@@ -3,7 +3,7 @@
 
 import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { SessionEvent } from "../session/events.js";
-import { deriveMessages } from "../session/deriveMessages.js";
+import { deriveMessages, DEFAULT_COMPRESSION } from "../session/deriveMessages.js";
 import type { ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
@@ -89,8 +89,9 @@ export class LoopEngine {
     this.append({ ...this.env(), type: "user_message", content: userInput });
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      // 永远从日志现算上下文——loop 自己不持有任何对话状态
-      const messages = deriveMessages(store.load(sessionId));
+      // 永远从日志现算上下文——loop 自己不持有任何对话状态。
+      // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
+      const messages = deriveMessages(store.load(sessionId), DEFAULT_COMPRESSION);
       const reply = await this.adapter.chat(
         messages,
         this.opts.tools.map((t) => t.def)

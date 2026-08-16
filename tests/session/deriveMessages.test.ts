@@ -77,3 +77,61 @@ describe("deriveMessages", () => {
     expect(deriveMessages(events)).toEqual([{ role: "user", content: "hi" }]);
   });
 });
+
+describe("deriveMessages 上下文压缩", () => {
+  const OPTS = { keepRecentTurns: 2, maxOldToolOutputChars: 50 };
+  const LONG = "x".repeat(200); // 超上限的工具输出
+  const toolTurn = (n: number, output: string): SessionEvent[] => [
+    { ...env(), type: "user_message", content: `问题${n}` },
+    {
+      ...env(),
+      type: "assistant_message",
+      content: "",
+      model: "m",
+      toolCalls: [{ id: `call_${n}`, name: "bash", args: { cmd: "ls" } }],
+    },
+    { ...env(), type: "tool_result", toolCallId: `call_${n}`, status: "ok", output },
+    { ...env(), type: "assistant_message", content: `答案${n}`, model: "m" },
+  ];
+  // 3 个 turn：turn1 = 老区（可压缩），turn2 / turn3 = 保真区
+  const events: SessionEvent[] = [...toolTurn(1, LONG), ...toolTurn(2, LONG), ...toolTurn(3, LONG)];
+
+  it("不传 opts = 不压缩：与旧行为逐字节一致（向后兼容）", () => {
+    const plain = deriveMessages(events);
+    expect(plain.filter((m) => m.role === "tool").every((m) => m.content === LONG)).toBe(true);
+  });
+
+  it("老 turn 的长输出截断且带原始长度标记；最近 K 个 turn 原文保真", () => {
+    const msgs = deriveMessages(events, OPTS);
+    const tools = msgs.filter((m) => m.role === "tool");
+    expect(tools[0]!.content).toContain("[上下文压缩：工具输出原 200 字符");
+    expect(tools[0]!.content.startsWith("x".repeat(50))).toBe(true);
+    expect(tools[1]!.content).toBe(LONG); // turn2 起进保真区
+    expect(tools[2]!.content).toBe(LONG);
+  });
+
+  it("只瘦内容不动结构：消息数量与 tool_call_id 配对与未压缩完全一致", () => {
+    const plain = deriveMessages(events);
+    const compressed = deriveMessages(events, OPTS);
+    expect(compressed.length).toBe(plain.length);
+    expect(compressed.map((m) => (m.role === "tool" ? m.tool_call_id : m.role))).toEqual(
+      plain.map((m) => (m.role === "tool" ? m.tool_call_id : m.role))
+    );
+  });
+
+  it("老区的短输出不动：低于上限没有折叠的必要", () => {
+    const short: SessionEvent[] = [...toolTurn(1, "短输出"), ...toolTurn(2, LONG), ...toolTurn(3, LONG)];
+    const tools = deriveMessages(short, OPTS).filter((m) => m.role === "tool");
+    expect(tools[0]!.content).toBe("短输出"); // 无标记、无截断
+  });
+
+  it("user_message 不足 K 个 = 全部保真（新会话永不压缩）", () => {
+    const one = toolTurn(1, LONG);
+    const tools = deriveMessages(one, OPTS).filter((m) => m.role === "tool");
+    expect(tools[0]!.content).toBe(LONG);
+  });
+
+  it("确定性：同 events 同 opts 两次投影深等——重放的根基", () => {
+    expect(deriveMessages(events, OPTS)).toEqual(deriveMessages(events, OPTS));
+  });
+});
