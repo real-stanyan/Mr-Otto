@@ -82,6 +82,34 @@ export class LoopEngine {
     }
   }
 
+  /** /compact：把现有上下文交给模型写摘要，摘要落盘成 context_compacted 事件，
+      之后的投影从摘要起步。贵（一次全量输入 + 摘要输出），所以只由用户手动触发。
+      摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
+  async compact(): Promise<void> {
+    const { store, sessionId } = this.opts;
+    // 给摘要人看全保真历史（不套确定性截断）：摘要质量优先，反正这次调用本来就贵
+    const messages = deriveMessages(store.load(sessionId));
+    const reply = await this.adapter.chat([
+      ...messages,
+      {
+        role: "user",
+        content:
+          "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
+          "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
+          "直接输出摘要正文，不要开场白。",
+      },
+    ]); // 不带工具：这一步只要文字
+    if (!reply.content.trim()) throw new Error("模型没有产出摘要，compact 已放弃（未写入任何事件）");
+
+    this.append({
+      ...this.env(),
+      type: "context_compacted",
+      summary: reply.content,
+      model: this.adapter.model,
+      ...(reply.usage ? { usage: reply.usage } : {}),
+    });
+  }
+
   /** 跑一个完整 turn：直到模型不再要工具为止 */
   async runTurn(userInput: string): Promise<void> {
     const { store, world, sessionId } = this.opts;
@@ -103,6 +131,7 @@ export class LoopEngine {
         content: reply.content,
         model: this.adapter.model,
         ...(reply.toolCalls ? { toolCalls: reply.toolCalls } : {}),
+        ...(reply.usage ? { usage: reply.usage } : {}), // token 账单随事件落盘，UI 从日志求和
       });
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了

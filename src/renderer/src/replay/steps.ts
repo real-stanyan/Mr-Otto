@@ -287,14 +287,36 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
     case "session_archived": {
       S.badge = "归档";
       S.desc =
-        "删除 = 追加归档标记。日志 append-only（DB trigger 拒绝 DELETE），所以不能真删：" +
-        "列表投影时滤掉带此标记的会话。历史不说谎，误删可救。";
+        "遗留事件：早期版本'删除' = 追加归档标记 + 列表滤掉。现版本删除改为整会话物理抹除" +
+        "（EventStore.purge，ADR-0002），不再产生此事件；旧日志里的它必须永远可重放。";
       S.nodes = ["n-bridge", "n-store"];
       S.edges = [];
       S.input = `侧栏 ✕ + 确认框\ndeleteSession("${e.sessionId}") 过桥`;
       S.fns = [
-        fn("deleteSession(sessionId)", "main/index.ts", "拒绝删运行中的会话，然后追加标记"),
+        fn("deleteSession(sessionId)", "main/index.ts", "旧版：拒绝删运行中的会话，然后追加标记"),
         ...APPEND(e, "（无 payload——标记本身就是全部信息）"),
+      ];
+      break;
+    }
+
+    case "context_compacted": {
+      S.badge = "压缩";
+      S.desc =
+        "/compact：模型把此前全部对话写成一份摘要，摘要落盘成事件，之后的投影从摘要起步。" +
+        "摘要出自模型（不确定输出），而模型今后看到的就是它——model-visible means logged，" +
+        "所以必须是事件，不能是投影层的临时计算。";
+      S.nodes = ["n-user", "n-bridge", "n-loop", "n-store", "n-derive", "n-adapter"];
+      S.edges = ["e-user-bridge", "e-bridge-loop", "e-store-derive", "e-derive-adapter", "e-adapter-loop", "e-loop-store"];
+      S.input = `用户输入 "/compact"\n渲染层查表分发 → compact(sessionId) 过桥（指令不落 user_message）`;
+      S.fns = [
+        fn("compact()", "loop/engine.ts", "全保真投影交给模型写摘要", `deriveMessages(前 ${e.seq} 条事件) → messages`),
+        fn(
+          "adapter.chat(messages)",
+          "model/openaiCompatible.ts",
+          "真实 API 调用，不带工具——只要文字",
+          `摘要 = "${clip(e.summary, 60)}"${e.usage ? `\n耗 ${e.usage.promptTokens + e.usage.completionTokens} tokens` : ""}`
+        ),
+        ...APPEND(e, `summary: "${clip(e.summary, 50)}",\n  model: "${e.model}"`),
       ];
       break;
     }

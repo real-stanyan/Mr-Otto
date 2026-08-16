@@ -116,4 +116,66 @@ describe("LoopEngine", () => {
     await expect(engine.runTurn("无限循环吧")).rejects.toThrow(/未收敛/);
     store.close();
   });
+
+  it("usage 随 assistant_message 落盘：token 账单是日志的一部分", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "答", usage: { promptTokens: 120, completionTokens: 8 } },
+    ]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("问");
+
+    const assistant = store.load("s1").find((e) => e.type === "assistant_message");
+    expect(assistant).toMatchObject({ usage: { promptTokens: 120, completionTokens: 8 } });
+    store.close();
+  });
+});
+
+describe("LoopEngine.compact", () => {
+  it("摘要落盘成 context_compacted，之后的 turn 只看到摘要不看到原文", async () => {
+    const store = new EventStore(":memory:");
+    // 先铺一段历史（直接落库——engine 不在乎事件是谁写的）
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "把秘密计划写进文件" });
+    store.append({ sessionId: "s1", ts: 2, type: "assistant_message", content: "写好了", model: "m" });
+
+    const seen: string[][] = []; // 每次调用时模型看到的 content 列表
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(messages) {
+        seen.push(messages.map((m) => m.content));
+        return seen.length === 1
+          ? { content: "摘要：用户让写秘密计划，已完成", usage: { promptTokens: 300, completionTokens: 20 } }
+          : { content: "收到" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+
+    await engine.compact();
+    const compacted = store.load("s1").at(-1);
+    expect(compacted).toMatchObject({
+      type: "context_compacted",
+      summary: "摘要：用户让写秘密计划，已完成",
+      model: "fake-model",
+      usage: { promptTokens: 300, completionTokens: 20 },
+    });
+
+    await engine.runTurn("继续");
+    const secondCall = seen[1]!;
+    // 摘要在、新消息在、原文不在——压缩真的换掉了模型的历史记忆
+    expect(secondCall.some((c) => c.includes("摘要：用户让写秘密计划"))).toBe(true);
+    expect(secondCall.some((c) => c === "继续")).toBe(true);
+    expect(secondCall.some((c) => c.includes("把秘密计划写进文件"))).toBe(false);
+    store.close();
+  });
+
+  it("模型交白卷 → 抛错且不落任何事件（宁可失败，不落空摘要）", async () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "随便聊聊" });
+    const { adapter } = fakeAdapter([{ content: "   " }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+
+    await expect(engine.compact()).rejects.toThrow(/没有产出摘要/);
+    expect(store.load("s1")).toHaveLength(1); // 只有原来那条
+    store.close();
+  });
 });

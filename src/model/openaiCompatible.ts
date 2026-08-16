@@ -24,6 +24,10 @@ interface ChatCompletionResponse {
       }[];
     };
   }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
 }
 
 export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): ModelAdapter {
@@ -62,6 +66,9 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       return {
         content: msg.content ?? "",
+        ...(data.usage
+          ? { usage: { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } }
+          : {}),
         ...(msg.tool_calls && msg.tool_calls.length > 0
           ? {
               toolCalls: msg.tool_calls.map((tc) => ({

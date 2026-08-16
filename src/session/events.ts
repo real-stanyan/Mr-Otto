@@ -24,12 +24,21 @@ export interface ToolCallRequest {
   args: unknown;   // 模型给的参数，原样存（JSON）
 }
 
+/** 一次模型调用的 token 账单（API 返回的 usage）。
+    记进事件 = UI 的消耗统计可从日志求和推导（投影硬规则），重开 app 不丢账 */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 /** 时间线 2：模型回复 —— 文本和工具调用请求可以同时出现 */
 export interface AssistantMessageEvent extends SessionEventBase {
   type: "assistant_message";
   content: string;               // 纯工具调用时可为空串
   toolCalls?: ToolCallRequest[]; // 有 = 本条回复要求执行工具
   model: string;                 // 实际生成这条的模型（事实，非配置）
+  /** 本次调用的 token 消耗。可选 = 旧日志/不报 usage 的 API 照样重放 */
+  usage?: TokenUsage;
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */
@@ -76,6 +85,17 @@ export interface SessionArchivedEvent extends SessionEventBase {
   type: "session_archived";
 }
 
+/** 额外 4：上下文压缩（/compact 的落盘）。
+    语义：投影时，本事件之前的一切消息被 summary 替换（围栏 system 消息除外）。
+    摘要出自模型——不确定输出，而模型之后看到的就是它：
+    model-visible means logged，所以必须是事件，不能是投影层的临时计算。 */
+export interface ContextCompactedEvent extends SessionEventBase {
+  type: "context_compacted";
+  summary: string;
+  model: string;                 // 摘要出自哪个模型（不同模型摘得不一样，溯源）
+  usage?: TokenUsage;            // compact 本身烧的 token（一次全量输入，不便宜）
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -85,4 +105,5 @@ export type SessionEvent =
   | ApprovalDecisionEvent
   | ToolResultEvent
   | ModelChangedEvent
-  | SessionArchivedEvent;
+  | SessionArchivedEvent
+  | ContextCompactedEvent;

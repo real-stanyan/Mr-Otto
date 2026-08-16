@@ -361,6 +361,14 @@ code { font-family: var(--mono); font-size: 12.5px; }
 .approval-actions .approve { background: var(--ok); border-color: var(--ok); color: #fff; }
 .approval-actions .deny { background: transparent; color: var(--deny); border-color: var(--deny); }
 
+/* 状态行：耗时 + 会话累计 token（composer 上方一行小字，数字等宽不跳动） */
+.status-line {
+  padding: 4px 22px;
+  font-size: 11px;
+  color: #7a7a7e;
+  font-variant-numeric: tabular-nums;
+}
+
 footer {
   display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line);
 }

@@ -1,12 +1,58 @@
 // 聊天主界面 — 功能优先（视觉设计等 harness 完工后再做）。
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
+import { dispatchSlash } from "./commands.js";
 import { Replay } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import type { SessionEvent } from "../../session/events.js";
+
+/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
+function totalTokens(events: SessionEvent[]): number {
+  let sum = 0;
+  for (const e of events) {
+    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
+      sum += e.usage.promptTokens + e.usage.completionTokens;
+    }
+  }
+  return sum;
+}
+
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+
+/** 状态行：跑 turn 时每秒走表的耗时 + 会话累计 token（Claude Code 状态行同款思路） */
+function StatusLine({ running, events }: { running: boolean; events: SessionEvent[] }) {
+  const [now, setNow] = useState(() => Date.now());
+  const startRef = useRef<number | null>(null);
+  if (running && startRef.current === null) startRef.current = Date.now();
+  if (!running) startRef.current = null;
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const tokens = useMemo(() => totalTokens(events), [events]);
+  if (!running && tokens === 0) return null; // 没得报就不占行
+
+  return (
+    <div className="status-line">
+      {running && startRef.current !== null && <span>{fmtElapsed(now - startRef.current)} · </span>}
+      <span>{fmtTokens(tokens)} tokens</span>
+      {running && <span> · 运行中…</span>}
+    </div>
+  );
+}
 
 /** agent 状态 → orb 动画。审批等待优先于 running：这时是 agent 在等人 */
 function orbStateOf(status: "idle" | "running", hasApproval: boolean) {
@@ -51,6 +97,14 @@ function EventRow({ event }: { event: SessionEvent }) {
 
     case "session_archived":
       return <div className="row audit">会话已归档</div>;
+
+    case "context_compacted":
+      return (
+        <div className="row audit">
+          ✻ 上下文已压缩——此前对话折叠为摘要（{event.model}
+          {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
+        </div>
+      );
 
     case "model_changed":
       return (
@@ -277,6 +331,7 @@ export function App() {
     const text = input.trim();
     if (!text || status === "running") return;
     setInput("");
+    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
     void send(text);
   };
 
@@ -342,6 +397,7 @@ export function App() {
 
           <ApprovalCard />
 
+          <StatusLine running={status === "running"} events={events} />
           <footer>
             <input
               autoFocus

@@ -76,6 +76,8 @@ function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number): numb
 
 export function deriveMessages(events: SessionEvent[], compression?: CompressionOptions): ChatMessage[] {
   const messages: ChatMessage[] = [];
+  // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
+  let systemMessage: SystemChatMessage | null = null;
   // 压缩只瘦身内容，永不增删消息：tool_call_id 与 assistant.tool_calls 的配对
   // 是 API 协议要求，删一条 tool 消息整个请求就废——结构神圣，内容可瘦。
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns) : 0;
@@ -119,13 +121,27 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         // 有 workspace → 投影成 system 消息（模型对工作目录的认知来自日志，不是配置）。
         // 没有（旧日志）→ 照旧丢弃，投影结果与从前逐字节一致。
         if (event.workspace) {
-          messages.push({
+          systemMessage = {
             role: "system",
             content:
               `你是 otter，一个会使用工具的助手。当前工程文件夹：${event.workspace}\n` +
               `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。`,
-          });
+          };
+          messages.push(systemMessage);
         }
+        break;
+
+      case "context_compacted":
+        // 摘要替换此前的一切投影：清空重来。两点讲究：
+        // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
+        // ② 摘要注入为 user 消息——中途插 system 各家方言兼容性参差，user 谁都认。
+        // 二次 compact 自然复合：第二份摘要清掉的历史里含第一份摘要。
+        messages.length = 0;
+        if (systemMessage) messages.push(systemMessage);
+        messages.push({
+          role: "user",
+          content: `[上下文已压缩。以下是此前对话的摘要，作为你对这段历史的全部记忆]\n${event.summary}`,
+        });
         break;
 
       // 模型不可见的事件：明确丢弃

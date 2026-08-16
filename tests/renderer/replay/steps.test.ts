@@ -19,7 +19,12 @@ const log: SessionEvent[] = [
   },
   { seq: 7, sessionId: "s", ts: 8, type: "tool_result", toolCallId: "c2", status: "error", output: "炸了" },
   { seq: 8, sessionId: "s", ts: 9, type: "assistant_message", content: "收尾", model: "glm-4.5-flash" },
-  { seq: 9, sessionId: "s", ts: 10, type: "session_archived" },
+  {
+    seq: 9, sessionId: "s", ts: 10, type: "context_compacted",
+    summary: "写了文件，bash 炸过一次", model: "glm-4.5-flash",
+    usage: { promptTokens: 500, completionTokens: 60 },
+  },
+  { seq: 10, sessionId: "s", ts: 11, type: "session_archived" },
 ];
 
 const steps = log.map((e, i) => toStep(e, i, log));
@@ -82,6 +87,15 @@ describe("toStep：事件 → 画布高亮 + 函数轨迹", () => {
     expect(at(8).badge).toBe("收口");
     // 数据卡里能看到真实调用参数
     expect(at(3).fns.map((f) => f.out).join()).toContain("write_file");
+  });
+
+  it("context_compacted：/compact 走 引擎 → adapter → 落盘，token 账单可见", () => {
+    const s = at(9);
+    expect(s.badge).toBe("压缩");
+    expect(s.input).toContain("/compact");
+    expect(s.nodes).toContain("n-adapter"); // 真实模型调用
+    expect(s.fns.some((f) => f.n.includes("adapter.chat"))).toBe(true);
+    expect(s.fns.map((f) => f.out).join()).toContain("560 tokens"); // 500 + 60
   });
 
   it("approval_decision denied 红色系；approved 绿色系", () => {

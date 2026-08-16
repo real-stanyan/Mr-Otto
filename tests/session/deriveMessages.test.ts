@@ -135,3 +135,46 @@ describe("deriveMessages 上下文压缩", () => {
     expect(deriveMessages(events, OPTS)).toEqual(deriveMessages(events, OPTS));
   });
 });
+
+describe("deriveMessages context_compacted", () => {
+  const base: SessionEvent[] = [
+    { ...env(), type: "session_created", workspace: "/proj" },
+    { ...env(), type: "user_message", content: "原文问题" },
+    { ...env(), type: "assistant_message", content: "原文回答", model: "m" },
+    { ...env(), type: "context_compacted", summary: "一句话摘要", model: "m" },
+    { ...env(), type: "user_message", content: "压缩后的新问题" },
+  ];
+
+  it("摘要替换此前一切；围栏 system 消息幸存；之后事件照常", () => {
+    const msgs = deriveMessages(base);
+    expect(msgs).toHaveLength(3); // system + 摘要 + 新问题
+    expect(msgs[0]!.role).toBe("system");
+    expect(msgs[0]!.content).toContain("/proj"); // 工作目录认知没被压掉
+    expect(msgs[1]!.role).toBe("user");
+    expect(msgs[1]!.content).toContain("一句话摘要");
+    expect(msgs[2]).toEqual({ role: "user", content: "压缩后的新问题" });
+    // 原文彻底离开模型视野
+    expect(msgs.some((m) => m.content.includes("原文问题"))).toBe(false);
+  });
+
+  it("二次 compact 复合：只剩最新摘要", () => {
+    const twice: SessionEvent[] = [
+      ...base,
+      { ...env(), type: "context_compacted", summary: "第二份摘要", model: "m" },
+    ];
+    const msgs = deriveMessages(twice);
+    expect(msgs.some((m) => m.content.includes("第二份摘要"))).toBe(true);
+    expect(msgs.some((m) => m.content.includes("一句话摘要"))).toBe(false);
+  });
+
+  it("usage 是账单不是内容：不进模型视野", () => {
+    const withUsage: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "hi" },
+      { ...env(), type: "assistant_message", content: "答", model: "m", usage: { promptTokens: 9, completionTokens: 1 } },
+    ];
+    expect(deriveMessages(withUsage)).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "答" },
+    ]);
+  });
+});

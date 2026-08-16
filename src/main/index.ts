@@ -157,6 +157,21 @@ void app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle(CHANNELS.compact, async (_e, sessionId: string) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能压缩上下文");
+    // compact 是一次真实的模型调用（几秒），复用 turn 状态灯让 UI 有反馈、挡并发
+    runningSessions.add(sessionId);
+    win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
+    try {
+      await agent.engine.compact();
+    } finally {
+      runningSessions.delete(sessionId);
+      win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+    }
+  });
+
   ipcMain.handle(
     CHANNELS.decideApproval,
     (_e, sessionId: string, toolCallId: string, decision: "approved" | "denied", reason?: string) => {
