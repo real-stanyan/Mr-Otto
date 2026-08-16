@@ -507,9 +507,10 @@ function Sidebar() {
             }
             onClick={() => void resume(s.sessionId)}
           >
-            <span className="dir">{s.workspace?.split("/").pop()}</span>
+            {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
+            <span className="title">{s.title ?? s.workspace?.split("/").pop()}</span>
             <span className="when">
-              {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+              {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
               {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
               {approvals[s.sessionId] ? (
                 <em className="flag approval"> 等审批</em>

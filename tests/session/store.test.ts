@@ -72,6 +72,24 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.workspace).toBeNull();
   });
 
+  it("sessions()：标题 = 第一条 user_message 的首行（多行输入只取首行）", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
+    store.append(userMsg("s1", "  帮我修登录 bug\n报错信息如下：\nTypeError…"));
+    store.append(userMsg("s1", "第二句不该当标题"));
+
+    expect(store.sessions()[0]?.title).toBe("帮我修登录 bug"); // 首行 + 去首尾空白
+  });
+
+  it("sessions()：还没发过话 / 首条是纯空白 → title 为 null（UI 兜底）", () => {
+    store.append({ sessionId: "silent", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({ sessionId: "blank", ts: 2, type: "session_created", workspace: "/q" });
+    store.append(userMsg("blank", "   \n\n  "));
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.title]));
+    expect(byId["silent"]).toBeNull();
+    expect(byId["blank"]).toBeNull();
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
     // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });

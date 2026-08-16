@@ -20,6 +20,9 @@ export interface SessionSummary {
   lastTs: number;
   /** 旧日志可能没记 workspace → null（不可恢复，UI 该滤掉） */
   workspace: string | null;
+  /** 标题 = 第一条 user_message 的首行（投影，非事件：推得出的不落盘）。
+      还没发过话 → null，UI 自行兜底 */
+  title: string | null;
 }
 
 const SCHEMA = `
@@ -116,7 +119,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     // 用 json_extract 在 SQL 层投影出来——又一个"从日志推导"的例子。
     // 旧日志可能没有 workspace 字段 → null（schema 向后兼容硬规则）。
     // 归档的会话（日志里出现过 session_archived）不进列表：删除 = 投影里消失，日志原封不动。
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT session_id AS sessionId,
                 COUNT(*)   AS events,
@@ -124,7 +127,11 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 MAX(ts)    AS lastTs,
                 (SELECT json_extract(payload, '$.workspace')
                    FROM events e0
-                  WHERE e0.session_id = e.session_id AND e0.seq = 0) AS workspace
+                  WHERE e0.session_id = e.session_id AND e0.seq = 0) AS workspace,
+                (SELECT json_extract(payload, '$.content')
+                   FROM events e1
+                  WHERE e1.session_id = e.session_id AND e1.type = 'user_message'
+                  ORDER BY e1.seq LIMIT 1) AS title
            FROM events e
           WHERE session_id NOT IN
                 (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
@@ -132,6 +139,11 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
           ORDER BY lastTs DESC`
       )
       .all() as SessionSummary[];
+    // 多行输入只取首行；空白算没标题（显示截断交给 UI 的 ellipsis）
+    return rows.map((r) => ({
+      ...r,
+      title: r.title?.split("\n")[0]?.trim() || null,
+    }));
   }
 
   close(): void {

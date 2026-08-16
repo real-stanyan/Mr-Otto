@@ -60,8 +60,8 @@ body {
 .session-delete:hover { color: var(--deny); }
 .session-delete:active { transform: translateY(-50%) scale(0.9); }
 .session-item.active { background: rgba(43, 74, 111, 0.45); }
-.session-item .dir { font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-item .when { font-size: 11px; color: var(--dim); font-family: var(--mono); }
+.session-item .title { font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item .when { font-size: 11px; color: var(--dim); font-family: var(--mono); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .flag { font-style: normal; font-weight: 600; }
 .session-item .flag.approval { color: var(--warn); }
 .session-item .flag.running { color: #74c0fc; }
