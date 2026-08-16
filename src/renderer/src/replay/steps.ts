@@ -309,7 +309,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       S.edges = ["e-user-bridge", "e-bridge-loop", "e-store-derive", "e-derive-adapter", "e-adapter-loop", "e-loop-store"];
       S.input = `用户输入 "/compact"\n渲染层查表分发 → compact(sessionId) 过桥（指令不落 user_message）`;
       S.fns = [
-        fn("compact()", "loop/engine.ts", "全保真投影交给模型写摘要", `deriveMessages(前 ${e.seq} 条事件) → messages`),
+        fn("compact()", "loop/engine.ts", "摘要专用投影（长工具输出/参数截断）交给模型", `deriveMessages(前 ${e.seq} 条事件, COMPACT_COMPRESSION) → messages`),
         fn(
           "adapter.chat(messages)",
           "model/openaiCompatible.ts",

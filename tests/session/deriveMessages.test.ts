@@ -79,7 +79,7 @@ describe("deriveMessages", () => {
 });
 
 describe("deriveMessages 上下文压缩", () => {
-  const OPTS = { keepRecentTurns: 2, maxOldToolOutputChars: 50 };
+  const OPTS = { keepRecentTurns: 2, maxOldToolOutputChars: 50, maxOldToolArgChars: 60 };
   const LONG = "x".repeat(200); // 超上限的工具输出
   const toolTurn = (n: number, output: string): SessionEvent[] => [
     { ...env(), type: "user_message", content: `问题${n}` },
@@ -133,6 +133,44 @@ describe("deriveMessages 上下文压缩", () => {
 
   it("确定性：同 events 同 opts 两次投影深等——重放的根基", () => {
     expect(deriveMessages(events, OPTS)).toEqual(deriveMessages(events, OPTS));
+  });
+
+  it("老 turn 的长工具参数截断带标记；保真区参数原文——write_file 的 content 不再永远躺在历史里", () => {
+    const bigArgs = { path: "a.txt", content: "长".repeat(100) };
+    const argTurn = (n: number): SessionEvent[] => [
+      { ...env(), type: "user_message", content: `问题${n}` },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "",
+        model: "m",
+        toolCalls: [{ id: `call_${n}`, name: "write_file", args: bigArgs }],
+      },
+      { ...env(), type: "tool_result", toolCallId: `call_${n}`, status: "ok", output: "写好" },
+    ];
+    const evts: SessionEvent[] = [...argTurn(1), ...argTurn(2), ...argTurn(3)];
+    const asst = deriveMessages(evts, OPTS).filter((m) => m.role === "assistant");
+
+    const oldArgs = asst[0]!.tool_calls![0]!.function.arguments;
+    expect(oldArgs).toContain("[上下文压缩：工具参数原");
+    expect(oldArgs.length).toBeLessThan(JSON.stringify(bigArgs).length);
+    // turn2 起进保真区：逐字节原文
+    expect(asst[1]!.tool_calls![0]!.function.arguments).toBe(JSON.stringify(bigArgs));
+    expect(asst[2]!.tool_calls![0]!.function.arguments).toBe(JSON.stringify(bigArgs));
+  });
+
+  it("压缩永不增肥：刚过上限的文本（截断+标记反而更长）原样放行", () => {
+    const barely = "x".repeat(55); // 超过 50 上限，但截到 50 加约 40 字符标记会更长
+    const evts: SessionEvent[] = [...toolTurn(1, barely), ...toolTurn(2, LONG), ...toolTurn(3, LONG)];
+    const tools = deriveMessages(evts, OPTS).filter((m) => m.role === "tool");
+    expect(tools[0]!.content).toBe(barely); // 原样，无标记
+  });
+
+  it("keepRecentTurns: 0 = 无保真区：连最后一个 turn 也压——compact 摘要档的地基", () => {
+    const opts = { keepRecentTurns: 0, maxOldToolOutputChars: 50, maxOldToolArgChars: 60 };
+    const one = toolTurn(1, LONG); // 只有一个 turn，K=2 时它是保真区
+    const tools = deriveMessages(one, opts).filter((m) => m.role === "tool");
+    expect(tools[0]!.content).toContain("[上下文压缩：工具输出原 200 字符");
   });
 });
 

@@ -168,6 +168,35 @@ describe("LoopEngine.compact", () => {
     store.close();
   });
 
+  it("摘要人看到的是压缩投影：长工具输出/参数被截断，不是全保真原文（ADR-0003）", async () => {
+    const store = new EventStore(":memory:");
+    const bigContent = "字".repeat(1000);
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "写篇长文章" });
+    store.append({
+      sessionId: "s1", ts: 2, type: "assistant_message", content: "", model: "m",
+      toolCalls: [{ id: "c1", name: "write_file", args: { path: "文章.txt", content: bigContent } }],
+    });
+    store.append({ sessionId: "s1", ts: 3, type: "tool_result", toolCallId: "c1", status: "ok", output: bigContent });
+    store.append({ sessionId: "s1", ts: 4, type: "assistant_message", content: "写好了", model: "m" });
+
+    let compactInput = "";
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(messages) {
+        compactInput = JSON.stringify(messages);
+        return { content: "摘要：写了文章.txt" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.compact();
+
+    // 全文没进输入，取而代之的是截断标记（参数和输出各自的）
+    expect(compactInput).not.toContain(bigContent);
+    expect(compactInput).toContain("工具参数原");
+    expect(compactInput).toContain("工具输出原");
+    store.close();
+  });
+
   it("模型交白卷 → 抛错且不落任何事件（宁可失败，不落空摘要）", async () => {
     const store = new EventStore(":memory:");
     store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "随便聊聊" });

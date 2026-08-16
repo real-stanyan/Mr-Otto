@@ -44,27 +44,46 @@ export type ChatMessage =
 // 摘要出自模型、不确定，就必须升级为落盘事件（model-visible means logged）。
 
 export interface CompressionOptions {
-  /** 最近几个 turn（以 user_message 为界）原文保真，不动一个字 */
+  /** 最近几个 turn（以 user_message 为界）原文保真，不动一个字。0 = 无保真区，全部可压 */
   keepRecentTurns: number;
   /** 更老的 turn 里，tool_result 输出超过此字符数则截断 */
   maxOldToolOutputChars: number;
+  /** 更老的 turn 里，tool_call 参数（JSON 字符串）超过此字符数则截断。
+      write_file 的 content 参数是上下文里另一大肥肉——写 700 字文章，
+      这 700 字就永远躺在历史里，每个后续请求都重复计费 */
+  maxOldToolArgChars: number;
 }
 
 /** engine 用的默认档：改这里 = 改所有会话的压缩行为（值本身是行为的一部分） */
 export const DEFAULT_COMPRESSION: CompressionOptions = {
   keepRecentTurns: 2,
   maxOldToolOutputChars: 400,
+  maxOldToolArgChars: 400,
 };
 
-/** 压缩标记带原始长度：模型知道这里被折叠过，不会被"无声变短的历史"误导 */
-function clipOutput(output: string, max: number): string {
-  if (output.length <= max) return output;
-  return output.slice(0, max) + `\n…[上下文压缩：工具输出原 ${output.length} 字符，仅保留前 ${max} 字符]`;
+/** /compact 摘要专用档（ADR-0003）：摘要人只需要"发生了什么"，不需要逐字证据。
+    无保真区（整段历史都压），输出上限放宽到 800——防止关键内容只存在于
+    工具输出里（assistant 没复述）时被截丢；参数收紧到 200——参数是 agent
+    自己生成的，它总会在正文里交代意图，路径开头那截通常就够 */
+export const COMPACT_COMPRESSION: CompressionOptions = {
+  keepRecentTurns: 0,
+  maxOldToolOutputChars: 800,
+  maxOldToolArgChars: 200,
+};
+
+/** 压缩标记带原始长度：模型知道这里被折叠过，不会被"无声变短的历史"误导。
+    刚过上限的文本截断后加上标记反而更长——那种情况原样放行（压缩永不增肥） */
+function clip(text: string, max: number, what: string): string {
+  if (text.length <= max) return text;
+  const clipped = text.slice(0, max) + `\n…[上下文压缩：${what}原 ${text.length} 字符，仅保留前 ${max} 字符]`;
+  return clipped.length < text.length ? clipped : text;
 }
 
 /** 找出"保真区"起点：倒数第 keepRecentTurns 个 user_message 的下标。
-    之前 = 老区（可压缩），之后 = 新区（原文）。user_message 不足 K 个 = 全保真 */
+    之前 = 老区（可压缩），之后 = 新区（原文）。user_message 不足 K 个 = 全保真。
+    K = 0 特判成 events.length：一个保真 turn 都不留，整段历史都算老区 */
 function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number): number {
+  if (keepRecentTurns <= 0) return events.length;
   let seen = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i]?.type === "user_message" && ++seen === keepRecentTurns) return i;
@@ -97,7 +116,16 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
                 tool_calls: event.toolCalls.map((tc) => ({
                   id: tc.id,
                   type: "function" as const,
-                  function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+                  // 老区的长参数截断（write_file 的 content 这种）。截的是序列化后的
+                  // JSON 字符串——截断处 JSON 会不完整，但这是给模型读的历史，不再执行，
+                  // 标记让它知道这里折叠过
+                  function: {
+                    name: tc.name,
+                    arguments:
+                      compression && i < boundary
+                        ? clip(JSON.stringify(tc.args), compression.maxOldToolArgChars, "工具参数")
+                        : JSON.stringify(tc.args),
+                  },
                 })),
               }
             : {}),
@@ -112,7 +140,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
           tool_call_id: event.toolCallId,
           content:
             compression && i < boundary
-              ? clipOutput(event.output, compression.maxOldToolOutputChars)
+              ? clip(event.output, compression.maxOldToolOutputChars, "工具输出")
               : event.output,
         });
         break;

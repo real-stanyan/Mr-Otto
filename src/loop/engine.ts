@@ -3,7 +3,7 @@
 
 import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { SessionEvent } from "../session/events.js";
-import { deriveMessages, DEFAULT_COMPRESSION } from "../session/deriveMessages.js";
+import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import type { ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
@@ -87,8 +87,9 @@ export class LoopEngine {
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
   async compact(): Promise<void> {
     const { store, sessionId } = this.opts;
-    // 给摘要人看全保真历史（不套确定性截断）：摘要质量优先，反正这次调用本来就贵
-    const messages = deriveMessages(store.load(sessionId));
+    // 摘要专用投影（ADR-0003）：整段历史无保真区，长工具输出/参数都截断——
+    // 摘要人要的是"发生了什么"，不是逐字证据；输入 token 是 compact 的主要成本
+    const messages = deriveMessages(store.load(sessionId), COMPACT_COMPRESSION);
     const reply = await this.adapter.chat([
       ...messages,
       {
