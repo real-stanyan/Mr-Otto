@@ -68,9 +68,10 @@ export interface SessionCreatedEvent extends SessionEventBase {
   };
 }
 
-/** 额外 3：会话归档 —— "删除"的事件化表达。
-    日志 append-only（DB trigger 拒绝 DELETE），所以删除不能真删：
-    追加此标记，列表投影时滤掉。历史不说谎，误删可救（将来补 session_restored 即恢复） */
+/** 额外 3：会话归档 —— 遗留类型。
+    早期版本"删除" = 追加此标记 + 列表滤掉；现版本删除改为整会话物理抹除
+    （EventStore.purge，ADR-0002），不再产生此事件。
+    类型保留：旧日志里可能有它，必须永远可重放（schema 向后兼容硬规则）。 */
 export interface SessionArchivedEvent extends SessionEventBase {
   type: "session_archived";
 }

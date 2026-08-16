@@ -72,15 +72,37 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.workspace).toBeNull();
   });
 
-  it("归档 = 追加标记：列表里消失，日志一个字节不少", () => {
+  it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
+    // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });
-    store.append({ sessionId: "gone", ts: 2, type: "session_created", workspace: "/b" });
-    store.append({ sessionId: "gone", ts: 3, type: "user_message", content: "要被删的会话" });
-    store.append({ sessionId: "gone", ts: 4, type: "session_archived" });
+    store.append({ sessionId: "old-archived", ts: 2, type: "session_created", workspace: "/b" });
+    store.append({ sessionId: "old-archived", ts: 3, type: "session_archived" });
 
-    expect(store.sessions().map((s) => s.sessionId)).toEqual(["keep"]); // 投影里没了
-    expect(store.load("gone")).toHaveLength(3); // 日志还在，包括归档标记本身
-    expect(store.load("gone").at(-1)?.type).toBe("session_archived");
+    expect(store.sessions().map((s) => s.sessionId)).toEqual(["keep"]);
+    expect(store.load("old-archived")).toHaveLength(2); // 旧日志本身原样可读
+  });
+
+  it("purge：整会话物理抹除，邻居会话一个字节不少", () => {
+    store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });
+    store.append(userMsg("keep", "我要活下来"));
+    store.append({ sessionId: "gone", ts: 2, type: "session_created", workspace: "/b" });
+    store.append(userMsg("gone", "我会被遗忘"));
+
+    store.purge("gone");
+
+    expect(store.load("gone")).toEqual([]); // 库里真没了
+    expect(store.load("keep")).toHaveLength(2); // 邻居毫发无损
+    expect(store.sessions().map((s) => s.sessionId)).toEqual(["keep"]);
+  });
+
+  it("purge 之后 append-only trigger 原样归位：UPDATE / 零散 DELETE 依旧被拒", () => {
+    store.append(userMsg("s1", "历史不可改"));
+    store.purge("nobody"); // 空目标也要走完 卸 trigger → 删 → 装回 的全程
+    const db = (store as unknown as { db: import("better-sqlite3").Database }).db;
+
+    expect(() => db.prepare("UPDATE events SET payload = '{}' ").run()).toThrow(/append-only/);
+    expect(() => db.prepare("DELETE FROM events").run()).toThrow(/append-only/);
+    expect(store.load("s1")).toHaveLength(1); // purge 别的会话不伤及无辜
   });
 
   it("集成：落盘的日志能直接投影出模型上下文", () => {

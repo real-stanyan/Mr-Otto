@@ -130,8 +130,8 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.deleteSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
-    // "删除" = 落一条归档事件。日志不动一个字节，只是从此不被列表投影出来。
-    store.append({ sessionId, ts: Date.now(), type: "session_archived" });
+    // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
+    store.purge(sessionId);
     agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
   });

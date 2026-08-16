@@ -49,7 +49,7 @@ export interface ShellBridge {
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
   resumeSession(sessionId: string): Promise<BootInfo>;
-  /** "删除"会话 = 追加 session_archived 标记（日志 append-only，不真删），列表里消失 */
+  /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise */
   switchModel(model: string): Promise<void>;

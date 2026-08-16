@@ -209,10 +209,10 @@ function Sidebar() {
             </span>
             <button
               className="session-delete"
-              title="删除会话（日志归档，不可从列表恢复）"
+              title="删除会话（整段日志从库里抹除，不可恢复）"
               onClick={(e) => {
                 e.stopPropagation(); // 别触发外层的"切换到该会话"
-                if (confirm(`删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？`)) {
+                if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
                   void deleteSession(s.sessionId);
                 }
               }}

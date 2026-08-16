@@ -71,6 +71,21 @@ export class EventStore {
     return insert(event);
   }
 
+  /** 物理抹除整个会话（被遗忘权）。
+      与 append-only 不矛盾：trigger 挡的是"改写历史"（UPDATE / 删日志的一部分），
+      而 purge 是"整段历史被完整遗忘"——要么全在、要么全无，不存在被篡改的中间态。
+      实现上事务内临时卸下 no_delete trigger，删完装回：
+      单连接同步库（better-sqlite3），事务里不会有并发写者穿过这扇临时开的门。 */
+  purge(sessionId: string): void {
+    this.db.transaction((id: string) => {
+      this.db.exec("DROP TRIGGER events_no_delete");
+      this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
+      this.db.exec(`CREATE TRIGGER events_no_delete
+BEFORE DELETE ON events
+BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
+    })(sessionId);
+  }
+
   /** 按 seq 顺序读出一个会话的全部事件 */
   load(sessionId: string): SessionEvent[] {
     const rows = this.db
