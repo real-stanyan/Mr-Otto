@@ -90,6 +90,25 @@ describe("EventStore", () => {
     expect(byId["blank"]).toBeNull();
   });
 
+  it("sessions()：手动改名（session_renamed）压过自动标题，改两次取最后一条", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
+    store.append(userMsg("s1", "第一句话（自动标题）"));
+    store.append({ sessionId: "s1", ts: 3, type: "session_renamed", title: "手动名 v1" });
+    store.append({ sessionId: "s1", ts: 4, type: "session_renamed", title: "手动名 v2" });
+
+    expect(store.sessions()[0]?.title).toBe("手动名 v2"); // 最后一条胜出，历史全留
+    expect(store.load("s1")).toHaveLength(4); // 改名不改旧事件，只追加
+  });
+
+  it("sessions()：日志里混进空白改名 → 当没有，退回自动标题", () => {
+    // 主进程会拒绝空白标题，但投影不赌上游守规矩：日志是别人也能写的
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
+    store.append(userMsg("s1", "自动标题"));
+    store.append({ sessionId: "s1", ts: 3, type: "session_renamed", title: "   " });
+
+    expect(store.sessions()[0]?.title).toBe("自动标题");
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
     // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });

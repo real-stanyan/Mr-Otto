@@ -63,6 +63,8 @@ interface ChatState {
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
   compact(): Promise<void>;
+  /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
+  rename(title: string): Promise<void>;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
 }
 
@@ -265,6 +267,17 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ error: null });
     try {
       await window.otter.compact(sessionId); // 结果以 context_compacted 事件流回
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async rename(title) {
+    const sessionId = get().sessionId;
+    set({ error: null });
+    try {
+      await window.otter.renameSession(sessionId, title);
+      set({ sessions: await window.otter.listSessions() }); // 侧栏标题立即换
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

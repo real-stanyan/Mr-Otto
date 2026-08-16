@@ -20,8 +20,8 @@ export interface SessionSummary {
   lastTs: number;
   /** 旧日志可能没记 workspace → null（不可恢复，UI 该滤掉） */
   workspace: string | null;
-  /** 标题 = 第一条 user_message 的首行（投影，非事件：推得出的不落盘）。
-      还没发过话 → null，UI 自行兜底 */
+  /** 标题投影，优先级：最后一条 session_renamed（用户手动改名）＞
+      第一条 user_message 首行（自动推导）＞ null（UI 自行兜底） */
   title: string | null;
 }
 
@@ -131,18 +131,23 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.content')
                    FROM events e1
                   WHERE e1.session_id = e.session_id AND e1.type = 'user_message'
-                  ORDER BY e1.seq LIMIT 1) AS title
+                  ORDER BY e1.seq LIMIT 1) AS title,
+                (SELECT json_extract(payload, '$.title')
+                   FROM events e2
+                  WHERE e2.session_id = e.session_id AND e2.type = 'session_renamed'
+                  ORDER BY e2.seq DESC LIMIT 1) AS renamed
            FROM events e
           WHERE session_id NOT IN
                 (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
           GROUP BY session_id
           ORDER BY lastTs DESC`
       )
-      .all() as SessionSummary[];
-    // 多行输入只取首行；空白算没标题（显示截断交给 UI 的 ellipsis）
-    return rows.map((r) => ({
+      .all() as (SessionSummary & { renamed: string | null })[];
+    // 手动改名（最后一条胜出）压过自动标题；自动标题只取首行；
+    // 空白一律算没有（显示截断交给 UI 的 ellipsis）
+    return rows.map(({ renamed, ...r }) => ({
       ...r,
-      title: r.title?.split("\n")[0]?.trim() || null,
+      title: renamed?.trim() || r.title?.split("\n")[0]?.trim() || null,
     }));
   }
 

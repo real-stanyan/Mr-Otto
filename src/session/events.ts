@@ -85,6 +85,15 @@ export interface SessionArchivedEvent extends SessionEventBase {
   type: "session_archived";
 }
 
+/** 额外 7：用户手动改名（/rename）。
+    自动标题（第一条 user_message 首行）推得出所以只是投影；手动改名是
+    新信息——日志里任何事件都推不出，所以必须成为事件。投影取最后一条
+    （改两次 = 两条事件，后者胜出，历史全留）。模型不消费。 */
+export interface SessionRenamedEvent extends SessionEventBase {
+  type: "session_renamed";
+  title: string;
+}
+
 /** 额外 4：上下文压缩（/compact 的落盘）。
     语义：投影时，本事件之前的一切消息被 summary 替换（围栏 system 消息除外）。
     摘要出自模型——不确定输出，而模型之后看到的就是它：
@@ -129,6 +138,7 @@ export type SessionEvent =
   | ToolResultEvent
   | ModelChangedEvent
   | SessionArchivedEvent
+  | SessionRenamedEvent
   | ContextCompactedEvent
   | ToolExecutionStartedEvent
   | TurnEndedEvent;

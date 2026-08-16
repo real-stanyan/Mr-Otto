@@ -306,6 +306,24 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       break;
     }
 
+    case "session_renamed": {
+      S.badge = "改名";
+      S.desc =
+        "/rename 的落盘。自动标题（第一条 user_message 首行）推得出所以只是投影；" +
+        "手动改名是新信息，推不出，必须成为事件。改两次 = 两条事件，投影取最后一条——" +
+        "append-only 日志里'修改'永远长这样：不改旧事实，追加新事实盖过它。模型不消费。";
+      S.nodes = ["n-user", "n-bridge", "n-store"];
+      S.edges = ["e-user-bridge", "e-bridge-loop", "e-loop-store"];
+      S.input = `输入框 "/rename ${clip(e.title, 40)}"\nrenameSession(sessionId, title) 过桥`;
+      S.fns = [
+        fn("dispatchSlash(text)", "renderer/commands.ts", "首个空白切开：指令名 + 参数", `args = "${clip(e.title, 40)}"`),
+        fn("renameSession(sessionId, title)", "main/index.ts", "空白标题拒绝；会话必须存在", "合法，落盘"),
+        ...APPEND(e, `title: "${clip(e.title, 60)}"`),
+        fn("sessions() 投影", "session/store.ts", "列表标题：最后一条 session_renamed 胜出", `侧栏显示 "${clip(e.title, 40)}"`),
+      ];
+      break;
+    }
+
     case "tool_execution_started": {
       const call = findCall(all, e.toolCallId);
       const info = toolInfo(call?.name);

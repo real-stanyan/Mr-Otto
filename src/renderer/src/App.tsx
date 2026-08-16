@@ -342,6 +342,9 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "session_archived":
       return <div className="row audit">会话已归档</div>;
 
+    case "session_renamed":
+      return <div className="row audit">会话改名 → {event.title}</div>;
+
     case "context_compacted":
       return (
         <div className="row audit">

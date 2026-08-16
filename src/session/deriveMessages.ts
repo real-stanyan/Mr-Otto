@@ -218,6 +218,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "approval_decision":
       case "model_changed":
       case "session_archived":
+      case "session_renamed":
       case "tool_execution_started":
       case "turn_ended":
         break;

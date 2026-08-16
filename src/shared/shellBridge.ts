@@ -65,6 +65,9 @@ export interface ShellBridge {
   resumeSession(sessionId: string): Promise<BootInfo>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
+  /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
+      生效凭证是流回来的事件；空白标题直接 reject */
+  renameSession(sessionId: string, title: string): Promise<void>;
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise */
   switchModel(model: string): Promise<void>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
@@ -102,6 +105,7 @@ export const CHANNELS = {
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
   deleteSession: "otter:deleteSession",
+  renameSession: "otter:renameSession",
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",

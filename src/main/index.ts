@@ -140,6 +140,15 @@ void app.whenReady().then(() => {
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
   });
 
+  ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {
+    const t = title.trim();
+    if (!t) throw new Error("标题不能为空（用法：/rename 新标题）");
+    if (store.load(sessionId).length === 0) throw new Error("会话不存在"); // 别给幽灵会话开日志
+    // 改名不碰 agent、不限 turn 状态：纯追加一条事件，投影层自然换标题
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_renamed", title: t });
+    win.webContents.send(CHANNELS.event, appended); // 时间线同款直播通道
+  });
+
   ipcMain.handle(CHANNELS.switchModel, (_e, model: string) => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     if (!agent) throw new Error("还没有会话");
