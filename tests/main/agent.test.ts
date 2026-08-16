@@ -133,3 +133,51 @@ describe("agent 运行时偏好（审批模式 / thinking）", () => {
     store.close();
   });
 });
+
+describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
+  function crashedLog(store: EventStore, withStarted: boolean) {
+    store.append({ sessionId: "s-x", ts: 1, type: "session_created", workspace: "/w" });
+    store.append({ sessionId: "s-x", ts: 2, type: "user_message", content: "跑" });
+    store.append({
+      sessionId: "s-x", ts: 3, type: "assistant_message", model: "m", content: "",
+      toolCalls: [{ id: "c1", name: "bash", args: { cmd: "sleep 99" } }],
+    });
+    if (withStarted) {
+      store.append({ sessionId: "s-x", ts: 4, type: "tool_execution_started", toolCallId: "c1" });
+    }
+  }
+
+  it("悬空调用补合成 tool_result(error) 并推给 UI；文案按 started 区分", () => {
+    const store = new EventStore(":memory:");
+    crashedLog(store, true);
+    const pushed: string[] = [];
+    createAgent({
+      store, workspace: "/w", resumeSessionId: "s-x",
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {} },
+    });
+
+    const last = store.load("s-x").at(-1);
+    expect(last).toMatchObject({ type: "tool_result", toolCallId: "c1", status: "error" });
+    expect((last as { output: string }).output).toContain("世界可能已被部分变更");
+    expect(pushed).toContain("tool_result");
+    store.close();
+  });
+
+  it("无 started 的悬空调用：文案说执行器未达", () => {
+    const store = new EventStore(":memory:");
+    crashedLog(store, false);
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    expect((store.load("s-x").at(-1) as { output: string }).output).toContain("世界未被此调用变更");
+    store.close();
+  });
+
+  it("幂等：修过再 resume 不重复追加", () => {
+    const store = new EventStore(":memory:");
+    crashedLog(store, true);
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    const afterFirst = store.load("s-x").length;
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    expect(store.load("s-x")).toHaveLength(afterFirst);
+    store.close();
+  });
+});

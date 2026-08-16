@@ -240,3 +240,45 @@ describe("lifecycle 事件对投影隐形（ADR-0004）", () => {
     expect(JSON.stringify(deriveMessages(withLifecycle))).toBe(JSON.stringify(deriveMessages(base)));
   });
 });
+
+describe("悬空工具调用自愈（ADR-0005 保命层）", () => {
+  const dangling = (withStarted: boolean): SessionEvent[] => [
+    { seq: 0, sessionId: "s", ts: 1, type: "user_message", content: "跑个命令" },
+    {
+      seq: 1, sessionId: "s", ts: 2, type: "assistant_message", model: "m", content: "",
+      toolCalls: [{ id: "c1", name: "bash", args: { cmd: "sleep 99" } }],
+    },
+    ...(withStarted
+      ? [{ seq: 2, sessionId: "s", ts: 3, type: "tool_execution_started", toolCallId: "c1" } as SessionEvent]
+      : []),
+    // 崩溃：没有 tool_result，下一 turn 的输入直接跟上
+    { seq: 3, sessionId: "s", ts: 9, type: "user_message", content: "还在吗" },
+  ];
+
+  it("悬空调用就地合成占位 tool 消息：紧跟 assistant，配对合法", () => {
+    const msgs = deriveMessages(dangling(true));
+    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+    const tool = msgs[2] as { tool_call_id: string; content: string };
+    expect(tool.tool_call_id).toBe("c1");
+    expect(tool.content).toContain("世界可能已被部分变更");
+  });
+
+  it("没有 started 的悬空调用：文案说清执行器未达", () => {
+    const msgs = deriveMessages(dangling(false));
+    const tool = msgs[2] as { content: string };
+    expect(tool.content).toContain("世界未被此调用变更");
+  });
+
+  it("配对完好的日志：自愈层一根手指都不动", () => {
+    const healthy: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "user_message", content: "跑" },
+      {
+        seq: 1, sessionId: "s", ts: 2, type: "assistant_message", model: "m", content: "",
+        toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }],
+      },
+      { seq: 2, sessionId: "s", ts: 3, type: "tool_result", toolCallId: "c1", status: "ok", output: "a.txt" },
+      { seq: 3, sessionId: "s", ts: 4, type: "assistant_message", model: "m", content: "有 a.txt" },
+    ];
+    expect(deriveMessages(healthy).map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+  });
+});

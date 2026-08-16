@@ -45,6 +45,37 @@ export function createAgent(opts: {
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
     // resume 时它已在日志里——engine 每 turn 从日志现算，所以这里啥都不用"恢复"。
     store.append({ sessionId, ts: Date.now(), type: "session_created", workspace: opts.workspace });
+  } else {
+    // 崩溃修复（ADR-0005，留痕层）：上次 app 在工具执行中途退出的话，日志里
+    // 会有悬空 toolCall（无配对 tool_result）。补合成结果事件——修复 = 追加，
+    // 永不改写。文案按 tool_execution_started 区分"跑了一半"和"没开跑"。
+    // 幂等：补过即配对，再 resume 不重复。事故从此是时间线事实，UI/回放可见。
+    const log = store.load(sessionId);
+    const answered = new Set(
+      log.filter((e) => e.type === "tool_result").map((e) => e.toolCallId)
+    );
+    const started = new Set(
+      log.filter((e) => e.type === "tool_execution_started").map((e) => e.toolCallId)
+    );
+    for (const e of log) {
+      if (e.type !== "assistant_message") continue;
+      for (const tc of e.toolCalls ?? []) {
+        if (answered.has(tc.id)) continue;
+        const full = store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "tool_result",
+          toolCallId: tc.id,
+          status: "error",
+          output: started.has(tc.id)
+            ? "执行中断：执行已开始但结果未落盘（app 在执行中退出）。" +
+              "世界可能已被部分变更，结果未知，建议检查现场。"
+            : "执行中断：调用未开始执行就被中断（审批未决或 app 退出）。" +
+              "执行器未达，世界未被此调用变更。",
+        });
+        opts.push.event(full);
+      }
+    }
   }
 
   // 当前模型 = 日志投影：最后一条 model_changed 说了算，没有就用默认。

@@ -91,6 +91,46 @@ function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number): numb
   return 0;
 }
 
+// ─── 悬空工具调用自愈（ADR-0005，保命层）───────────────────
+// app 在工具执行中途退出：日志停在 assistant_message(带 toolCalls)，无 tool_result。
+// OpenAI 方言要求每个 tool_call 必须有配对的 tool 消息——不补就是非法序列，
+// 且那条 assistant_message 永远在历史里：每次投影都 400，会话永久中毒。
+// 补在投影层 = 确定性纯函数，与压缩同一法理；老日志任何入口读取都自动痊愈。
+
+/** 合成占位文案按 tool_execution_started（ADR-0004）区分，不含糊 */
+function danglingText(started: boolean): string {
+  return started
+    ? "[执行中断：执行已开始但结果未落盘（app 在执行中退出）。" +
+      "世界可能已被部分变更，结果未知，建议检查现场。]"
+    : "[执行中断：调用未开始执行就被中断（审批未决或 app 退出）。" +
+      "执行器未达，世界未被此调用变更。]";
+}
+
+function healDanglingToolCalls(messages: ChatMessage[], startedIds: Set<string>): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    out.push(m);
+    if (m.role !== "assistant" || !m.tool_calls?.length) continue;
+    // 事件有序 → 投影里 tool 回应紧跟在 assistant 之后连成一块
+    const answered = new Set<string>();
+    let j = i + 1;
+    while (j < messages.length && messages[j]!.role === "tool") {
+      const t = messages[j] as ToolChatMessage;
+      answered.add(t.tool_call_id);
+      out.push(t);
+      j++;
+    }
+    i = j - 1;
+    for (const tc of m.tool_calls) {
+      if (!answered.has(tc.id)) {
+        out.push({ role: "tool", tool_call_id: tc.id, content: danglingText(startedIds.has(tc.id)) });
+      }
+    }
+  }
+  return out;
+}
+
 // ─── 投影 ──────────────────────────────────────────────────
 
 export function deriveMessages(events: SessionEvent[], compression?: CompressionOptions): ChatMessage[] {
@@ -184,5 +224,8 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
     }
   }
 
-  return messages;
+  const startedIds = new Set(
+    events.filter((e) => e.type === "tool_execution_started").map((e) => e.toolCallId)
+  );
+  return healDanglingToolCalls(messages, startedIds);
 }
