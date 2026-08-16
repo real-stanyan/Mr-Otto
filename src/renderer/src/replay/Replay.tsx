@@ -2,7 +2,7 @@
 // 回放"系统里发生了什么"——不是切聊天框，是重演每条事件穿过哪些组件、数据怎么流。
 // 全部只读：主进程和 agent 对回放毫不知情（纯渲染层投影）。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "../store.js";
 import { toStep, hl, type ReplayStep } from "./steps.js";
 import { Canvas } from "./Canvas.js";
@@ -94,65 +94,70 @@ export function Replay() {
     setReplayCursor(Math.max(0, Math.min(steps.length - 1, i)));
   };
 
+  // 播放/切步时当前行跟进视野（nearest：不居中猛跳，就近露出）
+  const curRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    curRef.current?.scrollIntoView({ block: "nearest" });
+  }, [cur]);
+
+  // 驾驶舱布局：画布 / 轨迹 / 步骤三区同屏（grid），信息不藏在滚动下面
   return (
     <section className="replay">
-      <div className="rp-top">
-        <div className="rp-canvas">
-          <Canvas nodes={s?.nodes ?? []} edges={s?.edges ?? []} deny={s?.deny ?? false} />
-        </div>
-        <div className="rp-side">
-          <div className="rp-controls">
-            <button onClick={() => goto(cur - 1)}>◀</button>
-            <button
-              className="primary"
-              onClick={() => {
-                if (playing) return setPlaying(false);
-                if (cur >= steps.length - 1) setReplayCursor(0);
-                setPlaying(true);
-              }}
-            >
-              {playing ? "⏸ 暂停" : "▶ 播放"}
-            </button>
-            <button onClick={() => goto(cur + 1)}>▶</button>
-            <span className="rp-pos">
-              {cur + 1} / {steps.length}
-            </span>
-          </div>
-          <div className="rp-steps">
-            {steps.map((st, i) => (
-              <div
-                key={st.ev.seq}
-                className={"rp-step" + (i === cur ? " cur" + (st.deny ? " deny" : "") : "")}
-                onClick={() => goto(i)}
-              >
-                <span className="n">seq {st.ev.seq}</span>
-                <span className="t">{st.title}</span>
-                <span className={"badge" + (st.deny ? " deny" : "")}>{st.badge}</span>
-              </div>
-            ))}
-          </div>
-          <div className="rp-payload">
-            {s ? (
-              <>
-                <h3>
-                  seq {s.ev.seq} · {s.title}
-                </h3>
-                <div className="desc">{s.desc}</div>
-                <pre>
-                  <Hl src={displayEvent(s.ev)} />
-                </pre>
-              </>
-            ) : (
-              <div className="desc">点一个 step，或按播放。</div>
-            )}
-          </div>
-        </div>
+      <div className="rp-canvas">
+        <Canvas nodes={s?.nodes ?? []} edges={s?.edges ?? []} deny={s?.deny ?? false} />
       </div>
+      <aside className="rp-side">
+        <div className="rp-controls">
+          <button onClick={() => goto(cur - 1)}>◀</button>
+          <button
+            className="primary"
+            onClick={() => {
+              if (playing) return setPlaying(false);
+              if (cur >= steps.length - 1) setReplayCursor(0);
+              setPlaying(true);
+            }}
+          >
+            {playing ? "⏸ 暂停" : "▶ 播放"}
+          </button>
+          <button onClick={() => goto(cur + 1)}>▶</button>
+          <span className="rp-pos">
+            {cur + 1} / {steps.length}
+          </span>
+        </div>
+        <div className="rp-steps">
+          {steps.map((st, i) => (
+            <div
+              key={st.ev.seq}
+              ref={i === cur ? curRef : null}
+              className={"rp-step" + (i === cur ? " cur" + (st.deny ? " deny" : "") : "")}
+              onClick={() => goto(i)}
+            >
+              <span className="n">seq {st.ev.seq}</span>
+              <span className="t">{st.title}</span>
+              <span className={"badge" + (st.deny ? " deny" : "")}>{st.badge}</span>
+            </div>
+          ))}
+        </div>
+        <div className="rp-payload">
+          {s ? (
+            <>
+              <h3>
+                seq {s.ev.seq} · {s.title}
+              </h3>
+              <div className="desc">{s.desc}</div>
+              <pre>
+                <Hl src={displayEvent(s.ev)} />
+              </pre>
+            </>
+          ) : (
+            <div className="desc">点一个 step，或按播放。</div>
+          )}
+        </div>
+      </aside>
       <div className="rp-trace">
         <h3>
-          {s
-            ? `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）—— 芯片 = 函数，蓝卡 = 函数之间流动的数据`
-            : "函数轨迹（本 step 实际经过的调用链）"}
+          <span>{s ? `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）` : "函数轨迹"}</span>
+          <span className="legend">芯片 = 函数 · 蓝卡 = 函数间流动的数据</span>
         </h3>
         {/* key=cur：换 step 时整棵子树重建，pop 入场动画重新播 */}
         {s ? (

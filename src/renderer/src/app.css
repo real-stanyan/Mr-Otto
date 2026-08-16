@@ -129,22 +129,29 @@ header .model-select {
 header .model-select:disabled { opacity: 0.4; }
 header .ghost:hover { color: var(--text); border-color: var(--text); }
 
-/* ── 富回放（docs/replay-demo.html 样式移植，作用域限 .replay） ── */
+/* ── 富回放（docs/replay-demo.html 样式移植，作用域限 .replay） ──
+   驾驶舱布局：三区同屏（画布 | 步骤+payload / 轨迹），整页不滚动，
+   滚动只发生在步骤列表、payload、轨迹链各自内部 */
 .replay {
   --hot: var(--ok); --hot-bg: rgba(47, 158, 68, 0.14);
   --deny-bg: rgba(224, 49, 49, 0.14);
-  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px;
-  display: flex; flex-direction: column; gap: 12px;
+  flex: 1; min-height: 0; padding: 12px 14px;
+  display: grid; gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas side" "trace side";
 }
-.replay > * { max-width: 100%; }
-/* 顶部两栏各自定高：画布面板贴着 SVG 收边，不陪侧栏拉高留空白 */
-.rp-top { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .rp-canvas {
-  flex: 1 1 480px; min-width: 420px;
+  grid-area: canvas; min-height: 0;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px;
+  display: flex; align-items: center; justify-content: center;
 }
-.rp-canvas svg { width: 100%; height: auto; display: block; }
-.rp-side { flex: 1 1 340px; min-width: 300px; display: flex; flex-direction: column; gap: 10px; }
+/* SVG 撑满面板并保持比例（preserveAspectRatio 默认 meet） */
+.rp-canvas svg { width: 100%; height: 100%; display: block; }
+.rp-side {
+  grid-area: side; min-height: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
 .rp-controls { display: flex; gap: 6px; align-items: center; }
 .rp-controls button { padding: 6px 14px; font-size: 13px; }
 .rp-controls .primary { background: var(--ok); border-color: var(--ok); color: #fff; }
@@ -155,7 +162,7 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
 }
 .rp-steps {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  padding: 6px; max-height: min(260px, 32vh); overflow-y: auto;
+  padding: 6px; flex: 1 1 40%; min-height: 120px; overflow-y: auto;
 }
 .rp-step {
   padding: 6px 10px; border-radius: 8px; cursor: pointer;
@@ -183,7 +190,7 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
 .rp-step.cur .badge.deny { background: rgba(224, 49, 49, 0.18); color: var(--deny); }
 .rp-payload {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  padding: 14px; flex: 1; min-height: 140px; overflow-y: auto;
+  padding: 14px; flex: 1 1 60%; min-height: 140px; overflow-y: auto;
 }
 /* 面板小标题统一：小字 + 加字重 + 微加字距（小字号要正字距才清楚） */
 .rp-payload h3, .rp-trace h3 {
@@ -229,10 +236,24 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
 @keyframes flow { to { stroke-dashoffset: -12; } }
 /* 函数轨迹 */
 .rp-trace {
+  grid-area: trace;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  padding: 14px; flex-shrink: 0;
+  padding: 14px 14px 8px;
 }
-.rp-trace .chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; row-gap: 10px; }
+/* 轨迹标题：左说明右图例，单行截断 */
+.rp-trace h3 { display: flex; gap: 12px; align-items: baseline; white-space: nowrap; }
+.rp-trace h3 > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.rp-trace h3 .legend { margin-left: auto; font-weight: 400; color: #6a6a6e; flex-shrink: 0; }
+/* 调用链 = 单行流水线：一律从左往右读，长了在面板内横向滚（不是窗口滚） */
+.rp-trace .chain {
+  display: flex; flex-wrap: nowrap; align-items: stretch; gap: 8px;
+  overflow-x: auto; padding-bottom: 8px;
+}
+.rp-trace .chain > * { flex-shrink: 0; }
+/* 面板内横向滚动条压暗压细，别抢流水线的戏 */
+.rp-trace .chain::-webkit-scrollbar { height: 6px; }
+.rp-trace .chain::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 3px; }
+.rp-trace .chain::-webkit-scrollbar-track { background: transparent; }
 .rp-trace .empty { color: var(--dim); font-size: 13px; }
 .rp-trace .fn {
   background: #232325; border: 1px solid var(--hot); border-radius: 10px;
@@ -255,6 +276,18 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
   opacity: 0; animation: pop 0.3s ease-out forwards;
 }
 @keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* 窄窗口降级：驾驶舱摆不下就回到纵向文档流，整区滚动 */
+@media (max-width: 980px) {
+  .replay {
+    display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden;
+  }
+  .rp-canvas { flex-shrink: 0; }
+  .rp-canvas svg { height: auto; }
+  .rp-steps { flex: 0 0 auto; max-height: min(260px, 32vh); }
+  .rp-payload { flex: 0 0 auto; overflow: visible; }
+  .rp-trace .chain { flex-wrap: wrap; overflow-x: visible; row-gap: 10px; }
+}
+
 /* 减少动效：入场改纯淡入（不平移不弹），画布流动虚线停摆但保持高亮色 */
 @media (prefers-reduced-motion: reduce) {
   .rp-trace .fn, .rp-trace .chev, .rp-trace .dat {
