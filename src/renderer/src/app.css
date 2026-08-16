@@ -305,15 +305,15 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
   .replay .edge.hot path { animation: none; stroke-dasharray: none; }
   .replay .node rect, .replay .node ellipse, .replay .node text { transition: none; }
 }
-/* 数据卡/payload 语法高亮（编辑器配色） */
-.replay i { font-style: normal; }
-.replay .hk { color: #74c0fc; }   /* key */
-.replay .hs { color: #a5d8b0; }   /* 字符串 */
-.replay .hd { color: #ffa94d; }   /* 数字 */
-.replay .hv { color: #dcbdfb; }   /* 标识符 */
-.replay .hw { color: #ff7b72; }   /* 关键字 */
-.replay .hp { color: #7a7f88; }   /* 标点 */
-.replay .hn { color: #6a7a8a; }   /* 中文注释 */
+/* 数据卡/payload/工具详情 语法高亮（编辑器配色）——回放和聊天区共用一套 */
+.replay i, .tool-detail i { font-style: normal; }
+.replay .hk, .tool-detail .hk { color: #74c0fc; }   /* key */
+.replay .hs, .tool-detail .hs { color: #a5d8b0; }   /* 字符串 */
+.replay .hd, .tool-detail .hd { color: #ffa94d; }   /* 数字 */
+.replay .hv, .tool-detail .hv { color: #dcbdfb; }   /* 标识符 */
+.replay .hw, .tool-detail .hw { color: #ff7b72; }   /* 关键字 */
+.replay .hp, .tool-detail .hp { color: #7a7f88; }   /* 标点 */
+.replay .hn, .tool-detail .hn { color: #6a7a8a; }   /* 中文注释 */
 .row.agent-status {
   display: flex; align-items: center; gap: 8px;
   color: var(--dim); font-size: 13px; padding: 2px 0;

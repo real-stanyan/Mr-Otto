@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
-import { Replay } from "./replay/Replay.js";
+import { Replay, Hl } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import type {
   SessionEvent,
@@ -291,11 +291,11 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
             {result && started ? ` · 执行耗时 ${result.ts - started.ts} ms` : ""}
           </div>
           <div className="tool-sec">参数</div>
-          <pre>{JSON.stringify(call.args, null, 2)}</pre>
+          <pre><Hl src={JSON.stringify(call.args, null, 2)} /></pre>
           {result && (
             <>
               <div className="tool-sec">输出</div>
-              <pre>{result.output || "（空）"}</pre>
+              <pre><Hl src={result.output || "（空）"} /></pre>
             </>
           )}
         </div>

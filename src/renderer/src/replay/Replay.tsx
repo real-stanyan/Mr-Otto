@@ -7,8 +7,9 @@ import { useChat } from "../store.js";
 import { toStep, hl, type ReplayStep } from "./steps.js";
 import { Canvas } from "./Canvas.js";
 
-/** token 数组 → 着色 span（steps.ts 的 hl 保持纯数据，DOM 在这拼） */
-function Hl({ src }: { src: string }) {
+/** token 数组 → 着色 span（steps.ts 的 hl 保持纯数据，DOM 在这拼）。
+    导出：聊天区工具详情面板复用同一高亮器——一处逻辑，两处消费 */
+export function Hl({ src }: { src: string }) {
   return (
     <>
       {hl(src).map((t, i) =>
