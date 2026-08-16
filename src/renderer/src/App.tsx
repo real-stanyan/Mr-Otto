@@ -2,6 +2,8 @@
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
 import { dispatchSlash } from "./commands.js";
@@ -59,9 +61,15 @@ function EventRow({ event }: { event: SessionEvent }) {
       return <div className="row user">{event.content}</div>;
 
     case "assistant_message":
+      // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
+      // 用户消息保持原文——用户打的不是 markdown，别替他排版
       return (
         <>
-          {event.content && <div className="row assistant">{event.content}</div>}
+          {event.content && (
+            <div className="row assistant md">
+              <Markdown remarkPlugins={[remarkGfm]}>{event.content}</Markdown>
+            </div>
+          )}
           {event.toolCalls?.map((c) => (
             <div key={c.id} className="row chip tool-call">
               请求工具 <code>{c.name}</code> <code>{JSON.stringify(c.args)}</code>
