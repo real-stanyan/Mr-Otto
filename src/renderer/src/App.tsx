@@ -31,6 +31,20 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
+/** 当前上下文占用估计 = 最近一次 API 调用的 prompt + completion。
+    近似而非精确（下个请求的 prompt 才是真占用），但它来自日志、随事件流实时更新 */
+function contextUsed(events: SessionEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if ((e?.type === "assistant_message" || e?.type === "context_compacted") && e.usage) {
+      // compact 之后历史只剩摘要：占用近似为摘要本身的体积
+      if (e.type === "context_compacted") return e.usage.completionTokens;
+      return e.usage.promptTokens + e.usage.completionTokens;
+    }
+  }
+  return 0;
+}
+
 /** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
     挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
 function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) {
@@ -46,6 +60,71 @@ function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) 
     <span>
       {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens · {label}
     </span>
+  );
+}
+
+/** 输入框下的状态条（Claude Code 同款布局）：
+    左 = 审批模式；右 = 模型 · thinking · 上下文用量。
+    模式/thinking 是运行时偏好（主进程 agent 持有）；模型是日志投影；用量是日志投影 */
+function ComposerBar() {
+  const model = useChat((s) => s.model);
+  const events = useChat((s) => s.events);
+  const approvalMode = useChat((s) => s.approvalMode);
+  const thinking = useChat((s) => s.thinking);
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const switchModel = useChat((s) => s.switchModel);
+  const setApprovalMode = useChat((s) => s.setApprovalMode);
+  const setThinking = useChat((s) => s.setThinking);
+
+  const choice = findModel(model);
+  const ctxWindow = choice?.contextWindow ?? 128_000;
+  const used = contextUsed(events);
+  const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
+
+  return (
+    <div className="composer-bar">
+      <select
+        className={"mode-select" + (approvalMode === "auto" ? " bypass" : "")}
+        value={approvalMode}
+        title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
+        onChange={(e) => void setApprovalMode(e.target.value as "ask" | "auto")}
+      >
+        <option value="ask">逐条审批</option>
+        <option value="auto">自动批准</option>
+      </select>
+
+      <span className="spacer" />
+
+      <select
+        className="model-select"
+        value={model}
+        disabled={status === "running"}
+        onChange={(e) => void switchModel(e.target.value)}
+      >
+        {MODEL_CATALOG.map((m) => (
+          <option key={m.model} value={m.model}>
+            {m.label}
+          </option>
+        ))}
+        {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
+        {!findModel(model) && <option value={model}>{model}</option>}
+      </select>
+
+      <select
+        className="thinking-select"
+        value={thinking ? "on" : "off"}
+        disabled={status === "running" || !choice?.supportsThinking}
+        title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
+        onChange={(e) => void setThinking(e.target.value === "on")}
+      >
+        <option value="on">Thinking 开</option>
+        <option value="off">Thinking 关</option>
+      </select>
+
+      <span className="ctx-usage" title={`上下文占用估计（最近一次调用的 token 账单）/ 型号上下文窗`}>
+        {fmtTokens(used)}/{fmtTokens(ctxWindow)} · {pct}%
+      </span>
+    </div>
   );
 }
 
@@ -309,12 +388,11 @@ function Welcome() {
 }
 
 export function App() {
-  const { phase, sessionId, model, workspace, events, error, boot, send } = useChat();
+  const { phase, sessionId, workspace, events, error, boot, send } = useChat();
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
-  const switchModel = useChat((s) => s.switchModel);
   const showSettings = useChat((s) => s.showSettings);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -350,20 +428,6 @@ export function App() {
         <span className="meta" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
         </span>
-        <select
-          className="model-select"
-          value={model}
-          disabled={status === "running"}
-          onChange={(e) => void switchModel(e.target.value)}
-        >
-          {MODEL_CATALOG.map((m) => (
-            <option key={m.model} value={m.model}>
-              {m.label}
-            </option>
-          ))}
-          {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
-          {!findModel(model) && <option value={model}>{model}</option>}
-        </select>
         <button className="ghost" onClick={() => setReplayCursor(replaying ? null : 0)}>
           {replaying ? "回到直播" : "回放"}
         </button>
@@ -399,19 +463,22 @@ export function App() {
           <ApprovalCard />
 
           <footer>
-            <input
-              autoFocus
-              placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
-              disabled={status === "running"}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
-              }}
-            />
-            <button onClick={submit} disabled={status === "running" || !input.trim()}>
-              发送
-            </button>
+            <div className="composer">
+              <input
+                autoFocus
+                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
+                disabled={status === "running"}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
+                }}
+              />
+              <button onClick={submit} disabled={status === "running" || !input.trim()}>
+                发送
+              </button>
+            </div>
+            <ComposerBar />
           </footer>
         </>
       )}

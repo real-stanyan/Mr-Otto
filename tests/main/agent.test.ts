@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { createAgent } from "../../src/main/agent.js";
 import { EventStore } from "../../src/session/store.js";
+import { createModeAwareApprover, type ApprovalMode } from "../../src/main/uiApprover.js";
+import type { Approver } from "../../src/loop/approvalGate.js";
 import type { AgentPush } from "../../src/main/agent.js";
+import type { ToolCallRequest } from "../../src/session/events.js";
+import { bashTool } from "../../src/tools/bash.js";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {} };
 
@@ -59,6 +63,73 @@ describe("createAgent 会话生命周期", () => {
 
     const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-m" });
     expect(agent.model).toBe("deepseek-v4-pro");
+    store.close();
+  });
+});
+
+describe("createModeAwareApprover 审批模式", () => {
+  const call: ToolCallRequest = { id: "c1", name: "bash", args: { cmd: "rm x" } };
+
+  it("ask 模式：委托 UI 审批人（问人）", async () => {
+    let uiAsked = false;
+    const ui: Approver = {
+      decide: async () => {
+        uiAsked = true;
+        return { decision: "denied" };
+      },
+    };
+    const approver = createModeAwareApprover(() => "ask", ui);
+    const outcome = await approver.decide(call, bashTool);
+    expect(uiAsked).toBe(true);
+    expect(outcome.decision).toBe("denied");
+  });
+
+  it("auto 模式：不问人直接批准，理由写明是 bypass", async () => {
+    const ui: Approver = {
+      decide: () => {
+        throw new Error("auto 模式不该碰 UI");
+      },
+    };
+    const approver = createModeAwareApprover(() => "auto", ui);
+    const outcome = await approver.decide(call, bashTool);
+    expect(outcome).toEqual({ decision: "approved", reason: "自动批准（bypass 模式）" });
+  });
+
+  it("模式是活引用：切换后下一次 decide 立即遵守新模式", async () => {
+    let mode: ApprovalMode = "auto";
+    let uiAsked = false;
+    const ui: Approver = {
+      decide: async () => {
+        uiAsked = true;
+        return { decision: "approved" };
+      },
+    };
+    const approver = createModeAwareApprover(() => mode, ui);
+
+    await approver.decide(call, bashTool); // auto：不问
+    expect(uiAsked).toBe(false);
+
+    mode = "ask"; // 踩刹车
+    await approver.decide(call, bashTool);
+    expect(uiAsked).toBe(true);
+  });
+});
+
+describe("agent 运行时偏好（审批模式 / thinking）", () => {
+  it("默认值安全：审批模式 ask、thinking 开；setter 生效", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push });
+
+    expect(agent.approvalMode).toBe("ask");
+    expect(agent.thinking).toBe(true);
+
+    agent.setApprovalMode("auto");
+    agent.setThinking(false);
+    expect(agent.approvalMode).toBe("auto");
+    expect(agent.thinking).toBe(false);
+
+    // 偏好不落日志：日志仍只有 session_created 一条
+    expect(store.load(agent.sessionId)).toHaveLength(1);
     store.close();
   });
 });

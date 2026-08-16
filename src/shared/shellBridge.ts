@@ -11,6 +11,10 @@ import type { SessionSummary } from "../session/store.js";
 
 export type { SessionSummary };
 
+/** 审批模式（Claude Code 的 permission mode 对应物）：
+    ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
+export type ApprovalMode = "ask" | "auto";
+
 export interface BootInfo {
   sessionId: string;
   model: string;
@@ -19,6 +23,9 @@ export interface BootInfo {
   /** 启动时的历史事件（新会话 = 只有 session_created；恢复 = 整段历史） */
   events: SessionEvent[];
   dbPath: string;
+  /** 运行时偏好（不落日志，resume 回默认值），UI 初始化控件用 */
+  approvalMode: ApprovalMode;
+  thinking: boolean;
 }
 
 export type TurnStatus = "idle" | "running";
@@ -53,6 +60,10 @@ export interface ShellBridge {
   deleteSession(sessionId: string): Promise<void>;
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise */
   switchModel(model: string): Promise<void>;
+  /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
+  setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
+  /** 切 thinking 开关（仅 supportsThinking 的型号有意义）。turn 进行中拒绝 */
+  setThinking(sessionId: string, on: boolean): Promise<void>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
   keyStatus(): Promise<Record<string, boolean>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
@@ -81,6 +92,8 @@ export const CHANNELS = {
   resumeSession: "otter:resumeSession",
   deleteSession: "otter:deleteSession",
   switchModel: "otter:switchModel",
+  setApprovalMode: "otter:setApprovalMode",
+  setThinking: "otter:setThinking",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",

@@ -6,6 +6,9 @@
 import type { Approver, ApprovalOutcome } from "../loop/approvalGate.js";
 import type { Tool } from "../tools/tool.js";
 import type { ToolCallRequest } from "../session/events.js";
+import type { ApprovalMode } from "../shared/shellBridge.js";
+
+export type { ApprovalMode };
 
 export class UIApprover implements Approver {
   private pending = new Map<string, (outcome: ApprovalOutcome) => void>();
@@ -29,4 +32,19 @@ export class UIApprover implements Approver {
     this.pending.delete(toolCallId);
     wake(outcome);
   }
+}
+
+/** 模式感知的 Approver：auto 模式短路 UI 往返，直接放行。
+    每次 decide 现读模式（getMode 是活引用）——turn 跑到一半切模式，下一个
+    工具调用立即遵守新模式。批准照样流经审批门 → approval_decision 照常落盘，
+    日志永远记着"这一步是自动批的"（reason 说明），行为可从日志推导。 */
+export function createModeAwareApprover(getMode: () => ApprovalMode, ui: Approver): Approver {
+  return {
+    decide(call, tool) {
+      if (getMode() === "auto") {
+        return Promise.resolve({ decision: "approved", reason: "自动批准（bypass 模式）" });
+      }
+      return ui.decide(call, tool);
+    },
+  };
 }

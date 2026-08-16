@@ -58,6 +58,8 @@ void app.whenReady().then(() => {
           workspace: agent.workspace,
           events: store.load(agent.sessionId),
           dbPath,
+          approvalMode: agent.approvalMode,
+          thinking: agent.thinking,
         }
       : null;
   };
@@ -141,6 +143,20 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model);
+  });
+
+  ipcMain.handle(CHANNELS.setApprovalMode, (_e, sessionId: string, mode: "ask" | "auto") => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    // turn 进行中也允许：auto 切 ask 是"踩刹车"，必须随时可踩
+    agent.setApprovalMode(mode);
+  });
+
+  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, on: boolean) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能切 thinking");
+    agent.setThinking(on);
   });
 
   ipcMain.handle(CHANNELS.sendMessage, async (_e, sessionId: string, text: string) => {

@@ -118,15 +118,10 @@ header .meta {
   /* header 永远单行：溢出截断加省略号（完整路径挂 title，悬停可见） */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-header select, header .ghost { flex-shrink: 0; }
+header .ghost { flex-shrink: 0; }
 header .ghost {
   padding: 4px 12px; font-size: 12px; color: var(--dim); background: transparent;
 }
-header .model-select {
-  background: var(--panel); color: var(--text); border: 1px solid var(--line);
-  border-radius: 8px; padding: 4px 8px; font-size: 12px; font-family: var(--mono);
-}
-header .model-select:disabled { opacity: 0.4; }
 header .ghost:hover { color: var(--text); border-color: var(--text); }
 
 /* ── 富回放（docs/replay-demo.html 样式移植，作用域限 .replay） ──
@@ -404,13 +399,32 @@ code { font-family: var(--mono); font-size: 12.5px; }
 .agent-status span { font-variant-numeric: tabular-nums; }
 
 footer {
-  display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 20px 10px; border-top: 1px solid var(--line);
 }
-footer input {
+footer .composer { display: flex; gap: 8px; }
+footer .composer input {
   flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   color: var(--text); padding: 10px 14px; font-size: 14px;
 }
-footer input:focus { outline: none; border-color: #4a4a4e; }
+footer .composer input:focus { outline: none; border-color: #4a4a4e; }
+
+/* 输入框下状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
+.composer-bar {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--dim);
+}
+.composer-bar .spacer { flex: 1; }
+.composer-bar select {
+  background: transparent; color: var(--dim); border: 1px solid transparent;
+  border-radius: 6px; padding: 2px 4px; font-size: 12px; font-family: var(--mono);
+  cursor: pointer;
+}
+.composer-bar select:hover { color: var(--text); border-color: var(--line); }
+.composer-bar select:disabled { opacity: 0.4; cursor: default; }
+/* bypass 模式常亮警示色——免审状态必须一眼可见（Claude Code 同款橙） */
+.composer-bar .mode-select.bypass { color: #e8a04c; background: rgba(232, 160, 76, 0.12); }
+.composer-bar .ctx-usage { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 button {
   background: var(--panel); color: var(--text);

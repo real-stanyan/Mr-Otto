@@ -9,7 +9,7 @@ import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
-import { UIApprover } from "./uiApprover.js";
+import { UIApprover, createModeAwareApprover, type ApprovalMode } from "./uiApprover.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 
@@ -34,6 +34,10 @@ export function createAgent(opts: {
   const approver = new UIApprover((call, tool) =>
     opts.push.approvalRequest(sessionId, call, tool)
   );
+  // 运行时偏好（刻意不落日志）：影响的是"怎么问人/怎么调 API"，不是模型看到的上下文。
+  // 代价：resume 后回默认值——审批模式回 ask 是安全默认，thinking 回开是保守默认。
+  let approvalMode: ApprovalMode = "ask";
+  let thinking = true;
   if (!opts.resumeSessionId) {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
@@ -59,6 +63,8 @@ export function createAgent(opts: {
       baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
       apiKey: process.env[choice.apiKeyEnv] ?? "",
       model: choice.model,
+      // 支持开关的型号才带 thinking 字段——别给不认识它的 API 发陌生参数
+      ...(choice.supportsThinking ? { thinking } : {}),
     });
 
   const engine = new LoopEngine({
@@ -67,7 +73,8 @@ export function createAgent(opts: {
     tools: [readFileTool, writeFileTool, bashTool],
     world: createLocalWorld({ root: opts.workspace }),
     sessionId,
-    approver,
+    // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
+    approver: createModeAwareApprover(() => approvalMode, approver),
     onEvent: opts.push.event,
   });
 
@@ -99,6 +106,21 @@ export function createAgent(opts: {
     },
     get model() {
       return current.model;
+    },
+    get approvalMode() {
+      return approvalMode;
+    },
+    /** turn 中途也可切：下一个工具调用立即遵守新模式（getMode 是活引用） */
+    setApprovalMode(mode: ApprovalMode): void {
+      approvalMode = mode;
+    },
+    get thinking() {
+      return thinking;
+    },
+    /** thinking 是 adapter 构造参数，改了要重建 adapter（调用方负责挡 turn 进行中） */
+    setThinking(on: boolean): void {
+      thinking = on;
+      engine.setAdapter(makeAdapter(current));
     },
   };
 }

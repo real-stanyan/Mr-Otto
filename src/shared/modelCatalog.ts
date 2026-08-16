@@ -14,6 +14,10 @@ export interface ModelChoice {
   baseUrlEnv: string;
   /** 主进程从哪个环境变量拿 key */
   apiKeyEnv: string;
+  /** 上下文窗大小（tokens）——UI 算用量百分比用 */
+  contextWindow: number;
+  /** 该型号是否支持请求级 thinking 开关（GLM 方言 thinking.type） */
+  supportsThinking: boolean;
 }
 
 export const MODEL_CATALOG: ModelChoice[] = [
@@ -24,6 +28,8 @@ export const MODEL_CATALOG: ModelChoice[] = [
     baseUrl: "https://api.deepseek.com/v1",
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     apiKeyEnv: "DEEPSEEK_API_KEY",
+    contextWindow: 128_000,
+    supportsThinking: false,
   },
   {
     provider: "deepseek",
@@ -32,6 +38,8 @@ export const MODEL_CATALOG: ModelChoice[] = [
     baseUrl: "https://api.deepseek.com/v1",
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     apiKeyEnv: "DEEPSEEK_API_KEY",
+    contextWindow: 128_000,
+    supportsThinking: false,
   },
   // Claude 系列：等有 ANTHROPIC_API_KEY 再加回来。Anthropic 有 OpenAI 兼容层
   // （https://api.anthropic.com/v1 + ANTHROPIC_API_KEY），adapter 不用改。
@@ -42,6 +50,8 @@ export const MODEL_CATALOG: ModelChoice[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     baseUrlEnv: "GLM_BASE_URL",
     apiKeyEnv: "GLM_API_KEY",
+    contextWindow: 128_000,
+    supportsThinking: true,
   },
 ];
 
@@ -59,6 +69,8 @@ export function resolveModel(model: string): ModelChoice {
       baseUrl: "https://api.deepseek.com/v1",
       baseUrlEnv: "DEEPSEEK_BASE_URL",
       apiKeyEnv: "DEEPSEEK_API_KEY",
+      contextWindow: 128_000,
+      supportsThinking: false,
     }
   );
 }

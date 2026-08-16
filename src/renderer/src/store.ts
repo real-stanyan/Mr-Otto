@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { SessionEvent } from "../../session/events.js";
 import type {
+  ApprovalMode,
   ApprovalRequest,
   BootInfo,
   SessionSummary,
@@ -32,6 +33,9 @@ interface ChatState {
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
   error: string | null;
+  /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
+  approvalMode: ApprovalMode;
+  thinking: boolean;
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
@@ -43,6 +47,8 @@ interface ChatState {
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
   switchModel(model: string): Promise<void>;
+  setApprovalMode(mode: ApprovalMode): Promise<void>;
+  setThinking(on: boolean): Promise<void>;
   openSettings(): Promise<void>;
   closeSettings(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
@@ -64,6 +70,8 @@ const enterChat = (info: BootInfo) => ({
   model: info.model,
   workspace: info.workspace,
   events: info.events,
+  approvalMode: info.approvalMode,
+  thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
   showSettings: false, // 侧栏点会话 = 想看聊天，设置页让位
   error: null,
@@ -79,6 +87,8 @@ export const useChat = create<ChatState>((set, get) => ({
   statusBySession: {},
   approvals: {},
   error: null,
+  approvalMode: "ask",
+  thinking: true,
   replayCursor: null,
   showSettings: false,
   keyStatus: {},
@@ -88,6 +98,24 @@ export const useChat = create<ChatState>((set, get) => ({
   async switchModel(model) {
     try {
       await window.otter.switchModel(model);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async setApprovalMode(mode) {
+    try {
+      await window.otter.setApprovalMode(get().sessionId, mode);
+      set({ approvalMode: mode }); // 主进程认了才落镜像
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async setThinking(on) {
+    try {
+      await window.otter.setThinking(get().sessionId, on);
+      set({ thinking: on });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

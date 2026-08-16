@@ -11,6 +11,10 @@ export interface OpenAICompatibleOptions {
   baseUrl: string;
   apiKey: string;
   model: string;   // 例："deepseek-v4-flash"
+  /** 请求级思考开关（GLM 方言 thinking.type: enabled/disabled）。
+      undefined = 该型号不支持，请求体里完全不出现这个字段——
+      别给不认识它的 API 发陌生参数 */
+  thinking?: boolean;
 }
 
 /** API 返回里我们关心的最小结构 */
@@ -44,6 +48,9 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         body: JSON.stringify({
           model: opts.model,
           messages,
+          ...(opts.thinking !== undefined
+            ? { thinking: { type: opts.thinking ? "enabled" : "disabled" } }
+            : {}),
           ...(tools && tools.length > 0
             ? {
                 tools: tools.map((t) => ({
