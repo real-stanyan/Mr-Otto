@@ -16,6 +16,9 @@
 ### 4. compact 的思考该不该落盘(第十四课)
 compact 也是一次真实模型调用——开着 thinking 时,摘要那次调用同样会回 `reasoning_content`,而现在 `context_compacted` 事件没存它,直接扔了。这和"模型产出的新信息必须落盘"矛盾吗?想想 summary 和 reasoning 在 compact 语义里的地位差别,说说你会不会给 `context_compacted` 也加 reasoning 字段。
 
+### 5. diff 预览的时间锚点（第十五课）
+审批卡弹出和预览构造之间有异步间隙——`world.fs.read` 完成之前文件可能被别的东西改掉,diff 显示的"旧内容"就不是 write_file 真正执行时覆盖的内容。这算 bug 吗?要消除间隙得把预览挪到哪一层、代价是什么?提示:审批悬停期间(人犹豫的几十秒)文件同样可能被改——预览的"真"到底该锚在哪个时刻。
+
 ## 已答
 
 ### /rename 幽灵会话守卫（第十三课）
