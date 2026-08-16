@@ -127,7 +127,7 @@ export function Replay() {
               >
                 <span className="n">seq {st.ev.seq}</span>
                 <span className="t">{st.title}</span>
-                <span className="badge">{st.badge}</span>
+                <span className={"badge" + (st.deny ? " deny" : "")}>{st.badge}</span>
               </div>
             ))}
           </div>
