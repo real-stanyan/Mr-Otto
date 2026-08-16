@@ -16,7 +16,8 @@ export interface ModelChoice {
   apiKeyEnv: string;
   /** 上下文窗大小（tokens）——UI 算用量百分比用 */
   contextWindow: number;
-  /** 该型号是否支持请求级 thinking 开关（GLM 方言 thinking.type） */
+  /** 该型号是否支持请求级 thinking 开关（thinking.type: enabled/disabled——
+      DeepSeek V4 与 GLM 用同一形状） */
   supportsThinking: boolean;
 }
 
@@ -28,8 +29,8 @@ export const MODEL_CATALOG: ModelChoice[] = [
     baseUrl: "https://api.deepseek.com/v1",
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     apiKeyEnv: "DEEPSEEK_API_KEY",
-    contextWindow: 128_000,
-    supportsThinking: false,
+    contextWindow: 1_000_000,
+    supportsThinking: true,
   },
   {
     provider: "deepseek",
@@ -38,8 +39,8 @@ export const MODEL_CATALOG: ModelChoice[] = [
     baseUrl: "https://api.deepseek.com/v1",
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     apiKeyEnv: "DEEPSEEK_API_KEY",
-    contextWindow: 128_000,
-    supportsThinking: false,
+    contextWindow: 1_000_000,
+    supportsThinking: true,
   },
   // Claude 系列：等有 ANTHROPIC_API_KEY 再加回来。Anthropic 有 OpenAI 兼容层
   // （https://api.anthropic.com/v1 + ANTHROPIC_API_KEY），adapter 不用改。

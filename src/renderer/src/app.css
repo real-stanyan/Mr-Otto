@@ -411,7 +411,7 @@ footer .composer input:focus { outline: none; border-color: #4a4a4e; }
 
 /* 输入框下状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
 .composer-bar {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   font-size: 12px; color: var(--dim);
 }
 .composer-bar .spacer { flex: 1; }

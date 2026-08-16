@@ -11,7 +11,7 @@ export interface OpenAICompatibleOptions {
   baseUrl: string;
   apiKey: string;
   model: string;   // 例："deepseek-v4-flash"
-  /** 请求级思考开关（GLM 方言 thinking.type: enabled/disabled）。
+  /** 请求级思考开关（thinking.type: enabled/disabled，DeepSeek V4 与 GLM 同一形状）。
       undefined = 该型号不支持，请求体里完全不出现这个字段——
       别给不认识它的 API 发陌生参数 */
   thinking?: boolean;
