@@ -13,6 +13,9 @@ export interface ToolCallContext {
   tool: Tool | undefined;
   world: ExecutionWorld;
   sessionId: string;
+  /** turn 中断信号（ADR-0006）：审批门用它唤醒挂起的审批，world 用它杀进程。
+      可选 = 不给就是不可中断（测试里的裸管线照旧） */
+  signal?: AbortSignal;
 }
 
 /** 管线产物 = tool_result 事件的内容部分（status 三态与事件定义对齐） */

@@ -90,4 +90,18 @@ describe("openaiCompatible 流式（SSE）", () => {
     const reply = await adapter.chat([], undefined, () => {});
     expect(reply.content).toBe("尾巴");
   });
+
+  it("signal 透传给 fetch：中断从这一根线穿进请求和 SSE 读流（ADR-0006）", async () => {
+    let seenSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { signal?: AbortSignal }) => {
+        seenSignal = init.signal;
+        return { ok: true, json: async () => ({ choices: [{ message: { content: "嗯" } }] }) };
+      })
+    );
+    const ctrl = new AbortController();
+    await adapter.chat([], undefined, undefined, ctrl.signal);
+    expect(seenSignal).toBe(ctrl.signal);
+  });
 });

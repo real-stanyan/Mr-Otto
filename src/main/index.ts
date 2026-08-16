@@ -175,6 +175,14 @@ void app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle(CHANNELS.stopTurn, (_e, sessionId: string) => {
+    // 幂等：turn 已收尾 / 重复点击都静默无操作——停止键连按不该报错
+    if (!runningSessions.has(sessionId)) return;
+    agents.get(sessionId)?.engine.abortTurn();
+    // 收尾（turnStatus idle、runningSessions 清理）仍由 sendMessage 的 finally 负责：
+    // 中断只是翻信号，turn 的退出路径全程只有一条
+  });
+
   ipcMain.handle(CHANNELS.compact, async (_e, sessionId: string) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");

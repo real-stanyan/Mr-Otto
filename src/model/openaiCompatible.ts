@@ -107,10 +107,14 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
     async chat(
       messages: ChatMessage[],
       tools?: ToolDefinition[],
-      onDelta?: (text: string) => void
+      onDelta?: (text: string) => void,
+      signal?: AbortSignal
     ): Promise<ModelReply> {
+      // fetch 原生认 signal：请求阶段和 SSE body 读流共用同一根线——
+      // abort 时 reader.read() 也会 reject AbortError，不用逐处手查
       const res = await fetch(`${opts.baseUrl}/chat/completions`, {
         method: "POST",
+        ...(signal ? { signal } : {}),
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${opts.apiKey}`,

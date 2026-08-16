@@ -57,3 +57,19 @@ describe("LocalWorld 围栏（root 圈地）", () => {
     expect(await world.fs.read(path)).toBe("free");
   });
 });
+
+describe("LocalWorld exec 中断（ADR-0006）", () => {
+  it("signal 翻转 → 杀死子进程并抛'命令被中断'，不伪装成命令失败", async () => {
+    const world = createLocalWorld({ root });
+    const ctrl = new AbortController();
+    const running = world.exec("sleep 30", { signal: ctrl.signal });
+    setTimeout(() => ctrl.abort(), 50);
+    await expect(running).rejects.toThrow(/命令被中断/);
+  });
+
+  it("不带 signal 照旧：接口向后兼容", async () => {
+    const world = createLocalWorld({ root });
+    const result = await world.exec("echo ok");
+    expect(result.stdout.trim()).toBe("ok");
+  });
+});

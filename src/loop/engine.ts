@@ -6,7 +6,7 @@ import type { SessionEvent } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import type { ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
-import type { ExecutionWorld } from "../world/executionWorld.js";
+import { withAbortSignal, type ExecutionWorld } from "../world/executionWorld.js";
 import { runPipeline } from "./middleware.js";
 import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.js";
 import { createApprovalGate } from "./approvalGate.js";
@@ -14,6 +14,11 @@ import type { Approver } from "./approvalGate.js";
 
 /** 单个 turn 内模型最多连续调工具的轮数（防失控空转烧钱） */
 const MAX_STEPS = 8;
+
+/** AbortError 判定：fetch 中止、signal.reason、throwIfAborted 抛的都是它 */
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
 
 export interface LoopEngineOptions {
   store: EventStore;
@@ -36,6 +41,9 @@ export class LoopEngine {
   private readonly toolsByName: Map<string, Tool>;
   private readonly pipeline: ToolMiddleware[];
   private adapter: ModelAdapter;
+  /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
+      AbortSignal 是一次性的，翻过去就回不来 */
+  private turnAbort: AbortController | null = null;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -117,14 +125,27 @@ export class LoopEngine {
     });
   }
 
+  /** 中断当前 turn（ADR-0006）。幂等：没 turn 在跑 / 重复按都是无操作。
+      效果 = 信号翻转，三个可能卡住的位置各自醒来：
+      fetch/SSE 抛 AbortError、审批 resolve 成 denied、bash 子进程收 SIGTERM */
+  abortTurn(): void {
+    this.turnAbort?.abort();
+  }
+
   /** 跑一个完整 turn：直到模型不再要工具为止。
-      收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错 */
+      收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
+      中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障 */
   async runTurn(userInput: string): Promise<void> {
     this.append({ ...this.env(), type: "user_message", content: userInput });
+    this.turnAbort = new AbortController();
     try {
-      await this.loop();
+      await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
     } catch (err) {
+      if (isAbort(err)) {
+        this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
+        return;
+      }
       this.append({
         ...this.env(),
         type: "turn_ended",
@@ -132,21 +153,29 @@ export class LoopEngine {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      this.turnAbort = null;
     }
   }
 
   /** turn 主循环 */
-  private async loop(): Promise<void> {
-    const { store, world, sessionId } = this.opts;
+  private async loop(signal: AbortSignal): Promise<void> {
+    const { store, sessionId } = this.opts;
+    // 工具拿到的 world 天生带中断信号（装饰器），工具代码对中断无感——
+    // 硬规则"工具只依赖 ExecutionWorld"原样成立
+    const world = withAbortSignal(this.opts.world, signal);
 
     for (let step = 0; step < MAX_STEPS; step++) {
+      signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
+
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
       const messages = deriveMessages(store.load(sessionId), DEFAULT_COMPRESSION);
       const reply = await this.adapter.chat(
         messages,
         this.opts.tools.map((t) => t.def),
-        this.opts.onAssistantDelta // 给了就流式直播；reply 依旧完整——落盘只认它
+        this.opts.onAssistantDelta, // 给了就流式直播；reply 依旧完整——落盘只认它
+        signal // 中断从这穿进 fetch / SSE 读流
       );
 
       this.append({
@@ -161,11 +190,25 @@ export class LoopEngine {
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了
 
       for (const call of reply.toolCalls) {
+        // 中断后剩余调用不再执行，但必须补上结果——OpenAI 方言要求每个
+        // tool_call 都有答复，缺一个 = 会话投影永久 400（ADR-0005 的教训）。
+        // 补的是事实（"没执行"），不是伪造的输出
+        if (signal.aborted) {
+          this.append({
+            ...this.env(),
+            type: "tool_result",
+            toolCallId: call.id,
+            status: "error",
+            output: "调用未执行：用户中断了 turn。执行器未达，世界未被此调用变更。",
+          });
+          continue;
+        }
         const outcome = await runPipeline(this.pipeline, (ctx) => this.execute(ctx), {
           call,
           tool: this.toolsByName.get(call.name),
           world,
           sessionId,
+          signal,
         });
         this.append({
           ...this.env(),

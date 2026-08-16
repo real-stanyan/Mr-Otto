@@ -327,23 +327,30 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
 
     case "turn_ended": {
       S.deny = e.outcome === "error";
-      S.badge = S.deny ? "turn 暴死" : "turn 落幕";
+      const aborted = e.outcome === "aborted";
+      S.badge = S.deny ? "turn 暴死" : aborted ? "turn 中断" : "turn 落幕";
       S.desc = S.deny
         ? "turn 中途炸了（API 报错 / MAX_STEPS 超限…）。此前错误只走 IPC reject——" +
           "只存在于一帧屏幕上的\"平行真相\"。现在错误是日志事实，重开 app 还在；" +
           "错误照旧向上抛，落盘是补记事实不是吞错（ADR-0004）。"
-        : "turn 生命周期边界落盘。模型调用次数 = 数两条边界间的 assistant_message——" +
-          "推得出的不落盘，所以没有 steps 字段（同一原则砍掉了 turn_started）。";
+        : aborted
+          ? "用户按了停止（ADR-0006）：AbortSignal 穿透 fetch/SSE、审批门、bash 子进程三处。" +
+            "中断不是错误——不向上抛，UI 不当故障渲染；流到一半的文本作废不落盘" +
+            "（日志只收完整消息，pi 边界）。"
+          : "turn 生命周期边界落盘。模型调用次数 = 数两条边界间的 assistant_message——" +
+            "推得出的不落盘，所以没有 steps 字段（同一原则砍掉了 turn_started）。";
       S.nodes = ["n-loop", "n-store"];
       S.edges = ["e-loop-store"];
       S.input = S.deny
         ? `runTurn 的 catch 接住异常：\n"${clip(e.error ?? "", 100)}"`
-        : "loop() 正常返回（模型不再要工具）";
+        : aborted
+          ? "abortTurn() 翻转信号 → 卡住处抛 AbortError → runTurn 的 catch 认出它"
+          : "loop() 正常返回（模型不再要工具）";
       S.fns = [
         fn(
-          S.deny ? "runTurn 的 catch" : "runTurn 的 try 收尾",
+          S.deny || aborted ? "runTurn 的 catch" : "runTurn 的 try 收尾",
           "loop/engine.ts",
-          S.deny ? "补记事实 → 重新 throw" : "turn 收敛",
+          S.deny ? "补记事实 → 重新 throw" : aborted ? "补记事实，不 throw（停止非故障）" : "turn 收敛",
           `outcome = "${e.outcome}"`
         ),
         ...APPEND(e, `outcome: "${e.outcome}"${e.error ? `,\n  error: "${clip(e.error, 60)}"` : ""}`),

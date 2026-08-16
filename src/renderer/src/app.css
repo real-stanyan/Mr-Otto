@@ -383,6 +383,8 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
 .row.result-ok { border-color: var(--ok); color: var(--ok); }
 .row.result-error { border-color: var(--err); color: var(--err); }
 .row.result-denied { border-color: var(--deny); color: var(--deny); }
+/* 中断 = 用户意志，中性灰居中——不是故障，不用红 */
+.row.aborted { align-self: center; color: var(--dim); }
 .row.audit { align-self: center; font-size: 12px; color: var(--dim); }
 
 code { font-family: var(--mono); font-size: 12.5px; }
@@ -444,6 +446,9 @@ footer { padding: 10px 20px 12px; }
 /* 发送 = 本视图唯一主操作：可发时上 accent，禁用时回素色（一屏一个重点） */
 .composer .send:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
 .composer .send:not(:disabled):hover { background: #35587a; border-color: #35587a; }
+/* 停止键：发送键原位变身。描边警示色而非实底红——可停，但不嘶吼 */
+.composer .send.stop { background: transparent; border-color: var(--err); color: var(--err); }
+.composer .send.stop:hover { background: rgba(224, 108, 108, 0.12); }
 
 /* 状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
 .composer-bar {

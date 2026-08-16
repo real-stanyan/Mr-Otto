@@ -13,9 +13,12 @@ export interface ApprovalOutcome {
   reason?: string;
 }
 
-/** 审批人 —— 谁实现都行，engine 只认这个形状 */
+/** 审批人 —— 谁实现都行，engine 只认这个形状。
+    signal（ADR-0006）：turn 中断时实现方必须让挂起的 decide 立即返回
+    （UIApprover resolve 成 denied），否则整条管线卡死在审批门里等一个
+    永远不会来的人。可选参数 = 向后兼容，测试假人不用管它 */
 export interface Approver {
-  decide(call: ToolCallRequest, tool: Tool): Promise<ApprovalOutcome>;
+  decide(call: ToolCallRequest, tool: Tool, signal?: AbortSignal): Promise<ApprovalOutcome>;
 }
 
 export interface ApprovalGateOptions {
@@ -36,7 +39,7 @@ export function createApprovalGate(opts: ApprovalGateOptions): ToolMiddleware {
       return { status: "denied", output: reason };
     }
 
-    const outcome = await opts.approver.decide(ctx.call, ctx.tool);
+    const outcome = await opts.approver.decide(ctx.call, ctx.tool, ctx.signal);
     opts.onDecision(ctx.call, outcome);
 
     if (outcome.decision === "denied") {

@@ -257,6 +257,129 @@ describe("LoopEngine 流式转发", () => {
   });
 });
 
+describe("turn 中断（ADR-0006）", () => {
+  it("模型调用中中断：turn_ended(aborted)，不 rethrow，半截文本不落盘", async () => {
+    const store = new EventStore(":memory:");
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      chat: (_m, _t, onDelta, signal) =>
+        new Promise((_res, rej) => {
+          onDelta?.("流到一半的");
+          // 真 fetch 的行为：signal 翻转 → reject AbortError
+          signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+        }),
+    };
+    const engine = new LoopEngine({
+      store, adapter, tools: [], world: fakeWorld, sessionId: "s1",
+      onAssistantDelta: () => {},
+    });
+
+    const turn = engine.runTurn("讲个长故事");
+    engine.abortTurn();
+    await turn; // resolve 而非 reject——停止是用户意志，不是故障
+
+    const log = store.load("s1");
+    expect(log.map((e) => e.type)).toEqual(["user_message", "turn_ended"]);
+    expect(log.at(-1)).toMatchObject({ outcome: "aborted" }); // 无 assistant_message：半截不是消息
+    store.close();
+  });
+
+  it("工具执行中中断：被杀的调用落 error 结果，剩余调用补'未执行'，不再调模型", async () => {
+    const store = new EventStore(":memory:");
+    let execStarted!: () => void;
+    const started = new Promise<void>((res) => { execStarted = res; });
+    // 假 world：exec 挂起直到信号翻转——模拟 LocalWorld 杀进程后 throw
+    const hangingWorld: ExecutionWorld = {
+      fs: fakeWorld.fs,
+      exec: (_cmd, opts) =>
+        new Promise((_res, rej) => {
+          execStarted();
+          opts?.signal?.addEventListener("abort", () =>
+            rej(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"))
+          );
+        }),
+    };
+    const slowTool = {
+      def: { name: "slow", description: "慢工具", parameters: { type: "object", properties: {} } },
+      requiresApproval: false,
+      run: async (_args: unknown, world: ExecutionWorld) => (await world.exec("sleep 99")).stdout,
+    };
+    let chatCalls = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat() {
+        chatCalls++;
+        return { content: "", toolCalls: [
+          { id: "c1", name: "slow", args: {} },
+          { id: "c2", name: "slow", args: {} },
+        ] };
+      },
+    };
+    const engine = new LoopEngine({
+      store, adapter, tools: [slowTool], world: hangingWorld, sessionId: "s1",
+    });
+
+    const turn = engine.runTurn("跑两条慢命令");
+    await started; // 等 c1 真的开跑再按停止
+    engine.abortTurn();
+    await turn;
+
+    const log = store.load("s1");
+    const results = log.filter((e) => e.type === "tool_result");
+    expect(results[0]).toMatchObject({ toolCallId: "c1", status: "error", output: expect.stringContaining("命令被中断") });
+    expect(results[1]).toMatchObject({ toolCallId: "c2", status: "error", output: expect.stringContaining("未执行") });
+    // 每个 toolCall 都有答复——OpenAI 方言不留悬空（ADR-0005 的教训）
+    expect(log.filter((e) => e.type === "tool_execution_started")).toHaveLength(1); // 只有 c1 碰过世界
+    expect(log.at(-1)).toMatchObject({ type: "turn_ended", outcome: "aborted" });
+    expect(chatCalls).toBe(1); // 中断后没再浪费一次模型调用
+    store.close();
+  });
+
+  it("审批等待中中断：挂起的审批按 denied 收场，approval_decision + tool_result 照常落盘", async () => {
+    const store = new EventStore(":memory:");
+    // 假审批人 = UIApprover 的中断行为：不 resolve，直到信号翻转
+    const hangingApprover = {
+      decide: (_call: unknown, _tool: unknown, signal?: AbortSignal) =>
+        new Promise<{ decision: "denied"; reason: string }>((res) => {
+          signal?.addEventListener("abort", () =>
+            res({ decision: "denied", reason: "turn 被用户中断" })
+          );
+        }),
+    };
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "bash", args: { cmd: "rm -rf /" } }] },
+    ]);
+    const engine = new LoopEngine({
+      store, adapter, tools: [bashTool], world: fakeWorld, sessionId: "s1",
+      approver: hangingApprover,
+    });
+
+    const turn = engine.runTurn("删库");
+    await new Promise((r) => setTimeout(r, 0)); // 让 turn 跑到审批门挂起
+    engine.abortTurn();
+    await turn;
+
+    const log = store.load("s1");
+    expect(log.find((e) => e.type === "approval_decision")).toMatchObject({ decision: "denied" });
+    expect(log.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+    expect(log.map((e) => e.type)).not.toContain("tool_execution_started"); // 执行器未达
+    expect(log.at(-1)).toMatchObject({ type: "turn_ended", outcome: "aborted" });
+    store.close();
+  });
+
+  it("幂等：没 turn 在跑时 abortTurn 无操作；中断不污染下一个 turn", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "好" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+
+    engine.abortTurn(); // idle 时按停止：啥也不发生
+    await engine.runTurn("你好"); // 新 turn 用新 controller，上面那下不影响它
+
+    expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed" });
+    store.close();
+  });
+});
+
 describe("lifecycle 事件（ADR-0004）", () => {
   it("收口 turn：末尾落 turn_ended(completed)；工具执行前落 tool_execution_started", async () => {
     const store = new EventStore(":memory:");

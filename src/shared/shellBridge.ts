@@ -78,6 +78,9 @@ export interface ShellBridge {
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了 */
   sendMessage(sessionId: string, text: string): Promise<void>;
+  /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
+      生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
+  stopTurn(sessionId: string): Promise<void>;
   /** /compact：调模型把会话历史摘要化，落 context_compacted 事件（耗 token，手动触发） */
   compact(sessionId: string): Promise<void>;
   /** 审批卡上的按钮最终调到这——resolve 对应会话里挂起的 Approver */
@@ -105,6 +108,7 @@ export const CHANNELS = {
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",
+  stopTurn: "otter:stopTurn",
   compact: "otter:compact",
   decideApproval: "otter:decideApproval",
   event: "otter:event",

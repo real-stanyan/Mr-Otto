@@ -235,6 +235,7 @@ describe("lifecycle 事件对投影隐形（ADR-0004）", () => {
       base[3]!, base[4]!,
       { seq: 6, sessionId: "s", ts: 6, type: "turn_ended", outcome: "completed" },
       { seq: 7, sessionId: "s", ts: 7, type: "turn_ended", outcome: "error", error: "假装炸了" },
+      { seq: 8, sessionId: "s", ts: 8, type: "turn_ended", outcome: "aborted" }, // ADR-0006 加宽
     ];
 
     expect(JSON.stringify(deriveMessages(withLifecycle))).toBe(JSON.stringify(deriveMessages(base)));

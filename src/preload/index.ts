@@ -24,6 +24,7 @@ const bridge: ShellBridge = {
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
   sendMessage: (sessionId, text) => ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text),
+  stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, decision, reason) =>
     ipcRenderer.invoke(CHANNELS.decideApproval, sessionId, toolCallId, decision, reason),

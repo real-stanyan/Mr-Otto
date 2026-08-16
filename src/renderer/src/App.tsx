@@ -362,8 +362,11 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "tool_execution_started":
       return null;
     case "turn_ended":
+      // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
       return event.outcome === "error" ? (
         <div className="row chip result-error">[turn 失败] {event.error}</div>
+      ) : event.outcome === "aborted" ? (
+        <div className="row chip aborted">已中断</div>
       ) : null;
   }
 }
@@ -561,7 +564,7 @@ function Welcome() {
 }
 
 export function App() {
-  const { phase, sessionId, workspace, events, error, boot, send } = useChat();
+  const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
@@ -588,6 +591,17 @@ export function App() {
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // Esc = 停止（Claude Code 同款肌肉记忆）。挂 window：running 时输入框
+  // disabled 收不到键盘，事件得在更高处接
+  useEffect(() => {
+    if (status !== "running") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") void stop();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [status, stop]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
@@ -701,9 +715,16 @@ export function App() {
               />
               <div className="composer-row">
                 <ComposerBar />
-                <button className="send" onClick={submit} disabled={status === "running" || !input.trim()}>
-                  发送
-                </button>
+                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效） */}
+                {status === "running" ? (
+                  <button className="send stop" title="停止 turn（Esc）" onClick={() => void stop()}>
+                    停止
+                  </button>
+                ) : (
+                  <button className="send" onClick={submit} disabled={!input.trim()}>
+                    发送
+                  </button>
+                )}
               </div>
             </div>
           </footer>

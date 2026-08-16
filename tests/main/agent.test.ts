@@ -115,6 +115,45 @@ describe("createModeAwareApprover 审批模式", () => {
   });
 });
 
+describe("UIApprover 中断（ADR-0006）", () => {
+  const call: ToolCallRequest = { id: "c1", name: "bash", args: { cmd: "sleep 99" } };
+
+  it("挂起的审批在信号翻转时按 denied 收场", async () => {
+    const { UIApprover } = await import("../../src/main/uiApprover.js");
+    const approver = new UIApprover(() => {});
+    const ctrl = new AbortController();
+
+    const pending = approver.decide(call, bashTool, ctrl.signal);
+    ctrl.abort();
+
+    await expect(pending).resolves.toEqual({ decision: "denied", reason: "turn 被用户中断" });
+  });
+
+  it("信号已翻转时直接短路：不给 UI 发一张必死的卡", async () => {
+    const { UIApprover } = await import("../../src/main/uiApprover.js");
+    let asked = 0;
+    const approver = new UIApprover(() => { asked++; });
+    const ctrl = new AbortController();
+    ctrl.abort();
+
+    const outcome = await approver.decide(call, bashTool, ctrl.signal);
+    expect(outcome.decision).toBe("denied");
+    expect(asked).toBe(0);
+  });
+
+  it("人先点了按钮：中断不重复收场（先到先得）", async () => {
+    const { UIApprover } = await import("../../src/main/uiApprover.js");
+    const approver = new UIApprover(() => {});
+    const ctrl = new AbortController();
+
+    const pending = approver.decide(call, bashTool, ctrl.signal);
+    approver.resolve("c1", { decision: "approved" });
+    ctrl.abort(); // 晚了——Promise 只 resolve 一次，且 pending 里已没有 c1
+
+    await expect(pending).resolves.toEqual({ decision: "approved" });
+  });
+});
+
 describe("agent 运行时偏好（审批模式 / thinking）", () => {
   it("默认值安全：审批模式 ask、thinking 开；setter 生效", () => {
     const store = new EventStore(":memory:");

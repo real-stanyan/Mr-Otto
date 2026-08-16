@@ -59,6 +59,8 @@ interface ChatState {
   resume(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   send(text: string): Promise<void>;
+  /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
+  stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
   compact(): Promise<void>;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
@@ -177,9 +179,14 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onTurnStatus(({ sessionId, status }) =>
       set((s) => ({
         statusBySession: { ...s.statusBySession, [sessionId]: status },
-        // turn 收尾兜底清缓冲：正常路径事件已清过；turn 中途炸掉时靠这条防幽灵字
+        // turn 收尾兜底：清直播缓冲（防幽灵字）+ 收审批卡。
+        // 中断会把挂起的审批在主进程侧 resolve 成 denied——没人点按钮，
+        // 卡得跟着 turn 一起谢幕，不然留一张点了也没人听的死卡
         ...(status === "idle"
-          ? { streamingBySession: without(s.streamingBySession, sessionId) }
+          ? {
+              streamingBySession: without(s.streamingBySession, sessionId),
+              approvals: without(s.approvals, sessionId),
+            }
           : {}),
       }))
     );
@@ -242,6 +249,14 @@ export const useChat = create<ChatState>((set, get) => ({
       if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
         set({ error: msg });
       }
+    }
+  },
+
+  async stop() {
+    try {
+      await window.otter.stopTurn(get().sessionId);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 

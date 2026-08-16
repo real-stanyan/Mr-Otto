@@ -107,10 +107,12 @@ export interface ToolExecutionStartedEvent extends SessionEventBase {
 
 /** 额外 6：turn 收口/暴死（ADR-0004）。此前 turn 死亡只走 IPC reject——
     错误信息是只存在于一帧屏幕上的"平行真相"。现在成为日志事实。
-    错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。 */
+    错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。
+    aborted（ADR-0006）= 用户主动停止，不是错误：不向上抛，UI 不当故障渲染。
+    union 加宽向后兼容——投影本来就丢弃 turn_ended，旧日志照常重放。 */
 export interface TurnEndedEvent extends SessionEventBase {
   type: "turn_ended";
-  outcome: "completed" | "error";
+  outcome: "completed" | "error" | "aborted";
   /** 仅 outcome = "error"：异常信息。
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
       推得出的不落盘（同一原则砍掉了 turn_started） */

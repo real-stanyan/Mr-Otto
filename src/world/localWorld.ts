@@ -33,14 +33,21 @@ export function createLocalWorld(opts: { root?: string } = {}): ExecutionWorld {
       write: async (path, content) => writeFile(fence(root, path), content, "utf8"),
     },
 
-    async exec(cmd): Promise<ExecResult> {
+    async exec(cmd, opts): Promise<ExecResult> {
       try {
         const { stdout, stderr } = await execAsync(cmd, {
           timeout: 30_000,
           ...(root ? { cwd: root } : {}),
+          // child_process 原生认 signal：abort = 给进程组发 SIGTERM
+          ...(opts?.signal ? { signal: opts.signal } : {}),
         });
         return { stdout, stderr, exitCode: 0 };
       } catch (err) {
+        // 中断不是命令自己的失败——exitCode ≠ 0 是"世界的正常反馈"（bash 工具
+        // 会原样拼给模型），被杀是外力，必须抛出去按 error 结果落盘（ADR-0006）
+        if (opts?.signal?.aborted) {
+          throw new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）");
+        }
         const e = err as { stdout?: string; stderr?: string; code?: number; message: string };
         return {
           stdout: e.stdout ?? "",

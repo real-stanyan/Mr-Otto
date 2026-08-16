@@ -24,10 +24,13 @@ export interface ModelAdapter {
   readonly model: string;
   /** onDelta 给了 = 流式：文本片段边到边回调（临时 UI 用，不是事实）。
       无论走不走流式，resolve 的 ModelReply 都是完整消息——落盘只认它。
-      调用方拿不齐完整回复就啥也别落：半成品不进日志 */
+      调用方拿不齐完整回复就啥也别落：半成品不进日志。
+      signal 中止（用户停止 turn）= reject AbortError：请求中、流读到一半都立刻断。
+      已流出的碎片随之作废——不完整就不是消息（ADR-0006 与 pi 边界一致） */
   chat(
     messages: ChatMessage[],
     tools?: ToolDefinition[],
-    onDelta?: (text: string) => void
+    onDelta?: (text: string) => void,
+    signal?: AbortSignal
   ): Promise<ModelReply>;
 }

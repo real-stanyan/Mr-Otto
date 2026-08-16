@@ -18,10 +18,23 @@ export class UIApprover implements Approver {
     private readonly requestFromUI: (call: ToolCallRequest, tool: Tool) => void
   ) {}
 
-  decide(call: ToolCallRequest, tool: Tool): Promise<ApprovalOutcome> {
+  decide(call: ToolCallRequest, tool: Tool, signal?: AbortSignal): Promise<ApprovalOutcome> {
     return new Promise((resolve) => {
+      // turn 中断（ADR-0006）：挂起的审批立即按"拒绝"收场——走既有 denied 管道，
+      // approval_decision + tool_result(denied) 照常落盘，不需要新事件类型。
+      // 已中止的信号直接短路，不给 UI 发一张必死的卡
+      const abortOutcome: ApprovalOutcome = { decision: "denied", reason: "turn 被用户中断" };
+      if (signal?.aborted) return resolve(abortOutcome);
       this.pending.set(call.id, resolve);
       this.requestFromUI(call, tool);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          // 人已经点过按钮（pending 里没了）就不重复收场
+          if (this.pending.delete(call.id)) resolve(abortOutcome);
+        },
+        { once: true }
+      );
     });
   }
 
@@ -40,11 +53,11 @@ export class UIApprover implements Approver {
     日志永远记着"这一步是自动批的"（reason 说明），行为可从日志推导。 */
 export function createModeAwareApprover(getMode: () => ApprovalMode, ui: Approver): Approver {
   return {
-    decide(call, tool) {
+    decide(call, tool, signal) {
       if (getMode() === "auto") {
         return Promise.resolve({ decision: "approved", reason: "自动批准（bypass 模式）" });
       }
-      return ui.decide(call, tool);
+      return ui.decide(call, tool, signal);
     },
   };
 }
