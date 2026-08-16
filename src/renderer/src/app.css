@@ -460,9 +460,57 @@ footer { padding: 10px 20px 12px; }
 .composer-bar select:disabled { opacity: 0.4; cursor: default; }
 /* bypass 模式常亮警示色——免审状态必须一眼可见（Claude Code 同款橙） */
 .composer-bar .mode-select.bypass { color: #e8a04c; background: rgba(232, 160, 76, 0.12); }
-.composer-bar .ctx-usage { display: inline-flex; align-items: center; padding: 0 2px; }
+.composer-bar .ctx-usage { position: relative; display: inline-flex; align-items: center; }
 /* 圆环弧长/颜色随账单更新平滑过渡（每 turn 一次，低频） */
 .ctx-ring circle { transition: stroke-dasharray 400ms var(--ease-out), stroke 400ms ease; }
+/* 环的按钮外壳：裸环可点，悬停微亮 */
+.ctx-btn {
+  display: inline-flex; align-items: center; padding: 3px; border-radius: 6px;
+  background: transparent; border: none;
+}
+.ctx-btn:hover { background: rgba(255, 255, 255, 0.07); }
+.ctx-btn:active { transform: none; } /* 14px 小件不做缩放，视觉噪音大于反馈 */
+
+/* 详情浮窗：锚在环上方，从触发处向上生长（transform-origin 右下） */
+.ctx-pop {
+  position: absolute; right: -4px; bottom: calc(100% + 8px); z-index: 10;
+  width: 258px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  font-size: 12px; color: var(--text); cursor: default;
+  transform-origin: bottom right;
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+  @starting-style { opacity: 0; transform: scale(0.97) translateY(2px); }
+}
+.ctx-pop-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-weight: 600; margin-bottom: 8px;
+}
+.ctx-pop-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; color: var(--dim); padding: 2.5px 0;
+}
+.ctx-pop .v {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--text); white-space: nowrap;
+}
+.ctx-pop-bar {
+  height: 4px; border-radius: 2px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.1); margin: 5px 0 7px;
+}
+.ctx-pop-bar i {
+  display: block; height: 100%; border-radius: 2px;
+  background: var(--accent-hi); min-width: 0;
+  transition: width 400ms var(--ease-out);
+}
+.ctx-pop-hint {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line);
+  color: var(--dim); font-size: 11px; line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctx-pop { transition: opacity 150ms ease; @starting-style { transform: none; } }
+}
 
 button {
   background: var(--panel); color: var(--text);

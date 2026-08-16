@@ -86,6 +86,70 @@ function CtxRing({ used, win }: { used: number; win: number }) {
   );
 }
 
+/** 圆环点开的详情浮窗：全部数字都是日志投影，没有任何独立状态。
+    锚在触发环上方（从来处出现），点外面/Esc 关闭 */
+function CtxPopover({ events, ctxWindow, onClose }: {
+  events: SessionEvent[];
+  ctxWindow: number;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => {
+      // 点在浮窗外（含触发环之外的一切）就收起
+      if (ref.current && !ref.current.parentElement?.contains(e.target as Node)) onClose();
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
+
+  const used = contextUsed(events);
+  const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
+  const lastUsage = [...events].reverse().find(
+    (e): e is SessionEvent & { usage: { promptTokens: number; completionTokens: number } } =>
+      (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
+  )?.usage;
+  const compacts = events.filter((e) => e.type === "context_compacted").length;
+  const n = (x: number) => x.toLocaleString("en-US");
+
+  return (
+    <div className="ctx-pop" ref={ref} role="dialog" aria-label="上下文用量详情">
+      <div className="ctx-pop-head">
+        上下文窗 <span className="v">{fmtTokens(ctxWindow)}</span>
+      </div>
+      <div className="ctx-pop-row">
+        <span>占用估计</span>
+        <span className="v">{n(used)} · {pct}%</span>
+      </div>
+      <div className="ctx-pop-bar" aria-hidden="true">
+        <i style={{ width: `${Math.max(pct, used > 0 ? 1 : 0)}%` }} />
+      </div>
+      {lastUsage && (
+        <div className="ctx-pop-row">
+          <span>最近一次调用</span>
+          <span className="v">入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
+        </div>
+      )}
+      <div className="ctx-pop-row">
+        <span>会话累计消耗</span>
+        <span className="v">{n(totalTokens(events))} tokens</span>
+      </div>
+      <div className="ctx-pop-row">
+        <span>事件日志</span>
+        <span className="v">{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
+      </div>
+      <div className="ctx-pop-hint">占用为最近一次调用的账单估计；/compact 可折叠历史释放上下文</div>
+    </div>
+  );
+}
+
 /** 输入框下的状态条（Claude Code 同款布局）：
     左 = 审批模式；右 = 模型 · thinking · 上下文用量。
     模式/thinking 是运行时偏好（主进程 agent 持有）；模型是日志投影；用量是日志投影 */
@@ -98,6 +162,7 @@ function ComposerBar() {
   const switchModel = useChat((s) => s.switchModel);
   const setApprovalMode = useChat((s) => s.setApprovalMode);
   const setThinking = useChat((s) => s.setThinking);
+  const [ctxOpen, setCtxOpen] = useState(false);
 
   const choice = findModel(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
@@ -144,11 +209,17 @@ function ComposerBar() {
         <option value="off">Thinking 关</option>
       </select>
 
-      <span
-        className="ctx-usage"
-        title={`上下文占用估计 ${fmtTokens(used)}/${fmtTokens(ctxWindow)} · ${pct}%（最近一次调用的 token 账单 / 型号上下文窗）`}
-      >
-        <CtxRing used={used} win={ctxWindow} />
+      <span className="ctx-usage">
+        <button
+          type="button"
+          className="ctx-btn"
+          title={`上下文占用 ${fmtTokens(used)}/${fmtTokens(ctxWindow)} · ${pct}%——点击看详情`}
+          aria-label="上下文用量详情"
+          onClick={() => setCtxOpen((o) => !o)}
+        >
+          <CtxRing used={used} win={ctxWindow} />
+        </button>
+        {ctxOpen && <CtxPopover events={events} ctxWindow={ctxWindow} onClose={() => setCtxOpen(false)} />}
       </span>
     </div>
   );
