@@ -1,4 +1,4 @@
-# Domain context — otter
+# Domain context — Mr Otto
 
 Domain glossary. All agents' understanding of domain terms is grounded here; code naming stays consistent with the terms defined here.
 

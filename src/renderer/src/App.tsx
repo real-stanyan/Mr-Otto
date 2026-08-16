@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
+import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
@@ -560,7 +561,10 @@ function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="brand">otter</div>
+      <div className="brand">
+        <img className="logo" src={ottoLogo} alt="" />
+        Mr Otto
+      </div>
       <button className="new-session" onClick={() => void startSession()}>
         ＋ 新会话
       </button>
@@ -618,7 +622,8 @@ function Welcome() {
 
   return (
     <main className="welcome">
-      <h1>otter</h1>
+      <img className="welcome-logo" src={ottoLogo} alt="Mr Otto" />
+      <h1>Mr Otto</h1>
       <p>
         选择一个工程文件夹开始会话，或在左侧继续之前的会话。
         <br />
@@ -696,7 +701,10 @@ export function App() {
   ) : (
     <main className="chat">
       <header>
-        <span className="name">otter</span>
+        <span className="name">
+          <img className="logo" src={ottoLogo} alt="" />
+          Mr Otto
+        </span>
         <span className="meta" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
         </span>

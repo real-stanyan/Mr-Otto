@@ -15,7 +15,7 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1100,
     height: 760,
-    title: "otter",
+    title: "Mr Otto",
     backgroundColor: "#121212",
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),

@@ -1,6 +1,6 @@
-# otter
+# Mr Otto
 
-otter 是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：多 agent 编排、MCP、插件系统。
+Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：多 agent 编排、MCP、插件系统。
 
 架构参考项目（学习/对照用，不引入为依赖）：
 - **DeepSeek Harness**：三原则 —— event-sourced 会话日志 / 工具中间件管线 / capability seam（ExecutionWorld）

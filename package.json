@@ -1,7 +1,7 @@
 {
-  "name": "otter",
+  "name": "mr-otto",
   "version": "1.0.0",
-  "description": "",
+  "description": "Mr Otto — macOS desktop GUI agent",
   "directories": {
     "doc": "docs"
   },
