@@ -491,6 +491,8 @@ export function App() {
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const showSettings = useChat((s) => s.showSettings);
+  // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）
+  const streamingText = useChat((s) => s.streamingBySession[s.sessionId] ?? "");
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -501,7 +503,7 @@ export function App() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
-  }, [events.length, status, approval]);
+  }, [events.length, status, approval, streamingText.length]);
 
   const submit = () => {
     const text = input.trim();
@@ -544,6 +546,11 @@ export function App() {
               <EventRow key={e.seq} event={e} />
             ))}
             {error && <div className="row chip result-error">[turn 失败] {error}</div>}
+            {streamingText && (
+              <div className="row assistant md streaming">
+                <Markdown remarkPlugins={[remarkGfm]}>{streamingText}</Markdown>
+              </div>
+            )}
             {(status === "running" || approval !== null) && (
               <div className="row agent-status">
                 <ThinkingOrb
@@ -551,7 +558,10 @@ export function App() {
                   size={20}
                   theme="dark"
                 />
-                <TurnMeta label={approval ? "等待审批…" : "思考中…"} events={events} />
+                <TurnMeta
+                  label={approval ? "等待审批…" : streamingText ? "输出中…" : "思考中…"}
+                  events={events}
+                />
               </div>
             )}
             <div ref={bottomRef} />

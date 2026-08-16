@@ -30,6 +30,7 @@ const bridge: ShellBridge = {
   onEvent: subscribe(CHANNELS.event),
   onApprovalRequest: subscribe(CHANNELS.approvalRequest),
   onTurnStatus: subscribe(CHANNELS.turnStatus),
+  onAssistantDelta: subscribe(CHANNELS.assistantDelta),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

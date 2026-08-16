@@ -208,3 +208,48 @@ describe("LoopEngine.compact", () => {
     store.close();
   });
 });
+
+describe("LoopEngine 流式转发", () => {
+  it("onAssistantDelta 穿透到 adapter；落盘的事件仍是完整消息", async () => {
+    const store = new EventStore(":memory:");
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_messages, _tools, onDelta) {
+        onDelta?.("片1");
+        onDelta?.("片2");
+        return { content: "片1片2" }; // 直播归直播，resolve 的永远是完整消息
+      },
+    };
+    const deltas: string[] = [];
+    const engine = new LoopEngine({
+      store, adapter, tools: [], world: fakeWorld, sessionId: "s1",
+      onAssistantDelta: (t) => deltas.push(t),
+    });
+    await engine.runTurn("说点什么");
+
+    expect(deltas).toEqual(["片1", "片2"]);
+    const last = store.load("s1").at(-1);
+    expect(last).toMatchObject({ type: "assistant_message", content: "片1片2" });
+    store.close();
+  });
+
+  it("compact 不带 onDelta：摘要走非流式，没人看直播", async () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "聊过几句" });
+    let sawDelta: unknown = "未记录";
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_messages, _tools, onDelta) {
+        sawDelta = onDelta;
+        return { content: "摘要" };
+      },
+    };
+    const engine = new LoopEngine({
+      store, adapter, tools: [], world: fakeWorld, sessionId: "s1",
+      onAssistantDelta: () => { throw new Error("compact 不该直播"); },
+    });
+    await engine.compact();
+    expect(sawDelta).toBeUndefined();
+    store.close();
+  });
+});

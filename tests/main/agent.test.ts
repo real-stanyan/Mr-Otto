@@ -7,7 +7,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 
-const push: AgentPush = { event: () => {}, approvalRequest: () => {} };
+const push: AgentPush = { event: () => {}, approvalRequest: () => {}, assistantDelta: () => {} };
 
 describe("createAgent 会话生命周期", () => {
   it("新建：日志第 0 条 = session_created，带 workspace", () => {
@@ -38,7 +38,7 @@ describe("createAgent 会话生命周期", () => {
     const agent = createAgent({
       store,
       workspace: "/proj/x",
-      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {} },
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {} },
     });
 
     agent.switchModel("glm-4.5-flash");

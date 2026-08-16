@@ -22,5 +22,12 @@ export interface ModelReply {
 export interface ModelAdapter {
   /** 实际型号 id，落进 assistant_message.model（事实记录用） */
   readonly model: string;
-  chat(messages: ChatMessage[], tools?: ToolDefinition[]): Promise<ModelReply>;
+  /** onDelta 给了 = 流式：文本片段边到边回调（临时 UI 用，不是事实）。
+      无论走不走流式，resolve 的 ModelReply 都是完整消息——落盘只认它。
+      调用方拿不齐完整回复就啥也别落：半成品不进日志 */
+  chat(
+    messages: ChatMessage[],
+    tools?: ToolDefinition[],
+    onDelta?: (text: string) => void
+  ): Promise<ModelReply>;
 }

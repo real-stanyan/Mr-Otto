@@ -548,3 +548,22 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
   .session-delete:active { transform: translateY(-50%); }
   .approval { transition: opacity 200ms ease; @starting-style { transform: none; } }
 }
+
+/* ─── 流式直播气泡 ───
+   内容本身持续生长就是最好的"进行中"信号，光标只补一笔"还没写完"。
+   挂在最后一个块级子元素尾部：跟着文字走，不另起一行 */
+.row.streaming > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 0.95em;
+  margin-left: 3px;
+  vertical-align: -0.12em;
+  border-radius: 1px;
+  background: var(--accent-hi);
+  animation: caret-blink 1s steps(2, jump-none) infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .row.streaming > :last-child::after { animation: none; opacity: 0.7; }
+}

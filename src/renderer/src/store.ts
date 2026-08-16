@@ -32,6 +32,9 @@ interface ChatState {
   statusBySession: Record<string, TurnStatus>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
+  /** 流式直播缓冲（按会话攒碎片）。临时投影：完整 assistant_message
+      事件一到就清——事件是事实，缓冲只是它到来前的预览 */
+  streamingBySession: Record<string, string>;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -86,6 +89,7 @@ export const useChat = create<ChatState>((set, get) => ({
   sessions: [],
   statusBySession: {},
   approvals: {},
+  streamingBySession: {},
   error: null,
   approvalMode: "ask",
   thinking: true,
@@ -142,21 +146,42 @@ export const useChat = create<ChatState>((set, get) => ({
 
     window.otter.onEvent((e) =>
       set((s) => {
+        // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
+        // 这步在分流之前：后台会话的缓冲也要清，不然工具循环里越攒越错
+        const streaming =
+          e.type === "assistant_message"
+            ? without(s.streamingBySession, e.sessionId)
+            : s.streamingBySession;
         // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
         // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
-        if (e.sessionId !== s.sessionId) return {};
+        if (e.sessionId !== s.sessionId) return { streamingBySession: streaming };
         return {
+          streamingBySession: streaming,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model } : {}),
         };
       })
     );
+    window.otter.onAssistantDelta(({ sessionId, text }) =>
+      set((s) => ({
+        streamingBySession: {
+          ...s.streamingBySession,
+          [sessionId]: (s.streamingBySession[sessionId] ?? "") + text,
+        },
+      }))
+    );
     window.otter.onApprovalRequest((req) =>
       set((s) => ({ approvals: { ...s.approvals, [req.sessionId]: req } }))
     );
     window.otter.onTurnStatus(({ sessionId, status }) =>
-      set((s) => ({ statusBySession: { ...s.statusBySession, [sessionId]: status } }))
+      set((s) => ({
+        statusBySession: { ...s.statusBySession, [sessionId]: status },
+        // turn 收尾兜底清缓冲：正常路径事件已清过；turn 中途炸掉时靠这条防幽灵字
+        ...(status === "idle"
+          ? { streamingBySession: without(s.streamingBySession, sessionId) }
+          : {}),
+      }))
     );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要

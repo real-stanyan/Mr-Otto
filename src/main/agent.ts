@@ -17,6 +17,8 @@ export interface AgentPush {
   event(e: SessionEvent): void;
   /** 带 sessionId：审批卡要挂靠到具体会话的视图上 */
   approvalRequest(sessionId: string, call: ToolCallRequest, tool: Tool): void;
+  /** 流式文本碎片（临时直播，不落日志）——渲染层按会话攒着显示 */
+  assistantDelta(sessionId: string, text: string): void;
 }
 
 export function createAgent(opts: {
@@ -76,6 +78,7 @@ export function createAgent(opts: {
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
     approver: createModeAwareApprover(() => approvalMode, approver),
     onEvent: opts.push.event,
+    onAssistantDelta: (text) => opts.push.assistantDelta(sessionId, text),
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则 */

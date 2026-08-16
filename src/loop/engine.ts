@@ -23,6 +23,9 @@ export interface LoopEngineOptions {
   sessionId: string;
   /** 每条事件落盘后回调 —— CLI 打印、将来 UI 实时刷新都挂这 */
   onEvent?: (event: SessionEvent) => void;
+  /** 流式文本碎片回调（临时 UI 直播，不是事实）。半成品永不落盘：
+      日志只收凝固后的完整 assistant_message——pi 的"消息完成后不可修改"同款边界 */
+  onAssistantDelta?: (text: string) => void;
   /** requiresApproval 工具的审批人；不给 = 危险操作一律默认拒绝 */
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
@@ -123,7 +126,8 @@ export class LoopEngine {
       const messages = deriveMessages(store.load(sessionId), DEFAULT_COMPRESSION);
       const reply = await this.adapter.chat(
         messages,
-        this.opts.tools.map((t) => t.def)
+        this.opts.tools.map((t) => t.def),
+        this.opts.onAssistantDelta // 给了就流式直播；reply 依旧完整——落盘只认它
       );
 
       this.append({

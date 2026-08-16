@@ -36,6 +36,13 @@ export interface TurnStatusUpdate {
   status: TurnStatus;
 }
 
+/** 流式文本碎片（临时直播，不落日志）：渲染层攒着显示，
+    完整 assistant_message 事件流回来后这些碎片就作废——事件才是事实 */
+export interface AssistantDelta {
+  sessionId: string;
+  text: string;
+}
+
 /** 主进程请渲染层出示审批卡时推的包 */
 export interface ApprovalRequest {
   /** 审批挂靠的会话——卡只在这个会话的视图里渲染 */
@@ -83,6 +90,7 @@ export interface ShellBridge {
   onEvent(cb: (event: SessionEvent) => void): Unsubscribe;
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
+  onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
 }
 
 export const CHANNELS = {
@@ -102,6 +110,7 @@ export const CHANNELS = {
   event: "otter:event",
   approvalRequest: "otter:approvalRequest",
   turnStatus: "otter:turnStatus",
+  assistantDelta: "otter:assistantDelta",
 } as const;
 
 declare global {
