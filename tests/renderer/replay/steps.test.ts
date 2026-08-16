@@ -36,6 +36,13 @@ describe("toStep：事件 → 画布高亮 + 函数轨迹", () => {
     }
   });
 
+  it("链条有头有尾：每步都有输入卡，最后一格函数必带 out（末端输出卡）", () => {
+    for (const s of steps) {
+      expect(s.input, s.title).toBeTruthy();
+      expect(s.fns.at(-1)!.out, s.title).toBeTruthy();
+    }
+  });
+
   it("tool_result ok：从日志找回 toolCall，工具文件与 world 调用对上号", () => {
     const s = at(5);
     expect(s.deny).toBe(false);

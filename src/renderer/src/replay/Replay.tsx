@@ -39,6 +39,17 @@ function FnChain({ step }: { step: ReplayStep }) {
   const d = () => ({ animationDelay: `${(delay += 80)}ms` });
   const parts: React.ReactNode[] = [];
 
+  // 链条头：进入第一个函数之前的世界（用户动作 / 上一步的产物）
+  if (step.input) {
+    parts.push(
+      <div key="in" className="dat cap" style={d()}>
+        <span className="cap-label">输入</span>
+        <Hl src={step.input} />
+      </div>,
+      <span key="inc" className="chev" style={d()}>➤</span>
+    );
+  }
+
   step.fns.forEach((f, i) => {
     const cls = f.skip ? "fn skip" : step.deny ? "fn deny" : "fn";
     parts.push(
@@ -65,6 +76,18 @@ function FnChain({ step }: { step: ReplayStep }) {
       }
     }
   });
+
+  // 链条尾：最后一个函数的产物 = 本 step 对世界的净效果
+  const last = step.fns[step.fns.length - 1];
+  if (last?.out) {
+    parts.push(
+      <span key="outc" className="chev" style={d()}>➤</span>,
+      <div key="out" className="dat cap" style={d()}>
+        <span className="cap-label">输出</span>
+        <Hl src={last.out} />
+      </div>
+    );
+  }
   return <div className="chain">{parts}</div>;
 }
 

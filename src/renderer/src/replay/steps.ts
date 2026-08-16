@@ -25,6 +25,9 @@ export interface ReplayStep {
   nodes: string[];
   edges: string[];
   fns: FnLink[];
+  /** 链条入口数据：第一个函数吃进去的是什么（触发源）。
+      末端输出 = 最后一个 fn 的 out——每条链都必须给最后一格填 out。 */
+  input: string;
 }
 
 const fn = (n: string, f: string, io: string, out: string | null = null, skip = false): FnLink => ({
@@ -85,6 +88,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
     nodes: [],
     edges: [],
     fns: [],
+    input: "",
   };
 
   switch (e.type) {
@@ -95,6 +99,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         "workspace 记在这条里——围栏、恢复会话、重放全从它重建。";
       S.nodes = ["n-user", "n-bridge", "n-store"];
       S.edges = ["e-user-bridge"];
+      S.input = `用户点「＋新会话」\n选中文件夹 "${e.workspace ?? "（旧日志无此字段）"}"`;
       S.fns = [
         fn("startSession()", "main/index.ts", "文件夹选择框 → 建 agent", `workspace = "${e.workspace ?? "（旧日志无此字段）"}"`),
         fn("createAgent(opts)", "main/agent.ts", "组装 store / world / engine，铸造 sessionId", `sessionId = "${e.sessionId}"`),
@@ -110,10 +115,16 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         "第一件事不是调模型——是 append 落盘（先落盘再喂模型）。";
       S.nodes = ["n-user", "n-bridge", "n-loop", "n-store"];
       S.edges = ["e-user-bridge", "e-bridge-loop", "e-loop-store"];
+      S.input = `输入框原文 = "${clip(e.content)}"\n回车 → sendMessage(sessionId, text) 过桥`;
       S.fns = [
         fn("runTurn(userInput)", "loop/engine.ts", "turn 入口", `userInput = "${clip(e.content)}"`),
         ...APPEND(e, `content: "${clip(e.content, 60)}"`),
-        fn("onEvent(e)", "回调（UI 经桥刷新）", "收到完整事件（带 seq）"),
+        fn(
+          "onEvent(e)",
+          "回调（UI 经桥刷新）",
+          "收到完整事件（带 seq）",
+          `渲染层 events[] 追加 seq ${e.seq}\n聊天区 / 回放画布同帧更新`
+        ),
       ];
       break;
     }
@@ -126,6 +137,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         : "上一步结果已在日志里 → 重新投影（load → deriveMessages → chat()），模型看到发生了什么，给出回复，落盘。无 toolCalls = 本 turn 收敛。";
       S.nodes = ["n-store", "n-derive", "n-adapter", "n-loop"];
       S.edges = ["e-store-derive", "e-derive-adapter", "e-adapter-loop", "e-loop-store"];
+      S.input = `turn 循环：日志里有 ${e.seq} 条事件（seq 0…${e.seq - 1}）\n上一步的结果已落盘 → 该问模型了`;
       const choice = resolveModel(e.model);
       S.fns = [
         fn("store.load(sessionId)", "session/store.ts", "ORDER BY seq 全量读", `events = ${e.seq} 条（seq 0…${e.seq - 1}）`),
@@ -170,6 +182,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         "决定落盘（审计线，模型不消费这条）。";
       S.nodes = ["n-loop", "n-gate", "n-approver", "n-bridge", "n-store"];
       S.edges = ["e-loop-gate", "e-gate-approver", "e-loop-store"];
+      S.input = `模型上一步发出的 toolCall：\n${j(call, 140)}`;
       S.fns = [
         fn("runPipeline(pipeline, execute, ctx)", "loop/middleware.ts", "管线入口", `ctx = { call: ${j(call)},\n  tool, world, sessionId }`),
         fn("dispatch(0) → 审批门", "loop/middleware.ts", "洋葱第一层", "ctx.tool.requiresApproval === true\n→ 拦下，不放行"),
@@ -188,6 +201,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
     case "tool_result": {
       const call = findCall(all, e.toolCallId);
       const info = toolInfo(call?.name);
+      S.input = `进入工具管线的 ctx：\ncall = ${j(call, 120)}\n+ tool 定义 + world + sessionId`;
       const gateFn = wasApproved(all, e.toolCallId)
         ? fn("审批门 → next()", "loop/approvalGate.ts", "approved → 放行", "ctx 原样进洋葱下一层")
         : fn("审批门 → next()", "loop/approvalGate.ts", "requiresApproval = false，免审直通", "ctx 原样进洋葱下一层");
@@ -261,6 +275,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         "落盘失败就不换，日志与现实永不分叉。恢复会话时'当前模型'就从最后一条 model_changed 投影回来。";
       S.nodes = ["n-user", "n-bridge", "n-loop", "n-adapter", "n-store"];
       S.edges = ["e-user-bridge", "e-bridge-loop", "e-loop-store"];
+      S.input = `header 下拉框选中 "${e.model}"\nswitchModel(model) 过桥进 main`;
       S.fns = [
         fn("switchModel(modelId)", "main/agent.ts", "同型号 = 无操作；否则先落盘", `目标 = ${e.provider}/${e.model}`),
         ...APPEND(e, `provider: "${e.provider}",\n  model: "${e.model}"`),
@@ -276,6 +291,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         "列表投影时滤掉带此标记的会话。历史不说谎，误删可救。";
       S.nodes = ["n-bridge", "n-store"];
       S.edges = [];
+      S.input = `侧栏 ✕ + 确认框\ndeleteSession("${e.sessionId}") 过桥`;
       S.fns = [
         fn("deleteSession(sessionId)", "main/index.ts", "拒绝删运行中的会话，然后追加标记"),
         ...APPEND(e, "（无 payload——标记本身就是全部信息）"),
