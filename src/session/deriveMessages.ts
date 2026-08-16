@@ -172,10 +172,14 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
-      // 模型不可见的事件：明确丢弃
+      // 模型不可见的事件：明确丢弃。
+      // lifecycle 事件（ADR-0004）是系统事实，不是对话内容——投影必须对它们隐形：
+      // 同一段日志加不加 lifecycle 事件，投影结果逐字节一致（有测试钉住）
       case "approval_decision":
       case "model_changed":
       case "session_archived":
+      case "tool_execution_started":
+      case "turn_ended":
         break;
     }
   }

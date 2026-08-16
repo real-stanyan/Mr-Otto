@@ -201,6 +201,12 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
     case "tool_result": {
       const call = findCall(all, e.toolCallId);
       const info = toolInfo(call?.name);
+      // 真执行耗时 = 推导值：配对 tool_execution_started 的 ts 相减（审批等待不计）。
+      // 旧日志没有该事件 → 不标注。不知道就不说，不编——理解题③的根治在这一行
+      const started = all.find(
+        (x) => x.type === "tool_execution_started" && x.toolCallId === e.toolCallId
+      );
+      const dur = started ? `执行耗时 ${e.ts - started.ts} ms（审批等待不计）。` : "";
       S.input = `进入工具管线的 ctx：\ncall = ${j(call, 120)}\n+ tool 定义 + world + sessionId`;
       const gateFn = wasApproved(all, e.toolCallId)
         ? fn("审批门 → next()", "loop/approvalGate.ts", "approved → 放行", "ctx 原样进洋葱下一层")
@@ -232,7 +238,8 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         S.badge = "error";
         S.desc =
           "工具执行报错（参数不合法 / 围栏拦截 / 运行时炸了）。错误被 execute 的 try/catch 接住，" +
-          "转成 status:'error' 的 tool_result 落盘——模型下一轮看到错误自己调整，turn 不崩。";
+          "转成 status:'error' 的 tool_result 落盘——模型下一轮看到错误自己调整，turn 不崩。" +
+          dur;
         S.nodes = ["n-gate", "n-tool", "n-store"];
         S.edges = ["e-gate-tool", "e-loop-store"];
         S.fns = [
@@ -249,7 +256,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         ];
       } else {
         S.badge = "ok";
-        S.desc = "放行：穿过审批门到执行器，tool.run 走 ExecutionWorld 真干活。结果落盘。";
+        S.desc = "放行：穿过审批门到执行器，tool.run 走 ExecutionWorld 真干活。结果落盘。" + dur;
         S.nodes = ["n-gate", "n-tool", "n-world", "n-store"];
         S.edges = ["e-gate-tool", "e-tool-world", "e-loop-store"];
         S.fns = [
@@ -295,6 +302,51 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       S.fns = [
         fn("deleteSession(sessionId)", "main/index.ts", "旧版：拒绝删运行中的会话，然后追加标记"),
         ...APPEND(e, "（无 payload——标记本身就是全部信息）"),
+      ];
+      break;
+    }
+
+    case "tool_execution_started": {
+      const call = findCall(all, e.toolCallId);
+      const info = toolInfo(call?.name);
+      S.badge = "执行开始";
+      S.desc =
+        "碰世界之前先留痕（ADR-0004）：审批门已过（或免审），洋葱芯即将调 tool.run。" +
+        "取证价值：崩溃后日志里\"有 started 无对应 tool_result\" = 悬空执行，" +
+        "世界可能已被部分变更，该去检查现场。";
+      S.nodes = ["n-loop", "n-tool", "n-store"];
+      S.edges = ["e-loop-store"];
+      S.input = `即将执行的调用：\n${j(call, 140)}`;
+      S.fns = [
+        fn("dispatch(1) → 洋葱芯", "loop/middleware.ts", "中间件走完，到执行器", "execute(ctx)"),
+        fn("execute(ctx)", "loop/engine.ts", `tool.run 之前先 append——${info.file} 还没跑`, "先留痕，再干活"),
+        ...APPEND(e, `toolCallId: "${e.toolCallId}"`),
+      ];
+      break;
+    }
+
+    case "turn_ended": {
+      S.deny = e.outcome === "error";
+      S.badge = S.deny ? "turn 暴死" : "turn 落幕";
+      S.desc = S.deny
+        ? "turn 中途炸了（API 报错 / MAX_STEPS 超限…）。此前错误只走 IPC reject——" +
+          "只存在于一帧屏幕上的\"平行真相\"。现在错误是日志事实，重开 app 还在；" +
+          "错误照旧向上抛，落盘是补记事实不是吞错（ADR-0004）。"
+        : "turn 生命周期边界落盘。模型调用次数 = 数两条边界间的 assistant_message——" +
+          "推得出的不落盘，所以没有 steps 字段（同一原则砍掉了 turn_started）。";
+      S.nodes = ["n-loop", "n-store"];
+      S.edges = ["e-loop-store"];
+      S.input = S.deny
+        ? `runTurn 的 catch 接住异常：\n"${clip(e.error ?? "", 100)}"`
+        : "loop() 正常返回（模型不再要工具）";
+      S.fns = [
+        fn(
+          S.deny ? "runTurn 的 catch" : "runTurn 的 try 收尾",
+          "loop/engine.ts",
+          S.deny ? "补记事实 → 重新 throw" : "turn 收敛",
+          `outcome = "${e.outcome}"`
+        ),
+        ...APPEND(e, `outcome: "${e.outcome}"${e.error ? `,\n  error: "${clip(e.error, 60)}"` : ""}`),
       ];
       break;
     }

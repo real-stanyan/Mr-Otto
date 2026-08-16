@@ -289,6 +289,15 @@ function EventRow({ event }: { event: SessionEvent }) {
           模型切换 → {event.provider}/{event.model}
         </div>
       );
+
+    // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
+    // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
+    case "tool_execution_started":
+      return null;
+    case "turn_ended":
+      return event.outcome === "error" ? (
+        <div className="row chip result-error">[turn 失败] {event.error}</div>
+      ) : null;
   }
 }
 

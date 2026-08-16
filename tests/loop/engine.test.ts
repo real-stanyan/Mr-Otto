@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { LoopEngine } from "../../src/loop/engine.js";
 import { EventStore } from "../../src/session/store.js";
 import { readFileTool } from "../../src/tools/readFile.js";
+import { bashTool } from "../../src/tools/bash.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
@@ -52,9 +53,11 @@ describe("LoopEngine", () => {
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([
       "user_message",
-      "assistant_message", // 带 toolCall
-      "tool_result",       // ok
-      "assistant_message", // 收口
+      "assistant_message",      // 带 toolCall
+      "tool_execution_started", // 碰世界前留痕（ADR-0004）
+      "tool_result",            // ok
+      "assistant_message",      // 收口
+      "turn_ended",
     ]);
 
     // 第二次调模型时，上下文应比第一次多 2 条（assistant + tool）
@@ -228,7 +231,7 @@ describe("LoopEngine 流式转发", () => {
     await engine.runTurn("说点什么");
 
     expect(deltas).toEqual(["片1", "片2"]);
-    const last = store.load("s1").at(-1);
+    const last = store.load("s1").filter((e) => e.type === "assistant_message").at(-1);
     expect(last).toMatchObject({ type: "assistant_message", content: "片1片2" });
     store.close();
   });
@@ -250,6 +253,66 @@ describe("LoopEngine 流式转发", () => {
     });
     await engine.compact();
     expect(sawDelta).toBeUndefined();
+    store.close();
+  });
+});
+
+describe("lifecycle 事件（ADR-0004）", () => {
+  it("收口 turn：末尾落 turn_ended(completed)；工具执行前落 tool_execution_started", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] },
+      { content: "读完了" },
+    ]);
+    const engine = new LoopEngine({
+      store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1",
+    });
+    await engine.runTurn("读 /a.txt");
+
+    const types = store.load("s1").map((e) => e.type);
+    expect(types).toEqual([
+      "user_message",
+      "assistant_message",
+      "tool_execution_started", // 碰世界前留痕
+      "tool_result",
+      "assistant_message",
+      "turn_ended",             // 收口边界
+    ]);
+    expect(store.load("s1").at(-1)).toMatchObject({ outcome: "completed" });
+    store.close();
+  });
+
+  it("turn 暴死：turn_ended(error) 补记事实，错误照旧向上抛", async () => {
+    const store = new EventStore(":memory:");
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat() { throw new Error("API 超时了"); },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+
+    await expect(engine.runTurn("你好")).rejects.toThrow("API 超时了");
+    expect(store.load("s1").at(-1)).toMatchObject({
+      type: "turn_ended", outcome: "error", error: "API 超时了",
+    });
+    store.close();
+  });
+
+  it("被拒绝的调用没有 tool_execution_started：审批门短路，执行器未达", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "bash", args: { cmd: "rm -rf /" } }] },
+      { content: "好吧不删了" },
+    ]);
+    // 不给 approver：requiresApproval 的工具默认拒绝
+    const engine = new LoopEngine({
+      store, adapter, tools: [bashTool], world: fakeWorld, sessionId: "s1",
+    });
+    await engine.runTurn("删库");
+
+    const types = store.load("s1").map((e) => e.type);
+    expect(types).not.toContain("tool_execution_started");
+    expect(types).toContain("approval_decision");
+    expect(store.load("s1").find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
     store.close();
   });
 });

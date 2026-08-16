@@ -66,9 +66,11 @@ describe("审批门（engine 集成）", () => {
     expect(types).toEqual([
       "user_message",
       "assistant_message",
-      "approval_decision", // 决定先落盘……
-      "tool_result",       // ……结果在后
+      "approval_decision",      // 决定先落盘……
+      "tool_execution_started", // ……批准了才碰世界（ADR-0004）
+      "tool_result",            // ……结果在后
       "assistant_message",
+      "turn_ended",
     ]);
     expect(store.load("s1").find((e) => e.type === "approval_decision")).toMatchObject({
       toolCallId: "c1",

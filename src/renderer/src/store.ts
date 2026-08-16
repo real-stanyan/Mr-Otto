@@ -234,7 +234,14 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.sendMessage(sessionId, text);
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      // turn 暴死已作为 turn_ended 事件渲染在时间线里（ADR-0004）——
+      // 同一条错误别再叠一行临时的；transient error 只兜 IPC 层失败（会话不存在等）。
+      // 包含判断：Electron 会把 reject 包成 "Error invoking remote method…: <原文>"
+      const last = get().events.at(-1);
+      if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
+        set({ error: msg });
+      }
     }
   },
 

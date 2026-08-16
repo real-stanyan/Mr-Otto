@@ -78,6 +78,9 @@ export class LoopEngine {
     if (!ctx.tool) {
       return { status: "error", output: `未知工具: ${ctx.call.name}` };
     }
+    // 碰世界之前先留痕（ADR-0004）：崩溃后"有 started 无 result" = 悬空执行。
+    // 被拒绝的调用到不了这（审批门短路），所以 denied 没有此事件
+    this.append({ ...this.env(), type: "tool_execution_started", toolCallId: ctx.call.id });
     try {
       return { status: "ok", output: await ctx.tool.run(ctx.call.args, ctx.world) };
     } catch (err) {
@@ -114,11 +117,27 @@ export class LoopEngine {
     });
   }
 
-  /** 跑一个完整 turn：直到模型不再要工具为止 */
+  /** 跑一个完整 turn：直到模型不再要工具为止。
+      收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错 */
   async runTurn(userInput: string): Promise<void> {
-    const { store, world, sessionId } = this.opts;
-
     this.append({ ...this.env(), type: "user_message", content: userInput });
+    try {
+      await this.loop();
+      this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
+    } catch (err) {
+      this.append({
+        ...this.env(),
+        type: "turn_ended",
+        outcome: "error",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
+  /** turn 主循环 */
+  private async loop(): Promise<void> {
+    const { store, world, sessionId } = this.opts;
 
     for (let step = 0; step < MAX_STEPS; step++) {
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。

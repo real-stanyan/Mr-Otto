@@ -125,3 +125,38 @@ describe("hl：数据卡迷你高亮器", () => {
     expect(toks.map((t) => t.text).join("")).toBe("seq = 42 → return foo");
   });
 });
+
+describe("lifecycle 事件的回放（ADR-0004）", () => {
+  const lc: SessionEvent[] = [
+    {
+      seq: 0, sessionId: "s", ts: 1000, type: "assistant_message", content: "", model: "m",
+      toolCalls: [{ id: "c1", name: "bash", args: { cmd: "sleep 2" } }],
+    },
+    { seq: 1, sessionId: "s", ts: 1500, type: "tool_execution_started", toolCallId: "c1" },
+    { seq: 2, sessionId: "s", ts: 3600, type: "tool_result", toolCallId: "c1", status: "ok", output: "" },
+    { seq: 3, sessionId: "s", ts: 3700, type: "turn_ended", outcome: "error", error: "后来炸了" },
+  ];
+
+  it("tool_result 的耗时是推导值：配对 started 的 ts 相减，审批等待不计", () => {
+    const s = toStep(lc[2]!, 2, lc);
+    expect(s.desc).toContain("执行耗时 2100 ms"); // 3600 - 1500，不是 3600 - 1000
+  });
+
+  it("旧日志没有 started → 不标注耗时（不知道就不说，不编）", () => {
+    const old = [lc[0]!, lc[2]!];
+    const s = toStep(lc[2]!, 1, old);
+    expect(s.desc).not.toContain("执行耗时");
+  });
+
+  it("turn_ended(error) 是红色步骤，错误进数据卡", () => {
+    const s = toStep(lc[3]!, 3, lc);
+    expect(s.deny).toBe(true);
+    expect(s.input).toContain("后来炸了");
+  });
+
+  it("tool_execution_started 渲染成独立步骤", () => {
+    const s = toStep(lc[1]!, 1, lc);
+    expect(s.badge).toBe("执行开始");
+    expect(s.input).toContain("sleep 2");
+  });
+});

@@ -96,6 +96,27 @@ export interface ContextCompactedEvent extends SessionEventBase {
   usage?: TokenUsage;            // compact 本身烧的 token（一次全量输入，不便宜）
 }
 
+/** 额外 5：工具执行开始（ADR-0004）——穿过审批门、tool.run 即将碰世界的瞬间。
+    真执行耗时 = 配对 tool_result.ts − 此事件 ts（审批等待不计入）。
+    取证价值：崩溃后日志里"有 started 无 result" = 悬空执行，世界可能已被部分变更。
+    被拒绝的调用没有此事件（审批门短路，执行器未达）。模型不消费。 */
+export interface ToolExecutionStartedEvent extends SessionEventBase {
+  type: "tool_execution_started";
+  toolCallId: string;
+}
+
+/** 额外 6：turn 收口/暴死（ADR-0004）。此前 turn 死亡只走 IPC reject——
+    错误信息是只存在于一帧屏幕上的"平行真相"。现在成为日志事实。
+    错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。 */
+export interface TurnEndedEvent extends SessionEventBase {
+  type: "turn_ended";
+  outcome: "completed" | "error";
+  /** 仅 outcome = "error"：异常信息。
+      刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
+      推得出的不落盘（同一原则砍掉了 turn_started） */
+  error?: string;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -106,4 +127,6 @@ export type SessionEvent =
   | ToolResultEvent
   | ModelChangedEvent
   | SessionArchivedEvent
-  | ContextCompactedEvent;
+  | ContextCompactedEvent
+  | ToolExecutionStartedEvent
+  | TurnEndedEvent;

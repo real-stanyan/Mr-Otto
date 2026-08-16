@@ -216,3 +216,27 @@ describe("deriveMessages context_compacted", () => {
     ]);
   });
 });
+
+describe("lifecycle 事件对投影隐形（ADR-0004）", () => {
+  it("同一段日志加不加 lifecycle 事件，投影逐字节一致", () => {
+    const base: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "写个文件" },
+      {
+        seq: 2, sessionId: "s", ts: 3, type: "assistant_message", model: "m", content: "",
+        toolCalls: [{ id: "c1", name: "write_file", args: { path: "a.txt", content: "hi" } }],
+      },
+      { seq: 3, sessionId: "s", ts: 4, type: "tool_result", toolCallId: "c1", status: "ok", output: "已写入" },
+      { seq: 4, sessionId: "s", ts: 5, type: "assistant_message", model: "m", content: "写好了" },
+    ];
+    const withLifecycle: SessionEvent[] = [
+      base[0]!, base[1]!, base[2]!,
+      { seq: 5, sessionId: "s", ts: 3, type: "tool_execution_started", toolCallId: "c1" },
+      base[3]!, base[4]!,
+      { seq: 6, sessionId: "s", ts: 6, type: "turn_ended", outcome: "completed" },
+      { seq: 7, sessionId: "s", ts: 7, type: "turn_ended", outcome: "error", error: "假装炸了" },
+    ];
+
+    expect(JSON.stringify(deriveMessages(withLifecycle))).toBe(JSON.stringify(deriveMessages(base)));
+  });
+});
