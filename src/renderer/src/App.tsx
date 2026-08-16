@@ -29,28 +29,21 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-/** 状态行：跑 turn 时每秒走表的耗时 + 会话累计 token（Claude Code 状态行同款思路） */
-function StatusLine({ running, events }: { running: boolean; events: SessionEvent[] }) {
-  const [now, setNow] = useState(() => Date.now());
-  const startRef = useRef<number | null>(null);
-  if (running && startRef.current === null) startRef.current = Date.now();
-  if (!running) startRef.current = null;
-
+/** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
+    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
+function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) {
+  const [start] = useState(() => Date.now());
+  const [now, setNow] = useState(start);
   useEffect(() => {
-    if (!running) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [running]);
+  }, []);
 
   const tokens = useMemo(() => totalTokens(events), [events]);
-  if (!running && tokens === 0) return null; // 没得报就不占行
-
   return (
-    <div className="status-line">
-      {running && startRef.current !== null && <span>{fmtElapsed(now - startRef.current)} · </span>}
-      <span>{fmtTokens(tokens)} tokens</span>
-      {running && <span> · 运行中…</span>}
-    </div>
+    <span>
+      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens · {label}
+    </span>
   );
 }
 
@@ -389,7 +382,7 @@ export function App() {
                   size={20}
                   theme="dark"
                 />
-                <span>{approval ? "等待审批…" : "思考中…"}</span>
+                <TurnMeta label={approval ? "等待审批…" : "思考中…"} events={events} />
               </div>
             )}
             <div ref={bottomRef} />
@@ -397,7 +390,6 @@ export function App() {
 
           <ApprovalCard />
 
-          <StatusLine running={status === "running"} events={events} />
           <footer>
             <input
               autoFocus
