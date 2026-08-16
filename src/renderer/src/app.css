@@ -328,6 +328,8 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
 .row.user {
   align-self: flex-end;
   background: #2b4a6f; border-radius: 12px 12px 2px 12px; padding: 8px 12px;
+  /* 多行输入原样展示：换行是用户打的事实，别折叠成一行 */
+  white-space: pre-wrap;
 }
 /* 模型回复无框（Claude Code 版式）：正文直接躺在背景上，占满行宽。
    气泡只留给用户消息——一眼分清"谁在说话"靠对齐和底色，不靠两个框 */
@@ -435,11 +437,15 @@ footer { padding: 10px 20px 12px; }
   border-color: #3a5a7a;
   box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.1); /* 功能性焦点环，非装饰 */
 }
-.composer input {
+.composer textarea {
   background: transparent; border: none; color: var(--text);
   padding: 8px 8px 6px; font-size: 14px;
+  /* textarea 三件套：字体不继承要显式给、禁手动拖拽角、内容驱动高度。
+     field-sizing 让高度跟内容长（Chromium 123+），max-height 封顶后转滚动 */
+  font-family: inherit; line-height: 1.45; resize: none;
+  field-sizing: content; max-height: 40vh;
 }
-.composer input:focus { outline: none; }
+.composer textarea:focus { outline: none; }
 .composer-row { display: flex; align-items: center; gap: 8px; }
 /* 控件行里的发送键收小一号，和状态条同一量级 */
 .composer .send { padding: 4px 14px; font-size: 13px; border-radius: 8px; flex-shrink: 0; }

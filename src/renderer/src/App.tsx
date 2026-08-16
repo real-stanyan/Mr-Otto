@@ -691,9 +691,12 @@ export function App() {
                   ))}
                 </div>
               )}
-              <input
+              {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
+                  自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
+              <textarea
                 autoFocus
-                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
+                rows={1}
+                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
                 disabled={status === "running"}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -710,7 +713,12 @@ export function App() {
                       return;
                     }
                   }
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
+                  // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
+                  // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    submit();
+                  }
                 }}
               />
               <div className="composer-row">
