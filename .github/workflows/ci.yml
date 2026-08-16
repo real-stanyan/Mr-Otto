@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # 依赖安装是门禁的前置管线，不是门禁本身（Gate 命令仍 = npm test）
+      - run: npm ci
       # IMPORTANT: keep this identical to the Gate section in AGENTS.md.
       # That sameness is the contract that lets CI enforce what agents promise.
       - run: npm test
