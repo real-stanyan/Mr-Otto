@@ -419,28 +419,35 @@ code { font-family: var(--mono); font-size: 12.5px; }
 /* orb 旁的状态文案数字等宽：秒表走字不抖动 */
 .agent-status span { font-variant-numeric: tabular-nums; }
 
-footer {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 20px 10px; border-top: 1px solid var(--line);
-}
-footer .composer { display: flex; gap: 8px; }
-footer .composer input {
-  flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  color: var(--text); padding: 10px 14px; font-size: 14px;
+footer { padding: 10px 20px 12px; }
+/* 会话框 = 单一容器：输入行在上、控件行在下，同一块圆角面板。
+   焦点环挂在容器上（focus-within）——整个会话框是一个控件 */
+.composer {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 2px;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
-footer .composer input:focus {
-  outline: none; border-color: #3a5a7a;
+.composer:focus-within {
+  border-color: #3a5a7a;
   box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.1); /* 功能性焦点环，非装饰 */
 }
+.composer input {
+  background: transparent; border: none; color: var(--text);
+  padding: 8px 8px 6px; font-size: 14px;
+}
+.composer input:focus { outline: none; }
+.composer-row { display: flex; align-items: center; gap: 8px; }
+/* 控件行里的发送键收小一号，和状态条同一量级 */
+.composer .send { padding: 4px 14px; font-size: 13px; border-radius: 8px; flex-shrink: 0; }
 /* 发送 = 本视图唯一主操作：可发时上 accent，禁用时回素色（一屏一个重点） */
-footer .composer button:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
-footer .composer button:not(:disabled):hover { background: #35587a; border-color: #35587a; }
+.composer .send:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.composer .send:not(:disabled):hover { background: #35587a; border-color: #35587a; }
 
-/* 输入框下状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
+/* 状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
 .composer-bar {
+  flex: 1; min-width: 0;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: 12px; color: var(--dim);
+  font-size: 12px; color: var(--dim); padding-left: 2px;
 }
 .composer-bar .spacer { flex: 1; }
 .composer-bar select {
@@ -453,7 +460,9 @@ footer .composer button:not(:disabled):hover { background: #35587a; border-color
 .composer-bar select:disabled { opacity: 0.4; cursor: default; }
 /* bypass 模式常亮警示色——免审状态必须一眼可见（Claude Code 同款橙） */
 .composer-bar .mode-select.bypass { color: #e8a04c; background: rgba(232, 160, 76, 0.12); }
-.composer-bar .ctx-usage { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.composer-bar .ctx-usage { display: inline-flex; align-items: center; padding: 0 2px; }
+/* 圆环弧长/颜色随账单更新平滑过渡（每 turn 一次，低频） */
+.ctx-ring circle { transition: stroke-dasharray 400ms var(--ease-out), stroke 400ms ease; }
 
 button {
   background: var(--panel); color: var(--text);

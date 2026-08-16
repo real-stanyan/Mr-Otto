@@ -64,6 +64,28 @@ function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) 
   );
 }
 
+/** 上下文用量圆环（Claude Code 同款）：满圈 = 上下文窗打满。
+    数字进悬停提示，环本身只传达"还剩多少"；爬坡换警示色 */
+function CtxRing({ used, win }: { used: number; win: number }) {
+  const pct = Math.min(1, used / win);
+  const r = 5.5;
+  const c = 2 * Math.PI * r;
+  // 有占用就至少画出一小段弧，不然低用量时环看着像坏了
+  const arc = pct === 0 ? 0 : Math.max(pct, 0.05) * c;
+  const color = pct > 0.9 ? "var(--deny)" : pct > 0.75 ? "var(--warn)" : "#74c0fc";
+  return (
+    <svg className="ctx-ring" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <circle cx="7" cy="7" r={r} fill="none" stroke="rgba(255, 255, 255, 0.16)" strokeWidth="2.5" />
+      <circle
+        cx="7" cy="7" r={r} fill="none"
+        stroke={color} strokeWidth="2.5" strokeLinecap="round"
+        strokeDasharray={`${arc} ${c}`}
+        transform="rotate(-90 7 7)"
+      />
+    </svg>
+  );
+}
+
 /** 输入框下的状态条（Claude Code 同款布局）：
     左 = 审批模式；右 = 模型 · thinking · 上下文用量。
     模式/thinking 是运行时偏好（主进程 agent 持有）；模型是日志投影；用量是日志投影 */
@@ -122,8 +144,11 @@ function ComposerBar() {
         <option value="off">Thinking 关</option>
       </select>
 
-      <span className="ctx-usage" title={`上下文占用估计（最近一次调用的 token 账单）/ 型号上下文窗`}>
-        {fmtTokens(used)}/{fmtTokens(ctxWindow)} · {pct}%
+      <span
+        className="ctx-usage"
+        title={`上下文占用估计 ${fmtTokens(used)}/${fmtTokens(ctxWindow)} · ${pct}%（最近一次调用的 token 账单 / 型号上下文窗）`}
+      >
+        <CtxRing used={used} win={ctxWindow} />
       </span>
     </div>
   );
@@ -464,6 +489,7 @@ export function App() {
           <ApprovalCard />
 
           <footer>
+            {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式） */}
             <div className="composer">
               <input
                 autoFocus
@@ -475,11 +501,13 @@ export function App() {
                   if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
                 }}
               />
-              <button onClick={submit} disabled={status === "running" || !input.trim()}>
-                发送
-              </button>
+              <div className="composer-row">
+                <ComposerBar />
+                <button className="send" onClick={submit} disabled={status === "running" || !input.trim()}>
+                  发送
+                </button>
+              </div>
             </div>
-            <ComposerBar />
           </footer>
         </>
       )}
