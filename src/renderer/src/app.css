@@ -6,7 +6,11 @@
   --bg: #121212; --panel: #1c1c1e; --line: #3a3a3c;
   --text: #e9ecef; --dim: #8a8a8e;
   --ok: #2f9e44; --err: #e8590c; --deny: #e03131; --warn: #f08c00;
+  --accent: #2b4a6f; --accent-hi: #74c0fc;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* 动效令牌：内置缓动太弱，UI 一律用强 ease-out（快起步 = 响应感）。
+     时长按频率分档：悬停 150ms / 按压 160ms / 偶发入场 220ms */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* 桌面 app：窗口本身永不滚动（尤其不出横向滚动条），
@@ -41,13 +45,16 @@ body {
   background: transparent; border: none; border-radius: 8px;
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
   text-align: left; padding: 7px 28px 7px 10px; /* 右侧给删除钮留位 */
+  transition: background-color 150ms ease;
 }
 .session-item:hover { background: rgba(255, 255, 255, 0.05); }
+.session-item:active { background: rgba(255, 255, 255, 0.09); } /* 按下即响应，不等松手 */
 .session-delete {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   padding: 2px 7px; font-size: 12px; line-height: 1.4;
   background: transparent; border: none; color: var(--dim);
   opacity: 0; /* 悬停行才现身，列表平时保持安静 */
+  transition: opacity 125ms ease, color 125ms ease;
 }
 .session-item:hover .session-delete { opacity: 1; }
 .session-delete:hover { color: var(--deny); }
@@ -74,8 +81,8 @@ body {
   height: 100%; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 16px; text-align: center;
 }
-.welcome h1 { font-size: 24px; font-weight: 650; }
-.welcome p { color: var(--dim); }
+.welcome h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; } /* 大字号收字距 */
+.welcome p { color: var(--dim); line-height: 1.7; }
 .welcome .primary {
   background: #2b4a6f; border-color: #2b4a6f; color: #fff; padding: 10px 24px;
 }
@@ -199,11 +206,12 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
   white-space: pre-wrap; word-break: break-all; color: #a5d8b0;
   background: rgba(0, 0, 0, 0.28); border-radius: 8px; padding: 10px 12px;
 }
-/* SVG 节点/边状态（demo 同款） */
+/* SVG 节点/边状态（demo 同款）。transition 点名具体属性，不用 all */
 .replay .node rect, .replay .node ellipse {
-  fill: #232325; stroke: #555; stroke-width: 1.5; transition: all 0.25s;
+  fill: #232325; stroke: #555; stroke-width: 1.5;
+  transition: fill 0.25s, stroke 0.25s, stroke-width 0.25s, filter 0.25s;
 }
-.replay .node text { fill: #9a9a9a; font-size: 12.5px; transition: all 0.25s; }
+.replay .node text { fill: #9a9a9a; font-size: 12.5px; transition: fill 0.25s; }
 .replay .node .sub { font-size: 10px; fill: #6a6a6e; }
 .replay .node .file { font-size: 8.5px; fill: #565b63; font-family: var(--mono); }
 .replay .node.hot .file { fill: #74c0fc; }
@@ -380,6 +388,10 @@ code { font-family: var(--mono); font-size: 12.5px; }
 .approval {
   margin: 0 20px 8px; border: 1px solid var(--warn); border-radius: 10px;
   background: rgba(240, 140, 0, 0.07);
+  /* 偶发事件才配入场动画（消息行是高频，永远不动）。
+     从下方 8px 淡入——它物理上贴着输入框，从来处进场 */
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+  @starting-style { opacity: 0; transform: translateY(8px); }
 }
 .approval-head { padding: 8px 14px 0; font-size: 12px; color: var(--warn); font-weight: 600; }
 .approval-body { padding: 6px 14px; }
@@ -395,6 +407,15 @@ code { font-family: var(--mono); font-size: 12.5px; }
 .approval-actions .approve { background: var(--ok); border-color: var(--ok); color: #fff; }
 .approval-actions .deny { background: transparent; color: var(--deny); border-color: var(--deny); }
 
+/* 其余文本框与主输入框同一套焦点语言（浏览器默认外环太糙） */
+.key-actions input, .approval-actions input {
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.key-actions input:focus, .approval-actions input:focus {
+  outline: none; border-color: #3a5a7a;
+  box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.1);
+}
+
 /* orb 旁的状态文案数字等宽：秒表走字不抖动 */
 .agent-status span { font-variant-numeric: tabular-nums; }
 
@@ -406,8 +427,15 @@ footer .composer { display: flex; gap: 8px; }
 footer .composer input {
   flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   color: var(--text); padding: 10px 14px; font-size: 14px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
-footer .composer input:focus { outline: none; border-color: #4a4a4e; }
+footer .composer input:focus {
+  outline: none; border-color: #3a5a7a;
+  box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.1); /* 功能性焦点环，非装饰 */
+}
+/* 发送 = 本视图唯一主操作：可发时上 accent，禁用时回素色（一屏一个重点） */
+footer .composer button:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+footer .composer button:not(:disabled):hover { background: #35587a; border-color: #35587a; }
 
 /* 输入框下状态条：左模式，右模型/thinking/上下文用量（Claude Code 同款布局） */
 .composer-bar {
@@ -419,6 +447,7 @@ footer .composer input:focus { outline: none; border-color: #4a4a4e; }
   background: transparent; color: var(--dim); border: 1px solid transparent;
   border-radius: 6px; padding: 2px 4px; font-size: 12px; font-family: var(--mono);
   cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease, background-color 150ms ease;
 }
 .composer-bar select:hover { color: var(--text); border-color: var(--line); }
 .composer-bar select:disabled { opacity: 0.4; cursor: default; }
@@ -430,7 +459,35 @@ button {
   background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 18px; font-size: 14px; cursor: pointer;
-  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: transform 160ms var(--ease-out),
+    background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
+button:hover:not(:disabled) { border-color: #4a4a4e; }
 button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.4; cursor: default; }
+
+/* 键盘焦点环：只在 :focus-visible（鼠标点按不冒环，Tab 导航才亮） */
+button:focus-visible, select:focus-visible, .session-item:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.25);
+}
+
+/* 内部滚动区的滚动条统一压细压暗，别抢内容的戏 */
+.timeline::-webkit-scrollbar, .session-list::-webkit-scrollbar,
+.settings-body::-webkit-scrollbar, .rp-steps::-webkit-scrollbar,
+.rp-payload::-webkit-scrollbar { width: 8px; }
+.timeline::-webkit-scrollbar-thumb, .session-list::-webkit-scrollbar-thumb,
+.settings-body::-webkit-scrollbar-thumb, .rp-steps::-webkit-scrollbar-thumb,
+.rp-payload::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14); border-radius: 4px;
+  background-clip: padding-box; border: 2px solid transparent;
+}
+.timeline::-webkit-scrollbar-track, .session-list::-webkit-scrollbar-track,
+.settings-body::-webkit-scrollbar-track, .rp-steps::-webkit-scrollbar-track,
+.rp-payload::-webkit-scrollbar-track { background: transparent; }
+
+/* 减少动效（app 级；回放区另有自己的一段）：位移/缩放全停，保留纯淡入与颜色变化 */
+@media (prefers-reduced-motion: reduce) {
+  button:active { transform: none; }
+  .session-delete:active { transform: translateY(-50%); }
+  .approval { transition: opacity 200ms ease; @starting-style { transform: none; } }
+}
