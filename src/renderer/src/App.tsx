@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
+import { Replay } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import type { SessionEvent } from "../../session/events.js";
 
@@ -262,9 +263,7 @@ export function App() {
   const showSettings = useChat((s) => s.showSettings);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  // 回放的全部魔法就这一行：界面 = 日志前缀的投影
-  const visible = replayCursor === null ? events : events.slice(0, replayCursor);
+  const replaying = replayCursor !== null;
 
   useEffect(() => {
     void boot();
@@ -272,7 +271,7 @@ export function App() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
-  }, [visible.length, status, approval]);
+  }, [events.length, status, approval]);
 
   const submit = () => {
     const text = input.trim();
@@ -309,21 +308,24 @@ export function App() {
           {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
           {!findModel(model) && <option value={model}>{model}</option>}
         </select>
-        <button
-          className="ghost"
-          onClick={() => setReplayCursor(replayCursor === null ? events.length : null)}
-        >
-          {replayCursor === null ? "回放" : "回到直播"}
+        <button className="ghost" onClick={() => setReplayCursor(replaying ? null : 0)}>
+          {replaying ? "回到直播" : "回放"}
         </button>
       </header>
 
-      <section className="timeline">
-        {visible.map((e) => (
-          <EventRow key={e.seq} event={e} />
-        ))}
-        {/* 直播专属：错误提示和状态灯是"现在"的信号，不属于过去的画面 */}
-        {replayCursor === null && (
-          <>
+      {replaying ? (
+        <>
+          {/* 富回放：画布 + 函数轨迹，重演每条事件在系统里的路径 */}
+          <Replay />
+          {/* 审批卡永不因回放隐藏：它是挂起中的活控制件，藏了 agent 就卡死 */}
+          <ApprovalCard />
+        </>
+      ) : (
+        <>
+          <section className="timeline">
+            {events.map((e) => (
+              <EventRow key={e.seq} event={e} />
+            ))}
             {error && <div className="row chip result-error">[turn 失败] {error}</div>}
             {(status === "running" || approval !== null) && (
               <div className="row agent-status">
@@ -335,48 +337,27 @@ export function App() {
                 <span>{approval ? "等待审批…" : "思考中…"}</span>
               </div>
             )}
-          </>
-        )}
-        <div ref={bottomRef} />
-      </section>
+            <div ref={bottomRef} />
+          </section>
 
-      {/* 审批卡永不因回放隐藏：它是挂起中的活控制件，藏了 agent 就卡死 */}
-      <ApprovalCard />
+          <ApprovalCard />
 
-      {replayCursor !== null ? (
-        <footer className="replay-bar">
-          <button onClick={() => setReplayCursor(Math.max(0, replayCursor - 1))}>←</button>
-          <input
-            type="range"
-            min={0}
-            max={events.length}
-            value={replayCursor}
-            onChange={(e) => setReplayCursor(Number(e.target.value))}
-          />
-          <button onClick={() => setReplayCursor(Math.min(events.length, replayCursor + 1))}>
-            →
-          </button>
-          <span className="replay-pos">
-            {replayCursor} / {events.length}
-            {visible.length > 0 ? ` · ${visible[visible.length - 1]?.type}` : ""}
-          </span>
-        </footer>
-      ) : (
-        <footer>
-          <input
-            autoFocus
-            placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
-            disabled={status === "running"}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
-            }}
-          />
-          <button onClick={submit} disabled={status === "running" || !input.trim()}>
-            发送
-          </button>
-        </footer>
+          <footer>
+            <input
+              autoFocus
+              placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
+              disabled={status === "running"}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
+              }}
+            />
+            <button onClick={submit} disabled={status === "running" || !input.trim()}>
+              发送
+            </button>
+          </footer>
+        </>
       )}
     </main>
   );

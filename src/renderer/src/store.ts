@@ -32,7 +32,7 @@ interface ChatState {
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
   error: string | null;
-  /** 回放游标：null = 直播；N = 只投影日志前 N 条。
+  /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
   /** 设置页开关（覆盖在任意 phase 之上） */

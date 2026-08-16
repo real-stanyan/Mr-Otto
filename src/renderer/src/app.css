@@ -129,12 +129,119 @@ header .model-select {
 header .model-select:disabled { opacity: 0.4; }
 header .ghost:hover { color: var(--text); border-color: var(--text); }
 
-.replay-bar { align-items: center; }
-.replay-bar input[type="range"] { flex: 1; accent-color: #74c0fc; }
-.replay-bar button { padding: 6px 12px; font-family: var(--mono); }
-.replay-bar .replay-pos {
-  font-family: var(--mono); font-size: 12px; color: #74c0fc; white-space: nowrap;
+/* ── 富回放（docs/replay-demo.html 样式移植，作用域限 .replay） ── */
+.replay {
+  --hot: var(--ok); --hot-bg: rgba(47, 158, 68, 0.14);
+  --deny-bg: rgba(224, 49, 49, 0.14);
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 12px;
 }
+.replay > * { max-width: 100%; }
+.rp-top { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
+.rp-canvas {
+  flex: 1 1 480px; min-width: 420px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px;
+}
+.rp-canvas svg { width: 100%; height: auto; display: block; }
+.rp-side { flex: 1 1 340px; min-width: 300px; display: flex; flex-direction: column; gap: 10px; }
+.rp-controls { display: flex; gap: 8px; align-items: center; }
+.rp-controls button { padding: 6px 14px; font-size: 13px; }
+.rp-controls .primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+.rp-pos { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.rp-steps {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 6px; max-height: 220px; overflow-y: auto;
+}
+.rp-step {
+  padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  display: flex; gap: 8px; align-items: baseline;
+}
+.rp-step:hover { background: #2c2c2e; }
+.rp-step.cur { background: var(--hot-bg); outline: 1px solid var(--hot); }
+.rp-step.cur.deny { background: var(--deny-bg); outline-color: var(--deny); }
+.rp-step .n { font-family: var(--mono); font-size: 11px; color: var(--dim); width: 46px; flex-shrink: 0; }
+.rp-step .t { font-size: 13px; }
+.rp-step .badge {
+  font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 99px;
+  background: #2c2c2e; color: var(--dim); margin-left: auto; flex-shrink: 0; white-space: nowrap;
+}
+.rp-payload {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px; flex: 1; min-height: 140px; overflow-y: auto;
+}
+.rp-payload h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 6px; }
+.rp-payload .desc { font-size: 13px; margin-bottom: 10px; }
+.rp-payload pre {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-all; color: #a5d8b0;
+}
+/* SVG 节点/边状态（demo 同款） */
+.replay .node rect, .replay .node ellipse {
+  fill: #232325; stroke: #555; stroke-width: 1.5; transition: all 0.25s;
+}
+.replay .node text { fill: #9a9a9a; font-size: 12.5px; transition: all 0.25s; }
+.replay .node .sub { font-size: 10px; fill: #6a6a6e; }
+.replay .node .file { font-size: 8.5px; fill: #565b63; font-family: var(--mono); }
+.replay .node.hot .file { fill: #74c0fc; }
+.replay .node.hot rect, .replay .node.hot ellipse {
+  stroke: var(--hot); stroke-width: 2.5; fill: var(--hot-bg);
+  filter: drop-shadow(0 0 6px rgba(47, 158, 68, 0.55));
+}
+.replay .node.hot text { fill: var(--text); }
+.replay .node.deny rect, .replay .node.deny ellipse {
+  stroke: var(--deny); fill: var(--deny-bg);
+  filter: drop-shadow(0 0 6px rgba(224, 49, 49, 0.55));
+}
+.replay .edge path {
+  stroke: #3f3f42; stroke-width: 1.5; fill: none; transition: stroke 0.25s;
+  marker-end: url(#arr);
+}
+.replay .edge text { fill: #6a6a6e; font-size: 10.5px; }
+.replay .edge.hot path {
+  stroke: var(--hot); stroke-width: 2.5; stroke-dasharray: 7 5;
+  animation: flow 0.6s linear infinite; marker-end: url(#arrHot);
+}
+.replay .edge.hot text { fill: var(--hot); }
+.replay .edge.deny path { stroke: var(--deny); marker-end: url(#arrDeny); }
+.replay .edge.deny text { fill: var(--deny); }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+/* 函数轨迹 */
+.rp-trace {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px; flex-shrink: 0;
+}
+.rp-trace h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 10px; }
+.rp-trace .chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+.rp-trace .empty { color: var(--dim); font-size: 13px; }
+.rp-trace .fn {
+  background: #232325; border: 1.5px solid var(--hot); border-radius: 10px;
+  padding: 8px 12px; min-width: 130px; opacity: 0; animation: pop 0.3s forwards;
+}
+.rp-trace .fn .name { font-family: var(--mono); font-size: 12px; }
+.rp-trace .fn .file { font-family: var(--mono); font-size: 10px; color: var(--dim); margin-top: 2px; }
+.rp-trace .fn .io { font-size: 10.5px; color: #74c0fc; margin-top: 4px; }
+.rp-trace .fn.skip { border-color: var(--line); border-style: dashed; }
+.rp-trace .fn.skip .name { color: #5a5a5e; text-decoration: line-through; }
+.rp-trace .fn.skip .io { color: var(--deny); }
+.rp-trace .fn.deny { border-color: var(--deny); }
+.rp-trace .chev { align-self: center; color: var(--hot); font-size: 15px; opacity: 0; animation: pop 0.3s forwards; }
+.rp-trace .chev.skip { color: var(--line); }
+.rp-trace .dat {
+  align-self: center; font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
+  color: #c9d1d9; background: #16222e; border: 1px dashed #2d4a66; border-radius: 8px;
+  padding: 6px 9px; max-width: 270px; white-space: pre-wrap; word-break: break-all;
+  opacity: 0; animation: pop 0.3s forwards;
+}
+@keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* 数据卡/payload 语法高亮（编辑器配色） */
+.replay i { font-style: normal; }
+.replay .hk { color: #74c0fc; }   /* key */
+.replay .hs { color: #a5d8b0; }   /* 字符串 */
+.replay .hd { color: #ffa94d; }   /* 数字 */
+.replay .hv { color: #dcbdfb; }   /* 标识符 */
+.replay .hw { color: #ff7b72; }   /* 关键字 */
+.replay .hp { color: #7a7f88; }   /* 标点 */
+.replay .hn { color: #6a7a8a; }   /* 中文注释 */
 .row.agent-status {
   display: flex; align-items: center; gap: 8px;
   color: var(--dim); font-size: 13px; padding: 2px 0;
