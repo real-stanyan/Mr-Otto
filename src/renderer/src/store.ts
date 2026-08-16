@@ -1,0 +1,193 @@
+// 渲染层状态（Zustand）— 桥上事件流的 UI 投影。
+// 只在 boot() 里订阅一次；所有跨进程调用都收敛在这，组件不直接摸 window.otter。
+
+import { create } from "zustand";
+import type { SessionEvent } from "../../session/events.js";
+import type {
+  ApprovalRequest,
+  BootInfo,
+  SessionSummary,
+  TurnStatus,
+} from "../../shared/shellBridge.js";
+
+/** 从 Record 里删一个 key 的不可变写法 */
+function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
+  const { [key]: _, ...rest } = rec;
+  return rest;
+}
+
+/** UI 三相：连接中 → 没会话（欢迎页）→ 聊天中 */
+type Phase = "connecting" | "welcome" | "chat";
+
+interface ChatState {
+  phase: Phase;
+  sessionId: string;
+  model: string;
+  workspace: string;
+  events: SessionEvent[];
+  /** 侧栏会话列表（常驻） */
+  sessions: SessionSummary[];
+  /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
+  statusBySession: Record<string, TurnStatus>;
+  /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
+  approvals: Record<string, ApprovalRequest>;
+  error: string | null;
+  /** 回放游标：null = 直播；N = 只投影日志前 N 条。
+      纯渲染层概念——主进程和 agent 对回放毫不知情。 */
+  replayCursor: number | null;
+  /** 设置页开关（覆盖在任意 phase 之上） */
+  showSettings: boolean;
+  /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
+  keyStatus: Record<string, boolean>;
+
+  boot(): Promise<void>;
+  setReplayCursor(cursor: number | null): void;
+  switchModel(model: string): Promise<void>;
+  openSettings(): Promise<void>;
+  closeSettings(): void;
+  saveApiKey(envName: string, key: string): Promise<void>;
+  startSession(): Promise<void>;
+  resume(sessionId: string): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
+  send(text: string): Promise<void>;
+  decide(decision: "approved" | "denied", reason?: string): Promise<void>;
+}
+
+let bootStarted = false; // StrictMode 会双跑 effect，用模块级闩防重复订阅
+
+/** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位 */
+const enterChat = (info: BootInfo) => ({
+  phase: "chat" as const,
+  sessionId: info.sessionId,
+  model: info.model,
+  workspace: info.workspace,
+  events: info.events,
+  replayCursor: null, // 换会话 = 换时间线，旧游标作废
+  showSettings: false, // 侧栏点会话 = 想看聊天，设置页让位
+  error: null,
+});
+
+export const useChat = create<ChatState>((set, get) => ({
+  phase: "connecting",
+  sessionId: "",
+  model: "",
+  workspace: "",
+  events: [],
+  sessions: [],
+  statusBySession: {},
+  approvals: {},
+  error: null,
+  replayCursor: null,
+  showSettings: false,
+  keyStatus: {},
+
+  setReplayCursor: (replayCursor) => set({ replayCursor }),
+
+  async switchModel(model) {
+    try {
+      await window.otter.switchModel(model);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async openSettings() {
+    set({ showSettings: true, keyStatus: await window.otter.keyStatus() });
+  },
+
+  closeSettings: () => set({ showSettings: false }),
+
+  async saveApiKey(envName, key) {
+    try {
+      await window.otter.setApiKey(envName, key);
+      set({ keyStatus: await window.otter.keyStatus() }); // 状态从主进程重新问，不本地猜
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async boot() {
+    if (bootStarted) return;
+    bootStarted = true;
+
+    window.otter.onEvent((e) =>
+      set((s) => {
+        // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
+        // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
+        if (e.sessionId !== s.sessionId) return {};
+        return {
+          events: [...s.events, e],
+          // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
+          ...(e.type === "model_changed" ? { model: e.model } : {}),
+        };
+      })
+    );
+    window.otter.onApprovalRequest((req) =>
+      set((s) => ({ approvals: { ...s.approvals, [req.sessionId]: req } }))
+    );
+    window.otter.onTurnStatus(({ sessionId, status }) =>
+      set((s) => ({ statusBySession: { ...s.statusBySession, [sessionId]: status } }))
+    );
+
+    // 会话列表是侧栏常驻数据，不分 phase 都要
+    const [info, sessions] = await Promise.all([
+      window.otter.boot(),
+      window.otter.listSessions(),
+    ]);
+    set(info ? { ...enterChat(info), sessions } : { phase: "welcome", sessions });
+  },
+
+  async startSession() {
+    try {
+      const info = await window.otter.startSession();
+      if (!info) return; // 用户取消了文件夹选择框
+      set(enterChat(info));
+      set({ sessions: await window.otter.listSessions() }); // 新会话进侧栏
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async resume(sessionId) {
+    try {
+      const info = await window.otter.resumeSession(sessionId);
+      set(enterChat(info));
+      set({ sessions: await window.otter.listSessions() });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async deleteSession(sessionId) {
+    try {
+      await window.otter.deleteSession(sessionId);
+      const sessions = await window.otter.listSessions();
+      // 删的是正看着的会话 → 回欢迎页，清掉它的投影
+      if (get().sessionId === sessionId) {
+        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+      } else {
+        set({ sessions });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async send(text) {
+    const sessionId = get().sessionId; // 发消息瞬间锁定目标会话——之后切走也不串
+    set({ error: null });
+    try {
+      await window.otter.sendMessage(sessionId, text);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async decide(decision, reason) {
+    const sessionId = get().sessionId;
+    const approval = get().approvals[sessionId]; // 只能批当前视图里的卡
+    if (!approval) return;
+    set((s) => ({ approvals: without(s.approvals, sessionId) })); // 先收卡；结果以事件流回
+    await window.otter.decideApproval(sessionId, approval.call.id, decision, reason);
+  },
+}));

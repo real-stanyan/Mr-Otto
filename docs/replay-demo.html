@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>otter replay 画布 demo</title>
+<style>
+  :root {
+    --bg: #121212; --panel: #1c1c1e; --line: #3a3a3c;
+    --idle: #555; --idle-text: #9a9a9a;
+    --hot: #2f9e44; --hot-bg: rgba(47,158,68,.14);
+    --deny: #e03131; --deny-bg: rgba(224,49,49,.14);
+    --text: #e9ecef; --dim: #8a8a8e; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", sans-serif; padding: 16px; }
+  h1 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+  .wrap { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }
+  .canvas { flex: 1 1 560px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px; min-width: 480px; }
+  svg { width: 100%; height: auto; display: block; }
+  .side { flex: 0 1 380px; min-width: 320px; display: flex; flex-direction: column; gap: 10px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  button { background: #2c2c2e; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #3a3a3c; }
+  button.primary { background: var(--hot); border-color: var(--hot); color: #fff; }
+  .scenario { margin-left: auto; display: flex; gap: 0; }
+  .scenario button { border-radius: 0; padding: 6px 10px; font-size: 12px; }
+  .scenario button:first-child { border-radius: 8px 0 0 8px; }
+  .scenario button:last-child { border-radius: 0 8px 8px 0; }
+  .scenario button.on { background: var(--hot); border-color: var(--hot); color: #fff; }
+  .scenario button.on.deny { background: var(--deny); border-color: var(--deny); }
+  .steps { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+  .step { padding: 7px 10px; border-radius: 8px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  .step:hover { background: #2c2c2e; }
+  .step.cur { background: var(--hot-bg); outline: 1px solid var(--hot); }
+  .step.cur.deny { background: var(--deny-bg); outline-color: var(--deny); }
+  .step .n { font-family: var(--mono); font-size: 11px; color: var(--dim); width: 40px; flex-shrink: 0; }
+  .step .t { font-size: 13px; }
+  .step .badge { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 99px; background: #2c2c2e; color: var(--dim); margin-left: auto; flex-shrink: 0; }
+  .payload { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; flex: 1; min-height: 180px; }
+  .payload h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 6px; }
+  .desc { font-size: 13px; margin-bottom: 10px; color: var(--text); }
+  pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; color: #a5d8b0; }
+  pre .k { color: #74c0fc; }
+  /* SVG 节点/边状态 */
+  .node rect, .node ellipse { fill: #232325; stroke: var(--idle); stroke-width: 1.5; transition: all .25s; }
+  .node text { fill: var(--idle-text); font-size: 12.5px; transition: all .25s; }
+  .node .sub { font-size: 10px; fill: #6a6a6e; }
+  .node .file { font-size: 8.5px; fill: #565b63; font-family: var(--mono); }
+  .node.hot .file { fill: #74c0fc; }
+  .node.hot rect, .node.hot ellipse { stroke: var(--hot); stroke-width: 2.5; fill: var(--hot-bg); filter: drop-shadow(0 0 6px rgba(47,158,68,.55)); }
+  .node.hot text { fill: var(--text); }
+  .node.deny rect, .node.deny ellipse { stroke: var(--deny); fill: var(--deny-bg); filter: drop-shadow(0 0 6px rgba(224,49,49,.55)); }
+  .edge path { stroke: #3f3f42; stroke-width: 1.5; fill: none; transition: stroke .25s; marker-end: url(#arr); }
+  .edge text { fill: #6a6a6e; font-size: 10.5px; }
+  .edge.hot path { stroke: var(--hot); stroke-width: 2.5; stroke-dasharray: 7 5; animation: flow .6s linear infinite; marker-end: url(#arrHot); }
+  .edge.hot text { fill: var(--hot); }
+  .edge.deny path { stroke: var(--deny); marker-end: url(#arrDeny); }
+  .edge.deny text { fill: var(--deny); }
+  @keyframes flow { to { stroke-dashoffset: -12; } }
+  /* 函数轨迹面板 */
+  .trace { margin-top: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .trace h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 10px; }
+  .chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+  .fn { background: #232325; border: 1.5px solid var(--hot); border-radius: 10px; padding: 8px 12px; min-width: 130px; opacity: 0; animation: pop .3s forwards; }
+  .fn .name { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .fn .file { font-family: var(--mono); font-size: 10px; color: var(--dim); margin-top: 2px; }
+  .fn .io { font-size: 10.5px; color: #74c0fc; margin-top: 4px; }
+  .fn.skip { border-color: #3a3a3c; border-style: dashed; }
+  .fn.skip .name { color: #5a5a5e; text-decoration: line-through; }
+  .fn.skip .io { color: var(--deny); }
+  .fn.deny { border-color: var(--deny); }
+  .chev { align-self: center; color: var(--hot); font-size: 15px; opacity: 0; animation: pop .3s forwards; }
+  .chev.skip { color: #3a3a3c; }
+  .dat { align-self: center; font-family: var(--mono); font-size: 10.5px; line-height: 1.5; color: #c9d1d9; background: #16222e; border: 1px dashed #2d4a66; border-radius: 8px; padding: 6px 9px; max-width: 270px; white-space: pre-wrap; word-break: break-all; opacity: 0; animation: pop .3s forwards; }
+  .dat .note { color: #6a7a8a; display: block; margin-top: 3px; font-size: 10px; }
+  /* 数据卡语法高亮（编辑器配色） */
+  .dat i { font-style: normal; }
+  .dat .hk { color: #74c0fc; }   /* key */
+  .dat .hs { color: #a5d8b0; }   /* 字符串 */
+  .dat .hd { color: #ffa94d; }   /* 数字 */
+  .dat .hv { color: #dcbdfb; }   /* 标识符/变量 */
+  .dat .hw { color: #ff7b72; }   /* 关键字 */
+  .dat .hp { color: #7a7f88; }   /* 标点 */
+  .dat .hn { color: #6a7a8a; }   /* （注释） */
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .trace .empty { color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>otter 架构画布 · replay demo</h1>
+<div class="sub">正式架构图（excalidraw 已退役）。同一份 append-only 事件日志的第二个投影：给人看的执行动画。数据 = 真 LoopEngine 跑出的事件（fake adapter，零 API）。node 下方小字 = 对应源码文件。</div>
+<div class="wrap">
+  <div class="canvas">
+    <svg viewBox="0 0 640 470">
+      <defs>
+        <marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#3f3f42"/></marker>
+        <marker id="arrHot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#2f9e44"/></marker>
+        <marker id="arrDeny" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#e03131"/></marker>
+      </defs>
+      <!-- 边 -->
+      <g class="edge" id="e-user-bridge"><path d="M88,60 H103"/></g>
+      <g class="edge" id="e-bridge-loop"><path d="M217,60 H235"/></g>
+      <g class="edge" id="e-loop-store"><path d="M255,105 L150,190"/><text x="130" y="150">append 先落盘</text></g>
+      <g class="edge" id="e-store-derive"><path d="M185,220 H255"/><text x="192" y="212">load</text></g>
+      <g class="edge" id="e-derive-adapter"><path d="M395,205 L470,112"/><text x="428" y="170">messages</text></g>
+      <g class="edge" id="e-adapter-loop"><path d="M470,75 H385"/><text x="398" y="67">reply</text></g>
+      <g class="edge" id="e-loop-gate"><path d="M255,107 L240,330"/><text x="130" y="300">runPipeline(call)</text></g>
+      <g class="edge" id="e-gate-approver"><path d="M395,360 H475"/><text x="400" y="352">decide()</text></g>
+      <g class="edge" id="e-gate-tool"><path d="M235,365 H165"/><text x="180" y="357">放行</text></g>
+      <g class="edge" id="e-tool-world"><path d="M100,397 V418"/><text x="108" y="412">world.*</text></g>
+      <!-- 节点（.file 行 = 对应源码） -->
+      <g class="node" id="n-user"><ellipse cx="50" cy="60" rx="38" ry="24"/><text x="50" y="64" text-anchor="middle">用户</text></g>
+      <g class="node" id="n-bridge"><rect x="103" y="28" width="114" height="66" rx="10"/><text x="160" y="50" text-anchor="middle">ShellBridge</text><text class="sub" x="160" y="65" text-anchor="middle">React UI ⇄ IPC ⇄ main</text><text class="file" x="160" y="82" text-anchor="middle">shared/shellBridge.ts</text><text class="file" x="160" y="92" text-anchor="middle">renderer/src/App.tsx</text></g>
+      <g class="node" id="n-loop"><rect x="235" y="35" width="150" height="72" rx="10"/><text x="310" y="60" text-anchor="middle">LoopEngine</text><text class="sub" x="310" y="76" text-anchor="middle">零状态 · 全靠日志</text><text class="file" x="310" y="94" text-anchor="middle">loop/engine.ts · middleware.ts</text></g>
+      <g class="node" id="n-adapter"><rect x="470" y="45" width="150" height="62" rx="10"/><text x="545" y="67" text-anchor="middle">ModelAdapter</text><text class="sub" x="545" y="83" text-anchor="middle">DeepSeek API</text><text class="file" x="545" y="99" text-anchor="middle">model/openaiCompatible.ts</text></g>
+      <g class="node" id="n-store"><rect x="35" y="190" width="150" height="60" rx="10"/><text x="110" y="212" text-anchor="middle">EventStore</text><text class="sub" x="110" y="228" text-anchor="middle">SQLite · append-only</text><text class="file" x="110" y="243" text-anchor="middle">session/store.ts</text></g>
+      <g class="node" id="n-derive"><rect x="255" y="190" width="140" height="60" rx="10"/><text x="325" y="212" text-anchor="middle">deriveMessages()</text><text class="sub" x="325" y="228" text-anchor="middle">日志 → 模型上下文</text><text class="file" x="325" y="243" text-anchor="middle">session/deriveMessages.ts</text></g>
+      <g class="node" id="n-gate"><rect x="235" y="330" width="160" height="66" rx="10"/><text x="315" y="352" text-anchor="middle">审批门</text><text class="sub" x="315" y="368" text-anchor="middle">fail-closed · 可短路</text><text class="file" x="315" y="385" text-anchor="middle">loop/approvalGate.ts</text></g>
+      <g class="node" id="n-approver"><rect x="475" y="333" width="145" height="63" rx="10"/><text x="547" y="353" text-anchor="middle">Approver</text><text class="sub" x="547" y="369" text-anchor="middle">UIApprover · GUI 审批卡</text><text class="file" x="547" y="386" text-anchor="middle">main/uiApprover.ts</text></g>
+      <g class="node" id="n-tool"><rect x="35" y="333" width="130" height="64" rx="10"/><text x="100" y="353" text-anchor="middle">工具层</text><text class="sub" x="100" y="369" text-anchor="middle">read_file · write_file · bash</text><text class="file" x="100" y="386" text-anchor="middle">tools/*.ts</text></g>
+      <g class="node" id="n-world"><rect x="35" y="418" width="230" height="48" rx="10"/><text x="150" y="436" text-anchor="middle">ExecutionWorld ← LocalWorld</text><text class="sub" x="150" y="450" text-anchor="middle">fence 围栏 · exec cwd = workspace</text><text class="file" x="150" y="462" text-anchor="middle">world/executionWorld.ts · localWorld.ts</text></g>
+    </svg>
+  </div>
+  <div class="side">
+    <div class="controls">
+      <button id="prev">◀</button>
+      <button id="play" class="primary">▶ 播放</button>
+      <button id="next">▶</button>
+      <div class="scenario">
+        <button id="sc-approved" class="on">批准剧本</button>
+        <button id="sc-denied">拒绝剧本</button>
+      </div>
+    </div>
+    <div class="steps" id="steps"></div>
+    <div class="payload">
+      <h3 id="ptitle">事件 payload</h3>
+      <div class="desc" id="pdesc">点一个 step，或按播放。</div>
+      <pre id="pjson"></pre>
+    </div>
+  </div>
+</div>
+<div class="trace">
+  <h3 id="ttitle">函数轨迹（本 step 实际经过的调用链）</h3>
+  <div class="chain" id="chain"><span class="empty">选一个 step 看它穿过哪些函数。</span></div>
+</div>
+<script>
+const DATA = {"approved":[{"seq":0,"sessionId":"demo-approved","ts":1786764856915,"type":"user_message","content":"把「你好，水獭！」写进 /tmp/hello.txt"},{"seq":1,"sessionId":"demo-approved","ts":1786764856915,"type":"assistant_message","content":"","model":"deepseek-v4-flash","toolCalls":[{"id":"call_1","name":"write_file","args":{"path":"/tmp/hello.txt","content":"你好，水獭！"}}]},{"seq":2,"sessionId":"demo-approved","ts":1786764856915,"type":"approval_decision","toolCallId":"call_1","decision":"approved"},{"seq":3,"sessionId":"demo-approved","ts":1786764856915,"type":"tool_result","toolCallId":"call_1","status":"ok","output":"已写入 /tmp/hello.txt（6 字符）"},{"seq":4,"sessionId":"demo-approved","ts":1786764856915,"type":"assistant_message","content":"写好了：/tmp/hello.txt，共 6 个字符。","model":"deepseek-v4-flash"}],"denied":[{"seq":0,"sessionId":"demo-denied","ts":1786764856915,"type":"user_message","content":"把「你好，水獭！」写进 /tmp/hello.txt"},{"seq":1,"sessionId":"demo-denied","ts":1786764856916,"type":"assistant_message","content":"","model":"deepseek-v4-flash","toolCalls":[{"id":"call_1","name":"write_file","args":{"path":"/tmp/hello.txt","content":"你好，水獭！"}}]},{"seq":2,"sessionId":"demo-denied","ts":1786764856916,"type":"approval_decision","toolCallId":"call_1","decision":"denied","reason":"先别动 /tmp"},{"seq":3,"sessionId":"demo-denied","ts":1786764856916,"type":"tool_result","toolCallId":"call_1","status":"denied","output":"用户拒绝执行：先别动 /tmp"},{"seq":4,"sessionId":"demo-denied","ts":1786764856916,"type":"assistant_message","content":"明白，已取消写入。需要换个路径吗？","model":"deepseek-v4-flash"}]};
+
+// 函数链条目：n=函数名 f=文件 io=职责一行 out=传给下一个函数的真实数据 skip=本剧本没执行
+const fn = (n, f, io, out, skip) => ({ n, f, io, out, skip: !!skip });
+const USER_INPUT = "把「你好，水獭！」写进 /tmp/hello.txt";
+const CALL = '{ id: "call_1", name: "write_file",\n  args: { path: "/tmp/hello.txt",\n          content: "你好，水獭！" } }';
+// 结尾恒定的落盘二连：append → EventStore.append，中间流的是事件本体
+const APPEND = (e, payloadPreview) => [
+  fn("append(event)", "loop/engine.ts", "唯一写口",
+     `event = { type: "${e.type}",\n  sessionId: "${e.sessionId}",\n  ts: ${e.ts},\n  ${payloadPreview} }\n（注意：还没有 seq）`),
+  fn("EventStore.append()", "session/store.ts", "事务：SELECT MAX(seq)+1 → INSERT",
+     `落盘完成，seq = ${e.seq} 已分配\n触发器保证 UPDATE/DELETE 直接 RAISE(ABORT)`),
+];
+
+// 事件 → 画布高亮映射（哪个组件在干活、数据从哪流到哪）
+function toStep(e, i, all) {
+  const S = { ev: e, deny: false };
+  const finalMsg = e.type === "assistant_message" && !e.toolCalls;
+  switch (e.type) {
+    case "user_message":
+      S.title = "user_message"; S.badge = "输入";
+      S.desc = "用户在 React UI 输入，经 ShellBridge（IPC）进 main 的 engine。第一件事不是调模型——是 append 落盘（先落盘再喂模型）。";
+      S.nodes = ["n-user","n-bridge","n-loop","n-store"];
+      S.edges = ["e-user-bridge","e-bridge-loop","e-loop-store"];
+      S.fns = [
+        fn("runTurn(userInput)", "loop/engine.ts", "turn 入口",
+           `userInput = "${USER_INPUT}"`),
+        ...APPEND(e, `content: "${e.content}"`),
+        fn("onEvent(e)", "回调（CLI 打印 / UI 刷新）", "收到完整事件（带 seq）", null),
+      ];
+      break;
+    case "assistant_message":
+      if (finalMsg) {
+        S.title = "assistant_message"; S.badge = "收口";
+        S.desc = "上一步结果已在日志里 → 重新投影（load → deriveMessages → chat()），模型看到发生了什么，给出最终回复，落盘。";
+      } else {
+        S.title = "assistant_message"; S.badge = "要调工具";
+        S.desc = "日志投影成 messages 喂给模型，模型回复带 toolCalls：要写文件。回复先落盘。";
+      }
+      S.nodes = ["n-store","n-derive","n-adapter","n-loop"];
+      S.edges = ["e-store-derive","e-derive-adapter","e-adapter-loop","e-loop-store"];
+      {
+        const denied = all.some(x => x.type === "tool_result" && x.status === "denied");
+        const toolContent = denied ? "用户拒绝执行：先别动 /tmp" : "已写入 /tmp/hello.txt（6 字符）";
+        const derivedOut = finalMsg
+          ? `messages = [\n { role: "user", content: "${USER_INPUT}" },\n { role: "assistant", tool_calls: [write_file] },\n { role: "tool", tool_call_id: "call_1",\n   content: "${toolContent}" }\n]\n（4 条事件 → 3 条消息：approval_decision 不投影）`
+          : `messages = [\n { role: "user",\n   content: "${USER_INPUT}" }\n]`;
+        const fetchOut = e.toolCalls
+          ? `响应 tool_calls = [{ id: "call_1",\n  function: { name: "write_file",\n    arguments: "{\\"path\\":\\"/tmp/hello.txt\\",…}" } }]\nJSON.parse(arguments) → args 恢复成对象`
+          : `响应 content = "${e.content}"\n无 tool_calls → 本 turn 收敛，runTurn return`;
+        S.fns = [
+          fn("store.load(sessionId)", "session/store.ts", "ORDER BY seq 全量读",
+             `events = ${e.seq} 条（seq 0…${e.seq - 1}）`),
+          fn("deriveMessages(events)", "session/deriveMessages.ts", "纯函数投影", derivedOut),
+          fn("adapter.chat(messages, tools)", "model/openaiCompatible.ts", "方言翻译：对象 → JSON 字符串",
+             `POST /v1/chat/completions\nbody = { model: "deepseek-v4-flash",\n  messages, tools: [write_file 定义…] }`),
+          fn("fetch → 解析响应", "model/openaiCompatible.ts", "方言翻译：JSON 字符串 → 对象", fetchOut),
+          ...APPEND(e, e.toolCalls
+            ? `content: "", model: "${e.model}",\n  toolCalls: [${CALL.replace(/\n/g, "\n   ")}]`
+            : `content: "${e.content}",\n  model: "${e.model}"`),
+        ];
+      }
+      break;
+    case "approval_decision":
+      S.deny = e.decision === "denied";
+      S.title = "approval_decision"; S.badge = S.deny ? "拒绝" : "批准";
+      S.desc = S.deny
+        ? "toolCall 进管线，审批门拦下 write_file，问 Approver（UIApprover 挂起 Promise，审批卡经 ShellBridge 弹到 UI）——拒绝。决定落盘（审计线，模型不消费这条）。"
+        : "toolCall 进管线，审批门拦下 write_file，问 Approver（UIApprover 挂起 Promise，审批卡经 ShellBridge 弹到 UI）——批准。决定落盘（审计线，模型不消费这条）。";
+      S.nodes = ["n-loop","n-gate","n-approver","n-bridge","n-store"];
+      S.edges = ["e-loop-gate","e-gate-approver","e-loop-store"];
+      S.fns = [
+        fn("runPipeline(pipeline, execute, ctx)", "loop/middleware.ts", "管线入口",
+           `ctx = { call: ${CALL.replace(/\n/g, "\n  ")},\n  tool: writeFileTool, world, sessionId }`),
+        fn("dispatch(0) → 审批门", "loop/middleware.ts", "洋葱第一层",
+           `ctx.tool.requiresApproval === true\n→ 拦下，不放行`),
+        fn("approver.decide(call, tool)", "main/uiApprover.ts（实现 «interface» Approver）", "挂起 Promise，等 UI 经 IPC 回 resolve",
+           `outcome = { decision: "${e.decision}"${e.reason ? `,\n  reason: "${e.reason}"` : ""} }`),
+        fn("onDecision(call, outcome)", "loop/engine.ts", "决定即落盘钩子", null),
+        ...APPEND(e, `toolCallId: "${e.toolCallId}",\n  decision: "${e.decision}"${e.reason ? `,\n  reason: "${e.reason}"` : ""}`),
+      ];
+      break;
+    case "tool_result":
+      S.deny = e.status === "denied";
+      if (S.deny) {
+        S.title = "tool_result"; S.badge = "denied";
+        S.desc = "短路：审批门直接返回 denied，tool.run 根本没执行（write_file、ExecutionWorld 都没亮）。拒绝作为 tool_result 落盘——模型下一轮从这条知道被拒。";
+        S.nodes = ["n-gate","n-store"];
+        S.edges = ["e-loop-store"];
+        S.fns = [
+          fn("审批门 return { status: 'denied' }", "loop/approvalGate.ts", "短路：不调 next()",
+             `outcome = { status: "denied",\n  output: "${e.output}" }\n直接跳到落盘，下面四个函数全跳过 ↓`),
+          fn("next() / dispatch(1)", "loop/middleware.ts", "没执行", null, true),
+          fn("execute(ctx)", "loop/engine.ts", "没执行", null, true),
+          fn("tool.run(args, world)", "tools/writeFile.ts", "没执行", null, true),
+          fn("world.fs.write(path, content)", "world/localWorld.ts", "没执行 —— 世界没被碰", null, true),
+          ...APPEND(e, `toolCallId: "${e.toolCallId}",\n  status: "denied",\n  output: "${e.output}"`),
+        ];
+      } else {
+        S.title = "tool_result"; S.badge = "ok";
+        S.desc = "放行：穿过审批门到执行器，tool.run 走 ExecutionWorld 真写盘。结果落盘。";
+        S.nodes = ["n-gate","n-tool","n-world","n-store"];
+        S.edges = ["e-gate-tool","e-tool-world","e-loop-store"];
+        S.fns = [
+          fn("审批门 → next()", "loop/approvalGate.ts", "approved → 放行",
+             `ctx 原样进洋葱下一层`),
+          fn("dispatch(1) → 洋葱芯", "loop/middleware.ts", "中间件走完，到执行器",
+             `execute(ctx)，try/catch 兜错`),
+          fn("tool.run(args, world)", "tools/writeFile.ts", "参数校验 + 干活",
+             `args = { path: "/tmp/hello.txt",\n  content: "你好，水獭！" }\n校验通过 → 调 world.fs.write(path, content)`),
+          fn("world.fs.write(path, content)", "world/localWorld.ts", "唯一碰 node:fs 的地方",
+             `磁盘已变更（demo 里是 fakeWorld）\nrun 返回 outcome = { status: "ok",\n  output: "${e.output}" }`),
+          ...APPEND(e, `toolCallId: "${e.toolCallId}",\n  status: "ok",\n  output: "${e.output}"`),
+        ];
+      }
+      break;
+  }
+  return S;
+}
+
+let scenario = "approved";
+let steps = DATA[scenario].map(toStep);
+let cur = -1, timer = null;
+
+const $ = (id) => document.getElementById(id);
+
+function renderList() {
+  $("steps").innerHTML = steps.map((s, i) =>
+    `<div class="step ${i===cur?("cur"+(s.deny?" deny":"")):""}" data-i="${i}">
+       <span class="n">seq ${s.ev.seq}</span><span class="t">${s.title}</span>
+       <span class="badge">${s.badge}</span></div>`).join("");
+  document.querySelectorAll(".step").forEach(el =>
+    el.onclick = () => { stop(); show(+el.dataset.i); });
+}
+
+function show(i) {
+  cur = i;
+  document.querySelectorAll(".node").forEach(n => n.classList.remove("hot","deny"));
+  document.querySelectorAll(".edge").forEach(n => n.classList.remove("hot","deny"));
+  const s = steps[i];
+  if (s) {
+    const cls = s.deny ? "deny" : "hot";
+    s.nodes.forEach(id => $(id).classList.add(s.deny ? "deny" : "hot", "hot"));
+    s.edges.forEach(id => $(id).classList.add(cls));
+    $("ptitle").textContent = `seq ${s.ev.seq} · ${s.title}`;
+    $("pdesc").textContent = s.desc;
+    $("pjson").innerHTML = JSON.stringify(s.ev, null, 2)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/"([^"]+)":/g, '<span class="k">"$1"</span>:');
+    renderChain(s);
+  }
+  renderList();
+}
+
+const esc = (x) => String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+// 数据卡迷你高亮器：字符串 / key / 数字 / 标识符 / 关键字 / 标点 / （中文注释）
+// 中文说明文字不匹配任何 token，保持素色
+const TOK = /("(?:[^"\\]|\\.)*")|(（[^）]*）?)|(-?\d+(?:\.\d+)?)|([A-Za-z_$][\w$]*)|([{}\[\]():,;=…]|→|←|✕|\/)/g;
+const KW = /^(true|false|null|return|await|try|catch|POST|SELECT|INSERT|UPDATE|DELETE|RAISE|ABORT|MAX)$/;
+function hl(src) {
+  src = String(src);
+  let html = "", last = 0, m;
+  TOK.lastIndex = 0;
+  while ((m = TOK.exec(src))) {
+    html += esc(src.slice(last, m.index));
+    const [, str, note, num, ident, punct] = m;
+    const keyNext = /^\s*:/.test(src.slice(TOK.lastIndex)); // 后面跟冒号 = key
+    if (str) html += `<i class="${keyNext ? "hk" : "hs"}">${esc(str)}</i>`;
+    else if (note) html += `<i class="hn">${esc(note)}</i>`;
+    else if (num) html += `<i class="hd">${esc(num)}</i>`;
+    else if (ident) html += `<i class="${keyNext ? "hk" : KW.test(ident) ? "hw" : "hv"}">${esc(ident)}</i>`;
+    else if (punct) html += `<i class="hp">${esc(punct)}</i>`;
+    last = TOK.lastIndex;
+  }
+  return html + esc(src.slice(last));
+}
+function renderChain(s) {
+  $("ttitle").textContent = `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）—— 芯片 = 函数，蓝卡 = 函数之间流动的数据`;
+  let delay = 0;
+  const d = () => { delay += 80; return `style="animation-delay:${delay}ms"`; };
+  $("chain").innerHTML = s.fns.map((f, i) => {
+    const cls = f.skip ? "fn skip" : (s.deny ? "fn deny" : "fn");
+    let html = `<div class="${cls}" ${d()}>
+        <div class="name">${f.skip ? "✕ " : ""}${esc(f.n)}</div>
+        <div class="file">${esc(f.f)}</div>
+        <div class="io">${esc(f.io)}</div></div>`;
+    if (i < s.fns.length - 1) {
+      const nextSkip = s.fns[i + 1].skip;
+      if (f.out) {
+        html += `<span class="chev ${nextSkip ? "skip" : ""}" ${d()}>➤</span>`
+              + `<div class="dat" ${d()}>${hl(f.out)}</div>`
+              + `<span class="chev ${nextSkip ? "skip" : ""}" ${d()}>➤</span>`;
+      } else {
+        html += `<span class="chev ${nextSkip ? "skip" : ""}" ${d()}>➤</span>`;
+      }
+    }
+    return html;
+  }).join("");
+}
+
+function stop() { clearInterval(timer); timer = null; $("play").textContent = "▶ 播放"; }
+$("play").onclick = () => {
+  if (timer) return stop();
+  if (cur >= steps.length - 1) cur = -1;
+  $("play").textContent = "⏸ 暂停";
+  const tick = () => { if (cur >= steps.length - 1) return stop(); show(cur + 1); };
+  tick(); timer = setInterval(tick, 1600);
+};
+$("prev").onclick = () => { stop(); show(Math.max(0, cur - 1)); };
+$("next").onclick = () => { stop(); show(Math.min(steps.length - 1, cur + 1)); };
+
+function setScenario(name) {
+  scenario = name; steps = DATA[name].map(toStep); stop(); cur = -1;
+  $("sc-approved").className = name === "approved" ? "on" : "";
+  $("sc-denied").className = name === "denied" ? "on deny" : "";
+  show(-1); $("pdesc").textContent = "点一个 step，或按播放。"; $("ptitle").textContent = "事件 payload"; $("pjson").textContent = "";
+  $("ttitle").textContent = "函数轨迹（本 step 实际经过的调用链）";
+  $("chain").innerHTML = '<span class="empty">选一个 step 看它穿过哪些函数。</span>';
+  renderList();
+}
+$("sc-approved").onclick = () => setScenario("approved");
+$("sc-denied").onclick = () => setScenario("denied");
+
+renderList();
+</script>
+</body>
+</html>
