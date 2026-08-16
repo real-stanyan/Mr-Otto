@@ -53,6 +53,32 @@ describe("openaiCompatible 流式（SSE）", () => {
     expect(reply.usage).toEqual({ promptTokens: 10, completionTokens: 2 });
   });
 
+  it("reasoning_content 单独成频道：先想后说，两条流分开攒", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{"reasoning_content":"让我想"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":"想…"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"答案是 42"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+
+    const deltas: { text: string; kind: string }[] = [];
+    const reply = await adapter.chat([], undefined, (text, kind) => deltas.push({ text, kind }));
+
+    expect(deltas).toEqual([
+      { text: "让我想", kind: "reasoning" },
+      { text: "想…", kind: "reasoning" },
+      { text: "答案是 42", kind: "content" },
+    ]);
+    expect(reply.reasoning).toBe("让我想想…");
+    expect(reply.content).toBe("答案是 42");
+  });
+
+  it("无 reasoning（关 thinking / 型号不支持）→ reply 不带该字段，别污染事件", async () => {
+    mockFetchSSE(['data: {"choices":[{"delta":{"content":"嗯"}}]}\n\n', "data: [DONE]\n\n"]);
+    const reply = await adapter.chat([], undefined, () => {});
+    expect(reply).not.toHaveProperty("reasoning");
+  });
+
   it("tool_calls 碎片按 index 归位，arguments 拼完整才 parse", async () => {
     mockFetchSSE([
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":""}}]}}]}\n\n',

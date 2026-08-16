@@ -39,6 +39,11 @@ export interface AssistantMessageEvent extends SessionEventBase {
   model: string;                 // 实际生成这条的模型（事实，非配置）
   /** 本次调用的 token 消耗。可选 = 旧日志/不报 usage 的 API 照样重放 */
   usage?: TokenUsage;
+  /** 思考过程（reasoning_content，thinking 开启时才有）。模型产出的新信息，
+      日志推不出 → 必须落盘；但 API 明令禁止塞回上下文（塞了 400）→
+      投影必须丢弃它。logged ≠ model-visible：给人回看的事实，不是给模型的。
+      可选 = 旧日志/关 thinking 照样重放 */
+  reasoning?: string;
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */

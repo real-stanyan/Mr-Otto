@@ -120,6 +120,17 @@ describe("LoopEngine", () => {
     store.close();
   });
 
+  it("reasoning 随 assistant_message 落盘：思考是模型产出的新信息，丢了回放永远缺", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "答", reasoning: "先想想：用户在问……" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("问");
+
+    const assistant = store.load("s1").find((e) => e.type === "assistant_message");
+    expect(assistant).toMatchObject({ reasoning: "先想想：用户在问……" });
+    store.close();
+  });
+
   it("usage 随 assistant_message 落盘：token 账单是日志的一部分", async () => {
     const store = new EventStore(":memory:");
     const { adapter } = fakeAdapter([
@@ -218,8 +229,8 @@ describe("LoopEngine 流式转发", () => {
     const adapter: ModelAdapter = {
       model: "fake-model",
       async chat(_messages, _tools, onDelta) {
-        onDelta?.("片1");
-        onDelta?.("片2");
+        onDelta?.("片1", "content");
+        onDelta?.("片2", "content");
         return { content: "片1片2" }; // 直播归直播，resolve 的永远是完整消息
       },
     };
@@ -264,7 +275,7 @@ describe("turn 中断（ADR-0006）", () => {
       model: "fake-model",
       chat: (_m, _t, onDelta, signal) =>
         new Promise((_res, rej) => {
-          onDelta?.("流到一半的");
+          onDelta?.("流到一半的", "content");
           // 真 fetch 的行为：signal 翻转 → reject AbortError
           signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
         }),

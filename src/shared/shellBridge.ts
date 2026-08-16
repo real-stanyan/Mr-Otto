@@ -37,10 +37,12 @@ export interface TurnStatusUpdate {
 }
 
 /** 流式文本碎片（临时直播，不落日志）：渲染层攒着显示，
-    完整 assistant_message 事件流回来后这些碎片就作废——事件才是事实 */
+    完整 assistant_message 事件流回来后这些碎片就作废——事件才是事实。
+    kind 分频道：思考碎片（reasoning）先到，正文碎片（content）后到 */
 export interface AssistantDelta {
   sessionId: string;
   text: string;
+  kind: "content" | "reasoning";
 }
 
 /** 主进程请渲染层出示审批卡时推的包 */

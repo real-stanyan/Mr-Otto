@@ -32,9 +32,9 @@ interface ChatState {
   statusBySession: Record<string, TurnStatus>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
-  /** 流式直播缓冲（按会话攒碎片）。临时投影：完整 assistant_message
-      事件一到就清——事件是事实，缓冲只是它到来前的预览 */
-  streamingBySession: Record<string, string>;
+  /** 流式直播缓冲（按会话攒碎片，思考/正文分频道）。临时投影：完整
+      assistant_message 事件一到就清——事件是事实，缓冲只是它到来前的预览 */
+  streamingBySession: Record<string, { content: string; reasoning: string }>;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -167,13 +167,19 @@ export const useChat = create<ChatState>((set, get) => ({
         };
       })
     );
-    window.otter.onAssistantDelta(({ sessionId, text }) =>
-      set((s) => ({
-        streamingBySession: {
-          ...s.streamingBySession,
-          [sessionId]: (s.streamingBySession[sessionId] ?? "") + text,
-        },
-      }))
+    window.otter.onAssistantDelta(({ sessionId, text, kind }) =>
+      set((s) => {
+        const buf = s.streamingBySession[sessionId] ?? { content: "", reasoning: "" };
+        return {
+          streamingBySession: {
+            ...s.streamingBySession,
+            [sessionId]:
+              kind === "reasoning"
+                ? { ...buf, reasoning: buf.reasoning + text }
+                : { ...buf, content: buf.content + text },
+          },
+        };
+      })
     );
     window.otter.onApprovalRequest((req) =>
       set((s) => ({ approvals: { ...s.approvals, [req.sessionId]: req } }))

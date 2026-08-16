@@ -4,7 +4,7 @@
 import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { SessionEvent } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import type { ModelAdapter } from "../model/adapter.js";
+import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, type ExecutionWorld } from "../world/executionWorld.js";
 import { runPipeline } from "./middleware.js";
@@ -28,9 +28,10 @@ export interface LoopEngineOptions {
   sessionId: string;
   /** 每条事件落盘后回调 —— CLI 打印、将来 UI 实时刷新都挂这 */
   onEvent?: (event: SessionEvent) => void;
-  /** 流式文本碎片回调（临时 UI 直播，不是事实）。半成品永不落盘：
-      日志只收凝固后的完整 assistant_message——pi 的"消息完成后不可修改"同款边界 */
-  onAssistantDelta?: (text: string) => void;
+  /** 流式文本碎片回调（临时 UI 直播，不是事实）。kind 区分思考/正文两条频道。
+      半成品永不落盘：日志只收凝固后的完整 assistant_message——
+      pi 的"消息完成后不可修改"同款边界 */
+  onAssistantDelta?: (text: string, kind: DeltaKind) => void;
   /** requiresApproval 工具的审批人；不给 = 危险操作一律默认拒绝 */
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
@@ -185,6 +186,9 @@ export class LoopEngine {
         model: this.adapter.model,
         ...(reply.toolCalls ? { toolCalls: reply.toolCalls } : {}),
         ...(reply.usage ? { usage: reply.usage } : {}), // token 账单随事件落盘，UI 从日志求和
+        // 思考过程随消息落盘（模型产出的新信息，丢了回放就永远缺这段）；
+        // 投影层会丢弃它——API 禁止思考回流上下文
+        ...(reply.reasoning ? { reasoning: reply.reasoning } : {}),
       });
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了

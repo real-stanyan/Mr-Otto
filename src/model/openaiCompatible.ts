@@ -2,7 +2,7 @@
 // DeepSeek / GLM / 本地 vLLM 全走这一个实现（它们都讲 OpenAI 方言），
 // 将来 Claude 原生 API（方言不同）才需要第二个实现。
 
-import type { ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
+import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
 
 export interface OpenAICompatibleOptions {
@@ -22,6 +22,8 @@ interface ChatCompletionResponse {
   choices: {
     message: {
       content: string | null;
+      /** 思考过程（DeepSeek/GLM 同名字段），thinking 关 = 缺席 */
+      reasoning_content?: string | null;
       tool_calls?: {
         id: string;
         function: { name: string; arguments: string };
@@ -36,6 +38,7 @@ interface ChatCompletionChunk {
   choices?: {
     delta?: {
       content?: string | null;
+      reasoning_content?: string | null;
       tool_calls?: {
         index: number;
         id?: string;
@@ -57,12 +60,18 @@ interface Usage {
     坑 2：tool_calls 的 arguments 是 JSON 字符串碎片，按 index 归位、拼完整才 parse。 */
 async function readSSE(
   body: ReadableStream<Uint8Array>,
-  onDelta: (text: string) => void
-): Promise<{ content: string; toolCalls: { id: string; name: string; args: string }[]; usage?: Usage }> {
+  onDelta: (text: string, kind: DeltaKind) => void
+): Promise<{
+  content: string;
+  reasoning: string;
+  toolCalls: { id: string; name: string; args: string }[];
+  usage?: Usage;
+}> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   let content = "";
+  let reasoning = "";
   let usage: Usage | undefined;
   // index 稀疏归位：理论上模型可以乱序发多个 tool_call 的碎片
   const calls: { id: string; name: string; args: string }[] = [];
@@ -75,9 +84,14 @@ async function readSSE(
     if (chunk.usage) usage = chunk.usage; // 终块专属（include_usage）
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) return;
+    // 思考碎片先于正文到达（模型先想后说），两条频道分开攒、分开播
+    if (delta.reasoning_content) {
+      reasoning += delta.reasoning_content;
+      onDelta(delta.reasoning_content, "reasoning");
+    }
     if (delta.content) {
       content += delta.content;
-      onDelta(delta.content);
+      onDelta(delta.content, "content");
     }
     for (const tc of delta.tool_calls ?? []) {
       const slot = (calls[tc.index] ??= { id: "", name: "", args: "" });
@@ -97,7 +111,7 @@ async function readSSE(
   }
   if (buf) feedLine(buf); // 流关了缓冲还有货 = 服务器没带尾换行
 
-  return { content, toolCalls: calls.filter(Boolean), ...(usage ? { usage } : {}) };
+  return { content, reasoning, toolCalls: calls.filter(Boolean), ...(usage ? { usage } : {}) };
 }
 
 export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): ModelAdapter {
@@ -107,7 +121,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
     async chat(
       messages: ChatMessage[],
       tools?: ToolDefinition[],
-      onDelta?: (text: string) => void,
+      onDelta?: (text: string, kind: DeltaKind) => void,
       signal?: AbortSignal
     ): Promise<ModelReply> {
       // fetch 原生认 signal：请求阶段和 SSE body 读流共用同一根线——
@@ -150,6 +164,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         const acc = await readSSE(res.body, onDelta);
         return {
           content: acc.content,
+          ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
           ...(acc.usage
             ? { usage: { promptTokens: acc.usage.prompt_tokens, completionTokens: acc.usage.completion_tokens } }
             : {}),
@@ -172,6 +187,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       return {
         content: msg.content ?? "",
+        ...(msg.reasoning_content ? { reasoning: msg.reasoning_content } : {}),
         ...(data.usage
           ? { usage: { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } }
           : {}),

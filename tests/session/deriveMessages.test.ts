@@ -215,6 +215,17 @@ describe("deriveMessages context_compacted", () => {
       { role: "assistant", content: "答" },
     ]);
   });
+
+  it("reasoning 落盘但不进模型视野：API 禁止思考回流上下文（塞了 400）", () => {
+    const withReasoning: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "hi" },
+      { ...env(), type: "assistant_message", content: "答", model: "m", reasoning: "先想想……" },
+    ];
+    expect(deriveMessages(withReasoning)).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "答" },
+    ]);
+  });
 });
 
 describe("lifecycle 事件对投影隐形（ADR-0004）", () => {

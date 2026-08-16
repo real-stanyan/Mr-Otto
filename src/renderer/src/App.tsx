@@ -314,6 +314,14 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
       // 用户消息保持原文——用户打的不是 markdown，别替他排版
       return (
         <>
+          {event.reasoning && (
+            // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
+            // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
+            <details className="row thinking">
+              <summary>思考过程</summary>
+              <div className="thinking-body">{event.reasoning}</div>
+            </details>
+          )}
           {event.content && (
             <div className="row assistant md">
               <Markdown remarkPlugins={[remarkGfm]}>{event.content}</Markdown>
@@ -574,8 +582,10 @@ export function App() {
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const showSettings = useChat((s) => s.showSettings);
-  // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）
-  const streamingText = useChat((s) => s.streamingBySession[s.sessionId] ?? "");
+  // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
+  // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
+  const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
+  const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -609,7 +619,7 @@ export function App() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
-  }, [events.length, status, approval, streamingText.length]);
+  }, [events.length, status, approval, streamingText.length, streamingThinking.length]);
 
   const submit = () => {
     const text = input.trim();
@@ -652,6 +662,14 @@ export function App() {
               <EventRow key={e.seq} event={e} all={events} />
             ))}
             {error && <div className="row chip result-error">[turn 失败] {error}</div>}
+            {streamingThinking && (
+              // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
+              // open 受控写死：流式中就是要摊开，用户要折等它完事
+              <details className="row thinking streaming" open>
+                <summary>思考中</summary>
+                <div className="thinking-body">{streamingThinking}</div>
+              </details>
+            )}
             {streamingText && (
               <div className="row assistant md streaming">
                 <Markdown remarkPlugins={[remarkGfm]}>{streamingText}</Markdown>

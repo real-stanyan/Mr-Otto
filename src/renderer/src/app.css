@@ -338,6 +338,25 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
   max-width: 100%;
   padding: 2px 0;
 }
+/* 思考过程：档案气质——降调、小字、细边。折叠头是唯一交互点 */
+.row.thinking {
+  align-self: stretch; max-width: 100%;
+  border-left: 2px solid #3a3a40;
+  padding: 2px 0 2px 10px;
+}
+.row.thinking summary {
+  cursor: pointer; color: var(--dim); font-size: 12px;
+  user-select: none; list-style: none;
+}
+.row.thinking summary::before { content: "▸ "; }
+.row.thinking[open] summary::before { content: "▾ "; }
+.row.thinking .thinking-body {
+  margin-top: 4px; color: #8e8e96; font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap;
+}
+/* 直播中的思考限高滚动：长思考别把时间线顶飞 */
+.row.thinking.streaming .thinking-body { max-height: 180px; overflow-y: auto; }
+
 /* ─── 模型输出的 Markdown 排版（.row.md 内）───
    pre-wrap 交还给 markdown 自己管段落，否则源码里的换行会双倍空行 */
 .row.md { white-space: normal; }
