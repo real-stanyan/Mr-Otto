@@ -6,10 +6,15 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
-import { dispatchSlash } from "./commands.js";
+import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
-import type { SessionEvent } from "../../session/events.js";
+import type {
+  SessionEvent,
+  ToolCallRequest,
+  ToolExecutionStartedEvent,
+  ToolResultEvent,
+} from "../../session/events.js";
 
 /** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
 function totalTokens(events: SessionEvent[]): number {
@@ -231,7 +236,75 @@ function orbStateOf(status: "idle" | "running", hasApproval: boolean) {
   return status === "running" ? ("working" as const) : ("breathing" as const);
 }
 
-function EventRow({ event }: { event: SessionEvent }) {
+/** 工具调用摘要行的文案：动词 + 目标 + 统计（Claude Code 版式）。
+    全部从 call.args 推导——UI 不知道工具"做了什么"，只知道日志里请求了什么 */
+function toolSummary(call: ToolCallRequest): { verb: string; target: string; stat: string } {
+  const a = (call.args ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : "");
+  switch (call.name) {
+    case "write_file": {
+      const content = str("content");
+      return {
+        verb: "写入",
+        target: str("path").split("/").pop() ?? "",
+        stat: content ? `+${content.split("\n").length} 行` : "",
+      };
+    }
+    case "read_file":
+      return { verb: "读取", target: str("path").split("/").pop() ?? "", stat: "" };
+    case "bash":
+      return { verb: "终端", target: str("cmd"), stat: "" };
+    default:
+      return { verb: call.name, target: "", stat: "" };
+  }
+}
+
+/** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
+    点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004） */
+function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) {
+  const [open, setOpen] = useState(false);
+  const result = all.find(
+    (e): e is ToolResultEvent => e.type === "tool_result" && e.toolCallId === call.id
+  );
+  const started = all.find(
+    (e): e is ToolExecutionStartedEvent =>
+      e.type === "tool_execution_started" && e.toolCallId === call.id
+  );
+  const { verb, target, stat } = toolSummary(call);
+  const status = result?.status ?? "running";
+
+  return (
+    <div className={`row tool-row st-${status}`}>
+      <button className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className="tool-verb">{verb}</span>
+        {target && <span className="tool-target">{target}</span>}
+        {stat && <span className="tool-stat">{stat}</span>}
+        {status === "running" && <span className="tool-flag">执行中…</span>}
+        {status === "error" && <span className="tool-flag err">出错</span>}
+        {status === "denied" && <span className="tool-flag err">已拒绝</span>}
+        <span className={`tool-chev${open ? " open" : ""}`}>›</span>
+      </button>
+      {open && (
+        <div className="tool-detail">
+          <div className="tool-meta">
+            {call.name} · {status}
+            {result && started ? ` · 执行耗时 ${result.ts - started.ts} ms` : ""}
+          </div>
+          <div className="tool-sec">参数</div>
+          <pre>{JSON.stringify(call.args, null, 2)}</pre>
+          {result && (
+            <>
+              <div className="tool-sec">输出</div>
+              <pre>{result.output || "（空）"}</pre>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
   switch (event.type) {
     case "user_message":
       return <div className="row user">{event.content}</div>;
@@ -247,19 +320,13 @@ function EventRow({ event }: { event: SessionEvent }) {
             </div>
           )}
           {event.toolCalls?.map((c) => (
-            <div key={c.id} className="row chip tool-call">
-              请求工具 <code>{c.name}</code> <code>{JSON.stringify(c.args)}</code>
-            </div>
+            <ToolRow key={c.id} call={c} all={all} />
           ))}
         </>
       );
 
     case "tool_result":
-      return (
-        <div className={`row chip result-${event.status}`}>
-          [{event.status}] <code>{event.output.slice(0, 400)}</code>
-        </div>
-      );
+      return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 
     case "approval_decision":
       return (
@@ -506,6 +573,18 @@ export function App() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
 
+  // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
+  const slashMatches = input.startsWith("/")
+    ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
+    : [];
+  const [slashSel, setSlashSel] = useState(0);
+  useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
+  const sel = Math.min(slashSel, Math.max(slashMatches.length - 1, 0));
+  const runSlash = (name: string) => {
+    setInput("");
+    dispatchSlash(name);
+  };
+
   useEffect(() => {
     void boot();
   }, [boot]);
@@ -552,7 +631,7 @@ export function App() {
         <>
           <section className="timeline">
             {events.map((e) => (
-              <EventRow key={e.seq} event={e} />
+              <EventRow key={e.seq} event={e} all={events} />
             ))}
             {error && <div className="row chip result-error">[turn 失败] {error}</div>}
             {streamingText && (
@@ -581,6 +660,23 @@ export function App() {
           <footer>
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式） */}
             <div className="composer">
+              {slashMatches.length > 0 && (
+                <div className="slash-menu" role="listbox">
+                  {slashMatches.map(([name, c], i) => (
+                    <button
+                      key={name}
+                      className={`slash-item${i === sel ? " sel" : ""}`}
+                      role="option"
+                      aria-selected={i === sel}
+                      onMouseEnter={() => setSlashSel(i)}
+                      onClick={() => runSlash(name)}
+                    >
+                      <span className="slash-name">{name}</span>
+                      <span className="slash-desc">{c.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <input
                 autoFocus
                 placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送"}
@@ -588,6 +684,18 @@ export function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
+                  // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
+                  if (slashMatches.length > 0) {
+                    const n = slashMatches.length;
+                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
+                    if (e.key === "Tab") { e.preventDefault(); setInput(slashMatches[sel]![0]); return; }
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      runSlash(slashMatches[sel]![0]);
+                      return;
+                    }
+                  }
                   if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
                 }}
               />
