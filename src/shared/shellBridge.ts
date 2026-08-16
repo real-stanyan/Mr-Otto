@@ -45,6 +45,14 @@ export interface AssistantDelta {
   kind: "content" | "reasoning";
 }
 
+/** write_file 审批预览：旧内容 vs 新内容。diff 是投影（两个事实推得出），
+    渲染层现算，不落盘。oldText 为 null = 新文件 */
+export interface WriteFilePreview {
+  path: string;
+  oldText: string | null;
+  newText: string;
+}
+
 /** 主进程请渲染层出示审批卡时推的包 */
 export interface ApprovalRequest {
   /** 审批挂靠的会话——卡只在这个会话的视图里渲染 */
@@ -52,6 +60,8 @@ export interface ApprovalRequest {
   call: ToolCallRequest;
   /** 工具的自我介绍，给人看的（来自 tool.def.description） */
   toolDescription: string;
+  /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
+  preview?: WriteFilePreview;
 }
 
 export type Unsubscribe = () => void;

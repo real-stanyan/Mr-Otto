@@ -4,8 +4,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
+import { diffLines } from "../../shared/diff.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
@@ -324,7 +326,9 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
           )}
           {event.content && (
             <div className="row assistant md">
-              <Markdown remarkPlugins={[remarkGfm]}>{event.content}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                {event.content}
+              </Markdown>
             </div>
           )}
           {event.toolCalls?.map((c) => (
@@ -382,6 +386,49 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
   }
 }
 
+/** write_file 审批的 diff 视图。diff 现算（投影）；连续未变行折叠成计数——
+    审批人要看的是"改了什么"，不是全文。算不动（超大文件）退回 JSON 由调用方兜底 */
+function DiffPreview({ oldText, newText }: { oldText: string | null; newText: string }) {
+  const lines = useMemo(() => diffLines(oldText ?? "", newText), [oldText, newText]);
+  if (!lines) return <pre>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>;
+
+  // 折叠：同类 same 连续段只留首尾各 2 行做上下文，中间换成"… N 行未变 …"
+  const CONTEXT = 2;
+  const rows: { key: number; kind: string; text: string }[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (line.kind !== "same") {
+      rows.push({ key: key++, kind: line.kind, text: line.text });
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < lines.length && lines[j]!.kind === "same") j++;
+    const run = j - i;
+    if (run > CONTEXT * 2 + 1) {
+      for (let k = i; k < i + CONTEXT; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
+      rows.push({ key: key++, kind: "skip", text: `… ${run - CONTEXT * 2} 行未变 …` });
+      for (let k = j - CONTEXT; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
+    } else {
+      for (let k = i; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
+    }
+    i = j;
+  }
+
+  return (
+    <pre className="diff">
+      {rows.map((r) => (
+        <div key={r.key} className={`diff-line ${r.kind}`}>
+          {r.kind === "add" ? "+ " : r.kind === "del" ? "- " : "  "}
+          {r.text}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
 function ApprovalCard() {
   // 只渲染挂靠在当前会话上的卡——别的会话的审批留在它自己的视图里
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
@@ -394,7 +441,17 @@ function ApprovalCard() {
       <div className="approval-head">危险操作待审批</div>
       <div className="approval-body">
         <code>{approval.call.name}</code> — {approval.toolDescription}
-        <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
+        {approval.preview ? (
+          <>
+            <div className="diff-path">
+              {approval.preview.path}
+              {approval.preview.oldText === null && <span className="diff-new">（新文件）</span>}
+            </div>
+            <DiffPreview oldText={approval.preview.oldText} newText={approval.preview.newText} />
+          </>
+        ) : (
+          <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
+        )}
       </div>
       <div className="approval-actions">
         <input
@@ -672,7 +729,11 @@ export function App() {
             )}
             {streamingText && (
               <div className="row assistant md streaming">
-                <Markdown remarkPlugins={[remarkGfm]}>{streamingText}</Markdown>
+                {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
+                    完整事件到达后重渲一次自然纠正 */}
+                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {streamingText}
+                </Markdown>
               </div>
             )}
             {(status === "running" || approval !== null) && (

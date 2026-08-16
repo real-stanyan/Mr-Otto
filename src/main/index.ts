@@ -67,11 +67,12 @@ void app.whenReady().then(() => {
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
     event: (e) => win.webContents.send(CHANNELS.event, e),
-    approvalRequest: (sessionId, call, tool) =>
+    approvalRequest: (sessionId, call, tool, preview) =>
       win.webContents.send(CHANNELS.approvalRequest, {
         sessionId,
         call,
         toolDescription: tool.def.description,
+        ...(preview ? { preview } : {}),
       }),
     assistantDelta: (sessionId, text, kind) =>
       win.webContents.send(CHANNELS.assistantDelta, { sessionId, text, kind }),

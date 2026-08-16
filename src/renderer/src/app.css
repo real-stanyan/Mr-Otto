@@ -386,6 +386,22 @@ header .ghost:hover { color: var(--text); border-color: var(--text); }
   border: 1px solid var(--line); border-radius: 8px;
 }
 .row.md pre code { background: none; border: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
+
+/* ─── 代码高亮（rehype-highlight 产出 .hljs-* token 类）───
+   不引现成主题 CSS：配色权留在自己手里，跟界面同一套暗色语言。
+   调性克制——代码块里最亮的应该是代码本身的结构，不是彩虹 */
+.row.md .hljs-keyword, .row.md .hljs-literal, .row.md .hljs-built_in { color: #c792ea; }
+.row.md .hljs-string, .row.md .hljs-regexp { color: #a5d6a7; }
+.row.md .hljs-number { color: #f7b26b; }
+.row.md .hljs-comment, .row.md .hljs-quote { color: #6b6b73; font-style: italic; }
+.row.md .hljs-function .hljs-title, .row.md .hljs-title { color: #74c0fc; }
+.row.md .hljs-attr, .row.md .hljs-attribute, .row.md .hljs-property { color: #8ab4f8; }
+.row.md .hljs-variable, .row.md .hljs-params { color: #d8d8dc; }
+.row.md .hljs-type, .row.md .hljs-class .hljs-title { color: #7fd4c1; }
+.row.md .hljs-tag, .row.md .hljs-name { color: #e8a2a2; }
+.row.md .hljs-meta, .row.md .hljs-doctag { color: #b8a04a; }
+.row.md .hljs-addition { color: #7fd48a; }
+.row.md .hljs-deletion { color: #e08a8a; }
 .row.md blockquote {
   margin: 0.6em 0; padding: 2px 12px;
   border-left: 3px solid #3a5a7a; color: #b8b8bc;
@@ -424,6 +440,21 @@ code { font-family: var(--mono); font-size: 12.5px; }
   font-family: var(--mono); font-size: 12px; color: var(--dim);
   margin-top: 6px; white-space: pre-wrap; word-break: break-all;
 }
+/* ─── write_file 审批 diff ─── */
+.diff-path {
+  margin-top: 8px; font-family: var(--mono); font-size: 12px; color: var(--text);
+}
+.diff-path .diff-new { color: var(--ok); margin-left: 6px; }
+.approval-body pre.diff {
+  max-height: 260px; overflow-y: auto;
+  background: rgba(0, 0, 0, 0.32); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; white-space: pre; word-break: normal; overflow-x: auto;
+}
+.diff-line { line-height: 1.5; }
+.diff-line.add { color: #7fd48a; background: rgba(60, 160, 80, 0.12); }
+.diff-line.del { color: #e08a8a; background: rgba(200, 70, 70, 0.12); text-decoration: line-through; text-decoration-color: rgba(224, 138, 138, 0.4); }
+.diff-line.skip { color: var(--dim); text-align: center; font-style: italic; }
+
 .approval-actions { display: flex; gap: 8px; padding: 0 14px 12px; }
 .approval-actions input {
   flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;

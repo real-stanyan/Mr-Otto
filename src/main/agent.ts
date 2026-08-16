@@ -10,14 +10,21 @@ import { readFileTool } from "../tools/readFile.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
 import { UIApprover, createModeAwareApprover, type ApprovalMode } from "./uiApprover.js";
+import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
+import type { WriteFilePreview } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
 
 export interface AgentPush {
   event(e: SessionEvent): void;
-  /** 带 sessionId：审批卡要挂靠到具体会话的视图上 */
-  approvalRequest(sessionId: string, call: ToolCallRequest, tool: Tool): void;
+  /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览 */
+  approvalRequest(
+    sessionId: string,
+    call: ToolCallRequest,
+    tool: Tool,
+    preview?: WriteFilePreview
+  ): void;
   /** 流式文本碎片（临时直播，不落日志）——渲染层按会话、按频道攒着显示 */
   assistantDelta(sessionId: string, text: string, kind: DeltaKind): void;
 }
@@ -34,9 +41,16 @@ export function createAgent(opts: {
 
   const sessionId =
     opts.resumeSessionId ?? `s-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`;
-  const approver = new UIApprover((call, tool) =>
-    opts.push.approvalRequest(sessionId, call, tool)
-  );
+  // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）
+  const world = createLocalWorld({ root: opts.workspace });
+  const approver = new UIApprover((call, tool) => {
+    // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
+    // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
+    void buildApprovalPreview(call, world).then(
+      (preview) => opts.push.approvalRequest(sessionId, call, tool, preview),
+      () => opts.push.approvalRequest(sessionId, call, tool)
+    );
+  });
   // 运行时偏好（刻意不落日志）：影响的是"怎么问人/怎么调 API"，不是模型看到的上下文。
   // 代价：resume 后回默认值——审批模式回 ask 是安全默认，thinking 回开是保守默认。
   let approvalMode: ApprovalMode = "ask";
@@ -105,7 +119,7 @@ export function createAgent(opts: {
     store,
     adapter: makeAdapter(current),
     tools: [readFileTool, writeFileTool, bashTool],
-    world: createLocalWorld({ root: opts.workspace }),
+    world,
     sessionId,
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
     approver: createModeAwareApprover(() => approvalMode, approver),
