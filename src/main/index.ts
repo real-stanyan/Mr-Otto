@@ -92,6 +92,10 @@ void app.whenReady().then(() => {
       .then(() => focusMainWindow())
       .catch((err) => console.error("account.handleCallback 失败", err));
   }
+  // 冷启动登录态恢复：authStorage 可能已经从 auth.json 恢复了 session，
+  // 但 account 初始值恒为 EMPTY——不 restore 一次的话 UI 会一直显示未登录。
+  // restore() 内部已经把 error/无 session 都静默处理，这里只兜底真正意外的 throw。
+  void manager.restore().catch((err) => console.error("account.restore 失败", err));
 
   const dbPath = join(app.getPath("userData"), "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着

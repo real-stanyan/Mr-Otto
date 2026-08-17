@@ -30,6 +30,9 @@ export type SupabaseLike = {
     }): Promise<{ data: { url: string | null }; error: unknown }>;
     exchangeCodeForSession(code: string): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
+    // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
+    // 用 authStorage 里恢复出来的 session 换一个当下有效的 user；离线/过期时 user 为 null。
+    getUser(): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
   };
 };
 
@@ -146,6 +149,26 @@ export class AccountManager {
       console.error("AccountManager.signOut：服务端 signOut 失败，仅清本地状态", error);
     }
     this.account = EMPTY_ACCOUNT;
+    this.onChange(this.account);
+  }
+
+  /**
+   * 冷启动登录态恢复：account 初始值恒为 EMPTY，signIn/handleCallback/signOut 是仅有的
+   * 赋值路径——重启后即使 authStorage 从 auth.json 恢复了 session，getAccount() 在
+   * restore 之前仍会一直回 signedIn:false。调 getUser()（而非读本地 getSession）用恢复
+   * 出来的 session 发一次真实校验，比信本地缓存可靠。
+   *
+   * error 或 user 为 null（离线 / session 过期 / 从未登录过）一律静默：保持 EMPTY、
+   * 不触发 onChange、不 throw——冷启动时这是正常状态，不是需要向上抛的异常。
+   */
+  async restore(): Promise<void> {
+    const { data, error } = await this.client.auth.getUser();
+    if (error) {
+      console.error("AccountManager.restore：getUser 失败，保持未登录态", error);
+      return;
+    }
+    if (!data.user) return;
+    this.account = toAccountInfo(data.user);
     this.onChange(this.account);
   }
 

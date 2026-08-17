@@ -107,6 +107,7 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
         error: null,
       })),
       signOut: vi.fn(async () => ({ error: null })),
+      getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
       ...overrides?.auth,
     },
   };
@@ -274,5 +275,73 @@ describe("AccountManager", () => {
       name: "",
       avatarUrl: "",
     });
+  });
+
+  it("restore：getUser 回真 user → getAccount().signedIn 为 true 且 onChange 收到", async () => {
+    const client = fakeClient({
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: {
+            user: {
+              email: "alice@example.com",
+              user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
+            },
+          },
+          error: null,
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await manager.restore();
+
+    expect(client.auth.getUser).toHaveBeenCalled();
+    expect(manager.getAccount()).toEqual({
+      signedIn: true,
+      email: "alice@example.com",
+      name: "Alice",
+      avatarUrl: "https://g.example/a.png",
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      signedIn: true,
+      email: "alice@example.com",
+      name: "Alice",
+      avatarUrl: "https://g.example/a.png",
+    });
+  });
+
+  it("restore：getUser 回 user=null（无 session / 从未登录）→ 保持 EMPTY，不触发 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await manager.restore();
+
+    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("restore：getUser 回 error（离线/过期）→ 静默保持 EMPTY，不 throw，不触发 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        getUser: vi.fn(async () => ({ data: { user: null }, error: { message: "network unreachable" } })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(manager.restore()).resolves.toBeUndefined();
+
+    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
   });
 });
