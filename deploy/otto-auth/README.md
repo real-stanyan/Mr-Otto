@@ -126,19 +126,32 @@ services:
 对应 `.env`:`API_GW_HTTP_PORT=8100`、`KONG_HTTP_PORT=8100`(fallback 键,一起设)、
 `POSTGRES_PORT=5433`、`POOLER_PROXY_PORT_TRANSACTION=6544`。
 
-### 6. 尚未处理的已知缺口(记录下来,不在本 Task 范围内)
+### 6. 补随机化的 demo 密钥字段(下一个任务就要出公网,不能再留)
 
-`.env.example` 里除了需求书 Step 1 覆盖的 5 个值(`POSTGRES_PASSWORD` /
-`JWT_SECRET` / `ANON_KEY` / `SERVICE_ROLE_KEY` / `DASHBOARD_PASSWORD`)之外,
-还有一批默认值 / demo 密钥没有随机化:`SECRET_KEY_BASE`、
-`REALTIME_DB_ENC_KEY`、`VAULT_ENC_KEY`、`PG_META_CRYPTO_KEY`、
-`LOGFLARE_PUBLIC_ACCESS_TOKEN`、`LOGFLARE_PRIVATE_ACCESS_TOKEN`、
-`S3_PROTOCOL_ACCESS_KEY_ID`/`SECRET`、`POOLER_TENANT_ID`、`MINIO_ROOT_PASSWORD`。
-这些字段各有长度要求(比如 `SECRET_KEY_BASE` ≥64 字符、`REALTIME_DB_ENC_KEY`
-恰好 16 字符),需求书的 gen-keys.mjs 没覆盖,超出了 Task 1 明确列出的范围,
-先按官方 demo 默认值放着——反正整个栈只绑 `127.0.0.1`,不直接对公网暴露。
-后续做安全加固/上生产前应该补一轮 `sh utils/generate-keys.sh` 或手动
-`openssl rand` 替换。
+`.env.example` 除了需求书 Step 1 覆盖的 5 个值之外,还带一批默认值 / demo
+密钥,已经在 gen-keys.mjs 里补上生成、推到服务器 `.env`、并 `docker compose -p
+otto up -d` 重建了受影响的容器:
+
+| 字段 | 消费方(docker-compose.yml 里读它的服务) | 长度要求 |
+|---|---|---|
+| `SECRET_KEY_BASE` | `realtime`、`supavisor` | ≥64 字符 |
+| `REALTIME_DB_ENC_KEY` | `realtime`(加密 `_realtime` schema 敏感字段) | 恰好 16 字符 |
+| `VAULT_ENC_KEY` | `supavisor` | 恰好 32 字符 |
+| `PG_META_CRYPTO_KEY` | `studio`、`meta` | ≥32 字符 |
+| `S3_PROTOCOL_ACCESS_KEY_ID`/`SECRET` | `storage` | 无强制长度 |
+| `LOGFLARE_PUBLIC_ACCESS_TOKEN`/`PRIVATE_ACCESS_TOKEN` | 无(这版 compose 没有 `analytics`/`vector` 服务,当前未消费) | ≥32 字符 |
+| `MINIO_ROOT_PASSWORD` | 无(需要 `docker-compose.s3.yml` overlay 才会用到,当前 `COMPOSE_FILE` 没叠加它) | ≥8 字符 |
+
+`LOGFLARE_*` 和 `MINIO_ROOT_PASSWORD` 虽然当前没有容器读它们,还是一起换成
+随机值——一次性成本很低,省得以后哪天升级 compose / 加了 analytics 服务时
+留一个没人注意到的 demo 密钥当活靶子。
+
+`POOLER_TENANT_ID`(默认值 `your-tenant-id`)判断为不是"密钥类"字段:它是
+supavisor 连接串里的租户命名空间标识符(类似 `postgres.<tenant_id>` 前缀),
+本身不是凭证,拿到这个值不能直接连上数据库,所以没有随机化。
+
+重建后重跑过健康检查,`GET /auth/v1/health` 仍返回 200,容器日志(`storage` /
+`meta` / `realtime`)干净无报错。
 
 TLS / 反向代理 / `otto-auth.duckdns.org` 对外可达,不在 Task 1 范围内(DNS 已经
 指向这台服务器,`dig +short otto-auth.duckdns.org` 返回 `65.109.113.168`),留给
