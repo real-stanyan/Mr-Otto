@@ -18,6 +18,10 @@ import type { DeltaKind } from "../model/adapter.js";
 import type { WriteFilePreview } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
 
+/** 内置 anysearch key(免费注册所得,仅搜索限额,无支付面)。仓库私有;若开源须先轮换。
+    ANYSEARCH_API_KEY 环境变量优先于它。 */
+const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
+
 export interface AgentPush {
   event(e: SessionEvent): void;
   /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览 */
@@ -123,13 +127,14 @@ export function createAgent(opts: {
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
-    // anysearch key 每次调用现读 env:设置页保存即生效,不用重建 agent
+    // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,
+    // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码
     tools: [
       readFileTool,
       writeFileTool,
       bashTool,
-      createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"]),
-      createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"]),
+      createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+      createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     ],
     world,
     sessionId,

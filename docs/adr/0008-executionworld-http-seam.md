@@ -31,3 +31,13 @@ web_search/web_extract 需要出站 HTTP。硬规则:工具只依赖 ExecutionWo
 - 匿名限额未知,撞墙表现为工具报错,模型可见可重试;换 key/换后端均不动上层。
 - http seam 出现让「工具能碰的世界」多了一维,v2 SandboxWorld 必须实现它
   (断网 bot = postJson 直接 reject)。
+
+## 追记(2026-08-17,同日)
+
+维护者决定:anysearch key **内置进源码**作为默认(BUILTIN_ANYSEARCH_KEY,
+src/main/agent.ts),ANYSEARCH_API_KEY 环境变量可覆盖;设置页不再暴露该 key。
+理由:开箱即高限额,免用户配置;该 key 免费注册所得、只管搜索限额、无支付面,
+风险面与 Supabase anon key 同级(打包进客户端是设计如此)。约束:仓库当前私有;
+**若开源,须先轮换该 key**。「key 不进 git」纪律不变——它针对的是 OAuth client
+secret / service_role 这类真凭证,不含此类限额 token。远期计划:自研搜索后端
+(SearXNG 思路)脱离第三方 key,届时只改 src/tools/anysearch.ts。

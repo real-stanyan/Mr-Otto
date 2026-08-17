@@ -229,7 +229,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
-  const allowedKeyEnvs = new Set([...MODEL_CATALOG.map((m) => m.apiKeyEnv), "ANYSEARCH_API_KEY"]);
+  const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
 
   ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
     const status: Record<string, boolean> = {};
