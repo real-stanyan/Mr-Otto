@@ -5,6 +5,7 @@ import { readFileTool } from "../../src/tools/readFile.js";
 import { bashTool } from "../../src/tools/bash.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
+import type { UserAttachmentRef } from "../../src/session/events.js";
 
 /** 脚本化 adapter：按预设顺序吐回复，并录下每次收到的消息数 */
 function fakeAdapter(script: ModelReply[]) {
@@ -142,6 +143,34 @@ describe("LoopEngine", () => {
 
     const assistant = store.load("s1").find((e) => e.type === "assistant_message");
     expect(assistant).toMatchObject({ usage: { promptTokens: 120, completionTokens: 8 } });
+    store.close();
+  });
+
+  it("runTurn 带 attachments：落盘的 user_message.attachments 与传入引用相等（钉住焊点）", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "看到了" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    const ref: UserAttachmentRef = {
+      id: `sha256:${"a".repeat(64)}`,
+      mediaType: "image/png",
+      bytes: 123,
+      name: "cat.png",
+    };
+    await engine.runTurn("看图", [ref]);
+
+    const evt = store.load("s1").find((e) => e.type === "user_message");
+    expect((evt as { attachments?: UserAttachmentRef[] })?.attachments).toEqual([ref]);
+    store.close();
+  });
+
+  it("runTurn 不传附件（空数组）：user_message 事件不带 attachments 字段（旧日志形状不变）", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "好" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("hi", []);
+
+    const evt = store.load("s1").find((e) => e.type === "user_message");
+    expect(evt).not.toHaveProperty("attachments");
     store.close();
   });
 });

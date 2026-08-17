@@ -327,9 +327,29 @@ void app.whenReady().then(() => {
       // 后续改/删不影响重放);图片只走 ref。二者都在落盘前拼好——先落盘再喂模型
       let full = text;
       const refs: UserAttachmentRef[] = [];
+      // 渲染层送来的 OutgoingAttachment 是不可信输入——形状必须在这把关。
+      // 坏形状（undefined/缺 id/id 非法）一旦被 push 进 refs，会原样存进
+      // append-only 的 user_message 事件；日志落了错的东西改不了、也不能删，
+      // deriveMessages 重放到这条时对 a.id 取值直接抛错，整个会话从此永久
+      // 不可重放（违反"旧日志必须永远可重放"硬规则）。所以宁可整条 send 拒发，
+      // 也不能让半吊子附件混进日志——拒绝发生在 runningSessions.add / 任何
+      // append 之前，坏请求不会留下任何痕迹。
       for (const a of attachments ?? []) {
-        if (a.kind === "text") full += `\n\n[用户附上文件「${a.name}」,内容如下]\n${a.content}`;
-        else refs.push(a.ref);
+        if (a.kind === "text") {
+          if (typeof a.name !== "string" || typeof a.content !== "string") {
+            throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
+          }
+          full += `\n\n[用户附上文件「${a.name}」,内容如下]\n${a.content}`;
+        } else if (
+          a.kind === "image" &&
+          a.ref &&
+          typeof a.ref.id === "string" &&
+          /^sha256:[a-f0-9]{64}$/.test(a.ref.id)
+        ) {
+          refs.push(a.ref);
+        } else {
+          throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
+        }
       }
       runningSessions.add(sessionId);
       win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
