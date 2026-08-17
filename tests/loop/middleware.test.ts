@@ -6,6 +6,7 @@ import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 const fakeWorld: ExecutionWorld = {
   fs: { read: async () => "", write: async () => {} },
   exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+  http: { postJson: async () => ({}) },
 };
 
 function ctx(): ToolCallContext {

@@ -24,6 +24,7 @@ function fakeAdapter(script: ModelReply[]): ModelAdapter {
 const fakeWorld: ExecutionWorld = {
   fs: { read: async () => "", write: async () => {} },
   exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+  http: { postJson: async () => ({}) },
 };
 
 const writeCall: ModelReply = {

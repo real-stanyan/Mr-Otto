@@ -32,6 +32,7 @@ function trackingWorld() {
       },
     },
     exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    http: { postJson: async () => ({}) },
   };
   return { world, writes };
 }

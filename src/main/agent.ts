@@ -9,6 +9,8 @@ import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
+import { createWebSearchTool } from "../tools/webSearch.js";
+import { createWebExtractTool } from "../tools/webExtract.js";
 import { UIApprover, createModeAwareApprover, type ApprovalMode } from "./uiApprover.js";
 import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
@@ -121,7 +123,14 @@ export function createAgent(opts: {
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
-    tools: [readFileTool, writeFileTool, bashTool],
+    // anysearch key 每次调用现读 env:设置页保存即生效,不用重建 agent
+    tools: [
+      readFileTool,
+      writeFileTool,
+      bashTool,
+      createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"]),
+      createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"]),
+    ],
     world,
     sessionId,
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision

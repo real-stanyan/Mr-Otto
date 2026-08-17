@@ -3,6 +3,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalWorld } from "../../src/world/localWorld.js";
+import { withAbortSignal } from "../../src/world/executionWorld.js";
 
 let root: string;
 
@@ -98,5 +99,79 @@ describe("LocalWorld exec 输出直播", () => {
     });
     expect(result.exitCode).toBe(3);
     expect(chunks.join("")).toBe("boom");
+  });
+});
+
+describe("http.postJson", () => {
+  const okResponse = (json: unknown) =>
+    ({ ok: true, status: 200, json: async () => json, text: async () => "" }) as Response;
+
+  it("POST JSON body,带 Content-Type 与自定义 header,返回解析后的 JSON", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init! });
+      return okResponse({ hello: "world" });
+    }) as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+
+    const out = await world.http.postJson("https://x.test/rpc", { a: 1 }, { headers: { Authorization: "Bearer k" } });
+
+    expect(out).toEqual({ hello: "world" });
+    expect(calls[0]!.url).toBe("https://x.test/rpc");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.body).toBe(JSON.stringify({ a: 1 }));
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers["Authorization"]).toBe("Bearer k");
+  });
+
+  it("非 2xx 抛错并带状态码与响应片段", async () => {
+    const fetchImpl = (async () =>
+      ({ ok: false, status: 429, json: async () => ({}), text: async () => "rate limited" }) as Response) as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    await expect(world.http.postJson("https://x.test/rpc", {})).rejects.toThrow(/429.*rate limited/s);
+  });
+
+  it("中断:signal abort 时 reject,不伪装成正常失败", async () => {
+    const fetchImpl = (async (_u: string | URL | Request, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        init!.signal!.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")));
+      })) as unknown as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    const ac = new AbortController();
+    const pending = world.http.postJson("https://x.test/rpc", {}, { signal: ac.signal });
+    ac.abort();
+    await expect(pending).rejects.toThrow(/中断/);
+  });
+});
+
+describe("装饰器透传 http", () => {
+  it("withAbortSignal 把 signal 焊进 http.postJson", async () => {
+    const seen: (AbortSignal | undefined)[] = [];
+    const base = createLocalWorld({
+      fetchImpl: (async (_u: string | URL | Request, init?: RequestInit) => {
+        seen.push(init?.signal ?? undefined);
+        // 让 fetch 在 signal abort 时 reject
+        return new Promise((_res, rej) => {
+          if (init?.signal?.aborted) {
+            rej(new DOMException("Aborted", "AbortError"));
+          } else {
+            init?.signal?.addEventListener("abort", () => {
+              rej(new DOMException("Aborted", "AbortError"));
+            });
+            // Never resolve normally in this test (测试工具场景中 abort 就是目标)
+          }
+        });
+      }) as unknown as typeof fetch,
+    });
+    const ac = new AbortController();
+    const world = withAbortSignal(base, ac.signal);
+    const pending = world.http.postJson("https://x.test/rpc", {});
+    ac.abort();
+    // 验证外部中断确实穿透：postJson 因 abort 而 reject，报错含「中断」
+    await expect(pending).rejects.toThrow(/中断/);
+    // 验证 fetchImpl 收到的 signal 确实是中止状态（AbortSignal.any 合成了外部 signal）
+    expect(seen[0]).toBeDefined();
+    expect(seen[0]?.aborted).toBe(true);
   });
 });
