@@ -99,10 +99,52 @@ body {
 .welcome h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; } /* 大字号收字距 */
 .welcome-logo { width: 72px; height: 72px; border-radius: 18px; }
 .welcome p { color: var(--dim); line-height: 1.7; }
-.welcome .primary {
-  background: #2b4a6f; border-color: #2b4a6f; color: #fff; padding: 10px 24px;
-}
+.welcome .hint { font-size: 12px; }
 .welcome .error { color: var(--err); font-size: 13px; }
+
+/* ─── 新会话 composer（ZCode 版式）：文件夹行 + 输入区 + 控件行一张卡 ─── */
+.nsc {
+  width: min(640px, 90%); text-align: left;
+  background: #1a1a1f; border: 1px solid var(--line); border-radius: 16px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  transition: border-color 120ms ease;
+}
+.nsc:focus-within { border-color: #3f3f4a; }
+.nsc-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nsc-folder {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  background: transparent; border: none; color: var(--text);
+  font-size: 13px; font-weight: 550; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+}
+.nsc-folder:hover { background: rgba(255, 255, 255, 0.06); }
+.nsc-chev { color: var(--dim); font-size: 11px; }
+.nsc-path {
+  color: var(--dim); font-size: 11px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nsc textarea {
+  background: transparent; border: none; resize: none; color: var(--text);
+  font: inherit; font-size: 14px; line-height: 1.55;
+  min-height: 52px; max-height: 200px; field-sizing: content; padding: 2px 4px;
+}
+.nsc textarea:focus { outline: none; }
+.nsc textarea::placeholder { color: var(--dim); }
+.nsc-bottom { display: flex; align-items: center; gap: 8px; }
+.nsc-bottom .spacer { flex: 1; }
+.nsc-bottom select {
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--dim); font-size: 12px; padding: 3px 6px; cursor: pointer;
+}
+.nsc-bottom select:hover { color: var(--text); border-color: var(--line); }
+.nsc-bottom select:disabled { opacity: 0.4; cursor: default; }
+/* 完全访问 = bypass 警示橙（与聊天栏同款语义色） */
+.nsc-bottom .mode-select.bypass { color: #e8a04c; background: rgba(232, 160, 76, 0.12); }
+.nsc-send {
+  width: 30px; height: 30px; border-radius: 10px; flex-shrink: 0;
+  font-size: 15px; line-height: 1; padding: 0;
+}
+.nsc-send:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.nsc-send:not(:disabled):hover { background: #35587a; border-color: #35587a; }
 
 .chat { display: flex; flex-direction: column; height: 100%; }
 

@@ -8,6 +8,7 @@ import type {
   ApprovalRequest,
   BootInfo,
   SessionSummary,
+  StartSessionOptions,
   TurnStatus,
 } from "../../shared/shellBridge.js";
 
@@ -61,7 +62,11 @@ interface ChatState {
   openSettings(): Promise<void>;
   closeSettings(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
-  startSession(): Promise<void>;
+  /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
+  pickWorkspace(): Promise<string | null>;
+  /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西 */
+  newSession(): void;
+  startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   send(text: string): Promise<void>;
@@ -244,10 +249,28 @@ export const useChat = create<ChatState>((set, get) => ({
     set(info ? { ...enterChat(info), sessions } : { phase: "welcome", sessions });
   },
 
-  async startSession() {
+  async pickWorkspace() {
     try {
-      const info = await window.otter.startSession();
-      if (!info) return; // 用户取消了文件夹选择框
+      return await window.otter.pickWorkspace();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
+  },
+
+  newSession: () =>
+    set({
+      phase: "welcome",
+      sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
+      events: [],
+      replayCursor: null,
+      showSettings: false,
+      error: null,
+    }),
+
+  async startSession(opts) {
+    try {
+      const info = await window.otter.startSession(opts);
       set(enterChat(info));
       set({ sessions: await window.otter.listSessions() }); // 新会话进侧栏
     } catch (e) {

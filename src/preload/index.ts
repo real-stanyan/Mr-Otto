@@ -14,7 +14,8 @@ function subscribe<T>(channel: string) {
 
 const bridge: ShellBridge = {
   boot: () => ipcRenderer.invoke(CHANNELS.boot),
-  startSession: () => ipcRenderer.invoke(CHANNELS.startSession),
+  pickWorkspace: () => ipcRenderer.invoke(CHANNELS.pickWorkspace),
+  startSession: (opts) => ipcRenderer.invoke(CHANNELS.startSession, opts),
   listSessions: () => ipcRenderer.invoke(CHANNELS.listSessions),
   resumeSession: (sessionId) => ipcRenderer.invoke(CHANNELS.resumeSession, sessionId),
   deleteSession: (sessionId) => ipcRenderer.invoke(CHANNELS.deleteSession, sessionId),

@@ -182,7 +182,7 @@ function ComposerBar() {
         onChange={(e) => void setApprovalMode(e.target.value as "ask" | "auto")}
       >
         <option value="ask">逐条审批</option>
-        <option value="auto">自动批准</option>
+        <option value="auto">完全访问</option>
       </select>
 
       <span className="spacer" />
@@ -559,7 +559,7 @@ function Sidebar() {
   const phase = useChat((s) => s.phase);
   const showSettings = useChat((s) => s.showSettings);
   const resume = useChat((s) => s.resume);
-  const startSession = useChat((s) => s.startSession);
+  const newSession = useChat((s) => s.newSession);
   const openSettings = useChat((s) => s.openSettings);
   const deleteSession = useChat((s) => s.deleteSession);
   const statusBySession = useChat((s) => s.statusBySession);
@@ -577,7 +577,8 @@ function Sidebar() {
         <img className="logo" src={ottoLogo} alt="" />
         Mr Otto
       </div>
-      <button className="new-session" onClick={() => void startSession()}>
+      {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话 */}
+      <button className="new-session" onClick={newSession}>
         ＋ 新会话
       </button>
       <nav className="session-list">
@@ -657,22 +658,115 @@ function Sidebar() {
   );
 }
 
+/** 新会话 composer（ZCode 版式）：文件夹 + 首条消息 + 模式/模型/thinking 先配齐，
+    ↑ 一按才落地。落地前全是渲染层草稿——反悔零痕迹，没建的会话不存在半个。
+    偏好初值：审批 ask（安全默认）、thinking 开；模型跟上个会话走，没有就用目录第一款 */
 function Welcome() {
   const startSession = useChat((s) => s.startSession);
+  const pickWorkspace = useChat((s) => s.pickWorkspace);
+  const send = useChat((s) => s.send);
   const error = useChat((s) => s.error);
+  const lastModel = useChat((s) => s.model);
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [model, setModel] = useState(() =>
+    findModel(lastModel) ? lastModel : MODEL_CATALOG[0]!.model
+  );
+  const [mode, setMode] = useState<"ask" | "auto">("ask");
+  const [thinking, setThinking] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const choice = findModel(model);
+
+  const pick = async () => {
+    const dir = await pickWorkspace();
+    if (dir) setWorkspace(dir); // 取消 = 保持原选择，别把已选的清掉
+  };
+
+  const launch = async () => {
+    if (!workspace || busy) return;
+    setBusy(true);
+    try {
+      // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
+      await startSession({ workspace, model, approvalMode: mode, thinking });
+      const t = text.trim();
+      // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
+      // 这里不走 slash 分发：会话刚出生，/compact 之类没有意义
+      if (useChat.getState().phase === "chat" && t) void send(t);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <main className="welcome">
       <img className="welcome-logo" src={ottoLogo} alt="Mr Otto" />
       <h1>Mr Otto</h1>
-      <p>
-        选择一个工程文件夹开始会话，或在左侧继续之前的会话。
-        <br />
-        agent 的文件读写会被限制在该文件夹内，危险操作先经你审批。
-      </p>
-      <button className="primary" onClick={() => void startSession()}>
-        选择工程文件夹…
-      </button>
+      <div className="nsc">
+        <div className="nsc-top">
+          <button className="nsc-folder" onClick={() => void pick()} title={workspace ?? "选择工程文件夹"}>
+            <span aria-hidden="true">📁</span>
+            {workspace ? workspace.split("/").pop() : "选择工程文件夹"}
+            <span className="nsc-chev" aria-hidden="true">⌄</span>
+          </button>
+          {workspace && (
+            <span className="nsc-path" title={workspace}>
+              {workspace}
+            </span>
+          )}
+        </div>
+        <textarea
+          autoFocus
+          rows={2}
+          placeholder="向 Mr Otto 描述任务，回车发送"
+          value={text}
+          disabled={busy}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void launch();
+            }
+          }}
+        />
+        <div className="nsc-bottom">
+          <select
+            className={"mode-select" + (mode === "auto" ? " bypass" : "")}
+            value={mode}
+            title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
+            onChange={(e) => setMode(e.target.value as "ask" | "auto")}
+          >
+            <option value="ask">逐条审批</option>
+            <option value="auto">完全访问</option>
+          </select>
+          <span className="spacer" />
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            {MODEL_CATALOG.map((m) => (
+              <option key={m.model} value={m.model}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={thinking ? "on" : "off"}
+            disabled={!choice?.supportsThinking}
+            title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
+            onChange={(e) => setThinking(e.target.value === "on")}
+          >
+            <option value="on">Thinking 开</option>
+            <option value="off">Thinking 关</option>
+          </select>
+          <button
+            className="nsc-send"
+            disabled={!workspace || busy}
+            title={workspace ? "开始会话" : "先选工程文件夹"}
+            aria-label="开始会话"
+            onClick={() => void launch()}
+          >
+            ↑
+          </button>
+        </div>
+      </div>
+      <p className="hint">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className="error">{error}</p>}
     </main>
   );

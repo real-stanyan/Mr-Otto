@@ -4,7 +4,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { CHANNELS, type BootInfo } from "../shared/shellBridge.js";
+import { CHANNELS, type BootInfo, type StartSessionOptions } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { EventStore } from "../session/store.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
@@ -85,19 +85,36 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 
-  ipcMain.handle(CHANNELS.startSession, async (): Promise<BootInfo | null> => {
+  // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）
+  // 再一次性落地，中途反悔不留任何痕迹——没建的会话不该存在半个
+  ipcMain.handle(CHANNELS.pickWorkspace, async (): Promise<string | null> => {
     const picked = await dialog.showOpenDialog(win, {
       title: "选择工程文件夹",
-      buttonLabel: "在此开始会话",
+      buttonLabel: "用这个文件夹",
       properties: ["openDirectory", "createDirectory"],
     });
-    const dir = picked.filePaths[0];
-    if (picked.canceled || !dir) return null;
+    return picked.canceled ? null : (picked.filePaths[0] ?? null);
+  });
 
-    const agent = createAgent({ store, workspace: dir, push });
+  ipcMain.handle(CHANNELS.startSession, (_e, opts: StartSessionOptions): BootInfo => {
+    if (typeof opts?.workspace !== "string" || !opts.workspace) {
+      throw new Error("未选择工程文件夹");
+    }
+    const agent = createAgent({ store, workspace: opts.workspace, push });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
-    return bootInfo();
+    // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
+    // 与默认相同时 switchModel 内部 no-op，零多余事件）；审批/thinking 是运行时偏好
+    if (opts.model) agent.switchModel(opts.model);
+    if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
+      agent.setApprovalMode(opts.approvalMode);
+    }
+    if (typeof opts.thinking === "boolean" && opts.thinking !== agent.thinking) {
+      agent.setThinking(opts.thinking);
+    }
+    const info = bootInfo();
+    if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
+    return info;
   });
 
   ipcMain.handle(CHANNELS.resumeSession, (_e, sessionId: string): BootInfo => {

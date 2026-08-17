@@ -15,6 +15,17 @@ export type { SessionSummary };
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
 export type ApprovalMode = "ask" | "auto";
 
+/** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
+    model 会落 model_changed 事件（resume 记得）；审批/thinking 是运行时偏好（不落日志） */
+export interface StartSessionOptions {
+  /** 工程文件夹绝对路径（pickWorkspace 的返回值） */
+  workspace: string;
+  /** 缺省 = 主进程默认（OTTER_MODEL 或目录默认款） */
+  model?: string;
+  approvalMode?: ApprovalMode;
+  thinking?: boolean;
+}
+
 export interface BootInfo {
   sessionId: string;
   model: string;
@@ -81,8 +92,10 @@ export type Unsubscribe = () => void;
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
   boot(): Promise<BootInfo | null>;
-  /** 弹系统文件夹选择框 → 建会话。null = 用户取消 */
-  startSession(): Promise<BootInfo | null>;
+  /** 只弹系统文件夹选择框，不建会话（新会话 composer 的文件夹按钮）。null = 用户取消 */
+  pickWorkspace(): Promise<string | null>;
+  /** 用配好的开局参数建会话（文件夹已由 pickWorkspace 选定） */
+  startSession(opts: StartSessionOptions): Promise<BootInfo>;
   /** 库里所有会话的摘要（欢迎页列表用），最近活跃在前 */
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
@@ -128,6 +141,7 @@ export interface ShellBridge {
 
 export const CHANNELS = {
   boot: "otter:boot",
+  pickWorkspace: "otter:pickWorkspace",
   startSession: "otter:startSession",
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
