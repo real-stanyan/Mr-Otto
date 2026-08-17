@@ -888,3 +888,36 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 600; color: var(--text);
 }
+
+/* ── 附件(file-input-v1)────────────────────────────── */
+.attach-btn {
+  border: none; background: transparent; color: inherit;
+  font-size: 16px; line-height: 1; padding: 2px 8px;
+  border-radius: 6px; cursor: pointer;
+}
+.attach-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.attach-btn:disabled { opacity: 0.4; cursor: default; }
+
+.attach-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding: 6px 10px 0;
+}
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255, 255, 255, 0.06); border-radius: 6px;
+  padding: 3px 6px; font-size: 12px; color: var(--dim);
+}
+.attach-chip img {
+  width: 36px; height: 36px; object-fit: cover;
+  border-radius: 4px; display: block;
+}
+.attach-chip-x {
+  border: none; background: transparent; color: inherit;
+  opacity: 0.6; cursor: pointer; font-size: 13px; padding: 0 2px;
+}
+.attach-chip-x:hover { opacity: 1; }
+.attach-error { color: var(--err); font-size: 12px; }
+
+.user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.attach-thumb { max-width: 200px; max-height: 160px; border-radius: 6px; display: block; }
+.attach-lost, .attach-loading { opacity: 0.6; font-size: 12px; color: var(--dim); }
