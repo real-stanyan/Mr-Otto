@@ -13,6 +13,7 @@ Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agen
 
 Electron（主进程 = Node agent 核心，ADR-0001）
 React + Zustand（渲染进程）
+Tailwind CSS + shadcn/ui（渲染进程样式/组件库，ADR-0010；存量 app.css 待 harness 完工后整体迁移，新增 UI 即日遵守）
 TypeScript（strict）/ Node.js
 SQLite（better-sqlite3，事件日志持久化）
 vitest（测试统一放 `tests/`，镜像 `src/` 结构；不与源码同目录）
