@@ -33,7 +33,8 @@
 | `--secondary` | `#8FABD4` | `#2E4A5C`(233D4D 提亮) | 次要按钮・悬停面 |
 | `--muted` | `#E5E1D3`(米压暗) | `#16262F`(233D4D 压暗) | 弱底(chips・代码块底) |
 | `--muted-foreground` | 黑 55% | `#EAECF0` 60% | dim 文字 |
-| `--accent` | `#4A70A9` | `#FE7F2D` 橙 | 点缀:链接・流式光标・焦点环・活跃态高亮 |
+| `--accent` | `#DCE6F2`(8FABD4 提亮) | `#2E4A5C` | shadcn 组件悬停面(菜单项・下拉项)——保持低调,不给橙 |
+| `--brand` | `#4A70A9` | `#FE7F2D` 橙 | 点缀:链接・流式光标・活跃态高亮 |
 | `--border` | 黑 12% | `#EAECF0` 15% | 描边 |
 | `--input` | 同 border | 同 border | 表单描边 |
 | `--ring` | `#4A70A9` | `#FE7F2D` | focus-visible 环 |
