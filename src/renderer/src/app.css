@@ -79,19 +79,31 @@ body {
 .session-item.prehistoric:hover { background: transparent; }
 .session-item.prehistoric:active { background: transparent; }
 .session-item.prehistoric .title { font-family: var(--mono); font-size: 12px; }
+/* 设置模式：会话列表让位给栏目导航（同一块地皮，.session-item 复用不变） */
+.settings-nav-back {
+  color: var(--dim); border-bottom: 1px solid var(--line);
+  border-radius: 8px 8px 0 0; margin-bottom: 4px;
+}
+.settings-nav-back:hover { color: var(--text); }
 
+/* 用户卡片 + 齿轮同一行：卡片吃满剩余宽度，齿轮定宽靠右 */
 .sidebar-bottom {
   border-top: 1px solid var(--line); padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; align-items: center; gap: 6px;
 }
 .sidebar-bottom .ghost {
   padding: 6px 10px; font-size: 13px; color: var(--dim);
   background: transparent; border: none; text-align: left;
 }
 .sidebar-bottom .ghost:hover { color: var(--text); }
+/* 齿轮：纯图标按钮，颜色/hover 沿用 .ghost，这里只管尺寸和居中（同选择器权重下靠源码顺序覆盖 padding） */
+.sidebar-bottom .settings-gear {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  padding: 6px 8px;
+}
 /* 登录槽：点击进设置页账号区。低调侧栏风，不套 .ghost（那是纯文字按钮，这里要放头像） */
 .login-slot {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
   padding: 4px 10px; color: var(--dim); font-size: 12px;
   background: transparent; border: none; text-align: left; cursor: pointer;
 }

@@ -23,6 +23,10 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
 /** UI 三相：连接中 → 没会话（欢迎页）→ 聊天中 */
 type Phase = "connecting" | "welcome" | "chat";
 
+/** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
+    在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
+export type SettingsSection = "account" | "keys" | "skills";
+
 interface ChatState {
   phase: Phase;
   sessionId: string;
@@ -49,10 +53,9 @@ interface ChatState {
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
-  /** 设置页开关（覆盖在任意 phase 之上） */
-  showSettings: boolean;
-  /** skill 库页开关（与设置页同级，互斥打开） */
-  showSkills: boolean;
+  /** 设置模式当前栏目（覆盖在任意 phase 之上）；null = 不在设置模式，
+      会话高亮判断也看这个 */
+  settingsSection: SettingsSection | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
@@ -67,10 +70,11 @@ interface ChatState {
   setThinking(on: boolean): Promise<void>;
   /** /steps 指令的落点：调单 turn 步数上限（合法性由主进程把关） */
   setMaxSteps(n: number): Promise<void>;
-  openSettings(): Promise<void>;
+  /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
+      （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
+      避免用户从没去过的栏目里存着开局时的陈旧镜像 */
+  openSettings(section?: SettingsSection): Promise<void>;
   closeSettings(): void;
-  openSkills(): Promise<void>;
-  closeSkills(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
@@ -106,8 +110,7 @@ const enterChat = (info: BootInfo) => ({
   thinking: info.thinking,
   maxSteps: info.maxSteps,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
-  showSettings: false, // 侧栏点会话 = 想看聊天，覆盖页让位
-  showSkills: false,
+  settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
   error: null,
 });
 
@@ -127,8 +130,7 @@ export const useChat = create<ChatState>((set, get) => ({
   thinking: true,
   maxSteps: 8,
   replayCursor: null,
-  showSettings: false,
-  showSkills: false,
+  settingsSection: null,
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
@@ -170,18 +172,20 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async openSettings() {
-    set({ showSettings: true, showSkills: false, keyStatus: await window.otter.keyStatus() });
+  async openSettings(section = "account") {
+    // 每个栏目各自的数据刷新副作用（原 openSettings/openSkills 各自的做法，合并后照旧）：
+    // keys 栏目拉一次 keyStatus；skills 栏目重扫一次磁盘（用户随时增删 SKILL.md，镜像别太陈旧）；
+    // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的
+    if (section === "keys") {
+      set({ settingsSection: section, keyStatus: await window.otter.keyStatus() });
+    } else if (section === "skills") {
+      set({ settingsSection: section, skills: await window.otter.listSkills() });
+    } else {
+      set({ settingsSection: section });
+    }
   },
 
-  closeSettings: () => set({ showSettings: false }),
-
-  async openSkills() {
-    // 开页顺手刷新：skill 是用户随时在磁盘上增删的外部文件，镜像别太陈旧
-    set({ showSkills: true, showSettings: false, skills: await window.otter.listSkills() });
-  },
-
-  closeSkills: () => set({ showSkills: false }),
+  closeSettings: () => set({ settingsSection: null }),
 
   async saveApiKey(envName, key) {
     try {
@@ -313,8 +317,7 @@ export const useChat = create<ChatState>((set, get) => ({
       sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
       events: [],
       replayCursor: null,
-      showSettings: false,
-      showSkills: false,
+      settingsSection: null, // ＋新会话退出设置模式，回 composer
       error: null,
     }),
 
