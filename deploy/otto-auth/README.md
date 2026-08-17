@@ -347,3 +347,78 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiw
 其余密钥(`POSTGRES_PASSWORD` / `JWT_SECRET` / `SERVICE_ROLE_KEY` /
 `DASHBOARD_PASSWORD`)只在服务器的 `~/otto-supabase/docker/.env` 里,没有落
 本地盘、没进 git、这份文档也不复述。
+
+## GoTrue 挂 Google/GitHub + profiles 表(Task 3,2026-08-17)
+
+目标:Step 1(用户杂务)已完成——Google OAuth client(Web application)和
+GitHub OAuth App 已建好,回调都填的 `https://otto-auth.stan.damianslife.com/auth/v1/callback`,
+凭证已由用户 SSH 粘进服务器 `~/otto-supabase/docker/.env` 末尾的
+"Otto OAuth providers" 块(`GOTRUE_EXTERNAL_GOOGLE_*` / `GOTRUE_EXTERNAL_GITHUB_*`
+四件套)。本任务让 GoTrue 真正读到这些值,并建好 `profiles` 表。
+
+### 踩的坑:官方 compose 的 auth environment 是白名单,不会自动透传
+
+`docker-compose.yml` 里 `auth` 服务的 `environment` 是显式列出的一份键名,
+`GOTRUE_EXTERNAL_GOOGLE_*`/`GOTRUE_EXTERNAL_GITHUB_*` 只在注释掉的示例区出现,
+且示例引用的是 `${GOOGLE_ENABLED}` 这类不同的变量名——即使 `.env` 里已经填好
+了 `GOTRUE_EXTERNAL_GOOGLE_ENABLED` 等键,容器起来也读不到,因为 base 文件根本
+没有把这些键映射进 environment。
+
+修复:在 `docker-compose.override.yml`(即本 repo 的 `compose.override.yml`)
+新增 `auth` 服务的 `environment` 块,显式把 8 个键(Google/GitHub 各 4 个)映射
+进去,值仍然是 `${VAR}` 引用而不是写死——override 文件要回抄进 git,不能带密钥。
+`environment` 是 mapping 字段,compose 默认按 key 合并两个文件,不需要像
+`ports` 数组那样加 `!override` 标签。
+
+```bash
+docker compose -p otto config auth   # 确认合并后的值确实解析出来了
+docker compose -p otto up -d auth    # 重建 auth 容器
+```
+
+### 验证 302
+
+```
+$ curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" \
+  "https://otto-auth.stan.damianslife.com/auth/v1/authorize?provider=google"
+302 https://accounts.google.com/o/oauth2/v2/auth?client_id=296030727117-u5v75eqp9um9b0f2qrg9pjqfcj8qd18i.apps.googleusercontent.com&...
+
+$ curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" \
+  "https://otto-auth.stan.damianslife.com/auth/v1/authorize?provider=github"
+302 https://github.com/login/oauth/authorize?client_id=Ov23liF7TIPzTubkzFpm&...
+```
+
+两个 CLIENT_ID 都是公开值,可以出现在这份文档里;SECRET 不落盘、不进 git、
+不复述。
+
+### profiles 表
+
+`profiles.sql`(本目录)按需求书原文:`public.profiles` 表(`id` 外键指到
+`auth.users`,`on delete cascade`)+ RLS(`own profile read`/`own profile write`
+两条策略,`auth.uid() = id`)+ `handle_new_user()` 触发器函数,在
+`auth.users` 插入新行后自动建对应的 `profiles` 行(`security definer`,绕过
+RLS 写入)。
+
+执行(服务器上,psql 进 `db` 容器):
+
+```bash
+docker compose -p otto exec -T db psql -U postgres -d postgres < profiles.sql
+```
+
+验证结果:
+
+```
+$ docker compose -p otto exec -T db psql -U postgres -d postgres -c '\d public.profiles'
+                         Table "public.profiles"
+    Column    |           Type           | Collation | Nullable | Default
+--------------+--------------------------+-----------+----------+---------
+ id           | uuid                     |           | not null |
+ display_name | text                     |           |          |
+ avatar_url   | text                     |           |          |
+ created_at   | timestamp with time zone |           | not null | now()
+Policies:
+    POLICY "own profile read" FOR SELECT USING ((auth.uid() = id))
+    POLICY "own profile write" FOR UPDATE USING ((auth.uid() = id))
+
+$ # relrowsecurity = t (RLS enabled)
+$ # trigger on_auth_user_created attached to auth.users
+```
