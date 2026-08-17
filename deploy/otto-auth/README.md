@@ -222,29 +222,15 @@ dryrun 的容器和端口(8000/5432/6543)未受影响,两套栈的 docker networ
 ## TLS 部署(Task 2,2026-08-17)
 
 目标:nginx vhost 只放行 `/auth/v1/`,反代到 Task 1 的 gateway(127.0.0.1:8100),
-再用 certbot 签发 Let's Encrypt 证书。**vhost 部分已完成并验证;certbot 部分被一个
-task 2 需求书没预料到的上游拦截层挡住,未能签发证书。**
+公网走 HTTPS。**最终方案:域名 `otto-auth.stan.damianslife.com`,TLS 在上游网关
+终止(网关持通配符证书),这台 VM 上只需要 nginx 反代,不跑 certbot。** 下面先记
+第一版方案(duckdns)踩坑被否决的过程,再记最终方案。
 
-### 已完成
+### 第一版方案(`otto-auth.duckdns.org` + 本机 certbot)——已否决
 
-1. `deploy/otto-auth/nginx-otto-auth.conf` scp 到服务器
-   `/etc/nginx/sites-available/otto-auth`,`ln -s` 进 `sites-enabled/`,
-   `nginx -t` + `systemctl reload nginx`,均成功。
-2. **发现并修复一个真实 bug**:需求书 Step 1 给的 vhost 原样部署后,本机验证
-   `curl -H 'Host: otto-auth.duckdns.org' http://127.0.0.1/auth/v1/health` 返回
-   `426 Upgrade Required`,不是预期的 200 JSON。直接绕过 nginx 打 gateway
-   (`curl http://127.0.0.1:8100/auth/v1/health`)是正常的 200,说明问题出在
-   nginx→gateway 这一跳。原因:nginx 的 `proxy_pass` 默认用 HTTP/1.0 转发给
-   上游,Envoy 网关对 HTTP/1.0 请求直接回 426。加一行 `proxy_http_version 1.1;`
-   后,同样的本机验证变成 200 JSON(`{"version":"v2.189.0","name":"GoTrue",...}`),
-   `/` 仍是 404。archive 的 conf 文件已经是修复后的版本。
-3. `certbot` + `python3-certbot-nginx` 通过 `apt-get` 装好(版本 2.9.0-1),不需要
-   snap。`certbot.timer` systemd timer 已确认存在(`systemctl list-timers` 能看到,
-   包安装时自带,不用手动建)。
-
-### 未完成 / 被阻塞:certbot 签发证书失败,根因是上游拦截层
-
-`sudo certbot --nginx -d otto-auth.duckdns.org` 报:
+需求书原计划:这台 VM 自己装 certbot,给 `otto-auth.duckdns.org` 签 Let's
+Encrypt 证书。vhost 部署本身没问题(过程中还顺手修了一个真 bug,见下一节),但
+`sudo certbot --nginx -d otto-auth.duckdns.org` 一直卡在:
 
 ```
 Domain: otto-auth.duckdns.org
@@ -272,44 +258,85 @@ Detail: 65.109.113.168: Invalid response from
   `~/Github/atlas-dashboard` 明显是同一套个人基础设施的命名。
 - 从这台 VPS 内部直接探测网关 `10.162.249.1`(它的 `80`/`443`/`22` 全通),打
   `curl http://10.162.249.1/` 拿到的是**一模一样的 catch-all 404**——证实这个
-  网关就是那层反代本体,otto-auth.duckdns.org 目前没有在它的路由表里登记,所以
-  落到了它的默认 catch-all 分支,根本没有转发到这台 VPS 的 `10.162.249.10:80`。
-  这也是为什么 Let's Encrypt 的 HTTP-01 挑战会拿到 404:LE 服务器打的请求同样
-  被这层网关截胡了,从没到过这台机器上刚部署好的 vhost。
+  网关就是那层反代本体,`otto-auth.duckdns.org` 没有在它的路由表里登记,落到了
+  默认 catch-all 分支,根本没有转发到这台 VPS 的 `10.162.249.10:80`。
 
-**这超出了 task-2-brief.md 给的范围**(需求书假设"域名已经解析到这台机、只需要在
-这台机上配 nginx+certbot 就够了",没预料到公网前面还有一层需要单独登记路由的
-反代)。Certbot 尝试失败后已自动回滚了它对 vhost 的临时改动,当前
-`/etc/nginx/sites-available/otto-auth` 干净,和本 repo 存档的
-`nginx-otto-auth.conf` 一致,`nginx -t` 通过,没有留下损坏状态。
+结论(Stan 确认):这个网关只对**手动登记的规则**放行,duckdns 这个域名没登记
+过;进一步实测连高位端口也全被这个网关滤掉(不是"换个端口就能绕过去"),说明
+"手动加一条转发规则"是这条路唯一的出口。协调后 Stan 选择改用另一个域名——见
+下一节。Certbot 当时失败后已自动回滚了它对 vhost 的临时改动,没有留下损坏状态,
+`python3-certbot-nginx` 包和 `certbot.timer` 仍留在系统上(装都装了,不影响其他
+域名将来要用 certbot 的场景,不必卸载)。
 
-**下一步需要谁来处理**:需要有权限管理那层上游反代路由表的人(大概率是
-`~/Github/atlas-dashboard` 或类似位置管理的 Stan 个人网关),给
-`otto-auth.duckdns.org` 加一条转发规则指向这台 VPS(`10.162.249.10:80`,或者它
-认的其他内网寻址方式)。路由生效后,重跑
-`sudo certbot --nginx -d otto-auth.duckdns.org --non-interactive --agree-tos -m stanhavenoidea@gmail.com`
-应该就能签发成功(nginx vhost 本身已经验证是对的);证书装上后按需求书注释,
-`certbot --nginx` 会自动改写这份 vhost 加 443 server block + 80→443 跳转,记得把
-改写后的最终版回抄进本文件替换当前版本。
+### 最终方案(2026-08-17 当天改):`otto-auth.stan.damianslife.com` + 网关代管 TLS
 
-### 验证记录(本机 / VPS 内部,截至 2026-08-17,均在 nginx 加了 `proxy_http_version 1.1` 修复之后)
+Stan 实测发现这个网关持有 `*.stan.damianslife.com` 的通配符 Let's Encrypt 证书,
+任意子域自动放行——不需要在网关侧单独登记规则。网关在 443 终止 TLS 后,以**明文
+HTTP** 转发到这台 VM 的 80(`access.log` 能看到来源 IP 是网关自己的
+`10.162.249.1`)。
+
+**接受的 trade-off**:网关→这台 VM 这一跳是明文 HTTP,不是这台 VM 自己签证书、
+自己终止 TLS。风险面:同一私网 `10.162.249.0/24` 内如果有恶意方能嗅探流量,
+`/auth/v1/` 的请求体(含 OAuth code、token 相关内容)理论上能被看到。判断为可接受
+——这段私网是 Stan 自己的基础设施(前面探测过网关本身、`10.162.249.1`,和
+`atlas-dashboard` 明显同源),不是公共云的共享二层网络;而且这正是网关持
+通配符证书这类架构的标准做法(TLS 在边缘终止,内网明文),不是这次任务专门放宽
+的口子。
+
+改动:
+
+1. **nginx vhost**:`server_name` 改成 `otto-auth.stan.damianslife.com`,继续
+   只监听 80、只放行 `/auth/v1/`、其余 404,保留 `proxy_http_version 1.1` 修复。
+   **不再需要 certbot**。`X-Forwarded-Proto` 改成透传网关传来的值
+   (`proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;`),不写死
+   `$scheme`——这一跳本身是 `http`,写死 `$scheme` 反而会把网关侧"客户端用的是
+   https"这个真实信息丢掉。GoTrue 出绝对 URL 靠 `API_EXTERNAL_URL`,不依赖这个头,
+   所以这个选择对 GoTrue 行为无影响,纯粹是为了给以后可能读这个头的中间件留一份
+   准确信息。
+2. **服务器 `~/otto-supabase/docker/.env`**:`SITE_URL` / `API_EXTERNAL_URL` /
+   `SUPABASE_PUBLIC_URL` 三个和两个 `GOTRUE_EXTERNAL_{GOOGLE,GITHUB}_REDIRECT_URI`
+   全部从 `otto-auth.duckdns.org` 改成 `otto-auth.stan.damianslife.com`(改前
+   `cp .env .env.bak-domain-migration-<timestamp>` 备份)。`API_EXTERNAL_URL`
+   保留 `/auth/v1` 后缀(Task 1 就定下来的既有决定)。`CLIENT_ID`/`SECRET` 的
+   `FILL_ME` 占位符没有动,等用户去 Google/GitHub 控制台建好 OAuth app 后自己填。
+   `docker compose -p otto up -d` 重建了受影响的容器
+   (`studio`/`auth`/`storage`/`api-gw`/`functions` 等,按 compose 依赖图自动判定)。
+
+### 验证记录(2026-08-17,最终方案生效后)
+
+服务器本机(经 nginx,Host 头模拟):
 
 ```
-$ ssh -p 2222 stan@65.109.113.168
-$ curl -s -H 'Host: otto-auth.duckdns.org' -H "apikey: $ANON_KEY" http://127.0.0.1/auth/v1/health
+$ curl -s -H 'Host: otto-auth.stan.damianslife.com' -H "apikey: $ANON_KEY" http://127.0.0.1/auth/v1/health
 {"version":"v2.189.0","name":"GoTrue","description":"GoTrue is a user registration and authentication API"}
-$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: otto-auth.duckdns.org' http://127.0.0.1/
-404
+$ curl -s -H 'Host: otto-auth.stan.damianslife.com' http://127.0.0.1/
+<html><head><title>404 Not Found</title></head>...<hr><center>nginx/1.24.0 (Ubuntu)</center>...
 ```
 
-公网验证(Mac 直连,预期 TLS 生效前会失败,记录为已知阻塞项,非本机配置问题):
+Mac 直连公网(真实验收):
 
 ```
-$ curl -s https://otto-auth.duckdns.org/auth/v1/health
-# 404(上游 catch-all 网关应答,不是这台 VPS,见上文根因分析)
-$ curl -s -o /dev/null -w '%{http_code}\n' http://otto-auth.duckdns.org/
-# 404(同上,未验证到 "301 跳转到 https" —— 因为 certbot 从未成功改写出这个跳转)
+$ curl -s https://otto-auth.stan.damianslife.com/auth/v1/health -H "apikey: $ANON_KEY"
+{"version":"v2.189.0","name":"GoTrue","description":"GoTrue is a user registration and authentication API"}
+HTTP_STATUS:200
+
+$ curl -s https://otto-auth.stan.damianslife.com/
+<html><head><title>404 Not Found</title></head>...<hr><center>nginx/1.24.0 (Ubuntu)</center>...
+HTTP_STATUS:404
 ```
+
+关键确认点:公网收到的 404 响应体是**这台 VM 上 nginx 自己的默认 404 页**
+(`<hr><center>nginx/1.24.0 (Ubuntu)</center>`),不是第一版方案里网关那个"深色
+背景 + Outfit/Inter 字体"的 catch-all 页——证明公网流量这次真的转发到了这台 VM,
+而不是被网关短路应答。
+
+```
+$ curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" http://otto-auth.stan.damianslife.com/auth/v1/health
+301 https://otto-auth.stan.damianslife.com/auth/v1/health
+```
+
+`http://` 在网关侧就跳转到了 `https://`(网关行为,不是这台 VM 配的——这台 VM
+上的 nginx 只监听 80,没有配任何跳转)。
 
 ## ANON_KEY(公开值,Task 5 客户端要用)
 
