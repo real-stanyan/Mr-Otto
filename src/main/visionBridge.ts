@@ -11,8 +11,9 @@ import type { UserAttachmentRef } from "../session/events.js";
 export const VISION_BRIDGE_MODEL = "glm-4.6v-flash";
 
 /** 429 重试节奏(ms)。免费档高峰限流是瞬态错(智谱 code 1305「访问量过大」),
-    退避两次再放弃——放弃后照旧 turn 失败,用户看得到原始错误 */
-const RETRY_DELAYS_MS = [1500, 4000];
+    实测高峰期逐次成功率仅 ~1/3,两段退避常耗尽——加密到五段(总窗 ~35s)
+    穿过拥堵;放弃后照旧 turn 失败,用户看得到原始错误 */
+const RETRY_DELAYS_MS = [1500, 3000, 6000, 10000, 15000];
 
 /** 组装根注入附件读取器,返回代读函数。
     userText 一并交给视觉模型——带着问题读图,解析才有针对性,不是干巴巴 OCR。

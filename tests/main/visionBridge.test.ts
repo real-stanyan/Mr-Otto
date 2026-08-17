@@ -56,7 +56,7 @@ describe("visionBridge 429 重试", () => {
     );
     await expect(describeImages([ref], "看图")).resolves.toBe("解析成功");
     expect(calls).toBe(3);
-    expect(slept).toEqual([1500, 4000]);
+    expect(slept).toEqual([1500, 3000]);
   });
 
   it("持续 429 → 重试耗尽后抛原始错误", async () => {
@@ -65,7 +65,7 @@ describe("visionBridge 429 重试", () => {
     })));
     const describeImages = createVisionBridge(() => new Uint8Array([1]), async () => {});
     await expect(describeImages([ref], "看图")).rejects.toThrow(/429/);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(6);
   });
 
   it("非 429(如 401 无 key)不重试,一击即抛", async () => {
