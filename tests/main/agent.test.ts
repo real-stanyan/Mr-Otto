@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAgent } from "../../src/main/agent.js";
 import { EventStore } from "../../src/session/store.js";
+import { AttachmentStore } from "../../src/session/attachments.js";
 import { createModeAwareApprover, type ApprovalMode } from "../../src/main/uiApprover.js";
 import type { Approver } from "../../src/loop/approvalGate.js";
 import type { AgentPush } from "../../src/main/agent.js";
@@ -8,11 +12,13 @@ import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
+// 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
+const attachments = new AttachmentStore(mkdtempSync(join(tmpdir(), "otter-agent-test-")));
 
 describe("createAgent 会话生命周期", () => {
   it("新建：日志第 0 条 = session_created，带 workspace", () => {
     const store = new EventStore(":memory:");
-    const agent = createAgent({ store, workspace: "/proj/x", push });
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
     const log = store.load(agent.sessionId);
     expect(log).toHaveLength(1);
@@ -25,7 +31,7 @@ describe("createAgent 会话生命周期", () => {
     store.append({ sessionId: "s-old", ts: 1, type: "session_created", workspace: "/proj/x" });
     store.append({ sessionId: "s-old", ts: 2, type: "user_message", content: "上次聊到哪了" });
 
-    const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-old" });
+    const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-old", attachments });
 
     expect(agent.sessionId).toBe("s-old");
     expect(store.load("s-old")).toHaveLength(2); // 一条没多
@@ -39,6 +45,7 @@ describe("createAgent 会话生命周期", () => {
       store,
       workspace: "/proj/x",
       push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
+      attachments,
     });
 
     agent.switchModel("glm-4.5-flash");
@@ -61,7 +68,7 @@ describe("createAgent 会话生命周期", () => {
       sessionId: "s-m", ts: 3, type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro",
     });
 
-    const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-m" });
+    const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-m", attachments });
     expect(agent.model).toBe("deepseek-v4-pro");
     store.close();
   });
@@ -157,7 +164,7 @@ describe("UIApprover 中断（ADR-0006）", () => {
 describe("agent 运行时偏好（审批模式 / thinking）", () => {
   it("默认值安全：审批模式 ask、thinking 开；setter 生效", () => {
     const store = new EventStore(":memory:");
-    const agent = createAgent({ store, workspace: "/proj/x", push });
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
     expect(agent.approvalMode).toBe("ask");
     expect(agent.thinking).toBe(true);
@@ -193,6 +200,7 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
     createAgent({
       store, workspace: "/w", resumeSessionId: "s-x",
       push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
+      attachments,
     });
 
     const last = store.load("s-x").at(-1);
@@ -205,7 +213,7 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
   it("无 started 的悬空调用：文案说执行器未达", () => {
     const store = new EventStore(":memory:");
     crashedLog(store, false);
-    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push, attachments });
     expect((store.load("s-x").at(-1) as { output: string }).output).toContain("世界未被此调用变更");
     store.close();
   });
@@ -213,9 +221,9 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
   it("幂等：修过再 resume 不重复追加", () => {
     const store = new EventStore(":memory:");
     crashedLog(store, true);
-    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push, attachments });
     const afterFirst = store.load("s-x").length;
-    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push });
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push, attachments });
     expect(store.load("s-x")).toHaveLength(afterFirst);
     store.close();
   });

@@ -2,6 +2,7 @@
 // 刻意不 import electron：接缝都是回调，Electron 接线在 index.ts。
 
 import { EventStore } from "../session/store.js";
+import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
 import { resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
@@ -45,6 +46,8 @@ export function createAgent(opts: {
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
+  /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
+  attachments: AttachmentStore;
 }) {
   const { store } = opts;
 
@@ -122,6 +125,7 @@ export function createAgent(opts: {
       model: choice.model,
       // 支持开关的型号才带 thinking 字段——别给不认识它的 API 发陌生参数
       ...(choice.supportsThinking ? { thinking } : {}),
+      readAttachment: (id) => opts.attachments.read(id),
     });
 
   const engine = new LoopEngine({

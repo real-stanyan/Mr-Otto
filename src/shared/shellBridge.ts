@@ -6,7 +6,7 @@
 //   请求/响应（renderer 问，main 答）：boot / sendMessage / decideApproval
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
-import type { SessionEvent, ToolCallRequest } from "../session/events.js";
+import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { SessionSummary } from "../session/store.js";
 
 export type { SessionSummary };
@@ -47,6 +47,19 @@ export interface SkillInfo {
   source: string;
   content: string;
 }
+
+/** ＋ 按钮选完文件、主进程分类后的暂存项(渲染层 chips 用)。
+    图片已即刻入库(取消发送 = 无害孤儿,内容寻址重发自动复用);
+    文本内容暂存在渲染层,发送时经 OutgoingAttachment travel 回主进程 */
+export type StagedAttachment =
+  | { kind: "image"; ref: UserAttachmentRef; previewDataUrl: string }
+  | { kind: "text"; name: string; content: string; bytes: number }
+  | { kind: "rejected"; name: string; reason: string };
+
+/** 发送时随消息走的附件(rejected 不上车) */
+export type OutgoingAttachment =
+  | { kind: "image"; ref: UserAttachmentRef }
+  | { kind: "text"; name: string; content: string };
 
 export interface BootInfo {
   sessionId: string;
@@ -141,6 +154,11 @@ export interface ShellBridge {
   setApiKey(envName: string, key: string): Promise<void>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
+      用户取消 = 空数组 */
+  pickAttachments(): Promise<StagedAttachment[]>;
+  /** 按附件 id 取 data URL(时间线缩略图懒取用)。只回展示用途,不进日志 */
+  attachmentDataUrl(id: string): Promise<string>;
   /** 当前登录账号（未登录 = signedIn: false 的空账号，不是 null） */
   getAccount(): Promise<AccountInfo>;
   /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
@@ -151,7 +169,12 @@ export interface ShellBridge {
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
       落 skill_invoked 事件，找不到则整条拒发 */
-  sendMessage(sessionId: string, text: string, skill?: string): Promise<void>;
+  sendMessage(
+    sessionId: string,
+    text: string,
+    skill?: string,
+    attachments?: OutgoingAttachment[]
+  ): Promise<void>;
   /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
       生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
   stopTurn(sessionId: string): Promise<void>;
@@ -193,6 +216,8 @@ export const CHANNELS = {
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",
+  pickAttachments: "otter:pickAttachments",
+  attachmentDataUrl: "otter:attachmentDataUrl",
   stopTurn: "otter:stopTurn",
   compact: "otter:compact",
   decideApproval: "otter:decideApproval",
