@@ -359,9 +359,24 @@ function AttachmentThumb({ id, name }: { id: string; name?: string | undefined }
 function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
   switch (event.type) {
     case "user_message":
+      // 文本文件渲染成折叠卡片,不摊开全文——全文是给模型的(投影时拼进上下文),
+      // 气泡里只亮"带了什么文件";点开可核对快照内容
       return (
         <div className="row user">
           {event.content}
+          {event.textFiles && event.textFiles.length > 0 && (
+            <div className="user-files">
+              {event.textFiles.map((f, i) => (
+                <details className="user-file" key={i}>
+                  <summary>
+                    📄 {f.name}
+                    <span className="user-file-size">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
+                  </summary>
+                  <div className="user-file-body">{f.content}</div>
+                </details>
+              ))}
+            </div>
+          )}
           {event.attachments && event.attachments.length > 0 && (
             <div className="user-attachments">
               {event.attachments.map((a) => (

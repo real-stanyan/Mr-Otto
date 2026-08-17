@@ -173,6 +173,29 @@ describe("LoopEngine", () => {
     expect(evt).not.toHaveProperty("attachments");
     store.close();
   });
+
+  it("runTurn 带 textFiles：结构化落 user_message.textFiles,content 保持纯正文（钉住焊点）", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "读了" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    const file = { name: "notes.txt", content: "第一行\n第二行", bytes: 16 };
+    await engine.runTurn("看文件", [], [file]);
+
+    const evt = store.load("s1").find((e) => e.type === "user_message");
+    expect(evt).toMatchObject({ content: "看文件", textFiles: [file] });
+    store.close();
+  });
+
+  it("runTurn 不传 textFiles（空数组）：user_message 事件不带 textFiles 字段（旧日志形状不变）", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "好" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("hi", [], []);
+
+    const evt = store.load("s1").find((e) => e.type === "user_message");
+    expect(evt).not.toHaveProperty("textFiles");
+    store.close();
+  });
 });
 
 describe("LoopEngine.compact", () => {

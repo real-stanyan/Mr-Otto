@@ -17,6 +17,18 @@ export interface UserMessageEvent extends SessionEventBase {
   content: string;
   /** 图片附件引用。可选 = 旧日志照常重放(schema 向后兼容硬规则) */
   attachments?: UserAttachmentRef[];
+  /** 文本文件附件(全文快照,同 skill_invoked 语义:日志自包含,原文件改/删
+      不影响重放)。结构化存而不内联进 content——content 保持纯用户正文,
+      UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
+      再拼全文。可选 = 旧日志照常重放 */
+  textFiles?: UserTextFile[];
+}
+
+/** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
+export interface UserTextFile {
+  name: string;    // basename,剥过路径
+  content: string; // 全文
+  bytes: number;   // 原始大小(展示用)
 }
 
 /** 用户消息附件引用(图片)。bytes 本体在附件库(userData/attachments),

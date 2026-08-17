@@ -153,3 +153,16 @@ export interface UserChatMessage {
   投影注入为 user 文本;adapter 把 image_ref 换占位文本(也兜住发图后
   切纯文本模型的历史)
 - 代读失败 = turn 失败,零事件落盘——不静默装看过
+
+## 追记(2026-08-17,文本文件结构化)
+
+原设计「文本文件发送时全文内联进 content」实测后被用户推翻:气泡里摊开
+全文,消息不可读。新行为:
+
+- `UserMessageEvent` 加可选 `textFiles: {name, content, bytes}[]`(纯新增,
+  向后兼容);content 保持纯用户正文
+- 快照语义不变:全文仍进日志(不进附件库),原文件改/删不影响重放
+- 模型口径由 `composeUserText`(deriveMessages 导出)统一拼接:投影与
+  vision-bridge 共用,模型看到的全文与从前逐字节一致
+- UI:气泡里渲染 📄 文件卡片(名字+大小,默认折叠,点开核对快照)
+- 旧日志(已内联的历史消息)照常摊开显示——事实不改写

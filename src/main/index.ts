@@ -14,7 +14,8 @@ import {
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { UserAttachmentRef } from "../session/events.js";
+import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
+import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
@@ -324,9 +325,10 @@ void app.whenReady().then(() => {
         if (!found) throw new Error(`skill 不存在: ${skill}`);
         invoked = { name: found.name, content: found.content };
       }
-      // 文本文件内联进 content(快照语义,同 skill_invoked:日志自包含,原文件
-      // 后续改/删不影响重放);图片只走 ref。二者都在落盘前拼好——先落盘再喂模型
-      let full = text;
+      // 文本文件结构化存进事件 textFiles(快照语义,同 skill_invoked:日志自
+      // 包含,原文件后续改/删不影响重放)——不内联进 content,UI 才能渲染成
+      // 文件卡片而不是摊开全文;模型投影时由 composeUserText 拼全文。图片只走 ref
+      const textFiles: UserTextFile[] = [];
       const refs: UserAttachmentRef[] = [];
       // 渲染层送来的 OutgoingAttachment 是不可信输入——形状必须在这把关。
       // 坏形状（undefined/缺 id/id 非法）一旦被 push 进 refs，会原样存进
@@ -340,7 +342,11 @@ void app.whenReady().then(() => {
           if (typeof a.name !== "string" || typeof a.content !== "string") {
             throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
           }
-          full += `\n\n[用户附上文件「${a.name}」,内容如下]\n${a.content}`;
+          textFiles.push({
+            name: a.name,
+            content: a.content,
+            bytes: Buffer.byteLength(a.content, "utf8"),
+          });
         } else if (
           a.kind === "image" &&
           a.ref &&
@@ -365,16 +371,18 @@ void app.whenReady().then(() => {
         // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
         // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
         // "模型看不见图还装看过"
+        // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
+        const modelText = composeUserText(text, textFiles);
         if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
           const describeImages = createVisionBridge((id) => attachmentStore.read(id));
-          const described = await describeImages(refs, full);
+          const described = await describeImages(refs, modelText);
           const descEvent = store.append({
             sessionId, ts: Date.now(), type: "image_described",
             content: described, model: VISION_BRIDGE_MODEL,
           });
           win.webContents.send(CHANNELS.event, descEvent);
         }
-        await agent.engine.runTurn(full, refs);
+        await agent.engine.runTurn(text, refs, textFiles);
       } finally {
         runningSessions.delete(sessionId);
         win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });

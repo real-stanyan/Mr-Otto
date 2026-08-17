@@ -919,5 +919,20 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
 .attach-error { color: var(--err); font-size: 12px; }
 
 .user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* 文本文件卡片:气泡里只亮文件名+大小,点开核对全文快照 */
+.user-files { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.user-file {
+  background: rgba(255, 255, 255, 0.06); border-radius: 6px;
+  padding: 4px 8px; font-size: 12px;
+}
+.user-file summary { cursor: pointer; color: var(--dim); list-style: none; }
+.user-file summary::-webkit-details-marker { display: none; }
+.user-file[open] summary { margin-bottom: 4px; }
+.user-file-size { opacity: 0.7; margin-left: 4px; }
+.user-file-body {
+  white-space: pre-wrap; word-break: break-word; max-height: 240px;
+  overflow-y: auto; color: var(--dim); font-size: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 4px;
+}
 .attach-thumb { max-width: 200px; max-height: 160px; border-radius: 6px; display: block; }
 .attach-lost, .attach-loading { opacity: 0.6; font-size: 12px; color: var(--dim); }

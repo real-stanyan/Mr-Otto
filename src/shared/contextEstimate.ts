@@ -46,6 +46,8 @@ export function contextUsed(events: SessionEvent[]): number {
     switch (e.type) {
       case "user_message":
         pending += estimateTokens(e.content);
+        // 文本文件全文随投影进上下文(composeUserText),得计
+        for (const f of e.textFiles ?? []) pending += estimateTokens(f.content);
         break;
       case "tool_result":
         pending += estimateTokens(e.output);

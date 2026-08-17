@@ -1,7 +1,18 @@
 // deriveMessages — 从事件日志投影出模型上下文（OpenAI-compatible 消息格式）
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
-import type { SessionEvent } from "./events.js";
+import type { SessionEvent, UserTextFile } from "./events.js";
+
+/** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
+    (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
+    模型上下文用这里拼的全文。拼法唯一出口:投影和 vision-bridge 共用 */
+export function composeUserText(content: string, textFiles?: UserTextFile[]): string {
+  let full = content;
+  for (const f of textFiles ?? []) {
+    full += `\n\n[用户附上文件「${f.name}」,内容如下]\n${f.content}`;
+  }
+  return full;
+}
 
 // ─── 目标格式：OpenAI-compatible ChatMessage ───────────────
 
@@ -150,16 +161,18 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
 
   for (const [i, event] of events.entries()) {
     switch (event.type) {
-      case "user_message":
+      case "user_message": {
         // 有图片附件 → parts 数组(text + image_ref);没有 → string 原样,
         // 老日志投影逐字节不变(测试钉住)。附件消息不参与压缩截断:
-        // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)
+        // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)。
+        // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)
+        const text = composeUserText(event.content, event.textFiles);
         messages.push(
           event.attachments && event.attachments.length > 0
             ? {
                 role: "user",
                 content: [
-                  { type: "text", text: event.content },
+                  { type: "text", text },
                   ...event.attachments.map((a) => ({
                     type: "image_ref" as const,
                     id: a.id,
@@ -167,9 +180,10 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
                   })),
                 ],
               }
-            : { role: "user", content: event.content }
+            : { role: "user", content: text }
         );
         break;
+      }
 
       case "assistant_message":
         messages.push({

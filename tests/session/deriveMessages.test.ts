@@ -355,6 +355,40 @@ describe("user_message 附件投影(file-input-v1)", () => {
     ];
     expect(deriveMessages(events)).toEqual([{ role: "user", content: "老消息" }]);
   });
+
+  it("带 textFiles → 全文拼进模型可见文本(content 里存的是纯正文)", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "总结这个文件",
+        textFiles: [{ name: "notes.txt", content: "第一行\n第二行", bytes: 16 }],
+      },
+    ];
+    expect(deriveMessages(events)).toEqual([
+      {
+        role: "user",
+        content: "总结这个文件\n\n[用户附上文件「notes.txt」,内容如下]\n第一行\n第二行",
+      },
+    ]);
+  });
+
+  it("textFiles + 图片 attachments 并存 → text part 是拼好的全文", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "对照图和文件",
+        attachments: [{ id: "sha256:" + "b".repeat(64), mediaType: "image/jpeg", bytes: 5 }],
+        textFiles: [{ name: "a.md", content: "# 标题", bytes: 8 }],
+      },
+    ];
+    expect(deriveMessages(events)).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "对照图和文件\n\n[用户附上文件「a.md」,内容如下]\n# 标题" },
+          { type: "image_ref", id: "sha256:" + "b".repeat(64), mediaType: "image/jpeg" },
+        ],
+      },
+    ]);
+  });
 });
 
 describe("image_described 投影(vision-bridge)", () => {
