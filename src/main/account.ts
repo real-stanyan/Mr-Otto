@@ -6,6 +6,9 @@
 // 真 client（createClient + pkce + authStorage）的组装被隔离进 createSupabaseAuthClient
 // 这一个工厂函数——它是本文件唯一会碰 @supabase/supabase-js 真实构造器和文件路径的地方，
 // 单测永远只注入 SupabaseLike 假实现，不实例化真 client、不发网络请求。
+//
+// Task 6 接线形态（控制者裁决，client 必填）：
+//   new AccountManager({ openExternal, onChange, client: createSupabaseAuthClient(path) })
 
 import { createClient } from "@supabase/supabase-js";
 import { createAuthStorage } from "./authStorage.js";
@@ -35,6 +38,16 @@ export type SupabaseLike = {
 };
 
 const REDIRECT_TO = "mrotto://auth-callback";
+
+/** supabase error（形态不定，AuthError 或任意 unknown）→ 可读消息 */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(error);
+}
 
 /** mrotto 深链或 loopback 回调 URL 里提取 code；非回调 URL（含无 code）一律 null */
 export function parseAuthCallback(url: string): string | null {
@@ -97,39 +110,45 @@ export class AccountManager {
   private readonly client: SupabaseLike;
   private account: AccountInfo = EMPTY_ACCOUNT;
 
-  constructor(deps: { openExternal(url: string): void; onChange(info: AccountInfo): void; client?: SupabaseLike }) {
-    if (!deps.client) {
-      // 真 client 需要落盘路径（userData 下的具体位置由接线层决定），
-      // 这里不替调用方猜路径——缺 client 时直接报错，指向 createSupabaseAuthClient(filePath)。
-      throw new Error(
-        "AccountManager 需要注入 client：用 createSupabaseAuthClient(filePath) 构造真 client，或测试里传假实现"
-      );
-    }
+  constructor(deps: { openExternal(url: string): void; onChange(info: AccountInfo): void; client: SupabaseLike }) {
     this.openExternal = deps.openExternal;
     this.onChange = deps.onChange;
     this.client = deps.client;
   }
 
   async signIn(provider: "google" | "github"): Promise<void> {
-    const { data } = await this.client.auth.signInWithOAuth({
+    const { data, error } = await this.client.auth.signInWithOAuth({
       provider,
       options: { redirectTo: REDIRECT_TO, skipBrowserRedirect: true },
     });
-    if (data.url) {
-      this.openExternal(data.url);
+    if (error) {
+      throw new Error(errorMessage(error));
     }
+    if (!data.url) {
+      throw new Error("signInWithOAuth 未返回授权 URL");
+    }
+    this.openExternal(data.url);
   }
 
   async handleCallback(url: string): Promise<void> {
     const code = parseAuthCallback(url);
     if (!code) return;
-    const { data } = await this.client.auth.exchangeCodeForSession(code);
+    const { data, error } = await this.client.auth.exchangeCodeForSession(code);
+    if (error) {
+      // 失败不调 onChange——不能让"换 session 失败"看起来像"正常登出"，
+      // 两者对调用方而言必须可区分。
+      throw new Error(errorMessage(error));
+    }
     this.account = toAccountInfo(data.user);
     this.onChange(this.account);
   }
 
   async signOut(): Promise<void> {
-    await this.client.auth.signOut();
+    const { error } = await this.client.auth.signOut();
+    if (error) {
+      // 服务端登出失败不阻塞本地登出：本地状态永远清空，服务端 session 交给自然过期。
+      console.error("AccountManager.signOut：服务端 signOut 失败，仅清本地状态", error);
+    }
     this.account = EMPTY_ACCOUNT;
     this.onChange(this.account);
   }

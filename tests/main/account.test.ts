@@ -93,7 +93,7 @@ describe("toAccountInfo", () => {
   });
 });
 
-function fakeClient(overrides?: Partial<SupabaseLike>): SupabaseLike {
+function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): SupabaseLike {
   return {
     auth: {
       signInWithOAuth: vi.fn(async () => ({ data: { url: "https://oauth.example/authorize" }, error: null })),
@@ -126,6 +126,37 @@ describe("AccountManager", () => {
       options: { redirectTo: "mrotto://auth-callback", skipBrowserRedirect: true },
     });
     expect(openExternal).toHaveBeenCalledWith("https://oauth.example/authorize");
+  });
+
+  it("signIn：signInWithOAuth 回 error → throw，不调 openExternal", async () => {
+    const client = fakeClient({
+      auth: {
+        signInWithOAuth: vi.fn(async () => ({
+          data: { url: null },
+          error: { message: "oauth provider rejected" },
+        })),
+      },
+    });
+    const openExternal = vi.fn();
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal, onChange, client });
+
+    await expect(manager.signIn("google")).rejects.toThrow("oauth provider rejected");
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("signIn：data.url 为空但无 error → throw，不调 openExternal", async () => {
+    const client = fakeClient({
+      auth: {
+        signInWithOAuth: vi.fn(async () => ({ data: { url: null }, error: null })),
+      },
+    });
+    const openExternal = vi.fn();
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal, onChange, client });
+
+    await expect(manager.signIn("google")).rejects.toThrow();
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
   it("handleCallback 提取 code 后 exchangeCodeForSession，成功后 onChange 收到 signedIn=true", async () => {
@@ -163,6 +194,27 @@ describe("AccountManager", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("handleCallback：exchangeCodeForSession 回 error → throw，不调 onChange（失败不能伪装成登出态）", async () => {
+    const client = fakeClient({
+      auth: {
+        exchangeCodeForSession: vi.fn(async () => ({
+          data: { user: null },
+          error: { message: "invalid or expired code" },
+        })),
+      },
+    });
+    const openExternal = vi.fn();
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal, onChange, client });
+
+    await expect(manager.handleCallback("mrotto://auth-callback?code=bad")).rejects.toThrow(
+      "invalid or expired code"
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    // 失败态下 getAccount 仍是初始空账户——不能读出一个"看似登出"的假状态
+    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+  });
+
   it("signOut 调 client.auth.signOut 后 onChange 收到 signedIn=false", async () => {
     const client = fakeClient();
     const openExternal = vi.fn();
@@ -187,6 +239,30 @@ describe("AccountManager", () => {
       name: "",
       avatarUrl: "",
     });
+  });
+
+  it("signOut：服务端 signOut 回 error → 仍清本地状态、仍调 onChange，只 console.error 记录", async () => {
+    const client = fakeClient({
+      auth: {
+        signOut: vi.fn(async () => ({ error: { message: "network unreachable" } })),
+      },
+    });
+    const openExternal = vi.fn();
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal, onChange, client });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await manager.handleCallback("mrotto://auth-callback?code=abc123");
+    onChange.mockClear();
+
+    await manager.signOut();
+
+    expect(client.auth.signOut).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledWith({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+
+    consoleErrorSpy.mockRestore();
   });
 
   it("getAccount 初始状态为 signedIn=false", () => {
