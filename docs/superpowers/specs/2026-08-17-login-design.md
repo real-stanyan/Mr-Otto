@@ -2,6 +2,14 @@
 
 日期:2026-08-17　状态:已批准(会话内)
 
+**变更记录**:2026-08-17 用户改选网关通配符子域(`otto-auth.stan.damianslife.com`
+替换 `otto-auth.duckdns.org`)。原因:duckdns 域名前面的网关只对手动登记的规则
+放行,`otto-auth.duckdns.org` 从未登记过,实测连高位端口也被网关滤掉;
+`*.stan.damianslife.com` 网关持有通配符 Let's Encrypt 证书,任意子域自动放行,
+443 在网关终止 TLS 后以明文 HTTP 转发到这台 VM 的 80。连带影响:这台 VM 上
+**不再需要 certbot**,TLS 由网关代管——Task 2 原计划的"nginx + certbot"缩成
+"nginx 反代"。详见 `deploy/otto-auth/README.md`「TLS 部署」。
+
 ## 目的与范围
 
 登录换来的身份将来用于:①同步用户配置的模型 API Key ②同步会话 ③同步 skill,
@@ -22,14 +30,14 @@
 - 机上已有:dryrun 项目的 Supabase 全家桶(Kong `127.0.0.1:8000`、pooler
   `127.0.0.1:5432/6543`)、glitchtip(`127.0.0.1:8080`)、n8n(`0.0.0.0:5678`)、
   nginx(80,仅 default 站点,无 TLS)
-- 域名:`otto-auth.duckdns.org` → `65.109.113.168`(已验证解析,无 AAAA)
+- 域名:`otto-auth.stan.damianslife.com` → `65.109.113.168`(已验证解析,无 AAAA)
 
 ## 服务器侧
 
 - **第二套 Supabase 栈**(官方 docker compose,项目名 `otto`),与 dryrun 完全隔离。
   端口错开且全部只绑 `127.0.0.1`:Kong → `8100`,pooler → `5433/6544`。
   不与 dryrun 共用 auth.users(GoTrue 用户表是实例级的,共用将来拆不开)
-- **nginx** vhost `otto-auth.duckdns.org` 反代 Kong(8100);**certbot** 签
+- **nginx** vhost `otto-auth.stan.damianslife.com` 反代 Kong(8100);**certbot** 签
   Let's Encrypt,强制 HTTPS
 - **GoTrue**:开 Google + GitHub 两个 external provider;**关闭邮箱密码注册**
   (只走 OAuth);`SITE_URL` / `URI_ALLOW_LIST` 放行 `mrotto://auth-callback`
@@ -69,13 +77,13 @@
 
 - 主进程单测(vitest):PKCE 回调 URL 解析、token 存取(注入 fs,复用 keyVault
   测法)、深链参数解析
-- 服务器:部署后 `curl https://otto-auth.duckdns.org/auth/v1/health`
+- 服务器:部署后 `curl https://otto-auth.stan.damianslife.com/auth/v1/health`
 - 端到端:真人各点一遍 Google / GitHub 登录 + 登出 + 重启后仍登录
 
 ## 用户侧杂务(需本人账号,agent 不代办)
 
 1. Google Cloud Console 建 OAuth client(Web application),回调
-   `https://otto-auth.duckdns.org/auth/v1/callback`,得 client ID + secret
+   `https://otto-auth.stan.damianslife.com/auth/v1/callback`,得 client ID + secret
 2. GitHub Developer settings 建 OAuth App,回调同上,得 client ID + secret
 3. 两组凭证 SSH 直接粘进服务器 env 文件(路径和格式由 agent 备好),不发聊天
 

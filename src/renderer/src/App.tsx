@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
+import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextUsed } from "../../shared/contextEstimate.js";
@@ -533,7 +534,61 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
   );
 }
 
-function Settings() {
+/** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片 */
+function AccountAvatar({ name, avatarUrl }: { name: string; avatarUrl: string }) {
+  if (avatarUrl) {
+    return <img className="account-avatar" src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
+  }
+  return <span className="account-avatar">{name.charAt(0).toUpperCase() || "?"}</span>;
+}
+
+/** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
+function AccountPage() {
+  const account = useChat((s) => s.account);
+  const signIn = useChat((s) => s.signIn);
+  const signOut = useChat((s) => s.signOut);
+  const closeSettings = useChat((s) => s.closeSettings);
+  const error = useChat((s) => s.error);
+
+  return (
+    <main className="settings">
+      <header>
+        <span className="name">账号</span>
+        <button className="ghost" onClick={closeSettings}>
+          返回
+        </button>
+      </header>
+      <section className="settings-body">
+        {account.signedIn ? (
+          <div className="account-row">
+            <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
+            <span className="name">{account.name}</span>
+            <span className="hint">{account.email}</span>
+            <button className="ghost" onClick={() => void signOut()}>
+              退出登录
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="account-row">
+              <button className="ghost" onClick={() => void signIn("google")}>
+                用 Google 登录
+              </button>
+              <button className="ghost" onClick={() => void signIn("github")}>
+                用 GitHub 登录
+              </button>
+            </div>
+            <p className="hint">登录后可在多台设备同步配置（即将上线）</p>
+          </>
+        )}
+        {error && <p className="error">{error}</p>}
+      </section>
+    </main>
+  );
+}
+
+/** 模型配置页（设置栏目之一）：各 provider 的 API key 管理 */
+function KeysPage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
   // 目录里每个不同的 apiKeyEnv 一行（provider 可能共用同一个 key）
@@ -542,7 +597,7 @@ function Settings() {
   return (
     <main className="settings">
       <header>
-        <span className="name">API Key 设置</span>
+        <span className="name">模型配置</span>
         <button className="ghost" onClick={closeSettings}>
           返回
         </button>
@@ -561,17 +616,17 @@ function Settings() {
   );
 }
 
-/** skill 库页：本机已安装 skill 的只读清单（磁盘扫描的投影，零持久化）。
+/** skill 库页（设置栏目之一）：本机已安装 skill 的只读清单（磁盘扫描的投影，零持久化）。
     安装/卸载 = 在根目录里增删 <名字>/SKILL.md 文件夹——这里只看不改 */
 function SkillsPage() {
   const skills = useChat((s) => s.skills);
-  const closeSkills = useChat((s) => s.closeSkills);
+  const closeSettings = useChat((s) => s.closeSettings);
 
   return (
     <main className="settings">
       <header>
         <span className="name">Skill 库</span>
-        <button className="ghost" onClick={closeSkills}>
+        <button className="ghost" onClick={closeSettings}>
           返回
         </button>
       </header>
@@ -599,19 +654,27 @@ function SkillsPage() {
   );
 }
 
-/** 左侧常驻侧栏：会话列表 + 底部设置/登录槽 */
+/** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案 */
+const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "account", label: "账号" },
+  { id: "keys", label: "模型配置" },
+  { id: "skills", label: "Skill 库" },
+];
+
+/** 左侧常驻侧栏：会话列表（设置模式下换成栏目导航）+ 底部设置/登录槽 */
 function Sidebar() {
   const sessions = useChat((s) => s.sessions);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
-  const showSettings = useChat((s) => s.showSettings);
+  const settingsSection = useChat((s) => s.settingsSection);
   const resume = useChat((s) => s.resume);
   const newSession = useChat((s) => s.newSession);
   const openSettings = useChat((s) => s.openSettings);
-  const openSkills = useChat((s) => s.openSkills);
+  const closeSettings = useChat((s) => s.closeSettings);
   const deleteSession = useChat((s) => s.deleteSession);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
+  const account = useChat((s) => s.account);
 
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
@@ -625,87 +688,138 @@ function Sidebar() {
         <img className="logo" src={ottoLogo} alt="" />
         Mr Otto
       </div>
-      {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话 */}
-      <button className="new-session" onClick={newSession}>
-        ＋ 新会话
-      </button>
-      <nav className="session-list">
-        {/* 行是 div 而非 button：里面要嵌删除按钮，button 套 button 是非法 HTML */}
-        {resumable.map((s) => (
-          <div
-            key={s.sessionId}
-            className={
-              "session-item" +
-              (phase === "chat" && !showSettings && s.sessionId === sessionId ? " active" : "")
-            }
-            onClick={() => void resume(s.sessionId)}
-          >
-            {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-            <span className="title">{s.title ?? s.workspace?.split("/").pop()}</span>
-            <span className="when">
-              {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-              {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-              {approvals[s.sessionId] ? (
-                <em className="flag approval"> 等审批</em>
-              ) : statusBySession[s.sessionId] === "running" ? (
-                <em className="flag running"> 运行中</em>
-              ) : null}
-            </span>
+      {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
+          设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
+      {settingsSection === null && (
+        <button className="new-session" onClick={newSession}>
+          ＋ 新会话
+        </button>
+      )}
+      {settingsSection !== null ? (
+        // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
+        <nav className="session-list">
+          <button className="session-item settings-nav-back" onClick={closeSettings}>
+            ← 返回会话
+          </button>
+          {SETTINGS_SECTIONS.map((sec) => (
             <button
-              className="session-delete"
-              title="删除会话（整段日志从库里抹除，不可恢复）"
-              onClick={(e) => {
-                e.stopPropagation(); // 别触发外层的"切换到该会话"
-                if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                  void deleteSession(s.sessionId);
-                }
-              }}
+              key={sec.id}
+              className={"session-item" + (settingsSection === sec.id ? " active" : "")}
+              onClick={() => void openSettings(sec.id)}
             >
-              ✕
+              <span className="title">{sec.label}</span>
             </button>
-          </div>
-        ))}
-        {prehistoric.length > 0 && (
-          <>
-            <div className="session-group">史前会话（不可恢复）</div>
-            {prehistoric.map((s) => (
-              <div
-                key={s.sessionId}
-                className="session-item prehistoric"
-                title="未记录工程文件夹，无法重建围栏，只能删除"
+          ))}
+        </nav>
+      ) : (
+        <nav className="session-list">
+          {/* 行是 div 而非 button：里面要嵌删除按钮，button 套 button 是非法 HTML */}
+          {resumable.map((s) => (
+            <div
+              key={s.sessionId}
+              className={
+                "session-item" +
+                (phase === "chat" && settingsSection === null && s.sessionId === sessionId ? " active" : "")
+              }
+              onClick={() => void resume(s.sessionId)}
+            >
+              {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
+              <span className="title">{s.title ?? s.workspace?.split("/").pop()}</span>
+              <span className="when">
+                {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
+                {approvals[s.sessionId] ? (
+                  <em className="flag approval"> 等审批</em>
+                ) : statusBySession[s.sessionId] === "running" ? (
+                  <em className="flag running"> 运行中</em>
+                ) : null}
+              </span>
+              <button
+                className="session-delete"
+                title="删除会话（整段日志从库里抹除，不可恢复）"
+                onClick={(e) => {
+                  e.stopPropagation(); // 别触发外层的"切换到该会话"
+                  if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                    void deleteSession(s.sessionId);
+                  }
+                }}
               >
-                <span className="title">{s.title ?? s.sessionId}</span>
-                <span className="when">
-                  {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                </span>
-                <button
-                  className="session-delete"
-                  title="删除会话（整段日志从库里抹除，不可恢复）"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                      void deleteSession(s.sessionId);
-                    }
-                  }}
+                ✕
+              </button>
+            </div>
+          ))}
+          {prehistoric.length > 0 && (
+            <>
+              <div className="session-group">史前会话（不可恢复）</div>
+              {prehistoric.map((s) => (
+                <div
+                  key={s.sessionId}
+                  className="session-item prehistoric"
+                  title="未记录工程文件夹，无法重建围栏，只能删除"
                 >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-      </nav>
+                  <span className="title">{s.title ?? s.sessionId}</span>
+                  <span className="when">
+                    {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                  </span>
+                  <button
+                    className="session-delete"
+                    title="删除会话（整段日志从库里抹除，不可恢复）"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                        void deleteSession(s.sessionId);
+                      }
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+        </nav>
+      )}
+      {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
+          这一行只留用户卡片 + 一颗进「模型配置」首屏的齿轮 */}
       <div className="sidebar-bottom">
-        <button className="ghost" onClick={() => void openSkills()}>
-          Skill 库
+        {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做） */}
+        <button
+          className="login-slot"
+          onClick={() => void openSettings("account")}
+          title={account.signedIn ? account.email : undefined}
+        >
+          {account.signedIn ? (
+            <>
+              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
+              <span className="name">{account.name}</span>
+            </>
+          ) : (
+            "未登录 · 点击登录"
+          )}
         </button>
-        <button className="ghost" onClick={() => void openSettings()}>
-          设置
+        <button
+          className="ghost settings-gear"
+          onClick={() => void openSettings("keys")}
+          title="设置"
+        >
+          <GearIcon />
         </button>
-        {/* 登录占位：账号体系是 v2（自托管 VPS / Docker per bot）的事，先留槽 */}
-        <div className="login-slot">未登录</div>
       </div>
     </aside>
+  );
+}
+
+/** 齿轮：侧栏底部设置入口图标（内联 SVG，跟 FolderIcon 同一套写法：
+    currentColor 描边，不吃色板变量，跟着按钮的文字色走）。
+    path 取自 feather icons 的 settings（MIT）——齿要连在轮缘上才是齿轮，
+    圆心射线画法读作太阳 */
+function GearIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
   );
 }
 
@@ -934,8 +1048,7 @@ export function App() {
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
-  const showSettings = useChat((s) => s.showSettings);
-  const showSkills = useChat((s) => s.showSkills);
+  const settingsSection = useChat((s) => s.settingsSection);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -1012,10 +1125,12 @@ export function App() {
 
   if (phase === "connecting") return <main className="boot">连接主进程…</main>;
 
-  // 布局：侧栏常驻，主区四态（设置 / skill 库 / 欢迎 / 聊天）
-  const main = showSettings ? (
-    <Settings />
-  ) : showSkills ? (
+  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）
+  const main = settingsSection === "account" ? (
+    <AccountPage />
+  ) : settingsSection === "keys" ? (
+    <KeysPage />
+  ) : settingsSection === "skills" ? (
     <SkillsPage />
   ) : phase === "welcome" ? (
     <Welcome />

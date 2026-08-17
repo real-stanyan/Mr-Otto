@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
@@ -12,6 +12,39 @@ import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { MODEL_CATALOG } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
+import { AccountManager, createSupabaseAuthClient } from "./account.js";
+
+// mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
+// 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
+// 才能实例化，中间这段空档收到的 URL 先缓存，ready 后 flush。
+app.setAsDefaultProtocolClient("mrotto");
+
+let accountManager: AccountManager | null = null;
+let pendingAuthUrl: string | null = null;
+let mainWindow: BrowserWindow | null = null;
+
+// 深链回调成功后把主窗口拉回前台——用户在系统浏览器授权完，观感上是"跳回 App"。
+// 窗口可能被 minimized，先 restore 再 show/focus；macOS 上 show/focus 不够抢焦点，
+// 还得 app.focus({ steal: true })。失败路径不聚焦，维持 console.error 现状。
+function focusMainWindow(): void {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (process.platform === "darwin") app.focus({ steal: true });
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  if (accountManager) {
+    accountManager
+      .handleCallback(url)
+      .then(() => focusMainWindow())
+      .catch((err) => console.error("account.handleCallback 失败", err));
+  } else {
+    pendingAuthUrl = url;
+  }
+});
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -41,6 +74,51 @@ void app.whenReady().then(() => {
   applyToEnv(loadKeys(keyVaultPath), process.env);
 
   const win = createWindow();
+  mainWindow = win;
+
+  // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
+  // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
+  accountManager = new AccountManager({
+    openExternal: (url) => shell.openExternal(url),
+    onChange: (info) => win.webContents.send(CHANNELS.accountChanged, info),
+    client: createSupabaseAuthClient(join(app.getPath("userData"), "auth.json")),
+  });
+  const manager = accountManager;
+  // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
+  // account——两条都跑的话，restore() 的 getUser() 若晚于 handleCallback() 的
+  // exchangeCodeForSession 完成，刚建立的新登录会被 restore 带来的旧 session 投影覆盖，
+  // 而且这是竞态、复现全靠时序，测不出来。裁定用互斥而不是加锁/时间戳：有待处理的深链
+  // 就说明这次冷启动一定会经过 handleCallback 建立最新投影，restore 只会是多余的、
+  // 反而可能后到覆盖它，所以直接不跑；没有待处理深链才需要 restore 兜底恢复旧 session。
+  // 两条路径不再共存，竞态随互斥消失。
+  //
+  // 但互斥有个边界：handleCallback 可能失败（用户拒绝 consent 导致无 code、code 过期、
+  // 网络错）或 no-op（parseAuthCallback 解不出 code），这两种情况都不会建立新登录态。
+  // 这时如果彻底跳过 restore，一个已有有效落盘 session 的用户会在这次冷启动里显示未登录，
+  // 直到下次重启才恢复——所以在 handleCallback 落定（then/catch 都跑完）之后兜底一次：
+  // 只有 account 仍是未登录态（说明 handleCallback 没能建立登录）才补跑 restore。
+  // 这个兜底 restore 在 handleCallback 的 promise 结束之后才发起，不再和它并发，
+  // 因此不会重新引入上面那条"最后写入者赢"的竞态。
+  if (pendingAuthUrl) {
+    const url = pendingAuthUrl;
+    pendingAuthUrl = null;
+    manager
+      .handleCallback(url)
+      .then(() => focusMainWindow())
+      .catch((err) => console.error("auth 深链回调失败:", err))
+      .finally(() => {
+        // 回调没建立登录态（失败或 no-op）时兜底恢复落盘 session
+        if (!manager.getAccount().signedIn) {
+          void manager.restore().catch((err) => console.error("恢复登录态失败:", err));
+        }
+      });
+  } else {
+    // 冷启动登录态恢复：authStorage 可能已经从 auth.json 恢复了 session，
+    // 但 account 初始值恒为 EMPTY——不 restore 一次的话 UI 会一直显示未登录。
+    // restore() 内部已经把 error/无 session 都静默处理，这里只兜底真正意外的 throw。
+    void manager.restore().catch((err) => console.error("account.restore 失败", err));
+  }
+
   const dbPath = join(app.getPath("userData"), "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
   const store = new EventStore(dbPath);
@@ -143,6 +221,12 @@ void app.whenReady().then(() => {
   const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
+  ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
+  // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
+  ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
+  ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
   const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
