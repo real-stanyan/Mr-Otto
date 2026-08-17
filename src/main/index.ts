@@ -91,13 +91,27 @@ void app.whenReady().then(() => {
   // 就说明这次冷启动一定会经过 handleCallback 建立最新投影，restore 只会是多余的、
   // 反而可能后到覆盖它，所以直接不跑；没有待处理深链才需要 restore 兜底恢复旧 session。
   // 两条路径不再共存，竞态随互斥消失。
+  //
+  // 但互斥有个边界：handleCallback 可能失败（用户拒绝 consent 导致无 code、code 过期、
+  // 网络错）或 no-op（parseAuthCallback 解不出 code），这两种情况都不会建立新登录态。
+  // 这时如果彻底跳过 restore，一个已有有效落盘 session 的用户会在这次冷启动里显示未登录，
+  // 直到下次重启才恢复——所以在 handleCallback 落定（then/catch 都跑完）之后兜底一次：
+  // 只有 account 仍是未登录态（说明 handleCallback 没能建立登录）才补跑 restore。
+  // 这个兜底 restore 在 handleCallback 的 promise 结束之后才发起，不再和它并发，
+  // 因此不会重新引入上面那条"最后写入者赢"的竞态。
   if (pendingAuthUrl) {
     const url = pendingAuthUrl;
     pendingAuthUrl = null;
     manager
       .handleCallback(url)
       .then(() => focusMainWindow())
-      .catch((err) => console.error("account.handleCallback 失败", err));
+      .catch((err) => console.error("auth 深链回调失败:", err))
+      .finally(() => {
+        // 回调没建立登录态（失败或 no-op）时兜底恢复落盘 session
+        if (!manager.getAccount().signedIn) {
+          void manager.restore().catch((err) => console.error("恢复登录态失败:", err));
+        }
+      });
   } else {
     // 冷启动登录态恢复：authStorage 可能已经从 auth.json 恢复了 session，
     // 但 account 初始值恒为 EMPTY——不 restore 一次的话 UI 会一直显示未登录。
