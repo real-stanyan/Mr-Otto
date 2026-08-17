@@ -3,6 +3,7 @@
 // 保持 require 外部引用，不被打进 bundle（原生 .node 文件没法 bundle）。
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   main: {
@@ -12,6 +13,6 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
   },
 });
