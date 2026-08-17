@@ -13,6 +13,10 @@ export interface ExecResult {
     可选参数 = 接口向后兼容，旧实现/旧调用零改动 */
 export interface ExecOptions {
   signal?: AbortSignal;
+  /** 输出直播回调：子进程每吐一段就叫一次（到达顺序，stdout/stderr 分流标注）。
+      直播是 UI 增强，不是事实——完整输出仍由 ExecResult 一次性返回并落盘，
+      和 assistantDelta 同款边界：碎片永不进日志，日志只收凝固后的整体 */
+  onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
 }
 
 export interface ExecutionWorld {
@@ -30,5 +34,18 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
+  };
+}
+
+/** 把输出直播回调焊进 world 的装饰器——withAbortSignal 同款手法。
+    engine 按工具调用包一层（回调里绑好 toolCallId），bash 工具照旧
+    只调 world.exec(cmd)，对直播的存在无感（硬规则原样成立）。 */
+export function withExecOutput(
+  world: ExecutionWorld,
+  onOutput: NonNullable<ExecOptions["onOutput"]>
+): ExecutionWorld {
+  return {
+    fs: world.fs,
+    exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
   };
 }

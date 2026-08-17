@@ -35,6 +35,9 @@ interface ChatState {
   /** 流式直播缓冲（按会话攒碎片，思考/正文分频道）。临时投影：完整
       assistant_message 事件一到就清——事件是事实，缓冲只是它到来前的预览 */
   streamingBySession: Record<string, { content: string; reasoning: string }>;
+  /** 工具输出直播缓冲（按 toolCallId 攒 bash 的 stdout/stderr 尾巴）。
+      只留尾部（终端视角：看最新进展）；tool_result 一到就清——完整输出以它为准 */
+  toolOutputByCall: Record<string, string>;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -94,6 +97,7 @@ export const useChat = create<ChatState>((set, get) => ({
   statusBySession: {},
   approvals: {},
   streamingBySession: {},
+  toolOutputByCall: {},
   error: null,
   approvalMode: "ask",
   thinking: true,
@@ -156,11 +160,17 @@ export const useChat = create<ChatState>((set, get) => ({
           e.type === "assistant_message"
             ? without(s.streamingBySession, e.sessionId)
             : s.streamingBySession;
+        // 工具输出直播同款作废：事实（tool_result）落地，该调用的碎片扔掉。
+        // 不分会话——callId 全局唯一，后台会话的缓冲也要清，不然只涨不消
+        const toolOutput =
+          e.type === "tool_result" ? without(s.toolOutputByCall, e.toolCallId) : s.toolOutputByCall;
         // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
         // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
-        if (e.sessionId !== s.sessionId) return { streamingBySession: streaming };
+        if (e.sessionId !== s.sessionId)
+          return { streamingBySession: streaming, toolOutputByCall: toolOutput };
         return {
           streamingBySession: streaming,
+          toolOutputByCall: toolOutput,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model } : {}),
@@ -177,6 +187,19 @@ export const useChat = create<ChatState>((set, get) => ({
               kind === "reasoning"
                 ? { ...buf, reasoning: buf.reasoning + text }
                 : { ...buf, content: buf.content + text },
+          },
+        };
+      })
+    );
+    window.otter.onToolOutput(({ toolCallId, chunk }) =>
+      set((s) => {
+        // stdout/stderr 不分家（终端视角：按到达顺序混流）。只留尾部 4000 字——
+        // 直播是"最新进展"，头部截断无所谓，完整输出反正在 tool_result 里
+        const merged = (s.toolOutputByCall[toolCallId] ?? "") + chunk;
+        return {
+          toolOutputByCall: {
+            ...s.toolOutputByCall,
+            [toolCallId]: merged.length > 4000 ? merged.slice(-4000) : merged,
           },
         };
       })

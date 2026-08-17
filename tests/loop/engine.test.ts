@@ -449,4 +449,61 @@ describe("lifecycle 事件（ADR-0004）", () => {
     expect(store.load("s1").find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
     store.close();
   });
+
+  it("onToolOutput 带着 toolCallId 转发 exec 直播碎片；碎片不落盘", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c9", name: "bash", args: { cmd: "make build" } }] },
+      { content: "编译完了" },
+    ]);
+    // 假 world：exec 时主动吐两段直播——模拟子进程分批输出
+    const streamingWorld: ExecutionWorld = {
+      fs: fakeWorld.fs,
+      exec: async (_cmd, opts) => {
+        opts?.onOutput?.("第一段\n", "stdout");
+        opts?.onOutput?.("警告\n", "stderr");
+        return { stdout: "第一段\n", stderr: "警告\n", exitCode: 0 };
+      },
+    };
+    const got: Array<{ id: string; chunk: string; stream: string }> = [];
+    const engine = new LoopEngine({
+      store, adapter, tools: [bashTool], world: streamingWorld, sessionId: "s1",
+      approver: { decide: async () => ({ decision: "approved" as const }) },
+      onToolOutput: (id, chunk, stream) => got.push({ id, chunk, stream }),
+    });
+    await engine.runTurn("跑个编译");
+
+    // 直播层：碎片挂着发起调用的 id（engine 按调用包 world，工具无感）
+    expect(got).toEqual([
+      { id: "c9", chunk: "第一段\n", stream: "stdout" },
+      { id: "c9", chunk: "警告\n", stream: "stderr" },
+    ]);
+    // 事实层：日志只有完整 tool_result，没有任何碎片事件
+    const log = store.load("s1");
+    expect(log.filter((e) => e.type === "tool_result")).toHaveLength(1);
+    store.close();
+  });
+
+  it("不给 onToolOutput：world 原样直达，接口向后兼容", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }] },
+      { content: "好" },
+    ]);
+    let sawOnOutput: unknown = "未调用";
+    const world: ExecutionWorld = {
+      fs: fakeWorld.fs,
+      exec: async (_cmd, opts) => {
+        sawOnOutput = opts?.onOutput;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+    const engine = new LoopEngine({
+      store, adapter, tools: [bashTool], world, sessionId: "s1",
+      approver: { decide: async () => ({ decision: "approved" as const }) },
+    });
+    await engine.runTurn("列一下");
+    expect(sawOnOutput).toBeUndefined(); // 没人订阅直播就不包装，不塞多余回调
+    store.close();
+  });
 });

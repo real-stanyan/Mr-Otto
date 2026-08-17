@@ -76,6 +76,8 @@ void app.whenReady().then(() => {
       }),
     assistantDelta: (sessionId, text, kind) =>
       win.webContents.send(CHANNELS.assistantDelta, { sessionId, text, kind }),
+    toolOutput: (sessionId, toolCallId, chunk, stream) =>
+      win.webContents.send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());

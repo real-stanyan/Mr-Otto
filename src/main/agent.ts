@@ -27,6 +27,9 @@ export interface AgentPush {
   ): void;
   /** 流式文本碎片（临时直播，不落日志）——渲染层按会话、按频道攒着显示 */
   assistantDelta(sessionId: string, text: string, kind: DeltaKind): void;
+  /** 工具输出直播碎片（bash 的 stdout/stderr）——同上，不落日志，
+      完整输出以 tool_result 事件为准 */
+  toolOutput(sessionId: string, toolCallId: string, chunk: string, stream: "stdout" | "stderr"): void;
 }
 
 export function createAgent(opts: {
@@ -125,6 +128,8 @@ export function createAgent(opts: {
     approver: createModeAwareApprover(() => approvalMode, approver),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),
+    onToolOutput: (toolCallId, chunk, stream) =>
+      opts.push.toolOutput(sessionId, toolCallId, chunk, stream),
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则 */

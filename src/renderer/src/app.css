@@ -70,6 +70,16 @@ body {
 .session-item .flag { font-style: normal; font-weight: 600; }
 .session-item .flag.approval { color: var(--warn); }
 .session-item .flag.running { color: #74c0fc; }
+/* 史前会话（无 workspace 的旧日志）：可见、可删、不可点开 */
+.session-group {
+  font-size: 11px; color: var(--dim); letter-spacing: 0.04em;
+  padding: 10px 10px 2px;
+}
+.session-item.prehistoric { cursor: default; opacity: 0.55; }
+.session-item.prehistoric:hover { background: transparent; }
+.session-item.prehistoric:active { background: transparent; }
+.session-item.prehistoric .title { font-family: var(--mono); font-size: 12px; }
+
 .sidebar-bottom {
   border-top: 1px solid var(--line); padding: 10px 12px;
   display: flex; flex-direction: column; gap: 6px;
@@ -665,6 +675,16 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
   transition: transform 150ms var(--ease-out);
 }
 .tool-chev.open { transform: rotate(90deg); }
+
+/* 执行中的输出直播：迷你终端尾巴。低亮度——它是过程噪音，不是结果 */
+.tool-live {
+  margin: 2px 0 4px; padding: 8px 10px; max-height: 160px; overflow-y: auto;
+  background: #0d0d0f; border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: #8e8e96; white-space: pre-wrap; word-break: break-all;
+  @starting-style { opacity: 0; }
+  transition: opacity 150ms var(--ease-out);
+}
 
 .tool-detail {
   margin: 2px 0 4px; padding: 10px 12px;

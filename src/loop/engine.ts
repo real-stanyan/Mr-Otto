@@ -6,7 +6,7 @@ import type { SessionEvent } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
-import { withAbortSignal, type ExecutionWorld } from "../world/executionWorld.js";
+import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
 import { runPipeline } from "./middleware.js";
 import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.js";
 import { createApprovalGate } from "./approvalGate.js";
@@ -32,6 +32,9 @@ export interface LoopEngineOptions {
       半成品永不落盘：日志只收凝固后的完整 assistant_message——
       pi 的"消息完成后不可修改"同款边界 */
   onAssistantDelta?: (text: string, kind: DeltaKind) => void;
+  /** 工具输出直播回调（bash 的 stdout/stderr 碎片，临时 UI 直播，不是事实）。
+      和 onAssistantDelta 一对儿：碎片不落盘，完整输出以 tool_result 事件落盘 */
+  onToolOutput?: (toolCallId: string, chunk: string, stream: "stdout" | "stderr") => void;
   /** requiresApproval 工具的审批人；不给 = 危险操作一律默认拒绝 */
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
@@ -207,10 +210,16 @@ export class LoopEngine {
           });
           continue;
         }
+        // 按调用再包一层：输出直播的回调在这绑上 toolCallId——
+        // world 到工具手里已经"知道"该把碎片挂到哪次调用，工具自己无感
+        const onToolOutput = this.opts.onToolOutput;
+        const callWorld = onToolOutput
+          ? withExecOutput(world, (chunk, stream) => onToolOutput(call.id, chunk, stream))
+          : world;
         const outcome = await runPipeline(this.pipeline, (ctx) => this.execute(ctx), {
           call,
           tool: this.toolsByName.get(call.name),
-          world,
+          world: callWorld,
           sessionId,
           signal,
         });

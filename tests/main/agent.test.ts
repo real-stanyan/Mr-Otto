@@ -7,7 +7,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 
-const push: AgentPush = { event: () => {}, approvalRequest: () => {}, assistantDelta: () => {} };
+const push: AgentPush = { event: () => {}, approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 
 describe("createAgent 会话生命周期", () => {
   it("新建：日志第 0 条 = session_created，带 workspace", () => {
@@ -38,7 +38,7 @@ describe("createAgent 会话生命周期", () => {
     const agent = createAgent({
       store,
       workspace: "/proj/x",
-      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {} },
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
     });
 
     agent.switchModel("glm-4.5-flash");
@@ -192,7 +192,7 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
     const pushed: string[] = [];
     createAgent({
       store, workspace: "/w", resumeSessionId: "s-x",
-      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {} },
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
     });
 
     const last = store.load("s-x").at(-1);

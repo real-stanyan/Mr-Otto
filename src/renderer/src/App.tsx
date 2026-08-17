@@ -273,6 +273,14 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
     (e): e is ToolExecutionStartedEvent =>
       e.type === "tool_execution_started" && e.toolCallId === call.id
   );
+  // 执行中的直播尾巴（bash 的 stdout/stderr 碎片）。tool_result 落地后 store
+  // 会清掉这个 key，这里自然消失——直播只活在"事实到来前"的窗口里
+  const live = useChat((s) => s.toolOutputByCall[call.id]);
+  const liveRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    // 终端语义：始终看最新输出，新碎片到就滚到底
+    liveRef.current?.scrollTo(0, liveRef.current.scrollHeight);
+  }, [live]);
   const { verb, target, stat } = toolSummary(call);
   const status = result?.status ?? "running";
 
@@ -287,6 +295,11 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
         {status === "denied" && <span className="tool-flag err">已拒绝</span>}
         <span className={`tool-chev${open ? " open" : ""}`}>›</span>
       </button>
+      {!result && live && (
+        <pre className="tool-live" ref={liveRef}>
+          {live}
+        </pre>
+      )}
       {open && (
         <div className="tool-detail">
           <div className="tool-meta">
@@ -556,8 +569,11 @@ function Sidebar() {
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
 
-  // 没记 workspace 的旧会话无法重建围栏，列表里不出现
+  // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
+  // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
+  // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
   const resumable = sessions.filter((s) => s.workspace !== null);
+  const prehistoric = sessions.filter((s) => s.workspace === null);
 
   return (
     <aside className="sidebar">
@@ -604,6 +620,35 @@ function Sidebar() {
             </button>
           </div>
         ))}
+        {prehistoric.length > 0 && (
+          <>
+            <div className="session-group">史前会话（不可恢复）</div>
+            {prehistoric.map((s) => (
+              <div
+                key={s.sessionId}
+                className="session-item prehistoric"
+                title="未记录工程文件夹，无法重建围栏，只能删除"
+              >
+                <span className="title">{s.title ?? s.sessionId}</span>
+                <span className="when">
+                  {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                </span>
+                <button
+                  className="session-delete"
+                  title="删除会话（整段日志从库里抹除，不可恢复）"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                      void deleteSession(s.sessionId);
+                    }
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </>
+        )}
       </nav>
       <div className="sidebar-bottom">
         <button className="ghost" onClick={() => void openSettings()}>

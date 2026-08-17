@@ -73,3 +73,30 @@ describe("LocalWorld exec 中断（ADR-0006）", () => {
     expect(result.stdout.trim()).toBe("ok");
   });
 });
+
+describe("LocalWorld exec 输出直播", () => {
+  it("onOutput 收到碎片（stdout/stderr 分流标注），完整结果不受直播影响", async () => {
+    const world = createLocalWorld({ root });
+    const chunks: Array<{ chunk: string; stream: string }> = [];
+    const result = await world.exec("printf out; printf err 1>&2", {
+      onOutput: (chunk, stream) => chunks.push({ chunk, stream }),
+    });
+    // 事实层：完整输出照旧从返回值拿，一个字不少
+    expect(result).toEqual({ stdout: "out", stderr: "err", exitCode: 0 });
+    // 直播层：碎片拼起来 = 完整输出（分段边界不承诺，只承诺不丢字）
+    const joined = (s: string) =>
+      chunks.filter((c) => c.stream === s).map((c) => c.chunk).join("");
+    expect(joined("stdout")).toBe("out");
+    expect(joined("stderr")).toBe("err");
+  });
+
+  it("非零退出码同样直播——失败过程也是人要看的进展", async () => {
+    const world = createLocalWorld({ root });
+    const chunks: string[] = [];
+    const result = await world.exec("printf boom 1>&2; exit 3", {
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    expect(result.exitCode).toBe(3);
+    expect(chunks.join("")).toBe("boom");
+  });
+});

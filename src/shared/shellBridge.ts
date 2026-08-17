@@ -45,6 +45,16 @@ export interface AssistantDelta {
   kind: "content" | "reasoning";
 }
 
+/** 工具输出直播碎片（bash 的 stdout/stderr，临时直播，不落日志）：
+    渲染层按 toolCallId 攒着给"执行中"的工具行当终端尾巴看，
+    tool_result 事件一到就作废——完整输出以它为准 */
+export interface ToolOutputChunk {
+  sessionId: string;
+  toolCallId: string;
+  chunk: string;
+  stream: "stdout" | "stderr";
+}
+
 /** write_file 审批预览：旧内容 vs 新内容。diff 是投影（两个事实推得出），
     渲染层现算，不落盘。oldText 为 null = 新文件 */
 export interface WriteFilePreview {
@@ -109,6 +119,7 @@ export interface ShellBridge {
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
+  onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
 }
 
 export const CHANNELS = {
@@ -131,6 +142,7 @@ export const CHANNELS = {
   approvalRequest: "otter:approvalRequest",
   turnStatus: "otter:turnStatus",
   assistantDelta: "otter:assistantDelta",
+  toolOutput: "otter:toolOutput",
 } as const;
 
 declare global {

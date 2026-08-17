@@ -35,12 +35,23 @@ export function createLocalWorld(opts: { root?: string } = {}): ExecutionWorld {
 
     async exec(cmd, opts): Promise<ExecResult> {
       try {
-        const { stdout, stderr } = await execAsync(cmd, {
+        const pending = execAsync(cmd, {
           timeout: 30_000,
           ...(root ? { cwd: root } : {}),
           // child_process 原生认 signal：abort = 给进程组发 SIGTERM
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
+        // 直播搭车：promisify(exec) 的 promise 挂着 .child，旁听它的输出流。
+        // exec 自己的缓冲收集不受影响——data 事件可以多方订阅，
+        // 完整结果仍从 await 拿（直播丢一段也不丢事实）
+        const onOutput = opts?.onOutput;
+        if (onOutput) {
+          pending.child.stdout?.setEncoding("utf8");
+          pending.child.stderr?.setEncoding("utf8");
+          pending.child.stdout?.on("data", (chunk: string) => onOutput(chunk, "stdout"));
+          pending.child.stderr?.on("data", (chunk: string) => onOutput(chunk, "stderr"));
+        }
+        const { stdout, stderr } = await pending;
         return { stdout, stderr, exitCode: 0 };
       } catch (err) {
         // 中断不是命令自己的失败——exitCode ≠ 0 是"世界的正常反馈"（bash 工具
