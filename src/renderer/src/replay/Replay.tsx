@@ -7,8 +7,22 @@ import { useChat } from "../store.js";
 import { toStep, hl, type ReplayStep } from "./steps.js";
 import { Canvas } from "./Canvas.js";
 
+/* 面板小标题统一:小字 + 加字重 + 微加字距(小字号要正字距才清楚) */
+const PANEL_H3 = "text-[11px] text-dim font-semibold tracking-[0.05em] mb-2 tabular-nums";
+/* 轨迹链入场动画(pop 定义在 app.css;减少动效时停摆直接可见) */
+const POP_ANIM = "opacity-0 animate-[pop_0.3s_ease-out_forwards] motion-reduce:animate-none motion-reduce:opacity-100";
+const CHEV = `self-center text-sm ${POP_ANIM}`;
+/* 函数间流动的数据卡(虚线);链条端点卡(输入/输出)实线边框另加 */
+const DAT = `hl self-center font-mono text-[10.5px] leading-[1.55] text-[#c9d1d9] bg-[#16222e] border border-dashed border-[#2d4a66] rounded-lg px-[10px] py-[7px] max-w-[270px] whitespace-pre-wrap break-all ${POP_ANIM}`;
+const DAT_CAP = `${DAT} border-solid border-[#35587a] bg-[#14212f]`;
+const CAP_LABEL = "block text-[9px] font-semibold tracking-[0.12em] text-[#74c0fc] mb-1";
+/* 调用链 = 单行流水线:一律从左往右读,长了在面板内横向滚(不是窗口滚);窄窗折行 */
+const CHAIN =
+  "flex flex-nowrap items-stretch gap-2 overflow-x-auto pb-2 [&>*]:shrink-0 scrollbar-thin-x max-[980px]:flex-wrap max-[980px]:overflow-x-visible max-[980px]:gap-y-[10px]";
+
 /** token 数组 → 着色 span（steps.ts 的 hl 保持纯数据，DOM 在这拼）。
-    导出：聊天区工具详情面板复用同一高亮器——一处逻辑，两处消费 */
+    导出：聊天区工具详情面板复用同一高亮器——一处逻辑，两处消费。
+    token 类的配色作用域挂在容器的 .hl 上（app.css） */
 export function Hl({ src }: { src: string }) {
   return (
     <>
@@ -43,29 +57,40 @@ function FnChain({ step }: { step: ReplayStep }) {
   // 链条头：进入第一个函数之前的世界（用户动作 / 上一步的产物）
   if (step.input) {
     parts.push(
-      <div key="in" className="dat cap" style={d()}>
-        <span className="cap-label">输入</span>
+      <div key="in" className={DAT_CAP} style={d()}>
+        <span className={CAP_LABEL}>输入</span>
         <Hl src={step.input} />
       </div>,
-      <span key="inc" className="chev" style={d()}>➤</span>
+      <span key="inc" className={`${CHEV} text-ok`} style={d()}>➤</span>
     );
   }
 
   step.fns.forEach((f, i) => {
-    const cls = f.skip ? "fn skip" : step.deny ? "fn deny" : "fn";
+    // 芯片 = 函数:skip 虚线划掉,deny 红边
+    const fnCls =
+      `bg-[#232325] border rounded-[10px] px-3 py-2 min-w-[130px] ${POP_ANIM} ` +
+      (f.skip
+        ? "border-line border-dashed"
+        : step.deny
+          ? "border-deny shadow-[0_1px_3px_rgba(0,0,0,0.3)]"
+          : "border-ok shadow-[0_1px_3px_rgba(0,0,0,0.3)]");
     parts.push(
-      <div key={`f${i}`} className={cls} style={d()}>
-        <div className="name">{f.skip ? "✕ " : ""}{f.n}</div>
-        <div className="file">{f.f}</div>
-        <div className="io">{f.io}</div>
+      <div key={`f${i}`} className={fnCls} style={d()}>
+        <div className={"font-mono text-xs font-medium" + (f.skip ? " text-[#5a5a5e] line-through" : "")}>
+          {f.skip ? "✕ " : ""}{f.n}
+        </div>
+        <div className="font-mono text-[10px] text-dim mt-[3px]">{f.f}</div>
+        <div className={"text-[10.5px] leading-normal mt-[5px] " + (f.skip ? "text-deny" : "text-[#74c0fc]")}>
+          {f.io}
+        </div>
       </div>
     );
     if (i < step.fns.length - 1) {
-      const chev = step.fns[i + 1]?.skip ? "chev skip" : "chev";
+      const chev = `${CHEV} ` + (step.fns[i + 1]?.skip ? "text-line" : "text-ok");
       if (f.out) {
         parts.push(
           <span key={`c${i}a`} className={chev} style={d()}>➤</span>,
-          <div key={`d${i}`} className="dat" style={d()}>
+          <div key={`d${i}`} className={DAT} style={d()}>
             <Hl src={f.out} />
           </div>,
           <span key={`c${i}b`} className={chev} style={d()}>➤</span>
@@ -82,14 +107,14 @@ function FnChain({ step }: { step: ReplayStep }) {
   const last = step.fns[step.fns.length - 1];
   if (last?.out) {
     parts.push(
-      <span key="outc" className="chev" style={d()}>➤</span>,
-      <div key="out" className="dat cap" style={d()}>
-        <span className="cap-label">输出</span>
+      <span key="outc" className={`${CHEV} text-ok`} style={d()}>➤</span>,
+      <div key="out" className={DAT_CAP} style={d()}>
+        <span className={CAP_LABEL}>输出</span>
         <Hl src={last.out} />
       </div>
     );
   }
-  return <div className="chain">{parts}</div>;
+  return <div className={CHAIN}>{parts}</div>;
 }
 
 export function Replay() {
@@ -124,17 +149,20 @@ export function Replay() {
     curRef.current?.scrollIntoView({ block: "nearest" });
   }, [cur]);
 
-  // 驾驶舱布局：画布 / 轨迹 / 步骤三区同屏（grid），信息不藏在滚动下面
+  // 驾驶舱布局：画布 / 轨迹 / 步骤三区同屏（grid），信息不藏在滚动下面;
+  // 窄窗口降级:摆不下就回到纵向文档流,整区滚动。
+  // .replay 类保留:画布 SVG 节点/边状态样式的作用域(app.css)
   return (
-    <section className="replay">
-      <div className="rp-canvas">
+    <section className="replay flex-1 min-h-0 px-[14px] py-3 grid gap-3 grid-cols-[minmax(0,1fr)_minmax(300px,380px)] grid-rows-[minmax(0,1fr)_auto] [grid-template-areas:'canvas_side'_'trace_side'] max-[980px]:flex max-[980px]:flex-col max-[980px]:overflow-y-auto max-[980px]:overflow-x-hidden">
+      {/* SVG 撑满面板并保持比例(preserveAspectRatio 默认 meet) */}
+      <div className="[grid-area:canvas] min-h-0 bg-panel border border-line rounded-xl p-2 flex items-center justify-center [&>svg]:w-full [&>svg]:h-full [&>svg]:block max-[980px]:shrink-0 max-[980px]:[&>svg]:h-auto">
         <Canvas nodes={s?.nodes ?? []} edges={s?.edges ?? []} deny={s?.deny ?? false} />
       </div>
-      <aside className="rp-side">
-        <div className="rp-controls">
-          <button onClick={() => goto(cur - 1)}>◀</button>
+      <aside className="[grid-area:side] min-h-0 flex flex-col gap-[10px]">
+        <div className="flex gap-[6px] items-center">
+          <button className="btn px-[14px] py-[6px] text-[13px]" onClick={() => goto(cur - 1)}>◀</button>
           <button
-            className="primary"
+            className="btn px-[14px] py-[6px] text-[13px] bg-ok border-ok text-white"
             onClick={() => {
               if (playing) return setPlaying(false);
               if (cur >= steps.length - 1) setReplayCursor(0);
@@ -143,52 +171,81 @@ export function Replay() {
           >
             {playing ? "⏸ 暂停" : "▶ 播放"}
           </button>
-          <button onClick={() => goto(cur + 1)}>▶</button>
-          <span className="rp-pos">
+          <button className="btn px-[14px] py-[6px] text-[13px]" onClick={() => goto(cur + 1)}>▶</button>
+          {/* 位置计数:等宽数字,走完 27 步数字不跳宽 */}
+          <span className="ml-auto font-mono text-xs text-dim tabular-nums">
             {cur + 1} / {steps.length}
           </span>
         </div>
-        <div className="rp-steps">
-          {steps.map((st, i) => (
-            <div
-              key={st.ev.seq}
-              ref={i === cur ? curRef : null}
-              className={"rp-step" + (i === cur ? " cur" + (st.deny ? " deny" : "") : "")}
-              onClick={() => goto(i)}
-            >
-              <span className="n">seq {st.ev.seq}</span>
-              <span className="t">{st.title}</span>
-              <span className={"badge" + (st.deny ? " deny" : "")}>{st.badge}</span>
-            </div>
-          ))}
+        <div className="bg-panel border border-line rounded-xl p-[6px] flex-[1_1_40%] min-h-[120px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:max-h-[min(260px,32vh)]">
+          {steps.map((st, i) => {
+            const isCur = i === cur;
+            // 当前步:左侧 accent 条 + 底色,比整圈描边安静(描边会跟滚动条打架)
+            return (
+              <div
+                key={st.ev.seq}
+                ref={isCur ? curRef : null}
+                className={
+                  "px-[10px] py-[6px] rounded-lg cursor-pointer flex gap-[10px] items-baseline transition-colors duration-100 " +
+                  (isCur
+                    ? st.deny
+                      ? "bg-[rgba(224,49,49,0.14)] shadow-[inset_2px_0_0_#e03131]"
+                      : "bg-[rgba(47,158,68,0.14)] shadow-[inset_2px_0_0_#2f9e44]"
+                    : "hover:bg-white/5 active:bg-white/[0.09]")
+                }
+                onClick={() => goto(i)}
+              >
+                <span className="font-mono text-[11px] text-dim w-[46px] shrink-0 tabular-nums">seq {st.ev.seq}</span>
+                {/* 事件类型是代码标识符:用等宽,和 payload/轨迹同一语言 */}
+                <span className="font-mono text-[12.5px] font-medium">{st.title}</span>
+                <span
+                  className={
+                    "text-[10px] px-[7px] py-[2px] rounded-full ml-auto shrink-0 whitespace-nowrap tracking-[0.02em] " +
+                    (isCur
+                      ? st.deny
+                        ? "bg-[rgba(224,49,49,0.18)] text-deny"
+                        : "bg-[rgba(47,158,68,0.18)] text-ok"
+                      : st.deny
+                        ? "bg-[rgba(224,49,49,0.14)] text-deny"
+                        : "bg-white/[0.06] text-dim")
+                  }
+                >
+                  {st.badge}
+                </span>
+              </div>
+            );
+          })}
         </div>
-        <div className="rp-payload">
+        <div className="bg-panel border border-line rounded-xl p-[14px] flex-[1_1_60%] min-h-[140px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:overflow-visible">
           {s ? (
             <>
-              <h3>
+              <h3 className={PANEL_H3}>
                 seq {s.ev.seq} · {s.title}
               </h3>
-              <div className="desc">{s.desc}</div>
-              <pre>
+              <div className="text-[13px] leading-[1.65] mb-[10px]">{s.desc}</div>
+              <pre className="hl font-mono text-[11.5px] leading-[1.6] whitespace-pre-wrap break-all text-[#a5d8b0] bg-black/[0.28] rounded-lg px-3 py-[10px]">
                 <Hl src={displayEvent(s.ev)} />
               </pre>
             </>
           ) : (
-            <div className="desc">点一个 step，或按播放。</div>
+            <div className="text-[13px] leading-[1.65] mb-[10px]">点一个 step，或按播放。</div>
           )}
         </div>
       </aside>
-      <div className="rp-trace">
-        <h3>
-          <span>{s ? `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）` : "函数轨迹"}</span>
-          <span className="legend">芯片 = 函数 · 蓝卡 = 函数间流动的数据</span>
+      <div className="[grid-area:trace] bg-panel border border-line rounded-xl pt-[14px] px-[14px] pb-2">
+        {/* 轨迹标题:左说明右图例,单行截断 */}
+        <h3 className={`${PANEL_H3} flex gap-3 items-baseline whitespace-nowrap`}>
+          <span className="overflow-hidden text-ellipsis">
+            {s ? `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）` : "函数轨迹"}
+          </span>
+          <span className="ml-auto font-normal text-[#6a6a6e] shrink-0">芯片 = 函数 · 蓝卡 = 函数间流动的数据</span>
         </h3>
         {/* key=cur：换 step 时整棵子树重建，pop 入场动画重新播 */}
         {s ? (
           <FnChain key={cur} step={s} />
         ) : (
-          <div className="chain">
-            <span className="empty">选一个 step 看它穿过哪些函数。</span>
+          <div className={CHAIN}>
+            <span className="text-dim text-[13px]">选一个 step 看它穿过哪些函数。</span>
           </div>
         )}
       </div>

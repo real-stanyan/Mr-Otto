@@ -42,6 +42,66 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
+/* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
+   多处复用的样式串抽成常量:一处改全局生效,JSX 里不抄长串。
+   一次性样式直接内联在各自元素上 */
+const ROW = "max-w-[76%] whitespace-pre-wrap break-words";
+const CHIP = `${ROW} self-start text-[12.5px] font-mono border border-line rounded-lg px-[9px] py-[5px] text-dim`;
+const AUDIT = `${ROW} self-center text-xs text-dim`;
+const V = "font-mono tabular-nums text-text whitespace-nowrap";
+const POP_ROW = "flex justify-between items-baseline gap-3 text-dim py-[2.5px]";
+/* 思考/skill 注入行:档案气质——降调、小字、细左边线,折叠头是唯一交互点 */
+const THINKING_DETAILS = "self-stretch max-w-full border-l-2 border-[#3a3a40] py-[2px] pl-[10px] group";
+const THINKING_SUMMARY =
+  "cursor-pointer text-dim text-xs select-none list-none [&::-webkit-details-marker]:hidden before:content-['▸_'] group-open:before:content-['▾_']";
+const THINKING_BODY = "mt-1 text-[#8e8e96] text-[12.5px] leading-[1.55] whitespace-pre-wrap";
+/* 按下即响应,不等松手。右侧 pr-7 给删除钮留位。
+   注意不写 border-none:preflight 已把边框归零,写了会砍掉返回钮的 border-b */
+const SESSION_ITEM =
+  "group relative cursor-pointer bg-transparent rounded-lg flex flex-col items-start gap-px text-left py-[7px] pr-7 pl-[10px] transition-colors duration-150 hover:bg-white/5 active:bg-white/[0.09]";
+const SESSION_LIST = "flex-1 overflow-y-auto pt-[2px] px-2 pb-2 flex flex-col gap-[2px] scrollbar-thin";
+/* 会话列表选中态(设置模式的栏目导航复用) */
+const SESSION_ACTIVE = " bg-[rgba(43,74,111,0.45)]";
+const SESSION_DELETE =
+  "absolute right-[6px] top-1/2 -translate-y-1/2 px-[7px] py-[2px] text-xs leading-[1.4] bg-transparent border-none text-dim opacity-0 transition-[opacity,color] duration-[125ms] group-hover:opacity-100 hover:text-deny active:scale-90 motion-reduce:active:scale-100";
+const TITLE_SPAN = "text-[13px] max-w-full truncate";
+const WHEN_SPAN = "text-[11px] text-dim font-mono max-w-full truncate";
+/* 设置页骨架(账号/模型配置/Skill 库共用) */
+const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
+const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-line";
+const HEADER_GHOST = "btn shrink-0 bg-transparent px-3 py-1 text-xs text-dim hover:text-text hover:border-text";
+const SETTINGS_BODY =
+  "flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-4 w-[min(640px,100%)] mx-auto scrollbar-thin";
+const HINT = "text-dim text-[13px]";
+const ERR_TXT = "text-err text-[13px]";
+/* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
+const FOCUS_INPUT =
+  "bg-bg border border-line rounded-lg text-text transition-[border-color,box-shadow] duration-150 focus:outline-none focus:border-[#3a5a7a] focus:shadow-[0_0_0_3px_rgba(116,192,252,0.1)]";
+/* 状态条/新会话卡的下拉框(素色,悬停亮边) */
+const BAR_SELECT =
+  "bg-transparent text-dim border border-transparent rounded-md px-1 py-[2px] text-xs font-mono cursor-pointer transition-[color,border-color,background-color] duration-150 hover:text-text hover:border-line disabled:opacity-40 disabled:cursor-default";
+/* bypass 模式常亮警示色——免审状态必须一眼可见 */
+const BYPASS = "text-[#e8a04c] bg-[rgba(232,160,76,0.12)]";
+/* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px) */
+const NSC_SELECT =
+  "bg-transparent border border-transparent rounded-lg text-dim text-xs px-[6px] py-[3px] cursor-pointer hover:text-text hover:border-line disabled:opacity-40 disabled:cursor-default";
+/* 发送/停止键:控件行里收小一号,和状态条同一量级 */
+const SEND_BTN = "btn px-[14px] py-1 text-[13px] rounded-lg shrink-0";
+/* 工作区浮窗列表项 */
+const WS_ITEM =
+  "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-text text-[13px] cursor-pointer hover:bg-white/[0.06] [&>svg]:text-dim [&>svg]:shrink-0";
+/* slash/$ 菜单(composer 上方弹出):origin-aware,从会话框顶边长出来 */
+const SLASH_MENU =
+  "absolute left-0 right-0 bottom-[calc(100%+8px)] flex flex-col gap-[2px] bg-panel border border-line rounded-xl p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] scrollbar-thin motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
+const SLASH_ITEM =
+  "flex items-baseline gap-[10px] w-full text-left bg-transparent border-none rounded-lg px-[10px] py-[7px] cursor-pointer transition-colors duration-100";
+/* 工具详情面板的小节标题与代码块(.hl = 自研高亮器配色作用域,见 app.css) */
+const TOOL_SEC = "text-[11px] text-dim uppercase tracking-[0.05em] mt-2 mb-1";
+const TOOL_PRE =
+  "hl m-0 px-[10px] py-2 rounded-lg bg-black/30 font-mono text-xs leading-normal whitespace-pre-wrap break-all max-h-60 overflow-auto scrollbar-thin";
+/* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
+const APPROVAL_PRE = "font-mono text-xs text-dim mt-[6px] whitespace-pre-wrap break-all";
+
 // contextUsed 搬进 shared（校准版：账单锚点 + 未计费事件估算），这里只消费
 
 /** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
@@ -56,7 +116,7 @@ function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) 
 
   const tokens = useMemo(() => totalTokens(events), [events]);
   return (
-    <span>
+    <span className="tabular-nums">
       {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens · {label}
     </span>
   );
@@ -70,9 +130,13 @@ function CtxRing({ used, win }: { used: number; win: number }) {
   const c = 2 * Math.PI * r;
   // 有占用就至少画出一小段弧，不然低用量时环看着像坏了
   const arc = pct === 0 ? 0 : Math.max(pct, 0.05) * c;
-  const color = pct > 0.9 ? "var(--deny)" : pct > 0.75 ? "var(--warn)" : "#74c0fc";
+  const color = pct > 0.9 ? "var(--color-deny)" : pct > 0.75 ? "var(--color-warn)" : "#74c0fc";
   return (
-    <svg className="ctx-ring" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+    // 圆环弧长/颜色随账单更新平滑过渡(每 turn 一次,低频)
+    <svg
+      className="[&_circle]:[transition:stroke-dasharray_400ms_var(--ease-strong),stroke_400ms_ease]"
+      width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"
+    >
       <circle cx="7" cy="7" r={r} fill="none" stroke="rgba(255, 255, 255, 0.16)" strokeWidth="2.5" />
       <circle
         cx="7" cy="7" r={r} fill="none"
@@ -119,36 +183,42 @@ function CtxPopover({ events, ctxWindow, onClose }: {
   const n = (x: number) => x.toLocaleString("en-US");
 
   return (
-    <div className="ctx-pop" ref={ref} role="dialog" aria-label="上下文用量详情">
-      <div className="ctx-pop-head">
-        上下文窗 <span className="v">{fmtTokens(ctxWindow)}</span>
+    <div
+      className="absolute -right-1 bottom-[calc(100%+8px)] z-10 w-[258px] px-3 py-[10px] bg-panel border border-line rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs text-text cursor-default origin-bottom-right transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
+      ref={ref} role="dialog" aria-label="上下文用量详情"
+    >
+      <div className="flex justify-between items-baseline font-semibold mb-2">
+        上下文窗 <span className={V}>{fmtTokens(ctxWindow)}</span>
       </div>
-      <div className="ctx-pop-row">
+      <div className={POP_ROW}>
         <span>占用估计</span>
-        <span className="v">{n(used)} · {pct}%</span>
+        <span className={V}>{n(used)} · {pct}%</span>
       </div>
-      <div className="ctx-pop-bar" aria-hidden="true">
-        <i style={{ width: `${Math.max(pct, used > 0 ? 1 : 0)}%` }} />
+      <div className="h-1 rounded-sm overflow-hidden bg-white/10 mt-[5px] mb-[7px]" aria-hidden="true">
+        <i
+          className="block h-full rounded-sm bg-accent-hi min-w-0 transition-[width] duration-[400ms] ease-strong"
+          style={{ width: `${Math.max(pct, used > 0 ? 1 : 0)}%` }}
+        />
       </div>
       {lastUsage && (
-        <div className="ctx-pop-row">
+        <div className={POP_ROW}>
           <span>最近一次调用</span>
-          <span className="v">入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
+          <span className={V}>入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
         </div>
       )}
-      <div className="ctx-pop-row">
+      <div className={POP_ROW}>
         <span>会话累计消耗</span>
-        <span className="v">{n(totalTokens(events))} tokens</span>
+        <span className={V}>{n(totalTokens(events))} tokens</span>
       </div>
-      <div className="ctx-pop-row">
+      <div className={POP_ROW}>
         <span>事件日志</span>
-        <span className="v">{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
+        <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
       </div>
-      <div className="ctx-pop-row">
+      <div className={POP_ROW}>
         <span>单 turn 步数上限</span>
-        <span className="v">{maxSteps}（/steps 可调）</span>
+        <span className={V}>{maxSteps}（/steps 可调）</span>
       </div>
-      <div className="ctx-pop-hint">
+      <div className="mt-2 pt-2 border-t border-line text-dim text-[11px] leading-normal">
         占用 = 最近账单 + 之后未计费事件的字符估算；/compact 可折叠历史释放上下文
       </div>
     </div>
@@ -175,9 +245,9 @@ function ComposerBar() {
   const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
   return (
-    <div className="composer-bar">
+    <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap text-xs text-dim pl-[2px]">
       <select
-        className={"mode-select" + (approvalMode === "auto" ? " bypass" : "")}
+        className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
         value={approvalMode}
         title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
         onChange={(e) => void setApprovalMode(e.target.value as "ask" | "auto")}
@@ -188,7 +258,7 @@ function ComposerBar() {
 
       <button
         type="button"
-        className="attach-btn"
+        className="border-none bg-transparent text-inherit text-base leading-none px-2 py-[2px] rounded-md enabled:hover:bg-white/[0.08] disabled:opacity-40 disabled:cursor-default"
         title="添加文件(图片/文本)"
         disabled={status === "running"}
         onClick={() => void useChat.getState().pickFiles()}
@@ -196,10 +266,10 @@ function ComposerBar() {
         ＋
       </button>
 
-      <span className="spacer" />
+      <span className="flex-1" />
 
       <select
-        className="model-select"
+        className={BAR_SELECT}
         value={model}
         disabled={status === "running"}
         onChange={(e) => void switchModel(e.target.value)}
@@ -214,7 +284,7 @@ function ComposerBar() {
       </select>
 
       <select
-        className="thinking-select"
+        className={BAR_SELECT}
         value={thinking ? "on" : "off"}
         disabled={status === "running" || !choice?.supportsThinking}
         title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
@@ -224,10 +294,10 @@ function ComposerBar() {
         <option value="off">Thinking 关</option>
       </select>
 
-      <span className="ctx-usage">
+      <span className="relative inline-flex items-center">
         <button
           type="button"
-          className="ctx-btn"
+          className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-white/[0.07]"
           title={`上下文占用 ${fmtTokens(used)}/${fmtTokens(ctxWindow)} · ${pct}%——点击看详情`}
           aria-label="上下文用量详情"
           onClick={() => setCtxOpen((o) => !o)}
@@ -292,33 +362,57 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
   const status = result?.status ?? "running";
 
   return (
-    <div className={`row tool-row st-${status}`}>
-      <button className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className="tool-verb">{verb}</span>
-        {target && <span className="tool-target">{target}</span>}
-        {stat && <span className="tool-stat">{stat}</span>}
-        {status === "running" && <span className="tool-flag">执行中…</span>}
-        {status === "error" && <span className="tool-flag err">出错</span>}
-        {status === "denied" && <span className="tool-flag err">已拒绝</span>}
-        <span className={`tool-chev${open ? " open" : ""}`}>›</span>
+    <div className={`${ROW} p-0`}>
+      {/* 高频摘要行零动画;宽行按压不缩放(读感怪) */}
+      <button
+        className="flex items-center gap-2 text-left bg-transparent border-none rounded-lg py-[5px] px-2 -mx-2 w-[calc(100%+16px)] text-[13px] text-dim transition-colors duration-[120ms] hover:bg-white/5"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <span
+          className={
+            "font-[550] shrink-0 " +
+            (status === "error" || status === "denied" ? "text-deny" : "text-text")
+          }
+        >
+          {verb}
+        </span>
+        {target && <span className="font-mono text-xs text-dim truncate">{target}</span>}
+        {stat && <span className="text-ok tabular-nums shrink-0">{stat}</span>}
+        {status === "running" && <span className="text-dim shrink-0">执行中…</span>}
+        {status === "error" && <span className="text-deny shrink-0">出错</span>}
+        {status === "denied" && <span className="text-deny shrink-0">已拒绝</span>}
+        <span
+          className={
+            "ml-auto shrink-0 text-dim transition-transform duration-150 ease-strong motion-reduce:transition-none" +
+            (open ? " rotate-90" : "")
+          }
+        >
+          ›
+        </span>
       </button>
       {!result && live && (
-        <pre className="tool-live" ref={liveRef}>
+        // 执行中的输出直播:迷你终端尾巴。低亮度——它是过程噪音,不是结果
+        <pre
+          className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-[#0d0d0f] border border-line rounded-lg font-mono text-xs leading-normal text-[#8e8e96] whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
+          ref={liveRef}
+        >
           {live}
         </pre>
       )}
       {open && (
-        <div className="tool-detail">
-          <div className="tool-meta">
+        // 详情展开是偶发动作:150ms ease-out 入场,从触发行长出来(origin 左上)
+        <div className="mt-[2px] mb-1 px-3 py-[10px] bg-panel border border-line rounded-[10px] origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100">
+          <div className="text-xs text-dim tabular-nums mb-[6px]">
             {call.name} · {status}
             {result && started ? ` · 执行耗时 ${result.ts - started.ts} ms` : ""}
           </div>
-          <div className="tool-sec">参数</div>
-          <pre><Hl src={JSON.stringify(call.args, null, 2)} /></pre>
+          <div className={TOOL_SEC}>参数</div>
+          <pre className={TOOL_PRE}><Hl src={JSON.stringify(call.args, null, 2)} /></pre>
           {result && (
             <>
-              <div className="tool-sec">输出</div>
-              <pre><Hl src={result.output || "（空）"} /></pre>
+              <div className={TOOL_SEC}>输出</div>
+              <pre className={TOOL_PRE}><Hl src={result.output || "（空）"} /></pre>
             </>
           )}
         </div>
@@ -351,9 +445,9 @@ function AttachmentThumb({ id, name }: { id: string; name?: string | undefined }
       alive = false;
     };
   }, [id, url]);
-  if (lost) return <span className="attach-lost">[图片缺失:{name ?? id.slice(0, 14)}]</span>;
-  if (!url) return <span className="attach-loading">…</span>;
-  return <img className="attach-thumb" src={url} alt={name ?? "附件图片"} title={name} />;
+  if (lost) return <span className="opacity-60 text-xs text-dim">[图片缺失:{name ?? id.slice(0, 14)}]</span>;
+  if (!url) return <span className="opacity-60 text-xs text-dim">…</span>;
+  return <img className="max-w-[200px] max-h-40 rounded-md block" src={url} alt={name ?? "附件图片"} title={name} />;
 }
 
 function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
@@ -362,23 +456,26 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
       // 文本文件渲染成折叠卡片,不摊开全文——全文是给模型的(投影时拼进上下文),
       // 气泡里只亮"带了什么文件";点开可核对快照内容
       return (
-        <div className="row user">
+        // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
+        <div className={`${ROW} self-end bg-accent rounded-[12px_12px_2px_12px] px-3 py-2`}>
           {event.content}
           {event.textFiles && event.textFiles.length > 0 && (
-            <div className="user-files">
+            <div className="flex flex-col gap-1 mt-[6px]">
               {event.textFiles.map((f, i) => (
-                <details className="user-file" key={i}>
-                  <summary>
+                <details className="group bg-white/[0.06] rounded-md px-2 py-1 text-xs" key={i}>
+                  <summary className="cursor-pointer text-dim list-none [&::-webkit-details-marker]:hidden group-open:mb-1">
                     📄 {f.name}
-                    <span className="user-file-size">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
+                    <span className="opacity-70 ml-1">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
                   </summary>
-                  <div className="user-file-body">{f.content}</div>
+                  <div className="whitespace-pre-wrap break-words max-h-60 overflow-y-auto text-dim text-xs border-t border-white/[0.08] pt-1">
+                    {f.content}
+                  </div>
                 </details>
               ))}
             </div>
           )}
           {event.attachments && event.attachments.length > 0 && (
-            <div className="user-attachments">
+            <div className="flex flex-wrap gap-[6px] mt-[6px]">
               {event.attachments.map((a) => (
                 <AttachmentThumb key={a.id} id={a.id} name={a.name} />
               ))}
@@ -395,13 +492,14 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
           {event.reasoning && (
             // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
             // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
-            <details className="row thinking">
-              <summary>思考过程</summary>
-              <div className="thinking-body">{event.reasoning}</div>
+            <details className={THINKING_DETAILS}>
+              <summary className={THINKING_SUMMARY}>思考过程</summary>
+              <div className={THINKING_BODY}>{event.reasoning}</div>
             </details>
           )}
           {event.content && (
-            <div className="row assistant md">
+            // 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息)
+            <div className="md self-stretch max-w-full py-[2px]">
               <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                 {event.content}
               </Markdown>
@@ -418,24 +516,24 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
 
     case "approval_decision":
       return (
-        <div className="row audit">
+        <div className={AUDIT}>
           审批：{event.decision === "approved" ? "已批准" : "已拒绝"}
           {event.reason ? `（${event.reason}）` : ""}
         </div>
       );
 
     case "session_created":
-      return <div className="row audit">会话已创建</div>;
+      return <div className={AUDIT}>会话已创建</div>;
 
     case "session_archived":
-      return <div className="row audit">会话已归档</div>;
+      return <div className={AUDIT}>会话已归档</div>;
 
     case "session_renamed":
-      return <div className="row audit">会话改名 → {event.title}</div>;
+      return <div className={AUDIT}>会话改名 → {event.title}</div>;
 
     case "context_compacted":
       return (
-        <div className="row audit">
+        <div className={AUDIT}>
           ✻ 上下文已压缩——此前对话折叠为摘要（{event.model}
           {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
         </div>
@@ -443,7 +541,7 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
 
     case "model_changed":
       return (
-        <div className="row audit">
+        <div className={AUDIT}>
           模型切换 → {event.provider}/{event.model}
         </div>
       );
@@ -451,9 +549,12 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "skill_invoked":
       // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
       return (
-        <details className="row thinking skill-note">
-          <summary>✦ 启用 skill「{event.name}」——指令已注入上下文</summary>
-          <div className="thinking-body">{event.content}</div>
+        <details className={THINKING_DETAILS}>
+          {/* skill 注入行:thinking 折叠版式 + accent 点题 */}
+          <summary className={`${THINKING_SUMMARY} text-accent-hi`}>
+            ✦ 启用 skill「{event.name}」——指令已注入上下文
+          </summary>
+          <div className={THINKING_BODY}>{event.content}</div>
         </details>
       );
 
@@ -461,9 +562,9 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
       // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
       // 不是对话内容；摊开能看到视觉模型到底读出了什么（解析质量一目了然）
       return (
-        <details className="row thinking image-desc">
-          <summary>👁 图片解析（由 {event.model} 代读）——已注入上下文</summary>
-          <div className="thinking-body">{event.content}</div>
+        <details className={THINKING_DETAILS}>
+          <summary className={THINKING_SUMMARY}>👁 图片解析（由 {event.model} 代读）——已注入上下文</summary>
+          <div className={THINKING_BODY}>{event.content}</div>
         </details>
       );
 
@@ -474,9 +575,10 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "turn_ended":
       // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
       return event.outcome === "error" ? (
-        <div className="row chip result-error">[turn 失败] {event.error}</div>
+        <div className={`${CHIP} border-err text-err`}>[turn 失败] {event.error}</div>
       ) : event.outcome === "aborted" ? (
-        <div className="row chip aborted">已中断</div>
+        // 中断 = 用户意志,中性灰居中——不是故障,不用红
+        <div className={`${CHIP} self-center`}>已中断</div>
       ) : null;
   }
 }
@@ -485,7 +587,7 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     审批人要看的是"改了什么"，不是全文。算不动（超大文件）退回 JSON 由调用方兜底 */
 function DiffPreview({ oldText, newText }: { oldText: string | null; newText: string }) {
   const lines = useMemo(() => diffLines(oldText ?? "", newText), [oldText, newText]);
-  if (!lines) return <pre>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>;
+  if (!lines) return <pre className={APPROVAL_PRE}>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>;
 
   // 折叠：同类 same 连续段只留首尾各 2 行做上下文，中间换成"… N 行未变 …"
   const CONTEXT = 2;
@@ -513,9 +615,21 @@ function DiffPreview({ oldText, newText }: { oldText: string | null; newText: st
   }
 
   return (
-    <pre className="diff">
+    <pre className={`${APPROVAL_PRE} max-h-[260px] overflow-y-auto bg-black/[0.32] border border-line rounded-lg px-[10px] py-2 whitespace-pre break-normal overflow-x-auto`}>
       {rows.map((r) => (
-        <div key={r.key} className={`diff-line ${r.kind}`}>
+        <div
+          key={r.key}
+          className={
+            "leading-normal " +
+            (r.kind === "add"
+              ? "text-[#7fd48a] bg-[rgba(60,160,80,0.12)]"
+              : r.kind === "del"
+                ? "text-[#e08a8a] bg-[rgba(200,70,70,0.12)] line-through [text-decoration-color:rgba(224,138,138,0.4)]"
+                : r.kind === "skip"
+                  ? "text-dim text-center italic"
+                  : "")
+          }
+        >
           {r.kind === "add" ? "+ " : r.kind === "del" ? "- " : "  "}
           {r.text}
         </div>
@@ -532,32 +646,34 @@ function ApprovalCard() {
 
   if (!approval) return null;
   return (
-    <div className="approval">
-      <div className="approval-head">危险操作待审批</div>
-      <div className="approval-body">
+    // 偶发事件才配入场动画:从下方 8px 淡入——它物理上贴着输入框,从来处进场
+    <div className="mx-5 mb-2 border border-warn rounded-[10px] bg-[rgba(240,140,0,0.07)] transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0">
+      <div className="pt-2 px-[14px] text-xs text-warn font-semibold">危险操作待审批</div>
+      <div className="px-[14px] py-[6px]">
         <code>{approval.call.name}</code> — {approval.toolDescription}
         {approval.preview ? (
           <>
-            <div className="diff-path">
+            <div className="mt-2 font-mono text-xs text-text">
               {approval.preview.path}
-              {approval.preview.oldText === null && <span className="diff-new">（新文件）</span>}
+              {approval.preview.oldText === null && <span className="text-ok ml-[6px]">（新文件）</span>}
             </div>
             <DiffPreview oldText={approval.preview.oldText} newText={approval.preview.newText} />
           </>
         ) : (
-          <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
+          <pre className={APPROVAL_PRE}>{JSON.stringify(approval.call.args, null, 2)}</pre>
         )}
       </div>
-      <div className="approval-actions">
+      <div className="flex gap-2 px-[14px] pb-3">
         <input
+          className={`${FOCUS_INPUT} flex-1 px-[10px] py-[6px] text-[13px]`}
           placeholder="拒绝原因（可空，模型会看到）"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
-        <button className="deny" onClick={() => void decide("denied", reason.trim() || undefined)}>
+        <button className="btn bg-transparent text-deny border-deny" onClick={() => void decide("denied", reason.trim() || undefined)}>
           拒绝
         </button>
-        <button className="approve" onClick={() => void decide("approved")}>
+        <button className="btn bg-ok border-ok text-white" onClick={() => void decide("approved")}>
           批准
         </button>
       </div>
@@ -578,16 +694,17 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
   };
 
   return (
-    <div className="key-row">
-      <div className="key-info">
-        <span className="key-label">{label}</span>
-        <span className={configured ? "key-state ok" : "key-state"}>
+    <div className="border border-line rounded-[10px] p-[14px] flex flex-col gap-[10px]">
+      <div className="flex items-baseline gap-[10px]">
+        <span className="font-semibold capitalize">{label}</span>
+        <span className={"text-xs " + (configured ? "text-ok" : "text-dim")}>
           {configured ? "● 已配置" : "○ 未配置"}
         </span>
-        <code className="key-env">{envName}</code>
+        <code className="text-dim text-[11.5px] ml-auto">{envName}</code>
       </div>
-      <div className="key-actions">
+      <div className="flex gap-2">
         <input
+          className={`${FOCUS_INPUT} flex-1 px-3 py-2 text-[13px] font-mono`}
           type="password"
           placeholder={configured ? "输入新 key 覆盖" : "粘贴 API key"}
           value={draft}
@@ -596,11 +713,11 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
             if (e.key === "Enter") void save();
           }}
         />
-        <button disabled={!draft.trim()} onClick={() => void save()}>
+        <button className="btn" disabled={!draft.trim()} onClick={() => void save()}>
           保存
         </button>
         {configured && (
-          <button className="deny" onClick={() => void saveApiKey(envName, "")}>
+          <button className="btn bg-transparent text-deny border-deny" onClick={() => void saveApiKey(envName, "")}>
             清除
           </button>
         )}
@@ -609,12 +726,18 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
   );
 }
 
-/** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片 */
-function AccountAvatar({ name, avatarUrl }: { name: string; avatarUrl: string }) {
+/** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片。
+    sizeCls 让侧栏登录槽用小一号(20px),设置页默认 28px */
+function AccountAvatar({ name, avatarUrl, sizeCls = "w-7 h-7 text-[13px]" }: {
+  name: string;
+  avatarUrl: string;
+  sizeCls?: string;
+}) {
+  const cls = `${sizeCls} rounded-full shrink-0 object-cover bg-accent inline-flex items-center justify-center font-semibold text-text`;
   if (avatarUrl) {
-    return <img className="account-avatar" src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
+    return <img className={cls} src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
   }
-  return <span className="account-avatar">{name.charAt(0).toUpperCase() || "?"}</span>;
+  return <span className={cls}>{name.charAt(0).toUpperCase() || "?"}</span>;
 }
 
 /** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
@@ -626,37 +749,37 @@ function AccountPage() {
   const error = useChat((s) => s.error);
 
   return (
-    <main className="settings">
-      <header>
-        <span className="name">账号</span>
-        <button className="ghost" onClick={closeSettings}>
+    <main className={MAIN_COL}>
+      <header className={HEADER}>
+        <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
+        <button className={HEADER_GHOST} onClick={closeSettings}>
           返回
         </button>
       </header>
-      <section className="settings-body">
+      <section className={SETTINGS_BODY}>
         {account.signedIn ? (
-          <div className="account-row">
+          <div className="flex items-center gap-[10px]">
             <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
-            <span className="name">{account.name}</span>
-            <span className="hint">{account.email}</span>
-            <button className="ghost" onClick={() => void signOut()}>
+            <span className="font-[650]">{account.name}</span>
+            <span className={HINT}>{account.email}</span>
+            <button className="btn" onClick={() => void signOut()}>
               退出登录
             </button>
           </div>
         ) : (
           <>
-            <div className="account-row">
-              <button className="ghost" onClick={() => void signIn("google")}>
+            <div className="flex items-center gap-[10px]">
+              <button className="btn" onClick={() => void signIn("google")}>
                 用 Google 登录
               </button>
-              <button className="ghost" onClick={() => void signIn("github")}>
+              <button className="btn" onClick={() => void signIn("github")}>
                 用 GitHub 登录
               </button>
             </div>
-            <p className="hint">登录后可在多台设备同步配置（即将上线）</p>
+            <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
           </>
         )}
-        {error && <p className="error">{error}</p>}
+        {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </main>
   );
@@ -670,22 +793,22 @@ function KeysPage() {
   const providers = [...new Map(MODEL_CATALOG.map((m) => [m.apiKeyEnv, m.provider])).entries()];
 
   return (
-    <main className="settings">
-      <header>
-        <span className="name">模型配置</span>
-        <button className="ghost" onClick={closeSettings}>
+    <main className={MAIN_COL}>
+      <header className={HEADER}>
+        <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
+        <button className={HEADER_GHOST} onClick={closeSettings}>
           返回
         </button>
       </header>
-      <section className="settings-body">
-        <p className="hint">
+      <section className={SETTINGS_BODY}>
+        <p className={HINT}>
           key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
           此处配置的 key 优先于 .env。
         </p>
         {providers.map(([envName, provider]) => (
           <KeyRow key={envName} envName={envName} label={provider} />
         ))}
-        {error && <p className="error">{error}</p>}
+        {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </main>
   );
@@ -698,32 +821,34 @@ function SkillsPage() {
   const closeSettings = useChat((s) => s.closeSettings);
 
   return (
-    <main className="settings">
-      <header>
-        <span className="name">Skill 库</span>
-        <button className="ghost" onClick={closeSettings}>
+    <main className={MAIN_COL}>
+      <header className={HEADER}>
+        <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
+        <button className={HEADER_GHOST} onClick={closeSettings}>
           返回
         </button>
       </header>
-      <section className="settings-body">
-        <p className="hint">
+      <section className={SETTINGS_BODY}>
+        <p className={HINT}>
           聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
           （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
           {" "}放进 <code>~/.otter/skills</code> 或 <code>~/.claude/skills</code>。
         </p>
         {skills.map((s) => (
-          <details key={s.name} className="skill-card">
-            <summary>
-              <span className="skill-name">{s.name}</span>
-              <span className="skill-desc">{s.description || "（无描述）"}</span>
-              <code className="skill-src" title={s.path}>
+          <details key={s.name} className="border border-line rounded-[10px]">
+            <summary className="flex items-baseline gap-[10px] px-[14px] py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+              <span className="font-mono text-[13px] font-semibold text-accent-hi shrink-0">{s.name}</span>
+              <span className="text-dim text-[12.5px] flex-1 min-w-0 truncate">{s.description || "（无描述）"}</span>
+              <code className="text-dim text-[11px] shrink-0" title={s.path}>
                 {s.source.split("/").slice(-2).join("/")}
               </code>
             </summary>
-            <pre className="skill-body">{s.content}</pre>
+            <pre className="m-0 px-[14px] py-3 border-t border-line text-xs leading-[1.55] text-dim whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+              {s.content}
+            </pre>
           </details>
         ))}
-        {skills.length === 0 && <p className="hint">还没有安装任何 skill。</p>}
+        {skills.length === 0 && <p className={HINT}>还没有安装任何 skill。</p>}
       </section>
     </main>
   );
@@ -758,59 +883,63 @@ function Sidebar() {
   const prehistoric = sessions.filter((s) => s.workspace === null);
 
   return (
-    <aside className="sidebar">
-      <div className="brand">
-        <img className="logo" src={ottoLogo} alt="" />
+    <aside className="w-[232px] shrink-0 flex flex-col bg-panel border-r border-line">
+      <div className="pt-4 px-4 pb-[10px] font-[650] flex items-center gap-2">
+        {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
+        <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
         Mr Otto
       </div>
       {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
           设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
       {settingsSection === null && (
-        <button className="new-session" onClick={newSession}>
+        <button className="btn mx-3 mb-[10px] px-3 py-[7px] text-[13px]" onClick={newSession}>
           ＋ 新会话
         </button>
       )}
       {settingsSection !== null ? (
         // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
-        <nav className="session-list">
-          <button className="session-item settings-nav-back" onClick={closeSettings}>
+        <nav className={SESSION_LIST}>
+          <button
+            className={`${SESSION_ITEM} text-dim border-b border-line rounded-t-lg rounded-b-none mb-1 hover:text-text`}
+            onClick={closeSettings}
+          >
             ← 返回会话
           </button>
           {SETTINGS_SECTIONS.map((sec) => (
             <button
               key={sec.id}
-              className={"session-item" + (settingsSection === sec.id ? " active" : "")}
+              className={SESSION_ITEM + (settingsSection === sec.id ? SESSION_ACTIVE : "")}
               onClick={() => void openSettings(sec.id)}
             >
-              <span className="title">{sec.label}</span>
+              <span className={TITLE_SPAN}>{sec.label}</span>
             </button>
           ))}
         </nav>
       ) : (
-        <nav className="session-list">
+        <nav className={SESSION_LIST}>
           {/* 行是 div 而非 button：里面要嵌删除按钮，button 套 button 是非法 HTML */}
           {resumable.map((s) => (
             <div
               key={s.sessionId}
               className={
-                "session-item" +
-                (phase === "chat" && settingsSection === null && s.sessionId === sessionId ? " active" : "")
+                SESSION_ITEM +
+                (phase === "chat" && settingsSection === null && s.sessionId === sessionId ? SESSION_ACTIVE : "")
               }
               onClick={() => void resume(s.sessionId)}
             >
               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-              <span className="title">{s.title ?? s.workspace?.split("/").pop()}</span>
-              <span className="when">
+              <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
+              <span className={WHEN_SPAN}>
                 {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
                 {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
                 {approvals[s.sessionId] ? (
-                  <em className="flag approval"> 等审批</em>
+                  <em className="not-italic font-semibold text-warn"> 等审批</em>
                 ) : statusBySession[s.sessionId] === "running" ? (
-                  <em className="flag running"> 运行中</em>
+                  <em className="not-italic font-semibold text-[#74c0fc]"> 运行中</em>
                 ) : null}
               </span>
               <button
-                className="session-delete"
+                className={SESSION_DELETE}
                 title="删除会话（整段日志从库里抹除，不可恢复）"
                 onClick={(e) => {
                   e.stopPropagation(); // 别触发外层的"切换到该会话"
@@ -825,19 +954,20 @@ function Sidebar() {
           ))}
           {prehistoric.length > 0 && (
             <>
-              <div className="session-group">史前会话（不可恢复）</div>
+              <div className="text-[11px] text-dim tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
               {prehistoric.map((s) => (
+                // 灰显示人 + 开放删除,点击不响应(能力问题诚实呈现,不是数据问题)
                 <div
                   key={s.sessionId}
-                  className="session-item prehistoric"
+                  className={`${SESSION_ITEM} cursor-default opacity-55 hover:bg-transparent active:bg-transparent`}
                   title="未记录工程文件夹，无法重建围栏，只能删除"
                 >
-                  <span className="title">{s.title ?? s.sessionId}</span>
-                  <span className="when">
+                  <span className="font-mono text-xs max-w-full truncate">{s.title ?? s.sessionId}</span>
+                  <span className={WHEN_SPAN}>
                     {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
                   </span>
                   <button
-                    className="session-delete"
+                    className={SESSION_DELETE}
                     title="删除会话（整段日志从库里抹除，不可恢复）"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -856,24 +986,26 @@ function Sidebar() {
       )}
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
           这一行只留用户卡片 + 一颗进「模型配置」首屏的齿轮 */}
-      <div className="sidebar-bottom">
-        {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做） */}
+      <div className="border-t border-line px-3 py-[10px] flex items-center gap-[6px]">
+        {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做）。
+            低调侧栏风:文字色 dim,悬停亮起 */}
         <button
-          className="login-slot"
+          className="flex items-center gap-2 flex-1 min-w-0 px-[10px] py-1 text-dim text-xs bg-transparent text-left hover:text-text"
           onClick={() => void openSettings("account")}
           title={account.signedIn ? account.email : undefined}
         >
           {account.signedIn ? (
             <>
-              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
-              <span className="name">{account.name}</span>
+              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
+              <span className="flex-1 min-w-0 truncate">{account.name}</span>
             </>
           ) : (
             "未登录 · 点击登录"
           )}
         </button>
+        {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
         <button
-          className="ghost settings-gear"
+          className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-dim bg-transparent hover:text-text"
           onClick={() => void openSettings("keys")}
           title="设置"
         >
@@ -969,42 +1101,52 @@ function WorkspacePicker({ value, onChange }: {
   };
 
   return (
-    <div className="ws-picker" ref={ref}>
-      <button className="nsc-folder" onClick={() => setOpen((o) => !o)} title={value ?? "选择工作区"}>
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        className="inline-flex items-center gap-[6px] shrink-0 bg-transparent text-text text-[13px] font-[550] px-2 py-1 rounded-lg hover:bg-white/[0.06]"
+        onClick={() => setOpen((o) => !o)}
+        title={value ?? "选择工作区"}
+      >
         <FolderIcon />
         {value ? value.split("/").pop() : "选择工作区"}
-        <span className="nsc-chev" aria-hidden="true">⌄</span>
+        <span className="text-dim text-[11px]" aria-hidden="true">⌄</span>
       </button>
       {open && (
-        <div className="ws-pop" role="listbox" aria-label="选择工作区">
+        // 浮窗锚在触发钮左上(从来处出现),只动 transform/opacity
+        <div
+          className="absolute top-[calc(100%+6px)] left-0 z-30 w-80 max-h-[340px] flex flex-col bg-[#1e1e24] border border-line rounded-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] overflow-hidden origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97]"
+          role="listbox"
+          aria-label="选择工作区"
+        >
           <input
-            className="ws-search"
+            className="bg-transparent border-0 border-b border-line px-3 py-[10px] text-text text-[13px] shrink-0 focus:outline-none placeholder:text-dim"
             autoFocus
             placeholder="搜索工作区"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="ws-list">
+          <div className="overflow-y-auto p-[6px] flex-1">
             {matches.map((dir) => (
               <button
                 key={dir}
-                className="ws-item"
+                className={WS_ITEM}
                 role="option"
                 aria-selected={dir === value}
                 title={dir}
                 onClick={() => choose(dir)}
               >
                 <FolderIcon />
-                <span className="ws-name">{dir.split("/").pop()}</span>
-                <span className="ws-dir">{dir}</span>
-                {dir === value && <span className="ws-check" aria-hidden="true">✓</span>}
+                <span className="shrink-0">{dir.split("/").pop()}</span>
+                {/* rtl 省略头部留尾部:路径的尾巴才认得出 */}
+                <span className="text-dim text-[11px] flex-1 min-w-0 truncate [direction:rtl]">{dir}</span>
+                {dir === value && <span className="text-accent shrink-0" aria-hidden="true">✓</span>}
               </button>
             ))}
-            {matches.length === 0 && <div className="ws-empty">没有匹配的工作区</div>}
+            {matches.length === 0 && <div className="text-dim text-xs px-3 py-[10px]">没有匹配的工作区</div>}
           </div>
-          <div className="ws-actions">
-            <button className="ws-item" onClick={() => void openDialog()}>
-              <span className="ws-plus" aria-hidden="true">＋</span> 打开文件夹…
+          <div className="border-t border-line p-[6px] shrink-0">
+            <button className={WS_ITEM} onClick={() => void openDialog()}>
+              <span className="text-dim shrink-0" aria-hidden="true">＋</span> 打开文件夹…
             </button>
           </div>
         </div>
@@ -1047,19 +1189,21 @@ function Welcome() {
   };
 
   return (
-    <main className="welcome">
-      <img className="welcome-logo" src={ottoLogo} alt="Mr Otto" />
-      <h1>Mr Otto</h1>
-      <div className="nsc">
-        <div className="nsc-top">
+    <main className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
+      <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
+      <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
+      {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡 */}
+      <div className="w-[min(640px,90%)] text-left bg-[#1a1a1f] border border-line rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-[#3f3f4a]">
+        <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {workspace && (
-            <span className="nsc-path" title={workspace}>
+            <span className="text-dim text-[11px] min-w-0 truncate" title={workspace}>
               {workspace}
             </span>
           )}
         </div>
         <textarea
+          className="bg-transparent resize-none text-text text-sm leading-[1.55] min-h-[52px] max-h-[200px] field-sizing-content px-1 py-[2px] focus:outline-none placeholder:text-dim"
           autoFocus
           rows={2}
           placeholder="向 Mr Otto 描述任务，回车发送"
@@ -1073,9 +1217,9 @@ function Welcome() {
             }
           }}
         />
-        <div className="nsc-bottom">
+        <div className="flex items-center gap-2">
           <select
-            className={"mode-select" + (mode === "auto" ? " bypass" : "")}
+            className={NSC_SELECT + (mode === "auto" ? " " + BYPASS : "")}
             value={mode}
             title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
             onChange={(e) => setMode(e.target.value as "ask" | "auto")}
@@ -1083,8 +1227,8 @@ function Welcome() {
             <option value="ask">逐条审批</option>
             <option value="auto">完全访问</option>
           </select>
-          <span className="spacer" />
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
+          <span className="flex-1" />
+          <select className={NSC_SELECT} value={model} onChange={(e) => setModel(e.target.value)}>
             {MODEL_CATALOG.map((m) => (
               <option key={m.model} value={m.model}>
                 {m.label}
@@ -1092,6 +1236,7 @@ function Welcome() {
             ))}
           </select>
           <select
+            className={NSC_SELECT}
             value={thinking ? "on" : "off"}
             disabled={!choice?.supportsThinking}
             title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
@@ -1101,7 +1246,7 @@ function Welcome() {
             <option value="off">Thinking 关</option>
           </select>
           <button
-            className="nsc-send"
+            className="btn w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0 enabled:bg-accent enabled:border-accent enabled:text-white enabled:hover:bg-[#35587a] enabled:hover:border-[#35587a]"
             disabled={!workspace || busy}
             title={workspace ? "开始会话" : "先选工程文件夹"}
             aria-label="开始会话"
@@ -1111,8 +1256,8 @@ function Welcome() {
           </button>
         </div>
       </div>
-      <p className="hint">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
-      {error && <p className="error">{error}</p>}
+      <p className="text-dim text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
+      {error && <p className={ERR_TXT}>{error}</p>}
     </main>
   );
 }
@@ -1201,7 +1346,7 @@ export function App() {
     void send(text);
   };
 
-  if (phase === "connecting") return <main className="boot">连接主进程…</main>;
+  if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-dim">连接主进程…</main>;
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）
   const main = settingsSection === "account" ? (
@@ -1213,16 +1358,17 @@ export function App() {
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
-    <main className="chat">
-      <header>
-        <span className="name">
-          <img className="logo" src={ottoLogo} alt="" />
+    <main className={MAIN_COL}>
+      <header className={HEADER}>
+        <span className="font-[650] inline-flex items-center gap-[6px]">
+          <img className="w-[18px] h-[18px] rounded-[5px]" src={ottoLogo} alt="" />
           Mr Otto
         </span>
-        <span className="meta" title={workspace}>
+        {/* header 永远单行:溢出截断加省略号(完整路径挂 title,悬停可见) */}
+        <span className="text-dim text-xs font-mono flex-1 min-w-0 truncate" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
         </span>
-        <button className="ghost" onClick={() => setReplayCursor(replaying ? null : 0)}>
+        <button className={HEADER_GHOST} onClick={() => setReplayCursor(replaying ? null : 0)}>
           {replaying ? "回到直播" : "回放"}
         </button>
       </header>
@@ -1236,21 +1382,22 @@ export function App() {
         </>
       ) : (
         <>
-          <section className="timeline">
+          <section className="flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 flex flex-col gap-2 scrollbar-thin">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
             ))}
-            {error && <div className="row chip result-error">[turn 失败] {error}</div>}
+            {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
             {streamingThinking && (
               // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
-              // open 受控写死：流式中就是要摊开，用户要折等它完事
-              <details className="row thinking streaming" open>
-                <summary>思考中</summary>
-                <div className="thinking-body">{streamingThinking}</div>
+              // open 受控写死：流式中就是要摊开，用户要折等它完事。
+              // streaming 类挂光标(app.css);直播思考限高滚动,别把时间线顶飞
+              <details className={`${THINKING_DETAILS} streaming`} open>
+                <summary className={THINKING_SUMMARY}>思考中</summary>
+                <div className={`${THINKING_BODY} max-h-[180px] overflow-y-auto`}>{streamingThinking}</div>
               </details>
             )}
             {streamingText && (
-              <div className="row assistant md streaming">
+              <div className="md streaming self-stretch max-w-full py-[2px]">
                 {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
                     完整事件到达后重渲一次自然纠正 */}
                 <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
@@ -1259,7 +1406,7 @@ export function App() {
               </div>
             )}
             {(status === "running" || approval !== null) && (
-              <div className="row agent-status">
+              <div className="flex items-center gap-2 text-dim text-[13px] py-[2px]">
                 <ThinkingOrb
                   state={orbStateOf(status, approval !== null)}
                   size={20}
@@ -1276,58 +1423,59 @@ export function App() {
 
           <ApprovalCard />
 
-          <footer>
-            {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式） */}
-            <div className="composer">
+          <footer className="px-5 pt-[10px] pb-3">
+            {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
+                焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
+            <div className="relative bg-panel border border-line rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-[#3a5a7a] focus-within:shadow-[0_0_0_3px_rgba(116,192,252,0.1)]">
               {slashMatches.length > 0 && (
-                <div className="slash-menu" role="listbox">
+                <div className={SLASH_MENU} role="listbox">
                   {slashMatches.map(([name, c], i) => (
                     <button
                       key={name}
-                      className={`slash-item${i === sel ? " sel" : ""}`}
+                      className={SLASH_ITEM + (i === sel ? " bg-[rgba(116,192,252,0.12)]" : "")}
                       role="option"
                       aria-selected={i === sel}
                       onMouseEnter={() => setSlashSel(i)}
                       onClick={() => runSlash(name)}
                     >
-                      <span className="slash-name">{name}</span>
-                      <span className="slash-desc">{c.desc}</span>
+                      <span className="font-mono text-[13px] text-accent-hi shrink-0">{name}</span>
+                      <span className="text-xs text-dim truncate">{c.desc}</span>
                     </button>
                   ))}
                 </div>
               )}
               {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
               {skillMatches.length > 0 && (
-                <div className="slash-menu" role="listbox">
+                <div className={SLASH_MENU} role="listbox">
                   {skillMatches.map((s, i) => (
                     <button
                       key={s.name}
-                      className={`slash-item${i === sel ? " sel" : ""}`}
+                      className={SLASH_ITEM + (i === sel ? " bg-[rgba(116,192,252,0.12)]" : "")}
                       role="option"
                       aria-selected={i === sel}
                       onMouseEnter={() => setSlashSel(i)}
                       onClick={() => pickSkill(s.name)}
                     >
-                      <span className="slash-name">{"$" + s.name}</span>
-                      <span className="slash-desc">{s.description || "（无描述）"}</span>
+                      <span className="font-mono text-[13px] text-accent-hi shrink-0">{"$" + s.name}</span>
+                      <span className="text-xs text-dim truncate">{s.description || "（无描述）"}</span>
                     </button>
                   ))}
                 </div>
               )}
               {(staged.length > 0 || attachError) && (
-                <div className="attach-chips">
+                <div className="flex flex-wrap gap-[6px] items-center pt-[6px] px-[10px]">
                   {staged.map((a, i) => (
-                    <span className="attach-chip" key={i}>
+                    <span className="inline-flex items-center gap-1 bg-white/[0.06] rounded-md px-[6px] py-[3px] text-xs text-dim" key={i}>
                       {a.kind === "image" ? (
-                        <img src={a.previewDataUrl} alt={a.ref.name ?? "图片"} />
+                        <img className="w-9 h-9 object-cover rounded-sm block" src={a.previewDataUrl} alt={a.ref.name ?? "图片"} />
                       ) : (
-                        <span className="attach-chip-file">
+                        <span>
                           {a.name}({(a.bytes / 1024).toFixed(0)}KB)
                         </span>
                       )}
                       <button
                         type="button"
-                        className="attach-chip-x"
+                        className="bg-transparent text-inherit opacity-60 text-[13px] px-[2px] hover:opacity-100"
                         title="移除"
                         onClick={() => removeStaged(i)}
                       >
@@ -1335,12 +1483,13 @@ export function App() {
                       </button>
                     </span>
                   ))}
-                  {attachError && <span className="attach-error">{attachError}</span>}
+                  {attachError && <span className="text-err text-xs">{attachError}</span>}
                 </div>
               )}
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <textarea
+                className="bg-transparent text-text pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none field-sizing-content max-h-[40vh] focus:outline-none placeholder:text-dim"
                 autoFocus
                 rows={1}
                 placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
@@ -1379,15 +1528,24 @@ export function App() {
                   }
                 }}
               />
-              <div className="composer-row">
+              <div className="flex items-center gap-2">
                 <ComposerBar />
-                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效） */}
+                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
+                    停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
                 {status === "running" ? (
-                  <button className="send stop" title="停止 turn（Esc）" onClick={() => void stop()}>
+                  <button
+                    className={`${SEND_BTN} bg-transparent border-err text-err hover:bg-[rgba(224,108,108,0.12)]`}
+                    title="停止 turn（Esc）"
+                    onClick={() => void stop()}
+                  >
                     停止
                   </button>
                 ) : (
-                  <button className="send" onClick={submit} disabled={!input.trim()}>
+                  <button
+                    className={`${SEND_BTN} enabled:bg-accent enabled:border-accent enabled:text-white enabled:hover:bg-[#35587a] enabled:hover:border-[#35587a]`}
+                    onClick={submit}
+                    disabled={!input.trim()}
+                  >
                     发送
                   </button>
                 )}
@@ -1400,7 +1558,7 @@ export function App() {
   );
 
   return (
-    <div className="layout">
+    <div className="flex h-screen">
       <Sidebar />
       {main}
     </div>
