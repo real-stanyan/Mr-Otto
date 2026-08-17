@@ -658,12 +658,126 @@ function Sidebar() {
   );
 }
 
+function FolderIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+      strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1.8 4h4.2l1.4 1.8h6.8v7.4H1.8z" />
+    </svg>
+  );
+}
+
+/** 工作区选择浮窗（ZCode 版式）：最近工作区 = 会话列表的投影（listSessions
+    最近活跃在前，按 workspace 去重即最近使用序）——零新增持久化。
+    系统原生选择框只在点"打开文件夹"时出场 */
+function WorkspacePicker({ value, onChange }: {
+  value: string | null;
+  onChange: (dir: string) => void;
+}) {
+  const sessions = useChat((s) => s.sessions);
+  const pickWorkspace = useChat((s) => s.pickWorkspace);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  const recents = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    // 草稿里刚通过系统框选的新文件夹也在列（它可能还没有任何会话）
+    if (value) {
+      seen.add(value);
+      out.push(value);
+    }
+    for (const s of sessions) {
+      if (s.workspace && !seen.has(s.workspace)) {
+        seen.add(s.workspace);
+        out.push(s.workspace);
+      }
+    }
+    return out;
+  }, [sessions, value]);
+
+  const q = query.trim().toLowerCase();
+  const matches = q ? recents.filter((d) => d.toLowerCase().includes(q)) : recents;
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
+  const choose = (dir: string) => {
+    onChange(dir);
+    setOpen(false);
+    setQuery("");
+  };
+
+  const openDialog = async () => {
+    setOpen(false); // 先收浮窗再弹系统框，两层 UI 不叠着
+    const dir = await pickWorkspace();
+    if (dir) onChange(dir); // 取消 = 保持原选择
+  };
+
+  return (
+    <div className="ws-picker" ref={ref}>
+      <button className="nsc-folder" onClick={() => setOpen((o) => !o)} title={value ?? "选择工作区"}>
+        <FolderIcon />
+        {value ? value.split("/").pop() : "选择工作区"}
+        <span className="nsc-chev" aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div className="ws-pop" role="listbox" aria-label="选择工作区">
+          <input
+            className="ws-search"
+            autoFocus
+            placeholder="搜索工作区"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="ws-list">
+            {matches.map((dir) => (
+              <button
+                key={dir}
+                className="ws-item"
+                role="option"
+                aria-selected={dir === value}
+                title={dir}
+                onClick={() => choose(dir)}
+              >
+                <FolderIcon />
+                <span className="ws-name">{dir.split("/").pop()}</span>
+                <span className="ws-dir">{dir}</span>
+                {dir === value && <span className="ws-check" aria-hidden="true">✓</span>}
+              </button>
+            ))}
+            {matches.length === 0 && <div className="ws-empty">没有匹配的工作区</div>}
+          </div>
+          <div className="ws-actions">
+            <button className="ws-item" onClick={() => void openDialog()}>
+              <span className="ws-plus" aria-hidden="true">＋</span> 打开文件夹…
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 新会话 composer（ZCode 版式）：文件夹 + 首条消息 + 模式/模型/thinking 先配齐，
     ↑ 一按才落地。落地前全是渲染层草稿——反悔零痕迹，没建的会话不存在半个。
     偏好初值：审批 ask（安全默认）、thinking 开；模型跟上个会话走，没有就用目录第一款 */
 function Welcome() {
   const startSession = useChat((s) => s.startSession);
-  const pickWorkspace = useChat((s) => s.pickWorkspace);
   const send = useChat((s) => s.send);
   const error = useChat((s) => s.error);
   const lastModel = useChat((s) => s.model);
@@ -676,11 +790,6 @@ function Welcome() {
   const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
   const choice = findModel(model);
-
-  const pick = async () => {
-    const dir = await pickWorkspace();
-    if (dir) setWorkspace(dir); // 取消 = 保持原选择，别把已选的清掉
-  };
 
   const launch = async () => {
     if (!workspace || busy) return;
@@ -703,11 +812,7 @@ function Welcome() {
       <h1>Mr Otto</h1>
       <div className="nsc">
         <div className="nsc-top">
-          <button className="nsc-folder" onClick={() => void pick()} title={workspace ?? "选择工程文件夹"}>
-            <span aria-hidden="true">📁</span>
-            {workspace ? workspace.split("/").pop() : "选择工程文件夹"}
-            <span className="nsc-chev" aria-hidden="true">⌄</span>
-          </button>
+          <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {workspace && (
             <span className="nsc-path" title={workspace}>
               {workspace}
