@@ -657,6 +657,7 @@ function Sidebar() {
   const deleteSession = useChat((s) => s.deleteSession);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
+  const account = useChat((s) => s.account);
 
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
@@ -747,8 +748,21 @@ function Sidebar() {
         <button className="ghost" onClick={() => void openSettings()}>
           设置
         </button>
-        {/* 登录占位：账号体系是 v2（自托管 VPS / Docker per bot）的事，先留槽 */}
-        <div className="login-slot">未登录</div>
+        {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做） */}
+        <button
+          className="login-slot"
+          onClick={() => void openSettings()}
+          title={account.signedIn ? account.email : undefined}
+        >
+          {account.signedIn ? (
+            <>
+              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
+              <span className="name">{account.name}</span>
+            </>
+          ) : (
+            "未登录 · 点击登录"
+          )}
+        </button>
       </div>
     </aside>
   );

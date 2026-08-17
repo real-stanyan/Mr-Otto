@@ -89,8 +89,15 @@ body {
   background: transparent; border: none; text-align: left;
 }
 .sidebar-bottom .ghost:hover { color: var(--text); }
-/* 登录占位槽：v2 账号体系落位处 */
-.login-slot { color: var(--dim); font-size: 12px; padding: 2px 10px 4px; }
+/* 登录槽：点击进设置页账号区。低调侧栏风，不套 .ghost（那是纯文字按钮，这里要放头像） */
+.login-slot {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 4px 10px; color: var(--dim); font-size: 12px;
+  background: transparent; border: none; text-align: left; cursor: pointer;
+}
+.login-slot:hover { color: var(--text); }
+.login-slot .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.login-slot .account-avatar { width: 20px; height: 20px; font-size: 11px; flex-shrink: 0; }
 
 .welcome {
   height: 100%; display: flex; flex-direction: column;
@@ -862,6 +869,7 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
 
 /* ─── 设置页账号区 ─── */
 .account-row { display: flex; align-items: center; gap: 10px; }
+.account-row .name { font-weight: 650; }
 .account-avatar {
   width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
   object-fit: cover; background: var(--accent);
