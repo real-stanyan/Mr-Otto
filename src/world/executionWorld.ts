@@ -19,12 +19,21 @@ export interface ExecOptions {
   onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
 }
 
+export interface HttpPostOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
     write(path: string, content: string): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
+  /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
+  http: {
+    postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
+  };
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -34,6 +43,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
+    http: {
+      postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
+    },
   };
 }
 
@@ -47,5 +59,6 @@ export function withExecOutput(
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
+    http: world.http,
   };
 }

@@ -15,6 +15,7 @@ function worldWith(files: Record<string, string>): ExecutionWorld {
     async exec() {
       return { stdout: "", stderr: "", exitCode: 0 };
     },
+    http: { postJson: async () => ({}) },
   };
 }
 

@@ -23,7 +23,7 @@ function fence(root: string | undefined, path: string): string {
   return abs;
 }
 
-export function createLocalWorld(opts: { root?: string } = {}): ExecutionWorld {
+export function createLocalWorld(opts: { root?: string; fetchImpl?: typeof fetch } = {}): ExecutionWorld {
   const { root } = opts;
   return {
     fs: {
@@ -66,6 +66,32 @@ export function createLocalWorld(opts: { root?: string } = {}): ExecutionWorld {
           exitCode: e.code ?? 1,
         };
       }
+    },
+
+    http: {
+      async postJson(url, body, o) {
+        const fetchImpl = opts.fetchImpl ?? fetch;
+        // 30s 超时与外部中断信号合并;两者都能掐死请求
+        const timeout = AbortSignal.timeout(30_000);
+        const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
+        let res: Response;
+        try {
+          res = await fetchImpl(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...o?.headers },
+            body: JSON.stringify(body),
+            signal,
+          });
+        } catch (err) {
+          // 中断是外力,不是请求自身失败——语义对齐 exec(ADR-0006)
+          if (o?.signal?.aborted) throw new Error("请求被中断：用户停止了 turn");
+          throw err;
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        }
+        return res.json();
+      },
     },
   };
 }

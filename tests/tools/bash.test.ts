@@ -14,6 +14,7 @@ function fakeWorld(result: ExecResult) {
       calls.push(cmd);
       return result;
     },
+    http: { postJson: async () => ({}) },
   };
   return { world, calls };
 }

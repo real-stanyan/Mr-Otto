@@ -28,6 +28,7 @@ const fakeWorld: ExecutionWorld = {
     write: async () => {},
   },
   exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+  http: { postJson: async () => ({}) },
 };
 
 describe("LoopEngine", () => {
@@ -309,6 +310,7 @@ describe("turn 中断（ADR-0006）", () => {
             rej(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"))
           );
         }),
+      http: { postJson: async () => ({}) },
     };
     const slowTool = {
       def: { name: "slow", description: "慢工具", parameters: { type: "object", properties: {} } },
@@ -464,6 +466,7 @@ describe("lifecycle 事件（ADR-0004）", () => {
         opts?.onOutput?.("警告\n", "stderr");
         return { stdout: "第一段\n", stderr: "警告\n", exitCode: 0 };
       },
+      http: { postJson: async () => ({}) },
     };
     const got: Array<{ id: string; chunk: string; stream: string }> = [];
     const engine = new LoopEngine({
@@ -497,6 +500,7 @@ describe("lifecycle 事件（ADR-0004）", () => {
         sawOnOutput = opts?.onOutput;
         return { stdout: "", stderr: "", exitCode: 0 };
       },
+      http: { postJson: async () => ({}) },
     };
     const engine = new LoopEngine({
       store, adapter, tools: [bashTool], world, sessionId: "s1",
