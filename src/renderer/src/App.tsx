@@ -610,7 +610,6 @@ function KeysPage() {
         {providers.map(([envName, provider]) => (
           <KeyRow key={envName} envName={envName} label={provider} />
         ))}
-        <KeyRow envName="ANYSEARCH_API_KEY" label="AnySearch(搜索)" />
         {error && <p className="error">{error}</p>}
       </section>
     </main>
