@@ -24,9 +24,11 @@ const bridge: ShellBridge = {
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
   setThinking: (sessionId, on) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, on),
   setMaxSteps: (sessionId, n) => ipcRenderer.invoke(CHANNELS.setMaxSteps, sessionId, n),
+  listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
-  sendMessage: (sessionId, text) => ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text),
+  sendMessage: (sessionId, text, skill) =>
+    ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill),
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, decision, reason) =>

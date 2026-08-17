@@ -295,3 +295,29 @@ describe("悬空工具调用自愈（ADR-0005 保命层）", () => {
     expect(deriveMessages(healthy).map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
   });
 });
+
+describe("skill_invoked（$ 指令的注入投影）", () => {
+  it("投影成 user 消息：名字 + 全文快照，位置在任务消息之前", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "先写测试再写实现" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "实现登录" },
+    ];
+    const msgs = deriveMessages(events);
+    expect(msgs.map((m) => m.role)).toEqual(["user", "user"]);
+    const skill = msgs[0] as { content: string };
+    expect(skill.content).toContain("「tdd」");
+    expect(skill.content).toContain("先写测试再写实现");
+    expect(msgs[1]).toEqual({ role: "user", content: "实现登录" });
+  });
+
+  it("compact 之后 skill 注入随历史一起被摘要替换", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "长指令" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "干活" },
+      { seq: 2, sessionId: "s", ts: 3, type: "context_compacted", summary: "都干完了", model: "m" },
+    ];
+    const msgs = deriveMessages(events);
+    expect(msgs).toHaveLength(1);
+    expect((msgs[0] as { content: string }).content).toContain("都干完了");
+  });
+});

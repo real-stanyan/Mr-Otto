@@ -26,6 +26,18 @@ export interface StartSessionOptions {
   thinking?: boolean;
 }
 
+/** 一个已安装的 skill（Claude Code 兼容：<根目录>/<名字>/SKILL.md + YAML frontmatter）。
+    content = 全文——skill 库页直接展示；真正喂模型的快照由主进程在发送时刻现读 */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  /** SKILL.md 绝对路径 */
+  path: string;
+  /** 来自哪个 skill 根目录（~/.otter/skills 或 ~/.claude/skills） */
+  source: string;
+  content: string;
+}
+
 export interface BootInfo {
   sessionId: string;
   model: string;
@@ -117,9 +129,13 @@ export interface ShellBridge {
   keyStatus(): Promise<Record<string, boolean>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
   setApiKey(envName: string, key: string): Promise<void>;
+  /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
+  listSkills(): Promise<SkillInfo[]>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
-      显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了 */
-  sendMessage(sessionId: string, text: string): Promise<void>;
+      显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
+      skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
+      落 skill_invoked 事件，找不到则整条拒发 */
+  sendMessage(sessionId: string, text: string, skill?: string): Promise<void>;
   /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
       生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
   stopTurn(sessionId: string): Promise<void>;
@@ -151,6 +167,7 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   setMaxSteps: "otter:setMaxSteps",
+  listSkills: "otter:listSkills",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",

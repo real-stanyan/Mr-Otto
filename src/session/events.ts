@@ -133,6 +133,16 @@ export interface TurnEndedEvent extends SessionEventBase {
   error?: string;
 }
 
+/** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md
+    全文进入模型上下文——模型可见的新信息必须落盘（先落盘再喂模型）。
+    content 是发送时刻的快照：日志自包含，skill 文件之后被改/被删，重放不失真
+    （代价：常用 skill 的全文在每个用到它的会话里各存一份，见 docs/adr/0007）。 */
+export interface SkillInvokedEvent extends SessionEventBase {
+  type: "skill_invoked";
+  name: string;
+  content: string;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -146,4 +156,5 @@ export type SessionEvent =
   | SessionRenamedEvent
   | ContextCompactedEvent
   | ToolExecutionStartedEvent
-  | TurnEndedEvent;
+  | TurnEndedEvent
+  | SkillInvokedEvent;

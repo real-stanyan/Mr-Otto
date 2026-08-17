@@ -199,6 +199,15 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         }
         break;
 
+      case "skill_invoked":
+        // 注入为 user 消息，与 compact 摘要同理：中途插 system 各家方言兼容性参差。
+        // 位置就是事件位置——skill 在哪条消息前启用，模型就从哪开始看到它
+        messages.push({
+          role: "user",
+          content: `[本轮启用 skill「${event.name}」，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
+        });
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；

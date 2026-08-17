@@ -3,11 +3,13 @@
 
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { CHANNELS, type BootInfo, type StartSessionOptions } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { EventStore } from "../session/store.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
+import { scanSkills } from "./skills.js";
 import { MODEL_CATALOG } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 
@@ -137,6 +139,11 @@ void app.whenReady().then(() => {
     return info;
   });
 
+  // skill 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位
+  const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
+
+  ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
   const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
 
@@ -202,13 +209,26 @@ void app.whenReady().then(() => {
     agent.setMaxSteps(n);
   });
 
-  ipcMain.handle(CHANNELS.sendMessage, async (_e, sessionId: string, text: string) => {
+  ipcMain.handle(CHANNELS.sendMessage, async (_e, sessionId: string, text: string, skill?: string) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
+    // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
+    // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
+    let invoked: { name: string; content: string } | null = null;
+    if (skill) {
+      const found = scanSkills(skillRoots).find((s) => s.name === skill);
+      if (!found) throw new Error(`skill 不存在: ${skill}`);
+      invoked = { name: found.name, content: found.content };
+    }
     runningSessions.add(sessionId);
     win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
     try {
+      if (invoked) {
+        // 快照落在 user_message 之前：模型先看到说明书，再看到任务
+        const full = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
+        win.webContents.send(CHANNELS.event, full);
+      }
       await agent.engine.runTurn(text);
     } finally {
       runningSessions.delete(sessionId);

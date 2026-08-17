@@ -89,6 +89,20 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
     expect(contextUsed(events)).toBe(400);
   });
 
+  it("skill_invoked 计入尾巴：它投影成 user 消息进上下文", () => {
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 200 },
+      },
+      { ...env(), type: "skill_invoked", name: "tdd", content: "a".repeat(400) },
+    ];
+    expect(contextUsed(events)).toBe(1300);
+  });
+
   it("从无账单（第一条消息还没发出去）：纯估算起步", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
