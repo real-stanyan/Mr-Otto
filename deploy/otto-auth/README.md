@@ -219,6 +219,98 @@ HTTP_STATUS:200
 dryrun 的容器和端口(8000/5432/6543)未受影响,两套栈的 docker network
 (`otto_default` / `supabase_default`)也是分开的。
 
+## TLS 部署(Task 2,2026-08-17)
+
+目标:nginx vhost 只放行 `/auth/v1/`,反代到 Task 1 的 gateway(127.0.0.1:8100),
+再用 certbot 签发 Let's Encrypt 证书。**vhost 部分已完成并验证;certbot 部分被一个
+task 2 需求书没预料到的上游拦截层挡住,未能签发证书。**
+
+### 已完成
+
+1. `deploy/otto-auth/nginx-otto-auth.conf` scp 到服务器
+   `/etc/nginx/sites-available/otto-auth`,`ln -s` 进 `sites-enabled/`,
+   `nginx -t` + `systemctl reload nginx`,均成功。
+2. **发现并修复一个真实 bug**:需求书 Step 1 给的 vhost 原样部署后,本机验证
+   `curl -H 'Host: otto-auth.duckdns.org' http://127.0.0.1/auth/v1/health` 返回
+   `426 Upgrade Required`,不是预期的 200 JSON。直接绕过 nginx 打 gateway
+   (`curl http://127.0.0.1:8100/auth/v1/health`)是正常的 200,说明问题出在
+   nginx→gateway 这一跳。原因:nginx 的 `proxy_pass` 默认用 HTTP/1.0 转发给
+   上游,Envoy 网关对 HTTP/1.0 请求直接回 426。加一行 `proxy_http_version 1.1;`
+   后,同样的本机验证变成 200 JSON(`{"version":"v2.189.0","name":"GoTrue",...}`),
+   `/` 仍是 404。archive 的 conf 文件已经是修复后的版本。
+3. `certbot` + `python3-certbot-nginx` 通过 `apt-get` 装好(版本 2.9.0-1),不需要
+   snap。`certbot.timer` systemd timer 已确认存在(`systemctl list-timers` 能看到,
+   包安装时自带,不用手动建)。
+
+### 未完成 / 被阻塞:certbot 签发证书失败,根因是上游拦截层
+
+`sudo certbot --nginx -d otto-auth.duckdns.org` 报:
+
+```
+Domain: otto-auth.duckdns.org
+Type:   unauthorized
+Detail: 65.109.113.168: Invalid response from
+  http://otto-auth.duckdns.org/.well-known/acme-challenge/...: 404
+```
+
+排查过程(结论:**不是这台 VPS 的 nginx/防火墙问题,是公网到这台 VPS 之间还有一层
+反代/网关,没有把 otto-auth.duckdns.org 的流量转发到这里**):
+
+- 这台 VPS 的 `eth0` 是私网 IP `10.162.249.10/24`,网关 `10.162.249.1`——它本身
+  **不直接持有**公网 IP `65.109.113.168`,是被某个上游节点做了 NAT/反代。
+- 从 Mac 和从这台 VPS 自己(打自己的公网 IP)访问 `http://otto-auth.duckdns.org/`
+  或 `https://.../`,两边都收到同一个**样式化的 "404 Page Not Found" 页面**
+  (深色背景 + `Outfit`/`Inter` 字体),`Server: nginx/1.24.0 (Ubuntu)` 头看似像
+  这台机器,但这台机器的 `/var/www/html` 里根本没有这个页面文件。
+- `sudo tail /var/log/nginx/access.log` 显示:从 127.0.0.1 发的请求(本机验证)
+  正常记录;从公网 IP 打进来的探测请求**完全没有落进这台机器的 access log**——
+  说明请求根本没到这台 nginx,是在更上游被截胡应答的。
+- `443` 端口(这台机器上此时**还没装任何证书、没有任何服务监听 443**)从公网
+  居然也能完成 TLS 握手,拿到的证书是:
+  `subject=C=AU, ST=NSW, L=Sydney, O=Atlas, CN=catch-all`
+  ——自签名,`O=Atlas`。这和 Stan 自己 `~/system/` 里的 "Atlas Method"/
+  `~/Github/atlas-dashboard` 明显是同一套个人基础设施的命名。
+- 从这台 VPS 内部直接探测网关 `10.162.249.1`(它的 `80`/`443`/`22` 全通),打
+  `curl http://10.162.249.1/` 拿到的是**一模一样的 catch-all 404**——证实这个
+  网关就是那层反代本体,otto-auth.duckdns.org 目前没有在它的路由表里登记,所以
+  落到了它的默认 catch-all 分支,根本没有转发到这台 VPS 的 `10.162.249.10:80`。
+  这也是为什么 Let's Encrypt 的 HTTP-01 挑战会拿到 404:LE 服务器打的请求同样
+  被这层网关截胡了,从没到过这台机器上刚部署好的 vhost。
+
+**这超出了 task-2-brief.md 给的范围**(需求书假设"域名已经解析到这台机、只需要在
+这台机上配 nginx+certbot 就够了",没预料到公网前面还有一层需要单独登记路由的
+反代)。Certbot 尝试失败后已自动回滚了它对 vhost 的临时改动,当前
+`/etc/nginx/sites-available/otto-auth` 干净,和本 repo 存档的
+`nginx-otto-auth.conf` 一致,`nginx -t` 通过,没有留下损坏状态。
+
+**下一步需要谁来处理**:需要有权限管理那层上游反代路由表的人(大概率是
+`~/Github/atlas-dashboard` 或类似位置管理的 Stan 个人网关),给
+`otto-auth.duckdns.org` 加一条转发规则指向这台 VPS(`10.162.249.10:80`,或者它
+认的其他内网寻址方式)。路由生效后,重跑
+`sudo certbot --nginx -d otto-auth.duckdns.org --non-interactive --agree-tos -m stanhavenoidea@gmail.com`
+应该就能签发成功(nginx vhost 本身已经验证是对的);证书装上后按需求书注释,
+`certbot --nginx` 会自动改写这份 vhost 加 443 server block + 80→443 跳转,记得把
+改写后的最终版回抄进本文件替换当前版本。
+
+### 验证记录(本机 / VPS 内部,截至 2026-08-17,均在 nginx 加了 `proxy_http_version 1.1` 修复之后)
+
+```
+$ ssh -p 2222 stan@65.109.113.168
+$ curl -s -H 'Host: otto-auth.duckdns.org' -H "apikey: $ANON_KEY" http://127.0.0.1/auth/v1/health
+{"version":"v2.189.0","name":"GoTrue","description":"GoTrue is a user registration and authentication API"}
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: otto-auth.duckdns.org' http://127.0.0.1/
+404
+```
+
+公网验证(Mac 直连,预期 TLS 生效前会失败,记录为已知阻塞项,非本机配置问题):
+
+```
+$ curl -s https://otto-auth.duckdns.org/auth/v1/health
+# 404(上游 catch-all 网关应答,不是这台 VPS,见上文根因分析)
+$ curl -s -o /dev/null -w '%{http_code}\n' http://otto-auth.duckdns.org/
+# 404(同上,未验证到 "301 跳转到 https" —— 因为 certbot 从未成功改写出这个跳转)
+```
+
 ## ANON_KEY(公开值,Task 5 客户端要用)
 
 ```
