@@ -192,7 +192,7 @@ describe("deriveMessages context_compacted", () => {
     expect(msgs[1]!.content).toContain("一句话摘要");
     expect(msgs[2]).toEqual({ role: "user", content: "压缩后的新问题" });
     // 原文彻底离开模型视野
-    expect(msgs.some((m) => m.content.includes("原文问题"))).toBe(false);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("原文问题"))).toBe(false);
   });
 
   it("二次 compact 复合：只剩最新摘要", () => {
@@ -201,8 +201,8 @@ describe("deriveMessages context_compacted", () => {
       { ...env(), type: "context_compacted", summary: "第二份摘要", model: "m" },
     ];
     const msgs = deriveMessages(twice);
-    expect(msgs.some((m) => m.content.includes("第二份摘要"))).toBe(true);
-    expect(msgs.some((m) => m.content.includes("一句话摘要"))).toBe(false);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("第二份摘要"))).toBe(true);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("一句话摘要"))).toBe(false);
   });
 
   it("usage 是账单不是内容：不进模型视野", () => {

@@ -157,7 +157,7 @@ describe("LoopEngine.compact", () => {
     const adapter: ModelAdapter = {
       model: "fake-model",
       async chat(messages) {
-        seen.push(messages.map((m) => m.content));
+        seen.push(messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))));
         return seen.length === 1
           ? { content: "摘要：用户让写秘密计划，已完成", usage: { promptTokens: 300, completionTokens: 20 } }
           : { content: "收到" };
