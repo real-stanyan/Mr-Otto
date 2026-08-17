@@ -21,11 +21,26 @@ app.setAsDefaultProtocolClient("mrotto");
 
 let accountManager: AccountManager | null = null;
 let pendingAuthUrl: string | null = null;
+let mainWindow: BrowserWindow | null = null;
+
+// 深链回调成功后把主窗口拉回前台——用户在系统浏览器授权完，观感上是"跳回 App"。
+// 窗口可能被 minimized，先 restore 再 show/focus；macOS 上 show/focus 不够抢焦点，
+// 还得 app.focus({ steal: true })。失败路径不聚焦，维持 console.error 现状。
+function focusMainWindow(): void {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (process.platform === "darwin") app.focus({ steal: true });
+}
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
   if (accountManager) {
-    accountManager.handleCallback(url).catch((err) => console.error("account.handleCallback 失败", err));
+    accountManager
+      .handleCallback(url)
+      .then(() => focusMainWindow())
+      .catch((err) => console.error("account.handleCallback 失败", err));
   } else {
     pendingAuthUrl = url;
   }
@@ -59,6 +74,7 @@ void app.whenReady().then(() => {
   applyToEnv(loadKeys(keyVaultPath), process.env);
 
   const win = createWindow();
+  mainWindow = win;
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
@@ -71,7 +87,10 @@ void app.whenReady().then(() => {
   if (pendingAuthUrl) {
     const url = pendingAuthUrl;
     pendingAuthUrl = null;
-    manager.handleCallback(url).catch((err) => console.error("account.handleCallback 失败", err));
+    manager
+      .handleCallback(url)
+      .then(() => focusMainWindow())
+      .catch((err) => console.error("account.handleCallback 失败", err));
   }
 
   const dbPath = join(app.getPath("userData"), "sessions.db");
