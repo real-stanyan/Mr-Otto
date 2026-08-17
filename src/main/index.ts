@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
@@ -12,6 +12,24 @@ import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { MODEL_CATALOG } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
+import { AccountManager, createSupabaseAuthClient } from "./account.js";
+
+// mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
+// 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
+// 才能实例化，中间这段空档收到的 URL 先缓存，ready 后 flush。
+app.setAsDefaultProtocolClient("mrotto");
+
+let accountManager: AccountManager | null = null;
+let pendingAuthUrl: string | null = null;
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  if (accountManager) {
+    accountManager.handleCallback(url).catch((err) => console.error("account.handleCallback 失败", err));
+  } else {
+    pendingAuthUrl = url;
+  }
+});
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -41,6 +59,21 @@ void app.whenReady().then(() => {
   applyToEnv(loadKeys(keyVaultPath), process.env);
 
   const win = createWindow();
+
+  // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
+  // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
+  accountManager = new AccountManager({
+    openExternal: (url) => shell.openExternal(url),
+    onChange: (info) => win.webContents.send(CHANNELS.accountChanged, info),
+    client: createSupabaseAuthClient(join(app.getPath("userData"), "auth.json")),
+  });
+  const manager = accountManager;
+  if (pendingAuthUrl) {
+    const url = pendingAuthUrl;
+    pendingAuthUrl = null;
+    manager.handleCallback(url).catch((err) => console.error("account.handleCallback 失败", err));
+  }
+
   const dbPath = join(app.getPath("userData"), "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
   const store = new EventStore(dbPath);
@@ -143,6 +176,12 @@ void app.whenReady().then(() => {
   const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
+  ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
+  // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
+  ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
+  ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
   const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));

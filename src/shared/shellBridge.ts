@@ -15,6 +15,16 @@ export type { SessionSummary };
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
 export type ApprovalMode = "ask" | "auto";
 
+/** 登录账号的渲染层可见形态（Task 5 产物，定义挪到此处——纯类型文件，
+    account.ts 反过来 import 它，避免渲染层 import 链拖进主进程模块）。
+    只有这四个字段：token/session 对象永不过 IPC（安全硬约束） */
+export interface AccountInfo {
+  signedIn: boolean;
+  email: string;
+  name: string;
+  avatarUrl: string;
+}
+
 /** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
     model 会落 model_changed 事件（resume 记得）；审批/thinking 是运行时偏好（不落日志） */
 export interface StartSessionOptions {
@@ -131,6 +141,12 @@ export interface ShellBridge {
   setApiKey(envName: string, key: string): Promise<void>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** 当前登录账号（未登录 = signedIn: false 的空账号，不是 null） */
+  getAccount(): Promise<AccountInfo>;
+  /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
+  signIn(provider: "google" | "github"): Promise<void>;
+  /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
+  signOut(): Promise<void>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
@@ -153,6 +169,8 @@ export interface ShellBridge {
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
+  /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
+  onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
 }
 
 export const CHANNELS = {
@@ -168,6 +186,10 @@ export const CHANNELS = {
   setThinking: "otter:setThinking",
   setMaxSteps: "otter:setMaxSteps",
   listSkills: "otter:listSkills",
+  getAccount: "otter:getAccount",
+  signIn: "otter:signIn",
+  signOut: "otter:signOut",
+  accountChanged: "otter:accountChanged",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",

@@ -25,6 +25,9 @@ const bridge: ShellBridge = {
   setThinking: (sessionId, on) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, on),
   setMaxSteps: (sessionId, n) => ipcRenderer.invoke(CHANNELS.setMaxSteps, sessionId, n),
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
+  getAccount: () => ipcRenderer.invoke(CHANNELS.getAccount),
+  signIn: (provider) => ipcRenderer.invoke(CHANNELS.signIn, provider),
+  signOut: () => ipcRenderer.invoke(CHANNELS.signOut),
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
   sendMessage: (sessionId, text, skill) =>
@@ -38,6 +41,7 @@ const bridge: ShellBridge = {
   onTurnStatus: subscribe(CHANNELS.turnStatus),
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),
+  onAccountChanged: subscribe(CHANNELS.accountChanged),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

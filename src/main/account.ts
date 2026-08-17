@@ -13,13 +13,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./authConfig.js";
+import type { AccountInfo } from "../shared/shellBridge.js";
 
-export type AccountInfo = {
-  signedIn: boolean;
-  email: string;
-  name: string;
-  avatarUrl: string;
-};
+export type { AccountInfo };
 
 const EMPTY_ACCOUNT: AccountInfo = { signedIn: false, email: "", name: "", avatarUrl: "" };
 
