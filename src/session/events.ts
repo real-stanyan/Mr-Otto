@@ -15,6 +15,18 @@ export interface SessionEventBase {
 export interface UserMessageEvent extends SessionEventBase {
   type: "user_message";
   content: string;
+  /** 图片附件引用。可选 = 旧日志照常重放(schema 向后兼容硬规则) */
+  attachments?: UserAttachmentRef[];
+}
+
+/** 用户消息附件引用(图片)。bytes 本体在附件库(userData/attachments),
+    日志只存这份轻量元数据——日志永远瘦,代价是重放依赖附件库(接受的取舍,
+    见 docs/adr/0009)。文本文件不走这:发送时全文内联进 content(快照语义) */
+export interface UserAttachmentRef {
+  id: string;        // "sha256:<hex>",内容寻址
+  mediaType: string; // "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+  bytes: number;
+  name?: string;     // basename,剥过路径(本机目录结构不进日志)
 }
 
 /** 模型发出的一次工具调用请求（不是事件，是 AssistantMessageEvent 的组成部分） */
