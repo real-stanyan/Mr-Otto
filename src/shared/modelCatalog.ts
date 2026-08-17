@@ -54,6 +54,18 @@ export const MODEL_CATALOG: ModelChoice[] = [
     contextWindow: 128_000,
     supportsThinking: true,
   },
+  // 目录里唯一的视觉款：图片附件(file-input-v1)得有人吃。免费、同端点同 key,
+  // 发图前在下拉框切到它;纯文本款收到 image_url 会 400(设计如此,不维护能力表)
+  {
+    provider: "glm",
+    model: "glm-4.6v-flash",
+    label: "GLM-4.6V Flash（免费·视觉）",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    baseUrlEnv: "GLM_BASE_URL",
+    apiKeyEnv: "GLM_API_KEY",
+    contextWindow: 128_000,
+    supportsThinking: true,
+  },
 ];
 
 export function findModel(model: string): ModelChoice | undefined {
