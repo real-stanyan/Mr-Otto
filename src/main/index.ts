@@ -16,9 +16,10 @@ import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef } from "../session/events.js";
 import { intakeFile } from "./attachmentIntake.js";
+import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
-import { MODEL_CATALOG } from "../shared/modelCatalog.js";
+import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 
@@ -358,6 +359,20 @@ void app.whenReady().then(() => {
           // 快照落在 user_message 之前：模型先看到说明书，再看到任务
           const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
           win.webContents.send(CHANNELS.event, fullEvent);
+        }
+        // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
+        // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
+        // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
+        // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
+        // "模型看不见图还装看过"
+        if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
+          const describeImages = createVisionBridge((id) => attachmentStore.read(id));
+          const described = await describeImages(refs, full);
+          const descEvent = store.append({
+            sessionId, ts: Date.now(), type: "image_described",
+            content: described, model: VISION_BRIDGE_MODEL,
+          });
+          win.webContents.send(CHANNELS.event, descEvent);
         }
         await agent.engine.runTurn(full, refs);
       } finally {

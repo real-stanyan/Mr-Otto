@@ -143,6 +143,7 @@ describe("图片附件(image_ref → image_url,file-input-v1)", () => {
       baseUrl: "https://api.example.com/v1",
       apiKey: "k",
       model: "m",
+      vision: true,
       readAttachment: (id) => {
         expect(id).toBe("sha256:" + "a".repeat(64));
         return new Uint8Array([1, 2, 3]);
@@ -184,7 +185,7 @@ describe("图片附件(image_ref → image_url,file-input-v1)", () => {
   it("未注入 readAttachment 遇 image_ref 抛错(配置缺口早暴露)", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const adapter = createOpenAICompatibleAdapter({
-      baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m",
+      baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m", vision: true,
     });
     await expect(
       adapter.chat([
@@ -192,5 +193,33 @@ describe("图片附件(image_ref → image_url,file-input-v1)", () => {
       ])
     ).rejects.toThrow(/readAttachment|附件/);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("无视觉模型(vision 缺省)遇 image_ref → 占位文本,不解 bytes 不炸(vision-bridge)", async () => {
+    const bodies: string[] = [];
+    const read = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    }));
+    const adapter = createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m",
+      readAttachment: read, // 注入了也不许碰:无视觉模型发 base64 = 白烧带宽还 400
+    });
+    await adapter.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看图" },
+          { type: "image_ref", id: "sha256:" + "a".repeat(64), mediaType: "image/png" },
+        ],
+      },
+    ]);
+    const sent = JSON.parse(bodies[0]!) as { messages: { content: unknown }[] };
+    expect(sent.messages[0]!.content).toEqual([
+      { type: "text", text: "看图" },
+      { type: "text", text: "[图片附件:当前模型不支持直接查看,图片内容见随附的图片解析]" },
+    ]);
+    expect(read).not.toHaveBeenCalled();
   });
 });

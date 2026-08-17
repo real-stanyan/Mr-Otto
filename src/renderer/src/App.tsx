@@ -442,6 +442,16 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
         </details>
       );
 
+    case "image_described":
+      // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
+      // 不是对话内容；摊开能看到视觉模型到底读出了什么（解析质量一目了然）
+      return (
+        <details className="row thinking image-desc">
+          <summary>👁 图片解析（由 {event.model} 代读）——已注入上下文</summary>
+          <div className="thinking-body">{event.content}</div>
+        </details>
+      );
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":

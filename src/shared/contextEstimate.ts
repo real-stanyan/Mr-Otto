@@ -53,6 +53,9 @@ export function contextUsed(events: SessionEvent[]): number {
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
         break;
+      case "image_described":
+        pending += estimateTokens(e.content); // 同上:代读文本注入为 user 消息
+        break;
       case "assistant_message":
         // 只有 API 没回账单的消息才落到估算侧（回了账单它就是锚点）
         pending += estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));

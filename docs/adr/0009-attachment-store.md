@@ -33,3 +33,12 @@ file-input-v1 要让图片进入模型上下文。事件日志是唯一事实源
 
 - base64 直接进日志:零新组件但性能债进最热路径
 - 文件复制进 workspace:污染用户工程文件夹
+
+## 追记(2026-08-17):vision-bridge 与能力表
+
+「非视觉模型收图靠 API 报错、不维护能力表」被推翻:实测现役三款全纯文本,
+图片功能没有可用路径。改为目录记 `supportsVision`,无视觉模型发图时由
+glm-4.6v-flash 代读(image_described 事件,解析文本落盘——model-visible
+means logged)。能力表维护成本 = 每型号一个布尔,换取图片对全部模型可用;
+代读质量 ≤ 原图直读,有视觉的模型仍走原图。代读员写死为目录里的免费视觉款
+(src/main/visionBridge.ts VISION_BRIDGE_MODEL),换员改一行。

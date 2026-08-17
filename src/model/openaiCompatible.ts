@@ -19,6 +19,10 @@ export interface OpenAICompatibleOptions {
       投影只带 image_ref 引用——bytes 在请求组装的最后一刻才解出转 base64,
       日志与上下文里永远没有 base64 大块 */
   readAttachment?: (id: string) => Uint8Array;
+  /** 该型号是否原生看图(目录 supportsVision)。true = image_ref 解 bytes 转
+      image_url;false/缺省 = 换占位文本——无视觉模型发 base64 必 400,
+      图片内容由 vision-bridge 的 image_described 事件以文字供给 */
+  vision?: boolean;
 }
 
 /** 非流式返回里我们关心的最小结构 */
@@ -127,6 +131,12 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       role: "user",
       content: m.content.map((part: UserContentPart) => {
         if (part.type === "text") return { type: "text", text: part.text };
+        // 无视觉模型:image_ref 换占位文本,bytes 一个字节都不解——发 base64 过去
+        // 只会 400,图片内容由 vision-bridge 落的 image_described 事件以文字供给。
+        // 也兜住"发图后切纯文本模型"的历史:老 image_ref 不再炸请求
+        if (!opts.vision) {
+          return { type: "text", text: "[图片附件:当前模型不支持直接查看,图片内容见随附的图片解析]" };
+        }
         if (!opts.readAttachment) {
           throw new Error("readAttachment 未注入,无法发送图片附件(image_ref)");
         }

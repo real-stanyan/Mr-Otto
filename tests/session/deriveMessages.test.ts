@@ -356,3 +356,24 @@ describe("user_message 附件投影(file-input-v1)", () => {
     expect(deriveMessages(events)).toEqual([{ role: "user", content: "老消息" }]);
   });
 });
+
+describe("image_described 投影(vision-bridge)", () => {
+  it("注入为 user 文本,标明代读来源;位置就是事件位置", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "image_described",
+        content: "图里是一只像素风水獭", model: "glm-4.6v-flash",
+      },
+      { seq: 2, sessionId: "s", ts: 2, type: "user_message", content: "这是什么" },
+    ];
+    const out = deriveMessages(events);
+    expect(out).toEqual([
+      {
+        role: "user",
+        content:
+          "[以下是随后消息附带图片的解析,由视觉模型 glm-4.6v-flash 代读——当前模型不支持直接看图]\n图里是一只像素风水獭",
+      },
+      { role: "user", content: "这是什么" },
+    ]);
+  });
+});

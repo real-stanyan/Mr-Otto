@@ -140,3 +140,16 @@ export interface UserChatMessage {
   最热路径(store.load 每 turn 全量读),性能债太重
 - **文件复制进 workspace + 路径引用**:通吃二进制,但污染用户工程文件夹
 - **粘贴/拖放入口**:实现代价小但本期只验证 ＋ 按钮主链路,留下期
+
+## 追记(2026-08-17,vision-bridge)
+
+原设计「非视觉模型直接报错、不维护能力表」在实测后被用户推翻:现役目录
+全是纯文本款,发图必 400,功能等于摆设。新行为:
+
+- 目录加 `supportsVision`;glm-4.6v-flash(免费视觉款)入目录
+- 当前模型有视觉 → 图直接走 image_ref(原路),不产生解析事件
+- 当前模型无视觉 → 发送路径先请 glm-4.6v-flash 带着用户问题代读图片,
+  解析落新事件 `image_described { content, model }`(纯新增,向后兼容),
+  投影注入为 user 文本;adapter 把 image_ref 换占位文本(也兜住发图后
+  切纯文本模型的历史)
+- 代读失败 = turn 失败,零事件落盘——不静默装看过

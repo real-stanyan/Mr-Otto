@@ -155,6 +155,17 @@ export interface SkillInvokedEvent extends SessionEventBase {
   content: string;
 }
 
+/** 额外 9：图片解析(vision-bridge)。当前模型不支持看图时,发送路径先请视觉
+    模型(glm-4.6v-flash)代读图片,解析文本落此事件——解析出自模型,日志推不出,
+    且随后就喂给当前模型(model-visible means logged)。紧贴在对应 user_message
+    之前落盘;投影注入为 user 文本(同 skill_invoked 手法)。
+    当前模型自己有眼睛时不产生此事件(图直接走 image_ref)。 */
+export interface ImageDescribedEvent extends SessionEventBase {
+  type: "image_described";
+  content: string;
+  model: string;                 // 解析出自哪个视觉模型(溯源)
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -169,4 +180,5 @@ export type SessionEvent =
   | ContextCompactedEvent
   | ToolExecutionStartedEvent
   | TurnEndedEvent
-  | SkillInvokedEvent;
+  | SkillInvokedEvent
+  | ImageDescribedEvent;

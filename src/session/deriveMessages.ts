@@ -232,6 +232,17 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
+      case "image_described":
+        // 视觉模型的代读结果,注入为 user 消息(同 skill_invoked:中途插 system
+        // 各家方言兼容性参差)。位置就是事件位置——紧贴在它服务的 user_message 之前
+        messages.push({
+          role: "user",
+          content:
+            `[以下是随后消息附带图片的解析,由视觉模型 ${event.model} 代读——当前模型不支持直接看图]\n` +
+            event.content,
+        });
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；

@@ -125,6 +125,8 @@ export function createAgent(opts: {
       model: choice.model,
       // 支持开关的型号才带 thinking 字段——别给不认识它的 API 发陌生参数
       ...(choice.supportsThinking ? { thinking } : {}),
+      // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
+      vision: choice.supportsVision,
       readAttachment: (id) => opts.attachments.read(id),
     });
 
