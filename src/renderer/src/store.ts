@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { SessionEvent } from "../../session/events.js";
 import type {
+  AccountInfo,
   ApprovalMode,
   ApprovalRequest,
   BootInfo,
@@ -56,6 +57,8 @@ interface ChatState {
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
+  /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
+  account: AccountInfo;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -69,6 +72,9 @@ interface ChatState {
   openSkills(): Promise<void>;
   closeSkills(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
+  /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
+  signIn(provider: "google" | "github"): Promise<void>;
+  signOut(): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
   /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西 */
@@ -125,6 +131,7 @@ export const useChat = create<ChatState>((set, get) => ({
   showSkills: false,
   skills: [],
   keyStatus: {},
+  account: { signedIn: false, email: "", name: "", avatarUrl: "" },
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -185,10 +192,28 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async signIn(provider) {
+    set({ error: null });
+    try {
+      await window.otter.signIn(provider); // 生效凭证是 onAccountChanged 推来的事件，不是这个 Promise
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async signOut() {
+    try {
+      await window.otter.signOut();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
 
+    window.otter.onAccountChanged((account) => set({ account }));
     window.otter.onEvent((e) =>
       set((s) => {
         // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
@@ -259,13 +284,18 @@ export const useChat = create<ChatState>((set, get) => ({
       }))
     );
 
-    // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页
-    const [info, sessions, skills] = await Promise.all([
+    // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
+    const [info, sessions, skills, account] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
+      window.otter.getAccount(),
     ]);
-    set(info ? { ...enterChat(info), sessions, skills } : { phase: "welcome", sessions, skills });
+    set(
+      info
+        ? { ...enterChat(info), sessions, skills, account }
+        : { phase: "welcome", sessions, skills, account }
+    );
   },
 
   async pickWorkspace() {

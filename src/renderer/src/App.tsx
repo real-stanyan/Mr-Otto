@@ -533,6 +533,50 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
   );
 }
 
+/** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片 */
+function AccountAvatar({ name, avatarUrl }: { name: string; avatarUrl: string }) {
+  if (avatarUrl) {
+    return <img className="account-avatar" src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
+  }
+  return <span className="account-avatar">{name.charAt(0).toUpperCase() || "?"}</span>;
+}
+
+/** 设置页顶部账号区:未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出。
+    是 settings-body 的头一个子块,不是独立 section——沿用父级 gap:16 的块间距 */
+function AccountSection() {
+  const account = useChat((s) => s.account);
+  const signIn = useChat((s) => s.signIn);
+  const signOut = useChat((s) => s.signOut);
+
+  return (
+    <>
+      <h3>账号</h3>
+      {account.signedIn ? (
+        <div className="account-row">
+          <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
+          <span className="name">{account.name}</span>
+          <span className="hint">{account.email}</span>
+          <button className="ghost" onClick={() => void signOut()}>
+            退出登录
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="account-row">
+            <button className="ghost" onClick={() => void signIn("google")}>
+              用 Google 登录
+            </button>
+            <button className="ghost" onClick={() => void signIn("github")}>
+              用 GitHub 登录
+            </button>
+          </div>
+          <p className="hint">登录后可在多台设备同步配置（即将上线）</p>
+        </>
+      )}
+    </>
+  );
+}
+
 function Settings() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
@@ -548,6 +592,7 @@ function Settings() {
         </button>
       </header>
       <section className="settings-body">
+        <AccountSection />
         <p className="hint">
           key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
           此处配置的 key 优先于 .env。

@@ -859,3 +859,12 @@ button:focus-visible, select:focus-visible, .session-item:focus-visible {
 }
 /* 时间线里的注入行：thinking 折叠版式 + accent 点题 */
 .row.skill-note summary { color: var(--accent-hi); }
+
+/* ─── 设置页账号区 ─── */
+.account-row { display: flex; align-items: center; gap: 10px; }
+.account-avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  object-fit: cover; background: var(--accent);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
