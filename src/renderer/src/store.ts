@@ -10,6 +10,7 @@ import type {
   BootInfo,
   SessionSummary,
   SkillInfo,
+  StagedAttachment,
   StartSessionOptions,
   TurnStatus,
 } from "../../shared/shellBridge.js";
@@ -62,6 +63,10 @@ interface ChatState {
   keyStatus: Record<string, boolean>;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
+  /** ＋ 按钮暂存的附件(chips 数据源)。rejected 不进这——进 attachError */
+  staged: (StagedAttachment & { kind: "image" | "text" })[];
+  /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
+  attachError: string | null;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -88,6 +93,10 @@ interface ChatState {
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
+  /** ＋ 按钮：弹系统文件选择器，选完的分类结果并入 staged（图片限额 4 张/条在这做） */
+  pickFiles(): Promise<void>;
+  /** chips 上的 × 按钮：按下标移除一个暂存附件 */
+  removeStaged(index: number): void;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -134,6 +143,8 @@ export const useChat = create<ChatState>((set, get) => ({
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
+  staged: [],
+  attachError: null,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -358,9 +369,24 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async send(text, skill) {
     const sessionId = get().sessionId; // 发消息瞬间锁定目标会话——之后切走也不串
-    set({ error: null });
+    const staged = get().staged;
+    const attachments = staged.map((a) =>
+      a.kind === "image"
+        ? { kind: "image" as const, ref: a.ref }
+        : { kind: "text" as const, name: a.name, content: a.content }
+    );
+    // 发出即清：sendMessage 是 turn 级 Promise（整 turn 结束才 resolve），
+    // 清空放 resolve 后意味着 turn 全程 chips 还挂着——不对。IPC 层失败
+    // （会话不存在/turn 冲突，消息没发出去）在 catch 里把附件回位，用户不用重选；
+    // turn 跑起来后暴死走 turn_ended 分支——消息已落盘，附件不回位，正确。
+    set({ error: null, attachError: null, staged: [] });
     try {
-      await window.otter.sendMessage(sessionId, text, skill);
+      await window.otter.sendMessage(
+        sessionId,
+        text,
+        skill,
+        attachments.length > 0 ? attachments : undefined
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // turn 暴死已作为 turn_ended 事件渲染在时间线里（ADR-0004）——
@@ -368,9 +394,36 @@ export const useChat = create<ChatState>((set, get) => ({
       // 包含判断：Electron 会把 reject 包成 "Error invoking remote method…: <原文>"
       const last = get().events.at(-1);
       if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
-        set({ error: msg });
+        set({ error: msg, staged: [...staged, ...get().staged] });
       }
     }
+  },
+
+  async pickFiles() {
+    try {
+      const picked = await window.otter.pickAttachments();
+      if (picked.length === 0) return; // 用户取消
+      const ok = picked.filter(
+        (a): a is Extract<StagedAttachment, { kind: "image" | "text" }> => a.kind !== "rejected"
+      );
+      const rejected = picked.filter((a) => a.kind === "rejected");
+      let staged = [...get().staged, ...ok];
+      // 限额:图片 ≤4 张/条。超出的裁掉并告知——静默丢弃会让用户以为传上了
+      const errors = rejected.map((r) => `「${r.name}」被拒:${r.reason}`);
+      const images = staged.filter((a) => a.kind === "image");
+      if (images.length > 4) {
+        let kept = 0;
+        staged = staged.filter((a) => a.kind !== "image" || ++kept <= 4);
+        errors.push(`图片最多 4 张/条,多出的 ${images.length - 4} 张已忽略`);
+      }
+      set({ staged, attachError: errors.length > 0 ? errors.join("；") : null });
+    } catch (e) {
+      set({ attachError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  removeStaged(index) {
+    set({ staged: get().staged.filter((_, i) => i !== index) });
   },
 
   async stop() {

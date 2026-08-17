@@ -1,7 +1,18 @@
 // deriveMessages — 从事件日志投影出模型上下文（OpenAI-compatible 消息格式）
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
-import type { SessionEvent } from "./events.js";
+import type { SessionEvent, UserTextFile } from "./events.js";
+
+/** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
+    (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
+    模型上下文用这里拼的全文。拼法唯一出口:投影和 vision-bridge 共用 */
+export function composeUserText(content: string, textFiles?: UserTextFile[]): string {
+  let full = content;
+  for (const f of textFiles ?? []) {
+    full += `\n\n[用户附上文件「${f.name}」,内容如下]\n${f.content}`;
+  }
+  return full;
+}
 
 // ─── 目标格式：OpenAI-compatible ChatMessage ───────────────
 
@@ -10,9 +21,16 @@ export interface SystemChatMessage {
   content: string;
 }
 
+/** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
+    解 bytes 是 adapter 的事(注入的 readAttachment) */
+export type UserContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_ref"; id: string; mediaType: string };
+
 export interface UserChatMessage {
   role: "user";
-  content: string;
+  /** string = 纯文本(老日志/无附件,投影逐字节不变);数组 = 带图片附件 */
+  content: string | UserContentPart[];
 }
 
 export interface AssistantChatMessage {
@@ -143,9 +161,29 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
 
   for (const [i, event] of events.entries()) {
     switch (event.type) {
-      case "user_message":
-        messages.push({ role: "user", content: event.content });
+      case "user_message": {
+        // 有图片附件 → parts 数组(text + image_ref);没有 → string 原样,
+        // 老日志投影逐字节不变(测试钉住)。附件消息不参与压缩截断:
+        // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)。
+        // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)
+        const text = composeUserText(event.content, event.textFiles);
+        messages.push(
+          event.attachments && event.attachments.length > 0
+            ? {
+                role: "user",
+                content: [
+                  { type: "text", text },
+                  ...event.attachments.map((a) => ({
+                    type: "image_ref" as const,
+                    id: a.id,
+                    mediaType: a.mediaType,
+                  })),
+                ],
+              }
+            : { role: "user", content: text }
+        );
         break;
+      }
 
       case "assistant_message":
         messages.push({
@@ -205,6 +243,17 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         messages.push({
           role: "user",
           content: `[本轮启用 skill「${event.name}」，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
+        });
+        break;
+
+      case "image_described":
+        // 视觉模型的代读结果,注入为 user 消息(同 skill_invoked:中途插 system
+        // 各家方言兼容性参差)。位置就是事件位置——紧贴在它服务的 user_message 之前
+        messages.push({
+          role: "user",
+          content:
+            `[以下是随后消息附带图片的解析,由视觉模型 ${event.model} 代读——当前模型不支持直接看图]\n` +
+            event.content,
         });
         break;
 

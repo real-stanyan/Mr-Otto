@@ -5,12 +5,22 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
-import { CHANNELS, type BootInfo, type StartSessionOptions } from "../shared/shellBridge.js";
+import {
+  CHANNELS,
+  type BootInfo,
+  type StartSessionOptions,
+  type OutgoingAttachment,
+} from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { EventStore } from "../session/store.js";
+import { AttachmentStore, detectImageType } from "../session/attachments.js";
+import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
+import { composeUserText } from "../session/deriveMessages.js";
+import { intakeFile } from "./attachmentIntake.js";
+import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
-import { MODEL_CATALOG } from "../shared/modelCatalog.js";
+import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 
@@ -122,6 +132,8 @@ void app.whenReady().then(() => {
   const dbPath = join(app.getPath("userData"), "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
   const store = new EventStore(dbPath);
+  // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
+  const attachmentStore = new AttachmentStore(join(app.getPath("userData"), "attachments"));
 
   // agent 注册表：会话隔离的核心。切走不杀旧 agent——它的 turn 继续跑，
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
@@ -180,7 +192,7 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    const agent = createAgent({ store, workspace: opts.workspace, push });
+    const agent = createAgent({ store, workspace: opts.workspace, push, attachments: attachmentStore });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -208,7 +220,13 @@ void app.whenReady().then(() => {
       }
       agents.set(
         sessionId,
-        createAgent({ store, workspace: first.workspace, push, resumeSessionId: sessionId })
+        createAgent({
+          store,
+          workspace: first.workspace,
+          push,
+          resumeSessionId: sessionId,
+          attachments: attachmentStore,
+        })
       );
     }
     currentSessionId = sessionId;
@@ -293,31 +311,99 @@ void app.whenReady().then(() => {
     agent.setMaxSteps(n);
   });
 
-  ipcMain.handle(CHANNELS.sendMessage, async (_e, sessionId: string, text: string, skill?: string) => {
-    const agent = agents.get(sessionId);
-    if (!agent) throw new Error("会话不存在或未激活");
-    if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
-    // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
-    // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
-    let invoked: { name: string; content: string } | null = null;
-    if (skill) {
-      const found = scanSkills(skillRoots).find((s) => s.name === skill);
-      if (!found) throw new Error(`skill 不存在: ${skill}`);
-      invoked = { name: found.name, content: found.content };
-    }
-    runningSessions.add(sessionId);
-    win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
-    try {
-      if (invoked) {
-        // 快照落在 user_message 之前：模型先看到说明书，再看到任务
-        const full = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
-        win.webContents.send(CHANNELS.event, full);
+  ipcMain.handle(
+    CHANNELS.sendMessage,
+    async (_e, sessionId: string, text: string, skill?: string, attachments?: OutgoingAttachment[]) => {
+      const agent = agents.get(sessionId);
+      if (!agent) throw new Error("会话不存在或未激活");
+      if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
+      // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
+      // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
+      let invoked: { name: string; content: string } | null = null;
+      if (skill) {
+        const found = scanSkills(skillRoots).find((s) => s.name === skill);
+        if (!found) throw new Error(`skill 不存在: ${skill}`);
+        invoked = { name: found.name, content: found.content };
       }
-      await agent.engine.runTurn(text);
-    } finally {
-      runningSessions.delete(sessionId);
-      win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+      // 文本文件结构化存进事件 textFiles(快照语义,同 skill_invoked:日志自
+      // 包含,原文件后续改/删不影响重放)——不内联进 content,UI 才能渲染成
+      // 文件卡片而不是摊开全文;模型投影时由 composeUserText 拼全文。图片只走 ref
+      const textFiles: UserTextFile[] = [];
+      const refs: UserAttachmentRef[] = [];
+      // 渲染层送来的 OutgoingAttachment 是不可信输入——形状必须在这把关。
+      // 坏形状（undefined/缺 id/id 非法）一旦被 push 进 refs，会原样存进
+      // append-only 的 user_message 事件；日志落了错的东西改不了、也不能删，
+      // deriveMessages 重放到这条时对 a.id 取值直接抛错，整个会话从此永久
+      // 不可重放（违反"旧日志必须永远可重放"硬规则）。所以宁可整条 send 拒发，
+      // 也不能让半吊子附件混进日志——拒绝发生在 runningSessions.add / 任何
+      // append 之前，坏请求不会留下任何痕迹。
+      for (const a of attachments ?? []) {
+        if (a.kind === "text") {
+          if (typeof a.name !== "string" || typeof a.content !== "string") {
+            throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
+          }
+          textFiles.push({
+            name: a.name,
+            content: a.content,
+            bytes: Buffer.byteLength(a.content, "utf8"),
+          });
+        } else if (
+          a.kind === "image" &&
+          a.ref &&
+          typeof a.ref.id === "string" &&
+          /^sha256:[a-f0-9]{64}$/.test(a.ref.id)
+        ) {
+          refs.push(a.ref);
+        } else {
+          throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
+        }
+      }
+      runningSessions.add(sessionId);
+      win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
+      try {
+        if (invoked) {
+          // 快照落在 user_message 之前：模型先看到说明书，再看到任务
+          const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
+          win.webContents.send(CHANNELS.event, fullEvent);
+        }
+        // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
+        // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
+        // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
+        // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
+        // "模型看不见图还装看过"
+        // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
+        const modelText = composeUserText(text, textFiles);
+        if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
+          const describeImages = createVisionBridge((id) => attachmentStore.read(id));
+          const described = await describeImages(refs, modelText);
+          const descEvent = store.append({
+            sessionId, ts: Date.now(), type: "image_described",
+            content: described, model: VISION_BRIDGE_MODEL,
+          });
+          win.webContents.send(CHANNELS.event, descEvent);
+        }
+        await agent.engine.runTurn(text, refs, textFiles);
+      } finally {
+        runningSessions.delete(sessionId);
+        win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+      }
     }
+  );
+
+  ipcMain.handle(CHANNELS.pickAttachments, async () => {
+    const picked = await dialog.showOpenDialog(win, {
+      properties: ["openFile", "multiSelections"],
+      // 不设 filters:什么都能选,分类闸门(intakeFile)决定收不收——
+      // 拒收带人话理由,比灰掉文件更能让用户明白为什么
+    });
+    if (picked.canceled) return [];
+    return picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore));
+  });
+
+  ipcMain.handle(CHANNELS.attachmentDataUrl, (_e, id: string) => {
+    const data = attachmentStore.read(id); // id 非法/不存在 = 抛,渲染层兜
+    const mediaType = detectImageType(data) ?? "application/octet-stream";
+    return `data:${mediaType};base64,${Buffer.from(data).toString("base64")}`;
   });
 
   ipcMain.handle(CHANNELS.stopTurn, (_e, sessionId: string) => {

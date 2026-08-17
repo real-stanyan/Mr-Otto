@@ -192,7 +192,7 @@ describe("deriveMessages context_compacted", () => {
     expect(msgs[1]!.content).toContain("一句话摘要");
     expect(msgs[2]).toEqual({ role: "user", content: "压缩后的新问题" });
     // 原文彻底离开模型视野
-    expect(msgs.some((m) => m.content.includes("原文问题"))).toBe(false);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("原文问题"))).toBe(false);
   });
 
   it("二次 compact 复合：只剩最新摘要", () => {
@@ -201,8 +201,8 @@ describe("deriveMessages context_compacted", () => {
       { ...env(), type: "context_compacted", summary: "第二份摘要", model: "m" },
     ];
     const msgs = deriveMessages(twice);
-    expect(msgs.some((m) => m.content.includes("第二份摘要"))).toBe(true);
-    expect(msgs.some((m) => m.content.includes("一句话摘要"))).toBe(false);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("第二份摘要"))).toBe(true);
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("一句话摘要"))).toBe(false);
   });
 
   it("usage 是账单不是内容：不进模型视野", () => {
@@ -319,5 +319,95 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
     const msgs = deriveMessages(events);
     expect(msgs).toHaveLength(1);
     expect((msgs[0] as { content: string }).content).toContain("都干完了");
+  });
+});
+
+describe("user_message 附件投影(file-input-v1)", () => {
+  it("带 attachments → content 变 parts:[text, ...image_ref]", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "看看这张图",
+        attachments: [{ id: "sha256:" + "a".repeat(64), mediaType: "image/png", bytes: 10, name: "cat.png" }],
+      },
+    ];
+    const out = deriveMessages(events);
+    expect(out).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看看这张图" },
+          { type: "image_ref", id: "sha256:" + "a".repeat(64), mediaType: "image/png" },
+        ],
+      },
+    ]);
+  });
+
+  it("attachments 空数组 = 无附件,content 保持 string", () => {
+    const events: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "hi", attachments: [] },
+    ];
+    expect(deriveMessages(events)).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("无 attachments 字段投影与从前逐字节一致(老日志回归)", () => {
+    const events: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "老消息" },
+    ];
+    expect(deriveMessages(events)).toEqual([{ role: "user", content: "老消息" }]);
+  });
+
+  it("带 textFiles → 全文拼进模型可见文本(content 里存的是纯正文)", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "总结这个文件",
+        textFiles: [{ name: "notes.txt", content: "第一行\n第二行", bytes: 16 }],
+      },
+    ];
+    expect(deriveMessages(events)).toEqual([
+      {
+        role: "user",
+        content: "总结这个文件\n\n[用户附上文件「notes.txt」,内容如下]\n第一行\n第二行",
+      },
+    ]);
+  });
+
+  it("textFiles + 图片 attachments 并存 → text part 是拼好的全文", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "对照图和文件",
+        attachments: [{ id: "sha256:" + "b".repeat(64), mediaType: "image/jpeg", bytes: 5 }],
+        textFiles: [{ name: "a.md", content: "# 标题", bytes: 8 }],
+      },
+    ];
+    expect(deriveMessages(events)).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "对照图和文件\n\n[用户附上文件「a.md」,内容如下]\n# 标题" },
+          { type: "image_ref", id: "sha256:" + "b".repeat(64), mediaType: "image/jpeg" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("image_described 投影(vision-bridge)", () => {
+  it("注入为 user 文本,标明代读来源;位置就是事件位置", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "image_described",
+        content: "图里是一只像素风水獭", model: "glm-4.6v-flash",
+      },
+      { seq: 2, sessionId: "s", ts: 2, type: "user_message", content: "这是什么" },
+    ];
+    const out = deriveMessages(events);
+    expect(out).toEqual([
+      {
+        role: "user",
+        content:
+          "[以下是随后消息附带图片的解析,由视觉模型 glm-4.6v-flash 代读——当前模型不支持直接看图]\n图里是一只像素风水獭",
+      },
+      { role: "user", content: "这是什么" },
+    ]);
   });
 });

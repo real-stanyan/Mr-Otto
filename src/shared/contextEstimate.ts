@@ -46,12 +46,17 @@ export function contextUsed(events: SessionEvent[]): number {
     switch (e.type) {
       case "user_message":
         pending += estimateTokens(e.content);
+        // 文本文件全文随投影进上下文(composeUserText),得计
+        for (const f of e.textFiles ?? []) pending += estimateTokens(f.content);
         break;
       case "tool_result":
         pending += estimateTokens(e.output);
         break;
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
+        break;
+      case "image_described":
+        pending += estimateTokens(e.content); // 同上:代读文本注入为 user 消息
         break;
       case "assistant_message":
         // 只有 API 没回账单的消息才落到估算侧（回了账单它就是锚点）

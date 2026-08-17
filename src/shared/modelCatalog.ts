@@ -19,6 +19,11 @@ export interface ModelChoice {
   /** 该型号是否支持请求级 thinking 开关（thinking.type: enabled/disabled——
       DeepSeek V4 与 GLM 用同一形状） */
   supportsThinking: boolean;
+  /** 该型号是否原生看图(vision)。false 的型号发图时走 vision-bridge:
+      先由目录里的视觉款代读成文字(image_described 事件),再喂当前模型。
+      ADR-0008 曾定"不维护能力表"——bridge 路由必须知道谁有眼睛,此处推翻,
+      见 ADR-0009 追记 */
+  supportsVision: boolean;
 }
 
 export const MODEL_CATALOG: ModelChoice[] = [
@@ -31,6 +36,7 @@ export const MODEL_CATALOG: ModelChoice[] = [
     apiKeyEnv: "DEEPSEEK_API_KEY",
     contextWindow: 1_000_000,
     supportsThinking: true,
+    supportsVision: false,
   },
   {
     provider: "deepseek",
@@ -41,6 +47,7 @@ export const MODEL_CATALOG: ModelChoice[] = [
     apiKeyEnv: "DEEPSEEK_API_KEY",
     contextWindow: 1_000_000,
     supportsThinking: true,
+    supportsVision: false,
   },
   // Claude 系列：等有 ANTHROPIC_API_KEY 再加回来。Anthropic 有 OpenAI 兼容层
   // （https://api.anthropic.com/v1 + ANTHROPIC_API_KEY），adapter 不用改。
@@ -53,6 +60,20 @@ export const MODEL_CATALOG: ModelChoice[] = [
     apiKeyEnv: "GLM_API_KEY",
     contextWindow: 128_000,
     supportsThinking: true,
+    supportsVision: false,
+  },
+  // 目录里唯一的视觉款：图片附件(file-input-v1)得有人吃。免费、同端点同 key。
+  // 兼任 vision-bridge 的代读员:纯文本款发图时由它先解析成文字(image_described)
+  {
+    provider: "glm",
+    model: "glm-4.6v-flash",
+    label: "GLM-4.6V Flash（免费·视觉）",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    baseUrlEnv: "GLM_BASE_URL",
+    apiKeyEnv: "GLM_API_KEY",
+    contextWindow: 128_000,
+    supportsThinking: true,
+    supportsVision: true,
   },
 ];
 
@@ -72,6 +93,7 @@ export function resolveModel(model: string): ModelChoice {
       apiKeyEnv: "DEEPSEEK_API_KEY",
       contextWindow: 128_000,
       supportsThinking: false,
+      supportsVision: false,
     }
   );
 }

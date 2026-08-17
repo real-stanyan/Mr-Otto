@@ -186,6 +186,16 @@ function ComposerBar() {
         <option value="auto">完全访问</option>
       </select>
 
+      <button
+        type="button"
+        className="attach-btn"
+        title="添加文件(图片/文本)"
+        disabled={status === "running"}
+        onClick={() => void useChat.getState().pickFiles()}
+      >
+        ＋
+      </button>
+
       <span className="spacer" />
 
       <select
@@ -317,10 +327,65 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
   );
 }
 
+/** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
+const thumbCache = new Map<string, string>();
+
+/** 时间线里的图片缩略图:懒取 + 缓存。取不到(附件库文件丢失)显示占位文案——
+    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线 */
+function AttachmentThumb({ id, name }: { id: string; name?: string | undefined }) {
+  const [url, setUrl] = useState<string | null>(thumbCache.get(id) ?? null);
+  const [lost, setLost] = useState(false);
+  useEffect(() => {
+    if (url) return;
+    let alive = true;
+    window.otter.attachmentDataUrl(id).then(
+      (u) => {
+        thumbCache.set(id, u);
+        if (alive) setUrl(u);
+      },
+      () => {
+        if (alive) setLost(true);
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, url]);
+  if (lost) return <span className="attach-lost">[图片缺失:{name ?? id.slice(0, 14)}]</span>;
+  if (!url) return <span className="attach-loading">…</span>;
+  return <img className="attach-thumb" src={url} alt={name ?? "附件图片"} title={name} />;
+}
+
 function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
   switch (event.type) {
     case "user_message":
-      return <div className="row user">{event.content}</div>;
+      // 文本文件渲染成折叠卡片,不摊开全文——全文是给模型的(投影时拼进上下文),
+      // 气泡里只亮"带了什么文件";点开可核对快照内容
+      return (
+        <div className="row user">
+          {event.content}
+          {event.textFiles && event.textFiles.length > 0 && (
+            <div className="user-files">
+              {event.textFiles.map((f, i) => (
+                <details className="user-file" key={i}>
+                  <summary>
+                    📄 {f.name}
+                    <span className="user-file-size">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
+                  </summary>
+                  <div className="user-file-body">{f.content}</div>
+                </details>
+              ))}
+            </div>
+          )}
+          {event.attachments && event.attachments.length > 0 && (
+            <div className="user-attachments">
+              {event.attachments.map((a) => (
+                <AttachmentThumb key={a.id} id={a.id} name={a.name} />
+              ))}
+            </div>
+          )}
+        </div>
+      );
 
     case "assistant_message":
       // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
@@ -388,6 +453,16 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
       return (
         <details className="row thinking skill-note">
           <summary>✦ 启用 skill「{event.name}」——指令已注入上下文</summary>
+          <div className="thinking-body">{event.content}</div>
+        </details>
+      );
+
+    case "image_described":
+      // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
+      // 不是对话内容；摊开能看到视觉模型到底读出了什么（解析质量一目了然）
+      return (
+        <details className="row thinking image-desc">
+          <summary>👁 图片解析（由 {event.model} 代读）——已注入上下文</summary>
           <div className="thinking-body">{event.content}</div>
         </details>
       );
@@ -1053,6 +1128,9 @@ export function App() {
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
+  const staged = useChat((s) => s.staged);
+  const attachError = useChat((s) => s.attachError);
+  const removeStaged = useChat((s) => s.removeStaged);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -1234,6 +1312,30 @@ export function App() {
                       <span className="slash-desc">{s.description || "（无描述）"}</span>
                     </button>
                   ))}
+                </div>
+              )}
+              {(staged.length > 0 || attachError) && (
+                <div className="attach-chips">
+                  {staged.map((a, i) => (
+                    <span className="attach-chip" key={i}>
+                      {a.kind === "image" ? (
+                        <img src={a.previewDataUrl} alt={a.ref.name ?? "图片"} />
+                      ) : (
+                        <span className="attach-chip-file">
+                          {a.name}({(a.bytes / 1024).toFixed(0)}KB)
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="attach-chip-x"
+                        title="移除"
+                        onClick={() => removeStaged(i)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {attachError && <span className="attach-error">{attachError}</span>}
                 </div>
               )}
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。

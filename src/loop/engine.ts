@@ -2,7 +2,7 @@
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
 import type { EventStore, NewSessionEvent } from "../session/store.js";
-import type { SessionEvent } from "../session/events.js";
+import type { SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
@@ -151,8 +151,19 @@ export class LoopEngine {
   /** 跑一个完整 turn：直到模型不再要工具为止。
       收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
       中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障 */
-  async runTurn(userInput: string): Promise<void> {
-    this.append({ ...this.env(), type: "user_message", content: userInput });
+  async runTurn(
+    userInput: string,
+    attachments?: UserAttachmentRef[],
+    textFiles?: UserTextFile[]
+  ): Promise<void> {
+    this.append({
+      ...this.env(),
+      type: "user_message",
+      content: userInput,
+      // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
+    });
     this.turnAbort = new AbortController();
     try {
       await this.loop(this.turnAbort.signal);

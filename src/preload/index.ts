@@ -30,8 +30,10 @@ const bridge: ShellBridge = {
   signOut: () => ipcRenderer.invoke(CHANNELS.signOut),
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
-  sendMessage: (sessionId, text, skill) =>
-    ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill),
+  sendMessage: (sessionId, text, skill, attachments) =>
+    ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill, attachments),
+  pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),
+  attachmentDataUrl: (id) => ipcRenderer.invoke(CHANNELS.attachmentDataUrl, id),
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, decision, reason) =>
