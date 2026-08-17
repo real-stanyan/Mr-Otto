@@ -84,6 +84,13 @@ void app.whenReady().then(() => {
     client: createSupabaseAuthClient(join(app.getPath("userData"), "auth.json")),
   });
   const manager = accountManager;
+  // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
+  // account——两条都跑的话，restore() 的 getUser() 若晚于 handleCallback() 的
+  // exchangeCodeForSession 完成，刚建立的新登录会被 restore 带来的旧 session 投影覆盖，
+  // 而且这是竞态、复现全靠时序，测不出来。裁定用互斥而不是加锁/时间戳：有待处理的深链
+  // 就说明这次冷启动一定会经过 handleCallback 建立最新投影，restore 只会是多余的、
+  // 反而可能后到覆盖它，所以直接不跑；没有待处理深链才需要 restore 兜底恢复旧 session。
+  // 两条路径不再共存，竞态随互斥消失。
   if (pendingAuthUrl) {
     const url = pendingAuthUrl;
     pendingAuthUrl = null;
@@ -91,11 +98,12 @@ void app.whenReady().then(() => {
       .handleCallback(url)
       .then(() => focusMainWindow())
       .catch((err) => console.error("account.handleCallback 失败", err));
+  } else {
+    // 冷启动登录态恢复：authStorage 可能已经从 auth.json 恢复了 session，
+    // 但 account 初始值恒为 EMPTY——不 restore 一次的话 UI 会一直显示未登录。
+    // restore() 内部已经把 error/无 session 都静默处理，这里只兜底真正意外的 throw。
+    void manager.restore().catch((err) => console.error("account.restore 失败", err));
   }
-  // 冷启动登录态恢复：authStorage 可能已经从 auth.json 恢复了 session，
-  // 但 account 初始值恒为 EMPTY——不 restore 一次的话 UI 会一直显示未登录。
-  // restore() 内部已经把 error/无 session 都静默处理，这里只兜底真正意外的 throw。
-  void manager.restore().catch((err) => console.error("account.restore 失败", err));
 
   const dbPath = join(app.getPath("userData"), "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
