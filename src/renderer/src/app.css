@@ -1,20 +1,160 @@
-/* Tailwind v4 入口(ADR-0010)。布局/间距/颜色全部住进 JSX utility;
-   这里只留 utility 够不着的:@theme 令牌、生成 DOM 的排版(markdown/hljs)、
-   动态 SVG 状态(replay 画布)、滚动条、keyframes、少量组件类(.btn)。 */
+/* Tailwind v4 入口(ADR-0010/0011)。布局/间距/颜色全部住进 JSX utility;
+   这里只留 utility 够不着的:主题变量、生成 DOM 的排版(markdown/hljs)、
+   动态 SVG 状态(replay 画布)、滚动条、keyframes、少量组件类(.btn,Task 3 删)。
+   双主题:裸变量 :root = light,.dark 覆盖 = dark,@theme inline 映射成 utility。 */
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #121212;
-  --color-panel: #1c1c1e;
-  --color-line: #3a3a3c;
-  --color-text: #e9ecef;
-  --color-dim: #8a8a8e;
-  --color-ok: #2f9e44;
-  --color-err: #e8590c;
-  --color-deny: #e03131;
-  --color-warn: #f08c00;
-  --color-accent: #2b4a6f;
-  --color-accent-hi: #74c0fc;
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: light;
+  --background: #efece3;
+  --foreground: #000000;
+  --card: #f7f5ef;
+  --card-foreground: #000000;
+  --popover: #f7f5ef;
+  --popover-foreground: #000000;
+  --primary: #4a70a9;
+  --primary-foreground: #ffffff;
+  --secondary: #8fabd4;
+  --secondary-foreground: #000000;
+  --muted: #e5e1d3;
+  --muted-foreground: rgba(0, 0, 0, 0.55);
+  --accent: #dce6f2;
+  --accent-foreground: #000000;
+  --brand: #4a70a9;
+  --border: rgba(0, 0, 0, 0.12);
+  --input: rgba(0, 0, 0, 0.12);
+  --ring: #4a70a9;
+  --destructive: #c92a2a;
+  --destructive-foreground: #ffffff;
+  /* 状态色(light 压深一档保对比) */
+  --ok: #2b8a3e;
+  --err: #d9480f;
+  --deny: #c92a2a;
+  --warn: #e67700;
+  /* 保留区双主题变量 */
+  --code-bg: rgba(0, 0, 0, 0.05);
+  --code-border: rgba(0, 0, 0, 0.08);
+  --pre-bg: rgba(0, 0, 0, 0.04);
+  --md-strong: #000000;
+  --md-em: #333333;
+  --md-quote: #4a4a44;
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --hljs-keyword: #8250df;
+  --hljs-string: #0a3069;
+  --hljs-number: #953800;
+  --hljs-comment: #6e7781;
+  --hljs-title: #0550ae;
+  --hljs-attr: #0550ae;
+  --hljs-variable: #24292f;
+  --hljs-type: #0f766e;
+  --hljs-tag: #116329;
+  --hljs-meta: #7d4e00;
+  --hljs-addition: #116329;
+  --hljs-deletion: #82071e;
+  --hl-key: #0550ae;
+  --hl-string: #0a3069;
+  --hl-number: #953800;
+  --hl-ident: #6f42c1;
+  --hl-keyword: #cf222e;
+  --hl-punct: #57606a;
+  --hl-comment: #6e7781;
+  --rp-node-fill: #f7f5ef;
+  --rp-node-stroke: #8a8a80;
+  --rp-node-text: #4b4b46;
+  --rp-node-sub: #77776f;
+  --rp-node-file: #6b7a88;
+  --rp-edge: #b5b1a4;
+  --rp-edge-text: #77776f;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #eaecf0;
+  --card: #233d4d;
+  --card-foreground: #eaecf0;
+  --popover: #233d4d;
+  --popover-foreground: #eaecf0;
+  --primary: #233d4d;
+  --primary-foreground: #eaecf0;
+  --secondary: #2e4a5c;
+  --secondary-foreground: #eaecf0;
+  --muted: #16262f;
+  --muted-foreground: rgba(234, 236, 240, 0.6);
+  --accent: #2e4a5c;
+  --accent-foreground: #eaecf0;
+  --brand: #fe7f2d;
+  --border: rgba(234, 236, 240, 0.15);
+  --input: rgba(234, 236, 240, 0.15);
+  --ring: #fe7f2d;
+  --destructive: #e03131;
+  --destructive-foreground: #ffffff;
+  --ok: #2f9e44;
+  --err: #e8590c;
+  --deny: #e03131;
+  --warn: #f08c00;
+  --code-bg: rgba(255, 255, 255, 0.08);
+  --code-border: rgba(255, 255, 255, 0.09);
+  --pre-bg: rgba(0, 0, 0, 0.32);
+  --md-strong: #ffffff;
+  --md-em: #d8d8dc;
+  --md-quote: #b8b8bc;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --hljs-keyword: #c792ea;
+  --hljs-string: #a5d6a7;
+  --hljs-number: #f7b26b;
+  --hljs-comment: #6b6b73;
+  --hljs-title: #74c0fc;
+  --hljs-attr: #8ab4f8;
+  --hljs-variable: #d8d8dc;
+  --hljs-type: #7fd4c1;
+  --hljs-tag: #e8a2a2;
+  --hljs-meta: #b8a04a;
+  --hljs-addition: #7fd48a;
+  --hljs-deletion: #e08a8a;
+  --hl-key: #74c0fc;
+  --hl-string: #a5d8b0;
+  --hl-number: #ffa94d;
+  --hl-ident: #dcbdfb;
+  --hl-keyword: #ff7b72;
+  --hl-punct: #7a7f88;
+  --hl-comment: #6a7a8a;
+  --rp-node-fill: #182b36;
+  --rp-node-stroke: #4a6172;
+  --rp-node-text: #9aa7b0;
+  --rp-node-sub: #6a7a86;
+  --rp-node-file: #5b7181;
+  --rp-edge: #35505f;
+  --rp-edge-text: #6a7a86;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand: var(--brand);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ok: var(--ok);
+  --color-err: var(--err);
+  --color-deny: var(--deny);
+  --color-warn: var(--warn);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* 内置缓动太弱,UI 一律强 ease-out(快起步 = 响应感) */
   --ease-strong: cubic-bezier(0.23, 1, 0.32, 1);
@@ -28,8 +168,8 @@
     overflow: hidden;
   }
   body {
-    background: var(--color-bg);
-    color: var(--color-text);
+    background: var(--background);
+    color: var(--foreground);
     font: 14px/1.6 -apple-system, "PingFang SC", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
@@ -44,16 +184,16 @@
   button:focus-visible,
   select:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(116, 192, 252, 0.25);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 30%, transparent);
   }
 }
 
 @layer components {
   /* 默认按钮外衣(原全局 button 样式):透明按钮(ghost/列表项)不用挂 */
   .btn {
-    background: var(--color-panel);
-    color: var(--color-text);
-    border: 1px solid var(--color-line);
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 8px 18px;
     font-size: 14px;
@@ -64,7 +204,7 @@
       color 150ms ease;
   }
   .btn:hover:not(:disabled) {
-    border-color: #4a4a4e;
+    border-color: var(--ring);
   }
   .btn:active {
     transform: scale(0.97);
@@ -96,13 +236,13 @@
   }
   .md strong {
     font-weight: 650;
-    color: #fff;
+    color: var(--md-strong);
   }
   .md em {
-    color: #d8d8dc;
+    color: var(--md-em);
   }
   .md a {
-    color: #74c0fc;
+    color: var(--brand);
   }
   .md h1,
   .md h2,
@@ -139,8 +279,8 @@
   .md code {
     font-family: var(--font-mono);
     font-size: 0.88em;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
     border-radius: 4px;
     padding: 0.1em 0.35em;
   }
@@ -148,8 +288,8 @@
     margin: 0.6em 0;
     padding: 10px 12px;
     overflow-x: auto;
-    background: rgba(0, 0, 0, 0.32);
-    border: 1px solid var(--color-line);
+    background: var(--pre-bg);
+    border: 1px solid var(--border);
     border-radius: 8px;
   }
   .md pre code {
@@ -162,15 +302,15 @@
   .md blockquote {
     margin: 0.6em 0;
     padding: 2px 12px;
-    border-left: 3px solid #3a5a7a;
-    color: #b8b8bc;
+    border-left: 3px solid var(--brand);
+    color: var(--md-quote);
   }
   .md blockquote > p {
     margin: 0.3em 0;
   }
   .md hr {
     border: none;
-    border-top: 1px solid var(--color-line);
+    border-top: 1px solid var(--border);
     margin: 0.8em 0;
   }
   .md table {
@@ -182,12 +322,12 @@
   }
   .md th,
   .md td {
-    border: 1px solid var(--color-line);
+    border: 1px solid var(--border);
     padding: 5px 10px;
     text-align: left;
   }
   .md th {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--muted);
     font-weight: 650;
   }
 
@@ -196,50 +336,50 @@
   .md .hljs-keyword,
   .md .hljs-literal,
   .md .hljs-built_in {
-    color: #c792ea;
+    color: var(--hljs-keyword);
   }
   .md .hljs-string,
   .md .hljs-regexp {
-    color: #a5d6a7;
+    color: var(--hljs-string);
   }
   .md .hljs-number {
-    color: #f7b26b;
+    color: var(--hljs-number);
   }
   .md .hljs-comment,
   .md .hljs-quote {
-    color: #6b6b73;
+    color: var(--hljs-comment);
     font-style: italic;
   }
   .md .hljs-function .hljs-title,
   .md .hljs-title {
-    color: #74c0fc;
+    color: var(--hljs-title);
   }
   .md .hljs-attr,
   .md .hljs-attribute,
   .md .hljs-property {
-    color: #8ab4f8;
+    color: var(--hljs-attr);
   }
   .md .hljs-variable,
   .md .hljs-params {
-    color: #d8d8dc;
+    color: var(--hljs-variable);
   }
   .md .hljs-type,
   .md .hljs-class .hljs-title {
-    color: #7fd4c1;
+    color: var(--hljs-type);
   }
   .md .hljs-tag,
   .md .hljs-name {
-    color: #e8a2a2;
+    color: var(--hljs-tag);
   }
   .md .hljs-meta,
   .md .hljs-doctag {
-    color: #b8a04a;
+    color: var(--hljs-meta);
   }
   .md .hljs-addition {
-    color: #7fd48a;
+    color: var(--hljs-addition);
   }
   .md .hljs-deletion {
-    color: #e08a8a;
+    color: var(--hljs-deletion);
   }
 
   /* 自研 JSON/事件高亮器(Hl 组件)的 token 配色——回放和工具详情共用,
@@ -248,25 +388,25 @@
     font-style: normal;
   }
   .hl .hk {
-    color: #74c0fc; /* key */
+    color: var(--hl-key); /* key */
   }
   .hl .hs {
-    color: #a5d8b0; /* 字符串 */
+    color: var(--hl-string); /* 字符串 */
   }
   .hl .hd {
-    color: #ffa94d; /* 数字 */
+    color: var(--hl-number); /* 数字 */
   }
   .hl .hv {
-    color: #dcbdfb; /* 标识符 */
+    color: var(--hl-ident); /* 标识符 */
   }
   .hl .hw {
-    color: #ff7b72; /* 关键字 */
+    color: var(--hl-keyword); /* 关键字 */
   }
   .hl .hp {
-    color: #7a7f88; /* 标点 */
+    color: var(--hl-punct); /* 标点 */
   }
   .hl .hn {
-    color: #6a7a8a; /* 中文注释 */
+    color: var(--hl-comment); /* 中文注释 */
   }
 
   /* ─── 流式直播光标:挂在最后一个块级子元素尾部,跟着文字走 ─── */
@@ -278,7 +418,7 @@
     margin-left: 3px;
     vertical-align: -0.12em;
     border-radius: 1px;
-    background: var(--color-accent-hi);
+    background: var(--brand);
     animation: caret-blink 1s steps(2, jump-none) infinite;
   }
   @media (prefers-reduced-motion: reduce) {
@@ -290,14 +430,14 @@
 
   /* ─── replay 画布 SVG 节点/边状态(Canvas 动态生成,类名切换驱动)─── */
   .replay {
-    --hot: var(--color-ok);
-    --hot-bg: rgba(47, 158, 68, 0.14);
-    --deny-bg: rgba(224, 49, 49, 0.14);
+    --hot: var(--ok);
+    --hot-bg: color-mix(in srgb, var(--ok) 14%, transparent);
+    --deny-bg: color-mix(in srgb, var(--deny) 14%, transparent);
   }
   .replay .node rect,
   .replay .node ellipse {
-    fill: #232325;
-    stroke: #555;
+    fill: var(--rp-node-fill);
+    stroke: var(--rp-node-stroke);
     stroke-width: 1.5;
     transition:
       fill 0.25s,
@@ -306,47 +446,47 @@
       filter 0.25s;
   }
   .replay .node text {
-    fill: #9a9a9a;
+    fill: var(--rp-node-text);
     font-size: 12.5px;
     transition: fill 0.25s;
   }
   .replay .node .sub {
     font-size: 10px;
-    fill: #6a6a6e;
+    fill: var(--rp-node-sub);
   }
   .replay .node .file {
     font-size: 8.5px;
-    fill: #565b63;
+    fill: var(--rp-node-file);
     font-family: var(--font-mono);
   }
   .replay .node.hot .file {
-    fill: #74c0fc;
+    fill: var(--brand);
   }
   .replay .node.hot rect,
   .replay .node.hot ellipse {
     stroke: var(--hot);
     stroke-width: 2.5;
     fill: var(--hot-bg);
-    filter: drop-shadow(0 0 6px rgba(47, 158, 68, 0.55));
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ok) 55%, transparent));
   }
   .replay .node.hot text {
-    fill: var(--color-text);
+    fill: var(--foreground);
   }
   .replay .node.deny rect,
   .replay .node.deny ellipse {
-    stroke: var(--color-deny);
+    stroke: var(--deny);
     fill: var(--deny-bg);
-    filter: drop-shadow(0 0 6px rgba(224, 49, 49, 0.55));
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--deny) 55%, transparent));
   }
   .replay .edge path {
-    stroke: #3f3f42;
+    stroke: var(--rp-edge);
     stroke-width: 1.5;
     fill: none;
     transition: stroke 0.25s;
     marker-end: url(#arr);
   }
   .replay .edge text {
-    fill: #6a6a6e;
+    fill: var(--rp-edge-text);
     font-size: 10.5px;
   }
   .replay .edge.hot path {
@@ -360,11 +500,11 @@
     fill: var(--hot);
   }
   .replay .edge.deny path {
-    stroke: var(--color-deny);
+    stroke: var(--deny);
     marker-end: url(#arrDeny);
   }
   .replay .edge.deny text {
-    fill: var(--color-deny);
+    fill: var(--deny);
   }
   @media (prefers-reduced-motion: reduce) {
     .replay .edge.hot path {
@@ -406,7 +546,7 @@
     width: 8px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.14);
+    background: var(--scrollbar-thumb);
     border-radius: 4px;
     background-clip: padding-box;
     border: 2px solid transparent;
@@ -421,7 +561,7 @@
     height: 6px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.14);
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
   }
   &::-webkit-scrollbar-track {

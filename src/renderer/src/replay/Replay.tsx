@@ -8,14 +8,14 @@ import { toStep, hl, type ReplayStep } from "./steps.js";
 import { Canvas } from "./Canvas.js";
 
 /* 面板小标题统一:小字 + 加字重 + 微加字距(小字号要正字距才清楚) */
-const PANEL_H3 = "text-[11px] text-dim font-semibold tracking-[0.05em] mb-2 tabular-nums";
+const PANEL_H3 = "text-[11px] text-muted-foreground font-semibold tracking-[0.05em] mb-2 tabular-nums";
 /* 轨迹链入场动画(pop 定义在 app.css;减少动效时停摆直接可见) */
 const POP_ANIM = "opacity-0 animate-[pop_0.3s_ease-out_forwards] motion-reduce:animate-none motion-reduce:opacity-100";
 const CHEV = `self-center text-sm ${POP_ANIM}`;
 /* 函数间流动的数据卡(虚线);链条端点卡(输入/输出)实线边框另加 */
-const DAT = `hl self-center font-mono text-[10.5px] leading-[1.55] text-[#c9d1d9] bg-[#16222e] border border-dashed border-[#2d4a66] rounded-lg px-[10px] py-[7px] max-w-[270px] whitespace-pre-wrap break-all ${POP_ANIM}`;
-const DAT_CAP = `${DAT} border-solid border-[#35587a] bg-[#14212f]`;
-const CAP_LABEL = "block text-[9px] font-semibold tracking-[0.12em] text-[#74c0fc] mb-1";
+const DAT = `hl self-center font-mono text-[10.5px] leading-[1.55] text-foreground bg-muted border border-dashed border-border rounded-lg px-[10px] py-[7px] max-w-[270px] whitespace-pre-wrap break-all ${POP_ANIM}`;
+const DAT_CAP = `${DAT} border-solid border-ring bg-card`;
+const CAP_LABEL = "block text-[9px] font-semibold tracking-[0.12em] text-brand mb-1";
 /* 调用链 = 单行流水线:一律从左往右读,长了在面板内横向滚(不是窗口滚);窄窗折行 */
 const CHAIN =
   "flex flex-nowrap items-stretch gap-2 overflow-x-auto pb-2 [&>*]:shrink-0 scrollbar-thin-x max-[980px]:flex-wrap max-[980px]:overflow-x-visible max-[980px]:gap-y-[10px]";
@@ -68,25 +68,25 @@ function FnChain({ step }: { step: ReplayStep }) {
   step.fns.forEach((f, i) => {
     // 芯片 = 函数:skip 虚线划掉,deny 红边
     const fnCls =
-      `bg-[#232325] border rounded-[10px] px-3 py-2 min-w-[130px] ${POP_ANIM} ` +
+      `bg-muted border rounded-[10px] px-3 py-2 min-w-[130px] ${POP_ANIM} ` +
       (f.skip
-        ? "border-line border-dashed"
+        ? "border-border border-dashed"
         : step.deny
           ? "border-deny shadow-[0_1px_3px_rgba(0,0,0,0.3)]"
           : "border-ok shadow-[0_1px_3px_rgba(0,0,0,0.3)]");
     parts.push(
       <div key={`f${i}`} className={fnCls} style={d()}>
-        <div className={"font-mono text-xs font-medium" + (f.skip ? " text-[#5a5a5e] line-through" : "")}>
+        <div className={"font-mono text-xs font-medium" + (f.skip ? " text-muted-foreground line-through" : "")}>
           {f.skip ? "✕ " : ""}{f.n}
         </div>
-        <div className="font-mono text-[10px] text-dim mt-[3px]">{f.f}</div>
-        <div className={"text-[10.5px] leading-normal mt-[5px] " + (f.skip ? "text-deny" : "text-[#74c0fc]")}>
+        <div className="font-mono text-[10px] text-muted-foreground mt-[3px]">{f.f}</div>
+        <div className={"text-[10.5px] leading-normal mt-[5px] " + (f.skip ? "text-deny" : "text-brand")}>
           {f.io}
         </div>
       </div>
     );
     if (i < step.fns.length - 1) {
-      const chev = `${CHEV} ` + (step.fns[i + 1]?.skip ? "text-line" : "text-ok");
+      const chev = `${CHEV} ` + (step.fns[i + 1]?.skip ? "text-border" : "text-ok");
       if (f.out) {
         parts.push(
           <span key={`c${i}a`} className={chev} style={d()}>➤</span>,
@@ -155,7 +155,7 @@ export function Replay() {
   return (
     <section className="replay flex-1 min-h-0 px-[14px] py-3 grid gap-3 grid-cols-[minmax(0,1fr)_minmax(300px,380px)] grid-rows-[minmax(0,1fr)_auto] [grid-template-areas:'canvas_side'_'trace_side'] max-[980px]:flex max-[980px]:flex-col max-[980px]:overflow-y-auto max-[980px]:overflow-x-hidden">
       {/* SVG 撑满面板并保持比例(preserveAspectRatio 默认 meet) */}
-      <div className="[grid-area:canvas] min-h-0 bg-panel border border-line rounded-xl p-2 flex items-center justify-center [&>svg]:w-full [&>svg]:h-full [&>svg]:block max-[980px]:shrink-0 max-[980px]:[&>svg]:h-auto">
+      <div className="[grid-area:canvas] min-h-0 bg-card border border-border rounded-xl p-2 flex items-center justify-center [&>svg]:w-full [&>svg]:h-full [&>svg]:block max-[980px]:shrink-0 max-[980px]:[&>svg]:h-auto">
         <Canvas nodes={s?.nodes ?? []} edges={s?.edges ?? []} deny={s?.deny ?? false} />
       </div>
       <aside className="[grid-area:side] min-h-0 flex flex-col gap-[10px]">
@@ -173,11 +173,11 @@ export function Replay() {
           </button>
           <button className="btn px-[14px] py-[6px] text-[13px]" onClick={() => goto(cur + 1)}>▶</button>
           {/* 位置计数:等宽数字,走完 27 步数字不跳宽 */}
-          <span className="ml-auto font-mono text-xs text-dim tabular-nums">
+          <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">
             {cur + 1} / {steps.length}
           </span>
         </div>
-        <div className="bg-panel border border-line rounded-xl p-[6px] flex-[1_1_40%] min-h-[120px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:max-h-[min(260px,32vh)]">
+        <div className="bg-card border border-border rounded-xl p-[6px] flex-[1_1_40%] min-h-[120px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:max-h-[min(260px,32vh)]">
           {steps.map((st, i) => {
             const isCur = i === cur;
             // 当前步:左侧 accent 条 + 底色,比整圈描边安静(描边会跟滚动条打架)
@@ -189,13 +189,13 @@ export function Replay() {
                   "px-[10px] py-[6px] rounded-lg cursor-pointer flex gap-[10px] items-baseline transition-colors duration-100 " +
                   (isCur
                     ? st.deny
-                      ? "bg-[rgba(224,49,49,0.14)] shadow-[inset_2px_0_0_#e03131]"
-                      : "bg-[rgba(47,158,68,0.14)] shadow-[inset_2px_0_0_#2f9e44]"
-                    : "hover:bg-white/5 active:bg-white/[0.09]")
+                      ? "bg-deny/15 shadow-[inset_2px_0_0_var(--color-deny)]"
+                      : "bg-ok/15 shadow-[inset_2px_0_0_var(--color-ok)]"
+                    : "hover:bg-foreground/5 active:bg-foreground/[0.09]")
                 }
                 onClick={() => goto(i)}
               >
-                <span className="font-mono text-[11px] text-dim w-[46px] shrink-0 tabular-nums">seq {st.ev.seq}</span>
+                <span className="font-mono text-[11px] text-muted-foreground w-[46px] shrink-0 tabular-nums">seq {st.ev.seq}</span>
                 {/* 事件类型是代码标识符:用等宽,和 payload/轨迹同一语言 */}
                 <span className="font-mono text-[12.5px] font-medium">{st.title}</span>
                 <span
@@ -203,11 +203,11 @@ export function Replay() {
                     "text-[10px] px-[7px] py-[2px] rounded-full ml-auto shrink-0 whitespace-nowrap tracking-[0.02em] " +
                     (isCur
                       ? st.deny
-                        ? "bg-[rgba(224,49,49,0.18)] text-deny"
-                        : "bg-[rgba(47,158,68,0.18)] text-ok"
+                        ? "bg-deny/[0.18] text-deny"
+                        : "bg-ok/[0.18] text-ok"
                       : st.deny
-                        ? "bg-[rgba(224,49,49,0.14)] text-deny"
-                        : "bg-white/[0.06] text-dim")
+                        ? "bg-deny/[0.14] text-deny"
+                        : "bg-foreground/[0.06] text-muted-foreground")
                   }
                 >
                   {st.badge}
@@ -216,14 +216,14 @@ export function Replay() {
             );
           })}
         </div>
-        <div className="bg-panel border border-line rounded-xl p-[14px] flex-[1_1_60%] min-h-[140px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:overflow-visible">
+        <div className="bg-card border border-border rounded-xl p-[14px] flex-[1_1_60%] min-h-[140px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:overflow-visible">
           {s ? (
             <>
               <h3 className={PANEL_H3}>
                 seq {s.ev.seq} · {s.title}
               </h3>
               <div className="text-[13px] leading-[1.65] mb-[10px]">{s.desc}</div>
-              <pre className="hl font-mono text-[11.5px] leading-[1.6] whitespace-pre-wrap break-all text-[#a5d8b0] bg-black/[0.28] rounded-lg px-3 py-[10px]">
+              <pre className="hl font-mono text-[11.5px] leading-[1.6] whitespace-pre-wrap break-all text-[var(--hl-string)] bg-[var(--pre-bg)] rounded-lg px-3 py-[10px]">
                 <Hl src={displayEvent(s.ev)} />
               </pre>
             </>
@@ -232,20 +232,20 @@ export function Replay() {
           )}
         </div>
       </aside>
-      <div className="[grid-area:trace] bg-panel border border-line rounded-xl pt-[14px] px-[14px] pb-2">
+      <div className="[grid-area:trace] bg-card border border-border rounded-xl pt-[14px] px-[14px] pb-2">
         {/* 轨迹标题:左说明右图例,单行截断 */}
         <h3 className={`${PANEL_H3} flex gap-3 items-baseline whitespace-nowrap`}>
           <span className="overflow-hidden text-ellipsis">
             {s ? `函数轨迹 · seq ${s.ev.seq} ${s.title}（${s.badge}）` : "函数轨迹"}
           </span>
-          <span className="ml-auto font-normal text-[#6a6a6e] shrink-0">芯片 = 函数 · 蓝卡 = 函数间流动的数据</span>
+          <span className="ml-auto font-normal text-muted-foreground shrink-0">芯片 = 函数 · 蓝卡 = 函数间流动的数据</span>
         </h3>
         {/* key=cur：换 step 时整棵子树重建，pop 入场动画重新播 */}
         {s ? (
           <FnChain key={cur} step={s} />
         ) : (
           <div className={CHAIN}>
-            <span className="text-dim text-[13px]">选一个 step 看它穿过哪些函数。</span>
+            <span className="text-muted-foreground text-[13px]">选一个 step 看它穿过哪些函数。</span>
           </div>
         )}
       </div>
