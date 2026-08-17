@@ -12,8 +12,9 @@ import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.
 import { createApprovalGate } from "./approvalGate.js";
 import type { Approver } from "./approvalGate.js";
 
-/** 单个 turn 内模型最多连续调工具的轮数（防失控空转烧钱） */
-const MAX_STEPS = 8;
+/** 单个 turn 内模型最多连续调工具的轮数默认值（防失控空转烧钱）。
+    运行时可经 setMaxSteps 调整——和 approvalMode 同类：运行时偏好，不落日志 */
+const DEFAULT_MAX_STEPS = 8;
 
 /** AbortError 判定：fetch 中止、signal.reason、throwIfAborted 抛的都是它 */
 function isAbort(err: unknown): boolean {
@@ -48,6 +49,8 @@ export class LoopEngine {
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
       AbortSignal 是一次性的，翻过去就回不来 */
   private turnAbort: AbortController | null = null;
+  /** 步数上限（活值：loop 每圈现读，turn 中途调低 = 踩刹车立即生效） */
+  private _maxSteps = DEFAULT_MAX_STEPS;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -72,6 +75,15 @@ export class LoopEngine {
   /** 换模型 = 换实现。engine 对"有哪些模型"一无所知，只认 ModelAdapter 接口 */
   setAdapter(adapter: ModelAdapter): void {
     this.adapter = adapter;
+  }
+
+  get maxSteps(): number {
+    return this._maxSteps;
+  }
+
+  /** 合法性（整数、区间）由 IPC 边界把关——engine 信任组装根 */
+  setMaxSteps(n: number): void {
+    this._maxSteps = n;
   }
 
   /** 落盘 + 通知，loop 里所有写日志走这一个口 */
@@ -169,7 +181,8 @@ export class LoopEngine {
     // 硬规则"工具只依赖 ExecutionWorld"原样成立
     const world = withAbortSignal(this.opts.world, signal);
 
-    for (let step = 0; step < MAX_STEPS; step++) {
+    // 上限每圈现读：turn 进行中用户调低（/steps）当圈生效
+    for (let step = 0; step < this._maxSteps; step++) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
@@ -234,6 +247,6 @@ export class LoopEngine {
       // 结果已落盘 → 下一圈 deriveMessages 自然带上它们
     }
 
-    throw new Error(`turn 超过 ${MAX_STEPS} 步仍未收敛，已中止`);
+    throw new Error(`turn 超过 ${this._maxSteps} 步仍未收敛，已中止（/steps 可调上限）`);
   }
 }

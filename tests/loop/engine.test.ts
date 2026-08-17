@@ -506,4 +506,26 @@ describe("lifecycle 事件（ADR-0004）", () => {
     expect(sawOnOutput).toBeUndefined(); // 没人订阅直播就不包装，不塞多余回调
     store.close();
   });
+
+  it("setMaxSteps 是活值：上限 1 时第一轮工具后就熔断", async () => {
+    const store = new EventStore(":memory:");
+    // 模型永远要工具，永不收敛
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat() {
+        return {
+          content: "",
+          toolCalls: [{ id: `c${Math.random()}`, name: "read_file", args: { path: "/a" } }],
+        };
+      },
+    };
+    const engine = new LoopEngine({
+      store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1",
+    });
+    engine.setMaxSteps(1);
+    await expect(engine.runTurn("干活")).rejects.toThrow(/超过 1 步/);
+    // 熔断也是日志事实（ADR-0004）
+    expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "error" });
+    store.close();
+  });
 });

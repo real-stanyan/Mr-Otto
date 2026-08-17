@@ -168,6 +168,13 @@ export function createAgent(opts: {
     setApprovalMode(mode: ApprovalMode): void {
       approvalMode = mode;
     },
+    get maxSteps() {
+      return engine.maxSteps;
+    },
+    /** turn 中途也可调：loop 每圈现读，调低 = 踩刹车（合法性由 IPC 边界把关） */
+    setMaxSteps(n: number): void {
+      engine.setMaxSteps(n);
+    },
     get thinking() {
       return thinking;
     },

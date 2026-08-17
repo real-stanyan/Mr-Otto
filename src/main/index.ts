@@ -60,6 +60,7 @@ void app.whenReady().then(() => {
           dbPath,
           approvalMode: agent.approvalMode,
           thinking: agent.thinking,
+          maxSteps: agent.maxSteps,
         }
       : null;
   };
@@ -171,6 +172,17 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能切 thinking");
     agent.setThinking(on);
+  });
+
+  ipcMain.handle(CHANNELS.setMaxSteps, (_e, sessionId: string, n: number) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    // 参数出自渲染层输入框，边界在这把关（engine 信任组装根）
+    if (!Number.isInteger(n) || n < 1 || n > 64) {
+      throw new Error("步数上限须为 1–64 的整数（用法：/steps 16）");
+    }
+    // turn 进行中也允许：调低是"踩刹车"，loop 每圈现读、当圈生效
+    agent.setMaxSteps(n);
   });
 
   ipcMain.handle(CHANNELS.sendMessage, async (_e, sessionId: string, text: string) => {

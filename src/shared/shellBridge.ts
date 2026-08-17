@@ -26,6 +26,8 @@ export interface BootInfo {
   /** 运行时偏好（不落日志，resume 回默认值），UI 初始化控件用 */
   approvalMode: ApprovalMode;
   thinking: boolean;
+  /** 单 turn 工具步数上限（运行时偏好，/steps 可调） */
+  maxSteps: number;
 }
 
 export type TurnStatus = "idle" | "running";
@@ -96,6 +98,8 @@ export interface ShellBridge {
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
   /** 切 thinking 开关（仅 supportsThinking 的型号有意义）。turn 进行中拒绝 */
   setThinking(sessionId: string, on: boolean): Promise<void>;
+  /** 调单 turn 步数上限（1–64 整数）。turn 中途可调，调低当圈生效（踩刹车） */
+  setMaxSteps(sessionId: string, n: number): Promise<void>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
   keyStatus(): Promise<Record<string, boolean>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
@@ -132,6 +136,7 @@ export const CHANNELS = {
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
+  setMaxSteps: "otter:setMaxSteps",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",

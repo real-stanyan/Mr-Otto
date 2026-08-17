@@ -9,6 +9,7 @@ import { ThinkingOrb } from "thinking-orbs";
 import { useChat } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
+import { contextUsed } from "../../shared/contextEstimate.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
@@ -40,19 +41,7 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-/** 当前上下文占用估计 = 最近一次 API 调用的 prompt + completion。
-    近似而非精确（下个请求的 prompt 才是真占用），但它来自日志、随事件流实时更新 */
-function contextUsed(events: SessionEvent[]): number {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if ((e?.type === "assistant_message" || e?.type === "context_compacted") && e.usage) {
-      // compact 之后历史只剩摘要：占用近似为摘要本身的体积
-      if (e.type === "context_compacted") return e.usage.completionTokens;
-      return e.usage.promptTokens + e.usage.completionTokens;
-    }
-  }
-  return 0;
-}
+// contextUsed 搬进 shared（校准版：账单锚点 + 未计费事件估算），这里只消费
 
 /** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
     挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
@@ -125,6 +114,7 @@ function CtxPopover({ events, ctxWindow, onClose }: {
       (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
   )?.usage;
   const compacts = events.filter((e) => e.type === "context_compacted").length;
+  const maxSteps = useChat((s) => s.maxSteps);
   const n = (x: number) => x.toLocaleString("en-US");
 
   return (
@@ -153,7 +143,13 @@ function CtxPopover({ events, ctxWindow, onClose }: {
         <span>事件日志</span>
         <span className="v">{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
       </div>
-      <div className="ctx-pop-hint">占用为最近一次调用的账单估计；/compact 可折叠历史释放上下文</div>
+      <div className="ctx-pop-row">
+        <span>单 turn 步数上限</span>
+        <span className="v">{maxSteps}（/steps 可调）</span>
+      </div>
+      <div className="ctx-pop-hint">
+        占用 = 最近账单 + 之后未计费事件的字符估算；/compact 可折叠历史释放上下文
+      </div>
     </div>
   );
 }
