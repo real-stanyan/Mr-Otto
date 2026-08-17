@@ -382,6 +382,15 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
         </div>
       );
 
+    case "skill_invoked":
+      // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
+      return (
+        <details className="row thinking skill-note">
+          <summary>✦ 启用 skill「{event.name}」——指令已注入上下文</summary>
+          <div className="thinking-body">{event.content}</div>
+        </details>
+      );
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":
@@ -552,6 +561,44 @@ function Settings() {
   );
 }
 
+/** skill 库页：本机已安装 skill 的只读清单（磁盘扫描的投影，零持久化）。
+    安装/卸载 = 在根目录里增删 <名字>/SKILL.md 文件夹——这里只看不改 */
+function SkillsPage() {
+  const skills = useChat((s) => s.skills);
+  const closeSkills = useChat((s) => s.closeSkills);
+
+  return (
+    <main className="settings">
+      <header>
+        <span className="name">Skill 库</span>
+        <button className="ghost" onClick={closeSkills}>
+          返回
+        </button>
+      </header>
+      <section className="settings-body">
+        <p className="hint">
+          聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
+          （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
+          {" "}放进 <code>~/.otter/skills</code> 或 <code>~/.claude/skills</code>。
+        </p>
+        {skills.map((s) => (
+          <details key={s.name} className="skill-card">
+            <summary>
+              <span className="skill-name">{s.name}</span>
+              <span className="skill-desc">{s.description || "（无描述）"}</span>
+              <code className="skill-src" title={s.path}>
+                {s.source.split("/").slice(-2).join("/")}
+              </code>
+            </summary>
+            <pre className="skill-body">{s.content}</pre>
+          </details>
+        ))}
+        {skills.length === 0 && <p className="hint">还没有安装任何 skill。</p>}
+      </section>
+    </main>
+  );
+}
+
 /** 左侧常驻侧栏：会话列表 + 底部设置/登录槽 */
 function Sidebar() {
   const sessions = useChat((s) => s.sessions);
@@ -561,6 +608,7 @@ function Sidebar() {
   const resume = useChat((s) => s.resume);
   const newSession = useChat((s) => s.newSession);
   const openSettings = useChat((s) => s.openSettings);
+  const openSkills = useChat((s) => s.openSkills);
   const deleteSession = useChat((s) => s.deleteSession);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
@@ -648,6 +696,9 @@ function Sidebar() {
         )}
       </nav>
       <div className="sidebar-bottom">
+        <button className="ghost" onClick={() => void openSkills()}>
+          Skill 库
+        </button>
         <button className="ghost" onClick={() => void openSettings()}>
           设置
         </button>
@@ -884,6 +935,7 @@ export function App() {
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const showSettings = useChat((s) => s.showSettings);
+  const showSkills = useChat((s) => s.showSkills);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -896,13 +948,22 @@ export function App() {
   const slashMatches = input.startsWith("/")
     ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
     : [];
+  // $ 菜单（skill 选择）：以 "$" 开头且还没打空格——打了空格 = 名字已定，后面是任务正文。
+  // 两个菜单天然互斥（首字符只能是一个），选中态共用同一个 slashSel
+  const skills = useChat((s) => s.skills);
+  const dollarQuery = input.startsWith("$") && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
+  const skillMatches =
+    dollarQuery !== null ? skills.filter((s) => s.name.toLowerCase().includes(dollarQuery)) : [];
   const [slashSel, setSlashSel] = useState(0);
   useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
-  const sel = Math.min(slashSel, Math.max(slashMatches.length - 1, 0));
+  const menuLen = Math.max(slashMatches.length, skillMatches.length);
+  const sel = Math.min(slashSel, Math.max(menuLen - 1, 0));
   const runSlash = (name: string) => {
     setInput("");
     dispatchSlash(name);
   };
+  // 选中 skill = 只补全名字，不发送：任务正文还等着用户打
+  const pickSkill = (name: string) => setInput(`$${name} `);
 
   useEffect(() => {
     void boot();
@@ -926,6 +987,24 @@ export function App() {
   const submit = () => {
     const text = input.trim();
     if (!text || status === "running") return;
+    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
+    // 报错时不清输入框——让用户就地改，不用重打一遍
+    if (text.startsWith("$")) {
+      const space = text.search(/\s/);
+      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const task = space === -1 ? "" : text.slice(space + 1).trim();
+      if (!useChat.getState().skills.some((s) => s.name === name)) {
+        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
+        return;
+      }
+      if (!task) {
+        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
+        return;
+      }
+      setInput("");
+      void send(task, name);
+      return;
+    }
     setInput("");
     if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
     void send(text);
@@ -933,9 +1012,11 @@ export function App() {
 
   if (phase === "connecting") return <main className="boot">连接主进程…</main>;
 
-  // 布局：侧栏常驻，主区三态（设置 / 欢迎 / 聊天）
+  // 布局：侧栏常驻，主区四态（设置 / skill 库 / 欢迎 / 聊天）
   const main = showSettings ? (
     <Settings />
+  ) : showSkills ? (
+    <SkillsPage />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
@@ -1022,6 +1103,24 @@ export function App() {
                   ))}
                 </div>
               )}
+              {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
+              {skillMatches.length > 0 && (
+                <div className="slash-menu" role="listbox">
+                  {skillMatches.map((s, i) => (
+                    <button
+                      key={s.name}
+                      className={`slash-item${i === sel ? " sel" : ""}`}
+                      role="option"
+                      aria-selected={i === sel}
+                      onMouseEnter={() => setSlashSel(i)}
+                      onClick={() => pickSkill(s.name)}
+                    >
+                      <span className="slash-name">{"$" + s.name}</span>
+                      <span className="slash-desc">{s.description || "（无描述）"}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <textarea
@@ -1041,6 +1140,17 @@ export function App() {
                     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       runSlash(slashMatches[sel]![0]);
+                      return;
+                    }
+                  }
+                  // $ 菜单：Enter/Tab 都只补全名字（不发送）——正文还没打
+                  if (skillMatches.length > 0) {
+                    const n = skillMatches.length;
+                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
+                    if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
+                      e.preventDefault();
+                      pickSkill(skillMatches[sel]!.name);
                       return;
                     }
                   }

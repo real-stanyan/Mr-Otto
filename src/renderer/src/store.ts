@@ -8,6 +8,7 @@ import type {
   ApprovalRequest,
   BootInfo,
   SessionSummary,
+  SkillInfo,
   StartSessionOptions,
   TurnStatus,
 } from "../../shared/shellBridge.js";
@@ -49,6 +50,10 @@ interface ChatState {
   replayCursor: number | null;
   /** 设置页开关（覆盖在任意 phase 之上） */
   showSettings: boolean;
+  /** skill 库页开关（与设置页同级，互斥打开） */
+  showSkills: boolean;
+  /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
+  skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
 
@@ -61,6 +66,8 @@ interface ChatState {
   setMaxSteps(n: number): Promise<void>;
   openSettings(): Promise<void>;
   closeSettings(): void;
+  openSkills(): Promise<void>;
+  closeSkills(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
@@ -69,7 +76,8 @@ interface ChatState {
   startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  send(text: string): Promise<void>;
+  /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
+  send(text: string, skill?: string): Promise<void>;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -92,7 +100,8 @@ const enterChat = (info: BootInfo) => ({
   thinking: info.thinking,
   maxSteps: info.maxSteps,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
-  showSettings: false, // 侧栏点会话 = 想看聊天，设置页让位
+  showSettings: false, // 侧栏点会话 = 想看聊天，覆盖页让位
+  showSkills: false,
   error: null,
 });
 
@@ -113,6 +122,8 @@ export const useChat = create<ChatState>((set, get) => ({
   maxSteps: 8,
   replayCursor: null,
   showSettings: false,
+  showSkills: false,
+  skills: [],
   keyStatus: {},
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
@@ -153,10 +164,17 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async openSettings() {
-    set({ showSettings: true, keyStatus: await window.otter.keyStatus() });
+    set({ showSettings: true, showSkills: false, keyStatus: await window.otter.keyStatus() });
   },
 
   closeSettings: () => set({ showSettings: false }),
+
+  async openSkills() {
+    // 开页顺手刷新：skill 是用户随时在磁盘上增删的外部文件，镜像别太陈旧
+    set({ showSkills: true, showSettings: false, skills: await window.otter.listSkills() });
+  },
+
+  closeSkills: () => set({ showSkills: false }),
 
   async saveApiKey(envName, key) {
     try {
@@ -241,12 +259,13 @@ export const useChat = create<ChatState>((set, get) => ({
       }))
     );
 
-    // 会话列表是侧栏常驻数据，不分 phase 都要
-    const [info, sessions] = await Promise.all([
+    // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页
+    const [info, sessions, skills] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
+      window.otter.listSkills(),
     ]);
-    set(info ? { ...enterChat(info), sessions } : { phase: "welcome", sessions });
+    set(info ? { ...enterChat(info), sessions, skills } : { phase: "welcome", sessions, skills });
   },
 
   async pickWorkspace() {
@@ -265,6 +284,7 @@ export const useChat = create<ChatState>((set, get) => ({
       events: [],
       replayCursor: null,
       showSettings: false,
+      showSkills: false,
       error: null,
     }),
 
@@ -303,11 +323,11 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async send(text) {
+  async send(text, skill) {
     const sessionId = get().sessionId; // 发消息瞬间锁定目标会话——之后切走也不串
     set({ error: null });
     try {
-      await window.otter.sendMessage(sessionId, text);
+      await window.otter.sendMessage(sessionId, text, skill);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // turn 暴死已作为 turn_ended 事件渲染在时间线里（ADR-0004）——

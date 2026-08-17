@@ -376,6 +376,32 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       break;
     }
 
+    case "skill_invoked": {
+      S.badge = "注入 skill";
+      S.desc =
+        "$ 指令：用户为本条消息启用一个 skill，主进程在发送时刻现读 SKILL.md 全文快照进事件——" +
+        "模型可见的新信息必须落盘；快照 = 日志自包含，skill 文件之后被改/被删，重放不失真。" +
+        "投影成 user 消息（中途插 system 各家方言兼容参差，与 compact 摘要同理）。";
+      S.nodes = ["n-user", "n-bridge", "n-store"];
+      S.edges = ["e-user-bridge"];
+      S.input = `用户输入 "$${e.name} 任务…"\n名字给 harness（注入 skill），正文才是给模型的话`;
+      S.fns = [
+        fn(
+          "sendMessage(sessionId, text, skill)",
+          "main/index.ts",
+          "现扫磁盘读 SKILL.md 做快照，找不到整条拒发",
+          `name = "${e.name}"`
+        ),
+        fn(
+          "EventStore.append()",
+          "session/store.ts",
+          "事务：SELECT MAX(seq)+1 → INSERT",
+          `落盘完成，seq = ${e.seq}\ncontent: "${clip(e.content, 50)}"`
+        ),
+      ];
+      break;
+    }
+
     case "context_compacted": {
       S.badge = "压缩";
       S.desc =
