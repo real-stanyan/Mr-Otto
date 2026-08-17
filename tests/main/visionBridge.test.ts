@@ -38,3 +38,42 @@ describe("visionBridge 代读", () => {
     await expect(describeImages([ref], "看图")).rejects.toThrow(/解析/);
   });
 });
+
+describe("visionBridge 429 重试", () => {
+  it("限流两次后成功:自动重试拿到解析,退避经 sleep", async () => {
+    let calls = 0;
+    const slept: number[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls++;
+      if (calls <= 2) {
+        return { ok: false, status: 429, text: async () => '{"error":{"code":"1305"}}' };
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "解析成功" } }] }) };
+    }));
+    const describeImages = createVisionBridge(
+      () => new Uint8Array([1]),
+      async (ms) => { slept.push(ms); }
+    );
+    await expect(describeImages([ref], "看图")).resolves.toBe("解析成功");
+    expect(calls).toBe(3);
+    expect(slept).toEqual([1500, 4000]);
+  });
+
+  it("持续 429 → 重试耗尽后抛原始错误", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 429, text: async () => '{"error":{"code":"1305","message":"访问量过大"}}',
+    })));
+    const describeImages = createVisionBridge(() => new Uint8Array([1]), async () => {});
+    await expect(describeImages([ref], "看图")).rejects.toThrow(/429/);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("非 429(如 401 无 key)不重试,一击即抛", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 401, text: async () => "unauthorized",
+    })));
+    const describeImages = createVisionBridge(() => new Uint8Array([1]), async () => {});
+    await expect(describeImages([ref], "看图")).rejects.toThrow(/401/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

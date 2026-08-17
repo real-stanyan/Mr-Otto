@@ -10,9 +10,17 @@ import type { UserAttachmentRef } from "../session/events.js";
 /** 代读员型号:目录里的免费视觉款。换代读员改这一行 */
 export const VISION_BRIDGE_MODEL = "glm-4.6v-flash";
 
+/** 429 重试节奏(ms)。免费档高峰限流是瞬态错(智谱 code 1305「访问量过大」),
+    退避两次再放弃——放弃后照旧 turn 失败,用户看得到原始错误 */
+const RETRY_DELAYS_MS = [1500, 4000];
+
 /** 组装根注入附件读取器,返回代读函数。
-    userText 一并交给视觉模型——带着问题读图,解析才有针对性,不是干巴巴 OCR */
-export function createVisionBridge(readAttachment: (id: string) => Uint8Array) {
+    userText 一并交给视觉模型——带着问题读图,解析才有针对性,不是干巴巴 OCR。
+    sleep 可注入(测试不真等) */
+export function createVisionBridge(
+  readAttachment: (id: string) => Uint8Array,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+) {
   return async function describeImages(
     refs: UserAttachmentRef[],
     userText: string
@@ -27,12 +35,12 @@ export function createVisionBridge(readAttachment: (id: string) => Uint8Array) {
       readAttachment,
     });
     // 非流式、不带工具:代读没有直播价值,结果整段落事件
-    const reply = await adapter.chat([
+    const messages = [
       {
-        role: "user",
+        role: "user" as const,
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text:
               "请逐张仔细解析以下图片(文字内容、版面结构、图表数据、关键细节)。" +
               "解析结果将提供给一个看不到图片的模型,由它回答用户的问题——" +
@@ -41,8 +49,19 @@ export function createVisionBridge(readAttachment: (id: string) => Uint8Array) {
           ...refs.map((r) => ({ type: "image_ref" as const, id: r.id, mediaType: r.mediaType })),
         ],
       },
-    ]);
-    if (!reply.content.trim()) throw new Error("视觉模型没有产出图片解析,turn 已放弃");
-    return reply.content;
+    ];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const reply = await adapter.chat(messages);
+        if (!reply.content.trim()) throw new Error("视觉模型没有产出图片解析,turn 已放弃");
+        return reply.content;
+      } catch (e) {
+        // 只重试 429(免费档高峰限流,瞬态);其他错误(401 无 key/400/断网)重试无意义
+        const msg = e instanceof Error ? e.message : String(e);
+        const delay = RETRY_DELAYS_MS[attempt];
+        if (!/API 429/.test(msg) || delay === undefined) throw e;
+        await sleep(delay);
+      }
+    }
   };
 }
