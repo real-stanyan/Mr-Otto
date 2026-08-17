@@ -151,12 +151,27 @@ describe("装饰器透传 http", () => {
     const base = createLocalWorld({
       fetchImpl: (async (_u: string | URL | Request, init?: RequestInit) => {
         seen.push(init?.signal ?? undefined);
-        return { ok: true, status: 200, json: async () => ({}), text: async () => "" } as Response;
-      }) as typeof fetch,
+        // 让 fetch 在 signal abort 时 reject
+        return new Promise((_res, rej) => {
+          if (init?.signal?.aborted) {
+            rej(new DOMException("Aborted", "AbortError"));
+          } else {
+            init?.signal?.addEventListener("abort", () => {
+              rej(new DOMException("Aborted", "AbortError"));
+            });
+            // Never resolve normally in this test (测试工具场景中 abort 就是目标)
+          }
+        });
+      }) as unknown as typeof fetch,
     });
     const ac = new AbortController();
     const world = withAbortSignal(base, ac.signal);
-    await world.http.postJson("https://x.test/rpc", {});
-    expect(seen[0]).toBeDefined(); // signal 已注入(实现里可能是 AbortSignal.any 的合成信号)
+    const pending = world.http.postJson("https://x.test/rpc", {});
+    ac.abort();
+    // 验证外部中断确实穿透：postJson 因 abort 而 reject，报错含「中断」
+    await expect(pending).rejects.toThrow(/中断/);
+    // 验证 fetchImpl 收到的 signal 确实是中止状态（AbortSignal.any 合成了外部 signal）
+    expect(seen[0]).toBeDefined();
+    expect(seen[0]?.aborted).toBe(true);
   });
 });
