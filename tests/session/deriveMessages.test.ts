@@ -321,3 +321,38 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
     expect((msgs[0] as { content: string }).content).toContain("都干完了");
   });
 });
+
+describe("user_message 附件投影(file-input-v1)", () => {
+  it("带 attachments → content 变 parts:[text, ...image_ref]", () => {
+    const events: SessionEvent[] = [
+      {
+        seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "看看这张图",
+        attachments: [{ id: "sha256:" + "a".repeat(64), mediaType: "image/png", bytes: 10, name: "cat.png" }],
+      },
+    ];
+    const out = deriveMessages(events);
+    expect(out).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看看这张图" },
+          { type: "image_ref", id: "sha256:" + "a".repeat(64), mediaType: "image/png" },
+        ],
+      },
+    ]);
+  });
+
+  it("attachments 空数组 = 无附件,content 保持 string", () => {
+    const events: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "hi", attachments: [] },
+    ];
+    expect(deriveMessages(events)).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("无 attachments 字段投影与从前逐字节一致(老日志回归)", () => {
+    const events: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "老消息" },
+    ];
+    expect(deriveMessages(events)).toEqual([{ role: "user", content: "老消息" }]);
+  });
+});

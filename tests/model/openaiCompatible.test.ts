@@ -131,3 +131,66 @@ describe("openaiCompatible 流式（SSE）", () => {
     expect(seenSignal).toBe(ctrl.signal);
   });
 });
+
+describe("图片附件(image_ref → image_url,file-input-v1)", () => {
+  it("parts 消息转 vision 方言:text 原样,image_ref 变 base64 data URL", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "看到了" } }] }) };
+    }));
+    const adapter = createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      readAttachment: (id) => {
+        expect(id).toBe("sha256:" + "a".repeat(64));
+        return new Uint8Array([1, 2, 3]);
+      },
+    });
+    await adapter.chat([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "这是什么" },
+          { type: "image_ref", id: "sha256:" + "a".repeat(64), mediaType: "image/png" },
+        ],
+      },
+    ]);
+    const sent = JSON.parse(bodies[0]!) as { messages: { content: unknown }[] };
+    expect(sent.messages[0]!.content).toEqual([
+      { type: "text", text: "这是什么" },
+      {
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}` },
+      },
+    ]);
+  });
+
+  it("string content 请求体保持原样(老路径回归)", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_u: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }] }) };
+    }));
+    const adapter = createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m",
+    });
+    await adapter.chat([{ role: "user", content: "纯文本" }]);
+    const sent = JSON.parse(bodies[0]!) as { messages: unknown[] };
+    expect(sent.messages).toEqual([{ role: "user", content: "纯文本" }]);
+  });
+
+  it("未注入 readAttachment 遇 image_ref 抛错(配置缺口早暴露)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const adapter = createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m",
+    });
+    await expect(
+      adapter.chat([
+        { role: "user", content: [{ type: "image_ref", id: "sha256:" + "a".repeat(64), mediaType: "image/png" }] },
+      ])
+    ).rejects.toThrow(/readAttachment|附件/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
