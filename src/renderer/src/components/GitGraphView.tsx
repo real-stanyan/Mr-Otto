@@ -2,7 +2,7 @@
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
 import { useMemo } from "react";
-import { Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
@@ -53,10 +53,21 @@ export function GitGraphView() {
   const panelWide = useChat((s) => s.panelWide);
   const togglePanelWide = useChat((s) => s.togglePanelWide);
 
+  // 当前分支名 = HEAD ref(detached 时 parseRefs 给 "HEAD")。对话中 agent 切/并分支,
+  // tool_result 触发 store 静默重拉,这里跟着新数据自动换
+  const headBranch = gitGraph?.ok
+    ? gitGraph.commits.flatMap((c) => c.refs).find((r) => r.type === "head")?.name ?? null
+    : null;
+
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="font-[650] text-sm">Git Graph</span>
+        {headBranch && (
+          <span className="inline-flex items-center gap-1 shrink-0 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title="当前所在分支">
+            <GitBranch className="w-3 h-3" />{headBranch}
+          </span>
+        )}
         <span className="font-mono text-xs text-muted-foreground truncate">{gitGraphRepo ?? "(无会话工作区)"}</span>
         <span className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
@@ -123,7 +134,8 @@ function GraphRows({ commits, head, selected, onPick }: {
         return (
           <button
             key={c.hash}
-            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : ""}`}
+            // HEAD 行常亮品牌淡底:一眼看到"现在在哪";点选态(bg-accent)优先级更高
+            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : c.hash === head ? "bg-brand/[0.08]" : ""}`}
             style={{ height: ROW_H }}
             onClick={() => onPick(c.hash)}
           >

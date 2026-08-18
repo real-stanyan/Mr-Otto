@@ -116,7 +116,8 @@ interface ChatState {
   /** 打开 Git Graph:目标 = 当前会话 workspace,开门即拉取 */
   openGitGraph(): Promise<void>;
   closeGitGraph(): void;
-  refreshGitGraph(): Promise<void>;
+  /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
+  refreshGitGraph(silent?: boolean): Promise<void>;
   openGitCommit(hash: string): Promise<void>;
   closeGitCommit(): void;
   togglePanelWide(): void;
@@ -147,6 +148,8 @@ interface ChatState {
 }
 
 let bootStarted = false; // StrictMode 会双跑 effect，用模块级闩防重复订阅
+// Git Graph 自动重拉的尾随防抖:一串工具调用(agent 连跑 git checkout/merge)只触发一次刷新
+let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
 
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位 */
 const enterChat = (info: BootInfo) => ({
@@ -336,10 +339,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   closeGitGraph: () => set({ gitGraphOpen: false }),
 
-  async refreshGitGraph() {
+  async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;
     if (!repo) return;
-    set({ gitGraph: null }); // 回加载态,刷新肉眼可见
+    if (!silent) set({ gitGraph: null }); // 回加载态,刷新肉眼可见;静默刷新原图不动,新图到了直接换
     try {
       const result = await window.otter.gitGraphLog(repo);
       if (get().gitGraphRepo === repo) set({ gitGraph: result });
@@ -396,7 +399,13 @@ export const useChat = create<ChatState>((set, get) => ({
     bootStarted = true;
 
     window.otter.onAccountChanged((account) => set({ account }));
-    window.otter.onEvent((e) =>
+    window.otter.onEvent((e) => {
+      // 工具结果落地 = agent 可能动了 git(checkout/merge/commit)。图开着就静默重拉,
+      // 图数据不属于事件日志投影,只能重新问 git——防抖 600ms,连环工具调用只刷尾部一次
+      if (e.type === "tool_result" && get().gitGraphOpen) {
+        clearTimeout(gitGraphAutoRefresh);
+        gitGraphAutoRefresh = setTimeout(() => void get().refreshGitGraph(true), 600);
+      }
       set((s) => {
         // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
         // 这步在分流之前：后台会话的缓冲也要清，不然工具循环里越攒越错
@@ -419,8 +428,8 @@ export const useChat = create<ChatState>((set, get) => ({
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model } : {}),
         };
-      })
-    );
+      });
+    });
     window.otter.onAssistantDelta(({ sessionId, text, kind }) =>
       set((s) => {
         const buf = s.streamingBySession[sessionId] ?? { content: "", reasoning: "" };
