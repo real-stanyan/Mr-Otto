@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { contextUsed, estimateTokens } from "../../src/shared/contextEstimate.js";
+import {
+  contextBreakdown,
+  contextUsed,
+  estimateTokens,
+  estimateToolTokens,
+} from "../../src/shared/contextEstimate.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 let seq = 0;
@@ -109,5 +114,95 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
       { ...env(), type: "user_message", content: "y".repeat(40) },
     ];
     expect(contextUsed(events)).toBe(10);
+  });
+});
+
+describe("contextBreakdown（按来源拆三份）", () => {
+  const tools = [
+    { name: "read_file", description: "读取一个文本文件的完整内容", parameters: { type: "object" } },
+  ];
+
+  it("三段之和 === 总量：对话消息取差额，不与账单双记", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "user_message", content: "问题" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 5000, completionTokens: 200 },
+      },
+    ];
+    const b = contextBreakdown(events, tools);
+    expect(b.total).toBe(5200); // 与 contextUsed 同源
+    expect(b.total).toBe(contextUsed(events));
+    expect(b.system + b.tools + b.messages).toBe(b.total);
+    expect(b.system).toBeGreaterThan(0);
+    expect(b.tools).toBeGreaterThan(0);
+  });
+
+  it("还没有任何账单：系统提示词 + 工具是显式底噪，不会谎报占用 0", () => {
+    const events: SessionEvent[] = [{ ...env(), type: "session_created", workspace: "/w" }];
+    const b = contextBreakdown(events, tools);
+    expect(b.messages).toBe(0);
+    expect(b.total).toBe(b.system + b.tools);
+    expect(b.total).toBeGreaterThan(0);
+    // 圆环（contextUsed）此刻仍读 0——它只认账单口径，底噪由弹窗补
+    expect(contextUsed(events)).toBe(0);
+  });
+
+  it("拿不到工具表：该项 0，其余照常（不瞎猜一个数）", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 100 },
+      },
+    ];
+    const b = contextBreakdown(events);
+    expect(b.tools).toBe(0);
+    expect(b.system + b.messages).toBe(1100);
+  });
+
+  it("老日志没有 workspace：系统提示词 0（投影也不会有那条 system 消息）", () => {
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 800, completionTokens: 50 },
+      },
+    ];
+    const b = contextBreakdown(events, tools);
+    expect(b.system).toBe(0);
+    expect(b.messages).toBe(850 - b.tools);
+  });
+
+  it("固定开销大于账单总量时对话消息钳到 0，三段仍不超总量", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "",
+        model: "m",
+        usage: { promptTokens: 5, completionTokens: 1 },
+      },
+    ];
+    const b = contextBreakdown(events, tools);
+    expect(b.messages).toBe(0);
+    expect(b.total).toBe(6);
+  });
+
+  it("工具估算按发出去的线格式：多一个工具就多一截", () => {
+    expect(estimateToolTokens([])).toBe(0);
+    const one = estimateToolTokens(tools);
+    const two = estimateToolTokens([...tools, { name: "bash", description: "跑命令", parameters: {} }]);
+    expect(two).toBeGreaterThan(one);
   });
 });

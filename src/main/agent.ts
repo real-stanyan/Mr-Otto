@@ -130,18 +130,22 @@ export function createAgent(opts: {
       readAttachment: (id) => opts.attachments.read(id),
     });
 
+  // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,
+  // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码。
+  // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
+  // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
+  const tools: Tool[] = [
+    readFileTool,
+    writeFileTool,
+    bashTool,
+    createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+    createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+  ];
+
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
-    // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,
-    // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码
-    tools: [
-      readFileTool,
-      writeFileTool,
-      bashTool,
-      createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
-      createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
-    ],
+    tools,
     world,
     sessionId,
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
@@ -173,6 +177,8 @@ export function createAgent(opts: {
     approver,
     sessionId,
     workspace: opts.workspace,
+    /** 喂给模型的工具声明（渲染层算上下文占用用；只有 name/description/parameters） */
+    toolDefs: tools.map((t) => t.def),
     switchModel,
     /** 设置页存了新 key 后调：现 adapter 捏的还是旧 key，重建一个 */
     reloadAdapter(): void {

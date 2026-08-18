@@ -21,6 +21,15 @@ export interface SystemChatMessage {
   content: string;
 }
 
+/** 围栏 system 消息的正文——投影(下面)和上下文用量估算(shared/contextEstimate)
+    共用这一处出口:两边不能各写一份文案,不然"系统提示词占多少"就是猜的 */
+export function systemPromptText(workspace: string): string {
+  return (
+    `你是 otter，一个会使用工具的助手。当前工程文件夹：${workspace}\n` +
+    `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。`
+  );
+}
+
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
     解 bytes 是 adapter 的事(注入的 readAttachment) */
 export type UserContentPart =
@@ -227,12 +236,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         // 有 workspace → 投影成 system 消息（模型对工作目录的认知来自日志，不是配置）。
         // 没有（旧日志）→ 照旧丢弃，投影结果与从前逐字节一致。
         if (event.workspace) {
-          systemMessage = {
-            role: "system",
-            content:
-              `你是 otter，一个会使用工具的助手。当前工程文件夹：${event.workspace}\n` +
-              `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。`,
-          };
+          systemMessage = { role: "system", content: systemPromptText(event.workspace) };
           messages.push(systemMessage);
         }
         break;
