@@ -232,42 +232,61 @@ export const useChat = create<ChatState>((set, get) => ({
     // 目标仓库:上次手选的记忆优先,否则跟当前会话的工程文件夹
     const repo = localStorage.getItem("otter-protocol-repo") ?? get().workspace ?? null;
     set({ protocolOpen: true, settingsSection: null, protocolRepo: repo, adrView: null, issueView: null });
-    if (repo) await get().refreshProtocol();
+    if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
   },
 
   closeProtocol: () => set({ protocolOpen: false }),
 
   async pickProtocolRepo() {
-    const dir = await window.otter.pickWorkspace();
-    if (!dir) return; // 用户取消 = 保持现状
-    localStorage.setItem("otter-protocol-repo", dir);
-    set({ protocolRepo: dir, adrView: null, issueView: null });
-    await get().refreshProtocol();
+    try {
+      const dir = await window.otter.pickWorkspace();
+      if (!dir) return; // 用户取消 = 保持现状
+      localStorage.setItem("otter-protocol-repo", dir);
+      set({ protocolRepo: dir, adrView: null, issueView: null });
+      await get().refreshProtocol();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   async refreshProtocol() {
     const repo = get().protocolRepo;
     if (!repo) return;
     set({ issues: null, adrs: [] }); // 回加载态,刷新肉眼可见
-    const [adrs, issues] = await Promise.all([
-      window.otter.protocolListAdrs(repo),
-      window.otter.protocolListIssues(repo),
-    ]);
-    set({ adrs, issues });
+    try {
+      const [adrs, issues] = await Promise.all([
+        window.otter.protocolListAdrs(repo),
+        window.otter.protocolListIssues(repo),
+      ]);
+      // 等待期间用户可能已经切了目标仓库——这批结果对不上当前仓库了,别拿旧数据盖新状态
+      if (get().protocolRepo === repo) set({ adrs, issues });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   async openAdr(path) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    const { markdown } = await window.otter.protocolReadAdr(repo, path);
-    set({ adrView: { path, markdown }, issueView: null });
+    set({ adrView: null }); // 先清,切换 ADR 时不残留上一篇的内容(镜像 openIssue 的做法)
+    try {
+      const { markdown } = await window.otter.protocolReadAdr(repo, path);
+      if (get().protocolRepo === repo) set({ adrView: { path, markdown }, issueView: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   async openIssue(number) {
     const repo = get().protocolRepo;
     if (!repo) return;
     set({ issueView: null });
-    set({ issueView: await window.otter.protocolGetIssue(repo, number), adrView: null });
+    try {
+      const issueView = await window.otter.protocolGetIssue(repo, number);
+      if (get().protocolRepo === repo) set({ issueView, adrView: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   setProtocolTab: (t) => set({ protocolTab: t }),
