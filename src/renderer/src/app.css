@@ -1,6 +1,7 @@
 /* Tailwind v4 入口(ADR-0010/0011)。布局/间距/颜色全部住进 JSX utility;
    这里只留 utility 够不着的:主题变量、生成 DOM 的排版(markdown/hljs)、
-   动态 SVG 状态(replay 画布)、滚动条、keyframes、少量组件类(.btn,Task 3 删)。
+   动态 SVG 状态(replay 画布)、滚动条、keyframes。组件类 .btn 已退役(Task 3):
+   全部换成 shadcn <Button>,自定义 variant 通过 className 叠加。
    双主题:裸变量 :root = light,.dark 覆盖 = dark,@theme inline 映射成 utility。 */
 @import "tailwindcss";
 
@@ -189,36 +190,6 @@
 }
 
 @layer components {
-  /* 默认按钮外衣(原全局 button 样式):透明按钮(ghost/列表项)不用挂 */
-  .btn {
-    background: var(--card);
-    color: var(--card-foreground);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 8px 18px;
-    font-size: 14px;
-    transition:
-      transform 160ms var(--ease-strong),
-      background-color 150ms ease,
-      border-color 150ms ease,
-      color 150ms ease;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--ring);
-  }
-  .btn:active {
-    transform: scale(0.97);
-  }
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .btn:active {
-      transform: none;
-    }
-  }
-
   /* ─── 模型输出的 Markdown 排版(.md 内)───
      react-markdown 生成的 DOM 挂不上 utility,排版只能走后代选择器 */
   .md {

@@ -15,6 +15,15 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
+import { Button } from "@/components/ui/button.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select.js";
+import { Textarea } from "@/components/ui/textarea.js";
 import type {
   SessionEvent,
   ToolCallRequest,
@@ -70,7 +79,7 @@ const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full trunca
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
 const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
-const HEADER_GHOST = "btn shrink-0 bg-transparent px-3 py-1 text-xs text-muted-foreground hover:text-foreground hover:border-foreground";
+const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
 const SETTINGS_BODY =
   "flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-4 w-[min(640px,100%)] mx-auto scrollbar-thin";
 const HINT = "text-muted-foreground text-[13px]";
@@ -78,16 +87,16 @@ const ERR_TXT = "text-err text-[13px]";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
   "bg-background border border-border rounded-lg text-foreground transition-[border-color,box-shadow] duration-150 focus:outline-none focus:border-ring focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]";
-/* 状态条/新会话卡的下拉框(素色,悬停亮边) */
+/* 状态条/新会话卡的下拉框(素色,悬停亮边)——shadcn SelectTrigger 的 className 叠加层 */
 const BAR_SELECT =
-  "bg-transparent text-muted-foreground border border-transparent rounded-md px-1 py-[2px] text-xs font-mono cursor-pointer transition-[color,border-color,background-color] duration-150 hover:text-foreground hover:border-border disabled:opacity-40 disabled:cursor-default";
+  "h-auto w-fit gap-1 bg-transparent text-muted-foreground border-transparent rounded-md px-1 py-[2px] text-xs font-mono shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
 /* bypass 模式常亮警示色——免审状态必须一眼可见 */
 const BYPASS = "text-warn bg-warn/[0.12]";
-/* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px) */
+/* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px)——shadcn SelectTrigger 的 className 叠加层 */
 const NSC_SELECT =
-  "bg-transparent border border-transparent rounded-lg text-muted-foreground text-xs px-[6px] py-[3px] cursor-pointer hover:text-foreground hover:border-border disabled:opacity-40 disabled:cursor-default";
+  "h-auto w-fit gap-1 bg-transparent border-transparent rounded-lg text-muted-foreground text-xs px-[6px] py-[3px] shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
 /* 发送/停止键:控件行里收小一号,和状态条同一量级 */
-const SEND_BTN = "btn px-[14px] py-1 text-[13px] rounded-lg shrink-0";
+const SEND_BTN = "px-[14px] py-1 h-auto text-[13px] rounded-lg shrink-0";
 /* 工作区浮窗列表项 */
 const WS_ITEM =
   "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-foreground text-[13px] cursor-pointer hover:bg-foreground/[0.06] [&>svg]:text-muted-foreground [&>svg]:shrink-0";
@@ -247,53 +256,64 @@ function ComposerBar() {
 
   return (
     <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap text-xs text-muted-foreground pl-[2px]">
-      <select
-        className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
-        value={approvalMode}
-        title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-        onChange={(e) => void setApprovalMode(e.target.value as "ask" | "auto")}
-      >
-        <option value="ask">逐条审批</option>
-        <option value="auto">完全访问</option>
-      </select>
+      <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
+        <SelectTrigger
+          className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
+          title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="ask">逐条审批</SelectItem>
+          <SelectItem value="auto">完全访问</SelectItem>
+        </SelectContent>
+      </Select>
 
-      <button
+      <Button
         type="button"
-        className="border-none bg-transparent text-inherit text-base leading-none px-2 py-[2px] rounded-md enabled:hover:bg-foreground/[0.08] disabled:opacity-40 disabled:cursor-default"
+        variant="ghost"
+        size="icon"
+        className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
         title="添加文件(图片/文本)"
         disabled={status === "running"}
         onClick={() => void useChat.getState().pickFiles()}
       >
         ＋
-      </button>
+      </Button>
 
       <span className="flex-1" />
 
-      <select
-        className={BAR_SELECT}
-        value={model}
-        disabled={status === "running"}
-        onChange={(e) => void switchModel(e.target.value)}
-      >
-        {MODEL_CATALOG.map((m) => (
-          <option key={m.model} value={m.model}>
-            {m.label}
-          </option>
-        ))}
-        {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
-        {!findModel(model) && <option value={model}>{model}</option>}
-      </select>
+      <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
+        <SelectTrigger className={BAR_SELECT}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {MODEL_CATALOG.map((m) => (
+            <SelectItem key={m.model} value={m.model}>
+              {m.label}
+            </SelectItem>
+          ))}
+          {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
+          {!findModel(model) && <SelectItem value={model}>{model}</SelectItem>}
+        </SelectContent>
+      </Select>
 
-      <select
-        className={BAR_SELECT}
+      <Select
         value={thinking ? "on" : "off"}
+        onValueChange={(v) => void setThinking(v === "on")}
         disabled={status === "running" || !choice?.supportsThinking}
-        title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-        onChange={(e) => void setThinking(e.target.value === "on")}
       >
-        <option value="on">Thinking 开</option>
-        <option value="off">Thinking 关</option>
-      </select>
+        <SelectTrigger
+          className={BAR_SELECT}
+          title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="on">Thinking 开</SelectItem>
+          <SelectItem value="off">Thinking 关</SelectItem>
+        </SelectContent>
+      </Select>
 
       <span className="relative inline-flex items-center">
         <button
@@ -671,12 +691,19 @@ function ApprovalCard() {
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
-        <button className="btn bg-transparent text-deny border-deny" onClick={() => void decide("denied", reason.trim() || undefined)}>
+        <Button
+          variant="outline"
+          className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => void decide("denied", reason.trim() || undefined)}
+        >
           拒绝
-        </button>
-        <button className="btn bg-ok border-ok text-white" onClick={() => void decide("approved")}>
+        </Button>
+        <Button
+          className="bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
+          onClick={() => void decide("approved")}
+        >
           批准
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -714,13 +741,17 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
             if (e.key === "Enter") void save();
           }}
         />
-        <button className="btn" disabled={!draft.trim()} onClick={() => void save()}>
+        <Button variant="outline" disabled={!draft.trim()} onClick={() => void save()}>
           保存
-        </button>
+        </Button>
         {configured && (
-          <button className="btn bg-transparent text-deny border-deny" onClick={() => void saveApiKey(envName, "")}>
+          <Button
+            variant="outline"
+            className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => void saveApiKey(envName, "")}
+          >
             清除
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -753,9 +784,9 @@ function AccountPage() {
     <main className={MAIN_COL}>
       <header className={HEADER}>
         <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
-        <button className={HEADER_GHOST} onClick={closeSettings}>
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
-        </button>
+        </Button>
       </header>
       <section className={SETTINGS_BODY}>
         {account.signedIn ? (
@@ -763,19 +794,15 @@ function AccountPage() {
             <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
             <span className="font-[650]">{account.name}</span>
             <span className={HINT}>{account.email}</span>
-            <button className="btn" onClick={() => void signOut()}>
+            <Button variant="outline" onClick={() => void signOut()}>
               退出登录
-            </button>
+            </Button>
           </div>
         ) : (
           <>
             <div className="flex items-center gap-[10px]">
-              <button className="btn" onClick={() => void signIn("google")}>
-                用 Google 登录
-              </button>
-              <button className="btn" onClick={() => void signIn("github")}>
-                用 GitHub 登录
-              </button>
+              <Button onClick={() => void signIn("google")}>用 Google 登录</Button>
+              <Button onClick={() => void signIn("github")}>用 GitHub 登录</Button>
             </div>
             <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
           </>
@@ -799,26 +826,30 @@ function KeysPage() {
     <main className={MAIN_COL}>
       <header className={HEADER}>
         <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
-        <button className={HEADER_GHOST} onClick={closeSettings}>
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
-        </button>
+        </Button>
       </header>
       <section className={SETTINGS_BODY}>
         <label className="flex items-center justify-between gap-3 text-[13px]">
           <span className="text-muted-foreground">外观</span>
-          <select
-            className={`${FOCUS_INPUT} px-[10px] py-[6px] text-[13px]`}
+          <Select
             value={themePref}
-            onChange={(e) => {
-              const p = e.target.value as ThemePref;
+            onValueChange={(v) => {
+              const p = v as ThemePref;
               themeController().setPref(p);
               setThemePref(p);
             }}
           >
-            <option value="system">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
+            <SelectTrigger className="px-[10px] py-[6px] text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">跟随系统</SelectItem>
+              <SelectItem value="light">浅色</SelectItem>
+              <SelectItem value="dark">深色</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         <p className={HINT}>
           key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
@@ -843,9 +874,9 @@ function SkillsPage() {
     <main className={MAIN_COL}>
       <header className={HEADER}>
         <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
-        <button className={HEADER_GHOST} onClick={closeSettings}>
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
-        </button>
+        </Button>
       </header>
       <section className={SETTINGS_BODY}>
         <p className={HINT}>
@@ -911,9 +942,13 @@ function Sidebar() {
       {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
           设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
       {settingsSection === null && (
-        <button className="btn mx-3 mb-[10px] px-3 py-[7px] text-[13px]" onClick={newSession}>
+        <Button
+          variant="ghost"
+          className="mx-3 mb-[10px] justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+          onClick={newSession}
+        >
           ＋ 新会话
-        </button>
+        </Button>
       )}
       {settingsSection !== null ? (
         // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
@@ -1221,8 +1256,8 @@ function Welcome() {
             </span>
           )}
         </div>
-        <textarea
-          className="bg-transparent resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] field-sizing-content px-1 py-[2px] focus:outline-none placeholder:text-muted-foreground"
+        <Textarea
+          className="border-none shadow-none resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] px-1 py-[2px] focus-visible:ring-0"
           autoFocus
           rows={2}
           placeholder="向 Mr Otto 描述任务，回车发送"
@@ -1237,42 +1272,52 @@ function Welcome() {
           }}
         />
         <div className="flex items-center gap-2">
-          <select
-            className={NSC_SELECT + (mode === "auto" ? " " + BYPASS : "")}
-            value={mode}
-            title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-            onChange={(e) => setMode(e.target.value as "ask" | "auto")}
-          >
-            <option value="ask">逐条审批</option>
-            <option value="auto">完全访问</option>
-          </select>
+          <Select value={mode} onValueChange={(v) => setMode(v as "ask" | "auto")}>
+            <SelectTrigger
+              className={NSC_SELECT + (mode === "auto" ? " " + BYPASS : "")}
+              title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ask">逐条审批</SelectItem>
+              <SelectItem value="auto">完全访问</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="flex-1" />
-          <select className={NSC_SELECT} value={model} onChange={(e) => setModel(e.target.value)}>
-            {MODEL_CATALOG.map((m) => (
-              <option key={m.model} value={m.model}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-          <select
-            className={NSC_SELECT}
-            value={thinking ? "on" : "off"}
-            disabled={!choice?.supportsThinking}
-            title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-            onChange={(e) => setThinking(e.target.value === "on")}
-          >
-            <option value="on">Thinking 开</option>
-            <option value="off">Thinking 关</option>
-          </select>
-          <button
-            className="btn w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0 enabled:bg-primary enabled:border-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 enabled:hover:border-primary/85"
+          <Select value={model} onValueChange={(v) => setModel(v)}>
+            <SelectTrigger className={NSC_SELECT}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MODEL_CATALOG.map((m) => (
+                <SelectItem key={m.model} value={m.model}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={thinking ? "on" : "off"} onValueChange={(v) => setThinking(v === "on")} disabled={!choice?.supportsThinking}>
+            <SelectTrigger
+              className={NSC_SELECT}
+              title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="on">Thinking 开</SelectItem>
+              <SelectItem value="off">Thinking 关</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
             disabled={!workspace || busy}
             title={workspace ? "开始会话" : "先选工程文件夹"}
             aria-label="开始会话"
             onClick={() => void launch()}
           >
             ↑
-          </button>
+          </Button>
         </div>
       </div>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
@@ -1387,9 +1432,14 @@ export function App() {
         <span className="text-muted-foreground text-xs font-mono flex-1 min-w-0 truncate" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
         </span>
-        <button className={HEADER_GHOST} onClick={() => setReplayCursor(replaying ? null : 0)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={HEADER_GHOST}
+          onClick={() => setReplayCursor(replaying ? null : 0)}
+        >
           {replaying ? "回到直播" : "回放"}
-        </button>
+        </Button>
       </header>
 
       {replaying ? (
@@ -1507,8 +1557,8 @@ export function App() {
               )}
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
-              <textarea
-                className="bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none field-sizing-content max-h-[40vh] focus:outline-none placeholder:text-muted-foreground"
+              <Textarea
+                className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
                 autoFocus
                 rows={1}
                 placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
@@ -1552,21 +1602,18 @@ export function App() {
                 {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
                     停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
                 {status === "running" ? (
-                  <button
-                    className={`${SEND_BTN} bg-transparent border-err text-err hover:bg-err/[0.12]`}
+                  <Button
+                    variant="outline"
+                    className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] hover:text-err`}
                     title="停止 turn（Esc）"
                     onClick={() => void stop()}
                   >
                     停止
-                  </button>
+                  </Button>
                 ) : (
-                  <button
-                    className={`${SEND_BTN} enabled:bg-primary enabled:border-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 enabled:hover:border-primary/85`}
-                    onClick={submit}
-                    disabled={!input.trim()}
-                  >
+                  <Button className={SEND_BTN} onClick={submit} disabled={!input.trim()}>
                     发送
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>

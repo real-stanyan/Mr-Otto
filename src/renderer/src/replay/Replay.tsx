@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "../store.js";
 import { toStep, hl, type ReplayStep } from "./steps.js";
 import { Canvas } from "./Canvas.js";
+import { Button } from "@/components/ui/button.js";
 
 /* 面板小标题统一:小字 + 加字重 + 微加字距(小字号要正字距才清楚) */
 const PANEL_H3 = "text-[11px] text-muted-foreground font-semibold tracking-[0.05em] mb-2 tabular-nums";
@@ -160,9 +161,9 @@ export function Replay() {
       </div>
       <aside className="[grid-area:side] min-h-0 flex flex-col gap-[10px]">
         <div className="flex gap-[6px] items-center">
-          <button className="btn px-[14px] py-[6px] text-[13px]" onClick={() => goto(cur - 1)}>◀</button>
-          <button
-            className="btn px-[14px] py-[6px] text-[13px] bg-ok border-ok text-white"
+          <Button variant="outline" className="px-[14px] py-[6px] h-auto text-[13px]" onClick={() => goto(cur - 1)}>◀</Button>
+          <Button
+            className="px-[14px] py-[6px] h-auto text-[13px] bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
             onClick={() => {
               if (playing) return setPlaying(false);
               if (cur >= steps.length - 1) setReplayCursor(0);
@@ -170,8 +171,8 @@ export function Replay() {
             }}
           >
             {playing ? "⏸ 暂停" : "▶ 播放"}
-          </button>
-          <button className="btn px-[14px] py-[6px] text-[13px]" onClick={() => goto(cur + 1)}>▶</button>
+          </Button>
+          <Button variant="outline" className="px-[14px] py-[6px] h-auto text-[13px]" onClick={() => goto(cur + 1)}>▶</Button>
           {/* 位置计数:等宽数字,走完 27 步数字不跳宽 */}
           <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">
             {cur + 1} / {steps.length}
