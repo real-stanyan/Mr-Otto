@@ -348,7 +348,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       const aborted = e.outcome === "aborted";
       S.badge = S.deny ? "turn 暴死" : aborted ? "turn 中断" : "turn 落幕";
       S.desc = S.deny
-        ? "turn 中途炸了（API 报错 / MAX_STEPS 超限…）。此前错误只走 IPC reject——" +
+        ? "turn 中途炸了（API 报错 / 工具抛错…）。此前错误只走 IPC reject——" +
           "只存在于一帧屏幕上的\"平行真相\"。现在错误是日志事实，重开 app 还在；" +
           "错误照旧向上抛，落盘是补记事实不是吞错（ADR-0004）。"
         : aborted
@@ -363,7 +363,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
         ? `runTurn 的 catch 接住异常：\n"${clip(e.error ?? "", 100)}"`
         : aborted
           ? "abortTurn() 翻转信号 → 卡住处抛 AbortError → runTurn 的 catch 认出它"
-          : "loop() 正常返回（模型不再要工具）";
+          : "loop() 正常返回（模型不再要工具，或工具声明 concludesTurn）";
       S.fns = [
         fn(
           S.deny || aborted ? "runTurn 的 catch" : "runTurn 的 try 收尾",
