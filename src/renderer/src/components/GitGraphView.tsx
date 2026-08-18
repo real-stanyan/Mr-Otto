@@ -1,12 +1,13 @@
 // Git Graph(只读)— 泳道图 + commit 详情。数据全从 store 取,零 IPC 纯投影。
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
-import { useMemo } from "react";
-import { Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
 import { assignLanes, type GitRef, type RawCommit } from "../../../shared/gitGraph.js";
+import { nearBottom, visibleRange } from "../../../shared/virtualWindow.js";
 
 const ROW_H = 28;
 const LANE_W = 14;
@@ -52,11 +53,47 @@ export function GitGraphView() {
   const closeGitCommit = useChat((s) => s.closeGitCommit);
   const panelWide = useChat((s) => s.panelWide);
   const togglePanelWide = useChat((s) => s.togglePanelWide);
+  const loadMoreGitGraph = useChat((s) => s.loadMoreGitGraph);
+  const gitGraphAtEnd = useChat((s) => s.gitGraphAtEnd);
+  const gitGraphLoadingMore = useChat((s) => s.gitGraphLoadingMore);
+
+  // 虚拟滚动:量出滚动容器的位置/高度,只画看得见的那几行(几千行时 DOM 才不炸)
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+
+  // 半屏/全屏切换、窗口缩放都会改视口高:量一次不够,得跟着变
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
+    ro.observe(el);
+    setViewportH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    setScrollTop(el.scrollTop);
+    // 滚近底部就去要下一页;到底/在拉时 store 侧是空操作,这里不重复判断
+    if (nearBottom(el.scrollTop, el.clientHeight, el.scrollHeight)) void loadMoreGitGraph();
+  };
+
+  // 当前分支名 = HEAD ref(detached 时 parseRefs 给 "HEAD")。对话中 agent 切/并分支,
+  // tool_result 触发 store 静默重拉,这里跟着新数据自动换
+  const headBranch = gitGraph?.ok
+    ? gitGraph.commits.flatMap((c) => c.refs).find((r) => r.type === "head")?.name ?? null
+    : null;
 
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="font-[650] text-sm">Git Graph</span>
+        <span className="shrink-0 whitespace-nowrap font-[650] text-sm">Git Graph</span>
+        {headBranch && (
+          <span className="inline-flex items-center gap-1 shrink-0 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title="当前所在分支">
+            <GitBranch className="w-3 h-3" />{headBranch}
+          </span>
+        )}
         <span className="font-mono text-xs text-muted-foreground truncate">{gitGraphRepo ?? "(无会话工作区)"}</span>
         <span className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
@@ -73,7 +110,11 @@ export function GitGraphView() {
 
       <div className="flex-1 min-h-0 flex">
         {/* 只竖滚:泳道 SVG 定宽 + 主题行 truncate,横向内容截断不出滚动条 */}
-        <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
+        <div
+          ref={scrollRef}
+          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden"
+          onScroll={onScroll}
+        >
           {gitGraph === null ? (
             <div className="grid gap-2 p-4">
               <Skeleton className="h-6" /><Skeleton className="h-6" /><Skeleton className="h-6" />
@@ -86,12 +127,21 @@ export function GitGraphView() {
           ) : gitGraph.commits.length === 0 ? (
             <p className="px-4 py-6 text-sm text-muted-foreground">还没有 commit。</p>
           ) : (
-            <GraphRows
-              commits={gitGraph.commits}
-              head={gitGraph.head}
-              selected={gitCommitView?.hash ?? null}
-              onPick={(h) => (gitCommitView?.hash === h ? closeGitCommit() : void openGitCommit(h))}
-            />
+            <>
+              <GraphRows
+                commits={gitGraph.commits}
+                head={gitGraph.head}
+                spineBranch={gitGraph.spineBranch}
+                selected={gitCommitView?.hash ?? null}
+                scrollTop={scrollTop}
+                viewportH={viewportH}
+                onPick={(h) => (gitCommitView?.hash === h ? closeGitCommit() : void openGitCommit(h))}
+              />
+              {/* 列表脚:加载中/到底了都说一声,别让人对着停住的滚动条猜 */}
+              <p className="px-4 py-3 text-center text-xs text-muted-foreground">
+                {gitGraphLoadingMore ? "加载更多…" : gitGraphAtEnd ? `到头了 · 共 ${gitGraph.commits.length} 条` : "继续下滑加载更多"}
+              </p>
+            </>
           )}
         </div>
 
@@ -105,26 +155,37 @@ export function GitGraphView() {
   );
 }
 
-function GraphRows({ commits, head, selected, onPick }: {
+function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH, onPick }: {
   commits: RawCommit[];
   head: string | null;
+  /** 钉在 0 道的主干分支名（null = 不预留,泳道全靠回收） */
+  spineBranch: string | null;
   selected: string | null;
+  /** 滚动容器量出来的位置/高度:决定这一帧画哪几行 */
+  scrollTop: number;
+  viewportH: number;
   onPick: (hash: string) => void;
 }) {
-  // 直播流每 token 触发 store set,不 memo 会按流频率重算 300 行泳道
-  const rows = useMemo(() => assignLanes(commits), [commits]);
+  // 直播流每 token 触发 store set,不 memo 会按流频率重算泳道。
+  // 泳道对「已加载的全量」算(每行的道依赖它前面所有行),窗口只裁渲染,不裁计算
+  const rows = useMemo(() => assignLanes(commits, spineBranch), [commits, spineBranch]);
   const maxLane = Math.max(...rows.map((r) => Math.max(r.lane, ...r.edges.map((e) => Math.max(e.fromLane, e.toLane)))));
   const svgW = (maxLane + 1) * LANE_W;
+  const { first, last } = visibleRange(scrollTop, viewportH, ROW_H, commits.length);
 
   return (
-    <div>
-      {commits.map((c, i) => {
+    // 外层撑满全高(滚动条长度诚实反映总量),行绝对定位到自己的 y——
+    // 只有窗口内的行进 DOM
+    <div className="relative" style={{ height: commits.length * ROW_H }}>
+      {commits.slice(first, last).map((c, k) => {
+        const i = first + k;
         const row = rows[i]!; // assignLanes 逐 commit 生成一行,长度与 commits 严格一致
         return (
           <button
             key={c.hash}
-            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : ""}`}
-            style={{ height: ROW_H }}
+            // HEAD 行常亮:品牌底 + 左缘 3px 指示条(inset shadow,不占布局不歪泳道);点选态(bg-accent)优先级更高
+            className={`absolute inset-x-0 flex items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : c.hash === head ? "bg-brand/[0.16] shadow-[inset_3px_0_0_0_var(--brand)]" : ""}`}
+            style={{ height: ROW_H, top: i * ROW_H }}
             onClick={() => onPick(c.hash)}
           >
             {/* overflow visible:行间连线要越过本行边界画到下一行中心 */}

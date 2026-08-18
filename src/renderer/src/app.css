@@ -41,7 +41,9 @@
   --md-strong: #000000;
   --md-em: #333333;
   --md-quote: #4a4a44;
-  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.38);
+  --scrollbar-thumb-active: rgba(0, 0, 0, 0.52);
   --hljs-keyword: #8250df;
   --hljs-string: #0a3069;
   --hljs-number: #953800;
@@ -112,7 +114,9 @@
   --md-strong: #ffffff;
   --md-em: #d8d8dc;
   --md-quote: #b8b8bc;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+  --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
   --hljs-keyword: #c792ea;
   --hljs-string: #a5d6a7;
   --hljs-number: #f7b26b;
@@ -537,33 +541,48 @@
   }
 }
 
-/* 内部滚动区的滚动条统一压细压暗,别抢内容的戏 */
-@utility scrollbar-thin {
-  &::-webkit-scrollbar {
-    width: 8px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 4px;
-    background-clip: padding-box;
-    border: 2px solid transparent;
-  }
-  &::-webkit-scrollbar-track {
-    background: transparent;
+/* ─── 滚动条:macOS 细条手感,全局一份(不再逐处挂 class)───
+   静止一根淡细条(在的,但不抢戏);指到条上加宽加深、按住最深——直接操作的抓握提示。
+   轨道恒定 11px,粗细变化只吃透明边不改轨道宽,永不引起内容回流。
+   两个 Chromium 事实决定了这个写法:
+   ① 一旦设 scrollbar-width/scrollbar-color,::-webkit-* 全失效 → 只用 ::-webkit-*
+   ② 容器 :hover 不会触发自定义滚动条重绘 → "静止全透明、进区才显形"做不到,
+      只有滚动条自身的 :hover/:active 可靠,所以静止态必须自带可见度 */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* 透明边 + background-clip:条实际只有 5px 宽,两侧留呼吸位 */
+  background-color: var(--scrollbar-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+/* 指到条上:5px→7px 变宽变深,像 macOS 那样"迎上来" */
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+  border-width: 2px;
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+  border-width: 2px;
+}
+/* 高对比度偏好:静止态直接上深色 */
+@media (prefers-contrast: more) {
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb-hover);
   }
 }
-/* 横向版(回放函数轨迹流水线) */
-@utility scrollbar-thin-x {
-  &::-webkit-scrollbar {
-    height: 6px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 3px;
-  }
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
+
+/* 内容会动态增长的区域(会话时间线):gutter 常驻,
+   流式输出跨过一屏时不会因滚动条突然出现而把整段文字挤窄一次 */
+@utility scrollbar-stable {
+  scrollbar-gutter: stable;
 }
 
 /* 侧栏收起后的全局重开钮:从侧栏消失的左缘滑入(空间一致性——从哪走的从哪回来)。

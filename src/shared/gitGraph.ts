@@ -31,12 +31,47 @@ export interface CommitDetail {
 export type GitErrorKind = "git-missing" | "no-repo" | "git-error";
 
 export type GitLogResult =
-  | { ok: true; head: string | null; commits: RawCommit[] }
+  | { ok: true; head: string | null; commits: RawCommit[]; spineBranch: string | null }
   | { ok: false; kind: GitErrorKind; detail: string };
 
 export type GitCommitResult =
   | { ok: true; detail: CommitDetail }
   | { ok: false; kind: GitErrorKind; detail: string };
+
+/** 本地分支一条:current = HEAD 当前所在(detached 时全 false) */
+export interface BranchInfo { name: string; current: boolean }
+
+export type GitBranchesResult =
+  | { ok: true; current: string | null; branches: BranchInfo[] }
+  | { ok: false; kind: GitErrorKind; detail: string };
+
+/** checkout 特有失败:dirty = 工作区有未提交改动挡路(可行动的降级,不是 git-error) */
+export type GitCheckoutResult =
+  | { ok: true; branch: string }
+  | { ok: false; kind: GitErrorKind | "dirty"; detail: string };
+
+/** 分支名验形:进 execFile 参数表前挡住 `-` 开头(会被 git 当选项)与空白/控制字符。
+    参数是数组传的、不过 shell,所以这里防的是选项注入,不是命令注入 */
+export function isValidBranchName(name: string): boolean {
+  if (name === "" || name.length > 255) return false;
+  if (name.startsWith("-")) return false;
+  // git 自身禁止的字符集(check-ref-format 的子集,够挡住实际能打出来的坏名字)
+  return !/[\s~^:?*[\\]|\.\.|@\{/.test(name);
+}
+
+/** `git branch --format=%(HEAD)%00%(refname:short)` 输出 → BranchInfo[]。
+    %(HEAD) 在当前分支是 "*",其余是空格 */
+export function parseBranchList(stdout: string): BranchInfo[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .flatMap((line): BranchInfo[] => {
+      const [flag, name] = line.split("\x00");
+      if (name === undefined || name === "") return []; // 格式错的行跳过,不猜
+      return [{ name, current: flag === "*" }];
+    });
+}
 
 /** %D 解码:"HEAD -> main, origin/main, tag: v1" → 结构化 ref 列表 */
 export function parseRefs(decorate: string): GitRef[] {
@@ -94,28 +129,75 @@ export function parseNumstat(stdout: string): FileStat[] {
 }
 
 /**
+ * 主脊分支 = 该钉在 0 道的那根。origin/HEAD 指的最准(remoteHead,调用方已剥掉
+ * "origin/" 前缀);拿不到就退 main / master / 当前 HEAD 分支。
+ * 一个都不认得就返回 null——不预留道,不硬猜。
+ */
+export function pickSpineBranch(commits: RawCommit[], remoteHead: string | null): string | null {
+  const names = new Set<string>();
+  let headName: string | null = null;
+  for (const c of commits) {
+    for (const r of c.refs) {
+      if (r.type === "branch") names.add(r.name);
+      // detached HEAD 的 ref 名就是字面量 "HEAD",不是分支,不能当主脊
+      else if (r.type === "head" && r.name !== "HEAD") {
+        names.add(r.name);
+        headName ??= r.name;
+      }
+    }
+  }
+  if (remoteHead && names.has(remoteHead)) return remoteHead;
+  if (names.has("main")) return "main";
+  if (names.has("master")) return "master";
+  return headName;
+}
+
+/**
  * 泳道分配:输入 topo 序 commit(子在前父在后),输出每行落点 + 行间线段。
  * 活动泳道表 active[j] = 泳道 j 在等的父 hash;origin[j] = 该道的线当前行的横向位置
  * (刚从 dot 分出来的道,线起点在 dot 所在道,下一行才归位)。
  * 规则:等它的道里最左落座,其余收拢;没人等就开道(优先复用空道);
  * 第一父续占本道,其余父已有道在等就并入、否则开新道。
+ *
+ * spineBranch 给了且在窗口里找得到它的 tip 时,0 道整条留给主干:主干 tip 强制落 0,
+ * 其一父链自然续占,其余线分道时跳过 0(ADR-0015)。主干 tip 之前的几行 0 道空着——
+ * 那是"主干不在这几行"的事实,不是排版空洞。找不到该分支就不预留,免得白留一列。
  */
-export function assignLanes(commits: RawCommit[]): GraphRow[] {
+export function assignLanes(commits: RawCommit[], spineBranch?: string | null): GraphRow[] {
   const active: (string | null)[] = [];
   const origin: number[] = [];
   const rows: GraphRow[] = [];
+
+  const spineTip = spineBranch
+    ? commits.find((c) =>
+        c.refs.some((r) => r.name === spineBranch && (r.type === "head" || r.type === "branch"))
+      )?.hash ?? null
+    : null;
+  // 预留位数:1 = 0 道归主干,别人从 1 开始分
+  const reserved = spineTip === null ? 0 : 1;
+  if (reserved === 1) { active.push(null); origin.push(0); }
+
+  /** 取一条可用道(跳过预留位);没有空道就开新道 */
+  const alloc = (): number => {
+    for (let j = reserved; j < active.length; j++) {
+      if (active[j] === null) return j;
+    }
+    active.push(null);
+    origin.push(active.length - 1);
+    return active.length - 1;
+  };
 
   for (const c of commits) {
     const waiting: number[] = [];
     active.forEach((h, j) => { if (h === c.hash) waiting.push(j); });
 
     let lane: number;
-    if (waiting.length > 0) {
+    if (c.hash === spineTip) {
+      lane = 0; // 主干 tip 压过"最左等待道":哪怕别的线先等到它,也把它拽回主脊
+    } else if (waiting.length > 0) {
       lane = waiting[0]!; // waiting 不空,索引 0 必存在
     } else {
-      const free = active.indexOf(null);
-      if (free !== -1) lane = free;
-      else { lane = active.length; active.push(null); origin.push(lane); }
+      lane = alloc();
     }
 
     // 上一行 → 本行的线段:每条活线一段;等本 commit 的弯进 lane,其余直落自己道
@@ -146,9 +228,9 @@ export function assignLanes(commits: RawCommit[]): GraphRow[] {
           // 已有道在等这个父:merge 线从 dot 直接并过去,本行就画
           row.edges.push({ fromLane: lane, toLane: existing });
         } else {
-          let t = active.indexOf(null);
-          if (t === -1) { t = active.length; active.push(p); origin.push(lane); }
-          else { active[t] = p; origin[t] = lane; }
+          const t = alloc();
+          active[t] = p;
+          origin[t] = lane; // 新道的线这一行还在 dot 上,下一行才归位
         }
       }
     }
