@@ -9,7 +9,6 @@ import { RefreshCw, FolderOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { Separator } from "@/components/ui/separator.js";
-import { SidebarTrigger } from "@/components/ui/sidebar.js";
 import { useChat } from "../store.js";
 import { parseHandoff, type IssueRole, type IssuesResult } from "../../../shared/protocol.js";
 
@@ -81,17 +80,11 @@ export function ProtocolView() {
 
   if (!protocolRepo) {
     return (
-      <main className="flex-1 min-w-0 flex flex-col">
-        {/* 空态也要能开关侧栏——offcanvas 收起后这是唯一出口 */}
-        <header className="flex items-center gap-2 px-4 py-2">
-          <SidebarTrigger />
-        </header>
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-          <p>还没有目标仓库——选一个含 docs/adr 或连着 GitHub 的文件夹。</p>
-          <Button onClick={() => void pickProtocolRepo()}>
-            <FolderOpen /> 选择仓库
-          </Button>
-        </div>
+      <main className="flex-1 min-w-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+        <p>还没有目标仓库——选一个含 docs/adr 或连着 GitHub 的文件夹。</p>
+        <Button onClick={() => void pickProtocolRepo()}>
+          <FolderOpen /> 选择仓库
+        </Button>
       </main>
     );
   }
@@ -100,7 +93,6 @@ export function ProtocolView() {
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部:仓库路径 + 换目录/刷新/关闭 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <SidebarTrigger />
         <span className="font-mono text-xs text-muted-foreground truncate">{protocolRepo}</span>
         <span className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => void pickProtocolRepo()} title="换目标仓库">

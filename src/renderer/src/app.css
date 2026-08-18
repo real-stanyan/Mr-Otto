@@ -565,3 +565,23 @@
     background: transparent;
   }
 }
+
+/* 侧栏收起后的全局重开钮:从侧栏消失的左缘滑入(空间一致性——从哪走的从哪回来)。
+   ease-out 起步快 = 即时反馈;reduced-motion 降为纯淡入,去位移 */
+.collapsed-nub {
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 200ms var(--ease-strong),
+    transform 200ms var(--ease-strong);
+  @starting-style {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsed-nub {
+    transform: none;
+    transition: opacity 200ms ease;
+  }
+}

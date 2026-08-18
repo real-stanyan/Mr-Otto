@@ -44,6 +44,7 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar.js";
 import type {
   SessionEvent,
@@ -90,6 +91,19 @@ const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
 const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
+
+/** 侧栏收起后的全局重开钮（壳层渲染,所有视图自动覆盖——welcome 曾漏配触发钮把人困死）:
+    侧栏从左缘消失,重开的把手就出现在左缘同侧(空间一致性);展开态不渲染——
+    关闭入口在侧栏头部,一个功能一个控件,不随视图漂移。悬浮半透明底 = 内容之上的功能层 */
+function CollapsedSidebarNub() {
+  const { state } = useSidebar();
+  if (state !== "collapsed") return null;
+  return (
+    <div className="collapsed-nub absolute top-[9px] left-2 z-40 rounded-md bg-background/75 backdrop-blur-sm border border-border shadow-sm">
+      <SidebarTrigger />
+    </div>
+  );
+}
 const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
 const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
 const SETTINGS_BODY =
@@ -799,7 +813,6 @@ function AccountPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -842,7 +855,6 @@ function KeysPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -891,7 +903,6 @@ function SkillsPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1477,7 +1488,6 @@ export function App() {
   ) : (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">
           <img className="w-[18px] h-[18px] rounded-[5px]" src={ottoLogo} alt="" />
           Mr Otto
@@ -1698,7 +1708,10 @@ export function App() {
     <SidebarProvider className="h-screen">
       <TooltipProvider delayDuration={400}>
         <AppSidebar />
-        <SidebarInset>{main}</SidebarInset>
+        <SidebarInset className="relative">
+          <CollapsedSidebarNub />
+          {main}
+        </SidebarInset>
       </TooltipProvider>
     </SidebarProvider>
   );
