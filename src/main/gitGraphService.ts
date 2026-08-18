@@ -40,8 +40,21 @@ const SHOW_FORMAT = "%H%x00%an%x00%ae%x00%at%x00%B";
 /** 分支列表格式:%(HEAD) 是 "*"/空格,%(refname:short) 是短名(shared/parseBranchList 的约定) */
 const BRANCH_FORMAT = "%(HEAD)%00%(refname:short)";
 
+/** 首屏条数;滚到底再按这个步长往下要 */
+export const DEFAULT_LOG_LIMIT = 300;
+/** 天花板:渲染层传什么都不许突破。非整数/负数一律回落首屏值,不把脏数字拼进命令行 */
+const MAX_LOG_LIMIT = 5000;
+
+export function clampLogLimit(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_LOG_LIMIT;
+  const i = Math.floor(n);
+  if (i < 1) return DEFAULT_LOG_LIMIT;
+  return Math.min(i, MAX_LOG_LIMIT);
+}
+
 export interface GitGraphService {
-  log(repoDir: string): Promise<GitLogResult>;
+  /** limit 缺省 300;滚到底加载更多时渲染层要更大的窗口(整窗重拉,不分页,见 issue #29) */
+  log(repoDir: string, limit?: number): Promise<GitLogResult>;
   commit(repoDir: string, hash: string): Promise<GitCommitResult>;
   branches(repoDir: string): Promise<GitBranchesResult>;
   /** 唯一的写操作:切分支。只服务"用户显式选分支",不给 agent 用 */
@@ -50,11 +63,11 @@ export interface GitGraphService {
 
 export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphService {
   return {
-    async log(repoDir) {
+    async log(repoDir, limit = DEFAULT_LOG_LIMIT) {
       if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGit(
-          ["log", "--all", "--topo-order", "-n", "300", `--format=${LOG_FORMAT}`],
+          ["log", "--all", "--topo-order", "-n", String(clampLogLimit(limit)), `--format=${LOG_FORMAT}`],
           repoDir
         );
         // HEAD 单独拿:detached/正常都返回 hash;空仓库等失败情形容错为 null

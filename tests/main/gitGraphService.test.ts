@@ -56,6 +56,34 @@ describe("log", () => {
     expect(calls.some((a) => a[0] === "symbolic-ref")).toBe(true);
   });
 
+  /** 抓 log 命令里的 -n 值:limit 透传/钳位都看它 */
+  const logLimitOf = async (limit?: number): Promise<string> => {
+    let n = "";
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        if (args[0] === "log") n = args[args.indexOf("-n") + 1]!;
+        if (args[0] === "rev-parse") return { stdout: "aaa\n" };
+        if (args[0] === "symbolic-ref") throw Object.assign(new Error("fail"), { stderr: "" });
+        return { stdout: LOG_REC };
+      },
+    }));
+    await svc.log("/repo", limit);
+    return n;
+  };
+
+  it("limit 缺省 300,给了就透传", async () => {
+    expect(await logLimitOf()).toBe("300");
+    expect(await logLimitOf(900)).toBe("900");
+  });
+
+  it("limit 钳在天花板内,脏数字回落 300(不把它们拼进命令行)", async () => {
+    expect(await logLimitOf(99999)).toBe("5000");
+    expect(await logLimitOf(0)).toBe("300");
+    expect(await logLimitOf(-5)).toBe("300");
+    expect(await logLimitOf(Number.NaN)).toBe("300");
+    expect(await logLimitOf(300.7)).toBe("300"); // 取整,不给 git 小数
+  });
+
   it("目录不存在:no-repo,不进 exec", async () => {
     const svc = createGitGraphService(fake({ dirExists: false }));
     const r = await svc.log("/gone");
