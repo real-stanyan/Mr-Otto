@@ -134,8 +134,8 @@ function GraphRows({ commits, head, selected, onPick }: {
         return (
           <button
             key={c.hash}
-            // HEAD 行常亮品牌淡底:一眼看到"现在在哪";点选态(bg-accent)优先级更高
-            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : c.hash === head ? "bg-brand/[0.08]" : ""}`}
+            // HEAD 行常亮:品牌底 + 左缘 3px 指示条(inset shadow,不占布局不歪泳道);点选态(bg-accent)优先级更高
+            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : c.hash === head ? "bg-brand/[0.16] shadow-[inset_3px_0_0_0_var(--brand)]" : ""}`}
             style={{ height: ROW_H }}
             onClick={() => onPick(c.hash)}
           >
