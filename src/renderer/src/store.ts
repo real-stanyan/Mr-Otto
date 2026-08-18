@@ -15,6 +15,7 @@ import type {
   TurnStatus,
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
+import type { GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 
 /** 从 Record 里删一个 key 的不可变写法 */
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -69,6 +70,14 @@ interface ChatState {
   issueView: IssueDetailResult | null;
   /** 仪表盘当前栏目(ADR / Issues),纯 UI 态,不参与互斥收口 */
   protocolTab: "adr" | "issues";
+  /** Git Graph 视图开关(与设置/Protocol 互斥) */
+  gitGraphOpen: boolean;
+  /** 图目标仓库 = 打开时的会话 workspace(刷新/详情都对着它) */
+  gitGraphRepo: string | null;
+  /** null = 加载中(骨架);ok:false 按 kind 降级 */
+  gitGraph: GitLogResult | null;
+  /** 选中 commit 详情面板;result null = 拉取中 */
+  gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
@@ -102,6 +111,12 @@ interface ChatState {
   openAdr(path: string): Promise<void>;
   openIssue(number: number): Promise<void>;
   setProtocolTab(t: "adr" | "issues"): void;
+  /** 打开 Git Graph:目标 = 当前会话 workspace,开门即拉取 */
+  openGitGraph(): Promise<void>;
+  closeGitGraph(): void;
+  refreshGitGraph(): Promise<void>;
+  openGitCommit(hash: string): Promise<void>;
+  closeGitCommit(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
@@ -143,6 +158,7 @@ const enterChat = (info: BootInfo) => ({
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
   settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
   protocolOpen: false, // 同上，仪表盘也让位
+  gitGraphOpen: false, // 同上
   error: null,
 });
 
@@ -170,6 +186,10 @@ export const useChat = create<ChatState>((set, get) => ({
   issues: null,
   issueView: null,
   protocolTab: "adr",
+  gitGraphOpen: false,
+  gitGraphRepo: null,
+  gitGraph: null,
+  gitCommitView: null,
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
@@ -222,7 +242,7 @@ export const useChat = create<ChatState>((set, get) => ({
     } else if (section === "skills") {
       set({ settingsSection: section, protocolOpen: false, skills: await window.otter.listSkills() });
     } else {
-      set({ settingsSection: section, protocolOpen: false });
+      set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false });
     }
   },
 
@@ -232,7 +252,10 @@ export const useChat = create<ChatState>((set, get) => ({
     // 目标仓库:跟当前会话的工程文件夹(入口挂会话头部,仪表盘对应各工作区);
     // 没有会话 workspace 才退回上次手选记忆
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
-    set({ protocolOpen: true, settingsSection: null, protocolRepo: repo, adrView: null, issueView: null });
+    set({
+      protocolOpen: true, settingsSection: null, gitGraphOpen: false,
+      protocolRepo: repo, adrView: null, issueView: null,
+    });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
   },
 
@@ -291,6 +314,44 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   setProtocolTab: (t) => set({ protocolTab: t }),
+
+  async openGitGraph() {
+    const repo = get().workspace || null;
+    set({
+      gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
+      protocolOpen: false, settingsSection: null, // 互斥:同一块主区
+    });
+    if (repo) await get().refreshGitGraph();
+  },
+
+  closeGitGraph: () => set({ gitGraphOpen: false }),
+
+  async refreshGitGraph() {
+    const repo = get().gitGraphRepo;
+    if (!repo) return;
+    set({ gitGraph: null }); // 回加载态,刷新肉眼可见
+    try {
+      const result = await window.otter.gitGraphLog(repo);
+      if (get().gitGraphRepo === repo) set({ gitGraph: result });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async openGitCommit(hash) {
+    const repo = get().gitGraphRepo;
+    if (!repo) return;
+    set({ gitCommitView: { hash, result: null } });
+    try {
+      const result = await window.otter.gitGraphCommit(repo, hash);
+      // 等待期间可能已换选中/关面板——只在还选着同一个 hash 时落数据
+      if (get().gitCommitView?.hash === hash) set({ gitCommitView: { hash, result } });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  closeGitCommit: () => set({ gitCommitView: null }),
 
   async saveApiKey(envName, key) {
     try {
