@@ -5,7 +5,7 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "lucide-react";
+import { ChevronLeft, RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { Separator } from "@/components/ui/separator.js";
@@ -73,7 +73,7 @@ function CommentBody({ body }: { body: string }) {
 export function ProtocolView() {
   const {
     protocolRepo, adrs, adrView, issues, issueView,
-    closeProtocol, pickProtocolRepo, refreshProtocol, openAdr, openIssue,
+    closeProtocol, closeProtocolDetail, pickProtocolRepo, refreshProtocol, openAdr, openIssue,
   } = useChat();
   const tab = useChat((s) => s.protocolTab);
   const setTab = useChat((s) => s.setProtocolTab);
@@ -154,9 +154,13 @@ export function ProtocolView() {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 flex">
+      {/* 版式按【这块面板】有多宽来定,不是按窗口多宽——容器查询而非视口断点:
+          同一个面板在半屏/全屏/拖窄三种情况下宽度完全不同,视口断点看不见这件事。
+          窄于 560px 时"列表 300px + 正文"两栏挤不下(正文只剩几十像素,竖成一条),
+          于是详情整栏覆盖列表,配一颗返回钮退回去 */}
+      <div className="@container flex-1 min-h-0 flex">
         {/* 左列:ADR / Issues 列表(无 shadcn Tabs,两颗 Button 拼分段开关);没选详情时占满整宽 */}
-        <div className={detail ? "w-[300px] shrink-0 border-r border-border flex flex-col" : "flex-1 min-w-0 flex flex-col"}>
+        <div className={detail ? "hidden @[560px]:flex w-[300px] shrink-0 border-r border-border flex-col" : "flex-1 min-w-0 flex flex-col"}>
           <div className="flex gap-1 p-2">
             <Button variant={tab === "adr" ? "secondary" : "ghost"} size="sm" className="flex-1" onClick={() => setTab("adr")}>
               ADR
@@ -223,7 +227,17 @@ export function ProtocolView() {
         </div>
 
         {/* 右区:选中的 ADR 全文或 issue 详情;没选中整栏不渲染 */}
-        {detail && <div className="flex-1 min-w-0 overflow-y-auto px-6 py-4">{detail}</div>}
+        {detail && (
+          <div className="flex-1 min-w-0 flex flex-col">
+            {/* 返回钮只在窄面板出现:宽面板下列表就在左边,退回去这个动作不存在 */}
+            <div className="@[560px]:hidden shrink-0 border-b border-border px-1 py-1">
+              <Button variant="ghost" size="sm" onClick={closeProtocolDetail}>
+                <ChevronLeft /> 返回列表
+              </Button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 @[560px]:px-6">{detail}</div>
+          </div>
+        )}
       </div>
     </main>
   );

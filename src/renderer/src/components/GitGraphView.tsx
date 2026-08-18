@@ -2,7 +2,7 @@
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
@@ -116,11 +116,16 @@ export function GitGraphView() {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 flex">
+      {/* 同 ProtocolView:版式按面板自身宽度决定(容器查询)。窄于 560px 时
+          "泳道图 + 320px 详情"并排会把图挤成一条线,改成详情整栏覆盖 + 返回钮 */}
+      <div className="@container flex-1 min-h-0 flex">
         {/* 只竖滚:泳道 SVG 定宽 + 主题行 truncate,横向内容截断不出滚动条 */}
         <div
           ref={scrollRef}
-          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden"
+          className={
+            "flex-1 min-w-0 overflow-y-auto overflow-x-hidden" +
+            (gitCommitView ? " hidden @[560px]:block" : "")
+          }
           onScroll={onScroll}
         >
           {gitGraph === null ? (
@@ -154,8 +159,16 @@ export function GitGraphView() {
         </div>
 
         {gitCommitView && (
-          <aside className="w-[320px] shrink-0 border-l border-border overflow-y-auto px-4 py-3">
-            <CommitDetailPane />
+          <aside className="flex min-w-0 flex-1 flex-col border-l border-border @[560px]:w-[320px] @[560px]:flex-none @[560px]:shrink-0">
+            {/* 返回钮只在窄面板出现:宽面板下泳道图就在左边,退回去这个动作不存在 */}
+            <div className="@[560px]:hidden shrink-0 border-b border-border px-1 py-1">
+              <Button variant="ghost" size="sm" onClick={closeGitCommit}>
+                <ChevronLeft /> 返回图谱
+              </Button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+              <CommitDetailPane />
+            </div>
           </aside>
         )}
       </div>
