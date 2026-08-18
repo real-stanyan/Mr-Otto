@@ -48,6 +48,9 @@ function SelectTrigger({
   )
 }
 
+// 注意 position 默认值是 item-aligned(不是 shadcn 上游的 popper):选中项盖在触发钮上,
+// 更像 macOS 原生 select。代价是它靠 SelectValue 节点当对齐锚点——触发钮里不放
+// <SelectValue /> 的话定位计算会静默放弃,弹层掉到视口外,现象是"下拉点不开"。
 function SelectContent({
   className,
   children,
