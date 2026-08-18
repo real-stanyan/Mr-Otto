@@ -26,7 +26,10 @@ create table if not exists public.token_ledger (
 );
 create index if not exists token_ledger_user_created
   on public.token_ledger (user_id, created_at desc);
--- 空串不参与唯一约束：只有带 request_id 的行需要防重
+-- 空串不参与唯一约束：只有带 request_id 的行需要防重。
+-- 注意：这是**部分**索引，下面两处 on conflict 必须原样重复 where 谓词，
+-- 否则 postgres 推断不出仲裁索引，直接报
+-- "there is no unique or exclusion constraint matching the ON CONFLICT specification"
 create unique index if not exists token_ledger_request_id_unique
   on public.token_ledger (request_id) where request_id <> '';
 
@@ -65,7 +68,7 @@ begin
   if p_grant_micro_usd > 0 then
     insert into public.token_ledger (user_id, delta_micro_usd, reason, request_id)
     values (p_user, p_grant_micro_usd, 'signup_grant', 'signup_grant:' || p_user::text)
-    on conflict (request_id) do nothing;
+    on conflict (request_id) where request_id <> '' do nothing;
 
     -- 只有真插进去了才加余额（on conflict 什么都没插时 not found 为真）
     if found then
@@ -106,7 +109,7 @@ begin
     user_id, delta_micro_usd, reason, model, prompt_tokens, completion_tokens, request_id
   ) values (
     p_user, p_delta_micro_usd, p_reason, p_model, p_prompt_tokens, p_completion_tokens, p_request_id
-  ) on conflict (request_id) do nothing;
+  ) on conflict (request_id) where request_id <> '' do nothing;
 
   -- 重放（同一个 request_id 再来一次）：账本没动，余额也不该动
   if not found then
