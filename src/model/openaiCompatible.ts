@@ -4,12 +4,25 @@
 
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
+import { parseGatewayError } from "../shared/gatewayConfig.js";
+
+/** 一次请求真正用的端点 */
+export interface ResolvedEndpoint {
+  baseUrl: string;
+  apiKey: string;
+  /** 附加请求头(网关的幂等键 x-otto-request-id 走这里) */
+  headers?: Record<string, string>;
+}
 
 export interface OpenAICompatibleOptions {
   /** 端点前缀，含版本段（例："https://api.deepseek.com/v1"）。
       各家版本段不同（GLM 是 /v4），所以由目录带，这里不写死 */
   baseUrl: string;
   apiKey: string;
+  /** 每次请求前重新解析端点。走 otto-gateway 时凭据是 Supabase access token,
+      它会过期——在 adapter 构造时静态捕获,等于 turn 跑到一半突然 401。
+      给了它就以它为准,不给 = 用上面的静态 baseUrl/apiKey(老路径一字不变) */
+  resolveEndpoint?: () => Promise<ResolvedEndpoint>;
   model: string;   // 例："deepseek-v4-flash"
   /** 请求级思考开关（thinking.type: enabled/disabled，DeepSeek V4 与 GLM 同一形状）。
       undefined = 该型号不支持，请求体里完全不出现这个字段——
@@ -160,12 +173,17 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
     ): Promise<ModelReply> {
       // fetch 原生认 signal：请求阶段和 SSE body 读流共用同一根线——
       // abort 时 reader.read() 也会 reject AbortError，不用逐处手查
-      const res = await fetch(`${opts.baseUrl}/chat/completions`, {
+      const endpoint: ResolvedEndpoint = opts.resolveEndpoint
+        ? await opts.resolveEndpoint()
+        : { baseUrl: opts.baseUrl, apiKey: opts.apiKey };
+
+      const res = await fetch(`${endpoint.baseUrl}/chat/completions`, {
         method: "POST",
         ...(signal ? { signal } : {}),
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${opts.apiKey}`,
+          authorization: `Bearer ${endpoint.apiKey}`,
+          ...endpoint.headers,
         },
         body: JSON.stringify({
           model: opts.model,
@@ -189,6 +207,10 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       if (!res.ok) {
         const body = await res.text();
+        // 网关的错误本来就是写给人看的("额度用尽,去设置填自己的 key"),
+        // 再裹一层 "model API 402:" 只会把那句话埋进一行技术噪音里
+        const gatewayError = parseGatewayError(body);
+        if (gatewayError) throw new Error(gatewayError.message || `otto-gateway ${res.status}`);
         throw new Error(`model API ${res.status}: ${body.slice(0, 500)}`);
       }
 

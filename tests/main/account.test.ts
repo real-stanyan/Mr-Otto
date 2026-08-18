@@ -108,6 +108,7 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
       })),
       signOut: vi.fn(async () => ({ error: null })),
       getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
+      getSession: vi.fn(async () => ({ data: { session: null }, error: null })),
       ...overrides?.auth,
     },
   };

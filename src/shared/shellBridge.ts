@@ -38,6 +38,15 @@ export interface AccountInfo {
   avatarUrl: string;
 }
 
+/** 官方额度余额（otto-gateway 的 GET /v1/wallet）。
+    未登录时 ShellBridge 回 null——没登录就没有"官方额度"这回事 */
+export interface WalletBalance {
+  balanceMicroUsd: number;
+  balanceUsd: number;
+  /** 注册赠额，用于画"还剩多少 / 一共给了多少" */
+  grantMicroUsd: number;
+}
+
 /** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
     model 会落 model_changed 事件（resume 记得）；审批/thinking 是运行时偏好（不落日志） */
 export interface StartSessionOptions {
@@ -195,6 +204,9 @@ export interface ShellBridge {
   signIn(provider: "google" | "github"): Promise<void>;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
+  /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
+      （"没有额度"和"查不到额度"必须可区分） */
+  walletBalance(): Promise<WalletBalance | null>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
@@ -270,6 +282,7 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   getAccount: "otter:getAccount",
+  walletBalance: "otter:walletBalance",
   signIn: "otter:signIn",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",

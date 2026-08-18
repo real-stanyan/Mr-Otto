@@ -223,3 +223,103 @@ describe("图片附件(image_ref → image_url,file-input-v1)", () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+describe("端点解析（otto-gateway 路线）", () => {
+  /** 记下每次请求的 url / headers,用来断言"用的是哪一套凭据" */
+  function mockFetchJSON(status = 200, body = '{"choices":[{"message":{"content":"ok"}}]}') {
+    const calls: { url: string; headers: Record<string, string> }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+        calls.push({ url, headers: init.headers });
+        return {
+          ok: status < 400,
+          status,
+          json: async () => JSON.parse(body),
+          text: async () => body,
+        };
+      })
+    );
+    return calls;
+  }
+
+  it("不给 resolveEndpoint → 老路径一字不变，用静态 baseUrl/apiKey", async () => {
+    const calls = mockFetchJSON();
+    await createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "static-key",
+      model: "m",
+    }).chat([{ role: "user", content: "hi" }]);
+    expect(calls[0]!.url).toBe("https://api.example.com/v1/chat/completions");
+    expect(calls[0]!.headers.authorization).toBe("Bearer static-key");
+  });
+
+  it("给了 resolveEndpoint → 以它为准，静态值被忽略", async () => {
+    const calls = mockFetchJSON();
+    await createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "static-key",
+      model: "m",
+      resolveEndpoint: async () => ({
+        baseUrl: "https://gw.example/gw/v1",
+        apiKey: "jwt-token",
+        headers: { "x-otto-request-id": "req-1" },
+      }),
+    }).chat([{ role: "user", content: "hi" }]);
+    expect(calls[0]!.url).toBe("https://gw.example/gw/v1/chat/completions");
+    expect(calls[0]!.headers.authorization).toBe("Bearer jwt-token");
+    expect(calls[0]!.headers["x-otto-request-id"]).toBe("req-1");
+  });
+
+  it("每次请求都重解析——access token 一小时就过期，构造时定死等于跑一半 401", async () => {
+    const calls = mockFetchJSON();
+    let n = 0;
+    const adapter = createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "unused",
+      model: "m",
+      resolveEndpoint: async () => ({ baseUrl: "https://gw.example/v1", apiKey: `jwt-${++n}` }),
+    });
+    await adapter.chat([{ role: "user", content: "a" }]);
+    await adapter.chat([{ role: "user", content: "b" }]);
+    expect(calls.map((c) => c.headers.authorization)).toEqual(["Bearer jwt-1", "Bearer jwt-2"]);
+  });
+
+  it("resolveEndpoint 抛错（没登录也没 key）→ 原样上抛，不发请求", async () => {
+    const calls = mockFetchJSON();
+    await expect(
+      createOpenAICompatibleAdapter({
+        baseUrl: "x",
+        apiKey: "",
+        model: "m",
+        resolveEndpoint: async () => {
+          throw new Error("还没法调用模型：登录即可用官方赠额");
+        },
+      }).chat([{ role: "user", content: "hi" }])
+    ).rejects.toThrow("登录即可用官方赠额");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("网关 402 → 只报那句人话，不裹 'model API 402:'", async () => {
+    mockFetchJSON(
+      402,
+      JSON.stringify({
+        error: { message: "token 额度已用尽。可在设置里改用自己的 API key。", type: "otto_gateway", code: "quota_exhausted" },
+      })
+    );
+    await expect(
+      createOpenAICompatibleAdapter({ baseUrl: "x", apiKey: "k", model: "m" }).chat([
+        { role: "user", content: "hi" },
+      ])
+    ).rejects.toThrow("token 额度已用尽。可在设置里改用自己的 API key。");
+  });
+
+  it("上游自己的错误照旧带状态码报——那不是网关说的话", async () => {
+    mockFetchJSON(401, JSON.stringify({ error: { message: "Authentication Fails", type: "authentication_error" } }));
+    await expect(
+      createOpenAICompatibleAdapter({ baseUrl: "x", apiKey: "k", model: "m" }).chat([
+        { role: "user", content: "hi" },
+      ])
+    ).rejects.toThrow("model API 401");
+  });
+});
