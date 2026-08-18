@@ -1,5 +1,6 @@
 -- 好友系统三表 + RLS + Realtime(spec: docs/superpowers/specs/2026-08-18-friend-system-design.md)
--- 在 Supabase SQL editor 手动执行一次。重复执行安全(if not exists / or replace)。
+-- 在 Supabase SQL editor 手动执行一次。重复执行安全(if not exists / or replace)——
+-- 唯一例外:文件末尾两条 alter publication 语句,表已是 publication 成员时重跑会报错,见下方注释。
 
 -- ── profiles:auth.users 的公开投影(邮箱精确搜索找人) ──────────────
 create table if not exists public.profiles (
@@ -121,5 +122,6 @@ create policy "messages_insert_accepted_friend" on public.messages
   );
 
 -- Realtime:两张表进 publication,postgres_changes 才有得推(RLS 照常生效)
+-- 注意:不是 if not exists,重跑迁移时若表已是 publication 成员会报错——手动重跑时跳过这两行
 alter publication supabase_realtime add table public.friendships;
 alter publication supabase_realtime add table public.messages;

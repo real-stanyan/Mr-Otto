@@ -76,6 +76,10 @@ export class FriendsManager {
   private readonly api: FriendsApi;
   private readonly push: FriendsPush;
   private unsubscribe: (() => void) | null = null;
+  // 世代计数:每次 start/teardown 自增。start 内每个 await 之后都核对世代号,
+  // 号对不上说明中途被 stop()/新 start() 抢先,当次 start 自我作废(不订阅/不推/
+  // 若已 subscribe 则立即退订),防"挂起的 start 在 stop 之后才落地"竞态
+  private generation = 0;
 
   constructor(deps: { api: FriendsApi; push: FriendsPush }) {
     this.api = deps.api;
@@ -165,18 +169,23 @@ export class FriendsManager {
   /** 登录后调:起 Realtime 订阅 + 推一次初始快照。幂等(重复 start 先 teardown) */
   async start(): Promise<void> {
     this.teardown();
+    const gen = ++this.generation;
     const uid = await this.api.getUserId();
+    if (gen !== this.generation) return; // stop() 或新 start() 已抢先,自我作废
     if (!uid) return;
-    this.unsubscribe = this.api.subscribe(uid, {
+    const unsubscribe = this.api.subscribe(uid, {
       onFriendshipsChange: () => { void this.pushSnapshot(uid).catch(() => {}); },
       onMessage: (row) => this.push.directMessage(toDirectMessage(row)),
       onPresence: (ids) => this.push.presenceChanged(ids),
     });
+    if (gen !== this.generation) { unsubscribe(); return; } // 订阅已建立但世代已过期,立即退订别漏
+    this.unsubscribe = unsubscribe;
     await this.pushSnapshot(uid).catch(() => {});
   }
 
-  /** 内部:只退订不推 */
+  /** 内部:只退订不推。同时使任何挂起中的 start() 作废 */
   private teardown(): void {
+    this.generation++;
     this.unsubscribe?.();
     this.unsubscribe = null;
   }

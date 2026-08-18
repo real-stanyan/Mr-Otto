@@ -109,9 +109,11 @@ void app.whenReady().then(() => {
   const friends = new FriendsManager({
     api: createSupabaseFriendsApi(supabase.raw),
     push: {
-      friendsChanged: (s) => win.webContents.send(CHANNELS.friendsChanged, s),
-      presenceChanged: (ids) => win.webContents.send(CHANNELS.presenceChanged, ids),
-      directMessage: (m) => win.webContents.send(CHANNELS.directMessage, m),
+      // win 可能已被 Cmd+W 销毁而 app/presence 通道仍活着(mac 惯例),
+      // 不查 isDestroyed 直接 send 会在 supabase-js websocket 回调里炸穿主进程
+      friendsChanged: (s) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.friendsChanged, s); },
+      presenceChanged: (ids) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.presenceChanged, ids); },
+      directMessage: (m) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.directMessage, m); },
     },
   });
   accountManager = new AccountManager({

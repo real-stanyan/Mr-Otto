@@ -183,4 +183,55 @@ describe("FriendsManager 生命周期", () => {
     expect(unsub).toHaveBeenCalledTimes(1);
     expect(api.subscribe).toHaveBeenCalledTimes(2);
   });
+
+  it("stop 在 start 挂起期间到达:不订阅不推", async () => {
+    let resolveUid!: (uid: string | null) => void;
+    const uidPromise = new Promise<string | null>((resolve) => { resolveUid = resolve; });
+    const api = fakeApi({ getUserId: vi.fn(() => uidPromise) });
+    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const m = new FriendsManager({ api, push });
+
+    const startPromise = m.start(); // 挂在 getUserId 上
+    m.stop(); // teardown 是 no-op(还没订阅),但世代号已推进
+    expect(push.friendsChanged).toHaveBeenCalledTimes(1); // stop() 自己推的空快照
+    expect(push.presenceChanged).toHaveBeenCalledTimes(1);
+
+    resolveUid("me"); // start 恢复
+    await startPromise;
+
+    expect(api.subscribe).not.toHaveBeenCalled();
+    expect(push.friendsChanged).toHaveBeenCalledTimes(1); // start 恢复后没有再推
+    expect(push.presenceChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("并发两次 start:只有最后一次的订阅存活", async () => {
+    // 卡住 listFriendships,好让第一次 start 停在"已订阅、快照还没推完"的中间态,
+    // 这时第二次 start 进来最有代表性:teardown() 立刻退掉第一次的订阅(不是靠世代号 bail)
+    let resolveList!: (rows: FriendshipRow[]) => void;
+    const listPromise = new Promise<FriendshipRow[]>((resolve) => { resolveList = resolve; });
+    const unsub1 = vi.fn();
+    const unsub2 = vi.fn();
+    let subscribeCalls = 0;
+    const api = fakeApi({
+      listFriendships: vi.fn(() => listPromise),
+      subscribe: vi.fn(() => (++subscribeCalls === 1 ? unsub1 : unsub2)),
+    });
+    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const m = new FriendsManager({ api, push });
+
+    const first = m.start();
+    await Promise.resolve();
+    await Promise.resolve(); // 放行足够微任务,让 first 跑过 getUserId + subscribe,卡在 listFriendships 上
+    expect(api.subscribe).toHaveBeenCalledTimes(1);
+
+    const second = m.start(); // teardown() 同步调用 unsub1
+    expect(unsub1).toHaveBeenCalledTimes(1);
+
+    resolveList([]); // 放开 listFriendships,两边的快照推送都能跑完
+    await first;
+    await second;
+
+    expect(api.subscribe).toHaveBeenCalledTimes(2);
+    expect(unsub2).not.toHaveBeenCalled(); // 第二次(最后一次)的订阅存活
+  });
 });
