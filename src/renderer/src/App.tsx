@@ -6,7 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, ChevronRight, Ellipsis, GitBranch, History, Plus } from "lucide-react";
+import { BookMarked, ChevronRight, Ellipsis, GitBranch, History, Plus, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,6 +28,18 @@ import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer.js";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable.js";
 import {
   Select,
   SelectContent,
@@ -156,7 +168,7 @@ const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespac
 
 /** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
     挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
-function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) {
+function TurnMeta({ events }: { events: SessionEvent[] }) {
   const [start] = useState(() => Date.now());
   const [now, setNow] = useState(start);
   useEffect(() => {
@@ -167,7 +179,7 @@ function TurnMeta({ label, events }: { label: string; events: SessionEvent[] }) 
   const tokens = useMemo(() => totalTokens(events), [events]);
   return (
     <span className="tabular-nums">
-      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens · {label}
+      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens
     </span>
   );
 }
@@ -377,10 +389,44 @@ function ComposerBar() {
   );
 }
 
-/** agent 状态 → orb 动画。审批等待优先于 running：这时是 agent 在等人 */
-function orbStateOf(status: "idle" | "running", hasApproval: boolean) {
-  if (hasApproval) return "listening" as const;
-  return status === "running" ? ("working" as const) : ("breathing" as const);
+/** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
+function currentTool(events: SessionEvent[]): ToolCallRequest | null {
+  const done = new Set<string>();
+  for (const e of events) if (e.type === "tool_result") done.add(e.toolCallId);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e && e.type === "assistant_message") {
+      for (const c of e.toolCalls ?? []) if (!done.has(c.id)) return c;
+    }
+  }
+  return null;
+}
+
+type OrbState = "listening" | "searching" | "working" | "composing" | "solving" | "breathing";
+
+/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
+     检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
+     四段对应 orbs 的 Searching / Working / Thinking / Solving */
+function agentPhase(opts: {
+  status: "idle" | "running";
+  hasApproval: boolean;
+  streamingThinking: string;
+  streamingText: string;
+  tool: ToolCallRequest | null;
+}): { orb: OrbState; label: string } {
+  if (opts.hasApproval) return { orb: "listening", label: "等待审批…" };
+  if (opts.status !== "running") return { orb: "breathing", label: "空闲" };
+  if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
+  if (opts.tool) return { orb: "working", label: "执行中…" };
+  if (opts.streamingText) return { orb: "solving", label: "作答中…" };
+  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
+}
+
+/** 工具执行阶段 → orb + 文案。read_file 是"找"，其余(bash/write)是"做" */
+function toolPhase(name: string): { orb: OrbState; label: string } {
+  return name === "read_file"
+    ? { orb: "searching", label: "检索中…" }
+    : { orb: "working", label: "执行中…" };
 }
 
 /** 工具调用摘要行的文案：动词 + 目标 + 统计（Claude Code 版式）。
@@ -446,7 +492,12 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
         </span>
         {target && <span className="font-mono text-xs text-muted-foreground truncate">{target}</span>}
         {stat && <span className="text-ok tabular-nums shrink-0">{stat}</span>}
-        {status === "running" && <span className="text-muted-foreground shrink-0">执行中…</span>}
+        {status === "running" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground shrink-0">
+            <ThinkingOrb state={toolPhase(call.name).orb} size={20} theme="auto" />
+            <span className="shimmer">{toolPhase(call.name).label}</span>
+          </span>
+        )}
         {status === "error" && <span className="text-deny shrink-0">出错</span>}
         {status === "denied" && <span className="text-deny shrink-0">已拒绝</span>}
         <span
@@ -995,6 +1046,18 @@ function AppSidebar() {
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const friendChat = useChat((s) => s.friendChat);
+  const unreadByFriend = useChat((s) => s.unreadByFriend);
+  const friendsSnapshot = useChat((s) => s.friendsSnapshot);
+  // 好友区显隐:侧栏常驻版收进 footer 的 icon(齿轮左边),点开弹 Drawer(vaul)。
+  // 纯 UI 偏好,不进事件日志(同 collapsed 组折叠的待遇)
+  const [friendsOpen, setFriendsOpen] = useState(false);
+  // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求。区收着也能被看见
+  const friendActivity =
+    Object.values(unreadByFriend).reduce((a, b) => a + b, 0) + friendsSnapshot.incoming.length;
+  // 抽屉是模态层,盖在主区上;点开 DM 面板时弹窗让位——不然 DM 被抽屉挡住看不见
+  useEffect(() => {
+    if (friendChat) setFriendsOpen(false);
+  }, [friendChat]);
 
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
@@ -1176,7 +1239,7 @@ function AppSidebar() {
                 ))}
               </SidebarMenu>
             )}
-            <FriendsSection />
+            {/* 好友区不再常驻侧栏:收进 footer icon 的 Drawer(见下方 Drawer 弹窗) */}
           </>
         )}
       </SidebarContent>
@@ -1200,6 +1263,32 @@ function AppSidebar() {
               "未登录 · 点击登录"
             )}
           </button>
+          {/* 好友 icon:好友区从侧栏常驻收进这里(齿轮左边),点开/收起。
+              有未读 DM 或待处理请求时右上角亮角标——区收着,动静也看得见 */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className={
+                  "relative shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] bg-transparent hover:text-foreground " +
+                  (friendsOpen ? "text-foreground bg-foreground/[0.08]" : "text-muted-foreground")
+                }
+                aria-label="好友"
+                aria-pressed={friendsOpen}
+                onClick={() => setFriendsOpen((o) => !o)}
+              >
+                <Users className="w-[14px] h-[14px]" />
+                {friendActivity > 0 && (
+                  <span
+                    className="absolute -top-[2px] -right-[2px] min-w-[10px] h-[10px] px-[2px] rounded-full bg-brand text-white text-[8px] font-semibold leading-none flex items-center justify-center"
+                    aria-label={`${friendActivity} 条好友动态`}
+                  >
+                    {friendActivity > 9 ? "9+" : friendActivity}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>好友</TooltipContent>
+          </Tooltip>
           {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1214,6 +1303,30 @@ function AppSidebar() {
           </Tooltip>
         </div>
       </SidebarFooter>
+      {/* 好友弹窗(shadcn Drawer/vaul):点 footer 的好友 icon 弹出。
+          右侧抽屉——桌面应用里和 DM/Protocol/GitGraph 右侧面板同一空间语言;
+          想要底部抽屉样式把 side 改成 "bottom" 即可。模态层,点外面/Esc/右滑关闭 */}
+      <Drawer open={friendsOpen} onOpenChange={setFriendsOpen} direction="right" shouldScaleBackground={false}>
+        <DrawerContent side="right" className="w-[min(340px,90vw)]">
+          <DrawerHeader className="flex items-center justify-between gap-2 text-left px-4 py-3 border-b border-border">
+            <DrawerTitle className="text-sm">好友</DrawerTitle>
+            <button
+              className="text-muted-foreground hover:text-foreground bg-transparent px-1 rounded-md text-[13px]"
+              aria-label="关闭好友面板"
+              onClick={() => setFriendsOpen(false)}
+            >
+              ✕
+            </button>
+          </DrawerHeader>
+          {/* SidebarMenu 系列需要 SidebarProvider 上下文(抽屉 portal 到 body,
+              根 provider 够不着)——包一层只喂上下文,不带侧栏结构 */}
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable px-[6px] py-2">
+            <SidebarProvider defaultOpen className="flex-col min-h-0">
+              <FriendsSection embedded />
+            </SidebarProvider>
+          </div>
+        </DrawerContent>
+      </Drawer>
     </Sidebar>
   );
 }
@@ -1562,6 +1675,14 @@ export function App() {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
+  // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
+  const turnPhase = agentPhase({
+    status,
+    hasApproval: approval !== null,
+    streamingThinking,
+    streamingText,
+    tool: currentTool(events),
+  });
 
   // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
   const slashMatches = input.startsWith("/")
@@ -1721,17 +1842,15 @@ export function App() {
               </div>
             )}
             {(status === "running" || approval !== null) && (
-              <div className="flex items-center gap-2 text-muted-foreground text-[13px] py-[2px]">
-                <ThinkingOrb
-                  state={orbStateOf(status, approval !== null)}
-                  size={20}
-                  theme="auto"
-                />
-                <TurnMeta
-                  label={approval ? "等待审批…" : streamingText ? "输出中…" : "思考中…"}
-                  events={events}
-                />
-              </div>
+              <Marker role="status" className="py-[2px] text-[13px]">
+                <MarkerIcon className="size-5">
+                  <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
+                </MarkerIcon>
+                <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
+                <span className="ml-auto shrink-0 text-xs">
+                  <TurnMeta events={events} />
+                </span>
+              </Marker>
             )}
             <div ref={bottomRef} />
           </section>
@@ -1881,14 +2000,29 @@ export function App() {
     </div>
   );
 
-  // 半屏:底层视图照常渲染,面板占右半带左框;全屏:面板独占,底层卸载省渲染
+  // 半屏:底层视图照常渲染,面板占右半、可左右拖拽缩放(左 28% ~ 右 72%);
+  // 全屏:面板独占,底层卸载省渲染。拖拽位置由 react-resizable-panels 按
+  // autoSaveId 存 localStorage,展开/收回、重启后都能记住。
   const main = panel ? (
-    <div className="flex-1 min-h-0 min-w-0 flex">
-      {!panelWide && base}
-      <div className={`side-panel flex min-w-0 ${panelWide ? "flex-1" : "w-1/2 shrink-0 border-l border-border"}`}>
-        {panel}
+    panelWide ? (
+      <div className="flex-1 min-h-0 min-w-0 flex">
+        <div className="side-panel flex min-w-0 flex-1">{panel}</div>
       </div>
-    </div>
+    ) : (
+      <ResizablePanelGroup
+        direction="horizontal"
+        autoSaveId="otter-side-panel"
+        className="flex-1 min-h-0 min-w-0"
+      >
+        <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
+          {base}
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
+          <div className="side-panel flex h-full min-w-0">{panel}</div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    )
   ) : (
     base
   );

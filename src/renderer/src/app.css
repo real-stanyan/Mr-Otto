@@ -540,6 +540,33 @@
     opacity: 0;
   }
 }
+@keyframes shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+/* ─── 状态文案 shimmer:文字表面有光带扫过,标示"正在发生"的直播态 ─── */
+.shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground) 32%,
+    var(--foreground) 47%,
+    var(--muted-foreground) 62%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    color: var(--muted-foreground);
+  }
+}
 
 /* ─── 滚动条:macOS 细条手感,全局一份(不再逐处挂 class)───
    静止一根淡细条(在的,但不抢戏);指到条上加宽加深、按住最深——直接操作的抓握提示。
