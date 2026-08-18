@@ -14,6 +14,7 @@ import { contextUsed } from "../../shared/contextEstimate.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
+import { themeController, type ThemePref } from "./theme.js";
 import type {
   SessionEvent,
   ToolCallRequest,
@@ -785,12 +786,14 @@ function AccountPage() {
   );
 }
 
-/** 模型配置页（设置栏目之一）：各 provider 的 API key 管理 */
+/** 模型配置页（设置栏目之一）：各 provider 的 API key 管理。
+    外观切换暂时挂靠在这里的顶部——项目还没有独立的"通用设置"栏目 */
 function KeysPage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
   // 目录里每个不同的 apiKeyEnv 一行（provider 可能共用同一个 key）
   const providers = [...new Map(MODEL_CATALOG.map((m) => [m.apiKeyEnv, m.provider])).entries()];
+  const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
 
   return (
     <main className={MAIN_COL}>
@@ -801,6 +804,22 @@ function KeysPage() {
         </button>
       </header>
       <section className={SETTINGS_BODY}>
+        <label className="flex items-center justify-between gap-3 text-[13px]">
+          <span className="text-muted-foreground">外观</span>
+          <select
+            className={`${FOCUS_INPUT} px-[10px] py-[6px] text-[13px]`}
+            value={themePref}
+            onChange={(e) => {
+              const p = e.target.value as ThemePref;
+              themeController().setPref(p);
+              setThemePref(p);
+            }}
+          >
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
         <p className={HINT}>
           key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
           此处配置的 key 优先于 .env。
