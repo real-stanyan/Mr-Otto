@@ -1,0 +1,14 @@
+{
+  "name": "otto-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mr Otto 的官方 key 网关：验 Supabase JWT、转发 DeepSeek、按用量扣额度",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12"
+  }
+}
