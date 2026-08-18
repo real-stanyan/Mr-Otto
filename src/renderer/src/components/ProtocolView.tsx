@@ -132,21 +132,26 @@ export function ProtocolView() {
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部:仓库路径 + 换目录/刷新/关闭 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="font-mono text-xs text-muted-foreground truncate">{protocolRepo}</span>
-        <span className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={() => void pickProtocolRepo()} title="换目标仓库">
-          <FolderOpen />
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void refreshProtocol()} title="重新拉取 ADR 与 issues">
-          <RefreshCw />
-        </Button>
-        {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
-        <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
-          {panelWide ? <Minimize2 /> : <Maximize2 />}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={closeProtocol} title="关闭仪表盘">
-          <X />
-        </Button>
+        {/* min-w-0 + shrink-0 的分工见 GitGraphView 同处注释:少了它们,
+            窄面板下这排按钮(含关闭)会被路径文字挤出可视区 */}
+        <span className="min-w-0 flex-1 font-mono text-xs text-muted-foreground truncate" title={protocolRepo}>
+          {protocolRepo}
+        </span>
+        <div className="flex shrink-0 items-center">
+          <Button variant="ghost" size="sm" onClick={() => void pickProtocolRepo()} title="换目标仓库">
+            <FolderOpen />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void refreshProtocol()} title="重新拉取 ADR 与 issues">
+            <RefreshCw />
+          </Button>
+          {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
+          <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
+            {panelWide ? <Minimize2 /> : <Maximize2 />}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={closeProtocol} title="关闭仪表盘">
+            <X />
+          </Button>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 flex">

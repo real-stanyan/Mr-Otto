@@ -87,25 +87,33 @@ export function GitGraphView() {
 
   return (
     <main className="flex-1 min-w-0 flex flex-col">
+      {/* 窄面板(半屏 + 窄窗口)下头部的取舍:控件永远在,文字先让位。
+          flex 里 truncate 必须配 min-w-0——否则 min-width:auto 让它按内容宽度
+          顶住不缩,把右边的按钮整排挤出可视区(面板本身裁掉溢出,于是关闭钮
+          直接消失,只剩 Esc 能退出)。按钮组 shrink-0 是同一条约束的另一端 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="shrink-0 whitespace-nowrap font-[650] text-sm">Git Graph</span>
         {headBranch && (
-          <span className="inline-flex items-center gap-1 shrink-0 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title="当前所在分支">
-            <GitBranch className="w-3 h-3" />{headBranch}
+          <span className="inline-flex min-w-0 max-w-[40%] items-center gap-1 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title={headBranch}>
+            <GitBranch className="w-3 h-3 shrink-0" />
+            <span className="truncate">{headBranch}</span>
           </span>
         )}
-        <span className="font-mono text-xs text-muted-foreground truncate">{gitGraphRepo ?? "(无会话工作区)"}</span>
-        <span className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
-          <RefreshCw />
-        </Button>
-        {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
-        <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
-          {panelWide ? <Minimize2 /> : <Maximize2 />}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
-          <X />
-        </Button>
+        <span className="min-w-0 flex-1 font-mono text-xs text-muted-foreground truncate" title={gitGraphRepo ?? undefined}>
+          {gitGraphRepo ?? "(无会话工作区)"}
+        </span>
+        <div className="flex shrink-0 items-center">
+          <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
+            <RefreshCw />
+          </Button>
+          {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
+          <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
+            {panelWide ? <Minimize2 /> : <Maximize2 />}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
+            <X />
+          </Button>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 flex">

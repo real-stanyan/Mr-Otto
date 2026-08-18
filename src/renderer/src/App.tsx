@@ -2155,7 +2155,8 @@ export function App() {
         <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
           {base}
         </ResizablePanel>
-        <ResizableHandle withHandle />
+        {/* 不要 withHandle 那颗六点抓手:分隔线本身整条可拖,抓手只是重复的视觉噪音 */}
+        <ResizableHandle />
         <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
           <div className="side-panel flex h-full min-w-0">{panel}</div>
         </ResizablePanel>
