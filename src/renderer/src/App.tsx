@@ -1708,7 +1708,9 @@ export function App() {
     <SidebarProvider className="h-screen">
       <TooltipProvider delayDuration={400}>
         <AppSidebar />
-        <SidebarInset className="relative">
+        {/* min-w-0:flex 子项默认 min-width:auto,宽内容会顶住不收缩,
+            侧栏一展开整列右溢出窗(会话视图代码块/composer 被裁) */}
+        <SidebarInset className="relative min-w-0">
           <CollapsedSidebarNub />
           {main}
         </SidebarInset>
