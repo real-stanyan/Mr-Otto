@@ -12,6 +12,13 @@ describe("toFriendProfile", () => {
     expect(toFriendProfile({ id: "u1", email: "a@x.com", name: null, avatar_url: null }))
       .toEqual({ id: "u1", email: "a@x.com", name: "", avatarUrl: "" });
   });
+
+  // 手机/匿名注册的 auth.users.email 就是 null(ADR-0025),渲染层类型是 string,
+  // null 必须在这条边界上归一,否则 UI 会渲出 "null"
+  it("email 为 null 时归一成空串", () => {
+    expect(toFriendProfile({ id: "u1", email: null, name: "N", avatar_url: null }))
+      .toEqual({ id: "u1", email: "", name: "N", avatarUrl: "" });
+  });
 });
 
 describe("buildSnapshot", () => {

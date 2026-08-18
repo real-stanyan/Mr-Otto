@@ -1,15 +1,53 @@
 -- 好友系统三表 + RLS + Realtime(spec: docs/superpowers/specs/2026-08-18-friend-system-design.md)
--- 在 Supabase SQL editor 手动执行一次。重复执行安全(if not exists / or replace)——
--- 唯一例外:文件末尾两条 alter publication 语句,表已是 publication 成员时重跑会报错,见下方注释。
+-- 在 Supabase SQL editor 手动执行一次。重复执行安全,而且是"形状意义上的安全":
+-- 对着一张同名但形状不同的旧表跑,也会把它收敛到本文件声明的形状(issue #62 的教训 ——
+-- create table if not exists 见到同名表就整张跳过,列一个都不补,幂等只剩"不报错")。
 
 -- ── profiles:auth.users 的公开投影(邮箱精确搜索找人) ──────────────
+-- email 可空 + 部分唯一索引(不是 0001 初版的 unique not null):见 docs/adr/0025。
+-- 手机/匿名注册没有邮箱,not null 会让这类注册当场失败,而 '' 只允许存在一行。
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  email text unique not null,
+  email text,
   name text not null default '',
   avatar_url text not null default '',
   updated_at timestamptz not null default now()
 );
+
+-- 旧库收敛:2026-08 之前建的表叫 display_name,且没有 email/updated_at
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'profiles' and column_name = 'display_name')
+     and not exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'profiles' and column_name = 'name')
+  then
+    alter table public.profiles rename column display_name to name;
+  end if;
+end $$;
+
+alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists name text;
+alter table public.profiles add column if not exists avatar_url text;
+alter table public.profiles add column if not exists updated_at timestamptz not null default now();
+
+-- 旧表这两列可空,新形状不可空:先填平再钉死(重跑时全是 no-op)
+update public.profiles set name = '' where name is null;
+update public.profiles set avatar_url = '' where avatar_url is null;
+alter table public.profiles alter column name set default '';
+alter table public.profiles alter column name set not null;
+alter table public.profiles alter column avatar_url set default '';
+alter table public.profiles alter column avatar_url set not null;
+
+-- email 的唯一事实源是 auth.users,profiles 只是投影,以 auth.users 为准回填
+update public.profiles p set email = u.email, updated_at = now()
+from auth.users u
+where u.id = p.id and u.email is not null and p.email is distinct from u.email;
+
+-- 唯一,但放过 null(部分索引:多行 null 不冲突)
+create unique index if not exists profiles_email_unique
+  on public.profiles (email) where email is not null;
+
 alter table public.profiles enable row level security;
 
 -- 意图:任何登录用户可读(支撑邮箱精确搜索);只有本人可改自己的行
@@ -19,6 +57,16 @@ create policy "profiles_select_authenticated" on public.profiles
 drop policy if exists "profiles_update_self" on public.profiles;
 create policy "profiles_update_self" on public.profiles
   for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
+-- 旧库里同语义的两条早期 policy:permissive policy 是 OR 关系,上面两条更宽,
+-- 留着只会让下一班误以为读权限被收窄。删除不改变有效权限
+drop policy if exists "own profile read" on public.profiles;
+drop policy if exists "own profile write" on public.profiles;
+
+-- 旧库遗留的 on_auth_user_created/handle_new_user 写的是 display_name,
+-- 上面改完列名它必炸,而它挂在 auth.users 的 insert 上 = 新用户注册当场失败(#62)。
+-- 新触发器接管,旧的必须在同一批次里删掉
+drop trigger if exists on_auth_user_created on auth.users;
+drop function if exists public.handle_new_user();
 
 -- auth.users → profiles 自动同步(注册/改资料)。security definer:触发器跑在
 -- auth schema 的上下文里,普通用户无权直写 profiles 之外的行
@@ -28,14 +76,17 @@ begin
   insert into public.profiles (id, email, name, avatar_url, updated_at)
   values (
     new.id,
-    coalesce(new.email, ''),
+    new.email,
     coalesce(new.raw_user_meta_data->>'name', new.raw_user_meta_data->>'user_name',
              split_part(coalesce(new.email, ''), '@', 1)),
     coalesce(new.raw_user_meta_data->>'avatar_url', new.raw_user_meta_data->>'picture', ''),
     now()
   )
   on conflict (id) do update
-    set email = excluded.email, name = excluded.name,
+    set email = excluded.email,
+        -- 只在本地还没名字时接受 provider 的名字:profiles_update_self 允许用户
+        -- 自己改名,每次 auth.users 更新都覆盖回去等于静默丢用户的数据
+        name = case when profiles.name = '' then excluded.name else profiles.name end,
         avatar_url = excluded.avatar_url, updated_at = now();
   return new;
 end $$;
@@ -46,7 +97,7 @@ create trigger on_auth_user_upsert
 
 -- 存量用户回填(触发器只管今后)
 insert into public.profiles (id, email, name, avatar_url)
-select id, coalesce(email, ''),
+select id, email,
        coalesce(raw_user_meta_data->>'name', raw_user_meta_data->>'user_name',
                 split_part(coalesce(email, ''), '@', 1)),
        coalesce(raw_user_meta_data->>'avatar_url', raw_user_meta_data->>'picture', '')
@@ -122,6 +173,12 @@ create policy "messages_insert_accepted_friend" on public.messages
   );
 
 -- Realtime:两张表进 publication,postgres_changes 才有得推(RLS 照常生效)
--- 注意:不是 if not exists,重跑迁移时若表已是 publication 成员会报错——手动重跑时跳过这两行
-alter publication supabase_realtime add table public.friendships;
-alter publication supabase_realtime add table public.messages;
+do $$
+begin
+  if not exists (select 1 from pg_publication_tables
+                 where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'friendships')
+  then alter publication supabase_realtime add table public.friendships; end if;
+  if not exists (select 1 from pg_publication_tables
+                 where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages')
+  then alter publication supabase_realtime add table public.messages; end if;
+end $$;
