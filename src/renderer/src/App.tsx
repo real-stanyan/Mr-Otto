@@ -304,7 +304,8 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
               />
               {c.label}
             </span>
-            <span className={V}>~{fmtCtx(breakdown[c.key])}</span>
+            {/* 带上单位:小值(~43)不带单位会像个裸数字,和 ~22.7K 不是一套读法 */}
+            <span className={V}>~{fmtCtx(breakdown[c.key])} tokens</span>
           </div>
         ))}
       </div>
