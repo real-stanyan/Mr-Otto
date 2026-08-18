@@ -6,6 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ChevronLeft, RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "lucide-react";
+import { SidebarNub } from "./SidebarNub.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { Separator } from "@/components/ui/separator.js";
@@ -132,6 +133,8 @@ export function ProtocolView() {
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部:仓库路径 + 换目录/刷新/关闭 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+        {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
+        {panelWide && <SidebarNub />}
         {/* min-w-0 + shrink-0 的分工见 GitGraphView 同处注释:少了它们,
             窄面板下这排按钮(含关闭)会被路径文字挤出可视区 */}
         <span className="min-w-0 flex-1 font-mono text-xs text-muted-foreground truncate" title={protocolRepo}>

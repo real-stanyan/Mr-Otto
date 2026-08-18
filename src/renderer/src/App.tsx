@@ -26,6 +26,7 @@ import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { FriendsSection } from "./components/FriendsSection.js";
+import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -73,7 +74,6 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
-  useSidebar,
 } from "@/components/ui/sidebar.js";
 import type {
   SessionEvent,
@@ -121,18 +121,6 @@ const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full trunca
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
 const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 
-/** 侧栏收起后的全局重开钮（壳层渲染,所有视图自动覆盖——welcome 曾漏配触发钮把人困死）:
-    侧栏从左缘消失,重开的把手就出现在左缘同侧(空间一致性);展开态不渲染——
-    关闭入口在侧栏头部,一个功能一个控件,不随视图漂移。悬浮半透明底 = 内容之上的功能层 */
-function CollapsedSidebarNub() {
-  const { state } = useSidebar();
-  if (state !== "collapsed") return null;
-  return (
-    <div className="collapsed-nub absolute top-[9px] left-2 z-40 rounded-md bg-background/75 backdrop-blur-sm border border-border shadow-sm">
-      <SidebarTrigger />
-    </div>
-  );
-}
 const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
 const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
 const SETTINGS_BODY =
@@ -1112,6 +1100,7 @@ function AccountPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1154,6 +1143,7 @@ function KeysPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1202,6 +1192,7 @@ function SkillsPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1999,6 +1990,7 @@ export function App() {
   ) : (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         {/* 会话名 · 工程 · 分支：一行说清"我在哪个会话、哪个工程、哪根枝上"。
             会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
         <div className="flex-1 min-w-0 flex items-center gap-2">
@@ -2276,7 +2268,9 @@ export function App() {
         {/* min-w-0:flex 子项默认 min-width:auto,宽内容会顶住不收缩,
             侧栏一展开整列右溢出窗(会话视图代码块/composer 被裁) */}
         <SidebarInset className="relative min-w-0">
-          <CollapsedSidebarNub />
+          {/* 有头部的视图把重开钮排进头部(见 SidebarNub);欢迎页没有头部,
+              它左上角是空地,浮标不会盖住任何东西("连接中"那屏在更早处 return) */}
+          {phase === "welcome" && <FloatingSidebarNub />}
           {main}
         </SidebarInset>
       </TooltipProvider>
