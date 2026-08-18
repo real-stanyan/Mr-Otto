@@ -491,6 +491,7 @@ export const useChat = create<ChatState>((set, get) => ({
       replayCursor: null,
       settingsSection: null, // ＋新会话退出设置模式，回 composer
       protocolOpen: false, // 同上，退出仪表盘
+      gitGraphOpen: false, // 同上
       error: null,
     }),
 
