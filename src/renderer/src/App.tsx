@@ -1351,12 +1351,72 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "skills", label: "Skill 库" },
 ];
 
+/** game 档下的侧栏内容：work 那边的会话在干什么。
+    只列"有动静"的（跑着 / 等审批 / 等回答），其余折成一行计数 ——
+    牌桌上的人要的是"有没有事找我"，不是完整会话列表 */
+function WorkStatusList() {
+  const sessions = useChat((s) => s.sessions);
+  const statusBySession = useChat((s) => s.statusBySession);
+  const approvals = useChat((s) => s.approvals);
+  const asks = useChat((s) => s.asks);
+  const resume = useChat((s) => s.resume);
+  const setSessionMode = useChat((s) => s.setSessionMode);
+
+  const rows = sessions
+    .map((s) => {
+      // 顺序即优先级：等人的排在跑着的前面，因为只有前者卡着不动
+      if (approvals[s.sessionId]) return { s, label: "等审批", live: true, urgent: true };
+      if (asks[s.sessionId]) return { s, label: "等回答", live: true, urgent: true };
+      if (statusBySession[s.sessionId] === "running") {
+        return { s, label: "运行中", live: true, urgent: false };
+      }
+      return { s, label: "空闲", live: false, urgent: false };
+    })
+    .filter((r) => r.live)
+    .sort((a, b) => Number(b.urgent) - Number(a.urgent));
+
+  const idle = sessions.length - rows.length;
+
+  return (
+    <div className="px-2 py-1 flex flex-col gap-1">
+      <div className="px-1 pt-1 pb-[2px] text-[11px] text-muted-foreground">Work 状态</div>
+      {rows.length === 0 ? (
+        <div className="px-1 py-2 text-xs text-muted-foreground">没有跑着的任务</div>
+      ) : (
+        rows.map(({ s, label, urgent }) => (
+          <button
+            key={s.sessionId}
+            className="w-full text-left rounded-md px-2 py-[6px] hover:bg-foreground/[0.06] transition-colors duration-150"
+            // 点一行 = 回 work 并落到那个会话上：看见了却过不去等于没看见
+            onClick={() => {
+              setSessionMode("work");
+              void resume(s.sessionId);
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span className={`size-1.5 shrink-0 rounded-full ${urgent ? "bg-primary" : "bg-muted-foreground"}`} />
+              <span className="min-w-0 flex-1 truncate text-[13px]">{s.title ?? s.sessionId}</span>
+              <span className={`shrink-0 text-[11px] ${urgent ? "text-primary" : "text-muted-foreground"}`}>
+                {label}
+              </span>
+            </div>
+          </button>
+        ))
+      )}
+      {idle > 0 && (
+        <div className="px-2 pt-1 text-[11px] text-muted-foreground">另有 {idle} 个空闲会话</div>
+      )}
+    </div>
+  );
+}
+
 /** 左侧常驻侧栏（shadcn Sidebar,offcanvas）：会话列表（设置模式下换成栏目导航）
     + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
 function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
   const mode = useChat((s) => s.sessionMode);
   const setSessionMode = useChat((s) => s.setSessionMode);
+  const asks = useChat((s) => s.asks);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -1430,7 +1490,8 @@ function AppSidebar() {
         </Tabs>
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
-        {settingsSection === null && (
+        {/* game 档下这颗也隐掉:牌桌模式里"新会话"没有落点(建牌桌是 #59 的事) */}
+        {settingsSection === null && mode !== "game" && (
           <Button
             variant="ghost"
             className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
@@ -1441,7 +1502,12 @@ function AppSidebar() {
         )}
       </SidebarHeader>
       <SidebarContent>
-        {settingsSection !== null ? (
+        {mode === "game" ? (
+          // game 档里看不见会话列表也看不见审批卡 —— 那就把"work 那边现在怎么样"
+          // 搬到这里来。静默挂起才是真的坏：turn 停在等审批上而人在牌桌上，
+          // 不给出口就等于把 agent 关在门外
+          <WorkStatusList />
+        ) : settingsSection !== null ? (
           // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
           <SidebarMenu>
             <SidebarMenuItem>
@@ -2100,7 +2166,13 @@ export function App() {
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView /> : gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
-  const base = settingsSection === "account" ? (
+  const base = mode === "game" ? (
+    // game 是另一套模式，不是会话的一个视图：头部（会话名/工程/分支）和输入框
+    // 都是 work 的语境，带过来只会让人以为这行字会发给牌桌
+    <div className={MAIN_COL}>
+      <PokerTable />
+    </div>
+  ) : settingsSection === "account" ? (
     <AccountPage />
   ) : settingsSection === "keys" ? (
     <KeysPage />
@@ -2165,7 +2237,6 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-        {mode === "work" ? (
           <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
@@ -2202,9 +2273,6 @@ export function App() {
             )}
             <div ref={bottomRef} />
           </section>
-        ) : (
-          <PokerTable />
-        )}
 
           <ApprovalCard />
           <QuestionnaireCard />

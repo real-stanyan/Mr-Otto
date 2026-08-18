@@ -33,6 +33,45 @@ export function createRpc(opts: RpcOptions): Rpc {
   };
 }
 
+/** PostgREST 的表读写。rpc 走函数，这里走表 —— 两者共用同一套鉴权头 */
+export interface Rest {
+  select(path: string): Promise<unknown[]>;
+  insert(table: string, row: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+export function createRest(opts: RpcOptions): Rest {
+  const doFetch = opts.fetchImpl ?? ((u, i) => fetch(u, i));
+  const base = opts.url.replace(/\/+$/, "");
+  const headers = {
+    "content-type": "application/json",
+    apikey: opts.serviceRoleKey,
+    authorization: `Bearer ${opts.serviceRoleKey}`,
+  };
+  async function call(path: string, init: RequestInit): Promise<unknown> {
+    const res = await doFetch(`${base}/rest/v1/${path}`, init);
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${path} 失败(${res.status})：${text.slice(0, 300)}`);
+    return text ? JSON.parse(text) : null;
+  }
+  return {
+    async select(path) {
+      const out = await call(path, { method: "GET", headers });
+      if (!Array.isArray(out)) throw new Error(`${path} 没返回数组`);
+      return out;
+    },
+    async insert(table, row) {
+      const out = await call(table, {
+        method: "POST",
+        headers: { ...headers, prefer: "return=representation" },
+        body: JSON.stringify(row),
+      });
+      const first = Array.isArray(out) ? out[0] : out;
+      if (!first || typeof first !== "object") throw new Error(`${table} 插入没回行`);
+      return first as Record<string, unknown>;
+    },
+  };
+}
+
 export function asNumber(value: unknown, rpc: string): number {
   // rpc 返回标量 bigint 时 PostgREST 给的是裸数字；数字过大时给字符串
   if (typeof value === "number" && Number.isFinite(value)) return value;
