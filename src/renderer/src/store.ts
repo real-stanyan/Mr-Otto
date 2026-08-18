@@ -16,6 +16,8 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
+import type { DirectMessage, FriendProfile, FriendsSnapshot } from "../../shared/friends.js";
+import { mergeDm, prependOlder } from "./lib/friendsState.js";
 
 /** 从 Record 里删一个 key 的不可变写法 */
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -90,6 +92,18 @@ interface ChatState {
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
   attachError: string | null;
+  /** 好友快照(主进程推送镜像;未登录/登出 = 三空数组) */
+  friendsSnapshot: FriendsSnapshot;
+  /** 当前在线的 userId(presence 推送镜像) */
+  onlineIds: string[];
+  /** 非 null = DM 面板开着(右侧叠加槽位,与 protocolOpen/gitGraphOpen 互斥) */
+  friendChat: FriendProfile | null;
+  /** friendId → 消息列表(旧→新)。只留打开过的会话,登出全清 */
+  dmByFriend: Record<string, DirectMessage[]>;
+  /** friendId → 未读数(面板开着的好友不计,打开即清零) */
+  unreadByFriend: Record<string, number>;
+  /** 好友区/DM 面板的内联错误(FriendsResult ok:false 的 message 落这) */
+  friendError: string | null;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -143,6 +157,18 @@ interface ChatState {
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
   rename(title: string): Promise<void>;
+  refreshFriends(): Promise<void>;
+  /** 邮箱精确搜索。null = 查无此人;错误落 friendError 并回 null */
+  searchFriend(email: string): Promise<FriendProfile | null>;
+  addFriend(userId: string): Promise<void>;
+  respondFriend(friendshipId: string, accept: boolean): Promise<void>;
+  removeFriend(friendshipId: string): Promise<void>;
+  /** 打开与该好友的 DM 面板(互斥收口其他面板),没历史就拉一页 */
+  openFriendChat(profile: FriendProfile): Promise<void>;
+  closeFriendChat(): void;
+  sendDm(body: string): Promise<void>;
+  /** DM 面板顶部"加载更早"——按当前最旧 id 往前翻一页 */
+  loadOlderDms(): Promise<void>;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
 }
 
@@ -162,6 +188,7 @@ const enterChat = (info: BootInfo) => ({
   settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
   protocolOpen: false, // 同上，仪表盘也让位
   gitGraphOpen: false, // 同上
+  friendChat: null, // 同上
   error: null,
 });
 
@@ -199,6 +226,12 @@ export const useChat = create<ChatState>((set, get) => ({
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   staged: [],
   attachError: null,
+  friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
+  onlineIds: [],
+  friendChat: null,
+  dmByFriend: {},
+  unreadByFriend: {},
+  friendError: null,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -243,16 +276,16 @@ export const useChat = create<ChatState>((set, get) => ({
     // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的
     if (section === "keys") {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false,
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         keyStatus: await window.otter.keyStatus(),
       });
     } else if (section === "skills") {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false,
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         skills: await window.otter.listSkills(),
       });
     } else {
-      set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false });
+      set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null });
     }
   },
 
@@ -263,7 +296,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 没有会话 workspace 才退回上次手选记忆
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({
-      protocolOpen: true, settingsSection: null, gitGraphOpen: false,
+      protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
@@ -329,7 +362,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().workspace || null;
     set({
       gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
-      protocolOpen: false, settingsSection: null, // 互斥:同一块主区
+      protocolOpen: false, settingsSection: null, friendChat: null, // 互斥:同一块主区
     });
     if (repo) await get().refreshGitGraph();
   },
@@ -391,11 +424,125 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async refreshFriends() {
+    const r = await window.otter.friendsList();
+    if (r.ok) set({ friendsSnapshot: r.value, friendError: null });
+    else set({ friendError: r.message });
+  },
+
+  async searchFriend(email) {
+    const r = await window.otter.friendsSearch(email);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return null;
+    }
+    set({ friendError: null });
+    return r.value;
+  },
+
+  async addFriend(userId) {
+    const r = await window.otter.friendsSendRequest(userId);
+    set({ friendError: r.ok ? null : r.message }); // 成功后的快照由主进程推,不本地猜
+  },
+
+  async respondFriend(friendshipId, accept) {
+    const r = await window.otter.friendsRespond(friendshipId, accept);
+    set({ friendError: r.ok ? null : r.message });
+  },
+
+  async removeFriend(friendshipId) {
+    const r = await window.otter.friendsRemove(friendshipId);
+    set({ friendError: r.ok ? null : r.message });
+  },
+
+  async openFriendChat(profile) {
+    set((s) => ({
+      friendChat: profile,
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, // 互斥:同一右侧槽位
+      unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
+      friendError: null,
+    }));
+    if ((get().dmByFriend[profile.id] ?? []).length === 0) {
+      const r = await window.otter.friendsListMessages(profile.id);
+      if (r.ok) {
+        const list = [...r.value].reverse(); // bridge 回新→旧,存旧→新
+        set((s) => ({ dmByFriend: { ...s.dmByFriend, [profile.id]: list } }));
+      } else set({ friendError: r.message });
+    }
+  },
+
+  closeFriendChat: () => set({ friendChat: null }),
+
+  async sendDm(body) {
+    const friend = get().friendChat;
+    if (!friend || !body.trim()) return;
+    const r = await window.otter.friendsSendMessage(friend.id, body.trim());
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    // 自己发的消息主进程不推(onDirectMessage 只推对端来信),重拉最新一页回显——
+    // 拿真 id/时间戳,不本地造假消息(与"快照由主进程推"同一哲学)
+    const page = await window.otter.friendsListMessages(friend.id);
+    if (page.ok) {
+      const list = [...page.value].reverse();
+      set((s) => ({
+        dmByFriend: { ...s.dmByFriend, [friend.id]: list },
+        friendError: null,
+      }));
+    }
+  },
+
+  async loadOlderDms() {
+    const friend = get().friendChat;
+    if (!friend) return;
+    const current = get().dmByFriend[friend.id] ?? [];
+    const oldest = current[0];
+    if (!oldest) return;
+    const r = await window.otter.friendsListMessages(friend.id, oldest.id);
+    if (r.ok) {
+      set((s) => ({
+        dmByFriend: {
+          ...s.dmByFriend,
+          [friend.id]: prependOlder(s.dmByFriend[friend.id] ?? [], r.value),
+        },
+      }));
+    } else set({ friendError: r.message });
+  },
+
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
 
-    window.otter.onAccountChanged((account) => set({ account }));
+    window.otter.onAccountChanged((account) =>
+      set(
+        account.signedIn
+          ? { account }
+          : {
+              account,
+              // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
+              friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
+              onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
+            }
+      )
+    );
+    window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
+    window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
+    window.otter.onDirectMessage((msg) =>
+      set((s) => {
+        const open = s.friendChat?.id === msg.sender;
+        return {
+          // 只并入已打开过的会话缓冲;没打开过的等 openFriendChat 拉历史
+          dmByFriend: s.dmByFriend[msg.sender]
+            ? { ...s.dmByFriend, [msg.sender]: mergeDm(s.dmByFriend[msg.sender]!, msg) }
+            : s.dmByFriend,
+          // 面板正对着这个人 = 已读;否则未读 +1
+          unreadByFriend: open
+            ? s.unreadByFriend
+            : { ...s.unreadByFriend, [msg.sender]: (s.unreadByFriend[msg.sender] ?? 0) + 1 },
+        };
+      })
+    );
     window.otter.onEvent((e) =>
       set((s) => {
         // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
@@ -498,6 +645,7 @@ export const useChat = create<ChatState>((set, get) => ({
       settingsSection: null, // ＋新会话退出设置模式，回 composer
       protocolOpen: false, // 同上，退出仪表盘
       gitGraphOpen: false, // 同上
+      friendChat: null, // 同上
       error: null,
     }),
 
