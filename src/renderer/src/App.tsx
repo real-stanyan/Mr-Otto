@@ -853,10 +853,13 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
       return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 
     case "approval_decision":
+      // 批准(含 bypass 自动批准)只是"正常放行",不是对话事实,时间线不显示——
+      // 免审模式下一长串「已批准」纯属噪音。拒绝才上时间线:它中断了流程,
+      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档
+      if (event.decision === "approved") return null;
       return (
         <div className={AUDIT}>
-          审批：{event.decision === "approved" ? "已批准" : "已拒绝"}
-          {event.reason ? `（${event.reason}）` : ""}
+          审批：已拒绝{event.reason ? `（${event.reason}）` : ""}
         </div>
       );
 
