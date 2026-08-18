@@ -14,6 +14,12 @@
 
 - `supabase/migrations/0002_token_wallets.sql`、`0003_token_denominated_wallet.sql`
   均已在 `otto-db-1` 执行并逐条验过行为（0003 起计费单位是 token、按 flash/pro 分桶，ADR-0021）
+- `0004_poker_ledger.sql`、`0005_poker_tables.sql` 已执行，对应的
+  `supabase/checks/*.check.sql` 全项 PASS（两份 check 都包在事务里，跑完 rollback）
+- 牌桌端点 `/v1/poker/*` 已上线（issue #58）。端到端验过：建桌 → 列桌 →
+  入座（座位 0）→ 单人开牌被拒 → 离桌带回 1000 → 无 token 401，
+  桶余额一进一出净零
+- `src/poker/` 子目录随本次部署一起上传，systemd 服务不需要改
 - 服务已 `systemctl enable --now`，开机自启
 - 公网入口：`https://otto-auth.stan.damianslife.com/gw/`（`/gw/healthz` 返回 200）
 - **`OTTO_UPSTREAM_API_KEY` still 是占位值** `REPLACE_ME_ROTATED_DEEPSEEK_KEY`

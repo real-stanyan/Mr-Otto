@@ -14,7 +14,8 @@ import { asBoolean, asNumber, createRpc, type RpcOptions } from "./supabaseRpc.j
 export interface BuyinParams {
   userId: string;
   tableId: string;
-  tier: string;
+  /** poker_join 不需要它（档位由桌子定），poker_buyin 需要 */
+  tier?: string;
   amount: number;
   /** 幂等键。重投同一次买入不会扣两遍 */
   requestId: string;
@@ -37,6 +38,10 @@ export interface HandRecord {
 }
 
 export interface PokerStore {
+  /** 好友门 + 分座位 + 买入，一个事务（migration 0005）。返回座位号 */
+  join(p: BuyinParams): Promise<number>;
+  /** 带走全部筹码 + 空出座位。返回带走了多少 */
+  leave(p: { userId: string; tableId: string; requestId: string }): Promise<number>;
   /** 桶 → 桌。返回买入后的桌上筹码 */
   buyin(p: BuyinParams): Promise<number>;
   /** 桌 → 桶，把整个栈带走。返回带走了多少 */
@@ -88,6 +93,34 @@ export function createSupabasePokerStore(opts: RpcOptions): PokerStore {
   const call = createRpc(opts);
 
   return {
+    async join(p) {
+      if (!p.requestId) throw new Error("入座必须带幂等键");
+      if (!Number.isInteger(p.amount) || p.amount <= 0) {
+        throw new Error(`买入额必须是正整数，给了 ${p.amount}`);
+      }
+      return asNumber(
+        await call("poker_join", {
+          p_user: p.userId,
+          p_table: p.tableId,
+          p_amount: p.amount,
+          p_request_id: p.requestId,
+        }),
+        "poker_join"
+      );
+    },
+
+    async leave(p) {
+      if (!p.requestId) throw new Error("离桌必须带幂等键");
+      return asNumber(
+        await call("poker_leave", {
+          p_user: p.userId,
+          p_table: p.tableId,
+          p_request_id: p.requestId,
+        }),
+        "poker_leave"
+      );
+    },
+
     async buyin(p) {
       if (!p.requestId) throw new Error("买入必须带幂等键");
       if (!Number.isInteger(p.amount) || p.amount <= 0) {
@@ -97,7 +130,7 @@ export function createSupabasePokerStore(opts: RpcOptions): PokerStore {
         await call("poker_buyin", {
           p_user: p.userId,
           p_table: p.tableId,
-          p_tier: p.tier,
+          p_tier: p.tier ?? "",
           p_amount: p.amount,
           p_request_id: p.requestId,
         }),
