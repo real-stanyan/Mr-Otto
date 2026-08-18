@@ -7,6 +7,7 @@
 // 单位是 token,按桶(tier)分账,不是钱(ADR-0021)。
 
 import type { Tier } from "./buckets.js";
+import { asNumber, createRpc, type FetchLike } from "./supabaseRpc.js";
 
 export interface SpendEntry {
   userId: string;
@@ -30,7 +31,7 @@ export interface Wallet {
   rebuild(userId: string, tier: Tier): Promise<number>;
 }
 
-export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+export type { FetchLike };
 
 export interface WalletOptions {
   /** Supabase 根地址,例如 https://otto-auth.stan.damianslife.com */
@@ -39,33 +40,10 @@ export interface WalletOptions {
   fetchImpl?: FetchLike;
 }
 
-function asNumber(value: unknown, rpc: string): number {
-  // rpc 返回标量 bigint 时 PostgREST 给的是裸数字;数字过大时给字符串
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  throw new Error(`${rpc} 返回了非数字:${JSON.stringify(value)}`);
-}
-
 export function createSupabaseWallet(opts: WalletOptions): Wallet {
-  const doFetch = opts.fetchImpl ?? ((u, i) => fetch(u, i));
-  const base = opts.url.replace(/\/+$/, "");
-
-  async function rpc(name: string, body: Record<string, unknown>): Promise<number> {
-    const res = await doFetch(`${base}/rest/v1/rpc/${name}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        apikey: opts.serviceRoleKey,
-        authorization: `Bearer ${opts.serviceRoleKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${name} 失败(${res.status}):${text.slice(0, 300)}`);
-    return asNumber(JSON.parse(text), name);
-  }
+  const call = createRpc(opts);
+  const rpc = async (name: string, body: Record<string, unknown>): Promise<number> =>
+    asNumber(await call(name, body), name);
 
   return {
     grant: (userId, tier, tokens) =>
