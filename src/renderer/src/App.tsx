@@ -288,7 +288,9 @@ function ComposerBar() {
   const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
   return (
-    <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap text-xs text-muted-foreground pl-[2px]">
+    // 窄宽(半屏面板挤压)时右簇整组换行:model/thinking/用量环包成一个 wrap 单元,
+    // ml-auto 让它在自己那行也贴右——不会散成一件一行的碎排
+    <div className="flex-1 min-w-0 flex items-center gap-x-2 gap-y-1 flex-wrap text-xs text-muted-foreground pl-[2px]">
       <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
         <SelectTrigger
           className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
@@ -318,8 +320,7 @@ function ComposerBar() {
         <TooltipContent>添加文件(图片/文本)</TooltipContent>
       </Tooltip>
 
-      <span className="flex-1" />
-
+      <div className="ml-auto flex items-center gap-2 min-w-0">
       <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
         <SelectTrigger className={BAR_SELECT}>
           <SelectValue />
@@ -364,6 +365,7 @@ function ComposerBar() {
         </button>
         {ctxOpen && <CtxPopover events={events} ctxWindow={ctxWindow} onClose={() => setCtxOpen(false)} />}
       </span>
+      </div>
     </div>
   );
 }
@@ -1573,10 +1575,12 @@ export function App() {
 
           <ApprovalCard />
 
-          <footer className="px-5 pt-[10px] pb-3">
+          <footer className="relative px-5 pt-[10px] pb-3">
+            {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
-            <div className="relative bg-card border border-border rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
+            <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
               {slashMatches.length > 0 && (
                 <div className={SLASH_MENU} role="listbox">
                   {slashMatches.map(([name, c], i) => (
@@ -1678,7 +1682,8 @@ export function App() {
                   }
                 }}
               />
-              <div className="flex items-center gap-2">
+              {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
+              <div className="flex items-end gap-2">
                 <ComposerBar />
                 {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
                     停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
