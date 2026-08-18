@@ -372,7 +372,11 @@ function TodoPanel() {
             <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
               <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
                 {t.status === "in_progress" ? (
-                  <ThinkingOrb state="working" size={16} theme="auto" />
+                  // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
+                  // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
+                  <span className="scale-[0.8] origin-center leading-none" aria-hidden>
+                    <ThinkingOrb state="working" size={20} theme="auto" />
+                  </span>
                 ) : t.status === "completed" ? (
                   <Check className="size-[13px] text-ok" aria-hidden />
                 ) : (
