@@ -6,7 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Ellipsis, GitBranch, History } from "lucide-react";
+import { BookMarked, ChevronRight, Ellipsis, GitBranch, History, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +24,7 @@ import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
+import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
 import {
   Select,
@@ -43,6 +44,10 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupAction,
+  SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -943,6 +948,26 @@ function SkillsPage() {
   );
 }
 
+/** 侧栏工程分组的折叠状态：UI 偏好，不是会话事实，走 localStorage 不进事件日志
+    （沿用 theme.ts 的先例）。存路径数组；读坏了就当全展开——折叠记忆丢了是小事，
+    白屏是大事 */
+const COLLAPSED_KEY = "otter-sidebar-collapsed-projects";
+
+function loadCollapsedProjects(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedProjects(dirs: Set<string>): void {
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...dirs]));
+}
+
 /** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案 */
 const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "account", label: "账号" },
@@ -971,8 +996,17 @@ function AppSidebar() {
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
-  const resumable = sessions.filter((s) => s.workspace !== null);
   const prehistoric = sessions.filter((s) => s.workspace === null);
+  // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
+  const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedProjects);
+  const toggleGroup = (dir: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(dir)) next.add(dir);
+      saveCollapsedProjects(next);
+      return next;
+    });
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -991,7 +1025,7 @@ function AppSidebar() {
           <Button
             variant="ghost"
             className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
-            onClick={newSession}
+            onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
           >
             ＋ 新会话
           </Button>
@@ -1021,42 +1055,94 @@ function AppSidebar() {
             ))}
           </SidebarMenu>
         ) : (
-          <SidebarMenu>
-            {resumable.map((s) => (
-              <SidebarMenuItem key={s.sessionId}>
-                <SidebarMenuButton
-                  className="h-auto flex-col items-start gap-px py-[7px]"
-                  isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && s.sessionId === sessionId}
-                  onClick={() => void resume(s.sessionId)}
-                >
-                  {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-                  <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
-                  <span className={WHEN_SPAN}>
-                    {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                    {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-                    {approvals[s.sessionId] ? (
-                      <em className="not-italic font-semibold text-warn"> 等审批</em>
-                    ) : statusBySession[s.sessionId] === "running" ? (
-                      <em className="not-italic font-semibold text-brand"> 运行中</em>
-                    ) : null}
-                  </span>
-                </SidebarMenuButton>
-                <SidebarMenuAction
-                  showOnHover
-                  title="删除会话（整段日志从库里抹除，不可恢复）"
-                  onClick={(e) => {
-                    e.stopPropagation(); // 别触发外层的"切换到该会话"
-                    if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                      void deleteSession(s.sessionId);
-                    }
-                  }}
-                >
-                  ✕
-                </SidebarMenuAction>
-              </SidebarMenuItem>
-            ))}
+          <>
+            {/* 一个工程一组：组序按组内最近会话时间，最近动过的工程浮上来。
+                折叠状态记 localStorage（UI 偏好不进事件日志，沿用 theme.ts 的先例） */}
+            {groups.map((g) => {
+              const isCollapsed = collapsed.has(g.workspace);
+              return (
+                <SidebarGroup key={g.workspace} className="py-1">
+                  <SidebarGroupLabel asChild>
+                    <button
+                      className="w-full gap-1 pr-7 hover:text-sidebar-foreground"
+                      onClick={() => toggleGroup(g.workspace)}
+                      title={g.workspace}
+                    >
+                      {/* 折叠只切显隐（列表结构变化,不做高度动画）；箭头转 = 状态反馈 */}
+                      <ChevronRight
+                        className={`w-[13px] h-[13px] shrink-0 transition-transform duration-150 ease-out ${isCollapsed ? "" : "rotate-90"}`}
+                      />
+                      <span className="min-w-0 truncate">{g.label}</span>
+                      {/* 收起来了才报条数：展开时数得出来，标签栏别添噪 */}
+                      {isCollapsed && (
+                        <span className="shrink-0 font-mono text-[10px] opacity-70">{g.sessions.length}</span>
+                      )}
+                    </button>
+                  </SidebarGroupLabel>
+                  <SidebarGroupAction
+                    title={`在 ${g.label} 下开新会话`}
+                    onClick={() => newSession(g.workspace)}
+                  >
+                    <Plus />
+                  </SidebarGroupAction>
+                  {!isCollapsed && (
+                    <SidebarGroupContent>
+                      {/* 一道竖脊 + 缩进:一眼看出这些会话挂在上面那个工程下,
+                          而不是和组标题平级的另一串 */}
+                      {/* 缩进只能吃自己的 padding:w-full 上再加 margin 会把总宽顶出侧栏,
+                          冒出一条横滚动条 */}
+                      <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
+                        {g.sessions.map((s) => (
+                          <SidebarMenuItem key={s.sessionId}>
+                            <SidebarMenuButton
+                              className="h-auto flex-col items-start gap-px py-[7px]"
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && s.sessionId === sessionId}
+                              onClick={() => void resume(s.sessionId)}
+                            >
+                              {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
+                              <span className={TITLE_SPAN}>{s.title ?? g.label}</span>
+                              {/* 文件夹名搬去组标题了,这行只留时间/条数——同组里重复报工程名是噪音 */}
+                              <span className={WHEN_SPAN}>
+                                {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                                {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
+                                {approvals[s.sessionId] ? (
+                                  <em className="not-italic font-semibold text-warn"> 等审批</em>
+                                ) : statusBySession[s.sessionId] === "running" ? (
+                                  <em className="not-italic font-semibold text-brand"> 运行中</em>
+                                ) : null}
+                              </span>
+                            </SidebarMenuButton>
+                            <SidebarMenuAction
+                              showOnHover
+                              title="删除会话（整段日志从库里抹除，不可恢复）"
+                              onClick={(e) => {
+                                e.stopPropagation(); // 别触发外层的"切换到该会话"
+                                if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                                  void deleteSession(s.sessionId);
+                                }
+                              }}
+                            >
+                              ✕
+                            </SidebarMenuAction>
+                          </SidebarMenuItem>
+                        ))}
+                      </SidebarMenu>
+                    </SidebarGroupContent>
+                  )}
+                </SidebarGroup>
+              );
+            })}
+            {/* 收起的组里有动静(跑 turn / 等审批)时提醒一句,免得折叠把事实藏了 */}
+            {groups.some(
+              (g) =>
+                collapsed.has(g.workspace) &&
+                g.sessions.some((s) => approvals[s.sessionId] || statusBySession[s.sessionId] === "running")
+            ) && (
+              <div className="px-[10px] pb-1 text-[11px] text-warn">收起的工程里有会话在动</div>
+            )}
             {prehistoric.length > 0 && (
-              <>
+              // 没工程可归,不塞进任何组:垫底单列一段
+              <SidebarMenu>
                 <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
                 {prehistoric.map((s) => (
                   <SidebarMenuItem key={s.sessionId}>
@@ -1085,9 +1171,9 @@ function AppSidebar() {
                     </SidebarMenuAction>
                   </SidebarMenuItem>
                 ))}
-              </>
+              </SidebarMenu>
             )}
-          </SidebarMenu>
+          </>
         )}
       </SidebarContent>
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
@@ -1321,7 +1407,11 @@ function Welcome() {
   const send = useChat((s) => s.send);
   const error = useChat((s) => s.error);
   const lastModel = useChat((s) => s.model);
-  const [workspace, setWorkspace] = useState<string | null>(null);
+  // 侧栏工程分组的 ＋ 带过来的文件夹初值。Welcome 常驻不卸载，所以用 effect 跟着变，
+  // 不用 key 重挂——重挂会连草稿一起清掉
+  const pendingWorkspace = useChat((s) => s.pendingWorkspace);
+  const [workspace, setWorkspace] = useState<string | null>(pendingWorkspace);
+  useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
   const [model, setModel] = useState(() =>
     findModel(lastModel) ? lastModel : MODEL_CATALOG[0]!.model

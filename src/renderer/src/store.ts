@@ -38,6 +38,9 @@ interface ChatState {
   events: SessionEvent[];
   /** 侧栏会话列表（常驻） */
   sessions: SessionSummary[];
+  /** 新会话 composer 的文件夹初值：侧栏工程分组的 ＋ 塞进来，Welcome 消费。
+      null = 空白开局（顶部那颗 ＋ 新会话） */
+  pendingWorkspace: string | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
@@ -138,8 +141,9 @@ interface ChatState {
   signOut(): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
-  /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西 */
-  newSession(): void;
+  /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西。
+      dir = 预填的工程文件夹（侧栏工程分组上那颗 ＋）；不传就是空白开局 */
+  newSession(dir?: string): void;
   startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
@@ -186,6 +190,7 @@ export const useChat = create<ChatState>((set, get) => ({
   workspace: "",
   events: [],
   sessions: [],
+  pendingWorkspace: null,
   statusBySession: {},
   approvals: {},
   streamingBySession: {},
@@ -553,8 +558,9 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  newSession: () =>
+  newSession: (dir) =>
     set({
+      pendingWorkspace: dir ?? null, // composer 的文件夹初值,由 Welcome 消费
       phase: "welcome",
       sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
       events: [],
