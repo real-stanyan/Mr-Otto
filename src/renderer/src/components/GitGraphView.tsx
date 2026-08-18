@@ -72,7 +72,8 @@ export function GitGraphView() {
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        <div className="flex-1 min-w-0 overflow-auto">
+        {/* 只竖滚:泳道 SVG 定宽 + 主题行 truncate,横向内容截断不出滚动条 */}
+        <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
           {gitGraph === null ? (
             <div className="grid gap-2 p-4">
               <Skeleton className="h-6" /><Skeleton className="h-6" /><Skeleton className="h-6" />
