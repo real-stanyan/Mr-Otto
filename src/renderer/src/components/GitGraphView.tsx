@@ -62,7 +62,7 @@ export function GitGraphView() {
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="font-[650] text-sm">Git Graph</span>
+        <span className="shrink-0 whitespace-nowrap font-[650] text-sm">Git Graph</span>
         {headBranch && (
           <span className="inline-flex items-center gap-1 shrink-0 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title="当前所在分支">
             <GitBranch className="w-3 h-3" />{headBranch}
