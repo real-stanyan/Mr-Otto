@@ -32,7 +32,7 @@
 - 视图内三块内容:
   - **ADR 面板**:扫 `docs/adr/` 与 `docs/gearbox-adr/` 下 `NNNN-slug.md`,列表(编号 + 标题)+ 点开渲染 markdown
   - **Issues 面板**:open/closed 两组列表;按三角色染色标签——Task / Memory(handoff)/ Protocol gap;角色靠标题关键词启发式判定("handoff"/"交接" = Memory,"Protocol gap" = gap,其余 = Task),猜不中归 Task
-  - **Handoff 视图**:点开 issue 看详情(正文 + 评论);评论中识别五段式(①-⑤ 或 1-5 编号段),解析成结构化卡片(五段各一节);解析失败整条回退原文渲染
+  - **Handoff 视图**:点开 issue 看详情(正文 + 评论);评论中识别五段式(①-⑤ 标记,齐全且按序),解析成结构化卡片(五段各一节);解析失败整条回退原文渲染
 - 目标仓库:默认当前会话工作目录;可手选文件夹(系统目录对话框),选择持久化(localStorage,UI 偏好非会话事实)
 
 ## 2. 数据管道

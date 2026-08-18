@@ -143,17 +143,33 @@ export function ProtocolView() {
             ) : !issues.ok ? (
               <IssuesError result={issues} />
             ) : (
-              issues.issues.map((i) => (
-                <button
-                  key={i.number}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${i.state === "closed" ? "opacity-55" : ""}`}
-                  onClick={() => void openIssue(i.number)}
-                >
-                  <span className="font-mono text-xs text-muted-foreground shrink-0">#{i.number}</span>
-                  <span className="flex-1 min-w-0 truncate">{i.title}</span>
-                  <RoleBadge role={i.role} />
-                </button>
-              ))
+              // spec §1:open/closed 两组列表,closed 组前加分隔标题(镜像 App.tsx 侧栏"史前会话"的样式)
+              (() => {
+                const open = issues.issues.filter((i) => i.state === "open");
+                const closed = issues.issues.filter((i) => i.state === "closed");
+                const row = (i: (typeof issues.issues)[number]) => (
+                  <button
+                    key={i.number}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${i.state === "closed" ? "opacity-55" : ""}`}
+                    onClick={() => void openIssue(i.number)}
+                  >
+                    <span className="font-mono text-xs text-muted-foreground shrink-0">#{i.number}</span>
+                    <span className="flex-1 min-w-0 truncate">{i.title}</span>
+                    <RoleBadge role={i.role} />
+                  </button>
+                );
+                return (
+                  <>
+                    {open.map(row)}
+                    {closed.length > 0 && (
+                      <>
+                        <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">已关闭</div>
+                        {closed.map(row)}
+                      </>
+                    )}
+                  </>
+                );
+              })()
             )}
           </div>
         </div>

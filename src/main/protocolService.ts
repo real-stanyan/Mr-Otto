@@ -3,7 +3,7 @@
 // 不经 ExecutionWorld;见 spec §2)。依赖注入照抄 skills.ts 模式:测试喂假实现。
 // 严格只读:gh 只调 list/view,永不写。
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { join, normalize } from "node:path";
 import {
@@ -18,6 +18,10 @@ export interface ProtocolDeps {
   readFile(path: string): string | null;
   /** gh 子进程;reject 的错误对象带 code/stderr(classifyGhError 的输入形状) */
   execGh(args: string[], cwd: string): Promise<{ stdout: string }>;
+  /** repoDir 是否存在——localStorage 记的目录可能被删/改名,exec 前先挡,
+   * 否则 execFile 对不存在的 cwd 抛 ENOENT,和"没装 gh"是同一错误码,会被
+   * classifyGhError 误判成 gh-missing(见调用处注释) */
+  dirExists(dir: string): boolean;
 }
 
 const nodeDeps: ProtocolDeps = {
@@ -44,6 +48,9 @@ const nodeDeps: ProtocolDeps = {
         else resolve({ stdout: String(stdout) });
       });
     });
+  },
+  dirExists(dir) {
+    return existsSync(dir);
   },
 };
 
@@ -87,6 +94,9 @@ export function createProtocolService(deps: ProtocolDeps = nodeDeps): ProtocolSe
     },
 
     async listIssues(repoDir) {
+      // localStorage 记的 repoDir 可能已被删/改名——exec 前先挡,否则 execFile 对不存在
+      // 的 cwd 抛 ENOENT,和"没装 gh"撞同一错误码,会被误判成 gh-missing(UI 引导装 gh 就跑偏了)
+      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGh(
           ["issue", "list", "--state", "all", "--limit", "200", "--json", "number,title,state,updatedAt"],
@@ -99,6 +109,8 @@ export function createProtocolService(deps: ProtocolDeps = nodeDeps): ProtocolSe
     },
 
     async getIssue(repoDir, n) {
+      // 同 listIssues:目录不存在先挡,别让 execFile 的 ENOENT 混进 classifyGhError
+      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGh(
           ["issue", "view", String(n), "--json", "number,title,state,body,comments"],

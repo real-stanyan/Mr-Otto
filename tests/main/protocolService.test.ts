@@ -5,6 +5,7 @@ import { createProtocolService, type ProtocolDeps } from "../../src/main/protoco
 function fakeDeps(init: {
   files?: Record<string, string>;
   gh?: (args: string[]) => { stdout: string } | { err: { code?: string; stderr?: string; message?: string } };
+  dirExists?: boolean;
 } = {}): ProtocolDeps {
   const files = init.files ?? {};
   return {
@@ -17,6 +18,10 @@ function fakeDeps(init: {
     },
     readFile(path) {
       return files[path] ?? null;
+    },
+    // 默认存在——大多数用例不关心这条,只有"目录被删/改名"的用例显式传 false
+    dirExists() {
+      return init.dirExists ?? true;
     },
     async execGh(args) {
       const r = init.gh?.(args);
@@ -84,6 +89,12 @@ describe("listIssues", () => {
     const svc = createProtocolService(fakeDeps({ gh: () => ({ stdout: "not json" }) }));
     expect(await svc.listIssues("/repo")).toMatchObject({ ok: false, kind: "gh-error" });
   });
+  // repoDir 记在 localStorage,目录删了/改名了再打开仪表盘会重现:execFile 对不存在的 cwd
+  // 抛 ENOENT,和"没装 gh"是同一个错误码——不能靠 classifyGhError 分辨,得在 exec 前挡住
+  it("目录不存在(remembered repoDir 被删/改名) = no-repo,不是 gh-missing", async () => {
+    const svc = createProtocolService(fakeDeps({ dirExists: false, gh: () => ({ err: { message: "should not be called" } }) }));
+    expect(await svc.listIssues("/repo/gone")).toMatchObject({ ok: false, kind: "no-repo", detail: "目录不存在: /repo/gone" });
+  });
 });
 
 describe("getIssue", () => {
@@ -100,5 +111,9 @@ describe("getIssue", () => {
   it("gh 炸 = 结构化错误", async () => {
     const svc = createProtocolService(fakeDeps({ gh: () => ({ err: { stderr: "HTTP 500" } }) }));
     expect(await svc.getIssue("/repo", 5)).toMatchObject({ ok: false, kind: "gh-error" });
+  });
+  it("目录不存在(remembered repoDir 被删/改名) = no-repo,不是 gh-missing", async () => {
+    const svc = createProtocolService(fakeDeps({ dirExists: false, gh: () => ({ err: { message: "should not be called" } }) }));
+    expect(await svc.getIssue("/repo/gone", 5)).toMatchObject({ ok: false, kind: "no-repo", detail: "目录不存在: /repo/gone" });
   });
 });
