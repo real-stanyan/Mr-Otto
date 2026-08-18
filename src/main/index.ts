@@ -29,6 +29,12 @@ import { AccountManager, createSupabaseAuthClient } from "./account.js";
 // 才能实例化，中间这段空档收到的 URL 先缓存，ready 后 flush。
 app.setAsDefaultProtocolClient("mrotto");
 
+// 品牌名 Mr Otto,但 userData 目录钉死在 mr-otto:Electron 的 userData 路径默认跟
+// app.name 走,改名会把 keys.json/sessions.db/attachments 留在旧目录里"凭空消失"。
+// 先 setName 再显式 setPath,老数据原地不动。
+app.setName("Mr Otto");
+app.setPath("userData", join(app.getPath("appData"), "mr-otto"));
+
 let accountManager: AccountManager | null = null;
 let pendingAuthUrl: string | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -78,6 +84,13 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  // dev 下菜单栏首项仍显示 "Electron"(来自 Electron 二进制的 Info.plist,运行时改不了,
+  // 打包后自然是 Mr Otto);dock 图标和关于面板运行时可改,先把这两处品牌立起来
+  if (process.platform === "darwin") {
+    app.dock?.setIcon(join(app.getAppPath(), "resources/icon.png"));
+  }
+  app.setAboutPanelOptions({ applicationName: "Mr Otto", applicationVersion: app.getVersion() });
+
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
   const keyVaultPath = join(app.getPath("userData"), "keys.json");
