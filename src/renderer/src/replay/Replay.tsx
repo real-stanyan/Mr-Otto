@@ -19,7 +19,7 @@ const DAT_CAP = `${DAT} border-solid border-ring bg-card`;
 const CAP_LABEL = "block text-[9px] font-semibold tracking-[0.12em] text-brand mb-1";
 /* 调用链 = 单行流水线:一律从左往右读,长了在面板内横向滚(不是窗口滚);窄窗折行 */
 const CHAIN =
-  "flex flex-nowrap items-stretch gap-2 overflow-x-auto pb-2 [&>*]:shrink-0 scrollbar-thin-x max-[980px]:flex-wrap max-[980px]:overflow-x-visible max-[980px]:gap-y-[10px]";
+  "flex flex-nowrap items-stretch gap-2 overflow-x-auto pb-2 [&>*]:shrink-0 max-[980px]:flex-wrap max-[980px]:overflow-x-visible max-[980px]:gap-y-[10px]";
 
 /** token 数组 → 着色 span（steps.ts 的 hl 保持纯数据，DOM 在这拼）。
     导出：聊天区工具详情面板复用同一高亮器——一处逻辑，两处消费。
@@ -178,7 +178,7 @@ export function Replay() {
             {cur + 1} / {steps.length}
           </span>
         </div>
-        <div className="bg-card border border-border rounded-xl p-[6px] flex-[1_1_40%] min-h-[120px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:max-h-[min(260px,32vh)]">
+        <div className="bg-card border border-border rounded-xl p-[6px] flex-[1_1_40%] min-h-[120px] overflow-y-auto max-[980px]:flex-none max-[980px]:max-h-[min(260px,32vh)]">
           {steps.map((st, i) => {
             const isCur = i === cur;
             // 当前步:左侧 accent 条 + 底色,比整圈描边安静(描边会跟滚动条打架)
@@ -217,7 +217,7 @@ export function Replay() {
             );
           })}
         </div>
-        <div className="bg-card border border-border rounded-xl p-[14px] flex-[1_1_60%] min-h-[140px] overflow-y-auto scrollbar-thin max-[980px]:flex-none max-[980px]:overflow-visible">
+        <div className="bg-card border border-border rounded-xl p-[14px] flex-[1_1_60%] min-h-[140px] overflow-y-auto max-[980px]:flex-none max-[980px]:overflow-visible">
           {s ? (
             <>
               <h3 className={PANEL_H3}>
