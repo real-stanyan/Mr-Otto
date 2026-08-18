@@ -7,7 +7,7 @@
 // 而 usage 只在**终块**里(include_usage)。所以这里是个"嗅探器":
 // 喂什么原样放行,同时顺手把 usage 抠出来。
 
-import type { TokenUsage } from "./pricing.js";
+import type { TokenUsage } from "./buckets.js";
 
 export interface SniffedUsage extends TokenUsage {
   /** 上游自报的型号(可能与请求的不同,比如别名解析),按它计价 */

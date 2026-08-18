@@ -5,11 +5,14 @@
 // 它守的是一条线:**真 key 只在这一侧**。客户端拿的是 Supabase JWT,
 // 网关验完签换成 DeepSeek key 转发。客户端永远看不到官方 key,
 // 也永远改不动自己的余额。
+//
+// 计费单位是 token,按型号桶分账(ADR-0021):flash 和 pro 各有各的余额,
+// 互不流通。
 
 import { randomUUID } from "node:crypto";
+import { bucketOf, grantFor, TIERS, tokensSpent, type Tier } from "./buckets.js";
 import { verifyJwt } from "./jwt.js";
-import { costMicroUsd, MICRO_PER_USD } from "./pricing.js";
-import { createUsageSniffer, sniffJson } from "./usage.js";
+import { createUsageSniffer, sniffJson, type SniffedUsage } from "./usage.js";
 import type { Wallet } from "./wallet.js";
 
 export interface GatewayConfig {
@@ -19,8 +22,6 @@ export interface GatewayConfig {
   upstreamBaseUrl: string;
   /** 官方 DeepSeek key —— 整个系统里最不能外流的一个值 */
   upstreamApiKey: string;
-  /** 新用户注册赠额(micro-USD) */
-  signupGrantMicroUsd: number;
 }
 
 export interface GatewayDeps {
@@ -29,6 +30,8 @@ export interface GatewayDeps {
   fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
   /** 注入时钟:过期判断要能被测试钉死 */
   now?: () => number;
+  /** 注入赠额,免得测试依赖 process.env */
+  grants?: (tier: Tier) => number;
   /** 记账失败只记日志,不影响已经发给用户的响应 */
   onError?: (where: string, err: unknown) => void;
 }
@@ -47,42 +50,31 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+function bearer(req: Request): string {
+  const auth = req.headers.get("authorization") ?? "";
+  return auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+}
+
 export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Response> {
   const { config, wallet } = deps;
   const doFetch = deps.fetchImpl ?? ((u, i) => fetch(u, i));
   const now = deps.now ?? (() => Date.now());
+  const grants = deps.grants ?? ((tier: Tier) => grantFor(tier));
   const onError = deps.onError ?? (() => {});
 
-  /** 认证 + 开户 + 余额门槛。通过则返回 userId */
-  async function admit(req: Request): Promise<{ userId: string } | Response> {
-    const auth = req.headers.get("authorization") ?? "";
-    const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  /** 验签取 userId。失败回一个现成的 Response */
+  function identify(req: Request): { userId: string } | Response {
+    const token = bearer(req);
     if (!token) return apiError(401, "缺少 Authorization: Bearer <Supabase JWT>", "no_token");
-
     const verified = verifyJwt(token, config.jwtSecret, Math.floor(now() / 1000));
     if (!verified.ok) return apiError(401, verified.reason, "bad_token");
-
-    const userId = verified.claims.sub;
-    let balance: number;
-    try {
-      balance = await wallet.ensure(userId, config.signupGrantMicroUsd);
-    } catch (err) {
-      onError("wallet.ensure", err);
-      return apiError(503, "额度服务暂时不可用", "wallet_unavailable");
-    }
-
-    // 事前只拦"已经欠着"。最后一次调用的超支拦不住——用量得等模型答完才知道,
-    // 这部分透支由赠额吸收,不做预扣(预扣要退款,退款是另一套账)
-    if (balance <= 0) {
-      return apiError(402, "token 额度已用尽。可在设置里改用自己的 API key。", "quota_exhausted");
-    }
-    return { userId };
+    return { userId: verified.claims.sub };
   }
 
   async function chatCompletions(req: Request): Promise<Response> {
-    const admitted = await admit(req);
-    if (admitted instanceof Response) return admitted;
-    const { userId } = admitted;
+    const who = identify(req);
+    if (who instanceof Response) return who;
+    const { userId } = who;
 
     let body: unknown;
     try {
@@ -93,11 +85,48 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
     if (!isRecord(body)) return apiError(400, "请求体必须是对象", "bad_request");
 
     const requestedModel = typeof body.model === "string" ? body.model : "";
+    // 桶按**请求的**型号定,不按上游回报的:别名解析在上游那边,
+    // 用户下单前就该知道这次花的是哪个桶
+    const tier = bucketOf(requestedModel);
+    if (!tier) {
+      return apiError(
+        400,
+        `官方额度不覆盖型号「${requestedModel || "(未指定)"}」。可在设置里填自己的 API key 使用它。`,
+        "model_not_covered"
+      );
+    }
+
+    // 开桶 + 发赠额(幂等),顺便拿到当前余额
+    let balance: number;
+    try {
+      balance = await wallet.grant(userId, tier, grants(tier));
+    } catch (err) {
+      onError("wallet.grant", err);
+      return apiError(503, "额度服务暂时不可用", "wallet_unavailable");
+    }
+
+    // 事前只拦"这个桶已经欠着"。最后一次调用的超支拦不住——用量得等模型答完
+    // 才知道,这部分由赠额吸收,不做预扣(预扣要退款,退款是另一套账)。
+    // 另一个桶还有额度不受影响:分桶的意义就在这
+    if (balance <= 0) {
+      return apiError(
+        402,
+        `${tier} 额度已用尽。可以换另一档模型，或在设置里改用自己的 API key。`,
+        "quota_exhausted"
+      );
+    }
+
     const streaming = body.stream === true;
     // 流式默认不回 usage,得显式要。不要 = 记不了账 = 白送,所以这里强制加上,
     // 不管客户端有没有写
     const upstreamBody = streaming
-      ? { ...body, stream_options: { ...(isRecord(body.stream_options) ? body.stream_options : {}), include_usage: true } }
+      ? {
+          ...body,
+          stream_options: {
+            ...(isRecord(body.stream_options) ? body.stream_options : {}),
+            include_usage: true,
+          },
+        }
       : body;
 
     // 幂等键:客户端给就用客户端的(重试同一次调用不会扣两遍),没给就现生成
@@ -120,7 +149,7 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
       return apiError(502, "上游模型服务不可达", "upstream_unreachable");
     }
 
-    // 上游报错:原样透传状态和 body,一分钱不扣(没产生用量)
+    // 上游报错:原样透传状态和 body,一个 token 不扣(没产生用量)
     if (!upstream.ok) {
       const text = await upstream.text();
       return new Response(text, {
@@ -129,24 +158,24 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
       });
     }
 
-    const settle = async (usage: { promptTokens: number; completionTokens: number; model: string } | null): Promise<void> => {
-      if (!usage) return; // 上游没给 usage:宁可漏一笔,也不按猜的数扣钱
-      const model = usage.model || requestedModel;
-      const cost = costMicroUsd(usage, model);
-      if (cost <= 0) return;
+    const settle = async (usage: SniffedUsage | null): Promise<void> => {
+      if (!usage) return; // 上游没给 usage:宁可漏一笔,也不按猜的数扣
+      const spent = tokensSpent(usage);
+      if (spent <= 0) return;
       try {
-        await wallet.charge({
+        await wallet.spend({
           userId,
-          deltaMicroUsd: -cost,
+          tier,
+          deltaTokens: -spent,
           reason: "api_usage",
-          model,
+          model: usage.model || requestedModel,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           requestId,
         });
       } catch (err) {
-        // 响应已经发出去了,这里失败只能记日志。账本靠 rebuild_wallet 对账兜底
-        onError("wallet.charge", err);
+        // 响应已经发出去了,这里失败只能记日志。账本靠 rebuild_balance 对账兜底
+        onError("wallet.spend", err);
       }
     };
 
@@ -205,23 +234,24 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
     });
   }
 
-  /** 余额查询 —— UI 画进度条用。
-      不复用 admit():余额为 0 时 admit 会 402,而那正是用户最需要看到数字的时候 */
+  /** 各桶余额 —— UI 画进度条用。
+      余额为 0 也照回:那正是用户最需要看到数字的时候 */
   async function walletBalance(req: Request): Promise<Response> {
-    const auth = req.headers.get("authorization") ?? "";
-    const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
-    if (!token) return apiError(401, "缺少 Authorization: Bearer <Supabase JWT>", "no_token");
-    const verified = verifyJwt(token, config.jwtSecret, Math.floor(now() / 1000));
-    if (!verified.ok) return apiError(401, verified.reason, "bad_token");
+    const who = identify(req);
+    if (who instanceof Response) return who;
+
     try {
-      const balance = await wallet.ensure(verified.claims.sub, config.signupGrantMicroUsd);
-      return json(200, {
-        balanceMicroUsd: balance,
-        balanceUsd: balance / MICRO_PER_USD,
-        grantMicroUsd: config.signupGrantMicroUsd,
-      });
+      const buckets: Record<string, { balanceTokens: number; grantTokens: number }> = {};
+      for (const tier of TIERS) {
+        const grantTokens = grants(tier);
+        buckets[tier] = {
+          balanceTokens: await wallet.grant(who.userId, tier, grantTokens),
+          grantTokens,
+        };
+      }
+      return json(200, { buckets });
     } catch (err) {
-      onError("wallet.ensure", err);
+      onError("wallet.grant", err);
       return apiError(503, "额度服务暂时不可用", "wallet_unavailable");
     }
   }
@@ -236,7 +266,9 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
         : apiError(405, "只收 POST", "method_not_allowed");
     }
     if (pathname === "/v1/wallet") {
-      return req.method === "GET" ? walletBalance(req) : apiError(405, "只收 GET", "method_not_allowed");
+      return req.method === "GET"
+        ? walletBalance(req)
+        : apiError(405, "只收 GET", "method_not_allowed");
     }
     return apiError(404, `没有这个端点:${pathname}`, "not_found");
   };

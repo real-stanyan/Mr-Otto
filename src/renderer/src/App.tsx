@@ -1108,8 +1108,13 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "w-7 h-7 text-[13px]" }: {
   return <span className={cls}>{name.charAt(0).toUpperCase() || "?"}</span>;
 }
 
-/** 官方额度卡（账号页内）。数字是读的不是玩的——不给进度条做入场动画：
-    这块每次进设置都会看一次，动一下就是每次都拖一下。 */
+/** 桶名 → 显示名。对得上模型下拉里的叫法，别让用户猜 flash 是哪个 */
+const BUCKET_LABEL: Record<string, string> = { flash: "Flash", pro: "Pro" };
+
+/** 官方额度卡（账号页内）。单位是 token 不是钱（ADR-0021）：
+    额度要能直接当德州筹码，美元每押一注都得换算一次。
+    数字是读的不是玩的——不给进度条做入场动画：这块每次进设置都会看一次，
+    动一下就是每次都拖一下。 */
 function QuotaCard() {
   const wallet = useChat((s) => s.wallet);
   const walletError = useChat((s) => s.walletError);
@@ -1129,7 +1134,7 @@ function QuotaCard() {
             重试
           </Button>
         </div>
-        {/* "查不到"和"没有额度"不是一回事，别把故障显示成 $0 */}
+        {/* "查不到"和"没有额度"不是一回事，别把故障显示成 0 */}
         <p className={ERR_TXT}>查不到额度：{walletError}</p>
       </div>
     );
@@ -1137,31 +1142,43 @@ function QuotaCard() {
 
   if (!wallet) return <p className={HINT}>正在查官方额度…</p>;
 
-  const grant = wallet.grantMicroUsd;
-  const pct = grant > 0 ? Math.max(0, Math.min(100, (wallet.balanceMicroUsd / grant) * 100)) : 0;
-  const empty = wallet.balanceMicroUsd <= 0;
+  const entries = Object.entries(wallet.buckets);
+  const allEmpty = entries.every(([, b]) => b.balanceTokens <= 0);
 
   return (
-    <div className="rounded-[10px] border border-border px-[14px] py-[10px] flex flex-col gap-[6px]">
-      <div className="flex items-baseline gap-2">
-        <span className="text-xs font-[650]">官方额度</span>
-        <span className="ml-auto tabular-nums font-[650]">
-          ${wallet.balanceUsd.toFixed(2)}
-        </span>
-        {grant > 0 && (
-          <span className={HINT}>/ ${(grant / 1_000_000).toFixed(2)}</span>
-        )}
-      </div>
-      <div className="h-[3px] rounded-full bg-muted overflow-hidden">
-        <div
-          className={`h-full rounded-full ${empty ? "bg-destructive" : "bg-primary"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+    <div className="rounded-[10px] border border-border px-[14px] py-[10px] flex flex-col gap-[10px]">
+      <span className="text-xs font-[650]">官方额度</span>
+
+      {entries.map(([name, b]) => {
+        const pct = b.grantTokens > 0
+          ? Math.max(0, Math.min(100, (b.balanceTokens / b.grantTokens) * 100))
+          : 0;
+        const empty = b.balanceTokens <= 0;
+        return (
+          <div key={name} className="flex flex-col gap-[4px]">
+            <div className="flex items-baseline gap-2 text-[13px]">
+              <span className="font-[650]">{BUCKET_LABEL[name] ?? name}</span>
+              <span className="ml-auto tabular-nums">
+                {Math.max(0, b.balanceTokens).toLocaleString("en-US")}
+              </span>
+              <span className={`${HINT} tabular-nums`}>
+                / {b.grantTokens.toLocaleString("en-US")}
+              </span>
+            </div>
+            <div className="h-[3px] rounded-full bg-muted overflow-hidden">
+              <div
+                className={`h-full rounded-full ${empty ? "bg-destructive" : "bg-primary"}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+
       <p className={HINT}>
-        {empty
-          ? "额度用完了。去「密钥」栏填自己的 API key 即可继续。"
-          : "用官方 DeepSeek 跑的量从这里扣；填了自己的 key 就走自己的，不动这份额度。"}
+        {allEmpty
+          ? "额度都用完了。去「模型配置」填自己的 API key 即可继续。"
+          : "单位是 token（进 + 出）。两档各扣各的，互不流通；填了自己的 key 就走自己的，不动这份额度。"}
       </p>
     </div>
   );

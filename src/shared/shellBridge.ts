@@ -38,13 +38,19 @@ export interface AccountInfo {
   avatarUrl: string;
 }
 
-/** 官方额度余额（otto-gateway 的 GET /v1/wallet）。
-    未登录时 ShellBridge 回 null——没登录就没有"官方额度"这回事 */
-export interface WalletBalance {
-  balanceMicroUsd: number;
-  balanceUsd: number;
+/** 一个额度桶的余额。单位是 token，不是钱（ADR-0021）：
+    额度要能直接当德州筹码，美元每押一注都得换算一次 */
+export interface WalletBucket {
+  balanceTokens: number;
   /** 注册赠额，用于画"还剩多少 / 一共给了多少" */
-  grantMicroUsd: number;
+  grantTokens: number;
+}
+
+/** 官方额度余额（otto-gateway 的 GET /v1/wallet）。
+    未登录时 ShellBridge 回 null——没登录就没有"官方额度"这回事。
+    桶名（flash / pro）由网关定，这里不写死：加一档模型不该牵动这个类型 */
+export interface WalletBalance {
+  buckets: Record<string, WalletBucket>;
 }
 
 /** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
