@@ -67,6 +67,7 @@
   - 角色判定启发式
   - gh JSON 映射(mock 子进程输出,含错误分支:非零退出、非法 JSON)
   - 路径校验(readAdr 越界拒绝)
-- UI 轻量 smoke:Protocol 视图挂载不炸
+- UI 无组件级测试(仓库无 jsdom/testing-library,为一个 smoke 背两棵依赖不值——YAGNI):
+  逻辑全下沉纯函数层已测,视图以 dev 实跑核对清单验收(见 plan Task 5)
 - UI 全部用现有 shadcn 组件 + Tailwind 令牌,不新增自制样式体系
 - 流程:开 Task issue 承载本活;分支 + PR;门禁 `npm test` 绿才收
