@@ -1,6 +1,7 @@
 // Git Graph(只读)— 泳道图 + commit 详情。数据全从 store 取,零 IPC 纯投影。
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
+import { useMemo } from "react";
 import { RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
@@ -40,8 +41,15 @@ const ERROR_GUIDE: Record<string, string> = {
 };
 
 export function GitGraphView() {
-  const { gitGraphRepo, gitGraph, gitCommitView, closeGitGraph, refreshGitGraph, openGitCommit, closeGitCommit } =
-    useChat();
+  // 逐字段 selector(而非整店解构):直播流每 token 触发 store set,
+  // 整店订阅会让本视图跟着任意会话的流式更新重渲——泳道图与流式内容毫无关系
+  const gitGraphRepo = useChat((s) => s.gitGraphRepo);
+  const gitGraph = useChat((s) => s.gitGraph);
+  const gitCommitView = useChat((s) => s.gitCommitView);
+  const closeGitGraph = useChat((s) => s.closeGitGraph);
+  const refreshGitGraph = useChat((s) => s.refreshGitGraph);
+  const openGitCommit = useChat((s) => s.openGitCommit);
+  const closeGitCommit = useChat((s) => s.closeGitCommit);
 
   return (
     <main className="flex-1 min-w-0 flex flex-col">
@@ -96,7 +104,8 @@ function GraphRows({ commits, head, selected, onPick }: {
   selected: string | null;
   onPick: (hash: string) => void;
 }) {
-  const rows = assignLanes(commits);
+  // 直播流每 token 触发 store set,不 memo 会按流频率重算 300 行泳道
+  const rows = useMemo(() => assignLanes(commits), [commits]);
   const maxLane = Math.max(...rows.map((r) => Math.max(r.lane, ...r.edges.map((e) => Math.max(e.fromLane, e.toLane)))));
   const svgW = (maxLane + 1) * LANE_W;
 
