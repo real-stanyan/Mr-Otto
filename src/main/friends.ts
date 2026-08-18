@@ -162,9 +162,9 @@ export class FriendsManager {
     );
   }
 
-  /** 登录后调:起 Realtime 订阅 + 推一次初始快照。幂等(重复 start 先 stop) */
+  /** 登录后调:起 Realtime 订阅 + 推一次初始快照。幂等(重复 start 先 teardown) */
   async start(): Promise<void> {
-    this.stop();
+    this.teardown();
     const uid = await this.api.getUserId();
     if (!uid) return;
     this.unsubscribe = this.api.subscribe(uid, {
@@ -175,10 +175,15 @@ export class FriendsManager {
     await this.pushSnapshot(uid).catch(() => {});
   }
 
-  /** 登出时调:退订 + 推空快照/空在线集(UI 立即清) */
-  stop(): void {
+  /** 内部:只退订不推 */
+  private teardown(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+  }
+
+  /** 登出时调:退订 + 推空快照/空在线集(UI 立即清) */
+  stop(): void {
+    this.teardown();
     this.push.friendsChanged({ friends: [], incoming: [], outgoing: [] });
     this.push.presenceChanged([]);
   }

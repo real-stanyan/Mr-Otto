@@ -136,3 +136,51 @@ describe("FriendsManager 关系链", () => {
     });
   });
 });
+
+describe("FriendsManager 生命周期", () => {
+  it("start:订阅 + 推初始快照;handlers 触发时转推", async () => {
+    let captured: Parameters<FriendsApi["subscribe"]>[1] | null = null;
+    const api = fakeApi({
+      subscribe: vi.fn((_uid, handlers) => { captured = handlers; return () => {}; }),
+    });
+    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const m = new FriendsManager({ api, push });
+    await m.start();
+    expect(push.friendsChanged).toHaveBeenCalledTimes(1); // 初始快照
+    captured!.onPresence(["u2"]);
+    expect(push.presenceChanged).toHaveBeenCalledWith(["u2"]);
+    captured!.onMessage({ id: 1, sender: "u2", recipient: "me", body: "hi", created_at: "t" });
+    expect(push.directMessage).toHaveBeenCalledWith(
+      { id: 1, sender: "u2", recipient: "me", body: "hi", createdAt: "t" });
+  });
+
+  it("start 时未登录:不订阅不推", async () => {
+    const api = fakeApi({ getUserId: vi.fn(async () => null) });
+    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    await new FriendsManager({ api, push }).start();
+    expect(api.subscribe).not.toHaveBeenCalled();
+    expect(push.friendsChanged).not.toHaveBeenCalled();
+  });
+
+  it("stop:退订 + 推空快照清 UI", async () => {
+    const unsub = vi.fn();
+    const api = fakeApi({ subscribe: vi.fn(() => unsub) });
+    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const m = new FriendsManager({ api, push });
+    await m.start();
+    m.stop();
+    expect(unsub).toHaveBeenCalledTimes(1);
+    expect(push.friendsChanged).toHaveBeenLastCalledWith({ friends: [], incoming: [], outgoing: [] });
+    expect(push.presenceChanged).toHaveBeenLastCalledWith([]);
+  });
+
+  it("重复 start 幂等:旧订阅先退", async () => {
+    const unsub = vi.fn();
+    const api = fakeApi({ subscribe: vi.fn(() => unsub) });
+    const m = new FriendsManager({ api, push: { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() } });
+    await m.start();
+    await m.start();
+    expect(unsub).toHaveBeenCalledTimes(1);
+    expect(api.subscribe).toHaveBeenCalledTimes(2);
+  });
+});
