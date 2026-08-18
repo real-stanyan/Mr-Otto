@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assignLanes, classifyGitError, isValidBranchName, parseBranchList,
-  parseGitLog, parseNumstat, parseRefs,
+  parseGitLog, parseNumstat, parseRefs, pickSpineBranch,
   type RawCommit,
 } from "../../src/shared/gitGraph.js";
 
@@ -117,6 +117,95 @@ describe("assignLanes", () => {
     // a 落 0 且不占用(无父,道立刻释放),b 复用 0 道
     expect(rows[0]!.lane).toBe(0);
     expect(rows[1]!.lane).toBe(0);
+  });
+});
+
+/** 带 ref 的 commit:主脊测试要靠 refs 认出主干 tip */
+const cr = (hash: string, parents: string[], refs: RawCommit["refs"]): RawCommit => ({
+  hash, parents, refs, author: "a", timestamp: 0, subject: "s",
+});
+
+describe("assignLanes 主脊预留", () => {
+  it("主干 tip 钉 0 道,先出现的 feature 让到 1 道", () => {
+    // topo 序:feature 的 commit 更新(在前),主干 tip 在后
+    const rows = assignLanes([
+      cr("f1", ["base"], [{ name: "feat/x", type: "head" }]),
+      cr("m1", ["base"], [{ name: "main", type: "branch" }]),
+      cr("base", [], []),
+    ], "main");
+    expect(rows[0]!.lane).toBe(1); // feature 不许占 0 道
+    expect(rows[1]!.lane).toBe(0); // 主干 tip 强制落 0
+    expect(rows[2]!.lane).toBe(0); // 共同祖先续在主脊上
+  });
+
+  it("主干的一父链一直续 0 道,不被回收给别人", () => {
+    const rows = assignLanes([
+      cr("m1", ["m2"], [{ name: "main", type: "branch" }]),
+      cr("m2", ["m3"], []),
+      cr("t1", [], [{ name: "feat/y", type: "branch" }]), // 孤立 tip:只能开 1 道
+      cr("m3", [], []),
+    ], "main");
+    expect(rows.map((r) => r.lane)).toEqual([0, 0, 1, 0]);
+  });
+
+  it("主干 tip 已被别的线等着,也拽回 0 道(线弯进主脊)", () => {
+    // f1 的父就是主干 tip m1:m1 会被 f1 那条线等在 1 道上
+    const rows = assignLanes([
+      cr("f1", ["m1"], [{ name: "feat/x", type: "head" }]),
+      cr("m1", [], [{ name: "main", type: "branch" }]),
+    ], "main");
+    expect(rows[0]!.lane).toBe(1);
+    expect(rows[1]!.lane).toBe(0);
+    expect(rows[0]!.edges).toContainEqual({ fromLane: 1, toLane: 0 });
+  });
+
+  it("窗口里没有该分支:不预留,0 道照常给第一个 tip(免得白留一列)", () => {
+    const rows = assignLanes([c("a", []), c("b", [])], "main");
+    expect(rows.map((r) => r.lane)).toEqual([0, 0]);
+  });
+
+  it("不传 spineBranch = 老行为不变", () => {
+    const withArg = assignLanes([cr("f1", ["x"], []), cr("m1", ["x"], []), c("x", [])]);
+    expect(withArg.map((r) => r.lane)).toEqual([0, 1, 0]);
+  });
+
+  it("remote ref 同名不算数(origin/main 不是本地主干 tip)", () => {
+    const rows = assignLanes([
+      cr("r1", [], [{ name: "origin/main", type: "remote" }]),
+      cr("m1", [], [{ name: "main", type: "branch" }]),
+    ], "main");
+    expect(rows[0]!.lane).toBe(1);
+    expect(rows[1]!.lane).toBe(0);
+  });
+});
+
+describe("pickSpineBranch", () => {
+  const withRefs = (refs: RawCommit["refs"]) => [cr("h", [], refs)];
+
+  it("origin/HEAD 指的分支优先(前提:窗口里见得到)", () => {
+    expect(pickSpineBranch(withRefs([
+      { name: "develop", type: "branch" }, { name: "main", type: "branch" },
+    ]), "develop")).toBe("develop");
+  });
+
+  it("origin/HEAD 指的分支不在窗口里:退 main", () => {
+    expect(pickSpineBranch(withRefs([{ name: "main", type: "branch" }]), "develop")).toBe("main");
+  });
+
+  it("没有 main 就退 master", () => {
+    expect(pickSpineBranch(withRefs([{ name: "master", type: "branch" }]), null)).toBe("master");
+  });
+
+  it("都没有就退当前 HEAD 分支", () => {
+    expect(pickSpineBranch(withRefs([{ name: "feat/x", type: "head" }]), null)).toBe("feat/x");
+  });
+
+  it("detached HEAD(ref 名就叫 HEAD)不当主脊", () => {
+    expect(pickSpineBranch(withRefs([{ name: "HEAD", type: "head" }]), null)).toBeNull();
+  });
+
+  it("一个分支都认不出:null(不硬猜)", () => {
+    expect(pickSpineBranch(withRefs([{ name: "v1", type: "tag" }]), null)).toBeNull();
   });
 });
 

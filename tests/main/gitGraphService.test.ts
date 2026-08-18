@@ -17,14 +17,43 @@ describe("log", () => {
     const svc = createGitGraphService(fake({
       onExec: async (args) => {
         if (args[0] === "rev-parse") return { stdout: "aaa\n" };
+        if (args[0] === "symbolic-ref") throw Object.assign(new Error("fail"), { stderr: "" });
         return { stdout: LOG_REC };
       },
     }));
     const r = await svc.log("/repo");
     expect(r).toEqual({
-      ok: true, head: "aaa",
+      ok: true, head: "aaa", spineBranch: "main",
       commits: [{ hash: "aaa", parents: [], refs: [{ name: "main", type: "branch" }], author: "stan", timestamp: 1755500000, subject: "feat: x" }],
     });
+  });
+
+  it("origin/HEAD 指哪根就用哪根当主脊,前缀剥掉", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        if (args[0] === "rev-parse") return { stdout: "aaa\n" };
+        if (args[0] === "symbolic-ref") return { stdout: "origin/main\n" };
+        return { stdout: LOG_REC };
+      },
+    }));
+    const r = await svc.log("/repo");
+    expect(r).toMatchObject({ ok: true, spineBranch: "main" });
+  });
+
+  it("symbolic-ref 失败(没设过 origin/HEAD)不算错误,退回名字兜底", async () => {
+    const calls: string[][] = [];
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        calls.push(args);
+        if (args[0] === "rev-parse") return { stdout: "aaa\n" };
+        if (args[0] === "symbolic-ref") throw Object.assign(new Error("fail"), { stderr: "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref" });
+        return { stdout: LOG_REC };
+      },
+    }));
+    const r = await svc.log("/repo");
+    expect(r.ok).toBe(true);
+    expect(r).toMatchObject({ spineBranch: "main" }); // log 里的 main 分支兜底
+    expect(calls.some((a) => a[0] === "symbolic-ref")).toBe(true);
   });
 
   it("目录不存在:no-repo,不进 exec", async () => {
@@ -41,7 +70,7 @@ describe("log", () => {
       },
     }));
     const r = await svc.log("/empty");
-    expect(r).toEqual({ ok: true, head: null, commits: [] });
+    expect(r).toEqual({ ok: true, head: null, commits: [], spineBranch: null });
   });
 
   it("非 git 仓库:no-repo", async () => {

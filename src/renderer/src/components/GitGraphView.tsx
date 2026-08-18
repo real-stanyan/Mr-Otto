@@ -100,6 +100,7 @@ export function GitGraphView() {
             <GraphRows
               commits={gitGraph.commits}
               head={gitGraph.head}
+              spineBranch={gitGraph.spineBranch}
               selected={gitCommitView?.hash ?? null}
               onPick={(h) => (gitCommitView?.hash === h ? closeGitCommit() : void openGitCommit(h))}
             />
@@ -116,14 +117,16 @@ export function GitGraphView() {
   );
 }
 
-function GraphRows({ commits, head, selected, onPick }: {
+function GraphRows({ commits, head, spineBranch, selected, onPick }: {
   commits: RawCommit[];
   head: string | null;
+  /** 钉在 0 道的主干分支名（null = 不预留,泳道全靠回收） */
+  spineBranch: string | null;
   selected: string | null;
   onPick: (hash: string) => void;
 }) {
   // 直播流每 token 触发 store set,不 memo 会按流频率重算 300 行泳道
-  const rows = useMemo(() => assignLanes(commits), [commits]);
+  const rows = useMemo(() => assignLanes(commits, spineBranch), [commits, spineBranch]);
   const maxLane = Math.max(...rows.map((r) => Math.max(r.lane, ...r.edges.map((e) => Math.max(e.fromLane, e.toLane)))));
   const svgW = (maxLane + 1) * LANE_W;
 
