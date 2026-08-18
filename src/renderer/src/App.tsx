@@ -1022,74 +1022,76 @@ function AppSidebar() {
             ))}
           </SidebarMenu>
         ) : (
-          <SidebarMenu>
-            {resumable.map((s) => (
-              <SidebarMenuItem key={s.sessionId}>
-                <SidebarMenuButton
-                  className="h-auto flex-col items-start gap-px py-[7px]"
-                  isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && s.sessionId === sessionId}
-                  onClick={() => void resume(s.sessionId)}
-                >
-                  {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-                  <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
-                  <span className={WHEN_SPAN}>
-                    {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                    {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-                    {approvals[s.sessionId] ? (
-                      <em className="not-italic font-semibold text-warn"> 等审批</em>
-                    ) : statusBySession[s.sessionId] === "running" ? (
-                      <em className="not-italic font-semibold text-brand"> 运行中</em>
-                    ) : null}
-                  </span>
-                </SidebarMenuButton>
-                <SidebarMenuAction
-                  showOnHover
-                  title="删除会话（整段日志从库里抹除，不可恢复）"
-                  onClick={(e) => {
-                    e.stopPropagation(); // 别触发外层的"切换到该会话"
-                    if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                      void deleteSession(s.sessionId);
-                    }
-                  }}
-                >
-                  ✕
-                </SidebarMenuAction>
-              </SidebarMenuItem>
-            ))}
-            {prehistoric.length > 0 && (
-              <>
-                <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
-                {prehistoric.map((s) => (
-                  <SidebarMenuItem key={s.sessionId}>
-                    {/* 灰显示人 + 开放删除,点击不响应(能力问题诚实呈现,不是数据问题) */}
-                    <SidebarMenuButton
-                      disabled
-                      className="h-auto flex-col items-start gap-px py-[7px] cursor-default opacity-55 hover:bg-transparent disabled:opacity-55"
-                      title="未记录工程文件夹，无法重建围栏，只能删除"
-                    >
-                      <span className="font-mono text-xs max-w-full truncate">{s.title ?? s.sessionId}</span>
-                      <span className={WHEN_SPAN}>
-                        {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                      </span>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      showOnHover
-                      title="删除会话（整段日志从库里抹除，不可恢复）"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                          void deleteSession(s.sessionId);
-                        }
-                      }}
-                    >
-                      ✕
-                    </SidebarMenuAction>
-                  </SidebarMenuItem>
-                ))}
-              </>
-            )}
-          </SidebarMenu>
-          <FriendsSection />
+          <>
+            <SidebarMenu>
+              {resumable.map((s) => (
+                <SidebarMenuItem key={s.sessionId}>
+                  <SidebarMenuButton
+                    className="h-auto flex-col items-start gap-px py-[7px]"
+                    isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && s.sessionId === sessionId}
+                    onClick={() => void resume(s.sessionId)}
+                  >
+                    {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
+                    <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
+                    <span className={WHEN_SPAN}>
+                      {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                      {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
+                      {approvals[s.sessionId] ? (
+                        <em className="not-italic font-semibold text-warn"> 等审批</em>
+                      ) : statusBySession[s.sessionId] === "running" ? (
+                        <em className="not-italic font-semibold text-brand"> 运行中</em>
+                      ) : null}
+                    </span>
+                  </SidebarMenuButton>
+                  <SidebarMenuAction
+                    showOnHover
+                    title="删除会话（整段日志从库里抹除，不可恢复）"
+                    onClick={(e) => {
+                      e.stopPropagation(); // 别触发外层的"切换到该会话"
+                      if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                        void deleteSession(s.sessionId);
+                      }
+                    }}
+                  >
+                    ✕
+                  </SidebarMenuAction>
+                </SidebarMenuItem>
+              ))}
+              {prehistoric.length > 0 && (
+                <>
+                  <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
+                  {prehistoric.map((s) => (
+                    <SidebarMenuItem key={s.sessionId}>
+                      {/* 灰显示人 + 开放删除,点击不响应(能力问题诚实呈现,不是数据问题) */}
+                      <SidebarMenuButton
+                        disabled
+                        className="h-auto flex-col items-start gap-px py-[7px] cursor-default opacity-55 hover:bg-transparent disabled:opacity-55"
+                        title="未记录工程文件夹，无法重建围栏，只能删除"
+                      >
+                        <span className="font-mono text-xs max-w-full truncate">{s.title ?? s.sessionId}</span>
+                        <span className={WHEN_SPAN}>
+                          {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                        </span>
+                      </SidebarMenuButton>
+                      <SidebarMenuAction
+                        showOnHover
+                        title="删除会话（整段日志从库里抹除，不可恢复）"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                            void deleteSession(s.sessionId);
+                          }
+                        }}
+                      >
+                        ✕
+                      </SidebarMenuAction>
+                    </SidebarMenuItem>
+                  ))}
+                </>
+              )}
+            </SidebarMenu>
+            <FriendsSection />
+          </>
         )}
       </SidebarContent>
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
