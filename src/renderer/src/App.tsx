@@ -30,6 +30,19 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip.js";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar.js";
 import type {
   SessionEvent,
   ToolCallRequest,
@@ -71,15 +84,6 @@ const THINKING_DETAILS = "self-stretch max-w-full border-l-2 border-border py-[2
 const THINKING_SUMMARY =
   "cursor-pointer text-muted-foreground text-xs select-none list-none [&::-webkit-details-marker]:hidden before:content-['▸_'] group-open:before:content-['▾_']";
 const THINKING_BODY = "mt-1 text-muted-foreground text-[12.5px] leading-[1.55] whitespace-pre-wrap";
-/* 按下即响应,不等松手。右侧 pr-7 给删除钮留位。
-   注意不写 border-none:preflight 已把边框归零,写了会砍掉返回钮的 border-b */
-const SESSION_ITEM =
-  "group relative cursor-pointer bg-transparent rounded-lg flex flex-col items-start gap-px text-left py-[7px] pr-7 pl-[10px] transition-colors duration-150 hover:bg-foreground/5 active:bg-foreground/[0.09]";
-const SESSION_LIST = "flex-1 overflow-y-auto pt-[2px] px-2 pb-2 flex flex-col gap-[2px] scrollbar-thin";
-/* 会话列表选中态(设置模式的栏目导航复用) */
-const SESSION_ACTIVE = " bg-accent";
-const SESSION_DELETE =
-  "absolute right-[6px] top-1/2 -translate-y-1/2 px-[7px] py-[2px] text-xs leading-[1.4] bg-transparent border-none text-muted-foreground opacity-0 transition-[opacity,color] duration-[125ms] group-hover:opacity-100 hover:text-deny active:scale-90 motion-reduce:active:scale-100";
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
@@ -791,8 +795,9 @@ function AccountPage() {
   const error = useChat((s) => s.error);
 
   return (
-    <main className={MAIN_COL}>
+    <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -819,7 +824,7 @@ function AccountPage() {
         )}
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
-    </main>
+    </div>
   );
 }
 
@@ -833,8 +838,9 @@ function KeysPage() {
   const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
 
   return (
-    <main className={MAIN_COL}>
+    <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -870,7 +876,7 @@ function KeysPage() {
         ))}
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
-    </main>
+    </div>
   );
 }
 
@@ -881,8 +887,9 @@ function SkillsPage() {
   const closeSettings = useChat((s) => s.closeSettings);
 
   return (
-    <main className={MAIN_COL}>
+    <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -910,7 +917,7 @@ function SkillsPage() {
         ))}
         {skills.length === 0 && <p className={HINT}>还没有安装任何 skill。</p>}
       </section>
-    </main>
+    </div>
   );
 }
 
@@ -921,8 +928,9 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "skills", label: "Skill 库" },
 ];
 
-/** 左侧常驻侧栏：会话列表（设置模式下换成栏目导航）+ 底部设置/登录槽 */
-function Sidebar() {
+/** 左侧常驻侧栏（shadcn Sidebar,offcanvas）：会话列表（设置模式下换成栏目导航）
+    + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
+function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
@@ -943,144 +951,153 @@ function Sidebar() {
   const prehistoric = sessions.filter((s) => s.workspace === null);
 
   return (
-    <aside className="w-[232px] shrink-0 flex flex-col bg-card border-r border-border">
-      <div className="pt-4 px-4 pb-[10px] font-[650] flex items-center gap-2">
-        {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
-        <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
-        Mr Otto
-      </div>
-      {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
-          设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
-      {settingsSection === null && (
-        <Button
-          variant="ghost"
-          className="mx-3 mb-[10px] justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
-          onClick={newSession}
-        >
-          ＋ 新会话
-        </Button>
-      )}
-      {settingsSection !== null ? (
-        // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
-        <nav className={SESSION_LIST}>
-          <button
-            className={`${SESSION_ITEM} text-muted-foreground border-b border-border rounded-t-lg rounded-b-none mb-1 hover:text-foreground`}
-            onClick={closeSettings}
+    <Sidebar collapsible="offcanvas">
+      <SidebarHeader>
+        <div className="pt-1 px-2 pb-[6px] font-[650] flex items-center gap-2">
+          {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
+          <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+          Mr Otto
+        </div>
+        {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
+            设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
+        {settingsSection === null && (
+          <Button
+            variant="ghost"
+            className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+            onClick={newSession}
           >
-            ← 返回会话
-          </button>
-          {SETTINGS_SECTIONS.map((sec) => (
-            <button
-              key={sec.id}
-              className={SESSION_ITEM + (settingsSection === sec.id ? SESSION_ACTIVE : "")}
-              onClick={() => void openSettings(sec.id)}
-            >
-              <span className={TITLE_SPAN}>{sec.label}</span>
-            </button>
-          ))}
-        </nav>
-      ) : (
-        <nav className={SESSION_LIST}>
-          {/* 行是 div 而非 button：里面要嵌删除按钮，button 套 button 是非法 HTML */}
-          {resumable.map((s) => (
-            <div
-              key={s.sessionId}
-              className={
-                SESSION_ITEM +
-                (phase === "chat" && settingsSection === null && s.sessionId === sessionId ? SESSION_ACTIVE : "")
-              }
-              onClick={() => void resume(s.sessionId)}
-            >
-              {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-              <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
-              <span className={WHEN_SPAN}>
-                {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-                {approvals[s.sessionId] ? (
-                  <em className="not-italic font-semibold text-warn"> 等审批</em>
-                ) : statusBySession[s.sessionId] === "running" ? (
-                  <em className="not-italic font-semibold text-brand"> 运行中</em>
-                ) : null}
-              </span>
-              <button
-                className={SESSION_DELETE}
-                title="删除会话（整段日志从库里抹除，不可恢复）"
-                onClick={(e) => {
-                  e.stopPropagation(); // 别触发外层的"切换到该会话"
-                  if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                    void deleteSession(s.sessionId);
-                  }
-                }}
+            ＋ 新会话
+          </Button>
+        )}
+      </SidebarHeader>
+      <SidebarContent>
+        {settingsSection !== null ? (
+          // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                className="text-muted-foreground border-b border-border rounded-b-none hover:text-foreground"
+                onClick={closeSettings}
               >
-                ✕
-              </button>
-            </div>
-          ))}
-          {prehistoric.length > 0 && (
-            <>
-              <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
-              {prehistoric.map((s) => (
-                // 灰显示人 + 开放删除,点击不响应(能力问题诚实呈现,不是数据问题)
-                <div
-                  key={s.sessionId}
-                  className={`${SESSION_ITEM} cursor-default opacity-55 hover:bg-transparent active:bg-transparent`}
-                  title="未记录工程文件夹，无法重建围栏，只能删除"
+                ← 返回会话
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            {SETTINGS_SECTIONS.map((sec) => (
+              <SidebarMenuItem key={sec.id}>
+                <SidebarMenuButton
+                  isActive={settingsSection === sec.id}
+                  onClick={() => void openSettings(sec.id)}
                 >
-                  <span className="font-mono text-xs max-w-full truncate">{s.title ?? s.sessionId}</span>
+                  <span className={TITLE_SPAN}>{sec.label}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        ) : (
+          <SidebarMenu>
+            {resumable.map((s) => (
+              <SidebarMenuItem key={s.sessionId}>
+                <SidebarMenuButton
+                  className="h-auto flex-col items-start gap-px py-[7px]"
+                  isActive={phase === "chat" && settingsSection === null && s.sessionId === sessionId}
+                  onClick={() => void resume(s.sessionId)}
+                >
+                  {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
+                  <span className={TITLE_SPAN}>{s.title ?? s.workspace?.split("/").pop()}</span>
                   <span className={WHEN_SPAN}>
-                    {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                    {s.workspace?.split("/").pop()} · {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                    {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
+                    {approvals[s.sessionId] ? (
+                      <em className="not-italic font-semibold text-warn"> 等审批</em>
+                    ) : statusBySession[s.sessionId] === "running" ? (
+                      <em className="not-italic font-semibold text-brand"> 运行中</em>
+                    ) : null}
                   </span>
-                  <button
-                    className={SESSION_DELETE}
-                    title="删除会话（整段日志从库里抹除，不可恢复）"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                        void deleteSession(s.sessionId);
-                      }
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </>
-          )}
-        </nav>
-      )}
+                </SidebarMenuButton>
+                <SidebarMenuAction
+                  showOnHover
+                  title="删除会话（整段日志从库里抹除，不可恢复）"
+                  onClick={(e) => {
+                    e.stopPropagation(); // 别触发外层的"切换到该会话"
+                    if (confirm(`彻底删除会话 ${s.workspace?.split("/").pop()} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                      void deleteSession(s.sessionId);
+                    }
+                  }}
+                >
+                  ✕
+                </SidebarMenuAction>
+              </SidebarMenuItem>
+            ))}
+            {prehistoric.length > 0 && (
+              <>
+                <div className="text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]">史前会话（不可恢复）</div>
+                {prehistoric.map((s) => (
+                  <SidebarMenuItem key={s.sessionId}>
+                    {/* 灰显示人 + 开放删除,点击不响应(能力问题诚实呈现,不是数据问题) */}
+                    <SidebarMenuButton
+                      disabled
+                      className="h-auto flex-col items-start gap-px py-[7px] cursor-default opacity-55 hover:bg-transparent disabled:opacity-55"
+                      title="未记录工程文件夹，无法重建围栏，只能删除"
+                    >
+                      <span className="font-mono text-xs max-w-full truncate">{s.title ?? s.sessionId}</span>
+                      <span className={WHEN_SPAN}>
+                        {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
+                      </span>
+                    </SidebarMenuButton>
+                    <SidebarMenuAction
+                      showOnHover
+                      title="删除会话（整段日志从库里抹除，不可恢复）"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                          void deleteSession(s.sessionId);
+                        }
+                      }}
+                    >
+                      ✕
+                    </SidebarMenuAction>
+                  </SidebarMenuItem>
+                ))}
+              </>
+            )}
+          </SidebarMenu>
+        )}
+      </SidebarContent>
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
           这一行只留用户卡片 + 一颗进「模型配置」首屏的齿轮 */}
-      <div className="border-t border-border px-3 py-[10px] flex items-center gap-[6px]">
-        {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做）。
-            低调侧栏风:文字色 dim,悬停亮起 */}
-        <button
-          className="flex items-center gap-2 flex-1 min-w-0 px-[10px] py-1 text-muted-foreground text-xs bg-transparent text-left hover:text-foreground"
-          onClick={() => void openSettings("account")}
-          title={account.signedIn ? account.email : undefined}
-        >
-          {account.signedIn ? (
-            <>
-              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
-              <span className="flex-1 min-w-0 truncate">{account.name}</span>
-            </>
-          ) : (
-            "未登录 · 点击登录"
-          )}
-        </button>
-        {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
-              onClick={() => void openSettings("keys")}
-            >
-              <GearIcon />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>设置</TooltipContent>
-        </Tooltip>
-      </div>
-    </aside>
+      <SidebarFooter>
+        <div className="flex items-center gap-[6px]">
+          {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做）。
+              低调侧栏风:文字色 dim,悬停亮起 */}
+          <button
+            className="flex items-center gap-2 flex-1 min-w-0 px-[10px] py-1 text-muted-foreground text-xs bg-transparent text-left hover:text-foreground"
+            onClick={() => void openSettings("account")}
+            title={account.signedIn ? account.email : undefined}
+          >
+            {account.signedIn ? (
+              <>
+                <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
+                <span className="flex-1 min-w-0 truncate">{account.name}</span>
+              </>
+            ) : (
+              "未登录 · 点击登录"
+            )}
+          </button>
+          {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
+                onClick={() => void openSettings("keys")}
+              >
+                <GearIcon />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>设置</TooltipContent>
+          </Tooltip>
+        </div>
+      </SidebarFooter>
+    </Sidebar>
   );
 }
 
@@ -1257,7 +1274,7 @@ function Welcome() {
   };
 
   return (
-    <main className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
+    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
       <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
       <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
       {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡 */}
@@ -1336,7 +1353,7 @@ function Welcome() {
       </div>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
-    </main>
+    </div>
   );
 }
 
@@ -1436,8 +1453,9 @@ export function App() {
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
-    <main className={MAIN_COL}>
+    <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarTrigger />
         <span className="font-[650] inline-flex items-center gap-[6px]">
           <img className="w-[18px] h-[18px] rounded-[5px]" src={ottoLogo} alt="" />
           Mr Otto
@@ -1643,15 +1661,15 @@ export function App() {
           </footer>
         </>
       )}
-    </main>
+    </div>
   );
 
   return (
-    <TooltipProvider delayDuration={400}>
-      <div className="flex h-screen">
-        <Sidebar />
-        {main}
-      </div>
-    </TooltipProvider>
+    <SidebarProvider>
+      <TooltipProvider delayDuration={400}>
+        <AppSidebar />
+        <SidebarInset>{main}</SidebarInset>
+      </TooltipProvider>
+    </SidebarProvider>
   );
 }

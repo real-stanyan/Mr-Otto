@@ -68,6 +68,16 @@
   --rp-node-file: #6b7a88;
   --rp-edge: #b5b1a4;
   --rp-edge-text: #77776f;
+  /* sidebar 令牌组(spec 修订 2026-08-18):与背景/弱底区分的独立面,
+     primary/accent 沿用主令牌表同色,foreground 系跟随对应文字色,border 单独取黑 12% */
+  --sidebar: #e9e5d8;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #4a70a9;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dce6f2;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: rgba(0, 0, 0, 0.12);
+  --sidebar-ring: #4a70a9;
 }
 
 .dark {
@@ -129,6 +139,14 @@
   --rp-node-file: #5b7181;
   --rp-edge: #35505f;
   --rp-edge-text: #6a7a86;
+  --sidebar: #0d171e;
+  --sidebar-foreground: #eaecf0;
+  --sidebar-primary: #233d4d;
+  --sidebar-primary-foreground: #eaecf0;
+  --sidebar-accent: #2e4a5c;
+  --sidebar-accent-foreground: #eaecf0;
+  --sidebar-border: rgba(234, 236, 240, 0.12);
+  --sidebar-ring: #fe7f2d;
 }
 
 @theme inline {
@@ -159,6 +177,14 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* 内置缓动太弱,UI 一律强 ease-out(快起步 = 响应感) */
   --ease-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
 }
 
 @layer base {
