@@ -957,7 +957,6 @@ function AppSidebar() {
   const approvals = useChat((s) => s.approvals);
   const account = useChat((s) => s.account);
   const protocolOpen = useChat((s) => s.protocolOpen);
-  const openProtocol = useChat((s) => s.openProtocol);
 
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
@@ -1101,18 +1100,6 @@ function AppSidebar() {
               "未登录 · 点击登录"
             )}
           </button>
-          {/* Protocol 仪表盘入口:齿轮同款纯图标按钮,挨着放 */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
-                onClick={() => void openProtocol()}
-              >
-                <BookMarked className="w-[14px] h-[14px]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Protocol 仪表盘:ADR / issues / handoff</TooltipContent>
-          </Tooltip>
           {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1395,6 +1382,7 @@ export function App() {
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
   const protocolOpen = useChat((s) => s.protocolOpen);
+  const openProtocol = useChat((s) => s.openProtocol);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -1503,6 +1491,10 @@ export function App() {
           onClick={() => setReplayCursor(replaying ? null : 0)}
         >
           {replaying ? "回到直播" : "回放"}
+        </Button>
+        {/* Protocol 仪表盘对应各工作区,入口挂会话头部(回放右边),不进全局侧栏 */}
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => void openProtocol()}>
+          <BookMarked className="w-[13px] h-[13px]" /> Protocol
         </Button>
       </header>
 

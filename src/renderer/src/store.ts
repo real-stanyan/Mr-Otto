@@ -60,7 +60,7 @@ interface ChatState {
   settingsSection: SettingsSection | null;
   /** Protocol 仪表盘开关(覆盖在任意 phase 之上,与设置模式互斥) */
   protocolOpen: boolean;
-  /** 仪表盘目标仓库(绝对路径):localStorage 记忆 ?? 当前会话 workspace */
+  /** 仪表盘目标仓库(绝对路径):当前会话 workspace ?? localStorage 记忆 */
   protocolRepo: string | null;
   adrs: AdrSummary[];
   adrView: { path: string; markdown: string } | null;
@@ -92,7 +92,7 @@ interface ChatState {
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
   openSettings(section?: SettingsSection): Promise<void>;
   closeSettings(): void;
-  /** 打开 Protocol 仪表盘:目标仓库取记忆或跟当前 workspace,有仓库就顺带刷新一次 */
+  /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
   closeProtocol(): void;
   /** 手选仪表盘目标仓库(弹文件夹选择框),选完记 localStorage 并刷新 */
@@ -229,8 +229,9 @@ export const useChat = create<ChatState>((set, get) => ({
   closeSettings: () => set({ settingsSection: null }),
 
   async openProtocol() {
-    // 目标仓库:上次手选的记忆优先,否则跟当前会话的工程文件夹
-    const repo = localStorage.getItem("otter-protocol-repo") ?? get().workspace ?? null;
+    // 目标仓库:跟当前会话的工程文件夹(入口挂会话头部,仪表盘对应各工作区);
+    // 没有会话 workspace 才退回上次手选记忆
+    const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({ protocolOpen: true, settingsSection: null, protocolRepo: repo, adrView: null, issueView: null });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
   },
