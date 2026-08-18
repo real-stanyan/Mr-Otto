@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
-  classifyGitError, isValidBranchName, parseBranchList, parseGitLog, parseNumstat,
+  classifyGitError, isValidBranchName, parseBranchList, parseGitLog, parseNumstat, pickSpineBranch,
   type CommitDetail, type GitBranchesResult, type GitCheckoutResult,
   type GitCommitResult, type GitLogResult,
 } from "../shared/gitGraph.js";
@@ -64,12 +64,25 @@ export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphSe
         } catch {
           head = null;
         }
-        return { ok: true, head, commits: parseGitLog(stdout) };
+        // 主脊分支:origin/HEAD 最准(纯本地读 ref,不联网)。没设过 origin/HEAD 的仓库
+        // 这条会失败,交给 pickSpineBranch 退 main/master/当前分支
+        let remoteHead: string | null = null;
+        try {
+          const { stdout: sym } = await deps.execGit(
+            ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            repoDir
+          );
+          remoteHead = sym.trim().replace(/^[^/]+\//, "") || null;
+        } catch {
+          remoteHead = null;
+        }
+        const commits = parseGitLog(stdout);
+        return { ok: true, head, commits, spineBranch: pickSpineBranch(commits, remoteHead) };
       } catch (e) {
         const err = e as { code?: string; stderr?: string; message?: string };
         // 空仓库:git log 报"没有 commit"不是错误,是合法空态
         if ((err.stderr ?? "").includes("does not have any commits")) {
-          return { ok: true, head: null, commits: [] };
+          return { ok: true, head: null, commits: [], spineBranch: null };
         }
         return { ok: false, ...classifyGitError(err) };
       }
