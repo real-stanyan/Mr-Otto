@@ -68,7 +68,7 @@ create unique index if not exists friendships_pair_unique
 alter table public.friendships enable row level security;
 
 -- 意图:仅当事双方可见;发起方只能插 pending 且 requester 必须是自己;
--- 被请求方接受 = pending→accepted(只有这一条 update 路径);双方都可删行
+-- 被请求方接受 = pending→accepted(只改 status/updated_at,requester/addressee 列级 grant 钉死,防伪造好友对);双方都可删行
 drop policy if exists "friendships_select_parties" on public.friendships;
 create policy "friendships_select_parties" on public.friendships
   for select to authenticated
@@ -86,6 +86,11 @@ drop policy if exists "friendships_delete_parties" on public.friendships;
 create policy "friendships_delete_parties" on public.friendships
   for delete to authenticated
   using (auth.uid() = requester or auth.uid() = addressee);
+
+-- accept 只能改 status/updated_at:RLS with check 看不到旧行,靠列级 grant 钉死
+-- requester/addressee 不可被 update 改写(防伪造好友对,解锁 messages insert)
+revoke update on public.friendships from authenticated;
+grant update (status, updated_at) on public.friendships to authenticated;
 
 -- ── messages:好友间一对一 DM ──────────────────────────────────────
 create table if not exists public.messages (
