@@ -154,6 +154,80 @@ export interface ApprovalRequest {
 
 export type Unsubscribe = () => void;
 
+
+/** ── 牌桌（issue #59）──────────────────────────────────────────────
+    这些是**裁剪过的**视图类型：别人的底牌在这里就是 null，
+    渲染层拿不到也就不可能不小心画出来 */
+export interface PokerTableSummary {
+  id: string;
+  name: string;
+  tier: string;
+  smallBlind: number;
+  bigBlind: number;
+  minBuyin: number;
+  maxBuyin: number;
+  maxSeats: number;
+  /** 自己是否已在这张桌上 */
+  seated: boolean;
+  /** 桌上是否有牌正在打 */
+  live: boolean;
+}
+
+export interface PokerTableInput {
+  name: string;
+  tier: string;
+  smallBlind: number;
+  bigBlind: number;
+  minBuyin: number;
+  maxBuyin: number;
+  maxSeats: number;
+}
+
+export type PokerActionOption =
+  | { readonly type: "fold" }
+  | { readonly type: "check" }
+  | { readonly type: "call"; readonly amount: number }
+  | { readonly type: "raise"; readonly minTo: number; readonly maxTo: number };
+
+export type PokerAction =
+  | { readonly type: "fold" }
+  | { readonly type: "check" }
+  | { readonly type: "call" }
+  | { readonly type: "raise"; readonly to: number };
+
+export interface PokerSeatView {
+  userId: string;
+  seatIndex: number;
+  /** 服务端标的"这是你"。客户端不自己判断身份 */
+  isMe: boolean;
+  startStack: number;
+  stack: number;
+  bet: number;
+  committed: number;
+  folded: boolean;
+  allIn: boolean;
+  /** null = 看不到（别人的牌，且还没摊牌） */
+  hole: number[] | null;
+}
+
+export interface PokerHandView {
+  handId: string;
+  tableId: string;
+  tier: string;
+  button: number;
+  street: string;
+  board: number[];
+  pot: number;
+  currentBet: number;
+  toAct: string | null;
+  seats: PokerSeatView[];
+  legal: PokerActionOption[];
+  done: boolean;
+  deltas: Record<string, number> | null;
+  /** deck/salt 只在摊牌后非空，玩家拿它自验庄家没换牌 */
+  commitment: { hash: string; deck: number[] | null; salt: string | null };
+}
+
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
   boot(): Promise<BootInfo | null>;
@@ -213,6 +287,15 @@ export interface ShellBridge {
   /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
       （"没有额度"和"查不到额度"必须可区分） */
   walletBalance(): Promise<WalletBalance | null>;
+  /** 牌桌：列/建/入座/离桌/开牌/行动。全部经主进程 —— token 不过桥 */
+  pokerTables(): Promise<PokerTableSummary[]>;
+  pokerCreateTable(input: PokerTableInput): Promise<PokerTableSummary>;
+  pokerJoin(tableId: string, amount: number): Promise<number>;
+  pokerLeave(tableId: string): Promise<number>;
+  pokerStart(tableId: string): Promise<void>;
+  pokerAct(tableId: string, action: PokerAction): Promise<void>;
+  /** 订阅一张桌；传 null = 退订。同一时刻只订一张 */
+  pokerWatch(tableId: string | null): Promise<void>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
@@ -246,6 +329,8 @@ export interface ShellBridge {
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
+  onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
+  onPokerError(cb: (message: string) => void): Unsubscribe;
   /** 邮箱精确匹配搜用户。value null = 查无此人(不是错误) */
   friendsSearch(email: string): Promise<FriendsResult<FriendProfile | null>>;
   /** 发好友请求。重复请求/已是好友 → ok:false 带人话理由 */
@@ -292,6 +377,15 @@ export const CHANNELS = {
   signIn: "otter:signIn",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
+  pokerTables: "otter:pokerTables",
+  pokerCreateTable: "otter:pokerCreateTable",
+  pokerJoin: "otter:pokerJoin",
+  pokerLeave: "otter:pokerLeave",
+  pokerStart: "otter:pokerStart",
+  pokerAct: "otter:pokerAct",
+  pokerWatch: "otter:pokerWatch",
+  pokerHand: "otter:pokerHand",
+  pokerError: "otter:pokerError",
   friendsSearch: "otter:friendsSearch",
   friendsSendRequest: "otter:friendsSendRequest",
   friendsRespond: "otter:friendsRespond",
