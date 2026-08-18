@@ -78,6 +78,8 @@ interface ChatState {
   gitGraph: GitLogResult | null;
   /** 选中 commit 详情面板;result null = 拉取中 */
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
+  /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
+  panelWide: boolean;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
@@ -117,6 +119,7 @@ interface ChatState {
   refreshGitGraph(): Promise<void>;
   openGitCommit(hash: string): Promise<void>;
   closeGitCommit(): void;
+  togglePanelWide(): void;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
@@ -190,6 +193,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphRepo: null,
   gitGraph: null,
   gitCommitView: null,
+  panelWide: false,
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
@@ -358,6 +362,8 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeGitCommit: () => set({ gitCommitView: null }),
+
+  togglePanelWide: () => set((s) => ({ panelWide: !s.panelWide })),
 
   async saveApiKey(envName, key) {
     try {

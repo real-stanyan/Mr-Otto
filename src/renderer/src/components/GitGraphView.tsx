@@ -2,7 +2,7 @@
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
 import { useMemo } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
@@ -50,6 +50,8 @@ export function GitGraphView() {
   const refreshGitGraph = useChat((s) => s.refreshGitGraph);
   const openGitCommit = useChat((s) => s.openGitCommit);
   const closeGitCommit = useChat((s) => s.closeGitCommit);
+  const panelWide = useChat((s) => s.panelWide);
+  const togglePanelWide = useChat((s) => s.togglePanelWide);
 
   return (
     <main className="flex-1 min-w-0 flex flex-col">
@@ -59,6 +61,10 @@ export function GitGraphView() {
         <span className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
           <RefreshCw />
+        </Button>
+        {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
+        <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
+          {panelWide ? <Minimize2 /> : <Maximize2 />}
         </Button>
         <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
           <X />

@@ -585,3 +585,22 @@
     transition: opacity 200ms ease;
   }
 }
+
+/* Protocol/Git Graph 叠加面板:从右缘滑入(ease-out,离场即关闭卸载,无对称需求) */
+.side-panel {
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 200ms var(--ease-strong),
+    transform 200ms var(--ease-strong);
+  @starting-style {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-panel {
+    transform: none;
+    transition: opacity 200ms ease;
+  }
+}

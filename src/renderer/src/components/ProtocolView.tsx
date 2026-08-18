@@ -5,7 +5,7 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { RefreshCw, FolderOpen, X } from "lucide-react";
+import { RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { Separator } from "@/components/ui/separator.js";
@@ -77,6 +77,8 @@ export function ProtocolView() {
   } = useChat();
   const tab = useChat((s) => s.protocolTab);
   const setTab = useChat((s) => s.setProtocolTab);
+  const panelWide = useChat((s) => s.panelWide);
+  const togglePanelWide = useChat((s) => s.togglePanelWide);
 
   if (!protocolRepo) {
     return (
@@ -100,6 +102,10 @@ export function ProtocolView() {
         </Button>
         <Button variant="ghost" size="sm" onClick={() => void refreshProtocol()} title="重新拉取 ADR 与 issues">
           <RefreshCw />
+        </Button>
+        {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
+        <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
+          {panelWide ? <Minimize2 /> : <Maximize2 />}
         </Button>
         <Button variant="ghost" size="sm" onClick={closeProtocol} title="关闭仪表盘">
           <X />

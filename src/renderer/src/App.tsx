@@ -1393,6 +1393,7 @@ export function App() {
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
+  const panelWide = useChat((s) => s.panelWide);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -1472,12 +1473,10 @@ export function App() {
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
-  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）
-  const main = gitGraphOpen ? (
-    <GitGraphView />
-  ) : protocolOpen ? (
-    <ProtocolView />
-  ) : settingsSection === "account" ? (
+  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）。
+  // Protocol/Git Graph 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
+  const panel = gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
+  const base = settingsSection === "account" ? (
     <AccountPage />
   ) : settingsSection === "keys" ? (
     <KeysPage />
@@ -1712,6 +1711,18 @@ export function App() {
         </>
       )}
     </div>
+  );
+
+  // 半屏:底层视图照常渲染,面板占右半带左框;全屏:面板独占,底层卸载省渲染
+  const main = panel ? (
+    <div className="flex-1 min-h-0 min-w-0 flex">
+      {!panelWide && base}
+      <div className={`side-panel flex min-w-0 ${panelWide ? "flex-1" : "w-1/2 shrink-0 border-l border-border"}`}>
+        {panel}
+      </div>
+    </div>
+  ) : (
+    base
   );
 
   return (
