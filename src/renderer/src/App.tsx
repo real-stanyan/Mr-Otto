@@ -1499,8 +1499,8 @@ export function App() {
         {/* 头部只留一颗「更多」溢出菜单:回放/Protocol 等功能收进去,后续新功能有地方放 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={HEADER_GHOST}>
-              <Ellipsis className="w-[14px] h-[14px]" /> 更多
+            <Button variant="ghost" size="sm" className={HEADER_GHOST} title="更多">
+              <Ellipsis className="w-[14px] h-[14px]" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
