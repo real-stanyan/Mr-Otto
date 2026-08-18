@@ -961,6 +961,9 @@ function AppSidebar() {
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
           <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
           Mr Otto
+          {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
+              展开状态下用户第一眼找的是侧栏里的开关 */}
+          <SidebarTrigger className="ml-auto" />
         </div>
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
