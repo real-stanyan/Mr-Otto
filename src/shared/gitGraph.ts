@@ -45,20 +45,27 @@ export function parseRefs(decorate: string): GitRef[] {
     if (part.startsWith("HEAD -> ")) return { name: part.slice("HEAD -> ".length), type: "head" };
     if (part === "HEAD") return { name: "HEAD", type: "head" }; // detached
     if (part.startsWith("tag: ")) return { name: part.slice("tag: ".length), type: "tag" };
-    // 已知 remote 前缀视为 remote;其他 / 视为本地分支(启发式:origin/X 形式才归 remote)
+    // 已知 remote 前缀视为 remote;其他视为本地分支(启发式:origin/X 形式才归 remote)
     if (part.startsWith("origin/") || part.startsWith("upstream/")) return { name: part, type: "remote" };
-    if (part.includes("/")) return { name: part, type: "branch" };
     return { name: part, type: "branch" };
   });
 }
 
-/** format = %x01%H%x00%P%x00%D%x00%an%x00%at%x00%s:\x01 分记录,\x00 分字段 */
+/** format = %x01%H%x00%P%x00%D%x00%an%x00%at%x00%s:\x01 分记录,\x00 分字段;格式错误跳过 */
 export function parseGitLog(stdout: string): RawCommit[] {
   return stdout
     .split("\x01")
     .filter((rec) => rec.trim() !== "")
     .map((rec) => {
-      const [hash, parents, decorate, author, at, subject] = rec.split("\x00");
+      const fields = rec.split("\x00");
+      // 格式错误(字段少于 6 个)则跳过此记录
+      if (fields.length < 6) return null;
+      const hash = fields[0]!;
+      const parents = fields[1]!;
+      const decorate = fields[2]!;
+      const author = fields[3]!;
+      const at = fields[4]!;
+      const subject = fields[5]!;
       return {
         hash,
         parents: parents.split(" ").filter(Boolean),
@@ -67,7 +74,8 @@ export function parseGitLog(stdout: string): RawCommit[] {
         timestamp: Number(at),
         subject: (subject ?? "").replace(/\n$/, ""),
       };
-    });
+    })
+    .filter((commit): commit is RawCommit => commit !== null);
 }
 
 /** numstat 行:"12\t3\tpath" 或 "-\t-\tbinary" */
@@ -103,7 +111,7 @@ export function assignLanes(commits: RawCommit[]): GraphRow[] {
 
     let lane: number;
     if (waiting.length > 0) {
-      lane = waiting[0];
+      lane = waiting[0]!; // waiting 不空,索引 0 必存在
     } else {
       const free = active.indexOf(null);
       if (free !== -1) lane = free;
@@ -112,10 +120,13 @@ export function assignLanes(commits: RawCommit[]): GraphRow[] {
 
     // 上一行 → 本行的线段:每条活线一段;等本 commit 的弯进 lane,其余直落自己道
     if (rows.length > 0) {
-      const prev = rows[rows.length - 1];
+      const prev = rows[rows.length - 1]!; // rows 不空,长度 > 0
       active.forEach((h, j) => {
         if (h === null) return;
-        prev.edges.push({ fromLane: origin[j], toLane: h === c.hash ? lane : j });
+        const originJ = origin[j]; // 存在于 active 对应位置
+        if (originJ !== undefined) {
+          prev.edges.push({ fromLane: originJ, toLane: h === c.hash ? lane : j });
+        }
       });
     }
 
@@ -127,7 +138,8 @@ export function assignLanes(commits: RawCommit[]): GraphRow[] {
     rows.push(row);
 
     if (c.parents.length > 0) {
-      active[lane] = c.parents[0];
+      const firstParent = c.parents[0]!; // parents 长度 > 0
+      active[lane] = firstParent;
       for (const p of c.parents.slice(1)) {
         const existing = active.findIndex((h) => h === p);
         if (existing !== -1) {

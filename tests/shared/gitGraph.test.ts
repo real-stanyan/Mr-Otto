@@ -37,7 +37,16 @@ describe("parseGitLog", () => {
 
   it("subject 里的逗号/空格原样保留", () => {
     const out = parseGitLog(`\x01abc\x00\x00\x00x\x001\x00fix: a, b 和 c\n`);
-    expect(out[0].subject).toBe("fix: a, b 和 c");
+    expect(out[0]!.subject).toBe("fix: a, b 和 c");
+  });
+
+  it("格式错误(字段不足)则跳过该记录", () => {
+    const out = parseGitLog(
+      `\x01abc\x00incomplete\n` + // 只有 2 个字段,跳过
+      `\x01valid\x00\x00\x00x\x001\x00subj\n` // 完整 6 字段
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.hash).toBe("valid");
   });
 });
 
@@ -64,9 +73,9 @@ describe("assignLanes", () => {
   it("线性链:全在 0 道,行间直线", () => {
     const rows = assignLanes([c("a", ["b"]), c("b", ["c"]), c("c", [])]);
     expect(rows.map((r) => r.lane)).toEqual([0, 0, 0]);
-    expect(rows[0].edges).toEqual([{ fromLane: 0, toLane: 0 }]);
-    expect(rows[1].edges).toEqual([{ fromLane: 0, toLane: 0 }]);
-    expect(rows[2].edges).toEqual([]); // 根 commit,线到此为止
+    expect(rows[0]!.edges).toEqual([{ fromLane: 0, toLane: 0 }]);
+    expect(rows[1]!.edges).toEqual([{ fromLane: 0, toLane: 0 }]);
+    expect(rows[2]!.edges).toEqual([]); // 根 commit,线到此为止
   });
 
   it("分叉:两个 tip 共父,第二 tip 开 1 道,汇入父所在 0 道", () => {
@@ -74,18 +83,18 @@ describe("assignLanes", () => {
     const rows = assignLanes([c("a", ["cc"]), c("b", ["cc"]), c("cc", [])]);
     expect(rows.map((r) => r.lane)).toEqual([0, 1, 0]);
     // b 行与 cc 行之间:0 道直落到 cc,1 道弯进 0 道(同一目标 hash 汇合)
-    expect(rows[1].edges).toContainEqual({ fromLane: 0, toLane: 0 });
-    expect(rows[1].edges).toContainEqual({ fromLane: 1, toLane: 0 });
+    expect(rows[1]!.edges).toContainEqual({ fromLane: 0, toLane: 0 });
+    expect(rows[1]!.edges).toContainEqual({ fromLane: 1, toLane: 0 });
   });
 
   it("合并 commit:第二父开新道,merge 线从 dot 拉出", () => {
     // m 是合并(父 p1 p2),topo 序 m p1 p2
     const rows = assignLanes([c("m", ["p1", "p2"]), c("p1", []), c("p2", [])]);
-    expect(rows[0].lane).toBe(0);
+    expect(rows[0]!.lane).toBe(0);
     // m 行下方:0 道续给 p1,新道 1 从 dot(0)拉向 1(第二父)
-    expect(rows[0].edges).toContainEqual({ fromLane: 0, toLane: 0 });
-    expect(rows[0].edges).toContainEqual({ fromLane: 0, toLane: 1 });
-    expect(rows[2].lane).toBe(1);
+    expect(rows[0]!.edges).toContainEqual({ fromLane: 0, toLane: 0 });
+    expect(rows[0]!.edges).toContainEqual({ fromLane: 0, toLane: 1 });
+    expect(rows[2]!.lane).toBe(1);
   });
 
   it("第二父已有道在等:直接汇入既有道,不开新道", () => {
@@ -96,17 +105,17 @@ describe("assignLanes", () => {
     ]);
     // m 落 0;1 道已被 m 的第二父(shared)占用,b 是独立 tip 开 2 道;
     // shared 被 1 道(m 的 merge 线)和 2 道(b 的第一父)同时等,落最左的 1 道
-    expect(rows[0].lane).toBe(0);
-    expect(rows[1].lane).toBe(2);
-    expect(rows[0].edges).toContainEqual({ fromLane: 0, toLane: 1 }); // merge 线并入既有 1 道
-    expect(rows[3].lane).toBe(1);
+    expect(rows[0]!.lane).toBe(0);
+    expect(rows[1]!.lane).toBe(2);
+    expect(rows[0]!.edges).toContainEqual({ fromLane: 0, toLane: 1 }); // merge 线并入既有 1 道
+    expect(rows[3]!.lane).toBe(1);
   });
 
   it("多根(orphan):互不相连各占道,道用完可回收", () => {
     const rows = assignLanes([c("a", []), c("b", [])]);
     // a 落 0 且不占用(无父,道立刻释放),b 复用 0 道
-    expect(rows[0].lane).toBe(0);
-    expect(rows[1].lane).toBe(0);
+    expect(rows[0]!.lane).toBe(0);
+    expect(rows[1]!.lane).toBe(0);
   });
 });
 
