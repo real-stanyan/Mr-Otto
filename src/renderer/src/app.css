@@ -541,11 +541,13 @@
   }
 }
 
-/* ─── 滚动条:macOS overlay 手感,全局一份(不再逐处挂 class)───
-   静止时完全隐形,指针进入滚动区才淡入;指到条上加粗加深(直接操作的抓握提示),
-   按住最深。轨道恒定 11px 且 gutter 常驻——条的出现/消失不引起任何内容回流。
-   注意:Chromium 里一旦设 scrollbar-width/scrollbar-color,::-webkit-* 全失效,
-   所以这里只用 ::-webkit-*(Electron = 纯 Chromium,不需要标准属性兜底)。 */
+/* ─── 滚动条:macOS 细条手感,全局一份(不再逐处挂 class)───
+   静止一根淡细条(在的,但不抢戏);指到条上加宽加深、按住最深——直接操作的抓握提示。
+   轨道恒定 11px,粗细变化只吃透明边不改轨道宽,永不引起内容回流。
+   两个 Chromium 事实决定了这个写法:
+   ① 一旦设 scrollbar-width/scrollbar-color,::-webkit-* 全失效 → 只用 ::-webkit-*
+   ② 容器 :hover 不会触发自定义滚动条重绘 → "静止全透明、进区才显形"做不到,
+      只有滚动条自身的 :hover/:active 可靠,所以静止态必须自带可见度 */
 ::-webkit-scrollbar {
   width: 11px;
   height: 11px;
@@ -555,20 +557,13 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: transparent;
   /* 透明边 + background-clip:条实际只有 5px 宽,两侧留呼吸位 */
+  background-color: var(--scrollbar-thumb);
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
-  /* 离场慢半拍(delay 500ms)——手刚离开就消失会显得神经质 */
-  transition: background-color 260ms ease 500ms;
 }
-/* 指针进滚动区 = 立刻显形(响应优先于优雅) */
-*:hover::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  transition: background-color 120ms var(--ease-strong) 0ms;
-}
-/* 指到条上:变宽(5px→7px)变深,像 macOS 那样"迎上来" */
+/* 指到条上:5px→7px 变宽变深,像 macOS 那样"迎上来" */
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);
   border-width: 2px;
@@ -577,7 +572,7 @@
   background-color: var(--scrollbar-thumb-active);
   border-width: 2px;
 }
-/* 高对比度偏好:恒显 + 实底,不玩隐形 */
+/* 高对比度偏好:静止态直接上深色 */
 @media (prefers-contrast: more) {
   ::-webkit-scrollbar-thumb {
     background-color: var(--scrollbar-thumb-hover);
