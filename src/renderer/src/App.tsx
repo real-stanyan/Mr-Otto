@@ -20,6 +20,7 @@ import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, parseTodoArgs, TODO_TOOL_NAME } from "../../session/deriveTodos.js";
+import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../../tools/askUser.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
@@ -28,6 +29,7 @@ import { GitGraphView } from "./components/GitGraphView.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
+import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
@@ -635,6 +637,8 @@ function agentPhase(opts: {
 function toolPhase(name: string): { orb: OrbState; label: string } {
   if (name === "read_file") return { orb: "searching", label: "检索中…" };
   if (name === TODO_TOOL_NAME) return { orb: "composing", label: "整理清单…" };
+  // 提问时管线其实停着等人，不该显示"执行中"——它在等你
+  if (name === ASK_USER_TOOL_NAME) return { orb: "composing", label: "等你回答…" };
   return { orb: "working", label: "执行中…" };
 }
 
@@ -656,6 +660,14 @@ function toolSummary(call: ToolCallRequest): { verb: string; target: string; sta
       return { verb: "读取", target: str("path").split("/").pop() ?? "", stat: "" };
     case "bash":
       return { verb: "终端", target: str("cmd"), stat: "" };
+    case ASK_USER_TOOL_NAME: {
+      const questions = parseAskUserArgs(call.args) ?? [];
+      return {
+        verb: "提问",
+        target: questions[0]?.question ?? "",
+        stat: questions.length > 1 ? `${questions.length} 题` : "",
+      };
+    }
     case TODO_TOOL_NAME: {
       // 目标位显示当前在做的那项——一行摘要里最有信息量的就是它
       const items = parseTodoArgs(call.args) ?? [];
@@ -2042,6 +2054,7 @@ export function App() {
           <Replay />
           {/* 审批卡永不因回放隐藏：它是挂起中的活控制件，藏了 agent 就卡死 */}
           <ApprovalCard />
+          <QuestionnaireCard />
         </>
       ) : (
         <>
@@ -2083,6 +2096,7 @@ export function App() {
           </section>
 
           <ApprovalCard />
+          <QuestionnaireCard />
 
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}

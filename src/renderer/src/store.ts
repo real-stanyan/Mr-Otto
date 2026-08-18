@@ -8,6 +8,8 @@ import type {
   AccountInfo,
   ApprovalMode,
   ApprovalRequest,
+  AskUserAnswer,
+  AskUserRequest,
   BootInfo,
   SessionSummary,
   SkillInfo,
@@ -51,6 +53,8 @@ interface ChatState {
   statusBySession: Record<string, TurnStatus>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
+  /** 待作答的问卷，同样按会话挂靠（模型问了话，人还没答） */
+  asks: Record<string, AskUserRequest>;
   /** 流式直播缓冲（按会话攒碎片，思考/正文分频道）。临时投影：完整
       assistant_message 事件一到就清——事件是事实，缓冲只是它到来前的预览 */
   streamingBySession: Record<string, { content: string; reasoning: string }>;
@@ -196,6 +200,8 @@ interface ChatState {
   /** DM 面板顶部"加载更早"——按当前最旧 id 往前翻一页 */
   loadOlderDms(): Promise<void>;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
+  /** 交问卷。answers 为 null = 用户关掉了卡片（模型会知道"没人答"，不是"全跳过"） */
+  answerQuestions(answers: AskUserAnswer[] | null): Promise<void>;
 }
 
 let bootStarted = false; // StrictMode 会双跑 effect，用模块级闩防重复订阅
@@ -233,6 +239,7 @@ export const useChat = create<ChatState>((set, get) => ({
   pendingWorkspace: null,
   statusBySession: {},
   approvals: {},
+  asks: {},
   streamingBySession: {},
   toolOutputByCall: {},
   error: null,
@@ -705,6 +712,9 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onApprovalRequest((req) =>
       set((s) => ({ approvals: { ...s.approvals, [req.sessionId]: req } }))
     );
+    window.otter.onAskUserRequest((req) =>
+      set((s) => ({ asks: { ...s.asks, [req.sessionId]: req } }))
+    );
     window.otter.onTurnStatus(({ sessionId, status }) =>
       set((s) => ({
         statusBySession: { ...s.statusBySession, [sessionId]: status },
@@ -715,6 +725,9 @@ export const useChat = create<ChatState>((set, get) => ({
           ? {
               streamingBySession: without(s.streamingBySession, sessionId),
               approvals: without(s.approvals, sessionId),
+              // 问卷同理：turn 谢幕时主进程侧已把挂起的提问收成"已取消"，
+              // 留一张点了没人听的问卷只会骗人
+              asks: without(s.asks, sessionId),
             }
           : {}),
       }))
@@ -886,5 +899,19 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!approval) return;
     set((s) => ({ approvals: without(s.approvals, sessionId) })); // 先收卡；结果以事件流回
     await window.otter.decideApproval(sessionId, approval.call.id, decision, reason);
+  },
+
+  async answerQuestions(answers) {
+    const sessionId = get().sessionId;
+    const ask = get().asks[sessionId]; // 只能答当前视图里的卷
+    if (!ask) return;
+    set((s) => ({ asks: without(s.asks, sessionId) })); // 先收卡；结果以事件流回
+    await window.otter.answerQuestions(
+      sessionId,
+      ask.toolCallId,
+      answers
+        ? { status: "answered", answers }
+        : { status: "cancelled", reason: "用户关掉了问卷" }
+    );
   },
 }));

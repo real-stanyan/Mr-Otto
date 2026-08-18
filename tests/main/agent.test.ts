@@ -11,7 +11,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 
-const push: AgentPush = { event: () => {}, approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
+const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
 const attachments = new AttachmentStore(mkdtempSync(join(tmpdir(), "otter-agent-test-")));
 
@@ -44,7 +44,7 @@ describe("createAgent 会话生命周期", () => {
     const agent = createAgent({
       store,
       workspace: "/proj/x",
-      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
       attachments,
     });
 
@@ -199,7 +199,7 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
     const pushed: string[] = [];
     createAgent({
       store, workspace: "/w", resumeSessionId: "s-x",
-      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
+      push: { event: (e) => pushed.push(e.type), approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} },
       attachments,
     });
 

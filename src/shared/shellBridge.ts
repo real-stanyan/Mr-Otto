@@ -12,6 +12,15 @@ import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot } from "./friends.js";
+import type {
+  AskUserAnswer,
+  AskUserOption,
+  AskUserOutcome,
+  AskUserQuestion,
+  AskUserRequest,
+} from "./askUser.js";
+
+export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
 export type { SessionSummary };
 
@@ -208,8 +217,12 @@ export interface ShellBridge {
     decision: "approved" | "denied",
     reason?: string
   ): Promise<void>;
+  /** 问卷卡交卷（或被用户关掉）——resolve 对应会话里挂起的 Asker。
+      与 decideApproval 同构：一次 UI 往返的返程 */
+  answerQuestions(sessionId: string, toolCallId: string, outcome: AskUserOutcome): Promise<void>;
   onEvent(cb: (event: SessionEvent) => void): Unsubscribe;
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
+  onAskUserRequest(cb: (req: AskUserRequest) => void): Unsubscribe;
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
@@ -278,8 +291,10 @@ export const CHANNELS = {
   stopTurn: "otter:stopTurn",
   compact: "otter:compact",
   decideApproval: "otter:decideApproval",
+  answerQuestions: "otter:answerQuestions",
   event: "otter:event",
   approvalRequest: "otter:approvalRequest",
+  askUserRequest: "otter:askUserRequest",
   turnStatus: "otter:turnStatus",
   assistantDelta: "otter:assistantDelta",
   toolOutput: "otter:toolOutput",

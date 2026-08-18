@@ -3,6 +3,15 @@
 import type { ToolDefinition } from "../model/adapter.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
+/** 执行器透给 run 的一点点上下文。绝大多数工具用不着——
+    只有需要"回头找自己这次调用"的工具（ask_user 要拿 toolCallId 当唤醒钥匙、
+    要拿 signal 在 turn 中断时收场）才读它。可选参数 = 老工具一个字不用改 */
+export interface ToolRunContext {
+  toolCallId: string;
+  /** turn 中断信号（ADR-0006）。不给 = 不可中断（测试里的裸管线照旧） */
+  signal?: AbortSignal;
+}
+
 export interface Tool {
   def: ToolDefinition;
   /** true = 执行前必须过人工审批门（下一课接入管线） */
@@ -11,6 +20,7 @@ export interface Tool {
       也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn */
   run(
     args: unknown,
-    world: ExecutionWorld
+    world: ExecutionWorld,
+    ctx?: ToolRunContext
   ): Promise<string | { output: string; concludesTurn?: true }>;
 }
