@@ -693,7 +693,7 @@ function ApprovalCard() {
         />
         <Button
           variant="outline"
-          className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
+          className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
           onClick={() => void decide("denied", reason.trim() || undefined)}
         >
           拒绝
@@ -747,7 +747,7 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
         {configured && (
           <Button
             variant="outline"
-            className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
+            className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
             onClick={() => void saveApiKey(envName, "")}
           >
             清除
@@ -1604,7 +1604,7 @@ export function App() {
                 {status === "running" ? (
                   <Button
                     variant="outline"
-                    className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] hover:text-err`}
+                    className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
                     title="停止 turn（Esc）"
                     onClick={() => void stop()}
                   >
