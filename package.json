@@ -45,10 +45,12 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^3.0.6",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.6.0",
     "thinking-orbs": "^0.3.1",
+    "vaul": "^1.1.2",
     "zustand": "^5.0.15"
   }
 }
