@@ -11,18 +11,27 @@
 --
 -- 全绿的标志是最后一行 "=== 全部通过 ==="。任何一条 FAIL 都会中断整段。
 -- u1 用的是维护者自己的账号（只读余额、动的部分随事务回滚）；u2 是临时造的。
+--
+-- 牌桌必须真建一行：0005 给 poker_stacks.table_id 补了外键 poker_stacks_table_fk，
+-- 从那以后凭空的 table_id 会被外键直接挡掉（issue #69）。0004 的 check 依赖
+-- 0005 的表结构，这是校验脚本对后续 migration 的单向依赖，不是反过来。
 
 begin;
 do $$
 declare
   u1 uuid := '32c6716a-2215-4fef-8865-7da11e0feab9';
   u2 uuid := gen_random_uuid();
-  t  uuid := gen_random_uuid();
+  t  uuid;
   h  uuid := gen_random_uuid();
   b1 bigint; b2 bigint; s1 bigint; s2 bigint; ok boolean; caught text;
 begin
   insert into auth.users (id, email) values (u2, 'poker-test@example.com');
   perform public.grant_tokens(u2, 'flash', 20000000);
+
+  -- 桌子得真存在（见头注释里的外键说明）。这里不走 poker_join：本文件校验的是
+  -- 钱那一层（买入/结算/离桌/重算），入座与好友门是 0005 的 check 的事
+  insert into public.poker_tables (tier, small_blind, big_blind, min_buyin, max_buyin, max_seats, created_by)
+  values ('flash', 25, 50, 1000, 5000, 2, u1) returning id into t;
 
   select balance_tokens into b1 from public.token_balances where user_id = u1 and tier = 'flash';
 
