@@ -79,6 +79,11 @@ interface ChatState {
   gitGraphRepo: string | null;
   /** null = 加载中(骨架);ok:false 按 kind 降级 */
   gitGraph: GitLogResult | null;
+  /** 当前拉了多少条(滚到底 +300 重拉,见 loadMoreGitGraph) */
+  gitGraphLimit: number;
+  /** git 给的比要的少 = 历史到头了,别再触发加载 */
+  gitGraphAtEnd: boolean;
+  gitGraphLoadingMore: boolean;
   /** 选中 commit 详情面板;result null = 拉取中 */
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
@@ -128,6 +133,8 @@ interface ChatState {
   closeGitGraph(): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
   refreshGitGraph(silent?: boolean): Promise<void>;
+  /** 滚近底部时把窗口 +300 整窗重拉。到底/在拉/没图时是空操作 */
+  loadMoreGitGraph(): Promise<void>;
   openGitCommit(hash: string): Promise<void>;
   closeGitCommit(): void;
   togglePanelWide(): void;
@@ -165,6 +172,8 @@ interface ChatState {
 let bootStarted = false; // StrictMode 会双跑 effect，用模块级闩防重复订阅
 // Git Graph 自动重拉的尾随防抖:一串工具调用(agent 连跑 git checkout/merge)只触发一次刷新
 let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
+/** Git Graph 每页条数:首屏拉这么多,滚到底再加一页(主进程侧同名默认值,超上限会被钳) */
+const GIT_GRAPH_PAGE = 300;
 
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位 */
 const enterChat = (info: BootInfo) => ({
@@ -211,6 +220,9 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphOpen: false,
   gitGraphRepo: null,
   gitGraph: null,
+  gitGraphLimit: GIT_GRAPH_PAGE,
+  gitGraphAtEnd: false,
+  gitGraphLoadingMore: false,
   gitCommitView: null,
   panelWide: false,
   branchesByDir: {},
@@ -351,6 +363,8 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().workspace || null;
     set({
       gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
+      // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
+      gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
       protocolOpen: false, settingsSection: null, // 互斥:同一块主区
     });
     if (repo) await get().refreshGitGraph();
@@ -362,11 +376,40 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().gitGraphRepo;
     if (!repo) return;
     if (!silent) set({ gitGraph: null }); // 回加载态,刷新肉眼可见;静默刷新原图不动,新图到了直接换
+    const limit = get().gitGraphLimit; // 自动刷新保住你已经翻到的深度,不把窗口缩回首屏
     try {
-      const result = await window.otter.gitGraphLog(repo);
-      if (get().gitGraphRepo === repo) set({ gitGraph: result });
+      const result = await window.otter.gitGraphLog(repo, limit);
+      // 到底了 = git 给的比要的少。相等只说明"可能还有",不敢断言到底
+      if (get().gitGraphRepo === repo) {
+        set({ gitGraph: result, gitGraphAtEnd: result.ok && result.commits.length < limit });
+      }
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async loadMoreGitGraph() {
+    const s = get();
+    // 到底了 / 正在拉 / 还没有图,都不重复触发(滚动事件密集,这三道闸都要)
+    if (s.gitGraphAtEnd || s.gitGraphLoadingMore || !s.gitGraph?.ok || !s.gitGraphRepo) return;
+    const repo = s.gitGraphRepo;
+    const limit = s.gitGraphLimit + GIT_GRAPH_PAGE;
+    set({ gitGraphLoadingMore: true });
+    try {
+      // 整窗重拉,不用 --skip:--all --topo-order 的序要从同一组 tip 完整遍历才稳定,
+      // 跳页会把序拼串。代价是 git 多跑一次(本地进程),换序绝对一致
+      const result = await window.otter.gitGraphLog(repo, limit);
+      if (get().gitGraphRepo === repo) {
+        set({
+          gitGraph: result,
+          gitGraphLimit: limit,
+          gitGraphAtEnd: result.ok && result.commits.length < limit,
+        });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ gitGraphLoadingMore: false });
     }
   },
 

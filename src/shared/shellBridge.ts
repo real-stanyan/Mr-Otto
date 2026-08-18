@@ -164,8 +164,9 @@ export interface ShellBridge {
   protocolListIssues(repoDir: string): Promise<IssuesResult>;
   /** 单 issue 详情(正文 + 评论,handoff 解析在渲染层做) */
   protocolGetIssue(repoDir: string, number: number): Promise<IssueDetailResult>;
-  /** Git Graph:目标仓库 git log 全分支拓扑(只读;非 git 仓库按 kind 降级) */
-  gitGraphLog(repoDir: string): Promise<GitLogResult>;
+  /** Git Graph:目标仓库 git log 全分支拓扑(只读;非 git 仓库按 kind 降级)。
+      limit = 要几条(缺省 300);滚到底加载更多时整窗重拉,主进程侧钳位 */
+  gitGraphLog(repoDir: string, limit?: number): Promise<GitLogResult>;
   /** 单 commit 详情:元数据 + numstat 文件清单 */
   gitGraphCommit(repoDir: string, hash: string): Promise<GitCommitResult>;
   /** 本地分支列表 + 当前分支(只读) */
