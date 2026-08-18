@@ -6,7 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Ellipsis, History } from "lucide-react";
+import { BookMarked, Ellipsis, GitBranch, History } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,6 +21,7 @@ import { contextUsed } from "../../shared/contextEstimate.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
+import { GitGraphView } from "./components/GitGraphView.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { Button } from "@/components/ui/button.js";
@@ -963,6 +964,7 @@ function AppSidebar() {
   const approvals = useChat((s) => s.approvals);
   const account = useChat((s) => s.account);
   const protocolOpen = useChat((s) => s.protocolOpen);
+  const gitGraphOpen = useChat((s) => s.gitGraphOpen);
 
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
@@ -1022,7 +1024,7 @@ function AppSidebar() {
               <SidebarMenuItem key={s.sessionId}>
                 <SidebarMenuButton
                   className="h-auto flex-col items-start gap-px py-[7px]"
-                  isActive={phase === "chat" && settingsSection === null && !protocolOpen && s.sessionId === sessionId}
+                  isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && s.sessionId === sessionId}
                   onClick={() => void resume(s.sessionId)}
                 >
                   {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
@@ -1389,6 +1391,8 @@ export function App() {
   const settingsSection = useChat((s) => s.settingsSection);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const openProtocol = useChat((s) => s.openProtocol);
+  const gitGraphOpen = useChat((s) => s.gitGraphOpen);
+  const openGitGraph = useChat((s) => s.openGitGraph);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
   // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -1469,7 +1473,9 @@ export function App() {
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）
-  const main = protocolOpen ? (
+  const main = gitGraphOpen ? (
+    <GitGraphView />
+  ) : protocolOpen ? (
     <ProtocolView />
   ) : settingsSection === "account" ? (
     <AccountPage />
@@ -1510,6 +1516,9 @@ export function App() {
             {/* Protocol 仪表盘对应各工作区,入口挂会话头部,不进全局侧栏 */}
             <DropdownMenuItem onClick={() => void openProtocol()}>
               <BookMarked /> Protocol 仪表盘
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => void openGitGraph()}>
+              <GitBranch /> Git Graph
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

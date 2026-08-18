@@ -1,0 +1,189 @@
+// Git Graph(只读)— 泳道图 + commit 详情。数据全从 store 取,零 IPC 纯投影。
+// 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
+
+import { RefreshCw, X } from "lucide-react";
+import { Button } from "@/components/ui/button.js";
+import { Skeleton } from "@/components/ui/skeleton.js";
+import { useChat } from "../store.js";
+import { assignLanes, type GitRef, type RawCommit } from "../../../shared/gitGraph.js";
+
+const ROW_H = 28;
+const LANE_W = 14;
+const DOT_R = 3.5;
+/** 泳道轮转色:亮暗主题下都可读的中饱和度色板(SVG stroke 用不了 Tailwind 类) */
+const LANE_COLORS = ["#4a9df8", "#e0a458", "#7cb96d", "#d96a6a", "#b07cd8", "#4fb8c4", "#c88ab0", "#8a92e0"];
+const laneColor = (lane: number) => LANE_COLORS[lane % LANE_COLORS.length];
+
+/** ref 徽章:HEAD 分支高亮,本地分支次之,remote/tag 弱化 */
+function RefBadge({ r }: { r: GitRef }) {
+  const cls =
+    r.type === "head" ? "bg-brand/20 text-brand font-semibold"
+    : r.type === "branch" ? "bg-brand/10 text-brand"
+    : "bg-muted text-muted-foreground";
+  return <span className={`shrink-0 rounded px-[5px] py-px text-[10px] font-mono ${cls}`}>{r.name}</span>;
+}
+
+/** 行间线段:三次贝塞尔,同道退化成直线 */
+function edgePath(fromLane: number, toLane: number): string {
+  const x1 = fromLane * LANE_W + LANE_W / 2;
+  const x2 = toLane * LANE_W + LANE_W / 2;
+  const y1 = ROW_H / 2;
+  const y2 = ROW_H + ROW_H / 2;
+  if (x1 === x2) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  return `M ${x1} ${y1} C ${x1} ${y1 + ROW_H / 2}, ${x2} ${y2 - ROW_H / 2}, ${x2} ${y2}`;
+}
+
+const ERROR_GUIDE: Record<string, string> = {
+  "git-missing": "未找到 git。安装 Xcode Command Line Tools:xcode-select --install",
+  "no-repo": "此文件夹不是 git 仓库——git init 之后这里就有图了。",
+  "git-error": "git 命令失败,可点刷新重试。",
+};
+
+export function GitGraphView() {
+  const { gitGraphRepo, gitGraph, gitCommitView, closeGitGraph, refreshGitGraph, openGitCommit, closeGitCommit } =
+    useChat();
+
+  return (
+    <main className="flex-1 min-w-0 flex flex-col">
+      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <span className="font-[650] text-sm">Git Graph</span>
+        <span className="font-mono text-xs text-muted-foreground truncate">{gitGraphRepo ?? "(无会话工作区)"}</span>
+        <span className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
+          <RefreshCw />
+        </Button>
+        <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
+          <X />
+        </Button>
+      </header>
+
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 overflow-auto">
+          {gitGraph === null ? (
+            <div className="grid gap-2 p-4">
+              <Skeleton className="h-6" /><Skeleton className="h-6" /><Skeleton className="h-6" />
+            </div>
+          ) : !gitGraph.ok ? (
+            <div className="px-4 py-6 text-sm text-muted-foreground">
+              <p>{ERROR_GUIDE[gitGraph.kind]}</p>
+              <p className="mt-2 font-mono text-xs opacity-70 break-all">{gitGraph.detail}</p>
+            </div>
+          ) : gitGraph.commits.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-muted-foreground">还没有 commit。</p>
+          ) : (
+            <GraphRows
+              commits={gitGraph.commits}
+              head={gitGraph.head}
+              selected={gitCommitView?.hash ?? null}
+              onPick={(h) => (gitCommitView?.hash === h ? closeGitCommit() : void openGitCommit(h))}
+            />
+          )}
+        </div>
+
+        {gitCommitView && (
+          <aside className="w-[320px] shrink-0 border-l border-border overflow-y-auto px-4 py-3">
+            <CommitDetailPane />
+          </aside>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function GraphRows({ commits, head, selected, onPick }: {
+  commits: RawCommit[];
+  head: string | null;
+  selected: string | null;
+  onPick: (hash: string) => void;
+}) {
+  const rows = assignLanes(commits);
+  const maxLane = Math.max(...rows.map((r) => Math.max(r.lane, ...r.edges.map((e) => Math.max(e.fromLane, e.toLane)))));
+  const svgW = (maxLane + 1) * LANE_W;
+
+  return (
+    <div>
+      {commits.map((c, i) => {
+        const row = rows[i]!; // assignLanes 逐 commit 生成一行,长度与 commits 严格一致
+        return (
+          <button
+            key={c.hash}
+            className={`flex w-full items-center gap-2 text-left hover:bg-accent ${selected === c.hash ? "bg-accent" : ""}`}
+            style={{ height: ROW_H }}
+            onClick={() => onPick(c.hash)}
+          >
+            {/* overflow visible:行间连线要越过本行边界画到下一行中心 */}
+            <svg width={svgW} height={ROW_H} className="shrink-0 overflow-visible">
+              {row.edges.map((e, k) => (
+                <path key={k} d={edgePath(e.fromLane, e.toLane)} fill="none" strokeWidth={2}
+                  stroke={laneColor(e.toLane)} />
+              ))}
+              <circle cx={row.lane * LANE_W + LANE_W / 2} cy={ROW_H / 2}
+                r={c.hash === head ? DOT_R + 1.5 : DOT_R}
+                fill={laneColor(row.lane)} />
+            </svg>
+            {c.refs.map((r) => <RefBadge key={`${r.type}:${r.name}`} r={r} />)}
+            <span className="flex-1 min-w-0 truncate text-sm">{c.subject}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{c.author}</span>
+            <span className="shrink-0 pr-3 text-xs text-muted-foreground font-mono">
+              {new Date(c.timestamp * 1000).toLocaleDateString()}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CommitDetailPane() {
+  const view = useChat((s) => s.gitCommitView);
+  const openGitCommit = useChat((s) => s.openGitCommit);
+  const closeGitCommit = useChat((s) => s.closeGitCommit);
+  if (!view) return null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs text-muted-foreground">{view.hash.slice(0, 8)}</span>
+        <span className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={closeGitCommit} title="关闭详情">
+          <X />
+        </Button>
+      </div>
+      {view.result === null ? (
+        <div className="grid gap-2"><Skeleton className="h-5" /><Skeleton className="h-14" /></div>
+      ) : !view.result.ok ? (
+        <div className="text-sm text-muted-foreground">
+          <p>拉取详情失败。</p>
+          <p className="mt-1 font-mono text-xs opacity-70 break-all">{view.result.detail}</p>
+          <Button variant="ghost" size="sm" className="mt-2" onClick={() => void openGitCommit(view.hash)}>
+            重试
+          </Button>
+        </div>
+      ) : (
+        <>
+          <pre className="whitespace-pre-wrap break-words text-sm font-sans">{view.result.detail.body}</pre>
+          <div className="text-xs text-muted-foreground">
+            {view.result.detail.author} &lt;{view.result.detail.email}&gt;
+            <br />
+            {new Date(view.result.detail.timestamp * 1000).toLocaleString()}
+          </div>
+          <div className="grid gap-1">
+            {view.result.detail.files.map((f) => (
+              <div key={f.file} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 min-w-0 truncate font-mono">{f.file}</span>
+                {f.insertions === null ? (
+                  <span className="shrink-0 text-muted-foreground">binary</span>
+                ) : (
+                  <span className="shrink-0">
+                    <em className="not-italic text-ok">+{f.insertions}</em>{" "}
+                    <em className="not-italic text-err">−{f.deletions}</em>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
