@@ -117,6 +117,18 @@ describe("底牌可见性", () => {
     }
   });
 
+  it("isMe 由服务端标 —— 客户端不自己判断身份", () => {
+    const { state, src } = deal(33);
+    for (const me of state.seats) {
+      const v = viewFor(me.userId, src(state));
+      expect(v.seats.filter((s) => s.isMe).map((s) => s.userId)).toEqual([me.userId]);
+      // 标了 isMe 的那一座，正好也是唯一能看到底牌的那一座
+      expect(v.seats.filter((s) => s.hole !== null).map((s) => s.userId)).toEqual([me.userId]);
+    }
+    // 外人一座都不标
+    expect(viewFor("outsider", src(state)).seats.every((s) => !s.isMe)).toBe(true);
+  });
+
   it("不在这桌上的人什么底牌都看不到", () => {
     const { state, src } = deal(21);
     const v = viewFor("outsider", src(state));

@@ -17,6 +17,10 @@ import type {
   StagedAttachment,
   StartSessionOptions,
   TurnStatus,
+  PokerAction,
+  PokerHandView,
+  PokerTableInput,
+  PokerTableSummary,
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
@@ -75,6 +79,13 @@ interface ChatState {
   /** 设置模式当前栏目（覆盖在任意 phase 之上）；null = 不在设置模式，
       会话高亮判断也看这个 */
   settingsSection: SettingsSection | null;
+  /** 看得见的牌桌（自己建的 / 自己坐着的 / 好友建的） */
+  pokerTables: PokerTableSummary[];
+  /** 当前订阅的桌;null = 没进桌 */
+  pokerTableId: string | null;
+  /** 服务端推来的**裁剪过的**牌局视图。别人的底牌在这里就是 null */
+  pokerHand: PokerHandView | null;
+  pokerError: string;
   /** 主区档位:work = 工程会话,game = 德州牌桌。纯本机视图偏好,
       不落事件日志、不进投影(同 ADR-0017/0018 的法理) */
   sessionMode: SessionMode;
@@ -150,6 +161,14 @@ interface ChatState {
   /** 拉一次官方额度（账号页进入时自动调一次） */
   refreshWallet(): Promise<void>;
   setSessionMode(mode: SessionMode): void;
+  refreshPokerTables(): Promise<void>;
+  createPokerTable(input: PokerTableInput): Promise<void>;
+  joinPokerTable(tableId: string, amount: number): Promise<void>;
+  leavePokerTable(): Promise<void>;
+  startPokerHand(): Promise<void>;
+  pokerAct(action: PokerAction): Promise<void>;
+  /** 进桌/退桌。同一时刻只订一张 */
+  watchPokerTable(tableId: string | null): Promise<void>;
   closeSettings(): void;
   /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
@@ -262,6 +281,10 @@ export const useChat = create<ChatState>((set, get) => ({
   replayCursor: null,
   settingsSection: null,
   sessionMode: "work",
+  pokerTables: [],
+  pokerTableId: null,
+  pokerHand: null,
+  pokerError: "",
   protocolOpen: false,
   protocolRepo: null,
   adrs: [],
@@ -358,6 +381,81 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   setSessionMode: (mode) => set({ sessionMode: mode }),
+
+  async refreshPokerTables() {
+    try {
+      set({ pokerTables: await window.otter.pokerTables(), pokerError: "" });
+    } catch (err) {
+      // 列不出来和"一张桌都没有"是两回事,后者是事实,前者是故障
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async createPokerTable(input) {
+    try {
+      const table = await window.otter.pokerCreateTable(input);
+      set({ pokerError: "" });
+      await get().refreshPokerTables();
+      // 建完直接进桌:建桌的人显然是要玩,不是要看一眼列表
+      await get().watchPokerTable(table.id);
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async joinPokerTable(tableId, amount) {
+    try {
+      await window.otter.pokerJoin(tableId, amount);
+      set({ pokerError: "" });
+      await get().refreshPokerTables();
+      await get().watchPokerTable(tableId);
+      // 买入把 token 从桶挪到桌上,桶余额跟着变
+      await get().refreshWallet();
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async leavePokerTable() {
+    const tableId = get().pokerTableId;
+    if (!tableId) return;
+    try {
+      await window.otter.pokerLeave(tableId);
+      await get().watchPokerTable(null);
+      await get().refreshPokerTables();
+      await get().refreshWallet();
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async startPokerHand() {
+    const tableId = get().pokerTableId;
+    if (!tableId) return;
+    try {
+      await window.otter.pokerStart(tableId);
+      set({ pokerError: "" });
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async pokerAct(action) {
+    const tableId = get().pokerTableId;
+    if (!tableId) return;
+    try {
+      await window.otter.pokerAct(tableId, action);
+      set({ pokerError: "" });
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async watchPokerTable(tableId) {
+    // 先清旧牌局再订新的:留着上一张桌的视图会让人对着别人的桌做决定
+    set({ pokerTableId: tableId, pokerHand: null, pokerError: "" });
+    await window.otter.pokerWatch(tableId);
+  },
   closeSettings: () => set({ settingsSection: null }),
 
   async openProtocol() {
@@ -668,6 +766,8 @@ export const useChat = create<ChatState>((set, get) => ({
       // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
       if (account.signedIn) void get().refreshWallet();
     });
+    window.otter.onPokerHand((pokerHand) => set({ pokerHand }));
+    window.otter.onPokerError((pokerError) => set({ pokerError }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onDirectMessage((msg) =>

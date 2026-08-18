@@ -16,6 +16,9 @@ import type { DeckCommitment } from "./shuffle.js";
 export interface SeatView {
   userId: string;
   seatIndex: number;
+  /** 这一座是不是看的人自己。由服务端标，而不是让客户端拿自己的 id 去比 ——
+      "我是谁"在这套系统里只有一个权威答案，就是 JWT 里的那个 sub */
+  isMe: boolean;
   startStack: number;
   stack: number;
   bet: number;
@@ -86,6 +89,7 @@ export function viewFor(viewerId: string, src: ViewSource): HandView {
     seats: state.seats.map((s, i) => ({
       userId: s.userId,
       seatIndex: i,
+      isMe: s.userId === viewerId,
       startStack: s.startStack,
       stack: s.stack,
       bet: s.bet,

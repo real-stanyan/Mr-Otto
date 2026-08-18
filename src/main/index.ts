@@ -10,6 +10,8 @@ import {
   type BootInfo,
   type StartSessionOptions,
   type OutgoingAttachment,
+  type PokerAction,
+  type PokerTableInput,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { EventStore } from "../session/store.js";
@@ -26,6 +28,9 @@ import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
+import {
+  createTable, joinTable, leaveTable, listTables, sendAction, startHand, watchTable,
+} from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { FriendsManager } from "./friends.js";
@@ -315,6 +320,41 @@ void app.whenReady().then(() => {
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
   ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
+
+  // ── 牌桌 ────────────────────────────────────────────────────────
+  // 同一时刻只订一张桌：换桌先退订。两条流同时推会互相盖着，
+  // 而"盖着"在牌桌上意味着看到的是上一张桌的底牌
+  let unwatchPoker: (() => void) | null = null;
+  ipcMain.handle(CHANNELS.pokerTables, () => listTables(getAccessToken));
+  ipcMain.handle(CHANNELS.pokerCreateTable, (_e, input: PokerTableInput) =>
+    createTable(getAccessToken, input)
+  );
+  ipcMain.handle(CHANNELS.pokerJoin, (_e, tableId: string, amount: number) =>
+    joinTable(getAccessToken, tableId, amount)
+  );
+  ipcMain.handle(CHANNELS.pokerLeave, (_e, tableId: string) =>
+    leaveTable(getAccessToken, tableId)
+  );
+  ipcMain.handle(CHANNELS.pokerStart, (_e, tableId: string) =>
+    startHand(getAccessToken, tableId)
+  );
+  ipcMain.handle(CHANNELS.pokerAct, (_e, tableId: string, action: PokerAction) =>
+    sendAction(getAccessToken, tableId, action)
+  );
+  ipcMain.handle(CHANNELS.pokerWatch, (_e, tableId: string | null) => {
+    unwatchPoker?.();
+    unwatchPoker = null;
+    if (!tableId) {
+      send(CHANNELS.pokerHand, null);
+      return;
+    }
+    unwatchPoker = watchTable(
+      getAccessToken,
+      tableId,
+      (view) => send(CHANNELS.pokerHand, view),
+      (err) => send(CHANNELS.pokerError, err instanceof Error ? err.message : String(err))
+    );
+  });
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());

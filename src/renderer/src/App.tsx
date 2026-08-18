@@ -1351,6 +1351,57 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "skills", label: "Skill 库" },
 ];
 
+/** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
+function TableList() {
+  const tables = useChat((s) => s.pokerTables);
+  const current = useChat((s) => s.pokerTableId);
+  const watch = useChat((s) => s.watchPokerTable);
+  const refresh = useChat((s) => s.refreshPokerTables);
+  const signedIn = useChat((s) => s.account.signedIn);
+
+  useEffect(() => {
+    if (signedIn) void refresh();
+  }, [signedIn, refresh]);
+
+  return (
+    <div className="px-2 py-1 flex flex-col gap-1">
+      <div className="px-1 pt-1 pb-[2px] text-[11px] text-muted-foreground">牌桌</div>
+      {current && (
+        <button
+          className="w-full rounded-md px-2 py-[6px] text-left text-[13px] hover:bg-foreground/[0.06]"
+          onClick={() => void watch(null)}
+        >
+          ← 回到大厅
+        </button>
+      )}
+      {tables.length === 0 ? (
+        <div className="px-1 py-2 text-xs text-muted-foreground">
+          {signedIn ? "还没有桌子" : "登录后可见"}
+        </div>
+      ) : (
+        tables.map((t) => (
+          <button
+            key={t.id}
+            className={`w-full rounded-md px-2 py-[6px] text-left transition-colors duration-150 hover:bg-foreground/[0.06] ${
+              t.id === current ? "bg-foreground/[0.08]" : ""
+            }`}
+            onClick={() => void watch(t.id)}
+          >
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-[13px]">{t.name || "无名桌"}</span>
+              {t.live && <span className="shrink-0 text-[11px] text-primary">打着</span>}
+              {t.seated && !t.live && <span className="shrink-0 text-[11px] text-muted-foreground">在座</span>}
+            </div>
+            <div className="text-[11px] tabular-nums text-muted-foreground">
+              {t.tier} · {t.smallBlind}/{t.bigBlind}
+            </div>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** game 档下的侧栏内容：work 那边的会话在干什么。
     只列"有动静"的（跑着 / 等审批 / 等回答），其余折成一行计数 ——
     牌桌上的人要的是"有没有事找我"，不是完整会话列表 */
@@ -1503,10 +1554,13 @@ function AppSidebar() {
       </SidebarHeader>
       <SidebarContent>
         {mode === "game" ? (
-          // game 档里看不见会话列表也看不见审批卡 —— 那就把"work 那边现在怎么样"
-          // 搬到这里来。静默挂起才是真的坏：turn 停在等审批上而人在牌桌上，
-          // 不给出口就等于把 agent 关在门外
-          <WorkStatusList />
+          // 上半是牌桌导航（这一档的主业），下半是 work 那边的状态：
+          // game 档里看不见会话列表也看不见审批卡，静默挂起才是真的坏 ——
+          // turn 停在等审批上而人在牌桌上，不给出口等于把 agent 关在门外
+          <>
+            <TableList />
+            <WorkStatusList />
+          </>
         ) : settingsSection !== null ? (
           // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
           <SidebarMenu>
