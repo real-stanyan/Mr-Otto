@@ -7,7 +7,9 @@ import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, FriendshipEntry,
 } from "../shared/friends.js";
 
-export type ProfileRow = { id: string; email: string; name: string | null; avatar_url: string | null };
+// email 可空:auth.users.email 本就可为 null(手机/匿名注册),见 docs/adr/0025。
+// null 只活到主进程边界为止,toFriendProfile 归一成 ""
+export type ProfileRow = { id: string; email: string | null; name: string | null; avatar_url: string | null };
 export type FriendshipRow = { id: string; requester: string; addressee: string; status: "pending" | "accepted" };
 export type MessageRow = { id: number; sender: string; recipient: string; body: string; created_at: string };
 
@@ -35,7 +37,7 @@ export type FriendsPush = {
 };
 
 export function toFriendProfile(row: ProfileRow): FriendProfile {
-  return { id: row.id, email: row.email, name: row.name ?? "", avatarUrl: row.avatar_url ?? "" };
+  return { id: row.id, email: row.email ?? "", name: row.name ?? "", avatarUrl: row.avatar_url ?? "" };
 }
 
 export function toDirectMessage(row: MessageRow): DirectMessage {
