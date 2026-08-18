@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,6 +29,7 @@ import { GitGraphView } from "./components/GitGraphView.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
+import { PokerTable } from "./components/PokerTable.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -53,6 +54,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select.js";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import {
   Tooltip,
@@ -1971,8 +1973,13 @@ function Welcome() {
   );
 }
 
+/** 会话面板的两档：work = 工程会话，game = 德州牌桌 */
+type SessionMode = "work" | "game";
+
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
+  // 档位是这台机器的视图偏好，不是会话事实 —— 不落日志、不进投影
+  const [mode, setMode] = useState<SessionMode>("work");
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
@@ -2140,7 +2147,15 @@ export function App() {
           <QuestionnaireCard />
         </>
       ) : (
-        <>
+        // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用。
+        // TabsList 排在 footer 里（DOM 顺序在 Content 之后）—— 视觉上贴着会话框，
+        // 因为它回答的是"我这句话是说给谁听的"，属于输入区的语境
+        <Tabs
+          value={mode}
+          onValueChange={(v) => setMode(v as SessionMode)}
+          className="flex-1 min-h-0 flex flex-col gap-0"
+        >
+        <TabsContent value="work" className="flex-1 min-h-0 flex flex-col">
           <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
@@ -2177,6 +2192,11 @@ export function App() {
             )}
             <div ref={bottomRef} />
           </section>
+        </TabsContent>
+
+        <TabsContent value="game" className="flex-1 min-h-0 flex flex-col">
+          <PokerTable />
+        </TabsContent>
 
           <ApprovalCard />
           <QuestionnaireCard />
@@ -2185,6 +2205,18 @@ export function App() {
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <TodoPanel />
+            {/* 档位切换：分段控件，贴着会话框上沿。h-8 比 tabs 默认的 h-9 矮一档，
+                它是次要控件，不该和会话框抢重量 */}
+            <TabsList className="mb-[6px] h-8">
+              <TabsTrigger value="work">
+                <SquareTerminal aria-hidden />
+                Work
+              </TabsTrigger>
+              <TabsTrigger value="game">
+                <Spade aria-hidden />
+                Game
+              </TabsTrigger>
+            </TabsList>
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
@@ -2320,7 +2352,7 @@ export function App() {
               </div>
             </div>
           </footer>
-        </>
+        </Tabs>
       )}
     </div>
   );
