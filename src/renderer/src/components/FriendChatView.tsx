@@ -31,9 +31,12 @@ export function FriendChatView() {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // 翻旧页不弹底,只在最新一条变化时贴底:messages.length 在 loadOlderDms 时也会变
+  // (prepend),用 lastId 而非 length 才能把"顶部插入旧消息"和"末尾追加新消息"分开
+  const lastId = messages.at(-1)?.id;
   useEffect(() => {
     bottomRef.current?.scrollIntoView();
-  }, [messages.length, friend?.id]);
+  }, [lastId, friend?.id]);
 
   if (!friend) return null;
   const online = onlineIds.includes(friend.id);
