@@ -2,6 +2,7 @@
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -25,6 +26,7 @@ import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { FriendsSection } from "./components/FriendsSection.js";
+import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -72,7 +74,6 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
-  useSidebar,
 } from "@/components/ui/sidebar.js";
 import type {
   SessionEvent,
@@ -120,18 +121,6 @@ const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full trunca
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
 const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 
-/** 侧栏收起后的全局重开钮（壳层渲染,所有视图自动覆盖——welcome 曾漏配触发钮把人困死）:
-    侧栏从左缘消失,重开的把手就出现在左缘同侧(空间一致性);展开态不渲染——
-    关闭入口在侧栏头部,一个功能一个控件,不随视图漂移。悬浮半透明底 = 内容之上的功能层 */
-function CollapsedSidebarNub() {
-  const { state } = useSidebar();
-  if (state !== "collapsed") return null;
-  return (
-    <div className="collapsed-nub absolute top-[9px] left-2 z-40 rounded-md bg-background/75 backdrop-blur-sm border border-border shadow-sm">
-      <SidebarTrigger />
-    </div>
-  );
-}
 const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
 const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
 const SETTINGS_BODY =
@@ -407,6 +396,51 @@ function TodoPanel() {
   );
 }
 
+/** 窄宽下收纳会话偏好的浮层。从触发钮左下角长出来(从来处出现,ADR-0010 的
+    origin-aware 惯例),点外面 / Esc 关闭——与 CtxPopover 同一套手法 */
+function SettingsPopover({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => {
+      // Radix 的 Select 下拉挂在 body 的 portal 上,不在本浮层的 DOM 子树里:
+      // 不放行的话点一下选项就把整个浮层关了,选不动任何东西
+      const t = e.target as HTMLElement;
+      if (t.closest("[data-radix-popper-content-wrapper]")) return;
+      if (ref.current && !ref.current.parentElement?.contains(t)) onClose();
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="会话偏好"
+      className="absolute -left-1 bottom-[calc(100%+8px)] z-10 w-[228px] flex flex-col gap-[6px] px-3 py-[10px] bg-card border border-border rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs cursor-default origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
+    >
+      {children}
+    </div>
+  );
+}
+
+/** 浮层里的一行:左标签右控件。标签紧贴它管的那个控件——
+    要靠说明文字才知道控件管什么,说明映射本身没做对 */
+function SettingRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 function ComposerBar() {
   const model = useChat((s) => s.model);
   const events = useChat((s) => s.events);
@@ -418,6 +452,7 @@ function ComposerBar() {
   const setApprovalMode = useChat((s) => s.setApprovalMode);
   const setThinking = useChat((s) => s.setThinking);
   const [ctxOpen, setCtxOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
 
   const choice = findModel(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
@@ -425,91 +460,139 @@ function ComposerBar() {
   const used = contextBreakdown(events, toolDefs).total;
   const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
-  return (
-    // 窄宽(半屏面板挤压)时右簇整组换行:model/thinking/用量环包成一个 wrap 单元,
-    // ml-auto 让它在自己那行也贴右——不会散成一件一行的碎排
-    <div className="flex-1 min-w-0 flex items-center gap-x-2 gap-y-1 flex-wrap text-xs text-muted-foreground pl-[2px]">
-      <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
-        <SelectTrigger
-          className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
-          title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="ask">逐条审批</SelectItem>
-          <SelectItem value="auto">完全访问</SelectItem>
-        </SelectContent>
-      </Select>
+  const approvalSelect = (
+    <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
+      <SelectTrigger
+        className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
+        title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="ask">逐条审批</SelectItem>
+        <SelectItem value="auto">完全访问</SelectItem>
+      </SelectContent>
+    </Select>
+  );
 
-      <Tooltip>
-        <TooltipTrigger asChild>
+  const modelSelect = (
+    <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
+      {/* 型号名最长的一档("DeepSeek V4 Flash")不该独占半条控件行:封顶后省略 */}
+      <SelectTrigger className={BAR_SELECT + " min-w-0 max-w-[150px]"}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {MODEL_CATALOG.map((m) => (
+          <SelectItem key={m.model} value={m.model}>
+            {m.label}
+          </SelectItem>
+        ))}
+        {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
+        {!findModel(model) && <SelectItem value={model}>{model}</SelectItem>}
+      </SelectContent>
+    </Select>
+  );
+
+  const thinkingSelect = (
+    <Select
+      value={thinking ? "on" : "off"}
+      onValueChange={(v) => void setThinking(v === "on")}
+      disabled={status === "running" || !choice?.supportsThinking}
+    >
+      <SelectTrigger
+        className={BAR_SELECT}
+        title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="on">Thinking 开</SelectItem>
+        <SelectItem value="off">Thinking 关</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+
+  return (
+    // 版式按会话框自身宽度切(容器查询),不按窗口——同一个 composer 在全屏、
+    // 半屏被面板挤、侧栏展开三种情况下宽度完全不同,视口断点看不见这件事。
+    //
+    // 原来是 flex-wrap 硬换行:控件散成两三行、右簇贴右左边留一大片空,
+    // 读起来像散架而不是版式。改成【常用的留在面上,设一次就不动的收进浮层】——
+    // 审批模式/模型/Thinking 是会话级偏好,＋(附件)、用量环、发送才是每条消息都碰的。
+    <div className="@container flex-1 min-w-0 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 pl-[2px]">
+        {/* 宽:三件偏好摊开 */}
+        <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{approvalSelect}</div>
+
+        {/* 窄:收进浮层。触发钮在免审(auto)状态下照样染警示色——
+            危险状态绝不能因为被折叠就不见了,那是把提醒藏进抽屉 */}
+        <span className="relative inline-flex @[520px]:hidden">
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
-            disabled={status === "running"}
-            onClick={() => void useChat.getState().pickFiles()}
+            className={
+              "w-auto h-auto px-[6px] py-[3px] rounded-md text-inherit hover:bg-foreground/[0.08]" +
+              (approvalMode === "auto" ? " " + BYPASS : "")
+            }
+            aria-label="会话偏好"
+            aria-expanded={prefsOpen}
+            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinking ? "开" : "关"}`}
+            onClick={() => setPrefsOpen((o) => !o)}
           >
-            ＋
+            <Ellipsis className="size-4" />
           </Button>
-        </TooltipTrigger>
-        <TooltipContent>添加文件(图片/文本)</TooltipContent>
-      </Tooltip>
+          {prefsOpen && (
+            <SettingsPopover onClose={() => setPrefsOpen(false)}>
+              <SettingRow label="审批">{approvalSelect}</SettingRow>
+              <SettingRow label="模型">{modelSelect}</SettingRow>
+              <SettingRow label="推理">{thinkingSelect}</SettingRow>
+            </SettingsPopover>
+          )}
+        </span>
 
-      <div className="ml-auto flex items-center gap-2 min-w-0">
-      <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
-        <SelectTrigger className={BAR_SELECT}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {MODEL_CATALOG.map((m) => (
-            <SelectItem key={m.model} value={m.model}>
-              {m.label}
-            </SelectItem>
-          ))}
-          {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
-          {!findModel(model) && <SelectItem value={model}>{model}</SelectItem>}
-        </SelectContent>
-      </Select>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
+              disabled={status === "running"}
+              onClick={() => void useChat.getState().pickFiles()}
+            >
+              ＋
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>添加文件(图片/文本)</TooltipContent>
+        </Tooltip>
 
-      <Select
-        value={thinking ? "on" : "off"}
-        onValueChange={(v) => void setThinking(v === "on")}
-        disabled={status === "running" || !choice?.supportsThinking}
-      >
-        <SelectTrigger
-          className={BAR_SELECT}
-          title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="on">Thinking 开</SelectItem>
-          <SelectItem value="off">Thinking 关</SelectItem>
-        </SelectContent>
-      </Select>
+        <div className="ml-auto flex items-center gap-2 min-w-0">
+          <div className="hidden @[520px]:flex items-center gap-2 min-w-0">
+            {modelSelect}
+            {thinkingSelect}
+          </div>
 
-      <span className="relative inline-flex items-center">
-        <button
-          type="button"
-          className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-foreground/[0.07]"
-          title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%——点击看详情`}
-          aria-label="上下文用量详情"
-          onClick={() => setCtxOpen((o) => !o)}
-        >
-          <CtxRing used={used} win={ctxWindow} />
-        </button>
-        {ctxOpen && (
-          <CtxPopover
-            events={events}
-            toolDefs={toolDefs}
-            ctxWindow={ctxWindow}
-            onClose={() => setCtxOpen(false)}
-          />
-        )}
-      </span>
+          <span className="relative inline-flex">
+            <button
+              type="button"
+              className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-foreground/[0.07]"
+              title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%——点击看详情`}
+              aria-label="上下文用量详情"
+              onClick={() => setCtxOpen((o) => !o)}
+            >
+              <CtxRing used={used} win={ctxWindow} />
+            </button>
+            {ctxOpen && (
+              <CtxPopover
+                events={events}
+                toolDefs={toolDefs}
+                ctxWindow={ctxWindow}
+                onClose={() => setCtxOpen(false)}
+              />
+            )}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -1017,6 +1100,7 @@ function AccountPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1059,6 +1143,7 @@ function KeysPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1107,6 +1192,7 @@ function SkillsPage() {
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
         <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
           返回
@@ -1904,6 +1990,7 @@ export function App() {
   ) : (
     <div className={MAIN_COL}>
       <header className={HEADER}>
+        <SidebarNub />
         {/* 会话名 · 工程 · 分支：一行说清"我在哪个会话、哪个工程、哪根枝上"。
             会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
         <div className="flex-1 min-w-0 flex items-center gap-2">
@@ -2155,7 +2242,8 @@ export function App() {
         <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
           {base}
         </ResizablePanel>
-        <ResizableHandle withHandle />
+        {/* 不要 withHandle 那颗六点抓手:分隔线本身整条可拖,抓手只是重复的视觉噪音 */}
+        <ResizableHandle />
         <ResizablePanel defaultSize={50} minSize={28} className="min-w-0">
           <div className="side-panel flex h-full min-w-0">{panel}</div>
         </ResizablePanel>
@@ -2180,7 +2268,9 @@ export function App() {
         {/* min-w-0:flex 子项默认 min-width:auto,宽内容会顶住不收缩,
             侧栏一展开整列右溢出窗(会话视图代码块/composer 被裁) */}
         <SidebarInset className="relative min-w-0">
-          <CollapsedSidebarNub />
+          {/* 有头部的视图把重开钮排进头部(见 SidebarNub);欢迎页没有头部,
+              它左上角是空地,浮标不会盖住任何东西("连接中"那屏在更早处 return) */}
+          {phase === "welcome" && <FloatingSidebarNub />}
           {main}
         </SidebarInset>
       </TooltipProvider>

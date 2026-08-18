@@ -2,7 +2,8 @@
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { SidebarNub } from "./SidebarNub.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
@@ -87,32 +88,47 @@ export function GitGraphView() {
 
   return (
     <main className="flex-1 min-w-0 flex flex-col">
+      {/* 窄面板(半屏 + 窄窗口)下头部的取舍:控件永远在,文字先让位。
+          flex 里 truncate 必须配 min-w-0——否则 min-width:auto 让它按内容宽度
+          顶住不缩,把右边的按钮整排挤出可视区(面板本身裁掉溢出,于是关闭钮
+          直接消失,只剩 Esc 能退出)。按钮组 shrink-0 是同一条约束的另一端 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+        {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
+        {panelWide && <SidebarNub />}
         <span className="shrink-0 whitespace-nowrap font-[650] text-sm">Git Graph</span>
         {headBranch && (
-          <span className="inline-flex items-center gap-1 shrink-0 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title="当前所在分支">
-            <GitBranch className="w-3 h-3" />{headBranch}
+          <span className="inline-flex min-w-0 max-w-[40%] items-center gap-1 rounded bg-brand/15 px-[6px] py-px font-mono text-[11px] text-brand" title={headBranch}>
+            <GitBranch className="w-3 h-3 shrink-0" />
+            <span className="truncate">{headBranch}</span>
           </span>
         )}
-        <span className="font-mono text-xs text-muted-foreground truncate">{gitGraphRepo ?? "(无会话工作区)"}</span>
-        <span className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
-          <RefreshCw />
-        </Button>
-        {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
-        <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
-          {panelWide ? <Minimize2 /> : <Maximize2 />}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
-          <X />
-        </Button>
+        <span className="min-w-0 flex-1 font-mono text-xs text-muted-foreground truncate" title={gitGraphRepo ?? undefined}>
+          {gitGraphRepo ?? "(无会话工作区)"}
+        </span>
+        <div className="flex shrink-0 items-center">
+          <Button variant="ghost" size="sm" onClick={() => void refreshGitGraph()} title="重新拉取">
+            <RefreshCw />
+          </Button>
+          {/* 半屏/全屏切换:面板默认半屏叠在会话旁,要沉浸再撑满 */}
+          <Button variant="ghost" size="sm" onClick={togglePanelWide} title={panelWide ? "收回半屏" : "展开全屏"}>
+            {panelWide ? <Minimize2 /> : <Maximize2 />}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={closeGitGraph} title="关闭">
+            <X />
+          </Button>
+        </div>
       </header>
 
-      <div className="flex-1 min-h-0 flex">
+      {/* 同 ProtocolView:版式按面板自身宽度决定(容器查询)。窄于 560px 时
+          "泳道图 + 320px 详情"并排会把图挤成一条线,改成详情整栏覆盖 + 返回钮 */}
+      <div className="@container flex-1 min-h-0 flex">
         {/* 只竖滚:泳道 SVG 定宽 + 主题行 truncate,横向内容截断不出滚动条 */}
         <div
           ref={scrollRef}
-          className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden"
+          className={
+            "flex-1 min-w-0 overflow-y-auto overflow-x-hidden" +
+            (gitCommitView ? " hidden @[560px]:block" : "")
+          }
           onScroll={onScroll}
         >
           {gitGraph === null ? (
@@ -146,8 +162,16 @@ export function GitGraphView() {
         </div>
 
         {gitCommitView && (
-          <aside className="w-[320px] shrink-0 border-l border-border overflow-y-auto px-4 py-3">
-            <CommitDetailPane />
+          <aside className="flex min-w-0 flex-1 flex-col border-l border-border @[560px]:w-[320px] @[560px]:flex-none @[560px]:shrink-0">
+            {/* 返回钮只在窄面板出现:宽面板下泳道图就在左边,退回去这个动作不存在 */}
+            <div className="@[560px]:hidden shrink-0 border-b border-border px-1 py-1">
+              <Button variant="ghost" size="sm" onClick={closeGitCommit}>
+                <ChevronLeft /> 返回图谱
+              </Button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+              <CommitDetailPane />
+            </div>
           </aside>
         )}
       </div>

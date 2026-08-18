@@ -136,6 +136,8 @@ interface ChatState {
   /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
   closeProtocol(): void;
+  /** 关掉右栏详情,退回列表(窄面板下两栏并排放不下,详情是整栏覆盖) */
+  closeProtocolDetail(): void;
   /** 手选仪表盘目标仓库(弹文件夹选择框),选完记 localStorage 并刷新 */
   pickProtocolRepo(): Promise<void>;
   /** 重新拉当前目标仓库的 ADR 列表 + issues 列表 */
@@ -329,6 +331,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeProtocol: () => set({ protocolOpen: false }),
+  closeProtocolDetail: () => set({ adrView: null, issueView: null }),
 
   async pickProtocolRepo() {
     try {

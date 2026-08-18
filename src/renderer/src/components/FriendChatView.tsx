@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useChat } from "../store.js";
 import { Button } from "@/components/ui/button.js";
 import { X, Maximize2, Minimize2 } from "lucide-react";
+import { SidebarNub } from "./SidebarNub.js";
 import type { DirectMessage } from "../../../shared/friends.js";
 
 // 好友未选中/dmByFriend 里没这个人时的兜底——模块级常量而非每次渲染 `?? []`,
@@ -51,6 +52,8 @@ export function FriendChatView() {
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       <header className="flex items-center gap-2 px-4 py-2 border-b border-border">
+        {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
+        {panelWide && <SidebarNub />}
         <span className={`w-2 h-2 rounded-full ${online ? "bg-brand" : "bg-border"}`} />
         <span className="font-[650] text-sm flex-1 min-w-0 truncate">{friend.name || friend.email}</span>
         <Button variant="ghost" size="sm" onClick={togglePanelWide}
