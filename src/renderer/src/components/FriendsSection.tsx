@@ -2,6 +2,7 @@
 // 全部状态走 store,不直接摸 window.otter(硬规则)。未登录显示占位。
 
 import { useState } from "react";
+import { Search } from "lucide-react";
 import { useChat } from "../store.js";
 import type { FriendProfile } from "../../../shared/friends.js";
 import {
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button.js";
 
 const SECTION_LABEL = "text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]";
 
-export function FriendsSection() {
+export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const account = useChat((s) => s.account);
   const snapshot = useChat((s) => s.friendsSnapshot);
   const onlineIds = useChat((s) => s.onlineIds);
@@ -28,7 +29,8 @@ export function FriendsSection() {
   const [hit, setHit] = useState<FriendProfile | null | "none">(null); // "none" = 搜过没命中
 
   if (!account.signedIn) {
-    return <div className={SECTION_LABEL}>好友 · 登录后可用</div>;
+    // embedded(抽屉里)= 标题由弹窗自己出,这里只留状态文案
+    return <div className={SECTION_LABEL}>{embedded ? "登录后可用" : "好友 · 登录后可用"}</div>;
   }
 
   const online = new Set(onlineIds);
@@ -41,19 +43,28 @@ export function FriendsSection() {
 
   return (
     <>
-      <div className={SECTION_LABEL}>好友</div>
-      {/* 添加好友:邮箱精确搜索 → 命中卡片一键发请求 */}
-      <div className="px-[10px] pb-1 flex gap-1">
-        <input
-          className="flex-1 min-w-0 bg-transparent border border-border rounded px-2 py-1 text-xs"
-          placeholder="按邮箱加好友"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setHit(null); }}
-          onKeyDown={(e) => { if (e.key === "Enter") void doSearch(); }}
-        />
-        <Button variant="ghost" size="sm" className="px-2 text-xs" onClick={() => void doSearch()}>
-          搜
-        </Button>
+      {!embedded && <div className={SECTION_LABEL}>好友</div>}
+      {/* 添加好友:邮箱精确搜索 → 命中卡片一键发请求。
+          搜索键 = 输入框内的放大镜 icon(不占一行、不吃文字),Enter 同效 */}
+      <div className="px-[10px] pb-1">
+        <div className="relative flex items-center">
+          <input
+            className="w-full min-w-0 bg-transparent border border-border rounded-md pl-[9px] pr-[30px] py-[6px] text-xs placeholder:text-muted-foreground/70 focus:outline-none focus:border-ring transition-colors duration-150"
+            placeholder="按邮箱加好友"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setHit(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") void doSearch(); }}
+          />
+          <button
+            type="button"
+            className="absolute right-[6px] flex items-center justify-center p-[4px] rounded-md text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] bg-transparent transition-colors duration-150"
+            aria-label="搜索好友"
+            title="搜索"
+            onClick={() => void doSearch()}
+          >
+            <Search className="w-[14px] h-[14px]" />
+          </button>
+        </div>
       </div>
       {hit === "none" && <p className="px-[10px] text-xs text-muted-foreground">没有这个邮箱的用户。</p>}
       {hit !== null && hit !== "none" && (
