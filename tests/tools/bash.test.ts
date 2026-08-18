@@ -43,7 +43,7 @@ describe("bash 工具", () => {
 
   it("超长输出截断并标注原始长度", async () => {
     const { world } = fakeWorld({ stdout: "x".repeat(20_000), stderr: "", exitCode: 0 });
-    const out = await bashTool.run({ cmd: "cat big" }, world);
+    const out = (await bashTool.run({ cmd: "cat big" }, world)) as string;
     expect(out.length).toBeLessThan(10_000);
     expect(out).toContain("截断，共 20000 字符");
   });

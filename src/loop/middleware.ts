@@ -22,6 +22,8 @@ export interface ToolCallContext {
 export interface ToolOutcome {
   status: "ok" | "error" | "denied";
   output: string;
+  /** DSH 式数据驱动收口：true = 本步结束整个 turn，不给模型补答的机会 */
+  concludesTurn?: true;
 }
 
 /**

@@ -6,6 +6,7 @@ import { bashTool } from "../../src/tools/bash.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { UserAttachmentRef } from "../../src/session/events.js";
+import type { Tool } from "../../src/tools/tool.js";
 
 /** 脚本化 adapter：按预设顺序吐回复，并录下每次收到的消息数 */
 function fakeAdapter(script: ModelReply[]) {
@@ -103,13 +104,14 @@ describe("LoopEngine", () => {
     store.close();
   });
 
-  it("永不收敛 → MAX_STEPS 熔断", async () => {
+  it("无步数上限：模型连续 12 轮调工具仍不熔断，直到它自己收口", async () => {
     const store = new EventStore(":memory:");
     const loop: ModelReply = {
       content: "",
       toolCalls: [{ id: "c", name: "read_file", args: { path: "/x" } }],
     };
-    const { adapter } = fakeAdapter(Array(20).fill(loop));
+    // 12 轮工具调用（远超旧上限 8）+ 最后一句纯文字收口
+    const { adapter } = fakeAdapter([...Array(12).fill(loop), { content: "读完了" }]);
 
     const engine = new LoopEngine({
       store,
@@ -118,7 +120,49 @@ describe("LoopEngine", () => {
       world: fakeWorld,
       sessionId: "s1",
     });
-    await expect(engine.runTurn("无限循环吧")).rejects.toThrow(/未收敛/);
+    await engine.runTurn("一直读");
+
+    const log = store.load("s1");
+    expect(log.filter((e) => e.type === "assistant_message").length).toBe(13); // 12 带工具 + 1 收口
+    expect(log.at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed" });
+    store.close();
+  });
+
+  it("工具声明 concludesTurn：当步提前收口，模型不再补答", async () => {
+    const store = new EventStore(":memory:");
+    const concludeTool: Tool = {
+      def: {
+        name: "finish",
+        description: "结束 turn",
+        parameters: { type: "object", properties: {} },
+      },
+      requiresApproval: false,
+      run: async () => ({ output: "任务完成", concludesTurn: true }),
+    };
+    // 只给一句带工具调用的回复：若 engine 没在 concludesTurn 处收口、又去调模型，
+    // fakeAdapter 会因脚本耗尽而抛错——测试靠这个兜住"不再补答"
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "finish", args: {} }] },
+    ]);
+
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [concludeTool],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("收尾");
+
+    const log = store.load("s1");
+    expect(log.map((e) => e.type)).toEqual([
+      "user_message",
+      "assistant_message",
+      "tool_execution_started",
+      "tool_result",
+      "turn_ended",
+    ]);
+    expect(log.at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed" });
     store.close();
   });
 
@@ -563,12 +607,14 @@ describe("lifecycle 事件（ADR-0004）", () => {
     store.close();
   });
 
-  it("setMaxSteps 是活值：上限 1 时第一轮工具后就熔断", async () => {
+  it("失控空转靠 abort 兜底：模型永远要工具也不报错，直到用户停止", async () => {
     const store = new EventStore(":memory:");
-    // 模型永远要工具，永不收敛
+    // 模型永远要工具、永不收敛——DSH 式设计里这不再报"超过 N 步"，
+    // 兜底是用户停止键（abortTurn）翻信号，loop 当圈从 throwIfAborted 收口
     const adapter: ModelAdapter = {
       model: "fake-model",
-      async chat() {
+      async chat(_messages, _tools, _delta, signal) {
+        signal?.throwIfAborted();
         return {
           content: "",
           toolCalls: [{ id: `c${Math.random()}`, name: "read_file", args: { path: "/a" } }],
@@ -578,10 +624,13 @@ describe("lifecycle 事件（ADR-0004）", () => {
     const engine = new LoopEngine({
       store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1",
     });
-    engine.setMaxSteps(1);
-    await expect(engine.runTurn("干活")).rejects.toThrow(/超过 1 步/);
-    // 熔断也是日志事实（ADR-0004）
-    expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "error" });
+    // 跑起来后立刻打断：不依赖步数上限，中断信号就是那个天花板
+    const running = engine.runTurn("无限循环吧");
+    await Promise.resolve(); // 让 loop 先进入第一轮
+    engine.abortTurn();
+    await running;
+
+    expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "aborted" });
     store.close();
   });
 });

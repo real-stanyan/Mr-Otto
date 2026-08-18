@@ -9,7 +9,7 @@
 日志记录的是对话史（user_message / assistant_message / tool_result），但系统运行本身
 也有事实，此前全部丢失：
 
-1. **turn 死亡无痕**：API 报错 / MAX_STEPS 超限只走 IPC reject 给当时的 UI，
+1. **turn 死亡无痕**：API 报错 / 工具抛错只走 IPC reject 给当时的 UI，
    日志里 turn 戛然而止。错误信息成了只存在于一帧屏幕上的"平行真相"——
    UI 知道的比日志多，违反"日志唯一事实来源"。
 2. **时间结构无痕**：`tool_result.ts - assistant_message.ts` 混着审批卡等人的时间，

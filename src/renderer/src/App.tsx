@@ -241,7 +241,6 @@ function CtxPopover({ events, ctxWindow, onClose }: {
       (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
   )?.usage;
   const compacts = events.filter((e) => e.type === "context_compacted").length;
-  const maxSteps = useChat((s) => s.maxSteps);
   const n = (x: number) => x.toLocaleString("en-US");
 
   return (
@@ -275,10 +274,6 @@ function CtxPopover({ events, ctxWindow, onClose }: {
       <div className={POP_ROW}>
         <span>事件日志</span>
         <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
-      </div>
-      <div className={POP_ROW}>
-        <span>单 turn 步数上限</span>
-        <span className={V}>{maxSteps}（/steps 可调）</span>
       </div>
       <div className="mt-2 pt-2 border-t border-border text-muted-foreground text-[11px] leading-normal">
         占用 = 最近账单 + 之后未计费事件的字符估算；/compact 可折叠历史释放上下文

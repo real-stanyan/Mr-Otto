@@ -57,7 +57,6 @@ interface ChatState {
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
   thinking: boolean;
-  maxSteps: number;
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
@@ -125,8 +124,6 @@ interface ChatState {
   switchModel(model: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
   setThinking(on: boolean): Promise<void>;
-  /** /steps 指令的落点：调单 turn 步数上限（合法性由主进程把关） */
-  setMaxSteps(n: number): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
@@ -210,7 +207,6 @@ const enterChat = (info: BootInfo) => ({
   events: info.events,
   approvalMode: info.approvalMode,
   thinking: info.thinking,
-  maxSteps: info.maxSteps,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
   settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
   protocolOpen: false, // 同上，仪表盘也让位
@@ -234,7 +230,6 @@ export const useChat = create<ChatState>((set, get) => ({
   error: null,
   approvalMode: "ask",
   thinking: true,
-  maxSteps: 8,
   replayCursor: null,
   settingsSection: null,
   protocolOpen: false,
@@ -290,15 +285,6 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.setThinking(get().sessionId, on);
       set({ thinking: on });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  async setMaxSteps(n) {
-    try {
-      await window.otter.setMaxSteps(get().sessionId, n);
-      set({ maxSteps: n, error: null }); // 主进程认了才落镜像
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

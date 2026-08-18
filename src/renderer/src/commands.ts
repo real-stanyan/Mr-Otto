@@ -21,19 +21,6 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
     desc: "改会话标题（/rename 新标题）",
     run: (args) => useChat.getState().rename(args),
   },
-  "/steps": {
-    desc: "调单 turn 工具步数上限（/steps 16；1–64，turn 中途调低当圈生效）",
-    run: async (args) => {
-      const state = useChat.getState();
-      if (!args) {
-        // 无参 = 查询。error 槽兼任信息槽（目前唯一的临时文案出口，凑合）
-        useChat.setState({ error: `当前步数上限 ${state.maxSteps}（用法：/steps 16）` });
-        return;
-      }
-      // 解析在这，合法性（整数、1–64）由主进程把关——边界只设一处
-      await state.setMaxSteps(Number(args));
-    },
-  },
 };
 
 /** true = 已按指令处理（含未知指令的报错），false = 普通消息，走 send。

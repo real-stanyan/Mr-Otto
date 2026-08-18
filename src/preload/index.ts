@@ -23,7 +23,6 @@ const bridge: ShellBridge = {
   switchModel: (model) => ipcRenderer.invoke(CHANNELS.switchModel, model),
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
   setThinking: (sessionId, on) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, on),
-  setMaxSteps: (sessionId, n) => ipcRenderer.invoke(CHANNELS.setMaxSteps, sessionId, n),
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
   protocolListAdrs: (repoDir) => ipcRenderer.invoke(CHANNELS.protocolListAdrs, repoDir),
   protocolReadAdr: (repoDir, relPath) => ipcRenderer.invoke(CHANNELS.protocolReadAdr, repoDir, relPath),

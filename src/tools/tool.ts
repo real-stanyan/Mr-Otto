@@ -7,6 +7,10 @@ export interface Tool {
   def: ToolDefinition;
   /** true = 执行前必须过人工审批门（下一课接入管线） */
   requiresApproval: boolean;
-  /** 返回值 = 喂回模型的 tool_result.output；抛错 = status: "error" */
-  run(args: unknown, world: ExecutionWorld): Promise<string>;
+  /** 返回值 = 喂回模型的 tool_result.output；抛错 = status: "error"。
+      也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn */
+  run(
+    args: unknown,
+    world: ExecutionWorld
+  ): Promise<string | { output: string; concludesTurn?: true }>;
 }
