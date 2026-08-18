@@ -3,14 +3,12 @@
   "version": "1.0.0",
   "productName": "Mr Otto",
   "description": "Mr Otto — macOS desktop GUI agent",
-  "directories": {
-    "doc": "docs"
-  },
   "scripts": {
     "test": "vitest run",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "rebuild-native": "electron-rebuild -f -w better-sqlite3"
+    "rebuild-native": "electron-rebuild -f -w better-sqlite3",
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64"
   },
   "main": "out/main/index.js",
   "keywords": [],
@@ -27,6 +25,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.12",
