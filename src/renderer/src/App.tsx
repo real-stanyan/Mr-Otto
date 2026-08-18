@@ -14,7 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { useChat } from "./store.js";
+import { type SessionMode, useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
@@ -1355,6 +1355,8 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
     + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
 function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
+  const mode = useChat((s) => s.sessionMode);
+  const setSessionMode = useChat((s) => s.setSessionMode);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -1408,6 +1410,24 @@ function AppSidebar() {
               展开状态下用户第一眼找的是侧栏里的开关 */}
           <SidebarTrigger className="ml-auto" />
         </div>
+        {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
+            它切的是整个主区在展示什么，属于导航，不是输入区的控件。
+            面板不在这棵树里（在 SidebarInset 那侧），所以 Root 只当分段控件用：
+            试过把 Root 提到最外层罩住两边，display:contents 会让 shadcn sidebar
+            的 peer 兄弟选择器算错宽度，主区不被推开。键盘导航和视觉照旧，
+            代价是 trigger 的 aria-controls 指向一个不存在的 id */}
+        <Tabs value={mode} onValueChange={(v) => setSessionMode(v as SessionMode)}>
+        <TabsList className="w-full">
+          <TabsTrigger value="work">
+            <SquareTerminal aria-hidden />
+            Work
+          </TabsTrigger>
+          <TabsTrigger value="game">
+            <Spade aria-hidden />
+            Game
+          </TabsTrigger>
+        </TabsList>
+        </Tabs>
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {settingsSection === null && (
@@ -1973,13 +1993,9 @@ function Welcome() {
   );
 }
 
-/** 会话面板的两档：work = 工程会话，game = 德州牌桌 */
-type SessionMode = "work" | "game";
-
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
-  // 档位是这台机器的视图偏好，不是会话事实 —— 不落日志、不进投影
-  const [mode, setMode] = useState<SessionMode>("work");
+  const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
@@ -2147,15 +2163,9 @@ export function App() {
           <QuestionnaireCard />
         </>
       ) : (
-        // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用。
-        // TabsList 排在 footer 里（DOM 顺序在 Content 之后）—— 视觉上贴着会话框，
-        // 因为它回答的是"我这句话是说给谁听的"，属于输入区的语境
-        <Tabs
-          value={mode}
-          onValueChange={(v) => setMode(v as SessionMode)}
-          className="flex-1 min-h-0 flex flex-col gap-0"
-        >
-        <TabsContent value="work" className="flex-1 min-h-0 flex flex-col">
+        // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
+        <>
+        {mode === "work" ? (
           <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
@@ -2192,11 +2202,9 @@ export function App() {
             )}
             <div ref={bottomRef} />
           </section>
-        </TabsContent>
-
-        <TabsContent value="game" className="flex-1 min-h-0 flex flex-col">
+        ) : (
           <PokerTable />
-        </TabsContent>
+        )}
 
           <ApprovalCard />
           <QuestionnaireCard />
@@ -2205,18 +2213,6 @@ export function App() {
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <TodoPanel />
-            {/* 档位切换：分段控件，贴着会话框上沿。h-8 比 tabs 默认的 h-9 矮一档，
-                它是次要控件，不该和会话框抢重量 */}
-            <TabsList className="mb-[6px] h-8">
-              <TabsTrigger value="work">
-                <SquareTerminal aria-hidden />
-                Work
-              </TabsTrigger>
-              <TabsTrigger value="game">
-                <Spade aria-hidden />
-                Game
-              </TabsTrigger>
-            </TabsList>
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
@@ -2352,7 +2348,7 @@ export function App() {
               </div>
             </div>
           </footer>
-        </Tabs>
+        </>
       )}
     </div>
   );

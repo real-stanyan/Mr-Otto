@@ -36,6 +36,9 @@ type Phase = "connecting" | "welcome" | "chat";
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
 export type SettingsSection = "account" | "keys" | "skills";
 
+/** 主区两档：work = 工程会话，game = 德州牌桌 */
+export type SessionMode = "work" | "game";
+
 interface ChatState {
   phase: Phase;
   sessionId: string;
@@ -72,6 +75,9 @@ interface ChatState {
   /** 设置模式当前栏目（覆盖在任意 phase 之上）；null = 不在设置模式，
       会话高亮判断也看这个 */
   settingsSection: SettingsSection | null;
+  /** 主区档位:work = 工程会话,game = 德州牌桌。纯本机视图偏好,
+      不落事件日志、不进投影(同 ADR-0017/0018 的法理) */
+  sessionMode: SessionMode;
   /** Protocol 仪表盘开关(覆盖在任意 phase 之上,与设置模式互斥) */
   protocolOpen: boolean;
   /** 仪表盘目标仓库(绝对路径):当前会话 workspace ?? localStorage 记忆 */
@@ -143,6 +149,7 @@ interface ChatState {
   openSettings(section?: SettingsSection): Promise<void>;
   /** 拉一次官方额度（账号页进入时自动调一次） */
   refreshWallet(): Promise<void>;
+  setSessionMode(mode: SessionMode): void;
   closeSettings(): void;
   /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
@@ -254,6 +261,7 @@ export const useChat = create<ChatState>((set, get) => ({
   thinking: true,
   replayCursor: null,
   settingsSection: null,
+  sessionMode: "work",
   protocolOpen: false,
   protocolRepo: null,
   adrs: [],
@@ -349,6 +357,7 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  setSessionMode: (mode) => set({ sessionMode: mode }),
   closeSettings: () => set({ settingsSection: null }),
 
   async openProtocol() {
