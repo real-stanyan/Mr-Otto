@@ -9,7 +9,7 @@
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
-import type { GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 
 export type { SessionSummary };
 
@@ -168,6 +168,10 @@ export interface ShellBridge {
   gitGraphLog(repoDir: string): Promise<GitLogResult>;
   /** 单 commit 详情:元数据 + numstat 文件清单 */
   gitGraphCommit(repoDir: string, hash: string): Promise<GitCommitResult>;
+  /** 本地分支列表 + 当前分支(只读) */
+  gitBranches(repoDir: string): Promise<GitBranchesResult>;
+  /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014) */
+  gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -229,6 +233,8 @@ export const CHANNELS = {
   protocolGetIssue: "otter:protocolGetIssue",
   gitGraphLog: "otter:gitGraphLog",
   gitGraphCommit: "otter:gitGraphCommit",
+  gitBranches: "otter:gitBranches",
+  gitCheckout: "otter:gitCheckout",
   getAccount: "otter:getAccount",
   signIn: "otter:signIn",
   signOut: "otter:signOut",

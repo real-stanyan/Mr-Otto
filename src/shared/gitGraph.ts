@@ -38,6 +38,41 @@ export type GitCommitResult =
   | { ok: true; detail: CommitDetail }
   | { ok: false; kind: GitErrorKind; detail: string };
 
+/** 本地分支一条:current = HEAD 当前所在(detached 时全 false) */
+export interface BranchInfo { name: string; current: boolean }
+
+export type GitBranchesResult =
+  | { ok: true; current: string | null; branches: BranchInfo[] }
+  | { ok: false; kind: GitErrorKind; detail: string };
+
+/** checkout 特有失败:dirty = 工作区有未提交改动挡路(可行动的降级,不是 git-error) */
+export type GitCheckoutResult =
+  | { ok: true; branch: string }
+  | { ok: false; kind: GitErrorKind | "dirty"; detail: string };
+
+/** 分支名验形:进 execFile 参数表前挡住 `-` 开头(会被 git 当选项)与空白/控制字符。
+    参数是数组传的、不过 shell,所以这里防的是选项注入,不是命令注入 */
+export function isValidBranchName(name: string): boolean {
+  if (name === "" || name.length > 255) return false;
+  if (name.startsWith("-")) return false;
+  // git 自身禁止的字符集(check-ref-format 的子集,够挡住实际能打出来的坏名字)
+  return !/[\s~^:?*[\\]|\.\.|@\{/.test(name);
+}
+
+/** `git branch --format=%(HEAD)%00%(refname:short)` 输出 → BranchInfo[]。
+    %(HEAD) 在当前分支是 "*",其余是空格 */
+export function parseBranchList(stdout: string): BranchInfo[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .flatMap((line): BranchInfo[] => {
+      const [flag, name] = line.split("\x00");
+      if (name === undefined || name === "") return []; // 格式错的行跳过,不猜
+      return [{ name, current: flag === "*" }];
+    });
+}
+
 /** %D 解码:"HEAD -> main, origin/main, tag: v1" → 结构化 ref 列表 */
 export function parseRefs(decorate: string): GitRef[] {
   if (!decorate.trim()) return [];

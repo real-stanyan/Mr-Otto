@@ -15,7 +15,7 @@ import type {
   TurnStatus,
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
-import type { GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
+import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 
 /** 从 Record 里删一个 key 的不可变写法 */
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -80,6 +80,13 @@ interface ChatState {
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
   panelWide: boolean;
+  /** 某个目录的分支状态(键 = 目录绝对路径)。新会话选文件夹、会话中显示当前分支共用一份缓存;
+      null 值 = 正在拉取。非 git 目录存 ok:false,UI 据此不显示分支控件 */
+  branchesByDir: Record<string, GitBranchesResult | null>;
+  /** 切分支进行中的目录(禁用重复点击 + 显示忙态) */
+  checkoutBusyDir: string | null;
+  /** 最近一次切分支失败的提示(下次切换/关闭时清) */
+  checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
@@ -121,6 +128,10 @@ interface ChatState {
   openGitCommit(hash: string): Promise<void>;
   closeGitCommit(): void;
   togglePanelWide(): void;
+  /** 拉某目录的分支列表(非 git 目录也要拉:ok:false 就是"这里没有分支"的事实) */
+  loadBranches(dir: string): Promise<void>;
+  /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
+  checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
@@ -197,6 +208,9 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraph: null,
   gitCommitView: null,
   panelWide: false,
+  branchesByDir: {},
+  checkoutBusyDir: null,
+  checkoutError: null,
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
@@ -368,6 +382,41 @@ export const useChat = create<ChatState>((set, get) => ({
 
   togglePanelWide: () => set((s) => ({ panelWide: !s.panelWide })),
 
+  async loadBranches(dir) {
+    if (!dir) return;
+    set((s) => ({ branchesByDir: { ...s.branchesByDir, [dir]: null } })); // null = 拉取中
+    try {
+      const result = await window.otter.gitBranches(dir);
+      set((s) => ({ branchesByDir: { ...s.branchesByDir, [dir]: result } }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async checkoutBranch(dir, branch) {
+    if (get().checkoutBusyDir) return; // 一次只切一个,防连点把仓库切成薛定谔态
+    set({ checkoutBusyDir: dir, checkoutError: null });
+    try {
+      const result = await window.otter.gitCheckout(dir, branch);
+      if (result.ok) {
+        await get().loadBranches(dir);
+        // 图开着的话顺带刷新:切完分支还看着旧图会误导
+        if (get().gitGraphOpen && get().gitGraphRepo === dir) await get().refreshGitGraph(true);
+      } else {
+        set({
+          checkoutError:
+            result.kind === "dirty"
+              ? "工作区有未提交改动，挡住了切换。先提交或 git stash 再切。"
+              : `切换失败：${result.detail}`,
+        });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ checkoutBusyDir: null });
+    }
+  },
+
   async saveApiKey(envName, key) {
     try {
       await window.otter.setApiKey(envName, key);
@@ -400,11 +449,17 @@ export const useChat = create<ChatState>((set, get) => ({
 
     window.otter.onAccountChanged((account) => set({ account }));
     window.otter.onEvent((e) => {
-      // 工具结果落地 = agent 可能动了 git(checkout/merge/commit)。图开着就静默重拉,
-      // 图数据不属于事件日志投影,只能重新问 git——防抖 600ms,连环工具调用只刷尾部一次
-      if (e.type === "tool_result" && get().gitGraphOpen) {
+      // 工具结果落地 = agent 可能动了 git(checkout/merge/commit)。git 状态不属于事件
+      // 日志投影,只能重新问 git——防抖 600ms,连环工具调用只刷尾部一次。
+      // 分支恒刷(composer 上方常显当前分支),图只在开着时刷
+      if (e.type === "tool_result") {
         clearTimeout(gitGraphAutoRefresh);
-        gitGraphAutoRefresh = setTimeout(() => void get().refreshGitGraph(true), 600);
+        gitGraphAutoRefresh = setTimeout(() => {
+          const s = get();
+          const dir = s.workspace;
+          if (dir && s.branchesByDir[dir] !== undefined) void s.loadBranches(dir);
+          if (s.gitGraphOpen) void s.refreshGitGraph(true);
+        }, 600);
       }
       set((s) => {
         // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。

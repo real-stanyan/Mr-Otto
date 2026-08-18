@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  assignLanes, classifyGitError, parseGitLog, parseNumstat, parseRefs,
+  assignLanes, classifyGitError, isValidBranchName, parseBranchList,
+  parseGitLog, parseNumstat, parseRefs,
   type RawCommit,
 } from "../../src/shared/gitGraph.js";
 
@@ -142,5 +143,45 @@ describe("classifyGitError", () => {
     const r = classifyGitError({ stderr: "fatal: bad object xyz" });
     expect(r.kind).toBe("git-error");
     expect(r.detail).toContain("bad object");
+  });
+});
+
+describe("parseBranchList", () => {
+  it("* 标记当前分支,空格标记其余", () => {
+    expect(parseBranchList("*\x00main\n \x00feat/x\n")).toEqual([
+      { name: "main", current: true },
+      { name: "feat/x", current: false },
+    ]);
+  });
+
+  it("空输出 = 空列表(新仓库还没有分支)", () => {
+    expect(parseBranchList("")).toEqual([]);
+  });
+
+  it("字段缺失的行跳过,不猜名字", () => {
+    expect(parseBranchList("*\x00main\n坏行没有分隔符\n \x00\n")).toEqual([{ name: "main", current: true }]);
+  });
+});
+
+describe("isValidBranchName", () => {
+  it("常见合法名通过", () => {
+    for (const n of ["main", "feat/branch-picker", "release/1.2.3", "fix_x"]) {
+      expect(isValidBranchName(n), n).toBe(true);
+    }
+  });
+
+  it("`-` 开头拒收——会被 git 当选项读", () => {
+    expect(isValidBranchName("--force")).toBe(false);
+    expect(isValidBranchName("-b")).toBe(false);
+  });
+
+  it("空名/超长/含空白或 git 禁用字符拒收", () => {
+    expect(isValidBranchName("")).toBe(false);
+    expect(isValidBranchName("a".repeat(256))).toBe(false);
+    expect(isValidBranchName("has space")).toBe(false);
+    expect(isValidBranchName("a..b")).toBe(false);
+    expect(isValidBranchName("a@{b")).toBe(false);
+    expect(isValidBranchName("a~1")).toBe(false);
+    expect(isValidBranchName("main; rm -rf /")).toBe(false);
   });
 });
