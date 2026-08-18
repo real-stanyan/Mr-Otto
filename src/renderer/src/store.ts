@@ -14,6 +14,7 @@ import type {
   StartSessionOptions,
   TurnStatus,
 } from "../../shared/shellBridge.js";
+import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 
 /** 从 Record 里删一个 key 的不可变写法 */
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -57,6 +58,17 @@ interface ChatState {
   /** 设置模式当前栏目（覆盖在任意 phase 之上）；null = 不在设置模式，
       会话高亮判断也看这个 */
   settingsSection: SettingsSection | null;
+  /** Protocol 仪表盘开关(覆盖在任意 phase 之上,与设置模式互斥) */
+  protocolOpen: boolean;
+  /** 仪表盘目标仓库(绝对路径):localStorage 记忆 ?? 当前会话 workspace */
+  protocolRepo: string | null;
+  adrs: AdrSummary[];
+  adrView: { path: string; markdown: string } | null;
+  /** null = 正在加载(骨架屏);ok:false = 按 kind 降级 */
+  issues: IssuesResult | null;
+  issueView: IssueDetailResult | null;
+  /** 仪表盘当前栏目(ADR / Issues),纯 UI 态,不参与互斥收口 */
+  protocolTab: "adr" | "issues";
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
@@ -80,6 +92,16 @@ interface ChatState {
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
   openSettings(section?: SettingsSection): Promise<void>;
   closeSettings(): void;
+  /** 打开 Protocol 仪表盘:目标仓库取记忆或跟当前 workspace,有仓库就顺带刷新一次 */
+  openProtocol(): Promise<void>;
+  closeProtocol(): void;
+  /** 手选仪表盘目标仓库(弹文件夹选择框),选完记 localStorage 并刷新 */
+  pickProtocolRepo(): Promise<void>;
+  /** 重新拉当前目标仓库的 ADR 列表 + issues 列表 */
+  refreshProtocol(): Promise<void>;
+  openAdr(path: string): Promise<void>;
+  openIssue(number: number): Promise<void>;
+  setProtocolTab(t: "adr" | "issues"): void;
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
@@ -120,6 +142,7 @@ const enterChat = (info: BootInfo) => ({
   maxSteps: info.maxSteps,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
   settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
+  protocolOpen: false, // 同上，仪表盘也让位
   error: null,
 });
 
@@ -140,6 +163,13 @@ export const useChat = create<ChatState>((set, get) => ({
   maxSteps: 8,
   replayCursor: null,
   settingsSection: null,
+  protocolOpen: false,
+  protocolRepo: null,
+  adrs: [],
+  adrView: null,
+  issues: null,
+  issueView: null,
+  protocolTab: "adr",
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
@@ -188,15 +218,78 @@ export const useChat = create<ChatState>((set, get) => ({
     // keys 栏目拉一次 keyStatus；skills 栏目重扫一次磁盘（用户随时增删 SKILL.md，镜像别太陈旧）；
     // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的
     if (section === "keys") {
-      set({ settingsSection: section, keyStatus: await window.otter.keyStatus() });
+      set({ settingsSection: section, protocolOpen: false, keyStatus: await window.otter.keyStatus() });
     } else if (section === "skills") {
-      set({ settingsSection: section, skills: await window.otter.listSkills() });
+      set({ settingsSection: section, protocolOpen: false, skills: await window.otter.listSkills() });
     } else {
-      set({ settingsSection: section });
+      set({ settingsSection: section, protocolOpen: false });
     }
   },
 
   closeSettings: () => set({ settingsSection: null }),
+
+  async openProtocol() {
+    // 目标仓库:上次手选的记忆优先,否则跟当前会话的工程文件夹
+    const repo = localStorage.getItem("otter-protocol-repo") ?? get().workspace ?? null;
+    set({ protocolOpen: true, settingsSection: null, protocolRepo: repo, adrView: null, issueView: null });
+    if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
+  },
+
+  closeProtocol: () => set({ protocolOpen: false }),
+
+  async pickProtocolRepo() {
+    try {
+      const dir = await window.otter.pickWorkspace();
+      if (!dir) return; // 用户取消 = 保持现状
+      localStorage.setItem("otter-protocol-repo", dir);
+      set({ protocolRepo: dir, adrView: null, issueView: null });
+      await get().refreshProtocol();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async refreshProtocol() {
+    const repo = get().protocolRepo;
+    if (!repo) return;
+    set({ issues: null, adrs: [] }); // 回加载态,刷新肉眼可见
+    try {
+      const [adrs, issues] = await Promise.all([
+        window.otter.protocolListAdrs(repo),
+        window.otter.protocolListIssues(repo),
+      ]);
+      // 等待期间用户可能已经切了目标仓库——这批结果对不上当前仓库了,别拿旧数据盖新状态
+      if (get().protocolRepo === repo) set({ adrs, issues });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async openAdr(path) {
+    const repo = get().protocolRepo;
+    if (!repo) return;
+    set({ adrView: null }); // 先清,切换 ADR 时不残留上一篇的内容(镜像 openIssue 的做法)
+    try {
+      const { markdown } = await window.otter.protocolReadAdr(repo, path);
+      if (get().protocolRepo === repo) set({ adrView: { path, markdown }, issueView: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async openIssue(number) {
+    const repo = get().protocolRepo;
+    if (!repo) return;
+    set({ issueView: null });
+    try {
+      const issueView = await window.otter.protocolGetIssue(repo, number);
+      if (get().protocolRepo === repo) set({ issueView, adrView: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  setProtocolTab: (t) => set({ protocolTab: t }),
 
   async saveApiKey(envName, key) {
     try {
@@ -329,6 +422,7 @@ export const useChat = create<ChatState>((set, get) => ({
       events: [],
       replayCursor: null,
       settingsSection: null, // ＋新会话退出设置模式，回 composer
+      protocolOpen: false, // 同上，退出仪表盘
       error: null,
     }),
 

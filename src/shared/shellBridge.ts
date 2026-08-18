@@ -8,6 +8,7 @@
 
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { SessionSummary } from "../session/store.js";
+import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 
 export type { SessionSummary };
 
@@ -154,6 +155,14 @@ export interface ShellBridge {
   setApiKey(envName: string, key: string): Promise<void>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
+  protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
+  /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
+  protocolReadAdr(repoDir: string, relPath: string): Promise<{ markdown: string }>;
+  /** gh CLI 读 issues(open+closed)。错误不 reject——结构化回流,渲染层按 kind 降级 */
+  protocolListIssues(repoDir: string): Promise<IssuesResult>;
+  /** 单 issue 详情(正文 + 评论,handoff 解析在渲染层做) */
+  protocolGetIssue(repoDir: string, number: number): Promise<IssueDetailResult>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -209,6 +218,10 @@ export const CHANNELS = {
   setThinking: "otter:setThinking",
   setMaxSteps: "otter:setMaxSteps",
   listSkills: "otter:listSkills",
+  protocolListAdrs: "otter:protocolListAdrs",
+  protocolReadAdr: "otter:protocolReadAdr",
+  protocolListIssues: "otter:protocolListIssues",
+  protocolGetIssue: "otter:protocolGetIssue",
   getAccount: "otter:getAccount",
   signIn: "otter:signIn",
   signOut: "otter:signOut",
