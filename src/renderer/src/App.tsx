@@ -17,7 +17,8 @@ import { useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
-import { contextUsed } from "../../shared/contextEstimate.js";
+import { contextBreakdown } from "../../shared/contextEstimate.js";
+import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
@@ -164,7 +165,7 @@ const TOOL_PRE =
 /* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
-// contextUsed 搬进 shared（校准版：账单锚点 + 未计费事件估算），这里只消费
+// 上下文占用估算住 shared（账单锚点 + 未计费事件估算 + 按来源拆分），这里只消费
 
 /** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
     挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
@@ -210,10 +211,31 @@ function CtxRing({ used, win }: { used: number; win: number }) {
   );
 }
 
-/** 圆环点开的详情浮窗：全部数字都是日志投影，没有任何独立状态。
+/** 用量弹窗的数字格式：~119K / 1M 那一路。K 以下给整数，10 万以上不要小数
+    （119.0K 的那位小数没有信息量，估算精度也撑不起它） */
+function fmtCtx(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1000) {
+    const k = n / 1000;
+    return `${k >= 100 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return String(n);
+}
+
+/** 三类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
+    对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，系统提示词用灰 */
+const CTX_CATEGORIES = [
+  { key: "system" as const, label: "系统提示词", color: "color-mix(in srgb, var(--foreground) 45%, transparent)" },
+  { key: "tools" as const, label: "工具", color: "#8b7fe0" },
+  { key: "messages" as const, label: "对话消息", color: "var(--brand)" },
+];
+
+/** 圆环点开的详情浮窗：全部数字都是投影（日志 + 主进程报的工具表），没有独立状态。
+    主视觉 = 一条按来源分段的占用条 + 图例，回答"上下文被谁吃掉了"。
     锚在触发环上方（从来处出现），点外面/Esc 关闭 */
-function CtxPopover({ events, ctxWindow, onClose }: {
+function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
   events: SessionEvent[];
+  toolDefs: ToolDefinition[];
   ctxWindow: number;
   onClose: () => void;
 }) {
@@ -234,49 +256,74 @@ function CtxPopover({ events, ctxWindow, onClose }: {
     };
   }, [onClose]);
 
-  const used = contextUsed(events);
-  const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
+  const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
+  const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
   const lastUsage = [...events].reverse().find(
     (e): e is SessionEvent & { usage: { promptTokens: number; completionTokens: number } } =>
       (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
   )?.usage;
   const compacts = events.filter((e) => e.type === "context_compacted").length;
   const n = (x: number) => x.toLocaleString("en-US");
+  /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
+      非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
+  const width = (v: number) => (v > 0 ? `max(1.5px, ${(v / ctxWindow) * 100}%)` : "0px");
 
   return (
     <div
-      className="absolute -right-1 bottom-[calc(100%+8px)] z-10 w-[258px] px-3 py-[10px] bg-card border border-border rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs text-foreground cursor-default origin-bottom-right transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
+      className="absolute -right-1 bottom-[calc(100%+8px)] z-10 w-[276px] px-3 py-[10px] bg-card border border-border rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs text-foreground cursor-default origin-bottom-right transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
       ref={ref} role="dialog" aria-label="上下文用量详情"
     >
-      <div className="flex justify-between items-baseline font-semibold mb-2">
-        上下文窗 <span className={V}>{fmtTokens(ctxWindow)}</span>
+      <div className="flex justify-between items-baseline gap-3 mb-[7px]">
+        <span className="font-semibold">上下文已用 {pct}%</span>
+        <span className={V + " text-muted-foreground"}>~{fmtCtx(breakdown.total)} / {fmtCtx(ctxWindow)}</span>
       </div>
-      <div className={POP_ROW}>
-        <span>占用估计</span>
-        <span className={V}>{n(used)} · {pct}%</span>
+
+      {/* 分段占用条：段宽 = 该类占窗口的比例，尾部留白 = 还没被吃掉的部分 */}
+      <div
+        className="flex h-[6px] rounded-full overflow-hidden bg-foreground/10 gap-[1px]"
+        role="img"
+        aria-label={`上下文占用 ${pct}%：系统提示词 ${breakdown.system}、工具 ${breakdown.tools}、对话消息 ${breakdown.messages} tokens`}
+      >
+        {CTX_CATEGORIES.map((c) => (
+          <i
+            key={c.key}
+            className="block h-full transition-[width] duration-[400ms] ease-strong"
+            style={{ width: width(breakdown[c.key]), background: c.color }}
+          />
+        ))}
       </div>
-      <div className="h-1 rounded-sm overflow-hidden bg-foreground/10 mt-[5px] mb-[7px]" aria-hidden="true">
-        <i
-          className="block h-full rounded-sm bg-brand min-w-0 transition-[width] duration-[400ms] ease-strong"
-          style={{ width: `${Math.max(pct, used > 0 ? 1 : 0)}%` }}
-        />
+
+      <div className="mt-[9px] mb-1">
+        {CTX_CATEGORIES.map((c) => (
+          <div key={c.key} className={POP_ROW}>
+            <span className="flex items-center gap-[7px] min-w-0">
+              <i
+                className="w-[7px] h-[7px] rounded-[2px] shrink-0"
+                style={{ background: c.color }}
+                aria-hidden="true"
+              />
+              {c.label}
+            </span>
+            <span className={V}>~{fmtCtx(breakdown[c.key])}</span>
+          </div>
+        ))}
       </div>
-      {lastUsage && (
+
+      <div className="pt-[6px] border-t border-border">
+        {lastUsage && (
+          <div className={POP_ROW}>
+            <span>最近一次调用</span>
+            <span className={V}>入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
+          </div>
+        )}
         <div className={POP_ROW}>
-          <span>最近一次调用</span>
-          <span className={V}>入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
+          <span>会话累计消耗</span>
+          <span className={V}>{n(totalTokens(events))} tokens</span>
         </div>
-      )}
-      <div className={POP_ROW}>
-        <span>会话累计消耗</span>
-        <span className={V}>{n(totalTokens(events))} tokens</span>
-      </div>
-      <div className={POP_ROW}>
-        <span>事件日志</span>
-        <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
-      </div>
-      <div className="mt-2 pt-2 border-t border-border text-muted-foreground text-[11px] leading-normal">
-        占用 = 最近账单 + 之后未计费事件的字符估算；/compact 可折叠历史释放上下文
+        <div className={POP_ROW}>
+          <span>事件日志</span>
+          <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
+        </div>
       </div>
     </div>
   );
@@ -288,6 +335,7 @@ function CtxPopover({ events, ctxWindow, onClose }: {
 function ComposerBar() {
   const model = useChat((s) => s.model);
   const events = useChat((s) => s.events);
+  const toolDefs = useChat((s) => s.toolDefs);
   const approvalMode = useChat((s) => s.approvalMode);
   const thinking = useChat((s) => s.thinking);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
@@ -298,7 +346,8 @@ function ComposerBar() {
 
   const choice = findModel(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
-  const used = contextUsed(events);
+  // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
+  const used = contextBreakdown(events, toolDefs).total;
   const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
   return (
@@ -371,13 +420,20 @@ function ComposerBar() {
         <button
           type="button"
           className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-foreground/[0.07]"
-          title={`上下文占用 ${fmtTokens(used)}/${fmtTokens(ctxWindow)} · ${pct}%——点击看详情`}
+          title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%——点击看详情`}
           aria-label="上下文用量详情"
           onClick={() => setCtxOpen((o) => !o)}
         >
           <CtxRing used={used} win={ctxWindow} />
         </button>
-        {ctxOpen && <CtxPopover events={events} ctxWindow={ctxWindow} onClose={() => setCtxOpen(false)} />}
+        {ctxOpen && (
+          <CtxPopover
+            events={events}
+            toolDefs={toolDefs}
+            ctxWindow={ctxWindow}
+            onClose={() => setCtxOpen(false)}
+          />
+        )}
       </span>
       </div>
     </div>

@@ -7,6 +7,7 @@
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
+import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
@@ -75,6 +76,10 @@ export interface BootInfo {
   /** 运行时偏好（不落日志，resume 回默认值），UI 初始化控件用 */
   approvalMode: ApprovalMode;
   thinking: boolean;
+  /** 本会话实际挂上 engine 的工具声明（name/description/parameters，无秘密）。
+      渲染层拿它算"工具 schema 吃掉多少上下文"——这块开销不在日志里，
+      日志推不出来，只能由持有工具表的主进程报过来 */
+  toolDefs: ToolDefinition[];
 }
 
 export type TurnStatus = "idle" | "running";

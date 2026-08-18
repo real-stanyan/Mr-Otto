@@ -5,6 +5,8 @@
 // 纯函数放 shared：渲染层用、测试逼边界，都不碰运行时。
 
 import type { SessionEvent } from "../session/events.js";
+import type { ToolDefinition } from "../model/adapter.js";
+import { systemPromptText } from "../session/deriveMessages.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
     校准用途，不求精确——离真值 ±30% 也比"冻结到上次账单"诚实。
@@ -21,25 +23,27 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk * 0.6 + rest / 4);
 }
 
-/** 当前上下文占用估计。
-    锚点：最近一次带 usage 的事件（API 报的账单，事实）；compact 锚点 = 摘要体积
-    （之后历史只剩摘要）。尾巴：锚点之后会进入下一次 prompt 的事件，按字符估算——
-    投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计。 */
-export function contextUsed(events: SessionEvent[]): number {
-  let anchor = 0;
-  let anchorIdx = -1;
+/** 账单锚点：最近一次带 usage 的事件（API 报的数，事实）。
+    compact 锚点 = 摘要体积（之后历史只剩摘要）。idx = -1 表示还没有任何账单 */
+function billingAnchor(events: SessionEvent[]): { value: number; idx: number } {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
-      anchor =
-        e.type === "context_compacted"
-          ? e.usage.completionTokens
-          : e.usage.promptTokens + e.usage.completionTokens;
-      anchorIdx = i;
-      break;
+      return {
+        value:
+          e.type === "context_compacted"
+            ? e.usage.completionTokens
+            : e.usage.promptTokens + e.usage.completionTokens,
+        idx: i,
+      };
     }
   }
+  return { value: 0, idx: -1 };
+}
 
+/** 锚点之后、会进入下一次 prompt 的事件按字符估算。
+    投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
+function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   let pending = 0;
   for (let i = anchorIdx + 1; i < events.length; i++) {
     const e = events[i]!;
@@ -66,5 +70,78 @@ export function contextUsed(events: SessionEvent[]): number {
         break;
     }
   }
-  return anchor + pending;
+  return pending;
+}
+
+/** 当前上下文占用估计。
+    锚点：最近一次带 usage 的事件（API 报的账单，事实）；compact 锚点 = 摘要体积
+    （之后历史只剩摘要）。尾巴：锚点之后会进入下一次 prompt 的事件，按字符估算——
+    投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计。 */
+export function contextUsed(events: SessionEvent[]): number {
+  const anchor = billingAnchor(events);
+  return anchor.value + pendingAfter(events, anchor.idx);
+}
+
+// ─── 分类拆分（用量弹窗的数据源）────────────────────────────
+// 圆环只回答"还剩多少"；弹窗要回答"被谁吃掉了"。三类:
+//   系统提示词 = 围栏 system 消息（每次请求都在最前面）
+//   工具       = 工具 schema（每次请求都随 prompt 发，与会话长度无关的固定开销）
+//   对话消息   = 剩下的一切（用户/助手/工具结果/skill/摘要）
+// 前两类可精确定位（文本就摆在那），第三类取差额——总量以账单锚点为准，
+// 减掉两块固定开销剩下的就是对话。这样三段之和 === 圆环读数，不会自相矛盾。
+
+export interface ContextBreakdown {
+  /** 系统提示词估算 */
+  system: number;
+  /** 工具 schema 估算 */
+  tools: number;
+  /** 对话消息 = 总量 − 系统提示词 − 工具（不小于 0） */
+  messages: number;
+  /** 总量：与 contextUsed 同源（无账单时另加固定开销，见下） */
+  total: number;
+}
+
+/** 工具 schema 的 token 估算：按 adapter 发出去的线格式（name/description/parameters）
+    算，不是按 Tool 对象——模型见到的是前者 */
+export function estimateToolTokens(tools: ToolDefinition[]): number {
+  if (tools.length === 0) return 0;
+  return estimateTokens(
+    JSON.stringify(
+      tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }))
+    )
+  );
+}
+
+/** 会话的围栏 workspace（日志第一条 session_created）。老日志可能没有 */
+function workspaceOf(events: SessionEvent[]): string | null {
+  for (const e of events) {
+    if (e.type === "session_created" && e.workspace) return e.workspace;
+  }
+  return null;
+}
+
+/** 上下文占用按来源拆三份。tools 缺省 = 空（拿不到工具表时该项显示 0，不瞎猜）。
+
+    有账单锚点时：total = contextUsed（事实优先），对话消息取差额——账单里
+    本来就含系统提示词和工具，重复加就是双记。
+    还没有任何账单（会话刚开、第一句还没发出去）时：估算侧看不见系统提示词和
+    工具，于是显式补上——不然弹窗会声称"占用 0"，而下一次请求其实已经有底噪。 */
+export function contextBreakdown(
+  events: SessionEvent[],
+  tools: ToolDefinition[] = []
+): ContextBreakdown {
+  const workspace = workspaceOf(events);
+  const system = workspace ? estimateTokens(systemPromptText(workspace)) : 0;
+  const toolTokens = estimateToolTokens(tools);
+  const anchor = billingAnchor(events);
+  const pending = pendingAfter(events, anchor.idx);
+
+  if (anchor.idx === -1) {
+    return { system, tools: toolTokens, messages: pending, total: system + toolTokens + pending };
+  }
+  const total = anchor.value + pending;
+  return { system, tools: toolTokens, messages: Math.max(0, total - system - toolTokens), total };
 }

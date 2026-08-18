@@ -186,6 +186,7 @@ void app.whenReady().then(() => {
           dbPath,
           approvalMode: agent.approvalMode,
           thinking: agent.thinking,
+          toolDefs: agent.toolDefs,
         }
       : null;
   };

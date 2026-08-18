@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import type { SessionEvent } from "../../session/events.js";
+import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
   ApprovalMode,
@@ -38,6 +39,9 @@ interface ChatState {
   model: string;
   workspace: string;
   events: SessionEvent[];
+  /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
+      上下文用量弹窗算"工具 schema 吃掉多少"用；没 boot 过 = 空表 */
+  toolDefs: ToolDefinition[];
   /** 侧栏会话列表（常驻） */
   sessions: SessionSummary[];
   /** 新会话 composer 的文件夹初值：侧栏工程分组的 ＋ 塞进来，Welcome 消费。
@@ -205,6 +209,7 @@ const enterChat = (info: BootInfo) => ({
   model: info.model,
   workspace: info.workspace,
   events: info.events,
+  toolDefs: info.toolDefs ?? [],
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
@@ -221,6 +226,7 @@ export const useChat = create<ChatState>((set, get) => ({
   model: "",
   workspace: "",
   events: [],
+  toolDefs: [],
   sessions: [],
   pendingWorkspace: null,
   statusBySession: {},
