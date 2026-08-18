@@ -19,6 +19,9 @@ import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
 import type { WriteFilePreview } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
+import { UIQuestioner } from "./uiQuestioner.js";
+import { createAskUserTool } from "../tools/askUser.js";
+import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 
 /** 内置 anysearch key(免费注册所得,仅搜索限额,无支付面)。仓库私有;若开源须先轮换。
     ANYSEARCH_API_KEY 环境变量优先于它。 */
@@ -33,6 +36,8 @@ export interface AgentPush {
     tool: Tool,
     preview?: WriteFilePreview
   ): void;
+  /** 带 sessionId：问卷卡同理，挂靠到发起提问的那个会话的视图上 */
+  askUserRequest(sessionId: string, toolCallId: string, questions: AskUserQuestion[]): void;
   /** 流式文本碎片（临时直播，不落日志）——渲染层按会话、按频道攒着显示 */
   assistantDelta(sessionId: string, text: string, kind: DeltaKind): void;
   /** 工具输出直播碎片（bash 的 stdout/stderr）——同上，不落日志，
@@ -64,6 +69,10 @@ export function createAgent(opts: {
       () => opts.push.approvalRequest(sessionId, call, tool)
     );
   });
+  // 问人和审批同构：都是"管线悬停等一次 UI 往返"，只是问的内容不同
+  const questioner = new UIQuestioner((toolCallId, questions) =>
+    opts.push.askUserRequest(sessionId, toolCallId, questions)
+  );
   // 运行时偏好（刻意不落日志）：影响的是"怎么问人/怎么调 API"，不是模型看到的上下文。
   // 代价：resume 后回默认值——审批模式回 ask 是安全默认，thinking 回开是保守默认。
   let approvalMode: ApprovalMode = "ask";
@@ -136,6 +145,7 @@ export function createAgent(opts: {
   // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
   // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
   const tools: Tool[] = [
+    createAskUserTool(questioner),
     todoWriteTool,
     readFileTool,
     writeFileTool,
@@ -177,6 +187,10 @@ export function createAgent(opts: {
   return {
     engine,
     approver,
+    /** IPC 唤醒挂起的问卷（与 approver.resolve 同构） */
+    answerQuestions(toolCallId: string, outcome: AskUserOutcome): void {
+      questioner.resolve(toolCallId, outcome);
+    },
     sessionId,
     workspace: opts.workspace,
     /** 喂给模型的工具声明（渲染层算上下文占用用；只有 name/description/parameters） */

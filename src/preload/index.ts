@@ -45,8 +45,11 @@ const bridge: ShellBridge = {
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, decision, reason) =>
     ipcRenderer.invoke(CHANNELS.decideApproval, sessionId, toolCallId, decision, reason),
+  answerQuestions: (sessionId, toolCallId, outcome) =>
+    ipcRenderer.invoke(CHANNELS.answerQuestions, sessionId, toolCallId, outcome),
   onEvent: subscribe(CHANNELS.event),
   onApprovalRequest: subscribe(CHANNELS.approvalRequest),
+  onAskUserRequest: subscribe(CHANNELS.askUserRequest),
   onTurnStatus: subscribe(CHANNELS.turnStatus),
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),

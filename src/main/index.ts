@@ -24,6 +24,7 @@ import { createProtocolService } from "./protocolService.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
+import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -201,6 +202,8 @@ void app.whenReady().then(() => {
         toolDescription: tool.def.description,
         ...(preview ? { preview } : {}),
       }),
+    askUserRequest: (sessionId, toolCallId, questions) =>
+      win.webContents.send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
     assistantDelta: (sessionId, text, kind) =>
       win.webContents.send(CHANNELS.assistantDelta, { sessionId, text, kind }),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
@@ -488,6 +491,13 @@ void app.whenReady().then(() => {
     (_e, sessionId: string, toolCallId: string, decision: "approved" | "denied", reason?: string) => {
       const outcome: ApprovalOutcome = { decision, ...(reason ? { reason } : {}) };
       agents.get(sessionId)?.approver.resolve(toolCallId, outcome);
+    }
+  );
+
+  ipcMain.handle(
+    CHANNELS.answerQuestions,
+    (_e, sessionId: string, toolCallId: string, outcome: AskUserOutcome) => {
+      agents.get(sessionId)?.answerQuestions(toolCallId, outcome);
     }
   );
 

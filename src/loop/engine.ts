@@ -91,7 +91,10 @@ export class LoopEngine {
     // 被拒绝的调用到不了这（审批门短路），所以 denied 没有此事件
     this.append({ ...this.env(), type: "tool_execution_started", toolCallId: ctx.call.id });
     try {
-      const raw = await ctx.tool.run(ctx.call.args, ctx.world);
+      const raw = await ctx.tool.run(ctx.call.args, ctx.world, {
+        toolCallId: ctx.call.id,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
       // run 可返回字符串（现状）或 { output, concludesTurn }（DSH 式提前收口）
       if (typeof raw === "string") return { status: "ok", output: raw };
       return {
