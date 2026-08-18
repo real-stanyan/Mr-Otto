@@ -27,6 +27,7 @@ import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 import { fetchWalletBalance } from "./walletApi.js";
+import { createSend } from "./rendererPush.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 
@@ -104,6 +105,9 @@ void app.whenReady().then(() => {
 
   const win = createWindow();
   mainWindow = win;
+  // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
+  // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
+  const send = createSend(win);
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
@@ -113,15 +117,15 @@ void app.whenReady().then(() => {
     push: {
       // win 可能已被 Cmd+W 销毁而 app/presence 通道仍活着(mac 惯例),
       // 不查 isDestroyed 直接 send 会在 supabase-js websocket 回调里炸穿主进程
-      friendsChanged: (s) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.friendsChanged, s); },
-      presenceChanged: (ids) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.presenceChanged, ids); },
-      directMessage: (m) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.directMessage, m); },
+      friendsChanged: (s) => send(CHANNELS.friendsChanged, s),
+      presenceChanged: (ids) => send(CHANNELS.presenceChanged, ids),
+      directMessage: (m) => send(CHANNELS.directMessage, m),
     },
   });
   accountManager = new AccountManager({
     openExternal: (url) => shell.openExternal(url),
     onChange: (info) => {
-      win.webContents.send(CHANNELS.accountChanged, info);
+      send(CHANNELS.accountChanged, info);
       // 好友子系统跟着登录态起落:登录起订阅,登出清场。start 内部自查 uid,
       // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
       if (info.signedIn) void friends.start();
@@ -198,20 +202,20 @@ void app.whenReady().then(() => {
 
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
-    event: (e) => win.webContents.send(CHANNELS.event, e),
+    event: (e) => send(CHANNELS.event, e),
     approvalRequest: (sessionId, call, tool, preview) =>
-      win.webContents.send(CHANNELS.approvalRequest, {
+      send(CHANNELS.approvalRequest, {
         sessionId,
         call,
         toolDescription: tool.def.description,
         ...(preview ? { preview } : {}),
       }),
     askUserRequest: (sessionId, toolCallId, questions) =>
-      win.webContents.send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
+      send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
     assistantDelta: (sessionId, text, kind) =>
-      win.webContents.send(CHANNELS.assistantDelta, { sessionId, text, kind }),
+      send(CHANNELS.assistantDelta, { sessionId, text, kind }),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
-      win.webContents.send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
+      send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
@@ -356,7 +360,7 @@ void app.whenReady().then(() => {
     if (store.load(sessionId).length === 0) throw new Error("会话不存在"); // 别给幽灵会话开日志
     // 改名不碰 agent、不限 turn 状态：纯追加一条事件，投影层自然换标题
     const appended = store.append({ sessionId, ts: Date.now(), type: "session_renamed", title: t });
-    win.webContents.send(CHANNELS.event, appended); // 时间线同款直播通道
+    send(CHANNELS.event, appended); // 时间线同款直播通道
   });
 
   ipcMain.handle(CHANNELS.switchModel, (_e, model: string) => {
@@ -428,12 +432,12 @@ void app.whenReady().then(() => {
         }
       }
       runningSessions.add(sessionId);
-      win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
+      send(CHANNELS.turnStatus, { sessionId, status: "running" });
       try {
         if (invoked) {
           // 快照落在 user_message 之前：模型先看到说明书，再看到任务
           const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
-          win.webContents.send(CHANNELS.event, fullEvent);
+          send(CHANNELS.event, fullEvent);
         }
         // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
         // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
@@ -449,12 +453,12 @@ void app.whenReady().then(() => {
             sessionId, ts: Date.now(), type: "image_described",
             content: described, model: VISION_BRIDGE_MODEL,
           });
-          win.webContents.send(CHANNELS.event, descEvent);
+          send(CHANNELS.event, descEvent);
         }
         await agent.engine.runTurn(text, refs, textFiles);
       } finally {
         runningSessions.delete(sessionId);
-        win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+        send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       }
     }
   );
@@ -489,12 +493,12 @@ void app.whenReady().then(() => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能压缩上下文");
     // compact 是一次真实的模型调用（几秒），复用 turn 状态灯让 UI 有反馈、挡并发
     runningSessions.add(sessionId);
-    win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "running" });
+    send(CHANNELS.turnStatus, { sessionId, status: "running" });
     try {
       await agent.engine.compact();
     } finally {
       runningSessions.delete(sessionId);
-      win.webContents.send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+      send(CHANNELS.turnStatus, { sessionId, status: "idle" });
     }
   });
 
