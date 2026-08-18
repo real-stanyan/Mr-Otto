@@ -53,6 +53,16 @@ begin
   then raise exception 'FAIL 邮箱搜不到刚注册的人'; end if;
   raise notice 'PASS 邮箱精确搜索命中';
 
+  -- 上面那条是超级用户身份查的,绕过了 RLS。渲染层是 authenticated 角色,
+  -- select policy 缺了照样搜不到人,所以这条才是真正对应 #62 症状的断言
+  set local role authenticated;
+  perform set_config('request.jwt.claims',
+                     json_build_object('sub', u1, 'role', 'authenticated')::text, true);
+  if not exists (select 1 from public.profiles where email = 'c1@example.com')
+  then raise exception 'FAIL authenticated 角色下邮箱搜不到人(select policy 没生效)'; end if;
+  reset role;
+  raise notice 'PASS RLS 下(authenticated)邮箱搜索仍命中';
+
   -- ── 用户自己改过的名字不该被下一次 auth.users 更新覆盖 ────────
   update public.profiles set name = '我自己改的' where id = u1;
   update auth.users set raw_user_meta_data = '{"name": "Provider Renamed"}'::jsonb where id = u1;
