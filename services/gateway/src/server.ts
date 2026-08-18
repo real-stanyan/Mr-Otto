@@ -3,8 +3,8 @@
 // 能出错的地方都在被测的那一侧。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { grantFor, TIERS } from "./buckets.js";
 import { createGateway, type GatewayConfig } from "./gateway.js";
-import { MICRO_PER_USD } from "./pricing.js";
 import { createSupabaseWallet } from "./wallet.js";
 
 function required(name: string): string {
@@ -68,7 +68,6 @@ const config: GatewayConfig = {
   jwtSecret: required("SUPABASE_JWT_SECRET"),
   upstreamBaseUrl: process.env.OTTO_UPSTREAM_BASE_URL ?? "https://api.deepseek.com/v1",
   upstreamApiKey: required("OTTO_UPSTREAM_API_KEY"),
-  signupGrantMicroUsd: Number(process.env.OTTO_SIGNUP_GRANT_USD ?? "20") * MICRO_PER_USD,
 };
 
 const handle = createGateway({
@@ -96,5 +95,7 @@ createServer((req, res) => {
   })();
 }).listen(port, () => {
   console.log(`[otto-gateway] 监听 :${port} → ${config.upstreamBaseUrl}`);
-  console.log(`[otto-gateway] 注册赠额 ${config.signupGrantMicroUsd / MICRO_PER_USD} USD`);
+  for (const tier of TIERS) {
+    console.log(`[otto-gateway] ${tier} 桶赠额 ${grantFor(tier).toLocaleString("en-US")} token`);
+  }
 });

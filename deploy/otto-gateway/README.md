@@ -12,7 +12,8 @@
 
 ## 部署状态（2026-08-18）
 
-- `supabase/migrations/0002_token_wallets.sql` 已在 `otto-db-1` 执行并逐条验过行为
+- `supabase/migrations/0002_token_wallets.sql`、`0003_token_denominated_wallet.sql`
+  均已在 `otto-db-1` 执行并逐条验过行为（0003 起计费单位是 token、按 flash/pro 分桶，ADR-0021）
 - 服务已 `systemctl enable --now`，开机自启
 - 公网入口：`https://otto-auth.stan.damianslife.com/gw/`（`/gw/healthz` 返回 200）
 - **`OTTO_UPSTREAM_API_KEY` still 是占位值** `REPLACE_ME_ROTATED_DEEPSEEK_KEY`

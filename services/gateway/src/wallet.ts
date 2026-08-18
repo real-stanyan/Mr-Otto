@@ -3,11 +3,16 @@
 // 不装 supabase-js:这里只发三种 POST,裸 fetch 比一个 SDK 少一层猜。
 // service_role key 只活在服务器进程里,绝不下发客户端(它绕过 RLS,
 // 拿到它等于拿到所有人的钱包)。
+//
+// 单位是 token,按桶(tier)分账,不是钱(ADR-0021)。
 
-export interface ChargeEntry {
+import type { Tier } from "./buckets.js";
+
+export interface SpendEntry {
   userId: string;
-  /** 正 = 进账,负 = 出账 */
-  deltaMicroUsd: number;
+  tier: Tier;
+  /** 正 = 进账(赠额/德州赢),负 = 出账(API 用量/德州输) */
+  deltaTokens: number;
   reason: string;
   model?: string;
   promptTokens?: number;
@@ -17,12 +22,12 @@ export interface ChargeEntry {
 }
 
 export interface Wallet {
-  /** 开户(幂等)+ 发注册赠额,返回当前余额 micro-USD */
-  ensure(userId: string, grantMicroUsd: number): Promise<number>;
+  /** 开桶(幂等)+ 发注册赠额,返回该桶当前余额(token) */
+  grant(userId: string, tier: Tier, tokens: number): Promise<number>;
   /** 记一笔账,返回记账后的余额 */
-  charge(entry: ChargeEntry): Promise<number>;
-  /** 从账本重算余额(对账用) */
-  rebuild(userId: string): Promise<number>;
+  spend(entry: SpendEntry): Promise<number>;
+  /** 从账本重算某个桶(对账用) */
+  rebuild(userId: string, tier: Tier): Promise<number>;
 }
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
@@ -63,13 +68,14 @@ export function createSupabaseWallet(opts: WalletOptions): Wallet {
   }
 
   return {
-    ensure: (userId, grantMicroUsd) =>
-      rpc("ensure_wallet", { p_user: userId, p_grant_micro_usd: grantMicroUsd }),
+    grant: (userId, tier, tokens) =>
+      rpc("grant_tokens", { p_user: userId, p_tier: tier, p_tokens: tokens }),
 
-    charge: (e) =>
-      rpc("charge_tokens", {
+    spend: (e) =>
+      rpc("spend_tokens", {
         p_user: e.userId,
-        p_delta_micro_usd: e.deltaMicroUsd,
+        p_tier: e.tier,
+        p_delta_tokens: e.deltaTokens,
         p_reason: e.reason,
         p_model: e.model ?? "",
         p_prompt_tokens: e.promptTokens ?? 0,
@@ -77,6 +83,6 @@ export function createSupabaseWallet(opts: WalletOptions): Wallet {
         p_request_id: e.requestId ?? "",
       }),
 
-    rebuild: (userId) => rpc("rebuild_wallet", { p_user: userId }),
+    rebuild: (userId, tier) => rpc("rebuild_balance", { p_user: userId, p_tier: tier }),
   };
 }
