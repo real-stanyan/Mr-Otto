@@ -24,6 +24,12 @@ import {
   SelectValue,
 } from "@/components/ui/select.js";
 import { Textarea } from "@/components/ui/textarea.js";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip.js";
 import type {
   SessionEvent,
   ToolCallRequest,
@@ -269,17 +275,21 @@ function ComposerBar() {
         </SelectContent>
       </Select>
 
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
-        title="添加文件(图片/文本)"
-        disabled={status === "running"}
-        onClick={() => void useChat.getState().pickFiles()}
-      >
-        ＋
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
+            disabled={status === "running"}
+            onClick={() => void useChat.getState().pickFiles()}
+          >
+            ＋
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>添加文件(图片/文本)</TooltipContent>
+      </Tooltip>
 
       <span className="flex-1" />
 
@@ -1058,13 +1068,17 @@ function Sidebar() {
           )}
         </button>
         {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
-        <button
-          className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
-          onClick={() => void openSettings("keys")}
-          title="设置"
-        >
-          <GearIcon />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
+              onClick={() => void openSettings("keys")}
+            >
+              <GearIcon />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>设置</TooltipContent>
+        </Tooltip>
       </div>
     </aside>
   );
@@ -1602,18 +1616,27 @@ export function App() {
                 {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
                     停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
                 {status === "running" ? (
-                  <Button
-                    variant="outline"
-                    className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
-                    title="停止 turn（Esc）"
-                    onClick={() => void stop()}
-                  >
-                    停止
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
+                        onClick={() => void stop()}
+                      >
+                        停止
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>停止 turn（Esc）</TooltipContent>
+                  </Tooltip>
                 ) : (
-                  <Button className={SEND_BTN} onClick={submit} disabled={!input.trim()}>
-                    发送
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim()}>
+                        发送
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>发送(Enter)</TooltipContent>
+                  </Tooltip>
                 )}
               </div>
             </div>
@@ -1624,9 +1647,11 @@ export function App() {
   );
 
   return (
-    <div className="flex h-screen">
-      <Sidebar />
-      {main}
-    </div>
+    <TooltipProvider delayDuration={400}>
+      <div className="flex h-screen">
+        <Sidebar />
+        {main}
+      </div>
+    </TooltipProvider>
   );
 }
