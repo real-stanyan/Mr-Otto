@@ -21,6 +21,7 @@ import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
+import { createGitGraphService } from "./gitGraphService.js";
 import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -262,6 +263,13 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.protocolListIssues, (_e, repoDir: string) => protocol.listIssues(repoDir));
   ipcMain.handle(CHANNELS.protocolGetIssue, (_e, repoDir: string, n: number) => protocol.getIssue(repoDir, n));
+
+  // Git Graph(只读):service 无状态,建一次全局复用
+  const gitGraph = createGitGraphService();
+  ipcMain.handle(CHANNELS.gitGraphLog, (_e, repoDir: string) => gitGraph.log(repoDir));
+  ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
+    gitGraph.commit(repoDir, hash)
+  );
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());

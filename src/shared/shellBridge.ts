@@ -9,6 +9,7 @@
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
+import type { GitCommitResult, GitLogResult } from "./gitGraph.js";
 
 export type { SessionSummary };
 
@@ -163,6 +164,10 @@ export interface ShellBridge {
   protocolListIssues(repoDir: string): Promise<IssuesResult>;
   /** 单 issue 详情(正文 + 评论,handoff 解析在渲染层做) */
   protocolGetIssue(repoDir: string, number: number): Promise<IssueDetailResult>;
+  /** Git Graph:目标仓库 git log 全分支拓扑(只读;非 git 仓库按 kind 降级) */
+  gitGraphLog(repoDir: string): Promise<GitLogResult>;
+  /** 单 commit 详情:元数据 + numstat 文件清单 */
+  gitGraphCommit(repoDir: string, hash: string): Promise<GitCommitResult>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -222,6 +227,8 @@ export const CHANNELS = {
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",
   protocolGetIssue: "otter:protocolGetIssue",
+  gitGraphLog: "otter:gitGraphLog",
+  gitGraphCommit: "otter:gitGraphCommit",
   getAccount: "otter:getAccount",
   signIn: "otter:signIn",
   signOut: "otter:signOut",
