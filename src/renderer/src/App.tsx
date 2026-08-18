@@ -6,7 +6,13 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked } from "lucide-react";
+import { BookMarked, Ellipsis, History } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.js";
 import { useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
@@ -1484,18 +1490,29 @@ export function App() {
         <span className="text-muted-foreground text-xs font-mono flex-1 min-w-0 truncate" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
         </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={HEADER_GHOST}
-          onClick={() => setReplayCursor(replaying ? null : 0)}
-        >
-          {replaying ? "回到直播" : "回放"}
-        </Button>
-        {/* Protocol 仪表盘对应各工作区,入口挂会话头部(回放右边),不进全局侧栏 */}
-        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => void openProtocol()}>
-          <BookMarked className="w-[13px] h-[13px]" /> Protocol
-        </Button>
+        {/* 模式出口不进菜单:回放中把「回到直播」外显,不让用户困在模式里翻菜单找出路 */}
+        {replaying && (
+          <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => setReplayCursor(null)}>
+            回到直播
+          </Button>
+        )}
+        {/* 头部只留一颗「更多」溢出菜单:回放/Protocol 等功能收进去,后续新功能有地方放 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={HEADER_GHOST}>
+              <Ellipsis className="w-[14px] h-[14px]" /> 更多
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem disabled={replaying} onClick={() => setReplayCursor(0)}>
+              <History /> 回放
+            </DropdownMenuItem>
+            {/* Protocol 仪表盘对应各工作区,入口挂会话头部,不进全局侧栏 */}
+            <DropdownMenuItem onClick={() => void openProtocol()}>
+              <BookMarked /> Protocol 仪表盘
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
 
       {replaying ? (
