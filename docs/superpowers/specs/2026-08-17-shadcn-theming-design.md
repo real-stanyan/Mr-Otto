@@ -98,3 +98,13 @@
 2. light 值填入 + useTheme + 防闪脚本 + 设置页三选
 3. shadcn 基建(alias/cn/components.json)+ 六组件引入替换
 4. Tooltip 收尾 + ADR-0011 + 收尾
+
+## 修订(2026-08-18,维护者指示)
+
+会话列表 sidebar 改用 shadcn Sidebar 全家桶,撤回"保留自制"判定:
+
+- `npx shadcn add sidebar`(连带 sheet/skeleton/separator/use-mobile 等依赖文件入库)
+- 收起模式 **offcanvas**(Cmd+B 整条滑出;SidebarTrigger 放主区 header 左侧,收起后仍可召回)
+- `--sidebar-*` 令牌组双主题补齐:light `--sidebar #E9E5D8`(与背景/弱底区分)、accent `#DCE6F2`、primary `#4A70A9`、border 黑 12%;dark `--sidebar #0D171E`、accent `#2E4A5C`、primary `#233D4D`、border `#EAECF0` 12%
+- 结构映射:新会话钮 → SidebarHeader;会话列表 → SidebarMenu/MenuItem/MenuButton(isActive = 当前会话);删除钮 → SidebarMenuAction(hover 显);登录槽 → SidebarFooter;主区包 SidebarInset
+- 行为零回归:点击切会话、hover 删除、当前态高亮、登录槽交互不变
