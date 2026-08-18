@@ -1267,6 +1267,50 @@ function WorkspacePicker({ value, onChange }: {
   );
 }
 
+/** 分支选择器：目录是 git 仓库才出现（不是仓库 = 整个控件消失，不占位不解释）。
+    新会话里 = 选分支再开工；会话里 = 常显当前分支，也能就地切。
+    切分支是唯一的 git 写操作（ADR-0014），失败给可行动文案，不甩 stderr */
+function BranchPicker({ dir, disabled }: { dir: string | null; disabled?: boolean }) {
+  const branches = useChat((s) => (dir ? s.branchesByDir[dir] : undefined));
+  const loadBranches = useChat((s) => s.loadBranches);
+  const checkoutBranch = useChat((s) => s.checkoutBranch);
+  const checkoutBusyDir = useChat((s) => s.checkoutBusyDir);
+  const checkoutError = useChat((s) => s.checkoutError);
+
+  // 目录变了就问一次 git（undefined = 没问过；null = 问着呢）
+  useEffect(() => {
+    if (dir && branches === undefined) void loadBranches(dir);
+  }, [dir, branches, loadBranches]);
+
+  if (!dir) return null;
+  if (branches === undefined || branches === null) return null; // 首帧不闪骨架：分支是配角
+  if (!branches.ok || branches.branches.length === 0) return null; // 非 git 仓库：整块消失
+
+  const busy = checkoutBusyDir === dir;
+  return (
+    <>
+      <Select
+        value={branches.current ?? ""}
+        onValueChange={(v) => void checkoutBranch(dir, v)}
+        disabled={disabled || busy}
+      >
+        <SelectTrigger className={BAR_SELECT + " max-w-[180px]"} title={busy ? "切换中…" : "当前分支——可切换"}>
+          <GitBranch className="w-3 h-3 shrink-0" />
+          <span className="truncate">{branches.current ?? "(detached HEAD)"}</span>
+        </SelectTrigger>
+        <SelectContent>
+          {branches.branches.map((b) => (
+            <SelectItem key={b.name} value={b.name}>
+              {b.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {checkoutError && <span className="text-err text-[11px] min-w-0 truncate" title={checkoutError}>{checkoutError}</span>}
+    </>
+  );
+}
+
 /** 新会话 composer（ZCode 版式）：文件夹 + 首条消息 + 模式/模型/thinking 先配齐，
     ↑ 一按才落地。落地前全是渲染层草稿——反悔零痕迹，没建的会话不存在半个。
     偏好初值：审批 ask（安全默认）、thinking 开；模型跟上个会话走，没有就用目录第一款 */
@@ -1308,6 +1352,8 @@ function Welcome() {
       <div className="w-[min(640px,90%)] text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
+          {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
+          <BranchPicker dir={workspace} disabled={busy} />
           {workspace && (
             <span className="text-muted-foreground text-[11px] min-w-0 truncate" title={workspace}>
               {workspace}
@@ -1489,10 +1535,6 @@ export function App() {
   ) : (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        <span className="font-[650] inline-flex items-center gap-[6px]">
-          <img className="w-[18px] h-[18px] rounded-[5px]" src={ottoLogo} alt="" />
-          Mr Otto
-        </span>
         {/* header 永远单行:溢出截断加省略号(完整路径挂 title,悬停可见) */}
         <span className="text-muted-foreground text-xs font-mono flex-1 min-w-0 truncate" title={workspace}>
           {workspace.split("/").pop()} · {sessionId}
@@ -1578,6 +1620,11 @@ export function App() {
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
+            {/* 当前分支贴在会话框正上方:发消息前最后一眼能看见自己站在哪根枝上。
+                turn 跑着时禁切——切到一半的仓库对 agent 是薛定谔态 */}
+            <div className="flex items-center gap-2 min-w-0 pb-[6px] pl-[2px]">
+              <BranchPicker dir={workspace} disabled={status === "running"} />
+            </div>
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">

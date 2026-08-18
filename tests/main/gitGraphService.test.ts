@@ -95,3 +95,71 @@ describe("commit", () => {
     expect(await svc.commit("/gone", "abc123")).toEqual({ ok: false, kind: "no-repo", detail: "目录不存在: /gone" });
   });
 });
+
+describe("branches", () => {
+  it("解析列表并挑出当前分支", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async () => ({ stdout: " \x00feat/x\n*\x00main\n \x00release\n" }),
+    }));
+    expect(await svc.branches("/repo")).toEqual({
+      ok: true,
+      current: "main",
+      branches: [
+        { name: "feat/x", current: false },
+        { name: "main", current: true },
+        { name: "release", current: false },
+      ],
+    });
+  });
+
+  it("detached HEAD:没有 current,列表照给", async () => {
+    const svc = createGitGraphService(fake({ onExec: async () => ({ stdout: " \x00main\n" }) }));
+    expect(await svc.branches("/repo")).toEqual({
+      ok: true, current: null, branches: [{ name: "main", current: false }],
+    });
+  });
+
+  it("非 git 目录:按 kind 降级", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async () => { throw Object.assign(new Error("x"), { stderr: "fatal: not a git repository" }); },
+    }));
+    expect(await svc.branches("/repo")).toMatchObject({ ok: false, kind: "no-repo" });
+  });
+});
+
+describe("checkout", () => {
+  it("成功:回报落地的分支名", async () => {
+    let seen: string[] = [];
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => { seen = args; return { stdout: "" }; },
+    }));
+    expect(await svc.checkout("/repo", "feat/x")).toEqual({ ok: true, branch: "feat/x" });
+    // `--` 终止选项解析:分支名永远不会被 git 当成选项读
+    expect(seen).toEqual(["checkout", "feat/x", "--"]);
+  });
+
+  it("工作区脏:单独的 dirty kind,不混进 git-error", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async () => {
+        throw Object.assign(new Error("x"), {
+          stderr: "error: Your local changes to the following files would be overwritten by checkout:\n\tsrc/a.ts",
+        });
+      },
+    }));
+    expect(await svc.checkout("/repo", "main")).toMatchObject({ ok: false, kind: "dirty" });
+  });
+
+  it("`-` 开头的分支名直接拒,不进 exec", async () => {
+    let called = false;
+    const svc = createGitGraphService(fake({
+      onExec: async () => { called = true; return { stdout: "" }; },
+    }));
+    expect(await svc.checkout("/repo", "--force")).toMatchObject({ ok: false, kind: "git-error" });
+    expect(called).toBe(false);
+  });
+
+  it("目录不存在:no-repo", async () => {
+    const svc = createGitGraphService(fake({ dirExists: false }));
+    expect(await svc.checkout("/gone", "main")).toMatchObject({ ok: false, kind: "no-repo" });
+  });
+});
