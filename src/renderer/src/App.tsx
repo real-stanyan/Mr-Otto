@@ -1356,7 +1356,17 @@ function WorkspacePicker({ value, onChange }: {
 /** 分支选择器：目录是 git 仓库才出现（不是仓库 = 整个控件消失，不占位不解释）。
     新会话里 = 选分支再开工；会话里 = 常显当前分支，也能就地切。
     切分支是唯一的 git 写操作（ADR-0014），失败给可行动文案，不甩 stderr */
-function BranchPicker({ dir, disabled }: { dir: string | null; disabled?: boolean }) {
+function BranchPicker({
+  dir,
+  disabled,
+  leadingSep,
+}: {
+  dir: string | null;
+  disabled?: boolean;
+  /** 前置一个「·」分隔点。放控件内部,非 git 目录整块消失时分隔点跟着走,
+      不会在头部留下一个孤零零的点 */
+  leadingSep?: boolean;
+}) {
   const branches = useChat((s) => (dir ? s.branchesByDir[dir] : undefined));
   const loadBranches = useChat((s) => s.loadBranches);
   const checkoutBranch = useChat((s) => s.checkoutBranch);
@@ -1375,6 +1385,7 @@ function BranchPicker({ dir, disabled }: { dir: string | null; disabled?: boolea
   const busy = checkoutBusyDir === dir;
   return (
     <>
+      {leadingSep && <span className="text-muted-foreground text-xs shrink-0">·</span>}
       <Select
         value={branches.current ?? ""}
         onValueChange={(v) => void checkoutBranch(dir, v)}
@@ -1526,6 +1537,8 @@ export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
+  // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
+  const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -1627,10 +1640,20 @@ export function App() {
   ) : (
     <div className={MAIN_COL}>
       <header className={HEADER}>
-        {/* header 永远单行:溢出截断加省略号(完整路径挂 title,悬停可见) */}
-        <span className="text-muted-foreground text-xs font-mono flex-1 min-w-0 truncate" title={workspace}>
-          {workspace.split("/").pop()} · {sessionId}
-        </span>
+        {/* 会话名 · 工程 · 分支：一行说清"我在哪个会话、哪个工程、哪根枝上"。
+            会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          <span className="font-[650] text-sm min-w-0 truncate" title={sessionId}>
+            {sessionTitle ?? sessionId}
+          </span>
+          <span className="text-muted-foreground text-xs shrink-0">·</span>
+          <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
+            {workspace.split("/").pop()}
+          </span>
+          {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
+              不是输入区的控件 */}
+          <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />
+        </div>
         {/* 模式出口不进菜单:回放中把「回到直播」外显,不让用户困在模式里翻菜单找出路 */}
         {replaying && (
           <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => setReplayCursor(null)}>
@@ -1712,11 +1735,6 @@ export function App() {
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
-            {/* 当前分支贴在会话框正上方:发消息前最后一眼能看见自己站在哪根枝上。
-                turn 跑着时禁切——切到一半的仓库对 agent 是薛定谔态 */}
-            <div className="flex items-center gap-2 min-w-0 pb-[6px] pl-[2px]">
-              <BranchPicker dir={workspace} disabled={status === "running"} />
-            </div>
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
