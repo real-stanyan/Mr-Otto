@@ -10,6 +10,7 @@ import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../sessio
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot } from "./friends.js";
 
 export type { SessionSummary };
 
@@ -213,6 +214,25 @@ export interface ShellBridge {
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
+  /** 邮箱精确匹配搜用户。value null = 查无此人(不是错误) */
+  friendsSearch(email: string): Promise<FriendsResult<FriendProfile | null>>;
+  /** 发好友请求。重复请求/已是好友 → ok:false 带人话理由 */
+  friendsSendRequest(userId: string): Promise<FriendsResult<null>>;
+  /** 接受(accept=true,pending→accepted)或拒绝(accept=false,删行) */
+  friendsRespond(friendshipId: string, accept: boolean): Promise<FriendsResult<null>>;
+  /** 删好友 = 删行(与拒绝同一条 DB 路径,语义由调用方 UI 区分) */
+  friendsRemove(friendshipId: string): Promise<FriendsResult<null>>;
+  /** 全量快照(好友/收到的请求/发出的请求)。变化推送走 onFriendsChanged */
+  friendsList(): Promise<FriendsResult<FriendsSnapshot>>;
+  friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<null>>;
+  /** 拉历史,新→旧;beforeId 翻旧页(取 id < beforeId 的一页,每页 50) */
+  friendsListMessages(friendId: string, beforeId?: number): Promise<FriendsResult<DirectMessage[]>>;
+  /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
+  onFriendsChanged(cb: (snapshot: FriendsSnapshot) => void): Unsubscribe;
+  /** presence 集合变化 → 当前在线的 userId 全量列表 */
+  onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
+  /** 对端发来的新 DM(自己发的不推——bridge 调用返回即成功,渲染层自己落) */
+  onDirectMessage(cb: (message: DirectMessage) => void): Unsubscribe;
 }
 
 export const CHANNELS = {
@@ -240,6 +260,16 @@ export const CHANNELS = {
   signIn: "otter:signIn",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
+  friendsSearch: "otter:friendsSearch",
+  friendsSendRequest: "otter:friendsSendRequest",
+  friendsRespond: "otter:friendsRespond",
+  friendsRemove: "otter:friendsRemove",
+  friendsList: "otter:friendsList",
+  friendsSendMessage: "otter:friendsSendMessage",
+  friendsListMessages: "otter:friendsListMessages",
+  friendsChanged: "otter:friendsChanged",
+  presenceChanged: "otter:presenceChanged",
+  directMessage: "otter:directMessage",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",

@@ -52,6 +52,19 @@ const bridge: ShellBridge = {
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),
   onAccountChanged: subscribe(CHANNELS.accountChanged),
+  friendsSearch: (email) => ipcRenderer.invoke(CHANNELS.friendsSearch, email),
+  friendsSendRequest: (userId) => ipcRenderer.invoke(CHANNELS.friendsSendRequest, userId),
+  friendsRespond: (friendshipId, accept) =>
+    ipcRenderer.invoke(CHANNELS.friendsRespond, friendshipId, accept),
+  friendsRemove: (friendshipId) => ipcRenderer.invoke(CHANNELS.friendsRemove, friendshipId),
+  friendsList: () => ipcRenderer.invoke(CHANNELS.friendsList),
+  friendsSendMessage: (friendId, body) =>
+    ipcRenderer.invoke(CHANNELS.friendsSendMessage, friendId, body),
+  friendsListMessages: (friendId, beforeId) =>
+    ipcRenderer.invoke(CHANNELS.friendsListMessages, friendId, beforeId),
+  onFriendsChanged: subscribe(CHANNELS.friendsChanged),
+  onPresenceChanged: subscribe(CHANNELS.presenceChanged),
+  onDirectMessage: subscribe(CHANNELS.directMessage),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

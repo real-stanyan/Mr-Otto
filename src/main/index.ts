@@ -25,6 +25,8 @@ import { createGitGraphService } from "./gitGraphService.js";
 import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
+import { FriendsManager } from "./friends.js";
+import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -103,10 +105,27 @@ void app.whenReady().then(() => {
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
+  const supabase = createSupabaseAuthClient(join(app.getPath("userData"), "auth.json"));
+  const friends = new FriendsManager({
+    api: createSupabaseFriendsApi(supabase.raw),
+    push: {
+      // win 可能已被 Cmd+W 销毁而 app/presence 通道仍活着(mac 惯例),
+      // 不查 isDestroyed 直接 send 会在 supabase-js websocket 回调里炸穿主进程
+      friendsChanged: (s) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.friendsChanged, s); },
+      presenceChanged: (ids) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.presenceChanged, ids); },
+      directMessage: (m) => { if (!win.isDestroyed()) win.webContents.send(CHANNELS.directMessage, m); },
+    },
+  });
   accountManager = new AccountManager({
     openExternal: (url) => shell.openExternal(url),
-    onChange: (info) => win.webContents.send(CHANNELS.accountChanged, info),
-    client: createSupabaseAuthClient(join(app.getPath("userData"), "auth.json")),
+    onChange: (info) => {
+      win.webContents.send(CHANNELS.accountChanged, info);
+      // 好友子系统跟着登录态起落:登录起订阅,登出清场。start 内部自查 uid,
+      // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
+      if (info.signedIn) void friends.start();
+      else friends.stop();
+    },
+    client: supabase.auth,
   });
   const manager = accountManager;
   // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
@@ -280,6 +299,17 @@ void app.whenReady().then(() => {
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
+
+  // 好友系统:全部结构化回流(FriendsResult),渲染层按 ok 分支,不靠 invoke reject
+  ipcMain.handle(CHANNELS.friendsSearch, (_e, email: string) => friends.search(email));
+  ipcMain.handle(CHANNELS.friendsSendRequest, (_e, userId: string) => friends.sendRequest(userId));
+  ipcMain.handle(CHANNELS.friendsRespond, (_e, id: string, accept: boolean) => friends.respond(id, accept));
+  ipcMain.handle(CHANNELS.friendsRemove, (_e, id: string) => friends.remove(id));
+  ipcMain.handle(CHANNELS.friendsList, () => friends.list());
+  ipcMain.handle(CHANNELS.friendsSendMessage, (_e, friendId: string, body: string) =>
+    friends.sendMessage(friendId, body));
+  ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
+    friends.listMessages(friendId, beforeId));
 
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
   const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));

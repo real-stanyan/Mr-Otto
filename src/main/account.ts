@@ -11,6 +11,7 @@
 //   new AccountManager({ openExternal, onChange, client: createSupabaseAuthClient(path) })
 
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./authConfig.js";
 import type { AccountInfo } from "../shared/shellBridge.js";
@@ -88,8 +89,11 @@ export function toAccountInfo(user: SupabaseUserLike): AccountInfo {
 /**
  * 真 client 工厂——createClient + pkce + authStorage（Task 4 产物）组装。
  * 只有这个函数会碰真实 supabase-js 构造器和落盘路径；单测不调用它。
+ *
+ * 真 client 工厂——auth 视角(SupabaseLike)给 AccountManager,raw 完整 client
+ * 给好友网关(from/channel)。同一个实例双出口:同一登录态,别建两个 client
  */
-export function createSupabaseAuthClient(filePath: string): SupabaseLike {
+export function createSupabaseAuthClient(filePath: string): { auth: SupabaseLike; raw: SupabaseClient } {
   const storage = createAuthStorage(filePath);
   const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -100,7 +104,7 @@ export function createSupabaseAuthClient(filePath: string): SupabaseLike {
       storage,
     },
   });
-  return client as unknown as SupabaseLike;
+  return { auth: client as unknown as SupabaseLike, raw: client };
 }
 
 export class AccountManager {
