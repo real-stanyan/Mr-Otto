@@ -40,28 +40,25 @@ Electron 客户端 ──Supabase JWT──> otto-gateway ──官方 key──
 
 ## 部署
 
-前置：`supabase/migrations/0002_token_wallets.sql` 已在 Supabase SQL editor 执行过一次。
+已部署（2026-08-18）。服务器侧配置的副本、以及**填官方 key 的最后一步**见
+`deploy/otto-gateway/README.md`。
+
+公网入口：`https://otto-auth.stan.damianslife.com/gw/`
+→ 客户端的 baseUrl 用 `https://otto-auth.stan.damianslife.com/gw/v1`
+
+重新部署代码：
 
 ```bash
-# 服务器（deploy/otto-auth/README.md 里那台）
-scp -P 2222 -r services/gateway stan@65.109.113.168:~/otto-gateway
-ssh -p 2222 stan@65.109.113.168
-cd ~/otto-gateway && npm install
-cp .env.example .env && chmod 600 .env   # 填真值，尤其 OTTO_UPSTREAM_API_KEY
-npm start
+ssh -p 2222 stan@65.109.113.168 'mkdir -p ~/otto-gateway/src'
+scp -P 2222 services/gateway/src/*.ts stan@65.109.113.168:~/otto-gateway/src/
+ssh -p 2222 stan@65.109.113.168 'sudo systemctl restart otto-gateway'
 ```
 
-nginx 反代到 `:8787` 时**必须关掉响应缓冲**，否则 SSE 会被攒成一坨等到最后才吐：
+nginx 反代**必须** `proxy_buffering off`，否则 SSE 会被攒成一坨等到最后才吐
+（`deploy/otto-gateway/nginx-gw-location.conf` 里已经关了）。
 
-```nginx
-location /gw/ {
-    proxy_pass http://127.0.0.1:8787/;
-    proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_set_header Connection '';
-    proxy_http_version 1.1;
-}
-```
+用 `tsx` 而不是 `node src/server.ts`：Node 24 自带类型擦除，但不会把 `./x.js`
+说明符解析到 `./x.ts`，而仓库的 import 都带 `.js` 扩展。
 
 ## 计价
 
