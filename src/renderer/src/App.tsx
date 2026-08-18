@@ -6,7 +6,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, ChevronRight, Ellipsis, GitBranch, History, Plus, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,6 +18,7 @@ import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
+import { countTodos, deriveTodos, parseTodoArgs, TODO_TOOL_NAME } from "../../session/deriveTodos.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
@@ -333,6 +334,79 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
 /** 输入框下的状态条（Claude Code 同款布局）：
     左 = 审批模式；右 = 模型 · thinking · 上下文用量。
     模式/thinking 是运行时偏好（主进程 agent 持有）；模型是日志投影；用量是日志投影 */
+/** 任务清单面板:模型用 todo_write 拆出来的活干到哪了。
+    数据是 deriveTodos(events) 的投影——不存 UI state,重开 app / 换机器照样是这份。
+    位置在会话框正上方:进度是"接下来要发生什么"的语境,贴着输入框读最顺 */
+function TodoPanel() {
+  const events = useChat((s) => s.events);
+  const todos = useMemo(() => deriveTodos(events), [events]);
+  const [open, setOpen] = useState(true);
+
+  if (todos.length === 0) return null; // 没拆过任务就完全不占地方
+  const c = countTodos(todos);
+  const allDone = c.completed === c.total;
+  // 头行只报"还没完的"——已完成数量是过去时,写出来抢眼但没用
+  const summary = allDone
+    ? `${c.total} 项全部完成`
+    : [c.inProgress && `${c.inProgress} 进行中`, c.pending && `${c.pending} 待处理`]
+        .filter(Boolean)
+        .join(" · ");
+
+  return (
+    <div className="mb-[6px] bg-card border border-border/60 rounded-xl overflow-hidden transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[2px]">
+      <button
+        type="button"
+        className="flex items-center gap-2 w-full text-left bg-transparent border-none px-3 py-[7px] text-[13px] text-muted-foreground transition-colors duration-[120ms] hover:bg-foreground/5"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <ListChecks className="size-4 shrink-0 opacity-70" aria-hidden />
+        <span className="font-[550] text-foreground shrink-0">任务</span>
+        <span className="tabular-nums truncate">{summary}</span>
+        <span className="ml-auto shrink-0 text-xs tabular-nums">
+          {c.completed}/{c.total}
+        </span>
+        <ChevronRight
+          className={
+            "size-4 shrink-0 transition-transform duration-150 ease-strong motion-reduce:transition-none" +
+            (open ? " rotate-90" : "")
+          }
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <ul className="list-none m-0 px-3 pb-[7px] pt-[1px] max-h-[30vh] overflow-y-auto flex flex-col gap-[3px]">
+          {todos.map((t, i) => (
+            // text 就是身份(见 deriveTodos),但模型偶尔写重复文案——配上下标兜底
+            <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
+              <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
+                {t.status === "in_progress" ? (
+                  <ThinkingOrb state="working" size={16} theme="auto" />
+                ) : t.status === "completed" ? (
+                  <Check className="size-[13px] text-ok" aria-hidden />
+                ) : (
+                  <span className="block size-[7px] rounded-full border border-muted-foreground/60" aria-hidden />
+                )}
+              </span>
+              <span
+                className={
+                  t.status === "completed"
+                    ? "text-muted-foreground line-through decoration-muted-foreground/40"
+                    : t.status === "in_progress"
+                      ? "text-foreground shimmer"
+                      : "text-muted-foreground"
+                }
+              >
+                {t.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ComposerBar() {
   const model = useChat((s) => s.model);
   const events = useChat((s) => s.events);
@@ -474,11 +548,11 @@ function agentPhase(opts: {
   return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
 }
 
-/** 工具执行阶段 → orb + 文案。read_file 是"找"，其余(bash/write)是"做" */
+/** 工具执行阶段 → orb + 文案。read_file 是"找"，todo_write 是"想"，其余(bash/write)是"做" */
 function toolPhase(name: string): { orb: OrbState; label: string } {
-  return name === "read_file"
-    ? { orb: "searching", label: "检索中…" }
-    : { orb: "working", label: "执行中…" };
+  if (name === "read_file") return { orb: "searching", label: "检索中…" };
+  if (name === TODO_TOOL_NAME) return { orb: "composing", label: "整理清单…" };
+  return { orb: "working", label: "执行中…" };
 }
 
 /** 工具调用摘要行的文案：动词 + 目标 + 统计（Claude Code 版式）。
@@ -499,6 +573,17 @@ function toolSummary(call: ToolCallRequest): { verb: string; target: string; sta
       return { verb: "读取", target: str("path").split("/").pop() ?? "", stat: "" };
     case "bash":
       return { verb: "终端", target: str("cmd"), stat: "" };
+    case TODO_TOOL_NAME: {
+      // 目标位显示当前在做的那项——一行摘要里最有信息量的就是它
+      const items = parseTodoArgs(call.args) ?? [];
+      const doing = items.find((t) => t.status === "in_progress");
+      const done = items.filter((t) => t.status === "completed").length;
+      return {
+        verb: "任务清单",
+        target: doing?.text ?? "",
+        stat: items.length > 0 ? `${done}/${items.length}` : "",
+      };
+    }
     default:
       return { verb: call.name, target: "", stat: "" };
   }
@@ -1912,6 +1997,7 @@ export function App() {
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
+            <TodoPanel />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">

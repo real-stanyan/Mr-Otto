@@ -8,6 +8,7 @@ import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
 import { resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
+import { todoWriteTool } from "../tools/todoWrite.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
@@ -135,6 +136,7 @@ export function createAgent(opts: {
   // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
   // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
   const tools: Tool[] = [
+    todoWriteTool,
     readFileTool,
     writeFileTool,
     bashTool,
