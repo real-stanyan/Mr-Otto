@@ -7,14 +7,14 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { useChat } from "./store.js";
+import { type SessionMode, useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
@@ -29,6 +29,7 @@ import { GitGraphView } from "./components/GitGraphView.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
+import { PokerTable } from "./components/PokerTable.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -53,6 +54,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select.js";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import {
   Tooltip,
@@ -1353,6 +1355,8 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
     + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
 function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
+  const mode = useChat((s) => s.sessionMode);
+  const setSessionMode = useChat((s) => s.setSessionMode);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -1406,6 +1410,24 @@ function AppSidebar() {
               展开状态下用户第一眼找的是侧栏里的开关 */}
           <SidebarTrigger className="ml-auto" />
         </div>
+        {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
+            它切的是整个主区在展示什么，属于导航，不是输入区的控件。
+            面板不在这棵树里（在 SidebarInset 那侧），所以 Root 只当分段控件用：
+            试过把 Root 提到最外层罩住两边，display:contents 会让 shadcn sidebar
+            的 peer 兄弟选择器算错宽度，主区不被推开。键盘导航和视觉照旧，
+            代价是 trigger 的 aria-controls 指向一个不存在的 id */}
+        <Tabs value={mode} onValueChange={(v) => setSessionMode(v as SessionMode)}>
+        <TabsList className="w-full">
+          <TabsTrigger value="work">
+            <SquareTerminal aria-hidden />
+            Work
+          </TabsTrigger>
+          <TabsTrigger value="game">
+            <Spade aria-hidden />
+            Game
+          </TabsTrigger>
+        </TabsList>
+        </Tabs>
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {settingsSection === null && (
@@ -1973,6 +1995,7 @@ function Welcome() {
 
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
+  const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
@@ -2140,7 +2163,9 @@ export function App() {
           <QuestionnaireCard />
         </>
       ) : (
+        // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
+        {mode === "work" ? (
           <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
@@ -2177,6 +2202,9 @@ export function App() {
             )}
             <div ref={bottomRef} />
           </section>
+        ) : (
+          <PokerTable />
+        )}
 
           <ApprovalCard />
           <QuestionnaireCard />
