@@ -1493,7 +1493,7 @@ export function App() {
                 <ThinkingOrb
                   state={orbStateOf(status, approval !== null)}
                   size={20}
-                  theme="dark"
+                  theme="auto"
                 />
                 <TurnMeta
                   label={approval ? "等待审批…" : streamingText ? "输出中…" : "思考中…"}
