@@ -1104,6 +1104,65 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "w-7 h-7 text-[13px]" }: {
   return <span className={cls}>{name.charAt(0).toUpperCase() || "?"}</span>;
 }
 
+/** 官方额度卡（账号页内）。数字是读的不是玩的——不给进度条做入场动画：
+    这块每次进设置都会看一次，动一下就是每次都拖一下。 */
+function QuotaCard() {
+  const wallet = useChat((s) => s.wallet);
+  const walletError = useChat((s) => s.walletError);
+  const refreshWallet = useChat((s) => s.refreshWallet);
+
+  if (walletError) {
+    return (
+      <div className="rounded-[10px] border border-border px-[14px] py-[10px]">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-[650]">官方额度</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-6 px-2 text-xs"
+            onClick={() => void refreshWallet()}
+          >
+            重试
+          </Button>
+        </div>
+        {/* "查不到"和"没有额度"不是一回事，别把故障显示成 $0 */}
+        <p className={ERR_TXT}>查不到额度：{walletError}</p>
+      </div>
+    );
+  }
+
+  if (!wallet) return <p className={HINT}>正在查官方额度…</p>;
+
+  const grant = wallet.grantMicroUsd;
+  const pct = grant > 0 ? Math.max(0, Math.min(100, (wallet.balanceMicroUsd / grant) * 100)) : 0;
+  const empty = wallet.balanceMicroUsd <= 0;
+
+  return (
+    <div className="rounded-[10px] border border-border px-[14px] py-[10px] flex flex-col gap-[6px]">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs font-[650]">官方额度</span>
+        <span className="ml-auto tabular-nums font-[650]">
+          ${wallet.balanceUsd.toFixed(2)}
+        </span>
+        {grant > 0 && (
+          <span className={HINT}>/ ${(grant / 1_000_000).toFixed(2)}</span>
+        )}
+      </div>
+      <div className="h-[3px] rounded-full bg-muted overflow-hidden">
+        <div
+          className={`h-full rounded-full ${empty ? "bg-destructive" : "bg-primary"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className={HINT}>
+        {empty
+          ? "额度用完了。去「密钥」栏填自己的 API key 即可继续。"
+          : "用官方 DeepSeek 跑的量从这里扣；填了自己的 key 就走自己的，不动这份额度。"}
+      </p>
+    </div>
+  );
+}
+
 /** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
 function AccountPage() {
   const account = useChat((s) => s.account);
@@ -1123,14 +1182,17 @@ function AccountPage() {
       </header>
       <section className={SETTINGS_BODY}>
         {account.signedIn ? (
-          <div className="flex items-center gap-[10px]">
-            <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
-            <span className="font-[650]">{account.name}</span>
-            <span className={HINT}>{account.email}</span>
-            <Button variant="outline" onClick={() => void signOut()}>
-              退出登录
-            </Button>
-          </div>
+          <>
+            <div className="flex items-center gap-[10px]">
+              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
+              <span className="font-[650]">{account.name}</span>
+              <span className={HINT}>{account.email}</span>
+              <Button variant="outline" onClick={() => void signOut()}>
+                退出登录
+              </Button>
+            </div>
+            <QuotaCard />
+          </>
         ) : (
           <>
             <div className="flex items-center gap-[10px]">

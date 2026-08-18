@@ -6,6 +6,7 @@ import type { SessionEvent } from "../../session/events.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
+  WalletBalance,
   ApprovalMode,
   ApprovalRequest,
   AskUserAnswer,
@@ -110,6 +111,10 @@ interface ChatState {
   keyStatus: Record<string, boolean>;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
+  /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
+  wallet: WalletBalance | null;
+  /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
+  walletError: string;
   /** ＋ 按钮暂存的附件(chips 数据源)。rejected 不进这——进 attachError */
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
@@ -136,6 +141,8 @@ interface ChatState {
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
   openSettings(section?: SettingsSection): Promise<void>;
+  /** 拉一次官方额度（账号页进入时自动调一次） */
+  refreshWallet(): Promise<void>;
   closeSettings(): void;
   /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
@@ -268,6 +275,8 @@ export const useChat = create<ChatState>((set, get) => ({
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
+  wallet: null,
+  walletError: "",
   staged: [],
   attachError: null,
   friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
@@ -321,6 +330,22 @@ export const useChat = create<ChatState>((set, get) => ({
       });
     } else {
       set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null });
+      // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）
+      void get().refreshWallet();
+    }
+  },
+
+  /** 拉一次官方额度。未登录 → wallet 置 null（不是错误）；查不到 → 记 walletError。
+      两者必须可区分：一个是"你没这回事"，一个是"我没查到" */
+  async refreshWallet() {
+    if (!get().account.signedIn) {
+      set({ wallet: null, walletError: "" });
+      return;
+    }
+    try {
+      set({ wallet: await window.otter.walletBalance(), walletError: "" });
+    } catch (e) {
+      set({ walletError: e instanceof Error ? e.message : String(e) });
     }
   },
 
@@ -616,7 +641,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (bootStarted) return;
     bootStarted = true;
 
-    window.otter.onAccountChanged((account) =>
+    window.otter.onAccountChanged((account) => {
       set(
         account.signedIn
           ? { account }
@@ -625,9 +650,15 @@ export const useChat = create<ChatState>((set, get) => ({
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
+              // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
+              wallet: null, walletError: "",
             }
-      )
-    );
+      );
+      // 补拉余额必须在 set 之后：refreshWallet 读的是 store 里的登录态，
+      // 先调等于拿着旧的"未登录"去查，直接短路成 null。
+      // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
+      if (account.signedIn) void get().refreshWallet();
+    });
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onDirectMessage((msg) =>

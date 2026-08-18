@@ -34,6 +34,9 @@ export type SupabaseLike = {
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
     // 用 authStorage 里恢复出来的 session 换一个当下有效的 user；离线/过期时 user 为 null。
     getUser(): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
+    // 拿当前 access token 喂 otto-gateway。读 getSession 而不是缓存令牌:
+    // supabase-js 开着 autoRefreshToken,过期的会在这一步换新,自己缓存等于跟它抢活
+    getSession(): Promise<{ data: { session: { access_token: string } | null }; error: unknown }>;
   };
 };
 
@@ -178,5 +181,23 @@ export class AccountManager {
 
   getAccount(): AccountInfo {
     return this.account;
+  }
+
+  /**
+   * otto-gateway 的进门凭据。每次请求前现取——access token 一小时就过期,
+   * 缓存下来等于让 turn 跑到一半突然 401。
+   *
+   * 未登录 / 离线 / session 过期一律回 null(不是异常):调用方据此走"没登录"那条路,
+   * 而不是把一次正常的未登录状态炸成错误。
+   */
+  async getAccessToken(): Promise<string | null> {
+    try {
+      const { data, error } = await this.client.auth.getSession();
+      if (error || !data.session) return null;
+      return data.session.access_token || null;
+    } catch (err) {
+      console.error("AccountManager.getAccessToken：取 session 失败", err);
+      return null;
+    }
   }
 }

@@ -26,6 +26,7 @@ import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
+import { fetchWalletBalance } from "./walletApi.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 
@@ -129,6 +130,9 @@ void app.whenReady().then(() => {
     client: supabase.auth,
   });
   const manager = accountManager;
+  // otto-gateway 的进门凭据取用器。传给 createAgent 决定走网关还是直连,
+  // 也给查余额用。token 只在主进程流转,永不过桥
+  const getAccessToken = (): Promise<string | null> => manager.getAccessToken();
   // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
   // account——两条都跑的话，restore() 的 getUser() 若晚于 handleCallback() 的
   // exchangeCodeForSession 完成，刚建立的新登录会被 restore 带来的旧 session 投影覆盖，
@@ -229,7 +233,13 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    const agent = createAgent({ store, workspace: opts.workspace, push, attachments: attachmentStore });
+    const agent = createAgent({
+      store,
+      workspace: opts.workspace,
+      push,
+      attachments: attachmentStore,
+      getAccessToken,
+    });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -263,6 +273,7 @@ void app.whenReady().then(() => {
           push,
           resumeSessionId: sessionId,
           attachments: attachmentStore,
+          getAccessToken,
         })
       );
     }
@@ -299,6 +310,7 @@ void app.whenReady().then(() => {
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
+  ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
