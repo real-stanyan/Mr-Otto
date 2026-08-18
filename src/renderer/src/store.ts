@@ -238,9 +238,15 @@ export const useChat = create<ChatState>((set, get) => ({
     // keys 栏目拉一次 keyStatus；skills 栏目重扫一次磁盘（用户随时增删 SKILL.md，镜像别太陈旧）；
     // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的
     if (section === "keys") {
-      set({ settingsSection: section, protocolOpen: false, keyStatus: await window.otter.keyStatus() });
+      set({
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false,
+        keyStatus: await window.otter.keyStatus(),
+      });
     } else if (section === "skills") {
-      set({ settingsSection: section, protocolOpen: false, skills: await window.otter.listSkills() });
+      set({
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false,
+        skills: await window.otter.listSkills(),
+      });
     } else {
       set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false });
     }
