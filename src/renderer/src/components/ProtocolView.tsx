@@ -91,6 +91,43 @@ export function ProtocolView() {
     );
   }
 
+  // 右栏内容:没选中时不渲染占位文案,整栏收起让列表占满(半屏下空栏太浪费)
+  const detail = adrView ? (
+    <article className="md max-w-[760px]">
+      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+        {adrView.markdown}
+      </Markdown>
+    </article>
+  ) : issueView ? (
+    !issueView.ok ? (
+      <IssuesError result={issueView} />
+    ) : (
+      <article className="max-w-[760px]">
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold">
+            <span className="font-mono text-muted-foreground">#{issueView.issue.number}</span> {issueView.issue.title}
+          </h2>
+          <RoleBadge role={issueView.issue.role} />
+          <span className="text-xs text-muted-foreground">{issueView.issue.state}</span>
+        </div>
+        <div className="md mt-3">
+          <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+            {issueView.issue.body || "_(无正文)_"}
+          </Markdown>
+        </div>
+        {issueView.issue.comments.map((c, idx) => (
+          <div key={idx} className="mt-4 rounded border border-border bg-card px-4 py-3">
+            <div className="mb-2 text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">{c.author}</span>
+              {" · "}{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}
+            </div>
+            <CommentBody body={c.body} />
+          </div>
+        ))}
+      </article>
+    )
+  ) : null;
+
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部:仓库路径 + 换目录/刷新/关闭 */}
@@ -113,8 +150,8 @@ export function ProtocolView() {
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        {/* 左列:ADR / Issues 列表(无 shadcn Tabs,两颗 Button 拼分段开关) */}
-        <div className="w-[300px] shrink-0 border-r border-border flex flex-col">
+        {/* 左列:ADR / Issues 列表(无 shadcn Tabs,两颗 Button 拼分段开关);没选详情时占满整宽 */}
+        <div className={detail ? "w-[300px] shrink-0 border-r border-border flex flex-col" : "flex-1 min-w-0 flex flex-col"}>
           <div className="flex gap-1 p-2">
             <Button variant={tab === "adr" ? "secondary" : "ghost"} size="sm" className="flex-1" onClick={() => setTab("adr")}>
               ADR
@@ -180,48 +217,8 @@ export function ProtocolView() {
           </div>
         </div>
 
-        {/* 右区:选中的 ADR 全文或 issue 详情 */}
-        <div className="flex-1 min-w-0 overflow-y-auto px-6 py-4">
-          {adrView ? (
-            <article className="md max-w-[760px]">
-              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {adrView.markdown}
-              </Markdown>
-            </article>
-          ) : issueView === null && tab === "issues" && issues?.ok ? (
-            <p className="text-sm text-muted-foreground">左边点一个 issue 看详情。</p>
-          ) : issueView ? (
-            !issueView.ok ? (
-              <IssuesError result={issueView} />
-            ) : (
-              <article className="max-w-[760px]">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold">
-                    <span className="font-mono text-muted-foreground">#{issueView.issue.number}</span> {issueView.issue.title}
-                  </h2>
-                  <RoleBadge role={issueView.issue.role} />
-                  <span className="text-xs text-muted-foreground">{issueView.issue.state}</span>
-                </div>
-                <div className="md mt-3">
-                  <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                    {issueView.issue.body || "_(无正文)_"}
-                  </Markdown>
-                </div>
-                {issueView.issue.comments.map((c, idx) => (
-                  <div key={idx} className="mt-4 rounded border border-border bg-card px-4 py-3">
-                    <div className="mb-2 text-xs text-muted-foreground">
-                      <span className="font-semibold text-foreground">{c.author}</span>
-                      {" · "}{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}
-                    </div>
-                    <CommentBody body={c.body} />
-                  </div>
-                ))}
-              </article>
-            )
-          ) : (
-            <p className="text-sm text-muted-foreground">左边选一篇 ADR 或一个 issue。</p>
-          )}
-        </div>
+        {/* 右区:选中的 ADR 全文或 issue 详情;没选中整栏不渲染 */}
+        {detail && <div className="flex-1 min-w-0 overflow-y-auto px-6 py-4">{detail}</div>}
       </div>
     </main>
   );
