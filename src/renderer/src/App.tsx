@@ -1665,7 +1665,15 @@ export function App() {
   );
 
   return (
-    <SidebarProvider>
+    // shadcn 默认 wrapper 只给 min-h-svh(下限,不设上限):内容一旦超一屏,
+    // 这个 div 会被撑到内容全高(auto height 服从 min-height 只兜底不封顶),
+    // 内部 flex-1/overflow-y-auto 的会话列表/时间线因此拿不到有界高度,
+    // scrollHeight == clientHeight,内部滚动条失效——超出部分被外层
+    // body{overflow:hidden}(app.css)硬裁掉。h-screen 补一个显式高度,
+    // 让这层重新成为有界 flex 容器（原 h-screen 链路的等价物）。
+    // min-h-svh 与 h-screen 分属不同 tailwind-merge 分组,不会互相 dedupe,
+    // 两条规则共存但不冲突(dev 环境下 svh≈vh,数值一致)
+    <SidebarProvider className="h-screen">
       <TooltipProvider delayDuration={400}>
         <AppSidebar />
         <SidebarInset>{main}</SidebarInset>
