@@ -22,6 +22,7 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
+import { FriendsSection } from "./components/FriendsSection.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { Button } from "@/components/ui/button.js";
@@ -1088,6 +1089,7 @@ function AppSidebar() {
               </>
             )}
           </SidebarMenu>
+          <FriendsSection />
         )}
       </SidebarContent>
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
