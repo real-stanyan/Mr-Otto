@@ -133,8 +133,11 @@ export function TerminalView() {
     const host = hostRef.current;
     if (!host || !activeId) return;
     const ro = new ResizeObserver(() => {
-      const slot = registry.get(activeId);
-      if (slot.exited) return; // 进程死了,尺寸对它没意义
+      // peek 不 get:activeId 可能是 closeTab 摘掉之后还残留在闭包里的旧值
+      // (下一次渲染才会把它换成 null/新 id)——用 get() 会把已经 dispose 掉的
+      // 槽位重新造一个出来,造出个没人挂载、也没人会去 dispose 的孤儿 Terminal
+      const slot = registry.peek(activeId);
+      if (!slot || slot.exited) return; // 实例没了,或进程死了,尺寸都没意义
       slot.fit.fit();
       void window.otter.terminalResize(activeId, slot.term.cols, slot.term.rows).catch(() => {
         /* 同上:关闭竞态,静默吞掉 */
