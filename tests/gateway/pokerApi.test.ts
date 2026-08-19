@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPokerApi, parseAction, toSeatRow, toTableInfo } from "../../services/gateway/src/pokerApi.js";
 import type { PokerStore } from "../../services/gateway/src/pokerStore.js";
 import type { Rest } from "../../services/gateway/src/supabaseRpc.js";
@@ -183,5 +183,22 @@ describe("SSE", () => {
     expect(view.seats.find((s) => s.userId === "b")!.hole).toHaveLength(2);
     expect(view.seats.find((s) => s.userId === "a")!.hole).toBeNull();
     await reader.cancel();
+  });
+
+  it("闲置时每 25s 发一行心跳注释,反代不会把静默流当死链掐掉", async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, tables } = harness();
+      await tables.startHand("t1");
+      const res = await api.handle("b", new Request("http://x/"), "t1/stream");
+      const reader = res.body!.getReader();
+      await reader.read(); // 初始视图
+      vi.advanceTimersByTime(25_000);
+      const hb = new TextDecoder().decode((await reader.read()).value);
+      expect(hb).toContain(": hb");
+      await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

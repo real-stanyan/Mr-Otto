@@ -10,6 +10,8 @@ import gsap from "gsap";
 import { useEffect, useRef, useState } from "react";
 import { RANKS, SUITS, rankOf, suitOf } from "../../../../services/gateway/src/poker/cards.js";
 import type { PokerHandView, PokerTableSummary } from "../../../shared/shellBridge.js";
+import { seatIdentity, seatPosition } from "../lib/pokerSeat.js";
+import { splitFlapFrame, splitFlapTotalTicks } from "../lib/splitFlap.js";
 import { useChat } from "../store.js";
 import ottoLogo from "../assets/otto.png";
 import { Button } from "./ui/button.js";
@@ -66,20 +68,97 @@ export function CardBack({ className = "" }: { className?: string }) {
   );
 }
 
+/**
+ * 牌面照真扑克画：白底、左上/右下对角角标（点数在上花色在下）、中央大花色。
+ * 字号全部用 cqw（相对卡片自身宽度），一份布局从 28px 的对手牌缩放到 64px
+ * 的手牌都不溢出 —— 之前居中一行 20px 文字塞 24px 宽的卡，两张牌叠成一团。
+ * 白底是刻意的：现实里扑克就是白的，深浅主题下都不跟着变。
+ */
 function CardFace({ card, className = "" }: { card: number; className?: string }) {
-  const label = `${RANKS[rankOf(card)]}${SUIT_GLYPH[suitOf(card)]}`;
+  const rank = RANKS[rankOf(card)];
+  const suit = SUIT_GLYPH[suitOf(card)];
+  const corner = (
+    <span className="flex flex-col items-center leading-none">
+      <span className="font-bold" style={{ fontSize: "30cqw" }}>{rank}</span>
+      <span style={{ fontSize: "24cqw" }}>{suit}</span>
+    </span>
+  );
   return (
     <div
-      className={`relative aspect-[5/7] rounded-[7px] border border-border bg-card shadow-sm flex items-center justify-center ${className}`}
+      className={`relative aspect-[5/7] select-none rounded-[7px] border border-black/20 bg-white shadow-sm ${className}`}
       aria-label={`${RANKS[rankOf(card)]} ${SUITS[suitOf(card)]}`}
+      style={{ color: isRed(card) ? "#d92d20" : "#1c1c1e", containerType: "inline-size" } as React.CSSProperties}
     >
+      <span className="absolute left-[7%] top-[6%]">{corner}</span>
+      <span className="absolute bottom-[6%] right-[7%] rotate-180">{corner}</span>
       <span
-        className={`font-semibold leading-none tabular-nums ${isRed(card) ? "text-[#e5484d]" : "text-foreground"}`}
-        style={{ fontSize: "min(3.2vw, 20px)" }}
+        className="absolute inset-0 flex items-center justify-center"
+        style={{ fontSize: "48cqw" }}
       >
-        {label}
+        {suit}
       </span>
     </div>
+  );
+}
+
+/** 公共牌还没翻到的位置：虚线空槽。画成牌背会被读成"有一张真牌扣着" */
+function CardSlot() {
+  return <div className="aspect-[5/7] rounded-[7px] border border-dashed border-border/60" aria-hidden />;
+}
+
+/**
+ * split-flap 数字（机场翻牌板）。底池变了,每一位滚过一串数字再落定,
+ * 从左到右一列列停 —— 钱的变化值得一个能看见的动作,但只在变化时动,
+ * 静止的板子完全安静。prefers-reduced-motion 下直接跳到目标值。
+ */
+function SplitFlapNumber({ text }: { text: string }) {
+  const [display, setDisplay] = useState(text);
+  const prev = useRef(text);
+
+  useEffect(() => {
+    if (text === prev.current) return;
+    const from = prev.current;
+    prev.current = text;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setDisplay(text);
+      return;
+    }
+    let tick = 0;
+    const total = splitFlapTotalTicks(text);
+    const id = setInterval(() => {
+      tick += 1;
+      setDisplay(splitFlapFrame(from, text, tick, "0123456789,"));
+      if (tick >= total) clearInterval(id);
+    }, 45);
+    return () => {
+      clearInterval(id);
+      setDisplay(text);
+    };
+  }, [text]);
+
+  return (
+    <span className="inline-flex gap-[2px]" aria-label={text}>
+      {display.split("").map((ch, i) => (
+        <span
+          key={i}
+          className="relative inline-flex h-[1.55em] min-w-[1.05em] items-center justify-center overflow-hidden rounded-[3px] border border-border/70 bg-card font-semibold tabular-nums shadow-sm after:absolute after:inset-x-0 after:top-1/2 after:h-px after:bg-foreground/15"
+        >
+          {ch}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** 座位头像。没有图就用名字首字的圆片,别让 img 的裂图标出来 */
+function SeatAvatar({ name, url }: { name: string; url: string }) {
+  if (url) {
+    return <img src={url} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" draggable={false} />;
+  }
+  return (
+    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
+      {(name || "?").slice(0, 1).toUpperCase()}
+    </span>
   );
 }
 
@@ -215,34 +294,42 @@ function Table({ hand }: { hand: PokerHandView }) {
   const root = useDealMotion(hand);
   const leave = useChat((s) => s.leavePokerTable);
   const start = useChat((s) => s.startPokerHand);
+  const friends = useChat((s) => s.friendsSnapshot.friends);
+  const account = useChat((s) => s.account);
   const n = hand.seats.length;
+  const meIndex = hand.seats.findIndex((s) => s.isMe);
 
   return (
     <div ref={root} className="flex h-full flex-col items-center justify-center gap-4 px-5 py-4">
-      <div className="relative aspect-[16/10] w-full max-w-[760px] rounded-[999px/40%] border border-border/60 bg-[radial-gradient(120%_100%_at_50%_0%,color-mix(in_srgb,var(--brand)_14%,var(--card)),var(--card))] shadow-inner">
+      {/* 外层是定位场,呢子桌面往里缩:座位块骑在桌沿上,谁都不会被容器裁掉 */}
+      <div className="relative aspect-[16/10] w-full max-w-[860px]">
+        <div className="absolute inset-x-[9%] inset-y-[13%] rounded-[999px/50%] border border-border/60 bg-[radial-gradient(120%_100%_at_50%_0%,color-mix(in_srgb,var(--brand)_14%,var(--card)),var(--card))] shadow-inner" />
+
         {hand.seats.map((seat, i) => {
-          const angle = (i / n) * Math.PI * 2 + Math.PI / 2;
-          const left = 50 + Math.cos(angle) * 42;
-          const top = 50 + Math.sin(angle) * 40;
+          const { left, top } = seatPosition(i, meIndex, n);
+          const who = seatIdentity(seat, friends, account.name, account.avatarUrl);
           const acting = hand.toAct === seat.userId;
           return (
             <div
               key={seat.userId}
-              className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 rounded-lg border px-2 py-1 transition-colors duration-150 ${
-                acting ? "border-primary bg-primary/[0.08]" : "border-border/70 bg-card/70"
+              className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 rounded-lg border px-2 py-1.5 transition-colors duration-150 ${
+                acting ? "border-primary bg-primary/[0.08]" : "border-border/70 bg-card/85"
               } ${seat.folded ? "opacity-45" : ""}`}
               style={{ left: `${left}%`, top: `${top}%` }}
             >
-              <div className="flex items-center gap-1 text-[11px]">
-                <span className="max-w-[90px] truncate">{seat.isMe ? "你" : seat.userId.slice(0, 6)}</span>
-                {i === hand.button && <span className="rounded-full border border-border px-1">D</span>}
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <SeatAvatar name={who.name} url={who.avatarUrl} />
+                <span className="max-w-[96px] truncate font-medium">{seat.isMe ? "你" : who.name}</span>
+                {i === hand.button && (
+                  <span className="rounded-full border border-border px-1 text-[10px] text-muted-foreground">D</span>
+                )}
               </div>
-              <div className="flex gap-[3px]">
+              <div className="flex gap-1">
                 {(seat.hole ?? [null, null]).map((c, k) =>
                   c === null ? (
-                    <CardBack key={k} data-hole="" className="w-6" />
+                    <CardBack key={k} data-hole="" className={seat.isMe ? "w-10" : "w-7"} />
                   ) : (
-                    <span key={k} data-hole="" className="block w-6">
+                    <span key={k} data-hole="" className={`block ${seat.isMe ? "w-10" : "w-7"}`}>
                       <CardFace card={c} />
                     </span>
                   )
@@ -263,12 +350,14 @@ function Table({ hand }: { hand: PokerHandView }) {
               const card = hand.board[i];
               return (
                 <span key={i} data-board="" className="block w-[52px]">
-                  {card === undefined ? <CardBack /> : <CardFace card={card} />}
+                  {card === undefined ? <CardSlot /> : <CardFace card={card} />}
                 </span>
               );
             })}
           </div>
-          <div className="text-xs tabular-nums text-muted-foreground">底池 {fmt(hand.pot)}</div>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            底池 <SplitFlapNumber text={fmt(hand.pot)} />
+          </div>
         </div>
       </div>
 
@@ -409,10 +498,14 @@ export function PokerTable() {
   const error = useChat((s) => s.pokerError);
   const account = useChat((s) => s.account);
   const refresh = useChat((s) => s.refreshPokerTables);
+  const refreshFriends = useChat((s) => s.refreshFriends);
 
   useEffect(() => {
-    if (account.signedIn) void refresh();
-  }, [account.signedIn, refresh]);
+    if (!account.signedIn) return;
+    void refresh();
+    // 座位显示真名+头像靠好友快照;不刷一把,先开牌桌再开好友页的人只能看到 ID
+    void refreshFriends();
+  }, [account.signedIn, refresh, refreshFriends]);
 
   if (!account.signedIn) {
     return (
