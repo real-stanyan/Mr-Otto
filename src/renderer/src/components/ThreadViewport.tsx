@@ -42,7 +42,9 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
       setMissed(true); // 你没在看,但下面确实多了东西
     }
     // stuck 刻意不进依赖:它一变就滚会把"用户刚滚上去"这个动作又拽回来。
-    // 这个 effect 只对"内容变了"负责
+    // 这个 effect 只对"内容变了"负责,不对"换会话了"负责——
+    // 跨会话的状态重置(stuck 归 true、missed 归 false)靠调用方给这个组件加 key(如 key={sessionId})
+    // 让它随会话切换重挂,不是这个 effect 自己去猜"这次变化是不是因为换会话了"。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
@@ -63,6 +65,9 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
           variant="outline"
           size="sm"
           onClick={jump}
+          // 状态放按钮自己的 aria-label:裸 <span aria-label> 映射到 generic 角色,
+          // 多数屏幕阅读器不念它的可访问名,等于"有新内容"这件事对屏幕阅读器用户不存在
+          aria-label={missed ? "回到最新(有新内容)" : "回到最新"}
           // buttonVariants 基类自带 transition-[...,transform,opacity] duration-150,
           // 这里再写一遍会被 cn() 判成同组、整组覆盖掉——按压 scale/hover 变色的过渡就丢了。
           // 只补进场需要的 starting:* 就够
@@ -70,7 +75,7 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
         >
           <ArrowDown className="size-3.5" />
           回到最新
-          {missed && <span className="size-1.5 rounded-full bg-brand" aria-label="有新内容" />}
+          {missed && <span aria-hidden className="size-1.5 rounded-full bg-brand" />}
         </Button>
       )}
     </div>

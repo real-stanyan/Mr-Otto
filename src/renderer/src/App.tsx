@@ -2030,6 +2030,7 @@ export function App() {
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
           <ThreadViewport
+            key={sessionId}
             deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
           >
             {items.map((item) =>
