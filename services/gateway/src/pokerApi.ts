@@ -207,12 +207,16 @@ export function createPokerApi(deps: PokerApiDeps) {
         entry = { userId, send };
         subs.set(tableId, [...(subs.get(tableId) ?? []), entry]);
         send(tables.view(tableId, userId));
+        // 有人上桌页 = 在场人数变了。推一把,别的订阅者立刻知道,不用等轮询
+        push(tableId);
       },
       cancel() {
         if (heartbeat) clearInterval(heartbeat);
         const list = (subs.get(tableId) ?? []).filter((s) => s !== entry);
         if (list.length) subs.set(tableId, list);
         else subs.delete(tableId);
+        // 有人关掉桌页,同理
+        push(tableId);
       },
     });
     return new Response(body, {
