@@ -1,7 +1,7 @@
 // 聊天主界面 — 功能优先（视觉设计等 harness 完工后再做）。
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,6 +20,7 @@ import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, parseTodoArgs, TODO_TOOL_NAME } from "../../session/deriveTodos.js";
+import { deriveSections } from "../../session/deriveSections.js";
 import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../../tools/askUser.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
@@ -40,6 +41,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { SectionRail } from "./components/SectionRail.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
@@ -2159,6 +2161,47 @@ export function App() {
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
+  // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
+  const sections = useMemo(() => deriveSections(events), [events]);
+  const [activeSection, setActiveSection] = useState<number | null>(null);
+  const scrollRef = useRef<HTMLElement>(null);
+
+  // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
+  // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
+  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || sections.length === 0) return;
+    const anchors = Array.from(root.querySelectorAll<HTMLElement>("[data-section]"));
+    if (anchors.length === 0) return;
+
+    const recompute = () => {
+      // 判定线：容器顶部往下 15% —— 用户读的是屏幕上方那段，不是正中间
+      const line = root.getBoundingClientRect().top + root.clientHeight * 0.15;
+      let active: number | null = null;
+      for (const a of anchors) {
+        if (a.getBoundingClientRect().top <= line) {
+          active = Number(a.dataset["section"]);
+        }
+      }
+      setActiveSection(active);
+    };
+
+    const io = new IntersectionObserver(recompute, { root, threshold: 0 });
+    anchors.forEach((a) => io.observe(a));
+    recompute();
+    return () => io.disconnect();
+  }, [sections]);
+
+  const jumpToSection = useCallback((index: number) => {
+    const root = scrollRef.current;
+    const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
+    anchor?.scrollIntoView({
+      block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -2315,44 +2358,67 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
-              不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
-          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
-            {events.map((e) => (
-              <EventRow key={e.seq} event={e} all={events} />
-            ))}
-            {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
-            {streamingThinking && (
-              // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
-              // open 受控写死：流式中就是要摊开，用户要折等它完事。
-              // streaming 类挂光标(app.css);直播思考限高滚动,别把时间线顶飞
-              <details className={`${THINKING_DETAILS} streaming`} open>
-                <summary className={THINKING_SUMMARY}>思考中</summary>
-                <div className={`${THINKING_BODY} max-h-[180px] overflow-y-auto`}>{streamingThinking}</div>
-              </details>
+          {/* 消息区 + 目录轨并排。min-h-0 是必须的：不给的话 flex 子项按内容撑高，
+              overflow-y-auto 永远出不来滚动条 */}
+          <div className="flex-1 min-h-0 flex">
+            {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
+                不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
+            <section ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
+              {events.map((e) => {
+                const sectionIndex = sections.findIndex((s) => s.startSeq === e.seq);
+                return (
+                  <Fragment key={e.seq}>
+                    {/* 分区锚点：零高度、不参与布局，只给跳转和 scrollspy 一个可测量的位置。
+                        不给每条消息挂 data-seq —— EventRow 有的分支返回 Fragment，
+                        外面再包一层 div 会把 self-end 之类的对齐全弄坏 */}
+                    {sectionIndex !== -1 && (
+                      <div data-section={sectionIndex} aria-hidden className="h-0 scroll-mt-4" />
+                    )}
+                    <EventRow event={e} all={events} />
+                  </Fragment>
+                );
+              })}
+              {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
+              {streamingThinking && (
+                // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
+                // open 受控写死：流式中就是要摊开，用户要折等它完事。
+                // streaming 类挂光标(app.css);直播思考限高滚动,别把时间线顶飞
+                <details className={`${THINKING_DETAILS} streaming`} open>
+                  <summary className={THINKING_SUMMARY}>思考中</summary>
+                  <div className={`${THINKING_BODY} max-h-[180px] overflow-y-auto`}>{streamingThinking}</div>
+                </details>
+              )}
+              {streamingText && (
+                <div className="md streaming self-stretch max-w-full py-[2px]">
+                  {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
+                      完整事件到达后重渲一次自然纠正 */}
+                  <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                    {streamingText}
+                  </Markdown>
+                </div>
+              )}
+              {(status === "running" || approval !== null) && (
+                <Marker role="status" className="py-[2px] text-[13px]">
+                  <MarkerIcon className="size-5">
+                    <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
+                  </MarkerIcon>
+                  <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
+                  <span className="ml-auto shrink-0 text-xs">
+                    <TurnMeta events={events} />
+                  </span>
+                </Marker>
+              )}
+              <div ref={bottomRef} />
+            </section>
+            {/* 只有一个分区时目录没有意义，把宽度还给对话 */}
+            {sections.length >= 2 && (
+              <SectionRail
+                items={sections.map((s) => s.title)}
+                activeIndex={activeSection}
+                onJump={jumpToSection}
+              />
             )}
-            {streamingText && (
-              <div className="md streaming self-stretch max-w-full py-[2px]">
-                {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
-                    完整事件到达后重渲一次自然纠正 */}
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                  {streamingText}
-                </Markdown>
-              </div>
-            )}
-            {(status === "running" || approval !== null) && (
-              <Marker role="status" className="py-[2px] text-[13px]">
-                <MarkerIcon className="size-5">
-                  <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
-                </MarkerIcon>
-                <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
-                <span className="ml-auto shrink-0 text-xs">
-                  <TurnMeta events={events} />
-                </span>
-              </Marker>
-            )}
-            <div ref={bottomRef} />
-          </section>
+          </div>
 
           <ApprovalCard />
           <QuestionnaireCard />
