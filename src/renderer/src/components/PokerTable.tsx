@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { RANKS, SUITS, rankOf, suitOf } from "../../../../services/gateway/src/poker/cards.js";
 import type { PokerHandView, PokerTableSummary } from "../../../shared/shellBridge.js";
 import { seatIdentity, seatPosition } from "../lib/pokerSeat.js";
+import { splitFlapFrame, splitFlapTotalTicks } from "../lib/splitFlap.js";
 import { useChat } from "../store.js";
 import ottoLogo from "../assets/otto.png";
 import { Button } from "./ui/button.js";
@@ -103,6 +104,50 @@ function CardFace({ card, className = "" }: { card: number; className?: string }
 /** 公共牌还没翻到的位置：虚线空槽。画成牌背会被读成"有一张真牌扣着" */
 function CardSlot() {
   return <div className="aspect-[5/7] rounded-[7px] border border-dashed border-border/60" aria-hidden />;
+}
+
+/**
+ * split-flap 数字（机场翻牌板）。底池变了,每一位滚过一串数字再落定,
+ * 从左到右一列列停 —— 钱的变化值得一个能看见的动作,但只在变化时动,
+ * 静止的板子完全安静。prefers-reduced-motion 下直接跳到目标值。
+ */
+function SplitFlapNumber({ text }: { text: string }) {
+  const [display, setDisplay] = useState(text);
+  const prev = useRef(text);
+
+  useEffect(() => {
+    if (text === prev.current) return;
+    const from = prev.current;
+    prev.current = text;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setDisplay(text);
+      return;
+    }
+    let tick = 0;
+    const total = splitFlapTotalTicks(text);
+    const id = setInterval(() => {
+      tick += 1;
+      setDisplay(splitFlapFrame(from, text, tick, "0123456789,"));
+      if (tick >= total) clearInterval(id);
+    }, 45);
+    return () => {
+      clearInterval(id);
+      setDisplay(text);
+    };
+  }, [text]);
+
+  return (
+    <span className="inline-flex gap-[2px]" aria-label={text}>
+      {display.split("").map((ch, i) => (
+        <span
+          key={i}
+          className="relative inline-flex h-[1.55em] min-w-[1.05em] items-center justify-center overflow-hidden rounded-[3px] border border-border/70 bg-card font-semibold tabular-nums shadow-sm after:absolute after:inset-x-0 after:top-1/2 after:h-px after:bg-foreground/15"
+        >
+          {ch}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /** 座位头像。没有图就用名字首字的圆片,别让 img 的裂图标出来 */
@@ -310,7 +355,9 @@ function Table({ hand }: { hand: PokerHandView }) {
               );
             })}
           </div>
-          <div className="text-xs tabular-nums text-muted-foreground">底池 {fmt(hand.pot)}</div>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            底池 <SplitFlapNumber text={fmt(hand.pot)} />
+          </div>
         </div>
       </div>
 
