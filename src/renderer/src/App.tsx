@@ -1,13 +1,13 @@
 // 聊天主界面 — 功能优先（视觉设计等 harness 完工后再做）。
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,12 +20,14 @@ import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
+import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
+import { BrowserPanel } from "./components/BrowserPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
@@ -39,6 +41,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { SectionRail } from "./components/SectionRail.js";
 import { RetryButton } from "./components/RetryButton.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
@@ -107,11 +110,17 @@ import { buildToolIndex } from "./lib/toolIndex.js";
 import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
 import { type OrbState } from "./lib/toolSummary.js";
 
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
+/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
+    section_classified 也算：分区分类是真花钱的模型调用，漏掉这一行统计就说谎 */
 function totalTokens(events: SessionEvent[]): number {
   let sum = 0;
   for (const e of events) {
-    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
+    if (
+      (e.type === "assistant_message" ||
+        e.type === "context_compacted" ||
+        e.type === "section_classified") &&
+      e.usage
+    ) {
       sum += e.usage.promptTokens + e.usage.completionTokens;
     }
   }
@@ -1213,6 +1222,7 @@ function AppSidebar() {
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
+  const browserPanelOpen = useChat((s) => s.browserPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1363,7 +1373,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-col items-start gap-px py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
@@ -1888,6 +1898,8 @@ export function App() {
   const openGitGraph = useChat((s) => s.openGitGraph);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
+  const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
@@ -1896,6 +1908,47 @@ export function App() {
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
+  // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
+  const sections = useMemo(() => deriveSections(events), [events]);
+  const [activeSection, setActiveSection] = useState<number | null>(null);
+  const scrollRef = useRef<HTMLElement>(null);
+
+  // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
+  // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
+  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || sections.length === 0) return;
+    const anchors = Array.from(root.querySelectorAll<HTMLElement>("[data-section]"));
+    if (anchors.length === 0) return;
+
+    const recompute = () => {
+      // 判定线：容器顶部往下 15% —— 用户读的是屏幕上方那段，不是正中间
+      const line = root.getBoundingClientRect().top + root.clientHeight * 0.15;
+      let active: number | null = null;
+      for (const a of anchors) {
+        if (a.getBoundingClientRect().top <= line) {
+          active = Number(a.dataset["section"]);
+        }
+      }
+      setActiveSection(active);
+    };
+
+    const io = new IntersectionObserver(recompute, { root, threshold: 0 });
+    anchors.forEach((a) => io.observe(a));
+    recompute();
+    return () => io.disconnect();
+  }, [sections]);
+
+  const jumpToSection = useCallback((index: number) => {
+    const root = scrollRef.current;
+    const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
+    anchor?.scrollIntoView({
+      block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replaying = replayCursor !== null;
@@ -1904,6 +1957,25 @@ export function App() {
   // 工具索引同理:建一次往下传引用,工具行/工具组就不用各自全量扫事件了。
   // 引用稳定还给下面的 memo 供了料——流式输出时它们才真的能跳过重渲染(#115)
   const toolIndex = useMemo(() => buildToolIndex(events), [events]);
+  // 分区锚点该插在哪个渲染项前面:渲染项键 → 该项之前要插的分区序号。
+  // 不是"seq 等于 startSeq 的那条事件"——分组投影会吃掉一部分事件
+  // (tool_result、纯工具调用的 assistant_message…),严格相等会让锚点凭空消失、
+  // 那条目录点了不动。改成"第一个位置 >= startSeq 的渲染项",两侧都按 seq 单调,
+  // 一趟扫完。同一项上可能落多个分区(中间那段全被吃掉了),所以值是数组
+  const sectionAnchors = useMemo(() => {
+    const map = new Map<number | string, number[]>();
+    let si = 0;
+    for (const item of items) {
+      const seq = item.kind === "event" ? item.key : item.seq;
+      while (si < sections.length && sections[si]!.startSeq <= seq) {
+        const at = map.get(item.key);
+        if (at) at.push(si);
+        else map.set(item.key, [si]);
+        si++;
+      }
+    }
+    return map;
+  }, [items, sections]);
   // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
   const turnPhase = agentPhase({
     status,
@@ -2010,6 +2082,7 @@ export function App() {
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView />
+    : browserPanelOpen ? <BrowserPanel />
     : terminalPanelOpen ? <TerminalView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
@@ -2074,6 +2147,9 @@ export function App() {
             <DropdownMenuItem onClick={() => openTerminalPanel()}>
               <TerminalIcon /> 终端
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openBrowserPanel()}>
+              <Globe /> 浏览器
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </header>
@@ -2091,18 +2167,40 @@ export function App() {
         <>
           <ThreadViewport
             key={sessionId}
+            // 分区轨要量的是滚动容器本身（scrollspy 的判定线、跳转的 scroll-mt 都以它为准），
+            // 而滚动元素归 ThreadViewport 所有——把它借出来，别在外面再套一层滚动区
+            viewportRef={scrollRef}
             deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
+            // 只有一个分区时目录没有意义（一条目录 = 噪音），不渲染。
+            // 轨是绝对定位的浮层，出现和消失都不动布局，不需要占位符防重排
+            overlay={
+              sections.length >= 2 ? (
+                <SectionRail
+                  items={sections.map((s) => ({ title: s.title, preview: s.preview }))}
+                  activeIndex={activeSection}
+                  onJump={jumpToSection}
+                />
+              ) : null
+            }
           >
-            {items.map((item) =>
-              item.kind === "event" ? (
-                <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
-              ) : item.calls.length === 1 ? (
-                // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
-                <ToolRow key={item.key} call={item.calls[0]!} index={toolIndex} />
-              ) : (
-                <ToolGroup key={item.key} calls={item.calls} index={toolIndex} />
-              )
-            )}
+            {items.map((item) => (
+              <Fragment key={item.key}>
+                {/* 分区锚点：零高度、不参与布局，只给跳转和 scrollspy 一个可测量的位置。
+                    不给每条消息挂 data-seq —— EventRow 有的分支返回 Fragment，
+                    外面再包一层 div 会把 self-end 之类的对齐全弄坏 */}
+                {sectionAnchors.get(item.key)?.map((si) => (
+                  <div key={si} data-section={si} aria-hidden className="h-0 scroll-mt-4" />
+                ))}
+                {item.kind === "event" ? (
+                  <EventRow event={item.event} isLast={item.key === items.at(-1)?.key} />
+                ) : item.calls.length === 1 ? (
+                  // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
+                  <ToolRow call={item.calls[0]!} index={toolIndex} />
+                ) : (
+                  <ToolGroup calls={item.calls} index={toolIndex} />
+                )}
+              </Fragment>
+            ))}
             {error && (
               <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
                 <span>[turn 失败] {error}</span>

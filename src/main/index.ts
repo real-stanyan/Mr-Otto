@@ -12,15 +12,19 @@ import {
   type OutgoingAttachment,
   type PokerAction,
   type PokerTableInput,
+  type BrowserBounds,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
+import { createBrowserHub } from "./browserHub.js";
+import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
+import { classifySection } from "./sectionClassifier.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
@@ -250,6 +254,49 @@ void app.whenReady().then(() => {
   const runningSessions = new Set<string>();
   let currentSessionId: string | null = null;
 
+  // 分区分类的按会话串行队列。分类跑在 turn 锁之外（见 sendMessage 末尾），
+  // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
+  // section_classified，于是两个标题描述同一段、startSeq 却各开一处。
+  // 链起来 = 同一会话永远只有一个分类在跑；跨度锚点本来就是自愈的
+  // （最后一条分类事件之后的全部事件），后来的那次只是看到更宽的一段。
+  // 代价：分类在飞的时候下一个 turn 可以开跑，分类#N+1 看到的跨度被分类#N 的事件
+  // 切割得只剩 turn N+1 本身那几条、汇总后是空。分类不落事件，turn N+1 根本没被
+  // 分类；若它开了新话题，章节标题要等 turn N+2 才出现，而且锚点是 N+2 不是 N+1——
+  // 导航跳过去会落在话题开始之后。下一个 turn 的分类自动补上漏掉的那段（自愈）。
+  // 这点代价换来的是输入框不被锁住，值。
+  const sectionQueues = new Map<string, Promise<void>>();
+
+  const classifyAndAppend = async (sessionId: string): Promise<void> => {
+    const section = await classifySection(store.load(sessionId));
+    if (!section) return;
+    // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
+    // 往 purge 过的 sessionId 上 append 会凭空造出一条没有 session_created 的
+    // 幽灵会话，而删除按 ADR-0002 是不可逆的物理抹除。agents 只在 purge 时删条目，
+    // 所以它在不在就是会话还活不活着
+    if (!agents.has(sessionId)) return;
+    const sectionEvent = store.append({
+      sessionId, ts: Date.now(), type: "section_classified",
+      title: section.title, model: section.model,
+      ...(section.usage ? { usage: section.usage } : {}),
+    });
+    send(CHANNELS.event, sectionEvent);
+  };
+
+  const enqueueSectionClassify = (sessionId: string): void => {
+    const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
+    // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
+    // 一环炸了不能毒死后面的环，也不能变成 unhandledRejection 把主进程带走
+    const next = prev
+      .then(() => classifyAndAppend(sessionId))
+      .catch((err) => console.error("分区分类失败", err));
+    sectionQueues.set(sessionId, next);
+    // 排空即删，别让 Map 随会话数无限长。只有自己仍是队尾才删——
+    // 期间又排进来一个的话队尾已经换人，删了会让它从空链起跑（等于解掉串行）
+    void next.then(() => {
+      if (sectionQueues.get(sessionId) === next) sectionQueues.delete(sessionId);
+    });
+  };
+
   // 终端注册表:app 级资源。openTerminal 走该会话 agent 的 ExecutionWorld,
   // 不是这里另起一个 LocalWorld——否则 v2 SandboxWorld 接进来之后,agent 明明
   // 看得见容器里的文件系统,用户终端却还开在宿主机上,ADR-0031 §1 挡的就是这个
@@ -267,6 +314,19 @@ void app.whenReady().then(() => {
       data: (id, data) => send(CHANNELS.terminalData, { id, data }),
       exit: (id, exitCode) => send(CHANNELS.terminalExit, { id, exitCode }),
     },
+  });
+
+  // 浏览器注册表:app 级资源,一个会话一个。
+  // 与终端的接线方向相反——终端是 hub 去调 agent.world.openTerminal(pty 是
+  // LocalWorld 自己能干的活),浏览器是 hub 造好能力反过来注入进 world:
+  // WebContentsView 只有主进程 + 窗口造得出来,LocalWorld 是纯 Node 模块,造不出来。
+  // seam 仍然成立:工具只认 world.browser,不知道 hub 的存在(ADR-0035)。
+  const browsers = createBrowserHub({
+    createView: () => {
+      if (!mainWindow) throw new Error("窗口还没建好，开不了浏览器");
+      return createWebContentsViewHandle(mainWindow, "persist:otto-browser");
+    },
+    push: { state: (info) => send(CHANNELS.browserState, info) },
   });
 
   const bootInfo = (): BootInfo | null => {
@@ -328,6 +388,7 @@ void app.whenReady().then(() => {
       push,
       attachments: attachmentStore,
       getAccessToken,
+      makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
     });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -361,6 +422,7 @@ void app.whenReady().then(() => {
           resumeSessionId: sessionId,
           attachments: attachmentStore,
           getAccessToken,
+          makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
         })
       );
     }
@@ -412,6 +474,19 @@ void app.whenReady().then(() => {
     terminals.resize(id, cols, rows)
   );
   ipcMain.handle(CHANNELS.terminalClose, (_e, id: string) => terminals.close(id));
+
+  // ── 浏览器 ──────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.browserOpen, (_e, sessionId: string) => browsers.open(sessionId));
+  ipcMain.handle(CHANNELS.browserNavigate, (_e, sessionId: string, url: string) =>
+    browsers.navigate(sessionId, url)
+  );
+  ipcMain.handle(CHANNELS.browserSetBounds, (_e, sessionId: string, bounds: BrowserBounds | null) =>
+    browsers.setBounds(sessionId, bounds)
+  );
+  ipcMain.handle(CHANNELS.browserBack, (_e, sessionId: string) => browsers.back(sessionId));
+  ipcMain.handle(CHANNELS.browserForward, (_e, sessionId: string) => browsers.forward(sessionId));
+  ipcMain.handle(CHANNELS.browserReload, (_e, sessionId: string) => browsers.reload(sessionId));
+  ipcMain.handle(CHANNELS.browserClose, (_e, sessionId: string) => browsers.close(sessionId));
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
@@ -537,6 +612,7 @@ void app.whenReady().then(() => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
     terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
+    browsers.close(sessionId); // 会话没了,它的浏览器也该没
     store.purge(sessionId);
     agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
@@ -651,6 +727,19 @@ void app.whenReady().then(() => {
         runningSessions.delete(sessionId);
         send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       }
+      // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
+      // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
+      // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）。
+      // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
+      // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
+      // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
+      let aborted = false;
+      for (const e of store.load(sessionId).slice().reverse()) {
+        if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
+      }
+      // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
+      // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
+      if (!aborted) enqueueSectionClassify(sessionId);
     }
   );
 
@@ -718,6 +807,7 @@ void app.whenReady().then(() => {
 
   app.on("before-quit", () => {
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
+    browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
     store.close();
   });
 });

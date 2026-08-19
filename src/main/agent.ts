@@ -29,6 +29,8 @@ import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
+import { browserReadTool } from "../tools/browserRead.js";
+import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
 import { UIApprover, createModeAwareApprover, type ApprovalMode } from "./uiApprover.js";
 import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
@@ -87,12 +89,18 @@ export function createAgent(opts: {
   /** Supabase access token 取用器(index.ts 注入 AccountManager.getAccessToken)。
       不给 = 这个装配里没有登录态,只能走自带 key 那条路(测试和裸装配照旧) */
   getAccessToken?: () => Promise<string | null>;
+  /** 浏览器能力工厂(index.ts 注入,按 sessionId 绑到 browserHub)。
+      不给 = 这个装配没有浏览器,browser_read 会明确报错(测试和裸装配照旧) */
+  makeBrowser?: (sessionId: string) => BrowserCapability;
 }) {
   const { store } = opts;
 
   const sessionId = opts.resumeSessionId ?? newSessionId();
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）
-  const world = createLocalWorld({ root: opts.workspace });
+  const base = createLocalWorld({ root: opts.workspace });
+  // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
+  // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
+  const world = opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
     // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
@@ -215,6 +223,11 @@ export function createAgent(opts: {
     bashTool,
     createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+    // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
+    // 会对模型宣称有这把工具,模型试一次、吃一个"这个世界没有内置浏览器",
+    // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
+    // 报一把用不了的工具连账也是错的
+    ...(world.browser ? [browserReadTool] : []),
   ];
 
   const engine = new LoopEngine({

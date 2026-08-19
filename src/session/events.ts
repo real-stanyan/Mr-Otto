@@ -183,6 +183,20 @@ export interface ImageDescribedEvent extends SessionEventBase {
   model: string;                 // 解析出自哪个视觉模型(溯源)
 }
 
+/** 额外 10：分区分类（会话目录）。每个 turn 收口后跑一次便宜模型：这一段是延续
+    当前分区，还是开了新分区。标题出自模型、日志里任何事件都推不出 → 必须落盘；
+    但它是给人看的目录，不喂回模型 → 投影必须丢弃（同 reasoning：logged ≠ model-visible）。
+    title 非空 = 从本条 seq 起进入新分区；null = 延续上一分区。
+    延续那次也落一条（而不是只在开新区时落）：每次模型调用的 usage 都要有账，
+    否则 token 统计从此少算一截（见 TokenUsage：消耗统计必须可从日志求和推导）。 */
+export interface SectionClassifiedEvent extends SessionEventBase {
+  type: "section_classified";
+  /** 非空 = 新分区标题；null = 延续上一分区 */
+  title: string | null;
+  model: string;                 // 分类出自哪个模型（溯源）
+  usage?: TokenUsage;            // 本次分类烧的 token
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -198,4 +212,5 @@ export type SessionEvent =
   | ToolExecutionStartedEvent
   | TurnEndedEvent
   | SkillInvokedEvent
-  | ImageDescribedEvent;
+  | ImageDescribedEvent
+  | SectionClassifiedEvent;
