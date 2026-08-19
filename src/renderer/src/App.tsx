@@ -1,7 +1,7 @@
 // 聊天主界面 — 功能优先（视觉设计等 harness 完工后再做）。
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -2193,6 +2193,44 @@ export function App() {
     return () => io.disconnect();
   }, [sections]);
 
+  // 竖轨刻度的纵向位置 = 该分区起点在可滚动内容里的真实比例。
+  // 按下标等分是在宣称一个不存在的关系（分区长短差好几倍）——控件的形状要映射它控制的东西。
+  // 用 rect + scrollTop 而不是 offsetTop：锚点的 offsetParent 是谁不归这里管，
+  // 中间随便插一层 position:relative 就会算歪
+  // useLayoutEffect：量完要在同一次绘制前落到 state。用 useEffect 的话，
+  // 轨挂上去的那一帧所有刻度都堆在顶端，下一帧才跳到位——一次白给的抖动
+  const [sectionOffsets, setSectionOffsets] = useState<number[]>([]);
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (!root || sections.length === 0) {
+      setSectionOffsets((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const measure = () => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const rootTop = el.getBoundingClientRect().top;
+      const total = el.scrollHeight;
+      const next = sections.map((_, i) => {
+        const a = el.querySelector<HTMLElement>(`[data-section="${i}"]`);
+        if (!a || total <= 0) return 0;
+        const top = a.getBoundingClientRect().top - rootTop + el.scrollTop;
+        return Math.min(1, Math.max(0, top / total));
+      });
+      // 同值不 setState：ResizeObserver 会因为自己触发的重排再叫一遍，不挡住就是循环
+      setSectionOffsets((prev) =>
+        prev.length === next.length && prev.every((v, i) => Math.abs(v - (next[i] ?? 0)) < 0.001)
+          ? prev
+          : next
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(root);
+    return () => ro.disconnect();
+    // events.length：内容长高了（新消息落盘）比例就变了，容器尺寸却没动，RO 叫不醒
+  }, [sections, events.length]);
+
   const jumpToSection = useCallback((index: number) => {
     const root = scrollRef.current;
     const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
@@ -2358,12 +2396,13 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          {/* 消息区 + 目录轨并排。min-h-0 是必须的：不给的话 flex 子项按内容撑高，
-              overflow-y-auto 永远出不来滚动条 */}
-          <div className="flex-1 min-h-0 flex">
+          {/* 消息区满宽，目录轨浮在它右缘之上（absolute，零布局宽度）。
+              这层 relative 只为给轨一个定位参照：轨在滚动元素外面，才不会跟着内容滚走。
+              min-h-0 是必须的：不给的话 flex 子项按内容撑高，overflow-y-auto 永远出不来滚动条 */}
+          <div className="flex-1 min-h-0 relative">
             {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
                 不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
-            <section ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
+            <section ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
               {events.map((e) => {
                 const sectionIndex = sections.findIndex((s) => s.startSeq === e.seq);
                 return (
@@ -2410,19 +2449,18 @@ export function App() {
               )}
               <div ref={bottomRef} />
             </section>
-            {/* 只有一个分区时目录没有意义（一条目录 = 噪音），标题不渲染；
-                但第一个分区一出现就先把这条竖槽占住——否则第二个分区诞生的那一刻
-                竖轨凭空插进来，消息栏当场少 184px、用户正在读的整段重排。
-                那正是 SectionRail 把轨宽写死要防的同一件事，只是换了个触发源 */}
-            {sections.length >= 2 ? (
+            {/* 只有一个分区时目录没有意义（一条目录 = 噪音），不渲染。
+                旧版要在这里占一条 184px 的空槽防重排，现在轨是绝对定位的浮层，
+                出现和消失都不动布局，占位符也就跟着没了 */}
+            {sections.length >= 2 && (
               <SectionRail
                 items={sections.map((s) => s.title)}
+                offsets={sectionOffsets}
                 activeIndex={activeSection}
                 onJump={jumpToSection}
+                scrollRef={scrollRef}
               />
-            ) : sections.length === 1 ? (
-              <div aria-hidden className="hidden lg:block shrink-0 w-[184px]" />
-            ) : null}
+            )}
           </div>
 
           <ApprovalCard />

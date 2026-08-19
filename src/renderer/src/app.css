@@ -785,3 +785,143 @@
     opacity: 0;
   }
 }
+
+/* ── 会话分区轨（SectionRail）───────────────────────────────────────────
+   玻璃只长在有字的地方：每条标题各自一枚贴边小胶囊，胶囊之间什么表面都没有。
+   先做过一张横跨全高的面板，三处翻车：两行字撑一整块玻璃（尺寸和内容量对不上）、
+   大面积模糊把背后的蓝气泡放大成光斑、左缘一条硬边把正文拦腰切断。
+   小面积 + 逐条独立，三件事一起消失。
+
+   自定义属性必须 @property 注册，否则过渡是离散的（中点硬跳）。
+   位移/缩放走 --chip-x/--chip-scale 而不是直接过渡 transform：
+   transform 里还混着临近效果的 --motion（rAF 每帧现算），
+   给 transform 挂 transition 会把那份手感一起糊掉 */
+@property --glass-blur {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --glass-sat {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+@property --chip-x {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --chip-scale {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+.section-rail-chip {
+  /* 未到场：在右边 10px 外、略小、玻璃还没成形（模糊半径 0） */
+  --chip-x: 10px;
+  --chip-scale: 0.96;
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  /* 底色自己就得够实：对比度不能指望模糊去提供。
+     saturate 压到 1 以下——材质的职责是让背后安静，不是把背景的彩色放大 */
+  background-color: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--foreground) 10%, transparent);
+  /* 往右滑出去的，从右边滑回来（进退同路），缩放锚在右缘 */
+  transform-origin: right center;
+  transition-property: opacity, --chip-x, --chip-scale, --glass-blur, --glass-sat;
+  transition-duration: 220ms;
+  transition-timing-function: var(--ease-strong);
+}
+
+.section-rail-title {
+  opacity: 0;
+  transform: translateY(-50%)
+    translateX(calc(var(--chip-x) - var(--motion, 0) * var(--max-shift)))
+    scale(var(--chip-scale));
+}
+.section-rail-list[data-expanded="true"] .section-rail-title {
+  --chip-x: 0px;
+  --chip-scale: 1;
+  --glass-blur: 8px;
+  --glass-sat: 0.85;
+  opacity: 1;
+}
+
+/* 换区提示：进场用 @starting-style，离场用 data-leaving，两端同一条路径 */
+.section-rail-flash {
+  --chip-x: 0px;
+  --chip-scale: 1;
+  --glass-blur: 8px;
+  --glass-sat: 0.85;
+  opacity: 1;
+  transform: translateY(-50%) translateX(var(--chip-x)) scale(var(--chip-scale));
+  @starting-style {
+    --chip-x: 10px;
+    --chip-scale: 0.96;
+    --glass-blur: 0px;
+    --glass-sat: 1;
+    opacity: 0;
+  }
+}
+.section-rail-flash[data-leaving="true"] {
+  --chip-x: 10px;
+  --chip-scale: 0.96;
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  opacity: 0;
+}
+
+/* 收起态刻度带和正文之间的过渡：一层很窄的渐变遮罩。
+   不用 1px 边框——浮动 chrome 压在正文上切一刀是这个平台明确要避开的做法 */
+.section-rail-edge {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--background) 60%, transparent)
+  );
+}
+
+/* 减动效：不做位移/缩放/模糊过场，只留交叉淡入淡出。
+   模糊值直接给终值——它是材质的一部分，不是动画 */
+@media (prefers-reduced-motion: reduce) {
+  .section-rail-chip {
+    --chip-x: 0px;
+    --chip-scale: 1;
+    --glass-blur: 8px;
+    --glass-sat: 0.85;
+    transition-property: opacity;
+    transition-duration: 180ms;
+    transition-timing-function: ease;
+  }
+  /* 这两条选择器比 .section-rail-chip 更specific，得逐条把位移/模糊按回去 */
+  .section-rail-flash {
+    @starting-style {
+      --chip-x: 0px;
+      --chip-scale: 1;
+      --glass-blur: 8px;
+      --glass-sat: 0.85;
+      opacity: 0;
+    }
+  }
+  .section-rail-flash[data-leaving="true"] {
+    --chip-x: 0px;
+    --chip-scale: 1;
+    --glass-blur: 8px;
+    --glass-sat: 0.85;
+  }
+  /* --motion 被归零 → 刻度长度差没了，而收起态「我在哪」只剩这根刻度。
+     静态补一档长度，读得出来但不动 */
+  .section-rail-tick[data-active="true"] {
+    transform: translateY(-50%) scaleX(1.8);
+  }
+}
+
+/* 降低透明度偏好：材质变实，别让文字压在模糊的背景上 */
+@media (prefers-reduced-transparency: reduce) {
+  .section-rail-chip {
+    background-color: var(--card);
+    backdrop-filter: none;
+  }
+}
