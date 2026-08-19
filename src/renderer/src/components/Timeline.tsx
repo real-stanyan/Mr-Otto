@@ -2,37 +2,31 @@
 // 都是事件日志的直接投影——UI 不持有自己的对话状态。
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import type {
-  SessionEvent,
-  ToolCallRequest,
-  ToolExecutionStartedEvent,
-  ToolResultEvent,
-} from "../../../session/events.js";
+import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { useChat } from "../store.js";
 import { Hl } from "../replay/Replay.js";
 import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
+import type { ToolIndex } from "../lib/toolIndex.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { MD_COMPONENTS } from "./CodeBlock.js";
 import { MessageActions } from "./MessageActions.js";
+import { RetryButton } from "./RetryButton.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
-    点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004） */
-export function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) {
+    点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004）。
+    memo:流式输出时 App 每个 token 重渲染一次,而这一行的入参(call/index)只随事件变——
+    不 memo 的话整屏工具行陪着白跑(#115)。直播尾巴走自己的 store 订阅,memo 挡不住 */
+export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRequest; index: ToolIndex }) {
   const [open, setOpen] = useState(false);
-  const result = all.find(
-    (e): e is ToolResultEvent => e.type === "tool_result" && e.toolCallId === call.id
-  );
-  const started = all.find(
-    (e): e is ToolExecutionStartedEvent =>
-      e.type === "tool_execution_started" && e.toolCallId === call.id
-  );
+  const result = index.results.get(call.id);
+  const started = index.starts.get(call.id);
   // 执行中的直播尾巴（bash 的 stdout/stderr 碎片）。tool_result 落地后 store
   // 会清掉这个 key，这里自然消失——直播只活在"事实到来前"的窗口里
   const live = useChat((s) => s.toolOutputByCall[call.id]);
@@ -107,9 +101,12 @@ export function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEven
       )}
     </div>
   );
-}
+});
 
-export function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
+// memo 同上:一条消息渲染一次 Markdown(remark + rehype-highlight 全量解析),
+// 流式期间每个 token 让全屏历史消息重解析一遍是纯浪费(#115)。
+// 动作条(MessageActions)自己订阅 store,memo 不影响它的新鲜度
+export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
   switch (event.type) {
     case "user_message":
       // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
@@ -227,10 +224,15 @@ export function EventRow({ event, isLast = false }: { event: SessionEvent; isLas
     case "turn_ended":
       // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
       return event.outcome === "error" ? (
-        <div className={`${CHIP} border-err text-err`}>[turn 失败] {event.error}</div>
+        // 重试只挂最后一条:它重发的是"上一条用户消息",对历史里的旧失败行没有意义
+        // ——那条失败之后用户早就又说过别的话了,点它会重发一句不相干的
+        <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
+          <span>[turn 失败] {event.error}</span>
+          {isLast && <RetryButton />}
+        </div>
       ) : event.outcome === "aborted" ? (
         // 中断 = 用户意志,中性灰居中——不是故障,不用红
         <div className={`${CHIP} self-center`}>已中断</div>
       ) : null;
   }
-}
+});

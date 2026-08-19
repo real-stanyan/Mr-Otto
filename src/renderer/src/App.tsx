@@ -40,6 +40,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { RetryButton } from "./components/RetryButton.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -103,6 +104,7 @@ import { retryLastUserMessage } from "./lib/retryAction.js";
 import { ToolGroup } from "./components/ToolGroup.js";
 import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
+import { buildToolIndex } from "./lib/toolIndex.js";
 import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
 import { type OrbState } from "./lib/toolSummary.js";
 
@@ -1872,41 +1874,6 @@ function Welcome() {
   );
 }
 
-/** 失败不该只是一行红字——恢复出口就挂在它旁边(assistant-ui 的 Error primitive 同款)。
-    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage/retryPlan),别处各写一份;
-    这里外观是红色文字钮,按钮文案随 plan 变——不然点了以为发出去了实际只是填回输入框
-    (plan 同时看"消息自身带没带附件"和"此刻输入框暂存区是否有附件":后者是
-    send() 读的是调用那一刻的 staged,跟被重试的消息无关,漏了这条会静默夹带) */
-function RetryButton() {
-  const events = useChat((s) => s.events);
-  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
-  const staged = useChat((s) => s.staged);
-  const prev = lastUserMessage(events);
-  const plan = retryPlan(prev, staged.length);
-  // retryPlan(null, x) 返 null，其它情况返 RetryPlan，所以 !plan ⟺ !prev，前一行已排除
-  if (!prev || status === "running") return null;
-  // retryPlan(prev, x) 当 prev 非 null 时必然返 RetryPlan，所以 plan 必然非 null
-  const planNonNull = plan!;
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      title={
-        planNonNull.mode === "resend"
-          ? "重试：把上一条消息原样再发一遍"
-          : planNonNull.reason === "attachments"
-            ? "把上一条消息填回输入框（附件要重新添加）"
-            : "输入框里有待发送的附件，先填回正文，你确认后再发"
-      }
-      className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
-      onClick={() => retryLastUserMessage(prev, planNonNull)}
-    >
-      {planNonNull.mode === "resend" ? "重试" : "填回输入框"}
-    </Button>
-  );
-}
-
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
@@ -1938,6 +1905,9 @@ export function App() {
   const replaying = replayCursor !== null;
   // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
   const items = useMemo(() => groupThread(events), [events]);
+  // 工具索引同理:建一次往下传引用,工具行/工具组就不用各自全量扫事件了。
+  // 引用稳定还给下面的 memo 供了料——流式输出时它们才真的能跳过重渲染(#115)
+  const toolIndex = useMemo(() => buildToolIndex(events), [events]);
   // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
   const turnPhase = agentPhase({
     status,
@@ -2136,9 +2106,9 @@ export function App() {
                 <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
               ) : item.calls.length === 1 ? (
                 // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
-                <ToolRow key={item.key} call={item.calls[0]!} all={events} />
+                <ToolRow key={item.key} call={item.calls[0]!} index={toolIndex} />
               ) : (
-                <ToolGroup key={item.key} calls={item.calls} all={events} />
+                <ToolGroup key={item.key} calls={item.calls} index={toolIndex} />
               )
             )}
             {error && (

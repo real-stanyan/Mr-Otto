@@ -6,38 +6,24 @@
 // 3) 有失败就不自动收,且失败数染红——错误绝不能因为折叠被藏掉
 // 用户手动点过之后就不再自动驱动:自动行为不该抢用户已经表达过的意图
 
-import { useState } from "react";
-import type { SessionEvent, ToolCallRequest, ToolResultEvent } from "../../../session/events.js";
+import { memo, useState } from "react";
+import type { ToolCallRequest } from "../../../session/events.js";
 import { summarizeGroup } from "../lib/toolSummary.js";
+import { groupElapsed, type ToolIndex } from "../lib/toolIndex.js";
 import { ToolRow } from "./Timeline.js";
 import { ROW } from "../timelineStyles.js";
 
-/** 组的墙上耗时:第一次开跑到最后一个结果落盘。
-    不是各调用耗时之和——并发时那个数会大于实际经过的时间 */
-function groupElapsed(calls: ToolCallRequest[], all: SessionEvent[]): number | null {
-  const ids = new Set(calls.map((c) => c.id));
-  let first: number | null = null;
-  let last: number | null = null;
-  for (const e of all) {
-    if (e.type === "tool_execution_started" && ids.has(e.toolCallId)) {
-      first ??= e.ts;
-    } else if (e.type === "tool_result" && ids.has(e.toolCallId)) {
-      last = e.ts;
-    }
-  }
-  if (first === null || last === null || last < first) return null;
-  return last - first;
-}
-
-export function ToolGroup({ calls, all }: { calls: ToolCallRequest[]; all: SessionEvent[] }) {
-  const results = new Map<string, ToolResultEvent>();
-  for (const e of all) {
-    if (e.type === "tool_result") results.set(e.toolCallId, e);
-  }
-
-  const running = calls.some((c) => !results.has(c.id));
+// memo:折叠头的入参只随事件变,而流式输出时 App 每个 token 重渲染一次(#115)
+export const ToolGroup = memo(function ToolGroup({
+  calls,
+  index,
+}: {
+  calls: ToolCallRequest[];
+  index: ToolIndex;
+}) {
+  const running = calls.some((c) => !index.results.has(c.id));
   const failed = calls.filter((c) => {
-    const r = results.get(c.id);
+    const r = index.results.get(c.id);
     // denied 是用户决策，不是故障，所以这里的 "not ok" 包括错误和拒绝两种情况
     return r !== undefined && r.status !== "ok";
   }).length;
@@ -47,7 +33,7 @@ export function ToolGroup({ calls, all }: { calls: ToolCallRequest[]; all: Sessi
   const [manual, setManual] = useState(false);
   const open = touched ? manual : running || failed > 0;
 
-  const elapsed = groupElapsed(calls, all);
+  const elapsed = groupElapsed(calls, index);
 
   return (
     <div className={`${ROW} p-0`}>
@@ -78,10 +64,10 @@ export function ToolGroup({ calls, all }: { calls: ToolCallRequest[]; all: Sessi
       {open && (
         <div className="pl-3 border-l border-border ml-[2px] flex flex-col">
           {calls.map((c) => (
-            <ToolRow key={c.id} call={c} all={all} />
+            <ToolRow key={c.id} call={c} index={index} />
           ))}
         </div>
       )}
     </div>
   );
-}
+});

@@ -70,7 +70,12 @@ export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphSe
       if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGit(
-          ["log", "--all", "--topo-order", "-n", String(clampLogLimit(limit)), `--format=${LOG_FORMAT}`],
+          // --decorate=full:%D 给全名(refs/heads/x、refs/remotes/fork/x)。短名下
+          // remote 和"名字里带斜杠的本地分支"长得一样,只能靠 origin/ 前缀猜,猜错了画错徽章
+          [
+            "log", "--all", "--topo-order", "--decorate=full",
+            "-n", String(clampLogLimit(limit)), `--format=${LOG_FORMAT}`,
+          ],
           repoDir
         );
         // HEAD 单独拿:detached/正常都返回 hash;空仓库等失败情形容错为 null
@@ -107,7 +112,8 @@ export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphSe
     async commit(repoDir, hash) {
       if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
       // 渲染层传来的 hash 只是"凭证"——验形后才进 exec,防注入(同 readAdr 路径钉死)
-      if (!/^[0-9a-f]{4,40}$/i.test(hash)) {
+      // 上限 64 而不是 40:SHA-256 仓库的 hash 就是 64 位十六进制(git 的 objectFormat=sha256)
+      if (!/^[0-9a-f]{4,64}$/i.test(hash)) {
         return { ok: false, kind: "git-error", detail: `非法 hash: ${hash}` };
       }
       try {
