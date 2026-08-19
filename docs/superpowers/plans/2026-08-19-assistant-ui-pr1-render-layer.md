@@ -106,7 +106,12 @@ Expected: PASS，939/939。npm 解包抹掉了 `spawn-helper` 的执行位，不
 
 - [ ] **Step 3: 写失败的测试**
 
-创建 `tests/renderer/toThreadMessages.test.ts`：
+创建 `tests/renderer/toThreadMessages.test.ts`。
+
+> **不要拿 `session_created` 当填充事件。** Task 3 会把它列进八类审计行（届时它**会**产生一条
+> system 消息），此处若断言「它不产生消息」，Task 3 就得回头改本文件 —— 那是计划自己制造的返工。
+
+
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -119,16 +124,8 @@ function ev(partial: Partial<SessionEvent> & { type: SessionEvent["type"] }, seq
 }
 
 describe("toThreadMessages — 骨架", () => {
-  it("session_created 不产生消息", () => {
-    const events = [ev({ type: "session_created" }, 0)];
-    expect(toThreadMessages(events)).toEqual([]);
-  });
-
   it("user_message 变成 user 角色的 text part", () => {
-    const events = [
-      ev({ type: "session_created" }, 0),
-      ev({ type: "user_message", content: "你好" }, 1),
-    ];
+    const events = [ev({ type: "user_message", content: "你好" }, 1)];
     expect(toThreadMessages(events)).toEqual([
       {
         role: "user",
@@ -261,7 +258,7 @@ export function toThreadMessages(
 - [ ] **Step 6: 跑测试确认通过**
 
 Run: `npx vitest run tests/renderer/toThreadMessages.test.ts`
-Expected: PASS（6 条全绿）
+Expected: PASS（5 条全绿）
 
 - [ ] **Step 7: 跑全量门禁**
 
