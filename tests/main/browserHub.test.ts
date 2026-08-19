@@ -14,8 +14,19 @@ function fakeView() {
   const nav = { back: 0, forward: 0, reload: 0 };
   let script: () => Promise<unknown> = async () =>
     JSON.stringify({ title: "T", url: "https://x.com", text: "正文" });
+  // 供"loadURL 自身 reject"那条路径的测试用:Electron 对失败导航常常
+  // 直接 reject loadURL,不只靠 failed 事件通知
+  let loadURLError: Error | null = null;
   const handle: BrowserViewHandle = {
-    loadURL: async (u) => { loaded.push(u); url = u; },
+    loadURL: async (u) => {
+      loaded.push(u);
+      if (loadURLError) {
+        const err = loadURLError;
+        loadURLError = null;
+        throw err;
+      }
+      url = u;
+    },
     getURL: () => url,
     getTitle: () => title,
     canGoBack: () => backable,
@@ -41,10 +52,13 @@ function fakeView() {
     setTitle: (t: string) => { title = t; },
     setBackable: (v: boolean) => { backable = v; },
     setScript: (f: () => Promise<unknown>) => { script = f; },
+    setLoadURLError: (err: Error | null) => { loadURLError = err; },
     get loaded() { return loaded; },
     get boundsLog() { return boundsLog; },
     get destroyed() { return destroyed; },
     get nav() { return nav; },
+    // read() 的临时订阅收尾之后,这个数应该回到只剩 hub 常驻监听那一个
+    get subscriberCount() { return subs.size; },
   };
 }
 
@@ -258,5 +272,15 @@ describe("browserHub.read", () => {
     hub.open("s1");
     views[0]!.setScript(async () => "not json");
     await expect(hub.read("s1")).rejects.toThrow();
+  });
+
+  it("loadURL 自身 reject(Electron 对失败导航常这样,不只靠 failed 事件)——" +
+     "照样要抛,且不留监听器泄漏", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1"); // 先建 view,拿到只有常驻监听时的基线订阅数
+    const baseline = views[0]!.subscriberCount;
+    views[0]!.setLoadURLError(new Error("ERR_CONNECTION_REFUSED"));
+    await expect(hub.read("s1", { url: "a.com" })).rejects.toThrow(/ERR_CONNECTION_REFUSED/);
+    expect(views[0]!.subscriberCount).toBe(baseline);
   });
 });

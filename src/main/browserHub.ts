@@ -174,6 +174,13 @@ export function createBrowserHub(deps: BrowserHubDeps) {
         const target = normalizeUrl(opts.url);
         // 先挂好监听再发起导航:loadURL 之后才订阅的话,
         // 快到离谱的本地页面(localhost 常见)可能在订阅前就 loaded 完了
+        //
+        // loadURL 本身也会在导航失败时直接 reject——不是只靠 failed 事件通知的
+        // (Electron 对失败导航就是这样)。所以 loadURL 挪进了 executor 内部,
+        // 用 .catch 把它接进同一条 finish 管线:不管是 loaded/failed 事件、
+        // 超时、外部中断,还是 loadURL 自己 reject,都走同一份一次性 teardown——
+        // 否则某条路径会漏掉监听器/定时器/abort 监听器,孤儿定时器之后触发
+        // 还会 reject 一个没人等的 promise(unhandled rejection)
         const settled = new Promise<void>((resolve, reject) => {
           let done = false;
           const finish = (fn: () => void) => {
@@ -196,9 +203,9 @@ export function createBrowserHub(deps: BrowserHubDeps) {
           );
           const onAbort = () => finish(() => reject(new Error("读取被中断：用户停止了 turn")));
           signal?.addEventListener("abort", onAbort, { once: true });
+          r.view.loadURL(target).catch((err: unknown) => finish(() => reject(err)));
         });
         delete r.lastError;
-        await r.view.loadURL(target);
         await settled;
       }
 
