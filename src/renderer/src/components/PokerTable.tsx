@@ -15,6 +15,39 @@ import ottoLogo from "../assets/otto.png";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
 
+/**
+ * 请求飞行期间禁用自己的按钮。
+ *
+ * 裸 onClick 直接 fire-and-forget 的代价是真金白银:建桌点两下就是两张桌(实测，
+ * 相隔 1 秒的两行)，而建桌这条路服务端没有幂等键 —— 买入/结算有(request_id)，
+ * 建桌没有。牌桌上的动作更狠:跟注点两下、加注点两下，都是往池子里再推一笔。
+ *
+ * 禁用而不是节流:节流只是把第二次点击往后挪，禁用才表达"这一次还没落地"。
+ */
+function AsyncButton({
+  onClick,
+  disabled,
+  children,
+  ...rest
+}: Omit<React.ComponentProps<typeof Button>, "onClick"> & {
+  onClick: () => Promise<unknown>;
+}) {
+  const [pending, setPending] = useState(false);
+  return (
+    <Button
+      {...rest}
+      disabled={disabled === true || pending}
+      onClick={() => {
+        if (pending) return;
+        setPending(true);
+        void onClick().finally(() => setPending(false));
+      }}
+    >
+      {children}
+    </Button>
+  );
+}
+
 /** 花色符号与配色。红黑之分是牌桌的基本可读性，不是装饰 */
 const SUIT_GLYPH = ["♣", "♦", "♥", "♠"] as const;
 const isRed = (card: number) => suitOf(card) === 1 || suitOf(card) === 2;
@@ -123,19 +156,19 @@ function ActionBar({ hand }: { hand: PokerHandView }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {hand.legal.some((o) => o.type === "fold") && (
-        <Button size="sm" variant="outline" onClick={() => void act({ type: "fold" })}>
+        <AsyncButton size="sm" variant="outline" onClick={() => act({ type: "fold" })}>
           弃牌
-        </Button>
+        </AsyncButton>
       )}
       {hand.legal.some((o) => o.type === "check") && (
-        <Button size="sm" variant="outline" onClick={() => void act({ type: "check" })}>
+        <AsyncButton size="sm" variant="outline" onClick={() => act({ type: "check" })}>
           过牌
-        </Button>
+        </AsyncButton>
       )}
       {call && (
-        <Button size="sm" onClick={() => void act({ type: "call" })}>
+        <AsyncButton size="sm" onClick={() => act({ type: "call" })}>
           跟注 {fmt(call.amount)}
-        </Button>
+        </AsyncButton>
       )}
       {raise && (
         <div className="flex items-center gap-1">
@@ -146,9 +179,9 @@ function ActionBar({ hand }: { hand: PokerHandView }) {
             onChange={(e) => setTo(e.target.value.replace(/[^\d]/g, ""))}
             aria-label={`加注到（${raise.minTo}..${raise.maxTo}）`}
           />
-          <Button size="sm" disabled={!canRaise} onClick={() => void act({ type: "raise", to: amount })}>
+          <AsyncButton size="sm" disabled={!canRaise} onClick={() => act({ type: "raise", to: amount })}>
             {amount >= raise.maxTo ? "全下" : "加注到"}
-          </Button>
+          </AsyncButton>
         </div>
       )}
     </div>
@@ -243,14 +276,14 @@ function Table({ hand }: { hand: PokerHandView }) {
         {hand.done ? (
           <>
             <Showdown hand={hand} />
-            <Button size="sm" onClick={() => void start()}>下一手</Button>
+            <AsyncButton size="sm" onClick={() => start()}>下一手</AsyncButton>
           </>
         ) : (
           <ActionBar hand={hand} />
         )}
         {/* 牌局进行中不给离桌:服务端也会拒,按钮先自己藏起来,别让人点了才知道 */}
         {hand.done && (
-          <Button size="sm" variant="ghost" onClick={() => void leave()}>离桌</Button>
+          <AsyncButton size="sm" variant="ghost" onClick={() => leave()}>离桌</AsyncButton>
         )}
       </div>
     </div>
@@ -283,10 +316,10 @@ function CreateTable() {
         <option value="flash">Flash</option>
         <option value="pro">Pro</option>
       </select>
-      <Button
+      <AsyncButton
         size="sm"
         onClick={() =>
-          void create({
+          create({
             name: name.trim() || "无名桌",
             tier,
             smallBlind: Math.max(1, Math.floor(bigBlind / 2)),
@@ -298,7 +331,7 @@ function CreateTable() {
         }
       >
         建桌
-      </Button>
+      </AsyncButton>
       <span className="text-[11px] text-muted-foreground">
         买入 {fmt(bigBlind * 20)}–{fmt(bigBlind * 100)} token，只有好友能同桌
       </span>
@@ -327,11 +360,11 @@ function Lobby({ tables }: { tables: PokerTableSummary[] }) {
               </div>
             </div>
             {t.seated ? (
-              <Button size="sm" variant="outline" onClick={() => void watch(t.id)}>回到牌桌</Button>
+              <AsyncButton size="sm" variant="outline" onClick={() => watch(t.id)}>回到牌桌</AsyncButton>
             ) : (
-              <Button size="sm" onClick={() => void join(t.id, t.minBuyin)}>
+              <AsyncButton size="sm" onClick={() => join(t.id, t.minBuyin)}>
                 买入 {fmt(t.minBuyin)}
-              </Button>
+              </AsyncButton>
             )}
           </div>
         ))
@@ -351,9 +384,9 @@ function TableIdle({ tableId }: { tableId: string }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
-        <Button size="sm" onClick={() => void join(tableId, table.minBuyin)}>
+        <AsyncButton size="sm" onClick={() => join(tableId, table.minBuyin)}>
           买入 {fmt(table.minBuyin)}
-        </Button>
+        </AsyncButton>
       </div>
     );
   }
@@ -362,8 +395,8 @@ function TableIdle({ tableId }: { tableId: string }) {
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
       已入座，等开牌（至少两个人才开得起来）。
       <div className="flex gap-2">
-        <Button size="sm" onClick={() => void start()}>开一手</Button>
-        <Button size="sm" variant="ghost" onClick={() => void leave()}>离桌</Button>
+        <AsyncButton size="sm" onClick={() => start()}>开一手</AsyncButton>
+        <AsyncButton size="sm" variant="ghost" onClick={() => leave()}>离桌</AsyncButton>
       </div>
     </div>
   );
