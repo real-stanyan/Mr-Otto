@@ -22,7 +22,8 @@ describe("buildOttoAdapter", () => {
     const a = buildOttoAdapter(input());
     expect(a.messages).toHaveLength(1);
     const m = a.messages![0]!;
-    expect(a.convertMessage!(m, 0)).toBe(m);
+    // convertMessage 上不加 !:T = ThreadMessageLike 时它在类型上是必填的
+    expect(a.convertMessage(m, 0)).toBe(m);
   });
 
   it("刻意不提供 onEdit / setMessages —— 本仓没有消息编辑和对话分支", () => {

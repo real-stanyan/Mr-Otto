@@ -32,7 +32,11 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
     convertMessage: (m) => m,
     isRunning: input.isRunning,
     onNew: async (message) => {
-      await input.send(textOf(message.content as never));
+      // 不要在这写 as never:AppendMessage.content 的每个成员要么带 text: string、
+      // 要么没有 text 字段,结构上本来就满足 textOf 的入参类型。
+      // as never 是最宽的逃生口(两个方向都可赋值),写在这里等于把将来真出现的
+      // 类型不匹配也一并吞掉
+      await input.send(textOf(message.content));
     },
     onCancel: input.cancel,
     // 刻意不给 onEdit / setMessages:本仓没有消息编辑,也没有对话分支。
