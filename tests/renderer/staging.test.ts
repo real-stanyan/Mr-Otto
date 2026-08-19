@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_IMAGES, mergeStaged, type StagedOk } from "../../src/renderer/src/lib/staging.js";
 import type { StagedAttachment } from "../../src/shared/shellBridge.js";
+import { dragHasFiles } from "../../src/renderer/src/lib/attachIntake.js";
 
 const img = (id: string): StagedAttachment => ({
   kind: "image",
@@ -40,5 +41,18 @@ describe("mergeStaged", () => {
   it("空输入 = 原样返回,不造错误", () => {
     const current = [img("a") as StagedOk];
     expect(mergeStaged(current, [])).toEqual({ staged: current, error: null });
+  });
+});
+
+describe("dragHasFiles", () => {
+  it("types 里有 Files 才算拖了文件(dragover 阶段 files 一定是空的)", () => {
+    expect(dragHasFiles(["Files"])).toBe(true);
+    expect(dragHasFiles(["text/plain", "Files"])).toBe(true);
+  });
+
+  it("拖选中的文字/链接不算,不弹投放浮层", () => {
+    expect(dragHasFiles(["text/plain", "text/html"])).toBe(false);
+    expect(dragHasFiles([])).toBe(false);
+    expect(dragHasFiles(undefined)).toBe(false);
   });
 });

@@ -28,6 +28,9 @@ import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { UserAttachments } from "./components/UserAttachments.js";
+import { AttachDropZone } from "./components/AttachDropZone.js";
+import { StagedChips } from "./components/StagedChips.js";
+import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
@@ -1975,6 +1978,8 @@ function Welcome() {
   const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
   const choice = findModel(model);
+  // 附件暂存区是全局的:在这里粘/拖进来的,建会话后由 send 原样带走
+  const attachPasted = useChat((s) => s.attachPasted);
 
   const launch = async () => {
     if (!workspace || busy) return;
@@ -1984,8 +1989,11 @@ function Welcome() {
       await startSession({ workspace, model, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
+      // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
       // 这里不走 slash 分发：会话刚出生，/compact 之类没有意义
-      if (useChat.getState().phase === "chat" && t) void send(t);
+      if (useChat.getState().phase === "chat" && (t || useChat.getState().staged.length > 0)) {
+        void send(t);
+      }
     } finally {
       setBusy(false);
     }
@@ -1995,8 +2003,10 @@ function Welcome() {
     <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
       <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
       <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
-      {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡 */}
-      <div className="w-[min(640px,90%)] text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
+      {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
+          外面套投放区:还没有会话也能先把图拖进来,建会话后随首条消息一起走 */}
+      <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
+      <div className="w-full text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
@@ -2007,6 +2017,7 @@ function Welcome() {
             </span>
           )}
         </div>
+        <StagedChips className="px-1" />
         <Textarea
           className="border-none shadow-none resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] px-1 py-[2px] focus-visible:ring-0"
           autoFocus
@@ -2015,6 +2026,13 @@ function Welcome() {
           value={text}
           disabled={busy}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // 与会话中的输入框同口径:有文件才接管,没文件不插手原生粘贴
+            const files = Array.from(e.clipboardData.files);
+            if (files.length === 0) return;
+            e.preventDefault();
+            void filesToPayload(files).then(attachPasted);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -2035,6 +2053,22 @@ function Welcome() {
               <SelectItem value="auto">完全访问</SelectItem>
             </SelectContent>
           </Select>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-base leading-none text-muted-foreground hover:bg-foreground/[0.08]"
+                disabled={busy}
+                aria-label="添加文件"
+                onClick={() => void useChat.getState().pickFiles()}
+              >
+                ＋
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
+          </Tooltip>
           <span className="flex-1" />
           <Select value={model} onValueChange={(v) => setModel(v)}>
             <SelectTrigger className={NSC_SELECT}>
@@ -2071,6 +2105,7 @@ function Welcome() {
           </Button>
         </div>
       </div>
+      </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
@@ -2098,8 +2133,6 @@ export function App() {
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const staged = useChat((s) => s.staged);
-  const attachError = useChat((s) => s.attachError);
-  const removeStaged = useChat((s) => s.removeStaged);
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -2155,7 +2188,8 @@ export function App() {
 
   const submit = () => {
     const text = input.trim();
-    if (!text || status === "running") return;
+    // 只贴了图不打字也算一条消息:附件本身就是内容
+    if ((!text && staged.length === 0) || status === "running") return;
     // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
     // 报错时不清输入框——让用户就地改，不用重打一遍
     if (text.startsWith("$")) {
@@ -2302,7 +2336,9 @@ export function App() {
             <WorkTreePill />
             <TodoPanel />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
-                焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
+                焦点环挂在容器上(focus-within)——整个会话框是一个控件。
+                外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}
+            <AttachDropZone disabled={status === "running"}>
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
               {slashMatches.length > 0 && (
                 <div className={SLASH_MENU} role="listbox">
@@ -2339,30 +2375,7 @@ export function App() {
                   ))}
                 </div>
               )}
-              {(staged.length > 0 || attachError) && (
-                <div className="flex flex-wrap gap-[6px] items-center pt-[6px] px-[10px]">
-                  {staged.map((a, i) => (
-                    <span className="inline-flex items-center gap-1 bg-foreground/[0.06] rounded-md px-[6px] py-[3px] text-xs text-muted-foreground" key={i}>
-                      {a.kind === "image" ? (
-                        <img className="w-9 h-9 object-cover rounded-sm block" src={a.previewDataUrl} alt={a.ref.name ?? "图片"} />
-                      ) : (
-                        <span>
-                          {a.name}({(a.bytes / 1024).toFixed(0)}KB)
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className="bg-transparent text-inherit opacity-60 text-[13px] px-[2px] hover:opacity-100"
-                        title="移除"
-                        onClick={() => removeStaged(i)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  {attachError && <span className="text-err text-xs">{attachError}</span>}
-                </div>
-              )}
+              <StagedChips className="pt-[6px] px-[10px]" />
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <Textarea
@@ -2380,13 +2393,7 @@ export function App() {
                   const files = Array.from(e.clipboardData.files);
                   if (files.length === 0) return;
                   e.preventDefault();
-                  void Promise.all(
-                    files.map(async (f) => ({
-                      // 截图的 File 常常叫 "image.png";名字只用于展示和拒收文案
-                      name: f.name || `粘贴的${f.type.startsWith("image/") ? "图片" : "文件"}`,
-                      data: new Uint8Array(await f.arrayBuffer()),
-                    }))
-                  ).then(attachPasted);
+                  void filesToPayload(files).then(attachPasted);
                 }}
                 onKeyDown={(e) => {
                   // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
@@ -2441,7 +2448,7 @@ export function App() {
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim()}>
+                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
                         发送
                       </Button>
                     </TooltipTrigger>
@@ -2450,6 +2457,7 @@ export function App() {
                 )}
               </div>
             </div>
+            </AttachDropZone>
           </footer>
         </>
       )}
