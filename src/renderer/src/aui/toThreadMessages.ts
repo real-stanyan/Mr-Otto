@@ -46,6 +46,41 @@ function toToolCallPart(call: ToolCallRequest, index: ToolIndex): Part {
   return { ...base, result: result.output };
 }
 
+/** 时间线上看得见的非对话事件 → 一条 system 消息,原始事件挂 metadata。
+    渲染交给既有的 EventRow(Task 6 的 SystemMessage override) —— 视觉一模一样,
+    且不需要第二条渲染路径。
+    这份名单照抄 Timeline.tsx 里 EventRow 不返回 null 的那些分支:
+    tool_result / tool_execution_started 已被 tool-call part 吸收,
+    approval_decision(approved) 是正常放行不是对话事实(免审模式下全是噪音) */
+function isAuditEvent(e: SessionEvent): boolean {
+  switch (e.type) {
+    case "session_created":
+    case "session_archived":
+    case "session_renamed":
+    case "model_changed":
+    case "skill_invoked":
+    case "image_described":
+    case "context_compacted":
+      return true;
+    case "approval_decision":
+      return e.decision === "denied";
+    case "turn_ended":
+      return e.outcome !== "completed";
+    default:
+      return false;
+  }
+}
+
+function toAuditMessage(e: SessionEvent): ThreadMessageLike {
+  return {
+    role: "system",
+    id: String(e.seq),
+    createdAt: new Date(e.ts),
+    content: [],
+    metadata: { custom: { otto: e } },
+  };
+}
+
 export function toThreadMessages(
   events: SessionEvent[],
   live?: LiveBuffer
@@ -68,12 +103,13 @@ export function toThreadMessages(
 
     if (e.type === "assistant_message") {
       const parts: Part[] = [];
+      if ((e.reasoning ?? "") !== "") parts.push({ type: "reasoning", text: e.reasoning! });
       if (e.content !== "") parts.push({ type: "text", text: e.content });
       for (const call of e.toolCalls ?? []) parts.push(toToolCallPart(call, index));
 
       // 有调用还没拿到结果 = 这条消息还在等世界回话(悬空调用,ADR-0005)
       const pending = (e.toolCalls ?? []).some((c) => !index.results.has(c.id));
-      out.push({
+      const message: ThreadMessageLike = {
         role: "assistant",
         id: String(e.seq),
         createdAt: new Date(e.ts),
@@ -81,20 +117,41 @@ export function toThreadMessages(
           ? { type: "requires-action", reason: "tool-calls" }
           : { type: "complete", reason: "stop" },
         content: parts,
-      });
+      };
+      out.push(
+        e.reasoningMs === undefined
+          ? message
+          : { ...message, metadata: { custom: { reasoningMs: e.reasoningMs } } }
+      );
+      continue;
+    }
+
+    if (e.type === "turn_ended" && e.outcome !== "completed") {
+      // 回头改最后一条 assistant 消息的状态:turn 的死法是那条消息的属性,
+      // 不是一条独立的消息。aborted 是用户按的停(ADR-0006),不是故障。
+      // 注意这里不 continue —— 它还要往下走,出一条审计行(现状就有那个 chip)
+      for (let i = out.length - 1; i >= 0; i--) {
+        const m = out[i];
+        if (m === undefined || m.role !== "assistant") continue;
+        out[i] = {
+          ...m,
+          status: { type: "incomplete", reason: e.outcome === "aborted" ? "cancelled" : "error" },
+        };
+        break;
+      }
+    }
+
+    if (isAuditEvent(e)) {
+      out.push(toAuditMessage(e));
       continue;
     }
   }
 
   if (live !== undefined && (live.content !== "" || live.reasoning !== "")) {
     const parts: Part[] = [];
+    if (live.reasoning !== "") parts.push({ type: "reasoning", text: live.reasoning });
     if (live.content !== "") parts.push({ type: "text", text: live.content });
-    out.push({
-      role: "assistant",
-      id: "live",
-      status: { type: "running" },
-      content: parts,
-    });
+    out.push({ role: "assistant", id: "live", status: { type: "running" }, content: parts });
   }
 
   return out;
