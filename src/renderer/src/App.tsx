@@ -2410,14 +2410,19 @@ export function App() {
               )}
               <div ref={bottomRef} />
             </section>
-            {/* 只有一个分区时目录没有意义，把宽度还给对话 */}
-            {sections.length >= 2 && (
+            {/* 只有一个分区时目录没有意义（一条目录 = 噪音），标题不渲染；
+                但第一个分区一出现就先把这条竖槽占住——否则第二个分区诞生的那一刻
+                竖轨凭空插进来，消息栏当场少 184px、用户正在读的整段重排。
+                那正是 SectionRail 把轨宽写死要防的同一件事，只是换了个触发源 */}
+            {sections.length >= 2 ? (
               <SectionRail
                 items={sections.map((s) => s.title)}
                 activeIndex={activeSection}
                 onJump={jumpToSection}
               />
-            )}
+            ) : sections.length === 1 ? (
+              <div aria-hidden className="hidden lg:block shrink-0 w-[184px]" />
+            ) : null}
           </div>
 
           <ApprovalCard />

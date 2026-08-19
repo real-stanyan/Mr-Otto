@@ -17,6 +17,14 @@ export const SECTION_MODEL = "glm-4.5-flash";
 const PER_MESSAGE_CHARS = 300;
 /** 整份摘要上限；超了保留最近的部分（近处的话题才决定当前章节） */
 const SUMMARY_CHARS = 4000;
+/** 标题上限。提示词要求「不超过 12 个字」，但那只是请求不是约束：便宜模型会跑偏，
+    而跨度是把对话原文夹在 --- 里直接插进提示词的——对话内容能反过来指挥分类员。
+    事件日志是 append-only，一条几 KB 的"标题"落进去就永远改不掉，还要渲染进竖轨。
+    截断而不是拒收：标题难看好过整段分区丢掉 */
+const TITLE_MAX_CHARS = 40;
+/** 分类的超时上限。openaiCompatible 走裸 fetch，本身没有任何超时——
+    一条卡死的 TCP 连接会让这次 await 永远不回来 */
+const CLASSIFY_TIMEOUT_MS = 20_000;
 
 /** 当前分区标题 = 日志里最后一个非空 title。没有 = 还没有任何分区 */
 export function currentSectionTitle(events: SessionEvent[]): string | null {
@@ -72,7 +80,7 @@ export function parseSectionReply(raw: string, hasSection: boolean): { title: st
   if (typeof newSection !== "boolean") return null;
   if (!newSection) return hasSection ? { title: null } : null;
   if (typeof title !== "string" || title.trim() === "") return null;
-  return { title: title.trim() };
+  return { title: title.trim().slice(0, TITLE_MAX_CHARS) };
 }
 
 function buildPrompt(currentTitle: string | null, span: string): string {
@@ -101,19 +109,31 @@ export async function classifySection(
 
   const choice = findModel(SECTION_MODEL);
   if (!choice) return null;
+  // 目录里的 GLM 没有内置凭据（不像 deepseek 有网关兜底，modelRoute 只放行 deepseek）。
+  // 没配 key 就别出门：空 Bearer 是每个 turn 一次必 401 的往返，白烧一次连接
+  const apiKey = process.env[choice.apiKeyEnv] ?? "";
+  if (apiKey === "") return null;
 
   try {
     const adapter = createOpenAICompatibleAdapter({
       baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
-      apiKey: process.env[choice.apiKeyEnv] ?? "",
+      apiKey,
       model: choice.model,
       vision: false,
+      // 分类员只要一句标题，思考过程一个字都用不上，但 glm-4.5-flash 的
+      // supportsThinking 是 true、provider 默认开着——实测为「用户问候」四个字
+      // 烧掉 1452 个 completion token（约 20 倍）。显式关掉
+      thinking: false,
     });
     const currentTitle = currentSectionTitle(events);
-    // 非流式、不带工具：分类没有直播价值，结果整段用
-    const reply = await adapter.chat([
-      { role: "user", content: buildPrompt(currentTitle, summary) },
-    ]);
+    // 非流式、不带工具：分类没有直播价值，结果整段用。
+    // 带超时信号：调用方在 turn 的收尾路径上等这个 await，卡死就是会话永久卡死
+    const reply = await adapter.chat(
+      [{ role: "user", content: buildPrompt(currentTitle, summary) }],
+      undefined,
+      undefined,
+      AbortSignal.timeout(CLASSIFY_TIMEOUT_MS)
+    );
     const parsed = parseSectionReply(reply.content, currentTitle !== null);
     if (!parsed) return null;
     return {
@@ -122,7 +142,7 @@ export async function classifySection(
       ...(reply.usage ? { usage: reply.usage } : {}),
     };
   } catch {
-    // 无 key / 限流 / 断网 / 超时：全都无害。不落事件，下次自愈
+    // key 无效 / 限流 / 断网 / 超时（AbortError）：全都无害。不落事件，下次自愈
     return null;
   }
 }

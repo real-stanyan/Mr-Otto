@@ -247,6 +247,47 @@ void app.whenReady().then(() => {
   const runningSessions = new Set<string>();
   let currentSessionId: string | null = null;
 
+  // 分区分类的按会话串行队列。分类跑在 turn 锁之外（见 sendMessage 末尾），
+  // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
+  // section_classified，于是两个标题描述同一段、startSeq 却各开一处。
+  // 链起来 = 同一会话永远只有一个分类在跑；跨度锚点本来就是自愈的
+  // （最后一条分类事件之后的全部事件），后来的那次只是看到更宽的一段。
+  // 残留的不精确：分类在飞的时候下一个 turn 可以开跑，分类事件会落在它的事件之后，
+  // 于是这一区的尾巴多包了几条。startSeq（区的头）仍然准，目录只是分得糙一点——
+  // 这点糙换来的是输入框不被锁住，值。
+  const sectionQueues = new Map<string, Promise<void>>();
+
+  const classifyAndAppend = async (sessionId: string): Promise<void> => {
+    const section = await classifySection(store.load(sessionId));
+    if (!section) return;
+    // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
+    // 往 purge 过的 sessionId 上 append 会凭空造出一条没有 session_created 的
+    // 幽灵会话，而删除按 ADR-0002 是不可逆的物理抹除。agents 只在 purge 时删条目，
+    // 所以它在不在就是会话还活不活着
+    if (!agents.has(sessionId)) return;
+    const sectionEvent = store.append({
+      sessionId, ts: Date.now(), type: "section_classified",
+      title: section.title, model: section.model,
+      ...(section.usage ? { usage: section.usage } : {}),
+    });
+    send(CHANNELS.event, sectionEvent);
+  };
+
+  const enqueueSectionClassify = (sessionId: string): void => {
+    const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
+    // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
+    // 一环炸了不能毒死后面的环，也不能变成 unhandledRejection 把主进程带走
+    const next = prev
+      .then(() => classifyAndAppend(sessionId))
+      .catch((err) => console.error("分区分类失败", err));
+    sectionQueues.set(sessionId, next);
+    // 排空即删，别让 Map 随会话数无限长。只有自己仍是队尾才删——
+    // 期间又排进来一个的话队尾已经换人，删了会让它从空链起跑（等于解掉串行）
+    void next.then(() => {
+      if (sectionQueues.get(sessionId) === next) sectionQueues.delete(sessionId);
+    });
+  };
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -572,24 +613,23 @@ void app.whenReady().then(() => {
           send(CHANNELS.event, descEvent);
         }
         await agent.engine.runTurn(text, refs, textFiles);
-        // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
-        // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
-        // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）；aborted 会走到，
-        // 半截对话也是对话，照分。
-        // 失败静默：分类是锦上添花，不能反过来把成功的 turn 变成失败的（见 sectionClassifier）
-        const section = await classifySection(store.load(sessionId));
-        if (section) {
-          const sectionEvent = store.append({
-            sessionId, ts: Date.now(), type: "section_classified",
-            title: section.title, model: section.model,
-            ...(section.usage ? { usage: section.usage } : {}),
-          });
-          send(CHANNELS.event, sectionEvent);
-        }
       } finally {
         runningSessions.delete(sessionId);
         send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       }
+      // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
+      // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
+      // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）。
+      // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
+      // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
+      // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
+      let aborted = false;
+      for (const e of store.load(sessionId).slice().reverse()) {
+        if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
+      }
+      // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
+      // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
+      if (!aborted) enqueueSectionClassify(sessionId);
     }
   );
 

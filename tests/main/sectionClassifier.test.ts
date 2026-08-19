@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SECTION_MODEL,
   classifySection,
@@ -8,7 +8,13 @@ import {
 } from "../../src/main/sectionClassifier.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-afterEach(() => vi.unstubAllGlobals());
+// 没 key 就根本不出门（见 classifySection 的 key 闸门），所以要打到网络的用例
+// 必须先有个 key；CI 环境本来就没有
+beforeEach(() => vi.stubEnv("GLM_API_KEY", "test-key"));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 const log: SessionEvent[] = [
   { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
@@ -63,6 +69,12 @@ describe("parseSectionReply", () => {
   it("还没有分区时回延续 = 失败（不能一个区都开不出来）", () => {
     expect(parseSectionReply('{"newSection":false,"title":""}', false)).toBeNull();
   });
+
+  it("超长标题截断而不是照收（日志 append-only，进去了就改不掉）", () => {
+    const raw = JSON.stringify({ newSection: true, title: `  ${"长".repeat(500)}  ` });
+    const out = parseSectionReply(raw, true);
+    expect(out).toEqual({ title: "长".repeat(40) });
+  });
 });
 
 describe("classifySection", () => {
@@ -86,6 +98,28 @@ describe("classifySection", () => {
       usage: { promptTokens: 300, completionTokens: 12 },
     });
     expect(JSON.parse(bodies[0]!).model).toBe(SECTION_MODEL);
+  });
+
+  it("关思考、带超时信号（一句标题不值 20 倍 token，也不许卡死 turn 收尾）", async () => {
+    let init: { body: string; signal?: AbortSignal } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, i: { body: string; signal?: AbortSignal }) => {
+      init = i;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
+      };
+    }));
+    await classifySection(log);
+    expect(JSON.parse(init!.body).thinking).toEqual({ type: "disabled" });
+    expect(init!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("没配 GLM_API_KEY → 一个字节都不发（空 Bearer 每 turn 必 401）", async () => {
+    vi.stubEnv("GLM_API_KEY", "");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(classifySection(log)).resolves.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("HTTP 失败 → 返回 null，绝不抛（turn 不能被目录拖垮）", async () => {
