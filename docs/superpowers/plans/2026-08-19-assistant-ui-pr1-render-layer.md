@@ -19,7 +19,10 @@
 - 路径别名：`@/*` → `src/renderer/src/*`（tsconfig + electron.vite.config.ts 双处已配）。
 - 事件日志硬规则：`toThreadMessages` 是**只读投影**，不得写日志、不得持有对话状态。
 - `SessionEvent` schema 本 PR **不改**（新事件在 PR3）。
-- 每个 task 结束前 `npm test` 必须绿（**939/939**，无跳过、无失败）。
+- 每个 task 结束前 `npm test` 必须绿（基线 **939/939**，只增不减，无跳过、无失败）。
+- **`npm test` 不做类型检查**（vitest 走 esbuild，只剥类型不校验）。所以每个 task 提交前
+  还要单独跑 `npx tsc --noEmit -p tsconfig.json`，必须零报错。门禁命令本身不改
+  （改它是 L1，超出本计划范围），但类型错不许靠「测试绿了」蒙混过去。
 - **装完任何 npm 包，先跑 `node scripts/fix-pty-perms.mjs` 再跑测试。** npm 解包会抹掉
   `node-pty` 里 `spawn-helper` 的执行位，`tests/world/localWorldTerminal.test.ts` 会以
   `posix_spawnp failed` 挂 3 条。这是环境问题不是代码问题（ad04699 加的 postinstall 就是干这个的），
@@ -401,15 +404,21 @@ function toToolCallPart(call: ToolCallRequest, index: ToolIndex): Part {
   const isObject =
     typeof call.args === "object" && call.args !== null && !Array.isArray(call.args);
 
+  // args 的类型从 Part 联合里取,不要写成 Record<string, unknown>:
+  // assistant-ui 那边是 ReadonlyJSONObject,和 unknown 索引签名不兼容,tsc 会红
+  type ToolCallPart = Extract<Part, { type: "tool-call" }>;
   const base = isObject
     ? { type: "tool-call" as const, toolCallId: call.id, toolName: call.name,
-        args: call.args as Record<string, unknown> }
+        args: call.args as NonNullable<ToolCallPart["args"]> }
     : { type: "tool-call" as const, toolCallId: call.id, toolName: call.name,
         argsText: JSON.stringify(call.args) };
 
-  // exactOptionalPropertyTypes:没有结果时这两个键必须整个不出现,不能赋 undefined
+  // exactOptionalPropertyTypes:没有结果时这两个键必须整个不出现,不能赋 undefined。
+  // isError 同理:status 是 "ok" 时整个键不出现,不写 isError: false ——
+  // 本 task 第一条测试用的是 toEqual 精确比对,多一个键就红
   if (result === undefined) return base;
-  return { ...base, result: result.output, isError: result.status !== "ok" };
+  if (result.status === "ok") return { ...base, result: result.output };
+  return { ...base, result: result.output, isError: true };
 }
 ```
 
