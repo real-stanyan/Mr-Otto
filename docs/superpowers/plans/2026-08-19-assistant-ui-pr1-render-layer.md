@@ -75,8 +75,9 @@ type MessageStatus =
 | `src/renderer/src/components/assistant-ui/thread.tsx` | 摘掉输入侧 + 加 `SystemMessage` 槽 | 6 |
 | `src/renderer/src/aui/OttoThread.tsx` | Thread 组装 + 三个 override | 7 |
 | `src/renderer/src/components/ToolLiveTail.tsx` | 执行中的输出直播尾巴（从 `ToolRow` 抽出） | 7 |
-| `src/renderer/src/App.tsx` | 换掉 `ThreadViewport` + `items.map` 那一段 | 8 |
-| `src/renderer/src/app.css` | 删 hljs 配色段 | 8 |
+| `src/renderer/src/aui/toThreadMessages.ts`（再改） | user 消息挂上原始事件，附件才有数据源 | 8 |
+| `src/renderer/src/App.tsx` | 换掉 `ThreadViewport` + `items.map` 那一段 | 9 |
+| `src/renderer/src/app.css` | 删 hljs 配色段 | 9 |
 | `tests/renderer/toThreadMessages.test.ts` | 主战场 | 1–3 |
 | `tests/renderer/ottoAdapter.test.ts` | adapter 字段取舍 | 4 |
 
@@ -1512,7 +1513,186 @@ EOF
 
 ---
 
-### Task 8: 接进 App.tsx，卸掉旧渲染栈
+### Task 8: 补回用户附件 —— 投影没投，图片会消失
+
+**Files:**
+- Modify: `src/renderer/src/aui/toThreadMessages.ts`
+- Modify: `tests/renderer/toThreadMessages.test.ts`
+- Modify: `src/renderer/src/components/assistant-ui/thread.tsx`
+- Modify: `src/renderer/src/aui/OttoThread.tsx`
+
+**Interfaces:**
+- Consumes: `UserAttachments`（`src/renderer/src/components/UserAttachments.tsx`，**不改**）
+- Produces: `ThreadComponents` 新增 `UserAttachments?: ComponentType | undefined` 槽；user 角色的投影消息带上 `metadata.custom.otto`
+
+**背景（实现者必读）：这是一处真实回归，不是打磨**
+
+迁移后用户消息走 assistant-ui 的 `UserMessage`，它在 `thread.tsx` 里渲染 `<UserMessageAttachments />`，
+数据来自 assistant-ui 的 attachment 状态、由 `message.attachments` 喂。
+而 `toThreadMessages` 从 Task 1 起就**只投 text part**，`user_message.attachments`（图片引用）和
+`textFiles`（文本文件全文快照）一个都没投 —— 接线后用户发过的图片和文件会从会话区里**消失**。
+
+为什么不直接投进 `attachments` 字段：本仓图片本体在附件库，走
+`window.otter.attachmentDataUrl(id)` 异步懒取（内容寻址，同图只过一次 IPC，见 ADR-0009），
+而 assistant-ui 的 `attachments` 要求 content part 里已经有可直接渲染的 data URL。
+把它变成同步就得在投影里 eager fetch 全部图片 —— 投影是纯函数，不该碰 IPC。
+
+所以走和审计行同一条路：把原始事件挂到 `metadata.custom.otto` 上，
+渲染交给**既有的 `UserAttachments`**（它自己会懒取、自己有缓存、自己处理图片丢失的降级）。
+`UserAttachments` 一行不改。
+
+**只换 `<UserMessageAttachments />` 这一处**，不要整个覆盖 `UserMessage` ——
+气泡样式、动作条（复制）、BranchPicker 都在它里面，整体覆盖等于把它们全部重写一遍。
+
+- [ ] **Step 1: 写失败的测试**
+
+追加到 `tests/renderer/toThreadMessages.test.ts` 的「骨架」describe 块里：
+
+```ts
+  it("user_message 带上原始事件,附件才有数据源", () => {
+    const e = ev({
+      type: "user_message",
+      content: "看这张图",
+      attachments: [{ id: "sha256:abc", mediaType: "image/png", bytes: 1024, name: "a.png" }],
+    }, 0);
+    const out = toThreadMessages([e]);
+    expect(out[0]?.metadata).toEqual({ custom: { otto: e } });
+    expect(out[0]?.content).toEqual([{ type: "text", text: "看这张图" }]);
+  });
+
+  it("只带附件不带正文时,消息仍然产生(否则图片无处可挂)", () => {
+    const e = ev({
+      type: "user_message",
+      content: "",
+      attachments: [{ id: "sha256:abc", mediaType: "image/png", bytes: 1024 }],
+    }, 0);
+    const out = toThreadMessages([e]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toEqual([]);
+  });
+```
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+Run: `npx vitest run tests/renderer/toThreadMessages.test.ts`
+Expected: FAIL —— `metadata` 是 `undefined`（投影没挂原始事件）
+
+- [ ] **Step 3: 投影挂上原始事件**
+
+改 `src/renderer/src/aui/toThreadMessages.ts` 的 `user_message` 分支，`out.push` 改成：
+
+```ts
+      out.push({
+        role: "user",
+        id: String(e.seq),
+        createdAt: new Date(e.ts),
+        content: parts,
+        // 原始事件挂上来:附件(图片引用/文本文件快照)不进 content ——
+        // 图片本体在附件库、走 IPC 懒取(ADR-0009),而投影是纯函数不碰 IPC。
+        // 渲染交给既有的 UserAttachments(它自己懒取、自己缓存、自己降级)
+        metadata: { custom: { otto: e } },
+      });
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `npx vitest run tests/renderer/toThreadMessages.test.ts`
+Expected: PASS（25 条全绿）
+
+- [ ] **Step 5: `thread.tsx` 加 `UserAttachments` 槽**
+
+在 `ThreadComponents` 里加（紧挨着 Task 6 加的 `SystemMessage`，两处注释风格保持一致）：
+
+```tsx
+  /** 本仓加的槽:用户消息的附件由既有的 UserAttachments 渲染 ——
+      图片本体在附件库、走 IPC 懒取,投影塞不进 assistant-ui 的 attachments 字段。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  UserAttachments?: ComponentType | undefined;
+```
+
+在 `UserMessage` 里，把 `<UserMessageAttachments />` 换成走槽（缺省仍是上游那个）：
+
+```tsx
+const UserMessage: FC = () => {
+  const { UserAttachments: UserAttachmentsComponent = UserMessageAttachments } =
+    useContext(ThreadComponentsContext);
+  return (
+    <MessagePrimitive.Root
+      ...原样不动...
+    >
+      <UserAttachmentsComponent />
+      ...其余原样不动...
+```
+
+**只动这一处**。气泡的 className、动作条、BranchPicker 全部保持原样。
+
+- [ ] **Step 6: `OttoThread` 加 override**
+
+在 `src/renderer/src/aui/OttoThread.tsx` 里，照 `SystemMessage` 的写法加：
+
+```tsx
+/** 用户附件:原始事件挂在 metadata.custom.otto 上,交给既有的 UserAttachments 渲染。
+    它自己走 window.otter.attachmentDataUrl 懒取图片、自己有内存缓存、
+    图片丢失时自己降级成占位卡 —— 这些都不该在投影层重做一遍 */
+const UserMessageAttachments: ComponentType = () => {
+  const event = useAuiState((s) => s.message.metadata.custom["otto"]) as
+    | SessionEvent
+    | undefined;
+  if (event === undefined || event.type !== "user_message") return null;
+  return <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />;
+};
+```
+
+并把它加进 `COMPONENTS`：
+
+```tsx
+const COMPONENTS: ThreadComponents = {
+  SystemMessage,
+  UserAttachments: UserMessageAttachments,
+  ToolFallback: ToolFallbackWithLiveTail,
+};
+```
+
+顶部补 import：
+
+```ts
+import { UserAttachments } from "../components/UserAttachments.js";
+```
+
+- [ ] **Step 7: 验证**
+
+Run: `npx tsc --noEmit -p tsconfig.json && npm run build && npm test`
+Expected: 三条全过，`npm test` 966（964 + 本 task 的 2 条）。
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add src/renderer/src/aui/toThreadMessages.ts tests/renderer/toThreadMessages.test.ts src/renderer/src/components/assistant-ui/thread.tsx src/renderer/src/aui/OttoThread.tsx
+git commit -m "$(cat <<'EOF'
+fix(aui): 补回用户附件——投影没投，接线后图片会从会话区消失
+
+toThreadMessages 从一开始就只投 text part，user_message.attachments 和
+textFiles 一个都没投。而迁移后用户消息走 assistant-ui 的 UserMessage，它的附件
+由 message.attachments 喂——所以接线那一刻，用户发过的图片和文件会消失。
+
+不直接投进 attachments 字段：本仓图片本体在附件库，走 IPC 懒取(内容寻址，
+同图只过一次，ADR-0009)，而那个字段要求 content part 里已经有可渲染的 data URL。
+要同步就得在投影里 eager fetch 全部图片——投影是纯函数，不该碰 IPC。
+
+所以走和审计行同一条路：原始事件挂 metadata.custom.otto，渲染交给既有的
+UserAttachments。它自己懒取、自己缓存、图片丢了自己降级，这些都不该重做一遍。
+
+只换掉 UserMessage 里 <UserMessageAttachments /> 这一处，不整体覆盖 UserMessage——
+气泡样式、复制动作条、BranchPicker 都在它里面。
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 9: 接进 App.tsx，卸掉旧渲染栈
 
 **Files:**
 - Modify: `src/renderer/src/App.tsx`（`<ThreadViewport>` 到 `</ThreadViewport>` 整段，约 2091-2140 行）（`ThreadViewport` 那一整段）
@@ -1522,7 +1702,7 @@ EOF
 - Modify: `package.json`（卸 react-markdown / remark-gfm / rehype-highlight / highlight.js）
 
 **Interfaces:**
-- Consumes: `OttoRuntimeProvider`（Task 4）、`OttoThread`（Task 7）
+- Consumes: `OttoRuntimeProvider`（Task 4）、`OttoThread`（Task 7、8）
 
 **背景（实现者必读）：** `ThreadViewport` 现在承担贴底滚动（`src/renderer/src/lib/stickToBottom.ts`，有测试 `tests/renderer/stickToBottom.test.ts`）。assistant-ui 的 `ThreadPrimitive.Viewport` **自带** auto-scroll。`ThreadViewport` 和 `stickToBottom.ts` 在本 PR 后仍被回放视图用着 —— **先确认再删**，不确认就留着。
 
@@ -1638,7 +1818,7 @@ EOF
 
 ---
 
-### Task 9: 补 ADR，开 PR
+### Task 10: 补 ADR，开 PR
 
 **Files:**
 - Create: `docs/adr/00NN-assistant-ui-external-store.md`
