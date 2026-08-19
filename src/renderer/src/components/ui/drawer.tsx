@@ -50,15 +50,18 @@ const DrawerContent = React.forwardRef<
     <DrawerPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed z-50 flex flex-col bg-background border",
+        // 描边只画贴着内容那一条:抽屉的另外三边贴着视口边缘,在那儿画线等于
+        // 给整个窗口镶一圈亮框(基类写 `border` 时就是这个效果)。镜像同目录
+        // Sheet 的写法 —— 它从一开始就是每个 side 各自加自己那一条
+        "fixed z-50 flex flex-col bg-background",
         side === "bottom" &&
-          "inset-x-0 bottom-0 mt-24 h-auto rounded-t-[10px]",
+          "inset-x-0 bottom-0 mt-24 h-auto rounded-t-[10px] border-t",
         side === "right" &&
           "inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm",
         side === "left" &&
           "inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-sm",
         side === "top" &&
-          "inset-x-0 top-0 h-auto rounded-b-[10px]",
+          "inset-x-0 top-0 h-auto rounded-b-[10px] border-b",
         className
       )}
       {...props}
