@@ -107,7 +107,7 @@ export function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEven
   );
 }
 
-export function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
+export function EventRow({ event }: { event: SessionEvent }) {
   switch (event.type) {
     case "user_message":
       // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
@@ -126,6 +126,8 @@ export function EventRow({ event, all }: { event: SessionEvent; all: SessionEven
       );
 
     case "assistant_message":
+      // 工具调用不在这渲染:它们被 groupThread 抽出去按"相邻成组"重新编排了
+      // (同一条消息的调用可能和下一条消息的调用属于同一组)
       // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
       // 用户消息保持原文——用户打的不是 markdown，别替他排版
       return (
@@ -146,9 +148,6 @@ export function EventRow({ event, all }: { event: SessionEvent; all: SessionEven
               </Markdown>
             </div>
           )}
-          {event.toolCalls?.map((c) => (
-            <ToolRow key={c.id} call={c} all={all} />
-          ))}
         </>
       );
 

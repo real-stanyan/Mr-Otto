@@ -65,3 +65,15 @@ export function toolSummary(call: ToolCallRequest): { verb: string; target: stri
       return { verb: call.name, target: "", stat: "" };
   }
 }
+
+/** 折叠头的摘要:按动作归并计数。
+    "读取 ×5 · 写入 ×2" 比 "7 个工具调用" 有信息量——折着也知道这一段干了什么。
+    顺序按首次出现,不按字母/数量重排:那是动作发生的顺序,读者按这个顺序理解 */
+export function summarizeGroup(calls: ToolCallRequest[]): string {
+  const byVerb = new Map<string, number>();
+  for (const c of calls) {
+    const { verb } = toolSummary(c);
+    byVerb.set(verb, (byVerb.get(verb) ?? 0) + 1);
+  }
+  return [...byVerb].map(([verb, n]) => `${verb} ×${n}`).join(" · ");
+}

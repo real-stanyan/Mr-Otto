@@ -88,7 +88,9 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
-import { EventRow } from "./components/Timeline.js";
+import { EventRow, ToolRow } from "./components/Timeline.js";
+import { ToolGroup } from "./components/ToolGroup.js";
+import { groupThread } from "./lib/threadGroups.js";
 import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
 import { type OrbState } from "./lib/toolSummary.js";
 
@@ -1876,6 +1878,8 @@ export function App() {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
+  // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
+  const items = useMemo(() => groupThread(events), [events]);
   // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
   const turnPhase = agentPhase({
     status,
@@ -2032,9 +2036,16 @@ export function App() {
           {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
               不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
           <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
-            {events.map((e) => (
-              <EventRow key={e.seq} event={e} all={events} />
-            ))}
+            {items.map((item) =>
+              item.kind === "event" ? (
+                <EventRow key={item.key} event={item.event} />
+              ) : item.calls.length === 1 ? (
+                // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
+                <ToolRow key={item.key} call={item.calls[0]!} all={events} />
+              ) : (
+                <ToolGroup key={item.key} calls={item.calls} all={events} />
+              )
+            )}
             {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
             {streamingThinking && (
               // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
