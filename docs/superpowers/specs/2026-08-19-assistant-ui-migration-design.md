@@ -94,11 +94,22 @@ registry 是 copy-in 源码（`npx shadcn@latest add @assistant-ui/xxx`），不
 `components.json` 现有配置（style new-york、css 指向 `src/renderer/src/app.css`、
 alias `@/components`）与 registry 兼容，无需改动。
 
-### 4.2 base-ui 与 radix 并存
+### 4.2 ~~base-ui 与 radix 并存~~ —— 这条代价不存在（2026-08-20 更正）
 
-assistant-ui 组件依赖 `@base-ui/react`，本仓存量 sidebar/dialog/select 是 `radix-ui`。
-不强行统一 —— 那是独立的一次重构，不该塞进本次迁移。代价是 bundle 变大。
-这条写成 ADR，避免后来者误以为是疏忽。
+**原文断言**：assistant-ui 组件依赖 `@base-ui/react`，与本仓存量的 `radix-ui` 并存，代价是 bundle 变大。
+
+**实际不成立。** 实施到 Task 12 时核实：
+
+- `@assistant-ui/react@0.15.15` 的依赖里是 **`radix-ui`**（以及一串 `@radix-ui/*`），
+  正是本仓已经在用的那个 headless 库
+- 装进来的 11 个 copy-in 组件，无一 import `@base-ui`
+- 依赖树里唯一的 `@base-ui/react` 来自 `@lobehub/icons → @lobehub/ui`，与本次工作无关，
+  且早于它就在
+
+错因：这条来自 assistant-ui 文档中 `directive-text` 那一页列出的依赖 —— 而 `directive-text`
+是 PR2 的组件，本 PR 一处没装。**照文档推断依赖，而不是看装完之后的包**，就会得出这种结论。
+
+结论：headless 库没有分裂，两套并存的顾虑消失，相应的 ADR 记录的是这次证伪本身。
 
 ### 4.3 覆盖风险
 
