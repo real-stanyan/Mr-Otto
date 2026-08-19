@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +26,7 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
+import { TerminalView } from "./components/TerminalView.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { UserAttachments } from "./components/UserAttachments.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
@@ -2140,6 +2141,8 @@ export function App() {
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
+  const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
+  const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
@@ -2196,6 +2199,20 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
 
+  // ⌃` = 开/关终端面板(VS Code 同款肌肉记忆)。挂 window:焦点可能在
+  // xterm 里,输入框收不到
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "`") {
+        e.preventDefault();
+        if (useChat.getState().terminalPanelOpen) useChat.getState().closeTerminalPanel();
+        else useChat.getState().openTerminalPanel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
   }, [events.length, status, approval, streamingText.length, streamingThinking.length]);
@@ -2232,7 +2249,10 @@ export function App() {
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
-  const panel = friendChat ? <FriendChatView /> : gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
+  const panel = friendChat ? <FriendChatView />
+    : terminalPanelOpen ? <TerminalView />
+    : gitGraphOpen ? <GitGraphView />
+    : protocolOpen ? <ProtocolView /> : null;
   const base = mode === "game" ? (
     // game 是另一套模式，不是会话的一个视图：头部（会话名/工程/分支）和输入框
     // 都是 work 的语境，带过来只会让人以为这行字会发给牌桌
@@ -2288,6 +2308,9 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => void openGitGraph()}>
               <GitBranch /> Git Graph
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openTerminalPanel()}>
+              <TerminalIcon /> 终端
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
