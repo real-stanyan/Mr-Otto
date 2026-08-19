@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, X, Maximize2, Minimize2 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useChat } from "../store.js";
-import { terminalRegistry as registry } from "../lib/terminalRegistry.js";
+import { terminalRegistry as registry, rememberActiveTerminal, recallActiveTerminal } from "../lib/terminalRegistry.js";
 import { Button } from "./ui/button.js";
 import type { TerminalInfo } from "../../../shared/shellBridge.js";
 
@@ -43,7 +43,14 @@ export function TerminalView() {
       if (!alive) return;
       if (existing.length > 0) {
         setTabs(existing);
-        setActiveId(existing[0]!.id);
+        // 优先找回上次停留的标签(展开/收起面板会卸载重挂这棵子树,
+        // 状态归零——见 terminalRegistry.ts 里 rememberActiveTerminal 的注释)。
+        // 记忆里的 id 有可能已经不在这批标签里了(标签在面板关着的时候被关掉/
+        // 会话被删过又重建),这时候不能硬恢复一个不存在的标签——退回 existing[0]
+        const remembered = recallActiveTerminal(sessionId);
+        const seed = existing.find((t) => t.id === remembered) ?? existing[0]!;
+        setActiveId(seed.id);
+        rememberActiveTerminal(sessionId, seed.id);
         return;
       }
       try {
@@ -51,6 +58,7 @@ export function TerminalView() {
         if (!alive) return;
         setTabs(await window.otter.terminalList(sessionId));
         setActiveId(id);
+        rememberActiveTerminal(sessionId, id);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
@@ -137,12 +145,19 @@ export function TerminalView() {
     return () => ro.disconnect();
   }, [activeId]);
 
+  // 用户主动点标签切换——跟挂载 effect 里的"自动选一个"共用同一份记忆写入,
+  // 保证展开/收起面板重挂时找回的是用户真正停留过的那个标签
+  const selectTab = (id: string) => {
+    setActiveId(id);
+    if (sessionId) rememberActiveTerminal(sessionId, id);
+  };
+
   const newTab = async () => {
     if (!sessionId) return;
     try {
       const { id } = await window.otter.terminalOpen(sessionId, 80, 24);
       setTabs(await window.otter.terminalList(sessionId));
-      setActiveId(id);
+      selectTab(id);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -154,7 +169,13 @@ export function TerminalView() {
     registry.dispose(id); // 关标签才 dispose——这是唯一该 dispose 的时机(会话删除见 store.deleteSession)
     const rest = sessionId ? await window.otter.terminalList(sessionId) : [];
     setTabs(rest);
-    if (activeId === id) setActiveId(rest[0]?.id ?? null);
+    if (activeId === id) {
+      const next = rest[0]?.id ?? null;
+      setActiveId(next);
+      // next 为 null 时也要写进去(清掉记忆):关掉的正好是记忆里那个标签,
+      // 留着旧值下次重挂会去找一个已经不存在的 id
+      if (sessionId) rememberActiveTerminal(sessionId, next);
+    }
   };
 
   return (
@@ -164,7 +185,7 @@ export function TerminalView() {
           {tabs.map((t) => (
             <button
               key={t.id}
-              onClick={() => setActiveId(t.id)}
+              onClick={() => selectTab(t.id)}
               className={`group flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
                 t.id === activeId ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"
               }`}

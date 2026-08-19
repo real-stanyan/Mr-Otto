@@ -74,3 +74,26 @@ export function startTerminalLiveFeed(): void {
     }
   });
 }
+
+/** 会话 -> 上次活跃标签 id 的记忆,模块级、活得比 TerminalView 组件久。
+    展开/收起面板那颗按钮(App.tsx 的 panelWide)切的是两套结构不同的 JSX
+    (纯 div vs ResizablePanelGroup),React 认不出是"同一棵树换了个壳",
+    只能整个子树卸载重挂——TerminalView 里 useState 的 activeId 跟着归零,
+    组件自己的挂载 effect 又总是兜底选 existing[0],于是三个标签开着、
+    正停在第 3 个,按一下展开就被弹回第 1 个。挂到组件外面,重挂时才有
+    地方找回"关之前到底停在哪个标签" */
+const activeTerminalBySession = new Map<string, string>();
+
+/** 记一下这个会话当前停在哪个标签;id 为 null 表示"没有活跃标签了"(标签页清空/
+    最后一个标签被关掉),对应清掉记忆而不是留一个必然失效的旧值占位 */
+export function rememberActiveTerminal(sessionId: string, id: string | null): void {
+  if (id) activeTerminalBySession.set(sessionId, id);
+  else activeTerminalBySession.delete(sessionId);
+}
+
+/** 取回记忆,调用方必须自己拿"这个会话现在到底有哪些标签"去验证一遍——
+    这里存的可能是一个标签已经被关掉/会话已经被删掉之后的陈旧 id,
+    这个模块不知道后端此刻的真实状态,不该替调用方断言它还存在 */
+export function recallActiveTerminal(sessionId: string): string | null {
+  return activeTerminalBySession.get(sessionId) ?? null;
+}
