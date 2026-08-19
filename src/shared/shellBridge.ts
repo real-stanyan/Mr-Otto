@@ -171,6 +171,8 @@ export interface PokerTableSummary {
   seated: boolean;
   /** 桌上是否有牌正在打 */
   live: boolean;
+  /** 有筹码的在座人数。旧网关不带此字段 */
+  players?: number;
 }
 
 export interface PokerTableInput {

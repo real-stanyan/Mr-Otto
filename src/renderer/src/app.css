@@ -650,3 +650,9 @@
     transition: opacity 200ms ease;
   }
 }
+
+/* 等桌页:卡背绕中心的 3D 轨道(PokerTable 的 OrbitCards) */
+@keyframes orbit-spin {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(360deg); }
+}
