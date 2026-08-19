@@ -9,7 +9,7 @@
 // ② 任何会改变占位符位置的动作(拖宽/全屏/窗口 resize)都得重新量。
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, RotateCw, X, Maximize2, Minimize2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, RotateCw, X, Maximize2, Minimize2, Power } from "lucide-react";
 import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";
 import { rectToBounds } from "../lib/browserBounds.js";
@@ -73,6 +73,24 @@ export function BrowserPanel() {
     void window.otter.browserNavigate(sessionId, draft);
   };
 
+  // 真正把这个会话的浏览器销毁掉。
+  //
+  // 为什么要单独一颗按钮:右边那颗 X 是"收面板",按前提只摘不杀
+  // (重开时页面还在、登录态还在),于是一个 WebContentsView 一旦开出来就再没有
+  // 出口——开过十个会话的浏览器 = 十个 Chromium 渲染进程活到 app 退出。
+  // 终端那边同一件事是靠标签上的 X 解决的(TerminalView.closeTab → terminalClose),
+  // 但这里一个会话只有一个浏览器、没有标签行可挂,所以摆进工具栏。
+  // 语义差别也因此必须靠图标和 title 说清:X = 收起(页面留着),
+  // 这颗电源 = 结束(页面、历史、前进后退全没,下次开是全新一张白页)。
+  // cookie/登录态存在 persist: 分区里,不随 view 走,所以"结束"不等于登出。
+  //
+  // 销毁完顺手收面板:view 已经没了,留着面板只会显示一份过期快照
+  const shutdown = async () => {
+    if (!sessionId) return;
+    await window.otter.browserClose(sessionId);
+    closePanel();
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
@@ -96,10 +114,16 @@ export function BrowserPanel() {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") go(); }}
         />
-        <Button variant="ghost" size="icon" onClick={togglePanelWide}>
+        <Button variant="ghost" size="icon" onClick={togglePanelWide}
+          title={panelWide ? "收回半屏" : "展开全屏"}>
           {panelWide ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
         </Button>
-        <Button variant="ghost" size="icon" onClick={closePanel}>
+        <Button variant="ghost" size="icon" onClick={() => void shutdown()} disabled={!sessionId}
+          title="结束浏览器（丢掉当前页面和历史，释放内存；下次打开是新的空白页）">
+          <Power className="size-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={closePanel}
+          title="关闭面板（页面留着，下次打开还在这一页）">
           <X className="size-4" />
         </Button>
       </div>
