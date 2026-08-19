@@ -7,6 +7,7 @@
     "test": "vitest run",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "postinstall": "node scripts/fix-pty-perms.mjs",
     "rebuild-native": "electron-rebuild -f -w better-sqlite3 -w node-pty",
     "dist:mac": "electron-vite build && electron-builder --mac --arm64"
   },
