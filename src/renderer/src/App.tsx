@@ -103,6 +103,7 @@ import { retryLastUserMessage } from "./lib/retryAction.js";
 import { ToolGroup } from "./components/ToolGroup.js";
 import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
+import { buildToolIndex } from "./lib/toolIndex.js";
 import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
 import { type OrbState } from "./lib/toolSummary.js";
 
@@ -1900,6 +1901,9 @@ export function App() {
   const replaying = replayCursor !== null;
   // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
   const items = useMemo(() => groupThread(events), [events]);
+  // 工具索引同理:建一次往下传引用,工具行/工具组就不用各自全量扫事件了。
+  // 引用稳定还给下面的 memo 供了料——流式输出时它们才真的能跳过重渲染(#115)
+  const toolIndex = useMemo(() => buildToolIndex(events), [events]);
   // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
   const turnPhase = agentPhase({
     status,
@@ -2094,9 +2098,9 @@ export function App() {
                 <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
               ) : item.calls.length === 1 ? (
                 // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
-                <ToolRow key={item.key} call={item.calls[0]!} all={events} />
+                <ToolRow key={item.key} call={item.calls[0]!} index={toolIndex} />
               ) : (
-                <ToolGroup key={item.key} calls={item.calls} all={events} />
+                <ToolGroup key={item.key} calls={item.calls} index={toolIndex} />
               )
             )}
             {error && (
