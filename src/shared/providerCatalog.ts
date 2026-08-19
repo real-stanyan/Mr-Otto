@@ -37,9 +37,6 @@ export interface ProviderInfo {
   consoleUrl: string;
   /** key 的样子，贴错家时用户能自己发现（"sk-ant-… 怎么贴进 OpenAI 了"） */
   keyHint: string;
-  /** 品牌色。取能在 light/dark 两套底盘上都读得出的中间调——
-      纯黑/纯白系品牌（xAI、Moonshot）按这条规矩挪到中间调，不照搬官方值 */
-  accent: string;
   /** 主要面向国内还是海外——决定用户要不要操心网络可达性 */
   region: "cn" | "global";
 }
@@ -54,7 +51,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "OPENAI_API_KEY",
     consoleUrl: "https://platform.openai.com/api-keys",
     keyHint: "sk-…",
-    accent: "#10a37f",
     region: "global",
   },
   {
@@ -66,7 +62,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "ANTHROPIC_API_KEY",
     consoleUrl: "https://console.anthropic.com/settings/keys",
     keyHint: "sk-ant-…",
-    accent: "#d97757",
     region: "global",
   },
   {
@@ -78,7 +73,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "GOOGLE_API_KEY",
     consoleUrl: "https://aistudio.google.com/apikey",
     keyHint: "AIza…",
-    accent: "#4285f4",
     region: "global",
   },
   {
@@ -90,7 +84,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "DEEPSEEK_API_KEY",
     consoleUrl: "https://platform.deepseek.com/api_keys",
     keyHint: "sk-…",
-    accent: "#4d6bfe",
     region: "cn",
   },
   {
@@ -102,7 +95,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "GLM_API_KEY",
     consoleUrl: "https://bigmodel.cn/usercenter/apikeys",
     keyHint: "…（形如 id.secret）",
-    accent: "#3859ff",
     region: "cn",
   },
   {
@@ -114,7 +106,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "MOONSHOT_API_KEY",
     consoleUrl: "https://platform.moonshot.cn/console/api-keys",
     keyHint: "sk-…",
-    accent: "#7c5cff",
     region: "cn",
   },
   {
@@ -126,7 +117,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "DASHSCOPE_API_KEY",
     consoleUrl: "https://bailian.console.aliyun.com/?tab=model#/api-key",
     keyHint: "sk-…",
-    accent: "#615ced",
     region: "cn",
   },
   {
@@ -138,7 +128,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "XAI_API_KEY",
     consoleUrl: "https://console.x.ai",
     keyHint: "xai-…",
-    accent: "#6e6e73",
     region: "global",
   },
   {
@@ -150,7 +139,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "MINIMAX_API_KEY",
     consoleUrl: "https://platform.minimaxi.com/user-center/basic-information",
     keyHint: "eyJ…（JWT）",
-    accent: "#f23f5d",
     region: "cn",
   },
   {
@@ -162,7 +150,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "MISTRAL_API_KEY",
     consoleUrl: "https://console.mistral.ai/api-keys",
     keyHint: "…",
-    accent: "#ff7000",
     region: "global",
   },
   {
@@ -174,7 +161,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "GROQ_API_KEY",
     consoleUrl: "https://console.groq.com/keys",
     keyHint: "gsk_…",
-    accent: "#f55036",
     region: "global",
   },
   {
@@ -186,7 +172,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "OPENROUTER_API_KEY",
     consoleUrl: "https://openrouter.ai/keys",
     keyHint: "sk-or-…",
-    accent: "#6467f2",
     region: "global",
   },
   {
@@ -198,7 +183,6 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     apiKeyEnv: "SILICONFLOW_API_KEY",
     consoleUrl: "https://cloud.siliconflow.cn/account/ak",
     keyHint: "sk-…",
-    accent: "#6e56f8",
     region: "cn",
   },
 ];

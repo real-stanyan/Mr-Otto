@@ -66,7 +66,7 @@ export function ModelPicker({
         )}
         title="选择模型：先挑厂商，再挑型号"
       >
-        {choice && <ProviderMark provider={choice.provider} className="size-[15px] rounded-[4px]" />}
+        {choice && <ProviderMark provider={choice.provider} size={15} className="rounded-[4px]" />}
         <span className="min-w-0 truncate">{choice?.label ?? value}</span>
         <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
       </DropdownMenuTrigger>
@@ -75,7 +75,7 @@ export function ModelPicker({
         {groups.map((g) => (
           <DropdownMenuSub key={g.provider}>
             <DropdownMenuSubTrigger className="gap-[10px] py-[7px]">
-              <ProviderMark provider={g.provider} className="size-[18px]" />
+              <ProviderMark provider={g.provider} size={18} />
               <span className="min-w-0 flex-1 truncate">{g.info.name}</span>
               {/* 选中的那家在收起状态下也要认得出——不然用户不知道该点开哪个 */}
               {choice?.provider === g.provider && (

@@ -58,7 +58,7 @@ function ProviderRow({
         }}
         className="flex w-full items-center gap-3 px-4 py-[11px] text-left transition-colors duration-150 hover:bg-foreground/[0.04]"
       >
-        <ProviderMark provider={info.id} className="size-7 rounded-[8px]" />
+        <ProviderMark provider={info.id} size={28} className="rounded-[8px]" />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-[13.5px] font-[550]">{info.name}</span>
           <span className="truncate text-[11.5px] text-muted-foreground">
