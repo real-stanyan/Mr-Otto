@@ -1289,11 +1289,17 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
           variant="outline"
           size="sm"
           onClick={jump}
-          className="absolute bottom-3 right-5 h-auto gap-1.5 rounded-full bg-card/90 backdrop-blur-sm px-3 py-1 text-xs shadow-md transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0"
+          aria-label={missed ? "回到最新（有新内容）" : "回到最新"}
+          // 不写 transition-*:buttonVariants 基类那条已经含 opacity/transform,
+          // 在这再写一个会被 tailwind-merge 判为同组、把基类整条替换掉,
+          // 按压 scale(0.97) 和 hover 变色因此失去过渡
+          className="absolute bottom-3 right-5 h-auto gap-1.5 rounded-full bg-card/90 backdrop-blur-sm px-3 py-1 text-xs shadow-md starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0"
         >
           <ArrowDown className="size-3.5" />
           回到最新
-          {missed && <span className="size-1.5 rounded-full bg-brand" aria-label="有新内容" />}
+          {/* 圆点纯装饰:裸 span 映射到 generic 角色,可访问名不被可靠朗读,
+              状态挂在按钮自己的 aria-label 上(见上) */}
+          {missed && <span aria-hidden className="size-1.5 rounded-full bg-brand" />}
         </Button>
       )}
     </div>
@@ -1318,6 +1324,11 @@ In `src/renderer/src/App.tsx`：
 
 ```tsx
           <ThreadViewport
+            // key 按会话:换会话就是换一条时间线,滚动状态该跟着会话走而不是继承。
+            // 不能只靠 deps——那五项在两个空会话之间可能全等(status/approval 都是
+            // 默认值、两个 streaming 长度都是 0、events.length 也可能一样),
+            // effect 会被整帧跳过,滚动位置和「有新内容」圆点就串台了
+            key={sessionId}
             deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
           >
             {/* …原来 section 里的全部内容原样保留… */}
