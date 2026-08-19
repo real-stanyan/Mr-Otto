@@ -5,14 +5,37 @@
 // 离底期间来了新东西就在浮钮上点一颗圆点告诉你下面有没看过的内容。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { isAtBottom } from "../lib/stickToBottom.js";
 import { SelectionQuote } from "./SelectionQuote.js";
 
-export function ThreadViewport({ deps, children }: { deps: unknown[]; children: ReactNode }) {
+/** overlay:钉在滚动区之上的浮层(会话分区轨)。放这一层而不是塞进 children,
+    是因为它必须待在滚动元素外面——跟着内容滚走的目录不是目录。
+    viewportRef:把滚动元素借给调用方量位置(scrollspy / 跳转),读用,别拿它改滚动状态——
+    粘性滚动的判定全在这个组件里,外面再动一次 scrollTop 就成了两个人抢方向盘 */
+export function ThreadViewport({
+  deps,
+  overlay,
+  viewportRef,
+  children,
+}: {
+  deps: unknown[];
+  overlay?: ReactNode;
+  viewportRef?: RefObject<HTMLElement | null>;
+  children: ReactNode;
+}) {
   const ref = useRef<HTMLElement>(null);
+  // 回调 ref 而不是 useEffect 同步:effect 要等到子树挂完才跑,
+  // 而调用方的 scrollspy effect 依赖同一个元素,晚一拍就读到 null
+  const attach = useCallback(
+    (el: HTMLElement | null) => {
+      ref.current = el;
+      if (viewportRef) viewportRef.current = el;
+    },
+    [viewportRef]
+  );
   const [stuck, setStuck] = useState(true);
   // 离底期间有没有来过新东西。回到底部即清
   const [missed, setMissed] = useState(false);
@@ -54,13 +77,14 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
       {/* pb 要盖过 footer 那道 40px 渐隐:不留这段余量,滚到底时最后一条消息
           正好压在渐变里,读起来像被蒙了一层 */}
       <section
-        ref={ref}
+        ref={attach}
         onScroll={onScroll}
         className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2"
       >
         {children}
       </section>
       <SelectionQuote hostRef={ref} />
+      {overlay}
       {!stuck && (
         <Button
           type="button"

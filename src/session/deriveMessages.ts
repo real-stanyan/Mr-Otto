@@ -314,6 +314,8 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "session_renamed":
       case "tool_execution_started":
       case "turn_ended":
+      // 分区目录是给人的导航，不是对话内容——喂回去只会污染上下文
+      case "section_classified":
         break;
     }
   }
