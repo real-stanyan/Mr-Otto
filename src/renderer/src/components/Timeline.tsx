@@ -2,13 +2,12 @@
 // 都是事件日志的直接投影——UI 不持有自己的对话状态。
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { useChat } from "../store.js";
 import { Hl } from "../replay/Replay.js";
 import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
@@ -18,6 +17,7 @@ import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TO
 import { MD_COMPONENTS } from "./CodeBlock.js";
 import { MessageActions } from "./MessageActions.js";
 import { RetryButton } from "./RetryButton.js";
+import { ToolLiveTail } from "./ToolLiveTail.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004）。
@@ -27,14 +27,6 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
   const [open, setOpen] = useState(false);
   const result = index.results.get(call.id);
   const started = index.starts.get(call.id);
-  // 执行中的直播尾巴（bash 的 stdout/stderr 碎片）。tool_result 落地后 store
-  // 会清掉这个 key，这里自然消失——直播只活在"事实到来前"的窗口里
-  const live = useChat((s) => s.toolOutputByCall[call.id]);
-  const liveRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义：始终看最新输出，新碎片到就滚到底
-    liveRef.current?.scrollTo(0, liveRef.current.scrollHeight);
-  }, [live]);
   const { verb, target, stat } = toolSummary(call);
   const status = result?.status ?? "running";
 
@@ -73,15 +65,7 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
           ›
         </span>
       </button>
-      {!result && live && (
-        // 执行中的输出直播:迷你终端尾巴。低亮度——它是过程噪音,不是结果
-        <pre
-          className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-          ref={liveRef}
-        >
-          {live}
-        </pre>
-      )}
+      <ToolLiveTail toolCallId={call.id} done={result !== undefined} />
       {open && (
         // 详情展开是偶发动作:150ms ease-out 入场,从触发行长出来(origin 左上)
         <div className="mt-[2px] mb-1 px-3 py-[10px] bg-card border border-border rounded-[10px] origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100">
