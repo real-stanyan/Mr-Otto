@@ -19,9 +19,11 @@ export interface TerminalInfo {
 }
 
 export interface TerminalHubDeps {
-  /** 由 index.ts 注入(内部走 LocalWorld.openTerminal)。注入而非直接 import:
-      测试要能塞假 pty,v2 要能换成容器世界 */
-  openTerminal(workspace: string, opts: OpenTerminalOptions): Promise<TerminalSession>;
+  /** 由 index.ts 注入,内部路由到该会话 agent 的 ExecutionWorld(ADR-0031 §1)——
+      不是自己另起一个 LocalWorld:v2 里 agent 的 world 换成 SandboxWorld,
+      终端才会自动跟着开进那个 bot 的容器,而不是宿主机。sessionId 就是给这层路由用的。
+      注入而非直接 import:测试要能塞假 pty,v2 要能换成容器世界 */
+  openTerminal(sessionId: string, workspace: string, opts: OpenTerminalOptions): Promise<TerminalSession>;
   push: {
     data(id: string, data: string): void;
     exit(id: string, exitCode: number): void;
@@ -104,7 +106,7 @@ export function createTerminalHub(deps: TerminalHubDeps) {
       const id = randomUUID();
       let session: TerminalSession;
       try {
-        session = await deps.openTerminal(workspace, { cols, rows });
+        session = await deps.openTerminal(sessionId, workspace, { cols, rows });
       } catch (err) {
         // 开失败了,占的座得还回去——不然一次失败的 open 永久吃掉一个名额
         pending.set(sessionId, (pending.get(sessionId) ?? 1) - 1);

@@ -15,7 +15,6 @@ import {
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
-import { createLocalWorld } from "../world/localWorld.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
@@ -248,10 +247,19 @@ void app.whenReady().then(() => {
   const runningSessions = new Set<string>();
   let currentSessionId: string | null = null;
 
-  // 终端注册表:app 级资源。openTerminal 注入而非直接 import node-pty——
-  // 硬规则说了,原生模块只在 LocalWorld 里出现
+  // 终端注册表:app 级资源。openTerminal 走该会话 agent 的 ExecutionWorld,
+  // 不是这里另起一个 LocalWorld——否则 v2 SandboxWorld 接进来之后,agent 明明
+  // 看得见容器里的文件系统,用户终端却还开在宿主机上,ADR-0031 §1 挡的就是这个
+  // (曾经的接线绕开了 seam:见该 ADR 的 review 记录)。workspace 参数留着不是
+  // 白留——world 早已经绑好 root,这里只需要 sessionId 去 agents 里找到那个 world
   const terminals = createTerminalHub({
-    openTerminal: (workspace, opts) => createLocalWorld({ root: workspace }).openTerminal!(opts),
+    openTerminal: async (sessionId, _workspace, opts) => {
+      const agent = agents.get(sessionId);
+      if (!agent?.world.openTerminal) {
+        throw new Error("这个会话的 world 不支持终端能力");
+      }
+      return agent.world.openTerminal(opts);
+    },
     push: {
       data: (id, data) => send(CHANNELS.terminalData, { id, data }),
       exit: (id, exitCode) => send(CHANNELS.terminalExit, { id, exitCode }),
