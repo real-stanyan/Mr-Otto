@@ -1692,14 +1692,108 @@ EOF
 
 ---
 
-### Task 9: 接进 App.tsx，卸掉旧渲染栈
+### Task 9: 模型输出真的换成 streamdown
+
+**Files:**
+- Modify: `src/renderer/src/components/assistant-ui/markdown-text.tsx`
+
+**Interfaces:**
+- Consumes: `@assistant-ui/react-streamdown` 的 `StreamdownTextPrimitive`、`@streamdown/code` 的 `code`、`@streamdown/cjk` 的 `cjk`（Task 5 已装：`streamdown@2.5.0` / `@streamdown/code@1.1.1` / `@streamdown/cjk@1.0.3` / `@assistant-ui/react-streamdown@0.3.10`）
+- Produces: `markdown-text.tsx` 仍然导出同名的 `MarkdownText`，**签名不变** —— 它的两个调用点（`thread.tsx` 的 `case "text"`、`reasoning.tsx` 的 `ReasoningImpl`）一行都不用改
+
+**背景（实现者必读）：这一项目前是没交付的**
+
+用户要的 12 项里有两项是「模型输出用 streamdown」和「模型输出代码块用 syntax-highlighting」。
+Task 5 把 `streamdown` 和插件都装了、`app.css` 的两行样式也接了，**但 registry 生成的
+`markdown-text.tsx` 走的是 `@assistant-ui/react-markdown` 的 `MarkdownTextPrimitive`**，
+streamdown 至今休眠。不换掉，这两项等于没做。
+
+换的位置只有一个文件：`markdown-text.tsx` 的内部实现。它导出的 `MarkdownText` 名字和签名不动，
+所以 `thread.tsx:316` 和 `reasoning.tsx:326` 两个调用点不用碰。
+
+**`@streamdown/cjk` 不是可选的**：本仓界面和内容都是中文，缺了 CJK 断行插件排版会散。
+
+- [ ] **Step 1: 读清两个 primitive 的真实差异**
+
+Run: `sed -n 1,60p src/renderer/src/components/assistant-ui/markdown-text.tsx`
+Run: `grep -n "StreamdownTextPrimitiveProps\|type StreamdownProps" -A 40 node_modules/@assistant-ui/react-streamdown/dist/index.d.ts | head -60`
+
+搞清三件事，写进报告：
+① `StreamdownTextPrimitive` 接哪些 prop（`plugins` / `shikiTheme` / `controls` / `mode` / `caret` …）
+② 现有 `defaultComponents` 里哪些还需要（streamdown 自带代码块高亮与控件，`CodeHeader`、
+   `pre`/`code` 的覆盖多半整个多余）
+③ `remark-gfm` 还需不需要显式传（streamdown 默认带 GFM 就不用）
+
+**以 `.d.ts` 为准，不要照抄文档。**
+
+- [ ] **Step 2: 换掉实现**
+
+把 `MarkdownText` 的实现改成 `StreamdownTextPrimitive`，插件至少给 `{ code, cjk }`：
+
+```tsx
+// 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
+import { code } from "@streamdown/code";
+import { cjk } from "@streamdown/cjk";
+import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
+
+// 模块级常量:每次渲染新建对象会让整棵子树白重挂
+const PLUGINS = { code, cjk };
+```
+
+主题跟随本仓的明暗两套（`app.css` 的 `:root` 裸变量 = light、`.dark` 覆盖）。
+`shikiTheme` 若接受 `[light, dark]` 双主题，用它；只接受单个就选与本仓 `--pre-bg` 对得上的那个，
+并在报告里说明选了哪个、为什么。
+
+删掉因此变成死代码的东西（`CodeHeader`、`pre`/`code` 的 `defaultComponents` 覆盖、
+只为它们服务的 import）。**逐个 grep 确认无人引用再删**；拿不准就留着并在报告里列出来。
+
+- [ ] **Step 3: 保住 `.md` 排版作用域**
+
+`app.css:287` 起那段排版规则是挂在 `.md` 后代选择器上的（「react-markdown 生成的 DOM 挂不上
+utility，排版只能走后代选择器」）。streamdown 生成的 DOM 结构不同 —— 确认换完之后
+模型回复的标题/列表/引用/表格排版没塌。
+
+Run: `grep -n "\.md " src/renderer/src/app.css | head -20`
+
+若 streamdown 自带排版而与 `.md` 那套打架，**不要改 `app.css`**（那段 `ProtocolView` 也在吃），
+改成在 `markdown-text.tsx` 这一侧收敛，并在报告里说明。
+
+- [ ] **Step 4: 验证**
+
+Run: `npx tsc --noEmit -p tsconfig.json && npm run build && npm test`
+Expected: 三条全过，`npm test` 仍是 966。
+
+Run: `grep -rn "streamdown" src/renderer/src/components/assistant-ui/ | head`
+Expected: 至少 `markdown-text.tsx` 命中 —— 这是「不再休眠」的证据。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add src/renderer/src/components/assistant-ui/markdown-text.tsx
+git commit -m "$(cat <<'EOF'
+feat(ui): 模型输出真的换成 streamdown，代码块走 Shiki
+
+装是装了，但 registry 生成的 markdown-text 走的是 @assistant-ui/react-markdown
+的 MarkdownTextPrimitive——streamdown 一直休眠，「模型输出用 streamdown」和
+「代码块用 syntax-highlighting」这两项等于没做。
+
+只换 markdown-text.tsx 的内部实现，导出的名字和签名不动，所以 thread.tsx 和
+reasoning.tsx 两个调用点一行没碰。
+
+@streamdown/cjk 不是可选的:本仓界面和内容都是中文，缺了断行排版会散。
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 10: 接进 App.tsx
 
 **Files:**
 - Modify: `src/renderer/src/App.tsx`（`<ThreadViewport>` 到 `</ThreadViewport>` 整段，约 2091-2140 行）（`ThreadViewport` 那一整段）
-- Modify: `src/renderer/src/components/Timeline.tsx`（换 Markdown 实现）
-- Modify: `src/renderer/src/components/CodeBlock.tsx`（删 `MD_COMPONENTS`，保留 `CopyButton` 的用法说明）
-- Modify: `src/renderer/src/app.css`（删 hljs 配色段）
-- Modify: `package.json`（卸 react-markdown / remark-gfm / rehype-highlight / highlight.js）
+- Modify: `src/renderer/src/components/Timeline.tsx`（只删 `user_message` / `assistant_message` 两个已到不了的分支及其独有的 import）
 
 **Interfaces:**
 - Consumes: `OttoRuntimeProvider`（Task 4）、`OttoThread`（Task 7、8）
@@ -1736,42 +1830,42 @@ import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 ```
 
-- [ ] **Step 3: 换掉 Timeline.tsx 里的 Markdown**
+- [ ] **Step 3: 清掉 `EventRow` 里已经到不了的两个分支**
 
-`src/renderer/src/components/Timeline.tsx` 里 `EventRow` 的 `assistant_message` 分支不再走消息主路径（它归 `OttoThread` 了），但**其余分支仍在用 Markdown**。把这四行 import：
+上一步之后，`EventRow` 只剩一个调用点：`OttoThread` 的 `SystemMessage` override，
+而它只会拿到审计事件（`toThreadMessages` 把 `user_message` 投成 `role:"user"`、
+`assistant_message` 投成 `role:"assistant"`，两者都不走 system 槽）。
+所以 `EventRow` 的 `case "user_message"` 和 `case "assistant_message"` 已经到不了。
 
-```ts
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
-import { MD_COMPONENTS } from "./CodeBlock.js";
-```
+先自己验一遍这个判断：
 
-换成：
+Run: `grep -rn "EventRow" src/renderer/src/`
+应当只剩 `Timeline.tsx` 的定义处和 `OttoThread.tsx` 的调用处。**若还有第三处，停下来报告** ——
+说明我这个判断错了，那两个分支还活着。
 
-```ts
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
+判断成立就删掉这两个 `case`，以及只为它们服务的 import：
+`Markdown` / `remarkGfm` / `rehypeHighlight` / `MD_COMPONENTS` / `UserAttachments` /
+`MessageActions` / `thinkingLabel`。**逐个 grep 确认文件内无人引用再删**。
 
-const MD_PLUGINS = { code, cjk };
-```
+- [ ] **Step 4: 不要卸包，不要删 hljs 配色段**
 
-并把每处 `<Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>{x}</Markdown>` 换成 `<Streamdown plugins={MD_PLUGINS}>{x}</Streamdown>`。
+这两件事本 PR **明确不做**，原因是查实的，不是保守：
 
-Run: `grep -n "Markdown" src/renderer/src/components/Timeline.tsx src/renderer/src/App.tsx`
-确认一处不剩。
+- `src/renderer/src/components/ProtocolView.tsx:5-7` 独立地用着
+  `react-markdown` / `remark-gfm` / `rehype-highlight`（协议仪表盘，和会话区无关）。卸包会把它打瞎。
+- `app.css:398` 起那段 `.md .hljs-*` 配色正是 `ProtocolView` 的代码高亮在吃。删了它同样打瞎。
+- 而且 `@assistant-ui/react-markdown` 自己就依赖 `react-markdown@^10.1.0`（见其 `package.json`），
+  即便本仓一处不用，它也会作为传递依赖留在树里。
 
-- [ ] **Step 4: 删 app.css 里的 hljs 段**
+Run: `grep -rn "react-markdown\|rehype-highlight\|remark-gfm" src/ | grep -v "components/assistant-ui/"`
+确认删完 Step 3 之后只剩 `ProtocolView.tsx` 那三行。**只剩它 = 对**，不是遗漏。
 
-Run: `grep -n "hljs" src/renderer/src/app.css`
-把查到的那整段配色规则删掉（Shiki 自带主题，不吃这套 class）。`.hl`（自研高亮器，工具详情面板 `TOOL_PRE` 在用）**不要删**。
+- [ ] **Step 5: 确认 `CodeBlock.tsx` 的去留**
 
-- [ ] **Step 5: 卸旧依赖**
+Run: `grep -rn "MD_COMPONENTS\|CodeBlock" src/renderer/src/`
 
-```bash
-npm uninstall react-markdown remark-gfm rehype-highlight highlight.js
-```
+`MD_COMPONENTS` 若在 Step 3 之后无人引用，删掉那一行导出；`CodeBlock` 组件本身若也无人引用，
+整个文件可以删。**但 `CopyButton` 一定还有人用，别顺手删它。** 拿不准就留着并在报告里列出来。
 
 - [ ] **Step 6: 类型检查 + 构建**
 
@@ -1798,7 +1892,7 @@ npm run dev
 ```bash
 git add -A
 git commit -m "$(cat <<'EOF'
-feat(ui): 会话区输出侧切到 assistant-ui,卸掉 react-markdown/highlight.js
+feat(ui): 会话区输出侧接进 assistant-ui
 
 streamingText / streamingThinking / turn 失败行这几块从 App.tsx 消失不是
 删功能:它们的职责进了 toThreadMessages —— 直播缓冲成 live 消息,turn 的死法
@@ -1809,7 +1903,11 @@ ApprovalCard / QuestionnaireCard 留在原位:它们是挂起中的活控制件,
 
 items.map 整段删掉,不留双渲染路径:八类审计行已经由投影 + SystemMessage
 override 喂回同一个 EventRow 渲染,视觉不丢。EventRow 的 user/assistant 两个
-分支从此走不到,但没删——删要动它的结构,那是 PR2 的活。
+分支从此到不了(它只剩 SystemMessage 一个调用点,而那里只会来审计事件),一并删掉。
+
+不卸 react-markdown 那几个包、也不删 app.css 的 hljs 配色段:ProtocolView 独立
+用着它们(协议仪表盘,和会话区无关),卸了删了会把它打瞎。何况
+@assistant-ui/react-markdown 自己就依赖 react-markdown,它本来也留在依赖树里。
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1818,7 +1916,7 @@ EOF
 
 ---
 
-### Task 10: 补 ADR，开 PR
+### Task 11: 补 ADR，开 PR
 
 **Files:**
 - Create: `docs/adr/00NN-assistant-ui-external-store.md`
