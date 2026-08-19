@@ -32,7 +32,7 @@ function isInvisible(e: SessionEvent): boolean {
     case "approval_decision":
       return e.decision === "approved"; // 批准只是正常放行,拒绝才是事实
     case "turn_ended":
-      return e.outcome === "ok";        // 正常收工不留痕,失败/中断留
+      return e.outcome === "completed";        // 正常收工不留痕,失败/中断留
     default:
       return false;
   }

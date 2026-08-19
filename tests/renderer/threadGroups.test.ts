@@ -32,7 +32,7 @@ const user = (content: string): SessionEvent =>
 const approval = (decision: "approved" | "denied"): SessionEvent =>
   ({ ...env(), type: "approval_decision", toolCallId: "x", decision }) as SessionEvent;
 
-const turnEnded = (outcome: "ok" | "error" | "aborted"): SessionEvent =>
+const turnEnded = (outcome: "completed" | "error" | "aborted"): SessionEvent =>
   ({ ...env(), type: "turn_ended", outcome, ...(outcome === "error" ? { error: "炸了" } : {}) }) as SessionEvent;
 
 describe("groupThread", () => {
@@ -97,7 +97,7 @@ describe("groupThread", () => {
       started("a"),
       approval("approved"),
       result("a"),
-      turnEnded("ok"),
+      turnEnded("completed"),
       tools(call("b")),
     ]);
     expect(items).toHaveLength(1);
@@ -126,4 +126,10 @@ describe("groupThread", () => {
     expect(items[0]!.key).toBe(u.seq);
     expect(items[1]!.key).toBe("first");
   });
+  it("turn 正常收工(completed)看不见,不打断分组——'ok' 不是这个字段的合法值", () => {
+    const items = groupThread([tools(call("a")), result("a"), turnEnded("completed"), tools(call("b"))]);
+    expect(items).toHaveLength(1);
+    expect((items[0] as { calls: ToolCallRequest[] }).calls.map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
 });
