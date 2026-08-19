@@ -24,6 +24,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | downstream | A project that copies this Gearbox protocol and then evolves independently; sync status is self-checked downstream via `gearbox-version` (pull-primary, ADR-0026 — the upstream fleet dashboard was retired in ADR-0033) | See ADR-0026 |
 | backfill | Downstream pulls Gearbox protocol improvements into its local copy; **pull-triggered** — downstream runs `gearbox-version` at the start of a shift to self-check, and `gearbox-update` if it's behind, with no dependency on upstream pushing; it's alignment, not enforcement — downstream can decline | ADR-0013 → ADR-0026 (push-triggered was downgraded to pull-triggered) |
 | protocol version number | A semver-variant tag: **major** = cross-tool/cross-repo contract change; **minor** = a new mechanism added; **patch** = revision of an existing file. Every protocol PR declares a `Version bump`; the author tags after merge; the downstream local version is recorded in the `.gearbox-version` stamp (written and read by tooling) | ADR-0023; baseline v0.0.0 |
+| 终端面板（Terminal panel） | 会话里内嵌的真 PTY 终端，纯人用。输出不进事件日志、不进模型上下文（ADR-0031）——它不是任何事实的投影，是人的旁路工具。 | |
+| 回滚缓冲（terminal ring buffer） | 主进程为每个终端保留的末尾约 200 KB 输出。面板关掉时渲染层的 xterm 实例就没了而 pty 还在吐，靠它接住；重开面板一次性灌回去。内存态，不落盘，与 pty 进程同生共死。 | |
 
 ## Key invariants
 

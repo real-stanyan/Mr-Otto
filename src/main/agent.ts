@@ -248,6 +248,10 @@ export function createAgent(opts: {
     },
     sessionId,
     workspace: opts.workspace,
+    /** 这个 agent 的 ExecutionWorld——终端接线要靠它才能走 seam 而不是绕过去
+        (ADR-0031)：v2 SandboxWorld 把 openTerminal 实现成 docker exec，
+        终端得开在 agent 这个 world 里，不能在 index.ts 里另起一个 LocalWorld */
+    world,
     /** 喂给模型的工具声明（渲染层算上下文占用用；只有 name/description/parameters） */
     toolDefs: tools.map((t) => t.def),
     switchModel,

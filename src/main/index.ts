@@ -14,6 +14,7 @@ import {
   type PokerTableInput,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { createTerminalHub } from "./terminalHub.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
@@ -249,6 +250,25 @@ void app.whenReady().then(() => {
   const runningSessions = new Set<string>();
   let currentSessionId: string | null = null;
 
+  // 终端注册表:app 级资源。openTerminal 走该会话 agent 的 ExecutionWorld,
+  // 不是这里另起一个 LocalWorld——否则 v2 SandboxWorld 接进来之后,agent 明明
+  // 看得见容器里的文件系统,用户终端却还开在宿主机上,ADR-0031 §1 挡的就是这个
+  // (曾经的接线绕开了 seam:见该 ADR 的 review 记录)。workspace 参数留着不是
+  // 白留——world 早已经绑好 root,这里只需要 sessionId 去 agents 里找到那个 world
+  const terminals = createTerminalHub({
+    openTerminal: async (sessionId, _workspace, opts) => {
+      const agent = agents.get(sessionId);
+      if (!agent?.world.openTerminal) {
+        throw new Error("这个会话的 world 不支持终端能力");
+      }
+      return agent.world.openTerminal(opts);
+    },
+    push: {
+      data: (id, data) => send(CHANNELS.terminalData, { id, data }),
+      exit: (id, exitCode) => send(CHANNELS.terminalExit, { id, exitCode }),
+    },
+  });
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -376,6 +396,23 @@ void app.whenReady().then(() => {
     gitGraph.commit(repoDir, hash)
   );
 
+  // ── 终端 ────────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.terminalList, (_e, sessionId: string) => terminals.list(sessionId));
+
+  ipcMain.handle(CHANNELS.terminalOpen, (_e, sessionId: string, cols: number, rows: number) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在，开不了终端");
+    // cwd 取会话的工程文件夹:终端是"这个会话的终端",不是随便一个 shell
+    return terminals.open(sessionId, agent.workspace, cols, rows);
+  });
+
+  ipcMain.handle(CHANNELS.terminalAttach, (_e, id: string) => terminals.attach(id));
+  ipcMain.handle(CHANNELS.terminalInput, (_e, id: string, data: string) => terminals.input(id, data));
+  ipcMain.handle(CHANNELS.terminalResize, (_e, id: string, cols: number, rows: number) =>
+    terminals.resize(id, cols, rows)
+  );
+  ipcMain.handle(CHANNELS.terminalClose, (_e, id: string) => terminals.close(id));
+
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
   ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
@@ -499,6 +536,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
+    terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
     store.purge(sessionId);
     agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
@@ -678,7 +716,10 @@ void app.whenReady().then(() => {
     }
   );
 
-  app.on("before-quit", () => store.close());
+  app.on("before-quit", () => {
+    terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
+    store.close();
+  });
 });
 
 app.on("window-all-closed", () => {

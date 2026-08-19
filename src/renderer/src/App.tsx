@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +25,7 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
+import { TerminalView } from "./components/TerminalView.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
@@ -1209,6 +1210,7 @@ function AppSidebar() {
   const identity = displayIdentity(account, myProfile);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
+  const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1359,7 +1361,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-col items-start gap-px py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
@@ -1917,6 +1919,8 @@ export function App() {
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
+  const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
+  const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
   // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
@@ -1989,6 +1993,20 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
 
+  // ⌃` = 开/关终端面板(VS Code 同款肌肉记忆)。挂 window:焦点可能在
+  // xterm 里,输入框收不到
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "`") {
+        e.preventDefault();
+        if (useChat.getState().terminalPanelOpen) useChat.getState().closeTerminalPanel();
+        else useChat.getState().openTerminalPanel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const submit = () => {
     const text = input.trim();
     // 只贴了图不打字也算一条消息:附件本身就是内容
@@ -2021,7 +2039,10 @@ export function App() {
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
-  const panel = friendChat ? <FriendChatView /> : gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
+  const panel = friendChat ? <FriendChatView />
+    : terminalPanelOpen ? <TerminalView />
+    : gitGraphOpen ? <GitGraphView />
+    : protocolOpen ? <ProtocolView /> : null;
   const base = mode === "game" ? (
     // game 是另一套模式，不是会话的一个视图：头部（会话名/工程/分支）和输入框
     // 都是 work 的语境，带过来只会让人以为这行字会发给牌桌
@@ -2079,6 +2100,9 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => void openGitGraph()}>
               <GitBranch /> Git Graph
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openTerminalPanel()}>
+              <TerminalIcon /> 终端
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
