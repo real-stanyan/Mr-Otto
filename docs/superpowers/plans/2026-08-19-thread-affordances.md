@@ -139,14 +139,17 @@ export function createReasoningClock(now: () => number = Date.now): ReasoningClo
   let end: number | null = null;
   return {
     observe(kind) {
+      // 每次都读一次时钟:?? = 会短路掉 now(),而"读时钟"这件事
+      // 本身要发生在每个碎片上(注入的假时钟按调用次数走)
+      const t = now();
       if (kind === "reasoning") {
         // 只认第一个:正文之后又冒出思考碎片时不重新计时,
         // 否则一次调用会算出好几段"思考",拼不成一个数
-        start ??= now();
+        if (start === null) start = t;
         return;
       }
       // 第一个正文碎片 = 思考结束那一刻。之后的正文是生成时间,不再改写
-      if (start !== null) end ??= now();
+      if (start !== null && end === null) end = t;
     },
     finish() {
       if (start === null) return null;
