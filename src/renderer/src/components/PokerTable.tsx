@@ -401,9 +401,15 @@ function ActionBar({ hand }: { hand: PokerHandView }) {
     // 点名等谁,不说"别人":桌上人一多,"等别人"等于什么都没说
     const actingSeat = hand.seats.find((s) => s.userId === hand.toAct) ?? null;
     const who = actingSeat ? seatIdentity(actingSeat, friends, account.name, account.avatarUrl) : null;
+    // 对方掉线时如实说,并交代会发生什么 —— 干等一个不在场的人最磨人
+    const offline = actingSeat ? actingSeat.online === false : false;
     return (
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-        {hand.done ? "这手牌结束了" : `等 ${who?.name ?? "对手"} 行动`}
+        {hand.done
+          ? "这手牌结束了"
+          : offline
+            ? `${who?.name ?? "对手"} 掉线了，超时会自动弃牌`
+            : `等 ${who?.name ?? "对手"} 行动`}
         {!hand.done && <span className="animate-pulse motion-reduce:animate-none">…</span>}
       </div>
     );
@@ -529,6 +535,9 @@ function Table({ hand }: { hand: PokerHandView }) {
               <div className="flex items-center gap-1.5 text-[11px]">
                 <SeatAvatar name={who.name} url={who.avatarUrl} />
                 <span className="max-w-[96px] truncate font-medium">{seat.isMe ? "你" : who.name}</span>
+                {seat.online === false && (
+                  <span className="rounded-full bg-muted px-1.5 text-[9px] text-muted-foreground">离线</span>
+                )}
                 {i === hand.button && (
                   // 现实牌桌的庄家钮就是白色小圆片,深浅主题都不跟着变
                   <span className="grid h-3.5 w-3.5 place-items-center rounded-full border border-black/20 bg-white text-[9px] font-bold text-black/70 shadow-sm">

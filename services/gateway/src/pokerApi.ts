@@ -16,6 +16,8 @@ export interface PokerApiDeps {
   /** 注入幂等键，测试要能钉死 */
   newId?: () => string;
   onError?: (where: string, err: unknown) => void;
+  /** toAct 玩家连续离场多久后代为弃牌。测试要能调短 */
+  offlineFoldMs?: number;
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -77,12 +79,56 @@ export function createPokerApi(deps: PokerApiDeps) {
   /** 每张桌的 SSE 订阅者。一人可以开多个窗口，所以是数组不是 map */
   const subs = new Map<string, { userId: string; send: (v: unknown) => void }[]>();
 
+  /** 在场者 = 订阅这张桌 SSE 的去重 userId。这是"人还开着牌桌页"的唯一权威信号 */
+  function onlineSet(tableId: string): Set<string> {
+    return new Set((subs.get(tableId) ?? []).map((x) => x.userId));
+  }
+
   function push(tableId: string): void {
+    const online = onlineSet(tableId);
     for (const sub of subs.get(tableId) ?? []) {
       // 各推各的：同一手牌，每个人看到的不是同一份数据
-      sub.send(tables.view(tableId, sub.userId));
+      sub.send(tables.view(tableId, sub.userId, online));
     }
   }
+
+  // ── 掉线自动弃牌 ──
+  // 牌局中途关掉 app 的人会让 toAct 永远指着空气,整桌人陪着挂死(实测)。
+  // 真扑克房的规矩:离席超时按弃牌处理。宽限 60s,网络抖动重连绰绰有余;
+  // 宽限期从"扫描first发现人不在"起算,回线即清零。fold 走 tables.act
+  // 正门,结算/推送与真人弃牌完全同路。
+  const offlineFoldMs = deps.offlineFoldMs ?? 60_000;
+  const offlineSince = new Map<string, number>();
+
+  async function sweepOffline(): Promise<void> {
+    const now = Date.now();
+    const seen = new Set<string>();
+    for (const tableId of tables.liveTableIds()) {
+      const v = tables.view(tableId, "");
+      if (!v || v.done || !v.toAct) continue;
+      if (onlineSet(tableId).has(v.toAct)) continue;
+      const key = `${tableId}:${v.handId}:${v.toAct}`;
+      seen.add(key);
+      const since = offlineSince.get(key);
+      if (since === undefined) {
+        offlineSince.set(key, now);
+        continue;
+      }
+      if (now - since < offlineFoldMs) continue;
+      offlineSince.delete(key);
+      try {
+        await tables.act(tableId, v.toAct, { type: "fold" });
+      } catch (err) {
+        onError("poker.autofold", err);
+      }
+    }
+    // 计时只对"此刻还离场的当前行动者"有效:换人行动/回线/手结束都从头来
+    for (const k of offlineSince.keys()) if (!seen.has(k)) offlineSince.delete(k);
+  }
+
+  const sweeper = setInterval(() => void sweepOffline(), 10_000);
+  // 扫描器不该是进程活着的理由(也别拖住测试退出)
+  sweeper.unref?.();
 
   async function myFriends(userId: string): Promise<Set<string>> {
     const rows = await rest.select(
@@ -170,6 +216,21 @@ export function createPokerApi(deps: PokerApiDeps) {
   }
 
   async function start(tableId: string): Promise<Response> {
+    // 在场硬门禁:客户端的"人齐了"只是按钮禁用,而且 app 被杀时 SSE cancel
+    // 最多延迟一个心跳周期,online 数有 race 窗口 —— 钱的门禁必须在服务端。
+    // 筹码留桌 ≠ 人在:B 关掉 app 后 poker_stacks 还有他,不查在场就会
+    // 开出一手永远等不到人的牌(实测)。
+    const seatRows = await rest.select(
+      `poker_stacks?table_id=eq.${tableId}&stack_tokens=gt.0&select=user_id`
+    );
+    const online = onlineSet(tableId);
+    const present = seatRows
+      .filter(isRecord)
+      .map((r) => String(r["user_id"]))
+      .filter((u) => online.has(u));
+    if (present.length < 2) {
+      return apiError(409, "在场的玩家不足两人，人齐了才能开牌", "not_enough_online");
+    }
     await tables.startHand(tableId);
     return json(200, { ok: true });
   }
@@ -206,7 +267,7 @@ export function createPokerApi(deps: PokerApiDeps) {
         }, 25_000);
         entry = { userId, send };
         subs.set(tableId, [...(subs.get(tableId) ?? []), entry]);
-        send(tables.view(tableId, userId));
+        send(tables.view(tableId, userId, onlineSet(tableId)));
         // 有人上桌页 = 在场人数变了。推一把,别的订阅者立刻知道,不用等轮询
         push(tableId);
       },
@@ -251,7 +312,7 @@ export function createPokerApi(deps: PokerApiDeps) {
         return apiError(405, "方法不对", "bad_method");
       }
       if (!verb && method === "GET") {
-        return json(200, { hand: tables.view(tableId, userId) });
+        return json(200, { hand: tables.view(tableId, userId, onlineSet(tableId)) });
       }
       if (method !== "POST" && verb !== "stream") return apiError(405, "方法不对", "bad_method");
       switch (verb) {
@@ -269,5 +330,8 @@ export function createPokerApi(deps: PokerApiDeps) {
     }
   }
 
-  return { handle, notify };
+  /** 测试用:停掉扫描定时器,别让 fake timers 里的 interval 悬着 */
+  const stop = (): void => clearInterval(sweeper);
+
+  return { handle, notify, stop };
 }
