@@ -24,7 +24,7 @@ describe("providerCatalog", () => {
     for (const p of PROVIDER_CATALOG) {
       expect(p.apiKeyEnv, p.id).toMatch(/^[A-Z0-9_]+$/);
       // 本机服务走 http 回环（没有中间人可防，Ollama 也不发证书）；出网的一律 https
-      expect(p.baseUrl, p.id).toMatch(p.region === "local" ? /^http:\/\/localhost/ : /^https:\/\//);
+      expect(p.baseUrl, p.id).toMatch(p.region === "local" ? /^http:\/\/127\.0\.0\.1/ : /^https:\/\//);
       expect(p.consoleUrl, p.id).toMatch(/^https:\/\//);
     }
   });

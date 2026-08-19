@@ -83,7 +83,7 @@ describe("免 key 的本机厂商（Ollama）", () => {
   it("没 key 也不 blocked：直连本机端点", () => {
     const r = route({ choice: ollama });
     expect(r.kind).toBe("direct");
-    expect(r).toMatchObject({ baseUrl: "http://localhost:11434/v1" });
+    expect(r).toMatchObject({ baseUrl: "http://127.0.0.1:11434/v1" });
   });
 
   it("不走网关：登录了也不该去扣官方赠额", () => {

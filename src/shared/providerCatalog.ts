@@ -194,8 +194,11 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     id: "ollama",
     name: "Ollama",
     blurb: "在这台机器上跑开源权重模型，不要 key，也不出网",
-    // 端点是 http 而不是 https：本机回环没有中间人可防，Ollama 也不发证书
-    baseUrl: "http://localhost:11434/v1",
+    // http 而不是 https：本机回环没有中间人可防，Ollama 也不发证书。
+    // 写 127.0.0.1 而不是 localhost：Ollama 默认只监听 IPv4，而 localhost 在
+    // 部分机器上先解析到 ::1 —— Node 的 fetch 不做 happy-eyeballs 回退，
+    // 一次 ECONNREFUSED 就结束了（curl 会自己换一条，所以命令行试是通的）
+    baseUrl: "http://127.0.0.1:11434/v1",
     baseUrlEnv: "OLLAMA_BASE_URL",
     // 免 key，但变量仍留着：把 OLLAMA_BASE_URL 指向带鉴权的远端 Ollama 时要用它
     apiKeyEnv: "OLLAMA_API_KEY",

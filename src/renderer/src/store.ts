@@ -734,8 +734,14 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async refreshOllamaModels() {
-    const { models, error } = await window.otter.listOllamaModels();
-    set({ ollamaModels: models, ollamaError: error });
+    try {
+      const { models, error } = await window.otter.listOllamaModels();
+      set({ ollamaModels: models, ollamaError: error });
+    } catch (e) {
+      // 桥本身炸了（多半是 preload 还是旧的一版）。这条以前被吞掉，
+      // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
+      set({ ollamaModels: [], ollamaError: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   async saveApiKey(envName, key) {
