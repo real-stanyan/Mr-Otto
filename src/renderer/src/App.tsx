@@ -19,15 +19,13 @@ import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
-import { countTodos, deriveTodos, parseTodoArgs, TODO_TOOL_NAME } from "../../session/deriveTodos.js";
-import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../../tools/askUser.js";
+import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
-import { Replay, Hl } from "./replay/Replay.js";
+import { Replay } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
-import { UserAttachments } from "./components/UserAttachments.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
@@ -47,6 +45,7 @@ import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
+import { MD_COMPONENTS } from "./components/CodeBlock.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -94,12 +93,16 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar.js";
-import type {
-  SessionEvent,
-  ToolCallRequest,
-  ToolExecutionStartedEvent,
-  ToolResultEvent,
-} from "../../session/events.js";
+import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
+import { EventRow, ToolRow } from "./components/Timeline.js";
+import { lastUserMessage } from "./lib/lastUserMessage.js";
+import { retryPlan } from "./lib/retry.js";
+import { retryLastUserMessage } from "./lib/retryAction.js";
+import { ToolGroup } from "./components/ToolGroup.js";
+import { ThreadViewport } from "./components/ThreadViewport.js";
+import { groupThread } from "./lib/threadGroups.js";
+import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
+import { type OrbState } from "./lib/toolSummary.js";
 
 /** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
 function totalTokens(events: SessionEvent[]): number {
@@ -125,16 +128,8 @@ function fmtElapsed(ms: number): string {
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
    多处复用的样式串抽成常量:一处改全局生效,JSX 里不抄长串。
    一次性样式直接内联在各自元素上 */
-const ROW = "max-w-[76%] whitespace-pre-wrap break-words";
-const CHIP = `${ROW} self-start text-[12.5px] font-mono border border-border rounded-lg px-[9px] py-[5px] text-muted-foreground`;
-const AUDIT = `${ROW} self-center text-xs text-muted-foreground`;
 const V = "font-mono tabular-nums text-foreground whitespace-nowrap";
 const POP_ROW = "flex justify-between items-baseline gap-3 text-muted-foreground py-[2.5px]";
-/* 思考/skill 注入行:档案气质——降调、小字、细左边线,折叠头是唯一交互点 */
-const THINKING_DETAILS = "self-stretch max-w-full border-l-2 border-border py-[2px] pl-[10px] group";
-const THINKING_SUMMARY =
-  "cursor-pointer text-muted-foreground text-xs select-none list-none [&::-webkit-details-marker]:hidden before:content-['▸_'] group-open:before:content-['▾_']";
-const THINKING_BODY = "mt-1 text-muted-foreground text-[12.5px] leading-[1.55] whitespace-pre-wrap";
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
@@ -167,10 +162,6 @@ const SLASH_MENU =
   "absolute left-0 right-0 bottom-[calc(100%+8px)] flex flex-col gap-[2px] bg-card border border-border rounded-xl p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
 const SLASH_ITEM =
   "flex items-baseline gap-[10px] w-full text-left bg-transparent border-none rounded-lg px-[10px] py-[7px] cursor-pointer transition-colors duration-100";
-/* 工具详情面板的小节标题与代码块(.hl = 自研高亮器配色作用域,见 app.css) */
-const TOOL_SEC = "text-[11px] text-muted-foreground uppercase tracking-[0.05em] mt-2 mb-1";
-const TOOL_PRE =
-  "hl m-0 px-[10px] py-2 rounded-lg bg-[var(--pre-bg)] font-mono text-xs leading-normal whitespace-pre-wrap break-all max-h-60 overflow-auto";
 /* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
@@ -633,8 +624,6 @@ function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   return null;
 }
 
-type OrbState = "listening" | "searching" | "working" | "composing" | "solving" | "breathing";
-
 /** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
      检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
      四段对应 orbs 的 Searching / Working / Thinking / Solving */
@@ -651,264 +640,6 @@ function agentPhase(opts: {
   if (opts.tool) return { orb: "working", label: "执行中…" };
   if (opts.streamingText) return { orb: "solving", label: "作答中…" };
   return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
-}
-
-/** 工具执行阶段 → orb + 文案。read_file 是"找"，todo_write 是"想"，其余(bash/write)是"做" */
-function toolPhase(name: string): { orb: OrbState; label: string } {
-  if (name === "read_file") return { orb: "searching", label: "检索中…" };
-  if (name === TODO_TOOL_NAME) return { orb: "composing", label: "整理清单…" };
-  // 提问时管线其实停着等人，不该显示"执行中"——它在等你
-  if (name === ASK_USER_TOOL_NAME) return { orb: "composing", label: "等你回答…" };
-  return { orb: "working", label: "执行中…" };
-}
-
-/** 工具调用摘要行的文案：动词 + 目标 + 统计（Claude Code 版式）。
-    全部从 call.args 推导——UI 不知道工具"做了什么"，只知道日志里请求了什么 */
-function toolSummary(call: ToolCallRequest): { verb: string; target: string; stat: string } {
-  const a = (call.args ?? {}) as Record<string, unknown>;
-  const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : "");
-  switch (call.name) {
-    case "write_file": {
-      const content = str("content");
-      return {
-        verb: "写入",
-        target: str("path").split("/").pop() ?? "",
-        stat: content ? `+${content.split("\n").length} 行` : "",
-      };
-    }
-    case "read_file":
-      return { verb: "读取", target: str("path").split("/").pop() ?? "", stat: "" };
-    case "bash":
-      return { verb: "终端", target: str("cmd"), stat: "" };
-    case ASK_USER_TOOL_NAME: {
-      const questions = parseAskUserArgs(call.args) ?? [];
-      return {
-        verb: "提问",
-        target: questions[0]?.question ?? "",
-        stat: questions.length > 1 ? `${questions.length} 题` : "",
-      };
-    }
-    case TODO_TOOL_NAME: {
-      // 目标位显示当前在做的那项——一行摘要里最有信息量的就是它
-      const items = parseTodoArgs(call.args) ?? [];
-      const doing = items.find((t) => t.status === "in_progress");
-      const done = items.filter((t) => t.status === "completed").length;
-      return {
-        verb: "任务清单",
-        target: doing?.text ?? "",
-        stat: items.length > 0 ? `${done}/${items.length}` : "",
-      };
-    }
-    default:
-      return { verb: call.name, target: "", stat: "" };
-  }
-}
-
-/** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
-    点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004） */
-function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) {
-  const [open, setOpen] = useState(false);
-  const result = all.find(
-    (e): e is ToolResultEvent => e.type === "tool_result" && e.toolCallId === call.id
-  );
-  const started = all.find(
-    (e): e is ToolExecutionStartedEvent =>
-      e.type === "tool_execution_started" && e.toolCallId === call.id
-  );
-  // 执行中的直播尾巴（bash 的 stdout/stderr 碎片）。tool_result 落地后 store
-  // 会清掉这个 key，这里自然消失——直播只活在"事实到来前"的窗口里
-  const live = useChat((s) => s.toolOutputByCall[call.id]);
-  const liveRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义：始终看最新输出，新碎片到就滚到底
-    liveRef.current?.scrollTo(0, liveRef.current.scrollHeight);
-  }, [live]);
-  const { verb, target, stat } = toolSummary(call);
-  const status = result?.status ?? "running";
-
-  return (
-    <div className={`${ROW} p-0`}>
-      {/* 高频摘要行零动画;宽行按压不缩放(读感怪) */}
-      <button
-        className="flex items-center gap-2 text-left bg-transparent border-none rounded-lg py-[5px] px-2 -mx-2 w-[calc(100%+16px)] text-[13px] text-muted-foreground transition-colors duration-[120ms] hover:bg-foreground/5"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-      >
-        <span
-          className={
-            "font-[550] shrink-0 " +
-            (status === "error" || status === "denied" ? "text-deny" : "text-foreground")
-          }
-        >
-          {verb}
-        </span>
-        {target && <span className="font-mono text-xs text-muted-foreground truncate">{target}</span>}
-        {stat && <span className="text-ok tabular-nums shrink-0">{stat}</span>}
-        {status === "running" && (
-          <span className="flex items-center gap-1.5 text-muted-foreground shrink-0">
-            <ThinkingOrb state={toolPhase(call.name).orb} size={20} theme="auto" />
-            <span className="shimmer">{toolPhase(call.name).label}</span>
-          </span>
-        )}
-        {status === "error" && <span className="text-deny shrink-0">出错</span>}
-        {status === "denied" && <span className="text-deny shrink-0">已拒绝</span>}
-        <span
-          className={
-            "ml-auto shrink-0 text-muted-foreground transition-transform duration-150 ease-strong motion-reduce:transition-none" +
-            (open ? " rotate-90" : "")
-          }
-        >
-          ›
-        </span>
-      </button>
-      {!result && live && (
-        // 执行中的输出直播:迷你终端尾巴。低亮度——它是过程噪音,不是结果
-        <pre
-          className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-          ref={liveRef}
-        >
-          {live}
-        </pre>
-      )}
-      {open && (
-        // 详情展开是偶发动作:150ms ease-out 入场,从触发行长出来(origin 左上)
-        <div className="mt-[2px] mb-1 px-3 py-[10px] bg-card border border-border rounded-[10px] origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100">
-          <div className="text-xs text-muted-foreground tabular-nums mb-[6px]">
-            {call.name} · {status}
-            {result && started ? ` · 执行耗时 ${result.ts - started.ts} ms` : ""}
-          </div>
-          <div className={TOOL_SEC}>参数</div>
-          <pre className={TOOL_PRE}><Hl src={JSON.stringify(call.args, null, 2)} /></pre>
-          {result && (
-            <>
-              <div className={TOOL_SEC}>输出</div>
-              <pre className={TOOL_PRE}><Hl src={result.output || "（空）"} /></pre>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
-  switch (event.type) {
-    case "user_message":
-      // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
-      // 各自成卡片摆在气泡上方(UserAttachments),气泡只留给用户正文。
-      // 只带附件不带字时不出空气泡:没说话就是没说话
-      return (
-        <div className={`${ROW} self-end flex flex-col items-end gap-[6px]`}>
-          <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />
-          {event.content.trim() !== "" && (
-            // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
-            <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
-              {event.content}
-            </div>
-          )}
-        </div>
-      );
-
-    case "assistant_message":
-      // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
-      // 用户消息保持原文——用户打的不是 markdown，别替他排版
-      return (
-        <>
-          {event.reasoning && (
-            // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
-            // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
-            <details className={THINKING_DETAILS}>
-              <summary className={THINKING_SUMMARY}>思考过程</summary>
-              <div className={THINKING_BODY}>{event.reasoning}</div>
-            </details>
-          )}
-          {event.content && (
-            // 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息)
-            <div className="md self-stretch max-w-full py-[2px]">
-              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {event.content}
-              </Markdown>
-            </div>
-          )}
-          {event.toolCalls?.map((c) => (
-            <ToolRow key={c.id} call={c} all={all} />
-          ))}
-        </>
-      );
-
-    case "tool_result":
-      return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
-
-    case "approval_decision":
-      // 批准(含 bypass 自动批准)只是"正常放行",不是对话事实,时间线不显示——
-      // 免审模式下一长串「已批准」纯属噪音。拒绝才上时间线:它中断了流程,
-      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档
-      if (event.decision === "approved") return null;
-      return (
-        <div className={AUDIT}>
-          审批：已拒绝{event.reason ? `（${event.reason}）` : ""}
-        </div>
-      );
-
-    case "session_created":
-      return <div className={AUDIT}>会话已创建</div>;
-
-    case "session_archived":
-      return <div className={AUDIT}>会话已归档</div>;
-
-    case "session_renamed":
-      return <div className={AUDIT}>会话改名 → {event.title}</div>;
-
-    case "context_compacted":
-      return (
-        <div className={AUDIT}>
-          ✻ 上下文已压缩——此前对话折叠为摘要（{event.model}
-          {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
-        </div>
-      );
-
-    case "model_changed":
-      return (
-        <div className={AUDIT}>
-          模型切换 → {modelChipLabel(event.provider, event.model)}
-        </div>
-      );
-
-    case "skill_invoked":
-      // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
-      return (
-        <details className={THINKING_DETAILS}>
-          {/* skill 注入行:thinking 折叠版式 + accent 点题 */}
-          <summary className={`${THINKING_SUMMARY} text-brand`}>
-            ✦ 启用 skill「{event.name}」——指令已注入上下文
-          </summary>
-          <div className={THINKING_BODY}>{event.content}</div>
-        </details>
-      );
-
-    case "image_described":
-      // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
-      // 不是对话内容；摊开能看到视觉模型到底读出了什么（解析质量一目了然）
-      return (
-        <details className={THINKING_DETAILS}>
-          <summary className={THINKING_SUMMARY}>👁 图片解析（由 {event.model} 代读）——已注入上下文</summary>
-          <div className={THINKING_BODY}>{event.content}</div>
-        </details>
-      );
-
-    // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
-    // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
-    case "tool_execution_started":
-      return null;
-    case "turn_ended":
-      // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
-      return event.outcome === "error" ? (
-        <div className={`${CHIP} border-err text-err`}>[turn 失败] {event.error}</div>
-      ) : event.outcome === "aborted" ? (
-        // 中断 = 用户意志,中性灰居中——不是故障,不用红
-        <div className={`${CHIP} self-center`}>已中断</div>
-      ) : null;
-  }
 }
 
 /** write_file 审批的 diff 视图。diff 现算（投影）；连续未变行折叠成计数——
@@ -2137,6 +1868,41 @@ function Welcome() {
   );
 }
 
+/** 失败不该只是一行红字——恢复出口就挂在它旁边(assistant-ui 的 Error primitive 同款)。
+    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage/retryPlan),别处各写一份;
+    这里外观是红色文字钮,按钮文案随 plan 变——不然点了以为发出去了实际只是填回输入框
+    (plan 同时看"消息自身带没带附件"和"此刻输入框暂存区是否有附件":后者是
+    send() 读的是调用那一刻的 staged,跟被重试的消息无关,漏了这条会静默夹带) */
+function RetryButton() {
+  const events = useChat((s) => s.events);
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const staged = useChat((s) => s.staged);
+  const prev = lastUserMessage(events);
+  const plan = retryPlan(prev, staged.length);
+  // retryPlan(null, x) 返 null，其它情况返 RetryPlan，所以 !plan ⟺ !prev，前一行已排除
+  if (!prev || status === "running") return null;
+  // retryPlan(prev, x) 当 prev 非 null 时必然返 RetryPlan，所以 plan 必然非 null
+  const planNonNull = plan!;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      title={
+        planNonNull.mode === "resend"
+          ? "重试：把上一条消息原样再发一遍"
+          : planNonNull.reason === "attachments"
+            ? "把上一条消息填回输入框（附件要重新添加）"
+            : "输入框里有待发送的附件，先填回正文，你确认后再发"
+      }
+      className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
+      onClick={() => retryLastUserMessage(prev, planNonNull)}
+    >
+      {planNonNull.mode === "resend" ? "重试" : "填回输入框"}
+    </Button>
+  );
+}
+
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
@@ -2160,8 +1926,10 @@ export function App() {
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replaying = replayCursor !== null;
+  // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
+  const items = useMemo(() => groupThread(events), [events]);
   // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
   const turnPhase = agentPhase({
     status,
@@ -2196,6 +1964,20 @@ export function App() {
     void boot();
   }, [boot]);
 
+  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
+  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
+  const composerInject = useChat((s) => s.composerInject);
+  useEffect(() => {
+    if (!composerInject) return;
+    setInput((prev) =>
+      composerInject.append
+        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
+        : composerInject.text
+    );
+    useChat.setState({ composerInject: null });
+    textareaRef.current?.focus();
+  }, [composerInject]);
+
   // Esc = 停止（Claude Code 同款肌肉记忆）。挂 window：running 时输入框
   // disabled 收不到键盘，事件得在更高处接
   useEffect(() => {
@@ -2206,10 +1988,6 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
-  }, [events.length, status, approval, streamingText.length, streamingThinking.length]);
 
   const submit = () => {
     const text = input.trim();
@@ -2317,13 +2095,26 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
-              不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
-          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
-            {events.map((e) => (
-              <EventRow key={e.seq} event={e} all={events} />
-            ))}
-            {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
+          <ThreadViewport
+            key={sessionId}
+            deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
+          >
+            {items.map((item) =>
+              item.kind === "event" ? (
+                <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
+              ) : item.calls.length === 1 ? (
+                // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
+                <ToolRow key={item.key} call={item.calls[0]!} all={events} />
+              ) : (
+                <ToolGroup key={item.key} calls={item.calls} all={events} />
+              )
+            )}
+            {error && (
+              <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
+                <span>[turn 失败] {error}</span>
+                <RetryButton />
+              </div>
+            )}
             {streamingThinking && (
               // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
               // open 受控写死：流式中就是要摊开，用户要折等它完事。
@@ -2337,7 +2128,7 @@ export function App() {
               <div className="md streaming self-stretch max-w-full py-[2px]">
                 {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
                     完整事件到达后重渲一次自然纠正 */}
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
                   {streamingText}
                 </Markdown>
               </div>
@@ -2353,8 +2144,7 @@ export function App() {
                 </span>
               </Marker>
             )}
-            <div ref={bottomRef} />
-          </section>
+          </ThreadViewport>
 
           <ApprovalCard />
           <QuestionnaireCard />
@@ -2408,6 +2198,7 @@ export function App() {
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <Textarea
+                ref={textareaRef}
                 className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
                 autoFocus
                 rows={1}

@@ -68,6 +68,11 @@ export interface AssistantMessageEvent extends SessionEventBase {
       投影必须丢弃它。logged ≠ model-visible：给人回看的事实，不是给模型的。
       可选 = 旧日志/关 thinking 照样重放 */
   reasoning?: string;
+  /** 纯思考耗时(ms):第一个 reasoning 碎片到第一个 content 碎片之间(reasoningClock)。
+      日志推不出这个事实(只有消息落盘时刻),而 UI 不许猜 —— 所以落盘(ADR-0032)。
+      非流式路径(没传 onAssistantDelta)测不到 → 字段缺席,不是 0。
+      可选 = 旧日志照常重放 */
+  reasoningMs?: number;
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */
