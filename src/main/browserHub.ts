@@ -174,6 +174,13 @@ export function createBrowserHub(deps: BrowserHubDeps) {
           r.lastError = `${e instanceof Error ? e.message : String(e)}: ${target}`;
         }
       }
+      // close() 可能就发生在上面这段 await 里(用户按了工具栏的电源键)。
+      // 那之后 r.view 已经销毁,snapshot() 里的 getURL() 会在一个死掉的
+      // webContents 上抛;异常穿过 ipcMain.handle 变成 invoke 的 reject,
+      // 而面板是 void 调 browserNavigate 的——没人接。
+      // "记录还在表里且还是同一条"是唯一可靠的"这个 view 还活着"判据
+      // (同一会话 close 后再 open 会换一条新记录,身份比较能连这种情况一起挡住)
+      if (browsers.get(sessionId) !== r) return;
       deps.push.state(snapshot(r));
     },
 
@@ -208,12 +215,27 @@ export function createBrowserHub(deps: BrowserHubDeps) {
     async read(sessionId: string, opts?: BrowserReadOptions): Promise<BrowserReadResult> {
       const signal = opts?.signal;
       if (signal?.aborted) throw new Error("读取被中断：用户停止了 turn");
-      // 在 ensure() 之前记一笔:ensure 会顺手造一个空 view,造完再看就分不清
-      // "这个会话本来就没浏览器"和"人开着一张白页"——而前者必须报错
-      const hadBrowser = browsers.has(sessionId);
-      const r = ensure(sessionId);
-
       const target = opts?.url ? normalizeUrl(opts.url) : null;
+      // 这条判断必须在 ensure() 之前:不给 url 又没有页面是条死路,
+      // 先 ensure 出一个 view 再抛,等于每次都白留一个没人管的 Chromium 渲染进程。
+      // 而这条路模型自己就能反复触发(人还没开过浏览器时的任意一次 browser_read),
+      // 是真泄漏不是偶发。
+      // 判据用 browsers.get() 而不是 ensure 后的 getURL():ensure 会顺手造一个
+      // 停在 about:blank 的新 view,造完再看就分不清"本来就没浏览器"和"人开着一张白页"
+      if (target === null) {
+        const opened = browsers.get(sessionId);
+        // 照直抽下去会给模型一份"正文为空"的成功结果——它会当成"这页没内容",
+        // 而事实是"压根没开页面"。这正是这个 hub 存在的理由(见文件头),
+        // 空字符串比报错难查一个数量级
+        if (!opened || isNoPage(opened.view.getURL())) {
+          throw new Error("browser_read: 当前没有打开任何页面，请用 url 参数指定要读的网址");
+        }
+      }
+      const r = ensure(sessionId);
+      // close() 之后的活性判据,同 navigate:每个 await 点之后都要重认一次,
+      // 这块屏是人和 agent 共用的,人随时可能在读取途中把浏览器整个结束掉
+      const stillLive = () => browsers.get(sessionId) === r;
+
       if (target !== null) {
         // 清错要在造 promise 之前:executor 是同步跑的,里面已经发出了 loadURL。
         // 放在后面只是靠"Electron 的事件下一个 tick 才到"侥幸没出事
@@ -252,15 +274,13 @@ export function createBrowserHub(deps: BrowserHubDeps) {
           r.view.loadURL(target).catch((err: unknown) => finish(() => reject(err)));
         });
         await settled;
-      } else if (!hadBrowser || isNoPage(r.view.getURL())) {
-        // 没给 url 又根本没有页面:ensure() 造出来的新 view 停在 about:blank,
-        // 照直抽下去会给模型一份"正文为空"的成功结果——它会当成"这页没内容",
-        // 而事实是"压根没开页面"。这正是这个 hub 存在的理由(见文件头),
-        // 空字符串比报错难查一个数量级
-        throw new Error("browser_read: 当前没有打开任何页面，请用 url 参数指定要读的网址");
+        if (!stillLive()) throw new Error("读取被中断：浏览器在读取途中被结束了");
       }
 
       const raw = await r.view.executeJavaScript(EXTRACT_JS);
+      // 抽取也是个 await 点。下面还要 getURL() 取权威地址,view 死了会在那儿抛
+      // 一个 Electron 的内部错("Object has been destroyed"),对模型毫无意义
+      if (!stillLive()) throw new Error("读取被中断：浏览器在读取途中被结束了");
       let parsed: { title?: unknown; url?: unknown; text?: unknown };
       try {
         parsed = JSON.parse(String(raw)) as typeof parsed;

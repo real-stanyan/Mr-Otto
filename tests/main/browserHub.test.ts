@@ -10,6 +10,9 @@ function fakeView() {
   let url = "";
   let title = "";
   let destroyed = false;
+  const assertAlive = () => {
+    if (destroyed) throw new Error("Object has been destroyed");
+  };
   let backable = false;
   const nav = { back: 0, forward: 0, reload: 0 };
   let script: () => Promise<unknown> = async () =>
@@ -27,10 +30,13 @@ function fakeView() {
       }
       url = u;
     },
-    getURL: () => url,
-    getTitle: () => title,
-    canGoBack: () => backable,
-    canGoForward: () => false,
+    // 真 WebContentsView 销毁之后再碰就抛 "Object has been destroyed"。
+    // 假 view 得学着点,否则"close 之后还给死 view 推状态"这类 bug
+    // 在测试里是静默通过的
+    getURL: () => { assertAlive(); return url; },
+    getTitle: () => { assertAlive(); return title; },
+    canGoBack: () => { assertAlive(); return backable; },
+    canGoForward: () => { assertAlive(); return false; },
     goBack: () => { nav.back++; },
     goForward: () => { nav.forward++; },
     reload: () => { nav.reload++; },
@@ -127,6 +133,19 @@ describe("browserHub 注册表", () => {
     views[0]!.setLoadURLError(aborted);
     await hub.navigate("s1", "a.com");
     expect(hub.info("s1")!.lastError).toBeUndefined();
+  });
+
+  it("导航途中浏览器被结束:不抛,也不给已经销毁的 view 推状态", async () => {
+    const { hub, views, state } = makeHub();
+    hub.open("s1");
+    const pending = hub.navigate("s1", "a.com");
+    hub.close("s1"); // 用户在加载途中按了工具栏的电源键
+    const pushes = state.mock.calls.length;
+    // 往死 view 上 snapshot 会抛,异常穿过 ipcMain.handle 变成 invoke 的 reject,
+    // 而面板是 void 调它的——没人接
+    await expect(pending).resolves.toBeUndefined();
+    expect(views[0]!.destroyed).toBe(true);
+    expect(state.mock.calls.length).toBe(pushes);
   });
 
   it("视图事件变成状态推送", () => {
@@ -230,11 +249,12 @@ describe("browserHub.read", () => {
     expect(r).toEqual({ url: "https://x.com", title: "T", text: "正文", truncated: false });
   });
 
-  it("不给 url 且这个会话根本没浏览器 = 抛,不返回一份'这页是空的'", async () => {
+  it("不给 url 且这个会话根本没浏览器 = 抛,且一个 view 都不造", async () => {
     const { hub, views } = makeHub();
     await expect(hub.read("s1")).rejects.toThrow(/没有打开任何页面/);
-    // 报错也别把 about:blank 抽一遍:模型拿到空正文会当成"这页没内容"
-    expect(views[0]!.loaded).toEqual([]);
+    // 造了再抛 = 每次白留一个没人管的 Chromium 渲染进程,而这条路
+    // 模型自己就能反复触发(人还没开过浏览器时的任意一次 browser_read)
+    expect(views).toHaveLength(0);
   });
 
   it("不给 url,面板开着但一页没加载过(about:blank)= 同样抛", async () => {
@@ -294,6 +314,17 @@ describe("browserHub.read", () => {
     hub.open("s1");
     await expect(hub.read("s1", { url: "a.com", signal: AbortSignal.abort() })).rejects.toThrow(/中断/);
     expect(views[0]!.loaded).toEqual([]);
+  });
+
+  it("读取途中浏览器被结束 = 报一句人话,而不是 Electron 的 '已销毁'", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "a.com" });
+    await Promise.resolve(); // 让 loadURL 落地
+    hub.close("s1");
+    // 临时订阅还挂在这个 view 上(off 的是 hub 的常驻监听),
+    // 页面加载完照样会放行 settled——之后的 getURL/抽取全在死 view 上
+    views[0]!.fire({ type: "loaded" });
+    await expect(pending).rejects.toThrow(/浏览器在读取途中被结束/);
   });
 
   it("超上限截断,并在结果里明说截了", async () => {
