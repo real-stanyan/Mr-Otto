@@ -1,0 +1,23 @@
+// 把 Zustand 里的会话状态接到 assistant-ui 的 runtime 上。
+// 只做订阅和转交:所有判断都在 buildOttoAdapter / toThreadMessages 那两个纯函数里
+
+import { useExternalStoreRuntime } from "@assistant-ui/react";
+import { useChat } from "../store.js";
+import { buildOttoAdapter } from "./ottoAdapter.js";
+
+export function useOttoRuntime() {
+  const sessionId = useChat((s) => s.sessionId);
+  const events = useChat((s) => s.events);
+  const live = useChat((s) => s.streamingBySession[s.sessionId]);
+  const status = useChat((s) => s.statusBySession[s.sessionId]);
+
+  // 动作从 store 上直接取(它们是稳定引用,不进依赖数组)
+  const send = useChat((s) => s.send);
+  const cancel = useChat((s) => s.stop);
+
+  void sessionId; // 换会话时 events/live 自然变,这里只是让意图显式
+
+  return useExternalStoreRuntime(
+    buildOttoAdapter({ events, live, isRunning: status === "running", send, cancel })
+  );
+}
