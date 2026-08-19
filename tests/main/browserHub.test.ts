@@ -4,7 +4,7 @@ import type { BrowserBounds } from "../../src/shared/browser.js";
 
 /** 假 view:能被导航、能被外部驱动着发事件、能被摘下来/销毁 */
 function fakeView() {
-  let emit: ((e: BrowserViewEvent) => void) | null = null;
+  const subs = new Set<(e: BrowserViewEvent) => void>();
   const loaded: string[] = [];
   const boundsLog: Array<BrowserBounds | null> = [];
   let url = "";
@@ -12,6 +12,8 @@ function fakeView() {
   let destroyed = false;
   let backable = false;
   const nav = { back: 0, forward: 0, reload: 0 };
+  let script: () => Promise<unknown> = async () =>
+    JSON.stringify({ title: "T", url: "https://x.com", text: "正文" });
   const handle: BrowserViewHandle = {
     loadURL: async (u) => { loaded.push(u); url = u; },
     getURL: () => url,
@@ -21,9 +23,11 @@ function fakeView() {
     goBack: () => { nav.back++; },
     goForward: () => { nav.forward++; },
     reload: () => { nav.reload++; },
-    executeJavaScript: async () => "{}",
+    executeJavaScript: () => script(),
     setBounds: (b) => { boundsLog.push(b); },
-    on: (cb) => { emit = cb; return () => { emit = null; }; },
+    // 支持多订阅者:read() 在 hub 常驻监听还挂着的时候,
+    // 会临时再订一份自己的——单回调的假实现会把常驻监听挤掉
+    on: (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
     destroy: () => { destroyed = true; },
   };
   return {
@@ -32,10 +36,11 @@ function fakeView() {
     // 假 view 得学着点,不然这里测的只是自己接的假线
     fire: (e: BrowserViewEvent) => {
       if (e.type === "navigated") url = e.url;
-      emit?.(e);
+      for (const cb of [...subs]) cb(e);
     },
     setTitle: (t: string) => { title = t; },
     setBackable: (v: boolean) => { backable = v; },
+    setScript: (f: () => Promise<unknown>) => { script = f; },
     get loaded() { return loaded; },
     get boundsLog() { return boundsLog; },
     get destroyed() { return destroyed; },
@@ -173,5 +178,85 @@ describe("browserHub 注册表", () => {
     hub.close("s1");
     expect(hub.open("s1").id).not.toBe(first);
     expect(views).toHaveLength(2);
+  });
+});
+
+describe("browserHub.read", () => {
+  it("不给 url = 读当前页,不导航", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    const r = await hub.read("s1");
+    expect(views[0]!.loaded).toEqual([]);
+    expect(r).toEqual({ url: "https://x.com", title: "T", text: "正文", truncated: false });
+  });
+
+  it("给了 url = 先导航,等 loaded 再读", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "a.com" });
+    await Promise.resolve(); // 让 loadURL 落地
+    expect(views[0]!.loaded).toEqual(["https://a.com"]);
+    views[0]!.fire({ type: "loaded" });
+    await expect(pending).resolves.toMatchObject({ text: "正文" });
+  });
+
+  it("agent 先到时自己 ensure 出 view —— 面板没开过也要能读", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "a.com" });
+    await Promise.resolve();
+    views[0]!.fire({ type: "loaded" });
+    await pending;
+    expect(views).toHaveLength(1);
+  });
+
+  it("加载失败 = 抛,不返回假装成功的空字符串", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "nope.invalid" });
+    await Promise.resolve();
+    views[0]!.fire({ type: "failed", errorCode: -105, errorDescription: "NAME_NOT_RESOLVED", url: "https://nope.invalid" });
+    await expect(pending).rejects.toThrow(/-105|NAME_NOT_RESOLVED/);
+  });
+
+  it("超时 = 抛", async () => {
+    vi.useFakeTimers();
+    const { hub } = makeHub();
+    const pending = hub.read("s1", { url: "slow.com" });
+    const assertion = expect(pending).rejects.toThrow(/超时/);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it("中断 = reject,且不伪装成加载失败(ADR-0006 语义)", async () => {
+    const { hub } = makeHub();
+    const ac = new AbortController();
+    const pending = hub.read("s1", { url: "a.com", signal: ac.signal });
+    const assertion = expect(pending).rejects.toThrow(/中断/);
+    ac.abort();
+    await assertion;
+  });
+
+  it("已经 abort 的信号:立刻 reject,不发起导航", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    await expect(hub.read("s1", { url: "a.com", signal: AbortSignal.abort() })).rejects.toThrow(/中断/);
+    expect(views[0]!.loaded).toEqual([]);
+  });
+
+  it("超上限截断,并在结果里明说截了", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    views[0]!.setScript(async () =>
+      JSON.stringify({ title: "T", url: "https://x.com", text: "字".repeat(60_000) })
+    );
+    const r = await hub.read("s1");
+    expect(r.truncated).toBe(true);
+    expect(r.text).toHaveLength(50_000);
+  });
+
+  it("页面脚本返回的不是预期形状 = 抛,而不是把 undefined 当正文喂给模型", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    views[0]!.setScript(async () => "not json");
+    await expect(hub.read("s1")).rejects.toThrow();
   });
 });

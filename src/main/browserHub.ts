@@ -10,6 +10,20 @@
 
 import { randomUUID } from "node:crypto";
 import { normalizeUrl, type BrowserBounds, type BrowserTabInfo } from "../shared/browser.js";
+import type { BrowserReadOptions, BrowserReadResult } from "../world/executionWorld.js";
+
+const READ_TIMEOUT_MS = 30_000;
+const MAX_TEXT_CHARS = 50_000;
+
+/** 页面里跑的抽取脚本。
+    直接用 innerText 而不是先克隆再删 script/style:innerText 按渲染结果取文本,
+    未渲染的节点天然不在里面;而克隆出来的游离节点没有 layout,innerText 恒为空串
+    ——照"先摘掉 script/style"的字面写法反而会读出一片空白。 */
+export const EXTRACT_JS = `JSON.stringify({
+  title: document.title || "",
+  url: location.href,
+  text: (document.body && document.body.innerText || "").replace(/\\n{3,}/g, "\\n\\n").trim()
+})`;
 
 /** 视图往外发的事件。窄联合而不是照搬 webContents 的事件名:
     hub 只关心这四件事,适配层负责把 Electron 那一堆翻译过来 */
@@ -146,6 +160,65 @@ export function createBrowserHub(deps: BrowserHubDeps) {
     /** 窗口关闭时清场 */
     closeAll(): void {
       for (const id of [...browsers.keys()]) api.close(id);
+    },
+
+    /** agent 的读。导航失败/超时/中断一律抛——
+        返回一个假装成功的空字符串,会让模型以为"这页没内容",
+        比报错难查一个数量级 */
+    async read(sessionId: string, opts?: BrowserReadOptions): Promise<BrowserReadResult> {
+      const signal = opts?.signal;
+      if (signal?.aborted) throw new Error("读取被中断：用户停止了 turn");
+      const r = ensure(sessionId);
+
+      if (opts?.url) {
+        const target = normalizeUrl(opts.url);
+        // 先挂好监听再发起导航:loadURL 之后才订阅的话,
+        // 快到离谱的本地页面(localhost 常见)可能在订阅前就 loaded 完了
+        const settled = new Promise<void>((resolve, reject) => {
+          let done = false;
+          const finish = (fn: () => void) => {
+            if (done) return;
+            done = true;
+            off();
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            fn();
+          };
+          const off = r.view.on((e) => {
+            if (e.type === "loaded") finish(resolve);
+            else if (e.type === "failed") {
+              finish(() => reject(new Error(`页面加载失败：${e.errorDescription}（${e.errorCode}）: ${e.url}`)));
+            }
+          });
+          const timer = setTimeout(
+            () => finish(() => reject(new Error(`页面加载超时（${READ_TIMEOUT_MS / 1000}s）：${target}`))),
+            READ_TIMEOUT_MS
+          );
+          const onAbort = () => finish(() => reject(new Error("读取被中断：用户停止了 turn")));
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+        delete r.lastError;
+        await r.view.loadURL(target);
+        await settled;
+      }
+
+      const raw = await r.view.executeJavaScript(EXTRACT_JS);
+      let parsed: { title?: unknown; url?: unknown; text?: unknown };
+      try {
+        parsed = JSON.parse(String(raw)) as typeof parsed;
+      } catch {
+        throw new Error("读取页面失败：抽取脚本没有返回预期的 JSON");
+      }
+      if (typeof parsed.text !== "string" || typeof parsed.url !== "string") {
+        throw new Error("读取页面失败：抽取脚本返回的形状不对");
+      }
+      const truncated = parsed.text.length > MAX_TEXT_CHARS;
+      return {
+        url: parsed.url,
+        title: typeof parsed.title === "string" ? parsed.title : "",
+        text: truncated ? parsed.text.slice(0, MAX_TEXT_CHARS) : parsed.text,
+        truncated,
+      };
     },
 
     info(sessionId: string): BrowserTabInfo | null {
