@@ -71,10 +71,12 @@ type MessageStatus =
 | `src/renderer/src/aui/ottoAdapter.ts` | 纯函数：状态 + 动作 → `ExternalStoreAdapter<ThreadMessageLike>` | 4 |
 | `src/renderer/src/aui/useOttoRuntime.ts` | React hook：订阅 Zustand，调上面两个纯函数 | 4 |
 | `src/renderer/src/aui/OttoRuntimeProvider.tsx` | `AssistantRuntimeProvider` 壳 | 4 |
-| `src/renderer/src/components/ui/*`（registry 生成） | thread / reasoning / streamdown / 依赖的 shadcn 件 | 5 |
-| `src/renderer/src/aui/OttoThread.tsx` | Thread 组装 + 各 part 的 override | 6 |
-| `src/renderer/src/App.tsx` | 换掉 `ThreadViewport` + `items.map` 那一段 | 7 |
-| `src/renderer/src/app.css` | 删 hljs 配色段，加 streamdown 的 `@source` | 7 |
+| `src/renderer/src/components/assistant-ui/*`（registry 生成，**11 个文件**，不是 `components/ui/`） | thread / reasoning / tool-fallback / tool-group / attachment / markdown-text / image / file / follow-up-suggestions / tooltip-icon-button；另有 `components/ui/collapsible.tsx` | 5 |
+| `src/renderer/src/components/assistant-ui/thread.tsx` | 摘掉输入侧 + 加 `SystemMessage` 槽 | 6 |
+| `src/renderer/src/aui/OttoThread.tsx` | Thread 组装 + 三个 override | 7 |
+| `src/renderer/src/components/ToolLiveTail.tsx` | 执行中的输出直播尾巴（从 `ToolRow` 抽出） | 7 |
+| `src/renderer/src/App.tsx` | 换掉 `ThreadViewport` + `items.map` 那一段 | 8 |
+| `src/renderer/src/app.css` | 删 hljs 配色段 | 8 |
 | `tests/renderer/toThreadMessages.test.ts` | 主战场 | 1–3 |
 | `tests/renderer/ottoAdapter.test.ts` | adapter 字段取舍 | 4 |
 
@@ -1181,343 +1183,148 @@ EOF
 
 ---
 
-### Task 6: Thread 组装与 part override
+### Task 6: `thread.tsx` 手术 —— 摘掉输入侧，补上 SystemMessage 槽
 
 **Files:**
-- Create: `src/renderer/src/aui/OttoThread.tsx`
-- Create: `src/renderer/src/components/ToolLiveTail.tsx`
-- Modify: `src/renderer/src/components/Timeline.tsx`（`ToolRow` 里的直播尾巴改用抽出来的组件，观感不变）
+- Modify: `src/renderer/src/components/assistant-ui/thread.tsx`
 
 **Interfaces:**
-- Consumes: `Thread` / `Reasoning*` / `ToolFallback`（Task 5 装的）、`EventRow`（`src/renderer/src/components/Timeline.tsx`，已存在，不改）
-- Produces: `export function OttoThread(): JSX.Element`、`export function ToolLiveTail(props: { toolCallId: string; done: boolean }): JSX.Element | null`
+- Consumes: 无（本 task 只改 Task 5 装进来的那个文件）
+- Produces: `ThreadComponents` 类型新增 `SystemMessage?: ComponentType | undefined` 槽；`Thread` 的 ViewportFooter 不再渲染 composer / suggestions
 
-**背景（实现者必读）：** 现有工具行的视觉（折叠摘要行、执行中的直播尾巴、参数/输出详情面板）在 `src/renderer/src/components/Timeline.tsx` 的 `ToolRow`，成组折叠在 `ToolGroup.tsx`。**这两个不重写** —— 它们就是「保留 Mr Otto 现有视觉」这条决定的落点，只是改从 assistant-ui 的 `tool-call` part 拿数据。
+**背景（实现者必读）：**
 
-**工具行用 assistant-ui 的 `ToolFallback`**（用户决定），不是本仓的 `ToolRow`。但 `ToolFallback` 没有「执行中的输出直播尾巴」这个概念，而本仓的 bash 工具靠它看进度 —— 这个能力**必须接回去**，否则跑长命令时界面上什么都看不到。
+`thread.tsx` 是 registry 装进来的 **copy-in 源码，归本仓所有** —— 改它是正当动作，不是「改第三方库」。但改动要克制、要留注释，因为将来从 registry 升级时这些改动要人工合。
 
-直播尾巴的实现现在埋在 `ToolRow` 里（`src/renderer/src/components/Timeline.tsx:29-38, 71-79`）：按 `toolCallId` 订阅 `store.toolOutputByCall`，新碎片到就滚到底，`tool_result` 落地后 store 清掉这个 key，它自然消失。本 task 把这块抽成独立组件，`ToolRow` 和新的 `ToolFallback` 组合各用各的 —— `ToolRow` 的行为一字不变（它还被 `EventRow` 间接留着）。
+装进来的 `Thread` 有两处和 PR1 的边界冲突：
 
-八类审计行同理：Task 3 已把原始事件投进 `metadata.custom.otto`，这里的 `SystemMessage` override 直接把它喂回 `EventRow`，**`EventRow` 一行不改**。
+1. **它自带输入侧。** `ThreadRoot` 的 `<ThreadPrimitive.ViewportFooter>` 里渲染了
+   `<ThreadFollowupSuggestions />`、`<Composer />`、`<ThreadSuggestions />`。
+   而 PR1 只迁输出侧 —— `App.tsx` 的 footer 有自己的一整套（`WorkTreePill`、`TodoPanel`、
+   `ComposerBar`、slash/$ 菜单、附件暂存区），PR2 才搬。两个都渲染 = 界面上两个输入框。
+2. **它没有 system 消息的位置。** `ThreadComponents` 只有 `AssistantMessage` / `Welcome` /
+   `ToolFallback` / `ToolGroup` / `ReasoningGroup`；`ThreadMessage` 只分 `role === "user"` 和
+   其余，**system 会掉进 assistant 分支**。而 Task 3 把八类审计行（会话创建/归档/改名、模型切换、
+   skill 注入、图片解析、审批拒绝、turn 暴死或中断）投成了 `role: "system"` —— 不补这个槽，
+   它们会被当成模型回复渲染。
 
-- [ ] **Step 1: 把直播尾巴抽成独立组件**
+- [ ] **Step 1: 摘掉 ViewportFooter 里的输入侧**
 
-Run: `sed -n 25,90p src/renderer/src/components/Timeline.tsx`
-找到 `ToolRow` 里 `const live = useChat(...)`、`liveRef`、`useEffect` 滚到底、以及 `{!result && live && (<pre ...>)}` 这几块。
-
-创建 `src/renderer/src/components/ToolLiveTail.tsx`，把它们原样搬过来：
+在 `ThreadRoot` 里，把 `<ThreadPrimitive.ViewportFooter>` 的内容改成只留滚动键：
 
 ```tsx
-// 执行中的输出直播尾巴 —— 迷你终端视角:只看最新进展。
-//
-// 从 ToolRow 抽出来:assistant-ui 的 ToolFallback 没有「执行中的输出」这个概念,
-// 而 bash 跑长命令时这条尾巴是唯一的进度信号。抽出来两边共用,行为一字不变。
-//
-// tool_result 落地后 store 会清掉这个 key,组件自然消失——
-// 直播只活在「事实到来前」的那个窗口里。
-
-import { useEffect, useRef } from "react";
-import { useChat } from "../store.js";
-
-export function ToolLiveTail({ toolCallId, done }: { toolCallId: string; done: boolean }) {
-  const live = useChat((s) => s.toolOutputByCall[toolCallId]);
-  const ref = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义:始终看最新输出,新碎片到就滚到底
-    ref.current?.scrollTo(0, ref.current.scrollHeight);
-  }, [live]);
-
-  if (done || live === undefined || live === "") return null;
-  return (
-    <pre
-      className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-      ref={ref}
-    >
-      {live}
-    </pre>
-  );
-}
+          <ThreadPrimitive.ViewportFooter
+            className={cn(
+              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
+              !isEmpty &&
+                "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
+            )}
+          >
+            <ThreadScrollToBottom />
+            {/* PR1 只迁输出侧:输入框仍是 App.tsx footer 里那一整套(WorkTreePill /
+                TodoPanel / ComposerBar / slash 菜单 / 附件暂存区)。这里若也渲染
+                <Composer />,界面上会出现两个输入框。
+                <ThreadFollowupSuggestions /> 同理:它要的 suggestions 数据 PR3 才有,
+                现在挂上去是个永远空着的壳。
+                PR2 搬输入框、PR3 接跟进建议时,把这两行加回来。 */}
+          </ThreadPrimitive.ViewportFooter>
 ```
 
-再改 `Timeline.tsx` 的 `ToolRow`：删掉 `live` / `liveRef` / 那个 `useEffect` / 那段 `<pre>`，换成 `<ToolLiveTail toolCallId={call.id} done={result !== undefined} />`。**观感必须一字不变** —— 这是纯搬家，不是重设计。
+删掉 `<ThreadFollowupSuggestions />`、`<Composer />`，以及那段包着 `<ThreadSuggestions />` 的 `<AuiIf>`。
 
-- [ ] **Step 2: 写 OttoThread**
-
-创建 `src/renderer/src/aui/OttoThread.tsx`：
-
-```tsx
-// Thread 的组装 —— assistant-ui 出骨架,各 part 的皮按本仓需要挑。
-//
-// 用 children render function 而不是 components 配置对象:后者在
-// ThreadPrimitiveMessages.Props 里标了 @deprecated("Use the children render
-// function instead"),而且 render function 直接把 MessageState 给你——
-// 审计行要读的 metadata 就在上面,不用再去找 hook。
-
-import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
-import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
-// 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
-import { EventRow } from "../components/Timeline.js";
-import { ToolLiveTail } from "../components/ToolLiveTail.js";
-import { ToolFallback } from "../components/ui/tool-fallback.js";
-import type { SessionEvent } from "../../../session/events.js";
-import {
-  ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger,
-} from "../components/ui/reasoning.js";
-
-const PLUGINS = { code, cjk };
-
-/** assistant 消息的 part 配置。提到模块级:每次渲染新建对象会让子树白重挂 */
-const ASSISTANT_PARTS = {
-  Text: () => (
-    <div className="md self-stretch max-w-full py-[2px]">
-      <StreamdownTextPrimitive plugins={PLUGINS} />
-    </div>
-  ),
-  Reasoning: ({ text, status }: { text: string; status?: { type: string } }) => (
-    <ReasoningRoot variant="ghost" streaming={status?.type === "running"}>
-      <ReasoningTrigger active={status?.type === "running"}>思考</ReasoningTrigger>
-      <ReasoningContent>
-        <ReasoningText>{text}</ReasoningText>
-      </ReasoningContent>
-    </ReasoningRoot>
-  ),
-  // 工具行走 assistant-ui 的 ToolFallback,外挂一条直播尾巴——ToolFallback
-  // 没有「执行中的输出」这个概念,而 bash 跑长命令时那条尾巴是唯一的进度信号
-  tools: {
-    Fallback: (part: { toolCallId?: string; toolName: string; result?: unknown }) => (
-      <>
-        <ToolFallback {...(part as never)} />
-        <ToolLiveTail
-          toolCallId={part.toolCallId ?? part.toolName}
-          done={part.result !== undefined}
-        />
-      </>
-    ),
-  },
-} as const;
-
-const USER_PARTS = {
-  Text: () => (
-    <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
-      <MessagePrimitive.Content />
-    </div>
-  ),
-} as const;
-
-export function OttoThread() {
-  return (
-    <ThreadPrimitive.Root className="flex-1 min-h-0 flex flex-col">
-      <ThreadPrimitive.Viewport className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 px-5 py-4">
-        <ThreadPrimitive.Messages>
-          {({ message }) => {
-            if (message.role === "system") {
-              // 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影),
-              // 直接喂回既有的 EventRow —— 视觉与迁移前一模一样,零重写
-              // isLast 必须传:turn_ended(error) 那条审计行只在最后一条上挂重试键
-              // (重发的是「上一条用户消息」,对历史里的旧失败行没有意义)
-              const event = message.metadata?.custom?.["otto"] as SessionEvent | undefined;
-              return event === undefined ? null : <EventRow event={event} isLast={message.isLast} />;
-            }
-            if (message.role === "user") {
-              return (
-                <MessagePrimitive.Root className="max-w-[76%] self-end flex flex-col items-end gap-[6px]">
-                  <MessagePrimitive.Parts components={USER_PARTS} />
-                </MessagePrimitive.Root>
-              );
-            }
-            return (
-              <MessagePrimitive.Root className="max-w-[76%] self-start">
-                <MessagePrimitive.Parts components={ASSISTANT_PARTS} />
-              </MessagePrimitive.Root>
-            );
-          }}
-        </ThreadPrimitive.Messages>
-      </ThreadPrimitive.Viewport>
-    </ThreadPrimitive.Root>
-  );
-}
-```tsx
-// 执行中的输出直播尾巴 —— 迷你终端视角:只看最新进展。
-//
-// 从 ToolRow 抽出来:assistant-ui 的 ToolFallback 没有「执行中的输出」这个概念,
-// 而 bash 跑长命令时这条尾巴是唯一的进度信号。抽出来两边共用,行为一字不变。
-//
-// tool_result 落地后 store 会清掉这个 key,组件自然消失——
-// 直播只活在「事实到来前」的那个窗口里。
-
-import { useEffect, useRef } from "react";
-import { useChat } from "../store.js";
-
-export function ToolLiveTail({ toolCallId, done }: { toolCallId: string; done: boolean }) {
-  const live = useChat((s) => s.toolOutputByCall[toolCallId]);
-  const ref = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义:始终看最新输出,新碎片到就滚到底
-    ref.current?.scrollTo(0, ref.current.scrollHeight);
-  }, [live]);
-
-  if (done || live === undefined || live === "") return null;
-  return (
-    <pre
-      className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-      ref={ref}
-    >
-      {live}
-    </pre>
-  );
-}
-```
-
-再改 `Timeline.tsx` 的 `ToolRow`：删掉 `live` / `liveRef` / 那个 `useEffect` / 那段 `<pre>`，换成 `<ToolLiveTail toolCallId={call.id} done={result !== undefined} />`。**观感必须一字不变** —— 这是纯搬家，不是重设计。
-
-- [ ] **Step 2: 写 OttoThread**
-
-创建 `src/renderer/src/aui/OttoThread.tsx`：
-
-```tsx
-// Thread 的组装 —— assistant-ui 出骨架,各 part 的皮全是本仓既有组件。
-//
-// 「保留 Mr Otto 现有视觉,只换底层」这条决定的落点就在这个文件:
-// ToolRow / ToolGroup / UserAttachments 一行没重写,只是改从 part 拿数据。
-
-import { MessagePrimitive, ThreadPrimitive, useMessage } from "@assistant-ui/react";
-import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
-// 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
-import { EventRow } from "../components/Timeline.js";
-import { ToolLiveTail } from "../components/ToolLiveTail.js";
-import { ToolFallback } from "../components/ui/tool-fallback.js";
-import type { SessionEvent } from "../../../session/events.js";
-import {
-  ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger,
-} from "../components/ui/reasoning.js";
-
-const PLUGINS = { code, cjk };
-
-export function OttoThread() {
-  return (
-    <ThreadPrimitive.Root className="flex-1 min-h-0 flex flex-col">
-      <ThreadPrimitive.Viewport className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 px-5 py-4">
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage: () => (
-              <MessagePrimitive.Root className="max-w-[76%] self-end flex flex-col items-end gap-[6px]">
-                <MessagePrimitive.Parts
-                  components={{
-                    Text: () => (
-                      <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
-                        <MessagePrimitive.Content />
-                      </div>
-                    ),
-                  }}
-                />
-              </MessagePrimitive.Root>
-            ),
-            // 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影),
-            // 直接喂回既有的 EventRow —— 视觉与迁移前一模一样,零重写
-            SystemMessage: () => {
-              const event = useMessage((m) => m.metadata?.custom?.["otto"]) as
-                | SessionEvent
-                | undefined;
-              if (event === undefined) return null;
-              return <EventRow event={event} />;
-            },
-            AssistantMessage: () => (
-              <MessagePrimitive.Root className="max-w-[76%] self-start">
-                <MessagePrimitive.Parts
-                  components={{
-                    Text: () => (
-                      <div className="md self-stretch max-w-full py-[2px]">
-                        <StreamdownTextPrimitive plugins={PLUGINS} />
-                      </div>
-                    ),
-                    Reasoning: ({ text, status }) => (
-                      <ReasoningRoot variant="ghost" streaming={status?.type === "running"}>
-                        <ReasoningTrigger active={status?.type === "running"}>思考</ReasoningTrigger>
-                        <ReasoningContent>
-                          <ReasoningText>{text}</ReasoningText>
-                        </ReasoningContent>
-                      </ReasoningRoot>
-                    ),
-                    // 工具行走 assistant-ui 的 ToolFallback,外挂一条直播尾巴——
-                    // ToolFallback 没有「执行中的输出」这个概念,而 bash 跑长命令时
-                    // 那条尾巴是唯一的进度信号
-                    tools: {
-                      Fallback: (part) => (
-                        <>
-                          <ToolFallback {...part} />
-                          <ToolLiveTail
-                            toolCallId={part.toolCallId ?? part.toolName}
-                            done={part.result !== undefined}
-                          />
-                        </>
-                      ),
-                    },
-                  }}
-                />
-              </MessagePrimitive.Root>
-            ),
-          }}
-        />
-      </ThreadPrimitive.Viewport>
-    </ThreadPrimitive.Root>
-  );
-}
-```
-
-- [ ] **Step 3: 对着装出来的源码校正 API**
-
-上一步的 `ThreadPrimitive` / `MessagePrimitive` 用法是照 `@assistant-ui/react@0.15.15` 的 `.d.ts` 写的，已核实：
-`ThreadPrimitiveMessages.Props` 的 `children: ({ message }: { message: MessageState }) => ReactNode` 是非废弃的那条路
-（`components` 配置对象在同一份 `.d.ts` 里标了 `@deprecated`），`MessagePrimitiveParts` 的
-`tools` 接 `{ Fallback: ComponentType<ToolCallMessagePartProps> }`，`MessageState` 继承 `ThreadMessage` 因而带 `metadata`。
-
-**要核的是 registry 生成的那三个文件的导出名** —— 它们是 copy-in 源码，仓里那份才是事实：
-
-Run: `grep -n "^export" src/renderer/src/components/ui/reasoning.tsx src/renderer/src/components/ui/tool-fallback.tsx`
-
-核 `ReasoningRoot` / `ReasoningTrigger` / `ReasoningContent` / `ReasoningText` 四个名字，
-以及 `ToolFallback` 的导出形态和它接受的 props。上一步是按「复合件直接吃 part」写的；
-若生成的源码要求手工组装 `.Root` / `.Trigger` / `.Content` / `.Args` / `.Result` / `.Error`，就照它的写法改。
-
-Run: `grep -n "ReasoningRoot\|variant\|streaming\|active" src/renderer/src/components/ui/reasoning.tsx | head -20`
-核 `variant="ghost"`、`streaming`、`active` 这三个 prop 是否真存在；不存在就去掉，别硬传。
-
-名字或 prop 对不上就改上一步的代码，**不要改生成的文件**。
-
-- [ ] **Step 4: 类型检查**
+- [ ] **Step 2: 清掉因此变成死代码的东西**
 
 Run: `npx tsc --noEmit -p tsconfig.json`
-Expected: 无 `OttoThread.tsx` 相关报错
 
-- [ ] **Step 5: 构建**
+`verbatimModuleSyntax` + 未使用变量不会报错，但 `npm run build` 时 esbuild 会把它们打进包。
+把只被上一步删掉那几处引用的组件和 import 一并删掉（`Composer`、`ComposerAction`、
+`ComposerAttachments`、`ComposerAddAttachment`、`ThreadSuggestions`、`ThreadSuggestionItem`、
+`ThreadFollowupSuggestions` 及其 import，以及随之无人引用的 `SuggestionPrimitive` /
+`ComposerPrimitive` import —— **但 `EditComposer` 用了 `ComposerPrimitive`，先确认再删**）。
 
-Run: `npm run build`
-Expected: 成功
+**逐个确认无人引用再删**：`grep -n "<组件名" src/renderer/src/components/assistant-ui/thread.tsx`。
+拿不准的就留着并在报告里列出来 —— 留一个死组件的代价，远小于删掉一个还在用的。
 
-- [ ] **Step 6: 跑全量门禁**
+- [ ] **Step 3: 给 `ThreadComponents` 加 `SystemMessage` 槽**
 
-Run: `npm test`
-Expected: PASS
+```tsx
+export type ThreadComponents = {
+  AssistantMessage?: ComponentType | undefined;
+  /** 本仓加的槽:事件日志里的审计行(会话创建/模型切换/skill 注入/turn 暴死…)
+      投成 role:"system" 消息,由它渲染。上游 registry 没有这个槽 —— 升级时要人工合 */
+  SystemMessage?: ComponentType | undefined;
+  Welcome?: ComponentType | undefined;
+  ToolFallback?: ToolCallMessagePartComponent | undefined;
+  ToolGroup?:
+    | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
+    | undefined;
+  ReasoningGroup?:
+    | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
+    | undefined;
+};
+```
+
+- [ ] **Step 4: 让 `ThreadMessage` 认 system**
+
+```tsx
+const ThreadMessage: FC = () => {
+  const {
+    AssistantMessage: AssistantMessageComponent = AssistantMessage,
+    SystemMessage: SystemMessageComponent,
+  } = useContext(ThreadComponentsContext);
+  const role = useAuiState((s) => s.message.role);
+  const isEditing = useAuiState((s) => s.message.composer.isEditing);
+
+  if (isEditing) return <EditComposer />;
+  if (role === "user") return <UserMessage />;
+  // 本仓加的分支:不认 system 的话,审计行会掉进 assistant 分支、被当成模型回复渲染。
+  // 没给 SystemMessage 时退回 assistant —— 与上游行为一致,不静默吞掉消息
+  if (role === "system" && SystemMessageComponent) return <SystemMessageComponent />;
+  return <AssistantMessageComponent />;
+};
+```
+
+- [ ] **Step 5: 版式对齐本仓**
+
+`ThreadRoot` 上写死了 `--thread-max-width: 44rem` 且内容居中（`mx-auto max-w-(--thread-max-width)`）。
+本仓会话区现在是撑满宽度、气泡各自 `max-w-[76%]`（见 `src/renderer/src/timelineStyles.ts` 的 `ROW`）。
+
+先看一眼当前值：
+
+Run: `grep -n "thread-max-width\|max-w-\[76%\]" src/renderer/src/components/assistant-ui/thread.tsx src/renderer/src/timelineStyles.ts`
+
+把 `--thread-max-width` 改成 `100%`，让宽度由外层容器决定 —— `App.tsx` 那边本来就有自己的
+padding 和宽度约束（Task 8 接线时会看到）。**不要动 `mx-auto`/`px-4`** 那些结构类，
+只改这一个变量：改结构会连带影响滚动和 sticky footer 的定位。
+
+```tsx
+        ["--thread-max-width" as string]: "100%",
+```
+
+- [ ] **Step 6: 验证**
+
+Run: `npx tsc --noEmit -p tsconfig.json && npm run build && npm test`
+Expected: 三条全过，`npm test` 仍是 964。
+
+`npm run build` 是这一步真正的门 —— 删多了引用、或删漏了 import，`tsc` 有时放过，esbuild 不会。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src/renderer/src/aui/OttoThread.tsx
+git add src/renderer/src/components/assistant-ui/thread.tsx
 git commit -m "$(cat <<'EOF'
-feat(aui): Thread 组装完成,工具行走 ToolFallback + 外挂直播尾巴
+feat(ui): thread.tsx 摘掉输入侧，补上 SystemMessage 槽
 
-工具行按用户决定改用 assistant-ui 的 ToolFallback。但它没有「执行中的输出」
-这个概念,而 bash 跑长命令时那条直播尾巴是唯一的进度信号——所以从 ToolRow
-里抽成 ToolLiveTail 外挂上去,ToolRow 那边观感一字不变(纯搬家)。
+registry 装进来的 Thread 自带 Composer 和 suggestions，但 PR1 只迁输出侧——
+App.tsx 的 footer 有自己一整套输入框(WorkTreePill / TodoPanel / ComposerBar /
+slash 菜单 / 附件暂存区)，两个都渲染就是界面上两个输入框。PR2 搬输入框、
+PR3 接跟进建议时再把那两行加回来。
 
-八类审计行走 SystemMessage override 喂回既有的 EventRow,一行没重写。
+它也没有 system 消息的位置：ThreadMessage 只分 user 和其余，而 Task 3 把八类
+审计行投成了 role:"system"——不补槽，那些行会被当成模型回复渲染。
 
-components 键名以装出来的 thread.tsx 为准,不以文档为准:registry 是
-copy-in 源码,仓里那份才是事实。
+thread.tsx 是 copy-in 源码、归本仓所有，改它是正当动作；但每处改动都留了注释，
+因为将来从 registry 升级时这些要人工合。
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1526,17 +1333,196 @@ EOF
 
 ---
 
-### Task 7: 接进 App.tsx，卸掉旧渲染栈
+### Task 7: `OttoThread` —— 组装 overrides，接回直播尾巴
 
 **Files:**
-- Modify: `src/renderer/src/App.tsx:2091-2140`（`ThreadViewport` 那一整段）
+- Create: `src/renderer/src/aui/OttoThread.tsx`
+- Create: `src/renderer/src/components/ToolLiveTail.tsx`
+- Modify: `src/renderer/src/components/Timeline.tsx`（`ToolRow` 里的直播尾巴改用抽出来的组件，观感不变）
+
+**Interfaces:**
+- Consumes: `Thread` / `ThreadComponents`（`@/components/assistant-ui/thread.js`，Task 6 已加 `SystemMessage` 槽）、`ToolFallback`（`@/components/assistant-ui/tool-fallback.js`）、`EventRow`（`src/renderer/src/components/Timeline.tsx`，**不改**）
+- Produces:
+  - `export function OttoThread(): JSX.Element`
+  - `export function ToolLiveTail(props: { toolCallId: string; done: boolean }): JSX.Element | null`
+
+**背景（实现者必读）：**
+
+装出来的文件在 `src/renderer/src/components/assistant-ui/`，**不是** `components/ui/`。
+`thread.tsx` 导出的是一个现成的 `Thread` 组件，吃 `components` 配置对象 —— 不用手搓 primitives。
+
+三个 override 各自要解决一件事：
+
+1. **`SystemMessage`** —— Task 3 把八类审计行投成 `role: "system"` 消息、原始事件挂在
+   `metadata.custom.otto` 上。这里把它取出来喂回**既有的 `EventRow`**，`EventRow` 一行不改，
+   视觉与迁移前一模一样。
+   **必须传 `isLast`**：`turn_ended(error)` 那条审计行只在最后一条上挂重试键
+   （重发的是「上一条用户消息」，对历史里的旧失败行没有意义），而 `EventRow` 的 `isLast` 默认 `false`。
+2. **`ToolFallback`** —— 用 assistant-ui 那套（用户决定），但它没有「执行中的输出」这个概念。
+   本仓 bash 跑长命令时，那条直播尾巴是界面上唯一的进度信号，所以外挂上去。
+3. 不给 `AssistantMessage` / `ToolGroup` / `ReasoningGroup` override —— 装进来的默认实现
+   已经在 Task 5 里换成本仓配色和动效了，再包一层只会多一处要维护的地方（YAGNI）。
+
+直播尾巴的实现现在埋在 `ToolRow` 里（`src/renderer/src/components/Timeline.tsx` 的
+`const live = useChat(...)` / `liveRef` / 滚到底的 `useEffect` / `{!result && live && (<pre ...>)}`）。
+抽成独立组件，两边共用；**`ToolRow` 的观感一字不变** —— 它还被 `EventRow` 那条线间接留着。
+
+- [ ] **Step 1: 把直播尾巴抽成独立组件**
+
+Run: `grep -n "toolOutputByCall\|liveRef\|const live" src/renderer/src/components/Timeline.tsx`
+
+创建 `src/renderer/src/components/ToolLiveTail.tsx`，把那几块原样搬过来：
+
+```tsx
+// 执行中的输出直播尾巴 —— 迷你终端视角:只看最新进展。
+//
+// 从 ToolRow 抽出来:assistant-ui 的 ToolFallback 没有「执行中的输出」这个概念,
+// 而 bash 跑长命令时这条尾巴是界面上唯一的进度信号。抽出来两边共用,行为一字不变。
+//
+// tool_result 落地后 store 会清掉这个 key,组件自然消失——
+// 直播只活在「事实到来前」的那个窗口里。
+
+import { useEffect, useRef } from "react";
+import { useChat } from "../store.js";
+
+export function ToolLiveTail({ toolCallId, done }: { toolCallId: string; done: boolean }) {
+  const live = useChat((s) => s.toolOutputByCall[toolCallId]);
+  const ref = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    // 终端语义:始终看最新输出,新碎片到就滚到底
+    ref.current?.scrollTo(0, ref.current.scrollHeight);
+  }, [live]);
+
+  if (done || live === undefined || live === "") return null;
+  return (
+    <pre
+      className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
+      ref={ref}
+    >
+      {live}
+    </pre>
+  );
+}
+```
+
+改 `Timeline.tsx` 的 `ToolRow`：删掉 `live` / `liveRef` / 那个 `useEffect` / 那段 `<pre>`，
+换成 `<ToolLiveTail toolCallId={call.id} done={result !== undefined} />`。
+**className 一个字符都不要改** —— 这是纯搬家，不是重设计。
+
+- [ ] **Step 2: 核对 override 的真实类型**
+
+Run: `grep -n "export type ThreadComponents" -A 20 src/renderer/src/components/assistant-ui/thread.tsx`
+Run: `grep -n "^export" src/renderer/src/components/assistant-ui/tool-fallback.tsx`
+
+确认 `SystemMessage` 槽在（Task 6 加的）、`ToolFallback` 的导出名和它接受的 props。
+`ToolFallback` 的类型是 `ToolCallMessagePartComponent` —— 拿到的 props 就是那个 part。
+
+- [ ] **Step 3: 写 OttoThread**
+
+创建 `src/renderer/src/aui/OttoThread.tsx`：
+
+```tsx
+// Thread 的组装 —— assistant-ui 出骨架,本仓只补三样东西。
+//
+// 「保留 Mr Otto 现有视觉」这条决定的落点在 SystemMessage:八类审计行直接喂回
+// 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
+
+import type { ComponentType } from "react";
+import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
+import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
+import { ToolLiveTail } from "../components/ToolLiveTail.js";
+import { EventRow } from "../components/Timeline.js";
+import type { SessionEvent } from "../../../session/events.js";
+import { useAuiState } from "@assistant-ui/react";
+
+/** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。
+    isLast 必须传:turn_ended(error) 那条行只在最后一条上挂重试键 ——
+    重发的是「上一条用户消息」,对历史里的旧失败行没有意义 */
+const SystemMessage: ComponentType = () => {
+  const event = useAuiState((s) => s.message.metadata?.custom?.["otto"]) as
+    | SessionEvent
+    | undefined;
+  const isLast = useAuiState((s) => s.message.isLast);
+  if (event === undefined) return null;
+  return <EventRow event={event} isLast={isLast} />;
+};
+
+/** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 ——
+    它没有「执行中的输出」这个概念,而 bash 跑长命令时那条尾巴是唯一的进度信号 */
+const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => (
+  <>
+    <ToolFallback {...part} />
+    <ToolLiveTail
+      toolCallId={part.toolCallId ?? part.toolName}
+      done={part.result !== undefined}
+    />
+  </>
+);
+
+// 模块级常量:每次渲染新建对象会让整棵子树白重挂
+const COMPONENTS: ThreadComponents = {
+  SystemMessage,
+  ToolFallback: ToolFallbackWithLiveTail,
+};
+
+export function OttoThread() {
+  return <Thread components={COMPONENTS} />;
+}
+```
+
+- [ ] **Step 4: 按真实类型修正**
+
+Run: `npx tsc --noEmit -p tsconfig.json`
+
+上一步的 `useAuiState` 选择器写法、`ToolCallMessagePartComponent` 的 props 形状，
+以真实类型为准。**报错就改上一步的代码，不要往里塞 `as never`** ——
+Task 4 已经因为一个凭空加的 `as never` 返工过一轮。
+若某处确实需要转型，在报告里单独列出它 silence 了什么。
+
+- [ ] **Step 5: 验证**
+
+Run: `npx tsc --noEmit -p tsconfig.json && npm run build && npm test`
+Expected: 三条全过，`npm test` 仍是 964。
+
+`OttoThread` 此刻还没有人渲染（Task 8 才接进 `App.tsx`），所以这一步验的是「能编译、能打包」，
+不是「界面对不对」。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add src/renderer/src/aui/OttoThread.tsx src/renderer/src/components/ToolLiveTail.tsx src/renderer/src/components/Timeline.tsx
+git commit -m "$(cat <<'EOF'
+feat(aui): Thread 组装完成，审计行喂回 EventRow，工具行外挂直播尾巴
+
+「保留 Mr Otto 现有视觉」这条决定的落点是 SystemMessage override:八类审计行
+直接喂回既有的 EventRow，一行没重写，也不需要第二条渲染路径。isLast 必须传，
+否则 turn_ended(error) 那条行的重试键永远不渲染。
+
+工具行按用户决定用 assistant-ui 的 ToolFallback。但它没有「执行中的输出」这个
+概念，而 bash 跑长命令时那条直播尾巴是界面上唯一的进度信号——所以从 ToolRow 里
+抽成 ToolLiveTail 外挂上去，ToolRow 那边观感一字不变(纯搬家)。
+
+不给 AssistantMessage / ToolGroup / ReasoningGroup override:装进来的默认实现
+Task 5 已经换成本仓配色和动效了，再包一层只是多一处要维护的地方。
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 8: 接进 App.tsx，卸掉旧渲染栈
+
+**Files:**
+- Modify: `src/renderer/src/App.tsx`（`<ThreadViewport>` 到 `</ThreadViewport>` 整段，约 2091-2140 行）（`ThreadViewport` 那一整段）
 - Modify: `src/renderer/src/components/Timeline.tsx`（换 Markdown 实现）
 - Modify: `src/renderer/src/components/CodeBlock.tsx`（删 `MD_COMPONENTS`，保留 `CopyButton` 的用法说明）
 - Modify: `src/renderer/src/app.css`（删 hljs 配色段）
 - Modify: `package.json`（卸 react-markdown / remark-gfm / rehype-highlight / highlight.js）
 
 **Interfaces:**
-- Consumes: `OttoRuntimeProvider`（Task 4）、`OttoThread`（Task 6）
+- Consumes: `OttoRuntimeProvider`（Task 4）、`OttoThread`（Task 7）
 
 **背景（实现者必读）：** `ThreadViewport` 现在承担贴底滚动（`src/renderer/src/lib/stickToBottom.ts`，有测试 `tests/renderer/stickToBottom.test.ts`）。assistant-ui 的 `ThreadPrimitive.Viewport` **自带** auto-scroll。`ThreadViewport` 和 `stickToBottom.ts` 在本 PR 后仍被回放视图用着 —— **先确认再删**，不确认就留着。
 
@@ -1652,7 +1638,7 @@ EOF
 
 ---
 
-### Task 8: 补 ADR，开 PR
+### Task 9: 补 ADR，开 PR
 
 **Files:**
 - Create: `docs/adr/00NN-assistant-ui-external-store.md`
