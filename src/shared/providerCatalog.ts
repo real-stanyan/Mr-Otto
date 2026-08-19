@@ -19,7 +19,8 @@ export type ProviderId =
   | "mistral"
   | "groq"
   | "openrouter"
-  | "siliconflow";
+  | "siliconflow"
+  | "ollama";
 
 export interface ProviderInfo {
   id: ProviderId;
@@ -37,8 +38,12 @@ export interface ProviderInfo {
   consoleUrl: string;
   /** key 的样子，贴错家时用户能自己发现（"sk-ant-… 怎么贴进 OpenAI 了"） */
   keyHint: string;
-  /** 主要面向国内还是海外——决定用户要不要操心网络可达性 */
-  region: "cn" | "global";
+  /** 主要面向国内还是海外——决定用户要不要操心网络可达性。
+      local = 跑在这台机器上，既不出网也不要 key */
+  region: "cn" | "global" | "local";
+  /** 免 key（本机推理服务）。true 时 UI 不出输入框，路由也不拦"没配 key"——
+      Ollama 的鉴权是"能连到 11434 就是你"，硬要一把 key 只会凭空造一道门槛 */
+  keyless?: boolean;
 }
 
 export const PROVIDER_CATALOG: ProviderInfo[] = [
@@ -184,6 +189,20 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     consoleUrl: "https://cloud.siliconflow.cn/account/ak",
     keyHint: "sk-…",
     region: "cn",
+  },
+  {
+    id: "ollama",
+    name: "Ollama",
+    blurb: "在这台机器上跑开源权重模型，不要 key，也不出网",
+    // 端点是 http 而不是 https：本机回环没有中间人可防，Ollama 也不发证书
+    baseUrl: "http://localhost:11434/v1",
+    baseUrlEnv: "OLLAMA_BASE_URL",
+    // 免 key，但变量仍留着：把 OLLAMA_BASE_URL 指向带鉴权的远端 Ollama 时要用它
+    apiKeyEnv: "OLLAMA_API_KEY",
+    consoleUrl: "https://ollama.com/download",
+    keyHint: "无需 key",
+    region: "local",
+    keyless: true,
   },
 ];
 

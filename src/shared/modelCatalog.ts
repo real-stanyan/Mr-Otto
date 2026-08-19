@@ -30,6 +30,8 @@ export interface ModelChoice {
       ADR-0008 曾定"不维护能力表"——bridge 路由必须知道谁有眼睛,此处推翻,
       见 ADR-0009 追记 */
   supportsVision: boolean;
+  /** 该型号所属厂商免 key（本机推理服务）。路由据此放行，UI 据此不出输入框 */
+  keyless: boolean;
 }
 
 /** 目录条目的手写部分：端点三件套由厂商目录补齐，这里只写型号自己的事 */
@@ -102,6 +104,16 @@ const MODEL_SPECS: ModelSpec[] = [
   // ── 硅基流动 ──
   { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V3.2-Exp", label: "DeepSeek V3.2", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
   { provider: "siliconflow", model: "Qwen/Qwen3-235B-A22B", label: "Qwen3 235B", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
+
+  // ── Ollama（本机）──
+  // 这里列的是几款常见 tag，装没装在用户那边：Ollama 只跑他 `ollama pull` 过的。
+  // 想用目录外的 tag（自定义 Modelfile、量化档）就填 OTTER_MODEL，照样能跑。
+  // 上下文按 Ollama 的默认 num_ctx 量级保守写，别让 UI 的占用百分比报得太乐观。
+  // thinking 一律 false：OpenAI 兼容层不吃 thinking 字段，发过去只会被当成陌生参数
+  { provider: "ollama", model: "qwen3", label: "Qwen3", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
+  { provider: "ollama", model: "llama3.2", label: "Llama 3.2", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
+  { provider: "ollama", model: "gpt-oss:20b", label: "GPT-OSS 20B", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
+  { provider: "ollama", model: "deepseek-r1", label: "DeepSeek R1", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
 ];
 
 function expand(spec: ModelSpec): ModelChoice {
@@ -117,6 +129,7 @@ function expand(spec: ModelSpec): ModelChoice {
     contextWindow: spec.contextWindow,
     supportsThinking: spec.supportsThinking,
     supportsVision: spec.supportsVision,
+    keyless: p.keyless ?? false,
   };
 }
 
@@ -153,6 +166,7 @@ export function resolveModel(model: string): ModelChoice {
       contextWindow: 128_000,
       supportsThinking: false,
       supportsVision: false,
+      keyless: false,
     }
   );
 }

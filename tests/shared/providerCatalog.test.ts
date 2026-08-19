@@ -20,8 +20,15 @@ describe("providerCatalog", () => {
   it("每家都有 key 变量、端点和领 key 的地方", () => {
     for (const p of PROVIDER_CATALOG) {
       expect(p.apiKeyEnv, p.id).toMatch(/^[A-Z0-9_]+$/);
-      expect(p.baseUrl, p.id).toMatch(/^https:\/\//);
+      // 本机服务走 http 回环（没有中间人可防，Ollama 也不发证书）；出网的一律 https
+      expect(p.baseUrl, p.id).toMatch(p.region === "local" ? /^http:\/\/localhost/ : /^https:\/\//);
       expect(p.consoleUrl, p.id).toMatch(/^https:\/\//);
+    }
+  });
+
+  it("免 key 的厂商只有本机那一档 —— 出网的服务不该被标成不要凭据", () => {
+    for (const p of PROVIDER_CATALOG) {
+      if (p.keyless) expect(p.region, p.id).toBe("local");
     }
   });
 
@@ -57,6 +64,12 @@ describe("modelCatalog", () => {
       MODEL_CATALOG.some((m) => m.provider === id)
     );
     expect(groups.map((g) => g.provider)).toEqual(order);
+  });
+
+  it("keyless 从厂商表传到每个型号上 —— 路由读的是型号，不会回头查厂商", () => {
+    for (const m of MODEL_CATALOG) {
+      expect(m.keyless, m.model).toBe(findProvider(m.provider)!.keyless ?? false);
+    }
   });
 
   it("至少有一款视觉型号 —— vision-bridge 的代读员得存在", () => {

@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
 import { ProviderMark } from "./ProviderMark.js";
 
-const REGION_LABEL: Record<ProviderInfo["region"], string> = { cn: "国内直连", global: "海外" };
+const REGION_LABEL: Record<ProviderInfo["region"], string> = { cn: "国内直连", global: "海外", local: "本机" };
 
 /** 一家厂商一行。收起时只说"是谁、配没配"，展开才谈 key */
 function ProviderRow({
@@ -53,8 +53,8 @@ function ProviderRow({
         aria-expanded={open}
         onClick={() => {
           onToggle();
-          // 展开 = 用户要填 key,光标直接落进去,省一次点击
-          if (!open) window.setTimeout(() => inputRef.current?.focus(), 60);
+          // 展开 = 用户要填 key,光标直接落进去,省一次点击（免 key 的行没有框可落）
+          if (!open && !info.keyless) window.setTimeout(() => inputRef.current?.focus(), 60);
         }}
         className="flex w-full items-center gap-3 px-4 py-[11px] text-left transition-colors duration-150 hover:bg-foreground/[0.04]"
       >
@@ -65,7 +65,12 @@ function ProviderRow({
             {info.blurb}
           </span>
         </span>
-        {configured ? (
+        {info.keyless ? (
+          <span className="flex shrink-0 items-center gap-[5px] text-[11.5px] text-ok">
+            <span className="size-[6px] rounded-full bg-ok" />
+            免 key
+          </span>
+        ) : configured ? (
           <span className="flex shrink-0 items-center gap-[5px] text-[11.5px] text-ok">
             <span className="size-[6px] rounded-full bg-ok" />
             已配置
@@ -84,34 +89,45 @@ function ProviderRow({
       <div className="disclose" data-open={open}>
         <div>
           <div className="flex flex-col gap-[10px] px-4 pt-1 pb-[14px]">
-            <div className="flex gap-2">
-              <Input
-                ref={inputRef}
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                className="h-9 flex-1 font-mono text-[13px]"
-                placeholder={configured ? `输入新 key 覆盖（${info.keyHint}）` : `粘贴 API key（${info.keyHint}）`}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void save();
-                }}
-              />
-              <Button size="sm" className="h-9" disabled={!draft.trim()} onClick={() => void save()}>
-                保存
-              </Button>
-              {configured && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 bg-transparent text-destructive border-destructive/60 hover:bg-destructive/10 hover:text-destructive dark:bg-transparent dark:hover:bg-destructive/10"
-                  onClick={() => void saveApiKey(info.apiKeyEnv, "")}
-                >
-                  清除
+            {/* 免 key 的一家没有输入框可填：它要的不是凭据，是"服务开着没" */}
+            {info.keyless ? (
+              <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
+                装好 Ollama 并让它跑着（<code>ollama serve</code>），再{" "}
+                <code>ollama pull</code> 下面任意一款，就能在型号下拉框里选到。
+                默认端点 <code>{info.baseUrl}</code>，改端点填{" "}
+                <code>{info.baseUrlEnv}</code>（远端 Ollama 要鉴权时再配{" "}
+                <code>{info.apiKeyEnv}</code>）。
+              </p>
+            ) : (
+              <div className="flex gap-2">
+                <Input
+                  ref={inputRef}
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-9 flex-1 font-mono text-[13px]"
+                  placeholder={configured ? `输入新 key 覆盖（${info.keyHint}）` : `粘贴 API key（${info.keyHint}）`}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void save();
+                  }}
+                />
+                <Button size="sm" className="h-9" disabled={!draft.trim()} onClick={() => void save()}>
+                  保存
                 </Button>
-              )}
-            </div>
+                {configured && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 bg-transparent text-destructive border-destructive/60 hover:bg-destructive/10 hover:text-destructive dark:bg-transparent dark:hover:bg-destructive/10"
+                    onClick={() => void saveApiKey(info.apiKeyEnv, "")}
+                  >
+                    清除
+                  </Button>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center gap-x-3 gap-y-[6px] text-[11.5px]">
               <button
@@ -119,10 +135,10 @@ function ProviderRow({
                 className="inline-flex items-center gap-1 text-primary hover:underline"
                 onClick={() => void window.otter.openProviderConsole(info.id)}
               >
-                去 {info.name} 控制台领 key
+                {info.keyless ? `下载 ${info.name}` : `去 ${info.name} 控制台领 key`}
                 <ExternalLinkIcon className="size-[11px]" />
               </button>
-              <code className="text-muted-foreground">{info.apiKeyEnv}</code>
+              {!info.keyless && <code className="text-muted-foreground">{info.apiKeyEnv}</code>}
               {saved && (
                 <span className="saved-hint inline-flex items-center gap-1 text-ok">
                   <CheckIcon className="size-[11px]" />
@@ -198,8 +214,11 @@ export function ModelProviderSettings() {
     [q]
   );
 
-  const configured = matched.filter((p) => keyStatus[p.apiKeyEnv]);
-  const rest = matched.filter((p) => !keyStatus[p.apiKeyEnv]);
+  // "可用" = 填了 key 的 + 免 key 的本机服务。分组问的是"我现在能不能选它",
+  // 不是"我有没有给过它凭据"——Ollama 从来不要凭据，却一直可用
+  const ready = (p: ProviderInfo) => p.keyless === true || (keyStatus[p.apiKeyEnv] ?? false);
+  const configured = matched.filter(ready);
+  const rest = matched.filter((p) => !ready(p));
 
   return (
     <>
@@ -213,7 +232,7 @@ export function ModelProviderSettings() {
         />
       </div>
 
-      <ProviderGroup title="已配置" providers={configured} openId={openId} setOpenId={setOpenId} />
+      <ProviderGroup title="可用" providers={configured} openId={openId} setOpenId={setOpenId} />
       <ProviderGroup
         title={configured.length > 0 ? "可添加" : "全部厂商"}
         providers={rest}

@@ -48,8 +48,10 @@ export function ModelPicker({
     const ready = (id: ProviderId) => {
       // DeepSeek 没配 key 也能用（登录后走官方赠额，见 main/modelRoute.ts）
       if (id === "deepseek") return true;
-      const env = findProvider(id)?.apiKeyEnv;
-      return env ? (keyStatus[env] ?? false) : false;
+      const info = findProvider(id);
+      if (!info) return false;
+      if (info.keyless) return true; // 本机 Ollama:能连上就能用
+      return keyStatus[info.apiKeyEnv] ?? false;
     };
     return modelsByProvider()
       .map((g) => ({ ...g, info: findProvider(g.provider)!, ready: ready(g.provider) }))

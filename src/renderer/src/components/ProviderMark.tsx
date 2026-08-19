@@ -18,7 +18,7 @@ import AnthropicMono from "@lobehub/icons/es/Anthropic/components/Mono.js";
 import * as anthropicStyle from "@lobehub/icons/es/Anthropic/style.js";
 import DeepSeekMono from "@lobehub/icons/es/DeepSeek/components/Mono.js";
 import * as deepseekStyle from "@lobehub/icons/es/DeepSeek/style.js";
-import GeminiColor from "@lobehub/icons/es/Gemini/components/Color.js";
+import GeminiMono from "@lobehub/icons/es/Gemini/components/Mono.js";
 import * as geminiStyle from "@lobehub/icons/es/Gemini/style.js";
 import GroqMono from "@lobehub/icons/es/Groq/components/Mono.js";
 import * as groqStyle from "@lobehub/icons/es/Groq/style.js";
@@ -28,6 +28,8 @@ import MistralMono from "@lobehub/icons/es/Mistral/components/Mono.js";
 import * as mistralStyle from "@lobehub/icons/es/Mistral/style.js";
 import MoonshotMono from "@lobehub/icons/es/Moonshot/components/Mono.js";
 import * as moonshotStyle from "@lobehub/icons/es/Moonshot/style.js";
+import OllamaMono from "@lobehub/icons/es/Ollama/components/Mono.js";
+import * as ollamaStyle from "@lobehub/icons/es/Ollama/style.js";
 import OpenAIMono from "@lobehub/icons/es/OpenAI/components/Mono.js";
 import * as openaiStyle from "@lobehub/icons/es/OpenAI/style.js";
 import OpenRouterMono from "@lobehub/icons/es/OpenRouter/components/Mono.js";
@@ -77,9 +79,11 @@ const brand = (Icon: Brand["Icon"], s: BrandStyle): Brand => ({
 const BRANDS: Record<ProviderId, Brand> = {
   openai: brand(asIcon(OpenAIMono), openaiStyle),
   anthropic: brand(asIcon(AnthropicMono), anthropicStyle),
-  // Gemini 是唯一用彩色字形的一家（上游 Avatar.js 同样选 Color）：
-  // 它的单色版在自家白底上是白的，等于看不见
-  google: brand(asIcon(GeminiColor), geminiStyle),
+  // Gemini 用单色字形 + 显式配色，不用上游 Avatar 选的 Color 版：Color 内部靠
+  // useId 生成渐变 id，那是这十几枚图标里唯一一处 React hook —— 换掉它，
+  // ProviderMark 整条依赖链就一个 hook 都不剩（渲染层崩在 useId 上的那次报错，
+  // 唯一可能的来源就是这里）。官方白底配白字形等于看不见，字色改成 Google 蓝
+  google: { ...brand(asIcon(GeminiMono), geminiStyle), color: "#4285f4" },
   deepseek: brand(asIcon(DeepSeekMono), deepseekStyle),
   glm: brand(asIcon(ZhipuMono), zhipuStyle),
   moonshot: brand(asIcon(MoonshotMono), moonshotStyle),
@@ -90,6 +94,7 @@ const BRANDS: Record<ProviderId, Brand> = {
   groq: brand(asIcon(GroqMono), groqStyle),
   openrouter: brand(asIcon(OpenRouterMono), openrouterStyle),
   siliconflow: brand(asIcon(SiliconCloudMono), siliconcloudStyle),
+  ollama: brand(asIcon(OllamaMono), ollamaStyle),
 };
 
 /** size = 方块边长（px，默认 20）；图形按各家官方比例居中 */
@@ -106,6 +111,7 @@ export function ProviderMark({
 }) {
   const b = BRANDS[provider];
   const { Icon } = b;
+  const glyph = Math.round(size * b.multiple);
   return (
     <span
       aria-hidden
@@ -116,7 +122,15 @@ export function ProviderMark({
         className
       )}
     >
-      <Icon size={Math.round(size * b.multiple)} />
+      {/* 行内 style 而不是只给 size prop：shadcn 的菜单项带着
+          `[&_svg:not([class*='size-'])]:size-4` 和 `…:text-muted-foreground`，
+          落在这枚 svg 上会把 logo 撑成 16px 的灰块。行内样式压得过类，
+          className 里的 text- 字样则让那条颜色规则不匹配 */}
+      <Icon
+        size={glyph}
+        className="text-current"
+        style={{ width: glyph, height: glyph }}
+      />
     </span>
   );
 }

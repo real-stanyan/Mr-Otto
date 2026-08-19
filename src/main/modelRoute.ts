@@ -32,6 +32,14 @@ export function routeModel(input: RouteInput): ModelRoute {
     return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
   }
 
+  // 免 key 的厂商（本机 Ollama）：能连上 11434 就是授权，没有第二道门。
+  // 排在官方额度分支之前——它压根不该走网关，赠额也覆盖不到本机进程。
+  // apiKey 仍给一个占位串："ollama" 是官方文档里 OpenAI 兼容客户端的惯用值，
+  // 服务端不校验，但空 Bearer 头在某些反代前面会被当成缺鉴权直接 401
+  if (choice.keyless) {
+    return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
+  }
+
   // 官方额度只买了 DeepSeek。GLM 的型号 id 发给 DeepSeek 只会换回一个上游 400,
   // 与其让用户对着看不懂的上游错误发呆,不如在这里说清楚
   if (choice.provider !== "deepseek") {
