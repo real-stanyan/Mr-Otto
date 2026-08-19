@@ -10,7 +10,7 @@ import {
   isAllowedTopLevelNavigation,
   shouldReportLoadFailure,
 } from "./browserNavigationPolicy.js";
-import type { BrowserBounds } from "../shared/browser.js";
+import { cssBoundsToDip, type BrowserBounds } from "../shared/browser.js";
 
 export function createWebContentsViewHandle(win: BrowserWindow, partition: string): BrowserViewHandle {
   const view = new WebContentsView({
@@ -74,7 +74,9 @@ export function createWebContentsViewHandle(win: BrowserWindow, partition: strin
         win.contentView.addChildView(view);
         attached = true;
       }
-      view.setBounds({ x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) });
+      // 渲染层报上来的是 CSS 像素,setBounds 认的是 DIP——缩放屏上差一个 zoomFactor。
+      // 现取而不缓存:用户按 Cmd +/- 改缩放,下一帧的上报就得按新倍数换算
+      view.setBounds(cssBoundsToDip(b, win.webContents.getZoomFactor()));
     },
 
     on: (cb: (e: BrowserViewEvent) => void) => {

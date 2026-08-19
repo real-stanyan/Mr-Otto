@@ -40,3 +40,21 @@ export function normalizeUrl(input: string): string {
   if (HAS_SCHEME.test(s)) return s;
   return "https://" + s;
 }
+
+/** CSS 像素 → DIP。
+    渲染层量出来的 getBoundingClientRect 是 CSS 像素,而 WebContentsView.setBounds
+    认的是 DIP;两者只在 zoomFactor 恰好为 1 时相等。缩放屏上 Electron 会给渲染层
+    一个非 1 的 zoomFactor(实测某台 1.577,devicePixelRatio 3.155 = 2 × 1.577),
+    直接把 CSS 像素当 DIP 传下去,网页就落在应有位置的 1/1.577 处、尺寸也缩水同样倍数
+    ——症状是"网页整块偏出面板",而不是显而易见的错位,所以值得单独一个函数把它钉住。
+
+    zoomFactor 非正(0 / NaN)时按 1 处理:拿到 0 会把网页缩成一个点,宁可不缩放。 */
+export function cssBoundsToDip(bounds: BrowserBounds, zoomFactor: number): BrowserBounds {
+  const z = zoomFactor > 0 && Number.isFinite(zoomFactor) ? zoomFactor : 1;
+  return {
+    x: Math.round(bounds.x * z),
+    y: Math.round(bounds.y * z),
+    width: Math.round(bounds.width * z),
+    height: Math.round(bounds.height * z),
+  };
+}
