@@ -89,8 +89,8 @@ import {
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
 import { EventRow, ToolRow } from "./components/Timeline.js";
-import { retryLastUserMessage } from "./components/MessageActions.js";
-import { hasUnretryableAttachments, lastUserMessage } from "./lib/lastUserMessage.js";
+import { lastUserMessage } from "./lib/lastUserMessage.js";
+import { retryLastUserMessage, retryPlan } from "./lib/retry.js";
 import { ToolGroup } from "./components/ToolGroup.js";
 import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
@@ -1857,28 +1857,33 @@ function Welcome() {
 }
 
 /** 失败不该只是一行红字——恢复出口就挂在它旁边(assistant-ui 的 Error primitive 同款)。
-    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage),别处各写一份;
-    这里外观是红色文字钮,按钮文案随"带不带附件"变——不然点了以为发出去了实际只是填回输入框 */
+    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage/retryPlan),别处各写一份;
+    这里外观是红色文字钮,按钮文案随 plan 变——不然点了以为发出去了实际只是填回输入框
+    (plan 同时看"消息自身带没带附件"和"此刻输入框暂存区是否有附件":后者是
+    send() 读的是调用那一刻的 staged,跟被重试的消息无关,漏了这条会静默夹带) */
 function RetryButton() {
   const events = useChat((s) => s.events);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const staged = useChat((s) => s.staged);
   const prev = lastUserMessage(events);
-  if (!prev || status === "running") return null;
-  const hasAttachments = hasUnretryableAttachments(prev);
+  const plan = retryPlan(prev, staged.length);
+  if (!prev || status === "running" || !plan) return null;
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
       title={
-        hasAttachments
-          ? "把上一条消息填回输入框（附件要重新添加）"
-          : "重试：把上一条消息原样再发一遍"
+        plan.mode === "resend"
+          ? "重试：把上一条消息原样再发一遍"
+          : plan.reason === "attachments"
+            ? "把上一条消息填回输入框（附件要重新添加）"
+            : "输入框里有待发送的附件，先填回正文，你确认后再发"
       }
       className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
-      onClick={() => retryLastUserMessage(prev)}
+      onClick={() => retryLastUserMessage(prev, plan)}
     >
-      {hasAttachments ? "填回输入框" : "重试"}
+      {plan.mode === "resend" ? "重试" : "填回输入框"}
     </Button>
   );
 }
