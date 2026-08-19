@@ -197,7 +197,11 @@ export function TerminalView() {
               />
             </button>
           ))}
-          <Button variant="ghost" size="sm" onClick={() => void newTab()} title="新终端">
+          {/* 没会话时这颗按钮点了也开不出终端(terminalOpen 要 sessionId)——
+              早先是静默 no-op,一块死面板还看不出为什么。跟 Welcome 页
+              「先选工程文件夹」那颗按钮同一个模式:disabled + title 说明原因,
+              而不是让用户点半天没反应自己猜 */}
+          <Button variant="ghost" size="sm" onClick={() => void newTab()} disabled={!sessionId} title={sessionId ? "新终端" : "先选一个会话"}>
             <Plus className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -209,7 +213,15 @@ export function TerminalView() {
         </Button>
       </header>
       {error && <div className="px-3 py-2 text-xs text-destructive">{error}</div>}
-      <div ref={hostRef} className="min-h-0 flex-1 px-2 py-1" />
+      {sessionId ? (
+        <div ref={hostRef} className="min-h-0 flex-1 px-2 py-1" />
+      ) : (
+        // 从欢迎页(没有会话)也能把面板开出来(⌃` 全局快捷键不看 phase)——
+        // 这里给个说明,别让用户面对一块空面板猜发生了什么
+        <div className="flex min-h-0 flex-1 items-center justify-center px-3 py-2 text-xs text-muted-foreground">
+          先选一个会话
+        </div>
+      )}
     </div>
   );
 }
