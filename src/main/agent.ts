@@ -99,7 +99,7 @@ export function createAgent(opts: {
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）
   const base = createLocalWorld({ root: opts.workspace });
   // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
-  // (与 openTerminal 的方向相反,见 ADR-0033)。工具照旧只认 world.browser
+  // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
   const world = opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。

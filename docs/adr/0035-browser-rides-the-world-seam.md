@@ -1,4 +1,4 @@
-# ADR-0033：浏览器骑在 ExecutionWorld seam 上，人的浏览不进日志
+# ADR-0035：浏览器骑在 ExecutionWorld seam 上，人的浏览不进日志
 
 - 状态：已接受
 - 日期：2026-08-19

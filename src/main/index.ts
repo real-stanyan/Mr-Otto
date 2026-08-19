@@ -320,7 +320,7 @@ void app.whenReady().then(() => {
   // 与终端的接线方向相反——终端是 hub 去调 agent.world.openTerminal(pty 是
   // LocalWorld 自己能干的活),浏览器是 hub 造好能力反过来注入进 world:
   // WebContentsView 只有主进程 + 窗口造得出来,LocalWorld 是纯 Node 模块,造不出来。
-  // seam 仍然成立:工具只认 world.browser,不知道 hub 的存在(ADR-0033)。
+  // seam 仍然成立:工具只认 world.browser,不知道 hub 的存在(ADR-0035)。
   const browsers = createBrowserHub({
     createView: () => {
       if (!mainWindow) throw new Error("窗口还没建好，开不了浏览器");
