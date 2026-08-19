@@ -31,6 +31,9 @@ import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
+import { ProfileCard } from "./components/ProfileCard.js";
+import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -1191,7 +1194,6 @@ function QuotaCard() {
 function AccountPage() {
   const account = useChat((s) => s.account);
   const signIn = useChat((s) => s.signIn);
-  const signOut = useChat((s) => s.signOut);
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
 
@@ -1207,14 +1209,9 @@ function AccountPage() {
       <section className={SETTINGS_BODY}>
         {account.signedIn ? (
           <>
-            <div className="flex items-center gap-[10px]">
-              <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} />
-              <span className="font-[650]">{account.name}</span>
-              <span className={HINT}>{account.email}</span>
-              <Button variant="outline" onClick={() => void signOut()}>
-                退出登录
-              </Button>
-            </div>
+            {/* 显示即编辑:名字和头像就地可改,和首登引导共用同一张表单
+                (components/ProfileCard.tsx → ProfileEditor.tsx) */}
+            <ProfileCard />
             <QuotaCard />
           </>
         ) : (
@@ -1480,6 +1477,9 @@ function AppSidebar() {
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
   const account = useChat((s) => s.account);
+  // 侧栏那一行显示的是"好友看到的我",所以以 profiles 为准而不是 auth.users(ADR-0028)
+  const myProfile = useChat((s) => s.myProfile);
+  const identity = displayIdentity(account, myProfile);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const friendChat = useChat((s) => s.friendChat);
@@ -1722,12 +1722,12 @@ function AppSidebar() {
           <button
             className="flex items-center gap-2 flex-1 min-w-0 px-[10px] py-1 text-muted-foreground text-xs bg-transparent text-left hover:text-foreground"
             onClick={() => void openSettings("account")}
-            title={account.signedIn ? account.email : undefined}
+            title={account.signedIn ? identity.email : undefined}
           >
             {account.signedIn ? (
               <>
-                <AccountAvatar name={account.name} avatarUrl={account.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
-                <span className="flex-1 min-w-0 truncate">{account.name}</span>
+                <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
+                <span className="flex-1 min-w-0 truncate">{identity.name}</span>
               </>
             ) : (
               "未登录 · 点击登录"
@@ -2531,6 +2531,8 @@ export function App() {
           {main}
           {/* 牌局邀请浮层:抽屉收着也得看得见,而邀请是有时效的(见组件顶部注释) */}
           <GameInviteToast />
+          {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
+          <ProfileSetupDialog />
         </SidebarInset>
       </TooltipProvider>
     </SidebarProvider>
