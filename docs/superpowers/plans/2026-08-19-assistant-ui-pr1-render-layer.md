@@ -1916,7 +1916,178 @@ EOF
 
 ---
 
-### Task 11: 补 ADR，开 PR
+### Task 11: 补回接线时丢掉的三处功能
+
+**Files:**
+- Modify: `src/renderer/src/App.tsx`（取回被删的四个纯函数 + 挂 `SelectionQuote`）
+- Modify: `src/renderer/src/components/assistant-ui/thread.tsx`（加 `RunIndicator` 槽）
+- Modify: `src/renderer/src/aui/OttoThread.tsx`（`RunIndicator` override）
+- Modify: `src/renderer/src/aui/ottoAdapter.ts`、`useOttoRuntime.ts`（接回 `onReload`）
+- Modify: `tests/renderer/ottoAdapter.test.ts`
+
+**背景（实现者必读）：这三处都是接线（`ed49cfa`）造成的真实回归，不是打磨**
+
+Task 10 的审查逐项走查删掉的代码，发现三样东西**没了替代品**。绿色构建证明不了这个 ——
+把一个组件和它唯一的调用点一起删掉，编译完美通过，功能却消失了。
+
+#### 1. turn 运行时的相位指示器
+
+删掉前，`App.tsx` 在 `status === "running" || approval !== null` 的整段时间里渲染一个
+`Marker`：相位 orb + 中文标签（等待审批 / 检索中 / 执行中 / 思考中 / 作答中）+
+实时 `mm:ss · Nk tokens`。
+
+删掉后，**turn 开始到第一个 token 到达之间界面上什么都没有** —— 投影只在
+`live.content` / `live.reasoning` 非空时才产出消息（`toThreadMessages.ts:150`），
+在那之前没有任何东西可渲染。跑一条要等十几秒才出字的命令时，界面看起来像死了。
+
+原实现在 `git show d2e3357:src/renderer/src/App.tsx` 里：`fmtTokens`(121)、`fmtElapsed`(126)、
+`TurnMeta`(175)、`currentTool`(618)、`agentPhase`(633)，以及 2129 行附近那段 `<Marker>`。
+**原样取回，不要重写。**
+
+#### 2. 模型回复上的重试/重发
+
+删掉前，每条模型回复悬停都有重试键（`MessageActions`）：原样重发上一条用户消息，
+或在原消息带附件时把正文填回输入框。它**不依赖 turn 失败** —— 回复得好好的也能重来一次。
+
+删掉后只剩 `turn_ended(error)` 那条错误行上的 `RetryButton`。而 assistant-ui 自带的
+`ActionBarPrimitive.Reload`（`thread.tsx:381-385`）是**哑的**，因为
+`ottoAdapter.ts` 当初刻意没接 `onReload`。
+
+**那个决定要推翻。** 当时的理由是「`retryPlan` 有 fill 档，接上去等于给用户一个有时
+什么都不生成的『重新生成』键」—— 但当时 `MessageActions` 还在，重试还有别的入口。
+现在没有了，「语义不够纯」远轻于「功能没了」。fill 档也不是什么都不做：正文落进输入框，
+用户确认后自己发，这正是本仓自己选的降级方式。
+
+#### 3. 划词引用
+
+`SelectionQuote`（在消息区选中文字 → 浮出「引用」→ 以 markdown 引用块进输入框）
+原本挂在 `ThreadViewport.tsx:63`，而 `ThreadViewport` 已经没人渲染了。
+它有自己的 lib（`lib/quote.ts`）和测试（`tests/renderer/quote.test.ts`），
+但**没有任何挂载点**。assistant-ui 的 `SelectionToolbar` 本仓一处没用。
+
+它的签名是 `SelectionQuote({ hostRef }: { hostRef: RefObject<HTMLElement | null> })`，
+坐标算的是相对宿主容器的偏移。原结构是：`<section ref={ref}>{children}</section>` 后面
+紧跟 `<SelectionQuote hostRef={ref} />`（兄弟，不是子元素）。**照抄这个结构**。
+
+- [ ] **Step 1: 接回 `onReload`（先做这个，它最小）**
+
+`src/renderer/src/aui/ottoAdapter.ts`：`OttoAdapterInput` 加回 `retry: () => void`，
+并在返回的 adapter 上加：
+
+```ts
+    // 接回 onReload:本仓的重试有 fill 档(原消息带附件时把正文填回输入框,不重发),
+    // 语义上确实不是纯粹的 regenerate。但接线后 MessageActions 那个入口没了,
+    // 「语义不够纯」远轻于「功能没了」—— fill 档也不是什么都不做:
+    // 正文落进输入框、用户确认后自己发,这正是本仓自己选的降级(见 lib/retry.ts)
+    onReload: async () => {
+      input.retry();
+    },
+```
+
+`src/renderer/src/aui/useOttoRuntime.ts`：组出 `retry` 并传进去。需要
+`lastUserMessage(events)`、`retryPlan(prev, staged.length)`、`retryLastUserMessage(prev, plan)`
+（分别在 `lib/lastUserMessage.js` / `lib/retry.js` / `lib/retryAction.js`）。
+`staged` 从 store 取。`prev` 或 `plan` 为空时 `retry` 什么都不做。
+
+`tests/renderer/ottoAdapter.test.ts`：把「刻意不提供 onReload」那条测试**改成**断言它存在且转交
+`retry`（这是产品代码变更带着它的测试一起改，不是删测试求绿）。
+
+- [ ] **Step 2: 验证 Step 1**
+
+Run: `npx vitest run tests/renderer/ottoAdapter.test.ts && npx tsc --noEmit -p tsconfig.json`
+
+- [ ] **Step 3: 取回相位指示器的四个纯函数**
+
+从 `git show d2e3357:src/renderer/src/App.tsx` 取回 `fmtTokens`、`fmtElapsed`、`TurnMeta`、
+`currentTool`、`agentPhase`，**原样放回 `App.tsx`**（连注释一起）。它们是纯函数，不要重写。
+
+- [ ] **Step 4: `thread.tsx` 加 `RunIndicator` 槽**
+
+在 `ThreadComponents` 里加（紧挨 Task 6 的 `SystemMessage`、Task 8 的 `UserAttachments`，
+注释风格保持一致）：
+
+```tsx
+  /** 本仓加的槽:turn 运行时的相位指示器(orb + 相位标签 + 实时耗时/token)。
+      它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  RunIndicator?: ComponentType | undefined;
+```
+
+在 `ThreadRoot` 的 `<ThreadPrimitive.ViewportFooter>` 里，`<ThreadScrollToBottom />` **之前**
+渲染它（缺省不渲染任何东西）：
+
+```tsx
+            {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
+            <ThreadScrollToBottom />
+```
+
+位置就是它原来在的地方：消息流末尾、输入框上方。
+
+- [ ] **Step 5: `OttoThread` 加 `RunIndicator` override**
+
+把 `App.tsx` 里原来那段 `<Marker>`（`git show d2e3357:src/renderer/src/App.tsx` 2129 行附近）
+搬进 `OttoThread.tsx` 的一个组件里，数据照旧从 store 订阅（`statusBySession` / `approvals` / `events`）。
+`agentPhase` 等四个函数从 `App.tsx` 导出后 import —— 或者一并搬进 `OttoThread.tsx`，
+**二选一，在报告里说明选了哪个、为什么**。
+
+`status !== "running" && approval === null` 时返回 `null`。
+
+- [ ] **Step 6: 挂回 `SelectionQuote`**
+
+在 `App.tsx` 里给 thread 套一层宿主容器，结构照抄 `ThreadViewport` 原来的样子
+（`SelectionQuote` 是滚动容器的**兄弟**，不是子元素）：
+
+```tsx
+          <div ref={threadHostRef} className="flex-1 min-h-0 flex flex-col relative">
+            <OttoRuntimeProvider>
+              <OttoThread />
+            </OttoRuntimeProvider>
+            <SelectionQuote hostRef={threadHostRef} />
+          </div>
+```
+
+`hostRef` 指向包着滚动区的那个容器。挂上之后**必须自己验证判定逻辑仍然成立**：
+`SelectionQuote` 要求选区两端都落在 host 里（防止从输入框拖选进消息区被误判）。
+host 换了元素，这个判定的边界也跟着变 —— 在报告里说明你怎么确认它仍然正确。
+
+- [ ] **Step 7: 全量验证**
+
+Run: `npx tsc --noEmit -p tsconfig.json && npm run build && npm test`
+Expected: 三条全过，`npm test` 966。
+
+Run: `grep -rn "SelectionQuote\|RunIndicator\|onReload" src/renderer/src/ | grep -v "^.*://"`
+三者都应各有定义处和使用处。
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add -A
+git commit -m "$(cat <<'EOF'
+fix(ui): 补回接线时丢掉的三处功能——相位指示器、消息级重试、划词引用
+
+Task 10 的审查逐项走查删掉的代码才发现:绿色构建证明不了功能还在。把一个组件
+和它唯一的调用点一起删掉，编译完美通过，功能却消失了。三处都是这样没的:
+
+一、turn 运行时的相位指示器(orb + 等待审批/检索中/执行中/思考中/作答中 + 实时
+耗时和 token)。投影只在有 token 之后才产出消息，所以 turn 开始到第一个 token
+之间界面上什么都没有——跑一条要等十几秒的命令时，看起来像死了。
+
+二、模型回复上的重试。它不依赖 turn 失败，回复得好好的也能重来一次。删掉后
+只剩错误行上那个。同时推翻 ottoAdapter 当初「不接 onReload」的决定:当时的理由是
+retryPlan 有 fill 档、语义不纯，但那时重试还有 MessageActions 这个入口；现在没了，
+「语义不够纯」远轻于「功能没了」。
+
+三、划词引用。它挂在 ThreadViewport 上，而 ThreadViewport 已经没人渲染——自带
+lib 和测试，却没有任何挂载点。
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 12: 补 ADR，开 PR
 
 **Files:**
 - Create: `docs/adr/00NN-assistant-ui-external-store.md`
