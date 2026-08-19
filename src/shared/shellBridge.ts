@@ -9,6 +9,7 @@
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
+import type { TerminalInfo } from "../main/terminalHub.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
@@ -27,6 +28,8 @@ import type {
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
 export type { SessionSummary };
+
+export type { TerminalInfo };
 
 /** 审批模式（Claude Code 的 permission mode 对应物）：
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
@@ -287,6 +290,18 @@ export interface ShellBridge {
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** 本会话已开的终端(标签行用)。终端不进事件日志——它不是投影,是人的旁路工具(ADR-0031) */
+  terminalList(sessionId: string): Promise<TerminalInfo[]>;
+  /** 新开一个终端(cwd = 会话的工程文件夹)。snapshot 恒为空串,形状与 attach 对齐 */
+  terminalOpen(sessionId: string, cols: number, rows: number): Promise<{ id: string; snapshot: string }>;
+  /** 接上已有终端,拿回滚缓冲一次性灌进 xterm(这就是"关面板不杀进程"给用户的兑现) */
+  terminalAttach(id: string): Promise<{ snapshot: string }>;
+  /** 键盘输入透传给 pty */
+  terminalInput(id: string, data: string): Promise<void>;
+  /** 面板拖拽/展开后同步窗口尺寸 */
+  terminalResize(id: string, cols: number, rows: number): Promise<void>;
+  /** 关标签 = 杀进程,不可逆 */
+  terminalClose(id: string): Promise<void>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -349,6 +364,8 @@ export interface ShellBridge {
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
+  onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
+  onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
@@ -418,6 +435,14 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  terminalList: "otter:terminalList",
+  terminalOpen: "otter:terminalOpen",
+  terminalAttach: "otter:terminalAttach",
+  terminalInput: "otter:terminalInput",
+  terminalResize: "otter:terminalResize",
+  terminalClose: "otter:terminalClose",
+  terminalData: "otter:terminalData",
+  terminalExit: "otter:terminalExit",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
