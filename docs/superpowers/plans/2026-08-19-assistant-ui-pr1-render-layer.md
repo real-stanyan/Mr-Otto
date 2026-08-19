@@ -946,7 +946,7 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run tests/renderer/ottoAdapter.test.ts`
-Expected: PASS（7 条全绿）
+Expected: PASS（8 条全绿）
 
 - [ ] **Step 5: 复核 store 上动作的名字**
 
@@ -1071,8 +1071,16 @@ cp src/renderer/src/components/ui/tooltip.tsx /tmp/otto-tooltip.bak.tsx
 - [ ] **Step 3: 装 registry 组件**
 
 ```bash
-npx shadcn@latest add @assistant-ui/thread @assistant-ui/reasoning @assistant-ui/tool-fallback
+npx shadcn@latest add --yes @assistant-ui/thread @assistant-ui/reasoning @assistant-ui/tool-fallback
 ```
+
+`--yes` 是必须的：不带它 CLI 会停在交互确认上，非交互环境里就挂住了。代价是它对
+「文件已存在，要覆盖吗」也一并答应 —— 所以上一步的备份不是保险，是**前提**。
+
+装完先看清单，再决定下一步：
+
+Run: `git status --short`
+把「新增」和「被改」两类分开记下来。被改的那些逐个过下一步。
 
 - [ ] **Step 4: 审覆盖，逐个把定制找回来**
 
