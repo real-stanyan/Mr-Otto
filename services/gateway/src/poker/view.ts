@@ -9,9 +9,17 @@
 //   2. 别人的底牌只在**摊牌**之后看得见，且只限真的摊了牌的人
 //      （弃牌的人从头到尾不亮牌，牌堆同理，摊牌后才随承诺一起揭示）
 
-import type { ActionOption, HandState, Pot, Street } from "./betting.js";
+import type { Action, ActionOption, HandState, Pot, Street } from "./betting.js";
 import { legalActions } from "./betting.js";
 import type { DeckCommitment } from "./shuffle.js";
+
+/** 座位在**当前街**的最后一个公开动作。动作流本来就是全桌可见的公开信息,
+    客户端拿它在头像上出气泡("跟注 50"/"加注到 200"/"过牌"/"弃牌") */
+export interface SeatLastAction {
+  kind: "blind" | Action["type"];
+  /** blind/call = 实付;raise = 加注到的目标;check/fold = 0 */
+  amount: number;
+}
 
 export interface SeatView {
   userId: string;
@@ -27,6 +35,8 @@ export interface SeatView {
   allIn: boolean;
   /** null = 看不到 */
   hole: readonly number[] | null;
+  /** null = 这条街还没动过 */
+  lastAction: SeatLastAction | null;
 }
 
 export interface CommitmentView {
@@ -64,6 +74,24 @@ export interface ViewSource {
   commitment: DeckCommitment;
 }
 
+/** 每座位在当前街的最后一个动作。窗口 = 最后一条 deal 之后（翻前没有 deal,整段都算） */
+function lastActions(state: HandState): (SeatLastAction | null)[] {
+  const out: (SeatLastAction | null)[] = state.seats.map(() => null);
+  let start = 0;
+  for (let i = 0; i < state.log.length; i++) if (state.log[i]!.t === "deal") start = i + 1;
+  for (let i = start; i < state.log.length; i++) {
+    const e = state.log[i]!;
+    if (e.t === "blind") out[e.seat] = { kind: "blind", amount: e.amount };
+    else if (e.t === "action") {
+      out[e.seat] = {
+        kind: e.action.type,
+        amount: e.action.type === "raise" ? e.action.to : e.action.type === "call" ? e.paid : 0,
+      };
+    }
+  }
+  return out;
+}
+
 /** 真摊了牌的座位下标（弃牌的人不在其中；全员弃到只剩一个也不在其中） */
 function shownSeats(state: HandState): Set<number> {
   const out = new Set<number>();
@@ -75,6 +103,7 @@ export function viewFor(viewerId: string, src: ViewSource): HandView {
   const { state } = src;
   const shown = shownSeats(state);
   const revealed = state.done;
+  const acted = lastActions(state);
 
   return {
     handId: src.handId,
@@ -97,6 +126,7 @@ export function viewFor(viewerId: string, src: ViewSource): HandView {
       folded: s.folded,
       allIn: s.allIn,
       hole: s.userId === viewerId || (revealed && shown.has(i)) ? s.hole : null,
+      lastAction: acted[i] ?? null,
     })),
     legal: legalActions(state, viewerId),
     done: state.done,

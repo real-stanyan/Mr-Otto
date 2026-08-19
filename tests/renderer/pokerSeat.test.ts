@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { seatIdentity, seatPosition } from "../../src/renderer/src/lib/pokerSeat.js";
+import { actionLabel, applyUnit, seatIdentity, seatPosition } from "../../src/renderer/src/lib/pokerSeat.js";
 import type { FriendshipEntry } from "../../src/shared/friends.js";
 
 describe("seatPosition", () => {
@@ -56,5 +56,26 @@ describe("seatIdentity", () => {
       name: "012345",
       avatarUrl: "",
     });
+  });
+});
+
+describe("actionLabel", () => {
+  it("带金额的报金额,不带的只报名字", () => {
+    expect(actionLabel({ kind: "blind", amount: 50 })).toBe("盲注 50");
+    expect(actionLabel({ kind: "call", amount: 1500 })).toBe("跟注 1,500");
+    expect(actionLabel({ kind: "raise", amount: 200 })).toBe("加注到 200");
+    expect(actionLabel({ kind: "check", amount: 0 })).toBe("过牌");
+    expect(actionLabel({ kind: "fold", amount: 0 })).toBe("弃牌");
+  });
+});
+
+describe("applyUnit", () => {
+  it("单位放大裸数字;非法输入 NaN", () => {
+    expect(applyUnit("300", 1)).toBe(300);
+    expect(applyUnit("2", 1000)).toBe(2000);
+    expect(applyUnit("1", 1000000)).toBe(1000000);
+    expect(applyUnit("", 1000)).toBeNaN();
+    expect(applyUnit("0", 1)).toBeNaN();
+    expect(applyUnit("1.5", 1000)).toBeNaN();
   });
 });

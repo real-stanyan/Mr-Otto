@@ -38,3 +38,22 @@ export function seatIdentity(
   // 兜底：快照没跟上（刚加好友/离线）。截 ID 至少还能区分人
   return { name: seat.userId.slice(0, 6), avatarUrl: hit?.profile.avatarUrl ?? "" };
 }
+
+/** 行动气泡文案。金额为 0 的动作只报名字,不写"0" */
+export function actionLabel(a: { kind: string; amount: number }): string {
+  switch (a.kind) {
+    case "blind": return `盲注 ${a.amount.toLocaleString("en-US")}`;
+    case "fold": return "弃牌";
+    case "check": return "过牌";
+    case "call": return `跟注 ${a.amount.toLocaleString("en-US")}`;
+    case "raise": return `加注到 ${a.amount.toLocaleString("en-US")}`;
+    default: return a.kind;
+  }
+}
+
+/** 加注输入的单位换算。raw 是用户敲的裸数字,unit 是 1/1000/1000000 */
+export function applyUnit(raw: string, unit: number): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return NaN;
+  return n * unit;
+}
