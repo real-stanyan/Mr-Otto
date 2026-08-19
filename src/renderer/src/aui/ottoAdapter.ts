@@ -13,6 +13,7 @@ export interface OttoAdapterInput {
   isRunning: boolean;
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
+  retry: () => void;
 }
 
 /** AppendMessage.content 里挑出文本。附件不从这条路走 ——
@@ -41,8 +42,12 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
     onCancel: input.cancel,
     // 刻意不给 onEdit / setMessages:本仓没有消息编辑,也没有对话分支。
     // 给了就等于凭空长出一条绕开事件日志的写路径 —— 硬规则不允许。
-    // 也不给 onReload:本仓的「重试」有 fill 档(原消息带附件时只把正文填回输入框,
-    // 不重发),接上去等于给用户一个有时什么都不生成的「重新生成」键 —— 那是骗人。
-    // 重试照旧走 turn_ended(error) 审计行里的 RetryButton
+    // 接回 onReload:本仓的重试有 fill 档(原消息带附件时把正文填回输入框,不重发),
+    // 语义上确实不是纯粹的 regenerate。但接线后 MessageActions 那个入口没了,
+    // 「语义不够纯」远轻于「功能没了」—— fill 档也不是什么都不做:
+    // 正文落进输入框、用户确认后自己发,这正是本仓自己选的降级(见 lib/retry.ts)
+    onReload: async () => {
+      input.retry();
+    },
   };
 }

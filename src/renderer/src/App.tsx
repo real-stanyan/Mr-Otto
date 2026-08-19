@@ -95,6 +95,7 @@ import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
+import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
 function totalTokens(events: SessionEvent[]): number {
@@ -1823,6 +1824,11 @@ export function App() {
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
+  // 原来挂在 ThreadViewport 自己的滚动 <section> 上;ThreadViewport 没人渲染了,
+  // 换成包住 OttoThread 的这层容器 —— composer 是它的兄弟(在 footer 里),不在此结构内,
+  // 所以「跨区域选择」的判定边界没变
+  const threadHostRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
 
   // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
@@ -2001,9 +2007,12 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          <OttoRuntimeProvider>
-            <OttoThread />
-          </OttoRuntimeProvider>
+          <div ref={threadHostRef} className="flex-1 min-h-0 flex flex-col relative">
+            <OttoRuntimeProvider>
+              <OttoThread />
+            </OttoRuntimeProvider>
+            <SelectionQuote hostRef={threadHostRef} />
+          </div>
 
           <ApprovalCard />
           <QuestionnaireCard />

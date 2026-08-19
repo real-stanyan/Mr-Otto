@@ -74,6 +74,10 @@ export type ThreadComponents = {
       图片本体在附件库、走 IPC 懒取,投影塞不进 assistant-ui 的 attachments 字段。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   UserAttachments?: ComponentType | undefined;
+  /** 本仓加的槽:turn 运行时的相位指示器(orb + 相位标签 + 实时耗时/token)。
+      它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  RunIndicator?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   ToolGroup?:
@@ -138,7 +142,8 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
 };
 
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
-  const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+  const { Welcome = ThreadWelcome, RunIndicator: RunIndicatorComponent } =
+    useContext(ThreadComponentsContext);
 
   return (
     <ThreadPrimitive.Root
@@ -187,6 +192,7 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
           >
+            {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
             {/* PR1 只迁输出侧:输入框仍是 App.tsx footer 里那一整套(WorkTreePill /
                 TodoPanel / ComposerBar / slash 菜单 / 附件暂存区)。这里若也渲染

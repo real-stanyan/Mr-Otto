@@ -13,6 +13,7 @@ function input(over: Partial<Parameters<typeof buildOttoAdapter>[0]> = {}) {
     isRunning: false,
     send: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
+    retry: vi.fn(),
     ...over,
   };
 }
@@ -32,8 +33,12 @@ describe("buildOttoAdapter", () => {
     expect(a.setMessages).toBeUndefined();
   });
 
-  it("刻意不提供 onReload —— 本仓的重试有 fill 档,不是 regenerate", () => {
-    expect(buildOttoAdapter(input()).onReload).toBeUndefined();
+  it("onReload 转交 retry —— 重试有 fill 档,但接线后 MessageActions 那个入口没了", async () => {
+    const retry = vi.fn();
+    const a = buildOttoAdapter(input({ retry }));
+    expect(a.onReload).toBeTypeOf("function");
+    await a.onReload!("p1", { runConfig: {} } as never);
+    expect(retry).toHaveBeenCalledOnce();
   });
 
   it("isRunning 直接透传", () => {
