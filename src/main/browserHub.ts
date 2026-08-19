@@ -15,6 +15,36 @@ import type { BrowserReadOptions, BrowserReadResult } from "../world/executionWo
 const READ_TIMEOUT_MS = 30_000;
 const MAX_TEXT_CHARS = 50_000;
 
+/** "还没打开过任何页面"的两种长相:view 刚造出来 getURL() 是空串,
+    Chromium 有时给的是 about:blank。两个都不是"一个页面" */
+function isNoPage(url: string): boolean {
+  return url === "" || url === "about:blank";
+}
+
+/** 比 URL 前先规整一道:new URL("https://a.com").href === "https://a.com/"。
+    Chromium 会把裸域名补上尾斜杠,拿原样字符串比会把这种纯写法差异
+    误判成"跑到别的页面去了" */
+function canonicalUrl(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
+/** loadURL 的 reject 是不是"这次导航被中途换掉了"。
+    Electron 把 net error 挂在 error 对象上:errno = -3 / code = "ERR_ABORTED",
+    但不同来源不一定两个字段都在,所以连 message 一起认。
+    与 did-fail-load 里滤掉 -3 是同一条理由:用户连按两下回车,
+    第一次被中止是预期行为,报成"打不开"是假警报 */
+function isAbortedNavigation(e: unknown): boolean {
+  const err = e as { errno?: unknown; code?: unknown; message?: unknown } | null;
+  if (!err) return false;
+  if (err.errno === -3) return true;
+  if (err.code === "ERR_ABORTED") return true;
+  return typeof err.message === "string" && err.message.includes("ERR_ABORTED");
+}
+
 /** 页面里跑的抽取脚本。
     直接用 innerText 而不是先克隆再删 script/style:innerText 按渲染结果取文本,
     未渲染的节点天然不在里面;而克隆出来的游离节点没有 layout,innerText 恒为空串
@@ -128,12 +158,22 @@ export function createBrowserHub(deps: BrowserHubDeps) {
       return snapshot(ensure(sessionId));
     },
 
-    /** 后来者赢,不加锁:agent 和人抢同一块屏是特性——人看得见它去了哪 */
+    /** 后来者赢,不加锁:agent 和人抢同一块屏是特性——人看得见它去了哪。
+        失败不外抛:面板是 void 调它的,原样 reject 只会变成没人接的
+        unhandled rejection,连带下面那次状态推送也被跳过,人对着一块
+        静默不动的面板猜。失败改落 lastError——这条通道渲染层已经在显示了 */
     async navigate(sessionId: string, url: string): Promise<void> {
       const r = ensure(sessionId);
       const target = normalizeUrl(url);
       delete r.lastError;
-      await r.view.loadURL(target);
+      try {
+        await r.view.loadURL(target);
+      } catch (e) {
+        // 用户自己中途换页导致的中止不是错(见 isAbortedNavigation)
+        if (!isAbortedNavigation(e)) {
+          r.lastError = `${e instanceof Error ? e.message : String(e)}: ${target}`;
+        }
+      }
       deps.push.state(snapshot(r));
     },
 
@@ -168,10 +208,16 @@ export function createBrowserHub(deps: BrowserHubDeps) {
     async read(sessionId: string, opts?: BrowserReadOptions): Promise<BrowserReadResult> {
       const signal = opts?.signal;
       if (signal?.aborted) throw new Error("读取被中断：用户停止了 turn");
+      // 在 ensure() 之前记一笔:ensure 会顺手造一个空 view,造完再看就分不清
+      // "这个会话本来就没浏览器"和"人开着一张白页"——而前者必须报错
+      const hadBrowser = browsers.has(sessionId);
       const r = ensure(sessionId);
 
-      if (opts?.url) {
-        const target = normalizeUrl(opts.url);
+      const target = opts?.url ? normalizeUrl(opts.url) : null;
+      if (target !== null) {
+        // 清错要在造 promise 之前:executor 是同步跑的,里面已经发出了 loadURL。
+        // 放在后面只是靠"Electron 的事件下一个 tick 才到"侥幸没出事
+        delete r.lastError;
         // 先挂好监听再发起导航:loadURL 之后才订阅的话,
         // 快到离谱的本地页面(localhost 常见)可能在订阅前就 loaded 完了
         //
@@ -205,8 +251,13 @@ export function createBrowserHub(deps: BrowserHubDeps) {
           signal?.addEventListener("abort", onAbort, { once: true });
           r.view.loadURL(target).catch((err: unknown) => finish(() => reject(err)));
         });
-        delete r.lastError;
         await settled;
+      } else if (!hadBrowser || isNoPage(r.view.getURL())) {
+        // 没给 url 又根本没有页面:ensure() 造出来的新 view 停在 about:blank,
+        // 照直抽下去会给模型一份"正文为空"的成功结果——它会当成"这页没内容",
+        // 而事实是"压根没开页面"。这正是这个 hub 存在的理由(见文件头),
+        // 空字符串比报错难查一个数量级
+        throw new Error("browser_read: 当前没有打开任何页面，请用 url 参数指定要读的网址");
       }
 
       const raw = await r.view.executeJavaScript(EXTRACT_JS);
@@ -219,12 +270,28 @@ export function createBrowserHub(deps: BrowserHubDeps) {
       if (typeof parsed.text !== "string" || typeof parsed.url !== "string") {
         throw new Error("读取页面失败：抽取脚本返回的形状不对");
       }
+      // url 只认主进程这一份。EXTRACT_JS 跑在页面的 main world 里,一个有恶意的
+      // 页面完全可以把 JSON.stringify 换掉,让 parsed.url 说自己是任何域名——
+      // 模型就会把攻击者写的正文记在一个可信来源的账上。正文是页面控制的没办法,
+      // 出处不该也跟着交出去。parsed.url 只留作形状校验(它证明脚本真跑了)
+      const actualUrl = r.view.getURL();
+      // 人和 agent 抢同一块屏时,临时订阅是认"任意一次 loaded"就 resolve 的:
+      // 人在 agent 读 A 的途中导去 B,B 的 loaded 会把 A 的等待放行。
+      // 屏幕归后来者是特性,答案归谁却不能含糊——这里拿实际地址和请求地址对一遍。
+      //
+      // 选"标注"而不是"报错":重定向是常态(补尾斜杠已在 canonicalUrl 里吸收掉,
+      // 但 http→https、加 www、跳语言目录都会让最终地址和请求地址不同),
+      // 一律报错等于把正常浏览也判死。标注则两头都不丢:正文照给,
+      // 出处写实际地址,再额外挂一条 requestedUrl 让工具层把差异摆到模型眼前
+      const requestedUrl =
+        target !== null && canonicalUrl(actualUrl) !== canonicalUrl(target) ? target : undefined;
       const truncated = parsed.text.length > MAX_TEXT_CHARS;
       return {
-        url: parsed.url,
+        url: actualUrl,
         title: typeof parsed.title === "string" ? parsed.title : "",
         text: truncated ? parsed.text.slice(0, MAX_TEXT_CHARS) : parsed.text,
         truncated,
+        ...(requestedUrl !== undefined ? { requestedUrl } : {}),
       };
     },
 

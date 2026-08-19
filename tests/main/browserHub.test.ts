@@ -108,6 +108,27 @@ describe("browserHub 注册表", () => {
     expect(hub.info("s1")!.url).toBe("https://b.com");
   });
 
+  it("navigate 失败不外抛,落进 lastError 推给渲染层 —— 面板是 void 调它的,"
+     + "往外抛只会变成没人接的 unhandled rejection", async () => {
+    const { hub, views, state } = makeHub();
+    hub.open("s1");
+    views[0]!.setLoadURLError(new Error("ERR_CONNECTION_REFUSED"));
+    await expect(hub.navigate("s1", "a.com")).resolves.toBeUndefined();
+    expect(hub.info("s1")!.lastError).toContain("ERR_CONNECTION_REFUSED");
+    expect(state).toHaveBeenLastCalledWith(
+      expect.objectContaining({ lastError: expect.stringContaining("ERR_CONNECTION_REFUSED") })
+    );
+  });
+
+  it("用户自己中途换页导致的 ERR_ABORTED 不算错 —— 连按两下回车不该报'打不开'", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    const aborted = Object.assign(new Error("ERR_ABORTED (-3) loading 'https://a.com'"), { errno: -3 });
+    views[0]!.setLoadURLError(aborted);
+    await hub.navigate("s1", "a.com");
+    expect(hub.info("s1")!.lastError).toBeUndefined();
+  });
+
   it("视图事件变成状态推送", () => {
     const { hub, views, state } = makeHub();
     hub.open("s1");
@@ -173,8 +194,12 @@ describe("browserHub 注册表", () => {
   it("close 销毁 view、解监听、从表里摘掉", () => {
     const { hub, views } = makeHub();
     hub.open("s1");
+    expect(views[0]!.subscriberCount).toBe(1); // 常驻监听已经挂上
     hub.close("s1");
     expect(views[0]!.destroyed).toBe(true);
+    // 解监听要真解掉:挂着监听器的死 view 就是泄漏(destroy 掉的 view
+    // 不会再发事件是实现细节,不能拿它当"不用退订"的理由)
+    expect(views[0]!.subscriberCount).toBe(0);
     expect(hub.info("s1")).toBeNull();
   });
 
@@ -199,9 +224,24 @@ describe("browserHub.read", () => {
   it("不给 url = 读当前页,不导航", async () => {
     const { hub, views } = makeHub();
     hub.open("s1");
+    views[0]!.fire({ type: "navigated", url: "https://x.com" }); // 人已经开着一页了
     const r = await hub.read("s1");
     expect(views[0]!.loaded).toEqual([]);
     expect(r).toEqual({ url: "https://x.com", title: "T", text: "正文", truncated: false });
+  });
+
+  it("不给 url 且这个会话根本没浏览器 = 抛,不返回一份'这页是空的'", async () => {
+    const { hub, views } = makeHub();
+    await expect(hub.read("s1")).rejects.toThrow(/没有打开任何页面/);
+    // 报错也别把 about:blank 抽一遍:模型拿到空正文会当成"这页没内容"
+    expect(views[0]!.loaded).toEqual([]);
+  });
+
+  it("不给 url,面板开着但一页没加载过(about:blank)= 同样抛", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    views[0]!.fire({ type: "navigated", url: "about:blank" });
+    await expect(hub.read("s1")).rejects.toThrow(/没有打开任何页面/);
   });
 
   it("给了 url = 先导航,等 loaded 再读", async () => {
@@ -259,6 +299,7 @@ describe("browserHub.read", () => {
   it("超上限截断,并在结果里明说截了", async () => {
     const { hub, views } = makeHub();
     hub.open("s1");
+    views[0]!.fire({ type: "navigated", url: "https://x.com" });
     views[0]!.setScript(async () =>
       JSON.stringify({ title: "T", url: "https://x.com", text: "字".repeat(60_000) })
     );
@@ -270,8 +311,47 @@ describe("browserHub.read", () => {
   it("页面脚本返回的不是预期形状 = 抛,而不是把 undefined 当正文喂给模型", async () => {
     const { hub, views } = makeHub();
     hub.open("s1");
+    views[0]!.fire({ type: "navigated", url: "https://x.com" });
     views[0]!.setScript(async () => "not json");
     await expect(hub.read("s1")).rejects.toThrow();
+  });
+
+  it("url 以主进程为准 —— 页面自报的地址不采信(它能改掉 JSON.stringify)", async () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    views[0]!.fire({ type: "navigated", url: "https://real.example" });
+    views[0]!.setScript(async () =>
+      JSON.stringify({ title: "假冒", url: "https://bank.example", text: "攻击者写的正文" })
+    );
+    const r = await hub.read("s1");
+    // 采信页面的话,这段正文就被记在 bank.example 头上了
+    expect(r.url).toBe("https://real.example");
+  });
+
+  it("人在 agent 读取途中把屏导去别处:正文归实际地址,并把差异摆出来", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "a.com" });
+    await Promise.resolve(); // 让 loadURL 落地
+    // 人抢屏:导去 b.com 并加载完。临时订阅认的是"任意一次 loaded",
+    // 于是 b 的 loaded 放行了 a 的等待——屏归后来者可以,答案不能跟着糊
+    views[0]!.fire({ type: "navigated", url: "https://b.com" });
+    views[0]!.setScript(async () =>
+      JSON.stringify({ title: "B", url: "https://b.com", text: "B 的正文" })
+    );
+    views[0]!.fire({ type: "loaded" });
+    const r = await pending;
+    expect(r.url).toBe("https://b.com");
+    expect(r.requestedUrl).toBe("https://a.com");
+    expect(r.text).toBe("B 的正文");
+  });
+
+  it("落点和请求地址一致(含补尾斜杠)不算跑偏,不挂 requestedUrl", async () => {
+    const { hub, views } = makeHub();
+    const pending = hub.read("s1", { url: "a.com" });
+    await Promise.resolve();
+    views[0]!.fire({ type: "navigated", url: "https://a.com/" }); // Chromium 补的尾斜杠
+    views[0]!.fire({ type: "loaded" });
+    expect((await pending).requestedUrl).toBeUndefined();
   });
 
   it("loadURL 自身 reject(Electron 对失败导航常这样,不只靠 failed 事件)——" +

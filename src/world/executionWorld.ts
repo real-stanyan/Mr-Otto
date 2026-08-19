@@ -49,12 +49,16 @@ export interface BrowserReadOptions {
 }
 
 export interface BrowserReadResult {
-  /** 读完那一刻的实际 URL(重定向之后的) */
+  /** 读完那一刻的实际 URL(重定向之后的)。以浏览器宿主为准,不采信页面自报 */
   url: string;
   title: string;
   text: string;
   /** 正文超上限被截断了。截了就明说,不假装读全了 */
   truncated: boolean;
+  /** 本次请求的 url,只在它和实际读到的 url 不一致时才有:重定向,
+      或者人在读取途中把这块共用的屏导去了别处。有值 = 正文属于 url 而不是
+      requestedUrl,工具层要把这句话摆到模型眼前 */
+  requestedUrl?: string;
 }
 
 /** 浏览器能力。只读——导航 + 抽正文,不点不打字(本期边界,工具名已把它划在名字里) */
