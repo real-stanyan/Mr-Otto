@@ -33,6 +33,7 @@ import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/p
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -123,6 +124,8 @@ interface ChatState {
   protocolRepo: string | null;
   adrs: AdrSummary[];
   adrView: { path: string; markdown: string } | null;
+  /** 右栏详情正在取:骨架屏用。没有它的话 openIssue 期间右栏整个不渲染,看着像没点上 */
+  protocolDetailPending: boolean;
   /** null = 正在加载(骨架屏);ok:false = 按 kind 降级 */
   issues: IssuesResult | null;
   issueView: IssueDetailResult | null;
@@ -348,6 +351,10 @@ const enterChat = (info: BootInfo) => ({
   error: null,
 });
 
+/** 右栏详情的作废闸:ADR 与 issue 共用一张,因为它们抢的是同一块槽位。
+    只比 protocolRepo 挡不住同仓库内的连点(#18 第 2 条) */
+const protocolDetailGate = createRequestGate();
+
 export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
   sessionId: "",
@@ -374,6 +381,7 @@ export const useChat = create<ChatState>((set, get) => ({
   pokerError: "",
   protocolOpen: false,
   protocolRepo: null,
+  protocolDetailPending: false,
   adrs: [],
   adrView: null,
   issues: null,
@@ -582,7 +590,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeProtocol: () => set({ protocolOpen: false }),
-  closeProtocolDetail: () => set({ adrView: null, issueView: null }),
+  closeProtocolDetail: () => {
+    protocolDetailGate.begin(); // 关掉之后在飞的那次回来别再把面板顶开
+    set({ adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async pickProtocolRepo() {
     try {
@@ -615,28 +626,39 @@ export const useChat = create<ChatState>((set, get) => ({
   async openAdr(path) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ adrView: null }); // 先清,切换 ADR 时不残留上一篇的内容(镜像 openIssue 的做法)
+    const token = protocolDetailGate.begin();
+    // 先清,切换时不残留上一篇;error 一并清掉——上一次的失败不该压在这一次的结果上
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const { markdown } = await window.otter.protocolReadAdr(repo, path);
-      if (get().protocolRepo === repo) set({ adrView: { path, markdown }, issueView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ adrView: { path, markdown }, issueView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
   async openIssue(number) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ issueView: null });
+    const token = protocolDetailGate.begin();
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const issueView = await window.otter.protocolGetIssue(repo, number);
-      if (get().protocolRepo === repo) set({ issueView, adrView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ issueView, adrView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
-  setProtocolTab: (t) => set({ protocolTab: t }),
+  setProtocolTab: (t) => {
+    // 切页签 = 换上下文。不清的话开着 ADR 切到 Issues,右栏还挂着上一篇 ADR 全文
+    protocolDetailGate.begin();
+    set({ protocolTab: t, adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async openGitGraph() {
     const repo = get().workspace || null;

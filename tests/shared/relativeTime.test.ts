@@ -27,3 +27,16 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(NOW - 900 * 86400, NOW)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
+
+describe("formatRelativeIso", () => {
+  it("ISO 串按同一套档位说话", async () => {
+    const { formatRelativeIso } = await import("../../src/shared/relativeTime.js");
+    expect(formatRelativeIso(new Date((NOW - 120) * 1000).toISOString(), NOW)).toBe("2 分钟前");
+  });
+
+  it("空串 / 解析不出来的串 = 空串（宁可不显示,不显示 NaN）", async () => {
+    const { formatRelativeIso } = await import("../../src/shared/relativeTime.js");
+    expect(formatRelativeIso("", NOW)).toBe("");
+    expect(formatRelativeIso("昨天", NOW)).toBe("");
+  });
+});

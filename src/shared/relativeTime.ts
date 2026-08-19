@@ -25,3 +25,11 @@ export function formatRelativeTime(ts: number, now: number): string {
   if (diff < RELATIVE_LIMIT) return `${Math.floor(diff / DAY)} 天前`;
   return isoDate(ts);
 }
+
+/** ISO 时间串版本（gh 的 updatedAt 就是这个形状）。
+    解析不出来给空串——显示 "NaN 分钟前" 比什么都不显示更糟 */
+export function formatRelativeIso(iso: string, now: number): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  return formatRelativeTime(Math.floor(ms / 1000), now);
+}

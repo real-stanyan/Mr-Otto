@@ -22,6 +22,8 @@ export interface IssueSummary {
 }
 
 export interface IssueComment {
+  /** gh 给的稳定 id;拿不到时是空串(渲染层据此退回下标做 key) */
+  id: string;
   author: string;
   createdAt: string;
   body: string;
@@ -45,7 +47,10 @@ export interface HandoffParts {
   rationale: string;
 }
 
-export type ProtocolErrorKind = "gh-missing" | "no-repo" | "gh-auth" | "gh-error";
+/** no-dir 与 no-repo 分开:前者是"这个目录没了"(localStorage 记的路径被删/改名),
+    后者是"目录在,但不是 git 仓库/ 没连 remote"。给的下一步完全不同 */
+export type ProtocolErrorKind =
+  | "gh-missing" | "no-dir" | "no-repo" | "gh-auth" | "gh-timeout" | "gh-error";
 
 /** issues 面板独立降级的载体:错误不 throw 过 IPC,而是结构化回流,渲染层按 kind 给指引 */
 export type IssuesResult =
@@ -123,6 +128,8 @@ export function mapIssueDetail(json: unknown): IssueDetail {
         const cc = c as Record<string, unknown>;
         const author = (cc.author as Record<string, unknown> | undefined)?.login;
         return {
+          // gh 给的稳定 id。缺席给空串——渲染层拿不到 id 时自己退回下标,不在这里编一个
+          id: typeof cc.id === "string" ? cc.id : "",
           author: typeof author === "string" ? author : "unknown",
           createdAt: String(cc.createdAt ?? ""),
           body: String(cc.body ?? ""),
@@ -144,10 +151,19 @@ export function classifyGhError(err: {
   code?: string;
   stderr?: string;
   message?: string;
+  /** execFile 因 timeout 杀掉子进程时为真 */
+  killed?: boolean;
+  signal?: string;
 }): { kind: ProtocolErrorKind; detail: string } {
   const stderr = err.stderr ?? "";
   const detail = stderr.trim() || err.message || "unknown gh error";
   if (err.code === "ENOENT") return { kind: "gh-missing", detail };
+  // execFile 的 timeout 到点就发信号杀进程:err.killed 为真、stderr 通常是空的。
+  // 不单独分类的话它会落进 gh-error,提示"网络/限流?可点刷新重试"——重试同样会挂满 20 秒
+  if (err.killed) {
+    const raw = stderr.trim() || err.message || "";
+    return { kind: "gh-timeout", detail: `gh 超时被终止(${err.signal ?? "signal"})${raw ? ` — ${raw}` : ""}` };
+  }
   const s = stderr.toLowerCase();
   if (s.includes("not a git repository") || s.includes("no git remotes") || s.includes("could not determine"))
     return { kind: "no-repo", detail };
