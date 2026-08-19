@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { isAtBottom } from "../lib/stickToBottom.js";
+import { SelectionQuote } from "./SelectionQuote.js";
 
 export function ThreadViewport({ deps, children }: { deps: unknown[]; children: ReactNode }) {
   const ref = useRef<HTMLElement>(null);
@@ -59,6 +60,7 @@ export function ThreadViewport({ deps, children }: { deps: unknown[]; children: 
       >
         {children}
       </section>
+      <SelectionQuote hostRef={ref} />
       {!stuck && (
         <Button
           type="button"
