@@ -70,6 +70,10 @@ export type ThreadComponents = {
   /** 本仓加的槽:事件日志里的审计行(会话创建/模型切换/skill 注入/turn 暴死…)
       投成 role:"system" 消息,由它渲染。上游 registry 没有这个槽 —— 升级时要人工合 */
   SystemMessage?: ComponentType | undefined;
+  /** 本仓加的槽:用户消息的附件由既有的 UserAttachments 渲染 ——
+      图片本体在附件库、走 IPC 懒取,投影塞不进 assistant-ui 的 attachments 字段。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  UserAttachments?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   ToolGroup?:
@@ -419,13 +423,17 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
 );
 
 const UserMessage: FC = () => {
+  // 本仓改动:附件槽默认仍是上游的 UserMessageAttachments(它读 message.attachments,
+  // 本仓一直是空的),有槽值时换成 OttoUserAttachments(读 metadata.custom.otto)
+  const { UserAttachments: UserAttachmentsComponent = UserMessageAttachments } =
+    useContext(ThreadComponentsContext);
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
       className="grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
       data-role="user"
     >
-      <UserMessageAttachments />
+      <UserAttachmentsComponent />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2 wrap-break-word empty:hidden">

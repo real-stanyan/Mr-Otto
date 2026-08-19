@@ -9,6 +9,7 @@ import { Thread, type ThreadComponents } from "../components/assistant-ui/thread
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
+import { UserAttachments } from "../components/UserAttachments.js";
 import type { SessionEvent } from "../../../session/events.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
@@ -24,6 +25,19 @@ const SystemMessage: ComponentType = () => {
   return <EventRow event={event} isLast={isLast} />;
 };
 
+/** 用户附件:原始事件挂在 metadata.custom.otto 上,交给既有的 UserAttachments 渲染。
+    它自己走 window.otter.attachmentDataUrl 懒取图片、自己有内存缓存、
+    图片丢失时自己降级成占位卡 —— 这些都不该在投影层重做一遍。
+    命名 OttoUserAttachments(不叫 UserMessageAttachments)——那个名字已经是
+    thread.tsx 从 attachment.js 引入的上游组件,同名会读着别扭 */
+const OttoUserAttachments: ComponentType = () => {
+  const event = useAuiState(
+    (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
+  );
+  if (event === undefined || event.type !== "user_message") return null;
+  return <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />;
+};
+
 /** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 ——
     它没有「执行中的输出」这个概念,而 bash 跑长命令时那条尾巴是唯一的进度信号 */
 const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => (
@@ -36,6 +50,7 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂
 const COMPONENTS: ThreadComponents = {
   SystemMessage,
+  UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
 };
 

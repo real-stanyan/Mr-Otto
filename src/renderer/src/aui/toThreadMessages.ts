@@ -97,6 +97,10 @@ export function toThreadMessages(
         id: String(e.seq),
         createdAt: new Date(e.ts),
         content: parts,
+        // 原始事件挂上来:附件(图片引用/文本文件快照)不进 content ——
+        // 图片本体在附件库、走 IPC 懒取(ADR-0009),而投影是纯函数不碰 IPC。
+        // 渲染交给既有的 UserAttachments(它自己懒取、自己缓存、自己降级)
+        metadata: { custom: { otto: e } },
       });
       continue;
     }

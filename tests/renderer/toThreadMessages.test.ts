@@ -17,15 +17,16 @@ describe("toThreadMessages — 骨架", () => {
   });
 
   it("user_message 变成 user 角色的 text part", () => {
-    const events = [
-      ev({ type: "user_message", content: "你好" }, 1),
-    ];
+    const e = ev({ type: "user_message", content: "你好" }, 1);
+    const events = [e];
     expect(toThreadMessages(events)).toEqual([
       {
         role: "user",
         id: "1",
         createdAt: new Date(1001),
         content: [{ type: "text", text: "你好" }],
+        // 每条 user_message 都挂原始事件(本 task 起):附件/文本文件的数据源
+        metadata: { custom: { otto: e } },
       },
     ]);
   });
@@ -67,6 +68,28 @@ describe("toThreadMessages — 骨架", () => {
   it("直播缓冲全空时不造空消息", () => {
     const events = [ev({ type: "user_message", content: "算一下" }, 0)];
     expect(toThreadMessages(events, { content: "", reasoning: "" })).toHaveLength(1);
+  });
+
+  it("user_message 带上原始事件,附件才有数据源", () => {
+    const e = ev({
+      type: "user_message",
+      content: "看这张图",
+      attachments: [{ id: "sha256:abc", mediaType: "image/png", bytes: 1024, name: "a.png" }],
+    }, 0);
+    const out = toThreadMessages([e]);
+    expect(out[0]?.metadata).toEqual({ custom: { otto: e } });
+    expect(out[0]?.content).toEqual([{ type: "text", text: "看这张图" }]);
+  });
+
+  it("只带附件不带正文时,消息仍然产生(否则图片无处可挂)", () => {
+    const e = ev({
+      type: "user_message",
+      content: "",
+      attachments: [{ id: "sha256:abc", mediaType: "image/png", bytes: 1024 }],
+    }, 0);
+    const out = toThreadMessages([e]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toEqual([]);
   });
 });
 
