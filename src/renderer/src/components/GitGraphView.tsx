@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
 import { assignLanes, type GitRef, type RawCommit } from "../../../shared/gitGraph.js";
 import { nearBottom, visibleRange } from "../../../shared/virtualWindow.js";
+import { formatRelativeTime } from "../../../shared/relativeTime.js";
 
 const ROW_H = 28;
 const LANE_W = 14;
@@ -131,7 +132,12 @@ export function GitGraphView() {
           }
           onScroll={onScroll}
         >
-          {gitGraph === null ? (
+          {gitGraphRepo === null ? (
+            // 没有工作区就没有仓库可读,store 压根不会去拉——不给空态就永远转骨架屏
+            <p className="px-4 py-6 text-sm text-muted-foreground">
+              这个会话没有工作区，没有仓库可看。在新会话里选一个目录，或打开一个带工作区的会话。
+            </p>
+          ) : gitGraph === null ? (
             <div className="grid gap-2 p-4">
               <Skeleton className="h-6" /><Skeleton className="h-6" /><Skeleton className="h-6" />
             </div>
@@ -196,6 +202,9 @@ function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH,
   const maxLane = Math.max(...rows.map((r) => Math.max(r.lane, ...r.edges.map((e) => Math.max(e.fromLane, e.toLane)))));
   const svgW = (maxLane + 1) * LANE_W;
   const { first, last } = visibleRange(scrollTop, viewportH, ROW_H, commits.length);
+  // 每次渲染取一次"现在"：滚动、刷新、开关详情都会重渲染，相对时间跟着走。
+  // 不挂定时器——为了让「3 分钟前」变成「4 分钟前」每分钟重画整个列表不划算
+  const now = Math.floor(Date.now() / 1000);
 
   return (
     // 外层撑满全高(滚动条长度诚实反映总量),行绝对定位到自己的 y——
@@ -225,8 +234,11 @@ function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH,
             {c.refs.map((r) => <RefBadge key={`${r.type}:${r.name}`} r={r} />)}
             <span className="flex-1 min-w-0 truncate text-sm">{c.subject}</span>
             <span className="shrink-0 text-xs text-muted-foreground">{c.author}</span>
-            <span className="shrink-0 pr-3 text-xs text-muted-foreground font-mono">
-              {new Date(c.timestamp * 1000).toLocaleDateString()}
+            <span
+              className="shrink-0 pr-3 text-xs text-muted-foreground font-mono"
+              title={new Date(c.timestamp * 1000).toLocaleString()}
+            >
+              {formatRelativeTime(c.timestamp, now)}
             </span>
           </button>
         );
@@ -271,7 +283,10 @@ function CommitDetailPane() {
           <div className="grid gap-1">
             {view.result.detail.files.map((f) => (
               <div key={f.file} className="flex items-center gap-2 text-xs">
-                <span className="flex-1 min-w-0 truncate font-mono">{f.file}</span>
+                <span className="flex-1 min-w-0 truncate font-mono" title={f.renamedFrom ? `${f.renamedFrom} → ${f.file}` : f.file}>
+                  {f.renamedFrom && <span className="text-muted-foreground">{f.renamedFrom} → </span>}
+                  {f.file}
+                </span>
                 {f.insertions === null ? (
                   <span className="shrink-0 text-muted-foreground">binary</span>
                 ) : (
