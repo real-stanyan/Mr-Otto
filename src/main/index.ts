@@ -252,9 +252,11 @@ void app.whenReady().then(() => {
   // section_classified，于是两个标题描述同一段、startSeq 却各开一处。
   // 链起来 = 同一会话永远只有一个分类在跑；跨度锚点本来就是自愈的
   // （最后一条分类事件之后的全部事件），后来的那次只是看到更宽的一段。
-  // 残留的不精确：分类在飞的时候下一个 turn 可以开跑，分类事件会落在它的事件之后，
-  // 于是这一区的尾巴多包了几条。startSeq（区的头）仍然准，目录只是分得糙一点——
-  // 这点糙换来的是输入框不被锁住，值。
+  // 代价：分类在飞的时候下一个 turn 可以开跑，分类#N+1 看到的跨度被分类#N 的事件
+  // 切割得只剩 turn N+1 本身那几条、汇总后是空。分类不落事件，turn N+1 根本没被
+  // 分类；若它开了新话题，章节标题要等 turn N+2 才出现，而且锚点是 N+2 不是 N+1——
+  // 导航跳过去会落在话题开始之后。下一个 turn 的分类自动补上漏掉的那段（自愈）。
+  // 这点代价换来的是输入框不被锁住，值。
   const sectionQueues = new Map<string, Promise<void>>();
 
   const classifyAndAppend = async (sessionId: string): Promise<void> => {
