@@ -5,40 +5,12 @@
 // 这里只管标签行 + xterm 的挂载。
 
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import { Plus, X, Maximize2, Minimize2 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useChat } from "../store.js";
-import { createXtermRegistry } from "../lib/xtermRegistry.js";
+import { terminalRegistry as registry } from "../lib/terminalRegistry.js";
 import { Button } from "./ui/button.js";
 import type { TerminalInfo } from "../../../shared/shellBridge.js";
-
-/** 一个终端在渲染层的全部家当:实例 + fit 插件 + 是否已经灌过快照 */
-interface Slot {
-  term: Terminal;
-  fit: FitAddon;
-  attached: boolean;
-  dispose(): void;
-}
-
-// 模块级:组件卸载不带走它(见 xtermRegistry 顶部注释)
-const registry = createXtermRegistry<Slot>(() => {
-  const term = new Terminal({
-    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
-    fontSize: 12,
-    cursorBlink: true,
-    // 取当前主题的底色/前景,别用 xterm 默认的纯黑——深色四色底盘里会显得脏
-    theme: {
-      background: "transparent",
-      foreground: getComputedStyle(document.documentElement).getPropertyValue("--foreground") || "#e5e5e5",
-    },
-    allowTransparency: true,
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  return { term, fit, attached: false, dispose: () => term.dispose() };
-});
 
 export function TerminalView() {
   const sessionId = useChat((s) => s.sessionId);
@@ -51,9 +23,19 @@ export function TerminalView() {
   const [error, setError] = useState("");
   const hostRef = useRef<HTMLDivElement | null>(null);
 
-  // 开面板:先看这个会话有没有已经在跑的终端(关面板不杀进程,大概率有),
-  // 没有才开新的
+  // 开面板 / 切会话:先看这个会话有没有已经在跑的终端(关面板不杀进程,大概率有),
+  // 没有才开新的。
+  //
+  // 同步阶段先把 activeId/tabs/error 摘掉(在任何 await 之前)——不这样做的话,
+  // 在 terminalList 的 IPC 往返期间,挂载 effect 还认着上一个会话的 activeId,
+  // 宿主 DOM 里挂的还是上一个会话那个 xterm 实例,它的 onData 还接着
+  // terminalInput(旧 sessionId 的终端 id, ...):这段窗口期间用户如果打字,
+  // 敲的字会进错会话的 PTY(Task 6 review finding 1)。activeId 变 null 后,
+  // 下面的挂载 effect 会把宿主清空,断开旧实例的键盘绑定
   useEffect(() => {
+    setActiveId(null);
+    setTabs([]);
+    setError("");
     if (!sessionId) return;
     let alive = true;
     void (async () => {
@@ -79,12 +61,28 @@ export function TerminalView() {
   // 挂载当前标签的 xterm 到 DOM,并把回滚缓冲灌进去(只灌一次)
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !activeId) return;
+    if (!host) return;
+    if (!activeId) {
+      // 没有活跃标签(切会话过渡期 / 这个会话还没终端):清空宿主,
+      // 别把上一个 activeId 挂过的 DOM 节点留在页面上
+      host.replaceChildren();
+      return;
+    }
     const slot = registry.get(activeId);
     host.replaceChildren();
-    slot.term.open(host);
+    if (slot.term.element) {
+      // 这个终端之前在别的宿主(甚至别的挂载周期)里 open() 过——
+      // xterm 的 open() 是"第一次初始化",对已经 open 过的实例再调一次是未定义行为
+      // (node_modules/@xterm/xterm/typings/xterm.d.ts 里 open() 的文档写明这点)。
+      // 已经 open 过就把它现成的 DOM 节点搬进新宿主,而不是再 open 一次
+      host.appendChild(slot.term.element);
+    } else {
+      slot.term.open(host);
+    }
     slot.fit.fit();
-    window.otter.terminalResize(activeId, slot.term.cols, slot.term.rows);
+    void window.otter.terminalResize(activeId, slot.term.cols, slot.term.rows).catch(() => {
+      /* 终端可能刚好在这一刻被关了,resize 打空不算错误 */
+    });
 
     if (!slot.attached) {
       slot.attached = true;
@@ -92,18 +90,33 @@ export function TerminalView() {
         .terminalAttach(activeId)
         .then(({ snapshot }) => { if (snapshot) slot.term.write(snapshot); })
         .catch(() => { /* 终端已经关了,标签行随后会刷新掉 */ });
-      slot.term.onData((data) => void window.otter.terminalInput(activeId, data));
+      slot.term.onData((data) => {
+        if (slot.exited) return; // 进程已经死了,敲字没有意义,也别再往 IPC 里扔
+        void window.otter.terminalInput(activeId, data).catch(() => {
+          /* 竞态:这条输入发出去的瞬间进程正好退出,静默吞掉 */
+        });
+      });
     }
     slot.term.focus();
   }, [activeId]);
 
-  // 输出直播:所有终端的都收,按 id 写进各自的实例(后台标签也在攒输出)
+  // 输出直播:只写进"已经被用户点开过"的实例,不替没见过的 id 顺手造一个。
+  //
+  // onTerminalData/onTerminalExit 是进程全局广播(payload 里没有 sessionId),
+  // 只要任意会话的任意终端在吐输出,这两个回调就会收到——如果像早先那样用
+  // registry.get(id) 去写,等于给"这个渲染进程收到过的每一个终端 id"都建一个
+  // xterm 实例,数量跟着全局输出量涨,没有上限(Task 6 review finding 2)。
+  // 用 peek 只查不造:实例只会在挂载 effect 里"用户真正点开了这个标签"时诞生
   useEffect(() => {
     const offData = window.otter.onTerminalData(({ id, data }) => {
-      registry.get(id).term.write(data);
+      registry.peek(id)?.term.write(data);
     });
     const offExit = window.otter.onTerminalExit(({ id, exitCode }) => {
-      registry.get(id).term.write(`\r\n\x1b[2m[进程已退出，代码 ${exitCode}]\x1b[0m\r\n`);
+      const slot = registry.peek(id);
+      if (slot) {
+        slot.exited = true;
+        slot.term.write(`\r\n\x1b[2m[进程已退出，代码 ${exitCode}]\x1b[0m\r\n`);
+      }
       if (sessionId) void window.otter.terminalList(sessionId).then(setTabs);
     });
     return () => { offData(); offExit(); };
@@ -115,8 +128,11 @@ export function TerminalView() {
     if (!host || !activeId) return;
     const ro = new ResizeObserver(() => {
       const slot = registry.get(activeId);
+      if (slot.exited) return; // 进程死了,尺寸对它没意义
       slot.fit.fit();
-      void window.otter.terminalResize(activeId, slot.term.cols, slot.term.rows);
+      void window.otter.terminalResize(activeId, slot.term.cols, slot.term.rows).catch(() => {
+        /* 同上:关闭竞态,静默吞掉 */
+      });
     });
     ro.observe(host);
     return () => ro.disconnect();
@@ -136,7 +152,7 @@ export function TerminalView() {
 
   const closeTab = async (id: string) => {
     await window.otter.terminalClose(id);
-    registry.dispose(id); // 关标签才 dispose——这是唯一该 dispose 的时机
+    registry.dispose(id); // 关标签才 dispose——这是唯一该 dispose 的时机(会话删除见 store.deleteSession)
     const rest = sessionId ? await window.otter.terminalList(sessionId) : [];
     setTabs(rest);
     if (activeId === id) setActiveId(rest[0]?.id ?? null);

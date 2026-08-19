@@ -36,6 +36,7 @@ import {
   type ChatMessage,
 } from "./lib/friendsState.js";
 import { needsOnboarding } from "./lib/identity.js";
+import { terminalRegistry } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
 export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
@@ -1165,7 +1166,14 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async deleteSession(sessionId) {
     try {
+      // 主进程 deleteSession 里会顺带 terminalHub.killSession(见 main/index.ts),
+      // 把这个会话名下的 pty 记录都摘了——删完再问 terminalList 就查无此会话了,
+      // 所以终端列表要在删除之前问。渲染层这边为它们造过的 xterm 实例(如果
+      // 用户开过终端面板并点开过)没有别的地方会去 dispose:它们属于一个
+      // 已经不存在的会话,不会再有 TerminalView 重新挂载它们(Task 6 review finding 2)
+      const terminals = await window.otter.terminalList(sessionId);
       await window.otter.deleteSession(sessionId);
+      for (const t of terminals) terminalRegistry.dispose(t.id);
       const sessions = await window.otter.listSessions();
       // 删的是正看着的会话 → 回欢迎页，清掉它的投影
       if (get().sessionId === sessionId) {

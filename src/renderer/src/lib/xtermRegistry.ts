@@ -22,6 +22,14 @@ export function createXtermRegistry<T extends Disposable>(factory: (id: string) 
       }
       return inst;
     },
+    /** 只查,不造。给"收到一条全局事件,但不确定这个 id 是不是自己见过"的调用点用——
+        比如 onTerminalData/onTerminalExit 是进程全局广播,payload 里没有 sessionId,
+        不能因为收到别的会话的终端输出就顺手 get() 出一个从没被用户点开过的实例
+        (那样实例数量就跟"这个渲染进程收到过多少条终端输出"挂钩,没有上限)。
+        get() 的 create-on-demand 契约不受影响,只在真正要挂载/操作时用它 */
+    peek(id: string): T | undefined {
+      return instances.get(id);
+    },
     dispose(id: string) {
       instances.get(id)?.dispose();
       instances.delete(id);
