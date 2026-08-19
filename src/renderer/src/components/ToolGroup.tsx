@@ -38,6 +38,7 @@ export function ToolGroup({ calls, all }: { calls: ToolCallRequest[]; all: Sessi
   const running = calls.some((c) => !results.has(c.id));
   const failed = calls.filter((c) => {
     const r = results.get(c.id);
+    // denied 是用户决策，不是故障，所以这里的 "not ok" 包括错误和拒绝两种情况
     return r !== undefined && r.status !== "ok";
   }).length;
 
@@ -60,7 +61,7 @@ export function ToolGroup({ calls, all }: { calls: ToolCallRequest[]; all: Sessi
         }}
       >
         <span className="font-[550] shrink-0 text-foreground">{summarizeGroup(calls)}</span>
-        {failed > 0 && <span className="text-deny shrink-0">{failed} 个失败</span>}
+        {failed > 0 && <span className="text-deny shrink-0">{failed} 项未通过</span>}
         {!running && elapsed !== null && (
           <span className="tabular-nums shrink-0">{(elapsed / 1000).toFixed(1)}s</span>
         )}

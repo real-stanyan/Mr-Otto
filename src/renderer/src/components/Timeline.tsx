@@ -17,6 +17,7 @@ import { useChat } from "../store.js";
 import { Hl } from "../replay/Replay.js";
 import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
+import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { MD_COMPONENTS } from "./CodeBlock.js";
 import { MessageActions } from "./MessageActions.js";
@@ -137,7 +138,9 @@ export function EventRow({ event, isLast = false }: { event: SessionEvent; isLas
             // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
             // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
             <details className={THINKING_DETAILS}>
-              <summary className={THINKING_SUMMARY}>思考过程</summary>
+              <summary className={THINKING_SUMMARY}>
+                {thinkingLabel(event.reasoning, event.reasoningMs)}
+              </summary>
               <div className={THINKING_BODY}>{event.reasoning}</div>
             </details>
           )}
