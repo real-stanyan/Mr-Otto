@@ -217,6 +217,8 @@ export interface PokerSeatView {
   hole: number[] | null;
   /** 当前街的最后一个公开动作；null = 这条街还没动过。旧网关不带此字段,客户端按 null 处理 */
   lastAction?: { kind: "blind" | "fold" | "check" | "call" | "raise"; amount: number } | null;
+  /** 此刻是否开着这张桌的页面(服务端按 SSE 订阅判)。旧网关不带此字段,按在场处理 */
+  online?: boolean;
 }
 
 export interface PokerHandView {

@@ -72,6 +72,11 @@ export class Tables {
     return h !== undefined && !h.state.done;
   }
 
+  /** 还有牌在打的桌子。掉线自动弃牌的扫描器拿它当巡逻名单 */
+  liveTableIds(): string[] {
+    return [...this.live.keys()].filter((id) => this.hasLiveHand(id));
+  }
+
   /** 开一手牌。桌上有牌在打就拒绝 —— 同一张桌不能同时跑两手 */
   async startHand(tableId: string): Promise<HandState> {
     if (this.hasLiveHand(tableId)) throw new Error("这张桌上还有一手牌没打完");
@@ -117,7 +122,7 @@ export class Tables {
   }
 
   /** 按人裁剪的视图。没有进行中的牌局返回 null */
-  view(tableId: string, viewerId: string): HandView | null {
+  view(tableId: string, viewerId: string, online?: ReadonlySet<string>): HandView | null {
     const hand = this.live.get(tableId);
     if (!hand) return null;
     return viewFor(viewerId, {
@@ -125,6 +130,7 @@ export class Tables {
       tableId,
       state: hand.state,
       commitment: hand.commitment,
+      online,
     });
   }
 
