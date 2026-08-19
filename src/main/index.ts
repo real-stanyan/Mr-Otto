@@ -25,7 +25,8 @@ import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
+import { findModel } from "../shared/modelCatalog.js";
+import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -445,13 +446,21 @@ void app.whenReady().then(() => {
     app.setBadgeCount(Math.max(0, Math.floor(count)));
   });
 
-  // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
-  const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
+  // 白名单：渲染层只能配厂商目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env。
+  // 按厂商算而不是按型号算——一家厂暂时 0 个型号时，它的 key 也该能先填上
+  const allowedKeyEnvs = new Set(providerKeyEnvs());
 
   ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
     const status: Record<string, boolean> = {};
     for (const env of allowedKeyEnvs) status[env] = Boolean(process.env[env]);
     return status; // 只有布尔——key 本体永远不过这座桥
+  });
+
+  // 领 key 的入口。只认目录里的厂商 id，URL 从目录里查——渲染层递不进来任意外链
+  ipcMain.handle(CHANNELS.openProviderConsole, (_e, providerId: string) => {
+    const info = findProvider(providerId as ProviderId);
+    if (!info) throw new Error(`不认识的厂商: ${providerId}`);
+    void shell.openExternal(info.consoleUrl);
   });
 
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {

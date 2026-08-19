@@ -5,7 +5,7 @@ import { EventStore } from "../session/store.js";
 import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
-import { resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
+import { DEFAULT_MODEL, resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
@@ -130,7 +130,7 @@ export function createAgent(opts: {
   let current: ModelChoice = resolveModel(
     lastSwitch?.type === "model_changed"
       ? lastSwitch.model
-      : (process.env["OTTER_MODEL"] ?? "deepseek-v4-flash")
+      : (process.env["OTTER_MODEL"] ?? DEFAULT_MODEL)
   );
 
   // key 本体只在这里碰 process.env；缺 key 不拦启动，chat 时报错给 UI。

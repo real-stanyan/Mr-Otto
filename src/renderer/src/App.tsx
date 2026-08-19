@@ -40,7 +40,9 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
-import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
+import { DEFAULT_MODEL, findModel } from "../../shared/modelCatalog.js";
+import { ModelPicker } from "./components/ModelPicker.js";
+import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -507,21 +509,13 @@ function ComposerBar() {
   );
 
   const modelSelect = (
-    <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
-      {/* 型号名最长的一档("DeepSeek V4 Flash")不该独占半条控件行:封顶后省略 */}
-      <SelectTrigger className={BAR_SELECT + " min-w-0 max-w-[150px]"}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {MODEL_CATALOG.map((m) => (
-          <SelectItem key={m.model} value={m.model}>
-            {m.label}
-          </SelectItem>
-        ))}
-        {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
-        {!findModel(model) && <SelectItem value={model}>{model}</SelectItem>}
-      </SelectContent>
-    </Select>
+    // 型号名最长的一档不该独占半条控件行:封顶后省略
+    <ModelPicker
+      value={model}
+      onChange={(v) => void switchModel(v)}
+      disabled={status === "running"}
+      className={BAR_SELECT + " max-w-[164px]"}
+    />
   );
 
   const thinkingSelect = (
@@ -1203,14 +1197,13 @@ function AccountPage() {
   );
 }
 
-/** 模型配置页（设置栏目之一）：各 provider 的 API key 管理。
-    外观切换暂时挂靠在这里的顶部——项目还没有独立的"通用设置"栏目 */
+/** 模型配置页（设置栏目之一）：市面主流厂商一家一行，挑一家、贴 key 就能用。
+    列表主体在 components/ModelProviderSettings.tsx —— 这里只留页壳。
+    外观切换曾经挂靠在这一页顶部，已搬去独立的「外观」栏目：它和 API key 没有关系，
+    放在一起只会让人以为主题是模型的一个属性 */
 function KeysPage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
-  // 目录里每个不同的 apiKeyEnv 一行（provider 可能共用同一个 key）
-  const providers = [...new Map(MODEL_CATALOG.map((m) => [m.apiKeyEnv, m.provider])).entries()];
-  const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
 
   return (
     <div className={MAIN_COL}>
@@ -1222,34 +1215,65 @@ function KeysPage() {
         </Button>
       </header>
       <section className={SETTINGS_BODY}>
-        <label className="flex items-center justify-between gap-3 text-[13px]">
-          <span className="text-muted-foreground">外观</span>
-          <Select
-            value={themePref}
-            onValueChange={(v) => {
-              const p = v as ThemePref;
-              themeController().setPref(p);
-              setThemePref(p);
-            }}
-          >
-            <SelectTrigger className="px-[10px] py-[6px] text-[13px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="system">跟随系统</SelectItem>
-              <SelectItem value="light">浅色</SelectItem>
-              <SelectItem value="dark">深色</SelectItem>
-            </SelectContent>
-          </Select>
-        </label>
-        <p className={HINT}>
-          key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
-          此处配置的 key 优先于 .env。
-        </p>
-        {providers.map(([envName, provider]) => (
-          <KeyRow key={envName} envName={envName} label={provider} />
-        ))}
+        <ModelProviderSettings />
         {error && <p className={ERR_TXT}>{error}</p>}
+      </section>
+    </div>
+  );
+}
+
+/** 外观页（设置栏目之一）：目前只有主题一项。
+    分段控件而不是下拉框——三个选项全部可见时，"选哪个"和"现在是哪个"是同一眼的事 */
+function AppearancePage() {
+  const closeSettings = useChat((s) => s.closeSettings);
+  const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
+
+  const OPTIONS: { value: ThemePref; label: string; hint: string }[] = [
+    { value: "light", label: "浅色", hint: "始终用浅色底盘" },
+    { value: "dark", label: "深色", hint: "始终用深色底盘" },
+    { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
+  ];
+
+  return (
+    <div className={MAIN_COL}>
+      <header className={HEADER}>
+        <SidebarNub />
+        <span className="font-[650] inline-flex items-center gap-[6px]">外观</span>
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
+          返回
+        </Button>
+      </header>
+      <section className={SETTINGS_BODY}>
+        <div className="flex flex-col gap-[6px]">
+          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">主题</h2>
+          <div
+            role="radiogroup"
+            aria-label="主题"
+            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
+          >
+            {OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={themePref === o.value}
+                title={o.hint}
+                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 ${
+                  themePref === o.value
+                    ? "bg-foreground/[0.10] font-[550] text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => {
+                  themeController().setPref(o.value);
+                  setThemePref(o.value);
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className={HINT}>{OPTIONS.find((o) => o.value === themePref)?.hint}</p>
+        </div>
       </section>
     </div>
   );
@@ -1320,6 +1344,7 @@ function saveCollapsedProjects(dirs: Set<string>): void {
 const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "account", label: "账号" },
   { id: "keys", label: "模型配置" },
+  { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
 ];
 
@@ -1986,7 +2011,7 @@ function Welcome() {
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
   const [model, setModel] = useState(() =>
-    findModel(lastModel) ? lastModel : MODEL_CATALOG[0]!.model
+    findModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
   const [mode, setMode] = useState<"ask" | "auto">("ask");
   const [thinking, setThinking] = useState(true);
@@ -2084,18 +2109,7 @@ function Welcome() {
             <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
           </Tooltip>
           <span className="flex-1" />
-          <Select value={model} onValueChange={(v) => setModel(v)}>
-            <SelectTrigger className={NSC_SELECT}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_CATALOG.map((m) => (
-                <SelectItem key={m.model} value={m.model}>
-                  {m.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <ModelPicker value={model} onChange={setModel} className={NSC_SELECT + " max-w-[180px]"} />
           <Select value={thinking ? "on" : "off"} onValueChange={(v) => setThinking(v === "on")} disabled={!choice?.supportsThinking}>
             <SelectTrigger
               className={NSC_SELECT}
@@ -2229,7 +2243,7 @@ export function App() {
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
-  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）。
+  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView /> : gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
@@ -2243,6 +2257,8 @@ export function App() {
     <AccountPage />
   ) : settingsSection === "keys" ? (
     <KeysPage />
+  ) : settingsSection === "appearance" ? (
+    <AppearancePage />
   ) : settingsSection === "skills" ? (
     <SkillsPage />
   ) : phase === "welcome" ? (

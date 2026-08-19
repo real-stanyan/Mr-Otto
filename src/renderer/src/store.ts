@@ -55,7 +55,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "skills";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -1079,16 +1079,19 @@ export const useChat = create<ChatState>((set, get) => ({
     );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
-    const [info, sessions, skills, account] = await Promise.all([
+    // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
+    // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
+    const [info, sessions, skills, account, keyStatus] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
       window.otter.getAccount(),
+      window.otter.keyStatus(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account }
-        : { phase: "welcome", sessions, skills, account }
+        ? { ...enterChat(info), sessions, skills, account, keyStatus }
+        : { phase: "welcome", sessions, skills, account, keyStatus }
     );
     // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
     // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着

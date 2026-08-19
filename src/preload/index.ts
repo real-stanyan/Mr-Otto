@@ -49,6 +49,7 @@ const bridge: ShellBridge = {
   updateProfile: (patch) => ipcRenderer.invoke(CHANNELS.updateProfile, patch),
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
+  openProviderConsole: (providerId) => ipcRenderer.invoke(CHANNELS.openProviderConsole, providerId),
   sendMessage: (sessionId, text, skill, attachments) =>
     ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill, attachments),
   pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),
