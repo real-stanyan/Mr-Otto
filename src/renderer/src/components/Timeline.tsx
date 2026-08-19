@@ -3,19 +3,12 @@
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
 import { memo, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { Hl } from "../replay/Replay.js";
-import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
-import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
-import { MD_COMPONENTS } from "./CodeBlock.js";
-import { MessageActions } from "./MessageActions.js";
 import { RetryButton } from "./RetryButton.js";
 import { ToolLiveTail } from "./ToolLiveTail.js";
 
@@ -87,60 +80,14 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
   );
 });
 
-// memo 同上:一条消息渲染一次 Markdown(remark + rehype-highlight 全量解析),
-// 流式期间每个 token 让全屏历史消息重解析一遍是纯浪费(#115)。
-// 动作条(MessageActions)自己订阅 store,memo 不影响它的新鲜度
+// memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
+// 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
   switch (event.type) {
-    case "user_message":
-      // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
-      // 各自成卡片摆在气泡上方(UserAttachments),气泡只留给用户正文。
-      // 只带附件不带字时不出空气泡:没说话就是没说话
-      return (
-        <div className={`${ROW} self-end flex flex-col items-end gap-[6px]`}>
-          <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />
-          {event.content.trim() !== "" && (
-            // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
-            <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
-              {event.content}
-            </div>
-          )}
-        </div>
-      );
-
-    case "assistant_message":
-      // 工具调用不在这渲染:它们被 groupThread 抽出去按"相邻成组"重新编排了
-      // (同一条消息的调用可能和下一条消息的调用属于同一组)
-      // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
-      // 用户消息保持原文——用户打的不是 markdown，别替他排版
-      return (
-        <>
-          {event.reasoning && (
-            // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
-            // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
-            <details className={THINKING_DETAILS}>
-              <summary className={THINKING_SUMMARY}>
-                {thinkingLabel(event.reasoning, event.reasoningMs)}
-              </summary>
-              <div className={THINKING_BODY}>{event.reasoning}</div>
-            </details>
-          )}
-          {event.content.trim() !== "" && (
-            // 与 threadGroups 的分组判定同口径,避免纯空白消息渲染不一致
-            // group/msg:动作条只在悬停这条回复时现身
-            <div className="group/msg self-stretch max-w-full flex flex-col">
-              {/* 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息) */}
-              <div className="md max-w-full py-[2px]">
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
-                  {event.content}
-                </Markdown>
-              </div>
-              <MessageActions content={event.content} isLast={isLast} />
-            </div>
-          )}
-        </>
-      );
-
+    // user_message / assistant_message 两个分支从此到不了:EventRow 现在只剩一个
+    // 调用点(OttoThread 的 SystemMessage override),而那里只会拿到审计事件——
+    // 两类事件各自的渲染已经进了 assistant-ui 自己的 role:"user"/"assistant" 分支
+    // (Task 8 的 UserAttachments override、Task 9 的 streamdown)
     case "tool_result":
       return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 

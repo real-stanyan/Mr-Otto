@@ -3,9 +3,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
 import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
@@ -39,7 +36,6 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
-import { RetryButton } from "./components/RetryButton.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -47,7 +43,6 @@ import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
-import { MD_COMPONENTS } from "./components/CodeBlock.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -57,7 +52,6 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer.js";
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -95,17 +89,12 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar.js";
-import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
-import { EventRow, ToolRow } from "./components/Timeline.js";
+import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
 import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
-import { ToolGroup } from "./components/ToolGroup.js";
-import { ThreadViewport } from "./components/ThreadViewport.js";
-import { groupThread } from "./lib/threadGroups.js";
-import { buildToolIndex } from "./lib/toolIndex.js";
-import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
-import { type OrbState } from "./lib/toolSummary.js";
+import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
+import { OttoThread } from "./aui/OttoThread.js";
 
 /** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
 function totalTokens(events: SessionEvent[]): number {
@@ -116,16 +105,6 @@ function totalTokens(events: SessionEvent[]): number {
     }
   }
   return sum;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-function fmtElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
@@ -169,24 +148,6 @@ const SLASH_ITEM =
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
 // 上下文占用估算住 shared（账单锚点 + 未计费事件估算 + 按来源拆分），这里只消费
-
-/** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
-    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
-function TurnMeta({ events }: { events: SessionEvent[] }) {
-  const [start] = useState(() => Date.now());
-  const [now, setNow] = useState(start);
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const tokens = useMemo(() => totalTokens(events), [events]);
-  return (
-    <span className="tabular-nums">
-      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens
-    </span>
-  );
-}
 
 /** 上下文用量圆环（Claude Code 同款）：满圈 = 上下文窗打满。
     数字进悬停提示，环本身只传达"还剩多少"；爬坡换警示色 */
@@ -612,37 +573,6 @@ function ComposerBar() {
       </div>
     </div>
   );
-}
-
-/** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
-function currentTool(events: SessionEvent[]): ToolCallRequest | null {
-  const done = new Set<string>();
-  for (const e of events) if (e.type === "tool_result") done.add(e.toolCallId);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e && e.type === "assistant_message") {
-      for (const c of e.toolCalls ?? []) if (!done.has(c.id)) return c;
-    }
-  }
-  return null;
-}
-
-/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
-     检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
-     四段对应 orbs 的 Searching / Working / Thinking / Solving */
-function agentPhase(opts: {
-  status: "idle" | "running";
-  hasApproval: boolean;
-  streamingThinking: string;
-  streamingText: string;
-  tool: ToolCallRequest | null;
-}): { orb: OrbState; label: string } {
-  if (opts.hasApproval) return { orb: "listening", label: "等待审批…" };
-  if (opts.status !== "running") return { orb: "breathing", label: "空闲" };
-  if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
-  if (opts.tool) return { orb: "working", label: "执行中…" };
-  if (opts.streamingText) return { orb: "solving", label: "作答中…" };
-  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
 }
 
 /** write_file 审批的 diff 视图。diff 现算（投影）；连续未变行折叠成计数——
@@ -1873,10 +1803,9 @@ function Welcome() {
 }
 
 export function App() {
-  const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
+  const { phase, sessionId, workspace, events, boot, send, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
-  const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
@@ -1890,28 +1819,11 @@ export function App() {
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
-  // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
-  // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
-  const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
-  const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replaying = replayCursor !== null;
-  // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
-  const items = useMemo(() => groupThread(events), [events]);
-  // 工具索引同理:建一次往下传引用,工具行/工具组就不用各自全量扫事件了。
-  // 引用稳定还给下面的 memo 供了料——流式输出时它们才真的能跳过重渲染(#115)
-  const toolIndex = useMemo(() => buildToolIndex(events), [events]);
-  // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
-  const turnPhase = agentPhase({
-    status,
-    hasApproval: approval !== null,
-    streamingThinking,
-    streamingText,
-    tool: currentTool(events),
-  });
 
   // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
   const slashMatches = input.startsWith("/")
@@ -2089,56 +2001,9 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          <ThreadViewport
-            key={sessionId}
-            deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
-          >
-            {items.map((item) =>
-              item.kind === "event" ? (
-                <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
-              ) : item.calls.length === 1 ? (
-                // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
-                <ToolRow key={item.key} call={item.calls[0]!} index={toolIndex} />
-              ) : (
-                <ToolGroup key={item.key} calls={item.calls} index={toolIndex} />
-              )
-            )}
-            {error && (
-              <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
-                <span>[turn 失败] {error}</span>
-                <RetryButton />
-              </div>
-            )}
-            {streamingThinking && (
-              // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
-              // open 受控写死：流式中就是要摊开，用户要折等它完事。
-              // streaming 类挂光标(app.css);直播思考限高滚动,别把时间线顶飞
-              <details className={`${THINKING_DETAILS} streaming`} open>
-                <summary className={THINKING_SUMMARY}>思考中</summary>
-                <div className={`${THINKING_BODY} max-h-[180px] overflow-y-auto`}>{streamingThinking}</div>
-              </details>
-            )}
-            {streamingText && (
-              <div className="md streaming self-stretch max-w-full py-[2px]">
-                {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
-                    完整事件到达后重渲一次自然纠正 */}
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
-                  {streamingText}
-                </Markdown>
-              </div>
-            )}
-            {(status === "running" || approval !== null) && (
-              <Marker role="status" className="py-[2px] text-[13px]">
-                <MarkerIcon className="size-5">
-                  <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
-                </MarkerIcon>
-                <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
-                <span className="ml-auto shrink-0 text-xs">
-                  <TurnMeta events={events} />
-                </span>
-              </Marker>
-            )}
-          </ThreadViewport>
+          <OttoRuntimeProvider>
+            <OttoThread />
+          </OttoRuntimeProvider>
 
           <ApprovalCard />
           <QuestionnaireCard />
