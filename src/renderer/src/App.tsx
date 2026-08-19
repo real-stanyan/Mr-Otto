@@ -89,6 +89,8 @@ import {
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
 import { EventRow, ToolRow } from "./components/Timeline.js";
+import { retryLastUserMessage } from "./components/MessageActions.js";
+import { hasUnretryableAttachments, lastUserMessage } from "./lib/lastUserMessage.js";
 import { ToolGroup } from "./components/ToolGroup.js";
 import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
@@ -1854,6 +1856,33 @@ function Welcome() {
   );
 }
 
+/** 失败不该只是一行红字——恢复出口就挂在它旁边(assistant-ui 的 Error primitive 同款)。
+    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage),别处各写一份;
+    这里外观是红色文字钮,按钮文案随"带不带附件"变——不然点了以为发出去了实际只是填回输入框 */
+function RetryButton() {
+  const events = useChat((s) => s.events);
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const prev = lastUserMessage(events);
+  if (!prev || status === "running") return null;
+  const hasAttachments = hasUnretryableAttachments(prev);
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      title={
+        hasAttachments
+          ? "把上一条消息填回输入框（附件要重新添加）"
+          : "重试：把上一条消息原样再发一遍"
+      }
+      className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
+      onClick={() => retryLastUserMessage(prev)}
+    >
+      {hasAttachments ? "填回输入框" : "重试"}
+    </Button>
+  );
+}
+
 export function App() {
   const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
@@ -1877,6 +1906,7 @@ export function App() {
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replaying = replayCursor !== null;
   // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
   const items = useMemo(() => groupThread(events), [events]);
@@ -1913,6 +1943,20 @@ export function App() {
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
+  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
+  const composerInject = useChat((s) => s.composerInject);
+  useEffect(() => {
+    if (!composerInject) return;
+    setInput((prev) =>
+      composerInject.append
+        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
+        : composerInject.text
+    );
+    useChat.setState({ composerInject: null });
+    textareaRef.current?.focus();
+  }, [composerInject]);
 
   // Esc = 停止（Claude Code 同款肌肉记忆）。挂 window：running 时输入框
   // disabled 收不到键盘，事件得在更高处接
@@ -2035,7 +2079,7 @@ export function App() {
           >
             {items.map((item) =>
               item.kind === "event" ? (
-                <EventRow key={item.key} event={item.event} />
+                <EventRow key={item.key} event={item.event} isLast={item.key === items.at(-1)?.key} />
               ) : item.calls.length === 1 ? (
                 // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
                 <ToolRow key={item.key} call={item.calls[0]!} all={events} />
@@ -2043,7 +2087,12 @@ export function App() {
                 <ToolGroup key={item.key} calls={item.calls} all={events} />
               )
             )}
-            {error && <div className={`${CHIP} border-err text-err`}>[turn 失败] {error}</div>}
+            {error && (
+              <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
+                <span>[turn 失败] {error}</span>
+                <RetryButton />
+              </div>
+            )}
             {streamingThinking && (
               // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
               // open 受控写死：流式中就是要摊开，用户要折等它完事。
@@ -2127,6 +2176,7 @@ export function App() {
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <Textarea
+                ref={textareaRef}
                 className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
                 autoFocus
                 rows={1}

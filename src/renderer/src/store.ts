@@ -164,6 +164,11 @@ interface ChatState {
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
   attachError: string | null;
+  /** 待注入输入框的文本(划词引用、重试填回都走这条)。App 收下即清。
+      append=true 追加到现有草稿后面(引用),false 整体替换(重试填回)。
+      为什么不把 composer 的输入状态提到 store:那是更大的重构,
+      这条通道够用且不改动现有输入框的任何行为 */
+  composerInject: { text: string; append: boolean } | null;
   /** 好友快照(主进程推送镜像;未登录/登出 = 三空数组) */
   friendsSnapshot: FriendsSnapshot;
   /** 当前在线的 userId(presence 推送镜像) */
@@ -255,6 +260,7 @@ interface ChatState {
   pickFiles(): Promise<void>;
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
   removeStaged(index: number): void;
+  injectComposer(text: string, append: boolean): void;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -369,6 +375,7 @@ export const useChat = create<ChatState>((set, get) => ({
   walletError: "",
   staged: [],
   attachError: null,
+  composerInject: null,
   friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
   onlineIds: [],
   friendChat: null,
@@ -1212,6 +1219,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   removeStaged(index) {
     set({ staged: get().staged.filter((_, i) => i !== index) });
+  },
+
+  injectComposer(text, append) {
+    set({ composerInject: { text, append } });
   },
 
   async stop() {

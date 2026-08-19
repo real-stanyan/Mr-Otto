@@ -18,7 +18,10 @@ export function CodeBlock({ children, ...rest }: ComponentPropsWithoutRef<"pre">
       <CopyButton
         text={() => ref.current?.textContent ?? ""}
         label="复制代码"
-        className="absolute top-2 right-2 bg-card/80 backdrop-blur-sm opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100 transition-opacity duration-150"
+        // 不在这写 transition-*:buttonVariants 基类已经带 transition-[...,opacity] duration-150,
+        // tailwind-merge 会把这里的 transition-opacity 和基类那条判成同一组、只留后写的那个,
+        // 结果按压 scale/hover 变色跟着丢过渡
+        className="absolute top-2 right-2 bg-card/80 backdrop-blur-sm opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100"
       />
     </div>
   );
