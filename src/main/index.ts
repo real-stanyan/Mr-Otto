@@ -23,6 +23,7 @@ import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
+import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
@@ -45,7 +46,8 @@ app.setAsDefaultProtocolClient("mrotto");
 // app.name 走,改名会把 keys.json/sessions.db/attachments 留在旧目录里"凭空消失"。
 // 先 setName 再显式 setPath,老数据原地不动。
 app.setName("Mr Otto");
-app.setPath("userData", join(app.getPath("appData"), "mr-otto"));
+// OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
+app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)));
 
 let accountManager: AccountManager | null = null;
 let pendingAuthUrl: string | null = null;
