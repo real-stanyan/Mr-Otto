@@ -344,6 +344,7 @@ void app.whenReady().then(() => {
       push,
       attachments: attachmentStore,
       getAccessToken,
+      makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
     });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -377,6 +378,7 @@ void app.whenReady().then(() => {
           resumeSessionId: sessionId,
           attachments: attachmentStore,
           getAccessToken,
+          makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
         })
       );
     }
