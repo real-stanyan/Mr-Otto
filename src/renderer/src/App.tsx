@@ -40,7 +40,13 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
-import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
+import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
+import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
+import { ThinkingPicker } from "./components/ThinkingPicker.js";
+import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
+import { modelChipLabel } from "./lib/modelChip.js";
+import { ModelPicker } from "./components/ModelPicker.js";
+import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -485,7 +491,9 @@ function ComposerBar() {
   const [ctxOpen, setCtxOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
 
-  const choice = findModel(model);
+  // 目录 + 本机探测：Ollama 的窗只有那台机器答得上来，查目录会拿到 32k 兜底常量，
+  // 圆环就会按一个假数报占用（实测 qwen3:30b 是 256k）
+  const choice = useModelChoice(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
@@ -507,40 +515,23 @@ function ComposerBar() {
   );
 
   const modelSelect = (
-    <Select value={model} onValueChange={(v) => void switchModel(v)} disabled={status === "running"}>
-      {/* 型号名最长的一档("DeepSeek V4 Flash")不该独占半条控件行:封顶后省略 */}
-      <SelectTrigger className={BAR_SELECT + " min-w-0 max-w-[150px]"}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {MODEL_CATALOG.map((m) => (
-          <SelectItem key={m.model} value={m.model}>
-            {m.label}
-          </SelectItem>
-        ))}
-        {/* OTTER_MODEL 填了目录外的型号：补一项，不然 select 显示空白 */}
-        {!findModel(model) && <SelectItem value={model}>{model}</SelectItem>}
-      </SelectContent>
-    </Select>
+    // 型号名最长的一档不该独占半条控件行:封顶后省略
+    <ModelPicker
+      value={model}
+      onChange={(v) => void switchModel(v)}
+      disabled={status === "running"}
+      className={BAR_SELECT + " max-w-[164px]"}
+    />
   );
 
   const thinkingSelect = (
-    <Select
-      value={thinking ? "on" : "off"}
-      onValueChange={(v) => void setThinking(v === "on")}
-      disabled={status === "running" || !choice?.supportsThinking}
-    >
-      <SelectTrigger
-        className={BAR_SELECT}
-        title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="on">Thinking 开</SelectItem>
-        <SelectItem value="off">Thinking 关</SelectItem>
-      </SelectContent>
-    </Select>
+    <ThinkingPicker
+      spec={thinkingSpecOf(choice)}
+      value={thinking}
+      onChange={(m) => void setThinking(m)}
+      disabled={status === "running"}
+      className={BAR_SELECT}
+    />
   );
 
   return (
@@ -568,7 +559,7 @@ function ComposerBar() {
             }
             aria-label="会话偏好"
             aria-expanded={prefsOpen}
-            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinking ? "开" : "关"}`}
+            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
             onClick={() => setPrefsOpen((o) => !o)}
           >
             <Ellipsis className="size-4" />
@@ -879,7 +870,7 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "model_changed":
       return (
         <div className={AUDIT}>
-          模型切换 → {event.provider}/{event.model}
+          模型切换 → {modelChipLabel(event.provider, event.model)}
         </div>
       );
 
@@ -1203,14 +1194,13 @@ function AccountPage() {
   );
 }
 
-/** 模型配置页（设置栏目之一）：各 provider 的 API key 管理。
-    外观切换暂时挂靠在这里的顶部——项目还没有独立的"通用设置"栏目 */
+/** 模型配置页（设置栏目之一）：市面主流厂商一家一行，挑一家、贴 key 就能用。
+    列表主体在 components/ModelProviderSettings.tsx —— 这里只留页壳。
+    外观切换曾经挂靠在这一页顶部，已搬去独立的「外观」栏目：它和 API key 没有关系，
+    放在一起只会让人以为主题是模型的一个属性 */
 function KeysPage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
-  // 目录里每个不同的 apiKeyEnv 一行（provider 可能共用同一个 key）
-  const providers = [...new Map(MODEL_CATALOG.map((m) => [m.apiKeyEnv, m.provider])).entries()];
-  const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
 
   return (
     <div className={MAIN_COL}>
@@ -1222,34 +1212,65 @@ function KeysPage() {
         </Button>
       </header>
       <section className={SETTINGS_BODY}>
-        <label className="flex items-center justify-between gap-3 text-[13px]">
-          <span className="text-muted-foreground">外观</span>
-          <Select
-            value={themePref}
-            onValueChange={(v) => {
-              const p = v as ThemePref;
-              themeController().setPref(p);
-              setThemePref(p);
-            }}
-          >
-            <SelectTrigger className="px-[10px] py-[6px] text-[13px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="system">跟随系统</SelectItem>
-              <SelectItem value="light">浅色</SelectItem>
-              <SelectItem value="dark">深色</SelectItem>
-            </SelectContent>
-          </Select>
-        </label>
-        <p className={HINT}>
-          key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面。
-          此处配置的 key 优先于 .env。
-        </p>
-        {providers.map(([envName, provider]) => (
-          <KeyRow key={envName} envName={envName} label={provider} />
-        ))}
+        <ModelProviderSettings />
         {error && <p className={ERR_TXT}>{error}</p>}
+      </section>
+    </div>
+  );
+}
+
+/** 外观页（设置栏目之一）：目前只有主题一项。
+    分段控件而不是下拉框——三个选项全部可见时，"选哪个"和"现在是哪个"是同一眼的事 */
+function AppearancePage() {
+  const closeSettings = useChat((s) => s.closeSettings);
+  const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
+
+  const OPTIONS: { value: ThemePref; label: string; hint: string }[] = [
+    { value: "light", label: "浅色", hint: "始终用浅色底盘" },
+    { value: "dark", label: "深色", hint: "始终用深色底盘" },
+    { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
+  ];
+
+  return (
+    <div className={MAIN_COL}>
+      <header className={HEADER}>
+        <SidebarNub />
+        <span className="font-[650] inline-flex items-center gap-[6px]">外观</span>
+        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
+          返回
+        </Button>
+      </header>
+      <section className={SETTINGS_BODY}>
+        <div className="flex flex-col gap-[6px]">
+          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">主题</h2>
+          <div
+            role="radiogroup"
+            aria-label="主题"
+            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
+          >
+            {OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={themePref === o.value}
+                title={o.hint}
+                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 ${
+                  themePref === o.value
+                    ? "bg-foreground/[0.10] font-[550] text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => {
+                  themeController().setPref(o.value);
+                  setThemePref(o.value);
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className={HINT}>{OPTIONS.find((o) => o.value === themePref)?.hint}</p>
+        </div>
       </section>
     </div>
   );
@@ -1320,6 +1341,7 @@ function saveCollapsedProjects(dirs: Set<string>): void {
 const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "account", label: "账号" },
   { id: "keys", label: "模型配置" },
+  { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
 ];
 
@@ -1973,7 +1995,8 @@ function BranchPicker({
 
 /** 新会话 composer（ZCode 版式）：文件夹 + 首条消息 + 模式/模型/thinking 先配齐，
     ↑ 一按才落地。落地前全是渲染层草稿——反悔零痕迹，没建的会话不存在半个。
-    偏好初值：审批 ask（安全默认）、thinking 开；模型跟上个会话走，没有就用目录第一款 */
+    偏好初值：审批 ask（安全默认）、thinking 跟型号的默认档；模型跟上个会话走，
+    没有就用开箱默认款 */
 function Welcome() {
   const startSession = useChat((s) => s.startSession);
   const send = useChat((s) => s.send);
@@ -1986,12 +2009,16 @@ function Welcome() {
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
   const [model, setModel] = useState(() =>
-    findModel(lastModel) ? lastModel : MODEL_CATALOG[0]!.model
+    describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
   const [mode, setMode] = useState<"ask" | "auto">("ask");
-  const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
-  const choice = findModel(model);
+  const choice = useModelChoice(model);
+  const thinkingSpec = thinkingSpecOf(choice);
+  const [thinking, setThinking] = useState<ThinkingMode>(thinkingSpec.default);
+  // 换型号 = 换挡位表。这里是渲染层草稿（会话还没落地，没有主进程可问），
+  // 钳位得自己做——用的是同一个函数，落地后主进程再钳一次也是同一个结果
+  useEffect(() => setThinking((t) => clampThinking(t, thinkingSpec)), [thinkingSpec]);
   // 附件暂存区是全局的:在这里粘/拖进来的,建会话后由 send 原样带走
   const attachPasted = useChat((s) => s.attachPasted);
 
@@ -2084,30 +2111,14 @@ function Welcome() {
             <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
           </Tooltip>
           <span className="flex-1" />
-          <Select value={model} onValueChange={(v) => setModel(v)}>
-            <SelectTrigger className={NSC_SELECT}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_CATALOG.map((m) => (
-                <SelectItem key={m.model} value={m.model}>
-                  {m.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={thinking ? "on" : "off"} onValueChange={(v) => setThinking(v === "on")} disabled={!choice?.supportsThinking}>
-            <SelectTrigger
-              className={NSC_SELECT}
-              title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="on">Thinking 开</SelectItem>
-              <SelectItem value="off">Thinking 关</SelectItem>
-            </SelectContent>
-          </Select>
+          <ModelPicker value={model} onChange={setModel} className={NSC_SELECT + " max-w-[180px]"} />
+          <ThinkingPicker
+            spec={thinkingSpec}
+            value={thinking}
+            onChange={setThinking}
+            disabled={busy}
+            className={NSC_SELECT}
+          />
           <Button
             className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
             disabled={!workspace || busy}
@@ -2229,7 +2240,7 @@ export function App() {
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
-  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / Skill 库 / 欢迎 / 聊天）。
+  // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView /> : gitGraphOpen ? <GitGraphView /> : protocolOpen ? <ProtocolView /> : null;
@@ -2243,6 +2254,8 @@ export function App() {
     <AccountPage />
   ) : settingsSection === "keys" ? (
     <KeysPage />
+  ) : settingsSection === "appearance" ? (
+    <AppearancePage />
   ) : settingsSection === "skills" ? (
     <SkillsPage />
   ) : phase === "welcome" ? (

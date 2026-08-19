@@ -162,20 +162,50 @@ describe("UIApprover 中断（ADR-0006）", () => {
 });
 
 describe("agent 运行时偏好（审批模式 / thinking）", () => {
-  it("默认值安全：审批模式 ask、thinking 开；setter 生效", () => {
+  it("默认值安全：审批模式 ask、thinking 取当前型号的默认档；setter 生效", () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
     expect(agent.approvalMode).toBe("ask");
-    expect(agent.thinking).toBe(true);
+    // 开箱默认是 DeepSeek（二选一挡位），默认档 = 开
+    expect(agent.thinking).toBe("on");
 
     agent.setApprovalMode("auto");
-    agent.setThinking(false);
+    agent.setThinking("off");
     expect(agent.approvalMode).toBe("auto");
-    expect(agent.thinking).toBe(false);
+    expect(agent.thinking).toBe("off");
 
     // 偏好不落日志：日志仍只有 session_created 一条
     expect(store.load(agent.sessionId)).toHaveLength(1);
+    store.close();
+  });
+
+  it("换型号把手上那一档钳进新型号的挡位表 —— 选项变了，值不能留在表外", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+
+    // DeepSeek 的"开" → GPT-5 只有低/中/高（关不掉），就近落到中档
+    agent.switchModel("gpt-5");
+    expect(agent.thinking).toBe("medium");
+
+    // 调到高，再切回二选一的 GLM：高 → 开
+    agent.setThinking("high");
+    agent.switchModel("glm-4.6");
+    expect(agent.thinking).toBe("on");
+
+    // 切到压根没有开关的型号：值退到 off，且不参与请求
+    agent.switchModel("grok-4");
+    expect(agent.thinking).toBe("off");
+    store.close();
+  });
+
+  it("setThinking 收到表外的档也会钳 —— 渲染层可能拿着上一款型号的选项集", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+
+    agent.switchModel("gpt-5"); // 只有 low/medium/high
+    agent.setThinking("on"); // 二选一那派的说法，GPT-5 没这一档
+    expect(agent.thinking).toBe("medium");
     store.close();
   });
 });

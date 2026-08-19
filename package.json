@@ -34,6 +34,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@lobehub/icons": "^5.16.0",
     "@supabase/supabase-js": "^2.112.3",
     "better-sqlite3": "^13.0.3",
     "class-variance-authority": "^0.7.1",

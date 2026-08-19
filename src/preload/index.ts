@@ -22,7 +22,7 @@ const bridge: ShellBridge = {
   renameSession: (sessionId, title) => ipcRenderer.invoke(CHANNELS.renameSession, sessionId, title),
   switchModel: (model) => ipcRenderer.invoke(CHANNELS.switchModel, model),
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
-  setThinking: (sessionId, on) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, on),
+  setThinking: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, mode),
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
   protocolListAdrs: (repoDir) => ipcRenderer.invoke(CHANNELS.protocolListAdrs, repoDir),
   protocolReadAdr: (repoDir, relPath) => ipcRenderer.invoke(CHANNELS.protocolReadAdr, repoDir, relPath),
@@ -49,6 +49,8 @@ const bridge: ShellBridge = {
   updateProfile: (patch) => ipcRenderer.invoke(CHANNELS.updateProfile, patch),
   keyStatus: () => ipcRenderer.invoke(CHANNELS.keyStatus),
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
+  openProviderConsole: (providerId) => ipcRenderer.invoke(CHANNELS.openProviderConsole, providerId),
+  listOllamaModels: () => ipcRenderer.invoke(CHANNELS.listOllamaModels),
   sendMessage: (sessionId, text, skill, attachments) =>
     ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill, attachments),
   pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),

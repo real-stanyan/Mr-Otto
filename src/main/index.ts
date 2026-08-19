@@ -25,7 +25,10 @@ import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
+import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
+import type { ThinkingMode } from "../shared/thinking.js";
+import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
+import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -314,9 +317,7 @@ void app.whenReady().then(() => {
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
-    if (typeof opts.thinking === "boolean" && opts.thinking !== agent.thinking) {
-      agent.setThinking(opts.thinking);
-    }
+    if (opts.thinking && opts.thinking !== agent.thinking) agent.setThinking(opts.thinking);
     const info = bootInfo();
     if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
     return info;
@@ -445,13 +446,47 @@ void app.whenReady().then(() => {
     app.setBadgeCount(Math.max(0, Math.floor(count)));
   });
 
-  // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
-  const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
+  // 白名单：渲染层只能配厂商目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env。
+  // 按厂商算而不是按型号算——一家厂暂时 0 个型号时，它的 key 也该能先填上
+  const allowedKeyEnvs = new Set(providerKeyEnvs());
 
   ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
     const status: Record<string, boolean> = {};
     for (const env of allowedKeyEnvs) status[env] = Boolean(process.env[env]);
     return status; // 只有布尔——key 本体永远不过这座桥
+  });
+
+  // 领 key 的入口。只认目录里的厂商 id，URL 从目录里查——渲染层递不进来任意外链
+  ipcMain.handle(CHANNELS.openProviderConsole, (_e, providerId: string) => {
+    const info = findProvider(providerId as ProviderId);
+    if (!info) throw new Error(`不认识的厂商: ${providerId}`);
+    void shell.openExternal(info.consoleUrl);
+  });
+
+  // 本机 Ollama：型号清单 + 各自能力（探测逻辑住 main/ollamaModels.ts，这里只接线）
+  ipcMain.handle(CHANNELS.listOllamaModels, async () => {
+    const info = findProvider("ollama")!;
+    const cap = Number(process.env["OLLAMA_CONTEXT_LENGTH"]);
+    const result = await probeOllamaModels({
+      defaultBaseUrl: info.baseUrl,
+      baseUrlOverride: process.env[info.baseUrlEnv],
+      // Ollama 自己的开关。用户改过它就该生效，不该逼他再学一个我们发明的变量
+      ollamaHost: process.env["OLLAMA_HOST"],
+      apiKey: process.env[info.apiKeyEnv],
+      prefix: OLLAMA_MODEL_PREFIX,
+      ...(Number.isFinite(cap) && cap > 0 ? { contextCap: cap } : {}),
+      fetchImpl: fetch,
+    });
+    // 探到的端点固化进 env：adapter 和 routeModel 读的都是这个变量，
+    // 不固化的话它们会继续拨目录里的默认值，而清单是从另一个地址问来的——
+    // "看得见却连不上"正是这类分叉的典型症状。keyVault 也是这么把 key 落进 env 的
+    if (result.baseUrl && !process.env[info.baseUrlEnv]) {
+      process.env[info.baseUrlEnv] = result.baseUrl;
+    }
+    // agent 要按型号决定发不发图，能力表只有探测知道
+    rememberOllamaModels(result.models);
+    for (const a of agents.values()) a.reloadAdapter();
+    return result;
   });
 
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {
@@ -483,6 +518,8 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model);
+    // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
+    return agent.thinking;
   });
 
   ipcMain.handle(CHANNELS.setApprovalMode, (_e, sessionId: string, mode: "ask" | "auto") => {
@@ -492,11 +529,12 @@ void app.whenReady().then(() => {
     agent.setApprovalMode(mode);
   });
 
-  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, on: boolean) => {
+  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, mode: ThinkingMode) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能切 thinking");
-    agent.setThinking(on);
+    agent.setThinking(mode);
+    return agent.thinking; // 钳位后的实际档
   });
 
   ipcMain.handle(
@@ -561,7 +599,7 @@ void app.whenReady().then(() => {
         // "模型看不见图还装看过"
         // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
         const modelText = composeUserText(text, textFiles);
-        if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
+        if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
           const describeImages = createVisionBridge((id) => attachmentStore.read(id));
           const described = await describeImages(refs, modelText);
           const descEvent = store.append({

@@ -14,7 +14,13 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
-    resolve: { alias: { "@": resolve(__dirname, "src/renderer/src") } },
+    resolve: {
+      alias: { "@": resolve(__dirname, "src/renderer/src") },
+      // 依赖里若有人把 react 解析成第二份实例，hook 会读到一个空的 dispatcher
+      // （症状是 "Cannot read properties of null (reading 'useXxx')"）。
+      // dedupe 强制全图共用同一份 —— 组件库越多这道保险越值钱
+      dedupe: ["react", "react-dom"],
+    },
     plugins: [react(), tailwindcss()],
   },
 });

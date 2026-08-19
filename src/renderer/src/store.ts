@@ -12,6 +12,7 @@ import type {
   AskUserAnswer,
   AskUserRequest,
   BootInfo,
+  OllamaModelInfo,
   SessionSummary,
   SkillInfo,
   StagedAttachment,
@@ -22,9 +23,16 @@ import type {
   PokerTableInput,
   PokerTableSummary,
 } from "../../shared/shellBridge.js";
+import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
+import type { ThinkingMode } from "../../shared/thinking.js";
+
+/** 冷启动那一瞬的 thinking 档：还没有会话，只能按默认型号的默认档来。
+    boot/startSession 一到就被主进程报上来的实际档覆盖 */
+const DEFAULT_THINKING: ThinkingMode = describeModel(DEFAULT_MODEL)?.thinking.default ?? "off";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -55,7 +63,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "skills";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -89,7 +97,9 @@ interface ChatState {
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
-  thinking: boolean;
+  /** 当前 thinking 挡位。挡位表由型号决定（shared/thinking.ts），
+      所以这里存的是主进程钳位后的那一档，不是渲染层自己算的 */
+  thinking: ThinkingMode;
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
@@ -148,6 +158,12 @@ interface ChatState {
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
+  /** 本机 Ollama 装了哪些型号 + 各自能力。目录查不到，只能现问 */
+  ollamaModels: OllamaModelInfo[];
+  /** 探通的那个端点。设置页要显示它——"连上了"得说清连的是哪儿 */
+  ollamaBaseUrl: string;
+  /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
+  ollamaError: string;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
@@ -188,7 +204,7 @@ interface ChatState {
   setReplayCursor(cursor: number | null): void;
   switchModel(model: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
-  setThinking(on: boolean): Promise<void>;
+  setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
@@ -236,6 +252,8 @@ interface ChatState {
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
   checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
+  /** 重问本机 Ollama 的型号清单。用户随时 pull/rm，镜像别太陈旧 */
+  refreshOllamaModels(): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   signOut(): Promise<void>;
@@ -332,7 +350,7 @@ export const useChat = create<ChatState>((set, get) => ({
   toolOutputByCall: {},
   error: null,
   approvalMode: "ask",
-  thinking: true,
+  thinking: DEFAULT_THINKING,
   replayCursor: null,
   settingsSection: null,
   sessionMode: "work",
@@ -362,6 +380,9 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   keyStatus: {},
+  ollamaModels: [],
+  ollamaBaseUrl: "",
+  ollamaError: "",
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
@@ -383,7 +404,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async switchModel(model) {
     try {
-      await window.otter.switchModel(model);
+      // 换型号会连带换挡位表：新型号未必有手上这一档（"开"之于只有低/中/高的 GPT-5）。
+      // 钳位在主进程做，这里认它回流的那一档——两边各钳各的迟早分叉
+      set({ thinking: await window.otter.switchModel(model) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -398,10 +421,9 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async setThinking(on) {
+  async setThinking(mode) {
     try {
-      await window.otter.setThinking(get().sessionId, on);
-      set({ thinking: on });
+      set({ thinking: await window.otter.setThinking(get().sessionId, mode) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -416,6 +438,9 @@ export const useChat = create<ChatState>((set, get) => ({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         keyStatus: await window.otter.keyStatus(),
       });
+      // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
+      // 不该把设置页的打开拖在后面
+      void get().refreshOllamaModels();
     } else if (section === "skills") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
@@ -719,6 +744,17 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       set({ checkoutBusyDir: null });
+    }
+  },
+
+  async refreshOllamaModels() {
+    try {
+      const { models, baseUrl, error } = await window.otter.listOllamaModels();
+      set({ ollamaModels: models, ollamaBaseUrl: baseUrl, ollamaError: error });
+    } catch (e) {
+      // 桥本身炸了（最常见是主进程还没跟上这一版）。这条以前被吞掉，
+      // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
+      set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: bridgeErrorMessage(e) });
     }
   },
 
@@ -1079,17 +1115,23 @@ export const useChat = create<ChatState>((set, get) => ({
     );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
-    const [info, sessions, skills, account] = await Promise.all([
+    // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
+    // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
+    const [info, sessions, skills, account, keyStatus] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
       window.otter.getAccount(),
+      window.otter.keyStatus(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account }
-        : { phase: "welcome", sessions, skills, account }
+        ? { ...enterChat(info), sessions, skills, account, keyStatus }
+        : { phase: "welcome", sessions, skills, account, keyStatus }
     );
+    // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
+    // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
+    void get().refreshOllamaModels();
     // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
     // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
     // provider 的旧名字,首登引导也永远不弹

@@ -5,6 +5,7 @@
 
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { resolveModel } from "../../../shared/modelCatalog.js";
+import { modelChipLabel } from "../lib/modelChip.js";
 
 /** 函数轨迹一格：n=函数名 f=文件 io=职责 out=传给下一格的数据 skip=本步没执行 */
 export interface FnLink {
@@ -284,7 +285,7 @@ export function toStep(e: SessionEvent, _i: number, all: SessionEvent[]): Replay
       S.edges = ["e-user-bridge", "e-bridge-loop", "e-loop-store"];
       S.input = `header 下拉框选中 "${e.model}"\nswitchModel(model) 过桥进 main`;
       S.fns = [
-        fn("switchModel(modelId)", "main/agent.ts", "同型号 = 无操作；否则先落盘", `目标 = ${e.provider}/${e.model}`),
+        fn("switchModel(modelId)", "main/agent.ts", "同型号 = 无操作；否则先落盘", `目标 = ${modelChipLabel(e.provider, e.model)}`),
         ...APPEND(e, `provider: "${e.provider}",\n  model: "${e.model}"`),
         fn("makeAdapter(choice) → engine.setAdapter", "main/agent.ts · loop/engine.ts", "查目录拿 baseUrl / key env，热替换", `adapter 现在指向 ${resolveModel(e.model).baseUrl}`),
       ];
