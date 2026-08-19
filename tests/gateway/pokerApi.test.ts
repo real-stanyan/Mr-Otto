@@ -194,6 +194,23 @@ describe("SSE", () => {
     await reader.cancel();
   });
 
+  it("开/关桌页都会推给其他订阅者 —— 在场人数变化不等 5s 轮询", async () => {
+    const { api } = harness();
+    const dec = new TextDecoder();
+    const resA = await api.handle("a", get(), "t1/stream");
+    const readerA = resA.body!.getReader();
+    expect(dec.decode((await readerA.read()).value)).toContain("data: null");
+
+    // b 订上(打开桌页):a 立刻多收到一份推送
+    const resB = await api.handle("b", get(), "t1/stream");
+    expect(dec.decode((await readerA.read()).value)).toContain("data:");
+
+    // b 退订(关掉桌页):a 又收到一份
+    await resB.body!.cancel();
+    expect(dec.decode((await readerA.read()).value)).toContain("data:");
+    await readerA.cancel();
+  });
+
   it("闲置时每 25s 发一行心跳注释,反代不会把静默流当死链掐掉", async () => {
     vi.useFakeTimers();
     try {
@@ -202,6 +219,7 @@ describe("SSE", () => {
       const res = await api.handle("b", new Request("http://x/"), "t1/stream");
       const reader = res.body!.getReader();
       await reader.read(); // 初始视图
+      await reader.read(); // 订阅触发的广播(自己也在订阅列表里)
       vi.advanceTimersByTime(25_000);
       const hb = new TextDecoder().decode((await reader.read()).value);
       expect(hb).toContain(": hb");

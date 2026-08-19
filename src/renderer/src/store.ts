@@ -846,7 +846,12 @@ export const useChat = create<ChatState>((set, get) => ({
       // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
       if (account.signedIn) void get().refreshWallet();
     });
-    window.otter.onPokerHand((pokerHand) => set({ pokerHand }));
+    window.otter.onPokerHand((pokerHand) => {
+      set({ pokerHand });
+      // 等桌状态下服务端推来的一定是 null,而它推送的时机(有人上桌/离桌/
+      // 开关桌页)恰是在场人数变化的时刻 —— 立刻刷列表,5s 轮询只当兜底
+      if (pokerHand === null && get().pokerTableId) void get().refreshPokerTables();
+    });
     window.otter.onPokerError((pokerError) => set({ pokerError }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
