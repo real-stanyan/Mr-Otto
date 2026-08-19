@@ -36,7 +36,7 @@ import {
   type ChatMessage,
 } from "./lib/friendsState.js";
 import { needsOnboarding } from "./lib/identity.js";
-import { terminalRegistry } from "./lib/terminalRegistry.js";
+import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
 export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
@@ -940,6 +940,12 @@ export const useChat = create<ChatState>((set, get) => ({
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
+
+    // pty 全局直播订阅要跟 app 同生共死,不能挂在 TerminalView 的 useEffect 里
+    // (面板一关组件卸载,主进程还在推 terminalData,渲染层没人听,数据就丢了——
+    // 见 terminalRegistry.ts 里 startTerminalLiveFeed 的注释)。boot() 是渲染层
+    // 唯一的"一次性订阅"落位,其它 onXxx 全局监听器都在这挂,这个不该是例外
+    startTerminalLiveFeed();
 
     window.otter.onAccountChanged((account) => {
       set(

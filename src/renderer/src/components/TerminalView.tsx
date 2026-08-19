@@ -106,26 +106,16 @@ export function TerminalView() {
     slot.term.focus();
   }, [activeId]);
 
-  // 输出直播:只写进"已经被用户点开过"的实例,不替没见过的 id 顺手造一个。
-  //
-  // onTerminalData/onTerminalExit 是进程全局广播(payload 里没有 sessionId),
-  // 只要任意会话的任意终端在吐输出,这两个回调就会收到——如果像早先那样用
-  // registry.get(id) 去写,等于给"这个渲染进程收到过的每一个终端 id"都建一个
-  // xterm 实例,数量跟着全局输出量涨,没有上限(Task 6 review finding 2)。
-  // 用 peek 只查不造:实例只会在挂载 effect 里"用户真正点开了这个标签"时诞生
+  // 写数据/标退出这两下已经搬到 startTerminalLiveFeed(store.boot() 里订阅一次,
+  // 跟 app 同生共死)——这里再订一遍会导致同一段字节被两条订阅各写一次,
+  // 屏幕上每个字符都会重复。这个组件级 effect 只剩"标签行要跟着刷新"这一件事:
+  // 退出时把哪一行画删除线是组件自己的状态,活不过 startTerminalLiveFeed
+  // 那种模块级订阅管不到,只能靠还挂载着的 TerminalView 自己去拉
   useEffect(() => {
-    const offData = window.otter.onTerminalData(({ id, data }) => {
-      registry.peek(id)?.term.write(data);
-    });
-    const offExit = window.otter.onTerminalExit(({ id, exitCode }) => {
-      const slot = registry.peek(id);
-      if (slot) {
-        slot.exited = true;
-        slot.term.write(`\r\n\x1b[2m[进程已退出，代码 ${exitCode}]\x1b[0m\r\n`);
-      }
+    const offExit = window.otter.onTerminalExit(() => {
       if (sessionId) void window.otter.terminalList(sessionId).then(setTabs);
     });
-    return () => { offData(); offExit(); };
+    return () => { offExit(); };
   }, [sessionId]);
 
   // 面板宽度变了(拖拽 / 展开全屏)要重算行列,否则 vim 之类的会画歪

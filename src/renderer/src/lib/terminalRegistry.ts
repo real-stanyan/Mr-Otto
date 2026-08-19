@@ -45,3 +45,32 @@ export const terminalRegistry = createXtermRegistry<TerminalSlot>(() => {
   term.loadAddon(fit);
   return { term, fit, attached: false, exited: false, dispose: () => term.dispose() };
 });
+
+let liveFeedStarted = false;
+
+/** pty 全局直播的唯一订阅入口——调用方是 store.boot(),跟 app 同生共死。
+    这段逻辑原来长在 TerminalView 的 useEffect 里,面板一关组件卸载,cleanup
+    把订阅摘了;可 pty 没死,主进程照样在推 terminalData——渲染层这边没人在
+    听,数据直接从 IPC 管道里消失,连 registry 里的 xterm 实例都没机会写进去。
+    这不是"重开面板时缓冲没灌回去"那种能事后补救的丢失,是彻底丢了
+    (ADR-0031 §3 的环形缓冲存在的前提就是"关面板不杀进程",但缓冲只解决
+    "重开时一次性灌回去",解决不了"关着的时候直播管道被拔了"——这段窗口
+    必须一直有人收)。所以订阅本身要跟 xterm 实例活得一样长:模块级,只订一次。
+
+    只写进 peek 到的实例,不 get:这是进程全局广播(payload 没有 sessionId),
+    不能替"渲染进程收到过的每个终端 id"都造一个从没被用户点开过的实例
+    (同 xtermRegistry.ts 里 peek 的注释,道理一样)。 */
+export function startTerminalLiveFeed(): void {
+  if (liveFeedStarted) return;
+  liveFeedStarted = true;
+  window.otter.onTerminalData(({ id, data }) => {
+    terminalRegistry.peek(id)?.term.write(data);
+  });
+  window.otter.onTerminalExit(({ id, exitCode }) => {
+    const slot = terminalRegistry.peek(id);
+    if (slot) {
+      slot.exited = true;
+      slot.term.write(`\r\n\x1b[2m[进程已退出，代码 ${exitCode}]\x1b[0m\r\n`);
+    }
+  });
+}
