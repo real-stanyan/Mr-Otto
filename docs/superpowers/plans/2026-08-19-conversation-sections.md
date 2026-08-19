@@ -732,6 +732,8 @@ const MAX_SHIFT = 8;          // px：文字最大右移
 const MARKER_LENGTH = 24;     // px：刻度线长度
 const MARKER_GAP = 10;        // px：刻度线到文字的距离
 const SMOOTHING_MS = 100;     // 指数平滑的时间常数
+/** 标题淡入用的强 ease-out。CSS 内置那几档太软，没有"立刻响应"的手感 */
+const REVEAL_EASE = "cubic-bezier(0.23, 1, 0.32, 1)";
 
 /** smoothstep：比线性更像物理 */
 const ease = (p: number) => p * p * (3 - 2 * p);
@@ -784,8 +786,15 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
     raf.current = requestAnimationFrame(frame);
   }, [frame]);
 
+  // 触屏点一下会派发 pointerenter 并把轨永久卡在展开态（没有 leave）——
+  // 临近效果本来就只对真实指针有意义，两处都只认 mouse
+  const onPointerEnter = useCallback((e: PointerEvent<HTMLElement>) => {
+    if (e.pointerType === "mouse") setHovered(true);
+  }, []);
+
   const onPointerMove = useCallback(
     (e: PointerEvent<HTMLUListElement>) => {
+      if (e.pointerType !== "mouse") return;
       if (reducedMotion()) return; // 减动效：不做临近效果，颜色仍跟 active 走
       const list = listRef.current;
       if (!list) return;
@@ -824,7 +833,7 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
     >
       <ul
         ref={listRef}
-        onPointerEnter={() => setHovered(true)}
+        onPointerEnter={onPointerEnter}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
         className="m-0 flex list-none flex-col gap-[18px] p-0"
@@ -836,7 +845,9 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
             aria-current={activeIndex === i ? "true" : undefined}
             onClick={() => onJump(i)}
             title={label}
-            className="relative cursor-pointer"
+            // 按下时整条压暗一点：可点的东西必须对按压有反应，
+            // 但这是一行文字不是按钮，用不着 scale
+            className="relative cursor-pointer active:opacity-70"
           >
             <span
               aria-hidden
@@ -844,10 +855,10 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
               style={{ left: `-${MARKER_LENGTH + MARKER_GAP}px`, width: `${MARKER_LENGTH}px` }}
             />
             <span
-              className="block truncate text-[11px] leading-[1.35] transition-opacity duration-200 [color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--muted-foreground))] [transform:translateX(calc(var(--effect,0)*var(--max-shift)))]"
+              className="block truncate text-[11px] leading-[1.35] duration-200 [transition-property:opacity] [color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--muted-foreground))] [transform:translateX(calc(var(--effect,0)*var(--max-shift)))]"
               // 收起态只有当前分区的标题看得见；其余留在原位但透明——
               // 用 opacity 不用 display:none，布局才不会跟着 hover 跳
-              style={{ opacity: hovered || activeIndex === i ? 1 : 0 }}
+              style={{ opacity: hovered || activeIndex === i ? 1 : 0, transitionTimingFunction: REVEAL_EASE }}
             >
               {label}
             </span>
