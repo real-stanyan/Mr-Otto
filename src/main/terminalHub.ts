@@ -9,14 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { OpenTerminalOptions, TerminalSession } from "../world/executionWorld.js";
-
-/** 渲染层看得见的终端形态(标签行用) */
-export interface TerminalInfo {
-  id: string;
-  title: string;
-  /** 进程已经退了。标签还留着——遗言得让人看得见,是用户点 × 才消失 */
-  exited: boolean;
-}
+import type { TerminalInfo } from "../shared/terminal.js";
 
 export interface TerminalHubDeps {
   /** 由 index.ts 注入,内部路由到该会话 agent 的 ExecutionWorld(ADR-0031 §1)——

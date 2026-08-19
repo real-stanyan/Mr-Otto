@@ -9,7 +9,7 @@
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
-import type { TerminalInfo } from "../main/terminalHub.js";
+import type { TerminalInfo } from "./terminal.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
