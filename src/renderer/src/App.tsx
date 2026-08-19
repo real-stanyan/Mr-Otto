@@ -90,7 +90,8 @@ import {
 import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
 import { EventRow, ToolRow } from "./components/Timeline.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
-import { retryLastUserMessage, retryPlan } from "./lib/retry.js";
+import { retryPlan } from "./lib/retry.js";
+import { retryLastUserMessage } from "./lib/retryAction.js";
 import { ToolGroup } from "./components/ToolGroup.js";
 import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
@@ -1867,23 +1868,26 @@ function RetryButton() {
   const staged = useChat((s) => s.staged);
   const prev = lastUserMessage(events);
   const plan = retryPlan(prev, staged.length);
-  if (!prev || status === "running" || !plan) return null;
+  // retryPlan(null, x) 返 null，其它情况返 RetryPlan，所以 !plan ⟺ !prev，前一行已排除
+  if (!prev || status === "running") return null;
+  // retryPlan(prev, x) 当 prev 非 null 时必然返 RetryPlan，所以 plan 必然非 null
+  const planNonNull = plan!;
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
       title={
-        plan.mode === "resend"
+        planNonNull.mode === "resend"
           ? "重试：把上一条消息原样再发一遍"
-          : plan.reason === "attachments"
+          : planNonNull.reason === "attachments"
             ? "把上一条消息填回输入框（附件要重新添加）"
             : "输入框里有待发送的附件，先填回正文，你确认后再发"
       }
       className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
-      onClick={() => retryLastUserMessage(prev, plan)}
+      onClick={() => retryLastUserMessage(prev, planNonNull)}
     >
-      {plan.mode === "resend" ? "重试" : "填回输入框"}
+      {planNonNull.mode === "resend" ? "重试" : "填回输入框"}
     </Button>
   );
 }

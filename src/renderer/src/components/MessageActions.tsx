@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
 import { CopyButton } from "./CopyButton.js";
 import { lastUserMessage } from "../lib/lastUserMessage.js";
-import { retryLastUserMessage, retryPlan } from "../lib/retry.js";
+import { retryPlan } from "../lib/retry.js";
+import { retryLastUserMessage } from "../lib/retryAction.js";
 import { useChat } from "../store.js";
 
 export function MessageActions({ content, isLast }: { content: string; isLast: boolean }) {

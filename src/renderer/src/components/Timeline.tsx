@@ -144,7 +144,8 @@ export function EventRow({ event, isLast = false }: { event: SessionEvent; isLas
               <div className={THINKING_BODY}>{event.reasoning}</div>
             </details>
           )}
-          {event.content && (
+          {event.content.trim() !== "" && (
+            // 与 threadGroups 的分组判定同口径,避免纯空白消息渲染不一致
             // group/msg:动作条只在悬停这条回复时现身
             <div className="group/msg self-stretch max-w-full flex flex-col">
               {/* 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息) */}

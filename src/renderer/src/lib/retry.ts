@@ -8,7 +8,6 @@
 //    暂存区可以让用户自己清或确认,消息里的附件没法凭空重新读出来发送
 
 import type { UserMessageEvent } from "../../../session/events.js";
-import { useChat } from "../store.js";
 
 export type RetryPlan =
   | { mode: "resend" }
@@ -21,14 +20,4 @@ export function retryPlan(prev: UserMessageEvent | null, stagedCount: number): R
   if (hasAttachments) return { mode: "fill", reason: "attachments" };
   if (stagedCount > 0) return { mode: "fill", reason: "staged" };
   return { mode: "resend" };
-}
-
-// 两处重试 UI(动作条图标钮 / 错误行文字钮)外观不同,但"点了发生什么"是同一件事——
-// 抽出来避免两处 onClick 逐字重复、将来改一处漏一处
-export function retryLastUserMessage(prev: UserMessageEvent, plan: RetryPlan): void {
-  if (plan.mode === "fill") {
-    useChat.getState().injectComposer(prev.content, false);
-    return;
-  }
-  void useChat.getState().send(prev.content);
 }
