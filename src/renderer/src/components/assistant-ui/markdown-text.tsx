@@ -1,26 +1,46 @@
 "use client";
 
-import "@assistant-ui/react-markdown/styles/dot.css";
+// registry 原实现走 @assistant-ui/react-markdown 的 MarkdownTextPrimitive——Task 5
+// 装好了 streamdown 全家桶却没接上,两项需求(「模型输出用 streamdown」「代码块
+// syntax-highlighting」)一直没交付。这里换成 @assistant-ui/react-streamdown 的
+// StreamdownTextPrimitive,导出的 MarkdownText 名字/签名不变(见 task-9-brief)。
+import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
+import type { StreamdownTextComponents } from "@assistant-ui/react-streamdown";
+// 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
+import { code } from "@streamdown/code";
+import { cjk } from "@streamdown/cjk";
+import { memo } from "react";
 
-import {
-  type CodeHeaderProps,
-  MarkdownTextPrimitive,
-  unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
-  useIsMarkdownCodeBlock,
-} from "@assistant-ui/react-markdown";
-import remarkGfm from "remark-gfm";
-import { type FC, memo, useState } from "react";
-import { CheckIcon, CopyIcon } from "lucide-react";
-
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.js";
 import { cn } from "@/lib/utils.js";
+
+// 模块级常量:每次渲染新建对象会让整棵子树白重挂。
+// cjk 不是可选项——本仓界面和内容都是中文,缺了 CJK 断行插件排版会散。
+const PLUGINS = { code, cjk };
+
+// 没有显式传 shikiTheme:StreamdownTextPrimitive 在 plugins.code 存在时,
+// 主题最终取的是 code.getThemes()(见 node_modules/streamdown/dist/chunk-*.js
+// 里 `shikiTheme:(...)=>g?.code?.getThemes()??d`),不是这层的 shikiTheme prop——
+// 这个 prop 在有 code 插件时是死的。@streamdown/code 的 code 单例默认主题就是
+// ["github-light","github-dark"],正好是明暗一对,浅色贴 --pre-bg 的近白、
+// 深色贴 --pre-bg 的近黑(#1d1d1f),不用再传一遍。若以后要换主题,
+// 得改成 createCodePlugin({ themes: [...] }) 而不是给这里加 shikiTheme。
+
+// remark-gfm 不用再显式传:streamdown 默认的 remark 插件里已经带 gfm
+// (见 node_modules/streamdown/dist/chunk-*.js 里 `Ks={gfm:[$s,{}],...}`)。
 
 const MarkdownTextImpl = () => {
   return (
-    <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
+    <StreamdownTextPrimitive
       className="aui-md"
       components={defaultComponents}
+      plugins={PLUGINS}
+      // 原 dot.css 的流式小圆点是靠 react-markdown 那层 [data-status="running"]
+      // 和 .aui-md 同挂一个元素才生效的;换到 streamdown 后 data-status 挂在
+      // 外层 wrapper div、aui-md 挂在内层内容 div,两者不再同源,dot.css 已经
+      // 失效(见 node_modules/@assistant-ui/react-streamdown 的
+      // primitives/StreamdownText.js)。用 streamdown 原生的 caret 补回同等的
+      // 「还在生成」视觉反馈。
+      caret="block"
       defer
     />
   );
@@ -28,55 +48,15 @@ const MarkdownTextImpl = () => {
 
 export const MarkdownText = memo(MarkdownTextImpl);
 
-const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
-  const onCopy = () => {
-    if (!code || isCopied) return;
-    copyToClipboard(code);
-  };
-
-  return (
-    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
-      <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
-        {language}
-      </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
-        {!isCopied && (
-          <CopyIcon className="transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-75 motion-reduce:transition-opacity motion-reduce:starting:scale-100" />
-        )}
-        {isCopied && (
-          <CheckIcon className="transition-[opacity,transform] duration-200 ease-strong starting:opacity-0 starting:scale-50 motion-reduce:transition-opacity motion-reduce:starting:scale-100" />
-        )}
-      </TooltipIconButton>
-    </div>
-  );
-};
-
-const useCopyToClipboard = ({
-  copiedDuration = 3000,
-}: {
-  copiedDuration?: number;
-} = {}) => {
-  const [isCopied, setIsCopied] = useState<boolean>(false);
-
-  const copyToClipboard = (value: string) => {
-    if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
-      return;
-    }
-
-    navigator.clipboard.writeText(value).then(
-      () => {
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), copiedDuration);
-      },
-      () => {},
-    );
-  };
-
-  return { isCopied, copyToClipboard };
-};
-
-const defaultComponents = memoizeMarkdownComponents({
+// streamdown 自带代码块的 Shiki 高亮 + 复制/行号等 controls(默认开启),
+// 原来的 CodeHeader / pre / code(区分 block 的那套)因此整个多余,删掉后
+// 逐个 grep 确认过全仓没有别处引用:
+//   - CodeHeader:仅这一处定义与使用(`grep -rn "CodeHeader" src/renderer/src`)
+//   - TooltipIconButton 的 copy 用法:仅这里用过,组件本身在别处仍有引用不能删文件
+//   - useCopyToClipboard / CheckIcon / CopyIcon:仅服务于旧 CodeHeader
+// 行内代码(非代码块)的样式挪到下面的 inlineCode——streamdown 会自动只把
+// 「没有 data-block」的 code 元素交给它,不用再手动判断是不是代码块。
+const defaultComponents = {
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
@@ -233,27 +213,13 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  pre: ({ className, ...props }) => (
-    <pre
+  inlineCode: ({ className, ...props }) => (
+    <code
       className={cn(
-        "aui-md-pre border-border/50 bg-muted/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
+        "aui-md-inline-code bg-muted rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
         className,
       )}
       {...props}
     />
   ),
-  code: function Code({ className, ...props }) {
-    const isCodeBlock = useIsMarkdownCodeBlock();
-    return (
-      <code
-        className={cn(
-          !isCodeBlock &&
-            "aui-md-inline-code bg-muted rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
-          className,
-        )}
-        {...props}
-      />
-    );
-  },
-  CodeHeader,
-});
+} satisfies StreamdownTextComponents;
