@@ -789,12 +789,24 @@ EOF
 **Interfaces:**
 - Consumes: `toThreadMessages`、`LiveBuffer`（Task 1–3）
 - Produces:
-  - `export interface OttoAdapterInput { events: SessionEvent[]; live: LiveBuffer | undefined; isRunning: boolean; send: (text: string) => Promise<void>; cancel: () => Promise<void>; retry: () => Promise<void> }`
+  - `export interface OttoAdapterInput { events: SessionEvent[]; live: LiveBuffer | undefined; isRunning: boolean; send: (text: string) => Promise<void>; cancel: () => Promise<void> }`
   - `export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<ThreadMessageLike>`
   - `export function useOttoRuntime(): AssistantRuntime`
   - `export function OttoRuntimeProvider({ children }: { children: ReactNode }): JSX.Element`
 
-**背景（实现者必读）：** store 里相关字段 —— `events: SessionEvent[]`、`streamingBySession: Record<string, { content: string; reasoning: string }>`、`statusBySession: Record<string, TurnStatus>`、`sessionId: string`。发消息 / 中断 / 重试的现成动作在 `src/renderer/src/store.ts` 上，实现前先 `grep -n "send\|abort\|interrupt\|retry" src/renderer/src/store.ts` 找准名字，**不要臆造**。
+**背景（实现者必读）：** store 里相关字段 —— `events: SessionEvent[]`、`streamingBySession: Record<string, { content: string; reasoning: string }>`、`statusBySession: Record<string, TurnStatus>`、`sessionId: string`。
+
+动作的**确切名字**（已核实，别改别猜）：
+- 发消息：`send(text: string, skill?: string): Promise<void>`（[store.ts:281](src/renderer/src/store.ts:281)）
+- 中断：`stop(): Promise<void>`（[store.ts:290](src/renderer/src/store.ts:290)）—— **不叫** `abortTurn`
+
+**本 PR 不提供 `onReload`。** 本仓的「重试」不是 assistant-ui 意义上的 regenerate：
+`retryPlan`（[retry.ts](src/renderer/src/lib/retry.ts)）有两档，原消息带附件、或输入框暂存区
+非空时走 `mode: "fill"` —— 把正文**填回输入框**让用户确认，而不是重发（附件本体在附件库，
+一键重发做不到）。把它接到 `onReload` 上，assistant-ui 会渲染一个「重新生成」按钮，
+点下去有时什么都不生成、只往另一棵组件树里的输入框塞了段字 —— 那是骗人。
+现有的 `RetryButton` 照旧从 `turn_ended(error)` 那条审计行里出来（Task 3 保住了它），
+重试能力一点没少。PR2 输入框搬家时再重开这个决定。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -816,7 +828,6 @@ function input(over: Partial<Parameters<typeof buildOttoAdapter>[0]> = {}) {
     isRunning: false,
     send: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
-    retry: vi.fn(async () => {}),
     ...over,
   };
 }
@@ -833,6 +844,10 @@ describe("buildOttoAdapter", () => {
     const a = buildOttoAdapter(input());
     expect(a.onEdit).toBeUndefined();
     expect(a.setMessages).toBeUndefined();
+  });
+
+  it("刻意不提供 onReload —— 本仓的重试有 fill 档,不是 regenerate", () => {
+    expect(buildOttoAdapter(input()).onReload).toBeUndefined();
   });
 
   it("isRunning 直接透传", () => {
@@ -866,14 +881,11 @@ describe("buildOttoAdapter", () => {
     expect(send).toHaveBeenCalledWith("看图");
   });
 
-  it("onCancel / onReload 接到对应动作", async () => {
+  it("onCancel 接到 stop", async () => {
     const cancel = vi.fn(async () => {});
-    const retry = vi.fn(async () => {});
-    const a = buildOttoAdapter(input({ cancel, retry }));
+    const a = buildOttoAdapter(input({ cancel }));
     await a.onCancel!();
-    await a.onReload!(null, {} as never);
     expect(cancel).toHaveBeenCalledOnce();
-    expect(retry).toHaveBeenCalledOnce();
   });
 });
 ```
@@ -903,7 +915,6 @@ export interface OttoAdapterInput {
   isRunning: boolean;
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
-  retry: () => Promise<void>;
 }
 
 /** AppendMessage.content 里挑出文本。附件不从这条路走 ——
@@ -926,11 +937,11 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
       await input.send(textOf(message.content as never));
     },
     onCancel: input.cancel,
-    onReload: async () => {
-      await input.retry();
-    },
     // 刻意不给 onEdit / setMessages:本仓没有消息编辑,也没有对话分支。
-    // 给了就等于凭空长出一条绕开事件日志的写路径 —— 硬规则不允许
+    // 给了就等于凭空长出一条绕开事件日志的写路径 —— 硬规则不允许。
+    // 也不给 onReload:本仓的「重试」有 fill 档(原消息带附件时只把正文填回输入框,
+    // 不重发),接上去等于给用户一个有时什么都不生成的「重新生成」键 —— 那是骗人。
+    // 重试照旧走 turn_ended(error) 审计行里的 RetryButton
   };
 }
 ```
@@ -940,16 +951,17 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
 Run: `npx vitest run tests/renderer/ottoAdapter.test.ts`
 Expected: PASS（7 条全绿）
 
-- [ ] **Step 5: 查清 store 上动作的真实名字**
+- [ ] **Step 5: 复核 store 上动作的名字**
 
-Run: `grep -n "sendMessage\|abort\|interrupt\|retry\|stopTurn" src/renderer/src/store.ts`
-把查到的名字用在下一步，**不要用猜的**。
+Run: `grep -n "send(text\|stop()" src/renderer/src/store.ts`
+应看到 `send(text: string, skill?: string): Promise<void>` 和 `stop(): Promise<void>`。
+对不上就以仓里的为准改下一步，别硬套。
 
 - [ ] **Step 6: 写 hook 和 Provider**
 
 > 组件名叫 `OttoRuntimeProvider`，**不要**叫 `AuiProvider` —— `@assistant-ui/react` 自己导出了一个同名的 `AuiProvider`，重名会让读代码的人以为在用官方那个。
 
-创建 `src/renderer/src/aui/useOttoRuntime.ts`（下面 `useChat` 的取值名按上一步查到的实际名字改）：
+创建 `src/renderer/src/aui/useOttoRuntime.ts`：
 
 ```ts
 // 把 Zustand 里的会话状态接到 assistant-ui 的 runtime 上。
@@ -967,13 +979,12 @@ export function useOttoRuntime() {
 
   // 动作从 store 上直接取(它们是稳定引用,不进依赖数组)
   const send = useChat((s) => s.send);
-  const cancel = useChat((s) => s.abortTurn);
-  const retry = useChat((s) => s.retry);
+  const cancel = useChat((s) => s.stop);
 
   void sessionId; // 换会话时 events/live 自然变,这里只是让意图显式
 
   return useExternalStoreRuntime(
-    buildOttoAdapter({ events, live, isRunning: status === "running", send, cancel, retry })
+    buildOttoAdapter({ events, live, isRunning: status === "running", send, cancel })
   );
 }
 ```
@@ -1015,8 +1026,12 @@ feat(aui): ExternalStoreRuntime 接缝立起来
 
 adapter 单独成文件而不是塞进 hook:字段取舍是有法理的决定,该能被单测钉住。
 刻意不给 onEdit / setMessages —— 本仓没有消息编辑也没有对话分支,给了就等于
-凭空长出一条绕开事件日志的写路径。onNew 只取 text part,附件走自己的通道
-(AttachmentAdapter,PR2),从这里偷渡会绕开附件库。
+凭空长出一条绕开事件日志的写路径。也不给 onReload:本仓的重试有 fill 档
+(原消息带附件时只把正文填回输入框,不重发),接上去等于给用户一个有时什么都
+不生成的「重新生成」键。重试照旧走审计行里的 RetryButton,能力一点没少。
+
+onNew 只取 text part,附件走自己的通道(AttachmentAdapter,PR2),从这里偷渡
+会绕开附件库。
 
 本 commit 只立接缝,还没有人用它渲染;换渲染在后面的 commit。
 
@@ -1263,8 +1278,10 @@ export function OttoThread() {
             if (message.role === "system") {
               // 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影),
               // 直接喂回既有的 EventRow —— 视觉与迁移前一模一样,零重写
+              // isLast 必须传:turn_ended(error) 那条审计行只在最后一条上挂重试键
+              // (重发的是「上一条用户消息」,对历史里的旧失败行没有意义)
               const event = message.metadata?.custom?.["otto"] as SessionEvent | undefined;
-              return event === undefined ? null : <EventRow event={event} />;
+              return event === undefined ? null : <EventRow event={event} isLast={message.isLast} />;
             }
             if (message.role === "user") {
               return (
