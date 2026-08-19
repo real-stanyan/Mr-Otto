@@ -173,6 +173,8 @@ export interface PokerTableSummary {
   live: boolean;
   /** 有筹码的在座人数。旧网关不带此字段 */
   players?: number;
+  /** 正开着这张桌牌桌页的人数(SSE 订阅去重)。旧网关不带此字段 */
+  online?: number;
 }
 
 export interface PokerTableInput {
