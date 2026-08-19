@@ -56,7 +56,9 @@ export interface SectionClassifiedEvent extends SessionEventBase {
 都住在 engine 外面（engine 只管闭环，不认识这些外挂）。
 
 **新文件** `src/main/sectionClassifier.ts`，抄 `visionBridge.ts` 的形状：
-复用 `createOpenAICompatibleAdapter`，非流式、不带工具，429 走同一套退避。
+复用 `createOpenAICompatibleAdapter`，非流式、不带工具。**不做 429 重试**——
+vision-bridge 必须重试是因为它失败等于 turn 失败；分类员失败无害且自愈（见下），
+再挂一套退避是白加复杂度。
 
 ```ts
 export const SECTION_MODEL = "glm-4.5-flash";  // 目录里的免费款；换分类员改这一行
@@ -88,14 +90,15 @@ catch 住、不落事件、turn 照常成功。下一个 turn 的分类员会看
 export interface Section {
   /** 分区标题（模型给的） */
   title: string;
-  /** 本分区第一条事件的 seq——点击跳转的锚点 */
+  /** 本分区第一条事件的 seq——点击跳转的锚点，也是滚动定位的唯一依据 */
   startSeq: number;
-  /** 本分区最后一条事件的 seq；最后一个分区 = 日志末尾 */
-  endSeq: number;
 }
 
 export function deriveSections(events: SessionEvent[]): Section[];
 ```
+
+刻意没有 `endSeq`：分区的结束 = 下一个分区的开始，推得出；而 UI 只用 `startSeq`
+（锚点 + scrollspy）。推得出的不落进接口。
 
 规则：扫 `section_classified`，`title` 非空的每一条开一个新分区。
 分区的 `startSeq` = **上一条 `section_classified` 之后的第一条事件**——
@@ -151,8 +154,9 @@ export function deriveSections(events: SessionEvent[]): Section[];
   未分类尾巴 / `title: null` 只延续不开区 / startSeq 落在分类事件之后那条。
 - `tests/session/deriveMessages.test.ts` 补一条：日志里有 `section_classified` 时，
   投影**逐字节等于**没有它时的投影（不喂回模型这条硬约束的回归锁）。
-- `tests/main/sectionClassifier.test.ts`：JSON 解析的好/坏形状；
-  429 重试后成功；彻底失败时**不抛**（turn 不受影响）。
+- `tests/main/sectionClassifier.test.ts`：JSON 解析的好/坏形状（含 ```json 围栏）；
+  网络/HTTP 失败时**返回 null 不抛**（turn 不受影响）；
+  「当前还没有分区」时模型回延续 → 当作失败，不落事件。
 - 组件层不写测试（项目现状：renderer 无组件测试，不在这个改动里开这个头）。
 
 ## 明确不做（YAGNI）
