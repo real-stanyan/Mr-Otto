@@ -173,6 +173,9 @@ export function createPokerApi(deps: PokerApiDeps) {
   /** SSE：连上先推一份当前视图，之后每次状态变化推一份 */
   function stream(userId: string, tableId: string): Response {
     let entry: { userId: string; send: (v: unknown) => void };
+    // 心跳：没人行动时流上没有任何字节，nginx 的 proxy_read_timeout(600s) 会把
+    // 连接当死链掐掉，客户端视图从此冻结。25s 一行 SSE 注释让代理知道流还活着。
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();
@@ -183,11 +186,19 @@ export function createPokerApi(deps: PokerApiDeps) {
             onError("poker.sse", err);
           }
         };
+        heartbeat = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(`: hb\n\n`));
+          } catch {
+            // 客户端已断，cancel 马上会来清场
+          }
+        }, 25_000);
         entry = { userId, send };
         subs.set(tableId, [...(subs.get(tableId) ?? []), entry]);
         send(tables.view(tableId, userId));
       },
       cancel() {
+        if (heartbeat) clearInterval(heartbeat);
         const list = (subs.get(tableId) ?? []).filter((s) => s !== entry);
         if (list.length) subs.set(tableId, list);
         else subs.delete(tableId);

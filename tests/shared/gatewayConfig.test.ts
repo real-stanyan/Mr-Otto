@@ -28,6 +28,17 @@ describe("parseGatewayError", () => {
     });
   });
 
+  it("牌桌端点的 otto_poker 错误也认——不然引擎给人看的报错被吞成'牌桌请求失败(400)'", () => {
+    const body = JSON.stringify({
+      error: { message: "这张桌上没有进行中的牌局", type: "otto_poker", code: "poker_error" },
+    });
+    expect(parseGatewayError(body)).toEqual({
+      message: "这张桌上没有进行中的牌局",
+      type: "otto_poker",
+      code: "poker_error",
+    });
+  });
+
   it("上游（DeepSeek）的错误不认——那层错误该按原样报，不冒充网关", () => {
     const body = JSON.stringify({
       error: { message: "Authentication Fails", type: "authentication_error" },

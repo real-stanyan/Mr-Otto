@@ -11,9 +11,11 @@ export function gatewayBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env[GATEWAY_BASE_URL_ENV] ?? DEFAULT_GATEWAY_BASE_URL;
 }
 
-/** 网关自己的错误形状(gateway.ts 的 apiError)。402 = 额度用尽 */
+/** 网关自己的错误形状(gateway.ts / pokerApi.ts 的 apiError)。402 = 额度用尽。
+    牌桌端点的 type 是 "otto_poker",同一形状 —— 两种都认,否则引擎给人看的
+    整句报错会被吞成"牌桌请求失败(400)" */
 export interface GatewayErrorBody {
-  error: { message: string; type: "otto_gateway"; code: string };
+  error: { message: string; type: "otto_gateway" | "otto_poker"; code: string };
 }
 
 export function parseGatewayError(body: string): GatewayErrorBody["error"] | null {
@@ -23,10 +25,10 @@ export function parseGatewayError(body: string): GatewayErrorBody["error"] | nul
     const err = (parsed as { error?: unknown }).error;
     if (typeof err !== "object" || err === null) return null;
     const e = err as Record<string, unknown>;
-    if (e.type !== "otto_gateway") return null;
+    if (e.type !== "otto_gateway" && e.type !== "otto_poker") return null;
     return {
       message: typeof e.message === "string" ? e.message : "",
-      type: "otto_gateway",
+      type: e.type,
       code: typeof e.code === "string" ? e.code : "",
     };
   } catch {

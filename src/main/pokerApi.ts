@@ -94,6 +94,10 @@ export async function sendAction(
  * 订阅一张桌的牌局推送。返回退订函数。
  *
  * 同一时刻只订一张桌：换桌先退订再订，免得两条流互相盖着推。
+ *
+ * 断流自动重连：SSE 会被代理掐（闲置超时）、被睡眠断网切开。服务端在每次
+ * 连接建立时都先推一份当前视图，所以重连本身就是自愈 —— 冻结的视图会被
+ * 新鲜的覆盖。退避 1s 起步翻倍，封顶 10s；连上一次就归零。
  */
 export function watchTable(
   getToken: GetToken,
@@ -103,45 +107,61 @@ export function watchTable(
   deps: PokerDeps = {}
 ): () => void {
   const controller = new AbortController();
-  void (async () => {
-    try {
-      const token = await getToken();
-      if (!token) throw new Error("先登录才能上牌桌");
-      const base = (deps.baseUrl ?? gatewayBaseUrl()).replace(/\/+$/, "");
-      const doFetch = deps.fetchImpl ?? ((u: string, i: RequestInit) => fetch(u, i));
-      const res = await doFetch(`${base}/poker/${tableId}/stream`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
-        signal: controller.signal,
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms);
+      controller.signal.addEventListener("abort", () => {
+        clearTimeout(t);
+        resolve();
       });
-      if (!res.ok || !res.body) throw new Error(`订阅牌桌失败(${res.status})`);
+    });
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        // SSE 以空行分事件；一个事件可能跨多个 chunk 到达，所以留住尾巴
-        let idx = buffer.indexOf("\n\n");
-        while (idx >= 0) {
-          const chunk = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          for (const line of chunk.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-              onHand(JSON.parse(line.slice(6)) as PokerHandView | null);
-            } catch (err) {
-              onError(err);
+  void (async () => {
+    let backoff = 1000;
+    while (!controller.signal.aborted) {
+      try {
+        const token = await getToken();
+        if (!token) throw new Error("先登录才能上牌桌");
+        const base = (deps.baseUrl ?? gatewayBaseUrl()).replace(/\/+$/, "");
+        const doFetch = deps.fetchImpl ?? ((u: string, i: RequestInit) => fetch(u, i));
+        const res = await doFetch(`${base}/poker/${tableId}/stream`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`订阅牌桌失败(${res.status})`);
+        backoff = 1000;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // SSE 以空行分事件；一个事件可能跨多个 chunk 到达，所以留住尾巴
+          let idx = buffer.indexOf("\n\n");
+          while (idx >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            for (const line of chunk.split("\n")) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                onHand(JSON.parse(line.slice(6)) as PokerHandView | null);
+              } catch (err) {
+                onError(err);
+              }
             }
+            idx = buffer.indexOf("\n\n");
           }
-          idx = buffer.indexOf("\n\n");
         }
+      } catch (err) {
+        // 主动退订触发的 abort 不是错误
+        if (!controller.signal.aborted) onError(err);
       }
-    } catch (err) {
-      // 主动退订触发的 abort 不是错误
-      if (!controller.signal.aborted) onError(err);
+      if (controller.signal.aborted) break;
+      await sleep(backoff);
+      backoff = Math.min(backoff * 2, 10_000);
     }
   })();
   return () => controller.abort();

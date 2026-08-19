@@ -448,6 +448,9 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ pokerError: "" });
     } catch (err) {
       set({ pokerError: err instanceof Error ? err.message : String(err) });
+      // 动作被拒最常见的原因是本地视图过期(SSE 断流后冻住)。重订阅时服务端
+      // 会先推一份当前视图,冻结状态被新鲜的覆盖 —— 报错留着,视图自愈
+      await window.otter.pokerWatch(tableId);
     }
   },
 
