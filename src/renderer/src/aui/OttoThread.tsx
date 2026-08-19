@@ -6,15 +6,23 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import { useAuiState } from "@assistant-ui/react";
+import type { PartState } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
+import {
+  ReasoningContent,
+  ReasoningRoot,
+  ReasoningText,
+  ReasoningTrigger,
+} from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
 import { RetryButton } from "../components/RetryButton.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
+import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import type { OrbState } from "../lib/toolSummary.js";
@@ -53,6 +61,42 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
     <ToolLiveTail toolCallId={part.toolCallId} done={part.result !== undefined} />
   </>
 );
+
+// ─── ReasoningGroup:折叠头复刻旧版"思考 823 字 · 1.2s"(补回接线时丢掉的功能,见 Task 11) ───
+//
+// reasoningMs 已经投影到 message.metadata.custom.reasoningMs(toThreadMessages.ts,
+// ADR-0032),但没人读——上游 ReasoningTrigger 默认只拼 "Reasoning (Xs)" 英文文案,
+// 且不认字数。字数来自本组同属的 reasoning part(用 group.indices 取消息里对应下标,
+// text 累加),和 reasoningMs 一起喂给 thinkingLabel()(lib/thinkingLabel.ts),
+// 换上 ReasoningTrigger 新加的 label 覆盖槽(见 reasoning.tsx)。
+// 默认组装原样照抄 thread.tsx 里 group-reasoning 分支的写法(ReasoningRoot streaming +
+// ReasoningTrigger active + ReasoningContent aria-busy + ReasoningText),
+// 唯一区别是 label 换成算出来的中文文案 —— 不走 thread.tsx 那条默认路径是因为
+// duration 参数拼不出"字数 · 耗时"这个格式
+const ReasoningGroupWithLabel: NonNullable<ThreadComponents["ReasoningGroup"]> = ({
+  group,
+  children,
+}) => {
+  const running = group.status.type === "running";
+  const reasoningMs = useAuiState(
+    (s) => s.message.metadata.custom["reasoningMs"] as number | undefined,
+  );
+  const reasoningText = useAuiState((s) =>
+    group.indices
+      .map((i) => s.message.parts[i])
+      .filter((p): p is Extract<PartState, { type: "reasoning" }> => p?.type === "reasoning")
+      .map((p) => p.text)
+      .join(""),
+  );
+  return (
+    <ReasoningRoot streaming={running}>
+      <ReasoningTrigger active={running} label={thinkingLabel(reasoningText, reasoningMs)} />
+      <ReasoningContent aria-busy={running}>
+        <ReasoningText>{children}</ReasoningText>
+      </ReasoningContent>
+    </ReasoningRoot>
+  );
+};
 
 // ─── RunIndicator:turn 运行时的相位指示器(补回接线时丢掉的功能,见 Task 11) ───
 //
@@ -106,7 +150,7 @@ function TurnMeta({ events }: { events: SessionEvent[] }) {
   );
 }
 
-/** 当前执行中的工具(有请求、无结果 = 还没落地)。纯日志投影:数 tool_result 对号 */
+/** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
 function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   const done = new Set<string>();
   for (const e of events) if (e.type === "tool_result") done.add(e.toolCallId);
@@ -119,7 +163,7 @@ function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   return null;
 }
 
-/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先,其后按「在跑哪个环节」细分:
+/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
      检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
      四段对应 orbs 的 Searching / Working / Thinking / Solving */
 function agentPhase(opts: {
@@ -134,7 +178,7 @@ function agentPhase(opts: {
   if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
   if (opts.tool) return { orb: "working", label: "执行中…" };
   if (opts.streamingText) return { orb: "solving", label: "作答中…" };
-  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用:都还在想
+  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
 }
 
 // ─── ErrorBanner:IPC 层瞬时发送失败的提示条(补回接线时丢掉的功能,见 Task 11) ───
@@ -197,6 +241,7 @@ const COMPONENTS: ThreadComponents = {
   SystemMessage,
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
+  ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
   ErrorBanner,
 };
