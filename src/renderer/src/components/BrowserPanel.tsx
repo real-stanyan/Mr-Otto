@@ -103,7 +103,12 @@ export function BrowserPanel() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // flex-1 + min-w-0 不是可有可无的排版糖:宿主 .side-panel 是行向 flex,
+    // 不写 flex-1 的话这块面板按内容宽度收成一条(实测卡在 424px 再也不动),
+    // 占位符跟着不长,浮在上面的网页自然也不长——症状是"拖宽/全屏后网页不适应尺寸"。
+    // min-w-0 是配套的:没有它,里面的 URL 栏能把面板顶得比容器还宽。
+    // 照 GitGraphView 的根节点写法
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
         <Button variant="ghost" size="icon" disabled={!info?.canGoBack}
           onClick={() => sessionId && void window.otter.browserBack(sessionId)}>
