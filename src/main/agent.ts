@@ -212,7 +212,11 @@ export function createAgent(opts: {
     bashTool,
     createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
-    browserReadTool,
+    // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
+    // 会对模型宣称有这把工具,模型试一次、吃一个"这个世界没有内置浏览器",
+    // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
+    // 报一把用不了的工具连账也是错的
+    ...(world.browser ? [browserReadTool] : []),
   ];
 
   const engine = new LoopEngine({
