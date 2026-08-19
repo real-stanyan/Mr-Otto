@@ -1069,7 +1069,7 @@ gh issue create --title "会话分区总结 + 侧边跳转条" --body "长会话
 
 - [ ] **Step 3: 写 ADR**
 
-Create `docs/adr/0031-会话分区事件.md`（编号按 Step 1 的结果）：
+Create `docs/adr/0034-会话分区事件.md`（编号按 Step 1 的结果；实际落到 0034——0031/0032/0033 在评审期间被别的 lane 陆续占走）：
 
 ```markdown
 # ADR-0031：会话分区是事件，不是投影
@@ -1130,7 +1130,7 @@ gh pr create --title "会话分区总结 + 侧边跳转条" --body "Closes #<Ste
 - 分类员在 engine 外，与 vision-bridge 对称；失败静默自愈
 
 设计 docs/superpowers/specs/2026-08-19-conversation-sections-design.md
-ADR docs/adr/0031-会话分区事件.md"
+ADR docs/adr/0034-会话分区事件.md"
 ```
 
 CI 绿了之后自己合（AGENTS.md「PR disposition」：作者 agent 自己合，用 merge commit，不 squash）。本 PR 不碰 AGENTS.md，属于普通代码改动，不需要 L1 批准。
