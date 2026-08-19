@@ -24,8 +24,21 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
-import type { DirectMessage, FriendProfile, FriendsSnapshot } from "../../shared/friends.js";
-import { mergeDm, prependOlder } from "./lib/friendsState.js";
+import type {
+  DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
+} from "../../shared/friends.js";
+import type { NotificationTarget } from "../../shared/shellBridge.js";
+import {
+  failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
+  type ChatMessage,
+} from "./lib/friendsState.js";
+
+/** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
+export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
+  const unread = Object.values(s.unreadByFriend).reduce((a, b) => a + b, 0);
+  const invites = s.gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length;
+  return unread + s.friendsSnapshot.incoming.length + invites;
+}
 
 /** 从 Record 里删一个 key 的不可变写法 */
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -142,12 +155,19 @@ interface ChatState {
   onlineIds: string[];
   /** 非 null = DM 面板开着(右侧叠加槽位,与 protocolOpen/gitGraphOpen 互斥) */
   friendChat: FriendProfile | null;
-  /** friendId → 消息列表(旧→新)。只留打开过的会话,登出全清 */
-  dmByFriend: Record<string, DirectMessage[]>;
+  /** friendId → 消息列表(旧→新)。只留打开过的会话,登出全清。
+      条目可能带本地发送态(乐观气泡),落库后被真行替换 */
+  dmByFriend: Record<string, ChatMessage[]>;
   /** friendId → 未读数(面板开着的好友不计,打开即清零) */
   unreadByFriend: Record<string, number>;
   /** 好友区/DM 面板的内联错误(FriendsResult ok:false 的 message 落这) */
   friendError: string | null;
+  /** 近期牌局邀请(收发两向,含终态)。主进程推,渲染层只投影 */
+  gameInvites: GameInvite[];
+  /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
+  realtimeHealth: RealtimeHealth;
+  /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
+  friendsPanelOpen: boolean;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -232,6 +252,13 @@ interface ChatState {
   sendDm(body: string): Promise<void>;
   /** DM 面板顶部"加载更早"——按当前最旧 id 往前翻一页 */
   loadOlderDms(): Promise<void>;
+  setFriendsPanelOpen(open: boolean): void;
+  refreshInvites(): Promise<void>;
+  /** 约好友上某张牌桌(tableName 是发出那刻的桌名快照) */
+  inviteToTable(friendId: string, tableId: string, tableName: string): Promise<void>;
+  /** 回应邀请。接受 = 切到 game 档并进那张桌,**不代付买入**(ADR-0027) */
+  respondGameInvite(inviteId: string, accept: boolean): Promise<void>;
+  cancelGameInvite(inviteId: string): Promise<void>;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
   /** 交问卷。answers 为 null = 用户关掉了卡片（模型会知道"没人答"，不是"全跳过"） */
   answerQuestions(answers: AskUserAnswer[] | null): Promise<void>;
@@ -316,6 +343,9 @@ export const useChat = create<ChatState>((set, get) => ({
   dmByFriend: {},
   unreadByFriend: {},
   friendError: null,
+  gameInvites: [],
+  realtimeHealth: "connecting",
+  friendsPanelOpen: false,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -712,22 +742,34 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async sendDm(body) {
     const friend = get().friendChat;
-    if (!friend || !body.trim()) return;
-    const r = await window.otter.friendsSendMessage(friend.id, body.trim());
-    if (!r.ok) {
-      set({ friendError: r.message });
-      return;
-    }
-    // 自己发的消息主进程不推(onDirectMessage 只推对端来信),重拉最新一页回显——
-    // 拿真 id/时间戳,不本地造假消息(与"快照由主进程推"同一哲学)
-    const page = await window.otter.friendsListMessages(friend.id);
-    if (page.ok) {
-      const list = [...page.value].reverse();
-      set((s) => ({
-        dmByFriend: { ...s.dmByFriend, [friend.id]: list },
-        friendError: null,
-      }));
-    }
+    const text = body.trim();
+    if (!friend || !text) return;
+    // 气泡先上屏再落库:回车到看见自己那句话之间不该有一次往返的空白
+    // (Apple 第一条 —— 反馈发生在按下的瞬间)。sender 留空是刻意的:
+    // 面板里"非对方即自己",分组也按这条判,不需要伪造一个 uid
+    const tempId = nextTempId();
+    set((s) => ({
+      dmByFriend: {
+        ...s.dmByFriend,
+        [friend.id]: [
+          ...(s.dmByFriend[friend.id] ?? []),
+          optimisticMessage(tempId, "", friend.id, text, new Date().toISOString()),
+        ],
+      },
+      friendError: null,
+    }));
+    const r = await window.otter.friendsSendMessage(friend.id, text);
+    set((s) => ({
+      dmByFriend: {
+        ...s.dmByFriend,
+        // 成功:占位换成服务端回的真行(真 id/时间戳);失败:占位标红留在原地,
+        // 悄悄消失才是最坏的结果——用户以为发出去了
+        [friend.id]: r.ok
+          ? settleOptimistic(s.dmByFriend[friend.id] ?? [], tempId, r.value)
+          : failOptimistic(s.dmByFriend[friend.id] ?? [], tempId),
+      },
+      friendError: r.ok ? null : r.message,
+    }));
   },
 
   async loadOlderDms() {
@@ -747,6 +789,40 @@ export const useChat = create<ChatState>((set, get) => ({
     } else set({ friendError: r.message });
   },
 
+  setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
+
+  async refreshInvites() {
+    const r = await window.otter.friendsListInvites();
+    if (r.ok) set({ gameInvites: r.value });
+    else set({ friendError: r.message });
+  },
+
+  async inviteToTable(friendId, tableId, tableName) {
+    const r = await window.otter.friendsSendInvite(friendId, tableId, tableName);
+    set({ friendError: r.ok ? null : r.message }); // 成功后的列表由主进程推,不本地猜
+  },
+
+  async respondGameInvite(inviteId, accept) {
+    const invite = get().gameInvites.find((i) => i.id === inviteId);
+    const r = await window.otter.friendsRespondInvite(inviteId, accept);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    set({ friendError: null });
+    if (!accept || !invite) return;
+    // 接受 = 把人送到桌边,**不替他掏钱**:买入花的是真 token(ADR-0021),
+    // 那一步留在牌桌页由本人按(ADR-0027)
+    set({ sessionMode: "game", friendsPanelOpen: false });
+    await get().refreshPokerTables();
+    await get().watchPokerTable(invite.tableId);
+  },
+
+  async cancelGameInvite(inviteId) {
+    const r = await window.otter.friendsCancelInvite(inviteId);
+    set({ friendError: r.ok ? null : r.message });
+  },
+
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
@@ -760,6 +836,7 @@ export const useChat = create<ChatState>((set, get) => ({
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
+              gameInvites: [], realtimeHealth: "connecting", friendsPanelOpen: false,
               // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
               wallet: null, walletError: "",
             }
@@ -778,6 +855,27 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onPokerError((pokerError) => set({ pokerError }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
+    window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
+    window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
+    // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
+    window.otter.onNotificationActivated((target: NotificationTarget) => {
+      if (target.kind === "dm") {
+        const profile = get().friendsSnapshot.friends.find((e) => e.profile.id === target.friendId)?.profile;
+        if (profile) void get().openFriendChat(profile);
+        return;
+      }
+      set({ friendsPanelOpen: true });
+    });
+    // dock 角标 = 所有"有人在等你"的总和。未读只有渲染层算得出(它知道哪个面板开着),
+    // 所以由这里算完报给主进程,而不是主进程自己猜
+    useChat.subscribe((s, prev) => {
+      if (
+        s.unreadByFriend === prev.unreadByFriend &&
+        s.friendsSnapshot === prev.friendsSnapshot &&
+        s.gameInvites === prev.gameInvites
+      ) return;
+      void window.otter.setBadgeCount(pendingAttention(s));
+    });
     window.otter.onDirectMessage((msg) =>
       set((s) => {
         const open = s.friendChat?.id === msg.sender;

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  toFriendProfile, buildSnapshot, FriendsManager,
-  type FriendsApi, type FriendshipRow, type ProfileRow,
+  toFriendProfile, buildSnapshot, presenceUnion, sameIds, toGameInvite, FriendsManager,
+  DEGRADED_POLL_MS, HEARTBEAT_MS,
+  type FriendsApi, type FriendsTimers, type FriendshipRow,
+  type InviteRow, type MessageRow, type ProfileRow,
 } from "../../src/main/friends.js";
 
 const P = (id: string, email = `${id}@x.com`): ProfileRow =>
@@ -55,13 +57,60 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
     deleteFriendship: vi.fn(async () => {}),
     listFriendships: vi.fn(async () => []),
     listProfiles: vi.fn(async () => []),
-    insertMessage: vi.fn(async () => {}),
+    insertMessage: vi.fn(async (sender: string, recipient: string, body: string): Promise<MessageRow> =>
+      ({ id: 1, sender, recipient, body, created_at: "t" })),
     listMessages: vi.fn(async () => []),
+    latestInboxId: vi.fn(async () => 0),
+    listInboxSince: vi.fn(async () => []),
+    touchPresence: vi.fn(async () => {}),
+    listLastSeen: vi.fn(async () => []),
+    insertInvite: vi.fn(async (inviter: string, invitee: string, tableId: string, tableName: string): Promise<InviteRow> =>
+      ({
+        id: "i1", inviter, invitee, table_id: tableId, table_name: tableName,
+        status: "pending", created_at: "t", expires_at: "t+",
+      })),
+    updateInviteStatus: vi.fn(async () => {}),
+    listInvites: vi.fn(async () => []),
     subscribe: vi.fn(() => () => {}),
     ...over,
   };
 }
-const noPush = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+
+/** 每个用例一份新的 push spy(共享一份会让调用次数跨用例累加) */
+function mkPush() {
+  return {
+    friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn(),
+    invitesChanged: vi.fn(), healthChanged: vi.fn(),
+  };
+}
+const noPush = mkPush();
+
+/** 手动推进的假定时器:测轮询/心跳不睡真时间 */
+function fakeTimers(): FriendsTimers & { tick(ms: number): void } {
+  const jobs: { fn: () => void; every: number; due: number }[] = [];
+  let now = 0;
+  return {
+    setInterval(fn, ms) {
+      const job = { fn, every: ms, due: now + ms };
+      jobs.push(job);
+      return job;
+    },
+    clearInterval(handle) {
+      const i = jobs.indexOf(handle as (typeof jobs)[number]);
+      if (i >= 0) jobs.splice(i, 1);
+    },
+    now: () => now,
+    tick(ms) {
+      now += ms;
+      for (const job of [...jobs]) {
+        while (job.due <= now) {
+          job.due += job.every;
+          job.fn();
+        }
+      }
+    },
+  };
+}
 
 describe("FriendsManager 关系链", () => {
   it("search:邮箱命中回 FriendProfile", async () => {
@@ -91,7 +140,7 @@ describe("FriendsManager 关系链", () => {
       ]),
       listProfiles: vi.fn(async () => [P("u2")]),
     });
-    const push = { ...noPush, friendsChanged: vi.fn() };
+    const push = mkPush();
     const m = new FriendsManager({ api, push });
     expect(await m.sendRequest("u2")).toEqual({ ok: true, value: null });
     expect(api.insertFriendship).toHaveBeenCalledWith("me", "u2");
@@ -126,7 +175,10 @@ describe("FriendsManager 关系链", () => {
   it("sendMessage 委托 insertMessage(sender=自己)", async () => {
     const api = fakeApi();
     const m = new FriendsManager({ api, push: noPush });
-    expect(await m.sendMessage("u2", "hi")).toEqual({ ok: true, value: null });
+    // 回的是落库后的真行:渲染层靠它把乐观气泡换成实条,不必再拉一整页
+    expect(await m.sendMessage("u2", "hi")).toEqual({
+      ok: true, value: { id: 1, sender: "me", recipient: "u2", body: "hi", createdAt: "t" },
+    });
     expect(api.insertMessage).toHaveBeenCalledWith("me", "u2", "hi");
   });
 
@@ -150,7 +202,7 @@ describe("FriendsManager 生命周期", () => {
     const api = fakeApi({
       subscribe: vi.fn((_uid, handlers) => { captured = handlers; return () => {}; }),
     });
-    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const push = mkPush();
     const m = new FriendsManager({ api, push });
     await m.start();
     expect(push.friendsChanged).toHaveBeenCalledTimes(1); // 初始快照
@@ -163,7 +215,7 @@ describe("FriendsManager 生命周期", () => {
 
   it("start 时未登录:不订阅不推", async () => {
     const api = fakeApi({ getUserId: vi.fn(async () => null) });
-    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const push = mkPush();
     await new FriendsManager({ api, push }).start();
     expect(api.subscribe).not.toHaveBeenCalled();
     expect(push.friendsChanged).not.toHaveBeenCalled();
@@ -172,7 +224,7 @@ describe("FriendsManager 生命周期", () => {
   it("stop:退订 + 推空快照清 UI", async () => {
     const unsub = vi.fn();
     const api = fakeApi({ subscribe: vi.fn(() => unsub) });
-    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const push = mkPush();
     const m = new FriendsManager({ api, push });
     await m.start();
     m.stop();
@@ -184,7 +236,7 @@ describe("FriendsManager 生命周期", () => {
   it("重复 start 幂等:旧订阅先退", async () => {
     const unsub = vi.fn();
     const api = fakeApi({ subscribe: vi.fn(() => unsub) });
-    const m = new FriendsManager({ api, push: { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() } });
+    const m = new FriendsManager({ api, push: mkPush() });
     await m.start();
     await m.start();
     expect(unsub).toHaveBeenCalledTimes(1);
@@ -195,7 +247,7 @@ describe("FriendsManager 生命周期", () => {
     let resolveUid!: (uid: string | null) => void;
     const uidPromise = new Promise<string | null>((resolve) => { resolveUid = resolve; });
     const api = fakeApi({ getUserId: vi.fn(() => uidPromise) });
-    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const push = mkPush();
     const m = new FriendsManager({ api, push });
 
     const startPromise = m.start(); // 挂在 getUserId 上
@@ -223,12 +275,11 @@ describe("FriendsManager 生命周期", () => {
       listFriendships: vi.fn(() => listPromise),
       subscribe: vi.fn(() => (++subscribeCalls === 1 ? unsub1 : unsub2)),
     });
-    const push = { friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn() };
+    const push = mkPush();
     const m = new FriendsManager({ api, push });
 
     const first = m.start();
-    await Promise.resolve();
-    await Promise.resolve(); // 放行足够微任务,让 first 跑过 getUserId + subscribe,卡在 listFriendships 上
+    for (let i = 0; i < 10; i++) await Promise.resolve(); // 放行微任务:getUserId → latestInboxId → subscribe,卡在 listFriendships 上
     expect(api.subscribe).toHaveBeenCalledTimes(1);
 
     const second = m.start(); // teardown() 同步调用 unsub1
@@ -240,5 +291,202 @@ describe("FriendsManager 生命周期", () => {
 
     expect(api.subscribe).toHaveBeenCalledTimes(2);
     expect(unsub2).not.toHaveBeenCalled(); // 第二次(最后一次)的订阅存活
+  });
+});
+
+// ── 在线状态:presence ∪ 心跳(ADR-0027) ──────────────────────────
+describe("presenceUnion", () => {
+  const now = 1_000_000;
+
+  it("Realtime presence 与心跳窗口取并集", () => {
+    expect(presenceUnion(["a"], [{ id: "b", last_seen_at: new Date(now - 1000).toISOString() }], now))
+      .toEqual(["a", "b"]);
+  });
+
+  it("心跳超出窗口 = 不在线", () => {
+    expect(presenceUnion([], [{ id: "b", last_seen_at: new Date(now - 200_000).toISOString() }], now))
+      .toEqual([]);
+  });
+
+  it("从没上过线(null)或时间戳无法解析 → 跳过,不当成在线", () => {
+    expect(presenceUnion([], [
+      { id: "b", last_seen_at: null },
+      { id: "c", last_seen_at: "不是时间" },
+    ], now)).toEqual([]);
+  });
+
+  it("两边都有同一个人 → 只出现一次", () => {
+    expect(presenceUnion(["a"], [{ id: "a", last_seen_at: new Date(now).toISOString() }], now))
+      .toEqual(["a"]);
+  });
+});
+
+describe("sameIds", () => {
+  it("同序同元素为真,长度或元素不同为假", () => {
+    expect(sameIds(["a", "b"], ["a", "b"])).toBe(true);
+    expect(sameIds(["a"], ["a", "b"])).toBe(false);
+    expect(sameIds(["a", "b"], ["a", "c"])).toBe(false);
+  });
+});
+
+// ── 牌局邀请 ────────────────────────────────────────────────────
+const INVITE = (over: Partial<InviteRow> = {}): InviteRow => ({
+  id: "i1", inviter: "u2", invitee: "me", table_id: "t1", table_name: "夜场",
+  status: "pending", created_at: "2026-08-19T00:00:00Z", expires_at: "2026-08-19T00:10:00Z",
+  ...over,
+});
+
+describe("toGameInvite", () => {
+  const profiles = new Map([["u2", P("u2")], ["u3", P("u3")]]);
+
+  it("收到的邀请:peer 是邀请人,direction=incoming", () => {
+    expect(toGameInvite("me", INVITE(), profiles)).toMatchObject({
+      direction: "incoming", peer: { id: "u2" }, tableId: "t1", tableName: "夜场",
+    });
+  });
+
+  it("发出的邀请:peer 是被邀请人,direction=outgoing", () => {
+    expect(toGameInvite("me", INVITE({ inviter: "me", invitee: "u3" }), profiles))
+      .toMatchObject({ direction: "outgoing", peer: { id: "u3" } });
+  });
+
+  it("对方 profile 缺席 → null(别渲染幽灵,同 buildSnapshot)", () => {
+    expect(toGameInvite("me", INVITE({ inviter: "nobody" }), profiles)).toBeNull();
+  });
+});
+
+describe("FriendsManager 邀请", () => {
+  it("sendInvite 落库后推新的邀请列表", async () => {
+    const api = fakeApi({
+      listInvites: vi.fn(async () => [INVITE({ inviter: "me", invitee: "u2" })]),
+      listProfiles: vi.fn(async () => [P("u2")]),
+    });
+    const push = mkPush();
+    const m = new FriendsManager({ api, push });
+    expect(await m.sendInvite("u2", "t1", "夜场")).toEqual({ ok: true, value: null });
+    expect(api.insertInvite).toHaveBeenCalledWith("me", "u2", "t1", "夜场");
+    expect(push.invitesChanged).toHaveBeenCalledWith([
+      expect.objectContaining({ direction: "outgoing", tableId: "t1" }),
+    ]);
+  });
+
+  it("sendInvite:pending 唯一索引冲突映射成人话", async () => {
+    const api = fakeApi({
+      insertInvite: vi.fn(async () => { throw Object.assign(new Error("dup"), { code: "23505" }); }),
+    });
+    const m = new FriendsManager({ api, push: mkPush() });
+    expect(await m.sendInvite("u2", "t1", "夜场")).toEqual({ ok: false, message: "已经邀过了,等对方回应" });
+  });
+
+  it("respondInvite 只改状态——买入花真 token,由用户在牌桌页再确认(ADR-0027)", async () => {
+    const api = fakeApi();
+    const m = new FriendsManager({ api, push: mkPush() });
+    await m.respondInvite("i1", true);
+    expect(api.updateInviteStatus).toHaveBeenCalledWith("i1", "accepted");
+    await m.respondInvite("i2", false);
+    expect(api.updateInviteStatus).toHaveBeenCalledWith("i2", "declined");
+    // FriendsApi 里根本没有买入这种方法:接受邀请不可能顺手把钱花掉
+    expect(Object.keys(api)).not.toContain("joinTable");
+  });
+
+  it("cancelInvite 走 cancelled", async () => {
+    const api = fakeApi();
+    await new FriendsManager({ api, push: mkPush() }).cancelInvite("i1");
+    expect(api.updateInviteStatus).toHaveBeenCalledWith("i1", "cancelled");
+  });
+});
+
+// ── 推送健康度与轮询兜底(ADR-0027) ──────────────────────────────
+const flush = async (): Promise<void> => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+describe("FriendsManager 推送兜底", () => {
+  function harness(over: Partial<FriendsApi> = {}) {
+    let captured: Parameters<FriendsApi["subscribe"]>[1] | null = null;
+    const api = fakeApi({
+      subscribe: vi.fn((_uid, handlers) => { captured = handlers; return () => {}; }),
+      ...over,
+    });
+    const push = mkPush();
+    const timers = fakeTimers();
+    const m = new FriendsManager({ api, push, timers });
+    return { api, push, timers, m, handlers: () => captured! };
+  }
+
+  it("订阅报错 → health degraded,并立刻起一拍轮询把新消息补上", async () => {
+    const inbox: MessageRow[] = [{ id: 5, sender: "u2", recipient: "me", body: "hi", created_at: "t" }];
+    const h = harness({
+      listInboxSince: vi.fn(async (_uid: string, since: number) => inbox.filter((m) => m.id > since)),
+    });
+    await h.m.start();
+    await flush();
+
+    h.handlers().onHealth("degraded");
+    await flush();
+    expect(h.push.healthChanged).toHaveBeenCalledWith("degraded");
+    expect(h.push.directMessage).toHaveBeenCalledWith(
+      { id: 5, sender: "u2", recipient: "me", body: "hi", createdAt: "t" });
+
+    // 水位推进:下一拍不该把同一条再推一遍
+    h.timers.tick(DEGRADED_POLL_MS);
+    await flush();
+    expect(h.push.directMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("订阅恢复 → 停轮询(不再打 listInboxSince)", async () => {
+    const h = harness();
+    await h.m.start();
+    await flush();
+    h.handlers().onHealth("degraded");
+    await flush();
+    const polls = (h.api.listInboxSince as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    h.handlers().onHealth("live");
+    await flush();
+    h.timers.tick(DEGRADED_POLL_MS * 3);
+    await flush();
+    expect((h.api.listInboxSince as ReturnType<typeof vi.fn>).mock.calls.length).toBe(polls);
+    expect(h.push.healthChanged).toHaveBeenLastCalledWith("live");
+  });
+
+  it("掉线时清掉 presence 的在线集:连不上的通道报不出谁下线了", async () => {
+    const h = harness();
+    await h.m.start();
+    await flush();
+    h.handlers().onPresence(["u2"]);
+    expect(h.push.presenceChanged).toHaveBeenLastCalledWith(["u2"]);
+
+    h.handlers().onHealth("degraded");
+    await flush();
+    expect(h.push.presenceChanged).toHaveBeenLastCalledWith([]);
+  });
+
+  it("心跳:start 立刻拍一次,之后每 HEARTBEAT_MS 一拍,并按窗口算在线", async () => {
+    const h = harness({
+      listFriendships: vi.fn(async () => [
+        { id: "f1", requester: "me", addressee: "u2", status: "accepted" } as FriendshipRow,
+      ]),
+      listProfiles: vi.fn(async () => [P("u2")]),
+      listLastSeen: vi.fn(async () => [{ id: "u2", last_seen_at: new Date(0).toISOString() }]),
+    });
+    await h.m.start();
+    await flush();
+    expect(h.api.touchPresence).toHaveBeenCalledTimes(1);
+    expect(h.push.presenceChanged).toHaveBeenLastCalledWith(["u2"]); // Realtime 没报,心跳报的
+
+    h.timers.tick(HEARTBEAT_MS);
+    await flush();
+    expect(h.api.touchPresence).toHaveBeenCalledTimes(2);
+  });
+
+  it("stop:清掉所有定时器 + 推空邀请与 connecting", async () => {
+    const h = harness();
+    await h.m.start();
+    await flush();
+    h.m.stop();
+    h.timers.tick(HEARTBEAT_MS * 3);
+    await flush();
+    expect(h.api.touchPresence).toHaveBeenCalledTimes(1); // 只有 start 那一拍
+    expect(h.push.invitesChanged).toHaveBeenLastCalledWith([]);
+    expect(h.push.healthChanged).toHaveBeenLastCalledWith("connecting");
   });
 });

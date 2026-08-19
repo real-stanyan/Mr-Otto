@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
@@ -36,6 +36,11 @@ import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
+import {
+  createNotifier, dmNotification, friendRequestNotification, inviteNotification,
+  newIncomingInvites, newIncomingRequests,
+} from "./friendNotifier.js";
+import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -119,14 +124,53 @@ void app.whenReady().then(() => {
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
   const supabase = createSupabaseAuthClient(join(app.getPath("userData"), "auth.json"));
+  // 系统通知:窗口没聚焦才发,点了就聚焦 + 告诉渲染层落到哪个面板(friendNotifier.ts)
+  const notify = createNotifier({
+    isFocused: () => !win.isDestroyed() && win.isFocused(),
+    show: (spec, onClick) => {
+      if (!Notification.isSupported()) return;
+      const n = new Notification({ title: spec.title, body: spec.body });
+      n.on("click", onClick);
+      n.show();
+    },
+    activate: (target) => {
+      if (win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      send(CHANNELS.notificationActivated, target);
+    },
+  });
+  // 好友请求/邀请是全量快照式推送,不做差集会把同一条反复弹成通知
+  let lastSnapshot: FriendsSnapshot | null = null;
+  let lastInvites: GameInvite[] | null = null;
   const friends = new FriendsManager({
     api: createSupabaseFriendsApi(supabase.raw),
     push: {
       // win 可能已被 Cmd+W 销毁而 app/presence 通道仍活着(mac 惯例),
       // 不查 isDestroyed 直接 send 会在 supabase-js websocket 回调里炸穿主进程
-      friendsChanged: (s) => send(CHANNELS.friendsChanged, s),
+      friendsChanged: (s) => {
+        for (const id of newIncomingRequests(lastSnapshot, s)) {
+          const entry = s.incoming.find((e) => e.friendshipId === id);
+          if (entry) notify(friendRequestNotification(entry.profile.name || entry.profile.email));
+        }
+        lastSnapshot = s;
+        send(CHANNELS.friendsChanged, s);
+      },
       presenceChanged: (ids) => send(CHANNELS.presenceChanged, ids),
-      directMessage: (m) => send(CHANNELS.directMessage, m),
+      directMessage: (m) => {
+        const sender = lastSnapshot?.friends.find((e) => e.profile.id === m.sender)?.profile;
+        notify(dmNotification(sender?.name || sender?.email || "", m.body, m.sender));
+        send(CHANNELS.directMessage, m);
+      },
+      invitesChanged: (invites) => {
+        for (const invite of newIncomingInvites(lastInvites, invites)) {
+          notify(inviteNotification(invite.peer.name || invite.peer.email, invite.tableName));
+        }
+        lastInvites = invites;
+        send(CHANNELS.gameInvitesChanged, invites);
+      },
+      healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
     },
   });
   accountManager = new AccountManager({
@@ -137,6 +181,11 @@ void app.whenReady().then(() => {
       // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
       if (info.signedIn) void friends.start();
       else friends.stop();
+      // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
+      // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
+      // 当成"全是新的",一屏历史请求当场弹成通知
+      lastSnapshot = null;
+      lastInvites = null;
     },
     client: supabase.auth,
   });
@@ -371,6 +420,17 @@ void app.whenReady().then(() => {
     friends.sendMessage(friendId, body));
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
+  ipcMain.handle(CHANNELS.friendsSendInvite, (_e, friendId: string, tableId: string, tableName: string) =>
+    friends.sendInvite(friendId, tableId, tableName));
+  ipcMain.handle(CHANNELS.friendsRespondInvite, (_e, inviteId: string, accept: boolean) =>
+    friends.respondInvite(inviteId, accept));
+  ipcMain.handle(CHANNELS.friendsCancelInvite, (_e, inviteId: string) => friends.cancelInvite(inviteId));
+  ipcMain.handle(CHANNELS.friendsListInvites, () => friends.listInvites());
+  // dock 角标:未读数只有渲染层算得出(它知道哪个面板开着),主进程只负责画。
+  // 非 mac 平台没有 dock,setBadgeCount 在那边是 no-op,不用分支
+  ipcMain.handle(CHANNELS.setBadgeCount, (_e, count: number) => {
+    app.setBadgeCount(Math.max(0, Math.floor(count)));
+  });
 
   // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
   const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));

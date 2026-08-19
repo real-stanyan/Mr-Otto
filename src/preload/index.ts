@@ -74,9 +74,19 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.friendsSendMessage, friendId, body),
   friendsListMessages: (friendId, beforeId) =>
     ipcRenderer.invoke(CHANNELS.friendsListMessages, friendId, beforeId),
+  friendsSendInvite: (friendId, tableId, tableName) =>
+    ipcRenderer.invoke(CHANNELS.friendsSendInvite, friendId, tableId, tableName),
+  friendsRespondInvite: (inviteId, accept) =>
+    ipcRenderer.invoke(CHANNELS.friendsRespondInvite, inviteId, accept),
+  friendsCancelInvite: (inviteId) => ipcRenderer.invoke(CHANNELS.friendsCancelInvite, inviteId),
+  friendsListInvites: () => ipcRenderer.invoke(CHANNELS.friendsListInvites),
+  setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
   onFriendsChanged: subscribe(CHANNELS.friendsChanged),
   onPresenceChanged: subscribe(CHANNELS.presenceChanged),
   onDirectMessage: subscribe(CHANNELS.directMessage),
+  onGameInvitesChanged: subscribe(CHANNELS.gameInvitesChanged),
+  onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
+  onNotificationActivated: subscribe(CHANNELS.notificationActivated),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

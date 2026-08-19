@@ -16,6 +16,7 @@ import { useChat } from "../store.js";
 import ottoLogo from "../assets/otto.png";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar.js";
 
 /**
  * 请求飞行期间禁用自己的按钮。
@@ -693,6 +694,73 @@ function OrbitCards({ count, total }: { count: number; total: number }) {
   );
 }
 
+/**
+ * 等桌页的邀请条:一张桌开不起来的唯一原因是人不够，所以"叫人"必须就在这一屏，
+ * 而不是让用户自己想到去好友抽屉里点。在线的排前面——能立刻来的才是有效人选。
+ *
+ * 邀请只是发一条待回应的记录(supabase/migrations/0006),不替对方买入。
+ */
+function InviteFriendsBar({ tableId, tableName }: { tableId: string; tableName: string }) {
+  const friends = useChat((s) => s.friendsSnapshot.friends);
+  const onlineIds = useChat((s) => s.onlineIds);
+  const invites = useChat((s) => s.gameInvites);
+  const invite = useChat((s) => s.inviteToTable);
+
+  if (friends.length === 0) {
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        还没有好友。好友区(侧栏底部那颗人像)按邮箱加，加上了才能同桌。
+      </p>
+    );
+  }
+
+  const online = new Set(onlineIds);
+  const pending = new Set(
+    invites
+      .filter((i) => i.direction === "outgoing" && i.status === "pending" && i.tableId === tableId)
+      .map((i) => i.peer.id)
+  );
+  const sorted = [...friends].sort(
+    (a, b) => Number(online.has(b.profile.id)) - Number(online.has(a.profile.id))
+  );
+
+  return (
+    <div className="flex max-w-[420px] flex-col items-center gap-2">
+      <div className="text-[11px] text-muted-foreground">叫人上桌</div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {sorted.map((e) => {
+          const name = e.profile.name || e.profile.email;
+          const invited = pending.has(e.profile.id);
+          return (
+            <AsyncButton
+              key={e.friendshipId}
+              size="sm"
+              variant="outline"
+              disabled={invited}
+              className="gap-2 rounded-full pl-1.5"
+              onClick={() => invite(e.profile.id, tableId, tableName)}
+            >
+              <span className="relative">
+                <Avatar size="sm">
+                  <AvatarImage src={e.profile.avatarUrl} alt={name} />
+                  <AvatarFallback>{name.slice(0, 1).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span
+                  className={`absolute -bottom-px -right-px size-[7px] rounded-full ring-2 ring-card ${
+                    online.has(e.profile.id) ? "bg-brand" : "bg-border"
+                  }`}
+                />
+              </span>
+              <span className="max-w-[120px] truncate">{name}</span>
+              <span className="text-[11px] text-muted-foreground">{invited ? "已邀请" : "邀请"}</span>
+            </AsyncButton>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** 进了桌但没牌在打：没买入 → 先买入；已在座 → 等人齐/开牌/离桌 */
 function TableIdle({ tableId }: { tableId: string }) {
   const table = useChat((s) => s.pokerTables.find((t) => t.id === tableId) ?? null);
@@ -744,6 +812,7 @@ function TableIdle({ tableId }: { tableId: string }) {
         <AsyncButton size="sm" disabled={!ready} onClick={() => start()}>开一手</AsyncButton>
         <AsyncButton size="sm" variant="ghost" onClick={() => leave()}>离桌</AsyncButton>
       </div>
+      {!ready && <InviteFriendsBar tableId={tableId} tableName={table?.name ?? ""} />}
     </div>
   );
 }
@@ -756,13 +825,16 @@ export function PokerTable() {
   const account = useChat((s) => s.account);
   const refresh = useChat((s) => s.refreshPokerTables);
   const refreshFriends = useChat((s) => s.refreshFriends);
+  const refreshInvites = useChat((s) => s.refreshInvites);
 
   useEffect(() => {
     if (!account.signedIn) return;
     void refresh();
     // 座位显示真名+头像靠好友快照;不刷一把,先开牌桌再开好友页的人只能看到 ID
     void refreshFriends();
-  }, [account.signedIn, refresh, refreshFriends]);
+    // 邀请列表:主进程在登录时推过一次,但渲染层可能是在那之后才挂上来的(推送不回放)
+    void refreshInvites();
+  }, [account.signedIn, refresh, refreshFriends, refreshInvites]);
 
   if (!account.signedIn) {
     return (

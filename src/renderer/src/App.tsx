@@ -30,6 +30,7 @@ import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
+import { GameInviteToast } from "./components/GameInviteToast.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -1485,11 +1486,17 @@ function AppSidebar() {
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
   // 好友区显隐:侧栏常驻版收进 footer 的 icon(齿轮左边),点开弹 Drawer(vaul)。
-  // 纯 UI 偏好,不进事件日志(同 collapsed 组折叠的待遇)
-  const [friendsOpen, setFriendsOpen] = useState(false);
-  // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求。区收着也能被看见
+  // 纯 UI 偏好,不进事件日志(同 collapsed 组折叠的待遇)。放 store 不放本地 state,
+  // 是因为点系统通知要能把它掀开(store.onNotificationActivated)
+  const friendsOpen = useChat((s) => s.friendsPanelOpen);
+  const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
+  const gameInvites = useChat((s) => s.gameInvites);
+  // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求 + 待回应牌局邀请。
+  // 区收着也能被看见
   const friendActivity =
-    Object.values(unreadByFriend).reduce((a, b) => a + b, 0) + friendsSnapshot.incoming.length;
+    Object.values(unreadByFriend).reduce((a, b) => a + b, 0) +
+    friendsSnapshot.incoming.length +
+    gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length;
   // 抽屉是模态层,盖在主区上;点开 DM 面板时弹窗让位——不然 DM 被抽屉挡住看不见
   useEffect(() => {
     if (friendChat) setFriendsOpen(false);
@@ -1737,7 +1744,7 @@ function AppSidebar() {
                 }
                 aria-label="好友"
                 aria-pressed={friendsOpen}
-                onClick={() => setFriendsOpen((o) => !o)}
+                onClick={() => setFriendsOpen(!friendsOpen)}
               >
                 <Users className="w-[14px] h-[14px]" />
                 {friendActivity > 0 && (
@@ -2522,6 +2529,8 @@ export function App() {
               它左上角是空地,浮标不会盖住任何东西("连接中"那屏在更早处 return) */}
           {phase === "welcome" && <FloatingSidebarNub />}
           {main}
+          {/* 牌局邀请浮层:抽屉收着也得看得见,而邀请是有时效的(见组件顶部注释) */}
+          <GameInviteToast />
         </SidebarInset>
       </TooltipProvider>
     </SidebarProvider>

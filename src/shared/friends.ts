@@ -35,6 +35,29 @@ export interface DirectMessage {
   createdAt: string;
 }
 
+/** 一条牌局邀请,从"我"的视角展开(peer 是对方,不管我是邀请人还是被邀请人)。
+    行形状对应 supabase/migrations/0006 的 game_invites */
+export interface GameInvite {
+  id: string;
+  /** 对方 —— direction=incoming 时是邀请人,outgoing 时是被邀请人 */
+  peer: FriendProfile;
+  direction: "incoming" | "outgoing";
+  tableId: string;
+  /** 建邀请那一刻的桌名快照(对方不一定看得见那张桌的行) */
+  tableName: string;
+  status: "pending" | "accepted" | "declined" | "cancelled";
+  /** ISO 8601 */
+  createdAt: string;
+  /** ISO 8601。过期是投影:到点了 UI 自己不显示,DB 里 status 仍是 pending */
+  expiresAt: string;
+}
+
+/** 实时链路健康度(主进程判定,渲染层只显示):
+    connecting = 正在建订阅;live = postgres_changes/presence 都通;
+    degraded = 订阅报错/超时,已切到轮询兜底(功能仍在,只是慢几秒)。
+    存在的理由见 ADR-0027 —— 线上 /realtime/v1 经 Kong 返 503(issue #77) */
+export type RealtimeHealth = "connecting" | "live" | "degraded";
+
 /** 好友 bridge 方法的错误形态(spec 裁定):网络/RLS 拒绝不 throw,结构化回流,
     渲染层拿 message 做内联提示。throw 只留给"渲染层送来非法参数"这类编程错误 */
 export type FriendsResult<T> = { ok: true; value: T } | { ok: false; message: string };
