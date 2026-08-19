@@ -28,10 +28,12 @@ import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
 import type { NotificationTarget } from "../../shared/shellBridge.js";
+import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
   type ChatMessage,
 } from "./lib/friendsState.js";
+import { needsOnboarding } from "./lib/identity.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
 export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
@@ -141,6 +143,12 @@ interface ChatState {
   keyStatus: Record<string, boolean>;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
+  /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
+      和 account 不是同一份数据,显示身份时以这份为准(ADR-0028) */
+  myProfile: MyProfile | null;
+  /** 首登引导弹窗开着没有。它由 needsOnboarding() 决定何时**首次**打开,
+      之后归用户(关了就是关了,不该被下一次 profile 刷新重新掀开) */
+  profileSetupOpen: boolean;
   /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
   wallet: WalletBalance | null;
   /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
@@ -259,6 +267,11 @@ interface ChatState {
   /** 回应邀请。接受 = 切到 game 档并进那张桌,**不代付买入**(ADR-0027) */
   respondGameInvite(inviteId: string, accept: boolean): Promise<void>;
   cancelGameInvite(inviteId: string): Promise<void>;
+  /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
+  refreshMyProfile(): Promise<void>;
+  /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
+  saveMyProfile(patch: ProfilePatch): Promise<string | null>;
+  setProfileSetupOpen(open: boolean): void;
   decide(decision: "approved" | "denied", reason?: string): Promise<void>;
   /** 交问卷。answers 为 null = 用户关掉了卡片（模型会知道"没人答"，不是"全跳过"） */
   answerQuestions(answers: AskUserAnswer[] | null): Promise<void>;
@@ -333,6 +346,8 @@ export const useChat = create<ChatState>((set, get) => ({
   skills: [],
   keyStatus: {},
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
+  myProfile: null,
+  profileSetupOpen: false,
   wallet: null,
   walletError: "",
   staged: [],
@@ -823,6 +838,32 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ friendError: r.ok ? null : r.message });
   },
 
+  setProfileSetupOpen: (open) => set({ profileSetupOpen: open }),
+
+  async refreshMyProfile() {
+    const r = await window.otter.myProfile();
+    if (!r.ok) {
+      // 资料读不到不弹错:它不是用户刚发起的动作,横幅出现得莫名其妙。
+      // 后果只是身份退回 account 那一份(ADR-0028 的兜底),不是功能坏了
+      console.error("myProfile 读取失败", r.message);
+      return;
+    }
+    const myProfile = r.value;
+    // 引导只在"这一次读出来发现没盖章"时**开一次**。写成
+    // profileSetupOpen: needsOnboarding(...) 会让用户关掉之后被下一次刷新重新掀开
+    set((s) => ({
+      myProfile,
+      profileSetupOpen: s.profileSetupOpen || needsOnboarding(s.account, myProfile),
+    }));
+  },
+
+  async saveMyProfile(patch) {
+    const r = await window.otter.updateProfile(patch);
+    if (!r.ok) return r.message;
+    set({ myProfile: r.value });
+    return null;
+  },
+
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
@@ -837,6 +878,9 @@ export const useChat = create<ChatState>((set, get) => ({
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
               gameInvites: [], realtimeHealth: "connecting", friendsPanelOpen: false,
+              // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
+              // 前一个人的脸,直到新资料拉回来
+              myProfile: null, profileSetupOpen: false,
               // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
               wallet: null, walletError: "",
             }
@@ -844,7 +888,11 @@ export const useChat = create<ChatState>((set, get) => ({
       // 补拉余额必须在 set 之后：refreshWallet 读的是 store 里的登录态，
       // 先调等于拿着旧的"未登录"去查，直接短路成 null。
       // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
-      if (account.signedIn) void get().refreshWallet();
+      if (account.signedIn) {
+        void get().refreshWallet();
+        // 资料补拉同理要在 set 之后:needsOnboarding 读的是 store 里的登录态
+        void get().refreshMyProfile();
+      }
     });
     window.otter.onPokerHand((pokerHand) => {
       set({ pokerHand });
@@ -991,6 +1039,10 @@ export const useChat = create<ChatState>((set, get) => ({
         ? { ...enterChat(info), sessions, skills, account }
         : { phase: "welcome", sessions, skills, account }
     );
+    // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
+    // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
+    // provider 的旧名字,首登引导也永远不弹
+    if (account.signedIn) void get().refreshMyProfile();
   },
 
   async pickWorkspace() {

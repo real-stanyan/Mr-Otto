@@ -710,3 +710,65 @@
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
   70%, 100% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--primary) 0%, transparent); }
 }
+
+/* ── 弹窗(shadcn dialog)的进出场 ─────────────────────────────────────
+   为什么手写而不是用 tailwindcss-animate 那套类名:本仓库没装那个插件,
+   ui/* 里那些 `animate-in fade-in-0 zoom-in-95` 全是死类名(见 ui/dialog.tsx 顶部注释)。
+   用 keyframes 而不是 @starting-style,是因为**离场也要**:radix 的 Presence
+   会等动画跑完再卸载,@starting-style 只管进场,关闭时会瞬间消失。
+   modal 不设 transform-origin:它不锚在任何触发器上,就该从视口中心来去 */
+@keyframes dialog-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dialog-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes dialog-content-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes dialog-content-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+}
+/* 起手 0.96 不是 0:现实里没有东西从"没有体积"长出来,scale(0) 会读成凭空冒出。
+   离场比进场快(140 vs 200):用户已经做完决定了,慢慢退场只是拖着他 */
+.dialog-overlay[data-state="open"] { animation: dialog-overlay-in 200ms var(--ease-strong); }
+.dialog-overlay[data-state="closed"] { animation: dialog-overlay-out 140ms var(--ease-strong); }
+.dialog-content[data-state="open"] { animation: dialog-content-in 200ms var(--ease-strong); }
+.dialog-content[data-state="closed"] { animation: dialog-content-out 140ms var(--ease-strong); }
+@media (prefers-reduced-motion: reduce) {
+  .dialog-content[data-state="open"],
+  .dialog-content[data-state="closed"] {
+    /* 位移和缩放全去掉,只留淡入淡出。translate 得留着——它是定位的一部分,
+       不是动效(去掉弹窗会跑到右下角) */
+    animation-name: dialog-overlay-in;
+    animation-duration: 160ms;
+  }
+  .dialog-content[data-state="closed"] { animation-name: dialog-overlay-out; }
+}
+
+/* 可按元素的按下反馈。100ms 是"手指还没抬起来就已经看到反应"的量级;
+   松手回弹用同一条曲线,不做过冲——这不是被甩出去的东西,是被按下去的 */
+.press-scale {
+  transition: transform 120ms var(--ease-strong);
+}
+.press-scale:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .press-scale:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* "已保存"提示:淡入即可。它是一句确认,不是一个事件,不该有位移 */
+.saved-hint {
+  opacity: 1;
+  transition: opacity 200ms var(--ease-strong);
+  @starting-style {
+    opacity: 0;
+  }
+}

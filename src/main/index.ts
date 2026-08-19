@@ -36,11 +36,14 @@ import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
+import { UserProfileManager } from "./userProfile.js";
+import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
   createNotifier, dmNotification, friendRequestNotification, inviteNotification,
   newIncomingInvites, newIncomingRequests,
 } from "./friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
+import type { ProfilePatch } from "../shared/profile.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -173,6 +176,9 @@ void app.whenReady().then(() => {
       healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
     },
   });
+  // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
+  // 同一登录态,别建第二个
+  const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
   accountManager = new AccountManager({
     openExternal: (url) => shell.openExternal(url),
     onChange: (info) => {
@@ -409,6 +415,12 @@ void app.whenReady().then(() => {
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
+
+  // 本人资料:读/写 profiles 自己那一行。结构化回流(ProfileResult),不靠 invoke reject
+  // 没有对应的推送频道:profiles 只被用户自己在这台机器上改,主进程不会背着渲染层
+  // 动它。回值即新状态,渲染层照着 set 就行(登录时由 onAccountChanged 触发补拉)
+  ipcMain.handle(CHANNELS.myProfile, () => userProfile.load());
+  ipcMain.handle(CHANNELS.updateProfile, (_e, patch: ProfilePatch) => userProfile.save(patch));
 
   // 好友系统:全部结构化回流(FriendsResult),渲染层按 ok 分支,不靠 invoke reject
   ipcMain.handle(CHANNELS.friendsSearch, (_e, email: string) => friends.search(email));

@@ -19,6 +19,7 @@ Realtime 暂时坏着(issue #77)时,好友/私信/牌局邀请仍然可用,只�
 | `0001_friends.sql` | profiles / friendships / messages + RLS + Realtime | 重跑安全,见文件头 |
 | `0002`–`0005` | 额度钱包 / 德州账本 / 牌桌 | — |
 | `0006_presence_heartbeat_and_game_invites.sql` | `profiles.last_seen_at` 心跳列 + `game_invites` 牌局邀请表 | 没跑这一条时,邀请功能会报表不存在;在线点退回只认 Realtime presence |
+| `0007_profile_onboarding.sql` | `profiles.onboarded_at` 首登标记 + 修 `handle_auth_user_upsert` 不再用 provider 头像覆盖用户自设的头像 | 没跑这一条时,读资料会报列不存在,身份退回 `AccountInfo`(改动前的行为),引导不弹、改资料报错;详见 ADR-0028 |
 
 `checks/` 下同名 `.check.sql` 是对着真库的一致性校验(整段事务 + rollback,不留痕),
 跑法写在每个文件头部。
