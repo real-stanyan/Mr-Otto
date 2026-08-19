@@ -208,6 +208,8 @@ export interface PokerSeatView {
   allIn: boolean;
   /** null = 看不到（别人的牌，且还没摊牌） */
   hole: number[] | null;
+  /** 当前街的最后一个公开动作；null = 这条街还没动过。旧网关不带此字段,客户端按 null 处理 */
+  lastAction?: { kind: "blind" | "fold" | "check" | "call" | "raise"; amount: number } | null;
 }
 
 export interface PokerHandView {

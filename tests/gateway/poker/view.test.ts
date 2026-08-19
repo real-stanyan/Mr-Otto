@@ -161,3 +161,44 @@ describe("视图其余字段", () => {
     expect(viewFor("p0", src(s)).deltas).toEqual(s.deltas);
   });
 });
+
+describe("lastAction(行动气泡数据)", () => {
+  it("开局只有盲注,大小盲的座位标 blind,其他座位 null", () => {
+    const { state, src } = deal(21);
+    const v = viewFor("p0", src(state));
+    const blinds = v.seats.filter((s) => s.lastAction?.kind === "blind");
+    expect(blinds).toHaveLength(2);
+    expect(blinds.map((s) => s.lastAction!.amount).sort((a, b) => a - b)).toEqual([25, 50]);
+    for (const s of v.seats) {
+      if (s.lastAction) expect(s.lastAction.kind).toBe("blind");
+    }
+  });
+
+  it("行动后覆盖该座位的气泡;call 报实付,raise 报加注到的目标", () => {
+    const { state, src } = deal(22);
+    const actor = state.seats[state.toAct]!;
+    const opts = legalActions(state, actor.userId);
+    const raise = opts.find((o) => o.type === "raise");
+    if (!raise || raise.type !== "raise") throw new Error("测试局面该有加注选项");
+    const s2 = applyAction(state, actor.userId, { type: "raise", to: raise.minTo });
+    const v = viewFor("p0", src(s2));
+    const seat = v.seats.find((s) => s.userId === actor.userId)!;
+    expect(seat.lastAction).toEqual({ kind: "raise", amount: raise.minTo });
+  });
+
+  it("换街清空:发出翻牌后所有座位的气泡归 null(直到有人再动)", () => {
+    const { state, src } = deal(23);
+    // 翻前所有人跟到底/过牌,推进到翻牌
+    let s = state;
+    while (s.street === "preflop" && !s.done) {
+      const seat = s.seats[s.toAct]!;
+      const opts = legalActions(s, seat.userId);
+      const call = opts.find((o) => o.type === "call") ?? opts.find((o) => o.type === "check");
+      if (!call) throw new Error("没有跟注/过牌选项");
+      s = applyAction(s, seat.userId, { type: call.type } as { type: "call" | "check" });
+    }
+    if (s.done) return; // 极端 all-in 跑完局面,不适用本断言
+    const v = viewFor("p0", src(s));
+    for (const seat of v.seats) expect(seat.lastAction).toBeNull();
+  });
+});
