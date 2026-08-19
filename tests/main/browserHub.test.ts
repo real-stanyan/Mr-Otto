@@ -171,12 +171,22 @@ describe("browserHub 注册表", () => {
     expect(hub.info("s1")!.lastError).toContain("-105");
   });
 
-  it("加载成功清掉上一次的错——错误是状态不是历史", () => {
+  it("下一次导航开始时清掉上一次的错——错误是状态不是历史", () => {
+    const { hub, views } = makeHub();
+    hub.open("s1");
+    views[0]!.fire({ type: "failed", errorCode: -105, errorDescription: "NAME_NOT_RESOLVED", url: "https://nope.invalid" });
+    views[0]!.fire({ type: "loading", loading: true });
+    expect(hub.info("s1")!.lastError).toBeUndefined();
+  });
+
+  it("失败之后那一发 loaded 不算翻篇 —— 加载失败时 Chromium 还会把自己的错误页" +
+     "加载完,再补一个 did-finish-load;当成\"成功一次\"处理的话,错误条会在" +
+     "面板重新挂上来的那一刻莫名消失(实测:关着面板时失败,重开就看不到错了)", () => {
     const { hub, views } = makeHub();
     hub.open("s1");
     views[0]!.fire({ type: "failed", errorCode: -105, errorDescription: "NAME_NOT_RESOLVED", url: "https://nope.invalid" });
     views[0]!.fire({ type: "loaded" });
-    expect(hub.info("s1")!.lastError).toBeUndefined();
+    expect(hub.info("s1")!.lastError).toContain("-105");
   });
 
   it("setBounds 透传;null = 摘下来但不销毁(关面板不杀页面)", () => {

@@ -135,11 +135,16 @@ export function createBrowserHub(deps: BrowserHubDeps) {
           break;
         case "loading":
           record.loading = e.loading;
+          // 翻篇的时机是"下一次导航开始",不是"某次加载完成":
+          // lastError 是状态不是历史,该由新的一次尝试来翻篇
+          if (e.loading) delete record.lastError;
           break;
         case "loaded":
           record.loading = false;
-          // 成功一次就把上次的错抹掉:lastError 是状态不是历史
-          delete record.lastError;
+          // 这里刻意不清 lastError。加载失败时 Chromium 还会把自己那张错误页
+          // 加载完,补一个 did-finish-load 上来——当成"成功一次"处理的话,
+          // 错误条会在面板重新挂回窗口的那一刻莫名消失(实测:关着面板时失败,
+          // 重开面板就看不到错了,只剩一个白页和一个打不开的地址)
           break;
         case "failed":
           record.loading = false;
