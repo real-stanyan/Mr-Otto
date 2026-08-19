@@ -40,6 +40,7 @@ export function ProfileEditor({
   initial,
   error,
   busy = false,
+  autoFocus = false,
   actions,
 }: {
   draft: ProfileDraft;
@@ -49,6 +50,9 @@ export function ProfileEditor({
   /** 保存失败的原因。表单自己的读图错误也会显示在同一行 */
   error?: string | null;
   busy?: boolean;
+  /** 挂载时把光标放进名字框。只有弹窗该开:设置页是用户自己点进来的,
+      进门就抢焦点会让接下来的任何按键都掉进名字框里 */
+  autoFocus?: boolean;
   actions?: React.ReactNode;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -59,9 +63,10 @@ export function ProfileEditor({
   // 弹窗一开就把光标放进名字框:引导的第一件事就是改名,让用户少点一下。
   // radix 的 Dialog 会在挂载后抢一次焦点,得等它抢完(下一帧)再要回来
   useEffect(() => {
+    if (!autoFocus) return;
     const id = requestAnimationFrame(() => nameRef.current?.focus());
     return () => cancelAnimationFrame(id);
-  }, []);
+  }, [autoFocus]);
 
   const pick = async (file: File | undefined) => {
     if (!file) return;

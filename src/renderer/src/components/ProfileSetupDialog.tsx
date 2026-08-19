@@ -16,8 +16,32 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 
+/**
+ * 外壳:只管开合。内容拆成下面一层是为了两件事同时成立 ——
+ *   ① 草稿的初值在**打开那一刻**才取。这个组件常驻在 App 里,写成一层的话
+ *      useState 会在 app 启动时(profile 还是 null)就把草稿定成空的,
+ *      等到真弹出来时名字框里是空白而不是当前的名字。
+ *   ② 关闭动画还能播。radix 的 Presence 会等动画跑完再卸载 content,
+ *      但如果我们自己在 open=false 时就把整个 Dialog 拆了,它没机会播。
+ */
 export function ProfileSetupDialog() {
   const open = useChat((s) => s.profileSetupOpen);
+  const setOpen = useChat((s) => s.setProfileSetupOpen);
+
+  return (
+    <Dialog
+      open={open}
+      // Esc / 点遮罩 / × —— 都算"现在不想弄",不盖章,下次登录再问
+      onOpenChange={(next) => { if (!next) setOpen(false); }}
+    >
+      <DialogContent className="sm:max-w-[420px]">
+        <ProfileSetupBody />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProfileSetupBody() {
   const account = useChat((s) => s.account);
   const profile = useChat((s) => s.myProfile);
   const save = useChat((s) => s.saveMyProfile);
@@ -25,15 +49,13 @@ export function ProfileSetupDialog() {
 
   const identity = displayIdentity(account, profile);
   // 草稿只在挂载时取一次初值 —— 打字过程中 profile 若被刷新(轮询/换号)不该把
-  // 用户正在输入的内容冲掉。open 时才挂载,所以每次弹出都是新鲜的初值
+  // 用户正在输入的内容冲掉。弹出时才挂载,所以每次弹出都是新鲜的初值
   const [draft, setDraft] = useState<ProfileDraft>({
     name: identity.name,
     avatarUrl: identity.avatarUrl,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  if (!open) return null;
 
   const finish = async () => {
     setBusy(true);
@@ -54,38 +76,31 @@ export function ProfileSetupDialog() {
   };
 
   return (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        // Esc / 点遮罩 / × —— 都算"现在不想弄",不盖章,下次登录再问
-        if (!next && !busy) setOpen(false);
-      }}
-    >
-      <DialogContent className="sm:max-w-[420px]">
-        <DialogHeader>
-          <DialogTitle>先给自己起个名字</DialogTitle>
-          <DialogDescription>
-            好友列表、聊天和牌桌上显示的都是这里的名字和头像。随时能在「账号」里改。
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <DialogHeader>
+        <DialogTitle>先给自己起个名字</DialogTitle>
+        <DialogDescription>
+          好友列表、聊天和牌桌上显示的都是这里的名字和头像。随时能在「账号」里改。
+        </DialogDescription>
+      </DialogHeader>
 
-        <ProfileEditor
-          draft={draft}
-          onChange={setDraft}
-          initial={identity.initial}
-          error={error}
-          busy={busy}
-        />
+      <ProfileEditor
+        draft={draft}
+        onChange={setDraft}
+        initial={identity.initial}
+        error={error}
+        busy={busy}
+        autoFocus
+      />
 
-        <DialogFooter>
-          <Button variant="ghost" disabled={busy} onClick={() => void later()}>
-            以后再说
-          </Button>
-          <Button disabled={busy || draft.name.trim() === ""} onClick={() => void finish()}>
-            {busy ? "保存中…" : "就这样"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <DialogFooter>
+        <Button variant="ghost" disabled={busy} onClick={() => void later()}>
+          以后再说
+        </Button>
+        <Button disabled={busy || draft.name.trim() === ""} onClick={() => void finish()}>
+          {busy ? "保存中…" : "就这样"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
