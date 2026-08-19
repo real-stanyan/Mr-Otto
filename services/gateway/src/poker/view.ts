@@ -33,6 +33,8 @@ export interface SeatView {
   committed: number;
   folded: boolean;
   allIn: boolean;
+  /** 此刻是否开着这张桌的页面(SSE 订阅去重)。false = 人不在,别等他手动行动 */
+  online: boolean;
   /** null = 看不到 */
   hole: readonly number[] | null;
   /** null = 这条街还没动过 */
@@ -72,6 +74,8 @@ export interface ViewSource {
   tableId: string;
   state: HandState;
   commitment: DeckCommitment;
+  /** 在场者(SSE 订阅去重)。不传 = 不知道,座位一律按在场显示 */
+  online?: ReadonlySet<string> | undefined;
 }
 
 /** 每座位在当前街的最后一个动作。窗口 = 最后一条 deal 之后（翻前没有 deal,整段都算） */
@@ -125,6 +129,7 @@ export function viewFor(viewerId: string, src: ViewSource): HandView {
       committed: s.committed,
       folded: s.folded,
       allIn: s.allIn,
+      online: src.online ? src.online.has(s.userId) : true,
       hole: s.userId === viewerId || (revealed && shown.has(i)) ? s.hole : null,
       lastAction: acted[i] ?? null,
     })),

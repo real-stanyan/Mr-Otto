@@ -176,6 +176,56 @@ describe("路由", () => {
   });
 });
 
+describe("在场门禁与掉线处理", () => {
+  it("开牌要求在场(SSE 订阅)∩在座 ≥ 2:筹码留桌不等于人在", async () => {
+    const { api } = harness();
+    // 没人开着牌桌页:a、b 的筹码都在座,也不许开
+    expect((await api.handle("a", post(), "t1/start")).status).toBe(409);
+
+    // 只有 a 在场:还是不许
+    const sseA = await api.handle("a", get(), "t1/stream");
+    const res1 = await api.handle("a", post(), "t1/start");
+    expect(res1.status).toBe(409);
+    expect(JSON.stringify(await res1.json())).toMatch(/不足两人/);
+
+    // a、b 都在场:开得起来
+    const sseB = await api.handle("b", get(), "t1/stream");
+    expect((await api.handle("a", post(), "t1/start")).status).toBe(200);
+    await sseA.body!.cancel();
+    await sseB.body!.cancel();
+  });
+
+  it("toAct 玩家离场超过宽限期,网关代为弃牌,牌局不挂死", async () => {
+    vi.useFakeTimers();
+    try {
+      const { api, tables } = harness();
+      const state = await tables.startHand("t1");
+      const actor = state.seats[state.toAct]!.userId;
+      const other = state.seats.find((s) => s.userId !== actor)!.userId;
+      // 只有对家在场,行动者不在
+      const sse = await api.handle(other, get(), "t1/stream");
+
+      // 第一轮扫描记下离场时刻,宽限 60s 后代为弃牌(单挑弃牌 = 这手直接结束)
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(tables.view("t1", other)!.done).toBe(true);
+      await sse.body!.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("视图按 SSE 订阅标每座位的 online", async () => {
+    const { api, tables } = harness();
+    await tables.startHand("t1");
+    const sse = await api.handle("b", get(), "t1/stream");
+    const res = await api.handle("b", get(), "t1");
+    const body = await res.json() as { hand: { seats: { userId: string; online: boolean }[] } };
+    expect(body.hand.seats.find((s) => s.userId === "b")!.online).toBe(true);
+    expect(body.hand.seats.find((s) => s.userId === "a")!.online).toBe(false);
+    await sse.body!.cancel();
+  });
+});
+
 describe("SSE", () => {
   it("连上先推一份自己的视图，之后每次变化各推各的", async () => {
     const { api, tables } = harness();
