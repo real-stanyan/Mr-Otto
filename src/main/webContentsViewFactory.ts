@@ -5,6 +5,11 @@
 
 import { WebContentsView, type BrowserWindow } from "electron";
 import type { BrowserViewHandle, BrowserViewEvent } from "./browserHub.js";
+import {
+  isAllowedPopupTarget,
+  isAllowedTopLevelNavigation,
+  shouldReportLoadFailure,
+} from "./browserNavigationPolicy.js";
 import type { BrowserBounds } from "../shared/browser.js";
 
 export function createWebContentsViewHandle(win: BrowserWindow, partition: string): BrowserViewHandle {
@@ -22,23 +27,25 @@ export function createWebContentsViewHandle(win: BrowserWindow, partition: strin
   const wc = view.webContents;
   let attached = false;
 
-  // 新窗口一律拦下,在当前 view 里打开:内置浏览器只有一块屏,
-  // 放任 window.open 会飘出一个 Otto 管不着的裸窗口。
-  // 但只把 http(s) 目标接进来——browser_read 工具拒绝 file:// 参数,防的就是
-  // 模型直接读本机文件;可一个不可信页面能自己 window.open("file:///…"),
-  // 若照单全收就会把同一份本地文件内容从后门喂给"读当前页"的 agent。
-  // 非 http(s) 一律拒绝且不导航;URL 解析失败(畸形 url)按拒绝处理,不能让异常
-  // 逃出这个 handler。
+  // 门之一:window.open。新窗口一律拦下,在当前 view 里打开——内置浏览器只有一块屏,
+  // 放任 window.open 会飘出一个 Otto 管不着的裸窗口。放行判断见
+  // browserNavigationPolicy.isAllowedPopupTarget(那里写了为什么只认 http(s))
   wc.setWindowOpenHandler(({ url }) => {
-    let scheme: string;
-    try {
-      scheme = new URL(url).protocol;
-    } catch {
-      return { action: "deny" };
-    }
-    if (scheme !== "http:" && scheme !== "https:") return { action: "deny" };
-    void wc.loadURL(url);
+    if (isAllowedPopupTarget(url)) void wc.loadURL(url);
     return { action: "deny" };
+  });
+
+  // 门之二:页面把顶层框架自己导走(location.href = …、<a>、meta refresh)。
+  // 上面那扇门只管 window.open,这一扇之前是敞着的。要关的是自定义协议:
+  // app 注册了 mrotto:// 协议处理器(index.ts 的 setAsDefaultProtocolClient
+  // + open-url 监听),回调 URL 里的 code 会被直接喂进登录流程(account.ts);
+  // 一个不可信页面若能把顶层框架导向 mrotto://auth-callback?code=…,
+  // 就等于隔着浏览器往 Otto 的认证流里塞参数——关的就是这扇门。
+  //
+  // 不影响正常浏览:服务端 3xx 重定向走的是 will-redirect 且落点还是 http(s);
+  // 我们自己 loadURL() 发起的导航是 API 发起的,根本不经过 will-navigate
+  wc.on("will-navigate", (event, url) => {
+    if (!isAllowedTopLevelNavigation(url)) event.preventDefault();
   });
 
   return {
@@ -50,7 +57,10 @@ export function createWebContentsViewHandle(win: BrowserWindow, partition: strin
     goBack: () => wc.navigationHistory.goBack(),
     goForward: () => wc.navigationHistory.goForward(),
     reload: () => wc.reload(),
-    executeJavaScript: (code) => wc.executeJavaScript(code, true),
+    // 不带 userGesture:抽取脚本不需要用户激活,而白送一个不可信页面一次
+    // transient activation(弹窗/全屏/自动播放的门票)没有任何好处。
+    // BrowserViewHandle 的签名里本来也没有这个参数
+    executeJavaScript: (code) => wc.executeJavaScript(code),
 
     setBounds: (b: BrowserBounds | null) => {
       if (!b || b.width <= 0 || b.height <= 0) {
@@ -81,10 +91,7 @@ export function createWebContentsViewHandle(win: BrowserWindow, partition: strin
         validatedURL: string,
         isMainFrame: boolean
       ) => {
-        // 子框架(广告 iframe 之类)加载失败不是这一页失败,报上去只会误导人
-        if (!isMainFrame) return;
-        // -3 = ABORTED,用户/我们自己中途换页触发的,不是错
-        if (errorCode === -3) return;
+        if (!shouldReportLoadFailure(errorCode, isMainFrame)) return;
         cb({ type: "failed", errorCode, errorDescription, url: validatedURL });
       };
       wc.on("did-navigate", onNavigate);
