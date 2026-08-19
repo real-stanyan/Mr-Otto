@@ -1173,7 +1173,6 @@ export const useChat = create<ChatState>((set, get) => ({
       // 已经不存在的会话,不会再有 TerminalView 重新挂载它们(Task 6 review finding 2)
       const terminals = await window.otter.terminalList(sessionId);
       await window.otter.deleteSession(sessionId);
-      for (const t of terminals) terminalRegistry.dispose(t.id);
       const sessions = await window.otter.listSessions();
       // 删的是正看着的会话 → 回欢迎页，清掉它的投影
       if (get().sessionId === sessionId) {
@@ -1181,6 +1180,12 @@ export const useChat = create<ChatState>((set, get) => ({
       } else {
         set({ sessions });
       }
+      // dispose 放在 set() 之后:先把 sessionId 变化落给订阅者,让还挂载着的
+      // TerminalView 的 [sessionId] effect 先摘断(activeId 置空、宿主清空),
+      // 再销毁实例——避免一个还在被挂载组件当作 activeId/DOM 引用着的实例
+      // 被 dispose 掉(Task 6 review finding 5 附带项,虽然复核没能实际撞出崩溃,
+      // 但顺序反过来更脆)
+      for (const t of terminals) terminalRegistry.dispose(t.id);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

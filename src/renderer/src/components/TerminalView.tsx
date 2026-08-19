@@ -69,6 +69,12 @@ export function TerminalView() {
       return;
     }
     const slot = registry.get(activeId);
+    // 标签有可能在被点开之前就已经退出——那样这里是第一次 get(),
+    // factory 给的 exited 默认是 false,但 tabs 列表已经是后端刷新过的事实
+    // (onTerminalExit 处理器每次都会重拉一遍 terminalList)。只在它说"退了"
+    // 的时候才纠正,不然会把"活跃标签退出时由 live 事件直接置 true"的结果盖掉
+    const tabInfo = tabs.find((t) => t.id === activeId);
+    if (tabInfo?.exited) slot.exited = true;
     host.replaceChildren();
     if (slot.term.element) {
       // 这个终端之前在别的宿主(甚至别的挂载周期)里 open() 过——
