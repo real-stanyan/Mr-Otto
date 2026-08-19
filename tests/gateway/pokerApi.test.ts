@@ -95,10 +95,17 @@ describe("路由", () => {
   it("列桌只列看得见的：自己建的 / 自己坐着的 / 好友建的", async () => {
     const { api } = harness();
     const res = await api.handle("a", get(), "");
-    const body = await res.json() as { tables: { id: string; players: number }[] };
+    const body = await res.json() as { tables: { id: string; players: number; online: number }[] };
     expect(body.tables.map((t) => t.id)).toEqual(["t1"]);
-    // 等桌页靠它画"X/Y 在座":有筹码的在座人数
+    // 等桌页靠它画人数:players = 有筹码的座位,online = 正开着牌桌页的人
     expect(body.tables[0]!.players).toBe(2);
+    expect(body.tables[0]!.online).toBe(0);
+
+    // b 打开牌桌页(订上 SSE)后,在场人数变 1 —— 筹码在座不等于人在场
+    const sse = await api.handle("b", get(), "t1/stream");
+    const body2 = await (await api.handle("a", get(), "")).json() as { tables: { online: number }[] };
+    expect(body2.tables[0]!.online).toBe(1);
+    await sse.body!.cancel();
 
     // 与建桌人 a 无关的 outsider 看不到
     const res2 = await api.handle("outsider", get(), "");

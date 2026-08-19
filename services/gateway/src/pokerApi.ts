@@ -122,6 +122,9 @@ export function createPokerApi(deps: PokerApiDeps) {
         seated: seated.has(String(r["id"])),
         live: tables.hasLiveHand(String(r["id"])),
         players: players.get(String(r["id"])) ?? 0,
+        // 在场 ≠ 在座:筹码离桌前一直留在桌上,人却可能早关了窗口。
+        // 订阅这张桌 SSE 的去重人数才是"正开着牌桌页的人"
+        online: new Set((subs.get(String(r["id"])) ?? []).map((x) => x.userId)).size,
       })),
     });
   }

@@ -614,7 +614,7 @@ function Lobby({ tables }: { tables: PokerTableSummary[] }) {
 function OrbitCards({ count, total }: { count: number; total: number }) {
   const N = 6;
   return (
-    <div className="relative h-[190px] w-[240px] [perspective:700px]" aria-label={`在座 ${count}/${total}`}>
+    <div className="relative h-[190px] w-[240px] [perspective:700px]" aria-label={`在场 ${count}/${total}`}>
       <div className="absolute inset-0 grid place-items-center [transform-style:preserve-3d] animate-[orbit-spin_16s_linear_infinite] motion-reduce:animate-none">
         {Array.from({ length: N }, (_, i) => (
           <div
@@ -632,7 +632,7 @@ function OrbitCards({ count, total }: { count: number; total: number }) {
             {count}
             <span className="text-sm font-normal text-muted-foreground">/{total}</span>
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">在座</div>
+          <div className="mt-1 text-[11px] text-muted-foreground">在场</div>
         </div>
       </div>
     </div>
@@ -654,13 +654,16 @@ function TableIdle({ tableId }: { tableId: string }) {
   }, [refresh]);
 
   const players = table?.players ?? 0;
+  const online = table?.online ?? 0;
   const maxSeats = table?.maxSeats ?? 6;
-  const ready = players >= 2;
+  // 人到了(正开着牌桌页)且都有筹码,才真开得起来。只看筹码会把
+  // 离桌前留在桌上的死筹码当成活人(实测踩过:B 关着 app,A 被提示人齐)
+  const ready = online >= 2 && players >= 2;
 
   if (table && !table.seated) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        <OrbitCards count={players} total={maxSeats} />
+        <OrbitCards count={online} total={maxSeats} />
         还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
         <AsyncButton size="sm" onClick={() => join(tableId, table.minBuyin)}>
           买入 {fmt(table.minBuyin)}
@@ -671,11 +674,13 @@ function TableIdle({ tableId }: { tableId: string }) {
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-      <OrbitCards count={players} total={maxSeats} />
+      <OrbitCards count={online} total={maxSeats} />
       {ready ? (
         <span className="font-medium text-primary">人齐了，可以开桌！</span>
       ) : (
-        <span>已入座，等好友买入（至少两个人才开得起来）。</span>
+        <span>
+          已入座，等好友上桌（在场 {online}，已买入 {players}，都到 2 才开得起来）。
+        </span>
       )}
       <div className="flex gap-2">
         <AsyncButton size="sm" disabled={!ready} onClick={() => start()}>开一手</AsyncButton>
