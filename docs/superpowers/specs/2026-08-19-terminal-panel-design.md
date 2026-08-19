@@ -80,7 +80,7 @@ interface TerminalRecord {
   sessionId: string;
   title: string;          // 默认 shell 名（zsh / bash）
   session: TerminalSession;
-  ring: RingBuffer;       // 末尾 ~200 KB
+  ring: RingBuffer;       // 末尾 ~20 万字符(UTF-16 码元,不是字节)
   exitCode: number | null;
 }
 ```
@@ -89,7 +89,8 @@ interface TerminalRecord {
 
 - 注册表 `Map<terminalId, TerminalRecord>`，按 sessionId 可反查。
 - **每会话上限 8 个标签**，超了 `terminalOpen` 抛人话错误（防手滑刷出一堆 shell）。
-- **环形回滚缓冲**：每终端保留最后约 200 KB 输出。这是「关面板不杀进程」的兑现物 ——
+- **环形回滚缓冲**：每终端保留最后约 20 万字符(UTF-16 码元,不是编码后的字节数)输出。
+  这是「关面板不杀进程」的兑现物 ——
   面板一关渲染层的 xterm 实例就没了，进程还在吐，得有人接住；重开面板时把缓冲
   一次性灌回去，用户看到的是连续的。
 - **连带清理**：app `before-quit` 杀全部；`deleteSession(sessionId)` 杀该会话名下全部。
@@ -159,7 +160,7 @@ AGENTS.md 硬规则是「model-visible means logged」—— 它的前提是 mod
 - `tests/main/terminalHub.test.ts`（注入假 pty 工厂）：
   - 开/列/关的注册表增删
   - 每会话上限 8，第 9 个报错
-  - 缓冲截断：写超 200 KB 后 snapshot 只剩尾部
+  - 缓冲截断：写超上限字符数后 snapshot 只剩尾部
   - 会话隔离：A 会话列不到 B 会话的终端
   - `killSession(sessionId)` 只杀该会话名下的
   - `killAll()` 全杀

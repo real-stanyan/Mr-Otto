@@ -26,7 +26,7 @@ function fakePty() {
   };
 }
 
-function makeHub(opts: { bufferBytes?: number; maxPerSession?: number } = {}) {
+function makeHub(opts: { bufferChars?: number; maxPerSession?: number } = {}) {
   const ptys: ReturnType<typeof fakePty>[] = [];
   const data = vi.fn();
   const exit = vi.fn();
@@ -124,13 +124,22 @@ describe("terminalHub 直播与缓冲", () => {
   });
 
   it("缓冲只留尾部:超上限后开头被丢掉", async () => {
-    const { hub, ptys } = makeHub({ bufferBytes: 10 });
+    const { hub, ptys } = makeHub({ bufferChars: 10 });
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
     ptys[0]!.emit("aaaaaaaaaa"); // 10
     ptys[0]!.emit("bbbbb");      // 再 5,总 15 > 10
     const snap = hub.attach(id).snapshot;
     expect(snap.length).toBeLessThanOrEqual(10);
     expect(snap.endsWith("bbbbb")).toBe(true);
+  });
+
+  it("bufferChars 量的是 UTF-16 码元,不是字节:多字节字符按码元数计入", async () => {
+    const { hub, ptys } = makeHub({ bufferChars: 3 });
+    const { id } = await hub.open("s1", "/tmp/w", 80, 24);
+    // "中" 在 UTF-16 下是 1 个码元,在 UTF-8 下是 3 字节——3 个字一共 3 码元 / 9 字节。
+    // 如果这里量的是字节,9 > 3 的上限该被截断;量的是码元,3 == 3 不截断
+    ptys[0]!.emit("中中中");
+    expect(hub.attach(id).snapshot).toBe("中中中");
   });
 
   it("attach 拿的是快照,不重放给别人;新开的终端快照是空的", async () => {

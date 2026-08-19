@@ -23,8 +23,11 @@ export interface TerminalHubDeps {
   };
   /** 每会话标签上限,防手滑刷出一堆 shell。缺省 8 */
   maxPerSession?: number;
-  /** 每终端回滚缓冲字节数,缺省 200 KB */
-  bufferBytes?: number;
+  /** 每终端回滚缓冲字符数(UTF-16 码元,即 JS string.length 的单位,不是字节),
+      缺省 200_000。中日韩这类多字节字符在 UTF-8 下会超出"200 KB"的字面承诺——
+      量的是码元数,不是编码后的字节数;真按字节量得在热路径上 TextEncoder,
+      不值这个成本,所以命名直接照实说 */
+  bufferChars?: number;
 }
 
 interface TerminalRecord {
@@ -41,7 +44,7 @@ interface TerminalRecord {
 
 export function createTerminalHub(deps: TerminalHubDeps) {
   const maxPerSession = deps.maxPerSession ?? 8;
-  const bufferBytes = deps.bufferBytes ?? 200_000;
+  const bufferChars = deps.bufferChars ?? 200_000;
   const terms = new Map<string, TerminalRecord>();
 
   // open() 里 await deps.openTerminal(...) 之前的这一段必须留出座位/号牌,
@@ -67,11 +70,11 @@ export function createTerminalHub(deps: TerminalHubDeps) {
   const remember = (rec: TerminalRecord, data: string) => {
     rec.chunks.push(data);
     rec.size += data.length;
-    while (rec.size > bufferBytes && rec.chunks.length > 1) {
+    while (rec.size > bufferChars && rec.chunks.length > 1) {
       rec.size -= rec.chunks.shift()!.length;
     }
-    if (rec.size > bufferBytes) {
-      const only = rec.chunks[0]!.slice(rec.size - bufferBytes);
+    if (rec.size > bufferChars) {
+      const only = rec.chunks[0]!.slice(rec.size - bufferChars);
       rec.chunks = [only];
       rec.size = only.length;
     }
