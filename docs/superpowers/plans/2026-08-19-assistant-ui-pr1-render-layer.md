@@ -1052,7 +1052,7 @@ EOF
 **Interfaces:**
 - Produces: 可从 `@/components/ui/thread.js` import 的 `Thread`；从 `@/components/ui/reasoning.js` import 的 `ReasoningRoot` / `ReasoningTrigger` / `ReasoningContent` / `ReasoningText`；从 `@/components/ui/tool-fallback.js` import 的 `ToolFallback`（复合件，另有 `.Root` / `.Trigger` / `.Content` / `.Args` / `.Result` / `.Error` / `.Approval` 子件）
 
-**背景（实现者必读）：** registry 是 **copy-in 源码**，不是版本化依赖 —— 装完的文件归本仓所有，要进 diff 审查。它会尝试覆盖 `ui/button.tsx`、`ui/tooltip.tsx`，这两个本仓**已定制过**（`button.tsx` 的 `buttonVariants` 基类带 `transition-[...,opacity] duration-150`，被覆盖会让 `CopyButton` 的按压动效丢失）。
+**背景（实现者必读）：** registry 是 **copy-in 源码**，不是版本化依赖 —— 装完的文件归本仓所有，要进 diff 审查。配色和动效都得并进本仓那套（Step 5 / Step 5b），不然同一屏里会有两种手感。它会尝试覆盖 `ui/button.tsx`、`ui/tooltip.tsx`，这两个本仓**已定制过**（`button.tsx` 的 `buttonVariants` 基类带 `transition-[...,opacity] duration-150`，被覆盖会让 `CopyButton` 的按压动效丢失）。
 
 - [ ] **Step 1: 装 streamdown 依赖**
 
@@ -1097,6 +1097,33 @@ cp /tmp/otto-tooltip.bak.tsx src/renderer/src/components/ui/tooltip.tsx
 ```
 rounded-[12px_12px_2px_12px] px-3 py-2 bg-primary text-primary-foreground
 ```
+
+- [ ] **Step 5b: 动效并入本仓的运动系统**
+
+registry 装进来的组件自带一套动效，本仓已有自己的一套（[app.css:196](src/renderer/src/app.css:196) 起）：
+`--ease-strong: cubic-bezier(0.23, 1, 0.32, 1)` 是全仓统一的强 ease-out，
+且每一处过渡都配了 `prefers-reduced-motion` 兜底。两套不并，同屏里同样的动作会有两种手感。
+
+逐个文件过一遍 `thread.tsx` / `reasoning.tsx` / `tool-fallback.tsx`，按这张表改：
+
+| 看到 | 改成 | 为什么 |
+|---|---|---|
+| `transition-all` | 只列真正变的属性，如 `transition-[opacity,transform]` | `all` 会把布局属性也拖进过渡，掉帧 |
+| 内建 `ease-in-out` / `ease-in` / 无缓动 | `ease-strong`（本仓 utility，映射到 `--ease-strong`） | `ease-in` 开头慢，正是用户盯得最紧的那一刻，读起来发钝 |
+| `scale-0` 入场 | `scale-[0.95]` + `opacity-0` | 现实里没有东西从「无」里冒出来 |
+| 时长 > 300ms 的 UI 过渡 | 150–250ms | 超过 300ms 的界面动效会被读成卡 |
+| 有过渡但没有 `motion-reduce:` 兜底 | 补 `motion-reduce:transition-none`（或只留不位移的那部分） | 减弱动效 ≠ 关掉动效：保留有助理解的淡入淡出，去掉位移 |
+| popover/浮层 `transform-origin: center` | base-ui 的 `origin-[var(--transform-origin)]` | 浮层该从触发点长出来，不是从屏幕中心 |
+
+按本仓既有写法照抄即可，`Timeline.tsx` 的工具详情面板就是范本：
+
+```
+transition-[opacity,transform] duration-150 ease-strong
+starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99]
+motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100
+```
+
+**不要改本仓既有组件的动效** —— 这一步只管把新装进来的三个文件拉齐。
 
 - [ ] **Step 6: 引入 streamdown 的样式**
 
