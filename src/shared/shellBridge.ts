@@ -14,6 +14,7 @@ import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResul
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "./friends.js";
+import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -292,6 +293,11 @@ export interface ShellBridge {
   signIn(provider: "google" | "github"): Promise<void>;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
+  /** 本人在 profiles 表里的那一行（好友看到的就是它）。未登录 → value: null。
+      和 getAccount() 不是同一份数据，冲突时以这份为准（ADR-0028） */
+  myProfile(): Promise<ProfileResult<MyProfile | null>>;
+  /** 改本人资料（名字/头像/引导标记），回改完的真行。校验不过也走 ok:false */
+  updateProfile(patch: ProfilePatch): Promise<ProfileResult<MyProfile>>;
   /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
       （"没有额度"和"查不到额度"必须可区分） */
   walletBalance(): Promise<WalletBalance | null>;
@@ -408,6 +414,8 @@ export const CHANNELS = {
   signIn: "otter:signIn",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
+  myProfile: "otter:myProfile",
+  updateProfile: "otter:updateProfile",
   pokerTables: "otter:pokerTables",
   pokerCreateTable: "otter:pokerCreateTable",
   pokerJoin: "otter:pokerJoin",
