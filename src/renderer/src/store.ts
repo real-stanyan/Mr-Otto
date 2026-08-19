@@ -25,6 +25,7 @@ import type {
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
@@ -248,6 +249,8 @@ interface ChatState {
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
+  /** 粘贴/拖入的字节并入 staged。与 pickFiles 共用闸门和限额 */
+  attachPasted(files: { name: string; data: Uint8Array }[]): Promise<void>;
   /** ＋ 按钮：弹系统文件选择器，选完的分类结果并入 staged（图片限额 4 张/条在这做） */
   pickFiles(): Promise<void>;
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
@@ -1180,20 +1183,21 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       const picked = await window.otter.pickAttachments();
       if (picked.length === 0) return; // 用户取消
-      const ok = picked.filter(
-        (a): a is Extract<StagedAttachment, { kind: "image" | "text" }> => a.kind !== "rejected"
-      );
-      const rejected = picked.filter((a) => a.kind === "rejected");
-      let staged = [...get().staged, ...ok];
-      // 限额:图片 ≤4 张/条。超出的裁掉并告知——静默丢弃会让用户以为传上了
-      const errors = rejected.map((r) => `「${r.name}」被拒:${r.reason}`);
-      const images = staged.filter((a) => a.kind === "image");
-      if (images.length > 4) {
-        let kept = 0;
-        staged = staged.filter((a) => a.kind !== "image" || ++kept <= 4);
-        errors.push(`图片最多 4 张/条,多出的 ${images.length - 4} 张已忽略`);
-      }
-      set({ staged, attachError: errors.length > 0 ? errors.join("；") : null });
+      const { staged, error } = mergeStaged(get().staged, picked);
+      set({ staged, attachError: error });
+    } catch (e) {
+      set({ attachError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async attachPasted(files) {
+    if (files.length === 0) return;
+    try {
+      // 闸门在主进程(intakeFile):渲染层不判断这是不是图片、够不够小——
+      // 只有一套准入策略,＋ 按钮和粘贴走的是同一道
+      const picked = await window.otter.intakePastedFiles(files);
+      const { staged, error } = mergeStaged(get().staged, picked);
+      set({ staged, attachError: error });
     } catch (e) {
       set({ attachError: e instanceof Error ? e.message : String(e) });
     }

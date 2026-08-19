@@ -2100,6 +2100,7 @@ export function App() {
   const staged = useChat((s) => s.staged);
   const attachError = useChat((s) => s.attachError);
   const removeStaged = useChat((s) => s.removeStaged);
+  const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -2372,6 +2373,21 @@ export function App() {
                 disabled={status === "running"}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={(e) => {
+                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
+                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
+                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
+                  const files = Array.from(e.clipboardData.files);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void Promise.all(
+                    files.map(async (f) => ({
+                      // 截图的 File 常常叫 "image.png";名字只用于展示和拒收文案
+                      name: f.name || `粘贴的${f.type.startsWith("image/") ? "图片" : "文件"}`,
+                      data: new Uint8Array(await f.arrayBuffer()),
+                    }))
+                  ).then(attachPasted);
+                }}
                 onKeyDown={(e) => {
                   // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
                   if (slashMatches.length > 0) {

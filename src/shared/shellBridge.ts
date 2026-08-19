@@ -288,6 +288,9 @@ export interface ShellBridge {
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
+  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文本带内容,
+      其余拒收带理由。与 pickAttachments 共用闸门 = 只有一套准入策略 */
+  intakePastedFiles(files: { name: string; data: Uint8Array }[]): Promise<StagedAttachment[]>;
   /** 按附件 id 取 data URL(时间线缩略图懒取用)。只回展示用途,不进日志 */
   attachmentDataUrl(id: string): Promise<string>;
   /** 当前登录账号（未登录 = signedIn: false 的空账号，不是 null） */
@@ -413,6 +416,7 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
   signIn: "otter:signIn",

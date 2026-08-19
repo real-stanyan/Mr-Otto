@@ -33,6 +33,7 @@ const bridge: ShellBridge = {
   gitBranches: (repoDir) => ipcRenderer.invoke(CHANNELS.gitBranches, repoDir),
   gitCheckout: (repoDir, branch) => ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch),
   gitStatus: (repoDir) => ipcRenderer.invoke(CHANNELS.gitStatus, repoDir),
+  intakePastedFiles: (files) => ipcRenderer.invoke(CHANNELS.intakePastedFiles, files),
   getAccount: () => ipcRenderer.invoke(CHANNELS.getAccount),
   walletBalance: () => ipcRenderer.invoke(CHANNELS.walletBalance),
   pokerTables: () => ipcRenderer.invoke(CHANNELS.pokerTables),
