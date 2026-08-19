@@ -42,8 +42,6 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
 
   const choice = findModel(value);
-  // 配了 key 的厂商排前面。用户十次里有九次要选的是"我已经能用的那几家",
-  // 让他每次都滚过一串灰名字去够，是把目录的完整性摊给他付账
   const groups = useMemo(() => {
     const ready = (id: ProviderId) => {
       // DeepSeek 没配 key 也能用（登录后走官方赠额，见 main/modelRoute.ts）
@@ -55,8 +53,13 @@ export function ModelPicker({
     };
     return modelsByProvider()
       .map((g) => ({ ...g, info: findProvider(g.provider)!, ready: ready(g.provider) }))
+      // 没配 key 的厂商压根不进这个菜单：这里是"挑一个现在就能跑的型号"，
+      // 十来行点进去只会撞上"需要 key"的死路。配 key 是另一件事，走底下那个入口。
+      // 例外是当前选中的那家——key 被清掉之后菜单里也得能找到它，
+      // 否则触发器显示着一个在菜单里不存在的型号
+      .filter((g) => g.ready || g.provider === choice?.provider)
       .sort((a, b) => Number(b.ready) - Number(a.ready));
-  }, [keyStatus]);
+  }, [keyStatus, choice?.provider]);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -83,7 +86,7 @@ export function ModelPicker({
               {choice?.provider === g.provider && (
                 <CheckIcon className="size-[14px] shrink-0 text-primary" />
               )}
-              {!g.ready && choice?.provider !== g.provider && (
+              {!g.ready && (
                 <span className="shrink-0 text-[10.5px] text-muted-foreground">需 key</span>
               )}
             </DropdownMenuSubTrigger>
@@ -133,6 +136,7 @@ export function ModelPicker({
         )}
 
         <DropdownMenuSeparator />
+        {/* 目录里其余厂商都在这扇门后面：菜单只留能跑的，要加新的一家从这里进 */}
         <DropdownMenuItem className="gap-2 py-[7px]" onSelect={() => void openSettings("keys")}>
           <SettingsIcon className="size-[15px]" />
           添加更多模型…
