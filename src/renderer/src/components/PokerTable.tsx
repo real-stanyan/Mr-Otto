@@ -148,34 +148,56 @@ function SplitFlapNumber({ text }: { text: string }) {
 
 /**
  * 行动气泡：座位在当前街的最后一个动作,浮在头像上方。数据来自服务端
- * view 的 lastAction(公开信息),换街自然清空。内容变了弹一下 ——
- * 从 0.9 起手不是 0:现实里没有东西从虚无里长出来。
+ * view 的 lastAction(公开信息),换街自然清空。
+ *
+ * 要显眼(实测截图里旧版沉进背景,两个原因):
+ * 1. 暗色主题 --primary 和卡片底色几乎同色,10% 淡底等于隐形 —— 换 --brand
+ *    实心色块(双主题都鲜艳),下注类用色块,fold/check 保持低调灰;
+ * 2. gsap 写 transform 会覆盖 Tailwind 的 -translate-x-1/2,气泡跑偏 ——
+ *    定位交给外层壳,动效只动内层。
+ * 弹入用 back.out 过冲(钱进池子是带冲量的动作,允许一点回弹),
+ * 下注类落定后再顶一记脉冲吸睛;reduced-motion 直接出现。
  */
 function ActionBubble({ action }: { action: { kind: string; amount: number } | null | undefined }) {
   const ref = useRef<HTMLDivElement>(null);
   const label = action ? actionLabel(action) : null;
+  const loud = action ? action.kind !== "fold" && action.kind !== "check" : false;
 
   useEffect(() => {
     if (!ref.current || !label) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    gsap.fromTo(
+    const tl = gsap.timeline();
+    tl.fromTo(
       ref.current,
-      { opacity: 0, y: 5, scale: 0.9 },
-      { opacity: 1, y: 0, scale: 1, duration: 0.18, ease: "power3.out" }
+      { opacity: 0, y: 12, scale: 0.6 },
+      { opacity: 1, y: 0, scale: 1, duration: 0.38, ease: "back.out(2.4)" }
     );
-  }, [label]);
+    if (loud) {
+      tl.to(ref.current, { scale: 1.12, duration: 0.12, ease: "power2.out" }, "+=0.25");
+      tl.to(ref.current, { scale: 1, duration: 0.2, ease: "power2.inOut" });
+    }
+    return () => {
+      tl.kill();
+    };
+  }, [label, loud]);
 
   if (!label) return null;
   return (
-    <div
-      ref={ref}
-      className={`absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium shadow-sm ${
-        action!.kind === "fold"
-          ? "border-border bg-card text-muted-foreground"
-          : "border-primary/50 bg-primary/10 text-primary"
-      }`}
-    >
-      {label}
+    <div className="absolute -top-8 left-1/2 z-10 -translate-x-1/2">
+      <div
+        ref={ref}
+        className={`relative whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold shadow-md ${
+          loud ? "bg-brand text-white shadow-brand/40" : "border border-border bg-card text-muted-foreground"
+        }`}
+      >
+        {label}
+        {/* 尾巴指向头像:气泡是"这个人说的",不是飘在空中的标签 */}
+        <span
+          className={`absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 ${
+            loud ? "bg-brand" : "border-b border-r border-border bg-card"
+          }`}
+        />
+      </div>
     </div>
   );
 }
