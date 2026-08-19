@@ -73,10 +73,15 @@ export function SelectionQuote({ hostRef }: { hostRef: RefObject<HTMLElement | n
     const host = hostRef.current;
     if (!host) return;
     // 浮钮的坐标是选区在当前滚动位置下算出来的绝对偏移:一滚动,文字走了
-    // 浮钮不会跟着走,就变成一颗指着错误位置的按钮——收起它,等用户重新选
+    // 浮钮不会跟着走,就变成一颗指着错误位置的按钮——收起它,等用户重新选。
+    // capture: true 是必须的,不是随手加的:scroll 事件不冒泡,而真正滚动的
+    // 是 host 内部嵌套的 assistant-ui ThreadPrimitive.Viewport,不是 host 自己——
+    // 冒泡阶段的监听永远收不到那个滚动。捕获阶段沿途经过每个祖先,不管目标元素
+    // 是谁都能截到,这里就是靠这个拿到内层滚动。removeEventListener 按
+    // (type, listener, capture) 三元组匹配,capture 两边必须一致,否则移除不掉
     const onScroll = (): void => setAnchor(null);
-    host.addEventListener("scroll", onScroll, { passive: true });
-    return () => host.removeEventListener("scroll", onScroll);
+    host.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => host.removeEventListener("scroll", onScroll, { capture: true });
   }, [hostRef]);
 
   if (!anchor) return null;
