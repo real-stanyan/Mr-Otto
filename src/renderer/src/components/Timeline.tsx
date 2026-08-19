@@ -21,6 +21,7 @@ import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { MD_COMPONENTS } from "./CodeBlock.js";
 import { MessageActions } from "./MessageActions.js";
+import { RetryButton } from "./RetryButton.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004） */
@@ -227,7 +228,12 @@ export function EventRow({ event, isLast = false }: { event: SessionEvent; isLas
     case "turn_ended":
       // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
       return event.outcome === "error" ? (
-        <div className={`${CHIP} border-err text-err`}>[turn 失败] {event.error}</div>
+        // 重试只挂最后一条:它重发的是"上一条用户消息",对历史里的旧失败行没有意义
+        // ——那条失败之后用户早就又说过别的话了,点它会重发一句不相干的
+        <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
+          <span>[turn 失败] {event.error}</span>
+          {isLast && <RetryButton />}
+        </div>
       ) : event.outcome === "aborted" ? (
         // 中断 = 用户意志,中性灰居中——不是故障,不用红
         <div className={`${CHIP} self-center`}>已中断</div>

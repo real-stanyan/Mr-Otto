@@ -39,6 +39,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { RetryButton } from "./components/RetryButton.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -1867,41 +1868,6 @@ function Welcome() {
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
-  );
-}
-
-/** 失败不该只是一行红字——恢复出口就挂在它旁边(assistant-ui 的 Error primitive 同款)。
-    onClick 逻辑与 MessageActions 动作条共享(retryLastUserMessage/retryPlan),别处各写一份;
-    这里外观是红色文字钮,按钮文案随 plan 变——不然点了以为发出去了实际只是填回输入框
-    (plan 同时看"消息自身带没带附件"和"此刻输入框暂存区是否有附件":后者是
-    send() 读的是调用那一刻的 staged,跟被重试的消息无关,漏了这条会静默夹带) */
-function RetryButton() {
-  const events = useChat((s) => s.events);
-  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
-  const staged = useChat((s) => s.staged);
-  const prev = lastUserMessage(events);
-  const plan = retryPlan(prev, staged.length);
-  // retryPlan(null, x) 返 null，其它情况返 RetryPlan，所以 !plan ⟺ !prev，前一行已排除
-  if (!prev || status === "running") return null;
-  // retryPlan(prev, x) 当 prev 非 null 时必然返 RetryPlan，所以 plan 必然非 null
-  const planNonNull = plan!;
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      title={
-        planNonNull.mode === "resend"
-          ? "重试：把上一条消息原样再发一遍"
-          : planNonNull.reason === "attachments"
-            ? "把上一条消息填回输入框（附件要重新添加）"
-            : "输入框里有待发送的附件，先填回正文，你确认后再发"
-      }
-      className="h-auto px-2 py-[1px] text-[12px] text-err hover:bg-err/[0.12] hover:text-err shrink-0"
-      onClick={() => retryLastUserMessage(prev, planNonNull)}
-    >
-      {planNonNull.mode === "resend" ? "重试" : "填回输入框"}
-    </Button>
   );
 }
 
