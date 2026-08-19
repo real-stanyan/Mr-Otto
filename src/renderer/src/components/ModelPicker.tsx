@@ -19,12 +19,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import {
-  describeModel,
-  modelsByProvider,
-  ollamaChoiceFrom,
-  OLLAMA_MODEL_PREFIX,
-} from "../../../shared/modelCatalog.js";
+import { describeModel, modelsByProvider, ollamaChoiceFrom } from "../../../shared/modelCatalog.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
@@ -107,15 +102,11 @@ export function ModelPicker({
               )}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="menu-pop w-[248px]" sideOffset={6}>
-              {g.models.map((m) => {
-                // Ollama 那组的条目 id 带 ollama/ 前缀（日志里存的就是它），
-                // 而 m.model 是要发给 API 的裸 tag——菜单选的是前者
-                const id = g.provider === "ollama" ? OLLAMA_MODEL_PREFIX + m.model : m.model;
-                return (
+              {g.models.map((m) => (
                 <DropdownMenuItem
-                  key={id}
+                  key={m.model}
                   className="gap-2 py-[7px]"
-                  onSelect={() => onChange(id)}
+                  onSelect={() => onChange(m.model)}
                 >
                   <span className="min-w-0 flex-1 truncate">{m.label}</span>
                   {m.supportsVision && (
@@ -124,12 +115,11 @@ export function ModelPicker({
                   <CheckIcon
                     className={cn(
                       "size-[14px] shrink-0 text-primary",
-                      id === value ? "opacity-100" : "opacity-0"
+                      m.model === value ? "opacity-100" : "opacity-0"
                     )}
                   />
                 </DropdownMenuItem>
-                );
-              })}
+              ))}
               {!g.ready && (
                 <>
                   <DropdownMenuSeparator />

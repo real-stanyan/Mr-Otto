@@ -23,7 +23,14 @@ export interface OpenAICompatibleOptions {
       它会过期——在 adapter 构造时静态捕获,等于 turn 跑到一半突然 401。
       给了它就以它为准,不给 = 用上面的静态 baseUrl/apiKey(老路径一字不变) */
   resolveEndpoint?: () => Promise<ResolvedEndpoint>;
-  model: string;   // 例："deepseek-v4-flash"
+  /** 事件日志里那个 id（engine 拿 adapter.model 盖进 assistant_message）。
+      例："deepseek-v4-flash" / "ollama/qwen3:30b" */
+  model: string;
+  /** 真正写进请求体的型号 id。缺省 = model。
+      只有本机 Ollama 两者不同：日志要带 ollama/ 前缀才认得回是哪家的，
+      而 Ollama 只认裸 tag。缺了这一层，日志里存的就是裸 tag，
+      重放时兜底成 DeepSeek —— 型号 id 发过去必 400 */
+  wireModel?: string;
   /** 请求级思考开关（thinking.type: enabled/disabled，DeepSeek V4 与 GLM 同一形状）。
       undefined = 该型号不支持，请求体里完全不出现这个字段——
       别给不认识它的 API 发陌生参数 */
@@ -186,7 +193,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
           ...endpoint.headers,
         },
         body: JSON.stringify({
-          model: opts.model,
+          model: opts.wireModel ?? opts.model,
           messages: messages.map(toWireMessage),
           ...(opts.thinking !== undefined
             ? { thinking: { type: opts.thinking ? "enabled" : "disabled" } }

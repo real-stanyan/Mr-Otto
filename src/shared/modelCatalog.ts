@@ -10,8 +10,15 @@ export type { ProviderId };
 
 export interface ModelChoice {
   provider: ProviderId;
-  /** API 型号 id，也是目录主键（落进 model_changed / assistant_message.model） */
+  /** 目录主键，也是落进 model_changed / assistant_message 的那个 id。
+      本机 Ollama 的带 ollama/ 前缀——日志得能自己说清是哪家的型号，
+      重放时 Ollama 可能没开着，问不了 */
   model: string;
+  /** 真正发上线的型号 id。除本机 Ollama 外与 model 相同（Ollama 只认裸 tag，
+      前缀是我们内部的记账方式）。
+      两者曾经是同一个字段，结果 switchModel 把剥了前缀的 id 写进了日志，
+      重放时认不回是 Ollama —— 兜底成 DeepSeek，型号 id 发过去必 400 */
+  wireModel: string;
   /** 下拉框显示名 */
   label: string;
   /** OpenAI 方言端点前缀（含版本段，adapter 只再拼 /chat/completions） */
@@ -113,6 +120,7 @@ function expand(spec: ModelSpec): ModelChoice {
   return {
     provider: spec.provider,
     model: spec.model,
+    wireModel: spec.model, // 目录里的型号，两个 id 就是同一个
     label: spec.label,
     baseUrl: p.baseUrl,
     baseUrlEnv: p.baseUrlEnv,
@@ -149,7 +157,8 @@ function ollamaChoice(tag: string): ModelChoice {
   const p = findProvider("ollama")!;
   return {
     provider: "ollama",
-    model: tag, // 发给 API 的是裸 tag——前缀是我们内部的记账方式，Ollama 不认
+    model: OLLAMA_MODEL_PREFIX + tag, // 日志里存带前缀的
+    wireModel: tag, // Ollama 只认裸 tag
     label: tag,
     baseUrl: p.baseUrl,
     baseUrlEnv: p.baseUrlEnv,
@@ -210,6 +219,7 @@ export function resolveModel(model: string): ModelChoice {
     described ?? {
       provider: "deepseek",
       model,
+      wireModel: model,
       label: model,
       baseUrl: "https://api.deepseek.com/v1",
       baseUrlEnv: "DEEPSEEK_BASE_URL",

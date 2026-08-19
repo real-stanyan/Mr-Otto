@@ -75,8 +75,9 @@ describe("免 key 的本机厂商（Ollama）", () => {
   // 目录里没有 Ollama 的型号(本机装了什么只有本机知道),id 靠前缀认领
   const ollama = resolveModel("ollama/qwen3:30b");
 
-  it("前缀被剥掉：发给 Ollama 的是它认得的裸 tag", () => {
-    expect(ollama.model).toBe("qwen3:30b");
+  it("两个 id 各司其职：日志留前缀，发给 Ollama 的是裸 tag", () => {
+    expect(ollama.model).toBe("ollama/qwen3:30b");
+    expect(ollama.wireModel).toBe("qwen3:30b");
     expect(ollama.keyless).toBe(true);
   });
 

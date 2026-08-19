@@ -80,13 +80,31 @@ describe("modelCatalog", () => {
     expect(modelsByProvider().some((g) => g.provider === "ollama")).toBe(false);
   });
 
-  it("ollama/ 前缀 = 本机型号：认得出厂商，也剥得回裸 tag", () => {
+  it("ollama/ 前缀 = 本机型号：日志 id 留前缀，上线 id 是裸 tag", () => {
     const m = describeModel("ollama/qwen3.5:27b-coding-mxfp8")!;
     expect(m.provider).toBe("ollama");
-    expect(m.model).toBe("qwen3.5:27b-coding-mxfp8"); // 发给 API 的是裸 tag
+    expect(m.model).toBe("ollama/qwen3.5:27b-coding-mxfp8"); // 落进事件日志的
+    expect(m.wireModel).toBe("qwen3.5:27b-coding-mxfp8"); // 发给 Ollama 的
     expect(m.label).toBe("qwen3.5:27b-coding-mxfp8");
     expect(ollamaTag("ollama/x")).toBe("x");
     expect(ollamaTag("deepseek-v4-flash")).toBeNull();
+  });
+
+  // 这条是回归锚：曾经 model 一个字段兼任两职，switchModel 把剥了前缀的 id 写进
+  // 日志，重放时认不回是 Ollama，兜底成 DeepSeek —— 型号 id 发过去必 400。
+  // 不变量：落盘的那个 id 必须能原样解析回同一个 choice
+  it("落盘的 id 解析得回同一个 choice（重放的地基）", () => {
+    for (const id of [...MODEL_CATALOG.map((m) => m.model), "ollama/qwen3:30b"]) {
+      const first = resolveModel(id);
+      expect(first.model, id).toBe(id);
+      const again = resolveModel(first.model);
+      expect(again.provider, id).toBe(first.provider);
+      expect(again.wireModel, id).toBe(first.wireModel);
+    }
+  });
+
+  it("目录里的型号两个 id 相同 —— 只有本机 Ollama 才分岔", () => {
+    for (const m of MODEL_CATALOG) expect(m.wireModel, m.model).toBe(m.model);
   });
 
   it("describeModel 认不出就返回 undefined，不像 resolveModel 那样兜底成 DeepSeek", () => {

@@ -12,7 +12,7 @@ import { lookupOllamaModel } from "./ollamaModels.js";
     探到的那份补在这里。探不到就用兜底形态——注册表是缓存，不是事实来源 */
 function withOllamaCapabilities(choice: ModelChoice): ModelChoice {
   if (choice.provider !== "ollama") return choice;
-  const info = lookupOllamaModel(choice.model);
+  const info = lookupOllamaModel(choice.wireModel); // 注册表按裸 tag 索引
   if (!info) return choice;
   return { ...choice, contextWindow: info.contextLength, supportsVision: info.vision };
 }
@@ -175,7 +175,8 @@ export function createAgent(opts: {
       baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
       apiKey: process.env[choice.apiKeyEnv] ?? "",
       resolveEndpoint: () => resolveEndpoint(choice),
-      model: choice.model,
+      model: choice.model, // 日志 id（Ollama 带前缀）
+      wireModel: choice.wireModel, // 发上线的 id
       // 支持开关的型号才带 thinking 字段——别给不认识它的 API 发陌生参数
       ...(choice.supportsThinking ? { thinking } : {}),
       // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
