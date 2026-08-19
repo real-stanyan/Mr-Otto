@@ -67,3 +67,68 @@ describe("toThreadMessages — 骨架", () => {
     expect(toThreadMessages(events, { content: "", reasoning: "" })).toHaveLength(1);
   });
 });
+
+describe("toThreadMessages — 工具调用", () => {
+  it("tool_result 合并进同一条消息的 tool-call part", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] }, 0),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "文件内容" }, 1),
+    ];
+    expect(toThreadMessages(events)[0]?.content).toEqual([
+      { type: "tool-call", toolCallId: "c1", toolName: "read_file",
+        args: { path: "/a.txt" }, result: "文件内容" },
+    ]);
+  });
+
+  it("被拒的调用 isError 为 true", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: { cmd: "rm -rf /" } }] }, 0),
+      ev({ type: "approval_decision", toolCallId: "c1", decision: "denied", reason: "不行" }, 1),
+      ev({ type: "tool_result", toolCallId: "c1", status: "denied", output: "用户拒绝:不行" }, 2),
+    ];
+    const part = toThreadMessages(events)[0]?.content?.[0];
+    expect(part).toMatchObject({ type: "tool-call", isError: true, result: "用户拒绝:不行" });
+  });
+
+  it("出错的调用 isError 为 true", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: {} }] }, 0),
+      ev({ type: "tool_result", toolCallId: "c1", status: "error", output: "命令不存在" }, 1),
+    ];
+    expect(toThreadMessages(events)[0]?.content?.[0]).toMatchObject({ isError: true });
+  });
+
+  it("悬空调用(有请求无结果)不带 result,消息状态是 requires-action", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: {} }] }, 0),
+    ];
+    const msg = toThreadMessages(events)[0]!;
+    expect(msg.status).toEqual({ type: "requires-action", reason: "tool-calls" });
+    expect(msg.content?.[0]).toEqual({ type: "tool-call", toolCallId: "c1", toolName: "bash", args: {} });
+  });
+
+  it("正文和工具调用同时出现时,text part 在前", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "我看一下", model: "m",
+           toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a" } }] }, 0),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "x" }, 1),
+    ];
+    const parts = toThreadMessages(events)[0]?.content;
+    expect(parts?.[0]).toMatchObject({ type: "text" });
+    expect(parts?.[1]).toMatchObject({ type: "tool-call" });
+  });
+
+  it("args 不是对象时退回 argsText,不硬塞进 args", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: "坏日志:不是对象" }] }, 0),
+    ];
+    expect(toThreadMessages(events)[0]?.content?.[0]).toEqual({
+      type: "tool-call", toolCallId: "c1", toolName: "bash", argsText: '"坏日志:不是对象"',
+    });
+  });
+});
