@@ -24,6 +24,24 @@ export interface HttpPostOptions {
   signal?: AbortSignal;
 }
 
+/** 一个活着的交互终端（PTY）。与 exec 的一次性命令是两回事：
+    它有生命周期、双向流、窗口尺寸。纯人用——agent 看不见它（ADR-0031） */
+export interface TerminalSession {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  /** 返回退订函数（与 ShellBridge 的订阅同构） */
+  onData(cb: (data: string) => void): () => void;
+  onExit(cb: (exitCode: number) => void): () => void;
+}
+
+export interface OpenTerminalOptions {
+  cols: number;
+  rows: number;
+  /** 缺省 = $SHELL，再缺省 = /bin/zsh */
+  shell?: string;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -34,6 +52,11 @@ export interface ExecutionWorld {
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
   };
+  /** 可选：这个世界开不开得了交互终端。
+      可选 = 向后兼容（旧实现和测试里的假 world 零改动，同 ExecOptions 的先例）；
+      缺这个字段 = 该世界没有终端能力，UI 据此不显示入口。
+      v2 SandboxWorld 把它实现成 docker exec，用户终端自动落进那个 bot 的容器 */
+  openTerminal?(opts: OpenTerminalOptions): Promise<TerminalSession>;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -46,6 +69,7 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
     },
+    ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
   };
 }
 
@@ -60,5 +84,6 @@ export function withExecOutput(
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
     http: world.http,
+    ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
   };
 }
