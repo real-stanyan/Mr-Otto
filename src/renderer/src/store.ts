@@ -808,8 +808,15 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async refreshInvites() {
     const r = await window.otter.friendsListInvites();
-    if (r.ok) set({ gameInvites: r.value });
-    else set({ friendError: r.message });
+    if (r.ok) {
+      set({ gameInvites: r.value });
+      return;
+    }
+    // 不写 friendError:这是挂载时的后台补拉,不是用户刚按下的动作。写进去会在
+    // 好友区顶上钉一条谁也关不掉的红字(migration 0006 没跑时就是这个样子 ——
+    // 一句 "Could not find the table 'public.game_invites'" 一直挂在搜索框下面)。
+    // 用户主动发/回应邀请那几条路径仍然照常报错,那才是他在等回音的地方
+    console.error("邀请列表读取失败", r.message);
   },
 
   async inviteToTable(friendId, tableId, tableName) {
