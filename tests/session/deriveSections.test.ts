@@ -25,7 +25,7 @@ describe("deriveSections（分区 = 被分类事件收口的跨度）", () => {
     seq = 0;
     const events = [user("修 bug"), user("再看看"), classify("修登录 bug")];
     expect(deriveSections(events)).toEqual([
-      { title: "修登录 bug", startSeq: 0, eventCount: 2, preview: "修 bug" },
+      { title: "修登录 bug", startSeq: 0, preview: "修 bug" },
     ]);
   });
 
@@ -46,8 +46,8 @@ describe("deriveSections（分区 = 被分类事件收口的跨度）", () => {
       classify("第二段"), // 5
     ];
     expect(deriveSections(events)).toEqual([
-      { title: "第一段", startSeq: 0, eventCount: 2, preview: "a" },
-      { title: "第二段", startSeq: 4, eventCount: 1, preview: "c" },
+      { title: "第一段", startSeq: 0, preview: "a" },
+      { title: "第二段", startSeq: 4, preview: "c" },
     ]);
   });
 
@@ -55,7 +55,7 @@ describe("deriveSections（分区 = 被分类事件收口的跨度）", () => {
     seq = 0;
     const events = [user("a"), classify("第一段"), user("b"), user("c")];
     expect(deriveSections(events)).toEqual([
-      { title: "第一段", startSeq: 0, eventCount: 1, preview: "a" },
+      { title: "第一段", startSeq: 0, preview: "a" },
     ]);
   });
 
@@ -69,34 +69,8 @@ describe("deriveSections（分区 = 被分类事件收口的跨度）", () => {
     seq = 0;
     const events = [user("a"), classify(null), user("b"), classify("第一段")];
     expect(deriveSections(events)).toEqual([
-      { title: "第一段", startSeq: 2, eventCount: 1, preview: "b" },
+      { title: "第一段", startSeq: 2, preview: "b" },
     ]);
-  });
-});
-
-describe("eventCount（刻度宽度编码的分区体量）", () => {
-  it("数的是分区里的事件，分类事件本身不算", () => {
-    seq = 0;
-    const events = [user("a"), assistant("b"), assistant("c"), classify("一段")];
-    expect(deriveSections(events)[0]?.eventCount).toBe(3);
-  });
-
-  it("延续段的事件算进上一分区——不算就会低报体量", () => {
-    seq = 0;
-    const events = [
-      user("a"),
-      classify("一段"),   // 此时 eventCount = 1
-      assistant("b"),
-      assistant("c"),
-      classify(null),      // 延续：+2
-    ];
-    expect(deriveSections(events)[0]?.eventCount).toBe(3);
-  });
-
-  it("尾巴上还没分类的事件不计入任何分区（它们还没有归属）", () => {
-    seq = 0;
-    const events = [user("a"), classify("一段"), assistant("b"), assistant("c")];
-    expect(deriveSections(events)[0]?.eventCount).toBe(1);
   });
 });
 

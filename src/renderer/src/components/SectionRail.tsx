@@ -7,20 +7,26 @@
 //    每条标题一枚常驻胶囊仍然是一片长期占着视线的文字
 // ③（现在）左侧留白里的紧凑刻度堆 —— 默认状态屏幕上一个字都没有，只有一小撮短横线
 //
-// 等距排列会丢掉「刻度位置 = 内容位置」那层映射，所以**位置信息换成体量信息**：
-// 刻度宽度 ∝ 分区的事件条数（deriveSections 的 eventCount）。映射照样诚实，而且紧凑。
+// 长度和颜色分工，各管一件事，互不越界：
+//   **长度 = 交互反馈**——只有被 hover 的那条变长，说的是"你正指着这条"，不编码任何数据。
+//   **颜色 = 我在哪**——当前分区那条是 --brand，跟长度无关。
+// 所以 hover 当前分区那条，它既蓝又长；hover 别的，那条变长但保持中性色，蓝色不动。
+// （中间试过用宽度编码分区体量，撤了：那让长度同时背两件事，
+//   而且要求一条宽到 36px 的动态范围，正文得为此永久让出一条留白。）
 //
 // 上一版那套 rAF 临近效果这里删掉了：12px 的行距上做"指针附近变亮"只会让邻居一起糊，
 // 而离散的悬停卡片本来就把"你指的是哪一条"说得很清楚。颜色交给 150ms 的 CSS 过渡。
 
 import { useCallback, useState, type CSSProperties, type PointerEvent } from "react";
 
-const PITCH = 12;        // px：刻度行距（紧凑成簇，不沿滚动区散开）
-const TICK_LEFT = 6;     // px：刻度左端离轨左缘
-const TICK_MIN = 12;     // px：最短刻度——下限保证再小的分区也看得见
-const TICK_MAX = 36;     // px：最长刻度——上限保证它横不穿留白
-const HIT_WIDTH = TICK_LEFT + TICK_MAX + 8;
-const CARD_LEFT = TICK_LEFT + TICK_MAX + 14; // px：卡片贴在刻度右侧
+const PITCH = 12;      // px：刻度行距（紧凑成簇，不沿滚动区散开）
+const TICK_LEFT = 6;   // px：刻度左端离轨左缘
+// 基础长度所有刻度一律相同，且连同左偏移一起塞进消息区现成的 px-5（20px）里：
+// 常驻的东西一寸都不该占正文的地方。hover 的延长（见 app.css）允许探出去一点——
+// 它是瞬时的，不常驻，不会长期压住任何字
+const TICK_BASE = 10;
+const HIT_WIDTH = 20;  // px：与 px-5 等宽，命中带一格都不越到正文上
+const CARD_LEFT = 42;  // px：卡片贴在刻度（含 hover 延长后）右侧
 const CARD_WIDTH = 240;
 /** 只用于底边夹紧的保守上界（卡片标题一行 + 预览三行 + 内边距），不是实际高度 */
 const CARD_MAX_H = 104;
@@ -34,8 +40,6 @@ export interface SectionRailItem {
   title: string;
   /** 正文预览（deriveSections 已压平空白并截断），可能是空串 */
   preview: string;
-  /** 分区体量：事件条数。刻度宽度按它编码 */
-  weight: number;
 }
 
 export interface SectionRailProps {
@@ -43,12 +47,6 @@ export interface SectionRailProps {
   /** 当前所在分区；null = 还没滚进任何分区 */
   activeIndex: number | null;
   onJump: (index: number) => void;
-}
-
-/** 体量 → 刻度宽度。按最大值归一化，宽度真的正比于体量；MIN 只是可见性下限 */
-function tickWidth(weight: number, max: number): number {
-  if (max <= 0) return TICK_MIN;
-  return TICK_MIN + (TICK_MAX - TICK_MIN) * Math.min(1, Math.max(0, weight / max));
 }
 
 export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
@@ -64,8 +62,6 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
     setHovered(i);
     setLastHovered(i);
   }, []);
-
-  const maxWeight = items.reduce((m, it) => Math.max(m, it.weight), 0);
 
   // 刻度堆的高度：正常就是 n × 行距，但分区多到撑破视口时按比例压扁，
   // 而不是让头尾几条滑出屏幕外。等距关系不变，只是行距变密
@@ -113,10 +109,7 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
               data-active={activeIndex === i ? "true" : "false"}
               data-hovered={hovered === i ? "true" : "false"}
               className="section-rail-tick absolute top-1/2 h-[2px] rounded-full"
-              style={{
-                left: `${TICK_LEFT}px`,
-                width: `${tickWidth(item.weight, maxWeight).toFixed(1)}px`,
-              }}
+              style={{ left: `${TICK_LEFT}px`, width: `${TICK_BASE}px` }}
             />
           </li>
         ))}

@@ -2364,10 +2364,9 @@ export function App() {
           <div className="flex-1 min-h-0 relative">
             {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
                 不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
-            {/* pl 比 pr 宽出一截:左边那条留白是给分区刻度堆站的位置。
-                无条件生效(只随断点变,不随分区数变)——做成"有分区才加 padding"
-                就等于第二个分区诞生的那一刻正文整体右移,那正是上一版被毙掉的重排 */}
-            <section ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-stable pl-5 lg:pl-12 pr-5 pt-4 pb-12 flex flex-col gap-2">
+            {/* 左右都是 px-5:刻度堆的常驻部分(左偏移 6 + 基础长 10 = 16px)住得进这条
+                现成的内边距,不用为一个导航件让整列正文永久右移 */}
+            <section ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
               {events.map((e) => {
                 const sectionIndex = sections.findIndex((s) => s.startSeq === e.seq);
                 return (
@@ -2419,11 +2418,7 @@ export function App() {
                 出现和消失都不动布局，占位符也就跟着没了 */}
             {sections.length >= 2 && (
               <SectionRail
-                items={sections.map((s) => ({
-                  title: s.title,
-                  preview: s.preview,
-                  weight: s.eventCount,
-                }))}
+                items={sections.map((s) => ({ title: s.title, preview: s.preview }))}
                 activeIndex={activeSection}
                 onJump={jumpToSection}
               />

@@ -787,8 +787,8 @@
 }
 
 /* ── 会话分区轨（SectionRail）───────────────────────────────────────────
-   默认状态下屏幕上一个字都没有，只有正文左侧留白里的一小撮短横线。
-   刻度宽度 ∝ 分区体量（等距排列丢掉的位置映射，换成体量映射补回来），
+   默认状态下屏幕上一个字都没有，只有正文左内边距里的一小撮等长短横线。
+   长度归交互（只有指着的那条伸长），位置归颜色（当前分区那条是主色），
    悬停才在刻度右侧长出一张卡片。
 
    自定义属性必须 @property 注册，否则过渡是离散的（中点硬跳），
@@ -814,18 +814,35 @@
   initial-value: 1;
 }
 
-/* 刻度：不做缩放反馈——刻度长度是在编码体量，悬停时把它拉长 8% 就是在改数据。
-   反馈只走颜色 */
+/* 刻度：长度和颜色分工，各管一件事。
+   **长度 = 交互反馈**——只有指着的那条伸长（scaleX 而不是 width：不碰布局），
+   origin 在左端，所以它是往正文那边探出去，不是两头一起长。
+   **颜色 = 我在哪**——当前分区那条是 --brand，跟长度无关。
+   两条规则正交：指着当前分区那条就又蓝又长；指着别的，那条长但保持中性色。
+   伸长要跟手：指针驱动的即时反馈，140ms 强 ease-out，慢一点就成了"慢吞吞地伸" */
 .section-rail-tick {
   background-color: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
-  transform: translateY(-50%);
-  transition: background-color 150ms var(--ease-strong);
+  transform-origin: left center;
+  transform: translateY(-50%) scaleX(1);
+  transition:
+    background-color 140ms var(--ease-strong),
+    transform 140ms var(--ease-strong);
 }
 .section-rail-tick[data-hovered="true"] {
   background-color: var(--foreground);
+  transform: translateY(-50%) scaleX(2.8);
 }
+/* active 排在 hovered 之后：同 specificity，源序靠后者赢——
+   指着别的分区时蓝色不该跟着指针跑，它得留在当前分区那条上 */
 .section-rail-tick[data-active="true"] {
   background-color: var(--brand);
+}
+
+/* 减动效：伸长是状态变化不是装饰，照样发生，只是不做过渡动画 */
+@media (prefers-reduced-motion: reduce) {
+  .section-rail-tick {
+    transition: background-color 140ms ease;
+  }
 }
 
 /* 卡片：材质到场，不是图片淡入——模糊半径、缩放、位移和透明度一起走。
@@ -845,9 +862,10 @@
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   box-shadow: 0 6px 20px color-mix(in srgb, var(--foreground) 12%, transparent);
   transform: translateX(var(--card-x)) scale(var(--card-scale));
-  /* top 刻意不进 transition：目标值是带百分比的 clamp()，Chromium 在两个 clamp
-     之间插值会直接把这次变化吞掉（实测：过渡结束后 top 停在旧值）。
-     卡片在刻度之间瞬时重定位，反而更像"另一条刻度的卡片"，不是同一张在飘 */
+  /* top 刻意不进 transition：刻度只隔 12px，让卡片花 200ms 滑过去，
+     指针扫过几条时它就一直落在后面。悬停反馈要跟手，瞬时重定位反而更像
+     "另一条刻度的卡片"，不是同一张在飘。
+     （不是能力问题：实测 Chromium 在两个带百分比的 clamp() 之间插值正常） */
   transition-property: opacity, --card-x, --card-scale, --glass-blur, --glass-sat;
   transition-duration: 200ms;
   transition-timing-function: var(--ease-strong);
