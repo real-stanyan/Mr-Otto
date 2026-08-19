@@ -24,6 +24,8 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
+import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
@@ -130,6 +132,11 @@ interface ChatState {
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
   panelWide: boolean;
+  /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
+      不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
+  workTree: GitStatusResult | null;
+  /** 用户手动关掉浮窗时那一刻的状态指纹。指纹没变就不再自己弹回来 */
+  workTreeDismissed: string | null;
   /** 某个目录的分支状态(键 = 目录绝对路径)。新会话选文件夹、会话中显示当前分支共用一份缓存;
       null 值 = 正在拉取。非 git 目录存 ok:false,UI 据此不显示分支控件 */
   branchesByDir: Record<string, GitBranchesResult | null>;
@@ -222,6 +229,10 @@ interface ChatState {
   togglePanelWide(): void;
   /** 拉某目录的分支列表(非 git 目录也要拉:ok:false 就是"这里没有分支"的事实) */
   loadBranches(dir: string): Promise<void>;
+  /** 重问一次工作区状态(工具跑完 / 切会话 / 窗口重新聚焦时) */
+  refreshGitStatus(): Promise<void>;
+  /** 关掉改动浮窗:记下当前指纹,状态再变才重新出现 */
+  dismissWorkTree(): void;
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
   checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
@@ -238,6 +249,8 @@ interface ChatState {
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
+  /** 粘贴/拖入的字节并入 staged。与 pickFiles 共用闸门和限额 */
+  attachPasted(files: { name: string; data: Uint8Array }[]): Promise<void>;
   /** ＋ 按钮：弹系统文件选择器，选完的分类结果并入 staged（图片限额 4 张/条在这做） */
   pickFiles(): Promise<void>;
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
@@ -298,6 +311,8 @@ const enterChat = (info: BootInfo) => ({
   protocolOpen: false, // 同上，仪表盘也让位
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
+  workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
+  workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   error: null,
 });
 
@@ -340,6 +355,8 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphLoadingMore: false,
   gitCommitView: null,
   panelWide: false,
+  workTree: null,
+  workTreeDismissed: null,
   branchesByDir: {},
   checkoutBusyDir: null,
   checkoutError: null,
@@ -656,6 +673,31 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async refreshGitStatus() {
+    const dir = get().workspace;
+    if (!dir) return;
+    try {
+      const result = await window.otter.gitStatus(dir);
+      // 期间切了会话就丢弃这份结果:它回答的是另一个工程的问题
+      if (get().workspace !== dir) return;
+      set((s) => ({
+        workTree: result,
+        // 关掉浮窗后状态又变了 = 新事件,解除静音;还是同一份就保持关着
+        workTreeDismissed:
+          result.ok && s.workTreeDismissed !== null && s.workTreeDismissed !== statusSignature(result.status)
+            ? null
+            : s.workTreeDismissed,
+      }));
+    } catch {
+      // 问 git 失败不该打断会话:保留上一份状态,下次工具跑完再问
+    }
+  },
+
+  dismissWorkTree: () =>
+    set((s) => ({
+      workTreeDismissed: s.workTree?.ok ? statusSignature(s.workTree.status) : "",
+    })),
+
   async checkoutBranch(dir, branch) {
     if (get().checkoutBusyDir) return; // 一次只切一个,防连点把仓库切成薛定谔态
     set({ checkoutBusyDir: dir, checkoutError: null });
@@ -950,6 +992,8 @@ export const useChat = create<ChatState>((set, get) => ({
           const dir = s.workspace;
           if (dir && s.branchesByDir[dir] !== undefined) void s.loadBranches(dir);
           if (s.gitGraphOpen) void s.refreshGitGraph(true);
+          // 工具刚动过盘:工作区改动浮窗要跟上(它就是为这一刻存在的)
+          void s.refreshGitStatus();
         }, 600);
       }
       set((s) => {
@@ -1139,20 +1183,21 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       const picked = await window.otter.pickAttachments();
       if (picked.length === 0) return; // 用户取消
-      const ok = picked.filter(
-        (a): a is Extract<StagedAttachment, { kind: "image" | "text" }> => a.kind !== "rejected"
-      );
-      const rejected = picked.filter((a) => a.kind === "rejected");
-      let staged = [...get().staged, ...ok];
-      // 限额:图片 ≤4 张/条。超出的裁掉并告知——静默丢弃会让用户以为传上了
-      const errors = rejected.map((r) => `「${r.name}」被拒:${r.reason}`);
-      const images = staged.filter((a) => a.kind === "image");
-      if (images.length > 4) {
-        let kept = 0;
-        staged = staged.filter((a) => a.kind !== "image" || ++kept <= 4);
-        errors.push(`图片最多 4 张/条,多出的 ${images.length - 4} 张已忽略`);
-      }
-      set({ staged, attachError: errors.length > 0 ? errors.join("；") : null });
+      const { staged, error } = mergeStaged(get().staged, picked);
+      set({ staged, attachError: error });
+    } catch (e) {
+      set({ attachError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async attachPasted(files) {
+    if (files.length === 0) return;
+    try {
+      // 闸门在主进程(intakeFile):渲染层不判断这是不是图片、够不够小——
+      // 只有一套准入策略,＋ 按钮和粘贴走的是同一道
+      const picked = await window.otter.intakePastedFiles(files);
+      const { staged, error } = mergeStaged(get().staged, picked);
+      set({ staged, attachError: error });
     } catch (e) {
       set({ attachError: e instanceof Error ? e.message : String(e) });
     }

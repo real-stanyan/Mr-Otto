@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +26,11 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
+import { WorkTreePill } from "./components/WorkTreePill.js";
+import { UserAttachments } from "./components/UserAttachments.js";
+import { AttachDropZone } from "./components/AttachDropZone.js";
+import { StagedChips } from "./components/StagedChips.js";
+import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
@@ -337,6 +342,10 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
 function TodoPanel() {
   const events = useChat((s) => s.events);
   const todos = useMemo(() => deriveTodos(events), [events]);
+  // turn 没在跑时,in_progress 只是"模型开了个头就收工了",不是此刻正在发生的事。
+  // 清单是日志的投影(不改),改的是措辞和动效:转圈的球 + shimmer 是"活的"的语言,
+  // 静止的会话不该说这句话
+  const live = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
   const [open, setOpen] = useState(true);
 
   if (todos.length === 0) return null; // 没拆过任务就完全不占地方
@@ -345,7 +354,10 @@ function TodoPanel() {
   // 头行只报"还没完的"——已完成数量是过去时,写出来抢眼但没用
   const summary = allDone
     ? `${c.total} 项全部完成`
-    : [c.inProgress && `${c.inProgress} 进行中`, c.pending && `${c.pending} 待处理`]
+    : [
+        c.inProgress && `${c.inProgress} ${live ? "进行中" : "已开始"}`,
+        c.pending && `${c.pending} 待处理`,
+      ]
         .filter(Boolean)
         .join(" · ");
 
@@ -378,11 +390,16 @@ function TodoPanel() {
             <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
               <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
                 {t.status === "in_progress" ? (
-                  // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
-                  // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
-                  <span className="scale-[0.8] origin-center leading-none" aria-hidden>
-                    <ThinkingOrb state="working" size={20} theme="auto" />
-                  </span>
+                  live ? (
+                    // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
+                    // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
+                    <span className="scale-[0.8] origin-center leading-none" aria-hidden>
+                      <ThinkingOrb state="working" size={20} theme="auto" />
+                    </span>
+                  ) : (
+                    // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
+                    <CircleDot className="size-[13px] text-brand" aria-hidden />
+                  )
                 ) : t.status === "completed" ? (
                   <Check className="size-[13px] text-ok" aria-hidden />
                 ) : (
@@ -394,7 +411,9 @@ function TodoPanel() {
                   t.status === "completed"
                     ? "text-muted-foreground line-through decoration-muted-foreground/40"
                     : t.status === "in_progress"
-                      ? "text-foreground shimmer"
+                      ? live
+                        ? "text-foreground shimmer"
+                        : "text-foreground"
                       : "text-muted-foreground"
                 }
               >
@@ -781,64 +800,19 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
   );
 }
 
-/** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
-const thumbCache = new Map<string, string>();
-
-/** 时间线里的图片缩略图:懒取 + 缓存。取不到(附件库文件丢失)显示占位文案——
-    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线 */
-function AttachmentThumb({ id, name }: { id: string; name?: string | undefined }) {
-  const [url, setUrl] = useState<string | null>(thumbCache.get(id) ?? null);
-  const [lost, setLost] = useState(false);
-  useEffect(() => {
-    if (url) return;
-    let alive = true;
-    window.otter.attachmentDataUrl(id).then(
-      (u) => {
-        thumbCache.set(id, u);
-        if (alive) setUrl(u);
-      },
-      () => {
-        if (alive) setLost(true);
-      }
-    );
-    return () => {
-      alive = false;
-    };
-  }, [id, url]);
-  if (lost) return <span className="opacity-60 text-xs text-muted-foreground">[图片缺失:{name ?? id.slice(0, 14)}]</span>;
-  if (!url) return <span className="opacity-60 text-xs text-muted-foreground">…</span>;
-  return <img className="max-w-[200px] max-h-40 rounded-md block" src={url} alt={name ?? "附件图片"} title={name} />;
-}
-
 function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
   switch (event.type) {
     case "user_message":
-      // 文本文件渲染成折叠卡片,不摊开全文——全文是给模型的(投影时拼进上下文),
-      // 气泡里只亮"带了什么文件";点开可核对快照内容
+      // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
+      // 各自成卡片摆在气泡上方(UserAttachments),气泡只留给用户正文。
+      // 只带附件不带字时不出空气泡:没说话就是没说话
       return (
-        // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
-        <div className={`${ROW} self-end bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2`}>
-          {event.content}
-          {event.textFiles && event.textFiles.length > 0 && (
-            <div className="flex flex-col gap-1 mt-[6px]">
-              {event.textFiles.map((f, i) => (
-                <details className="group bg-foreground/[0.06] rounded-md px-2 py-1 text-xs" key={i}>
-                  <summary className="cursor-pointer text-muted-foreground list-none [&::-webkit-details-marker]:hidden group-open:mb-1">
-                    📄 {f.name}
-                    <span className="opacity-70 ml-1">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
-                  </summary>
-                  <div className="whitespace-pre-wrap break-words max-h-60 overflow-y-auto text-muted-foreground text-xs border-t border-foreground/[0.08] pt-1">
-                    {f.content}
-                  </div>
-                </details>
-              ))}
-            </div>
-          )}
-          {event.attachments && event.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-[6px] mt-[6px]">
-              {event.attachments.map((a) => (
-                <AttachmentThumb key={a.id} id={a.id} name={a.name} />
-              ))}
+        <div className={`${ROW} self-end flex flex-col items-end gap-[6px]`}>
+          <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />
+          {event.content.trim() !== "" && (
+            // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
+            <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
+              {event.content}
             </div>
           )}
         </div>
@@ -2018,6 +1992,8 @@ function Welcome() {
   const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
   const choice = findModel(model);
+  // 附件暂存区是全局的:在这里粘/拖进来的,建会话后由 send 原样带走
+  const attachPasted = useChat((s) => s.attachPasted);
 
   const launch = async () => {
     if (!workspace || busy) return;
@@ -2027,8 +2003,11 @@ function Welcome() {
       await startSession({ workspace, model, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
+      // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
       // 这里不走 slash 分发：会话刚出生，/compact 之类没有意义
-      if (useChat.getState().phase === "chat" && t) void send(t);
+      if (useChat.getState().phase === "chat" && (t || useChat.getState().staged.length > 0)) {
+        void send(t);
+      }
     } finally {
       setBusy(false);
     }
@@ -2038,8 +2017,10 @@ function Welcome() {
     <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
       <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
       <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
-      {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡 */}
-      <div className="w-[min(640px,90%)] text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
+      {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
+          外面套投放区:还没有会话也能先把图拖进来,建会话后随首条消息一起走 */}
+      <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
+      <div className="w-full text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
@@ -2050,6 +2031,7 @@ function Welcome() {
             </span>
           )}
         </div>
+        <StagedChips className="px-1" />
         <Textarea
           className="border-none shadow-none resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] px-1 py-[2px] focus-visible:ring-0"
           autoFocus
@@ -2058,6 +2040,13 @@ function Welcome() {
           value={text}
           disabled={busy}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // 与会话中的输入框同口径:有文件才接管,没文件不插手原生粘贴
+            const files = Array.from(e.clipboardData.files);
+            if (files.length === 0) return;
+            e.preventDefault();
+            void filesToPayload(files).then(attachPasted);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -2078,6 +2067,22 @@ function Welcome() {
               <SelectItem value="auto">完全访问</SelectItem>
             </SelectContent>
           </Select>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-base leading-none text-muted-foreground hover:bg-foreground/[0.08]"
+                disabled={busy}
+                aria-label="添加文件"
+                onClick={() => void useChat.getState().pickFiles()}
+              >
+                ＋
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
+          </Tooltip>
           <span className="flex-1" />
           <Select value={model} onValueChange={(v) => setModel(v)}>
             <SelectTrigger className={NSC_SELECT}>
@@ -2114,6 +2119,7 @@ function Welcome() {
           </Button>
         </div>
       </div>
+      </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
@@ -2141,8 +2147,7 @@ export function App() {
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const staged = useChat((s) => s.staged);
-  const attachError = useChat((s) => s.attachError);
-  const removeStaged = useChat((s) => s.removeStaged);
+  const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
@@ -2197,7 +2202,8 @@ export function App() {
 
   const submit = () => {
     const text = input.trim();
-    if (!text || status === "running") return;
+    // 只贴了图不打字也算一条消息:附件本身就是内容
+    if ((!text && staged.length === 0) || status === "running") return;
     // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
     // 报错时不清输入框——让用户就地改，不用重打一遍
     if (text.startsWith("$")) {
@@ -2298,7 +2304,9 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
+          {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
+              不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
+          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
             ))}
@@ -2341,9 +2349,12 @@ export function App() {
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
+            <WorkTreePill />
             <TodoPanel />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
-                焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}
+                焦点环挂在容器上(focus-within)——整个会话框是一个控件。
+                外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}
+            <AttachDropZone disabled={status === "running"}>
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
               {slashMatches.length > 0 && (
                 <div className={SLASH_MENU} role="listbox">
@@ -2380,30 +2391,7 @@ export function App() {
                   ))}
                 </div>
               )}
-              {(staged.length > 0 || attachError) && (
-                <div className="flex flex-wrap gap-[6px] items-center pt-[6px] px-[10px]">
-                  {staged.map((a, i) => (
-                    <span className="inline-flex items-center gap-1 bg-foreground/[0.06] rounded-md px-[6px] py-[3px] text-xs text-muted-foreground" key={i}>
-                      {a.kind === "image" ? (
-                        <img className="w-9 h-9 object-cover rounded-sm block" src={a.previewDataUrl} alt={a.ref.name ?? "图片"} />
-                      ) : (
-                        <span>
-                          {a.name}({(a.bytes / 1024).toFixed(0)}KB)
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className="bg-transparent text-inherit opacity-60 text-[13px] px-[2px] hover:opacity-100"
-                        title="移除"
-                        onClick={() => removeStaged(i)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  {attachError && <span className="text-err text-xs">{attachError}</span>}
-                </div>
-              )}
+              <StagedChips className="pt-[6px] px-[10px]" />
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
               <Textarea
@@ -2414,6 +2402,15 @@ export function App() {
                 disabled={status === "running"}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={(e) => {
+                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
+                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
+                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
+                  const files = Array.from(e.clipboardData.files);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void filesToPayload(files).then(attachPasted);
+                }}
                 onKeyDown={(e) => {
                   // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
                   if (slashMatches.length > 0) {
@@ -2467,7 +2464,7 @@ export function App() {
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim()}>
+                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
                         发送
                       </Button>
                     </TooltipTrigger>
@@ -2476,6 +2473,7 @@ export function App() {
                 )}
               </div>
             </div>
+            </AttachDropZone>
           </footer>
         </>
       )}

@@ -220,3 +220,62 @@ describe("checkout", () => {
     expect(await svc.checkout("/gone", "main")).toMatchObject({ ok: false, kind: "no-repo" });
   });
 });
+
+describe("status", () => {
+  const STATUS = "## main...origin/main [ahead 1]\0M  src/a.ts\0?? src/b.ts\0";
+
+  it("status + numstat 合成:行增删贴回文件表", async () => {
+    const calls: string[][] = [];
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        calls.push(args);
+        if (args[0] === "diff") return { stdout: "12\t3\tsrc/a.ts\n" };
+        return { stdout: STATUS };
+      },
+    }));
+    const r = await svc.status("/repo");
+    expect(r).toEqual({
+      ok: true,
+      status: {
+        branch: "main", ahead: 1, behind: 0,
+        files: [
+          { path: "src/a.ts", kind: "modified", staged: true, insertions: 12, deletions: 3 },
+          { path: "src/b.ts", kind: "untracked", staged: false },
+        ],
+      },
+    });
+    // -z 是不转义路径的前提,--untracked-files=all 是"新目录摊开成文件"的前提:都不能掉
+    expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--branch", "--untracked-files=all"]);
+  });
+
+  it("numstat 失败(空仓库没有 HEAD)只是没数字,不算整体失败", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        if (args[0] === "diff") throw Object.assign(new Error("bad revision"), { stderr: "bad revision 'HEAD'" });
+        return { stdout: STATUS };
+      },
+    }));
+    const r = await svc.status("/repo");
+    expect(r).toMatchObject({ ok: true });
+    expect(r.ok && r.status.files[0]!.insertions).toBeUndefined();
+  });
+
+  it("非 git 目录按 kind 降级,不抛", async () => {
+    const svc = createGitGraphService(fake({
+      onExec: async () => {
+        throw Object.assign(new Error("x"), { stderr: "fatal: not a git repository" });
+      },
+    }));
+    expect(await svc.status("/repo")).toMatchObject({ ok: false, kind: "no-repo" });
+  });
+
+  it("目录不存在先挡下,不进子进程", async () => {
+    let called = false;
+    const svc = createGitGraphService(fake({
+      dirExists: false,
+      onExec: async () => { called = true; return { stdout: "" }; },
+    }));
+    expect(await svc.status("/gone")).toMatchObject({ ok: false, kind: "no-repo" });
+    expect(called).toBe(false);
+  });
+});

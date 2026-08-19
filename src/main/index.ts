@@ -367,6 +367,7 @@ void app.whenReady().then(() => {
   const gitGraph = createGitGraphService();
   ipcMain.handle(CHANNELS.gitGraphLog, (_e, repoDir: string, limit?: number) => gitGraph.log(repoDir, limit));
   ipcMain.handle(CHANNELS.gitBranches, (_e, repoDir: string) => gitGraph.branches(repoDir));
+  ipcMain.handle(CHANNELS.gitStatus, (_e, repoDir: string) => gitGraph.status(repoDir));
   ipcMain.handle(CHANNELS.gitCheckout, (_e, repoDir: string, branch: string) =>
     gitGraph.checkout(repoDir, branch)
   );
@@ -586,6 +587,14 @@ void app.whenReady().then(() => {
     if (picked.canceled) return [];
     return picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore));
   });
+
+  // 粘贴/拖入:字节已经在渲染层手上(剪贴板给的是 File,不是路径),
+  // 直接过同一道闸门。上限交给 intakeFile/AttachmentStore,这里不另设策略
+  ipcMain.handle(
+    CHANNELS.intakePastedFiles,
+    (_e, files: { name: string; data: Uint8Array }[]) =>
+      files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore))
+  );
 
   ipcMain.handle(CHANNELS.attachmentDataUrl, (_e, id: string) => {
     const data = attachmentStore.read(id); // id 非法/不存在 = 抛,渲染层兜

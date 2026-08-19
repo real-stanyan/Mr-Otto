@@ -11,6 +11,7 @@ import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "./friends.js";
@@ -284,9 +285,14 @@ export interface ShellBridge {
   gitBranches(repoDir: string): Promise<GitBranchesResult>;
   /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014) */
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
+  /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
+  gitStatus(repoDir: string): Promise<GitStatusResult>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
+  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文本带内容,
+      其余拒收带理由。与 pickAttachments 共用闸门 = 只有一套准入策略 */
+  intakePastedFiles(files: { name: string; data: Uint8Array }[]): Promise<StagedAttachment[]>;
   /** 按附件 id 取 data URL(时间线缩略图懒取用)。只回展示用途,不进日志 */
   attachmentDataUrl(id: string): Promise<string>;
   /** 当前登录账号（未登录 = signedIn: false 的空账号，不是 null） */
@@ -411,6 +417,8 @@ export const CHANNELS = {
   gitGraphCommit: "otter:gitGraphCommit",
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
+  gitStatus: "otter:gitStatus",
+  intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
   signIn: "otter:signIn",
