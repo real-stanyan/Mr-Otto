@@ -95,11 +95,17 @@ import type {
   ToolResultEvent,
 } from "../../session/events.js";
 
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
+/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
+    section_classified 也算：分区分类是真花钱的模型调用，漏掉这一行统计就说谎 */
 function totalTokens(events: SessionEvent[]): number {
   let sum = 0;
   for (const e of events) {
-    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
+    if (
+      (e.type === "assistant_message" ||
+        e.type === "context_compacted" ||
+        e.type === "section_classified") &&
+      e.usage
+    ) {
       sum += e.usage.promptTokens + e.usage.completionTokens;
     }
   }
@@ -904,6 +910,11 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
           <div className={THINKING_BODY}>{event.content}</div>
         </details>
       );
+
+    // 分区目录挂在右侧竖轨上，不进正文——每换一段话题就插一条系统行，
+    // 等于把导航噪音倒进对话里
+    case "section_classified":
+      return null;
 
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在

@@ -411,3 +411,19 @@ describe("image_described 投影(vision-bridge)", () => {
     ]);
   });
 });
+
+describe("section_classified 不进模型上下文", () => {
+  it("日志里插入分区事件，投影逐字节等于没有它时的投影", () => {
+    const base: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "你好" },
+      { seq: 2, sessionId: "s", ts: 3, type: "assistant_message", content: "在", model: "m" },
+    ];
+    const withSections: SessionEvent[] = [
+      ...base,
+      { seq: 3, sessionId: "s", ts: 4, type: "section_classified", title: "打招呼", model: "c" },
+      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: null, model: "c" },
+    ];
+    expect(JSON.stringify(deriveMessages(withSections))).toBe(JSON.stringify(deriveMessages(base)));
+  });
+});
