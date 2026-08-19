@@ -4,7 +4,8 @@
 // 三处改动（设计出处 docs/superpowers/specs/2026-08-19-conversation-sections-design.md）：
 // ① activeIndex 受控——亮哪条由滚动位置决定，不是点击驱动的内部 state
 // ② 收起态只亮当前分区标题，其余只剩刻度线；轨宽全程不变（hover 不让消息栏重排）
-// ③ prefers-reduced-motion 下关掉位移，只保留颜色
+// ③ prefers-reduced-motion 下关掉位移和刻度缩放，只保留颜色（同一 --effect 仍平滑变化，
+//    只是位移/缩放读的 --motion 被单独归零，不受影响——见 frame() 里的注释）
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 
@@ -41,11 +42,14 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
   activeRef.current = activeIndex;
 
   // 单条 rAF：每个 item 的 --effect 朝目标做帧率无关的指数逼近。
-  // 全部效果都读这一个变量 → 颜色、位移、刻度缩放永远同步，不会互相错拍
+  // 颜色读 --effect，位移/缩放读 --motion——两个变量平时同步，
+  // 减动效时 --motion 单独归零，--effect（颜色）不受影响继续走。
+  // reduced 每帧现读（不缓存在模块级常量）：这是活的系统设置，运行中可能被用户改掉
   const frame = useCallback((now: number) => {
     const dt = Math.min((now - last.current) / 1000, 0.05);
     last.current = now;
     const k = 1 - Math.exp(-dt / (SMOOTHING_MS / 1000));
+    const reduced = reducedMotion();
     let moving = false;
     itemRefs.current.forEach((el, i) => {
       if (!el) return;
@@ -56,6 +60,7 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
       const value = settled ? target : next;
       current.current[i] = value;
       el.style.setProperty("--effect", value.toFixed(4));
+      el.style.setProperty("--motion", reduced ? "0" : value.toFixed(4));
       if (!settled) moving = true;
     });
     raf.current = moving ? requestAnimationFrame(frame) : null;
@@ -132,11 +137,11 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
           >
             <span
               aria-hidden
-              className="absolute top-1/2 h-px origin-left [background-color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--border))] [transform:translateY(-50%)_scaleX(calc(0.7+var(--effect,0)*0.5))]"
+              className="absolute top-1/2 h-px origin-left [background-color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--border))] [transform:translateY(-50%)_scaleX(calc(0.7+var(--motion,0)*0.5))]"
               style={{ left: `-${MARKER_LENGTH + MARKER_GAP}px`, width: `${MARKER_LENGTH}px` }}
             />
             <span
-              className="block truncate text-[11px] leading-[1.35] duration-200 [transition-property:opacity] [color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--muted-foreground))] [transform:translateX(calc(var(--effect,0)*var(--max-shift)))]"
+              className="block truncate text-[11px] leading-[1.35] duration-200 [transition-property:opacity] [color:color-mix(in_srgb,var(--brand)_calc(var(--effect,0)*100%),var(--muted-foreground))] [transform:translateX(calc(var(--motion,0)*var(--max-shift)))]"
               // 收起态只有当前分区的标题看得见；其余留在原位但透明——
               // 用 opacity 不用 display:none，布局才不会跟着 hover 跳
               style={{ opacity: hovered || activeIndex === i ? 1 : 0, transitionTimingFunction: REVEAL_EASE }}
