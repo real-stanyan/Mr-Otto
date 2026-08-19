@@ -78,6 +78,11 @@ export type ThreadComponents = {
       它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   RunIndicator?: ComponentType | undefined;
+  /** 本仓加的槽:IPC 层瞬时发送失败的提示条(会话不存在/turn 冲突——消息压根
+      没进事件日志,与 turn_ended(error) 是不同的失败类别,见 store.ts send() 的
+      注释)。它不是消息、也不是事件投影,同样挂在 ViewportFooter 而不是消息流里。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  ErrorBanner?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   ToolGroup?:
@@ -142,8 +147,11 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
 };
 
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
-  const { Welcome = ThreadWelcome, RunIndicator: RunIndicatorComponent } =
-    useContext(ThreadComponentsContext);
+  const {
+    Welcome = ThreadWelcome,
+    RunIndicator: RunIndicatorComponent,
+    ErrorBanner: ErrorBannerComponent,
+  } = useContext(ThreadComponentsContext);
 
   return (
     <ThreadPrimitive.Root
@@ -192,6 +200,7 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
           >
+            {ErrorBannerComponent ? <ErrorBannerComponent /> : null}
             {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
             {/* PR1 只迁输出侧:输入框仍是 App.tsx footer 里那一整套(WorkTreePill /

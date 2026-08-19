@@ -12,7 +12,9 @@ import { Thread, type ThreadComponents } from "../components/assistant-ui/thread
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
+import { RetryButton } from "../components/RetryButton.js";
 import { UserAttachments } from "../components/UserAttachments.js";
+import { CHIP } from "../timelineStyles.js";
 import { useChat } from "../store.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import type { OrbState } from "../lib/toolSummary.js";
@@ -104,7 +106,7 @@ function TurnMeta({ events }: { events: SessionEvent[] }) {
   );
 }
 
-/** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
+/** 当前执行中的工具(有请求、无结果 = 还没落地)。纯日志投影:数 tool_result 对号 */
 function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   const done = new Set<string>();
   for (const e of events) if (e.type === "tool_result") done.add(e.toolCallId);
@@ -117,7 +119,7 @@ function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   return null;
 }
 
-/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
+/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先,其后按「在跑哪个环节」细分:
      检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
      四段对应 orbs 的 Searching / Working / Thinking / Solving */
 function agentPhase(opts: {
@@ -132,8 +134,30 @@ function agentPhase(opts: {
   if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
   if (opts.tool) return { orb: "working", label: "执行中…" };
   if (opts.streamingText) return { orb: "solving", label: "作答中…" };
-  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
+  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用:都还在想
 }
+
+// ─── ErrorBanner:IPC 层瞬时发送失败的提示条(补回接线时丢掉的功能,见 Task 11) ───
+//
+// store.error 与 turn_ended(error) 是刻意分开的两类失败(见 store.ts send() 的
+// 注释):这一类是消息压根没进事件日志(会话不存在/turn 冲突),不是投影
+// (toThreadMessages.ts)能表达的东西——它不对应任何 SessionEvent。只能像
+// RunIndicator 一样直接订阅 store、挂在 ViewportFooter,而不是走消息流。
+// 没有放进 RunIndicator 里合并:两者语义不同(一个是"turn 正在跑",一个是
+// "消息没发出去、turn 根本没起来"),经验上互斥但概念上不该揉成一个组件。
+// 样式照抄旧 App.tsx 的 chip(`git show 88703d1` 的 `[turn 失败]` 那行),
+// 重试钮复用 RetryButton——它自己会在 status==="running" 或没有上一条用户
+// 消息时隐身,这里不用重复判断
+const ErrorBanner: ComponentType = () => {
+  const error = useChat((s) => s.error);
+  if (!error) return null;
+  return (
+    <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
+      <span>[turn 失败] {error}</span>
+      <RetryButton />
+    </div>
+  );
+};
 
 /** ViewportFooter 里的相位指示器:数据照旧从 store 订阅(statusBySession / approvals /
     events / streamingBySession)。status 不是 running 且没有挂起审批就不渲染——
@@ -174,6 +198,7 @@ const COMPONENTS: ThreadComponents = {
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
   RunIndicator,
+  ErrorBanner,
 };
 
 export function OttoThread() {
