@@ -12,9 +12,12 @@ import {
   type OutgoingAttachment,
   type PokerAction,
   type PokerTableInput,
+  type BrowserBounds,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
+import { createBrowserHub } from "./browserHub.js";
+import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
@@ -269,6 +272,19 @@ void app.whenReady().then(() => {
     },
   });
 
+  // 浏览器注册表:app 级资源,一个会话一个。
+  // 与终端的接线方向相反——终端是 hub 去调 agent.world.openTerminal(pty 是
+  // LocalWorld 自己能干的活),浏览器是 hub 造好能力反过来注入进 world:
+  // WebContentsView 只有主进程 + 窗口造得出来,LocalWorld 是纯 Node 模块,造不出来。
+  // seam 仍然成立:工具只认 world.browser,不知道 hub 的存在(ADR-0033)。
+  const browsers = createBrowserHub({
+    createView: () => {
+      if (!mainWindow) throw new Error("窗口还没建好，开不了浏览器");
+      return createWebContentsViewHandle(mainWindow, "persist:otto-browser");
+    },
+    push: { state: (info) => send(CHANNELS.browserState, info) },
+  });
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -413,6 +429,19 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.terminalClose, (_e, id: string) => terminals.close(id));
 
+  // ── 浏览器 ──────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.browserOpen, (_e, sessionId: string) => browsers.open(sessionId));
+  ipcMain.handle(CHANNELS.browserNavigate, (_e, sessionId: string, url: string) =>
+    browsers.navigate(sessionId, url)
+  );
+  ipcMain.handle(CHANNELS.browserSetBounds, (_e, sessionId: string, bounds: BrowserBounds | null) =>
+    browsers.setBounds(sessionId, bounds)
+  );
+  ipcMain.handle(CHANNELS.browserBack, (_e, sessionId: string) => browsers.back(sessionId));
+  ipcMain.handle(CHANNELS.browserForward, (_e, sessionId: string) => browsers.forward(sessionId));
+  ipcMain.handle(CHANNELS.browserReload, (_e, sessionId: string) => browsers.reload(sessionId));
+  ipcMain.handle(CHANNELS.browserClose, (_e, sessionId: string) => browsers.close(sessionId));
+
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
   ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
@@ -537,6 +566,7 @@ void app.whenReady().then(() => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
     terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
+    browsers.close(sessionId); // 会话没了,它的浏览器也该没
     store.purge(sessionId);
     agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
@@ -718,6 +748,7 @@ void app.whenReady().then(() => {
 
   app.on("before-quit", () => {
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
+    browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
     store.close();
   });
 });
