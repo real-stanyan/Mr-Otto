@@ -18,6 +18,7 @@ import { Hl } from "../replay/Replay.js";
 import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
+import { MD_COMPONENTS } from "./CodeBlock.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004） */
@@ -140,7 +141,7 @@ export function EventRow({ event, all }: { event: SessionEvent; all: SessionEven
           {event.content && (
             // 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息)
             <div className="md self-stretch max-w-full py-[2px]">
-              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
                 {event.content}
               </Markdown>
             </div>

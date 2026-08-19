@@ -38,6 +38,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { MD_COMPONENTS } from "./components/CodeBlock.js";
 import { MODEL_CATALOG, findModel } from "../../shared/modelCatalog.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
@@ -2048,7 +2049,7 @@ export function App() {
               <div className="md streaming self-stretch max-w-full py-[2px]">
                 {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
                     完整事件到达后重渲一次自然纠正 */}
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
                   {streamingText}
                 </Markdown>
               </div>
