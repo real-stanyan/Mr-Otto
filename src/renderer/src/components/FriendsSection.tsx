@@ -1,16 +1,38 @@
-// FriendsSection — 侧边栏常驻好友区:添加好友(邮箱精确搜索)/待处理请求/好友列表+在线点。
+// FriendsSection — 好友区(收在侧栏 footer 的抽屉里):加好友(邮箱精确搜索)/
+// 待处理请求 / 好友列表(在线点 + 未读 + 约打牌) / 牌局邀请。
 // 全部状态走 store,不直接摸 window.otter(硬规则)。未登录显示占位。
 
-import { useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, Spade } from "lucide-react";
 import { useChat } from "../store.js";
 import type { FriendProfile } from "../../../shared/friends.js";
 import {
   SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarMenuAction,
 } from "@/components/ui/sidebar.js";
 import { Button } from "@/components/ui/button.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
+import { InviteTableMenu } from "./InviteTableMenu.js";
 
 const SECTION_LABEL = "text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]";
+
+/** 头像 + 在线点。在线点长在头像右下角(状态属于这个人,不属于旁边那行字) */
+function FriendAvatar({ profile, online }: { profile: FriendProfile; online: boolean }) {
+  const name = profile.name || profile.email || "?";
+  return (
+    <span className="relative shrink-0">
+      <Avatar size="sm">
+        <AvatarImage src={profile.avatarUrl} alt={name} />
+        <AvatarFallback>{name.slice(0, 1).toUpperCase()}</AvatarFallback>
+      </Avatar>
+      <span
+        className={`absolute -bottom-px -right-px size-[7px] rounded-full ring-2 ring-sidebar ${
+          online ? "bg-brand" : "bg-border"
+        }`}
+        aria-label={online ? "在线" : "离线"}
+      />
+    </span>
+  );
+}
 
 export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const account = useChat((s) => s.account);
@@ -18,15 +40,28 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const onlineIds = useChat((s) => s.onlineIds);
   const unread = useChat((s) => s.unreadByFriend);
   const friendError = useChat((s) => s.friendError);
+  const health = useChat((s) => s.realtimeHealth);
+  const invites = useChat((s) => s.gameInvites);
   const searchFriend = useChat((s) => s.searchFriend);
   const addFriend = useChat((s) => s.addFriend);
   const respondFriend = useChat((s) => s.respondFriend);
   const removeFriend = useChat((s) => s.removeFriend);
   const openFriendChat = useChat((s) => s.openFriendChat);
   const friendChat = useChat((s) => s.friendChat);
+  const respondGameInvite = useChat((s) => s.respondGameInvite);
+  const cancelGameInvite = useChat((s) => s.cancelGameInvite);
+
+  const refreshInvites = useChat((s) => s.refreshInvites);
 
   const [query, setQuery] = useState("");
   const [hit, setHit] = useState<FriendProfile | null | "none">(null); // "none" = 搜过没命中
+
+  // 推送不回放:主进程在登录那一刻推过一次邀请列表,而这块 UI 可能是后来才挂上的。
+  // 挂上时补拉一次,别让人对着空列表以为没人约过
+  const signedIn = account.signedIn;
+  useEffect(() => {
+    if (signedIn) void refreshInvites();
+  }, [signedIn, refreshInvites]);
 
   if (!account.signedIn) {
     // embedded(抽屉里)= 标题由弹窗自己出,这里只留状态文案
@@ -34,6 +69,8 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   }
 
   const online = new Set(onlineIds);
+  const incomingInvites = invites.filter((i) => i.direction === "incoming" && i.status === "pending");
+  const outgoingInvites = invites.filter((i) => i.direction === "outgoing" && i.status === "pending");
   const doSearch = async () => {
     const email = query.trim();
     if (!email) return;
@@ -44,6 +81,13 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   return (
     <>
       {!embedded && <div className={SECTION_LABEL}>好友</div>}
+      {/* 推送链路的实话:degraded 时消息/请求靠轮询,慢几秒。
+          不说的话,用户只会觉得"这软件有时候不灵"(issue #77 就是这种体感) */}
+      {health === "degraded" && (
+        <div className="mx-[10px] mb-1 rounded-md bg-foreground/[0.05] px-2 py-1 text-[11px] text-muted-foreground">
+          实时推送不通,已切轮询兜底 · 消息会慢几秒
+        </div>
+      )}
       {/* 添加好友:邮箱精确搜索 → 命中卡片一键发请求。
           搜索键 = 输入框内的放大镜 icon(不占一行、不吃文字),Enter 同效 */}
       <div className="px-[10px] pb-1">
@@ -80,6 +124,28 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
       )}
       {friendError && <p className="px-[10px] text-xs text-err">{friendError}</p>}
 
+      {/* 收到的牌局邀请:浮层可能已经被别的窗口挡住/用户切走过,抽屉里留一份账 */}
+      {incomingInvites.length > 0 && (
+        <>
+          <div className={SECTION_LABEL}>牌局邀请 · {incomingInvites.length}</div>
+          {incomingInvites.map((i) => (
+            <div key={i.id} className="mx-[10px] mb-1 flex items-center gap-1 rounded-md border border-border px-2 py-1">
+              <span className="min-w-0 flex-1 truncate text-xs">
+                {i.peer.name || i.peer.email} · {i.tableName || "无名桌"}
+              </span>
+              <Button variant="ghost" size="xs" className="text-muted-foreground"
+                onClick={() => void respondGameInvite(i.id, false)}>
+                忽略
+              </Button>
+              <Button variant="ghost" size="xs" className="text-brand"
+                onClick={() => void respondGameInvite(i.id, true)}>
+                去牌桌
+              </Button>
+            </div>
+          ))}
+        </>
+      )}
+
       {/* 收到的请求:就地 接受/拒绝 */}
       {snapshot.incoming.length > 0 && (
         <>
@@ -88,6 +154,7 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
             {snapshot.incoming.map((e) => (
               <SidebarMenuItem key={e.friendshipId}>
                 <SidebarMenuButton className="h-auto py-[5px] cursor-default hover:bg-transparent">
+                  <FriendAvatar profile={e.profile} online={online.has(e.profile.id)} />
                   <span className="flex-1 min-w-0 truncate text-xs">{e.profile.name || e.profile.email}</span>
                   <span className="flex gap-1">
                     <Button variant="ghost" size="sm" className="px-[6px] text-xs text-brand"
@@ -106,21 +173,33 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         </>
       )}
 
-      {/* 好友列表:在线点 + 未读角标,点开 DM 面板;发出未回应的请求灰显尾缀 */}
+      {/* 好友列表:在线点 + 未读角标,点开 DM 面板;悬停出"约打牌"和"删好友"两颗。
+          发出未回应的好友请求灰显在最后 */}
       <SidebarMenu>
         {snapshot.friends.map((e) => (
           <SidebarMenuItem key={e.friendshipId}>
             <SidebarMenuButton
-              className="h-auto py-[5px]"
+              className="h-auto py-[5px] pr-12"
               isActive={friendChat?.id === e.profile.id}
               onClick={() => void openFriendChat(e.profile)}
             >
-              <span className={`w-2 h-2 rounded-full shrink-0 ${online.has(e.profile.id) ? "bg-brand" : "bg-border"}`} />
+              <FriendAvatar profile={e.profile} online={online.has(e.profile.id)} />
               <span className="flex-1 min-w-0 truncate text-xs">{e.profile.name || e.profile.email}</span>
               {(unread[e.profile.id] ?? 0) > 0 && (
                 <span className="text-[10px] font-semibold text-brand">{unread[e.profile.id]}</span>
               )}
             </SidebarMenuButton>
+            {/* 约打牌排在删除左边:右边缘那颗是破坏性操作,固定位置不该被挤动 */}
+            <InviteTableMenu friendId={e.profile.id} label={`约 ${e.profile.name || e.profile.email} 打牌`}>
+              <SidebarMenuAction
+                showOnHover
+                className="right-7"
+                title="约打牌"
+                onClick={(ev) => ev.stopPropagation()}
+              >
+                <Spade />
+              </SidebarMenuAction>
+            </InviteTableMenu>
             <SidebarMenuAction
               showOnHover
               title="删除好友"
@@ -148,6 +227,24 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
           </SidebarMenuItem>
         ))}
       </SidebarMenu>
+
+      {/* 自己发出去、还没被回应的邀请:看得见才撤得回 */}
+      {outgoingInvites.length > 0 && (
+        <>
+          <div className={SECTION_LABEL}>已发出的邀请</div>
+          {outgoingInvites.map((i) => (
+            <div key={i.id} className="mx-[10px] mb-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate">
+                约 {i.peer.name || i.peer.email} 去 {i.tableName || "无名桌"}
+              </span>
+              <Button variant="ghost" size="xs" className="text-muted-foreground"
+                onClick={() => void cancelGameInvite(i.id)}>
+                撤回
+              </Button>
+            </div>
+          ))}
+        </>
+      )}
     </>
   );
 }
