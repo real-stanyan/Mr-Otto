@@ -47,23 +47,34 @@ export function BrowserPanel() {
     });
   }, [sessionId]);
 
-  // 矩形上报:占位符自己变了(ResizeObserver)、窗口变了(resize)都重量一次。
+  // 矩形上报:每帧量一次占位符,变了才发 IPC。
+  //
+  // 为什么是 rAF 而不是 ResizeObserver:网页是浮在这个组件之上的独立图层,
+  // 它得跟住占位符的**位置**,而 ResizeObserver 只在尺寸变化时触发,位移一概不报。
+  // 本面板的宿主 .side-panel 恰好有 200ms 的 translateX 入场动画(app.css),
+  // 于是挂载时那一次测量量到的是动画中途的坐标,尺寸自始至终没变过——
+  // 观察者再也不叫,网页就永远钉在那个错位的地方(实测:整块页面偏出面板)。
+  // 位移的来源还不止动画:拖拽分隔线、侧栏折叠、窗口 resize、字体加载导致的重排,
+  // 与其一条条挂监听,不如每帧问一次几何——只读四个数,变了才过桥,静止时零 IPC。
+  //
   // 卸载时报 null——这一句就是"关面板网页也跟着消失"的全部实现
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !sessionId) return;
-    const report = (visible: boolean) => {
-      const bounds = rectToBounds(host.getBoundingClientRect(), visible);
-      void window.otter.browserSetBounds(sessionId, bounds);
+    let raf = 0;
+    let last = "";
+    const tick = () => {
+      const bounds = rectToBounds(host.getBoundingClientRect(), true);
+      const key = JSON.stringify(bounds);
+      if (key !== last) {
+        last = key;
+        void window.otter.browserSetBounds(sessionId, bounds);
+      }
+      raf = requestAnimationFrame(tick);
     };
-    const ro = new ResizeObserver(() => report(true));
-    ro.observe(host);
-    const onWinResize = () => report(true);
-    window.addEventListener("resize", onWinResize);
-    report(true);
+    raf = requestAnimationFrame(tick);
     return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", onWinResize);
+      cancelAnimationFrame(raf);
       void window.otter.browserSetBounds(sessionId, null);
     };
   }, [sessionId, panelWide]);
