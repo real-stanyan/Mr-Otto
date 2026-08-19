@@ -32,6 +32,7 @@ const bridge: ShellBridge = {
   gitGraphCommit: (repoDir, hash) => ipcRenderer.invoke(CHANNELS.gitGraphCommit, repoDir, hash),
   gitBranches: (repoDir) => ipcRenderer.invoke(CHANNELS.gitBranches, repoDir),
   gitCheckout: (repoDir, branch) => ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch),
+  gitStatus: (repoDir) => ipcRenderer.invoke(CHANNELS.gitStatus, repoDir),
   getAccount: () => ipcRenderer.invoke(CHANNELS.getAccount),
   walletBalance: () => ipcRenderer.invoke(CHANNELS.walletBalance),
   pokerTables: () => ipcRenderer.invoke(CHANNELS.pokerTables),

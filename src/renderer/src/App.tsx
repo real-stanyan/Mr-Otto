@@ -26,6 +26,8 @@ import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay, Hl } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
+import { WorkTreePill } from "./components/WorkTreePill.js";
+import { UserAttachments } from "./components/UserAttachments.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
@@ -781,64 +783,19 @@ function ToolRow({ call, all }: { call: ToolCallRequest; all: SessionEvent[] }) 
   );
 }
 
-/** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
-const thumbCache = new Map<string, string>();
-
-/** 时间线里的图片缩略图:懒取 + 缓存。取不到(附件库文件丢失)显示占位文案——
-    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线 */
-function AttachmentThumb({ id, name }: { id: string; name?: string | undefined }) {
-  const [url, setUrl] = useState<string | null>(thumbCache.get(id) ?? null);
-  const [lost, setLost] = useState(false);
-  useEffect(() => {
-    if (url) return;
-    let alive = true;
-    window.otter.attachmentDataUrl(id).then(
-      (u) => {
-        thumbCache.set(id, u);
-        if (alive) setUrl(u);
-      },
-      () => {
-        if (alive) setLost(true);
-      }
-    );
-    return () => {
-      alive = false;
-    };
-  }, [id, url]);
-  if (lost) return <span className="opacity-60 text-xs text-muted-foreground">[图片缺失:{name ?? id.slice(0, 14)}]</span>;
-  if (!url) return <span className="opacity-60 text-xs text-muted-foreground">…</span>;
-  return <img className="max-w-[200px] max-h-40 rounded-md block" src={url} alt={name ?? "附件图片"} title={name} />;
-}
-
 function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) {
   switch (event.type) {
     case "user_message":
-      // 文本文件渲染成折叠卡片,不摊开全文——全文是给模型的(投影时拼进上下文),
-      // 气泡里只亮"带了什么文件";点开可核对快照内容
+      // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
+      // 各自成卡片摆在气泡上方(UserAttachments),气泡只留给用户正文。
+      // 只带附件不带字时不出空气泡:没说话就是没说话
       return (
-        // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
-        <div className={`${ROW} self-end bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2`}>
-          {event.content}
-          {event.textFiles && event.textFiles.length > 0 && (
-            <div className="flex flex-col gap-1 mt-[6px]">
-              {event.textFiles.map((f, i) => (
-                <details className="group bg-foreground/[0.06] rounded-md px-2 py-1 text-xs" key={i}>
-                  <summary className="cursor-pointer text-muted-foreground list-none [&::-webkit-details-marker]:hidden group-open:mb-1">
-                    📄 {f.name}
-                    <span className="opacity-70 ml-1">（{Math.max(1, Math.round(f.bytes / 1024))}KB）</span>
-                  </summary>
-                  <div className="whitespace-pre-wrap break-words max-h-60 overflow-y-auto text-muted-foreground text-xs border-t border-foreground/[0.08] pt-1">
-                    {f.content}
-                  </div>
-                </details>
-              ))}
-            </div>
-          )}
-          {event.attachments && event.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-[6px] mt-[6px]">
-              {event.attachments.map((a) => (
-                <AttachmentThumb key={a.id} id={a.id} name={a.name} />
-              ))}
+        <div className={`${ROW} self-end flex flex-col items-end gap-[6px]`}>
+          <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />
+          {event.content.trim() !== "" && (
+            // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
+            <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
+              {event.content}
             </div>
           )}
         </div>
@@ -2341,6 +2298,7 @@ export function App() {
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
+            <WorkTreePill />
             <TodoPanel />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件 */}

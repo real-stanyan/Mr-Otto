@@ -367,6 +367,7 @@ void app.whenReady().then(() => {
   const gitGraph = createGitGraphService();
   ipcMain.handle(CHANNELS.gitGraphLog, (_e, repoDir: string, limit?: number) => gitGraph.log(repoDir, limit));
   ipcMain.handle(CHANNELS.gitBranches, (_e, repoDir: string) => gitGraph.branches(repoDir));
+  ipcMain.handle(CHANNELS.gitStatus, (_e, repoDir: string) => gitGraph.status(repoDir));
   ipcMain.handle(CHANNELS.gitCheckout, (_e, repoDir: string, branch: string) =>
     gitGraph.checkout(repoDir, branch)
   );

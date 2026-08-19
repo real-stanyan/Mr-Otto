@@ -10,6 +10,7 @@ import {
   type CommitDetail, type GitBranchesResult, type GitCheckoutResult,
   type GitCommitResult, type GitLogResult,
 } from "../shared/gitGraph.js";
+import { mergeNumstat, parseGitStatus, type GitStatusResult } from "../shared/gitStatus.js";
 
 export interface GitGraphDeps {
   /** git 子进程;reject 的错误对象带 code/stderr(classifyGitError 的输入形状) */
@@ -59,6 +60,8 @@ export interface GitGraphService {
   branches(repoDir: string): Promise<GitBranchesResult>;
   /** 唯一的写操作:切分支。只服务"用户显式选分支",不给 agent 用 */
   checkout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
+  /** 工作区此刻脏在哪(只读)。行增删拿得到就贴上,拿不到不算失败 */
+  status(repoDir: string): Promise<GitStatusResult>;
 }
 
 export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphService {
@@ -134,6 +137,29 @@ export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphSe
         const { stdout } = await deps.execGit(["branch", "--list", `--format=${BRANCH_FORMAT}`], repoDir);
         const branches = parseBranchList(stdout);
         return { ok: true, current: branches.find((b) => b.current)?.name ?? null, branches };
+      } catch (e) {
+        return { ok: false, ...classifyGitError(e as { code?: string; stderr?: string; message?: string }) };
+      }
+    },
+
+    async status(repoDir) {
+      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
+      try {
+        // -z:路径不转义,中文/空格文件名照样是原样字节。--untracked-files=all:
+        // 新建的目录要摊开到文件——"新建了 3 个文件"比"新建了 1 个目录"更接近用户在问的事
+        const { stdout } = await deps.execGit(
+          ["status", "--porcelain", "-z", "--branch", "--untracked-files=all"],
+          repoDir
+        );
+        const status = parseGitStatus(stdout);
+        // 行增删是锦上添花:空仓库(没有 HEAD)这条会失败,失败就没数字,不影响文件清单
+        try {
+          const { stdout: num } = await deps.execGit(["diff", "--numstat", "HEAD", "--"], repoDir);
+          status.files = mergeNumstat(status.files, parseNumstat(num));
+        } catch {
+          // 保持没有数字的原样
+        }
+        return { ok: true, status };
       } catch (e) {
         return { ok: false, ...classifyGitError(e as { code?: string; stderr?: string; message?: string }) };
       }

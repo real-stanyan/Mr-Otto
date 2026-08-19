@@ -24,6 +24,7 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
+import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
@@ -130,6 +131,11 @@ interface ChatState {
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
   panelWide: boolean;
+  /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
+      不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
+  workTree: GitStatusResult | null;
+  /** 用户手动关掉浮窗时那一刻的状态指纹。指纹没变就不再自己弹回来 */
+  workTreeDismissed: string | null;
   /** 某个目录的分支状态(键 = 目录绝对路径)。新会话选文件夹、会话中显示当前分支共用一份缓存;
       null 值 = 正在拉取。非 git 目录存 ok:false,UI 据此不显示分支控件 */
   branchesByDir: Record<string, GitBranchesResult | null>;
@@ -222,6 +228,10 @@ interface ChatState {
   togglePanelWide(): void;
   /** 拉某目录的分支列表(非 git 目录也要拉:ok:false 就是"这里没有分支"的事实) */
   loadBranches(dir: string): Promise<void>;
+  /** 重问一次工作区状态(工具跑完 / 切会话 / 窗口重新聚焦时) */
+  refreshGitStatus(): Promise<void>;
+  /** 关掉改动浮窗:记下当前指纹,状态再变才重新出现 */
+  dismissWorkTree(): void;
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
   checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
@@ -298,6 +308,8 @@ const enterChat = (info: BootInfo) => ({
   protocolOpen: false, // 同上，仪表盘也让位
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
+  workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
+  workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   error: null,
 });
 
@@ -340,6 +352,8 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphLoadingMore: false,
   gitCommitView: null,
   panelWide: false,
+  workTree: null,
+  workTreeDismissed: null,
   branchesByDir: {},
   checkoutBusyDir: null,
   checkoutError: null,
@@ -656,6 +670,31 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async refreshGitStatus() {
+    const dir = get().workspace;
+    if (!dir) return;
+    try {
+      const result = await window.otter.gitStatus(dir);
+      // 期间切了会话就丢弃这份结果:它回答的是另一个工程的问题
+      if (get().workspace !== dir) return;
+      set((s) => ({
+        workTree: result,
+        // 关掉浮窗后状态又变了 = 新事件,解除静音;还是同一份就保持关着
+        workTreeDismissed:
+          result.ok && s.workTreeDismissed !== null && s.workTreeDismissed !== statusSignature(result.status)
+            ? null
+            : s.workTreeDismissed,
+      }));
+    } catch {
+      // 问 git 失败不该打断会话:保留上一份状态,下次工具跑完再问
+    }
+  },
+
+  dismissWorkTree: () =>
+    set((s) => ({
+      workTreeDismissed: s.workTree?.ok ? statusSignature(s.workTree.status) : "",
+    })),
+
   async checkoutBranch(dir, branch) {
     if (get().checkoutBusyDir) return; // 一次只切一个,防连点把仓库切成薛定谔态
     set({ checkoutBusyDir: dir, checkoutError: null });
@@ -950,6 +989,8 @@ export const useChat = create<ChatState>((set, get) => ({
           const dir = s.workspace;
           if (dir && s.branchesByDir[dir] !== undefined) void s.loadBranches(dir);
           if (s.gitGraphOpen) void s.refreshGitGraph(true);
+          // 工具刚动过盘:工作区改动浮窗要跟上(它就是为这一刻存在的)
+          void s.refreshGitStatus();
         }, 600);
       }
       set((s) => {

@@ -11,6 +11,7 @@ import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "./friends.js";
@@ -282,6 +283,8 @@ export interface ShellBridge {
   gitBranches(repoDir: string): Promise<GitBranchesResult>;
   /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014) */
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
+  /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
+  gitStatus(repoDir: string): Promise<GitStatusResult>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -409,6 +412,7 @@ export const CHANNELS = {
   gitGraphCommit: "otter:gitGraphCommit",
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
+  gitStatus: "otter:gitStatus",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
   signIn: "otter:signIn",
