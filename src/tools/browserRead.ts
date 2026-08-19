@@ -39,7 +39,13 @@ export const browserReadTool: Tool = {
     }
     const r = await world.browser.read(url === undefined ? {} : { url });
     const head = `# ${r.title || "(无标题)"}\n${r.url}\n\n`;
+    // 落地地址和请求地址不一致就明说。这块屏人和 agent 共用,人随时可能在
+    // 读取途中把它导去别处;不说的话,下面的正文会被记在一个它并不属于的地址上
+    const moved = r.requestedUrl
+      ? `[注意：请求的是 ${r.requestedUrl}，实际读到的是 ${r.url}（重定向，或用户在读取过程中切换了页面）。` +
+        `以下正文属于 ${r.url}，不要当成 ${r.requestedUrl} 的内容]\n\n`
+      : "";
     const tail = r.truncated ? "\n\n[正文超长已截断,以上不是全文]" : "";
-    return head + r.text + tail;
+    return head + moved + r.text + tail;
   },
 };

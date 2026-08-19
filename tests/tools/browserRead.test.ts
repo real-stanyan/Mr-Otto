@@ -42,6 +42,23 @@ describe("browser_read 工具", () => {
     expect(out).toContain("截断");
   });
 
+  it("落点和请求地址不一致要在输出里说 —— 不说的话正文会被记在一个它不属于的地址上", async () => {
+    const read = async () => ({
+      url: "https://b.com", title: "B", text: "B 的正文", truncated: false,
+      requestedUrl: "https://a.com",
+    });
+    const out = String(await browserReadTool.run({ url: "https://a.com" }, worldWith(read)));
+    expect(out).toContain("https://a.com");
+    expect(out).toContain("https://b.com");
+    expect(out).toMatch(/注意/);
+  });
+
+  it("没跑偏就不加噪音", async () => {
+    const read = async () => ({ url: "https://a.com", title: "A", text: "正文", truncated: false });
+    const out = String(await browserReadTool.run({ url: "https://a.com" }, worldWith(read)));
+    expect(out).not.toMatch(/注意/);
+  });
+
   it("world 没有浏览器能力 = 抛,不静默返回空", async () => {
     await expect(browserReadTool.run({}, bare)).rejects.toThrow(/浏览器/);
   });
