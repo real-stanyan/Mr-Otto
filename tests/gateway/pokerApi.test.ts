@@ -39,8 +39,8 @@ function harness() {
       }
       if (path.startsWith("poker_stacks")) {
         return [
-          { user_id: "a", seat_index: 0, stack_tokens: 1000 },
-          { user_id: "b", seat_index: 1, stack_tokens: 1000 },
+          { table_id: "t1", user_id: "a", seat_index: 0, stack_tokens: 1000 },
+          { table_id: "t1", user_id: "b", seat_index: 1, stack_tokens: 1000 },
         ];
       }
       if (path.startsWith("friendships")) {
@@ -95,8 +95,10 @@ describe("路由", () => {
   it("列桌只列看得见的：自己建的 / 自己坐着的 / 好友建的", async () => {
     const { api } = harness();
     const res = await api.handle("a", get(), "");
-    const body = await res.json() as { tables: { id: string }[] };
+    const body = await res.json() as { tables: { id: string; players: number }[] };
     expect(body.tables.map((t) => t.id)).toEqual(["t1"]);
+    // 等桌页靠它画"X/Y 在座":有筹码的在座人数
+    expect(body.tables[0]!.players).toBe(2);
 
     // 与建桌人 a 无关的 outsider 看不到
     const res2 = await api.handle("outsider", get(), "");

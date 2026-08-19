@@ -606,16 +606,61 @@ function Lobby({ tables }: { tables: PokerTableSummary[] }) {
   );
 }
 
-/** 进了桌但没牌在打：没买入 → 先买入；已在座 → 开牌/离桌 */
+/**
+ * 等桌页的卡背轨道（reactbits orbit-images 的做法）:六张 otto 牌背绕中心
+ * 3D 旋转,中心是在座人数。匀速转所以是 linear —— 传送带不需要缓动;
+ * reduced-motion 下环静止,人数照常显示。
+ */
+function OrbitCards({ count, total }: { count: number; total: number }) {
+  const N = 6;
+  return (
+    <div className="relative h-[190px] w-[240px] [perspective:700px]" aria-label={`在座 ${count}/${total}`}>
+      <div className="absolute inset-0 grid place-items-center [transform-style:preserve-3d] animate-[orbit-spin_16s_linear_infinite] motion-reduce:animate-none">
+        {Array.from({ length: N }, (_, i) => (
+          <div
+            key={i}
+            className="absolute"
+            style={{ transform: `rotateY(${(i / N) * 360}deg) translateZ(104px)` }}
+          >
+            <CardBack className="w-10" />
+          </div>
+        ))}
+      </div>
+      <div className="pointer-events-none absolute inset-0 grid place-items-center">
+        <div className="text-center">
+          <div className="text-3xl font-bold tabular-nums leading-none">
+            {count}
+            <span className="text-sm font-normal text-muted-foreground">/{total}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">在座</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 进了桌但没牌在打：没买入 → 先买入；已在座 → 等人齐/开牌/离桌 */
 function TableIdle({ tableId }: { tableId: string }) {
   const table = useChat((s) => s.pokerTables.find((t) => t.id === tableId) ?? null);
   const join = useChat((s) => s.joinPokerTable);
   const start = useChat((s) => s.startPokerHand);
   const leave = useChat((s) => s.leavePokerTable);
+  const refresh = useChat((s) => s.refreshPokerTables);
+
+  // 人数是会变的(好友随时买入),等桌页自己轮询;牌一开 SSE 会把整个页面换掉
+  useEffect(() => {
+    const id = setInterval(() => void refresh(), 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const players = table?.players ?? 0;
+  const maxSeats = table?.maxSeats ?? 6;
+  const ready = players >= 2;
 
   if (table && !table.seated) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        <OrbitCards count={players} total={maxSeats} />
         还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
         <AsyncButton size="sm" onClick={() => join(tableId, table.minBuyin)}>
           买入 {fmt(table.minBuyin)}
@@ -626,9 +671,14 @@ function TableIdle({ tableId }: { tableId: string }) {
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-      已入座，等开牌（至少两个人才开得起来）。
+      <OrbitCards count={players} total={maxSeats} />
+      {ready ? (
+        <span className="font-medium text-primary">人齐了，可以开桌！</span>
+      ) : (
+        <span>已入座，等好友买入（至少两个人才开得起来）。</span>
+      )}
       <div className="flex gap-2">
-        <AsyncButton size="sm" onClick={() => start()}>开一手</AsyncButton>
+        <AsyncButton size="sm" disabled={!ready} onClick={() => start()}>开一手</AsyncButton>
         <AsyncButton size="sm" variant="ghost" onClick={() => leave()}>离桌</AsyncButton>
       </div>
     </div>

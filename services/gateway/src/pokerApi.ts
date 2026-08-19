@@ -102,6 +102,13 @@ export function createPokerApi(deps: PokerApiDeps) {
     const rows = await rest.select("poker_tables?closed_at=is.null&select=*");
     const seatRows = await rest.select(`poker_stacks?user_id=eq.${userId}&select=table_id`);
     const seated = new Set(seatRows.filter(isRecord).map((r) => String(r["table_id"])));
+    // 每桌有筹码的在座人数 —— 等桌页拿它画"X/Y 在座"并判断够不够开牌
+    const allSeats = await rest.select("poker_stacks?stack_tokens=gt.0&select=table_id");
+    const players = new Map<string, number>();
+    for (const r of allSeats.filter(isRecord)) {
+      const t = String(r["table_id"]);
+      players.set(t, (players.get(t) ?? 0) + 1);
+    }
     const friends = await myFriends(userId);
     // service_role 绕过 RLS，所以可见性得在这里自己判 —— 与 0005 的 policy 同一套规则
     const visible = rows.filter(isRecord).filter((r) => {
@@ -114,6 +121,7 @@ export function createPokerApi(deps: PokerApiDeps) {
         name: String(r["name"] ?? ""),
         seated: seated.has(String(r["id"])),
         live: tables.hasLiveHand(String(r["id"])),
+        players: players.get(String(r["id"])) ?? 0,
       })),
     });
   }
