@@ -1457,6 +1457,7 @@ function AppSidebar() {
   const identity = displayIdentity(account, myProfile);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
+  const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1607,7 +1608,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-col items-start gap-px py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
