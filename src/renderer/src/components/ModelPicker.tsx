@@ -19,7 +19,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { findModel, modelsByProvider } from "../../../shared/modelCatalog.js";
+import { describeModel, modelsByProvider } from "../../../shared/modelCatalog.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
@@ -38,10 +38,11 @@ export function ModelPicker({
   className?: string;
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
+  const ollamaModels = useChat((s) => s.ollamaModels);
   const openSettings = useChat((s) => s.openSettings);
   const [open, setOpen] = useState(false);
 
-  const choice = findModel(value);
+  const choice = describeModel(value);
   const groups = useMemo(() => {
     const ready = (id: ProviderId) => {
       // DeepSeek 没配 key 也能用（登录后走官方赠额，见 main/modelRoute.ts）
@@ -51,7 +52,13 @@ export function ModelPicker({
       if (info.keyless) return true; // 本机 Ollama:能连上就能用
       return keyStatus[info.apiKeyEnv] ?? false;
     };
-    return modelsByProvider()
+    // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
+    // 一个都没装就整组不出现——空的二级菜单比没有这一项更让人困惑
+    const ollama =
+      ollamaModels.length > 0
+        ? [{ provider: "ollama" as ProviderId, models: ollamaModels.map((m) => describeModel(m)!) }]
+        : [];
+    return [...modelsByProvider(), ...ollama]
       .map((g) => ({ ...g, info: findProvider(g.provider)!, ready: ready(g.provider) }))
       // 没配 key 的厂商压根不进这个菜单：这里是"挑一个现在就能跑的型号"，
       // 十来行点进去只会撞上"需要 key"的死路。配 key 是另一件事，走底下那个入口。
@@ -59,7 +66,7 @@ export function ModelPicker({
       // 否则触发器显示着一个在菜单里不存在的型号
       .filter((g) => g.ready || g.provider === choice?.provider)
       .sort((a, b) => Number(b.ready) - Number(a.ready));
-  }, [keyStatus, choice?.provider]);
+  }, [keyStatus, ollamaModels, choice?.provider]);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -91,11 +98,15 @@ export function ModelPicker({
               )}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="menu-pop w-[248px]" sideOffset={6}>
-              {g.models.map((m) => (
+              {g.models.map((m, i) => {
+                // Ollama 那组的条目 id 带 ollama/ 前缀（日志里存的就是它），
+                // 而 m.model 是要发给 API 的裸 tag——菜单选的是前者
+                const id = g.provider === "ollama" ? ollamaModels[i]! : m.model;
+                return (
                 <DropdownMenuItem
-                  key={m.model}
+                  key={id}
                   className="gap-2 py-[7px]"
-                  onSelect={() => onChange(m.model)}
+                  onSelect={() => onChange(id)}
                 >
                   <span className="min-w-0 flex-1 truncate">{m.label}</span>
                   {m.supportsVision && (
@@ -104,11 +115,12 @@ export function ModelPicker({
                   <CheckIcon
                     className={cn(
                       "size-[14px] shrink-0 text-primary",
-                      m.model === value ? "opacity-100" : "opacity-0"
+                      id === value ? "opacity-100" : "opacity-0"
                     )}
                   />
                 </DropdownMenuItem>
-              ))}
+                );
+              })}
               {!g.ready && (
                 <>
                   <DropdownMenuSeparator />

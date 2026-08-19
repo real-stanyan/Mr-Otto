@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeModel } from "../../src/main/modelRoute.js";
-import { findModel } from "../../src/shared/modelCatalog.js";
+import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
 const deepseek = findModel("deepseek-v4-flash")!;
 const glm = findModel("glm-4.5-flash")!;
@@ -72,7 +72,13 @@ describe("routeModel", () => {
 });
 
 describe("免 key 的本机厂商（Ollama）", () => {
-  const ollama = findModel("qwen3")!;
+  // 目录里没有 Ollama 的型号(本机装了什么只有本机知道),id 靠前缀认领
+  const ollama = resolveModel("ollama/qwen3:30b");
+
+  it("前缀被剥掉：发给 Ollama 的是它认得的裸 tag", () => {
+    expect(ollama.model).toBe("qwen3:30b");
+    expect(ollama.keyless).toBe(true);
+  });
 
   it("没 key 也不 blocked：直连本机端点", () => {
     const r = route({ choice: ollama });

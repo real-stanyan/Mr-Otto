@@ -40,7 +40,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
-import { DEFAULT_MODEL, findModel } from "../../shared/modelCatalog.js";
+import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -487,7 +487,7 @@ function ComposerBar() {
   const [ctxOpen, setCtxOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
 
-  const choice = findModel(model);
+  const choice = describeModel(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
@@ -2011,12 +2011,12 @@ function Welcome() {
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
   const [model, setModel] = useState(() =>
-    findModel(lastModel) ? lastModel : DEFAULT_MODEL
+    describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
   const [mode, setMode] = useState<"ask" | "auto">("ask");
   const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
-  const choice = findModel(model);
+  const choice = describeModel(model);
   // 附件暂存区是全局的:在这里粘/拖进来的,建会话后由 send 原样带走
   const attachPasted = useChat((s) => s.attachPasted);
 

@@ -25,7 +25,7 @@ import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { findModel } from "../shared/modelCatalog.js";
+import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -463,6 +463,34 @@ void app.whenReady().then(() => {
     void shell.openExternal(info.consoleUrl);
   });
 
+  // 本机 Ollama 的型号清单。目录里一个 tag 都不写死——用户 pull 了什么就有什么，
+  // 写死等于给他一份跟本机对不上的清单。走 OpenAI 兼容的 /models（端点前缀
+  // 已经含 /v1），因为 adapter 也走这一套，两处对同一个服务的看法不会分叉。
+  // 超时 2 秒:没装 Ollama 时连接会立刻被拒,真正需要兜底的是"端口通着但没人应"
+  ipcMain.handle(CHANNELS.listOllamaModels, async (): Promise<{ models: string[]; error: string }> => {
+    const info = findProvider("ollama")!;
+    const base = process.env[info.baseUrlEnv] ?? info.baseUrl;
+    try {
+      const res = await fetch(`${base}/models`, {
+        signal: AbortSignal.timeout(2000),
+        ...(process.env[info.apiKeyEnv]
+          ? { headers: { authorization: `Bearer ${process.env[info.apiKeyEnv]}` } }
+          : {}),
+      });
+      if (!res.ok) return { models: [], error: `Ollama 返回 ${res.status}` };
+      const body = (await res.json()) as { data?: { id?: unknown }[] };
+      const models = (body.data ?? [])
+        .map((m) => (typeof m.id === "string" ? m.id : ""))
+        .filter((id) => id !== "")
+        .sort((a, b) => a.localeCompare(b))
+        .map((id) => OLLAMA_MODEL_PREFIX + id);
+      return { models, error: "" };
+    } catch (e) {
+      // 没装/没跑不是故障,是默认状态。原文回给 UI,由它决定说得多轻
+      return { models: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {
     if (!allowedKeyEnvs.has(envName)) throw new Error(`不认识的 key 变量: ${envName}`);
     applyToEnv(saveKey(keyVaultPath, envName, key), process.env);
@@ -570,7 +598,7 @@ void app.whenReady().then(() => {
         // "模型看不见图还装看过"
         // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
         const modelText = composeUserText(text, textFiles);
-        if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
+        if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
           const describeImages = createVisionBridge((id) => attachmentStore.read(id));
           const described = await describeImages(refs, modelText);
           const descEvent = store.append({

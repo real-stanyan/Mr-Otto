@@ -105,15 +105,6 @@ const MODEL_SPECS: ModelSpec[] = [
   { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V3.2-Exp", label: "DeepSeek V3.2", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
   { provider: "siliconflow", model: "Qwen/Qwen3-235B-A22B", label: "Qwen3 235B", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
 
-  // ── Ollama（本机）──
-  // 这里列的是几款常见 tag，装没装在用户那边：Ollama 只跑他 `ollama pull` 过的。
-  // 想用目录外的 tag（自定义 Modelfile、量化档）就填 OTTER_MODEL，照样能跑。
-  // 上下文按 Ollama 的默认 num_ctx 量级保守写，别让 UI 的占用百分比报得太乐观。
-  // thinking 一律 false：OpenAI 兼容层不吃 thinking 字段，发过去只会被当成陌生参数
-  { provider: "ollama", model: "qwen3", label: "Qwen3", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
-  { provider: "ollama", model: "llama3.2", label: "Llama 3.2", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
-  { provider: "ollama", model: "gpt-oss:20b", label: "GPT-OSS 20B", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
-  { provider: "ollama", model: "deepseek-r1", label: "DeepSeek R1", contextWindow: 32_768, supportsThinking: false, supportsVision: false },
 ];
 
 function expand(spec: ModelSpec): ModelChoice {
@@ -135,6 +126,51 @@ function expand(spec: ModelSpec): ModelChoice {
 
 export const MODEL_CATALOG: ModelChoice[] = MODEL_SPECS.map(expand);
 
+// ── 本机 Ollama：目录里一行都不写 ─────────────────────────────────────
+// 因为"有哪些型号"这个问题只有那台机器答得上来：用户 `ollama pull` 了什么就有什么，
+// 写死几个常见 tag 只会得到一份跟本机对不上的清单（正是这次的 bug）。
+// 型号清单在运行时问 Ollama（主进程 listOllamaModels → GET /v1/models）。
+//
+// 会话日志里存带前缀的 id（"ollama/qwen3:30b"）而不是裸 tag，有两个理由：
+// ① 裸 tag 认不出厂商——日志重放时 Ollama 可能没开着，问不了，而重放必须永远能跑；
+// ② 事件 schema 一个字段都不用改（ADR：SessionEvent 变更必须向后兼容），
+//    旧日志里的裸 id 照旧走目录查表。
+export const OLLAMA_MODEL_PREFIX = "ollama/";
+
+/** 带前缀的 id → 发给 Ollama 的裸 tag。不是 Ollama 的 id 原样返回 */
+export function ollamaTag(model: string): string | null {
+  return model.startsWith(OLLAMA_MODEL_PREFIX) ? model.slice(OLLAMA_MODEL_PREFIX.length) : null;
+}
+
+/** 裸 tag → 目录形态。上下文窗按 Ollama 默认 num_ctx 的量级保守取，
+    宁可 UI 把占用报得偏高，也别让用户以为还剩很多。
+    vision 一律 false：本机装没装视觉款问不出来，图片走 vision-bridge 兜底 */
+function ollamaChoice(tag: string): ModelChoice {
+  const p = findProvider("ollama")!;
+  return {
+    provider: "ollama",
+    model: tag, // 发给 API 的是裸 tag——前缀是我们内部的记账方式，Ollama 不认
+    label: tag,
+    baseUrl: p.baseUrl,
+    baseUrlEnv: p.baseUrlEnv,
+    apiKeyEnv: p.apiKeyEnv,
+    contextWindow: 32_768,
+    supportsThinking: false,
+    supportsVision: false,
+    keyless: true,
+  };
+}
+
+/** 目录查表 + Ollama 前缀识别。两处 UI（型号下拉框、状态条）用它拿显示名和能力位；
+    认不出来就是认不出来，返回 undefined —— 不像 resolveModel 那样兜底成 DeepSeek，
+    免得给一个陌生 id 亮出它并不具备的能力 */
+export function describeModel(model: string): ModelChoice | undefined {
+  const hit = findModel(model);
+  if (hit) return hit;
+  const tag = ollamaTag(model);
+  return tag ? ollamaChoice(tag) : undefined;
+}
+
 /** 开箱默认型号。不用 MODEL_CATALOG[0]——目录顺序是 UI 顺序（OpenAI 排头），
     而"默认"得挑一个**不填 key 也能跑**的：官方赠额只覆盖 DeepSeek（main/modelRoute.ts）。
     与 main/agent.ts 里 OTTER_MODEL 的兜底值同源 */
@@ -155,8 +191,9 @@ export function modelsByProvider(): { provider: ProviderId; models: ModelChoice[
 
 /** 目录外的型号 id（OTTER_MODEL 填了自定义值）→ 按 DeepSeek 方言兜底 */
 export function resolveModel(model: string): ModelChoice {
+  const described = describeModel(model);
   return (
-    findModel(model) ?? {
+    described ?? {
       provider: "deepseek",
       model,
       label: model,

@@ -6,8 +6,11 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MODEL,
   MODEL_CATALOG,
+  describeModel,
   findModel,
   modelsByProvider,
+  ollamaTag,
+  resolveModel,
 } from "../../src/shared/modelCatalog.js";
 import { PROVIDER_CATALOG, findProvider, providerKeyEnvs } from "../../src/shared/providerCatalog.js";
 
@@ -70,6 +73,25 @@ describe("modelCatalog", () => {
     for (const m of MODEL_CATALOG) {
       expect(m.keyless, m.model).toBe(findProvider(m.provider)!.keyless ?? false);
     }
+  });
+
+  it("Ollama 一个型号都不写死 —— 写死就会跟本机 ollama list 对不上", () => {
+    expect(MODEL_CATALOG.some((m) => m.provider === "ollama")).toBe(false);
+    expect(modelsByProvider().some((g) => g.provider === "ollama")).toBe(false);
+  });
+
+  it("ollama/ 前缀 = 本机型号：认得出厂商，也剥得回裸 tag", () => {
+    const m = describeModel("ollama/qwen3.5:27b-coding-mxfp8")!;
+    expect(m.provider).toBe("ollama");
+    expect(m.model).toBe("qwen3.5:27b-coding-mxfp8"); // 发给 API 的是裸 tag
+    expect(m.label).toBe("qwen3.5:27b-coding-mxfp8");
+    expect(ollamaTag("ollama/x")).toBe("x");
+    expect(ollamaTag("deepseek-v4-flash")).toBeNull();
+  });
+
+  it("describeModel 认不出就返回 undefined，不像 resolveModel 那样兜底成 DeepSeek", () => {
+    expect(describeModel("some-unknown-id")).toBeUndefined();
+    expect(resolveModel("some-unknown-id").provider).toBe("deepseek");
   });
 
   it("至少有一款视觉型号 —— vision-bridge 的代读员得存在", () => {

@@ -11,7 +11,7 @@ import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucid
 
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
-import { MODEL_CATALOG } from "../../../shared/modelCatalog.js";
+import { findModel, MODEL_CATALOG } from "../../../shared/modelCatalog.js";
 import { PROVIDER_CATALOG, type ProviderId, type ProviderInfo } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
@@ -35,6 +35,10 @@ function ProviderRow({
   const [saved, setSaved] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // 本机 Ollama 的型号不在目录里（用户 pull 了什么就有什么），现问现取
+  const ollamaModels = useChat((s) => s.ollamaModels);
+  const ollamaError = useChat((s) => s.ollamaError);
+  const refreshOllama = useChat((s) => s.refreshOllamaModels);
   const models = useMemo(() => MODEL_CATALOG.filter((m) => m.provider === info.id), [info.id]);
 
   const save = async () => {
@@ -92,8 +96,8 @@ function ProviderRow({
             {/* 免 key 的一家没有输入框可填：它要的不是凭据，是"服务开着没" */}
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
-                装好 Ollama 并让它跑着（<code>ollama serve</code>），再{" "}
-                <code>ollama pull</code> 下面任意一款，就能在型号下拉框里选到。
+                装好 Ollama 并让它跑着（<code>ollama serve</code>），
+                <code>ollama pull</code> 过的型号会自动出现在下面和型号下拉框里。
                 默认端点 <code>{info.baseUrl}</code>，改端点填{" "}
                 <code>{info.baseUrlEnv}</code>（远端 Ollama 要鉴权时再配{" "}
                 <code>{info.apiKeyEnv}</code>）。
@@ -147,17 +151,37 @@ function ProviderRow({
               )}
             </div>
 
-            {/* 型号清单:填完 key 之后下拉框里会多出哪几款,当场看得见 */}
-            <div className="flex flex-wrap gap-[6px]">
-              {models.map((m) => (
+            {/* 型号清单:填完 key 之后下拉框里会多出哪几款,当场看得见。
+                Ollama 那一行列的是本机 `ollama list` 的实际结果,不是写死的常见 tag */}
+            <div className="flex flex-wrap items-center gap-[6px]">
+              {(info.keyless ? ollamaModels : models.map((m) => m.model)).map((id) => (
                 <span
-                  key={m.model}
-                  title={m.model}
+                  key={id}
+                  title={id}
                   className="rounded-md border border-border px-[7px] py-[2px] text-[11px] text-muted-foreground"
                 >
-                  {m.label}
+                  {info.keyless ? id.replace("ollama/", "") : (findModel(id)?.label ?? id)}
                 </span>
               ))}
+              {info.keyless && (
+                <>
+                  {ollamaModels.length === 0 && (
+                    <span className="text-[11.5px] text-muted-foreground">
+                      {ollamaError
+                        ? `没连上本机 Ollama（${ollamaError}）`
+                        : "连上了，但一个型号都没装 —— 先 ollama pull 一个"}
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="text-muted-foreground"
+                    onClick={() => void refreshOllama()}
+                  >
+                    重新检测
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         </div>

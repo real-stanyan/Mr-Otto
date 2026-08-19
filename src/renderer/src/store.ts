@@ -148,6 +148,10 @@ interface ChatState {
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
+  /** 本机 Ollama 装了哪些型号（带 ollama/ 前缀）。目录查不到，只能现问 */
+  ollamaModels: string[];
+  /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
+  ollamaError: string;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
@@ -236,6 +240,8 @@ interface ChatState {
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
   checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
+  /** 重问本机 Ollama 的型号清单。用户随时 pull/rm，镜像别太陈旧 */
+  refreshOllamaModels(): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   signOut(): Promise<void>;
@@ -362,6 +368,8 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   keyStatus: {},
+  ollamaModels: [],
+  ollamaError: "",
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
@@ -416,6 +424,9 @@ export const useChat = create<ChatState>((set, get) => ({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         keyStatus: await window.otter.keyStatus(),
       });
+      // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
+      // 不该把设置页的打开拖在后面
+      void get().refreshOllamaModels();
     } else if (section === "skills") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
@@ -720,6 +731,11 @@ export const useChat = create<ChatState>((set, get) => ({
     } finally {
       set({ checkoutBusyDir: null });
     }
+  },
+
+  async refreshOllamaModels() {
+    const { models, error } = await window.otter.listOllamaModels();
+    set({ ollamaModels: models, ollamaError: error });
   },
 
   async saveApiKey(envName, key) {
@@ -1093,6 +1109,9 @@ export const useChat = create<ChatState>((set, get) => ({
         ? { ...enterChat(info), sessions, skills, account, keyStatus }
         : { phase: "welcome", sessions, skills, account, keyStatus }
     );
+    // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
+    // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
+    void get().refreshOllamaModels();
     // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
     // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
     // provider 的旧名字,首登引导也永远不弹

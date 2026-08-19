@@ -269,6 +269,9 @@ export interface ShellBridge {
   /** 用系统浏览器打开某厂商的控制台（去领 key）。收厂商 id 而不是 URL——
       URL 由主进程查目录得到，渲染层被攻破也拉不出任意外链 */
   openProviderConsole(providerId: string): Promise<void>;
+  /** 本机 Ollama 装了哪些型号（现问现答，无缓存）。返回带 ollama/ 前缀的 id。
+      不 reject——Ollama 没装/没跑是常态，结构化回流让 UI 自己降级 */
+  listOllamaModels(): Promise<{ models: string[]; error: string }>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
@@ -459,6 +462,7 @@ export const CHANNELS = {
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",
+  listOllamaModels: "otter:listOllamaModels",
   sendMessage: "otter:sendMessage",
   pickAttachments: "otter:pickAttachments",
   attachmentDataUrl: "otter:attachmentDataUrl",
