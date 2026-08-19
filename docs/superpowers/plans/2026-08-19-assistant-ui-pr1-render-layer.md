@@ -472,9 +472,19 @@ EOF
 
 **背景（实现者必读）：**
 - `assistant_message.reasoning?: string` = 思考正文，`reasoningMs?: number` = 纯思考耗时（ADR-0032）。**思考不进模型上下文**（塞回去 API 报 400），但要给人看 —— 所以进投影、进 `reasoning` part。
-- `context_compacted.summary` 语义是「本事件之前的一切消息被摘要替换」。**UI 投影不做这个替换** —— 界面上历史要留着给人翻，只在断层处插一条标记。这与 `deriveMessages`（喂模型的那份，真做替换）是刻意的不同。
-- `image_described.content` 是视觉模型代读图片的产物，紧贴在对应 `user_message` **之前**落盘。
 - `turn_ended.outcome` 为 `"aborted"` = 用户主动停止（ADR-0006），为 `"error"` = 暴死。
+- **审计行**：`src/renderer/src/components/Timeline.tsx:160-235` 的 `EventRow` 现在渲染 8 类
+  非对话行 —— `session_created` / `session_archived` / `session_renamed` / `model_changed` /
+  `skill_invoked`（可折叠）/ `image_described`（可折叠）/ `approval_decision(denied)` /
+  `turn_ended(error|aborted)`。它们**必须活下来**（spec：保留现有视觉），做法是投成
+  `role: "system"` 消息，把原始事件挂在 `metadata.custom.otto` 上，由 Task 6 的
+  SystemMessage override 直接喂回 `<EventRow>` 渲染。这样视觉一模一样，且不需要第二条渲染路径。
+- 因此 `context_compacted` 和 `image_described` **不做特殊处理**，走审计行这条统一的路 ——
+  和 `deriveMessages`（喂模型的那份，真做摘要替换、真把图片解析注进 user 消息）刻意不同：
+  喂模型的必须替换（不然上下文白压），喂人的必须留着给人翻。
+- `tool_result`、`tool_execution_started`、`approval_decision(approved)` 三类**不出审计行**：
+  前两者已被 tool-call part 吸收，第三类是「正常放行」不是对话事实（免审模式下一长串
+  「已批准」纯属噪音）。这份名单照抄 `EventRow` 里返回 `null` 的分支，别自己发明。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -512,10 +522,11 @@ describe("toThreadMessages — 边界", () => {
     });
   });
 
-  it("context_compacted 插一条 system 标记,不吞掉之前的历史", () => {
+  it("审计事件投成 system 消息,原始事件挂在 metadata.custom.otto 上", () => {
+    const compacted = ev({ type: "context_compacted", summary: "聊过天气", model: "m" }, 1);
     const events = [
       ev({ type: "user_message", content: "第一句" }, 0),
-      ev({ type: "context_compacted", summary: "聊过天气", model: "m" }, 1),
+      compacted,
       ev({ type: "user_message", content: "第二句" }, 2),
     ];
     const out = toThreadMessages(events);
@@ -523,29 +534,49 @@ describe("toThreadMessages — 边界", () => {
     expect(out[0]?.role).toBe("user");
     expect(out[1]).toEqual({
       role: "system", id: "1", createdAt: new Date(1001),
-      content: [{ type: "text", text: "聊过天气" }],
+      content: [], metadata: { custom: { otto: compacted } },
     });
+    expect(out[2]?.role).toBe("user");
   });
 
-  it("image_described 并进紧随其后的 user_message,不单独成条", () => {
+  it("八类审计事件一个不漏", () => {
     const events = [
-      ev({ type: "image_described", content: "图里是只水獭", model: "v" }, 0),
-      ev({ type: "user_message", content: "这是什么" }, 1),
+      ev({ type: "session_created" }, 0),
+      ev({ type: "session_archived" }, 1),
+      ev({ type: "session_renamed", title: "新名字" }, 2),
+      ev({ type: "model_changed", provider: "deepseek", model: "deepseek-chat" }, 3),
+      ev({ type: "skill_invoked", name: "tdd", content: "# TDD" }, 4),
+      ev({ type: "image_described", content: "图里是只水獭", model: "v" }, 5),
+      ev({ type: "approval_decision", toolCallId: "c1", decision: "denied", reason: "不行" }, 6),
+      ev({ type: "context_compacted", summary: "摘要", model: "m" }, 7),
     ];
     const out = toThreadMessages(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content).toEqual([
-      { type: "text", text: "图里是只水獭" },
-      { type: "text", text: "这是什么" },
+    expect(out).toHaveLength(8);
+    expect(out.every((m) => m.role === "system")).toBe(true);
+    expect(out.map((m) => (m.metadata?.custom?.["otto"] as { type: string }).type)).toEqual([
+      "session_created", "session_archived", "session_renamed", "model_changed",
+      "skill_invoked", "image_described", "approval_decision", "context_compacted",
     ]);
   });
 
-  it("turn 被中断时,最后一条 assistant 消息标 cancelled", () => {
+  it("被吸收/无声的三类不出审计行", () => {
+    const events = [
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "x" }, 0),
+      ev({ type: "tool_execution_started", toolCallId: "c1" }, 1),
+      ev({ type: "approval_decision", toolCallId: "c1", decision: "approved" }, 2),
+    ];
+    expect(toThreadMessages(events)).toEqual([]);
+  });
+
+  it("turn 被中断时,最后一条 assistant 消息标 cancelled,并额外出一条审计行", () => {
     const events = [
       ev({ type: "assistant_message", content: "写到一半", model: "m" }, 0),
       ev({ type: "turn_ended", outcome: "aborted" }, 1),
     ];
-    expect(toThreadMessages(events)[0]?.status).toEqual({ type: "incomplete", reason: "cancelled" });
+    const out = toThreadMessages(events);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.status).toEqual({ type: "incomplete", reason: "cancelled" });
+    expect(out[1]?.role).toBe("system");
   });
 
   it("turn 出错时,最后一条 assistant 消息标 error", () => {
@@ -556,27 +587,21 @@ describe("toThreadMessages — 边界", () => {
     expect(toThreadMessages(events)[0]?.status).toEqual({ type: "incomplete", reason: "error" });
   });
 
-  it("turn 正常收工不改状态", () => {
+  it("turn 正常收工:不改状态,也不出审计行", () => {
     const events = [
       ev({ type: "assistant_message", content: "好了", model: "m" }, 0),
       ev({ type: "turn_ended", outcome: "completed" }, 1),
     ];
-    expect(toThreadMessages(events)[0]?.status).toEqual({ type: "complete", reason: "stop" });
+    const out = toThreadMessages(events);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.status).toEqual({ type: "complete", reason: "stop" });
   });
 
-  it("turn_ended 之前没有 assistant 消息时不炸", () => {
+  it("turn_ended 之前没有 assistant 消息时不炸,审计行照出", () => {
     const events = [ev({ type: "turn_ended", outcome: "aborted" }, 0)];
-    expect(toThreadMessages(events)).toEqual([]);
-  });
-
-  it("model_changed / skill_invoked / tool_execution_started 不产生消息", () => {
-    const events = [
-      ev({ type: "model_changed", provider: "deepseek", model: "deepseek-chat" }, 0),
-      ev({ type: "skill_invoked", name: "tdd", content: "# TDD" }, 1),
-      ev({ type: "tool_execution_started", toolCallId: "c1" }, 2),
-      ev({ type: "session_renamed", title: "新名字" }, 3),
-    ];
-    expect(toThreadMessages(events)).toEqual([]);
+    const out = toThreadMessages(events);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.role).toBe("system");
   });
 });
 ```
@@ -584,28 +609,52 @@ describe("toThreadMessages — 边界", () => {
 - [ ] **Step 2: 跑测试确认它失败**
 
 Run: `npx vitest run tests/renderer/toThreadMessages.test.ts`
-Expected: FAIL —— 11 条新用例里除了「不产生消息」那条外全红
+Expected: FAIL —— 11 条新用例大部分红（`isAuditEvent` / `toAuditMessage` 还不存在）
 
 - [ ] **Step 3: 写实现**
 
 改 `src/renderer/src/aui/toThreadMessages.ts`。
 
-3a. 在 `toThreadMessages` 函数体建完索引后，加一个「待并入下一条 user 消息的图片解析」变量：
+3a. 在文件顶部（`toThreadMessages` 之前）加审计行的判定与构造：
 
 ```ts
-  let pendingImageText: string | null = null;
+/** 时间线上看得见的非对话事件 → 一条 system 消息,原始事件挂 metadata。
+    渲染交给既有的 EventRow(Task 6 的 SystemMessage override) —— 视觉一模一样,
+    且不需要第二条渲染路径。
+    这份名单照抄 Timeline.tsx 里 EventRow 不返回 null 的那些分支:
+    tool_result / tool_execution_started 已被 tool-call part 吸收,
+    approval_decision(approved) 是正常放行不是对话事实(免审模式下全是噪音) */
+function isAuditEvent(e: SessionEvent): boolean {
+  switch (e.type) {
+    case "session_created":
+    case "session_archived":
+    case "session_renamed":
+    case "model_changed":
+    case "skill_invoked":
+    case "image_described":
+    case "context_compacted":
+      return true;
+    case "approval_decision":
+      return e.decision === "denied";
+    case "turn_ended":
+      return e.outcome !== "completed";
+    default:
+      return false;
+  }
+}
+
+function toAuditMessage(e: SessionEvent): ThreadMessageLike {
+  return {
+    role: "system",
+    id: String(e.seq),
+    createdAt: new Date(e.ts),
+    content: [],
+    metadata: { custom: { otto: e } },
+  };
+}
 ```
 
-3b. `user_message` 分支的 `parts` 组装改成（把 pending 的解析插到最前）：
-
-```ts
-      const parts: Part[] = [];
-      if (pendingImageText !== null) {
-        parts.push({ type: "text", text: pendingImageText });
-        pendingImageText = null;
-      }
-      if (e.content.trim() !== "") parts.push({ type: "text", text: e.content });
-```
+3b. `user_message` 分支**不动**（图片解析不再并进来，它走审计行）。
 
 3c. `assistant_message` 分支里，`parts` 组装改成 reasoning 在前：
 
@@ -636,31 +685,17 @@ Expected: FAIL —— 11 条新用例里除了「不产生消息」那条外全�
       continue;
 ```
 
-3e. 新增两个分支（放在 `assistant_message` 分支之后）：
+3e. 在循环末尾（`assistant_message` 分支之后）加两段。
+
+先是 `turn_ended` 的状态回改 —— 它必须排在审计行**之前**，因为它要找的是
+「最后一条 assistant 消息」，审计行一旦先 push 进去不影响（只跳过非 assistant），
+但顺序写反了读起来会让人以为在改自己：
 
 ```ts
-    if (e.type === "image_described") {
-      // 视觉模型代读图片的产物,紧贴在对应 user_message 之前落盘。
-      // 不单独成条:它不是一次独立发言,是那条消息的一部分(同 deriveMessages 手法)
-      pendingImageText = e.content;
-      continue;
-    }
-
-    if (e.type === "context_compacted") {
-      // 只插标记,不替换历史 —— 这里和 deriveMessages 刻意不同:
-      // 喂模型的那份必须真替换(不然上下文白压),喂人的这份必须留着给人翻。
-      out.push({
-        role: "system",
-        id: String(e.seq),
-        createdAt: new Date(e.ts),
-        content: [{ type: "text", text: e.summary }],
-      });
-      continue;
-    }
-
     if (e.type === "turn_ended" && e.outcome !== "completed") {
       // 回头改最后一条 assistant 消息的状态:turn 的死法是那条消息的属性,
-      // 不是一条独立的消息。aborted 是用户按的停(ADR-0006),不是故障
+      // 不是一条独立的消息。aborted 是用户按的停(ADR-0006),不是故障。
+      // 注意这里不 continue —— 它还要往下走,出一条审计行(现状就有那个 chip)
       for (let i = out.length - 1; i >= 0; i--) {
         const m = out[i];
         if (m === undefined || m.role !== "assistant") continue;
@@ -670,6 +705,10 @@ Expected: FAIL —— 11 条新用例里除了「不产生消息」那条外全�
         };
         break;
       }
+    }
+
+    if (isAuditEvent(e)) {
+      out.push(toAuditMessage(e));
       continue;
     }
 ```
@@ -690,6 +729,8 @@ Expected: FAIL —— 11 条新用例里除了「不产生消息」那条外全�
 Run: `npx vitest run tests/renderer/toThreadMessages.test.ts`
 Expected: PASS（23 条全绿）
 
+若数目对不上，以「全绿」为准，别去凑数字。
+
 - [ ] **Step 5: 跑全量门禁**
 
 Run: `npm test`
@@ -706,11 +747,14 @@ feat(aui): 投影补齐思考/compact/图片解析/中断四类边界
 logged ≠ model-visible,投影层是这条规矩的执行点。reasoningMs 走 metadata,
 不混进 content:它是消息的属性,不是消息的内容。
 
-context_compacted 只插标记不替换历史,和 deriveMessages 刻意分岔:喂模型的
-那份必须真替换(不然上下文白压),喂人的这份必须留着给人翻。
+八类审计行(会话创建/归档/改名、模型切换、skill 注入、图片解析、审批拒绝、
+turn 暴死或中断)投成 role:"system" 消息,原始事件挂 metadata.custom.otto,
+渲染交给既有的 EventRow —— 视觉一模一样,且不需要第二条渲染路径。
+compact 和图片解析走同一条路,不做特殊处理:和 deriveMessages 刻意分岔,
+喂模型的那份必须真替换/真注入,喂人的这份必须留着给人翻。
 
-turn_ended 回头改最后一条 assistant 消息的状态,不单独成条——turn 的死法是
-那条消息的属性。aborted 是用户按的停,不是故障。
+turn_ended 双重职责:既回头改最后一条 assistant 消息的状态(turn 的死法是那条
+消息的属性),也出审计行(现状就有那个 chip)。aborted 是用户按的停,不是故障。
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1075,7 +1119,9 @@ EOF
 
 **背景（实现者必读）：** 现有工具行的视觉（折叠摘要行、执行中的直播尾巴、参数/输出详情面板）在 `src/renderer/src/components/Timeline.tsx` 的 `ToolRow`，成组折叠在 `ToolGroup.tsx`。**这两个不重写** —— 它们就是「保留 Mr Otto 现有视觉」这条决定的落点，只是改从 assistant-ui 的 `tool-call` part 拿数据。
 
-`ToolRow` 现在的入参是 `{ call: ToolCallRequest; index: ToolIndex }`；从 part 侧拿到的是 `{ toolCallId, toolName, args, result, isError }`。**不要改 `ToolRow` 的签名**（它还被回放视图用着）—— 在 `OttoThread.tsx` 里把 part 还原成 `ToolCallRequest` + 一个只含这一条的 `ToolIndex` 即可。
+`ToolRow` 现在的入参是 `{ call: ToolCallRequest; index: ToolIndex }`；从 part 侧拿到的是 `{ toolCallId, toolName, args, result, isError }`。**不要改 `ToolRow` 的签名** —— 在 `OttoThread.tsx` 里把 part 还原成 `ToolCallRequest` + 一个只含这一条的 `ToolIndex` 即可。
+
+八类审计行同理：Task 3 已把原始事件投进 `metadata.custom.otto`，这里的 `SystemMessage` override 直接把它喂回 `EventRow`，**`EventRow` 一行不改**。
 
 - [ ] **Step 1: 读现有工具行的渲染，确认不需要改它**
 
@@ -1092,12 +1138,13 @@ Run: `sed -n 25,100p src/renderer/src/components/Timeline.tsx`
 // 「保留 Mr Otto 现有视觉,只换底层」这条决定的落点就在这个文件:
 // ToolRow / ToolGroup / UserAttachments 一行没重写,只是改从 part 拿数据。
 
-import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
+import { MessagePrimitive, ThreadPrimitive, useMessage } from "@assistant-ui/react";
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
 // 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
 import { code } from "@streamdown/code";
 import { cjk } from "@streamdown/cjk";
-import { ToolRow } from "../components/Timeline.js";
+import { EventRow, ToolRow } from "../components/Timeline.js";
+import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
 import {
   ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger,
@@ -1146,6 +1193,15 @@ export function OttoThread() {
                 />
               </MessagePrimitive.Root>
             ),
+            // 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影),
+            // 直接喂回既有的 EventRow —— 视觉与迁移前一模一样,零重写
+            SystemMessage: () => {
+              const event = useMessage((m) => m.metadata?.custom?.["otto"]) as
+                | SessionEvent
+                | undefined;
+              if (event === undefined) return null;
+              return <EventRow event={event} />;
+            },
             AssistantMessage: () => (
               <MessagePrimitive.Root className="max-w-[76%] self-start">
                 <MessagePrimitive.Parts
@@ -1183,10 +1239,15 @@ export function OttoThread() {
 
 - [ ] **Step 3: 对着装出来的源码校正 API**
 
-上一步的 `components` 键名（`UserMessage` / `AssistantMessage` / `Text` / `Reasoning` / `tools.Fallback`）以 **Task 5 装出来的 `src/renderer/src/components/ui/thread.tsx` 里实际用的那套为准**。
+上一步用到的名字全部来自 assistant-ui 文档，而 registry 是 copy-in 源码 —— **仓里那份才是事实**。两处都要核：
 
-Run: `grep -n "components=\|Fallback\|MessagePrimitive.Parts\|ThreadPrimitive.Messages" src/renderer/src/components/ui/thread.tsx`
-按查到的实际写法改上一步的代码。**registry 生成的文件是本仓的事实，文档不是。**
+Run: `grep -n "components=\|Fallback\|SystemMessage\|MessagePrimitive.Parts\|ThreadPrimitive.Messages" src/renderer/src/components/ui/thread.tsx`
+核 `components` 的键名（`UserMessage` / `AssistantMessage` / `SystemMessage` / `Text` / `Reasoning` / `tools.Fallback`）。
+
+Run: `grep -n "^export" src/renderer/src/components/ui/reasoning.tsx`
+核 `ReasoningRoot` / `ReasoningTrigger` / `ReasoningContent` / `ReasoningText` 这四个导出名。
+
+按查到的实际写法改上一步的代码。名字对不上就改代码，不要改生成的文件。
 
 - [ ] **Step 4: 类型检查**
 
@@ -1238,7 +1299,7 @@ EOF
 
 **背景（实现者必读）：** `ThreadViewport` 现在承担贴底滚动（`src/renderer/src/lib/stickToBottom.ts`，有测试 `tests/renderer/stickToBottom.test.ts`）。assistant-ui 的 `ThreadPrimitive.Viewport` **自带** auto-scroll。`ThreadViewport` 和 `stickToBottom.ts` 在本 PR 后仍被回放视图用着 —— **先确认再删**，不确认就留着。
 
-`EventRow` 里除 `user_message` / `assistant_message` 外的分支（skill 注入行、审批拒绝行、turn 失败行等）本 PR **不迁**：它们在 `toThreadMessages` 里被投影成了空或 system 消息。**本 task 只换 user/assistant 两类的渲染**，其余仍走原 `items.map`。这是刻意的中间态，收口在 PR2。
+`items.map` 整段删掉是对的，**不留双渲染路径**：`EventRow` 的 8 类审计分支已经由 Task 3 投成 system 消息、Task 6 的 override 喂回 `EventRow` 渲染，视觉不丢。`EventRow` 里 `user_message` / `assistant_message` 两个分支从此走不到（它们归 `OttoThread`），但**不要删** —— 留着不碍事，删了要动 `EventRow` 的结构，那是 PR2 的活。
 
 - [ ] **Step 1: 确认 ThreadViewport / stickToBottom 还有谁在用**
 
@@ -1339,8 +1400,9 @@ streamingText / streamingThinking / turn 失败行这几块从 App.tsx 消失不
 ApprovalCard / QuestionnaireCard 留在原位:它们是挂起中的活控制件,不是消息,
 藏了 agent 就卡死。
 
-EventRow 其余分支(skill 注入、审批拒绝)本 PR 不迁,收口在 PR2 —— 刻意的
-中间态,换整个输入侧时一起动才不会来回改两遍。
+items.map 整段删掉,不留双渲染路径:八类审计行已经由投影 + SystemMessage
+override 喂回同一个 EventRow 渲染,视觉不丢。EventRow 的 user/assistant 两个
+分支从此走不到,但没删——删要动它的结构,那是 PR2 的活。
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1477,10 +1539,17 @@ assistant-ui 的 runtime 想自己持有消息流，本仓硬规则是事件日�
 
 详见 ADR 与 `docs/superpowers/specs/2026-08-19-assistant-ui-migration-design.md`。
 
+## 视觉保真
+
+八类审计行（会话创建/归档/改名、模型切换、skill 注入、图片解析、审批拒绝、
+turn 暴死或中断）投成 `role: "system"` 消息、原始事件挂 `metadata.custom.otto`，
+由 `SystemMessage` override 喂回**既有的 `EventRow`** 渲染 —— 一行没重写，
+也没有第二条渲染路径。`ToolRow` 同理。
+
 ## 已知的刻意中间态
 
-`EventRow` 里 skill 注入行、审批拒绝行等分支本 PR 不迁，仍走原 `items.map`，
-收口在 PR2 —— 和整个输入侧一起动，才不会来回改两遍。
+`EventRow` 的 `user_message` / `assistant_message` 两个分支从此走不到（归 `OttoThread` 了），
+留着没删 —— 删要动 `EventRow` 的结构，那是 PR2 的活。
 
 ## 验证
 
@@ -1510,5 +1579,14 @@ EOF
    `streamdown@2.5.0` / `@streamdown/code@1.1.1` / `@streamdown/cjk@1.0.3` 的包内容。
 4. **`@streamdown/cjk` 不是可选依赖** —— spec 的组件清单里没提。本仓界面和内容都是中文，
    缺了断行排版会散。
+
+执行前的预检扫描又发现两处，已就地改进本计划（裁决记录在
+`.superpowers/sdd/2026-08-19-assistant-ui-pr1-render-layer/progress.md`）：
+
+4. **投影必须覆盖 8 类审计行**（R1）—— 原 Task 3 把 `model_changed` / `skill_invoked` /
+   `session_renamed` 等投成「无消息」，原 Task 7 又删掉 `items.map`，两条合起来等于
+   这些行从界面消失，违背 spec 的「保留现有视觉」。改法：投成 `role: "system"` +
+   `metadata.custom.otto`，由 `SystemMessage` override 喂回既有 `EventRow`。
+5. **`reasoning.tsx` 的导出名也要核**（R2）—— 原 Task 6 只要求核 `thread.tsx`。
 
 spec 的 §5（sources / file / follow-up-suggestions）、§6 的 PR2/PR3 不在本计划内，各自出计划。
