@@ -303,7 +303,7 @@ describe("LoopEngine.compact", () => {
 
     // 全文没进输入，取而代之的是截断标记（参数和输出各自的）
     expect(compactInput).not.toContain(bigContent);
-    expect(compactInput).toContain("工具参数原");
+    expect(compactInput).toContain("上下文压缩：工具参数");
     expect(compactInput).toContain("工具输出原");
     store.close();
   });

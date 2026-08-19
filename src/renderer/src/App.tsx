@@ -41,6 +41,7 @@ import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
+import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
@@ -873,7 +874,7 @@ function EventRow({ event, all }: { event: SessionEvent; all: SessionEvent[] }) 
     case "model_changed":
       return (
         <div className={AUDIT}>
-          模型切换 → {event.provider}/{event.model}
+          模型切换 → {modelChipLabel(event.provider, event.model)}
         </div>
       );
 
