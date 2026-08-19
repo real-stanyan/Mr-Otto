@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +70,45 @@ describe("createAgent 会话生命周期", () => {
 
     const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-m", attachments });
     expect(agent.model).toBe("deepseek-v4-pro");
+    store.close();
+  });
+
+  it("同一秒建两个会话：id 不撞车，两份日志各归各的", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T12:34:56.000Z")); // 时钟钉死 = 撞车条件被必然触发
+    try {
+      const store = new EventStore(":memory:");
+
+      const first = createAgent({ store, workspace: "/proj/a", push, attachments });
+      const second = createAgent({ store, workspace: "/proj/b", push, attachments });
+
+      expect(second.sessionId).not.toBe(first.sessionId);
+      // 撞 id 的后果不是"看起来一样"，是第二个会话的事件 append 进第一个的日志
+      expect(store.load(first.sessionId)).toHaveLength(1);
+      expect(store.load(second.sessionId)).toHaveLength(1);
+      expect(store.load(first.sessionId)[0]).toMatchObject({ workspace: "/proj/a" });
+      expect(store.load(second.sessionId)[0]).toMatchObject({ workspace: "/proj/b" });
+      expect(store.sessions()).toHaveLength(2);
+
+      store.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 回归护栏：换 id 格式最容易顺手破坏的就是老日志。这条从换格式前就绿，
+  // 它的价值在于它必须一直绿（AGENTS.md 硬规则：旧日志永远可重放）
+  it("旧格式 id（s- 加 14 位时间戳）照旧能恢复", () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s-20260818123456", ts: 1, type: "session_created", workspace: "/proj/x" });
+    store.append({ sessionId: "s-20260818123456", ts: 2, type: "user_message", content: "上次聊到哪了" });
+
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, resumeSessionId: "s-20260818123456", attachments,
+    });
+
+    expect(agent.sessionId).toBe("s-20260818123456");
+    expect(store.load("s-20260818123456")).toHaveLength(2);
     store.close();
   });
 });
