@@ -11,7 +11,9 @@ import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
-import type { DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot } from "./friends.js";
+import type {
+  DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
+} from "./friends.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -347,16 +349,39 @@ export interface ShellBridge {
   friendsRemove(friendshipId: string): Promise<FriendsResult<null>>;
   /** 全量快照(好友/收到的请求/发出的请求)。变化推送走 onFriendsChanged */
   friendsList(): Promise<FriendsResult<FriendsSnapshot>>;
-  friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<null>>;
+  /** 发一条 DM,回落库后的真行(真 id/时间戳)——渲染层用它把乐观气泡换成实条 */
+  friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<DirectMessage>>;
   /** 拉历史,新→旧;beforeId 翻旧页(取 id < beforeId 的一页,每页 50) */
   friendsListMessages(friendId: string, beforeId?: number): Promise<FriendsResult<DirectMessage[]>>;
+  /** 约好友上某张牌桌。重复邀请(还没回应)→ ok:false 带人话理由 */
+  friendsSendInvite(friendId: string, tableId: string, tableName: string): Promise<FriendsResult<null>>;
+  /** 回应收到的邀请。接受**只改状态**——买入花真 token,仍要用户在牌桌页确认(ADR-0027) */
+  friendsRespondInvite(inviteId: string, accept: boolean): Promise<FriendsResult<null>>;
+  /** 撤回自己发出的邀请 */
+  friendsCancelInvite(inviteId: string): Promise<FriendsResult<null>>;
+  /** 近期邀请(收发两向,含终态)。变化推送走 onGameInvitesChanged */
+  friendsListInvites(): Promise<FriendsResult<GameInvite[]>>;
+  /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
+  setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
   onFriendsChanged(cb: (snapshot: FriendsSnapshot) => void): Unsubscribe;
-  /** presence 集合变化 → 当前在线的 userId 全量列表 */
+  /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
-  /** 对端发来的新 DM(自己发的不推——bridge 调用返回即成功,渲染层自己落) */
+  /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
   onDirectMessage(cb: (message: DirectMessage) => void): Unsubscribe;
+  /** 邀请集合变化(本端操作 / 对端 Realtime / 轮询兜底,同一条出口) */
+  onGameInvitesChanged(cb: (invites: GameInvite[]) => void): Unsubscribe;
+  /** 实时链路健康度:degraded = 已切轮询兜底,UI 该如实说"慢几秒"而不是装作正常 */
+  onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
+  /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
+  onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
 }
+
+/** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
+export type NotificationTarget =
+  | { kind: "dm"; friendId: string }
+  | { kind: "invite" }
+  | { kind: "friendRequest" };
 
 export const CHANNELS = {
   boot: "otter:boot",
@@ -399,9 +424,17 @@ export const CHANNELS = {
   friendsList: "otter:friendsList",
   friendsSendMessage: "otter:friendsSendMessage",
   friendsListMessages: "otter:friendsListMessages",
+  friendsSendInvite: "otter:friendsSendInvite",
+  friendsRespondInvite: "otter:friendsRespondInvite",
+  friendsCancelInvite: "otter:friendsCancelInvite",
+  friendsListInvites: "otter:friendsListInvites",
+  setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
   directMessage: "otter:directMessage",
+  gameInvitesChanged: "otter:gameInvitesChanged",
+  realtimeHealth: "otter:realtimeHealth",
+  notificationActivated: "otter:notificationActivated",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   sendMessage: "otter:sendMessage",
