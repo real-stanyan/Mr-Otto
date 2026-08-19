@@ -70,13 +70,55 @@ describe("terminalHub 注册表", () => {
     await hub.open("s1", "/tmp/w", 80, 24);
     await expect(hub.open("s1", "/tmp/w", 80, 24)).rejects.toThrow(/最多/);
   });
+
+  it("close 后重开:新题号不会和还活着的旧题号撞", async () => {
+    const { hub } = makeHub();
+    const { id: a } = await hub.open("s1", "/tmp/w", 80, 24); // 终端 1
+    const { id: b } = await hub.open("s1", "/tmp/w", 80, 24); // 终端 2
+    hub.close(a);
+    const { id: c } = await hub.open("s1", "/tmp/w", 80, 24); // 该是 终端 3,不是 终端 2
+    expect(hub.list("s1").map((t) => t.id).sort()).toEqual([b, c].sort());
+    expect(hub.list("s1").map((t) => t.title)).toEqual(["终端 2", "终端 3"]);
+  });
+
+  it("并发 open 挤同一个会话:上限只放行一个,另一个被拒", async () => {
+    const { hub } = makeHub({ maxPerSession: 1 });
+    const results = await Promise.allSettled([
+      hub.open("s1", "/tmp/w", 80, 24),
+      hub.open("s1", "/tmp/w", 80, 24),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(hub.list("s1")).toHaveLength(1);
+  });
+
+  it("openTerminal 失败不占位:失败后名额还能用", async () => {
+    let calls = 0;
+    const ptys: ReturnType<typeof fakePty>[] = [];
+    const hub = createTerminalHub({
+      openTerminal: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("模拟 pty 启动失败");
+        const p = fakePty();
+        ptys.push(p);
+        return p.session;
+      },
+      push: { data: vi.fn(), exit: vi.fn() },
+      maxPerSession: 1,
+    });
+    await expect(hub.open("s1", "/tmp/w", 80, 24)).rejects.toThrow(/模拟 pty 启动失败/);
+    const { id } = await hub.open("s1", "/tmp/w", 80, 24);
+    expect(hub.list("s1").map((t) => t.id)).toEqual([id]);
+  });
 });
 
 describe("terminalHub 直播与缓冲", () => {
   it("pty 的输出推给渲染层,同时进缓冲", async () => {
     const { hub, ptys, data } = makeHub();
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
-    ptys[0].emit("hello");
+    ptys[0]!.emit("hello");
     expect(data).toHaveBeenCalledWith(id, "hello");
     expect(hub.attach(id).snapshot).toBe("hello");
   });
@@ -84,8 +126,8 @@ describe("terminalHub 直播与缓冲", () => {
   it("缓冲只留尾部:超上限后开头被丢掉", async () => {
     const { hub, ptys } = makeHub({ bufferBytes: 10 });
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
-    ptys[0].emit("aaaaaaaaaa"); // 10
-    ptys[0].emit("bbbbb");      // 再 5,总 15 > 10
+    ptys[0]!.emit("aaaaaaaaaa"); // 10
+    ptys[0]!.emit("bbbbb");      // 再 5,总 15 > 10
     const snap = hub.attach(id).snapshot;
     expect(snap.length).toBeLessThanOrEqual(10);
     expect(snap.endsWith("bbbbb")).toBe(true);
@@ -113,8 +155,8 @@ describe("terminalHub 转发输入", () => {
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
     hub.input(id, "ls\n");
     hub.resize(id, 120, 40);
-    expect(ptys[0].written).toEqual(["ls\n"]);
-    expect(ptys[0].resized).toEqual([[120, 40]]);
+    expect(ptys[0]!.written).toEqual(["ls\n"]);
+    expect(ptys[0]!.resized).toEqual([[120, 40]]);
   });
 });
 
@@ -122,10 +164,10 @@ describe("terminalHub 生命周期", () => {
   it("进程自己死掉:推 exit、标记 exited,缓冲还留着给人看遗言", async () => {
     const { hub, ptys, exit } = makeHub();
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
-    ptys[0].emit("boom");
-    ptys[0].die(1);
+    ptys[0]!.emit("boom");
+    ptys[0]!.die(1);
     expect(exit).toHaveBeenCalledWith(id, 1);
-    expect(hub.list("s1")[0].exited).toBe(true);
+    expect(hub.list("s1")[0]!.exited).toBe(true);
     expect(hub.attach(id).snapshot).toBe("boom");
   });
 
@@ -133,7 +175,7 @@ describe("terminalHub 生命周期", () => {
     const { hub, ptys } = makeHub();
     const { id } = await hub.open("s1", "/tmp/w", 80, 24);
     hub.close(id);
-    expect(ptys[0].killed).toBe(true);
+    expect(ptys[0]!.killed).toBe(true);
     expect(hub.list("s1")).toHaveLength(0);
   });
 
@@ -142,8 +184,8 @@ describe("terminalHub 生命周期", () => {
     await hub.open("s1", "/tmp/w", 80, 24);
     await hub.open("s2", "/tmp/w", 80, 24);
     hub.killSession("s1");
-    expect(ptys[0].killed).toBe(true);
-    expect(ptys[1].killed).toBe(false);
+    expect(ptys[0]!.killed).toBe(true);
+    expect(ptys[1]!.killed).toBe(false);
     expect(hub.list("s1")).toHaveLength(0);
     expect(hub.list("s2")).toHaveLength(1);
   });

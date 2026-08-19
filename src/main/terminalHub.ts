@@ -32,7 +32,7 @@ export interface TerminalHubDeps {
   bufferBytes?: number;
 }
 
-interface Record_ {
+interface TerminalRecord {
   id: string;
   sessionId: string;
   title: string;
@@ -47,15 +47,29 @@ interface Record_ {
 export function createTerminalHub(deps: TerminalHubDeps) {
   const maxPerSession = deps.maxPerSession ?? 8;
   const bufferBytes = deps.bufferBytes ?? 200_000;
-  const terms = new Map<string, Record_>();
+  const terms = new Map<string, TerminalRecord>();
+
+  // open() 里 await deps.openTerminal(...) 之前的这一段必须留出座位/号牌,
+  // 否则两个并发 open() 会在都还没落地时读到同一个"当前数量",
+  // 上限检查和标题编号都会被绕过(见 issue 复核)。
+  //
+  // pending: 会话名下"已经通过上限检查、但 pty 还没建好"的座位数——
+  // 上限检查 = 已落地的 + 还占着座的,不是只看已落地的。
+  const pending = new Map<string, number>();
+  // seq: 会话名下发出去过的题号最大值,只增不减——close 掉的题号不回收,
+  // 不然重开一个新终端会撞上还活着的那个,人从标签上分不清谁是谁。
+  const seq = new Map<string, number>();
 
   const ofSession = (sessionId: string) =>
     [...terms.values()].filter((t) => t.sessionId === sessionId);
 
+  const seatsUsed = (sessionId: string) =>
+    ofSession(sessionId).length + (pending.get(sessionId) ?? 0);
+
   /** 环形缓冲:整段整段地丢最老的,丢到总量落回上限内。
-      按 chunk 丢会让快照从半个转义序列开始,xterm 会渲出乱码,
-      所以最后一段还要按字符裁 */
-  const remember = (rec: Record_, data: string) => {
+      chunk 数量降到只剩一段之后,那一段自己就可能比上限还大
+      (比如一次性吐出一大坨),所以还要在字符级别把它裁到位 */
+  const remember = (rec: TerminalRecord, data: string) => {
     rec.chunks.push(data);
     rec.size += data.length;
     while (rec.size > bufferBytes && rec.chunks.length > 1) {
@@ -68,7 +82,7 @@ export function createTerminalHub(deps: TerminalHubDeps) {
     }
   };
 
-  const drop = (rec: Record_) => {
+  const drop = (rec: TerminalRecord) => {
     for (const off of rec.offs) off();
     rec.offs = [];
     rec.session.kill();
@@ -77,16 +91,31 @@ export function createTerminalHub(deps: TerminalHubDeps) {
 
   return {
     async open(sessionId: string, workspace: string, cols: number, rows: number) {
-      const mine = ofSession(sessionId);
-      if (mine.length >= maxPerSession) {
+      // 上限检查 + 占座必须在 await 之前同步做完:两次并发 open() 调用,
+      // 第一次的这段同步代码会跑到 await 才让出控制权,第二次调用
+      // 这时候看到的是"已经占了座"之后的数字,才挡得住绕过上限
+      if (seatsUsed(sessionId) >= maxPerSession) {
         throw new Error(`一个会话最多开 ${maxPerSession} 个终端,先关掉一个再开`);
       }
+      pending.set(sessionId, (pending.get(sessionId) ?? 0) + 1);
+      const num = (seq.get(sessionId) ?? 0) + 1;
+      seq.set(sessionId, num);
+
       const id = randomUUID();
-      const session = await deps.openTerminal(workspace, { cols, rows });
-      const rec: Record_ = {
+      let session: TerminalSession;
+      try {
+        session = await deps.openTerminal(workspace, { cols, rows });
+      } catch (err) {
+        // 开失败了,占的座得还回去——不然一次失败的 open 永久吃掉一个名额
+        pending.set(sessionId, (pending.get(sessionId) ?? 1) - 1);
+        throw err;
+      }
+      pending.set(sessionId, (pending.get(sessionId) ?? 1) - 1);
+
+      const rec: TerminalRecord = {
         id,
         sessionId,
-        title: `终端 ${mine.length + 1}`,
+        title: `终端 ${num}`,
         session,
         chunks: [],
         size: 0,
