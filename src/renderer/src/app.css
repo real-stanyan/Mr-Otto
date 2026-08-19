@@ -84,72 +84,85 @@
 
 .dark {
   color-scheme: dark;
+  /* Apple 深色四色底盘(维护者 2026-08-19 指定):
+     #000000 = 窗口地面(second_main)、#1d1d1f = 浮起来的表面(main)、
+     #f5f5f7 = 正文、#0071e3 = 点缀。中性档(secondary/accent/muted)由前两者
+     往上抬一级得到,不另引入色相——四色以外的每一个值都要能说清它从哪来 */
   --background: #000000;
-  --foreground: #eaecf0;
-  --card: #233d4d;
-  --card-foreground: #eaecf0;
-  --popover: #233d4d;
-  --popover-foreground: #eaecf0;
-  --primary: #233d4d;
-  --primary-foreground: #eaecf0;
-  --secondary: #2e4a5c;
-  --secondary-foreground: #eaecf0;
-  --muted: #16262f;
-  --muted-foreground: rgba(234, 236, 240, 0.6);
-  --accent: #2e4a5c;
-  --accent-foreground: #eaecf0;
-  --brand: #fe7f2d;
-  --border: rgba(234, 236, 240, 0.15);
-  --input: rgba(234, 236, 240, 0.15);
-  --ring: #fe7f2d;
-  --destructive: #e03131;
+  --foreground: #f5f5f7;
+  --card: #1d1d1f;
+  --card-foreground: #f5f5f7;
+  --popover: #1d1d1f;
+  --popover-foreground: #f5f5f7;
+  /* primary = 点缀色本身:用户气泡、发送键这类"实底承载白字"的地方。
+     白字压 #0071e3 是 4.6:1,够 */
+  --primary: #0071e3;
+  --primary-foreground: #ffffff;
+  --secondary: #2c2c2e;
+  --secondary-foreground: #f5f5f7;
+  --muted: #2c2c2e;
+  --muted-foreground: rgba(245, 245, 247, 0.56);
+  --accent: #2c2c2e;
+  --accent-foreground: #f5f5f7;
+  --brand: #0071e3;
+  --border: rgba(245, 245, 247, 0.12);
+  --input: rgba(245, 245, 247, 0.14);
+  --ring: #0071e3;
+  /* 语义色跟着换成 Apple 深色系统色:旧的一套(#e8590c/#f08c00/#2f9e44)是配
+     橙+青灰主题调的,摆在 #0071e3 旁边会发浑 */
+  --destructive: #ff453a;
   --destructive-foreground: #ffffff;
-  --ok: #2f9e44;
-  --err: #e8590c;
-  --deny: #e03131;
-  --warn: #f08c00;
-  --code-bg: rgba(255, 255, 255, 0.08);
-  --code-border: rgba(255, 255, 255, 0.09);
-  --pre-bg: rgba(0, 0, 0, 0.32);
+  --ok: #30d158;
+  --err: #ff453a;
+  --deny: #ff453a;
+  --warn: #ff9f0a;
+  --code-bg: rgba(245, 245, 247, 0.08);
+  --code-border: rgba(245, 245, 247, 0.1);
+  /* 代码块要在纯黑正文区里读成"一块板":用浮起来的那一档,不是地面 */
+  --pre-bg: #1d1d1f;
   --md-strong: #ffffff;
-  --md-em: #d8d8dc;
-  --md-quote: #b8b8bc;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
-  --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
-  --hljs-keyword: #c792ea;
-  --hljs-string: #a5d6a7;
-  --hljs-number: #f7b26b;
-  --hljs-comment: #6b6b73;
-  --hljs-title: #74c0fc;
-  --hljs-attr: #8ab4f8;
-  --hljs-variable: #d8d8dc;
+  --md-em: rgba(245, 245, 247, 0.86);
+  --md-quote: rgba(245, 245, 247, 0.66);
+  --scrollbar-thumb: rgba(245, 245, 247, 0.16);
+  --scrollbar-thumb-hover: rgba(245, 245, 247, 0.32);
+  --scrollbar-thumb-active: rgba(245, 245, 247, 0.46);
+  --hljs-keyword: #d0a8ff;
+  --hljs-string: #7ee787;
+  --hljs-number: #ffa657;
+  --hljs-comment: rgba(245, 245, 247, 0.42);
+  --hljs-title: #4aa8ff;
+  --hljs-attr: #79c0ff;
+  --hljs-variable: rgba(245, 245, 247, 0.86);
   --hljs-type: #7fd4c1;
-  --hljs-tag: #e8a2a2;
-  --hljs-meta: #b8a04a;
-  --hljs-addition: #7fd48a;
-  --hljs-deletion: #e08a8a;
-  --hl-key: #74c0fc;
-  --hl-string: #a5d8b0;
-  --hl-number: #ffa94d;
-  --hl-ident: #dcbdfb;
+  --hljs-tag: #ff7b72;
+  --hljs-meta: #d29922;
+  --hljs-addition: #30d158;
+  --hljs-deletion: #ff453a;
+  --hl-key: #4aa8ff;
+  --hl-string: #7ee787;
+  --hl-number: #ffa657;
+  --hl-ident: #d0a8ff;
   --hl-keyword: #ff7b72;
-  --hl-punct: #7a7f88;
-  --hl-comment: #6a7a8a;
-  --rp-node-fill: #182b36;
-  --rp-node-stroke: #4a6172;
-  --rp-node-text: #9aa7b0;
-  --rp-node-sub: #6a7a86;
-  --rp-node-file: #5b7181;
-  --rp-edge: #35505f;
-  --rp-edge-text: #6a7a86;
-  --sidebar: #0d171e;
-  --sidebar-foreground: #eaecf0;
-  --sidebar-primary: #233d4d;
-  --sidebar-primary-foreground: #eaecf0;
-  --sidebar-accent: #2e4a5c;
-  --sidebar-accent-foreground: #eaecf0;
-  --sidebar-border: rgba(234, 236, 240, 0.12);
+  --hl-punct: rgba(245, 245, 247, 0.38);
+  --hl-comment: rgba(245, 245, 247, 0.42);
+  /* replay 画布:节点是"浮起来的表面",描边/文字全走中性透明档,
+     只有文件名用点缀色——画布里唯一需要被认出来的东西 */
+  --rp-node-fill: #1d1d1f;
+  --rp-node-stroke: rgba(245, 245, 247, 0.18);
+  --rp-node-text: rgba(245, 245, 247, 0.72);
+  --rp-node-sub: rgba(245, 245, 247, 0.45);
+  --rp-node-file: #0071e3;
+  --rp-edge: rgba(245, 245, 247, 0.2);
+  --rp-edge-text: rgba(245, 245, 247, 0.45);
+  /* 侧栏比正文区亮一级:正文在纯黑地面上,侧栏是压在上面的一层材质
+     (Music/Xcode 的深色版式同理),边框只做收边不做分隔 */
+  --sidebar: #1d1d1f;
+  --sidebar-foreground: #f5f5f7;
+  --sidebar-primary: #0071e3;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #2c2c2e;
+  --sidebar-accent-foreground: #f5f5f7;
+  --sidebar-border: rgba(245, 245, 247, 0.1);
   --sidebar-ring: var(--ring);
 }
 
