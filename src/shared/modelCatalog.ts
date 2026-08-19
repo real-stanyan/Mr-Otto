@@ -5,6 +5,15 @@
 // 永远不过桥、不进日志、不进渲染进程。
 
 import { PROVIDER_CATALOG, findProvider, type ProviderId } from "./providerCatalog.js";
+import {
+  THINKING_EFFORT,
+  THINKING_EFFORT_ALWAYS,
+  THINKING_ENABLE,
+  THINKING_FLAG,
+  THINKING_NONE,
+  THINKING_OPENROUTER,
+  type ThinkingSpec,
+} from "./thinking.js";
 
 export type { ProviderId };
 
@@ -29,9 +38,10 @@ export interface ModelChoice {
   apiKeyEnv: string;
   /** 上下文窗大小（tokens）——UI 算用量百分比用 */
   contextWindow: number;
-  /** 该型号是否支持请求级 thinking 开关（thinking.type: enabled/disabled——
-      DeepSeek V4 与 GLM 用同一形状） */
-  supportsThinking: boolean;
+  /** 该型号的 thinking 挡位与方言：有哪几档、默认哪档、写进请求体长什么样。
+      曾经是一个 supportsThinking 布尔——那等于假设全行业共用 GLM 的写法，
+      于是给 OpenAI 发 thinking:{type}、给 Grok 发一个它压根不认的字段。见 shared/thinking.ts */
+  thinking: ThinkingSpec;
   /** 该型号是否原生看图(vision)。false 的型号发图时走 vision-bridge:
       先由目录里的视觉款代读成文字(image_described 事件),再喂当前模型。
       ADR-0008 曾定"不维护能力表"——bridge 路由必须知道谁有眼睛,此处推翻,
@@ -47,7 +57,7 @@ interface ModelSpec {
   model: string;
   label: string;
   contextWindow: number;
-  supportsThinking: boolean;
+  thinking: ThinkingSpec;
   supportsVision: boolean;
 }
 
@@ -56,61 +66,67 @@ interface ModelSpec {
 // 端点覆盖走各家的 *_BASE_URL。目录只是"开箱能选"的默认集合，不是白名单。
 const MODEL_SPECS: ModelSpec[] = [
   // ── OpenAI ──
-  { provider: "openai", model: "gpt-5", label: "GPT-5", contextWindow: 400_000, supportsThinking: true, supportsVision: true },
-  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 mini", contextWindow: 400_000, supportsThinking: true, supportsVision: true },
-  { provider: "openai", model: "gpt-4.1", label: "GPT-4.1", contextWindow: 1_000_000, supportsThinking: false, supportsVision: true },
+  // GPT-5 是推理型号，思考关不掉，只能调档（reasoning_effort）
+  { provider: "openai", model: "gpt-5", label: "GPT-5", contextWindow: 400_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 mini", contextWindow: 400_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "openai", model: "gpt-4.1", label: "GPT-4.1", contextWindow: 1_000_000, thinking: THINKING_NONE, supportsVision: true },
 
   // ── Anthropic ──
-  { provider: "anthropic", model: "claude-opus-5", label: "Claude Opus 5", contextWindow: 200_000, supportsThinking: true, supportsVision: true },
-  { provider: "anthropic", model: "claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, supportsThinking: true, supportsVision: true },
-  { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindow: 200_000, supportsThinking: true, supportsVision: true },
+  // Claude 的扩展思考是原生 API 的 thinking.budget_tokens，OpenAI 兼容层没这个开关。
+  // 手上没有 Anthropic key 验不了，宁可一个字段都不发，也不拿一个猜的参数去撞 400
+  { provider: "anthropic", model: "claude-opus-5", label: "Claude Opus 5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "anthropic", model: "claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── Google ──
-  { provider: "google", model: "gemini-2.5-pro", label: "Gemini 2.5 Pro", contextWindow: 1_000_000, supportsThinking: true, supportsVision: true },
-  { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash", contextWindow: 1_000_000, supportsThinking: true, supportsVision: true },
+  // ── Google ──（OpenAI 兼容层认 reasoning_effort；2.5 Pro 关不掉思考，Flash 可以）
+  { provider: "google", model: "gemini-2.5-pro", label: "Gemini 2.5 Pro", contextWindow: 1_000_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash", contextWindow: 1_000_000, thinking: THINKING_EFFORT, supportsVision: true },
 
   // ── DeepSeek（官方赠额唯一覆盖的一家，见 main/modelRoute.ts）──
-  { provider: "deepseek", model: "deepseek-v4-flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, supportsThinking: true, supportsVision: false },
-  { provider: "deepseek", model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, supportsThinking: true, supportsVision: false },
+  { provider: "deepseek", model: "deepseek-v4-flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
+  { provider: "deepseek", model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
 
-  // ── 智谱 GLM ──
-  { provider: "glm", model: "glm-4.5-flash", label: "GLM-4.5 Flash（免费）", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
-  { provider: "glm", model: "glm-4.6", label: "GLM-4.6", contextWindow: 200_000, supportsThinking: true, supportsVision: false },
+  // ── 智谱 GLM ──（thinking:{type} 二选一，本机用 glm-4.5-flash 实测过：
+  // disabled 时 reasoning_content 空，enabled 时有）
+  { provider: "glm", model: "glm-4.5-flash", label: "GLM-4.5 Flash（免费）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: false },
+  { provider: "glm", model: "glm-4.6", label: "GLM-4.6", contextWindow: 200_000, thinking: THINKING_FLAG, supportsVision: false },
   // 目录里唯一的视觉款：图片附件(file-input-v1)得有人吃。免费、同端点同 key。
   // 兼任 vision-bridge 的代读员:纯文本款发图时由它先解析成文字(image_described)
-  { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费·视觉）", contextWindow: 128_000, supportsThinking: true, supportsVision: true },
+  { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费·视觉）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 月之暗面 Kimi ──
-  { provider: "moonshot", model: "kimi-k2-0905-preview", label: "Kimi K2", contextWindow: 256_000, supportsThinking: false, supportsVision: false },
-  { provider: "moonshot", model: "moonshot-v1-128k", label: "Moonshot v1 128k", contextWindow: 128_000, supportsThinking: false, supportsVision: false },
+  { provider: "moonshot", model: "kimi-k2-0905-preview", label: "Kimi K2", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: false },
+  { provider: "moonshot", model: "moonshot-v1-128k", label: "Moonshot v1 128k", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
 
-  // ── 阿里通义千问 ──
-  { provider: "qwen", model: "qwen3-max", label: "Qwen3 Max", contextWindow: 256_000, supportsThinking: true, supportsVision: false },
-  { provider: "qwen", model: "qwen-plus", label: "Qwen Plus", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
-  { provider: "qwen", model: "qwen-vl-max", label: "Qwen VL Max（视觉）", contextWindow: 128_000, supportsThinking: false, supportsVision: true },
+  // ── 阿里通义千问 ──（DashScope 的写法是 enable_thinking）
+  { provider: "qwen", model: "qwen3-max", label: "Qwen3 Max", contextWindow: 256_000, thinking: THINKING_ENABLE, supportsVision: false },
+  { provider: "qwen", model: "qwen-plus", label: "Qwen Plus", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
+  { provider: "qwen", model: "qwen-vl-max", label: "Qwen VL Max（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── xAI ──
-  { provider: "xai", model: "grok-4", label: "Grok 4", contextWindow: 256_000, supportsThinking: true, supportsVision: true },
-  { provider: "xai", model: "grok-4-fast", label: "Grok 4 Fast", contextWindow: 2_000_000, supportsThinking: true, supportsVision: true },
+  // ── xAI ──（Grok 4 一直思考，且不认 reasoning_effort：没有请求级开关可给）
+  { provider: "xai", model: "grok-4", label: "Grok 4", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "xai", model: "grok-4-fast", label: "Grok 4 Fast", contextWindow: 2_000_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── MiniMax ──
-  { provider: "minimax", model: "MiniMax-M2", label: "MiniMax M2", contextWindow: 200_000, supportsThinking: true, supportsVision: false },
+  // ── MiniMax ──（M2 交错思考，常开，无开关）
+  { provider: "minimax", model: "MiniMax-M2", label: "MiniMax M2", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: false },
 
   // ── Mistral ──
-  { provider: "mistral", model: "mistral-large-latest", label: "Mistral Large", contextWindow: 128_000, supportsThinking: false, supportsVision: false },
-  { provider: "mistral", model: "pixtral-large-latest", label: "Pixtral Large（视觉）", contextWindow: 128_000, supportsThinking: false, supportsVision: true },
+  { provider: "mistral", model: "mistral-large-latest", label: "Mistral Large", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
+  { provider: "mistral", model: "pixtral-large-latest", label: "Pixtral Large（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── Groq ──
-  { provider: "groq", model: "openai/gpt-oss-120b", label: "GPT-OSS 120B", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
-  { provider: "groq", model: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", contextWindow: 128_000, supportsThinking: false, supportsVision: false },
+  // ── Groq ──（gpt-oss 一直推理，只能调档）
+  { provider: "groq", model: "openai/gpt-oss-120b", label: "GPT-OSS 120B", contextWindow: 128_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: false },
+  { provider: "groq", model: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
 
   // ── OpenRouter（聚合，型号 id 形如 厂商/型号）──
-  { provider: "openrouter", model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, supportsThinking: true, supportsVision: true },
-  { provider: "openrouter", model: "openai/gpt-5", label: "GPT-5", contextWindow: 400_000, supportsThinking: true, supportsVision: true },
+  // 转发层把各家的写法统一成 reasoning:{effort} / reasoning:{enabled:false}，
+  // 我们照它这一套发就行，不用管背后那家原本长什么样
+  { provider: "openrouter", model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, thinking: THINKING_OPENROUTER, supportsVision: true },
+  { provider: "openrouter", model: "openai/gpt-5", label: "GPT-5", contextWindow: 400_000, thinking: THINKING_OPENROUTER, supportsVision: true },
 
   // ── 硅基流动 ──
-  { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V3.2-Exp", label: "DeepSeek V3.2", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
-  { provider: "siliconflow", model: "Qwen/Qwen3-235B-A22B", label: "Qwen3 235B", contextWindow: 128_000, supportsThinking: true, supportsVision: false },
+  { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V3.2-Exp", label: "DeepSeek V3.2", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
+  { provider: "siliconflow", model: "Qwen/Qwen3-235B-A22B", label: "Qwen3 235B", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
 
 ];
 
@@ -126,7 +142,7 @@ function expand(spec: ModelSpec): ModelChoice {
     baseUrlEnv: p.baseUrlEnv,
     apiKeyEnv: p.apiKeyEnv,
     contextWindow: spec.contextWindow,
-    supportsThinking: spec.supportsThinking,
+    thinking: spec.thinking,
     supportsVision: spec.supportsVision,
     keyless: p.keyless ?? false,
   };
@@ -164,23 +180,34 @@ function ollamaChoice(tag: string): ModelChoice {
     baseUrlEnv: p.baseUrlEnv,
     apiKeyEnv: p.apiKeyEnv,
     contextWindow: 32_768,
-    supportsThinking: false,
+    thinking: THINKING_NONE,
     supportsVision: false,
     keyless: true,
   };
 }
 
-/** 探测到的本机型号 → 目录形态。能力（窗多大、看不看得见图）用探到的真值，
-    不用 ollamaChoice 里那套没出处的兜底常量 */
-export function ollamaChoiceFrom(info: {
+/** 本机探到的能力。字段是 OllamaModelInfo（shellBridge）的子集——
+    这里按结构收，不 import：目录是共享世界常量，不该反过来依赖桥的线上类型 */
+export interface OllamaCaps {
   tag: string;
   contextLength: number;
   vision: boolean;
-}): ModelChoice {
+  /** /api/show 的 capabilities 里有没有 "thinking" */
+  thinking: boolean;
+}
+
+/** 探测到的本机型号 → 目录形态。能力（窗多大、看不看得见图、思不思考）用探到的真值，
+    不用 ollamaChoice 里那套没出处的兜底常量。
+
+    thinking 走 reasoning_effort：Ollama 0.32 的 /v1/chat/completions 实测——
+    "none" 关（返回体里没有 reasoning 字段），low/medium/high 开。
+    原生 API 那个 `think` 布尔在 /v1 上不生效，别拿它当开关 */
+export function ollamaChoiceFrom(info: OllamaCaps): ModelChoice {
   return {
     ...ollamaChoice(info.tag),
     contextWindow: info.contextLength,
     supportsVision: info.vision,
+    thinking: info.thinking ? THINKING_EFFORT : THINKING_NONE,
   };
 }
 
@@ -192,6 +219,21 @@ export function describeModel(model: string): ModelChoice | undefined {
   if (hit) return hit;
   const tag = ollamaTag(model);
   return tag ? ollamaChoice(tag) : undefined;
+}
+
+/** describeModel + 本机探测结果。本机 Ollama 的窗多大、思不思考，
+    只有那台机器答得上来——目录给的是没出处的兜底常量（32k / 不思考），
+    直接拿它画上下文圆环就是在报一个假数。探到了就用真值覆盖。
+    主进程（agent 的能力注册表）和渲染层（store.ollamaModels）共用这一个覆盖口径，
+    免得同一个型号在两边显示成两种能力 */
+export function describeModelWith(
+  model: string,
+  probe: (tag: string) => OllamaCaps | undefined
+): ModelChoice | undefined {
+  const base = describeModel(model);
+  if (!base || base.provider !== "ollama") return base;
+  const caps = probe(base.wireModel);
+  return caps ? ollamaChoiceFrom(caps) : base;
 }
 
 /** 开箱默认型号。不用 MODEL_CATALOG[0]——目录顺序是 UI 顺序（OpenAI 排头），
@@ -225,7 +267,7 @@ export function resolveModel(model: string): ModelChoice {
       baseUrlEnv: "DEEPSEEK_BASE_URL",
       apiKeyEnv: "DEEPSEEK_API_KEY",
       contextWindow: 128_000,
-      supportsThinking: false,
+      thinking: THINKING_NONE,
       supportsVision: false,
       keyless: false,
     }

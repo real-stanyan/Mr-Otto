@@ -26,6 +26,7 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
+import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
@@ -316,9 +317,7 @@ void app.whenReady().then(() => {
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
-    if (typeof opts.thinking === "boolean" && opts.thinking !== agent.thinking) {
-      agent.setThinking(opts.thinking);
-    }
+    if (opts.thinking && opts.thinking !== agent.thinking) agent.setThinking(opts.thinking);
     const info = bootInfo();
     if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
     return info;
@@ -519,6 +518,8 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model);
+    // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
+    return agent.thinking;
   });
 
   ipcMain.handle(CHANNELS.setApprovalMode, (_e, sessionId: string, mode: "ask" | "auto") => {
@@ -528,11 +529,12 @@ void app.whenReady().then(() => {
     agent.setApprovalMode(mode);
   });
 
-  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, on: boolean) => {
+  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, mode: ThinkingMode) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能切 thinking");
-    agent.setThinking(on);
+    agent.setThinking(mode);
+    return agent.thinking; // 钳位后的实际档
   });
 
   ipcMain.handle(

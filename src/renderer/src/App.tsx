@@ -41,6 +41,9 @@ import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
+import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
+import { ThinkingPicker } from "./components/ThinkingPicker.js";
+import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
@@ -488,7 +491,9 @@ function ComposerBar() {
   const [ctxOpen, setCtxOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
 
-  const choice = describeModel(model);
+  // 目录 + 本机探测：Ollama 的窗只有那台机器答得上来，查目录会拿到 32k 兜底常量，
+  // 圆环就会按一个假数报占用（实测 qwen3:30b 是 256k）
+  const choice = useModelChoice(model);
   const ctxWindow = choice?.contextWindow ?? 128_000;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
@@ -520,22 +525,13 @@ function ComposerBar() {
   );
 
   const thinkingSelect = (
-    <Select
-      value={thinking ? "on" : "off"}
-      onValueChange={(v) => void setThinking(v === "on")}
-      disabled={status === "running" || !choice?.supportsThinking}
-    >
-      <SelectTrigger
-        className={BAR_SELECT}
-        title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="on">Thinking 开</SelectItem>
-        <SelectItem value="off">Thinking 关</SelectItem>
-      </SelectContent>
-    </Select>
+    <ThinkingPicker
+      spec={thinkingSpecOf(choice)}
+      value={thinking}
+      onChange={(m) => void setThinking(m)}
+      disabled={status === "running"}
+      className={BAR_SELECT}
+    />
   );
 
   return (
@@ -563,7 +559,7 @@ function ComposerBar() {
             }
             aria-label="会话偏好"
             aria-expanded={prefsOpen}
-            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinking ? "开" : "关"}`}
+            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
             onClick={() => setPrefsOpen((o) => !o)}
           >
             <Ellipsis className="size-4" />
@@ -1999,7 +1995,8 @@ function BranchPicker({
 
 /** 新会话 composer（ZCode 版式）：文件夹 + 首条消息 + 模式/模型/thinking 先配齐，
     ↑ 一按才落地。落地前全是渲染层草稿——反悔零痕迹，没建的会话不存在半个。
-    偏好初值：审批 ask（安全默认）、thinking 开；模型跟上个会话走，没有就用目录第一款 */
+    偏好初值：审批 ask（安全默认）、thinking 跟型号的默认档；模型跟上个会话走，
+    没有就用开箱默认款 */
 function Welcome() {
   const startSession = useChat((s) => s.startSession);
   const send = useChat((s) => s.send);
@@ -2015,9 +2012,13 @@ function Welcome() {
     describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
   const [mode, setMode] = useState<"ask" | "auto">("ask");
-  const [thinking, setThinking] = useState(true);
   const [busy, setBusy] = useState(false);
-  const choice = describeModel(model);
+  const choice = useModelChoice(model);
+  const thinkingSpec = thinkingSpecOf(choice);
+  const [thinking, setThinking] = useState<ThinkingMode>(thinkingSpec.default);
+  // 换型号 = 换挡位表。这里是渲染层草稿（会话还没落地，没有主进程可问），
+  // 钳位得自己做——用的是同一个函数，落地后主进程再钳一次也是同一个结果
+  useEffect(() => setThinking((t) => clampThinking(t, thinkingSpec)), [thinkingSpec]);
   // 附件暂存区是全局的:在这里粘/拖进来的,建会话后由 send 原样带走
   const attachPasted = useChat((s) => s.attachPasted);
 
@@ -2111,18 +2112,13 @@ function Welcome() {
           </Tooltip>
           <span className="flex-1" />
           <ModelPicker value={model} onChange={setModel} className={NSC_SELECT + " max-w-[180px]"} />
-          <Select value={thinking ? "on" : "off"} onValueChange={(v) => setThinking(v === "on")} disabled={!choice?.supportsThinking}>
-            <SelectTrigger
-              className={NSC_SELECT}
-              title={choice?.supportsThinking ? "thinking：模型先推理再作答（更好也更贵）" : "当前型号不支持 thinking 开关"}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="on">Thinking 开</SelectItem>
-              <SelectItem value="off">Thinking 关</SelectItem>
-            </SelectContent>
-          </Select>
+          <ThinkingPicker
+            spec={thinkingSpec}
+            value={thinking}
+            onChange={setThinking}
+            disabled={busy}
+            className={NSC_SELECT}
+          />
           <Button
             className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
             disabled={!workspace || busy}

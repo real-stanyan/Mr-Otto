@@ -323,3 +323,84 @@ describe("端点解析（otto-gateway 路线）", () => {
     ).rejects.toThrow("model API 401");
   });
 });
+
+describe("thinking 挡位 → 请求体（各家方言不是同一个字段）", () => {
+  /** 只关心请求体，用最短的 SSE 收尾 */
+  const bodyOf = async (thinking: Parameters<typeof createOpenAICompatibleAdapter>[0]["thinking"]) => {
+    const bodies = mockFetchSSE(["data: [DONE]\n\n"]);
+    await createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      ...(thinking ? { thinking } : {}),
+    }).chat([], undefined, () => {});
+    return JSON.parse(bodies[0]!) as Record<string, unknown>;
+  };
+
+  it("flag：GLM / DeepSeek 的 thinking:{type}", async () => {
+    expect(await bodyOf({ mode: "on", wire: "flag" })).toMatchObject({
+      thinking: { type: "enabled" },
+    });
+    expect(await bodyOf({ mode: "off", wire: "flag" })).toMatchObject({
+      thinking: { type: "disabled" },
+    });
+  });
+
+  it("effort：reasoning_effort，关 = none（本机 Ollama 0.32 实测的关法）", async () => {
+    expect(await bodyOf({ mode: "high", wire: "effort" })).toMatchObject({
+      reasoning_effort: "high",
+    });
+    expect(await bodyOf({ mode: "off", wire: "effort" })).toMatchObject({
+      reasoning_effort: "none",
+    });
+  });
+
+  it("effort 收到二选一那派的「开」也发得出去 —— 当中档，不发一个非法值", async () => {
+    expect(await bodyOf({ mode: "on", wire: "effort" })).toMatchObject({
+      reasoning_effort: "medium",
+    });
+  });
+
+  it("enable_thinking：Qwen 系的布尔写法", async () => {
+    expect(await bodyOf({ mode: "on", wire: "enable_thinking" })).toMatchObject({
+      enable_thinking: true,
+    });
+    expect(await bodyOf({ mode: "off", wire: "enable_thinking" })).toMatchObject({
+      enable_thinking: false,
+    });
+  });
+
+  it("openrouter：关是 enabled:false，不是 effort 的某一档", async () => {
+    expect(await bodyOf({ mode: "low", wire: "openrouter" })).toMatchObject({
+      reasoning: { effort: "low" },
+    });
+    expect(await bodyOf({ mode: "off", wire: "openrouter" })).toMatchObject({
+      reasoning: { enabled: false },
+    });
+  });
+
+  it("没有挡位的型号：相关字段一个都不出现 —— 陌生参数发过去可能直接 400", async () => {
+    const none = await bodyOf({ mode: "off", wire: "none" });
+    const absent = await bodyOf(undefined);
+    for (const b of [none, absent]) {
+      expect(b).not.toHaveProperty("thinking");
+      expect(b).not.toHaveProperty("reasoning_effort");
+      expect(b).not.toHaveProperty("enable_thinking");
+      expect(b).not.toHaveProperty("reasoning");
+    }
+  });
+});
+
+describe("思考过程的字段名不止一个", () => {
+  it("Ollama 的 /v1 叫 reasoning（不是 reasoning_content）—— 少收一个就当场丢失", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{"reasoning":"先想想"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"4"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    const kinds: string[] = [];
+    const reply = await adapter.chat([], undefined, (_t, k) => kinds.push(k));
+    expect(reply.reasoning).toBe("先想想");
+    expect(kinds).toEqual(["reasoning", "content"]);
+  });
+});

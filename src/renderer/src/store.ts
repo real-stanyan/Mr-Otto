@@ -23,6 +23,12 @@ import type {
   PokerTableInput,
   PokerTableSummary,
 } from "../../shared/shellBridge.js";
+import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
+import type { ThinkingMode } from "../../shared/thinking.js";
+
+/** 冷启动那一瞬的 thinking 档：还没有会话，只能按默认型号的默认档来。
+    boot/startSession 一到就被主进程报上来的实际档覆盖 */
+const DEFAULT_THINKING: ThinkingMode = describeModel(DEFAULT_MODEL)?.thinking.default ?? "off";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
@@ -91,7 +97,9 @@ interface ChatState {
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
-  thinking: boolean;
+  /** 当前 thinking 挡位。挡位表由型号决定（shared/thinking.ts），
+      所以这里存的是主进程钳位后的那一档，不是渲染层自己算的 */
+  thinking: ThinkingMode;
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
@@ -196,7 +204,7 @@ interface ChatState {
   setReplayCursor(cursor: number | null): void;
   switchModel(model: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
-  setThinking(on: boolean): Promise<void>;
+  setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
@@ -342,7 +350,7 @@ export const useChat = create<ChatState>((set, get) => ({
   toolOutputByCall: {},
   error: null,
   approvalMode: "ask",
-  thinking: true,
+  thinking: DEFAULT_THINKING,
   replayCursor: null,
   settingsSection: null,
   sessionMode: "work",
@@ -396,7 +404,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async switchModel(model) {
     try {
-      await window.otter.switchModel(model);
+      // 换型号会连带换挡位表：新型号未必有手上这一档（"开"之于只有低/中/高的 GPT-5）。
+      // 钳位在主进程做，这里认它回流的那一档——两边各钳各的迟早分叉
+      set({ thinking: await window.otter.switchModel(model) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -411,10 +421,9 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async setThinking(on) {
+  async setThinking(mode) {
     try {
-      await window.otter.setThinking(get().sessionId, on);
-      set({ thinking: on });
+      set({ thinking: await window.otter.setThinking(get().sessionId, mode) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

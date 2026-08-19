@@ -7,6 +7,7 @@
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
+import type { ThinkingMode } from "./thinking.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
@@ -65,7 +66,9 @@ export interface StartSessionOptions {
   /** 缺省 = 主进程默认（OTTER_MODEL 或目录默认款） */
   model?: string;
   approvalMode?: ApprovalMode;
-  thinking?: boolean;
+  /** 缺省 = 该型号的默认档。挡位是型号的属性（见 shared/thinking.ts），
+      不是全局布尔——同一个"开"在 GPT-5 上根本不是合法档 */
+  thinking?: ThinkingMode;
 }
 
 /** 一个已安装的 skill（Claude Code 兼容：<根目录>/<名字>/SKILL.md + YAML frontmatter）。
@@ -103,7 +106,7 @@ export interface BootInfo {
   dbPath: string;
   /** 运行时偏好（不落日志，resume 回默认值），UI 初始化控件用 */
   approvalMode: ApprovalMode;
-  thinking: boolean;
+  thinking: ThinkingMode;
   /** 本会话实际挂上 engine 的工具声明（name/description/parameters，无秘密）。
       渲染层拿它算"工具 schema 吃掉多少上下文"——这块开销不在日志里，
       日志推不出来，只能由持有工具表的主进程报过来 */
@@ -256,12 +259,16 @@ export interface ShellBridge {
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
-  /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise */
-  switchModel(model: string): Promise<void>;
+  /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
+      返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
+      主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
+  switchModel(model: string): Promise<ThinkingMode>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
-  /** 切 thinking 开关（仅 supportsThinking 的型号有意义）。turn 进行中拒绝 */
-  setThinking(sessionId: string, on: boolean): Promise<void>;
+  /** 切 thinking 挡位（型号没有挡位表时无意义）。turn 进行中拒绝。
+      回流的是主进程钳位后的**实际**档：渲染层可能拿着上一款型号的选项集发过来，
+      认主进程的那一份，别让下拉框显示一个没生效的档 */
+  setThinking(sessionId: string, mode: ThinkingMode): Promise<ThinkingMode>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
   keyStatus(): Promise<Record<string, boolean>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
@@ -413,6 +420,9 @@ export interface OllamaModelInfo {
   /** 能不能调工具。不能 = 这个 agent 用不了它 */
   tools: boolean;
   vision: boolean;
+  /** 会不会思考（/api/show 的 capabilities 里有没有 "thinking"）。
+      决定 composer 上那个 Thinking 下拉框对这一款是不是可点 */
+  thinking: boolean;
 }
 
 export interface OllamaProbeResult {

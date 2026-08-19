@@ -95,10 +95,13 @@ export interface ProbeInput extends OllamaEnv {
 /** 兜底能力：/api/show 问不到时的保守假设。
     tools 给 true 是因为"问不到"不等于"不支持"，一刀切成 false 会把整台机器的
     型号全从选单里抹掉——那比偶尔选到一个不会调工具的更糟 */
-const FALLBACK: Pick<OllamaModelInfo, "contextLength" | "tools" | "vision"> = {
+const FALLBACK: Pick<OllamaModelInfo, "contextLength" | "tools" | "vision" | "thinking"> = {
   contextLength: 4096, // `ollama serve --help`：默认按显存 4k/32k/256k，取最低档
   tools: true,
   vision: false,
+  // thinking 与 tools 相反，问不到就当没有：多给一档"思考"只会让请求带上一个
+  // 型号不认的 reasoning_effort，而少给一档只是少个开关
+  thinking: false,
 };
 
 export async function probeOllamaModels(input: ProbeInput): Promise<OllamaProbeResult> {
@@ -151,6 +154,7 @@ export async function probeOllamaModels(input: ProbeInput): Promise<OllamaProbeR
             contextLength: contextCap ? Math.min(ctx, contextCap) : ctx,
             tools: caps.includes("tools"),
             vision: caps.includes("vision"),
+            thinking: caps.includes("thinking"),
           };
         } catch {
           return { ...base, ...FALLBACK };

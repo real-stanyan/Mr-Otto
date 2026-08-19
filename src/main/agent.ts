@@ -5,21 +5,21 @@ import { EventStore } from "../session/store.js";
 import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
-import { DEFAULT_MODEL, resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
+import {
+  DEFAULT_MODEL,
+  describeModelWith,
+  resolveModel,
+  type ModelChoice,
+} from "../shared/modelCatalog.js";
+import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
 
-/** 目录给不出本机 Ollama 的真实能力（装了什么、能不能看图、窗多大只有探测知道），
-    探到的那份补在这里。探不到就用兜底形态——注册表是缓存，不是事实来源 */
-function withOllamaCapabilities(choice: ModelChoice): ModelChoice {
-  if (choice.provider !== "ollama") return choice;
-  const info = lookupOllamaModel(choice.wireModel); // 注册表按裸 tag 索引
-  if (!info) return choice;
-  return { ...choice, contextWindow: info.contextLength, supportsVision: info.vision };
-}
-
-/** 目录查表 + Ollama 能力补齐。会话里所有拿到 ModelChoice 的地方都走它 */
+/** 目录查表 + Ollama 能力补齐（装了什么、能不能看图、思不思考、窗多大只有探测知道）。
+    会话里所有拿到 ModelChoice 的地方都走它。
+    补齐口径与渲染层共用 describeModelWith——同一个型号不该在两边显示成两种能力。
+    探不到就用兜底形态，注册表是缓存不是事实来源；目录外的 id 仍按 DeepSeek 方言兜底 */
 function resolveWithCapabilities(model: string): ModelChoice {
-  return withOllamaCapabilities(resolveModel(model));
+  return describeModelWith(model, (tag) => lookupOllamaModel(tag)) ?? resolveModel(model);
 }
 import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
@@ -97,7 +97,6 @@ export function createAgent(opts: {
   // 运行时偏好（刻意不落日志）：影响的是"怎么问人/怎么调 API"，不是模型看到的上下文。
   // 代价：resume 后回默认值——审批模式回 ask 是安全默认，thinking 回开是保守默认。
   let approvalMode: ApprovalMode = "ask";
-  let thinking = true;
   if (!opts.resumeSessionId) {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
@@ -148,6 +147,11 @@ export function createAgent(opts: {
       : (process.env["OTTER_MODEL"] ?? DEFAULT_MODEL)
   );
 
+  // thinking 也是运行时偏好，但它的**取值范围**由型号决定：GLM 是开/关，
+  // GPT-5 是低/中/高（关不掉），Grok 4 干脆没有开关。所以初值不能写死 true，
+  // 得问当前型号的默认档；换型号时同理要钳回新型号有的那一档（switchModel）
+  let thinking: ThinkingMode = current.thinking.default;
+
   // key 本体只在这里碰 process.env；缺 key 不拦启动，chat 时报错给 UI。
   //
   // 端点每次请求现算(resolveEndpoint),不在构造时定死。两个理由:
@@ -177,8 +181,12 @@ export function createAgent(opts: {
       resolveEndpoint: () => resolveEndpoint(choice),
       model: choice.model, // 日志 id（Ollama 带前缀）
       wireModel: choice.wireModel, // 发上线的 id
-      // 支持开关的型号才带 thinking 字段——别给不认识它的 API 发陌生参数
-      ...(choice.supportsThinking ? { thinking } : {}),
+      // 有挡位的型号才带 thinking 字段——别给不认识它的 API 发陌生参数。
+      // 档要按 choice 钳一次：切模型和这里之间没有别的把关，钳漏了就会
+      // 把 GLM 的"开"原样发给 GPT-5（reasoning_effort:"on" 不是合法值）
+      ...(choice.thinking.modes.length > 0
+        ? { thinking: { mode: clampThinking(thinking, choice.thinking), wire: choice.thinking.wire } }
+        : {}),
       // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
       vision: choice.supportsVision,
       readAttachment: (id) => opts.attachments.read(id),
@@ -224,6 +232,9 @@ export function createAgent(opts: {
       model: next.model,
     });
     opts.push.event(full); // engine 外落的盘，推送自己负责
+    // 换型号 = 换挡位表。手上这一档多半不在新型号的表里（"开"→ GPT-5 只有低/中/高），
+    // 按强度就近落地；顺序在 setAdapter 之前——adapter 要拿到钳好的那一档
+    thinking = clampThinking(thinking, next.thinking);
     engine.setAdapter(makeAdapter(next));
     current = next;
   }
@@ -254,12 +265,17 @@ export function createAgent(opts: {
     setApprovalMode(mode: ApprovalMode): void {
       approvalMode = mode;
     },
-    get thinking() {
+    get thinking(): ThinkingMode {
       return thinking;
     },
-    /** thinking 是 adapter 构造参数，改了要重建 adapter（调用方负责挡 turn 进行中） */
-    setThinking(on: boolean): void {
-      thinking = on;
+    /** 当前型号的挡位表（渲染层画下拉框用：有哪几档、什么方言） */
+    get thinkingSpec() {
+      return current.thinking;
+    },
+    /** thinking 是 adapter 构造参数，改了要重建 adapter（调用方负责挡 turn 进行中）。
+        钳一次再存：渲染层可能拿着上一款型号的选项集发过来 */
+    setThinking(mode: ThinkingMode): void {
+      thinking = clampThinking(mode, current.thinking);
       engine.setAdapter(makeAdapter(current));
     },
   };

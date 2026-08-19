@@ -5,6 +5,7 @@
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
 import { parseGatewayError } from "../shared/gatewayConfig.js";
+import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
 /** 一次请求真正用的端点 */
 export interface ResolvedEndpoint {
@@ -31,10 +32,10 @@ export interface OpenAICompatibleOptions {
       而 Ollama 只认裸 tag。缺了这一层，日志里存的就是裸 tag，
       重放时兜底成 DeepSeek —— 型号 id 发过去必 400 */
   wireModel?: string;
-  /** 请求级思考开关（thinking.type: enabled/disabled，DeepSeek V4 与 GLM 同一形状）。
-      undefined = 该型号不支持，请求体里完全不出现这个字段——
-      别给不认识它的 API 发陌生参数 */
-  thinking?: boolean;
+  /** 请求级思考挡位 + 该型号的方言（目录里查得到，见 shared/thinking.ts）。
+      undefined = 这个型号没有请求级开关，请求体里完全不出现相关字段——
+      别给不认识它的 API 发陌生参数（曾经不管哪家都发 thinking:{type}） */
+  thinking?: { mode: ThinkingMode; wire: ThinkingWire };
   /** 图片附件字节读取器(组装根注入 AttachmentStore.read)。
       投影只带 image_ref 引用——bytes 在请求组装的最后一刻才解出转 base64,
       日志与上下文里永远没有 base64 大块 */
@@ -45,13 +46,38 @@ export interface OpenAICompatibleOptions {
   vision?: boolean;
 }
 
+/** 挡位 → 请求体片段。各家的写法不一样，方言由目录给（ModelChoice.thinking.wire）。
+    这里是唯一一处把"用户选的档"翻成"线上字段"的地方——翻错了型号要么 400，
+    要么默默按自己的默认来（用户以为关了，账单说没关） */
+function thinkingBody(t: OpenAICompatibleOptions["thinking"]): Record<string, unknown> {
+  if (!t) return {};
+  const on = t.mode !== "off";
+  switch (t.wire) {
+    case "flag":
+      return { thinking: { type: on ? "enabled" : "disabled" } };
+    case "enable_thinking":
+      return { enable_thinking: on };
+    case "effort":
+      // "on" 不是 effort 方言里的档（那是二选一型号的说法），当中档发
+      return { reasoning_effort: t.mode === "off" ? "none" : t.mode === "on" ? "medium" : t.mode };
+    case "openrouter":
+      return on
+        ? { reasoning: { effort: t.mode === "on" ? "medium" : t.mode } }
+        : { reasoning: { enabled: false } };
+    case "none":
+      return {};
+  }
+}
+
 /** 非流式返回里我们关心的最小结构 */
 interface ChatCompletionResponse {
   choices: {
     message: {
       content: string | null;
-      /** 思考过程（DeepSeek/GLM 同名字段），thinking 关 = 缺席 */
+      /** 思考过程。DeepSeek/GLM 叫 reasoning_content，Ollama 的 /v1 叫 reasoning
+          （本机实测），两个都收——少收一个的后果是思考过程当场丢失 */
       reasoning_content?: string | null;
+      reasoning?: string | null;
       tool_calls?: {
         id: string;
         function: { name: string; arguments: string };
@@ -67,6 +93,7 @@ interface ChatCompletionChunk {
     delta?: {
       content?: string | null;
       reasoning_content?: string | null;
+      reasoning?: string | null;
       tool_calls?: {
         index: number;
         id?: string;
@@ -113,9 +140,10 @@ async function readSSE(
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) return;
     // 思考碎片先于正文到达（模型先想后说），两条频道分开攒、分开播
-    if (delta.reasoning_content) {
-      reasoning += delta.reasoning_content;
-      onDelta(delta.reasoning_content, "reasoning");
+    const think = delta.reasoning_content ?? delta.reasoning;
+    if (think) {
+      reasoning += think;
+      onDelta(think, "reasoning");
     }
     if (delta.content) {
       content += delta.content;
@@ -195,9 +223,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         body: JSON.stringify({
           model: opts.wireModel ?? opts.model,
           messages: messages.map(toWireMessage),
-          ...(opts.thinking !== undefined
-            ? { thinking: { type: opts.thinking ? "enabled" : "disabled" } }
-            : {}),
+          ...thinkingBody(opts.thinking),
           ...(tools && tools.length > 0
             ? {
                 tools: tools.map((t) => ({
@@ -250,7 +276,9 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       return {
         content: msg.content ?? "",
-        ...(msg.reasoning_content ? { reasoning: msg.reasoning_content } : {}),
+        ...((msg.reasoning_content ?? msg.reasoning)
+          ? { reasoning: msg.reasoning_content ?? msg.reasoning ?? "" }
+          : {}),
         ...(data.usage
           ? { usage: { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } }
           : {}),

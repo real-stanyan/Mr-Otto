@@ -111,8 +111,8 @@ describe("probeOllamaModels", () => {
     expect(r.baseUrl).toBe(DEFAULT);
     expect(r.error).toBe("");
     expect(r.models).toEqual([
-      { id: "ollama/cogito:8b", tag: "cogito:8b", contextLength: 131072, tools: true, vision: false },
-      { id: "ollama/qwen3:30b", tag: "qwen3:30b", contextLength: 262144, tools: true, vision: false },
+      { id: "ollama/cogito:8b", tag: "cogito:8b", contextLength: 131072, tools: true, vision: false, thinking: false },
+      { id: "ollama/qwen3:30b", tag: "qwen3:30b", contextLength: 262144, tools: true, vision: false, thinking: true },
     ]);
   });
 
@@ -123,6 +123,21 @@ describe("probeOllamaModels", () => {
       fetchImpl: machine({ "qwen3.8:27b": { caps: ["completion", "vision", "tools"], ctx: 262144 } }),
     });
     expect(r.models[0]).toMatchObject({ vision: true, tools: true });
+  });
+
+  it("会不会思考如实反映 —— composer 上那个挡位框对这一款可不可点，看它", async () => {
+    const r = await probeOllamaModels({
+      defaultBaseUrl: DEFAULT,
+      prefix: P,
+      fetchImpl: machine({
+        "qwen3:30b": { caps: ["completion", "tools", "thinking"], ctx: 262144 },
+        "cogito:8b": { caps: ["completion", "tools"], ctx: 131072 },
+      }),
+    });
+    expect(r.models.map((m) => [m.tag, m.thinking])).toEqual([
+      ["cogito:8b", false],
+      ["qwen3:30b", true],
+    ]);
   });
 
   it("不会调工具的型号如实标出来 —— 这个 agent 每一步都是工具调用", async () => {
@@ -152,7 +167,7 @@ describe("probeOllamaModels", () => {
         String(url).endsWith("/v1/models") ? ok(models(["x"])) : bad(500),
     });
     expect(r.models).toEqual([
-      { id: "ollama/x", tag: "x", contextLength: 4096, tools: true, vision: false },
+      { id: "ollama/x", tag: "x", contextLength: 4096, tools: true, vision: false, thinking: false },
     ]);
   });
 
