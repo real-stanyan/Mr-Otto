@@ -23,8 +23,20 @@ export function createWebContentsViewHandle(win: BrowserWindow, partition: strin
   let attached = false;
 
   // 新窗口一律拦下,在当前 view 里打开:内置浏览器只有一块屏,
-  // 放任 window.open 会飘出一个 Otto 管不着的裸窗口
+  // 放任 window.open 会飘出一个 Otto 管不着的裸窗口。
+  // 但只把 http(s) 目标接进来——browser_read 工具拒绝 file:// 参数,防的就是
+  // 模型直接读本机文件;可一个不可信页面能自己 window.open("file:///…"),
+  // 若照单全收就会把同一份本地文件内容从后门喂给"读当前页"的 agent。
+  // 非 http(s) 一律拒绝且不导航;URL 解析失败(畸形 url)按拒绝处理,不能让异常
+  // 逃出这个 handler。
   wc.setWindowOpenHandler(({ url }) => {
+    let scheme: string;
+    try {
+      scheme = new URL(url).protocol;
+    } catch {
+      return { action: "deny" };
+    }
+    if (scheme !== "http:" && scheme !== "https:") return { action: "deny" };
     void wc.loadURL(url);
     return { action: "deny" };
   });
