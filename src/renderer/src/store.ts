@@ -26,6 +26,7 @@ import type {
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -742,9 +743,9 @@ export const useChat = create<ChatState>((set, get) => ({
       const { models, baseUrl, error } = await window.otter.listOllamaModels();
       set({ ollamaModels: models, ollamaBaseUrl: baseUrl, ollamaError: error });
     } catch (e) {
-      // 桥本身炸了（多半是 preload 还是旧的一版）。这条以前被吞掉，
+      // 桥本身炸了（最常见是主进程还没跟上这一版）。这条以前被吞掉，
       // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
-      set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: e instanceof Error ? e.message : String(e) });
+      set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: bridgeErrorMessage(e) });
     }
   },
 
