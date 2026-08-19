@@ -19,7 +19,11 @@
 - 路径别名：`@/*` → `src/renderer/src/*`（tsconfig + electron.vite.config.ts 双处已配）。
 - 事件日志硬规则：`toThreadMessages` 是**只读投影**，不得写日志、不得持有对话状态。
 - `SessionEvent` schema 本 PR **不改**（新事件在 PR3）。
-- 每个 task 结束前 `npm test` 必须绿。
+- 每个 task 结束前 `npm test` 必须绿（**939/939**，无跳过、无失败）。
+- **装完任何 npm 包，先跑 `node scripts/fix-pty-perms.mjs` 再跑测试。** npm 解包会抹掉
+  `node-pty` 里 `spawn-helper` 的执行位，`tests/world/localWorldTerminal.test.ts` 会以
+  `posix_spawnp failed` 挂 3 条。这是环境问题不是代码问题（ad04699 加的 postinstall 就是干这个的），
+  别去改测试、别当成「既有失败」放过去。
 - commit message 用中文写「为什么」，结尾带 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`。
 
 ## 关键类型（照抄自 `@assistant-ui/core` 的 `.d.ts`，非推测）
@@ -90,10 +94,12 @@ type MessageStatus =
 npm install @assistant-ui/react@^0.15.15
 ```
 
-- [ ] **Step 2: 确认门禁没被装崩**
+- [ ] **Step 2: 补回 node-pty 执行位，确认门禁没被装崩**
 
-Run: `npm test`
-Expected: PASS（既有测试全绿，新依赖不该影响任何一条）
+Run: `node scripts/fix-pty-perms.mjs && npm test`
+Expected: PASS，939/939。npm 解包抹掉了 `spawn-helper` 的执行位，不补的话
+`tests/world/localWorldTerminal.test.ts` 会以 `posix_spawnp failed` 挂 3 条 ——
+环境问题，不是新依赖的问题。
 
 - [ ] **Step 3: 写失败的测试**
 
@@ -1026,6 +1032,8 @@ npm install @assistant-ui/react-streamdown streamdown @streamdown/code @streamdo
 ```
 
 `@streamdown/cjk` 不是可选项：本仓界面和内容都是中文，CJK 断行插件缺了排版会散。
+
+装完立刻跑 `node scripts/fix-pty-perms.mjs`（见 Global Constraints）。
 
 - [ ] **Step 2: 备份会被覆盖的两个定制件**
 
