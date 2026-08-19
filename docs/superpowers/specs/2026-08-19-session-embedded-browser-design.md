@@ -79,6 +79,8 @@ browser_read({url?}) --> world.browser.read(...) --> hub.read(sessionId, url?)
 
 view 在人第一次开面板、或 agent 第一次调工具时创建，谁先来谁触发。agent 先来时 view 存在但没挂到窗口上（零矩形），人一开面板就看到 agent 刚读的那页。
 
+`browserOpen(sessionId)` 就是人这一侧的触发点：幂等，view 已存在则不重建，一律返回当前 `BrowserTabInfo` 快照（面板挂载时调一次，用来画出 agent 可能已经开着的那一页）。agent 那一侧的触发点是 `hub.read()` 内部同一个 ensure 逻辑，不经过 bridge。
+
 ## 五、并发与失败
 
 1. **后来者赢，不加锁。** agent 导航直接改人正在看的那一页 —— 这是特性不是 bug：人看得见它去了哪。人同时手打 URL 撞上了，最后一个 `loadURL` 生效，不排队不报错。
