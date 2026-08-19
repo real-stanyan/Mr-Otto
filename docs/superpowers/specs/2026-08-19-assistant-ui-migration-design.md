@@ -1,7 +1,9 @@
 # assistant-ui 迁移设计
 
 日期：2026-08-19
-状态：已确认，待实施计划
+状态：已确认；PR1 实施计划见 `docs/superpowers/plans/2026-08-19-assistant-ui-pr1-render-layer.md`
+
+实测依据：`@assistant-ui/react@0.15.15` / `@assistant-ui/core` 的 `.d.ts`（本文所有类型均照抄自它，非推测）
 
 ## 1. 目标
 
@@ -40,7 +42,7 @@ assistant-ui 是完整框架，`Thread` 必须包在 `AssistantRuntimeProvider` 
 | 字段 | 取值 | 理由 |
 |---|---|---|
 | `messages` | `toThreadMessages(events)` 的结果 | 事件流是多对一映射到消息，不是逐条转换 |
-| `convertMessage` | **不提供** | 上一行已经产出 `ThreadMessageLike[]`，无需再逐条转 |
+| `convertMessage` | 恒等函数 `(m) => m` | 类型上必填：`ExternalStoreAdapter<T>` 定义为 `T extends ThreadMessage ? object : ExternalStoreMessageConverterAdapter<T>`，`T = ThreadMessageLike` 不满足前者。上一行已产出目标格式，所以是恒等 |
 | `isRunning` | store 的流式标志 | |
 | `onNew` | 现有 ShellBridge 发消息路径 | 写入方向不变 |
 | `onCancel` | 现有中断（ADR-0006） | |
