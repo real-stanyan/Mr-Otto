@@ -20,6 +20,7 @@ import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
+import { classifySection } from "./sectionClassifier.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
@@ -571,6 +572,20 @@ void app.whenReady().then(() => {
           send(CHANNELS.event, descEvent);
         }
         await agent.engine.runTurn(text, refs, textFiles);
+        // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
+        // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
+        // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）；aborted 会走到，
+        // 半截对话也是对话，照分。
+        // 失败静默：分类是锦上添花，不能反过来把成功的 turn 变成失败的（见 sectionClassifier）
+        const section = await classifySection(store.load(sessionId));
+        if (section) {
+          const sectionEvent = store.append({
+            sessionId, ts: Date.now(), type: "section_classified",
+            title: section.title, model: section.model,
+            ...(section.usage ? { usage: section.usage } : {}),
+          });
+          send(CHANNELS.event, sectionEvent);
+        }
       } finally {
         runningSessions.delete(sessionId);
         send(CHANNELS.turnStatus, { sessionId, status: "idle" });
