@@ -1,6 +1,7 @@
 // 组装根（agent 侧）— 把 store/adapter/tools/world/approver 拼成 engine。
 // 刻意不 import electron：接缝都是回调，Electron 接线在 index.ts。
 
+import { randomBytes } from "node:crypto";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
@@ -63,6 +64,17 @@ export interface AgentPush {
   toolOutput(sessionId: string, toolCallId: string, chunk: string, stream: "stdout" | "stderr"): void;
 }
 
+/** 会话 id：秒级时间戳 + 随机段。
+    时间戳留着是为了人能读、列表大致按时间排；随机段是承重的那一半——
+    id 是 append-only 日志的分区键，撞一次就是两个会话的事件写进同一条日志，
+    而日志不可编辑，事后拆不开（#111）。
+    旧日志里的 `s-<14 位>` 不受影响：全仓没有任何地方解析这个形状，
+    resume 只按字符串原样取（AGENTS.md 硬规则：旧日志必须永远可重放）。 */
+function newSessionId(): string {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  return `s-${stamp}-${randomBytes(4).toString("hex")}`;
+}
+
 export function createAgent(opts: {
   /** app 级资源，由外面注入——欢迎页列会话时 agent 还不存在，库必须先活着 */
   store: EventStore;
@@ -78,8 +90,7 @@ export function createAgent(opts: {
 }) {
   const { store } = opts;
 
-  const sessionId =
-    opts.resumeSessionId ?? `s-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`;
+  const sessionId = opts.resumeSessionId ?? newSessionId();
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）
   const world = createLocalWorld({ root: opts.workspace });
   const approver = new UIApprover((call, tool) => {
