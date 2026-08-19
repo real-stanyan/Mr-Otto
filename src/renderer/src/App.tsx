@@ -90,6 +90,7 @@ import {
 import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
 import { EventRow, ToolRow } from "./components/Timeline.js";
 import { ToolGroup } from "./components/ToolGroup.js";
+import { ThreadViewport } from "./components/ThreadViewport.js";
 import { groupThread } from "./lib/threadGroups.js";
 import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
 import { type OrbState } from "./lib/toolSummary.js";
@@ -1876,7 +1877,6 @@ export function App() {
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
   // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
   const items = useMemo(() => groupThread(events), [events]);
@@ -1924,10 +1924,6 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView(); // 高频动作：瞬时滚动，不加动画
-  }, [events.length, status, approval, streamingText.length, streamingThinking.length]);
 
   const submit = () => {
     const text = input.trim();
@@ -2033,9 +2029,9 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
-              不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
-          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
+          <ThreadViewport
+            deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
+          >
             {items.map((item) =>
               item.kind === "event" ? (
                 <EventRow key={item.key} event={item.event} />
@@ -2076,8 +2072,7 @@ export function App() {
                 </span>
               </Marker>
             )}
-            <div ref={bottomRef} />
-          </section>
+          </ThreadViewport>
 
           <ApprovalCard />
           <QuestionnaireCard />
