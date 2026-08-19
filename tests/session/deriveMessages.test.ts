@@ -135,6 +135,38 @@ describe("deriveMessages 上下文压缩", () => {
     expect(deriveMessages(events, OPTS)).toEqual(deriveMessages(events, OPTS));
   });
 
+  // 回归锚：这条曾经是一次真实的 400。压缩把序列化后的 JSON 从中间砍断，
+  // 本机 Ollama 严格解析 arguments，当场回 invalid tool call arguments；
+  // DeepSeek / GLM 恰好容忍，所以它藏了很久。
+  it("折叠后的 tool_calls.arguments 永远是合法 JSON，且参数名保得住", () => {
+    const fat = { path: "/tmp/a.md", content: "字".repeat(2000) };
+    const evts: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "写文件" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "",
+        model: "m",
+        toolCalls: [{ id: "c1", name: "write_file", args: fat }],
+      },
+      { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: "ok" },
+      ...toolTurn(2, "短"),
+      ...toolTurn(3, "短"),
+    ];
+    const msgs = deriveMessages(evts, { ...OPTS, maxOldToolArgChars: 400 });
+    const asst = msgs.find((m) => m.role === "assistant" && m.tool_calls) as {
+      tool_calls: { function: { arguments: string } }[];
+    };
+    const args = asst.tool_calls[0]!.function.arguments;
+
+    expect(() => JSON.parse(args)).not.toThrow();
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    // 折叠在值上做，所以结构还在：模型仍看得出这次调用动的是哪个文件
+    expect(parsed["path"]).toBe("/tmp/a.md");
+    expect(String(parsed["content"])).toContain("上下文压缩");
+    expect(args.length).toBeLessThan(JSON.stringify(fat).length);
+  });
+
   it("老 turn 的长工具参数截断带标记；保真区参数原文——write_file 的 content 不再永远躺在历史里", () => {
     const bigArgs = { path: "a.txt", content: "长".repeat(100) };
     const argTurn = (n: number): SessionEvent[] => [
@@ -152,7 +184,11 @@ describe("deriveMessages 上下文压缩", () => {
     const asst = deriveMessages(evts, OPTS).filter((m) => m.role === "assistant");
 
     const oldArgs = asst[0]!.tool_calls![0]!.function.arguments;
-    expect(oldArgs).toContain("[上下文压缩：工具参数原");
+    // 不变量比文案重要：折叠后仍必须是**合法 JSON**。
+    // OpenAI 方言规定 arguments 是 JSON 字符串，严格的服务端（Ollama）会当场解析，
+    // 从中间砍断换来的是 400 invalid tool call arguments
+    expect(() => JSON.parse(oldArgs)).not.toThrow();
+    expect(oldArgs).toContain("上下文压缩");
     expect(oldArgs.length).toBeLessThan(JSON.stringify(bigArgs).length);
     // turn2 起进保真区：逐字节原文
     expect(asst[1]!.tool_calls![0]!.function.arguments).toBe(JSON.stringify(bigArgs));

@@ -43,7 +43,7 @@ const nodeDeps: ProtocolDeps = {
   },
   execGh(args, cwd) {
     return new Promise((resolve, reject) => {
-      execFile("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: GH_TIMEOUT_MS }, (err, stdout, stderr) => {
         if (err) reject(Object.assign(err, { stderr: String(stderr) }));
         else resolve({ stdout: String(stdout) });
       });
@@ -53,6 +53,11 @@ const nodeDeps: ProtocolDeps = {
     return existsSync(dir);
   },
 };
+
+/** gh 子进程的客户端超时。gh 自己不保证返回——网络挂住、代理黑洞、等 2FA 输入,
+    都能让它一直不退出,而 Issues 面板此时只有一个永远转的骨架屏。
+    20 秒:比正常的 issue list(1-3 秒)宽出一个量级,又不至于让人以为界面死了 */
+const GH_TIMEOUT_MS = 20_000;
 
 /** 两个 ADR 目录写死:project ADR 在前(阅读优先级),gearbox 协议 ADR 在后 */
 const ADR_DIRS: { rel: string; source: AdrSummary["source"] }[] = [
@@ -95,8 +100,9 @@ export function createProtocolService(deps: ProtocolDeps = nodeDeps): ProtocolSe
 
     async listIssues(repoDir) {
       // localStorage 记的 repoDir 可能已被删/改名——exec 前先挡,否则 execFile 对不存在
-      // 的 cwd 抛 ENOENT,和"没装 gh"撞同一错误码,会被误判成 gh-missing(UI 引导装 gh 就跑偏了)
-      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
+      // 的 cwd 抛 ENOENT,和"没装 gh"撞同一错误码,会被误判成 gh-missing(UI 引导装 gh 就跑偏了)。
+      // kind 用 no-dir 不用 no-repo:目录已经没了的时候,"此目录不是 git 仓库"是句错话
+      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-dir", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGh(
           ["issue", "list", "--state", "all", "--limit", "200", "--json", "number,title,state,updatedAt"],
@@ -110,7 +116,7 @@ export function createProtocolService(deps: ProtocolDeps = nodeDeps): ProtocolSe
 
     async getIssue(repoDir, n) {
       // 同 listIssues:目录不存在先挡,别让 execFile 的 ENOENT 混进 classifyGhError
-      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-repo", detail: `目录不存在: ${repoDir}` };
+      if (!deps.dirExists(repoDir)) return { ok: false, kind: "no-dir", detail: `目录不存在: ${repoDir}` };
       try {
         const { stdout } = await deps.execGh(
           ["issue", "view", String(n), "--json", "number,title,state,body,comments"],

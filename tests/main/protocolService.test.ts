@@ -4,7 +4,7 @@ import { createProtocolService, type ProtocolDeps } from "../../src/main/protoco
 /** 假文件系统:路径 → 内容;假 gh:按 args 决定吐 stdout 还是炸 */
 function fakeDeps(init: {
   files?: Record<string, string>;
-  gh?: (args: string[]) => { stdout: string } | { err: { code?: string; stderr?: string; message?: string } };
+  gh?: (args: string[]) => { stdout: string } | { err: { code?: string; stderr?: string; message?: string; killed?: boolean; signal?: string } };
   dirExists?: boolean;
 } = {}): ProtocolDeps {
   const files = init.files ?? {};
@@ -31,6 +31,31 @@ function fakeDeps(init: {
     },
   };
 }
+
+describe("目录不存在与非仓库分开报", () => {
+  it("目录不存在 = no-dir,不是 no-repo——「不是 git 仓库」对一个已经没了的目录是错的", async () => {
+    const deps = fakeDeps({ dirExists: false });
+    const svc = createProtocolService(deps);
+    await expect(svc.listIssues("/gone")).resolves.toMatchObject({ ok: false, kind: "no-dir" });
+    await expect(svc.getIssue("/gone", 1)).resolves.toMatchObject({ ok: false, kind: "no-dir" });
+  });
+
+  it("目录在但不是仓库,仍按 gh 的 stderr 判成 no-repo", async () => {
+    const svc = createProtocolService(fakeDeps({
+      gh: () => ({ err: { stderr: "fatal: not a git repository" } }),
+    }));
+    await expect(svc.listIssues("/repo")).resolves.toMatchObject({ ok: false, kind: "no-repo" });
+  });
+});
+
+describe("gh 超时", () => {
+  it("execGh 被 timeout 打死 → gh-timeout(不混进「网络/限流?点刷新重试」)", async () => {
+    const svc = createProtocolService(fakeDeps({
+      gh: () => ({ err: { killed: true, signal: "SIGTERM", stderr: "" } }),
+    }));
+    await expect(svc.listIssues("/repo")).resolves.toMatchObject({ ok: false, kind: "gh-timeout" });
+  });
+});
 
 describe("listAdrs", () => {
   it("双目录合并,各自排序,project adr 在前;非 ADR 命名跳过", () => {
@@ -91,9 +116,9 @@ describe("listIssues", () => {
   });
   // repoDir 记在 localStorage,目录删了/改名了再打开仪表盘会重现:execFile 对不存在的 cwd
   // 抛 ENOENT,和"没装 gh"是同一个错误码——不能靠 classifyGhError 分辨,得在 exec 前挡住
-  it("目录不存在(remembered repoDir 被删/改名) = no-repo,不是 gh-missing", async () => {
+  it("目录不存在(remembered repoDir 被删/改名) = no-dir,不是 gh-missing", async () => {
     const svc = createProtocolService(fakeDeps({ dirExists: false, gh: () => ({ err: { message: "should not be called" } }) }));
-    expect(await svc.listIssues("/repo/gone")).toMatchObject({ ok: false, kind: "no-repo", detail: "目录不存在: /repo/gone" });
+    expect(await svc.listIssues("/repo/gone")).toMatchObject({ ok: false, kind: "no-dir", detail: "目录不存在: /repo/gone" });
   });
 });
 
@@ -112,8 +137,8 @@ describe("getIssue", () => {
     const svc = createProtocolService(fakeDeps({ gh: () => ({ err: { stderr: "HTTP 500" } }) }));
     expect(await svc.getIssue("/repo", 5)).toMatchObject({ ok: false, kind: "gh-error" });
   });
-  it("目录不存在(remembered repoDir 被删/改名) = no-repo,不是 gh-missing", async () => {
+  it("目录不存在(remembered repoDir 被删/改名) = no-dir,不是 gh-missing", async () => {
     const svc = createProtocolService(fakeDeps({ dirExists: false, gh: () => ({ err: { message: "should not be called" } }) }));
-    expect(await svc.getIssue("/repo/gone", 5)).toMatchObject({ ok: false, kind: "no-repo", detail: "目录不存在: /repo/gone" });
+    expect(await svc.getIssue("/repo/gone", 5)).toMatchObject({ ok: false, kind: "no-dir", detail: "目录不存在: /repo/gone" });
   });
 });

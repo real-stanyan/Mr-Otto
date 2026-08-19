@@ -11,6 +11,7 @@ import { runPipeline } from "./middleware.js";
 import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.js";
 import { createApprovalGate } from "./approvalGate.js";
 import type { Approver } from "./approvalGate.js";
+import { createReasoningClock } from "./reasoningClock.js";
 
 /** AbortError 判定：fetch 中止、signal.reason、throwIfAborted 抛的都是它 */
 function isAbort(err: unknown): boolean {
@@ -196,12 +197,21 @@ export class LoopEngine {
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
       const messages = deriveMessages(store.load(sessionId), DEFAULT_COMPRESSION);
+      // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
+      const clock = createReasoningClock();
+      const onDelta = this.opts.onAssistantDelta;
       const reply = await this.adapter.chat(
         messages,
         this.opts.tools.map((t) => t.def),
-        this.opts.onAssistantDelta, // 给了就流式直播；reply 依旧完整——落盘只认它
+        onDelta
+          ? (text, kind) => {
+              clock.observe(kind);
+              onDelta(text, kind);
+            }
+          : undefined, // 非流式路径:测不到就不测,字段缺席
         signal // 中断从这穿进 fetch / SSE 读流
       );
+      const reasoningMs = clock.finish();
 
       this.append({
         ...this.env(),
@@ -213,6 +223,8 @@ export class LoopEngine {
         // 思考过程随消息落盘（模型产出的新信息，丢了回放就永远缺这段）；
         // 投影层会丢弃它——API 禁止思考回流上下文
         ...(reply.reasoning ? { reasoning: reply.reasoning } : {}),
+        // 耗时只在真有思考内容时才有意义(空思考的耗时是噪音)
+        ...(reply.reasoning && reasoningMs !== null ? { reasoningMs } : {}),
       });
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了

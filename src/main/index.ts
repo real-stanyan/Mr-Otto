@@ -14,6 +14,7 @@ import {
   type PokerTableInput,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { createTerminalHub } from "./terminalHub.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
@@ -26,7 +27,10 @@ import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { MODEL_CATALOG, findModel } from "../shared/modelCatalog.js";
+import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
+import type { ThinkingMode } from "../shared/thinking.js";
+import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
+import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -290,6 +294,25 @@ void app.whenReady().then(() => {
     });
   };
 
+  // 终端注册表:app 级资源。openTerminal 走该会话 agent 的 ExecutionWorld,
+  // 不是这里另起一个 LocalWorld——否则 v2 SandboxWorld 接进来之后,agent 明明
+  // 看得见容器里的文件系统,用户终端却还开在宿主机上,ADR-0031 §1 挡的就是这个
+  // (曾经的接线绕开了 seam:见该 ADR 的 review 记录)。workspace 参数留着不是
+  // 白留——world 早已经绑好 root,这里只需要 sessionId 去 agents 里找到那个 world
+  const terminals = createTerminalHub({
+    openTerminal: async (sessionId, _workspace, opts) => {
+      const agent = agents.get(sessionId);
+      if (!agent?.world.openTerminal) {
+        throw new Error("这个会话的 world 不支持终端能力");
+      }
+      return agent.world.openTerminal(opts);
+    },
+    push: {
+      data: (id, data) => send(CHANNELS.terminalData, { id, data }),
+      exit: (id, exitCode) => send(CHANNELS.terminalExit, { id, exitCode }),
+    },
+  });
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -358,9 +381,7 @@ void app.whenReady().then(() => {
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
-    if (typeof opts.thinking === "boolean" && opts.thinking !== agent.thinking) {
-      agent.setThinking(opts.thinking);
-    }
+    if (opts.thinking && opts.thinking !== agent.thinking) agent.setThinking(opts.thinking);
     const info = bootInfo();
     if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
     return info;
@@ -418,6 +439,23 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
     gitGraph.commit(repoDir, hash)
   );
+
+  // ── 终端 ────────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.terminalList, (_e, sessionId: string) => terminals.list(sessionId));
+
+  ipcMain.handle(CHANNELS.terminalOpen, (_e, sessionId: string, cols: number, rows: number) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在，开不了终端");
+    // cwd 取会话的工程文件夹:终端是"这个会话的终端",不是随便一个 shell
+    return terminals.open(sessionId, agent.workspace, cols, rows);
+  });
+
+  ipcMain.handle(CHANNELS.terminalAttach, (_e, id: string) => terminals.attach(id));
+  ipcMain.handle(CHANNELS.terminalInput, (_e, id: string, data: string) => terminals.input(id, data));
+  ipcMain.handle(CHANNELS.terminalResize, (_e, id: string, cols: number, rows: number) =>
+    terminals.resize(id, cols, rows)
+  );
+  ipcMain.handle(CHANNELS.terminalClose, (_e, id: string) => terminals.close(id));
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
@@ -489,13 +527,47 @@ void app.whenReady().then(() => {
     app.setBadgeCount(Math.max(0, Math.floor(count)));
   });
 
-  // 白名单：渲染层只能配目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env
-  const allowedKeyEnvs = new Set(MODEL_CATALOG.map((m) => m.apiKeyEnv));
+  // 白名单：渲染层只能配厂商目录里声明过的 key 变量，不然被攻破的渲染进程能改任意 env。
+  // 按厂商算而不是按型号算——一家厂暂时 0 个型号时，它的 key 也该能先填上
+  const allowedKeyEnvs = new Set(providerKeyEnvs());
 
   ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
     const status: Record<string, boolean> = {};
     for (const env of allowedKeyEnvs) status[env] = Boolean(process.env[env]);
     return status; // 只有布尔——key 本体永远不过这座桥
+  });
+
+  // 领 key 的入口。只认目录里的厂商 id，URL 从目录里查——渲染层递不进来任意外链
+  ipcMain.handle(CHANNELS.openProviderConsole, (_e, providerId: string) => {
+    const info = findProvider(providerId as ProviderId);
+    if (!info) throw new Error(`不认识的厂商: ${providerId}`);
+    void shell.openExternal(info.consoleUrl);
+  });
+
+  // 本机 Ollama：型号清单 + 各自能力（探测逻辑住 main/ollamaModels.ts，这里只接线）
+  ipcMain.handle(CHANNELS.listOllamaModels, async () => {
+    const info = findProvider("ollama")!;
+    const cap = Number(process.env["OLLAMA_CONTEXT_LENGTH"]);
+    const result = await probeOllamaModels({
+      defaultBaseUrl: info.baseUrl,
+      baseUrlOverride: process.env[info.baseUrlEnv],
+      // Ollama 自己的开关。用户改过它就该生效，不该逼他再学一个我们发明的变量
+      ollamaHost: process.env["OLLAMA_HOST"],
+      apiKey: process.env[info.apiKeyEnv],
+      prefix: OLLAMA_MODEL_PREFIX,
+      ...(Number.isFinite(cap) && cap > 0 ? { contextCap: cap } : {}),
+      fetchImpl: fetch,
+    });
+    // 探到的端点固化进 env：adapter 和 routeModel 读的都是这个变量，
+    // 不固化的话它们会继续拨目录里的默认值，而清单是从另一个地址问来的——
+    // "看得见却连不上"正是这类分叉的典型症状。keyVault 也是这么把 key 落进 env 的
+    if (result.baseUrl && !process.env[info.baseUrlEnv]) {
+      process.env[info.baseUrlEnv] = result.baseUrl;
+    }
+    // agent 要按型号决定发不发图，能力表只有探测知道
+    rememberOllamaModels(result.models);
+    for (const a of agents.values()) a.reloadAdapter();
+    return result;
   });
 
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {
@@ -508,6 +580,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
+    terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
     store.purge(sessionId);
     agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
@@ -527,6 +600,8 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model);
+    // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
+    return agent.thinking;
   });
 
   ipcMain.handle(CHANNELS.setApprovalMode, (_e, sessionId: string, mode: "ask" | "auto") => {
@@ -536,11 +611,12 @@ void app.whenReady().then(() => {
     agent.setApprovalMode(mode);
   });
 
-  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, on: boolean) => {
+  ipcMain.handle(CHANNELS.setThinking, (_e, sessionId: string, mode: ThinkingMode) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能切 thinking");
-    agent.setThinking(on);
+    agent.setThinking(mode);
+    return agent.thinking; // 钳位后的实际档
   });
 
   ipcMain.handle(
@@ -605,7 +681,7 @@ void app.whenReady().then(() => {
         // "模型看不见图还装看过"
         // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
         const modelText = composeUserText(text, textFiles);
-        if (refs.length > 0 && !(findModel(agent.model)?.supportsVision ?? false)) {
+        if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
           const describeImages = createVisionBridge((id) => attachmentStore.read(id));
           const described = await describeImages(refs, modelText);
           const descEvent = store.append({
@@ -697,7 +773,10 @@ void app.whenReady().then(() => {
     }
   );
 
-  app.on("before-quit", () => store.close());
+  app.on("before-quit", () => {
+    terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
+    store.close();
+  });
 });
 
 app.on("window-all-closed", () => {

@@ -9,6 +9,7 @@ import { ChevronLeft, RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "luc
 import { SidebarNub } from "./SidebarNub.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
+import { formatRelativeIso } from "../../../shared/relativeTime.js";
 import { Separator } from "@/components/ui/separator.js";
 import { useChat } from "../store.js";
 import { parseHandoff, type IssueRole, type IssuesResult } from "../../../shared/protocol.js";
@@ -29,8 +30,12 @@ function RoleBadge({ role }: { role: IssueRole }) {
 function IssuesError({ result }: { result: Extract<IssuesResult, { ok: false }> }) {
   const guide: Record<string, string> = {
     "gh-missing": "未找到 gh CLI。安装:brew install gh,然后 gh auth login。",
+    // no-dir 与 no-repo 分开:目录已经没了的时候,"不是 git 仓库"是句错话,
+    // 而且下一步完全不同——一个是换目录,一个是连 remote
+    "no-dir": "这个目录不在了(被删或改名?)。点上面的路径换一个目标仓库。",
     "no-repo": "此目录不是 git 仓库或未连 GitHub remote。ADR 面板不受影响。",
     "gh-auth": "gh 未登录。终端跑一次:gh auth login。",
+    "gh-timeout": "gh 20 秒没返回,已掐掉。网络/代理挂住的话直接重试也会再等 20 秒,先在终端跑一次 gh issue list 看看。",
     "gh-error": "GitHub 请求失败(网络/限流?)。可点刷新重试。",
   };
   return (
@@ -77,6 +82,9 @@ export function ProtocolView() {
     closeProtocol, closeProtocolDetail, pickProtocolRepo, refreshProtocol, openAdr, openIssue,
   } = useChat();
   const tab = useChat((s) => s.protocolTab);
+  const detailPending = useChat((s) => s.protocolDetailPending);
+  const error = useChat((s) => s.error);
+  const now = Math.floor(Date.now() / 1000);
   const setTab = useChat((s) => s.setProtocolTab);
   const panelWide = useChat((s) => s.panelWide);
   const togglePanelWide = useChat((s) => s.togglePanelWide);
@@ -93,7 +101,12 @@ export function ProtocolView() {
   }
 
   // 右栏内容:没选中时不渲染占位文案,整栏收起让列表占满(半屏下空栏太浪费)
-  const detail = adrView ? (
+  const detail = detailPending ? (
+    // 取数期间右栏不能整个消失:点了没反应和"点上了正在拉"是两件事
+    <div className="grid max-w-[760px] gap-2">
+      <Skeleton className="h-7 w-1/2" /><Skeleton className="h-4" /><Skeleton className="h-4" /><Skeleton className="h-4 w-2/3" />
+    </div>
+  ) : adrView ? (
     <article className="md max-w-[760px]">
       <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
         {adrView.markdown}
@@ -117,7 +130,8 @@ export function ProtocolView() {
           </Markdown>
         </div>
         {issueView.issue.comments.map((c, idx) => (
-          <div key={idx} className="mt-4 rounded border border-border bg-card px-4 py-3">
+          // gh 给了稳定 id 就用它;拿不到(旧缓存/字段缺失)才退回下标
+          <div key={c.id || `idx:${idx}`} className="mt-4 rounded border border-border bg-card px-4 py-3">
             <div className="mb-2 text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">{c.author}</span>
               {" · "}{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}
@@ -173,6 +187,13 @@ export function ProtocolView() {
             </Button>
           </div>
           <Separator />
+          {/* store 的 error 原来在这个面板里没有任何落点:readAdr 失败(文件被删/越界)
+              只把消息写进 store 就没了下文,用户点一下什么也不发生。下一次动作会清掉它 */}
+          {error && (
+            <p className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive break-all">
+              {error}
+            </p>
+          )}
           <div className="flex-1 min-h-0 overflow-y-auto">
             {tab === "adr" ? (
               adrs.length === 0 ? (
@@ -197,6 +218,8 @@ export function ProtocolView() {
               </div>
             ) : !issues.ok ? (
               <IssuesError result={issues} />
+            ) : issues.issues.length === 0 ? (
+              <p className="px-3 py-6 text-sm text-muted-foreground">这个仓库还没有 issue。</p>
             ) : (
               // spec §1:open/closed 两组列表,closed 组前加分隔标题(镜像 App.tsx 侧栏"史前会话"的样式)
               (() => {
@@ -210,6 +233,11 @@ export function ProtocolView() {
                   >
                     <span className="font-mono text-xs text-muted-foreground shrink-0">#{i.number}</span>
                     <span className="flex-1 min-w-0 truncate">{i.title}</span>
+                    {/* updatedAt 一直拉着没显示过。相对时间:issue 列表里"多久没动了"
+                        比"哪天更新的"更接近你在找的东西 */}
+                    <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                      {formatRelativeIso(i.updatedAt, now)}
+                    </span>
                     <RoleBadge role={i.role} />
                   </button>
                 );

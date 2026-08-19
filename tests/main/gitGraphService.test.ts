@@ -147,6 +147,37 @@ describe("commit", () => {
     expect(called).toBe(false);
   });
 
+  it("SHA-256 仓库的 64 位 hash 放行,65 位仍拒", async () => {
+    const seen: string[] = [];
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        seen.push(args[args.length - 1]!);
+        if (args.includes("--no-patch")) return { stdout: `${"a".repeat(64)}\x00stan\x00s@x.com\x001755500000\x00msg` };
+        return { stdout: "" };
+      },
+    }));
+    const ok = await svc.commit("/repo", "a".repeat(64));
+    expect(ok.ok).toBe(true);
+
+    const tooLong = await svc.commit("/repo", "a".repeat(65));
+    expect(tooLong).toMatchObject({ ok: false, kind: "git-error" });
+    expect(seen.some((h) => h.length === 65)).toBe(false);
+  });
+
+  it("log 用 --decorate=full 拉 ref:短名下分不出 remote 和带斜杠的本地分支", async () => {
+    let logArgs: string[] = [];
+    const svc = createGitGraphService(fake({
+      onExec: async (args) => {
+        if (args[0] === "log") logArgs = args;
+        if (args[0] === "rev-parse") return { stdout: "aaa\n" };
+        if (args[0] === "symbolic-ref") throw Object.assign(new Error("fail"), { stderr: "" });
+        return { stdout: "" };
+      },
+    }));
+    await svc.log("/repo");
+    expect(logArgs).toContain("--decorate=full");
+  });
+
   it("目录不存在:no-repo", async () => {
     const svc = createGitGraphService(fake({ dirExists: false }));
     expect(await svc.commit("/gone", "abc123")).toEqual({ ok: false, kind: "no-repo", detail: "目录不存在: /gone" });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeModel } from "../../src/main/modelRoute.js";
-import { findModel } from "../../src/shared/modelCatalog.js";
+import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
 const deepseek = findModel("deepseek-v4-flash")!;
 const glm = findModel("glm-4.5-flash")!;
@@ -68,5 +68,33 @@ describe("routeModel", () => {
 
   it("空串 key 不算配过（keyVault 用空串表示清除）", () => {
     expect(route({ ownKey: "", accessToken: "jwt" }).kind).toBe("gateway");
+  });
+});
+
+describe("免 key 的本机厂商（Ollama）", () => {
+  // 目录里没有 Ollama 的型号(本机装了什么只有本机知道),id 靠前缀认领
+  const ollama = resolveModel("ollama/qwen3:30b");
+
+  it("两个 id 各司其职：日志留前缀，发给 Ollama 的是裸 tag", () => {
+    expect(ollama.model).toBe("ollama/qwen3:30b");
+    expect(ollama.wireModel).toBe("qwen3:30b");
+    expect(ollama.keyless).toBe(true);
+  });
+
+  it("没 key 也不 blocked：直连本机端点", () => {
+    const r = route({ choice: ollama });
+    expect(r.kind).toBe("direct");
+    expect(r).toMatchObject({ baseUrl: "http://127.0.0.1:11434/v1" });
+  });
+
+  it("不走网关：登录了也不该去扣官方赠额", () => {
+    expect(route({ choice: ollama, accessToken: "tok" }).kind).toBe("direct");
+  });
+
+  it("端点覆盖仍然生效：远端 Ollama 换 OLLAMA_BASE_URL 即可", () => {
+    expect(route({ choice: ollama, ownBaseUrl: "http://box.lan:11434/v1" })).toMatchObject({
+      kind: "direct",
+      baseUrl: "http://box.lan:11434/v1",
+    });
   });
 });

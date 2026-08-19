@@ -7,8 +7,10 @@
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
+import type { ThinkingMode } from "./thinking.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
+import type { TerminalInfo } from "./terminal.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
@@ -27,6 +29,8 @@ import type {
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
 export type { SessionSummary };
+
+export type { TerminalInfo };
 
 /** 审批模式（Claude Code 的 permission mode 对应物）：
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
@@ -65,7 +69,9 @@ export interface StartSessionOptions {
   /** 缺省 = 主进程默认（OTTER_MODEL 或目录默认款） */
   model?: string;
   approvalMode?: ApprovalMode;
-  thinking?: boolean;
+  /** 缺省 = 该型号的默认档。挡位是型号的属性（见 shared/thinking.ts），
+      不是全局布尔——同一个"开"在 GPT-5 上根本不是合法档 */
+  thinking?: ThinkingMode;
 }
 
 /** 一个已安装的 skill（Claude Code 兼容：<根目录>/<名字>/SKILL.md + YAML frontmatter）。
@@ -103,7 +109,7 @@ export interface BootInfo {
   dbPath: string;
   /** 运行时偏好（不落日志，resume 回默认值），UI 初始化控件用 */
   approvalMode: ApprovalMode;
-  thinking: boolean;
+  thinking: ThinkingMode;
   /** 本会话实际挂上 engine 的工具声明（name/description/parameters，无秘密）。
       渲染层拿它算"工具 schema 吃掉多少上下文"——这块开销不在日志里，
       日志推不出来，只能由持有工具表的主进程报过来 */
@@ -256,16 +262,27 @@ export interface ShellBridge {
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
-  /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise */
-  switchModel(model: string): Promise<void>;
+  /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
+      返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
+      主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
+  switchModel(model: string): Promise<ThinkingMode>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
-  /** 切 thinking 开关（仅 supportsThinking 的型号有意义）。turn 进行中拒绝 */
-  setThinking(sessionId: string, on: boolean): Promise<void>;
+  /** 切 thinking 挡位（型号没有挡位表时无意义）。turn 进行中拒绝。
+      回流的是主进程钳位后的**实际**档：渲染层可能拿着上一款型号的选项集发过来，
+      认主进程的那一份，别让下拉框显示一个没生效的档 */
+  setThinking(sessionId: string, mode: ThinkingMode): Promise<ThinkingMode>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
   keyStatus(): Promise<Record<string, boolean>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
   setApiKey(envName: string, key: string): Promise<void>;
+  /** 用系统浏览器打开某厂商的控制台（去领 key）。收厂商 id 而不是 URL——
+      URL 由主进程查目录得到，渲染层被攻破也拉不出任意外链 */
+  openProviderConsole(providerId: string): Promise<void>;
+  /** 本机 Ollama 装了哪些型号 + 各自的能力（现问现答，无缓存）。
+      端点按 Ollama 自己的约定解析（OLLAMA_HOST，默认 127.0.0.1:11434）。
+      不 reject——Ollama 没装/没跑是常态，结构化回流让 UI 自己降级 */
+  listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
@@ -287,6 +304,18 @@ export interface ShellBridge {
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** 本会话已开的终端(标签行用)。终端不进事件日志——它不是投影,是人的旁路工具(ADR-0031) */
+  terminalList(sessionId: string): Promise<TerminalInfo[]>;
+  /** 新开一个终端(cwd = 会话的工程文件夹)。snapshot 恒为空串,形状与 attach 对齐 */
+  terminalOpen(sessionId: string, cols: number, rows: number): Promise<{ id: string; snapshot: string }>;
+  /** 接上已有终端,拿回滚缓冲一次性灌进 xterm(这就是"关面板不杀进程"给用户的兑现) */
+  terminalAttach(id: string): Promise<{ snapshot: string }>;
+  /** 键盘输入透传给 pty */
+  terminalInput(id: string, data: string): Promise<void>;
+  /** 面板拖拽/展开后同步窗口尺寸 */
+  terminalResize(id: string, cols: number, rows: number): Promise<void>;
+  /** 关标签 = 杀进程,不可逆 */
+  terminalClose(id: string): Promise<void>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -349,6 +378,8 @@ export interface ShellBridge {
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
+  onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
+  onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
@@ -397,6 +428,27 @@ export type NotificationTarget =
   | { kind: "invite" }
   | { kind: "friendRequest" };
 
+export interface OllamaModelInfo {
+  /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */
+  id: string;
+  /** 发给 API 的裸 tag */
+  tag: string;
+  contextLength: number;
+  /** 能不能调工具。不能 = 这个 agent 用不了它 */
+  tools: boolean;
+  vision: boolean;
+  /** 会不会思考（/api/show 的 capabilities 里有没有 "thinking"）。
+      决定 composer 上那个 Thinking 下拉框对这一款是不是可点 */
+  thinking: boolean;
+}
+
+export interface OllamaProbeResult {
+  /** 真正连通的那个端点（含 /v1）。空串 = 一个都没连上 */
+  baseUrl: string;
+  models: OllamaModelInfo[];
+  error: string;
+}
+
 export const CHANNELS = {
   boot: "otter:boot",
   pickWorkspace: "otter:pickWorkspace",
@@ -418,6 +470,14 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  terminalList: "otter:terminalList",
+  terminalOpen: "otter:terminalOpen",
+  terminalAttach: "otter:terminalAttach",
+  terminalInput: "otter:terminalInput",
+  terminalResize: "otter:terminalResize",
+  terminalClose: "otter:terminalClose",
+  terminalData: "otter:terminalData",
+  terminalExit: "otter:terminalExit",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
@@ -455,6 +515,8 @@ export const CHANNELS = {
   notificationActivated: "otter:notificationActivated",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
+  openProviderConsole: "otter:openProviderConsole",
+  listOllamaModels: "otter:listOllamaModels",
   sendMessage: "otter:sendMessage",
   pickAttachments: "otter:pickAttachments",
   attachmentDataUrl: "otter:attachmentDataUrl",

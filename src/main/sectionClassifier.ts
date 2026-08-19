@@ -121,9 +121,11 @@ export async function classifySection(
       model: choice.model,
       vision: false,
       // 分类员只要一句标题，思考过程一个字都用不上，但 glm-4.5-flash 的
-      // supportsThinking 是 true、provider 默认开着——实测为「用户问候」四个字
-      // 烧掉 1452 个 completion token（约 20 倍）。显式关掉
-      thinking: false,
+      // thinking 默认档是「开」——实测为「用户问候」四个字烧掉 1452 个
+      // completion token（约 20 倍）。显式关掉。
+      // 挡位现在是型号的属性（ADR-0031，shared/thinking.ts）：方言从目录里查，
+      // 别自己拍一个——给 GLM 发 reasoning_effort 是发给一个不认识它的 API
+      thinking: { mode: "off", wire: choice.thinking.wire },
     });
     const currentTitle = currentSectionTitle(events);
     // 非流式、不带工具：分类没有直播价值，结果整段用。

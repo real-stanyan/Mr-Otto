@@ -12,6 +12,7 @@ import type {
   AskUserAnswer,
   AskUserRequest,
   BootInfo,
+  OllamaModelInfo,
   SessionSummary,
   SkillInfo,
   StagedAttachment,
@@ -22,9 +23,17 @@ import type {
   PokerTableInput,
   PokerTableSummary,
 } from "../../shared/shellBridge.js";
+import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
+import type { ThinkingMode } from "../../shared/thinking.js";
+
+/** 冷启动那一瞬的 thinking 档：还没有会话，只能按默认型号的默认档来。
+    boot/startSession 一到就被主进程报上来的实际档覆盖 */
+const DEFAULT_THINKING: ThinkingMode = describeModel(DEFAULT_MODEL)?.thinking.default ?? "off";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -36,6 +45,7 @@ import {
   type ChatMessage,
 } from "./lib/friendsState.js";
 import { needsOnboarding } from "./lib/identity.js";
+import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
 export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
@@ -55,7 +65,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "skills";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -89,7 +99,9 @@ interface ChatState {
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
-  thinking: boolean;
+  /** 当前 thinking 挡位。挡位表由型号决定（shared/thinking.ts），
+      所以这里存的是主进程钳位后的那一档，不是渲染层自己算的 */
+  thinking: ThinkingMode;
   /** 回放游标：null = 直播；N = 富回放视图里选中第 N 条事件（0 起）。
       纯渲染层概念——主进程和 agent 对回放毫不知情。 */
   replayCursor: number | null;
@@ -112,6 +124,8 @@ interface ChatState {
   protocolRepo: string | null;
   adrs: AdrSummary[];
   adrView: { path: string; markdown: string } | null;
+  /** 右栏详情正在取:骨架屏用。没有它的话 openIssue 期间右栏整个不渲染,看着像没点上 */
+  protocolDetailPending: boolean;
   /** null = 正在加载(骨架屏);ok:false = 按 kind 降级 */
   issues: IssuesResult | null;
   issueView: IssueDetailResult | null;
@@ -132,6 +146,9 @@ interface ChatState {
   gitCommitView: { hash: string; result: GitCommitResult | null } | null;
   /** Protocol/Git Graph 面板宽度:false = 半屏(会话仍可见),true = 全屏 */
   panelWide: boolean;
+  /** 终端面板开关(与 Protocol / Git Graph / DM 互斥:同一个右侧槽位)。
+      注意别和 ShellBridge 的 terminalOpen(开一个新终端)混为一谈 */
+  terminalPanelOpen: boolean;
   /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
       不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
   workTree: GitStatusResult | null;
@@ -148,6 +165,12 @@ interface ChatState {
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
+  /** 本机 Ollama 装了哪些型号 + 各自能力。目录查不到，只能现问 */
+  ollamaModels: OllamaModelInfo[];
+  /** 探通的那个端点。设置页要显示它——"连上了"得说清连的是哪儿 */
+  ollamaBaseUrl: string;
+  /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
+  ollamaError: string;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
@@ -164,6 +187,11 @@ interface ChatState {
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
   attachError: string | null;
+  /** 待注入输入框的文本(划词引用、重试填回都走这条)。App 收下即清。
+      append=true 追加到现有草稿后面(引用),false 整体替换(重试填回)。
+      为什么不把 composer 的输入状态提到 store:那是更大的重构,
+      这条通道够用且不改动现有输入框的任何行为 */
+  composerInject: { text: string; append: boolean } | null;
   /** 好友快照(主进程推送镜像;未登录/登出 = 三空数组) */
   friendsSnapshot: FriendsSnapshot;
   /** 当前在线的 userId(presence 推送镜像) */
@@ -188,7 +216,7 @@ interface ChatState {
   setReplayCursor(cursor: number | null): void;
   switchModel(model: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
-  setThinking(on: boolean): Promise<void>;
+  setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
@@ -220,6 +248,9 @@ interface ChatState {
   /** 打开 Git Graph:目标 = 当前会话 workspace,开门即拉取 */
   openGitGraph(): Promise<void>;
   closeGitGraph(): void;
+  /** 打开终端面板:同一会话已有跑着的终端就复用,没有才开新的(TerminalView 里做) */
+  openTerminalPanel(): void;
+  closeTerminalPanel(): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
   refreshGitGraph(silent?: boolean): Promise<void>;
   /** 滚近底部时把窗口 +300 整窗重拉。到底/在拉/没图时是空操作 */
@@ -236,6 +267,8 @@ interface ChatState {
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
   checkoutBranch(dir: string, branch: string): Promise<void>;
   saveApiKey(envName: string, key: string): Promise<void>;
+  /** 重问本机 Ollama 的型号清单。用户随时 pull/rm，镜像别太陈旧 */
+  refreshOllamaModels(): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   signOut(): Promise<void>;
@@ -255,6 +288,7 @@ interface ChatState {
   pickFiles(): Promise<void>;
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
   removeStaged(index: number): void;
+  injectComposer(text: string, append: boolean): void;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -311,10 +345,15 @@ const enterChat = (info: BootInfo) => ({
   protocolOpen: false, // 同上，仪表盘也让位
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
+  terminalPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   error: null,
 });
+
+/** 右栏详情的作废闸:ADR 与 issue 共用一张,因为它们抢的是同一块槽位。
+    只比 protocolRepo 挡不住同仓库内的连点(#18 第 2 条) */
+const protocolDetailGate = createRequestGate();
 
 export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
@@ -332,7 +371,7 @@ export const useChat = create<ChatState>((set, get) => ({
   toolOutputByCall: {},
   error: null,
   approvalMode: "ask",
-  thinking: true,
+  thinking: DEFAULT_THINKING,
   replayCursor: null,
   settingsSection: null,
   sessionMode: "work",
@@ -342,6 +381,7 @@ export const useChat = create<ChatState>((set, get) => ({
   pokerError: "",
   protocolOpen: false,
   protocolRepo: null,
+  protocolDetailPending: false,
   adrs: [],
   adrView: null,
   issues: null,
@@ -355,6 +395,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphLoadingMore: false,
   gitCommitView: null,
   panelWide: false,
+  terminalPanelOpen: false,
   workTree: null,
   workTreeDismissed: null,
   branchesByDir: {},
@@ -362,6 +403,9 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   keyStatus: {},
+  ollamaModels: [],
+  ollamaBaseUrl: "",
+  ollamaError: "",
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
@@ -369,6 +413,7 @@ export const useChat = create<ChatState>((set, get) => ({
   walletError: "",
   staged: [],
   attachError: null,
+  composerInject: null,
   friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
   onlineIds: [],
   friendChat: null,
@@ -383,7 +428,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async switchModel(model) {
     try {
-      await window.otter.switchModel(model);
+      // 换型号会连带换挡位表：新型号未必有手上这一档（"开"之于只有低/中/高的 GPT-5）。
+      // 钳位在主进程做，这里认它回流的那一档——两边各钳各的迟早分叉
+      set({ thinking: await window.otter.switchModel(model) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -398,10 +445,9 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async setThinking(on) {
+  async setThinking(mode) {
     try {
-      await window.otter.setThinking(get().sessionId, on);
-      set({ thinking: on });
+      set({ thinking: await window.otter.setThinking(get().sessionId, mode) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -414,15 +460,23 @@ export const useChat = create<ChatState>((set, get) => ({
     if (section === "keys") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
+        terminalPanelOpen: false,
         keyStatus: await window.otter.keyStatus(),
       });
+      // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
+      // 不该把设置页的打开拖在后面
+      void get().refreshOllamaModels();
     } else if (section === "skills") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
+        terminalPanelOpen: false,
         skills: await window.otter.listSkills(),
       });
     } else {
-      set({ settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null });
+      set({
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
+        terminalPanelOpen: false,
+      });
       // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）
       void get().refreshWallet();
     }
@@ -529,13 +583,17 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({
       protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
+      terminalPanelOpen: false,
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
   },
 
   closeProtocol: () => set({ protocolOpen: false }),
-  closeProtocolDetail: () => set({ adrView: null, issueView: null }),
+  closeProtocolDetail: () => {
+    protocolDetailGate.begin(); // 关掉之后在飞的那次回来别再把面板顶开
+    set({ adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async pickProtocolRepo() {
     try {
@@ -568,28 +626,39 @@ export const useChat = create<ChatState>((set, get) => ({
   async openAdr(path) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ adrView: null }); // 先清,切换 ADR 时不残留上一篇的内容(镜像 openIssue 的做法)
+    const token = protocolDetailGate.begin();
+    // 先清,切换时不残留上一篇;error 一并清掉——上一次的失败不该压在这一次的结果上
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const { markdown } = await window.otter.protocolReadAdr(repo, path);
-      if (get().protocolRepo === repo) set({ adrView: { path, markdown }, issueView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ adrView: { path, markdown }, issueView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
   async openIssue(number) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ issueView: null });
+    const token = protocolDetailGate.begin();
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const issueView = await window.otter.protocolGetIssue(repo, number);
-      if (get().protocolRepo === repo) set({ issueView, adrView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ issueView, adrView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
-  setProtocolTab: (t) => set({ protocolTab: t }),
+  setProtocolTab: (t) => {
+    // 切页签 = 换上下文。不清的话开着 ADR 切到 Issues,右栏还挂着上一篇 ADR 全文
+    protocolDetailGate.begin();
+    set({ protocolTab: t, adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async openGitGraph() {
     const repo = get().workspace || null;
@@ -597,12 +666,21 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
       // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
       gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
-      protocolOpen: false, settingsSection: null, friendChat: null, // 互斥:同一块主区
+      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, // 互斥:同一块主区
     });
     if (repo) await get().refreshGitGraph();
   },
 
   closeGitGraph: () => set({ gitGraphOpen: false }),
+
+  openTerminalPanel: () =>
+    set({
+      terminalPanelOpen: true,
+      // 互斥:同一块右侧槽位
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
+    }),
+
+  closeTerminalPanel: () => set({ terminalPanelOpen: false }),
 
   async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;
@@ -722,6 +800,17 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async refreshOllamaModels() {
+    try {
+      const { models, baseUrl, error } = await window.otter.listOllamaModels();
+      set({ ollamaModels: models, ollamaBaseUrl: baseUrl, ollamaError: error });
+    } catch (e) {
+      // 桥本身炸了（最常见是主进程还没跟上这一版）。这条以前被吞掉，
+      // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
+      set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: bridgeErrorMessage(e) });
+    }
+  },
+
   async saveApiKey(envName, key) {
     try {
       await window.otter.setApiKey(envName, key);
@@ -782,7 +871,7 @@ export const useChat = create<ChatState>((set, get) => ({
   async openFriendChat(profile) {
     set((s) => ({
       friendChat: profile,
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, // 互斥:同一右侧槽位
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, // 互斥:同一右侧槽位
       unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
       friendError: null,
     }));
@@ -916,6 +1005,12 @@ export const useChat = create<ChatState>((set, get) => ({
   async boot() {
     if (bootStarted) return;
     bootStarted = true;
+
+    // pty 全局直播订阅要跟 app 同生共死,不能挂在 TerminalView 的 useEffect 里
+    // (面板一关组件卸载,主进程还在推 terminalData,渲染层没人听,数据就丢了——
+    // 见 terminalRegistry.ts 里 startTerminalLiveFeed 的注释)。boot() 是渲染层
+    // 唯一的"一次性订阅"落位,其它 onXxx 全局监听器都在这挂,这个不该是例外
+    startTerminalLiveFeed();
 
     window.otter.onAccountChanged((account) => {
       set(
@@ -1079,17 +1174,23 @@ export const useChat = create<ChatState>((set, get) => ({
     );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
-    const [info, sessions, skills, account] = await Promise.all([
+    // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
+    // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
+    const [info, sessions, skills, account, keyStatus] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
       window.otter.getAccount(),
+      window.otter.keyStatus(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account }
-        : { phase: "welcome", sessions, skills, account }
+        ? { ...enterChat(info), sessions, skills, account, keyStatus }
+        : { phase: "welcome", sessions, skills, account, keyStatus }
     );
+    // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
+    // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
+    void get().refreshOllamaModels();
     // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
     // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
     // provider 的旧名字,首登引导也永远不弹
@@ -1116,6 +1217,7 @@ export const useChat = create<ChatState>((set, get) => ({
       protocolOpen: false, // 同上，退出仪表盘
       gitGraphOpen: false, // 同上
       friendChat: null, // 同上
+      terminalPanelOpen: false, // 同上
       error: null,
     }),
 
@@ -1141,6 +1243,12 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async deleteSession(sessionId) {
     try {
+      // 主进程 deleteSession 里会顺带 terminalHub.killSession(见 main/index.ts),
+      // 把这个会话名下的 pty 记录都摘了——删完再问 terminalList 就查无此会话了,
+      // 所以终端列表要在删除之前问。渲染层这边为它们造过的 xterm 实例(如果
+      // 用户开过终端面板并点开过)没有别的地方会去 dispose:它们属于一个
+      // 已经不存在的会话,不会再有 TerminalView 重新挂载它们(Task 6 review finding 2)
+      const terminals = await window.otter.terminalList(sessionId);
       await window.otter.deleteSession(sessionId);
       const sessions = await window.otter.listSessions();
       // 删的是正看着的会话 → 回欢迎页，清掉它的投影
@@ -1149,6 +1257,12 @@ export const useChat = create<ChatState>((set, get) => ({
       } else {
         set({ sessions });
       }
+      // dispose 放在 set() 之后:先把 sessionId 变化落给订阅者,让还挂载着的
+      // TerminalView 的 [sessionId] effect 先摘断(activeId 置空、宿主清空),
+      // 再销毁实例——避免一个还在被挂载组件当作 activeId/DOM 引用着的实例
+      // 被 dispose 掉(Task 6 review finding 5 附带项,虽然复核没能实际撞出崩溃,
+      // 但顺序反过来更脆)
+      for (const t of terminals) terminalRegistry.dispose(t.id);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -1212,6 +1326,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   removeStaged(index) {
     set({ staged: get().staged.filter((_, i) => i !== index) });
+  },
+
+  injectComposer(text, append) {
+    set({ composerInject: { text, append } });
   },
 
   async stop() {

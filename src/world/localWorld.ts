@@ -1,5 +1,6 @@
 // LocalWorld — ExecutionWorld 的本机实现。
 // 整个项目里唯一允许 import node:fs / child_process 的地方（工具层禁入）。
+// node-pty 同理：只在这里 import（动态），别处一律经 ExecutionWorld.openTerminal。
 // root 选项 = 软沙箱：文件操作圈在工程文件夹内，越界抛错。
 // exec 只把 cwd 设为 root（挡不住 `cd ..`，诚实说明）——硬隔离是 v2 Docker world 的活。
 
@@ -7,7 +8,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { exec as cpExec } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve, relative, isAbsolute } from "node:path";
-import type { ExecutionWorld, ExecResult } from "./executionWorld.js";
+import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
 
 const execAsync = promisify(cpExec);
 
@@ -92,6 +93,32 @@ export function createLocalWorld(opts: { root?: string; fetchImpl?: typeof fetch
         }
         return res.json();
       },
+    },
+
+    async openTerminal(o): Promise<TerminalSession> {
+      // 动态 import:node-pty 是原生模块,顶层 import 会让每个碰到 localWorld 的
+      // 测试都必须能在当前 ABI 下加载它(electron-rebuild 之后就加载不了)。
+      // 终端是低频入口,晚一点加载零代价。
+      const pty = await import("node-pty");
+      const spawn = (pty as unknown as { default?: typeof pty }).default?.spawn ?? pty.spawn;
+      const shell = o.shell ?? process.env.SHELL ?? "/bin/zsh";
+      const child = spawn(shell, [], {
+        name: "xterm-256color",
+        cols: o.cols,
+        rows: o.rows,
+        ...(root ? { cwd: root } : {}),
+        // TERM 让 CLI 上色;其余原样继承——用户的 PATH/nvm/别名都在里面,
+        // 剥干净了这个终端就不是"他自己的终端"了
+        env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
+      });
+      return {
+        write: (data) => child.write(data),
+        resize: (cols, rows) => child.resize(cols, rows),
+        // 已经死掉的进程再 kill 会抛;终端关闭路径上这是常态,不是错误
+        kill: () => { try { child.kill(); } catch { /* 已经死了 */ } },
+        onData: (cb) => { const d = child.onData(cb); return () => d.dispose(); },
+        onExit: (cb) => { const d = child.onExit(({ exitCode }) => cb(exitCode)); return () => d.dispose(); },
+      };
     },
   };
 }

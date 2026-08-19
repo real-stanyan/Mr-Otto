@@ -78,11 +78,11 @@ describe("mapIssueDetail", () => {
   it("正文 + 评论(author.login 摊平)", () => {
     const json = {
       number: 5, title: "Handoff: shift", state: "OPEN", body: "现状与建议",
-      comments: [{ author: { login: "stanyan" }, createdAt: "2026-08-17T10:00:00Z", body: "① A\n② B\n③ C\n④ D\n⑤ E" }],
+      comments: [{ id: "IC_1", author: { login: "stanyan" }, createdAt: "2026-08-17T10:00:00Z", body: "① A\n② B\n③ C\n④ D\n⑤ E" }],
     };
     expect(mapIssueDetail(json)).toEqual({
       number: 5, title: "Handoff: shift", state: "open", role: "memory", body: "现状与建议",
-      comments: [{ author: "stanyan", createdAt: "2026-08-17T10:00:00Z", body: "① A\n② B\n③ C\n④ D\n⑤ E" }],
+      comments: [{ id: "IC_1", author: "stanyan", createdAt: "2026-08-17T10:00:00Z", body: "① A\n② B\n③ C\n④ D\n⑤ E" }],
     });
   });
   it("comments 缺省 = 空数组", () => {
@@ -90,10 +90,35 @@ describe("mapIssueDetail", () => {
   });
 });
 
+describe("mapIssueDetail 的评论 id", () => {
+  it("gh 给的评论 id 留着——列表 key 用下标的话,插入/删除会把渲染态串行", () => {
+    const d = mapIssueDetail({
+      number: 1, title: "t",
+      comments: [{ id: "IC_aaa", author: { login: "x" }, createdAt: "2026-01-01", body: "b" }],
+    });
+    expect(d.comments[0]).toMatchObject({ id: "IC_aaa", author: "x" });
+  });
+
+  it("id 缺席时给空串,不编一个", () => {
+    const d = mapIssueDetail({ number: 1, title: "t", comments: [{ body: "b" }] });
+    expect(d.comments[0]!.id).toBe("");
+  });
+});
+
 describe("classifyGhError", () => {
   it("ENOENT = gh 未安装", () => {
     expect(classifyGhError({ code: "ENOENT", message: "spawn gh ENOENT" }).kind).toBe("gh-missing");
   });
+  it("被超时打死(execFile timeout 发 SIGTERM)= gh-timeout,不混进通用 gh-error", () => {
+    const r = classifyGhError({ killed: true, signal: "SIGTERM", stderr: "" });
+    expect(r.kind).toBe("gh-timeout");
+    expect(r.detail).toContain("超时");
+  });
+
+  it("有 stderr 的正常失败不因为带了 signal 就算超时", () => {
+    expect(classifyGhError({ stderr: "fatal: not a git repository" }).kind).toBe("no-repo");
+  });
+
   it("非 git 仓库 / 无 remote = no-repo", () => {
     expect(classifyGhError({ stderr: "fatal: not a git repository" }).kind).toBe("no-repo");
     expect(classifyGhError({ stderr: "no git remotes found" }).kind).toBe("no-repo");

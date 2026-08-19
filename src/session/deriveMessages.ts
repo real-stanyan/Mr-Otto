@@ -108,6 +108,36 @@ function clip(text: string, max: number, what: string): string {
   return clipped.length < text.length ? clipped : text;
 }
 
+/** 老区的长工具参数折叠。
+    结果必须仍是**合法 JSON**：OpenAI 方言规定 tool_calls[].function.arguments 是
+    一个 JSON 字符串，严格的服务端会当场解析它。把序列化结果从中间砍断，
+    换来的是 400 invalid tool call arguments —— 本机 Ollama 就是这么拒的
+    （DeepSeek / GLM 恰好容忍，所以这个 bug 藏了很久）。
+    所以折叠发生在**值**上，不在序列化结果上：参数名和结构原样保留，
+    只截长字符串（write_file 的 content 那种肥肉正是字符串），
+    模型读到的历史因此更完整，服务端也解析得动。 */
+function clipArgs(args: unknown, max: number): string {
+  const full = JSON.stringify(args) ?? "{}";
+  if (full.length <= max) return full;
+
+  if (args !== null && typeof args === "object" && !Array.isArray(args)) {
+    const entries = Object.entries(args as Record<string, unknown>);
+    const strings = entries.filter(([, v]) => typeof v === "string").length;
+    // 预算按长字符串的个数摊：几个肥字段就各分一份，别让"上限"变成"上限 × 字段数"。
+    // 60 是地板——再小就只剩省略标记，模型连参数长什么样都看不出来
+    const budget = Math.max(60, Math.floor(max / Math.max(1, strings)));
+    const folded = Object.fromEntries(
+      entries.map(([k, v]) => [k, typeof v === "string" ? clip(v, budget, `工具参数 ${k} `) : v])
+    );
+    const out = JSON.stringify(folded);
+    if (out.length < full.length) return out;
+  }
+
+  // 兜底：参数不是对象，或折叠反而更长。仍旧给一个合法 JSON——
+  // 这里宁可丢掉参数内容，也不能丢掉"能被解析"
+  return JSON.stringify({ __clipped: `上下文压缩：工具参数原 ${full.length} 字符，已折叠` });
+}
+
 /** 找出"保真区"起点：倒数第 keepRecentTurns 个 user_message 的下标。
     之前 = 老区（可压缩），之后 = 新区（原文）。user_message 不足 K 个 = 全保真。
     K = 0 特判成 events.length：一个保真 turn 都不留，整段历史都算老区 */
@@ -205,14 +235,13 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
                 tool_calls: event.toolCalls.map((tc) => ({
                   id: tc.id,
                   type: "function" as const,
-                  // 老区的长参数截断（write_file 的 content 这种）。截的是序列化后的
-                  // JSON 字符串——截断处 JSON 会不完整，但这是给模型读的历史，不再执行，
-                  // 标记让它知道这里折叠过
+                  // 老区的长参数折叠（write_file 的 content 这种）。折叠在值上做，
+                  // 序列化结果必须仍是合法 JSON —— 见 clipArgs
                   function: {
                     name: tc.name,
                     arguments:
                       compression && i < boundary
-                        ? clip(JSON.stringify(tc.args), compression.maxOldToolArgChars, "工具参数")
+                        ? clipArgs(tc.args, compression.maxOldToolArgChars)
                         : JSON.stringify(tc.args),
                   },
                 })),
