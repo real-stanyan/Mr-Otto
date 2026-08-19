@@ -752,13 +752,10 @@ export function CopyButton({
     <Button
       type="button"
       variant="ghost"
-      size="icon"
+      size="icon-xs"
       aria-label={label}
       title={label}
-      className={
-        "w-auto h-auto p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08] " +
-        className
-      }
+      className={"text-muted-foreground hover:text-foreground hover:bg-foreground/[0.08] " + className}
       onClick={() => void copy()}
     >
       {state === "done" ? (
@@ -795,10 +792,13 @@ export function CodeBlock({ children, ...rest }: ComponentPropsWithoutRef<"pre">
       <pre ref={ref} {...rest}>
         {children}
       </pre>
+      {/* 不写 transition-*:buttonVariants 基类那条已经含 opacity,
+          在这再写一个会被 tailwind-merge 判为同组、把基类整条替换掉,
+          按压 scale(0.97) 和 hover 变色因此失去过渡 */}
       <CopyButton
         text={() => ref.current?.textContent ?? ""}
         label="复制代码"
-        className="absolute top-2 right-2 bg-card/80 backdrop-blur-sm opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100 transition-opacity duration-150"
+        className="absolute top-2 right-2 bg-card/80 backdrop-blur-sm opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100"
       />
     </div>
   );
