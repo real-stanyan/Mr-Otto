@@ -161,6 +161,20 @@ function ollamaChoice(tag: string): ModelChoice {
   };
 }
 
+/** 探测到的本机型号 → 目录形态。能力（窗多大、看不看得见图）用探到的真值，
+    不用 ollamaChoice 里那套没出处的兜底常量 */
+export function ollamaChoiceFrom(info: {
+  tag: string;
+  contextLength: number;
+  vision: boolean;
+}): ModelChoice {
+  return {
+    ...ollamaChoice(info.tag),
+    contextWindow: info.contextLength,
+    supportsVision: info.vision,
+  };
+}
+
 /** 目录查表 + Ollama 前缀识别。两处 UI（型号下拉框、状态条）用它拿显示名和能力位；
     认不出来就是认不出来，返回 undefined —— 不像 resolveModel 那样兜底成 DeepSeek，
     免得给一个陌生 id 亮出它并不具备的能力 */

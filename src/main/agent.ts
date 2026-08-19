@@ -6,6 +6,21 @@ import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
 import { DEFAULT_MODEL, resolveModel, type ModelChoice } from "../shared/modelCatalog.js";
+import { lookupOllamaModel } from "./ollamaModels.js";
+
+/** 目录给不出本机 Ollama 的真实能力（装了什么、能不能看图、窗多大只有探测知道），
+    探到的那份补在这里。探不到就用兜底形态——注册表是缓存，不是事实来源 */
+function withOllamaCapabilities(choice: ModelChoice): ModelChoice {
+  if (choice.provider !== "ollama") return choice;
+  const info = lookupOllamaModel(choice.model);
+  if (!info) return choice;
+  return { ...choice, contextWindow: info.contextLength, supportsVision: info.vision };
+}
+
+/** 目录查表 + Ollama 能力补齐。会话里所有拿到 ModelChoice 的地方都走它 */
+function resolveWithCapabilities(model: string): ModelChoice {
+  return withOllamaCapabilities(resolveModel(model));
+}
 import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
@@ -127,7 +142,7 @@ export function createAgent(opts: {
     .load(sessionId)
     .filter((e) => e.type === "model_changed")
     .at(-1);
-  let current: ModelChoice = resolveModel(
+  let current: ModelChoice = resolveWithCapabilities(
     lastSwitch?.type === "model_changed"
       ? lastSwitch.model
       : (process.env["OTTER_MODEL"] ?? DEFAULT_MODEL)
@@ -199,7 +214,7 @@ export function createAgent(opts: {
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则 */
   function switchModel(modelId: string): void {
     if (modelId === current.model) return;
-    const next = resolveModel(modelId);
+    const next = resolveWithCapabilities(modelId);
     const full = store.append({
       sessionId,
       ts: Date.now(),

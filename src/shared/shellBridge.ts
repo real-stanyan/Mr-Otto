@@ -269,9 +269,10 @@ export interface ShellBridge {
   /** 用系统浏览器打开某厂商的控制台（去领 key）。收厂商 id 而不是 URL——
       URL 由主进程查目录得到，渲染层被攻破也拉不出任意外链 */
   openProviderConsole(providerId: string): Promise<void>;
-  /** 本机 Ollama 装了哪些型号（现问现答，无缓存）。返回带 ollama/ 前缀的 id。
+  /** 本机 Ollama 装了哪些型号 + 各自的能力（现问现答，无缓存）。
+      端点按 Ollama 自己的约定解析（OLLAMA_HOST，默认 127.0.0.1:11434）。
       不 reject——Ollama 没装/没跑是常态，结构化回流让 UI 自己降级 */
-  listOllamaModels(): Promise<{ models: string[]; error: string }>;
+  listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
@@ -402,6 +403,24 @@ export type NotificationTarget =
   | { kind: "dm"; friendId: string }
   | { kind: "invite" }
   | { kind: "friendRequest" };
+
+export interface OllamaModelInfo {
+  /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */
+  id: string;
+  /** 发给 API 的裸 tag */
+  tag: string;
+  contextLength: number;
+  /** 能不能调工具。不能 = 这个 agent 用不了它 */
+  tools: boolean;
+  vision: boolean;
+}
+
+export interface OllamaProbeResult {
+  /** 真正连通的那个端点（含 /v1）。空串 = 一个都没连上 */
+  baseUrl: string;
+  models: OllamaModelInfo[];
+  error: string;
+}
 
 export const CHANNELS = {
   boot: "otter:boot",

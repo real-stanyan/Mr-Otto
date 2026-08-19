@@ -26,7 +26,7 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
-import { probeOllamaModels } from "./ollamaModels.js";
+import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -464,16 +464,30 @@ void app.whenReady().then(() => {
     void shell.openExternal(info.consoleUrl);
   });
 
-  // 本机 Ollama 的型号清单（探测逻辑住 main/ollamaModels.ts，这里只接线）
-  ipcMain.handle(CHANNELS.listOllamaModels, () => {
+  // 本机 Ollama：型号清单 + 各自能力（探测逻辑住 main/ollamaModels.ts，这里只接线）
+  ipcMain.handle(CHANNELS.listOllamaModels, async () => {
     const info = findProvider("ollama")!;
-    return probeOllamaModels({
+    const cap = Number(process.env["OLLAMA_CONTEXT_LENGTH"]);
+    const result = await probeOllamaModels({
       defaultBaseUrl: info.baseUrl,
-      overrideBaseUrl: process.env[info.baseUrlEnv],
+      baseUrlOverride: process.env[info.baseUrlEnv],
+      // Ollama 自己的开关。用户改过它就该生效，不该逼他再学一个我们发明的变量
+      ollamaHost: process.env["OLLAMA_HOST"],
       apiKey: process.env[info.apiKeyEnv],
       prefix: OLLAMA_MODEL_PREFIX,
+      ...(Number.isFinite(cap) && cap > 0 ? { contextCap: cap } : {}),
       fetchImpl: fetch,
     });
+    // 探到的端点固化进 env：adapter 和 routeModel 读的都是这个变量，
+    // 不固化的话它们会继续拨目录里的默认值，而清单是从另一个地址问来的——
+    // "看得见却连不上"正是这类分叉的典型症状。keyVault 也是这么把 key 落进 env 的
+    if (result.baseUrl && !process.env[info.baseUrlEnv]) {
+      process.env[info.baseUrlEnv] = result.baseUrl;
+    }
+    // agent 要按型号决定发不发图，能力表只有探测知道
+    rememberOllamaModels(result.models);
+    for (const a of agents.values()) a.reloadAdapter();
+    return result;
   });
 
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {

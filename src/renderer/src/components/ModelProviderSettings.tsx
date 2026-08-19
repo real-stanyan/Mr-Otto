@@ -11,7 +11,7 @@ import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucid
 
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
-import { findModel, MODEL_CATALOG } from "../../../shared/modelCatalog.js";
+import { MODEL_CATALOG } from "../../../shared/modelCatalog.js";
 import { PROVIDER_CATALOG, type ProviderId, type ProviderInfo } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
@@ -38,6 +38,7 @@ function ProviderRow({
   // 本机 Ollama 的型号不在目录里（用户 pull 了什么就有什么），现问现取
   const ollamaModels = useChat((s) => s.ollamaModels);
   const ollamaError = useChat((s) => s.ollamaError);
+  const ollamaBaseUrl = useChat((s) => s.ollamaBaseUrl);
   const refreshOllama = useChat((s) => s.refreshOllamaModels);
   const models = useMemo(() => MODEL_CATALOG.filter((m) => m.provider === info.id), [info.id]);
 
@@ -97,10 +98,10 @@ function ProviderRow({
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
                 装好 Ollama 并让它跑着（<code>ollama serve</code>），
-                <code>ollama pull</code> 过的型号会自动出现在下面和型号下拉框里。
-                默认端点 <code>{info.baseUrl}</code>，改端点填{" "}
-                <code>{info.baseUrlEnv}</code>（远端 Ollama 要鉴权时再配{" "}
-                <code>{info.apiKeyEnv}</code>）。
+                <code>ollama pull</code> 过的型号会自动出现在下面和型号下拉框里，不用配任何东西。
+                端点跟着 Ollama 自己的 <code>OLLAMA_HOST</code> 走（默认{" "}
+                <code>127.0.0.1:11434</code>）
+                {ollamaBaseUrl && <>，当前连的是 <code>{ollamaBaseUrl}</code></>}。
               </p>
             ) : (
               <div className="flex gap-2">
@@ -152,37 +153,55 @@ function ProviderRow({
             </div>
 
             {/* 型号清单:填完 key 之后下拉框里会多出哪几款,当场看得见。
-                Ollama 那一行列的是本机 `ollama list` 的实际结果,不是写死的常见 tag */}
-            <div className="flex flex-wrap items-center gap-[6px]">
-              {(info.keyless ? ollamaModels : models.map((m) => m.model)).map((id) => (
-                <span
-                  key={id}
-                  title={id}
-                  className="rounded-md border border-border px-[7px] py-[2px] text-[11px] text-muted-foreground"
-                >
-                  {info.keyless ? id.replace("ollama/", "") : (findModel(id)?.label ?? id)}
-                </span>
-              ))}
-              {info.keyless && (
-                <>
-                  {ollamaModels.length === 0 && (
-                    <span className="text-[11.5px] text-muted-foreground">
-                      {ollamaError
-                        ? `没连上本机 Ollama（${ollamaError}）`
-                        : "连上了，但一个型号都没装 —— 先 ollama pull 一个"}
-                    </span>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="text-muted-foreground"
-                    onClick={() => void refreshOllama()}
+                Ollama 那一行列的是本机实际装了什么（现问 Ollama），
+                每款还标出它能不能调工具——不能调的不会出现在型号下拉框里，
+                得说清楚为什么，不然那是一次静默的消失 */}
+            {info.keyless ? (
+              <div className="flex flex-wrap items-center gap-[6px]">
+                {ollamaModels.map((m) => (
+                  <span
+                    key={m.id}
+                    title={`${m.tag}｜上下文 ${m.contextLength.toLocaleString("en-US")}${m.vision ? "｜可看图" : ""}`}
+                    className={cn(
+                      "rounded-md border px-[7px] py-[2px] text-[11px]",
+                      m.tools
+                        ? "border-border text-muted-foreground"
+                        : "border-dashed border-border text-muted-foreground/60"
+                    )}
                   >
-                    重新检测
-                  </Button>
-                </>
-              )}
-            </div>
+                    {m.tag}
+                    {!m.tools && "（不支持工具·已隐藏）"}
+                  </span>
+                ))}
+                {ollamaModels.length === 0 && (
+                  <span className="text-[11.5px] text-muted-foreground">
+                    {ollamaError
+                      ? `没连上 Ollama —— ${ollamaError}`
+                      : "连上了，但一个型号都没装 —— 先 ollama pull 一个"}
+                  </span>
+                )}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="text-muted-foreground"
+                  onClick={() => void refreshOllama()}
+                >
+                  重新检测
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-[6px]">
+                {models.map((m) => (
+                  <span
+                    key={m.model}
+                    title={m.model}
+                    className="rounded-md border border-border px-[7px] py-[2px] text-[11px] text-muted-foreground"
+                  >
+                    {m.label}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

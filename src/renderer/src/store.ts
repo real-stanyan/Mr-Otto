@@ -12,6 +12,7 @@ import type {
   AskUserAnswer,
   AskUserRequest,
   BootInfo,
+  OllamaModelInfo,
   SessionSummary,
   SkillInfo,
   StagedAttachment,
@@ -148,8 +149,10 @@ interface ChatState {
   skills: SkillInfo[];
   /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
   keyStatus: Record<string, boolean>;
-  /** 本机 Ollama 装了哪些型号（带 ollama/ 前缀）。目录查不到，只能现问 */
-  ollamaModels: string[];
+  /** 本机 Ollama 装了哪些型号 + 各自能力。目录查不到，只能现问 */
+  ollamaModels: OllamaModelInfo[];
+  /** 探通的那个端点。设置页要显示它——"连上了"得说清连的是哪儿 */
+  ollamaBaseUrl: string;
   /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
   ollamaError: string;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
@@ -369,6 +372,7 @@ export const useChat = create<ChatState>((set, get) => ({
   skills: [],
   keyStatus: {},
   ollamaModels: [],
+  ollamaBaseUrl: "",
   ollamaError: "",
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
@@ -735,12 +739,12 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async refreshOllamaModels() {
     try {
-      const { models, error } = await window.otter.listOllamaModels();
-      set({ ollamaModels: models, ollamaError: error });
+      const { models, baseUrl, error } = await window.otter.listOllamaModels();
+      set({ ollamaModels: models, ollamaBaseUrl: baseUrl, ollamaError: error });
     } catch (e) {
       // 桥本身炸了（多半是 preload 还是旧的一版）。这条以前被吞掉，
       // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
-      set({ ollamaModels: [], ollamaError: e instanceof Error ? e.message : String(e) });
+      set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: e instanceof Error ? e.message : String(e) });
     }
   },
 

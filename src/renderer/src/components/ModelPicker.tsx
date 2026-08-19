@@ -19,7 +19,12 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { describeModel, modelsByProvider } from "../../../shared/modelCatalog.js";
+import {
+  describeModel,
+  modelsByProvider,
+  ollamaChoiceFrom,
+  OLLAMA_MODEL_PREFIX,
+} from "../../../shared/modelCatalog.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
@@ -53,10 +58,14 @@ export function ModelPicker({
       return keyStatus[info.apiKeyEnv] ?? false;
     };
     // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
-    // 一个都没装就整组不出现——空的二级菜单比没有这一项更让人困惑
+    // 只留会调工具的：这个 agent 的每一步都是工具调用，选一个不会调工具的型号
+    // 等于选了一个只会聊天的搭档 —— 与其让它在会话里静默地什么也不做，
+    // 不如现在就不出现在选单里（设置页会列出它并说明为什么被藏起来）。
+    // 一个都没有就整组不出现：空的二级菜单比没有这一项更让人困惑
+    const usable = ollamaModels.filter((m) => m.tools);
     const ollama =
-      ollamaModels.length > 0
-        ? [{ provider: "ollama" as ProviderId, models: ollamaModels.map((m) => describeModel(m)!) }]
+      usable.length > 0
+        ? [{ provider: "ollama" as ProviderId, models: usable.map(ollamaChoiceFrom) }]
         : [];
     return [...modelsByProvider(), ...ollama]
       .map((g) => ({ ...g, info: findProvider(g.provider)!, ready: ready(g.provider) }))
@@ -98,10 +107,10 @@ export function ModelPicker({
               )}
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="menu-pop w-[248px]" sideOffset={6}>
-              {g.models.map((m, i) => {
+              {g.models.map((m) => {
                 // Ollama 那组的条目 id 带 ollama/ 前缀（日志里存的就是它），
                 // 而 m.model 是要发给 API 的裸 tag——菜单选的是前者
-                const id = g.provider === "ollama" ? ollamaModels[i]! : m.model;
+                const id = g.provider === "ollama" ? OLLAMA_MODEL_PREFIX + m.model : m.model;
                 return (
                 <DropdownMenuItem
                   key={id}
