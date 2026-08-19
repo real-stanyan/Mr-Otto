@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -342,6 +342,10 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
 function TodoPanel() {
   const events = useChat((s) => s.events);
   const todos = useMemo(() => deriveTodos(events), [events]);
+  // turn 没在跑时,in_progress 只是"模型开了个头就收工了",不是此刻正在发生的事。
+  // 清单是日志的投影(不改),改的是措辞和动效:转圈的球 + shimmer 是"活的"的语言,
+  // 静止的会话不该说这句话
+  const live = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
   const [open, setOpen] = useState(true);
 
   if (todos.length === 0) return null; // 没拆过任务就完全不占地方
@@ -350,7 +354,10 @@ function TodoPanel() {
   // 头行只报"还没完的"——已完成数量是过去时,写出来抢眼但没用
   const summary = allDone
     ? `${c.total} 项全部完成`
-    : [c.inProgress && `${c.inProgress} 进行中`, c.pending && `${c.pending} 待处理`]
+    : [
+        c.inProgress && `${c.inProgress} ${live ? "进行中" : "已开始"}`,
+        c.pending && `${c.pending} 待处理`,
+      ]
         .filter(Boolean)
         .join(" · ");
 
@@ -383,11 +390,16 @@ function TodoPanel() {
             <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
               <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
                 {t.status === "in_progress" ? (
-                  // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
-                  // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
-                  <span className="scale-[0.8] origin-center leading-none" aria-hidden>
-                    <ThinkingOrb state="working" size={20} theme="auto" />
-                  </span>
+                  live ? (
+                    // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
+                    // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
+                    <span className="scale-[0.8] origin-center leading-none" aria-hidden>
+                      <ThinkingOrb state="working" size={20} theme="auto" />
+                    </span>
+                  ) : (
+                    // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
+                    <CircleDot className="size-[13px] text-brand" aria-hidden />
+                  )
                 ) : t.status === "completed" ? (
                   <Check className="size-[13px] text-ok" aria-hidden />
                 ) : (
@@ -399,7 +411,9 @@ function TodoPanel() {
                   t.status === "completed"
                     ? "text-muted-foreground line-through decoration-muted-foreground/40"
                     : t.status === "in_progress"
-                      ? "text-foreground shimmer"
+                      ? live
+                        ? "text-foreground shimmer"
+                        : "text-foreground"
                       : "text-muted-foreground"
                 }
               >
@@ -2290,7 +2304,9 @@ export function App() {
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
         <>
-          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 py-4 flex flex-col gap-2">
+          {/* pb 要盖过 footer 那道 40px 渐隐(见下面的 -top-10 h-10):
+              不留这段余量,滚到底时最后一条消息正好压在渐变里,读起来像被蒙了一层 */}
+          <section className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stable px-5 pt-4 pb-12 flex flex-col gap-2">
             {events.map((e) => (
               <EventRow key={e.seq} event={e} all={events} />
             ))}
