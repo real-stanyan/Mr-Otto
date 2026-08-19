@@ -202,6 +202,8 @@ function WinOverlay({ hand }: { hand: PokerHandView }) {
   const [dismissedFor, setDismissedFor] = useState<string | null>(null);
   const numRef = useRef<HTMLSpanElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const deltas = hand.deltas;
   const winnerSeat = deltas
@@ -228,6 +230,16 @@ function WinOverlay({ hand }: { hand: PokerHandView }) {
     }
     const obj = { v: from };
     const tl = gsap.timeline();
+    // 浮层是一块"材质到场":模糊+缩放一起收,不是干巴巴的透明度渐变
+    if (rootRef.current && contentRef.current) {
+      tl.fromTo(rootRef.current, { opacity: 0 }, { opacity: 1, duration: 0.22, ease: "power2.out" }, 0);
+      tl.fromTo(
+        contentRef.current,
+        { opacity: 0, scale: 0.95, filter: "blur(6px)" },
+        { opacity: 1, scale: 1, filter: "blur(0px)", duration: 0.3, ease: "power3.out" },
+        0.05
+      );
+    }
     tl.fromTo(bar, { width: "0%" }, { width: "100%", duration: 1.4, ease: "power2.out" }, 0);
     tl.to(
       obj,
@@ -258,32 +270,41 @@ function WinOverlay({ hand }: { hand: PokerHandView }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background/80 backdrop-blur-sm"
+      ref={rootRef}
+      className="fixed inset-0 z-50 grid place-items-center bg-background/80 backdrop-blur-sm"
       onClick={() => setDismissedFor(hand.handId)}
       role="dialog"
       aria-label="本手结算"
     >
-      <div className="flex flex-col items-center gap-2">
-        {who.avatarUrl ? (
-          <img src={who.avatarUrl} alt="" className="h-16 w-16 rounded-full object-cover" draggable={false} />
-        ) : (
-          <span className="grid h-16 w-16 place-items-center rounded-full bg-primary/15 text-2xl font-semibold text-primary">
-            {(who.name || "?").slice(0, 1).toUpperCase()}
-          </span>
-        )}
-        <div className="text-lg font-semibold">{who.name}</div>
-        <div className="text-sm tabular-nums text-muted-foreground">
-          原有 {fmt(from)}
-          <span className="ml-1 font-semibold text-primary">+{fmt(won)}</span>
+      <div ref={contentRef} className="flex flex-col items-center gap-4">
+        <div className="flex flex-col items-center gap-2">
+          {who.avatarUrl ? (
+            <img
+              src={who.avatarUrl}
+              alt=""
+              className="h-16 w-16 rounded-full object-cover ring-2 ring-primary/40 ring-offset-2 ring-offset-background"
+              draggable={false}
+            />
+          ) : (
+            <span className="grid h-16 w-16 place-items-center rounded-full bg-primary/15 text-2xl font-semibold text-primary ring-2 ring-primary/40 ring-offset-2 ring-offset-background">
+              {(who.name || "?").slice(0, 1).toUpperCase()}
+            </span>
+          )}
+          <div className="text-xl font-semibold tracking-tight">{who.name}</div>
+          <div className="text-sm tabular-nums text-muted-foreground">
+            原有 {fmt(from)}
+            <span className="ml-1 font-semibold text-primary">+{fmt(won)}</span>
+          </div>
         </div>
+        {/* 大数字负字距:字号越大,默认字距越显松(排版随尺寸变形) */}
+        <span ref={numRef} className="text-5xl font-bold tabular-nums tracking-tight">
+          {fmt(from)}
+        </span>
+        <div className="h-2 w-[min(60vw,420px)] overflow-hidden rounded-full bg-border/60">
+          <div ref={barRef} className="h-full w-0 rounded-full bg-primary" />
+        </div>
+        <div className="text-[11px] text-muted-foreground">点击任意处关闭</div>
       </div>
-      <span ref={numRef} className="text-4xl font-bold tabular-nums">
-        {fmt(from)}
-      </span>
-      <div className="h-2 w-[min(60vw,420px)] overflow-hidden rounded-full bg-border/60">
-        <div ref={barRef} className="h-full w-0 rounded-full bg-primary" />
-      </div>
-      <div className="text-[11px] text-muted-foreground">点击任意处关闭</div>
     </div>
   );
 }
@@ -339,6 +360,8 @@ const mySeat = (hand: PokerHandView) => hand.seats.find((s) => s.isMe) ?? null;
 
 function ActionBar({ hand }: { hand: PokerHandView }) {
   const act = useChat((s) => s.pokerAct);
+  const friends = useChat((s) => s.friendsSnapshot.friends);
+  const account = useChat((s) => s.account);
   const raise = hand.legal.find((o) => o.type === "raise");
   const [to, setTo] = useState<string>("");
   // 单位是输入的放大镜:×1 敲几百,K/M 敲大数。换街重置回 ×1,别让上一街的 M 偷着放大这一街的 50
@@ -352,9 +375,13 @@ function ActionBar({ hand }: { hand: PokerHandView }) {
   }, [raise?.minTo, hand.handId, hand.street]);
 
   if (hand.toAct !== mySeat(hand)?.userId) {
+    // 点名等谁,不说"别人":桌上人一多,"等别人"等于什么都没说
+    const actingSeat = hand.seats.find((s) => s.userId === hand.toAct) ?? null;
+    const who = actingSeat ? seatIdentity(actingSeat, friends, account.name, account.avatarUrl) : null;
     return (
-      <div className="text-xs text-muted-foreground">
-        {hand.done ? "这手牌结束了" : "等别人行动…"}
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        {hand.done ? "这手牌结束了" : `等 ${who?.name ?? "对手"} 行动`}
+        {!hand.done && <span className="animate-pulse motion-reduce:animate-none">…</span>}
       </div>
     );
   }
@@ -381,24 +408,28 @@ function ActionBar({ hand }: { hand: PokerHandView }) {
         </AsyncButton>
       )}
       {raise && (
-        <div className="flex items-center gap-1">
-          <Input
-            className="h-8 w-24 tabular-nums"
-            value={to}
-            inputMode="numeric"
-            onChange={(e) => setTo(e.target.value.replace(/[^\d]/g, ""))}
-            aria-label={`加注到（${raise.minTo}..${raise.maxTo}）`}
-          />
-          <select
-            className="h-8 rounded-md border border-border bg-card px-1.5 text-[13px]"
-            value={unit}
-            onChange={(e) => setUnit(Number(e.target.value))}
-            aria-label="金额单位"
-          >
-            <option value={1}>×1</option>
-            <option value={1000}>K</option>
-            <option value={1000000}>M</option>
-          </select>
+        <div className="flex items-center gap-1.5">
+          {/* 数字和单位是一个值的两半,拼成一体控件,不是并排两个框 */}
+          <div className="flex h-8 items-center overflow-hidden rounded-md border border-border bg-card shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+            <Input
+              className="h-full w-24 rounded-none border-0 shadow-none tabular-nums focus-visible:border-0 focus-visible:ring-0"
+              value={to}
+              inputMode="numeric"
+              onChange={(e) => setTo(e.target.value.replace(/[^\d]/g, ""))}
+              aria-label={`加注到（${raise.minTo}..${raise.maxTo}）`}
+            />
+            <div className="h-4 w-px bg-border" />
+            <select
+              className="h-full border-0 bg-transparent pl-1.5 pr-1 text-[13px] outline-none"
+              value={unit}
+              onChange={(e) => setUnit(Number(e.target.value))}
+              aria-label="金额单位"
+            >
+              <option value={1}>×1</option>
+              <option value={1000}>K</option>
+              <option value={1000000}>M</option>
+            </select>
+          </div>
           <AsyncButton size="sm" disabled={!canRaise} onClick={() => act({ type: "raise", to: amount })}>
             {canRaise && amount >= raise.maxTo ? "全下" : `加注到${canRaise ? ` ${fmt(amount)}` : ""}`}
           </AsyncButton>
@@ -413,7 +444,15 @@ function Showdown({ hand }: { hand: PokerHandView }) {
   const mine = hand.deltas?.[me] ?? 0;
   return (
     <div className="flex flex-col items-center gap-1 text-xs">
-      <div className={mine > 0 ? "text-primary font-semibold" : "text-muted-foreground"}>
+      <div
+        className={
+          mine > 0
+            ? "font-semibold text-primary"
+            : mine < 0
+              ? "font-medium text-err"
+              : "text-muted-foreground"
+        }
+      >
         {mine > 0 ? `赢了 ${fmt(mine)}` : mine < 0 ? `输了 ${fmt(-mine)}` : "打平"}
       </div>
       {/* 承诺-揭示:牌堆在开局就被 hash 钉死了,这行让人自己看得见它被揭开 */}
@@ -444,7 +483,10 @@ function Table({ hand }: { hand: PokerHandView }) {
     <div ref={root} className="flex h-full flex-col items-center justify-center gap-4 px-5 py-4">
       {/* 外层是定位场,呢子桌面往里缩:座位块骑在桌沿上,谁都不会被容器裁掉 */}
       <div className="relative aspect-[16/10] w-full max-w-[860px]">
-        <div className="absolute inset-x-[9%] inset-y-[13%] rounded-[50%] border border-border/60 bg-[radial-gradient(120%_100%_at_50%_0%,color-mix(in_srgb,var(--brand)_14%,var(--card)),var(--card))] shadow-inner" />
+        {/* 桌沿 rail:比呢面宽一圈的深色环,让桌子有厚度而不是一块贴纸 */}
+        <div className="absolute inset-x-[7.5%] inset-y-[10.5%] rounded-[50%] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--foreground)_16%,var(--card)),color-mix(in_srgb,var(--foreground)_7%,var(--card)))] shadow-[0_10px_28px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.18)]" />
+        {/* 呢面:顶部受光的径向渐变 + 内阴影压出凹面,上缘一线高光 = 光打在材质上 */}
+        <div className="absolute inset-x-[9%] inset-y-[13%] rounded-[50%] border border-black/15 bg-[radial-gradient(120%_100%_at_50%_0%,color-mix(in_srgb,var(--brand)_16%,var(--card)),color-mix(in_srgb,var(--brand)_6%,var(--card)))] shadow-[inset_0_2px_12px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.10)]" />
 
         {hand.seats.map((seat, i) => {
           const { left, top } = seatPosition(i, meIndex, n);
@@ -453,9 +495,11 @@ function Table({ hand }: { hand: PokerHandView }) {
           return (
             <div
               key={seat.userId}
-              className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 rounded-lg border px-2 py-1.5 transition-colors duration-150 ${
-                acting ? "border-primary bg-primary/[0.08]" : "border-border/70 bg-card/85"
-              } ${seat.folded ? "opacity-45" : ""}`}
+              className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 rounded-xl border px-2.5 py-1.5 backdrop-blur-md transition-[border-color,background-color,opacity,filter] duration-200 ease-[var(--ease-strong)] ${
+                acting
+                  ? "border-primary/70 bg-primary/[0.10] animate-[seat-pulse_1.6s_ease-out_infinite] motion-reduce:animate-none"
+                  : "border-border/70 bg-card/70 shadow-sm"
+              } ${seat.folded ? "opacity-45 grayscale" : ""}`}
               style={{ left: `${left}%`, top: `${top}%` }}
             >
               <ActionBubble action={seat.lastAction} />
@@ -463,7 +507,10 @@ function Table({ hand }: { hand: PokerHandView }) {
                 <SeatAvatar name={who.name} url={who.avatarUrl} />
                 <span className="max-w-[96px] truncate font-medium">{seat.isMe ? "你" : who.name}</span>
                 {i === hand.button && (
-                  <span className="rounded-full border border-border px-1 text-[10px] text-muted-foreground">D</span>
+                  // 现实牌桌的庄家钮就是白色小圆片,深浅主题都不跟着变
+                  <span className="grid h-3.5 w-3.5 place-items-center rounded-full border border-black/20 bg-white text-[9px] font-bold text-black/70 shadow-sm">
+                    D
+                  </span>
                 )}
               </div>
               <div className="flex gap-1">
@@ -497,15 +544,19 @@ function Table({ hand }: { hand: PokerHandView }) {
               );
             })}
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            底池 <SplitFlapNumber text={fmt(hand.pot)} />
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">底池</span>
+            <span className="text-sm">
+              <SplitFlapNumber text={fmt(hand.pot)} />
+            </span>
           </div>
         </div>
       </div>
 
       <WinOverlay hand={hand} />
 
-      <div className="flex min-h-[36px] items-center gap-3">
+      {/* 行动栏是浮在牌桌下方的工具条:毛玻璃承托,和桌面分层,不是散落的裸按钮 */}
+      <div className="flex min-h-[44px] items-center gap-3 rounded-2xl border border-border/60 bg-card/70 px-4 py-2 shadow-sm backdrop-blur-md">
         {hand.done ? (
           <>
             <Showdown hand={hand} />
@@ -531,7 +582,7 @@ function CreateTable() {
 
   const bigBlind = Number(bb) || 50;
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/60 p-3">
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card/60 p-3">
       <Input className="h-8 w-40" placeholder="桌名" value={name} onChange={(e) => setName(e.target.value)} />
       <Input
         className="h-8 w-24 tabular-nums"
@@ -584,9 +635,12 @@ function Lobby({ tables }: { tables: PokerTableSummary[] }) {
         </div>
       ) : (
         tables.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 rounded-lg border border-border/60 px-3 py-2">
+          <div
+            key={t.id}
+            className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/40 px-3.5 py-2.5 transition-[border-color,background-color] duration-200 ease-[var(--ease-strong)] hover:border-border hover:bg-card/80"
+          >
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm">{t.name || "无名桌"}</div>
+              <div className="truncate text-sm font-medium">{t.name || "无名桌"}</div>
               <div className="text-[11px] tabular-nums text-muted-foreground">
                 {t.tier} · 盲注 {fmt(t.smallBlind)}/{fmt(t.bigBlind)} · 买入 {fmt(t.minBuyin)}–{fmt(t.maxBuyin)}
                 {t.live && " · 打着"}
@@ -664,7 +718,9 @@ function TableIdle({ tableId }: { tableId: string }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <OrbitCards count={online} total={maxSeats} />
-        还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
+        <p className="max-w-[320px] text-center leading-relaxed">
+          还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
+        </p>
         <AsyncButton size="sm" onClick={() => join(tableId, table.minBuyin)}>
           买入 {fmt(table.minBuyin)}
         </AsyncButton>
@@ -676,9 +732,11 @@ function TableIdle({ tableId }: { tableId: string }) {
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
       <OrbitCards count={online} total={maxSeats} />
       {ready ? (
-        <span className="font-medium text-primary">人齐了，可以开桌！</span>
+        <span className="animate-[pop_0.3s_var(--ease-strong)] font-medium text-primary motion-reduce:animate-none">
+          人齐了，可以开桌！
+        </span>
       ) : (
-        <span>
+        <span className="max-w-[320px] text-center leading-relaxed">
           已入座，等好友上桌（在场 {online}，已买入 {players}，都到 2 才开得起来）。
         </span>
       )}

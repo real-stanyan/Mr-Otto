@@ -656,3 +656,10 @@
   from { transform: rotateY(0deg); }
   to { transform: rotateY(360deg); }
 }
+
+/* 牌桌:轮到谁行动,谁的座位牌向外扩一圈光环。光环只用 box-shadow,
+   不动布局;motion-reduce 时座位仍有静态高亮边框(颜色不减) */
+@keyframes seat-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--primary) 0%, transparent); }
+}
