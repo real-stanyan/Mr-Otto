@@ -16,6 +16,7 @@ import { memo } from "react";
 import { DataTable } from "@/components/elements/data-table.js";
 import { MathBlock } from "@/components/elements/math-block.js";
 import { MermaidDiagram } from "@/components/assistant-ui/mermaid-diagram.js";
+import { OTTO_BLOCK_COMPONENTS } from "@/components/assistant-ui/otto-blocks.js";
 import { plainTable } from "@/lib/hastTable.js";
 import { cn } from "@/lib/utils.js";
 
@@ -37,6 +38,9 @@ const PLUGINS = { code, cjk, math };
 // easing 用 ease-out 那条强曲线(与全仓入场同一条):出场是"进来",起手就得快。
 const BY_LANGUAGE = {
   mermaid: { SyntaxHighlighter: MermaidDiagram, CodeHeader: () => null },
+  // ```otto-spec / otto-compare / otto-score / otto-flow —— 模型自己产出的
+  // 结构化块(约定写在系统提示词里,见 session/deriveMessages.ts)
+  ...OTTO_BLOCK_COMPONENTS,
 };
 
 const ANIMATED = {
