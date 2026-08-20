@@ -22,5 +22,14 @@ export default defineConfig({
       dedupe: ["react", "react-dom"],
     },
     plugins: [react(), tailwindcss()],
+    build: {
+      // 文件类型图标(566 枚,共约 470KB)一律不内联成 data URI。
+      // Vite 默认把 4KB 以下的资源塞进 JS,而这些图标平均才 800 字节 —— 全内联
+      // 等于把 470KB(base64 后更多)搬进主包,开机就得全部解析,而一屏上通常
+      // 只出现其中几枚。留成磁盘上的文件:界面上出现哪枚才读哪枚,
+      // 进包的只剩一张地址表。其它资源照旧走默认(返回 undefined)
+      assetsInlineLimit: (filePath: string) =>
+        filePath.includes("/assets/file-icons/") ? false : undefined,
+    },
   },
 });

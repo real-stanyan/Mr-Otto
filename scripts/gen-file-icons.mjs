@@ -1,9 +1,9 @@
-// 从 material-icon-theme 生成本仓要用的那一小撮文件图标 + 对照表。
+// 从 material-icon-theme 生成本仓用的文件类型图标 + 对照表。
 //
-// 为什么是"生成"而不是"依赖":上游那包带着 1250 枚图标(5MB)和一份 450KB 的
-// 对照表,而本仓要显示图标的地方就那么几处(附件、工具行的路径、diff 头)。
-// 全量塞进渲染进程 = 为了几十个常见后缀背 5MB;所以在这里挑一批、抄进仓里,
-// 认不出的后缀退回通用的 file 图标 —— 这是诚实的降级,不是缺失。
+// 为什么是"生成"而不是"直接依赖":上游那包里本仓用得上的只有 icons/*.svg 和一张
+// 对照表,其余(文件夹图标、明暗变体、克隆生成器、VS Code 的清单文件)一概用不上,
+// 而依赖装进来的是整包。这个脚本把用得上的那部分抄进仓里,顺带把对照表筛成
+// 只指向抄进来的图标 —— 表里留一条指向没抄进来的图标,界面上就是一个 404 的 img。
 //
 // 用法(需要先 npm i -D material-icon-theme):
 //   node scripts/gen-file-icons.mjs
@@ -14,7 +14,7 @@
 // 上游 MIT,LICENSE 一并抄进 assets/file-icons/。升级 = 改 package.json 的版本
 // 再跑一遍这个脚本,不手改产物。
 
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,24 +24,35 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkgDir = dirname(require.resolve("material-icon-theme/package.json"));
 const theme = JSON.parse(readFileSync(join(pkgDir, "dist/material-icons.json"), "utf8"));
 
-/** 要抄进来的图标。挑的标准:本仓的用户实际会在界面上看到的文件类型 ——
-    主流语言、常见配置/锁文件、几类二进制。名字是上游 icons/<name>.svg 的文件名 */
-const KEEP = [
-  // 默认与兜底
-  "file", "folder",
-  // 语言
-  "typescript", "react_ts", "javascript", "react", "python", "rust", "go", "java",
-  "kotlin", "swift", "c", "cpp", "h", "csharp", "ruby", "php", "lua", "vue", "svelte",
-  "console", "powershell", "webassembly", "jupyter", "graphql",
-  // 标记 / 样式 / 数据
-  "markdown", "readme", "html", "css", "sass", "less", "tailwindcss", "json", "yaml",
-  "toml", "xml", "database", "table", "document", "log", "todo",
-  // 工程配置
-  "nodejs", "npm", "pnpm", "vite", "tsconfig", "git", "docker", "makefile", "eslint",
-  "prettier", "editorconfig", "settings", "tune", "lock", "license", "test-ts",
-  // 资源 / 二进制
-  "svg", "image", "video", "audio", "font", "pdf", "zip", "exe", "key", "certificate",
-];
+/**
+ * 抄哪些图标：**上游文件类型表里点到名的全都抄**（后缀表 + 文件名表的并集，
+ * 584 枚里实际存在的 564 枚，约 460KB）。
+ *
+ * 曾经只挑了 68 枚"常见类型"，理由是"上游那包 5MB 太重"——那个 5MB 是 `du` 报的
+ * 磁盘块数（1250 个几百字节的小文件，每个占满一个 4KB 块），真实字节是 1MB，
+ * 而其中**文件类型**那部分只有 460KB（另外那些是文件夹图标和明暗变体，本仓用不上）。
+ * 按一个数错了一个量级的数去砍功能，砍掉的是这个功能本来的价值：手工挑的那 68 枚
+ * 覆盖的是"我想得到的类型"，而用户打开的是他自己的工程 —— .zig / .astro / .ex /
+ * .tf 落进通用图标时，退化恰好发生在这个功能最该起作用的地方。
+ *
+ * 代价按真实数算：图标不进主包（见 electron.vite.config.ts 里 file-icons 那条
+ * assetsInlineLimit），各自留在磁盘上，界面上出现哪枚才读哪枚；进包的只有一张
+ * 地址表和对照表，合计约 120KB。
+ *
+ * 仍然不抄的：文件夹图标（本仓没有文件树）、_light/明暗变体（本仓两套主题共用
+ * 同一枚彩色图标）、克隆变体。
+ */
+const KEEP = [...new Set([
+  ...Object.values(theme.fileExtensions ?? {}),
+  ...Object.values(theme.fileNames ?? {}),
+  // 兜底那两枚:上游的默认文件/文件夹图标不在上面两张表里
+  theme.file,
+  theme.folder,
+])]
+  // 上游有 20 来条指向 icons/ 里并不存在的名字(克隆/变体的产物)。
+  // 抄不过来的直接不要 —— 对照表下面会跟着筛掉,不会留下指向 404 的条目
+  .filter((name) => existsSync(join(pkgDir, `icons/${name}.svg`)))
+  .sort();
 
 const keep = new Set(KEEP);
 
