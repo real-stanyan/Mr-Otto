@@ -2,6 +2,7 @@
 
 import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils.js";
+import { FileTypeIcon } from "@/components/FileTypeIcon.js";
 import { codeScroll, codeSurface, mono, paper } from "@/lib/surfaces.js";
 
 // 本仓改动:多一种 skip —— 折叠掉的连续未变段("… N 行未变 …")。
@@ -53,7 +54,13 @@ export function CodeDiff({
       {...props}
     >
       <div className="flex items-center justify-between px-4 pt-3 pb-2">
-        <span className="text-foreground/90">{filename}</span>
+        {/* 本仓改动:文件名前面加一枚按类型走的图标(FileTypeIcon)。
+            审批卡是"要不要让它动这个文件"的判断,而判断的第一步是认出
+            这是个什么文件 —— 一行等宽文件名要读到后缀才知道 */}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FileTypeIcon path={filename} className="size-[15px]" />
+          <span className="min-w-0 truncate text-foreground/90">{filename}</span>
+        </span>
         <span className={cn(mono, "tabular-nums")}>
           <span className="text-emerald-600 dark:text-emerald-400">
             +{additions}

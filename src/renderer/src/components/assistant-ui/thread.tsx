@@ -24,13 +24,10 @@ import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { cn } from "@/lib/utils.js";
 import {
-  ActionBarMorePrimitive,
-  ActionBarPrimitive,
   AuiIf,
   type AssistantState,
   BranchPickerPrimitive,
   ComposerPrimitive,
-  ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
   ThreadPrimitive,
@@ -43,14 +40,8 @@ import {
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  CopyIcon,
-  DownloadIcon,
-  MoreHorizontalIcon,
-  PencilIcon,
-  RefreshCwIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -83,11 +74,6 @@ export type ThreadComponents = {
       它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   RunIndicator?: ComponentType | undefined;
-  /** 本仓加的槽:IPC 层瞬时发送失败的提示条(会话不存在/turn 冲突——消息压根
-      没进事件日志,与 turn_ended(error) 是不同的失败类别,见 store.ts send() 的
-      注释)。它不是消息、也不是事件投影,同样挂在 ViewportFooter 而不是消息流里。
-      上游 registry 没有这个槽 —— 升级时要人工合 */
-  ErrorBanner?: ComponentType | undefined;
   /** 本仓加的槽:会话分区轨的锚点(零高度、不参与布局,只给 scrollspy/跳转一个可测量
       的位置)。每条消息 id 就是产生它的那条 SessionEvent 的 seq(见
       aui/toThreadMessages.ts),分区起点也是 seq——同一把尺子,所以锚点该不该出现在
@@ -188,7 +174,6 @@ const ThreadRoot: FC<{
   const {
     Welcome = ThreadWelcome,
     RunIndicator: RunIndicatorComponent,
-    ErrorBanner: ErrorBannerComponent,
   } = useContext(ThreadComponentsContext);
 
   return (
@@ -249,7 +234,6 @@ const ThreadRoot: FC<{
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
           >
-            {ErrorBannerComponent ? <ErrorBannerComponent /> : null}
             {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
             {/* 本仓改动:这里**不**渲染 <Composer />,但输入框用的就是它 ——
@@ -312,16 +296,6 @@ const ThreadWelcome: FC = () => {
         How can I help you today?
       </h1>
     </div>
-  );
-};
-
-const MessageError: FC = () => {
-  return (
-    <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
-      </ErrorPrimitive.Root>
-    </MessagePrimitive.Error>
   );
 };
 
@@ -438,69 +412,29 @@ const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
-        <MessageError />
+        {/* 本仓改动:不画上游那个 message 级的错误框。它渲染的是英文的
+            "An error occurred"(assistant-ui 的默认文案,拿不到具体原因),
+            而本仓的失败**本来就在时间线上有一条**:turn 失败那条审计行,中文、
+            带服务商原话、还带重试出口(components/TurnErrorState.tsx)。
+            两个框说同一件事,其中一个还说得更少。
+            消息的 status(incomplete/error|cancelled)保留 —— assistant-ui 内部
+            要靠它判断这条消息是不是还在跑 */}
       </div>
 
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        // 本仓改动:改成竖排。上游把「页脚数字」和「复制/重跑/更多」挤在同一行,
+        // 而本仓的页脚是一整行数字(耗时·吞吐·token·花费),四组数后面再接三颗
+        // 图标钮,这一行就同时是读物和控件 —— 眼睛先要把图标从数字里挑出来。
+        // 拆成两行:上面一行只读,下面一行只按
+        className={cn("ms-2 flex flex-col items-start gap-1", ACTION_BAR_HEIGHT)}
       >
         {/* 本仓改动:不渲染 BranchPicker。对话分支要 adapter 提供 setMessages,
             而本仓刻意不给(ADR-0036:给了就等于凭空长出一条绕开事件日志的写路径)。
             实测它仍会冒出「< 2/2 >」——切过去什么也不会发生,是个只承诺不兑现的控件 */}
         {MessageFooterComponent ? <MessageFooterComponent /> : null}
-        <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
-  );
-};
-
-const AssistantActionBar: FC = () => {
-  return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      autohide="not-last"
-      className="aui-assistant-action-bar-root text-muted-foreground col-start-3 row-start-2 -ms-1 flex gap-1 transition-opacity duration-200 ease-strong starting:opacity-0"
-    >
-      <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Copy">
-          <AuiIf condition={(s) => s.message.isCopied}>
-            <CheckIcon className="transition-[opacity,transform] duration-200 ease-strong starting:opacity-0 starting:scale-50 motion-reduce:transition-opacity motion-reduce:starting:scale-100" />
-          </AuiIf>
-          <AuiIf condition={(s) => !s.message.isCopied}>
-            <CopyIcon className="transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-75 motion-reduce:transition-opacity motion-reduce:starting:scale-100" />
-          </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
-      <ActionBarMorePrimitive.Root>
-        <ActionBarMorePrimitive.Trigger asChild>
-          <TooltipIconButton
-            tooltip="More"
-            className="data-[state=open]:bg-accent"
-          >
-            <MoreHorizontalIcon />
-          </TooltipIconButton>
-        </ActionBarMorePrimitive.Trigger>
-        <ActionBarMorePrimitive.Content
-          side="bottom"
-          align="start"
-          sideOffset={6}
-          className="aui-action-bar-more-content menu-pop bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
-        >
-          <ActionBarPrimitive.ExportMarkdown asChild>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
-              <DownloadIcon className="size-4" />
-              Export as Markdown
-            </ActionBarMorePrimitive.Item>
-          </ActionBarPrimitive.ExportMarkdown>
-        </ActionBarMorePrimitive.Content>
-      </ActionBarMorePrimitive.Root>
-    </ActionBarPrimitive.Root>
   );
 };
 
@@ -541,29 +475,16 @@ const UserMessage: FC = () => {
             }}
           />
         </div>
-        <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
-          <UserActionBar />
-        </div>
+        {/* 本仓改动:用户消息那支「编辑」笔不画了。adapter 刻意没接 onEdit
+            (日志 append-only,本仓没有消息编辑也没有对话分支,见 aui/ottoAdapter.ts),
+            运行时据此把 capabilities.edit 算成 false —— 那颗钮渲染出来就是
+            disabled 的,点下去什么也不会发生。一颗永远点不动的钮,不如不画。
+            下面的 EditComposer 保留:它是上游的编辑态版式,将来真接了 onEdit
+            还要用它,删掉只会让升级时更难对 */}
       </div>
 
       {/* 本仓改动:同上,用户消息这一侧的分支选择器也不渲染 */}
     </MessagePrimitive.Root>
-  );
-};
-
-const UserActionBar: FC = () => {
-  return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      autohide="not-last"
-      className="aui-user-action-bar-root flex flex-col items-end"
-    >
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
-    </ActionBarPrimitive.Root>
   );
 };
 

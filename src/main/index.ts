@@ -36,6 +36,10 @@ import { createGitGraphService } from "./gitGraphService.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
+import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
+import { usageSnapshot } from "../shared/usageStats.js";
+import { maskKey } from "../shared/keyMask.js";
+import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -421,7 +425,7 @@ void app.whenReady().then(() => {
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
     // 与默认相同时 switchModel 内部 no-op，零多余事件）；审批/thinking 是运行时偏好
-    if (opts.model) agent.switchModel(opts.model);
+    if (opts.model) agent.switchModel(opts.model, opts.lane ?? "auto");
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
@@ -521,6 +525,17 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
   ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
 
+  // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
+  // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切
+  ipcMain.handle(CHANNELS.usageByProvider, (_e, days: number) => {
+    const span = Math.max(1, Math.floor(days));
+    const now = Date.now();
+    const since = now - span * 2 * 86_400_000;
+    return usageSnapshot(store.billedUsage(since), { now, days: span });
+  });
+  // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
+  ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
+
   // ── 牌桌 ────────────────────────────────────────────────────────
   // 同一时刻只订一张桌：换桌先退订。两条流同时推会互相盖着，
   // 而"盖着"在牌桌上意味着看到的是上一张桌的底牌
@@ -591,10 +606,12 @@ void app.whenReady().then(() => {
   // 按厂商算而不是按型号算——一家厂暂时 0 个型号时，它的 key 也该能先填上
   const allowedKeyEnvs = new Set(providerKeyEnvs());
 
-  ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
-    const status: Record<string, boolean> = {};
-    for (const env of allowedKeyEnvs) status[env] = Boolean(process.env[env]);
-    return status; // 只有布尔——key 本体永远不过这座桥
+  ipcMain.handle(CHANNELS.keyStatus, (): Record<string, string> => {
+    const status: Record<string, string> = {};
+    // 遮罩在这一侧算完再过桥：过去的是一个推不回原文的派生物（前 8 + 五颗星 + 后 4），
+    // key 本体永远不过这座桥。空串 = 没配（"配没配"照旧靠真假值判断）
+    for (const env of allowedKeyEnvs) status[env] = maskKey(process.env[env] ?? "");
+    return status;
   });
 
   // 领 key 的入口。只认目录里的厂商 id，URL 从目录里查——渲染层递不进来任意外链
@@ -634,6 +651,7 @@ void app.whenReady().then(() => {
     if (!allowedKeyEnvs.has(envName)) throw new Error(`不认识的 key 变量: ${envName}`);
     applyToEnv(saveKey(keyVaultPath, envName, key), process.env);
     if (!key) delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+    clearBalanceCache(); // 换了 key,60 秒缓存里那条余额说的是上一把 key 的账
     for (const a of agents.values()) a.reloadAdapter(); // 所有活 agent 的 adapter 都捏着旧 key
   });
 
@@ -656,11 +674,11 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended); // 时间线同款直播通道
   });
 
-  ipcMain.handle(CHANNELS.switchModel, (_e, model: string) => {
+  ipcMain.handle(CHANNELS.switchModel, (_e, model: string, lane?: ModelLane) => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
-    agent.switchModel(model);
+    agent.switchModel(model, lane ?? "auto");
     // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
     return agent.thinking;
   });

@@ -11,6 +11,9 @@ import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
+import type { ProviderId } from "./providerCatalog.js";
+import type { ModelLane } from "./modelLane.js";
+import type { UsageSnapshot } from "./usageStats.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
@@ -72,6 +75,8 @@ export interface StartSessionOptions {
   workspace: string;
   /** 缺省 = 主进程默认（OTTER_MODEL 或目录默认款） */
   model?: string;
+  /** 走哪条路（ADR-0045）。缺省 auto = 自带 key 优先；"grant" = 明确花官方赠额 */
+  lane?: ModelLane;
   approvalMode?: ApprovalMode;
   /** 缺省 = 该型号的默认档。挡位是型号的属性（见 shared/thinking.ts），
       不是全局布尔——同一个"开"在 GPT-5 上根本不是合法档 */
@@ -282,7 +287,9 @@ export interface ShellBridge {
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
       返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
       主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
-  switchModel(model: string): Promise<ThinkingMode>;
+  /** 换型号 / 换路（同一款型号从自己的 key 换到官方赠额也是一次切换）。
+      回的是钳位后的 thinking 档（新型号的挡位表未必装得下旧档） */
+  switchModel(model: string, lane?: ModelLane): Promise<ThinkingMode>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
   /** 切 thinking 挡位（型号没有挡位表时无意义）。turn 进行中拒绝。
@@ -290,7 +297,10 @@ export interface ShellBridge {
       认主进程的那一份，别让下拉框显示一个没生效的档 */
   setThinking(sessionId: string, mode: ThinkingMode): Promise<ThinkingMode>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
-  keyStatus(): Promise<Record<string, boolean>>;
+  /** env 变量名 → key 的遮罩形态（`sk-31cf5*****828c`）。空串 = 没配。
+      渲染层能知道的关于 key 的全部信息就是这个：够认出"贴进去的是哪一把",
+      推不回原文（遮罩在主进程算，见 shared/keyMask.ts） */
+  keyStatus(): Promise<Record<string, string>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
   setApiKey(envName: string, key: string): Promise<void>;
   /** 用系统浏览器打开某厂商的控制台（去领 key）。收厂商 id 而不是 URL——
@@ -367,6 +377,11 @@ export interface ShellBridge {
   /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
       （"没有额度"和"查不到额度"必须可区分） */
   walletBalance(): Promise<WalletBalance | null>;
+  /** 全库用量按厂商 + 按天投影（设置页那张柱状图）。
+      窗口 days 天，另附紧邻的前 days 天合计供对比 */
+  usageByProvider(days: number): Promise<UsageSnapshot>;
+  /** 各厂商账户余额。见 ProviderBalance —— 拿不到的厂商不在数组里 */
+  providerBalances(): Promise<ProviderBalance[]>;
   /** 牌桌：列/建/入座/离桌/开牌/行动。全部经主进程 —— token 不过桥 */
   pokerTables(): Promise<PokerTableSummary[]>;
   pokerCreateTable(input: PokerTableInput): Promise<PokerTableSummary>;
@@ -479,6 +494,13 @@ export interface OllamaProbeResult {
   error: string;
 }
 
+/** 一家厂商的账户余额。**只有四家有这个东西**（见 main/providerBalance.ts）：
+    查不到的厂商压根不出现在数组里 —— 显示 0 会被读成"没钱了"。
+    ok:false 是"问了但没问出来"（key 无效 / 网络不通），和"这家没有余额这回事"也不同 */
+export type ProviderBalance =
+  | { provider: ProviderId; ok: true; amount: number; currency: string }
+  | { provider: ProviderId; ok: false; error: string };
+
 export const CHANNELS = {
   boot: "otter:boot",
   pickWorkspace: "otter:pickWorkspace",
@@ -519,6 +541,8 @@ export const CHANNELS = {
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",
+  usageByProvider: "otter:usageByProvider",
+  providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",

@@ -818,13 +818,19 @@
   from { opacity: 1; }
   to { opacity: 0; }
 }
+/* 只写 scale,**不要**在这里补 translate(-50%,-50%)。
+   居中来自 -translate-x-1/2 -translate-y-1/2,而 Tailwind v4 把它编译成
+   `translate: -50% -50%`(独立的 translate 属性),不是 transform ——
+   两者会叠加。之前这里写了 transform: translate(-50%,-50%) 的那 200ms 里,
+   弹窗实际被推了整整 -100% / -100%:它先在左上角待一下,动画一结束
+   transform 归零,才"啪"地回到正中。就是那一下卡顿 */
 @keyframes dialog-content-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 @keyframes dialog-content-out {
-  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  to { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.98); }
 }
 /* 起手 0.96 不是 0:现实里没有东西从"没有体积"长出来,scale(0) 会读成凭空冒出。
    离场比进场快(140 vs 200):用户已经做完决定了,慢慢退场只是拖着他 */
@@ -835,8 +841,8 @@
 @media (prefers-reduced-motion: reduce) {
   .dialog-content[data-state="open"],
   .dialog-content[data-state="closed"] {
-    /* 位移和缩放全去掉,只留淡入淡出。translate 得留着——它是定位的一部分,
-       不是动效(去掉弹窗会跑到右下角) */
+    /* 缩放去掉,只留淡入淡出。定位不受影响:居中走的是独立的 translate 属性
+       (见上面那条注释),动画里本来就没碰它 */
     animation-name: dialog-overlay-in;
     animation-duration: 160ms;
   }

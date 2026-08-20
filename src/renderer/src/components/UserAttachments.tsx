@@ -1,21 +1,31 @@
-// UserAttachments — 用户消息里带的图片/文件,单独成排显示在气泡上方。
+// UserAttachments — 用户消息里带的图片/文件,一张卡片列表显示在气泡上方。
 //
 // 为什么不塞进气泡里:附件不是"话",是"随话递过来的东西"。塞进气泡等于
 // 把一张图当成一句话的标点,读的人得先解析气泡才知道自己收到了什么。
-// 分开后气泡只管文本(纯用户正文),附件自带一层卡片表面——它们是物件,有厚度。
+//
+// 为什么是**一列**卡片(elements/message-attachment),不是原来那排各自漂着的
+// 独立卡片:一条消息带一图一文件时,两张卡片各自成块、还会换行,读起来像
+// 连发了两三条消息 —— 而日志里它们本来就是同一条 user_message(一次发送、
+// 一个 seq)。同一条消息带来的东西,要长得像同一份清单。
 //
 // 图片走附件库懒取(内容寻址,同图只过一次 IPC);文本文件全文就在日志里
-// (UserTextFile 的快照语义),点开卡片就地核对,不摊开占掉整屏。
+// (UserTextFile 的快照语义)。两者都点行就地摊开核对——附件本来就在手边,
+// 为了看一眼自己刚发出去的东西再开一层浮窗,是白绕一圈。
 
 import { useEffect, useState } from "react";
-import { ChevronRight, FileText, ImageOff } from "lucide-react";
-import type { UserAttachmentRef, UserTextFile } from "../../../session/events.js";
+import { ImageOff } from "lucide-react";
+import type {
+  UserAttachmentRef,
+  UserTextFile,
+} from "../../../session/events.js";
+import {
+  MessageAttachments,
+  type MessageAttachmentItem,
+} from "./elements/message-attachment.js";
+import { FileTypeIcon } from "./FileTypeIcon.js";
 
 /** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
 const thumbCache = new Map<string, string>();
-
-const CARD =
-  "overflow-hidden rounded-[14px] border border-border/60 bg-card/70 backdrop-blur-sm shadow-sm";
 
 function sizeLabel(bytes: number): string {
   return bytes >= 1024 * 1024
@@ -23,84 +33,38 @@ function sizeLabel(bytes: number): string {
     : `${Math.max(1, Math.round(bytes / 1024))}KB`;
 }
 
-/** 时间线里的图片卡片:懒取 + 缓存。取不到(附件库文件丢失)退成占位卡——
-    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线 */
-function ImageCard({ att }: { att: UserAttachmentRef }) {
-  const [url, setUrl] = useState<string | null>(thumbCache.get(att.id) ?? null);
-  const [lost, setLost] = useState(false);
+/** 一批图片的 data URL:懒取 + 缓存。取不到(附件库文件丢失)记成 lost ——
+    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线。
+    一个 hook 管一批,而不是每张图一个组件:hook 不能在 map 里调,
+    "每张图一个子组件再把结果报回父级"绕的那一圈只是为了骗过这条规则 */
+function useThumbs(ids: readonly string[]): Record<string, string | "lost"> {
+  const key = ids.join("\u0000");
+  const [got, setGot] = useState<Record<string, string | "lost">>(() =>
+    Object.fromEntries(
+      ids.flatMap((id) =>
+        thumbCache.has(id) ? [[id, thumbCache.get(id)!]] : [],
+      ),
+    ),
+  );
   useEffect(() => {
-    if (url) return;
     let alive = true;
-    window.otter.attachmentDataUrl(att.id).then(
-      (u) => {
-        thumbCache.set(att.id, u);
-        if (alive) setUrl(u);
-      },
-      () => {
-        if (alive) setLost(true);
-      }
-    );
+    for (const id of key === "" ? [] : key.split("\u0000")) {
+      if (thumbCache.has(id)) continue;
+      window.otter.attachmentDataUrl(id).then(
+        (u) => {
+          thumbCache.set(id, u);
+          if (alive) setGot((cur) => ({ ...cur, [id]: u }));
+        },
+        () => {
+          if (alive) setGot((cur) => ({ ...cur, [id]: "lost" }));
+        },
+      );
+    }
     return () => {
       alive = false;
     };
-  }, [att.id, url]);
-
-  if (lost) {
-    return (
-      <div className={`${CARD} flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground`}>
-        <ImageOff className="size-4 shrink-0" aria-hidden />
-        图片缺失{att.name ? `：${att.name}` : ""}
-      </div>
-    );
-  }
-  return (
-    <div className={`${CARD} p-1`}>
-      {url ? (
-        <img
-          className="block max-h-40 max-w-[220px] rounded-[10px] object-cover"
-          src={url}
-          alt={att.name ?? "附件图片"}
-          title={att.name}
-        />
-      ) : (
-        // 占位保持和图片同量级的体积:图到位时不会把下面的消息顶一跳
-        <div className="h-24 w-32 animate-pulse rounded-[10px] bg-foreground/[0.06]" aria-hidden />
-      )}
-    </div>
-  );
-}
-
-/** 文本文件卡片:默认只亮"带了什么",点开就地核对快照全文 */
-function FileCard({ file }: { file: UserTextFile }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className={`${CARD} max-w-full`}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-2.5 py-2 text-left transition-[background-color,transform] duration-150 ease-[var(--ease-strong)] hover:bg-foreground/5 active:scale-[0.99]"
-      >
-        <FileText className="size-4 shrink-0 text-brand" aria-hidden />
-        <span className="min-w-0 truncate font-mono text-xs text-foreground">{file.name}</span>
-        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-          {sizeLabel(file.bytes)}
-        </span>
-        <ChevronRight
-          className={
-            "size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ease-[var(--ease-strong)] motion-reduce:transition-none" +
-            (open ? " rotate-90" : "")
-          }
-          aria-hidden
-        />
-      </button>
-      {open && (
-        <div className="max-h-60 overflow-y-auto border-t border-border/60 px-2.5 py-2 text-xs whitespace-pre-wrap break-words text-muted-foreground">
-          {file.content}
-        </div>
-      )}
-    </div>
-  );
+  }, [key]);
+  return got;
 }
 
 export function UserAttachments({
@@ -112,17 +76,67 @@ export function UserAttachments({
 }) {
   const images = attachments ?? [];
   const files = textFiles ?? [];
+  const thumbs = useThumbs(images.map((a) => a.id));
   if (images.length === 0 && files.length === 0) return null;
-  return (
-    // 右对齐跟着用户气泡走(同一个人说的话,同一侧);图片先、文件后——
-    // 图片一眼能认,文件要读名字,先易后难
-    <div className="flex max-w-full flex-wrap justify-end gap-1.5">
-      {images.map((a) => (
-        <ImageCard key={a.id} att={a} />
-      ))}
-      {files.map((f, i) => (
-        <FileCard key={`${f.name}-${i}`} file={f} />
-      ))}
-    </div>
-  );
+
+  const imageItem = (a: UserAttachmentRef): MessageAttachmentItem => {
+    const name = a.name ?? "图片";
+    const got = thumbs[a.id];
+    // 图丢了退成一条普通行:名字和大小日志里还记着,只是内容没了
+    if (got === "lost") {
+      return {
+        id: a.id,
+        name: `图片缺失：${name}`,
+        size: sizeLabel(a.bytes),
+        kind: "file",
+        icon: <ImageOff className="size-3.5" />,
+      };
+    }
+    return {
+      id: a.id,
+      name,
+      size: sizeLabel(a.bytes),
+      kind: "image",
+      // 还没取回来时不给 swatch:元件那边画一层同尺寸的浅底占位,图到位不顶版
+      ...(got !== undefined ? { swatch: `url("${got}")` } : {}),
+      // 摊开 = 看大图。缩略图和大图是同一份 data URL,不用再过一次 IPC
+      ...(got !== undefined
+        ? {
+            detail: (
+              <img
+                src={got}
+                alt={name}
+                className="block max-h-[420px] w-full object-contain p-1"
+              />
+            ),
+          }
+        : {}),
+    };
+  };
+
+  const items: MessageAttachmentItem[] = [
+    // 图片先、文件后——图片一眼能认,文件要读名字,先易后难
+    ...images.map(imageItem),
+    ...files.map((f, i) => ({
+      id: `f-${i}-${f.name}`,
+      name: f.name,
+      size: sizeLabel(f.bytes),
+      kind: "document" as const,
+      // 按文件类型走的图标(material-icon-theme 那套):一排附件里哪个是配置、
+      // 哪个是脚本、哪个是文档,扫一眼就分得出,不用逐个读文件名的后缀
+      icon: <FileTypeIcon path={f.name} className="size-[15px]" />,
+      detail: (
+        <div className="max-h-60 overflow-y-auto px-3 py-2 text-xs whitespace-pre-wrap break-words text-muted-foreground">
+          {f.content}
+        </div>
+      ),
+    })),
+  ];
+
+  // col-start-2:用户消息是两列网格(左边一列是留白/编辑钮的地盘),附件要和气泡
+  // 站同一列 —— 不写这一句会被自动排版丢进第 1 列,于是附件横在气泡**左边**,
+  // 看起来像另一条消息(上游那句 `[&:where(>*)]:col-start-2` 在本仓这套
+  // Tailwind 下没生效,气泡自己写了 col-start-2 才没跟着跑偏)。
+  // ms-auto:靠右贴齐气泡那一侧 —— 同一个人递过来的东西,同一侧
+  return <MessageAttachments attachments={items} className="col-start-2 ms-auto" />;
 }

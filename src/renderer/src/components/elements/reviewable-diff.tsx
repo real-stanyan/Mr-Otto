@@ -3,6 +3,7 @@
 import type { ComponentProps } from "react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
+import { FileTypeIcon } from "@/components/FileTypeIcon.js";
 import { codeScroll, codeSurface, inkButton, mono, paper } from "@/lib/surfaces.js";
 import type { DiffLine } from "./code-diff.js";
 
@@ -53,7 +54,13 @@ export function ReviewableDiff({
       {...props}
     >
       <div className="flex items-center justify-between px-4 pt-3 pb-2">
-        <span className="font-mono text-xs">{filename}</span>
+        {/* 本仓改动:文件名前面加一枚按类型走的图标(FileTypeIcon)。
+            审批卡是"要不要让它动这个文件"的判断,而判断的第一步是认出
+            这是个什么文件 —— 一行等宽文件名要读到后缀才知道 */}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FileTypeIcon path={filename} className="size-[15px]" />
+          <span className="min-w-0 truncate font-mono text-xs">{filename}</span>
+        </span>
         <span className={cn(mono, "text-foreground/35 tabular-nums")}>
           保留 {kept} / {hunks.length} 块
         </span>

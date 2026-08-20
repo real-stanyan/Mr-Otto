@@ -2,7 +2,14 @@
 // 只在 boot() 里订阅一次；所有跨进程调用都收敛在这，组件不直接摸 window.otter。
 
 import { create } from "zustand";
-import type { SessionEvent } from "../../session/events.js";
+import type { SessionEvent, UserMessageEvent } from "../../session/events.js";
+import {
+  dropTask,
+  pushTask,
+  takeNext,
+  unshiftTask,
+  type QueuedTask,
+} from "./lib/messageQueue.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
@@ -36,10 +43,13 @@ import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
+import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
-import type { NotificationTarget } from "../../shared/shellBridge.js";
+import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
+import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
+import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -75,6 +85,8 @@ interface ChatState {
   phase: Phase;
   sessionId: string;
   model: string;
+  /** 当前型号走哪条路（ADR-0045）。和 model 一样是日志投影：model_changed 说了算 */
+  lane: ModelLane;
   workspace: string;
   events: SessionEvent[];
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
@@ -87,6 +99,10 @@ interface ChatState {
   pendingWorkspace: string | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
+  /** 排队中的消息，按会话记（同 statusBySession 的路子）。turn 跑着时敲下的
+      回车不是"发不出去"，是排进这里；这一 turn 收工时按序发出去。
+      不进事件日志的理由写在 lib/messageQueue.ts 开头 */
+  queuedBySession: Record<string, QueuedTask[]>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
   /** 待作答的问卷，同样按会话挂靠（模型问了话，人还没答） */
@@ -166,14 +182,20 @@ interface ChatState {
   checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
-  /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
-  keyStatus: Record<string, boolean>;
+  /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
+      渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
+  keyStatus: Record<string, string>;
   /** 本机 Ollama 装了哪些型号 + 各自能力。目录查不到，只能现问 */
   ollamaModels: OllamaModelInfo[];
   /** 探通的那个端点。设置页要显示它——"连上了"得说清连的是哪儿 */
   ollamaBaseUrl: string;
   /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
   ollamaError: string;
+  /** 各厂商近 N 天的用量（设置页那张柱状图）。null = 还没查过——和"一个 token 都没花"不是一回事。
+      带着投影时的 now/days：把第 i 格换算成日期得用那个锚点，不能用渲染时的"今天" */
+  providerUsage: UsageSnapshot | null;
+  /** 各厂商账户余额。只有四家有这回事，查不到的厂商压根不在数组里 */
+  providerBalances: ProviderBalance[];
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
@@ -219,7 +241,7 @@ interface ChatState {
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
-  switchModel(model: string): Promise<void>;
+  switchModel(model: string, lane?: ModelLane): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
   setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
@@ -277,6 +299,9 @@ interface ChatState {
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 重问本机 Ollama 的型号清单。用户随时 pull/rm，镜像别太陈旧 */
   refreshOllamaModels(): Promise<void>;
+  /** 拉「模型配置」页要的两份数：跨会话用量 + 各家余额。开页时取一次。
+      两份各自成败（余额那趟要出网，慢且可能失败，不该拖累用量图） */
+  refreshProviderStats(days: number): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   signOut(): Promise<void>;
@@ -290,6 +315,14 @@ interface ChatState {
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
+  /** turn 跑着时的回车落在这：排进当前会话的队尾，等这一 turn 收工再发 */
+  enqueue(text: string, skill?: string): void;
+  /** 队列条目上的 × */
+  unqueue(id: string): void;
+  /** 一 turn 收工后把队首那条发出去（内部：onTurnStatus 的 idle 分支调）。
+      sessionId 显式传，不读 get().sessionId：排给 A 的活不能因为你此刻正看着 B
+      就发进 B。发失败的那条回队首（见 lib/messageQueue.unshiftTask） */
+  drainQueue(sessionId: string): Promise<void>;
   /** 粘贴/拖入的字节并入 staged。与 pickFiles 共用闸门和限额 */
   attachPasted(files: { name: string; data: Uint8Array }[]): Promise<void>;
   /** ＋ 按钮：弹系统文件选择器，选完的分类结果并入 staged（图片限额 4 张/条在这做） */
@@ -297,6 +330,11 @@ interface ChatState {
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
   removeStaged(index: number): void;
   injectComposer(text: string, append: boolean): void;
+  /** 原样重发一条已经在日志里的用户消息(重试)。附件从那条事件上取回来:
+      图片是内容寻址的 ref、文本文件是全文快照,两样都在事件里(ADR-0042)。
+      刻意不复用 send():那条路在调用瞬间读 get().staged —— 用户此刻暂存区里
+      放着的东西跟"再发一遍那条"毫无关系,混进去就把"原样"变成了假话 */
+  resend(event: UserMessageEvent): Promise<void>;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -346,6 +384,7 @@ const enterChat = (info: BootInfo) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
   model: info.model,
+  lane: laneOf(info.events),
   workspace: info.workspace,
   events: info.events,
   toolDefs: info.toolDefs ?? [],
@@ -371,12 +410,14 @@ export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
   sessionId: "",
   model: "",
+  lane: "auto" as ModelLane,
   workspace: "",
   events: [],
   toolDefs: [],
   sessions: [],
   pendingWorkspace: null,
   statusBySession: {},
+  queuedBySession: {},
   approvals: {},
   asks: {},
   streamingBySession: {},
@@ -419,6 +460,8 @@ export const useChat = create<ChatState>((set, get) => ({
   ollamaModels: [],
   ollamaBaseUrl: "",
   ollamaError: "",
+  providerUsage: null,
+  providerBalances: [],
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
@@ -440,11 +483,13 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
-  async switchModel(model) {
+  async switchModel(model, lane = "auto") {
     try {
       // 换型号会连带换挡位表：新型号未必有手上这一档（"开"之于只有低/中/高的 GPT-5）。
       // 钳位在主进程做，这里认它回流的那一档——两边各钳各的迟早分叉
-      set({ thinking: await window.otter.switchModel(model) });
+      // lane 不在这里落镜像：它跟着 model_changed 事件流回来（同 model 那一条，
+      // UI 不抢跑）——抢跑的话主进程拒了这次切换，界面上却已经换过去了
+      set({ thinking: await window.otter.switchModel(model, lane) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -834,10 +879,27 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async refreshProviderStats(days) {
+    // 分开 await：余额要出四趟外网，用量只读本地 SQLite。绑成一个 Promise.all
+    // 再一起 set，会让本来毫秒级就能画出来的图陪着网络请求一起等
+    void window.otter
+      .usageByProvider(days)
+      .then((providerUsage) => set({ providerUsage }))
+      // 用量查不出来就维持 null（"还没查过"）——空数组会被画成"这台机器没用过模型"
+      .catch(() => undefined);
+    void window.otter
+      .providerBalances()
+      .then((providerBalances) => set({ providerBalances }))
+      .catch(() => set({ providerBalances: [] }));
+  },
+
   async saveApiKey(envName, key) {
     try {
       await window.otter.setApiKey(envName, key);
       set({ keyStatus: await window.otter.keyStatus() }); // 状态从主进程重新问，不本地猜
+      // 刚贴完 key 就该看见余额。设置页只在挂载时取一次，不补这一刀的话
+      // 用户会盯着一个"已配置"却没有余额的行，以为这功能坏了
+      void get().refreshProviderStats(DEFAULT_USAGE_DAYS);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -1143,7 +1205,7 @@ export const useChat = create<ChatState>((set, get) => ({
           toolOutputByCall: toolOutput,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
-          ...(e.type === "model_changed" ? { model: e.model } : {}),
+          ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
         };
       });
     });
@@ -1180,7 +1242,7 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onAskUserRequest((req) =>
       set((s) => ({ asks: { ...s.asks, [req.sessionId]: req } }))
     );
-    window.otter.onTurnStatus(({ sessionId, status }) =>
+    window.otter.onTurnStatus(({ sessionId, status }) => {
       set((s) => ({
         statusBySession: { ...s.statusBySession, [sessionId]: status },
         // turn 收尾兜底：清直播缓冲（防幽灵字）+ 收审批卡。
@@ -1195,8 +1257,12 @@ export const useChat = create<ChatState>((set, get) => ({
               asks: without(s.asks, sessionId),
             }
           : {}),
-      }))
-    );
+      }));
+      // 这一 turn 收工 → 把排着的下一条发出去。挂在"状态变 idle"这一刻，
+      // 而不是 sendMessage 的 resolve：中断（Esc）、turn 暴死也都会走到这里，
+      // 排着的活不该因为上一条没善终就永远卡在队列里
+      if (status === "idle") void get().drainQueue(sessionId);
+    });
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
@@ -1278,10 +1344,18 @@ export const useChat = create<ChatState>((set, get) => ({
       await window.otter.deleteSession(sessionId);
       const sessions = await window.otter.listSessions();
       // 删的是正看着的会话 → 回欢迎页，清掉它的投影
+      // 队列跟着会话走：会话都删了，排给它的活没有落点了（留着也发不出去）
       if (get().sessionId === sessionId) {
-        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+        set((s) => ({
+          phase: "welcome",
+          sessions,
+          sessionId: "",
+          events: [],
+          replayCursor: null,
+          queuedBySession: without(s.queuedBySession, sessionId),
+        }));
       } else {
-        set({ sessions });
+        set((s) => ({ sessions, queuedBySession: without(s.queuedBySession, sessionId) }));
       }
       // dispose 放在 set() 之后:先把 sessionId 变化落给订阅者,让还挂载着的
       // TerminalView 的 [sessionId] effect 先摘断(activeId 置空、宿主清空),
@@ -1323,6 +1397,71 @@ export const useChat = create<ChatState>((set, get) => ({
       if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
         set({ error: msg, staged: [...staged, ...get().staged] });
       }
+    }
+  },
+
+  async resend(event) {
+    const sessionId = get().sessionId; // 同 send:发消息瞬间锁定目标会话
+    const attachments = outgoingFrom(event); // 事件形状 → 线上形状,见 lib/resendPayload.ts
+    set({ error: null });
+    try {
+      await window.otter.sendMessage(
+        sessionId,
+        event.content,
+        undefined,
+        attachments.length > 0 ? attachments : undefined
+      );
+    } catch (e) {
+      // 同 send:turn 暴死已经作为 turn_ended 事件渲染在时间线里,别再叠一行临时的
+      const msg = e instanceof Error ? e.message : String(e);
+      const last = get().events.at(-1);
+      if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
+        set({ error: msg });
+      }
+    }
+  },
+
+  enqueue(text, skill) {
+    const sessionId = get().sessionId; // 排队瞬间锁定目标会话——之后切走也不串
+    if (sessionId === "") return;
+    // id 只服务于 React key 和 × 按钮，不进日志、不跨进程 —— randomUUID 够了
+    const task: QueuedTask = { id: crypto.randomUUID(), text, skill };
+    set((s) => ({
+      queuedBySession: {
+        ...s.queuedBySession,
+        [sessionId]: pushTask(s.queuedBySession[sessionId] ?? [], task),
+      },
+    }));
+  },
+
+  unqueue(id) {
+    const sessionId = get().sessionId;
+    set((s) => ({
+      queuedBySession: {
+        ...s.queuedBySession,
+        [sessionId]: dropTask(s.queuedBySession[sessionId] ?? [], id),
+      },
+    }));
+  },
+
+  async drainQueue(sessionId) {
+    const [next, rest] = takeNext(get().queuedBySession[sessionId] ?? []);
+    if (!next) return;
+    // 先出队再发：sendMessage 是 turn 级 Promise（整 turn 结束才 resolve），
+    // 等它 resolve 再出队意味着这一条在队列里挂着跑完全程——看起来像没发出去
+    set((s) => ({ queuedBySession: { ...s.queuedBySession, [sessionId]: rest } }));
+    try {
+      await window.otter.sendMessage(sessionId, next.text, next.skill, undefined);
+    } catch (e) {
+      // 发不出去（会话没了 / turn 撞上了）就把话还给用户：回队首，原样排着，
+      // 下一次收工再试。这里不能吞——吞掉等于把用户敲过的一条活凭空删了
+      set((s) => ({
+        error: e instanceof Error ? e.message : String(e),
+        queuedBySession: {
+          ...s.queuedBySession,
+          [sessionId]: unshiftTask(s.queuedBySession[sessionId] ?? [], next),
+        },
+      }));
     }
   },
 

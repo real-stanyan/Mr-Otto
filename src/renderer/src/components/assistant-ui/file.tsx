@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { FileMessagePartComponent } from "@assistant-ui/react";
 import { cn } from "@/lib/utils.js";
+import { FileTypeIcon } from "@/components/FileTypeIcon.js";
 
 const fileVariants = cva(
   "aui-file-root inline-flex items-center gap-3 rounded-lg transition-colors",
@@ -114,10 +115,16 @@ function FileRoot({
 
 type FileIconDisplayProps = React.ComponentProps<"span"> & {
   mimeType?: string;
+  /** 本仓改动:有文件名就按文件名走类型图标(material-icon-theme 那套)。
+      mimeType 只分得出六大类(图/音/视/文本/json/其它),而这张卡上写着的是
+      一个具体的文件名 —— 一个 .tsx 和一个 .py 在 mime 眼里都是 text/plain,
+      在读的人眼里不是一回事。没有文件名时照旧退回 mime 那套 */
+  filename?: string | undefined;
 };
 
 function FileIconDisplay({
   mimeType,
+  filename,
   className,
   children,
   ...props
@@ -130,7 +137,12 @@ function FileIconDisplay({
       className={cn("text-muted-foreground shrink-0", className)}
       {...props}
     >
-      {children ?? <IconComponent className="size-5" />}
+      {children ??
+        (filename ? (
+          <FileTypeIcon path={filename} className="size-5" />
+        ) : (
+          <IconComponent className="size-5" />
+        ))}
     </span>
   );
 }
@@ -218,7 +230,7 @@ const FileImpl: FileMessagePartComponent = ({
 
   return (
     <FileRoot>
-      <FileIconDisplay mimeType={mimeType} />
+      <FileIconDisplay mimeType={mimeType} filename={filename} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <FileName>{filename}</FileName>
         {showSize && (

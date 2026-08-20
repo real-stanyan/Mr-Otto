@@ -1,13 +1,16 @@
 // 「模型配置」页的主体：市面主流厂商各一行，用户要做的只有一件事——挑一家、贴 key。
 //
 // 版式取自 Apple 设置页的 grouped inset list：整组一张圆角卡，行间发丝线，
-// 行首一枚品牌色方块当扫读锚点。展开行内编辑（不弹窗）——填 key 是"给这一行补个字段"，
-// 不是一次要打断上下文的任务，弹窗会把它演得比它重。
+// 行首一枚品牌色方块当扫读锚点。
 //
-// 不变量沿用 keyVault：输入框存完即清，渲染层不留 key 的任何副本；状态只有布尔。
+// 展开体里放的是**这家的账**（用量图 + 余额）；填 key 收在一枚入口钮后面的弹窗里
+// （components/ProviderKeyDialog.tsx）。原来是行内常驻一个输入框——那是在展开体
+// 长出用量图之前：看账是天天的事，改 key 是一次性的事，常驻位置该给前者。
+//
+// 不变量沿用 keyVault：key 存完即清，渲染层不留任何副本；状态只有布尔。
 
-import { useMemo, useRef, useState } from "react";
-import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -15,7 +18,9 @@ import { MODEL_CATALOG } from "../../../shared/modelCatalog.js";
 import { PROVIDER_CATALOG, type ProviderId, type ProviderInfo } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
+import { ProviderKeyDialog } from "./ProviderKeyDialog.js";
 import { ProviderMark } from "./ProviderMark.js";
+import { fmtBalance, ProviderUsage, USAGE_DAYS, useProviderBalance } from "./ProviderUsage.js";
 
 const REGION_LABEL: Record<ProviderInfo["region"], string> = { cn: "国内直连", global: "海外", local: "本机" };
 
@@ -29,11 +34,9 @@ function ProviderRow({
   open: boolean;
   onToggle: () => void;
 }) {
-  const configured = useChat((s) => s.keyStatus[info.apiKeyEnv] ?? false);
-  const saveApiKey = useChat((s) => s.saveApiKey);
-  const [draft, setDraft] = useState("");
-  const [saved, setSaved] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // 遮罩本身就是"配没配"：空串 = 没配（keyStatus 的口径，见 shared/keyMask.ts）
+  const mask = useChat((s) => s.keyStatus[info.apiKeyEnv] ?? "");
+  const configured = mask !== "";
 
   // 本机 Ollama 的型号不在目录里（用户 pull 了什么就有什么），现问现取
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -41,26 +44,14 @@ function ProviderRow({
   const ollamaBaseUrl = useChat((s) => s.ollamaBaseUrl);
   const refreshOllama = useChat((s) => s.refreshOllamaModels);
   const models = useMemo(() => MODEL_CATALOG.filter((m) => m.provider === info.id), [info.id]);
-
-  const save = async () => {
-    const key = draft.trim();
-    if (!key) return;
-    await saveApiKey(info.apiKeyEnv, key);
-    setDraft(""); // 存完即清:渲染层不留副本
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
-  };
+  const balance = useProviderBalance(info.id);
 
   return (
     <div>
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => {
-          onToggle();
-          // 展开 = 用户要填 key,光标直接落进去,省一次点击（免 key 的行没有框可落）
-          if (!open && !info.keyless) window.setTimeout(() => inputRef.current?.focus(), 60);
-        }}
+        onClick={onToggle}
         className="flex w-full items-center gap-3 px-4 py-[11px] text-left transition-colors duration-150 hover:bg-foreground/[0.04]"
       >
         <ProviderMark provider={info.id} size={28} className="rounded-[8px]" />
@@ -70,6 +61,13 @@ function ProviderRow({
             {info.blurb}
           </span>
         </span>
+        {/* 余额贴在状态前面:这一行是扫读用的,"哪家快没钱了"正是扫的时候想知道的事。
+            只有四家有余额 API,其余厂商这里什么都不长出来(不是长一个 0) */}
+        {balance?.ok && (
+          <span className="shrink-0 text-[11.5px] text-muted-foreground tabular-nums">
+            {fmtBalance(balance.amount, balance.currency)}
+          </span>
+        )}
         {info.keyless ? (
           <span className="flex shrink-0 items-center gap-[5px] text-[11.5px] text-ok">
             <span className="size-[6px] rounded-full bg-ok" />
@@ -94,6 +92,9 @@ function ProviderRow({
       <div className="disclose" data-open={open}>
         <div>
           <div className="flex flex-col gap-[10px] px-4 pt-1 pb-[14px]">
+            {/* 用量/余额放最上面:已经配好的厂商，展开多半是来看账的，不是来改 key 的。
+                没用过、也查不到余额的厂商这里整块不出现 */}
+            <ProviderUsage provider={info.id} />
             {/* 免 key 的一家没有输入框可填：它要的不是凭据，是"服务开着没" */}
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
@@ -104,53 +105,19 @@ function ProviderRow({
                 {ollamaBaseUrl && <>，当前连的是 <code>{ollamaBaseUrl}</code></>}。
               </p>
             ) : (
-              <div className="flex gap-2">
-                <Input
-                  ref={inputRef}
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="h-9 flex-1 font-mono text-[13px]"
-                  placeholder={configured ? `输入新 key 覆盖（${info.keyHint}）` : `粘贴 API key（${info.keyHint}）`}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void save();
-                  }}
-                />
-                <Button size="sm" className="h-9" disabled={!draft.trim()} onClick={() => void save()}>
-                  保存
-                </Button>
-                {configured && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-9 bg-transparent text-destructive border-destructive/60 hover:bg-destructive/10 hover:text-destructive dark:bg-transparent dark:hover:bg-destructive/10"
-                    onClick={() => void saveApiKey(info.apiKeyEnv, "")}
-                  >
-                    清除
-                  </Button>
-                )}
-              </div>
+              <ProviderKeyDialog info={info} mask={mask} />
             )}
 
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-[6px] text-[11.5px]">
+            {info.keyless && (
               <button
                 type="button"
-                className="inline-flex items-center gap-1 text-primary hover:underline"
+                className="inline-flex w-fit items-center gap-1 text-[11.5px] text-primary hover:underline"
                 onClick={() => void window.otter.openProviderConsole(info.id)}
               >
-                {info.keyless ? `下载 ${info.name}` : `去 ${info.name} 控制台领 key`}
+                下载 {info.name}
                 <ExternalLinkIcon className="size-[11px]" />
               </button>
-              {!info.keyless && <code className="text-muted-foreground">{info.apiKeyEnv}</code>}
-              {saved && (
-                <span className="saved-hint inline-flex items-center gap-1 text-ok">
-                  <CheckIcon className="size-[11px]" />
-                  已保存
-                </span>
-              )}
-            </div>
+            )}
 
             {/* 型号清单:填完 key 之后下拉框里会多出哪几款,当场看得见。
                 Ollama 那一行列的是本机实际装了什么（现问 Ollama），
@@ -245,6 +212,13 @@ export function ModelProviderSettings() {
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<ProviderId | null>(null);
 
+  const refreshProviderStats = useChat((s) => s.refreshProviderStats);
+  // 开页取一次。用量读的是本地 SQLite（毫秒级），余额要出网（各家 60s 缓存）——
+  // 不做轮询：这一页是"改配置"的地方，不是仪表盘，多刷一次只会多打几趟外网
+  useEffect(() => {
+    void refreshProviderStats(USAGE_DAYS);
+  }, [refreshProviderStats]);
+
   const q = query.trim().toLowerCase();
   const matched = useMemo(
     () =>
@@ -259,7 +233,7 @@ export function ModelProviderSettings() {
 
   // "可用" = 填了 key 的 + 免 key 的本机服务。分组问的是"我现在能不能选它",
   // 不是"我有没有给过它凭据"——Ollama 从来不要凭据，却一直可用
-  const ready = (p: ProviderInfo) => p.keyless === true || (keyStatus[p.apiKeyEnv] ?? false);
+  const ready = (p: ProviderInfo) => p.keyless === true || (keyStatus[p.apiKeyEnv] ?? "") !== "";
   const configured = matched.filter(ready);
   const rest = matched.filter((p) => !ready(p));
 

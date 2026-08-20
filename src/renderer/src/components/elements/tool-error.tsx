@@ -3,6 +3,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { AlertCircleIcon, Loader2Icon, RotateCwIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
+import { FileTypeIcon } from "@/components/FileTypeIcon.js";
 import { field, mono, paper } from "@/lib/surfaces.js";
 
 export function ToolError({
@@ -15,6 +16,7 @@ export function ToolError({
   onRetry,
   onSkip,
   actions,
+  filePath,
   className,
   ...props
 }: Omit<
@@ -43,6 +45,10 @@ export function ToolError({
       null = 这排不要(本仓没有单条工具的重试/跳过入口:重跑一次工具是一件新的事,
       得有新的 tool_call 落盘,不能拿旧的那条冒充) */
   actions?: ReactNode;
+  /** 本仓改动:出错的是一个文件时,把它的类型图标带上(读写文件失败时,
+      target 是文件名)。错误卡上最要紧的两件事是"哪一个"和"为什么",
+      图标帮的是前一件 */
+  filePath?: string | undefined;
 }) {
   return (
     <div
@@ -58,6 +64,7 @@ export function ToolError({
       <div className="flex items-center gap-2.5">
         <AlertCircleIcon className="size-3.5 shrink-0 text-red-500" />
         <span className={cn(mono, "text-foreground/55 shrink-0")}>{name}</span>
+        {filePath !== undefined && <FileTypeIcon path={filePath} className="size-3.5" />}
         <span className="text-foreground/80 min-w-0 flex-1 truncate text-[13px]">
           {target}
         </span>

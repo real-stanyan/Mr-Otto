@@ -21,6 +21,10 @@ export interface ErrorStateProps extends Omit<
   retryLabel?: string;
   retryTitle?: string;
   retryingLabel?: string;
+  /** 本仓改动:报错原文。detail 显示的是人话版(见 lib/modelError.ts),
+      原文折在这后面 —— 排查的人要的是那一串 JSON,读的人不要。
+      不给 = 没有原文可看(人话版就是原文),那就不长这个入口 */
+  raw?: string | undefined;
 }
 
 export function ErrorState({
@@ -31,6 +35,7 @@ export function ErrorState({
   retryLabel = "重试",
   retryTitle,
   retryingLabel = "重试中",
+  raw,
   className,
   ...props
 }: ErrorStateProps) {
@@ -73,13 +78,27 @@ export function ErrorState({
         <p className="mt-0.5 text-[13px] leading-snug text-red-600/60 dark:text-red-400/60">
           {detail}
         </p>
+        {/* 本仓改动:原文折叠。默认只念人话,要排查的人点开看服务商到底回了什么 */}
+        {raw !== undefined && (
+          <details className="group mt-1">
+            <summary className="w-fit cursor-pointer list-none text-[11px] text-red-600/45 transition-colors select-none hover:text-red-600/75 dark:text-red-400/45 dark:hover:text-red-400/75 [&::-webkit-details-marker]:hidden before:content-['▸_'] group-open:before:content-['▾_']">
+              原文
+            </summary>
+            <pre className="mt-1 max-h-32 overflow-auto font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-red-600/45 dark:text-red-400/45">
+              {raw}
+            </pre>
+          </details>
+        )}
       </div>
       {onRetry && (
         <button
           type="button"
           onClick={onRetry}
           {...(retryTitle !== undefined ? { title: retryTitle } : {})}
-          className="ms-auto flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+          // 本仓改动:self-center。外层是 items-start(图标要和标题第一行对齐),
+          // 于是这颗钮也被钉在顶上 —— 错误正文长起来时它孤零零挂在右上角。
+          // 它是**整条**错误的出口,不属于标题那一行,竖直居中才对得上整块
+          className="ms-auto flex shrink-0 items-center gap-1.5 self-center rounded-full px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
         >
           <RefreshCwIcon className="size-3" />
           {retryLabel}

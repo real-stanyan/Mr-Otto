@@ -29,7 +29,7 @@ import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
 import type { ApprovalRequest } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
-import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
+import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
@@ -50,10 +50,12 @@ import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
+import { SessionOrb } from "./components/SessionOrb.js";
+import { cn } from "@/lib/utils.js";
+import { orbState } from "./lib/sessionOrb.js";
+import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
-import { Chart } from "@/components/elements/chart.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
-import { contextSeries } from "../../session/deriveUsage.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
@@ -63,7 +65,9 @@ import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
+import { FolderIcon } from "./components/FileTypeIcon.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
+import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
@@ -117,8 +121,6 @@ import {
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
-import { retryPlan } from "./lib/retry.js";
-import { retryLastUserMessage } from "./lib/retryAction.js";
 import {
   ComposerPrimitive,
   unstable_useTriggerPopoverAriaProps,
@@ -136,6 +138,7 @@ import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigg
 import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
+import { SendErrorBanner } from "./components/SendErrorBanner.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
@@ -143,6 +146,9 @@ import { SelectionQuote } from "./components/SelectionQuote.js";
    一次性样式直接内联在各自元素上 */
 const V = "font-mono tabular-nums text-foreground whitespace-nowrap";
 const POP_ROW = "flex justify-between items-baseline gap-3 text-muted-foreground py-[2.5px]";
+/** 清单定稿之后用户又开了这么多轮还没更新过 = 当它被丢下了（理由见 TodoPanel） */
+const STALE_TODO_TURNS = 2;
+
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
@@ -215,8 +221,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
 }) {
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
-  const compacts = events.filter((e) => e.type === "context_compacted").length;
-  const series = useMemo(() => contextSeries(events), [events]);
   const n = (x: number) => x.toLocaleString("en-US");
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
       非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
@@ -262,22 +266,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
         ))}
       </div>
 
-      {/* 增长曲线:每一次正文调用送进去的 prompt token(投影见 session/deriveUsage)。
-          分段条回答"此刻的构成",曲线回答"它是怎么长到这儿的"——压缩发生时
-          曲线上会有一截明显的回落,那是这张卡里唯一能看见压缩效果的地方。
-          只有一两个点时不画:两个点连成的直线不是趋势 */}
-      {series.length >= 3 && (
-        <Chart
-          label="上下文增长"
-          // 空串 = 不画那个大数:上面那枚 ticker 已经报过同一个数了
-          value=""
-          points={series}
-          visibleCount={series.length}
-          variant="area"
-          className="mt-[9px] max-w-none border-0 bg-transparent p-0"
-        />
-      )}
-
       <div className="mt-[9px] mb-1">
         {CTX_CATEGORIES.map((c) => (
           <div key={c.key} className={POP_ROW}>
@@ -299,10 +287,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
         {/* 花费按型号拆开(cost-meter):正文走贵的、压缩/分区/建议走便宜的,
             只报一个总数会把这件事抹平 */}
         <CostPanel events={events} />
-        <div className={POP_ROW}>
-          <span>事件日志</span>
-          <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
-        </div>
       </div>
     </TooltipContent>
   );
@@ -314,6 +298,37 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
 /** 任务清单面板:模型用 todo_write 拆出来的活干到哪了。
     数据是 deriveTodos(events) 的投影——不存 UI state,重开 app / 换机器照样是这份。
     位置在会话框正上方:进度是"接下来要发生什么"的语境,贴着输入框读最顺 */
+/** 排队面板 —— assistant-ui 的 message-queue。
+    turn 跑着时敲的回车排进队里(store.enqueue),这里把队伍摊开:头一行是**正在跑
+    的那条**(取日志里最后一条 user_message),底下按序是排着的。
+
+    只在"跑着 + 队里有货"时出现:队列空着时这张卡只会重复说一遍聊天流里已经
+    在说的事(那条消息就在上面),白占一层楼。
+    位置在输入框正上方、任务清单之下:它讲的是"接下来要发生什么",和清单同一个语境 */
+function QueuePanel() {
+  const running = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
+  const queued = useChat((s) => s.queuedBySession[s.sessionId]);
+  const unqueue = useChat((s) => s.unqueue);
+  const events = useChat((s) => s.events);
+  const nowRunning = useMemo(() => lastUserMessage(events), [events]);
+
+  if (!running || !queued || queued.length === 0) return null;
+
+  return (
+    <MessageQueue
+      running={nowRunning?.content ?? "这一 turn"}
+      queued={queued}
+      onCancel={unqueue}
+      runningLabel="进行中"
+      queuedLabel={(n) => `${n} 条排队`}
+      hint="这条跑完自动发出"
+      // element 默认 max-w-sm(它设想自己是一张独立卡);这里它贴着输入框,
+      // 宽度该由输入框那一栏定
+      className="mb-2 max-w-none"
+    />
+  );
+}
+
 function TodoPanel() {
   const events = useChat((s) => s.events);
   const todos = useMemo(() => deriveTodos(events), [events]);
@@ -321,11 +336,23 @@ function TodoPanel() {
   // 清单是日志的投影(不改),改的是措辞和动效:转圈的球 + shimmer 是"活的"的语言,
   // 静止的会话不该说这句话
   const live = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
-  const [open, setOpen] = useState(true);
+  const stale = useMemo(() => turnsSinceTodoUpdate(events), [events]);
+  // 默认收起:清单是"背景进度",不是此刻要读的东西。头行那句摘要已经把
+  // "干到哪了"说完了,细目要看再点开
+  const [open, setOpen] = useState(false);
 
   if (todos.length === 0) return null; // 没拆过任务就完全不占地方
   const c = countTodos(todos);
   const allDone = c.completed === c.total;
+  // 全做完了就收摊:一张写着"3 项全部完成"的卡会一直挂在输入框上方,
+  // 而它已经没有任何"接下来"可讲了 —— 完成这件事在聊天流里说过了
+  if (allDone) return null;
+  // 疑似被丢下的清单同样收摊:模型写完就不再维护它是常态(压缩之后它自己
+  // 都不记得那张表了),而一张没人更新的清单报的是一个早就不成立的进度。
+  // 门槛两轮:一轮之内不动很正常(用户接着说"继续"、模型接着干同一件事),
+  // 两轮还一动没动,就是它已经走到别的事上去了。turn 在跑时不判:那正是
+  // 它可能马上更新清单的时刻
+  if (!live && stale >= STALE_TODO_TURNS) return null;
   // 头行只报"还没完的"——已完成数量是过去时,写出来抢眼但没用
   const summary = allDone
     ? `${c.total} 项全部完成`
@@ -438,6 +465,7 @@ function SettingRow({ label, children }: { label: string; children: ReactNode })
 
 function ComposerPrefsBar() {
   const model = useChat((s) => s.model);
+  const lane = useChat((s) => s.lane);
   const events = useChat((s) => s.events);
   const toolDefs = useChat((s) => s.toolDefs);
   const approvalMode = useChat((s) => s.approvalMode);
@@ -460,15 +488,19 @@ function ComposerPrefsBar() {
     <BypassToggle value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
   );
 
-  // 型号名最长的一档不该独占半条控件行:封顶后省略。
+  // 型号名默认写全,挤不下了才省略:原来封了 164px 的顶,于是"GLM-4.5 Flash"
+  // 这种明明放得下的名字也被砍成"GLM-4.5 Flash…" —— 省略号是**没地方了**的信号,
+  // 常态挂着它等于一直在报一个假警。去掉硬顶之后,触发器按内容取宽(w-fit),
+  // 行里挤了才收缩(min-w-0 + flex 默认可收缩),里面那层照旧 truncate。
   // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
   // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
     <ModelPicker
       value={model}
-      onChange={(v) => void switchModel(v)}
+      lane={lane}
+      onChange={(m, l) => void switchModel(m, l)}
       disabled={status === "running"}
-      className={BAR_SELECT + " max-w-[164px]"}
+      className={BAR_SELECT}
     />
   );
 
@@ -742,7 +774,7 @@ function reachOf(approval: ApprovalRequest): string[] {
 
 /** key 配置行：输入框存完即清——渲染层不留 key 的任何副本 */
 function KeyRow({ envName, label }: { envName: string; label: string }) {
-  const configured = useChat((s) => s.keyStatus[envName] ?? false);
+  const configured = useChat((s) => (s.keyStatus[envName] ?? "") !== "");
   const saveApiKey = useChat((s) => s.saveApiKey);
   const [draft, setDraft] = useState("");
 
@@ -1251,9 +1283,30 @@ function AppSidebar() {
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
           <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
           Mr Otto
-          {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
-              展开状态下用户第一眼找的是侧栏里的开关 */}
-          <SidebarTrigger className="ml-auto" />
+          {/* 搜索挪到顶行、收起钮左边:它是"去别的会话"的路口,和下面那一长串
+              会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
+              只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
+              看见放大镜就够了(悬停有全称和快捷键) */}
+          {/* 两颗钮是一组,靠右站在一起:ml-auto 给这个盒子,不给它们各自 ——
+              各挂一个 ml-auto 会把剩余空白**平分**给两者,搜索被推到行中间,
+              和收起钮隔出老远。搜索不在时(设置/牌桌档)盒子还在,收起钮照旧靠右 */}
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {settingsSection === null && mode !== "game" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground hover:bg-foreground/[0.06]"
+                title="搜索会话（⌘K）"
+                aria-label="搜索会话"
+                onClick={() => setSessionSearchOpen(true)}
+              >
+                <Search className="size-4" aria-hidden />
+              </Button>
+            )}
+            {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
+                展开状态下用户第一眼找的是侧栏里的开关 */}
+            <SidebarTrigger />
+          </div>
         </div>
         {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
             它切的是整个主区在展示什么，属于导航，不是输入区的控件。
@@ -1283,20 +1336,6 @@ function AppSidebar() {
             onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
           >
             ＋ 新会话
-          </Button>
-        )}
-        {/* 搜索入口跟着新会话钮走:两颗都是"去别的会话"的路口。
-            只留快捷键的话,不知道有这功能的人永远不知道 */}
-        {settingsSection === null && mode !== "game" && (
-          <Button
-            variant="ghost"
-            className="justify-start px-3 py-[7px] text-[13px] text-muted-foreground hover:bg-foreground/[0.06]"
-            title="搜索会话（⌘K）"
-            onClick={() => setSessionSearchOpen(true)}
-          >
-            <Search className="size-4 opacity-70" aria-hidden />
-            搜索会话
-            <kbd className="ml-auto font-mono text-[10px] opacity-60">⌘K</kbd>
           </Button>
         )}
       </SidebarHeader>
@@ -1372,21 +1411,22 @@ function AppSidebar() {
                         {g.sessions.map((s) => (
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
-                              className="h-auto flex-col items-start gap-px py-[7px]"
+                              className="h-auto flex-row items-center gap-2 py-[7px]"
                               isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
+                              {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
+                                  原来那行「日期 · 条数 运行中」里,只有最后两个字会改变你的
+                                  下一步动作,前两样不会 —— 所以留状态、去掉日期和条数 */}
+                              <SessionOrb
+                                state={orbState({
+                                  waiting: Boolean(approvals[s.sessionId] ?? asks[s.sessionId]),
+                                  running: statusBySession[s.sessionId] === "running",
+                                })}
+                              />
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-                              <span className={TITLE_SPAN}>{s.title ?? g.label}</span>
-                              {/* 文件夹名搬去组标题了,这行只留时间/条数——同组里重复报工程名是噪音 */}
-                              <span className={WHEN_SPAN}>
-                                {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                                {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-                                {approvals[s.sessionId] ? (
-                                  <em className="not-italic font-semibold text-warn"> 等审批</em>
-                                ) : statusBySession[s.sessionId] === "running" ? (
-                                  <em className="not-italic font-semibold text-brand"> 运行中</em>
-                                ) : null}
+                              <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+                                {s.title ?? g.label}
                               </span>
                             </SidebarMenuButton>
                             <SidebarMenuAction
@@ -1542,8 +1582,8 @@ function AppSidebar() {
   );
 }
 
-/** 齿轮：侧栏底部设置入口图标（内联 SVG，跟 FolderIcon 同一套写法：
-    currentColor 描边，不吃色板变量，跟着按钮的文字色走）。
+/** 齿轮：侧栏底部设置入口图标（内联 SVG：currentColor 描边，不吃色板变量，
+    跟着按钮的文字色走。文件夹那枚已经换成 material 的彩色图标，见 FileTypeIcon）。
     path 取自 feather icons 的 settings（MIT）——齿要连在轮缘上才是齿轮，
     圆心射线画法读作太阳 */
 function GearIcon() {
@@ -1552,15 +1592,6 @@ function GearIcon() {
       strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-      strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true">
-      <path d="M1.8 4h4.2l1.4 1.8h6.8v7.4H1.8z" />
     </svg>
   );
 }
@@ -1761,6 +1792,8 @@ function Welcome() {
   const [model, setModel] = useState(() =>
     describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
+  // 新会话卡还没有日志可投影,lane 只能是本地草稿;落地时跟着 startSession 过去
+  const [lane, setLane] = useState<ModelLane>("auto");
   const [mode, setMode] = useState<"ask" | "auto">("ask");
   const [busy, setBusy] = useState(false);
   const choice = useModelChoice(model);
@@ -1777,7 +1810,7 @@ function Welcome() {
     setBusy(true);
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
-      await startSession({ workspace, model, approvalMode: mode, thinking });
+      await startSession({ workspace, model, lane, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
@@ -1865,9 +1898,14 @@ function Welcome() {
           <span className="flex-1" />
           <ModelPicker
             value={model}
-            onChange={setModel}
+            lane={lane}
+            onChange={(m, l) => {
+              setModel(m);
+              setLane(l);
+            }}
             disabled={busy}
-            className={NSC_SELECT + " max-w-[180px]"}
+            // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
+            className={NSC_SELECT}
           />
           {/* 挡位单独一枚钮,与会话中的输入框同一套 */}
           <ThinkingPicker
@@ -1888,7 +1926,6 @@ function Welcome() {
         </div>
       </ComposerBar>
       </AttachDropZone>
-      <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );
@@ -1908,13 +1945,15 @@ function Welcome() {
     把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
 function ComposerTextarea({
   inputRef,
-  disabled,
+  running,
   onSubmit,
   onPasteFiles,
 }: {
   /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
   inputRef: React.Ref<HTMLTextAreaElement>;
-  disabled: boolean;
+  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"排队",
+      不是"发不出去"(见 lib/messageQueue.ts)。这里只用来换一句提示语 */
+  running: boolean;
   onSubmit: () => void;
   onPasteFiles: (files: File[]) => void;
 }) {
@@ -1943,8 +1982,9 @@ function ComposerTextarea({
         className="border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground px-3 py-2 text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35"
         autoFocus
         rows={1}
-        placeholder={disabled ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
-        disabled={disabled}
+        placeholder={
+          running ? "回车排队，这一条跑完自动发出" : "输入消息，回车发送，Shift+回车换行"
+        }
         onPaste={(e) => {
           // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
           // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
@@ -1991,6 +2031,7 @@ function ChatComposer() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const staged = useChat((s) => s.staged);
   const send = useChat((s) => s.send);
+  const enqueue = useChat((s) => s.enqueue);
   const stop = useChat((s) => s.stop);
   const attachPasted = useChat((s) => s.attachPasted);
   const composer = useAui().thread.composer();
@@ -2069,10 +2110,26 @@ function ChatComposer() {
   // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
   const canSend = input.trim() !== "" || staged.length > 0;
 
+  /** 发出去,还是排进队里。turn 跑着时敲的回车是"排队",不是"发不出去"
+      (队列本身见 lib/messageQueue.ts)。分岔只在这一处 —— 上面那些解析
+      ($skill / 空正文校验)两条路共用,排队的那条不该少走一遍校验 */
+  const dispatch = (text: string, skill?: string) => {
+    if (status === "running") {
+      enqueue(text, skill);
+      return;
+    }
+    void send(text, skill);
+  };
+
   const submit = () => {
     const text = input.trim();
     // 只贴了图不打字也算一条消息:附件本身就是内容
-    if ((!text && staged.length === 0) || status === "running") return;
+    if (!text && staged.length === 0) return;
+    // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
+    // 一条队列项挂不住)。turn 跑着时附件入口整个是关的(AttachDropZone
+    // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
+    // 把图悄悄丢掉发一条空消息
+    if (status === "running" && !text) return;
     // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
     // 报错时不清输入框——让用户就地改，不用重打一遍
     if (text.startsWith("$")) {
@@ -2088,12 +2145,14 @@ function ChatComposer() {
         return;
       }
       setInput("");
-      void send(task, name);
+      dispatch(task, name);
       return;
     }
     setInput("");
-    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
-    void send(text);
+    // "/" 开头 = 对 harness 说话，不进模型 —— 也就不排队:它们是本地动作
+    // (开面板、改标题),等一个 turn 跑完再执行没有道理
+    if (dispatchSlash(text)) return;
+    dispatch(text);
   };
 
   return (
@@ -2146,7 +2205,7 @@ function ChatComposer() {
             <StagedChips />
             <ComposerTextarea
               inputRef={textareaRef}
-              disabled={status === "running"}
+              running={status === "running"}
               onSubmit={submit}
               onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
             />
@@ -2421,6 +2480,9 @@ export function App() {
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <WorkTreePill />
             <TodoPanel />
+            <QueuePanel />
+            {/* 「消息没发出去」= 输入框的回执,所以贴着输入框,不在消息流里 */}
+            <SendErrorBanner />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}

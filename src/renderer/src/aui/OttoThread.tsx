@@ -31,7 +31,6 @@ import { WebPreview } from "../components/elements/web-preview.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
-import { TurnErrorState } from "../components/TurnErrorState.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
@@ -39,10 +38,13 @@ import { useChat } from "../store.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
-import { timingStats } from "./messageTiming.js";
+import { liveTimingStats, timingStats } from "./messageTiming.js";
+import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
+import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { toolSummary } from "../lib/toolSummary.js";
+import { toolFilePath, toolSummary } from "../lib/toolSummary.js";
+import { FileTypeIcon } from "../components/FileTypeIcon.js";
 import type { OrbState } from "../lib/toolSummary.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
@@ -178,13 +180,41 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
   );
 };
 
+/** 工具行那一句话。上游写死的是 "Used tool: read_file" —— 中文界面里冒一句英文
+    是一回事;只报工具名、不报**动的是哪个文件**是更要紧的一回事:这一行最常见的
+    两种就是读文件和写文件,而 "read_file" 这个词对读的人没有信息量,"App.tsx" 才有。
+
+    动词/目标/统计三段沿用 toolSummary(工具折叠组的摘要也读它,两处措辞一致);
+    读写文件时在目标前面加一枚类型图标 —— 一段连续的工具行里,眼睛先认出的是
+    颜色和形状,不是第七行那个文件名的后缀。 */
+function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
+  const call: ToolCallRequest = { id: "", name, args };
+  const { verb, target, stat } = toolSummary(call);
+  const path = toolFilePath(call);
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="shrink-0">{verb}</span>
+      {path !== null && <FileTypeIcon path={path} className="size-[15px]" />}
+      {target !== "" && (
+        // 封顶 42ch:bash 的目标是一整条命令,不封顶会把这一行拉到屏幕外
+        <span className="max-w-[42ch] truncate font-mono text-[13px] text-foreground/75">
+          {target}
+        </span>
+      )}
+      {stat !== "" && <span className="text-muted-foreground shrink-0 text-xs">{stat}</span>}
+    </span>
+  );
+}
+
 /** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 + 一张出错卡。
     直播尾巴:ToolFallback 没有「执行中的输出」这个概念,而 bash 跑长命令时
     那条尾巴是唯一的进度信号。
     出错卡:ToolFallback 把错误塞在折叠区里,默认收着——工具失败是这一步的结论,
     收起来等于让人点开才知道刚才没成 */
 const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => {
-  const summary = toolSummary({ id: part.toolCallId, name: part.toolName, args: part.args });
+  const call: ToolCallRequest = { id: part.toolCallId, name: part.toolName, args: part.args };
+  const summary = toolSummary(call);
+  const path = toolFilePath(call);
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路
   // (下面那张 tool-error 卡才是结论)
@@ -200,7 +230,13 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   }
   return (
     <>
-      <ToolFallback {...part} />
+      <ToolFallback
+        {...part}
+        label={<ToolRowLabel name={part.toolName} args={part.args} />}
+        // 悬停给完整路径:行里只留了 basename(短才读得快),而同名文件在
+        // src/ 和 tests/ 下各有一个是常事
+        {...(path !== null ? { title: path } : {})}
+      />
       <ToolLiveTail
         toolCallId={part.toolCallId}
         command={summary.target || part.toolName}
@@ -210,6 +246,7 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
         <ToolError
           name={part.toolName}
           target={summary.target}
+          {...(path !== null ? { filePath: path } : {})}
           message={typeof part.result === "string" ? part.result : JSON.stringify(part.result)}
           // 没有单条工具的重试/跳过:重跑一次是一件新的事,得有新的 tool_call 落盘。
           // 下一步归模型——错误就在它的上下文里
@@ -327,9 +364,19 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-/** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
-    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
-function TurnMeta({ events }: { events: SessionEvent[] }) {
+/** orb 旁的那一行数字 —— 和消息页脚同一个 element(message-timing),
+    区别只在数字是估的(见 aui/messageTiming.ts 的 liveTimingStats)。
+    用同一个 element 是有意的:turn 跑完之后这一行会被消息页脚那一行接替,
+    两者长得一样,读起来就是"同一行数字从估的变成结算过的",而不是换了个东西。
+
+    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点。
+    1 秒一跳:再快就是抖动(毫秒位每帧都在变,眼睛只会觉得吵),再慢就不像活的 */
+function TurnMeta({ events, toolDefs, output }: {
+  events: SessionEvent[];
+  toolDefs: ToolDefinition[];
+  /** 已经吐出来的字(正文 + 思考——思考也计费) */
+  output: string;
+}) {
   const [start] = useState(() => Date.now());
   const [now, setNow] = useState(start);
   useEffect(() => {
@@ -337,12 +384,14 @@ function TurnMeta({ events }: { events: SessionEvent[] }) {
     return () => clearInterval(t);
   }, []);
 
-  const tokens = useMemo(() => totalTokens(events), [events]);
-  return (
-    <span className="tabular-nums">
-      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens
-    </span>
-  );
+  // 送进去的 ≈ 此刻上下文有多大(和上下文圆环读同一份估算,两处数字不会打架)
+  const promptTokens = useMemo(() => contextBreakdown(events, toolDefs).total, [events, toolDefs]);
+  const stats = liveTimingStats({
+    elapsedMs: now - start,
+    promptTokens,
+    completionTokens: estimateTokens(output),
+  });
+  return <MessageTiming stats={stats} streaming className="w-auto" />;
 }
 
 /** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
@@ -376,28 +425,12 @@ function agentPhase(opts: {
   return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
 }
 
-// ─── ErrorBanner:IPC 层瞬时发送失败的提示条(补回接线时丢掉的功能,见 Task 11) ───
-//
-// store.error 与 turn_ended(error) 是刻意分开的两类失败(见 store.ts send() 的
-// 注释):这一类是消息压根没进事件日志(会话不存在/turn 冲突),不是投影
-// (toThreadMessages.ts)能表达的东西——它不对应任何 SessionEvent。只能像
-// RunIndicator 一样直接订阅 store、挂在 ViewportFooter,而不是走消息流。
-// 没有放进 RunIndicator 里合并:两者语义不同(一个是"turn 正在跑",一个是
-// "消息没发出去、turn 根本没起来"),经验上互斥但概念上不该揉成一个组件。
-// 外观和重试出口都交给 TurnErrorState(assistant-ui 的 error-state element),
-// 与 Timeline 里 turn_ended(error) 那条行同一个组件 —— 两类失败长相一致,
-// 差别只在标题:这一条是"压根没发出去",那一条是"发出去了但 turn 死在半路"
-const ErrorBanner: ComponentType = () => {
-  const error = useChat((s) => s.error);
-  if (!error) return null;
-  return <TurnErrorState title="消息没发出去" detail={error} interactive />;
-};
-
 /** ViewportFooter 里的相位指示器:数据照旧从 store 订阅(statusBySession / approvals /
     events / streamingBySession)。status 不是 running 且没有挂起审批就不渲染——
     这两个条件合起来正是原来 App.tsx 里 `(status === "running" || approval !== null)` */
 const RunIndicator: ComponentType = () => {
   const events = useChat((s) => s.events);
+  const toolDefs = useChat((s) => s.toolDefs);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -420,7 +453,7 @@ const RunIndicator: ComponentType = () => {
       </MarkerIcon>
       <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
       <span className="ml-auto shrink-0 text-xs">
-        <TurnMeta events={events} />
+        <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
       </span>
     </Marker>
   );
@@ -488,7 +521,6 @@ const STATIC_COMPONENTS = {
   Source: OttoSource,
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
-  ErrorBanner,
   MessageFooter: MessageTimingFooter,
   MessageAnchor: SectionAnchor,
 } satisfies ThreadComponents;

@@ -85,3 +85,44 @@ export function countTodos(items: TodoItem[]): TodoCounts {
   }
   return counts;
 }
+
+/** 当前这张清单是在第几条事件上定稿的（认定规则同 deriveTodos：成功执行的那次
+    todo_write）。一条清单都没有 = -1 */
+function todoWriteIndex(events: SessionEvent[]): number {
+  const pending = new Map<string, unknown>();
+  let at = -1;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e === undefined) continue;
+    if (e.type === "assistant_message") {
+      for (const tc of e.toolCalls ?? []) {
+        if (tc.name === TODO_TOOL_NAME) pending.set(tc.id, tc.args);
+      }
+    } else if (e.type === "tool_result" && e.status === "ok" && pending.has(e.toolCallId)) {
+      if (parseTodoArgs(pending.get(e.toolCallId))) at = i;
+      pending.delete(e.toolCallId);
+    }
+  }
+  return at;
+}
+
+/**
+ * 清单定稿之后，用户又开了几个 turn。
+ *
+ * 用来判断这张清单是不是已经被丢下了：模型写完清单就不再维护它，是常态而不是
+ * 例外（它自己也会忘——压缩之后那张表就不在上下文里了）。而一张没人再更新的
+ * 清单会一直挂在输入框上方，报着一个早就不成立的进度。
+ *
+ * 为什么按「用户又说了几次话」数，而不是按时间或事件条数：一个 turn 里可能有
+ * 上百条事件、跑上十分钟，那期间清单不更新完全正常（活还在干）。真正说明
+ * "它被丢下了"的，是用户已经把话题推进了好几轮，而这张表一动没动。
+ */
+export function turnsSinceTodoUpdate(events: SessionEvent[]): number {
+  const at = todoWriteIndex(events);
+  if (at === -1) return 0;
+  let turns = 0;
+  for (let i = at + 1; i < events.length; i++) {
+    if (events[i]?.type === "user_message") turns++;
+  }
+  return turns;
+}

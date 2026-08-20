@@ -18,6 +18,7 @@ import {
 import { useChat } from "../store.js";
 import { Badge } from "@/components/ui/badge.js";
 import { Button } from "@/components/ui/button.js";
+import { FileTypeIcon } from "./FileTypeIcon.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
 import { countChanges, statusSignature, type ChangeKind, type ChangedFile } from "../../../shared/gitStatus.js";
 
@@ -194,6 +195,7 @@ export function WorkTreePill() {
           <div ref={summaryRef} className="flex min-w-0 items-center gap-2">
             {/* 最要紧的那条(按 SEVERITY 排在最前)直接摆在头行:
                 冲突/删除这类要先看见的东西,不该藏在"展开"后面 */}
+            <FileTypeIcon path={head.path} className="size-[13px]" />
             <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
               {shortPath(head.path)}
             </span>
@@ -252,7 +254,10 @@ function FileRow({ file }: { file: ChangedFile }) {
   const k = KIND[file.kind];
   return (
     <li data-file-row className="flex items-center gap-2 py-[3px] text-[13px] leading-[1.45]">
-      <k.icon className={`size-[13px] shrink-0 ${k.tone}`} aria-hidden />
+      {/* 这里画的是**文件类型**,不是改动种类:改动种类紧跟在后面用带色的两个字
+          说了(新建/改写/删除),同一件事画两遍是浪费这个位置。而这一列真正难扫的
+          恰恰是文件类型 —— 十几行等宽路径里,哪几个是测试、哪个是配置 */}
+      <FileTypeIcon path={file.path} className="size-[13px]" />
       <span className={`shrink-0 text-[11px] ${k.tone}`}>{k.label}</span>
       <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={file.path}>
         {file.from ? `${file.from} → ${file.path}` : file.path}

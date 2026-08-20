@@ -66,6 +66,20 @@ export function toolSummary(call: ToolCallRequest): { verb: string; target: stri
   }
 }
 
+/** 这次调用动的是哪个文件的**完整路径**;不碰文件的工具返回 null。
+    单独一支而不是让 toolSummary 多带一个字段:摘要里的 target 已经被砍成了
+    basename(那一行要短),而图标要认的是完整路径(路径里可能还有信息,
+    比如 tests/ 下的同名文件)。两者要的东西不一样,别硬塞进一个返回值里。
+
+    只认 read_file / write_file:bash 的 target 是一条命令,给它画一枚文件图标
+    是在说假话 —— "认不出就别画"和图标本身同样重要 */
+export function toolFilePath(call: ToolCallRequest): string | null {
+  if (call.name !== "read_file" && call.name !== "write_file") return null;
+  const a = (call.args ?? {}) as Record<string, unknown>;
+  const path = a["path"];
+  return typeof path === "string" && path !== "" ? path : null;
+}
+
 /** 折叠头的摘要:按动作归并计数。
     "读取 ×5 · 写入 ×2" 比 "7 个工具调用" 有信息量——折着也知道这一段干了什么。
     顺序按首次出现,不按字母/数量重排:那是动作发生的顺序,读者按这个顺序理解 */

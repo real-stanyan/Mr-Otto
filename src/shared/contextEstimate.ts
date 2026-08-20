@@ -7,6 +7,7 @@
 import type { SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import { systemPromptText } from "../session/deriveMessages.js";
+import { barrenEventIndexes } from "../session/barrenTurns.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
     校准用途，不求精确——离真值 ±30% 也比"冻结到上次账单"诚实。
@@ -45,7 +46,11 @@ function billingAnchor(events: SessionEvent[]): { value: number; idx: number } {
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
 function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   let pending = 0;
+  // 什么也没产出的 turn 投影里就不进上下文(ADR-0042),这里也不能计 ——
+  // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
+  const barren = barrenEventIndexes(events);
   for (let i = anchorIdx + 1; i < events.length; i++) {
+    if (barren.has(i)) continue;
     const e = events[i]!;
     switch (e.type) {
       case "user_message":

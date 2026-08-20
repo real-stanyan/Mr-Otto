@@ -2,6 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import type { SessionEvent, UserTextFile } from "./events.js";
+import { barrenEventIndexes } from "./barrenTurns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -218,8 +219,12 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 压缩只瘦身内容，永不增删消息：tool_call_id 与 assistant.tool_calls 的配对
   // 是 API 协议要求，删一条 tool 消息整个请求就废——结构神圣，内容可瘦。
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns) : 0;
+  // 什么也没产出的 turn 不进上下文(ADR-0042):模型压根没读到过那条消息,
+  // 留着只会让每一次重试都把同一句话再囤一份。日志一个字节不改,跳的是投影
+  const barren = barrenEventIndexes(events);
 
   for (const [i, event] of events.entries()) {
+    if (barren.has(i)) continue;
     switch (event.type) {
       case "user_message": {
         // 有图片附件 → parts 数组(text + image_ref);没有 → string 原样,

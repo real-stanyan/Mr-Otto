@@ -157,4 +157,62 @@ describe("EventStore", () => {
       { role: "assistant", content: "在" },
     ]);
   });
+
+  describe("billedUsage", () => {
+    const assistant = (
+      sessionId: string,
+      ts: number,
+      model: string,
+      usage?: { promptTokens: number; completionTokens: number }
+    ): NewSessionEvent => ({
+      sessionId,
+      ts,
+      type: "assistant_message",
+      content: "x",
+      model,
+      ...(usage ? { usage } : {}),
+    });
+
+    it("捞出四类计费事件的用量,跨会话", () => {
+      store.append(assistant("s1", 100, "deepseek-v4-pro", { promptTokens: 10, completionTokens: 2 }));
+      store.append(assistant("s2", 200, "claude-opus-5", { promptTokens: 30, completionTokens: 4 }));
+      store.append({
+        sessionId: "s1",
+        ts: 300,
+        type: "suggestions_generated",
+        model: "deepseek-v4-flash",
+        suggestions: ["a"],
+        usage: { promptTokens: 7, completionTokens: 1 },
+      });
+
+      expect(store.billedUsage(0)).toEqual([
+        { ts: 100, model: "deepseek-v4-pro", promptTokens: 10, completionTokens: 2 },
+        { ts: 200, model: "claude-opus-5", promptTokens: 30, completionTokens: 4 },
+        { ts: 300, model: "deepseek-v4-flash", promptTokens: 7, completionTokens: 1 },
+      ]);
+    });
+
+    it("没记 usage 的调用不出现 —— 没记 ≠ 没花", () => {
+      store.append(assistant("s1", 100, "deepseek-v4-pro"));
+      expect(store.billedUsage(0)).toEqual([]);
+    });
+
+    it("不计费的事件不出现", () => {
+      store.append(userMsg("s1", "你好"));
+      expect(store.billedUsage(0)).toEqual([]);
+    });
+
+    it("since 之前的不过桥", () => {
+      store.append(assistant("s1", 100, "deepseek-v4-pro", { promptTokens: 1, completionTokens: 1 }));
+      store.append(assistant("s1", 500, "deepseek-v4-pro", { promptTokens: 2, completionTokens: 2 }));
+      expect(store.billedUsage(400).map((r) => r.ts)).toEqual([500]);
+    });
+
+    it("归档的会话照样算 —— archive 是从列表里消失,不是这笔钱没花过", () => {
+      store.append(assistant("s1", 100, "deepseek-v4-pro", { promptTokens: 9, completionTokens: 1 }));
+      store.append({ sessionId: "s1", ts: 110, type: "session_archived" });
+      expect(store.sessions()).toEqual([]);
+      expect(store.billedUsage(0)).toHaveLength(1);
+    });
+  });
 });
