@@ -154,11 +154,18 @@ function toBase64(text: string): string {
     只认写成功的:被拒/出错时盘上根本没有这个文件,给张能下载的卡是在撒谎。
     数据直接带在 part 里(base64),不走 IPC 回读 —— 内容本来就在事件日志的
     args 里躺着,再去问一次盘反而可能读到之后被改过的版本 */
-export function filePartFor(call: ToolCallRequest, result: ToolResultEvent | undefined): Part[] {
+export function filePartFor(
+  call: ToolCallRequest,
+  result: ToolResultEvent | undefined,
+  /** 实际执行用的参数(ADR-0041:人在审批时可能只保留了一部分改动)。
+      不给 = 原样执行。这张卡说的是"写出去的文件",拿模型请求的那份来画
+      就是在替模型说话 —— 大小和内容都会和磁盘上的对不上 */
+  executedArgs?: unknown
+): Part[] {
   if (call.name !== "write_file") return [];
   if (result === undefined || result.status !== "ok") return [];
 
-  const args = call.args as { path?: unknown; content?: unknown } | null;
+  const args = (executedArgs ?? call.args) as { path?: unknown; content?: unknown } | null;
   const path = args?.path;
   const content = args?.content;
   if (typeof path !== "string" || path === "" || typeof content !== "string") return [];

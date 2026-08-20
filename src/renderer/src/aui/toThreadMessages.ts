@@ -7,7 +7,7 @@
 // 不靠肉眼在界面上找。
 
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import { buildToolIndex } from "../lib/toolIndex.js";
+import { buildToolIndex, effectiveArgs } from "../lib/toolIndex.js";
 import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
@@ -141,7 +141,7 @@ export function toThreadMessages(
           seenSources.add(p.id);
           artifacts.push(p);
         }
-        artifacts.push(...filePartFor(call, result));
+        artifacts.push(...filePartFor(call, result, effectiveArgs(call, index)));
       }
       parts.push(...artifacts);
 

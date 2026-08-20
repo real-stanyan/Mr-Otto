@@ -100,6 +100,27 @@ describe("sourcePartsFor", () => {
   });
 });
 
+describe("filePartFor — 实际执行的参数（ADR-0041）", () => {
+  it("人在审批时改过内容:卡片画的是写出去的那份,不是模型请求的那份", () => {
+    const out = filePartFor(
+      call("write_file", { path: "/w/a.md", content: "模型想写的" }),
+      ok("已写入"),
+      { path: "/w/a.md", content: "人保留下来的" }
+    );
+    expect(out).toHaveLength(1);
+    // data 是 base64,解回来比对 —— 卡片必须和磁盘上的一致
+    const decoded = new TextDecoder().decode(
+      Uint8Array.from(atob((out[0] as { data: string }).data), (c) => c.charCodeAt(0))
+    );
+    expect(decoded).toBe("人保留下来的");
+  });
+
+  it("没改过就用模型请求的那份(不传第三个参数 = 原样执行)", () => {
+    const out = filePartFor(call("write_file", { path: "/w/a.md", content: "原样" }), ok("已写入"));
+    expect(out).toHaveLength(1);
+  });
+});
+
 describe("filePartFor", () => {
   it("写成功 → 一张文件卡,内容 base64 带在 part 里", () => {
     const out = filePartFor(call("write_file", { path: "/w/notes/a.md", content: "# 标题" }), ok("已写入"));

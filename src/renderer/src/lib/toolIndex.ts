@@ -20,6 +20,10 @@ export interface ToolIndex {
   results: ReadonlyMap<string, ToolResultEvent>;
   /** toolCallId → 开跑标记(ADR-0004)。被拒绝的调用没有这条:审批门短路,执行器未达 */
   starts: ReadonlyMap<string, ToolExecutionStartedEvent>;
+  /** toolCallId → 人在审批时改过的参数(ADR-0041)。没这一条 = 原样执行的。
+      投影要回答"到底什么东西碰了磁盘"时必须查它 —— 模型请求的那份还在
+      assistant_message 里,两份都在,别拿错 */
+  revised: ReadonlyMap<string, unknown>;
 }
 
 /** 全量扫一遍事件,建两张按 toolCallId 的表。
@@ -28,14 +32,25 @@ export interface ToolIndex {
 export function buildToolIndex(events: SessionEvent[]): ToolIndex {
   const results = new Map<string, ToolResultEvent>();
   const starts = new Map<string, ToolExecutionStartedEvent>();
+  const revised = new Map<string, unknown>();
   for (const e of events) {
     if (e.type === "tool_result") {
       if (!results.has(e.toolCallId)) results.set(e.toolCallId, e);
     } else if (e.type === "tool_execution_started") {
       if (!starts.has(e.toolCallId)) starts.set(e.toolCallId, e);
+    } else if (e.type === "approval_decision" && e.revisedArgs !== undefined) {
+      // 人在审批时改过的参数(ADR-0041 的分块取舍)。凡是要回答"到底发生了什么"的
+      // 投影,都得用这一份而不是模型请求的那一份 —— 否则界面在替模型说话
+      if (!revised.has(e.toolCallId)) revised.set(e.toolCallId, e.revisedArgs);
     }
   }
-  return { results, starts };
+  return { results, starts, revised };
+}
+
+/** 这次调用**实际执行**用的参数。没被改过就是模型请求的那份 */
+export function effectiveArgs(call: ToolCallRequest, index: ToolIndex): unknown {
+  const revised = index.revised.get(call.id);
+  return revised === undefined ? call.args : revised;
 }
 
 /** 组的墙上耗时:第一次开跑到最后一个结果落盘。
