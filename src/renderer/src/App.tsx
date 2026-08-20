@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowUpIcon, BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowUpIcon, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +17,7 @@ import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
 import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
 import { PermissionGrant } from "@/components/elements/permission-grant.js";
+import { TodoList } from "@/components/elements/todo-list.js";
 import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
 import type { ApprovalRequest } from "../../shared/shellBridge.js";
@@ -343,44 +344,33 @@ function TodoPanel() {
         />
       </button>
       {open && (
-        <ul className="list-none m-0 px-3 pb-[7px] pt-[1px] max-h-[30vh] overflow-y-auto flex flex-col gap-[3px]">
-          {todos.map((t, i) => (
-            // text 就是身份(见 deriveTodos),但模型偶尔写重复文案——配上下标兜底
-            <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
-              <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
-                {t.status === "in_progress" ? (
-                  live ? (
-                    // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
-                    // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
-                    <span className="scale-[0.8] origin-center leading-none" aria-hidden>
-                      <ThinkingOrb state="working" size={20} theme="auto" />
-                    </span>
-                  ) : (
-                    // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
-                    <CircleDot className="size-[13px] text-brand" aria-hidden />
-                  )
-                ) : t.status === "completed" ? (
-                  <Check className="size-[13px] text-ok" aria-hidden />
-                ) : (
-                  <span className="block size-[7px] rounded-full border border-muted-foreground/60" aria-hidden />
-                )}
+        // 身子换成 elements/todo-list：清单本身是投影(deriveTodos)，元件只负责画。
+        // 三处本仓特供都走它的口子：头行留给上面那个折叠钮、进行中的图标分"真在跑/
+        // 只是开了个头"两种、真在跑才加 shimmer
+        <TodoList
+          className="max-h-[30vh] max-w-none overflow-y-auto px-3 pt-[1px] pb-[7px]"
+          header={null}
+          {...(live ? { activeClassName: "shimmer" } : {})}
+          activeIcon={
+            live ? (
+              // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
+              // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
+              <span className="origin-center scale-[0.7] leading-none" aria-hidden>
+                <ThinkingOrb state="working" size={20} theme="auto" />
               </span>
-              <span
-                className={
-                  t.status === "completed"
-                    ? "text-muted-foreground line-through decoration-muted-foreground/40"
-                    : t.status === "in_progress"
-                      ? live
-                        ? "text-foreground shimmer"
-                        : "text-foreground"
-                      : "text-muted-foreground"
-                }
-              >
-                {t.text}
-              </span>
-            </li>
-          ))}
-        </ul>
+            ) : (
+              // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
+              <CircleDot className="size-[13px] text-brand" aria-hidden />
+            )
+          }
+          // text 就是身份(见 deriveTodos),但模型偶尔写重复文案——配上下标兜底
+          items={todos.map((t, i) => ({
+            id: `${i}-${t.text}`,
+            text: t.text,
+            status:
+              t.status === "completed" ? "done" : t.status === "in_progress" ? "active" : "pending",
+          }))}
+        />
       )}
     </div>
   );
