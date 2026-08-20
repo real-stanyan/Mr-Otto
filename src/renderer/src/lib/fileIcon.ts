@@ -29,10 +29,11 @@ export function fileIconName(input: string): string {
   if (named) return named;
 
   const parts = base.toLowerCase().split(".");
-  // 点号开头的文件（.gitignore）第一段是空串，它不是后缀 —— 从下标 2 起才有后缀可言
-  const first = base.startsWith(".") ? 2 : 1;
-  // 从最长的后缀往短了试：docker-compose.yml 要压过 yml，test.ts 要压过 ts
-  for (let i = first; i < parts.length; i++) {
+  // 从最长的后缀往短了试：docker-compose.yml 要压过 yml，test.ts 要压过 ts。
+  // 点号开头的文件第一段是空串，从下标 1 起正好跳过它：.env 的后缀就是 env
+  // （照上游的读法 —— VS Code 里 .env 拿的正是 env 那枚齿轮）。
+  // 代价是 ".ts" 这种"整个名字就是个后缀"的怪文件也会被认成 ts，与上游一致
+  for (let i = 1; i < parts.length; i++) {
     const icon = BY_EXTENSION[parts.slice(i).join(".")];
     if (icon) return icon;
   }

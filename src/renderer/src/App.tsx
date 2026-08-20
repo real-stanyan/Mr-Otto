@@ -486,7 +486,10 @@ function ComposerPrefsBar() {
     <BypassToggle value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
   );
 
-  // 型号名最长的一档不该独占半条控件行:封顶后省略。
+  // 型号名默认写全,挤不下了才省略:原来封了 164px 的顶,于是"GLM-4.5 Flash"
+  // 这种明明放得下的名字也被砍成"GLM-4.5 Flash…" —— 省略号是**没地方了**的信号,
+  // 常态挂着它等于一直在报一个假警。去掉硬顶之后,触发器按内容取宽(w-fit),
+  // 行里挤了才收缩(min-w-0 + flex 默认可收缩),里面那层照旧 truncate。
   // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
   // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
@@ -494,7 +497,7 @@ function ComposerPrefsBar() {
       value={model}
       onChange={(v) => void switchModel(v)}
       disabled={status === "running"}
-      className={BAR_SELECT + " max-w-[164px]"}
+      className={BAR_SELECT}
     />
   );
 
@@ -1901,7 +1904,8 @@ function Welcome() {
             value={model}
             onChange={setModel}
             disabled={busy}
-            className={NSC_SELECT + " max-w-[180px]"}
+            // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
+            className={NSC_SELECT}
           />
           {/* 挡位单独一枚钮,与会话中的输入框同一套 */}
           <ThinkingPicker

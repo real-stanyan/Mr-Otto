@@ -25,11 +25,11 @@ describe("fileIconName —— 路径认图标", () => {
     expect(fileIconName("lib/foo.ts")).toBe("typescript");
   });
 
-  it("点号开头的文件不会把名字当后缀", () => {
+  it("点号开头的文件:整名匹配优先，没有整名就把点后面那段当后缀", () => {
     expect(fileIconName(".gitignore")).toBe("git");
-    // .ts 这种"整个名字就是个后缀"的怪文件：第一段是空串，不该被当成 ts
-    expect(fileIconName(".ts")).toBe(DEFAULT_FILE_ICON);
-    // 但点号开头**又**真有后缀的照认
+    // .env 不在整名表里,但它的后缀就是 env —— 上游(VS Code 里)给的正是这枚齿轮。
+    // 这条是回归:早先把"点号开头"整个跳过了后缀匹配,.env 掉进通用图标
+    expect(fileIconName(".env")).toBe("tune");
     expect(fileIconName(".hidden.ts")).toBe("typescript");
   });
 
