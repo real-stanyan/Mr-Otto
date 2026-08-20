@@ -274,3 +274,104 @@ describe("toThreadMessages — 边界", () => {
     expect(out[0]?.role).toBe("system");
   });
 });
+
+describe("toThreadMessages —— 工具产物(来源 / 文件卡)", () => {
+  it("web_search 成功 → 同一条 assistant 消息里多出一条 url 型 source part", () => {
+    const events = [
+      ev(
+        {
+          type: "assistant_message",
+          content: "",
+          model: "deepseek-chat",
+          toolCalls: [{ id: "c1", name: "web_search", args: { query: "vite" } }],
+        },
+        0
+      ),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "[Vite](https://vite.dev/)" }, 1),
+    ];
+    const out = toThreadMessages(events);
+    expect(out[0]?.content).toEqual([
+      { type: "tool-call", toolCallId: "c1", toolName: "web_search", args: { query: "vite" }, result: "[Vite](https://vite.dev/)" },
+      { type: "source", sourceType: "url", id: "https://vite.dev/", url: "https://vite.dev/", title: "Vite" },
+    ]);
+  });
+
+  it("提不到网址就只有工具行,不留空壳", () => {
+    const events = [
+      ev(
+        {
+          type: "assistant_message",
+          content: "",
+          model: "deepseek-chat",
+          toolCalls: [{ id: "c1", name: "web_search", args: { query: "x" } }],
+        },
+        0
+      ),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "什么都没搜到" }, 1),
+    ];
+    expect(toThreadMessages(events)[0]?.content).toHaveLength(1);
+  });
+
+  it("write_file 成功后跟一张文件卡;没结果时只有工具行(还在等审批)", () => {
+    const call = { id: "c1", name: "write_file", args: { path: "/w/a.md", content: "hi" } };
+    const pending = [ev({ type: "assistant_message", content: "", model: "m", toolCalls: [call] }, 0)];
+    expect(toThreadMessages(pending)[0]?.content).toHaveLength(1);
+
+    const done = [
+      ...pending,
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "已写入" }, 1),
+    ];
+    const parts = toThreadMessages(done)[0]?.content;
+    expect(parts).toHaveLength(2);
+    expect(parts?.[1]).toEqual({
+      type: "file",
+      filename: "a.md",
+      mimeType: "text/markdown",
+      data: Buffer.from("hi", "utf8").toString("base64"),
+    });
+  });
+});
+
+describe("toThreadMessages —— 产物的排布", () => {
+  it("产物排在所有工具行之后:工具行保持连续,才合得成一组折叠", () => {
+    const events = [
+      ev(
+        {
+          type: "assistant_message",
+          content: "",
+          model: "m",
+          toolCalls: [
+            { id: "c1", name: "web_search", args: { query: "x" } },
+            { id: "c2", name: "write_file", args: { path: "/w/a.md", content: "hi" } },
+          ],
+        },
+        0
+      ),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "https://a.com/1" }, 1),
+      ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "已写入" }, 2),
+    ];
+    const kinds = (toThreadMessages(events)[0]?.content as { type: string }[]).map((p) => p.type);
+    expect(kinds).toEqual(["tool-call", "tool-call", "source", "file"]);
+  });
+
+  it("同一条消息里搜到同一个地址两次,只出一条来源", () => {
+    const events = [
+      ev(
+        {
+          type: "assistant_message",
+          content: "",
+          model: "m",
+          toolCalls: [
+            { id: "c1", name: "web_search", args: { query: "x" } },
+            { id: "c2", name: "web_search", args: { query: "y" } },
+          ],
+        },
+        0
+      ),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "https://a.com/1" }, 1),
+      ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "https://a.com/1" }, 2),
+    ];
+    const parts = toThreadMessages(events)[0]?.content as { type: string }[];
+    expect(parts.filter((p) => p.type === "source")).toHaveLength(1);
+  });
+});

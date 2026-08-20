@@ -11,6 +11,7 @@ import { buildToolIndex } from "../lib/toolIndex.js";
 import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
+import { filePartFor, sourcePartsFor, type Part } from "./toolArtifacts.js";
 
 /** 流式直播缓冲(store.streamingBySession 的一项)。事件未落盘前的预览 */
 export interface LiveBuffer {
@@ -18,8 +19,6 @@ export interface LiveBuffer {
   reasoning: string;
 }
 
-/** assistant-ui 的 content part 联合(只取本仓用得到的那几支) */
-type Part = NonNullable<Exclude<ThreadMessageLike["content"], string>>[number];
 /** tool-call part 的精确形状(从联合里抠出来,主要是拿它的 args 字段类型:
     assistant-ui 要求 ReadonlyJSONObject,不是 Record<string, unknown> ——
     我们的 args 来自事件日志的 unknown,只能整体断言成这个精确类型 */
@@ -115,7 +114,25 @@ export function toThreadMessages(
       const parts: Part[] = [];
       if ((e.reasoning ?? "") !== "") parts.push({ type: "reasoning", text: e.reasoning! });
       if (e.content !== "") parts.push({ type: "text", text: e.content });
-      for (const call of e.toolCalls ?? []) parts.push(toToolCallPart(call, index));
+      // 工具产物(查到的来源、写出的文件)统一排在所有工具行之后,不插在每一行后面。
+      // 两个理由:
+      // ① 工具行靠"连续"才能合成一组折叠(thread.tsx 的 groupPartByType),中间插一条
+      //    别的 part 就把组切断了 —— 一次「搜索→读文件→写文件」会碎成三组;
+      // ② 语义上它们是这条回复的产物,不是某一次调用的脚注 —— 多次搜索到同一个
+      //    地址也该只出现一次(下面按 url 去重)
+      const artifacts: Part[] = [];
+      const seenSources = new Set<string>();
+      for (const call of e.toolCalls ?? []) {
+        parts.push(toToolCallPart(call, index));
+        const result = index.results.get(call.id);
+        for (const p of sourcePartsFor(call, result)) {
+          if (p.type !== "source" || seenSources.has(p.id)) continue;
+          seenSources.add(p.id);
+          artifacts.push(p);
+        }
+        artifacts.push(...filePartFor(call, result));
+      }
+      parts.push(...artifacts);
 
       // 有调用还没拿到结果 = 这条消息还在等世界回话(悬空调用,ADR-0005)
       const pending = (e.toolCalls ?? []).some((c) => !index.results.has(c.id));

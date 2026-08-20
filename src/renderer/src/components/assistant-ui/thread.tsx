@@ -2,6 +2,7 @@
 
 import { UserMessageAttachments } from "@/components/assistant-ui/attachment.js";
 import { File } from "@/components/assistant-ui/file.js";
+import { Sources } from "@/components/assistant-ui/sources.js";
 import { Image } from "@/components/assistant-ui/image.js";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text.js";
 import {
@@ -33,6 +34,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   type FileMessagePartComponent,
+  type SourceMessagePartComponent,
   type ImageMessagePartComponent,
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -93,6 +95,10 @@ export type ThreadComponents = {
   MessageAnchor?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
+  /** 本仓加的槽:来源 chip。上游 registry 的 Sources 直接开 <a target="_blank">,
+      在 Electron 里那是飘出一个 Otto 管不着的裸窗口 —— 本仓要把它接到内嵌浏览器上,
+      所以得有个口子换掉整条渲染。上游 registry 没有这个槽 —— 升级时要人工合 */
+  Source?: SourceMessagePartComponent | undefined;
   ToolGroup?:
     | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
     | undefined;
@@ -296,6 +302,7 @@ const MessageError: FC = () => {
 const AssistantMessage: FC = () => {
   const {
     ToolFallback: ToolFallbackComponent = ToolFallback,
+    Source: SourceComponent = Sources,
     ToolGroup,
     ReasoningGroup,
   } = useContext(ThreadComponentsContext);
@@ -319,6 +326,10 @@ const AssistantMessage: FC = () => {
             reasoning: ["group-chainOfThought", "group-reasoning"],
             "tool-call": ["group-chainOfThought", "group-tool"],
             "standalone-tool-call": [],
+            // 本仓加的:来源 chip 挨在一起时排成一行(每条自己一行会把回复撑散)。
+            // 与 tool 组不同,这一组不进 chain-of-thought:它是"这次回答引了哪些页",
+            // 属于结论的一部分,不该跟着思考过程一起折叠
+            source: ["group-sources"],
           })}
         >
           {({ part, children }) => {
@@ -354,6 +365,17 @@ const AssistantMessage: FC = () => {
                   </ReasoningRoot>
                 );
               }
+              case "group-sources":
+                return (
+                  <div
+                    data-slot="aui_assistant-message-sources"
+                    className="flex flex-wrap items-center gap-1.5 py-1"
+                  >
+                    {children}
+                  </div>
+                );
+              case "source":
+                return <SourceComponent {...part} />;
               case "text":
                 return <MarkdownText />;
               case "reasoning":

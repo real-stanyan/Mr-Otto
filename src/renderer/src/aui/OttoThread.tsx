@@ -17,6 +17,7 @@ import {
   ReasoningTrigger,
 } from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
+import { Sources } from "../components/assistant-ui/sources.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
 import { RetryButton } from "../components/RetryButton.js";
@@ -63,6 +64,34 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
     <ToolLiveTail toolCallId={part.toolCallId} done={part.result !== undefined} />
   </>
 );
+
+/** 来源 chip:点开走 Otto 自己的内嵌浏览器,不放 <a target="_blank">。
+    上游 registry 的 Sources 就是一个开新标签页的 <a> —— 在 Electron 里那等于弹出
+    一个 Otto 管不着的裸窗口(主窗口没有 setWindowOpenHandler,只有内嵌浏览器那块
+    view 有,见 main/webContentsViewFactory.ts)。这里改成:开右侧浏览器面板 + 让
+    那块 view 导航过去。navigate 自己会 ensure(sessionId) 把 view 建出来
+    (main/browserHub.ts),所以不用等面板挂载完再发,没有先后顺序的坑。
+    href 仍然写上:中键/复制链接地址这些浏览器原生动作还指望它,
+    也让这一条在无障碍树里仍然是个链接 */
+const OttoSource: NonNullable<ThreadComponents["Source"]> = (part) => {
+  const sessionId = useChat((s) => s.sessionId);
+  const openBrowserPanel = useChat((s) => s.openBrowserPanel);
+  if (part.sourceType !== "url") return null; // 投影只产 url 型来源
+  const url = part.url;
+  return (
+    <Sources.Root
+      href={url}
+      onClick={(e) => {
+        e.preventDefault();
+        openBrowserPanel();
+        void window.otter.browserNavigate(sessionId, url);
+      }}
+    >
+      <Sources.Icon url={url} />
+      <Sources.Title>{part.title ?? url}</Sources.Title>
+    </Sources.Root>
+  );
+};
 
 // ─── ReasoningGroup:折叠头复刻旧版"思考 823 字 · 1.2s"(补回接线时丢掉的功能,见 Task 11) ───
 //
@@ -294,6 +323,7 @@ const COMPONENTS: ThreadComponents = {
   SystemMessage,
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
+  Source: OttoSource,
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
   ErrorBanner,
