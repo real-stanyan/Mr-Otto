@@ -97,6 +97,7 @@ import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
 import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
+import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
   ContextDisplayRoot,
   ContextDisplayTrigger,
@@ -1766,8 +1767,243 @@ function Welcome() {
   );
 }
 
+/** 会话中的输入框。
+    从 App() 里抽出来是**必须**的,不是顺手整理:它现在读 assistant-ui 的 composer
+    作用域(useAui/useAuiState),而 OttoRuntimeProvider 是 App() 自己渲染的 ——
+    同一个组件里的 hook 跑在 provider 外面,一挂载就抛。抽成独立组件、放进 provider
+    里面渲染,hook 才在作用域内。
+
+    为什么文本改由 assistant-ui 持有(原来是 App 的一个 useState):
+    `/` 和 `$` 的弹出菜单接下来要换成官方的 TriggerPopover + directive 适配器,
+    那一整套都长在 composer 作用域上 —— 文本不交出去,它们无从挂载。
+
+    为什么**发送**仍然走本仓自己的路(没有用 ComposerPrimitive.Send / runtime 的 onNew):
+    附件的所有权在 store(staged),不在 assistant-ui。这不是懒:新会话卡(Welcome)
+    也往同一个 staged 里粘图,建会话后由 send 原样带走 —— 而新会话卡渲染在
+    provider 外面(那会儿还没有会话),够不着 composer 作用域。把附件交给 assistant-ui
+    等于把这条交接掐断,或者养出两个所有者。既然附件不在它手上,它的
+    "空输入框不给发"就会把"只贴了图不打字"这条正常路径判死,所以
+    submitMode="none",Enter 和发送键都走下面这个 submit() */
+function ChatComposer() {
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const staged = useChat((s) => s.staged);
+  const send = useChat((s) => s.send);
+  const stop = useChat((s) => s.stop);
+  const attachPasted = useChat((s) => s.attachPasted);
+  const composer = useAui().thread.composer();
+  const input = useAuiState((s) => s.composer.text);
+  const setInput = (text: string) => composer.setText(text);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
+  const slashMatches = input.startsWith("/")
+    ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
+    : [];
+  // $ 菜单（skill 选择）：以 "$" 开头且还没打空格——打了空格 = 名字已定，后面是任务正文。
+  // 两个菜单天然互斥（首字符只能是一个），选中态共用同一个 slashSel
+  const skills = useChat((s) => s.skills);
+  const dollarQuery = input.startsWith("$") && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
+  const skillMatches =
+    dollarQuery !== null ? skills.filter((s) => s.name.toLowerCase().includes(dollarQuery)) : [];
+  const [slashSel, setSlashSel] = useState(0);
+  useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
+  const menuLen = Math.max(slashMatches.length, skillMatches.length);
+  const sel = Math.min(slashSel, Math.max(menuLen - 1, 0));
+  const runSlash = (name: string) => {
+    setInput("");
+    dispatchSlash(name);
+  };
+  // 选中 skill = 只补全名字，不发送：任务正文还等着用户打
+  const pickSkill = (name: string) => setInput(`$${name} `);
+
+
+  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
+  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
+  const composerInject = useChat((s) => s.composerInject);
+  useEffect(() => {
+    if (!composerInject) return;
+    // 追加档要读当前值。composer.getState() 而不是闭包里的 input:
+    // 这个 effect 只依赖 composerInject,input 的闭包会是旧的
+    const prev = composer.getState().text;
+    composer.setText(
+      composerInject.append
+        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
+        : composerInject.text
+    );
+    useChat.setState({ composerInject: null });
+    textareaRef.current?.focus();
+  }, [composerInject, composer]);
+
+
+  const submit = () => {
+    const text = input.trim();
+    // 只贴了图不打字也算一条消息:附件本身就是内容
+    if ((!text && staged.length === 0) || status === "running") return;
+    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
+    // 报错时不清输入框——让用户就地改，不用重打一遍
+    if (text.startsWith("$")) {
+      const space = text.search(/\s/);
+      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const task = space === -1 ? "" : text.slice(space + 1).trim();
+      if (!useChat.getState().skills.some((s) => s.name === name)) {
+        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
+        return;
+      }
+      if (!task) {
+        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
+        return;
+      }
+      setInput("");
+      void send(task, name);
+      return;
+    }
+    setInput("");
+    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
+    void send(text);
+  };
+
+  return (
+    <ComposerPrimitive.Root onSubmit={(e) => e.preventDefault()}>
+            <AttachDropZone disabled={status === "running"}>
+            <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
+              {slashMatches.length > 0 && (
+                <div className={SLASH_MENU} role="listbox">
+                  {slashMatches.map(([name, c], i) => (
+                    <button
+                      key={name}
+                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
+                      role="option"
+                      aria-selected={i === sel}
+                      onMouseEnter={() => setSlashSel(i)}
+                      onClick={() => runSlash(name)}
+                    >
+                      <span className="font-mono text-[13px] text-brand shrink-0">{name}</span>
+                      <span className="text-xs text-muted-foreground truncate">{c.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
+              {skillMatches.length > 0 && (
+                <div className={SLASH_MENU} role="listbox">
+                  {skillMatches.map((s, i) => (
+                    <button
+                      key={s.name}
+                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
+                      role="option"
+                      aria-selected={i === sel}
+                      onMouseEnter={() => setSlashSel(i)}
+                      onClick={() => pickSkill(s.name)}
+                    >
+                      <span className="font-mono text-[13px] text-brand shrink-0">{"$" + s.name}</span>
+                      <span className="text-xs text-muted-foreground truncate">{s.description || "（无描述）"}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <StagedChips className="pt-[6px] px-[10px]" />
+              {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
+                  自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
+              {/* ComposerPrimitive.Input 接管文本状态(值/受控/焦点管理),外观仍是本仓的 Textarea。
+                  三个关闭项都是刻意的:
+                  - submitMode="none":发送归下面的 submit()(理由见组件头注释)
+                  - addAttachmentOnPaste={false}:粘贴附件走 store 的闸门(intakePastedFiles),
+                    不走 assistant-ui 的附件通道
+                  - cancelOnEscape={false}:Esc 在本仓是"停止 turn"(App 里挂 window 的那个监听),
+                    不是"清空正在打的字" */}
+              <ComposerPrimitive.Input
+                asChild
+                submitMode="none"
+                addAttachmentOnPaste={false}
+                cancelOnEscape={false}
+              >
+              <Textarea
+                ref={textareaRef}
+                className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
+                autoFocus
+                rows={1}
+                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
+                disabled={status === "running"}
+                onPaste={(e) => {
+                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
+                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
+                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
+                  const files = Array.from(e.clipboardData.files);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void filesToPayload(files).then(attachPasted);
+                }}
+                onKeyDown={(e) => {
+                  // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
+                  if (slashMatches.length > 0) {
+                    const n = slashMatches.length;
+                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
+                    if (e.key === "Tab") { e.preventDefault(); setInput(slashMatches[sel]![0]); return; }
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      runSlash(slashMatches[sel]![0]);
+                      return;
+                    }
+                  }
+                  // $ 菜单：Enter/Tab 都只补全名字（不发送）——正文还没打
+                  if (skillMatches.length > 0) {
+                    const n = skillMatches.length;
+                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
+                    if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
+                      e.preventDefault();
+                      pickSkill(skillMatches[sel]!.name);
+                      return;
+                    }
+                  }
+                  // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
+                  // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+              />
+              </ComposerPrimitive.Input>
+              {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
+              <div className="flex items-end gap-2">
+                <ComposerBar />
+                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
+                    停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
+                {status === "running" ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
+                        onClick={() => void stop()}
+                      >
+                        停止
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>停止 turn（Esc）</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
+                        发送
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>发送(Enter)</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+            </div>
+            </AttachDropZone>
+    </ComposerPrimitive.Root>
+  );
+}
+
+
 export function App() {
-  const { phase, sessionId, workspace, events, boot, send, stop } = useChat();
+  const { phase, sessionId, workspace, events, boot, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
@@ -1785,8 +2021,6 @@ export function App() {
   const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
-  const staged = useChat((s) => s.staged);
-  const attachPasted = useChat((s) => s.attachPasted);
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
@@ -1830,8 +2064,6 @@ export function App() {
     });
   }, []);
 
-  const [input, setInput] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
   // 原来挂在 ThreadViewport 自己的滚动 <section> 上;ThreadViewport 没人渲染了,
   // 换成包住 OttoThread 的这层容器 —— composer 是它的兄弟(在 footer 里),不在此结构内,
@@ -1845,44 +2077,11 @@ export function App() {
   // sectionAnchors 是分区功能真正要留的部分,重做版本见下面 OttoThread 的
   // viewportRef/sections 两个 prop 和 aui/OttoThread.tsx 里的 SectionAnchor 槽
 
-  // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
-  const slashMatches = input.startsWith("/")
-    ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
-    : [];
-  // $ 菜单（skill 选择）：以 "$" 开头且还没打空格——打了空格 = 名字已定，后面是任务正文。
-  // 两个菜单天然互斥（首字符只能是一个），选中态共用同一个 slashSel
-  const skills = useChat((s) => s.skills);
-  const dollarQuery = input.startsWith("$") && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
-  const skillMatches =
-    dollarQuery !== null ? skills.filter((s) => s.name.toLowerCase().includes(dollarQuery)) : [];
-  const [slashSel, setSlashSel] = useState(0);
-  useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
-  const menuLen = Math.max(slashMatches.length, skillMatches.length);
-  const sel = Math.min(slashSel, Math.max(menuLen - 1, 0));
-  const runSlash = (name: string) => {
-    setInput("");
-    dispatchSlash(name);
-  };
-  // 选中 skill = 只补全名字，不发送：任务正文还等着用户打
-  const pickSkill = (name: string) => setInput(`$${name} `);
 
   useEffect(() => {
     void boot();
   }, [boot]);
 
-  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
-  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
-  const composerInject = useChat((s) => s.composerInject);
-  useEffect(() => {
-    if (!composerInject) return;
-    setInput((prev) =>
-      composerInject.append
-        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
-        : composerInject.text
-    );
-    useChat.setState({ composerInject: null });
-    textareaRef.current?.focus();
-  }, [composerInject]);
 
   // Esc = 停止（Claude Code 同款肌肉记忆）。挂 window：running 时输入框
   // disabled 收不到键盘，事件得在更高处接
@@ -1909,32 +2108,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const submit = () => {
-    const text = input.trim();
-    // 只贴了图不打字也算一条消息:附件本身就是内容
-    if ((!text && staged.length === 0) || status === "running") return;
-    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
-    // 报错时不清输入框——让用户就地改，不用重打一遍
-    if (text.startsWith("$")) {
-      const space = text.search(/\s/);
-      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
-      const task = space === -1 ? "" : text.slice(space + 1).trim();
-      if (!useChat.getState().skills.some((s) => s.name === name)) {
-        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
-        return;
-      }
-      if (!task) {
-        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
-        return;
-      }
-      setInput("");
-      void send(task, name);
-      return;
-    }
-    setInput("");
-    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
-    void send(text);
-  };
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
@@ -2065,127 +2238,7 @@ export function App() {
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}
-            <AttachDropZone disabled={status === "running"}>
-            <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
-              {slashMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {slashMatches.map(([name, c], i) => (
-                    <button
-                      key={name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => runSlash(name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{c.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
-              {skillMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {skillMatches.map((s, i) => (
-                    <button
-                      key={s.name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => pickSkill(s.name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{"$" + s.name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{s.description || "（无描述）"}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <StagedChips className="pt-[6px] px-[10px]" />
-              {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
-                  自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
-              <Textarea
-                ref={textareaRef}
-                className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
-                autoFocus
-                rows={1}
-                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
-                disabled={status === "running"}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onPaste={(e) => {
-                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
-                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
-                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
-                  const files = Array.from(e.clipboardData.files);
-                  if (files.length === 0) return;
-                  e.preventDefault();
-                  void filesToPayload(files).then(attachPasted);
-                }}
-                onKeyDown={(e) => {
-                  // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
-                  if (slashMatches.length > 0) {
-                    const n = slashMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab") { e.preventDefault(); setInput(slashMatches[sel]![0]); return; }
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      runSlash(slashMatches[sel]![0]);
-                      return;
-                    }
-                  }
-                  // $ 菜单：Enter/Tab 都只补全名字（不发送）——正文还没打
-                  if (skillMatches.length > 0) {
-                    const n = skillMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
-                      e.preventDefault();
-                      pickSkill(skillMatches[sel]!.name);
-                      return;
-                    }
-                  }
-                  // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
-                  // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    submit();
-                  }
-                }}
-              />
-              {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
-              <div className="flex items-end gap-2">
-                <ComposerBar />
-                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
-                    停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
-                {status === "running" ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
-                        onClick={() => void stop()}
-                      >
-                        停止
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>停止 turn（Esc）</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
-                        发送
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>发送(Enter)</TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-            </div>
-            </AttachDropZone>
+            <ChatComposer />
           </footer>
         </OttoRuntimeProvider>
       )}
