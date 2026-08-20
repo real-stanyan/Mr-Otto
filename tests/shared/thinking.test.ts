@@ -8,6 +8,7 @@ import {
   THINKING_EFFORT_MAX,
   THINKING_FLAG,
   THINKING_NONE,
+  type ThinkingMode,
   type ThinkingSpec,
 } from "../../src/shared/thinking.js";
 import { describeModel, MODEL_CATALOG } from "../../src/shared/modelCatalog.js";
@@ -57,6 +58,22 @@ describe("thinkingSwitchable", () => {
     expect(thinkingSwitchable(THINKING_NONE)).toBe(false);
     expect(thinkingSwitchable({ wire: "none", modes: ["on"], default: "on" })).toBe(false);
     expect(thinkingSwitchable(THINKING_FLAG)).toBe(true);
+  });
+});
+
+describe("认不出的档位", () => {
+  // 回归：dev 下渲染进程先热更、主进程还跑旧代码，主进程就会收到一个自己
+  // 不认识的档。旧实现拿它算距离得到 NaN，NaN 比较恒为 false，"就近"
+  // 一路落到候选里的第一个 —— 用户点「顶」，界面跳「低」
+  it("落默认档，不落最弱的那一档", () => {
+    const unknown = "ultra" as ThinkingMode;
+    expect(clampThinking(unknown, THINKING_EFFORT)).toBe("medium");
+    expect(clampThinking(unknown, THINKING_FLAG)).toBe("on");
+  });
+
+  it("默认档也不在表里时才退回第一档", () => {
+    const spec: ThinkingSpec = { wire: "effort", modes: ["low", "high"], default: "medium" };
+    expect(clampThinking("ultra" as ThinkingMode, spec)).toBe("low");
   });
 });
 

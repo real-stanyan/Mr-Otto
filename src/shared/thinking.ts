@@ -66,11 +66,18 @@ export function thinkingLabel(mode: ThinkingMode): string {
 export function clampThinking(mode: ThinkingMode, spec: ThinkingSpec): ThinkingMode {
   if (spec.modes.includes(mode)) return mode;
   if (spec.modes.length === 0) return "off"; // 没有这回事的型号，值不参与请求
+  // 认不出的档位落默认，不落"就近"：这个值是从渲染进程过 IPC 来的，
+  // 两个进程在 dev 下会各跑各的版本（新增一档时渲染层先热更、主进程还是旧的）。
+  // 旧的 RANK 查不到新档就得到 NaN，而 NaN 的比较**恒为 false** ——
+  // "就近"会一路 false 到底，原样吐出候选里的第一个（最弱那一档）。
+  // 表现是：点「顶」跳到「低」。宁可回默认，也不能把它读成最弱
+  const rank: number | undefined = RANK[mode];
+  if (rank === undefined) return spec.modes.includes(spec.default) ? spec.default : spec.modes[0]!;
   const pool = mode === "off" ? spec.modes : spec.modes.filter((m) => m !== "off");
   const candidates = pool.length > 0 ? pool : spec.modes;
   let best = candidates[0]!;
   for (const m of candidates) {
-    if (Math.abs(RANK[m] - RANK[mode]) < Math.abs(RANK[best] - RANK[mode])) best = m;
+    if (Math.abs(RANK[m] - rank) < Math.abs(RANK[best] - rank)) best = m;
   }
   return best;
 }

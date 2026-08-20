@@ -51,6 +51,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
+import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
@@ -425,19 +426,9 @@ function ComposerPrefsBar() {
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
 
-  const approvalSelect = (
-    <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
-      <SelectTrigger
-        className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
-        title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="ask">逐条审批</SelectItem>
-        <SelectItem value="auto">完全访问</SelectItem>
-      </SelectContent>
-    </Select>
+  // 审批模式是两态,用开关不用下拉框(理由见 BypassSwitch 的开篇)
+  const approvalToggle = (
+    <BypassToggle value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
   );
 
   // 型号名最长的一档不该独占半条控件行:封顶后省略。
@@ -473,7 +464,7 @@ function ComposerPrefsBar() {
     <div className="@container flex-1 min-w-0 text-xs text-muted-foreground">
       <div className="flex items-center gap-2 pl-[2px]">
         {/* 宽:三件偏好摊开 */}
-        <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{approvalSelect}</div>
+        <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{approvalToggle}</div>
 
         {/* 窄:收进浮层。触发钮在免审(auto)状态下照样染警示色——
             危险状态绝不能因为被折叠就不见了,那是把提醒藏进抽屉 */}
@@ -488,14 +479,16 @@ function ComposerPrefsBar() {
             }
             aria-label="会话偏好"
             aria-expanded={prefsOpen}
-            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
+            title={`会话偏好：${approvalMode === "auto" ? "免审批" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
             onClick={() => setPrefsOpen((o) => !o)}
           >
             <Ellipsis className="size-4" />
           </Button>
           {prefsOpen && (
             <SettingsPopover onClose={() => setPrefsOpen(false)}>
-              <SettingRow label="审批">{approvalSelect}</SettingRow>
+              <SettingRow label="免审批">
+                <BypassSwitch value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
+              </SettingRow>
               <SettingRow label="模型">{modelSelect}</SettingRow>
               <SettingRow label="Thinking">{thinkingPick}</SettingRow>
             </SettingsPopover>
@@ -1803,18 +1796,7 @@ function Welcome() {
           }}
         />
         <div className="flex items-center gap-2">
-          <Select value={mode} onValueChange={(v) => setMode(v as "ask" | "auto")}>
-            <SelectTrigger
-              className={NSC_SELECT + (mode === "auto" ? " " + BYPASS : "")}
-              title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ask">逐条审批</SelectItem>
-              <SelectItem value="auto">完全访问</SelectItem>
-            </SelectContent>
-          </Select>
+          <BypassToggle value={mode} onChange={setMode} />
           <Tooltip>
             <TooltipTrigger asChild>
               <ComposerAttachButton
