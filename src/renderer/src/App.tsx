@@ -2073,18 +2073,22 @@ export function App() {
         </>
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
-        <>
+        //
+        // OttoRuntimeProvider 包住的是**整列**(消息区 + 审批卡 + footer),不是只包消息区:
+        // 输入框那一排里的 assistant-ui 组件(上下文用量、模型选择器、composer)都要
+        // 读 runtime 的 context(useAui/useAuiState),provider 只包消息区的话它们一挂载就抛。
+        // 包到这一层的代价是零:runtime 本身是 useOttoRuntime 从 store 派生的,
+        // 上移只是把同一个 context 的作用域放大,没有多算任何东西
+        <OttoRuntimeProvider>
           <div ref={threadHostRef} className="flex-1 min-h-0 flex flex-col relative">
-            <OttoRuntimeProvider>
-              {/* viewportRef:分区轨要量的是真正滚动的那个元素(scrollspy 的判定线、
+            {/* viewportRef:分区轨要量的是真正滚动的那个元素(scrollspy 的判定线、
                   跳转的 scroll-mt 都以它为准)。ThreadPrimitive.Viewport 自己转发 ref
                   (见 components/assistant-ui/thread.tsx 的 viewportRef prop),接进去就够,
                   不用像旧 ThreadViewport 那样另开一个回调 ref 去接管 DOM 节点。
                   sections:锚点(哪条消息前面插第几个分区的起点)算在 OttoThread 内部——
                   它需要 toThreadMessages 产出的消息 id 顺序才能对齐,这份顺序只有
                   OttoThread 自己手上有,不值得为了传出来再破坏封装(见 aui/OttoThread.tsx) */}
-              <OttoThread viewportRef={scrollRef} sections={sections} />
-            </OttoRuntimeProvider>
+            <OttoThread viewportRef={scrollRef} sections={sections} />
             <SelectionQuote hostRef={threadHostRef} />
             {/* 只有一个分区时目录没有意义(一条目录 = 噪音),不渲染。轨是绝对定位的浮层,
                 挂在 threadHostRef 这层(SelectionQuote 的宿主)的兄弟位置——出现和消失
@@ -2232,7 +2236,7 @@ export function App() {
             </div>
             </AttachDropZone>
           </footer>
-        </>
+        </OttoRuntimeProvider>
       )}
     </div>
   );

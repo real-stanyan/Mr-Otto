@@ -350,7 +350,7 @@ describe("toThreadMessages —— 产物的排布", () => {
       ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "https://a.com/1" }, 1),
       ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "已写入" }, 2),
     ];
-    const kinds = (toThreadMessages(events)[0]?.content as { type: string }[]).map((p) => p.type);
+    const kinds = (toThreadMessages(events)[0]?.content as readonly { type: string }[]).map((p) => p.type);
     expect(kinds).toEqual(["tool-call", "tool-call", "source", "file"]);
   });
 
@@ -371,7 +371,7 @@ describe("toThreadMessages —— 产物的排布", () => {
       ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "https://a.com/1" }, 1),
       ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "https://a.com/1" }, 2),
     ];
-    const parts = toThreadMessages(events)[0]?.content as { type: string }[];
+    const parts = toThreadMessages(events)[0]?.content as readonly { type: string }[];
     expect(parts.filter((p) => p.type === "source")).toHaveLength(1);
   });
 });
