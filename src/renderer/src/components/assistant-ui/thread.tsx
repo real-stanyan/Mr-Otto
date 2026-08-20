@@ -232,9 +232,15 @@ const ThreadRoot: FC<{
             </ThreadPrimitive.Messages>
           </div>
 
+          {/* 本仓改动:这一条不铺底色、也不留那么厚的下边距。
+              上游这里是"消息区 + 输入框"一整块的收尾,底色是为了把滚上来的正文挡在
+              输入框后面;而本仓的输入框住在 Thread 外面(见下方注释),这一条footer
+              里只剩跟进建议/运行指示/错误条——都是自带底色的小块。
+              铺一层不透明底色 = 在正文和输入框之间横一条实心带子,把两者切开;
+              下边距同理:建议是"接着说什么"的入口,它该贴着输入框,不是浮在半空 */}
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
+              "aui-thread-viewport-footer flex flex-col gap-2 overflow-visible pb-1",
               !isEmpty &&
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}

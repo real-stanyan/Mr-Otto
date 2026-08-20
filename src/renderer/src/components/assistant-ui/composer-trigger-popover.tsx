@@ -137,14 +137,14 @@ const Items: FC<ItemsProps> = ({
       {(items) => (
         <div
           data-slot="composer-trigger-popover-items"
-          className="flex flex-col"
+          className="flex flex-col gap-0.5"
         >
           <ComposerPrimitive.Unstable_TriggerPopoverBack className="text-muted-foreground hover:bg-accent flex cursor-pointer items-center gap-1.5 border-b px-3 py-2 text-xs tracking-wide uppercase transition-colors">
             <ChevronLeftIcon className="size-3.5" />
             {backLabel}
           </ComposerPrimitive.Unstable_TriggerPopoverBack>
 
-          <div className="py-1">
+          <div className="flex flex-col gap-0.5">
             {items.map((item, index) => {
               const iconKey =
                 typeof item.metadata?.icon === "string"
@@ -152,29 +152,34 @@ const Items: FC<ItemsProps> = ({
                   : undefined;
               const Icon = resolveIcon(iconKey, iconMap, fallbackIcon);
               return (
+                // 本仓改动:一条一行(图标 · 名字 · 描述 · ↵),版式照
+                // elements/composer 的 ComposerMenuItem —— 输入框上方弹出的菜单
+                // 在本仓有两个(这个 + element 那套),长得不一样就像两个东西。
+                // 上游是两行(名字一行、描述折行在下),一屏放不下三条
                 <ComposerPrimitive.Unstable_TriggerPopoverItem
                   key={item.id}
                   item={item}
                   index={index}
-                  className="hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-start transition-colors outline-none"
+                  className="group/item data-[highlighted]:bg-foreground/[0.06] hover:bg-foreground/[0.04] flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-start text-[13.5px] transition-colors outline-none"
                 >
-                  <span className="flex items-center gap-2 text-sm font-medium">
-                    <Icon className="text-primary size-3.5" />
-                    {item.label}
-                  </span>
+                  <Icon className="text-foreground/35 size-3.5 shrink-0" />
+                  <span className="shrink-0 font-medium">{item.label}</span>
                   {item.description && (
-                    // 本仓改动:描述截成一行(line-clamp-1)。上游让它整段折行,
-                    // 而 skill 的 description 常有三五行——一屏只放得下三条,
-                    // 补全菜单变成了阅读材料。被换掉的手写菜单一直是单行 truncate
-                    <span className="text-muted-foreground ms-5.5 line-clamp-1 w-full text-xs leading-tight">
+                    // 描述截成一行:skill 的 description 常有三五行,
+                    // 整段摊开的话补全菜单变成了阅读材料
+                    <span className="text-foreground/45 min-w-0 flex-1 truncate text-xs">
                       {item.description}
                     </span>
                   )}
+                  {/* 选中那条才出现的回车提示:告诉人"现在按回车选的是这一条" */}
+                  <kbd className="bg-foreground/[0.06] text-foreground/45 ms-auto hidden rounded px-1 font-mono text-[10px] group-data-[highlighted]/item:inline">
+                    ↵
+                  </kbd>
                 </ComposerPrimitive.Unstable_TriggerPopoverItem>
               );
             })}
             {items.length === 0 && (
-              <div className="text-muted-foreground px-3 py-2 text-sm">
+              <div className="text-foreground/40 px-2.5 py-2 text-[13.5px]">
                 {isLoading ? loadingLabel : emptyLabel}
               </div>
             )}

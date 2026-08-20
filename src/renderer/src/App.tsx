@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowUpIcon, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,6 +16,13 @@ import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
 import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
+import {
+  ComposerActions,
+  ComposerAttachButton,
+  ComposerBar,
+  ComposerSend,
+  ComposerToolbar,
+} from "@/components/elements/composer.js";
 import { PermissionGrant } from "@/components/elements/permission-grant.js";
 import { TodoList } from "@/components/elements/todo-list.js";
 import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
@@ -158,8 +165,11 @@ const WS_ITEM =
    定位交给 ComposerTriggerPopover 自己(它已经是 absolute bottom-full),
    这里只覆盖"长什么样":拉满会话框宽度 + 本仓的卡片底色/阴影/入场动画 ——
    上游默认是 w-64 的窄条 + 无动画,和旧的手写菜单不是一个观感 */
+/* /$ 补全浮层(composer 上方弹出)。外观照 elements/composer 的 ComposerMenu:
+   同一个输入框上方弹出来的东西,该是同一种东西 —— floating 面 + 2xl 圆角 +
+   1.5 的内边距,从下沿长出来(origin-bottom-left) */
 const TRIGGER_POP =
-  "end-0 w-auto mb-2 bg-card border-border p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
+  "end-0 mb-2 w-auto max-h-[300px] overflow-auto rounded-2xl border-border/60 bg-background dark:bg-popover p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] starting:opacity-0 starting:scale-[0.97] motion-reduce:transition-opacity motion-reduce:starting:scale-100";
 /* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
@@ -395,7 +405,7 @@ function SettingRow({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-function ComposerBar() {
+function ComposerPrefsBar() {
   const model = useChat((s) => s.model);
   const events = useChat((s) => s.events);
   const toolDefs = useChat((s) => s.toolDefs);
@@ -481,18 +491,15 @@ function ComposerBar() {
           )}
         </span>
 
+        {/* 附件钮用 element 的:圆形 ghost + PlusIcon。原来是个全角「＋」字符,
+            它的行高/字宽跟着字体走,和旁边那些控件永远差半像素 */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
-              disabled={status === "running"}
-              onClick={() => void useChat.getState().pickFiles()}
-            >
-              ＋
-            </Button>
+            <ComposerAttachButton
+              className="size-7"
+              aria-label="添加文件"
+              {...(status === "running" ? {} : { onClick: () => void useChat.getState().pickFiles() })}
+            />
           </TooltipTrigger>
           <TooltipContent>添加文件(图片/文本)</TooltipContent>
         </Tooltip>
@@ -1745,7 +1752,9 @@ function Welcome() {
       {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
           外面套投放区:还没有会话也能先把图拖进来,建会话后随首条消息一起走 */}
       <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
-      <div className="w-full text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
+      {/* 外壳与会话中的输入框同一套(elements/composer 的 ComposerBar):
+          这两处都是"写一条要发出去的东西",长得不一样就像两个产品 */}
+      <ComposerBar className="w-full text-left transition-colors duration-[120ms] focus-within:border-ring">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
@@ -1794,17 +1803,11 @@ function Welcome() {
           </Select>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-base leading-none text-muted-foreground hover:bg-foreground/[0.08]"
-                disabled={busy}
+              <ComposerAttachButton
+                className="size-7"
                 aria-label="添加文件"
-                onClick={() => void useChat.getState().pickFiles()}
-              >
-                ＋
-              </Button>
+                {...(busy ? {} : { onClick: () => void useChat.getState().pickFiles() })}
+              />
             </TooltipTrigger>
             <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
           </Tooltip>
@@ -1817,17 +1820,17 @@ function Welcome() {
             thinking={thinking}
             onThinkingChange={setThinking}
           />
-          <Button
-            className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
+          <ComposerSend
+            streaming={false}
+            idle={!workspace || busy}
             disabled={!workspace || busy}
+            className="shrink-0 disabled:pointer-events-none"
             title={workspace ? "开始会话" : "先选工程文件夹"}
             aria-label="开始会话"
             onClick={() => void launch()}
-          >
-            ↑
-          </Button>
+          />
         </div>
-      </div>
+      </ComposerBar>
       </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
@@ -2007,6 +2010,9 @@ function ChatComposer() {
   }, [composerInject, composer]);
 
 
+  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
+  const canSend = input.trim() !== "" || staged.length > 0;
+
   const submit = () => {
     const text = input.trim();
     // 只贴了图不打字也算一条消息:附件本身就是内容
@@ -2053,10 +2059,10 @@ function ChatComposer() {
         {/* 投放区是本仓自己的:附件归 store(ADR-0040),不走 assistant-ui 的
             AttachmentDropzone —— 那条路会把文件交给它的附件通道 */}
         <AttachDropZone disabled={status === "running"}>
-          <div
-            data-slot="aui_composer-shell"
-            className="border-border/60 focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) shadow-sm transition-[border-color]"
-          >
+          {/* 外壳换成 elements/composer 的 ComposerBar:同样是 paper + 大圆角,
+              但它把「这一条要发的东西」当成一摞来排(附件行 / 输入 / 工具条),
+              而不是三个各管各的块 */}
+          <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative cursor-text shadow-sm transition-[border-color,background-color]">
             {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
                 和旧的手写菜单同一个位置 */}
             <ComposerTriggerPopover
@@ -2088,52 +2094,34 @@ function ChatComposer() {
               onSubmit={submit}
               onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
             />
-            {/* ComposerAction 那一排:上游左边是「＋ 附件」、右边是发送/停止的圆钮。
+            {/* 工具条:上游左边是「＋ 附件」、右边是发送/停止的圆钮。
                 本仓左边换成会话偏好条(审批模式/模型/用量环)—— 附件的 ＋ 在它里面。
-                items-end:窄宽时 ComposerBar 换两行,圆钮贴末行底对齐,不悬在行间 */}
-            <div className="aui-composer-action-wrapper relative flex items-end justify-between gap-2">
-              <ComposerBar />
-              <div className="flex items-center gap-1.5">
+                items-end:窄宽时偏好条换两行,圆钮贴末行底对齐,不悬在行间 */}
+            <ComposerToolbar className="relative items-end gap-2">
+              <ComposerPrefsBar />
+              <ComposerActions>
                 {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
-                    上游用的是实底圆钮 + 方块图标,这里照搬 —— 方块是通用的"停"，
-                    不需要再用红色喊一遍 */}
-                {status === "running" ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="default"
-                        size="icon"
-                        className="aui-composer-cancel size-7 shrink-0 rounded-full"
-                        aria-label="停止 turn"
-                        onClick={() => void stop()}
-                      >
-                        <SquareIcon className="size-3.5 fill-current" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>停止 turn（Esc）</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="default"
-                        size="icon"
-                        className="aui-composer-send size-7 shrink-0 rounded-full"
-                        aria-label="发送消息"
-                        onClick={submit}
-                        disabled={!input.trim() && staged.length === 0}
-                      >
-                        <ArrowUpIcon className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>发送(Enter)</TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-            </div>
-          </div>
+                    element 的 ComposerSend 把两个图标叠在同一枚钮里做交换(缩放+模糊),
+                    而不是换掉整枚钮 —— 位置不动,眼睛不用重新找它在哪。
+                    没东西可发时是素底：一枚常亮的实底钮在说「点我」，可它点了没用 */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <ComposerSend
+                      streaming={status === "running"}
+                      idle={!canSend}
+                      disabled={status !== "running" && !canSend}
+                      aria-label={status === "running" ? "停止 turn" : "发送消息"}
+                      onClick={() => (status === "running" ? void stop() : submit())}
+                      className="shrink-0 disabled:pointer-events-none"
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {status === "running" ? "停止 turn（Esc）" : "发送(Enter)"}
+                  </TooltipContent>
+                </Tooltip>
+              </ComposerActions>
+            </ComposerToolbar>
+          </ComposerBar>
         </AttachDropZone>
       </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
