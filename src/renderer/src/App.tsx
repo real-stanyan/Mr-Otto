@@ -1281,22 +1281,26 @@ function AppSidebar() {
               会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
               只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
               看见放大镜就够了(悬停有全称和快捷键) */}
-          {settingsSection === null && mode !== "game" && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="ml-auto size-7 text-muted-foreground hover:bg-foreground/[0.06]"
-              title="搜索会话（⌘K）"
-              aria-label="搜索会话"
-              onClick={() => setSessionSearchOpen(true)}
-            >
-              <Search className="size-4" aria-hidden />
-            </Button>
-          )}
-          {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
-              展开状态下用户第一眼找的是侧栏里的开关。
-              ml-auto 挂在它身上是为了"搜索不在时它仍靠右" */}
-          <SidebarTrigger className="ml-auto" />
+          {/* 两颗钮是一组,靠右站在一起:ml-auto 给这个盒子,不给它们各自 ——
+              各挂一个 ml-auto 会把剩余空白**平分**给两者,搜索被推到行中间,
+              和收起钮隔出老远。搜索不在时(设置/牌桌档)盒子还在,收起钮照旧靠右 */}
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {settingsSection === null && mode !== "game" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground hover:bg-foreground/[0.06]"
+                title="搜索会话（⌘K）"
+                aria-label="搜索会话"
+                onClick={() => setSessionSearchOpen(true)}
+              >
+                <Search className="size-4" aria-hidden />
+              </Button>
+            )}
+            {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
+                展开状态下用户第一眼找的是侧栏里的开关 */}
+            <SidebarTrigger />
+          </div>
         </div>
         {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
             它切的是整个主区在展示什么，属于导航，不是输入区的控件。
