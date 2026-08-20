@@ -9,6 +9,7 @@ import type { StreamdownTextComponents } from "@assistant-ui/react-streamdown";
 // 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
 import { code } from "@streamdown/code";
 import { cjk } from "@streamdown/cjk";
+import { useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 
 import { cn } from "@/lib/utils.js";
@@ -16,6 +17,24 @@ import { cn } from "@/lib/utils.js";
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂。
 // cjk 不是可选项——本仓界面和内容都是中文,缺了 CJK 断行插件排版会散。
 const PLUGINS = { code, cjk };
+
+// 逐字出场的参数（效果本身见 app.css 的 sd-ottoInk）。同样是模块级常量:
+// 每次渲染新建对象会让 streamdown 认成"插件换了"而重建整条管线。
+//
+// sep:"char" 不是可选项 —— 本仓正文是中文,而 "word" 是按空白切的,
+// 一整段中文没有空格 = 一个 span,逐字出场就退化成整段一闪。代价是一段话
+// 有多少字就有多少 span,所以只在这条消息还在流的时候开(见下面的 running)。
+//
+// stagger 8ms 不是 40(默认):一次推送常有十几二十个字,40ms 一个的话尾巴要拖
+// 快一秒,读起来是"字在追着光标跑"而不是"字落下来"。
+// easing 用 ease-out 那条强曲线(与全仓入场同一条):出场是"进来",起手就得快。
+const ANIMATED = {
+  animation: "ottoInk",
+  sep: "char",
+  duration: 420,
+  easing: "cubic-bezier(0.23, 1, 0.32, 1)",
+  stagger: 8,
+} as const;
 
 // 没有显式传 shikiTheme:StreamdownTextPrimitive 在 plugins.code 存在时,
 // 主题最终取的是 code.getThemes()(见 node_modules/streamdown/dist/chunk-*.js
@@ -29,11 +48,16 @@ const PLUGINS = { code, cjk };
 // (见 node_modules/streamdown/dist/chunk-*.js 里 `Ks={gfm:[$s,{}],...}`)。
 
 const MarkdownTextImpl = () => {
+  // 逐字出场只给还在流的那一条:说完了的消息不需要动画,也不该为它留一屏
+  // 的 <span>——一条长回答按字包是上千个节点,历史越长背得越重。
+  // 收工时这一条会重渲一次(span 全部消失),内容不变、行内元素不占位,看不出来
+  const running = useAuiState((s) => s.message.status?.type === "running");
   return (
     <StreamdownTextPrimitive
       className="aui-md"
       components={defaultComponents}
       plugins={PLUGINS}
+      animated={running ? ANIMATED : false}
       // 原 dot.css 的流式小圆点是靠 react-markdown 那层 [data-status="running"]
       // 和 .aui-md 同挂一个元素才生效的;换到 streamdown 后 data-status 挂在
       // 外层 wrapper div、aui-md 挂在内层内容 div,两者不再同源,dot.css 已经
