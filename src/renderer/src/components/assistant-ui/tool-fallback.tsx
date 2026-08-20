@@ -127,11 +127,17 @@ function ToolFallbackDuration({
 function ToolFallbackTrigger({
   toolName,
   status,
+  label: labelOverride,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
   status?: ToolCallMessagePartStatus;
+  /** 本仓改动:这一行的正文可以整个换掉。原件写死 "Used tool: <工具名>" ——
+      中文界面里每隔几行冒一句英文是一回事,只报工具名、不报**动的是哪个文件**
+      是更要紧的一回事:这一行最常见的两种是读文件和写文件,而 read_file 这个词
+      对读的人没有信息量,src/store.ts 才有。换进来的内容见 aui/OttoThread 的 ToolRowLabel */
+  label?: React.ReactNode;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
@@ -139,7 +145,11 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const Icon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const body = labelOverride ?? (
+    <>
+      {isCancelled ? "Cancelled tool" : "Used tool"}: <b>{toolName}</b>
+    </>
+  );
 
   return (
     <CollapsibleTrigger
@@ -165,16 +175,14 @@ function ToolFallbackTrigger({
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span>
-          {label}: <b>{toolName}</b>
-        </span>
+        <span>{body}</span>
         {isRunning && (
           <span
             aria-hidden
             data-slot="tool-fallback-trigger-shimmer"
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            {label}: <b>{toolName}</b>
+            {body}
           </span>
         )}
       </span>
@@ -525,7 +533,11 @@ function ToolFallbackApproval({
   );
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+/** 本仓改动:多一个可选的 label(理由见 ToolFallbackTrigger 上的注释)。
+    多一个**可选**参数不影响它仍然是一个合法的 ToolCallMessagePartComponent */
+type ToolFallbackProps = ToolCallMessagePartProps & { label?: React.ReactNode };
+
+const ToolFallbackImpl = ({
   toolName,
   argsText,
   result,
@@ -535,7 +547,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   interrupt,
   approval,
   respondToApproval,
-}) => {
+  label,
+}: ToolFallbackProps) => {
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
   const isRequiresAction = status?.type === "requires-action";
@@ -550,7 +563,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolFallbackTrigger toolName={toolName} status={status} />
+      <ToolFallbackTrigger toolName={toolName} status={status} label={label} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
@@ -574,7 +587,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
 const ToolFallback = memo(
   ToolFallbackImpl,
-) as unknown as ToolCallMessagePartComponent & {
+) as unknown as React.FC<ToolFallbackProps> & {
   Root: typeof ToolFallbackRoot;
   Trigger: typeof ToolFallbackTrigger;
   Content: typeof ToolFallbackContent;
