@@ -35,6 +35,7 @@ import {
   ThreadPrimitive,
   type FileMessagePartComponent,
   type SourceMessagePartComponent,
+  type TextMessagePartComponent,
   type ImageMessagePartComponent,
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -99,6 +100,11 @@ export type ThreadComponents = {
       在 Electron 里那是飘出一个 Otto 管不着的裸窗口 —— 本仓要把它接到内嵌浏览器上,
       所以得有个口子换掉整条渲染。上游 registry 没有这个槽 —— 升级时要人工合 */
   Source?: SourceMessagePartComponent | undefined;
+  /** 本仓加的槽:用户消息正文的渲染。默认是纯文本(上游的行为),给了就换成它 ——
+      本仓拿来把句中的 `$skill名` 画成 chip(directive-text)。只作用于用户消息:
+      assistant 正文走 MarkdownText,那条路和 directive 无关。
+      上游 registry 没有这个槽 —— 升级时要人工合 */
+  UserText?: TextMessagePartComponent | undefined;
   ToolGroup?:
     | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
     | undefined;
@@ -489,8 +495,10 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
 const UserMessage: FC = () => {
   // 本仓改动:附件槽默认仍是上游的 UserMessageAttachments(它读 message.attachments,
   // 本仓一直是空的),有槽值时换成 OttoUserAttachments(读 metadata.custom.otto)
-  const { UserAttachments: UserAttachmentsComponent = UserMessageAttachments } =
-    useContext(ThreadComponentsContext);
+  const {
+    UserAttachments: UserAttachmentsComponent = UserMessageAttachments,
+    UserText,
+  } = useContext(ThreadComponentsContext);
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -502,7 +510,11 @@ const UserMessage: FC = () => {
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2 wrap-break-word empty:hidden">
           <MessagePrimitive.Parts
-            components={{ File: UserFilePart, Image: UserImagePart }}
+            components={{
+              File: UserFilePart,
+              Image: UserImagePart,
+              ...(UserText ? { Text: UserText } : {}),
+            }}
           />
         </div>
         <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">

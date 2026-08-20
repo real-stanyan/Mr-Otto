@@ -18,6 +18,7 @@ import {
 } from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { Sources } from "../components/assistant-ui/sources.js";
+import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
 import { RetryButton } from "../components/RetryButton.js";
@@ -26,6 +27,7 @@ import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
 import { toThreadMessages } from "./toThreadMessages.js";
+import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import type { OrbState } from "../lib/toolSummary.js";
@@ -318,8 +320,10 @@ const SectionAnchor: ComponentType = () => {
   );
 };
 
-// 模块级常量:每次渲染新建对象会让整棵子树白重挂
-const COMPONENTS: ThreadComponents = {
+// 除 UserText 外都是模块级常量:每次渲染新建对象会让整棵子树白重挂。
+// UserText 造不成常量 —— 它要认「哪些 $名字 是真 skill」,而那份名单来自 store
+// (装了哪些 skill 是运行时的事)。所以下面按 skills 记忆化地造,skills 不变就不重造
+const STATIC_COMPONENTS = {
   SystemMessage,
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
@@ -328,7 +332,7 @@ const COMPONENTS: ThreadComponents = {
   RunIndicator,
   ErrorBanner,
   MessageAnchor: SectionAnchor,
-};
+} satisfies ThreadComponents;
 
 export function OttoThread({
   viewportRef,
@@ -341,13 +345,23 @@ export function OttoThread({
   sections: Section[];
 }) {
   const events = useChat((s) => s.events);
+  const skills = useChat((s) => s.skills);
   const anchorsByMessageId = useMemo(
     () => buildSectionAnchors(events, sections),
     [events, sections]
   );
+  // 用户正文里的 `$skill名` 画成 chip(directive-text)。名单来自已装的 skill ——
+  // 没有名单的话 `$100`、`$PATH` 也会被画成 chip(见 aui/ottoDirectives.ts)
+  const components = useMemo<ThreadComponents>(
+    () => ({
+      ...STATIC_COMPONENTS,
+      UserText: createDirectiveText(ottoDirectiveFormatter(skills.map((s) => s.name))),
+    }),
+    [skills]
+  );
   return (
     <SectionAnchorsContext.Provider value={anchorsByMessageId}>
-      <Thread components={COMPONENTS} viewportRef={viewportRef} />
+      <Thread components={components} viewportRef={viewportRef} />
     </SectionAnchorsContext.Provider>
   );
 }

@@ -97,12 +97,20 @@ import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
 import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
-import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
+import {
+  ComposerPrimitive,
+  unstable_useMentionAdapter,
+  unstable_useSlashCommandAdapter,
+  useAui,
+  useAuiState,
+} from "@assistant-ui/react";
 import {
   ContextDisplayRoot,
   ContextDisplayTrigger,
   ContextDisplayRingVisual,
 } from "@/components/assistant-ui/context-display.js";
+import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
+import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
@@ -156,11 +164,12 @@ const SEND_BTN = "px-[14px] py-1 h-auto text-[13px] rounded-lg shrink-0";
 /* 工作区浮窗列表项 */
 const WS_ITEM =
   "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-foreground text-[13px] cursor-pointer hover:bg-foreground/[0.06] [&>svg]:text-muted-foreground [&>svg]:shrink-0";
-/* slash/$ 菜单(composer 上方弹出):origin-aware,从会话框顶边长出来 */
-const SLASH_MENU =
-  "absolute left-0 right-0 bottom-[calc(100%+8px)] flex flex-col gap-[2px] bg-card border border-border rounded-xl p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
-const SLASH_ITEM =
-  "flex items-baseline gap-[10px] w-full text-left bg-transparent border-none rounded-lg px-[10px] py-[7px] cursor-pointer transition-colors duration-100";
+/* slash/$ 补全浮层(composer 上方弹出):origin-aware,从会话框顶边长出来。
+   定位交给 ComposerTriggerPopover 自己(它已经是 absolute bottom-full),
+   这里只覆盖"长什么样":拉满会话框宽度 + 本仓的卡片底色/阴影/入场动画 ——
+   上游默认是 w-64 的窄条 + 无动画,和旧的手写菜单不是一个观感 */
+const TRIGGER_POP =
+  "end-0 w-auto mb-2 bg-card border-border p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
 /* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
@@ -1795,26 +1804,42 @@ function ChatComposer() {
   const setInput = (text: string) => composer.setText(text);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
-  const slashMatches = input.startsWith("/")
-    ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
-    : [];
-  // $ 菜单（skill 选择）：以 "$" 开头且还没打空格——打了空格 = 名字已定，后面是任务正文。
-  // 两个菜单天然互斥（首字符只能是一个），选中态共用同一个 slashSel
+  // `/` 和 `$` 的补全菜单 —— 换成 assistant-ui 的 TriggerPopover(两条 trigger 各一个)。
+  // 手写那版(match/选中态/↑↓/Tab/Enter 全套)整个删掉了:触发时机、键盘导航、
+  // 与 IME 的相处、光标位置的插入,这些都是 composer 作用域里的事,它比外面看得清。
+  //
+  // 两条 trigger 的行为不一样:
+  // - `$skill`:directive(插入),选中只把 `$名字 ` 填进输入框 —— 任务正文还等着用户打
+  //   (旧的 pickSkill 就是这个手感)。发送时 submit() 再把名字切给 harness
+  // - `/指令`:action(执行),但带参的指令(takesArgs)不当场跑,而是同样填进输入框 ——
+  //   /rename 直接跑等于把标题改成空串。无参的(/compact)当场跑,和旧菜单的 Enter 一致
   const skills = useChat((s) => s.skills);
-  const dollarQuery = input.startsWith("$") && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
-  const skillMatches =
-    dollarQuery !== null ? skills.filter((s) => s.name.toLowerCase().includes(dollarQuery)) : [];
-  const [slashSel, setSlashSel] = useState(0);
-  useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
-  const menuLen = Math.max(slashMatches.length, skillMatches.length);
-  const sel = Math.min(slashSel, Math.max(menuLen - 1, 0));
-  const runSlash = (name: string) => {
-    setInput("");
-    dispatchSlash(name);
-  };
-  // 选中 skill = 只补全名字，不发送：任务正文还等着用户打
-  const pickSkill = (name: string) => setInput(`$${name} `);
+  const skillFormatter = useMemo(
+    () => ottoDirectiveFormatter(skills.map((k) => k.name)),
+    [skills]
+  );
+  const skillTrigger = unstable_useMentionAdapter({
+    items: skills.map((k) => ({
+      id: k.name,
+      type: "skill",
+      label: `$${k.name}`,
+      ...(k.description ? { description: k.description } : {}),
+    })),
+    includeModelContextTools: false, // 本仓的工具表不在 assistant-ui 的 model context 里
+    formatter: skillFormatter,
+  });
+  const slashTrigger = unstable_useSlashCommandAdapter({
+    removeOnExecute: true,
+    commands: Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
+      id: name,
+      label: name,
+      description: c.desc,
+      execute: () => {
+        if (c.takesArgs) setInput(`${name} `);
+        else dispatchSlash(name);
+      },
+    })),
+  });
 
 
   // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
@@ -1863,44 +1888,33 @@ function ChatComposer() {
   };
 
   return (
+    // TriggerPopoverRoot 是两条 trigger 的公共作用域(它管"现在哪条 trigger 活着")
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
     <ComposerPrimitive.Root onSubmit={(e) => e.preventDefault()}>
             <AttachDropZone disabled={status === "running"}>
             <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
-              {slashMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {slashMatches.map(([name, c], i) => (
-                    <button
-                      key={name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => runSlash(name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{c.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
-              {skillMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {skillMatches.map((s, i) => (
-                    <button
-                      key={s.name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => pickSkill(s.name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{"$" + s.name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{s.description || "（无描述）"}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
+                  和旧的手写菜单同一个位置 */}
+              <ComposerTriggerPopover
+                char="$"
+                className={TRIGGER_POP}
+                adapter={skillTrigger.adapter}
+                directive={skillTrigger.directive}
+                emptyItemsLabel="没有匹配的 skill"
+                emptyCategoriesLabel="还没装 skill"
+                backLabel="返回"
+                loadingLabel="加载中…"
+              />
+              <ComposerTriggerPopover
+                char="/"
+                className={TRIGGER_POP}
+                adapter={slashTrigger.adapter}
+                action={slashTrigger.action}
+                emptyItemsLabel="没有匹配的指令"
+                emptyCategoriesLabel="没有可用指令"
+                backLabel="返回"
+                loadingLabel="加载中…"
+              />
               <StagedChips className="pt-[6px] px-[10px]" />
               {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
                   自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
@@ -1934,29 +1948,9 @@ function ChatComposer() {
                   void filesToPayload(files).then(attachPasted);
                 }}
                 onKeyDown={(e) => {
-                  // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
-                  if (slashMatches.length > 0) {
-                    const n = slashMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab") { e.preventDefault(); setInput(slashMatches[sel]![0]); return; }
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      runSlash(slashMatches[sel]![0]);
-                      return;
-                    }
-                  }
-                  // $ 菜单：Enter/Tab 都只补全名字（不发送）——正文还没打
-                  if (skillMatches.length > 0) {
-                    const n = skillMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
-                      e.preventDefault();
-                      pickSkill(skillMatches[sel]!.name);
-                      return;
-                    }
-                  }
+                  // 补全浮层开着时,↑↓/Tab/Enter/Esc 都已被 TriggerPopover 在更靠前的
+                  // 阶段吃掉并 preventDefault —— 这里只要认这一点就够,不用再判菜单开没开
+                  if (e.defaultPrevented) return;
                   // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
                   // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1998,6 +1992,7 @@ function ChatComposer() {
             </div>
             </AttachDropZone>
     </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 }
 
