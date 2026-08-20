@@ -426,7 +426,9 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-footer"
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
-        <BranchPicker />
+        {/* 本仓改动:不渲染 BranchPicker。对话分支要 adapter 提供 setMessages,
+            而本仓刻意不给(ADR-0036:给了就等于凭空长出一条绕开事件日志的写路径)。
+            实测它仍会冒出「< 2/2 >」——切过去什么也不会发生,是个只承诺不兑现的控件 */}
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
@@ -524,10 +526,7 @@ const UserMessage: FC = () => {
         </div>
       </div>
 
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="col-span-full col-start-1 row-start-3 -me-1 justify-end"
-      />
+      {/* 本仓改动:同上,用户消息这一侧的分支选择器也不渲染 */}
     </MessagePrimitive.Root>
   );
 };
