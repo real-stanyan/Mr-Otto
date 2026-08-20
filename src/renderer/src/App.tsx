@@ -50,6 +50,7 @@ import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
@@ -448,8 +449,17 @@ function ComposerPrefsBar() {
       onChange={(v) => void switchModel(v)}
       disabled={status === "running"}
       className={BAR_SELECT + " max-w-[164px]"}
-      thinking={thinking}
-      onThinkingChange={(m) => void setThinking(m)}
+    />
+  );
+
+  // 挡位单独一枚钮(ThinkingPicker):型号浮层只回答"用哪个型号",
+  // 挡位归它自己。换不了挡的型号上这枚钮不出现
+  const thinkingPick = (
+    <ThinkingPicker
+      spec={thinkingSpecOf(choice)}
+      value={thinking}
+      onChange={(m) => void setThinking(m)}
+      disabled={status === "running"}
     />
   );
 
@@ -487,6 +497,7 @@ function ComposerPrefsBar() {
             <SettingsPopover onClose={() => setPrefsOpen(false)}>
               <SettingRow label="审批">{approvalSelect}</SettingRow>
               <SettingRow label="模型">{modelSelect}</SettingRow>
+              <SettingRow label="Thinking">{thinkingPick}</SettingRow>
             </SettingsPopover>
           )}
         </span>
@@ -505,7 +516,10 @@ function ComposerPrefsBar() {
         </Tooltip>
 
         <div className="ml-auto flex items-center gap-2 min-w-0">
-          <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{modelSelect}</div>
+          <div className="hidden @[520px]:flex items-center gap-2 min-w-0">
+            {modelSelect}
+            {thinkingPick}
+          </div>
 
           {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
               (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
@@ -1817,8 +1831,13 @@ function Welcome() {
             onChange={setModel}
             disabled={busy}
             className={NSC_SELECT + " max-w-[180px]"}
-            thinking={thinking}
-            onThinkingChange={setThinking}
+          />
+          {/* 挡位单独一枚钮,与会话中的输入框同一套 */}
+          <ThinkingPicker
+            spec={thinkingSpec}
+            value={thinking}
+            onChange={setThinking}
+            disabled={busy}
           />
           <ComposerSend
             streaming={false}

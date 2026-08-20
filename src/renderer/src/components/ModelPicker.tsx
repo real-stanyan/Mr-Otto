@@ -8,6 +8,7 @@
 // 搜索框和 thinking 挡位那一排都不画（searchable={false} / 不渲染 Effort）：
 // 这个浮层只回答一个问题——用哪个型号。cmdk 的键盘导航照旧（Content 会补一个
 // sr-only 的输入锚点），少的只是那个可见的输入框。
+// 挡位在 components/ThinkingPicker.tsx，控件行上单独一枚浮窗钮。
 //
 // 运行时耦合：ModelSelector 有一个可选的 ModelSelectorModelContext 子组件，会把选择
 // 注册进 assistant-ui 自己的 ModelContext。本仓不渲染它 —— 模型是主进程 agent 持有的
@@ -36,7 +37,6 @@ import { findProvider, type ProviderId } from "../../../shared/providerCatalog.j
 import {
   thinkingLabel,
   thinkingSwitchable,
-  type ThinkingMode,
   type ThinkingSpec,
 } from "../../../shared/thinking.js";
 import { cn } from "@/lib/utils.js";
@@ -68,17 +68,12 @@ export function ModelPicker({
   onChange,
   disabled = false,
   className,
-  thinking,
-  onThinkingChange,
 }: {
   value: string;
   onChange: (model: string) => void;
   disabled?: boolean;
   /** 触发器的样式叠加层（状态条版 BAR_SELECT / 新会话卡版 NSC_SELECT） */
   className?: string;
-  /** 当前 thinking 挡位。两个都给才会长出挡位那一排（新会话卡不管 thinking） */
-  thinking?: ThinkingMode;
-  onThinkingChange?: (mode: ThinkingMode) => void;
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -134,10 +129,6 @@ export function ModelPicker({
       onValueChange={onChange}
       open={open}
       onOpenChange={setOpen}
-      {...(thinking !== undefined ? { effort: thinking } : {})}
-      {...(onThinkingChange !== undefined
-        ? { onEffortChange: (e: string) => onThinkingChange(e as ThinkingMode) }
-        : {})}
     >
       <ModelSelectorTrigger
         disabled={disabled}
@@ -148,7 +139,9 @@ export function ModelPicker({
         )}
         title="选择模型：打字搜，或按厂商找"
       >
-        <ModelSelectorValue placeholder={value} />
+        {/* showEffort={false}：挡位归 ThinkingPicker 那枚钮，
+            两处都显示就成了同一件事说两遍（还得回答"点哪个才能改"） */}
+        <ModelSelectorValue placeholder={value} showEffort={false} />
       </ModelSelectorTrigger>
 
       {/* searchable={false} 不只是"不画搜索框":Content 据此决定 cmdk 是否过滤,
@@ -189,9 +182,9 @@ export function ModelPicker({
           </CommandGroup>
         </ModelSelectorList>
         {/* 挡位那一排不画了：这个浮层只回答"用哪个型号"。
-            effort/onEffortChange 仍然接在 Root 上（选中型号的挡位表也还在 ModelOption 里），
-            所以要把挡位重新长出来是一行的事 —— 但目前没有任何界面能改它，
-            thinking 只跟型号默认档走（shared/thinking.ts） */}
+            挡位搬去了 components/ThinkingPicker.tsx（输入框控件行上单独一枚浮窗钮）——
+            它是型号的属性没错，但改它是一件独立的事，不该只能顺路在选型号时碰到。
+            ModelOption.efforts 保留：那是"这个型号有哪几档"的事实描述 */}
       </ModelSelectorContent>
     </ModelSelectorRoot>
   );
