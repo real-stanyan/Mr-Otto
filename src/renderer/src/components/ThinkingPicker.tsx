@@ -58,8 +58,18 @@ export function ThinkingPicker({
         {thinkingLabel(value)}
       </PopoverTrigger>
       {/* 从触发器底边长出来(origin-aware,ADR-0010 的惯例);
-          w-auto:分段控件自己就那么宽,浮层不该比它宽出一圈空白 */}
-      <PopoverContent align="end" side="top" sideOffset={8} className="w-auto p-3">
+          w-auto:分段控件自己就那么宽,浮层不该比它宽出一圈空白。
+          border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 —— 与型号浮层同一条规矩 */}
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        className="w-auto border-0 p-3"
+        // 打开时不把焦点抢到第一枚药丸上:radix 默认这么做,而第一枚是「关」——
+        // 它会当场戴上焦点环,看起来像「现在选的是关」,而实际选中的是别的档。
+        // 焦点留在触发器上,Esc 关、Tab 仍然能走进去
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <ReasoningEffort
           label="Thinking"
           levels={spec.modes.map((m) => ({ key: m, label: thinkingLabel(m) }))}
