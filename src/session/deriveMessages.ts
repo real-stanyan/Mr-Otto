@@ -33,8 +33,8 @@ export function systemPromptText(workspace: string): string {
   );
 }
 
-/** 界面认得的四种结构化围栏。写进提示词而不是留给模型自己发挥：
-    界面只认这四种语言 + 这几个字段（渲染在 lib/ottoBlocks.ts 里逐字段校验），
+/** 界面认得的六种结构化围栏。写进提示词而不是留给模型自己发挥：
+    界面只认这几种语言 + 这几个字段（渲染在 lib/ottoBlocks.ts 里逐字段校验），
     没写清楚的话模型的每一次即兴发挥都会退回成一段裸 JSON。
 
     刻意不长：它跟着**每一次**请求走，多一行就是每轮都多付一次。所以只列
@@ -42,11 +42,13 @@ export function systemPromptText(workspace: string): string {
     也明说"平铺直叙能说清就别用"：这些卡是给真有结构的内容准备的，
     不是给每段话都套一个框。 */
 const STRUCTURED_BLOCKS =
-  `\n界面能把下面四种围栏渲染成卡片（围栏里只放 JSON，字段不全或写错会原样显示成代码块）：\n` +
+  `\n界面能把下面六种围栏渲染成卡片（围栏里只放 JSON，字段不全或写错会原样显示成代码块）：\n` +
   `\`\`\`otto-spec  {title, subtitle?, rows:[{label, value, emphasis?}]} —— 参数表/规格表\n` +
   `\`\`\`otto-compare  {traitLabels:[…], options:[{id, name, headline, traits:[字符串或 false]}], recommendedId, reason} —— 几个方案对比\n` +
   `\`\`\`otto-score  {verdict, total, outOf, criteria:[{label, score, weight, note?}]} —— 打分\n` +
   `\`\`\`otto-flow  {nodes:[{id, label, column, row, state:"done"|"active"|"pending"}], edges:[{from, to}]} —— 步骤流转（column/row 是非负整数格子坐标）\n` +
+  `\`\`\`otto-timeline  {events:[{id, when:"past"|"now"|"future", time, title, detail?}]} —— 时间线\n` +
+  `\`\`\`otto-job  {title, stages:[{name, weight}], stageIndex, stageProgress, eta} —— 多阶段任务走到哪了（stageProgress 是 0~1）\n` +
   `平铺直叙能说清的就别用；一段话套一个框只是噪音。`;
 
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,

@@ -12,12 +12,21 @@
 // 宁可给人看一段 JSON,也不能吞掉模型说的话,更不能白屏。
 
 import type { ComparisonOption } from "@/components/elements/comparison-card.js";
+import type { JobStage } from "@/components/elements/job-progress.js";
 import type { FlowEdge, FlowNode, FlowNodeState } from "@/components/elements/flow-graph.js";
 import type { ScoreCriterion } from "@/components/elements/score-breakdown.js";
 import type { SpecRow } from "@/components/elements/spec-sheet.js";
+import type { TimelineEvent, TimelineWhen } from "@/components/elements/timeline.js";
 
 /** 围栏语言 → 块类型。语言前缀统一带 otto-,免得和真的代码语言撞名 */
-export const BLOCK_LANGUAGES = ["otto-spec", "otto-compare", "otto-score", "otto-flow"] as const;
+export const BLOCK_LANGUAGES = [
+  "otto-spec",
+  "otto-compare",
+  "otto-score",
+  "otto-flow",
+  "otto-timeline",
+  "otto-job",
+] as const;
 export type BlockLanguage = (typeof BLOCK_LANGUAGES)[number];
 
 // ── 一组小检查器。写成函数而不是塞一个 schema 库:要校验的只有四种形状,
@@ -69,6 +78,22 @@ export interface FlowBlock {
 }
 
 const FLOW_STATES: readonly FlowNodeState[] = ["done", "active", "pending"];
+const WHENS: readonly TimelineWhen[] = ["past", "now", "future"];
+
+export interface TimelineBlock {
+  events: TimelineEvent[];
+}
+
+/** 进度块。这张卡报的是**模型自己声明的**进度:它不是运行时探到的真值,
+    也不会自己往前走 —— 一条消息落盘之后就定格在那一刻。所以没有 onCancel:
+    没有任何东西可以被取消 */
+export interface JobBlock {
+  title: string;
+  stages: JobStage[];
+  stageIndex: number;
+  stageProgress: number;
+  eta: string;
+}
 
 function specRow(v: unknown): SpecRow | null {
   if (!isObj(v) || !str(v["label"]) || !str(v["value"])) return null;
@@ -170,13 +195,57 @@ function flow(v: Record<string, unknown>): FlowBlock | null {
   return { nodes, edges };
 }
 
+function timelineEvent(v: unknown): TimelineEvent | null {
+  if (!isObj(v) || !str(v["id"]) || !str(v["time"]) || !str(v["title"])) return null;
+  const when = v["when"];
+  if (!str(when) || !WHENS.includes(when as TimelineWhen)) return null;
+  const detail = v["detail"];
+  if (detail !== undefined && !str(detail)) return null;
+  return {
+    id: v["id"],
+    when: when as TimelineWhen,
+    time: v["time"],
+    title: v["title"],
+    ...(str(detail) ? { detail } : {}),
+  };
+}
+
+function timeline(v: Record<string, unknown>): TimelineBlock | null {
+  const events = items(v["events"], timelineEvent);
+  if (events === null) return null;
+  if (new Set(events.map((e) => e.id)).size !== events.length) return null; // id 是 React key
+  return { events };
+}
+
+function stage(v: unknown): JobStage | null {
+  if (!isObj(v) || !str(v["name"]) || !num(v["weight"])) return null;
+  // 权重是分母的一部分,负数或 0 会把整条进度条算歪(全 0 时元件退化成 1)
+  if (v["weight"] <= 0) return null;
+  return { name: v["name"], weight: v["weight"] };
+}
+
+function job(v: Record<string, unknown>): JobBlock | null {
+  if (!str(v["title"]) || !str(v["eta"])) return null;
+  const stages = items(v["stages"], stage);
+  if (stages === null) return null;
+  // 阶段名是元件的 React key,重名会画丢一格
+  if (new Set(stages.map((s) => s.name)).size !== stages.length) return null;
+  const { stageIndex, stageProgress } = v;
+  if (!num(stageIndex) || !Number.isInteger(stageIndex) || stageIndex < 0) return null;
+  // 越界就是"全做完了"这一档,元件自己认(stage >= stages.length),不必拒
+  if (!num(stageProgress) || stageProgress < 0 || stageProgress > 1) return null;
+  return { title: v["title"], stages, stageIndex, stageProgress, eta: v["eta"] };
+}
+
 // ── 出口 ──────────────────────────────────────────────────────────
 
 export type OttoBlock =
   | { kind: "otto-spec"; data: SpecBlock }
   | { kind: "otto-compare"; data: CompareBlock }
   | { kind: "otto-score"; data: ScoreBlock }
-  | { kind: "otto-flow"; data: FlowBlock };
+  | { kind: "otto-flow"; data: FlowBlock }
+  | { kind: "otto-timeline"; data: TimelineBlock }
+  | { kind: "otto-job"; data: JobBlock };
 
 export function isBlockLanguage(language: string): language is BlockLanguage {
   return (BLOCK_LANGUAGES as readonly string[]).includes(language);
@@ -208,6 +277,14 @@ export function parseBlock(language: string, source: string): OttoBlock | null {
     case "otto-flow": {
       const data = flow(raw);
       return data === null ? null : { kind: "otto-flow", data };
+    }
+    case "otto-timeline": {
+      const data = timeline(raw);
+      return data === null ? null : { kind: "otto-timeline", data };
+    }
+    case "otto-job": {
+      const data = job(raw);
+      return data === null ? null : { kind: "otto-job", data };
     }
   }
 }

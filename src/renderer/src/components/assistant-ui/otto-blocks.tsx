@@ -10,8 +10,10 @@ import type { SyntaxHighlighterProps } from "@assistant-ui/react-streamdown";
 
 import { ComparisonCard } from "@/components/elements/comparison-card.js";
 import { FlowGraph } from "@/components/elements/flow-graph.js";
+import { JobProgress } from "@/components/elements/job-progress.js";
 import { ScoreBreakdown } from "@/components/elements/score-breakdown.js";
 import { SpecSheet } from "@/components/elements/spec-sheet.js";
+import { Timeline } from "@/components/elements/timeline.js";
 import { BLOCK_LANGUAGES, parseBlock, type BlockLanguage } from "@/lib/ottoBlocks.js";
 
 /** 卡在对话流里的统一外形:上下留一行、不受元件自带 max-w 限制(那是画廊里
@@ -69,6 +71,27 @@ function OttoBlock({ code, language }: SyntaxHighlighterProps) {
           nodes={block.data.nodes}
           edges={block.data.edges}
           visibleCount={block.data.nodes.length}
+          className={CARD}
+        />
+      );
+    case "otto-timeline":
+      return (
+        <Timeline
+          events={block.data.events}
+          visibleCount={block.data.events.length}
+          className={CARD}
+        />
+      );
+    case "otto-job":
+      // 没有 onCancel:这张卡报的是模型自己声明的进度,消息落盘就定格了,
+      // 没有任何东西可以被取消 —— 一颗按下去什么都不发生的 × 是在说谎
+      return (
+        <JobProgress
+          title={block.data.title}
+          stages={block.data.stages}
+          stageIndex={block.data.stageIndex}
+          stageProgress={block.data.stageProgress}
+          eta={block.data.eta}
           className={CARD}
         />
       );

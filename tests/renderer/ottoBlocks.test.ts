@@ -19,6 +19,14 @@ const flow = (o: unknown) => {
   const b = parseBlock("otto-flow", JSON.stringify(o));
   return b?.kind === "otto-flow" ? b.data : null;
 };
+const timeline = (o: unknown) => {
+  const b = parseBlock("otto-timeline", JSON.stringify(o));
+  return b?.kind === "otto-timeline" ? b.data : null;
+};
+const job = (o: unknown) => {
+  const b = parseBlock("otto-job", JSON.stringify(o));
+  return b?.kind === "otto-job" ? b.data : null;
+};
 
 describe("parseBlock —— 模型写的块认不认", () => {
   it("不是本仓的围栏语言一律不认", () => {
@@ -136,5 +144,60 @@ describe("otto-flow", () => {
 
   it("state 只认三档", () => {
     expect(flow({ nodes: [{ ...ok.nodes[0], state: "running" }] })).toBeNull();
+  });
+});
+
+describe("otto-timeline", () => {
+  const ok = {
+    events: [
+      { id: "a", when: "past", time: "09:00", title: "开工" },
+      { id: "b", when: "now", time: "11:30", title: "改代码", detail: "在改渲染层" },
+    ],
+  };
+
+  it("认标准形状", () => {
+    expect(timeline(ok)?.events).toHaveLength(2);
+  });
+
+  it("when 只认三档", () => {
+    expect(timeline({ events: [{ id: "a", when: "later", time: "1", title: "t" }] })).toBeNull();
+  });
+
+  it("id 重复不收 —— 它是 React key，重名会画丢一格", () => {
+    expect(timeline({ events: [ok.events[0], ok.events[0]] })).toBeNull();
+  });
+});
+
+describe("otto-job", () => {
+  const ok = {
+    title: "迁移",
+    stages: [
+      { name: "盘点", weight: 1 },
+      { name: "改写", weight: 3 },
+    ],
+    stageIndex: 1,
+    stageProgress: 0.4,
+    eta: "还要 10 分钟",
+  };
+
+  it("认标准形状", () => {
+    expect(job(ok)?.stages).toHaveLength(2);
+  });
+
+  it("越界的 stageIndex 收 —— 那一档就是「全做完了」，元件自己认", () => {
+    expect(job({ ...ok, stageIndex: 9 })?.stageIndex).toBe(9);
+  });
+
+  it("stageProgress 必须在 0~1", () => {
+    expect(job({ ...ok, stageProgress: 1.5 })).toBeNull();
+    expect(job({ ...ok, stageProgress: -0.1 })).toBeNull();
+  });
+
+  it("权重必须为正 —— 它是分母的一部分", () => {
+    expect(job({ ...ok, stages: [{ name: "a", weight: 0 }] })).toBeNull();
+  });
+
+  it("阶段重名不收 —— 名字就是元件的 key", () => {
+    expect(job({ ...ok, stages: [{ name: "a", weight: 1 }, { name: "a", weight: 1 }] })).toBeNull();
   });
 });

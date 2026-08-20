@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lastCall, totalTokens, usageByModel } from "../../src/session/deriveUsage.js";
+import { contextSeries, lastCall, totalTokens, usageByModel } from "../../src/session/deriveUsage.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 let seq = 0;
@@ -79,5 +79,28 @@ describe("lastCall", () => {
       ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "" }),
     ];
     expect(lastCall(events)).toEqual({ model: "b", promptTokens: 1, completionTokens: 2 });
+  });
+});
+
+describe("contextSeries —— 上下文增长曲线", () => {
+  it("只取正文调用的 promptTokens，按时间顺序", () => {
+    const events = [
+      said("m", 100, 10),
+      ev({ type: "section_classified", model: "m", usage: { promptTokens: 5, completionTokens: 1 } }),
+      said("m", 260, 20),
+    ];
+    expect(contextSeries(events)).toEqual([100, 260]);
+  });
+
+  it("压缩/分区/建议不进曲线 —— 它们的 prompt 是各自的小提示词，混进来是尖刺", () => {
+    const events = [
+      ev({ type: "context_compacted", model: "m", usage: { promptTokens: 9, completionTokens: 1 } }),
+      ev({ type: "suggestions_generated", model: "m", usage: { promptTokens: 7, completionTokens: 1 } }),
+    ];
+    expect(contextSeries(events)).toEqual([]);
+  });
+
+  it("没记 usage 的正文不进曲线 —— 当 0 会把曲线拽到地板", () => {
+    expect(contextSeries([ev({ type: "assistant_message", content: "", model: "m" })])).toEqual([]);
   });
 });

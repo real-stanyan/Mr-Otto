@@ -25,10 +25,14 @@ export function NumberTicker({
   value,
   label,
   className,
+  valueClassName = "text-3xl",
   ...props
 }: Omit<ComponentProps<"div">, "children" | "value" | "label"> & {
   value: number;
   label: string;
+  /** 本仓改动:数字号数可换。原件写死 text-3xl（画廊里它独占一屏），
+      本仓把它放进一枚 300px 的浮层做标题，3xl 会把整张卡压塌 */
+  valueClassName?: string;
 }) {
   const formatted = value.toLocaleString("en-US");
 
@@ -40,7 +44,10 @@ export function NumberTicker({
       {...props}
     >
       <span
-        className="flex text-3xl font-medium tracking-tight tabular-nums"
+        className={cn(
+          "flex font-medium tracking-tight tabular-nums",
+          valueClassName,
+        )}
         aria-label={formatted}
       >
         {formatted.split("").map((char, i) =>

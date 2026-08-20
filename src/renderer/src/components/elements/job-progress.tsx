@@ -74,7 +74,10 @@ export function JobProgress({
         <span className={cn(mono, "text-foreground/35 shrink-0 tabular-nums")}>
           {finished ? "done" : eta}
         </span>
-        {!finished && (
+        {/* 本仓改动:没给 onCancel 就不画这颗 ×。原件只看"做完没有"，
+            而本仓这张卡报的是模型自己声明的进度 —— 消息落盘就定格了，
+            没有任何东西可以被取消。一颗按下去什么都不发生的 × 是在说谎 */}
+        {!finished && onCancel && (
           <button
             type="button"
             aria-label="Cancel the job"

@@ -49,6 +49,9 @@ import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
+import { Chart } from "@/components/elements/chart.js";
+import { NumberTicker } from "@/components/elements/number-ticker.js";
+import { contextSeries } from "../../session/deriveUsage.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
@@ -211,6 +214,7 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
   const compacts = events.filter((e) => e.type === "context_compacted").length;
+  const series = useMemo(() => contextSeries(events), [events]);
   const n = (x: number) => x.toLocaleString("en-US");
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
       非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
@@ -226,12 +230,19 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       // 藏箭头:这是一张信息卡,不是一句提示气泡。本仓 tooltip 的箭头是
       // Radix 的 TooltipPrimitive.Arrow(见 ui/tooltip.tsx),它渲染成一个 <svg>,
       // 身上没有 data-slot —— 按标签选
-      className="w-[276px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
+      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
       aria-label="上下文用量详情"
     >
-      <div className="flex justify-between items-baseline gap-3 mb-[7px]">
-        <span className="font-semibold">上下文已用 {pct}%</span>
-        <span className={V + " text-muted-foreground"}>~{fmtCtx(breakdown.total)} / {fmtCtx(ctxWindow)}</span>
+      {/* 标题位换成会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
+          在上下文里",而它在一个 turn 里是**活的** —— 每翻一位就是刚发生的事。
+          原来那行 `~22.7K / 128K` 里的分母挪进底下的标签,分子留在这里 */}
+      <div className="flex items-baseline justify-between gap-3 mb-[7px]">
+        <NumberTicker
+          value={breakdown.total}
+          label={`已用 ${pct}% · 窗口 ${fmtCtx(ctxWindow)}`}
+          valueClassName="text-[22px]"
+          className="items-start gap-0.5"
+        />
       </div>
 
       {/* 分段占用条：段宽 = 该类占窗口的比例，尾部留白 = 还没被吃掉的部分 */}
@@ -248,6 +259,21 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
           />
         ))}
       </div>
+
+      {/* 增长曲线:每一次正文调用送进去的 prompt token(投影见 session/deriveUsage)。
+          分段条回答"此刻的构成",曲线回答"它是怎么长到这儿的"——压缩发生时
+          曲线上会有一截明显的回落,那是这张卡里唯一能看见压缩效果的地方。
+          只有一两个点时不画:两个点连成的直线不是趋势 */}
+      {series.length >= 3 && (
+        <Chart
+          label="上下文增长"
+          value={`~${fmtCtx(breakdown.total)}`}
+          points={series}
+          visibleCount={series.length}
+          variant="area"
+          className="mt-[9px] max-w-none border-0 bg-transparent p-0"
+        />
+      )}
 
       <div className="mt-[9px] mb-1">
         {CTX_CATEGORIES.map((c) => (
