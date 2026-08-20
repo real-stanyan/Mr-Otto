@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffView } from "../../src/renderer/src/lib/diffView.js";
+import { diffView, diffDoc, composeContent } from "../../src/renderer/src/lib/diffView.js";
 
 describe("diffView", () => {
   it("新文件:全是 added,删除计数为 0", () => {
@@ -63,5 +63,78 @@ describe("diffView", () => {
     const huge = Array.from({ length: 2100 }, (_, i) => String(i)).join("\n");
     const other = Array.from({ length: 2100 }, (_, i) => String(i * 2)).join("\n");
     expect(diffView(huge, other)).toBeNull();
+  });
+});
+
+describe("diffDoc — 分块", () => {
+  it("一处改动 = 一块,带两侧各两行上下文", () => {
+    const old = ["a", "b", "c", "d", "e", "f", "g"].join("\n");
+    const neu = ["a", "b", "c", "X", "e", "f", "g"].join("\n");
+    const doc = diffDoc(old, neu)!;
+    expect(doc.hunks).toHaveLength(1);
+    expect(doc.hunks[0]!.lines.map((l) => l.kind)).toEqual([
+      "context", "context", "removed", "added", "context", "context",
+    ]);
+    expect(doc.additions).toBe(1);
+    expect(doc.deletions).toBe(1);
+  });
+
+  it("隔得远的两处改动分成两块", () => {
+    const filler = Array.from({ length: 20 }, (_, i) => `f${i}`);
+    const old = ["a", ...filler, "z"].join("\n");
+    const neu = ["A", ...filler, "Z"].join("\n");
+    const doc = diffDoc(old, neu)!;
+    expect(doc.hunks).toHaveLength(2);
+    expect(doc.hunks.map((h) => h.id)).toEqual(["h0", "h1"]);
+  });
+
+  it("隔得近的两处改动合成一块 —— 不逼人对同一处按两次", () => {
+    const old = ["a", "1", "2", "3", "z"].join("\n");
+    const neu = ["A", "1", "2", "3", "Z"].join("\n");
+    const doc = diffDoc(old, neu)!;
+    expect(doc.hunks).toHaveLength(1);
+  });
+
+  it("没有任何改动 = 零块", () => {
+    expect(diffDoc("a\nb", "a\nb")!.hunks).toEqual([]);
+  });
+
+  it("range 是新文件里的行号", () => {
+    const old = ["a", "b", "c", "d", "e"].join("\n");
+    const neu = ["a", "b", "X", "d", "e"].join("\n");
+    expect(diffDoc(old, neu)!.hunks[0]!.range).toBe("第 1–5 行");
+  });
+});
+
+describe("composeContent — 按取舍拼内容", () => {
+  const old = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+               "k", "l", "m", "n", "o", "p", "q", "r", "s", "t"].join("\n");
+  const neu = ["A", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+               "k", "l", "m", "n", "o", "p", "q", "r", "s", "T"].join("\n");
+
+  it("一块没丢就是模型请求的原文(连字符串都不重拼)", () => {
+    expect(composeContent(old, neu, new Set())).toBe(neu);
+  });
+
+  it("丢掉第一块:那一段回到旧样子,另一块照改", () => {
+    const doc = diffDoc(old, neu)!;
+    expect(doc.hunks).toHaveLength(2);
+    const out = composeContent(old, neu, new Set([doc.hunks[0]!.id]))!;
+    expect(out.split("\n")[0]).toBe("a");
+    expect(out.split("\n").at(-1)).toBe("T");
+  });
+
+  it("两块全丢 = 旧文件原样(等于没改)", () => {
+    const doc = diffDoc(old, neu)!;
+    const out = composeContent(old, neu, new Set(doc.hunks.map((h) => h.id)))!;
+    expect(out).toBe(old);
+  });
+
+  it("新文件把唯一那块丢掉 = 空文件", () => {
+    expect(composeContent(null, "x\ny", new Set(["h0"]))).toBe("");
+  });
+
+  it("id 不认识就当没丢 —— 不许因为一个野 id 把改动整段吞掉", () => {
+    expect(composeContent(old, neu, new Set(["h99"]))).toBe(neu);
   });
 });

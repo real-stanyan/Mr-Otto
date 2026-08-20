@@ -31,7 +31,13 @@ import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
 import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
-import { UIApprover, createModeAwareApprover, type ApprovalMode } from "./uiApprover.js";
+import {
+  UIApprover,
+  createGrantAwareApprover,
+  createModeAwareApprover,
+  type ApprovalMode,
+} from "./uiApprover.js";
+import { sessionGrants, type GrantScope } from "../shared/permissionGrants.js";
 import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
@@ -92,6 +98,12 @@ export function createAgent(opts: {
   /** 浏览器能力工厂(index.ts 注入,按 sessionId 绑到 browserHub)。
       不给 = 这个装配没有浏览器,browser_read 会明确报错(测试和裸装配照旧) */
   makeBrowser?: (sessionId: string) => BrowserCapability;
+  /** 永久授权名单（ADR-0041，index.ts 从 userData/permissions.json 注入）。
+      活引用：查的是"此刻"的名单，不是装配时的快照。
+      不给 = 这个装配没有永久授权（测试和裸装配照旧，每次都问人） */
+  alwaysAllow?: () => ReadonlySet<string>;
+  /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
+  persistAlwaysAllow?: (tool: string) => void;
 }) {
   const { store } = opts;
 
@@ -116,6 +128,12 @@ export function createAgent(opts: {
   // 运行时偏好（刻意不落日志）：影响的是"怎么问人/怎么调 API"，不是模型看到的上下文。
   // 代价：resume 后回默认值——审批模式回 ask 是安全默认，thinking 回开是保守默认。
   let approvalMode: ApprovalMode = "ask";
+  // 本会话授过权的工具（ADR-0041）。resume 时从日志重建 —— 会话中途授的权
+  // 必须跟着会话回来，而日志是它唯一的凭据（approval_decision.grant）。
+  // 新会话那份日志是空的，扫出来就是空集合
+  const sessionAllow = new Set<string>(
+    opts.resumeSessionId ? sessionGrants(store.load(opts.resumeSessionId)) : []
+  );
   if (!opts.resumeSessionId) {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
@@ -237,7 +255,20 @@ export function createAgent(opts: {
     world,
     sessionId,
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
-    approver: createModeAwareApprover(() => approvalMode, approver),
+    // 两层短路，顺序有意：先看模式（"完全访问"是对整台机器说的话），
+    // 再看授权（对某个工具说的话）。都不命中才弹卡
+    approver: createModeAwareApprover(
+      () => approvalMode,
+      createGrantAwareApprover(
+        (tool) =>
+          sessionAllow.has(tool)
+            ? "session"
+            : opts.alwaysAllow?.().has(tool)
+              ? "always"
+              : undefined,
+        approver
+      )
+    ),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),
     onToolOutput: (toolCallId, chunk, stream) =>
@@ -266,6 +297,15 @@ export function createAgent(opts: {
   return {
     engine,
     approver,
+    /** IPC：审批卡上按下的不只是"批准"，还捎带一条长期许可（ADR-0041）。
+        授权的粒度是工具，而 IPC 回来的只有 toolCallId —— 从挂起表里查回工具名。
+        查不到（卡已过期/重复点击）就什么也不授：宁可再问一次，不能给错工具开门 */
+    grant(toolCallId: string, scope: GrantScope): void {
+      const tool = approver.toolFor(toolCallId);
+      if (!tool) return;
+      if (scope === "session") sessionAllow.add(tool);
+      else opts.persistAlwaysAllow?.(tool);
+    },
     /** IPC 唤醒挂起的问卷（与 approver.resolve 同构） */
     answerQuestions(toolCallId: string, outcome: AskUserOutcome): void {
       questioner.resolve(toolCallId, outcome);

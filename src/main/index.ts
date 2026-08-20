@@ -13,6 +13,7 @@ import {
   type PokerAction,
   type PokerTableInput,
   type BrowserBounds,
+  type ApprovalDecisionOutcome,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -27,6 +28,7 @@ import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
 import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
+import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
@@ -125,6 +127,9 @@ void app.whenReady().then(() => {
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
   const keyVaultPath = join(app.getPath("userData"), "keys.json");
+  // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
+  // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
+  const permissionsPath = join(app.getPath("userData"), "permissions.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
 
   const win = createWindow();
@@ -409,6 +414,8 @@ void app.whenReady().then(() => {
       attachments: attachmentStore,
       getAccessToken,
       makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
     });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -443,6 +450,8 @@ void app.whenReady().then(() => {
           attachments: attachmentStore,
           getAccessToken,
           makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
+          alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+          persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
         })
       );
     }
@@ -818,9 +827,21 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(
     CHANNELS.decideApproval,
-    (_e, sessionId: string, toolCallId: string, decision: "approved" | "denied", reason?: string) => {
-      const outcome: ApprovalOutcome = { decision, ...(reason ? { reason } : {}) };
-      agents.get(sessionId)?.approver.resolve(toolCallId, outcome);
+    (_e, sessionId: string, toolCallId: string, incoming: ApprovalDecisionOutcome) => {
+      const agent = agents.get(sessionId);
+      if (!agent) return;
+      const outcome: ApprovalOutcome = {
+        decision: incoming.decision,
+        ...(incoming.reason ? { reason: incoming.reason } : {}),
+        ...(incoming.grant ? { grant: incoming.grant } : {}),
+        ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
+      };
+      // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
+      // 下一个调用就该享受到这条授权了（ADR-0041）
+      if (incoming.decision === "approved" && incoming.grant) {
+        agent.grant(toolCallId, incoming.grant);
+      }
+      agent.approver.resolve(toolCallId, outcome);
     }
   );
 

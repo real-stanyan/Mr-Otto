@@ -15,7 +15,11 @@ import { type SessionMode, useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
-import { diffView } from "./lib/diffView.js";
+import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
+import { PermissionGrant } from "@/components/elements/permission-grant.js";
+import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
+import type { GrantScope } from "../../shared/permissionGrants.js";
+import type { ApprovalRequest } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -588,36 +592,97 @@ function DiffPreview({
 function ApprovalCard() {
   // 只渲染挂靠在当前会话上的卡——别的会话的审批留在它自己的视图里
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
+  if (!approval) return null;
+  // key = 这次调用:换一张卡就换一个组件实例,取舍状态和拒绝原因一起清零。
+  // 用 key 而不是在 effect 里手动清 —— 少一处"忘了清"的可能
+  return <ApprovalCardBody key={approval.call.id} approval={approval} />;
+}
+
+/** 审批卡的本体（ADR-0041）。三种形态，按"能不能看清将要发生什么"分：
+    改文件 → ReviewableDiff（每块可丢），新文件 → CodeDiff（整份都是新增，没有块可取舍），
+    其它工具 → PermissionGrant（这一步会碰什么，列出来）。
+    动作条只有一条，三种形态共用：拒绝 · 批准 · 本次会话 · 永久 */
+function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const decide = useChat((s) => s.decide);
   const [reason, setReason] = useState("");
+  const [discarded, setDiscarded] = useState<ReadonlySet<string>>(() => new Set());
 
-  if (!approval) return null;
+  const preview = approval.preview;
+  // 分块只对"改文件"有意义:新文件整份都是新增,拆块之后每一块都是"要不要这一段",
+  // 而模型给的是一整个文件 —— 拼出半个文件不是任何人想要的结果
+  const doc = useMemo(
+    () => (preview && preview.oldText !== null ? diffDoc(preview.oldText, preview.newText) : null),
+    [preview]
+  );
+
+  const toggle = (id: string, drop: boolean): void =>
+    setDiscarded((prev) => {
+      const next = new Set(prev);
+      if (drop) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const approve = (grant?: GrantScope): void => {
+    // 一块没丢 = 原样执行,不带 revisedArgs(日志里就不会多出一份重复的内容)
+    const revised =
+      preview && doc && discarded.size > 0
+        ? composeContent(preview.oldText, preview.newText, discarded)
+        : null;
+    void decide({
+      decision: "approved",
+      ...(grant ? { grant } : {}),
+      ...(revised !== null
+        ? { revisedArgs: { ...(approval.call.args as Record<string, unknown>), content: revised } }
+        : {}),
+    });
+  };
+
+  const keptCount = doc ? doc.hunks.length - discarded.size : 0;
+  const approveLabel =
+    doc && discarded.size > 0 ? `应用 ${keptCount}/${doc.hunks.length} 块` : "批准";
+
   return (
     // 偶发事件才配入场动画:从下方 8px 淡入——它物理上贴着输入框,从来处进场
     <div className="mx-5 mb-2 border border-warn rounded-[10px] bg-warn/[0.07] transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0">
       <div className="pt-2 px-[14px] text-xs text-warn font-semibold">危险操作待审批</div>
       <div className="px-[14px] py-[6px]">
-        <code>{approval.call.name}</code> — {approval.toolDescription}
-        {approval.preview ? (
+        {doc && preview ? (
+          <ReviewableDiff
+            filename={preview.path}
+            hunks={doc.hunks.map((h) => ({
+              id: h.id,
+              range: h.range,
+              decision: discarded.has(h.id) ? ("discarded" as const) : ("kept" as const),
+              lines: h.lines,
+            }))}
+            onKeep={(id) => toggle(id, false)}
+            onDiscard={(id) => toggle(id, true)}
+            className="max-h-[320px] max-w-none overflow-y-auto"
+          />
+        ) : preview ? (
           <>
-            {/* 路径进 element 的表头(它那一行本来就是"文件名 + 增删计数"),
-                这里只剩"这是个新文件"这句话——它不是 diff 的一部分,是 diff 的前提 */}
-            {approval.preview.oldText === null && (
-              <div className="mt-2 text-xs text-ok">（新文件）</div>
-            )}
+            <div className="mb-1 text-xs text-ok">（新文件）</div>
             <DiffPreview
-              path={approval.preview.path}
-              oldText={approval.preview.oldText}
-              newText={approval.preview.newText}
+              path={preview.path}
+              oldText={preview.oldText}
+              newText={preview.newText}
             />
           </>
         ) : (
-          <pre className={APPROVAL_PRE}>{JSON.stringify(approval.call.args, null, 2)}</pre>
+          <PermissionGrant
+            capability={approval.call.name}
+            requester={approval.toolDescription}
+            reach={reachOf(approval)}
+            scope="pending"
+            actions={null}
+            className="max-w-none"
+          />
         )}
       </div>
-      <div className="flex gap-2 px-[14px] pb-3">
+      <div className="flex flex-wrap gap-2 px-[14px] pb-3">
         <input
-          className={`${FOCUS_INPUT} flex-1 px-[10px] py-[6px] text-[13px]`}
+          className={`${FOCUS_INPUT} min-w-[140px] flex-1 px-[10px] py-[6px] text-[13px]`}
           placeholder="拒绝原因（可空，模型会看到）"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
@@ -625,19 +690,49 @@ function ApprovalCard() {
         <Button
           variant="outline"
           className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => void decide("denied", reason.trim() || undefined)}
+          onClick={() => void decide({ decision: "denied", ...(reason.trim() ? { reason: reason.trim() } : {}) })}
         >
           拒绝
         </Button>
+        {/* 两档长期许可（ADR-0041）。都顺带批准这一次 —— 授权是"以后也别问了"，
+            不是"这次不算"。改过参数的那一次照旧只应用留下的块 */}
+        <Button
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          title={`本次会话内不再为 ${approval.call.name} 弹审批（换会话恢复询问）`}
+          onClick={() => approve("session")}
+        >
+          本次会话
+        </Button>
+        <Button
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          title={`以后永远不再为 ${approval.call.name} 弹审批（存在 userData/permissions.json）`}
+          onClick={() => approve("always")}
+        >
+          永久
+        </Button>
         <Button
           className="bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
-          onClick={() => void decide("approved")}
+          onClick={() => approve()}
         >
-          批准
+          {approveLabel}
         </Button>
       </div>
     </div>
   );
+}
+
+/** 「这一步会」列表 —— 没有 diff 预览的工具，把参数摊成人话。
+    参数出自模型，形状不赌：认得出的写成一句话，认不出的原样列 key: value */
+function reachOf(approval: ApprovalRequest): string[] {
+  const args = approval.call.args;
+  if (typeof args !== "object" || args === null) return [String(args)];
+  return Object.entries(args as Record<string, unknown>).map(([k, v]) => {
+    const text = typeof v === "string" ? v : JSON.stringify(v);
+    // 长参数（bash 的一整段脚本）截断：这一列是"扫一眼看清要发生什么"，不是全文
+    return `${k}: ${text.length > 160 ? `${text.slice(0, 160)}…` : text}`;
+  });
 }
 
 /** key 配置行：输入框存完即清——渲染层不留 key 的任何副本 */

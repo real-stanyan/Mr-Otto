@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { createAgent } from "../../src/main/agent.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
-import { createModeAwareApprover, type ApprovalMode } from "../../src/main/uiApprover.js";
+import {
+  createGrantAwareApprover,
+  createModeAwareApprover,
+  type ApprovalMode,
+} from "../../src/main/uiApprover.js";
 import type { Approver } from "../../src/loop/approvalGate.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
@@ -295,5 +299,60 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
     createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push, attachments });
     expect(store.load("s-x")).toHaveLength(afterFirst);
     store.close();
+  });
+});
+
+describe("createGrantAwareApprover 长期授权（ADR-0041）", () => {
+  const call: ToolCallRequest = { id: "c1", name: "bash", args: { cmd: "ls" } };
+  const refuseUI: Approver = {
+    decide: () => {
+      throw new Error("授过权就不该再弹卡");
+    },
+  };
+
+  it("没授过权:照旧委托 UI 问人", async () => {
+    let asked = false;
+    const ui: Approver = {
+      decide: async () => {
+        asked = true;
+        return { decision: "denied" };
+      },
+    };
+    const approver = createGrantAwareApprover(() => undefined, ui);
+    await approver.decide(call, bashTool);
+    expect(asked).toBe(true);
+  });
+
+  it("授过权:直接批准,不碰 UI", async () => {
+    const approver = createGrantAwareApprover(() => "session", refuseUI);
+    const outcome = await approver.decide(call, bashTool);
+    expect(outcome.decision).toBe("approved");
+  });
+
+  it("理由写明是哪一档授权放的行 —— 日志里不能出现没人批过的危险操作", async () => {
+    expect((await createGrantAwareApprover(() => "session", refuseUI).decide(call, bashTool)).reason)
+      .toBe("已授权（本次会话）");
+    expect((await createGrantAwareApprover(() => "always", refuseUI).decide(call, bashTool)).reason)
+      .toBe("已授权（永久）");
+  });
+
+  it("查的是工具名 —— 授了 bash 不等于授了 write_file", async () => {
+    const approver = createGrantAwareApprover((t) => (t === "bash" ? "session" : undefined), {
+      decide: async () => ({ decision: "denied", reason: "问了人" }),
+    });
+    expect((await approver.decide(call, bashTool)).decision).toBe("approved");
+    const write: ToolCallRequest = { id: "c2", name: "write_file", args: {} };
+    expect((await approver.decide(write, bashTool)).decision).toBe("denied");
+  });
+
+  it("活引用:授权是中途给的,下一次调用立即生效", async () => {
+    const granted = new Set<string>();
+    const approver = createGrantAwareApprover(
+      (t) => (granted.has(t) ? "session" : undefined),
+      { decide: async () => ({ decision: "denied" }) }
+    );
+    expect((await approver.decide(call, bashTool)).decision).toBe("denied");
+    granted.add("bash");
+    expect((await approver.decide(call, bashTool)).decision).toBe("approved");
   });
 });

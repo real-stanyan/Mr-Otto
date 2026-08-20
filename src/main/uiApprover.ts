@@ -12,6 +12,10 @@ export type { ApprovalMode };
 
 export class UIApprover implements Approver {
   private pending = new Map<string, (outcome: ApprovalOutcome) => void>();
+  /** 挂起中的调用用的是哪个工具。授权授的是"工具"这个粒度,
+      而 IPC 回来的只有 toolCallId —— 这张表是两者之间唯一的桥。
+      与 pending 同生共死(同一处 set、同一处 delete) */
+  private pendingTool = new Map<string, string>();
 
   constructor(
     /** 怎么把审批请求送到 UI（主进程注入 webContents.send） */
@@ -26,11 +30,13 @@ export class UIApprover implements Approver {
       const abortOutcome: ApprovalOutcome = { decision: "denied", reason: "turn 被用户中断" };
       if (signal?.aborted) return resolve(abortOutcome);
       this.pending.set(call.id, resolve);
+      this.pendingTool.set(call.id, call.name);
       this.requestFromUI(call, tool);
       signal?.addEventListener(
         "abort",
         () => {
           // 人已经点过按钮（pending 里没了）就不重复收场
+          this.pendingTool.delete(call.id);
           if (this.pending.delete(call.id)) resolve(abortOutcome);
         },
         { once: true }
@@ -43,8 +49,38 @@ export class UIApprover implements Approver {
     const wake = this.pending.get(toolCallId);
     if (!wake) return;
     this.pending.delete(toolCallId);
+    this.pendingTool.delete(toolCallId);
     wake(outcome);
   }
+
+  /** 这个挂起中的调用是哪个工具。已收场/不认识的返 undefined —— 调用方据此不授权 */
+  toolFor(toolCallId: string): string | undefined {
+    return this.pendingTool.get(toolCallId);
+  }
+}
+
+/** 授权感知的 Approver：这个工具已经被授过权(本会话 / 永久)就直接放行，不弹卡。
+    ADR-0041。放行照旧流经审批门 → approval_decision 照常落盘，reason 写明是
+    哪一档授权放的行 —— 日志里不会出现"没人批过就跑了"的危险操作。
+
+    每次 decide 现查（两个都是活引用）：会话中途授的权，下一个调用立即生效；
+    永久授权文件被改了，也不用重启。 */
+export function createGrantAwareApprover(
+  isGranted: (tool: string) => "session" | "always" | undefined,
+  ui: Approver
+): Approver {
+  return {
+    decide(call, tool, signal) {
+      const scope = isGranted(call.name);
+      if (scope) {
+        return Promise.resolve({
+          decision: "approved",
+          reason: `已授权（${scope === "session" ? "本次会话" : "永久"}）`,
+        } satisfies ApprovalOutcome);
+      }
+      return ui.decide(call, tool, signal);
+    },
+  };
 }
 
 /** 模式感知的 Approver：auto 模式短路 UI 往返，直接放行。

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { KeyRoundIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { field, inkButton, mono, paper } from "@/lib/surfaces.js";
@@ -13,17 +13,22 @@ export function PermissionGrant({
   reach,
   scope,
   onGrant,
+  actions,
   className,
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "capability" | "requester" | "reach" | "scope" | "onGrant"
+  "children" | "capability" | "requester" | "reach" | "scope" | "onGrant" | "actions"
 > & {
   capability: string;
   requester: string;
   reach: readonly string[];
   scope: GrantScope | "pending";
   onGrant?: (scope: GrantScope) => void;
+  /** 本仓改动:自带那排钮换成调用方给的动作条。本仓的审批比"三档授权"多两件事 ——
+      拒绝要能带原因(模型会看到),批准还有"只批这一次"这一档 ——
+      而这些都塞不进 onGrant(scope) 这个形状。给了 actions 就整排替换 */
+  actions?: ReactNode;
 }) {
   return (
     <div
@@ -45,13 +50,13 @@ export function PermissionGrant({
             {capability}
           </span>
           <span className="text-foreground/45 truncate text-xs">
-            requested by {requester}
+            {requester} 请求
           </span>
         </div>
       </div>
 
       <div className="flex flex-col gap-1">
-        <span className={cn(mono, "text-foreground/30")}>this grants</span>
+        <span className={cn(mono, "text-foreground/30")}>这一步会</span>
         {reach.map((item) => (
           <span
             key={item}
@@ -67,7 +72,7 @@ export function PermissionGrant({
       </div>
 
       <div className="flex h-8 items-center justify-end gap-2">
-        {scope === "pending" ? (
+        {actions ?? (scope === "pending" ? (
           <>
             <button
               type="button"
@@ -105,7 +110,7 @@ export function PermissionGrant({
           >
             {scope === "denied" ? "denied" : `granted · ${scope}`}
           </span>
-        )}
+        ))}
       </div>
     </div>
   );

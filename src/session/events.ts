@@ -81,6 +81,19 @@ export interface ApprovalDecisionEvent extends SessionEventBase {
   toolCallId: string;
   decision: "approved" | "denied";
   reason?: string;               // 用户拒绝时的说明，会转进 tool_result
+  /** 这次批准同时授予了什么档位的长期许可（ADR-0041）。
+      "session" = 本会话内该工具不再问；"always" = 永久（跨会话，存在 userData）。
+      为什么落在这条事件上而不是另开一个事件类型：授权就发生在按下按钮的这一刻，
+      这条事件本来就在记那一刻。落盘的理由是**后续调用不弹审批**这个事实必须
+      可解释——否则重放一段日志会看见一串没人批过的危险操作。
+      缺席 = 只批这一次（旧日志照常重放）。 */
+  grant?: "session" | "always";
+  /** 用户在审批时改过的参数：**实际执行用的是这一份**，不是模型请求的那一份
+      （ADR-0041 的分块取舍：write_file 只写用户保留的那几块）。
+      必须落盘——模型请求的参数在 assistant_message.toolCalls 里，两边不一致时，
+      只有这个字段能回答"到底什么东西碰了磁盘"。日志是唯一事实来源，
+      少了它日志就在说谎。缺席 = 原样执行（旧日志照常重放）。 */
+  revisedArgs?: unknown;
 }
 
 /** 时间线 4：工具执行结果 —— 模型消费的是这个（拒绝也是一种"结果"） */

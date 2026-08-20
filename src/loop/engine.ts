@@ -61,6 +61,9 @@ export class LoopEngine {
             toolCallId: call.id,
             decision: outcome.decision,
             ...(outcome.reason ? { reason: outcome.reason } : {}),
+            // 长期许可和改过的参数都是"这一刻发生的新事实",日志推不出来 —— 必须落盘
+            ...(outcome.grant ? { grant: outcome.grant } : {}),
+            ...(outcome.revisedArgs !== undefined ? { revisedArgs: outcome.revisedArgs } : {}),
           }),
       }),
       ...(opts.middlewares ?? []),

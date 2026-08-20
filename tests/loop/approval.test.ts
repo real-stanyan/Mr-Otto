@@ -156,3 +156,105 @@ describe("审批门（engine 集成）", () => {
     store.close();
   });
 });
+
+describe("审批时改过的参数（ADR-0041：分块取舍）", () => {
+  const revisingApprover: Approver = {
+    decide: async () => ({
+      decision: "approved",
+      revisedArgs: { path: "/tmp/a.txt", content: "只保留了一半" },
+    }),
+  };
+
+  it("执行用的是改过的那一份 —— 磁盘上是人点头的内容,不是模型请求的", async () => {
+    const store = new EventStore(":memory:");
+    const { world, writes } = trackingWorld();
+    const engine = new LoopEngine({
+      store,
+      adapter: fakeAdapter([writeCallReply, { content: "写好了" }]),
+      tools: [writeFileTool],
+      world,
+      sessionId: "s1",
+      approver: revisingApprover,
+    });
+    await engine.runTurn("写个文件");
+    expect(writes).toEqual([{ path: "/tmp/a.txt", content: "只保留了一半" }]);
+    store.close();
+  });
+
+  it("改动落进 approval_decision.revisedArgs —— 少了它日志就在说谎", async () => {
+    const store = new EventStore(":memory:");
+    const { world } = trackingWorld();
+    const engine = new LoopEngine({
+      store,
+      adapter: fakeAdapter([writeCallReply, { content: "写好了" }]),
+      tools: [writeFileTool],
+      world,
+      sessionId: "s1",
+      approver: revisingApprover,
+    });
+    await engine.runTurn("写个文件");
+    const decision = store.load("s1").find((e) => e.type === "approval_decision");
+    expect(decision).toMatchObject({
+      decision: "approved",
+      revisedArgs: { path: "/tmp/a.txt", content: "只保留了一半" },
+    });
+    // 模型请求的原参数照旧留在 assistant_message 里,两份都在,谁也没被改写
+    const assistant = store.load("s1").find((e) => e.type === "assistant_message");
+    expect(assistant).toMatchObject({ toolCalls: [{ args: { content: "hi" } }] });
+    store.close();
+  });
+
+  it("模型被告知执行的不是它请求的那一份 —— 不说它会照着自己的请求继续推理", async () => {
+    const store = new EventStore(":memory:");
+    const { world } = trackingWorld();
+    const engine = new LoopEngine({
+      store,
+      adapter: fakeAdapter([writeCallReply, { content: "好" }]),
+      tools: [writeFileTool],
+      world,
+      sessionId: "s1",
+      approver: revisingApprover,
+    });
+    await engine.runTurn("写个文件");
+    const result = store.load("s1").find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({ status: "ok" });
+    expect((result as { output: string }).output).toContain("用户在审批时修改了参数");
+    store.close();
+  });
+
+  it("没改参数时 tool_result 不多那句话", async () => {
+    const store = new EventStore(":memory:");
+    const { world } = trackingWorld();
+    const engine = new LoopEngine({
+      store,
+      adapter: fakeAdapter([writeCallReply, { content: "好" }]),
+      tools: [writeFileTool],
+      world,
+      sessionId: "s1",
+      approver: alwaysApprove,
+    });
+    await engine.runTurn("写个文件");
+    const result = store.load("s1").find((e) => e.type === "tool_result");
+    expect((result as { output: string }).output).not.toContain("修改了参数");
+    store.close();
+  });
+
+  it("授权档位落进 approval_decision.grant —— 后续不弹卡这件事必须可解释", async () => {
+    const store = new EventStore(":memory:");
+    const { world } = trackingWorld();
+    const engine = new LoopEngine({
+      store,
+      adapter: fakeAdapter([writeCallReply, { content: "好" }]),
+      tools: [writeFileTool],
+      world,
+      sessionId: "s1",
+      approver: { decide: async () => ({ decision: "approved", grant: "session" }) },
+    });
+    await engine.runTurn("写个文件");
+    expect(store.load("s1").find((e) => e.type === "approval_decision")).toMatchObject({
+      decision: "approved",
+      grant: "session",
+    });
+    store.close();
+  });
+});
