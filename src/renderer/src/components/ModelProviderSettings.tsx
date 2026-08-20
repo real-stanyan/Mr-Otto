@@ -34,7 +34,9 @@ function ProviderRow({
   open: boolean;
   onToggle: () => void;
 }) {
-  const configured = useChat((s) => s.keyStatus[info.apiKeyEnv] ?? false);
+  // 遮罩本身就是"配没配"：空串 = 没配（keyStatus 的口径，见 shared/keyMask.ts）
+  const mask = useChat((s) => s.keyStatus[info.apiKeyEnv] ?? "");
+  const configured = mask !== "";
 
   // 本机 Ollama 的型号不在目录里（用户 pull 了什么就有什么），现问现取
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -103,7 +105,7 @@ function ProviderRow({
                 {ollamaBaseUrl && <>，当前连的是 <code>{ollamaBaseUrl}</code></>}。
               </p>
             ) : (
-              <ProviderKeyDialog info={info} configured={configured} />
+              <ProviderKeyDialog info={info} mask={mask} />
             )}
 
             {info.keyless && (
@@ -231,7 +233,7 @@ export function ModelProviderSettings() {
 
   // "可用" = 填了 key 的 + 免 key 的本机服务。分组问的是"我现在能不能选它",
   // 不是"我有没有给过它凭据"——Ollama 从来不要凭据，却一直可用
-  const ready = (p: ProviderInfo) => p.keyless === true || (keyStatus[p.apiKeyEnv] ?? false);
+  const ready = (p: ProviderInfo) => p.keyless === true || (keyStatus[p.apiKeyEnv] ?? "") !== "";
   const configured = matched.filter(ready);
   const rest = matched.filter((p) => !ready(p));
 

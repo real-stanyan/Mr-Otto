@@ -25,7 +25,10 @@ import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
 import { ProviderMark } from "./ProviderMark.js";
 
-export function ProviderKeyDialog({ info, configured }: { info: ProviderInfo; configured: boolean }) {
+export function ProviderKeyDialog({ info, mask }: { info: ProviderInfo; mask: string }) {
+  // 空串 = 没配（keyStatus 的口径）。配了就把遮罩显示在钮上 ——
+  // env 变量名只回答"这一格是干什么的"，回答不了"贴进去的是哪一把"
+  const configured = mask !== "";
   const saveApiKey = useChat((s) => s.saveApiKey);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -61,7 +64,7 @@ export function ProviderKeyDialog({ info, configured }: { info: ProviderInfo; co
         className="press-scale flex w-full items-center gap-2 rounded-[10px] border border-border px-3 py-[9px] text-left transition-colors duration-150 hover:bg-foreground/[0.04]"
       >
         <code className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground">
-          {info.apiKeyEnv}
+          {configured ? mask : info.apiKeyEnv}
         </code>
         {saved ? (
           <span className="saved-hint inline-flex shrink-0 items-center gap-1 text-[11.5px] text-ok">

@@ -292,7 +292,10 @@ export interface ShellBridge {
       认主进程的那一份，别让下拉框显示一个没生效的档 */
   setThinking(sessionId: string, mode: ThinkingMode): Promise<ThinkingMode>;
   /** env 变量名 → 是否已配置。只传布尔——key 本体永远不从主进程回流 */
-  keyStatus(): Promise<Record<string, boolean>>;
+  /** env 变量名 → key 的遮罩形态（`sk-31cf5*****828c`）。空串 = 没配。
+      渲染层能知道的关于 key 的全部信息就是这个：够认出"贴进去的是哪一把",
+      推不回原文（遮罩在主进程算，见 shared/keyMask.ts） */
+  keyStatus(): Promise<Record<string, string>>;
   /** 存/清 API key（key = "" 即清除）。只收目录白名单里的变量名 */
   setApiKey(envName: string, key: string): Promise<void>;
   /** 用系统浏览器打开某厂商的控制台（去领 key）。收厂商 id 而不是 URL——

@@ -179,8 +179,9 @@ interface ChatState {
   checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
-  /** env 变量名 → 配了没。渲染层能知道的关于 key 的全部信息 */
-  keyStatus: Record<string, boolean>;
+  /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
+      渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
+  keyStatus: Record<string, string>;
   /** 本机 Ollama 装了哪些型号 + 各自能力。目录查不到，只能现问 */
   ollamaModels: OllamaModelInfo[];
   /** 探通的那个端点。设置页要显示它——"连上了"得说清连的是哪儿 */

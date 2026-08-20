@@ -88,7 +88,7 @@ export function ModelPicker({
       const info = findProvider(id);
       if (!info) return false;
       if (info.keyless) return true; // 本机 Ollama:能连上就能用
-      return keyStatus[info.apiKeyEnv] ?? false;
+      return (keyStatus[info.apiKeyEnv] ?? "") !== "";
     };
     // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
     // 只留会调工具的：这个 agent 的每一步都是工具调用，选一个不会调工具的型号

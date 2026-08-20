@@ -38,6 +38,7 @@ import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
+import { maskKey } from "../shared/keyMask.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -604,10 +605,12 @@ void app.whenReady().then(() => {
   // 按厂商算而不是按型号算——一家厂暂时 0 个型号时，它的 key 也该能先填上
   const allowedKeyEnvs = new Set(providerKeyEnvs());
 
-  ipcMain.handle(CHANNELS.keyStatus, (): Record<string, boolean> => {
-    const status: Record<string, boolean> = {};
-    for (const env of allowedKeyEnvs) status[env] = Boolean(process.env[env]);
-    return status; // 只有布尔——key 本体永远不过这座桥
+  ipcMain.handle(CHANNELS.keyStatus, (): Record<string, string> => {
+    const status: Record<string, string> = {};
+    // 遮罩在这一侧算完再过桥：过去的是一个推不回原文的派生物（前 8 + 五颗星 + 后 4），
+    // key 本体永远不过这座桥。空串 = 没配（"配没配"照旧靠真假值判断）
+    for (const env of allowedKeyEnvs) status[env] = maskKey(process.env[env] ?? "");
+    return status;
   });
 
   // 领 key 的入口。只认目录里的厂商 id，URL 从目录里查——渲染层递不进来任意外链

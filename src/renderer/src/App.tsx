@@ -770,7 +770,7 @@ function reachOf(approval: ApprovalRequest): string[] {
 
 /** key 配置行：输入框存完即清——渲染层不留 key 的任何副本 */
 function KeyRow({ envName, label }: { envName: string; label: string }) {
-  const configured = useChat((s) => s.keyStatus[envName] ?? false);
+  const configured = useChat((s) => (s.keyStatus[envName] ?? "") !== "");
   const saveApiKey = useChat((s) => s.saveApiKey);
   const [draft, setDraft] = useState("");
 
