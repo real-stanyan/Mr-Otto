@@ -240,7 +240,11 @@ const ThreadRoot: FC<{
               下边距同理:建议是"接着说什么"的入口,它该贴着输入框,不是浮在半空 */}
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer flex flex-col gap-2 overflow-visible pb-1",
+              // 本仓改动:抬一层。footer(App.tsx)顶边那道滚动缘渐隐是绝对定位的,
+              // DOM 上排在消息区之后 —— 同为 z-auto 时它按后来居上盖在这一条上,
+              // 快速回复整片被蒙了一层暗底。渐隐的活是"把滚上来的正文淡进 footer 底色",
+              // 淡的是正文,不是钉在底边的控件:控件得在它之上
+              "aui-thread-viewport-footer relative z-10 flex flex-col gap-2 overflow-visible pb-1",
               !isEmpty &&
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
