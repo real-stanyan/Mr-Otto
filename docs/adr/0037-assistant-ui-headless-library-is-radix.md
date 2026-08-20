@@ -1,4 +1,4 @@
-# ADR-0035: assistant-ui 迁移没有引入第二套 headless 库——它本来就建在 radix 上
+# ADR-0037: assistant-ui 迁移没有引入第二套 headless 库——它本来就建在 radix 上
 
 日期：2026-08-20　状态：已接受
 
@@ -8,8 +8,9 @@
 而本仓存量的 sidebar / dialog / select / dropdown-menu 建在 `radix-ui` 上，
 两套 headless 库会在同一个 bundle 里并存（`docs/superpowers/specs/2026-08-19-assistant-ui-migration-design.md`
 §4.2 原文；Task 5 的执行计划里还专门留了一步「`npm run build` 会真的暴露
-base-ui 与 react 19 的解析问题」）。据此预留了一条 ADR 位（当时编号 0035）
-准备记录「并存是刻意的」这个决定。
+base-ui 与 react 19 的解析问题」）。据此预留了一条 ADR 位（当时编号 0035，
+并入 main 时撞上 main 自己的 ADR-0035《浏览器骑在 ExecutionWorld seam 上》，
+挪到了现在这个号）准备记录「并存是刻意的」这个决定。
 
 写这份 ADR 前照惯例核对代码，结果是：**这个假设不成立。**
 

@@ -1,4 +1,4 @@
-# ADR-0034: assistant-ui 走 ExternalStoreRuntime —— 投影，不是第二个事实来源
+# ADR-0036: assistant-ui 走 ExternalStoreRuntime —— 投影，不是第二个事实来源
 
 日期：2026-08-20　状态：已接受
 

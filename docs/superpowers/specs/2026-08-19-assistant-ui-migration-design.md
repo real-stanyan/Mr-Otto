@@ -171,11 +171,15 @@ PR1 中间态必须可运行：只挂 runtime + 换渲染，composer 原样留�
 
 | 编号 | 主题 | 随哪个 PR |
 |---|---|---|
-| ADR-0034 | assistant-ui 走 ExternalStoreRuntime —— 投影，不是第二个事实来源 | PR1 |
-| ADR-0035 | base-ui 与 radix 并存是刻意的 | PR1 |
-| ADR-0036 | 跟进建议是独立一次调用，logged 但不 model-visible | PR3 |
+| ADR-0036 | assistant-ui 走 ExternalStoreRuntime —— 投影，不是第二个事实来源 | PR1 |
+| ADR-0037 | base-ui 与 radix 并存是刻意的 | PR1 |
+| ADR-0039 | 跟进建议是独立一次调用，logged 但不 model-visible | PR3 |
 
 编号在开 PR 前重新确认（`docs/adr/` 已到 0033，且历史上出现过重号）。
+<!-- 并入 main 的合并任务重排过一次:main 自己占了 0034/0035(会话分区、浏览器骑 world seam)，
+     原来这里的 0034/0035/0036 挪到了 0036/0037/0039(0038 留给同批次另一份 ADR，
+     见 docs/adr/0038-raw-events-ride-metadata-custom-otto.md)。此表原样保留旧编号的历史意图，
+     只搬号，不改列出的主题描述。 -->
 
 ## 8. 测试
 

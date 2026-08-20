@@ -1,4 +1,4 @@
-# ADR-0036: 装不进 assistant-ui 消息模型的两类东西，原样挂 `metadata.custom.otto`，交给既有组件渲染
+# ADR-0038: 装不进 assistant-ui 消息模型的两类东西，原样挂 `metadata.custom.otto`，交给既有组件渲染
 
 日期：2026-08-20　状态：已接受
 
@@ -62,7 +62,7 @@
 
 `components/assistant-ui/thread.tsx` 是 `shadcn add` 装进来的 copy-in
 文件，upstream 的骨架版本没有这三个槽（`SystemMessage`、
-`UserAttachments`、`RunIndicator`——第三个是 ADR-0034 之外另一处回归修复，
+`UserAttachments`、`RunIndicator`——第三个是 ADR-0036 之外另一处回归修复，
 同样靠槽实现，参见 `thread.tsx:72-80`）。这三处是本仓手工加在 upstream
 骨架里的扩展点，每次跑 `shadcn add --overwrite` 重新安装或升级这个组件，
 这三处都会被覆盖掉，要对着 diff 手工加回来。已经在每个槽的定义处留了
