@@ -96,13 +96,13 @@ describe("liveTimingStats —— turn 跑着的时候那一行", () => {
   const live = (o: Partial<Parameters<typeof liveTimingStats>[0]> = {}) =>
     liveTimingStats({ elapsedMs: 5000, promptTokens: 6200, completionTokens: 150, ...o });
 
-  it("耗时是真的，不标 ~", () => {
+  it("耗时是真的", () => {
     expect(val(live(), "elapsed")).toBe("5.0s");
   });
 
-  it("估出来的数都标 ~ —— 一眼分得出这是估的还是结算过的", () => {
-    expect(val(live(), "tokens")).toBe("↑~6.2k ↓~150");
-    expect(val(live(), "tok/s")).toBe("~30");
+  it("估出来的数不标 ~ —— 这一行只在跑着的时候出现，那本身就说明了它是估的", () => {
+    expect(val(live(), "tokens")).toBe("↑6.2k ↓150");
+    expect(val(live(), "tok/s")).toBe("30");
   });
 
   it("第一秒之内不报吞吐 —— 分母太小，开头那一下会报出个几百", () => {
@@ -112,7 +112,7 @@ describe("liveTimingStats —— turn 跑着的时候那一行", () => {
 
   it("一个字都还没吐出来时不报吞吐 —— 0 除以时间是 0，写出来像卡住了", () => {
     expect(val(live({ completionTokens: 0 }), "tok/s")).toBeUndefined();
-    expect(val(live({ completionTokens: 0 }), "tokens")).toBe("↑~6.2k ↓~0");
+    expect(val(live({ completionTokens: 0 }), "tokens")).toBe("↑6.2k ↓0");
   });
 
   it("不报花费 —— 单价乘一个猜出来的 token 数，是个看着像结算金额的假数", () => {

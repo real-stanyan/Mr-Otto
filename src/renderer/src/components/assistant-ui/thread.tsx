@@ -75,11 +75,6 @@ export type ThreadComponents = {
       它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   RunIndicator?: ComponentType | undefined;
-  /** 本仓加的槽:IPC 层瞬时发送失败的提示条(会话不存在/turn 冲突——消息压根
-      没进事件日志,与 turn_ended(error) 是不同的失败类别,见 store.ts send() 的
-      注释)。它不是消息、也不是事件投影,同样挂在 ViewportFooter 而不是消息流里。
-      上游 registry 没有这个槽 —— 升级时要人工合 */
-  ErrorBanner?: ComponentType | undefined;
   /** 本仓加的槽:会话分区轨的锚点(零高度、不参与布局,只给 scrollspy/跳转一个可测量
       的位置)。每条消息 id 就是产生它的那条 SessionEvent 的 seq(见
       aui/toThreadMessages.ts),分区起点也是 seq——同一把尺子,所以锚点该不该出现在
@@ -180,7 +175,6 @@ const ThreadRoot: FC<{
   const {
     Welcome = ThreadWelcome,
     RunIndicator: RunIndicatorComponent,
-    ErrorBanner: ErrorBannerComponent,
   } = useContext(ThreadComponentsContext);
 
   return (
@@ -241,7 +235,6 @@ const ThreadRoot: FC<{
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
           >
-            {ErrorBannerComponent ? <ErrorBannerComponent /> : null}
             {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
             {/* 本仓改动:这里**不**渲染 <Composer />,但输入框用的就是它 ——

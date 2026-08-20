@@ -31,7 +31,6 @@ import { WebPreview } from "../components/elements/web-preview.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
-import { TurnErrorState } from "../components/TurnErrorState.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
@@ -366,7 +365,7 @@ function fmtElapsed(ms: number): string {
 }
 
 /** orb 旁的那一行数字 —— 和消息页脚同一个 element(message-timing),
-    区别只在数字是估的(标 `~`,见 aui/messageTiming.ts 的 liveTimingStats)。
+    区别只在数字是估的(见 aui/messageTiming.ts 的 liveTimingStats)。
     用同一个 element 是有意的:turn 跑完之后这一行会被消息页脚那一行接替,
     两者长得一样,读起来就是"同一行数字从估的变成结算过的",而不是换了个东西。
 
@@ -425,23 +424,6 @@ function agentPhase(opts: {
   if (opts.streamingText) return { orb: "solving", label: "作答中…" };
   return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
 }
-
-// ─── ErrorBanner:IPC 层瞬时发送失败的提示条(补回接线时丢掉的功能,见 Task 11) ───
-//
-// store.error 与 turn_ended(error) 是刻意分开的两类失败(见 store.ts send() 的
-// 注释):这一类是消息压根没进事件日志(会话不存在/turn 冲突),不是投影
-// (toThreadMessages.ts)能表达的东西——它不对应任何 SessionEvent。只能像
-// RunIndicator 一样直接订阅 store、挂在 ViewportFooter,而不是走消息流。
-// 没有放进 RunIndicator 里合并:两者语义不同(一个是"turn 正在跑",一个是
-// "消息没发出去、turn 根本没起来"),经验上互斥但概念上不该揉成一个组件。
-// 外观和重试出口都交给 TurnErrorState(assistant-ui 的 error-state element),
-// 与 Timeline 里 turn_ended(error) 那条行同一个组件 —— 两类失败长相一致,
-// 差别只在标题:这一条是"压根没发出去",那一条是"发出去了但 turn 死在半路"
-const ErrorBanner: ComponentType = () => {
-  const error = useChat((s) => s.error);
-  if (!error) return null;
-  return <TurnErrorState title="消息没发出去" detail={error} interactive />;
-};
 
 /** ViewportFooter 里的相位指示器:数据照旧从 store 订阅(statusBySession / approvals /
     events / streamingBySession)。status 不是 running 且没有挂起审批就不渲染——
@@ -539,7 +521,6 @@ const STATIC_COMPONENTS = {
   Source: OttoSource,
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
-  ErrorBanner,
   MessageFooter: MessageTimingFooter,
   MessageAnchor: SectionAnchor,
 } satisfies ThreadComponents;

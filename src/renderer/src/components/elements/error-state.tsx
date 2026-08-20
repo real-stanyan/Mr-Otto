@@ -79,7 +79,10 @@ export function ErrorState({
           type="button"
           onClick={onRetry}
           {...(retryTitle !== undefined ? { title: retryTitle } : {})}
-          className="ms-auto flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+          // 本仓改动:self-center。外层是 items-start(图标要和标题第一行对齐),
+          // 于是这颗钮也被钉在顶上 —— 错误正文长起来时它孤零零挂在右上角。
+          // 它是**整条**错误的出口,不属于标题那一行,竖直居中才对得上整块
+          className="ms-auto flex shrink-0 items-center gap-1.5 self-center rounded-full px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
         >
           <RefreshCwIcon className="size-3" />
           {retryLabel}

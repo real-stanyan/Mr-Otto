@@ -79,8 +79,11 @@ export function timingStats(
  *
  * 为什么要估:usage 只随 assistant_message 一起回来,turn 跑着的时候一个真数都没有。
  * 但"跑了多久、出了多少字、多快"恰恰是这段时间里唯一想知道的事 —— 等它跑完再报,
- * 报的是历史。所以照本仓上下文圆环的老规矩:估,并且**在数字上标 `~`**,
- * 让人一眼分得出这是估的还是结算过的。
+ * 报的是历史。所以这里报的是估算。
+ *
+ * 估算**不标 `~`**:这一行只在 turn 跑着的时候出现,跑完就被结算过的那一行替掉 ——
+ * "现在是估的"由它出现的时机说了,每个数字前面再挂一个波浪号是同一件事讲两遍,
+ * 而代价是数字本身不好扫了(`↑~13.2k ↓~0` 比 `↑13.2k ↓0` 多两个要跳过的字符)。
  *
  * 唯独不估花费:钱是估不得的。单价乘一个猜出来的 token 数,得到的是一个看着像
  * 结算金额的假数 —— 页脚上一格空着，比写一个错的钱数好（同 modelPricing 的规矩）。
@@ -99,11 +102,11 @@ export function liveTimingStats(opts: {
   // 吞吐要有分母:第一秒之内不出这一格,免得开头那一下报出个几百
   if (elapsedMs >= 1000 && completionTokens > 0) {
     const perSecond = completionTokens / (elapsedMs / 1000);
-    stats.push({ label: "tok/s", value: `~${perSecond.toFixed(perSecond < 10 ? 1 : 0)}` });
+    stats.push({ label: "tok/s", value: perSecond.toFixed(perSecond < 10 ? 1 : 0) });
   }
   stats.push({
     label: "tokens",
-    value: `↑~${fmtTokens(promptTokens)} ↓~${fmtTokens(completionTokens)}`,
+    value: `↑${fmtTokens(promptTokens)} ↓${fmtTokens(completionTokens)}`,
   });
   return stats;
 }

@@ -138,6 +138,7 @@ import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigg
 import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
+import { SendErrorBanner } from "./components/SendErrorBanner.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
@@ -2482,6 +2483,8 @@ export function App() {
             <WorkTreePill />
             <TodoPanel />
             <QueuePanel />
+            {/* 「消息没发出去」= 输入框的回执,所以贴着输入框,不在消息流里 */}
+            <SendErrorBanner />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}
