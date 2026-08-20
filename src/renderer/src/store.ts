@@ -2,7 +2,7 @@
 // 只在 boot() 里订阅一次；所有跨进程调用都收敛在这，组件不直接摸 window.otter。
 
 import { create } from "zustand";
-import type { SessionEvent } from "../../session/events.js";
+import type { SessionEvent, UserMessageEvent } from "../../session/events.js";
 import {
   dropTask,
   pushTask,
@@ -43,6 +43,7 @@ import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
+import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
@@ -316,6 +317,11 @@ interface ChatState {
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
   removeStaged(index: number): void;
   injectComposer(text: string, append: boolean): void;
+  /** 原样重发一条已经在日志里的用户消息(重试)。附件从那条事件上取回来:
+      图片是内容寻址的 ref、文本文件是全文快照,两样都在事件里(ADR-0042)。
+      刻意不复用 send():那条路在调用瞬间读 get().staged —— 用户此刻暂存区里
+      放着的东西跟"再发一遍那条"毫无关系,混进去就把"原样"变成了假话 */
+  resend(event: UserMessageEvent): Promise<void>;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
@@ -1354,6 +1360,27 @@ export const useChat = create<ChatState>((set, get) => ({
       const last = get().events.at(-1);
       if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
         set({ error: msg, staged: [...staged, ...get().staged] });
+      }
+    }
+  },
+
+  async resend(event) {
+    const sessionId = get().sessionId; // 同 send:发消息瞬间锁定目标会话
+    const attachments = outgoingFrom(event); // 事件形状 → 线上形状,见 lib/resendPayload.ts
+    set({ error: null });
+    try {
+      await window.otter.sendMessage(
+        sessionId,
+        event.content,
+        undefined,
+        attachments.length > 0 ? attachments : undefined
+      );
+    } catch (e) {
+      // 同 send:turn 暴死已经作为 turn_ended 事件渲染在时间线里,别再叠一行临时的
+      const msg = e instanceof Error ? e.message : String(e);
+      const last = get().events.at(-1);
+      if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
+        set({ error: msg });
       }
     }
   },

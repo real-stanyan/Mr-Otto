@@ -119,8 +119,6 @@ import {
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
-import { retryPlan } from "./lib/retry.js";
-import { retryLastUserMessage } from "./lib/retryAction.js";
 import {
   ComposerPrimitive,
   unstable_useTriggerPopoverAriaProps,

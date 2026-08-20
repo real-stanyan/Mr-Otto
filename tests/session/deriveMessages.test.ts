@@ -465,3 +465,60 @@ describe("section_classified 不进模型上下文", () => {
     expect(JSON.stringify(deriveMessages(withSections))).toBe(JSON.stringify(deriveMessages(base)));
   });
 });
+
+describe("什么也没产出的 turn 不进上下文（ADR-0042）", () => {
+  it("失败重试三次只留成功那一份 —— 而不是同一句话喂给模型四遍", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "收到这个文件说一个字「收」就行",
+        textFiles: [{ name: "a.json", content: "{}", bytes: 2 }] },
+      { ...env(), type: "turn_ended", outcome: "aborted" },
+      { ...env(), type: "user_message", content: "收到这个文件说一个字「收」就行",
+        textFiles: [{ name: "a.json", content: "{}", bytes: 2 }] },
+      { ...env(), type: "turn_ended", outcome: "error", error: "model API 429: …" },
+      { ...env(), type: "user_message", content: "收到这个文件说一个字「收」就行",
+        textFiles: [{ name: "a.json", content: "{}", bytes: 2 }] },
+      { ...env(), type: "assistant_message", content: "收", model: "glm-4.5-flash" },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+
+    const messages = deriveMessages(events);
+
+    expect(messages).toEqual([
+      {
+        role: "user",
+        content: "收到这个文件说一个字「收」就行\n\n[用户附上文件「a.json」,内容如下]\n{}",
+      },
+      { role: "assistant", content: "收" },
+    ]);
+  });
+
+  it("失败但产出过的 turn 照旧留着：半截对话也是对话", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "读一下 a.txt" },
+      {
+        ...env(), type: "assistant_message", content: "", model: "m",
+        toolCalls: [{ id: "c1", name: "read_file", args: { path: "a.txt" } }],
+      },
+      { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: "hi" },
+      { ...env(), type: "turn_ended", outcome: "aborted" },
+    ];
+
+    expect(deriveMessages(events).map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+  });
+
+  it("跳掉的消息带着它那条图片代读一起走 —— 不留一句悬空的「随后那条消息的图」", () => {
+    const events: SessionEvent[] = [
+      { ...env(), type: "image_described", content: "一只水獭", model: "v" },
+      { ...env(), type: "user_message", content: "这是什么" },
+      { ...env(), type: "turn_ended", outcome: "error", error: "model API 429: …" },
+      { ...env(), type: "user_message", content: "这是什么" },
+      { ...env(), type: "assistant_message", content: "水獭", model: "m" },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+
+    expect(deriveMessages(events)).toEqual([
+      { role: "user", content: "这是什么" },
+      { role: "assistant", content: "水獭" },
+    ]);
+  });
+});
