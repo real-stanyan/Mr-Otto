@@ -28,7 +28,6 @@ import {
   type AssistantState,
   BranchPickerPrimitive,
   ComposerPrimitive,
-  ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
   ThreadPrimitive,
@@ -300,16 +299,6 @@ const ThreadWelcome: FC = () => {
   );
 };
 
-const MessageError: FC = () => {
-  return (
-    <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
-      </ErrorPrimitive.Root>
-    </MessagePrimitive.Error>
-  );
-};
-
 const AssistantMessage: FC = () => {
   const {
     ToolFallback: ToolFallbackComponent = ToolFallback,
@@ -423,7 +412,13 @@ const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
-        <MessageError />
+        {/* 本仓改动:不画上游那个 message 级的错误框。它渲染的是英文的
+            "An error occurred"(assistant-ui 的默认文案,拿不到具体原因),
+            而本仓的失败**本来就在时间线上有一条**:turn 失败那条审计行,中文、
+            带服务商原话、还带重试出口(components/TurnErrorState.tsx)。
+            两个框说同一件事,其中一个还说得更少。
+            消息的 status(incomplete/error|cancelled)保留 —— assistant-ui 内部
+            要靠它判断这条消息是不是还在跑 */}
       </div>
 
       <div

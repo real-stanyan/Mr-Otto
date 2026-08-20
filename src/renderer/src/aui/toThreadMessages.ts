@@ -102,12 +102,16 @@ export function toThreadMessages(
 ): ThreadMessageLike[] {
   const index = buildToolIndex(events);
   const out: ThreadMessageLike[] = [];
+  // 本 turn 已经落下的那条 assistant 消息在 out 里的位置(没有 = null)。
+  // turn_ended 要标失败时只认它,别去动上一个 turn 的回复(见下面 turn_ended 分支)
+  let turnAssistantIdx: number | null = null;
 
   for (let idx = 0; idx < events.length; idx++) {
     const e = events[idx]!;
     if (e.type === "user_message") {
       const parts: Part[] = [];
       if (e.content.trim() !== "") parts.push({ type: "text", text: e.content });
+      turnAssistantIdx = null; // 新一轮开始
       out.push({
         role: "user",
         id: String(e.seq),
@@ -166,23 +170,30 @@ export function toThreadMessages(
       if (e.reasoningMs !== undefined) custom["reasoningMs"] = e.reasoningMs;
       if (prevTs !== undefined) custom["elapsedMs"] = e.ts - prevTs;
       custom["otto"] = e;
+      turnAssistantIdx = out.length;
       out.push({ ...message, metadata: { custom } });
       continue;
     }
 
-    if (e.type === "turn_ended" && e.outcome !== "completed") {
-      // 回头改最后一条 assistant 消息的状态:turn 的死法是那条消息的属性,
-      // 不是一条独立的消息。aborted 是用户按的停(ADR-0006),不是故障。
-      // 注意这里不 continue —— 它还要往下走,出一条审计行(现状就有那个 chip)
-      for (let i = out.length - 1; i >= 0; i--) {
-        const m = out[i];
-        if (m === undefined || m.role !== "assistant") continue;
-        out[i] = {
-          ...m,
-          status: { type: "incomplete", reason: e.outcome === "aborted" ? "cancelled" : "error" },
-        };
-        break;
+    if (e.type === "turn_ended") {
+      // 回头改**这个 turn 自己**那条 assistant 消息的状态:turn 的死法是那条消息的
+      // 属性,不是一条独立的消息。aborted 是用户按的停(ADR-0006),不是故障。
+      //
+      // 只认本 turn 的那一条 —— 原来是从尾巴一路往回找"最近的 assistant 消息",
+      // 于是 turn 死在模型开口之前(429/断网/停止)时,它会把**上一个 turn**那条
+      // 答得好好的回复标成失败,界面上给一条成功的回答扣一个红框。
+      // 本 turn 一条都没有 = 没有可标的:失败已经由审计行(turn 失败那条)说了。
+      // 注意这里不 continue —— 它还要往下走,出一条审计行
+      if (e.outcome !== "completed" && turnAssistantIdx !== null) {
+        const m = out[turnAssistantIdx];
+        if (m !== undefined) {
+          out[turnAssistantIdx] = {
+            ...m,
+            status: { type: "incomplete", reason: e.outcome === "aborted" ? "cancelled" : "error" },
+          };
+        }
       }
+      turnAssistantIdx = null;
     }
 
     if (isAuditEvent(e)) {

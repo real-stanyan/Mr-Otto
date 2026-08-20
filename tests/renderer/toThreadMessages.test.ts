@@ -291,6 +291,34 @@ describe("toThreadMessages — 边界", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.role).toBe("system");
   });
+
+  it("新 turn 死在模型开口之前:不许把上一个 turn 那条成功的回复标成失败", () => {
+    const events = [
+      ev({ type: "user_message", content: "只回一个字：好" }, 0),
+      ev({ type: "assistant_message", content: "好", model: "m" }, 1),
+      ev({ type: "turn_ended", outcome: "completed" }, 2),
+      ev({ type: "user_message", content: "1" }, 3),
+      // 这个 turn 一个字都没吐出来就 429 了
+      ev({ type: "turn_ended", outcome: "error", error: "model API 429: …" }, 4),
+    ];
+    const out = toThreadMessages(events);
+    const assistant = out.find((m) => m.role === "assistant");
+    expect(assistant?.status).toEqual({ type: "complete", reason: "stop" });
+    // 失败本身照旧有一条审计行说话
+    expect(out.filter((m) => m.role === "system")).toHaveLength(1);
+  });
+
+  it("同一个 turn 里的那条才标：吐了一半才断的算它自己的", () => {
+    const events = [
+      ev({ type: "user_message", content: "写个故事" }, 0),
+      ev({ type: "assistant_message", content: "从前", model: "m" }, 1),
+      ev({ type: "turn_ended", outcome: "aborted" }, 2),
+    ];
+    expect(toThreadMessages(events).find((m) => m.role === "assistant")?.status).toEqual({
+      type: "incomplete",
+      reason: "cancelled",
+    });
+  });
 });
 
 describe("toThreadMessages —— 工具产物(来源 / 文件卡)", () => {
