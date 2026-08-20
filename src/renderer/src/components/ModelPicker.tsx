@@ -3,11 +3,11 @@
 // 底层从自研的两级 DropdownMenu 换成了 assistant-ui 的 ModelSelector（registry 组件）。
 // 换的理由不是"用上组件库"，是这个控件本来就到了两级菜单撑不住的规模：目录 30+ 款、
 // 用户记得住的是型号名而不是它属于哪家，两级菜单逼人先答一个自己未必知道答案的问题。
-// ModelSelector 自带搜索（cmdk），厂商改成分组标题——想找的直接打名字，想逛的按家逛。
+// 厂商从二级菜单改成分组标题——一屏之内按家扫，不用先答"它是哪家的"。
 //
-// 同时把 thinking 挡位收进同一个浮层（ModelSelector.Effort 那一排）：
-// 挡位是**型号的属性**（见 shared/thinking.ts），本来就不该是并排的第二个下拉框——
-// 那种排法会让人以为可以先定挡位再挑型号，而实际是挑完型号才知道有哪些挡。
+// 搜索框和 thinking 挡位那一排都不画（searchable={false} / 不渲染 Effort）：
+// 这个浮层只回答一个问题——用哪个型号。cmdk 的键盘导航照旧（Content 会补一个
+// sr-only 的输入锚点），少的只是那个可见的输入框。
 //
 // 运行时耦合：ModelSelector 有一个可选的 ModelSelectorModelContext 子组件，会把选择
 // 注册进 assistant-ui 自己的 ModelContext。本仓不渲染它 —— 模型是主进程 agent 持有的
@@ -19,13 +19,11 @@ import { SettingsIcon } from "lucide-react";
 
 import {
   ModelSelectorContent,
-  ModelSelectorEffort,
   ModelSelectorEmpty,
   ModelSelectorGroup,
   ModelSelectorItem,
   ModelSelectorList,
   ModelSelectorRoot,
-  ModelSelectorSearch,
   ModelSelectorSeparator,
   ModelSelectorTrigger,
   ModelSelectorValue,
@@ -153,14 +151,19 @@ export function ModelPicker({
         <ModelSelectorValue placeholder={value} />
       </ModelSelectorTrigger>
 
-      <ModelSelectorContent align="end" className="w-[268px]">
-        <ModelSelectorSearch placeholder="搜索型号 / 厂商…" />
+      {/* searchable={false} 不只是"不画搜索框":Content 据此决定 cmdk 是否过滤,
+          并补上一个 sr-only 的输入锚点 —— 没有它,方向键/回车在列表里就不工作了。
+          border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
+      <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
         <ModelSelectorList className="max-h-[320px]">
           <ModelSelectorEmpty>没有匹配的型号</ModelSelectorEmpty>
           {groups.map((g) => (
             <ModelSelectorGroup key={g.provider} heading={g.info.name}>
               {g.options.map((o, i) => (
-                <ModelSelectorItem key={o.id} model={o}>
+                <ModelSelectorItem key={o.id} model={o} className="items-center">
+                  {/* 厂商标记要自己摆:给了 children 就等于整块自绘,
+                      上游那套 icon + name 的默认排版不会再出现(它在 children ?? 后面) */}
+                  {o.icon}
                   <span className="min-w-0 flex-1 truncate">{o.name}</span>
                   {g.models[i]?.supportsVision && (
                     <span className="shrink-0 text-[10.5px] text-muted-foreground">视觉</span>
@@ -185,8 +188,10 @@ export function ModelPicker({
             </CommandItem>
           </CommandGroup>
         </ModelSelectorList>
-        {/* 挡位那一排：只在型号真有得选、且调用方接了 onThinkingChange 时出现 */}
-        {onThinkingChange !== undefined && <ModelSelectorEffort label="Thinking" />}
+        {/* 挡位那一排不画了：这个浮层只回答"用哪个型号"。
+            effort/onEffortChange 仍然接在 Root 上（选中型号的挡位表也还在 ModelOption 里），
+            所以要把挡位重新长出来是一行的事 —— 但目前没有任何界面能改它，
+            thinking 只跟型号默认档走（shared/thinking.ts） */}
       </ModelSelectorContent>
     </ModelSelectorRoot>
   );

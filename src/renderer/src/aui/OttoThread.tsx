@@ -21,7 +21,7 @@ import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { EventRow } from "../components/Timeline.js";
-import { RetryButton } from "../components/RetryButton.js";
+import { TurnErrorState } from "../components/TurnErrorState.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
@@ -122,7 +122,10 @@ const ReasoningGroupWithLabel: NonNullable<ThreadComponents["ReasoningGroup"]> =
       .join(""),
   );
   return (
-    <ReasoningRoot streaming={running}>
+    // variant="ghost" = 不要外框。上游默认 outline(圆角 + 边框 + 内边距),
+    // 那个框在本仓是多余的一层:折叠头本身已经是一枚可点的胶囊,
+    // 外面再套一圈就成了"框里的框",而思考只是回答的一段前情,不该比正文更重
+    <ReasoningRoot streaming={running} variant="ghost">
       <ReasoningTrigger active={running} label={thinkingLabel(reasoningText, reasoningMs)} />
       <ReasoningContent aria-busy={running}>
         <ReasoningText>{children}</ReasoningText>
@@ -222,18 +225,13 @@ function agentPhase(opts: {
 // RunIndicator 一样直接订阅 store、挂在 ViewportFooter,而不是走消息流。
 // 没有放进 RunIndicator 里合并:两者语义不同(一个是"turn 正在跑",一个是
 // "消息没发出去、turn 根本没起来"),经验上互斥但概念上不该揉成一个组件。
-// 样式照抄旧 App.tsx 的 chip(`git show 88703d1` 的 `[turn 失败]` 那行),
-// 重试钮复用 RetryButton——它自己会在 status==="running" 或没有上一条用户
-// 消息时隐身,这里不用重复判断
+// 外观和重试出口都交给 TurnErrorState(assistant-ui 的 error-state element),
+// 与 Timeline 里 turn_ended(error) 那条行同一个组件 —— 两类失败长相一致,
+// 差别只在标题:这一条是"压根没发出去",那一条是"发出去了但 turn 死在半路"
 const ErrorBanner: ComponentType = () => {
   const error = useChat((s) => s.error);
   if (!error) return null;
-  return (
-    <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
-      <span>[turn 失败] {error}</span>
-      <RetryButton />
-    </div>
-  );
+  return <TurnErrorState title="消息没发出去" detail={error} interactive />;
 };
 
 /** ViewportFooter 里的相位指示器:数据照旧从 store 订阅(statusBySession / approvals /
