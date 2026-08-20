@@ -3,11 +3,8 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,7 +14,20 @@ import {
 import { type SessionMode, useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
-import { diffLines } from "../../shared/diff.js";
+import { CodeDiff } from "@/components/elements/code-diff.js";
+import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
+import {
+  ComposerActions,
+  ComposerAttachButton,
+  ComposerBar,
+  ComposerSend,
+  ComposerToolbar,
+} from "@/components/elements/composer.js";
+import { PermissionGrant } from "@/components/elements/permission-grant.js";
+import { TodoList } from "@/components/elements/todo-list.js";
+import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
+import type { GrantScope } from "../../shared/permissionGrants.js";
+import type { ApprovalRequest } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -38,19 +48,27 @@ import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
+import { CostPanel } from "./components/CostPanel.js";
+import { SessionActivity } from "./components/SessionActivity.js";
+import { pickGreeting } from "./lib/greeting.js";
+import { Chart } from "@/components/elements/chart.js";
+import { NumberTicker } from "@/components/elements/number-ticker.js";
+import { contextSeries } from "../../session/deriveUsage.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { ThinkingPicker } from "./components/ThinkingPicker.js";
+import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
+import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+// RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
+// ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
-import { RetryButton } from "./components/RetryButton.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
-import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
-import { MD_COMPONENTS } from "./components/CodeBlock.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -60,7 +78,6 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer.js";
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -98,44 +115,28 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar.js";
-import type { SessionEvent, ToolCallRequest } from "../../session/events.js";
-import { EventRow, ToolRow } from "./components/Timeline.js";
+import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
 import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
-import { ToolGroup } from "./components/ToolGroup.js";
-import { ThreadViewport } from "./components/ThreadViewport.js";
-import { groupThread } from "./lib/threadGroups.js";
-import { buildToolIndex } from "./lib/toolIndex.js";
-import { CHIP, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY } from "./timelineStyles.js";
-import { type OrbState } from "./lib/toolSummary.js";
-
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
-    section_classified 也算：分区分类是真花钱的模型调用，漏掉这一行统计就说谎 */
-function totalTokens(events: SessionEvent[]): number {
-  let sum = 0;
-  for (const e of events) {
-    if (
-      (e.type === "assistant_message" ||
-        e.type === "context_compacted" ||
-        e.type === "section_classified") &&
-      e.usage
-    ) {
-      sum += e.usage.promptTokens + e.usage.completionTokens;
-    }
-  }
-  return sum;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-function fmtElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
-}
+import {
+  ComposerPrimitive,
+  unstable_useTriggerPopoverAriaProps,
+  unstable_useSlashCommandAdapter,
+  useAui,
+  useAuiState,
+} from "@assistant-ui/react";
+import {
+  ContextDisplayRoot,
+  ContextDisplayTrigger,
+  ContextDisplayRingVisual,
+} from "@/components/assistant-ui/context-display.js";
+import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
+import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
+import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
+import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
+import { OttoThread } from "./aui/OttoThread.js";
+import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
    多处复用的样式串抽成常量:一处改全局生效,JSX 里不抄长串。
@@ -158,70 +159,28 @@ const FOCUS_INPUT =
   "bg-background border border-border rounded-lg text-foreground transition-[border-color,box-shadow] duration-150 focus:outline-none focus:border-ring focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]";
 /* 状态条/新会话卡的下拉框(素色,悬停亮边)——shadcn SelectTrigger 的 className 叠加层 */
 const BAR_SELECT =
-  "h-auto w-fit gap-1 bg-transparent text-muted-foreground border-transparent rounded-md px-1 py-[2px] text-xs font-mono shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
+  "h-auto w-fit gap-1 bg-transparent dark:bg-transparent dark:hover:bg-foreground/[0.06] text-muted-foreground border-transparent rounded-full px-2 py-[3px] text-xs font-mono shadow-none hover:text-foreground hover:bg-foreground/[0.06] disabled:opacity-40 [&_svg]:size-3";
 /* bypass 模式常亮警示色——免审状态必须一眼可见 */
 const BYPASS = "text-warn bg-warn/[0.12]";
 /* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px)——shadcn SelectTrigger 的 className 叠加层 */
 const NSC_SELECT =
-  "h-auto w-fit gap-1 bg-transparent border-transparent rounded-lg text-muted-foreground text-xs px-[6px] py-[3px] shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
-/* 发送/停止键:控件行里收小一号,和状态条同一量级 */
-const SEND_BTN = "px-[14px] py-1 h-auto text-[13px] rounded-lg shrink-0";
+  "h-auto w-fit gap-1 bg-transparent dark:bg-transparent dark:hover:bg-foreground/[0.06] border-transparent rounded-full text-muted-foreground text-xs px-2 py-[3px] shadow-none hover:text-foreground hover:bg-foreground/[0.06] disabled:opacity-40 [&_svg]:size-3";
 /* 工作区浮窗列表项 */
 const WS_ITEM =
   "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-foreground text-[13px] cursor-pointer hover:bg-foreground/[0.06] [&>svg]:text-muted-foreground [&>svg]:shrink-0";
-/* slash/$ 菜单(composer 上方弹出):origin-aware,从会话框顶边长出来 */
-const SLASH_MENU =
-  "absolute left-0 right-0 bottom-[calc(100%+8px)] flex flex-col gap-[2px] bg-card border border-border rounded-xl p-[6px] max-h-[300px] overflow-auto shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[3px] starting:scale-[0.98] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100";
-const SLASH_ITEM =
-  "flex items-baseline gap-[10px] w-full text-left bg-transparent border-none rounded-lg px-[10px] py-[7px] cursor-pointer transition-colors duration-100";
+/* slash/$ 补全浮层(composer 上方弹出):origin-aware,从会话框顶边长出来。
+   定位交给 ComposerTriggerPopover 自己(它已经是 absolute bottom-full),
+   这里只覆盖"长什么样":拉满会话框宽度 + 本仓的卡片底色/阴影/入场动画 ——
+   上游默认是 w-64 的窄条 + 无动画,和旧的手写菜单不是一个观感 */
+/* /$ 补全浮层(composer 上方弹出)。外观照 elements/composer 的 ComposerMenu:
+   同一个输入框上方弹出来的东西,该是同一种东西 —— floating 面 + 2xl 圆角 +
+   1.5 的内边距,从下沿长出来(origin-bottom-left) */
+const TRIGGER_POP =
+  "end-0 mb-2 w-auto max-h-[300px] overflow-auto rounded-2xl border-border/60 bg-background dark:bg-popover p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)] origin-bottom-left transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] starting:opacity-0 starting:scale-[0.97] motion-reduce:transition-opacity motion-reduce:starting:scale-100";
 /* 审批卡里的 pre(参数 JSON / diff 兜底文案) */
 const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespace-pre-wrap break-all";
 
 // 上下文占用估算住 shared（账单锚点 + 未计费事件估算 + 按来源拆分），这里只消费
-
-/** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
-    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
-function TurnMeta({ events }: { events: SessionEvent[] }) {
-  const [start] = useState(() => Date.now());
-  const [now, setNow] = useState(start);
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const tokens = useMemo(() => totalTokens(events), [events]);
-  return (
-    <span className="tabular-nums">
-      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens
-    </span>
-  );
-}
-
-/** 上下文用量圆环（Claude Code 同款）：满圈 = 上下文窗打满。
-    数字进悬停提示，环本身只传达"还剩多少"；爬坡换警示色 */
-function CtxRing({ used, win }: { used: number; win: number }) {
-  const pct = Math.min(1, used / win);
-  const r = 5.5;
-  const c = 2 * Math.PI * r;
-  // 有占用就至少画出一小段弧，不然低用量时环看着像坏了
-  const arc = pct === 0 ? 0 : Math.max(pct, 0.05) * c;
-  const color = pct > 0.9 ? "var(--color-deny)" : pct > 0.75 ? "var(--color-warn)" : "var(--color-brand)";
-  return (
-    // 圆环弧长/颜色随账单更新平滑过渡(每 turn 一次,低频)
-    <svg
-      className="[&_circle]:[transition:stroke-dasharray_400ms_var(--ease-strong),stroke_400ms_ease]"
-      width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"
-    >
-      <circle cx="7" cy="7" r={r} fill="none" stroke="color-mix(in srgb, var(--foreground) 16%, transparent)" strokeWidth="2.5" />
-      <circle
-        cx="7" cy="7" r={r} fill="none"
-        stroke={color} strokeWidth="2.5" strokeLinecap="round"
-        strokeDasharray={`${arc} ${c}`}
-        transform="rotate(-90 7 7)"
-      />
-    </svg>
-  );
-}
 
 /** 用量弹窗的数字格式：~119K / 1M 那一路。K 以下给整数，10 万以上不要小数
     （119.0K 的那位小数没有信息量，估算精度也撑不起它） */
@@ -242,52 +201,50 @@ const CTX_CATEGORIES = [
   { key: "messages" as const, label: "对话消息", color: "var(--brand)" },
 ];
 
-/** 圆环点开的详情浮窗：全部数字都是投影（日志 + 主进程报的工具表），没有独立状态。
+/** 用量环的详情浮层：全部数字都是投影（日志 + 主进程报的工具表），没有独立状态。
     主视觉 = 一条按来源分段的占用条 + 图例，回答"上下文被谁吃掉了"。
-    锚在触发环上方（从来处出现），点外面/Esc 关闭 */
-function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
+
+    壳换成了 assistant-ui 的 ContextDisplay（悬停 Tooltip，Root 管百分比/配色/开合），
+    内容仍是本仓这一份：上游 Content 报的是"上一次请求的 usage 分项"（入/缓存/出/推理），
+    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/对话消息）——两码事，换不得。
+    因此只用官方的 Root + Trigger + 环（ContextDisplayRingVisual），Content 自己写 */
+function CtxDetails({ events, toolDefs, ctxWindow }: {
   events: SessionEvent[];
   toolDefs: ToolDefinition[];
   ctxWindow: number;
-  onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const away = (e: MouseEvent) => {
-      // 点在浮窗外（含触发环之外的一切）就收起
-      if (ref.current && !ref.current.parentElement?.contains(e.target as Node)) onClose();
-    };
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [onClose]);
-
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
-  const lastUsage = [...events].reverse().find(
-    (e): e is SessionEvent & { usage: { promptTokens: number; completionTokens: number } } =>
-      (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
-  )?.usage;
   const compacts = events.filter((e) => e.type === "context_compacted").length;
+  const series = useMemo(() => contextSeries(events), [events]);
   const n = (x: number) => x.toLocaleString("en-US");
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
       非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
   const width = (v: number) => (v > 0 ? `max(1.5px, ${(v / ctxWindow) * 100}%)` : "0px");
 
   return (
-    <div
-      className="absolute -right-1 bottom-[calc(100%+8px)] z-10 w-[276px] px-3 py-[10px] bg-card border border-border rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs text-foreground cursor-default origin-bottom-right transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
-      ref={ref} role="dialog" aria-label="上下文用量详情"
+    <TooltipContent
+      side="top"
+      align="end"
+      sideOffset={8}
+      // 版式照旧：卡片底色/圆角/阴影都沿用原来的浮窗，只是开合改由 Tooltip 管。
+      // 箭头藏掉——这是一张信息卡，不是一句提示气泡
+      // 藏箭头:这是一张信息卡,不是一句提示气泡。本仓 tooltip 的箭头是
+      // Radix 的 TooltipPrimitive.Arrow(见 ui/tooltip.tsx),它渲染成一个 <svg>,
+      // 身上没有 data-slot —— 按标签选
+      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
+      aria-label="上下文用量详情"
     >
-      <div className="flex justify-between items-baseline gap-3 mb-[7px]">
-        <span className="font-semibold">上下文已用 {pct}%</span>
-        <span className={V + " text-muted-foreground"}>~{fmtCtx(breakdown.total)} / {fmtCtx(ctxWindow)}</span>
+      {/* 标题位换成会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
+          在上下文里",而它在一个 turn 里是**活的** —— 每翻一位就是刚发生的事。
+          原来那行 `~22.7K / 128K` 里的分母挪进底下的标签,分子留在这里 */}
+      <div className="flex items-baseline justify-between gap-3 mb-[7px]">
+        <NumberTicker
+          value={breakdown.total}
+          label={`已用 ${pct}% · 窗口 ${fmtCtx(ctxWindow)}`}
+          valueClassName="text-[22px]"
+          className="items-start gap-0.5"
+        />
       </div>
 
       {/* 分段占用条：段宽 = 该类占窗口的比例，尾部留白 = 还没被吃掉的部分 */}
@@ -304,6 +261,22 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
           />
         ))}
       </div>
+
+      {/* 增长曲线:每一次正文调用送进去的 prompt token(投影见 session/deriveUsage)。
+          分段条回答"此刻的构成",曲线回答"它是怎么长到这儿的"——压缩发生时
+          曲线上会有一截明显的回落,那是这张卡里唯一能看见压缩效果的地方。
+          只有一两个点时不画:两个点连成的直线不是趋势 */}
+      {series.length >= 3 && (
+        <Chart
+          label="上下文增长"
+          // 空串 = 不画那个大数:上面那枚 ticker 已经报过同一个数了
+          value=""
+          points={series}
+          visibleCount={series.length}
+          variant="area"
+          className="mt-[9px] max-w-none border-0 bg-transparent p-0"
+        />
+      )}
 
       <div className="mt-[9px] mb-1">
         {CTX_CATEGORIES.map((c) => (
@@ -323,22 +296,15 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
       </div>
 
       <div className="pt-[6px] border-t border-border">
-        {lastUsage && (
-          <div className={POP_ROW}>
-            <span>最近一次调用</span>
-            <span className={V}>入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
-          </div>
-        )}
-        <div className={POP_ROW}>
-          <span>会话累计消耗</span>
-          <span className={V}>{n(totalTokens(events))} tokens</span>
-        </div>
+        {/* 花费按型号拆开(cost-meter):正文走贵的、压缩/分区/建议走便宜的,
+            只报一个总数会把这件事抹平 */}
+        <CostPanel events={events} />
         <div className={POP_ROW}>
           <span>事件日志</span>
           <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
         </div>
       </div>
-    </div>
+    </TooltipContent>
   );
 }
 
@@ -393,44 +359,33 @@ function TodoPanel() {
         />
       </button>
       {open && (
-        <ul className="list-none m-0 px-3 pb-[7px] pt-[1px] max-h-[30vh] overflow-y-auto flex flex-col gap-[3px]">
-          {todos.map((t, i) => (
-            // text 就是身份(见 deriveTodos),但模型偶尔写重复文案——配上下标兜底
-            <li className="flex items-start gap-2 text-[13px] leading-[1.45]" key={`${i}-${t.text}`}>
-              <span className="shrink-0 mt-[1px] w-4 flex items-center justify-center">
-                {t.status === "in_progress" ? (
-                  live ? (
-                    // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
-                    // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
-                    <span className="scale-[0.8] origin-center leading-none" aria-hidden>
-                      <ThinkingOrb state="working" size={20} theme="auto" />
-                    </span>
-                  ) : (
-                    // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
-                    <CircleDot className="size-[13px] text-brand" aria-hidden />
-                  )
-                ) : t.status === "completed" ? (
-                  <Check className="size-[13px] text-ok" aria-hidden />
-                ) : (
-                  <span className="block size-[7px] rounded-full border border-muted-foreground/60" aria-hidden />
-                )}
+        // 身子换成 elements/todo-list：清单本身是投影(deriveTodos)，元件只负责画。
+        // 三处本仓特供都走它的口子：头行留给上面那个折叠钮、进行中的图标分"真在跑/
+        // 只是开了个头"两种、真在跑才加 shimmer
+        <TodoList
+          className="max-h-[30vh] max-w-none overflow-y-auto px-3 pt-[1px] pb-[7px]"
+          header={null}
+          {...(live ? { activeClassName: "shimmer" } : {})}
+          activeIcon={
+            live ? (
+              // 包只有 20 / 64 两档预设，size={16} 会取到 undefined 直接抛
+              // （issue #51 的黑屏）。要 16px 的视觉就外面缩，不要编造档位
+              <span className="origin-center scale-[0.7] leading-none" aria-hidden>
+                <ThinkingOrb state="working" size={20} theme="auto" />
               </span>
-              <span
-                className={
-                  t.status === "completed"
-                    ? "text-muted-foreground line-through decoration-muted-foreground/40"
-                    : t.status === "in_progress"
-                      ? live
-                        ? "text-foreground shimmer"
-                        : "text-foreground"
-                      : "text-muted-foreground"
-                }
-              >
-                {t.text}
-              </span>
-            </li>
-          ))}
-        </ul>
+            ) : (
+              // 停着的"开了头":实心点 = 动过,但没有转圈的动效在说"正在动"
+              <CircleDot className="size-[13px] text-brand" aria-hidden />
+            )
+          }
+          // text 就是身份(见 deriveTodos),但模型偶尔写重复文案——配上下标兜底
+          items={todos.map((t, i) => ({
+            id: `${i}-${t.text}`,
+            text: t.text,
+            status:
+              t.status === "completed" ? "done" : t.status === "in_progress" ? "active" : "pending",
+          }))}
+        />
       )}
     </div>
   );
@@ -481,7 +436,7 @@ function SettingRow({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-function ComposerBar() {
+function ComposerPrefsBar() {
   const model = useChat((s) => s.model);
   const events = useChat((s) => s.events);
   const toolDefs = useChat((s) => s.toolDefs);
@@ -491,7 +446,6 @@ function ComposerBar() {
   const switchModel = useChat((s) => s.switchModel);
   const setApprovalMode = useChat((s) => s.setApprovalMode);
   const setThinking = useChat((s) => s.setThinking);
-  const [ctxOpen, setCtxOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
 
   // 目录 + 本机探测：Ollama 的窗只有那台机器答得上来，查目录会拿到 32k 兜底常量，
@@ -500,25 +454,16 @@ function ComposerBar() {
   const ctxWindow = choice?.contextWindow ?? 128_000;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
-  const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
-  const approvalSelect = (
-    <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
-      <SelectTrigger
-        className={BAR_SELECT + (approvalMode === "auto" ? " " + BYPASS : "")}
-        title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="ask">逐条审批</SelectItem>
-        <SelectItem value="auto">完全访问</SelectItem>
-      </SelectContent>
-    </Select>
+  // 审批模式是两态,用开关不用下拉框(理由见 BypassSwitch 的开篇)
+  const approvalToggle = (
+    <BypassToggle value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
   );
 
+  // 型号名最长的一档不该独占半条控件行:封顶后省略。
+  // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
+  // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
-    // 型号名最长的一档不该独占半条控件行:封顶后省略
     <ModelPicker
       value={model}
       onChange={(v) => void switchModel(v)}
@@ -527,13 +472,14 @@ function ComposerBar() {
     />
   );
 
-  const thinkingSelect = (
+  // 挡位单独一枚钮(ThinkingPicker):型号浮层只回答"用哪个型号",
+  // 挡位归它自己。换不了挡的型号上这枚钮不出现
+  const thinkingPick = (
     <ThinkingPicker
       spec={thinkingSpecOf(choice)}
       value={thinking}
       onChange={(m) => void setThinking(m)}
       disabled={status === "running"}
-      className={BAR_SELECT}
     />
   );
 
@@ -547,7 +493,7 @@ function ComposerBar() {
     <div className="@container flex-1 min-w-0 text-xs text-muted-foreground">
       <div className="flex items-center gap-2 pl-[2px]">
         {/* 宽:三件偏好摊开 */}
-        <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{approvalSelect}</div>
+        <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{approvalToggle}</div>
 
         {/* 窄:收进浮层。触发钮在免审(auto)状态下照样染警示色——
             危险状态绝不能因为被折叠就不见了,那是把提醒藏进抽屉 */}
@@ -562,32 +508,31 @@ function ComposerBar() {
             }
             aria-label="会话偏好"
             aria-expanded={prefsOpen}
-            title={`会话偏好：${approvalMode === "auto" ? "完全访问" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
+            title={`会话偏好：${approvalMode === "auto" ? "免审批" : "逐条审批"} · ${choice?.label ?? model} · Thinking ${thinkingLabel(thinking)}`}
             onClick={() => setPrefsOpen((o) => !o)}
           >
             <Ellipsis className="size-4" />
           </Button>
           {prefsOpen && (
             <SettingsPopover onClose={() => setPrefsOpen(false)}>
-              <SettingRow label="审批">{approvalSelect}</SettingRow>
+              <SettingRow label="免审批">
+                <BypassSwitch value={approvalMode} onChange={(m) => void setApprovalMode(m)} />
+              </SettingRow>
               <SettingRow label="模型">{modelSelect}</SettingRow>
-              <SettingRow label="推理">{thinkingSelect}</SettingRow>
+              <SettingRow label="Thinking">{thinkingPick}</SettingRow>
             </SettingsPopover>
           )}
         </span>
 
+        {/* 附件钮用 element 的:圆形 ghost + PlusIcon。原来是个全角「＋」字符,
+            它的行高/字宽跟着字体走,和旁边那些控件永远差半像素 */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="w-auto h-auto px-2 py-[2px] text-base leading-none text-inherit hover:bg-foreground/[0.08]"
-              disabled={status === "running"}
-              onClick={() => void useChat.getState().pickFiles()}
-            >
-              ＋
-            </Button>
+            <ComposerAttachButton
+              className="size-7"
+              aria-label="添加文件"
+              {...(status === "running" ? {} : { onClick: () => void useChat.getState().pickFiles() })}
+            />
           </TooltipTrigger>
           <TooltipContent>添加文件(图片/文本)</TooltipContent>
         </Tooltip>
@@ -595,148 +540,154 @@ function ComposerBar() {
         <div className="ml-auto flex items-center gap-2 min-w-0">
           <div className="hidden @[520px]:flex items-center gap-2 min-w-0">
             {modelSelect}
-            {thinkingSelect}
+            {thinkingPick}
           </div>
 
-          <span className="relative inline-flex">
-            <button
-              type="button"
-              className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-foreground/[0.07]"
-              title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%——点击看详情`}
+          {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
+              (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
+          <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
+            {/* 不给 title:富 tooltip 已经把同样的数字说了一遍,
+                原生气泡会在它旁边再冒一个,成了重影 */}
+            <ContextDisplayTrigger
+              className="p-[3px] hover:bg-foreground/[0.07]"
               aria-label="上下文用量详情"
-              onClick={() => setCtxOpen((o) => !o)}
             >
-              <CtxRing used={used} win={ctxWindow} />
-            </button>
-            {ctxOpen && (
-              <CtxPopover
-                events={events}
-                toolDefs={toolDefs}
-                ctxWindow={ctxWindow}
-                onClose={() => setCtxOpen(false)}
-              />
-            )}
-          </span>
+              <ContextDisplayRingVisual />
+            </ContextDisplayTrigger>
+            <CtxDetails events={events} toolDefs={toolDefs} ctxWindow={ctxWindow} />
+          </ContextDisplayRoot>
         </div>
       </div>
     </div>
   );
 }
 
-/** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
-function currentTool(events: SessionEvent[]): ToolCallRequest | null {
-  const done = new Set<string>();
-  for (const e of events) if (e.type === "tool_result") done.add(e.toolCallId);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e && e.type === "assistant_message") {
-      for (const c of e.toolCalls ?? []) if (!done.has(c.id)) return c;
-    }
+/** write_file 审批的 diff 视图 —— assistant-ui 的 code-diff element。
+    diff 现算（投影）：旧内容 + 新内容两个事实推得出，不落盘。取景规则
+    （连续未变行折叠成计数）搬进了 lib/diffView.ts，那里有测试钉着；
+    这里只剩"算不动就退回文本"这一个判断。
+    max-w-none / max-h：element 默认 max-w-md（聊天流里的宽度），
+    而审批卡是贴着输入框的一整条，宽度由卡自己定；再高就滚，不许把输入框顶出屏幕 */
+function DiffPreview({
+  path,
+  oldText,
+  newText,
+}: {
+  path: string;
+  oldText: string | null;
+  newText: string;
+}) {
+  const view = useMemo(() => diffView(oldText, newText), [oldText, newText]);
+  if (!view) {
+    return (
+      <pre className={APPROVAL_PRE}>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>
+    );
   }
-  return null;
-}
-
-/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
-     检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
-     四段对应 orbs 的 Searching / Working / Thinking / Solving */
-function agentPhase(opts: {
-  status: "idle" | "running";
-  hasApproval: boolean;
-  streamingThinking: string;
-  streamingText: string;
-  tool: ToolCallRequest | null;
-}): { orb: OrbState; label: string } {
-  if (opts.hasApproval) return { orb: "listening", label: "等待审批…" };
-  if (opts.status !== "running") return { orb: "breathing", label: "空闲" };
-  if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
-  if (opts.tool) return { orb: "working", label: "执行中…" };
-  if (opts.streamingText) return { orb: "solving", label: "作答中…" };
-  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
-}
-
-/** write_file 审批的 diff 视图。diff 现算（投影）；连续未变行折叠成计数——
-    审批人要看的是"改了什么"，不是全文。算不动（超大文件）退回 JSON 由调用方兜底 */
-function DiffPreview({ oldText, newText }: { oldText: string | null; newText: string }) {
-  const lines = useMemo(() => diffLines(oldText ?? "", newText), [oldText, newText]);
-  if (!lines) return <pre className={APPROVAL_PRE}>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>;
-
-  // 折叠：同类 same 连续段只留首尾各 2 行做上下文，中间换成"… N 行未变 …"
-  const CONTEXT = 2;
-  const rows: { key: number; kind: string; text: string }[] = [];
-  let i = 0;
-  let key = 0;
-  while (i < lines.length) {
-    const line = lines[i]!;
-    if (line.kind !== "same") {
-      rows.push({ key: key++, kind: line.kind, text: line.text });
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < lines.length && lines[j]!.kind === "same") j++;
-    const run = j - i;
-    if (run > CONTEXT * 2 + 1) {
-      for (let k = i; k < i + CONTEXT; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-      rows.push({ key: key++, kind: "skip", text: `… ${run - CONTEXT * 2} 行未变 …` });
-      for (let k = j - CONTEXT; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-    } else {
-      for (let k = i; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-    }
-    i = j;
-  }
-
   return (
-    <pre className={`${APPROVAL_PRE} max-h-[260px] overflow-y-auto bg-[var(--pre-bg)] border border-border rounded-lg px-[10px] py-2 whitespace-pre break-normal overflow-x-auto`}>
-      {rows.map((r) => (
-        <div
-          key={r.key}
-          className={
-            "leading-normal " +
-            (r.kind === "add"
-              ? "text-ok bg-ok/[0.12]"
-              : r.kind === "del"
-                ? "text-deny bg-deny/[0.12] line-through [text-decoration-color:color-mix(in_srgb,var(--deny)_40%,transparent)]"
-                : r.kind === "skip"
-                  ? "text-muted-foreground text-center italic"
-                  : "")
-          }
-        >
-          {r.kind === "add" ? "+ " : r.kind === "del" ? "- " : "  "}
-          {r.text}
-        </div>
-      ))}
-    </pre>
+    <CodeDiff
+      filename={path}
+      additions={view.additions}
+      deletions={view.deletions}
+      lines={view.lines}
+      className="mt-2 max-h-[260px] max-w-none overflow-y-auto"
+    />
   );
 }
 
 function ApprovalCard() {
   // 只渲染挂靠在当前会话上的卡——别的会话的审批留在它自己的视图里
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
+  if (!approval) return null;
+  // key = 这次调用:换一张卡就换一个组件实例,取舍状态和拒绝原因一起清零。
+  // 用 key 而不是在 effect 里手动清 —— 少一处"忘了清"的可能
+  return <ApprovalCardBody key={approval.call.id} approval={approval} />;
+}
+
+/** 审批卡的本体（ADR-0041）。三种形态，按"能不能看清将要发生什么"分：
+    改文件 → ReviewableDiff（每块可丢），新文件 → CodeDiff（整份都是新增，没有块可取舍），
+    其它工具 → PermissionGrant（这一步会碰什么，列出来）。
+    动作条只有一条，三种形态共用：拒绝 · 批准 · 本次会话 · 永久 */
+function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const decide = useChat((s) => s.decide);
   const [reason, setReason] = useState("");
+  const [discarded, setDiscarded] = useState<ReadonlySet<string>>(() => new Set());
 
-  if (!approval) return null;
+  const preview = approval.preview;
+  // 分块只对"改文件"有意义:新文件整份都是新增,拆块之后每一块都是"要不要这一段",
+  // 而模型给的是一整个文件 —— 拼出半个文件不是任何人想要的结果
+  const doc = useMemo(
+    () => (preview && preview.oldText !== null ? diffDoc(preview.oldText, preview.newText) : null),
+    [preview]
+  );
+
+  const toggle = (id: string, drop: boolean): void =>
+    setDiscarded((prev) => {
+      const next = new Set(prev);
+      if (drop) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const approve = (grant?: GrantScope): void => {
+    // 一块没丢 = 原样执行,不带 revisedArgs(日志里就不会多出一份重复的内容)
+    const revised =
+      preview && doc && discarded.size > 0
+        ? composeContent(preview.oldText, preview.newText, discarded)
+        : null;
+    void decide({
+      decision: "approved",
+      ...(grant ? { grant } : {}),
+      ...(revised !== null
+        ? { revisedArgs: { ...(approval.call.args as Record<string, unknown>), content: revised } }
+        : {}),
+    });
+  };
+
+  const keptCount = doc ? doc.hunks.length - discarded.size : 0;
+  const approveLabel =
+    doc && discarded.size > 0 ? `应用 ${keptCount}/${doc.hunks.length} 块` : "批准";
+
   return (
     // 偶发事件才配入场动画:从下方 8px 淡入——它物理上贴着输入框,从来处进场
     <div className="mx-5 mb-2 border border-warn rounded-[10px] bg-warn/[0.07] transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0">
       <div className="pt-2 px-[14px] text-xs text-warn font-semibold">危险操作待审批</div>
       <div className="px-[14px] py-[6px]">
-        <code>{approval.call.name}</code> — {approval.toolDescription}
-        {approval.preview ? (
+        {doc && preview ? (
+          <ReviewableDiff
+            filename={preview.path}
+            hunks={doc.hunks.map((h) => ({
+              id: h.id,
+              range: h.range,
+              decision: discarded.has(h.id) ? ("discarded" as const) : ("kept" as const),
+              lines: h.lines,
+            }))}
+            onKeep={(id) => toggle(id, false)}
+            onDiscard={(id) => toggle(id, true)}
+            className="max-h-[320px] max-w-none overflow-y-auto"
+          />
+        ) : preview ? (
           <>
-            <div className="mt-2 font-mono text-xs text-foreground">
-              {approval.preview.path}
-              {approval.preview.oldText === null && <span className="text-ok ml-[6px]">（新文件）</span>}
-            </div>
-            <DiffPreview oldText={approval.preview.oldText} newText={approval.preview.newText} />
+            <div className="mb-1 text-xs text-ok">（新文件）</div>
+            <DiffPreview
+              path={preview.path}
+              oldText={preview.oldText}
+              newText={preview.newText}
+            />
           </>
         ) : (
-          <pre className={APPROVAL_PRE}>{JSON.stringify(approval.call.args, null, 2)}</pre>
+          <PermissionGrant
+            capability={approval.call.name}
+            requester={approval.toolDescription}
+            reach={reachOf(approval)}
+            scope="pending"
+            actions={null}
+            className="max-w-none"
+          />
         )}
       </div>
-      <div className="flex gap-2 px-[14px] pb-3">
+      <div className="flex flex-wrap gap-2 px-[14px] pb-3">
         <input
-          className={`${FOCUS_INPUT} flex-1 px-[10px] py-[6px] text-[13px]`}
+          className={`${FOCUS_INPUT} min-w-[140px] flex-1 px-[10px] py-[6px] text-[13px]`}
           placeholder="拒绝原因（可空，模型会看到）"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
@@ -744,19 +695,49 @@ function ApprovalCard() {
         <Button
           variant="outline"
           className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => void decide("denied", reason.trim() || undefined)}
+          onClick={() => void decide({ decision: "denied", ...(reason.trim() ? { reason: reason.trim() } : {}) })}
         >
           拒绝
         </Button>
+        {/* 两档长期许可（ADR-0041）。都顺带批准这一次 —— 授权是"以后也别问了"，
+            不是"这次不算"。改过参数的那一次照旧只应用留下的块 */}
+        <Button
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          title={`本次会话内不再为 ${approval.call.name} 弹审批（换会话恢复询问）`}
+          onClick={() => approve("session")}
+        >
+          本次会话
+        </Button>
+        <Button
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          title={`以后永远不再为 ${approval.call.name} 弹审批（存在 userData/permissions.json）`}
+          onClick={() => approve("always")}
+        >
+          永久
+        </Button>
         <Button
           className="bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
-          onClick={() => void decide("approved")}
+          onClick={() => approve()}
         >
-          批准
+          {approveLabel}
         </Button>
       </div>
     </div>
   );
+}
+
+/** 「这一步会」列表 —— 没有 diff 预览的工具，把参数摊成人话。
+    参数出自模型，形状不赌：认得出的写成一句话，认不出的原样列 key: value */
+function reachOf(approval: ApprovalRequest): string[] {
+  const args = approval.call.args;
+  if (typeof args !== "object" || args === null) return [String(args)];
+  return Object.entries(args as Record<string, unknown>).map(([k, v]) => {
+    const text = typeof v === "string" ? v : JSON.stringify(v);
+    // 长参数（bash 的一整段脚本）截断：这一列是"扫一眼看清要发生什么"，不是全文
+    return `${k}: ${text.length > 160 ? `${text.slice(0, 160)}…` : text}`;
+  });
 }
 
 /** key 配置行：输入框存完即清——渲染层不留 key 的任何副本 */
@@ -931,6 +912,10 @@ function AccountPage() {
             <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
           </>
         )}
+        {/* 会话热力图。放这一页而不是新会话屏:它是"我用了多久"这类统计,
+            和额度卡是同一类东西;而新会话屏的正事是开始干活,一张半年统计摆在
+            输入框底下只是让人多看一眼。登录与否都画 —— 数据是本机日志,不靠账号 */}
+        <SessionActivity workspace={null} className="max-w-none" />
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </div>
@@ -1210,6 +1195,7 @@ function AppSidebar() {
   const settingsSection = useChat((s) => s.settingsSection);
   const resume = useChat((s) => s.resume);
   const newSession = useChat((s) => s.newSession);
+  const setSessionSearchOpen = useChat((s) => s.setSessionSearchOpen);
   const openSettings = useChat((s) => s.openSettings);
   const closeSettings = useChat((s) => s.closeSettings);
   const deleteSession = useChat((s) => s.deleteSession);
@@ -1297,6 +1283,20 @@ function AppSidebar() {
             onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
           >
             ＋ 新会话
+          </Button>
+        )}
+        {/* 搜索入口跟着新会话钮走:两颗都是"去别的会话"的路口。
+            只留快捷键的话,不知道有这功能的人永远不知道 */}
+        {settingsSection === null && mode !== "game" && (
+          <Button
+            variant="ghost"
+            className="justify-start px-3 py-[7px] text-[13px] text-muted-foreground hover:bg-foreground/[0.06]"
+            title="搜索会话（⌘K）"
+            onClick={() => setSessionSearchOpen(true)}
+          >
+            <Search className="size-4 opacity-70" aria-hidden />
+            搜索会话
+            <kbd className="ml-auto font-mono text-[10px] opacity-60">⌘K</kbd>
           </Button>
         )}
       </SidebarHeader>
@@ -1753,6 +1753,11 @@ function Welcome() {
   const [workspace, setWorkspace] = useState<string | null>(pendingWorkspace);
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
+  // 招呼语只抽一次:Welcome 常驻不卸载,放进 render 体里的话每敲一个字都换一句话
+  const myProfile = useChat((s) => s.myProfile);
+  const account = useChat((s) => s.account);
+  const [roll] = useState(() => Math.random());
+  const greeting = pickGreeting(displayIdentity(account, myProfile).name, roll);
   const [model, setModel] = useState(() =>
     describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
@@ -1786,13 +1791,25 @@ function Welcome() {
   };
 
   return (
-    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
-      <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
-      <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
+    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
+      {/* 头像左、招呼语右,整块居中。竖排的「头像 + Mr Otto」是一张启动画面 ——
+          它介绍自己是谁,而这一屏的正事是开始说话。横过来之后这一块读成
+          "它在跟你打招呼",和底下那个输入框连成一句话。
+          不跟输入框左对齐:那样长短不一的招呼语会把右边拖出一条毛边,
+          而居中让每一句都以自己为中轴,长短变化只往两边匀开 */}
+      <div className="flex w-[min(640px,90%)] items-center justify-center gap-3">
+        <img className="size-16 shrink-0 rounded-2xl" src={ottoLogo} alt="Mr Otto" />
+        <p className="min-w-0 text-left text-[19px] font-[600] tracking-[-0.01em]">{greeting}</p>
+      </div>
       {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
           外面套投放区:还没有会话也能先把图拖进来,建会话后随首条消息一起走 */}
       <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
-      <div className="w-full text-left bg-card border border-border rounded-2xl px-3 py-[10px] flex flex-col gap-[6px] transition-colors duration-[120ms] focus-within:border-ring">
+      {/* 外壳与会话中的输入框同一套(elements/composer 的 ComposerBar):
+          这两处都是"写一条要发出去的东西",长得不一样就像两个产品 */}
+      {/* 焦点态与会话中的输入框同一套(见 ChatComposer):描边稍微提亮一档,不上主色。
+          蓝框太响 —— 这一屏上它是唯一的彩色，眼睛会先落在框上而不是要写的字上，
+          而"光标在这儿"这件事本来就有光标在说 */}
+      <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 w-full text-left transition-colors duration-[120ms]">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
@@ -1803,9 +1820,16 @@ function Welcome() {
             </span>
           )}
         </div>
-        <StagedChips className="px-1" />
+        <StagedChips />
+        {/* 与会话中的输入框逐字同款(见 ComposerTextarea):
+            bg-transparent 得连 dark: 一起写 —— shadcn 的 Textarea 自带
+            dark:bg-input/30,它和裸 bg-transparent 是两个变体,谁也盖不掉谁,
+            结果就是深色下卡里浮着一个灰盒子(之前会话中那个输入框栽过同一处)。
+            内边距也跟着改成 px-3 py-2:px-1 会让占位符贴着卡的左边缘, 
+            和底下那排控件对不上一条线 */
+        }
         <Textarea
-          className="border-none shadow-none resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] px-1 py-[2px] focus-visible:ring-0"
+          className="border-none shadow-none resize-none bg-transparent dark:bg-transparent text-foreground text-sm leading-[1.45] min-h-[52px] max-h-[200px] px-3 py-2 focus-visible:ring-0 placeholder:text-foreground/35"
           autoFocus
           rows={2}
           placeholder="向 Mr Otto 描述任务，回车发送"
@@ -1827,54 +1851,42 @@ function Welcome() {
           }}
         />
         <div className="flex items-center gap-2">
-          <Select value={mode} onValueChange={(v) => setMode(v as "ask" | "auto")}>
-            <SelectTrigger
-              className={NSC_SELECT + (mode === "auto" ? " " + BYPASS : "")}
-              title="审批模式：危险操作是逐条问你，还是免问直批（决定都会落日志）"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ask">逐条审批</SelectItem>
-              <SelectItem value="auto">完全访问</SelectItem>
-            </SelectContent>
-          </Select>
+          <BypassToggle value={mode} onChange={setMode} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-base leading-none text-muted-foreground hover:bg-foreground/[0.08]"
-                disabled={busy}
+              <ComposerAttachButton
+                className="size-7"
                 aria-label="添加文件"
-                onClick={() => void useChat.getState().pickFiles()}
-              >
-                ＋
-              </Button>
+                {...(busy ? {} : { onClick: () => void useChat.getState().pickFiles() })}
+              />
             </TooltipTrigger>
             <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
           </Tooltip>
           <span className="flex-1" />
-          <ModelPicker value={model} onChange={setModel} className={NSC_SELECT + " max-w-[180px]"} />
+          <ModelPicker
+            value={model}
+            onChange={setModel}
+            disabled={busy}
+            className={NSC_SELECT + " max-w-[180px]"}
+          />
+          {/* 挡位单独一枚钮,与会话中的输入框同一套 */}
           <ThinkingPicker
             spec={thinkingSpec}
             value={thinking}
             onChange={setThinking}
             disabled={busy}
-            className={NSC_SELECT}
           />
-          <Button
-            className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
+          <ComposerSend
+            streaming={false}
+            idle={!workspace || busy}
             disabled={!workspace || busy}
+            className="shrink-0 disabled:pointer-events-none"
             title={workspace ? "开始会话" : "先选工程文件夹"}
             aria-label="开始会话"
             onClick={() => void launch()}
-          >
-            ↑
-          </Button>
+          />
         </div>
-      </div>
+      </ComposerBar>
       </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
@@ -1882,11 +1894,301 @@ function Welcome() {
   );
 }
 
+/** 输入框本体。
+    从 ChatComposer 里再抽一层是**必须**的:它要调
+    unstable_useTriggerPopoverAriaProps() 判断补全浮层开没开,而那个 hook 读的是
+    TriggerPopoverRoot 的 context —— root 由 ChatComposer 自己渲染,同一个组件里
+    调等于在 provider 外面调。
+
+    为什么非得判浮层开没开:asChild 合并事件时,**我们的 onKeyDown 先跑**,
+    assistant-ui 的键盘处理在后面。所以浮层开着按 Enter,会先被下面这段当成
+    "发送"处理掉,浮层压根没机会选中当前项 —— 实测就是打个 `/` 再回车,
+    发出去一条 `/`,然后报「未知指令 /」。
+    aria-expanded 是官方给出的公开信号:ComposerPrimitive.Input 在浮层开着时
+    把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
+function ComposerTextarea({
+  inputRef,
+  disabled,
+  onSubmit,
+  onPasteFiles,
+}: {
+  /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
+  inputRef: React.Ref<HTMLTextAreaElement>;
+  disabled: boolean;
+  onSubmit: () => void;
+  onPasteFiles: (files: File[]) => void;
+}) {
+  const aria = unstable_useTriggerPopoverAriaProps();
+  const popoverOpen = aria["aria-expanded"] === true;
+
+  return (
+    // textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
+    // 自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条）。
+    //
+    // ComposerPrimitive.Input 接管文本状态(值/受控/焦点管理),外观仍是本仓的 Textarea。
+    // 三个关闭项都是刻意的:
+    // - submitMode="none":发送归 ChatComposer 的 submit()(理由见那边的头注释)
+    // - addAttachmentOnPaste={false}:粘贴附件走 store 的闸门(intakePastedFiles),
+    //   不走 assistant-ui 的附件通道
+    // - cancelOnEscape={false}:Esc 在本仓是"停止 turn"(App 里挂 window 的那个监听),
+    //   不是"清空正在打的字"
+    <ComposerPrimitive.Input
+      asChild
+      submitMode="none"
+      addAttachmentOnPaste={false}
+      cancelOnEscape={false}
+    >
+      <Textarea
+        ref={inputRef}
+        className="border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground px-3 py-2 text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35"
+        autoFocus
+        rows={1}
+        placeholder={disabled ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
+        disabled={disabled}
+        onPaste={(e) => {
+          // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
+          // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
+          // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
+          const files = Array.from(e.clipboardData.files);
+          if (files.length === 0) return;
+          e.preventDefault();
+          onPasteFiles(files);
+        }}
+        onKeyDown={(e) => {
+          // 浮层开着 = 这一下键盘归浮层(↑↓ 选、Tab 补全、Enter 选中、Esc 关)。
+          // 一律放行,别在这动手
+          if (popoverOpen || e.defaultPrevented) return;
+          // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
+          // preventDefault 必须有：不拦的话换行会先插进 textarea 再被清空,闪一帧
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+    </ComposerPrimitive.Input>
+  );
+}
+
+/** 会话中的输入框。
+    从 App() 里抽出来是**必须**的,不是顺手整理:它现在读 assistant-ui 的 composer
+    作用域(useAui/useAuiState),而 OttoRuntimeProvider 是 App() 自己渲染的 ——
+    同一个组件里的 hook 跑在 provider 外面,一挂载就抛。抽成独立组件、放进 provider
+    里面渲染,hook 才在作用域内。
+
+    为什么文本改由 assistant-ui 持有(原来是 App 的一个 useState):
+    `/` 和 `$` 的弹出菜单接下来要换成官方的 TriggerPopover + directive 适配器,
+    那一整套都长在 composer 作用域上 —— 文本不交出去,它们无从挂载。
+
+    为什么**发送**仍然走本仓自己的路(没有用 ComposerPrimitive.Send / runtime 的 onNew):
+    附件的所有权在 store(staged),不在 assistant-ui。这不是懒:新会话卡(Welcome)
+    也往同一个 staged 里粘图,建会话后由 send 原样带走 —— 而新会话卡渲染在
+    provider 外面(那会儿还没有会话),够不着 composer 作用域。把附件交给 assistant-ui
+    等于把这条交接掐断,或者养出两个所有者。既然附件不在它手上,它的
+    "空输入框不给发"就会把"只贴了图不打字"这条正常路径判死,所以
+    submitMode="none",Enter 和发送键都走下面这个 submit() */
+function ChatComposer() {
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const staged = useChat((s) => s.staged);
+  const send = useChat((s) => s.send);
+  const stop = useChat((s) => s.stop);
+  const attachPasted = useChat((s) => s.attachPasted);
+  const composer = useAui().thread.composer();
+  const input = useAuiState((s) => s.composer.text);
+  const setInput = (text: string) => composer.setText(text);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // `/` 和 `$` 的补全菜单 —— 换成 assistant-ui 的 TriggerPopover(两条 trigger 各一个)。
+  // 手写那版(match/选中态/↑↓/Tab/Enter 全套)整个删掉了:触发时机、键盘导航、
+  // 与 IME 的相处、光标位置的插入,这些都是 composer 作用域里的事,它比外面看得清。
+  //
+  // 两条 trigger 的行为不一样:
+  // - `$skill`:directive(插入),选中只把 `$名字 ` 填进输入框 —— 任务正文还等着用户打
+  //   (旧的 pickSkill 就是这个手感)。发送时 submit() 再把名字切给 harness
+  // - `/指令`:action(执行),但带参的指令(takesArgs)不当场跑,而是同样填进输入框 ——
+  //   /rename 直接跑等于把标题改成空串。无参的(/compact)当场跑,和旧菜单的 Enter 一致
+  const skills = useChat((s) => s.skills);
+  const skillFormatter = useMemo(
+    () => ottoDirectiveFormatter(skills.map((k) => k.name)),
+    [skills]
+  );
+  // 刻意不用 unstable_useMentionAdapter:它的 matchesQuery 连 **description** 一起匹,
+  // 而 skill 的 description 是几十字的说明。实测打 "review" 命中五条毫不相干的
+  // (apple-design / cloudflare-one / durable-objects…都因为描述里有 "review"),
+  // 真正的那条被挤到看不见的地方。补全菜单是按名字找东西的地方,不是全文检索。
+  // 形状照抄它的 flat 分支(categories/categoryItems 返回空 + 全靠 search)
+  const skillAdapter = useMemo<Unstable_TriggerAdapter>(() => {
+    const items = skills.map((k) => ({
+      id: k.name,
+      type: "skill",
+      label: `$${k.name}`,
+      ...(k.description ? { description: k.description } : {}),
+    }));
+    return {
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query: string) => {
+        const lower = query.toLowerCase();
+        return lower === "" ? items : items.filter((i) => i.id.toLowerCase().includes(lower));
+      },
+    };
+  }, [skills]);
+  const skillDirective = useMemo(() => ({ formatter: skillFormatter }), [skillFormatter]);
+  const slashTrigger = unstable_useSlashCommandAdapter({
+    removeOnExecute: true,
+    commands: Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
+      id: name,
+      label: name,
+      description: c.desc,
+      execute: () => {
+        if (c.takesArgs) setInput(`${name} `);
+        else dispatchSlash(name);
+      },
+    })),
+  });
+
+
+  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
+  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
+  const composerInject = useChat((s) => s.composerInject);
+  useEffect(() => {
+    if (!composerInject) return;
+    // 追加档要读当前值。composer.getState() 而不是闭包里的 input:
+    // 这个 effect 只依赖 composerInject,input 的闭包会是旧的
+    const prev = composer.getState().text;
+    composer.setText(
+      composerInject.append
+        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
+        : composerInject.text
+    );
+    useChat.setState({ composerInject: null });
+    textareaRef.current?.focus();
+  }, [composerInject, composer]);
+
+
+  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
+  const canSend = input.trim() !== "" || staged.length > 0;
+
+  const submit = () => {
+    const text = input.trim();
+    // 只贴了图不打字也算一条消息:附件本身就是内容
+    if ((!text && staged.length === 0) || status === "running") return;
+    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
+    // 报错时不清输入框——让用户就地改，不用重打一遍
+    if (text.startsWith("$")) {
+      const space = text.search(/\s/);
+      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const task = space === -1 ? "" : text.slice(space + 1).trim();
+      if (!useChat.getState().skills.some((s) => s.name === name)) {
+        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
+        return;
+      }
+      if (!task) {
+        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
+        return;
+      }
+      setInput("");
+      void send(task, name);
+      return;
+    }
+    setInput("");
+    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
+    void send(text);
+  };
+
+  return (
+    // TriggerPopoverRoot 是两条 trigger 的公共作用域(它管"现在哪条 trigger 活着")
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <ComposerPrimitive.Root
+        onSubmit={(e) => e.preventDefault()}
+        className="aui-composer-root relative flex w-full flex-col"
+        // 版式三件套是 assistant-ui composer 的量纲(圆角/底色/内边距),
+        // thread.tsx 把它们设在 Thread 根上 —— 而这个输入框住在 Thread 外面
+        // (App 的 footer),够不着那份作用域,所以在自己这一层再设一遍。
+        // 值与 thread.tsx 保持一致:同一个界面里两个输入框(会话/编辑)不该长得不一样
+        style={{
+          ["--composer-bg" as string]: "var(--color-card)",
+          ["--composer-radius" as string]: "1.5rem",
+          ["--composer-padding" as string]: "8px",
+        }}
+      >
+        {/* 投放区是本仓自己的:附件归 store(ADR-0040),不走 assistant-ui 的
+            AttachmentDropzone —— 那条路会把文件交给它的附件通道 */}
+        <AttachDropZone disabled={status === "running"}>
+          {/* 外壳换成 elements/composer 的 ComposerBar:同样是 paper + 大圆角,
+              但它把「这一条要发的东西」当成一摞来排(附件行 / 输入 / 工具条),
+              而不是三个各管各的块 */}
+          <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative cursor-text shadow-sm transition-[border-color,background-color]">
+            {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
+                和旧的手写菜单同一个位置 */}
+            <ComposerTriggerPopover
+              char="$"
+              className={TRIGGER_POP}
+              adapter={skillAdapter}
+              directive={skillDirective}
+              emptyItemsLabel="没有匹配的 skill"
+              emptyCategoriesLabel="还没装 skill"
+              backLabel="返回"
+              loadingLabel="加载中…"
+            />
+            <ComposerTriggerPopover
+              char="/"
+              className={TRIGGER_POP}
+              adapter={slashTrigger.adapter}
+              action={slashTrigger.action}
+              emptyItemsLabel="没有匹配的指令"
+              emptyCategoriesLabel="没有可用指令"
+              backLabel="返回"
+              loadingLabel="加载中…"
+            />
+            {/* 附件暂存区也是本仓的(同上):ComposerAttachments 读的是 assistant-ui
+                自己那份附件状态,本仓那份在 store.staged */}
+            <StagedChips />
+            <ComposerTextarea
+              inputRef={textareaRef}
+              disabled={status === "running"}
+              onSubmit={submit}
+              onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
+            />
+            {/* 工具条:上游左边是「＋ 附件」、右边是发送/停止的圆钮。
+                本仓左边换成会话偏好条(审批模式/模型/用量环)—— 附件的 ＋ 在它里面。
+                items-end:窄宽时偏好条换两行,圆钮贴末行底对齐,不悬在行间 */}
+            <ComposerToolbar className="relative items-end gap-2">
+              <ComposerPrefsBar />
+              <ComposerActions>
+                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
+                    element 的 ComposerSend 把两个图标叠在同一枚钮里做交换(缩放+模糊),
+                    而不是换掉整枚钮 —— 位置不动,眼睛不用重新找它在哪。
+                    没东西可发时是素底：一枚常亮的实底钮在说「点我」，可它点了没用 */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <ComposerSend
+                      streaming={status === "running"}
+                      idle={!canSend}
+                      disabled={status !== "running" && !canSend}
+                      aria-label={status === "running" ? "停止 turn" : "发送消息"}
+                      onClick={() => (status === "running" ? void stop() : submit())}
+                      className="shrink-0 disabled:pointer-events-none"
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {status === "running" ? "停止 turn（Esc）" : "发送(Enter)"}
+                  </TooltipContent>
+                </Tooltip>
+              </ComposerActions>
+            </ComposerToolbar>
+          </ComposerBar>
+        </AttachDropZone>
+      </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+  );
+}
+
+
 export function App() {
-  const { phase, sessionId, workspace, events, error, boot, send, stop } = useChat();
+  const { phase, sessionId, workspace, events, boot, stop } = useChat();
   const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
-  const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
@@ -1902,16 +2204,12 @@ export function App() {
   const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
-  // 直播缓冲 = 临时预览，完整 assistant_message 事件到达即被替换（内容一致，无缝）。
-  // 两个 selector 都返回原始字符串——selector 里造新对象会让 zustand 每次都判"变了"
-  const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
-  const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
-  const staged = useChat((s) => s.staged);
-  const attachPasted = useChat((s) => s.attachPasted);
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
-  const scrollRef = useRef<HTMLElement>(null);
+  // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
+  // 渲染的 div(见 components/assistant-ui/thread.tsx),不再是 ThreadViewport 自己的 <section>
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
   // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
@@ -1949,80 +2247,24 @@ export function App() {
     });
   }, []);
 
-  const [input, setInput] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
+  // 原来挂在 ThreadViewport 自己的滚动 <section> 上;ThreadViewport 没人渲染了,
+  // 换成包住 OttoThread 的这层容器 —— composer 是它的兄弟(在 footer 里),不在此结构内,
+  // 所以「跨区域选择」的判定边界没变
+  const threadHostRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
-  // 分组是纯投影,事件不变就不重算——每次渲染重算会让整段时间线重挂
-  const items = useMemo(() => groupThread(events), [events]);
-  // 工具索引同理:建一次往下传引用,工具行/工具组就不用各自全量扫事件了。
-  // 引用稳定还给下面的 memo 供了料——流式输出时它们才真的能跳过重渲染(#115)
-  const toolIndex = useMemo(() => buildToolIndex(events), [events]);
-  // 分区锚点该插在哪个渲染项前面:渲染项键 → 该项之前要插的分区序号。
-  // 不是"seq 等于 startSeq 的那条事件"——分组投影会吃掉一部分事件
-  // (tool_result、纯工具调用的 assistant_message…),严格相等会让锚点凭空消失、
-  // 那条目录点了不动。改成"第一个位置 >= startSeq 的渲染项",两侧都按 seq 单调,
-  // 一趟扫完。同一项上可能落多个分区(中间那段全被吃掉了),所以值是数组
-  const sectionAnchors = useMemo(() => {
-    const map = new Map<number | string, number[]>();
-    let si = 0;
-    for (const item of items) {
-      const seq = item.kind === "event" ? item.key : item.seq;
-      while (si < sections.length && sections[si]!.startSeq <= seq) {
-        const at = map.get(item.key);
-        if (at) at.push(si);
-        else map.set(item.key, [si]);
-        si++;
-      }
-    }
-    return map;
-  }, [items, sections]);
-  // 直播阶段的 phase：当前在跑哪个环节（审批/检索/执行/思考/作答），决定 orb + 文案
-  const turnPhase = agentPhase({
-    status,
-    hasApproval: approval !== null,
-    streamingThinking,
-    streamingText,
-    tool: currentTool(events),
-  });
+  // main 侧这里还有 items(groupThread)/toolIndex(buildToolIndex)/turnPhase(agentPhase)——
+  // 三者都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下已经没有消费者:
+  // 消息渲染整个交给 toThreadMessages(见 aui/OttoThread.tsx),turnPhase 的等价物
+  // 也已经搬进 OttoThread.tsx 的 RunIndicator(同一份 agentPhase 逻辑,原样搬回)。
+  // sectionAnchors 是分区功能真正要留的部分,重做版本见下面 OttoThread 的
+  // viewportRef/sections 两个 prop 和 aui/OttoThread.tsx 里的 SectionAnchor 槽
 
-  // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
-  const slashMatches = input.startsWith("/")
-    ? Object.entries(SLASH_COMMANDS).filter(([name]) => name.startsWith(input.trim()))
-    : [];
-  // $ 菜单（skill 选择）：以 "$" 开头且还没打空格——打了空格 = 名字已定，后面是任务正文。
-  // 两个菜单天然互斥（首字符只能是一个），选中态共用同一个 slashSel
-  const skills = useChat((s) => s.skills);
-  const dollarQuery = input.startsWith("$") && !/\s/.test(input) ? input.slice(1).toLowerCase() : null;
-  const skillMatches =
-    dollarQuery !== null ? skills.filter((s) => s.name.toLowerCase().includes(dollarQuery)) : [];
-  const [slashSel, setSlashSel] = useState(0);
-  useEffect(() => setSlashSel(0), [input]); // 过滤结果变了，选中回到第一项
-  const menuLen = Math.max(slashMatches.length, skillMatches.length);
-  const sel = Math.min(slashSel, Math.max(menuLen - 1, 0));
-  const runSlash = (name: string) => {
-    setInput("");
-    dispatchSlash(name);
-  };
-  // 选中 skill = 只补全名字，不发送：任务正文还等着用户打
-  const pickSkill = (name: string) => setInput(`$${name} `);
 
   useEffect(() => {
     void boot();
   }, [boot]);
 
-  // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
-  // 时对象引用没变,selector 判定无变化,下次不会重新触发这个 effect
-  const composerInject = useChat((s) => s.composerInject);
-  useEffect(() => {
-    if (!composerInject) return;
-    setInput((prev) =>
-      composerInject.append
-        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
-        : composerInject.text
-    );
-    useChat.setState({ composerInject: null });
-    textareaRef.current?.focus();
-  }, [composerInject]);
 
   // Esc = 停止（Claude Code 同款肌肉记忆）。挂 window：running 时输入框
   // disabled 收不到键盘，事件得在更高处接
@@ -2034,6 +2276,9 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
+
+  // ⌘K = 会话搜索(见 components/SessionSearch.tsx)
+  useSessionSearchHotkey();
 
   // ⌃` = 开/关终端面板(VS Code 同款肌肉记忆)。挂 window:焦点可能在
   // xterm 里,输入框收不到
@@ -2049,32 +2294,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const submit = () => {
-    const text = input.trim();
-    // 只贴了图不打字也算一条消息:附件本身就是内容
-    if ((!text && staged.length === 0) || status === "running") return;
-    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
-    // 报错时不清输入框——让用户就地改，不用重打一遍
-    if (text.startsWith("$")) {
-      const space = text.search(/\s/);
-      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
-      const task = space === -1 ? "" : text.slice(space + 1).trim();
-      if (!useChat.getState().skills.some((s) => s.name === name)) {
-        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
-        return;
-      }
-      if (!task) {
-        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
-        return;
-      }
-      setInput("");
-      void send(task, name);
-      return;
-    }
-    setInput("");
-    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
-    void send(text);
-  };
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
@@ -2164,79 +2383,35 @@ export function App() {
         </>
       ) : (
         // work / game 两档共用同一个输入框：切的是上面看什么，不是换一个应用
-        <>
-          <ThreadViewport
-            key={sessionId}
-            // 分区轨要量的是滚动容器本身（scrollspy 的判定线、跳转的 scroll-mt 都以它为准），
-            // 而滚动元素归 ThreadViewport 所有——把它借出来，别在外面再套一层滚动区
-            viewportRef={scrollRef}
-            deps={[events.length, status, approval, streamingText.length, streamingThinking.length]}
-            // 只有一个分区时目录没有意义（一条目录 = 噪音），不渲染。
-            // 轨是绝对定位的浮层，出现和消失都不动布局，不需要占位符防重排
-            overlay={
-              sections.length >= 2 ? (
-                <SectionRail
-                  items={sections.map((s) => ({ title: s.title, preview: s.preview }))}
-                  activeIndex={activeSection}
-                  onJump={jumpToSection}
-                />
-              ) : null
-            }
-          >
-            {items.map((item) => (
-              <Fragment key={item.key}>
-                {/* 分区锚点：零高度、不参与布局，只给跳转和 scrollspy 一个可测量的位置。
-                    不给每条消息挂 data-seq —— EventRow 有的分支返回 Fragment，
-                    外面再包一层 div 会把 self-end 之类的对齐全弄坏 */}
-                {sectionAnchors.get(item.key)?.map((si) => (
-                  <div key={si} data-section={si} aria-hidden className="h-0 scroll-mt-4" />
-                ))}
-                {item.kind === "event" ? (
-                  <EventRow event={item.event} isLast={item.key === items.at(-1)?.key} />
-                ) : item.calls.length === 1 ? (
-                  // 单个调用不加壳:一个调用套一层折叠框是纯粹的视觉噪音
-                  <ToolRow call={item.calls[0]!} index={toolIndex} />
-                ) : (
-                  <ToolGroup calls={item.calls} index={toolIndex} />
-                )}
-              </Fragment>
-            ))}
-            {error && (
-              <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
-                <span>[turn 失败] {error}</span>
-                <RetryButton />
-              </div>
+        //
+        // OttoRuntimeProvider 包住的是**整列**(消息区 + 审批卡 + footer),不是只包消息区:
+        // 输入框那一排里的 assistant-ui 组件(上下文用量、模型选择器、composer)都要
+        // 读 runtime 的 context(useAui/useAuiState),provider 只包消息区的话它们一挂载就抛。
+        // 包到这一层的代价是零:runtime 本身是 useOttoRuntime 从 store 派生的,
+        // 上移只是把同一个 context 的作用域放大,没有多算任何东西
+        <OttoRuntimeProvider>
+          <div ref={threadHostRef} className="flex-1 min-h-0 flex flex-col relative">
+            {/* viewportRef:分区轨要量的是真正滚动的那个元素(scrollspy 的判定线、
+                  跳转的 scroll-mt 都以它为准)。ThreadPrimitive.Viewport 自己转发 ref
+                  (见 components/assistant-ui/thread.tsx 的 viewportRef prop),接进去就够,
+                  不用像旧 ThreadViewport 那样另开一个回调 ref 去接管 DOM 节点。
+                  sections:锚点(哪条消息前面插第几个分区的起点)算在 OttoThread 内部——
+                  它需要 toThreadMessages 产出的消息 id 顺序才能对齐,这份顺序只有
+                  OttoThread 自己手上有,不值得为了传出来再破坏封装(见 aui/OttoThread.tsx) */}
+            <OttoThread viewportRef={scrollRef} sections={sections} />
+            <SelectionQuote hostRef={threadHostRef} />
+            {/* 只有一个分区时目录没有意义(一条目录 = 噪音),不渲染。轨是绝对定位的浮层,
+                挂在 threadHostRef 这层(SelectionQuote 的宿主)的兄弟位置——出现和消失
+                都不动布局,不需要占位符防重排。main 原来挂在 ThreadViewport 的 overlay
+                插槽里,那层容器没了,threadHostRef 是新架构里同等地位的宿主 */}
+            {sections.length >= 2 && (
+              <SectionRail
+                items={sections.map((s) => ({ title: s.title, preview: s.preview }))}
+                activeIndex={activeSection}
+                onJump={jumpToSection}
+              />
             )}
-            {streamingThinking && (
-              // 直播期思考敞开着流（看得见模型在想）；凝固成事件后默认折叠。
-              // open 受控写死：流式中就是要摊开，用户要折等它完事。
-              // streaming 类挂光标(app.css);直播思考限高滚动,别把时间线顶飞
-              <details className={`${THINKING_DETAILS} streaming`} open>
-                <summary className={THINKING_SUMMARY}>思考中</summary>
-                <div className={`${THINKING_BODY} max-h-[180px] overflow-y-auto`}>{streamingThinking}</div>
-              </details>
-            )}
-            {streamingText && (
-              <div className="md streaming self-stretch max-w-full py-[2px]">
-                {/* 流式也上高亮：半截代码块 rehype-highlight 容错（语言没识别就先素着），
-                    完整事件到达后重渲一次自然纠正 */}
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
-                  {streamingText}
-                </Markdown>
-              </div>
-            )}
-            {(status === "running" || approval !== null) && (
-              <Marker role="status" className="py-[2px] text-[13px]">
-                <MarkerIcon className="size-5">
-                  <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
-                </MarkerIcon>
-                <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
-                <span className="ml-auto shrink-0 text-xs">
-                  <TurnMeta events={events} />
-                </span>
-              </Marker>
-            )}
-          </ThreadViewport>
+          </div>
 
           <ApprovalCard />
           <QuestionnaireCard />
@@ -2249,129 +2424,9 @@ export function App() {
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}
-            <AttachDropZone disabled={status === "running"}>
-            <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
-              {slashMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {slashMatches.map(([name, c], i) => (
-                    <button
-                      key={name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => runSlash(name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{c.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* $ 菜单复用 slash 菜单的全部版式：同一个位置弹出、同一套键盘手感 */}
-              {skillMatches.length > 0 && (
-                <div className={SLASH_MENU} role="listbox">
-                  {skillMatches.map((s, i) => (
-                    <button
-                      key={s.name}
-                      className={SLASH_ITEM + (i === sel ? " bg-brand/[0.12]" : "")}
-                      role="option"
-                      aria-selected={i === sel}
-                      onMouseEnter={() => setSlashSel(i)}
-                      onClick={() => pickSkill(s.name)}
-                    >
-                      <span className="font-mono text-[13px] text-brand shrink-0">{"$" + s.name}</span>
-                      <span className="text-xs text-muted-foreground truncate">{s.description || "（无描述）"}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <StagedChips className="pt-[6px] px-[10px]" />
-              {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
-                  自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
-              <Textarea
-                ref={textareaRef}
-                className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
-                autoFocus
-                rows={1}
-                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
-                disabled={status === "running"}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onPaste={(e) => {
-                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
-                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
-                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
-                  const files = Array.from(e.clipboardData.files);
-                  if (files.length === 0) return;
-                  e.preventDefault();
-                  void filesToPayload(files).then(attachPasted);
-                }}
-                onKeyDown={(e) => {
-                  // 菜单开着时键盘先归菜单：↑↓ 选、Tab 补全、Enter 执行选中项
-                  if (slashMatches.length > 0) {
-                    const n = slashMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab") { e.preventDefault(); setInput(slashMatches[sel]![0]); return; }
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      runSlash(slashMatches[sel]![0]);
-                      return;
-                    }
-                  }
-                  // $ 菜单：Enter/Tab 都只补全名字（不发送）——正文还没打
-                  if (skillMatches.length > 0) {
-                    const n = skillMatches.length;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setSlashSel((sel + 1) % n); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setSlashSel((sel - 1 + n) % n); return; }
-                    if (e.key === "Tab" || (e.key === "Enter" && !e.nativeEvent.isComposing)) {
-                      e.preventDefault();
-                      pickSkill(skillMatches[sel]!.name);
-                      return;
-                    }
-                  }
-                  // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
-                  // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    submit();
-                  }
-                }}
-              />
-              {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
-              <div className="flex items-end gap-2">
-                <ComposerBar />
-                {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
-                    停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
-                {status === "running" ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
-                        onClick={() => void stop()}
-                      >
-                        停止
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>停止 turn（Esc）</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
-                        发送
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>发送(Enter)</TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-            </div>
-            </AttachDropZone>
+            <ChatComposer />
           </footer>
-        </>
+        </OttoRuntimeProvider>
       )}
     </div>
   );
@@ -2427,6 +2482,8 @@ export function App() {
           <GameInviteToast />
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
+          <SessionSearchDialog />
         </SidebarInset>
       </TooltipProvider>
     </SidebarProvider>

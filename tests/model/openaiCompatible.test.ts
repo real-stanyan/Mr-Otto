@@ -355,6 +355,12 @@ describe("thinking 挡位 → 请求体（各家方言不是同一个字段）",
     });
   });
 
+  it("effort：max 原样发 —— Ollama 的 /v1 收 high/medium/low/max/none 这五个", async () => {
+    expect(await bodyOf({ mode: "max", wire: "effort" })).toMatchObject({
+      reasoning_effort: "max",
+    });
+  });
+
   it("effort 收到二选一那派的「开」也发得出去 —— 当中档，不发一个非法值", async () => {
     expect(await bodyOf({ mode: "on", wire: "effort" })).toMatchObject({
       reasoning_effort: "medium",

@@ -81,6 +81,19 @@ export interface ApprovalDecisionEvent extends SessionEventBase {
   toolCallId: string;
   decision: "approved" | "denied";
   reason?: string;               // 用户拒绝时的说明，会转进 tool_result
+  /** 这次批准同时授予了什么档位的长期许可（ADR-0041）。
+      "session" = 本会话内该工具不再问；"always" = 永久（跨会话，存在 userData）。
+      为什么落在这条事件上而不是另开一个事件类型：授权就发生在按下按钮的这一刻，
+      这条事件本来就在记那一刻。落盘的理由是**后续调用不弹审批**这个事实必须
+      可解释——否则重放一段日志会看见一串没人批过的危险操作。
+      缺席 = 只批这一次（旧日志照常重放）。 */
+  grant?: "session" | "always";
+  /** 用户在审批时改过的参数：**实际执行用的是这一份**，不是模型请求的那一份
+      （ADR-0041 的分块取舍：write_file 只写用户保留的那几块）。
+      必须落盘——模型请求的参数在 assistant_message.toolCalls 里，两边不一致时，
+      只有这个字段能回答"到底什么东西碰了磁盘"。日志是唯一事实来源，
+      少了它日志就在说谎。缺席 = 原样执行（旧日志照常重放）。 */
+  revisedArgs?: unknown;
 }
 
 /** 时间线 4：工具执行结果 —— 模型消费的是这个（拒绝也是一种"结果"） */
@@ -197,6 +210,22 @@ export interface SectionClassifiedEvent extends SessionEventBase {
   usage?: TokenUsage;            // 本次分类烧的 token
 }
 
+/** 额外 11：跟进建议。turn 收口后跑一次便宜模型：站在用户的位置，接下来最可能想说的
+    三句话是什么。与 section_classified 完全同构（同一个位置、同一种"外挂"、
+    同一条纪律）：建议出自模型、日志里任何事件都推不出 → 必须落盘；但它是给人点的
+    快捷键，**不喂回模型** → 模型上下文的投影必须丢弃（logged ≠ model-visible）。
+
+    为什么落盘而不是放在渲染层内存里：重开 app、换机器重放同一段日志，界面该长得一样
+    （硬规则：任何投影必须可从日志推导）。顺带 usage 也有了账 —— 每次模型调用的
+    token 都要能从日志求和推导出来，否则统计从此少算一截。 */
+export interface SuggestionsGeneratedEvent extends SessionEventBase {
+  type: "suggestions_generated";
+  /** 建议的几句话。空数组不落事件（没建议 = 不落，不是落一条空的） */
+  suggestions: string[];
+  model: string;                 // 建议出自哪个模型（溯源）
+  usage?: TokenUsage;            // 本次生成烧的 token
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -213,4 +242,5 @@ export type SessionEvent =
   | TurnEndedEvent
   | SkillInvokedEvent
   | ImageDescribedEvent
-  | SectionClassifiedEvent;
+  | SectionClassifiedEvent
+  | SuggestionsGeneratedEvent;

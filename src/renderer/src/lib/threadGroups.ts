@@ -39,6 +39,8 @@ function isInvisible(e: SessionEvent): boolean {
       return e.outcome === "completed";        // 正常收工不留痕,失败/中断留
     case "section_classified":
       return true;                     // 目录挂在分区轨上,不进正文(见 Timeline 的同名分支)
+    case "suggestions_generated":
+      return true;                     // 建议挂在输入框上方,不进时间线
     default:
       return false;
   }

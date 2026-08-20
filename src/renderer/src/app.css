@@ -4,6 +4,12 @@
    全部换成 shadcn <Button>,自定义 variant 通过 className 叠加。
    双主题:裸变量 :root = light,.dark 覆盖 = dark,@theme inline 映射成 utility。 */
 @import "tailwindcss";
+@import "streamdown/styles.css";
+/* KaTeX 的字体/排版表(@streamdown/math 渲染出来的 span.katex 全靠它)。
+   版本必须和 @streamdown/math 用的那份对得上 —— 本仓把 katex 钉在 ^0.16 就是为此:
+   仓里另有 @lobehub/ui 带着 0.18，不钉的话根上会是 0.18，样式表和渲染结果对不上 */
+@import "katex/dist/katex.min.css";
+@source "../../../node_modules/streamdown/dist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -202,6 +208,54 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  /* assistant-ui 的 reasoning/tool-group/tool-fallback 折叠面板用:高度用真实值动画,
+     缓动并进本仓 --ease-strong,时长跟 ANIMATION_DURATION(200ms)对齐 */
+  --animate-collapsible-down: collapsible-down 200ms var(--ease-strong);
+  --animate-collapsible-up: collapsible-up 200ms var(--ease-strong);
+  @keyframes collapsible-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+    }
+  }
+  @keyframes collapsible-up {
+    from {
+      height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+    }
+    to {
+      height: 0;
+    }
+  }
+  /* 同一折叠面板内文字/参数/结果的进出场:淡入 + 轻移 + 轻虚化,和上面的
+     collapsible-down/up 走同一条 --ease-strong,时长同步 200ms */
+  --animate-content-reveal-in: content-reveal-in 200ms var(--ease-strong);
+  --animate-content-reveal-out: content-reveal-out 200ms var(--ease-strong);
+  @keyframes content-reveal-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+      filter: blur(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+  }
+  @keyframes content-reveal-out {
+    from {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+    to {
+      opacity: 0;
+      transform: translateY(-4px);
+      filter: blur(2px);
+    }
+  }
 }
 
 @layer base {
@@ -578,6 +632,32 @@
     animation: none;
     background: none;
     color: var(--muted-foreground);
+  }
+}
+
+/* ─── 流式正文:新落地的字先着蓝,再自己沉成墨色 ────────────────────
+   照 assistant-ui 的 streaming-text（elements/streaming-text）做的效果，但走的不是
+   那份组件：它吃的是 segments + count 的纯文本（按空格切词、不认 markdown），
+   而本仓正文是 streamdown 渲染的 markdown（代码块高亮 / CJK 断行都在里面）。
+   换过去等于把这些全删掉，所以只搬效果——streamdown 自带的 animate 插件会把
+   每个字包进 <span data-sd-animate>，逐字延迟出场，本来就是同一套机制。
+
+   关键在 to 段**不写 color**：只有 from 有颜色时，结束值取元素自己的计算色
+   （正文是 --foreground，链接是链接色，行内代码是它自己的）。写死一个终点色
+   会因为 fill-mode:both 永久留在那儿——链接会被这一下抹成正文色，再也变不回去。 */
+@keyframes sd-ottoInk {
+  from {
+    opacity: 0;
+    color: var(--brand);
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 减动效:字照常出现,只是不逐个淡入——正文的出现不是装饰,不能一起关掉 */
+@media (prefers-reduced-motion: reduce) {
+  [data-sd-animate] {
+    animation: none;
   }
 }
 
@@ -967,3 +1047,7 @@
 @media (prefers-reduced-motion: reduce) {
   .disclose { transition: opacity 140ms var(--ease-strong); }
 }
+
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));

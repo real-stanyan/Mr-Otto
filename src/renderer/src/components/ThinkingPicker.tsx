@@ -1,14 +1,22 @@
-// Thinking 挡位下拉框 —— 选项跟着当前型号走。
+// Thinking 挡位选择器 —— 一枚独立的浮窗钮,用 assistant-ui 的 reasoning-effort。
 //
-// 以前这里是写死的两条"开/关"，不管选的是哪家的型号。可"开/关"只是 GLM 那一派的说法：
-// GPT-5 只有低/中/高（关不掉），Grok 4 一直思考、压根没有请求级开关。写死两条的后果是
-// UI 给出了型号并不存在的选择，而请求体里发出去的是对方不认的字段。
+// 为什么单独拉出来:挡位曾经挂在型号浮层底部(ModelSelector.Effort),那一排随
+// "型号浮层只回答用哪个型号"一起被拿掉了,结果是**没有任何界面能改它** ——
+// 触发器上还显示着当前档,但那只是显示。
 //
-// 所以选项由 ModelChoice.thinking 给（shared/thinking.ts），这个组件只负责画。
-// 没得选的型号照样出现在控件行上——灰着并说明为什么，比整个控件消失好：
-// 控件忽然少一个，用户会以为界面坏了，而不是"这款没有这回事"。
+// 为什么是浮窗而不是常显的一排:挡位有四档(off/low/medium/high),摊在控件行上
+// 要占一条 pill 组的宽度,而它是"设一次就不动"的会话偏好,不是每条消息都碰的东西。
+// 收进浮窗 = 面上只留当前档(一眼可见),要改再点开。
+//
+// 挡位是**型号的属性**(shared/thinking.ts 的开篇就在讲这件事):可选档来自
+// 当前型号的 spec,只有一档或零档的型号整个不出现 —— 一个只有一个选项的
+// 选择器是在假装用户有得选。
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.js";
+import { Brain } from "lucide-react";
+import { useState } from "react";
+import { ReasoningEffort } from "@/components/elements/reasoning-effort.js";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
+import { cn } from "@/lib/utils.js";
 import {
   thinkingLabel,
   thinkingSwitchable,
@@ -16,45 +24,63 @@ import {
   type ThinkingSpec,
 } from "../../../shared/thinking.js";
 
-interface Props {
+export function ThinkingPicker({
+  spec,
+  value,
+  onChange,
+  disabled = false,
+  className,
+}: {
+  /** 当前型号的挡位表 */
   spec: ThinkingSpec;
   value: ThinkingMode;
   onChange: (mode: ThinkingMode) => void;
-  /** turn 进行中等外部原因（与"这型号没得选"是两回事，提示语也不同） */
   disabled?: boolean;
   className?: string;
-}
+}) {
+  const [open, setOpen] = useState(false);
+  // 换不了就不画:关不掉思考的型号(GPT-5/Gemini 2.5 Pro 那一类)、
+  // 以及压根没有请求级开关的型号,都在这一条里被挡住
+  if (!thinkingSwitchable(spec)) return null;
 
-/** 灰掉时给出的理由。两种"没得选"分开说——一种是型号一直在思考，
-    一种是它根本不思考，对用户是完全不同的两件事 */
-function whyFixed(spec: ThinkingSpec): string {
-  if (spec.modes.length === 0) return "当前型号没有请求级 thinking 开关";
-  return `当前型号的思考常开（${thinkingLabel(spec.modes[0]!)}），不可关闭`;
-}
-
-export function ThinkingPicker({ spec, value, onChange, disabled, className }: Props) {
-  const switchable = thinkingSwitchable(spec);
   return (
-    <Select
-      value={switchable ? value : (spec.modes[0] ?? "")}
-      onValueChange={(v) => onChange(v as ThinkingMode)}
-      disabled={disabled || !switchable}
-    >
-      <SelectTrigger
-        className={className}
-        title={switchable ? "thinking：模型先推理再作答（更好也更贵）" : whyFixed(spec)}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        disabled={disabled}
+        title={`Thinking：${thinkingLabel(value)}（点开换挡）`}
+        className={cn(
+          // 与旁边的型号触发器同一套:整块可点、按压回弹、悬停才浮出底色
+          "press-scale text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground data-[state=open]:text-foreground flex h-auto shrink-0 items-center gap-1 rounded-full px-2 py-[3px] text-xs transition-colors duration-150 disabled:opacity-40",
+          className,
+        )}
       >
-        {/* 没有任何档的型号连个占位值都没有，SelectValue 会是空的——给它一句话，
-            空控件比灰控件更像故障 */}
-        {spec.modes.length === 0 ? <span>无思考</span> : <SelectValue />}
-      </SelectTrigger>
-      <SelectContent>
-        {spec.modes.map((m) => (
-          <SelectItem key={m} value={m}>
-            Thinking {thinkingLabel(m)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+        <Brain className="size-3" aria-hidden />
+        {thinkingLabel(value)}
+      </PopoverTrigger>
+      {/* 从触发器底边长出来(origin-aware,ADR-0010 的惯例);
+          w-auto:分段控件自己就那么宽,浮层不该比它宽出一圈空白。
+          border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 —— 与型号浮层同一条规矩 */}
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        className="w-auto border-0 p-3"
+        // 打开时不把焦点抢到第一枚药丸上:radix 默认这么做,而第一枚是「关」——
+        // 它会当场戴上焦点环,看起来像「现在选的是关」,而实际选中的是别的档。
+        // 焦点留在触发器上,Esc 关、Tab 仍然能走进去
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <ReasoningEffort
+          label="Thinking"
+          levels={spec.modes.map((m) => ({ key: m, label: thinkingLabel(m) }))}
+          selectedKey={value}
+          onSelect={(key) => {
+            onChange(key as ThinkingMode);
+            setOpen(false);
+          }}
+          className="w-[184px] max-w-none"
+        />
+      </PopoverContent>
+    </Popover>
   );
 }

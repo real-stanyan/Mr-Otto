@@ -9,6 +9,7 @@ import type {
   WalletBalance,
   ApprovalMode,
   ApprovalRequest,
+  ApprovalDecisionOutcome,
   AskUserAnswer,
   AskUserRequest,
   BootInfo,
@@ -181,6 +182,8 @@ interface ChatState {
   /** 首登引导弹窗开着没有。它由 needsOnboarding() 决定何时**首次**打开,
       之后归用户(关了就是关了,不该被下一次 profile 刷新重新掀开) */
   profileSetupOpen: boolean;
+  /** 会话搜索面板(⌘K)开着没有。纯 UI 开合,不进日志 */
+  sessionSearchOpen: boolean;
   /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
   wallet: WalletBalance | null;
   /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
@@ -324,7 +327,10 @@ interface ChatState {
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
   saveMyProfile(patch: ProfilePatch): Promise<string | null>;
   setProfileSetupOpen(open: boolean): void;
-  decide(decision: "approved" | "denied", reason?: string): Promise<void>;
+  setSessionSearchOpen(open: boolean): void;
+  /** 审批卡的返程（ADR-0041）。四种意志一个对象：批/拒、拒绝原因、
+      顺带授予的长期许可、以及人改过的参数（write_file 的分块取舍） */
+  decide(outcome: ApprovalDecisionOutcome): Promise<void>;
   /** 交问卷。answers 为 null = 用户关掉了卡片（模型会知道"没人答"，不是"全跳过"） */
   answerQuestions(answers: AskUserAnswer[] | null): Promise<void>;
 }
@@ -416,6 +422,7 @@ export const useChat = create<ChatState>((set, get) => ({
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
+  sessionSearchOpen: false,
   wallet: null,
   walletError: "",
   staged: [],
@@ -994,6 +1001,8 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setProfileSetupOpen: (open) => set({ profileSetupOpen: open }),
 
+  setSessionSearchOpen: (open) => set({ sessionSearchOpen: open }),
+
   async refreshMyProfile() {
     const r = await window.otter.myProfile();
     if (!r.ok) {
@@ -1378,12 +1387,12 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async decide(decision, reason) {
+  async decide(outcome) {
     const sessionId = get().sessionId;
     const approval = get().approvals[sessionId]; // 只能批当前视图里的卡
     if (!approval) return;
     set((s) => ({ approvals: without(s.approvals, sessionId) })); // 先收卡；结果以事件流回
-    await window.otter.decideApproval(sessionId, approval.call.id, decision, reason);
+    await window.otter.decideApproval(sessionId, approval.call.id, outcome);
   },
 
   async answerQuestions(answers) {

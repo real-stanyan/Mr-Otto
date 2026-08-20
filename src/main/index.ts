@@ -13,6 +13,7 @@ import {
   type PokerAction,
   type PokerTableInput,
   type BrowserBounds,
+  type ApprovalDecisionOutcome,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -25,7 +26,9 @@ import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
+import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
+import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
@@ -124,6 +127,9 @@ void app.whenReady().then(() => {
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
   const keyVaultPath = join(app.getPath("userData"), "keys.json");
+  // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
+  // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
+  const permissionsPath = join(app.getPath("userData"), "permissions.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
 
   const win = createWindow();
@@ -282,6 +288,25 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, sectionEvent);
   };
 
+  // 跟进建议:和分区分类完全同构的第二条外挂 —— 同一个位置(turn 锁之外)、
+  // 同一种自我保护(永不抛/会话被 purge 就不落)。**没有**串行队列:
+  // 分类必须串行是因为它的锚点是"最后一条分类事件之后的跨度",两个在飞的分类
+  // 会各开一个分区;建议没有锚点,每次只看最后一轮问答,后落盘的那条天然覆盖
+  // 前一条(渲染只取最后一条)——撞车的代价就是多烧一次便宜调用
+  const suggestAndAppend = async (sessionId: string): Promise<void> => {
+    const result = await suggestFollowUps(store.load(sessionId));
+    if (!result) return;
+    // 同 classifyAndAppend:出了 turn 锁,这一跑期间会话可能已被 purge。
+    // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
+    if (!agents.has(sessionId)) return;
+    const event = store.append({
+      sessionId, ts: Date.now(), type: "suggestions_generated",
+      suggestions: result.suggestions, model: result.model,
+      ...(result.usage ? { usage: result.usage } : {}),
+    });
+    send(CHANNELS.event, event);
+  };
+
   const enqueueSectionClassify = (sessionId: string): void => {
     const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
     // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
@@ -389,6 +414,8 @@ void app.whenReady().then(() => {
       attachments: attachmentStore,
       getAccessToken,
       makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
     });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -423,6 +450,8 @@ void app.whenReady().then(() => {
           attachments: attachmentStore,
           getAccessToken,
           makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
+          alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+          persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
         })
       );
     }
@@ -739,7 +768,13 @@ void app.whenReady().then(() => {
       }
       // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
       // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
-      if (!aborted) enqueueSectionClassify(sessionId);
+      if (!aborted) {
+        enqueueSectionClassify(sessionId);
+        // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
+        // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
+        // 变成 unhandledRejection 会把主进程带走
+        void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+      }
     }
   );
 
@@ -792,9 +827,21 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(
     CHANNELS.decideApproval,
-    (_e, sessionId: string, toolCallId: string, decision: "approved" | "denied", reason?: string) => {
-      const outcome: ApprovalOutcome = { decision, ...(reason ? { reason } : {}) };
-      agents.get(sessionId)?.approver.resolve(toolCallId, outcome);
+    (_e, sessionId: string, toolCallId: string, incoming: ApprovalDecisionOutcome) => {
+      const agent = agents.get(sessionId);
+      if (!agent) return;
+      const outcome: ApprovalOutcome = {
+        decision: incoming.decision,
+        ...(incoming.reason ? { reason: incoming.reason } : {}),
+        ...(incoming.grant ? { grant: incoming.grant } : {}),
+        ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
+      };
+      // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
+      // 下一个调用就该享受到这条授权了（ADR-0041）
+      if (incoming.decision === "approved" && incoming.grant) {
+        agent.grant(toolCallId, incoming.grant);
+      }
+      agent.approver.resolve(toolCallId, outcome);
     }
   );
 

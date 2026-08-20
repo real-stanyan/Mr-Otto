@@ -28,9 +28,28 @@ export function systemPromptText(workspace: string): string {
     `你是 otter，一个会使用工具的助手。当前工程文件夹：${workspace}\n` +
     `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。\n` +
     `动手规划一个非平凡任务之前，如果不同的合理理解会导出完全不同的做法，` +
-    `先用 ask_user 把关键抉择问清楚，别替用户拍板。`
+    `先用 ask_user 把关键抉择问清楚，别替用户拍板。\n` +
+    STRUCTURED_BLOCKS
   );
 }
+
+/** 界面认得的六种结构化围栏。写进提示词而不是留给模型自己发挥：
+    界面只认这几种语言 + 这几个字段（渲染在 lib/ottoBlocks.ts 里逐字段校验），
+    没写清楚的话模型的每一次即兴发挥都会退回成一段裸 JSON。
+
+    刻意不长：它跟着**每一次**请求走，多一行就是每轮都多付一次。所以只列
+    语言名和字段，不给示例、不解释各字段长什么样——字段名自己就是解释。
+    也明说"平铺直叙能说清就别用"：这些卡是给真有结构的内容准备的，
+    不是给每段话都套一个框。 */
+const STRUCTURED_BLOCKS =
+  `\n界面能把下面六种围栏渲染成卡片（围栏里只放 JSON，字段不全或写错会原样显示成代码块）：\n` +
+  `\`\`\`otto-spec  {title, subtitle?, rows:[{label, value, emphasis?}]} —— 参数表/规格表\n` +
+  `\`\`\`otto-compare  {traitLabels:[…], options:[{id, name, headline, traits:[字符串或 false]}], recommendedId, reason} —— 几个方案对比\n` +
+  `\`\`\`otto-score  {verdict, total, outOf, criteria:[{label, score, weight, note?}]} —— 打分\n` +
+  `\`\`\`otto-flow  {nodes:[{id, label, column, row, state:"done"|"active"|"pending"}], edges:[{from, to}]} —— 步骤流转（column/row 是非负整数格子坐标）\n` +
+  `\`\`\`otto-timeline  {events:[{id, when:"past"|"now"|"future", time, title, detail?}]} —— 时间线\n` +
+  `\`\`\`otto-job  {title, stages:[{name, weight}], stageIndex, stageProgress, eta} —— 多阶段任务走到哪了（stageProgress 是 0~1）\n` +
+  `平铺直叙能说清的就别用；一段话套一个框只是噪音。`;
 
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
     解 bytes 是 adapter 的事(注入的 readAttachment) */
@@ -316,6 +335,9 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "turn_ended":
       // 分区目录是给人的导航，不是对话内容——喂回去只会污染上下文
       case "section_classified":
+      // 跟进建议同理：那是给人点的快捷键。喂回去等于让模型读自己上一轮的猜测，
+      // 下一轮再基于它猜——建议会自我强化，对话被自己的建议牵着走
+      case "suggestions_generated":
         break;
     }
   }

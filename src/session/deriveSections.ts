@@ -40,6 +40,9 @@ export function deriveSections(events: SessionEvent[]): Section[] {
 
   for (const e of events) {
     if (e.type !== "section_classified") {
+      // 跟进建议不参与跨度:它和分区分类是两条独立的异步队列,谁先落盘不定。
+      // 让它开跨度的话,分区起点会落在"上一段的尾巴"那条事件上,导航跳过去偏一格
+      if (e.type === "suggestions_generated") continue;
       if (spanStart === null) spanStart = e.seq;
       if (spanFirstUser === null && e.type === "user_message" && e.content.trim() !== "") {
         spanFirstUser = truncate(e.content);

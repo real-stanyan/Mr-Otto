@@ -2,22 +2,16 @@
 // 都是事件日志的直接投影——UI 不持有自己的对话状态。
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
-import { memo, useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
+import { memo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { useChat } from "../store.js";
 import { Hl } from "../replay/Replay.js";
-import { UserAttachments } from "./UserAttachments.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
-import { thinkingLabel } from "../lib/thinkingLabel.js";
-import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
-import { MD_COMPONENTS } from "./CodeBlock.js";
-import { MessageActions } from "./MessageActions.js";
-import { RetryButton } from "./RetryButton.js";
+import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
+import { TurnErrorState } from "./TurnErrorState.js";
+import { TurnStoppedState } from "./TurnStoppedState.js";
+import { ToolLiveTail } from "./ToolLiveTail.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004）。
@@ -27,14 +21,6 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
   const [open, setOpen] = useState(false);
   const result = index.results.get(call.id);
   const started = index.starts.get(call.id);
-  // 执行中的直播尾巴（bash 的 stdout/stderr 碎片）。tool_result 落地后 store
-  // 会清掉这个 key，这里自然消失——直播只活在"事实到来前"的窗口里
-  const live = useChat((s) => s.toolOutputByCall[call.id]);
-  const liveRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义：始终看最新输出，新碎片到就滚到底
-    liveRef.current?.scrollTo(0, liveRef.current.scrollHeight);
-  }, [live]);
   const { verb, target, stat } = toolSummary(call);
   const status = result?.status ?? "running";
 
@@ -73,15 +59,11 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
           ›
         </span>
       </button>
-      {!result && live && (
-        // 执行中的输出直播:迷你终端尾巴。低亮度——它是过程噪音,不是结果
-        <pre
-          className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-          ref={liveRef}
-        >
-          {live}
-        </pre>
-      )}
+      <ToolLiveTail
+        toolCallId={call.id}
+        command={target || call.name}
+        done={result !== undefined}
+      />
       {open && (
         // 详情展开是偶发动作:150ms ease-out 入场,从触发行长出来(origin 左上)
         <div className="mt-[2px] mb-1 px-3 py-[10px] bg-card border border-border rounded-[10px] origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100">
@@ -103,60 +85,14 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
   );
 });
 
-// memo 同上:一条消息渲染一次 Markdown(remark + rehype-highlight 全量解析),
-// 流式期间每个 token 让全屏历史消息重解析一遍是纯浪费(#115)。
-// 动作条(MessageActions)自己订阅 store,memo 不影响它的新鲜度
+// memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
+// 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
   switch (event.type) {
-    case "user_message":
-      // 附件不进气泡:图片/文件是"随话递过来的东西",不是话的一部分——
-      // 各自成卡片摆在气泡上方(UserAttachments),气泡只留给用户正文。
-      // 只带附件不带字时不出空气泡:没说话就是没说话
-      return (
-        <div className={`${ROW} self-end flex flex-col items-end gap-[6px]`}>
-          <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />
-          {event.content.trim() !== "" && (
-            // 多行输入原样展示(pre-wrap):换行是用户打的事实,别折叠成一行
-            <div className="max-w-full whitespace-pre-wrap break-words bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2">
-              {event.content}
-            </div>
-          )}
-        </div>
-      );
-
-    case "assistant_message":
-      // 工具调用不在这渲染:它们被 groupThread 抽出去按"相邻成组"重新编排了
-      // (同一条消息的调用可能和下一条消息的调用属于同一组)
-      // 模型输出按 Markdown 渲染（react-markdown 默认转义 HTML，无注入面）；
-      // 用户消息保持原文——用户打的不是 markdown，别替他排版
-      return (
-        <>
-          {event.reasoning && (
-            // 思考默认折叠：它是"怎么想的"的档案，不是回复本身。
-            // 纯文本渲染（pre-wrap）——思考不是给人排版的 markdown
-            <details className={THINKING_DETAILS}>
-              <summary className={THINKING_SUMMARY}>
-                {thinkingLabel(event.reasoning, event.reasoningMs)}
-              </summary>
-              <div className={THINKING_BODY}>{event.reasoning}</div>
-            </details>
-          )}
-          {event.content.trim() !== "" && (
-            // 与 threadGroups 的分组判定同口径,避免纯空白消息渲染不一致
-            // group/msg:动作条只在悬停这条回复时现身
-            <div className="group/msg self-stretch max-w-full flex flex-col">
-              {/* 模型回复无框:正文直接躺在背景上,占满行宽(气泡只留给用户消息) */}
-              <div className="md max-w-full py-[2px]">
-                <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>
-                  {event.content}
-                </Markdown>
-              </div>
-              <MessageActions content={event.content} isLast={isLast} />
-            </div>
-          )}
-        </>
-      );
-
+    // user_message / assistant_message 两个分支从此到不了:EventRow 现在只剩一个
+    // 调用点(OttoThread 的 SystemMessage override),而那里只会拿到审计事件——
+    // 两类事件各自的渲染已经进了 assistant-ui 自己的 role:"user"/"assistant" 分支
+    // (Task 8 的 UserAttachments override、Task 9 的 streamdown)
     case "tool_result":
       return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 
@@ -222,6 +158,10 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "section_classified":
       return null;
 
+    // 跟进建议挂在输入框上方(见 aui/OttoThread.tsx 的 FollowupSuggestions),不进正文
+    case "suggestions_generated":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":
@@ -229,15 +169,18 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "turn_ended":
       // aborted 也上时间线：用户的停止是事实，得看得见——但用中性灰，不是故障红
       return event.outcome === "error" ? (
-        // 重试只挂最后一条:它重发的是"上一条用户消息",对历史里的旧失败行没有意义
-        // ——那条失败之后用户早就又说过别的话了,点它会重发一句不相干的
-        <div className={`${CHIP} border-err text-err flex items-center gap-2`}>
-          <span>[turn 失败] {event.error}</span>
-          {isLast && <RetryButton />}
-        </div>
+        // 重试只挂最后一条(interactive):它重发的是"上一条用户消息",对历史里的
+        // 旧失败行没有意义 ——那条失败之后用户早就又说过别的话了,点它会重发一句不相干的
+        <TurnErrorState
+          title="turn 失败"
+          detail={event.error ?? "没有错误信息"}
+          interactive={isLast}
+          className="max-w-none"
+        />
       ) : event.outcome === "aborted" ? (
-        // 中断 = 用户意志,中性灰居中——不是故障,不用红
-        <div className={`${CHIP} self-center`}>已中断</div>
+        // 中断 = 用户意志,中性灰——不是故障,不用红。
+        // 「继续」只挂最后一条(interactive),理由同上:旧中断后面早有别的话了
+        <TurnStoppedState interactive={isLast} className="max-w-none" />
       ) : null;
   }
 });

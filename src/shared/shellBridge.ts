@@ -8,6 +8,7 @@
 
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
+import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { TerminalInfo } from "./terminal.js";
@@ -163,6 +164,19 @@ export interface ApprovalRequest {
   toolDescription: string;
   /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
   preview?: WriteFilePreview;
+}
+
+/** 审批卡按钮的返程（ADR-0041）。与 answerQuestions 同构：一个 outcome 对象，
+    不是一串位置参数 —— 这里已经有四种意志要表达（批/拒/授权档位/改过的参数） */
+export interface ApprovalDecisionOutcome {
+  decision: "approved" | "denied";
+  /** 拒绝原因（模型会看到）。批准时不带 */
+  reason?: string;
+  /** 顺手授予的长期许可：以后这个工具不再问。缺席 = 只批这一次 */
+  grant?: GrantScope;
+  /** 人改过的参数：write_file 分块取舍后真正要写的那一份。
+      缺席 = 原样执行模型请求的参数 */
+  revisedArgs?: unknown;
 }
 
 export type Unsubscribe = () => void;
@@ -381,8 +395,7 @@ export interface ShellBridge {
   decideApproval(
     sessionId: string,
     toolCallId: string,
-    decision: "approved" | "denied",
-    reason?: string
+    outcome: ApprovalDecisionOutcome
   ): Promise<void>;
   /** 问卷卡交卷（或被用户关掉）——resolve 对应会话里挂起的 Asker。
       与 decideApproval 同构：一次 UI 往返的返程 */

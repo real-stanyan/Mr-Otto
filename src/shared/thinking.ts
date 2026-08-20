@@ -15,8 +15,9 @@
 // 怎么显示、换型号时手上这一档该落到哪。发线上的写法归 modelCatalog（谁用哪种方言）
 // 和 openaiCompatible（怎么写进请求体）。
 
-/** 一个挡位。on 是"二选一"型号的开，low/medium/high 是"有档位"型号的档 */
-export type ThinkingMode = "off" | "low" | "on" | "medium" | "high";
+/** 一个挡位。on 是"二选一"型号的开，low/medium/high 是"有档位"型号的档，
+    max 目前只有 Ollama 有（它的 think 参数比 OpenAI 那套多这一档） */
+export type ThinkingMode = "off" | "low" | "on" | "medium" | "high" | "max";
 
 /** 该型号把这一档写进请求体的方言 */
 export type ThinkingWire =
@@ -40,7 +41,7 @@ export interface ThinkingSpec {
 }
 
 /** 挡位强度阶梯。钳位靠它找"最近的一档"——不是随便挑一个塞给用户 */
-const RANK: Record<ThinkingMode, number> = { off: 0, low: 1, on: 2, medium: 2, high: 3 };
+const RANK: Record<ThinkingMode, number> = { off: 0, low: 1, on: 2, medium: 2, high: 3, max: 4 };
 
 const LABEL: Record<ThinkingMode, string> = {
   off: "关",
@@ -48,6 +49,7 @@ const LABEL: Record<ThinkingMode, string> = {
   on: "开",
   medium: "中",
   high: "高",
+  max: "顶",
 };
 
 export function thinkingLabel(mode: ThinkingMode): string {
@@ -64,11 +66,18 @@ export function thinkingLabel(mode: ThinkingMode): string {
 export function clampThinking(mode: ThinkingMode, spec: ThinkingSpec): ThinkingMode {
   if (spec.modes.includes(mode)) return mode;
   if (spec.modes.length === 0) return "off"; // 没有这回事的型号，值不参与请求
+  // 认不出的档位落默认，不落"就近"：这个值是从渲染进程过 IPC 来的，
+  // 两个进程在 dev 下会各跑各的版本（新增一档时渲染层先热更、主进程还是旧的）。
+  // 旧的 RANK 查不到新档就得到 NaN，而 NaN 的比较**恒为 false** ——
+  // "就近"会一路 false 到底，原样吐出候选里的第一个（最弱那一档）。
+  // 表现是：点「顶」跳到「低」。宁可回默认，也不能把它读成最弱
+  const rank: number | undefined = RANK[mode];
+  if (rank === undefined) return spec.modes.includes(spec.default) ? spec.default : spec.modes[0]!;
   const pool = mode === "off" ? spec.modes : spec.modes.filter((m) => m !== "off");
   const candidates = pool.length > 0 ? pool : spec.modes;
   let best = candidates[0]!;
   for (const m of candidates) {
-    if (Math.abs(RANK[m] - RANK[mode]) < Math.abs(RANK[best] - RANK[mode])) best = m;
+    if (Math.abs(RANK[m] - rank) < Math.abs(RANK[best] - rank)) best = m;
   }
   return best;
 }
@@ -100,6 +109,16 @@ export const THINKING_EFFORT: ThinkingSpec = {
 export const THINKING_EFFORT_ALWAYS: ThinkingSpec = {
   wire: "effort",
   modes: ["low", "medium", "high"],
+  default: "medium",
+};
+/** Ollama：档位比别家多一个 max。
+    文档（docs.ollama.com/capabilities/thinking）说大多数思考模型既吃布尔也吃档位，
+    gpt-oss 则**只**吃档位（布尔被忽略）—— 所以本机模型一律按档位发，
+    两边都落得下。OpenAI 兼容端点收的值是 high/medium/low/max/none，
+    与 wire:"effort" 的写法一一对上（off → "none"，见 model/openaiCompatible.ts） */
+export const THINKING_EFFORT_MAX: ThinkingSpec = {
+  wire: "effort",
+  modes: ["off", "low", "medium", "high", "max"],
   default: "medium",
 };
 /** OpenRouter 的统一写法 */

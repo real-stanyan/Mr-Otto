@@ -50,4 +50,9 @@ describe("ollamaChoiceFrom", () => {
     expect(c.model).toBe("ollama/qwen3:30b");
     expect(c.wireModel).toBe("qwen3:30b");
   });
+
+  it("会思考的本机模型给 Ollama 那套档位 —— 比别家多一个 max", () => {
+    const c = ollamaChoiceFrom(PROBED["qwen3:30b"]!);
+    expect(c.thinking.modes).toEqual(["off", "low", "medium", "high", "max"]);
+  });
 });

@@ -11,6 +11,14 @@ import type { Tool } from "../tools/tool.js";
 export interface ApprovalOutcome {
   decision: "approved" | "denied";
   reason?: string;
+  /** 这次批准同时授予的长期许可（ADR-0041）。审批门只负责把它转告 onDecision
+      （engine 据此落进 approval_decision.grant）—— 谁记住、下次谁短路，
+      是外面那层 approver 的事，门本身不认识"以后" */
+  grant?: "session" | "always";
+  /** 人在审批时改过的参数：**执行用这一份**（write_file 的分块取舍）。
+      门在放行前把它写回 ctx.call.args —— 执行器只认 ctx.call，
+      改在别处都会变成"日志说一套、磁盘上是另一套" */
+  revisedArgs?: unknown;
 }
 
 /** 审批人 —— 谁实现都行，engine 只认这个形状。
@@ -48,6 +56,22 @@ export function createApprovalGate(opts: ApprovalGateOptions): ToolMiddleware {
         output: outcome.reason ? `用户拒绝执行：${outcome.reason}` : "用户拒绝执行",
       };
     }
-    return next(); // 放行 —— 进洋葱下一层
+    if (outcome.revisedArgs !== undefined) {
+      // 换一个**新对象**,不是改 ctx.call.args ——
+      // ctx.call 指的就是 assistant_message 事件里那条 toolCall(同一个对象引用),
+      // 原地改它等于把已经落盘的那条事件也一起改了:DB 里的行还是老样子,
+      // 但推给渲染层的那份内存对象已经变了,于是界面上"模型请求的参数"显示成了
+      // 人改过之后的样子 —— append-only 的日志在内存里被改写,这正是硬规则禁的事。
+      // 洋葱后面每一层(执行器在内)拿的都是 ctx,所以换引用照样生效
+      ctx.call = { ...ctx.call, args: outcome.revisedArgs };
+    }
+    const result = await next(); // 放行 —— 进洋葱下一层
+    if (outcome.revisedArgs === undefined || result.status !== "ok") return result;
+    // 模型必须知道执行的不是它请求的那一份。不说 = 它会照着自己的请求继续推理,
+    // 而磁盘上是另一个样子 —— 这比拒绝更危险,因为看起来成功了
+    return {
+      ...result,
+      output: `${result.output}\n（注意：用户在审批时修改了参数，实际执行的内容与你的请求不同。需要确认请重新读取。）`,
+    };
   };
 }
