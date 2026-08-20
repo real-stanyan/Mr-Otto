@@ -4,6 +4,7 @@ import {
   deriveTodos,
   parseTodoArgs,
   TODO_TOOL_NAME,
+  turnsSinceTodoUpdate,
 } from "../../src/session/deriveTodos.js";
 import { deriveMessages } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -158,5 +159,44 @@ describe("投影不受清单影响", () => {
     // 没有新事件类型要投影层特判——这正是不加 todo_updated 事件的好处
     const messages = deriveMessages(todoCall("c1", [{ text: "读代码", status: "pending" }]));
     expect(messages.map((m) => m.role)).toEqual(["assistant", "tool"]);
+  });
+});
+
+describe("turnsSinceTodoUpdate（这张清单是不是已经被丢下了）", () => {
+  const user = (content: string): SessionEvent => ({ ...env(), type: "user_message", content });
+  const one = [{ text: "量尺子", status: "pending" }];
+
+  it("压根没有清单 = 0，不会被误判成陈旧", () => {
+    expect(turnsSinceTodoUpdate([])).toBe(0);
+    expect(turnsSinceTodoUpdate([user("写个函数")])).toBe(0);
+  });
+
+  it("触发这次写入的那条用户消息不算 —— 它在清单之前", () => {
+    expect(turnsSinceTodoUpdate([user("拆一下"), ...todoCall("t1", one)])).toBe(0);
+  });
+
+  it("清单之后用户又说了几次话，就是几轮", () => {
+    const events = [...todoCall("t1", one), user("继续"), user("那换个思路")];
+    expect(turnsSinceTodoUpdate(events)).toBe(2);
+  });
+
+  it("重新写过清单就重新计数 —— 模型回来维护了，它就不是被丢下的那张", () => {
+    const events = [...todoCall("t1", one), user("继续"), ...todoCall("t2", one), user("再来")];
+    expect(turnsSinceTodoUpdate(events)).toBe(1);
+  });
+
+  it("没生效的那次写入不重置计数（被拒/出错的调用从来没改过清单）", () => {
+    const events = [...todoCall("t1", one), user("继续"), ...todoCall("t2", one, "denied"), user("再来")];
+    expect(turnsSinceTodoUpdate(events)).toBe(2);
+  });
+
+  it("一个 turn 里刷多少条事件都不算轮次 —— 活还在干，清单不动很正常", () => {
+    const events: SessionEvent[] = [
+      ...todoCall("t1", one),
+      { ...env(), type: "assistant_message", content: "在查", model: "m" },
+      { ...env(), type: "tool_result", toolCallId: "x", status: "ok", output: "..." },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+    expect(turnsSinceTodoUpdate(events)).toBe(0);
   });
 });

@@ -29,7 +29,7 @@ import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
 import type { ApprovalRequest } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
-import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
+import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
@@ -50,6 +50,10 @@ import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
+import { SessionOrb } from "./components/SessionOrb.js";
+import { cn } from "@/lib/utils.js";
+import { orbState } from "./lib/sessionOrb.js";
+import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
@@ -141,6 +145,9 @@ import { SelectionQuote } from "./components/SelectionQuote.js";
    一次性样式直接内联在各自元素上 */
 const V = "font-mono tabular-nums text-foreground whitespace-nowrap";
 const POP_ROW = "flex justify-between items-baseline gap-3 text-muted-foreground py-[2.5px]";
+/** 清单定稿之后用户又开了这么多轮还没更新过 = 当它被丢下了（理由见 TodoPanel） */
+const STALE_TODO_TURNS = 2;
+
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库共用) */
@@ -290,6 +297,37 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
 /** 任务清单面板:模型用 todo_write 拆出来的活干到哪了。
     数据是 deriveTodos(events) 的投影——不存 UI state,重开 app / 换机器照样是这份。
     位置在会话框正上方:进度是"接下来要发生什么"的语境,贴着输入框读最顺 */
+/** 排队面板 —— assistant-ui 的 message-queue。
+    turn 跑着时敲的回车排进队里(store.enqueue),这里把队伍摊开:头一行是**正在跑
+    的那条**(取日志里最后一条 user_message),底下按序是排着的。
+
+    只在"跑着 + 队里有货"时出现:队列空着时这张卡只会重复说一遍聊天流里已经
+    在说的事(那条消息就在上面),白占一层楼。
+    位置在输入框正上方、任务清单之下:它讲的是"接下来要发生什么",和清单同一个语境 */
+function QueuePanel() {
+  const running = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
+  const queued = useChat((s) => s.queuedBySession[s.sessionId]);
+  const unqueue = useChat((s) => s.unqueue);
+  const events = useChat((s) => s.events);
+  const nowRunning = useMemo(() => lastUserMessage(events), [events]);
+
+  if (!running || !queued || queued.length === 0) return null;
+
+  return (
+    <MessageQueue
+      running={nowRunning?.content ?? "这一 turn"}
+      queued={queued}
+      onCancel={unqueue}
+      runningLabel="进行中"
+      queuedLabel={(n) => `${n} 条排队`}
+      hint="这条跑完自动发出"
+      // element 默认 max-w-sm(它设想自己是一张独立卡);这里它贴着输入框,
+      // 宽度该由输入框那一栏定
+      className="mb-2 max-w-none"
+    />
+  );
+}
+
 function TodoPanel() {
   const events = useChat((s) => s.events);
   const todos = useMemo(() => deriveTodos(events), [events]);
@@ -297,11 +335,23 @@ function TodoPanel() {
   // 清单是日志的投影(不改),改的是措辞和动效:转圈的球 + shimmer 是"活的"的语言,
   // 静止的会话不该说这句话
   const live = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
-  const [open, setOpen] = useState(true);
+  const stale = useMemo(() => turnsSinceTodoUpdate(events), [events]);
+  // 默认收起:清单是"背景进度",不是此刻要读的东西。头行那句摘要已经把
+  // "干到哪了"说完了,细目要看再点开
+  const [open, setOpen] = useState(false);
 
   if (todos.length === 0) return null; // 没拆过任务就完全不占地方
   const c = countTodos(todos);
   const allDone = c.completed === c.total;
+  // 全做完了就收摊:一张写着"3 项全部完成"的卡会一直挂在输入框上方,
+  // 而它已经没有任何"接下来"可讲了 —— 完成这件事在聊天流里说过了
+  if (allDone) return null;
+  // 疑似被丢下的清单同样收摊:模型写完就不再维护它是常态(压缩之后它自己
+  // 都不记得那张表了),而一张没人更新的清单报的是一个早就不成立的进度。
+  // 门槛两轮:一轮之内不动很正常(用户接着说"继续"、模型接着干同一件事),
+  // 两轮还一动没动,就是它已经走到别的事上去了。turn 在跑时不判:那正是
+  // 它可能马上更新清单的时刻
+  if (!live && stale >= STALE_TODO_TURNS) return null;
   // 头行只报"还没完的"——已完成数量是过去时,写出来抢眼但没用
   const summary = allDone
     ? `${c.total} 项全部完成`
@@ -1227,8 +1277,25 @@ function AppSidebar() {
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
           <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
           Mr Otto
+          {/* 搜索挪到顶行、收起钮左边:它是"去别的会话"的路口,和下面那一长串
+              会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
+              只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
+              看见放大镜就够了(悬停有全称和快捷键) */}
+          {settingsSection === null && mode !== "game" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto size-7 text-muted-foreground hover:bg-foreground/[0.06]"
+              title="搜索会话（⌘K）"
+              aria-label="搜索会话"
+              onClick={() => setSessionSearchOpen(true)}
+            >
+              <Search className="size-4" aria-hidden />
+            </Button>
+          )}
           {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
-              展开状态下用户第一眼找的是侧栏里的开关 */}
+              展开状态下用户第一眼找的是侧栏里的开关。
+              ml-auto 挂在它身上是为了"搜索不在时它仍靠右" */}
           <SidebarTrigger className="ml-auto" />
         </div>
         {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
@@ -1259,20 +1326,6 @@ function AppSidebar() {
             onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
           >
             ＋ 新会话
-          </Button>
-        )}
-        {/* 搜索入口跟着新会话钮走:两颗都是"去别的会话"的路口。
-            只留快捷键的话,不知道有这功能的人永远不知道 */}
-        {settingsSection === null && mode !== "game" && (
-          <Button
-            variant="ghost"
-            className="justify-start px-3 py-[7px] text-[13px] text-muted-foreground hover:bg-foreground/[0.06]"
-            title="搜索会话（⌘K）"
-            onClick={() => setSessionSearchOpen(true)}
-          >
-            <Search className="size-4 opacity-70" aria-hidden />
-            搜索会话
-            <kbd className="ml-auto font-mono text-[10px] opacity-60">⌘K</kbd>
           </Button>
         )}
       </SidebarHeader>
@@ -1348,21 +1401,22 @@ function AppSidebar() {
                         {g.sessions.map((s) => (
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
-                              className="h-auto flex-col items-start gap-px py-[7px]"
+                              className="h-auto flex-row items-center gap-2 py-[7px]"
                               isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
+                              {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
+                                  原来那行「日期 · 条数 运行中」里,只有最后两个字会改变你的
+                                  下一步动作,前两样不会 —— 所以留状态、去掉日期和条数 */}
+                              <SessionOrb
+                                state={orbState({
+                                  waiting: Boolean(approvals[s.sessionId] ?? asks[s.sessionId]),
+                                  running: statusBySession[s.sessionId] === "running",
+                                })}
+                              />
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-                              <span className={TITLE_SPAN}>{s.title ?? g.label}</span>
-                              {/* 文件夹名搬去组标题了,这行只留时间/条数——同组里重复报工程名是噪音 */}
-                              <span className={WHEN_SPAN}>
-                                {new Date(s.lastTs).toLocaleDateString()} · {s.events} 条
-                                {/* 后台会话的动静：等审批 > 跑 turn，让你在别的会话也看得见 */}
-                                {approvals[s.sessionId] ? (
-                                  <em className="not-italic font-semibold text-warn"> 等审批</em>
-                                ) : statusBySession[s.sessionId] === "running" ? (
-                                  <em className="not-italic font-semibold text-brand"> 运行中</em>
-                                ) : null}
+                              <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+                                {s.title ?? g.label}
                               </span>
                             </SidebarMenuButton>
                             <SidebarMenuAction
@@ -1884,13 +1938,15 @@ function Welcome() {
     把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
 function ComposerTextarea({
   inputRef,
-  disabled,
+  running,
   onSubmit,
   onPasteFiles,
 }: {
   /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
   inputRef: React.Ref<HTMLTextAreaElement>;
-  disabled: boolean;
+  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"排队",
+      不是"发不出去"(见 lib/messageQueue.ts)。这里只用来换一句提示语 */
+  running: boolean;
   onSubmit: () => void;
   onPasteFiles: (files: File[]) => void;
 }) {
@@ -1919,8 +1975,9 @@ function ComposerTextarea({
         className="border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground px-3 py-2 text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35"
         autoFocus
         rows={1}
-        placeholder={disabled ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
-        disabled={disabled}
+        placeholder={
+          running ? "回车排队，这一条跑完自动发出" : "输入消息，回车发送，Shift+回车换行"
+        }
         onPaste={(e) => {
           // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
           // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
@@ -1967,6 +2024,7 @@ function ChatComposer() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const staged = useChat((s) => s.staged);
   const send = useChat((s) => s.send);
+  const enqueue = useChat((s) => s.enqueue);
   const stop = useChat((s) => s.stop);
   const attachPasted = useChat((s) => s.attachPasted);
   const composer = useAui().thread.composer();
@@ -2045,10 +2103,26 @@ function ChatComposer() {
   // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
   const canSend = input.trim() !== "" || staged.length > 0;
 
+  /** 发出去,还是排进队里。turn 跑着时敲的回车是"排队",不是"发不出去"
+      (队列本身见 lib/messageQueue.ts)。分岔只在这一处 —— 上面那些解析
+      ($skill / 空正文校验)两条路共用,排队的那条不该少走一遍校验 */
+  const dispatch = (text: string, skill?: string) => {
+    if (status === "running") {
+      enqueue(text, skill);
+      return;
+    }
+    void send(text, skill);
+  };
+
   const submit = () => {
     const text = input.trim();
     // 只贴了图不打字也算一条消息:附件本身就是内容
-    if ((!text && staged.length === 0) || status === "running") return;
+    if (!text && staged.length === 0) return;
+    // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
+    // 一条队列项挂不住)。turn 跑着时附件入口整个是关的(AttachDropZone
+    // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
+    // 把图悄悄丢掉发一条空消息
+    if (status === "running" && !text) return;
     // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
     // 报错时不清输入框——让用户就地改，不用重打一遍
     if (text.startsWith("$")) {
@@ -2064,12 +2138,14 @@ function ChatComposer() {
         return;
       }
       setInput("");
-      void send(task, name);
+      dispatch(task, name);
       return;
     }
     setInput("");
-    if (dispatchSlash(text)) return; // "/" 开头 = 对 harness 说话，不进模型
-    void send(text);
+    // "/" 开头 = 对 harness 说话，不进模型 —— 也就不排队:它们是本地动作
+    // (开面板、改标题),等一个 turn 跑完再执行没有道理
+    if (dispatchSlash(text)) return;
+    dispatch(text);
   };
 
   return (
@@ -2122,7 +2198,7 @@ function ChatComposer() {
             <StagedChips />
             <ComposerTextarea
               inputRef={textareaRef}
-              disabled={status === "running"}
+              running={status === "running"}
               onSubmit={submit}
               onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
             />
@@ -2397,6 +2473,7 @@ export function App() {
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <WorkTreePill />
             <TodoPanel />
+            <QueuePanel />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}

@@ -3,6 +3,13 @@
 
 import { create } from "zustand";
 import type { SessionEvent } from "../../session/events.js";
+import {
+  dropTask,
+  pushTask,
+  takeNext,
+  unshiftTask,
+  type QueuedTask,
+} from "./lib/messageQueue.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
@@ -87,6 +94,10 @@ interface ChatState {
   pendingWorkspace: string | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
+  /** 排队中的消息，按会话记（同 statusBySession 的路子）。turn 跑着时敲下的
+      回车不是"发不出去"，是排进这里；这一 turn 收工时按序发出去。
+      不进事件日志的理由写在 lib/messageQueue.ts 开头 */
+  queuedBySession: Record<string, QueuedTask[]>;
   /** 待审批按会话挂靠：卡只在自己的会话视图里渲染，侧栏挂标记 */
   approvals: Record<string, ApprovalRequest>;
   /** 待作答的问卷，同样按会话挂靠（模型问了话，人还没答） */
@@ -290,6 +301,14 @@ interface ChatState {
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
+  /** turn 跑着时的回车落在这：排进当前会话的队尾，等这一 turn 收工再发 */
+  enqueue(text: string, skill?: string): void;
+  /** 队列条目上的 × */
+  unqueue(id: string): void;
+  /** 一 turn 收工后把队首那条发出去（内部：onTurnStatus 的 idle 分支调）。
+      sessionId 显式传，不读 get().sessionId：排给 A 的活不能因为你此刻正看着 B
+      就发进 B。发失败的那条回队首（见 lib/messageQueue.unshiftTask） */
+  drainQueue(sessionId: string): Promise<void>;
   /** 粘贴/拖入的字节并入 staged。与 pickFiles 共用闸门和限额 */
   attachPasted(files: { name: string; data: Uint8Array }[]): Promise<void>;
   /** ＋ 按钮：弹系统文件选择器，选完的分类结果并入 staged（图片限额 4 张/条在这做） */
@@ -377,6 +396,7 @@ export const useChat = create<ChatState>((set, get) => ({
   sessions: [],
   pendingWorkspace: null,
   statusBySession: {},
+  queuedBySession: {},
   approvals: {},
   asks: {},
   streamingBySession: {},
@@ -1180,7 +1200,7 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onAskUserRequest((req) =>
       set((s) => ({ asks: { ...s.asks, [req.sessionId]: req } }))
     );
-    window.otter.onTurnStatus(({ sessionId, status }) =>
+    window.otter.onTurnStatus(({ sessionId, status }) => {
       set((s) => ({
         statusBySession: { ...s.statusBySession, [sessionId]: status },
         // turn 收尾兜底：清直播缓冲（防幽灵字）+ 收审批卡。
@@ -1195,8 +1215,12 @@ export const useChat = create<ChatState>((set, get) => ({
               asks: without(s.asks, sessionId),
             }
           : {}),
-      }))
-    );
+      }));
+      // 这一 turn 收工 → 把排着的下一条发出去。挂在"状态变 idle"这一刻，
+      // 而不是 sendMessage 的 resolve：中断（Esc）、turn 暴死也都会走到这里，
+      // 排着的活不该因为上一条没善终就永远卡在队列里
+      if (status === "idle") void get().drainQueue(sessionId);
+    });
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
@@ -1278,10 +1302,18 @@ export const useChat = create<ChatState>((set, get) => ({
       await window.otter.deleteSession(sessionId);
       const sessions = await window.otter.listSessions();
       // 删的是正看着的会话 → 回欢迎页，清掉它的投影
+      // 队列跟着会话走：会话都删了，排给它的活没有落点了（留着也发不出去）
       if (get().sessionId === sessionId) {
-        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+        set((s) => ({
+          phase: "welcome",
+          sessions,
+          sessionId: "",
+          events: [],
+          replayCursor: null,
+          queuedBySession: without(s.queuedBySession, sessionId),
+        }));
       } else {
-        set({ sessions });
+        set((s) => ({ sessions, queuedBySession: without(s.queuedBySession, sessionId) }));
       }
       // dispose 放在 set() 之后:先把 sessionId 变化落给订阅者,让还挂载着的
       // TerminalView 的 [sessionId] effect 先摘断(activeId 置空、宿主清空),
@@ -1323,6 +1355,50 @@ export const useChat = create<ChatState>((set, get) => ({
       if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
         set({ error: msg, staged: [...staged, ...get().staged] });
       }
+    }
+  },
+
+  enqueue(text, skill) {
+    const sessionId = get().sessionId; // 排队瞬间锁定目标会话——之后切走也不串
+    if (sessionId === "") return;
+    // id 只服务于 React key 和 × 按钮，不进日志、不跨进程 —— randomUUID 够了
+    const task: QueuedTask = { id: crypto.randomUUID(), text, skill };
+    set((s) => ({
+      queuedBySession: {
+        ...s.queuedBySession,
+        [sessionId]: pushTask(s.queuedBySession[sessionId] ?? [], task),
+      },
+    }));
+  },
+
+  unqueue(id) {
+    const sessionId = get().sessionId;
+    set((s) => ({
+      queuedBySession: {
+        ...s.queuedBySession,
+        [sessionId]: dropTask(s.queuedBySession[sessionId] ?? [], id),
+      },
+    }));
+  },
+
+  async drainQueue(sessionId) {
+    const [next, rest] = takeNext(get().queuedBySession[sessionId] ?? []);
+    if (!next) return;
+    // 先出队再发：sendMessage 是 turn 级 Promise（整 turn 结束才 resolve），
+    // 等它 resolve 再出队意味着这一条在队列里挂着跑完全程——看起来像没发出去
+    set((s) => ({ queuedBySession: { ...s.queuedBySession, [sessionId]: rest } }));
+    try {
+      await window.otter.sendMessage(sessionId, next.text, next.skill, undefined);
+    } catch (e) {
+      // 发不出去（会话没了 / turn 撞上了）就把话还给用户：回队首，原样排着，
+      // 下一次收工再试。这里不能吞——吞掉等于把用户敲过的一条活凭空删了
+      set((s) => ({
+        error: e instanceof Error ? e.message : String(e),
+        queuedBySession: {
+          ...s.queuedBySession,
+          [sessionId]: unshiftTask(s.queuedBySession[sessionId] ?? [], next),
+        },
+      }));
     }
   },
 
