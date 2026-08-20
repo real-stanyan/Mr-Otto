@@ -95,6 +95,10 @@ export type ThreadComponents = {
       消息都过一遍,而不是挂在消息内容里面——system/user/assistant 三条分支都要经过它,
       放进某一条分支会漏掉另外两种角色的消息。上游 registry 没有这个槽 —— 升级时要人工合 */
   MessageAnchor?: ComponentType | undefined;
+  /** 本仓加的槽:assistant 动作条上的"重来"钮。上游是一键重发上一条用户消息;
+      本仓换成"换个模型重新生成"——重来最常见的理由就是"这个模型答得不行",
+      而重来钮本身答不了"换成谁"。上游 registry 没有这个槽 —— 升级时要人工合 */
+  RegenerateAction?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   /** 本仓加的槽:来源 chip。上游 registry 的 Sources 直接开 <a target="_blank">,
@@ -460,10 +464,15 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const { RegenerateAction } = useContext(ThreadComponentsContext);
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
-      autohide="not-last"
+      // 本仓改动:autohide 从 "not-last" 改成 "never"。上游把历史消息的动作条
+      // 藏在 hover 后面(密集列表里少一排常驻图标),但本仓一条 assistant 消息
+      // 通常很长、还带脚注数字那一行——鼠标不在它身上时,那一行下面空着一截,
+      // 读起来像"这条消息没有这些操作"。常驻反而更安静:位置固定,不随指针闪
+      autohide="never"
       className="aui-assistant-action-bar-root text-muted-foreground col-start-3 row-start-2 -ms-1 flex gap-1 transition-opacity duration-200 ease-strong starting:opacity-0"
     >
       <ActionBarPrimitive.Copy asChild>
@@ -476,11 +485,18 @@ const AssistantActionBar: FC = () => {
           </AuiIf>
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
+      {/* 本仓改动:重来这颗钮可被 RegenerateAction 槽换掉 —— 本仓拿它做
+          "换个模型重新生成"(见 aui/OttoThread.tsx)。没给槽值时还是上游的
+          单纯重来钮 */}
+      {RegenerateAction ? (
+        <RegenerateAction />
+      ) : (
+        <ActionBarPrimitive.Reload asChild>
+          <TooltipIconButton tooltip="Refresh">
+            <RefreshCwIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Reload>
+      )}
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
@@ -559,7 +575,11 @@ const UserActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
-      autohide="not-last"
+      // 本仓改动:autohide 从 "not-last" 改成 "never"。上游把历史消息的动作条
+      // 藏在 hover 后面(密集列表里少一排常驻图标),但本仓一条 assistant 消息
+      // 通常很长、还带脚注数字那一行——鼠标不在它身上时,那一行下面空着一截,
+      // 读起来像"这条消息没有这些操作"。常驻反而更安静:位置固定,不随指针闪
+      autohide="never"
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <ActionBarPrimitive.Edit asChild>

@@ -4,7 +4,7 @@
 
 import { memo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
+import type { ModelChangedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { Hl } from "../replay/Replay.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
@@ -12,6 +12,12 @@ import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
 import { ToolLiveTail } from "./ToolLiveTail.js";
+import { AgentHandoff } from "./elements/agent-handoff.js";
+import { ProviderMark } from "./ProviderMark.js";
+import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
+import { modelChipLabel } from "../lib/modelChip.js";
+import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
+import { useChat } from "../store.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004）。
@@ -85,6 +91,42 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
   );
 });
 
+/** 模型切换 = 一次交接:谁交给谁、之后的话由谁来说。
+    渲染用 elements/agent-handoff —— 原来那行「模型切换 → glm/glm-4.6」把
+    两件事压成了一件:它只说了落点,读的人得自己往上翻才知道刚才用的是谁,
+    而"从谁换到谁"正是这一行唯一的信息。
+
+    来处要看整份日志才知道(它是上一条 model_changed),所以这里订阅 events;
+    modelHandoff 是纯函数(有测试钉着),这个组件只管把它画出来 */
+function sideMark(side: ModelSide) {
+  // 目录外的厂商(自定义 endpoint / 没收录的)没有标记可画,交给元件的默认机器人图标
+  const known = findProvider(side.provider as ProviderId);
+  return known ? <ProviderMark provider={side.provider as ProviderId} size={13} className="rounded-[4px]" /> : undefined;
+}
+
+const ModelHandoffRow = memo(function ModelHandoffRow({ event }: { event: ModelChangedEvent }) {
+  const events = useChat((s) => s.events);
+  const handoff = modelHandoff(events, event.seq);
+  // 投影不出来(日志里找不到这条)时退回一行朴素文字:交接行画不了,
+  // 但"换过模型"这个事实还是得留在时间线上
+  if (!handoff) {
+    return <div className={AUDIT}>模型切换 → {modelChipLabel(event.provider, event.model)}</div>;
+  }
+  return (
+    <div className={AUDIT}>
+      <AgentHandoff
+        {...(handoff.from ? { from: modelSideLabel(handoff.from), fromIcon: sideMark(handoff.from) } : {})}
+        to={modelSideLabel(handoff.to)}
+        toIcon={sideMark(handoff.to)}
+        // reason / carried 都不给:这一行要回答的只有"从谁换到了谁",
+        // 两枚 chip 已经说完了。补一句"此后的回复由它生成"是把读者已经知道的事
+        // 又讲一遍——切换行下面本来就跟着新模型说的话
+        settled={handoff.settled}
+      />
+    </div>
+  );
+});
+
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
@@ -125,11 +167,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
       );
 
     case "model_changed":
-      return (
-        <div className={AUDIT}>
-          模型切换 → {event.provider}/{event.model}
-        </div>
-      );
+      return <ModelHandoffRow event={event} />;
 
     case "skill_invoked":
       // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
