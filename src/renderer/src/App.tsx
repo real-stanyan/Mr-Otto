@@ -98,6 +98,11 @@ import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
 import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
+import {
+  ContextDisplayRoot,
+  ContextDisplayTrigger,
+  ContextDisplayRingVisual,
+} from "@/components/assistant-ui/context-display.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
@@ -161,32 +166,6 @@ const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespac
 
 // 上下文占用估算住 shared（账单锚点 + 未计费事件估算 + 按来源拆分），这里只消费
 
-/** 上下文用量圆环（Claude Code 同款）：满圈 = 上下文窗打满。
-    数字进悬停提示，环本身只传达"还剩多少"；爬坡换警示色 */
-function CtxRing({ used, win }: { used: number; win: number }) {
-  const pct = Math.min(1, used / win);
-  const r = 5.5;
-  const c = 2 * Math.PI * r;
-  // 有占用就至少画出一小段弧，不然低用量时环看着像坏了
-  const arc = pct === 0 ? 0 : Math.max(pct, 0.05) * c;
-  const color = pct > 0.9 ? "var(--color-deny)" : pct > 0.75 ? "var(--color-warn)" : "var(--color-brand)";
-  return (
-    // 圆环弧长/颜色随账单更新平滑过渡(每 turn 一次,低频)
-    <svg
-      className="[&_circle]:[transition:stroke-dasharray_400ms_var(--ease-strong),stroke_400ms_ease]"
-      width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"
-    >
-      <circle cx="7" cy="7" r={r} fill="none" stroke="color-mix(in srgb, var(--foreground) 16%, transparent)" strokeWidth="2.5" />
-      <circle
-        cx="7" cy="7" r={r} fill="none"
-        stroke={color} strokeWidth="2.5" strokeLinecap="round"
-        strokeDasharray={`${arc} ${c}`}
-        transform="rotate(-90 7 7)"
-      />
-    </svg>
-  );
-}
-
 /** 用量弹窗的数字格式：~119K / 1M 那一路。K 以下给整数，10 万以上不要小数
     （119.0K 的那位小数没有信息量，估算精度也撑不起它） */
 function fmtCtx(n: number): string {
@@ -206,32 +185,18 @@ const CTX_CATEGORIES = [
   { key: "messages" as const, label: "对话消息", color: "var(--brand)" },
 ];
 
-/** 圆环点开的详情浮窗：全部数字都是投影（日志 + 主进程报的工具表），没有独立状态。
+/** 用量环的详情浮层：全部数字都是投影（日志 + 主进程报的工具表），没有独立状态。
     主视觉 = 一条按来源分段的占用条 + 图例，回答"上下文被谁吃掉了"。
-    锚在触发环上方（从来处出现），点外面/Esc 关闭 */
-function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
+
+    壳换成了 assistant-ui 的 ContextDisplay（悬停 Tooltip，Root 管百分比/配色/开合），
+    内容仍是本仓这一份：上游 Content 报的是"上一次请求的 usage 分项"（入/缓存/出/推理），
+    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/对话消息）——两码事，换不得。
+    因此只用官方的 Root + Trigger + 环（ContextDisplayRingVisual），Content 自己写 */
+function CtxDetails({ events, toolDefs, ctxWindow }: {
   events: SessionEvent[];
   toolDefs: ToolDefinition[];
   ctxWindow: number;
-  onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const away = (e: MouseEvent) => {
-      // 点在浮窗外（含触发环之外的一切）就收起
-      if (ref.current && !ref.current.parentElement?.contains(e.target as Node)) onClose();
-    };
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [onClose]);
-
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
   const lastUsage = [...events].reverse().find(
@@ -245,9 +210,14 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
   const width = (v: number) => (v > 0 ? `max(1.5px, ${(v / ctxWindow) * 100}%)` : "0px");
 
   return (
-    <div
-      className="absolute -right-1 bottom-[calc(100%+8px)] z-10 w-[276px] px-3 py-[10px] bg-card border border-border rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.3)] text-xs text-foreground cursor-default origin-bottom-right transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:scale-[0.97] starting:translate-y-[2px] motion-reduce:transition-opacity motion-reduce:starting:scale-100 motion-reduce:starting:translate-y-0"
-      ref={ref} role="dialog" aria-label="上下文用量详情"
+    <TooltipContent
+      side="top"
+      align="end"
+      sideOffset={8}
+      // 版式照旧：卡片底色/圆角/阴影都沿用原来的浮窗，只是开合改由 Tooltip 管。
+      // 箭头藏掉——这是一张信息卡，不是一句提示气泡
+      className="w-[276px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&_[data-slot=tooltip-arrow]]:hidden"
+      aria-label="上下文用量详情"
     >
       <div className="flex justify-between items-baseline gap-3 mb-[7px]">
         <span className="font-semibold">上下文已用 {pct}%</span>
@@ -302,7 +272,7 @@ function CtxPopover({ events, toolDefs, ctxWindow, onClose }: {
           <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
         </div>
       </div>
-    </div>
+    </TooltipContent>
   );
 }
 
@@ -455,7 +425,6 @@ function ComposerBar() {
   const switchModel = useChat((s) => s.switchModel);
   const setApprovalMode = useChat((s) => s.setApprovalMode);
   const setThinking = useChat((s) => s.setThinking);
-  const [ctxOpen, setCtxOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
 
   // 目录 + 本机探测：Ollama 的窗只有那台机器答得上来，查目录会拿到 32k 兜底常量，
@@ -562,25 +531,18 @@ function ComposerBar() {
             {thinkingSelect}
           </div>
 
-          <span className="relative inline-flex">
-            <button
-              type="button"
-              className="inline-flex items-center p-[3px] rounded-md bg-transparent border-none hover:bg-foreground/[0.07]"
-              title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%——点击看详情`}
+          {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
+              (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
+          <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
+            <ContextDisplayTrigger
+              className="p-[3px] hover:bg-foreground/[0.07]"
+              title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%`}
               aria-label="上下文用量详情"
-              onClick={() => setCtxOpen((o) => !o)}
             >
-              <CtxRing used={used} win={ctxWindow} />
-            </button>
-            {ctxOpen && (
-              <CtxPopover
-                events={events}
-                toolDefs={toolDefs}
-                ctxWindow={ctxWindow}
-                onClose={() => setCtxOpen(false)}
-              />
-            )}
-          </span>
+              <ContextDisplayRingVisual />
+            </ContextDisplayTrigger>
+            <CtxDetails events={events} toolDefs={toolDefs} ctxWindow={ctxWindow} />
+          </ContextDisplayRoot>
         </div>
       </div>
     </div>
