@@ -51,18 +51,30 @@ describe("parseGitLog", () => {
   });
 });
 
-describe("parseRefs", () => {
-  it("HEAD -> 分支 = head 类型", () => {
-    expect(parseRefs("HEAD -> main")).toEqual([{ name: "main", type: "head" }]);
+describe("parseRefs（--decorate=full 的全名形式）", () => {
+  it("HEAD -> refs/heads/X = head 类型，名字剥到短名", () => {
+    expect(parseRefs("HEAD -> refs/heads/main")).toEqual([{ name: "main", type: "head" }]);
   });
   it("detached HEAD 单独出现 = head", () => {
-    expect(parseRefs("HEAD, tag: v2")).toEqual([
+    expect(parseRefs("HEAD, tag: refs/tags/v2")).toEqual([
       { name: "HEAD", type: "head" }, { name: "v2", type: "tag" },
     ]);
   });
-  it("含 / 的是 remote,其余是本地分支", () => {
-    expect(parseRefs("feat/x, origin/feat/x")).toEqual([
-      { name: "feat/x", type: "branch" }, { name: "origin/feat/x", type: "remote" },
+  it("按 refs/ 前缀分类,不再猜 remote 名——非 origin/upstream 的 remote 不会被当成本地分支", () => {
+    expect(parseRefs("refs/heads/feat/x, refs/remotes/fork/feat/x, refs/remotes/origin/feat/x")).toEqual([
+      { name: "feat/x", type: "branch" },
+      { name: "fork/feat/x", type: "remote" },
+      { name: "origin/feat/x", type: "remote" },
+    ]);
+  });
+  it("名字里带 refs 字样的分支不被误剥", () => {
+    expect(parseRefs("refs/heads/refs/heads/weird")).toEqual([
+      { name: "refs/heads/weird", type: "branch" },
+    ]);
+  });
+  it("没有 refs/ 前缀时退回短名启发式（log.decorate=short 被外部配置强按下的情形）", () => {
+    expect(parseRefs("main, origin/main")).toEqual([
+      { name: "main", type: "branch" }, { name: "origin/main", type: "remote" },
     ]);
   });
   it("空串 = 空数组", () => {
@@ -110,6 +122,28 @@ describe("assignLanes", () => {
     expect(rows[1]!.lane).toBe(2);
     expect(rows[0]!.edges).toContainEqual({ fromLane: 0, toLane: 1 }); // merge 线并入既有 1 道
     expect(rows[3]!.lane).toBe(1);
+  });
+
+  it("交叉合并(criss-cross):两个 merge 互相跨到对方的父,线不串道", () => {
+    // m1、m2 各自的两个父是同一对 (a, b)，方向相反 —— 泳道表要能同时
+    // 让两条线等着同一批 hash，且各归各的 dot
+    const rows = assignLanes([
+      c("m1", ["a", "b"]),
+      c("m2", ["b", "a"]),
+      c("a", ["r"]),
+      c("b", ["r"]),
+      c("r", []),
+    ]);
+    // 每个 commit 恰好一行，没有重复落座
+    expect(rows.map((r) => r.hash)).toEqual(["m1", "m2", "a", "b", "r"]);
+    // a、b 各占一道且互不相同 —— 串道的表现就是这两个撞在一起
+    const laneOf = Object.fromEntries(rows.map((r) => [r.hash, r.lane]));
+    expect(laneOf["a"]).not.toBe(laneOf["b"]);
+    // 两个 merge 都在自己那一行画出了并线段
+    expect(rows[0]!.edges.some((e) => e.fromLane === laneOf["m1"])).toBe(true);
+    expect(rows[1]!.edges.some((e) => e.fromLane === laneOf["m2"])).toBe(true);
+    // 根之后没有悬着的线
+    expect(rows[4]!.edges).toEqual([]);
   });
 
   it("多根(orphan):互不相连各占道,道用完可回收", () => {
@@ -218,6 +252,30 @@ describe("parseNumstat", () => {
   });
   it("空输出 = 空数组", () => {
     expect(parseNumstat("")).toEqual([]);
+  });
+
+  it("rename:带花括号的紧凑写法解成新路径,旧路径单独留着", () => {
+    expect(parseNumstat("0\t0\tsrc/{a.txt => b.txt}\n")).toEqual([
+      { file: "src/b.txt", renamedFrom: "src/a.txt", insertions: 0, deletions: 0 },
+    ]);
+  });
+
+  it("rename:花括号一侧为空(挪进子目录)不留出双斜杠", () => {
+    expect(parseNumstat("1\t2\tsrc/{ => sub}/a.txt\n")).toEqual([
+      { file: "src/sub/a.txt", renamedFrom: "src/a.txt", insertions: 1, deletions: 2 },
+    ]);
+  });
+
+  it("rename:没有公共前后缀时 git 写成裸的 old => new", () => {
+    expect(parseNumstat("3\t4\ta.txt => b.txt\n")).toEqual([
+      { file: "b.txt", renamedFrom: "a.txt", insertions: 3, deletions: 4 },
+    ]);
+  });
+
+  it("文件名里含 => 字样但不是 rename 行:原样当路径,不瞎拆", () => {
+    expect(parseNumstat("1\t0\tdocs/a=>b.md\n")).toEqual([
+      { file: "docs/a=>b.md", insertions: 1, deletions: 0 },
+    ]);
   });
 });
 

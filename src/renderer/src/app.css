@@ -836,6 +836,137 @@
   }
 }
 
+/* ── 会话分区轨（SectionRail）───────────────────────────────────────────
+   默认状态下屏幕上一个字都没有，只有正文左内边距里的一小撮等长短横线。
+   长度归交互（只有指着的那条伸长），位置归颜色（当前分区那条是主色），
+   悬停才在刻度右侧长出一张卡片。
+
+   自定义属性必须 @property 注册，否则过渡是离散的（中点硬跳），
+   玻璃"变厚"的那一下就没了 */
+@property --glass-blur {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --glass-sat {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+@property --card-x {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --card-scale {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+/* 刻度：长度和颜色分工，各管一件事。
+   **长度 = 交互反馈**——只有指着的那条伸长（scaleX 而不是 width：不碰布局），
+   origin 在左端，所以它是往正文那边探出去，不是两头一起长。
+   **颜色 = 我在哪**——当前分区那条是 --brand，跟长度无关。
+   两条规则正交：指着当前分区那条就又蓝又长；指着别的，那条长但保持中性色。
+   伸长要跟手：指针驱动的即时反馈，140ms 强 ease-out，慢一点就成了"慢吞吞地伸" */
+.section-rail-tick {
+  background-color: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  transform-origin: left center;
+  transform: translateY(-50%) scaleX(1);
+  transition:
+    background-color 140ms var(--ease-strong),
+    transform 140ms var(--ease-strong);
+}
+.section-rail-tick[data-hovered="true"] {
+  background-color: var(--foreground);
+  transform: translateY(-50%) scaleX(2.8);
+}
+/* active 排在 hovered 之后：同 specificity，源序靠后者赢——
+   指着别的分区时蓝色不该跟着指针跑，它得留在当前分区那条上 */
+.section-rail-tick[data-active="true"] {
+  background-color: var(--brand);
+}
+
+/* 减动效：伸长是状态变化不是装饰，照样发生，只是不做过渡动画 */
+@media (prefers-reduced-motion: reduce) {
+  .section-rail-tick {
+    transition: background-color 140ms ease;
+  }
+}
+
+/* 卡片：材质到场，不是图片淡入——模糊半径、缩放、位移和透明度一起走。
+   位移/缩放走注册过的 --card-x / --card-scale 而不是直接过渡 transform，
+   这样 transform 表达式随时可以再混进别的量而不被 transition 糊掉。
+   transform-origin 由组件钉在那条刻度上：卡片是从刻度里长出来的，
+   不是从自己的中心缩放出来的。进退同一条路径——往左收回去的，从左边长回来 */
+.section-rail-card {
+  --card-x: 0px;
+  --card-scale: 1;
+  --glass-blur: 10px;
+  --glass-sat: 0.85;
+  opacity: 1;
+  /* 底色自己就得够实：对比度不能指望模糊去提供。
+     saturate 压到 1 以下——材质的职责是让背后安静，不是把背景的彩色放大 */
+  background-color: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--foreground) 12%, transparent);
+  transform: translateX(var(--card-x)) scale(var(--card-scale));
+  /* top 刻意不进 transition：刻度只隔 12px，让卡片花 200ms 滑过去，
+     指针扫过几条时它就一直落在后面。悬停反馈要跟手，瞬时重定位反而更像
+     "另一条刻度的卡片"，不是同一张在飘。
+     （不是能力问题：实测 Chromium 在两个带百分比的 clamp() 之间插值正常） */
+  transition-property: opacity, --card-x, --card-scale, --glass-blur, --glass-sat;
+  transition-duration: 200ms;
+  transition-timing-function: var(--ease-strong);
+  @starting-style {
+    --card-x: -8px;
+    --card-scale: 0.96;
+    --glass-blur: 0px;
+    --glass-sat: 1;
+    opacity: 0;
+  }
+}
+.section-rail-card[data-visible="false"] {
+  --card-x: -8px;
+  --card-scale: 0.96;
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  opacity: 0;
+}
+
+/* 减动效：不做位移/缩放/模糊过场，也不滑动，只留交叉淡入淡出。
+   模糊值直接给终值——它是材质的一部分，不是动画 */
+@media (prefers-reduced-motion: reduce) {
+  .section-rail-card,
+  .section-rail-card[data-visible="false"] {
+    --card-x: 0px;
+    --card-scale: 1;
+    --glass-blur: 10px;
+    --glass-sat: 0.85;
+    transition-property: opacity;
+    transition-duration: 160ms;
+    transition-timing-function: ease;
+  }
+  .section-rail-card {
+    @starting-style {
+      --card-x: 0px;
+      --card-scale: 1;
+      --glass-blur: 10px;
+      --glass-sat: 0.85;
+      opacity: 0;
+    }
+  }
+}
+
+/* 降低透明度偏好：材质变实，别让文字压在模糊的背景上 */
+@media (prefers-reduced-transparency: reduce) {
+  .section-rail-card {
+    background-color: var(--card);
+    backdrop-filter: none;
+  }
+}
+
 /* ── 浮层(dropdown / 二级菜单)的进出场 ────────────────────────────────
    和 dialog 同一套理由:手写 keyframes 而不是 tailwindcss-animate 死类名,
    且离场也要(radix Presence 会等动画跑完再卸载)。

@@ -17,7 +17,14 @@ export interface Edge { fromLane: number; toLane: number }
 /** edges = 本行中心到下一行中心之间的线段(最后一行 edges 只含 merge 预置段) */
 export interface GraphRow { hash: string; lane: number; edges: Edge[] }
 
-export interface FileStat { file: string; insertions: number | null; deletions: number | null }
+export interface FileStat {
+  file: string;
+  /** 改名/复制的来源路径。只有 numstat 报了 `old => new` 时才有——
+      缺席的语义是"这不是一次改名",不是"来源未知" */
+  renamedFrom?: string;
+  insertions: number | null;
+  deletions: number | null;
+}
 
 export interface CommitDetail {
   hash: string;
@@ -73,14 +80,39 @@ export function parseBranchList(stdout: string): BranchInfo[] {
     });
 }
 
-/** %D 解码:"HEAD -> main, origin/main, tag: v1" → 结构化 ref 列表 */
+/** 一条全名 ref → 类型 + 短名。`refs/heads/refs/heads/x` 这种只剥一层前缀,
+    剩下的原样留着——分支名里带 refs 字样是合法的 */
+function classifyFullRef(ref: string): GitRef | null {
+  if (ref.startsWith("refs/heads/")) return { name: ref.slice("refs/heads/".length), type: "branch" };
+  if (ref.startsWith("refs/remotes/")) return { name: ref.slice("refs/remotes/".length), type: "remote" };
+  if (ref.startsWith("refs/tags/")) return { name: ref.slice("refs/tags/".length), type: "tag" };
+  return null;
+}
+
+/** %D 解码。数据源用 `--decorate=full`,所以正常输入是全名形式:
+    "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1"。
+
+    为什么要全名:短名下没法区分 remote 和"名字里带斜杠的本地分支"。
+    原来靠 `origin/` / `upstream/` 前缀猜,任何叫别的名字的 remote(fork/、
+    公司内网的 gitlab/)都会被当成本地分支画错徽章。前缀是 git 给的事实,猜不是。
+
+    没有 refs/ 前缀时退回旧的短名启发式——用户的 `log.decorate` 配置
+    可能把它按回 short,那种情况下猜总比全丢强。 */
 export function parseRefs(decorate: string): GitRef[] {
   if (!decorate.trim()) return [];
   return decorate.split(", ").map((part): GitRef => {
-    if (part.startsWith("HEAD -> ")) return { name: part.slice("HEAD -> ".length), type: "head" };
     if (part === "HEAD") return { name: "HEAD", type: "head" }; // detached
-    if (part.startsWith("tag: ")) return { name: part.slice("tag: ".length), type: "tag" };
-    // 已知 remote 前缀视为 remote;其他视为本地分支(启发式:origin/X 形式才归 remote)
+    if (part.startsWith("HEAD -> ")) {
+      const target = part.slice("HEAD -> ".length);
+      return { name: classifyFullRef(target)?.name ?? target, type: "head" };
+    }
+    if (part.startsWith("tag: ")) {
+      const target = part.slice("tag: ".length);
+      return { name: classifyFullRef(target)?.name ?? target, type: "tag" };
+    }
+    const full = classifyFullRef(part);
+    if (full) return full;
+    // 短名兜底:已知 remote 前缀视为 remote,其他视为本地分支
     if (part.startsWith("origin/") || part.startsWith("upstream/")) return { name: part, type: "remote" };
     return { name: part, type: "branch" };
   });
@@ -113,7 +145,27 @@ export function parseGitLog(stdout: string): RawCommit[] {
     .filter((commit): commit is RawCommit => commit !== null);
 }
 
-/** numstat 行:"12\t3\tpath" 或 "-\t-\tbinary" */
+/** 改名行的紧凑写法:`src/{a.txt => b.txt}`、`src/{ => sub}/a.txt`。
+    花括号一侧为空时拼出来会多一道斜杠,收掉 */
+const RENAME_BRACE = /^(.*?)\{(.*?) => (.*?)\}(.*)$/;
+
+/** numstat 的路径字段 → 新路径(+ 改名来源)。
+    git 只在真是改名/复制时写 " => "(带空格),所以文件名里出现 `a=>b` 不会误伤 */
+function parseNumstatPath(raw: string): { file: string; renamedFrom?: string } {
+  const braced = RENAME_BRACE.exec(raw);
+  if (braced) {
+    const [, pre, from, to, post] = braced;
+    const join = (mid: string) => `${pre}${mid}${post}`.replace(/\/{2,}/g, "/");
+    return { file: join(to!), renamedFrom: join(from!) };
+  }
+  const sep = raw.indexOf(" => ");
+  if (sep !== -1) {
+    return { file: raw.slice(sep + " => ".length), renamedFrom: raw.slice(0, sep) };
+  }
+  return { file: raw };
+}
+
+/** numstat 行:"12\t3\tpath"、"-\t-\tbinary",或改名行 "0\t0\tsrc/{a => b}" */
 export function parseNumstat(stdout: string): FileStat[] {
   return stdout
     .split("\n")
@@ -121,7 +173,7 @@ export function parseNumstat(stdout: string): FileStat[] {
     .map((l) => {
       const [ins, del, ...rest] = l.split("\t");
       return {
-        file: rest.join("\t"),
+        ...parseNumstatPath(rest.join("\t")),
         insertions: ins === "-" ? null : Number(ins),
         deletions: del === "-" ? null : Number(del),
       };

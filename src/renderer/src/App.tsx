@@ -1,10 +1,10 @@
 // 聊天主界面 — 功能优先（视觉设计等 harness 完工后再做）。
 // 消息区就是事件日志的直接渲染：又一个投影，UI 不持有自己的对话状态。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,12 +17,14 @@ import ottoLogo from "./assets/otto.png";
 import { diffLines } from "../../shared/diff.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
+import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { Replay } from "./replay/Replay.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
+import { BrowserPanel } from "./components/BrowserPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
@@ -36,6 +38,8 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+// RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
+// ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -97,11 +101,17 @@ import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢 */
+/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
+    section_classified 也算：分区分类是真花钱的模型调用，漏掉这一行统计就说谎 */
 function totalTokens(events: SessionEvent[]): number {
   let sum = 0;
   for (const e of events) {
-    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
+    if (
+      (e.type === "assistant_message" ||
+        e.type === "context_compacted" ||
+        e.type === "section_classified") &&
+      e.usage
+    ) {
       sum += e.usage.promptTokens + e.usage.completionTokens;
     }
   }
@@ -1144,6 +1154,7 @@ function AppSidebar() {
   const protocolOpen = useChat((s) => s.protocolOpen);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
+  const browserPanelOpen = useChat((s) => s.browserPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1294,7 +1305,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-col items-start gap-px py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
@@ -1818,10 +1829,53 @@ export function App() {
   const openGitGraph = useChat((s) => s.openGitGraph);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
+  const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
   const staged = useChat((s) => s.staged);
   const attachPasted = useChat((s) => s.attachPasted);
+  // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
+  const sections = useMemo(() => deriveSections(events), [events]);
+  const [activeSection, setActiveSection] = useState<number | null>(null);
+  const scrollRef = useRef<HTMLElement>(null);
+
+  // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
+  // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
+  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || sections.length === 0) return;
+    const anchors = Array.from(root.querySelectorAll<HTMLElement>("[data-section]"));
+    if (anchors.length === 0) return;
+
+    const recompute = () => {
+      // 判定线：容器顶部往下 15% —— 用户读的是屏幕上方那段，不是正中间
+      const line = root.getBoundingClientRect().top + root.clientHeight * 0.15;
+      let active: number | null = null;
+      for (const a of anchors) {
+        if (a.getBoundingClientRect().top <= line) {
+          active = Number(a.dataset["section"]);
+        }
+      }
+      setActiveSection(active);
+    };
+
+    const io = new IntersectionObserver(recompute, { root, threshold: 0 });
+    anchors.forEach((a) => io.observe(a));
+    recompute();
+    return () => io.disconnect();
+  }, [sections]);
+
+  const jumpToSection = useCallback((index: number) => {
+    const root = scrollRef.current;
+    const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
+    anchor?.scrollIntoView({
+      block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
@@ -1830,6 +1884,13 @@ export function App() {
   // 所以「跨区域选择」的判定边界没变
   const threadHostRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
+  // main 侧这里还有 items(groupThread)/toolIndex(buildToolIndex)/sectionAnchors/
+  // turnPhase(agentPhase)——都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下
+  // 已经没有消费者:消息渲染整个交给 toThreadMessages(见 aui/OttoThread.tsx),
+  // turnPhase 的等价物也已经搬进 OttoThread.tsx 的 RunIndicator(同一份 agentPhase
+  // 逻辑,原样搬回)。sectionAnchors 是会话分区轨要用的东西,这次合并暂不重接
+  // (下一个提交补上,见该提交说明)——sections/scrollRef/scrollspy 这段本身没有
+  // 冲突,原样留着,只是眼下还没人接到 DOM 上
 
   // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
   const slashMatches = input.startsWith("/")
@@ -1928,6 +1989,7 @@ export function App() {
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView />
+    : browserPanelOpen ? <BrowserPanel />
     : terminalPanelOpen ? <TerminalView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
@@ -1991,6 +2053,9 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openTerminalPanel()}>
               <TerminalIcon /> 终端
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openBrowserPanel()}>
+              <Globe /> 浏览器
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

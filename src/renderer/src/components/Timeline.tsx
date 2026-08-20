@@ -148,6 +148,11 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         </details>
       );
 
+    // 分区目录挂在左侧竖轨上，不进正文——每换一段话题就插一条系统行，
+    // 等于把导航噪音倒进对话里
+    case "section_classified":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":

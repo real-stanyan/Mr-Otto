@@ -11,6 +11,7 @@ import type { ThinkingMode } from "./thinking.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { TerminalInfo } from "./terminal.js";
+import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
@@ -31,6 +32,8 @@ export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, Ask
 export type { SessionSummary };
 
 export type { TerminalInfo };
+
+export type { BrowserTabInfo, BrowserBounds };
 
 /** 审批模式（Claude Code 的 permission mode 对应物）：
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
@@ -316,6 +319,18 @@ export interface ShellBridge {
   terminalResize(id: string, cols: number, rows: number): Promise<void>;
   /** 关标签 = 杀进程,不可逆 */
   terminalClose(id: string): Promise<void>;
+  /** 开/取本会话的浏览器。幂等:已存在则不重建,一律返回当前快照
+      (面板挂载时调一次——agent 可能已经先开着某一页了) */
+  browserOpen(sessionId: string): Promise<BrowserTabInfo>;
+  /** 地址栏回车。url 未归一化的原始输入,主进程侧过 normalizeUrl */
+  browserNavigate(sessionId: string, url: string): Promise<void>;
+  /** 面板位置/尺寸同步。null = 面板收起,把 view 从窗口上摘下来(不销毁) */
+  browserSetBounds(sessionId: string, bounds: BrowserBounds | null): Promise<void>;
+  browserBack(sessionId: string): Promise<void>;
+  browserForward(sessionId: string): Promise<void>;
+  browserReload(sessionId: string): Promise<void>;
+  /** 关浏览器 = 销毁 webContents,登录态之外的一切(历史/前进后退)都没了 */
+  browserClose(sessionId: string): Promise<void>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -380,6 +395,8 @@ export interface ShellBridge {
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
   onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
+  /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
+  onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
@@ -478,6 +495,14 @@ export const CHANNELS = {
   terminalClose: "otter:terminalClose",
   terminalData: "otter:terminalData",
   terminalExit: "otter:terminalExit",
+  browserOpen: "otter:browserOpen",
+  browserNavigate: "otter:browserNavigate",
+  browserSetBounds: "otter:browserSetBounds",
+  browserBack: "otter:browserBack",
+  browserForward: "otter:browserForward",
+  browserReload: "otter:browserReload",
+  browserClose: "otter:browserClose",
+  browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
   walletBalance: "otter:walletBalance",

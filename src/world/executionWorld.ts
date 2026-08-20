@@ -42,6 +42,30 @@ export interface OpenTerminalOptions {
   shell?: string;
 }
 
+/** 读一次内置浏览器。url 给了 = 先导航再读;不给 = 读当前页 */
+export interface BrowserReadOptions {
+  url?: string;
+  signal?: AbortSignal;
+}
+
+export interface BrowserReadResult {
+  /** 读完那一刻的实际 URL(重定向之后的)。以浏览器宿主为准,不采信页面自报 */
+  url: string;
+  title: string;
+  text: string;
+  /** 正文超上限被截断了。截了就明说,不假装读全了 */
+  truncated: boolean;
+  /** 本次请求的 url,只在它和实际读到的 url 不一致时才有:重定向,
+      或者人在读取途中把这块共用的屏导去了别处。有值 = 正文属于 url 而不是
+      requestedUrl,工具层要把这句话摆到模型眼前 */
+  requestedUrl?: string;
+}
+
+/** 浏览器能力。只读——导航 + 抽正文,不点不打字(本期边界,工具名已把它划在名字里) */
+export interface BrowserCapability {
+  read(opts?: BrowserReadOptions): Promise<BrowserReadResult>;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -57,6 +81,13 @@ export interface ExecutionWorld {
       缺这个字段 = 该世界没有终端能力，UI 据此不显示入口。
       v2 SandboxWorld 把它实现成 docker exec，用户终端自动落进那个 bot 的容器 */
   openTerminal?(opts: OpenTerminalOptions): Promise<TerminalSession>;
+  /** 可选:这个世界有没有内置浏览器。
+      可选的理由同 openTerminal(旧实现和测试里的假 world 零改动)。
+      v1 的实现不在 LocalWorld 里——WebContentsView 是 Electron 主进程的东西,
+      LocalWorld 是纯 Node 模块,造不出来,所以由 index.ts 从 browserHub 注入(withBrowser)。
+      这与终端的方向是反的(终端是 hub 去调 world),因为 pty 是 LocalWorld 自己能干的活。
+      v2 SandboxWorld 若在容器里跑浏览器,可以自己实现这个字段,注入那条线就自然退场。 */
+  browser?: BrowserCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -70,6 +101,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
     },
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
+    ...(world.browser
+      ? { browser: { read: (o?: BrowserReadOptions) => world.browser!.read({ ...o, signal }) } }
+      : {}),
   };
 }
 
@@ -85,5 +119,13 @@ export function withExecOutput(
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
     http: world.http,
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
+    ...(world.browser ? { browser: world.browser } : {}),
   };
+}
+
+/** 把浏览器能力焊进 world——withAbortSignal 同款手法。
+    index.ts 按会话包一层(read 里绑好 sessionId),工具照旧只调 world.browser.read,
+    对 hub 的存在无感(硬规则原样成立)。 */
+export function withBrowser(world: ExecutionWorld, browser: BrowserCapability): ExecutionWorld {
+  return { ...world, browser };
 }

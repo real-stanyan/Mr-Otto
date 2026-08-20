@@ -17,6 +17,10 @@ export interface EventItem {
 export interface ToolGroupItem {
   kind: "toolGroup";
   key: string; // 组内第一个调用的 id —— 组的边界会随新事件变,但头一个不会
+  /** 组在日志里的位置 = 开这一组的那条 assistant_message 的 seq。
+      渲染项不再和事件一一对应(工具调用被抽出来重编排了),但"排在日志的哪里"
+      仍然是投影的一部分——会话分区的锚点要按 seq 找落点,没有它就只能瞎猜 */
+  seq: number;
   calls: ToolCallRequest[];
 }
 
@@ -33,6 +37,8 @@ function isInvisible(e: SessionEvent): boolean {
       return e.decision === "approved"; // 批准只是正常放行,拒绝才是事实
     case "turn_ended":
       return e.outcome === "completed";        // 正常收工不留痕,失败/中断留
+    case "section_classified":
+      return true;                     // 目录挂在分区轨上,不进正文(见 Timeline 的同名分支)
     default:
       return false;
   }
@@ -42,10 +48,11 @@ function isInvisible(e: SessionEvent): boolean {
 export function groupThread(events: SessionEvent[]): ThreadItem[] {
   const items: ThreadItem[] = [];
   let calls: ToolCallRequest[] = [];
+  let callsSeq = 0; // 开这一组的那条消息的 seq
 
   const flush = (): void => {
     if (calls.length === 0) return;
-    items.push({ kind: "toolGroup", key: calls[0]!.id, calls });
+    items.push({ kind: "toolGroup", key: calls[0]!.id, seq: callsSeq, calls });
     calls = [];
   };
 
@@ -59,6 +66,7 @@ export function groupThread(events: SessionEvent[]): ThreadItem[] {
         items.push({ kind: "event", key: e.seq, event: e });
       }
       // 本条消息带的调用开启(或续上)下一组
+      if (calls.length === 0 && (e.toolCalls?.length ?? 0) > 0) callsSeq = e.seq;
       calls.push(...(e.toolCalls ?? []));
       continue;
     }

@@ -33,6 +33,7 @@ import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/p
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -123,6 +124,8 @@ interface ChatState {
   protocolRepo: string | null;
   adrs: AdrSummary[];
   adrView: { path: string; markdown: string } | null;
+  /** 右栏详情正在取:骨架屏用。没有它的话 openIssue 期间右栏整个不渲染,看着像没点上 */
+  protocolDetailPending: boolean;
   /** null = 正在加载(骨架屏);ok:false = 按 kind 降级 */
   issues: IssuesResult | null;
   issueView: IssueDetailResult | null;
@@ -146,6 +149,8 @@ interface ChatState {
   /** 终端面板开关(与 Protocol / Git Graph / DM 互斥:同一个右侧槽位)。
       注意别和 ShellBridge 的 terminalOpen(开一个新终端)混为一谈 */
   terminalPanelOpen: boolean;
+  /** 浏览器面板开关(同一个右侧槽位,与上面这些互斥) */
+  browserPanelOpen: boolean;
   /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
       不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
   workTree: GitStatusResult | null;
@@ -248,6 +253,9 @@ interface ChatState {
   /** 打开终端面板:同一会话已有跑着的终端就复用,没有才开新的(TerminalView 里做) */
   openTerminalPanel(): void;
   closeTerminalPanel(): void;
+  /** 打开浏览器面板:与终端同一块右侧槽位,互斥 */
+  openBrowserPanel(): void;
+  closeBrowserPanel(): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
   refreshGitGraph(silent?: boolean): Promise<void>;
   /** 滚近底部时把窗口 +300 整窗重拉。到底/在拉/没图时是空操作 */
@@ -343,10 +351,15 @@ const enterChat = (info: BootInfo) => ({
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
   terminalPanelOpen: false, // 同上
+  browserPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   error: null,
 });
+
+/** 右栏详情的作废闸:ADR 与 issue 共用一张,因为它们抢的是同一块槽位。
+    只比 protocolRepo 挡不住同仓库内的连点(#18 第 2 条) */
+const protocolDetailGate = createRequestGate();
 
 export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
@@ -374,6 +387,7 @@ export const useChat = create<ChatState>((set, get) => ({
   pokerError: "",
   protocolOpen: false,
   protocolRepo: null,
+  protocolDetailPending: false,
   adrs: [],
   adrView: null,
   issues: null,
@@ -388,6 +402,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gitCommitView: null,
   panelWide: false,
   terminalPanelOpen: false,
+  browserPanelOpen: false,
   workTree: null,
   workTreeDismissed: null,
   branchesByDir: {},
@@ -452,7 +467,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (section === "keys") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false,
         keyStatus: await window.otter.keyStatus(),
       });
       // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
@@ -461,13 +476,13 @@ export const useChat = create<ChatState>((set, get) => ({
     } else if (section === "skills") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false,
         skills: await window.otter.listSkills(),
       });
     } else {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false,
       });
       // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）
       void get().refreshWallet();
@@ -575,14 +590,17 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({
       protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
-      terminalPanelOpen: false,
+      terminalPanelOpen: false, browserPanelOpen: false,
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
   },
 
   closeProtocol: () => set({ protocolOpen: false }),
-  closeProtocolDetail: () => set({ adrView: null, issueView: null }),
+  closeProtocolDetail: () => {
+    protocolDetailGate.begin(); // 关掉之后在飞的那次回来别再把面板顶开
+    set({ adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async pickProtocolRepo() {
     try {
@@ -615,28 +633,39 @@ export const useChat = create<ChatState>((set, get) => ({
   async openAdr(path) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ adrView: null }); // 先清,切换 ADR 时不残留上一篇的内容(镜像 openIssue 的做法)
+    const token = protocolDetailGate.begin();
+    // 先清,切换时不残留上一篇;error 一并清掉——上一次的失败不该压在这一次的结果上
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const { markdown } = await window.otter.protocolReadAdr(repo, path);
-      if (get().protocolRepo === repo) set({ adrView: { path, markdown }, issueView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ adrView: { path, markdown }, issueView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
   async openIssue(number) {
     const repo = get().protocolRepo;
     if (!repo) return;
-    set({ issueView: null });
+    const token = protocolDetailGate.begin();
+    set({ adrView: null, issueView: null, protocolDetailPending: true, error: null });
     try {
       const issueView = await window.otter.protocolGetIssue(repo, number);
-      if (get().protocolRepo === repo) set({ issueView, adrView: null });
+      if (!protocolDetailGate.isCurrent(token) || get().protocolRepo !== repo) return;
+      set({ issueView, adrView: null, protocolDetailPending: false });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!protocolDetailGate.isCurrent(token)) return;
+      set({ error: e instanceof Error ? e.message : String(e), protocolDetailPending: false });
     }
   },
 
-  setProtocolTab: (t) => set({ protocolTab: t }),
+  setProtocolTab: (t) => {
+    // 切页签 = 换上下文。不清的话开着 ADR 切到 Issues,右栏还挂着上一篇 ADR 全文
+    protocolDetailGate.begin();
+    set({ protocolTab: t, adrView: null, issueView: null, protocolDetailPending: false });
+  },
 
   async openGitGraph() {
     const repo = get().workspace || null;
@@ -644,7 +673,7 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
       // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
       gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
-      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, // 互斥:同一块主区
+      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一块主区
     });
     if (repo) await get().refreshGitGraph();
   },
@@ -655,10 +684,19 @@ export const useChat = create<ChatState>((set, get) => ({
     set({
       terminalPanelOpen: true,
       // 互斥:同一块右侧槽位
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null, browserPanelOpen: false,
     }),
 
   closeTerminalPanel: () => set({ terminalPanelOpen: false }),
+
+  openBrowserPanel: () =>
+    set({
+      browserPanelOpen: true,
+      // 互斥:同一块右侧槽位
+      terminalPanelOpen: false, protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
+    }),
+
+  closeBrowserPanel: () => set({ browserPanelOpen: false }),
 
   async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;
@@ -849,7 +887,7 @@ export const useChat = create<ChatState>((set, get) => ({
   async openFriendChat(profile) {
     set((s) => ({
       friendChat: profile,
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, // 互斥:同一右侧槽位
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一右侧槽位
       unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
       friendError: null,
     }));
@@ -1196,6 +1234,7 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: false, // 同上
       friendChat: null, // 同上
       terminalPanelOpen: false, // 同上
+      browserPanelOpen: false, // 同上
       error: null,
     }),
 
