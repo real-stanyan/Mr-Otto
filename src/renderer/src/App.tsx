@@ -50,6 +50,7 @@ import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
+import { pickGreeting } from "./lib/greeting.js";
 import { Chart } from "@/components/elements/chart.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { contextSeries } from "../../session/deriveUsage.js";
@@ -1752,6 +1753,11 @@ function Welcome() {
   const [workspace, setWorkspace] = useState<string | null>(pendingWorkspace);
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
   const [text, setText] = useState("");
+  // 招呼语只抽一次:Welcome 常驻不卸载,放进 render 体里的话每敲一个字都换一句话
+  const myProfile = useChat((s) => s.myProfile);
+  const account = useChat((s) => s.account);
+  const [roll] = useState(() => Math.random());
+  const greeting = pickGreeting(displayIdentity(account, myProfile).name, roll);
   const [model, setModel] = useState(() =>
     describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
@@ -1785,9 +1791,14 @@ function Welcome() {
   };
 
   return (
-    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4 text-center">
-      <img className="w-[72px] h-[72px] rounded-[18px]" src={ottoLogo} alt="Mr Otto" />
-      <h1 className="text-2xl font-[650] tracking-[-0.01em]">Mr Otto</h1>
+    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
+      {/* 头像左、招呼语右。竖排的「头像 + Mr Otto」是一张启动画面 —— 它介绍自己是谁,
+          而这一屏的正事是开始说话。横过来之后这一块读成"它在跟你打招呼",
+          和底下那个输入框连成一句话。宽度跟输入框对齐,左边缘成一条线 */}
+      <div className="flex w-[min(640px,90%)] items-center gap-3">
+        <img className="size-11 shrink-0 rounded-xl" src={ottoLogo} alt="Mr Otto" />
+        <p className="min-w-0 text-left text-[19px] font-[600] tracking-[-0.01em]">{greeting}</p>
+      </div>
       {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
           外面套投放区:还没有会话也能先把图拖进来,建会话后随首条消息一起走 */}
       <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
@@ -1807,9 +1818,16 @@ function Welcome() {
             </span>
           )}
         </div>
-        <StagedChips className="px-1" />
+        <StagedChips />
+        {/* 与会话中的输入框逐字同款(见 ComposerTextarea):
+            bg-transparent 得连 dark: 一起写 —— shadcn 的 Textarea 自带
+            dark:bg-input/30,它和裸 bg-transparent 是两个变体,谁也盖不掉谁,
+            结果就是深色下卡里浮着一个灰盒子(之前会话中那个输入框栽过同一处)。
+            内边距也跟着改成 px-3 py-2:px-1 会让占位符贴着卡的左边缘, 
+            和底下那排控件对不上一条线 */
+        }
         <Textarea
-          className="border-none shadow-none resize-none text-foreground text-sm leading-[1.55] min-h-[52px] max-h-[200px] px-1 py-[2px] focus-visible:ring-0"
+          className="border-none shadow-none resize-none bg-transparent dark:bg-transparent text-foreground text-sm leading-[1.45] min-h-[52px] max-h-[200px] px-3 py-2 focus-visible:ring-0 placeholder:text-foreground/35"
           autoFocus
           rows={2}
           placeholder="向 Mr Otto 描述任务，回车发送"
