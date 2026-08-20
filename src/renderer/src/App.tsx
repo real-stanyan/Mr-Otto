@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowUpIcon, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowUpIcon, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,6 +42,7 @@ import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
@@ -1174,6 +1175,7 @@ function AppSidebar() {
   const settingsSection = useChat((s) => s.settingsSection);
   const resume = useChat((s) => s.resume);
   const newSession = useChat((s) => s.newSession);
+  const setSessionSearchOpen = useChat((s) => s.setSessionSearchOpen);
   const openSettings = useChat((s) => s.openSettings);
   const closeSettings = useChat((s) => s.closeSettings);
   const deleteSession = useChat((s) => s.deleteSession);
@@ -1261,6 +1263,20 @@ function AppSidebar() {
             onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
           >
             ＋ 新会话
+          </Button>
+        )}
+        {/* 搜索入口跟着新会话钮走:两颗都是"去别的会话"的路口。
+            只留快捷键的话,不知道有这功能的人永远不知道 */}
+        {settingsSection === null && mode !== "game" && (
+          <Button
+            variant="ghost"
+            className="justify-start px-3 py-[7px] text-[13px] text-muted-foreground hover:bg-foreground/[0.06]"
+            title="搜索会话（⌘K）"
+            onClick={() => setSessionSearchOpen(true)}
+          >
+            <Search className="size-4 opacity-70" aria-hidden />
+            搜索会话
+            <kbd className="ml-auto font-mono text-[10px] opacity-60">⌘K</kbd>
           </Button>
         )}
       </SidebarHeader>
@@ -2244,6 +2260,9 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [status, stop]);
 
+  // ⌘K = 会话搜索(见 components/SessionSearch.tsx)
+  useSessionSearchHotkey();
+
   // ⌃` = 开/关终端面板(VS Code 同款肌肉记忆)。挂 window:焦点可能在
   // xterm 里,输入框收不到
   useEffect(() => {
@@ -2446,6 +2465,8 @@ export function App() {
           <GameInviteToast />
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
+          <SessionSearchDialog />
         </SidebarInset>
       </TooltipProvider>
     </SidebarProvider>

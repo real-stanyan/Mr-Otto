@@ -42,7 +42,7 @@ function trimTrailing(url: string): string {
 }
 
 /** 域名(去掉 www.)。地址解析不了就原样退回 —— 这里不该抛 */
-function domainOf(url: string): string {
+export function domainOf(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {

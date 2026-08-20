@@ -4,9 +4,9 @@
 // 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { ComponentType, Ref } from "react";
+import type { ComponentType, FC, Ref } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import type { PartState } from "@assistant-ui/react";
+import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
@@ -21,6 +21,8 @@ import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
+import { WebSearch } from "../components/elements/web-search.js";
+import { domainOf, extractSources } from "./toolArtifacts.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { TurnErrorState } from "../components/TurnErrorState.js";
@@ -62,6 +64,43 @@ const OttoUserAttachments: ComponentType = () => {
   return <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />;
 };
 
+/** 搜索这一步:查询词 + 读回来的来源。
+    结果解析用的是投影层那个宽松的 extractSources —— web_search 的输出格式
+    没有任何保证(见 toolArtifacts.ts 的注释),捞不到就一条不显示,不猜。
+    点一条走内嵌浏览器,理由同 OttoSource:Electron 里 target="_blank"
+    等于弹一个 Otto 管不着的裸窗口 */
+const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
+  const sessionId = useChat((s) => s.sessionId);
+  const openBrowserPanel = useChat((s) => s.openBrowserPanel);
+  const query = (part.args as { query?: unknown } | undefined)?.query;
+  const searching = part.result === undefined;
+  const sources =
+    typeof part.result === "string" ? extractSources(part.result) : [];
+  const results = sources.map((s) => ({
+    title: s.title,
+    domain: domainOf(s.url),
+    url: s.url,
+  }));
+
+  return (
+    <WebSearch
+      query={typeof query === "string" ? query : part.toolName}
+      results={results}
+      visibleResults={results.length}
+      searching={searching}
+      cycle={0}
+      searchingLabel="搜索中…"
+      statusLabel={results.length > 0 ? `读了 ${results.length} 个来源` : "没捞到可用的链接"}
+      onOpenResult={(r) => {
+        if (r.url === undefined) return;
+        openBrowserPanel();
+        void window.otter.browserNavigate(sessionId, r.url);
+      }}
+      className="my-1 max-w-none"
+    />
+  );
+};
+
 /** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 + 一张出错卡。
     直播尾巴:ToolFallback 没有「执行中的输出」这个概念,而 bash 跑长命令时
     那条尾巴是唯一的进度信号。
@@ -69,6 +108,12 @@ const OttoUserAttachments: ComponentType = () => {
     收起来等于让人点开才知道刚才没成 */
 const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => {
   const summary = toolSummary({ id: part.toolCallId, name: part.toolName, args: part.args });
+  // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
+  // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路
+  // (下面那张 tool-error 卡才是结论)
+  if (part.toolName === "web_search" && part.isError !== true) {
+    return <WebSearchCard part={part} />;
+  }
   return (
     <>
       <ToolFallback {...part} />
