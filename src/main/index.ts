@@ -39,6 +39,7 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { maskKey } from "../shared/keyMask.js";
+import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -424,7 +425,7 @@ void app.whenReady().then(() => {
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
     // 与默认相同时 switchModel 内部 no-op，零多余事件）；审批/thinking 是运行时偏好
-    if (opts.model) agent.switchModel(opts.model);
+    if (opts.model) agent.switchModel(opts.model, opts.lane ?? "auto");
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
@@ -673,11 +674,11 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended); // 时间线同款直播通道
   });
 
-  ipcMain.handle(CHANNELS.switchModel, (_e, model: string) => {
+  ipcMain.handle(CHANNELS.switchModel, (_e, model: string, lane?: ModelLane) => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
-    agent.switchModel(model);
+    agent.switchModel(model, lane ?? "auto");
     // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
     return agent.thinking;
   });

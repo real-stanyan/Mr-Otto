@@ -66,6 +66,7 @@ import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
+import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
@@ -463,6 +464,7 @@ function SettingRow({ label, children }: { label: string; children: ReactNode })
 
 function ComposerPrefsBar() {
   const model = useChat((s) => s.model);
+  const lane = useChat((s) => s.lane);
   const events = useChat((s) => s.events);
   const toolDefs = useChat((s) => s.toolDefs);
   const approvalMode = useChat((s) => s.approvalMode);
@@ -494,7 +496,8 @@ function ComposerPrefsBar() {
   const modelSelect = (
     <ModelPicker
       value={model}
-      onChange={(v) => void switchModel(v)}
+      lane={lane}
+      onChange={(m, l) => void switchModel(m, l)}
       disabled={status === "running"}
       className={BAR_SELECT}
     />
@@ -1797,6 +1800,8 @@ function Welcome() {
   const [model, setModel] = useState(() =>
     describeModel(lastModel) ? lastModel : DEFAULT_MODEL
   );
+  // 新会话卡还没有日志可投影,lane 只能是本地草稿;落地时跟着 startSession 过去
+  const [lane, setLane] = useState<ModelLane>("auto");
   const [mode, setMode] = useState<"ask" | "auto">("ask");
   const [busy, setBusy] = useState(false);
   const choice = useModelChoice(model);
@@ -1813,7 +1818,7 @@ function Welcome() {
     setBusy(true);
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
-      await startSession({ workspace, model, approvalMode: mode, thinking });
+      await startSession({ workspace, model, lane, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
@@ -1901,7 +1906,11 @@ function Welcome() {
           <span className="flex-1" />
           <ModelPicker
             value={model}
-            onChange={setModel}
+            lane={lane}
+            onChange={(m, l) => {
+              setModel(m);
+              setLane(l);
+            }}
             disabled={busy}
             // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
             className={NSC_SELECT}
@@ -1925,7 +1934,6 @@ function Welcome() {
         </div>
       </ComposerBar>
       </AttachDropZone>
-      <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );

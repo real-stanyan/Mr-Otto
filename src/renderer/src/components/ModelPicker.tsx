@@ -33,6 +33,7 @@ import {
 import { CommandGroup, CommandItem } from "@/components/ui/command.js";
 import { describeModel, modelsByProvider, ollamaChoiceFrom } from "../../../shared/modelCatalog.js";
 import type { WalletBalance } from "../../../shared/shellBridge.js";
+import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import {
@@ -81,12 +82,15 @@ function fmtTokens(n: number): string {
 
 export function ModelPicker({
   value,
+  lane = "auto",
   onChange,
   disabled = false,
   className,
 }: {
   value: string;
-  onChange: (model: string) => void;
+  /** 当前走哪条路。选单里赠额那一份和自己 key 那一份是同一个型号的两个条目 */
+  lane?: ModelLane;
+  onChange: (model: string, lane: ModelLane) => void;
   disabled?: boolean;
   /** 触发器的样式叠加层（状态条版 BAR_SELECT / 新会话卡版 NSC_SELECT） */
   className?: string;
@@ -102,7 +106,10 @@ export function ModelPicker({
   // 赠额这条路现在通不通:登录了、且**没有**自己的 DeepSeek key。
   // 自带 key 优先于官方额度(ADR-0020/modelRoute.ts)——配了 key 就是花自己的钱，
   // 那几款该待在 DeepSeek 那一组里，而不是挂在"赠额"底下谎报免费
-  const grantOn = signedIn && (keyStatus["DEEPSEEK_API_KEY"] ?? "") === "";
+  // 赠额这一组:登录了就显示（ADR-0045）。配了自己的 key 也照样显示 ——
+  // 点它就是明确要花赠额,路由认这个选择(lane=grant),不再被"你配过 key"推翻
+  const grantOn = signedIn;
+  const ownDeepseek = (keyStatus["DEEPSEEK_API_KEY"] ?? "") !== "";
 
   // 余额只在需要显示的时候取一次:这个浮层开得很勤,每开一次打一趟网关是白打
   useEffect(() => {
@@ -134,7 +141,10 @@ export function ModelPicker({
       // 赠额开着时 DeepSeek 那几款被搬去单独一组(见下面的 grantGroup),
       // 这里不再出现 —— 同一款在两组里各出现一次,读者得先回答"点哪个才是免费的",
       // 而路由压根不给这个选择:走哪条路由 modelRoute 一条规矩定死
-      .filter((g) => !(grantOn && g.provider === "deepseek"))
+      // DeepSeek 自己那一组:只在"自带 key 这条路和赠额不是同一条"时才出现。
+      // 没配 key 又登录着的时候,auto 本来就会走网关 —— 两组一模一样,
+      // 读者得回答"点哪个才是免费的",而那个选择根本不存在
+      .filter((g) => !(grantOn && g.provider === "deepseek" && !ownDeepseek))
       // 没配 key 的厂商压根不进这个菜单：这里是"挑一个现在就能跑的型号"，
       // 十来行点进去只会撞上"需要 key"的死路。配 key 是另一件事，走底下那个入口。
       // 例外是当前选中的那家——key 被清掉之后菜单里也得能找到它，
@@ -144,7 +154,7 @@ export function ModelPicker({
         ...g,
         options: g.models.map((m) => optionOf(m, g.provider, g.info.name)),
       }));
-  }, [keyStatus, ollamaModels, choice?.provider, grantOn]);
+  }, [keyStatus, ollamaModels, choice?.provider, grantOn, ownDeepseek]);
 
   // 官方赠额那一组:赠额只买了 DeepSeek(modelRoute.ts),所以这一组就是 DeepSeek 那几款。
   // 余额用完的不删,只标成不可选 —— 选了也是 blocked,不如当场说清楚为什么
@@ -162,6 +172,9 @@ export function ModelPicker({
           left,
           option: {
             ...optionOf(m, "deepseek", info.name),
+            // 同一款型号在选单里可能出现两次(自己的 key 一份、赠额一份),
+            // cmdk 按 value 认唯一项 —— 两份必须有不同的 id
+            id: laneValue(m.model, "grant"),
             keywords: [info.name, m.model, "赠额", "免费"],
             ...(empty ? { disabled: true } : {}),
           },
@@ -185,8 +198,11 @@ export function ModelPicker({
   return (
     <ModelSelectorRoot
       models={models}
-      value={value}
-      onValueChange={onChange}
+      value={laneValue(value, lane)}
+      onValueChange={(v) => {
+        const picked = parseLaneValue(v);
+        onChange(picked.model, picked.lane);
+      }}
       open={open}
       onOpenChange={setOpen}
     >

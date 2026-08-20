@@ -98,3 +98,49 @@ describe("免 key 的本机厂商（Ollama）", () => {
     });
   });
 });
+
+describe("lane=grant：明确要花赠额", () => {
+  it("配了自己的 key 也走网关 —— 用户刚点的选择压过'你配过 key'", () => {
+    const route = routeModel({
+      choice: deepseek,
+      ownKey: "sk-mine",
+      accessToken: "token",
+      gatewayBaseUrl: "https://gw/v1",
+      lane: "grant",
+    });
+    expect(route).toEqual({ kind: "gateway", baseUrl: "https://gw/v1", apiKey: "token" });
+  });
+
+  it("没登录就没有赠额这回事,说清楚而不是悄悄回落到自己的 key", () => {
+    const route = routeModel({
+      choice: deepseek,
+      ownKey: "sk-mine",
+      accessToken: null,
+      gatewayBaseUrl: "https://gw/v1",
+      lane: "grant",
+    });
+    expect(route.kind).toBe("blocked");
+  });
+
+  it("赠额只覆盖 DeepSeek:别家点了 grant 也不给", () => {
+    const route = routeModel({
+      choice: glm,
+      ownKey: "",
+      accessToken: "token",
+      gatewayBaseUrl: "https://gw/v1",
+      lane: "grant",
+    });
+    expect(route.kind).toBe("blocked");
+  });
+
+  it("lane 缺省 = 老规矩:自带 key 优先（ADR-0020 没被推翻,只是多了一条明路）", () => {
+    const route = routeModel({
+      choice: deepseek,
+      ownKey: "sk-mine",
+      accessToken: "token",
+      gatewayBaseUrl: "https://gw/v1",
+    });
+    expect(route.kind).toBe("direct");
+  });
+});
+

@@ -49,6 +49,7 @@ import type {
 } from "../../shared/friends.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
+import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -84,6 +85,8 @@ interface ChatState {
   phase: Phase;
   sessionId: string;
   model: string;
+  /** 当前型号走哪条路（ADR-0045）。和 model 一样是日志投影：model_changed 说了算 */
+  lane: ModelLane;
   workspace: string;
   events: SessionEvent[];
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
@@ -238,7 +241,7 @@ interface ChatState {
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
-  switchModel(model: string): Promise<void>;
+  switchModel(model: string, lane?: ModelLane): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
   setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
@@ -381,6 +384,7 @@ const enterChat = (info: BootInfo) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
   model: info.model,
+  lane: laneOf(info.events),
   workspace: info.workspace,
   events: info.events,
   toolDefs: info.toolDefs ?? [],
@@ -406,6 +410,7 @@ export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
   sessionId: "",
   model: "",
+  lane: "auto" as ModelLane,
   workspace: "",
   events: [],
   toolDefs: [],
@@ -478,11 +483,13 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
-  async switchModel(model) {
+  async switchModel(model, lane = "auto") {
     try {
       // 换型号会连带换挡位表：新型号未必有手上这一档（"开"之于只有低/中/高的 GPT-5）。
       // 钳位在主进程做，这里认它回流的那一档——两边各钳各的迟早分叉
-      set({ thinking: await window.otter.switchModel(model) });
+      // lane 不在这里落镜像：它跟着 model_changed 事件流回来（同 model 那一条，
+      // UI 不抢跑）——抢跑的话主进程拒了这次切换，界面上却已经换过去了
+      set({ thinking: await window.otter.switchModel(model, lane) });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -1198,7 +1205,7 @@ export const useChat = create<ChatState>((set, get) => ({
           toolOutputByCall: toolOutput,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
-          ...(e.type === "model_changed" ? { model: e.model } : {}),
+          ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
         };
       });
     });

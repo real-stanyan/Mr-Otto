@@ -3,6 +3,7 @@
 // 答案必须是一句能指着代码念的话,而不是散在 makeAdapter 里的三个 if。
 
 import type { ModelChoice } from "../shared/modelCatalog.js";
+import type { ModelLane } from "../shared/modelLane.js";
 
 export type ModelRoute =
   /** 直连上游:用户自带 key,自己付钱 */
@@ -21,13 +22,32 @@ export interface RouteInput {
   /** Supabase access token,未登录为 null */
   accessToken: string | null;
   gatewayBaseUrl: string;
+  /** 走哪条路（ADR-0045）。缺省 auto = 老规矩（自带 key 优先）；
+      "grant" = 用户在选单里点的是赠额那一份，明确要花官方额度 */
+  lane?: ModelLane;
 }
 
 export function routeModel(input: RouteInput): ModelRoute {
-  const { choice, ownKey, ownBaseUrl, accessToken, gatewayBaseUrl } = input;
+  const { choice, ownKey, ownBaseUrl, accessToken, gatewayBaseUrl, lane } = input;
 
-  // 自带 key 优先于官方额度。他自己付的钱,不该因为顺手登录了就被改成花官方的——
-  // 反过来也一样:想省自己的钱,把 key 清掉即可,不用登出
+  // 明确点了赠额那一份:走网关,哪怕自己配了 key（ADR-0045）。
+  // 这一支排在最前面 —— 它是用户刚刚亲手做的选择,不该被"你配过 key"这个
+  // 更早、更含糊的事实推翻。清 key 才能用赠额那种玩法在这里作废
+  if (lane === "grant") {
+    if (choice.provider !== "deepseek") {
+      return {
+        kind: "blocked",
+        reason: `官方赠额只覆盖 DeepSeek 型号，${choice.label} 得走自己的 ${choice.apiKeyEnv}。`,
+      };
+    }
+    if (!accessToken) {
+      return { kind: "blocked", reason: "官方赠额要先登录才能用。" };
+    }
+    return { kind: "gateway", baseUrl: gatewayBaseUrl, apiKey: accessToken };
+  }
+
+  // 以下是 lane=auto 的老规矩(ADR-0020):自带 key 优先于官方额度。他自己付的钱,
+  // 不该因为顺手登录了就被改成花官方的——反过来也一样:想省自己的钱,把 key 清掉即可
   if (ownKey) {
     return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
   }

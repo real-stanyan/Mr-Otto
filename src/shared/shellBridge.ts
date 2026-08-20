@@ -12,6 +12,7 @@ import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
+import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
@@ -74,6 +75,8 @@ export interface StartSessionOptions {
   workspace: string;
   /** 缺省 = 主进程默认（OTTER_MODEL 或目录默认款） */
   model?: string;
+  /** 走哪条路（ADR-0045）。缺省 auto = 自带 key 优先；"grant" = 明确花官方赠额 */
+  lane?: ModelLane;
   approvalMode?: ApprovalMode;
   /** 缺省 = 该型号的默认档。挡位是型号的属性（见 shared/thinking.ts），
       不是全局布尔——同一个"开"在 GPT-5 上根本不是合法档 */
@@ -284,7 +287,9 @@ export interface ShellBridge {
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
       返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
       主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
-  switchModel(model: string): Promise<ThinkingMode>;
+  /** 换型号 / 换路（同一款型号从自己的 key 换到官方赠额也是一次切换）。
+      回的是钳位后的 thinking 档（新型号的挡位表未必装得下旧档） */
+  switchModel(model: string, lane?: ModelLane): Promise<ThinkingMode>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
   /** 切 thinking 挡位（型号没有挡位表时无意义）。turn 进行中拒绝。

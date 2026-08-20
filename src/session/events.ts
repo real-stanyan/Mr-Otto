@@ -1,6 +1,8 @@
 // SessionEvent — append-only 会话日志的事件定义
 // 硬规则（AGENTS.md）：先落盘再喂模型；schema 只加不改（旧日志永远可重放）
 
+import type { ModelLane } from "../shared/modelLane.js";
+
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
   seq: number;        // 会话内单调递增，排序唯一依据
@@ -109,6 +111,11 @@ export interface ModelChangedEvent extends SessionEventBase {
   type: "model_changed";
   provider: string;              // "deepseek" | "anthropic" | "glm"
   model: string;                 // 具体型号 id
+  /** 走哪条路（ADR-0045）。缺省 = auto：自带 key 优先，没 key 才用赠额。
+      "grant" = 明确花官方赠额，哪怕自己配了 key。
+      可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）；
+      落进日志而不是当运行时偏好，是因为它决定这个 turn 的钱从谁账上出 */
+  lane?: ModelLane;
 }
 
 /** 额外 2：会话创建 —— 永远是日志的第 0 条 */

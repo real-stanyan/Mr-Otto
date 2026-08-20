@@ -48,6 +48,7 @@ import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { gatewayBaseUrl } from "../shared/gatewayConfig.js";
 import { routeModel } from "./modelRoute.js";
+import type { ModelLane } from "../shared/modelLane.js";
 import { randomUUID } from "node:crypto";
 
 /** 内置 anysearch key(免费注册所得,仅搜索限额,无支付面)。仓库私有;若开源须先轮换。
@@ -183,6 +184,9 @@ export function createAgent(opts: {
       ? lastSwitch.model
       : (process.env["OTTER_MODEL"] ?? DEFAULT_MODEL)
   );
+  // lane 和型号同一个取法(都从最后一条 model_changed 投影)。旧日志没这个字段 = auto,
+  // 也就是老规矩:自带 key 优先(ADR-0020/0045)
+  let lane: ModelLane = (lastSwitch?.type === "model_changed" ? lastSwitch.lane : undefined) ?? "auto";
 
   // thinking 也是运行时偏好，但它的**取值范围**由型号决定：GLM 是开/关，
   // GPT-5 是低/中/高（关不掉），Grok 4 干脆没有开关。所以初值不能写死 true，
@@ -201,6 +205,7 @@ export function createAgent(opts: {
       ownBaseUrl: process.env[choice.baseUrlEnv],
       accessToken: opts.getAccessToken ? await opts.getAccessToken() : null,
       gatewayBaseUrl: gatewayBaseUrl(),
+      lane, // 每次请求现读:会话中途换 lane,下一次调用就该改道(同 key/登录态)
     });
     if (route.kind === "blocked") throw new Error(route.reason);
     return {
@@ -275,9 +280,11 @@ export function createAgent(opts: {
       opts.push.toolOutput(sessionId, toolCallId, chunk, stream),
   });
 
-  /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则 */
-  function switchModel(modelId: string): void {
-    if (modelId === current.model) return;
+  /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。
+      lane 一起落:同一个型号换条路走(自己的 key ↔ 官方赠额)也是一次切换,
+      而且它决定这个 turn 的钱从谁账上出 —— 那是"发生过什么"的一部分 */
+  function switchModel(modelId: string, nextLane: ModelLane = "auto"): void {
+    if (modelId === current.model && nextLane === lane) return;
     const next = resolveWithCapabilities(modelId);
     const full = store.append({
       sessionId,
@@ -285,7 +292,10 @@ export function createAgent(opts: {
       type: "model_changed",
       provider: next.provider,
       model: next.model,
+      // auto 不写进日志:它是缺省,写了等于给每条旧事件补一个没有信息量的字段
+      ...(nextLane === "grant" ? { lane: nextLane } : {}),
     });
+    lane = nextLane;
     opts.push.event(full); // engine 外落的盘，推送自己负责
     // 换型号 = 换挡位表。手上这一档多半不在新型号的表里（"开"→ GPT-5 只有低/中/高），
     // 按强度就近落地；顺序在 setAdapter 之前——adapter 要拿到钳好的那一档
