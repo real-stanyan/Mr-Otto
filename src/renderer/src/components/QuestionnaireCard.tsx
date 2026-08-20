@@ -55,7 +55,9 @@ export function QuestionnaireCard() {
   return (
     // 与审批卡同一进场：从下方 8px 淡入——它物理上贴着输入框，从来处进场。
     // key 换 = 新一张卷重新进场，而不是在旧卡上悄悄换字。
-    // 圆角/底色压回审批卡那一套：并排出现的两张卡长得不一样，看着就像两个来源
+    // 圆角/底色压回审批卡那一套：并排出现的两张卡长得不一样，看着就像两个来源。
+    // w-auto 是必须的：element 自带 w-full，w-full 量的是父容器宽度，
+    // 再叠 mx-5 就等于比容器宽 40px —— 右边一列(叉/进度/下一题)会被顶出屏外
     <ElicitationForm
       key={ask.toolCallId}
       server="Otto 想先问你几件事"
@@ -75,7 +77,7 @@ export function QuestionnaireCard() {
       }
       /* 推进钮（上一题/跳过/下一题/提交）在问卷身子里，卡底不留空排 */
       actions={null}
-      className="mx-5 mb-2 max-w-none gap-2 rounded-[10px] border-primary/40 bg-primary/[0.05] p-[14px] pt-2 transition-[opacity,transform] duration-[220ms] ease-strong starting:translate-y-2 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0 dark:bg-primary/[0.05]"
+      className="mx-5 mb-2 w-auto max-w-none gap-2 rounded-[10px] border-primary/40 bg-primary/[0.05] p-[14px] pt-2 transition-[opacity,transform] duration-[220ms] ease-strong starting:translate-y-2 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0 dark:bg-primary/[0.05]"
     >
       <Questionnaire
         className="pb-1"

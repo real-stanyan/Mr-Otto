@@ -19,8 +19,10 @@ import type { SessionEvent } from "../../../session/events.js";
 /** 破折号 = 这一款查不到价。空着会读成"零" */
 const UNKNOWN = "—";
 
+/** 顶上那两个数字得短:它们待在一枚浮层里并排站,写成 "199.8K tokens" 会折行。
+    不带单位不会读错:带 $ 的是钱,不带的是 token(下面每一行也都在报 in/out) */
 const fmtTokens = (n: number): string =>
-  n >= 1000 ? `${(n / 1000).toFixed(1)}K tokens` : `${n} tokens`;
+  n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
 
 /** 一笔用量的钱数写法:查得到价才是钱,查不到是破折号 */
 function money(u: ModelUsage): string {
@@ -46,8 +48,8 @@ export function CostPanel({ events }: { events: SessionEvent[] }) {
     <CostMeter
       runCost={runCost}
       sessionCost={sessionCost}
-      runLabel="最近一次调用"
-      sessionLabel="本会话"
+      runLabel={<span className="whitespace-nowrap">最近一次</span>}
+      sessionLabel={<span className="whitespace-nowrap">本会话</span>}
       lines={rows.map((r) => ({
         model: r.model,
         inputTokens: r.promptTokens,

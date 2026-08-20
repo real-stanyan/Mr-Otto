@@ -17,6 +17,11 @@ import {
   ReasoningTrigger,
 } from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
+import {
+  ToolGroupContent,
+  ToolGroupRoot,
+  ToolGroupTrigger,
+} from "../components/assistant-ui/tool-group.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
@@ -99,6 +104,31 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
       }}
       className="my-1 max-w-none"
     />
+  );
+};
+
+/** 工具组:出了错的那一组自己弹开。
+    工具组默认折起来是对的(一屏五个 read_file 谁也不想逐个看),但"这一步没成"
+    是这段回复的结论,不该躲在折叠头后面 —— 那张 tool-error 卡就在组里,
+    组收着等于没画。弹开之后照样能手动收回去(受控 open,不是永远钉住) */
+const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, children }) => {
+  const failed = useAuiState((s) =>
+    group.indices.some((i) => {
+      const part = s.message.content[i];
+      return part?.type === "tool-call" && part.isError === true;
+    }),
+  );
+  const [open, setOpen] = useState(false);
+  // 结果是后到的(组挂载时还在跑),所以不能只在挂载时判一次
+  useEffect(() => {
+    if (failed) setOpen(true);
+  }, [failed]);
+
+  return (
+    <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
+      <ToolGroupTrigger count={group.indices.length} active={group.status.type === "running"} />
+      <ToolGroupContent>{children}</ToolGroupContent>
+    </ToolGroupRoot>
   );
 };
 
@@ -401,6 +431,7 @@ const STATIC_COMPONENTS = {
   SystemMessage,
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
+  ToolGroup: OttoToolGroup,
   Source: OttoSource,
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
