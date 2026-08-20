@@ -106,6 +106,10 @@ export type ThreadComponents = {
       assistant 正文走 MarkdownText,那条路和 directive 无关。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   UserText?: TextMessagePartComponent | undefined;
+  /** 本仓加的槽:assistant 消息页脚左侧那一行数字(耗时/吞吐/token/花费)。
+      放在动作条左边,同一行 —— 它和"复制/重来"是同一层的东西:关于这条回复本身,
+      而不是回复的内容。上游 registry 没有这个槽 —— 升级时要人工合 */
+  MessageFooter?: ComponentType | undefined;
   ToolGroup?:
     | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
     | undefined;
@@ -313,6 +317,7 @@ const AssistantMessage: FC = () => {
     Source: SourceComponent = Sources,
     ToolGroup,
     ReasoningGroup,
+    MessageFooter: MessageFooterComponent,
   } = useContext(ThreadComponentsContext);
 
   const ACTION_BAR_PT = "pt-1.5";
@@ -429,6 +434,7 @@ const AssistantMessage: FC = () => {
         {/* 本仓改动:不渲染 BranchPicker。对话分支要 adapter 提供 setMessages,
             而本仓刻意不给(ADR-0036:给了就等于凭空长出一条绕开事件日志的写路径)。
             实测它仍会冒出「< 2/2 >」——切过去什么也不会发生,是个只承诺不兑现的控件 */}
+        {MessageFooterComponent ? <MessageFooterComponent /> : null}
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>

@@ -14,7 +14,8 @@ import {
 import { type SessionMode, useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
-import { diffLines } from "../../shared/diff.js";
+import { CodeDiff } from "@/components/elements/code-diff.js";
+import { diffView } from "./lib/diffView.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -552,58 +553,35 @@ function ComposerBar() {
   );
 }
 
-/** write_file 审批的 diff 视图。diff 现算（投影）；连续未变行折叠成计数——
-    审批人要看的是"改了什么"，不是全文。算不动（超大文件）退回 JSON 由调用方兜底 */
-function DiffPreview({ oldText, newText }: { oldText: string | null; newText: string }) {
-  const lines = useMemo(() => diffLines(oldText ?? "", newText), [oldText, newText]);
-  if (!lines) return <pre className={APPROVAL_PRE}>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>;
-
-  // 折叠：同类 same 连续段只留首尾各 2 行做上下文，中间换成"… N 行未变 …"
-  const CONTEXT = 2;
-  const rows: { key: number; kind: string; text: string }[] = [];
-  let i = 0;
-  let key = 0;
-  while (i < lines.length) {
-    const line = lines[i]!;
-    if (line.kind !== "same") {
-      rows.push({ key: key++, kind: line.kind, text: line.text });
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < lines.length && lines[j]!.kind === "same") j++;
-    const run = j - i;
-    if (run > CONTEXT * 2 + 1) {
-      for (let k = i; k < i + CONTEXT; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-      rows.push({ key: key++, kind: "skip", text: `… ${run - CONTEXT * 2} 行未变 …` });
-      for (let k = j - CONTEXT; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-    } else {
-      for (let k = i; k < j; k++) rows.push({ key: key++, kind: "same", text: lines[k]!.text });
-    }
-    i = j;
+/** write_file 审批的 diff 视图 —— assistant-ui 的 code-diff element。
+    diff 现算（投影）：旧内容 + 新内容两个事实推得出，不落盘。取景规则
+    （连续未变行折叠成计数）搬进了 lib/diffView.ts，那里有测试钉着；
+    这里只剩"算不动就退回文本"这一个判断。
+    max-w-none / max-h：element 默认 max-w-md（聊天流里的宽度），
+    而审批卡是贴着输入框的一整条，宽度由卡自己定；再高就滚，不许把输入框顶出屏幕 */
+function DiffPreview({
+  path,
+  oldText,
+  newText,
+}: {
+  path: string;
+  oldText: string | null;
+  newText: string;
+}) {
+  const view = useMemo(() => diffView(oldText, newText), [oldText, newText]);
+  if (!view) {
+    return (
+      <pre className={APPROVAL_PRE}>{`[文件过大，不展示 diff]\n新内容 ${newText.length} 字符`}</pre>
+    );
   }
-
   return (
-    <pre className={`${APPROVAL_PRE} max-h-[260px] overflow-y-auto bg-[var(--pre-bg)] border border-border rounded-lg px-[10px] py-2 whitespace-pre break-normal overflow-x-auto`}>
-      {rows.map((r) => (
-        <div
-          key={r.key}
-          className={
-            "leading-normal " +
-            (r.kind === "add"
-              ? "text-ok bg-ok/[0.12]"
-              : r.kind === "del"
-                ? "text-deny bg-deny/[0.12] line-through [text-decoration-color:color-mix(in_srgb,var(--deny)_40%,transparent)]"
-                : r.kind === "skip"
-                  ? "text-muted-foreground text-center italic"
-                  : "")
-          }
-        >
-          {r.kind === "add" ? "+ " : r.kind === "del" ? "- " : "  "}
-          {r.text}
-        </div>
-      ))}
-    </pre>
+    <CodeDiff
+      filename={path}
+      additions={view.additions}
+      deletions={view.deletions}
+      lines={view.lines}
+      className="mt-2 max-h-[260px] max-w-none overflow-y-auto"
+    />
   );
 }
 
@@ -622,11 +600,16 @@ function ApprovalCard() {
         <code>{approval.call.name}</code> — {approval.toolDescription}
         {approval.preview ? (
           <>
-            <div className="mt-2 font-mono text-xs text-foreground">
-              {approval.preview.path}
-              {approval.preview.oldText === null && <span className="text-ok ml-[6px]">（新文件）</span>}
-            </div>
-            <DiffPreview oldText={approval.preview.oldText} newText={approval.preview.newText} />
+            {/* 路径进 element 的表头(它那一行本来就是"文件名 + 增删计数"),
+                这里只剩"这是个新文件"这句话——它不是 diff 的一部分,是 diff 的前提 */}
+            {approval.preview.oldText === null && (
+              <div className="mt-2 text-xs text-ok">（新文件）</div>
+            )}
+            <DiffPreview
+              path={approval.preview.path}
+              oldText={approval.preview.oldText}
+              newText={approval.preview.newText}
+            />
           </>
         ) : (
           <pre className={APPROVAL_PRE}>{JSON.stringify(approval.call.args, null, 2)}</pre>

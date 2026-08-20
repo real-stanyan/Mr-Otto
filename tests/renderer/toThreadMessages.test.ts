@@ -44,6 +44,8 @@ describe("toThreadMessages — 骨架", () => {
       createdAt: new Date(1001),
       status: { type: "complete", reason: "stop" },
       content: [{ type: "text", text: "在" }],
+      // 页脚数字要的两样:原始事件(model/usage)和这次调用耗时(前一条事件到本条)
+      metadata: { custom: { elapsedMs: 1, otto: events[1] } },
     });
   });
 
@@ -174,12 +176,27 @@ describe("toThreadMessages — 边界", () => {
     const events = [
       ev({ type: "assistant_message", content: "好", reasoning: "想", reasoningMs: 1200, model: "m" }, 0),
     ];
-    expect(toThreadMessages(events)[0]?.metadata).toEqual({ custom: { reasoningMs: 1200 } });
+    expect(toThreadMessages(events)[0]?.metadata?.custom?.["reasoningMs"]).toBe(1200);
   });
 
-  it("没有 reasoningMs 时不造 metadata 键", () => {
+  it("没有 reasoningMs 时那个键就不存在(不是 undefined 值)", () => {
     const events = [ev({ type: "assistant_message", content: "好", model: "m" }, 0)];
-    expect(toThreadMessages(events)[0]?.metadata).toBeUndefined();
+    const custom = toThreadMessages(events)[0]?.metadata?.custom ?? {};
+    expect("reasoningMs" in custom).toBe(false);
+  });
+
+  it("日志里第一条 assistant_message 没有 elapsedMs —— 起点推不出来,不许猜", () => {
+    const events = [ev({ type: "assistant_message", content: "好", model: "m" }, 0)];
+    const custom = toThreadMessages(events)[0]?.metadata?.custom ?? {};
+    expect("elapsedMs" in custom).toBe(false);
+  });
+
+  it("elapsedMs = 本条与前一条事件的 ts 差(工具落地到下一次模型回话)", () => {
+    const events = [
+      ev({ type: "user_message", content: "跑一下" }, 0),
+      ev({ type: "assistant_message", content: "", model: "m" }, 5),
+    ];
+    expect(toThreadMessages(events)[1]?.metadata?.custom?.["elapsedMs"]).toBe(5);
   });
 
   it("直播期的思考也出 reasoning part,状态仍是 running", () => {

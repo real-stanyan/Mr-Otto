@@ -20,6 +20,7 @@ import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
+import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { TurnErrorState } from "../components/TurnErrorState.js";
 import { UserAttachments } from "../components/UserAttachments.js";
@@ -28,6 +29,7 @@ import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
+import { timingStats } from "./messageTiming.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import type { OrbState } from "../lib/toolSummary.js";
@@ -132,6 +134,24 @@ const ReasoningGroupWithLabel: NonNullable<ThreadComponents["ReasoningGroup"]> =
       </ReasoningContent>
     </ReasoningRoot>
   );
+};
+
+/** 消息页脚那一行数字:耗时 · 吞吐 · token · 花费。
+    四个值全部从日志推得出(aui/messageTiming.ts),投影时挂在 metadata.custom 上 ——
+    这里只负责读出来交给 element,不做任何计算。
+    没有 usage、也没有耗时的旧消息:stats 为空,整行不占位 */
+const MessageTimingFooter: ComponentType = () => {
+  const event = useAuiState(
+    (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
+  );
+  const elapsedMs = useAuiState(
+    (s) => s.message.metadata.custom["elapsedMs"] as number | undefined,
+  );
+  const running = useAuiState((s) => s.message.status?.type === "running");
+  if (event === undefined || event.type !== "assistant_message") return null;
+  const stats = timingStats(event, elapsedMs);
+  if (stats.length === 0) return null;
+  return <MessageTiming stats={stats} streaming={running} className="w-auto" />;
 };
 
 // ─── RunIndicator:turn 运行时的相位指示器(补回接线时丢掉的功能,见 Task 11) ───
@@ -329,6 +349,7 @@ const STATIC_COMPONENTS = {
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
   ErrorBanner,
+  MessageFooter: MessageTimingFooter,
   MessageAnchor: SectionAnchor,
 } satisfies ThreadComponents;
 

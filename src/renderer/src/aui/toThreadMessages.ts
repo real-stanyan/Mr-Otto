@@ -103,7 +103,8 @@ export function toThreadMessages(
   const index = buildToolIndex(events);
   const out: ThreadMessageLike[] = [];
 
-  for (const e of events) {
+  for (let idx = 0; idx < events.length; idx++) {
+    const e = events[idx]!;
     if (e.type === "user_message") {
       const parts: Part[] = [];
       if (e.content.trim() !== "") parts.push({ type: "text", text: e.content });
@@ -155,11 +156,17 @@ export function toThreadMessages(
           : { type: "complete", reason: "stop" },
         content: parts,
       };
-      out.push(
-        e.reasoningMs === undefined
-          ? message
-          : { ...message, metadata: { custom: { reasoningMs: e.reasoningMs } } }
-      );
+      // 页脚数字要的两个事实(见 aui/messageTiming.ts):
+      // reasoningMs 落在事件上(ADR-0032);elapsedMs 是"这次模型调用花了多久",
+      // 日志里没有这个字段但推得出 —— 前一条事件的 ts 就是这次调用的起点
+      // (首条是用户发话,其余是上一次工具落地)。推得出的不落盘,和 turn 的
+      // steps 数是同一条原则(events.ts 的 TurnEndedEvent 注释)
+      const prevTs = idx > 0 ? events[idx - 1]!.ts : undefined;
+      const custom: Record<string, unknown> = {};
+      if (e.reasoningMs !== undefined) custom["reasoningMs"] = e.reasoningMs;
+      if (prevTs !== undefined) custom["elapsedMs"] = e.ts - prevTs;
+      custom["otto"] = e;
+      out.push({ ...message, metadata: { custom } });
       continue;
     }
 
