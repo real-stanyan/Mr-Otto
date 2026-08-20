@@ -24,7 +24,6 @@ import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { cn } from "@/lib/utils.js";
 import {
-  ActionBarPrimitive,
   AuiIf,
   type AssistantState,
   BranchPickerPrimitive,
@@ -44,7 +43,6 @@ import {
   ArrowDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  PencilIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -489,33 +487,16 @@ const UserMessage: FC = () => {
             }}
           />
         </div>
-        <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
-          <UserActionBar />
-        </div>
+        {/* 本仓改动:用户消息那支「编辑」笔不画了。adapter 刻意没接 onEdit
+            (日志 append-only,本仓没有消息编辑也没有对话分支,见 aui/ottoAdapter.ts),
+            运行时据此把 capabilities.edit 算成 false —— 那颗钮渲染出来就是
+            disabled 的,点下去什么也不会发生。一颗永远点不动的钮,不如不画。
+            下面的 EditComposer 保留:它是上游的编辑态版式,将来真接了 onEdit
+            还要用它,删掉只会让升级时更难对 */}
       </div>
 
       {/* 本仓改动:同上,用户消息这一侧的分支选择器也不渲染 */}
     </MessagePrimitive.Root>
-  );
-};
-
-const UserActionBar: FC = () => {
-  return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      // 本仓改动:autohide 从 "not-last" 改成 "never"。上游把历史消息的动作条
-      // 藏在 hover 后面(密集列表里少一排常驻图标),但本仓一条 assistant 消息
-      // 通常很长、还带脚注数字那一行——鼠标不在它身上时,那一行下面空着一截,
-      // 读起来像"这条消息没有这些操作"。常驻反而更安静:位置固定,不随指针闪
-      autohide="never"
-      className="aui-user-action-bar-root flex flex-col items-end"
-    >
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
-    </ActionBarPrimitive.Root>
   );
 };
 
