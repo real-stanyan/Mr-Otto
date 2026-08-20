@@ -7,7 +7,6 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ComponentType, FC, Ref } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
-import { RefreshCwIcon } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
@@ -34,8 +33,6 @@ import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { TurnErrorState } from "../components/TurnErrorState.js";
 import { UserAttachments } from "../components/UserAttachments.js";
-import { ModelPicker } from "../components/ModelPicker.js";
-import { retryLatest } from "../lib/retryAction.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
@@ -75,36 +72,6 @@ const OttoUserAttachments: ComponentType = () => {
   );
   if (event === undefined || event.type !== "user_message") return null;
   return <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />;
-};
-
-/** 动作条上的「重新生成」:点开选一个模型,用它重跑上一条用户消息。
-    上游那颗钮只做"再来一次"——但重来最常见的理由就是"这个模型答得不行",
-    而一颗只会重发的钮答不了"那换成谁"。所以这里把重来和选型号合成一个动作:
-    选中即切(落 model_changed 事件,日志仍是唯一事实来源),切完立刻重跑。
-
-    重跑走的是与 runtime.onReload 同一个 retryLatest —— 原消息带附件时它会
-    把正文填回输入框而不是直接重发(附件本体没法凭空重读,见 lib/retry.ts) */
-const RegenerateWithModel: ComponentType = () => {
-  const model = useChat((s) => s.model);
-  const switchModel = useChat((s) => s.switchModel);
-  return (
-    <ModelPicker
-      value={model}
-      onChange={(m) => {
-        void (async () => {
-          // 选的就是当前这个 = 原样重跑,不必往日志里塞一条"从 A 换到 A"
-          if (m !== model) await switchModel(m);
-          retryLatest();
-        })();
-      }}
-      trigger={<RefreshCwIcon className="size-4" />}
-      title="重新生成：挑一个模型重跑上一条消息"
-      align="start"
-      // 版式对齐左右两颗图标钮(TooltipIconButton 的 size-6 p-1);
-      // 末尾那枚 chevron 藏掉——动作条上一排图标,只有它多一个小箭头会打乱这一行
-      className="size-6 justify-center gap-0 p-1 [&>svg:last-child]:hidden"
-    />
-  );
 };
 
 /** 搜索这一步:查询词 + 读回来的来源。
@@ -566,7 +533,6 @@ const SectionAnchor: ComponentType = () => {
 // (装了哪些 skill 是运行时的事)。所以下面按 skills 记忆化地造,skills 不变就不重造
 const STATIC_COMPONENTS = {
   SystemMessage,
-  RegenerateAction: RegenerateWithModel,
   UserAttachments: OttoUserAttachments,
   ToolFallback: ToolFallbackWithLiveTail,
   ToolGroup: OttoToolGroup,

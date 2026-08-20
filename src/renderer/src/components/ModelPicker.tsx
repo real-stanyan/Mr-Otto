@@ -15,7 +15,7 @@
 // 会话状态，切换要过 switchModel 落成 model_changed 事件（日志唯一事实来源），
 // 让 assistant-ui 再持有一份等于开了第二条写入路径。
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { SettingsIcon } from "lucide-react";
 
 import {
@@ -68,23 +68,12 @@ export function ModelPicker({
   onChange,
   disabled = false,
   className,
-  trigger,
-  title,
-  align = "end",
 }: {
   value: string;
   onChange: (model: string) => void;
   disabled?: boolean;
   /** 触发器的样式叠加层（状态条版 BAR_SELECT / 新会话卡版 NSC_SELECT） */
   className?: string;
-  /** 触发器里画什么。默认是当前型号名（ModelSelectorValue）；
-      给了就整块换掉 —— 动作条上的"换个模型重新生成"用的是一枚图标钮，
-      它问的不是"现在用的谁"，而是"这一次用谁重跑" */
-  trigger?: ReactNode;
-  title?: string;
-  /** 浮层贴哪一边。默认贴右（控件行/新会话卡上的触发器都在右侧）；
-      动作条那颗在消息左缘，贴右会把浮层甩到侧栏上面去 */
-  align?: "start" | "end";
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -148,17 +137,17 @@ export function ModelPicker({
           "press-scale min-w-0 gap-[6px] rounded-md border border-transparent text-muted-foreground transition-colors duration-150 hover:text-foreground hover:border-border focus-visible:border-ring disabled:opacity-40 data-[state=open]:text-foreground data-[state=open]:border-border",
           className
         )}
-        title={title ?? "选择模型：打字搜，或按厂商找"}
+        title="选择模型：打字搜，或按厂商找"
       >
         {/* showEffort={false}：挡位归 ThinkingPicker 那枚钮，
             两处都显示就成了同一件事说两遍（还得回答"点哪个才能改"） */}
-        {trigger ?? <ModelSelectorValue placeholder={value} showEffort={false} />}
+        <ModelSelectorValue placeholder={value} showEffort={false} />
       </ModelSelectorTrigger>
 
       {/* searchable={false} 不只是"不画搜索框":Content 据此决定 cmdk 是否过滤,
           并补上一个 sr-only 的输入锚点 —— 没有它,方向键/回车在列表里就不工作了。
           border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
-      <ModelSelectorContent align={align} searchable={false} className="w-[268px] border-0">
+      <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
         <ModelSelectorList className="max-h-[320px]">
           <ModelSelectorEmpty>没有匹配的型号</ModelSelectorEmpty>
           {groups.map((g) => (
