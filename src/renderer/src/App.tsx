@@ -911,6 +911,10 @@ function AccountPage() {
             <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
           </>
         )}
+        {/* 会话热力图。放这一页而不是新会话屏:它是"我用了多久"这类统计,
+            和额度卡是同一类东西;而新会话屏的正事是开始干活,一张半年统计摆在
+            输入框底下只是让人多看一眼。登录与否都画 —— 数据是本机日志,不靠账号 */}
+        <SessionActivity workspace={null} className="max-w-none" />
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </div>
@@ -1789,7 +1793,10 @@ function Welcome() {
       <AttachDropZone className="w-[min(640px,90%)]" disabled={busy}>
       {/* 外壳与会话中的输入框同一套(elements/composer 的 ComposerBar):
           这两处都是"写一条要发出去的东西",长得不一样就像两个产品 */}
-      <ComposerBar className="w-full text-left transition-colors duration-[120ms] focus-within:border-ring">
+      {/* 焦点态与会话中的输入框同一套(见 ChatComposer):描边稍微提亮一档,不上主色。
+          蓝框太响 —— 这一屏上它是唯一的彩色，眼睛会先落在框上而不是要写的字上，
+          而"光标在这儿"这件事本来就有光标在说 */}
+      <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 w-full text-left transition-colors duration-[120ms]">
         <div className="flex items-center gap-2 min-w-0">
           <WorkspacePicker value={workspace} onChange={setWorkspace} />
           {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
@@ -1862,9 +1869,6 @@ function Welcome() {
       </ComposerBar>
       </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
-      {/* 这半年在这儿开过多少会话(activity-graph)。这一屏的语境是"要开始点什么"，
-          而"上次是什么时候、多久没碰了"正是这个语境里唯一有用的历史 */}
-      <SessionActivity workspace={workspace} className="w-[min(640px,90%)] max-w-none text-left" />
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );
