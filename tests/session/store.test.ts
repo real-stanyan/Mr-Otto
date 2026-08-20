@@ -170,7 +170,7 @@ describe("EventStore", () => {
       type: "assistant_message",
       content: "x",
       model,
-      ...(usage ? { usage: { ...usage, totalTokens: usage.promptTokens + usage.completionTokens } } : {}),
+      ...(usage ? { usage } : {}),
     });
 
     it("捞出四类计费事件的用量,跨会话", () => {
@@ -182,7 +182,7 @@ describe("EventStore", () => {
         type: "suggestions_generated",
         model: "deepseek-v4-flash",
         suggestions: ["a"],
-        usage: { promptTokens: 7, completionTokens: 1, totalTokens: 8 },
+        usage: { promptTokens: 7, completionTokens: 1 },
       });
 
       expect(store.billedUsage(0)).toEqual([

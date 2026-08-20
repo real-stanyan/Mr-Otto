@@ -35,44 +35,52 @@ interface Endpoint {
   /** 完整 URL —— 各家的余额端点和聊天端点不在同一段路径下（DeepSeek 的甚至不带 /v1），
       从 baseUrl 拼反而更难读 */
   url: string;
-  currency: "CNY" | "USD";
-  /** 从响应体里取"还剩多少"。取不到返回 null（不是 0） */
-  pick: (json: unknown) => number | null;
+  /**
+   * 从响应体里取"还剩多少 + 什么币种"。取不到返回 null（不是 0）。
+   * 币种由**每家自己**决定，不写死在表里：同一家 DeepSeek，境内账户结算 CNY、
+   * 境外账户结算 USD，它自己在响应里说了 —— 写死一个符号就会把 $7.08 显示成 ¥7.08。
+   */
+  pick: (json: unknown) => { amount: number; currency: string } | null;
 }
 
 const ENDPOINTS: Partial<Record<ProviderId, Endpoint>> = {
   deepseek: {
     url: "https://api.deepseek.com/user/balance",
-    currency: "CNY",
-    // { balance_infos: [{ currency: "CNY", total_balance: "110.00", … }] }
+    // { balance_infos: [{ currency: "USD", total_balance: "7.08", … }] } —— 币种它自己报
     pick: (j) => {
       if (!isRecord(j) || !Array.isArray(j.balance_infos)) return null;
       const first: unknown = j.balance_infos[0];
-      return isRecord(first) ? num(first.total_balance) : null;
+      if (!isRecord(first)) return null;
+      const amount = num(first.total_balance);
+      if (amount === null) return null;
+      return { amount, currency: typeof first.currency === "string" ? first.currency : "CNY" };
     },
   },
   moonshot: {
     url: "https://api.moonshot.cn/v1/users/me/balance",
-    currency: "CNY",
-    // { data: { available_balance: 12.34, … } }
-    pick: (j) => (isRecord(j) && isRecord(j.data) ? num(j.data.available_balance) : null),
+    // { data: { available_balance: 12.34, … } } —— 只结算人民币
+    pick: (j) => {
+      const amount = isRecord(j) && isRecord(j.data) ? num(j.data.available_balance) : null;
+      return amount === null ? null : { amount, currency: "CNY" };
+    },
   },
   siliconflow: {
     url: "https://api.siliconflow.cn/v1/user/info",
-    currency: "CNY",
     // { data: { balance, chargeBalance, totalBalance } } —— 取 total(赠送 + 充值)，
     // 那才是"还能花多少"
-    pick: (j) => (isRecord(j) && isRecord(j.data) ? num(j.data.totalBalance) : null),
+    pick: (j) => {
+      const amount = isRecord(j) && isRecord(j.data) ? num(j.data.totalBalance) : null;
+      return amount === null ? null : { amount, currency: "CNY" };
+    },
   },
   openrouter: {
     url: "https://openrouter.ai/api/v1/credits",
-    currency: "USD",
     // 它报的是"充了多少 / 用了多少"，剩余要自己减
     pick: (j) => {
       if (!isRecord(j) || !isRecord(j.data)) return null;
       const total = num(j.data.total_credits);
       const used = num(j.data.total_usage);
-      return total === null || used === null ? null : total - used;
+      return total === null || used === null ? null : { amount: total - used, currency: "USD" };
     },
   },
 };
@@ -104,9 +112,9 @@ async function fetchOne(
       // 401 单独说：贴错 key 是最常见的一种失败，"HTTP 401"帮不上忙
       return { provider, ok: false, error: res.status === 401 ? "key 无效" : `查询失败(${res.status})` };
     }
-    const amount = endpoint.pick(JSON.parse(text) as unknown);
-    if (amount === null) return { provider, ok: false, error: "响应里没有余额字段" };
-    return { provider, ok: true, amount, currency: endpoint.currency };
+    const got = endpoint.pick(JSON.parse(text) as unknown);
+    if (!got) return { provider, ok: false, error: "响应里没有余额字段" };
+    return { provider, ok: true, amount: got.amount, currency: got.currency };
   } catch (err) {
     return { provider, ok: false, error: err instanceof Error ? err.message : String(err) };
   }

@@ -36,8 +36,8 @@ import { createGitGraphService } from "./gitGraphService.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
-import { fetchProviderBalances } from "./providerBalance.js";
-import { usageByProviderDaily } from "../shared/usageStats.js";
+import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
+import { usageSnapshot } from "../shared/usageStats.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -529,7 +529,7 @@ void app.whenReady().then(() => {
     const span = Math.max(1, Math.floor(days));
     const now = Date.now();
     const since = now - span * 2 * 86_400_000;
-    return usageByProviderDaily(store.billedUsage(since), { now, days: span });
+    return usageSnapshot(store.billedUsage(since), { now, days: span });
   });
   // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
   ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
@@ -647,6 +647,7 @@ void app.whenReady().then(() => {
     if (!allowedKeyEnvs.has(envName)) throw new Error(`不认识的 key 变量: ${envName}`);
     applyToEnv(saveKey(keyVaultPath, envName, key), process.env);
     if (!key) delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+    clearBalanceCache(); // 换了 key,60 秒缓存里那条余额说的是上一把 key 的账
     for (const a of agents.values()) a.reloadAdapter(); // 所有活 agent 的 adapter 都捏着旧 key
   });
 

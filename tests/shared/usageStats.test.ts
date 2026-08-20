@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { usageByProviderDaily, type BilledRow } from "../../src/shared/usageStats.js";
+import {
+  usageByProviderDaily,
+  usageSnapshot,
+  type BilledRow,
+} from "../../src/shared/usageStats.js";
 
 /** 本地某一天的正午（分桶按本地日历天，正午能躲开时区把日期挪走） */
 function noon(y: number, m: number, d: number): number {
@@ -20,7 +24,8 @@ describe("usageByProviderDaily", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0]?.provider).toBe("deepseek");
-    expect(out[0]?.days).toEqual([0, 10, 120]);
+    expect(out[0]?.models).toEqual(["deepseek-v4-flash"]);
+    expect(out[0]?.days).toEqual([[0], [10], [120]]);
     expect(out[0]?.totalTokens).toBe(130);
   });
 
@@ -29,7 +34,7 @@ describe("usageByProviderDaily", () => {
       [row(NOW, "deepseek-v4-flash", 1, 1), row(NOW + 3600_000, "deepseek-v4-flash", 2, 2)],
       { now: NOW, days: 2 }
     );
-    expect(out[0]?.days).toEqual([0, 6]);
+    expect(out[0]?.days).toEqual([[0], [6]]);
   });
 
   it("前一个同长度窗口只进 prevTokens,不进柱子", () => {
@@ -37,7 +42,7 @@ describe("usageByProviderDaily", () => {
       [row(NOW, "deepseek-v4-flash", 10, 0), row(noon(2026, 8, 17), "deepseek-v4-flash", 40, 0)],
       { now: NOW, days: 2 } // 窗口 = 8/19~8/20，前窗口 = 8/17~8/18
     );
-    expect(out[0]?.days).toEqual([0, 10]);
+    expect(out[0]?.days).toEqual([[0], [10]]);
     expect(out[0]?.totalTokens).toBe(10);
     expect(out[0]?.prevTokens).toBe(40);
   });
@@ -97,7 +102,31 @@ describe("usageByProviderDaily", () => {
     expect(out[0]?.costUsd).toBe(0);
   });
 
+  it("同一家的不同型号各成一层,按用量降序摞", () => {
+    const out = usageByProviderDaily(
+      [
+        row(NOW, "deepseek-v4-flash", 1, 1),
+        row(noon(2026, 8, 19), "deepseek-v4-pro", 50, 50),
+        row(NOW, "deepseek-v4-pro", 20, 20),
+      ],
+      { now: NOW, days: 2 }
+    );
+    expect(out[0]?.models).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+    // days[i][m] —— 第一列是 pro(用得多,排在前),第二列是 flash
+    expect(out[0]?.days).toEqual([
+      [100, 0],
+      [40, 2],
+    ]);
+  });
+
   it("空输入 = 空数组,不是一排 0", () => {
     expect(usageByProviderDaily([], { now: NOW, days: 14 })).toEqual([]);
+  });
+
+  it("snapshot 带上投影时的锚点 —— UI 靠它把第 i 格换算成日期", () => {
+    const snap = usageSnapshot([row(NOW, "deepseek-v4-flash", 1, 1)], { now: NOW, days: 14 });
+    expect(snap.now).toBe(NOW);
+    expect(snap.days).toBe(14);
+    expect(snap.providers[0]?.provider).toBe("deepseek");
   });
 });

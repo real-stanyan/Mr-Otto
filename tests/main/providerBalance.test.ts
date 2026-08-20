@@ -30,6 +30,14 @@ describe("fetchProviderBalances", () => {
     expect(out).toEqual([{ provider: "deepseek", ok: true, amount: 110.25, currency: "CNY" }]);
   });
 
+  it("币种照厂商说的报 —— 同一家也有结算美元的账户", async () => {
+    const { fetchImpl } = stubFetch(() => ({
+      body: { balance_infos: [{ currency: "USD", total_balance: "7.08" }] },
+    }));
+    const out = await fetchProviderBalances({ env: { DEEPSEEK_API_KEY: "sk-x" }, fetchImpl });
+    expect(out[0]).toEqual({ provider: "deepseek", ok: true, amount: 7.08, currency: "USD" });
+  });
+
   it("OpenRouter 报的是充值和已用,余额自己减", async () => {
     const { fetchImpl } = stubFetch(() => ({
       body: { data: { total_credits: 10, total_usage: 3.5 } },

@@ -48,7 +48,7 @@ import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
-import type { ProviderUsage } from "../../shared/usageStats.js";
+import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -187,8 +187,9 @@ interface ChatState {
   ollamaBaseUrl: string;
   /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
   ollamaError: string;
-  /** 各厂商近 N 天的用量（设置页那张柱状图）。null = 还没查过——和"一个 token 都没花"不是一回事 */
-  providerUsage: ProviderUsage[] | null;
+  /** 各厂商近 N 天的用量（设置页那张柱状图）。null = 还没查过——和"一个 token 都没花"不是一回事。
+      带着投影时的 now/days：把第 i 格换算成日期得用那个锚点，不能用渲染时的"今天" */
+  providerUsage: UsageSnapshot | null;
   /** 各厂商账户余额。只有四家有这回事，查不到的厂商压根不在数组里 */
   providerBalances: ProviderBalance[];
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
@@ -888,6 +889,9 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.setApiKey(envName, key);
       set({ keyStatus: await window.otter.keyStatus() }); // 状态从主进程重新问，不本地猜
+      // 刚贴完 key 就该看见余额。设置页只在挂载时取一次，不补这一刀的话
+      // 用户会盯着一个"已配置"却没有余额的行，以为这功能坏了
+      void get().refreshProviderStats(DEFAULT_USAGE_DAYS);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

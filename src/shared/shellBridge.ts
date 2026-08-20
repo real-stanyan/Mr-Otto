@@ -12,7 +12,7 @@ import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
-import type { ProviderUsage } from "./usageStats.js";
+import type { UsageSnapshot } from "./usageStats.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
@@ -371,7 +371,7 @@ export interface ShellBridge {
   walletBalance(): Promise<WalletBalance | null>;
   /** 全库用量按厂商 + 按天投影（设置页那张柱状图）。
       窗口 days 天，另附紧邻的前 days 天合计供对比 */
-  usageByProvider(days: number): Promise<ProviderUsage[]>;
+  usageByProvider(days: number): Promise<UsageSnapshot>;
   /** 各厂商账户余额。见 ProviderBalance —— 拿不到的厂商不在数组里 */
   providerBalances(): Promise<ProviderBalance[]>;
   /** 牌桌：列/建/入座/离桌/开牌/行动。全部经主进程 —— token 不过桥 */
@@ -490,7 +490,7 @@ export interface OllamaProbeResult {
     查不到的厂商压根不出现在数组里 —— 显示 0 会被读成"没钱了"。
     ok:false 是"问了但没问出来"（key 无效 / 网络不通），和"这家没有余额这回事"也不同 */
 export type ProviderBalance =
-  | { provider: ProviderId; ok: true; amount: number; currency: "CNY" | "USD" }
+  | { provider: ProviderId; ok: true; amount: number; currency: string }
   | { provider: ProviderId; ok: false; error: string };
 
 export const CHANNELS = {
