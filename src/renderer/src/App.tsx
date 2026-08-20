@@ -51,9 +51,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { pickGreeting } from "./lib/greeting.js";
-import { Chart } from "@/components/elements/chart.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
-import { contextSeries } from "../../session/deriveUsage.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
@@ -215,8 +213,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
 }) {
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
-  const compacts = events.filter((e) => e.type === "context_compacted").length;
-  const series = useMemo(() => contextSeries(events), [events]);
   const n = (x: number) => x.toLocaleString("en-US");
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
       非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
@@ -262,22 +258,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
         ))}
       </div>
 
-      {/* 增长曲线:每一次正文调用送进去的 prompt token(投影见 session/deriveUsage)。
-          分段条回答"此刻的构成",曲线回答"它是怎么长到这儿的"——压缩发生时
-          曲线上会有一截明显的回落,那是这张卡里唯一能看见压缩效果的地方。
-          只有一两个点时不画:两个点连成的直线不是趋势 */}
-      {series.length >= 3 && (
-        <Chart
-          label="上下文增长"
-          // 空串 = 不画那个大数:上面那枚 ticker 已经报过同一个数了
-          value=""
-          points={series}
-          visibleCount={series.length}
-          variant="area"
-          className="mt-[9px] max-w-none border-0 bg-transparent p-0"
-        />
-      )}
-
       <div className="mt-[9px] mb-1">
         {CTX_CATEGORIES.map((c) => (
           <div key={c.key} className={POP_ROW}>
@@ -299,10 +279,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
         {/* 花费按型号拆开(cost-meter):正文走贵的、压缩/分区/建议走便宜的,
             只报一个总数会把这件事抹平 */}
         <CostPanel events={events} />
-        <div className={POP_ROW}>
-          <span>事件日志</span>
-          <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>
-        </div>
       </div>
     </TooltipContent>
   );

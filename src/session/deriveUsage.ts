@@ -72,28 +72,3 @@ export function totalTokens(events: SessionEvent[]): number {
   }
   return sum;
 }
-
-/** 最近一次模型调用的账。没有任何一次带用量的调用 = null */
-export function lastCall(events: SessionEvent[]): ModelUsage | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e === undefined) continue;
-    const b = billed(e);
-    if (b) return b;
-  }
-  return null;
-}
-
-/** 上下文增长曲线:每一次**正文**调用送进去的 prompt token 数,按时间顺序。
-    为什么只取 assistant_message:压缩/分区/建议是外挂小调用,它们的 prompt
-    是各自的小提示词,和"这段对话有多长"没关系 —— 混进来会把曲线锯成一排尖刺。
-
-    promptTokens 就是那一刻上下文的真实大小(模型这一头数出来的),比投影层
-    estimate 出来的更准;压缩发生时它会掉下来一截,那正是压缩这件事该有的样子。 */
-export function contextSeries(events: SessionEvent[]): number[] {
-  const out: number[] = [];
-  for (const e of events) {
-    if (e.type === "assistant_message" && e.usage) out.push(e.usage.promptTokens);
-  }
-  return out;
-}

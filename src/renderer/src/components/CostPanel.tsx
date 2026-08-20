@@ -7,19 +7,19 @@
 // 钱的规矩(shared/modelPricing.ts 定的):查不到价的型号**不显示钱数**,
 // 不是显示 $0 —— 0 是"免费"这个事实,不是"我不知道"。所以:
 //   · 每一行:价目已知 → 钱数;未知 → 破折号
-//   · 顶上那个大数:只有**每一款**型号都有价才是钱,只要有一款没价就整个退回 token 总数
+//   · 顶上那个大数(本会话合计):只有**每一款**型号都有价才是钱,只要有一款没价就整个退回 token 总数
 //     —— 把已知的几款加起来当"本会话花费",是在报一个偏小的数,比不报更坏。
 
 import { useMemo } from "react";
 import { CostMeter } from "@/components/elements/cost-meter.js";
 import { costUsd, fmtUsd } from "../../../shared/modelPricing.js";
-import { lastCall, totalTokens, usageByModel, type ModelUsage } from "../../../session/deriveUsage.js";
+import { totalTokens, usageByModel, type ModelUsage } from "../../../session/deriveUsage.js";
 import type { SessionEvent } from "../../../session/events.js";
 
 /** 破折号 = 这一款查不到价。空着会读成"零" */
 const UNKNOWN = "—";
 
-/** 顶上那两个数字得短:它们待在一枚浮层里并排站,写成 "199.8K tokens" 会折行。
+/** 顶上那个数字得短:它待在一枚浮层里,写成 "199.8K tokens" 会折行。
     不带单位不会读错:带 $ 的是钱,不带的是 token(下面每一行也都在报 in/out) */
 const fmtTokens = (n: number): string =>
   n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -32,7 +32,6 @@ function money(u: ModelUsage): string {
 
 export function CostPanel({ events }: { events: SessionEvent[] }) {
   const rows = useMemo(() => usageByModel(events), [events]);
-  const last = useMemo(() => lastCall(events), [events]);
   const total = useMemo(() => totalTokens(events), [events]);
 
   if (rows.length === 0) return null; // 一次模型都没调过就不占地方
@@ -42,13 +41,10 @@ export function CostPanel({ events }: { events: SessionEvent[] }) {
   const sessionCost = allPriced
     ? fmtUsd(costs.reduce<number>((sum, c) => sum + (c ?? 0), 0))
     : fmtTokens(total);
-  const runCost = last === null ? UNKNOWN : allPriced ? money(last) : fmtTokens(last.promptTokens + last.completionTokens);
 
   return (
     <CostMeter
-      runCost={runCost}
       sessionCost={sessionCost}
-      runLabel={<span className="whitespace-nowrap">最近一次</span>}
       sessionLabel={<span className="whitespace-nowrap">本会话</span>}
       lines={rows.map((r) => ({
         model: r.model,

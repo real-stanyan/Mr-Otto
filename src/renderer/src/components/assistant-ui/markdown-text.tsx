@@ -16,6 +16,7 @@ import { memo } from "react";
 import { DataTable } from "@/components/elements/data-table.js";
 import { MathBlock } from "@/components/elements/math-block.js";
 import { MermaidDiagram } from "@/components/assistant-ui/mermaid-diagram.js";
+import { ShikiCodeBlock } from "@/components/assistant-ui/code-block.js";
 import { OTTO_BLOCK_COMPONENTS } from "@/components/assistant-ui/otto-blocks.js";
 import { plainTable } from "@/lib/hastTable.js";
 import { cn } from "@/lib/utils.js";
@@ -100,6 +101,10 @@ export const MarkdownText = memo(MarkdownTextImpl);
 // 行内代码(非代码块)的样式挪到下面的 inlineCode——streamdown 会自动只把
 // 「没有 data-block」的 code 元素交给它,不用再手动判断是不是代码块。
 const defaultComponents = {
+  // 语言表(componentsByLanguage)之外的代码块的兜底。**不能省** —— 只要传了
+  // componentsByLanguage,aui 的 adapter 就接管所有 code 元素,没有这一项时
+  // 别的语言会掉进一个裸 <pre>(理由与出处写在 code-block.tsx 开头)
+  SyntaxHighlighter: ShikiCodeBlock,
   h1: ({ className, ...props }) => (
     <h1
       className={cn(

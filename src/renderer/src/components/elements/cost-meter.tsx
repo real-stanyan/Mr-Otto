@@ -25,7 +25,11 @@ export function CostMeter({
   ComponentProps<"div">,
   "children" | "runCost" | "sessionCost" | "lines"
 > & {
-  runCost: string;
+  /** 本仓改动:可省。原件的头行是「最近一次多少钱 + 本会话多少钱」两个数,
+      而本仓这张卡挂在上下文浮层里,"最近一次"多半是 $0(免费的本地/免费型号)——
+      一个每次都写着 $0 的大号数字占着头行,读者读到的是噪音。省掉时把会话总额
+      提到大号位:那一行不能空着,也不该为了填满而报一个没人问的数 */
+  runCost?: string;
   sessionCost: string;
   lines: readonly CostLine[];
   /** 本仓改动:两行标签可换。原件写死 "this run"/"session",本仓是中文界面 */
@@ -45,12 +49,22 @@ export function CostMeter({
     >
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-medium tracking-tight tabular-nums">
-          {runCost}
+          {runCost ?? sessionCost}
         </span>
-        <span className={cn(mono, "text-foreground/30")}>{runLabel ?? "this run"}</span>
-        <span className={cn(mono, "text-foreground/35 ms-auto tabular-nums")}>
-          {sessionCost} {sessionLabel ?? "session"}
-        </span>
+        {runCost === undefined ? (
+          <span className={cn(mono, "text-foreground/30")}>
+            {sessionLabel ?? "session"}
+          </span>
+        ) : (
+          <>
+            <span className={cn(mono, "text-foreground/30")}>
+              {runLabel ?? "this run"}
+            </span>
+            <span className={cn(mono, "text-foreground/35 ms-auto tabular-nums")}>
+              {sessionCost} {sessionLabel ?? "session"}
+            </span>
+          </>
+        )}
       </div>
 
       <div className="bg-foreground/[0.06] flex h-1.5 w-full overflow-hidden rounded-full">
