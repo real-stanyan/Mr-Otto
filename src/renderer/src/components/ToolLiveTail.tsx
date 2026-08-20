@@ -5,25 +5,42 @@
 //
 // tool_result 落地后 store 会清掉这个 key,组件自然消失——
 // 直播只活在「事实到来前」的那个窗口里。
+//
+// 画的活交给 elements/terminal-block:命令写在头上、光标在跳、新行淡入 ——
+// 一坨匀速刷新的等宽字看不出"还活着",这三样都是在说"它在动"。
 
-import { useEffect, useRef } from "react";
 import { useChat } from "../store.js";
+import { TerminalBlock } from "./elements/terminal-block.js";
 
-export function ToolLiveTail({ toolCallId, done }: { toolCallId: string; done: boolean }) {
+/** 尾巴只留最后这些行。限高本来就会把上面裁掉,多出来的 DOM 节点白建 ——
+    npm install 那种刷几千行的命令,不设这个上限就是几千个 div */
+const TAIL_LINES = 40;
+
+export function ToolLiveTail({
+  toolCallId,
+  command,
+  done,
+}: {
+  toolCallId: string;
+  /** 头上那行字。bash 就是命令本身,别的工具退回工具名 */
+  command: string;
+  done: boolean;
+}) {
   const live = useChat((s) => s.toolOutputByCall[toolCallId]);
-  const ref = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    // 终端语义:始终看最新输出,新碎片到就滚到底
-    ref.current?.scrollTo(0, ref.current.scrollHeight);
-  }, [live]);
 
   if (done || live === undefined || live === "") return null;
+  const lines = live.split("\n").slice(-TAIL_LINES);
   return (
-    <pre
-      className="mt-[2px] mb-1 px-[10px] py-2 max-h-40 overflow-y-auto bg-muted border border-border rounded-lg font-mono text-xs leading-normal text-muted-foreground whitespace-pre-wrap break-all transition-opacity duration-150 ease-strong starting:opacity-0"
-      ref={ref}
-    >
-      {live}
-    </pre>
+    <TerminalBlock
+      command={command}
+      lines={lines}
+      visibleCount={lines.length}
+      // 永远是 false:结果一落盘这个组件就没了(见上),"exit 0"那一档在这儿到不了
+      done={false}
+      className="mt-[2px] mb-1 max-w-none rounded-lg text-xs transition-opacity duration-150 ease-strong starting:opacity-0"
+      // 顶部裁掉旧行而不是滚动:终端尾巴要的是"最新那几行永远在最下面",
+      // 滚动条得追、还会被用户手滚打断
+      bodyClassName="min-h-0 max-h-40 justify-end overflow-hidden"
+    />
   );
 }

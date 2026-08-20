@@ -20,6 +20,7 @@ import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
+import { ToolError } from "../components/elements/tool-error.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { TurnErrorState } from "../components/TurnErrorState.js";
@@ -32,6 +33,7 @@ import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import { timingStats } from "./messageTiming.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
+import { toolSummary } from "../lib/toolSummary.js";
 import type { OrbState } from "../lib/toolSummary.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
@@ -60,14 +62,35 @@ const OttoUserAttachments: ComponentType = () => {
   return <UserAttachments attachments={event.attachments} textFiles={event.textFiles} />;
 };
 
-/** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 ——
-    它没有「执行中的输出」这个概念,而 bash 跑长命令时那条尾巴是唯一的进度信号 */
-const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => (
-  <>
-    <ToolFallback {...part} />
-    <ToolLiveTail toolCallId={part.toolCallId} done={part.result !== undefined} />
-  </>
-);
+/** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 + 一张出错卡。
+    直播尾巴:ToolFallback 没有「执行中的输出」这个概念,而 bash 跑长命令时
+    那条尾巴是唯一的进度信号。
+    出错卡:ToolFallback 把错误塞在折叠区里,默认收着——工具失败是这一步的结论,
+    收起来等于让人点开才知道刚才没成 */
+const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => {
+  const summary = toolSummary({ id: part.toolCallId, name: part.toolName, args: part.args });
+  return (
+    <>
+      <ToolFallback {...part} />
+      <ToolLiveTail
+        toolCallId={part.toolCallId}
+        command={summary.target || part.toolName}
+        done={part.result !== undefined}
+      />
+      {part.isError === true && (
+        <ToolError
+          name={part.toolName}
+          target={summary.target}
+          message={typeof part.result === "string" ? part.result : JSON.stringify(part.result)}
+          // 没有单条工具的重试/跳过:重跑一次是一件新的事,得有新的 tool_call 落盘。
+          // 下一步归模型——错误就在它的上下文里
+          actions={null}
+          className="mt-1 max-w-none"
+        />
+      )}
+    </>
+  );
+};
 
 /** 来源 chip:点开走 Otto 自己的内嵌浏览器,不放 <a target="_blank">。
     上游 registry 的 Sources 就是一个开新标签页的 <a> —— 在 Electron 里那等于弹出

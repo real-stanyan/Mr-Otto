@@ -8,8 +8,9 @@ import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { Hl } from "../replay/Replay.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
-import { AUDIT, CHIP, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
+import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
+import { TurnStoppedState } from "./TurnStoppedState.js";
 import { ToolLiveTail } from "./ToolLiveTail.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
@@ -58,7 +59,11 @@ export const ToolRow = memo(function ToolRow({ call, index }: { call: ToolCallRe
           ›
         </span>
       </button>
-      <ToolLiveTail toolCallId={call.id} done={result !== undefined} />
+      <ToolLiveTail
+        toolCallId={call.id}
+        command={target || call.name}
+        done={result !== undefined}
+      />
       {open && (
         // 详情展开是偶发动作:150ms ease-out 入场,从触发行长出来(origin 左上)
         <div className="mt-[2px] mb-1 px-3 py-[10px] bg-card border border-border rounded-[10px] origin-top-left transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:-translate-y-[2px] starting:scale-[0.99] motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 motion-reduce:starting:scale-100">
@@ -173,8 +178,9 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
           className="max-w-none"
         />
       ) : event.outcome === "aborted" ? (
-        // 中断 = 用户意志,中性灰居中——不是故障,不用红
-        <div className={`${CHIP} self-center`}>已中断</div>
+        // 中断 = 用户意志,中性灰——不是故障,不用红。
+        // 「继续」只挂最后一条(interactive),理由同上:旧中断后面早有别的话了
+        <TurnStoppedState interactive={isLast} className="max-w-none" />
       ) : null;
   }
 });
