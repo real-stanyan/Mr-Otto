@@ -6,6 +6,7 @@
 import type { ExternalStoreAdapter, ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionEvent } from "../../../session/events.js";
 import { toThreadMessages, type LiveBuffer } from "./toThreadMessages.js";
+import { latestSuggestions } from "./suggestions.js";
 
 export interface OttoAdapterInput {
   events: SessionEvent[];
@@ -32,6 +33,9 @@ export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<
     // 上一行已经产出目标格式,所以这里是恒等
     convertMessage: (m) => m,
     isRunning: input.isRunning,
+    // 跟进建议也是日志投影(suggestions_generated 事件,主进程 turn 收口后生成)。
+    // 点一条走的是 onNew —— 也就是下面那条 send,和用户自己打字发出去的是同一条路
+    suggestions: latestSuggestions(input.events),
     onNew: async (message) => {
       // 不要在这写 as never:AppendMessage.content 的每个成员要么带 text: string、
       // 要么没有 text 字段,结构上本来就满足 textOf 的入参类型。

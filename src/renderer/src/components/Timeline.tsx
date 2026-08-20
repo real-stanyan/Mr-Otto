@@ -153,6 +153,10 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "section_classified":
       return null;
 
+    // 跟进建议挂在输入框上方(见 aui/OttoThread.tsx 的 FollowupSuggestions),不进正文
+    case "suggestions_generated":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":

@@ -25,6 +25,7 @@ import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
+import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { scanSkills } from "./skills.js";
 import { createProtocolService } from "./protocolService.js";
@@ -280,6 +281,25 @@ void app.whenReady().then(() => {
       ...(section.usage ? { usage: section.usage } : {}),
     });
     send(CHANNELS.event, sectionEvent);
+  };
+
+  // 跟进建议:和分区分类完全同构的第二条外挂 —— 同一个位置(turn 锁之外)、
+  // 同一种自我保护(永不抛/会话被 purge 就不落)。**没有**串行队列:
+  // 分类必须串行是因为它的锚点是"最后一条分类事件之后的跨度",两个在飞的分类
+  // 会各开一个分区;建议没有锚点,每次只看最后一轮问答,后落盘的那条天然覆盖
+  // 前一条(渲染只取最后一条)——撞车的代价就是多烧一次便宜调用
+  const suggestAndAppend = async (sessionId: string): Promise<void> => {
+    const result = await suggestFollowUps(store.load(sessionId));
+    if (!result) return;
+    // 同 classifyAndAppend:出了 turn 锁,这一跑期间会话可能已被 purge。
+    // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
+    if (!agents.has(sessionId)) return;
+    const event = store.append({
+      sessionId, ts: Date.now(), type: "suggestions_generated",
+      suggestions: result.suggestions, model: result.model,
+      ...(result.usage ? { usage: result.usage } : {}),
+    });
+    send(CHANNELS.event, event);
   };
 
   const enqueueSectionClassify = (sessionId: string): void => {
@@ -739,7 +759,13 @@ void app.whenReady().then(() => {
       }
       // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
       // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
-      if (!aborted) enqueueSectionClassify(sessionId);
+      if (!aborted) {
+        enqueueSectionClassify(sessionId);
+        // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
+        // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
+        // 变成 unhandledRejection 会把主进程带走
+        void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+      }
     }
   );
 

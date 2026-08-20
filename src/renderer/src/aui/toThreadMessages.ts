@@ -71,6 +71,10 @@ function isAuditEvent(e: SessionEvent): boolean {
       // default 也是同一个结果(false),但那是"碰巧对";这里显式列出来,
       // 免得以后 default 分支的语义变了,这条却没人注意到
       return false;
+    case "suggestions_generated":
+      // 跟进建议不是对话事实,它挂在输入框上方(ThreadFollowupSuggestions),
+      // 不在时间线里占一行 —— 同 section_classified
+      return false;
     default:
       return false;
   }

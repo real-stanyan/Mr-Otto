@@ -316,6 +316,9 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "turn_ended":
       // 分区目录是给人的导航，不是对话内容——喂回去只会污染上下文
       case "section_classified":
+      // 跟进建议同理：那是给人点的快捷键。喂回去等于让模型读自己上一轮的猜测，
+      // 下一轮再基于它猜——建议会自我强化，对话被自己的建议牵着走
+      case "suggestions_generated":
         break;
     }
   }

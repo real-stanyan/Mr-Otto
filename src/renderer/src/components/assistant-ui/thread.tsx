@@ -2,6 +2,7 @@
 
 import { UserMessageAttachments } from "@/components/assistant-ui/attachment.js";
 import { File } from "@/components/assistant-ui/file.js";
+import { ThreadFollowupSuggestions } from "@/components/assistant-ui/follow-up-suggestions.js";
 import { Sources } from "@/components/assistant-ui/sources.js";
 import { Image } from "@/components/assistant-ui/image.js";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text.js";
@@ -237,12 +238,13 @@ const ThreadRoot: FC<{
             {ErrorBannerComponent ? <ErrorBannerComponent /> : null}
             {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
-            {/* PR1 只迁输出侧:输入框仍是 App.tsx footer 里那一整套(WorkTreePill /
-                TodoPanel / ComposerBar / slash 菜单 / 附件暂存区)。这里若也渲染
-                <Composer />,界面上会出现两个输入框。
-                <ThreadFollowupSuggestions /> 同理:它要的 suggestions 数据 PR3 才有,
-                现在挂上去是个永远空着的壳。
-                PR2 搬输入框、PR3 接跟进建议时,把这两行加回来。 */}
+            {/* 本仓改动:这里**不**渲染 <Composer />。输入框是 App.tsx footer 里那一整套
+                (WorkTreePill / TodoPanel / ComposerBar / 补全浮层 / 附件暂存区),
+                它自己已经建在 ComposerPrimitive 上(见 App.tsx 的 ChatComposer);
+                这里再渲染一个,界面上就是两个输入框。
+                跟进建议留在这:它属于"这一屏对话的收尾",贴着消息区底部读最顺,
+                数据来自 suggestions_generated 事件的投影(aui/suggestions.ts) */}
+            <ThreadFollowupSuggestions />
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
