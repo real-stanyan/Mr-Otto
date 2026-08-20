@@ -3,8 +3,8 @@
 // 「保留 Mr Otto 现有视觉」这条决定的落点在 SystemMessage:八类审计行直接喂回
 // 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
 
-import { useEffect, useMemo, useState } from "react";
-import type { ComponentType } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import type { ComponentType, Ref } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import type { PartState } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -24,6 +24,8 @@ import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
+import { toThreadMessages } from "./toThreadMessages.js";
+import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import type { OrbState } from "../lib/toolSummary.js";
 
@@ -236,6 +238,57 @@ const RunIndicator: ComponentType = () => {
   );
 };
 
+// ─── MessageAnchor:会话分区轨的锚点(合并 main 后重接,见 App.tsx 里 SectionRail 的挂载) ───
+//
+// 每条 assistant-ui 消息的 id 就是产出它的那条 SessionEvent 的 seq(toThreadMessages.ts
+// 里三处 push 都是 `id: String(e.seq)`),分区起点(Section.startSeq)也是 seq——两边
+// 同一把尺子。但严格相等会漏锚点:分区起点可能落在一条不产出消息的事件上
+// (tool_result、被 isAuditEvent 过滤掉的事件…),这条 seq 上没有消息可挂。
+// 改成"沿消息顺序找第一个 id >= startSeq 的消息",跟旧 App.tsx 里 sectionAnchors 的算法
+// 一模一样,只是索引换成了 toThreadMessages 产出的消息 id 而不是 groupThread 的渲染项键。
+//
+// 这张表需要"消息的完整顺序"才算得出来,只能在能拿到完整 events 的地方建一次,
+// 不能建在单条消息的组件里——那是 O(消息数) 的算法在 O(消息数) 条组件上各跑一遍,
+// 变成 O(n²)(toolIndex 当年就是因为这个教训才从"各自扫"改成"建一次传下去",见 #115)。
+// 建在 OttoThread 顶层,用 Context 分发给挂在 thread.tsx MessageAnchor 槽上的组件读
+const SectionAnchorsContext = createContext<Map<string, number[]>>(new Map());
+
+function buildSectionAnchors(events: SessionEvent[], sections: Section[]): Map<string, number[]> {
+  // ThreadMessageLike.id 类型上是可选的(assistant-ui 允许调用方不给、自己生成),
+  // 但 toThreadMessages 的三处 push 都显式写了 `id: String(e.seq)` —— 运行时永远有值。
+  // 这里用 ?? "" 兜底而不是断言:空串在下面 Number("") 是 NaN,永远不会匹配到任何
+  // startSeq,是无害的降级,不是掩盖问题
+  const messageIds = toThreadMessages(events).map((m) => m.id ?? "");
+  const map = new Map<string, number[]>();
+  let si = 0;
+  for (const id of messageIds) {
+    const seq = Number(id);
+    while (si < sections.length && sections[si]!.startSeq <= seq) {
+      const at = map.get(id);
+      if (at) at.push(si);
+      else map.set(id, [si]);
+      si++;
+    }
+  }
+  return map;
+}
+
+/** 零高度、不参与布局,只给 scrollspy(IntersectionObserver)和跳转(scrollIntoView)
+    一个可测量的位置——同一份 `data-section` 约定,App.tsx 那边原样沿用旧版 */
+const SectionAnchor: ComponentType = () => {
+  const anchorsByMessageId = useContext(SectionAnchorsContext);
+  const id = useAuiState((s) => s.message.id);
+  const indices = anchorsByMessageId.get(id);
+  if (!indices) return null;
+  return (
+    <>
+      {indices.map((si) => (
+        <div key={si} data-section={si} aria-hidden className="h-0 scroll-mt-4" />
+      ))}
+    </>
+  );
+};
+
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂
 const COMPONENTS: ThreadComponents = {
   SystemMessage,
@@ -244,8 +297,27 @@ const COMPONENTS: ThreadComponents = {
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
   ErrorBanner,
+  MessageAnchor: SectionAnchor,
 };
 
-export function OttoThread() {
-  return <Thread components={COMPONENTS} />;
+export function OttoThread({
+  viewportRef,
+  sections,
+}: {
+  /** 转给 thread.tsx 的 ThreadPrimitive.Viewport——分区轨拿它做 scrollspy/跳转的量尺 */
+  viewportRef?: Ref<HTMLDivElement> | undefined;
+  /** deriveSections(events) 的结果,App.tsx 那边已经算过一份(SectionRail 也要用),
+      传进来避免在这再扫一遍事件日志算同样的东西 */
+  sections: Section[];
+}) {
+  const events = useChat((s) => s.events);
+  const anchorsByMessageId = useMemo(
+    () => buildSectionAnchors(events, sections),
+    [events, sections]
+  );
+  return (
+    <SectionAnchorsContext.Provider value={anchorsByMessageId}>
+      <Thread components={COMPONENTS} viewportRef={viewportRef} />
+    </SectionAnchorsContext.Provider>
+  );
 }

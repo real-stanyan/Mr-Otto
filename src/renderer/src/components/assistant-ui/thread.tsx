@@ -54,6 +54,7 @@ import {
   type ComponentType,
   type FC,
   type PropsWithChildren,
+  type Ref,
 } from "react";
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
@@ -83,6 +84,13 @@ export type ThreadComponents = {
       注释)。它不是消息、也不是事件投影,同样挂在 ViewportFooter 而不是消息流里。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   ErrorBanner?: ComponentType | undefined;
+  /** 本仓加的槽:会话分区轨的锚点(零高度、不参与布局,只给 scrollspy/跳转一个可测量
+      的位置)。每条消息 id 就是产生它的那条 SessionEvent 的 seq(见
+      aui/toThreadMessages.ts),分区起点也是 seq——同一把尺子,所以锚点该不该出现在
+      "这条消息前面"这件事,只有这条消息自己的 id 知道。挂在 ThreadMessage 里、每条
+      消息都过一遍,而不是挂在消息内容里面——system/user/assistant 三条分支都要经过它,
+      放进某一条分支会漏掉另外两种角色的消息。上游 registry 没有这个槽 —— 升级时要人工合 */
+  MessageAnchor?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   ToolGroup?:
@@ -95,6 +103,13 @@ export type ThreadComponents = {
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
+  /** 本仓加的:会话分区轨(SectionRail)量的是真正滚动的那个元素——scrollspy 的判定线、
+      跳转的 scroll-mt 都以它为准。ThreadPrimitive.Viewport 自己会转发 ref(内部用
+      useComposedRefs 拼了 autoScroll/size/element 三个 ref,forwardRef 出来的还是同一个
+      DOM 节点),所以直接接这个口子,不用像旧 ThreadViewport 那样另开一个回调 ref 去接管
+      DOM、也不用退回 data-slot 查询。上游没有暴露这个 prop —— 升级时留意 Viewport 是否
+      仍然转发 ref */
+  viewportRef?: Ref<HTMLDivElement> | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -136,17 +151,23 @@ const ThreadHistorySkeleton: FC = () => (
   </div>
 );
 
-export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
+export const Thread: FC<ThreadProps> = ({
+  components = EMPTY_COMPONENTS,
+  viewportRef,
+}) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
     <ThreadComponentsContext.Provider value={components}>
-      <ThreadRoot isEmpty={isEmpty} />
+      <ThreadRoot isEmpty={isEmpty} viewportRef={viewportRef} />
     </ThreadComponentsContext.Provider>
   );
 };
 
-const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
+const ThreadRoot: FC<{
+  isEmpty: boolean;
+  viewportRef: Ref<HTMLDivElement> | undefined;
+}> = ({ isEmpty, viewportRef }) => {
   const {
     Welcome = ThreadWelcome,
     RunIndicator: RunIndicatorComponent,
@@ -167,6 +188,7 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
       }}
     >
       <ThreadPrimitive.Viewport
+        ref={viewportRef}
         turnAnchor="top"
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
@@ -220,16 +242,21 @@ const ThreadMessage: FC = () => {
   const {
     AssistantMessage: AssistantMessageComponent = AssistantMessage,
     SystemMessage: SystemMessageComponent,
+    MessageAnchor: MessageAnchorComponent,
   } = useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
 
-  if (isEditing) return <EditComposer />;
-  if (role === "user") return <UserMessage />;
+  // 锚点在角色分支之前渲染一次:三条分支(编辑/用户/系统/assistant)都要经过它,
+  // 分区起点可能落在任意角色的消息前面
+  const anchor = MessageAnchorComponent ? <MessageAnchorComponent /> : null;
+
+  if (isEditing) return <>{anchor}<EditComposer /></>;
+  if (role === "user") return <>{anchor}<UserMessage /></>;
   // 本仓加的分支:不认 system 的话,审计行会掉进 assistant 分支、被当成模型回复渲染。
   // 没给 SystemMessage 时退回 assistant —— 与上游行为一致,不静默吞掉消息
-  if (role === "system" && SystemMessageComponent) return <SystemMessageComponent />;
-  return <AssistantMessageComponent />;
+  if (role === "system" && SystemMessageComponent) return <>{anchor}<SystemMessageComponent /></>;
+  return <>{anchor}<AssistantMessageComponent /></>;
 };
 
 const ThreadScrollToBottom: FC = () => {

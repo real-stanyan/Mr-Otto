@@ -66,6 +66,12 @@ function isAuditEvent(e: SessionEvent): boolean {
       return e.decision === "denied";
     case "turn_ended":
       return e.outcome !== "completed";
+    case "section_classified":
+      // main 合并进来的事件类型(会话分区分类)。目录挂在分区轨(SectionRail)上,
+      // 不进正文——同 lib/threadGroups.ts 的 isInvisible 里同一分支。原先落到
+      // default 也是同一个结果(false),但那是"碰巧对";这里显式列出来,
+      // 免得以后 default 分支的语义变了,这条却没人注意到
+      return false;
     default:
       return false;
   }

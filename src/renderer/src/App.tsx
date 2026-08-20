@@ -40,6 +40,7 @@ import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
+import { SectionRail } from "./components/SectionRail.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -1838,7 +1839,9 @@ export function App() {
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
-  const scrollRef = useRef<HTMLElement>(null);
+  // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
+  // 渲染的 div(见 components/assistant-ui/thread.tsx),不再是 ThreadViewport 自己的 <section>
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
   // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
@@ -1884,13 +1887,12 @@ export function App() {
   // 所以「跨区域选择」的判定边界没变
   const threadHostRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
-  // main 侧这里还有 items(groupThread)/toolIndex(buildToolIndex)/sectionAnchors/
-  // turnPhase(agentPhase)——都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下
-  // 已经没有消费者:消息渲染整个交给 toThreadMessages(见 aui/OttoThread.tsx),
-  // turnPhase 的等价物也已经搬进 OttoThread.tsx 的 RunIndicator(同一份 agentPhase
-  // 逻辑,原样搬回)。sectionAnchors 是会话分区轨要用的东西,这次合并暂不重接
-  // (下一个提交补上,见该提交说明)——sections/scrollRef/scrollspy 这段本身没有
-  // 冲突,原样留着,只是眼下还没人接到 DOM 上
+  // main 侧这里还有 items(groupThread)/toolIndex(buildToolIndex)/turnPhase(agentPhase)——
+  // 三者都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下已经没有消费者:
+  // 消息渲染整个交给 toThreadMessages(见 aui/OttoThread.tsx),turnPhase 的等价物
+  // 也已经搬进 OttoThread.tsx 的 RunIndicator(同一份 agentPhase 逻辑,原样搬回)。
+  // sectionAnchors 是分区功能真正要留的部分,重做版本见下面 OttoThread 的
+  // viewportRef/sections 两个 prop 和 aui/OttoThread.tsx 里的 SectionAnchor 槽
 
   // slash 菜单：输入以 "/" 开头即弹出，按前缀过滤注册表（注册表当初就为此留了 desc）
   const slashMatches = input.startsWith("/")
@@ -2074,9 +2076,27 @@ export function App() {
         <>
           <div ref={threadHostRef} className="flex-1 min-h-0 flex flex-col relative">
             <OttoRuntimeProvider>
-              <OttoThread />
+              {/* viewportRef:分区轨要量的是真正滚动的那个元素(scrollspy 的判定线、
+                  跳转的 scroll-mt 都以它为准)。ThreadPrimitive.Viewport 自己转发 ref
+                  (见 components/assistant-ui/thread.tsx 的 viewportRef prop),接进去就够,
+                  不用像旧 ThreadViewport 那样另开一个回调 ref 去接管 DOM 节点。
+                  sections:锚点(哪条消息前面插第几个分区的起点)算在 OttoThread 内部——
+                  它需要 toThreadMessages 产出的消息 id 顺序才能对齐,这份顺序只有
+                  OttoThread 自己手上有,不值得为了传出来再破坏封装(见 aui/OttoThread.tsx) */}
+              <OttoThread viewportRef={scrollRef} sections={sections} />
             </OttoRuntimeProvider>
             <SelectionQuote hostRef={threadHostRef} />
+            {/* 只有一个分区时目录没有意义(一条目录 = 噪音),不渲染。轨是绝对定位的浮层,
+                挂在 threadHostRef 这层(SelectionQuote 的宿主)的兄弟位置——出现和消失
+                都不动布局,不需要占位符防重排。main 原来挂在 ThreadViewport 的 overlay
+                插槽里,那层容器没了,threadHostRef 是新架构里同等地位的宿主 */}
+            {sections.length >= 2 && (
+              <SectionRail
+                items={sections.map((s) => ({ title: s.title, preview: s.preview }))}
+                activeIndex={activeSection}
+                onJump={jumpToSection}
+              />
+            )}
           </div>
 
           <ApprovalCard />
