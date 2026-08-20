@@ -15,6 +15,7 @@ import { memo } from "react";
 
 import { DataTable } from "@/components/elements/data-table.js";
 import { MathBlock } from "@/components/elements/math-block.js";
+import { MermaidDiagram } from "@/components/assistant-ui/mermaid-diagram.js";
 import { plainTable } from "@/lib/hastTable.js";
 import { cn } from "@/lib/utils.js";
 
@@ -34,6 +35,10 @@ const PLUGINS = { code, cjk, math };
 // stagger 8ms 不是 40(默认):一次推送常有十几二十个字,40ms 一个的话尾巴要拖
 // 快一秒,读起来是"字在追着光标跑"而不是"字落下来"。
 // easing 用 ease-out 那条强曲线(与全仓入场同一条):出场是"进来",起手就得快。
+const BY_LANGUAGE = {
+  mermaid: { SyntaxHighlighter: MermaidDiagram, CodeHeader: () => null },
+};
+
 const ANIMATED = {
   animation: "ottoInk",
   sep: "char",
@@ -70,6 +75,10 @@ const MarkdownTextImpl = () => {
       // 失效(见 node_modules/@assistant-ui/react-streamdown 的
       // primitives/StreamdownText.js)。用 streamdown 原生的 caret 补回同等的
       // 「还在生成」视觉反馈。
+      // ```mermaid 不走普通代码块:交给 MermaidDiagram（elements/diagram 的画框
+      // + mermaid 渲染的 SVG）。CodeHeader 一起换掉——画框自己有标题栏，
+      // 上面再顶一条"mermaid + 复制"是两层标题
+      componentsByLanguage={BY_LANGUAGE}
       caret="block"
       defer
     />
