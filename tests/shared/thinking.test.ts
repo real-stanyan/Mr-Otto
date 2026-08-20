@@ -5,6 +5,7 @@ import {
   thinkingSwitchable,
   THINKING_EFFORT,
   THINKING_EFFORT_ALWAYS,
+  THINKING_EFFORT_MAX,
   THINKING_FLAG,
   THINKING_NONE,
   type ThinkingSpec,
@@ -37,6 +38,17 @@ describe("clampThinking —— 换型号时手上那一档落到哪", () => {
 
   it("没有挡位表的型号一律 off —— 这个值不会参与请求", () => {
     expect(clampThinking("high", THINKING_NONE)).toBe("off");
+  });
+
+  it("Ollama 的 max 换到别家 → 落到那家最强的一档,而不是回默认", () => {
+    // max 只有 Ollama 有(docs.ollama.com/capabilities/thinking),
+    // 换去 OpenAI 这类只有三档的型号时,"顶"最近的是"高"
+    expect(clampThinking("max", THINKING_EFFORT)).toBe("high");
+    expect(clampThinking("max", THINKING_FLAG)).toBe("on");
+  });
+
+  it("别家的高换到 Ollama 仍是高 —— 不会被 max 抢走(有原档就不动)", () => {
+    expect(clampThinking("high", THINKING_EFFORT_MAX)).toBe("high");
   });
 });
 

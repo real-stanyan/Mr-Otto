@@ -7,6 +7,7 @@
 import { PROVIDER_CATALOG, findProvider, type ProviderId } from "./providerCatalog.js";
 import {
   THINKING_EFFORT,
+  THINKING_EFFORT_MAX,
   THINKING_EFFORT_ALWAYS,
   THINKING_ENABLE,
   THINKING_FLAG,
@@ -207,7 +208,8 @@ export function ollamaChoiceFrom(info: OllamaCaps): ModelChoice {
     ...ollamaChoice(info.tag),
     contextWindow: info.contextLength,
     supportsVision: info.vision,
-    thinking: info.thinking ? THINKING_EFFORT : THINKING_NONE,
+    // 本机模型给的是 Ollama 那套档位(比别家多一个 max)
+    thinking: info.thinking ? THINKING_EFFORT_MAX : THINKING_NONE,
   };
 }
 
