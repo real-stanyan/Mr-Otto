@@ -152,12 +152,12 @@ const FOCUS_INPUT =
   "bg-background border border-border rounded-lg text-foreground transition-[border-color,box-shadow] duration-150 focus:outline-none focus:border-ring focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]";
 /* 状态条/新会话卡的下拉框(素色,悬停亮边)——shadcn SelectTrigger 的 className 叠加层 */
 const BAR_SELECT =
-  "h-auto w-fit gap-1 bg-transparent text-muted-foreground border-transparent rounded-md px-1 py-[2px] text-xs font-mono shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
+  "h-auto w-fit gap-1 bg-transparent dark:bg-transparent dark:hover:bg-foreground/[0.06] text-muted-foreground border-transparent rounded-full px-2 py-[3px] text-xs font-mono shadow-none hover:text-foreground hover:bg-foreground/[0.06] disabled:opacity-40 [&_svg]:size-3";
 /* bypass 模式常亮警示色——免审状态必须一眼可见 */
 const BYPASS = "text-warn bg-warn/[0.12]";
 /* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px)——shadcn SelectTrigger 的 className 叠加层 */
 const NSC_SELECT =
-  "h-auto w-fit gap-1 bg-transparent border-transparent rounded-lg text-muted-foreground text-xs px-[6px] py-[3px] shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
+  "h-auto w-fit gap-1 bg-transparent dark:bg-transparent dark:hover:bg-foreground/[0.06] border-transparent rounded-full text-muted-foreground text-xs px-2 py-[3px] shadow-none hover:text-foreground hover:bg-foreground/[0.06] disabled:opacity-40 [&_svg]:size-3";
 /* 工作区浮窗列表项 */
 const WS_ITEM =
   "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-foreground text-[13px] cursor-pointer hover:bg-foreground/[0.06] [&>svg]:text-muted-foreground [&>svg]:shrink-0";
@@ -1884,7 +1884,7 @@ function ComposerTextarea({
     >
       <Textarea
         ref={inputRef}
-        className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
+        className="border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground px-3 py-2 text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35"
         autoFocus
         rows={1}
         placeholder={disabled ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
