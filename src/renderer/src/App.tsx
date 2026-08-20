@@ -1792,11 +1792,13 @@ function Welcome() {
 
   return (
     <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
-      {/* 头像左、招呼语右。竖排的「头像 + Mr Otto」是一张启动画面 —— 它介绍自己是谁,
-          而这一屏的正事是开始说话。横过来之后这一块读成"它在跟你打招呼",
-          和底下那个输入框连成一句话。宽度跟输入框对齐,左边缘成一条线 */}
-      <div className="flex w-[min(640px,90%)] items-center gap-3">
-        <img className="size-11 shrink-0 rounded-xl" src={ottoLogo} alt="Mr Otto" />
+      {/* 头像左、招呼语右,整块居中。竖排的「头像 + Mr Otto」是一张启动画面 ——
+          它介绍自己是谁,而这一屏的正事是开始说话。横过来之后这一块读成
+          "它在跟你打招呼",和底下那个输入框连成一句话。
+          不跟输入框左对齐:那样长短不一的招呼语会把右边拖出一条毛边,
+          而居中让每一句都以自己为中轴,长短变化只往两边匀开 */}
+      <div className="flex w-[min(640px,90%)] items-center justify-center gap-3">
+        <img className="size-16 shrink-0 rounded-2xl" src={ottoLogo} alt="Mr Otto" />
         <p className="min-w-0 text-left text-[19px] font-[600] tracking-[-0.01em]">{greeting}</p>
       </div>
       {/* 新会话 composer(ZCode 版式):文件夹行 + 输入区 + 控件行一张卡。
