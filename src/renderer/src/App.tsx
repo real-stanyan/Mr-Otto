@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowUpIcon, BookMarked, Check, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Spade, SquareIcon, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -165,8 +165,6 @@ const BYPASS = "text-warn bg-warn/[0.12]";
 /* 新会话卡控件行的下拉框(比状态条版大半号,圆角 8px)——shadcn SelectTrigger 的 className 叠加层 */
 const NSC_SELECT =
   "h-auto w-fit gap-1 bg-transparent border-transparent rounded-lg text-muted-foreground text-xs px-[6px] py-[3px] shadow-none hover:text-foreground hover:border-border disabled:opacity-40 [&_svg]:size-3";
-/* 发送/停止键:控件行里收小一号,和状态条同一量级 */
-const SEND_BTN = "px-[14px] py-1 h-auto text-[13px] rounded-lg shrink-0";
 /* 工作区浮窗列表项 */
 const WS_ITEM =
   "flex items-center gap-2 w-full text-left bg-transparent border-none rounded-lg px-[10px] py-2 text-foreground text-[13px] cursor-pointer hover:bg-foreground/[0.06] [&>svg]:text-muted-foreground [&>svg]:shrink-0";
@@ -2060,52 +2058,78 @@ function ChatComposer() {
   return (
     // TriggerPopoverRoot 是两条 trigger 的公共作用域(它管"现在哪条 trigger 活着")
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-    <ComposerPrimitive.Root onSubmit={(e) => e.preventDefault()}>
-            <AttachDropZone disabled={status === "running"}>
-            <div className="relative bg-card border border-border/60 shadow-sm rounded-xl pt-1 px-2 pb-[6px] flex flex-col gap-[2px] transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]">
-              {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
-                  和旧的手写菜单同一个位置 */}
-              <ComposerTriggerPopover
-                char="$"
-                className={TRIGGER_POP}
-                adapter={skillAdapter}
-                directive={skillDirective}
-                emptyItemsLabel="没有匹配的 skill"
-                emptyCategoriesLabel="还没装 skill"
-                backLabel="返回"
-                loadingLabel="加载中…"
-              />
-              <ComposerTriggerPopover
-                char="/"
-                className={TRIGGER_POP}
-                adapter={slashTrigger.adapter}
-                action={slashTrigger.action}
-                emptyItemsLabel="没有匹配的指令"
-                emptyCategoriesLabel="没有可用指令"
-                backLabel="返回"
-                loadingLabel="加载中…"
-              />
-              <StagedChips className="pt-[6px] px-[10px]" />
-              <ComposerTextarea
-                inputRef={textareaRef}
-                disabled={status === "running"}
-                onSubmit={submit}
-                onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
-              />
-              {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
-              <div className="flex items-end gap-2">
-                <ComposerBar />
+      <ComposerPrimitive.Root
+        onSubmit={(e) => e.preventDefault()}
+        className="aui-composer-root relative flex w-full flex-col"
+        // 版式三件套是 assistant-ui composer 的量纲(圆角/底色/内边距),
+        // thread.tsx 把它们设在 Thread 根上 —— 而这个输入框住在 Thread 外面
+        // (App 的 footer),够不着那份作用域,所以在自己这一层再设一遍。
+        // 值与 thread.tsx 保持一致:同一个界面里两个输入框(会话/编辑)不该长得不一样
+        style={{
+          ["--composer-bg" as string]: "var(--color-card)",
+          ["--composer-radius" as string]: "1.5rem",
+          ["--composer-padding" as string]: "8px",
+        }}
+      >
+        {/* 投放区是本仓自己的:附件归 store(ADR-0040),不走 assistant-ui 的
+            AttachmentDropzone —— 那条路会把文件交给它的附件通道 */}
+        <AttachDropZone disabled={status === "running"}>
+          <div
+            data-slot="aui_composer-shell"
+            className="border-border/60 focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) shadow-sm transition-[border-color]"
+          >
+            {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
+                和旧的手写菜单同一个位置 */}
+            <ComposerTriggerPopover
+              char="$"
+              className={TRIGGER_POP}
+              adapter={skillAdapter}
+              directive={skillDirective}
+              emptyItemsLabel="没有匹配的 skill"
+              emptyCategoriesLabel="还没装 skill"
+              backLabel="返回"
+              loadingLabel="加载中…"
+            />
+            <ComposerTriggerPopover
+              char="/"
+              className={TRIGGER_POP}
+              adapter={slashTrigger.adapter}
+              action={slashTrigger.action}
+              emptyItemsLabel="没有匹配的指令"
+              emptyCategoriesLabel="没有可用指令"
+              backLabel="返回"
+              loadingLabel="加载中…"
+            />
+            {/* 附件暂存区也是本仓的(同上):ComposerAttachments 读的是 assistant-ui
+                自己那份附件状态,本仓那份在 store.staged */}
+            <StagedChips />
+            <ComposerTextarea
+              inputRef={textareaRef}
+              disabled={status === "running"}
+              onSubmit={submit}
+              onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
+            />
+            {/* ComposerAction 那一排:上游左边是「＋ 附件」、右边是发送/停止的圆钮。
+                本仓左边换成会话偏好条(审批模式/模型/用量环)—— 附件的 ＋ 在它里面。
+                items-end:窄宽时 ComposerBar 换两行,圆钮贴末行底对齐,不悬在行间 */}
+            <div className="aui-composer-action-wrapper relative flex items-end justify-between gap-2">
+              <ComposerBar />
+              <div className="flex items-center gap-1.5">
                 {/* running 时发送键原位变停止键：同一个位置、同一块肌肉记忆（Esc 同效）。
-                    停止 = 描边警示色而非实底红——可停,但不嘶吼 */}
+                    上游用的是实底圆钮 + 方块图标,这里照搬 —— 方块是通用的"停"，
+                    不需要再用红色喊一遍 */}
                 {status === "running" ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
-                        variant="outline"
-                        className={`${SEND_BTN} bg-transparent dark:bg-transparent border-err text-err hover:bg-err/[0.12] dark:hover:bg-err/[0.12] hover:text-err`}
+                        type="button"
+                        variant="default"
+                        size="icon"
+                        className="aui-composer-cancel size-7 shrink-0 rounded-full"
+                        aria-label="停止 turn"
                         onClick={() => void stop()}
                       >
-                        停止
+                        <SquareIcon className="size-3.5 fill-current" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>停止 turn（Esc）</TooltipContent>
@@ -2113,8 +2137,16 @@ function ChatComposer() {
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Button className={SEND_BTN} onClick={submit} disabled={!input.trim() && staged.length === 0}>
-                        发送
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="icon"
+                        className="aui-composer-send size-7 shrink-0 rounded-full"
+                        aria-label="发送消息"
+                        onClick={submit}
+                        disabled={!input.trim() && staged.length === 0}
+                      >
+                        <ArrowUpIcon className="size-4" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>发送(Enter)</TooltipContent>
@@ -2122,8 +2154,9 @@ function ChatComposer() {
                 )}
               </div>
             </div>
-            </AttachDropZone>
-    </ComposerPrimitive.Root>
+          </div>
+        </AttachDropZone>
+      </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 }

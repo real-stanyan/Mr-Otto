@@ -242,9 +242,13 @@ const ThreadRoot: FC<{
             {ErrorBannerComponent ? <ErrorBannerComponent /> : null}
             {RunIndicatorComponent ? <RunIndicatorComponent /> : null}
             <ThreadScrollToBottom />
-            {/* 本仓改动:这里**不**渲染 <Composer />。输入框是 App.tsx footer 里那一整套
-                (WorkTreePill / TodoPanel / ComposerBar / 补全浮层 / 附件暂存区),
-                它自己已经建在 ComposerPrimitive 上(见 App.tsx 的 ChatComposer);
+            {/* 本仓改动:这里**不**渲染 <Composer />,但输入框用的就是它 ——
+                registry 那份 Composer 的外壳(shell 版式 / gap / 圆角底色内边距三件套 /
+                ComposerAction 那一排的左右分栏 / 右侧的圆钮)整套照搬到了 App.tsx 的
+                ChatComposer 里,只是壳子里装的是本仓自己的东西:投放区和附件暂存区归
+                store(ADR-0040),左边那一栏是会话偏好条,发送键不走 ComposerPrimitive.Send
+                (理由见 ChatComposer 的头注释)。搬过去而不是在这渲染,是因为输入框在本仓
+                住在 Thread 外面(App 的 footer,和工作区胶囊/待办面板同层);
                 这里再渲染一个,界面上就是两个输入框。
                 跟进建议留在这:它属于"这一屏对话的收尾",贴着消息区底部读最顺,
                 数据来自 suggestions_generated 事件的投影(aui/suggestions.ts) */}
