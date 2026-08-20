@@ -6,7 +6,7 @@
 //
 // 不变量沿用 keyVault：输入框存完即清，渲染层不留 key 的任何副本；状态只有布尔。
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button.js";
@@ -16,6 +16,7 @@ import { PROVIDER_CATALOG, type ProviderId, type ProviderInfo } from "../../../s
 import { cn } from "@/lib/utils.js";
 import { useChat } from "../store.js";
 import { ProviderMark } from "./ProviderMark.js";
+import { fmtBalance, ProviderUsage, USAGE_DAYS, useProviderBalance } from "./ProviderUsage.js";
 
 const REGION_LABEL: Record<ProviderInfo["region"], string> = { cn: "国内直连", global: "海外", local: "本机" };
 
@@ -41,6 +42,7 @@ function ProviderRow({
   const ollamaBaseUrl = useChat((s) => s.ollamaBaseUrl);
   const refreshOllama = useChat((s) => s.refreshOllamaModels);
   const models = useMemo(() => MODEL_CATALOG.filter((m) => m.provider === info.id), [info.id]);
+  const balance = useProviderBalance(info.id);
 
   const save = async () => {
     const key = draft.trim();
@@ -70,6 +72,13 @@ function ProviderRow({
             {info.blurb}
           </span>
         </span>
+        {/* 余额贴在状态前面:这一行是扫读用的,"哪家快没钱了"正是扫的时候想知道的事。
+            只有四家有余额 API,其余厂商这里什么都不长出来(不是长一个 0) */}
+        {balance?.ok && (
+          <span className="shrink-0 text-[11.5px] text-muted-foreground tabular-nums">
+            {fmtBalance(balance.amount, balance.currency)}
+          </span>
+        )}
         {info.keyless ? (
           <span className="flex shrink-0 items-center gap-[5px] text-[11.5px] text-ok">
             <span className="size-[6px] rounded-full bg-ok" />
@@ -94,6 +103,9 @@ function ProviderRow({
       <div className="disclose" data-open={open}>
         <div>
           <div className="flex flex-col gap-[10px] px-4 pt-1 pb-[14px]">
+            {/* 用量/余额放最上面:已经配好的厂商，展开多半是来看账的，不是来改 key 的。
+                没用过、也查不到余额的厂商这里整块不出现 */}
+            <ProviderUsage provider={info.id} />
             {/* 免 key 的一家没有输入框可填：它要的不是凭据，是"服务开着没" */}
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
@@ -244,6 +256,13 @@ export function ModelProviderSettings() {
   const keyStatus = useChat((s) => s.keyStatus);
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<ProviderId | null>(null);
+
+  const refreshProviderStats = useChat((s) => s.refreshProviderStats);
+  // 开页取一次。用量读的是本地 SQLite（毫秒级），余额要出网（各家 60s 缓存）——
+  // 不做轮询：这一页是"改配置"的地方，不是仪表盘，多刷一次只会多打几趟外网
+  useEffect(() => {
+    void refreshProviderStats(USAGE_DAYS);
+  }, [refreshProviderStats]);
 
   const q = query.trim().toLowerCase();
   const matched = useMemo(

@@ -36,6 +36,8 @@ import { createGitGraphService } from "./gitGraphService.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
+import { fetchProviderBalances } from "./providerBalance.js";
+import { usageByProviderDaily } from "../shared/usageStats.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -520,6 +522,17 @@ void app.whenReady().then(() => {
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
   ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
+
+  // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
+  // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切
+  ipcMain.handle(CHANNELS.usageByProvider, (_e, days: number) => {
+    const span = Math.max(1, Math.floor(days));
+    const now = Date.now();
+    const since = now - span * 2 * 86_400_000;
+    return usageByProviderDaily(store.billedUsage(since), { now, days: span });
+  });
+  // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
+  ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
 
   // ── 牌桌 ────────────────────────────────────────────────────────
   // 同一时刻只订一张桌：换桌先退订。两条流同时推会互相盖着，

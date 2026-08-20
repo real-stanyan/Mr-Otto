@@ -47,7 +47,8 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
 } from "../../shared/friends.js";
-import type { NotificationTarget } from "../../shared/shellBridge.js";
+import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
+import type { ProviderUsage } from "../../shared/usageStats.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -186,6 +187,10 @@ interface ChatState {
   ollamaBaseUrl: string;
   /** 问不到时的原因。空串 = 问到了（哪怕是空清单：那是"一个都没 pull" */
   ollamaError: string;
+  /** 各厂商近 N 天的用量（设置页那张柱状图）。null = 还没查过——和"一个 token 都没花"不是一回事 */
+  providerUsage: ProviderUsage[] | null;
+  /** 各厂商账户余额。只有四家有这回事，查不到的厂商压根不在数组里 */
+  providerBalances: ProviderBalance[];
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
@@ -289,6 +294,9 @@ interface ChatState {
   saveApiKey(envName: string, key: string): Promise<void>;
   /** 重问本机 Ollama 的型号清单。用户随时 pull/rm，镜像别太陈旧 */
   refreshOllamaModels(): Promise<void>;
+  /** 拉「模型配置」页要的两份数：跨会话用量 + 各家余额。开页时取一次。
+      两份各自成败（余额那趟要出网，慢且可能失败，不该拖累用量图） */
+  refreshProviderStats(days: number): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   signOut(): Promise<void>;
@@ -445,6 +453,8 @@ export const useChat = create<ChatState>((set, get) => ({
   ollamaModels: [],
   ollamaBaseUrl: "",
   ollamaError: "",
+  providerUsage: null,
+  providerBalances: [],
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
@@ -858,6 +868,20 @@ export const useChat = create<ChatState>((set, get) => ({
       // 表现成"本机明明装了 Ollama 却什么都没检测出来"——静默的失败最难查
       set({ ollamaModels: [], ollamaBaseUrl: "", ollamaError: bridgeErrorMessage(e) });
     }
+  },
+
+  async refreshProviderStats(days) {
+    // 分开 await：余额要出四趟外网，用量只读本地 SQLite。绑成一个 Promise.all
+    // 再一起 set，会让本来毫秒级就能画出来的图陪着网络请求一起等
+    void window.otter
+      .usageByProvider(days)
+      .then((providerUsage) => set({ providerUsage }))
+      // 用量查不出来就维持 null（"还没查过"）——空数组会被画成"这台机器没用过模型"
+      .catch(() => undefined);
+    void window.otter
+      .providerBalances()
+      .then((providerBalances) => set({ providerBalances }))
+      .catch(() => set({ providerBalances: [] }));
   },
 
   async saveApiKey(envName, key) {

@@ -18,18 +18,26 @@ export interface ModelUsage {
   completionTokens: number;
 }
 
+/** 会计上"算一次模型调用"的四类事件。导出是为了让主进程的 SQL 用同一份清单筛行
+    （设置页的跨会话用量），而不是在 store.ts 里再抄一遍这四个字符串 */
+export const BILLED_EVENT_TYPES = [
+  "assistant_message",
+  "context_compacted",
+  "section_classified",
+  "suggestions_generated",
+] as const;
+
+type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;
+
+function isBilledEvent(e: SessionEvent): e is BilledEvent {
+  return (BILLED_EVENT_TYPES as readonly string[]).includes(e.type);
+}
+
 /** 这条事件是不是一次模型调用的账。是就返回(型号, 用量),不是返回 null。
     usage 缺省的事件不算账:旧日志里有没记用量的调用,当 0 会让"没记"和"没花"
     看起来一样 —— 这里的做法是压根不出现在账里 */
 function billed(e: SessionEvent): { model: string; promptTokens: number; completionTokens: number } | null {
-  if (
-    e.type !== "assistant_message" &&
-    e.type !== "context_compacted" &&
-    e.type !== "section_classified" &&
-    e.type !== "suggestions_generated"
-  ) {
-    return null;
-  }
+  if (!isBilledEvent(e)) return null;
   if (!e.usage) return null;
   return {
     model: e.model,

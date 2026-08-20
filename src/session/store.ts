@@ -3,6 +3,8 @@
 
 import Database from "better-sqlite3";
 import type { SessionEvent } from "./events.js";
+import { BILLED_EVENT_TYPES } from "./deriveUsage.js";
+import type { BilledRow } from "../shared/usageStats.js";
 
 // SessionEvent 去掉 seq（seq 由 EventStore 分配）。
 // 普通 Omit 会把 discriminated union 压扁成只剩公共字段，
@@ -149,6 +151,39 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       ...r,
       title: renamed?.trim() || r.title?.split("\n")[0]?.trim() || null,
     }));
+  }
+
+  /**
+   * 全库的计费行（设置页那张「哪家烧了多少」的图）。
+   *
+   * 在 SQL 层就投影成四个数，而不是 load() 出整库事件再过一遍：一台用了几个月的
+   * 机器，日志里绝大多数字节是工具输出，为了几个 token 数把它们全读进内存不划算。
+   * "哪些事件算账"这条规则不在这里 —— 类型清单从 deriveUsage.ts 导入（唯一事实源），
+   * 这里只负责按它筛行。usage 缺省的行直接不出现（同 deriveUsage：没记 ≠ 没花）。
+   *
+   * 归档的会话**照样算**：archive 是"从会话列表里消失"，不是"这笔钱没花过"。
+   * （purge 例外——那是日志本身被完整遗忘，账自然也跟着没了。）
+   *
+   * @param since 只要这个时刻之后的（毫秒）。UI 只画一个窗口，更早的行不必过桥
+   */
+  billedUsage(since: number): BilledRow[] {
+    const marks = BILLED_EVENT_TYPES.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT ts,
+                json_extract(payload, '$.model')                  AS model,
+                json_extract(payload, '$.usage.promptTokens')     AS promptTokens,
+                json_extract(payload, '$.usage.completionTokens') AS completionTokens
+           FROM events
+          WHERE type IN (${marks})
+            AND ts >= ?
+            AND model IS NOT NULL
+            AND promptTokens IS NOT NULL
+            AND completionTokens IS NOT NULL
+          ORDER BY ts`
+      )
+      .all(...BILLED_EVENT_TYPES, since) as BilledRow[];
+    return rows;
   }
 
   close(): void {
