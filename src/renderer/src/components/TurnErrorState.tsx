@@ -12,6 +12,7 @@
 // ③ retrying 那一档只属于"当下这一条":历史行不该因为现在有个 turn 在跑就变成转圈
 
 import { ErrorState } from "@/components/elements/error-state.js";
+import { humanizeError } from "../lib/modelError.js";
 import { lastUserMessage } from "../lib/lastUserMessage.js";
 import { retryPlan } from "../lib/retry.js";
 import { retryLastUserMessage } from "../lib/retryAction.js";
@@ -41,10 +42,15 @@ export function TurnErrorState({
   const retrying = interactive && status === "running";
   const canRetry = interactive && !retrying && prev !== null && plan !== null;
 
+  // 显示的是人话版,原文折在"原文"后面(见 lib/modelError.ts):
+  // 一屏红字里念 `{"error":{"code":"1113"…}}` 等于让读的人自己当解析器
+  const human = humanizeError(detail);
+
   return (
     <ErrorState
       title={title}
-      detail={detail}
+      detail={human.text}
+      {...(human.text !== human.raw ? { raw: human.raw } : {})}
       retrying={retrying}
       {...(canRetry
         ? {
