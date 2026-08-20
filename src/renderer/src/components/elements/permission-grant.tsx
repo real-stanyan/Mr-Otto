@@ -71,8 +71,14 @@ export function PermissionGrant({
         ))}
       </div>
 
+      {/* actions === null 的意思是"这排我不要" —— 连这个 h-8 的位子都别占,
+          否则卡底下留一条空带。actions === undefined 才落回自带那排:
+          不能写 `actions ?? …`,?? 会把 null 也当成"没传" */}
+      {actions === null ? null : (
       <div className="flex h-8 items-center justify-end gap-2">
-        {actions ?? (scope === "pending" ? (
+        {actions !== undefined ? (
+          actions
+        ) : scope === "pending" ? (
           <>
             <button
               type="button"
@@ -110,8 +116,9 @@ export function PermissionGrant({
           >
             {scope === "denied" ? "denied" : `granted · ${scope}`}
           </span>
-        ))}
+        )}
       </div>
+      )}
     </div>
   );
 }
