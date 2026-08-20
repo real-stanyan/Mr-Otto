@@ -46,3 +46,13 @@ export function FileTypeIcon({
     />
   );
 }
+
+/** 文件夹那一枚（工作区选择器用）。和文件图标同一套来源、同一种画法 ——
+    界面上文件和文件夹经常挨着出现（工作区那一行下面就是文件路径），
+    一枚线框 lucide 配一排彩色 material 图标，像两套界面拼在一起。
+    material 的这枚是蓝灰实心（#90a4ae），明暗两套主题都压得住 */
+export function FolderIcon({ className }: { className?: string }) {
+  const src = urlOf("folder");
+  if (src === undefined) return null;
+  return <img src={src} alt="" aria-hidden="true" draggable={false} className={cn("size-[14px] shrink-0", className)} />;
+}

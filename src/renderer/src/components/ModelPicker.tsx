@@ -218,6 +218,13 @@ export function ModelPicker({
         {/* showEffort={false}：挡位归 ThinkingPicker 那枚钮，
             两处都显示就成了同一件事说两遍（还得回答"点哪个才能改"） */}
         <ModelSelectorValue placeholder={value} showEffort={false} />
+        {/* 走赠额时在触发器上留个记号:浮层一关,"我这会儿花的是谁的钱"就再也看不见了 ——
+            而这两条路的型号名一模一样,不标就只能靠记 */}
+        {lane === "grant" && (
+          <span className="shrink-0 rounded-[4px] bg-foreground/[0.07] px-[5px] py-[1px] text-[10.5px] leading-[1.5] text-muted-foreground">
+            赠额
+          </span>
+        )}
       </ModelSelectorTrigger>
 
       {/* searchable={false} 不只是"不画搜索框":Content 据此决定 cmdk 是否过滤,
