@@ -41,6 +41,7 @@ import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
+import { CostPanel } from "./components/CostPanel.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
@@ -123,23 +124,6 @@ import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
-    section_classified 也算：分区分类是真花钱的模型调用，漏掉这一行统计就说谎 */
-function totalTokens(events: SessionEvent[]): number {
-  let sum = 0;
-  for (const e of events) {
-    if (
-      (e.type === "assistant_message" ||
-        e.type === "context_compacted" ||
-        e.type === "section_classified") &&
-      e.usage
-    ) {
-      sum += e.usage.promptTokens + e.usage.completionTokens;
-    }
-  }
-  return sum;
-}
-
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
    多处复用的样式串抽成常量:一处改全局生效,JSX 里不抄长串。
    一次性样式直接内联在各自元素上 */
@@ -214,10 +198,6 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
 }) {
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
-  const lastUsage = [...events].reverse().find(
-    (e): e is SessionEvent & { usage: { promptTokens: number; completionTokens: number } } =>
-      (e.type === "assistant_message" || e.type === "context_compacted") && e.usage !== undefined
-  )?.usage;
   const compacts = events.filter((e) => e.type === "context_compacted").length;
   const n = (x: number) => x.toLocaleString("en-US");
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
@@ -275,16 +255,9 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       </div>
 
       <div className="pt-[6px] border-t border-border">
-        {lastUsage && (
-          <div className={POP_ROW}>
-            <span>最近一次调用</span>
-            <span className={V}>入 {n(lastUsage.promptTokens)} · 出 {n(lastUsage.completionTokens)}</span>
-          </div>
-        )}
-        <div className={POP_ROW}>
-          <span>会话累计消耗</span>
-          <span className={V}>{n(totalTokens(events))} tokens</span>
-        </div>
+        {/* 花费按型号拆开(cost-meter):正文走贵的、压缩/分区/建议走便宜的,
+            只报一个总数会把这件事抹平 */}
+        <CostPanel events={events} />
         <div className={POP_ROW}>
           <span>事件日志</span>
           <span className={V}>{events.length} 条{compacts > 0 ? ` · 压缩 ${compacts} 次` : ""}</span>

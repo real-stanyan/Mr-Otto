@@ -1,6 +1,6 @@
 "use client";
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
 import { pct } from "@/lib/range.js";
@@ -17,6 +17,8 @@ export function CostMeter({
   runCost,
   sessionCost,
   lines,
+  runLabel,
+  sessionLabel,
   className,
   ...props
 }: Omit<
@@ -26,6 +28,9 @@ export function CostMeter({
   runCost: string;
   sessionCost: string;
   lines: readonly CostLine[];
+  /** 本仓改动:两行标签可换。原件写死 "this run"/"session",本仓是中文界面 */
+  runLabel?: ReactNode;
+  sessionLabel?: ReactNode;
 }) {
   return (
     <div
@@ -42,9 +47,9 @@ export function CostMeter({
         <span className="text-2xl font-medium tracking-tight tabular-nums">
           {runCost}
         </span>
-        <span className={cn(mono, "text-foreground/30")}>this run</span>
+        <span className={cn(mono, "text-foreground/30")}>{runLabel ?? "this run"}</span>
         <span className={cn(mono, "text-foreground/35 ms-auto tabular-nums")}>
-          {sessionCost} session
+          {sessionCost} {sessionLabel ?? "session"}
         </span>
       </div>
 

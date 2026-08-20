@@ -30,6 +30,7 @@ import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
+import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import { timingStats } from "./messageTiming.js";
@@ -232,19 +233,6 @@ const MessageTimingFooter: ComponentType = () => {
 // 没有放回 App.tsx 再 export 回来 —— 那样 App.tsx 就要 import OttoThread.tsx
 // (渲染它),OttoThread.tsx 又要 import App.tsx(用这些函数),两个模块互相 import
 // 形成循环依赖。这几个函数只有这里一个消费者,直接放在这里最干净
-
-/** 会话累计 token（prompt + completion）——又一个日志投影：重开 app 账不丢。
-    App.tsx 也有一份同名函数(供 CtxRing 用),两处消费者不同、没有共同调用方,
-    没有为了不重复这八行去建一个新的共享模块 */
-function totalTokens(events: SessionEvent[]): number {
-  let sum = 0;
-  for (const e of events) {
-    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
-      sum += e.usage.promptTokens + e.usage.completionTokens;
-    }
-  }
-  return sum;
-}
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
