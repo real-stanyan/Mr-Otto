@@ -49,6 +49,7 @@ import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
+import { SessionActivity } from "./components/SessionActivity.js";
 import { Chart } from "@/components/elements/chart.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { contextSeries } from "../../session/deriveUsage.js";
@@ -1860,6 +1861,9 @@ function Welcome() {
       </ComposerBar>
       </AttachDropZone>
       <p className="text-muted-foreground text-xs leading-[1.7]">agent 的文件读写限制在所选文件夹内，危险操作先经你审批。</p>
+      {/* 这半年在这儿开过多少会话(activity-graph)。这一屏的语境是"要开始点什么"，
+          而"上次是什么时候、多久没碰了"正是这个语境里唯一有用的历史 */}
+      <SessionActivity workspace={workspace} className="w-[min(640px,90%)] max-w-none text-left" />
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );
