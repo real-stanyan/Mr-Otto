@@ -99,7 +99,7 @@ import { retryPlan } from "./lib/retry.js";
 import { retryLastUserMessage } from "./lib/retryAction.js";
 import {
   ComposerPrimitive,
-  unstable_useMentionAdapter,
+  unstable_useTriggerPopoverAriaProps,
   unstable_useSlashCommandAdapter,
   useAui,
   useAuiState,
@@ -109,6 +109,7 @@ import {
   ContextDisplayTrigger,
   ContextDisplayRingVisual,
 } from "@/components/assistant-ui/context-display.js";
+import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
 import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
@@ -225,7 +226,10 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       sideOffset={8}
       // 版式照旧：卡片底色/圆角/阴影都沿用原来的浮窗，只是开合改由 Tooltip 管。
       // 箭头藏掉——这是一张信息卡，不是一句提示气泡
-      className="w-[276px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&_[data-slot=tooltip-arrow]]:hidden"
+      // 藏箭头:这是一张信息卡,不是一句提示气泡。本仓 tooltip 的箭头是
+      // Radix 的 TooltipPrimitive.Arrow(见 ui/tooltip.tsx),它渲染成一个 <svg>,
+      // 身上没有 data-slot —— 按标签选
+      className="w-[276px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
       aria-label="上下文用量详情"
     >
       <div className="flex justify-between items-baseline gap-3 mb-[7px]">
@@ -442,7 +446,6 @@ function ComposerBar() {
   const ctxWindow = choice?.contextWindow ?? 128_000;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
-  const pct = Math.min(100, Math.round((used / ctxWindow) * 100));
 
   const approvalSelect = (
     <Select value={approvalMode} onValueChange={(v) => void setApprovalMode(v as "ask" | "auto")}>
@@ -533,9 +536,10 @@ function ComposerBar() {
           {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
               (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
           <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
+            {/* 不给 title:富 tooltip 已经把同样的数字说了一遍,
+                原生气泡会在它旁边再冒一个,成了重影 */}
             <ContextDisplayTrigger
               className="p-[3px] hover:bg-foreground/[0.07]"
-              title={`上下文占用 ~${fmtCtx(used)}/${fmtCtx(ctxWindow)} · ${pct}%`}
               aria-label="上下文用量详情"
             >
               <ContextDisplayRingVisual />
@@ -1776,6 +1780,82 @@ function Welcome() {
   );
 }
 
+/** 输入框本体。
+    从 ChatComposer 里再抽一层是**必须**的:它要调
+    unstable_useTriggerPopoverAriaProps() 判断补全浮层开没开,而那个 hook 读的是
+    TriggerPopoverRoot 的 context —— root 由 ChatComposer 自己渲染,同一个组件里
+    调等于在 provider 外面调。
+
+    为什么非得判浮层开没开:asChild 合并事件时,**我们的 onKeyDown 先跑**,
+    assistant-ui 的键盘处理在后面。所以浮层开着按 Enter,会先被下面这段当成
+    "发送"处理掉,浮层压根没机会选中当前项 —— 实测就是打个 `/` 再回车,
+    发出去一条 `/`,然后报「未知指令 /」。
+    aria-expanded 是官方给出的公开信号:ComposerPrimitive.Input 在浮层开着时
+    把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
+function ComposerTextarea({
+  inputRef,
+  disabled,
+  onSubmit,
+  onPasteFiles,
+}: {
+  /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
+  inputRef: React.Ref<HTMLTextAreaElement>;
+  disabled: boolean;
+  onSubmit: () => void;
+  onPasteFiles: (files: File[]) => void;
+}) {
+  const aria = unstable_useTriggerPopoverAriaProps();
+  const popoverOpen = aria["aria-expanded"] === true;
+
+  return (
+    // textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
+    // 自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条）。
+    //
+    // ComposerPrimitive.Input 接管文本状态(值/受控/焦点管理),外观仍是本仓的 Textarea。
+    // 三个关闭项都是刻意的:
+    // - submitMode="none":发送归 ChatComposer 的 submit()(理由见那边的头注释)
+    // - addAttachmentOnPaste={false}:粘贴附件走 store 的闸门(intakePastedFiles),
+    //   不走 assistant-ui 的附件通道
+    // - cancelOnEscape={false}:Esc 在本仓是"停止 turn"(App 里挂 window 的那个监听),
+    //   不是"清空正在打的字"
+    <ComposerPrimitive.Input
+      asChild
+      submitMode="none"
+      addAttachmentOnPaste={false}
+      cancelOnEscape={false}
+    >
+      <Textarea
+        ref={inputRef}
+        className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
+        autoFocus
+        rows={1}
+        placeholder={disabled ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
+        disabled={disabled}
+        onPaste={(e) => {
+          // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
+          // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
+          // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
+          const files = Array.from(e.clipboardData.files);
+          if (files.length === 0) return;
+          e.preventDefault();
+          onPasteFiles(files);
+        }}
+        onKeyDown={(e) => {
+          // 浮层开着 = 这一下键盘归浮层(↑↓ 选、Tab 补全、Enter 选中、Esc 关)。
+          // 一律放行,别在这动手
+          if (popoverOpen || e.defaultPrevented) return;
+          // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
+          // preventDefault 必须有：不拦的话换行会先插进 textarea 再被清空,闪一帧
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+    </ComposerPrimitive.Input>
+  );
+}
+
 /** 会话中的输入框。
     从 App() 里抽出来是**必须**的,不是顺手整理:它现在读 assistant-ui 的 composer
     作用域(useAui/useAuiState),而 OttoRuntimeProvider 是 App() 自己渲染的 ——
@@ -1818,16 +1898,28 @@ function ChatComposer() {
     () => ottoDirectiveFormatter(skills.map((k) => k.name)),
     [skills]
   );
-  const skillTrigger = unstable_useMentionAdapter({
-    items: skills.map((k) => ({
+  // 刻意不用 unstable_useMentionAdapter:它的 matchesQuery 连 **description** 一起匹,
+  // 而 skill 的 description 是几十字的说明。实测打 "review" 命中五条毫不相干的
+  // (apple-design / cloudflare-one / durable-objects…都因为描述里有 "review"),
+  // 真正的那条被挤到看不见的地方。补全菜单是按名字找东西的地方,不是全文检索。
+  // 形状照抄它的 flat 分支(categories/categoryItems 返回空 + 全靠 search)
+  const skillAdapter = useMemo<Unstable_TriggerAdapter>(() => {
+    const items = skills.map((k) => ({
       id: k.name,
       type: "skill",
       label: `$${k.name}`,
       ...(k.description ? { description: k.description } : {}),
-    })),
-    includeModelContextTools: false, // 本仓的工具表不在 assistant-ui 的 model context 里
-    formatter: skillFormatter,
-  });
+    }));
+    return {
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query: string) => {
+        const lower = query.toLowerCase();
+        return lower === "" ? items : items.filter((i) => i.id.toLowerCase().includes(lower));
+      },
+    };
+  }, [skills]);
+  const skillDirective = useMemo(() => ({ formatter: skillFormatter }), [skillFormatter]);
   const slashTrigger = unstable_useSlashCommandAdapter({
     removeOnExecute: true,
     commands: Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
@@ -1898,8 +1990,8 @@ function ChatComposer() {
               <ComposerTriggerPopover
                 char="$"
                 className={TRIGGER_POP}
-                adapter={skillTrigger.adapter}
-                directive={skillTrigger.directive}
+                adapter={skillAdapter}
+                directive={skillDirective}
                 emptyItemsLabel="没有匹配的 skill"
                 emptyCategoriesLabel="还没装 skill"
                 backLabel="返回"
@@ -1916,50 +2008,12 @@ function ChatComposer() {
                 loadingLabel="加载中…"
               />
               <StagedChips className="pt-[6px] px-[10px]" />
-              {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
-                  自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条） */}
-              {/* ComposerPrimitive.Input 接管文本状态(值/受控/焦点管理),外观仍是本仓的 Textarea。
-                  三个关闭项都是刻意的:
-                  - submitMode="none":发送归下面的 submit()(理由见组件头注释)
-                  - addAttachmentOnPaste={false}:粘贴附件走 store 的闸门(intakePastedFiles),
-                    不走 assistant-ui 的附件通道
-                  - cancelOnEscape={false}:Esc 在本仓是"停止 turn"(App 里挂 window 的那个监听),
-                    不是"清空正在打的字" */}
-              <ComposerPrimitive.Input
-                asChild
-                submitMode="none"
-                addAttachmentOnPaste={false}
-                cancelOnEscape={false}
-              >
-              <Textarea
-                ref={textareaRef}
-                className="border-none shadow-none min-h-0 bg-transparent text-foreground pt-2 px-2 pb-[6px] text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-muted-foreground"
-                autoFocus
-                rows={1}
-                placeholder={status === "running" ? "turn 进行中…" : "输入消息，回车发送，Shift+回车换行"}
+              <ComposerTextarea
+                inputRef={textareaRef}
                 disabled={status === "running"}
-                onPaste={(e) => {
-                  // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
-                  // 并拦掉默认行为——不然 Chromium 会把文件名当文本塞进输入框。
-                  // 没有文件就完全不插手:粘文字仍是原生行为(含撤销栈)
-                  const files = Array.from(e.clipboardData.files);
-                  if (files.length === 0) return;
-                  e.preventDefault();
-                  void filesToPayload(files).then(attachPasted);
-                }}
-                onKeyDown={(e) => {
-                  // 补全浮层开着时,↑↓/Tab/Enter/Esc 都已被 TriggerPopover 在更靠前的
-                  // 阶段吃掉并 preventDefault —— 这里只要认这一点就够,不用再判菜单开没开
-                  if (e.defaultPrevented) return;
-                  // Shift+Enter 走默认行为 = 插换行；裸 Enter 发送（IME 选字除外）。
-                  // preventDefault 必须有：不拦的话换行会先插进 textarea 再被 setInput("") 清掉，闪一帧
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    submit();
-                  }
-                }}
+                onSubmit={submit}
+                onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
               />
-              </ComposerPrimitive.Input>
               {/* items-end:窄宽时 ComposerBar 换两行,发送键贴末行底对齐,不悬在行间 */}
               <div className="flex items-end gap-2">
                 <ComposerBar />

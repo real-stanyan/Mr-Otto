@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fromThreadMessageLike } from "@assistant-ui/react";
 import { toThreadMessages } from "../../src/renderer/src/aui/toThreadMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -12,7 +13,7 @@ describe("toThreadMessages — 骨架", () => {
     const e = ev({ type: "session_created" }, 0);
     const events = [e];
     expect(toThreadMessages(events)).toEqual([
-      { role: "system", id: "0", createdAt: new Date(1000), content: [], metadata: { custom: { otto: e } } },
+      { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
     ]);
   });
 
@@ -201,7 +202,7 @@ describe("toThreadMessages — 边界", () => {
     expect(out[0]?.role).toBe("user");
     expect(out[1]).toEqual({
       role: "system", id: "1", createdAt: new Date(1001),
-      content: [], metadata: { custom: { otto: compacted } },
+      content: [{ type: "text", text: "" }], metadata: { custom: { otto: compacted } },
     });
     expect(out[2]?.role).toBe("user");
   });
@@ -373,5 +374,55 @@ describe("toThreadMessages —— 产物的排布", () => {
     ];
     const parts = toThreadMessages(events)[0]?.content as readonly { type: string }[];
     expect(parts.filter((p) => p.type === "source")).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 这一段是 2026-08-20 那次「测试全绿、界面一开就崩」之后补的。
+//
+// 崩的原因:审计行投成 `role:"system"` + `content: []`,而 assistant-ui 的
+// fromThreadMessageLike 对 system 消息有一条硬校验 ——「恰好一个 text part」,
+// 不满足就抛,整个渲染层白屏。上面那些 toEqual 断言逐字段比对了投影的形状,
+// 却没有一条问过「这个形状 assistant-ui 收不收」。
+//
+// 所以这里直接拿它自己的转换器当校验器过一遍:形状对不对,由它说了算。
+describe("投影产物必须过 assistant-ui 自己的校验(fromThreadMessageLike)", () => {
+  it("三种角色 + 各类 part 全部能被接收", () => {
+    const events: SessionEvent[] = [
+      ev({ type: "session_created", workspace: "/w" }, 0),
+      ev({ type: "model_changed", provider: "deepseek", model: "deepseek-chat" }, 1),
+      ev({ type: "skill_invoked", name: "review", content: "说明书全文" }, 2),
+      ev({ type: "user_message", content: "查一下 vite 然后写个文件" }, 3),
+      ev(
+        {
+          type: "assistant_message",
+          content: "这就去",
+          reasoning: "先搜再写",
+          reasoningMs: 820,
+          model: "deepseek-chat",
+          toolCalls: [
+            { id: "c1", name: "web_search", args: { query: "vite" } },
+            { id: "c2", name: "write_file", args: { path: "/w/a.md", content: "hi" } },
+          ],
+        },
+        4
+      ),
+      ev({ type: "tool_execution_started", toolCallId: "c1" }, 5),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "[Vite](https://vite.dev/)" }, 6),
+      ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "已写入" }, 7),
+      ev({ type: "approval_decision", toolCallId: "c2", decision: "denied", reason: "不许" }, 8),
+      ev({ type: "context_compacted", summary: "摘要", model: "m" }, 9),
+      ev({ type: "turn_ended", outcome: "error", error: "炸了" }, 10),
+      ev({ type: "suggestions_generated", suggestions: ["再跑一次"], model: "m" }, 11),
+    ];
+
+    const messages = toThreadMessages(events, { content: "直播中", reasoning: "在想" });
+    expect(messages.length).toBeGreaterThan(0);
+    // 抛出即失败 —— 这正是界面崩掉时发生的事
+    for (const m of messages) {
+      expect(() =>
+        fromThreadMessageLike(m, m.id ?? "fallback", { type: "complete", reason: "stop" })
+      ).not.toThrow();
+    }
   });
 });

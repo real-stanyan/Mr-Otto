@@ -85,7 +85,13 @@ function toAuditMessage(e: SessionEvent): ThreadMessageLike {
     role: "system",
     id: String(e.seq),
     createdAt: new Date(e.ts),
-    content: [],
+    // 必须**恰好一个 text part**,空数组会让 assistant-ui 的 fromThreadMessageLike
+    // 当场抛「System messages must have exactly one text message part.」——
+    // 整个渲染层崩掉,而不是这一行不显示。
+    // 内容给空串:审计行的真正载荷在 metadata.custom.otto 上,由 SystemMessage 槽
+    // 交给 EventRow 渲染(见 thread.tsx 的 system 分支,它压根不读 content)。
+    // 这里写任何字都会变成"另一份说法",空串才诚实:这条消息没有正文
+    content: [{ type: "text", text: "" }],
     metadata: { custom: { otto: e } },
   };
 }

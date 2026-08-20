@@ -163,7 +163,10 @@ const Items: FC<ItemsProps> = ({
                     {item.label}
                   </span>
                   {item.description && (
-                    <span className="text-muted-foreground ms-5.5 text-xs leading-tight">
+                    // 本仓改动:描述截成一行(line-clamp-1)。上游让它整段折行,
+                    // 而 skill 的 description 常有三五行——一屏只放得下三条,
+                    // 补全菜单变成了阅读材料。被换掉的手写菜单一直是单行 truncate
+                    <span className="text-muted-foreground ms-5.5 line-clamp-1 w-full text-xs leading-tight">
                       {item.description}
                     </span>
                   )}
