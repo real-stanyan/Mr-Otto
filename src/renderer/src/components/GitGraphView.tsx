@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
+import { FileTypeIcon } from "./FileTypeIcon.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
@@ -283,6 +284,9 @@ function CommitDetailPane() {
           <div className="grid gap-1">
             {view.result.detail.files.map((f) => (
               <div key={f.file} className="flex items-center gap-2 text-xs">
+                {/* 一次提交动了十几个文件时,这一列全是等宽路径;类型图标是这一列
+                    唯一能"扫"的东西 —— 哪几个是测试、哪个是配置,不用逐行读 */}
+                <FileTypeIcon path={f.file} className="size-[13px]" />
                 <span className="flex-1 min-w-0 truncate font-mono" title={f.renamedFrom ? `${f.renamedFrom} → ${f.file}` : f.file}>
                   {f.renamedFrom && <span className="text-muted-foreground">{f.renamedFrom} → </span>}
                   {f.file}

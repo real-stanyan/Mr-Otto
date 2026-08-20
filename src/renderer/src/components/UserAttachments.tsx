@@ -8,8 +8,9 @@
 // (UserTextFile 的快照语义),点开卡片就地核对,不摊开占掉整屏。
 
 import { useEffect, useState } from "react";
-import { ChevronRight, FileText, ImageOff } from "lucide-react";
+import { ChevronRight, ImageOff } from "lucide-react";
 import type { UserAttachmentRef, UserTextFile } from "../../../session/events.js";
+import { FileTypeIcon } from "./FileTypeIcon.js";
 
 /** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
 const thumbCache = new Map<string, string>();
@@ -81,7 +82,10 @@ function FileCard({ file }: { file: UserTextFile }) {
         onClick={() => setOpen(!open)}
         className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-2.5 py-2 text-left transition-[background-color,transform] duration-150 ease-[var(--ease-strong)] hover:bg-foreground/5 active:scale-[0.99]"
       >
-        <FileText className="size-4 shrink-0 text-brand" aria-hidden />
+        {/* 按文件类型走的图标(material-icon-theme 那套):一排附件里
+            哪个是配置、哪个是脚本、哪个是文档,扫一眼就分得出,
+            不用逐个读文件名的后缀 */}
+        <FileTypeIcon path={file.name} />
         <span className="min-w-0 truncate font-mono text-xs text-foreground">{file.name}</span>
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {sizeLabel(file.bytes)}

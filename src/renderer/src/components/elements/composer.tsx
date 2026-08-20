@@ -16,6 +16,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
+import { FileTypeIcon } from "@/components/FileTypeIcon.js";
+import { DEFAULT_FILE_ICON, fileIconName } from "@/lib/fileIcon.js";
 import {
   field,
   floating,
@@ -256,6 +258,11 @@ export function ComposerAttachmentChip({
   thumbnail?: ReactNode;
 }) {
   const Icon = ATTACHMENT_ICONS[attachment.kind ?? "text"];
+  // 本仓改动:名字认得出类型就画类型图标(material-icon-theme 那套)。
+  // 原件的 kind 只有三档(图/文本/压缩包),而一排暂存附件里真正要分辨的是
+  // "哪个是配置、哪个是代码、哪个是文档" —— 三档图标分不出这件事。
+  // 认不出的名字仍然退回 kind 那三枚,不画一个空泛的通用文件图标
+  const typed = attachment.name !== "" && fileIconName(attachment.name) !== DEFAULT_FILE_ICON;
   return (
     <div
       data-slot="composer-attachment"
@@ -268,7 +275,12 @@ export function ComposerAttachmentChip({
       {...props}
     >
       <span className="bg-background text-foreground/45 flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px] dark:bg-white/10">
-        {thumbnail ?? <Icon className="size-4" />}
+        {thumbnail ??
+          (typed ? (
+            <FileTypeIcon path={attachment.name} className="size-[18px]" />
+          ) : (
+            <Icon className="size-4" />
+          ))}
       </span>
       <span className="flex flex-col">
         <span className="max-w-36 truncate text-xs font-medium">
