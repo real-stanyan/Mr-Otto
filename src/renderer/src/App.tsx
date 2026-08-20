@@ -268,7 +268,8 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       {series.length >= 3 && (
         <Chart
           label="上下文增长"
-          value={`~${fmtCtx(breakdown.total)}`}
+          // 空串 = 不画那个大数:上面那枚 ticker 已经报过同一个数了
+          value=""
           points={series}
           visibleCount={series.length}
           variant="area"

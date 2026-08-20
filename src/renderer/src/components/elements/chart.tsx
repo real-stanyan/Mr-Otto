@@ -87,9 +87,14 @@ export function Chart({
         )}
       </div>
 
-      <span className="text-2xl font-medium tracking-tight tabular-nums">
-        {value}
-      </span>
+      {/* 本仓改动:value 传空串就不画这一行。原件的大数是这张卡的主语（画廊里
+          它单独一张），而本仓把曲线挂在上下文浮层里，主语已经由上面那枚
+          number-ticker 报过一遍了 —— 同一个数隔 100px 写两次，读者会以为是两件事 */}
+      {value !== "" && (
+        <span className="text-2xl font-medium tracking-tight tabular-nums">
+          {value}
+        </span>
+      )}
 
       <svg
         viewBox={`0 0 ${W} ${H}`}

@@ -1,8 +1,10 @@
 "use client";
 
 import type { ComponentProps } from "react";
+import { useMemo } from "react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
+import { isNumericColumn } from "@/lib/tableColumns.js";
 
 /** 本仓改动:原件是写死的三列（Model / Context / Cost）+ 写死的行结构
     { name, context, cost }，因为它在画廊里演示的就是"模型用量表"那一张。
@@ -20,12 +22,11 @@ export interface DataTableProps
   cycle?: number;
 }
 
-/** 首列吃剩余宽度、其余各列右对齐:表格里除了第一列（名字/项目）之外，
-    绝大多数是数字或短标签，右对齐才对得上位。等宽字体也只给这些列 */
-const cellClass = (index: number) =>
-  index === 0
-    ? "text-foreground/90 flex-1 min-w-0 truncate"
-    : cn(mono, "text-foreground/55 w-20 shrink-0 truncate text-end tabular-nums");
+/** 一列的排版。数字列:窄、右对齐、等宽;正文列:分摊剩余宽度、左对齐、**换行不截断** */
+const colClass = (numeric: boolean, first: boolean) =>
+  numeric
+    ? "w-20 shrink-0 text-end"
+    : cn("min-w-0 flex-1 break-words", first && "font-medium");
 
 export function DataTable({
   columns,
@@ -35,6 +36,12 @@ export function DataTable({
   className,
   ...props
 }: DataTableProps) {
+  // 每列量一次:排版靠它,表头和数据行必须用同一份判断,否则列头会和列错位
+  const numeric = useMemo(
+    () => columns.map((_, i) => isNumericColumn(rows, i)),
+    [columns, rows],
+  );
+
   return (
     <div
       data-slot="data-table"
@@ -45,16 +52,12 @@ export function DataTable({
       )}
       {...props}
     >
-      <div className="flex items-center gap-2.5 px-4 pt-3 pb-2">
+      <div className="flex items-start gap-2.5 px-4 pt-3 pb-2">
         {leadingBadge && <span className="size-5 shrink-0" aria-hidden />}
         {columns.map((col, index) => (
           <span
             key={index}
-            className={cn(
-              mono,
-              "text-foreground/35 truncate",
-              index === 0 ? "flex-1 min-w-0" : "w-20 shrink-0 text-end",
-            )}
+            className={cn(mono, "text-foreground/35", colClass(numeric[index] === true, false))}
           >
             {col}
           </span>
@@ -65,7 +68,7 @@ export function DataTable({
         {rows.map((row, rowIndex) => (
           <div
             key={rowIndex}
-            className="fade-in slide-in-from-bottom-1 animate-in fill-mode-both hover:bg-foreground/[0.03] flex items-center gap-2.5 px-4 py-2.5 transition-colors duration-300 motion-reduce:animate-none"
+            className="fade-in slide-in-from-bottom-1 animate-in fill-mode-both hover:bg-foreground/[0.03] flex items-start gap-2.5 px-4 py-2.5 transition-colors duration-300 motion-reduce:animate-none"
             style={{ animationDelay: `${rowIndex * 80}ms` }}
           >
             {leadingBadge && (
@@ -73,11 +76,20 @@ export function DataTable({
                 {row[0]?.[0] ?? ""}
               </span>
             )}
-            {columns.map((_, colIndex) => (
-              <span key={colIndex} className={cellClass(colIndex)}>
-                {row[colIndex] ?? ""}
-              </span>
-            ))}
+            {columns.map((_, colIndex) => {
+              const num = numeric[colIndex] === true;
+              return (
+                <span
+                  key={colIndex}
+                  className={cn(
+                    num ? cn(mono, "text-foreground/55 tabular-nums") : "text-foreground/90",
+                    colClass(num, colIndex === 0),
+                  )}
+                >
+                  {row[colIndex] ?? ""}
+                </span>
+              );
+            })}
           </div>
         ))}
       </div>
