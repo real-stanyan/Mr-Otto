@@ -39,7 +39,9 @@ import { useChat } from "../store.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
-import { timingStats } from "./messageTiming.js";
+import { liveTimingStats, timingStats } from "./messageTiming.js";
+import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
+import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { toolSummary } from "../lib/toolSummary.js";
@@ -327,9 +329,19 @@ function fmtElapsed(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-/** orb 旁的状态文案：耗时 · token · 在干嘛（Claude Code 状态行同款，一行合体）。
-    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点 */
-function TurnMeta({ events }: { events: SessionEvent[] }) {
+/** orb 旁的那一行数字 —— 和消息页脚同一个 element(message-timing),
+    区别只在数字是估的(标 `~`,见 aui/messageTiming.ts 的 liveTimingStats)。
+    用同一个 element 是有意的:turn 跑完之后这一行会被消息页脚那一行接替,
+    两者长得一样,读起来就是"同一行数字从估的变成结算过的",而不是换了个东西。
+
+    挂载即计时——本组件只在 turn 进行中存在，出生时刻就是 turn 起点。
+    1 秒一跳:再快就是抖动(毫秒位每帧都在变,眼睛只会觉得吵),再慢就不像活的 */
+function TurnMeta({ events, toolDefs, output }: {
+  events: SessionEvent[];
+  toolDefs: ToolDefinition[];
+  /** 已经吐出来的字(正文 + 思考——思考也计费) */
+  output: string;
+}) {
   const [start] = useState(() => Date.now());
   const [now, setNow] = useState(start);
   useEffect(() => {
@@ -337,12 +349,14 @@ function TurnMeta({ events }: { events: SessionEvent[] }) {
     return () => clearInterval(t);
   }, []);
 
-  const tokens = useMemo(() => totalTokens(events), [events]);
-  return (
-    <span className="tabular-nums">
-      {fmtElapsed(now - start)} · {fmtTokens(tokens)} tokens
-    </span>
-  );
+  // 送进去的 ≈ 此刻上下文有多大(和上下文圆环读同一份估算,两处数字不会打架)
+  const promptTokens = useMemo(() => contextBreakdown(events, toolDefs).total, [events, toolDefs]);
+  const stats = liveTimingStats({
+    elapsedMs: now - start,
+    promptTokens,
+    completionTokens: estimateTokens(output),
+  });
+  return <MessageTiming stats={stats} streaming className="w-auto" />;
 }
 
 /** 当前执行中的工具（有请求、无结果 = 还没落地）。纯日志投影：数 tool_result 对号 */
@@ -398,6 +412,7 @@ const ErrorBanner: ComponentType = () => {
     这两个条件合起来正是原来 App.tsx 里 `(status === "running" || approval !== null)` */
 const RunIndicator: ComponentType = () => {
   const events = useChat((s) => s.events);
+  const toolDefs = useChat((s) => s.toolDefs);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
@@ -420,7 +435,7 @@ const RunIndicator: ComponentType = () => {
       </MarkerIcon>
       <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
       <span className="ml-auto shrink-0 text-xs">
-        <TurnMeta events={events} />
+        <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
       </span>
     </Marker>
   );

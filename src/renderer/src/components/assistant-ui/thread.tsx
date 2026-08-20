@@ -443,7 +443,11 @@ const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        // 本仓改动:改成竖排。上游把「页脚数字」和「复制/重跑/更多」挤在同一行,
+        // 而本仓的页脚是一整行数字(耗时·吞吐·token·花费),四组数后面再接三颗
+        // 图标钮,这一行就同时是读物和控件 —— 眼睛先要把图标从数字里挑出来。
+        // 拆成两行:上面一行只读,下面一行只按
+        className={cn("ms-2 flex flex-col items-start gap-1", ACTION_BAR_HEIGHT)}
       >
         {/* 本仓改动:不渲染 BranchPicker。对话分支要 adapter 提供 setMessages,
             而本仓刻意不给(ADR-0036:给了就等于凭空长出一条绕开事件日志的写路径)。

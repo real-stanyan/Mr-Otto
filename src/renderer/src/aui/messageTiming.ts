@@ -73,3 +73,37 @@ export function timingStats(
 
   return stats;
 }
+
+/**
+ * turn 进行中的那一行（同一个 element，数字是估的）。
+ *
+ * 为什么要估:usage 只随 assistant_message 一起回来,turn 跑着的时候一个真数都没有。
+ * 但"跑了多久、出了多少字、多快"恰恰是这段时间里唯一想知道的事 —— 等它跑完再报,
+ * 报的是历史。所以照本仓上下文圆环的老规矩:估,并且**在数字上标 `~`**,
+ * 让人一眼分得出这是估的还是结算过的。
+ *
+ * 唯独不估花费:钱是估不得的。单价乘一个猜出来的 token 数,得到的是一个看着像
+ * 结算金额的假数 —— 页脚上一格空着，比写一个错的钱数好（同 modelPricing 的规矩）。
+ *
+ * @param elapsedMs        turn 起点到此刻
+ * @param promptTokens     送进去的（＝此刻上下文大小，contextBreakdown 估的）
+ * @param completionTokens 已经吐出来的（正文 + 思考，都计费）
+ */
+export function liveTimingStats(opts: {
+  elapsedMs: number;
+  promptTokens: number;
+  completionTokens: number;
+}): TimingStat[] {
+  const { elapsedMs, promptTokens, completionTokens } = opts;
+  const stats: TimingStat[] = [{ label: "elapsed", value: fmtDuration(elapsedMs) }];
+  // 吞吐要有分母:第一秒之内不出这一格,免得开头那一下报出个几百
+  if (elapsedMs >= 1000 && completionTokens > 0) {
+    const perSecond = completionTokens / (elapsedMs / 1000);
+    stats.push({ label: "tok/s", value: `~${perSecond.toFixed(perSecond < 10 ? 1 : 0)}` });
+  }
+  stats.push({
+    label: "tokens",
+    value: `↑~${fmtTokens(promptTokens)} ↓~${fmtTokens(completionTokens)}`,
+  });
+  return stats;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { timingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
+import { liveTimingStats, timingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
 
 const val = (stats: { label: string; value: string }[], label: string): string | undefined =>
   stats.find((s) => s.label === label)?.value;
@@ -89,5 +89,38 @@ describe("timingStats", () => {
 
   it("负耗时(时钟回拨)不出耗时那一格", () => {
     expect(timingStats({ model: "m" }, -5)).toEqual([]);
+  });
+});
+
+describe("liveTimingStats —— turn 跑着的时候那一行", () => {
+  const live = (o: Partial<Parameters<typeof liveTimingStats>[0]> = {}) =>
+    liveTimingStats({ elapsedMs: 5000, promptTokens: 6200, completionTokens: 150, ...o });
+
+  it("耗时是真的，不标 ~", () => {
+    expect(val(live(), "elapsed")).toBe("5.0s");
+  });
+
+  it("估出来的数都标 ~ —— 一眼分得出这是估的还是结算过的", () => {
+    expect(val(live(), "tokens")).toBe("↑~6.2k ↓~150");
+    expect(val(live(), "tok/s")).toBe("~30");
+  });
+
+  it("第一秒之内不报吞吐 —— 分母太小，开头那一下会报出个几百", () => {
+    expect(val(live({ elapsedMs: 400, completionTokens: 20 }), "tok/s")).toBeUndefined();
+    expect(val(live({ elapsedMs: 400 }), "elapsed")).toBe("400ms");
+  });
+
+  it("一个字都还没吐出来时不报吞吐 —— 0 除以时间是 0，写出来像卡住了", () => {
+    expect(val(live({ completionTokens: 0 }), "tok/s")).toBeUndefined();
+    expect(val(live({ completionTokens: 0 }), "tokens")).toBe("↑~6.2k ↓~0");
+  });
+
+  it("不报花费 —— 单价乘一个猜出来的 token 数，是个看着像结算金额的假数", () => {
+    expect(val(live(), "cost")).toBeUndefined();
+  });
+
+  it("耗时永远在，token 那一格永远在 —— 这一行不会整条消失", () => {
+    expect(live({ elapsedMs: 0, completionTokens: 0, promptTokens: 0 }).map((s) => s.label))
+      .toEqual(["elapsed", "tokens"]);
   });
 });
