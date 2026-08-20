@@ -27,7 +27,8 @@ import { createDirectiveText } from "../components/assistant-ui/directive-text.j
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
-import { domainOf, extractSources } from "./toolArtifacts.js";
+import { WebPreview } from "../components/elements/web-preview.js";
+import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { TurnErrorState } from "../components/TurnErrorState.js";
@@ -107,6 +108,51 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
   );
 };
 
+/** 读网页这一步:browser_read / web_extract。
+    通用工具行只会写「browser_read」+ 一坨折起来的 JSON,而这一步真正发生的事是
+    "打开了这个地址,读回了这些字"—— web-preview 的地址栏 + 正文框正好是这句话。
+    地址是可点的:走 Otto 自己的内嵌浏览器(理由同 OttoSource)。
+    没有刷新钮:重读一次是一件新的事,得走新的 tool_call 落盘(同 ToolError 的 actions={null}) */
+const WebPageCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
+  const sessionId = useChat((s) => s.sessionId);
+  const openBrowserPanel = useChat((s) => s.openBrowserPanel);
+  const loading = part.result === undefined;
+  const argUrl = (part.args as { url?: unknown } | undefined)?.url;
+  const page =
+    typeof part.result === "string"
+      ? extractPage(part.result, argUrl)
+      : { url: typeof argUrl === "string" ? argUrl : null, title: null, body: "" };
+
+  const url = page.url;
+
+  return (
+    <WebPreview
+      origin={url ?? "当前页面"}
+      loading={loading}
+      className="my-1 max-w-none"
+      {...(url === null
+        ? {}
+        : {
+            onOpenExternal: () => {
+              openBrowserPanel();
+              void window.otter.browserNavigate(sessionId, url);
+            },
+          })}
+    >
+      {/* 只给一眼:读回来的正文常常是几千字,全铺出来会把这条回复顶出屏外。
+          要全文的人点地址进浏览器看,那才是它本来的样子 */}
+      <div className="flex flex-col gap-1 px-3 py-2.5">
+        {page.title !== null && (
+          <span className="truncate text-[13px] font-medium">{page.title}</span>
+        )}
+        <p className="text-muted-foreground line-clamp-6 text-xs leading-relaxed whitespace-pre-wrap">
+          {page.body}
+        </p>
+      </div>
+    </WebPreview>
+  );
+};
+
 /** 工具组:出了错的那一组自己弹开。
     工具组默认折起来是对的(一屏五个 read_file 谁也不想逐个看),但"这一步没成"
     是这段回复的结论,不该躲在折叠头后面 —— 那张 tool-error 卡就在组里,
@@ -144,6 +190,13 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   // (下面那张 tool-error 卡才是结论)
   if (part.toolName === "web_search" && part.isError !== true) {
     return <WebSearchCard part={part} />;
+  }
+  // 读网页这两条同理:换成 web-preview 那张卡(地址栏 + 正文)。出错的那次不走这条路
+  if (
+    (part.toolName === "browser_read" || part.toolName === "web_extract") &&
+    part.isError !== true
+  ) {
+    return <WebPageCard part={part} />;
   }
   return (
     <>

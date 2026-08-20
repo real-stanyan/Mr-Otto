@@ -179,3 +179,23 @@ export function filePartFor(
   };
   return [part];
 }
+
+/** browser_read / web_extract 读回来的一页 → 地址 + 正文。
+    两条工具的输出都是 `# 标题\n地址\n\n正文…`（见 tools/browserRead.ts）,
+    但格式没有任何保证（web_extract 走的是第三方 API）——所以只当**约定**看:
+    第一行长得像 http(s) 就当地址，认不出来就退回参数里的 url，两头都没有就不显示地址。 */
+export function extractPage(
+  result: string,
+  argUrl: unknown,
+): { url: string | null; title: string | null; body: string } {
+  const lines = result.split("\n");
+  const title = lines[0]?.startsWith("# ") ? lines[0].slice(2).trim() : null;
+  const second = lines[1]?.trim() ?? "";
+  const fromBody = /^https?:\/\/\S+$/.test(second) ? second : null;
+  const url = fromBody ?? (typeof argUrl === "string" && argUrl !== "" ? argUrl : null);
+  // 把已经进了卡头的两行从正文里摘掉，免得地址在卡上出现两遍
+  const body = (fromBody === null ? (title === null ? lines : lines.slice(1)) : lines.slice(2))
+    .join("\n")
+    .trim();
+  return { url, title, body };
+}

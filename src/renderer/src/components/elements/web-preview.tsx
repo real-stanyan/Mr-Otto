@@ -40,19 +40,25 @@ export function WebPreview({
       {...props}
     >
       <div className="flex items-center gap-1.5 px-2.5 py-2">
-        <button
-          type="button"
-          aria-label="Reload the preview"
-          onClick={onReload}
-          className={cn(ghostButton, "size-7 shrink-0")}
-        >
-          <RotateCwIcon
-            className={cn(
-              "size-3.5",
-              loading && "animate-spin motion-reduce:animate-none",
-            )}
-          />
-        </button>
+        {/* 本仓改动:没给 onReload 就不画这颗钮。原件总是画它（演示里永远有得刷新），
+            而本仓拿这张卡罩的是**工具已经读回来的一页** —— 重读一次是一件新的事，
+            得走新的 tool_call 落盘，界面上没有"就地重刷"这回事。
+            按下去什么都不发生的钮比没有这颗钮更糟：它在说谎 */}
+        {onReload && (
+          <button
+            type="button"
+            aria-label="Reload the preview"
+            onClick={onReload}
+            className={cn(ghostButton, "size-7 shrink-0")}
+          >
+            <RotateCwIcon
+              className={cn(
+                "size-3.5",
+                loading && "animate-spin motion-reduce:animate-none",
+              )}
+            />
+          </button>
+        )}
 
         <span
           className={cn(
@@ -65,14 +71,17 @@ export function WebPreview({
           </span>
         </span>
 
-        <button
-          type="button"
-          aria-label="Open the preview in a new tab"
-          onClick={onOpenExternal}
-          className={cn(ghostButton, "size-7 shrink-0")}
-        >
-          <ExternalLinkIcon className="size-3.5" />
-        </button>
+        {/* 同上:没有去处就不画"去别处"那颗 */}
+        {onOpenExternal && (
+          <button
+            type="button"
+            aria-label="Open the preview in a new tab"
+            onClick={onOpenExternal}
+            className={cn(ghostButton, "size-7 shrink-0")}
+          >
+            <ExternalLinkIcon className="size-3.5" />
+          </button>
+        )}
       </div>
 
       <div className="border-foreground/[0.07] relative min-h-[9rem] border-t">
