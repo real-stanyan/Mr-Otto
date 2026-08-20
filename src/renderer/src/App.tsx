@@ -43,7 +43,6 @@ import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { SectionRail } from "./components/SectionRail.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
-import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
@@ -450,23 +449,17 @@ function ComposerBar() {
     </Select>
   );
 
+  // 型号名最长的一档不该独占半条控件行:封顶后省略。
+  // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
+  // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
-    // 型号名最长的一档不该独占半条控件行:封顶后省略
     <ModelPicker
       value={model}
       onChange={(v) => void switchModel(v)}
       disabled={status === "running"}
       className={BAR_SELECT + " max-w-[164px]"}
-    />
-  );
-
-  const thinkingSelect = (
-    <ThinkingPicker
-      spec={thinkingSpecOf(choice)}
-      value={thinking}
-      onChange={(m) => void setThinking(m)}
-      disabled={status === "running"}
-      className={BAR_SELECT}
+      thinking={thinking}
+      onThinkingChange={(m) => void setThinking(m)}
     />
   );
 
@@ -504,7 +497,6 @@ function ComposerBar() {
             <SettingsPopover onClose={() => setPrefsOpen(false)}>
               <SettingRow label="审批">{approvalSelect}</SettingRow>
               <SettingRow label="模型">{modelSelect}</SettingRow>
-              <SettingRow label="推理">{thinkingSelect}</SettingRow>
             </SettingsPopover>
           )}
         </span>
@@ -526,10 +518,7 @@ function ComposerBar() {
         </Tooltip>
 
         <div className="ml-auto flex items-center gap-2 min-w-0">
-          <div className="hidden @[520px]:flex items-center gap-2 min-w-0">
-            {modelSelect}
-            {thinkingSelect}
-          </div>
+          <div className="hidden @[520px]:flex items-center gap-2 min-w-0">{modelSelect}</div>
 
           {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
               (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
@@ -1751,13 +1740,13 @@ function Welcome() {
             <TooltipContent>添加文件(图片/文本)，也可直接粘贴或拖入</TooltipContent>
           </Tooltip>
           <span className="flex-1" />
-          <ModelPicker value={model} onChange={setModel} className={NSC_SELECT + " max-w-[180px]"} />
-          <ThinkingPicker
-            spec={thinkingSpec}
-            value={thinking}
-            onChange={setThinking}
+          <ModelPicker
+            value={model}
+            onChange={setModel}
             disabled={busy}
-            className={NSC_SELECT}
+            className={NSC_SELECT + " max-w-[180px]"}
+            thinking={thinking}
+            onThinkingChange={setThinking}
           />
           <Button
             className="w-[30px] h-[30px] rounded-[10px] shrink-0 text-[15px] leading-none p-0"
