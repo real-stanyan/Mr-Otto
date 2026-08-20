@@ -5,6 +5,10 @@
    双主题:裸变量 :root = light,.dark 覆盖 = dark,@theme inline 映射成 utility。 */
 @import "tailwindcss";
 @import "streamdown/styles.css";
+/* KaTeX 的字体/排版表(@streamdown/math 渲染出来的 span.katex 全靠它)。
+   版本必须和 @streamdown/math 用的那份对得上 —— 本仓把 katex 钉在 ^0.16 就是为此:
+   仓里另有 @lobehub/ui 带着 0.18，不钉的话根上会是 0.18，样式表和渲染结果对不上 */
+@import "katex/dist/katex.min.css";
 @source "../../../node_modules/streamdown/dist";
 
 @custom-variant dark (&:is(.dark *));

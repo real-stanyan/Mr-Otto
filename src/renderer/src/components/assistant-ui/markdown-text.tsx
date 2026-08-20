@@ -9,16 +9,20 @@ import type { StreamdownTextComponents } from "@assistant-ui/react-streamdown";
 // 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
 import { code } from "@streamdown/code";
 import { cjk } from "@streamdown/cjk";
+import { math } from "@streamdown/math";
 import { useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 
 import { DataTable } from "@/components/elements/data-table.js";
+import { MathBlock } from "@/components/elements/math-block.js";
 import { plainTable } from "@/lib/hastTable.js";
 import { cn } from "@/lib/utils.js";
 
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂。
 // cjk 不是可选项——本仓界面和内容都是中文,缺了 CJK 断行插件排版会散。
-const PLUGINS = { code, cjk };
+// math:$$…$$ 走 KaTeX(样式表在 app.css 里 @import,版本钉死见那条注释)。
+// 默认只认双美元的行间公式,不认单美元 —— 单美元在正文里更常见的身份是钱
+const PLUGINS = { code, cjk, math };
 
 // 逐字出场的参数（效果本身见 app.css 的 sd-ottoInk）。同样是模块级常量:
 // 每次渲染新建对象会让 streamdown 认成"插件换了"而重建整条管线。
@@ -191,6 +195,25 @@ const defaultComponents = {
   // 纯文本的表走 elements/data-table 那张卡（纸面 + 列头等宽 + 逐行落位）;
   // 只要有一格带链接/行内代码/图，就退回原生 <table> —— 那张卡吃的是字符串，
   // 交给它等于把可点的路径变成一行字（判断在 lib/hastTable.ts）
+  // KaTeX 把行间公式渲染成 <span class="katex-display">(它替掉了 remark-math
+  // 那层 math-display 包裹,所以只能从这一层认)。认出来就套上 elements/math-block
+  // 的纸面:公式在正文里是一个"块",给它自己的边界比裸着夹在段落之间好读。
+  // 行内公式(span.katex 但没有 katex-display)照旧,不套卡
+  span: ({ className, node, ...props }) => {
+    const classes = node?.properties?.["className"];
+    const display =
+      Array.isArray(classes) && classes.includes("katex-display");
+    if (!display) return <span className={className} {...props} />;
+    return (
+      <MathBlock
+        steps={[{ expression: <span className={className} {...props} /> }]}
+        visibleSteps={1}
+        // KaTeX 自带整套排版,让位(理由见 math-block 的 expressionClassName)
+        expressionClassName=""
+        className="my-3 max-w-none"
+      />
+    );
+  },
   table: ({ className, node, ...props }) => {
     const plain = plainTable(node);
     if (plain) {

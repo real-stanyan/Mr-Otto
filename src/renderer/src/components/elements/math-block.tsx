@@ -15,6 +15,7 @@ export function MathBlock({
   steps,
   visibleSteps,
   className,
+  expressionClassName = "font-serif text-[17px] italic",
   ...props
 }: Omit<
   ComponentProps<"div">,
@@ -23,6 +24,11 @@ export function MathBlock({
   label?: string;
   steps: readonly MathStep[];
   visibleSteps: number;
+  /** 本仓改动:算式那一行的排版可换掉。原件自带 font-serif italic ——
+      它演示的是手写的 Frac/Sup/Sub（本文件下面那几个），衬线斜体正是数学书的样子；
+      而本仓喂进来的是 KaTeX 渲染好的 DOM，它自带 KaTeX_Main 那一整套字体与斜体规则，
+      外面再压一层衬线斜体是两套排版打架。传空串即可让位 */
+  expressionClassName?: string;
 }) {
   return (
     <div
@@ -42,7 +48,12 @@ export function MathBlock({
           key={i}
           className="fade-in slide-in-from-bottom-1 animate-in fill-mode-both flex flex-col gap-1 duration-300"
         >
-          <span className="text-foreground/90 overflow-x-auto py-1 text-center font-serif text-[17px] leading-relaxed italic">
+          <span
+            className={cn(
+              "text-foreground/90 block overflow-x-auto py-1 text-center leading-relaxed",
+              expressionClassName,
+            )}
+          >
             {step.expression}
           </span>
           {step.note && (
