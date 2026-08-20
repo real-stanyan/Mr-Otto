@@ -12,6 +12,8 @@ import { cjk } from "@streamdown/cjk";
 import { useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 
+import { DataTable } from "@/components/elements/data-table.js";
+import { plainTable } from "@/lib/hastTable.js";
 import { cn } from "@/lib/utils.js";
 
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂。
@@ -186,15 +188,30 @@ const defaultComponents = {
       {...props}
     />
   ),
-  table: ({ className, ...props }) => (
-    <table
-      className={cn(
-        "aui-md-table my-3 w-full border-separate border-spacing-0 overflow-y-auto",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  // 纯文本的表走 elements/data-table 那张卡（纸面 + 列头等宽 + 逐行落位）;
+  // 只要有一格带链接/行内代码/图，就退回原生 <table> —— 那张卡吃的是字符串，
+  // 交给它等于把可点的路径变成一行字（判断在 lib/hastTable.ts）
+  table: ({ className, node, ...props }) => {
+    const plain = plainTable(node);
+    if (plain) {
+      return (
+        <DataTable
+          columns={plain.columns}
+          rows={plain.rows}
+          className={cn("aui-md-table my-3", className)}
+        />
+      );
+    }
+    return (
+      <table
+        className={cn(
+          "aui-md-table my-3 w-full border-separate border-spacing-0 overflow-y-auto",
+          className,
+        )}
+        {...props}
+      />
+    );
+  },
   th: ({ className, ...props }) => (
     <th
       className={cn(
