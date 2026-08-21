@@ -54,7 +54,7 @@ import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
-  DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth,
+  DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
@@ -297,6 +297,8 @@ interface ChatState {
   friendsSnapshot: FriendsSnapshot;
   /** 当前在线的 userId(presence 推送镜像) */
   onlineIds: string[];
+  /** 我 + 在线好友各自在哪个仓库哪个分支(主进程两条腿合成的快照,issue #167) */
+  workspaces: WorkspacesSnapshot;
   /** 非 null = DM 面板开着(右侧叠加槽位,与 protocolOpen/gitGraphOpen 互斥) */
   friendChat: FriendProfile | null;
   /** friendId → 消息列表(旧→新)。只留打开过的会话,登出全清。
@@ -623,6 +625,7 @@ export const useChat = create<ChatState>((set, get) => ({
   composerInject: null,
   friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
   onlineIds: [],
+  workspaces: { mine: null, friends: [] },
   friendChat: null,
   dmByFriend: {},
   unreadByFriend: {},
@@ -1434,6 +1437,12 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onPokerError((pokerError) => set({ pokerError }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
+    window.otter.onWorkspacesChanged((workspaces) => set({ workspaces }));
+    // 当前会话的工作区变了 → 告诉主进程去盯它的 HEAD、向好友广播"我在哪"
+    useChat.subscribe((s, prev) => {
+      if (s.workspace === prev.workspace) return;
+      void window.otter.setPresenceWorkspace(s.workspace || null);
+    });
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));

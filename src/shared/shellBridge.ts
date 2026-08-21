@@ -22,6 +22,7 @@ import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResul
 import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
+  WorkspacesSnapshot,
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
 import type {
@@ -406,6 +407,9 @@ export interface ShellBridge {
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** 告诉主进程"我此刻在哪个工作区":它据此算 repoKey/分支并向好友广播(issue #167)。
+      null = 没有会话。只读 git,不写;主进程按已知会话围栏校验这个路径 */
+  setPresenceWorkspace(repoDir: string | null): Promise<void>;
   /** 本会话已开的终端(标签行用)。终端不进事件日志——它不是投影,是人的旁路工具(ADR-0031) */
   terminalList(sessionId: string): Promise<TerminalInfo[]>;
   /** 新开一个终端(cwd = 会话的工程文件夹)。snapshot 恒为空串,形状与 attach 对齐 */
@@ -533,6 +537,8 @@ export interface ShellBridge {
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
   onFriendsChanged(cb: (snapshot: FriendsSnapshot) => void): Unsubscribe;
+  /** 我 + 在线好友各自在哪个仓库哪个分支(全量快照,Realtime presence ∪ 心跳列) */
+  onWorkspacesChanged(cb: (snapshot: WorkspacesSnapshot) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
@@ -616,6 +622,7 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  setPresenceWorkspace: "otter:setPresenceWorkspace",
   terminalList: "otter:terminalList",
   terminalOpen: "otter:terminalOpen",
   terminalAttach: "otter:terminalAttach",
@@ -665,6 +672,7 @@ export const CHANNELS = {
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
+  workspacesChanged: "otter:workspacesChanged",
   directMessage: "otter:directMessage",
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",

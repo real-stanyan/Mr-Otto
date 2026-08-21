@@ -310,3 +310,34 @@ describe("status", () => {
     expect(called).toBe(false);
   });
 });
+
+describe("workspace", () => {
+  const route = (remote: string | Error, head: string | Error) => async (args: string[]) => {
+    const pick = args[0] === "remote" ? remote : head;
+    if (pick instanceof Error) throw pick;
+    return { stdout: pick };
+  };
+
+  it("origin + 分支 → hash 过的 repoKey + 短名", async () => {
+    const svc = createGitGraphService(fake({ onExec: route("git@github.com:a/b.git\n", "feat/x\n") }));
+    const ws = await svc.workspace("/r");
+    expect(ws).toEqual({ repoKey: expect.stringMatching(/^[0-9a-f]{16}$/), branch: "feat/x" });
+  });
+
+  it("ssh 与 https 克隆同一仓库 → 同一把 repoKey", async () => {
+    const a = createGitGraphService(fake({ onExec: route("git@github.com:a/b.git\n", "main\n") }));
+    const b = createGitGraphService(fake({ onExec: route("https://github.com/A/B\n", "main\n") }));
+    expect((await a.workspace("/r"))!.repoKey).toBe((await b.workspace("/r"))!.repoKey);
+  });
+
+  it("detached HEAD:symbolic-ref 失败 → branch null,仍报 repoKey", async () => {
+    const svc = createGitGraphService(fake({ onExec: route("git@github.com:a/b.git\n", new Error("fatal")) }));
+    expect(await svc.workspace("/r")).toMatchObject({ branch: null });
+  });
+
+  it("没有 origin / 不是仓库 / 目录不存在 → null", async () => {
+    expect(await createGitGraphService(fake({ onExec: route(new Error("fatal: No such remote"), "main") })).workspace("/r")).toBeNull();
+    expect(await createGitGraphService(fake({ onExec: route("", "main") })).workspace("/r")).toBeNull();
+    expect(await createGitGraphService(fake({ dirExists: false })).workspace("/r")).toBeNull();
+  });
+});

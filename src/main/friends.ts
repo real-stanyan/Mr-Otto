@@ -10,7 +10,7 @@
 
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, FriendshipEntry,
-  GameInvite, RealtimeHealth,
+  FriendWorkspace, GameInvite, RealtimeHealth, WorkspacePresence, WorkspacesSnapshot,
 } from "../shared/friends.js";
 
 // email 可空:auth.users.email 本就可为 null(手机/匿名注册),见 docs/adr/0025。
@@ -23,12 +23,21 @@ export type InviteRow = {
   status: "pending" | "accepted" | "declined" | "cancelled";
   created_at: string; expires_at: string;
 };
-export type LastSeenRow = { id: string; last_seen_at: string | null };
+/** 心跳行。repo_key/repo_branch 是 0008 加的列:心跳那条腿顺便把"我在哪"带上(issue #167),
+    可选是因为没跑 0008 的库 select 不到这两列——此时只有在线点,没有分支 */
+export type LastSeenRow = {
+  id: string; last_seen_at: string | null;
+  repo_key?: string | null; repo_branch?: string | null;
+};
+
+/** Realtime presence 一条:key 即 uid,meta 里可能带工作区 */
+export type PresenceEntry = { id: string; workspace: WorkspacePresence | null };
 
 export type FriendsSubscribeHandlers = {
   onFriendshipsChange(): void;
   onMessage(row: MessageRow): void;
-  onPresence(onlineIds: string[]): void;
+  /** presence sync:在线的人 + 各自 track 出来的工作区(没带的为 null) */
+  onPresence(entries: PresenceEntry[]): void;
   onInvite(row: InviteRow): void;
   /** 订阅通道健康度:四条通道全 SUBSCRIBED 才算 live,任一报错/超时/关闭即 degraded */
   onHealth(health: "live" | "degraded"): void;
@@ -48,8 +57,10 @@ export type FriendsApi = {
   latestInboxId(uid: string): Promise<number>;
   /** 轮询兜底:发给我的、id 大于水位的消息(旧→新) */
   listInboxSince(uid: string, sinceId: number): Promise<MessageRow[]>;
-  /** 心跳:把自己的 last_seen_at 写成现在 */
-  touchPresence(uid: string): Promise<void>;
+  /** 心跳:把自己的 last_seen_at 写成现在,顺带写"我在哪"(null = 不在任何有 origin 的仓库里) */
+  touchPresence(uid: string, workspace: WorkspacePresence | null): Promise<void>;
+  /** Realtime 那条腿的"我在哪":重新 track 当前 presence 通道的 meta。未订阅时是空操作 */
+  trackWorkspace(workspace: WorkspacePresence | null): void;
   /** 读一批人的心跳时间 */
   listLastSeen(ids: string[]): Promise<LastSeenRow[]>;
   insertInvite(inviter: string, invitee: string, tableId: string, tableName: string): Promise<InviteRow>;
@@ -62,6 +73,8 @@ export type FriendsApi = {
 export type FriendsPush = {
   friendsChanged(snapshot: FriendsSnapshot): void;
   presenceChanged(onlineUserIds: string[]): void;
+  /** 我 + 在线好友各自在哪个仓库哪个分支(issue #167) */
+  workspacesChanged(snapshot: WorkspacesSnapshot): void;
   directMessage(message: DirectMessage): void;
   invitesChanged(invites: GameInvite[]): void;
   healthChanged(health: RealtimeHealth): void;
@@ -153,9 +166,34 @@ export function presenceUnion(
   return [...ids].sort();
 }
 
+/** 好友在哪 = Realtime meta 优先,没有就取心跳窗口内的 repo_key 列(两条腿,同 presenceUnion)。
+    只产出有 repoKey 的人——在线但不在仓库里的不是本功能要画的对象 */
+export function workspaceUnion(
+  realtime: PresenceEntry[], lastSeen: LastSeenRow[], nowMs: number, windowMs = PRESENCE_WINDOW_MS
+): FriendWorkspace[] {
+  const out = new Map<string, FriendWorkspace>();
+  for (const row of lastSeen) {
+    if (!row.last_seen_at || !row.repo_key) continue;
+    const at = Date.parse(row.last_seen_at);
+    if (Number.isNaN(at) || nowMs - at > windowMs) continue;
+    out.set(row.id, { userId: row.id, repoKey: row.repo_key, branch: row.repo_branch ?? null });
+  }
+  for (const e of realtime) {
+    if (!e.workspace) continue; // 老客户端只 track 了 {at},没有工作区:让心跳那条腿说话
+    out.set(e.id, { userId: e.id, ...e.workspace });
+  }
+  return [...out.values()].sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+}
+
 /** 两个 id 集合是否等价(已排序的全量推送,不等才推——省掉无谓的渲染层重绘) */
 export function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+function sameWorkspace(a: WorkspacePresence | null, b: WorkspacePresence | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.repoKey === b.repoKey && a.branch === b.branch;
 }
 
 function message(e: unknown): string {
@@ -177,6 +215,16 @@ export class FriendsManager {
   private health: RealtimeHealth = "connecting";
   /** Realtime presence 报来的在线集(degraded 时为空,靠心跳那条腿撑着) */
   private realtimeOnline: string[] = [];
+  /** 同上,但带 meta(工作区)。两者来自同一次 sync,拆开存只是因为在线点的消费者不关心 meta */
+  private realtimeEntries: PresenceEntry[] = [];
+  /** 我此刻在哪。由 setWorkspace 喂进来,心跳和 track 都从这里取 */
+  private workspace: WorkspacePresence | null = null;
+  /** 上次推出去的工作区快照(序列化后比对,变了才推) */
+  private pushedWorkspaces = "";
+  /** 最近一拍心跳读到的好友 id 集:Realtime 通道是全站的,工作区只放行好友的 */
+  private friendIds = new Set<string>();
+  /** 已 start 且拿到 uid:setWorkspace 要立刻补一拍心跳时用 */
+  private uid: string | null = null;
   /** 上次推给渲染层的并集,只在变化时再推 */
   private pushedOnline: string[] = [];
   /** 最近一次读到的好友心跳时间(在线判断的第二条腿) */
@@ -332,17 +380,44 @@ export class FriendsManager {
   /** 并集变了才推。realtime presence 与心跳轮询都汇到这一个出口 */
   private pushPresence(): void {
     const merged = presenceUnion(this.realtimeOnline, this.lastSeen, this.timers.now());
-    if (sameIds(merged, this.pushedOnline)) return;
-    this.pushedOnline = merged;
-    this.push.presenceChanged(merged);
+    if (!sameIds(merged, this.pushedOnline)) {
+      this.pushedOnline = merged;
+      this.push.presenceChanged(merged);
+    }
+    this.pushWorkspaces();
+  }
+
+  /** 工作区快照:我 + 好友。Realtime 通道是全站的,这里按好友集过滤一遍 */
+  private pushWorkspaces(): void {
+    const friends = workspaceUnion(
+      this.realtimeEntries.filter((e) => this.friendIds.has(e.id)),
+      this.lastSeen, this.timers.now()
+    );
+    const snapshot: WorkspacesSnapshot = { mine: this.workspace, friends };
+    const key = JSON.stringify(snapshot);
+    if (key === this.pushedWorkspaces) return;
+    this.pushedWorkspaces = key;
+    this.push.workspacesChanged(snapshot);
+  }
+
+  /** 渲染层/主进程 watcher 报"我现在在哪"。变了就两条腿都立刻更新:
+      track 重写 presence meta,心跳提前一拍把列写掉(不等 30s 的定时器) */
+  setWorkspace(workspace: WorkspacePresence | null): void {
+    if (sameWorkspace(this.workspace, workspace)) return;
+    this.workspace = workspace;
+    this.api.trackWorkspace(workspace);
+    if (this.uid) void this.beat(this.uid, this.generation);
+    this.pushWorkspaces();
   }
 
   /** 一拍心跳:写自己的 last_seen,读好友的。任一步失败都不该掀翻定时器 */
   private async beat(uid: string, gen: number): Promise<void> {
     try {
-      await this.api.touchPresence(uid);
+      await this.api.touchPresence(uid, this.workspace);
       const rows = await this.api.listFriendships();
       const ids = [...new Set(rows.map((r) => (r.requester === uid ? r.addressee : r.requester)))];
+      if (gen !== this.generation) return;
+      this.friendIds = new Set(ids);
       const seen = ids.length > 0 ? await this.api.listLastSeen(ids) : [];
       if (gen !== this.generation) return;
       this.lastSeen = seen;
@@ -399,6 +474,7 @@ export class FriendsManager {
     const uid = await this.api.getUserId();
     if (gen !== this.generation) return; // stop() 或新 start() 已抢先,自我作废
     if (!uid) return;
+    this.uid = uid;
     this.health = "connecting";
     this.push.healthChanged("connecting");
     // 水位先定在"现在":订阅/轮询只推此刻之后到达的消息,历史归 listMessages 管
@@ -432,8 +508,9 @@ export class FriendsManager {
         if (row.id > this.inboxWatermark) this.inboxWatermark = row.id;
         this.push.directMessage(toDirectMessage(row));
       },
-      onPresence: (ids) => {
-        this.realtimeOnline = ids;
+      onPresence: (entries) => {
+        this.realtimeEntries = entries;
+        this.realtimeOnline = entries.map((e) => e.id).sort();
         this.pushPresence();
       },
       onInvite: () => { void this.pushInvites(uid).catch(() => {}); },
@@ -446,6 +523,7 @@ export class FriendsManager {
           // 掉线时 presence 的 key 集不再可信(它只反映"还连着的人"),
           // 清掉让心跳那条腿独自说话,否则会留下一屋子假在线
           this.realtimeOnline = [];
+          this.realtimeEntries = [];
           this.pushPresence();
           this.startPolling(uid, gen);
         }
@@ -458,6 +536,7 @@ export class FriendsManager {
   /** 内部:只退订不推。同时使任何挂起中的 start() 作废 */
   private teardown(): void {
     this.generation++;
+    this.uid = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.stopPolling();
@@ -470,8 +549,11 @@ export class FriendsManager {
       this.resubscribeTimer = null;
     }
     this.realtimeOnline = [];
+    this.realtimeEntries = [];
     this.lastSeen = [];
     this.pushedOnline = [];
+    this.pushedWorkspaces = "";
+    this.friendIds = new Set();
   }
 
   /** 登出时调:退订 + 推空快照/空在线集(UI 立即清) */
@@ -480,6 +562,8 @@ export class FriendsManager {
     this.health = "connecting";
     this.push.friendsChanged({ friends: [], incoming: [], outgoing: [] });
     this.push.presenceChanged([]);
+    // 自己在哪不随登出清(那是本机事实),好友那半清空
+    this.push.workspacesChanged({ mine: this.workspace, friends: [] });
     this.push.invitesChanged([]);
     this.push.healthChanged("connecting");
   }
