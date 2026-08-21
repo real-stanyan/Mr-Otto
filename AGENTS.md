@@ -131,6 +131,10 @@ npm test
 
 > Fill in the gate to match your actual project — any command that can automatically assert "nothing's broken" works (rationale: ADR-0002). See ADR-0020 for how test-type gates (vitest/tsc/lint) map onto the L1/L2 tiers. The command must be byte-identical to `.github/workflows/ci.yml` (CI == Gate contract).
 
+> `npm test` 断言两件事：`tsc --noEmit` 通过，且 `vitest run` 通过（项目 ADR-0053）。
+> vitest 走 esbuild，只剥类型不校验类型——没有前半段，一个 TS strict 错误可以顶着全绿的门禁进 main。
+> 写代码时的内循环用 `npx vitest --watch`（只跑测试）；`npm test` 是提交前和 CI 上跑的那一次。
+
 CI (`.github/workflows/ci.yml`) runs the same set of commands; if it's red, merging is not allowed.
 
 ### On ending a shift (shift-end rules)

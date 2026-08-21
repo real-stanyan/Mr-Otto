@@ -14,7 +14,7 @@ import { createAgent, type AgentPush } from "./agent.js";
 import { denyingApprover } from "./uiApprover.js";
 import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
-import type { BrowserCapability } from "../world/executionWorld.js";
+import type { BrowserCapability, McpCapability } from "../world/executionWorld.js";
 import type { SessionEvent } from "../session/events.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
@@ -71,6 +71,11 @@ export function createChildAgent(opts: {
   getAccessToken?: () => Promise<string | null>;
   makeBrowser?: (sessionId: string) => BrowserCapability;
   alwaysAllow?: () => ReadonlySet<string>;
+  /** MCP 能力（ADR-0054）。这里必须显式传：重建走的是新造的 LocalWorld，
+      父 agent 可能早已不在内存里，没有一个带着 withMcp 的 world 可以继承。
+      给了也只是**挂载**——config.allowTools 那份白名单里没点名的 mcp__… 照样过滤掉，
+      与活着那一侧（subagentRunner 复用父 world）是同一套规则 */
+  mcp?: McpCapability;
 }): ReturnType<typeof createAgent> {
   return createAgent({
     store: opts.store,
@@ -81,6 +86,7 @@ export function createChildAgent(opts: {
     allowTools: opts.config.allowTools,
     ...(opts.getAccessToken ? { getAccessToken: opts.getAccessToken } : {}),
     ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
+    ...(opts.mcp ? { mcp: opts.mcp } : {}),
     // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧
     ...(opts.config.deny

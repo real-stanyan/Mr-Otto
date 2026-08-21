@@ -103,7 +103,14 @@ function mergeMaskedCreds(stored: McpServerConfig | undefined, incoming: McpServ
 }
 
 export function createMcpHub(opts: {
-  load(): { servers: Record<string, McpServerConfig>; errors: string[]; unrecognizedIds: string[] };
+  load(): {
+    servers: Record<string, McpServerConfig>;
+    errors: string[];
+    unrecognizedIds: string[];
+    /** 整份 JSON 解析不动（mcpConfig.parseMcpConfig 同名字段）。
+        true 时 servers 的空不代表"没有 server"，只代表"这次没读出来" */
+    fatal: boolean;
+  };
   /** unrecognizedIds：上一次 load() 里解析不动、但同伴健康的那些 id
       （mcpConfig.ts parseMcpConfig 的同名字段）——原样转给 saveMcpConfig，
       让它们的原始节点在写回时不被冲掉（F1 half 1，见 mcpConfig.ts 顶部
@@ -125,8 +132,21 @@ export function createMcpHub(opts: {
 
   /** 从磁盘同步一次清单：新增的进来，删掉的关连接。已在的保留连接状态 */
   function syncFromDisk(): void {
-    const { servers, errors, unrecognizedIds: unrec } = opts.load();
+    const { servers, errors, unrecognizedIds: unrec, fatal } = opts.load();
     parseErrors = errors;
+    if (fatal) {
+      // 整份文件读不出来（外部编辑器把 JSON 改坏了、写到一半、磁盘出错）。
+      // 此时 servers 是空的，但那是"这次没读出来"，不是"用户把 server 都删了"——
+      // 照常往下走会把活着的连接一条条关掉、从内存里忘掉，而用户什么提示都
+      // 看不到（issue #159）。内存里那份是上一次读成功的结果，它比"空"诚实得多，
+      // 原样留着继续用。
+      //
+      // unrecognizedIds 也刻意不动：这一轮我们连一个 id 都取不出来，
+      // 清空它等于把上一次好不容易记住的"要保护的原始节点"忘掉。
+      // 真要写盘时另有一道闸（serializeMcpConfig 对 prevText 解析不动直接拒写），
+      // 那条错误会原样穿到设置页——用户在那时候会被明确告知文件坏了。
+      return;
+    }
     unrecognizedIds = unrec;
     for (const [id, cfg] of Object.entries(servers)) {
       const cur = entries.get(id);

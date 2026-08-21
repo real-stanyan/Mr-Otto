@@ -161,10 +161,43 @@ export interface ToolOutputChunk {
 /** write_file 审批预览：旧内容 vs 新内容。diff 是投影（两个事实推得出），
     渲染层现算，不落盘。oldText 为 null = 新文件 */
 export interface WriteFilePreview {
+  kind: "write_file";
   path: string;
   oldText: string | null;
   newText: string;
 }
+
+/** MCP 工具审批预览（issue #157）。
+    没有它的话审批卡上写着的是 `mcp__github__create_pr` 加一坨原始 JSON——
+    而每把 MCP 工具都 requiresApproval，一台 everything 级的 server（13 把刀）
+    意味着一个会话里 13 次这样的决定。这是这个功能的主交互面，不是装饰。
+
+    server / tool 是**拆开的原始值**，不是从工具名反推：mcpToolName 的收口
+    有损（净化 + 截断 + 指纹），反推不回去，只能由主进程在还知道两截的时候拆好。 */
+export interface McpToolPreview {
+  kind: "mcp_tool";
+  /** 配置里那台 server 的 id */
+  server: string;
+  /** server 侧的原始工具名（不是收口成 mcp__… 之后的那个） */
+  tool: string;
+  /** 工具的自我介绍。server 没给就是空串 */
+  description: string;
+  /** 参数摊平：一格一项。值统一转成字符串，长的在主进程就截断——
+      IPC 不扛巨物，而审批卡是"扫一眼看清要发生什么"，不是全文阅读器 */
+  args: McpPreviewArg[];
+}
+
+export interface McpPreviewArg {
+  name: string;
+  value: string;
+  /** 值被截断了：卡上要说出来，不能让人以为参数就这么短 */
+  truncated: boolean;
+  /** 原始值的字符数（截断时用来说"共 N 字符"） */
+  fullLength: number;
+}
+
+/** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */
+export type ApprovalPreview = WriteFilePreview | McpToolPreview;
 
 /** 主进程请渲染层出示审批卡时推的包 */
 export interface ApprovalRequest {
@@ -173,8 +206,9 @@ export interface ApprovalRequest {
   call: ToolCallRequest;
   /** 工具的自我介绍，给人看的（来自 tool.def.description） */
   toolDescription: string;
-  /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
-  preview?: WriteFilePreview;
+  /** 有 = 这把工具有专门的排版（write_file 的 diff / MCP 的 server+参数表），
+      没有 = 审批卡退回通用的 PermissionGrant + 原样 JSON */
+  preview?: ApprovalPreview;
   /** 这张卡来自哪个 subagent（ADR-0047 的冒泡）。缺席 = 主 agent 自己的卡，
       现有渲染一字不改 */
   fromAgent?: string;

@@ -29,7 +29,7 @@ function conn(over: Partial<McpClientConn> = {}): McpClientConn {
 function memStore(initial: Record<string, McpServerConfig> = {}) {
   let servers = { ...initial };
   return {
-    load: () => ({ servers, errors: [] as string[], unrecognizedIds: [] as string[] }),
+    load: () => ({ servers, errors: [] as string[], unrecognizedIds: [] as string[], fatal: false }),
     save: (next: Record<string, McpServerConfig>, _unrecognizedIds: readonly string[]) => {
       servers = { ...next };
     },
@@ -50,6 +50,10 @@ function fileStore(initialText = "") {
   return {
     get text() {
       return text;
+    },
+    /** 模拟外部编辑器把文件改坏（issue #159） */
+    corrupt(bad: string) {
+      text = bad;
     },
     load: () => loadMcpConfig("mcp.json", reader),
     save: (servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]) =>
@@ -369,6 +373,83 @@ describe("save() 合并遮罩值（review finding 3）", () => {
     if (saved!.kind !== "stdio") throw new Error("窄化失败");
     expect(saved!.env["TOKEN"]).toBe("sk-31cf5*****828c");
   });
+
+  // issue #158：闸门那句 `stored[k] !== undefined` 从前没有测试钉住——
+  // 只删这一个子句，全部 mcpHub 测试照样绿。而它是承重的：上面那条测的是
+  // 新建**整台 server**（stored 为 undefined，函数第一行就 return 了，
+  // 压根走不到闸门），走到闸门还能被这个子句放过去的是下面这种——
+  // 已有 server 上加一个**新键**
+  it("已有 server 加一个新键，值恰好落在 maskKey 的不动点上也放行（stored[k] === undefined）", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { OLD: "sk-old-real-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-old-real-0123456789");
+
+    await expect(
+      hub.save("a", {
+        kind: "stdio", command: "npx", args: [],
+        // OLD 没碰（交回遮罩），NEW 是一把恰好长得像遮罩的新值
+        env: { OLD: masked, NEW: "sk-31cf5*****828c" },
+        enabled: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["OLD"]).toBe("sk-old-real-0123456789"); // 旧值没被遮罩覆盖
+    expect(saved!.env["NEW"]).toBe("sk-31cf5*****828c"); // 新键原样收下
+  });
+
+  // issue #158：merge 层的"没碰过就往返回真值"只测了 stdio/env，http/headers
+  // 那一路（同一个 merge 函数的另一个调用点）没有对应的往返测试
+  it("http headers 没碰过的字段送回遮罩值 —— 磁盘上的真值原样保留", async () => {
+    const store = memStore({
+      a: { kind: "http", url: "https://a.example.com", headers: { Authorization: "sk-http-real-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-http-real-0123456789");
+
+    // 用户只改了 url，Authorization 原样把遮罩交回来
+    await hub.save("a", {
+      kind: "http", url: "https://a2.example.com", headers: { Authorization: masked }, enabled: true,
+    });
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "http") throw new Error("窄化失败");
+    expect(saved!.url).toBe("https://a2.example.com");
+    expect(saved!.headers["Authorization"]).toBe("sk-http-real-0123456789");
+  });
+
+  // issue #158：两个键合法地共用同一个真值时，两份遮罩长得一模一样——
+  // 闸门必须逐键判断，不能因为"这串遮罩已经在别处出现过"就一竿子拒了
+  it("两个键共用同一个真值：两份遮罩交回来，两个键都还原成真值", async () => {
+    const store = memStore({
+      a: {
+        kind: "stdio", command: "npx", args: [],
+        env: { TOKEN_A: "sk-shared-real-0123456789", TOKEN_B: "sk-shared-real-0123456789" },
+        enabled: true,
+      },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-shared-real-0123456789");
+
+    await expect(
+      hub.save("a", {
+        kind: "stdio", command: "npx", args: [],
+        env: { TOKEN_A: masked, TOKEN_B: masked },
+        enabled: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN_A"]).toBe("sk-shared-real-0123456789");
+    expect(saved!.env["TOKEN_B"]).toBe("sk-shared-real-0123456789");
+  });
 });
 
 // review D1/D2：渲染层的 hasStrayMaskedValue 只看得见自己手上那份 baseline，
@@ -481,7 +562,7 @@ describe("configErrors()（review finding 4）", () => {
   it("同步磁盘之前是空的；list()/syncFromDisk 之后原样透出解析错误", () => {
     const errors = ['server「x」缺 command'];
     const hub = createMcpHub({
-      load: () => ({ servers: {}, errors, unrecognizedIds: [] }),
+      load: () => ({ servers: {}, errors, unrecognizedIds: [], fatal: false }),
       save: () => {},
       connect: vi.fn(),
     });
@@ -505,6 +586,7 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
         servers: { good: stdio() },
         errors: ["broken：既没有 command 也没有 url，不知道怎么连（本台跳过）"],
         unrecognizedIds: ["broken"],
+        fatal: false,
       }),
       save: (_servers, unrecognizedIds) => { savedUnrecognized.push(unrecognizedIds); },
       connect: async () => conn(),
@@ -522,6 +604,7 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
         servers: { good: stdio() },
         errors: ["broken：既没有 command 也没有 url，不知道怎么连（本台跳过）"],
         unrecognizedIds: ["broken"],
+        fatal: false,
       }),
       save: (servers, unrecognizedIds) => { savedCalls.push({ servers, unrecognizedIds }); },
       connect: async () => conn(),
@@ -536,7 +619,7 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
 
   it("save() 里 opts.save 抛（整份文件语法错误）时，错误原样穿透，内存状态不被假装保存成功", async () => {
     const hub = createMcpHub({
-      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [] }),
+      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [], fatal: false }),
       save: () => {
         throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
       },
@@ -552,7 +635,7 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
   it("remove() 里 opts.save 抛时，连接不能已经被关掉却没能持久化删除——写在关连接之前", async () => {
     const close = vi.fn(async () => {});
     const hub = createMcpHub({
-      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [] }),
+      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [], fatal: false }),
       save: () => {
         throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
       },
@@ -613,5 +696,89 @@ describe("F1 端到端 —— 拼上真实的 mcpConfig 读写函数，复现 re
     // 拒绝写之后磁盘必须原样不动——不能被"brandnew"取代（reviewer 复现的
     // 那句 "good1 and its credential destroyed" 就是这里被冲掉的）
     expect(store.text).toBe(brokenText);
+  });
+});
+
+// issue #159：会话中途，外部把 ~/.otter/mcp.json 改成语法不合法。
+// 从前 syncFromDisk 看到 servers:{} 就当成"用户把 server 都删了"，
+// 在拒绝写入那一步之前先把活连接一条条关掉、从内存里忘掉，用户毫无提示。
+describe("mcp.json 中途被改坏时不牵连活着的连接（issue #159）", () => {
+  it("fatal 的一次 load 不关连接、不忘记 server", async () => {
+    let fatal = false;
+    const close = vi.fn(async () => {});
+    const hub = createMcpHub({
+      load: () =>
+        fatal
+          ? { servers: {}, errors: ["mcp.json 不是合法 JSON，整份配置本次被忽略"], unrecognizedIds: [], fatal: true }
+          : { servers: { a: stdio(), b: stdio() }, errors: [], unrecognizedIds: [], fatal: false },
+      save: () => {},
+      connect: async () => conn({ close }),
+    });
+    await hub.ready();
+    expect(hub.servers().map((s) => s.status)).toEqual(["connected", "connected"]);
+
+    fatal = true;
+    hub.list(); // list() 内部 syncFromDisk()
+
+    expect(close).not.toHaveBeenCalled();
+    expect(hub.servers().map((s) => s.id)).toEqual(["a", "b"]);
+    expect(hub.servers().every((s) => s.live)).toBe(true);
+  });
+
+  it("fatal 时解析错误照常透出去（设置页要说得出文件坏了）", async () => {
+    const hub = createMcpHub({
+      load: () => ({
+        servers: {},
+        errors: ["mcp.json 不是合法 JSON，整份配置本次被忽略"],
+        unrecognizedIds: [],
+        fatal: true,
+      }),
+      save: () => {},
+      connect: async () => conn(),
+    });
+    hub.list();
+    expect(hub.configErrors()).toEqual(["mcp.json 不是合法 JSON，整份配置本次被忽略"]);
+  });
+
+  it("fatal 不吞掉真正的删除：文件修好之后，少掉的那台照常被关掉", async () => {
+    let phase: "both" | "fatal" | "one" = "both";
+    const closed: string[] = [];
+    const hub = createMcpHub({
+      load: () =>
+        phase === "fatal"
+          ? { servers: {}, errors: ["坏了"], unrecognizedIds: [], fatal: true }
+          : {
+              servers: phase === "both" ? { a: stdio(), b: stdio() } : { a: stdio() },
+              errors: [],
+              unrecognizedIds: [],
+              fatal: false,
+            },
+      save: () => {},
+      connect: async (id) => conn({ close: async () => { closed.push(id); } }),
+    });
+    await hub.ready();
+    phase = "fatal";
+    hub.list();
+    expect(closed).toEqual([]);
+    phase = "one";
+    hub.list();
+    expect(closed).toEqual(["b"]);
+    expect(hub.servers().map((s) => s.id)).toEqual(["a"]);
+  });
+
+  it("端到端：两台连着，文件被外部改坏，再存一台 —— 连接留着，保存被拒", async () => {
+    const store = fileStore(
+      JSON.stringify({ mcpServers: { a: { command: "npx", args: [] }, b: { command: "npx", args: [] } } })
+    );
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    expect(hub.servers().every((s) => s.live)).toBe(true);
+
+    store.corrupt("{ 这不是 JSON");
+
+    await expect(hub.save("a", stdio("npx-changed"))).rejects.toThrow(/不是合法 JSON/);
+    // 从前这里两条连接已经先被关掉了，而且用户看不到任何提示
+    expect(hub.servers().map((s) => s.id)).toEqual(["a", "b"]);
+    expect(hub.servers().every((s) => s.live)).toBe(true);
   });
 });

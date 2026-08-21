@@ -65,6 +65,9 @@ import { usageSnapshot } from "../shared/usageStats.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
+import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
+import { mcpToolName } from "../shared/mcp.js";
+import { singleFlight } from "../shared/singleFlight.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -167,6 +170,13 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
+  // .env 那条路不经过 keyVault，登记不到（loadDotEnv 只认"补空缺"这一件事）。
+  // 补登记：本仓认识的那几个 provider key 变量，此刻有值的都算凭据——
+  // 不管它来自 .env 还是用户自己的 shell。名单是精确的（providerCatalog 列的
+  // 就那几个），不是启发式，所以不会误伤用户的普通变量（issue #153）
+  for (const envName of providerKeyEnvs()) {
+    if (process.env[envName]) markSecretEnv(envName);
+  }
 
   const win = createWindow();
   mainWindow = win;
@@ -471,18 +481,35 @@ void app.whenReady().then(() => {
       },
       attachments: attachmentStore,
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
-      // 刻意不给 mcp（与 browser 的桩子相反）：这份名单是拿来校验 subagent
-      // 定义里的工具名的，而子 agent 本来就挂不上 mcp 工具（见 createSessionAgent
-      // 里那段注释）。放进来只会让"这个名字认得"和"这把刀给得了你"对不上。
-      // 顺带也省掉了在注册第一个 IPC 通道之前 await mcpHub.ready() 这件事
+      // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
+      // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
+      // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
+      // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
     }).toolDefs.map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
   }
+  /** 此刻活着的那些 server 提供的工具名（ADR-0054）。TOOL_NAMES 那个探针装配
+      刻意不给 mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、
+      改清单，快照会让"认不认得这个名字"停在装配那一刻。
+      mcp_read_resource 一并算上：它同样只在有 mcp 能力时才挂 */
+  const mcpToolNamesNow = (): string[] => {
+    const live = mcpHub.servers().filter((s) => s.live);
+    if (live.length === 0) return [];
+    return [
+      "mcp_read_resource",
+      ...live.flatMap((s) => s.tools.map((t) => mcpToolName(s.name, t.name))),
+    ];
+  };
+
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
-  const listSubagents = (workspace: string | null) =>
-    withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES), TOOL_NAMES);
+  const listSubagents = (workspace: string | null) => {
+    // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
+    // 在两边一个认得一个不认得
+    const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    return withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), known), known);
+  };
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
   // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
   // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
@@ -535,6 +562,10 @@ void app.whenReady().then(() => {
         resumeSessionId: args.resumeSessionId,
         config: args.child,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
+        // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
+        // 这一侧父可能早就不在内存里了，只能显式给
+        mcp: mcpHub,
       });
     }
     // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
@@ -550,9 +581,10 @@ void app.whenReady().then(() => {
       ...base,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      // MCP 只挂在主会话上。子会话（上面 createChildAgent 那条）刻意不给：
-      // 它的装备由那份 subagent 定义的工具白名单说了算，而白名单里写不出
-      // 一台此刻才连上的 server 的工具名（同它拿不到 subagentRunner 的道理）。
+      // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
+      // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
+      // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
+      // 而 MCP server 是第三方代码，接一台新 server 不该悄悄扩大所有子 agent 的权限面。
       // 两条调用点（startSession / resumeSession）都在调这个函数之前
       // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
       mcp: mcpHub,
@@ -642,38 +674,47 @@ void app.whenReady().then(() => {
     return info;
   });
 
+  // 同一个 sessionId 的两次 resume 只真正重建一次（issue #155）。
+  // 下面那道 agents.has() 守卫和 agents.set() 之间隔着一个 await（mcpHub.ready()），
+  // 不设防的话两次 resume 会双双穿过守卫、各建一个 agent。守卫那条注释里的
+  // 不变量（"绝不能顺手再建一个 agent 顶上"）当初是在这段代码还是同步的时候
+  // 写的，靠 Node 单线程天然原子；await 一进来就不成立了
+  const resumeOnce = singleFlight<string, void>();
+
   ipcMain.handle(CHANNELS.resumeSession, async (_e, sessionId: string): Promise<BootInfo> => {
     // 已在注册表里（包括正在跑 turn 的）→ 只是把视线切过去，agent 原样活着
     if (!agents.has(sessionId)) {
-      // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
-      // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
-      const events = store.load(sessionId);
-      const first = events[0];
-      if (!first || first.type !== "session_created" || !first.workspace) {
-        throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
-      }
-      // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
-      // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
-      // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
-      // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
-      // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
-      // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
-      if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
-        throw new Error("这个子会话正在跑，稍等一下再看");
-      }
-      // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
-      const child = childAgentConfig(events);
-      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
-      // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
-      await mcpHub.ready();
-      agents.set(
-        sessionId,
-        createSessionAgent({
-          workspace: first.workspace,
-          resumeSessionId: sessionId,
-          ...(child ? { child } : {}),
-        })
-      );
+      await resumeOnce(sessionId, async () => {
+        // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
+        // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
+        const events = store.load(sessionId);
+        const first = events[0];
+        if (!first || first.type !== "session_created" || !first.workspace) {
+          throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
+        }
+        // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
+        // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
+        // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
+        // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
+        // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+        // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
+        if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
+          throw new Error("这个子会话正在跑，稍等一下再看");
+        }
+        // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
+        const child = childAgentConfig(events);
+        // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
+        // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
+        await mcpHub.ready();
+        agents.set(
+          sessionId,
+          createSessionAgent({
+            workspace: first.workspace,
+            resumeSessionId: sessionId,
+            ...(child ? { child } : {}),
+          })
+        );
+      });
     }
     currentSessionId = sessionId;
     const info = bootInfo();
@@ -945,7 +986,10 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {
     if (!allowedKeyEnvs.has(envName)) throw new Error(`不认识的 key 变量: ${envName}`);
     applyToEnv(saveKey(keyVaultPath, envName, key), process.env);
-    if (!key) delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+    if (!key) {
+      delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+      unmarkSecretEnv(envName); // 已经不是凭据了，再登记着只会白白从子进程里摘掉一个普通变量
+    }
     clearBalanceCache(); // 换了 key,60 秒缓存里那条余额说的是上一把 key 的账
     for (const a of agents.values()) a.reloadAdapter(); // 所有活 agent 的 adapter 都捏着旧 key
   });

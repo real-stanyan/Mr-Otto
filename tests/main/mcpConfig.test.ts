@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseMcpConfig, serializeMcpConfig } from "../../src/main/mcpConfig.js";
+import type { McpServerConfig } from "../../src/shared/mcp.js";
 
 describe("parseMcpConfig", () => {
   it("有 command = stdio", () => {
@@ -56,7 +57,8 @@ describe("parseMcpConfig", () => {
   });
 
   it("文件不存在（空串）= 空清单、零错误 —— 没配过不是错", () => {
-    expect(parseMcpConfig("")).toEqual({ servers: {}, errors: [], unrecognizedIds: [] });
+    // fatal: false —— 空文件是「还没配过」，不是「读不出来」（issue #159）
+    expect(parseMcpConfig("")).toEqual({ servers: {}, errors: [], unrecognizedIds: [], fatal: false });
   });
 
   it("一台坏的不带垮其它台，坏的那台记进 unrecognizedIds", () => {
@@ -100,6 +102,24 @@ describe("serializeMcpConfig", () => {
     const out = JSON.parse(serializeMcpConfig("", {
       s: { kind: "stdio", command: "x", args: [], env: {}, enabled: true },
     }));
+    expect(out["mcpServers"]["s"]["enabled"]).toBeUndefined();
+  });
+
+  // issue #158：enabled 的写回逻辑与 kind 无关（那一行在两条分支之外），
+  // 但从前只有 stdio 一路被钉住——没有任何东西保证这个假设成立
+  it.each<[string, McpServerConfig]>([
+    ["stdio", { kind: "stdio", command: "x", args: [], env: {}, enabled: false }],
+    ["http", { kind: "http", url: "https://x", headers: {}, enabled: false }],
+  ])("enabled 为 false 时写进去（%s）", (_kind, cfg) => {
+    const out = JSON.parse(serializeMcpConfig("", { s: cfg }));
+    expect(out["mcpServers"]["s"]["enabled"]).toBe(false);
+  });
+
+  it.each<[string, McpServerConfig]>([
+    ["stdio", { kind: "stdio", command: "x", args: [], env: {}, enabled: true }],
+    ["http", { kind: "http", url: "https://x", headers: {}, enabled: true }],
+  ])("enabled 为 true 时不写进文件（%s）", (_kind, cfg) => {
+    const out = JSON.parse(serializeMcpConfig("", { s: cfg }));
     expect(out["mcpServers"]["s"]["enabled"]).toBeUndefined();
   });
 
@@ -157,5 +177,33 @@ describe("serializeMcpConfig", () => {
       ["从未出现过的id"]
     ));
     expect(Object.keys(out["mcpServers"])).toEqual(["good"]);
+  });
+});
+
+// issue #159：调用方必须分得开「读不出 server」和「这份文件说没有 server」——
+// 分不开的时候 mcpHub 会把整份文件的语法错误当成「用户删光了 server」
+describe("parseMcpConfig 的 fatal（issue #159）", () => {
+  it("整份 JSON 解析不动 = fatal", () => {
+    const out = parseMcpConfig("{ 这不是 JSON");
+    expect(out.fatal).toBe(true);
+    expect(out.servers).toEqual({});
+  });
+
+  it("空文件不是 fatal —— 那是货真价实的「还没配过」", () => {
+    expect(parseMcpConfig("").fatal).toBe(false);
+    expect(parseMcpConfig("   \n  ").fatal).toBe(false);
+  });
+
+  it("单条节点坏掉不是 fatal —— 一台坏的不带垮其它台，这条口径没变", () => {
+    const out = parseMcpConfig(
+      JSON.stringify({ mcpServers: { good: { command: "npx" }, bad: { note: "既没 command 也没 url" } } })
+    );
+    expect(out.fatal).toBe(false);
+    expect(Object.keys(out.servers)).toEqual(["good"]);
+    expect(out.unrecognizedIds).toEqual(["bad"]);
+  });
+
+  it("合法但没有 mcpServers 的文件不是 fatal", () => {
+    expect(parseMcpConfig(JSON.stringify({ $schema: "x" })).fatal).toBe(false);
   });
 });

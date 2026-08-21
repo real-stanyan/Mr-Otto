@@ -14,6 +14,8 @@ import type { Approver } from "../../src/loop/approvalGate.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
+import { createLocalWorld } from "../../src/world/localWorld.js";
+import { withMcp } from "../../src/world/executionWorld.js";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
@@ -413,5 +415,53 @@ describe("MCP 接进装配", () => {
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
     expect(names(agent).some((n) => n.startsWith("mcp"))).toBe(false);
     store.close();
+  });
+
+  // ADR-0054 / issue #154：子 agent 复用父的 world 实例，父身上那份 mcp 就是它的。
+  // "这次装配有没有 MCP 能力"因此问的是 world，不是参数
+  describe("子 agent 那条路（world 里带着 mcp，参数不给）", () => {
+    const parentWorld = () => withMcp(createLocalWorld(), cap());
+
+    it("从 world 里继承 mcp 能力，工具挂得上", () => {
+      const store = new EventStore(":memory:");
+      const agent = createAgent({
+        store, workspace: "/proj/x", push, attachments, world: parentWorld(),
+      });
+      expect(names(agent)).toContain("mcp__gh__create_pr");
+      store.close();
+    });
+
+    it("挂上不等于给用：白名单里没点名就一把都没有（默认行为）", () => {
+      const store = new EventStore(":memory:");
+      const agent = createAgent({
+        store, workspace: "/proj/x", push, attachments,
+        world: parentWorld(),
+        allowTools: ["read_file", "web_search"],
+      });
+      expect(names(agent).some((n) => n.startsWith("mcp"))).toBe(false);
+      store.close();
+    });
+
+    it("白名单点了名就真的给：逐个工具，不是整台 server", () => {
+      const store = new EventStore(":memory:");
+      const agent = createAgent({
+        store, workspace: "/proj/x", push, attachments,
+        world: parentWorld(),
+        allowTools: ["read_file", "mcp__gh__create_pr"],
+      });
+      expect(names(agent)).toContain("mcp__gh__create_pr");
+      // 同一台 server 上没点名的那把（这里是读资源）不跟着进来
+      expect(names(agent)).not.toContain("mcp_read_resource");
+      store.close();
+    });
+
+    it("world 里没有 mcp 的子 agent 照旧一把都没有", () => {
+      const store = new EventStore(":memory:");
+      const agent = createAgent({
+        store, workspace: "/proj/x", push, attachments, world: createLocalWorld(),
+      });
+      expect(names(agent).some((n) => n.startsWith("mcp"))).toBe(false);
+      store.close();
+    });
   });
 });

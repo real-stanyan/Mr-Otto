@@ -12,7 +12,10 @@ describe("mcpToolName", () => {
   });
 
   it("非法字符换成下划线 —— 模型的工具名只认 [A-Za-z0-9_-]", () => {
-    expect(mcpToolName("my server!", "do.thing")).toBe("mcp__my_server___do_thing");
+    // 净化会丢信息，所以尾部挂指纹（issue #156）。这条断言从前是
+    // "mcp__my_server___do_thing"——它钉住的正是那个 bug：两个不同的 server id
+    // 净化成同一串之后没有任何东西再把它们分开
+    expect(mcpToolName("my server!", "do.thing")).toMatch(/^mcp__my_server___do_thing_[0-9a-f]{4}$/);
   });
 
   it("超长时截断，且截断后仍然唯一（尾部挂 4 位哈希）", () => {
@@ -22,6 +25,28 @@ describe("mcpToolName", () => {
     expect(a.length).toBeLessThanOrEqual(64);
     expect(b.length).toBeLessThanOrEqual(64);
     expect(a).not.toBe(b);
+  });
+
+  // issue #156：指纹从前只挂在长度分支上，下面这几对全都不超长，
+  // 于是它们各自塌成同一个名字——LoopEngine 的 toolsByName 静默保留最后一个，
+  // 模型调 A 实际执行 B
+  it.each([
+    ["净化撞车", "foo.bar", "x", "foo_bar", "x"],
+    ["净化撞车（空格 vs 下划线）", "a b", "x", "a_b", "x"],
+    ["分隔符撞车（server 以 _ 结尾）", "a_", "b", "a", "_b"],
+    ["分隔符撞车（server 里含 __）", "a__b", "c", "a", "b__c"],
+  ])("%s 的两个 (server, tool) 不塌成同一个工具名", (_label, s1, t1, s2, t2) => {
+    expect(mcpToolName(s1, t1)).not.toBe(mcpToolName(s2, t2));
+  });
+
+  it("干净的名字不加料（绝大多数 server 的日常形态）", () => {
+    expect(mcpToolName("github", "create_pr")).toBe("mcp__github__create_pr");
+    expect(mcpToolName("my-server", "a-b_c")).toBe("mcp__my-server__a-b_c");
+  });
+
+  it("加了指纹也不越过 64 字符上限", () => {
+    const name = mcpToolName("x".repeat(30) + ".", "y".repeat(30));
+    expect(name.length).toBeLessThanOrEqual(64);
   });
 });
 
