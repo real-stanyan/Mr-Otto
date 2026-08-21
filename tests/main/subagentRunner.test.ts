@@ -334,4 +334,34 @@ describe("createSubagentRunner", () => {
     await expect(p).rejects.toThrow(/子任务被用户中断/); // 中断收口见上一个用例
     expect(abort).toHaveBeenCalled();
   });
+
+  it("subagent_briefed 记的是拼装后的全文,不是文件里那段正文", async () => {
+    const { store, attachments, push, parent, seen } = fixtures();
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def({ instructions: "正文" })],
+      parent,
+      composePrompt: (d, workspace) => `[前置@${workspace}]${d.instructions}`,
+      runTurn: async (agent) => {
+        store.append({
+          sessionId: agent.sessionId,
+          ts: Date.now(),
+          type: "assistant_message",
+          content: "done",
+          model: "deepseek-chat",
+        });
+      },
+    });
+    const out = await runner.run({ agent: "searcher", task: "t", parentToolCallId: "call_1" });
+
+    const briefed = store
+      .load(out.childSessionId)
+      .find((e) => e.type === "subagent_briefed");
+    expect(briefed?.type === "subagent_briefed" && briefed.instructions).toBe(
+      `[前置@${parent().workspace}]正文`
+    );
+    expect(seen.some((e) => e.type === "subagent_briefed")).toBe(true);
+  });
 });
