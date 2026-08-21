@@ -8,15 +8,16 @@ import { mcpToolName, renderMcpContent } from "../shared/mcp.js";
 
 /** 装配时把每台**已连上**的 server 的工具全挂上。
     没连上的不出刀 —— 它的工具清单是空的，没有 def 就无从挂起（spec §四第 3 点）。
-    挂上之后能不能用由 available() 管：掉线时从模型看到的声明表里消失，
-    但留在 toolsByName 里，这样掉线前发出的调用还能收到一句人话（engine.ts:208 的语义）。 */
+    挂上之后能不能用由 available() 管：engine 按 available() 过滤声明表喂模型，
+    掉线时工具从模型看到的清单消失。工具仍在 toolsByName 里，掉线前发出的调用
+    能收到一句人话而不是"未知工具"。 */
 export function createMcpTools(mcp: McpCapability): Tool[] {
   return mcp.servers().flatMap((server) =>
     server.tools.map<Tool>((t) => ({
       def: {
         name: mcpToolName(server.name, t.name),
         description: t.description,
-        parameters: t.inputSchema,
+        parameters: t.inputSchema as object,
       },
       // 全部要审批：server 是外部代码，MCP 协议里的 readOnlyHint 是它自报的，
       // 不采信（同"不采信页面自报 URL"的判断）。授权记忆按完整工具名记，

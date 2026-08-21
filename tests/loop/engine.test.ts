@@ -24,6 +24,22 @@ function fakeAdapter(script: ModelReply[]) {
   return { adapter, seenMessageCounts };
 }
 
+/** 脚本化 adapter 的增强版：还能录下每次收到的工具声明 */
+function fakeAdapterWithTools(script: ModelReply[]) {
+  const seenTools: { name: string }[][] = [];
+  let i = 0;
+  const adapter: ModelAdapter = {
+    model: "fake-model",
+    async chat(messages, tools) {
+      seenTools.push(tools?.map((t) => ({ name: t.name })) ?? []);
+      const reply = script[i++];
+      if (!reply) throw new Error("脚本用完了还在调");
+      return reply;
+    },
+  };
+  return { adapter, seenTools };
+}
+
 const fakeWorld: ExecutionWorld = {
   fs: {
     read: async (path) => `<content of ${path}>`,
@@ -238,6 +254,50 @@ describe("LoopEngine", () => {
 
     const evt = store.load("s1").find((e) => e.type === "user_message");
     expect(evt).not.toHaveProperty("textFiles");
+    store.close();
+  });
+
+  it("available() === false 的工具不在模型声明表里，但掉线前发出的调用仍能用 toolsByName 解决", async () => {
+    const store = new EventStore(":memory:");
+    // 两个工具：一个可用，一个已掉线
+    const availableTool: Tool = {
+      def: {
+        name: "available_tool",
+        description: "我还在",
+        parameters: { type: "object", properties: {} },
+      },
+      requiresApproval: false,
+      available: () => true,
+      run: async () => "可用工具响应",
+    };
+    const unavailableTool: Tool = {
+      def: {
+        name: "unavailable_tool",
+        description: "我掉线了",
+        parameters: { type: "object", properties: {} },
+      },
+      requiresApproval: false,
+      available: () => false, // 掉线
+      run: async () => "不应该执行到这",
+    };
+
+    const { adapter, seenTools } = fakeAdapterWithTools([
+      { content: "" },
+      { content: "看到了" },
+    ]);
+
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [availableTool, unavailableTool],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("查一下");
+
+    // 验证声明表里只有可用的工具
+    const firstCallTools = seenTools[0];
+    expect(firstCallTools?.map((t) => t.name)).toEqual(["available_tool"]);
     store.close();
   });
 });

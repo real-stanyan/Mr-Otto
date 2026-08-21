@@ -205,7 +205,7 @@ export class LoopEngine {
       const onDelta = this.opts.onAssistantDelta;
       const reply = await this.adapter.chat(
         messages,
-        this.opts.tools.map((t) => t.def),
+        this.opts.tools.filter((t) => t.available?.() ?? true).map((t) => t.def),
         onDelta
           ? (text, kind) => {
               clock.observe(kind);
