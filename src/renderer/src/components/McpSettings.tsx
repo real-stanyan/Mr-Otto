@@ -36,11 +36,13 @@ import { useChat } from "../store.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import {
   blankRow,
+  hasStrayMaskedValue,
   mcpConfigsEqual,
   mcpDisplayStatus,
   mcpServerIdError,
   recordFromRows,
   rowsFromRecord,
+  shouldClearValueOnKeyRename,
   splitArgs,
   type KeyValueRow,
   type McpDisplayStatus,
@@ -326,15 +328,23 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
   const [removing, setRemoving] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
 
-  const resetDraft = () => {
-    setEnabled(cfg.enabled);
-    setCommand(cfg.kind === "stdio" ? cfg.command : "");
-    setArgsText(cfg.kind === "stdio" ? cfg.args.join(" ") : "");
-    setUrl(cfg.kind === "http" ? cfg.url : "");
-    setEnvRows(rowsFromRecord(cfg.kind === "stdio" ? cfg.env : {}));
-    setHeaderRows(rowsFromRecord(cfg.kind === "http" ? cfg.headers : {}));
+  // resetDraft(打开态收起时)和"存成功之后"都要把草稿拉回某一份 config，
+  // 但拉回的对象不一样：收起时用的是这一次渲染闭包里的 cfg（没有异步间隙，
+  // 就是"当前"）；存成功之后不能用闭包里的 cfg——那是存之前的旧快照，
+  // 存完之后 store 已经换成了新的遮罩（旧值被吃回真值/新值被新遮罩盖住），
+  // 闭包里那份是过期的。syncDraftFrom 把"拿哪份 config 重置草稿"这件事
+  // 参数化，两个调用点各传各的
+  const syncDraftFrom = (c: McpServerConfig) => {
+    setEnabled(c.enabled);
+    setCommand(c.kind === "stdio" ? c.command : "");
+    setArgsText(c.kind === "stdio" ? c.args.join(" ") : "");
+    setUrl(c.kind === "http" ? c.url : "");
+    setEnvRows(rowsFromRecord(c.kind === "stdio" ? c.env : {}));
+    setHeaderRows(rowsFromRecord(c.kind === "http" ? c.headers : {}));
     setSaveError(null);
   };
+
+  const resetDraft = () => syncDraftFrom(cfg);
 
   // 草稿始终沿用打开时的 kind——stdio↔http 字段集完全不同，中途切换等于
   // 建一台新 server，那应该走"删掉重建"，不是这份编辑表单该管的事
@@ -350,8 +360,17 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
       : { kind: "http", url: url.trim(), headers: recordFromRows(headerRows), enabled };
 
   const dirty = !mcpConfigsEqual(cfg, draftConfig);
+  // Critical review finding 的兜底闸：改键名时 onChange 处理器已经会主动清空
+  // 跟着的值（见下面 KeyValueEditor 的调用），这里是万一那道防线被绕过时的
+  // 最后一道——草稿里只要还有一行"键名不在原配置里、值却是原配置某把凭据的
+  // 遮罩"，一律挡住保存，不能让遮罩字符串有任何机会被当真凭据写盘
+  const strayMasked =
+    cfg.kind === "stdio"
+      ? hasStrayMaskedValue(envRows, cfg.env)
+      : hasStrayMaskedValue(headerRows, cfg.headers);
   const invalid =
-    draftConfig.kind === "stdio" ? draftConfig.command === "" : draftConfig.url === "";
+    (draftConfig.kind === "stdio" ? draftConfig.command === "" : draftConfig.url === "") ||
+    strayMasked;
 
   const display = mcpDisplayStatus(cfg, server.status);
   const hasCapabilities = server.tools.length + server.resources.length + server.prompts.length > 0;
@@ -362,6 +381,14 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
     setSaveError(null);
     try {
       await saveMcpServer(server.id, draftConfig);
+      // 存成功后拿 store 里刚落地的那份重置草稿，不是这次渲染闭包里的旧
+      // cfg——不然凭据字段换成新遮罩之后，草稿还停在存之前的样子，dirty
+      // 立刻判真，"已保存"按钮会当场变回"保存"，像是没存成功，其实只是
+      // 草稿没跟上（Important review finding）。三个写操作都回全量快照，
+      // 这里用 getState() 现取，同 SubagentSettings 的 copyToOtterAgents
+      // 用的是同一招：只信刚落地的那份，不信闭包里可能已经过期的旧值
+      const fresh = useChat.getState().mcpServers.servers.find((s) => s.id === server.id);
+      if (fresh) syncDraftFrom(fresh.config);
     } catch (e) {
       setSaveError(bridgeErrorMessage(e));
     } finally {
@@ -534,8 +561,13 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
 }
 
 /** env/headers 的行编辑器。值输入框直接拿遮罩值预填——这正是防止表单覆盖真
-    凭据的机制本体（见文件顶部注释），不是巧合。baseline 是打开这一行时的
-    原始（遮罩）配置，只用来给"没改过"的行加一个小标记，不参与提交内容 */
+    凭据的机制本体（见文件顶部注释），不是巧合。
+    baseline 是这一行此刻对应的**实时** server.config.env/headers——随
+    onMcpChanged 推送更新，不是这一行展开那一刻冻结的快照（review 指出旧注释
+    写错了这一点）。这份实时性是特意保留的：改键名要不要清空值、"未改"标记
+    准不准，跟的都该是磁盘上此刻的真实凭据形状，而不是这一行刚展开时的旧照——
+    两者在大多数时候是同一份，只有外部（比如手改 mcp.json）在这一行展开期间
+    改动了同一台 server 时才会分岔，而这时候跟"此刻"走显然更安全 */
 function KeyValueEditor({
   label,
   rows,
@@ -556,41 +588,74 @@ function KeyValueEditor({
           // 键名没改、值也没改——才算"没碰过"。键名一改，值原来跟哪把凭据对应
           // 已经说不清了，不该继续标"未改"
           const unchanged = row.key !== "" && baseline[row.key] === row.value;
+          // 改名清空之后：originalKey 存在（这行本来是从磁盘加载的）、键名已经
+          // 跟 originalKey 不一样、值是空的——这三条一起才说明"是被改名清空的"，
+          // 不是用户自己手动清空了一个从没改过名的字段
+          const renamedAndCleared =
+            row.originalKey !== null && row.key !== row.originalKey && row.value === "";
+          // Critical review finding 的可见信号：万一 onChange 的清空没生效
+          // （不该发生，但这里不赌它一定不发生），这一行会亮出来，而不是
+          // 悄悄地把遮罩存出去。判据复用 hasStrayMaskedValue 本体（只传这一行），
+          // 不在这里另写一份等价逻辑——两份判据一旦不小心分叉，"挡住保存"的闸
+          // 和"告诉用户为什么"的提示就可能对不上号
+          const stray = hasStrayMaskedValue([row], baseline);
           return (
-            <div key={row.rowId} className="flex items-center gap-[6px]">
-              <Input
-                value={row.key}
-                onChange={(e) =>
-                  setRows(rows.map((r) => (r.rowId === row.rowId ? { ...r, key: e.target.value } : r)))
-                }
-                placeholder="键名"
-                className="w-[180px] shrink-0 font-mono text-[12.5px]"
-              />
-              <div className="flex min-w-0 flex-1 items-center gap-[6px]">
+            <div key={row.rowId} className="flex flex-col gap-1">
+              <div className="flex items-center gap-[6px]">
                 <Input
-                  value={row.value}
-                  onChange={(e) =>
-                    setRows(rows.map((r) => (r.rowId === row.rowId ? { ...r, value: e.target.value } : r)))
-                  }
-                  placeholder="值"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="min-w-0 flex-1 font-mono text-[12.5px]"
+                  value={row.key}
+                  onChange={(e) => {
+                    const newKey = e.target.value;
+                    setRows(
+                      rows.map((r) => {
+                        if (r.rowId !== row.rowId) return r;
+                        // 改键名这一刻：这一格的值如果还是旧键名对应的原始遮罩,
+                        // 说明用户没碰过它——继续留着提交,会被 mergeMaskedCreds
+                        // 按新键名去磁盘上找旧值,找不到就把这串星号原样当真凭据
+                        // 写盘（Critical review finding）。这里主动清空,逼用户
+                        // 重新填一遍真值，而不是让一个看不出变化的错误悄悄发生
+                        const clear = shouldClearValueOnKeyRename(r.key, r.value, baseline);
+                        return { ...r, key: newKey, value: clear ? "" : r.value };
+                      })
+                    );
+                  }}
+                  placeholder="键名"
+                  className="w-[180px] shrink-0 font-mono text-[12.5px]"
                 />
-                {/* 显示的是已保存凭据的遮罩形态,不是明文——这一格能直接认出"贴的是哪把"，
-                    改了哪怕一个字符这个标记就会消失，那正是"这行被当成新值了"的信号 */}
-                {unchanged && (
-                  <span className="shrink-0 whitespace-nowrap text-[10.5px] text-muted-foreground/70">未改</span>
-                )}
+                <div className="flex min-w-0 flex-1 items-center gap-[6px]">
+                  <Input
+                    value={row.value}
+                    onChange={(e) =>
+                      setRows(rows.map((r) => (r.rowId === row.rowId ? { ...r, value: e.target.value } : r)))
+                    }
+                    placeholder={renamedAndCleared ? "键名改了，请重新填值" : "值"}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className={cn(
+                      "min-w-0 flex-1 font-mono text-[12.5px]",
+                      (renamedAndCleared || stray) && "border-warn/60 focus-visible:border-warn"
+                    )}
+                  />
+                  {/* 显示的是已保存凭据的遮罩形态,不是明文——这一格能直接认出"贴的是哪把"，
+                      改了哪怕一个字符这个标记就会消失，那正是"这行被当成新值了"的信号 */}
+                  {unchanged && (
+                    <span className="shrink-0 whitespace-nowrap text-[10.5px] text-muted-foreground/70">未改</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="press-scale shrink-0 p-1 text-muted-foreground hover:text-err"
+                  onClick={() => setRows(rows.filter((r) => r.rowId !== row.rowId))}
+                  aria-label="删除这一行"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
               </div>
-              <button
-                type="button"
-                className="press-scale shrink-0 p-1 text-muted-foreground hover:text-err"
-                onClick={() => setRows(rows.filter((r) => r.rowId !== row.rowId))}
-                aria-label="删除这一行"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
+              {stray && (
+                <p className="pl-[186px] text-[11px] text-warn">
+                  这一行的值还是旧键名的遮罩形态，不是真凭据——请重新填值，否则无法保存
+                </p>
+              )}
             </div>
           );
         })}
