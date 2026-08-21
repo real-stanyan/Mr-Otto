@@ -126,9 +126,10 @@ function createWindow(): BrowserWindow {
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
     // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
     // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
-    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,16)pt,让位出左边距 + 顶部呼吸空间
+    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,21.5)pt,让位出左边距 + 顶部呼吸空间,
+    // 并与右侧 search/收起钮的垂直中心对齐(右侧按钮中心约 28pt,红绿灯高约 13pt)
     ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 16 } }
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 21.5 } }
       : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),

@@ -1295,19 +1295,21 @@ function AppSidebar() {
 
   return (
     <Sidebar collapsible="offcanvas">
-      <SidebarHeader className="drag-region">
+      <SidebarHeader className={cn("drag-region", trafficInset && "pt-1")}>
         <div
           className={cn(
-            "pt-1 pr-2 pb-[6px] font-[650] flex items-center gap-2",
-            trafficInset ? "pl-[72px]" : "pl-2"
+            "pr-2 pb-[6px] font-[650] flex items-center gap-2",
+            trafficInset ? "pl-[72px]" : "pt-1 pl-2"
           )}
         >
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看。
-              窗口模式下红绿灯叠在左上角,logo 让位(全屏红绿灯被 macOS 隐掉才回来) */}
+              窗口模式下红绿灯叠在左上角,logo + 标题都让位(全屏红绿灯被 macOS 隐掉才回来) */}
           {!trafficInset && (
-            <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+            <>
+              <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+              Mr Otto
+            </>
           )}
-          Mr Otto
           {/* 搜索挪到顶行、收起钮左边:它是"去别的会话"的路口,和下面那一长串
               会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
               只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
