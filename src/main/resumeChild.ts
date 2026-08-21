@@ -18,8 +18,9 @@ import type { BrowserCapability } from "../world/executionWorld.js";
 import type { SessionEvent } from "../session/events.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
-    从来没落过盘，resume 后一律回默认的 ask（同 ADR-0047 已接受的那笔代价）。
-    这里只保留必须还原的两样：给了哪几把刀、是不是整条审批链都换成拒绝。 */
+    从来没落过盘，而重建只信快照（ADR-0048 决策 3），所以 `deny` 现在恒为 true ——
+    比 ADR-0047 当初接受的"回默认 ask"更紧。字段留着不折叠成常量：它是
+    createChildAgent 的输入契约，那一侧要能表达"这次不拒绝"，哪怕今天没人这么传。 */
 export interface ChildAgentConfig {
   agent: string;
   allowTools: readonly string[];
