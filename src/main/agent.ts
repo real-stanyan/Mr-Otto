@@ -45,7 +45,7 @@ import { sessionGrants, type GrantScope } from "../shared/permissionGrants.js";
 import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
-import type { WriteFilePreview } from "../shared/shellBridge.js";
+import type { ApprovalPreview } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
 import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
@@ -70,7 +70,7 @@ export interface AgentPush {
     sessionId: string,
     call: ToolCallRequest,
     tool: Tool,
-    preview?: WriteFilePreview,
+    preview?: ApprovalPreview,
     fromAgent?: string
   ): void;
   /** 带 sessionId：问卷卡同理，挂靠到发起提问的那个会话的视图上 */

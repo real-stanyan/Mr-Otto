@@ -27,7 +27,7 @@ import { PermissionGrant } from "@/components/elements/permission-grant.js";
 import { TodoList } from "@/components/elements/todo-list.js";
 import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
-import type { ApprovalRequest } from "../../shared/shellBridge.js";
+import type { ApprovalRequest, McpToolPreview } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -636,6 +636,53 @@ function DiffPreview({
   );
 }
 
+/** MCP 工具的审批卡正文（issue #157）。
+    没有它的时候这里长这样：标题是 `mcp__github__create_pr`，正文是一坨原始 JSON。
+    而每把 MCP 工具都 requiresApproval、授权记忆按完整工具名记（ADR-0041），
+    一台 everything 级的 server（13 把刀）等于一个会话里 13 次这样的决定——
+    这是这个功能的主交互面，值得自己的排版。
+
+    三件事按重要性排：**哪台 server**（第三方代码的来源，最该先看清）、
+    **哪把刀 + 它自称干什么**、**参数**。参数一格一项，值等宽，长的自己滚，
+    不再是一行 JSON 里找逗号。 */
+function McpToolApproval({ preview }: { preview: McpToolPreview }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="rounded-md bg-foreground/[0.06] px-[6px] py-[2px] font-mono text-[11px] text-foreground/60">
+          MCP · {preview.server}
+        </span>
+        <span className="font-mono text-[13.5px] font-medium">{preview.tool}</span>
+      </div>
+      {preview.description !== "" && (
+        <div className="text-xs text-muted-foreground">{preview.description}</div>
+      )}
+      {preview.args.length === 0 ? (
+        <div className="text-xs text-muted-foreground">（这次调用没有参数）</div>
+      ) : (
+        <div className="flex flex-col gap-[6px]">
+          {preview.args.map((a) => (
+            <div key={a.name} className="flex flex-col gap-[2px]">
+              <div className="flex items-baseline gap-2">
+                <span className="font-mono text-[11px] text-foreground/45">{a.name}</span>
+                {a.truncated && (
+                  <span className="text-[11px] text-warn">
+                    只显示前 {a.value.length} 字符，共 {a.fullLength}
+                  </span>
+                )}
+              </div>
+              {/* 单个值自己滚：一个塞了整段脚本的参数不该把整张卡撑到屏幕外 */}
+              <pre className="max-h-[160px] overflow-y-auto rounded-md bg-foreground/[0.04] px-2 py-[6px] font-mono text-xs whitespace-pre-wrap break-all text-foreground/75">
+                {a.value === "" ? "（空）" : a.value}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApprovalCard() {
   // 只渲染挂靠在当前会话上的卡——别的会话的审批留在它自己的视图里
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
@@ -655,11 +702,15 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const [discarded, setDiscarded] = useState<ReadonlySet<string>>(() => new Set());
 
   const preview = approval.preview;
+  // 三种预览各管各的：write_file 那一路要 diff，MCP 那一路要 server + 参数表，
+  // 没有预览的退回通用卡。先分家再取字段——联合类型不分家就取不到字段
+  const filePreview = preview?.kind === "write_file" ? preview : null;
+  const mcpPreview = preview?.kind === "mcp_tool" ? preview : null;
   // 分块只对"改文件"有意义:新文件整份都是新增,拆块之后每一块都是"要不要这一段",
   // 而模型给的是一整个文件 —— 拼出半个文件不是任何人想要的结果
   const doc = useMemo(
-    () => (preview && preview.oldText !== null ? diffDoc(preview.oldText, preview.newText) : null),
-    [preview]
+    () => (filePreview && filePreview.oldText !== null ? diffDoc(filePreview.oldText, filePreview.newText) : null),
+    [filePreview]
   );
 
   const toggle = (id: string, drop: boolean): void =>
@@ -673,8 +724,8 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const approve = (grant?: GrantScope): void => {
     // 一块没丢 = 原样执行,不带 revisedArgs(日志里就不会多出一份重复的内容)
     const revised =
-      preview && doc && discarded.size > 0
-        ? composeContent(preview.oldText, preview.newText, discarded)
+      filePreview && doc && discarded.size > 0
+        ? composeContent(filePreview.oldText, filePreview.newText, discarded)
         : null;
     void decide({
       decision: "approved",
@@ -694,9 +745,9 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
     <div className="mx-5 mb-2 border border-warn rounded-[10px] bg-warn/[0.07] transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0">
       <div className="pt-2 px-[14px] text-xs text-warn font-semibold">危险操作待审批</div>
       <div className="px-[14px] py-[6px]">
-        {doc && preview ? (
+        {doc && filePreview ? (
           <ReviewableDiff
-            filename={preview.path}
+            filename={filePreview.path}
             hunks={doc.hunks.map((h) => ({
               id: h.id,
               range: h.range,
@@ -707,15 +758,17 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
             onDiscard={(id) => toggle(id, true)}
             className="max-h-[320px] max-w-none overflow-y-auto"
           />
-        ) : preview ? (
+        ) : filePreview ? (
           <>
             <div className="mb-1 text-xs text-ok">（新文件）</div>
             <DiffPreview
-              path={preview.path}
-              oldText={preview.oldText}
-              newText={preview.newText}
+              path={filePreview.path}
+              oldText={filePreview.oldText}
+              newText={filePreview.newText}
             />
           </>
+        ) : mcpPreview ? (
+          <McpToolApproval preview={mcpPreview} />
         ) : (
           <PermissionGrant
             capability={approval.call.name}
