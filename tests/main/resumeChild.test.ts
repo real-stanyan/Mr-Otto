@@ -41,6 +41,14 @@ describe("childAgentConfig", () => {
     const events = [{ type: "session_created" }] as unknown as SessionEvent[];
     expect(childAgentConfig(events)).toBeNull();
   });
+
+  // 那道守卫是一条三段 OR（!first || 类型不对 || 没有 spawnedBy），三段各有各的
+  // 入口。空日志走的是第一段——它曾经有过断言，改签名那轮跟着整块删掉了。
+  // 把它单独钉住:有人把这行"简化"成 `!first?.spawnedBy` 时，行为在 first 为
+  // undefined 和 first 类型不对这两种情况下会分叉，而没有测试会拦住
+  it("空日志 = null,不是崩溃", () => {
+    expect(childAgentConfig([])).toBeNull();
+  });
 });
 
 describe("createChildAgent", () => {
