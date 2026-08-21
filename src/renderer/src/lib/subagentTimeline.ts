@@ -14,7 +14,7 @@ import { totalTokens } from "../../../session/deriveUsage.js";
 import type { ToolIndex } from "./toolIndex.js";
 
 /** 按所属 assistant_message 分组 —— 判定用 toolCallId 所属的那条
-    assistant_message.toolCalls。执行是串行的(ADR-0046 的代价之一:子会话没有
+    assistant_message.toolCalls。执行是串行的(ADR-0047 的代价之一:子会话没有
     自己的停止键,派活本身也是 await 完才轮到下一个工具调用):一条消息里可能
     同时请求了两个 task 调用,但第二个的 subagent_spawned 要等第一个跑完才
     落盘——组会随着执行进度从 1 个成员长成 N 个,这里只描述"此刻已经落盘的
@@ -52,7 +52,7 @@ export type SubagentRowState = "working" | "waiting" | "done";
     done = 父会话里这次 task 调用已经有 tool_result(task 工具走标准工具管线，
     这条落盘就是子 turn 收口的事实)。
     没结果时看有没有审批/问卷冒泡到父会话——子会话的审批卡挂在父 sessionId 上
-    (ADR-0046:人正看着父会话界面，卡不能挂子会话，不然死锁)。
+    (ADR-0047:人正看着父会话界面，卡不能挂子会话，不然死锁)。
     执行是串行的：任一时刻至多一个 subagent 没有结果，所以这里不需要按 agent
     名字再去匹配"冒泡上来的审批到底是哪一个子会话的"——不是这一行没结果，
     这条判定就落不到它头上。 */

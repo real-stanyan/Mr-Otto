@@ -42,7 +42,7 @@ describe("groupSessionsByWorkspace", () => {
     expect(groupSessionsByWorkspace([s("a", null, 100)])).toEqual([]);
   });
 
-  it("子会话(spawnedFrom 非空)不进任何组——只能从父会话时间线的卡进去(ADR-0046)", () => {
+  it("子会话(spawnedFrom 非空)不进任何组——只能从父会话时间线的卡进去(ADR-0047)", () => {
     const g = groupSessionsByWorkspace([
       s("parent", "/p/x", 100),
       s("child", "/p/x", 200, "parent"),

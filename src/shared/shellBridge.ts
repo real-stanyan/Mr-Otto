@@ -172,7 +172,7 @@ export interface ApprovalRequest {
   toolDescription: string;
   /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
   preview?: WriteFilePreview;
-  /** 这张卡来自哪个 subagent（ADR-0046 的冒泡）。缺席 = 主 agent 自己的卡，
+  /** 这张卡来自哪个 subagent（ADR-0047 的冒泡）。缺席 = 主 agent 自己的卡，
       现有渲染一字不改 */
   fromAgent?: string;
 }
@@ -483,6 +483,11 @@ export interface ShellBridge {
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
   onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
+  /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
+      左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
+  getWindowFullscreen(): Promise<boolean>;
+  /** 窗口进入/退出全屏的推送。首帧状态用 getWindowFullscreen 问,变化走这里 */
+  onWindowFullscreen(cb: (fullscreen: boolean) => void): Unsubscribe;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -597,6 +602,8 @@ export const CHANNELS = {
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
+  getWindowFullscreen: "otter:getWindowFullscreen",
+  windowFullscreen: "otter:windowFullscreen",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",

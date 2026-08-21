@@ -62,7 +62,7 @@ const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
 export interface AgentPush {
   event(e: SessionEvent): void;
   /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览。
-      fromAgent 有 = 这张卡是从某个 subagent 冒泡上来的（ADR-0046），
+      fromAgent 有 = 这张卡是从某个 subagent 冒泡上来的（ADR-0047），
       缺席 = 主 agent 自己的卡，现有渲染一字不改 */
   approvalRequest(
     sessionId: string,
@@ -112,7 +112,7 @@ export function createAgent(opts: {
   alwaysAllow?: () => ReadonlySet<string>;
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
-  /** 复用现成的 world 而不是新造（ADR-0046）。子 agent 必须跑在父的 world 实例里：
+  /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
   world?: ExecutionWorld;
@@ -126,7 +126,7 @@ export function createAgent(opts: {
       目前唯一用途：approval: "deny" 的 subagent 传 denyingApprover */
   approver?: Approver;
   /** 给了 = 这个装配能派活（挂 task 工具）。子 agent 刻意不传它——
-      递归由此挡死（ADR-0046） */
+      递归由此挡死（ADR-0047） */
   subagentRunner?: SubagentRunner;
   /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
   listSubagents?: () => SubagentDef[];

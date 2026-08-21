@@ -52,7 +52,7 @@ import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
-import { cn } from "@/lib/utils.js";
+import { cn, isMac } from "@/lib/utils.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
@@ -151,13 +151,17 @@ const POP_ROW = "flex justify-between items-baseline gap-3 text-muted-foreground
 /** 清单定稿之后用户又开了这么多轮还没更新过 = 当它被丢下了（理由见 TodoPanel） */
 const STALE_TODO_TURNS = 2;
 
+/** 只在 macOS 上给隐藏标题栏(hiddenInset)做红绿灯让位/拖拽区;别的平台原生标题栏照旧 */
+const IS_MAC = isMac();
+
+
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 设置页骨架(账号/模型配置/Skill 库/Subagent 共用) —— 导出给 SubagentSettings.tsx，
    它是 SkillsPage 的可写版兄弟栏目，骨架该是同一份，不该各自拼一遍字符串 */
 export const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 
-export const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
+export const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border drag-region";
 export const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
 export const SETTINGS_BODY =
   "flex-1 overflow-y-auto scrollbar-stable px-5 py-6 flex flex-col gap-4 w-[min(640px,100%)] mx-auto";
@@ -1171,7 +1175,7 @@ function WorkStatusList() {
   const resume = useChat((s) => s.resume);
   const setSessionMode = useChat((s) => s.setSessionMode);
 
-  // 子会话（spawnedFrom 非空，ADR-0046）不在这露面：它们只能从父会话时间线
+  // 子会话（spawnedFrom 非空，ADR-0047）不在这露面：它们只能从父会话时间线
   // 那张卡进去，这里再列一遍会在父会话旁边重复一条"运行中"，正是 Task 8
   // 要把这个信号收拢到时间线卡上、不在别处重复的那件事（Task 8 review Important 2）
   const visible = sessions.filter((s) => s.spawnedFrom === null);
@@ -1259,6 +1263,10 @@ function AppSidebar() {
   const friendsOpen = useChat((s) => s.friendsPanelOpen);
   const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
   const gameInvites = useChat((s) => s.gameInvites);
+  // 窗口模式(mac + 非全屏)下红绿灯叠在侧栏左上角,logo 得让位;全屏红绿灯隐掉,logo 回来
+  const fullscreen = useChat((s) => s.fullscreen);
+  const trafficInset = IS_MAC && !fullscreen;
+
   // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求 + 待回应牌局邀请。
   // 区收着也能被看见
   const friendActivity =
@@ -1287,10 +1295,18 @@ function AppSidebar() {
 
   return (
     <Sidebar collapsible="offcanvas">
-      <SidebarHeader>
-        <div className="pt-1 px-2 pb-[6px] font-[650] flex items-center gap-2">
-          {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看 */}
-          <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+      <SidebarHeader className="drag-region">
+        <div
+          className={cn(
+            "pt-1 pr-2 pb-[6px] font-[650] flex items-center gap-2",
+            trafficInset ? "pl-[72px]" : "pl-2"
+          )}
+        >
+          {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看。
+              窗口模式下红绿灯叠在左上角,logo 让位(全屏红绿灯被 macOS 隐掉才回来) */}
+          {!trafficInset && (
+            <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+          )}
           Mr Otto
           {/* 搜索挪到顶行、收起钮左边:它是"去别的会话"的路口,和下面那一长串
               会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
@@ -1787,6 +1803,7 @@ function Welcome() {
   const send = useChat((s) => s.send);
   const error = useChat((s) => s.error);
   const lastModel = useChat((s) => s.model);
+  const fullscreen = useChat((s) => s.fullscreen);
   // 侧栏工程分组的 ＋ 带过来的文件夹初值。Welcome 常驻不卸载，所以用 effect 跟着变，
   // 不用 key 重挂——重挂会连草稿一起清掉
   const pendingWorkspace = useChat((s) => s.pendingWorkspace);
@@ -1833,7 +1850,11 @@ function Welcome() {
   };
 
   return (
-    <div className="flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
+    <div className="relative flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
+      {/* 欢迎页没有头部可排,窗口模式下顶部这一条空地带接住拖拽(全屏不需要) */}
+      {IS_MAC && !fullscreen && (
+        <div className="drag-region absolute top-0 inset-x-0 h-7" aria-hidden />
+      )}
       {/* 头像左、招呼语右,整块居中。竖排的「头像 + Mr Otto」是一张启动画面 ——
           它介绍自己是谁,而这一屏的正事是开始说话。横过来之后这一块读成
           "它在跟你打招呼",和底下那个输入框连成一句话。
@@ -2255,7 +2276,7 @@ function ChatComposer() {
 
 export function App() {
   const { phase, sessionId, workspace, events, boot, stop, resume } = useChat();
-  // 这个会话是不是被派活派出来的子会话(ADR-0046)——是就带上父会话 id，
+  // 这个会话是不是被派活派出来的子会话(ADR-0047)——是就带上父会话 id，
   // header 露一颗"← 回到父会话"。纯粹从 events[0] 的 spawnedBy 推导
   const spawnedFrom = useMemo(() => spawnedFromOf(events), [events]);
   const mode = useChat((s) => s.sessionMode);
@@ -2398,7 +2419,7 @@ export function App() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
-        {/* 子会话(ADR-0046)才有的返程键:它不在侧栏里,唯一的出路是回它的父会话 */}
+        {/* 子会话(ADR-0047)才有的返程键:它不在侧栏里,唯一的出路是回它的父会话 */}
         {spawnedFrom && (
           <Button
             variant="ghost"

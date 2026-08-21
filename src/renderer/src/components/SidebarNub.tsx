@@ -8,14 +8,26 @@
 // 也要它，而那几个组件是被 App.tsx import 的，反向再 import 就成环了。
 
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar.js";
+import { useChat } from "../store.js";
+import { cn, isMac } from "../lib/utils.js";
 
 /** 排进头部的版本：侧栏展开时不渲染（那时侧栏里自带收起钮） */
 export function SidebarNub() {
   const { state } = useSidebar();
+  const fullscreen = useChat((s) => s.fullscreen);
   if (state !== "collapsed") return null;
-  // -ml-2 把它拉回头部的 px-5 内缩里：视觉上贴着左缘，与侧栏展开后
-  // logo 所在的位置对齐——同一颗钮在两种状态下不该跳位置
-  return <SidebarTrigger className="collapsed-nub -ml-2 shrink-0 self-center" />;
+  // 窗口模式(mac + 非全屏)下红绿灯叠在左上角,和这颗"打开侧栏"钮同一行——
+  // 给红绿灯让出位置(侧栏展开时红绿灯在侧栏头部,这里不需要让)。
+  // 全屏红绿灯被 macOS 隐掉,照旧贴左缘(-ml-2 拉回头部 px-5 内缩里,和 logo 对齐)
+  const clearTrafficLights = isMac() && !fullscreen;
+  return (
+    <SidebarTrigger
+      className={cn(
+        "collapsed-nub shrink-0 self-center",
+        clearTrafficLights ? "ml-[52px]" : "-ml-2"
+      )}
+    />
+  );
 }
 
 /** 没有头部可排的视图（欢迎页/连接中）用的浮标版本：那些页面左上角确实是空地 */

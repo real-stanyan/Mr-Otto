@@ -207,7 +207,7 @@ describe("createSubagentRunner", () => {
     ).rejects.toThrow(/nobody/);
   });
 
-  // ADR-0046 决定 5 的回归钉子：task 永不进 subagent 的工具白名单。
+  // ADR-0047 决定 5 的回归钉子：task 永不进 subagent 的工具白名单。
   // 前面所有用例都注入 runTurn，谁也没看过真实装配的工具表——有人为了"一致"
   // 给 createAgent 补一句 subagentRunner: deps，MVP 边界会静悄悄地全绿着破掉
   it("子 agent 没有 task 工具——哪怕定义里明明白白写了它", async () => {

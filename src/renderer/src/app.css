@@ -1057,3 +1057,24 @@
 @custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
 
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
+
+/* ── macOS 隐藏原生标题栏(hiddenInset)后的窗口拖拽区 ────────────────────
+   标题栏那一行没了,拖窗口靠 -webkit-app-region:drag 接住。drag 会吞掉
+   其下子元素的点击,所以 drag 区里的交互件(button/input/链接/summary)
+   一律标回 no-drag——用后代选择器一把兜住,不用逐个组件加类名。
+   非 mac 平台这个属性被 Chromium 忽略,没有副作用 */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.drag-region button,
+.drag-region a,
+.drag-region input,
+.drag-region textarea,
+.drag-region select,
+.drag-region summary,
+.drag-region [role="button"],
+.drag-region [data-slot="sidebar-trigger"],
+.drag-region [data-slot="sidebar-menu-button"] {
+  -webkit-app-region: no-drag;
+}
+

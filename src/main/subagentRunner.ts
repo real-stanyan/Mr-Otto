@@ -1,4 +1,4 @@
-// SubagentRunner — task 工具那个洞的真身（ADR-0046）。
+// SubagentRunner — task 工具那个洞的真身（ADR-0047）。
 // 组装根特权：这里可以 import createAgent，工具那边不行。
 //
 // 递归由构造挡死：建子 agent 时不传 subagentRunner，子 agent 因此没有 task 工具。
@@ -136,7 +136,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         })
       );
 
-      // 父 turn 的停止键往下传：子会话自己没有停止键（ADR-0046 的代价之一）
+      // 父 turn 的停止键往下传：子会话自己没有停止键（ADR-0047 的代价之一）
       const onAbort = () => child.engine.abortTurn();
       signal?.addEventListener("abort", onAbort, { once: true });
       try {

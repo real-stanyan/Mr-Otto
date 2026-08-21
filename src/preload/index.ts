@@ -115,6 +115,8 @@ const bridge: ShellBridge = {
   onGameInvitesChanged: subscribe(CHANNELS.gameInvitesChanged),
   onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),
+  getWindowFullscreen: () => ipcRenderer.invoke(CHANNELS.getWindowFullscreen),
+  onWindowFullscreen: subscribe(CHANNELS.windowFullscreen),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

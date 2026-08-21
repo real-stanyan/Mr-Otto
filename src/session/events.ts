@@ -129,7 +129,7 @@ export interface SessionCreatedEvent extends SessionEventBase {
     sessionId: string;
     seq: number;                 // 从源会话哪个位置分叉
   };
-  /** 这个会话是被派活派出来的（ADR-0046）：谁派的、哪次调用派的、用的哪个定义。
+  /** 这个会话是被派活派出来的（ADR-0047）：谁派的、哪次调用派的、用的哪个定义。
       与 forkedFrom 并列。缺席 = 主会话（旧日志照常重放）。
       会话列表靠它把子会话滤出侧栏——子会话只能从父时间线上那张卡进去 */
   spawnedBy?: {

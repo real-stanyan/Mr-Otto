@@ -180,7 +180,7 @@ export function TerminalView() {
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <header className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+      <header className="flex items-center gap-1 border-b border-border px-2 py-1.5 drag-region">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((t) => (
             <button

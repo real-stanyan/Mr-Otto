@@ -77,7 +77,7 @@ export function FriendChatView() {
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部是浮在内容之上的一层材质(半透明 + 背景模糊),不是一条实心色带:
           滚动的消息从它底下过去,层次靠材质而不是描边(Apple 的 materials 那条) */}
-      <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-card/70 px-4 py-2 backdrop-blur-xl">
+      <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-card/70 px-4 py-2 backdrop-blur-xl drag-region">
         {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
         {panelWide && <SidebarNub />}
         <div className="relative shrink-0">

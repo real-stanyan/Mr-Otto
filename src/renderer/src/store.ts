@@ -96,7 +96,7 @@ interface ChatState {
   /** 全部会话（含子会话）的摘要镜像——原样对着 window.otter.listSessions()，
       不在这里过滤：正看着一个子会话时，header 的会话名要靠这份镜像查到标题
       (App.tsx 的 sessionTitle)，把子会话摘掉这里会查不到。子会话不进**侧栏**
-      这件事（ADR-0046）落在消费侧：sessionGroups.ts 的 groupSessionsByWorkspace
+      这件事（ADR-0047）落在消费侧：sessionGroups.ts 的 groupSessionsByWorkspace
       滤 spawnedFrom，侧栏 / ⌘K 搜索都走它，这份镜像本身保持完整 */
   sessions: SessionSummary[];
   /** 子会话日志的只读缓存（childSessionId → 全量事件），懒加载：父时间线上的
@@ -259,6 +259,8 @@ interface ChatState {
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
   friendsPanelOpen: boolean;
+  /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
+  fullscreen: boolean;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -517,6 +519,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gameInvites: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
+  fullscreen: false,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -1185,6 +1188,7 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
+    window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
       if (target.kind === "dm") {
@@ -1325,17 +1329,18 @@ export const useChat = create<ChatState>((set, get) => ({
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
     // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
-    const [info, sessions, skills, account, keyStatus] = await Promise.all([
+    const [info, sessions, skills, account, keyStatus, fullscreen] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
       window.otter.getAccount(),
       window.otter.keyStatus(),
+      window.otter.getWindowFullscreen(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account, keyStatus }
-        : { phase: "welcome", sessions, skills, account, keyStatus }
+        ? { ...enterChat(info), sessions, skills, account, keyStatus, fullscreen }
+        : { phase: "welcome", sessions, skills, account, keyStatus, fullscreen }
     );
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏

@@ -114,6 +114,9 @@ function createWindow(): BrowserWindow {
     height: 760,
     title: "Mr Otto",
     backgroundColor: "#121212",
+    // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
+    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
       contextIsolation: true,
@@ -150,6 +153,11 @@ void app.whenReady().then(() => {
   // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
   // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
   const send = createSend(win);
+
+  // 全屏状态推给渲染层:macOS 全屏隐红绿灯,左上角 logo 该让位/回来。
+  // 变化走推送给已订阅的 renderer,首帧快照走 getWindowFullscreen(见下方 handle)
+  win.on("enter-full-screen", () => send(CHANNELS.windowFullscreen, true));
+  win.on("leave-full-screen", () => send(CHANNELS.windowFullscreen, false));
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
@@ -513,6 +521,8 @@ void app.whenReady().then(() => {
   };
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
+
+  ipcMain.handle(CHANNELS.getWindowFullscreen, () => win.isFullScreen());
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 

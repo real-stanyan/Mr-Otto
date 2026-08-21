@@ -1,4 +1,4 @@
-// 恢复子会话（review I1）—— resume 曾经是绕开 ADR-0046 决定 5 的那条后门：
+// 恢复子会话（review I1）—— resume 曾经是绕开 ADR-0047 决定 5 的那条后门：
 // 一个 tools: read_file / approval: deny 的搜索员被 resume 回来时带着 bash、
 // write_file 和 task。而 resume 是查看子会话的唯一途径。
 
@@ -124,7 +124,7 @@ describe("createChildAgent", () => {
     return { dir, store, attachments };
   }
 
-  it("重建出来的子 agent 没有 task 工具（ADR-0046 决定 5，resume 这条路上）", () => {
+  it("重建出来的子 agent 没有 task 工具（ADR-0047 决定 5，resume 这条路上）", () => {
     const { dir, store, attachments } = fixtures();
     const events = store.load("s-child");
     const config = childAgentConfig(events, [def({ tools: ["read_file", "bash", "task"] })])!;

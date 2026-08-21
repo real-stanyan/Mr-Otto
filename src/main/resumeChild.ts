@@ -1,7 +1,7 @@
-// 恢复一个子会话（ADR-0046）—— 与 subagentRunner 的"创建口"对称的那个"重建口"。
+// 恢复一个子会话（ADR-0047）—— 与 subagentRunner 的"创建口"对称的那个"重建口"。
 //
 // 为什么单独成一个模块，而不是塞在 index.ts 的 resumeSession 里：这里是
-// "子 agent 不能再派子 agent"（ADR-0046 决定 5）的第二个把守点。创建那一侧靠
+// "子 agent 不能再派子 agent"（ADR-0047 决定 5）的第二个把守点。创建那一侧靠
 // subagentRunner 刻意不传 subagentRunner 挡住；恢复这一侧曾经压根不知道
 // "会话还可能是子会话"这回事，于是一个 tools: read_file / approval: deny 的
 // 搜索员 resume 回来时带着 bash、write_file 和 task 工具（review I1）——
@@ -19,7 +19,7 @@ import type { SessionEvent } from "../session/events.js";
 import type { SubagentDef } from "../shared/subagent.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
-    从来没落过盘，resume 后一律回默认的 ask（同 ADR-0046 已接受的那笔代价）。
+    从来没落过盘，resume 后一律回默认的 ask（同 ADR-0047 已接受的那笔代价）。
     这里只保留必须还原的两样：给了哪几把刀、是不是整条审批链都换成拒绝。 */
 export interface ChildAgentConfig {
   agent: string;

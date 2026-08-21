@@ -98,7 +98,7 @@ export function createModeAwareApprover(getMode: () => ApprovalMode, ui: Approve
   };
 }
 
-/** 一律拒绝的审批人（ADR-0046）。给 approval: "deny" 的 subagent 用——
+/** 一律拒绝的审批人（ADR-0047）。给 approval: "deny" 的 subagent 用——
     子 agent 没人盯着屏幕，"弹卡等人"在它身上等于永久挂起。
     拒绝照样流经审批门 → approval_decision 照常落盘，日志永远记着
     "这一步是被配置拒的"（reason 说明），行为可从日志推导。
