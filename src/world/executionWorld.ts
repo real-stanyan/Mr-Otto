@@ -79,6 +79,8 @@ export interface McpServerHandle {
   status: McpStatus;
   /** status === "connected" 的糖。工具层只关心这一个布尔 */
   live: boolean;
+  /** 连不上时的人话原因；连上了 = undefined（同 McpServerStatus 的口径） */
+  error?: string;
   tools: readonly McpToolInfo[];
   resources: readonly McpResourceInfo[];
   prompts: readonly McpPromptInfo[];
