@@ -83,15 +83,19 @@ async function convertDocument(
     // 给模型一份空文件,比告诉用户"没转出东西"更糟
     return { kind: "rejected", name, reason: "文档转换后没有任何文字内容" };
   }
-  // 上限判的是 md 的长度,不是原文件的:3MB 的 pptx 可能只转出 8KB 文字
-  const bytes = new TextEncoder().encode(markdown).byteLength;
-  if (bytes > TEXT_MAX_BYTES) {
+  // 两个字节数含义不同,别混:
+  // markdownBytes 是准入判据 —— 3MB 的 pptx 可能只转出 8KB 文字,
+  //   上限管的是喂给模型的那份,按原文件大小拒它没道理
+  // bytes 是展示口径 —— 用户丢进来的是那个 docx,界面上就该显示那个大小。
+  //   转换是内部优化,不该从一个奇怪的小数字里漏出去
+  const markdownBytes = new TextEncoder().encode(markdown).byteLength;
+  if (markdownBytes > TEXT_MAX_BYTES) {
     return {
       kind: "rejected", name,
-      reason: `文档转成文本后超过 100KB 上限(实际 ${(bytes / 1024).toFixed(0)}KB)`,
+      reason: `文档转成文本后超过 100KB 上限(实际 ${(markdownBytes / 1024).toFixed(0)}KB)`,
     };
   }
-  return { kind: "text", name, content: markdown, bytes };
+  return { kind: "text", name, content: markdown, bytes: data.byteLength };
 }
 
 function reasonFor(code: string | undefined, format: string): string {
