@@ -65,6 +65,7 @@ import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
+import { singleFlight } from "../shared/singleFlight.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -648,38 +649,47 @@ void app.whenReady().then(() => {
     return info;
   });
 
+  // 同一个 sessionId 的两次 resume 只真正重建一次（issue #155）。
+  // 下面那道 agents.has() 守卫和 agents.set() 之间隔着一个 await（mcpHub.ready()），
+  // 不设防的话两次 resume 会双双穿过守卫、各建一个 agent。守卫那条注释里的
+  // 不变量（"绝不能顺手再建一个 agent 顶上"）当初是在这段代码还是同步的时候
+  // 写的，靠 Node 单线程天然原子；await 一进来就不成立了
+  const resumeOnce = singleFlight<string, void>();
+
   ipcMain.handle(CHANNELS.resumeSession, async (_e, sessionId: string): Promise<BootInfo> => {
     // 已在注册表里（包括正在跑 turn 的）→ 只是把视线切过去，agent 原样活着
     if (!agents.has(sessionId)) {
-      // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
-      // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
-      const events = store.load(sessionId);
-      const first = events[0];
-      if (!first || first.type !== "session_created" || !first.workspace) {
-        throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
-      }
-      // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
-      // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
-      // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
-      // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
-      // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
-      // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
-      if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
-        throw new Error("这个子会话正在跑，稍等一下再看");
-      }
-      // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
-      const child = childAgentConfig(events);
-      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
-      // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
-      await mcpHub.ready();
-      agents.set(
-        sessionId,
-        createSessionAgent({
-          workspace: first.workspace,
-          resumeSessionId: sessionId,
-          ...(child ? { child } : {}),
-        })
-      );
+      await resumeOnce(sessionId, async () => {
+        // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
+        // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
+        const events = store.load(sessionId);
+        const first = events[0];
+        if (!first || first.type !== "session_created" || !first.workspace) {
+          throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
+        }
+        // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
+        // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
+        // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
+        // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
+        // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+        // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
+        if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
+          throw new Error("这个子会话正在跑，稍等一下再看");
+        }
+        // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
+        const child = childAgentConfig(events);
+        // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
+        // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
+        await mcpHub.ready();
+        agents.set(
+          sessionId,
+          createSessionAgent({
+            workspace: first.workspace,
+            resumeSessionId: sessionId,
+            ...(child ? { child } : {}),
+          })
+        );
+      });
     }
     currentSessionId = sessionId;
     const info = bootInfo();
