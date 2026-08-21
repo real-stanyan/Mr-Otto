@@ -60,6 +60,9 @@ export function readContextDocs(
     if (!isSafeContextFile(file)) continue;
     const text = reader.readFile(join(workspace, file));
     if (text === null) continue;
+    // 空白文件跳过而不是拼出一个只有标题、没有正文的段落——那一段对模型是纯噪音。
+    // 与 readGlobalPreamble 对空白文件的处置同一条规矩
+    if (text.trim() === "") continue;
     const truncated = text.length > CONTEXT_DOC_LIMIT;
     out.push({ file, text: truncated ? text.slice(0, CONTEXT_DOC_LIMIT) : text, truncated });
   }

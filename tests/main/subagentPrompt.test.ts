@@ -90,6 +90,10 @@ describe("readContextDocs", () => {
     expect(seen).toEqual([]); // 一次盘都没读
   });
 
+  it("空白文件跳过,不拼出一个只有标题的空段落", () => {
+    expect(readContextDocs("/w", ["AGENTS.md"], { readFile: () => "  \n\n " })).toEqual([]);
+  });
+
   it("超长截断并打标记", () => {
     const long = "x".repeat(CONTEXT_DOC_LIMIT + 10);
     const docs = readContextDocs("/w", ["AGENTS.md"], { readFile: () => long });
