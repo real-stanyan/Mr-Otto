@@ -115,7 +115,11 @@ function SidebarProvider({
   const state = open && !narrow ? "expanded" : "collapsed"
 
   // 进入预览:取消挂起的关闭,立刻展开浮层
+  // 展开/收起切换后的静默期:收起动画(200ms)里侧栏本体还在鼠标底下,
+  // 它的 onMouseEnter 会把刚收起的侧栏当预览又拉出来。切换后 300ms 内不接预览
+  const quietUntil = React.useRef(0)
   const enterPreview = React.useCallback(() => {
+    if (Date.now() < quietUntil.current) return
     if (closeTimer.current) {
       clearTimeout(closeTimer.current)
       closeTimer.current = null
@@ -139,6 +143,7 @@ function SidebarProvider({
       closeTimer.current = null
     }
     setPreview(false)
+    quietUntil.current = Date.now() + 300
   }, [open, narrow])
 
   // Adds a keyboard shortcut to toggle the sidebar.
