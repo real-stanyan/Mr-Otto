@@ -32,7 +32,7 @@ import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
 import { scanSubagents, subagentRoots, trustedWorkspace, writeSubagent } from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
-import { GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
+import { CONTEXT_DOC_LIMIT, GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
 import {
@@ -685,14 +685,26 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.getSubagentPreamble, () => preambleState());
 
-  ipcMain.handle(CHANNELS.saveSubagentPreamble, (_e, text: string | null) => {
+  ipcMain.handle(CHANNELS.saveSubagentPreamble, (_e, text: unknown) => {
+    // 跨进程来的值,类型注解管不住。非法输入直接拒,别让它走到 text.trim()
+    // 抛一个看不懂的 TypeError
+    if (text !== null && typeof text !== "string") throw new Error("前置词必须是文本");
+    // 上限跟工作区文档同一个数:这段会拼进**每一个**子智能体的 system prompt,
+    // 不设限的话一次误粘贴就悄悄撑爆此后每一次派活的上下文
+    if (typeof text === "string" && text.length > CONTEXT_DOC_LIMIT) {
+      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
+    }
     if (text === null || text.trim() === "") {
       // 删文件而不是写一份内容等于默认的:只有"文件不在"才是真的恢复默认——
       // 以后内置默认那段改了,没删文件的人会被钉在旧版本上
       try {
         rmSync(GLOBAL_PREAMBLE_PATH);
-      } catch {
-        // 本来就没有 = 已经是默认,不是错误
+      } catch (e) {
+        // 只有"本来就没有"才是已经默认了。别的错误(没权限、那儿其实是个目录)
+        // 必须抛出去:吞掉的话文件还在盘上,而 preambleState 那侧的 readFile
+        // 同样吞错、同样回 null,于是界面报"已恢复默认"、此后永远说"你在用内置
+        // 默认"——两个不分错误码的 catch 一叠,失败长得跟成功一模一样
+        if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
       }
     } else {
       mkdirSync(dirname(GLOBAL_PREAMBLE_PATH), { recursive: true });
