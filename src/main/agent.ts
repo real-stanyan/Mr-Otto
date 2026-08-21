@@ -30,7 +30,9 @@ import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
-import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
+import { withBrowser, withMcp, type BrowserCapability, type McpCapability } from "../world/executionWorld.js";
+import { createMcpTools } from "../tools/mcpTool.js";
+import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
 import {
   UIApprover,
   createGrantAwareApprover,
@@ -105,6 +107,10 @@ export function createAgent(opts: {
   alwaysAllow?: () => ReadonlySet<string>;
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
+  /** MCP 能力（index.ts 从 mcpHub 注入）。hub 要管子进程生命周期、要向渲染层推状态，
+      LocalWorld 造不出来 —— 同 makeBrowser 的注入方向（ADR-0035）。
+      不给 = 这个装配没有 MCP（测试和裸装配照旧） */
+  mcp?: McpCapability;
 }) {
   const { store } = opts;
 
@@ -113,7 +119,8 @@ export function createAgent(opts: {
   const base = createLocalWorld({ root: opts.workspace });
   // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
   // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
-  const world = opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
+  const withB = opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
+  const world = opts.mcp ? withMcp(withB, opts.mcp) : withB;
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
     // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
@@ -238,6 +245,12 @@ export function createAgent(opts: {
   // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码。
   // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
   // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
+  // 工具表是一次性拼好的（挂载一次定终身，见 tool.ts 的注释），
+  // 拼之前必须已经知道每台 server 提供了什么。createAgent 是同步的，
+  // 所以 ready() 在 index.ts 里、造 agent 之前就 await 过了；
+  // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
+  void opts.mcp?.ready();
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
@@ -251,6 +264,9 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
+    // 同理：没给 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂
+    ...(opts.mcp ? createMcpTools(opts.mcp) : []),
+    ...(opts.mcp ? [createMcpReadResourceTool(opts.mcp)] : []),
   ];
 
   const engine = new LoopEngine({

@@ -1,4 +1,5 @@
-// MCP 客户端 —— **本仓唯一** import @modelcontextprotocol/sdk 的文件。
+// MCP 客户端 —— **src/ 下唯一** import @modelcontextprotocol/sdk 的文件
+// （测试为了拿到真错误实例做 instanceof 断言，另外 import 了一份，见 mcpClient.test.ts）。
 // 把 SDK 锁在一个文件里的理由：依赖树上多一棵树是有成本的,将来换实现只动这一处;
 // 而且 mcpHub 因此可以完全不碰 SDK,状态机能用假 connect 测干净。
 

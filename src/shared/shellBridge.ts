@@ -16,6 +16,7 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
+import type { McpPromptInfo, McpServerConfig, McpServerStatus } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
@@ -38,6 +39,8 @@ export type { SessionSummary };
 export type { TerminalInfo };
 
 export type { BrowserTabInfo, BrowserBounds };
+
+export type { McpPromptInfo, McpServerConfig, McpServerStatus };
 
 /** 审批模式（Claude Code 的 permission mode 对应物）：
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
@@ -312,6 +315,19 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** MCP server 清单 + 各自状态。配置里的 env/headers 已遮罩（真值不出主进程） */
+  listMcpServers(): Promise<McpServerStatus[]>;
+  /** 存一台 server 的配置并立刻重连它。返回全量刷新后的清单 ——
+      存完立刻拿到最新镜像，不用再补一次 refresh */
+  saveMcpServer(id: string, cfg: McpServerConfig): Promise<McpServerStatus[]>;
+  removeMcpServer(id: string): Promise<McpServerStatus[]>;
+  /** 手动重连（failed 的那台，用户修好环境后自己点） */
+  reconnectMcpServer(id: string): Promise<McpServerStatus[]>;
+  /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
+  listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
+  /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
+      展开后就是普通用户消息，进 UserMessage 事件，重放零特殊化 */
+  expandMcpPrompt(server: string, name: string, args: Record<string, string>): Promise<string>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -425,6 +441,8 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** hub 状态变了就推一次全量清单。返回退订函数（与其它订阅同构） */
+  onMcpChanged(cb: (servers: McpServerStatus[]) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
@@ -513,6 +531,13 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  listMcpServers: "otter:listMcpServers",
+  saveMcpServer: "otter:saveMcpServer",
+  removeMcpServer: "otter:removeMcpServer",
+  reconnectMcpServer: "otter:reconnectMcpServer",
+  listMcpPrompts: "otter:listMcpPrompts",
+  expandMcpPrompt: "otter:expandMcpPrompt",
+  mcpChanged: "otter:mcpChanged",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",

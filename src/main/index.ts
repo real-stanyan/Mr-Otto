@@ -14,10 +14,14 @@ import {
   type PokerTableInput,
   type BrowserBounds,
   type ApprovalDecisionOutcome,
+  type McpServerConfig,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
+import { createMcpHub } from "./mcpHub.js";
+import { connectMcpClient } from "./mcpClient.js";
+import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
@@ -358,6 +362,18 @@ void app.whenReady().then(() => {
     push: { state: (info) => send(CHANNELS.browserState, info) },
   });
 
+  // MCP server 登记表:配置存 userData 外的 ~/.otter/mcp.json(与 skill 目录同一条口径,
+  // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
+  // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
+  const mcpConfigPath = join(homedir(), ".otter", "mcp.json");
+  const mcpHub = createMcpHub({
+    load: () => loadMcpConfig(mcpConfigPath),
+    save: (servers) => saveMcpConfig(mcpConfigPath, servers),
+    connect: connectMcpClient,
+  });
+  // hub 状态变了就推一次全量清单(设置页/斜杠面板都靠这个通道刷新)
+  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpHub.list()); });
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -407,10 +423,14 @@ void app.whenReady().then(() => {
     return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
-  ipcMain.handle(CHANNELS.startSession, (_e, opts: StartSessionOptions): BootInfo => {
+  ipcMain.handle(CHANNELS.startSession, async (_e, opts: StartSessionOptions): Promise<BootInfo> => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
+    // 工具表是一次性拼好的（挂载一次定终身）：必须在 createAgent 之前
+    // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
+    // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位
+    await mcpHub.ready();
     const agent = createAgent({
       store,
       workspace: opts.workspace,
@@ -420,6 +440,7 @@ void app.whenReady().then(() => {
       makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      mcp: mcpHub,
     });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -435,7 +456,7 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  ipcMain.handle(CHANNELS.resumeSession, (_e, sessionId: string): BootInfo => {
+  ipcMain.handle(CHANNELS.resumeSession, async (_e, sessionId: string): Promise<BootInfo> => {
     // 已在注册表里（包括正在跑 turn 的）→ 只是把视线切过去，agent 原样活着
     if (!agents.has(sessionId)) {
       // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
@@ -444,6 +465,8 @@ void app.whenReady().then(() => {
       if (!first || first.type !== "session_created" || !first.workspace) {
         throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
       }
+      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready
+      await mcpHub.ready();
       agents.set(
         sessionId,
         createAgent({
@@ -456,6 +479,7 @@ void app.whenReady().then(() => {
           makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
           alwaysAllow: () => loadAlwaysAllow(permissionsPath),
           persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+          mcp: mcpHub,
         })
       );
     }
@@ -469,6 +493,32 @@ void app.whenReady().then(() => {
   const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // ── MCP ─────────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.listMcpServers, () => mcpHub.list());
+  ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig) => {
+    await mcpHub.save(id, cfg);
+    return mcpHub.list();
+  });
+  ipcMain.handle(CHANNELS.removeMcpServer, async (_e, id: string) => {
+    await mcpHub.remove(id);
+    return mcpHub.list();
+  });
+  ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string) => {
+    await mcpHub.reconnect(id);
+    return mcpHub.list();
+  });
+  ipcMain.handle(CHANNELS.listMcpPrompts, () =>
+    mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
+  );
+  ipcMain.handle(
+    CHANNELS.expandMcpPrompt,
+    (_e, server: string, name: string, args: Record<string, string>) => {
+      const hit = mcpHub.servers().find((s) => s.live && s.name === server);
+      if (!hit) throw new Error(`没有连上名叫「${server}」的 MCP server`);
+      return mcpHub.getPrompt(hit.id, name, args);
+    }
+  );
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();
@@ -873,6 +923,7 @@ void app.whenReady().then(() => {
   app.on("before-quit", () => {
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
+    void mcpHub.closeAll(); // stdio server 是子进程,退出时得跟着收掉
     store.close();
   });
 });

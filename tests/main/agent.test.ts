@@ -356,3 +356,55 @@ describe("createGrantAwareApprover 长期授权（ADR-0041）", () => {
     expect((await approver.decide(call, bashTool)).decision).toBe("approved");
   });
 });
+
+describe("MCP 接进装配", () => {
+  const cap = (live = true) => ({
+    ready: vi.fn(async () => {}),
+    servers: () => [{
+      id: "gh", name: "gh", status: live ? ("connected" as const) : ("failed" as const), live,
+      tools: live ? [{ name: "create_pr", description: "开 PR", inputSchema: {} }] : [],
+      resources: [], prompts: [],
+    }],
+    callTool: async () => [{ kind: "text" as const, text: "ok" }],
+    readResource: async () => [],
+    getPrompt: async () => "",
+  });
+
+  const names = (a: { toolDefs: { name: string }[] }) => a.toolDefs.map((d) => d.name);
+
+  it("给了 mcp，工具表里出现 mcp__gh__create_pr", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    expect(names(agent)).toContain("mcp__gh__create_pr");
+    store.close();
+  });
+
+  it("同时挂上 mcp_read_resource", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    expect(names(agent)).toContain("mcp_read_resource");
+    store.close();
+  });
+
+  it("装配时叫过 ready() —— 不等就拿不到清单", async () => {
+    const store = new EventStore(":memory:");
+    const m = cap();
+    createAgent({ store, workspace: "/proj/x", push, attachments, mcp: m });
+    await vi.waitFor(() => expect(m.ready).toHaveBeenCalled());
+    store.close();
+  });
+
+  it("装配时那台没连上 = 一把 mcp 工具都不出（没清单无从挂起）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap(false) });
+    expect(names(agent).some((n) => n.startsWith("mcp__"))).toBe(false);
+    store.close();
+  });
+
+  it("不给 mcp，工具表一字不变（裸装配照旧）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(names(agent).some((n) => n.startsWith("mcp"))).toBe(false);
+    store.close();
+  });
+});
