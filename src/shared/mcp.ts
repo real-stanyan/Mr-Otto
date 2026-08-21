@@ -79,8 +79,10 @@ export interface McpServersSnapshot {
 
 const NAME_MAX = 64;
 
-/** 4 位十六进制指纹。截断后还要唯一 —— 两个前 60 个字符相同的长工具名
-    不能塌成同一个名字，那会让模型调 A 实际执行 B */
+/** 4 位十六进制指纹。收口之后还要唯一 —— 两个不同的 (server, tool) 不能塌成
+    同一个名字，那会让模型调 A 实际执行 B（LoopEngine 的 toolsByName 是个 Map，
+    撞名时静默保留最后一个）。"收口"有两条路会丢信息：净化（非法字符换下划线）
+    和截断（超长砍掉尾巴），两条都要挂指纹 */
 function fingerprint(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -92,12 +94,40 @@ function fingerprint(s: string): string {
 
 /** 工具名：mcp__<server>__<tool>，与 Claude Code 一致。
     加前缀是为了避开与内置工具撞名 —— 某台 server 完全可能提供一个叫 bash 的工具。
-    模型侧的工具名只认 [A-Za-z0-9_-] 且有长度上限，越界的部分在这里收口。 */
+    模型侧的工具名只认 [A-Za-z0-9_-] 且有长度上限，越界的部分在这里收口。
+
+    收口一旦丢信息就挂指纹（issue #156）。曾经指纹只挂在**长度**分支上，
+    于是净化那条路是敞开的：server id `foo.bar` 和 `foo_bar` 都产出
+    `mcp__foo_bar__x`，离 64 字符远得很，指纹永远不触发——正是上面那条注释
+    禁止的"调 A 执行 B"。prompt 那边（mcpPromptMenu.ts）当初就把 server 编进了
+    id，所以这是两处不一致，不是没想到。
+
+    分隔符 `__` 自己也会塌：("a_", "b") 和 ("a", "_b") 都拼成 `mcp__a___b`，
+    ("a__b", "c") 和 ("a", "b__c") 都拼成 `mcp__a__b__c`——一个字符都没被
+    净化换掉，长度也远没到上限。判据因此不是"有没有被改"，而是"这个名字还
+    读得回原来那两截吗"：server 那一截里不含 `__`、也不以 `_` 结尾时，
+    前缀之后的第一个 `__` 就一定是真分隔符，读得回去；否则读不回去。
+
+    指纹算在**原始**的 `server\u0000tool` 上，不是算在净化后的字符串上：
+    净化后再算等于把已经塌掉的两个名字喂给同一个哈希，指纹也跟着塌。
+    `\u0000` 当分隔符是同一个道理——它不可能出现在任何一侧。 */
 export function mcpToolName(server: string, tool: string): string {
   const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
-  const full = `mcp__${safe(server)}__${safe(tool)}`;
-  if (full.length <= NAME_MAX) return full;
-  return `${full.slice(0, NAME_MAX - 5)}_${fingerprint(full)}`;
+  const safeServer = safe(server);
+  const safeTool = safe(tool);
+  const full = `mcp__${safeServer}__${safeTool}`;
+  // 读得回原来那两截、也不超长 = 这个名字完整地表达了它自己，不必加料
+  const faithful =
+    safeServer === server &&
+    safeTool === tool &&
+    !safeServer.includes("__") &&
+    !safeServer.endsWith("_");
+  if (faithful && full.length <= NAME_MAX) return full;
+  const fp = fingerprint(`${server}\u0000${tool}`);
+  // "_" + 4 位 = 5 个字符
+  return full.length + 5 <= NAME_MAX
+    ? `${full}_${fp}`
+    : `${full.slice(0, NAME_MAX - 5)}_${fp}`;
 }
 
 /** content 数组压成喂给模型的字符串。
