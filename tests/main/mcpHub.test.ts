@@ -17,6 +17,7 @@ function conn(over: Partial<McpClientConn> = {}): McpClientConn {
     getPrompt: async () => "提示词",
     onListChanged: () => {},
     close: async () => {},
+    kill: () => {},
     ...over,
   };
 }
@@ -196,5 +197,148 @@ describe("createMcpHub", () => {
     if (row!.config.kind !== "stdio") throw new Error("窄化失败");
     expect(row!.config.env["TOKEN"]).toContain("*****");
     expect(JSON.stringify(hub.list())).not.toContain("ghp_abcdefghijklmnop");
+  });
+});
+
+// review finding 1：before-quit 不会等 closeAll() 的 promise settle，
+// 保证只能来自"kill() 在这次调用返回之前就已经同步跑完"
+describe("closeAll() 的同步 kill（review finding 1）", () => {
+  it("kill() 在 closeAll() 返回的 promise 有机会 settle 之前就已经被叫过", async () => {
+    const killed: string[] = [];
+    // close() 故意永远不 resolve —— 模拟 SDK 优雅关闭卡在那两个 2s 定时器上，
+    // 如果 closeAll() 的收尾依赖 close()，这条测试就会挂死，而不是像现在这样
+    // 立刻看到 kill() 已经跑完
+    const hangingClose = () => new Promise<void>(() => {});
+    const connect: McpConnect = async (id) => conn({ kill: () => { killed.push(id); }, close: hangingClose });
+    const hub = createMcpHub({ ...memStore({ a: stdio(), b: stdio() }), connect });
+    await hub.ready();
+
+    const settled = hub.closeAll(); // 不 await —— 这条 promise 本来就不会 resolve
+    // 微任务/宏任务都还没轮到之前，kill() 的同步代码已经跑完：
+    // async 函数体在第一个 await 之前是整段同步执行的（见 mcpHub.ts 的注释）
+    expect(killed.sort()).toEqual(["a", "b"]);
+    void settled; // 明知不会 settle，不等它，避免测试挂起
+  });
+
+  it("closeAll() 仍然尝试 close() —— kill 是兜底，不是取代协议层收尾", async () => {
+    const close = vi.fn(async () => {});
+    const hub = createMcpHub({ ...memStore({ a: stdio() }), connect: async () => conn({ close }) });
+    await hub.ready();
+    await hub.closeAll();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+});
+
+// review finding 2：ready() 曾经无界等待，一台握手不完的 server 会让
+// startSession/resumeSession 挂到 SDK 的 60s 默认超时
+describe("ready() 的超时兜底（review finding 2）", () => {
+  it("一台永远握手不完的 server 不会拖死 ready()，超时后状态留在 connecting", async () => {
+    vi.useFakeTimers();
+    try {
+      const neverConnect: McpConnect = () => new Promise<McpClientConn>(() => {});
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect: neverConnect });
+
+      const readyPromise = hub.ready();
+      await vi.advanceTimersByTimeAsync(10_000); // 走过 READY_TIMEOUT_MS
+      await expect(readyPromise).resolves.toBeUndefined();
+
+      // 没连完不等于连不上——不能把它判成 failed，那是撒谎；
+      // "connecting" 才是诚实的状态，UI 之后能靠 onChange 收到真正的结果
+      expect(hub.servers()[0]!.status).toBe("connecting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("超时之后再调 ready() 不会对同一台还在连接中的 server 重复发起连接", async () => {
+    vi.useFakeTimers();
+    try {
+      const connect = vi.fn(() => new Promise<McpClientConn>(() => {}));
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+
+      void hub.ready();
+      await vi.advanceTimersByTimeAsync(10_000);
+      void hub.ready(); // 第二次调用：上一轮的 connectOne 其实还挂在那儿没死
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // 两次 ready() 都超时返回，但底层只应该对 "a" 发起过一次 opts.connect() ——
+      // readying 不因为超时被提前清空，才不会撞出同一个 id 的第二个孤儿进程
+      expect(connect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// review finding 3：设置页的表单会拿 list() 给的遮罩值预填，原样交回来
+// 不该覆盖磁盘上的真凭据。这条测试删掉 mergeMaskedCreds 就会失败。
+describe("save() 合并遮罩值（review finding 3）", () => {
+  it("表单没碰的凭据字段送回遮罩值 —— 磁盘上的真值原样保留", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-real-secret-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    const [row] = hub.list();
+    if (row!.config.kind !== "stdio") throw new Error("窄化失败");
+    const shownToken = row!.config.env["TOKEN"]!;
+    expect(shownToken).not.toBe("sk-real-secret-0123456789"); // 渲染层看到的确实是遮罩值
+
+    // 模拟设置页：用户只改了 args，凭据字段原样把遮罩值交回来
+    await hub.save("a", {
+      kind: "stdio", command: "npx", args: ["-y"], env: { TOKEN: shownToken }, enabled: true,
+    });
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN"]).toBe("sk-real-secret-0123456789"); // 真值没被星号覆盖
+    expect(saved!.args).toEqual(["-y"]); // 用户真改的那部分照常生效
+  });
+
+  it("用户真的改了凭据 —— 新值原样生效，不会被合并逻辑拦住", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-old-value-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    await hub.save("a", {
+      kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-brand-new-value-999999" }, enabled: true,
+    });
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN"]).toBe("sk-brand-new-value-999999");
+  });
+
+  it("新建 server（磁盘上没有旧值）：incoming 原样采信，没有旧值可合并", async () => {
+    const store = memStore({});
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    await hub.save("new", {
+      kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-first-time-0123456789" }, enabled: true,
+    });
+
+    const saved = store.load().servers["new"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN"]).toBe("sk-first-time-0123456789");
+  });
+});
+
+// review finding 4：mcpConfig.ts 的 parseMcpConfig 早就结构化产出了错误列表，
+// 但过去 hub 只解构了 servers，errors 从没被接到任何地方
+describe("configErrors()（review finding 4）", () => {
+  it("同步磁盘之前是空的；list()/syncFromDisk 之后原样透出解析错误", () => {
+    const errors = ['server「x」缺 command'];
+    const hub = createMcpHub({
+      load: () => ({ servers: {}, errors }),
+      save: () => {},
+      connect: vi.fn(),
+    });
+    expect(hub.configErrors()).toEqual([]);
+    hub.list(); // list() 内部会 syncFromDisk()
+    expect(hub.configErrors()).toEqual(errors);
   });
 });

@@ -15,6 +15,7 @@ import {
   type BrowserBounds,
   type ApprovalDecisionOutcome,
   type McpServerConfig,
+  type McpServersSnapshot,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -371,8 +372,12 @@ void app.whenReady().then(() => {
     save: (servers) => saveMcpConfig(mcpConfigPath, servers),
     connect: connectMcpClient,
   });
-  // hub 状态变了就推一次全量清单(设置页/斜杠面板都靠这个通道刷新)
-  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpHub.list()); });
+  // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
+  // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
+  // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
+  const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
+  // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
+  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); });
 
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
@@ -495,18 +500,18 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
 
   // ── MCP ─────────────────────────────────────────────────────────
-  ipcMain.handle(CHANNELS.listMcpServers, () => mcpHub.list());
-  ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig) => {
+  ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());
+  ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig): Promise<McpServersSnapshot> => {
     await mcpHub.save(id, cfg);
-    return mcpHub.list();
+    return mcpSnapshot();
   });
-  ipcMain.handle(CHANNELS.removeMcpServer, async (_e, id: string) => {
+  ipcMain.handle(CHANNELS.removeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
     await mcpHub.remove(id);
-    return mcpHub.list();
+    return mcpSnapshot();
   });
-  ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string) => {
+  ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
     await mcpHub.reconnect(id);
-    return mcpHub.list();
+    return mcpSnapshot();
   });
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>
     mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
@@ -923,7 +928,13 @@ void app.whenReady().then(() => {
   app.on("before-quit", () => {
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
-    void mcpHub.closeAll(); // stdio server 是子进程,退出时得跟着收掉
+    // stdio server 是子进程,退出时得跟着收掉:closeAll() 虽然是 async 函数,
+    // 但 kill() 那一段是它函数体里第一个 await 之前的同步代码,这里一调用
+    // 就已经跑完(不依赖谁去 await 这个 promise)。之前只调 close() 的版本
+    // 是幂等噪音——SDK 的优雅关闭全靠两个 2s 定时器,before-quit 一返回
+    // Electron 就继续退出流程,那两个定时器永远没机会触发,子进程变孤儿
+    // (review finding 1;kill() 的同步保证见 mcpClient.ts / mcpHub.ts 的注释)
+    void mcpHub.closeAll();
     store.close();
   });
 });

@@ -36,6 +36,14 @@ export interface McpClientConn {
       不能靠 hub 那边一个不受类型检查的 cast 去够一个"其实不存在"的字段。 */
   refresh?(): Promise<void>;
   close(): Promise<void>;
+  /** 同步杀掉底层子进程(SIGKILL)。close() 走协议层优雅关闭——SDK 的
+      StdioClientTransport.close() 先 stdin.end()，等 2s 空转定时器才补
+      SIGTERM，再等 2s 才 SIGKILL；那两个定时器在 app 退出时永远没机会触发
+      （before-quit 一返回 Electron 就继续退出流程），子进程就被留成孤儿。
+      kill() 是给"不能等"的场景准备的逃生舱：stdio 场景直接按 pid 发
+      SIGKILL，调用它的这一拍就已经生效，不需要 await。http 场景没有子
+      进程可杀，是空操作——连接会随进程退出自然断开，没有东西需要收尾。 */
+  kill(): void;
 }
 
 type RawContent = { type: string; text?: string; data?: string; mimeType?: string; resource?: { uri?: string; text?: string; mimeType?: string } };
@@ -106,6 +114,12 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
     throw e;
   }
 
+  // pid 只有 stdio 传输才有(http 场景没有子进程)。connect() 成功之后才取——
+  // StdioClientTransport 的 pid getter 在 spawn 完成前是 null，取早了白取。
+  // instanceof 而不是 cfg.kind：cfg 在这里已经用不上了，transport 自己的
+  // 运行时类型就是唯一可信来源，两者本该一致，用 instanceof 更直接。
+  const pid = transport instanceof StdioClientTransport ? transport.pid : null;
+
   // initialize 握手成功后才有值——按 server 实际声明的 capability 决定拉不拉，
   // 不是"拉了失败就当没有"。这两码事对用户是不同的：真没有这项能力，跟声明了
   // 却因为传输死掉/超时/握手后 401 拉不到，前者该显示"这台没有 prompts"，
@@ -148,6 +162,15 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
       client.setNotificationHandler(PromptListChangedNotificationSchema, () => { cb(); });
     },
     close: () => client.close(),
+    kill: () => {
+      if (pid == null) return; // http 场景:没有子进程,空操作(见接口注释)
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // 进程已经退出/pid 已被系统回收——杀一个不存在的目标不是我们的错，
+        // 也不该让 before-quit 的收尾流程因为这一条而中断收别的 server
+      }
+    },
   };
 
   // tools/resources/prompts 声明成 readonly 是给外部看的——hub 只读不改。
