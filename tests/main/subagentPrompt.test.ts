@@ -68,6 +68,18 @@ describe("composeSubagentPrompt", () => {
     expect(out).toContain("## 工作区文档：CLAUDE.md");
     expect(out).toContain("（工作区文档总量已超上限，本文件未注入）");
   });
+  it("正文超长也截断——三个输入拼进同一个字符串,只给文档设限等于没设", () => {
+    const def = { ...base, instructions: "x".repeat(CONTEXT_DOC_LIMIT + 10) };
+    const out = composeSubagentPrompt({ def, globalPreamble: "", docs: [] });
+    expect(out).toContain("（正文过长，已截断）");
+    expect(out.length).toBeLessThan(CONTEXT_DOC_LIMIT + 100);
+  });
+
+  it("自定义前置词超长也截断——保存口那道上限拦不住手改 .md", () => {
+    const def = { ...base, preamble: { mode: "custom", text: "y".repeat(CONTEXT_DOC_LIMIT + 10) } as const };
+    const out = composeSubagentPrompt({ def, globalPreamble: "", docs: [] });
+    expect(out).toContain("（前置词过长，已截断）");
+  });
 });
 
 describe("readGlobalPreamble", () => {

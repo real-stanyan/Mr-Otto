@@ -389,6 +389,14 @@ describe("subagentSlotTaken", () => {
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(false);
   });
 
+  it("大小写不同也算占了——APFS 大小写不敏感,不这么判就是一次无声的覆盖", () => {
+    const reader: SubagentDirReader = {
+      listFiles: (r) => (r === wsRoot.root ? ["Reviewer.md"] : []),
+      readFile: () => md("Reviewer"),
+    };
+    expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
+  });
+
   it("同一层已经有同名的 = 占了", () => {
     const reader = readerFor({ "/w/.otter/agents/reviewer.md": md("reviewer") });
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);

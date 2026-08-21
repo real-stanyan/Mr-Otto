@@ -270,8 +270,12 @@ export function subagentSlotTaken(
   knownTools: readonly string[],
   reader: SubagentDirReader = nodeReader
 ): boolean {
-  if (reader.listFiles(root.root).includes(`${name}.md`)) return true;
-  return scanSubagents([root], knownTools, reader).some((d) => d.name === name);
+  // 比较不分大小写:这是个 macOS app,APFS 默认大小写不敏感。分大小写地比,
+  // `~/.otter/agents/Reviewer.md` 存在时新建 `reviewer` 两道检查全过,
+  // 然后 writeFileSync 落到同一个 inode 上——把用户那份直接抹了,没有确认也没有撤回
+  const lower = name.toLowerCase();
+  if (reader.listFiles(root.root).some((f) => f.toLowerCase() === `${lower}.md`)) return true;
+  return scanSubagents([root], knownTools, reader).some((d) => d.name.toLowerCase() === lower);
 }
 
 /** 单行 frontmatter 值里的换行换成空格。值里带换行会在写盘时裂成好几行，

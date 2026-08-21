@@ -96,14 +96,25 @@ export function readContextDocs(
 /** 模型看到的全部 = 前置词 + 工作区文档 + 正文。
     custom 是覆盖全局而不是追加（ADR-0048：追加的话它和 instructions 拼起来
     对模型完全一样，就只是 UI 分栏） */
+/** 超长就截断并留下痕迹。上限设在**拼装口**而不是保存口:保存口只管得住设置页那条
+    路,而手改 .md 是 ADR-0048 里写明的主要编写路径,绕过去了就等于没设。
+    三个输入拼进同一个字符串,只给其中一个设限是最坏的情况——看起来防住了,
+    实际上换个入口就漏 */
+function clip(text: string, label: string): string {
+  if (text.length <= CONTEXT_DOC_LIMIT) return text;
+  return `${text.slice(0, CONTEXT_DOC_LIMIT)}\n\n（${label}过长，已截断）`;
+}
+
 export function composeSubagentPrompt(opts: {
   def: SubagentDef;
   globalPreamble: string;
   docs: readonly ContextDoc[];
 }): string {
   const p = opts.def.preamble;
-  const preamble =
-    p.mode === "off" ? "" : p.mode === "custom" ? p.text.trim() : opts.globalPreamble.trim();
+  const preamble = clip(
+    p.mode === "off" ? "" : p.mode === "custom" ? p.text.trim() : opts.globalPreamble.trim(),
+    "前置词"
+  );
 
   const blocks: string[] = [];
   if (preamble) blocks.push(preamble);
@@ -116,7 +127,7 @@ export function composeSubagentPrompt(opts: {
     const tail = doc.truncated ? "\n\n（本文件过长，已截断）" : "";
     blocks.push(`## 工作区文档：${doc.file}\n\n${doc.text.trim()}${tail}`);
   }
-  const body = opts.def.instructions.trim();
+  const body = clip(opts.def.instructions.trim(), "正文");
   if (body) blocks.push(body);
   return blocks.join("\n\n");
 }
