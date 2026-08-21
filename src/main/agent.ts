@@ -287,10 +287,13 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
-    // 有 runner 且真有人可派才挂。清单空着还挂 = 对模型宣称一把用不了的工具，
-    // 它试一次、吃一个"一个都没有"，白烧一轮；而工具表同时是 UI 报的上下文占用，
-    // 报一把用不了的连账也是错的（同 browserReadTool 的既有做法）
-    ...(opts.subagentRunner && (opts.listSubagents?.() ?? []).length > 0
+    // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
+    // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
+    // 挂没挂必须一次定终身，否则组装时清单恰好是空的那个 agent 一辈子看不到 task，
+    // 哪怕用户后来在设置页建了第一个 subagent 也救不回来(这是每个新用户都会撞的
+    // 首次使用路径)。清单是不是空的这件事现在归 task 自己的 available()答，
+    // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
+    ...(opts.subagentRunner
       ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
       : []),
   ];
@@ -383,7 +386,10 @@ export function createAgent(opts: {
         getter 而不是快照数组：task 工具的 def 随磁盘上的 subagent 清单现算
         （用户在设置页加了人，当场生效，不用重开会话），报的账必须跟着变 */
     get toolDefs() {
-      return mounted.map((t) => t.def);
+      // available() 为 false 的工具（挂着但此刻用不出东西，比如清单还空着的
+      // task）不进这份表——模型不该被告知一把只会失败的工具，UI 的上下文占用
+      // 账也不该替它算钱
+      return mounted.filter((t) => t.available?.() ?? true).map((t) => t.def);
     },
     switchModel,
     /** 设置页存了新 key 后调：现 adapter 捏的还是旧 key，重建一个 */

@@ -205,7 +205,10 @@ export class LoopEngine {
       const onDelta = this.opts.onAssistantDelta;
       const reply = await this.adapter.chat(
         messages,
-        this.opts.tools.map((t) => t.def),
+        // available() 为 false 的工具不进模型看到的声明表——挂着(toolsByName 里还在,
+        // 万一模型误调也能给出清楚的错误)不等于此刻用得出东西，报一把只会失败的工具
+        // 只会让模型白试一次
+        this.opts.tools.filter((t) => t.available?.() ?? true).map((t) => t.def),
         onDelta
           ? (text, kind) => {
               clock.observe(kind);

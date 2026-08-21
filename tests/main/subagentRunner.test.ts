@@ -30,10 +30,11 @@ function fixtures() {
   const store = new EventStore(join(dir, "events.db"));
   const attachments = new AttachmentStore(join(dir, "attachments"));
   const seen: SessionEvent[] = [];
-  const approvals: { sessionId: string }[] = [];
+  const approvals: { sessionId: string; fromAgent?: string }[] = [];
   const push: AgentPush = {
     event: (e) => void seen.push(e),
-    approvalRequest: (sessionId) => void approvals.push({ sessionId }),
+    approvalRequest: (sessionId, _call, _tool, _preview, fromAgent) =>
+      void approvals.push({ sessionId, ...(fromAgent ? { fromAgent } : {}) }),
     askUserRequest: () => {},
     assistantDelta: () => {},
     toolOutput: () => {},
@@ -161,7 +162,9 @@ describe("createSubagentRunner", () => {
       },
     });
     await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
-    expect(approvals).toEqual([{ sessionId: "s-parent" }]);
+    // fromAgent 是这条改动新加的第五个参数（commit 5617988）：卡片要能带出处，
+    // 不然父会话的 UI 分不清这是谁派出去的 subagent 弹的卡
+    expect(approvals).toEqual([{ sessionId: "s-parent", fromAgent: "searcher" }]);
   });
 
   it("直播碎片不冒泡：那是子会话的事", async () => {

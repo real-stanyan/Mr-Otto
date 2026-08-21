@@ -407,19 +407,30 @@ void app.whenReady().then(() => {
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
   // 挂上，探针报的工具表就漏了这一把——手写常量正是为了躲开这种"和真实工具表
   // 对不上"，桩子撒谎是同一个坑换个地方摔
-  const TOOL_NAMES: string[] = createAgent({
-    store: new EventStore(":memory:"),
-    workspace: app.getPath("userData"),
-    push: {
-      event: () => {},
-      approvalRequest: () => {},
-      askUserRequest: () => {},
-      assistantDelta: () => {},
-      toolOutput: () => {},
-    },
-    attachments: attachmentStore,
-    makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
-  }).toolDefs.map((d) => d.name);
+  //
+  // 这一步跑在第一个 ipcMain.handle 注册之前（见下面 CHANNELS.boot）：这里抛错会
+  // 让整条 whenReady 链断掉，一个 IPC 通道都注册不上，白屏且没有报错入口——
+  // 比"某次调用失败"重得多，所以必须兜底。退化成 [] 的代价：已知工具名表是空的，
+  // 于是 subagent 定义里写的每一个工具名都会被判成"不认识"（scanSubagents 的
+  // unknownTools 分支），所有 subagent 静默退回默认工具集，直到重启恢复
+  let TOOL_NAMES: string[];
+  try {
+    TOOL_NAMES = createAgent({
+      store: new EventStore(":memory:"),
+      workspace: app.getPath("userData"),
+      push: {
+        event: () => {},
+        approvalRequest: () => {},
+        askUserRequest: () => {},
+        assistantDelta: () => {},
+        toolOutput: () => {},
+      },
+      attachments: attachmentStore,
+      makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+    }).toolDefs.map((d) => d.name);
+  } catch {
+    TOOL_NAMES = [];
+  }
   const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
@@ -539,13 +550,28 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.listSubagents, () => listSubagents());
 
   ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef) => {
-    writeSubagent(def);
+    // def.path / def.readOnly 是渲染层传来的,不可信——一个 readOnly:false 配任意
+    // path 就能让这个 handler 写任意文件。落地地址必须从信任侧(现扫一遍磁盘的清单)
+    // 按名字查出来,渲染层的 def 只当"要存的内容"用,不当"写去哪"用
+    // (同 protocolService.readAdr 的路径越界防法,ADR 路径钉死在白名单目录内那条)
+    const found = listSubagents().find((d) => d.name === def.name);
+    if (!found) throw new Error(`没有名叫「${def.name}」的 subagent`);
+    if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
+    // writeSubagent 内部的 readOnly 检查留着当第二道防线(defense in depth)——
+    // 这里已经挡过一次,但两处独立判断比互相信任更皮实
+    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly });
     return listSubagents();
   });
 
   ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
     const clean = name.trim().replace(/[^A-Za-z0-9_-]/g, "-");
     if (!clean) throw new Error("名字不能为空");
+    // 建之前先查重:用户输入一个已存在的名字往往就是想看看这个名字有没有被占——
+    // 不查重会直接截断写空,把已有的 description/instructions/tools 全冲掉,
+    // 没有确认也没有撤回
+    if (listSubagents().some((d) => d.name === clean)) {
+      throw new Error(`已经有一个叫「${clean}」的 subagent 了，换个名字`);
+    }
     const root = subagentRoots[0]!.root;
     writeSubagent({
       name: clean,

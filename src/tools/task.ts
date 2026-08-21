@@ -74,6 +74,9 @@ export function createTaskTool(runner: SubagentRunner, list: () => SubagentDef[]
     },
     // 派活本身不碰世界，不需要审批；危险动作在子 agent 里各自过审批门
     requiresApproval: false,
+    // 挂载(agent.ts 是否传了 subagentRunner)和可用是两件事：清单现在是空的，
+    // 挂着也派不出任何人——available 现算,与 def 的 enum 同一份 list()
+    available: () => list().length > 0,
     async run(raw: unknown, _world, ctx?: ToolRunContext): Promise<string> {
       const { agent, task } = parseArgs(raw);
       const known = list().map((d) => d.name);

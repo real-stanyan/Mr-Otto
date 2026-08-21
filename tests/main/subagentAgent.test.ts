@@ -8,6 +8,8 @@ import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
 import type { AgentPush } from "../../src/main/agent.js";
+import type { SubagentRunner } from "../../src/tools/task.js";
+import type { SubagentDef } from "../../src/shared/subagent.js";
 
 function fixtures() {
   const dir = mkdtempSync(join(tmpdir(), "otter-subagent-"));
@@ -57,6 +59,39 @@ describe("createAgent 的 subagent 接缝", () => {
     const parentWorld = createLocalWorld({ root: dir });
     const agent = createAgent({ store, workspace: dir, push, attachments, world: parentWorld });
     expect(agent.world).toBe(parentWorld);
+  });
+
+  it("task 的挂载在 subagentRunner 存在时一次定终身；清单从空变非空只影响 toolDefs 里报不报（finding 3）", () => {
+    const { dir, store, attachments, push } = fixtures();
+    let roster: SubagentDef[] = [];
+    const runner: SubagentRunner = {
+      run: async () => ({ report: "", childSessionId: "s-child" }),
+    };
+    const agent = createAgent({
+      store,
+      workspace: dir,
+      push,
+      attachments,
+      subagentRunner: runner,
+      listSubagents: () => roster,
+    });
+    // 清单空着：task 挂了（toolsByName 里在，误调能报清楚错误），但不进 toolDefs
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("task");
+    roster = [
+      {
+        name: "searcher",
+        description: "只读搜索员",
+        instructions: "你是一个只读搜索员。",
+        tools: ["read_file"],
+        unknownTools: [],
+        approval: "deny",
+        path: "/a/searcher.md",
+        source: "/a",
+        readOnly: false,
+      },
+    ];
+    // 清单现在非空：同一个 agent，不重开会话，toolDefs 立刻报出 task
+    expect(agent.toolDefs.map((d) => d.name)).toContain("task");
   });
 
   it("denyingApprover 一律拒绝，且带得出理由", async () => {
