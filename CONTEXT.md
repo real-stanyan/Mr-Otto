@@ -27,6 +27,10 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 终端面板（Terminal panel） | 会话里内嵌的真 PTY 终端，纯人用。输出不进事件日志、不进模型上下文（ADR-0031）——它不是任何事实的投影，是人的旁路工具。 | |
 | 回滚缓冲（terminal ring buffer） | 主进程为每个终端保留的末尾约 200 KB 输出。面板关掉时渲染层的 xterm 实例就没了而 pty 还在吐，靠它接住；重开面板一次性灌回去。内存态，不落盘，与 pty 进程同生共死。 | |
 | 轨迹（Trajectory） | 会话日志的第二种投影（第一种是聊天区）：一步一行，工具请求 + 审批 + 开跑 + 结果按 toolCallId 合成一行，顶部泳道时间轴（Input / Model / Tools）按 Duration / Turns / Calls 三种刻度铺开。对标 deepseek-harness 的 trajectory 视图。纯渲染层、只读、不进 store；取代了早期的「画布 + 函数轨迹」教学式回放（#151）。 | `src/renderer/src/replay/trajectory.ts` |
+| MCP（Model Context Protocol） | 一个标准协议，让 Otto 作为 **client** 连外部**server**，把 server 提供的 tools / resources / prompts 接进来。v1.x 只做 client 这一半，不做 server；不算插件系统——server 是跨进程外部程序，不向 Otto 进程注入代码 | ADR-0049、ADR-0050 |
+| MCP server | 一个外部程序，通过标准协议（stdio 或 streamable-http）向 client 提供 tools / resources / prompts。Otto 只认协议返回的形状（`McpClientConn`），不加载、不执行 server 的任何代码 | ADR-0049；配置见 `~/.otter/mcp.json` |
+| transport（stdio / streamable-http） | MCP 连接的传输方式：`stdio` = 本地 `spawn` 一个子进程，走标准输入输出对话；`streamable-http` = 连一个远程 HTTP 端点。配置里有 `command` 走前者，有 `url` 走后者，两者都有则报错不猜 | ADR-0050；`src/main/mcpClient.ts` |
+| elicitation | MCP 协议里 server 调用到一半反过来向用户要字段的机制。设计上打算复用既有的 `elicitation-form` 元素（原为 `ask_user` 准备）多接一个调用方；**本版（tasks 1–7）尚未接线**，只是协议里存在、设计文档里点过名的一个词条 | 设计文档 `docs/superpowers/specs/2026-08-21-mcp-design.md` §八 |
 
 ## Key invariants
 

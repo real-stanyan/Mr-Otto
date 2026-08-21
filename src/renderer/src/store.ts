@@ -31,7 +31,15 @@ import type {
   PokerHandView,
   PokerTableInput,
   PokerTableSummary,
+  McpServerConfig,
+  McpServersSnapshot,
+  McpPromptInfo,
 } from "../../shared/shellBridge.js";
+import {
+  initialMcpPromptValues,
+  isCurrentMcpPromptSubmission,
+  missingRequiredArgs,
+} from "./lib/mcpPromptMenu.js";
 import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
 import type { ThinkingMode } from "../../shared/thinking.js";
 
@@ -77,10 +85,25 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents" | "mcp";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
+
+/** composer 里正在填的 MCP prompt 参数表单——server/name 钉死是**哪一个**
+    prompt(同名 prompt 可能挂在不同 server 上),values 是用户此刻填的草稿,
+    submitting/error 是"展开"这次 IPC 调用的进度。expandMcpPrompt 会在 server
+    掉线时抛错(见 shared/shellBridge.ts 的方法注释)——那不是崩溃,是 error
+    该装的正常结果,装完继续留在这张卡上等用户改参数重试或取消 */
+export interface McpPromptFormState {
+  server: string;
+  name: string;
+  description?: string;
+  arguments: McpPromptInfo["arguments"];
+  values: Record<string, string>;
+  submitting: boolean;
+  error: string | null;
+}
 
 interface ChatState {
   phase: Phase;
@@ -214,6 +237,27 @@ interface ChatState {
   subagentScope: string | null;
   /** 全局前置词（~/.otter/subagent-preamble.md）。null = 还没问过后端 */
   subagentPreamble: { text: string; isDefault: boolean } | null;
+  /** 本机 MCP server 清单 + ~/.otter/mcp.json 解析阶段的人话错误（配置已遮罩,
+      见 shared/mcp.ts 的 McpServersSnapshot 注释）。进 MCP 栏目时组件自己
+      refreshMcp()，同时全程订阅 onMcpChanged——一台 server 从 connecting 转成
+      connected 是异步的（ready() 在后台跑），不订阅的话设置页会一直停在
+      "连接中"，直到用户手动切栏目再切回来 */
+  mcpServers: McpServersSnapshot;
+  /** 所有**连上**的 server 的 prompt 合起来,composer `/` 菜单读它。只在这里
+      现拉一份新鲜的(listMcpPrompts 只回连上的 server 那些,见 shared/shellBridge.ts
+      的方法注释),不从 mcpServers 里的 per-server prompts 字段自己拼——那样等于
+      在渲染层重新实现一遍"谁连上了"的判断,多一处要跟主进程保持同步的逻辑 */
+  mcpPrompts: (McpPromptInfo & { server: string })[];
+  /** composer 里正在填的那个 MCP prompt 参数表单。null = 没有表单开着。
+      零参数的 prompt 不会停在这一步——选中即直接展开,这里只服务"要填参数"
+      和"展开失败,等用户重试或取消"两种情况 */
+  mcpPromptForm: McpPromptFormState | null;
+  /** submitMcpPromptForm 每发起一次真正的展开请求都会领一个新号(自增)。
+      异步回调落地时拿它跟发起时留的那份快照比对——号对不上,说明这份
+      表单在请求飞在半空的时候被取消、重开(哪怕重开的是同一个 prompt)、
+      或者又提交了一次,响应已经过期,该原地放弃（review finding 1；
+      判断逻辑见 lib/mcpPromptMenu.ts 的 isCurrentMcpPromptSubmission） */
+  mcpPromptToken: number;
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -303,6 +347,37 @@ interface ChatState {
   refreshSubagentPreamble(): Promise<void>;
   /** 存一段全局前置词；text 为 null 或全空白 = 恢复内置默认（删文件） */
   saveSubagentPreamble(text: string | null): Promise<void>;
+  /** 重扫 MCP server 清单(MCP 栏目挂载时调一次,照 skills/subagents 的做法)。
+      开着栏目期间还有 onMcpChanged 的推送兜底,这次是"进页面先拿一份新鲜的" */
+  refreshMcp(): Promise<void>;
+  /** 存一台 server 的配置并立刻重连它。cfg 里没碰过的 env/headers 字段允许
+      原样带着 list() 给的遮罩值回来——主进程的 mergeMaskedCreds 会把它们
+      合并回真值，抛出的 Error 已经是中文句子，组件自己 catch 显示 */
+  saveMcpServer(id: string, cfg: McpServerConfig): Promise<void>;
+  removeMcpServer(id: string): Promise<void>;
+  /** 手动重连(failed 的那台，用户修好环境/网络后自己点) */
+  reconnectMcpServer(id: string): Promise<void>;
+  /** 重拉一份连上的 server 的 prompt 清单(composer `/` 菜单用)。boot 冷启动拉一次,
+      此后跟着 onMcpChanged 的推送自动补拉——一台 server 掉线/重连会改变这份清单,
+      不能只在打开菜单那一刻现问一次 */
+  refreshMcpPrompts(): Promise<void>;
+  /** 选中一个 MCP prompt(composer `/` 菜单)。零参数的直接展开(不停在表单这一步);
+      有参数的开一张卡等用户填。开卡(哪怕重开的是同一个 prompt)会让
+      mcpPromptToken 往前挪一格,作废任何还飞在半空的旧提交 */
+  openMcpPromptForm(prompt: McpPromptInfo & { server: string }): void;
+  /** 表单某个参数格改了值。顺手清掉上一次提交留下的 error——用户正在改,
+      旧的报错没道理继续挂在屏幕上 */
+  setMcpPromptFormValue(name: string, value: string): void;
+  /** 关掉表单,不展开。同 openMcpPromptForm,顺手把 mcpPromptToken 往前挪一格——
+      展开进行中点这个:promise 落地时号对不上,原地放弃 */
+  cancelMcpPromptForm(): void;
+  /** 校验必填项 → 领一个新 token → 调 expandMcpPrompt → 成功就把结果塞进
+      输入框并关掉表单,失败就把 error 留在表单上等用户重试或取消。server
+      在填表期间掉线是正常会发生的事,不是异常路径。回调落地前用
+      isCurrentMcpPromptSubmission 认一遍 token+sessionId,认不出就放弃——
+      认不出的两种情形:这份表单被取消/重开/再提交过(review finding 1),
+      或者用户已经切到别的会话了(review finding 2) */
+  submitMcpPromptForm(): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -435,8 +510,10 @@ let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
 /** Git Graph 每页条数:首屏拉这么多,滚到底再加一页(主进程侧同名默认值,超上限会被钳) */
 const GIT_GRAPH_PAGE = 300;
 
-/** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位 */
-const enterChat = (info: BootInfo) => ({
+/** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
+    export 是为了让这份"换会话该清什么"能被单测直接断言（见
+    tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
+export const enterChat = (info: BootInfo) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
   model: info.model,
@@ -455,6 +532,12 @@ const enterChat = (info: BootInfo) => ({
   browserPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
+  // 同上:composer 是按会话摆的,填到一半的 MCP prompt 参数卡跟着旧会话走,
+  // 不清的话卡会带着上一个会话的输入框一起露出来（review finding 2）。
+  // 光清这一格只解决"卡还留着"这一半——如果切会话前它已经提交出去、
+  // IPC 正飞在半空,那份响应落地时靠的是 submitMcpPromptForm 里的
+  // sessionId 比对（isCurrentMcpPromptSubmission）挡住,不是这一行
+  mcpPromptForm: null,
   error: null,
 });
 
@@ -526,6 +609,10 @@ export const useChat = create<ChatState>((set, get) => ({
   subagentsError: null,
   subagentScope: null,
   subagentPreamble: null,
+  mcpServers: { servers: [], errors: [] },
+  mcpPrompts: [],
+  mcpPromptForm: null,
+  mcpPromptToken: 0,
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -601,6 +688,12 @@ export const useChat = create<ChatState>((set, get) => ({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
         skills: await window.otter.listSkills(),
+      });
+    } else if (section === "mcp") {
+      set({
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
+        terminalPanelOpen: false, browserPanelOpen: false,
+        mcpServers: await window.otter.listMcpServers(),
       });
     } else {
       set({
@@ -763,6 +856,99 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async saveSubagentPreamble(text) {
     set({ subagentPreamble: await window.otter.saveSubagentPreamble(text) });
+  },
+
+  async refreshMcp() {
+    set({ mcpServers: await window.otter.listMcpServers() });
+  },
+
+  async saveMcpServer(id, cfg) {
+    // 三个写操作都回全量快照(同 subagent 三件套的做法)——存写完立刻在 state
+    // 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西
+    set({ mcpServers: await window.otter.saveMcpServer(id, cfg) });
+  },
+
+  async removeMcpServer(id) {
+    set({ mcpServers: await window.otter.removeMcpServer(id) });
+  },
+
+  async reconnectMcpServer(id) {
+    set({ mcpServers: await window.otter.reconnectMcpServer(id) });
+  },
+
+  async refreshMcpPrompts() {
+    set({ mcpPrompts: await window.otter.listMcpPrompts() });
+  },
+
+  openMcpPromptForm(prompt) {
+    const form: McpPromptFormState = {
+      server: prompt.server,
+      name: prompt.name,
+      ...(prompt.description !== undefined ? { description: prompt.description } : {}),
+      arguments: prompt.arguments,
+      values: initialMcpPromptValues(prompt.arguments),
+      // 零参数:没有可填的东西,直接进入"展开中"——下面顺手真的发起那次展开
+      submitting: prompt.arguments.length === 0,
+      error: null,
+    };
+    // 开一张新卡——哪怕重开的是同一个 prompt——都作废任何还飞在半空的旧提交
+    // (review finding 1:光靠 server+name 拼的身份挡不住"取消又重开同一个
+    // prompt"这一种,因为身份没变;号往前挪一格才挡得住)
+    set({ mcpPromptForm: form, mcpPromptToken: get().mcpPromptToken + 1 });
+    if (form.submitting) void get().submitMcpPromptForm();
+  },
+
+  setMcpPromptFormValue(name, value) {
+    const f = get().mcpPromptForm;
+    if (!f) return;
+    set({ mcpPromptForm: { ...f, values: { ...f.values, [name]: value }, error: null } });
+  },
+
+  cancelMcpPromptForm() {
+    // 同 openMcpPromptForm:关卡也要挪号,不然纯"取消、不重开"之后飞回来的
+    // 旧响应虽然会被下面 mcpPromptForm===null 的兜底挡住,但号不挪的话,
+    // 这次取消在"下一次提交该拿哪个号当基准"这件事上就没有留下任何痕迹
+    set({ mcpPromptForm: null, mcpPromptToken: get().mcpPromptToken + 1 });
+  },
+
+  async submitMcpPromptForm() {
+    const f = get().mcpPromptForm;
+    if (!f) return;
+    const missing = missingRequiredArgs(f.arguments, f.values);
+    if (missing.length > 0) {
+      set({ mcpPromptForm: { ...f, error: `还差：${missing.join("、")}` } });
+      return;
+    }
+    // 出发前领一个新号 + 记下当前会话:这趟 IPC 回来的时候,用户完全可能
+    // 已经取消/重开了这张卡(哪怕重开的还是同一个 prompt)、又提交了一次,
+    // 或者切到了另一个会话——四种情形分别是 review finding 1 和 finding 2。
+    // 回调落地前拿这两个快照去认(isCurrentMcpPromptSubmission),两个都对得上
+    // 才把结果用上,认不出就原地放弃
+    const token = get().mcpPromptToken + 1;
+    const sessionId = get().sessionId;
+    set({ mcpPromptForm: { ...f, submitting: true, error: null }, mcpPromptToken: token });
+    const stillCurrent = () =>
+      isCurrentMcpPromptSubmission(
+        { token: get().mcpPromptToken, sessionId: get().sessionId },
+        { token, sessionId }
+      );
+    try {
+      const text = await window.otter.expandMcpPrompt(f.server, f.name, f.values);
+      if (!stillCurrent()) return;
+      set({ mcpPromptForm: null });
+      // append: true —— 展开 prompt 是"往输入框里加一段",不是"清空重写"。
+      // 用户在敲 `/xxx` 之前完全可能已经打了半句话:slash 菜单的 removeOnExecute
+      // 只挪走 `/token` 本身,更早敲的那些字不受影响、原样留在 composer 里——
+      // 如果这里传 false,App.tsx 的 composerInject effect 会直接拿展开结果
+      // 整体覆盖 composer.setText,把那半句话冲没(F2)。同一份 append 语义
+      // 的另一处调用见 SelectionQuote.tsx 的"引用"按钮
+      get().injectComposer(text, true);
+    } catch (e) {
+      if (!stillCurrent()) return;
+      const cur = get().mcpPromptForm;
+      if (!cur) return; // token 对得上就不该是 null;留着当兜底,不做非空断言
+      set({ mcpPromptForm: { ...cur, submitting: false, error: bridgeErrorMessage(e) } });
+    }
   },
 
   async openProtocol() {
@@ -1266,6 +1452,16 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
+    // 全程订阅,不等进了 MCP 栏目才订:一台 server 从 connecting 转 connected/failed
+    // 是 ready() 在后台跑完才知道的异步结果，用户可能这时候根本没打开设置页——
+    // 镜像照样要更新，等他下次打开时看到的才是新鲜的，不是"进页面那一刻"的旧快照
+    window.otter.onMcpChanged((mcpServers) => {
+      set({ mcpServers });
+      // prompt 清单同理要跟着连接状态动:一台 server 掉线/重连会改变
+      // listMcpPrompts() 该回什么(它只回连上的那些),不补拉的话 composer
+      // 的 `/` 菜单会一直显示这台 server 掉线前的旧清单
+      void get().refreshMcpPrompts();
+    });
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
       if (target.kind === "dm") {
@@ -1406,18 +1602,22 @@ export const useChat = create<ChatState>((set, get) => ({
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
     // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
-    const [info, sessions, skills, account, keyStatus, fullscreen] = await Promise.all([
+    const [info, sessions, skills, mcpPrompts, account, keyStatus, fullscreen] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
+      // MCP prompt 清单同理进冷启动:composer 的 `/` 菜单在聊天视图常驻,
+      // 不像 MCP 设置栏目那样"用户可能一次都不打开"——等 openSettings("mcp")
+      // 才拉的话,新会话一开始 `/` 菜单里永远看不到已经连上的 server 的 prompt
+      window.otter.listMcpPrompts(),
       window.otter.getAccount(),
       window.otter.keyStatus(),
       window.otter.getWindowFullscreen(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account, keyStatus, fullscreen }
-        : { phase: "welcome", sessions, skills, account, keyStatus, fullscreen }
+        ? { ...enterChat(info), sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
+        : { phase: "welcome", sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
     );
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏

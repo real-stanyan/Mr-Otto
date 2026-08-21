@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +33,7 @@ import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/der
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
+import { mcpPromptCommandDescription, mcpPromptCommandId } from "./lib/mcpPromptMenu.js";
 import { TrajectoryView } from "./replay/TrajectoryView.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
@@ -63,6 +64,7 @@ import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
+import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
@@ -75,6 +77,7 @@ import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
+import { McpSettings } from "./components/McpSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -1111,6 +1114,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
   { id: "agents", label: "Subagent" },
+  { id: "mcp", label: "MCP" },
 ];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -2107,17 +2111,37 @@ function ChatComposer() {
     };
   }, [skills]);
   const skillDirective = useMemo(() => ({ formatter: skillFormatter }), [skillFormatter]);
+  // MCP prompt 混进同一份 `/` 菜单:只回**连上**的 server 的 prompt(见 store 的
+  // refreshMcpPrompts 注释),清单跟着 onMcpChanged 活着——server 掉线/重连,
+  // 这份 commands 数组下一渲染就跟着变,不用额外订阅。
+  // 零参数直接展开、带参数开表单卡,两条路都在 store.openMcpPromptForm 里判——
+  // 这里的 execute 只管"选中了就把 prompt 交出去"，不复述那份判断
+  const mcpPrompts = useChat((s) => s.mcpPrompts);
+  const openMcpPromptForm = useChat((s) => s.openMcpPromptForm);
   const slashTrigger = unstable_useSlashCommandAdapter({
     removeOnExecute: true,
-    commands: Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
-      id: name,
-      label: name,
-      description: c.desc,
-      execute: () => {
-        if (c.takesArgs) setInput(`${name} `);
-        else dispatchSlash(name);
-      },
-    })),
+    commands: [
+      ...Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
+        id: name,
+        label: name,
+        description: c.desc,
+        execute: () => {
+          if (c.takesArgs) setInput(`${name} `);
+          else dispatchSlash(name);
+        },
+      })),
+      ...mcpPrompts.map((p) => ({
+        id: mcpPromptCommandId(p.server, p.name),
+        label: `/${p.name}`,
+        description: mcpPromptCommandDescription(p.description, p.server),
+        // iconMap 见下方 ComposerTriggerPopover:"mcp" 这个 key 换成插头图标,
+        // 与本地指令用同一枚 fallback(闪光)分开——这是这版唯一的"分组"信号,
+        // 没有另起一套 TriggerCategory 浏览机制(本仓 `/` 菜单一直是纯搜索/
+        // 扁平列表,见 unstable_useSlashCommandAdapter 自己的实现)
+        icon: "mcp",
+        execute: () => openMcpPromptForm(p),
+      })),
+    ],
   });
 
 
@@ -2227,6 +2251,11 @@ function ChatComposer() {
               className={TRIGGER_POP}
               adapter={slashTrigger.adapter}
               action={slashTrigger.action}
+              // MCP prompt 条目在 execute() 里挂了 icon:"mcp"(见上方 slashTrigger),
+              // 换成插头图标——本地指令没挂 icon,照旧落回 fallbackIcon(闪光)。
+              // 这是这一版"分组"的全部实现:纯扁平搜索列表里靠图标分出两类来源,
+              // 没有另起一套分类导航
+              iconMap={{ mcp: Plug }}
               emptyItemsLabel="没有匹配的指令"
               emptyCategoriesLabel="没有可用指令"
               backLabel="返回"
@@ -2415,6 +2444,8 @@ export function App() {
     <SkillsPage />
   ) : settingsSection === "agents" ? (
     <SubagentSettings />
+  ) : settingsSection === "mcp" ? (
+    <McpSettings />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
@@ -2525,6 +2556,9 @@ export function App() {
 
           <ApprovalCard />
           <QuestionnaireCard />
+          {/* MCP prompt 参数表单:composer `/` 菜单选中的产物,同一类"管线停这等人"的卡,
+              贴在输入框正上方,同 QuestionnaireCard 的位置逻辑 */}
+          <McpPromptCard />
 
           <footer className="relative px-5 pt-[10px] pb-3">
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
