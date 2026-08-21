@@ -9,6 +9,7 @@ import { exec as cpExec } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve, relative, isAbsolute } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
+import { stripSecretEnv } from "../shared/secretEnv.js";
 
 const execAsync = promisify(cpExec);
 
@@ -24,8 +25,23 @@ function fence(root: string | undefined, path: string): string {
   return abs;
 }
 
-export function createLocalWorld(opts: { root?: string; fetchImpl?: typeof fetch } = {}): ExecutionWorld {
+export function createLocalWorld(
+  opts: {
+    root?: string;
+    fetchImpl?: typeof fetch;
+    /** 起子进程前现问一次：哪些 process.env 变量是 otter 注入的凭据（issue #153）。
+        缺省 = 全局登记处（keyVault.applyToEnv 写进去的那些）。可注入是为了测试
+        不必碰全局状态。返回空数组 = 什么都不摘（旧行为） */
+    secretEnvNames?: () => readonly string[];
+  } = {}
+): ExecutionWorld {
   const { root } = opts;
+  // 每次起子进程都现算一遍：名单会随用户在设置页存/清 key 而变，
+  // 装配时抓一次快照就会留下一个"配 key 之前建的会话永远不设防"的窟窿
+  const childEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
+    ...stripSecretEnv(process.env, opts.secretEnvNames?.()),
+    ...extra,
+  });
   return {
     fs: {
       // async 包一层：fence 的同步抛错变成 Promise rejection（接口约定返回 Promise，
@@ -38,6 +54,9 @@ export function createLocalWorld(opts: { root?: string; fetchImpl?: typeof fetch
       try {
         const pending = execAsync(cmd, {
           timeout: 30_000,
+          // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
+          // （issue #153）。其余原样继承——PATH/nvm/语言设置都在里面
+          env: childEnv(),
           ...(root ? { cwd: root } : {}),
           // child_process 原生认 signal：abort = 给进程组发 SIGTERM
           ...(opts?.signal ? { signal: opts.signal } : {}),
@@ -108,8 +127,12 @@ export function createLocalWorld(opts: { root?: string; fetchImpl?: typeof fetch
         rows: o.rows,
         ...(root ? { cwd: root } : {}),
         // TERM 让 CLI 上色;其余原样继承——用户的 PATH/nvm/别名都在里面,
-        // 剥干净了这个终端就不是"他自己的终端"了
-        env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
+        // 剥干净了这个终端就不是"他自己的终端"了。
+        // 唯一的例外是 otter 自己注入的那几把 API key（issue #153）：它们不属于
+        // 用户的 shell 环境,是 keyVault 明文写进 process.env 的,留着等于让
+        // agent 的一句 `echo $DEEPSEEK_API_KEY` 读到明文。用户自己 profile 里
+        // 真有同名变量的话,shell 起来后会自己 source 回去——摘掉的只是注入的那份
+        env: childEnv({ TERM: "xterm-256color" }),
       });
       return {
         write: (data) => child.write(data),

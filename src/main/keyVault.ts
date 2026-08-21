@@ -5,6 +5,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
+import { markSecretEnv } from "../shared/secretEnv.js";
 
 export type KeyFile = Record<string, string>;
 
@@ -30,7 +31,13 @@ export function saveKey(path: string, name: string, value: string): KeyFile {
   return keys;
 }
 
-/** UI 配的 key 覆盖 .env：.env 是开发便利，用户在设置页的最新意志优先 */
+/** UI 配的 key 覆盖 .env：.env 是开发便利，用户在设置页的最新意志优先。
+    写入的同一行登记进 secretEnv —— LocalWorld 起子进程时按这份名单把它们摘掉
+    （issue #153：不登记的话 agent 的一句 `echo $DEEPSEEK_API_KEY` 就读到明文）。
+    登记和写入不分家，是为了让名单不可能和真实注入 drift */
 export function applyToEnv(keys: KeyFile, env: NodeJS.ProcessEnv): void {
-  for (const [name, value] of Object.entries(keys)) env[name] = value;
+  for (const [name, value] of Object.entries(keys)) {
+    env[name] = value;
+    markSecretEnv(name);
+  }
 }

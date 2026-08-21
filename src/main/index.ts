@@ -64,6 +64,7 @@ import { usageSnapshot } from "../shared/usageStats.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
+import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
@@ -166,6 +167,13 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
+  // .env 那条路不经过 keyVault，登记不到（loadDotEnv 只认"补空缺"这一件事）。
+  // 补登记：本仓认识的那几个 provider key 变量，此刻有值的都算凭据——
+  // 不管它来自 .env 还是用户自己的 shell。名单是精确的（providerCatalog 列的
+  // 就那几个），不是启发式，所以不会误伤用户的普通变量（issue #153）
+  for (const envName of providerKeyEnvs()) {
+    if (process.env[envName]) markSecretEnv(envName);
+  }
 
   const win = createWindow();
   mainWindow = win;
@@ -982,7 +990,10 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.setApiKey, (_e, envName: string, key: string) => {
     if (!allowedKeyEnvs.has(envName)) throw new Error(`不认识的 key 变量: ${envName}`);
     applyToEnv(saveKey(keyVaultPath, envName, key), process.env);
-    if (!key) delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+    if (!key) {
+      delete process.env[envName]; // 清除时 applyToEnv 不会删，补一刀
+      unmarkSecretEnv(envName); // 已经不是凭据了，再登记着只会白白从子进程里摘掉一个普通变量
+    }
     clearBalanceCache(); // 换了 key,60 秒缓存里那条余额说的是上一把 key 的账
     for (const a of agents.values()) a.reloadAdapter(); // 所有活 agent 的 adapter 都捏着旧 key
   });
