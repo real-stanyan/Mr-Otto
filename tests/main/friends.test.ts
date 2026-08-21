@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  toFriendProfile, buildSnapshot, presenceUnion, sameIds, toGameInvite, FriendsManager,
+  toFriendProfile, buildSnapshot, presenceUnion, sameIds, toGameInvite, FriendsManager, workspaceUnion,
   DEGRADED_POLL_MS, HEARTBEAT_MS,
   type FriendsApi, type FriendsTimers, type FriendshipRow,
   type InviteRow, type MessageRow, type ProfileRow,
@@ -63,6 +63,7 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
     latestInboxId: vi.fn(async () => 0),
     listInboxSince: vi.fn(async () => []),
     touchPresence: vi.fn(async () => {}),
+    trackWorkspace: vi.fn(),
     listLastSeen: vi.fn(async () => []),
     insertInvite: vi.fn(async (inviter: string, invitee: string, tableId: string, tableName: string): Promise<InviteRow> =>
       ({
@@ -79,7 +80,7 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
 /** 每个用例一份新的 push spy(共享一份会让调用次数跨用例累加) */
 function mkPush() {
   return {
-    friendsChanged: vi.fn(), presenceChanged: vi.fn(), directMessage: vi.fn(),
+    friendsChanged: vi.fn(), presenceChanged: vi.fn(), workspacesChanged: vi.fn(), directMessage: vi.fn(),
     invitesChanged: vi.fn(), healthChanged: vi.fn(),
   };
 }
@@ -206,7 +207,7 @@ describe("FriendsManager 生命周期", () => {
     const m = new FriendsManager({ api, push });
     await m.start();
     expect(push.friendsChanged).toHaveBeenCalledTimes(1); // 初始快照
-    captured!.onPresence(["u2"]);
+    captured!.onPresence([{ id: "u2", workspace: null }]);
     expect(push.presenceChanged).toHaveBeenCalledWith(["u2"]);
     captured!.onMessage({ id: 1, sender: "u2", recipient: "me", body: "hi", created_at: "t" });
     expect(push.directMessage).toHaveBeenCalledWith(
@@ -396,6 +397,45 @@ describe("FriendsManager 邀请", () => {
   });
 });
 
+// ── 好友在哪:两条腿并集(issue #167) ─────────────────────────────
+describe("workspaceUnion", () => {
+  const W = { repoKey: "k1", branch: "feat" };
+  const now = 100_000;
+
+  it("Realtime meta 带工作区 → 直接用", () => {
+    expect(workspaceUnion([{ id: "u2", workspace: W }], [], now))
+      .toEqual([{ userId: "u2", repoKey: "k1", branch: "feat" }]);
+  });
+
+  it("Realtime 在线但没 meta(老客户端)→ 退回心跳列", () => {
+    const seen = [{ id: "u2", last_seen_at: new Date(now - 1000).toISOString(), repo_key: "k1", repo_branch: "main" }];
+    expect(workspaceUnion([{ id: "u2", workspace: null }], seen, now))
+      .toEqual([{ userId: "u2", repoKey: "k1", branch: "main" }]);
+  });
+
+  it("两腿都有时 Realtime 赢(更新)", () => {
+    const seen = [{ id: "u2", last_seen_at: new Date(now).toISOString(), repo_key: "k1", repo_branch: "old" }];
+    expect(workspaceUnion([{ id: "u2", workspace: W }], seen, now)[0]!.branch).toBe("feat");
+  });
+
+  it("心跳过窗口 / 没 repo_key / 没跑 0008 的库(列缺席)→ 不出现", () => {
+    const stale = [{ id: "a", last_seen_at: new Date(now - 200_000).toISOString(), repo_key: "k", repo_branch: "x" }];
+    const noRepo = [{ id: "b", last_seen_at: new Date(now).toISOString(), repo_key: null, repo_branch: null }];
+    const noCols = [{ id: "c", last_seen_at: new Date(now).toISOString() }];
+    expect(workspaceUnion([], [...stale, ...noRepo, ...noCols], now)).toEqual([]);
+  });
+
+  it("detached HEAD:branch null 照样报(人在仓库里,只是不在分支上)", () => {
+    expect(workspaceUnion([{ id: "u", workspace: { repoKey: "k", branch: null } }], [], now))
+      .toEqual([{ userId: "u", repoKey: "k", branch: null }]);
+  });
+
+  it("按 userId 排序,输出稳定", () => {
+    const r = workspaceUnion([{ id: "b", workspace: W }, { id: "a", workspace: W }], [], now);
+    expect(r.map((x) => x.userId)).toEqual(["a", "b"]);
+  });
+});
+
 // ── 推送健康度与轮询兜底(ADR-0027) ──────────────────────────────
 const flush = async (): Promise<void> => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
@@ -452,7 +492,7 @@ describe("FriendsManager 推送兜底", () => {
     const h = harness();
     await h.m.start();
     await flush();
-    h.handlers().onPresence(["u2"]);
+    h.handlers().onPresence([{ id: "u2", workspace: null }]);
     expect(h.push.presenceChanged).toHaveBeenLastCalledWith(["u2"]);
 
     h.handlers().onHealth("degraded");
@@ -476,6 +516,52 @@ describe("FriendsManager 推送兜底", () => {
     h.timers.tick(HEARTBEAT_MS);
     await flush();
     expect(h.api.touchPresence).toHaveBeenCalledTimes(2);
+  });
+
+  it("setWorkspace:两条腿立刻更新 —— 重 track + 提前一拍心跳带上工作区,并推 mine", async () => {
+    const h = harness();
+    await h.m.start();
+    await flush();
+    expect(h.api.touchPresence).toHaveBeenLastCalledWith("me", null);
+
+    const ws = { repoKey: "k1", branch: "feat" };
+    h.m.setWorkspace(ws);
+    await flush();
+    expect(h.api.trackWorkspace).toHaveBeenLastCalledWith(ws);
+    expect(h.api.touchPresence).toHaveBeenCalledTimes(2);
+    expect(h.api.touchPresence).toHaveBeenLastCalledWith("me", ws);
+    expect(h.push.workspacesChanged).toHaveBeenLastCalledWith({ mine: ws, friends: [] });
+
+    // 同一个工作区再报一次:什么都不发生(watcher 会抖)
+    h.m.setWorkspace({ ...ws });
+    await flush();
+    expect(h.api.touchPresence).toHaveBeenCalledTimes(2);
+  });
+
+  it("好友工作区:Realtime 通道是全站的,只放行好友;心跳腿照 listLastSeen 来", async () => {
+    const h = harness({
+      listFriendships: vi.fn(async () => [
+        { id: "f1", requester: "me", addressee: "u2", status: "accepted" } as FriendshipRow,
+      ]),
+      listProfiles: vi.fn(async () => [P("u2")]),
+      listLastSeen: vi.fn(async () => [
+        { id: "u2", last_seen_at: new Date(0).toISOString(), repo_key: "k1", repo_branch: "main" },
+      ]),
+    });
+    await h.m.start();
+    await flush();
+    // 心跳腿:u2 在 k1/main
+    expect(h.push.workspacesChanged).toHaveBeenLastCalledWith({
+      mine: null, friends: [{ userId: "u2", repoKey: "k1", branch: "main" }],
+    });
+    // Realtime 报来陌生人 u9 带工作区 → 不放行;u2 的 meta 盖过心跳
+    h.handlers().onPresence([
+      { id: "u2", workspace: { repoKey: "k1", branch: "feat" } },
+      { id: "u9", workspace: { repoKey: "k1", branch: "spy" } },
+    ]);
+    expect(h.push.workspacesChanged).toHaveBeenLastCalledWith({
+      mine: null, friends: [{ userId: "u2", repoKey: "k1", branch: "feat" }],
+    });
   });
 
   it("stop:清掉所有定时器 + 推空邀请与 connecting", async () => {

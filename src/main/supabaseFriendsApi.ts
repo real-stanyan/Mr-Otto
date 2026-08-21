@@ -3,10 +3,11 @@
 // 单测只测纯逻辑段(presenceStateToIds / mergeChannelHealth);查询链本身薄到无逻辑,
 // 错误原样上抛由 FriendsManager 收敛成 FriendsResult。
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import type {
-  FriendsApi, FriendshipRow, InviteRow, LastSeenRow, MessageRow, ProfileRow,
+  FriendsApi, FriendshipRow, InviteRow, LastSeenRow, MessageRow, PresenceEntry, ProfileRow,
 } from "./friends.js";
+import type { WorkspacePresence } from "../shared/friends.js";
 
 const PAGE = 50;
 /** 一次轮询最多补多少条积压消息(离线久了不至于一口气推爆渲染层) */
@@ -17,6 +18,22 @@ const INVITE_WINDOW_MS = 30 * 60 * 1000;
 /** presenceState() 的形状 {key: metas[]} → 在线 userId 列表(key 即 uid) */
 export function presenceStateToIds(state: Record<string, unknown[]>): string[] {
   return Object.keys(state).sort();
+}
+
+/** 同上,但把 meta 里的工作区也捞出来。同一个 uid 多个 meta(多窗口)取第一个带 repoKey 的;
+    老客户端只 track 了 {at} → workspace null。形状不对的字段一律当没有,不信任对端 */
+export function presenceStateToEntries(state: Record<string, unknown[]>): PresenceEntry[] {
+  return Object.keys(state).sort().map((id) => {
+    let workspace: WorkspacePresence | null = null;
+    for (const meta of state[id] ?? []) {
+      const m = meta as { repoKey?: unknown; branch?: unknown } | null;
+      if (m && typeof m.repoKey === "string" && m.repoKey) {
+        workspace = { repoKey: m.repoKey, branch: typeof m.branch === "string" ? m.branch : null };
+        break;
+      }
+    }
+    return { id, workspace };
+  });
 }
 
 /** 每条通道的订阅状态汇成一个健康度:全 SUBSCRIBED 才叫 live。
@@ -34,7 +51,17 @@ function unwrap<T>(res: { data: T; error: { message: string; code?: string } | n
   return res.data;
 }
 
+/** presence track 的 meta:at 是老字段,repoKey/branch 是 #167 加的(没工作区就不带键,对端按缺省读) */
+function presenceMeta(workspace: WorkspacePresence | null): Record<string, unknown> {
+  return workspace
+    ? { at: Date.now(), repoKey: workspace.repoKey, branch: workspace.branch }
+    : { at: Date.now() };
+}
+
 export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
+  /** 当前活着的 presence 通道:trackWorkspace 要往它上面重写 meta。subscribe 建,退订清 */
+  let presenceChannel: RealtimeChannel | null = null;
+  let currentWorkspace: WorkspacePresence | null = null;
   return {
     async getUserId() {
       const { data } = await client.auth.getUser();
@@ -100,15 +127,24 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
       return (unwrap(res) ?? []) as MessageRow[];
     },
 
-    async touchPresence(uid) {
+    async touchPresence(uid, workspace) {
       // 时间取服务端更准,但那要一个 RPC;心跳窗口 90s 容得下客户端时钟的常见偏差
       unwrap(await client.from("profiles")
-        .update({ last_seen_at: new Date().toISOString() }).eq("id", uid));
+        .update({
+          last_seen_at: new Date().toISOString(),
+          repo_key: workspace?.repoKey ?? null,
+          repo_branch: workspace?.branch ?? null,
+        }).eq("id", uid));
+    },
+
+    trackWorkspace(workspace) {
+      currentWorkspace = workspace;
+      if (presenceChannel) void presenceChannel.track(presenceMeta(workspace));
     },
 
     async listLastSeen(ids) {
       if (ids.length === 0) return [];
-      const res = await client.from("profiles").select("id,last_seen_at").in("id", ids);
+      const res = await client.from("profiles").select("id,last_seen_at,repo_key,repo_branch").in("id", ids);
       return (unwrap(res) ?? []) as LastSeenRow[];
     },
 
@@ -176,22 +212,25 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
         .subscribe((s) => report("invites", s));
 
       // presence:track key = 自己 uid,sync 时把整个 state 的 key 集推出去
-      const presenceChannel = client.channel("online-users", {
+      const channel = client.channel("online-users", {
         config: { presence: { key: uid } },
       });
-      presenceChannel
+      presenceChannel = channel;
+      channel
         .on("presence", { event: "sync" }, () =>
-          handlers.onPresence(presenceStateToIds(presenceChannel.presenceState())))
+          handlers.onPresence(presenceStateToEntries(channel.presenceState())))
         .subscribe((s) => {
           report("presence", s);
-          if (s === "SUBSCRIBED") void presenceChannel.track({ at: Date.now() });
+          // 一订上就把"我在哪"带上:重建订阅(degraded 爬回)时 meta 不能丢
+          if (s === "SUBSCRIBED") void channel.track(presenceMeta(currentWorkspace));
         });
 
       return () => {
+        if (presenceChannel === channel) presenceChannel = null;
         void client.removeChannel(fsChannel);
         void client.removeChannel(msgChannel);
         void client.removeChannel(inviteChannel);
-        void client.removeChannel(presenceChannel);
+        void client.removeChannel(channel);
       };
     },
   };
