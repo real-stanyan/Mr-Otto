@@ -203,6 +203,12 @@ interface ChatState {
       进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
       用户可能一次都不打开这个栏目 */
   subagents: SubagentDef[];
+  /** 拉这份清单失败时的说法（已经是中文句子，组件直接显示）。null = 清单是好的。
+      和 subagents 同进同出：每个换掉清单的 action 都顺手把它落定——成功清掉、失败写上。
+      放 store 不放组件：错误串和它描述的那份数据分居两处就一定会 drift（组件的
+      local state 摸不到 store 里那次成功的写入，于是一条早就过期的报错会一直挂在
+      一份已经好了的清单上头）——这一支已经修过两次同样形状的毛病了 */
+  subagentsError: string | null;
   /** subagent 清单查询的作用域：null = 用户级，工作区路径 = 该工程（用户级 + 工作区级）。
       切它 = 换一份清单（见 setSubagentScope） */
   subagentScope: string | null;
@@ -280,14 +286,17 @@ interface ChatState {
   refreshWallet(): Promise<void>;
   /** 重扫 subagent 清单（Subagent 栏目挂载时调一次，照 skills 的做法）。
       三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
-      存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西 */
+      存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西。
+      拉不到清单**不抛**，写进 subagentsError（见那条字段） */
   refreshSubagents(): Promise<void>;
   /** 存一个 subagent 的 frontmatter + 正文。抛出的 Error 是已经写成中文句子的
-      用户可读提示（对不上名字 / 只读），组件自己 catch 显示，这里不吞 */
+      用户可读提示（对不上名字 / 只读 / 不认识这个工作区），组件自己 catch 显示，这里不吞 */
   saveSubagent(def: SubagentDef): Promise<void>;
   /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
-      [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验 */
-  createSubagent(name: string): Promise<void>;
+      [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验。
+      回传的是后端刚扫出来的那份全量清单（**不经**作用域代次门,那道门只挡 state,
+      不该把调用方等着的答案一起吞掉）：复制流程要在里头找刚建出来那份的落地路径 */
+  createSubagent(name: string): Promise<SubagentDef[]>;
   /** 切作用域 = 换一份清单。见实现处注释 */
   setSubagentScope(workspace: string | null): Promise<void>;
   /** 重问一次全局前置词现状（设置页挂载时调一次） */
@@ -514,6 +523,7 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   subagents: [],
+  subagentsError: null,
   subagentScope: null,
   subagentPreamble: null,
   keyStatus: {},
@@ -697,35 +707,54 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   closeSettings: () => set({ settingsSection: null }),
 
+  // 下面四个 action 共一条规矩:谁换掉 subagents,谁就得把 subagentsError 一起落定。
+  // 两条读路径(refreshSubagents / setSubagentScope)自己 catch——它们没有别的地方
+  // 可报,吞掉就是"页面理直气壮地说这儿什么都没有"。两条写路径照旧抛给调用方
+  // (行内的保存提示 / 弹窗里的错),成功时顺手把旧的清单错清掉:回来的这份清单是新鲜的,
+  // 上面挂着的旧报错已经不描述任何东西了。写失败时不动它——清单根本没换,
+  // 它此刻说的还是实话
   async refreshSubagents() {
     const gen = subagentScopeGen;
-    const list = await window.otter.listSubagents(get().subagentScope);
-    if (gen !== subagentScopeGen) return; // 这份是旧作用域的答案
-    set({ subagents: list });
+    try {
+      const list = await window.otter.listSubagents(get().subagentScope);
+      if (gen !== subagentScopeGen) return; // 这份是旧作用域的答案
+      set({ subagents: list, subagentsError: null });
+    } catch (e) {
+      if (gen !== subagentScopeGen) return;
+      set({ subagentsError: bridgeErrorMessage(e) });
+    }
   },
 
   async saveSubagent(def) {
     const gen = subagentScopeGen;
     const list = await window.otter.saveSubagent(def, get().subagentScope);
     if (gen !== subagentScopeGen) return;
-    set({ subagents: list });
+    set({ subagents: list, subagentsError: null });
   },
 
   async createSubagent(name) {
     const gen = subagentScopeGen;
     const list = await window.otter.createSubagent(name, get().subagentScope);
-    if (gen !== subagentScopeGen) return;
-    set({ subagents: list });
+    // 代次对不上只是"这份答案不该再画到屏幕上",不代表这次创建没发生:文件已经落盘了,
+    // 所以清单照样回给调用方(复制流程要靠它找刚建出来那份的路径,不能因为
+    // 用户中途切了个作用域就把它扔掉,那会留下一个谁也够不着的空壳文件)
+    if (gen === subagentScopeGen) set({ subagents: list, subagentsError: null });
+    return list;
   },
 
   /** 切作用域 = 换一份清单。先把旧清单清空再拉新的，避免切换瞬间显示的是
       上一个作用域的内容（那会让用户以为工作区里已经有这些定义了） */
   async setSubagentScope(workspace) {
     const gen = ++subagentScopeGen;
-    set({ subagentScope: workspace, subagents: [] });
-    const list = await window.otter.listSubagents(workspace);
-    if (gen !== subagentScopeGen) return; // 期间又切过一次,那次说了算
-    set({ subagents: list });
+    set({ subagentScope: workspace, subagents: [], subagentsError: null });
+    try {
+      const list = await window.otter.listSubagents(workspace);
+      if (gen !== subagentScopeGen) return; // 期间又切过一次,那次说了算
+      set({ subagents: list, subagentsError: null });
+    } catch (e) {
+      if (gen !== subagentScopeGen) return;
+      set({ subagentsError: bridgeErrorMessage(e) });
+    }
   },
 
   async refreshSubagentPreamble() {

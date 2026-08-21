@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { subagentScopeOptions } from "../../src/renderer/src/lib/subagentScopes.js";
+import {
+  initialSubagentScope,
+  subagentScopeOptions,
+} from "../../src/renderer/src/lib/subagentScopes.js";
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
 
 const s = (workspace: string | null, lastTs: number): SessionSummary =>
@@ -24,5 +27,25 @@ describe("subagentScopeOptions", () => {
 
   it("没有工作区的史前会话不入选", () => {
     expect(subagentScopeOptions([s(null, 1)])).toHaveLength(1);
+  });
+});
+
+describe("initialSubagentScope", () => {
+  const opts = subagentScopeOptions([s("/a/proj-x", 2), s("/a/proj-y", 5)]);
+
+  it("当前会话的工程在候选里就停在那一层", () => {
+    expect(initialSubagentScope("/a/proj-x", opts)).toBe("/a/proj-x");
+  });
+
+  it("当前会话的工程不在候选里就回用户级", () => {
+    // 给主进程一个它不认的路径,写的时候只会抛「不认识这个工作区」
+    expect(initialSubagentScope("/a/proj-z", opts)).toBeNull();
+  });
+
+  it("没有会话工作区就回用户级", () => {
+    expect(initialSubagentScope(null, opts)).toBeNull();
+    // store 里没会话时那个字段是空串,不是 null
+    expect(initialSubagentScope("", opts)).toBeNull();
+    expect(initialSubagentScope(undefined, opts)).toBeNull();
   });
 });

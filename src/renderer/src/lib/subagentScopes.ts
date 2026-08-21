@@ -21,3 +21,26 @@ export function subagentScopeOptions(sessions: readonly SessionSummary[]): Subag
     })),
   ];
 }
+
+/**
+ * 打开设置页时该停在哪一层:跟着此刻在看的那个会话的工程走,它不在候选里才回「用户」。
+ *
+ * 恒定停在「用户」不是"少看几行"的事,是一条静默写错地方的路:用户在工程 W 的会话里
+ * 已经定过两个工作区级的子智能体,打开这一页看到的却是空清单 + "把文件放进
+ * ~/.otter/agents"的提示——他照着点「新建」,文件就落在了全局那一层,处处可见,
+ * 而全局命名空间污染正是作用域这整个特性要治的病(ADR-0048)。
+ *
+ * 候选里没有(那个工程还没开过会话、或者是没记 workspace 的史前会话)就回 null:
+ * 主进程的写路径只认"日志里出现过的围栏",给它一个认不出的路径只会在保存时抛
+ * 「不认识这个工作区」——不如老老实实停在用户级。
+ *
+ * 它是"开页时的落点"而不是一条偏好:不做持久化、不记住上次手选的那一层,
+ * 每次打开都重新跟着当前会话算——页面跟着会话走,不跟着上一次的页面走。
+ */
+export function initialSubagentScope(
+  workspace: string | null | undefined,
+  options: readonly SubagentScopeOption[]
+): string | null {
+  if (!workspace) return null;
+  return options.some((o) => o.workspace === workspace) ? workspace : null;
+}

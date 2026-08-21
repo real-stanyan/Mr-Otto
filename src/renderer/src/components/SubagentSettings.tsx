@@ -46,7 +46,7 @@ import {
   type SubagentPreamble,
 } from "../../../shared/subagent.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
-import { subagentScopeOptions } from "../lib/subagentScopes.js";
+import { initialSubagentScope, subagentScopeOptions } from "../lib/subagentScopes.js";
 
 const ERR_TXT = "text-err text-[13px]";
 
@@ -86,17 +86,19 @@ function canonicalContext(names: readonly string[]): string[] {
 
 export function SubagentSettings() {
   const subagents = useChat((s) => s.subagents);
+  // 拉清单失败的说法住在 store 里(跟 subagents 同进同出),不再是这儿的 local state:
+  // 组件摸不到"后来某次写入成功了"这件事,一条早就过期的报错会一直挂在一份已经好了的
+  // 清单上头
+  const listError = useChat((s) => s.subagentsError);
   const refreshSubagents = useChat((s) => s.refreshSubagents);
   const refreshSubagentPreamble = useChat((s) => s.refreshSubagentPreamble);
   const closeSettings = useChat((s) => s.closeSettings);
   const sessions = useChat((s) => s.sessions);
+  const workspace = useChat((s) => s.workspace);
   const scope = useChat((s) => s.subagentScope);
   const setScope = useChat((s) => s.setSubagentScope);
   const [newOpen, setNewOpen] = useState(false);
-  // 拉清单/拉前置词失败要说出来。不说的话:清单失败 = 页面理直气壮地写"还没定义
-  // 任何子智能体"(而工作区那一层永远并着用户级那些,空清单本身就可疑),
-  // 前置词失败 = 整张卡凭空消失。这正是上一个提交刚修掉的那个形状
-  const [listError, setListError] = useState<string | null>(null);
+  // 拉前置词失败要说出来,不说的话整张卡凭空消失（清单那条同理,只是它搬进 store 了）
   const [preambleError, setPreambleError] = useState<string | null>(null);
 
   const scopeOptions = useMemo(() => subagentScopeOptions(sessions), [sessions]);
@@ -105,28 +107,37 @@ export function SubagentSettings() {
   // 两者对不上时(见下面那个 effect)下拉显示的是 current,底下的路径也该是 current,
   // 不然这一帧里页面说的是一层、编的是另一层
   const scopeDir = current.workspace ? `${current.workspace}/.otter/agents` : "~/.otter/agents";
-
-  const switchScope = (workspace: string | null) => {
-    setListError(null);
-    setScope(workspace).catch((e: unknown) => setListError(bridgeErrorMessage(e)));
-  };
+  // 作用域标签只在"这份清单装得下两层"时才有信息量:选中某个工程时,扫的是工程那两条根
+  // **并上**用户级那两条,清单里混着两层的定义——两行长得一模一样,存一行写进工程、
+  // 存另一行写进用户主目录,而工作区级那份还会盖住同名的用户级那份(task 到底派哪一个,
+  // 光看名字说不出来)。「用户」视图里两条根都是用户级,标一遍等于每行都贴同一张标签
+  const showScope = current.workspace !== null;
 
   // 一个工作区的最后一条会话被删掉,它就从候选里消失了,但 store 里那个路径还留着:
   // 下拉框回落显示「用户」,底下的提示却还指着那条死路径,「新建」也落在用户级
   // (主进程不认一个不可信的路径)。而且这个错状态自己清不掉——选「用户」不触发
-  // onChange,它已经是当前显示值了。所以查不到就把 store 拨回用户级
+  // onChange,它已经是当前显示值了。所以查不到就把 store 拨回用户级。
+  // 它得排在下面那个开页 effect **前面**:挂载这一轮它拿的是上一次开页留下的 scope,
+  // 排在后面就会用那个陈旧值把开页刚落好的作用域又拨回用户级
   useEffect(() => {
-    if (scope !== null && current.workspace !== scope) {
-      setScope(null).catch((e: unknown) => setListError(bridgeErrorMessage(e)));
-    }
+    if (scope !== null && current.workspace !== scope) void setScope(null);
   }, [scope, current.workspace, setScope]);
 
+  // 每次打开这一页都重新跟着"此刻在看的那个会话"落一次作用域(见 initialSubagentScope:
+  // 恒定停在「用户」会把新建出来的文件推回全局命名空间)。
+  // 只在挂载时跑一次:这是开页时的落点,不是一条跟着 workspace/候选表变的绑定——
+  // 用户在这一页上手选过之后,不该被别处的会话切换把脚下这层抽走。
+  // 两条拉清单的路都不抛,拉不到时把话写进 store 的 subagentsError
   useEffect(() => {
-    setListError(null);
     setPreambleError(null);
-    refreshSubagents().catch((e: unknown) => setListError(bridgeErrorMessage(e)));
+    const desired = initialSubagentScope(workspace, scopeOptions);
+    // 已经停在该停的那一层就只重扫一遍。setSubagentScope 会先把清单清空(换层时必须
+    // 这么做,否则一瞬间显示的是上一层的内容),同一层也清一次的话,每次开页都要
+    // 闪一下"还没定义任何子智能体"那张空卡
+    if (desired === scope) void refreshSubagents();
+    else void setScope(desired);
     refreshSubagentPreamble().catch((e: unknown) => setPreambleError(bridgeErrorMessage(e)));
-  }, [refreshSubagents, refreshSubagentPreamble]);
+  }, []);
 
   return (
     <div className={MAIN_COL}>
@@ -137,7 +148,7 @@ export function SubagentSettings() {
         <select
           id="subagent-scope"
           value={current.workspace ?? ""}
-          onChange={(e) => switchScope(e.target.value === "" ? null : e.target.value)}
+          onChange={(e) => void setScope(e.target.value === "" ? null : e.target.value)}
           className="press-scale border border-border rounded-md bg-card px-2 py-1 text-[12.5px] text-foreground transition-colors duration-150"
           title={current.workspace ?? "所有工程都能用的那一层"}
         >
@@ -183,7 +194,13 @@ export function SubagentSettings() {
           </div>
         )}
         {subagents.map((def) => (
-          <SubagentRow key={def.path} def={def} scopeLabel={current.label} scopeDir={scopeDir} />
+          <SubagentRow
+            key={def.path}
+            def={def}
+            scopeLabel={current.label}
+            scopeDir={scopeDir}
+            showScope={showScope}
+          />
         ))}
       </section>
       <NewSubagentDialog open={newOpen} onOpenChange={setNewOpen} scopeLabel={current.label} />
@@ -276,12 +293,15 @@ function SubagentRow({
   def,
   scopeLabel,
   scopeDir,
+  showScope,
 }: {
   def: SubagentDef;
   /** 当前作用域的短名 —— 「复制到…」那颗按钮要说清文件会落在哪一层 */
   scopeLabel: string;
   /** 当前作用域对应的目录,进按钮的 title */
   scopeDir: string;
+  /** 这份清单里混着两层的定义,要在行头标出各自住在哪一层（见上面的 showScope） */
+  showScope: boolean;
 }) {
   const mainModel = useChat((s) => s.model);
   const toolDefs = useChat((s) => s.toolDefs);
@@ -322,10 +342,15 @@ function SubagentRow({
     ? clampThinking(thinkingValue, spec)
     : spec.default;
 
-  // custom 但正文是空的 = 等同于没覆盖,存成 default——否则文件里会留一个空块标量,
-  // 读回来又变成 default,界面上那个"自定义"档下次打开就自己跳回去了
+  // 草稿如实按用户选的那一档算,空白的"自定义"**不**在这里悄悄折叠成 default。
+  // 折叠过一次:preamble:off 的定义,点一下「自定义」还没打字,草稿就成了 default,
+  // dirty 跟着变真、按钮亮起「保存」,一按写进文件的是"用全局"——用户刚刚明确关掉的
+  // 那段前置词又回到模型眼前了,而单选组还停在「自定义」(它是 local state,行没重挂),
+  // 按钮转头说「已保存」。控件、按钮、落进文件的东西三个说法各不相同。
+  // 空白的自定义不是一种可存的状态,跟"一把工具都不选"同一个处理:挡在保存前(见
+  // blockedByBlankPreamble),不替用户改主意
   const preamble: SubagentPreamble =
-    preambleMode === "custom" && preambleText.trim()
+    preambleMode === "custom"
       ? { mode: "custom", text: preambleText.trim() }
       : preambleMode === "off"
         ? { mode: "off" }
@@ -352,6 +377,9 @@ function SubagentRow({
     (thinkingPinned && effectiveThinking !== def.thinking);
 
   const blockedByEmptyTools = toolsWillCollapse(tools);
+  /** 选了「自定义」却一个字没写。存下去 = 文件里一个空块标量,读回来是「用全局」 */
+  const blockedByBlankPreamble = preamble.mode === "custom" && preamble.text === "";
+  const blocked = blockedByEmptyTools || blockedByBlankPreamble;
 
   const modelLabel = describeModel(effectiveModel)?.label ?? effectiveModel;
 
@@ -371,7 +399,7 @@ function SubagentRow({
   };
 
   const save = async () => {
-    if (blockedByEmptyTools) return;
+    if (blocked) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -399,23 +427,39 @@ function SubagentRow({
   };
 
   const copyToOtterAgents = async () => {
-    // 复制目标名字加个后缀,不试图沿用原名——原名此刻已经被这份只读记录占着,
-    // createSubagent 会因为撞名直接拒绝(main/index.ts 的查重就是照着"当前完整清单"查的)
+    // 复制目标名字加个后缀。同名其实建得出来了——9a28e84 之后查重只问"落点那一层
+    // 占了没",不问合并清单(工作区盖住同名的用户级那份正是覆盖规则的用法)。
+    // 这里仍然加后缀,是个选择不是限制:「复制到本层」的意思是多一份能改的副本,
+    // 不是把眼前这份从清单里顶掉;顶掉该是用户明说的动作,不是点了「复制」的副作用
     const copyName = `${def.name}-copy`;
+    // 作用域是所有落点的前提,整个流程得钉在开始时的那一层上(见下面两处判断)
+    const scopeAtStart = useChat.getState().subagentScope;
     setCopying(true);
     setCopyError(null);
     setCopiedAs(null);
     try {
-      await createSubagent(copyName);
       // path/source/readOnly 必须来自刚建出来那份的磁盘现状,不能沿用 def(那是原本
       // 那份只读记录的路径)。saveSubagent 的 IPC handler 会按 name 重新查一遍磁盘、
       // 拿查到的 path/source/readOnly 覆盖请求体里的同名字段,所以这里传什么值都不会
       // 被后端采信——但组件自己的代码不该装作"知道"一个它其实没查过的路径,
       // 那样的正确性系着一个类型契约没承诺过的后端实现细节,下一个读这段代码的人
-      // 会学到错的教训。查不到就报错,不回退去用 def 的旧字段
-      const created = useChat.getState().subagents.find((d) => d.name === copyName);
+      // 会学到错的教训。
+      // 认准 createSubagent **回传**的那份清单,不去 store 里翻:store 那份会被作用域
+      // 代次门挡掉(用户中途切一下作用域就查不到了),而文件其实已经建出来了——
+      // 于是"请重试"变成一条走不通的路:再点一次撞的是「已经有一个叫「X-copy」的
+      // 子智能体了」,空壳文件留在那儿谁也够不着
+      const created = (await createSubagent(copyName)).find((d) => d.name === copyName);
       if (!created) {
-        setCopyError(`创建后没能在清单里找到「${copyName}」，请重试`);
+        setCopyError(`「${copyName}」已经建在 ${scopeDir} 了，但清单里没有它——去那个目录里手工把内容抄过去`);
+        return;
+      }
+      if (useChat.getState().subagentScope !== scopeAtStart) {
+        // 中途切了作用域:不能接着存。saveSubagent 用的是 store 里此刻那一层,
+        // 拿「X-copy」这个名字去新那层查——查不到是白跑一趟,查到个同名的就是
+        // 把内容写穿到另一个工程的定义上。空壳文件留在原来那层,回去展开它接着编。
+        // 这句话多半没人看得见(切作用域会清空清单,这一行此刻已经卸载了),留着是因为
+        // 看不见的提示也好过没有提示——真正要紧的是这一步不往错地方写
+        setCopyError(`「${copyName}」已经建好了，但你切了作用域，内容没抄过去——切回${scopeLabel}展开它继续`);
         return;
       }
       await saveSubagent({
@@ -461,6 +505,15 @@ function SubagentRow({
     >
       <summary className="flex items-baseline gap-[10px] px-[14px] py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[13px] font-semibold text-brand shrink-0">{def.name}</span>
+        {showScope && (
+          <Badge
+            variant="outline"
+            className="shrink-0 text-muted-foreground"
+            title={`来自 ${def.source}`}
+          >
+            {def.scope === "workspace" ? "工作区" : "用户"}
+          </Badge>
+        )}
         {def.readOnly && (
           <Badge variant="secondary" className="shrink-0">只读</Badge>
         )}
@@ -650,13 +703,20 @@ function SubagentRow({
             ))}
           </div>
           {preambleMode === "custom" ? (
-            <Textarea
-              value={preambleText}
-              disabled={def.readOnly}
-              onChange={(e) => setPreambleText(e.target.value)}
-              className="font-mono text-[12.5px] min-h-24"
-              placeholder="这一段会替代全局前置词，只对这个子智能体生效"
-            />
+            <>
+              <Textarea
+                value={preambleText}
+                disabled={def.readOnly}
+                onChange={(e) => setPreambleText(e.target.value)}
+                className="font-mono text-[12.5px] min-h-24"
+                placeholder="这一段会替代全局前置词，只对这个子智能体生效"
+              />
+              {blockedByBlankPreamble && (
+                <p className={ERR_TXT}>
+                  自定义前置词不能是空的——空的存下去读回来是「用全局」，等于把全局那段又加了回去。要一段都不加就选「不加」
+                </p>
+              )}
+            </>
           ) : (
             <p className={HINT}>
               {preambleMode === "off"
@@ -721,7 +781,7 @@ function SubagentRow({
         <div className="flex items-center gap-2">
           <Button
             size="sm"
-            disabled={def.readOnly || !dirty || saving || blockedByEmptyTools}
+            disabled={def.readOnly || !dirty || saving || blocked}
             onClick={() => void save()}
           >
             {saving ? "保存中…" : dirty ? "保存" : "已保存"}
