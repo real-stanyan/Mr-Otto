@@ -1077,4 +1077,16 @@
 .drag-region [data-slot="sidebar-menu-button"] {
   -webkit-app-region: no-drag;
 }
+/* 侧栏悬停预览浮层期间整块不可拖:drag 区不向 DOM 发鼠标事件,鼠标从打开钮
+   滑过侧栏头部(drag-region)时浮层收不到 mouseenter,关闭计时器照跑,人还没
+   摸到固定钮浮层就收了。浮层是瞬态弹窗,本来就不是拖窗口的地方 */
+[data-slot="sidebar"][data-preview="true"] .drag-region {
+  -webkit-app-region: no-drag;
+}
+/* fixed 定位的侧栏开关(SidebarToggle)不在任何 .drag-region 树里,上面那条后代
+   选择器罩不到它;但 Electron 按几何算拖拽区,它压在侧栏头部的 drag 矩形上,
+   不显式标 no-drag 点击就被当成拖窗口吞掉 */
+.sidebar-toggle {
+  -webkit-app-region: no-drag;
+}
 

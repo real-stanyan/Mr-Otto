@@ -417,7 +417,7 @@ describe("MCP 接进装配", () => {
     store.close();
   });
 
-  // ADR-0052 / issue #154：子 agent 复用父的 world 实例，父身上那份 mcp 就是它的。
+  // ADR-0054 / issue #154：子 agent 复用父的 world 实例，父身上那份 mcp 就是它的。
   // "这次装配有没有 MCP 能力"因此问的是 world，不是参数
   describe("子 agent 那条路（world 里带着 mcp，参数不给）", () => {
     const parentWorld = () => withMcp(createLocalWorld(), cap());

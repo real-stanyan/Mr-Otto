@@ -4,7 +4,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   CHANNELS,
   type BootInfo,
@@ -43,8 +43,9 @@ import {
   trustedWorkspaceForWrite,
   writeSubagent,
 } from "./subagents.js";
+import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
-import { CONTEXT_DOC_LIMIT, GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
+import { CONTEXT_DOC_LIMIT } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
 import {
@@ -482,13 +483,13 @@ void app.whenReady().then(() => {
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
       // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
       // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
-      // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0052），
+      // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
       // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
     }).toolDefs.map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
   }
-  /** 此刻活着的那些 server 提供的工具名（ADR-0052）。TOOL_NAMES 那个探针装配
+  /** 此刻活着的那些 server 提供的工具名（ADR-0054）。TOOL_NAMES 那个探针装配
       刻意不给 mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、
       改清单，快照会让"认不认得这个名字"停在装配那一刻。
       mcp_read_resource 一并算上：它同样只在有 mcp 能力时才挂 */
@@ -503,8 +504,12 @@ void app.whenReady().then(() => {
 
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
-  const listSubagents = (workspace: string | null) =>
-    scanSubagents(subagentRoots(homedir(), workspace), [...TOOL_NAMES, ...mcpToolNamesNow()]);
+  const listSubagents = (workspace: string | null) => {
+    // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
+    // 在两边一个认得一个不认得
+    const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    return withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), known), known);
+  };
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
   // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
   // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
@@ -558,7 +563,7 @@ void app.whenReady().then(() => {
         config: args.child,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
-        // （ADR-0052）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
+        // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
         mcp: mcpHub,
       });
@@ -576,7 +581,7 @@ void app.whenReady().then(() => {
       ...base,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      // 子会话也挂 MCP（ADR-0052）：挂载归挂载，能不能用由那份 subagent 定义的
+      // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
       // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
       // 而 MCP server 是第三方代码，接一台新 server 不该悄悄扩大所有子 agent 的权限面。
@@ -594,6 +599,7 @@ void app.whenReady().then(() => {
           workspace: self.workspace,
           world: self.world,
           model: self.model,
+          approvalMode: self.approvalMode,
         }),
         getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
@@ -753,7 +759,7 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
     const ws = trustedForWrite(workspace);
-    // 行内前置词也得有上限,理由和全局那份一模一样（见 saveSubagentPreamble）:
+    // 行内前置词也得有上限,理由和工作区文档那条一模一样:
     // 它会原样进 subagent_briefed 的快照,而那条快照投影出来的 user 消息永不被压缩。
     // 之前这一份存盘、序列化、拼装三处都没有限,是全局前置词那条上限的一个漏网口
     if (def.preamble.mode === "custom" && def.preamble.text.length > CONTEXT_DOC_LIMIT) {
@@ -798,45 +804,6 @@ void app.whenReady().then(() => {
       readOnly: false,
     });
     return listSubagents(ws);
-  });
-
-  /** 全局前置词此刻的状态。isDefault 按**文件在不在**判断,不按内容比对——
-      用户存了一段正好和内置默认一字不差的文本时,他确实是自己存过一份,
-      界面不该说"你用的是内置默认" */
-  const preambleState = (): { text: string; isDefault: boolean } => {
-    const raw = nodeFileReader.readFile(GLOBAL_PREAMBLE_PATH);
-    const custom = raw !== null && raw.trim() !== "";
-    return { text: custom ? raw.trim() : DEFAULT_PREAMBLE, isDefault: !custom };
-  };
-
-  ipcMain.handle(CHANNELS.getSubagentPreamble, () => preambleState());
-
-  ipcMain.handle(CHANNELS.saveSubagentPreamble, (_e, text: unknown) => {
-    // 跨进程来的值,类型注解管不住。非法输入直接拒,别让它走到 text.trim()
-    // 抛一个看不懂的 TypeError
-    if (text !== null && typeof text !== "string") throw new Error("前置词必须是文本");
-    // 上限跟工作区文档同一个数:这段会拼进**每一个**子智能体的 system prompt,
-    // 不设限的话一次误粘贴就悄悄撑爆此后每一次派活的上下文
-    if (typeof text === "string" && text.length > CONTEXT_DOC_LIMIT) {
-      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
-    }
-    if (text === null || text.trim() === "") {
-      // 删文件而不是写一份内容等于默认的:只有"文件不在"才是真的恢复默认——
-      // 以后内置默认那段改了,没删文件的人会被钉在旧版本上
-      try {
-        rmSync(GLOBAL_PREAMBLE_PATH);
-      } catch (e) {
-        // 只有"本来就没有"才是已经默认了。别的错误(没权限、那儿其实是个目录)
-        // 必须抛出去:吞掉的话文件还在盘上,而 preambleState 那侧的 readFile
-        // 同样吞错、同样回 null,于是界面报"已恢复默认"、此后永远说"你在用内置
-        // 默认"——两个不分错误码的 catch 一叠,失败长得跟成功一模一样
-        if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
-      }
-    } else {
-      mkdirSync(dirname(GLOBAL_PREAMBLE_PATH), { recursive: true });
-      writeFileSync(GLOBAL_PREAMBLE_PATH, `${text.trim()}\n`, "utf8");
-    }
-    return preambleState();
   });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用

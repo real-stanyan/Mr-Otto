@@ -71,7 +71,7 @@ export function createChildAgent(opts: {
   getAccessToken?: () => Promise<string | null>;
   makeBrowser?: (sessionId: string) => BrowserCapability;
   alwaysAllow?: () => ReadonlySet<string>;
-  /** MCP 能力（ADR-0052）。这里必须显式传：重建走的是新造的 LocalWorld，
+  /** MCP 能力（ADR-0054）。这里必须显式传：重建走的是新造的 LocalWorld，
       父 agent 可能早已不在内存里，没有一个带着 withMcp 的 world 可以继承。
       给了也只是**挂载**——config.allowTools 那份白名单里没点名的 mcp__… 照样过滤掉，
       与活着那一侧（subagentRunner 复用父 world）是同一套规则 */

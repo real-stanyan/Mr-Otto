@@ -96,7 +96,7 @@ const nodeReader: SubagentDirReader = {
   },
 };
 
-const APPROVALS: readonly SubagentApproval[] = ["ask", "auto", "deny"];
+const APPROVALS: readonly SubagentApproval[] = ["ask", "auto", "deny", "inherit"];
 const THINKINGS: readonly ThinkingMode[] = ["off", "low", "on", "medium", "high", "max"];
 
 /** 缩进宽度（只数前导空白的字符数，tab 按一个字符算——frontmatter 里混 tab

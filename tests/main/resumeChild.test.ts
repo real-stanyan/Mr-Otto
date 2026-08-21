@@ -109,7 +109,7 @@ describe("createChildAgent", () => {
     expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
   });
 
-  // ADR-0052 / issue #154：重建走的是新造的 LocalWorld（父可能早已不在内存里），
+  // ADR-0054 / issue #154：重建走的是新造的 LocalWorld（父可能早已不在内存里），
   // 没有一个带着 withMcp 的 world 可以继承，所以这一侧必须显式传 mcp。
   // 两条子 agent 路径的规则必须一样：挂载归挂载，用不用得着由快照里那份白名单说了算
   const mcp = () => ({

@@ -44,7 +44,7 @@ import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
-import { FloatingSidebarNub, SidebarNub } from "./components/SidebarNub.js";
+import { SidebarNub, SidebarToggle, SidebarTriggerSlot } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
@@ -123,7 +123,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
-  SidebarTrigger,
 } from "@/components/ui/sidebar.js";
 import type { SessionEvent } from "../../session/events.js";
 import { lastUserMessage } from "./lib/lastUserMessage.js";
@@ -1167,7 +1166,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "keys", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
-  { id: "agents", label: "Subagent" },
+  { id: "agents", label: "子智能体" },
   { id: "mcp", label: "MCP" },
 ];
 
@@ -1353,13 +1352,16 @@ function AppSidebar() {
 
   return (
     <Sidebar collapsible="offcanvas">
-      <SidebarHeader className={cn("drag-region", trafficInset && "pt-1")}>
+      <SidebarHeader className={cn("drag-region relative", trafficInset && "pt-1")}>
         <div
           className={cn(
             "pr-2 pb-[6px] font-[650] flex items-center gap-2",
-            trafficInset ? "pl-[72px]" : "pt-1 pl-2"
+            // 行首是 fixed 开关钮(SidebarToggle)的占位:钮本身不在这棵树里,
+            // 展开/收起两态同一坐标。窗口模式 x=72 贴红绿灯右侧,全屏 x=12
+            trafficInset ? "pl-[64px]" : "pt-1 pl-1"
           )}
         >
+          <SidebarTriggerSlot />
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看。
               窗口模式下红绿灯叠在左上角,logo + 标题都让位(全屏红绿灯被 macOS 隐掉才回来) */}
           {!trafficInset && (
@@ -1372,10 +1374,9 @@ function AppSidebar() {
               会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
               只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
               看见放大镜就够了(悬停有全称和快捷键) */}
-          {/* 两颗钮是一组,靠右站在一起:ml-auto 给这个盒子,不给它们各自 ——
-              各挂一个 ml-auto 会把剩余空白**平分**给两者,搜索被推到行中间,
-              和收起钮隔出老远。搜索不在时(设置/牌桌档)盒子还在,收起钮照旧靠右 */}
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {/* 搜索钮:窗口模式下和红绿灯、开关钮排成一行(绝对定位到开关右侧,
+              top 与 SidebarToggle 的 top-[5px] 同值);全屏没有红绿灯,照旧靠右 */}
+          <div className={cn("flex shrink-0 items-center", trafficInset ? "absolute top-[5px] left-[76px]" : "ml-auto")}>
             {settingsSection === null && mode !== "game" && (
               <Button
                 variant="ghost"
@@ -1388,9 +1389,6 @@ function AppSidebar() {
                 <Search className="size-4" aria-hidden />
               </Button>
             )}
-            {/* 收起钮进侧栏本体:内容区头部那颗只在收起后当"打开"用,
-                展开状态下用户第一眼找的是侧栏里的开关 */}
-            <SidebarTrigger />
           </div>
         </div>
         {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
@@ -2671,9 +2669,6 @@ export function App() {
         {/* min-w-0:flex 子项默认 min-width:auto,宽内容会顶住不收缩,
             侧栏一展开整列右溢出窗(会话视图代码块/composer 被裁) */}
         <SidebarInset className="relative min-w-0">
-          {/* 有头部的视图把重开钮排进头部(见 SidebarNub);欢迎页没有头部,
-              它左上角是空地,浮标不会盖住任何东西("连接中"那屏在更早处 return) */}
-          {phase === "welcome" && <FloatingSidebarNub />}
           {main}
           {/* 牌局邀请浮层:抽屉收着也得看得见,而邀请是有时效的(见组件顶部注释) */}
           <GameInviteToast />
@@ -2682,6 +2677,11 @@ export function App() {
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
         </SidebarInset>
+        {/* 侧栏开关常驻左上角,两态同位(见 SidebarNub.tsx)。必须排在侧栏和内容区
+            **之后**:Chromium 按文档顺序叠加 app-region 矩形、后者覆盖前者,放前面
+            的话侧栏头部的 drag 矩形会盖掉它的 no-drag,真鼠标点击被当成拖窗口吞掉
+            (CDP 模拟点击正常、真点无反应,就是这个) */}
+        <SidebarToggle />
       </TooltipProvider>
     </SidebarProvider>
   );

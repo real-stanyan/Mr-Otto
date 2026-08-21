@@ -153,7 +153,7 @@ export function createAgent(opts: {
   // MCP 叠在最外层。子 agent 走 opts.world 那条路时不会被重复包一层：
   // subagentRunner 复用父的 world 实例，父身上已经带着 withMcp 那层
   const world = opts.mcp ? withMcp(base, opts.mcp) : base;
-  // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0052）：子 agent 跑在
+  // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0054）：子 agent 跑在
   // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
   // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
   const mcp = opts.mcp ?? world.mcp;
