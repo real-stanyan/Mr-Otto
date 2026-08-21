@@ -206,6 +206,8 @@ interface ChatState {
   /** subagent 清单查询的作用域：null = 用户级，工作区路径 = 该工程（用户级 + 工作区级）。
       切它 = 换一份清单（见 setSubagentScope） */
   subagentScope: string | null;
+  /** 全局前置词（~/.otter/subagent-preamble.md）。null = 还没问过后端 */
+  subagentPreamble: { text: string; isDefault: boolean } | null;
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -288,6 +290,10 @@ interface ChatState {
   createSubagent(name: string): Promise<void>;
   /** 切作用域 = 换一份清单。见实现处注释 */
   setSubagentScope(workspace: string | null): Promise<void>;
+  /** 重问一次全局前置词现状（设置页挂载时调一次） */
+  refreshSubagentPreamble(): Promise<void>;
+  /** 存一段全局前置词；text 为 null 或全空白 = 恢复内置默认（删文件） */
+  saveSubagentPreamble(text: string | null): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -501,6 +507,7 @@ export const useChat = create<ChatState>((set, get) => ({
   skills: [],
   subagents: [],
   subagentScope: null,
+  subagentPreamble: null,
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -699,6 +706,14 @@ export const useChat = create<ChatState>((set, get) => ({
   async setSubagentScope(workspace) {
     set({ subagentScope: workspace, subagents: [] });
     set({ subagents: await window.otter.listSubagents(workspace) });
+  },
+
+  async refreshSubagentPreamble() {
+    set({ subagentPreamble: await window.otter.getSubagentPreamble() });
+  },
+
+  async saveSubagentPreamble(text) {
+    set({ subagentPreamble: await window.otter.saveSubagentPreamble(text) });
   },
 
   async openProtocol() {

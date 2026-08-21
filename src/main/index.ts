@@ -2,9 +2,9 @@
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import {
   CHANNELS,
   type BootInfo,
@@ -32,9 +32,11 @@ import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
 import { scanSubagents, subagentRoots, trustedWorkspace, writeSubagent } from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
+import { GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
 import {
+  DEFAULT_PREAMBLE,
   DEFAULT_SUBAGENT_TOOLS,
   subagentNameError,
   type SubagentDef,
@@ -670,6 +672,33 @@ void app.whenReady().then(() => {
       readOnly: false,
     });
     return listSubagents(ws);
+  });
+
+  /** 全局前置词此刻的状态。isDefault 按**文件在不在**判断,不按内容比对——
+      用户存了一段正好和内置默认一字不差的文本时,他确实是自己存过一份,
+      界面不该说"你用的是内置默认" */
+  const preambleState = (): { text: string; isDefault: boolean } => {
+    const raw = nodeFileReader.readFile(GLOBAL_PREAMBLE_PATH);
+    const custom = raw !== null && raw.trim() !== "";
+    return { text: custom ? raw.trim() : DEFAULT_PREAMBLE, isDefault: !custom };
+  };
+
+  ipcMain.handle(CHANNELS.getSubagentPreamble, () => preambleState());
+
+  ipcMain.handle(CHANNELS.saveSubagentPreamble, (_e, text: string | null) => {
+    if (text === null || text.trim() === "") {
+      // 删文件而不是写一份内容等于默认的:只有"文件不在"才是真的恢复默认——
+      // 以后内置默认那段改了,没删文件的人会被钉在旧版本上
+      try {
+        rmSync(GLOBAL_PREAMBLE_PATH);
+      } catch {
+        // 本来就没有 = 已经是默认,不是错误
+      }
+    } else {
+      mkdirSync(dirname(GLOBAL_PREAMBLE_PATH), { recursive: true });
+      writeFileSync(GLOBAL_PREAMBLE_PATH, `${text.trim()}\n`, "utf8");
+    }
+    return preambleState();
   });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
