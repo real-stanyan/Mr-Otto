@@ -102,15 +102,6 @@ export function SubagentSettings() {
         </Button>
       </header>
       <section className={SETTINGS_BODY}>
-        <p className={HINT}>
-          主 agent 靠 <code>task</code> 工具把子任务派给这里定义的某一个子智能体。
-          「用户」这一层处处可用；选中某个工程时看到的是它自己那一层（
-          <code>&lt;工程&gt;/.otter/agents/</code>），只在该工程的会话里派得出去，
-          同名时盖过用户级那份。子智能体没人盯着屏幕，审批档缺省是「直接拒绝」。
-        </p>
-        {view.current.workspace && (
-          <p className={cn(HINT, "font-mono text-[11px]")}>{view.current.workspace}</p>
-        )}
         {listError && <p className={ERR_TXT}>{listError}</p>}
         {/* 内置排在最上面:它是这一页唯一"打开就有东西"的那部分 —— 清单是空的新用户
             先看见的该是两个能用的,而不是一张"你还没定义任何子智能体"的空卡。
