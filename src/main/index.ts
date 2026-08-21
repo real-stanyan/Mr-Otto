@@ -2,9 +2,9 @@
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import {
   CHANNELS,
   type BootInfo,
@@ -35,11 +35,20 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
-import { scanSubagents, writeSubagent } from "./subagents.js";
+import {
+  scanSubagents,
+  subagentRoots,
+  subagentSlotTaken,
+  trustedWorkspace,
+  trustedWorkspaceForWrite,
+  writeSubagent,
+} from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
+import { CONTEXT_DOC_LIMIT, GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
 import {
+  DEFAULT_PREAMBLE,
   DEFAULT_SUBAGENT_TOOLS,
   subagentNameError,
   type SubagentDef,
@@ -120,8 +129,13 @@ function createWindow(): BrowserWindow {
     title: "Mr Otto",
     backgroundColor: "#121212",
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
-    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏
-    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
+    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
+    // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
+    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,21.5)pt,让位出左边距 + 顶部呼吸空间,
+    // 并与右侧 search/收起钮的垂直中心对齐(右侧按钮中心约 28pt,红绿灯高约 13pt)
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 21.5 } }
+      : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
       contextIsolation: true,
@@ -431,12 +445,6 @@ void app.whenReady().then(() => {
       send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
 
-  // subagent 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位。
-  // readOnly 标着的那份不写回——不去改用户 Claude Code 的配置
-  const subagentRoots = [
-    { root: join(homedir(), ".otter", "agents"), readOnly: false },
-    { root: join(homedir(), ".claude", "agents"), readOnly: true },
-  ];
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
@@ -470,7 +478,21 @@ void app.whenReady().then(() => {
   } catch {
     TOOL_NAMES = [];
   }
-  const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
+  /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
+      null = 只看用户级（设置页的「用户」视图、探针装配） */
+  const listSubagents = (workspace: string | null) =>
+    scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
+  // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
+  // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
+  // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
+  // 这个目录"：startSession 只校验了 `typeof workspace === "string" && workspace !== ""`，
+  // 既不验来源、也不验存在性，所以任何能调到 startSession 的渲染层都能往白名单里
+  // 塞一条自己编的路径。要真正堵死，得在 startSession 那侧校验来源——不在这次范围内。
+  const known = () => store.sessions().map((s) => s.workspace);
+  /** 读路径：认不出就降级成用户级（只影响界面看哪一层） */
+  const trusted = (workspace: unknown) => trustedWorkspace(workspace, known());
+  /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
+  const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -518,6 +540,10 @@ void app.whenReady().then(() => {
     // 还没返回——先声明后赋值：parent() 只在派活那一刻被调用（远在这行之后）。
     // 这里不能改成先起个快照，快照会把后续 switchModel 等运行时变化锁死在
     // 创建那一刻的值上
+    // 运行时的清单绑定在会话的 workspace 上：工作区级的定义只在本工程的会话里
+    // 进得了 task 工具的清单。绑定点放在组装根，SubagentRunner / createTaskTool
+    // 的签名一个字不用改——工具那层不需要知道有"作用域"这回事
+    const listForSession = () => listSubagents(args.workspace);
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
@@ -529,12 +555,12 @@ void app.whenReady().then(() => {
       // 两条调用点（startSession / resumeSession）都在调这个函数之前
       // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
       mcp: mcpHub,
-      listSubagents,
+      listSubagents: listForSession,
       subagentRunner: createSubagentRunner({
         store,
         attachments: attachmentStore,
         push,
-        list: listSubagents,
+        list: listForSession,
         parent: () => ({
           sessionId: self.sessionId,
           workspace: self.workspace,
@@ -634,7 +660,7 @@ void app.whenReady().then(() => {
         throw new Error("这个子会话正在跑，稍等一下再看");
       }
       // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
-      const child = childAgentConfig(events, listSubagents());
+      const child = childAgentConfig(events);
       // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
       // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
       await mcpHub.ready();
@@ -684,39 +710,42 @@ void app.whenReady().then(() => {
     }
   );
 
-  ipcMain.handle(CHANNELS.listSubagents, () => listSubagents());
+  ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
+    listSubagents(trusted(workspace))
+  );
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef) => {
-    // def.path / def.readOnly 是渲染层传来的,不可信——一个 readOnly:false 配任意
-    // path 就能让这个 handler 写任意文件。落地地址必须从信任侧(现扫一遍磁盘的清单)
-    // 按名字查出来,渲染层的 def 只当"要存的内容"用,不当"写去哪"用
-    // (同 protocolService.readAdr 的路径越界防法,ADR 路径钉死在白名单目录内那条)
-    const found = listSubagents().find((d) => d.name === def.name);
-    if (!found) throw new Error(`没有名叫「${def.name}」的 subagent`);
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
+    const ws = trustedForWrite(workspace);
+    // 行内前置词也得有上限,理由和全局那份一模一样（见 saveSubagentPreamble）:
+    // 它会原样进 subagent_briefed 的快照,而那条快照投影出来的 user 消息永不被压缩。
+    // 之前这一份存盘、序列化、拼装三处都没有限,是全局前置词那条上限的一个漏网口
+    if (def.preamble.mode === "custom" && def.preamble.text.length > CONTEXT_DOC_LIMIT) {
+      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
+    }
+    // def.path / def.readOnly 是渲染层传来的,不可信（同下）——落地地址必须从
+    // 信任侧（现扫一遍磁盘的清单）按名字查出来。作用域也一起传进来：同名可以
+    // 两层各一份,不带作用域查就可能在工作区里改一改、写穿到用户级那份上去
+    const found = listSubagents(ws).find((d) => d.name === def.name);
+    if (!found) throw new Error(`没有名叫「${def.name}」的子智能体`);
     if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
-    // writeSubagent 内部的 readOnly 检查留着当第二道防线(defense in depth)——
-    // 这里已经挡过一次,但两处独立判断比互相信任更皮实
-    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly });
-    return listSubagents();
+    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly, scope: found.scope });
+    return listSubagents(ws);
   });
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
+    const ws = trustedForWrite(workspace);
     const clean = name.trim();
-    // 校验必须在 IPC 边界之内：渲染层那道同款检查只是"别让请求白跑一趟"，
-    // 挡不住任何东西——这个 handler 的活儿就是往磁盘写文件（同 saveSubagent
-    // 收权的理由：渲染层传来的，不可信）。
-    // 而且是**拒绝**不是改写：以前把非法字符换成 "-"，"搜索员" 会塌成 "---"，
-    // 非空、通过、建出一个名叫 --- 的 subagent —— 用户看不出自己建了什么，
-    // 模型也永远打不出他心里那个名字
     const nameError = subagentNameError(clean);
     if (nameError) throw new Error(nameError);
-    // 建之前先查重:用户输入一个已存在的名字往往就是想看看这个名字有没有被占——
-    // 不查重会直接截断写空,把已有的 description/instructions/tools 全冲掉,
-    // 没有确认也没有撤回
-    if (listSubagents().some((d) => d.name === clean)) {
-      throw new Error(`已经有一个叫「${clean}」的 subagent 了，换个名字`);
+    // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.otter/agents，
+    // 用户级 = ~/.otter/agents。.claude/agents 是只读的，永远不是落点
+    const root = subagentRoots(homedir(), ws)[0]!;
+    // 查重只问"落点这一层占了没"，不问"这个名字在合并清单里露过面没"。
+    // 后者会把覆盖规则整个锁死：用户级有个 reviewer、想在工作区建一份同名的盖住它，
+    // 正是覆盖这个特性的用法，不是重名事故（详见 subagentSlotTaken 的注释）
+    if (subagentSlotTaken(root, clean, TOOL_NAMES)) {
+      throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
     }
-    const root = subagentRoots[0]!.root;
     writeSubagent({
       name: clean,
       description: "",
@@ -724,11 +753,53 @@ void app.whenReady().then(() => {
       tools: [...DEFAULT_SUBAGENT_TOOLS],
       unknownTools: [],
       approval: "deny",
-      path: join(root, `${clean}.md`),
-      source: root,
+      preamble: { mode: "default" },
+      context: [],
+      scope: root.scope,
+      path: join(root.root, `${clean}.md`),
+      source: root.root,
       readOnly: false,
     });
-    return listSubagents();
+    return listSubagents(ws);
+  });
+
+  /** 全局前置词此刻的状态。isDefault 按**文件在不在**判断,不按内容比对——
+      用户存了一段正好和内置默认一字不差的文本时,他确实是自己存过一份,
+      界面不该说"你用的是内置默认" */
+  const preambleState = (): { text: string; isDefault: boolean } => {
+    const raw = nodeFileReader.readFile(GLOBAL_PREAMBLE_PATH);
+    const custom = raw !== null && raw.trim() !== "";
+    return { text: custom ? raw.trim() : DEFAULT_PREAMBLE, isDefault: !custom };
+  };
+
+  ipcMain.handle(CHANNELS.getSubagentPreamble, () => preambleState());
+
+  ipcMain.handle(CHANNELS.saveSubagentPreamble, (_e, text: unknown) => {
+    // 跨进程来的值,类型注解管不住。非法输入直接拒,别让它走到 text.trim()
+    // 抛一个看不懂的 TypeError
+    if (text !== null && typeof text !== "string") throw new Error("前置词必须是文本");
+    // 上限跟工作区文档同一个数:这段会拼进**每一个**子智能体的 system prompt,
+    // 不设限的话一次误粘贴就悄悄撑爆此后每一次派活的上下文
+    if (typeof text === "string" && text.length > CONTEXT_DOC_LIMIT) {
+      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
+    }
+    if (text === null || text.trim() === "") {
+      // 删文件而不是写一份内容等于默认的:只有"文件不在"才是真的恢复默认——
+      // 以后内置默认那段改了,没删文件的人会被钉在旧版本上
+      try {
+        rmSync(GLOBAL_PREAMBLE_PATH);
+      } catch (e) {
+        // 只有"本来就没有"才是已经默认了。别的错误(没权限、那儿其实是个目录)
+        // 必须抛出去:吞掉的话文件还在盘上,而 preambleState 那侧的 readFile
+        // 同样吞错、同样回 null,于是界面报"已恢复默认"、此后永远说"你在用内置
+        // 默认"——两个不分错误码的 catch 一叠,失败长得跟成功一模一样
+        if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
+      }
+    } else {
+      mkdirSync(dirname(GLOBAL_PREAMBLE_PATH), { recursive: true });
+      writeFileSync(GLOBAL_PREAMBLE_PATH, `${text.trim()}\n`, "utf8");
+    }
+    return preambleState();
   });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用

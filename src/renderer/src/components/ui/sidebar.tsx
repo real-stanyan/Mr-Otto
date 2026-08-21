@@ -6,6 +6,7 @@ import { PanelLeftIcon } from "lucide-react"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils.js"
+import { isNarrowWidth } from "@/lib/sidebarNarrow.js"
 import { Button } from "@/components/ui/button.js"
 import { Input } from "@/components/ui/input.js"
 import { Separator } from "@/components/ui/separator.js"
@@ -23,6 +24,9 @@ const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
+/** hover 预览的关闭延迟(ms):给鼠标从触发钮挪进浮层留出空档,不闪断 */
+const PREVIEW_CLOSE_DELAY = 200
+
 /* shadcn 原版的移动端分支(useIsMobile 768px 断点 → 侧栏换成 Sheet)已整个拆掉：
    Otto 是 Electron 桌面 app，没有手机形态，窄窗口只是"窄的桌面窗口"。
    留着它的代价是实打实的 bug：窗口宽度掉到 768 以下时，侧栏收进关着的 Sheet，
@@ -35,6 +39,14 @@ type SidebarContextProps = {
   open: boolean
   setOpen: (open: boolean) => void
   toggleSidebar: () => void
+  /** 窗口宽度低于 AUTO_COLLAPSE_WIDTH:侧栏自动收起、展开被钳回,只允许 hover 预览 */
+  narrow: boolean
+  /** 收起态下 hover 打开的瞬态浮层开关(不推内容、不常驻) */
+  preview: boolean
+  /** 进入 hover 预览(取消延迟关闭) */
+  enterPreview: () => void
+  /** 离开 hover 预览(延迟关闭,给鼠标从触发钮挪进浮层留时间) */
+  leavePreview: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -64,7 +76,20 @@ function SidebarProvider({
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen)
+  const [narrow, setNarrow] = React.useState(false)
+  const [preview, setPreview] = React.useState(false)
+  const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const open = openProp ?? _open
+
+  // 窗口宽度 → narrow。用 outerWidth(窗口点数)而非 innerWidth(CSS 像素):
+  // 高分屏缩放下两者分叉(见 lib/sidebarNarrow.ts),innerWidth 会把默认窗口误判成窄窗口
+  React.useEffect(() => {
+    const update = () => setNarrow(isNarrowWidth(window.outerWidth))
+    update()
+    window.addEventListener("resize", update)
+    return () => window.removeEventListener("resize", update)
+  }, [])
+
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value
@@ -85,6 +110,37 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [setOpen])
 
+  // 有效状态:narrow 强制收起(意图仍留在 open,变宽自动还原)。
+  // preview 是叠加在收起态上的瞬态浮层,不改变这里的状态
+  const state = open && !narrow ? "expanded" : "collapsed"
+
+  // 进入预览:取消挂起的关闭,立刻展开浮层
+  const enterPreview = React.useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+    setPreview(true)
+  }, [])
+
+  // 离开预览:延迟关闭——鼠标从触发钮挪进浮层这段空档不清掉浮层
+  const leavePreview = React.useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current)
+    closeTimer.current = setTimeout(() => {
+      setPreview(false)
+      closeTimer.current = null
+    }, PREVIEW_CLOSE_DELAY)
+  }, [])
+
+  // 展开/收起/窄宽切换都复位预览:展开后不需要浮层,收起后要重新 hover 才有
+  React.useEffect(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+    setPreview(false)
+  }, [open, narrow])
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -101,18 +157,18 @@ function SidebarProvider({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleSidebar])
 
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes.
-  const state = open ? "expanded" : "collapsed"
-
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
       state,
       open,
       setOpen,
       toggleSidebar,
+      narrow,
+      preview,
+      enterPreview,
+      leavePreview,
     }),
-    [state, open, setOpen, toggleSidebar]
+    [state, open, setOpen, toggleSidebar, narrow, preview, enterPreview, leavePreview]
   )
 
   return (
@@ -152,7 +208,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { state } = useSidebar()
+  const { state, preview, enterPreview, leavePreview } = useSidebar()
 
   if (collapsible === "none") {
     return (
@@ -169,13 +225,18 @@ function Sidebar({
     )
   }
 
+  // 预览态:收起态上叠加的瞬态浮层。不推内容(占位 gap 恒为 0),
+  // 浮层本体从左缘滑入盖在内容之上——"弹窗"而非"常驻"。展开态下 preview 恒为 false
+  const previewing = preview && state === "collapsed"
+
   // 原版这层是 hidden md:block —— 同一个 768 断点的第二个雷:窄窗口下
   // 连桌面侧栏本体也一起藏了。桌面 app 没有"太窄就不给侧栏"这回事
   return (
     <div
       className="group peer block text-sidebar-foreground"
       data-state={state}
-      data-collapsible={state === "collapsed" ? collapsible : ""}
+      data-collapsible={state === "collapsed" && !previewing ? collapsible : ""}
+      data-preview={previewing ? "true" : "false"}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
@@ -186,6 +247,8 @@ function Sidebar({
         className={cn(
           "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
           "group-data-[collapsible=offcanvas]:w-0",
+          // 预览浮层不占位:内容不被推开
+          "group-data-[preview=true]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
             ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
@@ -194,6 +257,10 @@ function Sidebar({
       />
       <div
         data-slot="sidebar-container"
+        // 只在收起态挂预览 handler:展开态下挪进侧栏不该把 preview 置真
+        // (否则收起瞬间会闪一帧预览浮层)。预览期间鼠标挪进浮层本体也保持打开
+        onMouseEnter={state === "collapsed" ? enterPreview : undefined}
+        onMouseLeave={state === "collapsed" ? leavePreview : undefined}
         className={cn(
           "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear",
           side === "left"
@@ -210,7 +277,11 @@ function Sidebar({
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="flex h-full w-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm"
+          className={cn(
+            "flex h-full w-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm",
+            // 预览浮层:右边界 + 阴影,一眼看出是盖在内容上的"临时"弹窗
+            "group-data-[preview=true]:border-r group-data-[preview=true]:border-border group-data-[preview=true]:shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
+          )}
         >
           {children}
         </div>

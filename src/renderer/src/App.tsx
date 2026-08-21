@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,7 +34,7 @@ import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
 import { mcpPromptCommandDescription, mcpPromptCommandId } from "./lib/mcpPromptMenu.js";
-import { Replay } from "./replay/Replay.js";
+import { TrajectoryView } from "./replay/TrajectoryView.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
@@ -1299,19 +1299,21 @@ function AppSidebar() {
 
   return (
     <Sidebar collapsible="offcanvas">
-      <SidebarHeader className="drag-region">
+      <SidebarHeader className={cn("drag-region", trafficInset && "pt-1")}>
         <div
           className={cn(
-            "pt-1 pr-2 pb-[6px] font-[650] flex items-center gap-2",
-            trafficInset ? "pl-[72px]" : "pl-2"
+            "pr-2 pb-[6px] font-[650] flex items-center gap-2",
+            trafficInset ? "pl-[72px]" : "pt-1 pl-2"
           )}
         >
           {/* logo 原图白底方图:圆角裁成小图标块,暗色界面里当 app icon 看。
-              窗口模式下红绿灯叠在左上角,logo 让位(全屏红绿灯被 macOS 隐掉才回来) */}
+              窗口模式下红绿灯叠在左上角,logo + 标题都让位(全屏红绿灯被 macOS 隐掉才回来) */}
           {!trafficInset && (
-            <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+            <>
+              <img className="w-[22px] h-[22px] rounded-md" src={ottoLogo} alt="" />
+              Mr Otto
+            </>
           )}
-          Mr Otto
           {/* 搜索挪到顶行、收起钮左边:它是"去别的会话"的路口,和下面那一长串
               会话列表是同一件事的两个入口 —— 站在列表顶上比夹在按钮堆里好找。
               只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
@@ -2475,12 +2477,18 @@ export function App() {
               不是输入区的控件 */}
           <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />
         </div>
-        {/* 模式出口不进菜单:回放中把「回到直播」外显,不让用户困在模式里翻菜单找出路 */}
-        {replaying && (
-          <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => setReplayCursor(null)}>
-            回到直播
-          </Button>
-        )}
+        {/* 对话 / 轨迹 两个视图外显成 tab(deepseek-harness 版式):同一份日志的两种投影,
+            切换零成本,不该藏在溢出菜单里。replayCursor 非 null = 轨迹视图 */}
+        <Tabs
+          value={replaying ? "trajectory" : "chat"}
+          onValueChange={(v) => setReplayCursor(v === "trajectory" ? 0 : null)}
+          className="shrink-0"
+        >
+          <TabsList variant="line" className="h-7">
+            <TabsTrigger value="chat" className="text-xs px-2">对话</TabsTrigger>
+            <TabsTrigger value="trajectory" className="text-xs px-2">轨迹</TabsTrigger>
+          </TabsList>
+        </Tabs>
         {/* 头部只留一颗「更多」溢出菜单:回放/Protocol 等功能收进去,后续新功能有地方放 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -2489,9 +2497,6 @@ export function App() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={replaying} onClick={() => setReplayCursor(0)}>
-              <History /> 回放
-            </DropdownMenuItem>
             {/* Protocol 仪表盘对应各工作区,入口挂会话头部,不进全局侧栏 */}
             <DropdownMenuItem onClick={() => void openProtocol()}>
               <BookMarked /> Protocol 仪表盘
@@ -2511,8 +2516,8 @@ export function App() {
 
       {replaying ? (
         <>
-          {/* 富回放：画布 + 函数轨迹，重演每条事件在系统里的路径 */}
-          <Replay />
+          {/* 轨迹视图:泳道时间轴 + 一步一行 + 详情面板,看 agent 每一步做了什么 */}
+          <TrajectoryView />
           {/* 审批卡永不因回放隐藏：它是挂起中的活控制件，藏了 agent 就卡死 */}
           <ApprovalCard />
           <QuestionnaireCard />

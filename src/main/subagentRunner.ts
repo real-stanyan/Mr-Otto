@@ -9,21 +9,17 @@
 
 import { createAgent, type AgentPush } from "./agent.js";
 import { denyingApprover } from "./uiApprover.js";
+import {
+  GLOBAL_PREAMBLE_PATH,
+  composeSubagentPrompt,
+  readContextDocs,
+  readGlobalPreamble,
+} from "./subagentPrompt.js";
 import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import type { SubagentRunner } from "../tools/task.js";
-
-/** 拼在用户 instructions 前面的固定前言。
-    不指望用户在每个 subagent 文件里都写一遍这段边界——它对所有 subagent 都成立。
-    前言也进 subagent_briefed 快照：快照记的是模型看到的全部，不是用户敲进去的部分 */
-const PREAMBLE =
-  "你是被派来做一件具体任务的子 agent。你的最终一段文本就是返回值——" +
-  "它会直接交回给派你来的那个 agent，不是给人看的消息。" +
-  "做完就把结论写出来，不要寒暄，不要问「还需要什么帮助吗」。" +
-  "你看不到派你来的那个 agent 和用户的对话，任务里没写的背景你就是不知道；" +
-  "缺信息时在汇报里说清缺什么，别猜。\n\n";
 
 type Agent = ReturnType<typeof createAgent>;
 
@@ -48,6 +44,10 @@ export interface SubagentRunnerDeps {
   register?: (agent: Agent) => void;
   /** 测试接缝：真跑 turn 要发 HTTP。生产代码不传它 */
   runTurn?: (agent: Agent, push: AgentPush, task: string) => Promise<void>;
+  /** 拼好的 system prompt。以函数注入而不是传一份拼好的字符串：读盘要发生在
+      **派活那一刻**（工作区文档改了，下次派活就是新的），而不是接线那一刻。
+      测试喂假实现 */
+  composePrompt?: (def: SubagentDef, workspace: string) => string;
 }
 
 /** 中断落到父侧的那句话。spec §3「中断传播」：父侧 tool_result 写「子任务被
@@ -59,6 +59,14 @@ const ABORTED = "子任务被用户中断";
 export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
   const runTurn =
     deps.runTurn ?? ((agent: Agent, _push: AgentPush, task: string) => agent.engine.runTurn(task));
+  const composePrompt =
+    deps.composePrompt ??
+    ((def: SubagentDef, workspace: string) =>
+      composeSubagentPrompt({
+        def,
+        globalPreamble: readGlobalPreamble(GLOBAL_PREAMBLE_PATH),
+        docs: readContextDocs(workspace, def.context),
+      }));
 
   return {
     async run({ agent: name, task, parentToolCallId, signal }) {
@@ -119,7 +127,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
           ts: Date.now(),
           type: "subagent_briefed",
           agent: def.name,
-          instructions: PREAMBLE + def.instructions,
+          instructions: composePrompt(def, parent.workspace),
           tools: child.toolDefs.map((d) => d.name), // 实际挂上的，不是文件里写的
           model: child.model,
         })

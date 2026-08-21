@@ -1,8 +1,8 @@
-# ADR-0049：MCP 骑在 ExecutionWorld seam 上
+# ADR-0050：MCP 骑在 ExecutionWorld seam 上
 
 - 日期：2026-08-21
 - 状态：已接受
-- 相关：ADR-0008（http seam）、ADR-0031（terminal 骑 world seam）、ADR-0035（browser 骑 world seam）、ADR-0048（MCP 进入范围）
+- 相关：ADR-0008（http seam）、ADR-0031（terminal 骑 world seam）、ADR-0035（browser 骑 world seam）、ADR-0049（MCP 进入范围）
 - 设计文档：`docs/superpowers/specs/2026-08-21-mcp-design.md`
 
 ## 背景
@@ -97,7 +97,7 @@ ADR-0006）。这次没有只靠"记得改"：`tests/world/executionWorld.test.t
 ## 一处实现细节：hub 不 import SDK
 
 `@modelcontextprotocol/sdk` 被锁在 `src/main/mcpClient.ts` 一个文件里
-（ADR-0048 的"多一棵依赖树"代价，收在这一处），`src/main/mcpHub.ts` 只认
+（ADR-0049 的"多一棵依赖树"代价，收在这一处），`src/main/mcpHub.ts` 只认
 `connectMcpClient` 返回的 `McpClientConn` 接口形状，完全不 import SDK。
 这不是洁癖：`McpHub` 的状态机（四态迁移、`ready()` 的并发去重与超时、
 `list_changed` 触发重拉）因此可以用一个假 `connect` 函数在普通 vitest

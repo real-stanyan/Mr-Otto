@@ -1,6 +1,6 @@
 # MCP：接外部工具服务器
 
-日期：2026-08-21　　架构决定见 `docs/adr/0047-mcp-进入范围.md`、`docs/adr/0048-mcp-骑在-world-接缝上.md`
+日期：2026-08-21　　架构决定见 `docs/adr/0049-mcp-进入范围.md`、`docs/adr/0050-mcp-骑在-world-接缝上.md`
 
 ## 目标
 
@@ -386,8 +386,8 @@ onMcpStatusChanged(cb: (s: McpServerStatus[]) => void): () => void;   // hub 推
 按 ADR-0006 / ADR-0012，本设计触及两处 L1 内容，全部走 issue + ADR + PR：
 
 1. **Protocol gap issue**：范围声明从「不做 MCP」改为「做 MCP client」
-2. `docs/adr/0047-mcp-进入范围.md`：为什么改，边界在哪，「不做插件系统」为何仍成立
-3. `docs/adr/0048-mcp-骑在-world-接缝上.md`：对照 ADR-0008 / 0031 / 0035 —— 同一句话的第四次复述
+2. `docs/adr/0049-mcp-进入范围.md`：为什么改，边界在哪，「不做插件系统」为何仍成立
+3. `docs/adr/0050-mcp-骑在-world-接缝上.md`：对照 ADR-0008 / 0031 / 0035 —— 同一句话的第四次复述
 4. PR 改 `AGENTS.md` 两处：
    - 开头的范围声明
    - Tech stack 加 `@modelcontextprotocol/sdk`

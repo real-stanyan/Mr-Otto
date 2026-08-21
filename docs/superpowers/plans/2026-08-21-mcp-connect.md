@@ -2412,15 +2412,15 @@ EOF
 ## Task 11: 两篇 ADR + 改 AGENTS.md（**L1，需维护者同意**）
 
 **Files:**
-- Create: `docs/adr/0047-mcp-进入范围.md`
-- Create: `docs/adr/0048-mcp-骑在-world-接缝上.md`
+- Create: `docs/adr/0049-mcp-进入范围.md`
+- Create: `docs/adr/0050-mcp-骑在-world-接缝上.md`
 - Modify: `AGENTS.md`
 - Modify: `CONTEXT.md`
 
 > **编号在合并时认领**（ADR-0048 并行 lane 条款）。0046 被 Subagent 那条 lane 占着。
 > 合并前 `git fetch origin`；若有别的协议 PR 先落地，在本 PR 内重编号并重算版本号。
 
-- [ ] **Step 1: 写 `docs/adr/0047-mcp-进入范围.md`**
+- [ ] **Step 1: 写 `docs/adr/0049-mcp-进入范围.md`**
 
 照本仓 ADR 格式（`# ADR-00XX: 标题` / 日期状态 / 背景 / 决定 / 理由 / 代价）。要点：
 
@@ -2430,7 +2430,7 @@ EOF
 - 本版不做：sampling（server 反过来花你的钱，授权模型要单独设计）、roots、完整 OAuth
 - 代价：多一棵依赖树（锁在 `mcpClient.ts` 一个文件里）；冷启动之后的首个会话装配会多等一次连接
 
-- [ ] **Step 2: 写 `docs/adr/0048-mcp-骑在-world-接缝上.md`**
+- [ ] **Step 2: 写 `docs/adr/0050-mcp-骑在-world-接缝上.md`**
 
 要点：
 
@@ -2462,9 +2462,9 @@ Tech stack 那一节加一行：
 
 ```bash
 cd ../Mr_Otto-mcp && npm test
-git add docs/adr/0047-mcp-进入范围.md docs/adr/0048-mcp-骑在-world-接缝上.md AGENTS.md CONTEXT.md
+git add docs/adr/0049-mcp-进入范围.md docs/adr/0050-mcp-骑在-world-接缝上.md AGENTS.md CONTEXT.md
 git commit -m "$(cat <<'EOF'
-docs(mcp): ADR-0047/0048 + AGENTS.md 范围声明与 Tech stack（L1）
+docs(mcp): ADR-0049/0050 + AGENTS.md 范围声明与 Tech stack（L1）
 
 范围声明从「明确不做 MCP」改为「做 client 那一半，不做 server」。
 「不做插件系统」保持不变：MCP server 是跨进程外部程序，走标准协议

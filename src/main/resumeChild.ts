@@ -16,11 +16,11 @@ import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
 import type { BrowserCapability } from "../world/executionWorld.js";
 import type { SessionEvent } from "../session/events.js";
-import type { SubagentDef } from "../shared/subagent.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
-    从来没落过盘，resume 后一律回默认的 ask（同 ADR-0047 已接受的那笔代价）。
-    这里只保留必须还原的两样：给了哪几把刀、是不是整条审批链都换成拒绝。 */
+    从来没落过盘，而重建只信快照（ADR-0048 决策 3），所以 `deny` 现在恒为 true ——
+    比 ADR-0047 当初接受的"回默认 ask"更紧。字段留着不折叠成常量：它是
+    createChildAgent 的输入契约，那一侧要能表达"这次不拒绝"，哪怕今天没人这么传。 */
 export interface ChildAgentConfig {
   agent: string;
   allowTools: readonly string[];
@@ -32,29 +32,27 @@ export interface ChildAgentConfig {
  *
  * 不是子会话 → null（调用方照旧按主会话装配）。
  *
- * 装备的来源有先后：磁盘上的定义优先（只有它带 approval 档），定义没了
- * （用户把 .md 删了或改了名）就退到子日志里那条 `subagent_briefed` 快照——
- * 它记的是"当时实际挂上的那几把"，比文件更接近事实（日志是唯一事实来源）。
- * 走到这条退路上一律按最严的 deny 重建：审批档推不出来，就不能替用户假设它松。
+ * **只信 `subagent_briefed` 快照，不读磁盘定义**（ADR-0048 决策 3）。快照是
+ * append-only 日志的一部分 —— 事实来源；磁盘上那份 .md 是可变的外部状态，用它
+ * 重建等于让一个历史会话的内容随文件改动而改写，与"任何投影必须可从日志推导"
+ * 直接冲突。曾经这里是"磁盘优先、快照兜底"，代价是用户改一改 tools 就能给一个
+ * 历史子会话换副装备。
  *
- * **不存在"找不到定义就当主 agent 建"这条退路**——那等于删掉一个 md 文件
+ * 审批档快照里没有（它从来没落过盘），所以重建一律按最严的 deny —— 推不出来
+ * 就不能替用户假设它松。
+ *
+ * **不存在"认不出就当主 agent 建"这条退路**——那等于删掉一个 md 文件
  * 就能把一个只读搜索员提权成带 bash + task 的全权 agent。
  */
-export function childAgentConfig(
-  events: readonly SessionEvent[],
-  defs: readonly SubagentDef[]
-): ChildAgentConfig | null {
+export function childAgentConfig(events: readonly SessionEvent[]): ChildAgentConfig | null {
   const first = events[0];
   if (!first || first.type !== "session_created" || !first.spawnedBy) return null;
-  const agent = first.spawnedBy.agent;
-
-  const def = defs.find((d) => d.name === agent);
-  if (def) return { agent, allowTools: def.tools, deny: def.approval === "deny" };
-
   const briefed = events.find((e) => e.type === "subagent_briefed");
   return {
-    agent,
-    // 连快照都没有（理论不可达：briefed 是子会话的第 1 条）= 一把工具都不给。
+    agent: first.spawnedBy.agent,
+    // 连快照都没有（理论不可达：briefed 一定在子会话开头那几条里——不一定是第 1 条，
+    // switchModel 跑在 append 之前,model_changed 可能占掉 seq 1,所以上面按 `.find()`
+    // 取而不按位置取）= 一把工具都不给。
     // 宁可这个会话只能看不能动，也不给它一副来路不明的装备
     allowTools: briefed?.type === "subagent_briefed" ? briefed.tools : [],
     deny: true,
