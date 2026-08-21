@@ -1,31 +1,35 @@
-// 侧栏收起时的"打开"钮。
+// 侧栏开关:一颗 fixed 在左上角的钮,展开态 = 收起,收起态 = 打开(hover 瞬态预览)。
 //
-// 原来是一颗 absolute 贴在内容区左上角的浮标——浮标不占位，于是直接盖住了
-// 紧挨左边缘的会话名。头部那排是身份信息（会话名 · 工程 · 分支），左上角
-// 不是空地。改成【排进头部、当第一个元素】：它推开后面的内容而不是压在上面。
+// 为什么是一个 fixed 元素而不是两颗各自排版的钮:收起钮在侧栏头部、打开钮在
+// 内容区头部,两边 padding/行高稍有出入就对不齐,用户得来回挪鼠标。同一个
+// DOM 节点、同一组坐标,两种状态的位置**结构上**相等,不靠算 class 凑。
+// 两边头部各留一个等大占位(SidebarNub / SidebarTriggerSlot),布局流不变。
 //
 // 交互两层(ADR-0010 之后新增):
-//   hover = 瞬态预览浮层(不推内容、不常驻,移开就收)
-//   click = 常驻展开;窄窗口下(输入框挤不下)click 不常驻,只保留 hover 预览
-//
-// 单独成文件而不是留在 App.tsx：三个叠加面板(Protocol/GitGraph/DM)全屏时
-// 也要它，而那几个组件是被 App.tsx import 的，反向再 import 就成环了。
+//   hover(收起态) = 瞬态预览浮层(不推内容、不常驻,移开就收)
+//   click = 展开/收起常驻;窄窗口下(输入框挤不下)click 不常驻,只保留 hover 预览
 
+import { useRef } from "react";
 import { useSidebar } from "@/components/ui/sidebar.js";
 import { PanelLeftIcon } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
 import { cn, isMac } from "../lib/utils.js";
 
-/** 排进头部的版本：侧栏展开时不渲染（那时侧栏里自带收起钮） */
-export function SidebarNub() {
-  const { state, narrow, enterPreview, leavePreview, toggleSidebar } = useSidebar();
+/** 窗口模式(mac + 非全屏)红绿灯叠在左上角,给它让出位置;全屏红绿灯被 macOS 隐掉,贴左缘 */
+function useClearTrafficLights(): boolean {
   const fullscreen = useChat((s) => s.fullscreen);
-  if (state !== "collapsed") return null;
-  // 窗口模式(mac + 非全屏)下红绿灯叠在左上角,和这颗"打开侧栏"钮同一行——
-  // 给红绿灯让出位置。全屏红绿灯被 macOS 隐掉,照旧贴左缘(-ml-2 拉回头部
-  // px-5 内缩里,和 logo 对齐)
-  const clearTrafficLights = isMac() && !fullscreen;
+  return isMac() && !fullscreen;
+}
+
+/** 真正的开关钮。挂一次在应用根部(SidebarInset 之外,不跟任何头部走) */
+export function SidebarToggle() {
+  const { state, narrow, enterPreview, leavePreview, toggleSidebar } = useSidebar();
+  const clear = useClearTrafficLights();
+  const collapsed = state === "collapsed";
+  // 两态同位带来的新问题:点「收起」后鼠标还停在钮上,一挪就触发 hover 预览,
+  // 浮层又盖回来,看着像没收起。点击后解除武装,鼠标离开钮一次才重新允许预览
+  const armed = useRef(true);
   return (
     <Button
       data-sidebar="trigger"
@@ -33,13 +37,26 @@ export function SidebarNub() {
       variant="ghost"
       size="icon"
       className={cn(
-        "collapsed-nub size-7 shrink-0 self-center",
-        clearTrafficLights ? "ml-[52px]" : "-ml-2"
+        "sidebar-toggle fixed z-50 size-7",
+        // 窗口模式:垂直中心对齐红绿灯、与第三颗点隔一小段(坐标是截图实测调出来的,
+        // 搜索钮在 App.tsx 侧栏头部里以同一 top 绝对定位贴在它右侧);全屏:贴左上
+        clear ? "top-[5px] left-[54px]" : "top-3 left-3",
+        // 收起态:从侧栏消失的左缘滑入(空间一致性);展开态它就是侧栏里的收起钮
+        collapsed && "collapsed-nub",
+        // 展开态坐在侧栏头部(drag-region)之上:.sidebar-toggle 显式 no-drag(app.css)
+        !collapsed && "text-sidebar-foreground"
       )}
-      aria-label="打开侧栏"
-      onMouseEnter={enterPreview}
-      onMouseLeave={leavePreview}
+      aria-label={collapsed ? "打开侧栏" : "收起侧栏"}
+      title={collapsed ? "打开侧栏" : "收起侧栏"}
+      onMouseEnter={() => {
+        if (collapsed && armed.current) enterPreview();
+      }}
+      onMouseLeave={() => {
+        armed.current = true;
+        if (collapsed) leavePreview();
+      }}
       onClick={() => {
+        armed.current = false;
         // 窄窗口:不能常驻,click 是空操作(只靠 hover 预览)
         if (!narrow) toggleSidebar();
       }}
@@ -49,34 +66,16 @@ export function SidebarNub() {
   );
 }
 
-/** 没有头部可排的视图（欢迎页/连接中）用的浮标版本：那些页面左上角确实是空地 */
-export function FloatingSidebarNub() {
-  const { state, narrow, enterPreview, leavePreview, toggleSidebar } = useSidebar();
-  const fullscreen = useChat((s) => s.fullscreen);
+/** 内容区头部的占位:收起态下给 fixed 钮留出它覆盖的那块,不让标题滑到钮底下。
+    名字沿用 SidebarNub——九个头部的调用点一个不用改 */
+export function SidebarNub() {
+  const { state } = useSidebar();
+  const clear = useClearTrafficLights();
   if (state !== "collapsed") return null;
-  // 窗口模式红绿灯叠在左上角,浮标也要让位(全屏红绿灯被 macOS 隐掉,照旧贴左缘)
-  const clearTrafficLights = isMac() && !fullscreen;
-  return (
-    <div
-      className={cn(
-        "collapsed-nub absolute top-[9px] z-40 rounded-md bg-background/75 backdrop-blur-sm border border-border shadow-sm",
-        clearTrafficLights ? "left-[72px]" : "left-2"
-      )}
-    >
-      <Button
-        data-sidebar="trigger"
-        data-slot="sidebar-trigger"
-        variant="ghost"
-        size="icon"
-        aria-label="打开侧栏"
-        onMouseEnter={enterPreview}
-        onMouseLeave={leavePreview}
-        onClick={() => {
-          if (!narrow) toggleSidebar();
-        }}
-      >
-        <PanelLeftIcon />
-      </Button>
-    </div>
-  );
+  return <span aria-hidden className={cn("size-7 shrink-0 self-center", clear ? "ml-[52px]" : "-ml-2")} />;
+}
+
+/** 侧栏头部行首的占位:展开态下 fixed 钮就压在这里 */
+export function SidebarTriggerSlot() {
+  return <span aria-hidden className="size-7 shrink-0" />;
 }
