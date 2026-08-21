@@ -28,6 +28,7 @@ import {
   groupSubagentSpawns,
   subagentFact,
   subagentRowState,
+  taskHeadline,
 } from "../lib/subagentTimeline.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { useChat } from "../store.js";
@@ -205,7 +206,7 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
       <div className={`${AUDIT} flex flex-col items-center gap-1.5`}>
         <AgentStatus
           state={state}
-          label={spawn.agent}
+          label={`${spawn.agent} · ${taskHeadline(spawn.task)}`}
           onSelect={() => void resume(spawn.childSessionId)}
           {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}
         />
@@ -222,7 +223,15 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
     const done = index.results.has(spawn.toolCallId);
     const fact = done ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
     const model = subagents.find((d) => d.name === spawn.agent)?.model ?? "";
-    return { name: spawn.agent, model, ...(fact !== null ? { fact } : {}) };
+    return {
+      name: spawn.agent,
+      model,
+      task: taskHeadline(spawn.task),
+      // key 用 toolCallId：同一条消息里把同一个 agent 派两次是常事，
+      // 按名字做 key 就是两个一模一样的 key（React 会认错行）
+      id: spawn.toolCallId,
+      ...(fact !== null ? { fact } : {}),
+    };
   });
   const completedCount = group.filter((spawn) => index.results.has(spawn.toolCallId)).length;
   // 二值色带,不是真进度:我们不知道子 agent 跑到几成了(design brief 的

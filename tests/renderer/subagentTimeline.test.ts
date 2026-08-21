@@ -6,6 +6,7 @@ import {
   spawnedFromOf,
   subagentFact,
   subagentRowState,
+  taskHeadline,
 } from "../../src/renderer/src/lib/subagentTimeline.js";
 import { buildToolIndex } from "../../src/renderer/src/lib/toolIndex.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -193,5 +194,23 @@ describe("spawnedFromOf —— 当前会话是不是子会话", () => {
 
   it("空日志 → null，不猜", () => {
     expect(spawnedFromOf([])).toBeNull();
+  });
+});
+
+describe("taskHeadline", () => {
+  // 卡片标签 = 名字 + 任务首行（spec §五）。只印名字的话，同一条消息里把同一个
+  // agent 派两次会渲染出两行一模一样的东西（review M1）
+  it("取首行、去两头空白", () => {
+    expect(taskHeadline("  查一下 foo 的调用点  \n然后……\n再说")).toBe("查一下 foo 的调用点");
+  });
+
+  it("过长截断带省略号：卡片自己的 truncate 只管一行放不下，段落先在这切干净", () => {
+    expect(taskHeadline("abcdefghij", 4)).toBe("abcd…");
+    expect(taskHeadline("abcd", 4)).toBe("abcd");
+  });
+
+  it("空任务不炸，回空串", () => {
+    expect(taskHeadline("")).toBe("");
+    expect(taskHeadline("\n\n")).toBe("");
   });
 });

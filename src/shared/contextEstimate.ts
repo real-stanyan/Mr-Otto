@@ -64,6 +64,11 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
         break;
+      case "subagent_briefed":
+        // 同 skill_invoked：整份 instructions 快照（含内置前言）被投影成子会话的
+        // 第一条 user 消息。不计的话，子会话的圆环从头到尾少算一整篇说明书
+        pending += estimateTokens(e.instructions);
+        break;
       case "image_described":
         pending += estimateTokens(e.content); // 同上:代读文本注入为 user 消息
         break;

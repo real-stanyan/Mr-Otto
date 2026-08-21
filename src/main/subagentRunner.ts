@@ -2,8 +2,10 @@
 // 组装根特权：这里可以 import createAgent，工具那边不行。
 //
 // 递归由构造挡死：建子 agent 时不传 subagentRunner，子 agent 因此没有 task 工具。
-// 这比运行时过滤可靠——没有哪条代码路径能绕过它（AGENTS.md 的 MVP 边界
-// "明确不做多 agent 编排"由此原样成立）。
+// 这比运行时过滤可靠——但"没有哪条代码路径能绕过它"不是免费的：会话可以被
+// **重建**（resumeSession），重建那条路必须同样不传 subagentRunner，否则它就是
+// 一扇后门。见 index.ts 的 createSessionAgent（子会话分支）。
+// AGENTS.md 的 MVP 边界"明确不做多 agent 编排"靠这两处一起成立。
 
 import { createAgent, type AgentPush } from "./agent.js";
 import { denyingApprover } from "./uiApprover.js";
@@ -36,9 +38,23 @@ export interface SubagentRunnerDeps {
   parent: () => { sessionId: string; workspace: string; world: ExecutionWorld; model: string };
   getAccessToken?: () => Promise<string | null>;
   alwaysAllow?: () => ReadonlySet<string>;
+  /** 把刚建好的子 agent 登记进组装根的 agent 注册表（index.ts 的 `agents`）。
+      不是可选的锦上添花：不登记的话，resumeSession 的 `agents.has(sessionId)`
+      短路失效，用户点一下时间线上那张还在跑的卡就会在同一个活 sessionId 上
+      **再建一个 agent**，第二个 agent 的崩溃修复给还在飞的工具调用补一条
+      "app 在执行中退出"的假 tool_result，紧接着真结果也落盘——同一个
+      toolCallId 两条 tool_result，这个子会话从此每次投影都 400，永久中毒
+      （deriveMessages 里记着这条老教训）。测试和裸装配不传它照旧 */
+  register?: (agent: Agent) => void;
   /** 测试接缝：真跑 turn 要发 HTTP。生产代码不传它 */
   runTurn?: (agent: Agent, push: AgentPush, task: string) => Promise<void>;
 }
+
+/** 中断落到父侧的那句话。spec §3「中断传播」：父侧 tool_result 写「子任务被
+    用户中断」且 status 是 error——抛出去而不是返回半截汇报，engine 捕获后落的
+    就是 error。返回字符串会被记成 ok，模型下一轮读到的是"子任务完成了，这是
+    它的汇报"，而事实是这条线断了 */
+const ABORTED = "子任务被用户中断";
 
 export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
   const runTurn =
@@ -48,6 +64,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
     async run({ agent: name, task, parentToolCallId, signal }) {
       const def = deps.list().find((d) => d.name === name);
       if (!def) throw new Error(`没有名叫「${name}」的 subagent`);
+
+      // 进门就已经被中断：下面 addEventListener("abort") 再也不会响，不挡的话
+      // 用户按了停止之后子 agent 还会完完整整跑一轮（engine 那道 signal.aborted
+      // 检查和这里之间有一条窄缝，abort 正落在缝里就是这个下场）
+      if (signal?.aborted) throw new Error(`${ABORTED}：还没派出去就停了，什么都没发生。`);
 
       const parent = deps.parent();
 
@@ -80,6 +101,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
             : {}),
         // 刻意不传 subagentRunner —— 子 agent 因此没有 task 工具，递归到此为止
       });
+
+      // 先登记再干别的：从这一刻起 sessionId 就是"活的"，resumeSession 必须
+      // 能查到它、走"只切视线"那条路，而不是另建一个 agent（见 register 的注释）
+      deps.register?.(child);
 
       if (def.approval === "ask" || def.approval === "auto") child.setApprovalMode(def.approval);
       // 型号跟着定义走；没写就跟父。switchModel 与当前相同时内部 no-op，零多余事件
@@ -118,6 +143,14 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         await runTurn(child, childPush, task);
       } finally {
         signal?.removeEventListener("abort", onAbort);
+      }
+
+      // 中断了就别再去捞"汇报"：子会话最后那条 assistant_message 是半截话，
+      // 当成 ok 返回等于告诉父模型这件事办完了（spec §3 中断传播）。
+      // 中断这个事实在子日志里是 turn_ended: aborted，但父分区推不出来——
+      // 而模型看的正是父分区，所以必须在这儿落成父侧的 error
+      if (signal?.aborted) {
+        throw new Error(`${ABORTED}。子会话 ${child.sessionId} 里留着已经发生的那部分过程。`);
       }
 
       // 汇报 = 最后一条 assistant_message 的正文（pi 式：最终文本即返回值）

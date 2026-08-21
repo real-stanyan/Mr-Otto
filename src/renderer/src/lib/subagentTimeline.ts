@@ -86,6 +86,16 @@ export function subagentFact(childEvents: readonly SessionEvent[] | undefined): 
   return `${steps} 步 · ${tokenLabel} tokens`;
 }
 
+/** 派下去那件事的首行（spec §五：卡片标签 = subagent 名字 + 任务首行）。
+    只印名字的话，同一条消息里把同一个 agent 派两次会渲染出两行一模一样的东西——
+    看得见"派了两个人"，看不见"分别去干什么"。
+    截断在 24 个字符：卡片本来就带 truncate，但省略号出现在"第一行结束"和
+    "第一行还没完"两种情况下含义不同，这里先把段落切干净再交给 CSS。 */
+export function taskHeadline(task: string, max = 24): string {
+  const line = task.split("\n")[0]?.trim() ?? "";
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
 /** 当前会话是不是被派活派出来的子会话，是就给出父会话 id。
     纯粹从 events[0](session_created)的 spawnedBy 读——"回到父会话"要的只是
     这一份事实，不需要绕经 sessions() 那份侧栏投影。 */

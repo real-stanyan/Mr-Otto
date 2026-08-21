@@ -7,8 +7,9 @@
 //   ① 零工具的 subagent 存不下来（序列化成空 tools: 行，解析器直接丢掉整行，
 //      落地后变回缺省工具集）—— 这里挡在保存前，不让用户存出一个"看起来选了空、
 //      实际读回来是缺省"的文件。
-//   ② createSubagent 把名字里非 [A-Za-z0-9_-] 的字符全部换成 "-"，中文名会
-//      整个塌成一串"-"——新建对话框里先用同一条正则挡一遍，不让请求打到后端才发现。
+//   ② 名字只能用 [A-Za-z0-9_-]（它要变成磁盘上的文件名，也是模型调 task 时要
+//      打出来的词）。真正的把关在主进程（IPC 边界之内，review I6），这里调
+//      同一个 shared 的 subagentNameError 只为"别让请求白跑一趟"。
 
 import { useEffect, useMemo, useState } from "react";
 import type { SyntheticEvent } from "react";
@@ -35,7 +36,7 @@ import { useModelChoice, thinkingSpecOf } from "../lib/useModelChoice.js";
 import { describeModel } from "../../../shared/modelCatalog.js";
 import { clampThinking, thinkingSwitchable } from "../../../shared/thinking.js";
 import type { SubagentDef } from "../../../shared/shellBridge.js";
-import type { SubagentApproval } from "../../../shared/subagent.js";
+import { subagentNameError, type SubagentApproval } from "../../../shared/subagent.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 
 const ERR_TXT = "text-err text-[13px]";
@@ -128,11 +129,12 @@ function NewSubagentDialog({
 
   const submit = async () => {
     const trimmed = name.trim();
-    // 后端限制②:createSubagent 会把非 [A-Za-z0-9_-] 的字符全换成 "-",中文名
-    // 会整个塌成一串"-"。名字是模型派活时要打出来的那个词,必须先在这挡住,
-    // 而不是让请求打过去、拿回一个塌成"---"的结果才发现
-    if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) {
-      setError("名字只能用英文字母、数字、下划线、连字符——这是模型调 task 工具时要打出来的名字，中文会被后端整个改写成一串「-」");
+    // 与主进程同一条规则（shared 的 subagentNameError）：两边各写一条正则
+    // 迟早分家,曾经就是这么破的——渲染层挡住了中文,主进程那侧把中文 replace
+    // 成 "-",于是"搜索员"塌成"---"照样建了出来
+    const nameError = subagentNameError(trimmed);
+    if (nameError) {
+      setError(nameError);
       return;
     }
     setBusy(true);

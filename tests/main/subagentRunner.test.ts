@@ -207,6 +207,103 @@ describe("createSubagentRunner", () => {
     ).rejects.toThrow(/nobody/);
   });
 
+  // ADR-0046 决定 5 的回归钉子：task 永不进 subagent 的工具白名单。
+  // 前面所有用例都注入 runTurn，谁也没看过真实装配的工具表——有人为了"一致"
+  // 给 createAgent 补一句 subagentRunner: deps，MVP 边界会静悄悄地全绿着破掉
+  it("子 agent 没有 task 工具——哪怕定义里明明白白写了它", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    let mounted: string[] = [];
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      // 用户在 md 里手写 tools: read_file, bash, task 也没用：task 压根不在
+      // 子装配的工具表里(不传 subagentRunner = 它没被造出来),白名单过滤不到它
+      list: () => [def({ tools: ["read_file", "bash", "task"] })],
+      parent,
+      runTurn: async (agent) => {
+        mounted = agent.toolDefs.map((d) => d.name);
+      },
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    expect(mounted).not.toContain("task");
+    expect(mounted).toContain("read_file");
+    // 快照记的是实际给出去的那几把,同样不该出现 task
+    const briefed = store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
+    expect(briefed?.type === "subagent_briefed" && briefed.tools).not.toContain("task");
+  });
+
+  it("子 agent 建好当场就登记进注册表——早于开跑（review C1）", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    const registered: string[] = [];
+    const order: string[] = [];
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def()],
+      parent,
+      register: (a) => {
+        registered.push(a.sessionId);
+        order.push("register");
+      },
+      runTurn: async () => void order.push("turn"),
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    // 不登记的话 resumeSession 的 agents.has 短路失效,点一下还在跑的卡就会在
+    // 同一个活 sessionId 上再建一个 agent,崩溃修复给在飞的调用补一条假 tool_result
+    // → 同一个 toolCallId 两条 tool_result → 这个子会话永久 400
+    expect(registered).toEqual([out.childSessionId]);
+    expect(order).toEqual(["register", "turn"]);
+  });
+
+  it("进门就已中断 = 直接抛，一个子会话都不建（spec §3）", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    const ac = new AbortController();
+    ac.abort();
+    const ran = vi.fn();
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def()],
+      parent,
+      runTurn: ran,
+    });
+    await expect(
+      runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1", signal: ac.signal })
+    ).rejects.toThrow(/子任务被用户中断/);
+    expect(ran).not.toHaveBeenCalled();
+    // 什么都没发生 = 父日志上连一条 subagent_spawned 都不该有
+    expect(store.load("s-parent")).toEqual([]);
+  });
+
+  it("跑到一半被中断 = 抛错(父侧落 error),不把半截话当汇报返回（spec §3）", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def()],
+      parent,
+      runTurn: async (agent) => {
+        await new Promise((r) => setTimeout(r, 5));
+        store.append({
+          sessionId: agent.sessionId,
+          ts: Date.now(),
+          type: "assistant_message",
+          content: "我先看了看 foo.ts……",
+          model: "deepseek-chat",
+        });
+      },
+    });
+    const ac = new AbortController();
+    const p = runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1", signal: ac.signal });
+    ac.abort();
+    // 返回字符串会被 engine 记成 ok,模型下一轮读到的就是"子任务完成了,这是汇报"
+    await expect(p).rejects.toThrow(/子任务被用户中断/);
+  });
+
   it("中断信号翻转 = 调子 engine 的 abortTurn", async () => {
     const { store, attachments, push, parent } = fixtures();
     const abort = vi.fn();
@@ -231,7 +328,7 @@ describe("createSubagentRunner", () => {
     const ac = new AbortController();
     const p = runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1", signal: ac.signal });
     ac.abort();
-    await p;
+    await expect(p).rejects.toThrow(/子任务被用户中断/); // 中断收口见上一个用例
     expect(abort).toHaveBeenCalled();
   });
 });

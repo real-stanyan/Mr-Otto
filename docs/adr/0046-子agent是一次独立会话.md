@@ -27,8 +27,14 @@
 
 复用整个 `createAgent` 而不是裸拼一个 `LoopEngine`：审批门、输出直播、中断信号、
 模型路由（lane / 网关幂等键）、崩溃修复、resume、回放——这些全是免费的。子 agent
-和主 agent 的差别只有四样（system prompt、工具子集、模型、审批模式），而那四样
-正好就是设置页配的东西。
+和主 agent 的差别只有四样（**指令**、工具子集、模型、审批模式），而那四样正好就是
+设置页配的东西。
+
+**"指令"不是 system 消息**：`subagent_briefed` 被 `deriveMessages` 投影成子会话的
+第一条 **user** 消息（手法与 `skill_invoked` 一模一样），不是 system。原因是中途插
+system 消息各家方言兼容性参差。子会话的 system 消息还是主会话那一份（workspace
+围栏等会话事实），指令叠在它之上。写清楚这一点，免得下一个读到这里的人去代码里
+找一个并不存在的"子 agent 专用 system prompt"。
 
 **子会话的 world 是父的 world 实例，不新造。** 同一道 workspace 围栏；v2 换
 SandboxWorld 时子 agent 天然在同一个容器里（方向同 ADR-0031：终端必须开在 agent
@@ -79,6 +85,17 @@ engine 和工具全程无感。
 `task` 永不进 subagent 的工具白名单，代码里硬挡。一层派活是工具调用，递归派活
 就是编排——MVP 边界"明确不做多 agent 编排"由此原样成立。
 
+**两个把守点，不是一个。** 会话有"创建"和"重建"两条路，两条都得挡：
+
+- 创建：`subagentRunner.ts` 建子 agent 时不传 `subagentRunner`，task 工具压根不被造出来。
+- 重建：`resumeChild.ts` 的 `createChildAgent` —— 它的参数表里**没有** `subagentRunner`
+  这一项，所以"重建出来的子 agent 没有 task"是类型层面的事实，不靠纪律。
+
+补这一条是因为它真的漏过：`resumeSession` 起初只认得主会话，把子会话按全权 agent
+重建（带 bash / write_file / task）。而 resume 恰恰是查看子会话的唯一途径——时间线
+那张卡和"回到父会话"都走它。根因是同一份装配代码在 `index.ts` 里抄了两份、drift 了；
+修法是合并成 `createSessionAgent` 一处，"是不是子会话"只判断一次。
+
 ### 6. subagent 定义 = markdown 文件 + frontmatter
 
 `~/.otter/agents/<名字>.md`（原生，优先）、`~/.claude/agents/`（兼容，用户已有的
@@ -88,6 +105,17 @@ Claude Code subagent 零迁移可用）。同名先到先得。规则与 skill �
 认不出的工具名（Claude Code 写的是 `Read`/`Grep`，otter 是 `read_file`/`bash`）
 静默丢弃 + 设置页标注，而不是让整个 subagent 报废。落进 `subagent_briefed.tools`
 的是**实际给出去的那几把**——快照记事实，不记用户的意图。
+
+### 7. 删除父会话级联删掉它的子会话
+
+`EventStore.purge` 连带抹除 seq-0 的 `spawnedBy.sessionId` 指向被删会话的那些子会话，
+并把真正抹掉的 id 列表返回给组装根（终端 / 浏览器 / agent 注册表按同一份名单注销）。
+不递归——决定 5 保证了子 agent 不会有子 agent，一层到底。
+
+理由有两条，各自都够：子会话不进侧栏、不进 ⌘K，只能从父时间线那张卡点进去，父日志
+一没它就是够不着也删不掉的孤儿，而 `billedUsage` 还在替它算钱 —— 这与 ADR-0002 的
+"整会话物理抹除，不可逆"直接冲突；而且子会话的日志里存着同一个 workspace 的文件内容
+和 bash 输出，用户删掉一段对话时理所当然认为这些也跟着没了。
 
 ## 备选与否决
 
@@ -123,5 +151,16 @@ Claude Code subagent 零迁移可用）。同名先到先得。规则与 skill �
   ADR-0007 接受过的同一笔账。
 - **会话列表要区分主 / 子。** 子会话不进侧栏（靠 `spawnedBy` 滤），只能从父时间线
   上那张卡进去。代价是子会话在全局搜索里怎么出现需要单独想。
+- **子 agent 一建好就进组装根的 agent 注册表，且不再退出。** 必须进（否则
+  `resumeSession` 会在同一个还活着的 sessionId 上再建一个 agent，第二个的崩溃修复
+  给在飞的工具调用补一条假 `tool_result`，同一个 `toolCallId` 两条结果 = 这个子会话
+  永久 400）；不退出是权衡后的选择——跑完就注销的话，用户此刻正看着的那个子会话会
+  突然变成"会话不存在"，发不出消息。代价是注册表随一次运行里的派活次数增长，
+  重启清零。删父会话时按 purge 返回的名单一并注销。
+- **每会话成本口径不含它派出去的子会话。** `deriveUsage` 是按分区求和的，子会话的
+  token 落在子分区里，所以"这个会话花了多少"系统性偏低——一个派了三个 subagent 的
+  会话，屏幕上那个数只算它自己那几轮。时间线卡片上的"N 步 · Xk tokens"只补上了
+  单次派活这一格，补不齐总账。全库口径（设置页那张"哪家烧了多少"）不受影响：
+  `billedUsage` 扫的是整库，子会话的行本来就在里面。
 - **`~/.claude/agents/` 扫来的定义只读**——不去改用户 Claude Code 的配置。要改先
   "复制到 ~/.otter/agents"。

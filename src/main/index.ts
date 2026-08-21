@@ -32,7 +32,13 @@ import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
 import { scanSubagents, writeSubagent } from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
-import { DEFAULT_SUBAGENT_TOOLS, type SubagentDef } from "../shared/subagent.js";
+import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
+import type { BrowserReadOptions } from "../world/executionWorld.js";
+import {
+  DEFAULT_SUBAGENT_TOOLS,
+  subagentNameError,
+  type SubagentDef,
+} from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
@@ -433,6 +439,79 @@ void app.whenReady().then(() => {
   }
   const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
 
+  /**
+   * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
+   *
+   * 曾经这十几行在两处各抄一份，于是它们 drift 了：Task 5 给子 agent 定的那套
+   * 收权（工具白名单 / approval:"deny" 换掉整条审批链 / **不给 subagentRunner**）
+   * 只写在 subagentRunner.ts 那一份装配里，resumeSession 那一份压根不知道
+   * "会话还可能是子会话"这回事——于是恢复一个只读搜索员，回来的是带 bash、
+   * write_file 和 task 工具的全权 agent（review I1）。而恢复正是查看子会话的
+   * 唯一途径（时间线上那张卡、"回到父会话"都走 resume）。
+   *
+   * 合成一处之后，"这个会话是不是子会话"只有一个地方判断，drift 无处可藏。
+   */
+  const createSessionAgent = (args: {
+    workspace: string;
+    /** 给了 = 恢复既有会话 */
+    resumeSessionId?: string;
+    /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
+    child?: ChildAgentConfig;
+  }): ReturnType<typeof createAgent> => {
+    const base = {
+      store,
+      workspace: args.workspace,
+      push,
+      attachments: attachmentStore,
+      getAccessToken,
+      makeBrowser: (sid: string) => ({
+        read: (o?: BrowserReadOptions) => browsers.read(sid, o),
+      }),
+      ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+    };
+    if (args.child && args.resumeSessionId) {
+      // 子会话重建走 createChildAgent：它的签名里没有 subagentRunner 这一项，
+      // 于是"重建出来的子 agent 没有 task 工具"是类型层面的事实，不是纪律
+      // （world 是新造的 LocalWorld——父 agent 可能早已不在内存里了；
+      // 围栏一样是日志第 0 条记的那个 workspace）
+      return createChildAgent({
+        ...base,
+        resumeSessionId: args.resumeSessionId,
+        config: args.child,
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      });
+    }
+    // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
+    // 还没返回——先声明后赋值：parent() 只在派活那一刻被调用（远在这行之后）。
+    // 这里不能改成先起个快照，快照会把后续 switchModel 等运行时变化锁死在
+    // 创建那一刻的值上
+    let self: ReturnType<typeof createAgent>;
+    self = createAgent({
+      ...base,
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      listSubagents,
+      subagentRunner: createSubagentRunner({
+        store,
+        attachments: attachmentStore,
+        push,
+        list: listSubagents,
+        parent: () => ({
+          sessionId: self.sessionId,
+          workspace: self.workspace,
+          world: self.world,
+          model: self.model,
+        }),
+        getAccessToken,
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
+        // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
+        register: (child) => void agents.set(child.sessionId, child),
+      }),
+    });
+    return self;
+  };
+
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
@@ -473,37 +552,7 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    // 派活的 parent() 要能拿到"正在构造的这个 agent"——但 createAgent 还没返回。
-    // 用一个先声明后赋值的绑定：parent() 只在派活那一刻才被调用（远在这行之后），
-    // 到那时 self 早已赋值；这里不能改成先起个快照，快照会把后续 switchModel 等
-    // 运行时变化锁死在创建那一刻的值上
-    let self: ReturnType<typeof createAgent>;
-    self = createAgent({
-      store,
-      workspace: opts.workspace,
-      push,
-      attachments: attachmentStore,
-      getAccessToken,
-      makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
-      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      listSubagents,
-      subagentRunner: createSubagentRunner({
-        store,
-        attachments: attachmentStore,
-        push,
-        list: listSubagents,
-        parent: () => ({
-          sessionId: self.sessionId,
-          workspace: self.workspace,
-          world: self.world,
-          model: self.model,
-        }),
-        getAccessToken,
-        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-      }),
-    });
-    const agent = self;
+    const agent = createSessionAgent({ workspace: opts.workspace });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -523,39 +572,30 @@ void app.whenReady().then(() => {
     if (!agents.has(sessionId)) {
       // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
       // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
-      const first = store.load(sessionId)[0];
+      const events = store.load(sessionId);
+      const first = events[0];
       if (!first || first.type !== "session_created" || !first.workspace) {
         throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
       }
-      // 同一招：parent() 要能拿到正在构造的这个 agent，先声明后赋值
-      let self: ReturnType<typeof createAgent>;
-      self = createAgent({
-        store,
-        workspace: first.workspace,
-        push,
-        resumeSessionId: sessionId,
-        attachments: attachmentStore,
-        getAccessToken,
-        makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
-        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-        persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-        listSubagents,
-        subagentRunner: createSubagentRunner({
-          store,
-          attachments: attachmentStore,
-          push,
-          list: listSubagents,
-          parent: () => ({
-            sessionId: self.sessionId,
-            workspace: self.workspace,
-            world: self.world,
-            model: self.model,
-          }),
-          getAccessToken,
-          alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-        }),
-      });
-      agents.set(sessionId, self);
+      // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
+      // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
+      // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
+      // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
+      // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+      // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
+      if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
+        throw new Error("这个子会话正在跑，稍等一下再看");
+      }
+      // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
+      const child = childAgentConfig(events, listSubagents());
+      agents.set(
+        sessionId,
+        createSessionAgent({
+          workspace: first.workspace,
+          resumeSessionId: sessionId,
+          ...(child ? { child } : {}),
+        })
+      );
     }
     currentSessionId = sessionId;
     const info = bootInfo();
@@ -585,8 +625,15 @@ void app.whenReady().then(() => {
   });
 
   ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
-    const clean = name.trim().replace(/[^A-Za-z0-9_-]/g, "-");
-    if (!clean) throw new Error("名字不能为空");
+    const clean = name.trim();
+    // 校验必须在 IPC 边界之内：渲染层那道同款检查只是"别让请求白跑一趟"，
+    // 挡不住任何东西——这个 handler 的活儿就是往磁盘写文件（同 saveSubagent
+    // 收权的理由：渲染层传来的，不可信）。
+    // 而且是**拒绝**不是改写：以前把非法字符换成 "-"，"搜索员" 会塌成 "---"，
+    // 非空、通过、建出一个名叫 --- 的 subagent —— 用户看不出自己建了什么，
+    // 模型也永远打不出他心里那个名字
+    const nameError = subagentNameError(clean);
+    if (nameError) throw new Error(nameError);
     // 建之前先查重:用户输入一个已存在的名字往往就是想看看这个名字有没有被占——
     // 不查重会直接截断写空,把已有的 description/instructions/tools 全冲掉,
     // 没有确认也没有撤回
@@ -796,10 +843,13 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
-    terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
-    browsers.close(sessionId); // 会话没了,它的浏览器也该没
-    store.purge(sessionId);
-    agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+    // purge 会连它派出去的子会话一起抹（否则子会话成孤儿：够不着、删不掉、
+    // 账还在算），返回真正被抹掉的那几个 id——活资源按同一份名单注销
+    for (const id of store.purge(sessionId)) {
+      terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
+      browsers.close(id); // 会话没了,它的浏览器也该没
+      agents.delete(id); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+    }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
   });
 

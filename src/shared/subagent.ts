@@ -17,6 +17,22 @@ export const DEFAULT_SUBAGENT_TOOLS: readonly string[] = [
   "todo_write",
 ];
 
+/** 合法的 subagent 名字：只有它会变成磁盘上的文件名（`<名字>.md`），也只有它
+    是模型调 task 时要打出来的那个词。
+    定义放 shared：主进程和设置页共用同一条规则——两边各写一条正则，迟早分家
+    （曾经就是：渲染层挡住了中文，主进程那侧把中文 replace 成 "-"，
+    "搜索员" 塌成 "---" 照样建出来，review I6） */
+export const SUBAGENT_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/** 名字不合法时的说法（两侧同一句，用户在哪看到都一样）。
+    合法就回 null */
+export function subagentNameError(name: string): string | null {
+  if (!name) return "名字不能为空";
+  return SUBAGENT_NAME_RE.test(name)
+    ? null
+    : "名字只能用英文字母、数字、下划线、连字符——这是模型调 task 工具时要打出来的名字";
+}
+
 export interface SubagentDef {
   name: string;
   /** 写给**模型**看的：它进 task 工具的 def，模型靠它挑人。

@@ -12,6 +12,8 @@
 //     这一刻的事实）。
 //  ③ 加一个 onSelectAgent —— 每一行可点，点进去是这一行对应的子会话。给了才
 //     具备按钮语义（role/tabIndex/回车-空格键），没给保持纯展示。
+//  ③′ 加 task / id 两个字段 —— 见 SubagentItem 上的注释（同一个 agent 被派
+//     两次时，registry 原版的 key={name} 会撞车）。
 //  ④ 去掉入场/交错动效（完成时 CheckIcon 的 zoom-in、summary 卡的 slide-in）
 //     —— 本仓的时间线是刻意静止的界面，没有这一档预算（Task 8 的动效纪律）。
 //     width 的过渡（状态从"跑着"切到"完成"）留着：那是状态指示，不是装饰性
@@ -32,6 +34,12 @@ export interface SubagentItem {
   model: string;
   /** 收口后的一句事实（步数 · token）。存在时取代 model 的展示位置 */
   fact?: string;
+  /** 派下去那件事的首行（spec §五：名字 + 任务首行）。同一条消息里把同一个
+      agent 派两次是常事，只印名字的话两行一模一样，看不出谁是谁 */
+  task?: string;
+  /** React key。**不能用 name**：同一个 agent 派两次，两行同名 = 重复 key，
+      React 会认错行（状态串行、重排丢失）。调用方传 toolCallId */
+  id?: string;
 }
 
 export function SubagentList({
@@ -76,7 +84,7 @@ export function SubagentList({
 
         return (
           <div
-            key={agent.name}
+            key={agent.id ?? agent.name}
             {...(clickable
               ? {
                   role: "button" as const,
@@ -104,6 +112,9 @@ export function SubagentList({
               )}
               <span className="flex-1 truncate text-[13.5px]">
                 {agent.name}
+                {agent.task ? (
+                  <span className="text-foreground/45"> · {agent.task}</span>
+                ) : null}
               </span>
               <span className={cn(mono, "text-foreground/35 shrink-0")}>
                 {agent.fact ?? agent.model}
