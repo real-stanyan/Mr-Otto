@@ -16,6 +16,10 @@ export interface Tool {
   def: ToolDefinition;
   /** true = 执行前必须过人工审批门（下一课接入管线） */
   requiresApproval: boolean;
+  /** 挂载是一次性的（装配时决定），可用性每轮重问。
+      返回 false = 模型的声明表里消失，但工具还在 toolsByName 里，
+      这样掉线前发出的调用能收到人话而不是"未知工具"。可选参数 = 兼容旧工具 */
+  available?: () => boolean;
   /** 返回值 = 喂回模型的 tool_result.output；抛错 = status: "error"。
       也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn */
   run(
