@@ -5,7 +5,6 @@
 // 在测试里不碰磁盘地跑遍每一条分支。
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_PREAMBLE, isSafeContextFile, type SubagentDef } from "../shared/subagent.js";
 
@@ -23,11 +22,6 @@ export const CONTEXT_DOC_LIMIT = 64 * 1024;
     本来就能产生的最大值——不缩已有能力，只挡手写 context 列出十份文档那种。 */
 export const CONTEXT_DOCS_BUDGET = 128 * 1024;
 
-/** 全局前置词落在 ~/.otter/ 而不是 ~/.otter/agents/：agents/ 下每个 .md 都会被
-    scanSubagents 读一遍（没有 frontmatter 会被丢掉，不至于显示成一个子智能体），
-    但让配置文件和定义文件混住是在等一个未来的坑 */
-export const GLOBAL_PREAMBLE_PATH = join(homedir(), ".otter", "subagent-preamble.md");
-
 export interface FileReader {
   /** 读不到 = null */
   readFile(path: string): string | null;
@@ -42,13 +36,6 @@ export const nodeFileReader: FileReader = {
     }
   },
 };
-
-/** 全局前置词。文件不在／读不到／去空白后为空 = 内置默认。
-    空文件退回默认而不是"空前置词"：存了个空文件更像是失手，不像是意图 */
-export function readGlobalPreamble(path: string, reader: FileReader = nodeFileReader): string {
-  const text = reader.readFile(path);
-  return text && text.trim() ? text.trim() : DEFAULT_PREAMBLE;
-}
 
 export interface ContextDoc {
   file: string;
@@ -81,7 +68,7 @@ export function readContextDocs(
     const text = reader.readFile(join(workspace, file));
     if (text === null) continue;
     // 空白文件跳过而不是拼出一个只有标题、没有正文的段落——那一段对模型是纯噪音。
-    // 与 readGlobalPreamble 对空白文件的处置同一条规矩
+    // 空白文件退回"没有这份文档"而不是注入一段空白：存了个空文件更像是失手
     if (text.trim() === "") continue;
     // 这一份能占的位置 = 单份上限和"总预算还剩多少"里更小的那个
     const room = Math.min(CONTEXT_DOC_LIMIT, CONTEXT_DOCS_BUDGET - used);
@@ -107,12 +94,13 @@ function clip(text: string, label: string): string {
 
 export function composeSubagentPrompt(opts: {
   def: SubagentDef;
-  globalPreamble: string;
   docs: readonly ContextDoc[];
 }): string {
   const p = opts.def.preamble;
+  // "用全局" = 代码里那一份常量。它曾经是"读 ~/.otter/subagent-preamble.md，
+  // 没有就用内置默认"，那条路连同它的设置页卡片一起删了（理由见 DEFAULT_PREAMBLE）
   const preamble = clip(
-    p.mode === "off" ? "" : p.mode === "custom" ? p.text.trim() : opts.globalPreamble.trim(),
+    p.mode === "off" ? "" : p.mode === "custom" ? p.text.trim() : DEFAULT_PREAMBLE,
     "前置词"
   );
 

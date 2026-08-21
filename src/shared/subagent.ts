@@ -4,9 +4,14 @@
 import type { ThinkingMode } from "./thinking.js";
 
 /** subagent 碰到危险工具时怎么办。
-    比 ApprovalMode（"ask" | "auto"）多一档 "deny"：子 agent 没人盯着，
-    "一律拒绝"是它才需要的默认，主会话不需要（用户就在屏幕前） */
-export type SubagentApproval = "ask" | "auto" | "deny";
+    比 ApprovalMode（"ask" | "auto"）多两档：
+    - "deny"：一律拒绝。子 agent 没人盯着，这是它才需要的默认，主会话不需要
+      （用户就在屏幕前）
+    - "inherit"：跟父会话此刻那一档走——用户开了免审批就免审批，没开就把卡弹给他。
+      不复用 "ask" 来表达这件事：那会让所有已有的 `approval: ask` 定义在用户开
+      bypass 时**静默变成放行**，而写 ask 的人意思就是问我。内置那两份用它
+      （builtinSubagents），用户自己的定义写得出来但界面上不给编 */
+export type SubagentApproval = "ask" | "auto" | "deny" | "inherit";
 
 /** 缺省工具集：只读那几把。
     缺 tools 字段 ≠ "全给" —— 派出去的 agent 默认不该有 bash 和 write_file */
@@ -28,14 +33,26 @@ export type SubagentPreamble =
   | { mode: "off" }
   | { mode: "custom"; text: string };
 
-/** 内置的全局前置词。用户没在 ~/.otter/subagent-preamble.md 写自己的那份时用它。
-    放 shared 不放 runner：设置页要拿它当「恢复默认」后显示的正文 */
+/** 全局前置词 —— 拼在每个子智能体正文前面的那一段。写死在代码里，不给用户改。
+ *
+ * 曾经它住在 ~/.otter/subagent-preamble.md、设置页有一张卡可以编。删掉的理由是
+ * 这段话说的是**协议事实**而不是偏好：「你的最终一段文本就是返回值」「你看不到
+ * 父会话的对话」——它们描述的是这个 harness 的运行方式。用户删掉第一句，此后每个
+ * 子智能体都会开始写寒暄，而父 agent 拿到的返回值就是那句寒暄，界面上不报任何错。
+ * 一个改坏了没有反馈的旋钮，不如没有。
+ *
+ * 需要覆盖的场合已经有出口：每份定义自己的 preamble 三档（自定义 / 不加 / 用全局）。
+ *
+ * 用英文：模型对英文指令的服从度更稳，而这段话是给模型看的，不是给用户看的。
+ * 以后要做多语言，换掉这一个常量就够——它是唯一的出处 */
 export const DEFAULT_PREAMBLE =
-  "你是被派来做一件具体任务的子 agent。你的最终一段文本就是返回值——" +
-  "它会直接交回给派你来的那个 agent，不是给人看的消息。" +
-  "做完就把结论写出来，不要寒暄，不要问「还需要什么帮助吗」。" +
-  "你看不到派你来的那个 agent 和用户的对话，任务里没写的背景你就是不知道；" +
-  "缺信息时在汇报里说清缺什么，别猜。";
+  "You are a subagent dispatched to carry out one specific task. " +
+  "Your final block of text IS the return value: it goes straight back to the agent that " +
+  "dispatched you, not to a human reader. When you are done, state the conclusion — no " +
+  "pleasantries, and never ask whether there is anything else you can help with. " +
+  "You cannot see the conversation between that agent and the user, so any background the " +
+  "task text does not spell out is background you do not have; when something is missing, " +
+  "say what is missing in your report instead of guessing.";
 
 /** context 只收 basename。这是安全边界不是格式洁癖：定义文件可能是用户从别处
     抄来的，收全路径就等于让一份 .md 变成任意文件读取原语。
@@ -86,6 +103,11 @@ export interface SubagentDef {
   path: string;
   /** 哪个根目录来的 */
   source: string;
-  /** ~/.claude/agents/ 扫来的 = true：不去改用户 Claude Code 的配置 */
+  /** ~/.claude/agents/ 扫来的 = true：不去改用户 Claude Code 的配置。
+      内置那两份也是 true —— 它们压根不在磁盘上 */
   readOnly: boolean;
+  /** 随 app 一起发的内置定义（builtinSubagents），不在磁盘上。
+      可选而不是必填：加个必填字段要动每一处构造点（含全部测试夹具），
+      而"没有这个字段"和"不是内置"是同一件事 */
+  builtin?: true;
 }

@@ -1113,7 +1113,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "keys", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
-  { id: "agents", label: "Subagent" },
+  { id: "agents", label: "子智能体" },
   { id: "mcp", label: "MCP" },
 ];
 

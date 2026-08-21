@@ -235,8 +235,6 @@ interface ChatState {
   /** subagent 清单查询的作用域：null = 用户级，工作区路径 = 该工程（用户级 + 工作区级）。
       切它 = 换一份清单（见 setSubagentScope） */
   subagentScope: string | null;
-  /** 全局前置词（~/.otter/subagent-preamble.md）。null = 还没问过后端 */
-  subagentPreamble: { text: string; isDefault: boolean } | null;
   /** 本机 MCP server 清单 + ~/.otter/mcp.json 解析阶段的人话错误（配置已遮罩,
       见 shared/mcp.ts 的 McpServersSnapshot 注释）。进 MCP 栏目时组件自己
       refreshMcp()，同时全程订阅 onMcpChanged——一台 server 从 connecting 转成
@@ -343,10 +341,6 @@ interface ChatState {
   createSubagent(name: string): Promise<SubagentDef[]>;
   /** 切作用域 = 换一份清单。见实现处注释 */
   setSubagentScope(workspace: string | null): Promise<void>;
-  /** 重问一次全局前置词现状（设置页挂载时调一次） */
-  refreshSubagentPreamble(): Promise<void>;
-  /** 存一段全局前置词；text 为 null 或全空白 = 恢复内置默认（删文件） */
-  saveSubagentPreamble(text: string | null): Promise<void>;
   /** 重扫 MCP server 清单(MCP 栏目挂载时调一次,照 skills/subagents 的做法)。
       开着栏目期间还有 onMcpChanged 的推送兜底,这次是"进页面先拿一份新鲜的" */
   refreshMcp(): Promise<void>;
@@ -608,7 +602,6 @@ export const useChat = create<ChatState>((set, get) => ({
   subagents: [],
   subagentsError: null,
   subagentScope: null,
-  subagentPreamble: null,
   mcpServers: { servers: [], errors: [] },
   mcpPrompts: [],
   mcpPromptForm: null,
@@ -848,14 +841,6 @@ export const useChat = create<ChatState>((set, get) => ({
       if (gen !== subagentScopeGen) return;
       set({ subagentsError: bridgeErrorMessage(e) });
     }
-  },
-
-  async refreshSubagentPreamble() {
-    set({ subagentPreamble: await window.otter.getSubagentPreamble() });
-  },
-
-  async saveSubagentPreamble(text) {
-    set({ subagentPreamble: await window.otter.saveSubagentPreamble(text) });
   },
 
   async refreshMcp() {
