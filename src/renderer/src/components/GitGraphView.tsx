@@ -5,10 +5,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { FileTypeIcon } from "./FileTypeIcon.js";
 import { SidebarNub } from "./SidebarNub.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { useChat } from "../store.js";
 import { assignLanes, type GitRef, type RawCommit } from "../../../shared/gitGraph.js";
+import { projectFriendBranches, type FriendOnBranch } from "../../../shared/friendBranches.js";
+import type { FriendProfile } from "../../../shared/friends.js";
 import { nearBottom, visibleRange } from "../../../shared/virtualWindow.js";
 import { formatRelativeTime } from "../../../shared/relativeTime.js";
 
@@ -19,13 +22,56 @@ const DOT_R = 3.5;
 const LANE_COLORS = ["#4a9df8", "#e0a458", "#7cb96d", "#d96a6a", "#b07cd8", "#4fb8c4", "#c88ab0", "#8a92e0"];
 const laneColor = (lane: number) => LANE_COLORS[lane % LANE_COLORS.length];
 
-/** ref 徽章:HEAD 分支高亮,本地分支次之,remote/tag 弱化 */
-function RefBadge({ r }: { r: GitRef }) {
+/** ref 徽章:HEAD 分支高亮,本地分支次之,remote/tag 弱化。
+    friends = 此刻站在这根分支上的好友(issue #167),头像叠在徽章右侧 */
+function RefBadge({ r, friends }: { r: GitRef; friends?: FriendProfile[] | undefined }) {
   const cls =
     r.type === "head" ? "bg-brand/20 text-brand font-semibold"
     : r.type === "branch" ? "bg-brand/10 text-brand"
     : "bg-muted text-muted-foreground";
-  return <span className={`shrink-0 rounded px-[5px] py-px text-[10px] font-mono ${cls}`}>{r.name}</span>;
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded px-[5px] py-px text-[10px] font-mono ${cls}`}>
+      {r.name}
+      {friends && friends.length > 0 && <FriendStack friends={friends} />}
+    </span>
+  );
+}
+
+/** 一排小头像(重叠),hover 看名字。只画前 3 个,多了给个 +N */
+function FriendStack({ friends }: { friends: FriendProfile[] }) {
+  const shown = friends.slice(0, 3);
+  const rest = friends.length - shown.length;
+  const names = friends.map((f) => f.name || f.email).join("、");
+  return (
+    <span className="inline-flex items-center -space-x-1.5" title={`${names} 正在这根分支上`}>
+      {shown.map((f) => (
+        <Avatar key={f.id} className="size-4 ring-1 ring-background">
+          <AvatarImage src={f.avatarUrl} alt={f.name || f.email} />
+          <AvatarFallback className="text-[8px]">{(f.name || f.email).slice(0, 1).toUpperCase()}</AvatarFallback>
+        </Avatar>
+      ))}
+      {rest > 0 && <span className="pl-2 text-[9px] font-sans text-muted-foreground">+{rest}</span>}
+    </span>
+  );
+}
+
+/** 同仓库、但图里没有那根分支(还没 fetch)或 detached 的好友:一行灰字挂在图顶。
+    不代为 fetch——图里唯一的写操作是 checkout(ADR-0014) */
+function FriendsElsewhere({ items }: { items: FriendOnBranch[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-4 py-1.5 text-[11px] text-muted-foreground">
+      {items.map((it) => (
+        <span key={it.profile.id} className="inline-flex items-center gap-1">
+          <FriendStack friends={[it.profile]} />
+          <span>{it.profile.name || it.profile.email}</span>
+          <span className="font-mono">
+            {it.branch ? `@ ${it.branch}（本地未 fetch）` : "（detached HEAD）"}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** 行间线段:三次贝塞尔,同道退化成直线 */
@@ -58,6 +104,17 @@ export function GitGraphView() {
   const togglePanelWide = useChat((s) => s.togglePanelWide);
   const loadMoreGitGraph = useChat((s) => s.loadMoreGitGraph);
   const gitGraphAtEnd = useChat((s) => s.gitGraphAtEnd);
+  const workspaces = useChat((s) => s.workspaces);
+  const friendsSnapshot = useChat((s) => s.friendsSnapshot);
+  // 好友 → 分支徽章的投影。图是开图时会话的仓库,而 workspaces.mine 跟的是当前会话——
+  // 两者通常是同一个;不是时 repoKey 对不上,投影自然为空,不会画到别的仓库上
+  const friendProjection = useMemo(
+    () => projectFriendBranches(
+      workspaces, friendsSnapshot,
+      gitGraph?.ok ? gitGraph.commits.flatMap((c) => c.refs) : []
+    ),
+    [workspaces, friendsSnapshot, gitGraph]
+  );
   const gitGraphLoadingMore = useChat((s) => s.gitGraphLoadingMore);
 
   // 虚拟滚动:量出滚动容器的位置/高度,只画看得见的那几行(几千行时 DOM 才不炸)
@@ -151,8 +208,10 @@ export function GitGraphView() {
             <p className="px-4 py-6 text-sm text-muted-foreground">还没有 commit。</p>
           ) : (
             <>
+              <FriendsElsewhere items={friendProjection.elsewhere} />
               <GraphRows
                 commits={gitGraph.commits}
+                friendsByRef={friendProjection.byRef}
                 head={gitGraph.head}
                 spineBranch={gitGraph.spineBranch}
                 selected={gitCommitView?.hash ?? null}
@@ -186,8 +245,10 @@ export function GitGraphView() {
   );
 }
 
-function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH, onPick }: {
+function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH, onPick, friendsByRef }: {
   commits: RawCommit[];
+  /** ref 名 → 站在上面的好友;没人就没这个 key */
+  friendsByRef: Map<string, FriendProfile[]>;
   head: string | null;
   /** 钉在 0 道的主干分支名（null = 不预留,泳道全靠回收） */
   spineBranch: string | null;
@@ -232,7 +293,7 @@ function GraphRows({ commits, head, spineBranch, selected, scrollTop, viewportH,
                 r={c.hash === head ? DOT_R + 1.5 : DOT_R}
                 fill={laneColor(row.lane)} />
             </svg>
-            {c.refs.map((r) => <RefBadge key={`${r.type}:${r.name}`} r={r} />)}
+            {c.refs.map((r) => <RefBadge key={`${r.type}:${r.name}`} r={r} friends={friendsByRef.get(r.name)} />)}
             <span className="flex-1 min-w-0 truncate text-sm">{c.subject}</span>
             <span className="shrink-0 text-xs text-muted-foreground">{c.author}</span>
             <span
