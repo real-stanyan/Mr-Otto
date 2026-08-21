@@ -46,7 +46,7 @@ import {
   type SubagentPreamble,
 } from "../../../shared/subagent.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
-import { initialSubagentScope, subagentScopeOptions } from "../lib/subagentScopes.js";
+import { freeCopyName, initialSubagentScope, subagentScopeOptions } from "../lib/subagentScopes.js";
 
 const ERR_TXT = "text-err text-[13px]";
 
@@ -220,6 +220,7 @@ function NewSubagentDialog({
   scopeLabel: string;
 }) {
   const createSubagent = useChat((s) => s.createSubagent);
+  const subagents = useChat((s) => s.subagents);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -231,6 +232,16 @@ function NewSubagentDialog({
       setError(null);
     }
   }, [open]);
+
+  // 建一个和清单里现有同名的定义,后端现在是放行的(覆盖规则本身的用法,见
+  // subagentSlotTaken 的注释)——但清单去重之后用户只看得见赢的那一份,
+  // 于是他刚才盯着的那行会被一个空壳换掉,没有任何提示。这里先说一声。
+  // 不分大小写:落地的是 macOS 文件名
+  const shadowed = useMemo(() => {
+    const trimmed = name.trim().toLowerCase();
+    if (!trimmed) return null;
+    return subagents.find((d) => d.name.toLowerCase() === trimmed) ?? null;
+  }, [name, subagents]);
 
   const submit = async () => {
     const trimmed = name.trim();
@@ -275,6 +286,13 @@ function NewSubagentDialog({
             }}
           />
           {error && <p className={ERR_TXT}>{error}</p>}
+          {shadowed && (
+            <p className={HINT}>
+              「{shadowed.name}」这个名字在<b>{shadowed.scope === "workspace" ? "工作区" : "用户"}</b>
+              这一层已经有一份（{shadowed.source}）。建出来的这份会盖住它 ——
+              在这个作用域里，<code>task</code> 派到的会是新建的这份。
+            </p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>
@@ -431,7 +449,10 @@ function SubagentRow({
     // 占了没",不问合并清单(工作区盖住同名的用户级那份正是覆盖规则的用法)。
     // 这里仍然加后缀,是个选择不是限制:「复制到本层」的意思是多一份能改的副本,
     // 不是把眼前这份从清单里顶掉;顶掉该是用户明说的动作,不是点了「复制」的副作用
-    const copyName = `${def.name}-copy`;
+    // 名字挑一个当前没被占的:第一次点击可能已经把 -copy 建出来了(内容还没抄过去,
+    // 比如中途切了作用域),写死 -copy 的话"再点一次"撞的就是自己刚建的那个空壳,
+    // 是一条走不通的路
+    const copyName = freeCopyName(def.name, useChat.getState().subagents.map((d) => d.name));
     // 作用域是所有落点的前提,整个流程得钉在开始时的那一层上(见下面两处判断)
     const scopeAtStart = useChat.getState().subagentScope;
     setCopying(true);
