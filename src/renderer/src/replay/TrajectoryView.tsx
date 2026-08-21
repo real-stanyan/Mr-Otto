@@ -11,8 +11,9 @@ import {
   buildTrajectory,
   formatMs,
   formatTs,
+  rowExtent,
   rowMatches,
-  rowPosition,
+  rowSpans,
   toolDurationMs,
   type Lane,
   type RowKind,
@@ -65,42 +66,137 @@ function toolStatus(row: TrajRow): string {
 
 /* ─── 泳道时间轴 ─── */
 
+/** 可见窗口 ∈ [0,1]。滚轮围绕鼠标位置缩放（最小 2%），Shift+滚轮 / 横向滚轮平移，双击复位 */
+type Window = { v0: number; v1: number };
+const FULL: Window = { v0: 0, v1: 1 };
+const MIN_W = 0.02;
+
+function zoomAt(w: Window, anchor: number, factor: number): Window {
+  const width = Math.max(MIN_W, Math.min(1, (w.v1 - w.v0) * factor));
+  const a = w.v0 + anchor * (w.v1 - w.v0); // 鼠标下的那个点缩放前后不动
+  let v0 = a - anchor * width;
+  v0 = Math.max(0, Math.min(1 - width, v0));
+  return { v0, v1: v0 + width };
+}
+function panBy(w: Window, dx: number): Window {
+  const width = w.v1 - w.v0;
+  const v0 = Math.max(0, Math.min(1 - width, w.v0 + dx));
+  return { v0, v1: v0 + width };
+}
+
 function Swimlanes({
   traj, scale, query, selected, onSelect,
 }: {
   traj: Traj; scale: Scale; query: string; selected: string | null; onSelect: (key: string) => void;
 }) {
+  const [win, setWin] = useState<Window>(FULL);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const spans = useMemo(() => rowSpans(traj), [traj]);
+  const extents = useMemo(
+    () => traj.rows.map((r, i) => rowExtent(r, traj, scale, i, spans)),
+    [traj, scale, spans]
+  );
+  // 换刻度 / 换会话 → 窗口复位：旧窗口在新坐标系里没有意义
+  useEffect(() => setWin(FULL), [scale, traj]);
+
+  // React 的 onWheel 是 passive 的，preventDefault 无效 → 原生监听，拦住页面滚动
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        const d = (e.shiftKey ? e.deltaY : e.deltaX) / rect.width;
+        setWin((w) => panBy(w, d * (w.v1 - w.v0)));
+      } else {
+        const anchor = (e.clientX - rect.left) / rect.width;
+        setWin((w) => zoomAt(w, anchor, Math.exp(e.deltaY * 0.002)));
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const scaleX = 1 / (win.v1 - win.v0);
+  const zoomed = win.v1 - win.v0 < 0.999;
+
+  // 边缘悬停自动平移：放大后鼠标停在轨道左/右 48px 内，窗口朝那边滑，
+  // 越贴边越快（二次方缓入，边缘中段几乎不动，不会一碰就飞）。rAF 驱动，离开即停
+  const hoverX = useRef<number | null>(null);
+  const zoomedRef = useRef(zoomed);
+  zoomedRef.current = zoomed;
+  useEffect(() => {
+    let raf = 0;
+    let last = 0;
+    const EDGE = 48;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      const el = trackRef.current;
+      const x = hoverX.current;
+      if (!el || x === null || !zoomedRef.current) { last = now; return; }
+      const dt = last ? Math.min(50, now - last) : 0;
+      last = now;
+      const w = el.clientWidth;
+      let dir = 0;
+      if (x < EDGE) dir = -(((EDGE - x) / EDGE) ** 2);
+      else if (x > w - EDGE) dir = ((x - (w - EDGE)) / EDGE) ** 2;
+      if (dir === 0) return;
+      // 速度：贴死边缘时每秒滑过 1.2 个可见窗口
+      setWin((cur) => panBy(cur, dir * 1.2 * (cur.v1 - cur.v0) * (dt / 1000)));
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div className="shrink-0 border-b border-border px-3 py-2 grid grid-cols-[44px_1fr] gap-x-2">
       <div className="flex flex-col justify-around text-[10px] text-muted-foreground text-right leading-none">
         {LANES.map((l) => <span key={l.lane}>{l.label}</span>)}
       </div>
-      {/* 每个泳道一行；方块绝对定位，横坐标由刻度决定。右侧留 10px 让最后一格不被切 */}
-      <div className="relative h-[54px]">
-        {LANES.map((l, li) => (
-          <div key={l.lane} className="absolute inset-x-0 h-[14px] border-b border-border/40 last:border-b-0" style={{ top: li * 18 + 2 }}>
-            {traj.rows.map((r, i) => {
-              if (r.lane !== l.lane) return null;
-              const x = rowPosition(r, traj, scale, i);
-              const hit = rowMatches(r, query);
-              const cur = r.key === selected;
-              return (
-                <button
-                  key={r.key}
-                  title={`Turn ${r.turn} · Step ${r.step} · ${r.summary}`}
-                  onClick={() => onSelect(r.key)}
-                  className={
-                    "absolute top-[2px] h-[9px] w-[10px] rounded-[2px] border-none p-0 cursor-pointer transition-opacity " +
-                    (r.deny ? "bg-deny" : r.kind === "system" ? "bg-muted-foreground/50" : LANE_BG[l.lane]) +
-                    (hit ? "" : " opacity-20") +
-                    (cur ? " ring-2 ring-foreground ring-offset-1 ring-offset-background" : "")
-                  }
-                  style={{ left: `calc(${x * 100}% - ${x * 10}px)` }}
-                />
-              );
-            })}
-          </div>
-        ))}
+      {/* 外层裁切，内层按窗口放大 + 平移；块是区间（起点→终点），三道互斥接续 */}
+      <div
+        ref={trackRef}
+        className="relative h-[54px] overflow-hidden cursor-ew-resize select-none"
+        onDoubleClick={() => setWin(FULL)}
+        onMouseMove={(e) => { hoverX.current = e.clientX - e.currentTarget.getBoundingClientRect().left; }}
+        onMouseLeave={() => { hoverX.current = null; }}
+        title={zoomed ? "滚轮缩放 · Shift+滚轮平移 · 双击复位" : "滚轮缩放"}
+      >
+        <div
+          className="absolute inset-y-0"
+          style={{ left: `${-win.v0 * scaleX * 100}%`, width: `${scaleX * 100}%` }}
+        >
+          {LANES.map((l, li) => (
+            <div key={l.lane} className="absolute inset-x-0 h-[14px]" style={{ top: li * 18 + 2 }}>
+              {traj.rows.map((r, i) => {
+                if (r.lane !== l.lane) return null;
+                const [x0, x1] = extents[i]!;
+                const hit = rowMatches(r, query);
+                const cur = r.key === selected;
+                return (
+                  <button
+                    key={r.key}
+                    title={`Turn ${r.turn} · Step ${r.step} · ${r.summary}`}
+                    onClick={() => onSelect(r.key)}
+                    className={
+                      "absolute top-[2px] h-[10px] min-w-[3px] rounded-[2px] border-none p-0 cursor-pointer transition-opacity " +
+                      (r.deny ? "bg-deny" : r.kind === "system" ? "bg-muted-foreground/50" : LANE_BG[l.lane]) +
+                      (hit ? "" : " opacity-20") +
+                      (cur ? " ring-2 ring-foreground ring-offset-1 ring-offset-background z-10" : "")
+                    }
+                    style={{ left: `${x0 * 100}%`, width: `calc(${(x1 - x0) * 100}% - 1px)` }}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        {zoomed && (
+          <span className="absolute right-1 bottom-0 text-[9px] font-mono text-muted-foreground tabular-nums pointer-events-none">
+            {Math.round(scaleX * 10) / 10}×
+          </span>
+        )}
       </div>
     </div>
   );

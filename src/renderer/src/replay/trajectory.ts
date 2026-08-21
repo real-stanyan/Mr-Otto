@@ -192,25 +192,62 @@ export function toolDurationMs(row: TrajRow): number | null {
   return d < 0 ? null : d;
 }
 
-/** 行在时间轴上的横向位置 ∈ [0, 1]。
-    duration：按墙钟；turns：每个 turn 等宽，turn 内按步均分；calls：按行序均分 */
-export function rowPosition(row: TrajRow, traj: Trajectory, scale: Scale, index: number): number {
+/** 每行的时间区间 [start, end]（ms）。三道互斥接续：用户打字时模型没在答，
+    模型生成时工具没在跑——所以一行的起点 = 上一行的终点，终点 = 自己"完成"的时刻：
+    user / assistant / system 事件的 ts 就是完成时刻（消息完整才落盘）；
+    tool 的完成 = result.ts，开跑 = started.ts（有就用，审批等待算在前一行里）。
+    最后一行没人接 → 终点取日志末尾 ts（至少一个最小宽度由视图保证） */
+export interface Span {
+  start: number;
+  end: number;
+}
+
+export function rowSpans(traj: Trajectory): Span[] {
+  const out: Span[] = [];
+  let cursor = traj.startTs;
+  for (const r of traj.rows) {
+    let start = cursor;
+    let end: number;
+    if (r.kind === "tool") {
+      if (r.started && r.started.ts >= cursor) start = r.started.ts;
+      end = r.result?.ts ?? r.started?.ts ?? r.ts;
+    } else {
+      end = r.ts;
+    }
+    if (end < start) end = start;
+    out.push({ start, end });
+    cursor = end;
+  }
+  return out;
+}
+
+/** 行在时间轴上的横向区间 ∈ [0, 1]。
+    duration：按墙钟区间；turns：每个 turn 等宽，turn 内按步均分；calls：按行序均分 */
+export function rowExtent(
+  row: TrajRow,
+  traj: Trajectory,
+  scale: Scale,
+  index: number,
+  spans: Span[]
+): [number, number] {
   const n = traj.rows.length;
-  if (n <= 1) return 0;
+  if (n === 0) return [0, 0];
   switch (scale) {
     case "duration": {
-      const span = traj.endTs - traj.startTs;
-      if (span <= 0) return index / (n - 1);
-      return Math.min(1, Math.max(0, (row.ts - traj.startTs) / span));
+      const total = traj.endTs - traj.startTs;
+      if (total <= 0) return [index / n, (index + 1) / n];
+      const sp = spans[index]!;
+      return [(sp.start - traj.startTs) / total, (sp.end - traj.startTs) / total];
     }
     case "turns": {
       const turnCount = traj.turns + 1; // 含 turn 0
       const stepsInTurn = traj.rows.filter((r) => r.turn === row.turn).length;
-      const within = stepsInTurn <= 1 ? 0.5 : (row.step - 1) / (stepsInTurn - 1);
-      return (row.turn + within * 0.9 + 0.05) / turnCount;
+      const w = 1 / turnCount / stepsInTurn;
+      const x0 = row.turn / turnCount + (row.step - 1) * w;
+      return [x0, x0 + w];
     }
     case "calls":
-      return index / (n - 1);
+      return [index / n, (index + 1) / n];
   }
 }
 

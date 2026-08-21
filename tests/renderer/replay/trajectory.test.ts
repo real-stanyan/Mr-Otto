@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   buildTrajectory,
   rowMatches,
-  rowPosition,
+  rowExtent,
+  rowSpans,
   toolDurationMs,
   formatMs,
 } from "../../../src/renderer/src/replay/trajectory.js";
@@ -91,23 +92,44 @@ describe("toolDurationMs：真执行耗时 = result − started，审批等待�
   });
 });
 
-describe("rowPosition：三种刻度", () => {
-  it("duration 按墙钟等比", () => {
-    expect(rowPosition(traj.rows[0]!, traj, "duration", 0)).toBe(0);
-    expect(rowPosition(traj.rows[10]!, traj, "duration", 10)).toBeCloseTo(7000 / 7001);
+describe("rowSpans：三道互斥接续，一行的起点 = 上一行的终点", () => {
+  const spans = rowSpans(traj);
+  it("user 行从上一行终点到自己的 ts", () => {
+    expect(spans[2]).toEqual({ start: 1001, end: 2000 });
   });
-  it("calls 按行序均分", () => {
-    expect(rowPosition(traj.rows[0]!, traj, "calls", 0)).toBe(0);
-    expect(rowPosition(traj.rows[10]!, traj, "calls", 10)).toBe(1);
+  it("assistant 行 = 上一行终点 → 消息落盘时刻（生成期间）", () => {
+    expect(spans[3]).toEqual({ start: 2000, end: 3000 });
+  });
+  it("tool 行 = started → result；审批等待算在前面", () => {
+    expect(spans[4]).toEqual({ start: 4000, end: 4800 });
+  });
+  it("旧日志没有 started 的 tool：从上一行终点起，到 result", () => {
+    expect(spans[9]).toEqual({ start: 7000, end: 7900 });
+  });
+  it("区间单调不回头", () => {
+    for (let i = 1; i < spans.length; i++) expect(spans[i]!.start).toBeGreaterThanOrEqual(spans[i - 1]!.end);
+  });
+});
+
+describe("rowExtent：三种刻度", () => {
+  const spans = rowSpans(traj);
+  it("duration 按墙钟区间等比", () => {
+    const [a, b] = rowExtent(traj.rows[4]!, traj, "duration", 4, spans);
+    expect(a).toBeCloseTo(3000 / 7001);
+    expect(b).toBeCloseTo(3800 / 7001);
+  });
+  it("calls 按行序均分，首尾贴边", () => {
+    expect(rowExtent(traj.rows[0]!, traj, "calls", 0, spans)[0]).toBe(0);
+    expect(rowExtent(traj.rows[10]!, traj, "calls", 10, spans)[1]).toBe(1);
   });
   it("turns 每个 turn 等宽，turn 2 的行落在最后三分之一", () => {
-    const p = rowPosition(traj.rows[7]!, traj, "turns", 7);
-    expect(p).toBeGreaterThan(2 / 3);
-    expect(p).toBeLessThan(1);
+    const [a, b] = rowExtent(traj.rows[7]!, traj, "turns", 7, spans);
+    expect(a).toBeGreaterThanOrEqual(2 / 3);
+    expect(b).toBeLessThanOrEqual(1);
   });
   it("单行日志不除零", () => {
     const one = buildTrajectory([log[0]!]);
-    expect(rowPosition(one.rows[0]!, one, "duration", 0)).toBe(0);
+    expect(rowExtent(one.rows[0]!, one, "duration", 0, rowSpans(one))).toEqual([0, 1]);
   });
 });
 
