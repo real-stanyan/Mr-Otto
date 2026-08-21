@@ -41,6 +41,7 @@ import {
   mcpDisplayStatus,
   mcpServerIdError,
   recordFromRows,
+  restoredValueOnKeyUndo,
   rowsFromRecord,
   shouldClearValueOnKeyRename,
   splitArgs,
@@ -609,6 +610,17 @@ function KeyValueEditor({
                     setRows(
                       rows.map((r) => {
                         if (r.rowId !== row.rowId) return r;
+                        // 先判"改名又改回来了"（M1 review finding）：键名回到
+                        // originalKey、值还是空的（上一步改名清空剩下的，或者
+                        // 用户自己删空的）——把原始遮罩找回来，不然这一行会
+                        // 带着"键名没变过"的假象和一个空值滑向保存，把真凭据
+                        // 覆盖成空字符串，而 renamedAndCleared/stray 两道警示
+                        // 都不认这个状态（前者要求键名不等于 originalKey，
+                        // 后者显式排除空值）
+                        const restored = restoredValueOnKeyUndo(newKey, r.originalKey, r.value, baseline);
+                        if (restored !== null) {
+                          return { ...r, key: newKey, value: restored };
+                        }
                         // 改键名这一刻：这一格的值如果还是旧键名对应的原始遮罩,
                         // 说明用户没碰过它——继续留着提交,会被 mergeMaskedCreds
                         // 按新键名去磁盘上找旧值,找不到就把这串星号原样当真凭据

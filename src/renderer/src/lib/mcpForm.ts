@@ -145,10 +145,17 @@ export function shouldClearValueOnKeyRename(
 }
 
 /** 存之前的最后一道闸（shouldClearValueOnKeyRename 的兜底，不是替代）：
-    草稿里有没有哪一行，键名不在 baseline 里（新建的/改过名的），但 value
-    却等于 baseline 里**某一把**已有凭据的原始遮罩值——不管是哪条路径导致的
-    （改名清空的那一下被绕过、粘贴带来的巧合字符串、未来别的代码路径），
+    草稿里有没有哪一行，value 等于 baseline 里**某一把**已有凭据的原始遮罩值，
+    但这个值不是**这一行自己的键名**对应的原始遮罩——不管是哪条路径导致的
+    （改名清空的那一下被绕过、把 A 的遮罩粘贴进 B 的值框、未来别的代码路径），
     命中就该挡住保存，而不是抱着侥幸心态把一串遮罩当真凭据存出去。
+    判据是 `baseline[r.key] !== r.value`，不是"键名在不在 baseline 里"——
+    N1 review finding：只判"键名缺席"漏掉了同名覆盖的那一种粘贴——把 A 的
+    可见遮罩粘进**已存在**的键 B，B 自己的原始遮罩跟粘进来的值不一样，
+    但键名本身在 baseline 里能查到（只是查到的是 B 自己的，不是粘进来的 A
+    的），旧判据因为"键名不缺席"直接放过，新判据按值比对，两者不等就命中。
+    这个改法还顺带覆盖了"两个键本来就合法地存着同一份真凭据"的情况——那时候
+    baseline[r.key] === r.value 天然成立，不会被误判。
     空字符串必须整体排除在"遮罩值"之外：maskKey("") === ""（"没配"就该显示
     成空串，不是一串星，见 keyMask.ts），空值从来不是任何凭据的遮罩形态。
     不排除的话，只要 baseline 里随便哪把 env/header 恰好配的是空字符串，
@@ -160,8 +167,31 @@ export function hasStrayMaskedValue(
 ): boolean {
   const baselineValues = new Set(Object.values(baseline).filter((v) => v !== ""));
   return rows.some(
-    (r) => r.key !== "" && r.value !== "" && baseline[r.key] === undefined && baselineValues.has(r.value)
+    (r) => r.key !== "" && r.value !== "" && baseline[r.key] !== r.value && baselineValues.has(r.value)
   );
+}
+
+/** 改键名这一步会不会该把值找回来（M1 review finding）：
+    改名清空(shouldClearValueOnKeyRename)只往一个方向走——键名一旦跟
+    originalKey 不一样，值就清空；但如果用户接着又把键名改回了 originalKey
+    （典型触发：手滑打一个空格又退格，或者故意改名看一眼又改回去），键名
+    现在跟 originalKey 完全一样，值却还是空的——renamedAndCleared 的三条件
+    里"键名 !== originalKey"不成立，stray 的判据里"值等于某把遮罩"也不成立
+    （空值被 hasStrayMaskedValue 显式排除），两道警示都不会亮，这一行看上去
+    就是个"没改过、只是恰好没填值"的普通状态，Save 照常可点，一存就把真凭据
+    覆盖成空字符串。
+    命中条件：originalKey 存在、newKey 跟它一字不差、当前值是空的、baseline
+    里这个键还查得到原始遮罩——四条全中，返回该找回的那个值；否则返回 null
+    表示不用管（组件据此决定要不要覆盖用户刚打进去的新键名对应的 value） */
+export function restoredValueOnKeyUndo(
+  newKey: string,
+  originalKey: string | null,
+  currentValue: string,
+  baseline: Record<string, string>
+): string | null {
+  if (originalKey === null || newKey !== originalKey || currentValue !== "") return null;
+  const restored = baseline[originalKey];
+  return restored !== undefined ? restored : null;
 }
 
 /** command 按空白切分成 args 数组的简化版——不支持引号里带空格这种 shell 语法,

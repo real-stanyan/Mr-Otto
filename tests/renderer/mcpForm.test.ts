@@ -7,6 +7,7 @@ import {
   mcpDisplayStatus,
   mcpServerIdError,
   recordFromRows,
+  restoredValueOnKeyUndo,
   rowsFromRecord,
   shouldClearValueOnKeyRename,
   splitArgs,
@@ -239,6 +240,86 @@ describe("hasStrayMaskedValue", () => {
     expect(shouldClear).toBe(true);
     const after: KeyValueRow = { ...before, key: "GITHUB_PAT", value: shouldClear ? "" : before.value };
     expect(hasStrayMaskedValue([after], baseline)).toBe(false);
+  });
+
+  // N1 review finding：原判据只看"键名在不在 baseline 里"，漏掉了同名覆盖——
+  // 把 A 的可见遮罩粘进**已经存在**的键 B 的值框，B 自己在 baseline 里查得到
+  // （所以旧判据的 baseline[r.key] === undefined 不成立，放过了），但粘进来的
+  // 值根本不是 B 自己的原始遮罩，而是 A 的——这跟"改名后值还留着旧遮罩"是
+  // 同一种数据损坏，触发方式不同：值框里显示的就是普通明文，把 A 的遮罩粘到
+  // B 里是操作上顺理成章的一步（比如"这两个变量我想填一样的 token"）
+  it("键名没变，但值被粘成了另一把凭据的遮罩——命中（N1）", () => {
+    const b = { GITHUB_TOKEN: "ghp_ABCD*****MNOP", GH_TOKEN: "sk-31cf5*****828c" };
+    const pastedIntoExisting: KeyValueRow[] = [
+      { rowId: "1", originalKey: "GH_TOKEN", key: "GH_TOKEN", value: "ghp_ABCD*****MNOP" },
+    ];
+    expect(hasStrayMaskedValue(pastedIntoExisting, b)).toBe(true);
+  });
+
+  it("两个键合法地存着同一份真凭据（两个遮罩碰巧相同）——不该被误判", () => {
+    const shared = "ghp_ABCD*****MNOP";
+    const b = { KEY_A: shared, KEY_B: shared };
+    const rows: KeyValueRow[] = [
+      { rowId: "1", originalKey: "KEY_A", key: "KEY_A", value: shared },
+      { rowId: "2", originalKey: "KEY_B", key: "KEY_B", value: shared },
+    ];
+    expect(hasStrayMaskedValue(rows, b)).toBe(false);
+  });
+});
+
+// M1 review finding：改名清空之后又把键名改回 originalKey（典型触发：打个
+// 尾随空格再退格），值还是空的，但 renamedAndCleared 要求键名 !== originalKey、
+// stray 显式排除空值——两道警示的判据缝隙里漏掉了这个状态，Save 照常可点，
+// 一存就把真凭据覆盖成空字符串
+describe("restoredValueOnKeyUndo", () => {
+  const baseline = { GITHUB_TOKEN: "ghp_ABCD*****MNOP" };
+
+  it("键名改回 originalKey、值是空的、baseline 里查得到——找回原遮罩", () => {
+    expect(restoredValueOnKeyUndo("GITHUB_TOKEN", "GITHUB_TOKEN", "", baseline)).toBe(
+      "ghp_ABCD*****MNOP"
+    );
+  });
+
+  it("键名还没改回 originalKey——不该找回（还在改名途中）", () => {
+    expect(restoredValueOnKeyUndo("GITHUB_TOKEN2", "GITHUB_TOKEN", "", baseline)).toBeNull();
+  });
+
+  it("值不是空的（用户已经填了新值）——不该覆盖用户刚打的东西", () => {
+    expect(restoredValueOnKeyUndo("GITHUB_TOKEN", "GITHUB_TOKEN", "user typed this", baseline)).toBeNull();
+  });
+
+  it("originalKey 是 null（全新的行）——没有原值可找回", () => {
+    expect(restoredValueOnKeyUndo("ANYTHING", null, "", baseline)).toBeNull();
+  });
+
+  it("baseline 里已经没有这个键了（比如同时被删除）——没有可找回的原值", () => {
+    expect(restoredValueOnKeyUndo("GONE_KEY", "GONE_KEY", "", {})).toBeNull();
+  });
+
+  it("端到端：改名清空再改回去，跟组件里 onChange 的顺序一致", () => {
+    const original: KeyValueRow = {
+      rowId: "1",
+      originalKey: "GITHUB_TOKEN",
+      key: "GITHUB_TOKEN",
+      value: "ghp_ABCD*****MNOP",
+    };
+    // 第一步：改名（打一个字符），值按 shouldClearValueOnKeyRename 被清空
+    const renamedKey = "GITHUB_TOKEN2";
+    const undo1 = restoredValueOnKeyUndo(renamedKey, original.originalKey, original.value, baseline);
+    expect(undo1).toBeNull(); // 还没改回去，不该找回
+    const clear = shouldClearValueOnKeyRename(original.key, original.value, baseline);
+    const afterRename: KeyValueRow = { ...original, key: renamedKey, value: clear ? "" : original.value };
+    expect(afterRename.value).toBe("");
+    // 第二步：退格改回原键名——这时候该找回原值
+    const undo2 = restoredValueOnKeyUndo(original.originalKey as string, afterRename.originalKey, afterRename.value, baseline);
+    expect(undo2).toBe("ghp_ABCD*****MNOP");
+    const afterUndo: KeyValueRow = {
+      ...afterRename,
+      key: original.originalKey as string,
+      value: undo2 as string,
+    };
+    // 回到了跟最初一模一样的状态——包括"未改"判据会重新认出它
+    expect(afterUndo).toEqual(original);
   });
 });
 
