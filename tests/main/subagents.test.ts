@@ -208,6 +208,11 @@ describe("preamble 块标量", () => {
     expect(def?.preamble).toEqual({ mode: "default" });
   });
 
+  it("块首的空行不是内容——留着它,设置页会把一个没人碰过的行判成有未保存改动", () => {
+    const def = parse("---\nname: a\npreamble: |\n\n  正文\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "custom", text: "正文" });
+  });
+
   it("块标量写的 off 是内容,不是保留字——否则用户存的自定义前置词被静默改成「关闭」", () => {
     const def = parse("---\nname: a\npreamble: |\n  off\n---\n正文");
     expect(def?.preamble).toEqual({ mode: "custom", text: "off" });

@@ -109,7 +109,7 @@ function parseFrontmatter(block: string): Frontmatter {
       const body: string[] = [];
       const keyIndent = indentOf(line);
       // 吃掉后续缩进比键行深的连续行。空行留在块里（块中间的空行是内容的一部分），
-      // 块尾多余的空行由末尾的 trimEnd 收走
+      // 块首块尾多余的空行由末尾的 trim 收走
       while (i + 1 < lines.length) {
         const next = lines[i + 1] ?? "";
         if (next.trim() !== "" && indentOf(next) <= keyIndent) break;
@@ -118,7 +118,10 @@ function parseFrontmatter(block: string): Frontmatter {
       }
       const indents = body.filter((s) => s.trim() !== "").map(indentOf);
       const common = indents.length > 0 ? Math.min(...indents) : 0;
-      const text = body.map((s) => s.slice(common)).join("\n").trimEnd();
+      // 首尾的空行都不是内容——跟公共缩进一样,是排版不是正文。
+      // 留着块首那行空行,设置页组装出来的 preamble.text 会跟磁盘上这份差一个 "\n",
+      // 于是一个没人碰过的行显示"有未保存改动",而"已保存"是那一行唯一的诚实信号
+      const text = body.map((s) => s.slice(common)).join("\n").trim();
       // 空块 = 什么都没写，退回"这个键没写过"——不是"前置词是空字符串"
       if (text) {
         fields[key] = text;

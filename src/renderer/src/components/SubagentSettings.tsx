@@ -73,6 +73,17 @@ const PREAMBLE_OPTIONS: { value: SubagentPreamble["mode"]; label: string }[] = [
     但界面上摊开一个自由输入框等于邀请用户去踩 basename 那条限制 */
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 
+/** 把勾选结果排成 CONTEXT_FILES 的顺序。顺序会进模型:readContextDocs 按数组序
+    读盘,拼在正文前面的先后就是这个数组的先后。不归一的话它是点击顺序的副产品
+    ——取消勾选再勾回来,内容一模一样却换了个次序,而 dirty 是按集合比的,
+    这份被打乱的数组会搭着下一次无关的保存写进文件。
+    界面外手写的 basename 解析器照样认(只是这里没有勾选框),原样接在后面,
+    不能在保存时被吃掉 */
+function canonicalContext(names: readonly string[]): string[] {
+  const known: readonly string[] = CONTEXT_FILES;
+  return [...known.filter((f) => names.includes(f)), ...names.filter((n) => !known.includes(n))];
+}
+
 export function SubagentSettings() {
   const subagents = useChat((s) => s.subagents);
   const refreshSubagents = useChat((s) => s.refreshSubagents);
@@ -82,13 +93,39 @@ export function SubagentSettings() {
   const scope = useChat((s) => s.subagentScope);
   const setScope = useChat((s) => s.setSubagentScope);
   const [newOpen, setNewOpen] = useState(false);
+  // 拉清单/拉前置词失败要说出来。不说的话:清单失败 = 页面理直气壮地写"还没定义
+  // 任何子智能体"(而工作区那一层永远并着用户级那些,空清单本身就可疑),
+  // 前置词失败 = 整张卡凭空消失。这正是上一个提交刚修掉的那个形状
+  const [listError, setListError] = useState<string | null>(null);
+  const [preambleError, setPreambleError] = useState<string | null>(null);
 
   const scopeOptions = useMemo(() => subagentScopeOptions(sessions), [sessions]);
   const current = scopeOptions.find((o) => o.workspace === scope) ?? scopeOptions[0]!;
+  // 页面上所有跟作用域有关的字都从 current 取,不从 store 里那个 scope 取:
+  // 两者对不上时(见下面那个 effect)下拉显示的是 current,底下的路径也该是 current,
+  // 不然这一帧里页面说的是一层、编的是另一层
+  const scopeDir = current.workspace ? `${current.workspace}/.otter/agents` : "~/.otter/agents";
+
+  const switchScope = (workspace: string | null) => {
+    setListError(null);
+    setScope(workspace).catch((e: unknown) => setListError(bridgeErrorMessage(e)));
+  };
+
+  // 一个工作区的最后一条会话被删掉,它就从候选里消失了,但 store 里那个路径还留着:
+  // 下拉框回落显示「用户」,底下的提示却还指着那条死路径,「新建」也落在用户级
+  // (主进程不认一个不可信的路径)。而且这个错状态自己清不掉——选「用户」不触发
+  // onChange,它已经是当前显示值了。所以查不到就把 store 拨回用户级
+  useEffect(() => {
+    if (scope !== null && current.workspace !== scope) {
+      setScope(null).catch((e: unknown) => setListError(bridgeErrorMessage(e)));
+    }
+  }, [scope, current.workspace, setScope]);
 
   useEffect(() => {
-    void refreshSubagents();
-    void refreshSubagentPreamble();
+    setListError(null);
+    setPreambleError(null);
+    refreshSubagents().catch((e: unknown) => setListError(bridgeErrorMessage(e)));
+    refreshSubagentPreamble().catch((e: unknown) => setPreambleError(bridgeErrorMessage(e)));
   }, [refreshSubagents, refreshSubagentPreamble]);
 
   return (
@@ -99,10 +136,10 @@ export function SubagentSettings() {
         <label className="sr-only" htmlFor="subagent-scope">作用域</label>
         <select
           id="subagent-scope"
-          value={scope ?? ""}
-          onChange={(e) => void setScope(e.target.value === "" ? null : e.target.value)}
+          value={current.workspace ?? ""}
+          onChange={(e) => switchScope(e.target.value === "" ? null : e.target.value)}
           className="press-scale border border-border rounded-md bg-card px-2 py-1 text-[12.5px] text-foreground transition-colors duration-150"
-          title={scope ?? "所有工程都能用的那一层"}
+          title={current.workspace ?? "所有工程都能用的那一层"}
         >
           {scopeOptions.map((o) => (
             <option key={o.workspace ?? "user"} value={o.workspace ?? ""}>
@@ -125,15 +162,18 @@ export function SubagentSettings() {
           <code>&lt;工程&gt;/.otter/agents/</code>），只在该工程的会话里派得出去，
           同名时盖过用户级那份。子智能体没人盯着屏幕，审批档缺省是「直接拒绝」。
         </p>
-        {scope && <p className={cn(HINT, "font-mono text-[11px]")}>{scope}</p>}
+        {current.workspace && (
+          <p className={cn(HINT, "font-mono text-[11px]")}>{current.workspace}</p>
+        )}
+        {listError && <p className={ERR_TXT}>{listError}</p>}
+        {preambleError && <p className={ERR_TXT}>读不到全局前置词：{preambleError}</p>}
         <GlobalPreambleCard />
-        {subagents.length === 0 && (
+        {subagents.length === 0 && !listError && (
           <div className="border border-dashed border-border rounded-[10px] px-[18px] py-8 flex flex-col items-center gap-3 text-center">
             <p className="text-[13px] text-foreground">还没定义任何子智能体</p>
             <p className={cn(HINT, "max-w-[420px]")}>
               点右上角「新建」起一个，或者手写一份 <code>&lt;名字&gt;.md</code>
-              （带 YAML frontmatter）放进{" "}
-              <code>{scope ? `${scope}/.otter/agents` : "~/.otter/agents"}</code>。主 agent
+              （带 YAML frontmatter）放进 <code>{scopeDir}</code>。主 agent
               靠每个子智能体的 description 挑人——写清楚它是干什么的，模型才派得对。
             </p>
             <Button variant="outline" size="sm" onClick={() => setNewOpen(true)}>
@@ -143,7 +183,7 @@ export function SubagentSettings() {
           </div>
         )}
         {subagents.map((def) => (
-          <SubagentRow key={def.path} def={def} />
+          <SubagentRow key={def.path} def={def} scopeLabel={current.label} scopeDir={scopeDir} />
         ))}
       </section>
       <NewSubagentDialog open={newOpen} onOpenChange={setNewOpen} scopeLabel={current.label} />
@@ -232,7 +272,17 @@ function NewSubagentDialog({
   );
 }
 
-function SubagentRow({ def }: { def: SubagentDef }) {
+function SubagentRow({
+  def,
+  scopeLabel,
+  scopeDir,
+}: {
+  def: SubagentDef;
+  /** 当前作用域的短名 —— 「复制到…」那颗按钮要说清文件会落在哪一层 */
+  scopeLabel: string;
+  /** 当前作用域对应的目录,进按钮的 title */
+  scopeDir: string;
+}) {
   const mainModel = useChat((s) => s.model);
   const toolDefs = useChat((s) => s.toolDefs);
   const saveSubagent = useChat((s) => s.saveSubagent);
@@ -281,6 +331,9 @@ function SubagentRow({ def }: { def: SubagentDef }) {
         ? { mode: "off" }
         : { mode: "default" };
 
+  const contextDraft = canonicalContext(context);
+  const contextSaved = canonicalContext(def.context);
+
   const dirty =
     description !== def.description ||
     instructions !== def.instructions ||
@@ -289,8 +342,8 @@ function SubagentRow({ def }: { def: SubagentDef }) {
     (preamble.mode === "custom" &&
       def.preamble.mode === "custom" &&
       preamble.text !== def.preamble.text) ||
-    context.length !== def.context.length ||
-    context.some((c) => !def.context.includes(c)) ||
+    contextDraft.length !== contextSaved.length ||
+    contextDraft.some((c, i) => c !== contextSaved[i]) ||
     tools.length !== def.tools.length ||
     tools.some((t) => !def.tools.includes(t)) ||
     modelPinned !== (def.model !== undefined) ||
@@ -330,7 +383,7 @@ function SubagentRow({ def }: { def: SubagentDef }) {
         unknownTools: def.unknownTools,
         approval,
         preamble,
-        context,
+        context: contextDraft,
         scope: def.scope,
         path: def.path,
         source: def.source,
@@ -677,8 +730,14 @@ function SubagentRow({ def }: { def: SubagentDef }) {
             复制路径
           </Button>
           {def.readOnly && (
-            <Button variant="outline" size="sm" disabled={copying} onClick={() => void copyToOtterAgents()}>
-              {copying ? "复制中…" : "复制到 ~/.otter/agents"}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={copying}
+              title={scopeDir}
+              onClick={() => void copyToOtterAgents()}
+            >
+              {copying ? "复制中…" : `复制到${scopeLabel}这一层`}
             </Button>
           )}
         </div>
