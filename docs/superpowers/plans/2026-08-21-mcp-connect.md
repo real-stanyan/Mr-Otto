@@ -1800,8 +1800,11 @@ export function createMcpHub(opts: {
     readResource: (id, uri, signal) => liveConn(id).readResource(uri, signal),
     getPrompt: (id, name, args) => liveConn(id).getPrompt(name, args),
 
-    list: () =>
-      [...entries.entries()].map(([id, e]) => {
+    list: () => {
+      // 先同步磁盘：设置页会在 ready() 之前就调 list()，
+      // 那时候 entries 还是空的 —— 配置过但没连上的 server 也必须显示出来
+      syncFromDisk();
+      return [...entries.entries()].map(([id, e]) => {
         const h = handleOf(id, e);
         return {
           id,
@@ -1813,7 +1816,8 @@ export function createMcpHub(opts: {
           resources: [...h.resources],
           prompts: [...h.prompts],
         };
-      }),
+      });
+    },
 
     async save(id, cfg) {
       syncFromDisk();
@@ -2381,106 +2385,27 @@ EOF
 
 ---
 
-## Task 10: 审批预览 + 凭据遮罩
+## Task 10: 审批预览 + 凭据遮罩 —— **CUT（pre-flight 裁掉，见下）**
 
-**Files:**
-- Modify: `src/main/approvalPreview.ts`
-- Test: `tests/main/approvalPreview.test.ts`
+**Ruling（执行前扫描时作出）**：本 Task 取消，改为收尾时开一条 follow-up issue 记录。
 
-**Interfaces:**
-- Consumes: `buildApprovalPreview(call, world)` 既有签名
-- Produces: MCP 工具的预览分支
+三条理由，按分量排：
 
-- [ ] **Step 1: 写失败的测试**
+1. **它保护不了它声称要保护的东西**。`ToolCallRequest.args` 是 `src/session/events.ts`
+   里的字段，随 `tool_execution_started` 落进 append-only 日志。审批卡上遮罩住，
+   日志里照样是原文 —— 而日志是唯一事实来源、不可编辑。遮罩卡片是安全剧场。
+2. **威胁模型本来就不成立**。MCP 的凭据住在 server 配置的 `env` / `headers` 里，
+   那些**永远不进模型上下文**，模型没法把它们写进工具参数。工具参数里出现凭据，
+   只可能是用户自己在对话里粘了一个 —— 那是另一个问题，不是 MCP 引入的。
+3. **预览那一半改动面远大于收益**。`buildApprovalPreview` 的返回类型是
+   `WriteFilePreview | undefined`（`approvalPreview.ts:16`），它一路走
+   `AgentPush.approvalRequest` → ShellBridge → 渲染层的审批卡。要塞进 MCP 预览
+   就得把这个类型改成联合类型，三层跟着改。而收益是什么？卡上本来就显示
+   `mcp__github__create_pr` 这个名字（server 与工具名都在里面）加参数 JSON 兜底。
 
-在 `tests/main/approvalPreview.test.ts` 末尾追加：
-
-```ts
-describe("MCP 工具的审批预览", () => {
-  it("显示 server 名与工具名", async () => {
-    const p = await buildApprovalPreview(
-      { id: "c1", name: "mcp__github__create_pr", args: { title: "x" } } as never,
-      bareWorld
-    );
-    expect(JSON.stringify(p)).toContain("github");
-    expect(JSON.stringify(p)).toContain("create_pr");
-  });
-
-  it("参数里疑似凭据的字段显示遮罩 —— 审批卡也是一块屏，凭据不该整串亮出来", async () => {
-    const p = await buildApprovalPreview(
-      { id: "c1", name: "mcp__x__y", args: { token: "ghp_abcdefghijklmnop", title: "正常" } } as never,
-      bareWorld
-    );
-    const s = JSON.stringify(p);
-    expect(s).not.toContain("ghp_abcdefghijklmnop");
-    expect(s).toContain("正常");
-  });
-
-  it("键名带 secret / password / api_key 的一样遮", async () => {
-    const p = await buildApprovalPreview(
-      { id: "c1", name: "mcp__x__y", args: { apiKey: "sk-1234567890abcdef", myPassword: "hunter22222" } } as never,
-      bareWorld
-    );
-    const s = JSON.stringify(p);
-    expect(s).not.toContain("sk-1234567890abcdef");
-    expect(s).not.toContain("hunter22222");
-  });
-
-  it("非 MCP 工具的预览一字不变（回归）", async () => {
-    const p = await buildApprovalPreview({ id: "c1", name: "bash", args: { cmd: "ls" } } as never, bareWorld);
-    expect(JSON.stringify(p)).toContain("ls");
-  });
-});
-```
-
-- [ ] **Step 2: 跑测试确认它失败**
-
-```bash
-cd ../Mr_Otto-mcp && npx vitest run tests/main/approvalPreview.test.ts
-```
-
-- [ ] **Step 3: 实现**
-
-在 `src/main/approvalPreview.ts` 里加：
-
-```ts
-import { maskKey } from "../shared/keyMask.js";
-
-/** 审批卡也是一块屏 —— 参数里的凭据不该整串亮出来。
-    按键名判断:这是启发式,漏判的代价是多显示一串(卡是给人看的,不进日志),
-    误判的代价是少显示一串 —— 两边都不致命,所以宁可多遮 */
-const SECRET_KEY = /token|secret|password|passwd|api[-_]?key|credential|authorization/i;
-
-function maskArgs(args: unknown): unknown {
-  if (Array.isArray(args)) return args.map(maskArgs);
-  if (args && typeof args === "object") {
-    return Object.fromEntries(
-      Object.entries(args as Record<string, unknown>).map(([k, v]) =>
-        SECRET_KEY.test(k) && typeof v === "string" ? [k, maskKey(v)] : [k, maskArgs(v)]
-      )
-    );
-  }
-  return args;
-}
-```
-
-并在 `buildApprovalPreview` 顶部加一支：工具名以 `mcp__` 开头时，拆出 server 与 tool，返回带这两项 + `maskArgs(call.args)` 的预览。
-
-- [ ] **Step 4: 跑测试 + 门禁 + 提交**
-
-```bash
-cd ../Mr_Otto-mcp && npx vitest run tests/main/approvalPreview.test.ts && npm test
-git add src/main/approvalPreview.ts tests/main/approvalPreview.test.ts
-git commit -m "$(cat <<'EOF'
-feat(mcp): 审批卡显示 server + 工具名，参数里的凭据遮罩
-
-按键名判断是不是凭据，这是启发式：漏判的代价是多显示一串（卡是给人
-看的，不进日志），误判的代价是少显示一串 —— 两边都不致命，所以宁可多遮。
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-EOF
-)"
-```
+**代价（如果这个 ruling 错了）**：MCP 调用的审批卡长得跟 bash / 其它工具的审批卡
+一样朴素 —— 工具名 + 参数 JSON，没有专门排版。补回来是一个独立的 UI Task，
+不影响本分支任何其它部分。
 
 ---
 
