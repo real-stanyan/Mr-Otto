@@ -355,11 +355,12 @@ export interface ShellBridge {
   browserReload(sessionId: string): Promise<void>;
   /** 关浏览器 = 销毁 webContents,登录态之外的一切(历史/前进后退)都没了 */
   browserClose(sessionId: string): Promise<void>;
-  /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
+  /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文档转 md/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
-  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文本带内容,
-      其余拒收带理由。与 pickAttachments 共用闸门 = 只有一套准入策略 */
+  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文档转成
+      Markdown 后并入文本(ADR-0046),文本带内容,其余拒收带理由。
+      与 pickAttachments 共用闸门 = 只有一套准入策略 */
   intakePastedFiles(files: { name: string; data: Uint8Array }[]): Promise<StagedAttachment[]>;
   /** 按附件 id 取 data URL(时间线缩略图懒取用)。只回展示用途,不进日志 */
   attachmentDataUrl(id: string): Promise<string>;
