@@ -26,6 +26,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | protocol version number | A semver-variant tag: **major** = cross-tool/cross-repo contract change; **minor** = a new mechanism added; **patch** = revision of an existing file. Every protocol PR declares a `Version bump`; the author tags after merge; the downstream local version is recorded in the `.gearbox-version` stamp (written and read by tooling) | ADR-0023; baseline v0.0.0 |
 | 终端面板（Terminal panel） | 会话里内嵌的真 PTY 终端，纯人用。输出不进事件日志、不进模型上下文（ADR-0031）——它不是任何事实的投影，是人的旁路工具。 | |
 | 回滚缓冲（terminal ring buffer） | 主进程为每个终端保留的末尾约 200 KB 输出。面板关掉时渲染层的 xterm 实例就没了而 pty 还在吐，靠它接住；重开面板一次性灌回去。内存态，不落盘，与 pty 进程同生共死。 | |
+| 轨迹（Trajectory） | 会话日志的第二种投影（第一种是聊天区）：一步一行，工具请求 + 审批 + 开跑 + 结果按 toolCallId 合成一行，顶部泳道时间轴（Input / Model / Tools）按 Duration / Turns / Calls 三种刻度铺开。对标 deepseek-harness 的 trajectory 视图。纯渲染层、只读、不进 store；取代了早期的「画布 + 函数轨迹」教学式回放（#151）。 | `src/renderer/src/replay/trajectory.ts` |
 
 ## Key invariants
 

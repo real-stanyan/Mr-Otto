@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,7 +33,7 @@ import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/der
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
-import { Replay } from "./replay/Replay.js";
+import { TrajectoryView } from "./replay/TrajectoryView.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
@@ -2446,12 +2446,18 @@ export function App() {
               不是输入区的控件 */}
           <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />
         </div>
-        {/* 模式出口不进菜单:回放中把「回到直播」外显,不让用户困在模式里翻菜单找出路 */}
-        {replaying && (
-          <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={() => setReplayCursor(null)}>
-            回到直播
-          </Button>
-        )}
+        {/* 对话 / 轨迹 两个视图外显成 tab(deepseek-harness 版式):同一份日志的两种投影,
+            切换零成本,不该藏在溢出菜单里。replayCursor 非 null = 轨迹视图 */}
+        <Tabs
+          value={replaying ? "trajectory" : "chat"}
+          onValueChange={(v) => setReplayCursor(v === "trajectory" ? 0 : null)}
+          className="shrink-0"
+        >
+          <TabsList variant="line" className="h-7">
+            <TabsTrigger value="chat" className="text-xs px-2">对话</TabsTrigger>
+            <TabsTrigger value="trajectory" className="text-xs px-2">轨迹</TabsTrigger>
+          </TabsList>
+        </Tabs>
         {/* 头部只留一颗「更多」溢出菜单:回放/Protocol 等功能收进去,后续新功能有地方放 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -2460,9 +2466,6 @@ export function App() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={replaying} onClick={() => setReplayCursor(0)}>
-              <History /> 回放
-            </DropdownMenuItem>
             {/* Protocol 仪表盘对应各工作区,入口挂会话头部,不进全局侧栏 */}
             <DropdownMenuItem onClick={() => void openProtocol()}>
               <BookMarked /> Protocol 仪表盘
@@ -2482,8 +2485,8 @@ export function App() {
 
       {replaying ? (
         <>
-          {/* 富回放：画布 + 函数轨迹，重演每条事件在系统里的路径 */}
-          <Replay />
+          {/* 轨迹视图:泳道时间轴 + 一步一行 + 详情面板,看 agent 每一步做了什么 */}
+          <TrajectoryView />
           {/* 审批卡永不因回放隐藏：它是挂起中的活控制件，藏了 agent 就卡死 */}
           <ApprovalCard />
           <QuestionnaireCard />
