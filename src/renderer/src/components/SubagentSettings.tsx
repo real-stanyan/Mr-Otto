@@ -277,6 +277,17 @@ function SubagentRow({ def }: { def: SubagentDef }) {
     setCopiedAs(null);
     try {
       await createSubagent(copyName);
+      // path/source/readOnly 必须来自刚建出来那份的磁盘现状,不能沿用 def(那是原本
+      // 那份只读记录的路径)。saveSubagent 的 IPC handler 会按 name 重新查一遍磁盘、
+      // 拿查到的 path/source/readOnly 覆盖请求体里的同名字段,所以这里传什么值都不会
+      // 被后端采信——但组件自己的代码不该装作"知道"一个它其实没查过的路径,
+      // 那样的正确性系着一个类型契约没承诺过的后端实现细节,下一个读这段代码的人
+      // 会学到错的教训。查不到就报错,不回退去用 def 的旧字段
+      const created = useChat.getState().subagents.find((d) => d.name === copyName);
+      if (!created) {
+        setCopyError(`创建后没能在清单里找到「${copyName}」，请重试`);
+        return;
+      }
       await saveSubagent({
         name: copyName,
         description: def.description,
@@ -284,9 +295,9 @@ function SubagentRow({ def }: { def: SubagentDef }) {
         tools: def.tools,
         unknownTools: def.unknownTools,
         approval: def.approval,
-        path: def.path,
-        source: def.source,
-        readOnly: false,
+        path: created.path,
+        source: created.source,
+        readOnly: created.readOnly,
         ...(def.model ? { model: def.model } : {}),
         ...(def.thinking ? { thinking: def.thinking } : {}),
       });
