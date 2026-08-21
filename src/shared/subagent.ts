@@ -41,7 +41,7 @@ export const DEFAULT_PREAMBLE =
     抄来的，收全路径就等于让一份 .md 变成任意文件读取原语。
     解析时挡一次、运行时读盘前再挡一次（两处独立判断比互相信任更皮实） */
 export function isSafeContextFile(name: string): boolean {
-  return name.length > 0 && name !== "." && name !== ".." && !/[/\\]/.test(name);
+  return name.length > 0 && name !== "." && name !== ".." && !/[/\\,]/.test(name);
 }
 
 /** 合法的 subagent 名字：只有它会变成磁盘上的文件名（`<名字>.md`），也只有它

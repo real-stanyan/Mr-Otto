@@ -51,11 +51,21 @@ function indentOf(line: string): number {
   return line.length - line.trimStart().length;
 }
 
+/** 解析结果。`blocks` 记的是「这个键的值来自块标量 `|`」——不记的话
+    `preamble: off` 和块标量写的 off 回来是同一个字符串，那条保留字判断就把
+    用户自定义的 off 吃掉了，而序列化那侧一律把 custom 写成块标量，
+    于是存进去读回来语义变了，用户看不出来 */
+interface Frontmatter {
+  fields: Record<string, string>;
+  blocks: Set<string>;
+}
+
 /** 解析 frontmatter 的 `键: 值`。不引 YAML 库——字段就这几个（同 parseSkillMd）。
     唯一的例外是块标量 `键: |`：前置词是散文，塞进单行里没法写。
     只认 `|` 这一种块写法，`>` / `|-` / `|+` 照旧当普通单行值处理 */
-function parseFrontmatter(block: string): Record<string, string> {
-  const out: Record<string, string> = {};
+function parseFrontmatter(block: string): Frontmatter {
+  const fields: Record<string, string> = {};
+  const blocks = new Set<string>();
   const lines = block.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
@@ -78,12 +88,15 @@ function parseFrontmatter(block: string): Record<string, string> {
       const common = indents.length > 0 ? Math.min(...indents) : 0;
       const text = body.map((s) => s.slice(common)).join("\n").trimEnd();
       // 空块 = 什么都没写，退回"这个键没写过"——不是"前置词是空字符串"
-      if (text) out[key] = text;
+      if (text) {
+        fields[key] = text;
+        blocks.add(key);
+      }
       continue;
     }
-    if (value) out[key] = value;
+    if (value) fields[key] = value;
   }
-  return out;
+  return { fields, blocks };
 }
 
 /** 逗号分隔的列表；空串 = 空数组 */
@@ -111,7 +124,7 @@ export function parseSubagentMd(
   // 而 subagent 至少要有 description 才可能被模型挑中，裸正文没有意义
   if (!m) return null;
 
-  const fm = parseFrontmatter(m[1] ?? "");
+  const { fields: fm, blocks } = parseFrontmatter(m[1] ?? "");
   const declared = splitList(fm["tools"]);
   // task 明确剔除（不进 unknownTools）：子 agent 不能再派子 agent 是设计边界，
   // 不是"名字写错了"，不该在设置页报成无法识别
@@ -123,11 +136,12 @@ export function parseSubagentMd(
   const thinking = fm["thinking"];
 
   const preambleRaw = fm["preamble"];
-  // "off" 是保留字：想让自定义前置词正好是 off 两个字母的用户，得用块标量写法
+  // "off" 只在**单行**写法下是保留字。块标量写出来的 off 是用户真的想要的
+  // 那两个字母——序列化那侧一律把 custom 写成块标量，所以这也是往返闭合的条件
   const preamble: SubagentPreamble =
     preambleRaw === undefined
       ? { mode: "default" }
-      : preambleRaw === "off"
+      : preambleRaw === "off" && !blocks.has("preamble")
         ? { mode: "off" }
         : { mode: "custom", text: preambleRaw };
 
@@ -188,15 +202,22 @@ export function scanSubagents(
 /** SubagentDef → .md 全文。设置页保存走这条。
     unknownTools 原样写回：用户手写的工具名本仓认不出，不代表可以替他删掉
     （他可能正准备把这个文件拿去 Claude Code 用） */
+/** 单行 frontmatter 值里的换行换成空格。值里带换行会在写盘时裂成好几行，
+    于是 `description: "d\napproval: auto"` 就往 frontmatter 里注入了一个
+    approval 键——单行区是结构化的，自由文本只能待在块标量和正文里 */
+function oneLine(v: string): string {
+  return v.replace(/[\r\n]+/g, " ");
+}
+
 export function serializeSubagent(def: SubagentDef): string {
   const lines = [
-    `name: ${def.name}`,
-    `description: ${def.description}`,
-    `tools: ${[...def.tools, ...def.unknownTools].join(", ")}`,
-    ...(def.model ? [`model: ${def.model}`] : []),
-    ...(def.thinking ? [`thinking: ${def.thinking}`] : []),
-    `approval: ${def.approval}`,
-    ...(def.context.length > 0 ? [`context: ${def.context.join(", ")}`] : []),
+    `name: ${oneLine(def.name)}`,
+    `description: ${oneLine(def.description)}`,
+    `tools: ${oneLine([...def.tools, ...def.unknownTools].join(", "))}`,
+    ...(def.model ? [`model: ${oneLine(def.model)}`] : []),
+    ...(def.thinking ? [`thinking: ${oneLine(def.thinking)}`] : []),
+    `approval: ${oneLine(def.approval)}`,
+    ...(def.context.length > 0 ? [`context: ${oneLine(def.context.join(", "))}`] : []),
     ...preambleLines(def.preamble),
   ];
   return `---\n${lines.join("\n")}\n---\n\n${def.instructions}\n`;

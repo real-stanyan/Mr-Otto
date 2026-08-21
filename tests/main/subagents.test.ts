@@ -6,7 +6,7 @@ import {
   serializeSubagent,
   type SubagentDirReader,
 } from "../../src/main/subagents.js";
-import { DEFAULT_SUBAGENT_TOOLS } from "../../src/shared/subagent.js";
+import { DEFAULT_SUBAGENT_TOOLS, isSafeContextFile } from "../../src/shared/subagent.js";
 
 const KNOWN = ["read_file", "write_file", "bash", "web_search", "web_extract", "todo_write", "ask_user", "browser_read"];
 
@@ -205,6 +205,11 @@ describe("preamble 块标量", () => {
     const def = parse("---\nname: a\npreamble: |\n---\n正文");
     expect(def?.preamble).toEqual({ mode: "default" });
   });
+
+  it("块标量写的 off 是内容,不是保留字——否则用户存的自定义前置词被静默改成「关闭」", () => {
+    const def = parse("---\nname: a\npreamble: |\n  off\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "custom", text: "off" });
+  });
 });
 
 describe("context 只收 basename", () => {
@@ -224,6 +229,10 @@ describe("context 只收 basename", () => {
 
   it("带路径分隔符的一律丢掉——定义文件不能是任意文件读取原语", () => {
     expect(parse("../../etc/passwd, /etc/passwd, a/b, ..")?.context).toEqual([]);
+  });
+
+  it("带逗号的一律丢掉——context 是逗号分隔的列表，逗号会破坏往返", () => {
+    expect(isSafeContextFile("a,b")).toBe(false);
   });
 
   it("不写 context = 空数组", () => {
@@ -264,5 +273,13 @@ describe("序列化往返", () => {
   it("preamble 为 default 时整行不写", () => {
     const def = parse("---\nname: a\ndescription: d\ntools: read_file\n---\n正文")!;
     expect(serializeSubagent(def)).not.toContain("preamble:");
+  });
+
+  it("custom 内容正好是 off 时,往返不改语义", () => {
+    const once = parse(
+      "---\nname: a\ndescription: d\ntools: read_file\npreamble: |\n  off\n---\n正文"
+    )!;
+    expect(once.preamble).toEqual({ mode: "custom", text: "off" });
+    expect(parse(serializeSubagent(once))).toEqual(once);
   });
 });
