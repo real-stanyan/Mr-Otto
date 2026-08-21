@@ -9,12 +9,7 @@
 
 import { createAgent, type AgentPush } from "./agent.js";
 import { denyingApprover } from "./uiApprover.js";
-import {
-  GLOBAL_PREAMBLE_PATH,
-  composeSubagentPrompt,
-  readContextDocs,
-  readGlobalPreamble,
-} from "./subagentPrompt.js";
+import { composeSubagentPrompt, readContextDocs } from "./subagentPrompt.js";
 import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
@@ -70,11 +65,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
   const composePrompt =
     deps.composePrompt ??
     ((def: SubagentDef, workspace: string) =>
-      composeSubagentPrompt({
-        def,
-        globalPreamble: readGlobalPreamble(GLOBAL_PREAMBLE_PATH),
-        docs: readContextDocs(workspace, def.context),
-      }));
+      composeSubagentPrompt({ def, docs: readContextDocs(workspace, def.context) }));
 
   return {
     async run({ agent: name, task, parentToolCallId, signal }) {

@@ -21,7 +21,6 @@ import type { SyntheticEvent } from "react";
 import { Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge.js";
 import { Button } from "@/components/ui/button.js";
-import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/lib/utils.js";
 import { HEADER, HEADER_GHOST, HINT, MAIN_COL, SETTINGS_BODY } from "../App.js";
 import { SidebarNub } from "./SidebarNub.js";
@@ -43,7 +42,6 @@ export function SubagentSettings() {
   // 清单上头
   const listError = useChat((s) => s.subagentsError);
   const refreshSubagents = useChat((s) => s.refreshSubagents);
-  const refreshSubagentPreamble = useChat((s) => s.refreshSubagentPreamble);
   const closeSettings = useChat((s) => s.closeSettings);
   const workspace = useChat((s) => s.workspace);
   const scope = useChat((s) => s.subagentScope);
@@ -53,8 +51,6 @@ export function SubagentSettings() {
   // 内置的和自己的分两栏:一份改得了、一份改不了,混在一起每行都得先看徽章
   const builtins = subagents.filter((d) => d.builtin);
   const own = subagents.filter((d) => !d.builtin);
-  // 拉前置词失败要说出来,不说的话整张卡凭空消失（清单那条同理,只是它搬进 store 了）
-  const [preambleError, setPreambleError] = useState<string | null>(null);
 
   // 一个工作区的最后一条会话被删掉,它就从候选里消失了,但 store 里那个路径还留着:
   // 下拉框回落显示「用户」,底下的提示却还指着那条死路径,「新建」也落在用户级
@@ -72,14 +68,12 @@ export function SubagentSettings() {
   // 用户在这一页上手选过之后,不该被别处的会话切换把脚下这层抽走。
   // 两条拉清单的路都不抛,拉不到时把话写进 store 的 subagentsError
   useEffect(() => {
-    setPreambleError(null);
     const desired = initialSubagentScope(workspace, view.options);
     // 已经停在该停的那一层就只重扫一遍。setSubagentScope 会先把清单清空(换层时必须
     // 这么做,否则一瞬间显示的是上一层的内容),同一层也清一次的话,每次开页都要
     // 闪一下"还没定义任何子智能体"那张空卡
     if (desired === scope) void refreshSubagents();
     else void setScope(desired);
-    refreshSubagentPreamble().catch((e: unknown) => setPreambleError(bridgeErrorMessage(e)));
   }, []);
 
   if (creating) {
@@ -118,7 +112,6 @@ export function SubagentSettings() {
           <p className={cn(HINT, "font-mono text-[11px]")}>{view.current.workspace}</p>
         )}
         {listError && <p className={ERR_TXT}>{listError}</p>}
-        {preambleError && <p className={ERR_TXT}>读不到全局前置词：{preambleError}</p>}
         {/* 内置排在最上面:它是这一页唯一"打开就有东西"的那部分 —— 清单是空的新用户
             先看见的该是两个能用的,而不是一张"你还没定义任何子智能体"的空卡。
             同名的磁盘定义已经在 withBuiltins 里把它盖掉了,这里不会重复出现 */}
@@ -161,7 +154,6 @@ export function SubagentSettings() {
         {own.map((def) => (
           <SubagentRow key={def.path} def={def} scope={view} />
         ))}
-        <GlobalPreambleCard />
       </section>
     </div>
   );
@@ -377,70 +369,5 @@ function BuiltinSubagentRow({ def, scope }: { def: SubagentDef; scope: SubagentS
         </div>
       </div>
     </details>
-  );
-}
-
-/** 全局前置词 —— 拼在每个子智能体正文前面的那一段。单个子智能体可以覆盖它。
-    「恢复默认」是删文件不是写一份等于默认的内容:以后内置默认那段改了,
-    只有真的删掉文件的人才会跟着更新 */
-function GlobalPreambleCard() {
-  const state = useChat((s) => s.subagentPreamble);
-  const savePreamble = useChat((s) => s.saveSubagentPreamble);
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // 后端回来的状态是这个输入框的真相来源；用户改到一半时不要被它冲掉,
-  // 所以只在"这一份状态是新的"时同步（用 isDefault + text 一起当身份）
-  useEffect(() => {
-    if (state) setDraft(state.text);
-  }, [state?.text, state?.isDefault]);
-
-  if (!state) return null;
-
-  const dirty = draft.trim() !== state.text.trim();
-
-  const run = async (text: string | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await savePreamble(text);
-    } catch (e) {
-      setError(bridgeErrorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="border border-border rounded-[10px] px-[14px] py-4 flex flex-col gap-[6px]">
-      <label className="text-[11px] tracking-[0.06em] text-muted-foreground uppercase">
-        全局前置词
-      </label>
-      <p className={HINT}>
-        拼在每个子智能体正文前面；单个子智能体可以在下面覆盖它。存在{" "}
-        <code>~/.otter/subagent-preamble.md</code>，也可以直接用编辑器改。
-      </p>
-      <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        className="font-mono text-[12.5px] min-h-32"
-      />
-      {error && <p className={ERR_TXT}>{error}</p>}
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={!dirty || busy} onClick={() => void run(draft)}>
-          {busy ? "保存中…" : dirty ? "保存" : "已保存"}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={state.isDefault || busy}
-          onClick={() => void run(null)}
-        >
-          恢复默认
-        </Button>
-        <span className={HINT}>{state.isDefault ? "用的是内置默认" : "已自定义"}</span>
-      </div>
-    </div>
   );
 }

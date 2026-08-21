@@ -107,7 +107,7 @@ describe("createSubagentRunner", () => {
     const briefed = store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
     expect(briefed?.type === "subagent_briefed" && briefed.tools).toEqual(["read_file", "web_search"]);
     expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("你是一个只读搜索员。");
-    expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("最终一段文本就是返回值");
+    expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("Your final block of text IS the return value");
   });
 
   // approval: "inherit"（内置那两份走这条）——"用户有没有打开免审批"是运行时状态,

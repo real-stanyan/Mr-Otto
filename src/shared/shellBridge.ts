@@ -332,11 +332,6 @@ export interface ShellBridge {
   saveSubagent(def: SubagentDef, workspace: string | null): Promise<SubagentDef[]>;
   /** 按模板新建一个，返回整份清单。建在该作用域可写的那条根里 */
   createSubagent(name: string, workspace: string | null): Promise<SubagentDef[]>;
-  /** 全局前置词（~/.otter/subagent-preamble.md）。isDefault = 文件不在／是空的,
-      正文是内置默认那段 */
-  getSubagentPreamble(): Promise<{ text: string; isDefault: boolean }>;
-  /** 写回全局前置词。text === null 或全空白 = 删掉文件 = 恢复内置默认 */
-  saveSubagentPreamble(text: string | null): Promise<{ text: string; isDefault: boolean }>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -548,8 +543,6 @@ export const CHANNELS = {
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",
   createSubagent: "otter:createSubagent",
-  getSubagentPreamble: "otter:getSubagentPreamble",
-  saveSubagentPreamble: "otter:saveSubagentPreamble",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",

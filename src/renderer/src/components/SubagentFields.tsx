@@ -426,7 +426,7 @@ export function SubagentFields({
               disabled={readOnly}
               onChange={(e) => draft.setPreambleText(e.target.value)}
               className="font-mono text-[12.5px] min-h-24"
-              placeholder="这一段会替代全局前置词，只对这个子智能体生效"
+              placeholder="这一段会替代内置的那段前置词，只对这个子智能体生效"
             />
             {draft.blockedByBlankPreamble && (
               <p className={ERR_TXT}>
@@ -438,7 +438,7 @@ export function SubagentFields({
           <p className={HINT}>
             {draft.preambleMode === "off"
               ? "一段前置词都不加——它连「最终一段文本就是返回值」这条都不知道，正文里要自己写清楚"
-              : "用上面那份全局前置词"}
+              : "用内置的那段前置词（写死在代码里，不可改）"}
           </p>
         )}
       </div>
