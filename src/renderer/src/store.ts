@@ -35,7 +35,11 @@ import type {
   McpServersSnapshot,
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
-import { mcpPromptFormKey, missingRequiredArgs } from "./lib/mcpPromptMenu.js";
+import {
+  initialMcpPromptValues,
+  isCurrentMcpPromptSubmission,
+  missingRequiredArgs,
+} from "./lib/mcpPromptMenu.js";
 import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
 import type { ThinkingMode } from "../../shared/thinking.js";
 
@@ -237,6 +241,12 @@ interface ChatState {
       零参数的 prompt 不会停在这一步——选中即直接展开,这里只服务"要填参数"
       和"展开失败,等用户重试或取消"两种情况 */
   mcpPromptForm: McpPromptFormState | null;
+  /** submitMcpPromptForm 每发起一次真正的展开请求都会领一个新号(自增)。
+      异步回调落地时拿它跟发起时留的那份快照比对——号对不上,说明这份
+      表单在请求飞在半空的时候被取消、重开(哪怕重开的是同一个 prompt)、
+      或者又提交了一次,响应已经过期,该原地放弃（review finding 1；
+      判断逻辑见 lib/mcpPromptMenu.ts 的 isCurrentMcpPromptSubmission） */
+  mcpPromptToken: number;
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -332,17 +342,21 @@ interface ChatState {
       不能只在打开菜单那一刻现问一次 */
   refreshMcpPrompts(): Promise<void>;
   /** 选中一个 MCP prompt(composer `/` 菜单)。零参数的直接展开(不停在表单这一步);
-      有参数的开一张卡等用户填 */
+      有参数的开一张卡等用户填。开卡(哪怕重开的是同一个 prompt)会让
+      mcpPromptToken 往前挪一格,作废任何还飞在半空的旧提交 */
   openMcpPromptForm(prompt: McpPromptInfo & { server: string }): void;
   /** 表单某个参数格改了值。顺手清掉上一次提交留下的 error——用户正在改,
       旧的报错没道理继续挂在屏幕上 */
   setMcpPromptFormValue(name: string, value: string): void;
-  /** 关掉表单,不展开。展开进行中点这个:promise 落地时会发现表单已经没了,
-      原地放弃(见 mcpPromptFormKey 的注释) */
+  /** 关掉表单,不展开。同 openMcpPromptForm,顺手把 mcpPromptToken 往前挪一格——
+      展开进行中点这个:promise 落地时号对不上,原地放弃 */
   cancelMcpPromptForm(): void;
-  /** 校验必填项 → 调 expandMcpPrompt → 成功就把结果塞进输入框并关掉表单,
-      失败就把 error 留在表单上等用户重试或取消。server 在填表期间掉线是
-      正常会发生的事,不是异常路径 */
+  /** 校验必填项 → 领一个新 token → 调 expandMcpPrompt → 成功就把结果塞进
+      输入框并关掉表单,失败就把 error 留在表单上等用户重试或取消。server
+      在填表期间掉线是正常会发生的事,不是异常路径。回调落地前用
+      isCurrentMcpPromptSubmission 认一遍 token+sessionId,认不出就放弃——
+      认不出的两种情形:这份表单被取消/重开/再提交过(review finding 1),
+      或者用户已经切到别的会话了(review finding 2) */
   submitMcpPromptForm(): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
@@ -476,8 +490,10 @@ let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
 /** Git Graph 每页条数:首屏拉这么多,滚到底再加一页(主进程侧同名默认值,超上限会被钳) */
 const GIT_GRAPH_PAGE = 300;
 
-/** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位 */
-const enterChat = (info: BootInfo) => ({
+/** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
+    export 是为了让这份"换会话该清什么"能被单测直接断言（见
+    tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
+export const enterChat = (info: BootInfo) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
   model: info.model,
@@ -496,6 +512,12 @@ const enterChat = (info: BootInfo) => ({
   browserPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
+  // 同上:composer 是按会话摆的,填到一半的 MCP prompt 参数卡跟着旧会话走,
+  // 不清的话卡会带着上一个会话的输入框一起露出来（review finding 2）。
+  // 光清这一格只解决"卡还留着"这一半——如果切会话前它已经提交出去、
+  // IPC 正飞在半空,那份响应落地时靠的是 submitMcpPromptForm 里的
+  // sessionId 比对（isCurrentMcpPromptSubmission）挡住,不是这一行
+  mcpPromptForm: null,
   error: null,
 });
 
@@ -559,6 +581,7 @@ export const useChat = create<ChatState>((set, get) => ({
   mcpServers: { servers: [], errors: [] },
   mcpPrompts: [],
   mcpPromptForm: null,
+  mcpPromptToken: 0,
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -786,12 +809,15 @@ export const useChat = create<ChatState>((set, get) => ({
       name: prompt.name,
       ...(prompt.description !== undefined ? { description: prompt.description } : {}),
       arguments: prompt.arguments,
-      values: Object.fromEntries(prompt.arguments.map((a) => [a.name, ""])),
+      values: initialMcpPromptValues(prompt.arguments),
       // 零参数:没有可填的东西,直接进入"展开中"——下面顺手真的发起那次展开
       submitting: prompt.arguments.length === 0,
       error: null,
     };
-    set({ mcpPromptForm: form });
+    // 开一张新卡——哪怕重开的是同一个 prompt——都作废任何还飞在半空的旧提交
+    // (review finding 1:光靠 server+name 拼的身份挡不住"取消又重开同一个
+    // prompt"这一种,因为身份没变;号往前挪一格才挡得住)
+    set({ mcpPromptForm: form, mcpPromptToken: get().mcpPromptToken + 1 });
     if (form.submitting) void get().submitMcpPromptForm();
   },
 
@@ -802,7 +828,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   cancelMcpPromptForm() {
-    set({ mcpPromptForm: null });
+    // 同 openMcpPromptForm:关卡也要挪号,不然纯"取消、不重开"之后飞回来的
+    // 旧响应虽然会被下面 mcpPromptForm===null 的兜底挡住,但号不挪的话,
+    // 这次取消在"下一次提交该拿哪个号当基准"这件事上就没有留下任何痕迹
+    set({ mcpPromptForm: null, mcpPromptToken: get().mcpPromptToken + 1 });
   },
 
   async submitMcpPromptForm() {
@@ -813,19 +842,28 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ mcpPromptForm: { ...f, error: `还差：${missing.join("、")}` } });
       return;
     }
-    // 出发前留一份身份指纹：这趟 IPC 回来的时候，用户完全可能已经关掉
-    // 这张卡、或者选中了下一个 prompt 打开了新的一张——回调落地前得先
-    // 认一下"我还是不是当下这张卡"，认不出就原地放弃，不把过期结果糊上去
-    const key = mcpPromptFormKey(f);
-    set({ mcpPromptForm: { ...f, submitting: true, error: null } });
+    // 出发前领一个新号 + 记下当前会话:这趟 IPC 回来的时候,用户完全可能
+    // 已经取消/重开了这张卡(哪怕重开的还是同一个 prompt)、又提交了一次,
+    // 或者切到了另一个会话——四种情形分别是 review finding 1 和 finding 2。
+    // 回调落地前拿这两个快照去认(isCurrentMcpPromptSubmission),两个都对得上
+    // 才把结果用上,认不出就原地放弃
+    const token = get().mcpPromptToken + 1;
+    const sessionId = get().sessionId;
+    set({ mcpPromptForm: { ...f, submitting: true, error: null }, mcpPromptToken: token });
+    const stillCurrent = () =>
+      isCurrentMcpPromptSubmission(
+        { token: get().mcpPromptToken, sessionId: get().sessionId },
+        { token, sessionId }
+      );
     try {
       const text = await window.otter.expandMcpPrompt(f.server, f.name, f.values);
-      if (mcpPromptFormKey(get().mcpPromptForm) !== key) return;
+      if (!stillCurrent()) return;
       set({ mcpPromptForm: null });
       get().injectComposer(text, false);
     } catch (e) {
+      if (!stillCurrent()) return;
       const cur = get().mcpPromptForm;
-      if (!cur || mcpPromptFormKey(cur) !== key) return;
+      if (!cur) return; // token 对得上就不该是 null;留着当兜底,不做非空断言
       set({ mcpPromptForm: { ...cur, submitting: false, error: bridgeErrorMessage(e) } });
     }
   },

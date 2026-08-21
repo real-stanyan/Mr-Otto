@@ -15,6 +15,7 @@
 
 import { PlugIcon, X } from "lucide-react";
 import { useChat } from "../store.js";
+import { mcpPromptFormKey } from "../lib/mcpPromptMenu.js";
 import { ElicitationForm } from "./elements/elicitation-form.js";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
@@ -32,8 +33,11 @@ export function McpPromptCard() {
   return (
     <ElicitationForm
       // key 换 = 换了一个 prompt，卡片重新进场（同 QuestionnaireCard 用
-      // toolCallId 当 key 的道理）——server+name 是这张卡的身份
-      key={`${form.server}:${form.name}`}
+      // toolCallId 当 key 的道理）。取消又重开同一个 prompt 时 key 不变
+      // （不重新播进场动效），这就是 mcpPromptFormKey 的定位——它只回答
+      // "这是哪个 prompt"，不回答"这份异步响应还新不新鲜"（那是
+      // store.ts 里 isCurrentMcpPromptSubmission 的事，见它的注释）
+      key={mcpPromptFormKey(form)}
       server={`/${form.name} · ${form.server}`}
       state="request"
       icon={<PlugIcon className="size-3.5" />}

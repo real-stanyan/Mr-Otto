@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   initialMcpPromptValues,
+  isCurrentMcpPromptSubmission,
   mcpPromptCommandDescription,
   mcpPromptCommandId,
   mcpPromptFormKey,
@@ -70,17 +71,45 @@ describe("missingRequiredArgs", () => {
 });
 
 describe("mcpPromptFormKey", () => {
-  it("null 表单没有身份", () => {
+  it("null 表单没有 remount key", () => {
     expect(mcpPromptFormKey(null)).toBeNull();
   });
 
-  it("server+name 拼出身份指纹", () => {
+  it("server+name 拼出 remount key", () => {
     expect(mcpPromptFormKey({ server: "notion", name: "summarize" })).toBe("notion:summarize");
   });
 
-  it("换了 server 或换了名字,指纹跟着变", () => {
+  it("换了 server 或换了名字,key 跟着变", () => {
     const a = mcpPromptFormKey({ server: "notion", name: "summarize" });
     const b = mcpPromptFormKey({ server: "linear", name: "summarize" });
     expect(a).not.toBe(b);
+  });
+
+  it("取消又重开同一个 prompt,key 不变——它不负责回答请求还新不新鲜", () => {
+    // 这正是 review finding 1 的边界:key 相同不代表是同一次提交,
+    // 这道判断是 isCurrentMcpPromptSubmission 的事,不是这个函数的事
+    const before = mcpPromptFormKey({ server: "notion", name: "summarize" });
+    const after = mcpPromptFormKey({ server: "notion", name: "summarize" });
+    expect(before).toBe(after);
+  });
+});
+
+describe("isCurrentMcpPromptSubmission", () => {
+  const expected = { token: 3, sessionId: "session-a" };
+
+  it("token 和 session 都对得上才算数", () => {
+    expect(isCurrentMcpPromptSubmission({ token: 3, sessionId: "session-a" }, expected)).toBe(true);
+  });
+
+  it("token 变了(取消又重开同一个 prompt、或者又提交了一次)就不算数", () => {
+    expect(isCurrentMcpPromptSubmission({ token: 4, sessionId: "session-a" }, expected)).toBe(false);
+  });
+
+  it("session 变了(切到另一个会话)就不算数,哪怕 token 没变", () => {
+    expect(isCurrentMcpPromptSubmission({ token: 3, sessionId: "session-b" }, expected)).toBe(false);
+  });
+
+  it("两个都变了,同样不算数", () => {
+    expect(isCurrentMcpPromptSubmission({ token: 9, sessionId: "session-z" }, expected)).toBe(false);
   });
 });
