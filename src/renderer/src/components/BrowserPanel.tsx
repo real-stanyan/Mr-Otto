@@ -109,7 +109,7 @@ export function BrowserPanel() {
     // min-w-0 是配套的:没有它,里面的 URL 栏能把面板顶得比容器还宽。
     // 照 GitGraphView 的根节点写法
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1.5">
+      <div className="flex items-center gap-1 border-b px-2 py-1.5 drag-region">
         <Button variant="ghost" size="icon" disabled={!info?.canGoBack}
           onClick={() => sessionId && void window.otter.browserBack(sessionId)}>
           <ArrowLeft className="size-4" />

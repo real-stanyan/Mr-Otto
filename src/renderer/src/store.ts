@@ -23,6 +23,7 @@ import type {
   OllamaModelInfo,
   SessionSummary,
   SkillInfo,
+  SubagentDef,
   StagedAttachment,
   StartSessionOptions,
   TurnStatus,
@@ -76,7 +77,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "appearance" | "skills";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -92,8 +93,17 @@ interface ChatState {
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
       上下文用量弹窗算"工具 schema 吃掉多少"用；没 boot 过 = 空表 */
   toolDefs: ToolDefinition[];
-  /** 侧栏会话列表（常驻） */
+  /** 全部会话（含子会话）的摘要镜像——原样对着 window.otter.listSessions()，
+      不在这里过滤：正看着一个子会话时，header 的会话名要靠这份镜像查到标题
+      (App.tsx 的 sessionTitle)，把子会话摘掉这里会查不到。子会话不进**侧栏**
+      这件事（ADR-0047）落在消费侧：sessionGroups.ts 的 groupSessionsByWorkspace
+      滤 spawnedFrom，侧栏 / ⌘K 搜索都走它，这份镜像本身保持完整 */
   sessions: SessionSummary[];
+  /** 子会话日志的只读缓存（childSessionId → 全量事件），懒加载：父时间线上的
+      subagent 卡收口后要报"N 步 · Xk tokens"，这两个数字子会话日志之外没处
+      推，只能问一趟又不想每次重渲染都问。未出现的 key = 还没问过，不是"问了
+      是空的"——两者必须可区分，同 providerUsage 的路子 */
+  subagentLogCache: Record<string, SessionEvent[]>;
   /** 新会话 composer 的文件夹初值：侧栏工程分组的 ＋ 塞进来，Welcome 消费。
       null = 空白开局（顶部那颗 ＋ 新会话） */
   pendingWorkspace: string | null;
@@ -113,6 +123,13 @@ interface ChatState {
   /** 工具输出直播缓冲（按 toolCallId 攒 bash 的 stdout/stderr 尾巴）。
       只留尾部（终端视角：看最新进展）；tool_result 一到就清——完整输出以它为准 */
   toolOutputByCall: Record<string, string>;
+  /** 每个会话此刻正在跑的 toolCallId（不分是否正在看的会话，同 toolOutputByCall
+      的路子）。tool_execution_started 记下，配对的 tool_result 落地就清。
+      存在的意义：父时间线上的 subagent 卡只知道 childSessionId，不知道子会话
+      此刻具体在跑哪一次工具调用——ToolLiveTail 订阅的是 toolCallId，这份索引
+      补上"会话 → 正在跑的调用"这一层，卡才能挂上直播尾巴（Task 8 review
+      Important 1） */
+  runningToolCallBySession: Record<string, string>;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -182,6 +199,10 @@ interface ChatState {
   checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
+  /** 本机已定义的 subagent（~/.otter/agents + 只读的 ~/.claude/agents 合并后的清单）。
+      进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
+      用户可能一次都不打开这个栏目 */
+  subagents: SubagentDef[];
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -238,6 +259,8 @@ interface ChatState {
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
   friendsPanelOpen: boolean;
+  /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
+  fullscreen: boolean;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -250,6 +273,16 @@ interface ChatState {
   openSettings(section?: SettingsSection): Promise<void>;
   /** 拉一次官方额度（账号页进入时自动调一次） */
   refreshWallet(): Promise<void>;
+  /** 重扫 subagent 清单（Subagent 栏目挂载时调一次，照 skills 的做法）。
+      三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
+      存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西 */
+  refreshSubagents(): Promise<void>;
+  /** 存一个 subagent 的 frontmatter + 正文。抛出的 Error 是已经写成中文句子的
+      用户可读提示（对不上名字 / 只读），组件自己 catch 显示，这里不吞 */
+  saveSubagent(def: SubagentDef): Promise<void>;
+  /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
+      [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验 */
+  createSubagent(name: string): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -312,6 +345,9 @@ interface ChatState {
   newSession(dir?: string): void;
   startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
+  /** 取一次某个子会话的日志，塞进 subagentLogCache（已缓存就不重问）。
+      不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
+  loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
@@ -415,6 +451,7 @@ export const useChat = create<ChatState>((set, get) => ({
   events: [],
   toolDefs: [],
   sessions: [],
+  subagentLogCache: {},
   pendingWorkspace: null,
   statusBySession: {},
   queuedBySession: {},
@@ -422,6 +459,7 @@ export const useChat = create<ChatState>((set, get) => ({
   asks: {},
   streamingBySession: {},
   toolOutputByCall: {},
+  runningToolCallBySession: {},
   error: null,
   approvalMode: "ask",
   thinking: DEFAULT_THINKING,
@@ -456,6 +494,7 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutBusyDir: null,
   checkoutError: null,
   skills: [],
+  subagents: [],
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -480,6 +519,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gameInvites: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
+  fullscreen: false,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -635,6 +675,18 @@ export const useChat = create<ChatState>((set, get) => ({
     await window.otter.pokerWatch(tableId);
   },
   closeSettings: () => set({ settingsSection: null }),
+
+  async refreshSubagents() {
+    set({ subagents: await window.otter.listSubagents() });
+  },
+
+  async saveSubagent(def) {
+    set({ subagents: await window.otter.saveSubagent(def) });
+  },
+
+  async createSubagent(name) {
+    set({ subagents: await window.otter.createSubagent(name) });
+  },
 
   async openProtocol() {
     // 目标仓库:跟当前会话的工程文件夹(入口挂会话头部,仪表盘对应各工作区);
@@ -1136,6 +1188,7 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
+    window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
       if (target.kind === "dm") {
@@ -1196,13 +1249,22 @@ export const useChat = create<ChatState>((set, get) => ({
         // 不分会话——callId 全局唯一，后台会话的缓冲也要清，不然只涨不消
         const toolOutput =
           e.type === "tool_result" ? without(s.toolOutputByCall, e.toolCallId) : s.toolOutputByCall;
+        // 会话 → 正在跑的 toolCallId，同样不分会话地维护（见字段注释）：
+        // 开跑记下，配对的结果落地就清
+        const runningToolCall =
+          e.type === "tool_execution_started"
+            ? { ...s.runningToolCallBySession, [e.sessionId]: e.toolCallId }
+            : e.type === "tool_result"
+              ? without(s.runningToolCallBySession, e.sessionId)
+              : s.runningToolCallBySession;
         // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
         // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
         if (e.sessionId !== s.sessionId)
-          return { streamingBySession: streaming, toolOutputByCall: toolOutput };
+          return { streamingBySession: streaming, toolOutputByCall: toolOutput, runningToolCallBySession: runningToolCall };
         return {
           streamingBySession: streaming,
           toolOutputByCall: toolOutput,
+          runningToolCallBySession: runningToolCall,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
@@ -1267,17 +1329,18 @@ export const useChat = create<ChatState>((set, get) => ({
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
     // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
-    const [info, sessions, skills, account, keyStatus] = await Promise.all([
+    const [info, sessions, skills, account, keyStatus, fullscreen] = await Promise.all([
       window.otter.boot(),
       window.otter.listSessions(),
       window.otter.listSkills(),
       window.otter.getAccount(),
       window.otter.keyStatus(),
+      window.otter.getWindowFullscreen(),
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, account, keyStatus }
-        : { phase: "welcome", sessions, skills, account, keyStatus }
+        ? { ...enterChat(info), sessions, skills, account, keyStatus, fullscreen }
+        : { phase: "welcome", sessions, skills, account, keyStatus, fullscreen }
     );
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
@@ -1330,6 +1393,17 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ sessions: await window.otter.listSessions() });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async loadSubagentLog(sessionId) {
+    if (get().subagentLogCache[sessionId] !== undefined) return; // 已缓存，不重问
+    try {
+      const events = await window.otter.readSessionEvents(sessionId);
+      set((s) => ({ subagentLogCache: { ...s.subagentLogCache, [sessionId]: events } }));
+    } catch {
+      // 问不到不弹错:这是卡片背后悄悄补一笔事实的动作,不是用户按下的操作。
+      // 缓存留空,调用方（subagentFact）据此继续显示"还没有这个事实"，下次挂载再试
     }
   },
 

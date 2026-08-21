@@ -18,6 +18,7 @@ const bridge: ShellBridge = {
   startSession: (opts) => ipcRenderer.invoke(CHANNELS.startSession, opts),
   listSessions: () => ipcRenderer.invoke(CHANNELS.listSessions),
   resumeSession: (sessionId) => ipcRenderer.invoke(CHANNELS.resumeSession, sessionId),
+  readSessionEvents: (sessionId) => ipcRenderer.invoke(CHANNELS.readSessionEvents, sessionId),
   deleteSession: (sessionId) => ipcRenderer.invoke(CHANNELS.deleteSession, sessionId),
   renameSession: (sessionId, title) => ipcRenderer.invoke(CHANNELS.renameSession, sessionId, title),
   switchModel: (model, lane) => ipcRenderer.invoke(CHANNELS.switchModel, model, lane),
@@ -31,6 +32,9 @@ const bridge: ShellBridge = {
   listMcpPrompts: () => ipcRenderer.invoke(CHANNELS.listMcpPrompts),
   expandMcpPrompt: (server, name, args) =>
     ipcRenderer.invoke(CHANNELS.expandMcpPrompt, server, name, args),
+  listSubagents: () => ipcRenderer.invoke(CHANNELS.listSubagents),
+  saveSubagent: (def) => ipcRenderer.invoke(CHANNELS.saveSubagent, def),
+  createSubagent: (name) => ipcRenderer.invoke(CHANNELS.createSubagent, name),
   protocolListAdrs: (repoDir) => ipcRenderer.invoke(CHANNELS.protocolListAdrs, repoDir),
   protocolReadAdr: (repoDir, relPath) => ipcRenderer.invoke(CHANNELS.protocolReadAdr, repoDir, relPath),
   protocolListIssues: (repoDir) => ipcRenderer.invoke(CHANNELS.protocolListIssues, repoDir),
@@ -119,6 +123,8 @@ const bridge: ShellBridge = {
   onGameInvitesChanged: subscribe(CHANNELS.gameInvitesChanged),
   onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),
+  getWindowFullscreen: () => ipcRenderer.invoke(CHANNELS.getWindowFullscreen),
+  onWindowFullscreen: subscribe(CHANNELS.windowFullscreen),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

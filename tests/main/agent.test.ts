@@ -358,12 +358,19 @@ describe("createGrantAwareApprover 长期授权（ADR-0041）", () => {
 });
 
 describe("MCP 接进装配", () => {
+  // 这台假 server 有 tool 也有 resource。resource 不能省（合并 subagent 那条 lane
+  // 之后才补上的）：BootInfo.toolDefs 现在按 available() 过滤（agent.ts 的 getter），
+  // 而 mcp_read_resource 的 available() 就是"有没有任何可读资源"——一份资源都不给，
+  // 它挂上了也不会出现在 toolDefs 里，下面那条断言测的就不再是"挂没挂上"了。
+  // 「挂着但 available() 为 false 的工具仍在 toolsByName 里」由 engine 那层的
+  // 测试把守（tests/loop/engine.test.ts）
   const cap = (live = true) => ({
     ready: vi.fn(async () => {}),
     servers: () => [{
       id: "gh", name: "gh", status: live ? ("connected" as const) : ("failed" as const), live,
       tools: live ? [{ name: "create_pr", description: "开 PR", inputSchema: {} }] : [],
-      resources: [], prompts: [],
+      resources: live ? [{ uri: "repo://readme", name: "README" }] : [],
+      prompts: [],
     }],
     callTool: async () => [{ kind: "text" as const, text: "ok" }],
     readResource: async () => [],

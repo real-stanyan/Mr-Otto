@@ -11,13 +11,11 @@
 // 所以每张 chip 都是 state="done"。
 
 import { useChat } from "../store.js";
+import { formatBytes } from "../lib/byteSize.js";
 import {
   ComposerAttachmentChip,
   ComposerAttachments,
 } from "./elements/composer.js";
-
-/** 文本附件的副行:多大。图片没有字节数(入库时只留 ref),写它的用途 */
-const kb = (bytes: number) => `${(bytes / 1024).toFixed(0)} KB`;
 
 export function StagedChips({ className = "" }: { className?: string }) {
   const staged = useChat((s) => s.staged);
@@ -34,7 +32,8 @@ export function StagedChips({ className = "" }: { className?: string }) {
             key={`${i}-${name}`}
             attachment={{
               name,
-              meta: a.kind === "image" ? "图片" : kb(a.bytes),
+              // 文本附件的副行:多大。图片没有字节数(入库时只留 ref),写它的用途
+              meta: a.kind === "image" ? "图片" : formatBytes(a.bytes),
               state: "done",
               kind: a.kind,
             }}

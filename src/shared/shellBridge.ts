@@ -31,8 +31,11 @@ import type {
   AskUserQuestion,
   AskUserRequest,
 } from "./askUser.js";
+import type { SubagentDef } from "./subagent.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
+
+export type { SubagentDef };
 
 export type { SessionSummary };
 
@@ -172,6 +175,9 @@ export interface ApprovalRequest {
   toolDescription: string;
   /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
   preview?: WriteFilePreview;
+  /** 这张卡来自哪个 subagent（ADR-0047 的冒泡）。缺席 = 主 agent 自己的卡，
+      现有渲染一字不改 */
+  fromAgent?: string;
 }
 
 /** 审批卡按钮的返程（ADR-0041）。与 answerQuestions 同构：一个 outcome 对象，
@@ -282,6 +288,12 @@ export interface ShellBridge {
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
   resumeSession(sessionId: string): Promise<BootInfo>;
+  /** 只读地取一个会话的全部事件，不切换当前视图（同 resumeSession 的日志来源，
+      但不改 phase/sessionId 等任何镜像）。时间线上的 subagent 卡要用子会话的
+      事实——收口后的步数、token——而这些不进父会话的日志，只能单独问一趟；
+      点进去看全过程走的是 resumeSession，这个方法只用来"顺路看一眼事实"。
+      未知 sessionId 回空数组，同 EventStore.load 的语义 */
+  readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
@@ -333,6 +345,12 @@ export interface ShellBridge {
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
       展开后就是普通用户消息，进 UserMessage 事件，重放零特殊化 */
   expandMcpPrompt(server: string, name: string, args: Record<string, string>): Promise<string>;
+  /** 本机定义的 subagent（现扫磁盘，零缓存） */
+  listSubagents(): Promise<SubagentDef[]>;
+  /** 写回那份 .md，返回保存后的整份清单（省一次往返） */
+  saveSubagent(def: SubagentDef): Promise<SubagentDef[]>;
+  /** 按模板新建一个，返回整份清单 */
+  createSubagent(name: string): Promise<SubagentDef[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -376,11 +394,12 @@ export interface ShellBridge {
   browserReload(sessionId: string): Promise<void>;
   /** 关浏览器 = 销毁 webContents,登录态之外的一切(历史/前进后退)都没了 */
   browserClose(sessionId: string): Promise<void>;
-  /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文本读内容/拒收)。
+  /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文档转 md/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
-  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文本带内容,
-      其余拒收带理由。与 pickAttachments 共用闸门 = 只有一套准入策略 */
+  /** 粘贴/拖入的字节走同一道分类闸门(intakeFile):图片入库返 ref,文档转成
+      Markdown 后并入文本(ADR-0046),文本带内容,其余拒收带理由。
+      与 pickAttachments 共用闸门 = 只有一套准入策略 */
   intakePastedFiles(files: { name: string; data: Uint8Array }[]): Promise<StagedAttachment[]>;
   /** 按附件 id 取 data URL(时间线缩略图懒取用)。只回展示用途,不进日志 */
   attachmentDataUrl(id: string): Promise<string>;
@@ -488,6 +507,11 @@ export interface ShellBridge {
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
   onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
+  /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
+      左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
+  getWindowFullscreen(): Promise<boolean>;
+  /** 窗口进入/退出全屏的推送。首帧状态用 getWindowFullscreen 问,变化走这里 */
+  onWindowFullscreen(cb: (fullscreen: boolean) => void): Unsubscribe;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -530,6 +554,7 @@ export const CHANNELS = {
   startSession: "otter:startSession",
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
+  readSessionEvents: "otter:readSessionEvents",
   deleteSession: "otter:deleteSession",
   renameSession: "otter:renameSession",
   switchModel: "otter:switchModel",
@@ -543,6 +568,9 @@ export const CHANNELS = {
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",
+  listSubagents: "otter:listSubagents",
+  saveSubagent: "otter:saveSubagent",
+  createSubagent: "otter:createSubagent",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",
@@ -605,6 +633,8 @@ export const CHANNELS = {
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
+  getWindowFullscreen: "otter:getWindowFullscreen",
+  windowFullscreen: "otter:windowFullscreen",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",

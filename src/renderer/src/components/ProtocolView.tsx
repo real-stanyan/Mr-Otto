@@ -146,7 +146,7 @@ export function ProtocolView() {
   return (
     <main className="flex-1 min-w-0 flex flex-col">
       {/* 头部:仓库路径 + 换目录/刷新/关闭 */}
-      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+      <header className="flex items-center gap-2 border-b border-border px-4 py-2 drag-region">
         {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
         {panelWide && <SidebarNub />}
         {/* min-w-0 + shrink-0 的分工见 GitGraphView 同处注释:少了它们,

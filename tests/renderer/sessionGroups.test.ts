@@ -2,9 +2,14 @@ import { describe, it, expect } from "vitest";
 import { folderName, groupSessionsByWorkspace } from "../../src/renderer/src/sessionGroups.js";
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
 
-/** 造会话的速记:分组只关心 workspace 和 lastTs */
-const s = (sessionId: string, workspace: string | null, lastTs: number): SessionSummary => ({
-  sessionId, workspace, lastTs, startedTs: lastTs - 1, events: 1, title: null,
+/** 造会话的速记:分组只关心 workspace / lastTs / spawnedFrom */
+const s = (
+  sessionId: string,
+  workspace: string | null,
+  lastTs: number,
+  spawnedFrom: string | null = null,
+): SessionSummary => ({
+  sessionId, workspace, lastTs, startedTs: lastTs - 1, events: 1, title: null, spawnedFrom,
 });
 
 describe("folderName", () => {
@@ -35,6 +40,15 @@ describe("groupSessionsByWorkspace", () => {
 
   it("workspace 为 null 的史前会话直接丢弃,不伪造未知组", () => {
     expect(groupSessionsByWorkspace([s("a", null, 100)])).toEqual([]);
+  });
+
+  it("子会话(spawnedFrom 非空)不进任何组——只能从父会话时间线的卡进去(ADR-0047)", () => {
+    const g = groupSessionsByWorkspace([
+      s("parent", "/p/x", 100),
+      s("child", "/p/x", 200, "parent"),
+    ]);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["parent"]);
   });
 
   it("label 是文件夹名,workspace 仍是全路径", () => {

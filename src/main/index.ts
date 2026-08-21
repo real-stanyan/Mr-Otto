@@ -35,6 +35,15 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
+import { scanSubagents, writeSubagent } from "./subagents.js";
+import { createSubagentRunner } from "./subagentRunner.js";
+import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
+import type { BrowserReadOptions } from "../world/executionWorld.js";
+import {
+  DEFAULT_SUBAGENT_TOOLS,
+  subagentNameError,
+  type SubagentDef,
+} from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
@@ -110,6 +119,9 @@ function createWindow(): BrowserWindow {
     height: 760,
     title: "Mr Otto",
     backgroundColor: "#121212",
+    // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
+    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
       contextIsolation: true,
@@ -146,6 +158,11 @@ void app.whenReady().then(() => {
   // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
   // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
   const send = createSend(win);
+
+  // 全屏状态推给渲染层:macOS 全屏隐红绿灯,左上角 logo 该让位/回来。
+  // 变化走推送给已订阅的 renderer,首帧快照走 getWindowFullscreen(见下方 handle)
+  win.on("enter-full-screen", () => send(CHANNELS.windowFullscreen, true));
+  win.on("leave-full-screen", () => send(CHANNELS.windowFullscreen, false));
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
@@ -398,12 +415,13 @@ void app.whenReady().then(() => {
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
     event: (e) => send(CHANNELS.event, e),
-    approvalRequest: (sessionId, call, tool, preview) =>
+    approvalRequest: (sessionId, call, tool, preview, fromAgent) =>
       send(CHANNELS.approvalRequest, {
         sessionId,
         call,
         toolDescription: tool.def.description,
         ...(preview ? { preview } : {}),
+        ...(fromAgent ? { fromAgent } : {}),
       }),
     askUserRequest: (sessionId, toolCallId, questions) =>
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
@@ -413,9 +431,152 @@ void app.whenReady().then(() => {
       send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
 
+  // subagent 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位。
+  // readOnly 标着的那份不写回——不去改用户 Claude Code 的配置
+  const subagentRoots = [
+    { root: join(homedir(), ".otter", "agents"), readOnly: false },
+    { root: join(homedir(), ".claude", "agents"), readOnly: true },
+  ];
+  // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
+  // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
+  // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
+  // 挂上，探针报的工具表就漏了这一把——手写常量正是为了躲开这种"和真实工具表
+  // 对不上"，桩子撒谎是同一个坑换个地方摔
+  //
+  // 这一步跑在第一个 ipcMain.handle 注册之前（见下面 CHANNELS.boot）：这里抛错会
+  // 让整条 whenReady 链断掉，一个 IPC 通道都注册不上，白屏且没有报错入口——
+  // 比"某次调用失败"重得多，所以必须兜底。退化成 [] 的代价：已知工具名表是空的，
+  // 于是 subagent 定义里写的每一个工具名都会被判成"不认识"（scanSubagents 的
+  // unknownTools 分支），所有 subagent 静默退回默认工具集，直到重启恢复
+  let TOOL_NAMES: string[];
+  try {
+    TOOL_NAMES = createAgent({
+      store: new EventStore(":memory:"),
+      workspace: app.getPath("userData"),
+      push: {
+        event: () => {},
+        approvalRequest: () => {},
+        askUserRequest: () => {},
+        assistantDelta: () => {},
+        toolOutput: () => {},
+      },
+      attachments: attachmentStore,
+      makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+      // 刻意不给 mcp（与 browser 的桩子相反）：这份名单是拿来校验 subagent
+      // 定义里的工具名的，而子 agent 本来就挂不上 mcp 工具（见 createSessionAgent
+      // 里那段注释）。放进来只会让"这个名字认得"和"这把刀给得了你"对不上。
+      // 顺带也省掉了在注册第一个 IPC 通道之前 await mcpHub.ready() 这件事
+    }).toolDefs.map((d) => d.name);
+  } catch {
+    TOOL_NAMES = [];
+  }
+  const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
+
+  /**
+   * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
+   *
+   * 曾经这十几行在两处各抄一份，于是它们 drift 了：Task 5 给子 agent 定的那套
+   * 收权（工具白名单 / approval:"deny" 换掉整条审批链 / **不给 subagentRunner**）
+   * 只写在 subagentRunner.ts 那一份装配里，resumeSession 那一份压根不知道
+   * "会话还可能是子会话"这回事——于是恢复一个只读搜索员，回来的是带 bash、
+   * write_file 和 task 工具的全权 agent（review I1）。而恢复正是查看子会话的
+   * 唯一途径（时间线上那张卡、"回到父会话"都走 resume）。
+   *
+   * 合成一处之后，"这个会话是不是子会话"只有一个地方判断，drift 无处可藏。
+   */
+  const createSessionAgent = (args: {
+    workspace: string;
+    /** 给了 = 恢复既有会话 */
+    resumeSessionId?: string;
+    /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
+    child?: ChildAgentConfig;
+  }): ReturnType<typeof createAgent> => {
+    const base = {
+      store,
+      workspace: args.workspace,
+      push,
+      attachments: attachmentStore,
+      getAccessToken,
+      makeBrowser: (sid: string) => ({
+        read: (o?: BrowserReadOptions) => browsers.read(sid, o),
+      }),
+      ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+    };
+    if (args.child && args.resumeSessionId) {
+      // 子会话重建走 createChildAgent：它的签名里没有 subagentRunner 这一项，
+      // 于是"重建出来的子 agent 没有 task 工具"是类型层面的事实，不是纪律
+      // （world 是新造的 LocalWorld——父 agent 可能早已不在内存里了；
+      // 围栏一样是日志第 0 条记的那个 workspace）
+      return createChildAgent({
+        ...base,
+        resumeSessionId: args.resumeSessionId,
+        config: args.child,
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      });
+    }
+    // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
+    // 还没返回——先声明后赋值：parent() 只在派活那一刻被调用（远在这行之后）。
+    // 这里不能改成先起个快照，快照会把后续 switchModel 等运行时变化锁死在
+    // 创建那一刻的值上
+    let self: ReturnType<typeof createAgent>;
+    self = createAgent({
+      ...base,
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      // MCP 只挂在主会话上。子会话（上面 createChildAgent 那条）刻意不给：
+      // 它的装备由那份 subagent 定义的工具白名单说了算，而白名单里写不出
+      // 一台此刻才连上的 server 的工具名（同它拿不到 subagentRunner 的道理）。
+      // 两条调用点（startSession / resumeSession）都在调这个函数之前
+      // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
+      mcp: mcpHub,
+      listSubagents,
+      subagentRunner: createSubagentRunner({
+        store,
+        attachments: attachmentStore,
+        push,
+        list: listSubagents,
+        parent: () => ({
+          sessionId: self.sessionId,
+          workspace: self.workspace,
+          world: self.world,
+          model: self.model,
+        }),
+        getAccessToken,
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
+        // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
+        register: (child) => void agents.set(child.sessionId, child),
+      }),
+    });
+    return self;
+  };
+
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
 
+  ipcMain.handle(CHANNELS.getWindowFullscreen, () => win.isFullScreen());
+
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
+
+  // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
+  // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)
+  // 用的是这个通道，不是 resumeSession。
+  // 收窄成"只能读子会话"（Task 8 review Important 3）：目标必须带 spawnedBy，
+  // 且指回当前正看着的会话——不然这就是一个凭 sessionId 就能读任意会话全文的
+  // 静默通道：resumeSession 好歹会切视图，是"看得见"的；这个不会，读了不留痕迹。
+  // currentSessionId 是渲染层此刻唯一正当的"我在哪"
+  ipcMain.handle(CHANNELS.readSessionEvents, (_e, sessionId: string) => {
+    const events = store.load(sessionId);
+    const first = events[0];
+    if (
+      !first ||
+      first.type !== "session_created" ||
+      !first.spawnedBy ||
+      first.spawnedBy.sessionId !== currentSessionId
+    ) {
+      throw new Error("只能读取当前会话派出的子会话");
+    }
+    return events;
+  });
 
   // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）
   // 再一次性落地，中途反悔不留任何痕迹——没建的会话不该存在半个
@@ -432,21 +593,13 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    // 工具表是一次性拼好的（挂载一次定终身）：必须在 createAgent 之前
+    // 工具表是一次性拼好的（挂载一次定终身）：必须在 createSessionAgent 之前
     // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
-    // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位
+    // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位。
+    // createSessionAgent 是同步的（它调的 createAgent 就是同步的），
+    // 等这件事只能发生在它外面
     await mcpHub.ready();
-    const agent = createAgent({
-      store,
-      workspace: opts.workspace,
-      push,
-      attachments: attachmentStore,
-      getAccessToken,
-      makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
-      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-      persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      mcp: mcpHub,
-    });
+    const agent = createSessionAgent({ workspace: opts.workspace });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -466,25 +619,31 @@ void app.whenReady().then(() => {
     if (!agents.has(sessionId)) {
       // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
       // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
-      const first = store.load(sessionId)[0];
+      const events = store.load(sessionId);
+      const first = events[0];
       if (!first || first.type !== "session_created" || !first.workspace) {
         throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
       }
-      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready
+      // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
+      // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
+      // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
+      // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
+      // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+      // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
+      if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
+        throw new Error("这个子会话正在跑，稍等一下再看");
+      }
+      // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
+      const child = childAgentConfig(events, listSubagents());
+      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
+      // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
       await mcpHub.ready();
       agents.set(
         sessionId,
-        createAgent({
-          store,
+        createSessionAgent({
           workspace: first.workspace,
-          push,
           resumeSessionId: sessionId,
-          attachments: attachmentStore,
-          getAccessToken,
-          makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
-          alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-          persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-          mcp: mcpHub,
+          ...(child ? { child } : {}),
         })
       );
     }
@@ -524,6 +683,53 @@ void app.whenReady().then(() => {
       return mcpHub.getPrompt(hit.id, name, args);
     }
   );
+
+  ipcMain.handle(CHANNELS.listSubagents, () => listSubagents());
+
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef) => {
+    // def.path / def.readOnly 是渲染层传来的,不可信——一个 readOnly:false 配任意
+    // path 就能让这个 handler 写任意文件。落地地址必须从信任侧(现扫一遍磁盘的清单)
+    // 按名字查出来,渲染层的 def 只当"要存的内容"用,不当"写去哪"用
+    // (同 protocolService.readAdr 的路径越界防法,ADR 路径钉死在白名单目录内那条)
+    const found = listSubagents().find((d) => d.name === def.name);
+    if (!found) throw new Error(`没有名叫「${def.name}」的 subagent`);
+    if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
+    // writeSubagent 内部的 readOnly 检查留着当第二道防线(defense in depth)——
+    // 这里已经挡过一次,但两处独立判断比互相信任更皮实
+    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly });
+    return listSubagents();
+  });
+
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
+    const clean = name.trim();
+    // 校验必须在 IPC 边界之内：渲染层那道同款检查只是"别让请求白跑一趟"，
+    // 挡不住任何东西——这个 handler 的活儿就是往磁盘写文件（同 saveSubagent
+    // 收权的理由：渲染层传来的，不可信）。
+    // 而且是**拒绝**不是改写：以前把非法字符换成 "-"，"搜索员" 会塌成 "---"，
+    // 非空、通过、建出一个名叫 --- 的 subagent —— 用户看不出自己建了什么，
+    // 模型也永远打不出他心里那个名字
+    const nameError = subagentNameError(clean);
+    if (nameError) throw new Error(nameError);
+    // 建之前先查重:用户输入一个已存在的名字往往就是想看看这个名字有没有被占——
+    // 不查重会直接截断写空,把已有的 description/instructions/tools 全冲掉,
+    // 没有确认也没有撤回
+    if (listSubagents().some((d) => d.name === clean)) {
+      throw new Error(`已经有一个叫「${clean}」的 subagent 了，换个名字`);
+    }
+    const root = subagentRoots[0]!.root;
+    writeSubagent({
+      name: clean,
+      description: "",
+      instructions: "",
+      tools: [...DEFAULT_SUBAGENT_TOOLS],
+      unknownTools: [],
+      approval: "deny",
+      path: join(root, `${clean}.md`),
+      source: root,
+      readOnly: false,
+    });
+    return listSubagents();
+  });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();
@@ -713,10 +919,13 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能删除会话");
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
-    terminals.killSession(sessionId); // 会话没了,它名下的终端也不该继续跑
-    browsers.close(sessionId); // 会话没了,它的浏览器也该没
-    store.purge(sessionId);
-    agents.delete(sessionId); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+    // purge 会连它派出去的子会话一起抹（否则子会话成孤儿：够不着、删不掉、
+    // 账还在算），返回真正被抹掉的那几个 id——活资源按同一份名单注销
+    for (const id of store.purge(sessionId)) {
+      terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
+      browsers.close(id); // 会话没了,它的浏览器也该没
+      agents.delete(id); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+    }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
   });
 
@@ -858,7 +1067,9 @@ void app.whenReady().then(() => {
       // 拒收带人话理由,比灰掉文件更能让用户明白为什么
     });
     if (picked.canceled) return [];
-    return picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore));
+    return Promise.all(
+      picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore))
+    );
   });
 
   // 粘贴/拖入:字节已经在渲染层手上(剪贴板给的是 File,不是路径),
@@ -866,7 +1077,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(
     CHANNELS.intakePastedFiles,
     (_e, files: { name: string; data: Uint8Array }[]) =>
-      files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore))
+      Promise.all(files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore)))
   );
 
   ipcMain.handle(CHANNELS.attachmentDataUrl, (_e, id: string) => {

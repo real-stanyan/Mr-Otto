@@ -39,6 +39,7 @@
     "@assistant-ui/react": "^0.15.15",
     "@assistant-ui/react-markdown": "^0.14.11",
     "@assistant-ui/react-streamdown": "^0.3.10",
+    "@firecrawl/anydoc": "0.2.3",
     "@lobehub/icons": "^5.16.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@streamdown/cjk": "^1.0.3",

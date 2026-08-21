@@ -94,7 +94,7 @@ export function GitGraphView() {
           flex 里 truncate 必须配 min-w-0——否则 min-width:auto 让它按内容宽度
           顶住不缩,把右边的按钮整排挤出可视区(面板本身裁掉溢出,于是关闭钮
           直接消失,只剩 Esc 能退出)。按钮组 shrink-0 是同一条约束的另一端 */}
-      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+      <header className="flex items-center gap-2 border-b border-border px-4 py-2 drag-region">
         {/* 全屏时本面板独占内容区,侧栏的重开钮没有别的落点——排进这排最左 */}
         {panelWide && <SidebarNub />}
         <span className="shrink-0 whitespace-nowrap font-[650] text-sm">Git Graph</span>

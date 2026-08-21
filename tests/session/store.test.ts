@@ -109,6 +109,21 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.title).toBe("自动标题");
   });
 
+  it("sessions()：spawnedFrom 从第 0 条 session_created 的 spawnedBy 投影出来", () => {
+    store.append({ sessionId: "parent", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({
+      sessionId: "child",
+      ts: 2,
+      type: "session_created",
+      workspace: "/p",
+      spawnedBy: { sessionId: "parent", toolCallId: "call_1", agent: "reviewer" },
+    });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.spawnedFrom]));
+    expect(byId["child"]).toBe("parent");
+    expect(byId["parent"]).toBeNull(); // 普通会话没有 spawnedBy → null
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
     // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });
@@ -130,6 +145,54 @@ describe("EventStore", () => {
     expect(store.load("gone")).toEqual([]); // 库里真没了
     expect(store.load("keep")).toHaveLength(2); // 邻居毫发无损
     expect(store.sessions().map((s) => s.sessionId)).toEqual(["keep"]);
+  });
+
+  it("purge 级联抹掉它派出去的子会话（review I3：孤儿子会话够不着也删不掉）", () => {
+    store.append({ sessionId: "parent", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({
+      sessionId: "child",
+      ts: 2,
+      type: "session_created",
+      workspace: "/a",
+      spawnedBy: { sessionId: "parent", toolCallId: "call_1", agent: "searcher" },
+    });
+    store.append({
+      sessionId: "child",
+      ts: 3,
+      type: "assistant_message",
+      content: "文件里写着密码",
+      model: "deepseek-chat",
+      usage: { promptTokens: 10, completionTokens: 5 },
+    });
+
+    const purged = store.purge("parent");
+
+    // 父日志一没，子会话就是谁也够不着（不进侧栏、不进 ⌘K、时间线没了）、
+    // 谁也删不掉的孤儿——而它的 token 账还在 billedUsage 里继续算，
+    // 存的还是同一个 workspace 的文件内容。ADR-0002 承诺的是"整会话物理抹除"
+    expect(purged.sort()).toEqual(["child", "parent"]);
+    expect(store.load("child")).toEqual([]);
+    expect(store.billedUsage(0)).toEqual([]);
+  });
+
+  it("purge 不级联无关会话：只认 spawnedBy 指回自己的那些", () => {
+    store.append({ sessionId: "gone", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({ sessionId: "keep", ts: 2, type: "session_created", workspace: "/b" });
+    // 别人家的孩子不能连坐
+    store.append({
+      sessionId: "keep-child",
+      ts: 3,
+      type: "session_created",
+      workspace: "/b",
+      spawnedBy: { sessionId: "keep", toolCallId: "call_1", agent: "searcher" },
+    });
+    // fork 出来的会话带的是 forkedFrom 不是 spawnedBy，同样不该被连坐
+    store.append({ sessionId: "forked", ts: 4, type: "session_created", workspace: "/a" });
+
+    expect(store.purge("gone")).toEqual(["gone"]);
+    expect(store.load("keep")).toHaveLength(1);
+    expect(store.load("keep-child")).toHaveLength(1);
+    expect(store.load("forked")).toHaveLength(1);
   });
 
   it("purge 之后 append-only trigger 原样归位：UPDATE / 零散 DELETE 依旧被拒", () => {
