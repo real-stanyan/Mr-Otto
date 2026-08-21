@@ -103,8 +103,14 @@ function mergeMaskedCreds(stored: McpServerConfig | undefined, incoming: McpServ
 }
 
 export function createMcpHub(opts: {
-  load(): { servers: Record<string, McpServerConfig>; errors: string[] };
-  save(servers: Record<string, McpServerConfig>): void;
+  load(): { servers: Record<string, McpServerConfig>; errors: string[]; unrecognizedIds: string[] };
+  /** unrecognizedIds：上一次 load() 里解析不动、但同伴健康的那些 id
+      （mcpConfig.ts parseMcpConfig 的同名字段）——原样转给 saveMcpConfig，
+      让它们的原始节点在写回时不被冲掉（F1 half 1，见 mcpConfig.ts 顶部
+      serializeMcpConfig 的注释）。可能抛：prevText 本身解析不动时
+      （F1 half 2），不接住，让调用方（save()/remove()）原样把这次保存
+      失败的错误抛给上层，一路穿透到 IPC 和设置页 */
+  save(servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]): void;
   connect: McpConnect;
 }): McpHub {
   const entries = new Map<string, Entry>();
@@ -112,13 +118,16 @@ export function createMcpHub(opts: {
   let readying: Promise<void> | null = null;
   // 解析阶段的人话错误(见 McpHub.configErrors 的接口注释),每次 syncFromDisk 刷新
   let parseErrors: string[] = [];
+  // 同一次 load() 里解析不动的 id 清单，写回时要原样保护（见上方 save 的接口注释）
+  let unrecognizedIds: string[] = [];
 
   const emit = () => { for (const cb of listeners) cb(); };
 
   /** 从磁盘同步一次清单：新增的进来，删掉的关连接。已在的保留连接状态 */
   function syncFromDisk(): void {
-    const { servers, errors } = opts.load();
+    const { servers, errors, unrecognizedIds: unrec } = opts.load();
     parseErrors = errors;
+    unrecognizedIds = unrec;
     for (const [id, cfg] of Object.entries(servers)) {
       const cur = entries.get(id);
       if (!cur) {
@@ -262,7 +271,10 @@ export function createMcpHub(opts: {
       const merged = mergeMaskedCreds(entries.get(id)?.cfg, cfg);
       const next = Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg]));
       next[id] = merged;
-      opts.save(next);
+      // 磁盘写在前、内存状态变更在后——opts.save 抛（F1 half 2：prevText
+      // 解析不动）时，不能让下面的 close()/entries.set() 抢跑：写都没写成,
+      // 内存不该假装这次保存已经生效
+      opts.save(next, unrecognizedIds);
       // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
       const cur = entries.get(id);
       if (cur?.conn) await cur.conn.close();
@@ -273,10 +285,18 @@ export function createMcpHub(opts: {
 
     async remove(id) {
       syncFromDisk();
+      const remaining = Object.fromEntries(
+        [...entries.entries()].filter(([k]) => k !== id).map(([k, e]) => [k, e.cfg])
+      );
+      // 同 save()：写在前、关连接/删内存记录在后——opts.save 抛的话
+      // （F1 half 2）这台 server 的连接和内存记录都原样留着，不因为一次
+      // 没写成的删除就先斩后奏关掉一条还活着的连接。同时把 unrecognizedIds
+      // 原样带上：删除一台健康 server 不该连带冲掉磁盘上解析不动的 broken
+      // sibling（F1 half 1 在 remove() 路径上的同款问题，见上面 save 的注释）
+      opts.save(remaining, unrecognizedIds);
       const cur = entries.get(id);
       if (cur?.conn) await cur.conn.close();
       entries.delete(id);
-      opts.save(Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg])));
       emit();
     },
 

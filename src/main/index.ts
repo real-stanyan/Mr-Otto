@@ -386,7 +386,7 @@ void app.whenReady().then(() => {
   const mcpConfigPath = join(homedir(), ".otter", "mcp.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
-    save: (servers) => saveMcpConfig(mcpConfigPath, servers),
+    save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
     connect: connectMcpClient,
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段

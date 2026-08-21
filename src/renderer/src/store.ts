@@ -859,7 +859,13 @@ export const useChat = create<ChatState>((set, get) => ({
       const text = await window.otter.expandMcpPrompt(f.server, f.name, f.values);
       if (!stillCurrent()) return;
       set({ mcpPromptForm: null });
-      get().injectComposer(text, false);
+      // append: true —— 展开 prompt 是"往输入框里加一段",不是"清空重写"。
+      // 用户在敲 `/xxx` 之前完全可能已经打了半句话:slash 菜单的 removeOnExecute
+      // 只挪走 `/token` 本身,更早敲的那些字不受影响、原样留在 composer 里——
+      // 如果这里传 false,App.tsx 的 composerInject effect 会直接拿展开结果
+      // 整体覆盖 composer.setText,把那半句话冲没(F2)。同一份 append 语义
+      // 的另一处调用见 SelectionQuote.tsx 的"引用"按钮
+      get().injectComposer(text, true);
     } catch (e) {
       if (!stillCurrent()) return;
       const cur = get().mcpPromptForm;

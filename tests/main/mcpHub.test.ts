@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createMcpHub, type McpConnect } from "../../src/main/mcpHub.js";
+import { loadMcpConfig, saveMcpConfig, type McpConfigReader } from "../../src/main/mcpConfig.js";
 import { McpAuthRequiredError, type McpClientConn } from "../../src/main/mcpClient.js";
 import { maskKey } from "../../src/shared/keyMask.js";
 import type { McpServerConfig } from "../../src/shared/mcp.js";
@@ -23,12 +24,36 @@ function conn(over: Partial<McpClientConn> = {}): McpClientConn {
   };
 }
 
-/** 内存里的配置源 —— 不碰磁盘 */
+/** 内存里的配置源 —— 不碰磁盘。errors/unrecognizedIds 固定给空，不模拟解析失败
+    （模拟解析失败、F1 的场景用下面的 fileStore，走真实的 mcpConfig 读写函数） */
 function memStore(initial: Record<string, McpServerConfig> = {}) {
   let servers = { ...initial };
   return {
-    load: () => ({ servers, errors: [] as string[] }),
-    save: (next: Record<string, McpServerConfig>) => { servers = { ...next }; },
+    load: () => ({ servers, errors: [] as string[], unrecognizedIds: [] as string[] }),
+    save: (next: Record<string, McpServerConfig>, _unrecognizedIds: readonly string[]) => {
+      servers = { ...next };
+    },
+  };
+}
+
+/** 内存里的"文件" —— 走真实的 loadMcpConfig/saveMcpConfig（连同它们背后的
+    parseMcpConfig/serializeMcpConfig），只是 fs 换成一个内存字符串。
+    F1 的两个 scenario 要测的是这几个函数拼在一起之后的真实行为，
+    memStore 那种"servers 直接是 Record"的假实现绕过了 parseMcpConfig，
+    测不出"解析不动的 id 有没有被冲掉"这件事 */
+function fileStore(initialText = "") {
+  let text = initialText;
+  const reader: McpConfigReader = {
+    readFile: () => text,
+    writeFile: (_path, t) => { text = t; },
+  };
+  return {
+    get text() {
+      return text;
+    },
+    load: () => loadMcpConfig("mcp.json", reader),
+    save: (servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]) =>
+      saveMcpConfig("mcp.json", servers, unrecognizedIds, reader),
   };
 }
 
@@ -390,7 +415,7 @@ describe("mergeMaskedCreds 拒绝跨 server / 过期遮罩（review D1/D2）", (
     // 磁盘在渲染层这一行展开期间被外部改了(手改 mcp.json / 另一个窗口存过)
     store.save({
       a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-new-real-value-999999" }, enabled: true },
-    });
+    }, []);
 
     // 渲染层不知道磁盘已经变了，交回来的还是它自己那份过期的遮罩
     await expect(
@@ -456,12 +481,137 @@ describe("configErrors()（review finding 4）", () => {
   it("同步磁盘之前是空的；list()/syncFromDisk 之后原样透出解析错误", () => {
     const errors = ['server「x」缺 command'];
     const hub = createMcpHub({
-      load: () => ({ servers: {}, errors }),
+      load: () => ({ servers: {}, errors, unrecognizedIds: [] }),
       save: () => {},
       connect: vi.fn(),
     });
     expect(hub.configErrors()).toEqual([]);
     hub.list(); // list() 内部会 syncFromDisk()
     expect(hub.configErrors()).toEqual(errors);
+  });
+});
+
+// F1（whole-branch review 的 blocking finding）：解析不动的那台 server 不该
+// 因为用户保存/删除了别的 server 就从磁盘上消失；整份文件语法错误时也不该
+// 被"重建"成只剩这次改动的样子。下面两组测试分别钉住"hub 有没有把
+// unrecognizedIds 转给 opts.save"（单元级、用假 store 观察调用参数）和
+// "拼上真实的 mcpConfig 读写函数之后，reviewer 复现的两个 scenario 有没有
+// 真的被修好"（端到端、用 fileStore）
+describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => {
+  it("save() 把当前 unrecognizedIds 原样转给 opts.save —— 邻居的 broken sibling 不会因为这次保存而消失", async () => {
+    const savedUnrecognized: (readonly string[])[] = [];
+    const hub = createMcpHub({
+      load: () => ({
+        servers: { good: stdio() },
+        errors: ["broken：既没有 command 也没有 url，不知道怎么连（本台跳过）"],
+        unrecognizedIds: ["broken"],
+      }),
+      save: (_servers, unrecognizedIds) => { savedUnrecognized.push(unrecognizedIds); },
+      connect: async () => conn(),
+    });
+    await hub.save("good", stdio("npx-changed"));
+    // 如果 mcpHub.save() 忘了把 unrecognizedIds 转给 opts.save（比如改回
+    // `opts.save(next)` 少传一个参数），这里拿到的就是 undefined，断言失败
+    expect(savedUnrecognized[0]).toEqual(["broken"]);
+  });
+
+  it("remove() 同样把 unrecognizedIds 转给 opts.save —— 删掉一台健康 server 不牵连 broken sibling", async () => {
+    const savedCalls: { servers: Record<string, McpServerConfig>; unrecognizedIds: readonly string[] }[] = [];
+    const hub = createMcpHub({
+      load: () => ({
+        servers: { good: stdio() },
+        errors: ["broken：既没有 command 也没有 url，不知道怎么连（本台跳过）"],
+        unrecognizedIds: ["broken"],
+      }),
+      save: (servers, unrecognizedIds) => { savedCalls.push({ servers, unrecognizedIds }); },
+      connect: async () => conn(),
+    });
+    await hub.ready();
+    await hub.remove("good");
+    // servers 参数里 good 已经不在了（真的被删），但 unrecognizedIds 必须
+    // 依然带着 "broken"——它从来不经过 entries，只能靠这条通道活下来
+    expect(savedCalls[0]!.servers).toEqual({});
+    expect(savedCalls[0]!.unrecognizedIds).toEqual(["broken"]);
+  });
+
+  it("save() 里 opts.save 抛（整份文件语法错误）时，错误原样穿透，内存状态不被假装保存成功", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [] }),
+      save: () => {
+        throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
+      },
+      connect: async () => conn(),
+    });
+    await hub.ready();
+    await expect(hub.save("a", stdio("changed"))).rejects.toThrow(/不是合法 JSON/);
+    // 旧配置/旧连接原样留着——不是"保存失败了但内存已经切到新状态"这种
+    // 更糟的半吊子结果
+    expect(hub.servers()[0]!.status).toBe("connected");
+  });
+
+  it("remove() 里 opts.save 抛时，连接不能已经被关掉却没能持久化删除——写在关连接之前", async () => {
+    const close = vi.fn(async () => {});
+    const hub = createMcpHub({
+      load: () => ({ servers: { a: stdio() }, errors: [], unrecognizedIds: [] }),
+      save: () => {
+        throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
+      },
+      connect: async () => conn({ close }),
+    });
+    await hub.ready();
+    await expect(hub.remove("a")).rejects.toThrow(/不是合法 JSON/);
+    // 如果 remove() 被改回"先关连接、再写盘"的顺序，这里 close 已经被叫过，
+    // 断言会失败——这条测试钉住的是顺序，不是"最终有没有报错"
+    expect(close).not.toHaveBeenCalled();
+    expect(hub.servers()).toHaveLength(1);
+  });
+});
+
+describe("F1 端到端 —— 拼上真实的 mcpConfig 读写函数，复现 reviewer 的两个 scenario", () => {
+  it("scenario A：保存一台 server 之后，解析不动的邻居依然在磁盘上（reviewer：good1 ids 之外的 broken 不该消失）", async () => {
+    const store = fileStore(JSON.stringify({
+      mcpServers: {
+        good1: { command: "npx" },
+        good2: { command: "npx" },
+        broken: { note: "既没有 command 也没有 url" },
+      },
+    }));
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    await hub.save("good1", { kind: "stdio", command: "npx-changed", args: [], env: {}, enabled: true });
+    const onDisk = JSON.parse(store.text) as { mcpServers: Record<string, unknown> };
+    expect(onDisk.mcpServers["broken"]).toEqual({ note: "既没有 command 也没有 url" });
+    expect((onDisk.mcpServers["good1"] as { command: string }).command).toBe("npx-changed");
+    expect(onDisk.mcpServers["good2"]).toBeDefined();
+  });
+
+  it("scenario A 的删除变体：删掉一台健康 server 之后，解析不动的邻居依然在", async () => {
+    const store = fileStore(JSON.stringify({
+      mcpServers: {
+        good1: { command: "npx" },
+        good2: { command: "npx" },
+        broken: { note: "既没有 command 也没有 url" },
+      },
+    }));
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    await hub.remove("good2");
+    const onDisk = JSON.parse(store.text) as { mcpServers: Record<string, unknown> };
+    expect(onDisk.mcpServers["broken"]).toEqual({ note: "既没有 command 也没有 url" });
+    expect(onDisk.mcpServers["good2"]).toBeUndefined();
+    expect(onDisk.mcpServers["good1"]).toBeDefined();
+  });
+
+  it("scenario B：整份 JSON 语法错误时，新建一台不会把文件冲成只剩这一台——保存被拒绝，磁盘原样不动", async () => {
+    const brokenText = "{ 这不是 json，但磁盘上原本还有 good1 和它的凭据";
+    const store = fileStore(brokenText);
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready(); // 整份解析不动 -> servers 是空的,ready() 无事可连
+    await expect(
+      hub.save("brandnew", { kind: "stdio", command: "npx", args: [], env: {}, enabled: true })
+    ).rejects.toThrow(/不是合法 JSON/);
+    // 拒绝写之后磁盘必须原样不动——不能被"brandnew"取代（reviewer 复现的
+    // 那句 "good1 and its credential destroyed" 就是这里被冲掉的）
+    expect(store.text).toBe(brokenText);
   });
 });
