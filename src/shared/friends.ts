@@ -61,3 +61,24 @@ export type RealtimeHealth = "connecting" | "live" | "degraded";
 /** 好友 bridge 方法的错误形态(spec 裁定):网络/RLS 拒绝不 throw,结构化回流,
     渲染层拿 message 做内联提示。throw 只留给"渲染层送来非法参数"这类编程错误 */
 export type FriendsResult<T> = { ok: true; value: T } | { ok: false; message: string };
+
+/** 一个工作区的"在场"信息:在哪个仓库、哪个分支(issue #167,ADR-0055)。
+    repoKey = 规范化 remote URL 的 hash(shared/repoKey.ts 规范化,主进程 hash),
+    好友之间只能比对"同不同一个仓库",看不到地址本身。
+    branch = 本地短名;detached HEAD 时为 null(在仓库里但不在任何分支上) */
+export interface WorkspacePresence {
+  repoKey: string;
+  branch: string | null;
+}
+
+/** 某个好友此刻在哪(只含在线好友;离线的人不在列表里) */
+export interface FriendWorkspace extends WorkspacePresence {
+  userId: string;
+}
+
+/** onWorkspacesChanged 的全量推送:我自己在哪 + 好友们在哪。
+    mine 一起推是因为渲染层过滤"同仓库"要拿我的 repoKey 作基准 */
+export interface WorkspacesSnapshot {
+  mine: WorkspacePresence | null;
+  friends: FriendWorkspace[];
+}

@@ -4,6 +4,7 @@
 // DI 模式同 protocolService:测试喂假 execGit。
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   classifyGitError, isValidBranchName, parseBranchList, parseGitLog, parseNumstat, pickSpineBranch,
@@ -11,6 +12,8 @@ import {
   type GitCommitResult, type GitLogResult,
 } from "../shared/gitGraph.js";
 import { mergeNumstat, parseGitStatus, type GitStatusResult } from "../shared/gitStatus.js";
+import { normalizeRemoteUrl } from "../shared/repoKey.js";
+import type { WorkspacePresence } from "../shared/friends.js";
 
 export interface GitGraphDeps {
   /** git 子进程;reject 的错误对象带 code/stderr(classifyGitError 的输入形状) */
@@ -62,6 +65,17 @@ export interface GitGraphService {
   checkout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** 工作区此刻脏在哪(只读)。行增删拿得到就贴上,拿不到不算失败 */
   status(repoDir: string): Promise<GitStatusResult>;
+  /** 这个目录"是哪个仓库、在哪个分支"(只读,issue #167)。
+      没有 origin / 不是仓库 / 目录不存在 → null(没 remote 的本地仓库没有跨机器身份,不广播) */
+  workspace(repoDir: string): Promise<WorkspacePresence | null>;
+  /** 这个工作区的 git 目录(绝对路径)。普通仓库是 <repo>/.git,linked worktree 是主仓库
+      .git/worktrees/<name> —— HEAD 住在这里,watch 分支切换要盯它。不是仓库 → null */
+  gitDir(repoDir: string): Promise<string | null>;
+}
+
+/** 规范化 remote → 16 位 hex。sha256 截断够防碰撞,短到能塞进 presence meta 和一列 text */
+export function hashRepoKey(normalized: string): string {
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
 
 export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphService {
@@ -168,6 +182,37 @@ export function createGitGraphService(deps: GitGraphDeps = nodeDeps): GitGraphSe
         return { ok: true, status };
       } catch (e) {
         return { ok: false, ...classifyGitError(e as { code?: string; stderr?: string; message?: string }) };
+      }
+    },
+
+    async workspace(repoDir) {
+      if (!deps.dirExists(repoDir)) return null;
+      let normalized: string | null;
+      try {
+        const { stdout } = await deps.execGit(["remote", "get-url", "origin"], repoDir);
+        normalized = normalizeRemoteUrl(stdout);
+      } catch {
+        return null; // 不是仓库,或没有 origin
+      }
+      if (!normalized) return null;
+      let branch: string | null = null;
+      try {
+        // --short 给本地短名;detached HEAD 时 symbolic-ref 以 128 退出 → 留 null
+        const { stdout } = await deps.execGit(["symbolic-ref", "--short", "-q", "HEAD"], repoDir);
+        branch = stdout.trim() || null;
+      } catch {
+        branch = null;
+      }
+      return { repoKey: hashRepoKey(normalized), branch };
+    },
+
+    async gitDir(repoDir) {
+      if (!deps.dirExists(repoDir)) return null;
+      try {
+        const { stdout } = await deps.execGit(["rev-parse", "--absolute-git-dir"], repoDir);
+        return stdout.trim() || null;
+      } catch {
+        return null;
       }
     },
 
