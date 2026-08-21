@@ -31,6 +31,8 @@ import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
 import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
+import { createTaskTool, type SubagentRunner } from "../tools/task.js";
+import type { SubagentDef } from "../shared/subagent.js";
 import {
   UIApprover,
   createGrantAwareApprover,
@@ -59,12 +61,15 @@ const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
 
 export interface AgentPush {
   event(e: SessionEvent): void;
-  /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览 */
+  /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览。
+      fromAgent 有 = 这张卡是从某个 subagent 冒泡上来的（ADR-0046），
+      缺席 = 主 agent 自己的卡，现有渲染一字不改 */
   approvalRequest(
     sessionId: string,
     call: ToolCallRequest,
     tool: Tool,
-    preview?: WriteFilePreview
+    preview?: WriteFilePreview,
+    fromAgent?: string
   ): void;
   /** 带 sessionId：问卷卡同理，挂靠到发起提问的那个会话的视图上 */
   askUserRequest(sessionId: string, toolCallId: string, questions: AskUserQuestion[]): void;
@@ -120,6 +125,11 @@ export function createAgent(opts: {
   /** 换掉整条审批链（mode 感知 + 授权感知 + UI）。给了 = 那三层都不参与。
       目前唯一用途：approval: "deny" 的 subagent 传 denyingApprover */
   approver?: Approver;
+  /** 给了 = 这个装配能派活（挂 task 工具）。子 agent 刻意不传它——
+      递归由此挡死（ADR-0046） */
+  subagentRunner?: SubagentRunner;
+  /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
+  listSubagents?: () => SubagentDef[];
 }) {
   const { store } = opts;
 
@@ -277,6 +287,12 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
+    // 有 runner 且真有人可派才挂。清单空着还挂 = 对模型宣称一把用不了的工具，
+    // 它试一次、吃一个"一个都没有"，白烧一轮；而工具表同时是 UI 报的上下文占用，
+    // 报一把用不了的连账也是错的（同 browserReadTool 的既有做法）
+    ...(opts.subagentRunner && (opts.listSubagents?.() ?? []).length > 0
+      ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
+      : []),
   ];
 
   // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件

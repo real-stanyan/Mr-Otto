@@ -30,6 +30,9 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
+import { scanSubagents, writeSubagent } from "./subagents.js";
+import { createSubagentRunner } from "./subagentRunner.js";
+import { DEFAULT_SUBAGENT_TOOLS, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
@@ -377,12 +380,13 @@ void app.whenReady().then(() => {
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
     event: (e) => send(CHANNELS.event, e),
-    approvalRequest: (sessionId, call, tool, preview) =>
+    approvalRequest: (sessionId, call, tool, preview, fromAgent) =>
       send(CHANNELS.approvalRequest, {
         sessionId,
         call,
         toolDescription: tool.def.description,
         ...(preview ? { preview } : {}),
+        ...(fromAgent ? { fromAgent } : {}),
       }),
     askUserRequest: (sessionId, toolCallId, questions) =>
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
@@ -391,6 +395,32 @@ void app.whenReady().then(() => {
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
       send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
+
+  // subagent 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位。
+  // readOnly 标着的那份不写回——不去改用户 Claude Code 的配置
+  const subagentRoots = [
+    { root: join(homedir(), ".otter", "agents"), readOnly: false },
+    { root: join(homedir(), ".claude", "agents"), readOnly: true },
+  ];
+  // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
+  // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
+  // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
+  // 挂上，探针报的工具表就漏了这一把——手写常量正是为了躲开这种"和真实工具表
+  // 对不上"，桩子撒谎是同一个坑换个地方摔
+  const TOOL_NAMES: string[] = createAgent({
+    store: new EventStore(":memory:"),
+    workspace: app.getPath("userData"),
+    push: {
+      event: () => {},
+      approvalRequest: () => {},
+      askUserRequest: () => {},
+      assistantDelta: () => {},
+      toolOutput: () => {},
+    },
+    attachments: attachmentStore,
+    makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+  }).toolDefs.map((d) => d.name);
+  const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
 
@@ -411,7 +441,12 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    const agent = createAgent({
+    // 派活的 parent() 要能拿到"正在构造的这个 agent"——但 createAgent 还没返回。
+    // 用一个先声明后赋值的绑定：parent() 只在派活那一刻才被调用（远在这行之后），
+    // 到那时 self 早已赋值；这里不能改成先起个快照，快照会把后续 switchModel 等
+    // 运行时变化锁死在创建那一刻的值上
+    let self: ReturnType<typeof createAgent>;
+    self = createAgent({
       store,
       workspace: opts.workspace,
       push,
@@ -420,7 +455,23 @@ void app.whenReady().then(() => {
       makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      listSubagents,
+      subagentRunner: createSubagentRunner({
+        store,
+        attachments: attachmentStore,
+        push,
+        list: listSubagents,
+        parent: () => ({
+          sessionId: self.sessionId,
+          workspace: self.workspace,
+          world: self.world,
+          model: self.model,
+        }),
+        getAccessToken,
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      }),
     });
+    const agent = self;
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -444,20 +495,35 @@ void app.whenReady().then(() => {
       if (!first || first.type !== "session_created" || !first.workspace) {
         throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
       }
-      agents.set(
-        sessionId,
-        createAgent({
+      // 同一招：parent() 要能拿到正在构造的这个 agent，先声明后赋值
+      let self: ReturnType<typeof createAgent>;
+      self = createAgent({
+        store,
+        workspace: first.workspace,
+        push,
+        resumeSessionId: sessionId,
+        attachments: attachmentStore,
+        getAccessToken,
+        makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
+        alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+        listSubagents,
+        subagentRunner: createSubagentRunner({
           store,
-          workspace: first.workspace,
-          push,
-          resumeSessionId: sessionId,
           attachments: attachmentStore,
+          push,
+          list: listSubagents,
+          parent: () => ({
+            sessionId: self.sessionId,
+            workspace: self.workspace,
+            world: self.world,
+            model: self.model,
+          }),
           getAccessToken,
-          makeBrowser: (sid) => ({ read: (o) => browsers.read(sid, o) }),
           alwaysAllow: () => loadAlwaysAllow(permissionsPath),
-          persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-        })
-      );
+        }),
+      });
+      agents.set(sessionId, self);
     }
     currentSessionId = sessionId;
     const info = bootInfo();
@@ -469,6 +535,31 @@ void app.whenReady().then(() => {
   const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  ipcMain.handle(CHANNELS.listSubagents, () => listSubagents());
+
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef) => {
+    writeSubagent(def);
+    return listSubagents();
+  });
+
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
+    const clean = name.trim().replace(/[^A-Za-z0-9_-]/g, "-");
+    if (!clean) throw new Error("名字不能为空");
+    const root = subagentRoots[0]!.root;
+    writeSubagent({
+      name: clean,
+      description: "",
+      instructions: "",
+      tools: [...DEFAULT_SUBAGENT_TOOLS],
+      unknownTools: [],
+      approval: "deny",
+      path: join(root, `${clean}.md`),
+      source: root,
+      readOnly: false,
+    });
+    return listSubagents();
+  });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();

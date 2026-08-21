@@ -57,7 +57,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
       const childPush: AgentPush = {
         ...deps.push,
         approvalRequest: (_child, call, tool, preview) =>
-          deps.push.approvalRequest(parent.sessionId, call, tool, preview),
+          deps.push.approvalRequest(parent.sessionId, call, tool, preview, def.name),
         askUserRequest: (_child, toolCallId, questions) =>
           deps.push.askUserRequest(parent.sessionId, toolCallId, questions),
       };

@@ -4,8 +4,8 @@
 // 而且 frontmatter 字段多，需要真解析而不是两个正则。
 // 主进程模块（组装根特权可碰 fs）；解析是纯函数，fs 以接口注入，测试喂假实现。
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_SUBAGENT_TOOLS,
   type SubagentApproval,
@@ -136,4 +136,31 @@ export function scanSubagents(
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** SubagentDef → .md 全文。设置页保存走这条。
+    unknownTools 原样写回：用户手写的工具名本仓认不出，不代表可以替他删掉
+    （他可能正准备把这个文件拿去 Claude Code 用） */
+export function serializeSubagent(def: SubagentDef): string {
+  const lines = [
+    `name: ${def.name}`,
+    `description: ${def.description}`,
+    `tools: ${[...def.tools, ...def.unknownTools].join(", ")}`,
+    ...(def.model ? [`model: ${def.model}`] : []),
+    ...(def.thinking ? [`thinking: ${def.thinking}`] : []),
+    `approval: ${def.approval}`,
+  ];
+  return `---\n${lines.join("\n")}\n---\n\n${def.instructions}\n`;
+}
+
+/** 写回磁盘。只写 readOnly: false 的——~/.claude/agents/ 是用户 Claude Code
+    的配置，我们不去改它 */
+export function writeSubagent(def: SubagentDef, write = defaultWrite): void {
+  if (def.readOnly) throw new Error(`${def.name} 是只读的（来自 ${def.source}），请先复制一份`);
+  write(def.path, serializeSubagent(def));
+}
+
+function defaultWrite(path: string, text: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text, "utf8");
 }

@@ -30,8 +30,11 @@ import type {
   AskUserQuestion,
   AskUserRequest,
 } from "./askUser.js";
+import type { SubagentDef } from "./subagent.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
+
+export type { SubagentDef };
 
 export type { SessionSummary };
 
@@ -169,6 +172,9 @@ export interface ApprovalRequest {
   toolDescription: string;
   /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
   preview?: WriteFilePreview;
+  /** 这张卡来自哪个 subagent（ADR-0046 的冒泡）。缺席 = 主 agent 自己的卡，
+      现有渲染一字不改 */
+  fromAgent?: string;
 }
 
 /** 审批卡按钮的返程（ADR-0041）。与 answerQuestions 同构：一个 outcome 对象，
@@ -312,6 +318,12 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** 本机定义的 subagent（现扫磁盘，零缓存） */
+  listSubagents(): Promise<SubagentDef[]>;
+  /** 写回那份 .md，返回保存后的整份清单（省一次往返） */
+  saveSubagent(def: SubagentDef): Promise<SubagentDef[]>;
+  /** 按模板新建一个，返回整份清单 */
+  createSubagent(name: string): Promise<SubagentDef[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -513,6 +525,9 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  listSubagents: "otter:listSubagents",
+  saveSubagent: "otter:saveSubagent",
+  createSubagent: "otter:createSubagent",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",
