@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createMcpHub, type McpConnect } from "../../src/main/mcpHub.js";
 import { McpAuthRequiredError, type McpClientConn } from "../../src/main/mcpClient.js";
+import { maskKey } from "../../src/shared/keyMask.js";
 import type { McpServerConfig } from "../../src/shared/mcp.js";
 
 const stdio = (command = "npx"): McpServerConfig => ({
@@ -324,6 +325,128 @@ describe("save() 合并遮罩值（review finding 3）", () => {
     const saved = store.load().servers["new"];
     if (saved!.kind !== "stdio") throw new Error("窄化失败");
     expect(saved!.env["TOKEN"]).toBe("sk-first-time-0123456789");
+  });
+
+  it("新建一台 server 时,凭据字段哪怕长得像遮罩,也不该被这道闸拦住（没有旧值可覆盖）", async () => {
+    const store = memStore({});
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    // 这串是另一把 key 遮罩之后的形状,但这是新建 server,没有"磁盘上的旧值"
+    // 可言——闸门的判据要求 stored[k] !== undefined,新建天然不满足
+    await expect(
+      hub.save("brand-new", {
+        kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-31cf5*****828c" }, enabled: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["brand-new"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN"]).toBe("sk-31cf5*****828c");
+  });
+});
+
+// review D1/D2：渲染层的 hasStrayMaskedValue 只看得见自己手上那份 baseline，
+// 看不见"另一台 server 的遮罩被粘过来了"或者"这一行展开期间磁盘被外部改过"。
+// 这道闸长在 mergeMaskedCreds 里，同时看得见"整份磁盘现状"和"这次 incoming
+// 改的是哪台/哪个键"，堵上渲染层结构性看不见的两个洞
+describe("mergeMaskedCreds 拒绝跨 server / 过期遮罩（review D1/D2）", () => {
+  it("D1：把另一台 server 的可见遮罩粘进这一台已存在的键——拒存并抛错", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-server-a-secret-0000000" }, enabled: true },
+      b: { kind: "stdio", command: "npx", args: [], env: { GITHUB_TOKEN: "sk-server-b-secret-1111" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    const [rowA] = hub.list().filter((s) => s.id === "a");
+    if (rowA!.config.kind !== "stdio") throw new Error("窄化失败");
+    const maskedA = rowA!.config.env["TOKEN"]!;
+
+    // 用户把 A 的遮罩粘进了 B 的 GITHUB_TOKEN 值框，键名 GITHUB_TOKEN 没变
+    await expect(
+      hub.save("b", {
+        kind: "stdio", command: "npx", args: [], env: { GITHUB_TOKEN: maskedA }, enabled: true,
+      })
+    ).rejects.toThrow(/遮罩|真凭据/);
+
+    // 拒存意味着磁盘上 B 的真凭据必须原封不动，不能被半途写坏
+    const stillB = store.load().servers["b"];
+    if (stillB!.kind !== "stdio") throw new Error("窄化失败");
+    expect(stillB!.env["GITHUB_TOKEN"]).toBe("sk-server-b-secret-1111");
+  });
+
+  it("D2：这一行展开期间磁盘被外部改过，交回来的还是旧遮罩——拒存，不拿旧遮罩覆盖新真值", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-old-real-value-000000" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    const [row] = hub.list();
+    if (row!.config.kind !== "stdio") throw new Error("窄化失败");
+    const staleMask = row!.config.env["TOKEN"]!; // 渲染层此刻手上握着的遮罩
+
+    // 磁盘在渲染层这一行展开期间被外部改了(手改 mcp.json / 另一个窗口存过)
+    store.save({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-new-real-value-999999" }, enabled: true },
+    });
+
+    // 渲染层不知道磁盘已经变了，交回来的还是它自己那份过期的遮罩
+    await expect(
+      hub.save("a", {
+        kind: "stdio", command: "npx", args: [], env: { TOKEN: staleMask }, enabled: true,
+      })
+    ).rejects.toThrow(/遮罩|真凭据/);
+
+    const stillNew = store.load().servers["a"];
+    if (stillNew!.kind !== "stdio") throw new Error("窄化失败");
+    expect(stillNew!.env["TOKEN"]).toBe("sk-new-real-value-999999"); // 新真值没被旧遮罩覆盖
+  });
+
+  it("清空一个字段（value === \"\"）不该被这道闸拦住——空值是正常操作", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { TOKEN: "sk-real-secret-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    await expect(
+      hub.save("a", { kind: "stdio", command: "npx", args: [], env: { TOKEN: "" }, enabled: true })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN"]).toBe("");
+  });
+
+  it("http headers 同一条闸——跨 server 粘遮罩同样拒存", async () => {
+    const store = memStore({
+      a: { kind: "http", url: "https://a.example.com", headers: { Authorization: "sk-http-a-secret-0000" }, enabled: true },
+      b: { kind: "http", url: "https://b.example.com", headers: { Authorization: "sk-http-b-secret-1111" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+
+    const [rowA] = hub.list().filter((s) => s.id === "a");
+    if (rowA!.config.kind !== "http") throw new Error("窄化失败");
+    const maskedA = rowA!.config.headers["Authorization"]!;
+
+    await expect(
+      hub.save("b", {
+        kind: "http", url: "https://b.example.com", headers: { Authorization: maskedA }, enabled: true,
+      })
+    ).rejects.toThrow(/遮罩|真凭据/);
+  });
+
+  it("maskKey 在三段长度分支上都是幂等的——这道闸能成立的前提，单独钉住", () => {
+    const long = "sk-abcdefghijklmnopqrstuvwxyz0123456789"; // >= 16
+    const mid = "abcdefgh"; // 8-15
+    const short = "ab"; // < 8
+    for (const s of [long, mid, short]) {
+      const once = maskKey(s);
+      expect(maskKey(once)).toBe(once);
+    }
   });
 });
 

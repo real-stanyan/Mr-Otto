@@ -47,14 +47,50 @@ const READY_TIMEOUT_MS = 10_000;
     判定法：对每个键单独比较——如果 incoming 的值恰好等于「磁盘上这个键的
     当前值」经 maskKey 之后的样子,说明用户没碰它,原样保留磁盘上的真值;
     否则采信 incoming（用户真改了,或者这是一把新键）。
-    kind 变了（stdio ↔ http）没有旧值可比,直接采信 incoming——新建同理。 */
+    kind 变了（stdio ↔ http）没有旧值可比,直接采信 incoming——新建同理。
+
+    第二道闸（review D1/D2）：渲染层三轮补丁分别堵上了"同一台 server 内改名
+    漏值"（N1）、"改名又改回来"（M1）这两条路，但渲染层的判据结构性地只能
+    看见它自己手上那份 baseline——看不见"另一台 server 的遮罩被粘过来了"
+    （D1：设置页里几台 server 的 <details> 能同时展开，遮罩在值输入框里是
+    普普通通、可以选中复制的明文，把 A 的遮罩粘进 B 的字段是操作上顺理成章
+    的一步）、也看不见"这一行展开期间磁盘被外部改过"（D2：baseline 是活的
+    prop,但 envRows/headerRows 只在挂载和存完之后才重新取样，外部改动落地
+    的那一刻,行里握着的还是旧遮罩）。这两个洞都不是"渲染层漏做了什么",
+    是渲染层能看见的信息本来就不够——它只有一份 baseline,不知道全局磁盘
+    现状,也不知道别的 server 长什么样。真正同时看得见"整份磁盘现状 + 这一次
+    incoming 到底改的是哪台"的只有这里，所以第二道闸必须长在这一层，
+    不是又一次渲染层补丁。
+
+    判据（v 已经不是 k 自己的遮罩,即上面 merge 判过"没碰过"这条之后的分支）：
+    stored[k] !== undefined（有真值在磁盘上,真凭据确实处在风险里——新键/
+    新 server 没有旧值可覆盖,不该被这道闸拦住）且 v !== ""（清空是正常操作,
+    见 mcpForm.ts hasStrayMaskedValue 同款的空值豁免）且 maskKey(v) === v
+    （v 长得像"遮罩形状"——这是可判定的：maskKey 在全部三段长度分支上都是
+    幂等的，maskKey(maskKey(s)) === maskKey(s) 恒成立，逐段验证见
+    mcpHub.test.ts。v 如果是用户真敲的一把新凭据，几乎不可能恰好落在
+    maskKey 的不动点上；如果恰好等于 maskKey(v)，唯一自洽的解释就是它本来
+    就是某处的遮罩——可能是这台 server 自己的旧遮罩（D2）、也可能是另一台
+    server 的（D1）——总之不是这个键此刻该收下的真凭据）。
+    命中就拒存，抛错——宁可错杀也不可放过：静默覆盖成星号且日后无法察觉，
+    远比"这次保存被拒、用户看到一条能读懂的报错、重新填一遍"更糟。
+    失败方向要诚实：一把恰好长得像 `XXXXXXXX*****YYYY` 这种形状的真实凭据
+    （概率极低，但结构上不是不可能）会被这道闸误伤，存不进去——这是刻意的
+    取舍，不是需要"修"的 bug,下一个读到这里的人不必为它去关掉这项检查。 */
 function mergeMaskedCreds(stored: McpServerConfig | undefined, incoming: McpServerConfig): McpServerConfig {
   if (!stored || stored.kind !== incoming.kind) return incoming;
   const merge = (inc: Record<string, string>, old: Record<string, string>): Record<string, string> =>
     Object.fromEntries(
       Object.entries(inc).map(([k, v]) => {
         const oldValue = old[k];
-        return [k, oldValue !== undefined && v === maskKey(oldValue) ? oldValue : v];
+        if (oldValue !== undefined && v === maskKey(oldValue)) return [k, oldValue];
+        if (oldValue !== undefined && v !== "" && maskKey(v) === v) {
+          throw new Error(
+            `「${k}」提交的值看起来是遮罩字符串（可能贴自另一台 server，或者这一格` +
+            `展开期间磁盘上的凭据已经被改过），不像是真凭据——为安全起见拒绝这次保存，请重新填一遍真值`
+          );
+        }
+        return [k, v];
       })
     );
   if (incoming.kind === "stdio" && stored.kind === "stdio") {

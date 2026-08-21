@@ -377,7 +377,10 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
   const hasCapabilities = server.tools.length + server.resources.length + server.prompts.length > 0;
 
   const save = async () => {
-    if (invalid) return;
+    // O3 review finding：dirty 原来只靠 Save 按钮的 disabled 属性挡，函数
+    // 本身没有这条不变量——按钮确实是唯一的调用入口（没有 <form>/onSubmit/
+    // onKeyDown），但把它写进函数比全靠一个 JSX 属性更经得起以后的改动
+    if (!dirty || invalid) return;
     setSaving(true);
     setSaveError(null);
     try {
