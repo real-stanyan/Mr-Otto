@@ -1171,7 +1171,12 @@ function WorkStatusList() {
   const resume = useChat((s) => s.resume);
   const setSessionMode = useChat((s) => s.setSessionMode);
 
-  const rows = sessions
+  // 子会话（spawnedFrom 非空，ADR-0046）不在这露面：它们只能从父会话时间线
+  // 那张卡进去，这里再列一遍会在父会话旁边重复一条"运行中"，正是 Task 8
+  // 要把这个信号收拢到时间线卡上、不在别处重复的那件事（Task 8 review Important 2）
+  const visible = sessions.filter((s) => s.spawnedFrom === null);
+
+  const rows = visible
     .map((s) => {
       // 顺序即优先级：等人的排在跑着的前面，因为只有前者卡着不动
       if (approvals[s.sessionId]) return { s, label: "等审批", live: true, urgent: true };
@@ -1184,7 +1189,7 @@ function WorkStatusList() {
     .filter((r) => r.live)
     .sort((a, b) => Number(b.urgent) - Number(a.urgent));
 
-  const idle = sessions.length - rows.length;
+  const idle = visible.length - rows.length;
 
   return (
     <div className="px-2 py-1 flex flex-col gap-1">

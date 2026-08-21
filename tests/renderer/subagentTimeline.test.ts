@@ -84,6 +84,25 @@ describe("groupSubagentSpawns —— 按所属 assistant_message 分组", () => 
     ];
     expect(groupSubagentSpawns(events)).toHaveLength(2);
   });
+
+  it("toolCallId 找不到归属的 assistant_message(坏日志/被修过的日志)→ 自成一组，不抛异常", () => {
+    // 理论不可达的兜底分支：没有任何 assistant_message 声明过这个 toolCallId，
+    // owner 表里查不到，退回用自己的 seq 当分组键——单独成一个单成员组，
+    // 渲染层照样能画一张 AgentStatus，不会因为一条坏事件让整条时间线崩掉
+    const orphan = spawned(1, "orphan_call");
+    const groups = groupSubagentSpawns([orphan]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toEqual([orphan]);
+  });
+
+  it("孤儿 spawn 和一个正常的组共存时，互不干扰", () => {
+    const orphan = spawned(1, "orphan_call");
+    const events = [orphan, assistantWithTask(2, ["call_1"]), spawned(3, "call_1")];
+    const groups = groupSubagentSpawns(events);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toEqual([orphan]);
+    expect(groups[1]?.map((e) => e.toolCallId)).toEqual(["call_1"]);
+  });
 });
 
 describe("subagentRowState —— 状态全从父会话自己的日志/实时镜像推导", () => {

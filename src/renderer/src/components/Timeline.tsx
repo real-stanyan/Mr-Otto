@@ -171,6 +171,9 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
   const subagentLogCache = useChat((s) => s.subagentLogCache);
   const loadSubagentLog = useChat((s) => s.loadSubagentLog);
   const resume = useChat((s) => s.resume);
+  // 子会话此刻在跑哪个 toolCallId——ToolLiveTail 订阅的是 toolCallId 不是
+  // sessionId,这份索引把两者接起来(Task 8 review Important 1)
+  const runningToolCallBySession = useChat((s) => s.runningToolCallBySession);
 
   const index = useMemo(() => buildToolIndex(events), [events]);
   const groups = useMemo(() => groupSubagentSpawns(events), [events]);
@@ -197,14 +200,20 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
     const resultTs = index.results.get(spawn.toolCallId)?.ts;
     const elapsedMs = (state === "done" ? (resultTs ?? now) : now) - spawn.ts;
     const fact = state === "done" ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+    const runningToolCallId = runningToolCallBySession[spawn.childSessionId];
     return (
-      <div className={AUDIT}>
+      <div className={`${AUDIT} flex flex-col items-center gap-1.5`}>
         <AgentStatus
           state={state}
           label={spawn.agent}
           onSelect={() => void resume(spawn.childSessionId)}
           {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}
         />
+        {/* 直播尾巴:只在跑着、且子会话真有一个工具调用开着的时候才挂——
+            没有就没有,不摆一个空壳子(同 ToolRow 的做法) */}
+        {state === "working" && runningToolCallId !== undefined && (
+          <ToolLiveTail toolCallId={runningToolCallId} command={spawn.agent} done={false} />
+        )}
       </div>
     );
   }
@@ -219,9 +228,13 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
   // 二值色带,不是真进度:我们不知道子 agent 跑到几成了(design brief 的
   // "no fake progress")——done=完整色带,working=四成占位,只区分两态
   const progress = group.map((spawn) => (index.results.has(spawn.toolCallId) ? 100 : 40));
+  // 执行是串行的:任一时刻至多一个成员还没结果,直播尾巴只可能属于它
+  // (Task 8 review Important 1)
+  const runningSpawn = group.find((spawn) => !index.results.has(spawn.toolCallId));
+  const runningToolCallId = runningSpawn && runningToolCallBySession[runningSpawn.childSessionId];
 
   return (
-    <div className={AUDIT}>
+    <div className={`${AUDIT} flex flex-col items-center gap-1.5`}>
       <SubagentList
         agents={items}
         completedCount={completedCount}
@@ -230,6 +243,9 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
         summaryAgent={items[0]!}
         onSelectAgent={(i) => void resume(group[i]!.childSessionId)}
       />
+      {runningToolCallId !== undefined && (
+        <ToolLiveTail toolCallId={runningToolCallId} command={runningSpawn!.agent} done={false} />
+      )}
     </div>
   );
 });

@@ -439,8 +439,24 @@ void app.whenReady().then(() => {
 
   // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
   // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)
-  // 用的是这个通道，不是 resumeSession
-  ipcMain.handle(CHANNELS.readSessionEvents, (_e, sessionId: string) => store.load(sessionId));
+  // 用的是这个通道，不是 resumeSession。
+  // 收窄成"只能读子会话"（Task 8 review Important 3）：目标必须带 spawnedBy，
+  // 且指回当前正看着的会话——不然这就是一个凭 sessionId 就能读任意会话全文的
+  // 静默通道：resumeSession 好歹会切视图，是"看得见"的；这个不会，读了不留痕迹。
+  // currentSessionId 是渲染层此刻唯一正当的"我在哪"
+  ipcMain.handle(CHANNELS.readSessionEvents, (_e, sessionId: string) => {
+    const events = store.load(sessionId);
+    const first = events[0];
+    if (
+      !first ||
+      first.type !== "session_created" ||
+      !first.spawnedBy ||
+      first.spawnedBy.sessionId !== currentSessionId
+    ) {
+      throw new Error("只能读取当前会话派出的子会话");
+    }
+    return events;
+  });
 
   // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）
   // 再一次性落地，中途反悔不留任何痕迹——没建的会话不该存在半个

@@ -123,6 +123,13 @@ interface ChatState {
   /** 工具输出直播缓冲（按 toolCallId 攒 bash 的 stdout/stderr 尾巴）。
       只留尾部（终端视角：看最新进展）；tool_result 一到就清——完整输出以它为准 */
   toolOutputByCall: Record<string, string>;
+  /** 每个会话此刻正在跑的 toolCallId（不分是否正在看的会话，同 toolOutputByCall
+      的路子）。tool_execution_started 记下，配对的 tool_result 落地就清。
+      存在的意义：父时间线上的 subagent 卡只知道 childSessionId，不知道子会话
+      此刻具体在跑哪一次工具调用——ToolLiveTail 订阅的是 toolCallId，这份索引
+      补上"会话 → 正在跑的调用"这一层，卡才能挂上直播尾巴（Task 8 review
+      Important 1） */
+  runningToolCallBySession: Record<string, string>;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -450,6 +457,7 @@ export const useChat = create<ChatState>((set, get) => ({
   asks: {},
   streamingBySession: {},
   toolOutputByCall: {},
+  runningToolCallBySession: {},
   error: null,
   approvalMode: "ask",
   thinking: DEFAULT_THINKING,
@@ -1237,13 +1245,22 @@ export const useChat = create<ChatState>((set, get) => ({
         // 不分会话——callId 全局唯一，后台会话的缓冲也要清，不然只涨不消
         const toolOutput =
           e.type === "tool_result" ? without(s.toolOutputByCall, e.toolCallId) : s.toolOutputByCall;
+        // 会话 → 正在跑的 toolCallId，同样不分会话地维护（见字段注释）：
+        // 开跑记下，配对的结果落地就清
+        const runningToolCall =
+          e.type === "tool_execution_started"
+            ? { ...s.runningToolCallBySession, [e.sessionId]: e.toolCallId }
+            : e.type === "tool_result"
+              ? without(s.runningToolCallBySession, e.sessionId)
+              : s.runningToolCallBySession;
         // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
         // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
         if (e.sessionId !== s.sessionId)
-          return { streamingBySession: streaming, toolOutputByCall: toolOutput };
+          return { streamingBySession: streaming, toolOutputByCall: toolOutput, runningToolCallBySession: runningToolCall };
         return {
           streamingBySession: streaming,
           toolOutputByCall: toolOutput,
+          runningToolCallBySession: runningToolCall,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),

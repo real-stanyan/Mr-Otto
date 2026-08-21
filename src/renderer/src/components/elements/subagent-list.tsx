@@ -16,6 +16,10 @@
 //     —— 本仓的时间线是刻意静止的界面，没有这一档预算（Task 8 的动效纪律）。
 //     width 的过渡（状态从"跑着"切到"完成"）留着：那是状态指示，不是装饰性
 //     的入场。
+//  ⑤ 这条过渡的 duration-700 严格说超出了"可点元素 160ms ease-out"那份预算
+//     ——是有意的：色带切换不是按压反馈，是状态指示（同 job-progress 现有的
+//     duration-500 先例），700ms 让"跑着→完成"这个切换看得清，不是漏改。
+//     写在这里而不是当成疏漏，免得下一次升级/复核把它"修"回 160ms。
 
 import type { ComponentProps, KeyboardEvent } from "react";
 import { CheckIcon, Loader2Icon } from "lucide-react";
