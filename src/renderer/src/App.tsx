@@ -57,6 +57,7 @@ import { cn, isMac } from "@/lib/utils.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
+import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -2206,11 +2207,7 @@ function ChatComposer() {
     // 追加档要读当前值。composer.getState() 而不是闭包里的 input:
     // 这个 effect 只依赖 composerInject,input 的闭包会是旧的
     const prev = composer.getState().text;
-    composer.setText(
-      composerInject.append
-        ? (prev.trim() === "" ? "" : prev.replace(/\s*$/, "\n\n")) + composerInject.text
-        : composerInject.text
-    );
+    composer.setText(composeInjectedText(prev, composerInject.text, composerInject.append));
     useChat.setState({ composerInject: null });
     textareaRef.current?.focus();
   }, [composerInject, composer]);

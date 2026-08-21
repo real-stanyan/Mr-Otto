@@ -373,6 +373,83 @@ describe("save() 合并遮罩值（review finding 3）", () => {
     if (saved!.kind !== "stdio") throw new Error("窄化失败");
     expect(saved!.env["TOKEN"]).toBe("sk-31cf5*****828c");
   });
+
+  // issue #158：闸门那句 `stored[k] !== undefined` 从前没有测试钉住——
+  // 只删这一个子句，全部 mcpHub 测试照样绿。而它是承重的：上面那条测的是
+  // 新建**整台 server**（stored 为 undefined，函数第一行就 return 了，
+  // 压根走不到闸门），走到闸门还能被这个子句放过去的是下面这种——
+  // 已有 server 上加一个**新键**
+  it("已有 server 加一个新键，值恰好落在 maskKey 的不动点上也放行（stored[k] === undefined）", async () => {
+    const store = memStore({
+      a: { kind: "stdio", command: "npx", args: [], env: { OLD: "sk-old-real-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-old-real-0123456789");
+
+    await expect(
+      hub.save("a", {
+        kind: "stdio", command: "npx", args: [],
+        // OLD 没碰（交回遮罩），NEW 是一把恰好长得像遮罩的新值
+        env: { OLD: masked, NEW: "sk-31cf5*****828c" },
+        enabled: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["OLD"]).toBe("sk-old-real-0123456789"); // 旧值没被遮罩覆盖
+    expect(saved!.env["NEW"]).toBe("sk-31cf5*****828c"); // 新键原样收下
+  });
+
+  // issue #158：merge 层的"没碰过就往返回真值"只测了 stdio/env，http/headers
+  // 那一路（同一个 merge 函数的另一个调用点）没有对应的往返测试
+  it("http headers 没碰过的字段送回遮罩值 —— 磁盘上的真值原样保留", async () => {
+    const store = memStore({
+      a: { kind: "http", url: "https://a.example.com", headers: { Authorization: "sk-http-real-0123456789" }, enabled: true },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-http-real-0123456789");
+
+    // 用户只改了 url，Authorization 原样把遮罩交回来
+    await hub.save("a", {
+      kind: "http", url: "https://a2.example.com", headers: { Authorization: masked }, enabled: true,
+    });
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "http") throw new Error("窄化失败");
+    expect(saved!.url).toBe("https://a2.example.com");
+    expect(saved!.headers["Authorization"]).toBe("sk-http-real-0123456789");
+  });
+
+  // issue #158：两个键合法地共用同一个真值时，两份遮罩长得一模一样——
+  // 闸门必须逐键判断，不能因为"这串遮罩已经在别处出现过"就一竿子拒了
+  it("两个键共用同一个真值：两份遮罩交回来，两个键都还原成真值", async () => {
+    const store = memStore({
+      a: {
+        kind: "stdio", command: "npx", args: [],
+        env: { TOKEN_A: "sk-shared-real-0123456789", TOKEN_B: "sk-shared-real-0123456789" },
+        enabled: true,
+      },
+    });
+    const hub = createMcpHub({ ...store, connect: async () => conn() });
+    await hub.ready();
+    const masked = maskKey("sk-shared-real-0123456789");
+
+    await expect(
+      hub.save("a", {
+        kind: "stdio", command: "npx", args: [],
+        env: { TOKEN_A: masked, TOKEN_B: masked },
+        enabled: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const saved = store.load().servers["a"];
+    if (saved!.kind !== "stdio") throw new Error("窄化失败");
+    expect(saved!.env["TOKEN_A"]).toBe("sk-shared-real-0123456789");
+    expect(saved!.env["TOKEN_B"]).toBe("sk-shared-real-0123456789");
+  });
 });
 
 // review D1/D2：渲染层的 hasStrayMaskedValue 只看得见自己手上那份 baseline，

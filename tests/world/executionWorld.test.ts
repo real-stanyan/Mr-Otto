@@ -125,8 +125,25 @@ describe("装饰器透传 mcp", () => {
     expect(w.mcp?.servers()).toHaveLength(1);
   });
 
-  it("世界本来没有 MCP 时，装饰后依然没有（不凭空造一个）", () => {
-    expect(withAbortSignal(fakeWorld(), new AbortController().signal).mcp).toBeUndefined();
-    expect(withExecOutput(fakeWorld(), () => {}).mcp).toBeUndefined();
+  // issue #158：这条从前是按**值**断言 undefined —— 把 withExecOutput 里那句
+  // 条件透传拍成无条件的 `mcp: world.mcp`，它照样绿（值仍然是 undefined），
+  // 也就是说它测不出它存在的理由。exactOptionalPropertyTypes 下"键不存在"和
+  // "键的值是 undefined"是两件事，断言必须落在键上
+  it("世界本来没有 MCP 时，装饰后连这个键都不该有（不凭空造一个）", () => {
+    const decorated = [
+      withAbortSignal(fakeWorld(), new AbortController().signal),
+      withExecOutput(fakeWorld(), () => {}),
+    ];
+    for (const w of decorated) {
+      expect(Object.hasOwn(w, "mcp")).toBe(false);
+      expect(w.mcp).toBeUndefined();
+    }
+  });
+
+  // 同款：browser / openTerminal 走的是同一行条件透传的写法
+  it("世界本来没有 browser / openTerminal 时，装饰后也不该冒出这两个键", () => {
+    const w = withExecOutput(fakeWorld(), () => {});
+    expect(Object.hasOwn(w, "browser")).toBe(false);
+    expect(Object.hasOwn(w, "openTerminal")).toBe(false);
   });
 });

@@ -320,8 +320,14 @@ describe("LoopEngine", () => {
     });
 
     // 验证 1c: 这验证了 toolsByName 没被过滤——若被过滤，run() 永远不会被调
-    // 通过检查存储记录验证工具确实被尝试执行了
-    expect(store.load("s1").some((e) => e.type === "tool_execution_started")).toBe(true);
+    // 通过检查存储记录验证工具确实被尝试执行了。
+    // 按 toolCallId 过滤而不是全会话 .some()（issue #158）：本例一轮只有一次
+    // 调用，两种写法今天等价，但"某处有过一条 tool_execution_started"
+    // 和"c1 这次调用真的开跑了"是两件事，断言该说后者
+    const started = store
+      .load("s1")
+      .filter((e) => e.type === "tool_execution_started" && e.toolCallId === "c1");
+    expect(started).toHaveLength(1);
 
     store.close();
   });

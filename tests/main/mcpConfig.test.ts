@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseMcpConfig, serializeMcpConfig } from "../../src/main/mcpConfig.js";
+import type { McpServerConfig } from "../../src/shared/mcp.js";
 
 describe("parseMcpConfig", () => {
   it("有 command = stdio", () => {
@@ -101,6 +102,24 @@ describe("serializeMcpConfig", () => {
     const out = JSON.parse(serializeMcpConfig("", {
       s: { kind: "stdio", command: "x", args: [], env: {}, enabled: true },
     }));
+    expect(out["mcpServers"]["s"]["enabled"]).toBeUndefined();
+  });
+
+  // issue #158：enabled 的写回逻辑与 kind 无关（那一行在两条分支之外），
+  // 但从前只有 stdio 一路被钉住——没有任何东西保证这个假设成立
+  it.each<[string, McpServerConfig]>([
+    ["stdio", { kind: "stdio", command: "x", args: [], env: {}, enabled: false }],
+    ["http", { kind: "http", url: "https://x", headers: {}, enabled: false }],
+  ])("enabled 为 false 时写进去（%s）", (_kind, cfg) => {
+    const out = JSON.parse(serializeMcpConfig("", { s: cfg }));
+    expect(out["mcpServers"]["s"]["enabled"]).toBe(false);
+  });
+
+  it.each<[string, McpServerConfig]>([
+    ["stdio", { kind: "stdio", command: "x", args: [], env: {}, enabled: true }],
+    ["http", { kind: "http", url: "https://x", headers: {}, enabled: true }],
+  ])("enabled 为 true 时不写进文件（%s）", (_kind, cfg) => {
+    const out = JSON.parse(serializeMcpConfig("", { s: cfg }));
     expect(out["mcpServers"]["s"]["enabled"]).toBeUndefined();
   });
 
