@@ -97,3 +97,17 @@ export function createModeAwareApprover(getMode: () => ApprovalMode, ui: Approve
     },
   };
 }
+
+/** 一律拒绝的审批人（ADR-0047）。给 approval: "deny" 的 subagent 用——
+    子 agent 没人盯着屏幕，"弹卡等人"在它身上等于永久挂起。
+    拒绝照样流经审批门 → approval_decision 照常落盘，日志永远记着
+    "这一步是被配置拒的"（reason 说明），行为可从日志推导。
+    刻意不短路到"工具压根不挂"：模型试一次、吃一个明确的拒绝，比对着一把
+    不存在的工具瞎猜下一步更省 token，也更好排查 */
+export const denyingApprover: Approver = {
+  decide: () =>
+    Promise.resolve({
+      decision: "denied" as const,
+      reason: "这个 subagent 被配置为拒绝一切需要审批的操作（approval: deny）",
+    }),
+};

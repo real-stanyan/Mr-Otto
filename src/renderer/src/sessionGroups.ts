@@ -20,11 +20,13 @@ export function folderName(path: string): string {
 
 /** 按 workspace 分组。workspace 为 null 的史前会话不在这里处理——调用方先滤掉,
     因为它们压根没有工程可归,归到"未知"组等于伪造事实。
+    子会话(spawnedFrom 非空,ADR-0047)同样不进任何组:它们只能从派出它们的
+    父会话时间线那张卡进去,混进侧栏/⌘K 搜索会让人以为能独立打开一个"工程会话"。
     组序 = 组内最近会话时间倒序(最近用过的工程在上),组内也是时间倒序。 */
 export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGroup[] {
   const byDir = new Map<string, SessionSummary[]>();
   for (const s of sessions) {
-    if (s.workspace === null) continue;
+    if (s.workspace === null || s.spawnedFrom !== null) continue;
     const bucket = byDir.get(s.workspace);
     if (bucket) bucket.push(s);
     else byDir.set(s.workspace, [s]);

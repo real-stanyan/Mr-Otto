@@ -316,6 +316,17 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
+      case "subagent_briefed":
+        // 注入为 user 消息，手法同 skill_invoked（中途插 system 各家方言兼容性参差）。
+        // 位置就是事件位置——它是子会话的第 1 条，所以模型开口前先读到自己是谁
+        messages.push({
+          role: "user",
+          content:
+            `[你是 subagent「${event.agent}」，以下是你的指令，请在完成任务时遵循。` +
+            `本次可用工具：${event.tools.join("、")}]\n${event.instructions}`,
+        });
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
@@ -343,6 +354,9 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       // 跟进建议同理：那是给人点的快捷键。喂回去等于让模型读自己上一轮的猜测，
       // 下一轮再基于它猜——建议会自我强化，对话被自己的建议牵着走
       case "suggestions_generated":
+      // 派活是给 UI 的路标（点进子会话），不是对话内容。父会话的模型从
+      // tool_result 里读汇报就够了，childSessionId 对它毫无意义
+      case "subagent_spawned":
         break;
     }
   }

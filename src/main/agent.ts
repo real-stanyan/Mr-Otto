@@ -31,6 +31,8 @@ import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
 import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
+import { createTaskTool, type SubagentRunner } from "../tools/task.js";
+import type { SubagentDef } from "../shared/subagent.js";
 import {
   UIApprover,
   createGrantAwareApprover,
@@ -50,6 +52,8 @@ import { gatewayBaseUrl } from "../shared/gatewayConfig.js";
 import { routeModel } from "./modelRoute.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { randomUUID } from "node:crypto";
+import type { Approver } from "../loop/approvalGate.js";
+import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 内置 anysearch key(免费注册所得,仅搜索限额,无支付面)。仓库私有;若开源须先轮换。
     ANYSEARCH_API_KEY 环境变量优先于它。 */
@@ -57,12 +61,15 @@ const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
 
 export interface AgentPush {
   event(e: SessionEvent): void;
-  /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览 */
+  /** 带 sessionId：审批卡要挂靠到具体会话的视图上。preview 有 = write_file 的 diff 预览。
+      fromAgent 有 = 这张卡是从某个 subagent 冒泡上来的（ADR-0047），
+      缺席 = 主 agent 自己的卡，现有渲染一字不改 */
   approvalRequest(
     sessionId: string,
     call: ToolCallRequest,
     tool: Tool,
-    preview?: WriteFilePreview
+    preview?: WriteFilePreview,
+    fromAgent?: string
   ): void;
   /** 带 sessionId：问卷卡同理，挂靠到发起提问的那个会话的视图上 */
   askUserRequest(sessionId: string, toolCallId: string, questions: AskUserQuestion[]): void;
@@ -105,15 +112,38 @@ export function createAgent(opts: {
   alwaysAllow?: () => ReadonlySet<string>;
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
+  /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
+      LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
+      （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
+  world?: ExecutionWorld;
+  /** 这个会话是被派活派出来的：写进 session_created 第 0 条 */
+  spawnedBy?: { sessionId: string; toolCallId: string; agent: string };
+  /** 只挂名字在这份名单里的工具。不给 = 全套（现有装配一字不受影响）。
+      task 不在这里挡——它压根不会被挂上（见 subagentRunner：建子 agent 时
+      不传 subagentRunner，递归由构造挡死） */
+  allowTools?: readonly string[];
+  /** 换掉整条审批链（mode 感知 + 授权感知 + UI）。给了 = 那三层都不参与。
+      目前唯一用途：approval: "deny" 的 subagent 传 denyingApprover */
+  approver?: Approver;
+  /** 给了 = 这个装配能派活（挂 task 工具）。子 agent 刻意不传它——
+      递归由此挡死（ADR-0047） */
+  subagentRunner?: SubagentRunner;
+  /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
+  listSubagents?: () => SubagentDef[];
 }) {
   const { store } = opts;
 
   const sessionId = opts.resumeSessionId ?? newSessionId();
-  // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）
-  const base = createLocalWorld({ root: opts.workspace });
-  // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
-  // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
-  const world = opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
+  // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）。
+  // 外面给了现成的就用它（子 agent 走这条：必须和父在同一个 world 实例里）
+  const world: ExecutionWorld =
+    opts.world ??
+    (() => {
+      // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
+      // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
+      const base = createLocalWorld({ root: opts.workspace });
+      return opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
+    })();
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
     // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
@@ -139,7 +169,13 @@ export function createAgent(opts: {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
     // resume 时它已在日志里——engine 每 turn 从日志现算，所以这里啥都不用"恢复"。
-    store.append({ sessionId, ts: Date.now(), type: "session_created", workspace: opts.workspace });
+    store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "session_created",
+      workspace: opts.workspace,
+      ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
+    });
   } else {
     // 崩溃修复（ADR-0005，留痕层）：上次 app 在工具执行中途退出的话，日志里
     // 会有悬空 toolCall（无配对 tool_result）。补合成结果事件——修复 = 追加，
@@ -251,29 +287,49 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
+    // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
+    // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
+    // 挂没挂必须一次定终身，否则组装时清单恰好是空的那个 agent 一辈子看不到 task，
+    // 哪怕用户后来在设置页建了第一个 subagent 也救不回来(这是每个新用户都会撞的
+    // 首次使用路径)。清单是不是空的这件事现在归 task 自己的 available()答，
+    // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
+    ...(opts.subagentRunner
+      ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
+      : []),
   ];
+
+  // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件
+  // （world.browser 才挂 browser_read）是"这个装配有没有这把刀"，白名单是
+  // "这次准不准用"，两件事，别搅在一起
+  const mounted = opts.allowTools
+    ? tools.filter((t) => opts.allowTools!.includes(t.def.name))
+    : tools;
 
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
-    tools,
+    tools: mounted,
     world,
     sessionId,
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
     // 两层短路，顺序有意：先看模式（"完全访问"是对整台机器说的话），
-    // 再看授权（对某个工具说的话）。都不命中才弹卡
-    approver: createModeAwareApprover(
-      () => approvalMode,
-      createGrantAwareApprover(
-        (tool) =>
-          sessionAllow.has(tool)
-            ? "session"
-            : opts.alwaysAllow?.().has(tool)
-              ? "always"
-              : undefined,
-        approver
-      )
-    ),
+    // 再看授权（对某个工具说的话）。都不命中才弹卡。
+    // opts.approver 给了 = 整条链换成它，mode/grant 都不参与
+    // （subagent 唯一用途：denyingApprover——没人盯屏幕，弹卡等人等于永久挂起）
+    approver:
+      opts.approver ??
+      createModeAwareApprover(
+        () => approvalMode,
+        createGrantAwareApprover(
+          (tool) =>
+            sessionAllow.has(tool)
+              ? "session"
+              : opts.alwaysAllow?.().has(tool)
+                ? "always"
+                : undefined,
+          approver
+        )
+      ),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),
     onToolOutput: (toolCallId, chunk, stream) =>
@@ -326,8 +382,15 @@ export function createAgent(opts: {
         (ADR-0031)：v2 SandboxWorld 把 openTerminal 实现成 docker exec，
         终端得开在 agent 这个 world 里，不能在 index.ts 里另起一个 LocalWorld */
     world,
-    /** 喂给模型的工具声明（渲染层算上下文占用用；只有 name/description/parameters） */
-    toolDefs: tools.map((t) => t.def),
+    /** 喂给模型的工具声明（渲染层算上下文占用用；只有 name/description/parameters）。
+        getter 而不是快照数组：task 工具的 def 随磁盘上的 subagent 清单现算
+        （用户在设置页加了人，当场生效，不用重开会话），报的账必须跟着变 */
+    get toolDefs() {
+      // available() 为 false 的工具（挂着但此刻用不出东西，比如清单还空着的
+      // task）不进这份表——模型不该被告知一把只会失败的工具，UI 的上下文占用
+      // 账也不该替它算钱
+      return mounted.filter((t) => t.available?.() ?? true).map((t) => t.def);
+    },
     switchModel,
     /** 设置页存了新 key 后调：现 adapter 捏的还是旧 key，重建一个 */
     reloadAdapter(): void {

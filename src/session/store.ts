@@ -25,6 +25,11 @@ export interface SessionSummary {
   /** 标题投影，优先级：最后一条 session_renamed（用户手动改名）＞
       第一条 user_message 首行（自动推导）＞ null（UI 自行兜底） */
   title: string | null;
+  /** 这个会话是不是被派活派出来的子会话（ADR-0047）：是就带上派它的那个父
+      会话 id，供 UI 把它从侧栏滤掉、以及子会话视图里"← 回到父会话"用。
+      从第 0 条 session_created 的 spawnedBy.sessionId 投影出来。
+      不是子会话 / 旧日志没有 spawnedBy 字段 → null（schema 向后兼容硬规则） */
+  spawnedFrom: string | null;
 }
 
 const SCHEMA = `
@@ -80,15 +85,37 @@ export class EventStore {
       与 append-only 不矛盾：trigger 挡的是"改写历史"（UPDATE / 删日志的一部分），
       而 purge 是"整段历史被完整遗忘"——要么全在、要么全无，不存在被篡改的中间态。
       实现上事务内临时卸下 no_delete trigger，删完装回：
-      单连接同步库（better-sqlite3），事务里不会有并发写者穿过这扇临时开的门。 */
-  purge(sessionId: string): void {
-    this.db.transaction((id: string) => {
+      单连接同步库（better-sqlite3），事务里不会有并发写者穿过这扇临时开的门。
+
+      **级联删它派出去的子会话**（ADR-0047）：子会话不进侧栏、不进 ⌘K，只能从父
+      时间线上那张卡点进去——父日志一没，它就是谁也够不着、谁也删不掉的孤儿，
+      而它的 token 账还在 billedUsage 里继续算。删除按 ADR-0002 是"整会话物理
+      抹除，不可逆"，用户以为抹掉的那段记录（子会话里存着同一个 workspace 的
+      文件内容和 bash 输出）却留在库里，这既是承诺没兑现，也是隐私漏洞。
+      不递归：子 agent 不能再派子 agent（ADR-0047 决定 5），一层到底。
+
+      @returns 真正被抹掉的 sessionId（含自己）——调用方据此把终端/浏览器/
+               agent 注册表里对应的活资源一并注销 */
+  purge(sessionId: string): string[] {
+    const children = (
+      this.db
+        .prepare(
+          `SELECT session_id FROM events
+            WHERE seq = 0 AND type = 'session_created'
+              AND json_extract(payload, '$.spawnedBy.sessionId') = ?`
+        )
+        .all(sessionId) as { session_id: string }[]
+    ).map((r) => r.session_id);
+    const ids = [sessionId, ...children];
+    this.db.transaction((all: string[]) => {
       this.db.exec("DROP TRIGGER events_no_delete");
-      this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
+      const del = this.db.prepare("DELETE FROM events WHERE session_id = ?");
+      for (const id of all) del.run(id);
       this.db.exec(`CREATE TRIGGER events_no_delete
 BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
-    })(sessionId);
+    })(ids);
+    return ids;
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
@@ -137,7 +164,10 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.title')
                    FROM events e2
                   WHERE e2.session_id = e.session_id AND e2.type = 'session_renamed'
-                  ORDER BY e2.seq DESC LIMIT 1) AS renamed
+                  ORDER BY e2.seq DESC LIMIT 1) AS renamed,
+                (SELECT json_extract(payload, '$.spawnedBy.sessionId')
+                   FROM events e3
+                  WHERE e3.session_id = e.session_id AND e3.seq = 0) AS spawnedFrom
            FROM events e
           WHERE session_id NOT IN
                 (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')

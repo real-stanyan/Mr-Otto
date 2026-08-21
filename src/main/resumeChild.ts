@@ -1,0 +1,95 @@
+// 恢复一个子会话（ADR-0047）—— 与 subagentRunner 的"创建口"对称的那个"重建口"。
+//
+// 为什么单独成一个模块，而不是塞在 index.ts 的 resumeSession 里：这里是
+// "子 agent 不能再派子 agent"（ADR-0047 决定 5）的第二个把守点。创建那一侧靠
+// subagentRunner 刻意不传 subagentRunner 挡住；恢复这一侧曾经压根不知道
+// "会话还可能是子会话"这回事，于是一个 tools: read_file / approval: deny 的
+// 搜索员 resume 回来时带着 bash、write_file 和 task 工具（review I1）——
+// 而 resume 恰恰是查看子会话的唯一途径（时间线那张卡、"回到父会话"都走它）。
+//
+// createChildAgent 的参数表里**没有 subagentRunner 这一项**：递归不再靠
+// "记得别传"，靠类型系统。
+
+import { createAgent, type AgentPush } from "./agent.js";
+import { denyingApprover } from "./uiApprover.js";
+import type { EventStore } from "../session/store.js";
+import type { AttachmentStore } from "../session/attachments.js";
+import type { BrowserCapability } from "../world/executionWorld.js";
+import type { SessionEvent } from "../session/events.js";
+import type { SubagentDef } from "../shared/subagent.js";
+
+/** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
+    从来没落过盘，resume 后一律回默认的 ask（同 ADR-0047 已接受的那笔代价）。
+    这里只保留必须还原的两样：给了哪几把刀、是不是整条审批链都换成拒绝。 */
+export interface ChildAgentConfig {
+  agent: string;
+  allowTools: readonly string[];
+  deny: boolean;
+}
+
+/**
+ * 从一份会话日志里认出"这是谁派出来的子会话"，并把它当初那副装备找回来。
+ *
+ * 不是子会话 → null（调用方照旧按主会话装配）。
+ *
+ * 装备的来源有先后：磁盘上的定义优先（只有它带 approval 档），定义没了
+ * （用户把 .md 删了或改了名）就退到子日志里那条 `subagent_briefed` 快照——
+ * 它记的是"当时实际挂上的那几把"，比文件更接近事实（日志是唯一事实来源）。
+ * 走到这条退路上一律按最严的 deny 重建：审批档推不出来，就不能替用户假设它松。
+ *
+ * **不存在"找不到定义就当主 agent 建"这条退路**——那等于删掉一个 md 文件
+ * 就能把一个只读搜索员提权成带 bash + task 的全权 agent。
+ */
+export function childAgentConfig(
+  events: readonly SessionEvent[],
+  defs: readonly SubagentDef[]
+): ChildAgentConfig | null {
+  const first = events[0];
+  if (!first || first.type !== "session_created" || !first.spawnedBy) return null;
+  const agent = first.spawnedBy.agent;
+
+  const def = defs.find((d) => d.name === agent);
+  if (def) return { agent, allowTools: def.tools, deny: def.approval === "deny" };
+
+  const briefed = events.find((e) => e.type === "subagent_briefed");
+  return {
+    agent,
+    // 连快照都没有（理论不可达：briefed 是子会话的第 1 条）= 一把工具都不给。
+    // 宁可这个会话只能看不能动，也不给它一副来路不明的装备
+    allowTools: briefed?.type === "subagent_briefed" ? briefed.tools : [],
+    deny: true,
+  };
+}
+
+/** 按 config 重建一个子 agent。签名里没有 subagentRunner，所以重建出来的
+    这一位永远没有 task 工具——递归到此为止，与创建那一侧一字不差。 */
+export function createChildAgent(opts: {
+  store: EventStore;
+  workspace: string;
+  resumeSessionId: string;
+  push: AgentPush;
+  attachments: AttachmentStore;
+  config: ChildAgentConfig;
+  getAccessToken?: () => Promise<string | null>;
+  makeBrowser?: (sessionId: string) => BrowserCapability;
+  alwaysAllow?: () => ReadonlySet<string>;
+}): ReturnType<typeof createAgent> {
+  return createAgent({
+    store: opts.store,
+    workspace: opts.workspace,
+    resumeSessionId: opts.resumeSessionId,
+    push: opts.push,
+    attachments: opts.attachments,
+    allowTools: opts.config.allowTools,
+    ...(opts.getAccessToken ? { getAccessToken: opts.getAccessToken } : {}),
+    ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
+    // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
+    // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧
+    ...(opts.config.deny
+      ? { approver: denyingApprover }
+      : opts.alwaysAllow
+        ? { alwaysAllow: opts.alwaysAllow }
+        : {}),
+    // 刻意不传 subagentRunner —— 这个参数在本函数的签名里根本不存在
+  });
+}

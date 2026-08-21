@@ -30,8 +30,11 @@ import type {
   AskUserQuestion,
   AskUserRequest,
 } from "./askUser.js";
+import type { SubagentDef } from "./subagent.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
+
+export type { SubagentDef };
 
 export type { SessionSummary };
 
@@ -169,6 +172,9 @@ export interface ApprovalRequest {
   toolDescription: string;
   /** 有 = write_file 且参数形状正常：审批卡渲染 diff 而不是原始 JSON */
   preview?: WriteFilePreview;
+  /** 这张卡来自哪个 subagent（ADR-0047 的冒泡）。缺席 = 主 agent 自己的卡，
+      现有渲染一字不改 */
+  fromAgent?: string;
 }
 
 /** 审批卡按钮的返程（ADR-0041）。与 answerQuestions 同构：一个 outcome 对象，
@@ -279,6 +285,12 @@ export interface ShellBridge {
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
   resumeSession(sessionId: string): Promise<BootInfo>;
+  /** 只读地取一个会话的全部事件，不切换当前视图（同 resumeSession 的日志来源，
+      但不改 phase/sessionId 等任何镜像）。时间线上的 subagent 卡要用子会话的
+      事实——收口后的步数、token——而这些不进父会话的日志，只能单独问一趟；
+      点进去看全过程走的是 resumeSession，这个方法只用来"顺路看一眼事实"。
+      未知 sessionId 回空数组，同 EventStore.load 的语义 */
+  readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
@@ -312,6 +324,12 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** 本机定义的 subagent（现扫磁盘，零缓存） */
+  listSubagents(): Promise<SubagentDef[]>;
+  /** 写回那份 .md，返回保存后的整份清单（省一次往返） */
+  saveSubagent(def: SubagentDef): Promise<SubagentDef[]>;
+  /** 按模板新建一个，返回整份清单 */
+  createSubagent(name: string): Promise<SubagentDef[]>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -466,6 +484,11 @@ export interface ShellBridge {
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
   onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
+  /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
+      左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
+  getWindowFullscreen(): Promise<boolean>;
+  /** 窗口进入/退出全屏的推送。首帧状态用 getWindowFullscreen 问,变化走这里 */
+  onWindowFullscreen(cb: (fullscreen: boolean) => void): Unsubscribe;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -508,12 +531,16 @@ export const CHANNELS = {
   startSession: "otter:startSession",
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
+  readSessionEvents: "otter:readSessionEvents",
   deleteSession: "otter:deleteSession",
   renameSession: "otter:renameSession",
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  listSubagents: "otter:listSubagents",
+  saveSubagent: "otter:saveSubagent",
+  createSubagent: "otter:createSubagent",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",
@@ -576,6 +603,8 @@ export const CHANNELS = {
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
+  getWindowFullscreen: "otter:getWindowFullscreen",
+  windowFullscreen: "otter:windowFullscreen",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",

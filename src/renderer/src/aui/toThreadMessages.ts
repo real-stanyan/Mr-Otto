@@ -60,6 +60,10 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "skill_invoked":
     case "image_described":
     case "context_compacted":
+    // 派活(Task 8):父会话上那张卡、子会话里的"我是谁"存档,都要能上时间线——
+    // 同 model_changed 那一类,是审计事实不是对话正文
+    case "subagent_spawned":
+    case "subagent_briefed":
       return true;
     case "approval_decision":
       return e.decision === "denied";

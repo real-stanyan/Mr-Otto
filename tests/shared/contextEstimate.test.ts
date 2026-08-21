@@ -108,6 +108,29 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
     expect(contextUsed(events)).toBe(1300);
   });
 
+  it("subagent_briefed 计入尾巴：整份说明书投影成子会话的第一条 user 消息", () => {
+    // 子会话的圆环少算的正是这一整篇 instructions（含内置前言）——
+    // 圆环和真实 prompt 必须用同一把尺子（review I5）
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 200 },
+      },
+      {
+        ...env(),
+        type: "subagent_briefed",
+        agent: "searcher",
+        instructions: "a".repeat(400),
+        tools: ["read_file"],
+        model: "m",
+      },
+    ];
+    expect(contextUsed(events)).toBe(1300);
+  });
+
   it("从无账单（第一条消息还没发出去）：纯估算起步", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
