@@ -23,6 +23,7 @@ import type {
   OllamaModelInfo,
   SessionSummary,
   SkillInfo,
+  SubagentDef,
   StagedAttachment,
   StartSessionOptions,
   TurnStatus,
@@ -76,7 +77,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "appearance" | "skills";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -182,6 +183,10 @@ interface ChatState {
   checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
+  /** 本机已定义的 subagent（~/.otter/agents + 只读的 ~/.claude/agents 合并后的清单）。
+      进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
+      用户可能一次都不打开这个栏目 */
+  subagents: SubagentDef[];
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -250,6 +255,16 @@ interface ChatState {
   openSettings(section?: SettingsSection): Promise<void>;
   /** 拉一次官方额度（账号页进入时自动调一次） */
   refreshWallet(): Promise<void>;
+  /** 重扫 subagent 清单（Subagent 栏目挂载时调一次，照 skills 的做法）。
+      三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
+      存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西 */
+  refreshSubagents(): Promise<void>;
+  /** 存一个 subagent 的 frontmatter + 正文。抛出的 Error 是已经写成中文句子的
+      用户可读提示（对不上名字 / 只读），组件自己 catch 显示，这里不吞 */
+  saveSubagent(def: SubagentDef): Promise<void>;
+  /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
+      [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验 */
+  createSubagent(name: string): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -456,6 +471,7 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutBusyDir: null,
   checkoutError: null,
   skills: [],
+  subagents: [],
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -635,6 +651,18 @@ export const useChat = create<ChatState>((set, get) => ({
     await window.otter.pokerWatch(tableId);
   },
   closeSettings: () => set({ settingsSection: null }),
+
+  async refreshSubagents() {
+    set({ subagents: await window.otter.listSubagents() });
+  },
+
+  async saveSubagent(def) {
+    set({ subagents: await window.otter.saveSubagent(def) });
+  },
+
+  async createSubagent(name) {
+    set({ subagents: await window.otter.createSubagent(name) });
+  },
 
   async openProtocol() {
     // 目标仓库:跟当前会话的工程文件夹(入口挂会话头部,仪表盘对应各工作区);

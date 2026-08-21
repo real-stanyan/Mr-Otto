@@ -73,6 +73,7 @@ import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
+import { SubagentSettings } from "./components/SubagentSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -151,14 +152,15 @@ const STALE_TODO_TURNS = 2;
 
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
-/* 设置页骨架(账号/模型配置/Skill 库共用) */
-const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
+/* 设置页骨架(账号/模型配置/Skill 库/Subagent 共用) —— 导出给 SubagentSettings.tsx，
+   它是 SkillsPage 的可写版兄弟栏目，骨架该是同一份，不该各自拼一遍字符串 */
+export const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 
-const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
-const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
-const SETTINGS_BODY =
+export const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border";
+export const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
+export const SETTINGS_BODY =
   "flex-1 overflow-y-auto scrollbar-stable px-5 py-6 flex flex-col gap-4 w-[min(640px,100%)] mx-auto";
-const HINT = "text-muted-foreground text-[13px]";
+export const HINT = "text-muted-foreground text-[13px]";
 const ERR_TXT = "text-err text-[13px]";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
@@ -1103,6 +1105,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "keys", label: "模型配置" },
   { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
+  { id: "agents", label: "Subagent" },
 ];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -2378,6 +2381,8 @@ export function App() {
     <AppearancePage />
   ) : settingsSection === "skills" ? (
     <SkillsPage />
+  ) : settingsSection === "agents" ? (
+    <SubagentSettings />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
