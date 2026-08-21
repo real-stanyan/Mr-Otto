@@ -23,15 +23,10 @@ import {
   type MessageAttachmentItem,
 } from "./elements/message-attachment.js";
 import { FileTypeIcon } from "./FileTypeIcon.js";
+import { formatBytes } from "../lib/byteSize.js";
 
 /** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
 const thumbCache = new Map<string, string>();
-
-function sizeLabel(bytes: number): string {
-  return bytes >= 1024 * 1024
-    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
-    : `${Math.max(1, Math.round(bytes / 1024))}KB`;
-}
 
 /** 一批图片的 data URL:懒取 + 缓存。取不到(附件库文件丢失)记成 lost ——
     日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线。
@@ -87,7 +82,7 @@ export function UserAttachments({
       return {
         id: a.id,
         name: `图片缺失：${name}`,
-        size: sizeLabel(a.bytes),
+        size: formatBytes(a.bytes),
         kind: "file",
         icon: <ImageOff className="size-3.5" />,
       };
@@ -95,7 +90,7 @@ export function UserAttachments({
     return {
       id: a.id,
       name,
-      size: sizeLabel(a.bytes),
+      size: formatBytes(a.bytes),
       kind: "image",
       // 还没取回来时不给 swatch:元件那边画一层同尺寸的浅底占位,图到位不顶版
       ...(got !== undefined ? { swatch: `url("${got}")` } : {}),
@@ -120,7 +115,7 @@ export function UserAttachments({
     ...files.map((f, i) => ({
       id: `f-${i}-${f.name}`,
       name: f.name,
-      size: sizeLabel(f.bytes),
+      size: formatBytes(f.bytes),
       kind: "document" as const,
       // 按文件类型走的图标(material-icon-theme 那套):一排附件里哪个是配置、
       // 哪个是脚本、哪个是文档,扫一眼就分得出,不用逐个读文件名的后缀
