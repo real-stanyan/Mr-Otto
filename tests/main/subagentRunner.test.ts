@@ -43,7 +43,14 @@ function fixtures() {
     toolOutput: () => {},
   };
   const world = createLocalWorld({ root: dir });
-  const parent = () => ({ sessionId: "s-parent", workspace: dir, world, model: "deepseek-chat" });
+  // approvalMode 可参数化:approval "inherit" 的定义直接用父此刻这一档
+  const parent = (approvalMode: "ask" | "auto" = "ask") => () => ({
+    sessionId: "s-parent",
+    workspace: dir,
+    world,
+    model: "deepseek-chat",
+    approvalMode,
+  });
   return { dir, store, attachments, push, parent, seen, approvals, world };
 }
 
@@ -56,7 +63,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         order.push(`turn:${agent.sessionId}`);
         store.append({
@@ -85,7 +92,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def({ tools: ["read_file", "web_search"] })],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         store.append({
           sessionId: agent.sessionId,
@@ -103,6 +110,61 @@ describe("createSubagentRunner", () => {
     expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("最终一段文本就是返回值");
   });
 
+  // approval: "inherit"（内置那两份走这条）——"用户有没有打开免审批"是运行时状态,
+  // 派活那一刻现问父,不读快照
+  it.each([
+    ["ask" as const],
+    ["auto" as const],
+  ])("approval inherit：父是 %s，子就是 %s", async (mode) => {
+    const { store, attachments, push, parent } = fixtures();
+    let childMode: string | undefined;
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def({ approval: "inherit" })],
+      parent: parent(mode),
+      runTurn: async (agent) => {
+        childMode = agent.approvalMode;
+        store.append({
+          sessionId: agent.sessionId,
+          ts: Date.now(),
+          type: "assistant_message",
+          content: "好了",
+          model: "deepseek-chat",
+        });
+      },
+    });
+    await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    expect(childMode).toBe(mode);
+  });
+
+  // deny 换掉的是整条审批链,不是模式——inherit 不能把它松开
+  it("approval deny 不受父的免审批影响", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    let childMode: string | undefined;
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def({ approval: "deny" })],
+      parent: parent("auto"),
+      runTurn: async (agent) => {
+        childMode = agent.approvalMode;
+        store.append({
+          sessionId: agent.sessionId,
+          ts: Date.now(),
+          type: "assistant_message",
+          content: "好了",
+          model: "deepseek-chat",
+        });
+      },
+    });
+    await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    // 模式没被拨过（createAgent 的初值 ask）,而审批器已经是 denyingApprover
+    expect(childMode).toBe("ask");
+  });
+
   it("汇报 = 子日志最后一条 assistant_message 的正文", async () => {
     const { store, attachments, push, parent } = fixtures();
     const runner = createSubagentRunner({
@@ -110,7 +172,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         for (const content of ["先看了看", "结论：三处"]) {
           store.append({
@@ -134,7 +196,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async () => {},
     });
     const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
@@ -148,7 +210,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def({ approval: "ask" })],
-      parent,
+      parent: parent(),
       runTurn: async (agent, wrappedPush) => {
         wrappedPush.approvalRequest(
           agent.sessionId,
@@ -179,7 +241,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push: spyPush,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async (agent, wrappedPush) => {
         wrappedPush.assistantDelta(agent.sessionId, "碎", "content");
         store.append({
@@ -202,7 +264,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [],
-      parent,
+      parent: parent(),
       runTurn: async () => {},
     });
     await expect(
@@ -223,7 +285,7 @@ describe("createSubagentRunner", () => {
       // 用户在 md 里手写 tools: read_file, bash, task 也没用：task 压根不在
       // 子装配的工具表里(不传 subagentRunner = 它没被造出来),白名单过滤不到它
       list: () => [def({ tools: ["read_file", "bash", "task"] })],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         mounted = agent.toolDefs.map((d) => d.name);
       },
@@ -245,7 +307,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       register: (a) => {
         registered.push(a.sessionId);
         order.push("register");
@@ -270,7 +332,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: ran,
     });
     await expect(
@@ -288,7 +350,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         await new Promise((r) => setTimeout(r, 5));
         store.append({
@@ -315,7 +377,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def()],
-      parent,
+      parent: parent(),
       runTurn: async (agent) => {
         agent.engine.abortTurn = abort;
         await new Promise((r) => setTimeout(r, 5));
@@ -342,7 +404,7 @@ describe("createSubagentRunner", () => {
       attachments,
       push,
       list: () => [def({ instructions: "正文" })],
-      parent,
+      parent: parent(),
       composePrompt: (d, workspace) => `[前置@${workspace}]${d.instructions}`,
       runTurn: async (agent) => {
         store.append({
@@ -360,7 +422,7 @@ describe("createSubagentRunner", () => {
       .load(out.childSessionId)
       .find((e) => e.type === "subagent_briefed");
     expect(briefed?.type === "subagent_briefed" && briefed.instructions).toBe(
-      `[前置@${parent().workspace}]正文`
+      `[前置@${parent()().workspace}]正文`
     );
     expect(seen.some((e) => e.type === "subagent_briefed")).toBe(true);
   });

@@ -4,9 +4,14 @@
 import type { ThinkingMode } from "./thinking.js";
 
 /** subagent 碰到危险工具时怎么办。
-    比 ApprovalMode（"ask" | "auto"）多一档 "deny"：子 agent 没人盯着，
-    "一律拒绝"是它才需要的默认，主会话不需要（用户就在屏幕前） */
-export type SubagentApproval = "ask" | "auto" | "deny";
+    比 ApprovalMode（"ask" | "auto"）多两档：
+    - "deny"：一律拒绝。子 agent 没人盯着，这是它才需要的默认，主会话不需要
+      （用户就在屏幕前）
+    - "inherit"：跟父会话此刻那一档走——用户开了免审批就免审批，没开就把卡弹给他。
+      不复用 "ask" 来表达这件事：那会让所有已有的 `approval: ask` 定义在用户开
+      bypass 时**静默变成放行**，而写 ask 的人意思就是问我。内置那两份用它
+      （builtinSubagents），用户自己的定义写得出来但界面上不给编 */
+export type SubagentApproval = "ask" | "auto" | "deny" | "inherit";
 
 /** 缺省工具集：只读那几把。
     缺 tools 字段 ≠ "全给" —— 派出去的 agent 默认不该有 bash 和 write_file */
@@ -86,6 +91,11 @@ export interface SubagentDef {
   path: string;
   /** 哪个根目录来的 */
   source: string;
-  /** ~/.claude/agents/ 扫来的 = true：不去改用户 Claude Code 的配置 */
+  /** ~/.claude/agents/ 扫来的 = true：不去改用户 Claude Code 的配置。
+      内置那两份也是 true —— 它们压根不在磁盘上 */
   readOnly: boolean;
+  /** 随 app 一起发的内置定义（builtinSubagents），不在磁盘上。
+      可选而不是必填：加个必填字段要动每一处构造点（含全部测试夹具），
+      而"没有这个字段"和"不是内置"是同一件事 */
+  builtin?: true;
 }

@@ -51,6 +51,9 @@ const APPROVAL_OPTIONS: { value: SubagentApproval; label: string }[] = [
   { value: "ask", label: "问我" },
   { value: "auto", label: "自动放行" },
   { value: "deny", label: "直接拒绝" },
+  // 内置那两份是 inherit。不列出来的话它们展开时这一组一个都不选中,看着像坏了；
+  // 既然要列,就不做成"只能看不能选"——用户自己的定义想要这一档同样说得通
+  { value: "inherit", label: "跟随主会话" },
 ];
 
 const PREAMBLE_OPTIONS: { value: SubagentPreamble["mode"]; label: string }[] = [
@@ -394,7 +397,8 @@ export function SubagentFields({
           ))}
         </div>
         <p className={HINT}>
-          子智能体没人盯着,默认拒绝——「问我」会把危险操作的审批卡弹给你,「自动放行」全部放行
+          子智能体没人盯着,默认拒绝——「问我」会把危险操作的审批卡弹给你,「自动放行」全部放行,
+          「跟随主会话」用你此刻那一档（开了免审批就免审批）
         </p>
       </div>
 

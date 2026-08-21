@@ -31,7 +31,15 @@ export interface SubagentRunnerDeps {
   list: () => SubagentDef[];
   /** 派活那一刻的父会话上下文。函数而不是值：派活可能发生在会话开始后很久，
       那时父的模型/world 可能已经变过 */
-  parent: () => { sessionId: string; workspace: string; world: ExecutionWorld; model: string };
+  parent: () => {
+    sessionId: string;
+    workspace: string;
+    world: ExecutionWorld;
+    model: string;
+    /** 父会话此刻的审批档。approval: "inherit" 的定义直接用它——
+        "用户有没有打开免审批"是个运行时状态，读一次快照会在长会话里过期 */
+    approvalMode: "ask" | "auto";
+  };
   getAccessToken?: () => Promise<string | null>;
   alwaysAllow?: () => ReadonlySet<string>;
   /** 把刚建好的子 agent 登记进组装根的 agent 注册表（index.ts 的 `agents`）。
@@ -100,7 +108,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         allowTools: def.tools,
         spawnedBy: { sessionId: parent.sessionId, toolCallId: parentToolCallId, agent: def.name },
         ...(deps.getAccessToken ? { getAccessToken: deps.getAccessToken } : {}),
-        // deny 换掉整条审批链（mode/授权都不参与）；ask/auto 走常规链，
+        // deny 换掉整条审批链（mode/授权都不参与）；ask/auto/inherit 走常规链，
         // 用户永久授过权的工具在子 agent 里照样免问——授权授的是工具，不是会话
         ...(def.approval === "deny"
           ? { approver: denyingApprover }
@@ -114,7 +122,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
       // 能查到它、走"只切视线"那条路，而不是另建一个 agent（见 register 的注释）
       deps.register?.(child);
 
-      if (def.approval === "ask" || def.approval === "auto") child.setApprovalMode(def.approval);
+      // inherit = 用父此刻那一档（内置那两份走这条）。deny 上面已经换掉整条审批链，
+      // 到不了这里
+      if (def.approval === "inherit") child.setApprovalMode(parent.approvalMode);
+      else if (def.approval === "ask" || def.approval === "auto") child.setApprovalMode(def.approval);
       // 型号跟着定义走；没写就跟父。switchModel 与当前相同时内部 no-op，零多余事件
       if (def.model) child.switchModel(def.model);
       if (def.thinking) child.setThinking(def.thinking);

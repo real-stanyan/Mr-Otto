@@ -38,6 +38,7 @@ import {
   trustedWorkspaceForWrite,
   writeSubagent,
 } from "./subagents.js";
+import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { CONTEXT_DOC_LIMIT, GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
@@ -456,7 +457,7 @@ void app.whenReady().then(() => {
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) =>
-    scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
+    withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES), TOOL_NAMES);
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
   // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
   // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
@@ -535,6 +536,7 @@ void app.whenReady().then(() => {
           workspace: self.workspace,
           world: self.world,
           model: self.model,
+          approvalMode: self.approvalMode,
         }),
         getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),

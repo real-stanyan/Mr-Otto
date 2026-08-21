@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+import { BUILTIN_SOURCE, builtinSubagents, withBuiltins } from "../../src/main/builtinSubagents.js";
+import type { SubagentDef } from "../../src/shared/subagent.js";
+
+const ALL = [
+  "read_file",
+  "write_file",
+  "bash",
+  "web_search",
+  "web_extract",
+  "browser_read",
+  "todo_write",
+];
+
+function onDisk(name: string): SubagentDef {
+  return {
+    name,
+    description: "",
+    instructions: "",
+    tools: ["read_file"],
+    unknownTools: [],
+    approval: "deny",
+    preamble: { mode: "default" },
+    context: [],
+    scope: "user",
+    path: `/a/${name}.md`,
+    source: "/a",
+    readOnly: false,
+  };
+}
+
+describe("builtinSubagents", () => {
+  it("两份，都标 builtin + readOnly，没有磁盘路径", () => {
+    const b = builtinSubagents(ALL);
+    expect(b.map((d) => d.name)).toEqual(["general-purpose", "Explore"]);
+    expect(b.every((d) => d.builtin === true && d.readOnly && d.path === "")).toBe(true);
+    expect(b.every((d) => d.source === BUILTIN_SOURCE)).toBe(true);
+  });
+
+  it("审批档是 inherit —— 跟父会话此刻那一档走", () => {
+    expect(builtinSubagents(ALL).every((d) => d.approval === "inherit")).toBe(true);
+  });
+
+  it("Explore 拿不到 bash 和 write_file", () => {
+    const explore = builtinSubagents(ALL).find((d) => d.name === "Explore")!;
+    expect(explore.tools).not.toContain("bash");
+    expect(explore.tools).not.toContain("write_file");
+  });
+
+  // task 是设计边界(子 agent 不能再派子 agent),内置也不例外
+  it("谁都拿不到 task", () => {
+    expect(builtinSubagents([...ALL, "task"]).some((d) => d.tools.includes("task"))).toBe(false);
+  });
+
+  // 这个装配挂不上的工具过滤掉,不记成 unknownTools:那个徽章是说"你的文件里有个
+  // 名字我不认识",而内置的文件不是用户写的,让他去修一份他改不了的东西没意义
+  it("装配里没有的工具过滤掉，不进 unknownTools", () => {
+    const b = builtinSubagents(["read_file"]);
+    expect(b.every((d) => d.tools.every((t) => t === "read_file"))).toBe(true);
+    expect(b.every((d) => d.unknownTools.length === 0)).toBe(true);
+  });
+});
+
+describe("withBuiltins", () => {
+  it("磁盘上没有时补进来", () => {
+    expect(withBuiltins([], ALL).map((d) => d.name).sort()).toEqual(
+      ["Explore", "general-purpose"].sort()
+    );
+  });
+
+  // materialize 的落地方式:改了模型就在可写根写出一份同名 .md,从此看到的是自己那份
+  it("同名的磁盘定义盖住内置那份", () => {
+    const got = withBuiltins([onDisk("general-purpose")], ALL);
+    const gp = got.filter((d) => d.name === "general-purpose");
+    expect(gp).toHaveLength(1);
+    expect(gp[0]!.builtin).toBeUndefined();
+    expect(gp[0]!.path).toBe("/a/general-purpose.md");
+  });
+
+  // 落地的是 macOS 文件名,APFS 大小写不敏感:Explore 和 explore 是同一个文件
+  it("盖不盖不分大小写", () => {
+    const got = withBuiltins([onDisk("explore")], ALL);
+    expect(got.filter((d) => d.name.toLowerCase() === "explore")).toHaveLength(1);
+  });
+});

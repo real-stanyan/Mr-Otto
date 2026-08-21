@@ -19,8 +19,8 @@ import { SubagentFields, useSubagentDraft, ERR_TXT } from "./SubagentFields.js";
 import { SubagentScopeSelect } from "./SubagentScopeSelect.js";
 import { useChat } from "../store.js";
 import { subagentNameError } from "../../../shared/subagent.js";
-import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { blankSubagentDef, shadowedSubagent } from "../lib/newSubagent.js";
+import { createSubagentFile } from "../lib/createSubagentFile.js";
 import type { SubagentScopeView } from "../lib/useSubagentScope.js";
 
 export function NewSubagentPage({
@@ -33,8 +33,6 @@ export function NewSubagentPage({
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const createSubagent = useChat((s) => s.createSubagent);
-  const saveSubagent = useChat((s) => s.saveSubagent);
   const subagents = useChat((s) => s.subagents);
 
   const seed = useMemo(() => blankSubagentDef(scope.current.workspace ? "workspace" : "user"), []);
@@ -59,45 +57,23 @@ export function NewSubagentPage({
     }
     if (draft.blocked) return;
 
-    // 作用域是所有落点的前提，整个流程钉在按下按钮那一刻的那一层上
-    const scopeAtStart = useChat.getState().subagentScope;
     setBusy(true);
     setError(null);
-    try {
-      // 认准 createSubagent **回传**的那份清单，不去 store 里翻：store 那份会被
-      // 作用域代次门挡掉（用户中途切一下作用域就查不到了），而文件其实已经建出来了
-      const created = (await createSubagent(trimmed)).find((d) => d.name === trimmed);
-      if (!created) {
-        setError(
-          `「${trimmed}」已经建在 ${scope.scopeDir} 了，但清单里没有它——去那个目录里手工把内容填上`
-        );
-        return;
-      }
-      if (useChat.getState().subagentScope !== scopeAtStart) {
-        // 切了作用域就不能接着存：saveSubagent 用的是 store 里此刻那一层，拿这个
-        // 名字去新那层查——查不到是白跑一趟，查到个同名的就是把内容写穿到另一个
-        // 工程的定义上。空壳文件留在原来那层，切回去展开它接着编
-        setError(
-          `「${trimmed}」已经建好了，但你切了作用域，填的内容没写进去——切回${scope.current.label}在列表里展开它继续`
-        );
-        return;
-      }
-      // path / source / readOnly / scope 一律用刚建出来那份的磁盘现状，不用草稿里
-      // 的（后端也会按名字重查一遍覆盖掉，但组件不该装作"知道"一个它没查过的路径）
-      await saveSubagent({
-        name: trimmed,
-        ...draft.payload(),
-        scope: created.scope,
-        path: created.path,
-        source: created.source,
-        readOnly: created.readOnly,
-      });
-      onDone();
-    } catch (e) {
-      setError(bridgeErrorMessage(e));
-    } finally {
-      setBusy(false);
+    // 落盘的两步（create 拿真路径 → save 写内容）和中途切作用域那道判断都在
+    // createSubagentFile 里——三条建定义的路共用一份，漏掉那道判断的后果不是
+    // 报个错，是把内容写穿到另一个工程的同名定义上
+    const err = await createSubagentFile({
+      name: trimmed,
+      fields: draft.payload(),
+      scopeLabel: scope.current.label,
+      scopeDir: scope.scopeDir,
+    });
+    setBusy(false);
+    if (err) {
+      setError(err);
+      return;
     }
+    onDone();
   };
 
   return (

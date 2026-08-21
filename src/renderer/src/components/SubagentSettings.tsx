@@ -32,6 +32,8 @@ import { useChat } from "../store.js";
 import type { SubagentDef } from "../../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { freeCopyName, initialSubagentScope } from "../lib/subagentScopes.js";
+import { createSubagentFile, fileFieldsOf } from "../lib/createSubagentFile.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { useSubagentScope, type SubagentScopeView } from "../lib/useSubagentScope.js";
 
 export function SubagentSettings() {
@@ -48,6 +50,9 @@ export function SubagentSettings() {
   const view = useSubagentScope();
   const setScope = view.setScope;
   const [creating, setCreating] = useState(false);
+  // 内置的和自己的分两栏:一份改得了、一份改不了,混在一起每行都得先看徽章
+  const builtins = subagents.filter((d) => d.builtin);
+  const own = subagents.filter((d) => !d.builtin);
   // 拉前置词失败要说出来,不说的话整张卡凭空消失（清单那条同理,只是它搬进 store 了）
   const [preambleError, setPreambleError] = useState<string | null>(null);
 
@@ -115,9 +120,9 @@ export function SubagentSettings() {
         {listError && <p className={ERR_TXT}>{listError}</p>}
         {preambleError && <p className={ERR_TXT}>读不到全局前置词：{preambleError}</p>}
         <GlobalPreambleCard />
-        {subagents.length === 0 && !listError && (
+        {own.length === 0 && !listError && (
           <div className="border border-dashed border-border rounded-[10px] px-[18px] py-8 flex flex-col items-center gap-3 text-center">
-            <p className="text-[13px] text-foreground">还没定义任何子智能体</p>
+            <p className="text-[13px] text-foreground">你还没定义自己的子智能体</p>
             <p className={cn(HINT, "max-w-[420px]")}>
               点右上角「新建」起一个，或者手写一份 <code>&lt;名字&gt;.md</code>
               （带 YAML frontmatter）放进 <code>{view.scopeDir}</code>。主 agent
@@ -129,9 +134,28 @@ export function SubagentSettings() {
             </Button>
           </div>
         )}
-        {subagents.map((def) => (
+        {own.map((def) => (
           <SubagentRow key={def.path} def={def} scope={view} />
         ))}
+        {/* 内置那一栏排在自己的定义后面:它是兜底的那一层,不是主角。
+            同名的磁盘定义已经在 withBuiltins 里把它盖掉了,这里不会重复出现 */}
+        {builtins.length > 0 && (
+          <>
+            <div className="flex items-baseline gap-2 pt-2">
+              <h2 className="text-[13px] font-[650] text-foreground">内置子智能体</h2>
+              <span className={HINT}>{builtins.length} 项</span>
+            </div>
+            <p className={HINT}>
+              随 app 一起发的，不在磁盘上，删不掉也改不了。想改就点「改成我自己的一份」——
+              会在<b>{view.current.label}</b>这一层写出一份同名定义盖住它，
+              从此它是你的（代价：以后升级改了内置的正文或工具集，你这份跟不上）。
+              审批档是「跟随主会话」：你开了免审批它就免审批，没开就把卡弹给你。
+            </p>
+            {builtins.map((def) => (
+              <BuiltinSubagentRow key={`builtin:${def.name}`} def={def} scope={view} />
+            ))}
+          </>
+        )}
       </section>
     </div>
   );
@@ -139,7 +163,6 @@ export function SubagentSettings() {
 
 function SubagentRow({ def, scope }: { def: SubagentDef; scope: SubagentScopeView }) {
   const saveSubagent = useChat((s) => s.saveSubagent);
-  const createSubagent = useChat((s) => s.createSubagent);
   const draft = useSubagentDraft(def);
 
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -177,58 +200,20 @@ function SubagentRow({ def, scope }: { def: SubagentDef; scope: SubagentScopeVie
     // 比如中途切了作用域),写死 -copy 的话"再点一次"撞的就是自己刚建的那个空壳,
     // 是一条走不通的路
     const copyName = freeCopyName(def.name, useChat.getState().subagents.map((d) => d.name));
-    // 作用域是所有落点的前提,整个流程得钉在开始时的那一层上(见下面两处判断)
-    const scopeAtStart = useChat.getState().subagentScope;
     setCopying(true);
     setCopyError(null);
     setCopiedAs(null);
-    try {
-      // path/source/readOnly 必须来自刚建出来那份的磁盘现状,不能沿用 def(那是原本
-      // 那份只读记录的路径)。saveSubagent 的 IPC handler 会按 name 重新查一遍磁盘、
-      // 拿查到的 path/source/readOnly 覆盖请求体里的同名字段,所以这里传什么值都不会
-      // 被后端采信——但组件自己的代码不该装作"知道"一个它其实没查过的路径,
-      // 那样的正确性系着一个类型契约没承诺过的后端实现细节,下一个读这段代码的人
-      // 会学到错的教训。
-      // 认准 createSubagent **回传**的那份清单,不去 store 里翻:store 那份会被作用域
-      // 代次门挡掉(用户中途切一下作用域就查不到了),而文件其实已经建出来了——
-      // 于是"请重试"变成一条走不通的路:再点一次撞的是「已经有一个叫「X-copy」的
-      // 子智能体了」,空壳文件留在那儿谁也够不着
-      const created = (await createSubagent(copyName)).find((d) => d.name === copyName);
-      if (!created) {
-        setCopyError(`「${copyName}」已经建在 ${scope.scopeDir} 了，但清单里没有它——去那个目录里手工把内容抄过去`);
-        return;
-      }
-      if (useChat.getState().subagentScope !== scopeAtStart) {
-        // 中途切了作用域:不能接着存。saveSubagent 用的是 store 里此刻那一层,
-        // 拿「X-copy」这个名字去新那层查——查不到是白跑一趟,查到个同名的就是
-        // 把内容写穿到另一个工程的定义上。空壳文件留在原来那层,回去展开它接着编。
-        // 这句话多半没人看得见(切作用域会清空清单,这一行此刻已经卸载了),留着是因为
-        // 看不见的提示也好过没有提示——真正要紧的是这一步不往错地方写
-        setCopyError(`「${copyName}」已经建好了，但你切了作用域，内容没抄过去——切回${scope.current.label}展开它继续`);
-        return;
-      }
-      await saveSubagent({
-        name: copyName,
-        description: def.description,
-        instructions: def.instructions,
-        tools: def.tools,
-        unknownTools: def.unknownTools,
-        approval: def.approval,
-        preamble: def.preamble,
-        context: def.context,
-        scope: created.scope,
-        path: created.path,
-        source: created.source,
-        readOnly: created.readOnly,
-        ...(def.model ? { model: def.model } : {}),
-        ...(def.thinking ? { thinking: def.thinking } : {}),
-      });
-      setCopiedAs(copyName);
-    } catch (e) {
-      setCopyError(bridgeErrorMessage(e));
-    } finally {
-      setCopying(false);
-    }
+    // 抄的是**磁盘现状**(def)而不是草稿:这一行是只读的,展开时那些控件也是只读的,
+    // 用户没有过"改了但没存"这种状态
+    const err = await createSubagentFile({
+      name: copyName,
+      fields: fileFieldsOf(def),
+      scopeLabel: scope.current.label,
+      scopeDir: scope.scopeDir,
+    });
+    setCopyError(err);
+    if (!err) setCopiedAs(copyName);
+    setCopying(false);
   };
 
   const copyPath = async () => {
@@ -313,6 +298,76 @@ function SubagentRow({ def, scope }: { def: SubagentDef; scope: SubagentScopeVie
               {copying ? "复制中…" : `复制到${scope.current.label}这一层`}
             </Button>
           )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** 内置那一份的行。改不了，只有两个出口：换个模型，或者「改成我自己的一份」——
+    两个都走同一条 materialize（在当前作用域写出一份同名定义盖住内置那份）。
+    换模型也 materialize 是有代价的选择：一个下拉框顺手就在磁盘上留下了文件。
+    换来的是内置这一层永远只有一种状态——代码里那份——而不是"代码里那份 + 一张
+    谁也推导不出来的模型覆盖表"（事件日志是唯一事实来源，那张表不在日志里）。
+    所以换完必须当场说清楚发生了什么，下面那句提示不是客套 */
+function BuiltinSubagentRow({ def, scope }: { def: SubagentDef; scope: SubagentScopeView }) {
+  const draft = useSubagentDraft(def);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const materialize = async (model?: string) => {
+    setBusy(true);
+    setError(null);
+    setError(
+      await createSubagentFile({
+        name: def.name,
+        ...(model ? { fields: fileFieldsOf(def, { model }) } : { fields: fileFieldsOf(def) }),
+        scopeLabel: scope.current.label,
+        scopeDir: scope.scopeDir,
+      })
+    );
+    setBusy(false);
+  };
+
+  return (
+    <details className="border border-border rounded-[10px]">
+      <summary className="flex items-baseline gap-[10px] px-[14px] py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <span className="font-mono text-[13px] font-semibold text-brand shrink-0">{def.name}</span>
+        <Badge variant="secondary" className="shrink-0">内置</Badge>
+        <span className="text-muted-foreground text-[12.5px] flex-1 min-w-0 truncate">
+          {def.description}
+        </span>
+        <span className="text-muted-foreground text-[11px] shrink-0 font-mono">
+          {def.tools.length} 把工具
+        </span>
+        {/* 摘要行里的控件:点它不该把这一行展开/收起（summary 的默认动作） */}
+        <span
+          className="shrink-0"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <ModelPicker
+            value={draft.effectiveModel}
+            onChange={(m) => void materialize(m)}
+            disabled={busy}
+            placeholder="跟随主会话"
+            className="border border-border rounded-md px-2 py-1"
+          />
+        </span>
+      </summary>
+
+      <div className="flex flex-col gap-4 px-[14px] py-4 border-t border-border">
+        <SubagentFields draft={draft} readOnly />
+        {error && <p className={ERR_TXT}>{error}</p>}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void materialize()}>
+            {busy ? "写入中…" : "改成我自己的一份"}
+          </Button>
+          <span className={HINT}>
+            会在{scope.current.label}这一层写出 <code>{def.name}.md</code>，盖住内置那份
+          </span>
         </div>
       </div>
     </details>
