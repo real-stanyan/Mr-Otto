@@ -46,19 +46,31 @@ const asStringArray = (v: unknown): string[] => (Array.isArray(v) ? v.map(String
     F1 half 1）。整份 JSON 都解析不动时（errors 只有一条"不是合法 JSON"）
     这里永远是空数组——那种情形下我们连一个 id 都取不出来，得靠
     serializeMcpConfig 那边的另一道闸（F1 half 2：prevText 本身解析不动
-    时拒绝写）来兜底。 */
+    时拒绝写）来兜底。
+
+    `fatal`：整份 JSON 都解析不动。**"读不出 server" 和 "这份文件说没有 server"
+    是两件事**，调用方必须能分开（issue #159）。分不开的时候 mcpHub.syncFromDisk
+    会把 `servers: {}` 当成"用户把所有 server 都删了"，于是把活着的连接一条条
+    关掉、从内存里忘掉——用户什么提示都看不到，直到下次打开设置页。
+    空文件不是 fatal：那是货真价实的"还没配过"。 */
 export function parseMcpConfig(text: string): {
   servers: Record<string, McpServerConfig>;
   errors: string[];
   unrecognizedIds: string[];
+  fatal: boolean;
 } {
-  if (text.trim() === "") return { servers: {}, errors: [], unrecognizedIds: [] };
+  if (text.trim() === "") return { servers: {}, errors: [], unrecognizedIds: [], fatal: false };
 
   let root: Raw;
   try {
     root = asRecord(JSON.parse(text));
   } catch {
-    return { servers: {}, errors: ["mcp.json 不是合法 JSON，整份配置本次被忽略"], unrecognizedIds: [] };
+    return {
+      servers: {},
+      errors: ["mcp.json 不是合法 JSON，整份配置本次被忽略"],
+      unrecognizedIds: [],
+      fatal: true,
+    };
   }
 
   const servers: Record<string, McpServerConfig> = {};
@@ -97,7 +109,7 @@ export function parseMcpConfig(text: string): {
     }
   }
 
-  return { servers, errors, unrecognizedIds };
+  return { servers, errors, unrecognizedIds, fatal: false };
 }
 
 /** 写回。**在 prev 的基础上改**，不是重新生成 ——
@@ -164,7 +176,7 @@ export function serializeMcpConfig(
 export function loadMcpConfig(
   path: string,
   reader: McpConfigReader = nodeReader
-): { servers: Record<string, McpServerConfig>; errors: string[]; unrecognizedIds: string[] } {
+): { servers: Record<string, McpServerConfig>; errors: string[]; unrecognizedIds: string[]; fatal: boolean } {
   return parseMcpConfig(reader.readFile(path));
 }
 
