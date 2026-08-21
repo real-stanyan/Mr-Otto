@@ -41,9 +41,15 @@ export function createMcpHub(opts: {
     for (const [id, cfg] of Object.entries(servers)) {
       const cur = entries.get(id);
       if (!cur) {
-        // 未连接的初始态一律记 failed —— McpStatus 只有四态，"没连过"和"停用"
-        // 都归在这里，区别写进 error 那句人话里给 UI 显示
-        entries.set(id, { cfg, status: "failed", error: cfg.enabled ? "还没连过" : "已停用" });
+        // 中性起始态，不是 failed —— "还没试过"和"真的连不上"对用户是两件事：
+        // 设置页可能在 ready() 之前就调 list()，这时候一律记 failed 会让每台
+        // 刚配置好、压根没试过的 server 都亮红灯；enabled: false 的更冤枉，
+        // 它会一直停在这个初始态（connectOne 直接跳过它），永远显示"失败"。
+        // "connecting" 没有这个歧义：enabled 的会立刻被 ready() 里的 connectOne
+        // 接过去转正，disabled 的会一直停在这里但至少不撒谎说它坏了——
+        // UI 要区分"关掉的"和"连不上的"，看 config.enabled 就够，不必再借
+        // status 这一个字段传两种意思（这正是原先的设计想省但省错了的地方）。
+        entries.set(id, { cfg, status: "connecting" });
       } else {
         cur.cfg = cfg;
       }
@@ -65,10 +71,19 @@ export function createMcpHub(opts: {
     try {
       const conn = await opts.connect(id, e.cfg);
       // list_changed：server 说清单变了,重拉一次再推 UI。
-      // 重拉失败不改状态 —— 连接还活着,只是这次没拉到
+      // 重拉失败不改状态 —— 连接还活着,只是这次没拉到，吞掉不往外抛。
+      // 这层 try/catch 是必须的：mcpClient.ts 的 refresh() 现在对"声明了
+      // capability 却拉不到"这种真故障是原样抛的（I3），首次连接时那个抛出
+      // 要让 connectOne 的外层 catch 接住、标成 failed；但这里是连接已经
+      // 活着之后的重拉，同一个错误不该把一条好端端的连接标死，只是这次
+      // 没拉到新清单，旧清单继续用。
       conn.onListChanged(() => {
         void (async () => {
-          await (conn as { refresh?: () => Promise<void> }).refresh?.();
+          try {
+            await conn.refresh?.();
+          } catch {
+            // 见上：连接没死，只是这次重拉没成功，保留旧清单
+          }
           emit();
         })();
       });
@@ -152,7 +167,8 @@ export function createMcpHub(opts: {
       // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
       const cur = entries.get(id);
       if (cur?.conn) await cur.conn.close();
-      entries.set(id, { cfg, status: "failed", error: "还没连过" });
+      // 同 syncFromDisk 的口径：还没试连不等于连不上，见上面那条注释
+      entries.set(id, { cfg, status: "connecting" });
       await connectOne(id);
     },
 

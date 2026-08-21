@@ -122,19 +122,33 @@ describe("createMcpHub", () => {
     await expect(hub.callTool("a", "t1", {})).rejects.toThrow(/a/);
   });
 
-  it("list_changed 通知触发重拉清单", async () => {
+  it("list_changed 通知触发重拉清单 —— 靠 hub 真的调用 refresh()，不是外部直接改数组", async () => {
+    // tools 是一个普通字段（不是 getter），只有 refreshSpy 内部会改它。
+    // 这样断言"清单变成 2 个"就只能靠 hub 调用了 conn.refresh() 才成立——
+    // 如果 hub 里触发重拉的那段代码被删掉，refreshSpy 不会被调用，
+    // tools 也就永远停在 1 个，测试会失败（而不是像原来那样，不管 hub
+    // 有没有调用 refresh，测试都会通过，因为断言读的是被测试自己从外部
+    // 改过的同一个数组）。
     let fire = () => {};
-    let tools = [{ name: "t1", description: "", inputSchema: {} }];
-    const connect: McpConnect = async () => ({
-      ...conn(),
-      get tools() { return tools; },
-      onListChanged: (cb: () => void) => { fire = cb; },
+    const fakeConn: McpClientConn = conn();
+    // tools 对外是 readonly（McpClientConn 的契约），refreshSpy 是"内部实现"，
+    // 借同一个手法（mcpClient.ts 自己也这么干）绕开 readonly 去写同一个对象。
+    const mutable = fakeConn as { tools: McpClientConn["tools"] };
+    const refreshSpy = vi.fn(async () => {
+      mutable.tools = [
+        { name: "t1", description: "", inputSchema: {} },
+        { name: "t2", description: "", inputSchema: {} },
+      ];
     });
+    fakeConn.onListChanged = (cb: () => void) => { fire = cb; };
+    fakeConn.refresh = refreshSpy;
+    const connect: McpConnect = async () => fakeConn;
     const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
     await hub.ready();
     expect(hub.servers()[0]!.tools).toHaveLength(1);
-    tools = [...tools, { name: "t2", description: "", inputSchema: {} }];
+    expect(refreshSpy).not.toHaveBeenCalled();
     fire();
+    await vi.waitFor(() => expect(refreshSpy).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(hub.servers()[0]!.tools).toHaveLength(2));
   });
 

@@ -4,7 +4,8 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
   ToolListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
@@ -29,6 +30,10 @@ export interface McpClientConn {
   getPrompt(name: string, args: Record<string, string>): Promise<string>;
   /** server 说"我的清单变了" —— hub 收到就重拉 */
   onListChanged(cb: () => void): void;
+  /** 重拉三份清单。可选是因为它是内部实现细节的把手，不是每个 McpClientConn
+      的消费者都需要——但既然 hub 要跨模块边界调它，就必须写进这个接口，
+      不能靠 hub 那边一个不受类型检查的 cast 去够一个"其实不存在"的字段。 */
+  refresh?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -52,7 +57,15 @@ function toContent(raw: unknown): McpContent[] {
   });
 }
 
-const looksLikeAuth = (e: unknown): boolean => {
+/** 判断一次连接失败是不是"要授权"。优先认 SDK 给的类型信号——
+    StreamableHTTPClientTransport 在 POST 分支的 401/403 上抛 StreamableHTTPError，
+    状态码在 .code 而不在 .message 里（构造函数把 message 包了一层前缀，
+    正则永远配不上纯数字状态码）；GET/SSE 分支和一部分 auth() 内部路径抛
+    UnauthorizedError。正则留着兜底——万一某个 transport/server 组合两个
+    类型都不抛，只在文本里说了"unauthorized"这种情况 */
+const isAuthError = (e: unknown): boolean => {
+  if (e instanceof UnauthorizedError) return true;
+  if (e instanceof StreamableHTTPError) return e.code === 401 || e.code === 403;
   const msg = e instanceof Error ? e.message : String(e);
   return /\b401\b|unauthor|forbidden|\b403\b/i.test(msg);
 };
@@ -66,8 +79,15 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
       ? new StdioClientTransport({
           command: cfg.command,
           args: cfg.args,
-          // 继承当前环境再叠用户配的 —— npx 要 PATH 才跑得起来
-          env: { ...(process.env as Record<string, string>), ...cfg.env },
+          // 只传用户为这台 server 配的 env——PATH/HOME/... 这类安全白名单由
+          // SDK 自己在 spawn 时补在下面（stdio.js 的 start()：
+          // `env: { ...getDefaultEnvironment(), ...this._serverParams.env }`，
+          // 名单抄的是 sudo 的默认继承表，只有 6~12 个变量）。
+          // 这里如果传一整份 process.env，等于把那份安全白名单整个盖掉——
+          // 而 index.ts 的 applyToEnv(loadKeys(...), process.env) 早就把
+          // DeepSeek/Claude/GLM 等模型 key 的明文写进了 process.env，相当于
+          // 把用户的模型账号双手奉上给任意一个用户自己配置的第三方 npx 包。
+          env: cfg.env,
         })
       : new StreamableHTTPClientTransport(new URL(cfg.url), {
           requestInit: { headers: cfg.headers },
@@ -81,18 +101,15 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
     // 这里断言掉，不因此放松 tsconfig。
     await client.connect(transport as unknown as Transport);
   } catch (e) {
-    if (looksLikeAuth(e)) throw new McpAuthRequiredError(`${id} 需要授权：${String(e)}`);
+    if (isAuthError(e)) throw new McpAuthRequiredError(`${id} 需要授权：${String(e)}`);
     throw e;
   }
 
-  // 三份清单：server 没声明对应 capability 时 SDK 会抛,那不是错,是"这台没有这项"
-  const safe = async <T>(f: () => Promise<T>, empty: T): Promise<T> => {
-    try {
-      return await f();
-    } catch {
-      return empty;
-    }
-  };
+  // initialize 握手成功后才有值——按 server 实际声明的 capability 决定拉不拉，
+  // 不是"拉了失败就当没有"。这两码事对用户是不同的：真没有这项能力，跟声明了
+  // 却因为传输死掉/超时/握手后 401 拉不到，前者该显示"这台没有 prompts"，
+  // 后者该显示这台连接失败——不该被悄悄吞成一个状态健康、清单空空如也的 server。
+  const caps = client.getServerCapabilities();
 
   const conn: McpClientConn = {
     tools: [],
@@ -132,12 +149,15 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
     close: () => client.close(),
   };
 
-  // refresh 是可变的：list_changed 之后 hub 会再叫一次
+  // tools/resources/prompts 声明成 readonly 是给外部看的——hub 只读不改。
+  // refresh() 内部要写，借一个宽类型的引用绕开 readonly，写的仍是同一个对象。
   const mutable = conn as { tools: McpToolInfo[]; resources: McpResourceInfo[]; prompts: McpPromptInfo[] };
   const refresh = async () => {
-    const t = await safe(() => client.listTools(), { tools: [] });
-    const r = await safe(() => client.listResources(), { resources: [] });
-    const p = await safe(() => client.listPrompts(), { prompts: [] });
+    // 没声明这项 capability = 真没有，给空数组，不发请求。
+    // 声明了却调用失败 = 故障，原样抛出去，不在这里吞。
+    const t = caps?.tools ? await client.listTools() : { tools: [] };
+    const r = caps?.resources ? await client.listResources() : { resources: [] };
+    const p = caps?.prompts ? await client.listPrompts() : { prompts: [] };
     mutable.tools = (t.tools ?? []).map((x) => ({
       name: x.name, description: x.description ?? "", inputSchema: x.inputSchema ?? { type: "object" },
     }));
@@ -156,8 +176,12 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
       })),
     }));
   };
+  // 首次拉取失败要原样抛出去：调用方（connectOne）的 try/catch 会把这台标成
+  // failed/needs-auth，而不是把"握手成功但清单没拉到"误报成"一切正常"。
   await refresh();
-  (conn as { refresh?: () => Promise<void> }).refresh = refresh;
+  // refresh 现在是 McpClientConn 的一等公民（见上方接口声明），直接赋值即可，
+  // 不需要再拿一个不受类型检查的 cast 去够一个接口里本不存在的字段。
+  conn.refresh = refresh;
 
   return conn;
 }
