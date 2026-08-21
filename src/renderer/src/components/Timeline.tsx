@@ -10,7 +10,7 @@ import type {
   SubagentSpawnedEvent,
   ToolCallRequest,
 } from "../../../session/events.js";
-import { Hl } from "../replay/Replay.js";
+import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
