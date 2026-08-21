@@ -453,6 +453,14 @@ const enterChat = (info: BootInfo) => ({
     只比 protocolRepo 挡不住同仓库内的连点(#18 第 2 条) */
 const protocolDetailGate = createRequestGate();
 
+/** 子智能体清单的作用域代号:切一次作用域 +1。
+    四个清单 action 都在 await 前记下它,回来时对不上就把结果扔掉——
+    慢的那次请求是在旧作用域下发出的,让它落地等于把上一个工程(或用户级)的
+    清单盖回当前工程,而用户看到的下拉框已经指着别处了。
+    不用 createRequestGate:那张闸每次请求都自增,同一作用域下的并发刷新会互相
+    作废;这里要作废的只有"跨过一次切换"的那些 */
+let subagentScopeGen = 0;
+
 export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
   sessionId: "",
@@ -690,22 +698,34 @@ export const useChat = create<ChatState>((set, get) => ({
   closeSettings: () => set({ settingsSection: null }),
 
   async refreshSubagents() {
-    set({ subagents: await window.otter.listSubagents(get().subagentScope) });
+    const gen = subagentScopeGen;
+    const list = await window.otter.listSubagents(get().subagentScope);
+    if (gen !== subagentScopeGen) return; // 这份是旧作用域的答案
+    set({ subagents: list });
   },
 
   async saveSubagent(def) {
-    set({ subagents: await window.otter.saveSubagent(def, get().subagentScope) });
+    const gen = subagentScopeGen;
+    const list = await window.otter.saveSubagent(def, get().subagentScope);
+    if (gen !== subagentScopeGen) return;
+    set({ subagents: list });
   },
 
   async createSubagent(name) {
-    set({ subagents: await window.otter.createSubagent(name, get().subagentScope) });
+    const gen = subagentScopeGen;
+    const list = await window.otter.createSubagent(name, get().subagentScope);
+    if (gen !== subagentScopeGen) return;
+    set({ subagents: list });
   },
 
   /** 切作用域 = 换一份清单。先把旧清单清空再拉新的，避免切换瞬间显示的是
       上一个作用域的内容（那会让用户以为工作区里已经有这些定义了） */
   async setSubagentScope(workspace) {
+    const gen = ++subagentScopeGen;
     set({ subagentScope: workspace, subagents: [] });
-    set({ subagents: await window.otter.listSubagents(workspace) });
+    const list = await window.otter.listSubagents(workspace);
+    if (gen !== subagentScopeGen) return; // 期间又切过一次,那次说了算
+    set({ subagents: list });
   },
 
   async refreshSubagentPreamble() {
