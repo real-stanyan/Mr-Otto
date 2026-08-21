@@ -63,7 +63,7 @@ function toContent(raw: unknown): McpContent[] {
     正则永远配不上纯数字状态码）；GET/SSE 分支和一部分 auth() 内部路径抛
     UnauthorizedError。正则留着兜底——万一某个 transport/server 组合两个
     类型都不抛，只在文本里说了"unauthorized"这种情况 */
-const isAuthError = (e: unknown): boolean => {
+export const isAuthError = (e: unknown): boolean => {
   if (e instanceof UnauthorizedError) return true;
   if (e instanceof StreamableHTTPError) return e.code === 401 || e.code === 403;
   const msg = e instanceof Error ? e.message : String(e);
@@ -178,7 +178,27 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
   };
   // 首次拉取失败要原样抛出去：调用方（connectOne）的 try/catch 会把这台标成
   // failed/needs-auth，而不是把"握手成功但清单没拉到"误报成"一切正常"。
-  await refresh();
+  //
+  // 但这里的失败发生在 client.connect() 已经成功之后——SDK 只在 initialize
+  // 阶段失败时自己收尾（client/index.js:311-316，catch 里 void this.close()）,
+  // 握手之后的失败它不管。不在这里补一刀 client.close()，stdio 场景下就是
+  // 让已经 spawn 出来的子进程永远挂着：conn 从没构造完、从没赋给 e.conn，
+  // hub 手上根本没有能拿去 close() 的引用，closeAll()/remove() 都够不着它；
+  // ready() 还会在下一轮重试同一台失败的 server，每次都再多孤儿一个进程。
+  //
+  // 同时,这一步失败也要过一遍鉴权分类：这里能抛出的典型场景正是"握手不需要
+  // 授权,但方法调用需要"（服务端在 tools/list 上返回 401），也就是 I3 那次
+  // 明确要求别再吞掉的那类真故障——它不是在 client.connect() 那次 try/catch
+  // 里出现的,原来的分类只包住了握手那一步,这里得单独再分类一次,否则用户
+  // 看到的是"这台坏了"而不是"去点一下授权"。
+  try {
+    await refresh();
+  } catch (e) {
+    // 关闭失败就吞掉,不能让一次收尾失败盖过更有信息量的原始错误
+    await client.close().catch(() => {});
+    if (isAuthError(e)) throw new McpAuthRequiredError(`${id} 需要授权：${String(e)}`);
+    throw e;
+  }
   // refresh 现在是 McpClientConn 的一等公民（见上方接口声明），直接赋值即可，
   // 不需要再拿一个不受类型检查的 cast 去够一个接口里本不存在的字段。
   conn.refresh = refresh;
