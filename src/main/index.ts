@@ -607,7 +607,7 @@ void app.whenReady().then(() => {
         throw new Error("这个子会话正在跑，稍等一下再看");
       }
       // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
-      const child = childAgentConfig(events, listSubagents(null));
+      const child = childAgentConfig(events);
       agents.set(
         sessionId,
         createSessionAgent({
