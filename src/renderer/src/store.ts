@@ -93,8 +93,17 @@ interface ChatState {
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
       上下文用量弹窗算"工具 schema 吃掉多少"用；没 boot 过 = 空表 */
   toolDefs: ToolDefinition[];
-  /** 侧栏会话列表（常驻） */
+  /** 全部会话（含子会话）的摘要镜像——原样对着 window.otter.listSessions()，
+      不在这里过滤：正看着一个子会话时，header 的会话名要靠这份镜像查到标题
+      (App.tsx 的 sessionTitle)，把子会话摘掉这里会查不到。子会话不进**侧栏**
+      这件事（ADR-0046）落在消费侧：sessionGroups.ts 的 groupSessionsByWorkspace
+      滤 spawnedFrom，侧栏 / ⌘K 搜索都走它，这份镜像本身保持完整 */
   sessions: SessionSummary[];
+  /** 子会话日志的只读缓存（childSessionId → 全量事件），懒加载：父时间线上的
+      subagent 卡收口后要报"N 步 · Xk tokens"，这两个数字子会话日志之外没处
+      推，只能问一趟又不想每次重渲染都问。未出现的 key = 还没问过，不是"问了
+      是空的"——两者必须可区分，同 providerUsage 的路子 */
+  subagentLogCache: Record<string, SessionEvent[]>;
   /** 新会话 composer 的文件夹初值：侧栏工程分组的 ＋ 塞进来，Welcome 消费。
       null = 空白开局（顶部那颗 ＋ 新会话） */
   pendingWorkspace: string | null;
@@ -327,6 +336,9 @@ interface ChatState {
   newSession(dir?: string): void;
   startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
+  /** 取一次某个子会话的日志，塞进 subagentLogCache（已缓存就不重问）。
+      不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
+  loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
   send(text: string, skill?: string): Promise<void>;
@@ -430,6 +442,7 @@ export const useChat = create<ChatState>((set, get) => ({
   events: [],
   toolDefs: [],
   sessions: [],
+  subagentLogCache: {},
   pendingWorkspace: null,
   statusBySession: {},
   queuedBySession: {},
@@ -1358,6 +1371,17 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ sessions: await window.otter.listSessions() });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async loadSubagentLog(sessionId) {
+    if (get().subagentLogCache[sessionId] !== undefined) return; // 已缓存，不重问
+    try {
+      const events = await window.otter.readSessionEvents(sessionId);
+      set((s) => ({ subagentLogCache: { ...s.subagentLogCache, [sessionId]: events } }));
+    } catch {
+      // 问不到不弹错:这是卡片背后悄悄补一笔事实的动作,不是用户按下的操作。
+      // 缓存留空,调用方（subagentFact）据此继续显示"还没有这个事实"，下次挂载再试
     }
   },
 

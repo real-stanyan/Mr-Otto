@@ -437,6 +437,11 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 
+  // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
+  // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)
+  // 用的是这个通道，不是 resumeSession
+  ipcMain.handle(CHANNELS.readSessionEvents, (_e, sessionId: string) => store.load(sessionId));
+
   // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）
   // 再一次性落地，中途反悔不留任何痕迹——没建的会话不该存在半个
   ipcMain.handle(CHANNELS.pickWorkspace, async (): Promise<string | null> => {

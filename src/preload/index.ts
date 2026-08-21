@@ -18,6 +18,7 @@ const bridge: ShellBridge = {
   startSession: (opts) => ipcRenderer.invoke(CHANNELS.startSession, opts),
   listSessions: () => ipcRenderer.invoke(CHANNELS.listSessions),
   resumeSession: (sessionId) => ipcRenderer.invoke(CHANNELS.resumeSession, sessionId),
+  readSessionEvents: (sessionId) => ipcRenderer.invoke(CHANNELS.readSessionEvents, sessionId),
   deleteSession: (sessionId) => ipcRenderer.invoke(CHANNELS.deleteSession, sessionId),
   renameSession: (sessionId, title) => ipcRenderer.invoke(CHANNELS.renameSession, sessionId, title),
   switchModel: (model, lane) => ipcRenderer.invoke(CHANNELS.switchModel, model, lane),

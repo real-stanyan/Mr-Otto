@@ -2,20 +2,33 @@
 // 都是事件日志的直接投影——UI 不持有自己的对话状态。
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
-import { memo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import type { ModelChangedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
+import type {
+  ModelChangedEvent,
+  SessionEvent,
+  SubagentSpawnedEvent,
+  ToolCallRequest,
+} from "../../../session/events.js";
 import { Hl } from "../replay/Replay.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
-import type { ToolIndex } from "../lib/toolIndex.js";
+import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
 import { ToolLiveTail } from "./ToolLiveTail.js";
 import { AgentHandoff } from "./elements/agent-handoff.js";
+import { AgentStatus } from "./elements/agent-status.js";
+import { SubagentList, type SubagentItem } from "./elements/subagent-list.js";
 import { ProviderMark } from "./ProviderMark.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
+import {
+  formatElapsed,
+  groupSubagentSpawns,
+  subagentFact,
+  subagentRowState,
+} from "../lib/subagentTimeline.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { useChat } from "../store.js";
 
@@ -127,6 +140,115 @@ const ModelHandoffRow = memo(function ModelHandoffRow({ event }: { event: ModelC
   );
 });
 
+/** 跑着/等着的行需要一颗会走的表——父会话自己的日志在子会话跑的时候纹丝不动
+    (task 调用是 await 的,父 turn 整段卡在这里,没有新事件可落),不挂个定时器
+    elapsed 就会在初次渲染的那个数字上钉死。intervalMs=null 时不走表(收口的
+    行不需要再滴答) */
+function useNow(intervalMs: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (intervalMs === null) return;
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+/** 派活卡:一条 subagent_spawned 落在时间线上的样子。
+    分组、状态推导全部走 lib/subagentTimeline.ts 的纯函数(有测试钉着) ——
+    这个组件只管订阅、拼 props、画出来。
+
+    一个组只画一张卡:组里最后一个成员的位置渲染完整的卡(单个 AgentStatus /
+    多个 SubagentList),更早的成员在自己的位置上返回 null——同一组不该在
+    时间线上出现两张卡。执行是串行的,组会随日志节奏从 1 长到 N,卡自然跟着
+    "长"到最新落盘的那个位置,不需要额外的过渡去模拟"多出一行" */
+const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: SubagentSpawnedEvent }) {
+  const events = useChat((s) => s.events);
+  const sessionId = useChat((s) => s.sessionId);
+  const pendingApproval = useChat((s) => s.approvals[s.sessionId] !== undefined);
+  const pendingAsk = useChat((s) => s.asks[s.sessionId] !== undefined);
+  const subagents = useChat((s) => s.subagents);
+  const subagentLogCache = useChat((s) => s.subagentLogCache);
+  const loadSubagentLog = useChat((s) => s.loadSubagentLog);
+  const resume = useChat((s) => s.resume);
+
+  const index = useMemo(() => buildToolIndex(events), [events]);
+  const groups = useMemo(() => groupSubagentSpawns(events), [events]);
+  const group = groups.find((g) => g.some((e) => e.toolCallId === event.toolCallId)) ?? [event];
+  const isLastOfGroup = group[group.length - 1]?.toolCallId === event.toolCallId;
+  const anyRunning = group.some((e) => !index.results.has(e.toolCallId));
+  const now = useNow(anyRunning ? 1000 : null);
+
+  // 收口了才去问子会话日志(还没收口时那份日志本来就还没定型,问了也白问)
+  useEffect(() => {
+    for (const e of group) {
+      if (index.results.has(e.toolCallId)) void loadSubagentLog(e.childSessionId);
+    }
+    // group/index 每次渲染都可能是新引用,但 loadSubagentLog 内部有缓存闸,
+    // 重复调用是空操作——这里不为了省这一层 useMemo 再多包一层
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, sessionId]);
+
+  if (!isLastOfGroup) return null; // 早于当前组最新成员的位置,让最新那张卡说话
+
+  if (group.length === 1) {
+    const spawn = group[0]!;
+    const state = subagentRowState(spawn, index, pendingApproval, pendingAsk);
+    const resultTs = index.results.get(spawn.toolCallId)?.ts;
+    const elapsedMs = (state === "done" ? (resultTs ?? now) : now) - spawn.ts;
+    const fact = state === "done" ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+    return (
+      <div className={AUDIT}>
+        <AgentStatus
+          state={state}
+          label={spawn.agent}
+          onSelect={() => void resume(spawn.childSessionId)}
+          {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}
+        />
+      </div>
+    );
+  }
+
+  const items: SubagentItem[] = group.map((spawn) => {
+    const done = index.results.has(spawn.toolCallId);
+    const fact = done ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+    const model = subagents.find((d) => d.name === spawn.agent)?.model ?? "";
+    return { name: spawn.agent, model, ...(fact !== null ? { fact } : {}) };
+  });
+  const completedCount = group.filter((spawn) => index.results.has(spawn.toolCallId)).length;
+  // 二值色带,不是真进度:我们不知道子 agent 跑到几成了(design brief 的
+  // "no fake progress")——done=完整色带,working=四成占位,只区分两态
+  const progress = group.map((spawn) => (index.results.has(spawn.toolCallId) ? 100 : 40));
+
+  return (
+    <div className={AUDIT}>
+      <SubagentList
+        agents={items}
+        completedCount={completedCount}
+        progress={progress}
+        showSummary={false}
+        summaryAgent={items[0]!}
+        onSelectAgent={(i) => void resume(group[i]!.childSessionId)}
+      />
+    </div>
+  );
+});
+
+/** subagent 就位存档(落子会话):同 skill_invoked 的折叠版式——全文是"模型看到的
+    说明书"快照,不是对话内容,默认收着,想查就摊开 */
+function SubagentBriefedRow({ agent, instructions, tools, model }: {
+  agent: string; instructions: string; tools: string[]; model: string;
+}) {
+  return (
+    <details className={THINKING_DETAILS}>
+      <summary className={`${THINKING_SUMMARY} text-brand`}>
+        ✦ 作为 subagent「{agent}」就位——{model} · {tools.length} 把工具
+      </summary>
+      <div className={THINKING_BODY}>{instructions}</div>
+    </details>
+  );
+}
+
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
@@ -168,6 +290,19 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
 
     case "model_changed":
       return <ModelHandoffRow event={event} />;
+
+    case "subagent_spawned":
+      return <SubagentSpawnedRow event={event} />;
+
+    case "subagent_briefed":
+      return (
+        <SubagentBriefedRow
+          agent={event.agent}
+          instructions={event.instructions}
+          tools={event.tools}
+          model={event.model}
+        />
+      );
 
     case "skill_invoked":
       // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容

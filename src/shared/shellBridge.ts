@@ -285,6 +285,12 @@ export interface ShellBridge {
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
   resumeSession(sessionId: string): Promise<BootInfo>;
+  /** 只读地取一个会话的全部事件，不切换当前视图（同 resumeSession 的日志来源，
+      但不改 phase/sessionId 等任何镜像）。时间线上的 subagent 卡要用子会话的
+      事实——收口后的步数、token——而这些不进父会话的日志，只能单独问一趟；
+      点进去看全过程走的是 resumeSession，这个方法只用来"顺路看一眼事实"。
+      未知 sessionId 回空数组，同 EventStore.load 的语义 */
+  readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
@@ -519,6 +525,7 @@ export const CHANNELS = {
   startSession: "otter:startSession",
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
+  readSessionEvents: "otter:readSessionEvents",
   deleteSession: "otter:deleteSession",
   renameSession: "otter:renameSession",
   switchModel: "otter:switchModel",

@@ -25,6 +25,11 @@ export interface SessionSummary {
   /** 标题投影，优先级：最后一条 session_renamed（用户手动改名）＞
       第一条 user_message 首行（自动推导）＞ null（UI 自行兜底） */
   title: string | null;
+  /** 这个会话是不是被派活派出来的子会话（ADR-0046）：是就带上派它的那个父
+      会话 id，供 UI 把它从侧栏滤掉、以及子会话视图里"← 回到父会话"用。
+      从第 0 条 session_created 的 spawnedBy.sessionId 投影出来。
+      不是子会话 / 旧日志没有 spawnedBy 字段 → null（schema 向后兼容硬规则） */
+  spawnedFrom: string | null;
 }
 
 const SCHEMA = `
@@ -137,7 +142,10 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.title')
                    FROM events e2
                   WHERE e2.session_id = e.session_id AND e2.type = 'session_renamed'
-                  ORDER BY e2.seq DESC LIMIT 1) AS renamed
+                  ORDER BY e2.seq DESC LIMIT 1) AS renamed,
+                (SELECT json_extract(payload, '$.spawnedBy.sessionId')
+                   FROM events e3
+                  WHERE e3.session_id = e.session_id AND e3.seq = 0) AS spawnedFrom
            FROM events e
           WHERE session_id NOT IN
                 (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')

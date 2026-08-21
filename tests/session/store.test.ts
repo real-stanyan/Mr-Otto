@@ -109,6 +109,21 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.title).toBe("自动标题");
   });
 
+  it("sessions()：spawnedFrom 从第 0 条 session_created 的 spawnedBy 投影出来", () => {
+    store.append({ sessionId: "parent", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({
+      sessionId: "child",
+      ts: 2,
+      type: "session_created",
+      workspace: "/p",
+      spawnedBy: { sessionId: "parent", toolCallId: "call_1", agent: "reviewer" },
+    });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.spawnedFrom]));
+    expect(byId["child"]).toBe("parent");
+    expect(byId["parent"]).toBeNull(); // 普通会话没有 spawnedBy → null
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
     // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });

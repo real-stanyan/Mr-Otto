@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, History, ListChecks, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,6 +51,7 @@ import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
+import { spawnedFromOf } from "./lib/subagentTimeline.js";
 import { cn } from "@/lib/utils.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
@@ -2248,7 +2249,10 @@ function ChatComposer() {
 
 
 export function App() {
-  const { phase, sessionId, workspace, events, boot, stop } = useChat();
+  const { phase, sessionId, workspace, events, boot, stop, resume } = useChat();
+  // 这个会话是不是被派活派出来的子会话(ADR-0046)——是就带上父会话 id，
+  // header 露一颗"← 回到父会话"。纯粹从 events[0] 的 spawnedBy 推导
+  const spawnedFrom = useMemo(() => spawnedFromOf(events), [events]);
   const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
@@ -2389,6 +2393,17 @@ export function App() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
+        {/* 子会话(ADR-0046)才有的返程键:它不在侧栏里,唯一的出路是回它的父会话 */}
+        {spawnedFrom && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className={HEADER_GHOST}
+            onClick={() => void resume(spawnedFrom)}
+          >
+            <ArrowLeft /> 回到父会话
+          </Button>
+        )}
         {/* 会话名 · 工程 · 分支：一行说清"我在哪个会话、哪个工程、哪根枝上"。
             会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
         <div className="flex-1 min-w-0 flex items-center gap-2">
