@@ -31,6 +31,8 @@ import type {
   PokerHandView,
   PokerTableInput,
   PokerTableSummary,
+  McpServerConfig,
+  McpServersSnapshot,
 } from "../../shared/shellBridge.js";
 import { describeModel, DEFAULT_MODEL } from "../../shared/modelCatalog.js";
 import type { ThinkingMode } from "../../shared/thinking.js";
@@ -77,7 +79,7 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents";
+export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents" | "mcp";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";
@@ -203,6 +205,12 @@ interface ChatState {
       进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
       用户可能一次都不打开这个栏目 */
   subagents: SubagentDef[];
+  /** 本机 MCP server 清单 + ~/.otter/mcp.json 解析阶段的人话错误（配置已遮罩,
+      见 shared/mcp.ts 的 McpServersSnapshot 注释）。进 MCP 栏目时组件自己
+      refreshMcp()，同时全程订阅 onMcpChanged——一台 server 从 connecting 转成
+      connected 是异步的（ready() 在后台跑），不订阅的话设置页会一直停在
+      "连接中"，直到用户手动切栏目再切回来 */
+  mcpServers: McpServersSnapshot;
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -283,6 +291,16 @@ interface ChatState {
   /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
       [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验 */
   createSubagent(name: string): Promise<void>;
+  /** 重扫 MCP server 清单(MCP 栏目挂载时调一次,照 skills/subagents 的做法)。
+      开着栏目期间还有 onMcpChanged 的推送兜底,这次是"进页面先拿一份新鲜的" */
+  refreshMcp(): Promise<void>;
+  /** 存一台 server 的配置并立刻重连它。cfg 里没碰过的 env/headers 字段允许
+      原样带着 list() 给的遮罩值回来——主进程的 mergeMaskedCreds 会把它们
+      合并回真值，抛出的 Error 已经是中文句子，组件自己 catch 显示 */
+  saveMcpServer(id: string, cfg: McpServerConfig): Promise<void>;
+  removeMcpServer(id: string): Promise<void>;
+  /** 手动重连(failed 的那台，用户修好环境/网络后自己点) */
+  reconnectMcpServer(id: string): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -495,6 +513,7 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   subagents: [],
+  mcpServers: { servers: [], errors: [] },
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -570,6 +589,12 @@ export const useChat = create<ChatState>((set, get) => ({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
         skills: await window.otter.listSkills(),
+      });
+    } else if (section === "mcp") {
+      set({
+        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
+        terminalPanelOpen: false, browserPanelOpen: false,
+        mcpServers: await window.otter.listMcpServers(),
       });
     } else {
       set({
@@ -686,6 +711,24 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async createSubagent(name) {
     set({ subagents: await window.otter.createSubagent(name) });
+  },
+
+  async refreshMcp() {
+    set({ mcpServers: await window.otter.listMcpServers() });
+  },
+
+  async saveMcpServer(id, cfg) {
+    // 三个写操作都回全量快照(同 subagent 三件套的做法)——存写完立刻在 state
+    // 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西
+    set({ mcpServers: await window.otter.saveMcpServer(id, cfg) });
+  },
+
+  async removeMcpServer(id) {
+    set({ mcpServers: await window.otter.removeMcpServer(id) });
+  },
+
+  async reconnectMcpServer(id) {
+    set({ mcpServers: await window.otter.reconnectMcpServer(id) });
   },
 
   async openProtocol() {
@@ -1189,6 +1232,10 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
+    // 全程订阅,不等进了 MCP 栏目才订:一台 server 从 connecting 转 connected/failed
+    // 是 ready() 在后台跑完才知道的异步结果，用户可能这时候根本没打开设置页——
+    // 镜像照样要更新，等他下次打开时看到的才是新鲜的，不是"进页面那一刻"的旧快照
+    window.otter.onMcpChanged((mcpServers) => set({ mcpServers }));
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
       if (target.kind === "dm") {

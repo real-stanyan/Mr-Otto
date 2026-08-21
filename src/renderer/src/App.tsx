@@ -75,6 +75,7 @@ import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
+import { McpSettings } from "./components/McpSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -1111,6 +1112,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "appearance", label: "外观" },
   { id: "skills", label: "Skill 库" },
   { id: "agents", label: "Subagent" },
+  { id: "mcp", label: "MCP" },
 ];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -2413,6 +2415,8 @@ export function App() {
     <SkillsPage />
   ) : settingsSection === "agents" ? (
     <SubagentSettings />
+  ) : settingsSection === "mcp" ? (
+    <McpSettings />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (
