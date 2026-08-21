@@ -23,6 +23,28 @@ export interface SubagentDirReader {
   readFile(path: string): string | null;
 }
 
+export interface SubagentRoot {
+  root: string;
+  readOnly: boolean;
+  scope: SubagentScope;
+}
+
+/** 扫描根，按覆盖优先级排（同名先到先得，所以工作区排在用户前面 = 工作区盖用户）。
+    workspace 为 null（设置页选「用户」、探针装配）时只有用户那两条。
+    `.claude/agents/` 是 Claude Code 的配置，只读——我们不去改用户别的工具的文件 */
+export function subagentRoots(home: string, workspace: string | null): SubagentRoot[] {
+  return [
+    ...(workspace
+      ? [
+          { root: join(workspace, ".otter", "agents"), readOnly: false, scope: "workspace" as const },
+          { root: join(workspace, ".claude", "agents"), readOnly: true, scope: "workspace" as const },
+        ]
+      : []),
+    { root: join(home, ".otter", "agents"), readOnly: false, scope: "user" as const },
+    { root: join(home, ".claude", "agents"), readOnly: true, scope: "user" as const },
+  ];
+}
+
 const nodeReader: SubagentDirReader = {
   listFiles(root) {
     try {
@@ -174,7 +196,7 @@ export function parseSubagentMd(
 /** 按 roots 顺序扫描全部 subagent。同名先到先得——原生目录排在前面 = 覆盖优先。
     每次调用都现扫磁盘：定义是用户随时增删的外部文件，缓存只会陈旧（同 scanSkills）。 */
 export function scanSubagents(
-  roots: readonly { root: string; readOnly: boolean; scope: SubagentScope }[],
+  roots: readonly SubagentRoot[],
   knownTools: readonly string[],
   reader: SubagentDirReader = nodeReader
 ): SubagentDef[] {

@@ -4,6 +4,7 @@ import {
   parseSubagentMd,
   scanSubagents,
   serializeSubagent,
+  subagentRoots,
   type SubagentDirReader,
 } from "../../src/main/subagents.js";
 import { DEFAULT_SUBAGENT_TOOLS, isSafeContextFile } from "../../src/shared/subagent.js";
@@ -281,5 +282,40 @@ describe("序列化往返", () => {
     )!;
     expect(once.preamble).toEqual({ mode: "custom", text: "off" });
     expect(parse(serializeSubagent(once))).toEqual(once);
+  });
+});
+
+describe("subagentRoots", () => {
+  it("有工作区时四条，工作区排在用户前面（同名先到先得 = 工作区盖用户）", () => {
+    expect(subagentRoots("/home/u", "/work/proj")).toEqual([
+      { root: "/work/proj/.otter/agents", readOnly: false, scope: "workspace" },
+      { root: "/work/proj/.claude/agents", readOnly: true, scope: "workspace" },
+      { root: "/home/u/.otter/agents", readOnly: false, scope: "user" },
+      { root: "/home/u/.claude/agents", readOnly: true, scope: "user" },
+    ]);
+  });
+
+  it("没有工作区就只有用户那两条", () => {
+    expect(subagentRoots("/home/u", null).map((r) => r.scope)).toEqual(["user", "user"]);
+  });
+});
+
+describe("scanSubagents 的覆盖顺序", () => {
+  it("同名时工作区那份赢，且 scope 跟着赢的那条根走", () => {
+    const files: Record<string, string[]> = {
+      "/work/.otter/agents": ["r.md"],
+      "/home/.otter/agents": ["r.md"],
+    };
+    const reader = {
+      listFiles: (root: string) => files[root] ?? [],
+      readFile: (path: string) =>
+        path.startsWith("/work")
+          ? "---\nname: r\ndescription: 工作区那份\n---\n正文"
+          : "---\nname: r\ndescription: 用户那份\n---\n正文",
+    };
+    const defs = scanSubagents(subagentRoots("/home", "/work"), ["read_file"], reader);
+    expect(defs).toHaveLength(1);
+    expect(defs[0]?.description).toBe("工作区那份");
+    expect(defs[0]?.scope).toBe("workspace");
   });
 });

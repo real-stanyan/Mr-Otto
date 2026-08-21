@@ -30,7 +30,7 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
-import { scanSubagents, writeSubagent } from "./subagents.js";
+import { scanSubagents, subagentRoots, writeSubagent } from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
@@ -414,12 +414,6 @@ void app.whenReady().then(() => {
       send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
   };
 
-  // subagent 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位。
-  // readOnly 标着的那份不写回——不去改用户 Claude Code 的配置
-  const subagentRoots = [
-    { root: join(homedir(), ".otter", "agents"), readOnly: false, scope: "user" as const },
-    { root: join(homedir(), ".claude", "agents"), readOnly: true, scope: "user" as const },
-  ];
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
@@ -449,7 +443,10 @@ void app.whenReady().then(() => {
   } catch {
     TOOL_NAMES = [];
   }
-  const listSubagents = () => scanSubagents(subagentRoots, TOOL_NAMES);
+  /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
+      null = 只看用户级（设置页的「用户」视图、探针装配） */
+  const listSubagents = (workspace: string | null) =>
+    scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -497,17 +494,21 @@ void app.whenReady().then(() => {
     // 还没返回——先声明后赋值：parent() 只在派活那一刻被调用（远在这行之后）。
     // 这里不能改成先起个快照，快照会把后续 switchModel 等运行时变化锁死在
     // 创建那一刻的值上
+    // 运行时的清单绑定在会话的 workspace 上：工作区级的定义只在本工程的会话里
+    // 进得了 task 工具的清单。绑定点放在组装根，SubagentRunner / createTaskTool
+    // 的签名一个字不用改——工具那层不需要知道有"作用域"这回事
+    const listForSession = () => listSubagents(args.workspace);
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      listSubagents,
+      listSubagents: listForSession,
       subagentRunner: createSubagentRunner({
         store,
         attachments: attachmentStore,
         push,
-        list: listSubagents,
+        list: listForSession,
         parent: () => ({
           sessionId: self.sessionId,
           workspace: self.workspace,
@@ -601,7 +602,7 @@ void app.whenReady().then(() => {
         throw new Error("这个子会话正在跑，稍等一下再看");
       }
       // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
-      const child = childAgentConfig(events, listSubagents());
+      const child = childAgentConfig(events, listSubagents(null));
       agents.set(
         sessionId,
         createSessionAgent({
@@ -622,39 +623,31 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
 
-  ipcMain.handle(CHANNELS.listSubagents, () => listSubagents());
+  ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: string | null) =>
+    listSubagents(workspace)
+  );
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef) => {
-    // def.path / def.readOnly 是渲染层传来的,不可信——一个 readOnly:false 配任意
-    // path 就能让这个 handler 写任意文件。落地地址必须从信任侧(现扫一遍磁盘的清单)
-    // 按名字查出来,渲染层的 def 只当"要存的内容"用,不当"写去哪"用
-    // (同 protocolService.readAdr 的路径越界防法,ADR 路径钉死在白名单目录内那条)
-    const found = listSubagents().find((d) => d.name === def.name);
-    if (!found) throw new Error(`没有名叫「${def.name}」的 subagent`);
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: string | null) => {
+    // def.path / def.readOnly 是渲染层传来的,不可信（同下）——落地地址必须从
+    // 信任侧（现扫一遍磁盘的清单）按名字查出来。作用域也一起传进来：同名可以
+    // 两层各一份,不带作用域查就可能在工作区里改一改、写穿到用户级那份上去
+    const found = listSubagents(workspace).find((d) => d.name === def.name);
+    if (!found) throw new Error(`没有名叫「${def.name}」的子智能体`);
     if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
-    // writeSubagent 内部的 readOnly 检查留着当第二道防线(defense in depth)——
-    // 这里已经挡过一次,但两处独立判断比互相信任更皮实
-    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly });
-    return listSubagents();
+    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly, scope: found.scope });
+    return listSubagents(workspace);
   });
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string) => {
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: string | null) => {
     const clean = name.trim();
-    // 校验必须在 IPC 边界之内：渲染层那道同款检查只是"别让请求白跑一趟"，
-    // 挡不住任何东西——这个 handler 的活儿就是往磁盘写文件（同 saveSubagent
-    // 收权的理由：渲染层传来的，不可信）。
-    // 而且是**拒绝**不是改写：以前把非法字符换成 "-"，"搜索员" 会塌成 "---"，
-    // 非空、通过、建出一个名叫 --- 的 subagent —— 用户看不出自己建了什么，
-    // 模型也永远打不出他心里那个名字
     const nameError = subagentNameError(clean);
     if (nameError) throw new Error(nameError);
-    // 建之前先查重:用户输入一个已存在的名字往往就是想看看这个名字有没有被占——
-    // 不查重会直接截断写空,把已有的 description/instructions/tools 全冲掉,
-    // 没有确认也没有撤回
-    if (listSubagents().some((d) => d.name === clean)) {
-      throw new Error(`已经有一个叫「${clean}」的 subagent 了，换个名字`);
+    if (listSubagents(workspace).some((d) => d.name === clean)) {
+      throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
     }
-    const root = subagentRoots[0]!.root;
+    // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.otter/agents，
+    // 用户级 = ~/.otter/agents。.claude/agents 是只读的，永远不是落点
+    const root = subagentRoots(homedir(), workspace)[0]!.root;
     writeSubagent({
       name: clean,
       description: "",
@@ -664,12 +657,12 @@ void app.whenReady().then(() => {
       approval: "deny",
       preamble: { mode: "default" },
       context: [],
-      scope: "user",
+      scope: workspace ? "workspace" : "user",
       path: join(root, `${clean}.md`),
       source: root,
       readOnly: false,
     });
-    return listSubagents();
+    return listSubagents(workspace);
   });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用

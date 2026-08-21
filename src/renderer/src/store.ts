@@ -203,6 +203,9 @@ interface ChatState {
       进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
       用户可能一次都不打开这个栏目 */
   subagents: SubagentDef[];
+  /** subagent 清单查询的作用域：null = 用户级，工作区路径 = 该工程（用户级 + 工作区级）。
+      切它 = 换一份清单（见 setSubagentScope） */
+  subagentScope: string | null;
   /** env 变量名 → key 的遮罩（`sk-31cf5*****828c`）；空串 = 没配。
       渲染层能知道的关于 key 的全部信息 —— 真假值当"配没配"用，字符串本身给人看 */
   keyStatus: Record<string, string>;
@@ -283,6 +286,8 @@ interface ChatState {
   /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
       [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验 */
   createSubagent(name: string): Promise<void>;
+  /** 切作用域 = 换一份清单。见实现处注释 */
+  setSubagentScope(workspace: string | null): Promise<void>;
   setSessionMode(mode: SessionMode): void;
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
@@ -495,6 +500,7 @@ export const useChat = create<ChatState>((set, get) => ({
   checkoutError: null,
   skills: [],
   subagents: [],
+  subagentScope: null,
   keyStatus: {},
   ollamaModels: [],
   ollamaBaseUrl: "",
@@ -677,15 +683,22 @@ export const useChat = create<ChatState>((set, get) => ({
   closeSettings: () => set({ settingsSection: null }),
 
   async refreshSubagents() {
-    set({ subagents: await window.otter.listSubagents() });
+    set({ subagents: await window.otter.listSubagents(get().subagentScope) });
   },
 
   async saveSubagent(def) {
-    set({ subagents: await window.otter.saveSubagent(def) });
+    set({ subagents: await window.otter.saveSubagent(def, get().subagentScope) });
   },
 
   async createSubagent(name) {
-    set({ subagents: await window.otter.createSubagent(name) });
+    set({ subagents: await window.otter.createSubagent(name, get().subagentScope) });
+  },
+
+  /** 切作用域 = 换一份清单。先把旧清单清空再拉新的，避免切换瞬间显示的是
+      上一个作用域的内容（那会让用户以为工作区里已经有这些定义了） */
+  async setSubagentScope(workspace) {
+    set({ subagentScope: workspace, subagents: [] });
+    set({ subagents: await window.otter.listSubagents(workspace) });
   },
 
   async openProtocol() {
