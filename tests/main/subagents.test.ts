@@ -5,7 +5,9 @@ import {
   scanSubagents,
   serializeSubagent,
   subagentRoots,
+  subagentSlotTaken,
   trustedWorkspace,
+  trustedWorkspaceForWrite,
   type SubagentDirReader,
 } from "../../src/main/subagents.js";
 import { DEFAULT_SUBAGENT_TOOLS, isSafeContextFile } from "../../src/shared/subagent.js";
@@ -326,14 +328,14 @@ describe("scanSubagents 的覆盖顺序", () => {
   });
 });
 
-describe("trustedWorkspace", () => {
+describe("trustedWorkspace（读路径）", () => {
   const known = ["/work/proj", null];
 
   it("在名单里的原样放行", () => {
     expect(trustedWorkspace("/work/proj", known)).toBe("/work/proj");
   });
 
-  it("不在名单里的降级成用户级——它会变成写文件的落点,不能听渲染层的", () => {
+  it("不在名单里的降级成用户级——读只决定界面看哪一层,降级是无害的", () => {
     expect(trustedWorkspace("/Users/victim/Desktop", known)).toBeNull();
   });
 
@@ -342,5 +344,64 @@ describe("trustedWorkspace", () => {
     expect(trustedWorkspace(null, known)).toBeNull();
     expect(trustedWorkspace(42, known)).toBeNull();
     expect(trustedWorkspace({ toString: () => "/work/proj" }, known)).toBeNull();
+  });
+});
+
+describe("trustedWorkspaceForWrite（写路径）", () => {
+  const known = ["/work/proj", null];
+
+  it("在名单里的原样放行", () => {
+    expect(trustedWorkspaceForWrite("/work/proj", known)).toBe("/work/proj");
+  });
+
+  it("不在名单里的**抛**,不降级——降级 = 对话框说建在 W,文件落进 ~/.otter/agents", () => {
+    expect(() => trustedWorkspaceForWrite("/Users/victim/Desktop", known)).toThrow(/不认识这个工作区/);
+  });
+
+  it("null 和空串仍然是合法的「用户级」,不抛", () => {
+    expect(trustedWorkspaceForWrite(null, known)).toBeNull();
+    expect(trustedWorkspaceForWrite("", known)).toBeNull();
+  });
+
+  it("压根不是字符串的也抛——那是渲染层出了 bug,不该悄悄当成用户级", () => {
+    expect(() => trustedWorkspaceForWrite(42, known)).toThrow(/必须是一个路径字符串/);
+    expect(() => trustedWorkspaceForWrite({ toString: () => "/work/proj" }, known)).toThrow();
+  });
+});
+
+describe("subagentSlotTaken", () => {
+  const wsRoot = { root: "/w/.otter/agents", readOnly: false, scope: "workspace" as const };
+  const md = (name: string) => `---\nname: ${name}\ndescription: d\n---\n正文\n`;
+
+  const readerFor = (files: Record<string, string>): SubagentDirReader => ({
+    listFiles: (root) =>
+      Object.keys(files)
+        .filter((p) => p.startsWith(`${root}/`))
+        .map((p) => p.slice(root.length + 1)),
+    readFile: (p) => files[p] ?? null,
+  });
+
+  it("落点空着 = 没占——哪怕用户级有个同名的:盖住用户级正是覆盖规则的用法", () => {
+    const reader = readerFor({
+      "/home/.otter/agents/reviewer.md": md("reviewer"),
+      "/w/.otter/agents/other.md": md("other"),
+    });
+    expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(false);
+  });
+
+  it("同一层已经有同名的 = 占了", () => {
+    const reader = readerFor({ "/w/.otter/agents/reviewer.md": md("reviewer") });
+    expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
+  });
+
+  it("文件名对得上但没 frontmatter 也算占了——覆盖上去等于抹掉别人的文件", () => {
+    const reader = readerFor({ "/w/.otter/agents/reviewer.md": "只是一篇随手记的笔记\n" });
+    expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
+  });
+
+  it("文件名和 name: 不一致时撞的是名字,不是路径", () => {
+    const reader = readerFor({ "/w/.otter/agents/foo.md": md("reviewer") });
+    expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
+    expect(subagentSlotTaken(wsRoot, "bar", KNOWN, reader)).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTEXT_DOCS_BUDGET,
   CONTEXT_DOC_LIMIT,
   composeSubagentPrompt,
   readContextDocs,
@@ -44,7 +45,7 @@ describe("composeSubagentPrompt", () => {
     const out = composeSubagentPrompt({
       def: base,
       globalPreamble: "全局",
-      docs: [{ file: "AGENTS.md", text: "规矩", truncated: false }],
+      docs: [{ file: "AGENTS.md", text: "规矩", truncated: false, skipped: false }],
     });
     expect(out).toBe("全局\n\n## 工作区文档：AGENTS.md\n\n规矩\n\n正文");
   });
@@ -53,9 +54,19 @@ describe("composeSubagentPrompt", () => {
     const out = composeSubagentPrompt({
       def: base,
       globalPreamble: "",
-      docs: [{ file: "AGENTS.md", text: "长", truncated: true }],
+      docs: [{ file: "AGENTS.md", text: "长", truncated: true, skipped: false }],
     });
     expect(out).toContain("（本文件过长，已截断）");
+  });
+
+  it("整份没注入的也写进正文——静默少一份文档正是要修的毛病", () => {
+    const out = composeSubagentPrompt({
+      def: base,
+      globalPreamble: "",
+      docs: [{ file: "CLAUDE.md", text: "", truncated: false, skipped: true }],
+    });
+    expect(out).toContain("## 工作区文档：CLAUDE.md");
+    expect(out).toContain("（工作区文档总量已超上限，本文件未注入）");
   });
 });
 
@@ -99,5 +110,54 @@ describe("readContextDocs", () => {
     const docs = readContextDocs("/w", ["AGENTS.md"], { readFile: () => long });
     expect(docs[0]?.truncated).toBe(true);
     expect(docs[0]?.text).toHaveLength(CONTEXT_DOC_LIMIT);
+  });
+
+  it("总预算封顶:多份加起来不超 CONTEXT_DOCS_BUDGET,被削的那份打截断标记", () => {
+    const long = "x".repeat(CONTEXT_DOC_LIMIT);
+    const files = ["AGENTS.md", "CLAUDE.md", "CONTEXT.md", "README.md"];
+    const docs = readContextDocs("/w", files, { readFile: () => long });
+    const total = docs.reduce((n, d) => n + d.text.length, 0);
+    expect(total).toBe(CONTEXT_DOCS_BUDGET);
+    // 前两份把 128 KB 吃满,第三份一个字都放不下
+    expect(docs[0]?.truncated).toBe(false);
+    expect(docs[1]?.truncated).toBe(false);
+    expect(docs[2]?.skipped).toBe(true);
+  });
+
+  it("预算见底后不再读盘,但每一份声明过的文档都留一条 skipped 记录", () => {
+    const seen: string[] = [];
+    const long = "y".repeat(CONTEXT_DOCS_BUDGET + 1);
+    const docs = readContextDocs("/w", ["AGENTS.md", "CLAUDE.md", "CONTEXT.md", "README.md"], {
+      readFile: (p) => {
+        seen.push(p);
+        return long;
+      },
+    });
+    // 前两份各被单份上限削到 64 KB,加起来正好花光预算;后两份一次盘都没读
+    expect(seen).toEqual(["/w/AGENTS.md", "/w/CLAUDE.md"]);
+    expect(docs.map((d) => d.file)).toEqual([
+      "AGENTS.md",
+      "CLAUDE.md",
+      "CONTEXT.md",
+      "README.md",
+    ]);
+    expect(docs[2]).toEqual({ file: "CONTEXT.md", text: "", truncated: false, skipped: true });
+    expect(docs[3]?.skipped).toBe(true);
+  });
+
+  it("卡在预算边界上的那份被削一半,标记的是「截断」不是「未注入」", () => {
+    const texts: Record<string, string> = {
+      "/w/AGENTS.md": "a".repeat(CONTEXT_DOC_LIMIT),
+      "/w/CLAUDE.md": "b".repeat(CONTEXT_DOC_LIMIT),
+      "/w/CONTEXT.md": "c".repeat(5000),
+    };
+    // 先把预算花掉 64 KB + 63 KB,留 1 KB 给第三份
+    texts["/w/CLAUDE.md"] = "b".repeat(CONTEXT_DOC_LIMIT - 1024);
+    const docs = readContextDocs("/w", ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"], {
+      readFile: (p) => texts[p] ?? null,
+    });
+    expect(docs[2]?.skipped).toBe(false);
+    expect(docs[2]?.truncated).toBe(true);
+    expect(docs[2]?.text).toHaveLength(1024);
   });
 });

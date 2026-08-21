@@ -13,6 +13,16 @@ import { DEFAULT_PREAMBLE, isSafeContextFile, type SubagentDef } from "../shared
     而"悄悄少读一半"比"读不到"更难查，所以截断这件事要写进正文 */
 export const CONTEXT_DOC_LIMIT = 64 * 1024;
 
+/** 所有工作区文档**加起来**的上限。为什么这一条比一般的体积限制重要得多：
+    这段文本会拼进 subagent_briefed.instructions，而 deriveMessages 把它投影成一条
+    **user 消息**；本仓的上下文压缩只削 tool_result 的输出和工具调用参数，user 消息
+    从来不削。也就是说它每一轮都原样重发、永不缩水，而日志是 append-only——
+    超了不是"变慢一点"，是那个子会话从第 1 轮起就爆上下文、并且**永久修不好**
+    （事后改 .md 也救不回已经落盘的那份快照）。
+    定在 128 KB = 单份上限的两倍，也正好是设置页那两个勾选框（AGENTS.md + CLAUDE.md）
+    本来就能产生的最大值——不缩已有能力，只挡手写 context 列出十份文档那种。 */
+export const CONTEXT_DOCS_BUDGET = 128 * 1024;
+
 /** 全局前置词落在 ~/.otter/ 而不是 ~/.otter/agents/：agents/ 下每个 .md 都会被
     scanSubagents 读一遍（没有 frontmatter 会被丢掉，不至于显示成一个子智能体），
     但让配置文件和定义文件混住是在等一个未来的坑 */
@@ -44,6 +54,10 @@ export interface ContextDoc {
   file: string;
   text: string;
   truncated: boolean;
+  /** 总预算已经花光,这份声明过的文档一个字都没注入。
+      为什么要留下这条空记录而不是直接丢掉：静默丢掉一份用户声明过的文档，
+      正是这次要修的那个毛病本身——模型不知道自己缺了什么，用户也看不出来 */
+  skipped: boolean;
 }
 
 /** 按会话 workspace 读 def.context 声明的那几份文档。
@@ -56,15 +70,25 @@ export function readContextDocs(
   reader: FileReader = nodeFileReader
 ): ContextDoc[] {
   const out: ContextDoc[] = [];
+  let used = 0;
   for (const file of files) {
     if (!isSafeContextFile(file)) continue;
+    // 预算见底就不再读盘了。仍然记一条 skipped——声明过却没注入这件事必须留痕
+    if (used >= CONTEXT_DOCS_BUDGET) {
+      out.push({ file, text: "", truncated: false, skipped: true });
+      continue;
+    }
     const text = reader.readFile(join(workspace, file));
     if (text === null) continue;
     // 空白文件跳过而不是拼出一个只有标题、没有正文的段落——那一段对模型是纯噪音。
     // 与 readGlobalPreamble 对空白文件的处置同一条规矩
     if (text.trim() === "") continue;
-    const truncated = text.length > CONTEXT_DOC_LIMIT;
-    out.push({ file, text: truncated ? text.slice(0, CONTEXT_DOC_LIMIT) : text, truncated });
+    // 这一份能占的位置 = 单份上限和"总预算还剩多少"里更小的那个
+    const room = Math.min(CONTEXT_DOC_LIMIT, CONTEXT_DOCS_BUDGET - used);
+    const truncated = text.length > room;
+    const kept = truncated ? text.slice(0, room) : text;
+    used += kept.length;
+    out.push({ file, text: kept, truncated, skipped: false });
   }
   return out;
 }
@@ -84,6 +108,11 @@ export function composeSubagentPrompt(opts: {
   const blocks: string[] = [];
   if (preamble) blocks.push(preamble);
   for (const doc of opts.docs) {
+    // 整份没进来的也要出现在正文里,理由同 ContextDoc.skipped
+    if (doc.skipped) {
+      blocks.push(`## 工作区文档：${doc.file}\n\n（工作区文档总量已超上限，本文件未注入）`);
+      continue;
+    }
     const tail = doc.truncated ? "\n\n（本文件过长，已截断）" : "";
     blocks.push(`## 工作区文档：${doc.file}\n\n${doc.text.trim()}${tail}`);
   }

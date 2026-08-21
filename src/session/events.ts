@@ -254,7 +254,9 @@ export interface SubagentSpawnedEvent extends SessionEventBase {
   task: string;            // 派下去的任务（模型给的 args，原样）
 }
 
-/** 额外 13：subagent 就位（落**子**会话，紧跟 session_created）。
+/** 额外 13：subagent 就位（落**子**会话，是开头那几条里的一条——不保证紧跟
+    session_created：装配时 switchModel 跑在 append 之前，model_changed 可能占掉
+    seq 1。读的人一律用 `.find()` 取，不靠位置，见 resumeChild.childAgentConfig）。
     instructions 是派活时刻的全文快照（含 runner 拼的内置前言）——模型可见的
     新信息必须落盘，且日志要自包含：定义文件之后被改/被删，重放不失真
     （同 skill_invoked 的理由，见 docs/adr/0007）。

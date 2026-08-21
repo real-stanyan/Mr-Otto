@@ -50,7 +50,9 @@ export function childAgentConfig(events: readonly SessionEvent[]): ChildAgentCon
   const briefed = events.find((e) => e.type === "subagent_briefed");
   return {
     agent: first.spawnedBy.agent,
-    // 连快照都没有（理论不可达：briefed 是子会话的第 1 条）= 一把工具都不给。
+    // 连快照都没有（理论不可达：briefed 一定在子会话开头那几条里——不一定是第 1 条，
+    // switchModel 跑在 append 之前,model_changed 可能占掉 seq 1,所以上面按 `.find()`
+    // 取而不按位置取）= 一把工具都不给。
     // 宁可这个会话只能看不能动，也不给它一副来路不明的装备
     allowTools: briefed?.type === "subagent_briefed" ? briefed.tools : [],
     deny: true,

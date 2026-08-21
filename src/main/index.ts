@@ -30,7 +30,14 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
-import { scanSubagents, subagentRoots, trustedWorkspace, writeSubagent } from "./subagents.js";
+import {
+  scanSubagents,
+  subagentRoots,
+  subagentSlotTaken,
+  trustedWorkspace,
+  trustedWorkspaceForWrite,
+  writeSubagent,
+} from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { CONTEXT_DOC_LIMIT, GLOBAL_PREAMBLE_PATH, nodeFileReader } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
@@ -450,10 +457,16 @@ void app.whenReady().then(() => {
   const listSubagents = (workspace: string | null) =>
     scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
-  // 白名单 = 日志里真实存在过的会话围栏，每一个都来自 startSession 那次
-  // 原生目录选择器，也就是用户亲手指过的目录
-  const trusted = (workspace: unknown) =>
-    trustedWorkspace(workspace, store.sessions().map((s) => s.workspace));
+  // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
+  // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
+  // 这个目录"：startSession 只校验了 `typeof workspace === "string" && workspace !== ""`，
+  // 既不验来源、也不验存在性，所以任何能调到 startSession 的渲染层都能往白名单里
+  // 塞一条自己编的路径。要真正堵死，得在 startSession 那侧校验来源——不在这次范围内。
+  const known = () => store.sessions().map((s) => s.workspace);
+  /** 读路径：认不出就降级成用户级（只影响界面看哪一层） */
+  const trusted = (workspace: unknown) => trustedWorkspace(workspace, known());
+  /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
+  const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -635,7 +648,13 @@ void app.whenReady().then(() => {
   );
 
   ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
-    const ws = trusted(workspace);
+    const ws = trustedForWrite(workspace);
+    // 行内前置词也得有上限,理由和全局那份一模一样（见 saveSubagentPreamble）:
+    // 它会原样进 subagent_briefed 的快照,而那条快照投影出来的 user 消息永不被压缩。
+    // 之前这一份存盘、序列化、拼装三处都没有限,是全局前置词那条上限的一个漏网口
+    if (def.preamble.mode === "custom" && def.preamble.text.length > CONTEXT_DOC_LIMIT) {
+      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
+    }
     // def.path / def.readOnly 是渲染层传来的,不可信（同下）——落地地址必须从
     // 信任侧（现扫一遍磁盘的清单）按名字查出来。作用域也一起传进来：同名可以
     // 两层各一份,不带作用域查就可能在工作区里改一改、写穿到用户级那份上去
@@ -647,16 +666,19 @@ void app.whenReady().then(() => {
   });
 
   ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
-    const ws = trusted(workspace);
+    const ws = trustedForWrite(workspace);
     const clean = name.trim();
     const nameError = subagentNameError(clean);
     if (nameError) throw new Error(nameError);
-    if (listSubagents(ws).some((d) => d.name === clean)) {
-      throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
-    }
     // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.otter/agents，
     // 用户级 = ~/.otter/agents。.claude/agents 是只读的，永远不是落点
-    const root = subagentRoots(homedir(), ws)[0]!.root;
+    const root = subagentRoots(homedir(), ws)[0]!;
+    // 查重只问"落点这一层占了没"，不问"这个名字在合并清单里露过面没"。
+    // 后者会把覆盖规则整个锁死：用户级有个 reviewer、想在工作区建一份同名的盖住它，
+    // 正是覆盖这个特性的用法，不是重名事故（详见 subagentSlotTaken 的注释）
+    if (subagentSlotTaken(root, clean, TOOL_NAMES)) {
+      throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
+    }
     writeSubagent({
       name: clean,
       description: "",
@@ -666,9 +688,9 @@ void app.whenReady().then(() => {
       approval: "deny",
       preamble: { mode: "default" },
       context: [],
-      scope: ws ? "workspace" : "user",
-      path: join(root, `${clean}.md`),
-      source: root,
+      scope: root.scope,
+      path: join(root.root, `${clean}.md`),
+      source: root.root,
       readOnly: false,
     });
     return listSubagents(ws);

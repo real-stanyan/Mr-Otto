@@ -45,14 +45,36 @@ export function subagentRoots(home: string, workspace: string | null): SubagentR
   ];
 }
 
-/** 渲染层给的 workspace 只有出现在已知会话围栏里才作数 —— 它会变成写文件的
-    落点，而已知围栏每一个都来自用户在原生目录选择器里亲手指过的路径 */
+/** 渲染层给的 workspace 只有出现在已知会话围栏里才作数 —— 它会变成写文件的落点。
+    白名单只是把写入面收窄到「日志里真出现过的会话围栏」，这比直接信参数强得多，
+    但它**不是**「用户在目录选择器里亲手指过」的证据：startSession 只校验了
+    `typeof workspace === "string" && workspace !== ""`（见 src/main/index.ts），
+    没有来源校验、也没有存在性校验。要堵死那个口子得在 startSession 那侧验来源。
+
+    **读路径**用这个：认不出就降级成 null（= 只看用户级），因为读只影响界面看到哪一层。 */
 export function trustedWorkspace(
   workspace: unknown,
   known: readonly (string | null)[]
 ): string | null {
   if (typeof workspace !== "string" || workspace === "") return null;
   return known.includes(workspace) ? workspace : null;
+}
+
+/** **写路径**用这个：认不出就抛，绝不降级。
+    降级在读路径上只是"少看一层"，在写路径上是一次**静默写错地方**——对话框上写着
+    「建在 W 这一层」，文件却落进 ~/.otter/agents/。今天还够不着（下拉框的选项恒是
+    会话清单的子集，也还没有删会话的入口），但删会话一上线它就是真的写错地方了。
+    null / "" 仍然合法,那是"用户级"这个真实意图,不是"我说了个你不认识的工作区"。 */
+export function trustedWorkspaceForWrite(
+  workspace: unknown,
+  known: readonly (string | null)[]
+): string | null {
+  if (workspace === null || workspace === "") return null;
+  if (typeof workspace !== "string") throw new Error("工作区必须是一个路径字符串");
+  if (!known.includes(workspace)) {
+    throw new Error(`不认识这个工作区：${workspace}——它不在任何一次会话的围栏里，不能往里写`);
+  }
+  return workspace;
 }
 
 const nodeReader: SubagentDirReader = {
@@ -232,6 +254,24 @@ export function scanSubagents(
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 落点那一层已经占了吗（新建查重）。
+    为什么**不能**拿合并后的清单查重：合并清单是覆盖解析之后的结果。用户级有一份
+    reviewer、想在工作区里建一份同名的把它盖住——这正是覆盖规则本身的用法，是特性
+    不是事故。按合并清单拦，等于把整个覆盖能力锁死，只剩手工建文件一条路。
+    真正的撞车只有一种：**落点这条根里**已经有同名的了。
+    两道都查：文件名占了位（哪怕那份 .md 没 frontmatter、扫不出定义，覆盖上去也是
+    抹掉别人的东西），或者这条根里已经有一份叫这个名字的定义（文件名和 `name:` 不
+    一致时，撞的是名字不是路径）。 */
+export function subagentSlotTaken(
+  root: SubagentRoot,
+  name: string,
+  knownTools: readonly string[],
+  reader: SubagentDirReader = nodeReader
+): boolean {
+  if (reader.listFiles(root.root).includes(`${name}.md`)) return true;
+  return scanSubagents([root], knownTools, reader).some((d) => d.name === name);
 }
 
 /** 单行 frontmatter 值里的换行换成空格。值里带换行会在写盘时裂成好几行，
