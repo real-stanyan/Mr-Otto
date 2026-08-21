@@ -114,11 +114,18 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
     throw e;
   }
 
-  // pid 只有 stdio 传输才有(http 场景没有子进程)。connect() 成功之后才取——
-  // StdioClientTransport 的 pid getter 在 spawn 完成前是 null，取早了白取。
+  // 留传输对象本身,不留 pid 数字——kill() 可能在连接建立后很久才被调用
+  // (before-quit,可能是几小时后),这中间子进程完全可能已经自然退出。
+  // 如果这里把 pid 存成一个数字快照，kill() 时那个号早被操作系统回收去
+  // 给了别的进程——process.kill 对一个"存在但不是它"的 pid 不会抛，
+  // 会成功杀死一个跟这台 MCP server 毫无关系的进程。
+  // stdio.js 的 pid 是 getter（`get pid() { return this._process?.pid ?? null }`），
+  // 子进程 close 时 SDK 自己把 _process 置 null（stdio.js:83）——所以在 kill()
+  // 里现读 transport.pid 而不是在这里存一份快照，就白得了 SDK 自带的
+  // 存活判断：子进程已经退出时，这里读到的就是 null，不会瞎杀。
   // instanceof 而不是 cfg.kind：cfg 在这里已经用不上了，transport 自己的
   // 运行时类型就是唯一可信来源，两者本该一致，用 instanceof 更直接。
-  const pid = transport instanceof StdioClientTransport ? transport.pid : null;
+  const stdioTransport = transport instanceof StdioClientTransport ? transport : null;
 
   // initialize 握手成功后才有值——按 server 实际声明的 capability 决定拉不拉，
   // 不是"拉了失败就当没有"。这两码事对用户是不同的：真没有这项能力，跟声明了
@@ -163,12 +170,17 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
     },
     close: () => client.close(),
     kill: () => {
-      if (pid == null) return; // http 场景:没有子进程,空操作(见接口注释)
+      // 现读，不用捕获的快照——见上方 stdioTransport 的注释：子进程已经
+      // 自然退出时 SDK 把 pid 收回成 null，这里跟着读到 null 就什么也不做，
+      // 而不是拿一个失效的数字去杀一个毫不相干的进程。
+      const pid = stdioTransport?.pid;
+      if (pid == null) return; // http 场景 / 子进程已经不在了:空操作(见接口注释)
       try {
         process.kill(pid, "SIGKILL");
       } catch {
-        // 进程已经退出/pid 已被系统回收——杀一个不存在的目标不是我们的错，
-        // 也不该让 before-quit 的收尾流程因为这一条而中断收别的 server
+        // 极小的竞态窗口：上面刚读到非 null 的 pid，这一行执行前进程恰好
+        // 退出——kill 一个已经不存在的目标不是我们的错，也不该让 before-quit
+        // 的收尾流程因为这一条而中断收别的 server
       }
     },
   };
