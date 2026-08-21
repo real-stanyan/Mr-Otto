@@ -803,7 +803,9 @@ void app.whenReady().then(() => {
       // 拒收带人话理由,比灰掉文件更能让用户明白为什么
     });
     if (picked.canceled) return [];
-    return picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore));
+    return Promise.all(
+      picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore))
+    );
   });
 
   // 粘贴/拖入:字节已经在渲染层手上(剪贴板给的是 File,不是路径),
@@ -811,7 +813,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(
     CHANNELS.intakePastedFiles,
     (_e, files: { name: string; data: Uint8Array }[]) =>
-      files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore))
+      Promise.all(files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore)))
   );
 
   ipcMain.handle(CHANNELS.attachmentDataUrl, (_e, id: string) => {
