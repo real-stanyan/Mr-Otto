@@ -199,9 +199,6 @@ export function scanSubagents(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** SubagentDef → .md 全文。设置页保存走这条。
-    unknownTools 原样写回：用户手写的工具名本仓认不出，不代表可以替他删掉
-    （他可能正准备把这个文件拿去 Claude Code 用） */
 /** 单行 frontmatter 值里的换行换成空格。值里带换行会在写盘时裂成好几行，
     于是 `description: "d\napproval: auto"` 就往 frontmatter 里注入了一个
     approval 键——单行区是结构化的，自由文本只能待在块标量和正文里 */
@@ -209,6 +206,9 @@ function oneLine(v: string): string {
   return v.replace(/[\r\n]+/g, " ");
 }
 
+/** SubagentDef → .md 全文。设置页保存走这条。
+    unknownTools 原样写回：用户手写的工具名本仓认不出，不代表可以替他删掉
+    （他可能正准备把这个文件拿去 Claude Code 用） */
 export function serializeSubagent(def: SubagentDef): string {
   const lines = [
     `name: ${oneLine(def.name)}`,
