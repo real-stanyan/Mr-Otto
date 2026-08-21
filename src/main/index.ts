@@ -14,10 +14,15 @@ import {
   type PokerTableInput,
   type BrowserBounds,
   type ApprovalDecisionOutcome,
+  type McpServerConfig,
+  type McpServersSnapshot,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
+import { createMcpHub } from "./mcpHub.js";
+import { connectMcpClient } from "./mcpClient.js";
+import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
@@ -390,6 +395,22 @@ void app.whenReady().then(() => {
     push: { state: (info) => send(CHANNELS.browserState, info) },
   });
 
+  // MCP server 登记表:配置存 userData 外的 ~/.otter/mcp.json(与 skill 目录同一条口径,
+  // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
+  // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
+  const mcpConfigPath = join(homedir(), ".otter", "mcp.json");
+  const mcpHub = createMcpHub({
+    load: () => loadMcpConfig(mcpConfigPath),
+    save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
+    connect: connectMcpClient,
+  });
+  // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
+  // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
+  // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
+  const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
+  // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
+  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); });
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -450,6 +471,10 @@ void app.whenReady().then(() => {
       },
       attachments: attachmentStore,
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+      // 刻意不给 mcp（与 browser 的桩子相反）：这份名单是拿来校验 subagent
+      // 定义里的工具名的，而子 agent 本来就挂不上 mcp 工具（见 createSessionAgent
+      // 里那段注释）。放进来只会让"这个名字认得"和"这把刀给得了你"对不上。
+      // 顺带也省掉了在注册第一个 IPC 通道之前 await mcpHub.ready() 这件事
     }).toolDefs.map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
@@ -525,6 +550,12 @@ void app.whenReady().then(() => {
       ...base,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      // MCP 只挂在主会话上。子会话（上面 createChildAgent 那条）刻意不给：
+      // 它的装备由那份 subagent 定义的工具白名单说了算，而白名单里写不出
+      // 一台此刻才连上的 server 的工具名（同它拿不到 subagentRunner 的道理）。
+      // 两条调用点（startSession / resumeSession）都在调这个函数之前
+      // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
+      mcp: mcpHub,
       listSubagents: listForSession,
       subagentRunner: createSubagentRunner({
         store,
@@ -586,10 +617,16 @@ void app.whenReady().then(() => {
     return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
-  ipcMain.handle(CHANNELS.startSession, (_e, opts: StartSessionOptions): BootInfo => {
+  ipcMain.handle(CHANNELS.startSession, async (_e, opts: StartSessionOptions): Promise<BootInfo> => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
+    // 工具表是一次性拼好的（挂载一次定终身）：必须在 createSessionAgent 之前
+    // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
+    // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位。
+    // createSessionAgent 是同步的（它调的 createAgent 就是同步的），
+    // 等这件事只能发生在它外面
+    await mcpHub.ready();
     const agent = createSessionAgent({ workspace: opts.workspace });
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
@@ -605,7 +642,7 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  ipcMain.handle(CHANNELS.resumeSession, (_e, sessionId: string): BootInfo => {
+  ipcMain.handle(CHANNELS.resumeSession, async (_e, sessionId: string): Promise<BootInfo> => {
     // 已在注册表里（包括正在跑 turn 的）→ 只是把视线切过去，agent 原样活着
     if (!agents.has(sessionId)) {
       // 恢复 = 重新投影：workspace 从日志第 0 条读回来，
@@ -626,6 +663,9 @@ void app.whenReady().then(() => {
       }
       // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
       const child = childAgentConfig(events);
+      // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
+      // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
+      await mcpHub.ready();
       agents.set(
         sessionId,
         createSessionAgent({
@@ -645,6 +685,32 @@ void app.whenReady().then(() => {
   const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // ── MCP ─────────────────────────────────────────────────────────
+  ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());
+  ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig): Promise<McpServersSnapshot> => {
+    await mcpHub.save(id, cfg);
+    return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.removeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
+    await mcpHub.remove(id);
+    return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
+    await mcpHub.reconnect(id);
+    return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.listMcpPrompts, () =>
+    mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
+  );
+  ipcMain.handle(
+    CHANNELS.expandMcpPrompt,
+    (_e, server: string, name: string, args: Record<string, string>) => {
+      const hit = mcpHub.servers().find((s) => s.live && s.name === server);
+      if (!hit) throw new Error(`没有连上名叫「${server}」的 MCP server`);
+      return mcpHub.getPrompt(hit.id, name, args);
+    }
+  );
 
   ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
     listSubagents(trusted(workspace))
@@ -1107,6 +1173,13 @@ void app.whenReady().then(() => {
   app.on("before-quit", () => {
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
+    // stdio server 是子进程,退出时得跟着收掉:closeAll() 虽然是 async 函数,
+    // 但 kill() 那一段是它函数体里第一个 await 之前的同步代码,这里一调用
+    // 就已经跑完(不依赖谁去 await 这个 promise)。之前只调 close() 的版本
+    // 是幂等噪音——SDK 的优雅关闭全靠两个 2s 定时器,before-quit 一返回
+    // Electron 就继续退出流程,那两个定时器永远没机会触发,子进程变孤儿
+    // (review finding 1;kill() 的同步保证见 mcpClient.ts / mcpHub.ts 的注释)
+    void mcpHub.closeAll();
     store.close();
   });
 });

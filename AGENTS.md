@@ -1,6 +1,6 @@
 # Mr Otto
 
-Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：多 agent 编排、MCP、插件系统（skill 库是纯提示词注入，不算插件系统，见 docs/adr/0007）。
+Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：多 agent 编排、插件系统（skill 库是纯提示词注入，不算插件系统，见 docs/adr/0007）。MCP 做 client 那一半（接外部 server 的 tools/resources/prompts，见 docs/adr/0049），不做 server。
 
 架构参考项目（学习/对照用，不引入为依赖）：
 - **DeepSeek Harness**：三原则 —— event-sourced 会话日志 / 工具中间件管线 / capability seam（ExecutionWorld）
@@ -18,6 +18,7 @@ TypeScript（strict）/ Node.js
 SQLite（better-sqlite3，事件日志持久化）
 vitest（测试统一放 `tests/`，镜像 `src/` 结构；不与源码同目录）
 直连 OpenAI-compatible API（不用 LangChain）；模型 adapter 切换 DeepSeek / Claude / GLM
+`@modelcontextprotocol/sdk`（MCP 客户端；只允许 `src/main/mcpClient.ts` import，见 docs/adr/0050）
 v2：Docker per bot（dockerode，自托管 VPS）
 
 ## Hard rules

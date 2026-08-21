@@ -30,7 +30,9 @@ import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
-import { withBrowser, type BrowserCapability } from "../world/executionWorld.js";
+import { withBrowser, withMcp, type BrowserCapability, type McpCapability } from "../world/executionWorld.js";
+import { createMcpTools } from "../tools/mcpTool.js";
+import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import {
@@ -112,6 +114,10 @@ export function createAgent(opts: {
   alwaysAllow?: () => ReadonlySet<string>;
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
+  /** MCP 能力（index.ts 从 mcpHub 注入）。hub 要管子进程生命周期、要向渲染层推状态，
+      LocalWorld 造不出来 —— 同 makeBrowser 的注入方向（ADR-0035）。
+      不给 = 这个装配没有 MCP（测试和裸装配照旧） */
+  mcp?: McpCapability;
   /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
@@ -136,14 +142,18 @@ export function createAgent(opts: {
   const sessionId = opts.resumeSessionId ?? newSessionId();
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）。
   // 外面给了现成的就用它（子 agent 走这条：必须和父在同一个 world 实例里）
-  const world: ExecutionWorld =
+  const base: ExecutionWorld =
     opts.world ??
     (() => {
       // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
       // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
-      const base = createLocalWorld({ root: opts.workspace });
-      return opts.makeBrowser ? withBrowser(base, opts.makeBrowser(sessionId)) : base;
+      const local = createLocalWorld({ root: opts.workspace });
+      return opts.makeBrowser ? withBrowser(local, opts.makeBrowser(sessionId)) : local;
     })();
+  // MCP 叠在最外层。子 agent 走 opts.world 那条路时不会被重复包一层：
+  // subagentRunner 复用父的 world 实例（父身上已经带着 withMcp 那层），
+  // 而它刻意不传 mcp —— 于是这里的三元一定走 false 分支
+  const world = opts.mcp ? withMcp(base, opts.mcp) : base;
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
     // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
@@ -274,6 +284,12 @@ export function createAgent(opts: {
   // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码。
   // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
   // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
+  // 工具表是一次性拼好的（挂载一次定终身，见 tool.ts 的注释），
+  // 拼之前必须已经知道每台 server 提供了什么。createAgent 是同步的，
+  // 所以 ready() 在 index.ts 里、造 agent 之前就 await 过了；
+  // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
+  void opts.mcp?.ready();
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
@@ -287,6 +303,9 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
+    // 同理：没给 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂
+    ...(opts.mcp ? createMcpTools(opts.mcp) : []),
+    ...(opts.mcp ? [createMcpReadResourceTool(opts.mcp)] : []),
     // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
     // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
     // 挂没挂必须一次定终身，否则组装时清单恰好是空的那个 agent 一辈子看不到 task，

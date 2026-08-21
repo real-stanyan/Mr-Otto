@@ -16,6 +16,7 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
+import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
 import type { GitStatusResult } from "./gitStatus.js";
@@ -41,6 +42,8 @@ export type { SessionSummary };
 export type { TerminalInfo };
 
 export type { BrowserTabInfo, BrowserBounds };
+
+export type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot };
 
 /** 审批模式（Claude Code 的 permission mode 对应物）：
     ask = 危险操作逐条出审批卡；auto = 免问直批（bypass） */
@@ -324,6 +327,24 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** MCP server 清单 + 各自状态,外加 ~/.otter/mcp.json 解析阶段的人话错误
+      （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
+      server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
+      配置里的 env/headers 已遮罩（真值不出主进程） */
+  listMcpServers(): Promise<McpServersSnapshot>;
+  /** 存一台 server 的配置并立刻重连它。返回全量刷新后的快照 ——
+      存完立刻拿到最新镜像，不用再补一次 refresh。
+      cfg 里没改过的凭据字段允许原样带着 list() 给的遮罩值回来——
+      hub.save() 会把它们合并回真值，不会拿星号覆盖磁盘上的真凭据 */
+  saveMcpServer(id: string, cfg: McpServerConfig): Promise<McpServersSnapshot>;
+  removeMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 手动重连（failed 的那台，用户修好环境后自己点） */
+  reconnectMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
+  listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
+  /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
+      展开后就是普通用户消息，进 UserMessage 事件，重放零特殊化 */
+  expandMcpPrompt(server: string, name: string, args: Record<string, string>): Promise<string>;
   /** 本机定义的子智能体（现扫磁盘，零缓存）。
       workspace = null 只看用户级；给了工作区就带上该工程的两条根（工作区盖用户） */
   listSubagents(workspace: string | null): Promise<SubagentDef[]>;
@@ -446,6 +467,8 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** hub 状态变了就推一次全量快照。返回退订函数（与其它订阅同构） */
+  onMcpChanged(cb: (snapshot: McpServersSnapshot) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
@@ -540,6 +563,13 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  listMcpServers: "otter:listMcpServers",
+  saveMcpServer: "otter:saveMcpServer",
+  removeMcpServer: "otter:removeMcpServer",
+  reconnectMcpServer: "otter:reconnectMcpServer",
+  listMcpPrompts: "otter:listMcpPrompts",
+  expandMcpPrompt: "otter:expandMcpPrompt",
+  mcpChanged: "otter:mcpChanged",
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",
   createSubagent: "otter:createSubagent",
