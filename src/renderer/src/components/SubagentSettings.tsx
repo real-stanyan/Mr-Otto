@@ -119,25 +119,8 @@ export function SubagentSettings() {
         )}
         {listError && <p className={ERR_TXT}>{listError}</p>}
         {preambleError && <p className={ERR_TXT}>读不到全局前置词：{preambleError}</p>}
-        <GlobalPreambleCard />
-        {own.length === 0 && !listError && (
-          <div className="border border-dashed border-border rounded-[10px] px-[18px] py-8 flex flex-col items-center gap-3 text-center">
-            <p className="text-[13px] text-foreground">你还没定义自己的子智能体</p>
-            <p className={cn(HINT, "max-w-[420px]")}>
-              点右上角「新建」起一个，或者手写一份 <code>&lt;名字&gt;.md</code>
-              （带 YAML frontmatter）放进 <code>{view.scopeDir}</code>。主 agent
-              靠每个子智能体的 description 挑人——写清楚它是干什么的，模型才派得对。
-            </p>
-            <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
-              <Plus className="size-3.5" />
-              新建
-            </Button>
-          </div>
-        )}
-        {own.map((def) => (
-          <SubagentRow key={def.path} def={def} scope={view} />
-        ))}
-        {/* 内置那一栏排在自己的定义后面:它是兜底的那一层,不是主角。
+        {/* 内置排在最上面:它是这一页唯一"打开就有东西"的那部分 —— 清单是空的新用户
+            先看见的该是两个能用的,而不是一张"你还没定义任何子智能体"的空卡。
             同名的磁盘定义已经在 withBuiltins 里把它盖掉了,这里不会重复出现 */}
         {builtins.length > 0 && (
           <>
@@ -156,6 +139,29 @@ export function SubagentSettings() {
             ))}
           </>
         )}
+        {/* 自己那一栏也带个标题:上面那栏有,这栏没有的话读起来像内置的续篇 */}
+        <div className="flex items-baseline gap-2 pt-2">
+          <h2 className="text-[13px] font-[650] text-foreground">我的子智能体</h2>
+          <span className={HINT}>{own.length} 项</span>
+        </div>
+        {own.length === 0 && !listError && (
+          <div className="border border-dashed border-border rounded-[10px] px-[18px] py-8 flex flex-col items-center gap-3 text-center">
+            <p className="text-[13px] text-foreground">你还没定义自己的子智能体</p>
+            <p className={cn(HINT, "max-w-[420px]")}>
+              点右上角「新建」起一个，或者手写一份 <code>&lt;名字&gt;.md</code>
+              （带 YAML frontmatter）放进 <code>{view.scopeDir}</code>。主 agent
+              靠每个子智能体的 description 挑人——写清楚它是干什么的，模型才派得对。
+            </p>
+            <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
+              <Plus className="size-3.5" />
+              新建
+            </Button>
+          </div>
+        )}
+        {own.map((def) => (
+          <SubagentRow key={def.path} def={def} scope={view} />
+        ))}
+        <GlobalPreambleCard />
       </section>
     </div>
   );
