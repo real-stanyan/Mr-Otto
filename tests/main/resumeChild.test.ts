@@ -108,4 +108,47 @@ describe("createChildAgent", () => {
     });
     expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
   });
+
+  // ADR-0052 / issue #154：重建走的是新造的 LocalWorld（父可能早已不在内存里），
+  // 没有一个带着 withMcp 的 world 可以继承，所以这一侧必须显式传 mcp。
+  // 两条子 agent 路径的规则必须一样：挂载归挂载，用不用得着由快照里那份白名单说了算
+  const mcp = () => ({
+    ready: async () => {},
+    servers: () => [{
+      id: "gh", name: "gh", status: "connected" as const, live: true,
+      tools: [{ name: "create_pr", description: "开 PR", inputSchema: {} }],
+      resources: [],
+      prompts: [],
+    }],
+    callTool: async () => [{ kind: "text" as const, text: "ok" }],
+    readResource: async () => [],
+    getPrompt: async () => "",
+  });
+
+  it("快照点了名的 mcp 工具，重建回来还在", () => {
+    const { dir, store, attachments } = fixtures(["read_file", "mcp__gh__create_pr"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config, mcp: mcp(),
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toContain("mcp__gh__create_pr");
+  });
+
+  it("快照没点名 = 挂了也过不了白名单（与活着那一侧同一套规则）", () => {
+    const { dir, store, attachments } = fixtures(["read_file"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config, mcp: mcp(),
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
+  });
+
+  it("不给 mcp 就一把都没有（旧行为，裸装配/测试照旧）", () => {
+    const { dir, store, attachments } = fixtures(["read_file", "mcp__gh__create_pr"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config,
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
+  });
 });

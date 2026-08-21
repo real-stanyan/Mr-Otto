@@ -151,9 +151,12 @@ export function createAgent(opts: {
       return opts.makeBrowser ? withBrowser(local, opts.makeBrowser(sessionId)) : local;
     })();
   // MCP 叠在最外层。子 agent 走 opts.world 那条路时不会被重复包一层：
-  // subagentRunner 复用父的 world 实例（父身上已经带着 withMcp 那层），
-  // 而它刻意不传 mcp —— 于是这里的三元一定走 false 分支
+  // subagentRunner 复用父的 world 实例，父身上已经带着 withMcp 那层
   const world = opts.mcp ? withMcp(base, opts.mcp) : base;
+  // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0052）：子 agent 跑在
+  // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
+  // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
+  const mcp = opts.mcp ?? world.mcp;
   const approver = new UIApprover((call, tool) => {
     // 预览是尽力而为：算好了随卡出场，算炸了（理论上不会）卡照常弹、走 JSON 兜底。
     // async 在闭包里消化——UIApprover 不知道预览的存在，审批悬停语义原样
@@ -288,7 +291,7 @@ export function createAgent(opts: {
   // 拼之前必须已经知道每台 server 提供了什么。createAgent 是同步的，
   // 所以 ready() 在 index.ts 里、造 agent 之前就 await 过了；
   // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
-  void opts.mcp?.ready();
+  void mcp?.ready();
 
   const tools: Tool[] = [
     createAskUserTool(questioner),
@@ -303,9 +306,9 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
-    // 同理：没给 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂
-    ...(opts.mcp ? createMcpTools(opts.mcp) : []),
-    ...(opts.mcp ? [createMcpReadResourceTool(opts.mcp)] : []),
+    // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂
+    ...(mcp ? createMcpTools(mcp) : []),
+    ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
     // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
     // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
     // 挂没挂必须一次定终身，否则组装时清单恰好是空的那个 agent 一辈子看不到 task，

@@ -65,6 +65,7 @@ import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
+import { mcpToolName } from "../shared/mcp.js";
 import { singleFlight } from "../shared/singleFlight.js";
 import type { ApprovalOutcome } from "../loop/approvalGate.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -479,18 +480,31 @@ void app.whenReady().then(() => {
       },
       attachments: attachmentStore,
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
-      // 刻意不给 mcp（与 browser 的桩子相反）：这份名单是拿来校验 subagent
-      // 定义里的工具名的，而子 agent 本来就挂不上 mcp 工具（见 createSessionAgent
-      // 里那段注释）。放进来只会让"这个名字认得"和"这把刀给得了你"对不上。
-      // 顺带也省掉了在注册第一个 IPC 通道之前 await mcpHub.ready() 这件事
+      // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
+      // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
+      // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0052），
+      // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
     }).toolDefs.map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
   }
+  /** 此刻活着的那些 server 提供的工具名（ADR-0052）。TOOL_NAMES 那个探针装配
+      刻意不给 mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、
+      改清单，快照会让"认不认得这个名字"停在装配那一刻。
+      mcp_read_resource 一并算上：它同样只在有 mcp 能力时才挂 */
+  const mcpToolNamesNow = (): string[] => {
+    const live = mcpHub.servers().filter((s) => s.live);
+    if (live.length === 0) return [];
+    return [
+      "mcp_read_resource",
+      ...live.flatMap((s) => s.tools.map((t) => mcpToolName(s.name, t.name))),
+    ];
+  };
+
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) =>
-    scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
+    scanSubagents(subagentRoots(homedir(), workspace), [...TOOL_NAMES, ...mcpToolNamesNow()]);
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
   // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
   // 出现过"，比直接采信参数强得多；但它**不等于**"用户在原生目录选择器里亲手指过
@@ -543,6 +557,10 @@ void app.whenReady().then(() => {
         resumeSessionId: args.resumeSessionId,
         config: args.child,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
+        // （ADR-0052）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
+        // 这一侧父可能早就不在内存里了，只能显式给
+        mcp: mcpHub,
       });
     }
     // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
@@ -558,9 +576,10 @@ void app.whenReady().then(() => {
       ...base,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
-      // MCP 只挂在主会话上。子会话（上面 createChildAgent 那条）刻意不给：
-      // 它的装备由那份 subagent 定义的工具白名单说了算，而白名单里写不出
-      // 一台此刻才连上的 server 的工具名（同它拿不到 subagentRunner 的道理）。
+      // 子会话也挂 MCP（ADR-0052）：挂载归挂载，能不能用由那份 subagent 定义的
+      // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
+      // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
+      // 而 MCP server 是第三方代码，接一台新 server 不该悄悄扩大所有子 agent 的权限面。
       // 两条调用点（startSession / resumeSession）都在调这个函数之前
       // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
       mcp: mcpHub,
