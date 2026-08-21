@@ -27,7 +27,26 @@ describe("intakeFile 文档分支", () => {
     // 真解析的证据:粗体保住了,表格成了 GFM
     expect(out.content).toContain("**加粗**");
     expect(out.content).toContain("| 名字 | 角色 |");
-    expect(out.bytes).toBe(new TextEncoder().encode(out.content).byteLength);
+  });
+
+  it("bytes 是原文件大小,不是转出的 md 长度 —— 转换不该从界面上漏出去", () => {
+    const bytes = docx();
+    return intakeFile("/x/报告.docx", bytes, store).then((out) => {
+      expect(out.kind).toBe("text");
+      if (out.kind !== "text") return;
+      // 用户丢进来的是这个 docx,界面上就该显示这个大小
+      expect(out.bytes).toBe(bytes.byteLength);
+      // 而 content 是转出来的 md,两者不是一个数(否则这条测试什么也没钉住)
+      expect(new TextEncoder().encode(out.content).byteLength).not.toBe(out.bytes);
+    });
+  });
+
+  it("纯文本不受影响:bytes 仍然等于内容长度(两者本来就是同一个数)", async () => {
+    const text = "# 标题\n正文";
+    const raw = new TextEncoder().encode(text);
+    const out = await intakeFile("/x/readme.md", raw, store);
+    expect(out.kind).toBe("text");
+    if (out.kind === "text") expect(out.bytes).toBe(raw.byteLength);
   });
 
   it("docx 排在 \\0 二进制嗅探之前 —— 否则 zip 容器先被判死", async () => {
