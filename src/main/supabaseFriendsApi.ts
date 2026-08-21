@@ -43,6 +43,13 @@ export function mergeChannelHealth(statuses: string[]): "live" | "degraded" {
   return statuses.every((s) => s === "SUBSCRIBED") ? "live" : "degraded";
 }
 
+/** 列不存在:PostgREST 对 update 未知列报 PGRST204,对 select 未知列透传 pg 的 42703。
+    migration 0008 没跑的库会这样——心跳不能因为多带两列就整个哑掉(在线点靠它) */
+export function isMissingColumn(e: unknown): boolean {
+  const code = (e as { code?: string } | null)?.code;
+  return code === "PGRST204" || code === "42703";
+}
+
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
   if (res.error) {
@@ -62,6 +69,8 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
   /** 当前活着的 presence 通道:trackWorkspace 要往它上面重写 meta。subscribe 建,退订清 */
   let presenceChannel: RealtimeChannel | null = null;
   let currentWorkspace: WorkspacePresence | null = null;
+  /** 真库还没跑 0008:心跳退回只写/只读 last_seen_at,工作区只剩 Realtime 那条腿 */
+  let legacySchema = false;
   return {
     async getUserId() {
       const { data } = await client.auth.getUser();
@@ -129,12 +138,19 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
 
     async touchPresence(uid, workspace) {
       // 时间取服务端更准,但那要一个 RPC;心跳窗口 90s 容得下客户端时钟的常见偏差
-      unwrap(await client.from("profiles")
-        .update({
-          last_seen_at: new Date().toISOString(),
-          repo_key: workspace?.repoKey ?? null,
-          repo_branch: workspace?.branch ?? null,
-        }).eq("id", uid));
+      const last_seen_at = new Date().toISOString();
+      if (!legacySchema) {
+        try {
+          unwrap(await client.from("profiles")
+            .update({ last_seen_at, repo_key: workspace?.repoKey ?? null, repo_branch: workspace?.branch ?? null })
+            .eq("id", uid));
+          return;
+        } catch (e) {
+          if (!isMissingColumn(e)) throw e;
+          legacySchema = true;
+        }
+      }
+      unwrap(await client.from("profiles").update({ last_seen_at }).eq("id", uid));
     },
 
     trackWorkspace(workspace) {
@@ -144,7 +160,16 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
 
     async listLastSeen(ids) {
       if (ids.length === 0) return [];
-      const res = await client.from("profiles").select("id,last_seen_at,repo_key,repo_branch").in("id", ids);
+      if (!legacySchema) {
+        try {
+          const res = await client.from("profiles").select("id,last_seen_at,repo_key,repo_branch").in("id", ids);
+          return (unwrap(res) ?? []) as LastSeenRow[];
+        } catch (e) {
+          if (!isMissingColumn(e)) throw e;
+          legacySchema = true;
+        }
+      }
+      const res = await client.from("profiles").select("id,last_seen_at").in("id", ids);
       return (unwrap(res) ?? []) as LastSeenRow[];
     },
 

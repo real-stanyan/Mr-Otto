@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { mergeChannelHealth, presenceStateToEntries, presenceStateToIds } from "../../src/main/supabaseFriendsApi.js";
+import { createSupabaseFriendsApi, isMissingColumn, mergeChannelHealth, presenceStateToEntries, presenceStateToIds } from "../../src/main/supabaseFriendsApi.js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 describe("presenceStateToIds", () => {
   it("state 的 key 即在线 uid,排序输出", () => {
@@ -44,5 +45,65 @@ describe("presenceStateToEntries", () => {
   it("形状不对的 meta 一律当没有(对端不可信)", () => {
     expect(presenceStateToEntries({ a: [null, "str", { repoKey: "" }, { repoKey: 7 }] }))
       .toEqual([{ id: "a", workspace: null }]);
+  });
+});
+
+describe("isMissingColumn", () => {
+  it("PGRST204(update 未知列)与 42703(select 未知列)算;别的不算", () => {
+    expect(isMissingColumn({ code: "PGRST204" })).toBe(true);
+    expect(isMissingColumn({ code: "42703" })).toBe(true);
+    expect(isMissingColumn({ code: "23505" })).toBe(false);
+    expect(isMissingColumn(null)).toBe(false);
+  });
+});
+
+describe("心跳在没跑 0008 的库上退化", () => {
+  /** 假 client:profiles 的 update/select 按"有没有带新列"决定报不报缺列 */
+  function fakeClient(hasColumns: boolean) {
+    const calls: { op: string; payload: unknown }[] = [];
+    const missing = { message: "column does not exist", code: "PGRST204" };
+    const from = () => ({
+      update: (payload: Record<string, unknown>) => ({
+        eq: async () => {
+          calls.push({ op: "update", payload });
+          const touchesNew = "repo_key" in payload;
+          return { data: null, error: !hasColumns && touchesNew ? missing : null };
+        },
+      }),
+      select: (cols: string) => ({
+        in: async () => {
+          calls.push({ op: "select", payload: cols });
+          const touchesNew = cols.includes("repo_key");
+          return { data: [{ id: "u2", last_seen_at: "t" }], error: !hasColumns && touchesNew ? { ...missing, code: "42703" } : null };
+        },
+      }),
+    });
+    return { client: { from } as unknown as SupabaseClient, calls };
+  }
+
+  it("有列:一次写成,带 repo_key/repo_branch", async () => {
+    const { client, calls } = fakeClient(true);
+    const api = createSupabaseFriendsApi(client);
+    await api.touchPresence("me", { repoKey: "k", branch: "main" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.payload).toMatchObject({ repo_key: "k", repo_branch: "main" });
+  });
+
+  it("缺列:第一拍退回只写 last_seen_at,之后记住不再试;读同理", async () => {
+    const { client, calls } = fakeClient(false);
+    const api = createSupabaseFriendsApi(client);
+    await api.touchPresence("me", { repoKey: "k", branch: "main" });
+    expect(calls.map((c) => c.op)).toEqual(["update", "update"]);
+    expect(calls[1]!.payload).toEqual({ last_seen_at: expect.any(String) });
+    await api.touchPresence("me", null);
+    expect(calls).toHaveLength(3); // 记住了:不再先试新列
+    const rows = await api.listLastSeen(["u2"]);
+    expect(calls[3]!.payload).toBe("id,last_seen_at");
+    expect(rows).toEqual([{ id: "u2", last_seen_at: "t" }]);
+  });
+
+  it("别的错误照样上抛,不吞", async () => {
+    const client = { from: () => ({ update: () => ({ eq: async () => ({ data: null, error: { message: "rls", code: "42501" } }) }) }) } as unknown as SupabaseClient;
+    await expect(createSupabaseFriendsApi(client).touchPresence("me", null)).rejects.toMatchObject({ code: "42501" });
   });
 });
