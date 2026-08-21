@@ -129,6 +129,14 @@ export interface SessionCreatedEvent extends SessionEventBase {
     sessionId: string;
     seq: number;                 // 从源会话哪个位置分叉
   };
+  /** 这个会话是被派活派出来的（ADR-0046）：谁派的、哪次调用派的、用的哪个定义。
+      与 forkedFrom 并列。缺席 = 主会话（旧日志照常重放）。
+      会话列表靠它把子会话滤出侧栏——子会话只能从父时间线上那张卡进去 */
+  spawnedBy?: {
+    sessionId: string;
+    toolCallId: string;
+    agent: string;
+  };
 }
 
 /** 额外 3：会话归档 —— 遗留类型。
@@ -233,6 +241,33 @@ export interface SuggestionsGeneratedEvent extends SessionEventBase {
   usage?: TokenUsage;            // 本次生成烧的 token
 }
 
+/** 额外 12：派活给 subagent（落**父**会话）。
+    为什么必须落盘：tool_result.output 只有汇报正文，推不出 childSessionId，
+    而"时间线上这张卡点进去是哪个子会话"是 UI 投影 —— 投影必须可从日志推导。
+    模型不消费它（投影丢弃，同 turn_ended）。
+    落盘时机：子会话建好、子 turn 开跑之前（先落盘再跑）。 */
+export interface SubagentSpawnedEvent extends SessionEventBase {
+  type: "subagent_spawned";
+  toolCallId: string;      // 对回父的那次 task 调用
+  childSessionId: string;
+  agent: string;
+  task: string;            // 派下去的任务（模型给的 args，原样）
+}
+
+/** 额外 13：subagent 就位（落**子**会话，紧跟 session_created）。
+    instructions 是派活时刻的全文快照（含 runner 拼的内置前言）——模型可见的
+    新信息必须落盘，且日志要自包含：定义文件之后被改/被删，重放不失真
+    （同 skill_invoked 的理由，见 docs/adr/0007）。
+    为什么不复用 skill_invoked：工具白名单落不了盘。模型看到的工具声明来自
+    用户随时可改的磁盘文件，少了这个字段，重放时还原不出当时子 agent 有几把刀。 */
+export interface SubagentBriefedEvent extends SessionEventBase {
+  type: "subagent_briefed";
+  agent: string;
+  instructions: string;
+  tools: string[];         // 这次实际给出去的那几把（不是用户写的那几个字）
+  model: string;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -250,4 +285,6 @@ export type SessionEvent =
   | SkillInvokedEvent
   | ImageDescribedEvent
   | SectionClassifiedEvent
-  | SuggestionsGeneratedEvent;
+  | SuggestionsGeneratedEvent
+  | SubagentSpawnedEvent
+  | SubagentBriefedEvent;
