@@ -80,4 +80,11 @@ describe("mcp_read_resource", () => {
       createMcpReadResourceTool(cap).run({ server: "fs" }, worldWith(cap), { toolCallId: "c" })
     ).rejects.toThrow(/uri/);
   });
+
+  it("同时缺 uri 和 server 不存在时，uri 检查优先", async () => {
+    const cap = capWith([handle(RES)]);
+    await expect(
+      createMcpReadResourceTool(cap).run({ server: "nope" }, worldWith(cap), { toolCallId: "c" })
+    ).rejects.toThrow(/uri/);
+  });
 });
