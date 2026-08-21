@@ -324,12 +324,19 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
-  /** 本机定义的 subagent（现扫磁盘，零缓存） */
-  listSubagents(): Promise<SubagentDef[]>;
-  /** 写回那份 .md，返回保存后的整份清单（省一次往返） */
-  saveSubagent(def: SubagentDef): Promise<SubagentDef[]>;
-  /** 按模板新建一个，返回整份清单 */
-  createSubagent(name: string): Promise<SubagentDef[]>;
+  /** 本机定义的子智能体（现扫磁盘，零缓存）。
+      workspace = null 只看用户级；给了工作区就带上该工程的两条根（工作区盖用户） */
+  listSubagents(workspace: string | null): Promise<SubagentDef[]>;
+  /** 写回那份 .md，返回保存后的整份清单（省一次往返）。
+      workspace 决定在哪一层里查这个名字——同名可以两层各一份 */
+  saveSubagent(def: SubagentDef, workspace: string | null): Promise<SubagentDef[]>;
+  /** 按模板新建一个，返回整份清单。建在该作用域可写的那条根里 */
+  createSubagent(name: string, workspace: string | null): Promise<SubagentDef[]>;
+  /** 全局前置词（~/.otter/subagent-preamble.md）。isDefault = 文件不在／是空的,
+      正文是内置默认那段 */
+  getSubagentPreamble(): Promise<{ text: string; isDefault: boolean }>;
+  /** 写回全局前置词。text === null 或全空白 = 删掉文件 = 恢复内置默认 */
+  saveSubagentPreamble(text: string | null): Promise<{ text: string; isDefault: boolean }>;
   /** Protocol 仪表盘(只读):扫目标仓库 docs/adr + docs/gearbox-adr。目录缺失 = 空数组 */
   protocolListAdrs(repoDir: string): Promise<AdrSummary[]>;
   /** 读单篇 ADR 全文。路径必须落在 ADR 目录内,越界主进程拒绝 */
@@ -541,6 +548,8 @@ export const CHANNELS = {
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",
   createSubagent: "otter:createSubagent",
+  getSubagentPreamble: "otter:getSubagentPreamble",
+  saveSubagentPreamble: "otter:saveSubagentPreamble",
   protocolListAdrs: "otter:protocolListAdrs",
   protocolReadAdr: "otter:protocolReadAdr",
   protocolListIssues: "otter:protocolListIssues",

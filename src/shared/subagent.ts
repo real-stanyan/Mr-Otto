@@ -17,6 +17,33 @@ export const DEFAULT_SUBAGENT_TOOLS: readonly string[] = [
   "todo_write",
 ];
 
+/** 定义住在哪一层。工作区级只在本工程的会话里可用（ADR-0048） */
+export type SubagentScope = "user" | "workspace";
+
+/** 一个子智能体的前置词取哪儿来。
+    custom 是**覆盖**全局而不是追加：追加的话它和 instructions 拼起来对模型
+    完全一样，那它就只是 UI 分栏，没有 instructions 表达不了的能力 */
+export type SubagentPreamble =
+  | { mode: "default" }
+  | { mode: "off" }
+  | { mode: "custom"; text: string };
+
+/** 内置的全局前置词。用户没在 ~/.otter/subagent-preamble.md 写自己的那份时用它。
+    放 shared 不放 runner：设置页要拿它当「恢复默认」后显示的正文 */
+export const DEFAULT_PREAMBLE =
+  "你是被派来做一件具体任务的子 agent。你的最终一段文本就是返回值——" +
+  "它会直接交回给派你来的那个 agent，不是给人看的消息。" +
+  "做完就把结论写出来，不要寒暄，不要问「还需要什么帮助吗」。" +
+  "你看不到派你来的那个 agent 和用户的对话，任务里没写的背景你就是不知道；" +
+  "缺信息时在汇报里说清缺什么，别猜。";
+
+/** context 只收 basename。这是安全边界不是格式洁癖：定义文件可能是用户从别处
+    抄来的，收全路径就等于让一份 .md 变成任意文件读取原语。
+    解析时挡一次、运行时读盘前再挡一次（两处独立判断比互相信任更皮实） */
+export function isSafeContextFile(name: string): boolean {
+  return name.length > 0 && name !== "." && name !== ".." && !/[/\\,]/.test(name);
+}
+
 /** 合法的 subagent 名字：只有它会变成磁盘上的文件名（`<名字>.md`），也只有它
     是模型调 task 时要打出来的那个词。
     定义放 shared：主进程和设置页共用同一条规则——两边各写一条正则，迟早分家
@@ -49,6 +76,12 @@ export interface SubagentDef {
   /** 缺席 = 该型号默认档（落地前过 clampThinking） */
   thinking?: ThinkingMode;
   approval: SubagentApproval;
+  /** 前置词从哪儿来。缺席的老文件解析成 { mode: "default" } */
+  preamble: SubagentPreamble;
+  /** 派活时按会话 workspace 读进来拼在正文前的文档（basename，已过滤） */
+  context: string[];
+  /** 用户级还是工作区级。由扫到它的那条根目录决定，不来自文件内容 */
+  scope: SubagentScope;
   /** .md 绝对路径 */
   path: string;
   /** 哪个根目录来的 */

@@ -1,0 +1,67 @@
+import { describe, expect, it } from "vitest";
+import {
+  freeCopyName,
+  initialSubagentScope,
+  subagentScopeOptions,
+} from "../../src/renderer/src/lib/subagentScopes.js";
+import type { SessionSummary } from "../../src/shared/shellBridge.js";
+
+const s = (workspace: string | null, lastTs: number): SessionSummary =>
+  ({ workspace, lastTs, spawnedFrom: null }) as unknown as SessionSummary;
+
+describe("subagentScopeOptions", () => {
+  it("第一项永远是「用户」", () => {
+    expect(subagentScopeOptions([])[0]).toEqual({ workspace: null, label: "用户" });
+  });
+
+  it("工作区按最近用过排在后面,短名取路径末段", () => {
+    const opts = subagentScopeOptions([s("/a/proj-x", 2), s("/a/proj-y", 5)]);
+    expect(opts.slice(1)).toEqual([
+      { workspace: "/a/proj-y", label: "proj-y" },
+      { workspace: "/a/proj-x", label: "proj-x" },
+    ]);
+  });
+
+  it("同一个工作区只出现一次", () => {
+    expect(subagentScopeOptions([s("/a/p", 1), s("/a/p", 9)])).toHaveLength(2);
+  });
+
+  it("没有工作区的史前会话不入选", () => {
+    expect(subagentScopeOptions([s(null, 1)])).toHaveLength(1);
+  });
+});
+
+describe("initialSubagentScope", () => {
+  const opts = subagentScopeOptions([s("/a/proj-x", 2), s("/a/proj-y", 5)]);
+
+  it("当前会话的工程在候选里就停在那一层", () => {
+    expect(initialSubagentScope("/a/proj-x", opts)).toBe("/a/proj-x");
+  });
+
+  it("当前会话的工程不在候选里就回用户级", () => {
+    // 给主进程一个它不认的路径,写的时候只会抛「不认识这个工作区」
+    expect(initialSubagentScope("/a/proj-z", opts)).toBeNull();
+  });
+
+  it("没有会话工作区就回用户级", () => {
+    expect(initialSubagentScope(null, opts)).toBeNull();
+    // store 里没会话时那个字段是空串,不是 null
+    expect(initialSubagentScope("", opts)).toBeNull();
+    expect(initialSubagentScope(undefined, opts)).toBeNull();
+  });
+});
+
+describe("freeCopyName", () => {
+  it("没占就用 -copy", () => {
+    expect(freeCopyName("reviewer", [])).toBe("reviewer-copy");
+  });
+
+  it("占了就往后数,让「再点一次」永远走得通", () => {
+    expect(freeCopyName("reviewer", ["reviewer-copy"])).toBe("reviewer-copy-2");
+    expect(freeCopyName("reviewer", ["reviewer-copy", "reviewer-copy-2"])).toBe("reviewer-copy-3");
+  });
+
+  it("比较不分大小写——落地的是 macOS 文件名", () => {
+    expect(freeCopyName("reviewer", ["Reviewer-Copy"])).toBe("reviewer-copy-2");
+  });
+});
