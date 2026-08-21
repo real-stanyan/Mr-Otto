@@ -86,6 +86,7 @@ export function ModelPicker({
   onChange,
   disabled = false,
   className,
+  placeholder,
 }: {
   value: string;
   /** 当前走哪条路。选单里赠额那一份和自己 key 那一份是同一个型号的两个条目 */
@@ -94,6 +95,10 @@ export function ModelPicker({
   disabled?: boolean;
   /** 触发器的样式叠加层（状态条版 BAR_SELECT / 新会话卡版 NSC_SELECT） */
   className?: string;
+  /** value 是空的时候显示什么。子智能体那边不定型号 = 跟主会话走,
+      而主会话可能还没开起来（设置页不需要一个活着的会话）—— 那时"跟随主会话"
+      比"选择型号"更贴事实：这个控件不选也有确定的结果 */
+  placeholder?: string;
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -217,7 +222,10 @@ export function ModelPicker({
       >
         {/* showEffort={false}：挡位归 ThinkingPicker 那枚钮，
             两处都显示就成了同一件事说两遍（还得回答"点哪个才能改"） */}
-        <ModelSelectorValue placeholder={value} showEffort={false} />
+        {/* 认不出的型号 id 原样显示(比"Select model"多一点信息:至少看得出是哪个)。
+            value 是空的时候必须换一句话——空字符串渲染出来是个只剩箭头的空盒子,
+            看着像控件坏了。会话还没开起来时主会话型号就是空的,设置页照样能打开 */}
+        <ModelSelectorValue placeholder={value || placeholder || "选择型号"} showEffort={false} />
         {/* 走赠额时在触发器上留个记号:浮层一关,"我这会儿花的是谁的钱"就再也看不见了 ——
             而这两条路的型号名一模一样,不标就只能靠记 */}
         {lane === "grant" && (

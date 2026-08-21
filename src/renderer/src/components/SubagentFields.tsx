@@ -221,7 +221,9 @@ export function useSubagentDraft(def: SubagentDef): SubagentDraft {
     effectiveModel,
     spec,
     effectiveThinking,
-    modelLabel: describeModel(effectiveModel)?.label ?? effectiveModel,
+    // 会话还没开起来时主会话型号是空的。空字符串会进行头摘要（「 · 4 把工具」）
+    // 和「…没有可换的挡位」那句提示,两处都渲染成半句话——这里给它一句人话
+    modelLabel: describeModel(effectiveModel)?.label ?? (effectiveModel || "跟随主会话"),
     thinkingSwitchable: switchable,
     dirty,
     blockedByEmptyTools,
@@ -298,6 +300,7 @@ export function SubagentFields({
               value={draft.effectiveModel}
               onChange={draft.pinModel}
               disabled={readOnly}
+              placeholder="跟随主会话"
               className="border border-border rounded-md px-2 py-1"
             />
             {draft.modelPinned && !readOnly && (
