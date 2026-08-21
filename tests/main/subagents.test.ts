@@ -5,6 +5,7 @@ import {
   scanSubagents,
   serializeSubagent,
   subagentRoots,
+  trustedWorkspace,
   type SubagentDirReader,
 } from "../../src/main/subagents.js";
 import { DEFAULT_SUBAGENT_TOOLS, isSafeContextFile } from "../../src/shared/subagent.js";
@@ -317,5 +318,24 @@ describe("scanSubagents 的覆盖顺序", () => {
     expect(defs).toHaveLength(1);
     expect(defs[0]?.description).toBe("工作区那份");
     expect(defs[0]?.scope).toBe("workspace");
+  });
+});
+
+describe("trustedWorkspace", () => {
+  const known = ["/work/proj", null];
+
+  it("在名单里的原样放行", () => {
+    expect(trustedWorkspace("/work/proj", known)).toBe("/work/proj");
+  });
+
+  it("不在名单里的降级成用户级——它会变成写文件的落点,不能听渲染层的", () => {
+    expect(trustedWorkspace("/Users/victim/Desktop", known)).toBeNull();
+  });
+
+  it("空串、非字符串、null 一律降级", () => {
+    expect(trustedWorkspace("", known)).toBeNull();
+    expect(trustedWorkspace(null, known)).toBeNull();
+    expect(trustedWorkspace(42, known)).toBeNull();
+    expect(trustedWorkspace({ toString: () => "/work/proj" }, known)).toBeNull();
   });
 });

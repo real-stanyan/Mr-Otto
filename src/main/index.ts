@@ -30,7 +30,7 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { scanSkills } from "./skills.js";
-import { scanSubagents, subagentRoots, writeSubagent } from "./subagents.js";
+import { scanSubagents, subagentRoots, trustedWorkspace, writeSubagent } from "./subagents.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
@@ -447,6 +447,11 @@ void app.whenReady().then(() => {
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) =>
     scanSubagents(subagentRoots(homedir(), workspace), TOOL_NAMES);
+  // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
+  // 白名单 = 日志里真实存在过的会话围栏，每一个都来自 startSession 那次
+  // 原生目录选择器，也就是用户亲手指过的目录
+  const trusted = (workspace: unknown) =>
+    trustedWorkspace(workspace, store.sessions().map((s) => s.workspace));
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -623,31 +628,33 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
 
-  ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: string | null) =>
-    listSubagents(workspace)
+  ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
+    listSubagents(trusted(workspace))
   );
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: string | null) => {
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
+    const ws = trusted(workspace);
     // def.path / def.readOnly 是渲染层传来的,不可信（同下）——落地地址必须从
     // 信任侧（现扫一遍磁盘的清单）按名字查出来。作用域也一起传进来：同名可以
     // 两层各一份,不带作用域查就可能在工作区里改一改、写穿到用户级那份上去
-    const found = listSubagents(workspace).find((d) => d.name === def.name);
+    const found = listSubagents(ws).find((d) => d.name === def.name);
     if (!found) throw new Error(`没有名叫「${def.name}」的子智能体`);
     if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
     writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly, scope: found.scope });
-    return listSubagents(workspace);
+    return listSubagents(ws);
   });
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: string | null) => {
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
+    const ws = trusted(workspace);
     const clean = name.trim();
     const nameError = subagentNameError(clean);
     if (nameError) throw new Error(nameError);
-    if (listSubagents(workspace).some((d) => d.name === clean)) {
+    if (listSubagents(ws).some((d) => d.name === clean)) {
       throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
     }
     // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.otter/agents，
     // 用户级 = ~/.otter/agents。.claude/agents 是只读的，永远不是落点
-    const root = subagentRoots(homedir(), workspace)[0]!.root;
+    const root = subagentRoots(homedir(), ws)[0]!.root;
     writeSubagent({
       name: clean,
       description: "",
@@ -657,12 +664,12 @@ void app.whenReady().then(() => {
       approval: "deny",
       preamble: { mode: "default" },
       context: [],
-      scope: workspace ? "workspace" : "user",
+      scope: ws ? "workspace" : "user",
       path: join(root, `${clean}.md`),
       source: root,
       readOnly: false,
     });
-    return listSubagents(workspace);
+    return listSubagents(ws);
   });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用

@@ -45,6 +45,16 @@ export function subagentRoots(home: string, workspace: string | null): SubagentR
   ];
 }
 
+/** 渲染层给的 workspace 只有出现在已知会话围栏里才作数 —— 它会变成写文件的
+    落点，而已知围栏每一个都来自用户在原生目录选择器里亲手指过的路径 */
+export function trustedWorkspace(
+  workspace: unknown,
+  known: readonly (string | null)[]
+): string | null {
+  if (typeof workspace !== "string" || workspace === "") return null;
+  return known.includes(workspace) ? workspace : null;
+}
+
 const nodeReader: SubagentDirReader = {
   listFiles(root) {
     try {
