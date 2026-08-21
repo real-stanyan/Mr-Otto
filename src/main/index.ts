@@ -57,6 +57,7 @@ import {
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
+import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
@@ -226,6 +227,7 @@ void app.whenReady().then(() => {
         send(CHANNELS.friendsChanged, s);
       },
       presenceChanged: (ids) => send(CHANNELS.presenceChanged, ids),
+      workspacesChanged: (snapshot) => send(CHANNELS.workspacesChanged, snapshot),
       directMessage: (m) => {
         const sender = lastSnapshot?.friends.find((e) => e.profile.id === m.sender)?.profile;
         notify(dmNotification(sender?.name || sender?.email || "", m.body, m.sender));
@@ -826,6 +828,20 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
     gitGraph.commit(repoDir, hash)
   );
+
+  // 好友分支在场(issue #167):渲染层报当前会话的工作区,这里盯 HEAD、算 repoKey/分支,
+  // 交 FriendsManager 两条腿广播。路径按 known() 校验——虽然这条只读 git 不写盘,
+  // 也不让渲染层指挥主进程去任意目录跑 git(同 subagent 那条防线的口径)
+  const workspacePresence = createWorkspacePresence((ws) => friends.setWorkspace(ws), {
+    workspace: (dir) => gitGraph.workspace(dir),
+    gitDir: (dir) => gitGraph.gitDir(dir),
+  });
+  ipcMain.handle(CHANNELS.setPresenceWorkspace, (_e, repoDir: unknown) => {
+    const dir = typeof repoDir === "string" && repoDir !== "" && known().includes(repoDir) ? repoDir : null;
+    workspacePresence.setRepoDir(dir);
+  });
+  // 重新聚焦窗口时对一次账:用户可能在终端里切了分支,fs.watch 没报也能追上
+  win.on("focus", () => workspacePresence.refresh());
 
   // ── 终端 ────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.terminalList, (_e, sessionId: string) => terminals.list(sessionId));
