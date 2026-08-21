@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { LoopEngine } from "../../src/loop/engine.js";
 import { EventStore } from "../../src/session/store.js";
 import { readFileTool } from "../../src/tools/readFile.js";
@@ -270,6 +270,10 @@ describe("LoopEngine", () => {
       available: () => true,
       run: async () => "可用工具响应",
     };
+    const unavailableRun = vi.fn(async () => {
+      // 模拟 mcpTool.ts 的行为：掉线时抛出人话错误
+      throw new Error("当前没连上，这次调用没发出去");
+    });
     const unavailableTool: Tool = {
       def: {
         name: "unavailable_tool",
@@ -278,12 +282,15 @@ describe("LoopEngine", () => {
       },
       requiresApproval: false,
       available: () => false, // 掉线
-      run: async () => "不应该执行到这",
+      run: unavailableRun,
     };
 
     const { adapter, seenTools } = fakeAdapterWithTools([
-      { content: "" },
-      { content: "看到了" },
+      {
+        content: "试试不可用的工具",
+        toolCalls: [{ id: "c1", name: "unavailable_tool", args: {} }],
+      },
+      { content: "完成" },
     ]);
 
     const engine = new LoopEngine({
@@ -295,9 +302,27 @@ describe("LoopEngine", () => {
     });
     await engine.runTurn("查一下");
 
-    // 验证声明表里只有可用的工具
+    // 验证 1a: 声明表里只有可用的工具（掉线的工具被过滤）
     const firstCallTools = seenTools[0];
     expect(firstCallTools?.map((t) => t.name)).toEqual(["available_tool"]);
+
+    // 验证 1b: 掉线的工具仍在 toolsByName 里，调用被解决而非"未知工具"
+    // （若 toolsByName 也被过滤，模型请求的工具会失败为"未知工具"；
+    // 现在应该成功调用工具，只是工具的 run() 该因为掉线而内部报错）
+    const result = store.load("s1").find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({
+      toolCallId: "c1",
+      status: "error", // 工具执行失败
+      // 关键：输出应该是 unavailableTool 本身产生的错误，不是 engine 的"未知工具"错误
+      // unavailableTool.run 没被执行（因为它会返回成功），
+      // 而是在 engine 的 run() 调用中抛了错（检查 live 失败）
+      output: expect.not.stringContaining("未知工具"),
+    });
+
+    // 验证 1c: 这验证了 toolsByName 没被过滤——若被过滤，run() 永远不会被调
+    // 通过检查存储记录验证工具确实被尝试执行了
+    expect(store.load("s1").some((e) => e.type === "tool_execution_started")).toBe(true);
+
     store.close();
   });
 });
