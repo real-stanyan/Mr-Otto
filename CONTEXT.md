@@ -31,6 +31,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | MCP server | 一个外部程序，通过标准协议（stdio 或 streamable-http）向 client 提供 tools / resources / prompts。Otto 只认协议返回的形状（`McpClientConn`），不加载、不执行 server 的任何代码 | ADR-0049；配置见 `~/.otter/mcp.json` |
 | transport（stdio / streamable-http） | MCP 连接的传输方式：`stdio` = 本地 `spawn` 一个子进程，走标准输入输出对话；`streamable-http` = 连一个远程 HTTP 端点。配置里有 `command` 走前者，有 `url` 走后者，两者都有则报错不猜 | ADR-0050；`src/main/mcpClient.ts` |
 | elicitation | MCP 协议里 server 调用到一半反过来向用户要字段的机制。设计上打算复用既有的 `elicitation-form` 元素（原为 `ask_user` 准备）多接一个调用方；**本版（tasks 1–7）尚未接线**，只是协议里存在、设计文档里点过名的一个词条 | 设计文档 `docs/superpowers/specs/2026-08-21-mcp-design.md` §八 |
+| 工作区在场（WorkspacePresence） | 一个人此刻「在哪个仓库、哪根分支」：`{repoKey, branch}`。repoKey = 规范化 remote URL 的 sha256 前 16 位（只能比对同不同仓库，看不到地址）；branch 是本地短名，detached 为 null。两条腿广播——Realtime presence 的 track meta ∪ 心跳写入 `profiles.repo_key/repo_branch`——Git Graph 把同仓库好友的头像贴到对应分支徽章上 | ADR-0055；`src/shared/repoKey.ts`、`src/main/workspacePresence.ts`、`src/shared/friendBranches.ts` |
 
 ## Key invariants
 
