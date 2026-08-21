@@ -3,13 +3,21 @@ import { join } from "node:path";
 import {
   parseSubagentMd,
   scanSubagents,
+  serializeSubagent,
   type SubagentDirReader,
 } from "../../src/main/subagents.js";
 import { DEFAULT_SUBAGENT_TOOLS } from "../../src/shared/subagent.js";
 
 const KNOWN = ["read_file", "write_file", "bash", "web_search", "web_extract", "todo_write", "ask_user", "browser_read"];
 
-const base = { fallbackName: "fallback", knownTools: KNOWN, path: "/p/x.md", source: "/p", readOnly: false };
+const base = {
+  fallbackName: "fallback",
+  knownTools: KNOWN,
+  path: "/p/x.md",
+  source: "/p",
+  readOnly: false,
+  scope: "user" as const,
+};
 
 describe("parseSubagentMd", () => {
   it("全字段齐备时逐个读出来", () => {
@@ -34,6 +42,9 @@ approval: deny
       model: "deepseek-chat",
       thinking: "off",
       approval: "deny",
+      preamble: { mode: "default" },
+      context: [],
+      scope: "user",
       path: "/p/x.md",
       source: "/p",
       readOnly: false,
@@ -88,8 +99,8 @@ describe("scanSubagents", () => {
   const otter = "/roots/otter";
   const claude = "/roots/claude";
   const roots = [
-    { root: otter, readOnly: false },
-    { root: claude, readOnly: true },
+    { root: otter, readOnly: false, scope: "user" as const },
+    { root: claude, readOnly: true, scope: "user" as const },
   ];
 
   function fakeReader(
@@ -154,5 +165,104 @@ describe("scanSubagents", () => {
       )
     );
     expect(defs.map((d) => d.name)).toEqual(["alpha", "zed"]);
+  });
+});
+
+describe("preamble 块标量", () => {
+  const parse = (text: string) =>
+    parseSubagentMd(text, {
+      fallbackName: "x",
+      knownTools: ["read_file"],
+      path: "/r/x.md",
+      source: "/r",
+      readOnly: false,
+      scope: "user",
+    });
+
+  it("不写 preamble = 用全局", () => {
+    const def = parse("---\nname: a\ndescription: d\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "default" });
+  });
+
+  it("preamble: off = 一段都不加", () => {
+    const def = parse("---\nname: a\npreamble: off\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "off" });
+  });
+
+  it("块标量吃掉缩进更深的连续行，并去掉公共缩进", () => {
+    const def = parse("---\nname: a\npreamble: |\n  第一行\n  第二行\napproval: ask\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "custom", text: "第一行\n第二行" });
+    // 块结束后的键照常解析，不被块吞掉
+    expect(def?.approval).toBe("ask");
+  });
+
+  it("块中间的空行留在内容里", () => {
+    const def = parse("---\nname: a\npreamble: |\n  上\n\n  下\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "custom", text: "上\n\n下" });
+  });
+
+  it("空块退回默认——写了个 | 却什么都没写，不该变成空前置词", () => {
+    const def = parse("---\nname: a\npreamble: |\n---\n正文");
+    expect(def?.preamble).toEqual({ mode: "default" });
+  });
+});
+
+describe("context 只收 basename", () => {
+  const parse = (ctx: string) =>
+    parseSubagentMd(`---\nname: a\ncontext: ${ctx}\n---\n正文`, {
+      fallbackName: "x",
+      knownTools: [],
+      path: "/r/x.md",
+      source: "/r",
+      readOnly: false,
+      scope: "user",
+    });
+
+  it("留下正常文件名", () => {
+    expect(parse("AGENTS.md, CLAUDE.md")?.context).toEqual(["AGENTS.md", "CLAUDE.md"]);
+  });
+
+  it("带路径分隔符的一律丢掉——定义文件不能是任意文件读取原语", () => {
+    expect(parse("../../etc/passwd, /etc/passwd, a/b, ..")?.context).toEqual([]);
+  });
+
+  it("不写 context = 空数组", () => {
+    const def = parseSubagentMd("---\nname: a\n---\n正文", {
+      fallbackName: "x",
+      knownTools: [],
+      path: "/r/x.md",
+      source: "/r",
+      readOnly: false,
+      scope: "workspace",
+    });
+    expect(def?.context).toEqual([]);
+    expect(def?.scope).toBe("workspace");
+  });
+});
+
+describe("序列化往返", () => {
+  const parse = (text: string) =>
+    parseSubagentMd(text, {
+      fallbackName: "x",
+      knownTools: ["read_file", "bash"],
+      path: "/r/x.md",
+      source: "/r",
+      readOnly: false,
+      scope: "user",
+    });
+
+  it("parse ∘ serialize ∘ parse 与 parse 同结果（块标量的公共缩进不是内容）", () => {
+    const src =
+      "---\nname: a\ndescription: d\ntools: read_file, bash\napproval: ask\n" +
+      "context: AGENTS.md\npreamble: |\n  第一行\n  第二行\n---\n\n正文\n";
+    const once = parse(src);
+    expect(once).not.toBeNull();
+    const twice = parse(serializeSubagent(once!));
+    expect(twice).toEqual(once);
+  });
+
+  it("preamble 为 default 时整行不写", () => {
+    const def = parse("---\nname: a\ndescription: d\ntools: read_file\n---\n正文")!;
+    expect(serializeSubagent(def)).not.toContain("preamble:");
   });
 });

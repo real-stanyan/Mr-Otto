@@ -115,8 +115,12 @@ function createWindow(): BrowserWindow {
     title: "Mr Otto",
     backgroundColor: "#121212",
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
-    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏
-    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
+    // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
+    // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
+    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,16)pt,让位出左边距 + 顶部呼吸空间
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
       contextIsolation: true,
@@ -413,8 +417,8 @@ void app.whenReady().then(() => {
   // subagent 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位。
   // readOnly 标着的那份不写回——不去改用户 Claude Code 的配置
   const subagentRoots = [
-    { root: join(homedir(), ".otter", "agents"), readOnly: false },
-    { root: join(homedir(), ".claude", "agents"), readOnly: true },
+    { root: join(homedir(), ".otter", "agents"), readOnly: false, scope: "user" as const },
+    { root: join(homedir(), ".claude", "agents"), readOnly: true, scope: "user" as const },
   ];
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
@@ -658,6 +662,9 @@ void app.whenReady().then(() => {
       tools: [...DEFAULT_SUBAGENT_TOOLS],
       unknownTools: [],
       approval: "deny",
+      preamble: { mode: "default" },
+      context: [],
+      scope: "user",
       path: join(root, `${clean}.md`),
       source: root,
       readOnly: false,

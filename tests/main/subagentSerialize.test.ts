@@ -13,6 +13,9 @@ const def: SubagentDef = {
   model: "deepseek-chat",
   thinking: "off",
   approval: "deny",
+  preamble: { mode: "default" },
+  context: [],
+  scope: "user",
   path: "/a/searcher.md",
   source: "/a",
   readOnly: false,
@@ -27,6 +30,7 @@ describe("serializeSubagent", () => {
       path: def.path,
       source: def.source,
       readOnly: false,
+      scope: "user",
     });
     expect(back).toEqual(def);
   });

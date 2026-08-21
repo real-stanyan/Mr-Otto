@@ -8,8 +8,11 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   DEFAULT_SUBAGENT_TOOLS,
+  isSafeContextFile,
   type SubagentApproval,
   type SubagentDef,
+  type SubagentPreamble,
+  type SubagentScope,
 } from "../shared/subagent.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 
@@ -42,13 +45,43 @@ const nodeReader: SubagentDirReader = {
 const APPROVALS: readonly SubagentApproval[] = ["ask", "auto", "deny"];
 const THINKINGS: readonly ThinkingMode[] = ["off", "low", "on", "medium", "high", "max"];
 
-/** 解析 frontmatter 的单行 `键: 值`。不引 YAML 库——字段就这六个，
-    一个正则的事，别为它背一棵依赖树（同 parseSkillMd 的理由） */
+/** 缩进宽度（只数前导空白的字符数，tab 按一个字符算——frontmatter 里混 tab
+    本来就不该有，这里不为它设计） */
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+/** 解析 frontmatter 的 `键: 值`。不引 YAML 库——字段就这几个（同 parseSkillMd）。
+    唯一的例外是块标量 `键: |`：前置词是散文，塞进单行里没法写。
+    只认 `|` 这一种块写法，`>` / `|-` / `|+` 照旧当普通单行值处理 */
 function parseFrontmatter(block: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of block.split(/\r?\n/)) {
+  const lines = block.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     const kv = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*?)\s*$/);
-    if (kv?.[1] && kv[2]) out[kv[1]] = kv[2];
+    if (!kv?.[1]) continue;
+    const key = kv[1];
+    const value = kv[2] ?? "";
+    if (value === "|") {
+      const body: string[] = [];
+      const keyIndent = indentOf(line);
+      // 吃掉后续缩进比键行深的连续行。空行留在块里（块中间的空行是内容的一部分），
+      // 块尾多余的空行由末尾的 trimEnd 收走
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1] ?? "";
+        if (next.trim() !== "" && indentOf(next) <= keyIndent) break;
+        body.push(next);
+        i++;
+      }
+      const indents = body.filter((s) => s.trim() !== "").map(indentOf);
+      const common = indents.length > 0 ? Math.min(...indents) : 0;
+      const text = body.map((s) => s.slice(common)).join("\n").trimEnd();
+      // 空块 = 什么都没写，退回"这个键没写过"——不是"前置词是空字符串"
+      if (text) out[key] = text;
+      continue;
+    }
+    if (value) out[key] = value;
   }
   return out;
 }
@@ -70,6 +103,7 @@ export function parseSubagentMd(
     path: string;
     source: string;
     readOnly: boolean;
+    scope: SubagentScope;
   }
 ): SubagentDef | null {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
@@ -88,6 +122,15 @@ export function parseSubagentMd(
   const approval = fm["approval"];
   const thinking = fm["thinking"];
 
+  const preambleRaw = fm["preamble"];
+  // "off" 是保留字：想让自定义前置词正好是 off 两个字母的用户，得用块标量写法
+  const preamble: SubagentPreamble =
+    preambleRaw === undefined
+      ? { mode: "default" }
+      : preambleRaw === "off"
+        ? { mode: "off" }
+        : { mode: "custom", text: preambleRaw };
+
   return {
     name: fm["name"] ?? opts.fallbackName,
     description: fm["description"] ?? "",
@@ -105,6 +148,9 @@ export function parseSubagentMd(
       approval && (APPROVALS as readonly string[]).includes(approval)
         ? (approval as SubagentApproval)
         : "deny",
+    preamble,
+    context: splitList(fm["context"]).filter(isSafeContextFile),
+    scope: opts.scope,
     path: opts.path,
     source: opts.source,
     readOnly: opts.readOnly,
@@ -114,12 +160,12 @@ export function parseSubagentMd(
 /** 按 roots 顺序扫描全部 subagent。同名先到先得——原生目录排在前面 = 覆盖优先。
     每次调用都现扫磁盘：定义是用户随时增删的外部文件，缓存只会陈旧（同 scanSkills）。 */
 export function scanSubagents(
-  roots: readonly { root: string; readOnly: boolean }[],
+  roots: readonly { root: string; readOnly: boolean; scope: SubagentScope }[],
   knownTools: readonly string[],
   reader: SubagentDirReader = nodeReader
 ): SubagentDef[] {
   const byName = new Map<string, SubagentDef>();
-  for (const { root, readOnly } of roots) {
+  for (const { root, readOnly, scope } of roots) {
     for (const file of reader.listFiles(root)) {
       const path = join(root, file);
       const content = reader.readFile(path);
@@ -130,6 +176,7 @@ export function scanSubagents(
         path,
         source: root,
         readOnly,
+        scope,
       });
       if (!def) continue;
       if (!byName.has(def.name)) byName.set(def.name, def);
@@ -149,8 +196,19 @@ export function serializeSubagent(def: SubagentDef): string {
     ...(def.model ? [`model: ${def.model}`] : []),
     ...(def.thinking ? [`thinking: ${def.thinking}`] : []),
     `approval: ${def.approval}`,
+    ...(def.context.length > 0 ? [`context: ${def.context.join(", ")}`] : []),
+    ...preambleLines(def.preamble),
   ];
   return `---\n${lines.join("\n")}\n---\n\n${def.instructions}\n`;
+}
+
+/** preamble 写回：default 整行不写（老文件读进来是什么样，写回去还是什么样）；
+    off 一行；custom 写块标量，每行两格缩进，空行不缩进——缩进的空行会被解析时
+    的公共缩进算法当成内容行，往返就不对称了 */
+function preambleLines(p: SubagentPreamble): string[] {
+  if (p.mode === "default") return [];
+  if (p.mode === "off") return ["preamble: off"];
+  return ["preamble: |", ...p.text.split(/\r?\n/).map((l) => (l.trim() === "" ? "" : `  ${l}`))];
 }
 
 /** 写回磁盘。只写 readOnly: false 的——~/.claude/agents/ 是用户 Claude Code
