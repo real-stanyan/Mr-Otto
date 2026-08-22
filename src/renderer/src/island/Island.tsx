@@ -35,7 +35,11 @@ function useReportSize(ref: React.RefObject<HTMLDivElement | null>, focusable: b
     if (!el) return;
     const report = () => {
       const r = el.getBoundingClientRect();
-      void window.otter.islandResize({ w: Math.ceil(r.width), h: Math.ceil(r.height), focusable });
+      // 量尺寸这条路失败了不该炸掉整个渲染层(unhandled rejection):岛的内容还在,
+      // 只是窗体没跟着变 —— 记一行就够(#175 M9)
+      void window.otter
+        .islandResize({ w: Math.ceil(r.width), h: Math.ceil(r.height), focusable })
+        .catch((e: unknown) => console.warn("岛窗改尺寸失败", e));
     };
     report();
     const ro = new ResizeObserver(report);
@@ -57,23 +61,31 @@ export function Island() {
   const { s, model } = useIsland();
   const [composing, setComposing] = useState(false);
   const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   useReportSize(rootRef, composing);
 
   const submit = async () => {
     if (!s.sessionId || !text.trim()) return;
     const body = text.trim();
-    setText("");
+    // 乐观收起输入框(常态是成功),但 text 一个字都不清 —— 只有确认送到了才清。
+    // 送失败还把字吞掉的话,用户得在一条一行的胶囊里重打一遍(spec §4:岛内报一行错)
     setComposing(false);
+    setError(null);
     try {
       await window.otter.sendMessage(s.sessionId, body);
+      setText("");
     } catch (e) {
       console.error("岛上发消息失败", e);
+      setComposing(true); // 原样把输入态和那句话还回去
+      setError(e instanceof Error ? e.message : "发送失败");
     }
   };
   const decide = (decision: "approved" | "denied", grant?: "session") => {
     if (!s.sessionId || !s.pendingApproval) return;
-    void window.otter.decideApproval(s.sessionId, s.pendingApproval.call.id, { decision, ...(grant ? { grant } : {}) });
+    void window.otter
+      .decideApproval(s.sessionId, s.pendingApproval.call.id, { decision, ...(grant ? { grant } : {}) })
+      .catch((e: unknown) => console.warn("岛上审批回执失败", e));
   };
 
   const shell = "inline-flex items-center gap-2 rounded-full bg-black text-white text-[12px] px-3 py-1.5 shadow-lg select-none";
@@ -94,7 +106,10 @@ export function Island() {
           <input
             autoFocus
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (error) setError(null); // 又开始打字 = 这条错已经被看到了
+            }}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
                 setComposing(false);
@@ -105,17 +120,29 @@ export function Island() {
             placeholder={s.sessionId ? "对 Otto 说…" : "主窗里先开会话"}
             className="w-64 bg-transparent outline-none placeholder:text-white/40"
           />
+          {error && (
+            <span className="max-w-24 shrink-0 truncate text-[10px] text-red-400" title={error}>
+              {error}
+            </span>
+          )}
           <button type="submit" disabled={!s.sessionId} className={`opacity-70 hover:opacity-100 ${btn}`}>
             <Send size={14} />
           </button>
         </form>
       ) : s.phase === "approval" && s.pendingApproval ? (
         (() => {
-          const summary = toolSummary(s.pendingApproval.call);
+          const call = s.pendingApproval.call;
+          const summary = toolSummary(call);
+          // 岛只有一行,摘要必然被 truncate 掉;审批是"要人负责"的那一步,看不清
+          // 到底批了什么最要命 —— 悬停给全文(#175 I4)。
+          // 带 path 的工具(write_file / read_file)的 target 是 basename,这里换成
+          // 全路径:同名文件在不同目录下是两件完全不同的事
+          const p = ((call.args ?? {}) as Record<string, unknown>)["path"];
+          const title = `${summary.verb} ${typeof p === "string" && p ? p : summary.target}`;
           return (
             <div key="approval" className={`${shell} island-state motion-reduce:transition-none`}>
               <span className="text-amber-300">审批</span>
-              <span className="max-w-56 truncate">
+              <span className="max-w-56 truncate" title={title}>
                 {summary.verb} {summary.target}
               </span>
               <button onClick={() => decide("approved")} title="允许" className={`text-green-400 ${btn}`}>
