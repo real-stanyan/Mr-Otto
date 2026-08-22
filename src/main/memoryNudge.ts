@@ -16,13 +16,16 @@ export function userTurnsSinceNudge(events: SessionEvent[]): number {
   return n;
 }
 
-/** 只在整点那一下为 true：落了 memory_nudge 之后计数归零，自然不会连发。
+/** 达到或过点就 true（>= 而非 ===）：某一轮 turn 中途 abort/throw 会跳过
+    落 memory_nudge 的那一步，若用 === 则那个窗口错过后再也追不上——直到
+    下一次完整跑完的 turn 也不会补发。落了 memory_nudge 之后计数归零，
+    自然不会连发，所以 >= 不会导致重复触发。
     子会话（session_created.spawnedBy 有值）永远 false——memory-reviewer 自己
     也是主 agent 派出来的子会话，不挡住它会递归自派 */
 export function shouldNudge(events: SessionEvent[]): boolean {
   const created = events.find((e) => e.type === "session_created");
   if (created && created.type === "session_created" && created.spawnedBy) return false;
-  return userTurnsSinceNudge(events) === MEMORY_NUDGE_EVERY;
+  return userTurnsSinceNudge(events) >= MEMORY_NUDGE_EVERY;
 }
 
 /** 参数太长就掐掉——参数是 agent 自己生成的，掐了也看得出意图（同

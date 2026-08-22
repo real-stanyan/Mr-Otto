@@ -16,10 +16,21 @@ describe("memoryNudge", () => {
     const events = [u(1), u(2), nudge(3), u(4), u(5), u(6)];
     expect(userTurnsSinceNudge(events)).toBe(3);
   });
-  it("满 10 才 nudge，11 不 nudge（只在整点那一下）", () => {
+  it("满 10 才 nudge", () => {
     expect(shouldNudge(Array.from({ length: MEMORY_NUDGE_EVERY }, (_, i) => u(i + 1)))).toBe(true);
-    expect(shouldNudge(Array.from({ length: MEMORY_NUDGE_EVERY + 1 }, (_, i) => u(i + 1)))).toBe(false);
     expect(shouldNudge([u(1)])).toBe(false);
+  });
+  it("刚 nudge 过、下一轮计数才 1，不该再触发", () => {
+    const events = [
+      ...Array.from({ length: MEMORY_NUDGE_EVERY }, (_, i) => u(i + 1)),
+      nudge(MEMORY_NUDGE_EVERY + 1),
+      u(MEMORY_NUDGE_EVERY + 2),
+    ];
+    expect(shouldNudge(events)).toBe(false);
+  });
+  it("错过整点（第 10 轮 abort/throw 没落 memory_nudge）也该在下一次补上", () => {
+    const events = Array.from({ length: MEMORY_NUDGE_EVERY + 1 }, (_, i) => u(i + 1));
+    expect(shouldNudge(events)).toBe(true);
   });
   it("子会话（spawnedBy）永不 nudge", () => {
     const events: SessionEvent[] = [
