@@ -28,7 +28,8 @@ import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
-import { composeUserText } from "../session/deriveMessages.js";
+import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
+import { shouldNudge, MEMORY_NUDGE_EVERY } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
@@ -371,6 +372,58 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, event);
   };
 
+  // 记忆审查：与分区分类/跟进建议同构的第三条外挂（turn 锁之外、永不抛、
+  // 会话被 purge 就不落）。每 10 个 user turn 落一条 memory_nudge，然后派内置
+  // memory-reviewer 子智能体；子会话自己调 memory 工具写盘，结果不回父上下文
+  // （父会话整个 session 看到的记忆仍是开头那份快照，ADR-0059）。
+  //
+  // 子会话没有自己的 subagentRunner——这里现造一个，接线和 createSessionAgent
+  // 里派活那份完全同构（同一个 list / parent / alwaysAllow / register），
+  // 只是派活的时机不是模型调 task 工具，而是 turn 收口这一刻
+  const nudgeMemory = async (sessionId: string): Promise<void> => {
+    const agent = agents.get(sessionId);
+    if (!agent) return;
+    const log = store.load(sessionId);
+    if (!shouldNudge(log)) return;
+    const nudgeEvent = store.append({
+      sessionId, ts: Date.now(), type: "memory_nudge", userTurns: MEMORY_NUDGE_EVERY,
+    });
+    send(CHANNELS.event, nudgeEvent);
+    // 转写给 reviewer 看：只留 user/assistant 正文（连带丢掉 system 消息尾部
+    // 拼进去的 MEMORY/USER 块——那份内容下面单独现读一遍最新的）。
+    // 尾部截断到 12000 字符、保留结尾：长会话不该把 reviewer 自己的上下文撑爆，
+    // 而离当前时刻最近的对话对"记什么"最有参考价值
+    const transcript = deriveMessages(log, COMPACT_COMPRESSION)
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : "[多模态]"}`)
+      .join("\n\n")
+      .slice(-12000);
+    const mem = readMemoryFiles();
+    const runner = createSubagentRunner({
+      store,
+      attachments: attachmentStore,
+      push,
+      list: () => listSubagents(agent.workspace),
+      parent: () => ({
+        sessionId: agent.sessionId,
+        workspace: agent.workspace,
+        world: agent.world,
+        model: agent.model,
+        approvalMode: agent.approvalMode,
+      }),
+      getAccessToken,
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
+      // 从建好那一刻起就是活的，resumeSession 必须查得到它
+      register: (child) => void agents.set(child.sessionId, child),
+    });
+    await runner.run({
+      agent: "memory-reviewer",
+      task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+      parentToolCallId: `memory-nudge-${nudgeEvent.seq}`,
+    });
+  };
+
   const enqueueSectionClassify = (sessionId: string): void => {
     const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
     // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
@@ -494,6 +547,11 @@ void app.whenReady().then(() => {
       },
       attachments: attachmentStore,
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+      // 给 configRoot：这条装配只用来探名字、永远不会真跑一轮，但不给的话
+      // world.config 是 undefined，memory 工具不会出现在 TOOL_NAMES 里——
+      // builtinSubagents 的 memory-reviewer 定义会把 "memory" 过滤成不认识的
+      // 工具名，装出来的清单永远挂不上它要用的那把工具
+      configRoot: configDir(homedir()),
       // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
       // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
@@ -1184,6 +1242,9 @@ void app.whenReady().then(() => {
         // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
         // 变成 unhandledRejection 会把主进程带走
         void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+        // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
+        // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
+        void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
       }
     }
   );

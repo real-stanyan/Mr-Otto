@@ -1,4 +1,4 @@
-// 内置子智能体 —— 随 app 一起发的两份定义，不在磁盘上。
+// 内置子智能体 —— 随 app 一起发的定义，不在磁盘上。
 //
 // 为什么不是"首次启动往 ~/.mr-otto/agents 里写两个文件"：那样它们立刻变成用户的
 // 文件，以后升级改了正文或工具集，装过老版本的人永远跟不上；而删掉它们又会在
@@ -60,6 +60,20 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
     preamble: { mode: "default" },
     context: [],
   scope: "user",
+  },
+  {
+    name: "memory-reviewer",
+    description: "记忆审查员：回顾一段对话，把值得跨会话记住的事实写进长期记忆。由系统每 10 轮自动派出，用户一般不用手动派。",
+    instructions:
+      "你是记忆审查员。任务里附的是父会话最近一段对话的摘要投影，以及当前的 MEMORY/USER 内容。\n\n" +
+      "判断有没有**新的、一周后仍然成立的**事实值得记：用户偏好、环境细节、工具怪癖、稳定约定、用户纠正过你的事。" +
+      "有就用 memory 工具写（陈述句；与已有条目重复的合并而不是再加一条；过时的 replace/remove 掉）；没有就什么也不写。\n\n" +
+      "不记任务进度、文件清单、PR/issue 号、commit、正在做的事。汇报一句话：记了什么/没记为什么。",
+    tools: ["memory"],
+    approval: "inherit",
+    preamble: { mode: "default" },
+    context: [],
+    scope: "user",
   },
 ];
 
