@@ -29,7 +29,10 @@ import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
 import { WebPreview } from "../components/elements/web-preview.js";
+import { MemoryChips } from "../components/elements/memory-chips.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
+import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
+import { parseMemoryResult } from "../../../shared/memoryStore.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
@@ -107,6 +110,32 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
         void window.otter.browserNavigate(sessionId, r.url);
       }}
       className="my-1 max-w-none"
+    />
+  );
+};
+
+/** memory 工具这一步:模型这次记了 / 改了哪几条,配一枚能点的「忘掉」×。
+    解析用 parseMemoryResult(shared 层,主进程的 memory 工具在 output 末行埋的
+    `<!--memory:{...}-->`,详见 shared/memoryStore.ts)。解析不出来就退回 null,
+    调用方(ToolFallbackWithLiveTail)会落回通用工具行——不在这里猜。
+    忘掉之后 chip 只在本地隐藏(forgotten 这个 state),不改事件日志:
+    forgetMemory 已经把 remove 操作重新落成一条新的工具调用事件,
+    这一条历史工具卡还是"当时发生的事"的忠实记录 */
+const MemoryCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
+  const sessionId = useChat((s) => s.sessionId);
+  const [forgotten, setForgotten] = useState<Set<string>>(new Set());
+  const result = typeof part.result === "string" ? parseMemoryResult(part.result) : null;
+  if (!result) return null;
+  const chips = memoryChipsFromResult(result).filter((c) => !forgotten.has(c.id));
+  if (chips.length === 0) return null;
+  return (
+    <MemoryChips
+      chips={chips}
+      onForget={(id) => {
+        setForgotten((prev) => new Set(prev).add(id));
+        void window.otter.forgetMemory(result.target, chipEntryText(id), sessionId);
+      }}
+      className="my-1"
     />
   );
 };
@@ -214,6 +243,12 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   const call: ToolCallRequest = { id: part.toolCallId, name: part.toolName, args: part.args };
   const summary = toolSummary(call);
   const path = toolFilePath(call);
+  // memory 这一步换成 memory-chips element:通用工具行只会写「memory」+ 一坨
+  // 折起来的 JSON。解析不出来(旧日志 / 格式变了)就落回下面的通用工具行,不猜
+  if (part.toolName === "memory" && part.isError !== true) {
+    const parsed = typeof part.result === "string" ? parseMemoryResult(part.result) : null;
+    if (parsed) return <MemoryCard part={part} />;
+  }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路
   // (下面那张 tool-error 卡才是结论)
