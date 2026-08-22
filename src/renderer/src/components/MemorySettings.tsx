@@ -70,12 +70,24 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
   const over = used > limit;
   const pct = limit > 0 ? Math.max(0, Math.min(100, (used / limit) * 100)) : 0;
 
+  // 保存/清空之后不拿本地的 text 直接当 loaded:主进程用
+  // formatEntries(parseEntries(...)) 归一化过(去空条目、保序去重)才落盘,
+  // 本地这份是归一化*之前*的草稿。两者在有重复/空条目时会不一样——
+  // 不重新拉一次的话,textarea 会停在一份磁盘上其实不存在的旧文本上,
+  // 且因为 loaded 也被错误地设成了它,dirty 判不出来,保存钮跟着锁死。
+  // 磁盘上真正写了什么,只有再读一次 getMemory() 才知道——不在这重新实现一遍归一化
+  const syncFromDisk = async () => {
+    const m = await window.otter.getMemory();
+    setLoaded(m[target]);
+    setText(m[target]);
+  };
+
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
       await window.otter.saveMemory(target, text);
-      setLoaded(text);
+      await syncFromDisk();
       setSaved(true);
     } catch (e) {
       setError(bridgeErrorMessage(e));
@@ -90,8 +102,7 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
     setError(null);
     try {
       await window.otter.saveMemory(target, "");
-      setLoaded("");
-      setText("");
+      await syncFromDisk();
       setSaved(true);
     } catch (e) {
       setError(bridgeErrorMessage(e));

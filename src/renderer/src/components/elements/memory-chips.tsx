@@ -28,7 +28,6 @@ export function MemoryChips({
     <div
       data-slot="memory-chips"
       className={cn("flex w-full max-w-sm flex-col gap-2", className)}
-
       {...props}
     >
       <div className="flex items-center gap-1.5">
