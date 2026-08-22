@@ -9,6 +9,7 @@
 // ② 任何会改变占位符位置的动作(拖宽/全屏/窗口 resize)都得重新量。
 
 import { useEffect, useRef, useState } from "react";
+import { HEADER_H } from "../App.js";
 import { ArrowLeft, ArrowRight, RotateCw, X, Maximize2, Minimize2, Power } from "lucide-react";
 import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";
@@ -109,7 +110,7 @@ export function BrowserPanel() {
     // min-w-0 是配套的:没有它,里面的 URL 栏能把面板顶得比容器还宽。
     // 照 GitGraphView 的根节点写法
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1.5 drag-region">
+      <div className={`flex ${HEADER_H} items-center gap-1 border-b px-2 drag-region`}>
         <Button variant="ghost" size="icon" disabled={!info?.canGoBack}
           onClick={() => sessionId && void window.otter.browserBack(sessionId)}>
           <ArrowLeft className="size-4" />

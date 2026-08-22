@@ -5,6 +5,7 @@
 // 这里只管标签行 + xterm 的挂载。
 
 import { useEffect, useRef, useState } from "react";
+import { HEADER_H } from "../App.js";
 import { Plus, X, Maximize2, Minimize2 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useChat } from "../store.js";
@@ -180,7 +181,7 @@ export function TerminalView() {
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <header className="flex items-center gap-1 border-b border-border px-2 py-1.5 drag-region">
+      <header className={`flex ${HEADER_H} items-center gap-1 border-b border-border px-2 drag-region`}>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((t) => (
             <button

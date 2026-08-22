@@ -259,6 +259,14 @@
 }
 
 @layer base {
+  /* shadcn 的基座规则:Tailwind v4 里裸 `border` 的颜色是 currentColor(白字就白框),
+     shadcn 的 ui/* 组件(dropdown / popover / select…)写的都是裸 `border`,
+     全指望这一条把默认描边色接到 --border 上 */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
   /* 桌面 app:窗口本身永不滚动,滚动只发生在内部区域 */
   html,
   body {

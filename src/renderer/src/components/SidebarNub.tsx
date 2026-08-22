@@ -22,6 +22,11 @@ function useClearTrafficLights(): boolean {
   return isMac() && !fullscreen;
 }
 
+/** 窗口模式下开关钮和搜索钮共用的 top:(44 - 28) / 2 = 8,中心 22 = HEADER_H 的中心 */
+export const TOGGLE_TOP = "top-[8px]";
+/** 搜索钮紧贴开关钮右侧:72 + 28 + 4 */
+export const SEARCH_LEFT = "left-[104px]";
+
 /** 真正的开关钮。挂一次在应用根部(SidebarInset 之外,不跟任何头部走) */
 export function SidebarToggle() {
   const { state, narrow, enterPreview, leavePreview, toggleSidebar } = useSidebar();
@@ -38,9 +43,10 @@ export function SidebarToggle() {
       size="icon"
       className={cn(
         "sidebar-toggle fixed z-50 size-7",
-        // 窗口模式:垂直中心对齐红绿灯、与第三颗点隔一小段(坐标是截图实测调出来的,
-        // 搜索钮在 App.tsx 侧栏头部里以同一 top 绝对定位贴在它右侧);全屏:贴左上
-        clear ? "top-[5px] left-[54px]" : "top-3 left-3",
+        // 窗口模式:红绿灯 (16,16) 占到 x=68,钮从 72 起;top 8 + 钮高 28 → 中心 22,
+        // 和 h-11 顶栏、红绿灯中心同一条线(搜索钮在 App.tsx 里以同一 top 贴在它右侧,
+        // 数字见 TOGGLE_TOP / SEARCH_LEFT);全屏没有红绿灯:贴左上
+        clear ? `${TOGGLE_TOP} left-[72px]` : "top-3 left-3",
         // 收起态:从侧栏消失的左缘滑入(空间一致性);展开态它就是侧栏里的收起钮
         collapsed && "collapsed-nub",
         // 展开态坐在侧栏头部(drag-region)之上:.sidebar-toggle 显式 no-drag(app.css)

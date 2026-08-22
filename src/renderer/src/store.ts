@@ -132,6 +132,10 @@ interface ChatState {
   pendingWorkspace: string | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
+  /** 正在压缩上下文的会话。主进程把 compact 复用成 running 灯（挡并发），
+      渲染层分不出"在想"还是"在压"——这个标记只在 compact() 调用期间为 true，
+      让相位指示器能把文案换成「压缩中」。不进事件日志：它是调用期的瞬时状态 */
+  compactingBySession: Record<string, boolean>;
   /** 排队中的消息，按会话记（同 statusBySession 的路子）。turn 跑着时敲下的
       回车不是"发不出去"，是排进这里；这一 turn 收工时按序发出去。
       不进事件日志的理由写在 lib/messageQueue.ts 开头 */
@@ -222,7 +226,8 @@ interface ChatState {
   checkoutError: string | null;
   /** 本机已安装 skill（磁盘扫描镜像：boot 时取一次，开库页时刷新） */
   skills: SkillInfo[];
-  /** 本机已定义的 subagent（~/.otter/agents + 只读的 ~/.claude/agents 合并后的清单）。
+  /** 本机已定义的 subagent（<工程>/.mr-otto/agents + ~/.mr-otto/agents 合并后的清单，
+      只认 Mr Otto 自己的目录，ADR-0056）。
       进 Subagent 栏目时组件自己 refreshSubagents()，不在 boot() 里预取 ——
       用户可能一次都不打开这个栏目 */
   subagents: SubagentDef[];
@@ -235,7 +240,7 @@ interface ChatState {
   /** subagent 清单查询的作用域：null = 用户级，工作区路径 = 该工程（用户级 + 工作区级）。
       切它 = 换一份清单（见 setSubagentScope） */
   subagentScope: string | null;
-  /** 本机 MCP server 清单 + ~/.otter/mcp.json 解析阶段的人话错误（配置已遮罩,
+  /** 本机 MCP server 清单 + ~/.mr-otto/mcp.json 解析阶段的人话错误（配置已遮罩,
       见 shared/mcp.ts 的 McpServersSnapshot 注释）。进 MCP 栏目时组件自己
       refreshMcp()，同时全程订阅 onMcpChanged——一台 server 从 connecting 转成
       connected 是异步的（ready() 在后台跑），不订阅的话设置页会一直停在
@@ -561,6 +566,7 @@ export const useChat = create<ChatState>((set, get) => ({
   subagentLogCache: {},
   pendingWorkspace: null,
   statusBySession: {},
+  compactingBySession: {},
   queuedBySession: {},
   approvals: {},
   asks: {},
@@ -1852,11 +1858,16 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async compact() {
     const sessionId = get().sessionId;
-    set({ error: null });
+    set((s) => ({ error: null, compactingBySession: { ...s.compactingBySession, [sessionId]: true } }));
     try {
       await window.otter.compact(sessionId); // 结果以 context_compacted 事件流回
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set((s) => {
+        const { [sessionId]: _gone, ...rest } = s.compactingBySession;
+        return { compactingBySession: rest };
+      });
     }
   },
 
