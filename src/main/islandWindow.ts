@@ -1,7 +1,7 @@
 // 灵动岛:第二个 BrowserWindow,贴主屏顶部居中。它和主窗一样只是日志的投影窗口
 // (ADR-0059),主进程推送两边都到(createSend 多目标),审批/发消息走同一套 IPC。
 // 为什么不是原生 NSPanel:引 native 构建链,签名分发翻倍,透明 alwaysOnTop 已够用。
-import { BrowserWindow, screen } from "electron";
+import { app, BrowserWindow, screen } from "electron";
 
 /** 纯函数:给显示器工作区和内容尺寸,算窗体位置。单测只测这个 */
 export function islandBounds(
@@ -67,6 +67,17 @@ export function createIslandWindow(opts: {
 export function resizeIsland(win: BrowserWindow, size: { w: number; h: number }, focusable: boolean): void {
   if (win.isDestroyed()) return;
   win.setBounds(islandBounds(screen.getPrimaryDisplay().bounds, size));
-  win.setFocusable(focusable);
-  if (focusable) win.focus();
+  if (focusable) {
+    // 进输入态:光抢窗焦点不够 —— app 本身可能不在前台(岛是常驻置顶的,用户多半正
+    // 在别的 app 里),那时 win.focus() 敲不进键盘。同 index.ts 的 focusMainWindow
+    win.setFocusable(true);
+    win.focus();
+    if (process.platform === "darwin") app.focus({ steal: true });
+  } else {
+    // 退出输入态:macOS 上 setFocusable(false) 不会把已经拿着的焦点交出去
+    // (Electron 文档明说),不显式 blur 的话岛会一直吃着键盘,用户回到刚才那个
+    // app 里打字打不进去 —— 一个常驻置顶窗把整台机器的输入扣住(#175 I3)
+    win.setFocusable(false);
+    win.blur();
+  }
 }
