@@ -12,6 +12,7 @@ import type {
 } from "../../../session/events.js";
 import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../lib/toolSummary.js";
+import { compactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -340,7 +341,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "context_compacted":
       return (
         <div className={AUDIT}>
-          ✻ 上下文已压缩——此前对话折叠为摘要（{event.model}
+          ✻ {compactedHeadline(event.trigger)}——此前对话折叠为摘要（{event.model}
           {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
         </div>
       );
