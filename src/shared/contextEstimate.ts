@@ -6,7 +6,7 @@
 
 import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import { systemPromptText, renderMemoryBlocks } from "../session/deriveMessages.js";
+import { systemPromptText, renderMemoryPrompt } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
@@ -148,7 +148,7 @@ export function contextBreakdown(
   const system = workspace
     ? estimateTokens(
         systemPromptText(workspace) +
-          (memoryEvent ? renderMemoryBlocks(memoryEvent.memory, memoryEvent.user) : "")
+          (memoryEvent ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user) : "")
       )
     : 0;
   const toolTokens = estimateToolTokens(tools);

@@ -32,9 +32,6 @@ export function systemPromptText(workspace: string): string {
     `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。\n` +
     `动手规划一个非平凡任务之前，如果不同的合理理解会导出完全不同的做法，` +
     `先用 ask_user 把关键抉择问清楚，别替用户拍板。\n` +
-    `你有跨会话的长期记忆（本消息末尾的 MEMORY/USER 块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
-    `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
-    `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。\n` +
     STRUCTURED_BLOCKS
   );
 }
@@ -75,6 +72,20 @@ export function renderMemoryBlocks(memory: string, user: string): string {
   const u = memoryBlock("USER (about the user)", user, MEMORY_LIMITS.user);
   if (!m && !u) return "";
   return `\n${m}${u}${MEMORY_RULE}`;
+}
+
+/** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0059）。
+    指引文案跟着这条事件走，不写进 systemPromptText：没有这条事件的会话
+    （老日志 / 子会话 / 没有记忆能力的装配）不该被告知"你有 memory 工具"——
+    那把工具压根没挂给它们，写死在 systemPromptText 里就是一句谎话。
+    两个文件都空也要说这段话：模型得知道自己**能**写记忆，不是只在已经有内容时才提 */
+export function renderMemoryPrompt(memory: string, user: string): string {
+  return (
+    `\n你有跨会话的长期记忆（本消息末尾的 MEMORY/USER 块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
+    `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
+    `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
+    renderMemoryBlocks(memory, user)
+  );
 }
 
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
@@ -352,13 +363,13 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
-      case "memory_loaded": {
+      case "memory_loaded":
         // 拼进 system 尾部而不是单独一条：① compact 清场时随 system 幸存；
-        // ② 放尾部 = volatile tail，前缀缓存只从这里往下失效
-        const blocks = renderMemoryBlocks(event.memory, event.user);
-        if (systemMessage && blocks) systemMessage.content += blocks;
+        // ② 放尾部 = volatile tail，前缀缓存只从这里往下失效。
+        // 无条件拼（哪怕两个文件都空）：这条事件本身就是"这个装配有记忆能力"的
+        // 凭据，指引文案该不该出现只看这条事件在不在，不看内容是不是空的
+        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user);
         break;
-      }
 
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
