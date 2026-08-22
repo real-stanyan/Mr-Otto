@@ -10,6 +10,8 @@ describe("redactSensitiveText", () => {
     ["https://alice:s3cret@example.com/x", /s3cret/],
     ["ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", /ghp_A/],
     ["AKIAIOSFODNN7EXAMPLE", /AKIA/],
+    ["Authorization: Bearer dGVzdDp0ZXN0dGVzdA==", /dGVzdD/],
+    ["sk-abc12345defgh", /sk-/],
   ])("遮掉 %s", (text, leak) => {
     const out = redactSensitiveText(text);
     expect(out).not.toMatch(leak);
@@ -17,6 +19,26 @@ describe("redactSensitiveText", () => {
   });
   it("普通文本原样", () => {
     expect(redactSensitiveText("用户偏好简短回复，项目用 pnpm")).toBe("用户偏好简短回复，项目用 pnpm");
+  });
+  it("密码/密钥中文：保留键名，遮值", () => {
+    const out1 = redactSensitiveText("密码：hunter2");
+    expect(out1).toContain("密码：");
+    expect(out1).not.toMatch(/hunter2/);
+    expect(out1).toContain("[REDACTED]");
+
+    const out2 = redactSensitiveText("我的密钥：sk-test");
+    expect(out2).toContain("密钥：");
+    expect(out2).not.toMatch(/sk-/);
+    expect(out2).toContain("[REDACTED]");
+
+    const out3 = redactSensitiveText("用户 密码：hunter2 是重要信息");
+    expect(out3).toContain("密码：");
+    expect(out3).not.toMatch(/hunter2/);
+    expect(out3).toContain("是重要信息");
+  });
+  it('设计文本（负面）原样：prose "secret sauce = patience"，"design token: spacing-4"', () => {
+    expect(redactSensitiveText("secret sauce = patience")).toBe("secret sauce = patience");
+    expect(redactSensitiveText("design token: spacing-4")).toBe("design token: spacing-4");
   });
 });
 
