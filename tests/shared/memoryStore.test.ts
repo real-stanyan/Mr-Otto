@@ -77,4 +77,10 @@ describe("parseMemoryResult", () => {
     expect(parseMemoryResult("no mark")).toBeNull();
     expect(parseMemoryResult(`${MEMORY_RESULT_MARK}{bad-->`)).toBeNull();
   });
+  it("valid JSON but ok !== true returns null", () => {
+    expect(parseMemoryResult(`${MEMORY_RESULT_MARK}{"ok":false,"target":"user","added":[],"updated":[],"removed":[],"used":0,"limit":1375}-->`)).toBeNull();
+  });
+  it("valid JSON but ok field absent returns null", () => {
+    expect(parseMemoryResult(`${MEMORY_RESULT_MARK}{"target":"user","added":[],"updated":[],"removed":[],"used":0,"limit":1375}-->`)).toBeNull();
+  });
 });

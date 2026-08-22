@@ -108,7 +108,7 @@ export interface MemoryToolResult {
 
 export const MEMORY_RESULT_MARK = "<!--memory:";
 
-/** UI 从 tool_result.output 末行解析 chips。解析失败 = null，UI 退回通用工具行 */
+/** UI 从 tool_result.output 末行解析 chips。解析失败 = null，UI 退回通用工具行；note: lastIndexOf("-->") assumes entry text never contains "-->" */
 export function parseMemoryResult(output: string): MemoryToolResult | null {
   const i = output.lastIndexOf(MEMORY_RESULT_MARK);
   if (i < 0) return null;
