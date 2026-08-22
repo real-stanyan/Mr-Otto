@@ -35,7 +35,7 @@ agent 运行状态、危险操作审批、快捷输入。主窗失焦 / 最小�
 - `focusable` 按态切换：胶囊 / 活动 / 审批态 `false`（不抢焦点）；输入态 `true`。
 - 位置：纯函数 `islandBounds(display: {x,y,width}, size: {w,h})` → `{x: 居中, y: display.y}`。
   `screen.on('display-metrics-changed')` 重算。
-- 尺寸由岛渲染层决定：`islandResize({w,h})` IPC → 主进程 `setBounds`。
+- 尺寸由岛渲染层决定：`islandResize({w,h,focusable})` IPC → 主进程 `setBounds` + `setFocusable`。
 - 仅 `process.platform === 'darwin'` 创建；其他平台所有岛相关 IPC 为空操作。
 - 生命周期：`app.whenReady` 后随主窗一起建；主窗销毁岛不销毁；`before-quit` 一起销毁。
 
@@ -53,7 +53,7 @@ agent 运行状态、危险操作审批、快捷输入。主窗失焦 / 最小�
 - 审批：主窗卡片同时仍在，任一侧点了两边都收（`UIApprover.resolve` 对重复 resolve 已忽略；
   主进程在 resolve 后推 `approvalResolved(toolCallId)` 让另一侧收卡 —— 若现有通道已覆盖则复用）。
 - 输入：`activeSessionId === null` 时输入禁用，文案"主窗里先开会话"。
-- 工具图标映射从主窗渲染层抽到 `src/shared/toolIcons.ts` 供两个入口共用。
+- 工具文案复用既有 `src/renderer/src/lib/toolSummary.ts`（同一 renderer 构建，无需抽到 shared）。
 
 ## 3. 数据流
 
@@ -81,7 +81,7 @@ agent 运行状态、危险操作审批、快捷输入。主窗失焦 / 最小�
 ## 6. 文件清单
 
 新增：`src/main/islandWindow.ts`、`src/renderer/island.html`、`src/renderer/src/island/*`、
-`src/shared/toolIcons.ts`、`docs/adr/0059-灵动岛是第二个日志投影窗口.md`。
+`docs/adr/0059-灵动岛是第二个日志投影窗口.md`。
 改动：`src/main/index.ts`（建岛窗、fan-out send、activeSession handle）、
 `src/main/rendererPush.ts`、`src/shared/shellBridge.ts`、`src/preload/index.ts`、
 `electron.vite.config.*`（第二个 renderer 入口）、主窗切会话处调 `setActiveSession`。
