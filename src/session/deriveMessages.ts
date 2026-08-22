@@ -367,7 +367,11 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         // 拼进 system 尾部而不是单独一条：① compact 清场时随 system 幸存；
         // ② 放尾部 = volatile tail，前缀缓存只从这里往下失效。
         // 无条件拼（哪怕两个文件都空）：这条事件本身就是"这个装配有记忆能力"的
-        // 凭据，指引文案该不该出现只看这条事件在不在，不看内容是不是空的
+        // 凭据，指引文案该不该出现只看这条事件在不在，不看内容是不是空的。
+        // systemMessage 可能是 null：session_created 没带 workspace（老日志 /
+        // 子会话）时上面那个 case 不会造 system 消息，这里就只能悄悄丢掉记忆
+        // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
+        // 只发生在子会话或旧日志上，不影响主线记忆功能。
         if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user);
         break;
 
