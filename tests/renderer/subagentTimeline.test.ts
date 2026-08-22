@@ -5,6 +5,7 @@ import {
   groupSubagentSpawns,
   spawnedFromOf,
   subagentFact,
+  subagentModel,
   subagentRowState,
   taskHeadline,
 } from "../../src/renderer/src/lib/subagentTimeline.js";
@@ -212,5 +213,16 @@ describe("taskHeadline", () => {
   it("空任务不炸，回空串", () => {
     expect(taskHeadline("")).toBe("");
     expect(taskHeadline("\n\n")).toBe("");
+  });
+});
+
+describe("subagentModel", () => {
+  it("读子日志里 subagent_briefed 的 model 快照", () => {
+    const events = [
+      { type: "subagent_briefed", agent: "Explore", instructions: "", tools: [], model: "deepseek-chat", seq: 2, ts: 0, sessionId: "c" },
+    ] as unknown as SessionEvent[];
+    expect(subagentModel(events)).toBe("deepseek-chat");
+    expect(subagentModel([])).toBeNull();
+    expect(subagentModel(undefined)).toBeNull();
   });
 });

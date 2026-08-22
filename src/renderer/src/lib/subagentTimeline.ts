@@ -86,6 +86,17 @@ export function subagentFact(childEvents: readonly SessionEvent[] | undefined): 
   return `${steps} 步 · ${tokenLabel} tokens`;
 }
 
+/** 子会话实际用的模型:读子日志里的 subagent_briefed(派活时刻的快照,ADR 见
+    events.ts)。**不读定义文件当前的 model** —— 定义之后被改,旧卡不该跟着变。
+    子日志没取到 / 没这条事件时回 null,调用方自己决定退回哪里 */
+export function subagentModel(childEvents: readonly SessionEvent[] | undefined): string | null {
+  if (childEvents === undefined) return null;
+  for (const e of childEvents) {
+    if (e.type === "subagent_briefed") return e.model;
+  }
+  return null;
+}
+
 /** 派下去那件事的首行（spec §五：卡片标签 = subagent 名字 + 任务首行）。
     只印名字的话，同一条消息里把同一个 agent 派两次会渲染出两行一模一样的东西——
     看得见"派了两个人"，看不见"分别去干什么"。

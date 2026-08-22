@@ -27,7 +27,7 @@ export function subagentScopeOptions(sessions: readonly SessionSummary[]): Subag
  *
  * 恒定停在「用户」不是"少看几行"的事,是一条静默写错地方的路:用户在工程 W 的会话里
  * 已经定过两个工作区级的子智能体,打开这一页看到的却是空清单 + "把文件放进
- * ~/.otter/agents"的提示——他照着点「新建」,文件就落在了全局那一层,处处可见,
+ * ~/.mr-otto/agents"的提示——他照着点「新建」,文件就落在了全局那一层,处处可见,
  * 而全局命名空间污染正是作用域这整个特性要治的病(ADR-0048)。
  *
  * 候选里没有(那个工程还没开过会话、或者是没记 workspace 的史前会话)就回 null:
