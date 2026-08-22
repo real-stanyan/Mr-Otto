@@ -5,6 +5,8 @@ import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
+import { contextUsed } from "../shared/contextEstimate.js";
+import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
@@ -38,6 +40,12 @@ export interface LoopEngineOptions {
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
   middlewares?: ToolMiddleware[];
+  /** 自动压缩（ADR-00NN）：给了就在 loop 每圈模型调用前判定占用。
+      不给 = 这个装配没有自动压缩（测试和裸装配照旧，只能手动 /compact） */
+  autoCompact?: {
+    contextWindow: () => number | undefined; // 当前型号的窗口；换型号后现算
+    settings: () => AutoCompactSettings; // 现读（设置页改了当场生效）
+  };
 }
 
 export class LoopEngine {
@@ -47,6 +55,9 @@ export class LoopEngine {
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
       AbortSignal 是一次性的，翻过去就回不来 */
   private turnAbort: AbortController | null = null;
+  /** 本 turn 是否已经自动压缩过；runTurn 里每 turn 重置一次。
+      同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱 */
+  private compactedThisTurn = false;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -186,6 +197,7 @@ export class LoopEngine {
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
     });
     this.turnAbort = new AbortController();
+    this.compactedThisTurn = false;
     try {
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
@@ -218,6 +230,20 @@ export class LoopEngine {
 
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
+
+      // 自动压缩（ADR-00NN）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
+      // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
+      if (this.opts.autoCompact && !this.compactedThisTurn) {
+        const { contextWindow, settings } = this.opts.autoCompact;
+        if (shouldAutoCompact(contextUsed(store.load(sessionId)), contextWindow(), settings())) {
+          this.compactedThisTurn = true;
+          try {
+            await this.compact({ trigger: "auto" });
+          } catch (err) {
+            console.warn("自动压缩失败，本 turn 不再尝试", err);
+          }
+        }
+      }
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
