@@ -5,22 +5,81 @@ import SwiftUI
 struct IslandExpandedView: View {
   @ObservedObject var model: IslandModel
   @State private var now = Date()
+  @State private var text = ""
+  /// composeRow 出现时靠 .onAppear 把这个设 true——SwiftUI 会据此把键盘焦点
+  /// 移进 TextField。这只在承载窗口是 key window 时才生效,窗口 key 与否是
+  /// main.swift 的 onComposeChange 负责的(activationPolicy + NSPanel.makeKey)。
+  @FocusState private var composeFieldFocused: Bool
   private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
   var body: some View {
     let s = model.snapshot
     Group {
-      switch s.phase {
-      case .approval:
-        approvalRow(s.pendingApproval)
-      case .active:
-        activeRow(s)
-      case .idle:
-        // 防御性兜底:理论上 idle 不会被 expand,万一状态竞态漏进来也不要崩。
-        Color.clear.frame(width: 1, height: 1)
+      if model.composing {
+        composeRow
+      } else {
+        switch s.phase {
+        case .approval:
+          approvalRow(s.pendingApproval)
+        case .active:
+          activeRow(s)
+        case .idle:
+          // 防御性兜底:理论上 idle 不会被 expand,万一状态竞态漏进来也不要崩。
+          Color.clear.frame(width: 1, height: 1)
+        }
       }
     }
     .onReceive(timer) { now = $0 }
+  }
+
+  /// 输入态整行:TextField + 发送按钮。composing 由外部(点"说话"入口)置真,
+  /// main.swift 的 desiredState 据此强制 .expanded 并让承载窗口成为 key window,
+  /// 这里 .onAppear 把 SwiftUI 焦点也移过去——两边都到位,TextField 才真正能打字。
+  private var composeRow: some View {
+    HStack(spacing: 8) {
+      TextField(
+        model.snapshot.sessionId == nil ? "主窗里先开会话" : "对 Otto 说…",
+        text: $text
+      )
+      .textFieldStyle(.plain)
+      .foregroundStyle(.white)
+      .focused($composeFieldFocused)
+      .onSubmit { submit() }
+      Button {
+        submit()
+      } label: {
+        Image(systemName: "paperplane.fill")
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.white)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .onAppear { composeFieldFocused = true }
+    .onExitCommand { cancelCompose() } // Esc:取消输入态,清空文本
+    // 单参数版 onChange(of:perform:)——部署目标 macOS 13,双参数版是 14+ 才有的 API。
+    .onChange(of: composeFieldFocused) { focused in
+      // 失焦(比如用户点回了别的 app,承载窗口 resign key)也要退出输入态,
+      // 不然 composing 卡在 true、main.swift 不会把 activationPolicy 放回
+      // .accessory——这正是 #175 I3 那种"窗口一直扣着键盘"的失败模式。
+      if !focused && model.composing {
+        cancelCompose()
+      }
+    }
+  }
+
+  private func submit() {
+    guard let sid = model.snapshot.sessionId,
+          !text.trimmingCharacters(in: .whitespaces).isEmpty
+    else { return }
+    model.onOutbound(.send(sessionId: sid, text: text))
+    text = ""
+    model.exitCompose()
+  }
+
+  private func cancelCompose() {
+    text = ""
+    model.exitCompose()
   }
 
   private func activeRow(_ s: IslandSnapshot) -> some View {
@@ -83,14 +142,32 @@ struct IslandCompactView: View {
     Group {
       switch model.snapshot.phase {
       case .active:
-        Circle()
-          .fill(Color.accentColor)
-          .frame(width: 5, height: 5)
-          .opacity(pulse ? 1 : 0.35)
-          .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
-          .onAppear { pulse = true }
-      case .idle, .approval:
-        // idle:贴合刘海什么都不显。approval 不等 hover 直接 expand,compact 内容不会被看到。
+        // 脉动点本身就是入口:点一下进输入态(Task 6)。视觉不变,只是加了可点性,
+        // 跟 task-5 报告里"active 默认折叠只露一个提示点"的设计没冲突。
+        Button {
+          model.enterCompose()
+        } label: {
+          Circle()
+            .fill(Color.accentColor)
+            .frame(width: 5, height: 5)
+            .opacity(pulse ? 1 : 0.35)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+        }
+        .buttonStyle(.plain)
+        .onAppear { pulse = true }
+      case .idle:
+        // Task 6 之前这里是纯 Color.clear(贴合刘海什么都不显)。要让 idle 也能进输入态,
+        // 必须有个可点的东西——用一个很小的键盘图标当"点一下说话"入口,尽量不抢视觉。
+        Button {
+          model.enterCompose()
+        } label: {
+          Image(systemName: "keyboard")
+            .font(.system(size: 8))
+            .foregroundStyle(.white.opacity(0.55))
+        }
+        .buttonStyle(.plain)
+      case .approval:
+        // approval 不等 hover 直接 expand,compact 内容不会被看到,不需要入口。
         Color.clear.frame(width: 1, height: 1)
       }
     }
