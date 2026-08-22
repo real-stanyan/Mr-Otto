@@ -3,8 +3,10 @@ import {
   withAbortSignal,
   withBrowser,
   withExecOutput,
+  withHistory,
   withMcp,
   type ExecutionWorld,
+  type HistoryCapability,
   type McpCapability,
   type TerminalSession,
 } from "../../src/world/executionWorld.js";
@@ -145,5 +147,30 @@ describe("装饰器透传 mcp", () => {
     const w = withExecOutput(fakeWorld(), () => {});
     expect(Object.hasOwn(w, "browser")).toBe(false);
     expect(Object.hasOwn(w, "openTerminal")).toBe(false);
+  });
+});
+
+describe("history 能力（可选）", () => {
+  const fakeHistory: HistoryCapability = {
+    search: () => [],
+    window: () => [],
+    load: () => [],
+    recent: () => [],
+  };
+
+  it("withHistory 把能力焊上去", () => {
+    const w = withHistory(fakeWorld(), fakeHistory);
+    expect(w.history).toBe(fakeHistory);
+  });
+
+  it("装饰器透传 history —— 照 config 那条写：同一引用原样带过去", () => {
+    const world = withHistory(fakeWorld(), fakeHistory);
+    expect(withAbortSignal(world, new AbortController().signal).history).toBe(world.history);
+    expect(withExecOutput(world, () => {}).history).toBe(world.history);
+  });
+
+  it("世界本来没有 history 时，装饰后连这个键都不该有（不凭空造一个）", () => {
+    expect(Object.hasOwn(withAbortSignal(fakeWorld(), new AbortController().signal), "history")).toBe(false);
+    expect(Object.hasOwn(withExecOutput(fakeWorld(), () => {}), "history")).toBe(false);
   });
 });
