@@ -53,7 +53,16 @@ function renderEvents(events: SessionEvent[]): string {
     .filter((x): x is string => x !== null)
     .join("\n");
 }
+/** 与 store.sessions()（BROWSE 走的那条路，见 store.ts）同一条标题规则：
+    手动改名（最后一条 session_renamed 胜出）压过自动标题；没改名才退回
+    第一条 user_message 首行。discovery 的 source 和 READ 的 document.title
+    原来只认第一条 user_message，改过名的会话在这两处显示的标题和 BROWSE
+    对不上——三处标题投影必须是同一条规则，不然模型看到的是三个不同的名字 */
 function titleOf(events: SessionEvent[]): string {
+  const renamed = [...events].reverse().find((e): e is Extract<SessionEvent, { type: "session_renamed" }> =>
+    e.type === "session_renamed"
+  );
+  if (renamed && renamed.title.trim()) return renamed.title.trim().slice(0, 60);
   const first = events.find((e) => e.type === "user_message");
   return first && first.type === "user_message" ? first.content.split("\n")[0]!.trim().slice(0, 60) : "(无标题)";
 }

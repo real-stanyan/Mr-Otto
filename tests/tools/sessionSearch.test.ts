@@ -104,6 +104,32 @@ describe("session_search", () => {
     const parsed = parseSessionSearchResult(out)!;
     expect(parsed.document).toMatchObject({ sessionId: "s1", pages: 6 });
   });
+  it("标题统一：discovery 的 source 和 read 的 document.title 都认 session_renamed（改名压过首条 user_message，同 BROWSE 那条规则）", async () => {
+    const renamedEvents: SessionEvent[] = [
+      { sessionId: "s4", seq: 0, ts: 0, type: "session_created", workspace: "/w" } as SessionEvent,
+      ev("s4", 1, "user_message", "原始第一句 改名关键词"),
+      { sessionId: "s4", seq: 2, ts: 120_000, type: "session_renamed", title: "改过的标题" } as SessionEvent,
+    ];
+    const renamedHistory: HistoryCapability = {
+      search: () => [{ sessionId: "s4", seq: 1, type: "user_message", text: "原始第一句 改名关键词", score: 1 }],
+      window: () => [],
+      load: (id) => (id === "s4" ? renamedEvents : []),
+      recent: () => [],
+    };
+    const renamedWorld = { history: renamedHistory } as unknown as ExecutionWorld;
+    const discoveryOut = await (async () => {
+      const r = await tool.run({ query: "改名关键词" }, renamedWorld);
+      return typeof r === "string" ? r : r.output;
+    })();
+    expect(parseSessionSearchResult(discoveryOut)!.chunks![0]!.source).toBe("改过的标题");
+    expect(discoveryOut).toContain("s4「改过的标题」"); // 段落标题也是改过的，不是首条 user_message
+
+    const readOut = await (async () => {
+      const r = await tool.run({ session_id: "s4" }, renamedWorld);
+      return typeof r === "string" ? r : r.output;
+    })();
+    expect(parseSessionSearchResult(readOut)!.document!.title).toBe("改过的标题");
+  });
   it("read：未知会话报错", async () => {
     await expect(tool.run({ session_id: "nope" }, world)).rejects.toThrow(/没有/);
   });
