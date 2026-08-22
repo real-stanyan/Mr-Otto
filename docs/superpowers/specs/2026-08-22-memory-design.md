@@ -26,7 +26,7 @@
 | 顺序 | 记忆工具 → FTS 搜索 → 自动压缩 → 微压缩 |
 | 写入审批 | 不过审批门（同 hermes 默认 `write_approval: false`） |
 | nudge | 每 10 个 user turn fork 内置子智能体后台审查（照抄） |
-| 文件作用域 | 全局一份 `~/.config/mr-otto/memories/`，不分 workspace |
+| 文件作用域 | 全局一份 `~/.mr-otto/memories/`，不分 workspace |
 | 会话内 UI | assistant-ui elements：memory-chips / retrieval-chunks / document-reference |
 
 ---
@@ -35,8 +35,8 @@
 
 ### 文件
 
-- `~/.config/mr-otto/memories/MEMORY.md`：agent 笔记，上限 **2200 字符**
-- `~/.config/mr-otto/memories/USER.md`：用户画像，上限 **1375 字符**
+- `~/.mr-otto/memories/MEMORY.md`：agent 笔记，上限 **2200 字符**
+- `~/.mr-otto/memories/USER.md`：用户画像，上限 **1375 字符**
 - 条目分隔符 `\n§\n`，条目可多行。按字符不按 token（字符数与模型无关）。
 - 读写经 `ExecutionWorld` 新增 `readConfigFile(rel) / writeConfigFile(rel, text)`（配置目录作用域，不受 workspace 围栏约束）。工具不 import fs。严格 UTF-8 解码，BOM 容忍。
 
