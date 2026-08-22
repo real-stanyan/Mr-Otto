@@ -25,6 +25,7 @@ function resolveWithCapabilities(model: string): ModelChoice {
 import { createLocalWorld } from "../world/localWorld.js";
 import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
+import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
@@ -136,6 +137,13 @@ export function createAgent(opts: {
   subagentRunner?: SubagentRunner;
   /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
   listSubagents?: () => SubagentDef[];
+  /** 新 session 的长期记忆快照（ADR-0059）。由 index.ts 在造 agent 之前读好——
+      createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的 */
+  memory?: { memory: string; user: string };
+  /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
+      （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
+      不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
+  configRoot?: string;
 }) {
   const { store } = opts;
 
@@ -147,7 +155,10 @@ export function createAgent(opts: {
     (() => {
       // 浏览器能力从外面注入:WebContentsView 只有主进程造得出来,LocalWorld 造不出来
       // (与 openTerminal 的方向相反,见 ADR-0035)。工具照旧只认 world.browser
-      const local = createLocalWorld({ root: opts.workspace });
+      const local = createLocalWorld({
+        root: opts.workspace,
+        ...(opts.configRoot ? { configRoot: opts.configRoot } : {}),
+      });
       return opts.makeBrowser ? withBrowser(local, opts.makeBrowser(sessionId)) : local;
     })();
   // MCP 叠在最外层。子 agent 走 opts.world 那条路时不会被重复包一层：
@@ -189,6 +200,17 @@ export function createAgent(opts: {
       workspace: opts.workspace,
       ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
     });
+    // 长期记忆快照落盘（ADR-0059）：紧跟 session_created 之后，先落盘再喂模型。
+    // 只在有记忆能力的装配里落——world.config 不在 = 这个装配压根没有长期记忆
+    if (opts.memory && world.config) {
+      store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "memory_loaded",
+        memory: opts.memory.memory,
+        user: opts.memory.user,
+      });
+    }
   } else {
     // 崩溃修复（ADR-0005，留痕层）：上次 app 在工具执行中途退出的话，日志里
     // 会有悬空 toolCall（无配对 tool_result）。补合成结果事件——修复 = 追加，
@@ -296,6 +318,9 @@ export function createAgent(opts: {
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
+    // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
+    // 的装配（裸装配/测试）不该对模型宣称有记忆
+    ...(world.config ? [createMemoryTool()] : []),
     readFileTool,
     writeFileTool,
     bashTool,

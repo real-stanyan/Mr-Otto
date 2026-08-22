@@ -58,6 +58,7 @@ import {
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
+import { MEMORY_FILES } from "../shared/memoryStore.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -537,6 +538,21 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
+  /** 两个记忆文件的当前内容（ADR-0059）。读不到 = 空——"没记过"不是故障。
+      同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
+      createAgent 是同步的，这份快照必须在调它之前就手上有值 */
+  const readMemoryFiles = (): { memory: string; user: string } => {
+    const root = configDir(homedir());
+    const read = (rel: string): string => {
+      try {
+        return readFileSync(join(root, rel), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+  };
+
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
    *
@@ -594,6 +610,11 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
+      // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
+      // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0059）
+      configRoot: configDir(homedir()),
+      memory: readMemoryFiles(),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
