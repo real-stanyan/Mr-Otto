@@ -58,6 +58,35 @@ describe("session_search", () => {
     expect(parsed.chunks![0]!.locator).toMatch(/:07 · #7/);
     expect(parsed.chunks![0]!.locator).not.toMatch(/:00 · #7/);
   });
+  it("discovery 第一名窗口按消息条数取 ±5，不被插在中间的非文本事件（turn_ended）稀释", async () => {
+    // s3：每条 user_message 后面插一条 turn_ended（无文本）。命中在第 10 句（seq 19）。
+    // 若还按原始 seq ±5 取窗，中间被 turn_ended 占掉一半 seq，只能圈到第 8~12 句；
+    // 按"消息条数"下标 ±5 取窗，应该圈到第 5~15 句
+    const withGaps: Record<string, SessionEvent[]> = {
+      s3: [
+        { sessionId: "s3", seq: 0, ts: 0, type: "session_created", workspace: "/w" } as SessionEvent,
+        ...Array.from({ length: 25 }, (_, i) => {
+          const k = i + 1;
+          return [
+            ev("s3", 2 * k - 1, "user_message", `第${k}句${k === 10 ? " 插播关键词" : ""}`),
+            { sessionId: "s3", seq: 2 * k, ts: 2 * k * 60_000, type: "turn_ended", outcome: "completed" } as SessionEvent,
+          ];
+        }).flat(),
+      ],
+    };
+    const gapHistory: HistoryCapability = {
+      search: () => [{ sessionId: "s3", seq: 19, type: "user_message", text: "第10句 插播关键词", score: 1 }],
+      window: (id, a, b) => (withGaps[id] ?? []).filter((e) => e.seq >= a && e.seq <= b),
+      load: (id) => withGaps[id] ?? [],
+      recent: () => [],
+    };
+    const gapWorld = { history: gapHistory } as unknown as ExecutionWorld;
+    const r = await tool.run({ query: "插播关键词" }, gapWorld);
+    const out = typeof r === "string" ? r : r.output;
+    expect(out).toContain("第5句");   // 命中前 5 条真消息（按消息序数数，不是按原始 seq）
+    expect(out).toContain("第15句");  // 命中后 5 条
+    expect(out).not.toContain("第4句"); // 再往外一条，既不在窗口里也不在首尾 bookend（head 只到第 3 句）里
+  });
   it("discovery 零命中：人话 + 空 chunks", async () => {
     const out = await text({ query: "没有的词" });
     expect(out).toMatch(/没有找到/);

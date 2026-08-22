@@ -132,11 +132,16 @@ export function createSessionSearchTool(): Tool {
         score: hit.score,
       });
       if (rank === 0) {
-        // 第一名：命中 ±5 + 首尾各 3（hermes 的 adaptive hydration）
+        // 第一名：命中 ±5 + 首尾各 3（hermes 的 adaptive hydration）。
+        // ±5 按"消息条数"数，不按原始 seq 数——seq 里混着 turn_ended/tool_call
+        // 这类无文本的路标事件，按 seq ±5 会被它们稀释，实际看到的有文本消息
+        // 可能不到 5 条。先在 byText（已经滤掉无文本事件）里定位命中的下标，
+        // 再按下标 ±TOP_WINDOW 切片，保证窗口两侧各是 TOP_WINDOW 条真消息
         const byText = all.filter((e) => textOf(e) !== null);
         const head = byText.slice(0, BOOKEND);
         const tailE = byText.slice(-BOOKEND);
-        const mid = all.filter((e) => e.seq >= hit.seq - TOP_WINDOW && e.seq <= hit.seq + TOP_WINDOW && textOf(e) !== null);
+        const hitIdx = byText.findIndex((e) => e.seq === hit.seq);
+        const mid = hitIdx < 0 ? [] : byText.slice(Math.max(0, hitIdx - TOP_WINDOW), hitIdx + TOP_WINDOW + 1);
         const seen = new Set<number>();
         const merged = [...head, ...mid, ...tailE]
           .filter((e) => (seen.has(e.seq) ? false : (seen.add(e.seq), true)))
