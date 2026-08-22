@@ -7,6 +7,8 @@
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { ApprovalRequest, IslandBoot, IslandSnapshot, TurnStatusUpdate } from "../shared/shellBridge.js";
 import { toolFilePath, toolSummary } from "../shared/toolSummary.js";
+import type { SessionSummary } from "../session/store.js";
+import type { IslandAgent, IslandFleet } from "../shared/shellBridge.js";
 
 export type IslandPhase = "idle" | "active" | "approval";
 
@@ -116,4 +118,53 @@ export function flattenSnapshot(s: IslandState, model: string | null): IslandSna
     turnStartedAt: s.turnStartedAt,
     pendingApproval: pending,
   };
+}
+
+/** 侧栏可见集合口径 + 同序:滤掉子会话(spawnedFrom!=null)/无 workspace,
+    按 workspace 分组、组内 lastTs 倒序、组序按组内最近 lastTs 倒序,展平。
+    与 renderer 的 groupSessionsByWorkspace 同规则(那份带 UI 标签,这里只要顺序) */
+export function orderedVisibleSessions(sessions: SessionSummary[]): SessionSummary[] {
+  const byDir = new Map<string, SessionSummary[]>();
+  for (const s of sessions) {
+    if (s.workspace === null || s.spawnedFrom !== null) continue;
+    const bucket = byDir.get(s.workspace);
+    if (bucket) bucket.push(s);
+    else byDir.set(s.workspace, [s]);
+  }
+  return [...byDir.values()]
+    .map((list) => [...list].sort((a, b) => b.lastTs - a.lastTs))
+    .sort((ga, gb) => (gb[0]?.lastTs ?? 0) - (ga[0]?.lastTs ?? 0))
+    .flat();
+}
+
+/** 一份 IslandState(可能没有,按 idle)+ SessionSummary → 拍平成一行 IslandAgent */
+export function flattenAgent(state: IslandState | undefined, session: SessionSummary): IslandAgent {
+  const s = state ?? initialIsland;
+  const ct = s.currentTool ? toolSummary(s.currentTool) : null;
+  let pending: IslandAgent["pendingApproval"] = null;
+  if (s.pendingApproval) {
+    const sum = toolSummary(s.pendingApproval.call);
+    pending = { callId: s.pendingApproval.call.id, verb: sum.verb, target: sum.target, fullPath: toolFilePath(s.pendingApproval.call) };
+  }
+  return {
+    sessionId: session.sessionId,
+    title: session.title,
+    phase: s.phase,
+    currentTool: ct ? { verb: ct.verb, target: ct.target } : null,
+    turnStartedAt: s.turnStartedAt,
+    pendingApproval: pending,
+  };
+}
+
+/** 会话集合 → 线上 fleet。顺序 = 侧栏序,但审批态置顶(要人当场动手,不被淹) */
+export function flattenFleet(
+  states: ReadonlyMap<string, IslandState>,
+  sessions: SessionSummary[],
+  focusedSessionId: string | null
+): IslandFleet {
+  const ordered = orderedVisibleSessions(sessions);
+  const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess));
+  // 审批置顶:稳定排序,审批在前,其余保持侧栏序
+  agents.sort((a, b) => Number(b.phase === "approval") - Number(a.phase === "approval"));
+  return { agents, focusedSessionId };
 }

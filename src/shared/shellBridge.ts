@@ -599,6 +599,23 @@ export interface IslandSnapshot {
   pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
 }
 
+/** 灵动岛列表里的一个会话(一行)。字段全是拍平后的字符串/枚举,Swift 纯渲染 */
+export interface IslandAgent {
+  sessionId: string;
+  /** 侧栏同款显示名(SessionSummary.title);null 兜底成短标签由渲染侧处理 */
+  title: string | null;
+  phase: "idle" | "active" | "approval";
+  currentTool: { verb: string; target: string } | null;
+  turnStartedAt: number | null;
+  pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
+}
+
+/** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行) */
+export interface IslandFleet {
+  agents: IslandAgent[];
+  focusedSessionId: string | null;
+}
+
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
