@@ -36,8 +36,8 @@ function textOf(e: SessionEvent): string | null {
   if (e.type === "tool_result") return e.output;
   return null;
 }
-function role(e: SessionEvent): string {
-  return e.type === "user_message" ? "user" : e.type === "assistant_message" ? "assistant" : "tool";
+function role(type: string): string {
+  return type === "user_message" ? "user" : type === "assistant_message" ? "assistant" : "tool";
 }
 function fmtTs(ts: number): string {
   const d = new Date(ts);
@@ -48,7 +48,7 @@ function renderEvents(events: SessionEvent[]): string {
   return events
     .map((e) => {
       const t = textOf(e);
-      return t === null ? null : `[#${e.seq}] ${role(e)}: ${clip(t)}`;
+      return t === null ? null : `[#${e.seq}] ${role(e.type)}: ${clip(t)}`;
     })
     .filter((x): x is string => x !== null)
     .join("\n");
@@ -126,7 +126,8 @@ export function createSessionSearchTool(): Tool {
         sessionId: hit.sessionId,
         seq: hit.seq,
         source: title,
-        locator: `${fmtTs(all[0]?.ts ?? 0)} · #${hit.seq}`,
+        locator: `${fmtTs(all.find((e) => e.seq === hit.seq)?.ts ?? all[0]?.ts ?? 0)} · #${hit.seq}`,
+        // 卡片两行截断，比正文的 SNIPPET(300) 短是有意的：discovery 命中列表要一眼扫过去，不是逐字读
         text: clip(hit.text, 160),
         score: hit.score,
       });
@@ -142,7 +143,7 @@ export function createSessionSearchTool(): Tool {
           .sort((x, y) => x.seq - y.seq);
         sections.push(`## ${hit.sessionId}「${title}」（最相关，命中 #${hit.seq}）\n${renderEvents(merged)}`);
       } else {
-        sections.push(`## ${hit.sessionId}「${title}」（命中 #${hit.seq}）\n[#${hit.seq}] ${hit.type}: ${clip(hit.text)}`);
+        sections.push(`## ${hit.sessionId}「${title}」（命中 #${hit.seq}）\n[#${hit.seq}] ${role(hit.type)}: ${clip(hit.text)}`);
       }
     });
     const result: SessionSearchResult = { mode, query, chunks };

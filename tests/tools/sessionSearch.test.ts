@@ -5,7 +5,9 @@ import type { ExecutionWorld, HistoryCapability } from "../../src/world/executio
 import type { SessionEvent } from "../../src/session/events.js";
 
 function ev(sessionId: string, seq: number, type: "user_message" | "assistant_message", content: string): SessionEvent {
-  return { sessionId, seq, ts: seq, type, content, model: "m" } as SessionEvent;
+  // ts 按分钟展开（不是 seq 原样）：locator 的时间格式化到分钟粒度，
+  // 相邻 seq 若共用同一 ms 时间戳会在断言里区分不出"取的是哪条事件的 ts"
+  return { sessionId, seq, ts: seq * 60_000, type, content, model: "m" } as SessionEvent;
 }
 const sessions: Record<string, SessionEvent[]> = {
   s1: [
@@ -51,6 +53,10 @@ describe("session_search", () => {
     expect(parsed.mode).toBe("discovery");
     expect(parsed.chunks!.map((c) => c.sessionId)).toEqual(["s1", "s2"]);
     expect(parsed.chunks![0]).toMatchObject({ seq: 7, score: 2, locator: expect.stringContaining("#7") });
+    // locator 用的是命中事件自己的 ts（seq 7 → 第 7 分钟），不是 session 起始的 ts（seq 0 → 第 0 分钟）。
+    // 只钉分钟位，不钉小时位：时区偏移是整小时（本机 Sydney +10/+11），分钟不受影响
+    expect(parsed.chunks![0]!.locator).toMatch(/:07 · #7/);
+    expect(parsed.chunks![0]!.locator).not.toMatch(/:00 · #7/);
   });
   it("discovery 零命中：人话 + 空 chunks", async () => {
     const out = await text({ query: "没有的词" });
