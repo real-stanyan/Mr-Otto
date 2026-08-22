@@ -35,7 +35,7 @@ export type SubagentPreamble =
 
 /** 全局前置词 —— 拼在每个子智能体正文前面的那一段。写死在代码里，不给用户改。
  *
- * 曾经它住在 ~/.otter/subagent-preamble.md、设置页有一张卡可以编。删掉的理由是
+ * 曾经它住在 ~/.mr-otto/subagent-preamble.md、设置页有一张卡可以编。删掉的理由是
  * 这段话说的是**协议事实**而不是偏好：「你的最终一段文本就是返回值」「你看不到
  * 父会话的对话」——它们描述的是这个 harness 的运行方式。用户删掉第一句，此后每个
  * 子智能体都会开始写寒暄，而父 agent 拿到的返回值就是那句寒暄，界面上不报任何错。
@@ -103,8 +103,8 @@ export interface SubagentDef {
   path: string;
   /** 哪个根目录来的 */
   source: string;
-  /** ~/.claude/agents/ 扫来的 = true：不去改用户 Claude Code 的配置。
-      内置那两份也是 true —— 它们压根不在磁盘上 */
+  /** 不能写回磁盘的 = true。现在只有内置那两份 —— 它们压根不在磁盘上
+      （曾经还有 ~/.claude/agents/ 扫来的那些，ADR-0056 之后不再扫） */
   readOnly: boolean;
   /** 随 app 一起发的内置定义（builtinSubagents），不在磁盘上。
       可选而不是必填：加个必填字段要动每一处构造点（含全部测试夹具），

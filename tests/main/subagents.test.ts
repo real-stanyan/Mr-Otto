@@ -294,25 +294,27 @@ describe("序列化往返", () => {
 });
 
 describe("subagentRoots", () => {
-  it("有工作区时四条，工作区排在用户前面（同名先到先得 = 工作区盖用户）", () => {
+  it("有工作区时两条，工作区排在用户前面（同名先到先得 = 工作区盖用户）", () => {
     expect(subagentRoots("/home/u", "/work/proj")).toEqual([
-      { root: "/work/proj/.otter/agents", readOnly: false, scope: "workspace" },
-      { root: "/work/proj/.claude/agents", readOnly: true, scope: "workspace" },
-      { root: "/home/u/.otter/agents", readOnly: false, scope: "user" },
-      { root: "/home/u/.claude/agents", readOnly: true, scope: "user" },
+      { root: "/work/proj/.mr-otto/agents", readOnly: false, scope: "workspace" },
+      { root: "/home/u/.mr-otto/agents", readOnly: false, scope: "user" },
     ]);
   });
 
-  it("没有工作区就只有用户那两条", () => {
-    expect(subagentRoots("/home/u", null).map((r) => r.scope)).toEqual(["user", "user"]);
+  it("不扫 .claude/agents(ADR-0056)", () => {
+    expect(subagentRoots("/home/u", "/work/proj").some((r) => r.root.includes(".claude"))).toBe(false);
+  });
+
+  it("没有工作区就只有用户那一条", () => {
+    expect(subagentRoots("/home/u", null).map((r) => r.scope)).toEqual(["user"]);
   });
 });
 
 describe("scanSubagents 的覆盖顺序", () => {
   it("同名时工作区那份赢，且 scope 跟着赢的那条根走", () => {
     const files: Record<string, string[]> = {
-      "/work/.otter/agents": ["r.md"],
-      "/home/.otter/agents": ["r.md"],
+      "/work/.mr-otto/agents": ["r.md"],
+      "/home/.mr-otto/agents": ["r.md"],
     };
     const reader = {
       listFiles: (root: string) => files[root] ?? [],
@@ -354,7 +356,7 @@ describe("trustedWorkspaceForWrite（写路径）", () => {
     expect(trustedWorkspaceForWrite("/work/proj", known)).toBe("/work/proj");
   });
 
-  it("不在名单里的**抛**,不降级——降级 = 对话框说建在 W,文件落进 ~/.otter/agents", () => {
+  it("不在名单里的**抛**,不降级——降级 = 对话框说建在 W,文件落进 ~/.mr-otto/agents", () => {
     expect(() => trustedWorkspaceForWrite("/Users/victim/Desktop", known)).toThrow(/不认识这个工作区/);
   });
 
@@ -370,7 +372,7 @@ describe("trustedWorkspaceForWrite（写路径）", () => {
 });
 
 describe("subagentSlotTaken", () => {
-  const wsRoot = { root: "/w/.otter/agents", readOnly: false, scope: "workspace" as const };
+  const wsRoot = { root: "/w/.mr-otto/agents", readOnly: false, scope: "workspace" as const };
   const md = (name: string) => `---\nname: ${name}\ndescription: d\n---\n正文\n`;
 
   const readerFor = (files: Record<string, string>): SubagentDirReader => ({
@@ -383,8 +385,8 @@ describe("subagentSlotTaken", () => {
 
   it("落点空着 = 没占——哪怕用户级有个同名的:盖住用户级正是覆盖规则的用法", () => {
     const reader = readerFor({
-      "/home/.otter/agents/reviewer.md": md("reviewer"),
-      "/w/.otter/agents/other.md": md("other"),
+      "/home/.mr-otto/agents/reviewer.md": md("reviewer"),
+      "/w/.mr-otto/agents/other.md": md("other"),
     });
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(false);
   });
@@ -398,17 +400,17 @@ describe("subagentSlotTaken", () => {
   });
 
   it("同一层已经有同名的 = 占了", () => {
-    const reader = readerFor({ "/w/.otter/agents/reviewer.md": md("reviewer") });
+    const reader = readerFor({ "/w/.mr-otto/agents/reviewer.md": md("reviewer") });
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
   });
 
   it("文件名对得上但没 frontmatter 也算占了——覆盖上去等于抹掉别人的文件", () => {
-    const reader = readerFor({ "/w/.otter/agents/reviewer.md": "只是一篇随手记的笔记\n" });
+    const reader = readerFor({ "/w/.mr-otto/agents/reviewer.md": "只是一篇随手记的笔记\n" });
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
   });
 
   it("文件名和 name: 不一致时撞的是名字,不是路径", () => {
-    const reader = readerFor({ "/w/.otter/agents/foo.md": md("reviewer") });
+    const reader = readerFor({ "/w/.mr-otto/agents/foo.md": md("reviewer") });
     expect(subagentSlotTaken(wsRoot, "reviewer", KNOWN, reader)).toBe(true);
     expect(subagentSlotTaken(wsRoot, "bar", KNOWN, reader)).toBe(false);
   });
