@@ -94,11 +94,18 @@ export class EventStore {
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
 
-    const hadFts = this.db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'")
-      .get();
-    this.db.exec(FTS_SCHEMA);
-    if (!hadFts) this.rebuildFts(); // 老库第一次开：一次性回填
+    // 建表 + 回填一次性焊死在一个事务里：不然崩在"表建完、回填还没跑"那道缝上，
+    // 下次开库会看见 events_fts 已存在（= 判定"已回填"，见 rebuildFts 之上的注释），
+    // 索引从此永久空着、永远不会被自愈。CREATE VIRTUAL TABLE / CREATE TRIGGER 在
+    // SQLite 里本身就是事务性 DDL，better-sqlite3 的 transaction() 支持嵌套（内部转
+    // SAVEPOINT），rebuildFts() 自己那层事务原样嵌进来
+    this.db.transaction(() => {
+      const hadFts = this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'")
+        .get();
+      this.db.exec(FTS_SCHEMA);
+      if (!hadFts) this.rebuildFts(); // 老库第一次开：一次性回填
+    })();
   }
 
   /** 追加一条事件，seq 由存储层分配，返回完整事件 */

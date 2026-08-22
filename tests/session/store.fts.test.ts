@@ -79,4 +79,23 @@ describe("EventStore FTS", () => {
     expect(s.searchText("回填这句话")).toMatchObject([{ sessionId: "old", seq: 1 }]);
     s.close();
   });
+
+  it("events_fts 表已建但是空的 + events 里有数据 → 不回填（存在即视为已完成，不看是否为空）", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "otto-fts-")), "log.db");
+    const legacy = new Database(path);
+    legacy.exec(
+      `CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, type TEXT NOT NULL, sandbox_id TEXT, payload TEXT NOT NULL, PRIMARY KEY (session_id, seq))`
+    );
+    legacy.exec(
+      `CREATE VIRTUAL TABLE events_fts USING fts5(session_id UNINDEXED, seq UNINDEXED, type UNINDEXED, text, tokenize='trigram')`
+    );
+    legacy.prepare("INSERT INTO events VALUES ('old', 0, 1, 'session_created', NULL, '{\"workspace\":\"/w\"}')").run();
+    legacy
+      .prepare("INSERT INTO events VALUES ('old', 1, 2, 'user_message', NULL, '{\"content\":\"不该被回填的句子\"}')")
+      .run();
+    legacy.close();
+    const s = new EventStore(path);
+    expect(s.searchText("不该被回填的句子")).toEqual([]);
+    s.close();
+  });
 });
