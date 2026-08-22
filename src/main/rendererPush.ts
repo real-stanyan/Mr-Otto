@@ -24,11 +24,15 @@ export interface SendTarget {
 
 export type Send = (channel: string, ...args: unknown[]) => void;
 
-export function createSend(win: SendTarget): Send {
+/** 多目标:主窗 + 岛窗都是日志的投影窗口,每条推送两边都要到。
+    每个目标各自查 destroyed —— 主窗 Cmd+W 关了,岛照常收 */
+export function createSend(...targets: SendTarget[]): Send {
   return (channel, ...args) => {
-    // 两个都查:窗口还在但 webContents 先没了是可能的(崩溃/重载),
-    // 只查 win.isDestroyed() 挡不住那一种
-    if (win.isDestroyed() || win.webContents.isDestroyed()) return;
-    win.webContents.send(channel, ...args);
+    for (const win of targets) {
+      // 两个都查:窗口还在但 webContents 先没了是可能的(崩溃/重载),
+      // 只查 win.isDestroyed() 挡不住那一种
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      win.webContents.send(channel, ...args);
+    }
   };
 }
