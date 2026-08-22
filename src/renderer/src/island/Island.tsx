@@ -13,7 +13,7 @@ function useIsland() {
     const offs = [
       window.otter.onActiveSessionChanged((b) => {
         setModel(b.model);
-        dispatch({ kind: "activeSession", sessionId: b.activeSessionId });
+        dispatch({ kind: "activeSession", boot: b, now: Date.now() });
       }),
       window.otter.onEvent((event) => dispatch({ kind: "event", event })),
       window.otter.onTurnStatus((update) => dispatch({ kind: "turnStatus", update, now: Date.now() })),
@@ -21,7 +21,7 @@ function useIsland() {
     ];
     void window.otter.islandBoot().then((b) => {
       setModel(b.model);
-      dispatch({ kind: "activeSession", sessionId: b.activeSessionId });
+      dispatch({ kind: "activeSession", boot: b, now: Date.now() });
     });
     return () => offs.forEach((off) => off());
   }, []);

@@ -17,6 +17,8 @@ import {
   type McpServerConfig,
   type McpServersSnapshot,
   type IslandBoot,
+  type ApprovalRequest,
+  type ApprovalPreview,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -28,7 +30,8 @@ import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { Tool } from "../tools/tool.js";
 import { composeUserText } from "../session/deriveMessages.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
@@ -466,17 +469,28 @@ void app.whenReady().then(() => {
       : null;
   };
 
+  // 审批卡的载荷只在这里拼一次:实时推送(push.approvalRequest)和岛窗补快照
+  // (islandSnapshot)必须交出同一形状的东西 —— 否则"中途切进来看到的卡"和
+  // "刚推过来的卡"会长得不一样,而它们说的是同一件事(#175 I1)
+  const approvalPayload = (
+    sessionId: string,
+    call: ToolCallRequest,
+    tool: Tool,
+    preview?: ApprovalPreview,
+    fromAgent?: string
+  ): ApprovalRequest => ({
+    sessionId,
+    call,
+    toolDescription: tool.def.description,
+    ...(preview ? { preview } : {}),
+    ...(fromAgent ? { fromAgent } : {}),
+  });
+
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
     event: (e) => send(CHANNELS.event, e),
     approvalRequest: (sessionId, call, tool, preview, fromAgent) =>
-      send(CHANNELS.approvalRequest, {
-        sessionId,
-        call,
-        toolDescription: tool.def.description,
-        ...(preview ? { preview } : {}),
-        ...(fromAgent ? { fromAgent } : {}),
-      }),
+      send(CHANNELS.approvalRequest, approvalPayload(sessionId, call, tool, preview, fromAgent)),
     askUserRequest: (sessionId, toolCallId, questions) =>
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
     assistantDelta: (sessionId, text, kind) =>
@@ -649,10 +663,21 @@ void app.whenReady().then(() => {
 
   // 岛只跟主窗当前会话。主进程存这一个 id:岛窗 boot 时问,变化时推
   let activeSessionId: string | null = null;
-  const islandSnapshot = (): IslandBoot => ({
-    activeSessionId,
-    model: activeSessionId ? (agents.get(activeSessionId)?.model ?? null) : null,
-  });
+  const islandSnapshot = (): IslandBoot => {
+    const agent = activeSessionId ? agents.get(activeSessionId) : undefined;
+    // 挂着的审批原样补给岛:UIApprover 存的就是 requestFromUI 当初拿到的 (call, tool)。
+    // 刻意不补 preview —— 它是异步现算的(buildApprovalPreview 要 world),而岛的
+    // 审批卡只用 call 做一行摘要,补一份算不出来的东西不如明确地不给(preview 可选)。
+    // fromAgent 同理缺席:这里问的是主 agent 自己的 approver,子 agent 的卡是冒泡来的
+    const pending = agent?.approver.pendingRequest();
+    return {
+      activeSessionId,
+      model: agent?.model ?? null,
+      running: activeSessionId ? runningSessions.has(activeSessionId) : false,
+      pendingApproval:
+        pending && activeSessionId ? approvalPayload(activeSessionId, pending.call, pending.tool) : null,
+    };
+  };
   ipcMain.handle(CHANNELS.setActiveSession, (_e, sessionId: string | null) => {
     activeSessionId = sessionId;
     send(CHANNELS.activeSessionChanged, islandSnapshot());

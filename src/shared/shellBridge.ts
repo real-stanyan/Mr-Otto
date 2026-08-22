@@ -564,10 +564,17 @@ export interface ShellBridge {
   onActiveSessionChanged(cb: (info: IslandBoot) => void): Unsubscribe;
 }
 
-/** 岛窗的首帧 / 变化推送都是这一份 */
+/** 岛窗的首帧 / 变化推送都是这一份。
+    只带 activeSessionId 是不够的:岛窗可能在 turn 跑到一半才起来(或者用户中途
+    切进一个正在跑的会话),那时它错过了所有 turnStatus/approvalRequest 推送,
+    只靠"从此刻起的增量"永远显示空闲(#175 I1)。所以快照要带上活的状态 */
 export interface IslandBoot {
   activeSessionId: string | null;
   model: string | null;
+  /** 这个会话此刻有没有 turn 在跑 —— 岛据此直接进活动态 */
+  running: boolean;
+  /** 此刻挂着的那张审批卡(没有 = null)—— 岛据此直接进审批态 */
+  pendingApproval: ApprovalRequest | null;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
