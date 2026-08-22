@@ -13,4 +13,12 @@ describe("autoCompactStore", () => {
     saveAutoCompact(p, { enabled: true, threshold: "x" as unknown as number });
     expect(loadAutoCompact(p)).toEqual({ enabled: true });
   });
+
+  it("threshold 越界（有限数但超出 [THRESHOLD_MIN, THRESHOLD_MAX]）落盘前夹住", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "otto-ac-")), "auto-compact.json");
+    saveAutoCompact(p, { enabled: true, threshold: 5 });
+    expect(loadAutoCompact(p)).toEqual({ enabled: true, threshold: 0.9 });
+    saveAutoCompact(p, { enabled: true, threshold: -1 });
+    expect(loadAutoCompact(p)).toEqual({ enabled: true, threshold: 0.3 });
+  });
 });
