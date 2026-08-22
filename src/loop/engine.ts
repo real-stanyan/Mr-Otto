@@ -2,8 +2,9 @@
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
 import type { EventStore, NewSessionEvent } from "../session/store.js";
-import type { SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
+import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
@@ -112,20 +113,40 @@ export class LoopEngine {
   }
 
   /** /compact：把现有上下文交给模型写摘要，摘要落盘成 context_compacted 事件，
-      之后的投影从摘要起步。贵（一次全量输入 + 摘要输出），所以只由用户手动触发。
+      之后的投影从摘要起步。贵（一次全量输入 + 摘要输出）——manual 是用户主动要，
+      auto 是上下文超阈值自动触发（trigger 字段落盘，溯源谁点的火）。
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
-  async compact(): Promise<void> {
+  async compact(opts: { trigger: "auto" | "manual" } = { trigger: "manual" }): Promise<void> {
     const { store, sessionId } = this.opts;
+    const log = store.load(sessionId);
     // 摘要专用投影（ADR-0003）：整段历史无保真区，长工具输出/参数都截断——
-    // 摘要人要的是"发生了什么"，不是逐字证据；输入 token 是 compact 的主要成本
-    const messages = deriveMessages(store.load(sessionId), COMPACT_COMPRESSION);
+    // 摘要人要的是"发生了什么"，不是逐字证据；输入 token 是 compact 的主要成本。
+    // system 消息脱敏：memory_loaded 无条件拼进 system 尾部（deriveMessages 375 行，
+    // ADR-0060），且不经过压缩——这是记忆里的 key 能泄到摘要人手上的另一条路，
+    // 和下面新拼的 MEMORY CONTEXT 段是同一个风险、同一次外发，一并处理
+    const messages = deriveMessages(log, COMPACT_COMPRESSION).map((m) =>
+      m.role === "system" ? { ...m, content: redactSensitiveText(m.content) } : m
+    );
+    // 压缩前把长期记忆递给摘要人（hermes 的 on_pre_compress 同款）：已经在记忆里的
+    // 事实不必再进摘要；脱敏 + 截断——记忆是自由文本，难免混进 key，摘要是另一次外发。
+    // 反向查找最新一条（一个 session 通常只有一条，但保险起见找最后一条）
+    const mem = [...log].reverse().find((e): e is MemoryLoadedEvent => e.type === "memory_loaded");
+    const memText = mem ? [mem.memory, mem.user].filter(Boolean).join("\n§\n") : "";
+    const memoryContext = memText
+      ? [{
+          role: "user" as const,
+          content: `MEMORY CONTEXT（已在长期记忆里的事实，摘要里不要重复）:\n${clipHeadTail(redactSensitiveText(memText))}`,
+        }]
+      : [];
     const reply = await this.adapter.chat([
       ...messages,
+      ...memoryContext,
       {
         role: "user",
         content:
           "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
           "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
+          (memText ? "MEMORY CONTEXT 里已有的事实不要重复写进摘要。" : "") +
           "直接输出摘要正文，不要开场白。",
       },
     ]); // 不带工具：这一步只要文字
@@ -136,6 +157,7 @@ export class LoopEngine {
       type: "context_compacted",
       summary: reply.content,
       model: this.adapter.model,
+      trigger: opts.trigger,
       ...(reply.usage ? { usage: reply.usage } : {}),
     });
   }
