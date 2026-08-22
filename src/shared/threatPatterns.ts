@@ -7,7 +7,7 @@ const RULES: { name: string; re: RegExp }[] = [
   { name: "fake-role-tag", re: /<\/?\s*(system|assistant|developer|tool)\s*>|\[(SYSTEM|INST)\]/i },
   { name: "pipe-to-shell", re: /(curl|wget)\s[^|\n]*\|\s*(ba|z|)sh\b/i },
   { name: "persona-hijack", re: /\b(you are now|from now on you are|act as)\s+(a |an |the )?(?:unrestricted|jailbroken|uncensored|DAN|evil|free)\b|\bwithout (any )?(restrictions|limits|rules|filters)\b|(从现在开始|现在起)你是(一个)?(没有|无)(任何)?(限制|规则|过滤)|你现在是一个(没有|无)(任何)?(限制|规则)/i },
-  { name: "exfiltration", re: /(send|post|upload|发送|上传)[^\n]{0,40}(api[_ ]?key|token|password|密码|密钥)/i },
+  { name: "exfiltration", re: /(?:\b(?:send|post|upload)\b|发送|上传)[^\n]{0,40}(api[_ ]?key|token|password|密码|密钥)/i },
 ];
 
 export function scanThreat(text: string): string | null {
