@@ -97,7 +97,7 @@ export interface SkillInfo {
   description: string;
   /** SKILL.md 绝对路径 */
   path: string;
-  /** 来自哪个 skill 根目录（~/.otter/skills 或 ~/.claude/skills） */
+  /** 来自哪个 skill 根目录（~/.mr-otto/skills 或 ~/.claude/skills） */
   source: string;
   content: string;
 }
@@ -362,7 +362,7 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
-  /** MCP server 清单 + 各自状态,外加 ~/.otter/mcp.json 解析阶段的人话错误
+  /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
       配置里的 env/headers 已遮罩（真值不出主进程） */

@@ -16,10 +16,21 @@ const noise: SessionEvent = {
 };
 
 describe("modelHandoff —— 一条 model_changed 的两端", () => {
-  it("第一次切换没有来处：日志里没有会话的默认模型这条事实，不编一个", () => {
+  it("开局就切、一条回复都没有：没有来处，不编一个默认模型", () => {
     const h = modelHandoff([sw(1, "deepseek", "deepseek-chat")], 1);
     expect(h).toEqual({ to: { provider: "deepseek", model: "deepseek-chat" }, settled: false });
     expect(h?.from).toBeUndefined();
+  });
+
+  it("第一次切换的来处 = 之前最后一条回复的 model（事实），厂商从目录反查", () => {
+    const reply = { sessionId: "s", type: "assistant_message", content: "在", model: "glm-4.5-flash", seq: 2, ts: 0 } as SessionEvent;
+    const h = modelHandoff([reply, sw(3, "glm", "glm-4.6v-flash")], 3);
+    expect(h?.from).toEqual({ provider: "glm", model: "glm-4.5-flash" });
+  });
+
+  it("目录里没有、也没带厂商前缀的型号认不出来处 → 不画", () => {
+    const reply = { sessionId: "s", type: "assistant_message", content: "在", model: "mystery-9000", seq: 2, ts: 0 } as SessionEvent;
+    expect(modelHandoff([reply, sw(3, "glm", "glm-4.6")], 3)?.from).toBeUndefined();
   });
 
   it("来处 = 上一条 model_changed，中间隔着别的事件也认得出", () => {

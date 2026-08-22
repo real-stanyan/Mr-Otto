@@ -32,7 +32,7 @@ export function useSubagentScope(): SubagentScopeView {
   return {
     options,
     current,
-    scopeDir: current.workspace ? `${current.workspace}/.otter/agents` : "~/.otter/agents",
+    scopeDir: current.workspace ? `${current.workspace}/.mr-otto/agents` : "~/.mr-otto/agents",
     showScope: current.workspace !== null,
     setScope,
   };

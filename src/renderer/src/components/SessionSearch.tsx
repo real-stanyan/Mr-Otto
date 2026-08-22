@@ -68,7 +68,10 @@ export function SessionSearchDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       {/* 面板自己就是一张卡(paper + 圆角),Dialog 的外壳去掉边框/内边距,
           免得两层卡片套在一起 */}
-      <DialogContent className="max-w-[480px] border-0 bg-transparent p-0 shadow-none">
+      <DialogContent
+        showCloseButton={false}
+        className="w-[480px] max-w-[calc(100%-2rem)] sm:max-w-[480px] border-0 bg-transparent p-0 shadow-none"
+      >
         <DialogHeader className="sr-only">
           <DialogTitle>搜索会话</DialogTitle>
         </DialogHeader>
@@ -84,7 +87,9 @@ export function SessionSearchDialog() {
           }}
           placeholder="搜索会话"
           emptyLabel={query === "" ? "还没有会话" : `没有会话匹配「${query}」`}
-          className="max-h-[60vh] max-w-none overflow-y-auto"
+          // min-w-0:DialogContent 是 grid,格子里的东西默认 min-width:auto ——
+          // 一条带长串英文的会话标题就能把面板撑过 480px,truncate 根本没机会生效
+          className="min-w-0 max-h-[60vh] max-w-none"
         />
       </DialogContent>
     </Dialog>

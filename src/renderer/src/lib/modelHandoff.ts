@@ -1,8 +1,10 @@
 // 一条 model_changed 事件 → 这一次交接的两端。
 //
 // 日志里每条 model_changed 只记落点("换成了谁"),没记来处 —— 来处是**推出来**的:
-// 它就是上一条 model_changed,再往前没有就是会话起点(那时用的是默认模型,
-// 日志里没有它,所以第一条交接不画来源,见 elements/agent-handoff 的本仓改动②)。
+// 它就是上一条 model_changed;再往前没有,就看这次切换之前最后一条 assistant_message
+// 的 model 字段 —— 那是"实际生成这条的模型",是事实不是配置,拿来当来处不算编。
+// 连一条回复都还没有就切了(开局先换模型)才真的没有来处,这时不画来源
+// (见 elements/agent-handoff 的本仓改动②)。会话默认模型仍然不猜:日志没记它。
 //
 // settled = 这次交接后来又被下一次覆盖了。当前生效的那一次不 settled ——
 // 一屏里可能有好几条切换行,读的人真正要认出的是"现在跑的是哪一个"。
@@ -10,6 +12,7 @@
 // 纯函数、不 import 渲染层的东西:vitest 直接跑(测试不解析 @/ 别名)
 
 import type { SessionEvent } from "../../../session/events.js";
+import { findModel } from "../../../shared/modelCatalog.js";
 
 export interface ModelSide {
   provider: string;
@@ -29,10 +32,12 @@ export function modelHandoff(events: readonly SessionEvent[], seq: number): Mode
   const self = switches[i];
   if (i === -1 || !self || self.type !== "model_changed") return null;
   const prev = switches[i - 1];
+  const from =
+    prev && prev.type === "model_changed"
+      ? { provider: prev.provider, model: prev.model }
+      : lastReplyModel(events, seq);
   return {
-    ...(prev && prev.type === "model_changed"
-      ? { from: { provider: prev.provider, model: prev.model } }
-      : {}),
+    ...(from ? { from } : {}),
     to: { provider: self.provider, model: self.model },
     settled: i < switches.length - 1,
   };
@@ -47,4 +52,18 @@ export function modelHandoff(events: readonly SessionEvent[], seq: number): Mode
 export function modelSideLabel(side: ModelSide): string {
   const prefix = `${side.provider}/`;
   return side.model.startsWith(prefix) ? side.model.slice(prefix.length) : side.model;
+}
+
+/** 这次切换之前最后一条回复是谁生成的。assistant_message.model 只记型号 id,
+    厂商从目录反查;目录里没有(自定义/已下架)但带 "x/" 前缀的,前缀就是厂商;
+    两样都没有就认不出,不硬凑 */
+function lastReplyModel(events: readonly SessionEvent[], before: number): ModelSide | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (!e || e.seq >= before || e.type !== "assistant_message") continue;
+    const provider = findModel(e.model)?.provider ?? e.model.split("/")[0];
+    if (!provider || provider === e.model) return undefined;
+    return { provider, model: e.model };
+  }
+  return undefined;
 }

@@ -10,6 +10,7 @@
 // 两步之间用户可能切了作用域，那时不能接着写（见 submit 里的第二道判断）。
 
 import { useMemo, useState } from "react";
+import { Bot } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { cn } from "@/lib/utils.js";
@@ -83,9 +84,10 @@ export function NewSubagentPage({
         <span className="inline-flex items-baseline gap-[6px] flex-1 min-w-0">
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground transition-colors duration-150"
+            className="text-muted-foreground hover:text-foreground transition-colors duration-150 [&_svg]:align-[-3px] [&_svg]:me-[6px] [&_svg]:inline"
             onClick={onCancel}
           >
+            <Bot className="size-4" />
             子智能体
           </button>
           <span className="text-muted-foreground/60">/</span>
@@ -127,7 +129,7 @@ export function NewSubagentPage({
               >
                 作用域
               </label>
-              <SubagentScopeSelect scope={scope} id="new-subagent-scope" className="py-[7px]" />
+              <SubagentScopeSelect scope={scope} id="new-subagent-scope" />
             </div>
           </div>
           {shadowed && (

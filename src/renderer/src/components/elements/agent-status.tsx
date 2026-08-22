@@ -18,7 +18,7 @@
 //     就不显示 elapsed，两者不会同时出现）。
 
 import type { ComponentProps, KeyboardEvent } from "react";
-import { CheckIcon } from "lucide-react";
+import { BotIcon, CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
 
@@ -34,18 +34,25 @@ export function AgentStatus({
   label,
   elapsed,
   fact,
+  model,
   onSelect,
+  expanded = false,
+  children,
   className,
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "state" | "label" | "elapsed" | "onClick" | "onKeyDown"
+  "state" | "label" | "elapsed" | "onClick" | "onKeyDown"
 > & {
+  /** 点开了:胶囊撑成卡,children(转录面板)挂在头行下面 */
+  expanded?: boolean;
   state: AgentState;
   label: string;
   elapsed?: string;
   /** 收口后的一句事实（步数 · token），取代 elapsed 的位置 */
   fact?: string;
+  /** 子会话用的模型,钉在最右边 */
+  model?: string;
   /** 给了才可点：点这一行 = 进这个 subagent 对应的子会话 */
   onSelect?: () => void;
 }) {
@@ -65,15 +72,21 @@ export function AgentStatus({
             },
           }
         : {})}
+      data-expanded={expanded || undefined}
       className={cn(
         paper,
-        "flex items-center gap-2.5 rounded-full py-1.5 ps-3.5 pe-3.5",
+        "flex flex-col gap-2 py-1.5 ps-3.5 pe-3.5",
+        expanded ? "w-full max-w-2xl rounded-2xl pb-2.5" : "rounded-full",
         clickable &&
           "cursor-pointer transition-transform duration-[160ms] ease-out active:scale-[0.97]",
+        // 点开后整张卡别再跟着按压缩放:里面是要滚着读的东西
+        expanded && "active:scale-100",
         className,
       )}
       {...props}
     >
+      <div className="flex items-center gap-2.5">
+      <BotIcon aria-hidden className="text-foreground/60 size-3.5 shrink-0" />
       {state === "done" ? (
         <CheckIcon aria-hidden className="size-3 shrink-0 text-emerald-500" />
       ) : (
@@ -87,12 +100,19 @@ export function AgentStatus({
           )}
         />
       )}
-      <span className="max-w-44 truncate text-xs">{label}</span>
+      <span className="min-w-0 max-w-80 flex-1 truncate text-xs">{label}</span>
       {fact !== undefined ? (
-        <span className={cn(mono, "text-foreground/35 tabular-nums")}>{fact}</span>
+        <span className={cn(mono, "text-foreground/35 shrink-0 tabular-nums")}>{fact}</span>
       ) : elapsed !== undefined && state !== "done" ? (
-        <span className={cn(mono, "text-foreground/30 tabular-nums")}>{elapsed}</span>
+        <span className={cn(mono, "text-foreground/30 shrink-0 tabular-nums")}>{elapsed}</span>
       ) : null}
+      {model !== undefined && (
+        <span className={cn(mono, "text-foreground/50 ms-1 shrink-0 border-s border-foreground/10 ps-2.5")}>
+          {model}
+        </span>
+      )}
+      </div>
+      {expanded ? children : null}
     </div>
   );
 }

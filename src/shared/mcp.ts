@@ -68,7 +68,7 @@ export interface McpServerStatus {
 
 /** listMcpServers 等四个读写方法过桥的整体形状：server 清单 + 配置文件
     解析阶段的错误。errors 挂在这里而不是塞进某一台 server 的字段——它是
-    整份 ~/.otter/mcp.json 级别的问题（一行 JSON 坏了、缺 command/url），
+    整份 ~/.mr-otto/mcp.json 级别的问题（一行 JSON 坏了、缺 command/url），
     不属于任何一台已经解析成功的 server（mcpConfig.ts 的 parseMcpConfig
     早就结构化产出了这份清单；review finding 4 之前它只是从没被接到桥上，
     设置页（Task 8/9，未在本次开工）能不能显示它，取决于这个字段先落地）。 */

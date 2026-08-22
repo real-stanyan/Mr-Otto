@@ -23,8 +23,8 @@
 //     duration-500 先例），700ms 让"跑着→完成"这个切换看得清，不是漏改。
 //     写在这里而不是当成疏漏，免得下一次升级/复核把它"修"回 160ms。
 
-import type { ComponentProps, KeyboardEvent } from "react";
-import { CheckIcon, Loader2Icon } from "lucide-react";
+import type { ComponentProps, KeyboardEvent, ReactNode } from "react";
+import { BotIcon, CheckIcon, Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
 import { pct } from "@/lib/range.js";
@@ -32,7 +32,7 @@ import { pct } from "@/lib/range.js";
 export interface SubagentItem {
   name: string;
   model: string;
-  /** 收口后的一句事实（步数 · token）。存在时取代 model 的展示位置 */
+  /** 收口后的一句事实（步数 · token）。model 始终钉在最右,fact 排它左边 */
   fact?: string;
   /** 派下去那件事的首行（spec §五：名字 + 任务首行）。同一条消息里把同一个
       agent 派两次是常事，只印名字的话两行一模一样，看不出谁是谁 */
@@ -49,6 +49,8 @@ export function SubagentList({
   showSummary,
   summaryAgent,
   onSelectAgent,
+  expandedIndex = null,
+  renderDetail,
   className,
   ...props
 }: Omit<
@@ -65,14 +67,18 @@ export function SubagentList({
   progress: readonly number[];
   showSummary: boolean;
   summaryAgent: SubagentItem;
-  /** 给了才可点：点某一行 = 进那一行对应的子会话 */
+  /** 给了才可点：点某一行 = 展开/收起那一行 */
   onSelectAgent?: (index: number) => void;
+  /** 哪一行点开了(一次只开一行,看完收起看下一个) */
+  expandedIndex?: number | null;
+  /** 点开那一行下面画什么(转录面板) */
+  renderDetail?: (index: number) => ReactNode;
 }) {
   return (
     <div
       data-slot="subagent-list"
       className={cn(
-        "flex min-h-[14.5rem] w-full max-w-xs flex-col gap-2",
+        "flex min-h-[14.5rem] w-full max-w-2xl flex-col gap-2",
         className,
       )}
       {...props}
@@ -81,10 +87,12 @@ export function SubagentList({
         const done = index < completedCount;
         const width = progress[index] ?? 0;
         const clickable = onSelectAgent !== undefined;
+        const expanded = expandedIndex === index;
 
         return (
           <div
             key={agent.id ?? agent.name}
+            data-expanded={expanded || undefined}
             {...(clickable
               ? {
                   role: "button" as const,
@@ -102,9 +110,11 @@ export function SubagentList({
               "flex flex-col gap-2 rounded-2xl px-3.5 py-2.5",
               clickable &&
                 "cursor-pointer transition-transform duration-[160ms] ease-out active:scale-[0.97]",
+              expanded && "active:scale-100",
             )}
           >
             <div className="flex items-center gap-2">
+              <BotIcon className="text-foreground/60 size-3.5 shrink-0" />
               {done ? (
                 <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
               ) : (
@@ -116,9 +126,14 @@ export function SubagentList({
                   <span className="text-foreground/45"> · {agent.task}</span>
                 ) : null}
               </span>
-              <span className={cn(mono, "text-foreground/35 shrink-0")}>
-                {agent.fact ?? agent.model}
-              </span>
+              {agent.fact ? (
+                <span className={cn(mono, "text-foreground/35 shrink-0 tabular-nums")}>{agent.fact}</span>
+              ) : null}
+              {agent.model ? (
+                <span className={cn(mono, "text-foreground/50 shrink-0 border-s border-foreground/10 ps-2.5")}>
+                  {agent.model}
+                </span>
+              ) : null}
             </div>
             <span className="bg-foreground/[0.06] h-[3px] w-full overflow-hidden rounded-full">
               <span
@@ -129,6 +144,7 @@ export function SubagentList({
                 style={{ width: `${pct(width, 100)}%` }}
               />
             </span>
+            {expanded && renderDetail ? renderDetail(index) : null}
           </div>
         );
       })}

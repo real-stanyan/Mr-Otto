@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { liveTimingStats, timingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
+import { accumulateTurn, EMPTY_TURN_AGG, liveTimingStats, timingStats, turnTimingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
 
 const val = (stats: { label: string; value: string }[], label: string): string | undefined =>
   stats.find((s) => s.label === label)?.value;
@@ -122,5 +122,22 @@ describe("liveTimingStats —— turn 跑着的时候那一行", () => {
   it("耗时永远在，token 那一格永远在 —— 这一行不会整条消失", () => {
     expect(live({ elapsedMs: 0, completionTokens: 0, promptTokens: 0 }).map((s) => s.label))
       .toEqual(["elapsed", "tokens"]);
+  });
+});
+
+describe("turnTimingStats(按 turn 结算)", () => {
+  it("几波调用的 token / 钱累加,吞吐按模型时间,耗时按墙上时间", () => {
+    let agg = accumulateTurn(EMPTY_TURN_AGG, { model: "claude-sonnet-5", usage: { promptTokens: 1000, completionTokens: 100 } }, 1000);
+    agg = accumulateTurn(agg, { model: "claude-sonnet-5", usage: { promptTokens: 2000, completionTokens: 200 } }, 2000);
+    const stats = turnTimingStats({ ...agg, wallMs: 10_000 });
+    expect(stats.find((s) => s.label === "elapsed")?.value).toBe("10.0s");
+    expect(stats.find((s) => s.label === "tok/s")?.value).toBe("100");
+    expect(stats.find((s) => s.label === "tokens")?.value).toBe("↑3.0k ↓300");
+    expect(stats.some((s) => s.label === "cost")).toBe(true);
+  });
+  it("有一条算不出价钱,整段不出 cost", () => {
+    let agg = accumulateTurn(EMPTY_TURN_AGG, { model: "claude-sonnet-5", usage: { promptTokens: 1, completionTokens: 1 } }, 10);
+    agg = accumulateTurn(agg, { model: "no-such-model", usage: { promptTokens: 1, completionTokens: 1 } }, 10);
+    expect(turnTimingStats({ ...agg, wallMs: 20 }).some((s) => s.label === "cost")).toBe(false);
   });
 });

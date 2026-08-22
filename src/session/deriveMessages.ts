@@ -43,7 +43,7 @@ export function systemPromptText(workspace: string): string {
     也明说"平铺直叙能说清就别用"：这些卡是给真有结构的内容准备的，
     不是给每段话都套一个框。 */
 const STRUCTURED_BLOCKS =
-  `\n界面能把下面六种围栏渲染成卡片（围栏里只放 JSON，字段不全或写错会原样显示成代码块）：\n` +
+  `\n界面能把下面六种围栏渲染成卡片（围栏里只放严格 JSON——键名带双引号，不是 JS 对象字面量；字段不全或写错会原样显示成代码块）：\n` +
   `\`\`\`otto-spec  {title, subtitle?, rows:[{label, value, emphasis?}]} —— 参数表/规格表\n` +
   `\`\`\`otto-compare  {traitLabels:[…], options:[{id, name, headline, traits:[字符串或 false]}], recommendedId, reason} —— 几个方案对比\n` +
   `\`\`\`otto-score  {verdict, total, outOf, criteria:[{label, score, weight, note?}]} —— 打分\n` +

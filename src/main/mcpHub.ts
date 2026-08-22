@@ -16,7 +16,7 @@ export interface McpHub extends McpCapability {
   reconnect(id: string): Promise<void>;
   onChange(cb: () => void): () => void;
   closeAll(): Promise<void>;
-  /** 上一次读 ~/.otter/mcp.json 时,解析不动的那几行的人话原因(mcpConfig.ts
+  /** 上一次读 ~/.mr-otto/mcp.json 时,解析不动的那几行的人话原因(mcpConfig.ts
       的 parseMcpConfig 早就结构化产出了这份清单,但过去没人把它接到桥上——
       一台配置坏了不该拖垮别的 server,但也不该连错在哪都不告诉用户)。
       每次 syncFromDisk()(被 list()/save()/remove() 间接触发)都会刷新它 */

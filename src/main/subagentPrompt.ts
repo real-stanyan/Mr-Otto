@@ -97,7 +97,7 @@ export function composeSubagentPrompt(opts: {
   docs: readonly ContextDoc[];
 }): string {
   const p = opts.def.preamble;
-  // "用全局" = 代码里那一份常量。它曾经是"读 ~/.otter/subagent-preamble.md，
+  // "用全局" = 代码里那一份常量。它曾经是"读 ~/.mr-otto/subagent-preamble.md，
   // 没有就用内置默认"，那条路连同它的设置页卡片一起删了（理由见 DEFAULT_PREAMBLE）
   const preamble = clip(
     p.mode === "off" ? "" : p.mode === "custom" ? p.text.trim() : DEFAULT_PREAMBLE,

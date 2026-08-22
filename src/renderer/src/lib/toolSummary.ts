@@ -13,7 +13,8 @@ export type OrbState =
   | "working"
   | "composing"
   | "solving"
-  | "breathing";
+  | "breathing"
+  | "weaving";
 
 /** 工具执行阶段 → orb + 文案。read_file 是"找"，todo_write 是"想"，其余(bash/write)是"做" */
 export function toolPhase(name: string): { orb: OrbState; label: string } {

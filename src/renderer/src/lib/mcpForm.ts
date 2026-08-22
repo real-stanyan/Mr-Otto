@@ -195,7 +195,7 @@ export function restoredValueOnKeyUndo(
 }
 
 /** command 按空白切分成 args 数组的简化版——不支持引号里带空格这种 shell 语法,
-    这是有意的取舍:真要跑复杂命令行,用户本来就该手改 ~/.otter/mcp.json,
+    这是有意的取舍:真要跑复杂命令行,用户本来就该手改 ~/.mr-otto/mcp.json,
     这个输入框服务的是"贴一个 npx 命令"这种最常见的路径 */
 export function splitArgs(text: string): string[] {
   return text.split(/\s+/).map((s) => s.trim()).filter((s) => s !== "");

@@ -8,11 +8,6 @@ import { useChat } from "./store.js";
 export interface SlashCommand {
   /** 给将来 /help 和自动补全用的一句话说明 */
   desc: string;
-  /** 这条指令要带参数吗。**只影响补全菜单里选中它之后发生什么**:
-      带参的选中 = 把 `/名字 ` 填进输入框等用户接着打(直接跑等于用空参数跑,
-      /rename 会把标题改成空串);无参的选中 = 当场执行。
-      分发本身不看这个字段 —— dispatchSlash 永远按"首个空白前是名字"切 */
-  takesArgs?: boolean;
   /** args = 指令名后面的余下文本（已去首尾空白；无参指令直接无视它） */
   run: (args: string) => Promise<void>;
 }
@@ -24,7 +19,6 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
   },
   "/rename": {
     desc: "改会话标题（/rename 新标题）",
-    takesArgs: true,
     run: (args) => useChat.getState().rename(args),
   },
 };

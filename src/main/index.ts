@@ -21,6 +21,7 @@ import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
+import { configDir } from "./configDir.js";
 import { connectMcpClient } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
@@ -136,10 +137,12 @@ function createWindow(): BrowserWindow {
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
     // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
     // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
-    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,21.5)pt,让位出左边距 + 顶部呼吸空间,
-    // 并与右侧 search/收起钮的垂直中心对齐(右侧按钮中心约 28pt,红绿灯高约 13pt)
+    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,16)pt:顶栏统一 h-11(44px,见 App.tsx
+    // HEADER_H),中心 22;y=19 让灯的视觉中心落在 22(截图实测:y=16 时灯比中心高 3px,
+    // 这个 y 不是灯的几何顶边),和侧栏开关钮 / 搜索钮(SidebarNub.tsx 的 TOGGLE_TOP)
+    // 同一条水平线。三颗灯占到 x=68,开关钮从 72 起
     ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 21.5 } }
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 19 } }
       : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
@@ -414,10 +417,10 @@ void app.whenReady().then(() => {
     push: { state: (info) => send(CHANNELS.browserState, info) },
   });
 
-  // MCP server 登记表:配置存 userData 外的 ~/.otter/mcp.json(与 skill 目录同一条口径,
+  // MCP server 登记表:配置存 userData 外的 ~/.mr-otto/mcp.json(与 skill 目录同一条口径,
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
-  const mcpConfigPath = join(homedir(), ".otter", "mcp.json");
+  const mcpConfigPath = join(configDir(homedir()), "mcp.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
     save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
@@ -517,6 +520,9 @@ void app.whenReady().then(() => {
     // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
     // 在两边一个认得一个不认得
     const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    // subagentRoots 只拼路径;搬家(.otter → .mr-otto)在这里先做一遍,用户级和工作区级都搬
+    configDir(homedir());
+    if (workspace) configDir(workspace);
     return withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), known), known);
   };
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
@@ -731,8 +737,8 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  // skill 根目录：otter 原生排前（同名覆盖优先），其后兼容 Claude Code 的安装位
-  const skillRoots = [join(homedir(), ".otter", "skills"), join(homedir(), ".claude", "skills")];
+  // skill 根目录：Mr Otto 自己的排前（同名覆盖优先），其后兼容 Claude Code 的安装位
+  const skillRoots = [join(configDir(homedir()), "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
 
@@ -789,8 +795,8 @@ void app.whenReady().then(() => {
     const clean = name.trim();
     const nameError = subagentNameError(clean);
     if (nameError) throw new Error(nameError);
-    // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.otter/agents，
-    // 用户级 = ~/.otter/agents。.claude/agents 是只读的，永远不是落点
+    // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.mr-otto/agents，
+    // 用户级 = ~/.mr-otto/agents。.claude/agents 是只读的，永远不是落点
     const root = subagentRoots(homedir(), ws)[0]!;
     // 查重只问"落点这一层占了没"，不问"这个名字在合并清单里露过面没"。
     // 后者会把覆盖规则整个锁死：用户级有个 reviewer、想在工作区建一份同名的盖住它，

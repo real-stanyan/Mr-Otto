@@ -4,11 +4,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, KeyRound, ListChecks, Palette, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users, type LucideIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { type SessionMode, useChat } from "./store.js";
@@ -33,7 +34,7 @@ import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/der
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
-import { mcpPromptCommandDescription, mcpPromptCommandId } from "./lib/mcpPromptMenu.js";
+import { mcpPromptCommandDescription } from "./lib/mcpPromptMenu.js";
 import { TrajectoryView } from "./replay/TrajectoryView.js";
 import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
@@ -44,7 +45,7 @@ import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
-import { SidebarNub, SidebarToggle, SidebarTriggerSlot } from "./components/SidebarNub.js";
+import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
@@ -129,7 +130,6 @@ import { lastUserMessage } from "./lib/lastUserMessage.js";
 import {
   ComposerPrimitive,
   unstable_useTriggerPopoverAriaProps,
-  unstable_useSlashCommandAdapter,
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
@@ -138,9 +138,11 @@ import {
   ContextDisplayTrigger,
   ContextDisplayRingVisual,
 } from "@/components/assistant-ui/context-display.js";
-import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
+import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
-import { ottoDirectiveFormatter } from "./aui/ottoDirectives.js";
+import { ottoDirectiveFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
+import { segmentComposerText } from "./aui/composerDirectives.js";
+import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SendErrorBanner } from "./components/SendErrorBanner.js";
@@ -164,11 +166,29 @@ const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full trunca
    它是 SkillsPage 的可写版兄弟栏目，骨架该是同一份，不该各自拼一遍字符串 */
 export const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
 
-export const HEADER = "flex items-baseline gap-3 px-5 py-3 border-b border-border drag-region";
+/* h-11 是所有顶栏的公约数:会话区这条和右侧工具面板(终端/浏览器/Protocol/Git Graph)
+   的顶栏并排,高度不一样的话分割线在中间错一截。写死高度而不是靠 padding + 内容
+   撑,两边内容不一样高也对得齐 */
+export const HEADER_H = "h-11";
+export const HEADER = `flex ${HEADER_H} items-center gap-3 px-5 border-b border-border drag-region`;
 export const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
+/* 内容铺满主区宽度,只靠两侧内边距留呼吸:居中定宽那版在宽窗口里两边空一大片,
+   列表本身又是整行可点的卡,宽一点反而更像"一页设置"而不是一张浮在中间的表单 */
 export const SETTINGS_BODY =
-  "flex-1 overflow-y-auto scrollbar-stable px-5 py-6 flex flex-col gap-4 w-[min(640px,100%)] mx-auto";
+  "flex-1 overflow-y-auto scrollbar-stable px-8 py-6 flex flex-col gap-4 w-full";
 export const HINT = "text-muted-foreground text-[13px]";
+
+/** 设置页 header 的标题:和侧栏导航同一个图标 + 同一个文案,一处定义(SETTINGS_SECTIONS)。
+    面包屑页(新建/编辑子智能体)把它当第一级用 */
+export function SettingsTitle({ id, className }: { id: SettingsSection; className?: string }) {
+  const sec = SETTINGS_SECTIONS.find((s) => s.id === id)!;
+  return (
+    <span className={cn("font-[650] inline-flex items-center gap-[6px]", className)}>
+      <sec.icon className="size-4 text-muted-foreground" />
+      {sec.label}
+    </span>
+  );
+}
 const ERR_TXT = "text-err text-[13px]";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
@@ -740,9 +760,67 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const approveLabel =
     doc && discarded.size > 0 ? `应用 ${keptCount}/${doc.hunks.length} 块` : "批准";
 
+  // 入场:偶发事件才配动画,从下方 8px 淡入——它物理上贴着输入框,从来处进场
+  // relative z-10:footer 顶上那条 -top-10 的滚动缘渐隐会盖到紧贴它的这张卡底部,
+  // 卡是活控制件,得压在渐隐上面
+  const ENTER =
+    "relative z-10 mx-5 mb-2 transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0";
+
+  // 通用工具那一路:PermissionGrant 自己就是一张卡,外面不再套橙框/标题/拒绝原因框,
+  // 四颗钮塞进卡的动作条(元件自带的那排形状:h-8 胶囊)。拒绝因此不带原因 ——
+  // 模型只看到 denied;要说理由的场景走输入框里的下一句话
+  if (!filePreview && !mcpPreview) {
+    const PILL =
+      "h-8 rounded-full px-3 text-xs font-medium transition-[background-color,color,scale] duration-150 active:scale-[0.96]";
+    return (
+      <div className={ENTER}>
+        <PermissionGrant
+          capability={approval.call.name}
+          requester={approval.toolDescription}
+          reach={reachOf(approval)}
+          scope="pending"
+          className="max-w-none"
+          actions={
+            <>
+              <button
+                type="button"
+                className={`${PILL} text-destructive hover:bg-destructive/10`}
+                onClick={() => void decide({ decision: "denied" })}
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
+                title={`本次会话内不再为 ${approval.call.name} 弹审批（换会话恢复询问）`}
+                onClick={() => approve("session")}
+              >
+                本次会话
+              </button>
+              <button
+                type="button"
+                className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
+                title={`以后永远不再为 ${approval.call.name} 弹审批（存在 userData/permissions.json）`}
+                onClick={() => approve("always")}
+              >
+                永久
+              </button>
+              <button
+                type="button"
+                className={`${PILL} bg-ok text-white hover:bg-ok/90`}
+                onClick={() => approve()}
+              >
+                批准
+              </button>
+            </>
+          }
+        />
+      </div>
+    );
+  }
+
   return (
-    // 偶发事件才配入场动画:从下方 8px 淡入——它物理上贴着输入框,从来处进场
-    <div className="mx-5 mb-2 border border-warn rounded-[10px] bg-warn/[0.07] transition-[opacity,transform] duration-[220ms] ease-strong starting:opacity-0 starting:translate-y-2 motion-reduce:transition-opacity motion-reduce:duration-200 motion-reduce:starting:translate-y-0">
+    <div className={`${ENTER} border border-warn rounded-[10px] bg-warn/[0.07]`}>
       <div className="pt-2 px-[14px] text-xs text-warn font-semibold">危险操作待审批</div>
       <div className="px-[14px] py-[6px]">
         {doc && filePreview ? (
@@ -767,17 +845,8 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
               newText={filePreview.newText}
             />
           </>
-        ) : mcpPreview ? (
-          <McpToolApproval preview={mcpPreview} />
         ) : (
-          <PermissionGrant
-            capability={approval.call.name}
-            requester={approval.toolDescription}
-            reach={reachOf(approval)}
-            scope="pending"
-            actions={null}
-            className="max-w-none"
-          />
+          <McpToolApproval preview={mcpPreview!} />
         )}
       </div>
       <div className="flex flex-wrap gap-2 px-[14px] pb-3">
@@ -985,10 +1054,7 @@ function AccountPage() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
-        <span className="font-[650] inline-flex items-center gap-[6px]">账号</span>
-        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
-          返回
-        </Button>
+        <SettingsTitle id="account" />
       </header>
       <section className={SETTINGS_BODY}>
         {account.signedIn ? (
@@ -1029,10 +1095,7 @@ function KeysPage() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
-        <span className="font-[650] inline-flex items-center gap-[6px]">模型配置</span>
-        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
-          返回
-        </Button>
+        <SettingsTitle id="keys" />
       </header>
       <section className={SETTINGS_BODY}>
         <ModelProviderSettings />
@@ -1058,10 +1121,7 @@ function AppearancePage() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
-        <span className="font-[650] inline-flex items-center gap-[6px]">外观</span>
-        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
-          返回
-        </Button>
+        <SettingsTitle id="appearance" />
       </header>
       <section className={SETTINGS_BODY}>
         <div className="flex flex-col gap-[6px]">
@@ -1109,16 +1169,13 @@ function SkillsPage() {
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
-        <span className="font-[650] inline-flex items-center gap-[6px]">Skill 库</span>
-        <Button variant="ghost" size="sm" className={HEADER_GHOST} onClick={closeSettings}>
-          返回
-        </Button>
+        <SettingsTitle id="skills" />
       </header>
       <section className={SETTINGS_BODY}>
         <p className={HINT}>
           聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
           （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
-          {" "}放进 <code>~/.otter/skills</code> 或 <code>~/.claude/skills</code>。
+          {" "}放进 <code>~/.mr-otto/skills</code> 或 <code>~/.claude/skills</code>。
         </p>
         {skills.map((s) => (
           <details key={s.name} className="border border-border rounded-[10px]">
@@ -1161,13 +1218,13 @@ function saveCollapsedProjects(dirs: Set<string>): void {
 }
 
 /** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案 */
-const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
-  { id: "account", label: "账号" },
-  { id: "keys", label: "模型配置" },
-  { id: "appearance", label: "外观" },
-  { id: "skills", label: "Skill 库" },
-  { id: "agents", label: "子智能体" },
-  { id: "mcp", label: "MCP" },
+export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
+  { id: "account", label: "账号", icon: UserRound },
+  { id: "keys", label: "模型配置", icon: KeyRound },
+  { id: "appearance", label: "外观", icon: Palette },
+  { id: "skills", label: "Skill 库", icon: BookMarked },
+  { id: "agents", label: "子智能体", icon: Bot },
+  { id: "mcp", label: "MCP", icon: Plug },
 ];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -1375,8 +1432,8 @@ function AppSidebar() {
               只留图标:这一行的宽度归标题,而 ⌘K 的人不看字,不知道有这功能的人
               看见放大镜就够了(悬停有全称和快捷键) */}
           {/* 搜索钮:窗口模式下和红绿灯、开关钮排成一行(绝对定位到开关右侧,
-              top 与 SidebarToggle 的 top-[5px] 同值);全屏没有红绿灯,照旧靠右 */}
-          <div className={cn("flex shrink-0 items-center", trafficInset ? "absolute top-[5px] left-[76px]" : "ml-auto")}>
+              top 与 SidebarToggle 同值(TOGGLE_TOP));全屏没有红绿灯,照旧靠右 */}
+          <div className={cn("flex shrink-0 items-center", trafficInset ? `absolute ${TOGGLE_TOP} ${SEARCH_LEFT}` : "ml-auto")}>
             {settingsSection === null && mode !== "game" && (
               <Button
                 variant="ghost"
@@ -1432,15 +1489,21 @@ function AppSidebar() {
             <WorkStatusList />
           </>
         ) : settingsSection !== null ? (
-          // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                className="text-muted-foreground border-b border-border rounded-b-none hover:text-foreground"
+          // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）。
+          // 会话那边包在 SidebarGroup(p-2)里,这边裸 SidebarMenu 得自己补同样的边距
+          <SidebarMenu className="p-2">
+            {/* 和主侧栏的「＋ 新会话」同一副模样(四边描边的长钮):两者都是
+                "离开当前列表去别处"的主入口,该长得一样。主区头部不再放返回钮,
+                这颗是设置模式唯一的出口 */}
+            <SidebarMenuItem className="mb-2">
+              <Button
+                variant="ghost"
+                className="w-full justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
                 onClick={closeSettings}
               >
-                ← 返回会话
-              </SidebarMenuButton>
+                <ArrowLeft className="size-3.5" />
+                返回会话
+              </Button>
             </SidebarMenuItem>
             {SETTINGS_SECTIONS.map((sec) => (
               <SidebarMenuItem key={sec.id}>
@@ -1448,6 +1511,7 @@ function AppSidebar() {
                   isActive={settingsSection === sec.id}
                   onClick={() => void openSettings(sec.id)}
                 >
+                  <sec.icon className="size-4 text-muted-foreground" />
                   <span className={TITLE_SPAN}>{sec.label}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -2031,12 +2095,60 @@ function Welcome() {
     发出去一条 `/`,然后报「未知指令 /」。
     aria-expanded 是官方给出的公开信号:ComposerPrimitive.Input 在浮层开着时
     把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
+/** textarea 和它底下的高亮镜像层必须**逐字同排**:字号/行高/内边距/换行规则
+    一个字节都不能差,否则 chip 会偏离光标下的字。共用这一份 */
+const COMPOSER_METRICS = "px-3 py-2 text-sm leading-[1.45] whitespace-pre-wrap break-words";
+
+/** 输入框里的 directive chip(assistant-ui 的 DirectiveText 只管发出去的消息,
+    composer 内没有官方方案)。做法是经典的 highlight-backdrop:textarea 的字
+    画成透明、只留光标,底下叠一层同字号的镜像把同一段文本画出来,命中的
+    `$skill` / `/指令` 段加底色。chip 的"内边距"用 ring(box-shadow)画,不占
+    排版宽度 —— 一占宽,后面的字就和 textarea 里的错位了 */
+function ComposerHighlight({
+  text,
+  segments,
+  scrollTop,
+}: {
+  text: string;
+  segments: readonly Unstable_DirectiveSegment[];
+  scrollTop: number;
+}) {
+  return (
+    <div
+      aria-hidden
+      className={`pointer-events-none absolute inset-0 overflow-hidden text-foreground ${COMPOSER_METRICS}`}
+    >
+      <div style={{ transform: `translateY(${-scrollTop}px)` }}>
+        {segments.map((seg, i) =>
+          seg.kind === "text" ? (
+            <span key={i}>{seg.text}</span>
+          ) : (
+            <span
+              key={i}
+              className="rounded-[4px] bg-brand/15 text-brand ring-[3px] ring-brand/15 [box-decoration-break:clone]"
+            >
+              {seg.label}
+            </span>
+          )
+        )}
+        {/* 末尾换行在 pre-wrap 里不占高度,补一个零宽字符把那一行撑出来 */}
+        {text.endsWith("\n") ? "\u200b" : null}
+      </div>
+    </div>
+  );
+}
+
 function ComposerTextarea({
   inputRef,
   running,
   onSubmit,
   onPasteFiles,
+  text,
+  segments,
 }: {
+  /** 当前文本 + 切好的段,给高亮层画 chip */
+  text: string;
+  segments: readonly Unstable_DirectiveSegment[];
   /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
   inputRef: React.Ref<HTMLTextAreaElement>;
   /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"排队",
@@ -2047,9 +2159,13 @@ function ComposerTextarea({
 }) {
   const aria = unstable_useTriggerPopoverAriaProps();
   const popoverOpen = aria["aria-expanded"] === true;
+  const [scrollTop, setScrollTop] = useState(0);
+  const hasChip = segments.some((s) => s.kind !== "text");
 
   return (
-    // textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
+    <div className="relative">
+    {hasChip && <ComposerHighlight text={text} segments={segments} scrollTop={scrollTop} />}
+    {/* textarea + Enter 发送 / Shift+Enter 换行（Slack 约定）。
     // 自动长高走 field-sizing: content（纯 CSS，max-height 封顶出滚动条）。
     //
     // ComposerPrimitive.Input 接管文本状态(值/受控/焦点管理),外观仍是本仓的 Textarea。
@@ -2059,6 +2175,9 @@ function ComposerTextarea({
     //   不走 assistant-ui 的附件通道
     // - cancelOnEscape={false}:Esc 在本仓是"停止 turn"(App 里挂 window 的那个监听),
     //   不是"清空正在打的字"
+    //
+    // 有 chip 时字画成透明(text-transparent),由上面的镜像层代画;光标色另给。
+    // 没 chip 时不开透明,省掉镜像层,也避免两层字的亚像素差 */}
     <ComposerPrimitive.Input
       asChild
       submitMode="none"
@@ -2067,7 +2186,12 @@ function ComposerTextarea({
     >
       <Textarea
         ref={inputRef}
-        className="border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground px-3 py-2 text-sm leading-[1.45] resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35"
+        className={cn(
+          "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
+          COMPOSER_METRICS,
+          hasChip && "text-transparent"
+        )}
+        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
         autoFocus
         rows={1}
         placeholder={
@@ -2095,6 +2219,7 @@ function ComposerTextarea({
         }}
       />
     </ComposerPrimitive.Input>
+    </div>
   );
 }
 
@@ -2134,8 +2259,9 @@ function ChatComposer() {
   // 两条 trigger 的行为不一样:
   // - `$skill`:directive(插入),选中只把 `$名字 ` 填进输入框 —— 任务正文还等着用户打
   //   (旧的 pickSkill 就是这个手感)。发送时 submit() 再把名字切给 harness
-  // - `/指令`:action(执行),但带参的指令(takesArgs)不当场跑,而是同样填进输入框 ——
-  //   /rename 直接跑等于把标题改成空串。无参的(/compact)当场跑,和旧菜单的 Enter 一致
+  // - `/指令`:同样是 directive(插入)。Tab/点选只把 `/名字 ` 填进输入框,回车才算发出 ——
+  //   菜单里"选中"和"执行"是两个动作,不让一次误触的 Tab 直接跑掉一次 /compact。
+  //   回车后 submit() 按名字分发:本地指令走 dispatchSlash,MCP prompt 开表单卡
   const skills = useChat((s) => s.skills);
   const skillFormatter = useMemo(
     () => ottoDirectiveFormatter(skills.map((k) => k.name)),
@@ -2170,31 +2296,49 @@ function ChatComposer() {
   // 这里的 execute 只管"选中了就把 prompt 交出去"，不复述那份判断
   const mcpPrompts = useChat((s) => s.mcpPrompts);
   const openMcpPromptForm = useChat((s) => s.openMcpPromptForm);
-  const slashTrigger = unstable_useSlashCommandAdapter({
-    removeOnExecute: true,
-    commands: [
+  const slashItems = useMemo<Unstable_TriggerItem[]>(
+    () => [
       ...Object.entries(SLASH_COMMANDS).map(([name, c]) => ({
-        id: name,
+        id: name.slice(1),
+        type: "command",
         label: name,
         description: c.desc,
-        execute: () => {
-          if (c.takesArgs) setInput(`${name} `);
-          else dispatchSlash(name);
-        },
       })),
       ...mcpPrompts.map((p) => ({
-        id: mcpPromptCommandId(p.server, p.name),
+        id: p.name,
+        type: "command",
         label: `/${p.name}`,
         description: mcpPromptCommandDescription(p.description, p.server),
         // iconMap 见下方 ComposerTriggerPopover:"mcp" 这个 key 换成插头图标,
         // 与本地指令用同一枚 fallback(闪光)分开——这是这版唯一的"分组"信号,
         // 没有另起一套 TriggerCategory 浏览机制(本仓 `/` 菜单一直是纯搜索/
-        // 扁平列表,见 unstable_useSlashCommandAdapter 自己的实现)
+        // 扁平列表)
         icon: "mcp",
-        execute: () => openMcpPromptForm(p),
       })),
     ],
-  });
+    [mcpPrompts]
+  );
+  const slashAdapter = useMemo<Unstable_TriggerAdapter>(
+    () => ({
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query: string) => {
+        const lower = query.toLowerCase();
+        return lower === ""
+          ? slashItems
+          : slashItems.filter((i) => i.id.toLowerCase().includes(lower));
+      },
+    }),
+    [slashItems]
+  );
+  const slashDirective = useMemo(
+    () => ({ formatter: ottoSlashFormatter(slashItems.map((i) => i.id)) }),
+    [slashItems]
+  );
+  const composerSegments = useMemo(
+    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter]),
+    [input, skillFormatter, slashDirective]
+  );
 
 
   // composerInject 是一次性通道:收到就立刻清空 store,不然"又注入一次同样的文本"
@@ -2254,8 +2398,22 @@ function ChatComposer() {
     }
     setInput("");
     // "/" 开头 = 对 harness 说话，不进模型 —— 也就不排队:它们是本地动作
-    // (开面板、改标题),等一个 turn 跑完再执行没有道理
-    if (dispatchSlash(text)) return;
+    // (开面板、改标题),等一个 turn 跑完再执行没有道理。
+    // MCP prompt 和本地指令共用 `/` 菜单,回车时先认 MCP prompt 的名字
+    // (本地指令表里没有的才轮到它),认上了就开表单卡/直接展开(store 判)
+    if (text.startsWith("/")) {
+      const space = text.search(/\s/);
+      const name = space === -1 ? text : text.slice(0, space);
+      if (!(name in SLASH_COMMANDS)) {
+        const prompt = mcpPrompts.find((p) => `/${p.name}` === name);
+        if (prompt) {
+          openMcpPromptForm(prompt);
+          return;
+        }
+      }
+      dispatchSlash(text);
+      return;
+    }
     dispatch(text);
   };
 
@@ -2297,8 +2455,8 @@ function ChatComposer() {
             <ComposerTriggerPopover
               char="/"
               className={TRIGGER_POP}
-              adapter={slashTrigger.adapter}
-              action={slashTrigger.action}
+              adapter={slashAdapter}
+              directive={slashDirective}
               // MCP prompt 条目在 execute() 里挂了 icon:"mcp"(见上方 slashTrigger),
               // 换成插头图标——本地指令没挂 icon,照旧落回 fallbackIcon(闪光)。
               // 这是这一版"分组"的全部实现:纯扁平搜索列表里靠图标分出两类来源,
@@ -2317,6 +2475,8 @@ function ChatComposer() {
               running={status === "running"}
               onSubmit={submit}
               onPasteFiles={(files) => void filesToPayload(files).then(attachPasted)}
+              text={input}
+              segments={composerSegments}
             />
             {/* 工具条:上游左边是「＋ 附件」、右边是发送/停止的圆钮。
                 本仓左边换成会话偏好条(审批模式/模型/用量环)—— 附件的 ＋ 在它里面。
@@ -2373,6 +2533,7 @@ export function App() {
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
   const openBrowserPanel = useChat((s) => s.openBrowserPanel);
+  const openSettings = useChat((s) => s.openSettings);
   const friendChat = useChat((s) => s.friendChat);
   const panelWide = useChat((s) => s.panelWide);
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
@@ -2557,6 +2718,13 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openBrowserPanel()}>
               <Globe /> 浏览器
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
+                (SubagentSettings 的 initialSubagentScope),所以从这进去编的就是
+                <工程>/.mr-otto/agents 里的定义,不是用户级那份 */}
+            <DropdownMenuItem onClick={() => void openSettings("agents")}>
+              <Bot /> 子智能体
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

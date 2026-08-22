@@ -42,6 +42,23 @@ describe("parseBlock —— 模型写的块认不认", () => {
     expect(parseBlock("otto-spec", "[1,2,3]")).toBeNull();
     expect(parseBlock("otto-spec", '"字符串"')).toBeNull();
   });
+
+  it("JS 对象字面量（裸键名 + 尾逗号）也认 —— 模型照着提示词的字段写法走样是常态", () => {
+    const src = `{
+  title: "业务域总览",
+  rows: [
+    { label: "Loyalty", value: "1 杯 = 1 星, tier: 折扣", emphasis: true },
+    { label: "配送 driver", value: "司机端 app" },
+  ],
+}`;
+    const b = parseBlock("otto-spec", src);
+    expect(b?.kind).toBe("otto-spec");
+    if (b?.kind !== "otto-spec") return;
+    expect(b.data.title).toBe("业务域总览");
+    expect(b.data.rows).toHaveLength(2);
+    // 字符串里的 "tier: 折扣" 不该被当键名改写（前面没有 { 或 ,）
+    expect(b.data.rows[0]?.value).toBe("1 杯 = 1 星, tier: 折扣");
+  });
 });
 
 describe("otto-spec", () => {

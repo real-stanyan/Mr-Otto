@@ -1,4 +1,4 @@
-// MCP server 清单 —— ~/.otter/mcp.json 的解析与写回。
+// MCP server 清单 —— ~/.mr-otto/mcp.json 的解析与写回。
 // 格式与 Claude Code 的 .mcp.json 兼容（同名字段同语义），用户能把已有配置直接粘过来。
 // 解析是纯函数，fs 以接口注入（抄 skills.ts 的 SkillDirReader 形状），测试喂假实现。
 // 主进程模块（组装根特权可碰 fs）。

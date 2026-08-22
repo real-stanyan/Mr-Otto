@@ -30,7 +30,7 @@ describe("blankSubagentDef", () => {
 });
 
 describe("shadowedSubagent", () => {
-  const list = [def({ name: "Reviewer", scope: "user", source: "~/.otter/agents" })];
+  const list = [def({ name: "Reviewer", scope: "user", source: "~/.mr-otto/agents" })];
 
   it("空名字不算撞", () => {
     expect(shadowedSubagent("   ", list)).toBeNull();

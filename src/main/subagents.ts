@@ -6,6 +6,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { CONFIG_DIR } from "./configDir.js";
 import {
   DEFAULT_SUBAGENT_TOOLS,
   isSafeContextFile,
@@ -30,18 +31,16 @@ export interface SubagentRoot {
 }
 
 /** 扫描根，按覆盖优先级排（同名先到先得，所以工作区排在用户前面 = 工作区盖用户）。
-    workspace 为 null（设置页选「用户」、探针装配）时只有用户那两条。
-    `.claude/agents/` 是 Claude Code 的配置，只读——我们不去改用户别的工具的文件 */
+    workspace 为 null（设置页选「用户」、探针装配）时只有用户那一条。
+    只认自己的目录：`.claude/agents/`（Claude Code 的定义）不再扫——那些文件的
+    工具名、模型名是另一套产品的词，混进清单就是一排「N 个工具名无法识别」的只读
+    条目，模型还会把活派给它们（ADR-0056 撤销 ADR-0048 的第 2/4 条根） */
 export function subagentRoots(home: string, workspace: string | null): SubagentRoot[] {
   return [
     ...(workspace
-      ? [
-          { root: join(workspace, ".otter", "agents"), readOnly: false, scope: "workspace" as const },
-          { root: join(workspace, ".claude", "agents"), readOnly: true, scope: "workspace" as const },
-        ]
+      ? [{ root: join(workspace, CONFIG_DIR, "agents"), readOnly: false, scope: "workspace" as const }]
       : []),
-    { root: join(home, ".otter", "agents"), readOnly: false, scope: "user" as const },
-    { root: join(home, ".claude", "agents"), readOnly: true, scope: "user" as const },
+    { root: join(home, CONFIG_DIR, "agents"), readOnly: false, scope: "user" as const },
   ];
 }
 
@@ -62,7 +61,7 @@ export function trustedWorkspace(
 
 /** **写路径**用这个：认不出就抛，绝不降级。
     降级在读路径上只是"少看一层"，在写路径上是一次**静默写错地方**——对话框上写着
-    「建在 W 这一层」，文件却落进 ~/.otter/agents/。今天还够不着（下拉框的选项恒是
+    「建在 W 这一层」，文件却落进 ~/.mr-otto/agents/。今天还够不着（下拉框的选项恒是
     会话清单的子集，也还没有删会话的入口），但删会话一上线它就是真的写错地方了。
     null / "" 仍然合法,那是"用户级"这个真实意图,不是"我说了个你不认识的工作区"。 */
 export function trustedWorkspaceForWrite(
@@ -271,7 +270,7 @@ export function subagentSlotTaken(
   reader: SubagentDirReader = nodeReader
 ): boolean {
   // 比较不分大小写:这是个 macOS app,APFS 默认大小写不敏感。分大小写地比,
-  // `~/.otter/agents/Reviewer.md` 存在时新建 `reviewer` 两道检查全过,
+  // `~/.mr-otto/agents/Reviewer.md` 存在时新建 `reviewer` 两道检查全过,
   // 然后 writeFileSync 落到同一个 inode 上——把用户那份直接抹了,没有确认也没有撤回
   const lower = name.toLowerCase();
   if (reader.listFiles(root.root).some((f) => f.toLowerCase() === `${lower}.md`)) return true;
@@ -311,8 +310,7 @@ function preambleLines(p: SubagentPreamble): string[] {
   return ["preamble: |", ...p.text.split(/\r?\n/).map((l) => (l.trim() === "" ? "" : `  ${l}`))];
 }
 
-/** 写回磁盘。只写 readOnly: false 的——~/.claude/agents/ 是用户 Claude Code
-    的配置，我们不去改它 */
+/** 写回磁盘。只写 readOnly: false 的——内置那两份不在磁盘上，没地方写 */
 export function writeSubagent(def: SubagentDef, write = defaultWrite): void {
   if (def.readOnly) throw new Error(`${def.name} 是只读的（来自 ${def.source}），请先复制一份`);
   write(def.path, serializeSubagent(def));
