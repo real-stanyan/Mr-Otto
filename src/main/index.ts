@@ -16,6 +16,7 @@ import {
   type ApprovalDecisionOutcome,
   type McpServerConfig,
   type McpServersSnapshot,
+  type IslandBoot,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -78,6 +79,7 @@ import {
 } from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
+import { createIslandWindow, resizeIsland } from "./islandWindow.js";
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 import { UserProfileManager } from "./userProfile.js";
@@ -191,9 +193,24 @@ void app.whenReady().then(() => {
 
   const win = createWindow();
   mainWindow = win;
+
+  // 灵动岛只在 mac 上有(ADR-0059)。建失败不能拖死启动链 —— 同 dock 图标的处理
+  let island: BrowserWindow | null = null;
+  if (process.platform === "darwin") {
+    try {
+      island = createIslandWindow({
+        preload: join(import.meta.dirname, "../preload/index.mjs"),
+        ...(process.env["ELECTRON_RENDERER_URL"]
+          ? { rendererUrl: process.env["ELECTRON_RENDERER_URL"] }
+          : { rendererFile: join(import.meta.dirname, "../renderer/island.html") }),
+      });
+    } catch (e) {
+      console.warn("灵动岛没起来:", e instanceof Error ? e.message : e);
+    }
+  }
   // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
   // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
-  const send = createSend(win);
+  const send = island ? createSend(win, island) : createSend(win);
 
   // 全屏状态推给渲染层:macOS 全屏隐红绿灯,左上角 logo 该让位/回来。
   // 变化走推送给已订阅的 renderer,首帧快照走 getWindowFullscreen(见下方 handle)
@@ -630,6 +647,21 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.getWindowFullscreen, () => win.isFullScreen());
 
+  // 岛只跟主窗当前会话。主进程存这一个 id:岛窗 boot 时问,变化时推
+  let activeSessionId: string | null = null;
+  const islandSnapshot = (): IslandBoot => ({
+    activeSessionId,
+    model: activeSessionId ? (agents.get(activeSessionId)?.model ?? null) : null,
+  });
+  ipcMain.handle(CHANNELS.setActiveSession, (_e, sessionId: string | null) => {
+    activeSessionId = sessionId;
+    send(CHANNELS.activeSessionChanged, islandSnapshot());
+  });
+  ipcMain.handle(CHANNELS.islandBoot, () => islandSnapshot());
+  ipcMain.handle(CHANNELS.islandResize, (_e, size: { w: number; h: number; focusable?: boolean }) => {
+    if (island) resizeIsland(island, size, size.focusable ?? false);
+  });
+
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 
   // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
@@ -1050,6 +1082,7 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model, lane ?? "auto");
+    send(CHANNELS.activeSessionChanged, islandSnapshot());
     // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
     return agent.thinking;
   });
@@ -1244,6 +1277,7 @@ void app.whenReady().then(() => {
   );
 
   app.on("before-quit", () => {
+    island?.destroy();
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
     // stdio server 是子进程,退出时得跟着收掉:closeAll() 虽然是 async 函数,
