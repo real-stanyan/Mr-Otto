@@ -40,7 +40,7 @@ export interface LoopEngineOptions {
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
   middlewares?: ToolMiddleware[];
-  /** 自动压缩（ADR-00NN）：给了就在 loop 每圈模型调用前判定占用。
+  /** 自动压缩（ADR-0062）：给了就在 loop 每圈模型调用前判定占用。
       不给 = 这个装配没有自动压缩（测试和裸装配照旧，只能手动 /compact） */
   autoCompact?: {
     contextWindow: () => number | undefined; // 当前型号的窗口；换型号后现算
@@ -236,7 +236,7 @@ export class LoopEngine {
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
 
-      // 自动压缩（ADR-00NN）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
+      // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
       // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
       if (this.opts.autoCompact && !this.compactedThisTurn) {
         const { contextWindow, settings } = this.opts.autoCompact;

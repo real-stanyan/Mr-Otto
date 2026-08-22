@@ -145,7 +145,7 @@ export function createAgent(opts: {
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
   configRoot?: string;
-  /** 自动压缩设置的现读器（index.ts 从设置页状态注入，ADR-00NN）。
+  /** 自动压缩设置的现读器（index.ts 从设置页状态注入，ADR-0062）。
       不给 = 用全局默认（DEFAULT_AUTO_COMPACT，开启，按窗口两档阈值） */
   autoCompactSettings?: () => AutoCompactSettings;
 }) {

@@ -206,7 +206,7 @@ void app.whenReady().then(() => {
   // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
-  // 自动压缩设置（ADR-00NN）。和 permissions.json 同款：app 级、跨会话，
+  // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
   const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
