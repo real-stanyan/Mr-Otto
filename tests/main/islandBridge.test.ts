@@ -1,18 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { createIslandBridge, decodeCommand, encodeState } from "../../src/main/islandBridge.js";
-import type { IslandSnapshot } from "../../src/shared/shellBridge.js";
+import type { IslandFleet } from "../../src/shared/shellBridge.js";
 
-const IDLE: IslandSnapshot = {
-  sessionId: null, model: null, phase: "idle",
-  currentTool: null, turnStartedAt: null, pendingApproval: null,
-};
+const IDLE: IslandFleet = { agents: [], focusedSessionId: null };
 
 describe("encodeState", () => {
   it("一行 JSON 带换行结尾", () => {
     const line = encodeState(IDLE);
     expect(line.endsWith("\n")).toBe(true);
     expect(JSON.parse(line.trim()).type).toBe("state");
-    expect(JSON.parse(line.trim()).state.phase).toBe("idle");
+    expect(Array.isArray(JSON.parse(line.trim()).state.agents)).toBe(true);
   });
 });
 

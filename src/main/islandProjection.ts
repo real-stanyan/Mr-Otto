@@ -3,9 +3,9 @@
 // 纯函数,全部可单测;不新增 SessionEvent —— 岛是日志的又一个投影(ADR-0059)。
 // 这份是 src/renderer/src/island/reduceIsland.ts 的搬迁副本(Task 3 删旧文件后
 // 此处成唯一副本),搬到主进程可达位置是为原生 Swift helper 铺路:投影在日志
-// 所有者(主进程)处算一次,flattenSnapshot 拍平成线上快照,helper 纯渲染。
+// 所有者(主进程)处算一次,flattenFleet 拍平成线上 fleet,helper 纯渲染。
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
-import type { ApprovalRequest, IslandBoot, IslandSnapshot, TurnStatusUpdate } from "../shared/shellBridge.js";
+import type { ApprovalRequest, IslandBoot, TurnStatusUpdate } from "../shared/shellBridge.js";
 import { toolFilePath, toolSummary } from "../shared/toolSummary.js";
 import type { SessionSummary } from "../session/store.js";
 import type { IslandAgent, IslandFleet } from "../shared/shellBridge.js";
@@ -95,29 +95,6 @@ export function reduceIsland(s: IslandState, input: IslandInput): IslandState {
       }
     }
   }
-}
-
-/** IslandState → 线上快照:currentTool/pendingApproval 拍平成字符串,附上 model */
-export function flattenSnapshot(s: IslandState, model: string | null): IslandSnapshot {
-  const ct = s.currentTool ? toolSummary(s.currentTool) : null;
-  let pending: IslandSnapshot["pendingApproval"] = null;
-  if (s.pendingApproval) {
-    const sum = toolSummary(s.pendingApproval.call);
-    pending = {
-      callId: s.pendingApproval.call.id,
-      verb: sum.verb,
-      target: sum.target,
-      fullPath: toolFilePath(s.pendingApproval.call),
-    };
-  }
-  return {
-    sessionId: s.sessionId,
-    model,
-    phase: s.phase,
-    currentTool: ct ? { verb: ct.verb, target: ct.target } : null,
-    turnStartedAt: s.turnStartedAt,
-    pendingApproval: pending,
-  };
 }
 
 /** 侧栏可见集合口径 + 同序:滤掉子会话(spawnedFrom!=null)/无 workspace,

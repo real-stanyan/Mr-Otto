@@ -1,4 +1,4 @@
-import type { IslandSnapshot } from "../shared/shellBridge.js";
+import type { IslandFleet } from "../shared/shellBridge.js";
 
 export type IslandCommand =
   | { type: "ready" }
@@ -14,8 +14,8 @@ export interface IslandChild {
 }
 export type SpawnFn = (binPath: string) => IslandChild;
 
-export function encodeState(snapshot: IslandSnapshot): string {
-  return JSON.stringify({ type: "state", state: snapshot }) + "\n";
+export function encodeState(fleet: IslandFleet): string {
+  return JSON.stringify({ type: "state", state: fleet }) + "\n";
 }
 
 export function decodeCommand(line: string): IslandCommand | null {
@@ -54,12 +54,12 @@ export function createIslandBridge(opts: {
   spawn: SpawnFn;
   onCommand: (c: IslandCommand) => void;
   log?: (m: string) => void;
-}): { pushState(s: IslandSnapshot): void; dispose(): void } {
+}): { pushState(s: IslandFleet): void; dispose(): void } {
   const log = opts.log ?? (() => {});
   let child: IslandChild | null = null;
   let restarts = 0;
   let disposed = false;
-  let last: IslandSnapshot | null = null;
+  let last: IslandFleet | null = null;
 
   const start = () => {
     if (disposed) return;
@@ -95,7 +95,7 @@ export function createIslandBridge(opts: {
     });
   };
 
-  const pushState = (s: IslandSnapshot) => {
+  const pushState = (s: IslandFleet) => {
     last = s;
     if (!child) return;
     try {

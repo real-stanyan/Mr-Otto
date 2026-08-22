@@ -88,7 +88,7 @@ import {
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
-import { flattenSnapshot, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
+import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -355,7 +355,7 @@ void app.whenReady().then(() => {
   // 灵动岛(ADR-0059 推翻版):不再是第二个 BrowserWindow,换成 stdio 桥接一个
   // 原生 Swift helper 进程。helper 二进制不存在(未打包 / 非 mac)时 bridge 为
   // null,岛静默不启动——不拖死启动链,也不留一块空白窗口。
-  let islandState: IslandState = initialIsland;
+  const islandStates = new Map<string, IslandState>();
   const bridge =
     process.platform === "darwin"
       ? (() => {
@@ -373,17 +373,35 @@ void app.whenReady().then(() => {
         })()
       : null;
 
-  // 投影器的唯一喂入口:四处 choke point(event/approvalRequest/turnStatus/
-  // activeSession)都调这个。reduce 返回同引用 = 无变化,不推——helper 不需要
-  // 收到"没变"的快照
+  // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
+  // 沿用 ADR-0059 的"丢弃成本可忽略"
+  const pushFleet = (): void => {
+    if (!bridge) return;
+    bridge.pushState(flattenFleet(islandStates, store.sessions(), activeSessionId));
+  };
+
+  /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
+      reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
     if (!bridge) return;
-    const next = reduceIsland(islandState, input);
-    if (next === islandState) return;
-    islandState = next;
-    const model = activeSessionId ? (agents.get(activeSessionId)?.model ?? null) : null;
-    bridge.pushState(flattenSnapshot(islandState, model));
+    const sid = islandInputSessionId(input);
+    if (sid) {
+      const cur = islandStates.get(sid) ?? initialIsland;
+      const next = reduceIsland(cur, input);
+      if (next !== cur) islandStates.set(sid, next);
+    }
+    pushFleet();
   };
+
+  /** 从 IslandInput 取它作用的 sessionId(activeSession 用 boot.activeSessionId) */
+  function islandInputSessionId(input: IslandInput): string | null {
+    switch (input.kind) {
+      case "event": return input.event.sessionId;
+      case "turnStatus": return input.update.sessionId;
+      case "approvalRequest": return input.req.sessionId;
+      case "activeSession": return input.boot.activeSessionId;
+    }
+  }
 
   // 分区分类的按会话串行队列。分类跑在 turn 锁之外（见 sendMessage 末尾），
   // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
@@ -1231,8 +1249,10 @@ void app.whenReady().then(() => {
       terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
       browsers.close(id); // 会话没了,它的浏览器也该没
       agents.delete(id); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+      islandStates.delete(id); // 岛的 Map 投影也剪掉——不然拍平出来的 fleet 会带一行死会话
     }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
+    pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
   });
 
   ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {
@@ -1473,9 +1493,8 @@ void app.whenReady().then(() => {
   // 上面两个命名函数——发消息/审批这两条路,不管是主窗输入框还是岛,只走一份逻辑
   function handleIslandCommand(c: IslandCommand): void {
     if (c.type === "ready") {
-      // helper 起来了:把当前快照补推一次(等价旧 islandBoot)
-      const model = activeSessionId ? (agents.get(activeSessionId)?.model ?? null) : null;
-      bridge?.pushState(flattenSnapshot(islandState, model));
+      // helper 起来了:把当前 fleet 补推一次(等价旧 islandBoot)
+      pushFleet();
       return;
     }
     if (c.type === "send") {
