@@ -99,6 +99,13 @@ export interface McpCapability {
   getPrompt(serverId: string, name: string, args: Record<string, string>): Promise<string>;
 }
 
+/** 配置目录能力。rel 相对配置目录根，越界抛错。read 不存在 = null（不是抛错：
+    "还没配过"是常态不是故障）；write 自动建父目录 */
+export interface ConfigCapability {
+  read(rel: string): Promise<string | null>;
+  write(rel: string, content: string): Promise<void>;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -126,6 +133,11 @@ export interface ExecutionWorld {
       LocalWorld 造不出来,由 index.ts 用 withMcp 焊进来(ADR-0035 同款)。
       v2 SandboxWorld 把 stdio server spawn 进容器,这一层接口一字不改。 */
   mcp?: McpCapability;
+  /** 可选：用户级配置目录（~/.mr-otto）的读写。与 fs 分开：fs 圈在工程文件夹内，
+      这里圈在配置目录内——记忆文件跨 workspace 共享，不属于任何工程。
+      可选的理由同 openTerminal（旧实现和假 world 零改动）；缺席 = 该装配没有
+      长期记忆（memory 工具不挂）。v2 SandboxWorld 可以把它映射成容器外的卷 */
+  config?: ConfigCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -155,6 +167,7 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
           },
         }
       : {}),
+    ...(world.config ? { config: world.config } : {}),
   };
 }
 
@@ -172,6 +185,7 @@ export function withExecOutput(
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser ? { browser: world.browser } : {}),
     ...(world.mcp ? { mcp: world.mcp } : {}),
+    ...(world.config ? { config: world.config } : {}),
   };
 }
 
