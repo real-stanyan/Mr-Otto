@@ -683,9 +683,17 @@ void app.whenReady().then(() => {
     send(CHANNELS.activeSessionChanged, islandSnapshot());
   });
   ipcMain.handle(CHANNELS.islandBoot, () => islandSnapshot());
+  // 岛的尺寸是渲染层量出来报上来的,而 setBounds 是"整块屏幕上的一个窗"这种
+  // 不可撤销的效果:NaN / Infinity 会让窗跑到算不出来的地方(用户再也点不到它),
+  // 一个离谱的大数则等于用一块黑胶囊糊住整个屏幕。钳在岛该有的量级里,
+  // 越界的干脆丢掉(#175 M6)—— 上一帧的尺寸留着,比听一个坏数字强
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
   ipcMain.handle(CHANNELS.islandResize, (_e, size: { w: number; h: number; focusable?: boolean }) => {
-    if (island) resizeIsland(island, size, size.focusable ?? false);
+    if (!island) return;
+    if (!Number.isFinite(size.w) || !Number.isFinite(size.h)) return;
+    resizeIsland(island, { w: clamp(size.w, 40, 900), h: clamp(size.h, 20, 400) }, size.focusable ?? false);
   });
+
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 
