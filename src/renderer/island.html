@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mr Otto Island</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ws://localhost:5173 ws://127.0.0.1:5173; img-src 'self' data:"
+    />
+    <style>
+      /* 透明穿透窗:app.css 里的 body { background: var(--background) } 是不透明的
+         (主窗要用),岛窗必须整条链路透明才能看到桌面——!important 压过它 */
+      html,
+      body,
+      #root {
+        background: transparent !important;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      /* 四态切换的进场动画:透明度 + 轻微缩放,CSS-only(不用动画库)。
+         @starting-style 让新挂载的节点从这个起点开始过渡,而不是瞬间出现。
+         键盘操作(Enter 提交 / Esc 收起)后的状态切换不额外加延迟——
+         过渡本身只有 180ms,观感上足够跟手 */
+      .island-state {
+        transition:
+          opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+          scale 180ms cubic-bezier(0.23, 1, 0.32, 1);
+        opacity: 1;
+        scale: 1;
+
+        @starting-style {
+          opacity: 0;
+          scale: 0.97;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .island-state {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/island/main.tsx"></script>
+  </body>
+</html>

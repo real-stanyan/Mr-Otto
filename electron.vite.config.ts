@@ -30,6 +30,14 @@ export default defineConfig({
       // 进包的只剩一张地址表。其它资源照旧走默认(返回 undefined)
       assetsInlineLimit: (filePath: string) =>
         filePath.includes("/assets/file-icons/") ? false : undefined,
+      // 灵动岛(Task 6)是第二个 renderer 入口:独立 HTML/bundle,主窗和岛窗
+      // 各自的 loadFile 指到各自的产物(见 index.ts createWindow / createIslandWindow)
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, "src/renderer/index.html"),
+          island: resolve(__dirname, "src/renderer/island.html"),
+        },
+      },
     },
   },
 });

@@ -182,3 +182,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/e2e/` — Playwright-electron 冒烟（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）
+- `src/main/islandWindow.ts` — macOS 灵动岛窗口（ADR-0059）

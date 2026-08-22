@@ -65,6 +65,26 @@ describe("createSend", () => {
   });
 });
 
+function fakeWin(destroyed = false): SendTarget & { sent: unknown[][] } {
+  const sent: unknown[][] = [];
+  return {
+    sent,
+    isDestroyed: () => destroyed,
+    webContents: { isDestroyed: () => destroyed, send: (...a: unknown[]) => { sent.push(a); } },
+  };
+}
+
+describe("createSend 多目标", () => {
+  it("推给所有活着的窗口,已销毁的静默跳过", () => {
+    const a = fakeWin(), dead = fakeWin(true), b = fakeWin();
+    const send = createSend(a, dead, b);
+    send("ch", 1);
+    expect(a.sent).toEqual([["ch", 1]]);
+    expect(b.sent).toEqual([["ch", 1]]);
+    expect(dead.sent).toEqual([]);
+  });
+});
+
 describe("主进程里不许有裸 send", () => {
   // 门禁只跑 vitest。「所有 send 都走统一出口」这条规矩不写成测试，
   // 下一个人照旧会在新通道上写 win.webContents.send —— 这个 bug 上次

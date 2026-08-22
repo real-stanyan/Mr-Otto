@@ -12,10 +12,12 @@ export type { ApprovalMode };
 
 export class UIApprover implements Approver {
   private pending = new Map<string, (outcome: ApprovalOutcome) => void>();
-  /** 挂起中的调用用的是哪个工具。授权授的是"工具"这个粒度,
+  /** 挂起中的调用请求了什么。授权授的是"工具"这个粒度,
       而 IPC 回来的只有 toolCallId —— 这张表是两者之间唯一的桥。
+      存整个 (call, tool) 而不只是工具名:岛窗 boot / 切会话时要把"此刻挂着的那张卡"
+      原样补给 UI(#175 I1),而 requestFromUI 当初拿到的就是这两样东西。
       与 pending 同生共死(同一处 set、同一处 delete) */
-  private pendingTool = new Map<string, string>();
+  private pendingTool = new Map<string, { call: ToolCallRequest; tool: Tool }>();
 
   constructor(
     /** 怎么把审批请求送到 UI（主进程注入 webContents.send） */
@@ -30,7 +32,7 @@ export class UIApprover implements Approver {
       const abortOutcome: ApprovalOutcome = { decision: "denied", reason: "turn 被用户中断" };
       if (signal?.aborted) return resolve(abortOutcome);
       this.pending.set(call.id, resolve);
-      this.pendingTool.set(call.id, call.name);
+      this.pendingTool.set(call.id, { call, tool });
       this.requestFromUI(call, tool);
       signal?.addEventListener(
         "abort",
@@ -55,7 +57,15 @@ export class UIApprover implements Approver {
 
   /** 这个挂起中的调用是哪个工具。已收场/不认识的返 undefined —— 调用方据此不授权 */
   toolFor(toolCallId: string): string | undefined {
-    return this.pendingTool.get(toolCallId);
+    return this.pendingTool.get(toolCallId)?.call.name;
+  }
+
+  /** 此刻挂着的审批(给 UI 补快照用)。一个会话同一时刻至多挂一张卡 ——
+      工具管线是串行的,审批门里悬停的只会有一个 —— 所以取第一个就是那一个。
+      没有挂起项返 undefined:岛窗据此显示"没有待审批" */
+  pendingRequest(): { call: ToolCallRequest; tool: Tool } | undefined {
+    for (const entry of this.pendingTool.values()) return entry;
+    return undefined;
   }
 }
 
