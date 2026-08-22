@@ -52,6 +52,40 @@ BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;
 `;
 
+/** 派生索引，不是事实：events 是日志，events_fts 随时可 DROP 重建。
+    trigram：中文不需要分词，代价是查询 ≥3 字符（短查询走 LIKE 兜底，见 searchText）。
+    只收三种事件的正文——其余事件是系统事实/UI 路标，不是"过去说过的话" */
+const FTS_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+  session_id UNINDEXED, seq UNINDEXED, type UNINDEXED, text, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events
+WHEN NEW.type IN ('user_message','assistant_message','tool_result')
+BEGIN
+  INSERT INTO events_fts(session_id, seq, type, text)
+  VALUES (NEW.session_id, NEW.seq, NEW.type,
+          COALESCE(json_extract(NEW.payload, '$.content'), json_extract(NEW.payload, '$.output'), ''));
+END;
+`;
+
+/** FTS5 查询语法里引号/运算符有意义；把用户词整体当短语：双引号包住，内部引号翻倍 */
+function ftsQuote(q: string): string {
+  return `"${q.replace(/"/g, '""')}"`;
+}
+function likeEscape(q: string): string {
+  return q.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** searchText() 的命中行——一条被索引的历史消息/工具结果 */
+export interface FtsHit {
+  sessionId: string;
+  seq: number;
+  type: "user_message" | "assistant_message" | "tool_result";
+  text: string;
+  /** -bm25（越大越相关）；LIKE 兜底时恒为 0 */
+  score: number;
+}
+
 export class EventStore {
   private db: Database.Database;
 
@@ -59,6 +93,12 @@ export class EventStore {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+
+    const hadFts = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'")
+      .get();
+    this.db.exec(FTS_SCHEMA);
+    if (!hadFts) this.rebuildFts(); // 老库第一次开：一次性回填
   }
 
   /** 追加一条事件，seq 由存储层分配，返回完整事件 */
@@ -110,12 +150,62 @@ export class EventStore {
     this.db.transaction((all: string[]) => {
       this.db.exec("DROP TRIGGER events_no_delete");
       const del = this.db.prepare("DELETE FROM events WHERE session_id = ?");
-      for (const id of all) del.run(id);
+      const delFts = this.db.prepare("DELETE FROM events_fts WHERE session_id = ?");
+      for (const id of all) {
+        del.run(id);
+        delFts.run(id);
+      }
       this.db.exec(`CREATE TRIGGER events_no_delete
 BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     })(ids);
     return ids;
+  }
+
+  /** 从 events 重建索引。幂等：先清空再灌。老库首开、或索引损坏时用 */
+  rebuildFts(): void {
+    this.db.transaction(() => {
+      this.db.exec("DELETE FROM events_fts");
+      this.db
+        .prepare(
+          `INSERT INTO events_fts(session_id, seq, type, text)
+           SELECT session_id, seq, type,
+                  COALESCE(json_extract(payload, '$.content'), json_extract(payload, '$.output'), '')
+             FROM events WHERE type IN ('user_message','assistant_message','tool_result')`
+        )
+        .run();
+    })();
+  }
+
+  /** 全文检索。≥3 字符走 FTS5 trigram + BM25；更短的走 LIKE 兜底（trigram 的硬限制，
+      中文双字词太常见不能不管）。永远排除归档会话与子会话 */
+  searchText(query: string, opts: { limit?: number; excludeSessions?: string[] } = {}): FtsHit[] {
+    const q = query.trim();
+    if (!q) return [];
+    const limit = opts.limit ?? 300;
+    const exclude = opts.excludeSessions ?? [];
+    const notIn = exclude.length ? `AND f.session_id NOT IN (${exclude.map(() => "?").join(",")})` : "";
+    const common = `
+      AND f.session_id NOT IN (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
+      AND f.session_id NOT IN (SELECT session_id FROM events WHERE seq = 0 AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
+      ${notIn}`;
+    if ([...q].length >= 3) {
+      const rows = this.db
+        .prepare(
+          `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, -bm25(events_fts) AS score
+             FROM events_fts f WHERE events_fts MATCH ? ${common}
+            ORDER BY score DESC LIMIT ?`
+        )
+        .all(ftsQuote(q), ...exclude, limit) as FtsHit[];
+      return rows;
+    }
+    return this.db
+      .prepare(
+        `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, 0 AS score
+           FROM events_fts f WHERE f.text LIKE ? ESCAPE '\\' ${common}
+          ORDER BY f.session_id, f.seq LIMIT ?`
+      )
+      .all(`%${likeEscape(q)}%`, ...exclude, limit) as FtsHit[];
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
