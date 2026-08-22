@@ -19,7 +19,7 @@ ADR-0059 用第二个透明 `BrowserWindow`（alwaysOnTop、贴顶居中）做�
 删除 Electron 第二窗口实现，改用原生 Swift helper：
 
 - **`native/MrOttoIsland/`**：SPM 包，依赖 [DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit)（MIT），`platforms: [.macOS(.v13)]`，独立 executable target。拿真实 `NSScreen` 刘海几何、四态 SwiftUI 渲染、spring 动画、hover 展开、非 notch 机走 `.floating` 兜底。
-- **stdio 子进程桥**：Electron 主进程 `child_process.spawn` 该二进制（`LSUIElement`/`.accessory`，不进 dock 不抢焦点），`stdio: ['pipe','pipe','pipe']`。主进程写 NDJSON 状态快照到 helper stdin，helper 写 NDJSON 命令（`send`/`approve`/`deny`/`ready`）到 stdout。解析失败的一侧记一行日志、跳过该行、保管道不崩。
+- **stdio 子进程桥**：Electron 主进程 `child_process.spawn` 该二进制（`LSUIElement`/`.accessory`，不进 dock 不抢焦点），`stdio: ["pipe","pipe","inherit"]`（stderr 特意继承到 Electron 控制台，Swift 侧的 decode 错误/崩溃日志直接可见，不需要额外转发）。主进程写 NDJSON 状态快照到 helper stdin，helper 写 NDJSON 命令（`send`/`approve`/`deny`/`ready`）到 stdout。解析失败的一侧记一行日志、跳过该行、保管道不崩。
 - **主进程算投影、推扁平快照**：`islandSnapshot()` 由主进程（事件日志所有者）在 active session 变、turnStatus 变、工具开始/结束、审批请求/裁决、model 变时算好，整包（非增量）序列化后 push；Swift 侧是纯渲染层，不持有权威状态，只做 diff 驱动动画。
 
 ## 否决项
@@ -34,7 +34,7 @@ ADR-0059 用第二个透明 `BrowserWindow`（alwaysOnTop、贴顶居中）做�
 - 多一条 Swift 构建链：`scripts/build-island.mjs` 跑 `swift build`（dev 用 debug 产物，打包用 release），CI/开发机都要装 Swift toolchain。
 - 打包多一步：`electron-builder.yml` 的 `afterPack`（`scripts/afterPack.cjs`）把 release 二进制拷进 `<app>/Contents/Resources/MrOttoIsland` 并 ad-hoc 签（与主 app 同签名策略，见 docs/distribution-macos.md）。
 - Swift 侧无权威状态：岛崩溃或二进制缺失不影响主进程/主窗——`resolveIslandBinPath()` 找不到二进制就返回 `null`，岛静默不启动，app 无回归。
-- 跨进程 stdio 桥比同进程内的 `BrowserWindow`/IPC 多一层序列化/反序列化和进程生命周期管理（限次重启 ≤3、指数退避、超限即不亮岛）。
+- 跨进程 stdio 桥比同进程内的 `BrowserWindow`/IPC 多一层序列化/反序列化和进程生命周期管理（崩溃后即时重启，累计 ≤3 次后放弃——不亮岛，app 照常）。
 
 ## 投影模型说明（新 ADR 关键点）
 

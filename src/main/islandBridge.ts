@@ -60,13 +60,14 @@ export function createIslandBridge(opts: {
   let restarts = 0;
   let disposed = false;
   let last: IslandSnapshot | null = null;
-  let buf = "";
 
   const start = () => {
     if (disposed) return;
     const c = opts.spawn(opts.binPath);
     child = c;
-    buf = "";
+    // 每代一个局部 buf:旧 child 的 stdout 监听不会被显式摘掉,若崩溃后仍有
+    // 迟到字节抵达,不能让它们混进新一代的行缓冲里
+    let buf = "";
     c.stdout.on("data", (b) => {
       buf += b.toString("utf8");
       let nl: number;
