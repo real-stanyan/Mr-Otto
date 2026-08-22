@@ -33,6 +33,7 @@ import { MemoryChips } from "../components/elements/memory-chips.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
 import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memoryStore.js";
+import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
@@ -118,8 +119,10 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
     result 是调用方(ToolFallbackWithLiveTail)已经用 parseMemoryResult 解析好的
     结果——那边判过 null(解析不出来就落回通用工具行),这里不用再解析一遍。
     忘掉之后 chip 只在本地隐藏(forgotten 这个 state),不改事件日志:
-    forgetMemory 已经把 remove 操作重新落成一条新的工具调用事件,
-    这一条历史工具卡还是"当时发生的事"的忠实记录 */
+    forgetMemory 已经把 remove 操作落成一条新的 memory_user_edit 事件,
+    这一条历史工具卡还是"当时发生的事"的忠实记录。
+    forgetMemory 失败(比如条目已经不在文件里了)要把 chip 退回来——
+    不然本地状态和磁盘对不上,用户以为忘掉了其实压根没生效 */
 const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
   const sessionId = useChat((s) => s.sessionId);
   const [forgotten, setForgotten] = useState<Set<string>>(new Set());
@@ -130,7 +133,14 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
       chips={chips}
       onForget={(id) => {
         setForgotten((prev) => new Set(prev).add(id));
-        void window.otter.forgetMemory(result.target, chipEntryText(id), sessionId);
+        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId).catch((e: unknown) => {
+          setForgotten((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          console.error("forgetMemory 失败:", bridgeErrorMessage(e));
+        });
       }}
       className="my-1"
     />
