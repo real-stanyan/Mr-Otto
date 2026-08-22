@@ -5,6 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electr
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import {
   CHANNELS,
   type BootInfo,
@@ -59,7 +60,8 @@ import {
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { MEMORY_FILES } from "../shared/memoryStore.js";
+import { MEMORY_FILES, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -607,6 +609,24 @@ void app.whenReady().then(() => {
     return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
   };
 
+  /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
+      memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
+  const memoryEditDeps = {
+    store,
+    readFile: async (rel: string) => {
+      try {
+        return await readFile(join(configDir(homedir()), rel), "utf8");
+      } catch {
+        return "";
+      }
+    },
+    writeFile: async (rel: string, c: string) => {
+      const abs = join(configDir(homedir()), rel);
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, c, "utf8");
+    },
+  };
+
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
    *
@@ -816,6 +836,15 @@ void app.whenReady().then(() => {
   const skillRoots = [join(configDir(homedir()), "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
+  ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
+  ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
+    applyUserEdit(memoryEditDeps, target, text, sessionId));
+  ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
+    const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
+    await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
+  });
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());

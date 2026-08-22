@@ -33,6 +33,7 @@ import type {
   AskUserRequest,
 } from "./askUser.js";
 import type { SubagentDef } from "./subagent.js";
+import type { MemoryTarget } from "./memoryStore.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
@@ -362,6 +363,14 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** 两个记忆文件的当前内容（设置页读，ADR-0059） */
+  getMemory(): Promise<{ memory: string; user: string }>;
+  /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
+      MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts） */
+  saveMemory(target: MemoryTarget, text: string, sessionId?: string): Promise<void>;
+  /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
+      的会话——留证要知道是谁忘的 */
+  forgetMemory(target: MemoryTarget, entry: string, sessionId: string): Promise<void>;
   /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
@@ -603,6 +612,9 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  getMemory: "otter:getMemory",
+  saveMemory: "otter:saveMemory",
+  forgetMemory: "otter:forgetMemory",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",
