@@ -77,6 +77,11 @@ export function createChildAgent(opts: {
       与活着那一侧（subagentRunner 复用父 world）是同一套规则 */
   mcp?: McpCapability;
 }): ReturnType<typeof createAgent> {
+  // 刻意不传 history：重建出来的子会话没有 world.history，session_search 工具
+  // 不会挂上去。活着的子会话（subagentRunner.ts）复用 `parent.world`——同一个
+  // world 实例，history 早就在里面；这里是新造一个 LocalWorld，没有父 world
+  // 可继承，也没必要单独焊一个：子会话本来就该只查自己那段，不该反过来
+  // 翻别的历史会话（ADR-0061 排除子会话同一个道理）
   return createAgent({
     store: opts.store,
     workspace: opts.workspace,

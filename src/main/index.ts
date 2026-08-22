@@ -22,6 +22,7 @@ import {
   type ApprovalPreview,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
@@ -579,8 +580,9 @@ void app.whenReady().then(() => {
   // unknownTools 分支），所有 subagent 静默退回默认工具集，直到重启恢复
   let TOOL_NAMES: string[];
   try {
+    const probeStore = new EventStore(":memory:");
     TOOL_NAMES = createAgent({
-      store: new EventStore(":memory:"),
+      store: probeStore,
       workspace: app.getPath("userData"),
       push: {
         event: () => {},
@@ -596,6 +598,9 @@ void app.whenReady().then(() => {
       // builtinSubagents 的 memory-reviewer 定义会把 "memory" 过滤成不认识的
       // 工具名，装出来的清单永远挂不上它要用的那把工具
       configRoot: configDir(homedir()),
+      // 同理给 history：不给的话 world.history 是 undefined，session_search
+      // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
+      history: createHistoryCapability(probeStore, () => "probe"),
       // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
       // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
@@ -735,6 +740,10 @@ void app.whenReady().then(() => {
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: configDir(homedir()),
       memory: readMemoryFiles(),
+      // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
+      // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
+      // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
+      history: createHistoryCapability(store, () => self.sessionId),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的

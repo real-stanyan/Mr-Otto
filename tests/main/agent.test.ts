@@ -152,6 +152,19 @@ describe("createAgent 会话生命周期", () => {
     expect(withConfig.toolDefs.map((d) => d.name)).toContain("memory");
     store2.close();
   });
+
+  it("world 有 history 才挂 session_search", () => {
+    const store = new EventStore(":memory:");
+    const bare = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(bare.toolDefs.map((d) => d.name)).not.toContain("session_search");
+    store.close();
+
+    const store2 = new EventStore(":memory:");
+    const history = { search: () => [], window: () => [], load: () => [], recent: () => [] };
+    const withHistory = createAgent({ store: store2, workspace: "/proj/x", push, attachments, history });
+    expect(withHistory.toolDefs.map((d) => d.name)).toContain("session_search");
+    store2.close();
+  });
 });
 
 describe("createModeAwareApprover 审批模式", () => {

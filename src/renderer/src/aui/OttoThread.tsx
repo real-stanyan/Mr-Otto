@@ -30,9 +30,13 @@ import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
 import { WebPreview } from "../components/elements/web-preview.js";
 import { MemoryChips } from "../components/elements/memory-chips.js";
+import { RetrievalChunks } from "../components/elements/retrieval-chunks.js";
+import { DocumentReference } from "../components/elements/document-reference.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
 import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memoryStore.js";
+import { parseSessionSearchResult, type SessionSearchResult } from "../../../shared/sessionSearch.js";
+import { toDocumentProps, toRetrievalProps } from "../lib/sessionSearchCard.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
@@ -147,6 +151,56 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
   );
 };
 
+/** session_search 的 discovery 形态:按 session 去重后的候选段落。
+    result 是调用方(ToolFallbackWithLiveTail)已经用 parseSessionSearchResult 解析好的
+    结果(或者还没出结果时现拼的一份占位 result,见下面 searching 分支),这里只管
+    映射成 element 的 props(纯函数在 lib/sessionSearchCard.ts,方便单测)。
+    searching 默认 false:大多数调用方走的是"已经解析出 discovery 结果"那条路径,
+    part.result 早已是字符串,天然不在搜索中。真正会传 true 的是
+    ToolFallbackWithLiveTail 里那条"还没出结果、但 args.query 已经能看出这是一次
+    discovery 调用"的分支——同 WebSearchCard 的 pre-result 写法,判据也和
+    inferMode(src/tools/sessionSearch.ts)的第一条一致(query 存在即 discovery),
+    但这里是本地重写的一行判断,没有 import src/tools/(渲染进程不许 import 那边,
+    硬规则,见 AGENTS.md) */
+const RetrievalCard: FC<{ result: SessionSearchResult; searching?: boolean }> = ({
+  result,
+  searching = false,
+}) => {
+  const { query, chunks, visibleCount } = toRetrievalProps(result);
+  return (
+    <RetrievalChunks
+      query={query}
+      chunks={searching ? [] : chunks}
+      visibleCount={searching ? 0 : visibleCount}
+      searching={searching}
+      searchingLabel="检索中…"
+      statusLabel={chunks.length > 0 ? `命中 ${chunks.length} 段` : "没捞到"}
+      className="my-1 max-w-none"
+    />
+  );
+};
+
+/** session_search 的 read 形态:整段会话的目录 + 命中的锚点。点一条锚点不是"跳到
+    那一页"(这不是分页文档,是一段会话),而是切过去那个会话本身——resume 是
+    store 里切会话的 action(见 store.ts,底层是 window.otter.resumeSession)。
+    activePage 恒为 0:这里没有"正在看第几页"的概念,只用它换来 DocumentReference
+    的高亮态别乱选 */
+const DocumentCard: FC<{ result: SessionSearchResult }> = ({ result }) => {
+  const document = result.document;
+  if (!document) return null;
+  const { title, pages, anchors } = toDocumentProps(result);
+  return (
+    <DocumentReference
+      title={title}
+      pages={pages}
+      anchors={anchors}
+      activePage={0}
+      onJump={() => void useChat.getState().resume(document.sessionId)}
+      className="my-1 max-w-none"
+    />
+  );
+};
+
 /** 读网页这一步:browser_read / web_extract。
     通用工具行只会写「browser_read」+ 一坨折起来的 JSON,而这一步真正发生的事是
     "打开了这个地址,读回了这些字"—— web-preview 的地址栏 + 正文框正好是这句话。
@@ -255,6 +309,31 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   if (part.toolName === "memory" && part.isError !== true) {
     const parsed = typeof part.result === "string" ? parseMemoryResult(part.result) : null;
     if (parsed) return <MemoryCard result={parsed} />;
+  }
+  // session_search 这一步换成 retrieval-chunks / document-reference 两张卡:discovery
+  // 结果是"搜到的候选段落",read 结果是"整段会话的目录"。scroll/browse 两种形态
+  // 没有对应的 element(那是"翻这一段""列最近会话",不是"给我看几条结果"),
+  // parsed 为 null 或 mode 对不上就落回下面的通用工具行,不猜。
+  // 还没出结果、但 args.query 已经是字符串——同 WebSearchCard 的 pre-result 写法,
+  // 判据对齐 inferMode 的第一条(query 存在即 discovery),但这行判断本地重写,
+  // 没有 import src/tools/ 那份 inferMode(渲染进程不许 import,硬规则)
+  if (
+    part.toolName === "session_search" &&
+    part.isError !== true &&
+    part.result === undefined &&
+    typeof (part.args as { query?: unknown } | undefined)?.query === "string"
+  ) {
+    return (
+      <RetrievalCard
+        result={{ mode: "discovery", query: String((part.args as { query: string }).query), chunks: [] }}
+        searching
+      />
+    );
+  }
+  if (part.toolName === "session_search" && part.isError !== true) {
+    const parsed = typeof part.result === "string" ? parseSessionSearchResult(part.result) : null;
+    if (parsed?.mode === "discovery" && parsed.chunks) return <RetrievalCard result={parsed} />;
+    if (parsed?.mode === "read" && parsed.document) return <DocumentCard result={parsed} />;
   }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路

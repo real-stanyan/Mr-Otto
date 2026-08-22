@@ -34,6 +34,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 工作区在场（WorkspacePresence） | 一个人此刻「在哪个仓库、哪根分支」：`{repoKey, branch}`。repoKey = 规范化 remote URL 的 sha256 前 16 位（只能比对同不同仓库，看不到地址）；branch 是本地短名，detached 为 null。两条腿广播——Realtime presence 的 track meta ∪ 心跳写入 `profiles.repo_key/repo_branch`——Git Graph 把同仓库好友的头像贴到对应分支徽章上 | ADR-0055；`src/shared/repoKey.ts`、`src/main/workspacePresence.ts`、`src/shared/friendBranches.ts` |
 | 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
+| 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除归档、子会话、当前会话 | ADR-0061 |
+| 历史索引（events_fts） | `events` 表的 FTS5 trigram 派生索引（user/assistant/tool_result 正文），insert 触发器同步、老库首开回填、purge 连带删；可 DROP 重建，不是事实 | ADR-0061 |
 
 ## Key invariants
 
