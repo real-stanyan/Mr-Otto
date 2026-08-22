@@ -70,6 +70,13 @@ export function AutoCompactSettings() {
   };
 
   const onEnabledChange = (enabled: boolean) => {
+    // 先取消滑块那边悬着的去抖：它捕获的 next 是切换开关之前的 settings 快照，
+    // 200ms 后原样落盘会把这里刚写的 enabled 静默盖回去（拖了滑块又立刻点了开关
+    // 才会撞上，但撞上就是脏写，不吱声）
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
     const next = { ...settings, enabled };
     setSettings(next);
     persist(next); // 开关是低频离散动作，即时落盘
