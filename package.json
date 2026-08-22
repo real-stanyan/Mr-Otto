@@ -5,7 +5,9 @@
   "description": "Mr Otto — macOS desktop GUI agent",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "pretest": "node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
+    "e2e": "electron-vite build && playwright test",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "node scripts/fix-pty-perms.mjs",
@@ -20,6 +22,7 @@
   "type": "module",
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",

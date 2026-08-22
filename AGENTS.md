@@ -156,7 +156,7 @@ Serial single-human repos need none of this — with one live shift, the rules a
 
 ### Branch hygiene (optional)
 
-Before shift-end (or when you hit stale refs at shift-start), run `npx gearbox-agents prune` (in this repo you can run `node scripts/gearbox-prune` directly). It cleans up four things (ADR-0030/0043):
+Before shift-end (or when you hit stale refs at shift-start), run `npx gearbox-agents prune`. It cleans up four things (ADR-0030/0043):
 
 - Leftover linked worktrees from agent sessions (`--apply-worktrees`, `git worktree remove` on merged + clean ones only — dirty or locked worktrees are reported, never removed; runs before the branch pass because a worktree checkout blocks `git branch -d`)
 - Locally merged branches (`git branch -d` safe-deletes, fails loudly)
@@ -178,4 +178,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `CONTEXT.md` — domain glossary
 - `docs/gearbox-adr/` — protocol ADRs (copied from Gearbox, managed by tooling — don't hand-edit)
 - `docs/adr/` — this project's own architectural decisions (starting at 0001, human-authored)
-- <other module documentation directories, e.g. docs/modules/>
+- `docs/distribution-macos.md` — macOS 打包 / 签名 / 分发
+- `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
+- `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
+- `tests/e2e/` — Playwright-electron 冒烟（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）

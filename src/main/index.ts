@@ -159,8 +159,15 @@ function createWindow(): BrowserWindow {
 void app.whenReady().then(() => {
   // dev 下菜单栏首项仍显示 "Electron"(来自 Electron 二进制的 Info.plist,运行时改不了,
   // 打包后自然是 Mr Otto);dock 图标和关于面板运行时可改,先把这两处品牌立起来
+  // 图标找不到只丢掉图标,不能把整条启动链拖死:这个 then 里往下是建窗口,
+  // 抛在这儿窗口就永远不出来(e2e 冒烟用 `electron out/main/index.js` 起 app 时
+  // getAppPath 指向 out/main,就踩到过 —— 白屏都没有,是根本没有窗)
   if (process.platform === "darwin") {
-    app.dock?.setIcon(join(app.getAppPath(), "resources/icon.png"));
+    try {
+      app.dock?.setIcon(join(app.getAppPath(), "resources/icon.png"));
+    } catch (e) {
+      console.warn("dock 图标没装上:", e instanceof Error ? e.message : e);
+    }
   }
   app.setAboutPanelOptions({ applicationName: "Mr Otto", applicationVersion: app.getVersion() });
 
