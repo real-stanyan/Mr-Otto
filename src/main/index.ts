@@ -109,6 +109,9 @@ app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)
 let accountManager: AccountManager | null = null;
 let pendingAuthUrl: string | null = null;
 let mainWindow: BrowserWindow | null = null;
+// 真的要退了吗?mac 上主窗的关闭键是"藏起来"而不是"关掉"(见 createWindow 里的
+// close 拦截),只有走到 before-quit 才算数 —— 这个标志是两者之间唯一的区分
+let quitting = false;
 
 // 深链回调成功后把主窗口拉回前台——用户在系统浏览器授权完，观感上是"跳回 App"。
 // 窗口可能被 minimized，先 restore 再 show/focus；macOS 上 show/focus 不够抢焦点，
@@ -156,6 +159,18 @@ function createWindow(): BrowserWindow {
       sandbox: false,
     },
   });
+  // mac 惯例:Cmd+W / 点红灯是"收起窗口",app 不退。这里必须拦,否则主窗一关
+  // 就 destroy 了 —— 而灵动岛还挂在屏幕顶上(它是独立窗,不跟着关),岛上所有
+  // 推送的目标(createSend 的第一个目标)、以及"回主窗看看"这条路全部作废,
+  // 用户面对一个还在动、但点哪儿都回不去的胶囊(#175 I5)。
+  // 真退出时 before-quit 先把 quitting 置上,这里就放行
+  if (process.platform === "darwin") {
+    win.on("close", (e) => {
+      if (quitting) return;
+      e.preventDefault();
+      win.hide();
+    });
+  }
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
@@ -693,7 +708,6 @@ void app.whenReady().then(() => {
     if (!Number.isFinite(size.w) || !Number.isFinite(size.h)) return;
     resizeIsland(island, { w: clamp(size.w, 40, 900), h: clamp(size.h, 20, 400) }, size.focusable ?? false);
   });
-
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
 
@@ -1310,6 +1324,7 @@ void app.whenReady().then(() => {
   );
 
   app.on("before-quit", () => {
+    quitting = true; // 放行 createWindow 里那道 close 拦截 —— 这次是真要退
     island?.destroy();
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
@@ -1326,4 +1341,10 @@ void app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// 主窗被 Cmd+W 藏起来之后,点 dock 图标是把它叫回来的那条路(mac 惯例)。
+// 没有这一条,藏起来的窗就再也没有入口了 —— 只剩一个岛在屏幕顶上(#175 I5)
+app.on("activate", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
 });
