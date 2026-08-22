@@ -3,9 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <title>Mr Otto</title>
+    <!-- font-src 放行 data::Vite 把 4KB 以下的资源内联成 data URI,KaTeX 的几枚小字体
+         (Size3/Size4 等)正好在线下;没有这条它们在打包版里被 CSP 静默拦掉,公式缺字。
+         e2e 冒烟第一次跑就抓到的(ADR-0058) -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:5173 ws://127.0.0.1:5173; img-src 'self' data: https://avatars.githubusercontent.com https://*.googleusercontent.com"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ws://localhost:5173 ws://127.0.0.1:5173; img-src 'self' data: https://avatars.githubusercontent.com https://*.googleusercontent.com"
     />
   </head>
   <body>
