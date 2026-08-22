@@ -127,6 +127,10 @@ const bridge: ShellBridge = {
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),
   getWindowFullscreen: () => ipcRenderer.invoke(CHANNELS.getWindowFullscreen),
   onWindowFullscreen: subscribe(CHANNELS.windowFullscreen),
+  setActiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.setActiveSession, sessionId),
+  islandBoot: () => ipcRenderer.invoke(CHANNELS.islandBoot),
+  islandResize: (size) => ipcRenderer.invoke(CHANNELS.islandResize, size),
+  onActiveSessionChanged: subscribe(CHANNELS.activeSessionChanged),
 };
 
 contextBridge.exposeInMainWorld("otter", bridge);

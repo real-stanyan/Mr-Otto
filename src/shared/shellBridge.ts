@@ -554,6 +554,20 @@ export interface ShellBridge {
   getWindowFullscreen(): Promise<boolean>;
   /** 窗口进入/退出全屏的推送。首帧状态用 getWindowFullscreen 问,变化走这里 */
   onWindowFullscreen(cb: (fullscreen: boolean) => void): Unsubscribe;
+  /** 主窗当前看着哪个会话(null = welcome)。岛只投影这一个会话 */
+  setActiveSession(sessionId: string | null): Promise<void>;
+  /** 岛窗首帧快照:当前会话 + 它的模型 */
+  islandBoot(): Promise<IslandBoot>;
+  /** 岛窗内容尺寸变了 → 主进程 setBounds(透明窗的窗体要跟 DOM 同步) */
+  islandResize(size: { w: number; h: number; focusable?: boolean }): Promise<void>;
+  /** 主窗切会话 / 切模型 → 推给岛窗 */
+  onActiveSessionChanged(cb: (info: IslandBoot) => void): Unsubscribe;
+}
+
+/** 岛窗的首帧 / 变化推送都是这一份 */
+export interface IslandBoot {
+  activeSessionId: string | null;
+  model: string | null;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -679,6 +693,10 @@ export const CHANNELS = {
   notificationActivated: "otter:notificationActivated",
   getWindowFullscreen: "otter:getWindowFullscreen",
   windowFullscreen: "otter:windowFullscreen",
+  setActiveSession: "otter:setActiveSession",
+  islandBoot: "otter:islandBoot",
+  islandResize: "otter:islandResize",
+  activeSessionChanged: "otter:activeSessionChanged",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",
