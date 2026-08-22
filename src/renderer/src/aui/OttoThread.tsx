@@ -153,16 +153,18 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
 
 /** session_search 的 discovery 形态:按 session 去重后的候选段落。
     result 是调用方(ToolFallbackWithLiveTail)已经用 parseSessionSearchResult 解析好的
-    结果,这里只管映射成 element 的 props(纯函数在 lib/sessionSearchCard.ts,方便单测)。
-    searching 字面上就是"这次调用还没跑完"(part.result === undefined)——本仓没有
-    在结果落地之前就分辨出"这是一次 discovery 调用"的办法(那要读 args 里的
-    query/session_id 推断 mode,而那份推断逻辑 inferMode 长在 src/tools/ 下,渲染进程
-    不许 import;硬规则,见 AGENTS.md),所以这颗组件目前只在结果已经是 discovery 时
-    才会被喂进来,searching 在这条路径上恒为 false —— 但仍然算真实表达式而不是写死
-    false,保持这颗组件本身"还在搜"这个语义是对的,不是死代码 */
-const RetrievalCard: FC<{ result: SessionSearchResult; searching: boolean }> = ({
+    结果(或者还没出结果时现拼的一份占位 result,见下面 searching 分支),这里只管
+    映射成 element 的 props(纯函数在 lib/sessionSearchCard.ts,方便单测)。
+    searching 默认 false:大多数调用方走的是"已经解析出 discovery 结果"那条路径,
+    part.result 早已是字符串,天然不在搜索中。真正会传 true 的是
+    ToolFallbackWithLiveTail 里那条"还没出结果、但 args.query 已经能看出这是一次
+    discovery 调用"的分支——同 WebSearchCard 的 pre-result 写法,判据也和
+    inferMode(src/tools/sessionSearch.ts)的第一条一致(query 存在即 discovery),
+    但这里是本地重写的一行判断,没有 import src/tools/(渲染进程不许 import 那边,
+    硬规则,见 AGENTS.md) */
+const RetrievalCard: FC<{ result: SessionSearchResult; searching?: boolean }> = ({
   result,
-  searching,
+  searching = false,
 }) => {
   const { query, chunks, visibleCount } = toRetrievalProps(result);
   return (
@@ -311,12 +313,26 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   // session_search 这一步换成 retrieval-chunks / document-reference 两张卡:discovery
   // 结果是"搜到的候选段落",read 结果是"整段会话的目录"。scroll/browse 两种形态
   // 没有对应的 element(那是"翻这一段""列最近会话",不是"给我看几条结果"),
-  // parsed 为 null 或 mode 对不上就落回下面的通用工具行,不猜
+  // parsed 为 null 或 mode 对不上就落回下面的通用工具行,不猜。
+  // 还没出结果、但 args.query 已经是字符串——同 WebSearchCard 的 pre-result 写法,
+  // 判据对齐 inferMode 的第一条(query 存在即 discovery),但这行判断本地重写,
+  // 没有 import src/tools/ 那份 inferMode(渲染进程不许 import,硬规则)
+  if (
+    part.toolName === "session_search" &&
+    part.isError !== true &&
+    part.result === undefined &&
+    typeof (part.args as { query?: unknown } | undefined)?.query === "string"
+  ) {
+    return (
+      <RetrievalCard
+        result={{ mode: "discovery", query: String((part.args as { query: string }).query), chunks: [] }}
+        searching
+      />
+    );
+  }
   if (part.toolName === "session_search" && part.isError !== true) {
     const parsed = typeof part.result === "string" ? parseSessionSearchResult(part.result) : null;
-    if (parsed?.mode === "discovery" && parsed.chunks) {
-      return <RetrievalCard result={parsed} searching={part.result === undefined} />;
-    }
+    if (parsed?.mode === "discovery" && parsed.chunks) return <RetrievalCard result={parsed} />;
     if (parsed?.mode === "read" && parsed.document) return <DocumentCard result={parsed} />;
   }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
