@@ -206,6 +206,11 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
         .all(ftsQuote(q), ...exclude, limit) as FtsHit[];
       return rows;
     }
+    // LIKE 兜底：`f.text LIKE ?` 没有索引可用（trigram 索引最短 3 字符，<3
+    // 字符的查询够不到它），这条查询是对 events_fts.text 的全表扫描。v1 能接受
+    // 是因为触发这条路径的只有 1~2 字符的查询——真出现在生产库上大概率是
+    // 输入还没打完；真要给短查询也走索引，得换成 bigram/单字符 tokenizer 或
+    // 前缀索引，目前没这个必要
     return this.db
       .prepare(
         `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, 0 AS score
