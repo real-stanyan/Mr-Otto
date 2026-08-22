@@ -4,9 +4,9 @@
 // 校准 = 已计费锚点（真实账单）+ 锚点之后未计费事件的字符估算（会进下一次 prompt 的那些）。
 // 纯函数放 shared：渲染层用、测试逼边界，都不碰运行时。
 
-import type { SessionEvent } from "../session/events.js";
+import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import { systemPromptText } from "../session/deriveMessages.js";
+import { systemPromptText, renderMemoryPrompt } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
@@ -144,7 +144,13 @@ export function contextBreakdown(
   tools: ToolDefinition[] = []
 ): ContextBreakdown {
   const workspace = workspaceOf(events);
-  const system = workspace ? estimateTokens(systemPromptText(workspace)) : 0;
+  const memoryEvent = events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded");
+  const system = workspace
+    ? estimateTokens(
+        systemPromptText(workspace) +
+          (memoryEvent ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user) : "")
+      )
+    : 0;
   const toolTokens = estimateToolTokens(tools);
   const anchor = billingAnchor(events);
   const pending = pendingAfter(events, anchor.idx);

@@ -29,7 +29,11 @@ import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
 import { WebPreview } from "../components/elements/web-preview.js";
+import { MemoryChips } from "../components/elements/memory-chips.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
+import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
+import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memoryStore.js";
+import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow } from "../components/Timeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
@@ -107,6 +111,38 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
         void window.otter.browserNavigate(sessionId, r.url);
       }}
       className="my-1 max-w-none"
+    />
+  );
+};
+
+/** memory 工具这一步:模型这次记了 / 改了哪几条,配一枚能点的「忘掉」×。
+    result 是调用方(ToolFallbackWithLiveTail)已经用 parseMemoryResult 解析好的
+    结果——那边判过 null(解析不出来就落回通用工具行),这里不用再解析一遍。
+    忘掉之后 chip 只在本地隐藏(forgotten 这个 state),不改事件日志:
+    forgetMemory 已经把 remove 操作落成一条新的 memory_user_edit 事件,
+    这一条历史工具卡还是"当时发生的事"的忠实记录。
+    forgetMemory 失败(比如条目已经不在文件里了)要把 chip 退回来——
+    不然本地状态和磁盘对不上,用户以为忘掉了其实压根没生效 */
+const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
+  const sessionId = useChat((s) => s.sessionId);
+  const [forgotten, setForgotten] = useState<Set<string>>(new Set());
+  const chips = memoryChipsFromResult(result).filter((c) => !forgotten.has(c.id));
+  if (chips.length === 0) return null;
+  return (
+    <MemoryChips
+      chips={chips}
+      onForget={(id) => {
+        setForgotten((prev) => new Set(prev).add(id));
+        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId).catch((e: unknown) => {
+          setForgotten((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          console.error("forgetMemory 失败:", bridgeErrorMessage(e));
+        });
+      }}
+      className="my-1"
     />
   );
 };
@@ -214,6 +250,12 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   const call: ToolCallRequest = { id: part.toolCallId, name: part.toolName, args: part.args };
   const summary = toolSummary(call);
   const path = toolFilePath(call);
+  // memory 这一步换成 memory-chips element:通用工具行只会写「memory」+ 一坨
+  // 折起来的 JSON。解析不出来(旧日志 / 格式变了)就落回下面的通用工具行,不猜
+  if (part.toolName === "memory" && part.isError !== true) {
+    const parsed = typeof part.result === "string" ? parseMemoryResult(part.result) : null;
+    if (parsed) return <MemoryCard result={parsed} />;
+  }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路
   // (下面那张 tool-error 卡才是结论)

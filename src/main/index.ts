@@ -5,6 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electr
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import {
   CHANNELS,
   type BootInfo,
@@ -32,7 +33,8 @@ import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
-import { composeUserText } from "../session/deriveMessages.js";
+import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
+import { shouldNudge, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
@@ -62,6 +64,8 @@ import {
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
+import { MEMORY_FILES, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -405,6 +409,54 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, event);
   };
 
+  // 记忆审查：与分区分类/跟进建议同构的第三条外挂（turn 锁之外、永不抛、
+  // 会话被 purge 就不落）。每 10 个 user turn 落一条 memory_nudge，然后派内置
+  // memory-reviewer 子智能体；子会话自己调 memory 工具写盘，结果不回父上下文
+  // （父会话整个 session 看到的记忆仍是开头那份快照，ADR-0060）。
+  //
+  // 子会话没有自己的 subagentRunner——这里现造一个，接线和 createSessionAgent
+  // 里派活那份完全同构（同一个 list / parent / alwaysAllow / register），
+  // 只是派活的时机不是模型调 task 工具，而是 turn 收口这一刻
+  const nudgeMemory = async (sessionId: string): Promise<void> => {
+    const agent = agents.get(sessionId);
+    if (!agent) return;
+    const log = store.load(sessionId);
+    if (!shouldNudge(log)) return;
+    const nudgeEvent = store.append({
+      sessionId, ts: Date.now(), type: "memory_nudge", userTurns: MEMORY_NUDGE_EVERY,
+    });
+    send(CHANNELS.event, nudgeEvent);
+    // 转写给 reviewer 看：只丢 system（那条尾部拼着 MEMORY/USER 块，reviewer
+    // 拿到的是下面 readMemoryFiles() 现读的最新版本，喂旧投影是重复信息）。
+    // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
+    // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
+    const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
+    const mem = readMemoryFiles();
+    const runner = createSubagentRunner({
+      store,
+      attachments: attachmentStore,
+      push,
+      list: () => listSubagents(agent.workspace),
+      parent: () => ({
+        sessionId: agent.sessionId,
+        workspace: agent.workspace,
+        world: agent.world,
+        model: agent.model,
+        approvalMode: agent.approvalMode,
+      }),
+      getAccessToken,
+      alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
+      // 从建好那一刻起就是活的，resumeSession 必须查得到它
+      register: (child) => void agents.set(child.sessionId, child),
+    });
+    await runner.run({
+      agent: "memory-reviewer",
+      task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+      parentToolCallId: `memory-nudge-${nudgeEvent.seq}`,
+    });
+  };
+
   const enqueueSectionClassify = (sessionId: string): void => {
     const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
     // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
@@ -539,6 +591,11 @@ void app.whenReady().then(() => {
       },
       attachments: attachmentStore,
       makeBrowser: () => ({ read: () => Promise.reject(new Error("probe")) }),
+      // 给 configRoot：这条装配只用来探名字、永远不会真跑一轮，但不给的话
+      // world.config 是 undefined，memory 工具不会出现在 TOOL_NAMES 里——
+      // builtinSubagents 的 memory-reviewer 定义会把 "memory" 过滤成不认识的
+      // 工具名，装出来的清单永远挂不上它要用的那把工具
+      configRoot: configDir(homedir()),
       // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
       // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
@@ -582,6 +639,39 @@ void app.whenReady().then(() => {
   const trusted = (workspace: unknown) => trustedWorkspace(workspace, known());
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
+
+  /** 两个记忆文件的当前内容（ADR-0060）。读不到 = 空——"没记过"不是故障。
+      同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
+      createAgent 是同步的，这份快照必须在调它之前就手上有值 */
+  const readMemoryFiles = (): { memory: string; user: string } => {
+    const root = configDir(homedir());
+    const read = (rel: string): string => {
+      try {
+        return readFileSync(join(root, rel), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+  };
+
+  /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
+      memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
+  const memoryEditDeps = {
+    store,
+    readFile: async (rel: string) => {
+      try {
+        return await readFile(join(configDir(homedir()), rel), "utf8");
+      } catch {
+        return "";
+      }
+    },
+    writeFile: async (rel: string, c: string) => {
+      const abs = join(configDir(homedir()), rel);
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, c, "utf8");
+    },
+  };
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -640,6 +730,11 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
+      // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
+      // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
+      configRoot: configDir(homedir()),
+      memory: readMemoryFiles(),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
@@ -820,6 +915,15 @@ void app.whenReady().then(() => {
   const skillRoots = [join(configDir(homedir()), "skills"), join(homedir(), ".claude", "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+
+  // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
+  ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
+  ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
+    applyUserEdit(memoryEditDeps, target, text, sessionId));
+  ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
+    const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
+    await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
+  });
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());
@@ -1243,6 +1347,9 @@ void app.whenReady().then(() => {
         // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
         // 变成 unhandledRejection 会把主进程带走
         void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+        // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
+        // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
+        void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
       }
     }
   );

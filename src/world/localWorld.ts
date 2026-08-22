@@ -4,23 +4,24 @@
 // root 选项 = 软沙箱：文件操作圈在工程文件夹内，越界抛错。
 // exec 只把 cwd 设为 root（挡不住 `cd ..`，诚实说明）——硬隔离是 v2 Docker world 的活。
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { exec as cpExec } from "node:child_process";
 import { promisify } from "node:util";
-import { resolve, relative, isAbsolute } from "node:path";
+import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 
 const execAsync = promisify(cpExec);
 
-/** 把 path 解析到 root 下并验证没越界；没配 root = 不设防（旧行为） */
-function fence(root: string | undefined, path: string): string {
+/** 把 path 解析到 root 下并验证没越界；没配 root = 不设防（旧行为）。
+    what：错误文案里叫什么围栏——fs 用「工程文件夹」，config 用「配置目录」 */
+function fence(root: string | undefined, path: string, what = "工程文件夹"): string {
   if (!root) return path;
   const abs = resolve(root, path); // 相对路径落在 root 下，绝对路径原样解析
   const rel = relative(root, abs);
   const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
   if (!inside) {
-    throw new Error(`路径越出工程文件夹（${root}）: ${path}`);
+    throw new Error(`路径越出${what}（${root}）: ${path}`);
   }
   return abs;
 }
@@ -33,6 +34,9 @@ export function createLocalWorld(
         缺省 = 全局登记处（keyVault.applyToEnv 写进去的那些）。可注入是为了测试
         不必碰全局状态。返回空数组 = 什么都不摘（旧行为） */
     secretEnvNames?: () => readonly string[];
+    /** 用户级配置目录（如 ~/.mr-otto）。给了才挂 config 能力——记忆文件跨
+        workspace 共享，圈在这里而不是 root（工程文件夹）内 */
+    configRoot?: string;
   } = {}
 ): ExecutionWorld {
   const { root } = opts;
@@ -143,5 +147,25 @@ export function createLocalWorld(
         onExit: (cb) => { const d = child.onExit(({ exitCode }) => cb(exitCode)); return () => d.dispose(); },
       };
     },
+
+    ...(opts.configRoot
+      ? {
+          config: {
+            read: async (rel: string) => {
+              try {
+                return await readFile(fence(opts.configRoot, rel, "配置目录"), "utf8");
+              } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+                throw err;
+              }
+            },
+            write: async (rel: string, content: string) => {
+              const abs = fence(opts.configRoot, rel, "配置目录");
+              await mkdir(dirname(abs), { recursive: true });
+              await writeFile(abs, content, "utf8");
+            },
+          },
+        }
+      : {}),
   };
 }

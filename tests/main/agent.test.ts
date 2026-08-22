@@ -117,6 +117,41 @@ describe("createAgent 会话生命周期", () => {
     expect(store.load("s-20260818123456")).toHaveLength(2);
     store.close();
   });
+
+  // ADR-0060：新 session 落一条长期记忆快照，紧跟 session_created 之后；
+  // resume 不再落——日志里那条才是模型看过的那份，重复落等于说谎
+  it("新 session：session_created 之后紧跟 memory_loaded；resume 不再落", () => {
+    const store = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: mkdtempSync(join(tmpdir(), "otter-agent-config-")) });
+    const memory = { memory: "m", user: "u" };
+
+    const a = createAgent({ store, workspace: "/proj/x", push, attachments, world, memory });
+    const log = store.load(a.sessionId);
+    expect(log[0]!.type).toBe("session_created");
+    expect(log[1]).toMatchObject({ type: "memory_loaded", memory: "m", user: "u" });
+    store.close();
+
+    const store2 = new EventStore(":memory:");
+    store2.append({ sessionId: "s-old-mem", ts: 1, type: "session_created", workspace: "/proj/x" });
+    const resumed = createAgent({
+      store: store2, workspace: "/proj/x", push, attachments, world, memory, resumeSessionId: "s-old-mem",
+    });
+    expect(store2.load(resumed.sessionId).filter((e) => e.type === "memory_loaded")).toHaveLength(0);
+    store2.close();
+  });
+
+  it("world 有 config 才挂 memory 工具", () => {
+    const store = new EventStore(":memory:");
+    const bare = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(bare.toolDefs.map((d) => d.name)).not.toContain("memory");
+    store.close();
+
+    const store2 = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: mkdtempSync(join(tmpdir(), "otter-agent-config-")) });
+    const withConfig = createAgent({ store: store2, workspace: "/proj/x", push, attachments, world });
+    expect(withConfig.toolDefs.map((d) => d.name)).toContain("memory");
+    store2.close();
+  });
 });
 
 describe("createModeAwareApprover 审批模式", () => {
