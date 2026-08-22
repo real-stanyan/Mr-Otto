@@ -511,6 +511,17 @@ let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
 /** Git Graph 每页条数:首屏拉这么多,滚到底再加一页(主进程侧同名默认值,超上限会被钳) */
 const GIT_GRAPH_PAGE = 300;
 
+/** 审批在另一个窗口(岛)被点掉 → approval_decision 流回来,主窗这张卡也收。
+    以前只有"自己点了收卡"和"turn idle 兜底收卡"两条路,岛来了就多了第三个点按钮的地方 */
+export const clearApprovalOnDecision = (
+  approvals: Record<string, ApprovalRequest>,
+  e: SessionEvent
+): Record<string, ApprovalRequest> => {
+  if (e.type !== "approval_decision") return approvals;
+  const cur = approvals[e.sessionId];
+  return cur?.call.id === e.toolCallId ? without(approvals, e.sessionId) : approvals;
+};
+
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
     export 是为了让这份"换会话该清什么"能被单测直接断言（见
     tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
@@ -1449,6 +1460,11 @@ export const useChat = create<ChatState>((set, get) => ({
       if (s.workspace === prev.workspace) return;
       void window.otter.setPresenceWorkspace(s.workspace || null);
     });
+    // 主窗看着哪个会话 → 告诉主进程,岛只投影这一个("" = welcome,报 null)
+    useChat.subscribe((s, prev) => {
+      if (s.sessionId === prev.sessionId) return;
+      void window.otter.setActiveSession(s.sessionId || null);
+    });
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
@@ -1530,14 +1546,23 @@ export const useChat = create<ChatState>((set, get) => ({
             : e.type === "tool_result"
               ? without(s.runningToolCallBySession, e.sessionId)
               : s.runningToolCallBySession;
+        // 审批跨窗收卡同理不分流：岛上点了,approval_decision 流回来时后台
+        // 会话的卡也要收,不然切回去看到一张早就点掉的死卡
+        const approvals = clearApprovalOnDecision(s.approvals, e);
         // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
         // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
         if (e.sessionId !== s.sessionId)
-          return { streamingBySession: streaming, toolOutputByCall: toolOutput, runningToolCallBySession: runningToolCall };
+          return {
+            streamingBySession: streaming,
+            toolOutputByCall: toolOutput,
+            runningToolCallBySession: runningToolCall,
+            approvals,
+          };
         return {
           streamingBySession: streaming,
           toolOutputByCall: toolOutput,
           runningToolCallBySession: runningToolCall,
+          approvals,
           events: [...s.events, e],
           // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
           ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
