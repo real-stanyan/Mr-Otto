@@ -31,9 +31,17 @@ import { bashTool } from "../tools/bash.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
-import { withBrowser, withMcp, type BrowserCapability, type McpCapability } from "../world/executionWorld.js";
+import {
+  withBrowser,
+  withMcp,
+  withHistory,
+  type BrowserCapability,
+  type HistoryCapability,
+  type McpCapability,
+} from "../world/executionWorld.js";
 import { createMcpTools } from "../tools/mcpTool.js";
 import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
+import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import {
@@ -119,6 +127,10 @@ export function createAgent(opts: {
       LocalWorld 造不出来 —— 同 makeBrowser 的注入方向（ADR-0035）。
       不给 = 这个装配没有 MCP（测试和裸装配照旧） */
   mcp?: McpCapability;
+  /** 历史会话查询能力（index.ts 用 createHistoryCapability(store, ...) 焊进来）。
+      挂了才装 session_search 工具——子 agent 复用父 world 时自带（withHistory 焊在
+      父身上），resumeChild 走的是父的旧世界，同理不用重复传（ADR-0060 的另一半） */
+  history?: HistoryCapability;
   /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
@@ -163,7 +175,10 @@ export function createAgent(opts: {
     })();
   // MCP 叠在最外层。子 agent 走 opts.world 那条路时不会被重复包一层：
   // subagentRunner 复用父的 world 实例，父身上已经带着 withMcp 那层
-  const world = opts.mcp ? withMcp(base, opts.mcp) : base;
+  const withMcpLayer = opts.mcp ? withMcp(base, opts.mcp) : base;
+  // history 叠在 mcp 之外——同一件事：子 agent 复用父的 world 实例时这层已经在了，
+  // 不会被重复包一层（world.history 是不是在只问 world，不问 opts.history 给没给）
+  const world = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
   // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0054）：子 agent 跑在
   // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
   // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
@@ -321,6 +336,9 @@ export function createAgent(opts: {
     // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
     // 的装配（裸装配/测试）不该对模型宣称有记忆
     ...(world.config ? [createMemoryTool()] : []),
+    // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
+    // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
+    ...(world.history ? [createSessionSearchTool()] : []),
     readFileTool,
     writeFileTool,
     bashTool,
