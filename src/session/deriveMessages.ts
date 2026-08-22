@@ -3,6 +3,8 @@
 
 import type { SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
+import { charCount, MEMORY_LIMITS, parseEntries, formatEntries } from "../shared/memoryStore.js";
+import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -51,6 +53,40 @@ const STRUCTURED_BLOCKS =
   `\`\`\`otto-timeline  {events:[{id, when:"past"|"now"|"future", time, title, detail?}]} —— 时间线\n` +
   `\`\`\`otto-job  {title, stages:[{name, weight}], stageIndex, stageProgress, eta} —— 多阶段任务走到哪了（stageProgress 是 0~1）\n` +
   `平铺直叙能说清的就别用；一段话套一个框只是噪音。`;
+
+const MEMORY_RULE = "═".repeat(46);
+
+function memoryBlock(title: string, raw: string, limit: number): string {
+  const entries = parseEntries(raw);
+  if (entries.length === 0) return "";
+  const used = charCount(formatEntries(entries));
+  const pct = Math.round((used / limit) * 100);
+  const body = formatEntries(sanitizeForPrompt(entries));
+  return `${MEMORY_RULE}\n${title} [${pct}% — ${used.toLocaleString("en-US")}/${limit.toLocaleString("en-US")} chars]\n${body}\n`;
+}
+
+/** memory_loaded 渲成 system 尾部的两块。两个都空 = 空串（投影与无记忆逐字节一致）。
+    标题带占用百分比：模型看得见自己还剩多少地方，超限报错时不至于意外 */
+export function renderMemoryBlocks(memory: string, user: string): string {
+  const m = memoryBlock("MEMORY (your personal notes)", memory, MEMORY_LIMITS.memory);
+  const u = memoryBlock("USER (about the user)", user, MEMORY_LIMITS.user);
+  if (!m && !u) return "";
+  return `\n${m}${u}${MEMORY_RULE}`;
+}
+
+/** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0060）。
+    指引文案跟着这条事件走，不写进 systemPromptText：没有这条事件的会话
+    （老日志 / 子会话 / 没有记忆能力的装配）不该被告知"你有 memory 工具"——
+    那把工具压根没挂给它们，写死在 systemPromptText 里就是一句谎话。
+    两个文件都空也要说这段话：模型得知道自己**能**写记忆，不是只在已经有内容时才提 */
+export function renderMemoryPrompt(memory: string, user: string): string {
+  return (
+    `\n你有跨会话的长期记忆（本消息末尾的 MEMORY/USER 块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
+    `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
+    `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
+    renderMemoryBlocks(memory, user)
+  );
+}
 
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
     解 bytes 是 adapter 的事(注入的 readAttachment) */
@@ -327,6 +363,18 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
+      case "memory_loaded":
+        // 拼进 system 尾部而不是单独一条：① compact 清场时随 system 幸存；
+        // ② 放尾部 = volatile tail，前缀缓存只从这里往下失效。
+        // 无条件拼（哪怕两个文件都空）：这条事件本身就是"这个装配有记忆能力"的
+        // 凭据，指引文案该不该出现只看这条事件在不在，不看内容是不是空的。
+        // systemMessage 可能是 null：session_created 没带 workspace（老日志 /
+        // 子会话）时上面那个 case 不会造 system 消息，这里就只能悄悄丢掉记忆
+        // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
+        // 只发生在子会话或旧日志上，不影响主线记忆功能。
+        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user);
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
@@ -357,6 +405,10 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       // 派活是给 UI 的路标（点进子会话），不是对话内容。父会话的模型从
       // tool_result 里读汇报就够了，childSessionId 对它毫无意义
       case "subagent_spawned":
+      // 记忆维护事件不是对话内容：memory_user_edit 是审计凭据（人手改了记忆文件），
+      // memory_nudge 只是计数触发点——两者都不喂回模型
+      case "memory_user_edit":
+      case "memory_nudge":
         break;
     }
   }

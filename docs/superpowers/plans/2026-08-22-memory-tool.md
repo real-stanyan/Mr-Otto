@@ -4,7 +4,7 @@
 
 **Goal:** 给 Otto 加 hermes-agent 式长期记忆：`memory` 工具维护 `~/.mr-otto/memories/{MEMORY,USER}.md`，session 开头把快照落 `memory_loaded` 事件并渲进 system 消息，每 10 个用户 turn 派内置子智能体后台审查。
 
-**Architecture:** 记忆文件是投影，`memory` 工具的事件 + `memory_user_edit` 事件是事实（ADR-0059）。工具经 `ExecutionWorld.config`（新增可选能力）读写配置目录，不碰 fs。注入走 `memory_loaded` 事件 → `deriveMessages` 把它拼进 system 消息尾部，整个 session 字节不变。nudge 是 index.ts 里与 `classifyAndAppend` 同构的第三条外挂。
+**Architecture:** 记忆文件是投影，`memory` 工具的事件 + `memory_user_edit` 事件是事实（ADR-0060）。工具经 `ExecutionWorld.config`（新增可选能力）读写配置目录，不碰 fs。注入走 `memory_loaded` 事件 → `deriveMessages` 把它拼进 system 消息尾部，整个 session 字节不变。nudge 是 index.ts 里与 `classifyAndAppend` 同构的第三条外挂。
 
 **Tech Stack:** TypeScript strict / vitest / Electron 主进程 / React + assistant-ui elements（memory-chips）
 
@@ -836,7 +836,7 @@ Run: `npx vitest run tests/session/deriveMessages.memory.test.ts tests/shared/co
 `src/session/events.ts`，在 `SubagentBriefedEvent` 之后加：
 
 ```ts
-/** 额外 13：长期记忆快照（ADR-0059）。session 开头把 ~/.mr-otto/memories/ 两个文件
+/** 额外 13：长期记忆快照（ADR-0060）。session 开头把 ~/.mr-otto/memories/ 两个文件
     的内容落盘——模型整个 session 看到的就是这一份（投影拼进 system 尾部），中途
     写盘下个 session 才可见（前缀缓存不被打穿，hermes 同款取舍）。快照语义同
     skill_invoked：文件后来改了/丢了，重放不失真 */
@@ -977,7 +977,7 @@ git commit -m "feat(memory): memory_loaded/memory_user_edit/memory_nudge 事件�
 `src/main/agent.ts`：选项加
 
 ```ts
-  /** 新 session 的长期记忆快照（ADR-0059）。由 index.ts 在造 agent 之前读好——
+  /** 新 session 的长期记忆快照（ADR-0060）。由 index.ts 在造 agent 之前读好——
       createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的 */
   memory?: { memory: string; user: string };
 ```
@@ -1139,7 +1139,7 @@ export function shouldNudge(events: SessionEvent[]): boolean {
   // 记忆审查：与分区分类同构的第三条外挂（turn 锁之外、永不抛、会话被 purge 就不落）。
   // 每 10 个 user turn 落一条 memory_nudge，然后派内置 memory-reviewer 子智能体；
   // 子会话自己调 memory 工具写盘，结果不回父上下文（父会话整个 session 看到的
-  // 记忆仍是开头那份快照，ADR-0059）
+  // 记忆仍是开头那份快照，ADR-0060）
   const nudgeMemory = async (sessionId: string): Promise<void> => {
     const agent = agents.get(sessionId);
     if (!agent) return;
@@ -1245,7 +1245,7 @@ describe("applyUserEdit", () => {
 
 ```ts
 // src/main/memoryEdit.ts
-// 用户在 UI 改记忆文件：写盘 + 落 memory_user_edit（ADR-0059：人手改的也要留证）。
+// 用户在 UI 改记忆文件：写盘 + 落 memory_user_edit（ADR-0060：人手改的也要留证）。
 // 没有当前会话时落到保留会话——事件必须挂在某个 sessionId 上，而"设置页"不是会话。
 
 import type { EventStore } from "../session/store.js";
@@ -1383,7 +1383,7 @@ git commit -m "feat(memory-ui): memory-chips 工具卡 + 设置页记忆卡"
 
 ---
 
-### Task 10: ADR-0059 + CONTEXT.md + spec 路径修正
+### Task 10: ADR-0060 + CONTEXT.md + spec 路径修正
 
 **Files:**
 - Create: `docs/adr/0059-记忆文件是投影-记忆工具事件是事实.md`
@@ -1393,7 +1393,7 @@ git commit -m "feat(memory-ui): memory-chips 工具卡 + 设置页记忆卡"
 - [ ] **Step 1: 写 ADR**
 
 ```markdown
-# ADR-0059：记忆文件是投影，记忆工具事件是事实
+# ADR-0060：记忆文件是投影，记忆工具事件是事实
 
 - 状态：已接受
 - 日期：2026-08-22
@@ -1429,8 +1429,8 @@ Hard rule 说 append-only 事件日志是唯一事实——两者有张力。her
 
 - [ ] **Step 2: CONTEXT.md 加两行**（按文件既有表格格式）
 
-| 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0059 |
-| 记忆快照（memory_loaded） | session 第 2 条事件，模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0059 |
+| 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
+| 记忆快照（memory_loaded） | session 第 2 条事件，模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
 
 - [ ] **Step 3: 提交**
 

@@ -228,4 +228,13 @@ describe("contextBreakdown（按来源拆三份）", () => {
     const two = estimateToolTokens([...tools, { name: "bash", description: "跑命令", parameters: {} }]);
     expect(two).toBeGreaterThan(one);
   });
+
+  it("memory_loaded 的正文计入 system 占用", () => {
+    const without = contextBreakdown([{ ...env(), type: "session_created", workspace: "/w" }]);
+    const withMem = contextBreakdown([
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "memory_loaded", memory: "x".repeat(400), user: "" },
+    ]);
+    expect(withMem.system).toBeGreaterThan(without.system + 50);
+  });
 });

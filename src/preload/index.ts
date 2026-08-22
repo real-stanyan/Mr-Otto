@@ -25,6 +25,11 @@ const bridge: ShellBridge = {
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
   setThinking: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, mode),
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
+  getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
+  saveMemory: (target, text, sessionId) =>
+    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),
+  forgetMemory: (target, entry, sessionId) =>
+    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId),
   listMcpServers: () => ipcRenderer.invoke(CHANNELS.listMcpServers),
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),

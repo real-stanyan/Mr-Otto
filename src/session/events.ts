@@ -2,6 +2,7 @@
 // 硬规则（AGENTS.md）：先落盘再喂模型；schema 只加不改（旧日志永远可重放）
 
 import type { ModelLane } from "../shared/modelLane.js";
+import type { MemoryTarget } from "../shared/memoryStore.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -270,6 +271,33 @@ export interface SubagentBriefedEvent extends SessionEventBase {
   model: string;
 }
 
+/** 额外 14：长期记忆快照（ADR-0060）。session 开头把 ~/.mr-otto/memories/ 两个文件
+    的内容落盘——模型整个 session 看到的就是这一份（投影拼进 system 尾部），中途
+    写盘下个 session 才可见（前缀缓存不被打穿，hermes 同款取舍）。快照语义同
+    skill_invoked：文件后来改了/丢了，重放不失真 */
+export interface MemoryLoadedEvent extends SessionEventBase {
+  type: "memory_loaded";
+  memory: string;
+  user: string;
+}
+
+/** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
+    模型不可见。它是"记忆文件可从日志重建"这句话的凭据：工具写入已经有
+    tool_call/tool_result 作证，人手改的没有——这条补上 */
+export interface MemoryUserEditEvent extends SessionEventBase {
+  type: "memory_user_edit";
+  target: MemoryTarget;
+  before: string;
+  after: string;
+}
+
+/** 额外 16：记忆审查触发点。每 10 个 user_message 落一条，随后派 memory-reviewer
+    子智能体。模型不可见；落盘是为了计数可从日志推导（下一次从这条之后数起） */
+export interface MemoryNudgeEvent extends SessionEventBase {
+  type: "memory_nudge";
+  userTurns: number;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -289,4 +317,7 @@ export type SessionEvent =
   | SectionClassifiedEvent
   | SuggestionsGeneratedEvent
   | SubagentSpawnedEvent
-  | SubagentBriefedEvent;
+  | SubagentBriefedEvent
+  | MemoryLoadedEvent
+  | MemoryUserEditEvent
+  | MemoryNudgeEvent;

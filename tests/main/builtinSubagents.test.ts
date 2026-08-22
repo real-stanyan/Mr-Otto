@@ -30,9 +30,9 @@ function onDisk(name: string): SubagentDef {
 }
 
 describe("builtinSubagents", () => {
-  it("两份，都标 builtin + readOnly，没有磁盘路径", () => {
-    const b = builtinSubagents(ALL);
-    expect(b.map((d) => d.name)).toEqual(["general-purpose", "Explore"]);
+  it("三份，都标 builtin + readOnly，没有磁盘路径", () => {
+    const b = builtinSubagents([...ALL, "memory"]);
+    expect(b.map((d) => d.name)).toEqual(["general-purpose", "Explore", "memory-reviewer"]);
     expect(b.every((d) => d.builtin === true && d.readOnly && d.path === "")).toBe(true);
     expect(b.every((d) => d.source === BUILTIN_SOURCE)).toBe(true);
   });
@@ -59,12 +59,19 @@ describe("builtinSubagents", () => {
     expect(b.every((d) => d.tools.every((t) => t === "read_file"))).toBe(true);
     expect(b.every((d) => d.unknownTools.length === 0)).toBe(true);
   });
+
+  it("memory-reviewer：只带 memory 工具；装配里没有 memory 时过滤成空", () => {
+    const withMem = builtinSubagents(["read_file", "memory"]).find((d) => d.name === "memory-reviewer")!;
+    expect(withMem.tools).toEqual(["memory"]);
+    const without = builtinSubagents(["read_file"]).find((d) => d.name === "memory-reviewer")!;
+    expect(without.tools).toEqual([]);
+  });
 });
 
 describe("withBuiltins", () => {
   it("磁盘上没有时补进来", () => {
     expect(withBuiltins([], ALL).map((d) => d.name).sort()).toEqual(
-      ["Explore", "general-purpose"].sort()
+      ["Explore", "general-purpose", "memory-reviewer"].sort()
     );
   });
 

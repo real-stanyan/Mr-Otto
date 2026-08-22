@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { initTheme } from "./theme.js";
 import { App } from "./App.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { Splash } from "./components/Splash.js";
 import "./app.css";
 
 // 首帧前按偏好定主题:CSP 禁内联 script,module 顶层执行同样先于首次 paint
@@ -22,6 +23,8 @@ createRoot(document.getElementById("root")!).render(
     {/* 组件崩了要看得见错误,而不是一片黑(issue #51) */}
     <ErrorBoundary>
       <App />
+      {/* 启动画面盖在 App 上面，boot 完 + 最短停留到了自己淡出卸载 */}
+      <Splash />
     </ErrorBoundary>
   </React.StrictMode>
 );
