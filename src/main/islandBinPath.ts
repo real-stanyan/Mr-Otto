@@ -6,6 +6,9 @@ import { join } from "node:path";
 
 /** 找 Swift helper 二进制;找不到返回 null(岛不启动) */
 export function resolveIslandBinPath(): string | null {
+  // 打包态:electron-builder afterPack 把二进制放进 Resources
+  const packaged = join(process.resourcesPath ?? "", "MrOttoIsland");
+  if (existsSync(packaged)) return packaged;
   // dev:swift build -c debug 的产物
   const dev = join(import.meta.dirname, "../../native/MrOttoIsland/.build/debug/MrOttoIsland");
   if (existsSync(dev)) return dev;

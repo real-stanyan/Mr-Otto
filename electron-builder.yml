@@ -8,6 +8,10 @@ directories:
   output: dist
   buildResources: resources
 
+# 灵动岛 Swift helper 的 release 二进制在此拷进 .app 并 ad-hoc 签,见
+# scripts/afterPack.cjs 与 scripts/build-island.mjs(dist:mac 前置跑后者)
+afterPack: scripts/afterPack.cjs
+
 # out/ 是 electron-vite 的三个 bundle;resources/ 里的 icon.png 被主进程
 # 在运行时按 app.getAppPath() 拼路径读(设 dock 图标),所以必须一起进包
 files:
