@@ -39,6 +39,15 @@ describe("reduceIsland", () => {
     expect(s.pendingApproval).toBeNull();
   });
 
+  it("挂着审批时 turn running 推送不冲掉 approval 态", () => {
+    const req = { sessionId: S, call, toolDescription: "跑命令" };
+    let s = reduceIsland(active(), { kind: "turnStatus", update: { sessionId: S, status: "running" }, now: 1 });
+    s = reduceIsland(s, { kind: "approvalRequest", req });
+    s = reduceIsland(s, { kind: "turnStatus", update: { sessionId: S, status: "running" }, now: 2 });
+    expect(s.phase).toBe("approval");
+    expect(s.pendingApproval).toEqual(req);
+  });
+
   it("turn idle → 全清回 idle", () => {
     let s = reduceIsland(active(), { kind: "approvalRequest", req: { sessionId: S, call, toolDescription: "" } });
     s = reduceIsland(s, { kind: "turnStatus", update: { sessionId: S, status: "idle" }, now: 5 });
@@ -49,6 +58,7 @@ describe("reduceIsland", () => {
     const s = active();
     expect(reduceIsland(s, { kind: "turnStatus", update: { sessionId: "other", status: "running" }, now: 1 })).toBe(s);
     expect(reduceIsland(s, { kind: "approvalRequest", req: { sessionId: "other", call, toolDescription: "" } })).toBe(s);
+    expect(reduceIsland(s, { kind: "event", event: ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "" }) } )).toBe(s);
   });
 
   it("切会话 → 重置为该会话的 idle", () => {
