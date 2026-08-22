@@ -5,3 +5,5 @@ out/
 *.db
 .DS_Store
 .superpowers/
+test-results/
+playwright-report/
