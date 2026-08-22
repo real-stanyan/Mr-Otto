@@ -321,6 +321,10 @@ interface ChatState {
   friendsPanelOpen: boolean;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
+  /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
+      给启动画面的进度条用——真实进度，不是假动画（见 lib/splashProgress.ts） */
+  bootDone: number;
+  bootTotal: number;
 
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
@@ -651,6 +655,8 @@ export const useChat = create<ChatState>((set, get) => ({
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
+  bootDone: 0,
+  bootTotal: 0,
 
   setReplayCursor: (replayCursor) => set({ replayCursor }),
 
@@ -1627,17 +1633,24 @@ export const useChat = create<ChatState>((set, get) => ({
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
     // 它在 composer 上,不进设置页也看得见——不能再等 openSettings("keys") 才拉
+    // 每个调用回来就给启动画面的进度条加一格（bootDone/bootTotal）——条走的是真实进度
+    const tick = <T,>(p: Promise<T>): Promise<T> =>
+      p.then((v) => {
+        set((s) => ({ bootDone: s.bootDone + 1 }));
+        return v;
+      });
+    set({ bootDone: 0, bootTotal: 7 });
     const [info, sessions, skills, mcpPrompts, account, keyStatus, fullscreen] = await Promise.all([
-      window.otter.boot(),
-      window.otter.listSessions(),
-      window.otter.listSkills(),
+      tick(window.otter.boot()),
+      tick(window.otter.listSessions()),
+      tick(window.otter.listSkills()),
       // MCP prompt 清单同理进冷启动:composer 的 `/` 菜单在聊天视图常驻,
       // 不像 MCP 设置栏目那样"用户可能一次都不打开"——等 openSettings("mcp")
       // 才拉的话,新会话一开始 `/` 菜单里永远看不到已经连上的 server 的 prompt
-      window.otter.listMcpPrompts(),
-      window.otter.getAccount(),
-      window.otter.keyStatus(),
-      window.otter.getWindowFullscreen(),
+      tick(window.otter.listMcpPrompts()),
+      tick(window.otter.getAccount()),
+      tick(window.otter.keyStatus()),
+      tick(window.otter.getWindowFullscreen()),
     ]);
     set(
       info
