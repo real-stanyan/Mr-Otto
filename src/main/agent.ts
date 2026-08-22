@@ -388,7 +388,9 @@ export function createAgent(opts: {
     // 闭包读的是 current 这个变量,不是此刻的值——换模型时 current 被重新赋值
     // （switchModel），闭包必须现读到新窗口，不能锁死装配那一刻的型号
     autoCompact: {
-      contextWindow: () => current.contextWindow,
+      // 窗口是兜底猜的数（未探测的本机 Ollama / 目录外的自定义型号id）就别拿它算阈值——
+      // 一个假数据驱动自动压缩，压出来的时机毫无意义（可能太早也可能永远压不到）
+      contextWindow: () => (current.contextWindowKnown ? current.contextWindow : undefined),
       settings: opts.autoCompactSettings ?? (() => DEFAULT_AUTO_COMPACT),
     },
   });

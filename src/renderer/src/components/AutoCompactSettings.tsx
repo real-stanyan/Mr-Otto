@@ -14,7 +14,7 @@ import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { describeThreshold } from "../lib/autoCompactCopy.js";
 import { useChat } from "../store.js";
-import { findModel } from "../../../shared/modelCatalog.js";
+import { useModelChoice } from "../lib/useModelChoice.js";
 import {
   DEFAULT_AUTO_COMPACT,
   THRESHOLD_MAX,
@@ -28,8 +28,11 @@ const THRESHOLD_DEBOUNCE_MS = 200;
 
 export function AutoCompactSettings() {
   const model = useChat((s) => s.model);
-  const modelInfo = findModel(model);
-  const contextWindow = modelInfo?.contextWindow;
+  // 主进程判定要不要自动压缩，用的就是 current.contextWindowKnown（agent.ts）——
+  // 这里也走 useModelChoice（describeModelWith，含本机 Ollama 探测），窗口未知时
+  // 显式取 undefined，不能让引擎当"没窗口"而设置页却煞有介事地显示一个兜底猜测
+  const modelInfo = useModelChoice(model);
+  const contextWindow = modelInfo?.contextWindowKnown ? modelInfo.contextWindow : undefined;
 
   // null = 还没从主进程读到（禁用状态，同 MemorySettings 的 loaded 模式）
   const [loaded, setLoaded] = useState<AutoCompactSettingsValue | null>(null);

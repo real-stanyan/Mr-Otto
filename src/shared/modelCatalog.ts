@@ -39,6 +39,11 @@ export interface ModelChoice {
   apiKeyEnv: string;
   /** 上下文窗大小（tokens）——UI 算用量百分比用 */
   contextWindow: number;
+  /** contextWindow 是不是真值：目录条目、探测到的本机 Ollama 型号 = true；
+      没探到就用兜底常量顶上的两处（未探测的 Ollama tag / 目录外的兜底型号）= false。
+      引擎和 UI 的窗口 getter 都得看这一位——不然"瞎猜的窗口大小"会被当真值参与
+      自动压缩阈值判断，压根不知道自己在算一个假数 */
+  contextWindowKnown: boolean;
   /** 该型号的 thinking 挡位与方言：有哪几档、默认哪档、写进请求体长什么样。
       曾经是一个 supportsThinking 布尔——那等于假设全行业共用 GLM 的写法，
       于是给 OpenAI 发 thinking:{type}、给 Grok 发一个它压根不认的字段。见 shared/thinking.ts */
@@ -143,6 +148,7 @@ function expand(spec: ModelSpec): ModelChoice {
     baseUrlEnv: p.baseUrlEnv,
     apiKeyEnv: p.apiKeyEnv,
     contextWindow: spec.contextWindow,
+    contextWindowKnown: true, // 目录条目：手写的真实窗口大小
     thinking: spec.thinking,
     supportsVision: spec.supportsVision,
     keyless: p.keyless ?? false,
@@ -181,6 +187,7 @@ function ollamaChoice(tag: string): ModelChoice {
     baseUrlEnv: p.baseUrlEnv,
     apiKeyEnv: p.apiKeyEnv,
     contextWindow: 32_768,
+    contextWindowKnown: false, // 没探测到时的兜底常量，不是真实窗口——引擎/UI 都不能拿它算阈值
     thinking: THINKING_NONE,
     supportsVision: false,
     keyless: true,
@@ -207,6 +214,7 @@ export function ollamaChoiceFrom(info: OllamaCaps): ModelChoice {
   return {
     ...ollamaChoice(info.tag),
     contextWindow: info.contextLength,
+    contextWindowKnown: true, // 探到了真值，覆盖 ollamaChoice 的兜底
     supportsVision: info.vision,
     // 本机模型给的是 Ollama 那套档位(比别家多一个 max)
     thinking: info.thinking ? THINKING_EFFORT_MAX : THINKING_NONE,
@@ -269,6 +277,7 @@ export function resolveModel(model: string): ModelChoice {
       baseUrlEnv: "DEEPSEEK_BASE_URL",
       apiKeyEnv: "DEEPSEEK_API_KEY",
       contextWindow: 128_000,
+      contextWindowKnown: false, // 目录外的兜底猜测，不是这个型号的真实窗口
       thinking: THINKING_NONE,
       supportsVision: false,
       keyless: false,

@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   describeModel,
   describeModelWith,
+  findModel,
   ollamaChoiceFrom,
+  resolveModel,
   type OllamaCaps,
 } from "../../src/shared/modelCatalog.js";
 
@@ -41,6 +43,24 @@ describe("describeModelWith —— 本机 Ollama 的能力以探测为准", () =
 
   it("目录外的 id 仍然是 undefined —— 不替陌生型号编能力", () => {
     expect(describeModelWith("某个没见过的型号", probe)).toBeUndefined();
+  });
+});
+
+describe("contextWindowKnown —— 未探测的窗口不能冒充真值参与自动压缩判断", () => {
+  it("目录条目：true", () => {
+    expect(findModel("glm-4.6")?.contextWindowKnown).toBe(true);
+  });
+
+  it("未探测的本机 Ollama tag（走目录兜底常量）：false", () => {
+    expect(describeModel("ollama/没探到:latest")?.contextWindowKnown).toBe(false);
+  });
+
+  it("探测到的本机 Ollama tag：true", () => {
+    expect(describeModelWith("ollama/qwen3:30b", probe)?.contextWindowKnown).toBe(true);
+  });
+
+  it("目录外的 id（resolveModel 兜底成 DeepSeek 方言）：false——它是猜的窗口", () => {
+    expect(resolveModel("某个没见过的型号").contextWindowKnown).toBe(false);
   });
 });
 
