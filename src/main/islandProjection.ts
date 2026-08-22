@@ -143,5 +143,9 @@ export function flattenFleet(
   const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess));
   // 审批置顶:稳定排序,审批在前,其余保持侧栏序
   agents.sort((a, b) => Number(b.phase === "approval") - Number(a.phase === "approval"));
-  return { agents, focusedSessionId };
+  // focusedSessionId 可能指向一个已经不在 agents 里的会话(比如刚被删的那个,
+  // deleteSession 只清 currentSessionId,不动 activeSessionId)——线上不能带一个
+  // 悬空的焦点 id,清成 null 让 helper 落回"无高亮行"
+  const focused = agents.some((a) => a.sessionId === focusedSessionId) ? focusedSessionId : null;
+  return { agents, focusedSessionId: focused };
 }

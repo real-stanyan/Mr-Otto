@@ -63,4 +63,51 @@ describe("flattenFleet", () => {
     expect(fleet.agents[0]!.sessionId).toBe("s1");
     expect(fleet.agents[0]!.pendingApproval).toEqual({ callId: "c1", verb: "写入", target: "a.ts", fullPath: "a.ts" });
   });
+
+  it("跑 bash 工具:currentTool 拍平成 终端 + 命令,phase active(回归:islandProjection.test.ts 删除前的用例覆盖)", () => {
+    let s: IslandState = reduceIsland(initialIsland, {
+      kind: "activeSession",
+      boot: { activeSessionId: "s1", model: "m", running: false, pendingApproval: null },
+      now: 1000,
+    });
+    s = reduceIsland(s, {
+      kind: "event",
+      event: {
+        type: "assistant_message",
+        sessionId: "s1",
+        toolCalls: [{ id: "call1", name: "bash", args: { cmd: "npm test" } }],
+      } as never,
+    });
+    s = reduceIsland(s, {
+      kind: "event",
+      event: { type: "tool_execution_started", sessionId: "s1", toolCallId: "call1" } as never,
+    });
+    const states = new Map<string, IslandState>([["s1", s]]);
+    const fleet = flattenFleet(states, [sess("s1")], "s1");
+    const a1 = fleet.agents.find((a) => a.sessionId === "s1")!;
+    expect(a1.phase).toBe("active");
+    expect(a1.currentTool).toEqual({ verb: "终端", target: "npm test" });
+  });
+
+  it("focusedSessionId 指向不在 agents 里的会话(比如刚被删的那个)时清成 null,不带悬空 id 上线", () => {
+    const states = new Map<string, IslandState>();
+    const fleet = flattenFleet(states, [sess("s1")], "deleted-session");
+    expect(fleet.focusedSessionId).toBeNull();
+  });
+});
+
+describe("reduceIsland 的 seed 契约(回归 feedIsland Map-miss 丢事件的 bug)", () => {
+  it("从 initialIsland(sessionId:null)喂一个别的会话的 event → 守卫拦下,返回同引用(旧 bug 的症状)", () => {
+    const event = { type: "tool_execution_started", sessionId: "s1", toolCallId: "call1" } as never;
+    const next = reduceIsland(initialIsland, { kind: "event", event });
+    expect(next).toBe(initialIsland); // sessionId 不匹配(null !== "s1"),被拦下——这正是修复前 feedIsland 的坑
+  });
+
+  it("从按 sessionId 播种的空状态({...initialIsland, sessionId:'s1'})喂同一会话的 event → 守卫放行,返回新引用", () => {
+    const seeded: IslandState = { ...initialIsland, sessionId: "s1" };
+    const event = { type: "tool_execution_started", sessionId: "s1", toolCallId: "call1" } as never;
+    const next = reduceIsland(seeded, { kind: "event", event });
+    expect(next).not.toBe(seeded); // sessionId 匹配,守卫放行——feedIsland 必须用这份种子,不能用裸 initialIsland
+    expect(next.phase).toBe("active");
+  });
 });

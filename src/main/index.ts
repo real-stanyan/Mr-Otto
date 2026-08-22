@@ -386,7 +386,7 @@ void app.whenReady().then(() => {
     if (!bridge) return;
     const sid = islandInputSessionId(input);
     if (sid) {
-      const cur = islandStates.get(sid) ?? initialIsland;
+      const cur = islandStates.get(sid) ?? { ...initialIsland, sessionId: sid };
       const next = reduceIsland(cur, input);
       if (next !== cur) islandStates.set(sid, next);
     }
