@@ -23,6 +23,12 @@ final class IslandModel: ObservableObject {
   var onComposeChange: (Bool) -> Void = { _ in }
 
   func enterCompose() {
+    // 已经在输入态时再触发一次入口(比如按钮重复点击)不该重新走一遍
+    // onComposeChange(true)——那会在 main.swift 里重新采一次
+    // NSWorkspace.shared.frontmostApplication,而这时"最前台的 app"已经是
+    // 我们自己(已经 .regular + activate 过了),会把 previousFrontmostApp
+    // 错误地覆盖成自己,退出时就找不到真正该还键盘的那个 app 了。
+    guard !composing else { return }
     composing = true
     onComposeChange(true)
   }

@@ -62,8 +62,15 @@ struct IslandExpandedView: View {
       // 失焦(比如用户点回了别的 app,承载窗口 resign key)也要退出输入态,
       // 不然 composing 卡在 true、main.swift 不会把 activationPolicy 放回
       // .accessory——这正是 #175 I3 那种"窗口一直扣着键盘"的失败模式。
+      //
+      // 只退出输入态,不清 text——Send 按钮点击时,鼠标点下去可能先让
+      // TextField resign first responder(触发这条 blur 分支),再轮到按钮的
+      // action 触发 submit()。这两条事件流谁先谁后不是我们能控的时序保证。
+      // 如果这里清了 text,submit() 里 guard 文本非空的检查就会先失败,
+      // 用户刚打完的字被静默丢掉——这是本 fix round 要堵的竞态。
+      // text = "" 只留给明确的退出路径:Esc(cancelCompose)和提交成功(submit)。
       if !focused && model.composing {
-        cancelCompose()
+        model.exitCompose()
       }
     }
   }
