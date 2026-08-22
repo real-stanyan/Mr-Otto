@@ -166,6 +166,10 @@ export interface ContextCompactedEvent extends SessionEventBase {
   summary: string;
   model: string;                 // 摘要出自哪个模型（不同模型摘得不一样，溯源）
   usage?: TokenUsage;            // compact 本身烧的 token（一次全量输入，不便宜）
+  /** 谁触发的：新事件总是写这个字段（用户手动 /compact = "manual"，上下文超阈值
+      自动触发 = "auto"）。缺省只出现在旧事件里——写日志的一律照实填，
+      缺省 = 该事件写下时协议还没有这个字段，按语义等价于 manual 解读 */
+  trigger?: "auto" | "manual";
 }
 
 /** 额外 5：工具执行开始（ADR-0004）——穿过审批门、tool.run 即将碰世界的瞬间。

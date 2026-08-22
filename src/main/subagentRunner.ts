@@ -15,6 +15,7 @@ import type { AttachmentStore } from "../session/attachments.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import type { SubagentRunner } from "../tools/task.js";
+import type { AutoCompactSettings } from "../shared/autoCompact.js";
 
 type Agent = ReturnType<typeof createAgent>;
 
@@ -37,6 +38,9 @@ export interface SubagentRunnerDeps {
   };
   getAccessToken?: () => Promise<string | null>;
   alwaysAllow?: () => ReadonlySet<string>;
+  /** 自动压缩设置的现读器（同 alwaysAllow 的活引用规矩）。子 agent 也该守同一份
+      设置——不给 = 走 createAgent 的全局默认 */
+  autoCompactSettings?: () => AutoCompactSettings;
   /** 把刚建好的子 agent 登记进组装根的 agent 注册表（index.ts 的 `agents`）。
       不是可选的锦上添花：不登记的话，resumeSession 的 `agents.has(sessionId)`
       短路失效，用户点一下时间线上那张还在跑的卡就会在同一个活 sessionId 上
@@ -99,6 +103,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         allowTools: def.tools,
         spawnedBy: { sessionId: parent.sessionId, toolCallId: parentToolCallId, agent: def.name },
         ...(deps.getAccessToken ? { getAccessToken: deps.getAccessToken } : {}),
+        ...(deps.autoCompactSettings ? { autoCompactSettings: deps.autoCompactSettings } : {}),
         // deny 换掉整条审批链（mode/授权都不参与）；ask/auto/inherit 走常规链，
         // 用户永久授过权的工具在子 agent 里照样免问——授权授的是工具，不是会话
         ...(def.approval === "deny"
