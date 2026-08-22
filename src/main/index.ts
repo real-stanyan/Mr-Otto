@@ -29,7 +29,7 @@ import { EventStore } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { shouldNudge, MEMORY_NUDGE_EVERY } from "./memoryNudge.js";
+import { shouldNudge, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection } from "./sectionClassifier.js";
@@ -389,15 +389,11 @@ void app.whenReady().then(() => {
       sessionId, ts: Date.now(), type: "memory_nudge", userTurns: MEMORY_NUDGE_EVERY,
     });
     send(CHANNELS.event, nudgeEvent);
-    // 转写给 reviewer 看：只留 user/assistant 正文（连带丢掉 system 消息尾部
-    // 拼进去的 MEMORY/USER 块——那份内容下面单独现读一遍最新的）。
-    // 尾部截断到 12000 字符、保留结尾：长会话不该把 reviewer 自己的上下文撑爆，
-    // 而离当前时刻最近的对话对"记什么"最有参考价值
-    const transcript = deriveMessages(log, COMPACT_COMPRESSION)
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : "[多模态]"}`)
-      .join("\n\n")
-      .slice(-12000);
+    // 转写给 reviewer 看：只丢 system（那条尾部拼着 MEMORY/USER 块，reviewer
+    // 拿到的是下面 readMemoryFiles() 现读的最新版本，喂旧投影是重复信息）。
+    // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
+    // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
+    const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
     const mem = readMemoryFiles();
     const runner = createSubagentRunner({
       store,
