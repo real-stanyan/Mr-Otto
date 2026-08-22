@@ -6,6 +6,7 @@
 // 纯函数不碰 React:边界情况(悬空调用、被拒、compact 断层)全靠单测逼,
 // 不靠肉眼在界面上找。
 
+import { accumulateTurn, EMPTY_TURN_AGG, type TurnTimingAgg } from "./messageTiming.js";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import { buildToolIndex, effectiveArgs } from "../lib/toolIndex.js";
 import type { ToolCallRequest } from "../../../session/events.js";
@@ -109,13 +110,26 @@ export function toThreadMessages(
   // 本 turn 已经落下的那条 assistant 消息在 out 里的位置(没有 = null)。
   // turn_ended 要标失败时只认它,别去动上一个 turn 的回复(见下面 turn_ended 分支)
   let turnAssistantIdx: number | null = null;
+  // 页脚那行数字按 turn 结算(见 messageTiming.ts 的 TurnTimingAgg):
+  // 从用户发话开始累,只挂在不带工具调用的那条(= 最终回复)上
+  let turnAgg: TurnTimingAgg = EMPTY_TURN_AGG;
+  let turnStartTs: number | undefined;
 
   for (let idx = 0; idx < events.length; idx++) {
     const e = events[idx]!;
     if (e.type === "user_message") {
       const parts: Part[] = [];
-      if (e.content.trim() !== "") parts.push({ type: "text", text: e.content });
+      // "$skill 任务"在发送时被拆成两条事件:skill_invoked(快照)紧贴在 user_message
+      // 之前,user_message 只剩任务正文。气泡要把 `$名字` 画回成 chip(UserText 走
+      // directive-text,只认正文里的 `$名字`),所以投影时把它拼回去 —— 从日志推导,
+      // 不是凭空加:那条 skill_invoked 就是证据。中间可能隔一条 image_described
+      // (vision-bridge 也落在 user_message 之前),跳过它再看
+      const skill = invokedSkillBefore(events, idx);
+      const text = skill === null ? e.content : `$${skill} ${e.content}`.trimEnd();
+      if (text.trim() !== "") parts.push({ type: "text", text });
       turnAssistantIdx = null; // 新一轮开始
+      turnAgg = EMPTY_TURN_AGG;
+      turnStartTs = e.ts;
       out.push({
         role: "user",
         id: String(e.seq),
@@ -172,8 +186,16 @@ export function toThreadMessages(
       const prevTs = idx > 0 ? events[idx - 1]!.ts : undefined;
       const custom: Record<string, unknown> = {};
       if (e.reasoningMs !== undefined) custom["reasoningMs"] = e.reasoningMs;
-      if (prevTs !== undefined) custom["elapsedMs"] = e.ts - prevTs;
+      const elapsedMs = prevTs !== undefined ? e.ts - prevTs : undefined;
+      if (elapsedMs !== undefined) custom["elapsedMs"] = elapsedMs;
       custom["otto"] = e;
+      turnAgg = accumulateTurn(turnAgg, e, elapsedMs);
+      if ((e.toolCalls ?? []).length === 0) {
+        custom["turnTiming"] = {
+          ...turnAgg,
+          wallMs: turnStartTs !== undefined ? e.ts - turnStartTs : 0,
+        } satisfies TurnTimingAgg;
+      }
       turnAssistantIdx = out.length;
       out.push({ ...message, metadata: { custom } });
       continue;
@@ -214,4 +236,14 @@ export function toThreadMessages(
   }
 
   return out;
+}
+
+/** 紧贴在 events[idx](一条 user_message)之前的 skill_invoked 的名字;没有 → null */
+function invokedSkillBefore(events: readonly SessionEvent[], idx: number): string | null {
+  for (let j = idx - 1; j >= 0; j--) {
+    const p = events[j]!;
+    if (p.type === "image_described") continue;
+    return p.type === "skill_invoked" ? p.name : null;
+  }
+  return null;
 }

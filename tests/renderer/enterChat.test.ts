@@ -9,7 +9,7 @@ function boot(overrides: Partial<BootInfo> = {}): BootInfo {
     model: "claude",
     workspace: "/tmp/proj",
     events: [],
-    dbPath: "/tmp/proj/.otter/db.sqlite",
+    dbPath: "/tmp/proj/.mr-otto/db.sqlite",
     approvalMode: "ask",
     thinking: "off",
     toolDefs: [],

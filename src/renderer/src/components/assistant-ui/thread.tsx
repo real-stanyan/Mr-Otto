@@ -210,7 +210,10 @@ const ThreadRoot: FC<{
 
           <div
             data-slot="aui_message-group"
-            className="mb-14 flex flex-col gap-y-6 empty:hidden"
+            // 本仓改动:相邻两条 assistant 消息(一 turn 里的几波工具调用各是一条)
+            // 之间收到 gap-y-6 的一半 —— 它们是同一个回答的连续步骤,和思考行
+            // 与工具行之间的间距一档,不该像换了个话题
+            className="mb-14 flex flex-col gap-y-6 empty:hidden [&>[data-role=assistant]+[data-role=assistant]]:-mt-3"
           >
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage />}
@@ -311,12 +314,21 @@ const AssistantMessage: FC = () => {
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
   const ACTION_BAR_HEIGHT = `min-h-7.5 ${ACTION_BAR_PT}`;
+  // 本仓改动:页脚只挂在 turn 的最终回复上(投影把 turnTiming 只给那一条,见
+  // aui/toThreadMessages.ts)。中间那些"1 tool call"消息没页脚,就不给它留页脚的
+  // 位置 —— 原先每条都预留 min-h-7.5 + pt-1.5,一串工具调用之间就隔出 60px 的空
+  const hasFooter = useAuiState(
+    (s) => s.message.metadata.custom["turnTiming"] !== undefined,
+  );
 
   return (
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="relative -mb-7.5 pb-7.5 transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className={cn(
+        "relative transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 [contain-intrinsic-size:auto_200px] [content-visibility:auto]",
+        hasFooter && "-mb-7.5 pb-7.5",
+      )}
     >
       <div
         data-slot="aui_assistant-message-content"
@@ -421,7 +433,7 @@ const AssistantMessage: FC = () => {
             要靠它判断这条消息是不是还在跑 */}
       </div>
 
-      <div
+      {hasFooter && <div
         data-slot="aui_assistant-message-footer"
         // 本仓改动:改成竖排。上游把「页脚数字」和「复制/重跑/更多」挤在同一行,
         // 而本仓的页脚是一整行数字(耗时·吞吐·token·花费),四组数后面再接三颗
@@ -433,7 +445,7 @@ const AssistantMessage: FC = () => {
             而本仓刻意不给(ADR-0036:给了就等于凭空长出一条绕开事件日志的写路径)。
             实测它仍会冒出「< 2/2 >」——切过去什么也不会发生,是个只承诺不兑现的控件 */}
         {MessageFooterComponent ? <MessageFooterComponent /> : null}
-      </div>
+      </div>}
     </MessagePrimitive.Root>
   );
 };

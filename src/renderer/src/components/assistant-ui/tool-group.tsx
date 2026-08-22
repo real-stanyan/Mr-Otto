@@ -8,7 +8,7 @@ import {
   type FC,
   type PropsWithChildren,
 } from "react";
-import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+import { ChevronDownIcon, LoaderIcon, TriangleAlertIcon, WrenchIcon } from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { useScrollLock } from "@assistant-ui/react";
 import {
@@ -95,11 +95,14 @@ function ToolGroupRoot({
 function ToolGroupTrigger({
   count,
   active = false,
+  warning = false,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   count: number;
   active?: boolean;
+  /** 组里有工具出错:chevron 右边挂一枚黄色三角,组不自动展开 */
+  warning?: boolean;
 }) {
   const label = `${count} tool ${count === 1 ? "call" : "calls"}`;
 
@@ -115,10 +118,17 @@ function ToolGroupTrigger({
       )}
       {...props}
     >
-      {active && (
+      {/* 和 reasoning 的 BrainIcon 同一档(size-4):思考/工具两条折叠行并排出现,
+          字号和图标都对齐。跑着时扳手换成 loader,位置不变 */}
+      {active ? (
         <LoaderIcon
           data-slot="tool-group-trigger-loader"
-          className="aui-tool-group-trigger-loader size-3 shrink-0 animate-spin [animation-duration:0.6s]"
+          className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin [animation-duration:0.6s]"
+        />
+      ) : (
+        <WrenchIcon
+          data-slot="tool-group-trigger-icon"
+          className="aui-tool-group-trigger-icon size-4 shrink-0"
         />
       )}
       <span
@@ -130,12 +140,12 @@ function ToolGroupTrigger({
           "group-data-[variant=muted]/tool-group-root:grow",
         )}
       >
-        <span className="text-xs">{label}</span>
+        <span className="tabular-nums">{label}</span>
         {active && (
           <span
             aria-hidden
             data-slot="tool-group-trigger-shimmer"
-            className="aui-tool-group-trigger-shimmer shimmer pointer-events-none absolute inset-0 text-xs motion-reduce:animate-none"
+            className="aui-tool-group-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
             {label}
           </span>
@@ -144,13 +154,20 @@ function ToolGroupTrigger({
       <ChevronDownIcon
         data-slot="tool-group-trigger-chevron"
         className={cn(
-          "aui-tool-group-trigger-chevron size-3 shrink-0",
+          "aui-tool-group-trigger-chevron mt-0.5 size-4 shrink-0",
           "transition-transform duration-(--animation-duration) ease-strong motion-reduce:transition-none",
           "-rotate-90",
           "group-data-open/trigger:rotate-0",
           "group-data-panel-open/trigger:rotate-0",
         )}
       />
+      {warning && (
+        <TriangleAlertIcon
+          data-slot="tool-group-trigger-warning"
+          aria-label="有工具出错"
+          className="aui-tool-group-trigger-warning size-4 shrink-0 text-amber-500"
+        />
+      )}
     </CollapsibleTrigger>
   );
 }

@@ -74,6 +74,66 @@ export function timingStats(
   return stats;
 }
 
+/** 一个 turn 的累计:从用户发话到最终回复,中间几波工具调用全算在一起。
+    页脚只出现在**最终那条回复**下面,不在每一波工具调用后面各出一行 ——
+    那是一个回答的结算,不是每次模型调用的流水 */
+export interface TurnTimingAgg {
+  /** 用户发话 → 最终回复落盘,墙上时间(含工具执行、审批等待) */
+  wallMs: number;
+  /** 只算模型在生成的那几段,吞吐的分母 */
+  modelMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** 有任何一条带 usage 才 true;全没有就只剩耗时一格 */
+  hasUsage: boolean;
+  /** 各条按各自型号计价再相加;有一条算不出价钱整段就算不出(undefined) */
+  costUsd: number | undefined;
+}
+
+export const EMPTY_TURN_AGG: TurnTimingAgg = {
+  wallMs: 0,
+  modelMs: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  hasUsage: false,
+  costUsd: 0,
+};
+
+/** 把一条 assistant_message 累进 turn 的总账 */
+export function accumulateTurn(
+  agg: TurnTimingAgg,
+  e: Pick<AssistantMessageEvent, "model" | "usage">,
+  elapsedMs: number | undefined
+): TurnTimingAgg {
+  const next: TurnTimingAgg = { ...agg };
+  if (elapsedMs !== undefined && elapsedMs > 0) next.modelMs += elapsedMs;
+  if (e.usage) {
+    next.hasUsage = true;
+    next.promptTokens += e.usage.promptTokens;
+    next.completionTokens += e.usage.completionTokens;
+    const usd = costUsd(e.model, e.usage);
+    next.costUsd = usd === undefined || next.costUsd === undefined ? undefined : next.costUsd + usd;
+  }
+  return next;
+}
+
+export function turnTimingStats(agg: TurnTimingAgg): TimingStat[] {
+  const stats: TimingStat[] = [];
+  if (agg.wallMs > 0) stats.push({ label: "elapsed", value: fmtDuration(agg.wallMs) });
+  if (agg.hasUsage) {
+    if (agg.modelMs > 0 && agg.completionTokens > 0) {
+      const perSecond = agg.completionTokens / (agg.modelMs / 1000);
+      stats.push({ label: "tok/s", value: perSecond.toFixed(perSecond < 10 ? 1 : 0) });
+    }
+    stats.push({
+      label: "tokens",
+      value: `↑${fmtTokens(agg.promptTokens)} ↓${fmtTokens(agg.completionTokens)}`,
+    });
+    if (agg.costUsd !== undefined) stats.push({ label: "cost", value: fmtUsd(agg.costUsd) });
+  }
+  return stats;
+}
+
 /**
  * turn 进行中的那一行（同一个 element，数字是估的）。
  *

@@ -145,6 +145,9 @@ export function ThreadSearch({
         />
       </div>
 
+      {/* 只有列表滚,输入框钉在顶上:滚动条归结果区,不把搜索框一起卷进去。
+          高度上限由外层 className 给(max-h),这里靠 min-h-0 让它在 flex 列里能缩 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
       {pinned.length > 0 && (
         <div className="flex flex-col">
           <span className={cn(mono, "text-foreground/25 px-2 pb-1")}>
@@ -170,6 +173,7 @@ export function ThreadSearch({
           {emptyLabel ?? `No thread matches “${query}”`}
         </span>
       )}
+      </div>
     </div>
   );
 }

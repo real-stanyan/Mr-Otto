@@ -32,6 +32,31 @@ describe("toThreadMessages — 骨架", () => {
     ]);
   });
 
+  it("紧贴在前的 skill_invoked 把 `$名字` 拼回用户正文 —— 气泡才画得出 chip", () => {
+    const inv = ev({ type: "skill_invoked", name: "review", content: "# SKILL" }, 1);
+    const u = ev({ type: "user_message", content: "看下这个 PR" }, 2);
+    const msgs = toThreadMessages([inv, u]);
+    const user = msgs.find((m) => m.role === "user");
+    expect(user?.content).toEqual([{ type: "text", text: "$review 看下这个 PR" }]);
+  });
+
+  it("skill_invoked 和 user_message 之间隔着 image_described 也认", () => {
+    const inv = ev({ type: "skill_invoked", name: "review", content: "# SKILL" }, 1);
+    const desc = ev({ type: "image_described", content: "一张图", model: "v" }, 2);
+    const u = ev({ type: "user_message", content: "看图" }, 3);
+    const user = toThreadMessages([inv, desc, u]).find((m) => m.role === "user");
+    expect(user?.content).toEqual([{ type: "text", text: "$review 看图" }]);
+  });
+
+  it("前面不是 skill_invoked 就不拼 —— 上一轮的 skill 不算这一轮的", () => {
+    const inv = ev({ type: "skill_invoked", name: "review", content: "# SKILL" }, 1);
+    const u1 = ev({ type: "user_message", content: "第一句" }, 2);
+    const a = ev({ type: "assistant_message", content: "好", model: "m" }, 3);
+    const u2 = ev({ type: "user_message", content: "第二句" }, 4);
+    const users = toThreadMessages([inv, u1, a, u2]).filter((m) => m.role === "user");
+    expect(users[1]?.content).toEqual([{ type: "text", text: "第二句" }]);
+  });
+
   it("assistant_message 变成 assistant 角色，status 为 complete", () => {
     const events = [
       ev({ type: "user_message", content: "在吗" }, 0),
@@ -45,7 +70,7 @@ describe("toThreadMessages — 骨架", () => {
       status: { type: "complete", reason: "stop" },
       content: [{ type: "text", text: "在" }],
       // 页脚数字要的两样:原始事件(model/usage)和这次调用耗时(前一条事件到本条)
-      metadata: { custom: { elapsedMs: 1, otto: events[1] } },
+      metadata: { custom: { elapsedMs: 1, otto: events[1], turnTiming: { wallMs: 1, modelMs: 1, promptTokens: 0, completionTokens: 0, hasUsage: false, costUsd: 0 } } },
     });
   });
 
@@ -469,5 +494,25 @@ describe("投影产物必须过 assistant-ui 自己的校验(fromThreadMessageLi
         fromThreadMessageLike(m, m.id ?? "fallback", { type: "complete", reason: "stop" })
       ).not.toThrow();
     }
+  });
+});
+
+describe("turnTiming 只挂在最终回复上", () => {
+  it("带工具调用的中间消息没有,最后那条有且是累计", () => {
+    const events = [
+      { type: "user_message", content: "看看", seq: 1, ts: 0, sessionId: "s" },
+      { type: "assistant_message", content: "", model: "m", seq: 2, ts: 1000, sessionId: "s",
+        usage: { promptTokens: 100, completionTokens: 10 },
+        toolCalls: [{ id: "t1", name: "bash", args: { command: "ls" } }] },
+      { type: "tool_result", toolCallId: "t1", status: "ok", output: "", seq: 3, ts: 1500, sessionId: "s" },
+      { type: "assistant_message", content: "完事", model: "m", seq: 4, ts: 3000, sessionId: "s",
+        usage: { promptTokens: 200, completionTokens: 20 } },
+    ] as unknown as SessionEvent[];
+    const msgs = toThreadMessages(events);
+    const assistants = msgs.filter((m) => m.role === "assistant");
+    expect(assistants[0]!.metadata?.custom?.["turnTiming"]).toBeUndefined();
+    expect(assistants[1]!.metadata?.custom?.["turnTiming"]).toMatchObject({
+      wallMs: 3000, modelMs: 2500, promptTokens: 300, completionTokens: 30,
+    });
   });
 });

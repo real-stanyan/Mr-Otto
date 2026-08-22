@@ -24,6 +24,7 @@ import {
 } from "../components/assistant-ui/tool-group.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
+import { Sparkles } from "lucide-react";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
@@ -38,7 +39,7 @@ import { useChat } from "../store.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
-import { liveTimingStats, timingStats } from "./messageTiming.js";
+import { liveTimingStats, turnTimingStats, type TurnTimingAgg } from "./messageTiming.js";
 import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
 import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
@@ -155,10 +156,9 @@ const WebPageCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
   );
 };
 
-/** 工具组:出了错的那一组自己弹开。
-    工具组默认折起来是对的(一屏五个 read_file 谁也不想逐个看),但"这一步没成"
-    是这段回复的结论,不该躲在折叠头后面 —— 那张 tool-error 卡就在组里,
-    组收着等于没画。弹开之后照样能手动收回去(受控 open,不是永远钉住) */
+/** 工具组:默认折起,出了错的那一组**不自动弹开**,只在折叠头右边挂一枚黄色
+    三角感叹号。一屏五个 read_file 谁也不想逐个看,但"这一步没成"也不能
+    藏得无声无息 —— 标一下,要看的人自己点开 */
 const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, children }) => {
   const failed = useAuiState((s) =>
     group.indices.some((i) => {
@@ -166,15 +166,14 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       return part?.type === "tool-call" && part.isError === true;
     }),
   );
-  const [open, setOpen] = useState(false);
-  // 结果是后到的(组挂载时还在跑),所以不能只在挂载时判一次
-  useEffect(() => {
-    if (failed) setOpen(true);
-  }, [failed]);
 
   return (
-    <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
-      <ToolGroupTrigger count={group.indices.length} active={group.status.type === "running"} />
+    <ToolGroupRoot variant="ghost">
+      <ToolGroupTrigger
+        count={group.indices.length}
+        active={group.status.type === "running"}
+        warning={failed}
+      />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>
   );
@@ -325,20 +324,17 @@ const ReasoningGroupWithLabel: NonNullable<ThreadComponents["ReasoningGroup"]> =
   );
 };
 
-/** 消息页脚那一行数字:耗时 · 吞吐 · token · 花费。
-    四个值全部从日志推得出(aui/messageTiming.ts),投影时挂在 metadata.custom 上 ——
-    这里只负责读出来交给 element,不做任何计算。
-    没有 usage、也没有耗时的旧消息:stats 为空,整行不占位 */
+/** 消息页脚那一行数字:耗时 · 吞吐 · token · 花费 —— **整个 turn 的总计**。
+    投影(toThreadMessages)只把 turnTiming 挂在最终那条回复上,中间几波工具调用
+    的消息没有这个字段,页脚就不出现。四个值全部从日志推得出(aui/messageTiming.ts),
+    这里只负责读出来交给 element,不做任何计算 */
 const MessageTimingFooter: ComponentType = () => {
-  const event = useAuiState(
-    (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
-  );
-  const elapsedMs = useAuiState(
-    (s) => s.message.metadata.custom["elapsedMs"] as number | undefined,
+  const agg = useAuiState(
+    (s) => s.message.metadata.custom["turnTiming"] as TurnTimingAgg | undefined,
   );
   const running = useAuiState((s) => s.message.status?.type === "running");
-  if (event === undefined || event.type !== "assistant_message") return null;
-  const stats = timingStats(event, elapsedMs);
+  if (agg === undefined) return null;
+  const stats = turnTimingStats(agg);
   if (stats.length === 0) return null;
   return <MessageTiming stats={stats} streaming={running} className="w-auto" />;
 };
@@ -413,12 +409,16 @@ function currentTool(events: SessionEvent[]): ToolCallRequest | null {
 function agentPhase(opts: {
   status: "idle" | "running";
   hasApproval: boolean;
+  compacting?: boolean;
   streamingThinking: string;
   streamingText: string;
   tool: ToolCallRequest | null;
 }): { orb: OrbState; label: string } {
   if (opts.hasApproval) return { orb: "listening", label: "等待审批…" };
   if (opts.status !== "running") return { orb: "breathing", label: "空闲" };
+  // 压缩上下文:主进程把它复用成 running 灯,靠 store 里的瞬时标记分辨。
+  // weaving = 把一长段历史织成一份摘要,比"思考"的旋转更贴这件事
+  if (opts.compacting) return { orb: "weaving", label: "压缩中…" };
   if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
   if (opts.tool) return { orb: "working", label: "执行中…" };
   if (opts.streamingText) return { orb: "solving", label: "作答中…" };
@@ -435,10 +435,12 @@ const RunIndicator: ComponentType = () => {
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
+  const compacting = useChat((s) => s.compactingBySession[s.sessionId] === true);
 
   const turnPhase = agentPhase({
     status,
     hasApproval: approval !== null,
+    compacting,
     streamingThinking,
     streamingText,
     tool: currentTool(events),
@@ -546,7 +548,11 @@ export function OttoThread({
   const components = useMemo<ThreadComponents>(
     () => ({
       ...STATIC_COMPONENTS,
-      UserText: createDirectiveText(ottoDirectiveFormatter(skills.map((s) => s.name))),
+      // 闪光图标:和 composer `$` 菜单里 skill 条目用的同一枚(TRIGGER_POP 的 fallback),
+      // 输入时看到的和发出去之后看到的是同一个东西
+      UserText: createDirectiveText(ottoDirectiveFormatter(skills.map((s) => s.name)), {
+        iconMap: { skill: Sparkles },
+      }),
     }),
     [skills]
   );

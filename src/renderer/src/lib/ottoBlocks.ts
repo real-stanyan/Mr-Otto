@@ -251,15 +251,87 @@ export function isBlockLanguage(language: string): language is BlockLanguage {
   return (BLOCK_LANGUAGES as readonly string[]).includes(language);
 }
 
+/** 严格 JSON 解不开时再放宽一档:给裸键名补双引号、去掉尾逗号。
+    提示词里的字段写法 `{title, rows:[…]}` 长得像 JS,模型照着写成对象字面量
+    是常见的走样 —— 一张本来能画出来的卡因为键名少两个引号退回成裸代码,
+    不值。不用正则而是逐字扫:字符串内部原样跳过,`{`/`,` 后面紧跟的
+    `标识符:` 才补引号,所以 value 里出现 "a, b: c" 不会被误伤。
+    解不开返回 undefined(null 是合法 JSON 值,不能拿来当"失败") */
+function parseLenient(source: string): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    /* 走下面那条 */
+  }
+  try {
+    return JSON.parse(relaxJson(source));
+  } catch {
+    return undefined;
+  }
+}
+
+function relaxJson(src: string): string {
+  let out = "";
+  let i = 0;
+  // 上一个非空白的结构字符是不是 { 或 , —— 只有这时后面的标识符才可能是键名
+  let keyPos = false;
+  while (i < src.length) {
+    const ch = src[i]!;
+    if (ch === '"') {
+      // 整段字符串原样搬过去(含转义)
+      let j = i + 1;
+      while (j < src.length && src[j] !== '"') {
+        if (src[j] === "\\") j++;
+        j++;
+      }
+      out += src.slice(i, j + 1);
+      i = j + 1;
+      keyPos = false;
+      continue;
+    }
+    if (ch === "," ) {
+      // 尾逗号:后面只剩空白 + } 或 ] 的话整个丢掉
+      let j = i + 1;
+      while (j < src.length && /\s/.test(src[j]!)) j++;
+      if (src[j] === "}" || src[j] === "]") {
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+      keyPos = true;
+      continue;
+    }
+    if (ch === "{") {
+      out += ch;
+      i++;
+      keyPos = true;
+      continue;
+    }
+    if (keyPos && /[A-Za-z_$]/.test(ch)) {
+      let j = i;
+      while (j < src.length && /[\w$]/.test(src[j]!)) j++;
+      let k = j;
+      while (k < src.length && /\s/.test(src[k]!)) k++;
+      if (src[k] === ":") {
+        out += `"${src.slice(i, j)}"`;
+        i = j;
+        keyPos = false;
+        continue;
+      }
+    }
+    if (!/\s/.test(ch)) keyPos = false;
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 /** 一段围栏正文 → 块;认不出来一律 null(调用方退回普通代码块) */
 export function parseBlock(language: string, source: string): OttoBlock | null {
   if (!isBlockLanguage(language)) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(source);
-  } catch {
-    return null; // 还在流的半段 JSON 也走这条路——写完了自然就解析得开
-  }
+  const raw = parseLenient(source);
+  if (raw === undefined) return null; // 还在流的半段 JSON 也走这条路——写完了自然就解析得开
   if (!isObj(raw)) return null;
   switch (language) {
     case "otto-spec": {

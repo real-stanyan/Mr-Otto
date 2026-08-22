@@ -32,18 +32,35 @@ function readName(text: string, i: number): string {
 }
 
 /**
- * 造一个只认这批名字的 formatter。
+ * 造一个只认这批名字的 formatter(skill 用,`$` 打头)。
  *
  * 匹配用"最长优先":名单里同时有 `review` 和 `review-pr` 时,
  * `$review-pr` 必须整条命中长的那个 —— 从 `$` 往后一路吃字符再回头比名单,
  * 天然就是最长优先(吃到的那段本身就是最长的候选)。
  */
 export function ottoDirectiveFormatter(skillNames: readonly string[]): Unstable_DirectiveFormatter {
-  const known = new Set(skillNames);
+  return makeFormatter("$", "skill", skillNames);
+}
+
+/**
+ * 斜杠指令的那一份(`/` 打头,type = "command")。名单传**不带斜杠**的名字
+ * (`compact`、`rename`、MCP prompt 的 name)。选中只把 `/名字 ` 填进输入框,
+ * 真正执行等回车 —— submit() 那头按首个空白前的名字分发(commands.ts)。
+ */
+export function ottoSlashFormatter(commandNames: readonly string[]): Unstable_DirectiveFormatter {
+  return makeFormatter("/", "command", commandNames);
+}
+
+function makeFormatter(
+  sigil: string,
+  type: string,
+  names: readonly string[]
+): Unstable_DirectiveFormatter {
+  const known = new Set(names);
   return {
     // 末尾那个空格是刻意的:插进 composer 之后光标直接落在名字后面,
     // 用户接着打任务正文,不用自己补空格(旧的 pickSkill 就是这个手感)
-    serialize: (item: Unstable_TriggerItem) => `$${item.id} `,
+    serialize: (item: Unstable_TriggerItem) => `${sigil}${item.id} `,
 
     parse(text: string): readonly Unstable_DirectiveSegment[] {
       const out: Unstable_DirectiveSegment[] = [];
@@ -57,20 +74,20 @@ export function ottoDirectiveFormatter(skillNames: readonly string[]): Unstable_
       };
 
       while (i < text.length) {
-        if (text[i] !== "$") {
+        if (text[i] !== sigil) {
           plain += text[i];
           i++;
           continue;
         }
         const name = readName(text, i);
         if (name === "" || !known.has(name)) {
-          // 不是已安装的 skill:`$` 只是个普通字符(价格、shell 变量、正则里的行尾)
+          // 不在名单里:`$`/`/` 只是个普通字符(价格、shell 变量、路径)
           plain += text[i];
           i++;
           continue;
         }
         flush();
-        out.push({ kind: "mention", type: "skill", label: `$${name}`, id: name });
+        out.push({ kind: "mention", type, label: `${sigil}${name}`, id: name });
         i += 1 + name.length;
       }
 

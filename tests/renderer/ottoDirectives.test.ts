@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ottoDirectiveFormatter } from "../../src/renderer/src/aui/ottoDirectives.js";
+import { ottoDirectiveFormatter, ottoSlashFormatter } from "../../src/renderer/src/aui/ottoDirectives.js";
 
 const f = ottoDirectiveFormatter(["review", "review-pr", "写代码"]);
 
@@ -50,5 +50,21 @@ describe("ottoDirectiveFormatter", () => {
       { kind: "mention", type: "skill", label: "$review", id: "review" },
       { kind: "mention", type: "skill", label: "$review-pr", id: "review-pr" },
     ]);
+  });
+});
+
+describe("ottoSlashFormatter", () => {
+  const f = ottoSlashFormatter(["compact", "rename"]);
+
+  it("serialize 写成 `/名字 `,尾随空格留给参数", () => {
+    expect(f.serialize({ id: "rename", type: "command", label: "/rename" })).toBe("/rename ");
+  });
+
+  it("parse 认回名单里的指令,路径里的斜杠不算", () => {
+    expect(f.parse("/rename 新标题")).toEqual([
+      { kind: "mention", type: "command", label: "/rename", id: "rename" },
+      { kind: "text", text: " 新标题" },
+    ]);
+    expect(f.parse("看 /usr/bin")).toEqual([{ kind: "text", text: "看 /usr/bin" }]);
   });
 });

@@ -8,8 +8,10 @@
 
 import type { SyntaxHighlighterProps } from "@assistant-ui/react-streamdown";
 
+import { ShikiCodeBlock } from "@/components/assistant-ui/code-block.js";
 import { ComparisonCard } from "@/components/elements/comparison-card.js";
 import { FlowGraph } from "@/components/elements/flow-graph.js";
+import { layoutFlow } from "@/lib/flowLayout.js";
 import { JobProgress } from "@/components/elements/job-progress.js";
 import { ScoreBreakdown } from "@/components/elements/score-breakdown.js";
 import { SpecSheet } from "@/components/elements/spec-sheet.js";
@@ -20,12 +22,10 @@ import { BLOCK_LANGUAGES, parseBlock, type BlockLanguage } from "@/lib/ottoBlock
     单独展示时的宽度,对话流有自己的栏宽) */
 const CARD = "my-3 max-w-none";
 
+/** 退回代码块时走和普通 ```json 一样的那条路(shiki 高亮 + 复制钮),
+    而不是一段裸 pre:人要看的是"模型写了什么、错在哪",上了色才看得清结构 */
 function Fallback({ code }: { code: string }) {
-  return (
-    <pre className="aui-md-pre bg-muted my-3 overflow-x-auto rounded-lg p-3 text-[13px]">
-      <code>{code}</code>
-    </pre>
-  );
+  return <ShikiCodeBlock code={code} language="json" />;
 }
 
 function OttoBlock({ code, language }: SyntaxHighlighterProps) {
@@ -68,7 +68,8 @@ function OttoBlock({ code, language }: SyntaxHighlighterProps) {
     case "otto-flow":
       return (
         <FlowGraph
-          nodes={block.data.nodes}
+          // 格子坐标不信模型给的,按拓扑深度重排(lib/flowLayout.ts)
+          nodes={layoutFlow(block.data.nodes, block.data.edges)}
           edges={block.data.edges}
           visibleCount={block.data.nodes.length}
           className={CARD}

@@ -20,6 +20,7 @@ import { ToolLiveTail } from "./ToolLiveTail.js";
 import { AgentHandoff } from "./elements/agent-handoff.js";
 import { AgentStatus } from "./elements/agent-status.js";
 import { SubagentList, type SubagentItem } from "./elements/subagent-list.js";
+import { SubagentTranscriptPanel } from "./SubagentTranscriptPanel.js";
 import { ProviderMark } from "./ProviderMark.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
@@ -27,10 +28,12 @@ import {
   formatElapsed,
   groupSubagentSpawns,
   subagentFact,
+  subagentModel,
   subagentRowState,
   taskHeadline,
 } from "../lib/subagentTimeline.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
+import { findModel } from "../../../shared/modelCatalog.js";
 import { useChat } from "../store.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
@@ -155,6 +158,19 @@ function useNow(intervalMs: number | null): number {
   return now;
 }
 
+/** 卡右边那个模型名:优先子日志里 subagent_briefed 的快照(派活那一刻真用的),
+    子日志还没取到(跑着 / 刚收口)才退回定义文件当前的 model。显示用目录里的
+    label,目录里没有(自填的型号)就印原 id */
+function modelLabelFor(
+  spawn: SubagentSpawnedEvent,
+  cache: Record<string, readonly SessionEvent[] | undefined>,
+  defs: readonly { name: string; model?: string | undefined }[],
+): string | null {
+  const id = subagentModel(cache[spawn.childSessionId]) ?? defs.find((d) => d.name === spawn.agent)?.model;
+  if (!id) return null;
+  return findModel(id)?.label ?? id;
+}
+
 /** 派活卡:一条 subagent_spawned 落在时间线上的样子。
     分组、状态推导全部走 lib/subagentTimeline.ts 的纯函数(有测试钉着) ——
     这个组件只管订阅、拼 props、画出来。
@@ -171,10 +187,14 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
   const subagents = useChat((s) => s.subagents);
   const subagentLogCache = useChat((s) => s.subagentLogCache);
   const loadSubagentLog = useChat((s) => s.loadSubagentLog);
-  const resume = useChat((s) => s.resume);
   // 子会话此刻在跑哪个 toolCallId——ToolLiveTail 订阅的是 toolCallId 不是
   // sessionId,这份索引把两者接起来(Task 8 review Important 1)
   const runningToolCallBySession = useChat((s) => s.runningToolCallBySession);
+
+  // 点开的那一行(按 toolCallId 记,不按下标:组会随日志长,下标会漂)。
+  // 一次只开一个:看完收起看下一个,这是卡片内展开而不是整屏切过去的意义
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const toggle = (id: string) => setExpandedId((cur) => (cur === id ? null : id));
 
   const index = useMemo(() => buildToolIndex(events), [events]);
   const groups = useMemo(() => groupSubagentSpawns(events), [events]);
@@ -201,15 +221,20 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
     const resultTs = index.results.get(spawn.toolCallId)?.ts;
     const elapsedMs = (state === "done" ? (resultTs ?? now) : now) - spawn.ts;
     const fact = state === "done" ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+    const model = modelLabelFor(spawn, subagentLogCache, subagents);
     const runningToolCallId = runningToolCallBySession[spawn.childSessionId];
     return (
       <div className={`${AUDIT} flex flex-col items-center gap-1.5`}>
         <AgentStatus
           state={state}
           label={`${spawn.agent} · ${taskHeadline(spawn.task)}`}
-          onSelect={() => void resume(spawn.childSessionId)}
+          onSelect={() => toggle(spawn.toolCallId)}
+          expanded={expandedId === spawn.toolCallId}
           {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}
-        />
+          {...(model !== null ? { model } : {})}
+        >
+          <SubagentTranscriptPanel childSessionId={spawn.childSessionId} done={state === "done"} />
+        </AgentStatus>
         {/* 直播尾巴:只在跑着、且子会话真有一个工具调用开着的时候才挂——
             没有就没有,不摆一个空壳子(同 ToolRow 的做法) */}
         {state === "working" && runningToolCallId !== undefined && (
@@ -222,7 +247,7 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
   const items: SubagentItem[] = group.map((spawn) => {
     const done = index.results.has(spawn.toolCallId);
     const fact = done ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
-    const model = subagents.find((d) => d.name === spawn.agent)?.model ?? "";
+    const model = modelLabelFor(spawn, subagentLogCache, subagents) ?? "";
     return {
       name: spawn.agent,
       model,
@@ -250,7 +275,14 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
         progress={progress}
         showSummary={false}
         summaryAgent={items[0]!}
-        onSelectAgent={(i) => void resume(group[i]!.childSessionId)}
+        onSelectAgent={(i) => toggle(group[i]!.toolCallId)}
+        expandedIndex={group.findIndex((spawn) => spawn.toolCallId === expandedId)}
+        renderDetail={(i) => (
+          <SubagentTranscriptPanel
+            childSessionId={group[i]!.childSessionId}
+            done={index.results.has(group[i]!.toolCallId)}
+          />
+        )}
       />
       {runningToolCallId !== undefined && (
         <ToolLiveTail toolCallId={runningToolCallId} command={runningSpawn!.agent} done={false} />
