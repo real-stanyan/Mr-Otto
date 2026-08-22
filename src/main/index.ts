@@ -377,7 +377,7 @@ void app.whenReady().then(() => {
   // 记忆审查：与分区分类/跟进建议同构的第三条外挂（turn 锁之外、永不抛、
   // 会话被 purge 就不落）。每 10 个 user turn 落一条 memory_nudge，然后派内置
   // memory-reviewer 子智能体；子会话自己调 memory 工具写盘，结果不回父上下文
-  // （父会话整个 session 看到的记忆仍是开头那份快照，ADR-0059）。
+  // （父会话整个 session 看到的记忆仍是开头那份快照，ADR-0060）。
   //
   // 子会话没有自己的 subagentRunner——这里现造一个，接线和 createSessionAgent
   // 里派活那份完全同构（同一个 list / parent / alwaysAllow / register），
@@ -594,7 +594,7 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
-  /** 两个记忆文件的当前内容（ADR-0059）。读不到 = 空——"没记过"不是故障。
+  /** 两个记忆文件的当前内容（ADR-0060）。读不到 = 空——"没记过"不是故障。
       同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
       createAgent 是同步的，这份快照必须在调它之前就手上有值 */
   const readMemoryFiles = (): { memory: string; user: string } => {
@@ -686,7 +686,7 @@ void app.whenReady().then(() => {
       ...base,
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
-      // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0059）
+      // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: configDir(homedir()),
       memory: readMemoryFiles(),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),

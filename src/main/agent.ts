@@ -137,7 +137,7 @@ export function createAgent(opts: {
   subagentRunner?: SubagentRunner;
   /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
   listSubagents?: () => SubagentDef[];
-  /** 新 session 的长期记忆快照（ADR-0059）。由 index.ts 在造 agent 之前读好——
+  /** 新 session 的长期记忆快照（ADR-0060）。由 index.ts 在造 agent 之前读好——
       createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的 */
   memory?: { memory: string; user: string };
   /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
@@ -200,7 +200,7 @@ export function createAgent(opts: {
       workspace: opts.workspace,
       ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
     });
-    // 长期记忆快照落盘（ADR-0059）：紧跟 session_created 之后，先落盘再喂模型。
+    // 长期记忆快照落盘（ADR-0060）：紧跟 session_created 之后，先落盘再喂模型。
     // 只在有记忆能力的装配里落——world.config 不在 = 这个装配压根没有长期记忆
     if (opts.memory && world.config) {
       store.append({

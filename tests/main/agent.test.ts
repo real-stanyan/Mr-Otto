@@ -118,7 +118,7 @@ describe("createAgent 会话生命周期", () => {
     store.close();
   });
 
-  // ADR-0059：新 session 落一条长期记忆快照，紧跟 session_created 之后；
+  // ADR-0060：新 session 落一条长期记忆快照，紧跟 session_created 之后；
   // resume 不再落——日志里那条才是模型看过的那份，重复落等于说谎
   it("新 session：session_created 之后紧跟 memory_loaded；resume 不再落", () => {
     const store = new EventStore(":memory:");

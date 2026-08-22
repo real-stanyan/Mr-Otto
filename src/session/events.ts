@@ -271,7 +271,7 @@ export interface SubagentBriefedEvent extends SessionEventBase {
   model: string;
 }
 
-/** 额外 14：长期记忆快照（ADR-0059）。session 开头把 ~/.mr-otto/memories/ 两个文件
+/** 额外 14：长期记忆快照（ADR-0060）。session 开头把 ~/.mr-otto/memories/ 两个文件
     的内容落盘——模型整个 session 看到的就是这一份（投影拼进 system 尾部），中途
     写盘下个 session 才可见（前缀缓存不被打穿，hermes 同款取舍）。快照语义同
     skill_invoked：文件后来改了/丢了，重放不失真 */

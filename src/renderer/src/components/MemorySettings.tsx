@@ -1,4 +1,4 @@
-// 记忆栏目(设置页)——MEMORY.md / USER.md 的直接编辑口(ADR-0059)。
+// 记忆栏目(设置页)——MEMORY.md / USER.md 的直接编辑口(ADR-0060)。
 //
 // textarea 绑的是磁盘上的原文(带 ENTRY_DELIMITER 的 "\n§\n" 分隔符),不是重排过的
 // "一行一条":getMemory()/saveMemory() 只归一化(去空条目、保序去重),不重排格式,

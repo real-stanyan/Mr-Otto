@@ -74,7 +74,7 @@ export function renderMemoryBlocks(memory: string, user: string): string {
   return `\n${m}${u}${MEMORY_RULE}`;
 }
 
-/** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0059）。
+/** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0060）。
     指引文案跟着这条事件走，不写进 systemPromptText：没有这条事件的会话
     （老日志 / 子会话 / 没有记忆能力的装配）不该被告知"你有 memory 工具"——
     那把工具压根没挂给它们，写死在 systemPromptText 里就是一句谎话。

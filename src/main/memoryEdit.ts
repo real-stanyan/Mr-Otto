@@ -1,4 +1,4 @@
-// 用户在 UI 改记忆文件：写盘 + 落 memory_user_edit（ADR-0059：人手改的也要留证）。
+// 用户在 UI 改记忆文件：写盘 + 落 memory_user_edit（ADR-0060：人手改的也要留证）。
 // 没有当前会话时落到保留会话——事件必须挂在某个 sessionId 上，而"设置页"不是会话。
 
 import type { EventStore } from "../session/store.js";

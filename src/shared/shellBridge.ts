@@ -363,7 +363,7 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
-  /** 两个记忆文件的当前内容（设置页读，ADR-0059） */
+  /** 两个记忆文件的当前内容（设置页读，ADR-0060） */
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
       MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts） */
