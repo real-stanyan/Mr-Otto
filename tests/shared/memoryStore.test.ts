@@ -57,6 +57,17 @@ describe("applyOps", () => {
   it("target 不匹配的 op 报错", () => {
     expect(applyOps("memory", [], [{ action: "add", target: "user", content: "x" }]).ok).toBe(false);
   });
+  it("content 混进分隔符 § 拒绝：add 和 replace 都要挡", () => {
+    expect(applyOps("memory", [], [
+      { action: "add", target: "memory", content: `一半${ENTRY_DELIMITER}另一半` },
+    ])).toMatchObject({ ok: false, error: expect.stringContaining("条目内容不能包含分隔符 §") });
+    expect(applyOps("memory", [], [
+      { action: "add", target: "memory", content: "第一行\n§\n第二行" },
+    ])).toMatchObject({ ok: false, error: expect.stringContaining("条目内容不能包含分隔符 §") });
+    expect(applyOps("memory", ["旧条目"], [
+      { action: "replace", target: "memory", old_text: "旧条目", content: `新的${ENTRY_DELIMITER}内容` },
+    ])).toMatchObject({ ok: false, error: expect.stringContaining("条目内容不能包含分隔符 §") });
+  });
 });
 
 describe("parseMemoryResult", () => {

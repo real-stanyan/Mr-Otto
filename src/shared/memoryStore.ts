@@ -48,6 +48,13 @@ const LABEL: Record<MemoryTarget, string> = { memory: "MEMORY", user: "USER" };
 
 /** 按 old_text 子串找唯一一条。0 条 / 多条都是错：模型给的定位词不够具体，
     让它换个更长的——绝不猜 */
+/** content 混进分隔符会把一条写成两条（或撕裂后续 parseEntries）——整段
+    ENTRY_DELIMITER（"\n§\n"）出现，或某一行独立就是 "§"，都拒 */
+function containsDelimiter(content: string): boolean {
+  if (content.includes(ENTRY_DELIMITER)) return true;
+  return content.split("\n").some((line) => line === "§");
+}
+
 function locate(entries: string[], oldText: string): { idx: number } | { error: string } {
   const hits = entries.map((e, i) => (e.includes(oldText) ? i : -1)).filter((i) => i >= 0);
   if (hits.length === 0) return { error: `没有条目包含「${oldText}」` };
@@ -64,6 +71,7 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
     if (op.action === "add") {
       const c = op.content.trim();
       if (!c) return { ok: false, error: "content 为空" };
+      if (containsDelimiter(c)) return { ok: false, error: "条目内容不能包含分隔符 §" };
       if (next.includes(c)) return { ok: false, error: `已存在完全相同的条目：「${c}」` };
       next.push(c);
       changed.added.push(c);
@@ -76,6 +84,7 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
       } else {
         const c = op.content.trim();
         if (!c) return { ok: false, error: "content 为空" };
+        if (containsDelimiter(c)) return { ok: false, error: "条目内容不能包含分隔符 §" };
         next[loc.idx] = c;
         changed.updated.push(c);
       }
