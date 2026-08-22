@@ -127,7 +127,7 @@ export class LoopEngine {
       之后的投影从摘要起步。贵（一次全量输入 + 摘要输出）——manual 是用户主动要，
       auto 是上下文超阈值自动触发（trigger 字段落盘，溯源谁点的火）。
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
-  async compact(opts: { trigger: "auto" | "manual" } = { trigger: "manual" }): Promise<void> {
+  async compact(opts: { trigger: "auto" | "manual"; signal?: AbortSignal } = { trigger: "manual" }): Promise<void> {
     const { store, sessionId } = this.opts;
     const log = store.load(sessionId);
     // 摘要专用投影（ADR-0003）：整段历史无保真区，长工具输出/参数都截断——
@@ -149,18 +149,23 @@ export class LoopEngine {
           content: `MEMORY CONTEXT（已在长期记忆里的事实，摘要里不要重复）:\n${clipHeadTail(redactSensitiveText(memText))}`,
         }]
       : [];
-    const reply = await this.adapter.chat([
-      ...messages,
-      ...memoryContext,
-      {
-        role: "user",
-        content:
-          "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
-          "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
-          (memText ? "MEMORY CONTEXT 里已有的事实不要重复写进摘要。" : "") +
-          "直接输出摘要正文，不要开场白。",
-      },
-    ]); // 不带工具：这一步只要文字
+    const reply = await this.adapter.chat(
+      [
+        ...messages,
+        ...memoryContext,
+        {
+          role: "user",
+          content:
+            "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
+            "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
+            (memText ? "MEMORY CONTEXT 里已有的事实不要重复写进摘要。" : "") +
+            "直接输出摘要正文，不要开场白。",
+        },
+      ],
+      undefined, // 不带工具：这一步只要文字
+      undefined,
+      opts.signal // auto 触发时带上 turn 的中断信号——Stop 也要能砍掉正在跑的摘要
+    );
     if (!reply.content.trim()) throw new Error("模型没有产出摘要，compact 已放弃（未写入任何事件）");
 
     this.append({
@@ -238,8 +243,11 @@ export class LoopEngine {
         if (shouldAutoCompact(contextUsed(store.load(sessionId)), contextWindow(), settings())) {
           this.compactedThisTurn = true;
           try {
-            await this.compact({ trigger: "auto" });
+            await this.compact({ trigger: "auto", signal });
           } catch (err) {
+            // 中断不是"失败"——是用户意志（ADR-0006）。让它原样冒到 runTurn 的
+            // catch，落 turn_ended:"aborted"；只有真失败（模型没吐摘要等）才吞
+            if (isAbort(err)) throw err;
             console.warn("自动压缩失败，本 turn 不再尝试", err);
           }
         }
