@@ -94,6 +94,30 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
     expect(contextUsed(events)).toBe(400);
   });
 
+  it("compact 没回 usage（摘要模型没报账单）：锚点仍是这次 compact，值取摘要估算——不能穿透回 compact 前那笔更大的账单", () => {
+    const summary = "摘".repeat(50); // 中文估算：50 * 0.6 = 30
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "旧",
+        model: "m",
+        usage: { promptTokens: 90_000, completionTokens: 500 },
+      },
+      {
+        ...env(),
+        type: "context_compacted",
+        summary,
+        model: "m",
+        // 无 usage
+      },
+    ];
+    // 若锚点误穿透回上一条账单（90500），圆环会虚高回压缩前的水位，
+    // 触发第二次不必要的 compact（livelock）。正确答案只是摘要估算
+    expect(contextUsed(events)).toBe(estimateTokens(summary));
+    expect(contextUsed(events)).not.toBe(90_500);
+  });
+
   it("skill_invoked 计入尾巴：它投影成 user 消息进上下文", () => {
     const events: SessionEvent[] = [
       {

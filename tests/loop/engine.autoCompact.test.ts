@@ -86,6 +86,30 @@ describe("自动压缩", () => {
     expect(store.load("s").at(-2)).toMatchObject({ type: "assistant_message", content: "答" });
   });
 
+  it("摘要模型没回 usage：compact 锚点仍落到摘要本身，第二个 runTurn 不再重复压缩（livelock 回归）", async () => {
+    const store = seeded();
+    // 三次 chat：第一个 turn 先摘要（无 usage）再答，第二个 turn 只答一次——
+    // 若锚点穿透回 compact 前那笔 79k+1k 的老账单，第二个 turn 会再次判定超阈值，
+    // 排出第 4 个 reply 但脚本只给 3 个，adapter 会拿 undefined 报错，测试即失败
+    const { adapter } = scripted([
+      { content: "摘要" } as ModelReply, // compact，无 usage
+      { content: "答1" } as ModelReply,
+      { content: "答2" } as ModelReply,
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [],
+      world,
+      sessionId: "s",
+      autoCompact: { contextWindow: () => 100_000, settings: () => ({ enabled: true }) },
+    });
+    await engine.runTurn("新问题1");
+    await engine.runTurn("新问题2");
+    const types = store.load("s").map((e) => e.type);
+    expect(types.filter((t) => t === "context_compacted")).toHaveLength(1);
+  });
+
   it("自动压缩摘要请求中被中断（Stop）：不落 context_compacted，turn 落 aborted，不落半截 assistant_message", async () => {
     const store = seeded();
     let engineRef!: LoopEngine;
