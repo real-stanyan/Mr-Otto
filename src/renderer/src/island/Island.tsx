@@ -3,7 +3,7 @@
 // 窗体尺寸跟 DOM 走:ResizeObserver 量根节点,islandResize 上报给主进程 setBounds。
 import { useEffect, useReducer, useRef, useState } from "react";
 import { Check, Loader2, Send, Terminal, X } from "lucide-react";
-import { toolSummary } from "@/lib/toolSummary.js";
+import { toolSummary } from "../../../shared/toolSummary.js";
 import { initialIsland, reduceIsland, type IslandInput } from "./reduceIsland.js";
 
 function useIsland() {

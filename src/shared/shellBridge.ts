@@ -577,6 +577,21 @@ export interface IslandBoot {
   pendingApproval: ApprovalRequest | null;
 }
 
+/** 灵动岛的线上快照:主进程(日志所有者)算好的拍平投影,推给原生 helper 纯渲染。
+    不带几何(chrome)——刘海尺寸由 Swift 侧 DynamicNotchKit 从 NSScreen 拿。
+    currentTool/pendingApproval 都已拍平成字符串,Swift 不需要 toolSummary 逻辑 */
+export interface IslandSnapshot {
+  sessionId: string | null;
+  model: string | null;
+  phase: "idle" | "active" | "approval";
+  /** 正在跑的工具的动词+目标(空闲/无工具=null) */
+  currentTool: { verb: string; target: string } | null;
+  /** 这个 turn 的起点(ms epoch);helper 本地据此走计时器。没在跑=null */
+  turnStartedAt: number | null;
+  /** 挂起的审批(没有=null)。fullPath:带路径的工具给完整路径,否则 null */
+  pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
+}
+
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
