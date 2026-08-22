@@ -98,4 +98,14 @@ describe("EventStore FTS", () => {
     expect(s.searchText("不该被回填的句子")).toEqual([]);
     s.close();
   });
+
+  it("userTurnCounts 批量数 user_message：只数点名的会话，未知会话不出现在结果里", () => {
+    seed(store, "a", ["第一句", "第二句"]);
+    seed(store, "b", ["只有一句"]);
+    const counts = store.userTurnCounts(["a", "b", "nope"]);
+    expect(counts.get("a")).toBe(2);
+    expect(counts.get("b")).toBe(1);
+    expect(counts.has("nope")).toBe(false);
+    expect(store.userTurnCounts([])).toEqual(new Map());
+  });
 });

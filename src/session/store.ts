@@ -313,6 +313,24 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     return rows;
   }
 
+  /** 一批会话各自的 user_message 条数（"几轮对话"）。给 recent() 用：
+      逐会话 load() 整段事件只为数一个类型，会话一多、日志一长就是不必要的 N+1；
+      这里一条 SQL 一次性数完，session_id 不在 events 里的（未知会话）在结果 Map
+      里直接不出现——调用方按需 `?? 0` */
+  userTurnCounts(sessionIds: string[]): Map<string, number> {
+    if (sessionIds.length === 0) return new Map();
+    const marks = sessionIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT session_id AS sessionId, COUNT(*) AS n
+           FROM events
+          WHERE type = 'user_message' AND session_id IN (${marks})
+          GROUP BY session_id`
+      )
+      .all(...sessionIds) as { sessionId: string; n: number }[];
+    return new Map(rows.map((r) => [r.sessionId, r.n]));
+  }
+
   close(): void {
     this.db.close();
   }

@@ -16,18 +16,22 @@ export function createHistoryCapability(
     window: (sessionId, fromSeq, toSeq) =>
       store.load(sessionId).filter((e) => e.seq >= fromSeq && e.seq <= toSeq),
     load: (sessionId) => store.load(sessionId),
-    recent: (limit) =>
-      store
+    recent: (limit) => {
+      const list = store
         .sessions()
         .filter((s) => s.spawnedFrom === null && s.sessionId !== currentSessionId())
-        .slice(0, limit)
-        .map((s) => ({
-          sessionId: s.sessionId,
-          title: s.title,
-          workspace: s.workspace,
-          startedTs: s.startedTs,
-          lastTs: s.lastTs,
-          userTurns: store.load(s.sessionId).filter((e) => e.type === "user_message").length,
-        })),
+        .slice(0, limit);
+      // 逐会话 load() 整段事件只为数 user_message 条数是 N+1：会话一多、
+      // 日志一长就是白白读一遍全量 payload。一条 SQL 批量数完（store.ts）
+      const counts = store.userTurnCounts(list.map((s) => s.sessionId));
+      return list.map((s) => ({
+        sessionId: s.sessionId,
+        title: s.title,
+        workspace: s.workspace,
+        startedTs: s.startedTs,
+        lastTs: s.lastTs,
+        userTurns: counts.get(s.sessionId) ?? 0,
+      }));
+    },
   };
 }
