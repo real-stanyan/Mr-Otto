@@ -4,7 +4,9 @@ export type IslandCommand =
   | { type: "ready" }
   | { type: "send"; sessionId: string; text: string }
   | { type: "approve"; sessionId: string; callId: string; grant?: "session" }
-  | { type: "deny"; sessionId: string; callId: string };
+  | { type: "deny"; sessionId: string; callId: string }
+  /** 点列表行(#210):请主窗聚焦并切到这个会话 */
+  | { type: "focusSession"; sessionId: string };
 
 export interface IslandChild {
   stdin: { write(s: string): void };
@@ -41,6 +43,10 @@ export function decodeCommand(line: string): IslandCommand | null {
     case "deny":
       return typeof c.sessionId === "string" && typeof c.callId === "string"
         ? { type: "deny", sessionId: c.sessionId, callId: c.callId }
+        : null;
+    case "focusSession":
+      return typeof c.sessionId === "string"
+        ? { type: "focusSession", sessionId: c.sessionId }
         : null;
     default:
       return null;

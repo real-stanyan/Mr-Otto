@@ -36,6 +36,8 @@ describe("islandUsage", () => {
     // 显示名走 describeModel(目录 label),不是原始 id
     expect(out[0]!.label).not.toBe("deepseek-v4-flash");
     expect(out[0]!.label.length).toBeGreaterThan(0);
+    // 行带厂商 id:Swift 侧按它取 bundle 里的 logo(#209)
+    expect(out[0]!.provider).toBe("deepseek");
   });
 
   it("describeModel 认不出的型号整行丢弃", () => {

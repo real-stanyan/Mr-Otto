@@ -35,9 +35,11 @@ struct IslandAgent: Codable, Equatable, Identifiable {
 enum Display: String, Codable { case sessions, usage }
 
 /// 用量表的一行:一个模型在 今天/7天/14天 三个窗口的 token 合计。
-/// label 是主进程拍平好的目录显示名,这边纯渲染。
+/// label 是主进程拍平好的目录显示名,这边纯渲染;provider 是厂商 id,
+/// 对应资源 bundle 里 providers/<id>.png 的 logo(#209;Optional 向后兼容)。
 struct UsageRow: Codable, Equatable, Identifiable {
   let label: String
+  var provider: String?
   let today: Double
   let d7: Double
   let d14: Double
@@ -79,12 +81,15 @@ enum Outbound {
   case send(sessionId: String, text: String)
   case approve(sessionId: String, callId: String, grant: String?)
   case deny(sessionId: String, callId: String)
+  /// 点列表行(#210):请主窗聚焦并切到这个会话
+  case focusSession(sessionId: String)
 
   func jsonLine() -> String {
     let obj: [String: Any]
     switch self {
     case .ready: obj = ["type": "ready"]
     case let .send(s, t): obj = ["type": "send", "sessionId": s, "text": t]
+    case let .focusSession(s): obj = ["type": "focusSession", "sessionId": s]
     case let .approve(s, c, g):
       var o: [String: Any] = ["type": "approve", "sessionId": s, "callId": c]
       if let g { o["grant"] = g }

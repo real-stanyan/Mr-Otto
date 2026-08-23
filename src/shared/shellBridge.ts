@@ -572,6 +572,9 @@ export interface ShellBridge {
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
   onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
+  /** 用户点了灵动岛列表里的会话行(#210)→ 主进程已聚焦窗口,渲染层负责切会话
+      (走 store.resume,同侧栏点行一条路) */
+  onIslandFocusSession(cb: (sessionId: string) => void): Unsubscribe;
   /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
       左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
   getWindowFullscreen(): Promise<boolean>;
@@ -761,6 +764,7 @@ export const CHANNELS = {
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
+  islandFocusSession: "otter:islandFocusSession",
   getWindowFullscreen: "otter:getWindowFullscreen",
   windowFullscreen: "otter:windowFullscreen",
   setActiveSession: "otter:setActiveSession",
