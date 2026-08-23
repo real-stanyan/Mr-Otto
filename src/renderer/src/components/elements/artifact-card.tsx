@@ -2,6 +2,8 @@
 
 // 来自 assistant-ui registry: elements-artifact-card
 // (https://r.assistant-ui.com/elements-artifact-card.json)
+// 取回于 2026-08-23（registry 不发版本号，只能记日期：升级时拿这个日期之后的
+// upstream diff 对着下面这份改动一览人工合）
 //
 // 本仓改动一览（升级时要人工合）：
 //  ① surfaces 从 @/lib/surfaces.js 引（上游是同目录 ./surfaces）。

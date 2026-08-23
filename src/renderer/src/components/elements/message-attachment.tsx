@@ -2,6 +2,8 @@
 
 // 来自 assistant-ui registry: elements-message-attachment
 // (https://r.assistant-ui.com/elements-message-attachment.json)
+// 取回于 2026-08-20（registry 不发版本号，只能记日期：升级时拿这个日期之后的
+// upstream diff 对着下面这份改动一览人工合）
 //
 // 本仓改动一览(升级时要人工合):
 //  ① item.icon —— 允许调用方自带图标。本仓有 material-icon-theme 那套类型图标
