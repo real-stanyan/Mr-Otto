@@ -20,6 +20,20 @@ Realtime 暂时坏着(issue #77)时,好友/私信/牌局邀请仍然可用,只�
 | `0002`–`0005` | 额度钱包 / 德州账本 / 牌桌 | — |
 | `0006_presence_heartbeat_and_game_invites.sql` | `profiles.last_seen_at` 心跳列 + `game_invites` 牌局邀请表 | 没跑这一条时,邀请功能会报表不存在;在线点退回只认 Realtime presence |
 | `0007_profile_onboarding.sql` | `profiles.onboarded_at` 首登标记 + 修 `handle_auth_user_upsert` 不再用 provider 头像覆盖用户自设的头像 | 没跑这一条时,读资料会报列不存在,身份退回 `AccountInfo`(改动前的行为),引导不弹、改资料报错;详见 ADR-0028 |
+| `0008_workspace_presence.sql` | `profiles.repo_key` / `repo_branch` 两列,心跳顺带广播「我在哪个仓库哪根分支」 | 没跑这一条时,客户端整拍心跳会被 PGRST204/42703 打回,自动退回旧形状——在线点照常,好友分支徽章全空;设计见 ADR-0055 |
 
 `checks/` 下同名 `.check.sql` 是对着真库的一致性校验(整段事务 + rollback,不留痕),
 跑法写在每个文件头部。
+
+## 真库执行状态
+
+截至 **2026-08-23**,`0001`–`0008` 全部已在自托管实例执行完毕,并对着真库跑过
+`checks/` 下现有的全部校验脚本(`0001` / `0004` / `0005` / `0006` / `0007` / `0008`),
+逐条 PASS。
+
+这一行会过期,所以它记的是**日期**不是「已完成」:新增 migration 之后要么补一行,
+要么直接跑一遍 checks —— 校验脚本不留痕,想知道真库是什么形状,跑它比读这段字准。
+
+`0002` / `0003`(额度钱包)至今没有 check 脚本,那两条的真库形状只有"表在不在"这个
+层面被 #76 的暴露面审计核过。
+
