@@ -85,8 +85,13 @@ test("#142-7 内置那份「改成我自己的一份」；ADR-0056 撤掉的 ~/.
     await expect(win.getByRole("button", { name: /^Explore/ })).toHaveCount(1, { timeout: 10_000 });
     const written = readFileSync(join(userAgentsDir, "Explore.md"), "utf8");
     expect(written).toMatch(/^---\nname: Explore\n/);
-    // 盖住了内置那份：内置栏从 3 项掉到 2 项，自己那栏多出一行，不是两行 Explore
-    await expect(win.getByText("内置子智能体").locator("xpath=following-sibling::span[1]")).toHaveText("2 项");
+    // 盖住了内置那份：清单里仍然只有一行 Explore（不是内置一行 + 磁盘一行），
+    // 它留在「内置」那一栏、挂着「内置 · 已自定义」的徽章 —— 那份磁盘定义是
+    // 内置那份的覆盖层，不是另一个东西
+    await expect(win.getByText("内置子智能体").locator("xpath=following-sibling::span[1]")).toHaveText(
+      "3 项"
+    );
+    await expect(win.getByRole("button", { name: /^Explore/ })).toContainText("已自定义");
 
     // 这一份现在是自己的：点开能改（Description 不再禁用）
     await win.getByRole("button", { name: /^Explore/ }).click();
