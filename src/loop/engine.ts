@@ -237,11 +237,15 @@ export class LoopEngine {
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
 
+      // 每圈只 load 一次（issue #193）：占用检查和投影读同一份日志快照，
+      // 只有 compact 真的落了新事件才重读
+      let log = store.load(sessionId);
+
       // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
       // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
       if (this.opts.autoCompact && !this.compactedThisTurn) {
         const { contextWindow, settings } = this.opts.autoCompact;
-        if (shouldAutoCompact(contextUsed(store.load(sessionId)), contextWindow(), settings())) {
+        if (shouldAutoCompact(contextUsed(log), contextWindow(), settings())) {
           this.compactedThisTurn = true;
           try {
             await this.compact({ trigger: "auto", signal });
@@ -251,12 +255,13 @@ export class LoopEngine {
             if (isAbort(err)) throw err;
             console.warn("自动压缩失败，本 turn 不再尝试", err);
           }
+          log = store.load(sessionId); // compact 落了 context_compacted，快照过期
         }
       }
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
-      const messages = deriveMessages(store.load(sessionId), DEFAULT_COMPRESSION);
+      const messages = deriveMessages(log, DEFAULT_COMPRESSION);
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
       const clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;

@@ -40,6 +40,26 @@ describe("redactSensitiveText", () => {
     expect(redactSensitiveText("secret sauce = patience")).toBe("secret sauce = patience");
     expect(redactSensitiveText("design token: spacing-4")).toBe("design token: spacing-4");
   });
+
+  // issue #193：GitHub 三种新式 token、Google API key、PEM 私钥块
+  it("github_pat_ / gho_ / ghs_ 打码", () => {
+    expect(redactSensitiveText(`推送用 github_pat_${"A1".repeat(41)} 这个`)).not.toContain("github_pat_A1");
+    expect(redactSensitiveText(`OAuth 令牌 gho_${"a".repeat(36)}`)).not.toMatch(/gho_a/);
+    expect(redactSensitiveText(`装置令牌 ghs_${"b".repeat(36)}`)).not.toMatch(/ghs_b/);
+  });
+  it("Google API key（AIza 开头 39 位）打码", () => {
+    const key = "AIza" + "SyD-abcdefghijklmnopqrstuvwxyz0123456".slice(0, 35);
+    const out = redactSensitiveText(`地图用 ${key} 调`);
+    expect(out).not.toContain(key);
+    expect(out).toContain("[REDACTED]");
+  });
+  it("PEM 私钥块整块打码，围栏外文本保留", () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\nqqqq\n-----END RSA PRIVATE KEY-----";
+    const out = redactSensitiveText(`部署脚本里有\n${pem}\n注意收好`);
+    expect(out).not.toContain("MIIEpAIBAAKCAQEA");
+    expect(out).toContain("[REDACTED]");
+    expect(out).toContain("注意收好");
+  });
 });
 
 describe("clipHeadTail", () => {

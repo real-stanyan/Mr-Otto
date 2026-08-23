@@ -509,9 +509,11 @@ function ComposerPrefsBar() {
   const [prefsOpen, setPrefsOpen] = useState(false);
 
   // 目录 + 本机探测：Ollama 的窗只有那台机器答得上来，查目录会拿到 32k 兜底常量，
-  // 圆环就会按一个假数报占用（实测 qwen3:30b 是 256k）
+  // 圆环就会按一个假数报占用（实测 qwen3:30b 是 256k）。
+  // contextWindowKnown = false（兜底常量/目录外猜测）时不画环（issue #193）：
+  // 按假分母报百分比比不报更糟——主进程判定自动压缩用的也是同一个开关（agent.ts）
   const choice = useModelChoice(model);
-  const ctxWindow = choice?.contextWindow ?? 128_000;
+  const ctxWindow = choice?.contextWindowKnown ? choice.contextWindow : null;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
   const used = contextBreakdown(events, toolDefs).total;
 
@@ -608,18 +610,21 @@ function ComposerPrefsBar() {
           </div>
 
           {/* usage 只喂 totalTokens:Root 拿它算百分比和配色。分项不走上游那套
-              (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算 */}
-          <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
-            {/* 不给 title:富 tooltip 已经把同样的数字说了一遍,
-                原生气泡会在它旁边再冒一个,成了重影 */}
-            <ContextDisplayTrigger
-              className="p-[3px] hover:bg-foreground/[0.07]"
-              aria-label="上下文用量详情"
-            >
-              <ContextDisplayRingVisual />
-            </ContextDisplayTrigger>
-            <CtxDetails events={events} toolDefs={toolDefs} ctxWindow={ctxWindow} />
-          </ContextDisplayRoot>
+              (入/缓存/出/推理),本仓的分项是"上下文构成",在 CtxDetails 里自己算。
+              窗口未知（兜底常量）时整个环不画:假百分比不如没有 */}
+          {ctxWindow !== null && (
+            <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
+              {/* 不给 title:富 tooltip 已经把同样的数字说了一遍,
+                  原生气泡会在它旁边再冒一个,成了重影 */}
+              <ContextDisplayTrigger
+                className="p-[3px] hover:bg-foreground/[0.07]"
+                aria-label="上下文用量详情"
+              >
+                <ContextDisplayRingVisual />
+              </ContextDisplayTrigger>
+              <CtxDetails events={events} toolDefs={toolDefs} ctxWindow={ctxWindow} />
+            </ContextDisplayRoot>
+          )}
         </div>
       </div>
     </div>
