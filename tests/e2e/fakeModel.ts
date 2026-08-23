@@ -31,7 +31,14 @@ export interface FakeTurn {
 export interface FakeRequest {
   model: string;
   messages: { role: string; content: unknown }[];
-  tools?: { function: { name: string } }[];
+  tools?: {
+    function: {
+      name: string;
+      /** task 那把工具的 agent 字段是个 enum —— 「此刻派得出谁」就写在这里，
+          验作用域/首次可用那几条时读它 */
+      parameters?: { properties?: { agent?: { enum?: string[] } } };
+    };
+  }[];
   stream?: boolean;
 }
 
