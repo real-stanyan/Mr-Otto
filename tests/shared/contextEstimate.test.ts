@@ -262,3 +262,24 @@ describe("contextBreakdown（按来源拆三份）", () => {
     expect(withMem.system).toBeGreaterThan(without.system + 50);
   });
 });
+
+describe("微压缩后的估算", () => {
+  it("被吸收的事件不再计入 pending，摘要计入", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 0, type: "user_message", content: "u0" },
+      { seq: 2, sessionId: "s", ts: 0, type: "assistant_message", content: "a0", model: "m" },
+      { seq: 3, sessionId: "s", ts: 0, type: "user_message", content: "u1" },
+      { seq: 4, sessionId: "s", ts: 0, type: "tool_result", toolCallId: "c", status: "ok", output: "x".repeat(4000) },
+      { seq: 5, sessionId: "s", ts: 0, type: "user_message", content: "u2" },
+      { seq: 6, sessionId: "s", ts: 0, type: "user_message", content: "u3" },
+    ];
+    const before = contextUsed(events);
+    const after = contextUsed([
+      ...events,
+      { seq: 7, sessionId: "s", ts: 0, type: "micro_compacted", summary: "短摘要", coversUpTo: 4, model: "cheap" },
+    ]);
+    expect(after).toBeLessThan(before - 900); // 4000 字符 ≈ 1000 token 被摘要替掉
+    expect(after).toBeGreaterThan(0);
+  });
+});

@@ -8,6 +8,7 @@ import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import { systemPromptText, renderMemoryPrompt } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
+import { absorbedIndexes, latestMicroCompacted } from "../session/microCompact.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
     校准用途，不求精确——离真值 ±30% 也比"冻结到上次账单"诚实。
@@ -51,8 +52,14 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   // 什么也没产出的 turn 投影里就不进上下文(ADR-0042),这里也不能计 ——
   // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
   const barren = barrenEventIndexes(events);
+  // 微压缩（ADR-0063）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
+  // 和 deriveMessages 同一个 absorbedIndexes。锚点之前的事件本来就不计（账单里已含），
+  // 只有锚点之后、被吸收的那些要从估算里扣掉；摘要只在锚点之后有 micro 事件时才加
+  const micro = absorbedIndexes(events);
+  const latestMicro = latestMicroCompacted(events);
   for (let i = anchorIdx + 1; i < events.length; i++) {
     if (barren.has(i)) continue;
+    if (micro?.absorbed.has(i)) continue;
     const e = events[i]!;
     switch (e.type) {
       case "user_message":
@@ -77,6 +84,10 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
       case "assistant_message":
         // 只有 API 没回账单的消息才落到估算侧（回了账单它就是锚点）
         pending += estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));
+        break;
+      case "micro_compacted":
+        // 只有最新一条进投影；旧的被新摘要包含
+        if (e === latestMicro) pending += estimateTokens(e.summary);
         break;
       default:
         break;

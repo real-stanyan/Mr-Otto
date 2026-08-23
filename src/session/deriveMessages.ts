@@ -3,6 +3,7 @@
 
 import type { SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
+import { absorbedIndexes } from "./microCompact.js";
 import { charCount, MEMORY_LIMITS, parseEntries, formatEntries } from "../shared/memoryStore.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
@@ -248,6 +249,10 @@ function healDanglingToolCalls(messages: ChatMessage[], startedIds: Set<string>)
 
 // ─── 投影 ──────────────────────────────────────────────────
 
+/** 微压缩摘要消息的文案前缀（ADR-0063）。插入摘要的两处（主循环、尾插）
+    共用这一个常量：文案只能有一处出口，不然"投影里到底长什么样"就是猜的 */
+const MICRO_SUMMARY_PREFIX = "[对话摘要]\n";
+
 export function deriveMessages(events: SessionEvent[], compression?: CompressionOptions): ChatMessage[] {
   const messages: ChatMessage[] = [];
   // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
@@ -258,8 +263,17 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 什么也没产出的 turn 不进上下文(ADR-0042):模型压根没读到过那条消息,
   // 留着只会让每一次重试都把同一句话再囤一份。日志一个字节不改,跳的是投影
   const barren = barrenEventIndexes(events);
+  // 微压缩（ADR-0063）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
+  // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
+  // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
+  // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
+  const micro = absorbedIndexes(events);
 
   for (const [i, event] of events.entries()) {
+    if (micro && i === micro.summaryAt) {
+      messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
+    }
+    if (micro?.absorbed.has(i)) continue;
     if (barren.has(i)) continue;
     switch (event.type) {
       case "user_message": {
@@ -388,6 +402,11 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
         });
         break;
 
+      case "micro_compacted":
+        // 事件本身不投影：它的效果是"吸收集合 + 摘要消息"，位置由 absorbedIndexes
+        // 决定（紧跟被吸收区），不是事件落盘的位置（那总在日志尾巴）
+        break;
+
       // 模型不可见的事件：明确丢弃。
       // lifecycle 事件（ADR-0004）是系统事实，不是对话内容——投影必须对它们隐形：
       // 同一段日志加不加 lifecycle 事件，投影结果逐字节一致（有测试钉住）
@@ -411,6 +430,11 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "memory_nudge":
         break;
     }
+  }
+
+  // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
+  if (micro && micro.summaryAt >= events.length) {
+    messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
   }
 
   const startedIds = new Set(
