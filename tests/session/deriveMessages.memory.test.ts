@@ -44,6 +44,9 @@ describe("memory_loaded 投影", () => {
     const content = (withEmpty[0] as { content: string }).content;
     expect(content).toContain("你有跨会话的长期记忆");
     expect(content).toContain("session_search");
+    // 机制自述：防模型被问「记忆怎么工作」时脑补出 RAG / 没有 UI（会话 2026-08-23 实测翻车）
+    expect(content).toContain("整份快照注入");
+    expect(content).toContain("设置页");
     expect(content).not.toContain("MEMORY (");
     expect(content).not.toContain("USER (");
   });
