@@ -111,7 +111,15 @@ export function withBuiltins(
   onDisk: readonly SubagentDef[],
   knownTools: readonly string[]
 ): SubagentDef[] {
+  const builtins = builtinSubagents(knownTools);
+  const builtinNames = new Set(builtins.map((b) => b.name.toLowerCase()));
+  // 盖住内置的磁盘定义标 overridesBuiltin：内置是身份不是状态——用户配了个
+  // 模型，它仍是内置那只（设置页留在「内置」栏，挂"已自定义"），不该看起来
+  // 像内置的消失了、多出来一个重名的"我的"
+  const marked = onDisk.map((d) =>
+    builtinNames.has(d.name.toLowerCase()) ? { ...d, overridesBuiltin: true as const } : d
+  );
   const taken = new Set(onDisk.map((d) => d.name.toLowerCase()));
-  const extra = builtinSubagents(knownTools).filter((b) => !taken.has(b.name.toLowerCase()));
-  return [...onDisk, ...extra].sort((a, b) => a.name.localeCompare(b.name));
+  const extra = builtins.filter((b) => !taken.has(b.name.toLowerCase()));
+  return [...marked, ...extra].sort((a, b) => a.name.localeCompare(b.name));
 }
