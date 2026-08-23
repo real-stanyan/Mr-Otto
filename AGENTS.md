@@ -184,4 +184,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/e2e/` — Playwright-electron 冒烟（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）
 - `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）
-- `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059）
+- `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）
