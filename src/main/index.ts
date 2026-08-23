@@ -1498,6 +1498,9 @@ void app.whenReady().then(() => {
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
     feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
+    // runTurn 抛错时走不到下面（整个 sendMessage 一起抛），所以这个初值只是让
+    // TS 安心；真正的取值只有 runTurn 的返回
+    let outcome: "completed" | "aborted" = "aborted";
     try {
       if (invoked) {
         // 快照落在 user_message 之前：模型先看到说明书，再看到任务
@@ -1520,7 +1523,7 @@ void app.whenReady().then(() => {
         });
         send(CHANNELS.event, descEvent);
       }
-      await agent.engine.runTurn(text, refs, textFiles);
+      outcome = await agent.engine.runTurn(text, refs, textFiles);
     } finally {
       runningSessions.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
@@ -1532,13 +1535,12 @@ void app.whenReady().then(() => {
     // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
     // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
     // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
-    let aborted = false;
-    for (const e of store.load(sessionId).slice().reverse()) {
-      if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
-    }
     // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
-    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
-    if (!aborted) {
+    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性。
+    // outcome 由 runTurn 直接给（issue #112）：原来是在这里做一次全量 store.load
+    // + 倒着找最后一条 turn_ended，把 engine 早一帧就知道的事实又推导了一遍——
+    // 每个 turn 一次、同步跑在主进程，长会话上是白读整份日志
+    if (outcome === "completed") {
       enqueueSectionClassify(sessionId);
       // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
       // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,

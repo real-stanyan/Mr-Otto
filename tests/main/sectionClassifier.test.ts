@@ -134,6 +134,30 @@ describe("classifySection", () => {
     await expect(classifySection(log)).resolves.toBeNull();
   });
 
+  it("开新分区但标题跟当前这条一模一样 → 落成延续（竖轨上不长两条同名刻度）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
+    })));
+    const events: SessionEvent[] = [
+      ...log,
+      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: "修登录", model: "c" },
+      { seq: 5, sessionId: "s", ts: 6, type: "user_message", content: "再看看这个" },
+    ];
+    await expect(classifySection(events)).resolves.toEqual({ title: null, model: SECTION_MODEL });
+  });
+
+  // 这条路径原来只在 parseSectionReply 单元层覆盖（issue #112）：另外三条失败
+  // 路径都走完整的 mock HTTP，唯独它没有——而它是"模型说延续、但一条分区都还
+  // 没有"这个真会发生的组合
+  it("还没有任何分区 + 模型回延续 → null（不落一条没有标题的分区事件）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"newSection":false,"title":""}' } }] }),
+    })));
+    await expect(classifySection(log)).resolves.toBeNull();
+  });
+
   it("跨度是空的（上一条就是分类事件）→ 不调模型，直接 null", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);

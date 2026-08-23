@@ -188,12 +188,16 @@ export class LoopEngine {
 
   /** 跑一个完整 turn：直到模型不再要工具为止。
       收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
-      中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障 */
+      中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障。
+
+      返回这一轮的收口方式（error 走抛的那条路，返回不了）：调用方要按"用户按没按
+      停止"决定跑不跑那几条 turn 后外挂，而它早就在这儿知道了——让它回头去日志里
+      倒着找最后一条 turn_ended，是把已知的事实再推导一遍（issue #112） */
   async runTurn(
     userInput: string,
     attachments?: UserAttachmentRef[],
     textFiles?: UserTextFile[]
-  ): Promise<void> {
+  ): Promise<"completed" | "aborted"> {
     this.append({
       ...this.env(),
       type: "user_message",
@@ -207,10 +211,11 @@ export class LoopEngine {
     try {
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
+      return "completed";
     } catch (err) {
       if (isAbort(err)) {
         this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
-        return;
+        return "aborted";
       }
       this.append({
         ...this.env(),
