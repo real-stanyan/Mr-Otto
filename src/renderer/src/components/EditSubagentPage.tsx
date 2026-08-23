@@ -110,6 +110,11 @@ export function EditSubagentPage({
           <span className="text-muted-foreground/60">/</span>
           <span className="font-mono font-[650] text-brand truncate">{def.name}</span>
           {def.builtin && <Badge variant="secondary" className="shrink-0">内置</Badge>}
+          {def.overridesBuiltin && (
+            <Badge variant="secondary" className="shrink-0" title="盖住内置那份的磁盘定义，删掉文件就回到出厂">
+              内置 · 已自定义
+            </Badge>
+          )}
           {!def.builtin && def.readOnly && (
             <Badge variant="secondary" className="shrink-0">只读</Badge>
           )}
