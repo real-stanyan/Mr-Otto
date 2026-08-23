@@ -130,6 +130,7 @@ export function flattenAgent(state: IslandState | undefined, session: SessionSum
     currentTool: ct ? { verb: ct.verb, target: ct.target } : null,
     turnStartedAt: s.turnStartedAt,
     pendingApproval: pending,
+    workspace: session.workspace,
   };
 }
 
@@ -141,8 +142,9 @@ export function flattenFleet(
 ): IslandFleet {
   const ordered = orderedVisibleSessions(sessions);
   const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess));
-  // 审批置顶:稳定排序,审批在前,其余保持侧栏序
-  agents.sort((a, b) => Number(b.phase === "approval") - Number(a.phase === "approval"));
+  // 不再做审批置顶排序(#206):分组视图里顺序必须保持侧栏序(同 workspace 连续),
+  // 置顶会把审批行拽出它的组。审批可见性改由 Swift 侧承担——selectedAgent 兜底
+  // 优先审批行(auto-expand 后详情区照样当场三按钮)+ 收起的组头带橙点。
   // focusedSessionId 可能指向一个已经不在 agents 里的会话(比如刚被删的那个,
   // deleteSession 只清 currentSessionId,不动 activeSessionId)——线上不能带一个
   // 悬空的焦点 id,清成 null 让 helper 落回"无高亮行"

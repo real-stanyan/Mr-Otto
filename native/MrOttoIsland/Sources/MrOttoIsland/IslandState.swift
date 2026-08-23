@@ -12,6 +12,8 @@ struct PendingApproval: Codable, Equatable {
 }
 
 /// 一只水獭(一个 session)在灵动岛里的状态。
+/// workspace = 工程文件夹全路径(#206 分组键;旧主进程不带 → nil,
+/// synthesized Codable 对 Optional 走 decodeIfPresent,天然向后兼容)。
 struct IslandAgent: Codable, Equatable, Identifiable {
   let sessionId: String
   let title: String?
@@ -19,7 +21,14 @@ struct IslandAgent: Codable, Equatable, Identifiable {
   let currentTool: ToolRef?
   let turnStartedAt: Double?
   let pendingApproval: PendingApproval?
+  var workspace: String?
   var id: String { sessionId }
+
+  /// 组头显示名:路径末段。nil(旧主进程)归到"其他"组。
+  var workspaceLabel: String {
+    guard let workspace else { return "其他" }
+    return (workspace as NSString).lastPathComponent
+  }
 }
 
 /// 展开态上半区画哪个(#199):会话列表 or 用量表。设置页切,主进程随快照推。
