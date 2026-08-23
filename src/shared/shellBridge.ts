@@ -10,7 +10,7 @@ import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../sessio
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import type { SessionSummary } from "../session/store.js";
+import type { SessionSummary, FtsHit } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
@@ -41,7 +41,7 @@ export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, Ask
 
 export type { SubagentDef };
 
-export type { SessionSummary };
+export type { SessionSummary, FtsHit };
 
 export type { TerminalInfo };
 
@@ -379,6 +379,10 @@ export interface ShellBridge {
   /** 重建跨会话回忆的全文索引（issue #190）。索引是 events 的派生物，幂等重灌；
       平时只在老库首开时自动跑一次，这个口子是索引损坏时的修复路径 */
   rebuildSearchIndex(): Promise<void>;
+  /** 拿用户给的词直接查一次全文索引（设置页的试搜框）。走 EventStore.searchText
+      同一条路，但不像 session_search 那样额外排除当前会话——这个口子是给用户
+      验证「索引里有没有」的，不是给模型回忆用的。text 在主进程截断过 */
+  searchIndex(query: string): Promise<FtsHit[]>;
   /** 自动压缩设置（设置页读，落 userData/auto-compact.json）。现读不缓存——
       改了立刻对下一次造 agent 生效，不用重启（同 alwaysAllow 的规矩） */
   getAutoCompact(): Promise<AutoCompactSettings>;
@@ -712,6 +716,7 @@ export const CHANNELS = {
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
   rebuildSearchIndex: "otter:rebuildSearchIndex",
+  searchIndex: "otter:searchIndex",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
   getHelperModel: "otter:getHelperModel",
