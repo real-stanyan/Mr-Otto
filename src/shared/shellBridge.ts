@@ -373,6 +373,9 @@ export interface ShellBridge {
   /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
       的会话——留证要知道是谁忘的 */
   forgetMemory(target: MemoryTarget, entry: string, sessionId: string): Promise<void>;
+  /** 重建跨会话回忆的全文索引（issue #190）。索引是 events 的派生物，幂等重灌；
+      平时只在老库首开时自动跑一次，这个口子是索引损坏时的修复路径 */
+  rebuildSearchIndex(): Promise<void>;
   /** 自动压缩设置（设置页读，落 userData/auto-compact.json）。现读不缓存——
       改了立刻对下一次造 agent 生效，不用重启（同 alwaysAllow 的规矩） */
   getAutoCompact(): Promise<AutoCompactSettings>;
@@ -676,6 +679,7 @@ export const CHANNELS = {
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
+  rebuildSearchIndex: "otter:rebuildSearchIndex",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
   getIslandSettings: "otter:getIslandSettings",

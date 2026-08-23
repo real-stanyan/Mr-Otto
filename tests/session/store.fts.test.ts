@@ -42,6 +42,26 @@ describe("EventStore FTS", () => {
     expect(store.searchText("悉尼")).toMatchObject([{ sessionId: "a", score: 0 }]);
   });
 
+  // issue #190：limit 在按 session 去重之前时，一个 300+ 命中的话痨会话
+  // 能把其他会话挤出 discovery 的名额
+  it("话痨会话挤不掉别人：每个 session 只回分最高的一条", () => {
+    seed(store, "chatty", Array.from({ length: 12 }, () => "悉尼北区 悉尼北区 悉尼北区"));
+    seed(store, "quiet", ["搬去了悉尼北区附近"]);
+    const hits = store.searchText("悉尼北区", { limit: 5 });
+    const ids = hits.map((h) => h.sessionId);
+    expect(new Set(ids).size).toBe(ids.length); // 每 session 至多一条
+    expect(ids).toContain("quiet");
+    expect(ids[0]).toBe("chatty"); // 排序仍按各 session 的最高分
+  });
+
+  it("LIKE 兜底同样按 session 去重", () => {
+    seed(store, "chatty", Array.from({ length: 12 }, () => "住悉尼"));
+    seed(store, "quiet", ["也在悉尼"]);
+    const ids = store.searchText("悉尼", { limit: 5 }).map((h) => h.sessionId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("quiet");
+  });
+
   it("只索引三种事件；tool_result 按 output", () => {
     store.append({ sessionId: "a", ts: 1, type: "session_created", workspace: "/w" });
     store.append({ sessionId: "a", ts: 2, type: "tool_result", toolCallId: "c1", status: "ok", output: "pnpm install 完成" });

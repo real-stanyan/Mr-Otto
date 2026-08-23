@@ -30,6 +30,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),
   forgetMemory: (target, entry, sessionId) =>
     ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId),
+  rebuildSearchIndex: () => ipcRenderer.invoke(CHANNELS.rebuildSearchIndex),
   getAutoCompact: () => ipcRenderer.invoke(CHANNELS.getAutoCompact),
   setAutoCompact: (settings) => ipcRenderer.invoke(CHANNELS.setAutoCompact, settings),
   getIslandSettings: () => ipcRenderer.invoke(CHANNELS.getIslandSettings),

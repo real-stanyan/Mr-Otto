@@ -1068,6 +1068,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
   ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
     applyUserEdit(memoryEditDeps, target, text, sessionId));
+  // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
+  ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
   ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
     // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
     // MEMORY_FILES[target] 拼了路径，得在拼之前挡
