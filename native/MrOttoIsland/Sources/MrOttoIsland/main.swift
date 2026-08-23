@@ -8,12 +8,13 @@ app.setActivationPolicy(.accessory) // LSUIElement:无 dock 无菜单栏
 
 /// fleet(所有 session)+ compact 区 hover 状态 + 输入态 → 目标 DynamicNotchState。
 /// 任一 session 在 approval 或正在输入:不等 hover,直接展开。
-/// 任一 session active 且 hover 中:展开细节。否则贴合刘海(compact)。
-/// 这是能编译的最小版——按 selectedAgent/多行列表精化展开条件留给下一个 task。
+/// hover 中:展开——不再要求有非 idle 会话。全 idle 时展开也有内容可看
+/// (会话列表 + 键盘入口;fleet 为空则是"主窗里先开会话"提示),
+/// 原先的 `phase != .idle` 限制让用户在没任务时 hover 得不到任何反馈。
 func desiredState(fleet: IslandFleet, hovering: Bool, composing: Bool) -> DynamicNotchState {
   if composing { return .expanded }
   if fleet.agents.contains(where: { $0.phase == .approval }) { return .expanded }
-  if hovering && fleet.agents.contains(where: { $0.phase != .idle }) { return .expanded }
+  if hovering { return .expanded }
   return .compact
 }
 
