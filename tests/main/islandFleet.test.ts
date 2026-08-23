@@ -46,7 +46,9 @@ describe("flattenFleet", () => {
     expect(a1.title).toBe("s1");
   });
 
-  it("审批态会话排到列表最前", () => {
+  it("审批态不再重排(#206:分组接管顺序),pendingApproval 照常拍平,行带 workspace", () => {
+    // 置顶排序会把审批行拽出它的 workspace 组,分组视图里顺序必须保持侧栏序;
+    // 审批可见性改由 Swift 侧兜底(selectedAgent 优先审批行)+ 收起组头橙点承担
     let approving = reduceIsland(initialIsland, {
       kind: "activeSession",
       boot: { activeSessionId: "s1", model: "m", running: true, pendingApproval: null },
@@ -57,11 +59,12 @@ describe("flattenFleet", () => {
       req: { sessionId: "s1", call: { id: "c1", name: "write_file", args: { path: "a.ts", content: "x" } }, toolDescription: "d" } as never,
     });
     const states = new Map<string, IslandState>([["s1", approving]]);
-    // s2 的 lastTs 更大,正常会排前;但 s1 挂审批 → 置顶
+    // s2 的 lastTs 更大 → 按侧栏序排前;s1 挂审批也不再插队
     const sessions = [sess("s1", { lastTs: 10 }), sess("s2", { lastTs: 99 })];
     const fleet = flattenFleet(states, sessions, "s2");
-    expect(fleet.agents[0]!.sessionId).toBe("s1");
-    expect(fleet.agents[0]!.pendingApproval).toEqual({ callId: "c1", verb: "写入", target: "a.ts", fullPath: "a.ts" });
+    expect(fleet.agents.map((a) => a.sessionId)).toEqual(["s2", "s1"]);
+    expect(fleet.agents[1]!.pendingApproval).toEqual({ callId: "c1", verb: "写入", target: "a.ts", fullPath: "a.ts" });
+    expect(fleet.agents[1]!.workspace).toBe("/w/a");
   });
 
   it("跑 bash 工具:currentTool 拍平成 终端 + 命令,phase active(回归:islandProjection.test.ts 删除前的用例覆盖)", () => {

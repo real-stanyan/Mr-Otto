@@ -22,10 +22,26 @@ final class IslandModel: ObservableObject {
   /// Model 自己不碰 AppKit——保持它是纯状态容器,AppKit 副作用留给 main.swift。
   var onComposeChange: (Bool) -> Void = { _ in }
 
-  /// 当前详情区对准的会话:用户选中优先,否则主窗聚焦,再否则列表首行。
+  /// 用户点收起的工程组(workspace 全路径为键)。helper 进程内存态,不持久化——
+  /// 收放是"临时腾地方",不是要记住的偏好(#206)。
+  @Published var collapsedWorkspaces: Set<String> = []
+
+  /// 当前详情区对准的会话:用户选中优先,否则主窗聚焦;都没有时优先兜底到
+  /// **审批行**再到首行——flattenFleet 不再做审批置顶(#206:置顶会把行拽出
+  /// 它的 workspace 组),auto-expand 后详情区还能当场出三按钮就靠这层兜底。
   var selectedAgent: IslandAgent? {
     let id = selectedSessionId ?? fleet.focusedSessionId
-    return fleet.agents.first(where: { $0.id == id }) ?? fleet.agents.first
+    return fleet.agents.first(where: { $0.id == id })
+      ?? fleet.agents.first(where: { $0.phase == .approval })
+      ?? fleet.agents.first
+  }
+
+  func toggleWorkspace(_ workspace: String) {
+    if collapsedWorkspaces.contains(workspace) {
+      collapsedWorkspaces.remove(workspace)
+    } else {
+      collapsedWorkspaces.insert(workspace)
+    }
   }
 
   /// 新 fleet 到达:若选中行已不在列表(会话被删),清掉手动选中回落到 focused/首行。

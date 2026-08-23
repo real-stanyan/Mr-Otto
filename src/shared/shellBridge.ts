@@ -604,6 +604,9 @@ export interface IslandAgent {
   currentTool: { verb: string; target: string } | null;
   turnStartedAt: number | null;
   pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
+  /** 工程文件夹全路径(SessionSummary.workspace,#206 分组键;显示名由 Swift 取
+      basename)。orderedVisibleSessions 已滤掉 null,但类型跟着源头如实标可空 */
+  workspace: string | null;
 }
 
 /** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行)。

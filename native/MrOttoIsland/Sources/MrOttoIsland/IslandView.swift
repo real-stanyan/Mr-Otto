@@ -15,12 +15,35 @@ struct IslandExpandedView: View {
   @FocusState private var composeFieldFocused: Bool
   private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-  /// 列表行高亮用的"有效选中 id"。brief 定义为 selectedSessionId ?? focusedSessionId;
-  /// 额外兜底到 agents.first——理由:model.selectedAgent 自己就有这层 first 兜底
-  /// (两者都是 nil 时仍展示首行详情),高亮和详情如果不同步会出现"详情是 A,却没有
-  /// 任何行被高亮"的观感错位,所以这里镜像同一条兜底链路。
+  /// 列表行高亮用的"有效选中 id"。镜像 model.selectedAgent 的兜底链路
+  /// (selected ?? focused ?? 审批行 ?? 首行)——高亮和详情不同步会出现
+  /// "详情是 A,却没有任何行被高亮"的观感错位。
   private var effectiveSelectedId: String? {
-    model.selectedSessionId ?? model.fleet.focusedSessionId ?? model.fleet.agents.first?.id
+    model.selectedSessionId
+      ?? model.fleet.focusedSessionId
+      ?? model.fleet.agents.first(where: { $0.phase == .approval })?.id
+      ?? model.fleet.agents.first?.id
+  }
+
+  /// 会话按 workspace 分组(#206):flattenFleet 保证同 workspace 连续(侧栏同序),
+  /// 这里只做连续切段,不重排。id 用 workspace 全路径(收放状态的键)。
+  private struct WorkspaceGroup: Identifiable {
+    let id: String
+    let label: String
+    let agents: [IslandAgent]
+  }
+
+  private var workspaceGroups: [WorkspaceGroup] {
+    var groups: [WorkspaceGroup] = []
+    for agent in model.fleet.agents {
+      let key = agent.workspace ?? "其他"
+      if let last = groups.indices.last, groups[last].id == key {
+        groups[last] = WorkspaceGroup(id: key, label: groups[last].label, agents: groups[last].agents + [agent])
+      } else {
+        groups.append(WorkspaceGroup(id: key, label: agent.workspaceLabel, agents: [agent]))
+      }
+    }
+    return groups
   }
 
   var body: some View {
@@ -45,14 +68,21 @@ struct IslandExpandedView: View {
         VStack(spacing: 0) {
           ScrollView {
             VStack(spacing: 2) {
-              ForEach(model.fleet.agents) { agent in
-                AgentRow(agent: agent, isSelected: agent.id == effectiveSelectedId)
-                  .onTapGesture { model.selectedSessionId = agent.id }
+              ForEach(workspaceGroups) { group in
+                let collapsed = model.collapsedWorkspaces.contains(group.id)
+                workspaceHeader(group, collapsed: collapsed)
+                  .onTapGesture { model.toggleWorkspace(group.id) }
+                if !collapsed {
+                  ForEach(group.agents) { agent in
+                    AgentRow(agent: agent, isSelected: agent.id == effectiveSelectedId)
+                      .onTapGesture { model.selectedSessionId = agent.id }
+                  }
+                }
               }
             }
             .padding(.vertical, 4)
           }
-          .frame(maxHeight: 180)
+          .frame(maxHeight: 200)
 
           Divider()
 
@@ -70,6 +100,33 @@ struct IslandExpandedView: View {
     // 工具 caption 单行不换行,也给审批三按钮(允许/会话/拒绝)和输入框留够地方,
     // 同时贴近刘海尺度,不再是一条横条。
     .frame(width: 380)
+  }
+
+  /// 组头(#206):chevron + 文件夹名,整行可点收放。收起时组内状态不能凭空消失——
+  /// 组内有审批给橙点(要人动手的那种,绝不能被收起藏没)、有 active 给蓝点。
+  private func workspaceHeader(_ group: WorkspaceGroup, collapsed: Bool) -> some View {
+    let hasApproval = group.agents.contains { $0.phase == .approval }
+    let hasActive = group.agents.contains { $0.phase == .active }
+    return HStack(spacing: 5) {
+      Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .frame(width: 10)
+      Text(group.label)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+      if collapsed && hasApproval {
+        Circle().fill(Color.orange).frame(width: 5, height: 5)
+      } else if collapsed && hasActive {
+        Circle().fill(Color.accentColor).frame(width: 5, height: 5)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 5)
+    .padding(.bottom, 2)
+    .contentShape(Rectangle())
   }
 
   /// 用量表(#199):每模型一行,今天/7天/14天 三列。数字 monospacedDigit +

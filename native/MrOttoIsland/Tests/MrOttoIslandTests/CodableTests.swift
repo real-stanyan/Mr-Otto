@@ -32,6 +32,17 @@ final class CodableTests: XCTestCase {
     XCTAssertEqual(inbound.state.usage, [])
   }
 
+  /// #206:workspace 是分组键,主进程带全路径;旧主进程不带 → nil,解码不炸。
+  func testDecodeAgentWorkspace() throws {
+    let with = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null,"workspace":"/Users/x/Github/Mr_Otto"}],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: with.data(using: .utf8)!)
+    XCTAssertEqual(inbound.state.agents[0].workspace, "/Users/x/Github/Mr_Otto")
+
+    let without = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null}],"focusedSessionId":null}}"#
+    let old = try JSONDecoder().decode(Inbound.self, from: without.data(using: .utf8)!)
+    XCTAssertNil(old.state.agents[0].workspace)
+  }
+
   func testOutboundJSON() throws {
     let line = Outbound.approve(sessionId: "s", callId: "c", grant: "session").jsonLine()
     let o = try JSONSerialization.jsonObject(with: line.data(using: .utf8)!) as! [String: Any]
