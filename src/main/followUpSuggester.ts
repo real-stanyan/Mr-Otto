@@ -96,11 +96,13 @@ export async function suggestFollowUps(
   const exchange = summarizeExchange(lastExchange(events));
   if (exchange.trim() === "") return null; // 没有问答可依据，别浪费一次调用
 
-  // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts
-  const cheap = createCheapAdapter(SUGGEST_MODEL, SUGGEST_TIMEOUT_MS);
-  if (!cheap) return null;
-
   try {
+    // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
+    // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
+    // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
+    const cheap = createCheapAdapter(SUGGEST_MODEL, SUGGEST_TIMEOUT_MS);
+    if (!cheap) return null;
+
     const reply = await cheap.adapter.chat(
       [{ role: "user", content: buildPrompt(exchange) }],
       undefined,

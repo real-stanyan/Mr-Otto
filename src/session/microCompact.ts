@@ -125,14 +125,20 @@ export function absorbedIndexes(events: SessionEvent[]): AbsorbedRange | null {
   return { absorbed, summaryAt, summary: latest.summary };
 }
 
-/** 倒数第 keepRecentTurns 个 user_message 的下标——和 deriveMessages.fidelityBoundary
-    同一个定义（之前 = 可压，之后 = 保真）：投影认什么是"最近 K 轮"，这里就认什么，
-    两边不能各有一把尺子。不足 K 个 = floor + 1（全保真）。K ≤ 0 = events.length */
-function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number, floor: number): number {
+/** 倒数第 keepRecentTurns 个**非空跑** user_message 的下标——和
+    deriveMessages.fidelityBoundary 同一个定义（之前 = 可压，之后 = 保真）：投影认什么是
+    "最近 K 轮"，这里就认什么，两边不能各有一把尺子（空跑不占名额的理由也同源：
+    它不进投影，模型没见过它）。不足 K 个 = floor + 1（全保真）。K ≤ 0 = events.length */
+function fidelityBoundary(
+  events: SessionEvent[],
+  keepRecentTurns: number,
+  floor: number,
+  barren: ReadonlySet<number>
+): number {
   if (keepRecentTurns <= 0) return events.length;
   let seen = 0;
   for (let i = events.length - 1; i > floor; i--) {
-    if (events[i]?.type === "user_message" && ++seen === keepRecentTurns) return i;
+    if (events[i]?.type === "user_message" && !barren.has(i) && ++seen === keepRecentTurns) return i;
   }
   return floor + 1;
 }
@@ -159,8 +165,8 @@ export interface MicroExchange {
 export function nextMicroExchange(events: SessionEvent[], keepRecentTurns: number): MicroExchange | null {
   const floor = lastContextCompacted(events);
   const latest = latestMicroCompacted(events);
-  const boundary = fidelityBoundary(events, keepRecentTurns, floor);
   const barren = barrenEventIndexes(events);
+  const boundary = fidelityBoundary(events, keepRecentTurns, floor, barren);
   const userIdx: number[] = [];
   for (let i = floor + 1; i < events.length; i++) {
     if (events[i]?.type === "user_message" && !barren.has(i)) userIdx.push(i);

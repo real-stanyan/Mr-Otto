@@ -272,3 +272,23 @@ describe("fix round 1", () => {
     expect(JSON.stringify(events)).toBe(before);
   });
 });
+
+describe("保真区名额不算空跑", () => {
+  it("尾部 真/空跑/真：倒数第 2 轮真实对话仍在保真区，不可吸收", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      { ...base(), type: "session_created", workspace: "/w" },
+      user("u0"), assistant("a0"), ended(),
+      user("u1"), assistant("a1"), ended(),
+      user("u2"), assistant("a2"), ended(),
+      user("u3-barren"), { ...base(), type: "turn_ended", outcome: "aborted" },
+      user("u4"), assistant("a4"), ended(),
+    ];
+    const pick = nextMicroExchange(events, 2);
+    // 能吸收的只有 u1（u0 保护区；u2、u4 是最近两轮真实对话）
+    expect(pick).not.toBeNull();
+    expect(events[pick!.start]).toMatchObject({ content: "u1" });
+    events.push(micro("S", pick!.coversUpTo));
+    expect(nextMicroExchange(events, 2)).toBeNull();
+  });
+});

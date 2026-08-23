@@ -522,3 +522,29 @@ describe("什么也没产出的 turn 不进上下文（ADR-0042）", () => {
     ]);
   });
 });
+
+describe("保真区名额不算空跑（ADR-0042 × 压缩）", () => {
+  it("尾部 真/空跑/真：倒数第 2 轮真实对话的工具输出不被截断", () => {
+    seq = 0;
+    const long = "y".repeat(3000);
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "user_message", content: "u1" },
+      { ...env(), type: "assistant_message", content: "", model: "m", toolCalls: [{ id: "c1", name: "bash", args: {} }] },
+      { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: long },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u2" },
+      { ...env(), type: "assistant_message", content: "", model: "m", toolCalls: [{ id: "c2", name: "bash", args: {} }] },
+      { ...env(), type: "tool_result", toolCallId: "c2", status: "ok", output: long },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u3-barren" },
+      { ...env(), type: "turn_ended", outcome: "aborted" },
+      { ...env(), type: "user_message", content: "u4" },
+      { ...env(), type: "assistant_message", content: "a4", model: "m" },
+    ];
+    const msgs = deriveMessages(events, { keepRecentTurns: 2, maxOldToolOutputChars: 400, maxOldToolArgChars: 400 });
+    const tools = msgs.filter((m) => m.role === "tool");
+    expect(tools[0]!.content.length).toBeLessThan(long.length); // u1 在老区，截断
+    expect(tools[1]!.content).toBe(long); // u2 是倒数第 2 轮真实对话，保真
+  });
+});

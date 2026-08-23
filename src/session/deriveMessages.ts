@@ -195,14 +195,22 @@ function clipArgs(args: unknown, max: number): string {
   return JSON.stringify({ __clipped: `上下文压缩：工具参数原 ${full.length} 字符，已折叠` });
 }
 
-/** 找出"保真区"起点：倒数第 keepRecentTurns 个 user_message 的下标。
+/** 找出"保真区"起点：倒数第 keepRecentTurns 个**非空跑** user_message 的下标。
     之前 = 老区（可压缩），之后 = 新区（原文）。user_message 不足 K 个 = 全保真。
-    K = 0 特判成 events.length：一个保真 turn 都不留，整段历史都算老区 */
-function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number): number {
+    K = 0 特判成 events.length：一个保真 turn 都不留，整段历史都算老区。
+
+    空跑的 user_message（barren.has(i)）不占名额：它压根不进投影，模型没见过它，
+    把它当成"最近 K 轮"里的一轮，等于用一次断线重试就把一轮真实对话挤出保真区——
+    用户按了两次停止，上一轮的工具输出就被截断了。数名额的尺子必须和投影同一把。 */
+function fidelityBoundary(
+  events: SessionEvent[],
+  keepRecentTurns: number,
+  barren: ReadonlySet<number>
+): number {
   if (keepRecentTurns <= 0) return events.length;
   let seen = 0;
   for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i]?.type === "user_message" && ++seen === keepRecentTurns) return i;
+    if (events[i]?.type === "user_message" && !barren.has(i) && ++seen === keepRecentTurns) return i;
   }
   return 0;
 }
@@ -259,10 +267,11 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   let systemMessage: SystemChatMessage | null = null;
   // 压缩只瘦身内容，永不增删消息：tool_call_id 与 assistant.tool_calls 的配对
   // 是 API 协议要求，删一条 tool 消息整个请求就废——结构神圣，内容可瘦。
-  const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns) : 0;
   // 什么也没产出的 turn 不进上下文(ADR-0042):模型压根没读到过那条消息,
-  // 留着只会让每一次重试都把同一句话再囤一份。日志一个字节不改,跳的是投影
+  // 留着只会让每一次重试都把同一句话再囤一份。日志一个字节不改,跳的是投影。
+  // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）
   const barren = barrenEventIndexes(events);
+  const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 微压缩（ADR-0063）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。

@@ -106,11 +106,13 @@ export async function classifySection(
   const summary = summarizeSpan(span);
   if (summary.trim() === "") return null; // 空跨度：没内容可分，别浪费一次调用
 
-  // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts
-  const cheap = createCheapAdapter(SECTION_MODEL, CLASSIFY_TIMEOUT_MS);
-  if (!cheap) return null;
-
   try {
+    // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
+    // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
+    // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
+    const cheap = createCheapAdapter(SECTION_MODEL, CLASSIFY_TIMEOUT_MS);
+    if (!cheap) return null;
+
     const currentTitle = currentSectionTitle(events);
     // 非流式、不带工具：分类没有直播价值，结果整段用。
     // 带超时信号：调用方在 turn 的收尾路径上等这个 await，卡死就是会话永久卡死

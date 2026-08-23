@@ -60,6 +60,22 @@ function estimateAbsorbable(e: SessionEvent): number {
   }
 }
 
+/** 账单锚点那一刻生效的**上一条** micro（running summary 的前一版）。
+    从 anchorIdx 往回扫，撞到 context_compacted 就停（清场之后微压缩重新起跑，
+    锚点的 prompt 里不带任何微摘要）。返回：
+      covers  —— 上一条 micro 的 coversUpTo；没有 = -Infinity（锚点 prompt 里一条原文都没被替换过）
+      summary —— 上一条 micro 的摘要估算；没有 = 0
+    只扫 anchorIdx 及之前，且遇 context_compacted 即停 —— 于是天然只会捡到
+    「最新 context_compacted 之后」的 micro，与 latestMicroCompacted 的有效性规则同源。 */
+function microAtAnchor(events: SessionEvent[], anchorIdx: number): { covers: number; summary: number } {
+  for (let i = anchorIdx; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "context_compacted") break;
+    if (e.type === "micro_compacted") return { covers: e.coversUpTo, summary: estimateTokens(e.summary) };
+  }
+  return { covers: -Infinity, summary: 0 };
+}
+
 /** 锚点之后、会进入下一次 prompt 的事件按字符估算。
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
 function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
@@ -81,10 +97,19 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   // 只在 microIdx > anchorIdx 时才有必要扣——那次账单确实还包含着这段原文；
   // 若 micro 落在锚点之前（微压缩早于最近一次账单），账单本身已经是压缩后的投影
   // 算出来的用量，扣了反而是双减，见下面 pendingAfter 循环里锚点之后才继续累计。
+  //
+  // 关键：absorbed 是**累计**集合（保护区之后一路到最新 coversUpTo），不是"这次新折的那段"。
+  // 而锚点的 prompt 里，更早那些 exchange 早就被**上一条** micro 的摘要替换掉了，只有
+  // 上一条 coversUpTo 之后、这一条 coversUpTo 之内的那段还是原文。照 absorbed 全扣就是
+  // 每轮把同一段历史重复扣一遍：稳态跑几轮后圆环会一路探到 0 并被钳住，读数彻底失真。
+  // 所以扣两笔、只扣两笔：① 新折进去的那段原文（seq > 上一条 coversUpTo）；
+  // ② 上一条摘要本身（它在锚点 prompt 里，现在被新摘要顶掉了——新摘要在下面循环里加回一次）。
   if (micro && microIdx > anchorIdx) {
+    const prev = microAtAnchor(events, anchorIdx);
     for (const i of micro.absorbed) {
-      if (i <= anchorIdx) pending -= estimateAbsorbable(events[i]!);
+      if (i <= anchorIdx && events[i]!.seq > prev.covers) pending -= estimateAbsorbable(events[i]!);
     }
+    pending -= prev.summary;
   }
 
   for (let i = anchorIdx + 1; i < events.length; i++) {
@@ -116,8 +141,10 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
         pending += estimateAbsorbable(e);
         break;
       case "micro_compacted":
-        // 只有最新一条进投影；旧的被新摘要包含
-        if (e === latestMicro) pending += estimateTokens(e.summary);
+        // 只有最新一条进投影；旧的被新摘要包含。
+        // micro === null 时（absorbedIndexes 认定这条指向空/不完整的区间）投影里
+        // 压根不会插那条摘要消息——这里也不能加，不然圆环凭空多出一段没人看见的文本
+        if (micro && e === latestMicro) pending += estimateTokens(e.summary);
         break;
       default:
         break;
