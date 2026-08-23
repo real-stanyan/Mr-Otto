@@ -191,7 +191,7 @@ MEMORY CONTEXT（已在长期记忆里的事实，摘要里不要重复）:
 
 ### 事件
 
-`micro_compacted { summary: string; coversUpTo: number; model: string; usage?: TokenUsage }`。`coversUpTo` = 被吸收的最后一个事件下标。
+`micro_compacted { summary: string; coversUpTo: number; model: string; usage?: TokenUsage }`。`coversUpTo` = 被吸收的最后一个事件的 seq。
 
 ### 流程
 
@@ -212,7 +212,7 @@ MEMORY CONTEXT（已在长期记忆里的事实，摘要里不要重复）:
 
 ### ADR
 
-0062：append-only 下的微压缩 = 追加事件 + 投影替换。
+0063：append-only 下的微压缩 = 追加事件 + 投影替换。
 
 ### 测试
 

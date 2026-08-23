@@ -37,7 +37,9 @@ import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session
 import { shouldNudge, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
-import { classifySection } from "./sectionClassifier.js";
+import { classifySection, SECTION_MODEL } from "./sectionClassifier.js";
+import { createCheapAdapter } from "./cheapAdapter.js";
+import { microCompactOnce } from "../loop/microCompact.js";
 import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
@@ -460,6 +462,49 @@ void app.whenReady().then(() => {
       agent: "memory-reviewer",
       task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
       parentToolCallId: `memory-nudge-${nudgeEvent.seq}`,
+    });
+  };
+
+  // 微压缩（ADR-0063）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
+  // 会话被 purge 就不落。**必须串行**（同 sectionQueues 的理由）：两次并发的
+  // microCompactOnce 各自看不到对方的 micro_compacted，会对同一个 exchange 摘两次、
+  // 后落的那条 running summary 丢掉先落那条的内容。
+  const MICRO_MODEL = SECTION_MODEL;
+  const MICRO_TIMEOUT_MS = 30_000;
+  const microQueues = new Map<string, Promise<void>>();
+
+  const microCompactAndAppend = async (sessionId: string): Promise<void> => {
+    if (!loadAutoCompact(autoCompactPath).micro) return; // 现读：设置页一关当场停
+    // cheapAdapter 必须每跑一次现造：它带的是 AbortSignal.timeout(30s)，从造出来
+    // 那一刻开始走表。提到闭包外面 = 主进程开机 30 秒后每次微压缩都当场超时
+    const cheap = createCheapAdapter(MICRO_MODEL, MICRO_TIMEOUT_MS);
+    if (!cheap) return;
+    const result = await microCompactOnce(store.load(sessionId), cheap.adapter, {
+      signal: cheap.signal,
+    });
+    if (!result) return;
+    // 同 classifyAndAppend：出了 turn 锁，这一跑期间会话可能已被 purge，
+    // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
+    if (!agents.has(sessionId)) return;
+    const event = store.append({
+      sessionId, ts: Date.now(), type: "micro_compacted",
+      summary: result.summary, coversUpTo: result.coversUpTo, model: MICRO_MODEL,
+      ...(result.usage ? { usage: result.usage } : {}),
+    });
+    send(CHANNELS.event, event);
+  };
+
+  const enqueueMicroCompact = (sessionId: string): void => {
+    const prev = microQueues.get(sessionId) ?? Promise.resolve();
+    // catch 挂在链上：microCompactOnce 自己不抛，但它外面的 store.append / send 会。
+    // 一环炸了不能毒死后面的环，也不能变成 unhandledRejection 把主进程带走
+    const next = prev
+      .then(() => microCompactAndAppend(sessionId))
+      .catch((err) => console.error("微压缩失败", err));
+    microQueues.set(sessionId, next);
+    // 排空即删（同 sectionQueues）：只有自己仍是队尾才删
+    void next.then(() => {
+      if (microQueues.get(sessionId) === next) microQueues.delete(sessionId);
     });
   };
 
@@ -1365,6 +1410,8 @@ void app.whenReady().then(() => {
         // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
         // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
         void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
+        // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
+        enqueueMicroCompact(sessionId);
       }
     }
   );

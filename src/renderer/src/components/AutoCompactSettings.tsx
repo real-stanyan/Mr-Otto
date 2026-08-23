@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../App.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
-import { describeThreshold } from "../lib/autoCompactCopy.js";
+import { MICRO_COMPACT_HINT, describeThreshold } from "../lib/autoCompactCopy.js";
 import { useChat } from "../store.js";
 import { useModelChoice } from "../lib/useModelChoice.js";
 import {
@@ -82,6 +82,19 @@ export function AutoCompactSettings() {
     persist(next); // 开关是低频离散动作，即时落盘
   };
 
+  const onMicroChange = (micro: boolean) => {
+    // 同 onEnabledChange：先掐掉滑块那边悬着的去抖，别让旧快照把 micro 盖回去
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    // exactOptionalPropertyTypes：关 = 键消失，不是 micro:false
+    const { micro: _drop, ...rest } = settings;
+    const next: AutoCompactSettingsValue = micro ? { ...rest, micro: true } : rest;
+    setSettings(next);
+    persist(next);
+  };
+
   const onThresholdChange = (values: number[]) => {
     const threshold = values[0];
     if (threshold === undefined) return;
@@ -97,8 +110,9 @@ export function AutoCompactSettings() {
       debounceRef.current = null;
     }
     // exactOptionalPropertyTypes:"清空覆盖"是整个键消失，不是赋成 undefined ——
-    // AutoCompactSettings.threshold 的类型不接受显式 undefined
-    const next: AutoCompactSettingsValue = { enabled: settings.enabled };
+    // AutoCompactSettings.threshold 的类型不接受显式 undefined。
+    // 用剩余展开而不是重建 { enabled }：这个按钮只清阈值，重建会把 micro 一起吞掉
+    const { threshold: _drop, ...next } = settings;
     setSettings(next);
     persist(next);
   };
@@ -154,6 +168,15 @@ export function AutoCompactSettings() {
             <p className={HINT}>
               当前型号（{modelLabel}）：{describeThreshold(settings, contextWindow)}
             </p>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[13px] font-medium">微压缩</span>
+              <p className={HINT}>每轮收口后把最老的一段对话并进摘要，用户原话保留。</p>
+              <p className={HINT}>{MICRO_COMPACT_HINT}</p>
+            </div>
+            <Switch checked={settings.micro === true} onCheckedChange={onMicroChange} disabled={disabled} />
           </div>
         </div>
         {error !== null && <p className="text-destructive text-[13px]">{error}</p>}

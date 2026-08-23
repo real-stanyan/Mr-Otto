@@ -35,6 +35,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
 | 自动压缩（auto compact） | 上下文占用 ≥ 窗口 × 阈值（≥512K 窗口 0.50，否则 0.75；可调 0.3–0.9）时，loop 在下一次模型调用前自动 /compact；一 turn 一次；摘要 prompt 带脱敏后的记忆快照 | ADR-0062 |
+| 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0063 |
 
 ## Key invariants
 
