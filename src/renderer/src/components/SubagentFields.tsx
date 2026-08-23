@@ -7,7 +7,8 @@
 // 草稿状态住在 useSubagentDraft 里，落盘那一步不在这里：列表行是「保存回原路径」，
 // 新建页是「先 create 拿到真路径再 save」，两条路的落点不同（见各自的调用处）。
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/lib/utils.js";
@@ -45,6 +46,63 @@ const PILL_OFF = "border-border text-muted-foreground hover:text-foreground";
     选择是挡住，不是静默兜底：用户存的应该是他勾的那份，不是解析器猜的那份 */
 function toolsWillCollapse(selected: readonly string[]): boolean {
   return selected.length === 0;
+}
+
+/** 分段控件（审批档 / 前置词）——role=radiogroup 承诺的不只是语义，还有方向键：
+    读屏器把它读成一组单选，用户按方向键换项，而原来只有 Tab + Enter（issue #141）。
+    roving tabindex：整组只有选中那颗进 Tab 序，方向键在组内移动并当场选中 */
+function SegGroup<T extends string>({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  disabled?: boolean;
+  onChange: (v: T) => void;
+}) {
+  const move = (e: ReactKeyboardEvent<HTMLDivElement>, delta: number) => {
+    e.preventDefault(); // 左右键默认在某些容器里滚屏
+    const i = options.findIndex((o) => o.value === value);
+    const next = options[(i + delta + options.length) % options.length];
+    if (!next) return;
+    onChange(next.value);
+    // 焦点跟着选中走：roving tabindex 下不移焦点的话，下一次按键还落在旧的那颗上
+    const group = e.currentTarget;
+    group.querySelectorAll<HTMLButtonElement>("[role=radio]")[
+      (i + delta + options.length) % options.length
+    ]?.focus();
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={SEG_GROUP}
+      onKeyDown={(e) => {
+        if (disabled) return;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") move(e, 1);
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") move(e, -1);
+      }}
+    >
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          tabIndex={value === o.value ? 0 : -1}
+          disabled={disabled}
+          className={cn(SEG_ITEM, value === o.value ? SEG_ON : SEG_OFF)}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 const APPROVAL_OPTIONS: { value: SubagentApproval; label: string }[] = [
@@ -278,13 +336,20 @@ export function SubagentFields({
 }) {
   const toolOptions = useToolOptions();
 
+  // 表单 label 与控件配对（issue #141）：原来九个 <label> 一个都没绑控件，
+  // 读屏器聚焦到输入框时报不出字段名。文本控件走 htmlFor/id，一组按钮（工具 /
+  // 工作区文档）走 role=group + aria-labelledby——它们没有单一控件可绑
+  const uid = useId();
+  const fid = (k: string) => `${uid}-${k}`;
+
   return (
     <>
       {/* description:全表唯一写给模型看的字段——task 工具把它塞进 def 里,
           模型靠这句话挑人。用户当成给自己看的备注来写,模型就会挑错人 */}
       <div className={FIELD}>
-        <label className={LABEL}>Description</label>
+        <label className={LABEL} htmlFor={fid("description")}>Description</label>
         <Input
+          id={fid("description")}
           value={draft.description}
           disabled={readOnly}
           onChange={(e) => draft.setDescription(e.target.value)}
@@ -297,8 +362,8 @@ export function SubagentFields({
 
       <div className="flex flex-col sm:flex-row gap-4">
         <div className={cn(FIELD, "flex-1")}>
-          <label className={LABEL}>模型</label>
-          <div className="flex items-center gap-2">
+          <span className={LABEL} id={fid("model")}>模型</span>
+          <div className="flex items-center gap-2" role="group" aria-labelledby={fid("model")}>
             <ModelPicker
               value={draft.effectiveModel}
               onChange={draft.pinModel}
@@ -320,8 +385,8 @@ export function SubagentFields({
         </div>
 
         <div className={cn(FIELD, "flex-1")}>
-          <label className={LABEL}>Thinking</label>
-          <div className="flex items-center gap-2">
+          <span className={LABEL} id={fid("thinking")}>Thinking</span>
+          <div className="flex items-center gap-2" role="group" aria-labelledby={fid("thinking")}>
             <ThinkingPicker
               spec={draft.spec}
               value={draft.effectiveThinking}
@@ -346,8 +411,8 @@ export function SubagentFields({
       </div>
 
       <div className={FIELD}>
-        <label className={LABEL}>工具</label>
-        <div className="flex flex-wrap gap-[6px]">
+        <span className={LABEL} id={fid("tools")}>工具</span>
+        <div className="flex flex-wrap gap-[6px]" role="group" aria-labelledby={fid("tools")}>
           {toolOptions.map((t) => {
             const checked = draft.tools.includes(t.name);
             return (
@@ -380,22 +445,14 @@ export function SubagentFields({
       </div>
 
       <div className={FIELD}>
-        <label className={LABEL}>审批</label>
-        <div role="radiogroup" aria-label="审批档" className={SEG_GROUP}>
-          {APPROVAL_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              role="radio"
-              aria-checked={draft.approval === o.value}
-              disabled={readOnly}
-              className={cn(SEG_ITEM, draft.approval === o.value ? SEG_ON : SEG_OFF)}
-              onClick={() => draft.setApproval(o.value)}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        <span className={LABEL}>审批</span>
+        <SegGroup
+          label="审批档"
+          value={draft.approval}
+          options={APPROVAL_OPTIONS}
+          disabled={readOnly}
+          onChange={(v) => draft.setApproval(v)}
+        />
         <p className={HINT}>
           子智能体没人盯着,默认拒绝——「问我」会把危险操作的审批卡弹给你,「自动放行」全部放行,
           「跟随主会话」用你此刻那一档（开了免审批就免审批）
@@ -403,22 +460,14 @@ export function SubagentFields({
       </div>
 
       <div className={FIELD}>
-        <label className={LABEL}>前置词</label>
-        <div role="radiogroup" aria-label="前置词" className={SEG_GROUP}>
-          {PREAMBLE_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              role="radio"
-              aria-checked={draft.preambleMode === o.value}
-              disabled={readOnly}
-              className={cn(SEG_ITEM, draft.preambleMode === o.value ? SEG_ON : SEG_OFF)}
-              onClick={() => draft.setPreambleMode(o.value)}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        <span className={LABEL}>前置词</span>
+        <SegGroup
+          label="前置词"
+          value={draft.preambleMode}
+          options={PREAMBLE_OPTIONS}
+          disabled={readOnly}
+          onChange={(v) => draft.setPreambleMode(v)}
+        />
         {draft.preambleMode === "custom" ? (
           <>
             <Textarea
@@ -444,8 +493,8 @@ export function SubagentFields({
       </div>
 
       <div className={FIELD}>
-        <label className={LABEL}>工作区文档</label>
-        <div className="flex flex-wrap gap-[6px]">
+        <span className={LABEL} id={fid("context")}>工作区文档</span>
+        <div className="flex flex-wrap gap-[6px]" role="group" aria-labelledby={fid("context")}>
           {CONTEXT_FILES.map((f) => {
             const checked = draft.context.includes(f);
             return (
@@ -474,8 +523,9 @@ export function SubagentFields({
       </div>
 
       <div className={FIELD}>
-        <label className={LABEL}>正文</label>
+        <label className={LABEL} htmlFor={fid("instructions")}>正文</label>
         <Textarea
+          id={fid("instructions")}
           value={draft.instructions}
           disabled={readOnly}
           onChange={(e) => draft.setInstructions(e.target.value)}
