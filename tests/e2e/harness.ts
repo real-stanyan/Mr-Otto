@@ -61,6 +61,8 @@ export interface Otto {
   errors: string[];
   /** `$HOME/.mr-otto/agents` */
   userAgentsDir: string;
+  /** Electron 的 userData（sessions.db 在里面）。删会话那类用例要直接查库 */
+  userData: string;
   /** 关窗 + 删临时目录。用例用 try/finally 保证它跑到 */
   close(): Promise<void>;
 }
@@ -112,6 +114,7 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     home,
     errors,
     userAgentsDir,
+    userData,
     async close() {
       await app.close().catch(() => {});
       rmSync(home, { recursive: true, force: true });
