@@ -6,8 +6,7 @@
 // 「最后一条 section_classified 之后的全部事件」，自动把漏掉的那段补进来。
 // 自愈，所以刻意不做 429 重试（vision-bridge 必须重试是因为它失败 = turn 失败）。
 
-import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
-import { findModel } from "../shared/modelCatalog.js";
+import { createCheapAdapter } from "./cheapAdapter.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
 /** 分类员型号：目录里的免费款。换分类员改这一行 */
@@ -107,34 +106,21 @@ export async function classifySection(
   const summary = summarizeSpan(span);
   if (summary.trim() === "") return null; // 空跨度：没内容可分，别浪费一次调用
 
-  const choice = findModel(SECTION_MODEL);
-  if (!choice) return null;
-  // 目录里的 GLM 没有内置凭据（不像 deepseek 有网关兜底，modelRoute 只放行 deepseek）。
-  // 没配 key 就别出门：空 Bearer 是每个 turn 一次必 401 的往返，白烧一次连接
-  const apiKey = process.env[choice.apiKeyEnv] ?? "";
-  if (apiKey === "") return null;
-
   try {
-    const adapter = createOpenAICompatibleAdapter({
-      baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
-      apiKey,
-      model: choice.model,
-      vision: false,
-      // 分类员只要一句标题，思考过程一个字都用不上，但 glm-4.5-flash 的
-      // thinking 默认档是「开」——实测为「用户问候」四个字烧掉 1452 个
-      // completion token（约 20 倍）。显式关掉。
-      // 挡位现在是型号的属性（ADR-0031，shared/thinking.ts）：方言从目录里查，
-      // 别自己拍一个——给 GLM 发 reasoning_effort 是发给一个不认识它的 API
-      thinking: { mode: "off", wire: choice.thinking.wire },
-    });
+    // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
+    // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
+    // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
+    const cheap = createCheapAdapter(SECTION_MODEL, CLASSIFY_TIMEOUT_MS);
+    if (!cheap) return null;
+
     const currentTitle = currentSectionTitle(events);
     // 非流式、不带工具：分类没有直播价值，结果整段用。
     // 带超时信号：调用方在 turn 的收尾路径上等这个 await，卡死就是会话永久卡死
-    const reply = await adapter.chat(
+    const reply = await cheap.adapter.chat(
       [{ role: "user", content: buildPrompt(currentTitle, summary) }],
       undefined,
       undefined,
-      AbortSignal.timeout(CLASSIFY_TIMEOUT_MS)
+      cheap.signal
     );
     const parsed = parseSectionReply(reply.content, currentTitle !== null);
     if (!parsed) return null;

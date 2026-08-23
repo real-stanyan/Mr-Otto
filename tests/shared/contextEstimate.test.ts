@@ -262,3 +262,134 @@ describe("contextBreakdown（按来源拆三份）", () => {
     expect(withMem.system).toBeGreaterThan(without.system + 50);
   });
 });
+
+describe("微压缩后的估算（真实会话：吸收区落在账单锚点之前）", () => {
+  // 真实会话里，微压缩吸收的从来是"锚点之前"那一段——锚点是最近一次带账单的
+  // assistant_message，它的 promptTokens 那次请求本来就已经包含了这段原文。
+  // 不扣掉的话，micro_compacted 一落盘 contextUsed 反而会"涨"（只加了摘要，
+  // 没扣被替代的原文），直到下一次账单才自我修正——这里验证不必等那一轮。
+  function fixture(): SessionEvent[] {
+    return [
+      { ...env(), type: "user_message", content: "u0" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a0",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 100 },
+      },
+      { ...env(), type: "user_message", content: "u1" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a1",
+        model: "m",
+        toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }],
+      },
+      { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: "x".repeat(8000) },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a1b",
+        model: "m",
+        usage: { promptTokens: 3000, completionTokens: 50 },
+      },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u2" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a2",
+        model: "m",
+        usage: { promptTokens: 3200, completionTokens: 60 },
+      },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u3" },
+    ];
+  }
+
+  it("micro 落在锚点之后（吸收区在锚点之前的 u1 那笔交换）：从 pending 里扣掉原文，摘要只加一次，钳到 ≥ 0", () => {
+    const events = fixture();
+    const end1 = events[6]!; // u1 交换的 turn_ended
+    const before = contextUsed(events);
+    const after = contextUsed([
+      ...events,
+      { ...env(), type: "micro_compacted", summary: "短摘要", coversUpTo: end1.seq, model: "cheap" },
+    ]);
+    // 8000 字符的 tool_result（≈2000 token）被摘要替掉，扣减应远超 1500
+    expect(after).toBeLessThan(before - 1500);
+    expect(after).toBeGreaterThanOrEqual(0);
+  });
+
+  it("micro 落在锚点之前（锚点是 micro 之后新产生的一笔账单）：吸收区不重复扣减，摘要也不重复计入——账单已经反映了压缩后的投影", () => {
+    const events = fixture();
+    const end1 = events[6]!; // u1 交换的 turn_ended
+    const before = contextUsed(events); // 不含 micro 的基线：锚点仍是 a2
+    const withEarlyMicro = [
+      ...events.slice(0, 7), // ... a1b, turn_ended（u1 交换结束）
+      { ...env(), type: "micro_compacted", summary: "短摘要", coversUpTo: end1.seq, model: "cheap" } as SessionEvent,
+      ...events.slice(7), // u2, a2(usage), turn_ended, u3 —— a2 仍是最新账单锚点，在 micro 之后
+    ];
+    const after = contextUsed(withEarlyMicro);
+    // 账单（a2 那次请求）本来就是压在 micro 投影之后打的，不需要也不应该再扣一次；
+    // 摘要本身的 token 也不该被加进 pending（micro 的下标 ≤ 锚点下标，不进循环）
+    expect(after).toBe(before);
+  });
+});
+
+describe("微压缩稳态：两条 micro 夹着账单锚点", () => {
+  const big = (n: number) => "x".repeat(n);
+  function turn(label: string, usage?: { promptTokens: number; completionTokens: number }): SessionEvent[] {
+    return [
+      { ...env(), type: "user_message", content: `u${label}` },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: `a${label}` + big(2000),
+        model: "m",
+        ...(usage ? { usage } : {}),
+      },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+  }
+  const est = (e: SessionEvent) =>
+    e.type === "assistant_message" ? estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? [])) : 0;
+
+  it("只扣新折进去的那段 + 被顶掉的旧摘要，不把更早已折的段再扣一遍", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      ...turn("1"), ...turn("2"), ...turn("3"),
+    ];
+    const end2 = events[6]!.seq; // u2 交换的 turn_ended
+    events.push({ ...env(), type: "micro_compacted", summary: "S1", coversUpTo: end2, model: "cheap" });
+    events.push(...turn("4", { promptTokens: 4400, completionTokens: 2000 })); // 锚点
+    const base = contextUsed(events);
+    expect(base).toBe(6400);
+    const end3 = events[9]!.seq; // u3 交换的 turn_ended
+    const a3 = events[8]!;
+    const S2 = "S2 长一点的摘要";
+    const after = contextUsed([
+      ...events,
+      { ...env(), type: "micro_compacted", summary: S2, coversUpTo: end3, model: "cheap" },
+    ]);
+    // 锚点 prompt 里：u2 段已是 S1，u3 段还是原文。新 micro 顶掉 S1、折掉 a3、加上 S2
+    expect(after).toBe(6400 - est(a3) - estimateTokens("S1") + estimateTokens(S2));
+  });
+
+  it("micro/账单交替 6 轮：读数始终贴着最新账单，不会一路探底到 0", () => {
+    seq = 0;
+    const events: SessionEvent[] = [{ ...env(), type: "session_created", workspace: "/w" }, ...turn("0")];
+    let lastBill = 0;
+    for (let k = 1; k <= 6; k++) {
+      events.push(...turn(String(k), { promptTokens: 5000, completionTokens: 500 }));
+      lastBill = 5500;
+      // 折掉最老的未折 exchange（k-1 段）：倒数第 4 个事件是上一轮的 turn_ended（k=2）或上一条 micro（k≥3），seq 都落在 te_{k-1} 与 u_k 之间，刚好整段吸收
+      const end = events[events.length - 4]!.seq;
+      if (k >= 2) events.push({ ...env(), type: "micro_compacted", summary: `S${k}`, coversUpTo: end, model: "cheap" });
+      const used = contextUsed(events);
+      expect(used).toBeGreaterThan(lastBill - 1200); // 最多扣掉一段原文（≈500 token）+ 一条短摘要
+      expect(used).toBeLessThanOrEqual(lastBill + 50);
+    }
+  });
+});

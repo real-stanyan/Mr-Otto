@@ -8,6 +8,7 @@ import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import { systemPromptText, renderMemoryPrompt } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
+import { absorbedIndexes, latestMicroCompacted } from "../session/microCompact.js";
 
 /** 粗粒度 token 估算：CJK ≈ 0.6 token/字，其余 ≈ 4 字符/token。
     校准用途，不求精确——离真值 ±30% 也比"冻结到上次账单"诚实。
@@ -44,6 +45,37 @@ function billingAnchor(events: SessionEvent[]): { value: number; idx: number } {
   return { value: 0, idx: -1 };
 }
 
+/** 被吸收候选事件（tool_result / assistant_message）的字符估算——absorbedIndexes
+    的吸收集合本来就只含这两种类型（user_message 永不吸收）。add 侧（pendingAfter
+    正向累加锚点之后的事件）和 subtract 侧（微压缩把锚点账单里已经计过的吸收区扣出来）
+    共用这一把尺子：两头各写一套算法，数字迟早对不上 */
+function estimateAbsorbable(e: SessionEvent): number {
+  switch (e.type) {
+    case "tool_result":
+      return estimateTokens(e.output);
+    case "assistant_message":
+      return estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));
+    default:
+      return 0;
+  }
+}
+
+/** 账单锚点那一刻生效的**上一条** micro（running summary 的前一版）。
+    从 anchorIdx 往回扫，撞到 context_compacted 就停（清场之后微压缩重新起跑，
+    锚点的 prompt 里不带任何微摘要）。返回：
+      covers  —— 上一条 micro 的 coversUpTo；没有 = -Infinity（锚点 prompt 里一条原文都没被替换过）
+      summary —— 上一条 micro 的摘要估算；没有 = 0
+    只扫 anchorIdx 及之前，且遇 context_compacted 即停 —— 于是天然只会捡到
+    「最新 context_compacted 之后」的 micro，与 latestMicroCompacted 的有效性规则同源。 */
+function microAtAnchor(events: SessionEvent[], anchorIdx: number): { covers: number; summary: number } {
+  for (let i = anchorIdx; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "context_compacted") break;
+    if (e.type === "micro_compacted") return { covers: e.coversUpTo, summary: estimateTokens(e.summary) };
+  }
+  return { covers: -Infinity, summary: 0 };
+}
+
 /** 锚点之后、会进入下一次 prompt 的事件按字符估算。
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
 function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
@@ -51,8 +83,38 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   // 什么也没产出的 turn 投影里就不进上下文(ADR-0042),这里也不能计 ——
   // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
   const barren = barrenEventIndexes(events);
+  // 微压缩（ADR-0064）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
+  // 和 deriveMessages 同一个 absorbedIndexes。
+  const micro = absorbedIndexes(events);
+  const latestMicro = latestMicroCompacted(events);
+  const microIdx = latestMicro ? events.indexOf(latestMicro) : -1;
+
+  // 真实会话里吸收区几乎总落在锚点**之前**：锚点是最近一次带账单的 assistant_message，
+  // 它的 promptTokens 那一次请求本来就已经包含了被吸收的原文（微压缩发生在那之后）。
+  // 如果不把这段原文的估算量从 pending 里扣掉，micro_compacted 一落盘，contextUsed
+  // 就会凭空"涨"一截（只加了摘要，没扣被它替代的原文）——直到下一次真实账单，
+  // 圆环才会自我修正回真值。这里提前做那次修正：微压缩不该让圆环反而变得不诚实。
+  // 只在 microIdx > anchorIdx 时才有必要扣——那次账单确实还包含着这段原文；
+  // 若 micro 落在锚点之前（微压缩早于最近一次账单），账单本身已经是压缩后的投影
+  // 算出来的用量，扣了反而是双减，见下面 pendingAfter 循环里锚点之后才继续累计。
+  //
+  // 关键：absorbed 是**累计**集合（保护区之后一路到最新 coversUpTo），不是"这次新折的那段"。
+  // 而锚点的 prompt 里，更早那些 exchange 早就被**上一条** micro 的摘要替换掉了，只有
+  // 上一条 coversUpTo 之后、这一条 coversUpTo 之内的那段还是原文。照 absorbed 全扣就是
+  // 每轮把同一段历史重复扣一遍：稳态跑几轮后圆环会一路探到 0 并被钳住，读数彻底失真。
+  // 所以扣两笔、只扣两笔：① 新折进去的那段原文（seq > 上一条 coversUpTo）；
+  // ② 上一条摘要本身（它在锚点 prompt 里，现在被新摘要顶掉了——新摘要在下面循环里加回一次）。
+  if (micro && microIdx > anchorIdx) {
+    const prev = microAtAnchor(events, anchorIdx);
+    for (const i of micro.absorbed) {
+      if (i <= anchorIdx && events[i]!.seq > prev.covers) pending -= estimateAbsorbable(events[i]!);
+    }
+    pending -= prev.summary;
+  }
+
   for (let i = anchorIdx + 1; i < events.length; i++) {
     if (barren.has(i)) continue;
+    if (micro?.absorbed.has(i)) continue; // 锚点之后被吸收的：单纯跳过，不重复计
     const e = events[i]!;
     switch (e.type) {
       case "user_message":
@@ -61,7 +123,7 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
         for (const f of e.textFiles ?? []) pending += estimateTokens(f.content);
         break;
       case "tool_result":
-        pending += estimateTokens(e.output);
+        pending += estimateAbsorbable(e);
         break;
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
@@ -76,7 +138,13 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
         break;
       case "assistant_message":
         // 只有 API 没回账单的消息才落到估算侧（回了账单它就是锚点）
-        pending += estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));
+        pending += estimateAbsorbable(e);
+        break;
+      case "micro_compacted":
+        // 只有最新一条进投影；旧的被新摘要包含。
+        // micro === null 时（absorbedIndexes 认定这条指向空/不完整的区间）投影里
+        // 压根不会插那条摘要消息——这里也不能加，不然圆环凭空多出一段没人看见的文本
+        if (micro && e === latestMicro) pending += estimateTokens(e.summary);
         break;
       default:
         break;
@@ -91,7 +159,9 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计。 */
 export function contextUsed(events: SessionEvent[]): number {
   const anchor = billingAnchor(events);
-  return anchor.value + pendingAfter(events, anchor.idx);
+  // 微压缩的锚点前扣减可能让总量瞬间探到 0 以下（估算误差,不是真实账单）——
+  // 圆环没有"负占用"这种读数,钳到 0
+  return Math.max(0, anchor.value + pendingAfter(events, anchor.idx));
 }
 
 // ─── 分类拆分（用量弹窗的数据源）────────────────────────────
@@ -158,8 +228,9 @@ export function contextBreakdown(
   const pending = pendingAfter(events, anchor.idx);
 
   if (anchor.idx === -1) {
-    return { system, tools: toolTokens, messages: pending, total: system + toolTokens + pending };
+    const total = Math.max(0, system + toolTokens + pending);
+    return { system, tools: toolTokens, messages: Math.max(0, pending), total };
   }
-  const total = anchor.value + pending;
+  const total = Math.max(0, anchor.value + pending);
   return { system, tools: toolTokens, messages: Math.max(0, total - system - toolTokens), total };
 }

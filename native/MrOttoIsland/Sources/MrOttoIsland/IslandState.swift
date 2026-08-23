@@ -1,0 +1,55 @@
+import Foundation
+
+enum Phase: String, Codable { case idle, active, approval }
+
+struct ToolRef: Codable, Equatable { let verb: String; let target: String }
+
+struct PendingApproval: Codable, Equatable {
+  let callId: String
+  let verb: String
+  let target: String
+  let fullPath: String?
+}
+
+/// 一只水獭(一个 session)在灵动岛里的状态。
+struct IslandAgent: Codable, Equatable, Identifiable {
+  let sessionId: String
+  let title: String?
+  let phase: Phase
+  let currentTool: ToolRef?
+  let turnStartedAt: Double?
+  let pendingApproval: PendingApproval?
+  var id: String { sessionId }
+}
+
+/// 主进程推来的全量快照:所有 session 的列表 + 主窗当前聚焦的那个。
+struct IslandFleet: Codable, Equatable {
+  let agents: [IslandAgent]
+  let focusedSessionId: String?
+}
+
+/// 主进程 → helper
+struct Inbound: Codable { let type: String; let state: IslandFleet }
+
+/// helper → 主进程
+enum Outbound {
+  case ready
+  case send(sessionId: String, text: String)
+  case approve(sessionId: String, callId: String, grant: String?)
+  case deny(sessionId: String, callId: String)
+
+  func jsonLine() -> String {
+    let obj: [String: Any]
+    switch self {
+    case .ready: obj = ["type": "ready"]
+    case let .send(s, t): obj = ["type": "send", "sessionId": s, "text": t]
+    case let .approve(s, c, g):
+      var o: [String: Any] = ["type": "approve", "sessionId": s, "callId": c]
+      if let g { o["grant"] = g }
+      obj = o
+    case let .deny(s, c): obj = ["type": "deny", "sessionId": s, "callId": c]
+    }
+    let data = try! JSONSerialization.data(withJSONObject: obj)
+    return String(data: data, encoding: .utf8)! + "\n"
+  }
+}

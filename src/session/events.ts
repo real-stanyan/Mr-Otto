@@ -302,6 +302,20 @@ export interface MemoryNudgeEvent extends SessionEventBase {
   userTurns: number;
 }
 
+/** 额外 17：微压缩（ADR-0064）。设置开启时每个 turn 收口后落一条：把最老的一个
+    未吸收 exchange 的 assistant/tool 部分并进 running summary。投影只认最新一条：
+    seq ≤ coversUpTo 的 assistant_message / tool_result 被替换成一条
+    `[对话摘要]` assistant 消息，user_message 原文永不吸收。
+    旧摘要被新摘要包含（running summary），所以旧事件只是历史，不再参与投影。
+    coversUpTo 存 seq（事件的稳定身份），不是数组下标 */
+export interface MicroCompactedEvent extends SessionEventBase {
+  type: "micro_compacted";
+  summary: string;       // running summary 全文（含之前所有被吸收的 exchange）
+  coversUpTo: number;    // 被吸收的最后一个事件的 seq
+  model: string;         // 摘要出自哪个（便宜）模型
+  usage?: TokenUsage;    // 本次（含 defrag 那次）烧的 token
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -324,4 +338,5 @@ export type SessionEvent =
   | SubagentBriefedEvent
   | MemoryLoadedEvent
   | MemoryUserEditEvent
-  | MemoryNudgeEvent;
+  | MemoryNudgeEvent
+  | MicroCompactedEvent;

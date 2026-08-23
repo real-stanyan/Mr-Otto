@@ -77,6 +77,8 @@ function systemSummary(e: SessionEvent): string {
         : `turn_ended ${e.outcome}`;
     case "context_compacted":
       return `context_compacted ${clip(e.summary, 80)}`;
+    case "micro_compacted":
+      return `micro_compacted ${clip(e.summary, 80)}`;
     case "session_renamed":
       return `session_renamed → ${e.title}`;
     case "subagent_spawned":

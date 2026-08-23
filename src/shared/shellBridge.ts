@@ -569,27 +569,42 @@ export interface ShellBridge {
   getWindowFullscreen(): Promise<boolean>;
   /** 窗口进入/退出全屏的推送。首帧状态用 getWindowFullscreen 问,变化走这里 */
   onWindowFullscreen(cb: (fullscreen: boolean) => void): Unsubscribe;
-  /** 主窗当前看着哪个会话(null = welcome)。岛只投影这一个会话 */
+  /** 主窗当前看着哪个会话(null = welcome)。主进程内部的岛投影器只跟这一个会话
+      (ADR-0059 推翻版:岛不再是渲染进程,不经 ShellBridge 收推送——见
+      src/main/islandBridge.ts 的 stdio 桥) */
   setActiveSession(sessionId: string | null): Promise<void>;
-  /** 岛窗首帧快照:当前会话 + 它的模型 */
-  islandBoot(): Promise<IslandBoot>;
-  /** 岛窗内容尺寸变了 → 主进程 setBounds(透明窗的窗体要跟 DOM 同步) */
-  islandResize(size: { w: number; h: number; focusable?: boolean }): Promise<void>;
-  /** 主窗切会话 / 切模型 → 推给岛窗 */
-  onActiveSessionChanged(cb: (info: IslandBoot) => void): Unsubscribe;
 }
 
-/** 岛窗的首帧 / 变化推送都是这一份。
-    只带 activeSessionId 是不够的:岛窗可能在 turn 跑到一半才起来(或者用户中途
-    切进一个正在跑的会话),那时它错过了所有 turnStatus/approvalRequest 推送,
-    只靠"从此刻起的增量"永远显示空闲(#175 I1)。所以快照要带上活的状态 */
+/** 主进程内部的岛快照类型:activeSession / switchModel 这些 choke point 现算一份,
+    喂给 src/main/islandProjection.ts 的 reduceIsland(kind:"activeSession")。
+    只带 activeSessionId 是不够的:投影器可能在 turn 跑到一半才装(或者用户中途
+    切进一个正在跑的会话),那时它错过了所有 turnStatus/approvalRequest,
+    只靠"从此刻起的增量"永远显示空闲(#175 I1 的原始动机,现搬进主进程内部)。
+    所以快照要带上活的状态。不再经 IPC 出渲染进程,纯主进程内部类型 */
 export interface IslandBoot {
   activeSessionId: string | null;
   model: string | null;
-  /** 这个会话此刻有没有 turn 在跑 —— 岛据此直接进活动态 */
+  /** 这个会话此刻有没有 turn 在跑 —— 投影器据此直接进活动态 */
   running: boolean;
-  /** 此刻挂着的那张审批卡(没有 = null)—— 岛据此直接进审批态 */
+  /** 此刻挂着的那张审批卡(没有 = null)—— 投影器据此直接进审批态 */
   pendingApproval: ApprovalRequest | null;
+}
+
+/** 灵动岛列表里的一个会话(一行)。字段全是拍平后的字符串/枚举,Swift 纯渲染 */
+export interface IslandAgent {
+  sessionId: string;
+  /** 侧栏同款显示名(SessionSummary.title);null 兜底成短标签由渲染侧处理 */
+  title: string | null;
+  phase: "idle" | "active" | "approval";
+  currentTool: { verb: string; target: string } | null;
+  turnStartedAt: number | null;
+  pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
+}
+
+/** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行) */
+export interface IslandFleet {
+  agents: IslandAgent[];
+  focusedSessionId: string | null;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -721,9 +736,6 @@ export const CHANNELS = {
   getWindowFullscreen: "otter:getWindowFullscreen",
   windowFullscreen: "otter:windowFullscreen",
   setActiveSession: "otter:setActiveSession",
-  islandBoot: "otter:islandBoot",
-  islandResize: "otter:islandResize",
-  activeSessionChanged: "otter:activeSessionChanged",
   keyStatus: "otter:keyStatus",
   setApiKey: "otter:setApiKey",
   openProviderConsole: "otter:openProviderConsole",

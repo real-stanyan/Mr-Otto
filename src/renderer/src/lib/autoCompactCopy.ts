@@ -23,3 +23,13 @@ export function describeThreshold(
 export function compactedHeadline(trigger: "auto" | "manual" | undefined): string {
   return trigger === "auto" ? "上下文已自动压缩" : "上下文已压缩";
 }
+
+/** 微压缩开关的说明（spec §四 原文，逐字）——默认关的理由要写在开关旁边，
+    不是"没启用"这种废话：每轮改写已发送的历史 = 前缀缓存每轮作废 */
+export const MICRO_COMPACT_HINT =
+  "每轮改写已发送的历史，会让模型的前缀缓存每轮失效；上下文小、对话长时再开。";
+
+/** 时间线微压缩行标题。带上摘要体积，用户才看得出"并进去之后摘要多大了" */
+export function microCompactedHeadline(summaryTokens: number): string {
+  return `一段对话并入摘要（摘要约 ${summaryTokens} tokens）`;
+}

@@ -24,8 +24,10 @@ export interface SendTarget {
 
 export type Send = (channel: string, ...args: unknown[]) => void;
 
-/** 多目标:主窗 + 岛窗都是日志的投影窗口,每条推送两边都要到。
-    每个目标各自查 destroyed —— 主窗 Cmd+W 关了,岛照常收 */
+/** 多目标:主窗 + 其余真实 BrowserWindow 目标都是日志的投影窗口,每条推送各处都要到。
+    岛不在其中——它是原生 helper,不是 BrowserWindow,状态经 islandBridge 的
+    stdio 管道单独喂(见 src/main/islandBridge.ts),不走这条 IPC 通道。
+    每个目标各自查 destroyed —— 某一窗口 Cmd+W 关了,其余目标照常收 */
 export function createSend(...targets: SendTarget[]): Send {
   return (channel, ...args) => {
     for (const win of targets) {

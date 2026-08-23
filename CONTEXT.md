@@ -37,6 +37,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除归档、子会话、当前会话 | ADR-0061 |
 | 历史索引（events_fts） | `events` 表的 FTS5 trigram 派生索引（user/assistant/tool_result 正文），insert 触发器同步、老库首开回填、purge 连带删；可 DROP 重建，不是事实 | ADR-0061 |
 | 自动压缩（auto compact） | 上下文占用 ≥ 窗口 × 阈值（≥512K 窗口 0.50，否则 0.75；可调 0.3–0.9）时，loop 在下一次模型调用前自动 /compact；一 turn 一次；摘要 prompt 带脱敏后的记忆快照 | ADR-0062 |
+| 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0064 |
 
 ## Key invariants
 

@@ -27,7 +27,14 @@ export function normaliseAutoCompact(input: unknown): AutoCompactSettings {
     typeof obj["threshold"] === "number" && Number.isFinite(obj["threshold"])
       ? Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, obj["threshold"]))
       : undefined;
-  return threshold === undefined ? { enabled } : { enabled, threshold };
+  // micro 只在明确为 true 时落盘：缺省 = 关（ADR-0064），false 和缺省是同一个意思，
+  // 不写 `micro: false` 免得文件里多一个"看着像开关其实等于没写"的键
+  const micro = obj["micro"] === true;
+  return {
+    enabled,
+    ...(threshold === undefined ? {} : { threshold }),
+    ...(micro ? { micro: true } : {}),
+  };
 }
 
 export function loadAutoCompact(path: string): AutoCompactSettings {
