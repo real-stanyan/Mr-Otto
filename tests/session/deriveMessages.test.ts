@@ -362,19 +362,71 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
     expect(msgs[1]).toEqual({ role: "user", content: "实现登录" });
   });
 
-  it("compact 之后 skill 注入随历史一起被摘要替换", () => {
+  it("args 进投影头；没有 args 的旧事件投影头不变", () => {
     const events: SessionEvent[] = [
-      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "长指令" },
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "ponytail", content: "越少越好", args: "ultra" },
+      { seq: 1, sessionId: "s", ts: 2, type: "skill_invoked", name: "tdd", content: "先写测试" },
+      { seq: 2, sessionId: "s", ts: 3, type: "user_message", content: "干活" },
+    ];
+    const msgs = deriveMessages(events);
+    expect((msgs[0] as { content: string }).content).toContain("「ponytail」（参数：ultra）");
+    // 无 args：旧日志的投影逐字节不变（向后兼容钉住）
+    expect((msgs[1] as { content: string }).content).toContain("[本轮启用 skill「tdd」，以下是它的指令");
+  });
+
+  // issue #214：此前 compact 清场把 skill 指令连历史一起抹掉——用户没说停，
+  // 技能却无声失效。现在清场后按台账重注入（纯投影，快照来自日志里的事件）
+  it("compact 清场后已启用的 skill 重注入：摘要之后、当前请求兜底之前，带 args", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "长指令", args: "strict" },
       { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "干活" },
       { seq: 2, sessionId: "s", ts: 3, type: "context_compacted", summary: "都干完了", model: "m" },
     ];
     const msgs = deriveMessages(events);
-    // 摘要 + 当前请求兜底（issue #193：compact 后没有新 user_message 时原文重注）
-    expect(msgs.map((m) => m.role)).toEqual(["user", "user"]);
+    // 摘要 + skill 重注入 + 当前请求兜底（issue #193）
+    expect(msgs.map((m) => m.role)).toEqual(["user", "user", "user"]);
     expect((msgs[0] as { content: string }).content).toContain("都干完了");
-    // skill 注入本体确实随历史消失
-    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("长指令"))).toBe(false);
-    expect((msgs[1] as { content: string }).content).toContain("干活");
+    const re = (msgs[1] as { content: string }).content;
+    expect(re).toContain("「tdd」（参数：strict）在压缩前已启用，仍然生效");
+    expect(re).toContain("长指令");
+    expect((msgs[2] as { content: string }).content).toContain("干活");
+  });
+
+  it("同名多次启用去重，后启用的快照覆盖先启用的", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "旧版指令" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "活一" },
+      { seq: 2, sessionId: "s", ts: 3, type: "skill_invoked", name: "tdd", content: "新版指令" },
+      { seq: 3, sessionId: "s", ts: 4, type: "user_message", content: "活二" },
+      { seq: 4, sessionId: "s", ts: 5, type: "context_compacted", summary: "摘要", model: "m" },
+    ];
+    const msgs = deriveMessages(events);
+    const reinjected = msgs.filter(
+      (m) => typeof m.content === "string" && m.content.includes("在压缩前已启用")
+    );
+    expect(reinjected).toHaveLength(1);
+    expect((reinjected[0] as { content: string }).content).toContain("新版指令");
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("旧版指令"))).toBe(false);
+  });
+
+  it("二次 compact：压缩后新启用的 skill 也进下一轮台账，与旧 skill 一起重注入", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "先写测试" },
+      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "活一" },
+      { seq: 2, sessionId: "s", ts: 3, type: "context_compacted", summary: "摘要一", model: "m" },
+      { seq: 3, sessionId: "s", ts: 4, type: "skill_invoked", name: "ponytail", content: "越少越好" },
+      { seq: 4, sessionId: "s", ts: 5, type: "user_message", content: "活二" },
+      { seq: 5, sessionId: "s", ts: 6, type: "context_compacted", summary: "摘要二", model: "m" },
+    ];
+    const msgs = deriveMessages(events);
+    const reinjected = msgs
+      .filter((m) => typeof m.content === "string" && m.content.includes("在压缩前已启用"))
+      .map((m) => m.content as string);
+    expect(reinjected).toHaveLength(2);
+    expect(reinjected.some((c) => c.includes("先写测试"))).toBe(true);
+    expect(reinjected.some((c) => c.includes("越少越好"))).toBe(true);
+    // 只剩最新摘要（复合语义不受重注入影响）
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("摘要一"))).toBe(false);
   });
 });
 
