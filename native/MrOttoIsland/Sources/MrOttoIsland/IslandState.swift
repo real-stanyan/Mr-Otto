@@ -11,17 +11,25 @@ struct PendingApproval: Codable, Equatable {
   let fullPath: String?
 }
 
-struct IslandSnapshot: Codable, Equatable {
-  let sessionId: String?
-  let model: String?
+/// 一只水獭(一个 session)在灵动岛里的状态。
+struct IslandAgent: Codable, Equatable, Identifiable {
+  let sessionId: String
+  let title: String?
   let phase: Phase
   let currentTool: ToolRef?
   let turnStartedAt: Double?
   let pendingApproval: PendingApproval?
+  var id: String { sessionId }
+}
+
+/// 主进程推来的全量快照:所有 session 的列表 + 主窗当前聚焦的那个。
+struct IslandFleet: Codable, Equatable {
+  let agents: [IslandAgent]
+  let focusedSessionId: String?
 }
 
 /// 主进程 → helper
-struct Inbound: Codable { let type: String; let state: IslandSnapshot }
+struct Inbound: Codable { let type: String; let state: IslandFleet }
 
 /// helper → 主进程
 enum Outbound {

@@ -4,8 +4,8 @@ import Foundation
 final class Bridge {
   private let outLock = NSLock()
 
-  /// 后台线程逐行读 stdin,解出 IslandSnapshot 就回调(主线程由调用方切)
-  func start(onSnapshot: @escaping (IslandSnapshot) -> Void) {
+  /// 后台线程逐行读 stdin,解出 IslandFleet 就回调(主线程由调用方切)
+  func start(onSnapshot: @escaping (IslandFleet) -> Void) {
     let handle = FileHandle.standardInput
     DispatchQueue.global(qos: .userInitiated).async {
       var buffer = Data()

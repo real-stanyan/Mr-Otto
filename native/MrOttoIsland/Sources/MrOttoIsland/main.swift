@@ -6,17 +6,15 @@ import SwiftUI
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // LSUIElement:无 dock 无菜单栏
 
-/// phase + compact 区 hover 状态 + 输入态 → 目标 DynamicNotchState。
-/// idle:贴合刘海(compact,内容为空)。active:默认 compact(脉动点),hover 才展开细节。
-/// approval:不等 hover,直接展开。composing(Task 6 输入态)优先级最高——
-/// 不管 phase/hover 是什么,只要在打字就必须是 .expanded,TextField 才有地方待着。
-func desiredState(phase: Phase, hovering: Bool, composing: Bool) -> DynamicNotchState {
+/// fleet(所有 session)+ compact 区 hover 状态 + 输入态 → 目标 DynamicNotchState。
+/// 任一 session 在 approval 或正在输入:不等 hover,直接展开。
+/// 任一 session active 且 hover 中:展开细节。否则贴合刘海(compact)。
+/// 这是能编译的最小版——按 selectedAgent/多行列表精化展开条件留给下一个 task。
+func desiredState(fleet: IslandFleet, hovering: Bool, composing: Bool) -> DynamicNotchState {
   if composing { return .expanded }
-  switch phase {
-  case .idle: return .compact
-  case .active: return hovering ? .expanded : .compact
-  case .approval: return .expanded
-  }
+  if fleet.agents.contains(where: { $0.phase == .approval }) { return .expanded }
+  if hovering && fleet.agents.contains(where: { $0.phase != .idle }) { return .expanded }
+  return .compact
 }
 
 // main.swift 顶层代码本身不是 MainActor-isolated(与 async @main 入口不同),
@@ -66,10 +64,10 @@ MainActor.assumeIsolated {
     compactTrailing: { EmptyView() }
   )
 
-  Publishers.CombineLatest3(model.$snapshot, notch.$isHovering, model.$composing)
+  Publishers.CombineLatest3(model.$fleet, notch.$isHovering, model.$composing)
     .receive(on: DispatchQueue.main)
-    .sink { snapshot, hovering, composing in
-      let target = desiredState(phase: snapshot.phase, hovering: hovering, composing: composing)
+    .sink { fleet, hovering, composing in
+      let target = desiredState(fleet: fleet, hovering: hovering, composing: composing)
       Task { @MainActor in
         switch target {
         case .compact: await notch.compact()
@@ -90,11 +88,11 @@ MainActor.assumeIsolated {
 
   // Bridge 的 onSnapshot 回调在后台线程触发,必须先跳回主线程再碰 @Published/DynamicNotch。
   // DispatchQueue.main.async 保证物理上在主线程,但类型系统不知道这点,所以内层还要
-  // 再 assumeIsolated 一次才能写 model.snapshot。
-  bridge.start { snapshot in
+  // 再 assumeIsolated 一次才能调 model.apply(_:)。
+  bridge.start { fleet in
     DispatchQueue.main.async {
       MainActor.assumeIsolated {
-        model.snapshot = snapshot
+        model.apply(fleet)
       }
     }
   }

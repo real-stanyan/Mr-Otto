@@ -13,20 +13,22 @@ struct IslandExpandedView: View {
   private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
   var body: some View {
-    let s = model.snapshot
     Group {
       if model.composing {
         composeRow
-      } else {
-        switch s.phase {
+      } else if let agent = model.selectedAgent {
+        switch agent.phase {
         case .approval:
-          approvalRow(s.pendingApproval)
+          approvalRow(agent)
         case .active:
-          activeRow(s)
+          activeRow(agent)
         case .idle:
           // 防御性兜底:理论上 idle 不会被 expand,万一状态竞态漏进来也不要崩。
           Color.clear.frame(width: 1, height: 1)
         }
+      } else {
+        // fleet 为空(还没有任何 session):没有可展示的详情,贴合刘海。
+        Color.clear.frame(width: 1, height: 1)
       }
     }
     .onReceive(timer) { now = $0 }
@@ -38,7 +40,7 @@ struct IslandExpandedView: View {
   private var composeRow: some View {
     HStack(spacing: 8) {
       TextField(
-        model.snapshot.sessionId == nil ? "主窗里先开会话" : "对 Otto 说…",
+        model.selectedAgent == nil ? "主窗里先开会话" : "对 Otto 说…",
         text: $text
       )
       .textFieldStyle(.plain)
@@ -76,7 +78,7 @@ struct IslandExpandedView: View {
   }
 
   private func submit() {
-    guard let sid = model.snapshot.sessionId,
+    guard let sid = model.selectedAgent?.sessionId,
           !text.trimmingCharacters(in: .whitespaces).isEmpty
     else { return }
     model.onOutbound(.send(sessionId: sid, text: text))
@@ -89,12 +91,12 @@ struct IslandExpandedView: View {
     model.exitCompose()
   }
 
-  private func activeRow(_ s: IslandSnapshot) -> some View {
+  private func activeRow(_ agent: IslandAgent) -> some View {
     HStack(spacing: 8) {
-      Image(systemName: s.currentTool == nil ? "circle.dashed" : "terminal")
-      Text(s.currentTool.map { "\($0.verb) \($0.target)" } ?? "思考中…")
+      Image(systemName: agent.currentTool == nil ? "circle.dashed" : "terminal")
+      Text(agent.currentTool.map { "\($0.verb) \($0.target)" } ?? "思考中…")
         .lineLimit(1)
-      if let start = s.turnStartedAt {
+      if let start = agent.turnStartedAt {
         Text("\(Int(now.timeIntervalSince1970 - start / 1000))s")
           .foregroundStyle(.secondary)
           .monospacedDigit()
@@ -105,23 +107,24 @@ struct IslandExpandedView: View {
     .foregroundStyle(.white)
   }
 
-  private func approvalRow(_ p: PendingApproval?) -> some View {
-    HStack(spacing: 8) {
+  private func approvalRow(_ agent: IslandAgent) -> some View {
+    let p = agent.pendingApproval
+    return HStack(spacing: 8) {
       Text("审批").foregroundStyle(.orange)
       Text(p.map { "\($0.verb) \($0.target)" } ?? "").lineLimit(1)
       if let p {
         Button {
-          model.onOutbound(.approve(sessionId: model.snapshot.sessionId ?? "", callId: p.callId, grant: nil))
+          model.onOutbound(.approve(sessionId: agent.sessionId, callId: p.callId, grant: nil))
         } label: {
           Label("允许", systemImage: "checkmark")
         }
         Button {
-          model.onOutbound(.approve(sessionId: model.snapshot.sessionId ?? "", callId: p.callId, grant: "session"))
+          model.onOutbound(.approve(sessionId: agent.sessionId, callId: p.callId, grant: "session"))
         } label: {
           Text("会话").font(.caption)
         }
         Button {
-          model.onOutbound(.deny(sessionId: model.snapshot.sessionId ?? "", callId: p.callId))
+          model.onOutbound(.deny(sessionId: agent.sessionId, callId: p.callId))
         } label: {
           Label("拒绝", systemImage: "xmark")
         }
@@ -145,10 +148,19 @@ struct IslandCompactView: View {
   @ObservedObject var model: IslandModel
   @State private var pulse = false
 
+  /// 折叠态脉动条件:fleet 里任一 session 在 active(不局限于当前选中的那个)——
+  /// 哪怕选中行是别的 session,只要有 agent 在跑就该有提示。按 selectedAgent 切换的
+  /// 单会话逻辑(点击进输入态等)留到列表 UI 落地的下一个 task。
+  private var anyActive: Bool {
+    model.fleet.agents.contains { $0.phase == .active }
+  }
+
   var body: some View {
     Group {
-      switch model.snapshot.phase {
-      case .active:
+      if model.selectedAgent?.phase == .approval {
+        // approval 不等 hover 直接 expand,compact 内容不会被看到,不需要入口。
+        Color.clear.frame(width: 1, height: 1)
+      } else if anyActive {
         // 脉动点本身就是入口:点一下进输入态(Task 6)。视觉不变,只是加了可点性,
         // 跟 task-5 报告里"active 默认折叠只露一个提示点"的设计没冲突。
         Button {
@@ -162,7 +174,7 @@ struct IslandCompactView: View {
         }
         .buttonStyle(.plain)
         .onAppear { pulse = true }
-      case .idle:
+      } else {
         // Task 6 之前这里是纯 Color.clear(贴合刘海什么都不显)。要让 idle 也能进输入态,
         // 必须有个可点的东西——用一个很小的键盘图标当"点一下说话"入口,尽量不抢视觉。
         Button {
@@ -173,9 +185,6 @@ struct IslandCompactView: View {
             .foregroundStyle(.white.opacity(0.55))
         }
         .buttonStyle(.plain)
-      case .approval:
-        // approval 不等 hover 直接 expand,compact 内容不会被看到,不需要入口。
-        Color.clear.frame(width: 1, height: 1)
       }
     }
     .padding(.horizontal, 6)
