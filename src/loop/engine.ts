@@ -2,8 +2,11 @@
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
 import type { EventStore, NewSessionEvent } from "../session/store.js";
-import type { SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
+import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
+import { contextUsed } from "../shared/contextEstimate.js";
+import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
@@ -37,6 +40,12 @@ export interface LoopEngineOptions {
   approver?: Approver;
   /** 额外中间件，插在审批门之后、执行器之前（日志、限流、脱敏都从这进） */
   middlewares?: ToolMiddleware[];
+  /** 自动压缩（ADR-0062）：给了就在 loop 每圈模型调用前判定占用。
+      不给 = 这个装配没有自动压缩（测试和裸装配照旧，只能手动 /compact） */
+  autoCompact?: {
+    contextWindow: () => number | undefined; // 当前型号的窗口；换型号后现算
+    settings: () => AutoCompactSettings; // 现读（设置页改了当场生效）
+  };
 }
 
 export class LoopEngine {
@@ -46,6 +55,9 @@ export class LoopEngine {
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
       AbortSignal 是一次性的，翻过去就回不来 */
   private turnAbort: AbortController | null = null;
+  /** 本 turn 是否已经自动压缩过；runTurn 里每 turn 重置一次。
+      同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱 */
+  private compactedThisTurn = false;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -112,23 +124,49 @@ export class LoopEngine {
   }
 
   /** /compact：把现有上下文交给模型写摘要，摘要落盘成 context_compacted 事件，
-      之后的投影从摘要起步。贵（一次全量输入 + 摘要输出），所以只由用户手动触发。
+      之后的投影从摘要起步。贵（一次全量输入 + 摘要输出）——manual 是用户主动要，
+      auto 是上下文超阈值自动触发（trigger 字段落盘，溯源谁点的火）。
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
-  async compact(): Promise<void> {
+  async compact(opts: { trigger: "auto" | "manual"; signal?: AbortSignal } = { trigger: "manual" }): Promise<void> {
     const { store, sessionId } = this.opts;
+    const log = store.load(sessionId);
     // 摘要专用投影（ADR-0003）：整段历史无保真区，长工具输出/参数都截断——
-    // 摘要人要的是"发生了什么"，不是逐字证据；输入 token 是 compact 的主要成本
-    const messages = deriveMessages(store.load(sessionId), COMPACT_COMPRESSION);
-    const reply = await this.adapter.chat([
-      ...messages,
-      {
-        role: "user",
-        content:
-          "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
-          "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
-          "直接输出摘要正文，不要开场白。",
-      },
-    ]); // 不带工具：这一步只要文字
+    // 摘要人要的是"发生了什么"，不是逐字证据；输入 token 是 compact 的主要成本。
+    // system 消息脱敏：memory_loaded 无条件拼进 system 尾部（deriveMessages 375 行，
+    // ADR-0060），且不经过压缩——这是记忆里的 key 能泄到摘要人手上的另一条路，
+    // 和下面新拼的 MEMORY CONTEXT 段是同一个风险、同一次外发，一并处理
+    const messages = deriveMessages(log, COMPACT_COMPRESSION).map((m) =>
+      m.role === "system" ? { ...m, content: redactSensitiveText(m.content) } : m
+    );
+    // 压缩前把长期记忆递给摘要人（hermes 的 on_pre_compress 同款）：已经在记忆里的
+    // 事实不必再进摘要；脱敏 + 截断——记忆是自由文本，难免混进 key，摘要是另一次外发。
+    // 反向查找最新一条（一个 session 通常只有一条，但保险起见找最后一条）
+    const mem = [...log].reverse().find((e): e is MemoryLoadedEvent => e.type === "memory_loaded");
+    const memText = mem ? [mem.memory, mem.user].filter(Boolean).join("\n§\n") : "";
+    const memoryContext = memText
+      ? [{
+          role: "user" as const,
+          content: `MEMORY CONTEXT（已在长期记忆里的事实，摘要里不要重复）:\n${clipHeadTail(redactSensitiveText(memText))}`,
+        }]
+      : [];
+    const reply = await this.adapter.chat(
+      [
+        ...messages,
+        ...memoryContext,
+        {
+          role: "user",
+          content:
+            "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
+            "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
+            (memText ? "MEMORY CONTEXT 里已有的事实不要重复写进摘要。" : "") +
+            "直接输出摘要正文，不要开场白。" +
+            "用户最新的那条请求（最后一条 user 消息）原文逐字保留，放在摘要末尾的「当前请求」段。",
+        },
+      ],
+      undefined, // 不带工具：这一步只要文字
+      undefined,
+      opts.signal // auto 触发时带上 turn 的中断信号——Stop 也要能砍掉正在跑的摘要
+    );
     if (!reply.content.trim()) throw new Error("模型没有产出摘要，compact 已放弃（未写入任何事件）");
 
     this.append({
@@ -136,6 +174,7 @@ export class LoopEngine {
       type: "context_compacted",
       summary: reply.content,
       model: this.adapter.model,
+      trigger: opts.trigger,
       ...(reply.usage ? { usage: reply.usage } : {}),
     });
   }
@@ -164,6 +203,7 @@ export class LoopEngine {
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
     });
     this.turnAbort = new AbortController();
+    this.compactedThisTurn = false;
     try {
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
@@ -196,6 +236,23 @@ export class LoopEngine {
 
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
+
+      // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
+      // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
+      if (this.opts.autoCompact && !this.compactedThisTurn) {
+        const { contextWindow, settings } = this.opts.autoCompact;
+        if (shouldAutoCompact(contextUsed(store.load(sessionId)), contextWindow(), settings())) {
+          this.compactedThisTurn = true;
+          try {
+            await this.compact({ trigger: "auto", signal });
+          } catch (err) {
+            // 中断不是"失败"——是用户意志（ADR-0006）。让它原样冒到 runTurn 的
+            // catch，落 turn_ended:"aborted"；只有真失败（模型没吐摘要等）才吞
+            if (isAbort(err)) throw err;
+            console.warn("自动压缩失败，本 turn 不再尝试", err);
+          }
+        }
+      }
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）

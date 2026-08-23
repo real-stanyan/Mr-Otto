@@ -34,6 +34,7 @@ import type {
 } from "./askUser.js";
 import type { SubagentDef } from "./subagent.js";
 import type { MemoryTarget } from "./memoryStore.js";
+import type { AutoCompactSettings } from "./autoCompact.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
@@ -371,6 +372,11 @@ export interface ShellBridge {
   /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
       的会话——留证要知道是谁忘的 */
   forgetMemory(target: MemoryTarget, entry: string, sessionId: string): Promise<void>;
+  /** 自动压缩设置（设置页读，落 userData/auto-compact.json）。现读不缓存——
+      改了立刻对下一次造 agent 生效，不用重启（同 alwaysAllow 的规矩） */
+  getAutoCompact(): Promise<AutoCompactSettings>;
+  /** 存一份新设置。未知字段/非法形状在主进程被剥掉，不是"渲染层传什么就信什么" */
+  setAutoCompact(settings: AutoCompactSettings): Promise<void>;
   /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
@@ -651,6 +657,8 @@ export const CHANNELS = {
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
+  getAutoCompact: "otter:getAutoCompact",
+  setAutoCompact: "otter:setAutoCompact",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",

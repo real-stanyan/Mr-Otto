@@ -13,6 +13,7 @@ import {
   type ModelChoice,
 } from "../shared/modelCatalog.js";
 import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
+import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
 
 /** 目录查表 + Ollama 能力补齐（装了什么、能不能看图、思不思考、窗多大只有探测知道）。
@@ -144,6 +145,9 @@ export function createAgent(opts: {
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
   configRoot?: string;
+  /** 自动压缩设置的现读器（index.ts 从设置页状态注入，ADR-0062）。
+      不给 = 用全局默认（DEFAULT_AUTO_COMPACT，开启，按窗口两档阈值） */
+  autoCompactSettings?: () => AutoCompactSettings;
 }) {
   const { store } = opts;
 
@@ -381,6 +385,14 @@ export function createAgent(opts: {
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),
     onToolOutput: (toolCallId, chunk, stream) =>
       opts.push.toolOutput(sessionId, toolCallId, chunk, stream),
+    // 闭包读的是 current 这个变量,不是此刻的值——换模型时 current 被重新赋值
+    // （switchModel），闭包必须现读到新窗口，不能锁死装配那一刻的型号
+    autoCompact: {
+      // 窗口是兜底猜的数（未探测的本机 Ollama / 目录外的自定义型号id）就别拿它算阈值——
+      // 一个假数据驱动自动压缩，压出来的时机毫无意义（可能太早也可能永远压不到）
+      contextWindow: () => (current.contextWindowKnown ? current.contextWindow : undefined),
+      settings: opts.autoCompactSettings ?? (() => DEFAULT_AUTO_COMPACT),
+    },
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。
