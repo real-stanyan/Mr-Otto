@@ -143,6 +143,12 @@ export function DitherBackground({ className, dark = true }: { className?: strin
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
     // 拿不到 WebGL2（软渲染被禁之类）就留一块纯色——启动画面不值得为此兜第二套实现
     if (!gl) return;
+    // context 丢了就别往下走：createShader 会静默返回 null，画面变纯色但控制台干净，
+    // 排查起来像"效果没做"。宁可在这里吵一声
+    if (gl.isContextLost()) {
+      console.error("[dither] WebGL2 context lost，跳过这次渲染");
+      return;
+    }
     const vs = compile(gl, gl.VERTEX_SHADER, VERT);
     const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
     const prog = gl.createProgram();
@@ -209,7 +215,10 @@ export function DitherBackground({ className, dark = true }: { className?: strin
       gl.deleteProgram(prog);
       gl.deleteShader(vs);
       gl.deleteShader(fs);
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      // 这里不能 loseContext()：canvas 的 context 是认 canvas 不认 effect 的，
+      // 丢掉之后同一个 canvas 再 getContext("webgl2") 拿回来的还是那个已丢失的 context
+      // （规范如此，不会新建）。StrictMode 在 dev 下 mount→cleanup→mount，
+      // 第二次挂载就永远拿到死 context，画面全空。canvas 卸载时 context 自己会走。
     };
   }, [dark]);
 
