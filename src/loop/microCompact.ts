@@ -140,7 +140,7 @@ function buildPrompt(runningSummary: string, exchange: string): string {
     "你在为一个 AI 助手维护一份「对话摘要」，它会替代已发生对话的助手回复和工具调用，" +
     "作为助手之后回看历史的唯一依据。用户的原话会另外原文保留，摘要里不要复述用户说了什么，" +
     "只记助手做了什么、用了哪些工具、得到什么结果、做了什么决定（含文件路径、命令、关键数字）。\n" +
-    (runningSummary ? `当前摘要：\n---\n${runningSummary}\n---\n` : "当前还没有摘要。\n") +
+    (runningSummary ? `当前摘要：\n---\n${neutralizeFences(runningSummary)}\n---\n` : "当前还没有摘要。\n") +
     `新增的一段对话：\n---\n${exchange}\n---\n` +
     "把新增内容并进当前摘要，输出更新后的完整摘要。条目式、按时间顺序、不要开场白、不要围栏。"
   );
@@ -150,7 +150,7 @@ function buildDefragPrompt(summary: string): string {
   return (
     `下面这份对话摘要太长了，请整理：合并重复、去掉已被后续内容推翻的条目、压缩措辞，` +
     `目标不超过约 ${MICRO_DEFRAG_TARGET} 个 token，但文件路径、命令、关键数字和未完成事项一个都不能丢。` +
-    `直接输出整理后的摘要，不要开场白、不要围栏。\n---\n${summary}\n---`
+    `直接输出整理后的摘要，不要开场白、不要围栏。\n---\n${neutralizeFences(summary)}\n---`
   );
 }
 
