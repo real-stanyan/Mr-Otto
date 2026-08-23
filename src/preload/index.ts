@@ -88,8 +88,8 @@ const bridge: ShellBridge = {
   setApiKey: (envName, key) => ipcRenderer.invoke(CHANNELS.setApiKey, envName, key),
   openProviderConsole: (providerId) => ipcRenderer.invoke(CHANNELS.openProviderConsole, providerId),
   listOllamaModels: () => ipcRenderer.invoke(CHANNELS.listOllamaModels),
-  sendMessage: (sessionId, text, skill, attachments) =>
-    ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill, attachments),
+  sendMessage: (sessionId, text, skill, attachments, skillArgs) =>
+    ipcRenderer.invoke(CHANNELS.sendMessage, sessionId, text, skill, attachments, skillArgs),
   pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),
   attachmentDataUrl: (id) => ipcRenderer.invoke(CHANNELS.attachmentDataUrl, id),
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),

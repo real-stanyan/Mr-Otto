@@ -2339,12 +2339,19 @@ function ChatComposer() {
   // 真正的那条被挤到看不见的地方。补全菜单是按名字找东西的地方,不是全文检索。
   // 形状照抄它的 flat 分支(categories/categoryItems 返回空 + 全靠 search)
   const skillAdapter = useMemo<Unstable_TriggerAdapter>(() => {
-    const items = skills.map((k) => ({
-      id: k.name,
-      type: "skill",
-      label: `$${k.name}`,
-      ...(k.description ? { description: k.description } : {}),
-    }));
+    const items = skills.map((k) => {
+      // argument-hint 拼进 description 尾巴：菜单项没有第三个展示位，
+      // 而"这个 skill 吃什么参数"正是选它之前想知道的事
+      const desc = [k.description, k.argumentHint && `参数 ${k.argumentHint}`]
+        .filter(Boolean)
+        .join(" · ");
+      return {
+        id: k.name,
+        type: "skill",
+        label: `$${k.name}`,
+        ...(desc ? { description: desc } : {}),
+      };
+    });
     return {
       categories: () => [],
       categoryItems: () => [],
@@ -2427,12 +2434,12 @@ function ChatComposer() {
   /** 发出去,还是排进队里。turn 跑着时敲的回车是"排队",不是"发不出去"
       (队列本身见 lib/messageQueue.ts)。分岔只在这一处 —— 上面那些解析
       ($skill / 空正文校验)两条路共用,排队的那条不该少走一遍校验 */
-  const dispatch = (text: string, skill?: string) => {
+  const dispatch = (text: string, skill?: string, skillArgs?: string) => {
     if (status === "running") {
-      enqueue(text, skill);
+      enqueue(text, skill, skillArgs);
       return;
     }
-    void send(text, skill);
+    void send(text, skill, skillArgs);
   };
 
   const submit = () => {
@@ -2444,14 +2451,18 @@ function ChatComposer() {
     // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
     // 把图悄悄丢掉发一条空消息
     if (status === "running" && !text) return;
-    // "$skill名 任务正文"：名字给 harness（注入 skill），正文才是给模型的话。
-    // 报错时不清输入框——让用户就地改，不用重打一遍
+    // "$skill名(参数) 任务正文"：名字和参数给 harness（注入 skill），正文才是给模型的话。
+    // 参数在括号里显式分隔（issue #214，ponytail 的 argument-hint 档位同款需求），
+    // 单 token、不含空格——首个空白之前整段是指令头。报错时不清输入框——让用户就地改
     if (text.startsWith("$")) {
       const space = text.search(/\s/);
-      const name = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const token = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const paren = token.match(/^(.+?)\((.*)\)$/);
+      const name = paren ? paren[1]! : token;
+      const skillArgs = paren?.[2]?.trim() || undefined;
       const task = space === -1 ? "" : text.slice(space + 1).trim();
       if (!useChat.getState().skills.some((s) => s.name === name)) {
-        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名）` });
+        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名，可带参数：$名字(参数)）` });
         return;
       }
       if (!task) {
@@ -2459,7 +2470,7 @@ function ChatComposer() {
         return;
       }
       setInput("");
-      dispatch(task, name);
+      dispatch(task, name, skillArgs);
       return;
     }
     setInput("");

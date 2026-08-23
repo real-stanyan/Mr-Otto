@@ -394,7 +394,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         <details className={THINKING_DETAILS}>
           {/* skill 注入行:thinking 折叠版式 + accent 点题 */}
           <summary className={`${THINKING_SUMMARY} text-brand`}>
-            ✦ 启用 skill「{event.name}」——指令已注入上下文
+            ✦ 启用 skill「{event.name}」{event.args ? `（参数：${event.args}）` : ""}——指令已注入上下文
           </summary>
           <div className={THINKING_BODY}>{event.content}</div>
         </details>

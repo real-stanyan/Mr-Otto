@@ -457,10 +457,11 @@ interface ChatState {
       不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
   loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn */
-  send(text: string, skill?: string): Promise<void>;
+  /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn。
+      skillArgs = `$名字(参数)` 里的参数，随事件进投影头 */
+  send(text: string, skill?: string, skillArgs?: string): Promise<void>;
   /** turn 跑着时的回车落在这：排进当前会话的队尾，等这一 turn 收工再发 */
-  enqueue(text: string, skill?: string): void;
+  enqueue(text: string, skill?: string, skillArgs?: string): void;
   /** 队列条目上的 × */
   unqueue(id: string): void;
   /** 一 turn 收工后把队首那条发出去（内部：onTurnStatus 的 idle 分支调）。
@@ -1770,7 +1771,7 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async send(text, skill) {
+  async send(text, skill, skillArgs) {
     const sessionId = get().sessionId; // 发消息瞬间锁定目标会话——之后切走也不串
     const staged = get().staged;
     const attachments = staged.map((a) =>
@@ -1788,7 +1789,8 @@ export const useChat = create<ChatState>((set, get) => ({
         sessionId,
         text,
         skill,
-        attachments.length > 0 ? attachments : undefined
+        attachments.length > 0 ? attachments : undefined,
+        skillArgs
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1823,11 +1825,11 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  enqueue(text, skill) {
+  enqueue(text, skill, skillArgs) {
     const sessionId = get().sessionId; // 排队瞬间锁定目标会话——之后切走也不串
     if (sessionId === "") return;
     // id 只服务于 React key 和 × 按钮，不进日志、不跨进程 —— randomUUID 够了
-    const task: QueuedTask = { id: crypto.randomUUID(), text, skill };
+    const task: QueuedTask = { id: crypto.randomUUID(), text, skill, skillArgs };
     set((s) => ({
       queuedBySession: {
         ...s.queuedBySession,
@@ -1853,7 +1855,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 等它 resolve 再出队意味着这一条在队列里挂着跑完全程——看起来像没发出去
     set((s) => ({ queuedBySession: { ...s.queuedBySession, [sessionId]: rest } }));
     try {
-      await window.otter.sendMessage(sessionId, next.text, next.skill, undefined);
+      await window.otter.sendMessage(sessionId, next.text, next.skill, undefined, next.skillArgs);
     } catch (e) {
       // 发不出去（会话没了 / turn 撞上了）就把话还给用户：回队首，原样排着，
       // 下一次收工再试。这里不能吞——吞掉等于把用户敲过的一条活凭空删了

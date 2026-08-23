@@ -296,6 +296,12 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
   const micro = absorbedIndexes(events, barren);
 
+  // 已启用的 skill（issue #214）：context_compacted 清场会把 skill 指令连同历史
+  // 一起抹掉——用户没说停，技能却无声失效。清场后按这份台账重注入：快照本来
+  // 就在 skill_invoked 事件里，重注入是纯投影（可从日志推导，不落新事件），
+  // 旧日志追溯受益。按名去重、后启用覆盖先启用（同名重复注入没有第二种语义）。
+  const activeSkills = new Map<string, { content: string; args?: string }>();
+
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {
       messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
@@ -376,10 +382,17 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
 
       case "skill_invoked":
         // 注入为 user 消息，与 compact 摘要同理：中途插 system 各家方言兼容性参差。
-        // 位置就是事件位置——skill 在哪条消息前启用，模型就从哪开始看到它
+        // 位置就是事件位置——skill 在哪条消息前启用，模型就从哪开始看到它。
+        // args 段只在有参数时出现：旧日志（无 args 字段）投影逐字节不变
         messages.push({
           role: "user",
-          content: `[本轮启用 skill「${event.name}」，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
+          content:
+            `[本轮启用 skill「${event.name}」${event.args ? `（参数：${event.args}）` : ""}` +
+            `，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
+        });
+        activeSkills.set(event.name, {
+          content: event.content,
+          ...(event.args !== undefined ? { args: event.args } : {}),
         });
         break;
 
@@ -428,6 +441,18 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
           role: "user",
           content: `[上下文已压缩。以下是此前对话的摘要，作为你对这段历史的全部记忆]\n${event.summary}`,
         });
+        // 已启用的 skill 随清场重注入（issue #214）：摘要之后、当前请求之前——
+        // 模型先读说明书再读任务，与首次注入的次序一致。用户没有"停用"动作，
+        // 所以启用过 = 仍然生效；快照取台账里那份（发送时刻的原文），不回磁盘
+        // 现读——文件后来被改/被删不影响重放，与 ADR-0007 的快照语义一脉相承
+        for (const [name, s] of activeSkills) {
+          messages.push({
+            role: "user",
+            content:
+              `[skill「${name}」${s.args ? `（参数：${s.args}）` : ""}在压缩前已启用，仍然生效` +
+              `——以下是它的指令，请继续遵循]\n${s.content}`,
+          });
+        }
         // 当前请求兜底（issue #193）：compact 之后没有更新的 user_message =
         // 被折进摘要的最后一条 user 就是正在处理的请求。原文重注，不再单靠
         // 提示词求摘要模型逐字保留。只重注正文——textFiles 是把上下文撑爆的
