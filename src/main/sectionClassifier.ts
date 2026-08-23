@@ -9,10 +9,12 @@
 import { randomUUID } from "node:crypto";
 
 import { createCheapAdapter } from "./cheapAdapter.js";
+import { DEFAULT_HELPER_MODEL } from "../shared/helperModel.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
-/** 分类员型号：目录里的免费款。换分类员改这一行 */
-export const SECTION_MODEL = "glm-4.5-flash";
+/** 分类员型号的出厂默认。用户可以在设置页改（shared/helperModel.ts），
+    调用方把选定的那个 id 传进来——常量留着当默认值和测试锚点 */
+export const SECTION_MODEL = DEFAULT_HELPER_MODEL;
 
 /** 单条消息进摘要时的截断长度：分类只需要知道在聊什么，不需要读完 */
 const PER_MESSAGE_CHARS = 300;
@@ -135,7 +137,9 @@ function buildPrompt(currentTitle: string | null, span: string, tag: string): st
 
 /** 跑一次分类。失败一律返回 null（永不抛）——目录是锦上添花，不能拖垮 turn */
 export async function classifySection(
-  events: SessionEvent[]
+  events: SessionEvent[],
+  /** 用哪一款（设置页可改，见 shared/helperModel.ts）。不传 = 出厂默认 */
+  model: string = SECTION_MODEL
 ): Promise<{ title: string | null; model: string; usage?: TokenUsage } | null> {
   const span = unclassifiedSpan(events);
   const summary = summarizeSpan(span);
@@ -145,7 +149,7 @@ export async function classifySection(
     // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
     // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
     // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
-    const cheap = createCheapAdapter(SECTION_MODEL, CLASSIFY_TIMEOUT_MS);
+    const cheap = createCheapAdapter(model, CLASSIFY_TIMEOUT_MS);
     if (!cheap) return null;
 
     const currentTitle = currentSectionTitle(events);
@@ -166,7 +170,7 @@ export async function classifySection(
     const title = parsed.title !== null && parsed.title === currentTitle ? null : parsed.title;
     return {
       title,
-      model: SECTION_MODEL,
+      model,
       ...(reply.usage ? { usage: reply.usage } : {}),
     };
   } catch {

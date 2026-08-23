@@ -384,6 +384,14 @@ export interface ShellBridge {
   getAutoCompact(): Promise<AutoCompactSettings>;
   /** 存一份新设置。未知字段/非法形状在主进程被剥掉，不是"渲染层传什么就信什么" */
   setAutoCompact(settings: AutoCompactSettings): Promise<void>;
+  /** 三个 turn 外挂（分区分类 / 跟进建议 / 微压缩）共用的那一款小模型
+      （issue #112，落 userData/helper-model.json）。出厂默认和看图的 vision-bridge
+      共一家的免费额度，而那条路失败会让整个 turn 失败——换一家就换了一把 key、
+      一份额度。现读不缓存：改了立刻对下一次 turn 收口生效 */
+  getHelperModel(): Promise<string>;
+  /** 存一款新的，返回真正存下去的那个 id：认不出来的型号在主进程被换成出厂默认，
+      渲染层照着回值更新，不用自己再猜一遍 */
+  setHelperModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
@@ -706,6 +714,8 @@ export const CHANNELS = {
   rebuildSearchIndex: "otter:rebuildSearchIndex",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
+  getHelperModel: "otter:getHelperModel",
+  setHelperModel: "otter:setHelperModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
   listMcpServers: "otter:listMcpServers",
