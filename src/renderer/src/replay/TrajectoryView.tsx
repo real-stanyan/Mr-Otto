@@ -239,8 +239,12 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
     : ev.type === "turn_ended" ? ev.outcome
     : "Completed";
 
+  // shrink-0 只在横排时才是「别压我的 400px 宽」；一到 980 以下换竖排，它就变成
+  // 「别压我的高」——面板没有 flex-1，高度取内容高度，于是撑到多长有多长，把列表
+  // 挤没、自己溢出窗口底，里面那层 overflow-y-auto 拿不到有界高度所以滚不动。
+  // 竖排时改成和列表对半分（flex-1 + 可收缩），两边各自滚各自的
   return (
-    <aside className="w-[400px] shrink-0 border-l border-border flex flex-col min-h-0 max-[980px]:w-full max-[980px]:border-l-0 max-[980px]:border-t">
+    <aside className="w-[400px] border-l border-border flex flex-col min-h-0 min-[981px]:shrink-0 max-[980px]:w-full max-[980px]:flex-1 max-[980px]:border-l-0 max-[980px]:border-t">
       <div className="flex items-center gap-2 px-4 py-[10px] border-b border-border">
         <span className={`text-[10px] font-semibold tracking-[0.06em] px-[6px] py-[2px] rounded ${tag.cls}`}>{tag.label}</span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
