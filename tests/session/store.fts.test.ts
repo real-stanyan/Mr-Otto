@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { EventStore } from "../../src/session/store.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function seed(
   store: EventStore,
@@ -87,7 +86,7 @@ describe("EventStore FTS", () => {
 
   it("老库回填：FTS 表缺失时启动一次性建索引", () => {
     // 用同一个文件路径开两次：第一次只建 events（模拟旧库），第二次建 FTS 并回填
-    const path = join(mkdtempSync(join(tmpdir(), "otto-fts-")), "log.db");
+    const path = join(tempDir("otto-fts-"), "log.db");
     const legacy = new Database(path);
     legacy.exec(
       `CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, type TEXT NOT NULL, sandbox_id TEXT, payload TEXT NOT NULL, PRIMARY KEY (session_id, seq))`
@@ -101,7 +100,7 @@ describe("EventStore FTS", () => {
   });
 
   it("events_fts 表已建但是空的 + events 里有数据 → 不回填（存在即视为已完成，不看是否为空）", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "otto-fts-")), "log.db");
+    const path = join(tempDir("otto-fts-"), "log.db");
     const legacy = new Database(path);
     legacy.exec(
       `CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, type TEXT NOT NULL, sandbox_id TEXT, payload TEXT NOT NULL, PRIMARY KEY (session_id, seq))`

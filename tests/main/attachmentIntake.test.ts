@@ -1,16 +1,15 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { intakeFile, TEXT_MAX_BYTES } from "../../src/main/attachmentIntake.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 const png = () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
 
 let dir: string;
 let store: AttachmentStore;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "otter-intake-"));
+  dir = tempDir("otter-intake-");
   store = new AttachmentStore(dir);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));

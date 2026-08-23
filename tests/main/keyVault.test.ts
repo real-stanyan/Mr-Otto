@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { loadKeys, saveKey, applyToEnv } from "../../src/main/keyVault.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function vaultPath() {
-  return join(mkdtempSync(join(tmpdir(), "otter-vault-")), "keys.json");
+  return join(tempDir("otter-vault-"), "keys.json");
 }
 
 describe("keyVault", () => {

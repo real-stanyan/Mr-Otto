@@ -7,5 +7,11 @@ import { defineConfig } from "vitest/config";
 // 那些目录在 .git/info/exclude 里,CI 的 clone 根本没有,
 // 所以这条 include 是让本地对齐 CI(CI == Gate 契约),不是削覆盖(issue #30 / ADR-0016)。
 export default defineConfig({
-  test: { include: ["tests/**/*.test.ts"] },
+  test: {
+    include: ["tests/**/*.test.ts"],
+    // 每个测试文件跑完删掉它建过的一次性目录（tests/helpers/tempDir.ts）。
+    // 挂在这里而不是让每个文件各自 afterEach：那要求每个新测试都记得补，
+    // 记不住的规矩迟早失效——而失效的表现是 /tmp 里慢慢堆满 otter-* 目录
+    setupFiles: ["tests/helpers/setup.ts"],
+  },
 });

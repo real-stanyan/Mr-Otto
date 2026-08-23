@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadAlwaysAllow, addAlwaysAllow } from "../../src/main/permissionStore.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function storePath() {
-  return join(mkdtempSync(join(tmpdir(), "otter-perm-")), "permissions.json");
+  return join(tempDir("otter-perm-"), "permissions.json");
 }
 
 describe("permissionStore", () => {

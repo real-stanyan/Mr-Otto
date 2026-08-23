@@ -2,18 +2,18 @@
 // 这里跑的是真 anydoc,不 mock —— mock 掉转换器等于只测了自己写的 if。
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { intakeFile, TEXT_MAX_BYTES } from "../../src/main/attachmentIntake.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 const docx = () => new Uint8Array(readFileSync(join(__dirname, "../fixtures/sample.docx")));
 
 let dir: string;
 let store: AttachmentStore;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "otter-doc-"));
+  dir = tempDir("otter-doc-");
   store = new AttachmentStore(dir);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));

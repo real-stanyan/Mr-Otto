@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { createAuthStorage, nodeIO } from "../../src/main/authStorage.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function fakeIO() {
   const store = new Map<string, string>();
@@ -81,7 +81,7 @@ describe("authStorage", () => {
   });
 
   it("nodeIO 落盘权限恒 0600（含二次写入）", () => {
-    const dir = mkdtempSync(join(tmpdir(), "otter-authstorage-"));
+    const dir = tempDir("otter-authstorage-");
     const filePath = join(dir, "auth.json");
     const storage = createAuthStorage(filePath, nodeIO);
     storage.setItem("sb-token", "abc");
@@ -92,7 +92,7 @@ describe("authStorage", () => {
   });
 
   it("nodeIO：文件不存在时 getItem 为 null（真实文件系统）", () => {
-    const dir = mkdtempSync(join(tmpdir(), "otter-authstorage-"));
+    const dir = tempDir("otter-authstorage-");
     const filePath = join(dir, "does-not-exist.json");
     const storage = createAuthStorage(filePath, nodeIO);
     expect(storage.getItem("anything")).toBeNull();

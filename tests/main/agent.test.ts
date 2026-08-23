@@ -1,7 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createAgent } from "../../src/main/agent.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
@@ -17,10 +14,11 @@ import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
 import { withMcp } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
-const attachments = new AttachmentStore(mkdtempSync(join(tmpdir(), "otter-agent-test-")));
+const attachments = new AttachmentStore(tempDir("otter-agent-test-"));
 
 describe("createAgent 会话生命周期", () => {
   it("新建：日志第 0 条 = session_created，带 workspace", () => {
@@ -123,7 +121,7 @@ describe("createAgent 会话生命周期", () => {
   // resume 不再落——日志里那条才是模型看过的那份，重复落等于说谎
   it("新 session：session_created 之后紧跟 memory_loaded；resume 不再落", () => {
     const store = new EventStore(":memory:");
-    const world = createLocalWorld({ configRoot: mkdtempSync(join(tmpdir(), "otter-agent-config-")) });
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
     const memory = { memory: "m", user: "u" };
 
     const a = createAgent({ store, workspace: "/proj/x", push, attachments, world, memory });
@@ -148,7 +146,7 @@ describe("createAgent 会话生命周期", () => {
     store.close();
 
     const store2 = new EventStore(":memory:");
-    const world = createLocalWorld({ configRoot: mkdtempSync(join(tmpdir(), "otter-agent-config-")) });
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
     const withConfig = createAgent({ store: store2, workspace: "/proj/x", push, attachments, world });
     expect(withConfig.toolDefs.map((d) => d.name)).toContain("memory");
     store2.close();
