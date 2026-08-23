@@ -670,6 +670,6 @@ deriveMessages.ts `renderMemoryPrompt` 指引第 2 句末尾加：「过去做�
 
 ### Task 6: ADR + CONTEXT + 收尾
 
-- ADR 号 = 合并时下一个空号（此刻 0061）：「跨会话回忆靠搜索不靠注入」——决定：FTS 是派生索引（可 DROP 重建，不是事实）；查询经 `world.history` 能力（工具不碰 store）；不自动注入历史，只给工具；子会话/归档/当前会话排除；<3 字符 LIKE 兜底。
+- ADR 号 = 合并时下一个空号（实际落在 0065，0061-0064 已被占）：「跨会话回忆靠搜索不靠注入」——决定：FTS 是派生索引（可 DROP 重建，不是事实）；查询经 `world.history` 能力（工具不碰 store）；不自动注入历史，只给工具；子会话/归档/当前会话排除；<3 字符 LIKE 兜底。
 - CONTEXT.md 两行：「跨会话回忆（session_search）」「历史索引（events_fts）」。
 - `npm test` 绿 → push → PR `Closes #177`，body 贴 e2e 结果。**PR 开了就停，合并由维护者决定。**
