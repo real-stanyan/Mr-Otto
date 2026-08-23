@@ -62,7 +62,7 @@ MainActor.assumeIsolated {
     style: .auto,
     expanded: { IslandExpandedView(model: model) },
     compactLeading: { IslandCompactView(model: model) },
-    compactTrailing: { EmptyView() }
+    compactTrailing: { IslandCompactStatusView(model: model) }
   )
 
   Publishers.CombineLatest3(model.$fleet, notch.$isHovering, model.$composing)
