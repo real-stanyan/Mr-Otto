@@ -34,6 +34,7 @@ import { initialSubagentScope } from "../lib/subagentScopes.js";
 import { createSubagentFile, fileFieldsOf } from "../lib/createSubagentFile.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { useSubagentScope, type SubagentScopeView } from "../lib/useSubagentScope.js";
+import { VisionModelSetting } from "./VisionModelSetting.js";
 
 export function SubagentSettings() {
   const subagents = useChat((s) => s.subagents);
@@ -51,9 +52,11 @@ export function SubagentSettings() {
   const [page, setPage] = useState<{ kind: "list" } | { kind: "new" } | { kind: "edit"; key: string }>({
     kind: "list",
   });
-  // 内置的和自己的分两栏:一份改得了、一份改不了,混在一起每行都得先看徽章
-  const builtins = subagents.filter((d) => d.builtin);
-  const own = subagents.filter((d) => !d.builtin);
+  // 内置的和自己的分两栏:一份改得了、一份改不了,混在一起每行都得先看徽章。
+  // 盖住内置的磁盘定义(materialize 产物)留在内置栏:内置是身份不是状态,
+  // 配了个模型不该看起来像内置的消失了、「我的」栏多出一个重名的
+  const builtins = subagents.filter((d) => d.builtin || d.overridesBuiltin);
+  const own = subagents.filter((d) => !d.builtin && !d.overridesBuiltin);
 
   // 一个工作区的最后一条会话被删掉,它就从候选里消失了,但 store 里那个路径还留着:
   // 下拉框回落显示「用户」,底下的提示却还指着那条死路径,「新建」也落在用户级
@@ -113,16 +116,30 @@ export function SubagentSettings() {
             </div>
             <p className={HINT}>
               随 app 一起发的，不在磁盘上，删不掉也改不了；点开可以「改成我自己的一份」。
+              改过的挂「已自定义」留在这栏，删掉那份文件就回到出厂。
               审批档是「跟随主会话」：你开了免审批它就免审批，没开就把卡弹给你。
             </p>
-            {builtins.map((def) => (
-              <BuiltinSubagentRow
-                key={rowKey(def)}
-                def={def}
-                scope={view}
-                onOpen={() => setPage({ kind: "edit", key: rowKey(def) })}
-              />
-            ))}
+            {builtins.map((def) =>
+              def.builtin ? (
+                <BuiltinSubagentRow
+                  key={rowKey(def)}
+                  def={def}
+                  scope={view}
+                  onOpen={() => setPage({ kind: "edit", key: rowKey(def) })}
+                />
+              ) : (
+                // 已自定义的那份:磁盘定义,走普通行(可编辑、显示模型),徽章标身份
+                <SubagentRow
+                  key={rowKey(def)}
+                  def={def}
+                  scope={view}
+                  onOpen={() => setPage({ kind: "edit", key: rowKey(def) })}
+                />
+              )
+            )}
+            {/* 不是子智能体,但用户的心智模型是"后台帮手都在内置这一栏"(issue #262):
+                memory-reviewer 在上面,图片代读员也该在这找得到 */}
+            <VisionModelSetting />
           </>
         )}
         {/* 自己那一栏也带个标题:上面那栏有,这栏没有的话读起来像内置的续篇 */}
@@ -182,6 +199,11 @@ function SubagentRow({
       {scope.showScope && (
         <Badge variant="outline" className="shrink-0 text-muted-foreground" title={`来自 ${def.source}`}>
           {def.scope === "workspace" ? "工作区" : "用户"}
+        </Badge>
+      )}
+      {def.overridesBuiltin && (
+        <Badge variant="secondary" className="shrink-0" title="盖住内置那份的磁盘定义，删掉文件就回到出厂">
+          已自定义
         </Badge>
       )}
       {def.readOnly && <Badge variant="secondary" className="shrink-0">只读</Badge>}

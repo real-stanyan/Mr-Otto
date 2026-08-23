@@ -83,6 +83,7 @@ import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
 import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
+import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -2701,6 +2702,8 @@ export function App() {
     <MemorySettings />
   ) : settingsSection === "context" ? (
     <AutoCompactSettings />
+  ) : settingsSection === "about" ? (
+    <AboutUpdateSettings />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (

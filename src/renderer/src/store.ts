@@ -93,7 +93,8 @@ export type SettingsSection =
   | "agents"
   | "mcp"
   | "memory"
-  | "context";
+  | "context"
+  | "about";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createVisionBridge, VISION_BRIDGE_MODEL } from "../../src/main/visionBridge.js";
+import { createVisionBridge } from "../../src/main/visionBridge.js";
+import { DEFAULT_VISION_MODEL } from "../../src/shared/visionModel.js";
 
 const ref = { id: "sha256:" + "a".repeat(64), mediaType: "image/png", bytes: 3 };
 
@@ -20,7 +21,7 @@ describe("visionBridge 代读", () => {
       model: string;
       messages: { content: { type: string; text?: string; image_url?: { url: string } }[] }[];
     };
-    expect(sent.model).toBe(VISION_BRIDGE_MODEL);
+    expect(sent.model).toBe(DEFAULT_VISION_MODEL);
     const parts = sent.messages[0]!.content;
     expect(parts[0]!.type).toBe("text");
     expect(parts[0]!.text).toContain("这是什么");

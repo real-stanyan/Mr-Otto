@@ -87,6 +87,7 @@ export function ModelPicker({
   disabled = false,
   className,
   placeholder,
+  filter,
 }: {
   value: string;
   /** 当前走哪条路。选单里赠额那一份和自己 key 那一份是同一个型号的两个条目 */
@@ -99,6 +100,8 @@ export function ModelPicker({
       而主会话可能还没开起来（设置页不需要一个活着的会话）—— 那时"跟随主会话"
       比"选择型号"更贴事实：这个控件不选也有确定的结果 */
   placeholder?: string;
+  /** 只列一部分型号（看图设置那格只列 supportsVision 的款）。滤空的组整组不出现 */
+  filter?: (m: ModelChoice) => boolean;
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -142,6 +145,10 @@ export function ModelPicker({
         ? [{ provider: "ollama" as ProviderId, models: usable.map(ollamaChoiceFrom) }]
         : [];
     return [...modelsByProvider(), ...ollama]
+      // 能力过滤在 ready/选中兜底之前：滤空的组整组不出现，
+      // 但当前选中的那家照旧保留（value 得在菜单里找得到自己）
+      .map((g) => ({ ...g, models: filter ? g.models.filter(filter) : g.models }))
+      .filter((g) => g.models.length > 0 || g.provider === choice?.provider)
       .map((g) => ({ ...g, info: findProvider(g.provider)! }))
       // 赠额开着时 DeepSeek 那几款被搬去单独一组(见下面的 grantGroup),
       // 这里不再出现 —— 同一款在两组里各出现一次,读者得先回答"点哪个才是免费的",
@@ -159,7 +166,7 @@ export function ModelPicker({
         ...g,
         options: g.models.map((m) => optionOf(m, g.provider, g.info.name)),
       }));
-  }, [keyStatus, ollamaModels, choice?.provider, grantOn, ownDeepseek]);
+  }, [keyStatus, ollamaModels, choice?.provider, grantOn, ownDeepseek, filter]);
 
   // 官方赠额那一组:赠额只买了 DeepSeek(modelRoute.ts),所以这一组就是 DeepSeek 那几款。
   // 余额用完的不删,只标成不可选 —— 选了也是 blocked,不如当场说清楚为什么
@@ -168,7 +175,8 @@ export function ModelPicker({
     const info = findProvider("deepseek")!;
     const items = modelsByProvider()
       .find((g) => g.provider === "deepseek")
-      ?.models.map((m) => {
+      ?.models.filter((m) => (filter ? filter(m) : true))
+      .map((m) => {
         const bucket = bucketOf(m.model, wallet);
         const left = bucket === undefined ? undefined : wallet?.buckets[bucket]?.balanceTokens;
         const empty = left !== undefined && left <= 0;
@@ -186,7 +194,7 @@ export function ModelPicker({
         };
       });
     return items && items.length > 0 ? items : null;
-  }, [grantOn, wallet]);
+  }, [grantOn, wallet, filter]);
 
   // Root 要一份**平铺**的清单：选中项、以及它的挡位表都从这里查。
   // OTTER_MODEL 填了目录外的型号时补一条，否则触发器会显示 placeholder ——

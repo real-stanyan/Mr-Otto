@@ -10,7 +10,7 @@ import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../sessio
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import type { SessionSummary } from "../session/store.js";
+import type { SessionSummary, FtsHit } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
@@ -41,7 +41,7 @@ export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, Ask
 
 export type { SubagentDef };
 
-export type { SessionSummary };
+export type { SessionSummary, FtsHit };
 
 export type { TerminalInfo };
 
@@ -379,6 +379,10 @@ export interface ShellBridge {
   /** 重建跨会话回忆的全文索引（issue #190）。索引是 events 的派生物，幂等重灌；
       平时只在老库首开时自动跑一次，这个口子是索引损坏时的修复路径 */
   rebuildSearchIndex(): Promise<void>;
+  /** 拿用户给的词直接查一次全文索引（设置页的试搜框）。走 EventStore.searchText
+      同一条路，但不像 session_search 那样额外排除当前会话——这个口子是给用户
+      验证「索引里有没有」的，不是给模型回忆用的。text 在主进程截断过 */
+  searchIndex(query: string): Promise<FtsHit[]>;
   /** 自动压缩设置（设置页读，落 userData/auto-compact.json）。现读不缓存——
       改了立刻对下一次造 agent 生效，不用重启（同 alwaysAllow 的规矩） */
   getAutoCompact(): Promise<AutoCompactSettings>;
@@ -392,10 +396,26 @@ export interface ShellBridge {
   /** 存一款新的，返回真正存下去的那个 id：认不出来的型号在主进程被换成出厂默认，
       渲染层照着回值更新，不用自己再猜一遍 */
   setHelperModel(model: string): Promise<string>;
+  /** vision-bridge 代读员型号（落 userData/vision-model.json）。当前模型没眼睛
+      而消息带图时由它代读；只收目录里原生看图的款，别的在主进程被换成默认。
+      现读不缓存：改了对下一条带图消息生效 */
+  getVisionModel(): Promise<string>;
+  /** 存一款新的，契约同 setHelperModel：回值是真正存下去的那个 id */
+  setVisionModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
+  /** OTA 更新（ADR-0075）。快照现问现答；变化走 onUpdaterState 推送 */
+  updaterGetState(): Promise<UpdaterState>;
+  /** 手动查一次（设置页按钮）。返回这一轮查完落定的状态——按钮要即时反馈，
+      不必等推送。查询/下载进行中时重入直接回当前状态，不并发起第二轮 */
+  updaterCheckNow(): Promise<UpdaterState>;
+  /** ready 时才有效：spawn 换包脚本并退出 app。非 ready 调用是空操作 */
+  updaterInstallAndRestart(): Promise<void>;
+  /** 用系统浏览器打开 GitHub Releases 页（manual 降级 / 用户想看更新日志）。
+      URL 由主进程钉死，渲染层递不进任意外链（同 openProviderConsole 的规矩） */
+  updaterOpenReleasePage(): Promise<void>;
   /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
@@ -601,6 +621,8 @@ export interface ShellBridge {
   /** 用户点了灵动岛列表里的会话行(#210)→ 主进程已聚焦窗口,渲染层负责切会话
       (走 store.resume,同侧栏点行一条路) */
   onIslandFocusSession(cb: (sessionId: string) => void): Unsubscribe;
+  /** OTA 更新器状态变化（后台定时检查也会推——设置页没开着时状态也在走） */
+  onUpdaterState(cb: (state: UpdaterState) => void): Unsubscribe;
   /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
       左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
   getWindowFullscreen(): Promise<boolean>;
@@ -661,6 +683,19 @@ export interface IslandSettings {
   display: IslandDisplay;
 }
 
+/** OTA 更新器状态（main/updater.ts 维护并推送，设置页「关于与更新」卡消费）。
+    无开发者账号签不了名（ADR-0026）→ electron-updater 走不通，自研换包（ADR-0075）。
+    manual = 检测到新版但本机没法自动换包（App Translocation / 目录不可写），
+    只能提示用户去 Release 页手动装；disabled = 开发模式/非 mac，压根不查 */
+export type UpdaterState =
+  | { phase: "idle"; currentVersion: string }
+  | { phase: "checking"; currentVersion: string }
+  | { phase: "downloading"; currentVersion: string; version: string; received: number; total: number }
+  | { phase: "ready"; currentVersion: string; version: string }
+  | { phase: "manual"; currentVersion: string; version: string; reason: string }
+  | { phase: "error"; currentVersion: string; message: string }
+  | { phase: "disabled"; currentVersion: string; reason: string };
+
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
@@ -712,12 +747,20 @@ export const CHANNELS = {
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
   rebuildSearchIndex: "otter:rebuildSearchIndex",
+  searchIndex: "otter:searchIndex",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
   getHelperModel: "otter:getHelperModel",
   setHelperModel: "otter:setHelperModel",
+  getVisionModel: "otter:getVisionModel",
+  setVisionModel: "otter:setVisionModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
+  updaterGetState: "otter:updaterGetState",
+  updaterCheckNow: "otter:updaterCheckNow",
+  updaterInstallAndRestart: "otter:updaterInstallAndRestart",
+  updaterOpenReleasePage: "otter:updaterOpenReleasePage",
+  updaterState: "otter:updaterState",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",

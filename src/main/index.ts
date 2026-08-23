@@ -38,7 +38,8 @@ import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { shouldNudge, settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
-import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
+import { createVisionBridge } from "./visionBridge.js";
+import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifySection, SECTION_MODEL } from "./sectionClassifier.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
@@ -48,7 +49,10 @@ import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
-import type { IslandSettings } from "../shared/shellBridge.js";
+import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
+import { createUpdater } from "./updater.js";
+import { createUpdaterHostDeps } from "./updaterHost.js";
+import { RELEASES_PAGE_URL } from "./updaterCore.js";
 import { scanSkills } from "./skills.js";
 import {
   scanSubagents,
@@ -219,6 +223,8 @@ void app.whenReady().then(() => {
   // 而外挂失败只少一条标题；愿意换家的人在设置页换，换了就换了一把 key、一份额度
   const helperModelPath = join(app.getPath("userData"), "helper-model.json");
   const helperModel = (): string => loadHelperModel(helperModelPath);
+  const visionModelPath = join(app.getPath("userData"), "vision-model.json");
+  const visionModel = (): string => loadVisionModel(visionModelPath);
   // 灵动岛设置(#199)。app 级、跨会话;启动读一次进内存——只有 set handler 会改它,
   // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
   const islandSettingsPath = join(app.getPath("userData"), "island.json");
@@ -1105,6 +1111,14 @@ void app.whenReady().then(() => {
     applyUserEdit(memoryEditDeps, target, text, sessionId));
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
+  // 设置页的试搜框。不排除当前会话（用户验证「索引里有没有」，不是模型回忆）；
+  // tool_result 能有上万字符，截断后再过 IPC
+  ipcMain.handle(CHANNELS.searchIndex, (_e, query: unknown) => {
+    if (typeof query !== "string") throw new Error("query 必须是字符串");
+    return store
+      .searchText(query, { limit: 20 })
+      .map((h) => ({ ...h, text: [...h.text].length > 200 ? [...h.text].slice(0, 200).join("") + "…" : h.text }));
+  });
   ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
     // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
     // MEMORY_FILES[target] 拼了路径，得在拼之前挡
@@ -1120,6 +1134,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getHelperModel, () => helperModel());
   ipcMain.handle(CHANNELS.setHelperModel, (_e, model: unknown) =>
     saveHelperModel(helperModelPath, model));
+  ipcMain.handle(CHANNELS.getVisionModel, () => visionModel());
+  ipcMain.handle(CHANNELS.setVisionModel, (_e, model: unknown) =>
+    saveVisionModel(visionModelPath, model));
   // 灵动岛设置(#199):normalise 在 store 层做(渲染层传什么不直接信),
   // set 完立刻重推岛快照——切换即时生效,不等下一个事件
   ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
@@ -1129,6 +1146,28 @@ void app.whenReady().then(() => {
     islandUsageCache = null; // 切换瞬间给最新数,别端上一份 30s 前的缓存
     pushFleet();
   });
+
+  // ── OTA 更新（ADR-0075）──────────────────────────────────────────
+  // 打包的 mac 版才启用：开发模式没有可换的 .app，查了也白查。
+  // 定时节奏：启动 30s 后一次（别挤开冷启动关键路径）+ 每 6h 一次；
+  // checkNow 内部有互斥，定时器和设置页按钮撞上也只跑一轮
+  const updater =
+    process.platform === "darwin" && app.isPackaged
+      ? createUpdater(createUpdaterHostDeps((s) => send(CHANNELS.updaterState, s)))
+      : null;
+  const updaterDisabled: UpdaterState = {
+    phase: "disabled",
+    currentVersion: app.getVersion(),
+    reason: app.isPackaged ? "仅支持 macOS" : "开发模式不检查更新",
+  };
+  ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
+  ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
+  ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
+  ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
+  if (updater !== null) {
+    setTimeout(() => void updater.checkNow(), 30_000);
+    setInterval(() => void updater.checkNow(), 6 * 60 * 60 * 1000);
+  }
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());
@@ -1528,11 +1567,14 @@ void app.whenReady().then(() => {
       // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
       const modelText = composeUserText(text, textFiles);
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
-        const describeImages = createVisionBridge((id) => attachmentStore.read(id));
+        // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
+        // 真正代读的那一款，不是常量
+        const bridgeModel = visionModel();
+        const describeImages = createVisionBridge((id) => attachmentStore.read(id), undefined, bridgeModel);
         const described = await describeImages(refs, modelText);
         const descEvent = store.append({
           sessionId, ts: Date.now(), type: "image_described",
-          content: described, model: VISION_BRIDGE_MODEL,
+          content: described, model: bridgeModel,
         });
         send(CHANNELS.event, descEvent);
       }

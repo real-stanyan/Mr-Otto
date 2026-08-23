@@ -115,4 +115,8 @@ export interface SubagentDef {
       可选而不是必填：加个必填字段要动每一处构造点（含全部测试夹具），
       而"没有这个字段"和"不是内置"是同一件事 */
   builtin?: true;
+  /** 磁盘定义，但同名盖住了一份内置（materialize 的产物）。设置页据此把它
+      留在「内置」栏（挂"已自定义"徽章）而不是挪去「我的」——用户配了个模型
+      不该看起来像内置的那份消失了。可选，理由同 builtin */
+  overridesBuiltin?: true;
 }

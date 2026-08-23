@@ -89,4 +89,13 @@ describe("withBuiltins", () => {
     const got = withBuiltins([onDisk("explore")], ALL);
     expect(got.filter((d) => d.name.toLowerCase() === "explore")).toHaveLength(1);
   });
+
+  // 内置是身份不是状态:配了模型的内置仍留在设置页的「内置」栏,靠这个标记认
+  it("盖住内置的磁盘定义标 overridesBuiltin，别的磁盘定义不标", () => {
+    const got = withBuiltins([onDisk("general-purpose"), onDisk("my-own")], ALL);
+    expect(got.find((d) => d.name === "general-purpose")!.overridesBuiltin).toBe(true);
+    expect(got.find((d) => d.name === "my-own")!.overridesBuiltin).toBeUndefined();
+    // 大小写不敏感这条对标记同样成立
+    expect(withBuiltins([onDisk("explore")], ALL).find((d) => d.name === "explore")!.overridesBuiltin).toBe(true);
+  });
 });
