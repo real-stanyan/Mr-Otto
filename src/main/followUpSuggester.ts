@@ -6,8 +6,7 @@
 // 建议是"此刻这一屏"的东西,这个 turn 没生成出来,下个 turn 自然会有新的一批。
 // 所以这里没有"未分类跨度"那套锚点,只看最后一轮问答。
 
-import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
-import { findModel } from "../shared/modelCatalog.js";
+import { createCheapAdapter } from "./cheapAdapter.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
 /** 生成员型号:和分类员同一款免费货。换生成员改这一行 */
@@ -97,28 +96,16 @@ export async function suggestFollowUps(
   const exchange = summarizeExchange(lastExchange(events));
   if (exchange.trim() === "") return null; // 没有问答可依据，别浪费一次调用
 
-  const choice = findModel(SUGGEST_MODEL);
-  if (!choice) return null;
-  // 同 sectionClassifier：没配 key 就别出门，空 Bearer 是每个 turn 一次必 401 的往返
-  const apiKey = process.env[choice.apiKeyEnv] ?? "";
-  if (apiKey === "") return null;
+  // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts
+  const cheap = createCheapAdapter(SUGGEST_MODEL, SUGGEST_TIMEOUT_MS);
+  if (!cheap) return null;
 
   try {
-    const adapter = createOpenAICompatibleAdapter({
-      baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
-      apiKey,
-      model: choice.model,
-      vision: false,
-      // 关掉 thinking：三句短话不需要推理，而 glm-4.5-flash 的默认档是「开」
-      // （分类员那边实测为四个字烧掉 1452 个 completion token）。
-      // 方言从目录里查，别自己拍一个（ADR-0031）
-      thinking: { mode: "off", wire: choice.thinking.wire },
-    });
-    const reply = await adapter.chat(
+    const reply = await cheap.adapter.chat(
       [{ role: "user", content: buildPrompt(exchange) }],
       undefined,
       undefined,
-      AbortSignal.timeout(SUGGEST_TIMEOUT_MS)
+      cheap.signal
     );
     const suggestions = parseSuggestions(reply.content);
     if (!suggestions) return null;
