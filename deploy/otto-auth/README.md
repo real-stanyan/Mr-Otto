@@ -60,6 +60,27 @@ Dryrun 那套栈的容器名是固定的 `supabase-db`、`supabase-studio`、`su
   互相访问(服务发现走的是 compose 生成的 service 名,如 `POSTGRES_HOST=db`),
   删掉这行不影响容器间通信。
 
+> **订正(2026-08-23,issue #77)**:上面那条「确认过」只对 **compose 文件**成立,
+> 漏了挂载进网关的 Envoy 配置。`volumes/api/envoy/cds.yaml` 里 realtime 集群写死了
+> `address: realtime-dev.supabase-realtime`(`type: STRICT_DNS`)——那正是 base compose
+> 给 realtime 服务写的 `container_name`。删掉 `container_name` 行之后这个主机名在
+> docker DNS 里不存在,STRICT_DNS 解析不到 endpoint,Envoy 对 `/realtime/v1/*` 一律回
+> **503 `no healthy upstream`**,实时推送整条腿静默死掉,#77 就是它。
+>
+> 上游这么写不是笔误:realtime 是多租户的,**靠解析 Host 的子域得出 tenant id**
+> (base compose 在那行 `container_name` 上方的注释原话:"realtime constructs tenant id
+> by parsing the subdomain"),健康检查打的是 `/api/tenants/realtime-dev/health`。
+> 所以主机名的子域 `realtime-dev` 是有语义的,不能随便换成 `realtime`。
+>
+> 修法:在 `docker-compose.override.yml` 里给 realtime 服务补一个网络别名
+> `realtime-dev.supabase-realtime`,不动 upstream 的 `cds.yaml`。选别名而不是改
+> `cds.yaml`,是因为删 `container_name` 这个决定当初图的就是"升级时脚本可以照抄",
+> 改一份 upstream 原样 clone 的文件等于把这个好处还回去。这条路 upstream 自己就在用:
+> base compose 里 api-gw 服务挂着 `aliases: [envoy, kong]`,理由一模一样。
+>
+> **删 `container_name` 之后要检查的不只是 compose 文件本身,还有所有挂进容器的配置文件**
+> —— 网关配置、健康检查命令、各服务 environment 里的 URL,都可能拿容器名当主机名。
+
 服务器上执行的命令(不进 git,纯部署步骤):
 ```bash
 cd ~/otto-supabase/docker

@@ -36,6 +36,33 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
       - "127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION:-6544}:6543"
 
+  # issue #77:Envoy 的 realtime 集群写死了 upstream 主机名
+  # `realtime-dev.supabase-realtime:4000`(`volumes/api/envoy/cds.yaml`,
+  # `type: STRICT_DNS`)。那个名字原本来自 base compose 里 realtime 服务的
+  # `container_name:` —— 而本部署把全部 11 行 `container_name:` 删掉了
+  # (README「关键决定 / 踩坑」第 2 条),于是这个主机名在 docker DNS 里不存在,
+  # STRICT_DNS 解析不到任何 endpoint,Envoy 对 /realtime/v1/* 一律回
+  # 503 `no healthy upstream`。README 第 2 条当时写「确认过 compose 文件内部
+  # 没有任何地方用 container_name 的值当 hostname 互相访问」——这句话对
+  # **compose 文件**成立,但漏了挂载进网关的 envoy 配置,它正是这么用的。
+  #
+  # 补一个网络别名而不是去改 `volumes/api/envoy/cds.yaml`:那份是 upstream
+  # 原样 clone 下来的文件,改它等于以后每次升级 supabase/docker 都要重新打一遍
+  # 补丁,而删 container_name 这个决定当初图的就是"升级时脚本可以照抄"。
+  # 别名这条路 upstream 自己就在用:base compose 里 api-gw 服务挂着
+  # `aliases: [envoy, kong]`,理由一模一样(内部配置引用的是旧网关的名字)。
+  #
+  # 名字不能随便取:realtime 是多租户的,靠**解析 Host 的子域**得出 tenant id
+  # (base compose 在那行 container_name 上方的注释原话:"realtime constructs
+  # tenant id by parsing the subdomain"),健康检查打的是
+  # `/api/tenants/realtime-dev/health`。所以别名必须正好是
+  # `realtime-dev.supabase-realtime`,子域正好是 `realtime-dev`。
+  realtime:
+    networks:
+      default:
+        aliases:
+          - realtime-dev.supabase-realtime
+
   # Task 3: 官方 docker-compose.yml 的 auth 服务 environment 是显式白名单,
   # GOTRUE_EXTERNAL_GOOGLE_*/GITHUB_* 这几个键完全不在名单里(base 文件里只有
   # 被注释掉的示例,而且引用的是 ${GOOGLE_ENABLED} 这种不同的变量名),不会自动
