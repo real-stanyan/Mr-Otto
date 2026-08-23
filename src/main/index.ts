@@ -655,7 +655,16 @@ void app.whenReady().then(() => {
   // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
   const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
   // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
-  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); });
+  /** 把活跃会话此刻的工具声明推给渲染层（issue #141）。agent.toolDefs 是活 getter，
+      BootInfo 里那份是 boot/resume 那一刻的快照——建出第一个子智能体（task 从
+      available() 为 false 变成 true）、一台 MCP server 连上或掉线，主进程当场就变，
+      镜像不推的话要等下次 boot 才对得上，而上下文占用弹窗算的正是这份表。
+      没有活跃会话就什么都不推：那时渲染层那份本来就是空的 */
+  const sendToolDefs = (): void => {
+    const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
+    if (agent) send(CHANNELS.toolDefsChanged, { sessionId: agent.sessionId, toolDefs: agent.toolDefs });
+  };
+  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
 
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
@@ -1162,13 +1171,19 @@ void app.whenReady().then(() => {
     join,
   };
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) =>
-    saveSubagentDef(subagentWriteDeps, def, workspace)
-  );
+  // 写完推一次工具表：清单从空变成有人，task 工具的 available() 当场翻面
+  // （见 agent.ts 的 toolDefs getter），渲染层那份镜像得跟着动
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
+    const list = saveSubagentDef(subagentWriteDeps, def, workspace);
+    sendToolDefs();
+    return list;
+  });
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) =>
-    createSubagentDef(subagentWriteDeps, name, workspace)
-  );
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
+    const list = createSubagentDef(subagentWriteDeps, name, workspace);
+    sendToolDefs();
+    return list;
+  });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();

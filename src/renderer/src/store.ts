@@ -1506,6 +1506,12 @@ export const useChat = create<ChatState>((set, get) => ({
     // 全程订阅,不等进了 MCP 栏目才订:一台 server 从 connecting 转 connected/failed
     // 是 ready() 在后台跑完才知道的异步结果，用户可能这时候根本没打开设置页——
     // 镜像照样要更新，等他下次打开时看到的才是新鲜的，不是"进页面那一刻"的旧快照
+    // 工具表的活镜像（issue #141）：建出第一个子智能体、MCP server 连上/掉线，
+    // 主进程那份当场就变。只认当前会话那条——推送带 sessionId 是因为主进程
+    // 只推活跃会话，而渲染层可能正在切换，切一半收到旧会话的表会把账算错
+    window.otter.onToolDefsChanged(({ sessionId, toolDefs }) => {
+      if (get().sessionId === sessionId) set({ toolDefs });
+    });
     window.otter.onMcpChanged((mcpServers) => {
       set({ mcpServers });
       // prompt 清单同理要跟着连接状态动:一台 server 掉线/重连会改变

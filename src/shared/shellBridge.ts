@@ -541,6 +541,11 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** 活跃会话的工具声明变了（issue #141）。BootInfo.toolDefs 是 boot/resume 那一刻
+      的快照，而 agent.toolDefs 是活 getter：用户建出第一个子智能体、或者一台 MCP
+      server 连上/掉线，主进程那份当场就变了，渲染层那份镜像却要等下一次 boot。
+      上下文占用弹窗算的正是这份表，镜像过期 = 报的账是错的 */
+  onToolDefsChanged(cb: (info: { sessionId: string; toolDefs: ToolDefinition[] }) => void): Unsubscribe;
   /** hub 状态变了就推一次全量快照。返回退订函数（与其它订阅同构） */
   onMcpChanged(cb: (snapshot: McpServersSnapshot) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
@@ -710,6 +715,7 @@ export const CHANNELS = {
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",
+  toolDefsChanged: "otter:toolDefsChanged",
   toolCatalog: "otter:toolCatalog",
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",

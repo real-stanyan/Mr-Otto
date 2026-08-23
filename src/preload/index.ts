@@ -109,6 +109,7 @@ const bridge: ShellBridge = {
   onTerminalExit: subscribe(CHANNELS.terminalExit),
   onBrowserState: subscribe(CHANNELS.browserState),
   onMcpChanged: subscribe(CHANNELS.mcpChanged),
+  onToolDefsChanged: subscribe(CHANNELS.toolDefsChanged),
   onAccountChanged: subscribe(CHANNELS.accountChanged),
   onPokerHand: subscribe(CHANNELS.pokerHand),
   onPokerError: subscribe(CHANNELS.pokerError),
