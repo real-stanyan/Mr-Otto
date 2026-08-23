@@ -115,3 +115,17 @@ export function spawnedFromOf(events: readonly SessionEvent[]): string | null {
   if (!first || first.type !== "session_created") return null;
   return first.spawnedBy?.sessionId ?? null;
 }
+
+/** 已经派出去的那些 task 调用的 toolCallId。
+    时间线上一次派活原来渲染两遍：一张派活卡（agent、任务、状态、汇报、点进子会话），
+    外加一条普通 task 工具行（原始参数 + 汇报全文）——同一份信息的两种形态，
+    后者对读的人没有新东西（issue #141，维护者拍板压掉工具行）。
+
+    判据是"这条调用真的派出去了"而不是"工具名叫 task"：派活前就失败的那次
+    （没有这个名字的 subagent / 派出去之前就被中断）根本没有卡，
+    一律压掉会把唯一的报错也一起吞掉 */
+export function spawnedToolCallIds(events: readonly SessionEvent[]): Set<string> {
+  const ids = new Set<string>();
+  for (const e of events) if (e.type === "subagent_spawned") ids.add(e.toolCallId);
+  return ids;
+}

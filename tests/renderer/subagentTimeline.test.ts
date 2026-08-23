@@ -4,6 +4,7 @@ import {
   formatElapsed,
   groupSubagentSpawns,
   spawnedFromOf,
+  spawnedToolCallIds,
   subagentFact,
   subagentModel,
   subagentRowState,
@@ -224,5 +225,27 @@ describe("subagentModel", () => {
     expect(subagentModel(events)).toBe("deepseek-chat");
     expect(subagentModel([])).toBeNull();
     expect(subagentModel(undefined)).toBeNull();
+  });
+});
+
+describe("spawnedToolCallIds —— 哪些 task 调用真的派出去了", () => {
+  it("落过 subagent_spawned 的进集合，工具行由派活卡代替", () => {
+    const events = [assistantWithTask(1, ["call_1"]), spawned(2, "call_1")];
+    expect([...spawnedToolCallIds(events)]).toEqual(["call_1"]);
+  });
+
+  it("派出去之前就失败的那次不进集合 —— 它没有卡，压掉工具行会连报错一起吞", () => {
+    // 「没有名叫 X 的 subagent」：task 抛在 runner 里，subagent_spawned 从未落盘
+    const events = [assistantWithTask(1, ["call_1"]), toolResult(2, "call_1")];
+    expect(spawnedToolCallIds(events).size).toBe(0);
+  });
+
+  it("同一条消息派两个，两个都在", () => {
+    const events = [
+      assistantWithTask(1, ["call_1", "call_2"]),
+      spawned(2, "call_1"),
+      spawned(3, "call_2"),
+    ];
+    expect([...spawnedToolCallIds(events)].sort()).toEqual(["call_1", "call_2"]);
   });
 });

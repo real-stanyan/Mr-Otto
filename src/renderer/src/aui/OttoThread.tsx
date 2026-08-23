@@ -44,6 +44,7 @@ import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
+import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
@@ -301,7 +302,14 @@ function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
     出错卡:ToolFallback 把错误塞在折叠区里,默认收着——工具失败是这一步的结论,
     收起来等于让人点开才知道刚才没成 */
 const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = (part) => {
+  // 派活的那条 task 工具行压掉（issue #141）：同一次派活在时间线上还有一张
+  // 派活卡，卡上已经有 agent、任务、状态、汇报和"点进子会话"的入口，
+  // 工具行是同一份信息的原始形态。只压真的派出去了的那些——派活之前就失败
+  // 的那次没有卡，压掉等于把唯一的报错也吞了（判据见 spawnedToolCallIds）
+  const events = useChat((s) => s.events);
+  const spawned = useMemo(() => spawnedToolCallIds(events), [events]);
   const call: ToolCallRequest = { id: part.toolCallId, name: part.toolName, args: part.args };
+  if (part.toolName === "task" && spawned.has(part.toolCallId)) return null;
   const summary = toolSummary(call);
   const path = toolFilePath(call);
   // memory 这一步换成 memory-chips element:通用工具行只会写「memory」+ 一坨
