@@ -293,7 +293,8 @@ struct AgentRow: View {
   }
 }
 
-/// DynamicNotch 的 compact leading 内容:idle 什么都不显;active 一个脉动小圆点提示"有事在发生"。
+/// DynamicNotch 的 compact leading 内容:Otto logo 常显(#201/#203)——身份标识 +
+/// 输入态入口(点了 enterCompose)。状态点在另一侧(IslandCompactStatusView)。
 ///
 /// hover 检测特意不放在这里:DynamicNotchKit 的 NotchView 只在 state == .compact 时才把
 /// compactLeading 挂进视图树,一旦因 hover 展开成 .expanded,这个 view 连同它的 .onHover
@@ -302,14 +303,6 @@ struct AgentRow: View {
 /// (框架把 .onHover 挂在包住 compact+expanded 两层内容的外层容器上),main.swift 直接订阅它。
 struct IslandCompactView: View {
   @ObservedObject var model: IslandModel
-  @State private var pulse = false
-
-  /// 折叠态脉动条件:fleet 里任一 session 在 active(不局限于当前选中的那个)——
-  /// 哪怕选中行是别的 session,只要有 agent 在跑就该有提示。按 selectedAgent 切换的
-  /// 单会话逻辑(点击进输入态等)留到列表 UI 落地的下一个 task。
-  private var anyActive: Bool {
-    model.fleet.agents.contains { $0.phase == .active }
-  }
 
   /// SPM 资源 bundle 里的 logo(透明背景版 otto.png,和渲染层同一张图,#201)。
   /// 找不到给 nil,下面兜底回键盘图标——资源缺失(打包漏拷 bundle)时岛不能瞎。
@@ -318,35 +311,57 @@ struct IslandCompactView: View {
       .flatMap { NSImage(contentsOf: $0) }
 
   var body: some View {
-    // logo 常显(#201):它是身份标识,不再按 phase 换入口图标——点 logo 进输入态,
-    // active 只是在旁边多一颗脉动点。approval 时 compact 内容照旧不会被看到
-    // (desiredState fleet-wide 直接 expand),不用专门藏。
-    HStack(spacing: 5) {
-      Button {
-        model.enterCompose()
-      } label: {
-        if let logo = Self.logo {
-          Image(nsImage: logo)
-            .resizable()
-            .scaledToFit()
-            .frame(height: 14)
-        } else {
-          Image(systemName: "keyboard")
-            .font(.system(size: 8))
-            .foregroundStyle(.white.opacity(0.55))
-        }
+    Button {
+      model.enterCompose()
+    } label: {
+      if let logo = Self.logo {
+        Image(nsImage: logo)
+          .resizable()
+          .scaledToFit()
+          .frame(height: 20)
+      } else {
+        Image(systemName: "keyboard")
+          .font(.system(size: 8))
+          .foregroundStyle(.white.opacity(0.55))
       }
-      .buttonStyle(.plain)
-      if anyActive {
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 6)
+  }
+}
+
+/// compact trailing(刘海右侧)的状态小圆球(#203):有任务在跑时蓝色脉动。
+/// approval 也给一颗橙点——虽然 desiredState 会立刻 fleet-wide 展开,展开动画
+/// 那几百毫秒里 compact 还在屏上,橙点让状态切换读起来连续而不是跳变。
+struct IslandCompactStatusView: View {
+  @ObservedObject var model: IslandModel
+  @State private var pulse = false
+
+  /// fleet-wide 条件(不局限当前选中):哪怕选中行是别的 session,
+  /// 只要有 agent 在跑/在等审批就该有提示。
+  private var anyActive: Bool {
+    model.fleet.agents.contains { $0.phase == .active }
+  }
+  private var anyApproval: Bool {
+    model.fleet.agents.contains { $0.phase == .approval }
+  }
+
+  var body: some View {
+    Group {
+      if anyApproval || anyActive {
         Circle()
-          .fill(Color.accentColor)
-          .frame(width: 5, height: 5)
+          .fill(anyApproval ? Color.orange : Color.accentColor)
+          .frame(width: 6, height: 6)
           .opacity(pulse ? 1 : 0.35)
           .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
           .onAppear { pulse = true }
           // repeatForever 的动画锚在 pulse 的**值变化**上:active 结束点被移除后
           // pulse 还是 true,下次再 active 时没有变化就没有动画——归零才有下一次
           .onDisappear { pulse = false }
+      } else {
+        // 空闲不显示——但 DynamicNotchKit 对空 trailing 会把区域收到 0,
+        // 留一个 1pt 占位让左右视觉对称的问题交给框架的 padding,不在这里硬凑
+        Color.clear.frame(width: 1, height: 1)
       }
     }
     .padding(.horizontal, 6)
