@@ -30,6 +30,14 @@ const ANIMATION_DURATION = 200;
 
 const ReasoningPreviewContext = createContext(false);
 
+/**
+ * 顶上那道渐变只在「上面真的还有被卷走的内容」时才画。
+ * 原来是无条件画的：展开后还没滚动时，那 32px 的
+ * linear-gradient(background → transparent) 正好压在第一段字上，看着像糊了一层。
+ * 底下那道不动——预览态内容钉在底部，它是给最新一行做的软收边，跟滚动位置无关。
+ */
+const ReasoningScrolledContext = createContext<((scrolled: boolean) => void) | null>(null);
+
 const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
   variants: {
     variant: {
@@ -232,6 +240,7 @@ function ReasoningContent({
   ...props
 }: React.ComponentProps<typeof CollapsibleContent>) {
   const isPreview = useContext(ReasoningPreviewContext);
+  const [scrolled, setScrolled] = useState(false);
 
   return (
     <CollapsibleContent
@@ -248,8 +257,8 @@ function ReasoningContent({
       )}
       {...props}
     >
-      <ReasoningFade side="top" />
-      {children}
+      <ReasoningFade side="top" className={scrolled ? "opacity-100" : "opacity-0"} />
+      <ReasoningScrolledContext.Provider value={setScrolled}>{children}</ReasoningScrolledContext.Provider>
       {isPreview ? <ReasoningFade /> : null}
     </CollapsibleContent>
   );
@@ -263,6 +272,24 @@ function ReasoningText({
   const isPreview = useContext(ReasoningPreviewContext);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const reportScrolled = useContext(ReasoningScrolledContext);
+
+  // 滚动、内容长高、展开动画改可视高度，三种都可能改变「上面还有没有内容」
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    const contentEl = contentRef.current;
+    if (!scrollEl || !contentEl || !reportScrolled) return;
+    const measure = () => reportScrolled(scrollEl.scrollTop > 1);
+    measure();
+    scrollEl.addEventListener("scroll", measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(contentEl);
+    observer.observe(scrollEl);
+    return () => {
+      scrollEl.removeEventListener("scroll", measure);
+      observer.disconnect();
+    };
+  }, [reportScrolled]);
 
   useEffect(() => {
     if (!isPreview) return;
