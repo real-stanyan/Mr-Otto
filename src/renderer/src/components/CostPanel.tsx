@@ -12,8 +12,10 @@
 
 import { useMemo } from "react";
 import { CostMeter } from "@/components/elements/cost-meter.js";
+import { cn } from "@/lib/utils.js";
+import { mono } from "@/lib/surfaces.js";
 import { costUsd, fmtUsd } from "../../../shared/modelPricing.js";
-import { totalTokens, usageByModel, type ModelUsage } from "../../../session/deriveUsage.js";
+import { cacheStats, totalTokens, usageByModel, type ModelUsage } from "../../../session/deriveUsage.js";
 import type { SessionEvent } from "../../../session/events.js";
 
 /** 破折号 = 这一款查不到价。空着会读成"零" */
@@ -33,6 +35,7 @@ function money(u: ModelUsage): string {
 export function CostPanel({ events }: { events: SessionEvent[] }) {
   const rows = useMemo(() => usageByModel(events), [events]);
   const total = useMemo(() => totalTokens(events), [events]);
+  const cache = useMemo(() => cacheStats(events), [events]);
 
   if (rows.length === 0) return null; // 一次模型都没调过就不占地方
 
@@ -42,20 +45,34 @@ export function CostPanel({ events }: { events: SessionEvent[] }) {
     ? fmtUsd(costs.reduce<number>((sum, c) => sum + (c ?? 0), 0))
     : fmtTokens(total);
 
+  // 命中率只在"量到过"时出现:没有一次调用报 cache 字段就整行不渲染——
+  // 一行永远 0% 的指标读起来是"缓存全废",而事实只是这家 API 不报数
+  const hitRate =
+    cache && cache.measuredPromptTokens > 0
+      ? Math.round((cache.cachedTokens / cache.measuredPromptTokens) * 100)
+      : null;
+
   return (
-    <CostMeter
-      sessionCost={sessionCost}
-      sessionLabel={<span className="whitespace-nowrap">本会话</span>}
-      lines={rows.map((r) => ({
-        model: r.model,
-        inputTokens: r.promptTokens,
-        outputTokens: r.completionTokens,
-        cost: money(r),
-        // 占比按 token 算,不按钱:钱可能有一半的型号查不到价,占比条会变成一半空白
-        share: total === 0 ? 0 : (r.promptTokens + r.completionTokens) / total,
-      }))}
-      // 它已经在一张卡(上下文浮层)里了,再套一层纸会变成卡中卡
-      className="max-w-none gap-2 border-0 bg-transparent p-0"
-    />
+    <div className="flex flex-col gap-1.5">
+      <CostMeter
+        sessionCost={sessionCost}
+        sessionLabel={<span className="whitespace-nowrap">本会话</span>}
+        lines={rows.map((r) => ({
+          model: r.model,
+          inputTokens: r.promptTokens,
+          outputTokens: r.completionTokens,
+          cost: money(r),
+          // 占比按 token 算,不按钱:钱可能有一半的型号查不到价,占比条会变成一半空白
+          share: total === 0 ? 0 : (r.promptTokens + r.completionTokens) / total,
+        }))}
+        // 它已经在一张卡(上下文浮层)里了,再套一层纸会变成卡中卡
+        className="max-w-none gap-2 border-0 bg-transparent p-0"
+      />
+      {hitRate !== null && cache && (
+        <div className={cn(mono, "text-foreground/40 tabular-nums")}>
+          cache 命中 {hitRate}%（{fmtTokens(cache.cachedTokens)}/{fmtTokens(cache.measuredPromptTokens)}）
+        </div>
+      )}
+    </div>
   );
 }

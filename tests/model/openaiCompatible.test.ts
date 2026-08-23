@@ -117,6 +117,41 @@ describe("openaiCompatible 流式（SSE）", () => {
     expect(reply.content).toBe("尾巴");
   });
 
+  it("cache 命中字段(DeepSeek 方言 prompt_cache_hit_tokens)→ usage.cachedTokens", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{"content":"嗯"}}]}\n\n',
+      'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":64}}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    const reply = await adapter.chat([], undefined, () => {});
+    expect(reply.usage).toEqual({ promptTokens: 100, completionTokens: 5, cachedTokens: 64 });
+  });
+
+  it("cache 命中字段(OpenAI/GLM 方言 prompt_tokens_details.cached_tokens)→ 同一个 cachedTokens", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "嗯" } }],
+          usage: { prompt_tokens: 200, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 128 } },
+        }),
+      }))
+    );
+    const reply = await adapter.chat([]);
+    expect(reply.usage).toEqual({ promptTokens: 200, completionTokens: 3, cachedTokens: 128 });
+  });
+
+  it("两个方言都不报 cache → usage 不带 cachedTokens:「API 不报」≠「命中 0」", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    const reply = await adapter.chat([], undefined, () => {});
+    expect(reply.usage).toEqual({ promptTokens: 10, completionTokens: 2 });
+    expect(reply.usage).not.toHaveProperty("cachedTokens");
+  });
+
   it("signal 透传给 fetch：中断从这一根线穿进请求和 SSE 读流（ADR-0006）", async () => {
     let seenSignal: AbortSignal | undefined;
     vi.stubGlobal(
