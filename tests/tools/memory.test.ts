@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createMemoryTool, parseMemoryResult, MEMORY_TOOL_NAME } from "../../src/tools/memory.js";
+import { parseEntries } from "../../src/shared/memoryStore.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 function fakeWorld(files: Record<string, string | null> = {}, opts: { readThrows?: boolean } = {}) {
@@ -109,5 +110,29 @@ describe("memory 工具", () => {
     const { world } = fakeWorld();
     await expect(tool.run({ action: "add", content: "x" }, world)).rejects.toThrow(/target/);
     await expect(tool.run({ target: "memory" }, world)).rejects.toThrow(/action|operations/);
+  });
+
+  // issue #185：memory-reviewer 子会话与父会话可能同时写同一文件。
+  // read-modify-write 无锁时后写者覆盖前者，且前者的 tool_result 仍报成功。
+  it("并发 RMW 不丢更新：两个工具实例同时 add，两条都落盘", async () => {
+    const { world, store } = fakeWorld();
+    const parent = createMemoryTool();
+    const reviewer = createMemoryTool();
+    await Promise.all([
+      parent.run({ target: "memory", action: "add", content: "甲" }, world),
+      reviewer.run({ target: "memory", action: "add", content: "乙" }, world),
+    ]);
+    expect(parseEntries(store.get("memories/MEMORY.md") ?? null).sort()).toEqual(["乙", "甲"]);
+  });
+
+  it("并发 RMW：后到的 replace 基于前一次 add 之后的最新视图定位", async () => {
+    const { world, store } = fakeWorld({ "memories/MEMORY.md": "旧条目" });
+    const t1 = createMemoryTool();
+    const t2 = createMemoryTool();
+    await Promise.all([
+      t1.run({ target: "memory", action: "add", content: "新条目" }, world),
+      t2.run({ target: "memory", action: "replace", old_text: "旧条目", content: "改过的条目" }, world),
+    ]);
+    expect(parseEntries(store.get("memories/MEMORY.md") ?? null).sort()).toEqual(["改过的条目", "新条目"]);
   });
 });

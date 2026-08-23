@@ -35,6 +35,20 @@ export function formatEntries(entries: string[]): string {
   return entries.join(ENTRY_DELIMITER);
 }
 
+// 写互斥（issue #185）：memory 工具与设置页 applyUserEdit 都是 read-modify-write，
+// nudge 派出的 memory-reviewer 与父会话可能同时写同一文件——无锁时后写者覆盖前者，
+// 且前者的 tool_result 仍报成功。主进程单线程，一条 per-target promise 链就够；
+// 模块级共享，跨工具实例、跨会话都走同一条链。
+const fileLocks = new Map<MemoryTarget, Promise<unknown>>();
+
+export function withMemoryFileLock<T>(target: MemoryTarget, fn: () => Promise<T>): Promise<T> {
+  const prev = fileLocks.get(target) ?? Promise.resolve();
+  // 前一次成功失败都不影响这一次排队（失败的写不该把后面的写都堵死）
+  const run = prev.then(fn, fn);
+  fileLocks.set(target, run.catch(() => {}));
+  return run;
+}
+
 export type MemoryOp =
   | { action: "add"; target: MemoryTarget; content: string }
   | { action: "replace"; target: MemoryTarget; old_text: string; content: string }

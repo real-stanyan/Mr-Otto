@@ -2,7 +2,7 @@
 // 没有当前会话时落到保留会话——事件必须挂在某个 sessionId 上，而"设置页"不是会话。
 
 import type { EventStore } from "../session/store.js";
-import { formatEntries, parseEntries, MEMORY_FILES, type MemoryTarget } from "../shared/memoryStore.js";
+import { formatEntries, parseEntries, withMemoryFileLock, MEMORY_FILES, type MemoryTarget } from "../shared/memoryStore.js";
 
 export const MEMORY_EDITS_SESSION = "sys-memory-edits";
 
@@ -23,13 +23,17 @@ export async function applyUserEdit(
   sessionId: string = MEMORY_EDITS_SESSION
 ): Promise<void> {
   const rel = MEMORY_FILES[target];
-  const before = await deps.readFile(rel);
-  const after = formatEntries(parseEntries(text));
-  if (before === after) return;
-  await deps.writeFile(rel, after);
-  if (sessionId === MEMORY_EDITS_SESSION && deps.store.load(sessionId).length === 0) {
-    deps.store.append({ sessionId, ts: Date.now(), type: "session_created" });
-    deps.store.append({ sessionId, ts: Date.now(), type: "session_archived" });
-  }
-  deps.store.append({ sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after });
+  // 与 memory 工具共用同一把 per-target 锁（issue #185）：工具的 read-modify-write
+  // 进行中时这里进不来，before 永远是写入时刻的真实磁盘原文
+  await withMemoryFileLock(target, async () => {
+    const before = await deps.readFile(rel);
+    const after = formatEntries(parseEntries(text));
+    if (before === after) return;
+    await deps.writeFile(rel, after);
+    if (sessionId === MEMORY_EDITS_SESSION && deps.store.load(sessionId).length === 0) {
+      deps.store.append({ sessionId, ts: Date.now(), type: "session_created" });
+      deps.store.append({ sessionId, ts: Date.now(), type: "session_archived" });
+    }
+    deps.store.append({ sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after });
+  });
 }

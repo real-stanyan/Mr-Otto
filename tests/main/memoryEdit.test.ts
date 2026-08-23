@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyUserEdit, MEMORY_EDITS_SESSION } from "../../src/main/memoryEdit.js";
 import { EventStore } from "../../src/session/store.js";
+import { createMemoryTool } from "../../src/tools/memory.js";
+import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 function deps() {
   const files = new Map<string, string>();
@@ -43,5 +45,26 @@ describe("applyUserEdit", () => {
     await applyUserEdit(d, "memory", "a\n§\n b \n§\n", "s1");
     expect(d.writeFile).not.toHaveBeenCalled();
     expect(d.store.load("s1")).toEqual([]);
+  });
+
+  // issue #185：设置页编辑与 memory 工具共用同一把 per-target 锁。
+  // 无锁时：工具先读（旧视图）、用户编辑落盘、工具再写 → 用户的编辑被覆盖，
+  // 且 memory_user_edit 的 before 不再等于写入时刻的磁盘原文。
+  it("与 memory 工具并发：编辑排在工具写之后，before 是工具写完的最新内容", async () => {
+    const d = deps();
+    d.store.append({ sessionId: "s1", ts: 0, type: "session_created", workspace: "/w" });
+    const tool = createMemoryTool();
+    const world = {
+      config: {
+        read: async (rel: string) => d.files.get(rel) ?? null,
+        write: async (rel: string, c: string) => { d.files.set(rel, c); },
+      },
+    } as unknown as ExecutionWorld;
+    await Promise.all([
+      tool.run({ target: "memory", action: "add", content: "甲" }, world),
+      applyUserEdit(d, "memory", "手编", "s1"),
+    ]);
+    expect(d.files.get("memories/MEMORY.md")).toBe("手编");
+    expect(d.store.load("s1").at(-1)).toMatchObject({ type: "memory_user_edit", before: "甲", after: "手编" });
   });
 });

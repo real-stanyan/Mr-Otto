@@ -8,7 +8,7 @@
 import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
-  applyOps, charCount, formatEntries, parseEntries,
+  applyOps, charCount, formatEntries, parseEntries, withMemoryFileLock,
   MEMORY_FILES, MEMORY_LIMITS, MEMORY_RESULT_MARK,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
@@ -65,31 +65,35 @@ export function createMemoryTool(): Tool {
     }
 
     const rel = MEMORY_FILES[target];
-    let raw: string | null;
-    try {
-      raw = await world.config.read(rel);
-    } catch (err) {
-      throw new Error(`${rel} 存在但读不了（${err instanceof Error ? err.message : String(err)}），拒绝改写以免清空`);
-    }
-    const entries = parseEntries(raw);
+    // read→apply→write 整段持 per-target 锁（issue #185）：并发的另一次写在这段
+    // 结束前进不来，读到的永远是上一次写完之后的最新视图
+    const result = await withMemoryFileLock(target, async (): Promise<MemoryToolResult> => {
+      let raw: string | null;
+      try {
+        raw = await world.config!.read(rel);
+      } catch (err) {
+        throw new Error(`${rel} 存在但读不了（${err instanceof Error ? err.message : String(err)}），拒绝改写以免清空`);
+      }
+      const entries = parseEntries(raw);
 
-    // 漂移守卫（hermes #26045）：replace/remove 依赖"我看到的条目"去定位，
-    // 磁盘上的文本若不能 round-trip（重复、多余空白），我的视图就不是真的那份——
-    // 拿它去改写会把人手编的内容悄悄归一化掉。add 不定位，不受此限
-    const needsLocate = ops.some((o) => o.action !== "add");
-    if (needsLocate && raw !== null && formatEntries(entries) !== raw) {
-      throw new Error(`${rel} 的内容与解析结果不一致（可能被手编过、有重复或多余空白），拒绝按旧视图改写。先在设置页整理一次`);
-    }
+      // 漂移守卫（hermes #26045）：replace/remove 依赖"我看到的条目"去定位，
+      // 磁盘上的文本若不能 round-trip（重复、多余空白），我的视图就不是真的那份——
+      // 拿它去改写会把人手编的内容悄悄归一化掉。add 不定位，不受此限
+      const needsLocate = ops.some((o) => o.action !== "add");
+      if (needsLocate && raw !== null && formatEntries(entries) !== raw) {
+        throw new Error(`${rel} 的内容与解析结果不一致（可能被手编过、有重复或多余空白），拒绝按旧视图改写。先在设置页整理一次`);
+      }
 
-    const r = applyOps(target, entries, ops);
-    if (!r.ok) throw new Error(r.error);
-    await world.config.write(rel, formatEntries(r.entries));
+      const r = applyOps(target, entries, ops);
+      if (!r.ok) throw new Error(r.error);
+      await world.config!.write(rel, formatEntries(r.entries));
 
-    const result: MemoryToolResult = {
-      ok: true, target,
-      added: r.changed.added, updated: r.changed.updated, removed: r.changed.removed,
-      used: charCount(formatEntries(r.entries)), limit: MEMORY_LIMITS[target],
-    };
+      return {
+        ok: true, target,
+        added: r.changed.added, updated: r.changed.updated, removed: r.changed.removed,
+        used: charCount(formatEntries(r.entries)), limit: MEMORY_LIMITS[target],
+      };
+    });
     const n = result.added.length + result.updated.length + result.removed.length;
     // 终态一句话，不回显条目
     return `已更新 ${target === "memory" ? "MEMORY" : "USER"}（${n} 处，${result.used}/${result.limit} 字符）。\n${MEMORY_RESULT_MARK}${JSON.stringify(result)}-->`;
