@@ -6,7 +6,7 @@
 
 import type { SessionEvent } from "../../../session/events.js";
 import { buildToolIndex } from "./toolIndex.js";
-import { toolSummary } from "./toolSummary.js";
+import { toolSummary } from "../../../shared/toolSummary.js";
 
 export type TranscriptRow =
   | { kind: "user"; text: string }

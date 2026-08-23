@@ -38,6 +38,17 @@ xattr -dr com.apple.quarantine "/Applications/Mr Otto.app"
 
 app 做了 ad-hoc 签名（`codesign --verify --deep --strict` 能过），但没有公证。Gatekeeper 认的是公证，不是签名。要去掉这一步，只能买开发者账号并接上公证流程 —— 到那天，把这份文档的「收件人怎么装」第 2 步整段删掉即可。
 
+## 灵动岛 helper
+
+灵动岛（`native/MrOttoIsland/`，ADR-0061）是随主 app 一起打包的原生 Swift 二进制，出包时多两步：
+
+1. `scripts/build-island.mjs`（`dist:mac` 前置跑）：`swift build -c release --package-path native/MrOttoIsland`，编出 arm64 release 二进制。
+2. `electron-builder.yml` 的 `afterPack` 钩子（`scripts/afterPack.cjs`）：把 `native/MrOttoIsland/.build/release/MrOttoIsland` 拷进 `<app>/Contents/Resources/MrOttoIsland`，再 `codesign --force --sign -`（ad-hoc）签这个二进制——跟主 app 同一套签名策略，**不走独立公证流程**。
+
+`afterPack.cjs` 在拷贝前检查 release 二进制是否存在，缺失就直接抛错、整个 `dist:mac` 失败——这是打包链路上的硬失败，逼着 `build-island.mjs` 必须先跑成功。
+
+运行时是另一条路径，行为不同：主进程启动时用 `resolveIslandBinPath()`（`src/main/islandBinPath.ts`）在 `process.resourcesPath` 下找这个二进制；打包完整（上面两步都跑过）就能找到。**找不到（非 mac、Swift 未装、build-island 没跑过、或二进制被后续步骤删掉）时，`resolveIslandBinPath()` 返回 `null`，岛静默不启动**——不弹错误、不拖死启动链、主窗和其余功能照常跑，只是没有灵动岛。
+
 ## 已知边界
 
 - **版本号**取自 `package.json` 的 `version`，目前没有自动升版。发第二个包前先手动升，否则两个内容不同的包会同名。

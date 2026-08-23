@@ -11,7 +11,7 @@ import type {
   ToolCallRequest,
 } from "../../../session/events.js";
 import { Hl } from "../replay/HlText.js";
-import { toolPhase, toolSummary } from "../lib/toolSummary.js";
+import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";

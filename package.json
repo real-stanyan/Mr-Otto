@@ -8,11 +8,11 @@
     "pretest": "node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",
-    "dev": "electron-vite dev",
+    "dev": "node scripts/build-island.mjs --debug && electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "node scripts/fix-pty-perms.mjs",
     "rebuild-native": "electron-rebuild -f -w better-sqlite3 -w node-pty",
-    "dist:mac": "electron-vite build && electron-builder --mac --arm64"
+    "dist:mac": "node scripts/build-island.mjs && electron-vite build && electron-builder --mac --arm64"
   },
   "main": "out/main/index.js",
   "keywords": [],

@@ -19,6 +19,7 @@ SQLite（better-sqlite3，事件日志持久化）
 vitest（测试统一放 `tests/`，镜像 `src/` 结构；不与源码同目录）
 直连 OpenAI-compatible API（不用 LangChain）；模型 adapter 切换 DeepSeek / Claude / GLM
 `@modelcontextprotocol/sdk`（MCP 客户端；只允许 `src/main/mcpClient.ts` import，见 docs/adr/0050）
+Swift + SwiftUI + DynamicNotchKit（native/MrOttoIsland；macOS 灵动岛原生 helper，主进程 spawn，stdio NDJSON 桥；ADR-0061）
 v2：Docker per bot（dockerode，自托管 VPS）
 
 ## Hard rules
@@ -182,4 +183,5 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/e2e/` — Playwright-electron 冒烟（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）
-- `src/main/islandWindow.ts` — macOS 灵动岛窗口（ADR-0059）
+- `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）
+- `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）

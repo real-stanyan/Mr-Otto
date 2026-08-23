@@ -48,9 +48,9 @@ import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimat
 import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { toolFilePath, toolSummary } from "../lib/toolSummary.js";
+import { toolFilePath, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
-import type { OrbState } from "../lib/toolSummary.js";
+import type { OrbState } from "../../../shared/toolSummary.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
     的类型是 Record<string, unknown> ——不认识 SessionEvent,这一转型没有更窄的写法。
