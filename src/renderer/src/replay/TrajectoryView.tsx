@@ -91,6 +91,8 @@ function Swimlanes({
 }) {
   const [win, setWin] = useState<Window>(FULL);
   const trackRef = useRef<HTMLDivElement>(null);
+  // 画布 = 轨道去掉左右天沟的那块。所有 ∈[0,1] 的坐标换算都认画布，不认轨道
+  const canvasRef = useRef<HTMLDivElement>(null);
   const spans = useMemo(() => rowSpans(traj), [traj]);
   const extents = useMemo(
     () => traj.rows.map((r, i) => rowExtent(r, traj, scale, i, spans)),
@@ -105,7 +107,7 @@ function Swimlanes({
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
+      const rect = (canvasRef.current ?? el).getBoundingClientRect();
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         const d = (e.shiftKey ? e.deltaY : e.deltaX) / rect.width;
         setWin((w) => panBy(w, d * (w.v1 - w.v0)));
@@ -132,7 +134,7 @@ function Swimlanes({
     const EDGE = 48;
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
-      const el = trackRef.current;
+      const el = canvasRef.current ?? trackRef.current;
       const x = hoverX.current;
       if (!el || x === null || !zoomedRef.current) { last = now; return; }
       const dt = last ? Math.min(50, now - last) : 0;
@@ -159,38 +161,42 @@ function Swimlanes({
         ref={trackRef}
         className="relative h-[54px] overflow-hidden cursor-ew-resize select-none"
         onDoubleClick={() => setWin(FULL)}
-        onMouseMove={(e) => { hoverX.current = e.clientX - e.currentTarget.getBoundingClientRect().left; }}
+        onMouseMove={(e) => { hoverX.current = e.clientX - (canvasRef.current ?? e.currentTarget).getBoundingClientRect().left; }}
         onMouseLeave={() => { hoverX.current = null; }}
         title={zoomed ? "滚轮缩放 · Shift+滚轮平移 · 双击复位" : "滚轮缩放"}
       >
-        <div
-          className="absolute inset-y-0"
-          style={{ left: `${-win.v0 * scaleX * 100}%`, width: `${scaleX * 100}%` }}
-        >
-          {LANES.map((l, li) => (
-            <div key={l.lane} className="absolute inset-x-0 h-[14px]" style={{ top: li * 18 + 2 }}>
-              {traj.rows.map((r, i) => {
-                if (r.lane !== l.lane) return null;
-                const [x0, x1] = extents[i]!;
-                const hit = rowMatches(r, query);
-                const cur = r.key === selected;
-                return (
-                  <button
-                    key={r.key}
-                    title={`Turn ${r.turn} · Step ${r.step} · ${r.summary}`}
-                    onClick={() => onSelect(r.key)}
-                    className={
-                      "absolute top-[2px] h-[10px] min-w-[3px] rounded-[2px] border-none p-0 cursor-pointer transition-opacity " +
-                      (r.deny ? "bg-deny" : r.kind === "system" ? "bg-muted-foreground/50" : LANE_BG[l.lane]) +
-                      (hit ? "" : " opacity-20") +
-                      (cur ? " ring-2 ring-foreground ring-offset-1 ring-offset-background z-10" : "")
-                    }
-                    style={{ left: `${x0 * 100}%`, width: `calc(${(x1 - x0) * 100}% - 1px)` }}
-                  />
-                );
-              })}
-            </div>
-          ))}
+        {/* 左右各留 4px 天沟：首尾两块贴死边时，选中环（ring 2px + ring-offset 1px）
+            会被上面那层 overflow-hidden 切掉，最后一条轨迹看着像残的 */}
+        <div ref={canvasRef} className="absolute inset-y-0 left-1 right-1">
+          <div
+            className="absolute inset-y-0"
+            style={{ left: `${-win.v0 * scaleX * 100}%`, width: `${scaleX * 100}%` }}
+          >
+            {LANES.map((l, li) => (
+              <div key={l.lane} className="absolute inset-x-0 h-[14px]" style={{ top: li * 18 + 2 }}>
+                {traj.rows.map((r, i) => {
+                  if (r.lane !== l.lane) return null;
+                  const [x0, x1] = extents[i]!;
+                  const hit = rowMatches(r, query);
+                  const cur = r.key === selected;
+                  return (
+                    <button
+                      key={r.key}
+                      title={`Turn ${r.turn} · Step ${r.step} · ${r.summary}`}
+                      onClick={() => onSelect(r.key)}
+                      className={
+                        "absolute top-[2px] h-[10px] min-w-[3px] rounded-[2px] border-none p-0 cursor-pointer transition-opacity " +
+                        (r.deny ? "bg-deny" : r.kind === "system" ? "bg-muted-foreground/50" : LANE_BG[l.lane]) +
+                        (hit ? "" : " opacity-20") +
+                        (cur ? " ring-2 ring-foreground ring-offset-1 ring-offset-background z-10" : "")
+                      }
+                      style={{ left: `${x0 * 100}%`, width: `calc(${(x1 - x0) * 100}% - 1px)` }}
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         </div>
         {zoomed && (
           <span className="absolute right-1 bottom-0 text-[9px] font-mono text-muted-foreground tabular-nums pointer-events-none">
