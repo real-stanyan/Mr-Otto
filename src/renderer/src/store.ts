@@ -1492,6 +1492,11 @@ export const useChat = create<ChatState>((set, get) => ({
       // 的 `/` 菜单会一直显示这台 server 掉线前的旧清单
       void get().refreshMcpPrompts();
     });
+    // 点灵动岛的会话行 = 同一种意志(#210):主进程已聚焦主窗,这里切到那个会话。
+    // 已经在看它就不重复 resume(那会白跑一次全量事件回放)
+    window.otter.onIslandFocusSession((sessionId: string) => {
+      if (get().sessionId !== sessionId) void get().resume(sessionId);
+    });
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
       if (target.kind === "dm") {

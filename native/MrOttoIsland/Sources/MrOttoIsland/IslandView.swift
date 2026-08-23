@@ -75,14 +75,19 @@ struct IslandExpandedView: View {
                 if !collapsed {
                   ForEach(group.agents) { agent in
                     AgentRow(agent: agent, isSelected: agent.id == effectiveSelectedId)
-                      .onTapGesture { model.selectedSessionId = agent.id }
+                      .onTapGesture {
+                        model.selectedSessionId = agent.id
+                        // 点行不只是选中详情(#210):把主窗也切过去——点击表达的
+                        // 是"我要看这个会话",岛上的详情区只放得下一行状态
+                        model.onOutbound(.focusSession(sessionId: agent.id))
+                      }
                   }
                 }
               }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
           }
-          .frame(maxHeight: 200)
+          .frame(maxHeight: 240)
 
           Divider()
 
@@ -96,10 +101,9 @@ struct IslandExpandedView: View {
     // 展开态根节点限宽:AgentRow 里的 Spacer(minLength: 0) 会贪婪吃满可用宽度,
     // 而 DynamicNotchKit 的展开面板窗口本身是 maxWidth: .infinity(库内 NotchContentView
     // 决定的全屏宽)。两者叠加,没有这行的话面板会被内容的 intrinsic width 撑成
-    // 横贯全屏的黑条。380pt 落在 360–420pt 区间:够放下状态点 + 会话标题 + 简短
-    // 工具 caption 单行不换行,也给审批三按钮(允许/会话/拒绝)和输入框留够地方,
-    // 同时贴近刘海尺度,不再是一条横条。
-    .frame(width: 380)
+    // 横贯全屏的黑条。420pt:#209 字号整体放大一档(13/14pt 正文)后 380 开始
+    // 挤(用量三列 58pt + logo),420 仍贴刘海尺度,不是横条。
+    .frame(width: 420)
   }
 
   /// 组头(#206):chevron + 文件夹名,整行可点收放。收起时组内状态不能凭空消失——
@@ -107,71 +111,90 @@ struct IslandExpandedView: View {
   private func workspaceHeader(_ group: WorkspaceGroup, collapsed: Bool) -> some View {
     let hasApproval = group.agents.contains { $0.phase == .approval }
     let hasActive = group.agents.contains { $0.phase == .active }
-    return HStack(spacing: 5) {
+    return HStack(spacing: 6) {
       Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-        .font(.system(size: 8, weight: .semibold))
+        .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(.secondary)
-        .frame(width: 10)
+        .frame(width: 11)
       Text(group.label)
-        .font(.caption)
+        .font(.system(size: 13))
         .foregroundStyle(.secondary)
         .lineLimit(1)
       if collapsed && hasApproval {
-        Circle().fill(Color.orange).frame(width: 5, height: 5)
+        Circle().fill(Color.orange).frame(width: 6, height: 6)
       } else if collapsed && hasActive {
-        Circle().fill(Color.accentColor).frame(width: 5, height: 5)
+        Circle().fill(Color.accentColor).frame(width: 6, height: 6)
       }
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 12)
-    .padding(.top, 5)
-    .padding(.bottom, 2)
+    .padding(.horizontal, 14)
+    .padding(.top, 8)
+    .padding(.bottom, 3)
     .contentShape(Rectangle())
   }
 
-  /// 用量表(#199):每模型一行,今天/7天/14天 三列。数字 monospacedDigit +
-  /// 固定列宽右对齐——列不对齐的数字表读起来是灾难。行数主进程已截到 6,
-  /// 高度可控,不套 ScrollView(表是扫一眼的东西,不是翻页的东西)。
+  /// 厂商 logo(#209):资源 bundle providers/<id>.png(lobehub dark 变体)。
+  /// 查过一次就缓存——每帧重复解码 PNG 没意义。找不到返回 nil,行内只显文字。
+  @MainActor private static var providerLogoCache: [String: NSImage?] = [:]
+  @MainActor private static func providerLogo(_ id: String?) -> NSImage? {
+    guard let id else { return nil }
+    if let hit = providerLogoCache[id] { return hit }
+    let img = Bundle.module
+      .url(forResource: id, withExtension: "png", subdirectory: "providers")
+      .flatMap { NSImage(contentsOf: $0) }
+    providerLogoCache[id] = img
+    return img
+  }
+
+  /// 用量表(#199):每模型一行,厂商 logo(#209)+ 今天/7天/14天 三列。数字
+  /// monospacedDigit + 固定列宽右对齐——列不对齐的数字表读起来是灾难。
+  /// 行数主进程已截到 6,高度可控,不套 ScrollView(表是扫一眼的东西)。
   private var usageTable: some View {
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: 3) {
       if model.fleet.usage.isEmpty {
         Text("还没有用量")
           .foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.vertical, 6)
+          .padding(.vertical, 10)
       } else {
         HStack(spacing: 8) {
           Text("模型")
           Spacer(minLength: 0)
-          Text("今天").frame(width: 54, alignment: .trailing)
-          Text("7天").frame(width: 54, alignment: .trailing)
-          Text("14天").frame(width: 54, alignment: .trailing)
+          Text("今天").frame(width: 58, alignment: .trailing)
+          Text("7天").frame(width: 58, alignment: .trailing)
+          Text("14天").frame(width: 58, alignment: .trailing)
         }
-        .font(.caption2)
+        .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
         ForEach(model.fleet.usage) { row in
           HStack(spacing: 8) {
+            if let logo = Self.providerLogo(row.provider) {
+              Image(nsImage: logo)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 15, height: 15)
+            }
             Text(row.label)
               .lineLimit(1)
               .foregroundStyle(.white)
             Spacer(minLength: 0)
             Group {
-              Text(Self.fmtTokens(row.today)).frame(width: 54, alignment: .trailing)
-              Text(Self.fmtTokens(row.d7)).frame(width: 54, alignment: .trailing)
-              Text(Self.fmtTokens(row.d14)).frame(width: 54, alignment: .trailing)
+              Text(Self.fmtTokens(row.today)).frame(width: 58, alignment: .trailing)
+              Text(Self.fmtTokens(row.d7)).frame(width: 58, alignment: .trailing)
+              Text(Self.fmtTokens(row.d14)).frame(width: 58, alignment: .trailing)
             }
             .foregroundStyle(.secondary)
             .monospacedDigit()
           }
-          .font(.caption)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 2)
+          .font(.system(size: 13))
+          .padding(.horizontal, 14)
+          .padding(.vertical, 4)
         }
       }
     }
-    .padding(.bottom, 6)
+    .padding(.bottom, 9)
   }
 
   /// K/M 缩写,同渲染层 fmtTokens 的口径(ProviderUsage.tsx)——两边显示同一个数,
@@ -323,29 +346,30 @@ struct AgentRow: View {
   }
 
   var body: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: 9) {
       Circle()
         .fill(dotColor)
-        .frame(width: 6, height: 6)
-      VStack(alignment: .leading, spacing: 1) {
+        .frame(width: 7, height: 7)
+      VStack(alignment: .leading, spacing: 2) {
         Text(agent.title ?? "未命名会话")
+          .font(.system(size: 14))
           .lineLimit(1)
           .foregroundStyle(.white)
         if agent.phase == .active {
           // 无工具时(刚开跑/思考中)也给行内 caption,和详情区 activeRow 的兜底
           // 文案一致——不然列表行只有蓝点没字,看不出这行在干嘛(#194)。
           Text(agent.currentTool.map { "\($0.verb) \($0.target)" } ?? "思考中…")
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
       }
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 4)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 6)
     .background(isSelected ? Color.white.opacity(0.14) : Color.clear)
-    .cornerRadius(6)
+    .cornerRadius(7)
     .contentShape(Rectangle())
   }
 }

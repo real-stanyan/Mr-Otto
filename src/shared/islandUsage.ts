@@ -9,9 +9,11 @@
 import { describeModel } from "./modelCatalog.js";
 import type { BilledRow } from "./usageStats.js";
 
-/** 灵动岛用量表的一行。label 是目录显示名(ModelChoice.label),Swift 纯渲染 */
+/** 灵动岛用量表的一行。label 是目录显示名(ModelChoice.label),Swift 纯渲染;
+    provider 是厂商 id(ProviderId)——Swift 按它取资源 bundle 里的厂商 logo(#209) */
 export interface IslandUsageRow {
   label: string;
+  provider: string;
   today: number;
   d7: number;
   d14: number;
@@ -31,7 +33,10 @@ export function islandUsage(
   opts: { now: number; max?: number }
 ): IslandUsageRow[] {
   const today = dayKey(opts.now);
-  const byModel = new Map<string, { label: string; today: number; d7: number; d14: number }>();
+  const byModel = new Map<
+    string,
+    { label: string; provider: string; today: number; d7: number; d14: number }
+  >();
 
   for (const r of rows) {
     const choice = describeModel(r.model);
@@ -42,7 +47,7 @@ export function islandUsage(
 
     let acc = byModel.get(r.model);
     if (!acc) {
-      acc = { label: choice.label, today: 0, d7: 0, d14: 0 };
+      acc = { label: choice.label, provider: choice.provider, today: 0, d7: 0, d14: 0 };
       byModel.set(r.model, acc);
     }
     const tokens = r.promptTokens + r.completionTokens;

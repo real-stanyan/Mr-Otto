@@ -1636,6 +1636,17 @@ void app.whenReady().then(() => {
       void handleSendMessage(c.sessionId, c.text).catch((e) => console.warn("岛发消息失败", e));
       return;
     }
+    if (c.type === "focusSession") {
+      // 点岛上的会话行 = "我要看这个会话"(#210):掀主窗 + 让渲染层切过去
+      // (切会话是渲染层的事——store.resume 那条路带侧栏刷新/事件回放,主进程不重造)
+      if (!win.isDestroyed()) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        send(CHANNELS.islandFocusSession, c.sessionId);
+      }
+      return;
+    }
     const outcome =
       c.type === "approve"
         ? { decision: "approved" as const, ...(c.grant ? { grant: c.grant } : {}) }

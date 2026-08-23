@@ -135,6 +135,7 @@ const bridge: ShellBridge = {
   onGameInvitesChanged: subscribe(CHANNELS.gameInvitesChanged),
   onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),
+  onIslandFocusSession: subscribe(CHANNELS.islandFocusSession),
   getWindowFullscreen: () => ipcRenderer.invoke(CHANNELS.getWindowFullscreen),
   onWindowFullscreen: subscribe(CHANNELS.windowFullscreen),
   setActiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.setActiveSession, sessionId),

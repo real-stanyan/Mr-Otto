@@ -24,6 +24,12 @@ describe("decodeCommand", () => {
       type: "approve", sessionId: "s", callId: "c", grant: "session",
     });
   });
+  it("解 focusSession(#210:点行跳主窗)", () => {
+    expect(decodeCommand('{"type":"focusSession","sessionId":"s9"}')).toEqual({
+      type: "focusSession", sessionId: "s9",
+    });
+    expect(decodeCommand('{"type":"focusSession"}')).toBeNull(); // 缺 sessionId 不认
+  });
   it("坏 JSON → null", () => {
     expect(decodeCommand("not json")).toBeNull();
   });

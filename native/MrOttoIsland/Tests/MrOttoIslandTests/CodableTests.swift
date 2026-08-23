@@ -16,11 +16,12 @@ final class CodableTests: XCTestCase {
   /// #199:display/usage 是后加的可选字段。带上时要解出来——
   /// usage 行给用量表,display 决定展开态上半区画哪个。
   func testDecodeFleetWithUsage() throws {
-    let line = #"{"type":"state","state":{"agents":[],"focusedSessionId":null,"display":"usage","usage":[{"label":"DeepSeek V4 Flash","today":1200,"d7":34000,"d14":56000}]}}"#
+    let line = #"{"type":"state","state":{"agents":[],"focusedSessionId":null,"display":"usage","usage":[{"label":"DeepSeek V4 Flash","provider":"deepseek","today":1200,"d7":34000,"d14":56000}]}}"#
     let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
     XCTAssertEqual(inbound.state.display, .usage)
     XCTAssertEqual(inbound.state.usage,
-                   [UsageRow(label: "DeepSeek V4 Flash", today: 1200, d7: 34000, d14: 56000)])
+                   [UsageRow(label: "DeepSeek V4 Flash", provider: "deepseek",
+                             today: 1200, d7: 34000, d14: 56000)])
   }
 
   /// 旧主进程不带新字段:解码不能炸,display 兜底 sessions、usage 兜底空表
