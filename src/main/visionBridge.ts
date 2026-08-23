@@ -5,10 +5,8 @@
 
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
 import { findModel } from "../shared/modelCatalog.js";
+import { DEFAULT_VISION_MODEL } from "../shared/visionModel.js";
 import type { UserAttachmentRef } from "../session/events.js";
-
-/** 代读员型号:目录里的免费视觉款。换代读员改这一行 */
-export const VISION_BRIDGE_MODEL = "glm-4.6v-flash";
 
 /** 429 重试节奏(ms)。免费档高峰限流是瞬态错(智谱 code 1305「访问量过大」),
     实测高峰期逐次成功率仅 ~1/3,两段退避常耗尽——加密到五段(总窗 ~35s)
@@ -17,17 +15,20 @@ const RETRY_DELAYS_MS = [1500, 3000, 6000, 10000, 15000];
 
 /** 组装根注入附件读取器,返回代读函数。
     userText 一并交给视觉模型——带着问题读图,解析才有针对性,不是干巴巴 OCR。
-    sleep 可注入(测试不真等) */
+    sleep 可注入(测试不真等)。
+    model 由调用方从设置现读传入(visionModelStore,默认免费视觉款)——这里
+    不自己读盘:组装根决定配置从哪来,和 helperModel 在 index.ts 的用法同款 */
 export function createVisionBridge(
   readAttachment: (id: string) => Uint8Array,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  model: string = DEFAULT_VISION_MODEL
 ) {
   return async function describeImages(
     refs: UserAttachmentRef[],
     userText: string
   ): Promise<string> {
-    const choice = findModel(VISION_BRIDGE_MODEL);
-    if (!choice) throw new Error(`vision-bridge 型号不在目录: ${VISION_BRIDGE_MODEL}`);
+    const choice = findModel(model);
+    if (!choice) throw new Error(`vision-bridge 型号不在目录: ${model}`);
     const adapter = createOpenAICompatibleAdapter({
       baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
       apiKey: process.env[choice.apiKeyEnv] ?? "",

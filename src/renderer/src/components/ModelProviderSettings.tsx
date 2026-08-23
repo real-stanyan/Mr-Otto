@@ -21,6 +21,7 @@ import { useChat } from "../store.js";
 import { ProviderKeyDialog } from "./ProviderKeyDialog.js";
 import { ProviderMark } from "./ProviderMark.js";
 import { HelperModelSetting } from "./HelperModelSetting.js";
+import { VisionModelSetting } from "./VisionModelSetting.js";
 import { fmtBalance, ProviderUsage, USAGE_DAYS, useProviderBalance } from "./ProviderUsage.js";
 
 const REGION_LABEL: Record<ProviderInfo["region"], string> = { cn: "国内直连", global: "海外", local: "本机" };
@@ -261,6 +262,7 @@ export function ModelProviderSettings() {
       {/* 后台小模型（issue #112）：三个 turn 外挂共用的那一款。摆在厂商列表之后
           ——它是"配完 key 之后的一个选择"，不是"先答这个才能开始" */}
       <HelperModelSetting />
+      <VisionModelSetting />
 
       {matched.length === 0 && (
         <p className="px-1 text-[13px] text-muted-foreground">没有匹配「{query}」的厂商或型号。</p>

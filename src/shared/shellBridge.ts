@@ -396,6 +396,12 @@ export interface ShellBridge {
   /** 存一款新的，返回真正存下去的那个 id：认不出来的型号在主进程被换成出厂默认，
       渲染层照着回值更新，不用自己再猜一遍 */
   setHelperModel(model: string): Promise<string>;
+  /** vision-bridge 代读员型号（落 userData/vision-model.json）。当前模型没眼睛
+      而消息带图时由它代读；只收目录里原生看图的款，别的在主进程被换成默认。
+      现读不缓存：改了对下一条带图消息生效 */
+  getVisionModel(): Promise<string>;
+  /** 存一款新的，契约同 setHelperModel：回值是真正存下去的那个 id */
+  setVisionModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
@@ -721,6 +727,8 @@ export const CHANNELS = {
   setAutoCompact: "otter:setAutoCompact",
   getHelperModel: "otter:getHelperModel",
   setHelperModel: "otter:setHelperModel",
+  getVisionModel: "otter:getVisionModel",
+  setVisionModel: "otter:setVisionModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
   listMcpServers: "otter:listMcpServers",
