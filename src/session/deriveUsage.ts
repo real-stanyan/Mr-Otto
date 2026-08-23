@@ -5,9 +5,10 @@
 //
 // 谁携带一次模型调用的账:凡是"跑了一次模型"的事件都带 usage —— 正文
 // (assistant_message)、压缩(context_compacted)、分区(section_classified)、
-// 跟进建议(suggestions_generated)。后两个是"外挂"小调用,但它们照样烧钱:
-// 漏掉哪一类,统计就从此少算一截(events.ts 里 SuggestionsGeneratedEvent
-// 的注释写的就是这件事)。
+// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)。
+// 后三个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
+// (events.ts 里 SuggestionsGeneratedEvent 的注释写的就是这件事)。
+// 微压缩尤其不能漏:它每 turn 收口都烧一次,开着的话是这里最高频的一笔。
 
 import type { SessionEvent } from "./events.js";
 
@@ -18,13 +19,14 @@ export interface ModelUsage {
   completionTokens: number;
 }
 
-/** 会计上"算一次模型调用"的四类事件。导出是为了让主进程的 SQL 用同一份清单筛行
-    （设置页的跨会话用量），而不是在 store.ts 里再抄一遍这四个字符串 */
+/** 会计上"算一次模型调用"的五类事件。导出是为了让主进程的 SQL 用同一份清单筛行
+    （设置页的跨会话用量），而不是在 store.ts 里再抄一遍这几个字符串 */
 export const BILLED_EVENT_TYPES = [
   "assistant_message",
   "context_compacted",
   "section_classified",
   "suggestions_generated",
+  "micro_compacted",
 ] as const;
 
 type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;

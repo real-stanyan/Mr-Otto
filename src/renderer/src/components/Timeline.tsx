@@ -12,7 +12,7 @@ import type {
 } from "../../../session/events.js";
 import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
-import { compactedHeadline } from "../lib/autoCompactCopy.js";
+import { compactedHeadline, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -35,6 +35,7 @@ import {
 } from "../lib/subagentTimeline.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { findModel } from "../../../shared/modelCatalog.js";
+import { estimateTokens } from "../../../shared/contextEstimate.js";
 import { useChat } from "../store.js";
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
@@ -342,6 +343,14 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
       return (
         <div className={AUDIT}>
           ✻ {compactedHeadline(event.trigger)}——此前对话折叠为摘要（{event.model}
+          {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
+        </div>
+      );
+
+    case "micro_compacted":
+      return (
+        <div className={AUDIT}>
+          ✻ {microCompactedHeadline(estimateTokens(event.summary))}（{event.model}
           {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
         </div>
       );

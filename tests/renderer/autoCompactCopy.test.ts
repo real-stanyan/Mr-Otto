@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { compactedHeadline, describeThreshold } from "../../src/renderer/src/lib/autoCompactCopy.js";
+import {
+  MICRO_COMPACT_HINT,
+  compactedHeadline,
+  describeThreshold,
+  microCompactedHeadline,
+} from "../../src/renderer/src/lib/autoCompactCopy.js";
 import type { AutoCompactSettings } from "../../src/shared/autoCompact.js";
 
 describe("describeThreshold", () => {
@@ -30,5 +35,15 @@ describe("compactedHeadline", () => {
   it("manual 或缺省（旧事件）：标「已压缩」", () => {
     expect(compactedHeadline("manual")).toBe("上下文已压缩");
     expect(compactedHeadline(undefined)).toBe("上下文已压缩");
+  });
+});
+
+describe("微压缩文案", () => {
+  it("开关说明逐字对齐 spec", () => {
+    expect(MICRO_COMPACT_HINT).toBe("每轮改写已发送的历史，会让模型的前缀缓存每轮失效；上下文小、对话长时再开。");
+  });
+
+  it("时间线行带摘要体积", () => {
+    expect(microCompactedHeadline(321)).toBe("一段对话并入摘要（摘要约 321 tokens）");
   });
 });

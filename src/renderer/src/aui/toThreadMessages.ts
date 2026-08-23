@@ -61,6 +61,9 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "skill_invoked":
     case "image_described":
     case "context_compacted":
+    // 微压缩(ADR-0064):和 context_compacted 同列——"哪一段对话被并进摘要了"
+    // 是审计事实,投影替换了模型看到的东西,时间线上必须留下痕迹
+    case "micro_compacted":
     // 派活(Task 8):父会话上那张卡、子会话里的"我是谁"存档,都要能上时间线——
     // 同 model_changed 那一类,是审计事实不是对话正文
     case "subagent_spawned":

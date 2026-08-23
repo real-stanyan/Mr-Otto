@@ -58,6 +58,18 @@ describe("totalTokens", () => {
     expect(totalTokens([said("a", 10, 5), said("b", 1, 2)])).toBe(18);
   });
 
+  it("微压缩那一笔也算(ADR-0064) —— 开着的话它是最高频的一笔,漏掉少算最多", () => {
+    const events = [
+      said("a", 10, 5),
+      ev({ type: "micro_compacted", summary: "S", coversUpTo: 3, model: "cheap", usage: { promptTokens: 30, completionTokens: 6 } }),
+    ];
+    expect(usageByModel(events)).toEqual([
+      { model: "cheap", promptTokens: 30, completionTokens: 6 },
+      { model: "a", promptTokens: 10, completionTokens: 5 },
+    ]);
+    expect(totalTokens(events)).toBe(51);
+  });
+
   it("跟进建议那一笔也算 —— 漏掉一类,统计从此少算一截", () => {
     const events = [
       said("a", 10, 5),
