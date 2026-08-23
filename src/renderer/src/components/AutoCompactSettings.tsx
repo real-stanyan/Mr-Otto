@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Slider } from "@/components/ui/slider.js";
 import { Switch } from "@/components/ui/switch.js";
-import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../App.js";
+import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MICRO_COMPACT_HINT, describeThreshold } from "../lib/autoCompactCopy.js";

@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/lib/utils.js";
-import { HINT } from "../App.js";
+import { HINT } from "../settingsShell.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { ThinkingPicker } from "./ThinkingPicker.js";
 import { useChat } from "../store.js";

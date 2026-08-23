@@ -9,7 +9,7 @@
 // ② 任何会改变占位符位置的动作(拖宽/全屏/窗口 resize)都得重新量。
 
 import { useEffect, useRef, useState } from "react";
-import { HEADER_H } from "../App.js";
+import { HEADER_H } from "../settingsShell.js";
 import { ArrowLeft, ArrowRight, RotateCw, X, Maximize2, Minimize2, Power } from "lucide-react";
 import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";

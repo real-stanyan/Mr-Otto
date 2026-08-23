@@ -3,7 +3,7 @@
 // 降级哲学(spec §3):每块独立坏、独立给指引,任何一块坏不拖垮整页。
 
 import Markdown from "react-markdown";
-import { HEADER_H } from "../App.js";
+import { HEADER_H } from "../settingsShell.js";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { ChevronLeft, RefreshCw, FolderOpen, Maximize2, Minimize2, X } from "lucide-react";

@@ -22,7 +22,7 @@ import { ChevronRight, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge.js";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/lib/utils.js";
-import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../App.js";
+import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { NewSubagentPage } from "./NewSubagentPage.js";
 import { EditSubagentPage } from "./EditSubagentPage.js";

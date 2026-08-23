@@ -14,7 +14,7 @@ import { Bot } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { cn } from "@/lib/utils.js";
-import { HEADER, HEADER_GHOST, HINT, MAIN_COL, SETTINGS_BODY } from "../App.js";
+import { HEADER, HEADER_GHOST, HINT, MAIN_COL, SETTINGS_BODY } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { SubagentFields, useSubagentDraft, ERR_TXT } from "./SubagentFields.js";
 import { SubagentScopeSelect } from "./SubagentScopeSelect.js";
