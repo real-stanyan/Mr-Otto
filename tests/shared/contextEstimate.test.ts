@@ -384,7 +384,7 @@ describe("微压缩稳态：两条 micro 夹着账单锚点", () => {
     for (let k = 1; k <= 6; k++) {
       events.push(...turn(String(k), { promptTokens: 5000, completionTokens: 500 }));
       lastBill = 5500;
-      // 折掉最老的未折 exchange（k-1 段）：它的 turn_ended 是倒数第 4 个事件
+      // 折掉最老的未折 exchange（k-1 段）：倒数第 4 个事件是上一轮的 turn_ended（k=2）或上一条 micro（k≥3），seq 都落在 te_{k-1} 与 u_k 之间，刚好整段吸收
       const end = events[events.length - 4]!.seq;
       if (k >= 2) events.push({ ...env(), type: "micro_compacted", summary: `S${k}`, coversUpTo: end, model: "cheap" });
       const used = contextUsed(events);
