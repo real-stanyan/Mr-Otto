@@ -220,6 +220,9 @@ export function parseSubagentMd(
         : "deny",
     preamble,
     context: splitList(fm["context"]).filter(isSafeContextFile),
+    // 只认 "none" 这一个值：写了别的（含 "inherit"）= 缺席 = 继承。
+    // 不进 unknownTools 式的报错——这是开关不是清单，非法值的安全解释就是默认档
+    ...(fm["skills"] === "none" ? { skills: "none" as const } : {}),
     scope: opts.scope,
     path: opts.path,
     source: opts.source,
@@ -296,6 +299,9 @@ export function serializeSubagent(def: SubagentDef): string {
     ...(def.thinking ? [`thinking: ${oneLine(def.thinking)}`] : []),
     `approval: ${oneLine(def.approval)}`,
     ...(def.context.length > 0 ? [`context: ${oneLine(def.context.join(", "))}`] : []),
+    // 缺席不写行（默认继承的老文件写回不长新行）；设置页现在不给编这个键，
+    // 手写的 skills: none 必须在保存后活下来——serializeSubagent 丢字段即数据丢失
+    ...(def.skills === "none" ? ["skills: none"] : []),
     ...preambleLines(def.preamble),
   ];
   return `---\n${lines.join("\n")}\n---\n\n${def.instructions}\n`;

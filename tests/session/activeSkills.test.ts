@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+import { activeSkills } from "../../src/session/activeSkills.js";
+import type { SessionEvent } from "../../src/session/events.js";
+
+const skill = (seq: number, name: string, content: string, args?: string): SessionEvent => ({
+  seq,
+  sessionId: "s",
+  ts: seq,
+  type: "skill_invoked",
+  name,
+  content,
+  ...(args !== undefined ? { args } : {}),
+});
+
+const user = (seq: number, content: string): SessionEvent => ({
+  seq, sessionId: "s", ts: seq, type: "user_message", content,
+});
+
+describe("activeSkills（已启用 skill 的台账，ADR-0066/0068 共用）", () => {
+  it("按名去重，后启用的快照覆盖并排到台账尾部", () => {
+    const events = [
+      skill(0, "tdd", "旧版"),
+      user(1, "活一"),
+      skill(2, "ponytail", "越少越好", "ultra"),
+      user(3, "活二"),
+      skill(4, "tdd", "新版"),
+      user(5, "活三"),
+    ];
+    const out = activeSkills(events, new Set());
+    expect([...out.keys()]).toEqual(["ponytail", "tdd"]); // tdd 重启用后排到尾部
+    expect(out.get("tdd")).toEqual({ content: "新版" });
+    expect(out.get("ponytail")).toEqual({ content: "越少越好", args: "ultra" });
+  });
+
+  it("before 截到区间：只算此前启用的", () => {
+    const events = [skill(0, "a", "甲"), user(1, "活"), skill(2, "b", "乙")];
+    expect([...activeSkills(events, new Set(), 2).keys()]).toEqual(["a"]);
+  });
+
+  it("barren 集合里的下标跳过（防御位：今天 barrenEventIndexes 不收 skill_invoked）", () => {
+    const events = [skill(0, "a", "甲"), skill(1, "b", "乙")];
+    expect([...activeSkills(events, new Set([0])).keys()]).toEqual(["b"]);
+  });
+
+  it("无 args 的条目没有 args 键（不是 undefined 值——快照要能原样 spread 进新事件）", () => {
+    const out = activeSkills([skill(0, "a", "甲")], new Set());
+    expect("args" in out.get("a")!).toBe(false);
+  });
+});
