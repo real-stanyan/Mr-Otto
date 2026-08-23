@@ -30,7 +30,7 @@ import {
 import { Input } from "@/components/ui/input.js";
 import { Switch } from "@/components/ui/switch.js";
 import { cn } from "@/lib/utils.js";
-import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../App.js";
+import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { useChat } from "../store.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";

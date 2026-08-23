@@ -83,8 +83,11 @@ describe("createTaskTool", () => {
     await expect(tool.run("随便", world, { toolCallId: "call_1" })).rejects.toThrow();
   });
 
-  it("没有 toolCallId（裸管线）也不炸", async () => {
+  // 原来这里断言的是「裸管线也不炸」：没有 ctx 就把 parentToolCallId 传成空串。
+  // 改成抛错（issue #141）——空串不是"更宽容"，它让 groupSubagentSpawns 归不了属、
+  // results.has 推不出状态，父时间线那张卡永远翻不成 done，而报错要到几层之后才现形
+  it("没有 toolCallId（裸管线）= 当场抛错，不把空串传下去", async () => {
     const tool = createTaskTool(okRunner, () => [def("searcher", "")]);
-    await expect(tool.run({ agent: "searcher", task: "T" }, world)).resolves.toBeTruthy();
+    await expect(tool.run({ agent: "searcher", task: "T" }, world)).rejects.toThrow(/toolCallId/);
   });
 });

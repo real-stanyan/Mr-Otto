@@ -475,7 +475,9 @@ describe("turn 中断（ADR-0006）", () => {
 
     const turn = engine.runTurn("讲个长故事");
     engine.abortTurn();
-    await turn; // resolve 而非 reject——停止是用户意志，不是故障
+    // resolve 而非 reject——停止是用户意志，不是故障。返回值直接说这一轮怎么收的口：
+    // 调用方靠它决定跑不跑 turn 后那几条外挂，不必回头翻日志（issue #112）
+    await expect(turn).resolves.toBe("aborted");
 
     const log = store.load("s1");
     expect(log.map((e) => e.type)).toEqual(["user_message", "turn_ended"]);
@@ -590,7 +592,7 @@ describe("lifecycle 事件（ADR-0004）", () => {
     const engine = new LoopEngine({
       store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1",
     });
-    await engine.runTurn("读 /a.txt");
+    await expect(engine.runTurn("读 /a.txt")).resolves.toBe("completed");
 
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([

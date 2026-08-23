@@ -2,7 +2,7 @@
 // 泳道几何由 shared/assignLanes 算出,这里只负责把 lane/edges 画成 SVG。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { HEADER_H } from "../App.js";
+import { HEADER_H } from "../settingsShell.js";
 import { ChevronLeft, GitBranch, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { FileTypeIcon } from "./FileTypeIcon.js";
 import { SidebarNub } from "./SidebarNub.js";

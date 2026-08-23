@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, Bot, Brain, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, KeyRound, ListChecks, Palette, Plug, Plus, Search, Shrink, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users, type LucideIcon } from "lucide-react";
+import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,6 +55,7 @@ import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
 import { cn, isMac } from "@/lib/utils.js";
+import { HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
@@ -164,33 +165,6 @@ const IS_MAC = isMac();
 
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
-/* 设置页骨架(账号/模型配置/Skill 库/Subagent 共用) —— 导出给 SubagentSettings.tsx，
-   它是 SkillsPage 的可写版兄弟栏目，骨架该是同一份，不该各自拼一遍字符串 */
-export const MAIN_COL = "flex-1 min-w-0 flex h-full flex-col";
-
-/* h-11 是所有顶栏的公约数:会话区这条和右侧工具面板(终端/浏览器/Protocol/Git Graph)
-   的顶栏并排,高度不一样的话分割线在中间错一截。写死高度而不是靠 padding + 内容
-   撑,两边内容不一样高也对得齐 */
-export const HEADER_H = "h-11";
-export const HEADER = `flex ${HEADER_H} items-center gap-3 px-5 border-b border-border drag-region`;
-export const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-foreground";
-/* 内容铺满主区宽度,只靠两侧内边距留呼吸:居中定宽那版在宽窗口里两边空一大片,
-   列表本身又是整行可点的卡,宽一点反而更像"一页设置"而不是一张浮在中间的表单 */
-export const SETTINGS_BODY =
-  "flex-1 overflow-y-auto scrollbar-stable px-8 py-6 flex flex-col gap-4 w-full";
-export const HINT = "text-muted-foreground text-[13px]";
-
-/** 设置页 header 的标题:和侧栏导航同一个图标 + 同一个文案,一处定义(SETTINGS_SECTIONS)。
-    面包屑页(新建/编辑子智能体)把它当第一级用 */
-export function SettingsTitle({ id, className }: { id: SettingsSection; className?: string }) {
-  const sec = SETTINGS_SECTIONS.find((s) => s.id === id)!;
-  return (
-    <span className={cn("font-[650] inline-flex items-center gap-[6px]", className)}>
-      <sec.icon className="size-4 text-muted-foreground" />
-      {sec.label}
-    </span>
-  );
-}
 const ERR_TXT = "text-err text-[13px]";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
@@ -1280,18 +1254,6 @@ function loadCollapsedProjects(): Set<string> {
 function saveCollapsedProjects(dirs: Set<string>): void {
   localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...dirs]));
 }
-
-/** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案 */
-export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
-  { id: "account", label: "账号", icon: UserRound },
-  { id: "keys", label: "模型配置", icon: KeyRound },
-  { id: "appearance", label: "外观", icon: Palette },
-  { id: "skills", label: "Skill 库", icon: BookMarked },
-  { id: "agents", label: "子智能体", icon: Bot },
-  { id: "mcp", label: "MCP", icon: Plug },
-  { id: "memory", label: "记忆", icon: Brain },
-  { id: "context", label: "上下文", icon: Shrink },
-];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
 function TableList() {

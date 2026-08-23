@@ -97,8 +97,22 @@ export function SectionRail({ items, activeIndex, onJump }: SectionRailProps) {
           <li
             key={`${item.title}-${i}`}
             aria-current={activeIndex === i ? "true" : undefined}
+            // 键盘可达(issue #112):刻度是跳转控件,只挂 onClick 的话分区跳转是纯鼠标操作。
+            // role=button + tabIndex + Enter/Space —— 和读屏器上那句 sr-only 标题配成一对
+            role="button"
+            tabIndex={0}
             onPointerEnter={(e) => onEnter(e, i)}
             onClick={() => onJump(i)}
+            onFocus={() => {
+              setHovered(i);
+              setLastHovered(i); // 键盘聚焦也该弹卡片:鼠标那条路径靠 onEnter 一并设,这里补上
+            }}
+            onBlur={() => setHovered(null)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault(); // 空格默认滚屏,而这里正要跳到别处
+              onJump(i);
+            }}
             className="pointer-events-auto absolute inset-x-0 cursor-pointer [transform:translateY(-50%)]"
             style={{ top: `${(fraction(i) * 100).toFixed(3)}%`, height: `${PITCH}px` }}
           >

@@ -231,7 +231,9 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
       <div className={`${AUDIT} flex flex-col items-center gap-1.5`}>
         <AgentStatus
           state={state}
-          label={`${spawn.agent} · ${taskHeadline(spawn.task)}`}
+          // 分隔符跟着标题走:taskHeadline 可能是空串(现在被 task.ts:parseArgs 的
+          // 空 task 拦着,但那是别人的不变量,不该由这里的排版依赖它,issue #141)
+          label={taskHeadline(spawn.task) ? `${spawn.agent} · ${taskHeadline(spawn.task)}` : spawn.agent}
           onSelect={() => toggle(spawn.toolCallId)}
           expanded={expandedId === spawn.toolCallId}
           {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}

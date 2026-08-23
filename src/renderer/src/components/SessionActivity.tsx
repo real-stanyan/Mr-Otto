@@ -21,8 +21,13 @@ export function SessionActivity({
   className?: string;
 }) {
   const sessions = useChat((s) => s.sessions);
+  // 只数主会话:子会话(spawnedFrom!=null)是主 agent 派活的产物,不是"人开的会话"——
+  // 数进去的话派一次活热力图就多一格,说的不再是"你在这儿开过多少会话"(issue #141)
   const scoped = useMemo(
-    () => (workspace === null ? sessions : sessions.filter((s) => s.workspace === workspace)),
+    () =>
+      sessions.filter(
+        (s) => s.spawnedFrom === null && (workspace === null || s.workspace === workspace),
+      ),
     [sessions, workspace],
   );
   // now 每次渲染取一次就够:这张图的粒度是"天",一次渲染里的毫秒差不会换格子。

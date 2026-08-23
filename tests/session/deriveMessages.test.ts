@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveMessages } from "../../src/session/deriveMessages.js";
+import { DEFAULT_COMPRESSION, deriveMessages } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 // 信封字段工厂：测试里只关心 payload，信封统一生成
@@ -521,18 +521,40 @@ describe("image_described 投影(vision-bridge)", () => {
 });
 
 describe("section_classified 不进模型上下文", () => {
-  it("日志里插入分区事件，投影逐字节等于没有它时的投影", () => {
-    const base: SessionEvent[] = [
-      { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
-      { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "你好" },
-      { seq: 2, sessionId: "s", ts: 3, type: "assistant_message", content: "在", model: "m" },
-    ];
-    const withSections: SessionEvent[] = [
-      ...base,
-      { seq: 3, sessionId: "s", ts: 4, type: "section_classified", title: "打招呼", model: "c" },
-      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: null, model: "c" },
-    ];
+  // 分区事件插在**中间**、且带压缩选项跑（issue #112）：都放在日志尾巴 + 不传
+  // 压缩的话，这条测试演示不了它要钉的性质——fidelityBoundary 是同一个数组里的
+  // 位置计算，多插两条事件会把保真区的边界推走，尾部的分区事件推不动它
+  const turn = (n: number): SessionEvent[] => [
+    { seq: n * 10 + 1, sessionId: "s", ts: n * 10 + 1, type: "user_message", content: `问题${n}` },
+    {
+      seq: n * 10 + 2, sessionId: "s", ts: n * 10 + 2, type: "assistant_message", content: "",
+      model: "m", toolCalls: [{ id: `t${n}`, name: "read_file", args: { path: `${n}.ts` } }],
+    },
+    { seq: n * 10 + 3, sessionId: "s", ts: n * 10 + 3, type: "tool_result", toolCallId: `t${n}`, status: "ok", output: "x".repeat(5000) },
+    { seq: n * 10 + 4, sessionId: "s", ts: n * 10 + 4, type: "assistant_message", content: `答案${n}`, model: "m" },
+  ];
+  const base: SessionEvent[] = [
+    { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
+    ...turn(1), ...turn(2), ...turn(3),
+  ];
+  const section = (seq: number, title: string | null): SessionEvent =>
+    ({ seq, sessionId: "s", ts: seq, type: "section_classified", title, model: "c" });
+  // 夹在第一个 turn 之后、第二个 turn 之前 —— 正好落在老区和保真区之间
+  const withSections: SessionEvent[] = [
+    ...base.slice(0, 5),
+    section(15, "第一段"),
+    section(16, null),
+    ...base.slice(5),
+  ];
+
+  it("插在中间的分区事件，投影逐字节等于没有它时的投影（不压缩）", () => {
     expect(JSON.stringify(deriveMessages(withSections))).toBe(JSON.stringify(deriveMessages(base)));
+  });
+
+  it("带压缩选项也一样：分区事件不该把保真区的边界推走", () => {
+    expect(JSON.stringify(deriveMessages(withSections, DEFAULT_COMPRESSION))).toBe(
+      JSON.stringify(deriveMessages(base, DEFAULT_COMPRESSION))
+    );
   });
 });
 

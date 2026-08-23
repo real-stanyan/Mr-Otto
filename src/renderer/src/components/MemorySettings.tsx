@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/lib/utils.js";
-import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../App.js";
+import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import {

@@ -627,7 +627,10 @@ const SectionAnchor: ComponentType = () => {
   return (
     <>
       {indices.map((si) => (
-        <div key={si} data-section={si} aria-hidden className="h-0 scroll-mt-4" />
+        // absolute + 不设 top/left = 停在自己的静态位置,同时彻底退出 flex 流(issue #112):
+        // 零高度的 div 在 `flex flex-col gap-2` 里照样占一格,每个分区边界上下各多 8px,
+        // 跟上面那句"不参与布局"对不上
+        <div key={si} data-section={si} aria-hidden className="absolute h-0 scroll-mt-4" />
       ))}
     </>
   );

@@ -363,6 +363,10 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // 本次进程运行里派出去过的子会话 id。只增不减，且只在本次运行内有意义：
+  // 它是 resumeSession 那道"绝不重建第二个 agent"守卫的判据（见那里的注释）。
+  // 上一轮 app 留下的子会话不在里面 —— 它们本来就该按崩溃修复重建（issue #141）
+  const spawnedThisRun = new Set<string>();
   let currentSessionId: string | null = null;
   // 岛只跟主窗当前会话。主进程存这一个 id:helper ready 时补一次快照,变化时喂投影器
   let activeSessionId: string | null = null;
@@ -521,7 +525,10 @@ void app.whenReady().then(() => {
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
-      register: (child) => void agents.set(child.sessionId, child),
+      register: (child) => {
+        agents.set(child.sessionId, child);
+        spawnedThisRun.add(child.sessionId);
+      },
     });
     // 收口走 settleNudgeSpawn（issue #186）：跑完往父会话落配对的 tool_result，
     // 时间线那张卡才翻得成 done——不落的话合成 toolCallId 永远没有结果
@@ -922,7 +929,10 @@ void app.whenReady().then(() => {
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
-        register: (child) => void agents.set(child.sessionId, child),
+        register: (child) => {
+          agents.set(child.sessionId, child);
+          spawnedThisRun.add(child.sessionId);
+        },
       }),
     });
     return self;
@@ -1029,14 +1039,16 @@ void app.whenReady().then(() => {
         if (!first || first.type !== "session_created" || !first.workspace) {
           throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
         }
-        // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
-        // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
-        // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
-        // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
-        // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
-        // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
-        if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
-          throw new Error("这个子会话正在跑，稍等一下再看");
+        // C1 的第二道门：本次运行派出去的子会话，从 register 那一刻起就在 agents 里，
+        // 走不到这里；走到这里说明登记那一环漏了。绝不能顺手再建一个 agent 顶上——
+        // 第二个 agent 的崩溃修复会给还在飞的工具调用补一条"app 在执行中退出"的假结果，
+        // 紧接着真结果也落盘，同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+        //
+        // 判据是 spawnedThisRun 而不是"父会话此刻有没有 turn 在跑"（issue #141）：
+        // 后者会说假话——重启后点开一张上一轮遗留的子会话卡片、而父会话此刻恰好在跑，
+        // 用户会看到"它正在跑"，其实它早停了。上一轮的子会话该走下面的崩溃修复重建
+        if (spawnedThisRun.has(sessionId)) {
+          throw new Error("这个子会话本次运行里已经建过 agent，重建会毁掉它的日志——重启应用后再看");
         }
         // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
         const child = childAgentConfig(events);
@@ -1486,6 +1498,9 @@ void app.whenReady().then(() => {
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
     feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
+    // runTurn 抛错时走不到下面（整个 sendMessage 一起抛），所以这个初值只是让
+    // TS 安心；真正的取值只有 runTurn 的返回
+    let outcome: "completed" | "aborted" = "aborted";
     try {
       if (invoked) {
         // 快照落在 user_message 之前：模型先看到说明书，再看到任务
@@ -1508,7 +1523,7 @@ void app.whenReady().then(() => {
         });
         send(CHANNELS.event, descEvent);
       }
-      await agent.engine.runTurn(text, refs, textFiles);
+      outcome = await agent.engine.runTurn(text, refs, textFiles);
     } finally {
       runningSessions.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
@@ -1520,13 +1535,12 @@ void app.whenReady().then(() => {
     // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
     // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
     // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
-    let aborted = false;
-    for (const e of store.load(sessionId).slice().reverse()) {
-      if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
-    }
     // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
-    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
-    if (!aborted) {
+    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性。
+    // outcome 由 runTurn 直接给（issue #112）：原来是在这里做一次全量 store.load
+    // + 倒着找最后一条 turn_ended，把 engine 早一帧就知道的事实又推导了一遍——
+    // 每个 turn 一次、同步跑在主进程，长会话上是白读整份日志
+    if (outcome === "completed") {
       enqueueSectionClassify(sessionId);
       // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
       // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,

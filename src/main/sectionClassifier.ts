@@ -124,8 +124,13 @@ export async function classifySection(
     );
     const parsed = parseSectionReply(reply.content, currentTitle !== null);
     if (!parsed) return null;
+    // 「开新分区」但标题跟当前这条一模一样 = 模型其实在说延续（issue #112）。
+    // 照单全收的话竖轨上会出现两条相邻的同名刻度，点哪条都跳到差不多的地方。
+    // 落成延续（title: null）而不是丢弃：那段跨度确实分过类了，丢弃会让下一轮
+    // 连着这段重分一次
+    const title = parsed.title !== null && parsed.title === currentTitle ? null : parsed.title;
     return {
-      title: parsed.title,
+      title,
       model: SECTION_MODEL,
       ...(reply.usage ? { usage: reply.usage } : {}),
     };

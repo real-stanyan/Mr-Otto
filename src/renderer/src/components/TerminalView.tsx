@@ -5,7 +5,7 @@
 // 这里只管标签行 + xterm 的挂载。
 
 import { useEffect, useRef, useState } from "react";
-import { HEADER_H } from "../App.js";
+import { HEADER_H } from "../settingsShell.js";
 import { Plus, X, Maximize2, Minimize2 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { useChat } from "../store.js";
