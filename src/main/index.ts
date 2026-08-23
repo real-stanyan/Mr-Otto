@@ -1105,6 +1105,14 @@ void app.whenReady().then(() => {
     applyUserEdit(memoryEditDeps, target, text, sessionId));
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
+  // 设置页的试搜框。不排除当前会话（用户验证「索引里有没有」，不是模型回忆）；
+  // tool_result 能有上万字符，截断后再过 IPC
+  ipcMain.handle(CHANNELS.searchIndex, (_e, query: unknown) => {
+    if (typeof query !== "string") throw new Error("query 必须是字符串");
+    return store
+      .searchText(query, { limit: 20 })
+      .map((h) => ({ ...h, text: [...h.text].length > 200 ? [...h.text].slice(0, 200).join("") + "…" : h.text }));
+  });
   ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
     // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
     // MEMORY_FILES[target] 拼了路径，得在拼之前挡
