@@ -2,6 +2,8 @@
 
 // 来自 assistant-ui registry: elements-agent-status
 // (https://r.assistant-ui.com/elements-agent-status.json)
+// 取回于 2026-08-21（registry 不发版本号，只能记日期：升级时拿这个日期之后的
+// upstream diff 对着下面这份改动一览人工合）
 //
 // 本仓改动一览（升级时要人工合）：
 //  ① 去掉右侧的暂停/重跑按钮 —— 本仓没有单个 subagent 的暂停能力，子会话自己

@@ -2,6 +2,8 @@
 
 // 来自 assistant-ui registry: elements-agent-handoff
 // (https://r.assistant-ui.com/elements-agent-handoff.json)
+// 取回于 2026-08-20（registry 不发版本号，只能记日期：升级时拿这个日期之后的
+// upstream diff 对着下面这份改动一览人工合）
 //
 // 本仓改动一览(升级时要人工合):
 //  ① carried 可省 —— 上游是必填数组(演示里永远有东西被带过去);本仓的模型切换

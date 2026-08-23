@@ -182,8 +182,12 @@ export function createTaskTool(runner: SubagentRunner, list: () => SubagentDef[]
 
 1. 查定义（现扫磁盘）。查不到 → 抛错，engine 落 `tool_result: error`。
 2. `createAgent({ workspace: 父的, world: 父的, spawnedBy: {...}, push: 包装过的 })`。
-3. 落 `subagent_briefed`（instructions 全文快照，含内置前言）。
-4. 非默认模型 → 落 `model_changed`。
+3. 非默认模型 → 落 `model_changed`（`switchModel` 与当前相同时内部 no-op，零多余事件）。
+4. 落 `subagent_briefed`（instructions 全文快照，含内置前言）。
+
+   > 订正（issue #141）：这两条原来写反了。实现里 `model_changed` 在前 ——
+   > `briefed.model` 读的是切换**之后**的值，先落 briefed 的话那份快照记的是父的
+   > 型号，与它自称的"我是谁"的快照语义对不上。以实现为准。
 5. 父侧落 `subagent_spawned`。
 6. `engine.runTurn(task)`。
 7. 取子日志最后一条 `assistant_message.content` 当汇报。空 → 回退文案
