@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// DynamicNotch 的 expanded 内容:上半区是会话列表(逐 session 一行,点选切换),
@@ -292,7 +293,8 @@ struct AgentRow: View {
   }
 }
 
-/// DynamicNotch 的 compact leading 内容:idle 什么都不显;active 一个脉动小圆点提示"有事在发生"。
+/// DynamicNotch 的 compact leading 内容:Otto logo 常显(#201/#203)——身份标识 +
+/// 输入态入口(点了 enterCompose)。状态点在另一侧(IslandCompactStatusView)。
 ///
 /// hover 检测特意不放在这里:DynamicNotchKit 的 NotchView 只在 state == .compact 时才把
 /// compactLeading 挂进视图树,一旦因 hover 展开成 .expanded,这个 view 连同它的 .onHover
@@ -301,48 +303,65 @@ struct AgentRow: View {
 /// (框架把 .onHover 挂在包住 compact+expanded 两层内容的外层容器上),main.swift 直接订阅它。
 struct IslandCompactView: View {
   @ObservedObject var model: IslandModel
+
+  /// SPM 资源 bundle 里的 logo(透明背景版 otto.png,和渲染层同一张图,#201)。
+  /// 找不到给 nil,下面兜底回键盘图标——资源缺失(打包漏拷 bundle)时岛不能瞎。
+  private static let logo: NSImage? =
+    Bundle.module.url(forResource: "otto", withExtension: "png")
+      .flatMap { NSImage(contentsOf: $0) }
+
+  var body: some View {
+    Button {
+      model.enterCompose()
+    } label: {
+      if let logo = Self.logo {
+        Image(nsImage: logo)
+          .resizable()
+          .scaledToFit()
+          .frame(height: 20)
+      } else {
+        Image(systemName: "keyboard")
+          .font(.system(size: 8))
+          .foregroundStyle(.white.opacity(0.55))
+      }
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 6)
+  }
+}
+
+/// compact trailing(刘海右侧)的状态小圆球(#203):有任务在跑时蓝色脉动。
+/// approval 也给一颗橙点——虽然 desiredState 会立刻 fleet-wide 展开,展开动画
+/// 那几百毫秒里 compact 还在屏上,橙点让状态切换读起来连续而不是跳变。
+struct IslandCompactStatusView: View {
+  @ObservedObject var model: IslandModel
   @State private var pulse = false
 
-  /// 折叠态脉动条件:fleet 里任一 session 在 active(不局限于当前选中的那个)——
-  /// 哪怕选中行是别的 session,只要有 agent 在跑就该有提示。按 selectedAgent 切换的
-  /// 单会话逻辑(点击进输入态等)留到列表 UI 落地的下一个 task。
+  /// fleet-wide 条件(不局限当前选中):哪怕选中行是别的 session,
+  /// 只要有 agent 在跑/在等审批就该有提示。
   private var anyActive: Bool {
     model.fleet.agents.contains { $0.phase == .active }
+  }
+  private var anyApproval: Bool {
+    model.fleet.agents.contains { $0.phase == .approval }
   }
 
   var body: some View {
     Group {
-      if model.fleet.agents.contains(where: { $0.phase == .approval }) {
-        // approval 不等 hover 直接 expand(desiredState 是 fleet-wide 的 contains,
-        // 见 main.swift),compact 内容不会被看到,不需要入口。这里的判断跟着
-        // 改成 fleet-wide,和展开条件保持同一把键——原先按 selectedAgent 判,
-        // 用户手动选中别的行时和展开条件错位(#194)。
-        Color.clear.frame(width: 1, height: 1)
-      } else if anyActive {
-        // 脉动点本身就是入口:点一下进输入态(Task 6)。视觉不变,只是加了可点性,
-        // 跟 task-5 报告里"active 默认折叠只露一个提示点"的设计没冲突。
-        Button {
-          model.enterCompose()
-        } label: {
-          Circle()
-            .fill(Color.accentColor)
-            .frame(width: 5, height: 5)
-            .opacity(pulse ? 1 : 0.35)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
-        }
-        .buttonStyle(.plain)
-        .onAppear { pulse = true }
+      if anyApproval || anyActive {
+        Circle()
+          .fill(anyApproval ? Color.orange : Color.accentColor)
+          .frame(width: 6, height: 6)
+          .opacity(pulse ? 1 : 0.35)
+          .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+          .onAppear { pulse = true }
+          // repeatForever 的动画锚在 pulse 的**值变化**上:active 结束点被移除后
+          // pulse 还是 true,下次再 active 时没有变化就没有动画——归零才有下一次
+          .onDisappear { pulse = false }
       } else {
-        // Task 6 之前这里是纯 Color.clear(贴合刘海什么都不显)。要让 idle 也能进输入态,
-        // 必须有个可点的东西——用一个很小的键盘图标当"点一下说话"入口,尽量不抢视觉。
-        Button {
-          model.enterCompose()
-        } label: {
-          Image(systemName: "keyboard")
-            .font(.system(size: 8))
-            .foregroundStyle(.white.opacity(0.55))
-        }
-        .buttonStyle(.plain)
+        // 空闲不显示——但 DynamicNotchKit 对空 trailing 会把区域收到 0,
+        // 留一个 1pt 占位让左右视觉对称的问题交给框架的 padding,不在这里硬凑
+        Color.clear.frame(width: 1, height: 1)
       }
     }
     .padding(.horizontal, 6)
