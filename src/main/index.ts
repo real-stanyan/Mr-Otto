@@ -47,6 +47,7 @@ import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
+import type { IslandSettings } from "../shared/shellBridge.js";
 import { scanSkills } from "./skills.js";
 import {
   scanSubagents,
@@ -78,6 +79,8 @@ import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
+import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
+import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
@@ -214,6 +217,10 @@ void app.whenReady().then(() => {
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
   const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
+  // 灵动岛设置(#199)。app 级、跨会话;启动读一次进内存——只有 set handler 会改它,
+  // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
+  const islandSettingsPath = join(app.getPath("userData"), "island.json");
+  let islandSettings = loadIslandSettings(islandSettingsPath);
   applyToEnv(loadKeys(keyVaultPath), process.env);
   // .env 那条路不经过 keyVault，登记不到（loadDotEnv 只认"补空缺"这一件事）。
   // 补登记：本仓认识的那几个 provider key 变量，此刻有值的都算凭据——
@@ -383,9 +390,25 @@ void app.whenReady().then(() => {
 
   // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
   // 沿用 ADR-0059 的"丢弃成本可忽略"
+  // display=usage 时每次推送都要一份用量表,但账单 SQL + 聚合不值得跟着每个
+  // 工具事件跑——30s 记忆化:表里的数字是"今天烧了多少"量级,30s 的陈旧无感,
+  // 而工具事件可以一秒好几个
+  let islandUsageCache: { at: number; rows: IslandUsageRow[] } | null = null;
+  const islandUsageRows = (): IslandUsageRow[] => {
+    const now = Date.now();
+    if (!islandUsageCache || now - islandUsageCache.at > 30_000) {
+      const since = now - 14 * 86_400_000;
+      islandUsageCache = { at: now, rows: islandUsage(store.billedUsage(since), { now }) };
+    }
+    return islandUsageCache.rows;
+  };
+
   const pushFleet = (): void => {
     if (!bridge) return;
-    bridge.pushState(flattenFleet(islandStates, store.sessions(), activeSessionId));
+    const fleet = flattenFleet(islandStates, store.sessions(), activeSessionId);
+    fleet.display = islandSettings.display;
+    if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
+    bridge.pushState(fleet);
   };
 
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
@@ -1034,6 +1057,15 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getAutoCompact, () => loadAutoCompact(autoCompactPath));
   ipcMain.handle(CHANNELS.setAutoCompact, (_e, settings: AutoCompactSettings) =>
     saveAutoCompact(autoCompactPath, settings));
+  // 灵动岛设置(#199):normalise 在 store 层做(渲染层传什么不直接信),
+  // set 完立刻重推岛快照——切换即时生效,不等下一个事件
+  ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
+  ipcMain.handle(CHANNELS.setIslandSettings, (_e, settings: IslandSettings) => {
+    islandSettings = normaliseIslandSettings(settings);
+    saveIslandSettings(islandSettingsPath, islandSettings);
+    islandUsageCache = null; // 切换瞬间给最新数,别端上一份 30s 前的缓存
+    pushFleet();
+  });
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());

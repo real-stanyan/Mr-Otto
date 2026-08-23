@@ -13,6 +13,25 @@ final class CodableTests: XCTestCase {
                    PendingApproval(callId: "c9", verb: "写入", target: "foo.ts", fullPath: "src/foo.ts"))
   }
 
+  /// #199:display/usage 是后加的可选字段。带上时要解出来——
+  /// usage 行给用量表,display 决定展开态上半区画哪个。
+  func testDecodeFleetWithUsage() throws {
+    let line = #"{"type":"state","state":{"agents":[],"focusedSessionId":null,"display":"usage","usage":[{"label":"DeepSeek V4 Flash","today":1200,"d7":34000,"d14":56000}]}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
+    XCTAssertEqual(inbound.state.display, .usage)
+    XCTAssertEqual(inbound.state.usage,
+                   [UsageRow(label: "DeepSeek V4 Flash", today: 1200, d7: 34000, d14: 56000)])
+  }
+
+  /// 旧主进程不带新字段:解码不能炸,display 兜底 sessions、usage 兜底空表
+  /// (协议向后兼容,同 SessionEvent 的规矩)。
+  func testDecodeFleetWithoutUsageFields() throws {
+    let line = #"{"type":"state","state":{"agents":[],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
+    XCTAssertEqual(inbound.state.display, .sessions)
+    XCTAssertEqual(inbound.state.usage, [])
+  }
+
   func testOutboundJSON() throws {
     let line = Outbound.approve(sessionId: "s", callId: "c", grant: "session").jsonLine()
     let o = try JSONSerialization.jsonObject(with: line.data(using: .utf8)!) as! [String: Any]

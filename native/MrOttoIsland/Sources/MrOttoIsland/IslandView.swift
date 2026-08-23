@@ -24,7 +24,18 @@ struct IslandExpandedView: View {
 
   var body: some View {
     Group {
-      if model.fleet.agents.isEmpty {
+      // 用量模式(#199):上半区换成用量表,下半区详情(审批三按钮 / compose 输入)
+      // 原样保留——审批 fleet-wide 强制展开的意义就是当场能按按钮,不能因为
+      // 显示的是用量就把按钮藏了。fleet 为空但有历史用量也照常显示表。
+      if model.fleet.display == .usage {
+        VStack(spacing: 0) {
+          usageTable
+          if let agent = model.selectedAgent, model.composing || agent.phase != .idle {
+            Divider()
+            detail(agent)
+          }
+        }
+      } else if model.fleet.agents.isEmpty {
         Text("主窗里先开会话")
           .foregroundStyle(.secondary)
           .padding(.horizontal, 12)
@@ -58,6 +69,59 @@ struct IslandExpandedView: View {
     // 工具 caption 单行不换行,也给审批三按钮(允许/会话/拒绝)和输入框留够地方,
     // 同时贴近刘海尺度,不再是一条横条。
     .frame(width: 380)
+  }
+
+  /// 用量表(#199):每模型一行,今天/7天/14天 三列。数字 monospacedDigit +
+  /// 固定列宽右对齐——列不对齐的数字表读起来是灾难。行数主进程已截到 6,
+  /// 高度可控,不套 ScrollView(表是扫一眼的东西,不是翻页的东西)。
+  private var usageTable: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      if model.fleet.usage.isEmpty {
+        Text("还没有用量")
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .center)
+          .padding(.vertical, 6)
+      } else {
+        HStack(spacing: 8) {
+          Text("模型")
+          Spacer(minLength: 0)
+          Text("今天").frame(width: 54, alignment: .trailing)
+          Text("7天").frame(width: 54, alignment: .trailing)
+          Text("14天").frame(width: 54, alignment: .trailing)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        ForEach(model.fleet.usage) { row in
+          HStack(spacing: 8) {
+            Text(row.label)
+              .lineLimit(1)
+              .foregroundStyle(.white)
+            Spacer(minLength: 0)
+            Group {
+              Text(Self.fmtTokens(row.today)).frame(width: 54, alignment: .trailing)
+              Text(Self.fmtTokens(row.d7)).frame(width: 54, alignment: .trailing)
+              Text(Self.fmtTokens(row.d14)).frame(width: 54, alignment: .trailing)
+            }
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+          }
+          .font(.caption)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 2)
+        }
+      }
+    }
+    .padding(.bottom, 6)
+  }
+
+  /// K/M 缩写,同渲染层 fmtTokens 的口径(ProviderUsage.tsx)——两边显示同一个数,
+  /// 写法也该长一个样。
+  static func fmtTokens(_ n: Double) -> String {
+    if n >= 1_000_000 { return String(format: "%.1fM", n / 1_000_000) }
+    if n >= 1_000 { return String(format: "%.1fK", n / 1_000) }
+    return String(Int(n))
   }
 
   /// 选中会话的详情区:输入态优先(composing 是全局开关,不分会话),否则按
