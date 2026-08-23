@@ -34,6 +34,7 @@ import { initialSubagentScope } from "../lib/subagentScopes.js";
 import { createSubagentFile, fileFieldsOf } from "../lib/createSubagentFile.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { useSubagentScope, type SubagentScopeView } from "../lib/useSubagentScope.js";
+import { VisionModelSetting } from "./VisionModelSetting.js";
 
 export function SubagentSettings() {
   const subagents = useChat((s) => s.subagents);
@@ -136,6 +137,9 @@ export function SubagentSettings() {
                 />
               )
             )}
+            {/* 不是子智能体,但用户的心智模型是"后台帮手都在内置这一栏"(issue #262):
+                memory-reviewer 在上面,图片代读员也该在这找得到 */}
+            <VisionModelSetting />
           </>
         )}
         {/* 自己那一栏也带个标题:上面那栏有,这栏没有的话读起来像内置的续篇 */}
