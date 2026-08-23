@@ -46,6 +46,7 @@ import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
+import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings } from "../shared/shellBridge.js";
 import { scanSkills } from "./skills.js";
@@ -61,7 +62,8 @@ import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentDef, saveSubagentDef, type SubagentWriteDeps } from "./subagentWrites.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
-import type { BrowserReadOptions } from "../world/executionWorld.js";
+import type { BrowserReadOptions, McpCapability } from "../world/executionWorld.js";
+import type { ToolDefinition } from "../model/adapter.js";
 import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
@@ -212,6 +214,11 @@ void app.whenReady().then(() => {
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
   const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
+  // 三个 turn 外挂共用的那一款小模型（issue #112）。现读不缓存：设置页改了当场生效。
+  // 出厂默认和 vision-bridge 共一家的免费额度——那条路失败会让整个 turn 失败，
+  // 而外挂失败只少一条标题；愿意换家的人在设置页换，换了就换了一把 key、一份额度
+  const helperModelPath = join(app.getPath("userData"), "helper-model.json");
+  const helperModel = (): string => loadHelperModel(helperModelPath);
   // 灵动岛设置(#199)。app 级、跨会话;启动读一次进内存——只有 set handler 会改它,
   // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
   const islandSettingsPath = join(app.getPath("userData"), "island.json");
@@ -446,7 +453,7 @@ void app.whenReady().then(() => {
   const sectionQueues = new Map<string, Promise<void>>();
 
   const classifyAndAppend = async (sessionId: string): Promise<void> => {
-    const section = await classifySection(store.load(sessionId));
+    const section = await classifySection(store.load(sessionId), helperModel());
     if (!section) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
     // 往 purge 过的 sessionId 上 append 会凭空造出一条没有 session_created 的
@@ -467,7 +474,7 @@ void app.whenReady().then(() => {
   // 会各开一个分区;建议没有锚点,每次只看最后一轮问答,后落盘的那条天然覆盖
   // 前一条(渲染只取最后一条)——撞车的代价就是多烧一次便宜调用
   const suggestAndAppend = async (sessionId: string): Promise<void> => {
-    const result = await suggestFollowUps(store.load(sessionId));
+    const result = await suggestFollowUps(store.load(sessionId), helperModel());
     if (!result) return;
     // 同 classifyAndAppend:出了 turn 锁,这一跑期间会话可能已被 purge。
     // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
@@ -543,7 +550,6 @@ void app.whenReady().then(() => {
   // 会话被 purge 就不落。**必须串行**（同 sectionQueues 的理由）：两次并发的
   // microCompactOnce 各自看不到对方的 micro_compacted，会对同一个 exchange 摘两次、
   // 后落的那条 running summary 丢掉先落那条的内容。
-  const MICRO_MODEL = SECTION_MODEL;
   const MICRO_TIMEOUT_MS = 30_000;
   const microQueues = new Map<string, Promise<void>>();
 
@@ -551,7 +557,10 @@ void app.whenReady().then(() => {
     if (!loadAutoCompact(autoCompactPath).micro) return; // 现读：设置页一关当场停
     // cheapAdapter 必须每跑一次现造：它带的是 AbortSignal.timeout(30s)，从造出来
     // 那一刻开始走表。提到闭包外面 = 主进程开机 30 秒后每次微压缩都当场超时
-    const cheap = createCheapAdapter(MICRO_MODEL, MICRO_TIMEOUT_MS);
+    // 现读一次、记在局部：这一跑要几十秒，期间用户可能在设置页换了型号——
+    // 落盘那条 micro_compacted 记的必须是真正跑这一次的那款
+    const model = helperModel();
+    const cheap = createCheapAdapter(model, MICRO_TIMEOUT_MS);
     if (!cheap) return;
     const log = store.load(sessionId);
     const result = await microCompactOnce(log, cheap.adapter, {
@@ -573,7 +582,7 @@ void app.whenReady().then(() => {
     if (compactedSince) return;
     const event = store.append({
       sessionId, ts: Date.now(), type: "micro_compacted",
-      summary: result.summary, coversUpTo: result.coversUpTo, model: MICRO_MODEL,
+      summary: result.summary, coversUpTo: result.coversUpTo, model,
       ...(result.usage ? { usage: result.usage } : {}),
     });
     send(CHANNELS.event, event);
@@ -654,7 +663,16 @@ void app.whenReady().then(() => {
   // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
   const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
   // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
-  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); });
+  /** 把活跃会话此刻的工具声明推给渲染层（issue #141）。agent.toolDefs 是活 getter，
+      BootInfo 里那份是 boot/resume 那一刻的快照——建出第一个子智能体（task 从
+      available() 为 false 变成 true）、一台 MCP server 连上或掉线，主进程当场就变，
+      镜像不推的话要等下次 boot 才对得上，而上下文占用弹窗算的正是这份表。
+      没有活跃会话就什么都不推：那时渲染层那份本来就是空的 */
+  const sendToolDefs = (): void => {
+    const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
+    if (agent) send(CHANNELS.toolDefsChanged, { sessionId: agent.sessionId, toolDefs: agent.toolDefs });
+  };
+  mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
 
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
@@ -719,10 +737,14 @@ void app.whenReady().then(() => {
   // 比"某次调用失败"重得多，所以必须兜底。退化成 [] 的代价：已知工具名表是空的，
   // 于是 subagent 定义里写的每一个工具名都会被判成"不认识"（scanSubagents 的
   // unknownTools 分支），所有 subagent 静默退回默认工具集，直到重启恢复
-  let TOOL_NAMES: string[];
-  try {
+  //
+  // 拎成函数是因为它有第二个用处：设置页画子智能体的工具勾选框要的正是这份表
+  // （issue #141 —— 没有会话时 BootInfo.toolDefs 是空的，而首次使用路径恰恰是
+  // 「新用户 → 设置 → 新建」）。那次调用要带上 mcp，这次开机探名字不带，
+  // 差别只有这一个参数，其余装配必须逐字一致——否则两份表会各说各话
+  const probeToolDefs = (mcp?: McpCapability): ToolDefinition[] => {
     const probeStore = new EventStore(":memory:");
-    TOOL_NAMES = createAgent({
+    return createAgent({
       store: probeStore,
       workspace: app.getPath("userData"),
       push: {
@@ -743,11 +765,17 @@ void app.whenReady().then(() => {
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
-      // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
-      // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
+      // 开机那次刻意不给 mcp（与 browser 的桩子相反）：那一步跑在注册第一个 IPC
+      // 通道之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
       // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
-    }).toolDefs.map((d) => d.name);
+      ...(mcp ? { mcp } : {}),
+    }).toolDefs;
+  };
+
+  let TOOL_NAMES: string[];
+  try {
+    TOOL_NAMES = probeToolDefs().map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
   }
@@ -1089,6 +1117,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getAutoCompact, () => loadAutoCompact(autoCompactPath));
   ipcMain.handle(CHANNELS.setAutoCompact, (_e, settings: AutoCompactSettings) =>
     saveAutoCompact(autoCompactPath, settings));
+  ipcMain.handle(CHANNELS.getHelperModel, () => helperModel());
+  ipcMain.handle(CHANNELS.setHelperModel, (_e, model: unknown) =>
+    saveHelperModel(helperModelPath, model));
   // 灵动岛设置(#199):normalise 在 store 层做(渲染层传什么不直接信),
   // set 完立刻重推岛快照——切换即时生效,不等下一个事件
   ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
@@ -1125,6 +1156,17 @@ void app.whenReady().then(() => {
     }
   );
 
+  // 工具目录（issue #141）：与 BootInfo.toolDefs 同源、但不需要会话。
+  // 每次现装一条探针而不是缓存：MCP server 会连上/掉线/改清单，缓存会让
+  // 设置页的勾选框停在开机那一刻。代价是一次内存库 + 一次装配，
+  // 只发生在用户打开子智能体设置页的时候
+  ipcMain.handle(CHANNELS.toolCatalog, async (): Promise<ToolDefinition[]> => {
+    // 先等握手：mcp 工具是"挂载一次定终身"，装配之前 server 没连上就一把都不挂
+    await mcpHub.ready();
+    // task 过滤掉：子 agent 不能再派子 agent（main/subagents.ts 解析时也剔）。
+    // 这条探针本来就没有 subagentRunner、装不出 task，留着这句是写给下一个人看的
+    return probeToolDefs(mcpHub).filter((d) => d.name !== "task");
+  });
   ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
     listSubagents(trusted(workspace))
   );
@@ -1140,13 +1182,19 @@ void app.whenReady().then(() => {
     join,
   };
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) =>
-    saveSubagentDef(subagentWriteDeps, def, workspace)
-  );
+  // 写完推一次工具表：清单从空变成有人，task 工具的 available() 当场翻面
+  // （见 agent.ts 的 toolDefs getter），渲染层那份镜像得跟着动
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
+    const list = saveSubagentDef(subagentWriteDeps, def, workspace);
+    sendToolDefs();
+    return list;
+  });
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) =>
-    createSubagentDef(subagentWriteDeps, name, workspace)
-  );
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
+    const list = createSubagentDef(subagentWriteDeps, name, workspace);
+    sendToolDefs();
+    return list;
+  });
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();

@@ -3,14 +3,13 @@
 // write_file 和 task。而 resume 是查看子会话的唯一途径。
 
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childAgentConfig, createChildAgent } from "../../src/main/resumeChild.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 const push: AgentPush = {
   event: () => {},
@@ -53,7 +52,7 @@ describe("childAgentConfig", () => {
 
 describe("createChildAgent", () => {
   function fixtures(tools: string[] = ["read_file"]) {
-    const dir = mkdtempSync(join(tmpdir(), "otter-resume-child-"));
+    const dir = tempDir("otter-resume-child-");
     const store = new EventStore(join(dir, "events.db"));
     const attachments = new AttachmentStore(join(dir, "attachments"));
     // 真造一份子会话日志出来，好让 resumeSessionId 有东西可投影

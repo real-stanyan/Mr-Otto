@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgent } from "../../src/main/agent.js";
 import { denyingApprover } from "../../src/main/uiApprover.js";
@@ -10,9 +8,10 @@ import { createLocalWorld } from "../../src/world/localWorld.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { SubagentRunner } from "../../src/tools/task.js";
 import type { SubagentDef } from "../../src/shared/subagent.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function fixtures() {
-  const dir = mkdtempSync(join(tmpdir(), "otter-subagent-"));
+  const dir = tempDir("otter-subagent-");
   const store = new EventStore(join(dir, "events.db"));
   const attachments = new AttachmentStore(join(dir, "attachments"));
   const push: AgentPush = {

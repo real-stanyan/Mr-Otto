@@ -1,6 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSubagentRunner } from "../../src/main/subagentRunner.js";
 import { EventStore } from "../../src/session/store.js";
@@ -10,6 +8,7 @@ import { withHistory } from "../../src/world/executionWorld.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { SubagentDef } from "../../src/shared/subagent.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 function def(over: Partial<SubagentDef> = {}): SubagentDef {
   return {
@@ -30,7 +29,7 @@ function def(over: Partial<SubagentDef> = {}): SubagentDef {
 }
 
 function fixtures() {
-  const dir = mkdtempSync(join(tmpdir(), "otter-runner-"));
+  const dir = tempDir("otter-runner-");
   const store = new EventStore(join(dir, "events.db"));
   const attachments = new AttachmentStore(join(dir, "attachments"));
   const seen: SessionEvent[] = [];

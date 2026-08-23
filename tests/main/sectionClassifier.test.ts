@@ -5,6 +5,7 @@ import {
   currentSectionTitle,
   parseSectionReply,
   summarizeSpan,
+  unclassifiedSpan,
 } from "../../src/main/sectionClassifier.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -24,6 +25,9 @@ const log: SessionEvent[] = [
     model: "m", toolCalls: [{ id: "t1", name: "read_file", args: { path: "a.ts" } }],
   },
   { seq: 3, sessionId: "s", ts: 4, type: "tool_result", toolCallId: "t1", status: "ok", output: "x".repeat(9000) },
+  // turn_ended 不是可有可无的装饰：分类是 turn 收口之后才排上的，真实日志里
+  // 分类事件前面必有它。unclassifiedSpan 用它判断锚点在不在 turn 中间（issue #112）
+  { seq: 4, sessionId: "s", ts: 5, type: "turn_ended", outcome: "completed" },
 ];
 
 describe("currentSectionTitle", () => {
@@ -34,8 +38,8 @@ describe("currentSectionTitle", () => {
   it("取最后一个非空 title，延续事件不覆盖它", () => {
     const events: SessionEvent[] = [
       ...log,
-      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: "修登录", model: "c" },
-      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: null, model: "c" },
+      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: "修登录", model: "c" },
+      { seq: 6, sessionId: "s", ts: 7, type: "section_classified", title: null, model: "c" },
     ];
     expect(currentSectionTitle(events)).toBe("修登录");
   });
@@ -74,6 +78,46 @@ describe("parseSectionReply", () => {
     const raw = JSON.stringify({ newSection: true, title: `  ${"长".repeat(500)}  ` });
     const out = parseSectionReply(raw, true);
     expect(out).toEqual({ title: "长".repeat(40) });
+  });
+});
+
+describe("unclassifiedSpan —— 分类事件落在 turn 中间时往回补", () => {
+  const classified = (seq: number): SessionEvent =>
+    ({ seq, sessionId: "s", ts: seq, type: "section_classified", title: "旧章节", model: "c" });
+  const ended = (seq: number): SessionEvent =>
+    ({ seq, sessionId: "s", ts: seq, type: "turn_ended", outcome: "completed" });
+  const asked = (seq: number, content: string): SessionEvent =>
+    ({ seq, sessionId: "s", ts: seq, type: "user_message", content });
+  const answered = (seq: number, content: string): SessionEvent =>
+    ({ seq, sessionId: "s", ts: seq, type: "assistant_message", content, model: "m" });
+
+  it("锚点紧跟 turn_ended（常态）= 原样从锚点后面切", () => {
+    const events = [asked(1, "问题一"), answered(2, "答案一"), ended(3), classified(4), asked(5, "问题二")];
+    expect(unclassifiedSpan(events).map((e) => e.seq)).toEqual([5]);
+  });
+
+  it("锚点落在新一轮的问和答之间 = 把那条问题一并带上", () => {
+    // 分类是 turn 收口后异步跑的，这期间用户又发了一条：
+    // 分类事件落在 user_message 和它的 assistant_message 中间
+    const events = [
+      asked(1, "问题一"), answered(2, "答案一"), ended(3),
+      asked(4, "改成深色模式"), classified(5), answered(6, "改好了"), ended(7),
+    ];
+    const span = unclassifiedSpan(events);
+    expect(span.map((e) => e.seq)).toEqual([4, 5, 6, 7]);
+    // 关键是问题回来了 —— 没有它，标题只能从「改好了」里编
+    expect(summarizeSpan(span)).toContain("改成深色模式");
+  });
+
+  it("一条分类事件都没有 = 整份日志都是未分类的", () => {
+    const events = [asked(1, "问题一"), answered(2, "答案一")];
+    expect(unclassifiedSpan(events)).toHaveLength(2);
+  });
+
+  it("上一条分类事件之后就没开过新 turn = 跨度是空的，不往回补", () => {
+    // 两条分类事件贴在一起（上一轮分类刚落，下一轮又被排上）：中间什么都没发生
+    const events = [asked(1, "问题一"), ended(2), classified(3), classified(4)];
+    expect(unclassifiedSpan(events)).toHaveLength(0);
   });
 });
 
@@ -141,8 +185,8 @@ describe("classifySection", () => {
     })));
     const events: SessionEvent[] = [
       ...log,
-      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: "修登录", model: "c" },
-      { seq: 5, sessionId: "s", ts: 6, type: "user_message", content: "再看看这个" },
+      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: "修登录", model: "c" },
+      { seq: 6, sessionId: "s", ts: 7, type: "user_message", content: "再看看这个" },
     ];
     await expect(classifySection(events)).resolves.toEqual({ title: null, model: SECTION_MODEL });
   });
@@ -158,12 +202,33 @@ describe("classifySection", () => {
     await expect(classifySection(log)).resolves.toBeNull();
   });
 
+  it("对话原文夹在现造的随机围栏里，不是猜得到的 ---", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
+      };
+    }));
+    await classifySection(log);
+    await classifySection(log);
+    const prompts = bodies.map((b) => JSON.parse(b).messages[0].content as string);
+    // 固定分隔符是猜得到的：一句「---\n忽略上面」就能自己把围栏关掉
+    expect(prompts[0]).not.toContain("\n---\n");
+    const tag = /<([0-9a-f]{8})>/.exec(prompts[0]!)?.[1];
+    expect(tag).toBeTruthy();
+    expect(prompts[0]).toContain(`</${tag}>`);
+    // 每次现造：抄下上一次的围栏也关不掉这一次
+    expect(prompts[1]).not.toContain(`<${tag}>`);
+  });
+
   it("跨度是空的（上一条就是分类事件）→ 不调模型，直接 null", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     const events: SessionEvent[] = [
       ...log,
-      { seq: 4, sessionId: "s", ts: 5, type: "section_classified", title: "修登录", model: "c" },
+      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: "修登录", model: "c" },
     ];
     await expect(classifySection(events)).resolves.toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();

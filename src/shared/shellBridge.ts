@@ -384,6 +384,14 @@ export interface ShellBridge {
   getAutoCompact(): Promise<AutoCompactSettings>;
   /** 存一份新设置。未知字段/非法形状在主进程被剥掉，不是"渲染层传什么就信什么" */
   setAutoCompact(settings: AutoCompactSettings): Promise<void>;
+  /** 三个 turn 外挂（分区分类 / 跟进建议 / 微压缩）共用的那一款小模型
+      （issue #112，落 userData/helper-model.json）。出厂默认和看图的 vision-bridge
+      共一家的免费额度，而那条路失败会让整个 turn 失败——换一家就换了一把 key、
+      一份额度。现读不缓存：改了立刻对下一次 turn 收口生效 */
+  getHelperModel(): Promise<string>;
+  /** 存一款新的，返回真正存下去的那个 id：认不出来的型号在主进程被换成出厂默认，
+      渲染层照着回值更新，不用自己再猜一遍 */
+  setHelperModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
@@ -406,6 +414,14 @@ export interface ShellBridge {
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
       展开后就是普通用户消息，进 UserMessage 事件，重放零特殊化 */
   expandMcpPrompt(server: string, name: string, args: Record<string, string>): Promise<string>;
+  /** 这台机器上「工具一共有哪些」的目录（名字 + 给模型看的那句描述）。
+      与 BootInfo.toolDefs 的区别是**它不需要会话**：那份是"当前这个 agent 此刻
+      挂着什么"，会话没起来时是空的；这份是"装配得出来的工具"，用来给设置页
+      画子智能体的工具勾选框——首次使用路径正是「新用户 → 设置 → 新建」，
+      那时一个会话都还没有（issue #141）。
+      task 不在里面：子 agent 不能再派子 agent 是设计边界。
+      现算，不是快照：MCP server 会连上、掉线、改清单 */
+  toolCatalog(): Promise<ToolDefinition[]>;
   /** 本机定义的子智能体（现扫磁盘，零缓存）。
       workspace = null 只看用户级；给了工作区就带上该工程的两条根（工作区盖用户） */
   listSubagents(workspace: string | null): Promise<SubagentDef[]>;
@@ -533,6 +549,11 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** 活跃会话的工具声明变了（issue #141）。BootInfo.toolDefs 是 boot/resume 那一刻
+      的快照，而 agent.toolDefs 是活 getter：用户建出第一个子智能体、或者一台 MCP
+      server 连上/掉线，主进程那份当场就变了，渲染层那份镜像却要等下一次 boot。
+      上下文占用弹窗算的正是这份表，镜像过期 = 报的账是错的 */
+  onToolDefsChanged(cb: (info: { sessionId: string; toolDefs: ToolDefinition[] }) => void): Unsubscribe;
   /** hub 状态变了就推一次全量快照。返回退订函数（与其它订阅同构） */
   onMcpChanged(cb: (snapshot: McpServersSnapshot) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
@@ -693,6 +714,8 @@ export const CHANNELS = {
   rebuildSearchIndex: "otter:rebuildSearchIndex",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
+  getHelperModel: "otter:getHelperModel",
+  setHelperModel: "otter:setHelperModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
   listMcpServers: "otter:listMcpServers",
@@ -702,6 +725,8 @@ export const CHANNELS = {
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",
+  toolDefsChanged: "otter:toolDefsChanged",
+  toolCatalog: "otter:toolCatalog",
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",
   createSubagent: "otter:createSubagent",

@@ -1,6 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   AttachmentStore,
@@ -8,6 +7,7 @@ import {
   stripToBasename,
   IMAGE_MAX_BYTES,
 } from "../../src/session/attachments.js";
+import { tempDir } from "../helpers/tempDir.js";
 
 // 最小合法 magic bytes 前缀 + 填充——嗅探只看头,不解码全图
 const png = () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -21,7 +21,7 @@ const webp = () => {
 };
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "otter-att-")); });
+beforeEach(() => { dir = tempDir("otter-att-"); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe("detectImageType", () => {

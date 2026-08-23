@@ -7,7 +7,7 @@
 // 草稿状态住在 useSubagentDraft 里，落盘那一步不在这里：列表行是「保存回原路径」，
 // 新建页是「先 create 拿到真路径再 save」，两条路的落点不同（见各自的调用处）。
 
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
@@ -317,12 +317,24 @@ export function useSubagentDraft(def: SubagentDef): SubagentDraft {
   };
 }
 
-/** 当前挂载的工具表，减掉 task。
-    子 agent 不能再派子 agent 是设计边界（main/subagents.ts 解析时就把 task 从
-    tools 里剔除了），但 toolDefs 是"此刻挂载的工具表"，task 只要清单不空就在里头 */
+/** 工具勾选框的选项表：优先当前会话挂载的那份，没有会话就退回主进程探的目录。
+    两份都减掉 task —— 子 agent 不能再派子 agent 是设计边界（main/subagents.ts
+    解析时就把 task 从 tools 里剔除了），但 toolDefs 是"此刻挂载的工具表"，
+    task 只要清单不空就在里头。
+
+    退路不是可有可无（issue #141）：toolDefs 来自会话 boot，欢迎页上是空的，
+    而"新用户 → 设置 → 新建子智能体"恰好就发生在那时——原来那条路径上一个
+    工具都勾不了。优先会话那份而不是一律用目录：目录是探针装配探出来的，
+    真会话的 world 能力可能不同（白名单、没有浏览器的装配），当场有真表就用真表 */
 export function useToolOptions(): ToolDefinition[] {
   const toolDefs = useChat((s) => s.toolDefs);
-  return useMemo(() => toolDefs.filter((t) => t.name !== "task"), [toolDefs]);
+  const catalog = useChat((s) => s.toolCatalog);
+  const loadToolCatalog = useChat((s) => s.loadToolCatalog);
+  useEffect(() => {
+    void loadToolCatalog();
+  }, [loadToolCatalog]);
+  const source = toolDefs.length > 0 ? toolDefs : (catalog ?? []);
+  return useMemo(() => source.filter((t) => t.name !== "task"), [source]);
 }
 
 /** 九个字段的控件本体。name 不在这里：列表行的名字是不可改的标题，

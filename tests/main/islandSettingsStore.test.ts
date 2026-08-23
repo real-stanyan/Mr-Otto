@@ -1,7 +1,6 @@
 // 灵动岛设置落盘(#199):userData/island.json,autoCompactStore 同款模式。
 // 文件是外部输入(用户手改过/旧版本写的/截断过),不赌形状。
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,8 +8,9 @@ import {
   normaliseIslandSettings,
   saveIslandSettings,
 } from "../../src/main/islandSettingsStore.js";
+import { tempDir } from "../helpers/tempDir.js";
 
-const dir = () => mkdtempSync(join(tmpdir(), "island-settings-"));
+const dir = () => tempDir("island-settings-");
 
 describe("normaliseIslandSettings", () => {
   it("合法值原样通过", () => {

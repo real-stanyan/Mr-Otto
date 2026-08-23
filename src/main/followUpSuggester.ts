@@ -7,10 +7,12 @@
 // 所以这里没有"未分类跨度"那套锚点,只看最后一轮问答。
 
 import { createCheapAdapter } from "./cheapAdapter.js";
+import { DEFAULT_HELPER_MODEL } from "../shared/helperModel.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
-/** 生成员型号:和分类员同一款免费货。换生成员改这一行 */
-export const SUGGEST_MODEL = "glm-4.5-flash";
+/** 生成员型号的出厂默认:和分类员同一款免费货。用户可以在设置页改
+    （shared/helperModel.ts），调用方把选定的那个 id 传进来 */
+export const SUGGEST_MODEL = DEFAULT_HELPER_MODEL;
 
 /** 要几条。三条是有意的上限:建议是快捷键不是菜单,多到要读就已经比自己打字慢了 */
 const WANT = 3;
@@ -91,7 +93,9 @@ function buildPrompt(exchange: string): string {
 
 /** 跑一次建议生成。失败一律返回 null（永不抛）—— 建议是锦上添花，不能拖垮 turn */
 export async function suggestFollowUps(
-  events: SessionEvent[]
+  events: SessionEvent[],
+  /** 用哪一款（设置页可改，见 shared/helperModel.ts）。不传 = 出厂默认 */
+  model: string = SUGGEST_MODEL
 ): Promise<{ suggestions: string[]; model: string; usage?: TokenUsage } | null> {
   const exchange = summarizeExchange(lastExchange(events));
   if (exchange.trim() === "") return null; // 没有问答可依据，别浪费一次调用
@@ -100,7 +104,7 @@ export async function suggestFollowUps(
     // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
     // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
     // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
-    const cheap = createCheapAdapter(SUGGEST_MODEL, SUGGEST_TIMEOUT_MS);
+    const cheap = createCheapAdapter(model, SUGGEST_TIMEOUT_MS);
     if (!cheap) return null;
 
     const reply = await cheap.adapter.chat(
@@ -113,7 +117,7 @@ export async function suggestFollowUps(
     if (!suggestions) return null;
     return {
       suggestions,
-      model: SUGGEST_MODEL,
+      model,
       ...(reply.usage ? { usage: reply.usage } : {}),
     };
   } catch {
