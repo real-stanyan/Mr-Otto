@@ -48,7 +48,10 @@ import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
-import type { IslandSettings } from "../shared/shellBridge.js";
+import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
+import { createUpdater } from "./updater.js";
+import { createUpdaterHostDeps } from "./updaterHost.js";
+import { RELEASES_PAGE_URL } from "./updaterCore.js";
 import { scanSkills } from "./skills.js";
 import {
   scanSubagents,
@@ -1137,6 +1140,28 @@ void app.whenReady().then(() => {
     islandUsageCache = null; // 切换瞬间给最新数,别端上一份 30s 前的缓存
     pushFleet();
   });
+
+  // ── OTA 更新（ADR-0075）──────────────────────────────────────────
+  // 打包的 mac 版才启用：开发模式没有可换的 .app，查了也白查。
+  // 定时节奏：启动 30s 后一次（别挤开冷启动关键路径）+ 每 6h 一次；
+  // checkNow 内部有互斥，定时器和设置页按钮撞上也只跑一轮
+  const updater =
+    process.platform === "darwin" && app.isPackaged
+      ? createUpdater(createUpdaterHostDeps((s) => send(CHANNELS.updaterState, s)))
+      : null;
+  const updaterDisabled: UpdaterState = {
+    phase: "disabled",
+    currentVersion: app.getVersion(),
+    reason: app.isPackaged ? "仅支持 macOS" : "开发模式不检查更新",
+  };
+  ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
+  ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
+  ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
+  ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
+  if (updater !== null) {
+    setTimeout(() => void updater.checkNow(), 30_000);
+    setInterval(() => void updater.checkNow(), 6 * 60 * 60 * 1000);
+  }
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());

@@ -35,8 +35,13 @@ mac:
   category: public.app-category.developer-tools
   icon: resources/icon.png
   darkModeSupport: true
+  # dmg 给首次安装；zip 给 OTA 换包下载（ADR-0075,src/main/updater.ts 认
+  # -arm64-mac.zip 后缀的 Release 资产）
   target:
     - target: dmg
+      arch:
+        - arm64
+    - target: zip
       arch:
         - arm64
   # 没有 Apple Developer 账号,不做签名证书与公证。electron-builder 会退到

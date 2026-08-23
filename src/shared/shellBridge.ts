@@ -400,6 +400,16 @@ export interface ShellBridge {
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
+  /** OTA 更新（ADR-0075）。快照现问现答；变化走 onUpdaterState 推送 */
+  updaterGetState(): Promise<UpdaterState>;
+  /** 手动查一次（设置页按钮）。返回这一轮查完落定的状态——按钮要即时反馈，
+      不必等推送。查询/下载进行中时重入直接回当前状态，不并发起第二轮 */
+  updaterCheckNow(): Promise<UpdaterState>;
+  /** ready 时才有效：spawn 换包脚本并退出 app。非 ready 调用是空操作 */
+  updaterInstallAndRestart(): Promise<void>;
+  /** 用系统浏览器打开 GitHub Releases 页（manual 降级 / 用户想看更新日志）。
+      URL 由主进程钉死，渲染层递不进任意外链（同 openProviderConsole 的规矩） */
+  updaterOpenReleasePage(): Promise<void>;
   /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
@@ -605,6 +615,8 @@ export interface ShellBridge {
   /** 用户点了灵动岛列表里的会话行(#210)→ 主进程已聚焦窗口,渲染层负责切会话
       (走 store.resume,同侧栏点行一条路) */
   onIslandFocusSession(cb: (sessionId: string) => void): Unsubscribe;
+  /** OTA 更新器状态变化（后台定时检查也会推——设置页没开着时状态也在走） */
+  onUpdaterState(cb: (state: UpdaterState) => void): Unsubscribe;
   /** 窗口是否全屏的即时快照(请求/响应)。macOS 全屏会隐掉红绿灯,
       左上角 logo 的显隐以它为准(见 onWindowFullscreen 的推送) */
   getWindowFullscreen(): Promise<boolean>;
@@ -665,6 +677,19 @@ export interface IslandSettings {
   display: IslandDisplay;
 }
 
+/** OTA 更新器状态（main/updater.ts 维护并推送，设置页「关于与更新」卡消费）。
+    无开发者账号签不了名（ADR-0026）→ electron-updater 走不通，自研换包（ADR-0075）。
+    manual = 检测到新版但本机没法自动换包（App Translocation / 目录不可写），
+    只能提示用户去 Release 页手动装；disabled = 开发模式/非 mac，压根不查 */
+export type UpdaterState =
+  | { phase: "idle"; currentVersion: string }
+  | { phase: "checking"; currentVersion: string }
+  | { phase: "downloading"; currentVersion: string; version: string; received: number; total: number }
+  | { phase: "ready"; currentVersion: string; version: string }
+  | { phase: "manual"; currentVersion: string; version: string; reason: string }
+  | { phase: "error"; currentVersion: string; message: string }
+  | { phase: "disabled"; currentVersion: string; reason: string };
+
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
@@ -723,6 +748,11 @@ export const CHANNELS = {
   setHelperModel: "otter:setHelperModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
+  updaterGetState: "otter:updaterGetState",
+  updaterCheckNow: "otter:updaterCheckNow",
+  updaterInstallAndRestart: "otter:updaterInstallAndRestart",
+  updaterOpenReleasePage: "otter:updaterOpenReleasePage",
+  updaterState: "otter:updaterState",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",
