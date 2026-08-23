@@ -58,16 +58,11 @@ import {
   writeSubagent,
 } from "./subagents.js";
 import { withBuiltins } from "./builtinSubagents.js";
+import { createSubagentDef, saveSubagentDef, type SubagentWriteDeps } from "./subagentWrites.js";
 import { createSubagentRunner } from "./subagentRunner.js";
-import { CONTEXT_DOC_LIMIT } from "./subagentPrompt.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
 import type { BrowserReadOptions } from "../world/executionWorld.js";
-import {
-  DEFAULT_PREAMBLE,
-  DEFAULT_SUBAGENT_TOOLS,
-  subagentNameError,
-  type SubagentDef,
-} from "../shared/subagent.js";
+import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
@@ -1134,54 +1129,24 @@ void app.whenReady().then(() => {
     listSubagents(trusted(workspace))
   );
 
-  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) => {
-    const ws = trustedForWrite(workspace);
-    // 行内前置词也得有上限,理由和工作区文档那条一模一样:
-    // 它会原样进 subagent_briefed 的快照,而那条快照投影出来的 user 消息永不被压缩。
-    // 之前这一份存盘、序列化、拼装三处都没有限,是全局前置词那条上限的一个漏网口
-    if (def.preamble.mode === "custom" && def.preamble.text.length > CONTEXT_DOC_LIMIT) {
-      throw new Error(`前置词太长了（上限 ${Math.floor(CONTEXT_DOC_LIMIT / 1024)} KB）`);
-    }
-    // def.path / def.readOnly 是渲染层传来的,不可信（同下）——落地地址必须从
-    // 信任侧（现扫一遍磁盘的清单）按名字查出来。作用域也一起传进来：同名可以
-    // 两层各一份,不带作用域查就可能在工作区里改一改、写穿到用户级那份上去
-    const found = listSubagents(ws).find((d) => d.name === def.name);
-    if (!found) throw new Error(`没有名叫「${def.name}」的子智能体`);
-    if (found.readOnly) throw new Error(`${found.name} 是只读的（来自 ${found.source}），不能保存`);
-    writeSubagent({ ...def, path: found.path, source: found.source, readOnly: found.readOnly, scope: found.scope });
-    return listSubagents(ws);
-  });
+  // 两个写盘动作的本体在 subagentWrites.ts（issue #146）：handler 里只剩接线，
+  // 不变量和它们的测试住在一起
+  const subagentWriteDeps: SubagentWriteDeps = {
+    listSubagents,
+    trustedForWrite,
+    roots: (ws) => subagentRoots(homedir(), ws),
+    slotTaken: (root, name) => subagentSlotTaken(root, name, TOOL_NAMES),
+    write: (def) => writeSubagent(def),
+    join,
+  };
 
-  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) => {
-    const ws = trustedForWrite(workspace);
-    const clean = name.trim();
-    const nameError = subagentNameError(clean);
-    if (nameError) throw new Error(nameError);
-    // 建在选中作用域**可写**的那条根里：工作区级 = <工作区>/.mr-otto/agents，
-    // 用户级 = ~/.mr-otto/agents。.claude/agents 是只读的，永远不是落点
-    const root = subagentRoots(homedir(), ws)[0]!;
-    // 查重只问"落点这一层占了没"，不问"这个名字在合并清单里露过面没"。
-    // 后者会把覆盖规则整个锁死：用户级有个 reviewer、想在工作区建一份同名的盖住它，
-    // 正是覆盖这个特性的用法，不是重名事故（详见 subagentSlotTaken 的注释）
-    if (subagentSlotTaken(root, clean, TOOL_NAMES)) {
-      throw new Error(`已经有一个叫「${clean}」的子智能体了，换个名字`);
-    }
-    writeSubagent({
-      name: clean,
-      description: "",
-      instructions: "",
-      tools: [...DEFAULT_SUBAGENT_TOOLS],
-      unknownTools: [],
-      approval: "deny",
-      preamble: { mode: "default" },
-      context: [],
-      scope: root.scope,
-      path: join(root.root, `${clean}.md`),
-      source: root.root,
-      readOnly: false,
-    });
-    return listSubagents(ws);
-  });
+  ipcMain.handle(CHANNELS.saveSubagent, (_e, def: SubagentDef, workspace: unknown) =>
+    saveSubagentDef(subagentWriteDeps, def, workspace)
+  );
+
+  ipcMain.handle(CHANNELS.createSubagent, (_e, name: string, workspace: unknown) =>
+    createSubagentDef(subagentWriteDeps, name, workspace)
+  );
 
   // Protocol 仪表盘(只读):service 无状态,建一次全局复用
   const protocol = createProtocolService();
