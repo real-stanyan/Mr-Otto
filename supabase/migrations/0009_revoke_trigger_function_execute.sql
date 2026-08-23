@@ -1,0 +1,21 @@
+-- 收掉 handle_auth_user_upsert 对 PUBLIC / anon / authenticated 的 execute(issue #78)
+-- 在 Supabase SQL editor 手动执行一次。重复执行安全(revoke 天然幂等)。
+--
+-- 背景:0001 建这个函数时没写 revoke,于是它拿了 PostgreSQL 的默认值——
+-- **新建函数默认对 PUBLIC 开放 execute**。真库上的 ACL 是
+--   =X/postgres | postgres=X/postgres | anon=X/postgres | authenticated=X/postgres | service_role=X/postgres
+-- 头一段 `=X/postgres` 就是 PUBLIC。public schema 下所有函数里,它是唯一一个
+-- anon/authenticated 还能 execute 的(钱和牌那些只授权 service_role)。
+--
+-- 实际风险低:它返回 `trigger`,PostgREST 不把这类函数当 RPC 暴露,硬调也会被
+-- 「trigger functions can only be called as triggers」挡住。收掉是因为 /rest/v1
+-- 现在公网可达(issue #76),而"低"不是"没有"——留着它就是留一个不需要留的口子。
+--
+-- 为什么收掉之后注册不会炸:PostgreSQL 对触发器函数的 EXECUTE 权限是在
+-- **建触发器那一刻**检查的,不是每次开火时检查;而且这个函数是 SECURITY DEFINER,
+-- 开火时按 owner(postgres)的身份跑。这两条都是推理,#62 炸过一次注册,所以
+-- 落库前对着真库做过事务内冒烟(revoke → 以 supabase_auth_admin 身份 insert
+-- auth.users → 查 profiles 有没有落行 → rollback),插入和更新两条路径都照常。
+-- 那份冒烟的常驻版本在 checks/0009_revoke_trigger_function_execute.check.sql。
+
+revoke execute on function public.handle_auth_user_upsert() from public, anon, authenticated;
