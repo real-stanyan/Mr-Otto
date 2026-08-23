@@ -56,6 +56,10 @@ export interface ToolCallRequest {
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
+  /** promptTokens 里命中 prompt cache 的那部分（各家 API 报的子集数）。
+      缺席 = 这家 API 不报 cache 字段（旧日志/不支持的端点照样重放）；
+      0 = 报了但一个没命中 —— 「没记」和「没中」是两个事实，别混（issue #213） */
+  cachedTokens?: number;
 }
 
 /** 时间线 2：模型回复 —— 文本和工具调用请求可以同时出现 */

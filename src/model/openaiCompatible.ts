@@ -3,6 +3,7 @@
 // 将来 Claude 原生 API（方言不同）才需要第二个实现。
 
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
+import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
 import { parseGatewayError } from "../shared/gatewayConfig.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
@@ -107,6 +108,21 @@ interface ChatCompletionChunk {
 interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
+  /** DeepSeek 方言：prompt 里命中磁盘缓存的 token 数 */
+  prompt_cache_hit_tokens?: number;
+  /** OpenAI/GLM 方言：同一件事藏在 details 里 */
+  prompt_tokens_details?: { cached_tokens?: number };
+}
+
+/** 线上 usage → 事件里的 TokenUsage。cache 字段两个方言都收，谁在场用谁；
+    都不在场就不带 cachedTokens —— 「API 不报」必须和「命中 0」区分开（issue #213） */
+function toTokenUsage(u: Usage): TokenUsage {
+  const cached = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens;
+  return {
+    promptTokens: u.prompt_tokens,
+    completionTokens: u.completion_tokens,
+    ...(cached !== undefined ? { cachedTokens: cached } : {}),
+  };
 }
 
 /** 把 SSE 字节流攒成完整 ModelReply，途中把文本碎片交给 onDelta。
@@ -254,9 +270,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         return {
           content: acc.content,
           ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
-          ...(acc.usage
-            ? { usage: { promptTokens: acc.usage.prompt_tokens, completionTokens: acc.usage.completion_tokens } }
-            : {}),
+          ...(acc.usage ? { usage: toTokenUsage(acc.usage) } : {}),
           ...(acc.toolCalls.length > 0
             ? {
                 toolCalls: acc.toolCalls.map((tc) => ({
@@ -279,9 +293,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         ...((msg.reasoning_content ?? msg.reasoning)
           ? { reasoning: msg.reasoning_content ?? msg.reasoning ?? "" }
           : {}),
-        ...(data.usage
-          ? { usage: { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } }
-          : {}),
+        ...(data.usage ? { usage: toTokenUsage(data.usage) } : {}),
         ...(msg.tool_calls && msg.tool_calls.length > 0
           ? {
               toolCalls: msg.tool_calls.map((tc) => ({

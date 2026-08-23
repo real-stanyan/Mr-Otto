@@ -73,6 +73,31 @@ export function usageByModel(events: SessionEvent[]): ModelUsage[] {
   });
 }
 
+/** prompt cache 命中账（issue #213 基线度量）。
+    分母不是全会话 promptTokens,而是**报了 cachedTokens 的那些调用**的 promptTokens——
+    把不报 cache 字段的调用算进分母,会把「API 不报」稀释成「命中率低」。 */
+export interface CacheStats {
+  /** 命中缓存的 prompt token 总数 */
+  cachedTokens: number;
+  /** 报了 cache 字段的那些调用的 prompt token 总数(命中率的分母) */
+  measuredPromptTokens: number;
+}
+
+/** null = 整段日志没有一次调用报过 cache 字段(旧日志/端点不支持)。
+    区别于 {0, n}:后者是"量了,一个没中"。 */
+export function cacheStats(events: SessionEvent[]): CacheStats | null {
+  let cachedTokens = 0;
+  let measuredPromptTokens = 0;
+  let measured = false;
+  for (const e of events) {
+    if (!isBilledEvent(e) || !e.usage || e.usage.cachedTokens === undefined) continue;
+    measured = true;
+    cachedTokens += e.usage.cachedTokens;
+    measuredPromptTokens += e.usage.promptTokens;
+  }
+  return measured ? { cachedTokens, measuredPromptTokens } : null;
+}
+
 /** 会话累计 token(入 + 出)。UI 上那个"会话累计消耗"就是它 */
 export function totalTokens(events: SessionEvent[]): number {
   let sum = 0;

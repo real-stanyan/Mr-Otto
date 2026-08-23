@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { totalTokens, usageByModel } from "../../src/session/deriveUsage.js";
+import { cacheStats, totalTokens, usageByModel } from "../../src/session/deriveUsage.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 let seq = 0;
@@ -76,5 +76,39 @@ describe("totalTokens", () => {
       ev({ type: "suggestions_generated", suggestions: ["x"], model: "cheap", usage: { promptTokens: 4, completionTokens: 1 } }),
     ];
     expect(totalTokens(events)).toBe(20);
+  });
+});
+
+describe("cacheStats(issue #213 命中率基线)", () => {
+  const saidCached = (p: number, cached: number): SessionEvent =>
+    ev({
+      type: "assistant_message",
+      content: "",
+      model: "m",
+      usage: { promptTokens: p, completionTokens: 1, cachedTokens: cached },
+    });
+
+  it("没有一次调用报 cache 字段 → null:「API 不报」不是「命中 0」", () => {
+    expect(cacheStats([said("m", 10, 2)])).toBeNull();
+    expect(cacheStats([])).toBeNull();
+  });
+
+  it("只累计报了 cache 字段的调用,分母同样只算它们 —— 不报的调用不稀释命中率", () => {
+    expect(cacheStats([said("m", 999, 2), saidCached(100, 64), saidCached(100, 36)])).toEqual({
+      cachedTokens: 100,
+      measuredPromptTokens: 200,
+    });
+  });
+
+  it("报了但全没命中 → {0, n},和 null 是两个事实", () => {
+    expect(cacheStats([saidCached(50, 0)])).toEqual({ cachedTokens: 0, measuredPromptTokens: 50 });
+  });
+
+  it("外挂小调用(压缩/微压缩)报了 cache 也进账 —— 它们同样吃 prefix cache", () => {
+    expect(
+      cacheStats([
+        ev({ type: "micro_compacted", summary: "S", coversUpTo: 3, model: "cheap", usage: { promptTokens: 30, completionTokens: 6, cachedTokens: 20 } }),
+      ])
+    ).toEqual({ cachedTokens: 20, measuredPromptTokens: 30 });
   });
 });
