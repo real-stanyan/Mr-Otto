@@ -2,9 +2,14 @@
 // 全部只读：主进程和 agent 对它毫不知情——纯渲染层投影（buildTrajectory）。
 // 选中哪一行是视图自己的瞬态状态，不进 store：换会话 / 离开视图即作废，没人需要恢复它。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Search, X } from "lucide-react";
 import { useChat } from "../store.js";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable.js";
 import { Hl } from "./HlText.js";
 import { toolSchema } from "./toolSchemas.js";
 import {
@@ -62,6 +67,23 @@ function toolStatus(row: TrajRow): string {
   if (row.started) return "Running";
   if (row.approval) return row.approval.decision === "approved" ? "Approved" : "Denied";
   return "Pending";
+}
+
+/* ─── 列表 / 详情的分栏 ─── */
+
+/**
+ * 980px 是这块从左右布局翻成上下布局的分界。原来只有 CSS 变体（max-[980px]:）
+ * 知道它，现在拖拽方向、默认占比、存哪个 autoSaveId 都要跟着翻，JS 也得知道。
+ */
+const STACK_MQ = "(max-width: 980px)";
+const subscribeStack = (cb: () => void) => {
+  const mq = window.matchMedia(STACK_MQ);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+};
+const getStack = () => window.matchMedia(STACK_MQ).matches;
+function useStacked(): boolean {
+  return useSyncExternalStore(subscribeStack, getStack);
 }
 
 /* ─── 泳道时间轴 ─── */
@@ -239,12 +261,10 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
     : ev.type === "turn_ended" ? ev.outcome
     : "Completed";
 
-  // shrink-0 只在横排时才是「别压我的 400px 宽」；一到 980 以下换竖排，它就变成
-  // 「别压我的高」——面板没有 flex-1，高度取内容高度，于是撑到多长有多长，把列表
-  // 挤没、自己溢出窗口底，里面那层 overflow-y-auto 拿不到有界高度所以滚不动。
-  // 竖排时改成和列表对半分（flex-1 + 可收缩），两边各自滚各自的
+  // 尺寸交给外面的 ResizablePanel（可拖、按 autoSaveId 记住），分隔线就是那根手柄，
+  // 所以这里不自带宽度也不自带边框——自带的话会和手柄叠成两条线
   return (
-    <aside className="w-[400px] border-l border-border flex flex-col min-h-0 min-[981px]:shrink-0 max-[980px]:w-full max-[980px]:flex-1 max-[980px]:border-l-0 max-[980px]:border-t">
+    <aside className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-4 py-[10px] border-b border-border">
         <span className={`text-[10px] font-semibold tracking-[0.06em] px-[6px] py-[2px] rounded ${tag.cls}`}>{tag.label}</span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -357,6 +377,7 @@ export function TrajectoryView() {
   const [scale, setScale] = useState<Scale>("duration");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const stacked = useStacked();
   const selRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => traj.rows.filter((r) => rowMatches(r, query)), [traj, query]);
@@ -414,40 +435,58 @@ export function TrajectoryView() {
 
       <Swimlanes traj={traj} scale={scale} query={query} selected={selected} onSelect={setSelected} />
 
-      <div className="flex-1 min-h-0 flex max-[980px]:flex-col">
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {visible.length === 0 && (
-            <div className="text-[13px] text-muted-foreground p-4">
-              {traj.rows.length === 0 ? "这个会话还没有任何一步。" : "没有匹配的步骤。"}
-            </div>
-          )}
-          {visible.map((r) => {
-            const cur = r.key === selected;
-            const tag = KIND_TAG[r.kind];
-            return (
-              <div
-                key={r.key}
-                ref={cur ? selRef : null}
-                onClick={() => setSelected(r.key)}
-                className={
-                  "grid grid-cols-[88px_1fr] items-center gap-3 px-3 py-[7px] border-b border-border/50 cursor-pointer font-mono text-[12.5px] " +
-                  (cur
-                    ? r.deny ? "bg-deny/10 shadow-[inset_2px_0_0_var(--color-deny)]" : "bg-foreground/[0.06] shadow-[inset_2px_0_0_var(--color-brand)]"
-                    : "hover:bg-foreground/[0.03]")
-                }
-              >
-                <span className={`justify-self-end text-[10px] font-semibold tracking-[0.06em] px-[6px] py-[2px] rounded ${tag.cls}`}>
-                  {tag.label}
-                </span>
-                <span className={"truncate " + (r.deny ? "text-deny" : r.kind === "system" ? "text-muted-foreground" : "")} title={r.summary}>
-                  {r.summary}
-                </span>
+      {/* 左右 / 上下都可拖：direction 跟着 980px 断点翻，两个方向各存各的
+          autoSaveId（同一个 id 存百分比，横竖混用会互相污染）。
+          key 强制换向时重挂——PanelGroup 的 direction 不是可热切的 */}
+      <ResizablePanelGroup
+        key={stacked ? "stacked" : "side"}
+        direction={stacked ? "vertical" : "horizontal"}
+        autoSaveId={stacked ? "otter-trajectory-stacked" : "otter-trajectory-side"}
+        className="flex-1 min-h-0"
+      >
+        <ResizablePanel id="list" order={1} defaultSize={stacked ? 50 : 66} minSize={20} className="min-h-0 min-w-0">
+          <div className="h-full overflow-y-auto">
+            {visible.length === 0 && (
+              <div className="text-[13px] text-muted-foreground p-4">
+                {traj.rows.length === 0 ? "这个会话还没有任何一步。" : "没有匹配的步骤。"}
               </div>
-            );
-          })}
-        </div>
-        {row && <Detail row={row} onClose={() => setSelected(null)} />}
-      </div>
+            )}
+            {visible.map((r) => {
+              const cur = r.key === selected;
+              const tag = KIND_TAG[r.kind];
+              return (
+                <div
+                  key={r.key}
+                  ref={cur ? selRef : null}
+                  onClick={() => setSelected(r.key)}
+                  className={
+                    "grid grid-cols-[88px_1fr] items-center gap-3 px-3 py-[7px] border-b border-border/50 cursor-pointer font-mono text-[12.5px] " +
+                    (cur
+                      ? r.deny ? "bg-deny/10 shadow-[inset_2px_0_0_var(--color-deny)]" : "bg-foreground/[0.06] shadow-[inset_2px_0_0_var(--color-brand)]"
+                      : "hover:bg-foreground/[0.03]")
+                  }
+                >
+                  <span className={`justify-self-end text-[10px] font-semibold tracking-[0.06em] px-[6px] py-[2px] rounded ${tag.cls}`}>
+                    {tag.label}
+                  </span>
+                  <span className={"truncate " + (r.deny ? "text-deny" : r.kind === "system" ? "text-muted-foreground" : "")} title={r.summary}>
+                    {r.summary}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </ResizablePanel>
+        {row && (
+          <>
+            {/* 不要 withHandle 那颗六点抓手：分隔线本身整条可拖（沿用侧栏面板的做法） */}
+            <ResizableHandle />
+            <ResizablePanel id="detail" order={2} defaultSize={stacked ? 50 : 34} minSize={20} className="min-h-0 min-w-0">
+              <Detail row={row} onClose={() => setSelected(null)} />
+            </ResizablePanel>
+          </>
+        )}
+      </ResizablePanelGroup>
     </section>
   );
 }
