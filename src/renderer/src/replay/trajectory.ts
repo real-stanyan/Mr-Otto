@@ -118,7 +118,7 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
       case "skill_invoked":
         push({
           key: String(e.seq), kind: "user", lane: "input", seq: e.seq, ts: e.ts,
-          summary: `$${e.name} ${clip(e.content, 100)}`, deny: false, ev: e,
+          summary: `$${e.name}${e.args ? `(${e.args})` : ""} ${clip(e.content, 100)}`, deny: false, ev: e,
         });
         break;
 

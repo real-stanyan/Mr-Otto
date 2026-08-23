@@ -1431,18 +1431,24 @@ void app.whenReady().then(() => {
     sessionId: string,
     text: string,
     skill?: string,
-    attachments?: OutgoingAttachment[]
+    attachments?: OutgoingAttachment[],
+    skillArgs?: string
   ): Promise<void> {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
     // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
-    // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
-    let invoked: { name: string; content: string } | null = null;
+    // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"。
+    // skillArgs 与附件同理是渲染层送来的不可信输入：非字符串会原样进 append-only
+    // 日志且改不了，宁可拒发（形状把关先于任何 append，坏请求零痕迹）
+    if (skillArgs !== undefined && typeof skillArgs !== "string") {
+      throw new Error("skill 参数形状非法(渲染层送来的 skillArgs 不是字符串)");
+    }
+    let invoked: { name: string; content: string; args?: string } | null = null;
     if (skill) {
       const found = scanSkills(skillRoots).find((s) => s.name === skill);
       if (!found) throw new Error(`skill 不存在: ${skill}`);
-      invoked = { name: found.name, content: found.content };
+      invoked = { name: found.name, content: found.content, ...(skillArgs ? { args: skillArgs } : {}) };
     }
     // 文本文件结构化存进事件 textFiles(快照语义,同 skill_invoked:日志自
     // 包含,原文件后续改/删不影响重放)——不内联进 content,UI 才能渲染成
@@ -1536,8 +1542,14 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(
     CHANNELS.sendMessage,
-    (_e, sessionId: string, text: string, skill?: string, attachments?: OutgoingAttachment[]) =>
-      handleSendMessage(sessionId, text, skill, attachments)
+    (
+      _e,
+      sessionId: string,
+      text: string,
+      skill?: string,
+      attachments?: OutgoingAttachment[],
+      skillArgs?: string
+    ) => handleSendMessage(sessionId, text, skill, attachments, skillArgs)
   );
 
   ipcMain.handle(CHANNELS.pickAttachments, async () => {

@@ -10,11 +10,13 @@
 //
 // 这个文件只放不碰 React、不碰 window.otter 的那部分 —— 队列本身的增删。
 
-/** 一条排着的活。skill = $ 指令注入的 skill 名(与 send 的第二参同义) */
+/** 一条排着的活。skill = $ 指令注入的 skill 名(与 send 的第二参同义)；
+    skillArgs = `$名字(参数)` 里的参数,随 skill 一起过桥 */
 export interface QueuedTask {
   id: string;
   text: string;
   skill?: string | undefined;
+  skillArgs?: string | undefined;
 }
 
 /** 排到队尾。先来先发 —— 用户敲下去的顺序就是他想要的顺序，不做优先级 */

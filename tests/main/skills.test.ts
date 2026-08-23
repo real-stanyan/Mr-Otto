@@ -28,6 +28,16 @@ describe("parseSkillMd", () => {
   it("CRLF 换行也认", () => {
     expect(parseSkillMd("---\r\nname: x\r\n---\r\n正文")).toEqual({ name: "x" });
   });
+
+  it("argument-hint：提取并剥外层引号（Claude Code 同名约定，常写成带引号的档位表）", () => {
+    expect(
+      parseSkillMd('---\nname: ponytail\nargument-hint: "[lite|full|ultra]"\n---\n正文')
+    ).toEqual({ name: "ponytail", argumentHint: "[lite|full|ultra]" });
+    // 不带引号原样收
+    expect(parseSkillMd("---\nargument-hint: [a|b]\n---\n正文")).toEqual({
+      argumentHint: "[a|b]",
+    });
+  });
 });
 
 describe("scanSkills", () => {
@@ -36,6 +46,16 @@ describe("scanSkills", () => {
 
   it("根目录不存在 = 空列表，不炸", () => {
     expect(scanSkills(["/nowhere"], fakeReader({}, {}))).toEqual([]);
+  });
+
+  it("argument-hint 随 SkillInfo 带出；没有就没有这个键", () => {
+    const r = fakeReader({ [rootA]: ["p", "q"] }, {
+      [join(rootA, "p", "SKILL.md")]: '---\nname: p\nargument-hint: "[lite|ultra]"\n---\n正文',
+      [join(rootA, "q", "SKILL.md")]: md("q", "无参数"),
+    });
+    const out = scanSkills([rootA], r);
+    expect(out.find((s) => s.name === "p")?.argumentHint).toBe("[lite|ultra]");
+    expect("argumentHint" in out.find((s) => s.name === "q")!).toBe(false);
   });
 
   it("没有 SKILL.md 的目录不是 skill，跳过", () => {

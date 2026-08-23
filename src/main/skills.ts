@@ -33,15 +33,24 @@ const nodeReader: SkillDirReader = {
   },
 };
 
-/** 解析 SKILL.md 的 YAML frontmatter。只认单行 `name:` / `description:`——
-    不引 YAML 库：skill 元数据就两个字段，一个正则的事，别为它背一棵依赖树 */
-export function parseSkillMd(text: string): { name?: string; description?: string } {
+/** 解析 SKILL.md 的 YAML frontmatter。只认单行 `name:` / `description:` /
+    `argument-hint:`——不引 YAML 库：skill 元数据就三个字段，一个正则的事，
+    别为它背一棵依赖树。argument-hint（Claude Code 同名约定，如 "[lite|full|ultra]"）
+    是给用户看的参数提示，常带引号，剥掉 */
+export function parseSkillMd(text: string): {
+  name?: string;
+  description?: string;
+  argumentHint?: string;
+} {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return {};
-  const out: { name?: string; description?: string } = {};
+  const out: { name?: string; description?: string; argumentHint?: string } = {};
   for (const line of m[1]!.split(/\r?\n/)) {
-    const kv = line.match(/^(name|description):\s*(.+?)\s*$/);
-    if (kv) out[kv[1] as "name" | "description"] = kv[2]!;
+    const kv = line.match(/^(name|description|argument-hint):\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const value = kv[2]!.replace(/^(["'])(.*)\1$/, "$2");
+    if (kv[1] === "argument-hint") out.argumentHint = value;
+    else out[kv[1] as "name" | "description"] = value;
   }
   return out;
 }
@@ -59,7 +68,14 @@ export function scanSkills(roots: string[], reader: SkillDirReader = nodeReader)
       const fm = parseSkillMd(content);
       const name = fm.name ?? dir;
       if (!byName.has(name)) {
-        byName.set(name, { name, description: fm.description ?? "", path, source: root, content });
+        byName.set(name, {
+          name,
+          description: fm.description ?? "",
+          path,
+          source: root,
+          content,
+          ...(fm.argumentHint !== undefined ? { argumentHint: fm.argumentHint } : {}),
+        });
       }
     }
   }

@@ -203,6 +203,9 @@ export interface SkillInvokedEvent extends SessionEventBase {
   type: "skill_invoked";
   name: string;
   content: string;
+  /** `$名字(参数) 任务` 里的参数（如档位 lite/ultra），随快照进投影头。
+      可选 = 向后兼容：旧日志没有这个字段，投影不带参数段，逐字节不变 */
+  args?: string;
 }
 
 /** 额外 9：图片解析(vision-bridge)。当前模型不支持看图时,发送路径先请视觉

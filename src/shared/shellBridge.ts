@@ -103,6 +103,9 @@ export interface SkillInfo {
   /** 来自哪个 skill 根目录（~/.mr-otto/skills 或 ~/.claude/skills） */
   source: string;
   content: string;
+  /** frontmatter `argument-hint`（Claude Code 同名约定，如 "[lite|full|ultra]"）：
+      给用户看的参数提示，$ 菜单展示用。没有 = 该 skill 不声明参数 */
+  argumentHint?: string;
 }
 
 /** ＋ 按钮选完文件、主进程分类后的暂存项(渲染层 chips 用)。
@@ -497,12 +500,14 @@ export interface ShellBridge {
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
-      落 skill_invoked 事件，找不到则整条拒发 */
+      落 skill_invoked 事件，找不到则整条拒发。
+      skillArgs = `$名字(参数)` 里的参数，原样落进事件、进投影头 */
   sendMessage(
     sessionId: string,
     text: string,
     skill?: string,
-    attachments?: OutgoingAttachment[]
+    attachments?: OutgoingAttachment[],
+    skillArgs?: string
   ): Promise<void>;
   /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
       生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
