@@ -205,6 +205,58 @@ describe("createSubagentRunner", () => {
     expect(childMode).toBe("ask");
   });
 
+  // ADR-0068：父会话 $ 启用的行为约束覆盖整个任务，包括派出去的部分
+  it("父会话已启用的 skill 复制快照进子日志：briefed 之后、开跑之前，args 随行", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    // 父日志：启用两个 skill（其中 tdd 启用过两次，后一次带 args）
+    for (const e of [
+      { type: "skill_invoked" as const, name: "tdd", content: "旧版" },
+      { type: "user_message" as const, content: "活一" },
+      { type: "skill_invoked" as const, name: "ponytail", content: "越少越好", args: "ultra" },
+      { type: "user_message" as const, content: "活二" },
+      { type: "skill_invoked" as const, name: "tdd", content: "新版" },
+      { type: "user_message" as const, content: "活三" },
+    ]) {
+      store.append({ sessionId: "s-parent", ts: Date.now(), ...e });
+    }
+    const runner = createSubagentRunner({
+      store, attachments, push,
+      list: () => [def()],
+      parent: parent(),
+      runTurn: async () => {},
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+
+    const child = store.load(out.childSessionId);
+    const types = child.map((e) => e.type);
+    expect(types.slice(0, 4)).toEqual([
+      "session_created", "subagent_briefed", "skill_invoked", "skill_invoked",
+    ]);
+    const skills = child.filter((e) => e.type === "skill_invoked");
+    // 去重 + 覆盖：tdd 只来一份且是新版；args 原样随行
+    expect(skills.map((s) => s.name)).toEqual(["ponytail", "tdd"]);
+    expect(skills[0]).toMatchObject({ name: "ponytail", content: "越少越好", args: "ultra" });
+    expect(skills[1]).toMatchObject({ name: "tdd", content: "新版" });
+    expect("args" in skills[1]!).toBe(false);
+  });
+
+  it("skills: none 的定义不收父 skill；父没启用过 = 子日志也干净", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    store.append({ sessionId: "s-parent", ts: Date.now(), type: "skill_invoked", name: "tdd", content: "X" });
+    const runner = createSubagentRunner({
+      store, attachments, push,
+      list: () => [def({ skills: "none" }), def({ name: "plain" })],
+      parent: parent(),
+      runTurn: async () => {},
+    });
+    const optOut = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+    expect(store.load(optOut.childSessionId).some((e) => e.type === "skill_invoked")).toBe(false);
+
+    // 对照组：没写 skills 的定义照收
+    const inherit = await runner.run({ agent: "plain", task: "T", parentToolCallId: "c2" });
+    expect(store.load(inherit.childSessionId).filter((e) => e.type === "skill_invoked")).toHaveLength(1);
+  });
+
   it("汇报 = 子日志最后一条 assistant_message 的正文", async () => {
     const { store, attachments, push, parent } = fixtures();
     const runner = createSubagentRunner({

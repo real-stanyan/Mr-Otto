@@ -44,6 +44,17 @@ describe("serializeSubagent", () => {
     expect(text).not.toContain("thinking:");
   });
 
+  it("skills: none 往返存活；缺席不写行（ADR-0068，serializeSubagent 丢字段即数据丢失）", () => {
+    const text = serializeSubagent({ ...def, skills: "none" });
+    expect(text).toContain("skills: none");
+    const back = parseSubagentMd(text, {
+      fallbackName: "x", knownTools: KNOWN, path: def.path, source: def.source,
+      readOnly: false, scope: "user",
+    });
+    expect(back?.skills).toBe("none");
+    expect(serializeSubagent(def)).not.toContain("skills:");
+  });
+
   it("unknownTools 原样保留，用户的手写内容不被静默吃掉", () => {
     const text = serializeSubagent({ ...def, unknownTools: ["Grep"] });
     expect(text).toContain("Grep");

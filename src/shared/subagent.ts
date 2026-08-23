@@ -97,6 +97,11 @@ export interface SubagentDef {
   preamble: SubagentPreamble;
   /** 派活时按会话 workspace 读进来拼在正文前的文档（basename，已过滤） */
   context: string[];
+  /** 父会话已启用的 skill 是否随派活下发（ADR-0068）。缺席 = 继承（用户 $ 启用的
+      行为约束默认覆盖整个任务，包括派出去的部分——ponytail 的 fail-open 同思路）；
+      "none" = 本 subagent 明确不收（机械型/分类型 agent 不该被行为 skill 污染）。
+      可选而不是必填枚举：加必填字段要动每一处构造点，而"没写"和"继承"是同一件事 */
+  skills?: "none";
   /** 用户级还是工作区级。由扫到它的那条根目录决定，不来自文件内容 */
   scope: SubagentScope;
   /** .md 绝对路径 */

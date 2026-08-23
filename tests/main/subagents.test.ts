@@ -86,6 +86,15 @@ approval: deny
     expect(def?.unknownTools).toEqual(["Read", "Grep"]);
   });
 
+  it("skills: none 读出来；其它值（含 inherit）= 缺席 = 继承（ADR-0068）", () => {
+    const none = parseSubagentMd("---\nname: a\nskills: none\n---\n正文", base);
+    expect(none?.skills).toBe("none");
+    const inherit = parseSubagentMd("---\nname: a\nskills: inherit\n---\n正文", base);
+    expect(inherit && "skills" in inherit).toBe(false);
+    const garbage = parseSubagentMd("---\nname: a\nskills: 全都要\n---\n正文", base);
+    expect(garbage && "skills" in garbage).toBe(false);
+  });
+
   it("非法 approval / thinking 值当缺席处理，不炸", () => {
     const def = parseSubagentMd("---\nname: a\napproval: 随便\nthinking: 超猛\n---\n正文", base);
     expect(def?.approval).toBe("deny");

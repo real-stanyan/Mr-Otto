@@ -9,6 +9,8 @@
 
 import { createAgent, type AgentPush } from "./agent.js";
 import { SESSION_SEARCH_TOOL_NAME } from "../tools/sessionSearch.js";
+import { activeSkills } from "../session/activeSkills.js";
+import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { denyingApprover } from "./uiApprover.js";
 import { composeSubagentPrompt, readContextDocs } from "./subagentPrompt.js";
 import type { EventStore } from "../session/store.js";
@@ -146,6 +148,27 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
           model: child.model,
         })
       );
+      // 父会话已启用的 skill 随派活下发（ADR-0068）：用户 $ 启用的行为约束覆盖
+      // 整个任务，包括派出去的部分——否则「$ponytail 然后 spawn」的子 agent 不受
+      // 约束。台账语义与 compact 重注入同一份（activeSkills.ts）。**复制快照**进
+      // 子日志而不是引用父日志：子会话必须自包含，重放不跨日志取证（ADR-0007 的
+      // 快照理由原样成立）。位置在 briefed 之后、task 之前：先"我是谁"，再说明书，
+      // 最后任务。def.skills === "none" = 本 subagent 明确不收
+      if (def.skills !== "none") {
+        const parentLog = deps.store.load(parent.sessionId);
+        for (const [skillName, s] of activeSkills(parentLog, barrenEventIndexes(parentLog))) {
+          deps.push.event(
+            deps.store.append({
+              sessionId: child.sessionId,
+              ts: Date.now(),
+              type: "skill_invoked",
+              name: skillName,
+              content: s.content,
+              ...(s.args !== undefined ? { args: s.args } : {}),
+            })
+          );
+        }
+      }
       deps.push.event(
         deps.store.append({
           sessionId: parent.sessionId,
