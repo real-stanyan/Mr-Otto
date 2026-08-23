@@ -52,6 +52,40 @@ BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;
 `;
 
+/** 派生索引，不是事实：events 是日志，events_fts 随时可 DROP 重建。
+    trigram：中文不需要分词，代价是查询 ≥3 字符（短查询走 LIKE 兜底，见 searchText）。
+    只收三种事件的正文——其余事件是系统事实/UI 路标，不是"过去说过的话" */
+const FTS_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+  session_id UNINDEXED, seq UNINDEXED, type UNINDEXED, text, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events
+WHEN NEW.type IN ('user_message','assistant_message','tool_result')
+BEGIN
+  INSERT INTO events_fts(session_id, seq, type, text)
+  VALUES (NEW.session_id, NEW.seq, NEW.type,
+          COALESCE(json_extract(NEW.payload, '$.content'), json_extract(NEW.payload, '$.output'), ''));
+END;
+`;
+
+/** FTS5 查询语法里引号/运算符有意义；把用户词整体当短语：双引号包住，内部引号翻倍 */
+function ftsQuote(q: string): string {
+  return `"${q.replace(/"/g, '""')}"`;
+}
+function likeEscape(q: string): string {
+  return q.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** searchText() 的命中行——一条被索引的历史消息/工具结果 */
+export interface FtsHit {
+  sessionId: string;
+  seq: number;
+  type: "user_message" | "assistant_message" | "tool_result";
+  text: string;
+  /** -bm25（越大越相关）；LIKE 兜底时恒为 0 */
+  score: number;
+}
+
 export class EventStore {
   private db: Database.Database;
 
@@ -59,6 +93,19 @@ export class EventStore {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+
+    // 建表 + 回填一次性焊死在一个事务里：不然崩在"表建完、回填还没跑"那道缝上，
+    // 下次开库会看见 events_fts 已存在（= 判定"已回填"，见 rebuildFts 之上的注释），
+    // 索引从此永久空着、永远不会被自愈。CREATE VIRTUAL TABLE / CREATE TRIGGER 在
+    // SQLite 里本身就是事务性 DDL，better-sqlite3 的 transaction() 支持嵌套（内部转
+    // SAVEPOINT），rebuildFts() 自己那层事务原样嵌进来
+    this.db.transaction(() => {
+      const hadFts = this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'")
+        .get();
+      this.db.exec(FTS_SCHEMA);
+      if (!hadFts) this.rebuildFts(); // 老库第一次开：一次性回填
+    })();
   }
 
   /** 追加一条事件，seq 由存储层分配，返回完整事件 */
@@ -110,12 +157,67 @@ export class EventStore {
     this.db.transaction((all: string[]) => {
       this.db.exec("DROP TRIGGER events_no_delete");
       const del = this.db.prepare("DELETE FROM events WHERE session_id = ?");
-      for (const id of all) del.run(id);
+      const delFts = this.db.prepare("DELETE FROM events_fts WHERE session_id = ?");
+      for (const id of all) {
+        del.run(id);
+        delFts.run(id);
+      }
       this.db.exec(`CREATE TRIGGER events_no_delete
 BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     })(ids);
     return ids;
+  }
+
+  /** 从 events 重建索引。幂等：先清空再灌。老库首开、或索引损坏时用 */
+  rebuildFts(): void {
+    this.db.transaction(() => {
+      this.db.exec("DELETE FROM events_fts");
+      this.db
+        .prepare(
+          `INSERT INTO events_fts(session_id, seq, type, text)
+           SELECT session_id, seq, type,
+                  COALESCE(json_extract(payload, '$.content'), json_extract(payload, '$.output'), '')
+             FROM events WHERE type IN ('user_message','assistant_message','tool_result')`
+        )
+        .run();
+    })();
+  }
+
+  /** 全文检索。≥3 字符走 FTS5 trigram + BM25；更短的走 LIKE 兜底（trigram 的硬限制，
+      中文双字词太常见不能不管）。永远排除归档会话与子会话 */
+  searchText(query: string, opts: { limit?: number; excludeSessions?: string[] } = {}): FtsHit[] {
+    const q = query.trim();
+    if (!q) return [];
+    const limit = opts.limit ?? 300;
+    const exclude = opts.excludeSessions ?? [];
+    const notIn = exclude.length ? `AND f.session_id NOT IN (${exclude.map(() => "?").join(",")})` : "";
+    const common = `
+      AND f.session_id NOT IN (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
+      AND f.session_id NOT IN (SELECT session_id FROM events WHERE seq = 0 AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
+      ${notIn}`;
+    if ([...q].length >= 3) {
+      const rows = this.db
+        .prepare(
+          `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, -bm25(events_fts) AS score
+             FROM events_fts f WHERE events_fts MATCH ? ${common}
+            ORDER BY score DESC LIMIT ?`
+        )
+        .all(ftsQuote(q), ...exclude, limit) as FtsHit[];
+      return rows;
+    }
+    // LIKE 兜底：`f.text LIKE ?` 没有索引可用（trigram 索引最短 3 字符，<3
+    // 字符的查询够不到它），这条查询是对 events_fts.text 的全表扫描。v1 能接受
+    // 是因为触发这条路径的只有 1~2 字符的查询——真出现在生产库上大概率是
+    // 输入还没打完；真要给短查询也走索引，得换成 bigram/单字符 tokenizer 或
+    // 前缀索引，目前没这个必要
+    return this.db
+      .prepare(
+        `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, 0 AS score
+           FROM events_fts f WHERE f.text LIKE ? ESCAPE '\\' ${common}
+          ORDER BY f.session_id, f.seq LIMIT ?`
+      )
+      .all(`%${likeEscape(q)}%`, ...exclude, limit) as FtsHit[];
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
@@ -214,6 +316,24 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       )
       .all(...BILLED_EVENT_TYPES, since) as BilledRow[];
     return rows;
+  }
+
+  /** 一批会话各自的 user_message 条数（"几轮对话"）。给 recent() 用：
+      逐会话 load() 整段事件只为数一个类型，会话一多、日志一长就是不必要的 N+1；
+      这里一条 SQL 一次性数完，session_id 不在 events 里的（未知会话）在结果 Map
+      里直接不出现——调用方按需 `?? 0` */
+  userTurnCounts(sessionIds: string[]): Map<string, number> {
+    if (sessionIds.length === 0) return new Map();
+    const marks = sessionIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT session_id AS sessionId, COUNT(*) AS n
+           FROM events
+          WHERE type = 'user_message' AND session_id IN (${marks})
+          GROUP BY session_id`
+      )
+      .all(...sessionIds) as { sessionId: string; n: number }[];
+    return new Map(rows.map((r) => [r.sessionId, r.n]));
   }
 
   close(): void {

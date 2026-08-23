@@ -5,6 +5,7 @@
 import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
+import type { SessionEvent } from "../session/events.js";
 
 export interface ExecResult {
   stdout: string;
@@ -106,6 +107,39 @@ export interface ConfigCapability {
   write(rel: string, content: string): Promise<void>;
 }
 
+/** 会话检索结果里的一条历史会话摘要——recent() 的返回形状（session_search 工具用） */
+export interface HistorySession {
+  sessionId: string;
+  title: string | null;
+  workspace: string | null;
+  startedTs: number;
+  lastTs: number;
+  userTurns: number;
+}
+
+/** 全文检索命中的一行——search() 的返回形状 */
+export interface HistoryHit {
+  sessionId: string;
+  seq: number;
+  type: string;
+  text: string;
+  score: number;
+}
+
+/** 历史会话查询能力——session_search 工具的世界（硬规则：工具只认 ExecutionWorld，
+    不直接碰 EventStore）。v1 由 src/main/historyCapability.ts 焊在 EventStore 上；
+    v2 SandboxWorld 可以换成 RPC 到宿主 */
+export interface HistoryCapability {
+  /** 全文检索（已排除归档/子会话/当前会话） */
+  search(query: string, opts?: { limit?: number }): HistoryHit[];
+  /** 某会话 [fromSeq, toSeq] 区间的事件（含端点）；未知会话 = [] */
+  window(sessionId: string, fromSeq: number, toSeq: number): SessionEvent[];
+  /** 整段事件；未知会话 = [] */
+  load(sessionId: string): SessionEvent[];
+  /** 最近会话（排除归档/子会话/当前会话） */
+  recent(limit: number): HistorySession[];
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -138,6 +172,11 @@ export interface ExecutionWorld {
       可选的理由同 openTerminal（旧实现和假 world 零改动）；缺席 = 该装配没有
       长期记忆（memory 工具不挂）。v2 SandboxWorld 可以把它映射成容器外的卷 */
   config?: ConfigCapability;
+  /** 可选：查历史会话的能力（session_search 工具用）。可选的理由同 config/openTerminal
+      （旧实现和假 world 零改动）；缺席 = 该装配没有历史检索（工具不挂）。
+      v1 由 index.ts 用 withHistory 焊 historyCapability.ts 的实现进来；
+      v2 SandboxWorld 这一层接口不变，换成 RPC 到宿主 */
+  history?: HistoryCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -168,6 +207,7 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
         }
       : {}),
     ...(world.config ? { config: world.config } : {}),
+    ...(world.history ? { history: world.history } : {}),
   };
 }
 
@@ -186,6 +226,7 @@ export function withExecOutput(
     ...(world.browser ? { browser: world.browser } : {}),
     ...(world.mcp ? { mcp: world.mcp } : {}),
     ...(world.config ? { config: world.config } : {}),
+    ...(world.history ? { history: world.history } : {}),
   };
 }
 
@@ -201,4 +242,12 @@ export function withBrowser(world: ExecutionWorld, browser: BrowserCapability): 
     (硬规则原样成立)。 */
 export function withMcp(world: ExecutionWorld, mcp: McpCapability): ExecutionWorld {
   return { ...world, mcp };
+}
+
+/** 把历史检索能力焊进 world —— withBrowser/withMcp 同款手法。
+    index.ts 用 createHistoryCapability(store, currentSessionId) 焊进来，
+    工具照旧只调 world.history.search/window/load/recent，对 EventStore 的存在无感
+    (硬规则原样成立)。 */
+export function withHistory(world: ExecutionWorld, history: HistoryCapability): ExecutionWorld {
+  return { ...world, history };
 }

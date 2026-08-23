@@ -43,6 +43,7 @@ describe("memory_loaded 投影", () => {
     const withEmpty = deriveMessages([created, loaded("", ""), userMsg]);
     const content = (withEmpty[0] as { content: string }).content;
     expect(content).toContain("你有跨会话的长期记忆");
+    expect(content).toContain("session_search");
     expect(content).not.toContain("MEMORY (");
     expect(content).not.toContain("USER (");
   });

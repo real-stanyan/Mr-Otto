@@ -84,6 +84,7 @@ export function renderMemoryPrompt(memory: string, user: string): string {
   return (
     `\n你有跨会话的长期记忆（本消息末尾的 MEMORY/USER 块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
     `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
+    `过去做过什么、进度到哪、当时怎么决定的——用 session_search 查历史会话。` +
     `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
     renderMemoryBlocks(memory, user)
   );
