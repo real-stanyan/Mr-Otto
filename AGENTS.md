@@ -47,7 +47,7 @@ v2：Docker per bot（dockerode，自托管 VPS）
 - One agent sees a task through from start to finish; handoffs only happen at task boundaries (issue closed / PR merged), never mid-task
 - Non-trivial changes go through a branch + PR; typo-level tweaks can go straight into main
 - **Project-owned** architectural decisions go in `docs/adr/` (one decision per file, starting at 0001); protocol ADRs live in `docs/gearbox-adr/`, managed by the gearbox tooling — don't hand-edit them
-- Look up domain-term definitions in `CONTEXT.md`; add new terms as they come up
+- Look up domain-term definitions in `CONTEXT.md` — **two sections: protocol terms and product/technical terms** (ADR-0070); add new terms to the matching section as they come up (product concepts belong there too; no back-filling of historical debt)
 
 ### Roles of issues & PRs
 
@@ -143,7 +143,8 @@ CI (`.github/workflows/ci.yml`) runs the same set of commands; if it's red, merg
 1. The gate is all-green
 2. commit + push
 3. Close finished Task issues as usual; for half-finished ones, write progress into that issue's comment
-4. **Open a handoff issue for the next shift** (Task type, kept open, ADR-0005): the body states the current state and suggestions for next steps, and this shift's Memory comment (five-part format, ADR-0004) goes here. In multi-human repos the body also lists the Task issues this lane still owns (takeover = claiming exactly those), or marks itself **"context only"** when nothing transfers (ADR-0048). **This is the only entry point the next shift is guaranteed to encounter** — Memory no longer gets buried in a casually closed Task issue. **The sole exception — a terminal shift** (ADR-0009): when archiving / confirming there's no next shift, you may skip opening one, but you must explicitly declare "no next shift" + the reason in a comment on the last closed issue. A silent terminal doesn't count as terminal. Terminal is repo-level: with another lane still live (someone else's open handoff or claimed task), a terminal declaration is invalid — that's just a lane end (ADR-0048)
+4. **Open a handoff issue for the next shift** (Task type, kept open, ADR-0005): the body states the current state and suggestions for next steps, and this shift's Memory comment (five-part format, ADR-0004) goes here. In multi-human repos the body also lists the Task issues this lane still owns (takeover = claiming exactly those), or marks itself **"context only"** when nothing transfers (ADR-0048). **This is the only entry point the next shift is guaranteed to encounter** — Memory no longer gets buried in a casually closed Task issue. **The sole exception — a terminal shift** (ADR-0009): when archiving / confirming there's no next shift, you may skip opening one, but you must explicitly declare "no next shift" + the reason in a comment on the last closed issue. A silent terminal doesn't count as terminal. Terminal is repo-level: with another lane still live (someone else's open handoff or claimed task), a terminal declaration is invalid — that's just a lane end (ADR-0048).
+   **Closing someone else's "context only" handoff does NOT count as taking over a lane** (ADR-0069): that hands you context, not the baton. The shift that closed one still owes this rule — open its own handoff issue, or declare terminal. Two options, no third.
 
 ### Parallel shifts (multi-human repos, ADR-0048)
 
@@ -176,7 +177,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 
 ## Where to find things
 
-- `CONTEXT.md` — domain glossary
+- `CONTEXT.md` — domain glossary (protocol terms + product/technical terms, two sections, ADR-0070)
 - `docs/gearbox-adr/` — protocol ADRs (copied from Gearbox, managed by tooling — don't hand-edit)
 - `docs/adr/` — this project's own architectural decisions (starting at 0001, human-authored)
 - `docs/distribution-macos.md` — macOS 打包 / 签名 / 分发

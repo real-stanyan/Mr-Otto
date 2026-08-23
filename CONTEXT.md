@@ -2,7 +2,9 @@
 
 Domain glossary. All agents' understanding of domain terms is grounded here; code naming stays consistent with the terms defined here.
 
-## Terms
+## 协议术语（Gearbox）
+
+读规则的人要查的词。来源是 Gearbox 协议 + 本仓的 ADR。
 
 | Term | Definition | Notes |
 |---|---|---|
@@ -20,10 +22,17 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | frontier task | An open Task issue with no open blockers — the only kind of task a shift may claim; when a blocker closes, its dependents join the frontier | ADR-0044 |
 | claim | Self-assignment on a Task issue (`gh issue edit <N> --add-assignee @me`), first wins; a "claiming this" comment where assignment isn't possible. An open frontier task with no assignee and no claim comment is free | ADR-0047; single-human repos may skip — the value begins at the second human |
 | lane | One shift plus the tasks it has claimed; parallel shifts are allowed iff lanes are disjoint (each works only on frontier tasks it claimed) | ADR-0048; handoff issues are per-lane |
-| context-only handoff | A handoff issue whose lane finished with nothing to transfer — kept for its Memory comment, closed by its first reader after reading | ADR-0048 |
+| context-only handoff | A handoff issue whose lane finished with nothing to transfer — kept for its Memory comment, closed by its first reader after reading. **Closing one is not taking over that lane**: the reader still owes its own handoff, or a terminal declaration | ADR-0048; ADR-0069 (closing ≠ takeover) |
 | downstream | A project that copies this Gearbox protocol and then evolves independently; sync status is self-checked downstream via `gearbox-version` (pull-primary, ADR-0026 — the upstream fleet dashboard was retired in ADR-0033) | See ADR-0026 |
 | backfill | Downstream pulls Gearbox protocol improvements into its local copy; **pull-triggered** — downstream runs `gearbox-version` at the start of a shift to self-check, and `gearbox-update` if it's behind, with no dependency on upstream pushing; it's alignment, not enforcement — downstream can decline | ADR-0013 → ADR-0026 (push-triggered was downgraded to pull-triggered) |
 | protocol version number | A semver-variant tag: **major** = cross-tool/cross-repo contract change; **minor** = a new mechanism added; **patch** = revision of an existing file. Every protocol PR declares a `Version bump`; the author tags after merge; the downstream local version is recorded in the `.gearbox-version` stamp (written and read by tooling) | ADR-0023; baseline v0.0.0 |
+## 产品 / 技术术语（Mr Otto）
+
+写这个产品的人要查的词。新概念随写随加（AGENTS.md：add new terms as they come up），
+不追补历史欠账；边界模糊的词按「读者是谁」归节（ADR-0070）。
+
+| Term | Definition | Notes |
+|---|---|---|
 | 终端面板（Terminal panel） | 会话里内嵌的真 PTY 终端，纯人用。输出不进事件日志、不进模型上下文（ADR-0031）——它不是任何事实的投影，是人的旁路工具。 | |
 | 回滚缓冲（terminal ring buffer） | 主进程为每个终端保留的末尾约 200 KB 输出。面板关掉时渲染层的 xterm 实例就没了而 pty 还在吐，靠它接住；重开面板一次性灌回去。内存态，不落盘，与 pty 进程同生共死。 | |
 | 轨迹（Trajectory） | 会话日志的第二种投影（第一种是聊天区）：一步一行，工具请求 + 审批 + 开跑 + 结果按 toolCallId 合成一行，顶部泳道时间轴（Input / Model / Tools）按 Duration / Turns / Calls 三种刻度铺开。对标 deepseek-harness 的 trajectory 视图。纯渲染层、只读、不进 store；取代了早期的「画布 + 函数轨迹」教学式回放（#151）。 | `src/renderer/src/replay/trajectory.ts` |
