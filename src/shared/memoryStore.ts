@@ -4,6 +4,12 @@
 
 export type MemoryTarget = "memory" | "user";
 
+/** 运行时守卫（issue #186）：IPC/工具入参都是 unknown，MEMORY_FILES[target]
+    对非法值回 undefined，会把 undefined 一路传进文件路径拼接 */
+export function isMemoryTarget(v: unknown): v is MemoryTarget {
+  return v === "memory" || v === "user";
+}
+
 export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 2200, user: 1375 };
 export const MEMORY_FILES: Record<MemoryTarget, string> = {
   memory: "memories/MEMORY.md",
@@ -33,6 +39,20 @@ export function parseEntries(text: string | null): string[] {
 
 export function formatEntries(entries: string[]): string {
   return entries.join(ENTRY_DELIMITER);
+}
+
+// 写互斥（issue #185）：memory 工具与设置页 applyUserEdit 都是 read-modify-write，
+// nudge 派出的 memory-reviewer 与父会话可能同时写同一文件——无锁时后写者覆盖前者，
+// 且前者的 tool_result 仍报成功。主进程单线程，一条 per-target promise 链就够；
+// 模块级共享，跨工具实例、跨会话都走同一条链。
+const fileLocks = new Map<MemoryTarget, Promise<unknown>>();
+
+export function withMemoryFileLock<T>(target: MemoryTarget, fn: () => Promise<T>): Promise<T> {
+  const prev = fileLocks.get(target) ?? Promise.resolve();
+  // 前一次成功失败都不影响这一次排队（失败的写不该把后面的写都堵死）
+  const run = prev.then(fn, fn);
+  fileLocks.set(target, run.catch(() => {}));
+  return run;
 }
 
 export type MemoryOp =
@@ -117,7 +137,18 @@ export interface MemoryToolResult {
 
 export const MEMORY_RESULT_MARK = "<!--memory:";
 
-/** UI 从 tool_result.output 末行解析 chips。解析失败 = null，UI 退回通用工具行；note: lastIndexOf("-->") assumes entry text never contains "-->" */
+/** 机器可读尾行的序列化（写侧，issue #186）：JSON 里的 `<`/`>` 全部转成 \uXXXX
+    转义——JSON.stringify 只会在字符串字面量里出现这两个字符，转义后语义不变，
+    但条目内容再也拼不出 `-->`（终止符）或 `<!--memory:`（起始标记），
+    parseMemoryResult 的 lastIndexOf 定界从此撕不裂。解析侧不用改：旧日志的
+    输出照旧解析 */
+export function formatMemoryResultLine(result: MemoryToolResult): string {
+  const json = JSON.stringify(result).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  return `${MEMORY_RESULT_MARK}${json}-->`;
+}
+
+/** UI 从 tool_result.output 末行解析 chips。解析失败 = null，UI 退回通用工具行；
+    写侧已把 JSON 里的尖括号转义（见 formatMemoryResultLine），条目内容不可能再撕裂定界 */
 export function parseMemoryResult(output: string): MemoryToolResult | null {
   const i = output.lastIndexOf(MEMORY_RESULT_MARK);
   if (i < 0) return null;

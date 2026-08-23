@@ -55,6 +55,17 @@ describe("memory_loaded 投影", () => {
     expect((msgs[0] as { content: string }).content).toContain("用户用 pnpm");
     expect(msgs[1]!.role).toBe("user");
   });
+  // issue #186：nudge 派活的收口靠一条合成 tool_result（toolCallId = memory-nudge-N），
+  // 它没有对应的 assistant_message.toolCalls——投影成孤儿 tool 消息是 OpenAI 方言
+  // 的非法序列（每条 tool 消息必须跟着带对应 tool_calls 的 assistant 消息）
+  it("孤儿 tool_result（无对应 assistant toolCall）不进投影", () => {
+    const a = deriveMessages([created, userMsg]);
+    const b = deriveMessages([
+      created, userMsg,
+      { ...base(4), type: "tool_result", toolCallId: "memory-nudge-9", status: "ok", output: "整理完了" },
+    ]);
+    expect(b).toEqual(a);
+  });
   it("memory_user_edit / memory_nudge 对投影隐形", () => {
     const a = deriveMessages([created, userMsg]);
     const b = deriveMessages([

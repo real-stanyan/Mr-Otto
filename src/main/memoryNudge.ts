@@ -2,6 +2,7 @@
 // 计数从日志推导：最后一条 memory_nudge 之后的 user_message 数——重开 app 不丢数。
 
 import type { SessionEvent } from "../session/events.js";
+import type { NewSessionEvent } from "../session/store.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
 
 export const MEMORY_NUDGE_EVERY = 10;
@@ -26,6 +27,29 @@ export function shouldNudge(events: SessionEvent[]): boolean {
   const created = events.find((e) => e.type === "session_created");
   if (created && created.type === "session_created" && created.spawnedBy) return false;
   return userTurnsSinceNudge(events) >= MEMORY_NUDGE_EVERY;
+}
+
+/** nudge 派活的收口（issue #186）：reviewer 跑完后往父会话落一条配对的
+    tool_result——`memory-nudge-<seq>` 这种合成 parentToolCallId 走不到标准工具
+    管线，没有这条的话 subagentRowState 永远 working，时间线那张卡永远转圈。
+    成功落 ok（output = 汇报），失败落 error 再把错误原样往外抛（调用方负责记
+    日志——nudge 是永不抛的外挂，外面本来就包着 catch）。
+    这条 tool_result 没有对应的 assistant toolCall，deriveMessages 的孤儿过滤
+    会把它挡在投影外——它只喂 UI，不喂模型 */
+export async function settleNudgeSpawn(
+  deps: { append: (e: NewSessionEvent) => SessionEvent; send: (e: SessionEvent) => void },
+  sessionId: string,
+  toolCallId: string,
+  run: () => Promise<{ report: string }>,
+): Promise<void> {
+  try {
+    const { report } = await run();
+    deps.send(deps.append({ sessionId, ts: Date.now(), type: "tool_result", toolCallId, status: "ok", output: report }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    deps.send(deps.append({ sessionId, ts: Date.now(), type: "tool_result", toolCallId, status: "error", output: msg }));
+    throw err;
+  }
 }
 
 /** 参数太长就掐掉——参数是 agent 自己生成的，掐了也看得出意图（同

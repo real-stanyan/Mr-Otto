@@ -231,6 +231,20 @@ describe("deriveMessages context_compacted", () => {
     expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("原文问题"))).toBe(false);
   });
 
+  // issue #193：auto-compact 发生在 turn 中途时，正在处理的 user_message 随历史
+  // 被折进摘要，此前只靠提示词求摘要模型「逐字保留」。投影兜底：compact 之后
+  // 还没有新 user_message（= 被折的那条就是当前请求）时，把它原文重注
+  it("compact 之后还没有新 user_message：最后一条 user 原文重注在摘要后", () => {
+    const midTurn = base.slice(0, 4); // created, user, assistant, compact——auto 截胡当前请求
+    const msgs = deriveMessages(midTurn);
+    expect(msgs).toHaveLength(3); // system + 摘要 + 当前请求原文
+    expect(msgs[2]!.role).toBe("user");
+    expect(msgs[2]!.content).toContain("原文问题");
+    // 有了更新的 user_message 就不再重注（base 全量：新问题顶上，旧请求已是历史）
+    const after = deriveMessages(base);
+    expect(after.some((m) => typeof m.content === "string" && m.content.includes("原文问题"))).toBe(false);
+  });
+
   it("二次 compact 复合：只剩最新摘要", () => {
     const twice: SessionEvent[] = [
       ...base,
@@ -355,8 +369,12 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
       { seq: 2, sessionId: "s", ts: 3, type: "context_compacted", summary: "都干完了", model: "m" },
     ];
     const msgs = deriveMessages(events);
-    expect(msgs).toHaveLength(1);
+    // 摘要 + 当前请求兜底（issue #193：compact 后没有新 user_message 时原文重注）
+    expect(msgs.map((m) => m.role)).toEqual(["user", "user"]);
     expect((msgs[0] as { content: string }).content).toContain("都干完了");
+    // skill 注入本体确实随历史消失
+    expect(msgs.some((m) => typeof m.content === "string" && m.content.includes("长指令"))).toBe(false);
+    expect((msgs[1] as { content: string }).content).toContain("干活");
   });
 });
 

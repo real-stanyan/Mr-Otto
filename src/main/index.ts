@@ -36,7 +36,7 @@ import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { shouldNudge, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
+import { shouldNudge, settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge, VISION_BRIDGE_MODEL } from "./visionBridge.js";
 import { classifySection, SECTION_MODEL } from "./sectionClassifier.js";
@@ -71,7 +71,7 @@ import {
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
-import { MEMORY_FILES, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
@@ -523,11 +523,18 @@ void app.whenReady().then(() => {
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
       register: (child) => void agents.set(child.sessionId, child),
     });
-    await runner.run({
-      agent: "memory-reviewer",
-      task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
-      parentToolCallId: `memory-nudge-${nudgeEvent.seq}`,
-    });
+    // 收口走 settleNudgeSpawn（issue #186）：跑完往父会话落配对的 tool_result，
+    // 时间线那张卡才翻得成 done——不落的话合成 toolCallId 永远没有结果
+    const toolCallId = `memory-nudge-${nudgeEvent.seq}`;
+    await settleNudgeSpawn(
+      { append: (e) => store.append(e), send: (e) => send(CHANNELS.event, e) },
+      sessionId, toolCallId,
+      () => runner.run({
+        agent: "memory-reviewer",
+        task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+        parentToolCallId: toolCallId,
+      }),
+    );
   };
 
   // 微压缩（ADR-0064）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
@@ -544,7 +551,8 @@ void app.whenReady().then(() => {
     // 那一刻开始走表。提到闭包外面 = 主进程开机 30 秒后每次微压缩都当场超时
     const cheap = createCheapAdapter(MICRO_MODEL, MICRO_TIMEOUT_MS);
     if (!cheap) return;
-    const result = await microCompactOnce(store.load(sessionId), cheap.adapter, {
+    const log = store.load(sessionId);
+    const result = await microCompactOnce(log, cheap.adapter, {
       signal: cheap.signal,
     });
     if (!result) return;
@@ -553,9 +561,12 @@ void app.whenReady().then(() => {
     if (!agents.has(sessionId)) return;
     // 跑的这几十秒里下一个 turn 可能已经 auto-compact 了：那份摘要描述的是被 compact
     // 替换掉的历史，投影侧（latestMicroCompacted）会按 coversUpTo 丢弃它，这里干脆
-    // 不落——落了也只是一条永远不投影、却记在账上的事件
+    // 不落——落了也只是一条永远不投影、却记在账上的事件。
+    // 只查开跑之后的尾巴（issue #197）：开跑前的日志喂过 microCompactOnce，
+    // 它选出的 coversUpTo 天然在当时最新的 compact 之后，旧事件里不可能命中
+    const lastSeen = log.at(-1)?.seq ?? -1;
     const compactedSince = store
-      .load(sessionId)
+      .load(sessionId, { afterSeq: lastSeen })
       .some((e) => e.type === "context_compacted" && e.seq > result.coversUpTo);
     if (compactedSince) return;
     const event = store.append({
@@ -782,7 +793,13 @@ void app.whenReady().then(() => {
     const read = (rel: string): string => {
       try {
         return readFileSync(join(root, rel), "utf8");
-      } catch {
+      } catch (err) {
+        // ENOENT = 没记过，不是故障。别的错误（EACCES 之类）不能装没看见——
+        // 那会让"文件在但读不了"呈现成"记忆是空的"（issue #186）。但会话装配
+        // 也不该因此挂掉：记下来，快照按空处理
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
+        }
         return "";
       }
     };
@@ -796,7 +813,10 @@ void app.whenReady().then(() => {
     readFile: async (rel: string) => {
       try {
         return await readFile(join(configDir(homedir()), rel), "utf8");
-      } catch {
+      } catch (err) {
+        // ENOENT = 没记过。别的错误必须抛（issue #186）：吞掉的话 before 会被
+        // 记成空串，writeFile 若碰巧成功，memory_user_edit 的留证就在说谎
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         return "";
       }
     },
@@ -1048,7 +1068,12 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
   ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
     applyUserEdit(memoryEditDeps, target, text, sessionId));
+  // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
+  ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
   ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
+    // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
+    // MEMORY_FILES[target] 拼了路径，得在拼之前挡
+    if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
     const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
     await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
   });

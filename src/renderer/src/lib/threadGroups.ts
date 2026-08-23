@@ -41,6 +41,10 @@ function isInvisible(e: SessionEvent): boolean {
       return true;                     // 目录挂在分区轨上,不进正文(见 Timeline 的同名分支)
     case "suggestions_generated":
       return true;                     // 建议挂在输入框上方,不进时间线
+    case "memory_loaded":              // 记忆快照拼进 system 尾部(deriveMessages),不是对话内容
+    case "memory_user_edit":           // 人手改记忆的留证,模型不可见,UI 也不渲染
+    case "memory_nudge":               // 审查触发点只为计数,派活本身有 subagent_spawned 卡说话
+      return true;
     default:
       return false;
   }

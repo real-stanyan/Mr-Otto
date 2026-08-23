@@ -185,7 +185,11 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
   }
 
   /** 全文检索。≥3 字符走 FTS5 trigram + BM25；更短的走 LIKE 兜底（trigram 的硬限制，
-      中文双字词太常见不能不管）。永远排除归档会话与子会话 */
+      中文双字词太常见不能不管）。永远排除归档会话与子会话。
+      每个 session 只回分最高的一条（issue #190）：limit 若发生在按 session 去重之前，
+      一个几百条命中的话痨会话能把其他会话挤出 discovery 的名额——GROUP BY 之后
+      limit 数的是 session 数。SQLite 的 bare-column + MAX() 语义保证取到的
+      seq/type/text 正是最高分那一行 */
   searchText(query: string, opts: { limit?: number; excludeSessions?: string[] } = {}): FtsHit[] {
     const q = query.trim();
     if (!q) return [];
@@ -197,11 +201,15 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       AND f.session_id NOT IN (SELECT session_id FROM events WHERE seq = 0 AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
       ${notIn}`;
     if ([...q].length >= 3) {
+      // bm25() 函数出不了 FTS 查询语境（子查询外层就报 unable to use function
+      // bm25），rank 隐藏列是同一个分数的列形态，能穿过子查询——内层逐行算分，
+      // 外层按 session 取最高分那一行
       const rows = this.db
         .prepare(
-          `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, -bm25(events_fts) AS score
-             FROM events_fts f WHERE events_fts MATCH ? ${common}
-            ORDER BY score DESC LIMIT ?`
+          `SELECT sessionId, seq, type, text, MAX(score) AS score FROM (
+             SELECT f.session_id AS sessionId, f.seq, f.type, f.text, -f.rank AS score
+               FROM events_fts f WHERE events_fts MATCH ? ${common}
+           ) GROUP BY sessionId ORDER BY score DESC LIMIT ?`
         )
         .all(ftsQuote(q), ...exclude, limit) as FtsHit[];
       return rows;
@@ -210,23 +218,26 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     // 字符的查询够不到它），这条查询是对 events_fts.text 的全表扫描。v1 能接受
     // 是因为触发这条路径的只有 1~2 字符的查询——真出现在生产库上大概率是
     // 输入还没打完；真要给短查询也走索引，得换成 bigram/单字符 tokenizer 或
-    // 前缀索引，目前没这个必要
+    // 前缀索引，目前没这个必要。
+    // LIKE 没有分数，MIN(seq) = 每个 session 里最早的那条命中（稳定可复现）
     return this.db
       .prepare(
-        `SELECT f.session_id AS sessionId, f.seq, f.type, f.text, 0 AS score
+        `SELECT f.session_id AS sessionId, MIN(f.seq) AS seq, f.type, f.text, 0 AS score
            FROM events_fts f WHERE f.text LIKE ? ESCAPE '\\' ${common}
-          ORDER BY f.session_id, f.seq LIMIT ?`
+          GROUP BY f.session_id ORDER BY f.session_id LIMIT ?`
       )
       .all(`%${likeEscape(q)}%`, ...exclude, limit) as FtsHit[];
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
-  load(sessionId: string): SessionEvent[] {
+  load(sessionId: string, opts: { afterSeq?: number } = {}): SessionEvent[] {
+    // afterSeq = 只读这个 seq 之后的事件（issue #197）：微压缩写侧收口前的
+    // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读
     const rows = this.db
       .prepare(
-        "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? ORDER BY seq"
+        "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq"
       )
-      .all(sessionId) as {
+      .all(sessionId, opts.afterSeq ?? -1) as {
       seq: number;
       ts: number;
       type: string;

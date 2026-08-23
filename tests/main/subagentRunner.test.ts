@@ -6,6 +6,7 @@ import { createSubagentRunner } from "../../src/main/subagentRunner.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
+import { withHistory } from "../../src/world/executionWorld.js";
 import type { AgentPush } from "../../src/main/agent.js";
 import type { SubagentDef } from "../../src/shared/subagent.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -108,6 +109,45 @@ describe("createSubagentRunner", () => {
     expect(briefed?.type === "subagent_briefed" && briefed.tools).toEqual(["read_file", "web_search"]);
     expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("你是一个只读搜索员。");
     expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("Your final block of text IS the return value");
+  });
+
+  // issue #190：session_search 的使用指引跟着 memory_loaded 走，只到主会话；
+  // 子会话继承了工具却没人告诉它历史可查。工具真挂上了才补这句——没挂的
+  // 装配不该被告知能查历史（同 renderMemoryPrompt 的理由）
+  it("子会话挂了 session_search：briefed 指引里补一句怎么用；没挂不补", async () => {
+    const base = fixtures();
+    const history = {
+      search: () => [],
+      window: () => [],
+      load: () => [],
+      recent: () => [],
+    };
+    const worldWithHistory = withHistory(base.world, history);
+    const parentWith = () => ({ ...base.parent()(), world: worldWithHistory });
+    const runTurn = async (agent: { sessionId: string }) => {
+      base.store.append({
+        sessionId: agent.sessionId, ts: Date.now(), type: "assistant_message", content: "好了", model: "deepseek-chat",
+      });
+    };
+    const runner = createSubagentRunner({
+      store: base.store, attachments: base.attachments, push: base.push,
+      list: () => [def({ tools: ["read_file", "session_search"] })],
+      parent: parentWith, runTurn,
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    const briefed = base.store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
+    expect(briefed?.type === "subagent_briefed" && briefed.tools).toContain("session_search");
+    expect(briefed?.type === "subagent_briefed" && briefed.instructions).toContain("session_search");
+
+    const bare = fixtures();
+    const runner2 = createSubagentRunner({
+      store: bare.store, attachments: bare.attachments, push: bare.push,
+      list: () => [def()],
+      parent: bare.parent(), runTurn,
+    });
+    const out2 = await runner2.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    const briefed2 = bare.store.load(out2.childSessionId).find((e) => e.type === "subagent_briefed");
+    expect(briefed2?.type === "subagent_briefed" && briefed2.instructions).not.toContain("session_search");
   });
 
   // approval: "inherit"（内置那两份走这条）——"用户有没有打开免审批"是运行时状态,

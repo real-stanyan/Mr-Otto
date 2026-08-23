@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   shouldNudge,
   userTurnsSinceNudge,
+  settleNudgeSpawn,
   MEMORY_NUDGE_EVERY,
   reviewerTranscript,
 } from "../../src/main/memoryNudge.js";
@@ -94,5 +95,51 @@ describe("reviewerTranscript", () => {
     expect(out.length).toBe(50);
     expect(out).toContain("第49条消息");
     expect(out).not.toContain("第0条消息");
+  });
+});
+
+// issue #186：memory-nudge-<seq> 这种合成 parentToolCallId 没有配对的 tool_result，
+// subagentRowState 永远 working。settleNudgeSpawn 在 reviewer 跑完后往父会话落
+// 一条收口 tool_result（成功 ok / 失败 error），时间线那张卡据此翻成 done。
+describe("settleNudgeSpawn", () => {
+  const deps = () => {
+    const appended: SessionEvent[] = [];
+    const sent: SessionEvent[] = [];
+    return {
+      appended, sent,
+      append: (e: Omit<SessionEvent, "seq">) => {
+        const full = { ...e, seq: appended.length + 1 } as SessionEvent;
+        appended.push(full);
+        return full;
+      },
+      send: (e: SessionEvent) => { sent.push(e); },
+    };
+  };
+
+  it("reviewer 成功：落 ok tool_result，output 是汇报", async () => {
+    const d = deps();
+    await settleNudgeSpawn(
+      { append: d.append, send: d.send },
+      "parent-s", "memory-nudge-7",
+      async () => ({ report: "记了 2 条" }),
+    );
+    expect(d.appended).toHaveLength(1);
+    expect(d.appended[0]).toMatchObject({
+      sessionId: "parent-s", type: "tool_result", toolCallId: "memory-nudge-7", status: "ok", output: "记了 2 条",
+    });
+    expect(d.sent).toEqual(d.appended);
+  });
+
+  it("reviewer 抛错：落 error tool_result 再把错误往外抛（调用方负责记日志）", async () => {
+    const d = deps();
+    await expect(
+      settleNudgeSpawn({ append: d.append, send: d.send }, "parent-s", "memory-nudge-7", async () => {
+        throw new Error("模型不可用");
+      }),
+    ).rejects.toThrow("模型不可用");
+    expect(d.appended[0]).toMatchObject({
+      type: "tool_result", toolCallId: "memory-nudge-7", status: "error",
+    });
+    expect((d.appended[0] as { output: string }).output).toContain("模型不可用");
   });
 });

@@ -178,7 +178,41 @@ export function MemorySettings() {
         {FIELDS.map((f) => (
           <MemoryField key={f.target} target={f.target} label={f.label} />
         ))}
+        <RebuildIndexRow />
       </section>
+    </div>
+  );
+}
+
+/** 跨会话回忆的索引修复入口（issue #190）：索引是事件日志的派生物，平时只在
+    老库首开时自动建一次——session_search 突然搜不到明明存在的历史时，从这重灌 */
+function RebuildIndexRow() {
+  const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const rebuild = async () => {
+    setState("busy");
+    setError(null);
+    try {
+      await window.otter.rebuildSearchIndex();
+      setState("done");
+      setTimeout(() => setState("idle"), SAVED_HINT_MS);
+    } catch (err) {
+      setError(bridgeErrorMessage(err));
+      setState("error");
+    }
+  };
+  return (
+    <div className="flex items-center gap-3">
+      <Button variant="outline" size="sm" disabled={state === "busy"} onClick={() => void rebuild()}>
+        {state === "busy" ? "重建中…" : "重建搜索索引"}
+      </Button>
+      <span className={HINT}>
+        {state === "done"
+          ? "已重建"
+          : state === "error"
+            ? (error ?? "重建失败")
+            : "跨会话回忆（session_search / ⌘K）搜不到明明存在的历史时，从事件日志重灌一次索引"}
+      </span>
     </div>
   );
 }

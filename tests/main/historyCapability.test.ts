@@ -17,8 +17,9 @@ describe("historyCapability", () => {
     seed(store, "old", ["关键词甲乙丙", "第二句"], 1);
     const h = createHistoryCapability(store, () => "cur");
     // "old" 的回复文案里嵌了同一个关键词（trigram 支持子串命中，见 store.fts.test.ts），
-    // 两行都命中——search 只保证排除 cur，不去重同会话内的多行命中
-    expect(h.search("关键词甲乙丙").map((x) => x.sessionId)).toEqual(["old", "old"]);
+    // 两行都命中——但 searchText 按 session 去重只回分最高的一条（issue #190），
+    // search 同时排除 cur
+    expect(h.search("关键词甲乙丙").map((x) => x.sessionId)).toEqual(["old"]);
     expect(h.window("old", 1, 2).map((e) => e.seq)).toEqual([1, 2]);
     expect(h.load("old")).toHaveLength(5);
     expect(h.load("nope")).toEqual([]);

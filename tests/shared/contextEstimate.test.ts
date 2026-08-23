@@ -377,6 +377,34 @@ describe("微压缩稳态：两条 micro 夹着账单锚点", () => {
     expect(after).toBe(6400 - est(a3) - estimateTokens("S1") + estimateTokens(S2));
   });
 
+  // issue #197：latestMicroCompacted 拒绝 coversUpTo ≤ 最新 compact seq 的
+  // "迟到的旧摘要"，microAtAnchor 也必须用同一条有效性规则——
+  // 一条被投影拒绝的 micro，它在或不在日志里，圆环读数不能有区别
+  it("被投影拒绝的过期 micro（coversUpTo 指向 compact 之前）不影响读数", () => {
+    seq = 0;
+    const preCompact: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      ...turn("0", { promptTokens: 900, completionTokens: 100 }),
+    ];
+    const staleCovers = preCompact.at(-1)!.seq; // compact 之前的历史
+    const rest: SessionEvent[] = [
+      { ...env(), type: "context_compacted", summary: "C", model: "m" },
+      ...turn("1"), ...turn("2"),
+      ...turn("3", { promptTokens: 4400, completionTokens: 2000 }), // 锚点
+    ];
+    const stale: SessionEvent = {
+      ...env(), type: "micro_compacted", summary: big(4000), coversUpTo: staleCovers, model: "cheap",
+    };
+    const end2 = rest[6]!.seq; // u2 交换的 turn_ended（compact 后第二个 exchange）
+    const fresh: SessionEvent = {
+      ...env(), type: "micro_compacted", summary: "S 新", coversUpTo: end2, model: "cheap",
+    };
+    // stale 插在 compact 之后、锚点之前；fresh 落在锚点之后
+    const withStale = [...preCompact, rest[0]!, stale, ...rest.slice(1), fresh];
+    const withoutStale = [...preCompact, ...rest, fresh];
+    expect(contextUsed(withStale)).toBe(contextUsed(withoutStale));
+  });
+
   it("micro/账单交替 6 轮：读数始终贴着最新账单，不会一路探底到 0", () => {
     seq = 0;
     const events: SessionEvent[] = [{ ...env(), type: "session_created", workspace: "/w" }, ...turn("0")];

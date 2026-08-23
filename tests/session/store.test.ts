@@ -43,6 +43,16 @@ describe("EventStore", () => {
     expect(store.load("nope")).toEqual([]);
   });
 
+  // issue #197：微压缩写侧收口前只需要问"我开跑之后有没有落新的 context_compacted"，
+  // 长会话全量重读一遍日志是白花的
+  it("load({afterSeq})：只读该 seq 之后的事件", () => {
+    const e0 = store.append({ sessionId: "s1", ts: 1, type: "session_created", title: "t" });
+    const e1 = store.append(userMsg("s1", "你好"));
+    const e2 = store.append(userMsg("s1", "又来"));
+    expect(store.load("s1", { afterSeq: e0.seq })).toEqual([e1, e2]);
+    expect(store.load("s1", { afterSeq: e2.seq })).toEqual([]);
+  });
+
   it("sandboxId 缺省时读回的事件不带该字段", () => {
     store.append(userMsg("s1", "x"));
     expect(store.load("s1")[0]).not.toHaveProperty("sandboxId");

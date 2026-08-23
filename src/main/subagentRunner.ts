@@ -8,6 +8,7 @@
 // AGENTS.md 的 MVP 边界"明确不做多 agent 编排"靠这两处一起成立。
 
 import { createAgent, type AgentPush } from "./agent.js";
+import { SESSION_SEARCH_TOOL_NAME } from "../tools/sessionSearch.js";
 import { denyingApprover } from "./uiApprover.js";
 import { composeSubagentPrompt, readContextDocs } from "./subagentPrompt.js";
 import type { EventStore } from "../session/store.js";
@@ -127,15 +128,21 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
       if (def.thinking) child.setThinking(def.thinking);
 
       // 先落子侧的"我是谁"（模型可见的新信息，先落盘再喂模型），
-      // 再落父侧的"派出去了"，最后才开跑
+      // 再落父侧的"派出去了"，最后才开跑。
+      // session_search 指引（issue #190）：主会话的用法指引跟着 memory_loaded 走，
+      // 子会话没有那条事件——工具真挂上了才补这一句，没挂的装配不该被告知能查历史
+      const toolNames = child.toolDefs.map((d) => d.name);
+      const searchHint = toolNames.includes(SESSION_SEARCH_TOOL_NAME)
+        ? "\n\n过去做过什么、进度到哪、当时怎么决定的——用 session_search 查历史会话。"
+        : "";
       deps.push.event(
         deps.store.append({
           sessionId: child.sessionId,
           ts: Date.now(),
           type: "subagent_briefed",
           agent: def.name,
-          instructions: composePrompt(def, parent.workspace),
-          tools: child.toolDefs.map((d) => d.name), // 实际挂上的，不是文件里写的
+          instructions: composePrompt(def, parent.workspace) + searchHint,
+          tools: toolNames, // 实际挂上的，不是文件里写的
           model: child.model,
         })
       );

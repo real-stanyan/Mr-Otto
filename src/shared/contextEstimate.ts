@@ -65,15 +65,14 @@ function estimateAbsorbable(e: SessionEvent): number {
     锚点的 prompt 里不带任何微摘要）。返回：
       covers  —— 上一条 micro 的 coversUpTo；没有 = -Infinity（锚点 prompt 里一条原文都没被替换过）
       summary —— 上一条 micro 的摘要估算；没有 = 0
-    只扫 anchorIdx 及之前，且遇 context_compacted 即停 —— 于是天然只会捡到
-    「最新 context_compacted 之后」的 micro，与 latestMicroCompacted 的有效性规则同源。 */
+    直接复用 latestMicroCompacted 的有效性规则（issue #197）：视野截到 anchorIdx。
+    自己写一遍"往回扫遇 compact 即停"会漏掉 coversUpTo > floorSeq 那半条规则——
+    一条被投影拒绝的迟到旧摘要会被当成"锚点带的旧摘要"扣一次。 */
 function microAtAnchor(events: SessionEvent[], anchorIdx: number): { covers: number; summary: number } {
-  for (let i = anchorIdx; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.type === "context_compacted") break;
-    if (e.type === "micro_compacted") return { covers: e.coversUpTo, summary: estimateTokens(e.summary) };
-  }
-  return { covers: -Infinity, summary: 0 };
+  const prev = latestMicroCompacted(events, anchorIdx);
+  return prev
+    ? { covers: prev.coversUpTo, summary: estimateTokens(prev.summary) }
+    : { covers: -Infinity, summary: 0 };
 }
 
 /** 锚点之后、会进入下一次 prompt 的事件按字符估算。
@@ -85,7 +84,7 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   const barren = barrenEventIndexes(events);
   // 微压缩（ADR-0064）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
   // 和 deriveMessages 同一个 absorbedIndexes。
-  const micro = absorbedIndexes(events);
+  const micro = absorbedIndexes(events, barren);
   const latestMicro = latestMicroCompacted(events);
   const microIdx = latestMicro ? events.indexOf(latestMicro) : -1;
 

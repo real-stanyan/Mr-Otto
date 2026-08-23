@@ -15,6 +15,21 @@ const RULES: RedactRule[] = [
     replace: () => "[REDACTED]",
   },
   {
+    // GitHub 新式 token（issue #193）：fine-grained PAT / OAuth / 装置 / 刷新 / server-to-server
+    re: /\b(?:github_pat|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{16,}\b/g,
+    replace: () => "[REDACTED]",
+  },
+  {
+    // Google API key：AIza 后跟 35 位
+    re: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+    replace: () => "[REDACTED]",
+  },
+  {
+    // PEM 私钥块（issue #193）：BEGIN…END 整块吃掉，类型词（RSA/EC/OPENSSH…）任意
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    replace: () => "[REDACTED]",
+  },
+  {
     re: /\bAKIA[0-9A-Z]{16}\b/g,
     replace: () => "[REDACTED]",
   },

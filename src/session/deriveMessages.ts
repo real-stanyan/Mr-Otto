@@ -273,11 +273,28 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）
   const barren = barrenEventIndexes(events);
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
+  // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
+  // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
+  // 投影成 tool 消息就是 OpenAI 方言的非法序列（每条 tool 消息前面必须有
+  // 带对应 tool_calls 的 assistant 消息）。标准工具管线永远先落 assistant
+  // 再落 result，所以这层过滤对既有日志是空操作
+  const knownToolCallIds = new Set<string>();
+  for (const e of events) {
+    if (e.type !== "assistant_message") continue;
+    for (const tc of e.toolCalls ?? []) knownToolCallIds.add(tc.id);
+  }
+  // 最后一条非空跑 user_message 的下标（issue #193）：auto-compact 发生在 turn 中途时，
+  // 正在处理的请求随历史被折进摘要，摘要模型是否「逐字保留」它不由我们掌控。
+  // compact 之后还没有新 user_message（= 被折的就是当前请求）时投影兜底重注原文
+  let lastLiveUserIdx = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.type === "user_message" && !barren.has(i)) { lastLiveUserIdx = i; break; }
+  }
   // 微压缩（ADR-0064）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
-  const micro = absorbedIndexes(events);
+  const micro = absorbedIndexes(events, barren);
 
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {
@@ -337,6 +354,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "tool_result":
         // ok / error / denied 一视同仁：都是"这个调用的结果"。
         // 老区（保真边界之前）的长输出截断——工具输出是上下文里最肥的部分
+        if (!knownToolCallIds.has(event.toolCallId)) break; // 孤儿收口事件（见上）
         messages.push({
           role: "tool",
           tool_call_id: event.toolCallId,
@@ -410,6 +428,16 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
           role: "user",
           content: `[上下文已压缩。以下是此前对话的摘要，作为你对这段历史的全部记忆]\n${event.summary}`,
         });
+        // 当前请求兜底（issue #193）：compact 之后没有更新的 user_message =
+        // 被折进摘要的最后一条 user 就是正在处理的请求。原文重注，不再单靠
+        // 提示词求摘要模型逐字保留。只重注正文——textFiles 是把上下文撑爆的
+        // 主力之一，跟着回来等于压缩白做
+        if (lastLiveUserIdx >= 0 && lastLiveUserIdx < i) {
+          const u = events[lastLiveUserIdx]!;
+          if (u.type === "user_message") {
+            messages.push({ role: "user", content: `[当前请求（压缩前最后一条用户消息，原文）]\n${u.content}` });
+          }
+        }
         break;
 
       case "micro_compacted":
