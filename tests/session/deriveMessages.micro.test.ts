@@ -46,14 +46,13 @@ describe("微压缩投影", () => {
 
   it("被吸收的 assistant/tool 换成一条摘要；user 原文保留；保护区与保真区原样", () => {
     const events = fiveTurns();
-    const pick = nextMicroExchange(events, 2)!;
+    const pick = nextMicroExchange(events, 2)!; // 攒批区间覆盖 u1+u2（ADR-0068）
     events.push(micro("S1", pick.coversUpTo));
     const t = texts(events);
     expect(t).toEqual([
       expect.stringMatching(/^system:/),
       "user:u0", "assistant:a0",
-      "user:u1", "assistant:[对话摘要]\nS1",
-      "user:u2", "assistant:a2",
+      "user:u1", "user:u2", "assistant:[对话摘要]\nS1",
       "user:u3", "assistant:a3",
       "user:u4", "assistant:a4",
     ]);
@@ -65,9 +64,8 @@ describe("微压缩投影", () => {
 
   it("只认最新一条：第二条 micro 的摘要替代前两段，旧摘要不再出现", () => {
     const events = fiveTurns();
-    const p1 = nextMicroExchange(events, 2)!;
-    events.push(micro("S1", p1.coversUpTo));
-    const p2 = nextMicroExchange(events, 2)!;
+    events.push(micro("S1", events[7]!.seq)); // 先只盖住 u1 那一段
+    const p2 = nextMicroExchange(events, 2)!; // 接着盖到 u2
     events.push(micro("S1+S2", p2.coversUpTo));
     const t = texts(events);
     expect(t.filter((x) => x.startsWith("assistant:[对话摘要]"))).toEqual(["assistant:[对话摘要]\nS1+S2"]);

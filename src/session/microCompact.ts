@@ -157,10 +157,10 @@ function fidelityBoundary(
 }
 
 export interface MicroExchange {
-  /** user_message 的下标 */
+  /** 区间首个 exchange 的 user_message 下标（ADR-0068 攒批后区间可跨多个 exchange） */
   start: number;
-  /** exchange 内最后一个下标（含）：next 之前最后一个 assistant_message / tool_result /
-      turn_ended，跳过夹在中间、其实是下一轮前导的 skill_invoked / image_described */
+  /** 区间末个可吸收 exchange 的最后一个下标（含）：其 next 之前最后一个 assistant_message /
+      tool_result / turn_ended，跳过夹在中间、其实是下一轮前导的 skill_invoked / image_described */
   end: number;
   /** events[end].seq——落进事件的 coversUpTo */
   coversUpTo: number;
@@ -168,14 +168,29 @@ export interface MicroExchange {
   runningSummary: string;
 }
 
-/** 最老的未吸收 exchange。规则（spec §四）：
+/** 生产默认的攒批门槛（ADR-0068）：可吸收 exchange 攒够这么多才动一次手。
+    每 turn 吸一个 = running summary 每 turn 重写 + 吸收区每 turn 长大 = 投影中段
+    每 turn 变化 = prefix cache 每 turn 全废。攒批把重写频率降到 ~1/4，
+    其余 turn 投影前缀逐字节稳定。由 loop 层注入（同 keepRecentTurns 的分层） */
+export const MICRO_BATCH_MIN_EXCHANGES = 4;
+
+/** 未吸收的整段 backlog。规则（spec §四 + ADR-0068）：
     ① 只看最新 context_compacted 之后；② 其后第一个（非空跑）exchange 是保护区不碰；
     ③ 尾部 keepRecentTurns 个 turn 保真不碰；④ 上一条 micro 的 coversUpTo 之后接着数；
-    ⑤ 没有 assistant/tool 可吸收的 exchange 直接跳过（它的 user_message 反正原样保留）；
+    ⑤ 没有 assistant/tool 可吸收的 exchange 不计入批量（它的 user_message 反正原样保留，
+    夹在区间中段的照常被 coversUpTo 覆盖——absorbedIndexes 只收 assistant/tool）；
     ⑥ end 不越过下一条 user_message 的前导事件——skill_invoked/image_described 是紧贴在
     *下一条* user_message 之前为它生成的（见 barrenTurns.ts、events.ts 对应注释），不属于
-    这一轮，不能被这一轮的 coversUpTo 吞进去 */
-export function nextMicroExchange(events: SessionEvent[], keepRecentTurns: number): MicroExchange | null {
+    这一轮，不能被这一轮的 coversUpTo 吞进去；
+    ⑦ 攒批（ADR-0068）：一次返回从最老未吸收 exchange 到边界前最后一个可吸收 exchange
+    的整个区间（一条 micro_compacted 覆盖全部），且可吸收 exchange 不足 batchMin 个
+    就返回 null——不动手 = 这一 turn 投影零变化，前缀缓存完整。
+    batchMin 缺省 1 = 无门槛（只保留区间语义），生产值见 MICRO_BATCH_MIN_EXCHANGES */
+export function nextMicroExchange(
+  events: SessionEvent[],
+  keepRecentTurns: number,
+  batchMin = 1
+): MicroExchange | null {
   const floor = lastContextCompacted(events);
   const latest = latestMicroCompacted(events);
   const barren = barrenEventIndexes(events);
@@ -185,12 +200,15 @@ export function nextMicroExchange(events: SessionEvent[], keepRecentTurns: numbe
     if (events[i]?.type === "user_message" && !barren.has(i)) userIdx.push(i);
   }
   // 第一个（非空跑）exchange 永远保护（任务起点）；之后从 coversUpTo 后第一个 user_message 起
+  let first: number | null = null;
+  let lastEnd = -1;
+  let bodies = 0;
   for (let k = 1; k < userIdx.length; k++) {
     const start = userIdx[k]!;
     if (latest && events[start]!.seq <= latest.coversUpTo) continue;
-    if (start >= boundary) return null; // 进了保真区
+    if (start >= boundary) break; // 进了保真区
     const next = userIdx[k + 1];
-    if (next === undefined) return null; // 最后一个 exchange 总在保真区内（K≥1）；K=0 时也不吸收进行中的 turn
+    if (next === undefined) break; // 最后一个 exchange 总在保真区内（K≥1）；K=0 时也不吸收进行中的 turn
     let end = next - 1;
     while (end > start) {
       const t = events[end]!.type;
@@ -203,12 +221,15 @@ export function nextMicroExchange(events: SessionEvent[], keepRecentTurns: numbe
       if (t === "assistant_message" || t === "tool_result") { hasBody = true; break; }
     }
     if (!hasBody) continue;
-    return {
-      start,
-      end,
-      coversUpTo: events[end]!.seq,
-      runningSummary: latest?.summary ?? "",
-    };
+    if (first === null) first = start;
+    lastEnd = end;
+    bodies++;
   }
-  return null;
+  if (first === null || bodies < batchMin) return null;
+  return {
+    start: first,
+    end: lastEnd,
+    coversUpTo: events[lastEnd]!.seq,
+    runningSummary: latest?.summary ?? "",
+  };
 }
