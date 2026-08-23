@@ -14,6 +14,7 @@ import type { SessionSummary } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
+import type { IslandUsageRow } from "./islandUsage.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
@@ -377,6 +378,10 @@ export interface ShellBridge {
   getAutoCompact(): Promise<AutoCompactSettings>;
   /** 存一份新设置。未知字段/非法形状在主进程被剥掉，不是"渲染层传什么就信什么" */
   setAutoCompact(settings: AutoCompactSettings): Promise<void>;
+  /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
+      立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
+  getIslandSettings(): Promise<IslandSettings>;
+  setIslandSettings(settings: IslandSettings): Promise<void>;
   /** MCP server 清单 + 各自状态,外加 ~/.mr-otto/mcp.json 解析阶段的人话错误
       （review finding 4：一份配置文件级的问题不属于任何一台已解析成功的
       server，跟清单一起过桥，见 McpServersSnapshot 的类型注释）。
@@ -601,10 +606,24 @@ export interface IslandAgent {
   pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
 }
 
-/** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行) */
+/** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行)。
+    display/usage 是 #199 加的可选字段:旧 helper 解码时忽略,新 helper 缺字段
+    兜底成 sessions/空表——NDJSON 协议两个方向都向后兼容 */
 export interface IslandFleet {
   agents: IslandAgent[];
   focusedSessionId: string | null;
+  /** 展开态上半区显示什么(设置页切换,默认 sessions) */
+  display?: IslandDisplay;
+  /** display=usage 时的用量表(shared/islandUsage.ts 的投影);sessions 模式不带 */
+  usage?: IslandUsageRow[];
+}
+
+/** 灵动岛展开态上半区的两种内容(#199) */
+export type IslandDisplay = "sessions" | "usage";
+
+/** 灵动岛设置(userData/island.json,main/islandSettingsStore.ts 落盘) */
+export interface IslandSettings {
+  display: IslandDisplay;
 }
 
 /** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
@@ -659,6 +678,8 @@ export const CHANNELS = {
   forgetMemory: "otter:forgetMemory",
   getAutoCompact: "otter:getAutoCompact",
   setAutoCompact: "otter:setAutoCompact",
+  getIslandSettings: "otter:getIslandSettings",
+  setIslandSettings: "otter:setIslandSettings",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",

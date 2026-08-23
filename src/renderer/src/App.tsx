@@ -28,7 +28,7 @@ import { PermissionGrant } from "@/components/elements/permission-grant.js";
 import { TodoList } from "@/components/elements/todo-list.js";
 import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
-import type { ApprovalRequest, McpToolPreview } from "../../shared/shellBridge.js";
+import type { ApprovalRequest, IslandDisplay, McpToolPreview } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -1107,16 +1107,38 @@ function KeysPage() {
   );
 }
 
-/** 外观页（设置栏目之一）：目前只有主题一项。
-    分段控件而不是下拉框——三个选项全部可见时，"选哪个"和"现在是哪个"是同一眼的事 */
+/** 外观页（设置栏目之一）：主题 + 灵动岛显示内容。
+    分段控件而不是下拉框——选项全部可见时，"选哪个"和"现在是哪个"是同一眼的事 */
 function AppearancePage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
+  // 灵动岛设置(#199)。null = 还没从主进程读回来(控件禁用,同 AutoCompactSettings
+  // 的 loaded 模式);set 一点就落盘——低频离散动作,主进程 set 完立刻重推岛快照
+  const [islandDisplay, setIslandDisplay] = useState<IslandDisplay | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    window.otter
+      .getIslandSettings()
+      .then((s) => {
+        if (!cancelled) setIslandDisplay(s.display);
+      })
+      .catch(() => {
+        /* 读不到就保持禁用——非 mac 或桥出错,控件灰着比假装能切要诚实 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const OPTIONS: { value: ThemePref; label: string; hint: string }[] = [
     { value: "light", label: "浅色", hint: "始终用浅色底盘" },
     { value: "dark", label: "深色", hint: "始终用深色底盘" },
     { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
+  ];
+
+  const ISLAND_OPTIONS: { value: IslandDisplay; label: string; hint: string }[] = [
+    { value: "sessions", label: "会话列表", hint: "展开时显示各会话状态,点选切换、当场审批" },
+    { value: "usage", label: "Token 用量", hint: "展开时显示各模型 今天/7天/14天 的 token 消耗" },
   ];
 
   return (
@@ -1155,6 +1177,41 @@ function AppearancePage() {
             ))}
           </div>
           <p className={HINT}>{OPTIONS.find((o) => o.value === themePref)?.hint}</p>
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">灵动岛</h2>
+          <div
+            role="radiogroup"
+            aria-label="灵动岛显示内容"
+            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
+          >
+            {ISLAND_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={islandDisplay === o.value}
+                disabled={islandDisplay === null}
+                title={o.hint}
+                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 disabled:opacity-50 ${
+                  islandDisplay === o.value
+                    ? "bg-foreground/[0.10] font-[550] text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => {
+                  setIslandDisplay(o.value);
+                  void window.otter.setIslandSettings({ display: o.value });
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className={HINT}>
+            {islandDisplay === null
+              ? "刘海展开时显示的内容(仅 macOS)"
+              : ISLAND_OPTIONS.find((o) => o.value === islandDisplay)?.hint}
+          </p>
         </div>
       </section>
     </div>

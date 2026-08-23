@@ -32,6 +32,8 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId),
   getAutoCompact: () => ipcRenderer.invoke(CHANNELS.getAutoCompact),
   setAutoCompact: (settings) => ipcRenderer.invoke(CHANNELS.setAutoCompact, settings),
+  getIslandSettings: () => ipcRenderer.invoke(CHANNELS.getIslandSettings),
+  setIslandSettings: (settings) => ipcRenderer.invoke(CHANNELS.setIslandSettings, settings),
   listMcpServers: () => ipcRenderer.invoke(CHANNELS.listMcpServers),
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),
