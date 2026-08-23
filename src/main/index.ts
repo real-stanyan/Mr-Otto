@@ -61,7 +61,8 @@ import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentDef, saveSubagentDef, type SubagentWriteDeps } from "./subagentWrites.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
-import type { BrowserReadOptions } from "../world/executionWorld.js";
+import type { BrowserReadOptions, McpCapability } from "../world/executionWorld.js";
+import type { ToolDefinition } from "../model/adapter.js";
 import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
@@ -719,10 +720,14 @@ void app.whenReady().then(() => {
   // 比"某次调用失败"重得多，所以必须兜底。退化成 [] 的代价：已知工具名表是空的，
   // 于是 subagent 定义里写的每一个工具名都会被判成"不认识"（scanSubagents 的
   // unknownTools 分支），所有 subagent 静默退回默认工具集，直到重启恢复
-  let TOOL_NAMES: string[];
-  try {
+  //
+  // 拎成函数是因为它有第二个用处：设置页画子智能体的工具勾选框要的正是这份表
+  // （issue #141 —— 没有会话时 BootInfo.toolDefs 是空的，而首次使用路径恰恰是
+  // 「新用户 → 设置 → 新建」）。那次调用要带上 mcp，这次开机探名字不带，
+  // 差别只有这一个参数，其余装配必须逐字一致——否则两份表会各说各话
+  const probeToolDefs = (mcp?: McpCapability): ToolDefinition[] => {
     const probeStore = new EventStore(":memory:");
-    TOOL_NAMES = createAgent({
+    return createAgent({
       store: probeStore,
       workspace: app.getPath("userData"),
       push: {
@@ -743,11 +748,17 @@ void app.whenReady().then(() => {
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
-      // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
-      // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
+      // 开机那次刻意不给 mcp（与 browser 的桩子相反）：那一步跑在注册第一个 IPC
+      // 通道之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
       // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
-    }).toolDefs.map((d) => d.name);
+      ...(mcp ? { mcp } : {}),
+    }).toolDefs;
+  };
+
+  let TOOL_NAMES: string[];
+  try {
+    TOOL_NAMES = probeToolDefs().map((d) => d.name);
   } catch {
     TOOL_NAMES = [];
   }
@@ -1125,6 +1136,17 @@ void app.whenReady().then(() => {
     }
   );
 
+  // 工具目录（issue #141）：与 BootInfo.toolDefs 同源、但不需要会话。
+  // 每次现装一条探针而不是缓存：MCP server 会连上/掉线/改清单，缓存会让
+  // 设置页的勾选框停在开机那一刻。代价是一次内存库 + 一次装配，
+  // 只发生在用户打开子智能体设置页的时候
+  ipcMain.handle(CHANNELS.toolCatalog, async (): Promise<ToolDefinition[]> => {
+    // 先等握手：mcp 工具是"挂载一次定终身"，装配之前 server 没连上就一把都不挂
+    await mcpHub.ready();
+    // task 过滤掉：子 agent 不能再派子 agent（main/subagents.ts 解析时也剔）。
+    // 这条探针本来就没有 subagentRunner、装不出 task，留着这句是写给下一个人看的
+    return probeToolDefs(mcpHub).filter((d) => d.name !== "task");
+  });
   ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
     listSubagents(trusted(workspace))
   );

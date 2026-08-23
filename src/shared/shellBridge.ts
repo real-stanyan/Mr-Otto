@@ -406,6 +406,14 @@ export interface ShellBridge {
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
       展开后就是普通用户消息，进 UserMessage 事件，重放零特殊化 */
   expandMcpPrompt(server: string, name: string, args: Record<string, string>): Promise<string>;
+  /** 这台机器上「工具一共有哪些」的目录（名字 + 给模型看的那句描述）。
+      与 BootInfo.toolDefs 的区别是**它不需要会话**：那份是"当前这个 agent 此刻
+      挂着什么"，会话没起来时是空的；这份是"装配得出来的工具"，用来给设置页
+      画子智能体的工具勾选框——首次使用路径正是「新用户 → 设置 → 新建」，
+      那时一个会话都还没有（issue #141）。
+      task 不在里面：子 agent 不能再派子 agent 是设计边界。
+      现算，不是快照：MCP server 会连上、掉线、改清单 */
+  toolCatalog(): Promise<ToolDefinition[]>;
   /** 本机定义的子智能体（现扫磁盘，零缓存）。
       workspace = null 只看用户级；给了工作区就带上该工程的两条根（工作区盖用户） */
   listSubagents(workspace: string | null): Promise<SubagentDef[]>;
@@ -702,6 +710,7 @@ export const CHANNELS = {
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",
+  toolCatalog: "otter:toolCatalog",
   listSubagents: "otter:listSubagents",
   saveSubagent: "otter:saveSubagent",
   createSubagent: "otter:createSubagent",

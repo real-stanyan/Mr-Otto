@@ -42,6 +42,7 @@ const bridge: ShellBridge = {
   listMcpPrompts: () => ipcRenderer.invoke(CHANNELS.listMcpPrompts),
   expandMcpPrompt: (server, name, args) =>
     ipcRenderer.invoke(CHANNELS.expandMcpPrompt, server, name, args),
+  toolCatalog: () => ipcRenderer.invoke(CHANNELS.toolCatalog),
   listSubagents: (workspace) => ipcRenderer.invoke(CHANNELS.listSubagents, workspace),
   saveSubagent: (def, workspace) => ipcRenderer.invoke(CHANNELS.saveSubagent, def, workspace),
   createSubagent: (name, workspace) => ipcRenderer.invoke(CHANNELS.createSubagent, name, workspace),

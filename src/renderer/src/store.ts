@@ -124,6 +124,11 @@ interface ChatState {
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
       上下文用量弹窗算"工具 schema 吃掉多少"用；没 boot 过 = 空表 */
   toolDefs: ToolDefinition[];
+  /** 这台机器上装配得出来的工具目录（主进程现探的，与会话无关，issue #141）。
+      toolDefs 是"当前这个 agent 挂着什么"，没有会话时是空的；这份是"能有什么"。
+      子智能体设置页的工具勾选框在没会话时靠它——首次使用路径正是
+      「新用户 → 设置 → 新建」。null = 还没拉过 */
+  toolCatalog: ToolDefinition[] | null;
   /** 全部会话（含子会话）的摘要镜像——原样对着 window.otter.listSessions()，
       不在这里过滤：正看着一个子会话时，header 的会话名要靠这份镜像查到标题
       (App.tsx 的 sessionTitle)，把子会话摘掉这里会查不到。子会话不进**侧栏**
@@ -349,6 +354,8 @@ interface ChatState {
       三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
       存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西。
       拉不到清单**不抛**，写进 subagentsError（见那条字段） */
+  /** 拉一次工具目录（子智能体设置页挂载时调）。已经有了就直接返回；失败静默 */
+  loadToolCatalog(): Promise<void>;
   refreshSubagents(): Promise<void>;
   /** 存一个 subagent 的 frontmatter + 正文。抛出的 Error 是已经写成中文句子的
       用户可读提示（对不上名字 / 只读 / 不认识这个工作区），组件自己 catch 显示，这里不吞 */
@@ -586,6 +593,7 @@ export const useChat = create<ChatState>((set, get) => ({
   workspace: "",
   events: [],
   toolDefs: [],
+  toolCatalog: null,
   sessions: [],
   subagentLogCache: {},
   pendingWorkspace: null,
@@ -834,6 +842,18 @@ export const useChat = create<ChatState>((set, get) => ({
   // (行内的保存提示 / 弹窗里的错),成功时顺手把旧的清单错清掉:回来的这份清单是新鲜的,
   // 上面挂着的旧报错已经不描述任何东西了。写失败时不动它——清单根本没换,
   // 它此刻说的还是实话
+  /** 工具目录只拉一次：装配得出来的工具在一次进程运行里不会变（MCP 那部分会变，
+      代价是设置页开着时新连上的 server 要重开一次页面才出现——比每次渲染都发一次
+      IPC 划算）。失败静默：这是勾选框的兜底数据源，有会话时压根用不到它 */
+  async loadToolCatalog() {
+    if (get().toolCatalog !== null) return;
+    try {
+      set({ toolCatalog: await window.otter.toolCatalog() });
+    } catch {
+      set({ toolCatalog: [] });
+    }
+  },
+
   async refreshSubagents() {
     const gen = subagentScopeGen;
     try {
