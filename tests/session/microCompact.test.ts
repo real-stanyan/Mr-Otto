@@ -5,6 +5,7 @@ import {
   latestMicroCompacted,
   nextMicroExchange,
 } from "../../src/session/microCompact.js";
+import { deriveMessages } from "../../src/session/deriveMessages.js";
 
 let seq = 0;
 const base = () => ({ seq: seq++, sessionId: "s", ts: seq });
@@ -178,8 +179,55 @@ describe("fix round 1", () => {
     const got = absorbedIndexes(events)!;
     expect(got.absorbed.has(a1Idx)).toBe(true); // a1 没有 toolCalls，正常吸收
     expect(got.absorbed.has(a2Idx)).toBe(false); // a2 的 tool_result 没跟上，整条踢掉
-    expect(got.summaryAt).toBe(a2Idx); // 摘要退到 a2 自己的下标，a2 原样留在投影里
+    // 摘要退到剩余集合（只剩 a1）里最大下标 + 1，不是退到被踢掉的 a2 自己的下标——
+    // a2 所在的整条 exchange（u2 开始）都不算覆盖完整，摘要边界不能停在它内部
+    // （旧实现退到 a2Idx 会把摘要夹在 u2 的 user 消息和 a2 的 assistant 回复之间，
+    // 读起来像是摘要在描述一段还没答完的对话）
+    expect(got.summaryAt).toBe(a1Idx + 1);
     expect(got.summary).toBe("S");
+  });
+
+  it("absorbedIndexes 防孤儿（整组去留）：并行 toolCalls 里只要有一个没跟上覆盖范围，" +
+    "assistant 连同它已吸收的另一个 tool_result 要一起踢出去——投影里不会剩一条断头 tool 消息", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      { ...base(), type: "session_created", workspace: "/w" },
+      user("u0"), assistant("a0"), ended(),
+      user("u1"),
+      assistant("a1", [
+        { id: "c1", name: "bash", args: {} },
+        { id: "c2", name: "bash", args: {} },
+      ]),
+      tool("c1", "out1"),
+      tool("c2", "out2"),
+      ended(),
+      user("u2"), assistant("a2"), ended(),
+    ];
+    const a1Idx = events.findIndex((e) => e.type === "assistant_message" && e.content === "a1");
+    const c1Idx = events.findIndex((e) => e.type === "tool_result" && e.toolCallId === "c1");
+    const c2Idx = events.findIndex((e) => e.type === "tool_result" && e.toolCallId === "c2");
+    // 手写 coversUpTo = tool_result c1 自己的 seq——并行的 c2 落在覆盖范围外
+    events.push(micro("S", events[c1Idx]!.seq));
+
+    const got = absorbedIndexes(events);
+    // 旧实现只查"下标最大的那条"：这里下标最大的是 c1（tool_result），不是 a1，
+    // 旧的单点检查根本不会触发，会把 a1 和 c1 都错误地吸收掉，留下断头的 a1
+    // （toolCalls 里的 c2 从没得到回应）。新实现整组一起验，a1/c1/c2 全部踢出
+    expect(got === null || !got.absorbed.has(a1Idx)).toBe(true);
+    expect(got === null || !got.absorbed.has(c1Idx)).toBe(true);
+    expect(got === null || !got.absorbed.has(c2Idx)).toBe(true);
+
+    // 投影层验证：任何一条 tool 消息，前面都必须有一条 assistant 消息、
+    // 它的 tool_calls 里含这个 tool_call_id——不能有断头的 tool 消息
+    const msgs = deriveMessages(events);
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i]!;
+      if (m.role !== "tool") continue;
+      const hasCaller = msgs
+        .slice(0, i)
+        .some((p) => p.role === "assistant" && p.tool_calls?.some((tc) => tc.id === m.tool_call_id));
+      expect(hasCaller).toBe(true);
+    }
   });
 
   it("keepRecentTurns=0：仍然不吃最后一个 exchange（next undefined 分支，不是保真区分支）", () => {

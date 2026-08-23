@@ -59,11 +59,15 @@ export interface AbsorbedRange {
     不论该事件是不是被吸收的类型——被吸收的 turn 自己的 turn_ended 也算区内），所有被吸收的
     user_message 都已经按原文出现过，摘要读起来才是"这些请求的处理经过"。
 
-    防孤儿：如果集合里下标最大的那条是带 toolCalls 的 assistant_message，但它请求的工具
-    结果（按 toolCallId 配对）没有整个落在 coversUpTo 以内——要么还没发生，要么恰好卡在
-    边界外——就把这条 assistant_message 也踢出集合，summaryAt 退到它自己的下标上（它连同
-    它的 toolCalls 原样留在投影里，等真正配齐了再被后一次 micro 吸收）。不这样做，投影里
-    会剩一条断头的 tool_result：没有请求它的 assistant 消息作陪，模型看了会懵。
+    防孤儿（整组去留）：集合里**任何一条**带 toolCalls 的 assistant_message（不只是下标
+    最大的那条——中间夹着的一条一样会留断头），只要它请求的工具结果（按 toolCallId 配对，
+    只在它与下一条 assistant_message/user_message 之间的窗口内找）没有整组都落在 absorbed
+    集合里——要么还没发生，要么恰好卡在 coversUpTo 边界外——就把这条 assistant_message
+    连同它已经被吸收的那些 tool_result 一起踢出集合（它们原样留在投影里，等真正配齐了
+    再被后一次 micro 吸收）。不这样做，投影里会剩一条断头的 tool_result（没有请求它的
+    assistant 消息作陪）或一条断头的 assistant_message（toolCalls 只有部分配上了结果），
+    模型看了会懵。踢完之后 summaryAt 退到剩余集合里最大下标 + 1——一条 exchange 只要有
+    一个 toolCall 没跟上，这整条 exchange 就不算"覆盖完整"，摘要边界不能停在它内部。
     正常情况下（coversUpTo 出自 nextMicroExchange 自己的 end）这条分支不会触发——
     nextMicroExchange 的 end 只会停在 turn_ended/assistant/tool_result 上，tool_result
     和请求它的 assistant_message 天然同框；这里防的是别的调用方喂一个不来自
@@ -79,7 +83,7 @@ export function absorbedIndexes(events: SessionEvent[]): AbsorbedRange | null {
   for (let i = start; i < events.length; i++) {
     const e = events[i]!;
     if (e.seq > latest.coversUpTo) break;
-    last = i; // 区内最远下标，不论类型——决定 summaryAt
+    last = i; // 区内最远下标，不论类型——决定默认 summaryAt
     if (e.type === "assistant_message" || e.type === "tool_result") {
       absorbed.add(i);
     }
@@ -87,24 +91,28 @@ export function absorbedIndexes(events: SessionEvent[]): AbsorbedRange | null {
   if (absorbed.size === 0) return null; // 指向一段没内容的区间：当它不存在
 
   let summaryAt = last + 1;
-  const lastIdx = Math.max(...absorbed);
-  const lastEvt = events[lastIdx]!;
-  if (lastEvt.type === "assistant_message" && lastEvt.toolCalls && lastEvt.toolCalls.length > 0) {
-    const ids = new Set(lastEvt.toolCalls.map((c) => c.id));
-    let orphan = false;
-    for (let i = lastIdx + 1; i < events.length; i++) {
-      const e = events[i]!;
-      if (e.type === "tool_result" && ids.has(e.toolCallId) && e.seq > latest.coversUpTo) {
-        orphan = true;
-        break;
-      }
+  let removedAny = false;
+  // 用快照迭代：下面会就地修改 absorbed，不能一边遍历一边被自己改动的集合牵着走
+  for (const i of [...absorbed]) {
+    const e = events[i]!;
+    if (e.type !== "assistant_message" || !e.toolCalls || e.toolCalls.length === 0) continue;
+    const ids = new Set(e.toolCalls.map((c) => c.id));
+    const matched: number[] = [];
+    for (let j = i + 1; j < events.length; j++) {
+      const t = events[j]!;
+      if (t.type === "assistant_message" || t.type === "user_message") break; // 下一轮的边界
+      if (t.type === "tool_result" && ids.has(t.toolCallId)) matched.push(j);
     }
-    if (orphan) {
-      absorbed.delete(lastIdx);
-      summaryAt = lastIdx;
-      if (absorbed.size === 0) return null;
+    const wholeGroupAbsorbed = matched.every((j) => absorbed.has(j));
+    if (!wholeGroupAbsorbed) {
+      absorbed.delete(i);
+      for (const j of matched) absorbed.delete(j);
+      removedAny = true;
     }
   }
+
+  if (absorbed.size === 0) return null; // 整组都被踢空：这次吸收指向一段不完整的区间
+  if (removedAny) summaryAt = Math.max(...absorbed) + 1;
 
   return { absorbed, summaryAt, summary: latest.summary };
 }

@@ -45,6 +45,21 @@ function billingAnchor(events: SessionEvent[]): { value: number; idx: number } {
   return { value: 0, idx: -1 };
 }
 
+/** 被吸收候选事件（tool_result / assistant_message）的字符估算——absorbedIndexes
+    的吸收集合本来就只含这两种类型（user_message 永不吸收）。add 侧（pendingAfter
+    正向累加锚点之后的事件）和 subtract 侧（微压缩把锚点账单里已经计过的吸收区扣出来）
+    共用这一把尺子：两头各写一套算法，数字迟早对不上 */
+function estimateAbsorbable(e: SessionEvent): number {
+  switch (e.type) {
+    case "tool_result":
+      return estimateTokens(e.output);
+    case "assistant_message":
+      return estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));
+    default:
+      return 0;
+  }
+}
+
 /** 锚点之后、会进入下一次 prompt 的事件按字符估算。
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
 function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
@@ -53,13 +68,28 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
   const barren = barrenEventIndexes(events);
   // 微压缩（ADR-0063）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
-  // 和 deriveMessages 同一个 absorbedIndexes。锚点之前的事件本来就不计（账单里已含），
-  // 只有锚点之后、被吸收的那些要从估算里扣掉；摘要只在锚点之后有 micro 事件时才加
+  // 和 deriveMessages 同一个 absorbedIndexes。
   const micro = absorbedIndexes(events);
   const latestMicro = latestMicroCompacted(events);
+  const microIdx = latestMicro ? events.indexOf(latestMicro) : -1;
+
+  // 真实会话里吸收区几乎总落在锚点**之前**：锚点是最近一次带账单的 assistant_message，
+  // 它的 promptTokens 那一次请求本来就已经包含了被吸收的原文（微压缩发生在那之后）。
+  // 如果不把这段原文的估算量从 pending 里扣掉，micro_compacted 一落盘，contextUsed
+  // 就会凭空"涨"一截（只加了摘要，没扣被它替代的原文）——直到下一次真实账单，
+  // 圆环才会自我修正回真值。这里提前做那次修正：微压缩不该让圆环反而变得不诚实。
+  // 只在 microIdx > anchorIdx 时才有必要扣——那次账单确实还包含着这段原文；
+  // 若 micro 落在锚点之前（微压缩早于最近一次账单），账单本身已经是压缩后的投影
+  // 算出来的用量，扣了反而是双减，见下面 pendingAfter 循环里锚点之后才继续累计。
+  if (micro && microIdx > anchorIdx) {
+    for (const i of micro.absorbed) {
+      if (i <= anchorIdx) pending -= estimateAbsorbable(events[i]!);
+    }
+  }
+
   for (let i = anchorIdx + 1; i < events.length; i++) {
     if (barren.has(i)) continue;
-    if (micro?.absorbed.has(i)) continue;
+    if (micro?.absorbed.has(i)) continue; // 锚点之后被吸收的：单纯跳过，不重复计
     const e = events[i]!;
     switch (e.type) {
       case "user_message":
@@ -68,7 +98,7 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
         for (const f of e.textFiles ?? []) pending += estimateTokens(f.content);
         break;
       case "tool_result":
-        pending += estimateTokens(e.output);
+        pending += estimateAbsorbable(e);
         break;
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
@@ -83,7 +113,7 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
         break;
       case "assistant_message":
         // 只有 API 没回账单的消息才落到估算侧（回了账单它就是锚点）
-        pending += estimateTokens(e.content) + estimateTokens(JSON.stringify(e.toolCalls ?? []));
+        pending += estimateAbsorbable(e);
         break;
       case "micro_compacted":
         // 只有最新一条进投影；旧的被新摘要包含
@@ -102,7 +132,9 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计。 */
 export function contextUsed(events: SessionEvent[]): number {
   const anchor = billingAnchor(events);
-  return anchor.value + pendingAfter(events, anchor.idx);
+  // 微压缩的锚点前扣减可能让总量瞬间探到 0 以下（估算误差,不是真实账单）——
+  // 圆环没有"负占用"这种读数,钳到 0
+  return Math.max(0, anchor.value + pendingAfter(events, anchor.idx));
 }
 
 // ─── 分类拆分（用量弹窗的数据源）────────────────────────────
@@ -169,8 +201,9 @@ export function contextBreakdown(
   const pending = pendingAfter(events, anchor.idx);
 
   if (anchor.idx === -1) {
-    return { system, tools: toolTokens, messages: pending, total: system + toolTokens + pending };
+    const total = Math.max(0, system + toolTokens + pending);
+    return { system, tools: toolTokens, messages: Math.max(0, pending), total };
   }
-  const total = anchor.value + pending;
+  const total = Math.max(0, anchor.value + pending);
   return { system, tools: toolTokens, messages: Math.max(0, total - system - toolTokens), total };
 }

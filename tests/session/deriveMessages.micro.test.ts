@@ -32,11 +32,16 @@ const texts = (events: SessionEvent[]) =>
   deriveMessages(events, DEFAULT_COMPRESSION).map((m) => `${m.role}:${typeof m.content === "string" ? m.content : "?"}`);
 
 describe("微压缩投影", () => {
-  it("没有 micro 事件：投影逐字节不变", () => {
+  it("没有 micro 事件：投影就是五轮对话原样展开，一条不多一条不少", () => {
     const events = fiveTurns();
-    const before = JSON.stringify(deriveMessages(events, DEFAULT_COMPRESSION));
-    expect(JSON.stringify(deriveMessages(events, DEFAULT_COMPRESSION))).toBe(before);
-    expect(texts(events)).toContain("assistant:a1");
+    expect(texts(events)).toEqual([
+      expect.stringMatching(/^system:/),
+      "user:u0", "assistant:a0",
+      "user:u1", "assistant:a1", "tool:t1",
+      "user:u2", "assistant:a2",
+      "user:u3", "assistant:a3",
+      "user:u4", "assistant:a4",
+    ]);
   });
 
   it("被吸收的 assistant/tool 换成一条摘要；user 原文保留；保护区与保真区原样", () => {

@@ -263,23 +263,76 @@ describe("contextBreakdown（按来源拆三份）", () => {
   });
 });
 
-describe("微压缩后的估算", () => {
-  it("被吸收的事件不再计入 pending，摘要计入", () => {
-    const events: SessionEvent[] = [
-      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
-      { seq: 1, sessionId: "s", ts: 0, type: "user_message", content: "u0" },
-      { seq: 2, sessionId: "s", ts: 0, type: "assistant_message", content: "a0", model: "m" },
-      { seq: 3, sessionId: "s", ts: 0, type: "user_message", content: "u1" },
-      { seq: 4, sessionId: "s", ts: 0, type: "tool_result", toolCallId: "c", status: "ok", output: "x".repeat(4000) },
-      { seq: 5, sessionId: "s", ts: 0, type: "user_message", content: "u2" },
-      { seq: 6, sessionId: "s", ts: 0, type: "user_message", content: "u3" },
+describe("微压缩后的估算（真实会话：吸收区落在账单锚点之前）", () => {
+  // 真实会话里，微压缩吸收的从来是"锚点之前"那一段——锚点是最近一次带账单的
+  // assistant_message，它的 promptTokens 那次请求本来就已经包含了这段原文。
+  // 不扣掉的话，micro_compacted 一落盘 contextUsed 反而会"涨"（只加了摘要，
+  // 没扣被替代的原文），直到下一次账单才自我修正——这里验证不必等那一轮。
+  function fixture(): SessionEvent[] {
+    return [
+      { ...env(), type: "user_message", content: "u0" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a0",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 100 },
+      },
+      { ...env(), type: "user_message", content: "u1" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a1",
+        model: "m",
+        toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }],
+      },
+      { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: "x".repeat(8000) },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a1b",
+        model: "m",
+        usage: { promptTokens: 3000, completionTokens: 50 },
+      },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u2" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "a2",
+        model: "m",
+        usage: { promptTokens: 3200, completionTokens: 60 },
+      },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+      { ...env(), type: "user_message", content: "u3" },
     ];
+  }
+
+  it("micro 落在锚点之后（吸收区在锚点之前的 u1 那笔交换）：从 pending 里扣掉原文，摘要只加一次，钳到 ≥ 0", () => {
+    const events = fixture();
+    const end1 = events[6]!; // u1 交换的 turn_ended
     const before = contextUsed(events);
     const after = contextUsed([
       ...events,
-      { seq: 7, sessionId: "s", ts: 0, type: "micro_compacted", summary: "短摘要", coversUpTo: 4, model: "cheap" },
+      { ...env(), type: "micro_compacted", summary: "短摘要", coversUpTo: end1.seq, model: "cheap" },
     ]);
-    expect(after).toBeLessThan(before - 900); // 4000 字符 ≈ 1000 token 被摘要替掉
-    expect(after).toBeGreaterThan(0);
+    // 8000 字符的 tool_result（≈2000 token）被摘要替掉，扣减应远超 1500
+    expect(after).toBeLessThan(before - 1500);
+    expect(after).toBeGreaterThanOrEqual(0);
+  });
+
+  it("micro 落在锚点之前（锚点是 micro 之后新产生的一笔账单）：吸收区不重复扣减，摘要也不重复计入——账单已经反映了压缩后的投影", () => {
+    const events = fixture();
+    const end1 = events[6]!; // u1 交换的 turn_ended
+    const before = contextUsed(events); // 不含 micro 的基线：锚点仍是 a2
+    const withEarlyMicro = [
+      ...events.slice(0, 7), // ... a1b, turn_ended（u1 交换结束）
+      { ...env(), type: "micro_compacted", summary: "短摘要", coversUpTo: end1.seq, model: "cheap" } as SessionEvent,
+      ...events.slice(7), // u2, a2(usage), turn_ended, u3 —— a2 仍是最新账单锚点，在 micro 之后
+    ];
+    const after = contextUsed(withEarlyMicro);
+    // 账单（a2 那次请求）本来就是压在 micro 投影之后打的，不需要也不应该再扣一次；
+    // 摘要本身的 token 也不该被加进 pending（micro 的下标 ≤ 锚点下标，不进循环）
+    expect(after).toBe(before);
   });
 });
