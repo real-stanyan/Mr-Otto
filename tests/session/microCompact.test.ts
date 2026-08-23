@@ -38,20 +38,21 @@ function fiveTurns(): SessionEvent[] {
 }
 
 describe("nextMicroExchange", () => {
-  it("跳过第一个 exchange（保护区），选第二个；尾部 keepRecentTurns 个 turn 不碰", () => {
+  it("跳过第一个 exchange（保护区），区间从第二个起吃掉整段 backlog（ADR-0068）；尾部 keepRecentTurns 个 turn 不碰", () => {
     const events = fiveTurns();
     const pick = nextMicroExchange(events, 2);
     expect(pick).not.toBeNull();
     expect(events[pick!.start]).toMatchObject({ type: "user_message", content: "u1" });
+    // 区间一直伸到 u2 的收口（u3/u4 是保真区）：一条 micro 覆盖 u1+u2 两段
     expect(events[pick!.end]).toMatchObject({ type: "turn_ended" });
-    expect(pick!.coversUpTo).toBe(events[pick!.end]!.seq);
+    expect(pick!.end).toBe(10);
+    expect(pick!.coversUpTo).toBe(events[10]!.seq);
     expect(pick!.runningSummary).toBe("");
   });
 
   it("已有 micro：从 coversUpTo 之后接着选，带上 running summary", () => {
     const events = fiveTurns();
-    const first = nextMicroExchange(events, 2)!;
-    events.push(micro("S1", first.coversUpTo));
+    events.push(micro("S1", events[7]!.seq)); // 只盖住 u1 那一段
     const pick = nextMicroExchange(events, 2)!;
     expect(events[pick.start]).toMatchObject({ content: "u2" });
     expect(pick.runningSummary).toBe("S1");
@@ -106,8 +107,9 @@ describe("latestMicroCompacted / absorbedIndexes", () => {
     events.push(micro("S1", first.coversUpTo));
     const got = absorbedIndexes(events)!;
     const types = [...got.absorbed].map((i) => events[i]!.type);
-    expect(types.sort()).toEqual(["assistant_message", "tool_result"]);
-    // 只吸收 u1 那一段：a0 在保护区不在集合里
+    // 攒批区间覆盖 u1+u2 两段：a1 t1 a2（ADR-0068）
+    expect(types.sort()).toEqual(["assistant_message", "assistant_message", "tool_result"]);
+    // a0 在保护区不在集合里
     expect(got.absorbed.has(2)).toBe(false);
     expect(got.summaryAt).toBe(first.end + 1);
   });
@@ -245,22 +247,14 @@ describe("fix round 1", () => {
     }
   });
 
-  it("keepRecentTurns=0：仍然不吃最后一个 exchange（next undefined 分支，不是保真区分支）", () => {
-    let cur = fiveTurns();
-    let pick = nextMicroExchange(cur, 0)!;
+  it("keepRecentTurns=0：一批吃掉 u1..u3，仍然不吃最后一个 exchange（next undefined 分支，不是保真区分支）", () => {
+    const cur = fiveTurns();
+    const pick = nextMicroExchange(cur, 0)!;
     expect(cur[pick.start]).toMatchObject({ content: "u1" });
-    cur = [...cur, micro("m1", pick.coversUpTo)];
-
-    pick = nextMicroExchange(cur, 0)!;
-    expect(cur[pick.start]).toMatchObject({ content: "u2" });
-    cur = [...cur, micro("m2", pick.coversUpTo)];
-
-    pick = nextMicroExchange(cur, 0)!;
-    expect(cur[pick.start]).toMatchObject({ content: "u3" });
-    cur = [...cur, micro("m3", pick.coversUpTo)];
-
-    // 只剩最后一个 exchange u4：没有 next，永远不选它——即使 K=0 没有保真区
-    expect(nextMicroExchange(cur, 0)).toBeNull();
+    // 区间伸到 u3 的收口（下标 13）；u4 没有 next，永远不选它——即使 K=0 没有保真区
+    expect(pick.end).toBe(13);
+    expect(pick.coversUpTo).toBe(cur[13]!.seq);
+    expect(nextMicroExchange([...cur, micro("m1", pick.coversUpTo)], 0)).toBeNull();
   });
 
   it("三个函数都不修改传入的 events（纯函数，不能有副作用）", () => {
@@ -270,6 +264,44 @@ describe("fix round 1", () => {
     latestMicroCompacted(events);
     absorbedIndexes(events);
     expect(JSON.stringify(events)).toBe(before);
+  });
+});
+
+describe("攒批门槛（ADR-0068）", () => {
+  /** 7 个 turn：u0 保护，u5/u6 保真（K=2），可吸收 backlog = u1..u4 共 4 段 */
+  function sevenTurns(): SessionEvent[] {
+    seq = 0;
+    return [
+      { ...base(), type: "session_created", workspace: "/w" },
+      user("u0"), assistant("a0"), ended(),
+      user("u1"), assistant("a1"), ended(),
+      user("u2"), assistant("a2"), ended(),
+      user("u3"), assistant("a3"), ended(),
+      user("u4"), assistant("a4"), ended(),
+      user("u5"), assistant("a5"), ended(),
+      user("u6"), assistant("a6"), ended(),
+    ];
+  }
+
+  it("不足 batchMin 个可吸收 exchange → null：这一 turn 投影零变化，前缀缓存完整", () => {
+    // fiveTurns 的 backlog 只有 u1、u2 两段
+    expect(nextMicroExchange(fiveTurns(), 2, 4)).toBeNull();
+  });
+
+  it("攒够了：一次覆盖整段 backlog，coversUpTo = 区间末尾", () => {
+    const events = sevenTurns();
+    const pick = nextMicroExchange(events, 2, 4)!;
+    expect(events[pick.start]).toMatchObject({ content: "u1" });
+    expect(pick.end).toBe(15); // u4 的收口
+    expect(pick.coversUpTo).toBe(events[15]!.seq);
+  });
+
+  it("没有 assistant/tool 内容的 exchange 不计入批量数", () => {
+    const events = sevenTurns();
+    // 把 u2 的 assistant 挖掉：backlog 里带内容的只剩 u1/u3/u4 = 3 段，不够 4
+    const a2Idx = events.findIndex((e) => e.type === "assistant_message" && e.content === "a2");
+    events.splice(a2Idx, 1);
+    expect(nextMicroExchange(events, 2, 4)).toBeNull();
   });
 });
 

@@ -21,7 +21,7 @@
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 import type { ModelAdapter } from "../model/adapter.js";
 import { DEFAULT_COMPRESSION, type ChatMessage } from "../session/deriveMessages.js";
-import { nextMicroExchange } from "../session/microCompact.js";
+import { MICRO_BATCH_MIN_EXCHANGES, nextMicroExchange } from "../session/microCompact.js";
 import { estimateTokens } from "../shared/contextEstimate.js";
 
 /** 摘要超过这个估算 token 数就先让模型整理一次再落（spec §四 第 4 条） */
@@ -164,10 +164,16 @@ async function ask(adapter: ModelAdapter, prompt: string, signal?: AbortSignal) 
 export async function microCompactOnce(
   events: SessionEvent[],
   adapter: ModelAdapter,
-  opts: { signal?: AbortSignal; keepRecentTurns?: number } = {}
+  opts: { signal?: AbortSignal; keepRecentTurns?: number; batchMin?: number } = {}
 ): Promise<MicroCompactResult | null> {
   try {
-    const pick = nextMicroExchange(events, opts.keepRecentTurns ?? DEFAULT_COMPRESSION.keepRecentTurns);
+    // 攒批（ADR-0068）：不足 batchMin 个可吸收 exchange 就什么也不做——
+    // 每 turn 落一条 micro = 投影中段每 turn 重写 = prefix cache 每 turn 全废
+    const pick = nextMicroExchange(
+      events,
+      opts.keepRecentTurns ?? DEFAULT_COMPRESSION.keepRecentTurns,
+      opts.batchMin ?? MICRO_BATCH_MIN_EXCHANGES
+    );
     if (!pick) return null;
     const reply = await ask(adapter, buildPrompt(pick.runningSummary, renderExchange(events, pick.start, pick.end)), opts.signal);
     let summary = reply.content.trim();

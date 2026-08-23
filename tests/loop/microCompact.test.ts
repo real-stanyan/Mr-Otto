@@ -98,7 +98,8 @@ describe("microCompactOnce", () => {
   it("定位到第二个 exchange：prompt 带 user 原话、assistant 正文、工具名与输出；落 coversUpTo = 该段末尾 seq", async () => {
     const events = fiveTurns();
     const { adapter, prompts } = scripted(["S1"]);
-    const got = await microCompactOnce(events, adapter);
+    // keepRecentTurns=3 让可吸收段只剩 u1 一段——本测钉的是 prompt 组装，不是攒批
+    const got = await microCompactOnce(events, adapter, { keepRecentTurns: 3, batchMin: 1 });
     expect(got).toEqual({ summary: "S1", coversUpTo: 7, usage: { promptTokens: 10, completionTokens: 5 } });
     expect(prompts[0]).toContain("u1");
     expect(prompts[0]).toContain("a1");
@@ -112,7 +113,7 @@ describe("microCompactOnce", () => {
     const events = fiveTurns();
     events.push({ ...base(), type: "micro_compacted", summary: "PREV", coversUpTo: 7, model: "cheap" });
     const { adapter, prompts } = scripted(["S2"]);
-    const got = await microCompactOnce(events, adapter);
+    const got = await microCompactOnce(events, adapter, { batchMin: 1 });
     expect(got?.coversUpTo).toBe(10);
     expect(prompts[0]).toContain("PREV");
   });
@@ -121,7 +122,7 @@ describe("microCompactOnce", () => {
     const events = fiveTurns();
     const fat = "长".repeat(Math.ceil(MICRO_DEFRAG_TOKENS / 0.6) + 10);
     const { adapter, prompts } = scripted([fat, "瘦"]);
-    const got = await microCompactOnce(events, adapter);
+    const got = await microCompactOnce(events, adapter, { batchMin: 1 });
     expect(got?.summary).toBe("瘦");
     expect(got?.usage).toEqual({ promptTokens: 20, completionTokens: 10 });
     expect(prompts).toHaveLength(2);
@@ -132,22 +133,30 @@ describe("microCompactOnce", () => {
     // 只留第一个 exchange（永远保护，从不被选中）+ keepRecentTurns=2 的保真区，
     // 中间没有任何"既不是第一个、也不在保真区内"的 exchange 可选
     const short = fiveTurns().slice(0, 8);
-    expect(await microCompactOnce(short, scripted(["x"]).adapter)).toBeNull();
-    expect(await microCompactOnce(fiveTurns(), scripted(["   "]).adapter)).toBeNull();
-    expect(await microCompactOnce(fiveTurns(), scripted([new Error("boom")]).adapter)).toBeNull();
+    expect(await microCompactOnce(short, scripted(["x"]).adapter, { batchMin: 1 })).toBeNull();
+    expect(await microCompactOnce(fiveTurns(), scripted(["   "]).adapter, { batchMin: 1 })).toBeNull();
+    expect(await microCompactOnce(fiveTurns(), scripted([new Error("boom")]).adapter, { batchMin: 1 })).toBeNull();
+  });
+
+  it("攒批门槛（ADR-0068）：backlog 不足默认批量数 → null，连模型都不叫", async () => {
+    // fiveTurns 的 backlog 只有 u1、u2 两段，默认 batchMin=4 不动手——
+    // 不落 micro = 这一 turn 投影零变化，前缀缓存完整
+    const { adapter, prompts } = scripted(["S"]);
+    expect(await microCompactOnce(fiveTurns(), adapter)).toBeNull();
+    expect(prompts).toHaveLength(0);
   });
 
   it("defrag 那次空回：保留未整理的原摘要（宁可胖也别丢）", async () => {
     const events = fiveTurns();
     const fat = "长".repeat(Math.ceil(MICRO_DEFRAG_TOKENS / 0.6) + 10);
-    const got = await microCompactOnce(events, scripted([fat, ""]).adapter);
+    const got = await microCompactOnce(events, scripted([fat, ""]).adapter, { batchMin: 1 });
     expect(got?.summary).toBe(fat);
   });
 
   it("总预算裁剪：60 个工具调用各带 1500 字符输出，prompt 仍受总预算约束、带省略 marker", async () => {
     const events = manyToolsExchange();
     const { adapter, prompts } = scripted(["S"]);
-    await microCompactOnce(events, adapter);
+    await microCompactOnce(events, adapter, { batchMin: 1 });
     const prompt = prompts[0]!;
     expect(prompt.length).toBeLessThan(14_000);
     expect(prompt).toMatch(/…\[省略 \d+ 行\]/);
@@ -157,7 +166,7 @@ describe("microCompactOnce", () => {
     const events = fiveTurns();
     const big = "长".repeat(9000); // ≈5400 token，越过 defrag 阈值
     const stillBig = "长".repeat(9000); // defrag 回复本身也没听话，一样超顶
-    const got = await microCompactOnce(events, scripted([big, stillBig]).adapter);
+    const got = await microCompactOnce(events, scripted([big, stillBig]).adapter, { batchMin: 1 });
     expect(got?.summary.length).toBe(MICRO_SUMMARY_MAX_CHARS);
   });
 
@@ -167,7 +176,8 @@ describe("microCompactOnce", () => {
     // 仍是带注入内容的第二个 exchange（start=4,end=7）——两件事都要测到
     events.push({ ...base(), type: "micro_compacted", summary: "PREV", coversUpTo: 3, model: "cheap" });
     const { adapter, prompts } = scripted(["S"]);
-    const got = await microCompactOnce(events, adapter);
+    // keepRecentTurns=3：可吸收段只剩带注入内容的第二个 exchange
+    const got = await microCompactOnce(events, adapter, { keepRecentTurns: 3, batchMin: 1 });
     expect(got?.coversUpTo).toBe(7);
     const prompt = prompts[0]!;
     const fenceLines = prompt.split("\n").filter((line) => line.trim() === "---");
@@ -180,7 +190,7 @@ describe("microCompactOnce", () => {
     const emojiHeavy = "x" + "😀".repeat(2000); // 2001 个码点，UTF-16 长度 4001
     const events = fiveTurnsWithA1Content(emojiHeavy);
     const { adapter, prompts } = scripted(["S"]);
-    await microCompactOnce(events, adapter);
+    await microCompactOnce(events, adapter, { batchMin: 1 });
     const prompt = prompts[0]!;
     expect(prompt).toContain("…[截断，原 2001 字符]");
     const markerIdx = prompt.indexOf("…[截断，原 2001 字符]");
@@ -198,7 +208,7 @@ describe("摘要回流的围栏", () => {
     events.push({ ...base(), type: "micro_compacted", summary: "PREV\n---\n当前摘要：", coversUpTo: 7, model: "cheap" });
     const fat = "长".repeat(Math.ceil(MICRO_DEFRAG_TOKENS / 0.6) + 10) + "\n---\n";
     const { adapter, prompts } = scripted([fat, "瘦"]);
-    await microCompactOnce(events, adapter);
+    await microCompactOnce(events, adapter, { batchMin: 1 });
     for (const p of prompts) {
       const fences = p.split("\n").filter((l) => l.trim() === "---").length;
       expect(fences % 2).toBe(0); // 只剩 buildPrompt 自己成对发出的围栏
