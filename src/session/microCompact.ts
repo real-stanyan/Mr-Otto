@@ -63,23 +63,14 @@ export function absorbedIndexes(
   return { absorbed, summaryAt: last + 1 };
 }
 
-/** 倒数第 keepRecentTurns 个「已收口」user_message 的下标（同 deriveMessages.fidelityBoundary
-    的定义：之前 = 可压，之后 = 保真）。按 turn_ended 计数，不是按 user_message 计数——
-    还没收到 turn_ended 的最后一轮（正在进行中，仅有孤零零一条 user_message）不算一个已完成的
-    turn，不占 keepRecentTurns 的名额，否则会把它数进"最近 K 轮"从而多让出一个可压的位置。
-    不足 K 个已收口 turn = 0（全保真）。K ≤ 0 = events.length */
+/** 倒数第 keepRecentTurns 个 user_message 的下标——和 deriveMessages.fidelityBoundary
+    同一个定义（之前 = 可压，之后 = 保真）：投影认什么是"最近 K 轮"，这里就认什么，
+    两边不能各有一把尺子。不足 K 个 = floor + 1（全保真）。K ≤ 0 = events.length */
 function fidelityBoundary(events: SessionEvent[], keepRecentTurns: number, floor: number): number {
   if (keepRecentTurns <= 0) return events.length;
   let seen = 0;
-  let sawEnd = false; // 倒着走：从上一个 user_message 到现在有没有见过 turn_ended
   for (let i = events.length - 1; i > floor; i--) {
-    const t = events[i]?.type;
-    if (t === "turn_ended") {
-      sawEnd = true;
-    } else if (t === "user_message") {
-      if (sawEnd && ++seen === keepRecentTurns) return i;
-      sawEnd = false;
-    }
+    if (events[i]?.type === "user_message" && ++seen === keepRecentTurns) return i;
   }
   return floor + 1;
 }

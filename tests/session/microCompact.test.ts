@@ -63,7 +63,7 @@ describe("nextMicroExchange", () => {
     events.push(micro("S", events[u2End]!.seq));
     expect(nextMicroExchange(events, 2)).toBeNull();
     // 短会话：只有 3 个 turn（第 1 个保护，后 2 个保真）
-    const short = fiveTurns().slice(0, 12);
+    const short = fiveTurns().slice(0, 11);
     expect(nextMicroExchange(short, 2)).toBeNull();
   });
 
