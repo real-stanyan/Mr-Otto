@@ -38,7 +38,7 @@ function fiveTurns(): SessionEvent[] {
 }
 
 describe("nextMicroExchange", () => {
-  it("跳过第一个 exchange（保护区），区间从第二个起吃掉整段 backlog（ADR-0068）；尾部 keepRecentTurns 个 turn 不碰", () => {
+  it("跳过第一个 exchange（保护区），区间从第二个起吃掉整段 backlog（ADR-0073）；尾部 keepRecentTurns 个 turn 不碰", () => {
     const events = fiveTurns();
     const pick = nextMicroExchange(events, 2);
     expect(pick).not.toBeNull();
@@ -107,7 +107,7 @@ describe("latestMicroCompacted / absorbedIndexes", () => {
     events.push(micro("S1", first.coversUpTo));
     const got = absorbedIndexes(events)!;
     const types = [...got.absorbed].map((i) => events[i]!.type);
-    // 攒批区间覆盖 u1+u2 两段：a1 t1 a2（ADR-0068）
+    // 攒批区间覆盖 u1+u2 两段：a1 t1 a2（ADR-0073）
     expect(types.sort()).toEqual(["assistant_message", "assistant_message", "tool_result"]);
     // a0 在保护区不在集合里
     expect(got.absorbed.has(2)).toBe(false);
@@ -267,7 +267,7 @@ describe("fix round 1", () => {
   });
 });
 
-describe("攒批门槛（ADR-0068）", () => {
+describe("攒批门槛（ADR-0073）", () => {
   /** 7 个 turn：u0 保护，u5/u6 保真（K=2），可吸收 backlog = u1..u4 共 4 段 */
   function sevenTurns(): SessionEvent[] {
     seq = 0;

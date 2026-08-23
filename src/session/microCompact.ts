@@ -157,7 +157,7 @@ function fidelityBoundary(
 }
 
 export interface MicroExchange {
-  /** 区间首个 exchange 的 user_message 下标（ADR-0068 攒批后区间可跨多个 exchange） */
+  /** 区间首个 exchange 的 user_message 下标（ADR-0073 攒批后区间可跨多个 exchange） */
   start: number;
   /** 区间末个可吸收 exchange 的最后一个下标（含）：其 next 之前最后一个 assistant_message /
       tool_result / turn_ended，跳过夹在中间、其实是下一轮前导的 skill_invoked / image_described */
@@ -168,13 +168,13 @@ export interface MicroExchange {
   runningSummary: string;
 }
 
-/** 生产默认的攒批门槛（ADR-0068）：可吸收 exchange 攒够这么多才动一次手。
+/** 生产默认的攒批门槛（ADR-0073）：可吸收 exchange 攒够这么多才动一次手。
     每 turn 吸一个 = running summary 每 turn 重写 + 吸收区每 turn 长大 = 投影中段
     每 turn 变化 = prefix cache 每 turn 全废。攒批把重写频率降到 ~1/4，
     其余 turn 投影前缀逐字节稳定。由 loop 层注入（同 keepRecentTurns 的分层） */
 export const MICRO_BATCH_MIN_EXCHANGES = 4;
 
-/** 未吸收的整段 backlog。规则（spec §四 + ADR-0068）：
+/** 未吸收的整段 backlog。规则（spec §四 + ADR-0073）：
     ① 只看最新 context_compacted 之后；② 其后第一个（非空跑）exchange 是保护区不碰；
     ③ 尾部 keepRecentTurns 个 turn 保真不碰；④ 上一条 micro 的 coversUpTo 之后接着数；
     ⑤ 没有 assistant/tool 可吸收的 exchange 不计入批量（它的 user_message 反正原样保留，
@@ -182,7 +182,7 @@ export const MICRO_BATCH_MIN_EXCHANGES = 4;
     ⑥ end 不越过下一条 user_message 的前导事件——skill_invoked/image_described 是紧贴在
     *下一条* user_message 之前为它生成的（见 barrenTurns.ts、events.ts 对应注释），不属于
     这一轮，不能被这一轮的 coversUpTo 吞进去；
-    ⑦ 攒批（ADR-0068）：一次返回从最老未吸收 exchange 到边界前最后一个可吸收 exchange
+    ⑦ 攒批（ADR-0073）：一次返回从最老未吸收 exchange 到边界前最后一个可吸收 exchange
     的整个区间（一条 micro_compacted 覆盖全部），且可吸收 exchange 不足 batchMin 个
     就返回 null——不动手 = 这一 turn 投影零变化，前缀缓存完整。
     batchMin 缺省 1 = 无门槛（只保留区间语义），生产值见 MICRO_BATCH_MIN_EXCHANGES */
