@@ -50,7 +50,21 @@ export interface LaunchOptions {
   claudeAgents?: SubagentSeed[];
   /** 追加/覆盖环境变量（假模型端点、key 之类） */
   env?: Record<string, string>;
+  /** 起打好包的那个 .app 而不是 out/ 里的产物（见 PACKAGED_APP） */
+  packaged?: boolean;
 }
+
+/** electron-builder 产出的 .app 里的可执行文件。`npm run dist:mac` 跑过才有；
+    没有就让用例自己 skip —— 打一次包要几分钟，不该变成跑 e2e 的前置条件 */
+export const PACKAGED_APP = join(
+  ROOT,
+  "dist",
+  "mac-arm64",
+  "Mr Otto.app",
+  "Contents",
+  "MacOS",
+  "Mr Otto"
+);
 
 export interface Otto {
   app: ElectronApplication;
@@ -84,7 +98,9 @@ function seedInto(dir: string, seeds: SubagentSeed[] | undefined): void {
 }
 
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
-  expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
+  if (!opts.packaged) {
+    expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
+  }
 
   const home = mkdtempSync(join(tmpdir(), "otto-e2e-home-"));
   const profile = `e2e${randomBytes(4).toString("hex")}`;
@@ -93,7 +109,8 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
 
   const app = await electron.launch({
-    args: [ROOT],
+    // 打好包的那一只从自己的 asar 里读入口，不能再把仓库根塞给它
+    ...(opts.packaged ? { executablePath: PACKAGED_APP, args: [] } : { args: [ROOT] }),
     cwd: ROOT,
     env: { ...process.env, ...opts.env, HOME: home, OTTO_PROFILE: profile },
   });

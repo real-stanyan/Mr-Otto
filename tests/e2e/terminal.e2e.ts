@@ -5,12 +5,18 @@
 // 全是运行时事实。
 
 import { expect, test } from "@playwright/test";
-import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expectNoRendererErrors, launchOtto, startSession, type Otto } from "./harness.js";
+import {
+  PACKAGED_APP,
+  expectNoRendererErrors,
+  launchOtto,
+  startSession,
+  type Otto,
+} from "./harness.js";
 
 /** xterm 的可见文本。DOM 渲染器把每一行画成一个 div，读整块就够判断了 */
 async function screenText(otto: Otto): Promise<string> {
@@ -186,4 +192,45 @@ test("#123/#117-5 拖分隔线改宽度 → fit 生效：PTY 那侧的列数真�
   } finally {
     await otto.close();
   }
+});
+
+// 「从装好的 .app 里开终端跑 pwd」—— #123 表里点名「最该盯」的那一条。
+//
+// **点这一下仍然只能由人来做**，理由是工具的硬限制不是懒：Playwright 的
+// electron.launch 靠 NODE_OPTIONS 往主进程里塞一段桥接代码，而打过包的
+// Electron 明确忽略绝大多数 NODE_OPTIONS（实测日志：`Most NODE_OPTIONs are not
+// supported in packaged apps`），于是 launch 永远不返回。out/ 那条路能驱动，
+// .app 这条不能。
+//
+// 但这一条真正怕的那件事是**静态的**：dev 模式下 node-pty 从 node_modules 直接
+// 加载；打包之后 PTY 要靠 asar unpacked 里的 `spawn-helper` 这个独立可执行文件，
+// 而本仓没有开发者证书、走 ad-hoc 签名（docs/distribution-macos.md），最容易
+// 在这一步把它的执行权/签名弄坏 —— 坏了的表现就是「装好的 app 里终端开不出来」。
+// 所以这里把那几件事钉住：文件在、可执行、签名过得了 codesign。剩下人只需要
+// 双击一次确认提示符出来。
+//
+// 需要先 `npm run dist:mac`（几分钟）。没打过包就跳过。
+test("#123 装好的 .app 里：PTY 的 spawn-helper 在、可执行、ad-hoc 签名有效", async () => {
+  test.skip(!existsSync(PACKAGED_APP), "没有 dist/mac-arm64/Mr Otto.app —— 先 npm run dist:mac");
+  const unpacked = join(
+    PACKAGED_APP,
+    "..",
+    "..",
+    "Resources",
+    "app.asar.unpacked",
+    "node_modules",
+    "node-pty",
+    "build",
+    "Release"
+  );
+
+  const helper = join(unpacked, "spawn-helper");
+  expect(existsSync(helper), `${helper} 不在 —— 打包漏了 asar unpacked`).toBe(true);
+  // 0o111 里任何一位都行：丢了执行位，PTY 起不来，终端面板就是一块死屏
+  expect(statSync(helper).mode & 0o111, "spawn-helper 没有执行位").not.toBe(0);
+  expect(existsSync(join(unpacked, "pty.node")), "pty.node 没被 unpack 出来").toBe(true);
+
+  // ad-hoc 签名必须是有效的：签坏了 macOS 会直接拒绝 exec 这个 helper
+  execFileSync("codesign", ["-v", "--verbose=2", helper], { stdio: "pipe" });
+  execFileSync("codesign", ["-v", "--deep", join(PACKAGED_APP, "..", "..", "..")], { stdio: "pipe" });
 });
