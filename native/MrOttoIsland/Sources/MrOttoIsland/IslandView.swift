@@ -51,6 +51,13 @@ struct IslandExpandedView: View {
       }
     }
     .onReceive(timer) { now = $0 }
+    // 展开态根节点限宽:AgentRow 里的 Spacer(minLength: 0) 会贪婪吃满可用宽度,
+    // 而 DynamicNotchKit 的展开面板窗口本身是 maxWidth: .infinity(库内 NotchContentView
+    // 决定的全屏宽)。两者叠加,没有这行的话面板会被内容的 intrinsic width 撑成
+    // 横贯全屏的黑条。380pt 落在 360–420pt 区间:够放下状态点 + 会话标题 + 简短
+    // 工具 caption 单行不换行,也给审批三按钮(允许/会话/拒绝)和输入框留够地方,
+    // 同时贴近刘海尺度,不再是一条横条。
+    .frame(width: 380)
   }
 
   /// 选中会话的详情区:输入态优先(composing 是全局开关,不分会话),否则按
