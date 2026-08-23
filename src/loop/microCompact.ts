@@ -1,4 +1,4 @@
-// microCompact — 跑一次微压缩（ADR-0063）：最老的未吸收 exchange + running summary
+// microCompact — 跑一次微压缩（ADR-0064）：最老的未吸收 exchange + running summary
 // → 便宜模型 → 新 summary。adapter 注入：谁来摘要是装配的事（main 里用 cheapAdapter），
 // 这里只管"喂什么、收什么"。永不抛：微压缩是锦上添花，失败 = 不落事件，下一 turn 自愈。
 // 住在 src/loop 而不是 engine 里：它不在 turn 的闭环上（turn 锁外跑），和 engine 只共享投影规则。
@@ -6,7 +6,7 @@
 // 型号 id 不在这里定：src/loop 不允许 import src/main（tests/architecture.test.ts），
 // 调用方（main/index.ts 装配处）自己接 MICRO_MODEL = SECTION_MODEL。
 //
-// 注入面（residual risk 记在 ADR-0063）：这条摘要落盘后，会作为一条 assistant 消息
+// 注入面（residual risk 记在 ADR-0064）：这条摘要落盘后，会作为一条 assistant 消息
 // 进模型自己的投影（deriveMessages 的 [对话摘要] 前缀行）——不是旁路的元数据，是模型
 // 之后每一轮都会读到的"自己说过的话"。而摘要的原料（renderExchange 喂的 exchange 文本）
 // 里混着 tool_result 的原文输出：一条精心构造的工具输出完全可以自己带上 "---" 把
@@ -16,7 +16,7 @@
 // 围栏字面量）；summary 落盘前统一裁到 MICRO_SUMMARY_MAX_CHARS——即便围栏没守住、模型被
 // 骗着吐出超长内容，也有一个跟"胖摘要"共用的硬顶。没堵死的部分：摘要模型仍可能被输出内容
 // "说服"去改写摘要措辞本身（不是围栏注入，是提示注入）——这一层只能靠摘要不是模型看到的
-// 唯一信源（user_message 原文永远保留）来兜底，见 ADR-0063。
+// 唯一信源（user_message 原文永远保留）来兜底，见 ADR-0064。
 
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 import type { ModelAdapter } from "../model/adapter.js";

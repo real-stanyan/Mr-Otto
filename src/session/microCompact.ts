@@ -1,4 +1,4 @@
-// microCompact — 微压缩的纯函数层（ADR-0063）。
+// microCompact — 微压缩的纯函数层（ADR-0064）。
 // 两个消费者共用同一把尺子：deriveMessages（投影替换）和 contextEstimate（用量估算）
 // 都从 absorbedIndexes 拿"哪些事件已被摘要替代"；engine 外挂从 nextMicroExchange
 // 拿"下一个该吸收谁"。全是纯函数：同 events 同输出，重放可还原模型视野。

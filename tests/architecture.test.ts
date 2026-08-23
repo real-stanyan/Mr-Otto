@@ -1,12 +1,12 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 四条边界,前三条是 AGENTS.md 原文,第四条是 ADR-0063 落下来的分层约束:
+// 四条边界,前三条是 AGENTS.md 原文,第四条是 ADR-0064 落下来的分层约束:
 //   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API
 //   3. @modelcontextprotocol/sdk 只允许 src/main/mcpClient.ts import(ADR-0050)
 //   4. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
-//      通道、设置文件路径)是 main 的事(ADR-0063 的微压缩就踩在这条线上)
+//      通道、设置文件路径)是 main 的事(ADR-0064 的微压缩就踩在这条线上)
 //
 // 纯 grep 级:读源码文本找 import 语句,不做 AST。简单到一眼能看懂,也够用——
 // 这里挡的是"顺手"犯的错,不是刻意绕过。
@@ -76,7 +76,7 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
       bad,
       `src/loop 这些文件反向依赖了主进程:\n  ${bad.join("\n  ")}\n` +
         "修法:把那个常量/能力做成参数,由 src/main/index.ts 装配时注入" +
-        "(如微压缩的 MICRO_MODEL 与 cheapAdapter,见 ADR-0063);" +
+        "(如微压缩的 MICRO_MODEL 与 cheapAdapter,见 ADR-0064);" +
         "loop 只该依赖 session / model / shared / world"
     ).toEqual([]);
   });

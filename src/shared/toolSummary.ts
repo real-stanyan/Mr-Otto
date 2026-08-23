@@ -1,9 +1,9 @@
 // 工具调用的一行摘要 —— 从 args 里挑出人看得懂的那一点。
 // 从 App.tsx 抽出来:工具行和工具折叠组都要用,谁也不该 import 谁
 
-import type { ToolCallRequest } from "../../../session/events.js";
-import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../../../tools/askUser.js";
-import { parseTodoArgs, TODO_TOOL_NAME } from "../../../session/deriveTodos.js";
+import type { ToolCallRequest } from "../session/events.js";
+import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../tools/askUser.js";
+import { parseTodoArgs, TODO_TOOL_NAME } from "../session/deriveTodos.js";
 
 /** orb 的几档状态。原本是 App.tsx 里的局部 type(645 行),
     toolPhase 搬过来就跟着搬——agentPhase 还留在 App.tsx,从这里 import 回去 */

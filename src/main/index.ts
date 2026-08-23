@@ -5,6 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electr
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import {
   CHANNELS,
@@ -90,7 +91,9 @@ import {
 } from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
-import { createIslandWindow, resizeIsland } from "./islandWindow.js";
+import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
+import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
+import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 import { UserProfileManager } from "./userProfile.js";
@@ -168,9 +171,8 @@ function createWindow(): BrowserWindow {
     },
   });
   // mac 惯例:Cmd+W / 点红灯是"收起窗口",app 不退。这里必须拦,否则主窗一关
-  // 就 destroy 了 —— 而灵动岛还挂在屏幕顶上(它是独立窗,不跟着关),岛上所有
-  // 推送的目标(createSend 的第一个目标)、以及"回主窗看看"这条路全部作废,
-  // 用户面对一个还在动、但点哪儿都回不去的胶囊(#175 I5)。
+  // 就 destroy 了——推送目标(createSend 的唯一目标)没了,还在跑的 turn
+  // 推给谁都是丢(issue #53),而且用户没有"回主窗看看"的路了(#175 I5)。
   // 真退出时 before-quit 先把 quitting 置上,这里就放行
   if (process.platform === "darwin") {
     win.on("close", (e) => {
@@ -223,23 +225,9 @@ void app.whenReady().then(() => {
   const win = createWindow();
   mainWindow = win;
 
-  // 灵动岛只在 mac 上有(ADR-0059)。建失败不能拖死启动链 —— 同 dock 图标的处理
-  let island: BrowserWindow | null = null;
-  if (process.platform === "darwin") {
-    try {
-      island = createIslandWindow({
-        preload: join(import.meta.dirname, "../preload/index.mjs"),
-        ...(process.env["ELECTRON_RENDERER_URL"]
-          ? { rendererUrl: process.env["ELECTRON_RENDERER_URL"] }
-          : { rendererFile: join(import.meta.dirname, "../renderer/island.html") }),
-      });
-    } catch (e) {
-      console.warn("灵动岛没起来:", e instanceof Error ? e.message : e);
-    }
-  }
   // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
   // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
-  const send = island ? createSend(win, island) : createSend(win);
+  const send = createSend(win);
 
   // 全屏状态推给渲染层:macOS 全屏隐红绿灯,左上角 logo 该让位/回来。
   // 变化走推送给已订阅的 renderer,首帧快照走 getWindowFullscreen(见下方 handle)
@@ -368,6 +356,59 @@ void app.whenReady().then(() => {
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
   let currentSessionId: string | null = null;
+  // 岛只跟主窗当前会话。主进程存这一个 id:helper ready 时补一次快照,变化时喂投影器
+  let activeSessionId: string | null = null;
+
+  // 灵动岛(ADR-0059 推翻版):不再是第二个 BrowserWindow,换成 stdio 桥接一个
+  // 原生 Swift helper 进程。helper 二进制不存在(未打包 / 非 mac)时 bridge 为
+  // null,岛静默不启动——不拖死启动链,也不留一块空白窗口。
+  const islandStates = new Map<string, IslandState>();
+  const bridge =
+    process.platform === "darwin"
+      ? (() => {
+          const bin = resolveIslandBinPath();
+          if (!bin) return null;
+          return createIslandBridge({
+            binPath: bin,
+            spawn: (p) => {
+              const cp = spawn(p, [], { stdio: ["pipe", "pipe", "inherit"] });
+              return { stdin: cp.stdin!, stdout: cp.stdout!, on: cp.on.bind(cp), kill: () => cp.kill() };
+            },
+            onCommand: (c) => handleIslandCommand(c),
+            log: (m) => console.warn(m),
+          });
+        })()
+      : null;
+
+  // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
+  // 沿用 ADR-0059 的"丢弃成本可忽略"
+  const pushFleet = (): void => {
+    if (!bridge) return;
+    bridge.pushState(flattenFleet(islandStates, store.sessions(), activeSessionId));
+  };
+
+  /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
+      reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
+  const feedIsland = (input: IslandInput): void => {
+    if (!bridge) return;
+    const sid = islandInputSessionId(input);
+    if (sid) {
+      const cur = islandStates.get(sid) ?? { ...initialIsland, sessionId: sid };
+      const next = reduceIsland(cur, input);
+      if (next !== cur) islandStates.set(sid, next);
+    }
+    pushFleet();
+  };
+
+  /** 从 IslandInput 取它作用的 sessionId(activeSession 用 boot.activeSessionId) */
+  function islandInputSessionId(input: IslandInput): string | null {
+    switch (input.kind) {
+      case "event": return input.event.sessionId;
+      case "turnStatus": return input.update.sessionId;
+      case "approvalRequest": return input.req.sessionId;
+      case "activeSession": return input.boot.activeSessionId;
+    }
+  }
 
   // 分区分类的按会话串行队列。分类跑在 turn 锁之外（见 sendMessage 末尾），
   // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
@@ -465,7 +506,7 @@ void app.whenReady().then(() => {
     });
   };
 
-  // 微压缩（ADR-0063）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
+  // 微压缩（ADR-0064）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
   // 会话被 purge 就不落。**必须串行**（同 sectionQueues 的理由）：两次并发的
   // microCompactOnce 各自看不到对方的 micro_compacted，会对同一个 exchange 摘两次、
   // 后落的那条 running summary 丢掉先落那条的内容。
@@ -613,9 +654,15 @@ void app.whenReady().then(() => {
 
   // 所有 agent 共用同一份推送接线；靠消息里的 sessionId 区分来源
   const push: AgentPush = {
-    event: (e) => send(CHANNELS.event, e),
-    approvalRequest: (sessionId, call, tool, preview, fromAgent) =>
-      send(CHANNELS.approvalRequest, approvalPayload(sessionId, call, tool, preview, fromAgent)),
+    event: (e) => {
+      send(CHANNELS.event, e);
+      feedIsland({ kind: "event", event: e });
+    },
+    approvalRequest: (sessionId, call, tool, preview, fromAgent) => {
+      const req = approvalPayload(sessionId, call, tool, preview, fromAgent);
+      send(CHANNELS.approvalRequest, req);
+      feedIsland({ kind: "approvalRequest", req });
+    },
     askUserRequest: (sessionId, toolCallId, questions) =>
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
     assistantDelta: (sessionId, text, kind) =>
@@ -833,8 +880,6 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(CHANNELS.getWindowFullscreen, () => win.isFullScreen());
 
-  // 岛只跟主窗当前会话。主进程存这一个 id:岛窗 boot 时问,变化时推
-  let activeSessionId: string | null = null;
   const islandSnapshot = (): IslandBoot => {
     const agent = activeSessionId ? agents.get(activeSessionId) : undefined;
     // 挂着的审批原样补给岛:UIApprover 存的就是 requestFromUI 当初拿到的 (call, tool)。
@@ -852,18 +897,7 @@ void app.whenReady().then(() => {
   };
   ipcMain.handle(CHANNELS.setActiveSession, (_e, sessionId: string | null) => {
     activeSessionId = sessionId;
-    send(CHANNELS.activeSessionChanged, islandSnapshot());
-  });
-  ipcMain.handle(CHANNELS.islandBoot, () => islandSnapshot());
-  // 岛的尺寸是渲染层量出来报上来的,而 setBounds 是"整块屏幕上的一个窗"这种
-  // 不可撤销的效果:NaN / Infinity 会让窗跑到算不出来的地方(用户再也点不到它),
-  // 一个离谱的大数则等于用一块黑胶囊糊住整个屏幕。钳在岛该有的量级里,
-  // 越界的干脆丢掉(#175 M6)—— 上一帧的尺寸留着,比听一个坏数字强
-  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  ipcMain.handle(CHANNELS.islandResize, (_e, size: { w: number; h: number; focusable?: boolean }) => {
-    if (!island) return;
-    if (!Number.isFinite(size.w) || !Number.isFinite(size.h)) return;
-    resizeIsland(island, { w: clamp(size.w, 40, 900), h: clamp(size.h, 20, 400) }, size.focusable ?? false);
+    feedIsland({ kind: "activeSession", boot: islandSnapshot(), now: Date.now() });
   });
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
@@ -1282,8 +1316,10 @@ void app.whenReady().then(() => {
       terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
       browsers.close(id); // 会话没了,它的浏览器也该没
       agents.delete(id); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
+      islandStates.delete(id); // 岛的 Map 投影也剪掉——不然拍平出来的 fleet 会带一行死会话
     }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
+    pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
   });
 
   ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {
@@ -1300,7 +1336,9 @@ void app.whenReady().then(() => {
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
     agent.switchModel(model, lane ?? "auto");
-    send(CHANNELS.activeSessionChanged, islandSnapshot());
+    // 换模型也是"活跃会话的快照变了"——同 setActiveSession,喂一次投影器,
+    // 岛上挂着的模型名跟着换
+    feedIsland({ kind: "activeSession", boot: islandSnapshot(), now: Date.now() });
     // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
     return agent.thinking;
   });
@@ -1320,107 +1358,120 @@ void app.whenReady().then(() => {
     return agent.thinking; // 钳位后的实际档
   });
 
-  ipcMain.handle(
-    CHANNELS.sendMessage,
-    async (_e, sessionId: string, text: string, skill?: string, attachments?: OutgoingAttachment[]) => {
-      const agent = agents.get(sessionId);
-      if (!agent) throw new Error("会话不存在或未激活");
-      if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
-      // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
-      // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
-      let invoked: { name: string; content: string } | null = null;
-      if (skill) {
-        const found = scanSkills(skillRoots).find((s) => s.name === skill);
-        if (!found) throw new Error(`skill 不存在: ${skill}`);
-        invoked = { name: found.name, content: found.content };
-      }
-      // 文本文件结构化存进事件 textFiles(快照语义,同 skill_invoked:日志自
-      // 包含,原文件后续改/删不影响重放)——不内联进 content,UI 才能渲染成
-      // 文件卡片而不是摊开全文;模型投影时由 composeUserText 拼全文。图片只走 ref
-      const textFiles: UserTextFile[] = [];
-      const refs: UserAttachmentRef[] = [];
-      // 渲染层送来的 OutgoingAttachment 是不可信输入——形状必须在这把关。
-      // 坏形状（undefined/缺 id/id 非法）一旦被 push 进 refs，会原样存进
-      // append-only 的 user_message 事件；日志落了错的东西改不了、也不能删，
-      // deriveMessages 重放到这条时对 a.id 取值直接抛错，整个会话从此永久
-      // 不可重放（违反"旧日志必须永远可重放"硬规则）。所以宁可整条 send 拒发，
-      // 也不能让半吊子附件混进日志——拒绝发生在 runningSessions.add / 任何
-      // append 之前，坏请求不会留下任何痕迹。
-      for (const a of attachments ?? []) {
-        if (a.kind === "text") {
-          if (typeof a.name !== "string" || typeof a.content !== "string") {
-            throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
-          }
-          textFiles.push({
-            name: a.name,
-            content: a.content,
-            bytes: Buffer.byteLength(a.content, "utf8"),
-          });
-        } else if (
-          a.kind === "image" &&
-          a.ref &&
-          typeof a.ref.id === "string" &&
-          /^sha256:[a-f0-9]{64}$/.test(a.ref.id)
-        ) {
-          refs.push(a.ref);
-        } else {
+  // 抽成命名函数:ipc handler 和 handleIslandCommand("send" 命令)都调它,
+  // 逻辑只有一份——岛上发消息和主窗输入框发消息必须走同一条路(含附件校验/
+  // vision-bridge/分区分类),不能有第二套实现悄悄 drift
+  async function handleSendMessage(
+    sessionId: string,
+    text: string,
+    skill?: string,
+    attachments?: OutgoingAttachment[]
+  ): Promise<void> {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
+    // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
+    // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"
+    let invoked: { name: string; content: string } | null = null;
+    if (skill) {
+      const found = scanSkills(skillRoots).find((s) => s.name === skill);
+      if (!found) throw new Error(`skill 不存在: ${skill}`);
+      invoked = { name: found.name, content: found.content };
+    }
+    // 文本文件结构化存进事件 textFiles(快照语义,同 skill_invoked:日志自
+    // 包含,原文件后续改/删不影响重放)——不内联进 content,UI 才能渲染成
+    // 文件卡片而不是摊开全文;模型投影时由 composeUserText 拼全文。图片只走 ref
+    const textFiles: UserTextFile[] = [];
+    const refs: UserAttachmentRef[] = [];
+    // 渲染层送来的 OutgoingAttachment 是不可信输入——形状必须在这把关。
+    // 坏形状（undefined/缺 id/id 非法）一旦被 push 进 refs，会原样存进
+    // append-only 的 user_message 事件；日志落了错的东西改不了、也不能删，
+    // deriveMessages 重放到这条时对 a.id 取值直接抛错，整个会话从此永久
+    // 不可重放（违反"旧日志必须永远可重放"硬规则）。所以宁可整条 send 拒发，
+    // 也不能让半吊子附件混进日志——拒绝发生在 runningSessions.add / 任何
+    // append 之前，坏请求不会留下任何痕迹。
+    for (const a of attachments ?? []) {
+      if (a.kind === "text") {
+        if (typeof a.name !== "string" || typeof a.content !== "string") {
           throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
         }
-      }
-      runningSessions.add(sessionId);
-      send(CHANNELS.turnStatus, { sessionId, status: "running" });
-      try {
-        if (invoked) {
-          // 快照落在 user_message 之前：模型先看到说明书，再看到任务
-          const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
-          send(CHANNELS.event, fullEvent);
-        }
-        // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
-        // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
-        // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
-        // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
-        // "模型看不见图还装看过"
-        // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
-        const modelText = composeUserText(text, textFiles);
-        if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
-          const describeImages = createVisionBridge((id) => attachmentStore.read(id));
-          const described = await describeImages(refs, modelText);
-          const descEvent = store.append({
-            sessionId, ts: Date.now(), type: "image_described",
-            content: described, model: VISION_BRIDGE_MODEL,
-          });
-          send(CHANNELS.event, descEvent);
-        }
-        await agent.engine.runTurn(text, refs, textFiles);
-      } finally {
-        runningSessions.delete(sessionId);
-        send(CHANNELS.turnStatus, { sessionId, status: "idle" });
-      }
-      // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
-      // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
-      // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）。
-      // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
-      // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
-      // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
-      let aborted = false;
-      for (const e of store.load(sessionId).slice().reverse()) {
-        if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
-      }
-      // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
-      // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
-      if (!aborted) {
-        enqueueSectionClassify(sessionId);
-        // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
-        // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
-        // 变成 unhandledRejection 会把主进程带走
-        void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
-        // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
-        // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
-        void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
-        // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
-        enqueueMicroCompact(sessionId);
+        textFiles.push({
+          name: a.name,
+          content: a.content,
+          bytes: Buffer.byteLength(a.content, "utf8"),
+        });
+      } else if (
+        a.kind === "image" &&
+        a.ref &&
+        typeof a.ref.id === "string" &&
+        /^sha256:[a-f0-9]{64}$/.test(a.ref.id)
+      ) {
+        refs.push(a.ref);
+      } else {
+        throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
       }
     }
+    runningSessions.add(sessionId);
+    send(CHANNELS.turnStatus, { sessionId, status: "running" });
+    feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
+    try {
+      if (invoked) {
+        // 快照落在 user_message 之前：模型先看到说明书，再看到任务
+        const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
+        send(CHANNELS.event, fullEvent);
+      }
+      // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
+      // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
+      // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
+      // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
+      // "模型看不见图还装看过"
+      // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
+      const modelText = composeUserText(text, textFiles);
+      if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
+        const describeImages = createVisionBridge((id) => attachmentStore.read(id));
+        const described = await describeImages(refs, modelText);
+        const descEvent = store.append({
+          sessionId, ts: Date.now(), type: "image_described",
+          content: described, model: VISION_BRIDGE_MODEL,
+        });
+        send(CHANNELS.event, descEvent);
+      }
+      await agent.engine.runTurn(text, refs, textFiles);
+    } finally {
+      runningSessions.delete(sessionId);
+      send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+      feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
+    }
+    // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
+    // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
+    // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）。
+    // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
+    // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
+    // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
+    let aborted = false;
+    for (const e of store.load(sessionId).slice().reverse()) {
+      if (e.type === "turn_ended") { aborted = e.outcome === "aborted"; break; }
+    }
+    // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
+    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性
+    if (!aborted) {
+      enqueueSectionClassify(sessionId);
+      // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
+      // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
+      // 变成 unhandledRejection 会把主进程带走
+      void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+      // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
+      // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
+      void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
+      // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
+      enqueueMicroCompact(sessionId);
+    }
+  }
+
+  ipcMain.handle(
+    CHANNELS.sendMessage,
+    (_e, sessionId: string, text: string, skill?: string, attachments?: OutgoingAttachment[]) =>
+      handleSendMessage(sessionId, text, skill, attachments)
   );
 
   ipcMain.handle(CHANNELS.pickAttachments, async () => {
@@ -1464,33 +1515,67 @@ void app.whenReady().then(() => {
     // compact 是一次真实的模型调用（几秒），复用 turn 状态灯让 UI 有反馈、挡并发
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
+    // compact 也是一次真实的 turn 状态变化——旧岛窗(单进程内共享 IPC 推送)本就
+    // 会收到这条,喂投影器保持同样的观感,不因这次重接线悄悄丢一种状态
+    feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
     try {
       await agent.engine.compact();
     } finally {
       runningSessions.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
+      feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
     }
   });
 
+  // 抽成命名函数，同 handleSendMessage 的理由：ipc handler 和 handleIslandCommand
+  // ("approve"/"deny" 命令)都调它。声明成 async 是为了给 handleIslandCommand 一个
+  // 统一的 Promise 接口好挂 .catch()——函数体本身仍是同步的，返回的 Promise 不会
+  // 真的 reject，除非 agent.grant / approver.resolve 意外抛出
+  async function handleDecideApproval(
+    sessionId: string,
+    toolCallId: string,
+    incoming: ApprovalDecisionOutcome
+  ): Promise<void> {
+    const agent = agents.get(sessionId);
+    if (!agent) return;
+    const outcome: ApprovalOutcome = {
+      decision: incoming.decision,
+      ...(incoming.reason ? { reason: incoming.reason } : {}),
+      ...(incoming.grant ? { grant: incoming.grant } : {}),
+      ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
+    };
+    // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
+    // 下一个调用就该享受到这条授权了（ADR-0041）
+    if (incoming.decision === "approved" && incoming.grant) {
+      agent.grant(toolCallId, incoming.grant);
+    }
+    agent.approver.resolve(toolCallId, outcome);
+  }
+
   ipcMain.handle(
     CHANNELS.decideApproval,
-    (_e, sessionId: string, toolCallId: string, incoming: ApprovalDecisionOutcome) => {
-      const agent = agents.get(sessionId);
-      if (!agent) return;
-      const outcome: ApprovalOutcome = {
-        decision: incoming.decision,
-        ...(incoming.reason ? { reason: incoming.reason } : {}),
-        ...(incoming.grant ? { grant: incoming.grant } : {}),
-        ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
-      };
-      // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
-      // 下一个调用就该享受到这条授权了（ADR-0041）
-      if (incoming.decision === "approved" && incoming.grant) {
-        agent.grant(toolCallId, incoming.grant);
-      }
-      agent.approver.resolve(toolCallId, outcome);
-    }
+    (_e, sessionId: string, toolCallId: string, incoming: ApprovalDecisionOutcome) =>
+      handleDecideApproval(sessionId, toolCallId, incoming)
   );
+
+  // 岛发来的命令（stdio 桥的另一半）：ready 补一次快照,send/approve/deny 复用
+  // 上面两个命名函数——发消息/审批这两条路,不管是主窗输入框还是岛,只走一份逻辑
+  function handleIslandCommand(c: IslandCommand): void {
+    if (c.type === "ready") {
+      // helper 起来了:把当前 fleet 补推一次(等价旧 islandBoot)
+      pushFleet();
+      return;
+    }
+    if (c.type === "send") {
+      void handleSendMessage(c.sessionId, c.text).catch((e) => console.warn("岛发消息失败", e));
+      return;
+    }
+    const outcome =
+      c.type === "approve"
+        ? { decision: "approved" as const, ...(c.grant ? { grant: c.grant } : {}) }
+        : { decision: "denied" as const };
+    void handleDecideApproval(c.sessionId, c.callId, outcome).catch((e) => console.warn("岛审批失败", e));
+  }
 
   ipcMain.handle(
     CHANNELS.answerQuestions,
@@ -1501,7 +1586,7 @@ void app.whenReady().then(() => {
 
   app.on("before-quit", () => {
     quitting = true; // 放行 createWindow 里那道 close 拦截 —— 这次是真要退
-    island?.destroy();
+    bridge?.dispose(); // stdio 桥收掉;helper 子进程跟着退出
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
     // stdio server 是子进程,退出时得跟着收掉:closeAll() 虽然是 async 函数,

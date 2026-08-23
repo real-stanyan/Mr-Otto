@@ -83,7 +83,7 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   // 什么也没产出的 turn 投影里就不进上下文(ADR-0042),这里也不能计 ——
   // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
   const barren = barrenEventIndexes(events);
-  // 微压缩（ADR-0063）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
+  // 微压缩（ADR-0064）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
   // 和 deriveMessages 同一个 absorbedIndexes。
   const micro = absorbedIndexes(events);
   const latestMicro = latestMicroCompacted(events);

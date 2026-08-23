@@ -302,7 +302,7 @@ export interface MemoryNudgeEvent extends SessionEventBase {
   userTurns: number;
 }
 
-/** 额外 17：微压缩（ADR-0063）。设置开启时每个 turn 收口后落一条：把最老的一个
+/** 额外 17：微压缩（ADR-0064）。设置开启时每个 turn 收口后落一条：把最老的一个
     未吸收 exchange 的 assistant/tool 部分并进 running summary。投影只认最新一条：
     seq ≤ coversUpTo 的 assistant_message / tool_result 被替换成一条
     `[对话摘要]` assistant 消息，user_message 原文永不吸收。

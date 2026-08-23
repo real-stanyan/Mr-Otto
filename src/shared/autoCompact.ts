@@ -4,7 +4,7 @@ export interface AutoCompactSettings {
   enabled: boolean;
   /** 用户覆盖（0.3–0.9）。缺省 = 按窗口两档 */
   threshold?: number;
-  /** 微压缩（ADR-0063）：每 turn 收口后把最老的 exchange 并进摘要。缺省 = 关——
+  /** 微压缩（ADR-0064）：每 turn 收口后把最老的 exchange 并进摘要。缺省 = 关——
       每轮改写已发送的历史会让前缀缓存每轮失效，只在上下文小、对话长时值得 */
   micro?: boolean;
 }

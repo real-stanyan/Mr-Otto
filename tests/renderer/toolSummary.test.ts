@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeGroup, toolFilePath } from "../../src/renderer/src/lib/toolSummary.js";
+import { summarizeGroup, toolFilePath } from "../../src/shared/toolSummary.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 
 const read = (path: string): ToolCallRequest => ({ id: path, name: "read_file", args: { path } });

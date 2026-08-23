@@ -24,7 +24,7 @@
 - 只认最新一条 `micro_compacted`。`context_compacted` 之后的投影清场，之前的 micro 摘要随之作废；选 exchange 也只看最新 `context_compacted` 之后的事件。
 - 微压缩永不抛、永不拖 turn：跑在 turn 锁外；失败不落事件，下一 turn 自愈。用户中断（`turn_ended.outcome === "aborted"`）后不跑。
 - 测试放 `tests/` 镜像 `src/`；门禁 `npm test`（tsc + vitest）。
-- ADR 编号在合并时定：当前预计 `docs/adr/0063-微压缩是追加事件加投影替换.md`。
+- ADR 编号在合并时定：当前预计 `docs/adr/0064-微压缩是追加事件加投影替换.md`。
 
 ---
 
@@ -44,7 +44,7 @@
 在 `src/session/events.ts` 的 `MemoryNudgeEvent`（额外 16）之后追加：
 
 ```ts
-/** 额外 17：微压缩（ADR-0063）。设置开启时每个 turn 收口后落一条：把最老的一个
+/** 额外 17：微压缩（ADR-0064）。设置开启时每个 turn 收口后落一条：把最老的一个
     未吸收 exchange 的 assistant/tool 部分并进 running summary。投影只认最新一条：
     seq ≤ coversUpTo 的 assistant_message / tool_result 被替换成一条
     `[对话摘要]` assistant 消息，user_message 原文永不吸收。
@@ -70,7 +70,7 @@ export interface AutoCompactSettings {
   enabled: boolean;
   /** 用户覆盖（0.3–0.9）。缺省 = 按窗口两档 */
   threshold?: number;
-  /** 微压缩（ADR-0063）：每 turn 收口后把最老的 exchange 并进摘要。缺省 = 关——
+  /** 微压缩（ADR-0064）：每 turn 收口后把最老的 exchange 并进摘要。缺省 = 关——
       每轮改写已发送的历史会让前缀缓存每轮失效，只在上下文小、对话长时值得 */
   micro?: boolean;
 }
@@ -114,7 +114,7 @@ export function normaliseAutoCompact(input: unknown): AutoCompactSettings {
     typeof obj["threshold"] === "number" && Number.isFinite(obj["threshold"])
       ? Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, obj["threshold"]))
       : undefined;
-  // micro 只在明确为 true 时落盘：缺省 = 关（ADR-0063），false 和缺省是同一个意思，
+  // micro 只在明确为 true 时落盘：缺省 = 关（ADR-0064），false 和缺省是同一个意思，
   // 不写 `micro: false` 免得文件里多一个"看着像开关其实等于没写"的键
   const micro = obj["micro"] === true;
   return {
@@ -136,7 +136,7 @@ Expected: PASS（tsc 会逼出所有 switch 缺口——本任务只加 union �
 git add src/session/events.ts src/shared/autoCompact.ts src/main/autoCompactStore.ts tests/main/autoCompactStore.test.ts
 git commit -m "feat(events): 微压缩事件 micro_compacted + 设置字段 micro（默认关）
 
-ADR-0063 的数据形状先落：事件存 running summary 与 coversUpTo（seq），
+ADR-0064 的数据形状先落：事件存 running summary 与 coversUpTo（seq），
 设置挂在 auto-compact.json 同一文件上——同一栏目的两个开关不该分两个文件。"
 ```
 
@@ -296,7 +296,7 @@ Expected: FAIL（模块不存在）
 `src/session/microCompact.ts`：
 
 ```ts
-// microCompact — 微压缩的纯函数层（ADR-0063）。
+// microCompact — 微压缩的纯函数层（ADR-0064）。
 // 两个消费者共用同一把尺子：deriveMessages（投影替换）和 contextEstimate（用量估算）
 // 都从 absorbedIndexes 拿"哪些事件已被摘要替代"；engine 外挂从 nextMicroExchange
 // 拿"下一个该吸收谁"。全是纯函数：同 events 同输出，重放可还原模型视野。
@@ -566,7 +566,7 @@ Expected: FAIL（a1 仍在投影里）
 2. 在 `deriveMessages` 里 `const barren = barrenEventIndexes(events);` 之后加：
 
 ```ts
-  // 微压缩（ADR-0063）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
+  // 微压缩（ADR-0064）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
@@ -649,7 +649,7 @@ Expected: FAIL（after === before）
 function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
   let pending = 0;
   const barren = barrenEventIndexes(events);
-  // 微压缩（ADR-0063）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
+  // 微压缩（ADR-0064）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
   // 和 deriveMessages 同一个 absorbedIndexes。锚点之前的事件本来就不计（账单里已含），
   // 只有锚点之后、被吸收的那些要从估算里扣掉；摘要只在锚点之后有 micro 事件时才加
   const micro = absorbedIndexes(events);
@@ -867,7 +867,7 @@ Expected: FAIL（模块不存在）
 `src/loop/microCompact.ts`：
 
 ```ts
-// microCompact — 跑一次微压缩（ADR-0063）：最老的未吸收 exchange + running summary
+// microCompact — 跑一次微压缩（ADR-0064）：最老的未吸收 exchange + running summary
 // → 便宜模型 → 新 summary。adapter 注入：谁来摘要是装配的事（main 里用 cheapAdapter），
 // 这里只管"喂什么、收什么"。永不抛：微压缩是锦上添花，失败 = 不落事件，下一 turn 自愈。
 // 住在 src/loop 而不是 engine 里：它不在 turn 的闭环上（turn 锁外跑），和 engine 只共享投影规则。
@@ -997,7 +997,7 @@ key 闸门 / thinking 关 / 超时，不再各抄一份。"
 - Modify: `src/renderer/src/lib/autoCompactCopy.ts`（文案常量 + 时间线行标题）
 - Modify: `src/renderer/src/components/Timeline.tsx`（`micro_compacted` 审计行）
 - Modify: `CONTEXT.md`（微压缩词条）
-- Create: `docs/adr/0063-微压缩是追加事件加投影替换.md`
+- Create: `docs/adr/0064-微压缩是追加事件加投影替换.md`
 - Test: `tests/renderer/autoCompactCopy.test.ts`（追加）
 
 **Interfaces:**
@@ -1040,7 +1040,7 @@ Run: `npx vitest run tests/renderer/autoCompactCopy.test.ts` → FAIL，再实�
 在 `nudgeMemory` 定义之后加：
 
 ```ts
-  // 微压缩（ADR-0063）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
+  // 微压缩（ADR-0064）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
   // 会话被 purge 就不落。**必须串行**（同 sectionQueues 的理由）：两次并发的
   // microCompactOnce 各自看不到对方的 micro_compacted，会对同一个 exchange 摘两次、
   // 后落的那条 running summary 丢掉先落那条的内容。
@@ -1136,14 +1136,14 @@ import `microCompactedHeadline` 与 `estimateTokens`（`../../../shared/contextE
 `CONTEXT.md` 在「自动压缩」行之后加：
 
 ```
-| 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0063 |
+| 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0064 |
 ```
 
-`docs/adr/0063-微压缩是追加事件加投影替换.md`（对照 0062 的格式：状态 / 背景 / 决定 / 后果）。要点：
+`docs/adr/0064-微压缩是追加事件加投影替换.md`（对照 0062 的格式：状态 / 背景 / 决定 / 后果）。要点：
 - 背景：hermes 的 micro-compaction 是原地改写历史；这里的硬规则是 append-only + 投影可推导。
 - 决定：微压缩 = 追加 `micro_compacted` 事件 + 投影替换；只认最新一条（running summary）；`coversUpTo` 存 seq 不存下标（稳定身份，fork/过滤不影响）；吸收集合与用量估算共用 `absorbedIndexes`；跑在 turn 锁外、按会话串行；便宜模型通道抽成 `cheapAdapter`；开关挂在 `auto-compact.json.micro`，默认关。
 - 裁定记录：摘要消息插在被吸收区**之后**（让所有被吸收的 user 原话先出现）；user_message 之外的 user-角色注入（skill_invoked / image_described / subagent_briefed）不吸收；没有 assistant/tool 的 exchange 跳过；测试路径为 `tests/session/microCompact.test.ts` / `tests/loop/microCompact.test.ts`（spec 写的 `engine.micro.test.ts` 因为逻辑不在 engine 里）。
-- 后果：每轮前缀缓存失效（所以默认关）；圆环在下一次账单前按估算扣除；编号 0063 是因为 0061 被 #189 占、0062 是自动压缩。
+- 后果：每轮前缀缓存失效（所以默认关）；圆环在下一次账单前按估算扣除；编号 0064：0061、0063 被灵动岛两次先合并占走，0062 是自动压缩。
 
 - [ ] **Step 6: 门禁 + e2e**
 
@@ -1155,8 +1155,8 @@ Run: `npm run e2e`（不在 gate 里，GUI 改动的 PR 贴结果；splash 用�
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/main/index.ts src/renderer/src/components/AutoCompactSettings.tsx src/renderer/src/lib/autoCompactCopy.ts src/renderer/src/components/Timeline.tsx CONTEXT.md docs/adr/0063-微压缩是追加事件加投影替换.md tests/renderer/autoCompactCopy.test.ts
-git commit -m "feat(micro-compact): turn 收口外挂接线 + 设置开关（默认关）+ 时间线行 + ADR-0063
+git add src/main/index.ts src/renderer/src/components/AutoCompactSettings.tsx src/renderer/src/lib/autoCompactCopy.ts src/renderer/src/components/Timeline.tsx CONTEXT.md docs/adr/0064-微压缩是追加事件加投影替换.md tests/renderer/autoCompactCopy.test.ts
+git commit -m "feat(micro-compact): turn 收口外挂接线 + 设置开关（默认关）+ 时间线行 + ADR-0064
 
 跑在 turn 锁外、按会话串行（两次并发会对同一段摘两次）；开关现读，
 关了当场停。"

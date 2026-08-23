@@ -5,7 +5,7 @@
 //
 // 谁携带一次模型调用的账:凡是"跑了一次模型"的事件都带 usage —— 正文
 // (assistant_message)、压缩(context_compacted)、分区(section_classified)、
-// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0063)。
+// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)。
 // 后三个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
 // (events.ts 里 SuggestionsGeneratedEvent 的注释写的就是这件事)。
 // 微压缩尤其不能漏:它每 turn 收口都烧一次,开着的话是这里最高频的一笔。

@@ -222,7 +222,7 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
   const result: string | null =
     row.kind === "tool" ? (row.result ? row.result.output || "(empty)" : null)
     : ev.type === "context_compacted" ? ev.summary
-    // 微压缩（ADR-0063）同 context_compacted：这条事件的载荷就是那段摘要，
+    // 微压缩（ADR-0064）同 context_compacted：这条事件的载荷就是那段摘要，
     // 详情面板不给出来的话，用户在轨迹里只看得到"发生过一次微压缩"、看不到摘了什么
     : ev.type === "micro_compacted" ? ev.summary
     : null;

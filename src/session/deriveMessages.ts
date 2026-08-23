@@ -257,7 +257,7 @@ function healDanglingToolCalls(messages: ChatMessage[], startedIds: Set<string>)
 
 // ─── 投影 ──────────────────────────────────────────────────
 
-/** 微压缩摘要消息的文案前缀（ADR-0063）。插入摘要的两处（主循环、尾插）
+/** 微压缩摘要消息的文案前缀（ADR-0064）。插入摘要的两处（主循环、尾插）
     共用这一个常量：文案只能有一处出口，不然"投影里到底长什么样"就是猜的 */
 const MICRO_SUMMARY_PREFIX = "[对话摘要]\n";
 
@@ -272,7 +272,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）
   const barren = barrenEventIndexes(events);
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
-  // 微压缩（ADR-0063）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
+  // 微压缩（ADR-0064）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
