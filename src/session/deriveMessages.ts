@@ -87,6 +87,9 @@ export function renderMemoryPrompt(memory: string, user: string): string {
     `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
     `过去做过什么、进度到哪、当时怎么决定的——用 session_search 查历史会话。` +
     `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
+    `\n记忆的工作机制（被问到时照实说，别脑补）：会话开始时整份快照注入（就是下面的 MEMORY/USER 块），没有按相关性检索；` +
+    `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这两份笔记；` +
+    `session_search 查的是历史会话正文，和记忆是分开的两条路。` +
     renderMemoryBlocks(memory, user)
   );
 }
