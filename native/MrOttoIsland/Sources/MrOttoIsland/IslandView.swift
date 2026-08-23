@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// DynamicNotch 的 expanded 内容:active(工具 + 本地计时)/ approval(verb+target + 三按钮)。
-/// idle 不会走到这里 —— idle 态由 main.swift 驱动到 compact,压根不 expand。
+/// DynamicNotch 的 expanded 内容:上半区是会话列表(逐 session 一行,点选切换),
+/// 下半区是选中会话的详情——active(工具 + 本地计时)/ approval(verb+target + 三按钮)/
+/// compose(输入框)。idle 详情不会真的被看到——idle 态由 main.swift 驱动到 compact,
+/// 压根不 expand(除非用户手动点了列表行里的 idle session,这时详情兜底渲染空)。
 struct IslandExpandedView: View {
   @ObservedObject var model: IslandModel
   @State private var now = Date()
@@ -12,26 +14,65 @@ struct IslandExpandedView: View {
   @FocusState private var composeFieldFocused: Bool
   private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
+  /// 列表行高亮用的"有效选中 id"。brief 定义为 selectedSessionId ?? focusedSessionId;
+  /// 额外兜底到 agents.first——理由:model.selectedAgent 自己就有这层 first 兜底
+  /// (两者都是 nil 时仍展示首行详情),高亮和详情如果不同步会出现"详情是 A,却没有
+  /// 任何行被高亮"的观感错位,所以这里镜像同一条兜底链路。
+  private var effectiveSelectedId: String? {
+    model.selectedSessionId ?? model.fleet.focusedSessionId ?? model.fleet.agents.first?.id
+  }
+
   var body: some View {
     Group {
-      if model.composing {
-        composeRow
-      } else if let agent = model.selectedAgent {
-        switch agent.phase {
-        case .approval:
-          approvalRow(agent)
-        case .active:
-          activeRow(agent)
-        case .idle:
-          // 防御性兜底:理论上 idle 不会被 expand,万一状态竞态漏进来也不要崩。
-          Color.clear.frame(width: 1, height: 1)
-        }
+      if model.fleet.agents.isEmpty {
+        Text("主窗里先开会话")
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 6)
       } else {
-        // fleet 为空(还没有任何 session):没有可展示的详情,贴合刘海。
-        Color.clear.frame(width: 1, height: 1)
+        VStack(spacing: 0) {
+          ScrollView {
+            VStack(spacing: 2) {
+              ForEach(model.fleet.agents) { agent in
+                AgentRow(agent: agent, isSelected: agent.id == effectiveSelectedId)
+                  .onTapGesture { model.selectedSessionId = agent.id }
+              }
+            }
+            .padding(.vertical, 4)
+          }
+          .frame(maxHeight: 180)
+
+          Divider()
+
+          if let agent = model.selectedAgent {
+            detail(agent)
+          }
+        }
       }
     }
     .onReceive(timer) { now = $0 }
+  }
+
+  /// 选中会话的详情区:输入态优先(composing 是全局开关,不分会话),否则按
+  /// 该 agent 当前 phase 分派——这部分视图体是从旧的"直接渲染 selectedAgent 详情"
+  /// 版本原样搬过来的,入参从隐式 model.selectedAgent 改成显式传入的 agent,
+  /// 内容(审批三按钮 / active 计时 / compose 输入框)未改。
+  @ViewBuilder
+  private func detail(_ agent: IslandAgent) -> some View {
+    if model.composing {
+      composeRow
+    } else {
+      switch agent.phase {
+      case .approval:
+        approvalRow(agent)
+      case .active:
+        activeRow(agent)
+      case .idle:
+        // 防御性兜底:idle 详情理论上不会被真的看到(compact 态就没 expand),
+        // 用户手动点了一个 idle 行也不该崩,留空即可。
+        Color.clear.frame(width: 1, height: 1)
+      }
+    }
   }
 
   /// 输入态整行:TextField + 发送按钮。composing 由外部(点"说话"入口)置真,
@@ -134,6 +175,47 @@ struct IslandExpandedView: View {
     .padding(.vertical, 6)
     .foregroundStyle(.white)
     .buttonStyle(.plain)
+  }
+}
+
+/// 会话列表里的一行:状态点(idle 灰 / active 蓝 / approval 橙)+ 标题 +(active 才有的)
+/// 当前工具 caption。选中行给一层浅底高亮。`.contentShape(Rectangle())` 让整行(包括
+/// 间隙)都能接住点击——不加这行的话 HStack 里的 Spacer 区域是点不中的。
+struct AgentRow: View {
+  let agent: IslandAgent
+  let isSelected: Bool
+
+  private var dotColor: Color {
+    switch agent.phase {
+    case .idle: return .gray
+    case .active: return .blue
+    case .approval: return .orange
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Circle()
+        .fill(dotColor)
+        .frame(width: 6, height: 6)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(agent.title ?? "未命名会话")
+          .lineLimit(1)
+          .foregroundStyle(.white)
+        if agent.phase == .active, let tool = agent.currentTool {
+          Text("\(tool.verb) \(tool.target)")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 4)
+    .background(isSelected ? Color.white.opacity(0.14) : Color.clear)
+    .cornerRadius(6)
+    .contentShape(Rectangle())
   }
 }
 
