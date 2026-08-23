@@ -122,6 +122,21 @@ describe("latestMicroCompacted / absorbedIndexes", () => {
     expect(latestMicroCompacted(events)).toBeNull();
     expect(absorbedIndexes(events)).toBeNull();
   });
+
+  it("迟到的旧摘要作废：位置在 compact 之后，但 coversUpTo 指向 compact 之前那段历史", () => {
+    const events = fiveTurns();
+    const preCompactSeq = events[7]!.seq; // u1 那一段的收口，compact 会把它折叠掉
+    const c = compacted("C");
+    events.push(c);
+    // 微压缩跑在 turn 锁外：它读的是 compact 之前的日志，收口却排在 compact 后面。
+    // 位置检查（下标 > floor）放它过关，只有 coversUpTo 能识破
+    events.push(micro("旧摘要", preCompactSeq));
+    expect(events[events.length - 1]!.seq).toBeGreaterThan(c.seq); // 确实排在 compact 之后
+    expect(latestMicroCompacted(events)).toBeNull();
+    expect(absorbedIndexes(events)).toBeNull();
+    // 下一次微压缩从零起跑：不能把这条作废的摘要当 running summary 接着往上堆
+    expect(nextMicroExchange(events, 2)?.runningSummary ?? "").toBe("");
+  });
 });
 
 describe("fix round 1", () => {

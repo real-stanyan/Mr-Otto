@@ -175,6 +175,7 @@ export function AutoCompactSettings() {
               <span className="text-[13px] font-medium">微压缩</span>
               <p className={HINT}>每轮收口后把最老的一段对话并进摘要，用户原话保留。</p>
               <p className={HINT}>{MICRO_COMPACT_HINT}</p>
+              <p className={HINT}>需要智谱 GLM 的 key（同分区分类）；没配就静默不跑。</p>
             </div>
             <Switch checked={settings.micro === true} onCheckedChange={onMicroChange} disabled={disabled} />
           </div>

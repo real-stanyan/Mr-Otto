@@ -18,13 +18,21 @@ function lastContextCompacted(events: SessionEvent[]): number {
   return -1;
 }
 
-/** 最新一条 micro_compacted，且必须在最新 context_compacted 之后——
-    compact 之前的微摘要描述的是已被 compact 摘要替换掉的历史，再用就是重复记忆 */
+/** 最新一条 micro_compacted，且必须**在两个意义上**都晚于最新 context_compacted：
+    位置上落在它之后（下标 > floor），且吸收范围也开始于它之后
+    （coversUpTo > floor 那条事件的 seq）。
+
+    只看位置不够：一次微压缩可能在 compact 落盘之后才收口（它跑在 turn 锁外，
+    compact 跑在 turn 里），于是事件排在 compact 后面，可它读的是 compact 之前的日志，
+    coversUpTo 指向被 compact 摘要替换掉的那段历史。这种"迟到的旧摘要"必须丢掉——
+    留着它，投影会把 compact 已经折叠掉的历史用微摘要的形式再注回去一遍（重复记忆，
+    而且是两份措辞不同的记忆），正是 compact 清场要消灭的东西。 */
 export function latestMicroCompacted(events: SessionEvent[]): MicroCompactedEvent | null {
   const floor = lastContextCompacted(events);
+  const floorSeq = floor >= 0 ? events[floor]!.seq : -Infinity;
   for (let i = events.length - 1; i > floor; i--) {
     const e = events[i];
-    if (e?.type === "micro_compacted") return e;
+    if (e?.type === "micro_compacted" && e.coversUpTo > floorSeq) return e;
   }
   return null;
 }
