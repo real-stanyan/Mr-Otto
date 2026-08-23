@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MICRO_COMPACT_HINT,
-  compactedHeadline,
+  compactedCardMeta,
   describeThreshold,
   microCompactedHeadline,
 } from "../../src/renderer/src/lib/autoCompactCopy.js";
@@ -27,14 +27,26 @@ describe("describeThreshold", () => {
   });
 });
 
-describe("compactedHeadline", () => {
-  it("auto 触发：标「已自动压缩」", () => {
-    expect(compactedHeadline("auto")).toBe("上下文已自动压缩");
+// compactedHeadline 的测试随函数一起删（#128）：审计行换成摘要卡，
+// auto/manual 区分移入 compactedCardMeta 的 trigger 前缀（同 PR 产品变更，ADR-0020 L2）
+
+describe("compactedCardMeta", () => {
+  it("有 usage：模型 + 这次压缩烧的 token 总数", () => {
+    expect(
+      compactedCardMeta("deepseek-v4-pro", { promptTokens: 8000, completionTokens: 421 }),
+    ).toBe("deepseek-v4-pro · 耗 8,421 tokens");
   });
 
-  it("manual 或缺省（旧事件）：标「已压缩」", () => {
-    expect(compactedHeadline("manual")).toBe("上下文已压缩");
-    expect(compactedHeadline(undefined)).toBe("上下文已压缩");
+  it("旧日志没有 usage：只印模型，不炸也不留悬空分隔符", () => {
+    expect(compactedCardMeta("deepseek-v4-pro", undefined)).toBe("deepseek-v4-pro");
+  });
+
+  it("auto 触发：meta 前缀「自动压缩」——原审计行的 auto/manual 区分不因换卡而丢", () => {
+    expect(
+      compactedCardMeta("m", { promptTokens: 100, completionTokens: 1 }, "auto"),
+    ).toBe("自动压缩 · m · 耗 101 tokens");
+    expect(compactedCardMeta("m", undefined, "manual")).toBe("m");
+    expect(compactedCardMeta("m", undefined, undefined)).toBe("m");
   });
 });
 

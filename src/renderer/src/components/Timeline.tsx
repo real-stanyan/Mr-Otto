@@ -5,6 +5,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type {
+  ContextCompactedEvent,
   ModelChangedEvent,
   SessionEvent,
   SubagentSpawnedEvent,
@@ -12,13 +13,14 @@ import type {
 } from "../../../session/events.js";
 import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
-import { compactedHeadline, microCompactedHeadline } from "../lib/autoCompactCopy.js";
+import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
 import { ToolLiveTail } from "./ToolLiveTail.js";
 import { AgentHandoff } from "./elements/agent-handoff.js";
+import { ArtifactCard } from "./elements/artifact-card.js";
 import { AgentStatus } from "./elements/agent-status.js";
 import { SubagentList, type SubagentItem } from "./elements/subagent-list.js";
 import { SubagentTranscriptPanel } from "./SubagentTranscriptPanel.js";
@@ -308,6 +310,26 @@ function SubagentBriefedRow({ agent, instructions, tools, model }: {
   );
 }
 
+/** 压缩摘要卡（#128）：summary 是"此前那半个会话现在还剩什么"——压缩之后模型
+    只看得见它，日志里有、界面上没有是净缺口。原来那行审计文字的信息
+    （auto/manual + 模型 + 烧的 token）全在卡的 meta 行里；点开就地展开全文
+    ——它是时间线上的一段历史，不是另一件事，不弹窗 */
+const CompactSummaryRow = memo(function CompactSummaryRow({ event }: { event: ContextCompactedEvent }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={AUDIT}>
+      <ArtifactCard
+        title="会话摘要"
+        meta={compactedCardMeta(event.model, event.usage, event.trigger)}
+        onSelect={() => setOpen(!open)}
+        expanded={open}
+      >
+        <div className={`${THINKING_BODY} text-left`}>{event.summary}</div>
+      </ArtifactCard>
+    </div>
+  );
+});
+
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
@@ -340,12 +362,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
       return <div className={AUDIT}>会话改名 → {event.title}</div>;
 
     case "context_compacted":
-      return (
-        <div className={AUDIT}>
-          ✻ {compactedHeadline(event.trigger)}——此前对话折叠为摘要（{event.model}
-          {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
-        </div>
-      );
+      return <CompactSummaryRow event={event} />;
 
     case "micro_compacted":
       return (

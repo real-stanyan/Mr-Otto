@@ -18,10 +18,20 @@ export function describeThreshold(
   return settings.threshold === undefined ? `${pct}%（默认）` : `${pct}%（自定义）`;
 }
 
-/** 时间线压缩行标题：auto 触发（超阈值自动压）vs manual/缺省（用户 /compact）。
-    缺省只出现在旧事件里，语义上等价于 manual（见 ContextCompactedEvent 的注释） */
-export function compactedHeadline(trigger: "auto" | "manual" | undefined): string {
-  return trigger === "auto" ? "上下文已自动压缩" : "上下文已压缩";
+/** 摘要卡的 meta 行（mono 那一行）：出自哪个模型 + 这次压缩烧了多少 token。
+    usage 缺席只出现在旧日志里——如实只印模型，不留悬空的分隔符。
+    auto 触发另加前缀：原审计行（#128 之前的 compactedHeadline）靠标题区分
+    auto/manual，换成卡之后这个区分不能丢（manual/缺省是默认态，不占字。
+    缺省只出现在旧事件里，语义等价 manual，见 ContextCompactedEvent 注释） */
+export function compactedCardMeta(
+  model: string,
+  usage: { promptTokens: number; completionTokens: number } | undefined,
+  trigger?: "auto" | "manual"
+): string {
+  const prefix = trigger === "auto" ? "自动压缩 · " : "";
+  if (!usage) return `${prefix}${model}`;
+  const total = (usage.promptTokens + usage.completionTokens).toLocaleString("en-US");
+  return `${prefix}${model} · 耗 ${total} tokens`;
 }
 
 /** 微压缩开关的说明（spec §四 原文，逐字）——默认关的理由要写在开关旁边，
