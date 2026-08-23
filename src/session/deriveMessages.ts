@@ -273,6 +273,16 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）
   const barren = barrenEventIndexes(events);
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
+  // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
+  // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
+  // 投影成 tool 消息就是 OpenAI 方言的非法序列（每条 tool 消息前面必须有
+  // 带对应 tool_calls 的 assistant 消息）。标准工具管线永远先落 assistant
+  // 再落 result，所以这层过滤对既有日志是空操作
+  const knownToolCallIds = new Set<string>();
+  for (const e of events) {
+    if (e.type !== "assistant_message") continue;
+    for (const tc of e.toolCalls ?? []) knownToolCallIds.add(tc.id);
+  }
   // 微压缩（ADR-0064）：最新 micro_compacted 吸收的 assistant/tool 事件不进投影，
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
@@ -337,6 +347,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
       case "tool_result":
         // ok / error / denied 一视同仁：都是"这个调用的结果"。
         // 老区（保真边界之前）的长输出截断——工具输出是上下文里最肥的部分
+        if (!knownToolCallIds.has(event.toolCallId)) break; // 孤儿收口事件（见上）
         messages.push({
           role: "tool",
           tool_call_id: event.toolCallId,

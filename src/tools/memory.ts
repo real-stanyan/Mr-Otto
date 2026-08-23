@@ -8,8 +8,8 @@
 import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
-  applyOps, charCount, formatEntries, parseEntries, withMemoryFileLock,
-  MEMORY_FILES, MEMORY_LIMITS, MEMORY_RESULT_MARK,
+  applyOps, charCount, formatEntries, formatMemoryResultLine, isMemoryTarget, parseEntries, withMemoryFileLock,
+  MEMORY_FILES, MEMORY_LIMITS,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
 import { scanThreat } from "../shared/threatPatterns.js";
@@ -19,14 +19,10 @@ export { parseMemoryResult } from "../shared/memoryStore.js";
 export const MEMORY_TOOL_NAME = "memory";
 const MAX_CONSECUTIVE_FAILURES = 3;
 
-function isTarget(v: unknown): v is MemoryTarget {
-  return v === "memory" || v === "user";
-}
-
 /** 把模型给的 args 归一成 MemoryOp[]。new_text 是 content 的别名（hermes 同款） */
 function parseOps(args: unknown): { target: MemoryTarget; ops: MemoryOp[] } {
   const a = (args ?? {}) as Record<string, unknown>;
-  if (!isTarget(a["target"])) throw new Error("target 必填，且只能是 memory 或 user");
+  if (!isMemoryTarget(a["target"])) throw new Error("target 必填，且只能是 memory 或 user");
   const target = a["target"];
   const raw: Record<string, unknown>[] = Array.isArray(a["operations"])
     ? (a["operations"] as Record<string, unknown>[])
@@ -96,7 +92,7 @@ export function createMemoryTool(): Tool {
     });
     const n = result.added.length + result.updated.length + result.removed.length;
     // 终态一句话，不回显条目
-    return `已更新 ${target === "memory" ? "MEMORY" : "USER"}（${n} 处，${result.used}/${result.limit} 字符）。\n${MEMORY_RESULT_MARK}${JSON.stringify(result)}-->`;
+    return `已更新 ${target === "memory" ? "MEMORY" : "USER"}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
   }
 
   return {

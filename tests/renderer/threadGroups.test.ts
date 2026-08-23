@@ -148,4 +148,13 @@ describe("groupThread", () => {
     expect((items[0] as { calls: ToolCallRequest[] }).calls.map((c) => c.id)).toEqual(["a", "b"]);
   });
 
+  it("memory_loaded / memory_user_edit / memory_nudge 看不见,不打断分组 (#186)", () => {
+    const memLoaded: SessionEvent = { ...env(), type: "memory_loaded", memory: "", user: "" } as SessionEvent;
+    const memEdit: SessionEvent = { ...env(), type: "memory_user_edit", target: "memory", before: "", after: "x" } as SessionEvent;
+    const memNudge: SessionEvent = { ...env(), type: "memory_nudge", userTurns: 10 } as SessionEvent;
+    const items = groupThread([tools(call("a")), result("a"), memLoaded, memEdit, memNudge, tools(call("b"))]);
+    expect(items).toHaveLength(1);
+    expect((items[0] as { calls: ToolCallRequest[] }).calls.map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
 });

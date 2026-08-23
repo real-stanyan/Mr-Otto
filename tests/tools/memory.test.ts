@@ -112,6 +112,16 @@ describe("memory 工具", () => {
     await expect(tool.run({ target: "memory" }, world)).rejects.toThrow(/action|operations/);
   });
 
+  // issue #186：条目内容含 "-->" 或 "<!--memory:" 时，机器可读尾行的定界不能被撕裂
+  it("条目内容含结果标记/终止符：chips 仍能解析", async () => {
+    const tool = createMemoryTool();
+    const { world } = fakeWorld();
+    const entry = "HTML 注释语法是 <!--memory: 与 --> 这样的";
+    const out = await tool.run({ target: "memory", action: "add", content: entry }, world);
+    const text = typeof out === "string" ? out : (out as { output: string }).output;
+    expect(parseMemoryResult(text)).toMatchObject({ ok: true, added: [entry] });
+  });
+
   // issue #185：memory-reviewer 子会话与父会话可能同时写同一文件。
   // read-modify-write 无锁时后写者覆盖前者，且前者的 tool_result 仍报成功。
   it("并发 RMW 不丢更新：两个工具实例同时 add，两条都落盘", async () => {

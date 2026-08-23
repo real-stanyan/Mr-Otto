@@ -402,6 +402,13 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "suggestions_generated":
       return null;
 
+    // 记忆事件（ADR-0060）：与 threadGroups.isInvisible 一一对应——快照/留证/触发点
+    // 都不是对话内容(memory_nudge 派出的活由 subagent_spawned 卡呈现)
+    case "memory_loaded":
+    case "memory_user_edit":
+    case "memory_nudge":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":
