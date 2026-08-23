@@ -87,10 +87,14 @@ export function createTaskTool(runner: SubagentRunner, list: () => SubagentDef[]
           `没有名叫「${agent}」的 subagent。可派的有：${known.join("、") || "（一个都没有）"}`
         );
       }
+      // 空 toolCallId 会让 groupSubagentSpawns 的归属查找和 results.has 的状态推导一起
+      // 失效(父时间线那张卡永远翻不成 done)。经 engine 走不到这条,但空串要到几层之后
+      // 才现形,抛错比它诚实(issue #141)
+      if (!ctx?.toolCallId) throw new Error("task 工具缺少 toolCallId，无法把子会话挂回父时间线");
       const { report } = await runner.run({
         agent,
         task,
-        parentToolCallId: ctx?.toolCallId ?? "",
+        parentToolCallId: ctx.toolCallId,
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
       return report;

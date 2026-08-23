@@ -363,6 +363,10 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // 本次进程运行里派出去过的子会话 id。只增不减，且只在本次运行内有意义：
+  // 它是 resumeSession 那道"绝不重建第二个 agent"守卫的判据（见那里的注释）。
+  // 上一轮 app 留下的子会话不在里面 —— 它们本来就该按崩溃修复重建（issue #141）
+  const spawnedThisRun = new Set<string>();
   let currentSessionId: string | null = null;
   // 岛只跟主窗当前会话。主进程存这一个 id:helper ready 时补一次快照,变化时喂投影器
   let activeSessionId: string | null = null;
@@ -521,7 +525,10 @@ void app.whenReady().then(() => {
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
-      register: (child) => void agents.set(child.sessionId, child),
+      register: (child) => {
+        agents.set(child.sessionId, child);
+        spawnedThisRun.add(child.sessionId);
+      },
     });
     // 收口走 settleNudgeSpawn（issue #186）：跑完往父会话落配对的 tool_result，
     // 时间线那张卡才翻得成 done——不落的话合成 toolCallId 永远没有结果
@@ -922,7 +929,10 @@ void app.whenReady().then(() => {
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
-        register: (child) => void agents.set(child.sessionId, child),
+        register: (child) => {
+          agents.set(child.sessionId, child);
+          spawnedThisRun.add(child.sessionId);
+        },
       }),
     });
     return self;
@@ -1029,14 +1039,16 @@ void app.whenReady().then(() => {
         if (!first || first.type !== "session_created" || !first.workspace) {
           throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
         }
-        // C1 的第二道门：父 turn 还跑着的时候，它派出去的子会话一定是活的
-        // （runner 正在跑它）。此刻它不在注册表里就说明登记那一环漏了——
-        // 绝不能顺手再建一个 agent 顶上：第二个 agent 的崩溃修复会给还在飞的
-        // 工具调用补一条"app 在执行中退出"的假结果，紧接着真结果也落盘，
-        // 同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
-        // 重启后的真崩溃修复不受影响：那时 runningSessions 是空的
-        if (first.spawnedBy && runningSessions.has(first.spawnedBy.sessionId)) {
-          throw new Error("这个子会话正在跑，稍等一下再看");
+        // C1 的第二道门：本次运行派出去的子会话，从 register 那一刻起就在 agents 里，
+        // 走不到这里；走到这里说明登记那一环漏了。绝不能顺手再建一个 agent 顶上——
+        // 第二个 agent 的崩溃修复会给还在飞的工具调用补一条"app 在执行中退出"的假结果，
+        // 紧接着真结果也落盘，同一个 toolCallId 两条 tool_result，这个会话从此永久 400。
+        //
+        // 判据是 spawnedThisRun 而不是"父会话此刻有没有 turn 在跑"（issue #141）：
+        // 后者会说假话——重启后点开一张上一轮遗留的子会话卡片、而父会话此刻恰好在跑，
+        // 用户会看到"它正在跑"，其实它早停了。上一轮的子会话该走下面的崩溃修复重建
+        if (spawnedThisRun.has(sessionId)) {
+          throw new Error("这个子会话本次运行里已经建过 agent，重建会毁掉它的日志——重启应用后再看");
         }
         // 是子会话就按它当初那副装备重建（工具白名单 / 审批链 / 没有 task）
         const child = childAgentConfig(events);
