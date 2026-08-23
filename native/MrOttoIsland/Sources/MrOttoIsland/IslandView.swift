@@ -209,8 +209,10 @@ struct AgentRow: View {
         Text(agent.title ?? "未命名会话")
           .lineLimit(1)
           .foregroundStyle(.white)
-        if agent.phase == .active, let tool = agent.currentTool {
-          Text("\(tool.verb) \(tool.target)")
+        if agent.phase == .active {
+          // 无工具时(刚开跑/思考中)也给行内 caption,和详情区 activeRow 的兜底
+          // 文案一致——不然列表行只有蓝点没字,看不出这行在干嘛(#194)。
+          Text(agent.currentTool.map { "\($0.verb) \($0.target)" } ?? "思考中…")
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -246,8 +248,11 @@ struct IslandCompactView: View {
 
   var body: some View {
     Group {
-      if model.selectedAgent?.phase == .approval {
-        // approval 不等 hover 直接 expand,compact 内容不会被看到,不需要入口。
+      if model.fleet.agents.contains(where: { $0.phase == .approval }) {
+        // approval 不等 hover 直接 expand(desiredState 是 fleet-wide 的 contains,
+        // 见 main.swift),compact 内容不会被看到,不需要入口。这里的判断跟着
+        // 改成 fleet-wide,和展开条件保持同一把键——原先按 selectedAgent 判,
+        // 用户手动选中别的行时和展开条件错位(#194)。
         Color.clear.frame(width: 1, height: 1)
       } else if anyActive {
         // 脉动点本身就是入口:点一下进输入态(Task 6)。视觉不变,只是加了可点性,
