@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// DynamicNotch 的 expanded 内容:上半区是会话列表(逐 session 一行,点选切换),
@@ -310,39 +311,42 @@ struct IslandCompactView: View {
     model.fleet.agents.contains { $0.phase == .active }
   }
 
+  /// SPM 资源 bundle 里的 logo(透明背景版 otto.png,和渲染层同一张图,#201)。
+  /// 找不到给 nil,下面兜底回键盘图标——资源缺失(打包漏拷 bundle)时岛不能瞎。
+  private static let logo: NSImage? =
+    Bundle.module.url(forResource: "otto", withExtension: "png")
+      .flatMap { NSImage(contentsOf: $0) }
+
   var body: some View {
-    Group {
-      if model.fleet.agents.contains(where: { $0.phase == .approval }) {
-        // approval 不等 hover 直接 expand(desiredState 是 fleet-wide 的 contains,
-        // 见 main.swift),compact 内容不会被看到,不需要入口。这里的判断跟着
-        // 改成 fleet-wide,和展开条件保持同一把键——原先按 selectedAgent 判,
-        // 用户手动选中别的行时和展开条件错位(#194)。
-        Color.clear.frame(width: 1, height: 1)
-      } else if anyActive {
-        // 脉动点本身就是入口:点一下进输入态(Task 6)。视觉不变,只是加了可点性,
-        // 跟 task-5 报告里"active 默认折叠只露一个提示点"的设计没冲突。
-        Button {
-          model.enterCompose()
-        } label: {
-          Circle()
-            .fill(Color.accentColor)
-            .frame(width: 5, height: 5)
-            .opacity(pulse ? 1 : 0.35)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
-        }
-        .buttonStyle(.plain)
-        .onAppear { pulse = true }
-      } else {
-        // Task 6 之前这里是纯 Color.clear(贴合刘海什么都不显)。要让 idle 也能进输入态,
-        // 必须有个可点的东西——用一个很小的键盘图标当"点一下说话"入口,尽量不抢视觉。
-        Button {
-          model.enterCompose()
-        } label: {
+    // logo 常显(#201):它是身份标识,不再按 phase 换入口图标——点 logo 进输入态,
+    // active 只是在旁边多一颗脉动点。approval 时 compact 内容照旧不会被看到
+    // (desiredState fleet-wide 直接 expand),不用专门藏。
+    HStack(spacing: 5) {
+      Button {
+        model.enterCompose()
+      } label: {
+        if let logo = Self.logo {
+          Image(nsImage: logo)
+            .resizable()
+            .scaledToFit()
+            .frame(height: 14)
+        } else {
           Image(systemName: "keyboard")
             .font(.system(size: 8))
             .foregroundStyle(.white.opacity(0.55))
         }
-        .buttonStyle(.plain)
+      }
+      .buttonStyle(.plain)
+      if anyActive {
+        Circle()
+          .fill(Color.accentColor)
+          .frame(width: 5, height: 5)
+          .opacity(pulse ? 1 : 0.35)
+          .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+          .onAppear { pulse = true }
+          // repeatForever 的动画锚在 pulse 的**值变化**上:active 结束点被移除后
+          // pulse 还是 true,下次再 active 时没有变化就没有动画——归零才有下一次
+          .onDisappear { pulse = false }
       }
     }
     .padding(.horizontal, 6)
