@@ -180,7 +180,13 @@ export function TerminalView() {
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    // flex-1 不能少（issue #123 的 #117-5：拖宽面板终端不跟着变宽）：
+    // 宿主槽位是个横向 flex 容器，这一层没有 flex-1 就只按内容宽度铺——
+    // min-w-0 让它缩得下去，却没有任何东西让它长得起来。于是 fit() 量到的
+    // 宿主宽度永远等于此刻的终端宽度，列数只减不增：面板拖宽了，终端还是
+    // 原来那么宽，右边空一条。别的右侧面板走 settingsShell 的 MAIN_COL
+    // （"flex-1 min-w-0 flex h-full flex-col"），本来就带着它
+    <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className={`flex ${HEADER_H} items-center gap-1 border-b border-border px-2 drag-region`}>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((t) => (

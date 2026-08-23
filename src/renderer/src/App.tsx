@@ -1720,6 +1720,9 @@ function AppSidebar() {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                // 纯图标按钮：Tooltip 只在悬停时才挂 aria-describedby，读屏和自动化
+                // 平时看到的是一颗没有名字的按钮。aria-label 才是它的名字
+                aria-label="设置"
                 className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
                 onClick={() => void openSettings("keys")}
               >
