@@ -486,6 +486,13 @@ void app.whenReady().then(() => {
     // 同 classifyAndAppend：出了 turn 锁，这一跑期间会话可能已被 purge，
     // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
     if (!agents.has(sessionId)) return;
+    // 跑的这几十秒里下一个 turn 可能已经 auto-compact 了：那份摘要描述的是被 compact
+    // 替换掉的历史，投影侧（latestMicroCompacted）会按 coversUpTo 丢弃它，这里干脆
+    // 不落——落了也只是一条永远不投影、却记在账上的事件
+    const compactedSince = store
+      .load(sessionId)
+      .some((e) => e.type === "context_compacted" && e.seq > result.coversUpTo);
+    if (compactedSince) return;
     const event = store.append({
       sessionId, ts: Date.now(), type: "micro_compacted",
       summary: result.summary, coversUpTo: result.coversUpTo, model: MICRO_MODEL,
