@@ -3,6 +3,7 @@
 
 import type { SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
+import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
 import { charCount, MEMORY_LIMITS, parseEntries, formatEntries } from "../shared/memoryStore.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
@@ -296,12 +297,6 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
   const micro = absorbedIndexes(events, barren);
 
-  // 已启用的 skill（issue #214）：context_compacted 清场会把 skill 指令连同历史
-  // 一起抹掉——用户没说停，技能却无声失效。清场后按这份台账重注入：快照本来
-  // 就在 skill_invoked 事件里，重注入是纯投影（可从日志推导，不落新事件），
-  // 旧日志追溯受益。按名去重、后启用覆盖先启用（同名重复注入没有第二种语义）。
-  const activeSkills = new Map<string, { content: string; args?: string }>();
-
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {
       messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
@@ -390,10 +385,6 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
             `[本轮启用 skill「${event.name}」${event.args ? `（参数：${event.args}）` : ""}` +
             `，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
         });
-        activeSkills.set(event.name, {
-          content: event.content,
-          ...(event.args !== undefined ? { args: event.args } : {}),
-        });
         break;
 
       case "image_described":
@@ -441,11 +432,10 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
           role: "user",
           content: `[上下文已压缩。以下是此前对话的摘要，作为你对这段历史的全部记忆]\n${event.summary}`,
         });
-        // 已启用的 skill 随清场重注入（issue #214）：摘要之后、当前请求之前——
-        // 模型先读说明书再读任务，与首次注入的次序一致。用户没有"停用"动作，
-        // 所以启用过 = 仍然生效；快照取台账里那份（发送时刻的原文），不回磁盘
-        // 现读——文件后来被改/被删不影响重放，与 ADR-0007 的快照语义一脉相承
-        for (const [name, s] of activeSkills) {
+        // 已启用的 skill 随清场重注入（issue #214，ADR-0066）：摘要之后、当前请求
+        // 之前——模型先读说明书再读任务，与首次注入的次序一致。台账语义（启用过=
+        // 仍然生效、按名去重、空跑不算）在 activeSkills.ts，与 subagent 下发共用一份
+        for (const [name, s] of activeSkills(events, barren, i)) {
           messages.push({
             role: "user",
             content:
