@@ -1,0 +1,4 @@
+# promptfoo 的运行产物和本地 key——都不进库
+.env
+.promptfoo/
+output/

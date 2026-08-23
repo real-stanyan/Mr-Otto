@@ -1,0 +1,32 @@
+# skill 注入手法三臂对照（见 README.md；跑法：npx promptfoo@latest eval -c 本文件）
+description: "skill 注入手法：无 / user 消息注入（ADR-0007 现行）/ system 注入（被否决备选）"
+
+prompts:
+  - file://arms/baseline.json
+  - file://arms/user-inject.json
+  - file://arms/system-inject.json
+
+providers:
+  # 项目默认模型先行。DEEPSEEK_API_KEY 从 --env-file 进来
+  - id: openai:chat:deepseek-chat
+    label: deepseek-chat
+    config:
+      apiBaseUrl: https://api.deepseek.com/v1
+      apiKeyEnvar: DEEPSEEK_API_KEY
+  # 想加 Claude 臂就解开注释并填 ANTHROPIC_API_KEY。
+  # 注意：user-inject 臂是**连续两条 user 消息**——这正是 ADR-0007 说的
+  # 「各家方言兼容性参差」本身；anthropic 方言对连续 user 的处理先自己验一次再开
+  # - id: anthropic:messages:claude-haiku-4-5-20251001
+  #   label: claude-haiku
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://metrics/compliance.js
+
+tests:
+  - vars: { task: "解释什么是 debounce，以及它和 throttle 的区别。" }
+  - vars: { task: "我想把最近 3 个 commit 合成一个，给出操作思路。" }
+  - vars: { task: "一个读取 CSV 并对某列求和的脚本，帮它的三个主要函数起名。" }
+  - vars: { task: "event-sourcing 相比直接存当前状态有什么好处？" }
+  - vars: { task: "给新人解释为什么测试要放独立目录而不是和源码混在一起。" }
