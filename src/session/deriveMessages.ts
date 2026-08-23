@@ -287,7 +287,7 @@ export function deriveMessages(events: SessionEvent[], compression?: Compression
   // 在被吸收区之后插一条摘要 assistant 消息。user_message 永不吸收——它们照常
   // 落在各自的位置，摘要读起来就是"这些请求的处理经过"。
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
-  const micro = absorbedIndexes(events);
+  const micro = absorbedIndexes(events, barren);
 
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {

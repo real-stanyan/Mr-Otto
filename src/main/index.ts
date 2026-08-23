@@ -551,7 +551,8 @@ void app.whenReady().then(() => {
     // 那一刻开始走表。提到闭包外面 = 主进程开机 30 秒后每次微压缩都当场超时
     const cheap = createCheapAdapter(MICRO_MODEL, MICRO_TIMEOUT_MS);
     if (!cheap) return;
-    const result = await microCompactOnce(store.load(sessionId), cheap.adapter, {
+    const log = store.load(sessionId);
+    const result = await microCompactOnce(log, cheap.adapter, {
       signal: cheap.signal,
     });
     if (!result) return;
@@ -560,9 +561,12 @@ void app.whenReady().then(() => {
     if (!agents.has(sessionId)) return;
     // 跑的这几十秒里下一个 turn 可能已经 auto-compact 了：那份摘要描述的是被 compact
     // 替换掉的历史，投影侧（latestMicroCompacted）会按 coversUpTo 丢弃它，这里干脆
-    // 不落——落了也只是一条永远不投影、却记在账上的事件
+    // 不落——落了也只是一条永远不投影、却记在账上的事件。
+    // 只查开跑之后的尾巴（issue #197）：开跑前的日志喂过 microCompactOnce，
+    // 它选出的 coversUpTo 天然在当时最新的 compact 之后，旧事件里不可能命中
+    const lastSeen = log.at(-1)?.seq ?? -1;
     const compactedSince = store
-      .load(sessionId)
+      .load(sessionId, { afterSeq: lastSeen })
       .some((e) => e.type === "context_compacted" && e.seq > result.coversUpTo);
     if (compactedSince) return;
     const event = store.append({

@@ -10,9 +10,11 @@ import type { MicroCompactedEvent, SessionEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 
 /** 最新 context_compacted 的下标；没有 = -1。compact 清场后此前一切投影作废，
-    微压缩的计数（保护区、running summary）也从这之后重新开始 */
-function lastContextCompacted(events: SessionEvent[]): number {
-  for (let i = events.length - 1; i >= 0; i--) {
+    微压缩的计数（保护区、running summary）也从这之后重新开始。
+    endIdx = 只看这个下标（含）之前的日志——contextEstimate 要问"账单锚点那一刻"
+    的视图，全量扫会把锚点之后才发生的 compact 也算进来 */
+function lastContextCompacted(events: SessionEvent[], endIdx = events.length - 1): number {
+  for (let i = Math.min(endIdx, events.length - 1); i >= 0; i--) {
     if (events[i]?.type === "context_compacted") return i;
   }
   return -1;
@@ -26,11 +28,18 @@ function lastContextCompacted(events: SessionEvent[]): number {
     compact 跑在 turn 里），于是事件排在 compact 后面，可它读的是 compact 之前的日志，
     coversUpTo 指向被 compact 摘要替换掉的那段历史。这种"迟到的旧摘要"必须丢掉——
     留着它，投影会把 compact 已经折叠掉的历史用微摘要的形式再注回去一遍（重复记忆，
-    而且是两份措辞不同的记忆），正是 compact 清场要消灭的东西。 */
-export function latestMicroCompacted(events: SessionEvent[]): MicroCompactedEvent | null {
-  const floor = lastContextCompacted(events);
+    而且是两份措辞不同的记忆），正是 compact 清场要消灭的东西。
+
+    endIdx = 只看这个下标（含）之前的日志（issue #197）：contextEstimate 的
+    microAtAnchor 要问"账单锚点那一刻生效的 micro 是哪条"——同一条有效性规则，
+    同一个函数，只是视野截到锚点为止。缺省 = 全量（原语义不变） */
+export function latestMicroCompacted(
+  events: SessionEvent[],
+  endIdx = events.length - 1
+): MicroCompactedEvent | null {
+  const floor = lastContextCompacted(events, endIdx);
   const floorSeq = floor >= 0 ? events[floor]!.seq : -Infinity;
-  for (let i = events.length - 1; i > floor; i--) {
+  for (let i = Math.min(endIdx, events.length - 1); i > floor; i--) {
     const e = events[i];
     if (e?.type === "micro_compacted" && e.coversUpTo > floorSeq) return e;
   }
@@ -80,11 +89,15 @@ export interface AbsorbedRange {
     nextMicroExchange 的 end 只会停在 turn_ended/assistant/tool_result 上，tool_result
     和请求它的 assistant_message 天然同框；这里防的是别的调用方喂一个不来自
     nextMicroExchange 的、手写/旧版本产生的 coversUpTo。 */
-export function absorbedIndexes(events: SessionEvent[]): AbsorbedRange | null {
+export function absorbedIndexes(
+  events: SessionEvent[],
+  // 调用方（deriveMessages / contextEstimate.pendingAfter）自己已经算过一份
+  // barren 的话传进来（issue #197 perf）——两边必须是同一把尺子，缺省自算
+  barren: ReadonlySet<number> = barrenEventIndexes(events)
+): AbsorbedRange | null {
   const latest = latestMicroCompacted(events);
   if (!latest) return null;
   const floor = lastContextCompacted(events);
-  const barren = barrenEventIndexes(events);
   const start = absorbableFrom(events, floor, barren);
   const absorbed = new Set<number>();
   let last = -1;

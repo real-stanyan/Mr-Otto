@@ -221,12 +221,14 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
-  load(sessionId: string): SessionEvent[] {
+  load(sessionId: string, opts: { afterSeq?: number } = {}): SessionEvent[] {
+    // afterSeq = 只读这个 seq 之后的事件（issue #197）：微压缩写侧收口前的
+    // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读
     const rows = this.db
       .prepare(
-        "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? ORDER BY seq"
+        "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq"
       )
-      .all(sessionId) as {
+      .all(sessionId, opts.afterSeq ?? -1) as {
       seq: number;
       ts: number;
       type: string;
