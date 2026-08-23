@@ -138,7 +138,7 @@ describe("microCompactOnce", () => {
     expect(await microCompactOnce(fiveTurns(), scripted([new Error("boom")]).adapter, { batchMin: 1 })).toBeNull();
   });
 
-  it("攒批门槛（ADR-0068）：backlog 不足默认批量数 → null，连模型都不叫", async () => {
+  it("攒批门槛（ADR-0073）：backlog 不足默认批量数 → null，连模型都不叫", async () => {
     // fiveTurns 的 backlog 只有 u1、u2 两段，默认 batchMin=4 不动手——
     // 不落 micro = 这一 turn 投影零变化，前缀缓存完整
     const { adapter, prompts } = scripted(["S"]);

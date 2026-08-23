@@ -46,7 +46,7 @@ describe("微压缩投影", () => {
 
   it("被吸收的 assistant/tool 换成一条摘要；user 原文保留；保护区与保真区原样", () => {
     const events = fiveTurns();
-    const pick = nextMicroExchange(events, 2)!; // 攒批区间覆盖 u1+u2（ADR-0068）
+    const pick = nextMicroExchange(events, 2)!; // 攒批区间覆盖 u1+u2（ADR-0073）
     events.push(micro("S1", pick.coversUpTo));
     const t = texts(events);
     expect(t).toEqual([

@@ -1642,7 +1642,7 @@ git commit -m "feat(friends): DM 聊天面板——右侧叠加槽位,气泡列�
 ### Task 9: ADR + 收口验收
 
 **Files:**
-- Create: `docs/adr/0014-friend-system-supabase.md`（编号执行时以 `ls docs/adr/` 最大号 +1 为准）
+- Create: `docs/adr/0071-friend-system-supabase.md`（落盘时是 0014，撞号后改号，见 issue #230）（编号执行时以 `ls docs/adr/` 最大号 +1 为准）
 
 **Interfaces:**
 - Consumes: 全部前序任务

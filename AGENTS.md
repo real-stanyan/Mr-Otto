@@ -46,7 +46,7 @@ v2：Docker per bot（dockerode，自托管 VPS）
 - **Protocol files stay committed — never add them to `.gitignore`**: `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `docs/gearbox-adr/`, `.gearbox-version`, `.github/workflows/ci.yml`. The repo is the only shared memory between shifts; an ignored protocol file exists locally but never reaches the next agent's clone (ADR-0037)
 - One agent sees a task through from start to finish; handoffs only happen at task boundaries (issue closed / PR merged), never mid-task
 - Non-trivial changes go through a branch + PR; typo-level tweaks can go straight into main
-- **Project-owned** architectural decisions go in `docs/adr/` (one decision per file, starting at 0001); protocol ADRs live in `docs/gearbox-adr/`, managed by the gearbox tooling — don't hand-edit them
+- **Project-owned** architectural decisions go in `docs/adr/` (one decision per file, starting at 0001); protocol ADRs live in `docs/gearbox-adr/`, managed by the gearbox tooling — don't hand-edit them. **Project ADR numbers are claimed at merge, not at branch time** (project ADR-0074, mirroring what "Parallel shifts" already says for protocol ADRs): before merging, re-fetch; if another PR landed on your number, renumber your ADR to `max + 1` inside your PR, add an `原为 ADR-00XX` line at the top of the file, and update every in-repo reference to it. Commit messages can't be rewritten, so the alias line is what keeps old references resolvable. The gate asserts no two files share a four-digit prefix (`tests/docs/adrNumbers.test.ts`)
 - Look up domain-term definitions in `CONTEXT.md` — **two sections: protocol terms and product/technical terms** (ADR-0070); add new terms to the matching section as they come up (product concepts belong there too; no back-filling of historical debt)
 
 ### Roles of issues & PRs
@@ -183,6 +183,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/distribution-macos.md` — macOS 打包 / 签名 / 分发
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
+- `tests/docs/adrNumbers.test.ts` — `docs/adr/` 编号唯一 + 不跳号的可执行版（撞号在这里红，ADR-0074）
 - `tests/e2e/` — Playwright-electron 冒烟（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）
 - `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）
 - `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）

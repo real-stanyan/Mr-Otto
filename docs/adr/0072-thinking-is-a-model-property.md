@@ -1,4 +1,9 @@
-# ADR-0031：thinking 是型号的属性，不是一个全局布尔
+# ADR-0072：thinking 是型号的属性，不是一个全局布尔
+
+> 原为 ADR-0031。撞号改号（issue #230）：`docs/adr/` 下 0031 曾同时有两份，
+> 本篇是较晚合并的那份。**2026-08-23 之前的 commit message 和已关闭的 issue
+> 里仍写着 ADR-0031**——那些改不动，靠这一行认领。留在 0031 的那份是
+> 「终端挂在 ExecutionWorld 上」（`0031-terminal-rides-the-world-seam-and-stays-out-of-the-log.md`）。
 
 日期：2026-08-19
 状态：已采纳

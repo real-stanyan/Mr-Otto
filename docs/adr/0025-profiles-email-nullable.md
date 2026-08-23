@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-08-18
-- 关联：issue #62，migration `supabase/migrations/0001_friends.sql`，ADR-0014（好友系统）
+- 关联：issue #62，migration `supabase/migrations/0001_friends.sql`，ADR-0071（好友系统，原 0014）
 
 ## 背景
 

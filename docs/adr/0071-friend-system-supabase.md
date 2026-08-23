@@ -1,4 +1,10 @@
-# 0014. 好友系统走 Supabase 直连(表 + RLS + Realtime,无自建服务器)
+# 0071. 好友系统走 Supabase 直连(表 + RLS + Realtime,无自建服务器)
+
+> 原为 ADR-0014。撞号改号（issue #230）：`docs/adr/` 下 0014 曾同时有两份，
+> 本篇是较晚合并的那份，按新规则（AGENTS.md「Roles of issues & PRs」的
+> ADR 编号 claim-at-merge）改到当时最大号 +1。**2026-08-23 之前的 commit
+> message 和已关闭的 issue 里仍写着 ADR-0014**——那些改不动，靠这一行认领。
+> 留在 0014 的那份是分支选择器（`0014-branch-picker.md`）。
 
 日期:2026-08-18
 状态:已采纳

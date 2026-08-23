@@ -167,7 +167,7 @@ export async function microCompactOnce(
   opts: { signal?: AbortSignal; keepRecentTurns?: number; batchMin?: number } = {}
 ): Promise<MicroCompactResult | null> {
   try {
-    // 攒批（ADR-0068）：不足 batchMin 个可吸收 exchange 就什么也不做——
+    // 攒批（ADR-0073）：不足 batchMin 个可吸收 exchange 就什么也不做——
     // 每 turn 落一条 micro = 投影中段每 turn 重写 = prefix cache 每 turn 全废
     const pick = nextMicroExchange(
       events,

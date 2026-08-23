@@ -9,7 +9,7 @@
 
 - `auth.users.user_metadata` —— OAuth provider 给的（Google/GitHub 的昵称和头像），
   `account.ts` 的 `toAccountInfo` 把它投影成 `AccountInfo`，侧栏和账号页显示的就是它。
-- `public.profiles` —— 好友系统读写的那张表（ADR-0014）。**好友列表、聊天头部、
+- `public.profiles` —— 好友系统读写的那张表（ADR-0071，原 0014）。**好友列表、聊天头部、
   牌桌座位牌上显示的都是它**。
 
 这两份数据从来没有被谁裁决过谁说了算，因为在 issue #95 之前，用户根本没有改资料的入口——
