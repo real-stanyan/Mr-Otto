@@ -42,6 +42,8 @@ import { classifySection } from "./sectionClassifier.js";
 import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
+import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
+import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import { scanSkills } from "./skills.js";
 import {
   scanSubagents,
@@ -205,6 +207,9 @@ void app.whenReady().then(() => {
   // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
+  // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
+  // 每次造 agent 前现读——设置页改了不用重启
+  const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
   applyToEnv(loadKeys(keyVaultPath), process.env);
   // .env 那条路不经过 keyVault，登记不到（loadDotEnv 只认"补空缺"这一件事）。
   // 补登记：本仓认识的那几个 provider key 变量，此刻有值的都算凭据——
@@ -447,6 +452,7 @@ void app.whenReady().then(() => {
       }),
       getAccessToken,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
       register: (child) => void agents.set(child.sessionId, child),
@@ -601,6 +607,7 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 刻意不给 mcp（与 browser 的桩子相反）：这一步跑在注册第一个 IPC 通道
       // 之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
@@ -718,6 +725,7 @@ void app.whenReady().then(() => {
         resumeSessionId: args.resumeSessionId,
         config: args.child,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
@@ -746,6 +754,7 @@ void app.whenReady().then(() => {
       history: createHistoryCapability(store, () => self.sessionId),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
       // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
@@ -768,6 +777,7 @@ void app.whenReady().then(() => {
         }),
         getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
         register: (child) => void agents.set(child.sessionId, child),
@@ -933,6 +943,11 @@ void app.whenReady().then(() => {
     const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
     await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
   });
+
+  // ── 自动压缩设置（设置页读/改）────────────────────────────────────
+  ipcMain.handle(CHANNELS.getAutoCompact, () => loadAutoCompact(autoCompactPath));
+  ipcMain.handle(CHANNELS.setAutoCompact, (_e, settings: AutoCompactSettings) =>
+    saveAutoCompact(autoCompactPath, settings));
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());

@@ -24,19 +24,21 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk * 0.6 + rest / 4);
 }
 
-/** 账单锚点：最近一次带 usage 的事件（API 报的数，事实）。
-    compact 锚点 = 摘要体积（之后历史只剩摘要）。idx = -1 表示还没有任何账单 */
+/** 账单锚点：最近一次带 usage 的 assistant_message，或最近一次 context_compacted
+    （无论有没有 usage）。compact 锚点 = 摘要体积——有账单就是 completionTokens（事实），
+    没有账单（摘要模型没回 usage）就退化为摘要文本的估算，但仍然是锚点：
+    之前的历史已经被摘要替换，不能让 for 循环穿透过去、把 compact 之前那笔更大的
+    账单当成锚点——那样圆环会在 compact 之后立刻虚高回压缩前的水位（livelock：
+    第二轮 runTurn 一看"占用又超阈值"，又触发一次 compact）。
+    idx = -1 表示还没有任何账单 */
 function billingAnchor(events: SessionEvent[]): { value: number; idx: number } {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
-    if ((e.type === "assistant_message" || e.type === "context_compacted") && e.usage) {
-      return {
-        value:
-          e.type === "context_compacted"
-            ? e.usage.completionTokens
-            : e.usage.promptTokens + e.usage.completionTokens,
-        idx: i,
-      };
+    if (e.type === "context_compacted") {
+      return { value: e.usage ? e.usage.completionTokens : estimateTokens(e.summary), idx: i };
+    }
+    if (e.type === "assistant_message" && e.usage) {
+      return { value: e.usage.promptTokens + e.usage.completionTokens, idx: i };
     }
   }
   return { value: 0, idx: -1 };

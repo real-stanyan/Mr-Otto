@@ -16,6 +16,7 @@ import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
 import { withMcp } from "../../src/world/executionWorld.js";
+import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
@@ -509,6 +510,46 @@ describe("MCP 接进装配", () => {
         store, workspace: "/proj/x", push, attachments, world: createLocalWorld(),
       });
       expect(names(agent).some((n) => n.startsWith("mcp"))).toBe(false);
+      store.close();
+    });
+  });
+});
+
+describe("自动压缩：目录外的型号 id（窗口未知）不能顶着假窗口触发压缩（ADR-0062）", () => {
+  it("OTTER_MODEL 是没见过的 id：即使账单锚点已经巨大，也不落 context_compacted", () => {
+    const store = new EventStore(":memory:");
+    const sessionId = "s-unknown-model";
+    store.append({ sessionId, ts: 0, type: "session_created", workspace: "/proj/x" });
+    store.append({ sessionId, ts: 0, type: "user_message", content: "早先" });
+    // 账单锚点巨大——如果窗口被当成已知的兜底常量（128_000），任何阈值都早超了
+    store.append({
+      sessionId, ts: 0, type: "assistant_message", content: "…", model: "m",
+      usage: { promptTokens: 999_000, completionTokens: 1_000 },
+    });
+    store.append({ sessionId, ts: 0, type: "turn_ended", outcome: "completed" });
+
+    const prevModel = process.env["OTTER_MODEL"];
+    process.env["OTTER_MODEL"] = "一个没见过的型号-xyz";
+    let agent: ReturnType<typeof createAgent>;
+    try {
+      agent = createAgent({ store, workspace: "/proj/x", push, attachments, resumeSessionId: sessionId });
+    } finally {
+      // 只在装配那一刻读 env——读完立刻还原，不污染其它测试
+      if (prevModel === undefined) delete process.env["OTTER_MODEL"];
+      else process.env["OTTER_MODEL"] = prevModel;
+    }
+
+    // 换掉真 adapter：这条路径本来会真的打 API，测试只关心 compact 触不触发
+    agent.engine.setAdapter({
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        return { content: "答" };
+      },
+    } as unknown as ModelAdapter);
+
+    return agent.engine.runTurn("新问题").then(() => {
+      const types = store.load(sessionId).map((e) => e.type);
+      expect(types).not.toContain("context_compacted");
       store.close();
     });
   });

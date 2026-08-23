@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, Bot, Brain, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, KeyRound, ListChecks, Palette, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users, type LucideIcon } from "lucide-react";
+import { ArrowLeft, BookMarked, Bot, Brain, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, KeyRound, ListChecks, Palette, Plug, Plus, Search, Shrink, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users, type LucideIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -81,6 +81,7 @@ import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
+import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -1227,6 +1228,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: Luci
   { id: "agents", label: "子智能体", icon: Bot },
   { id: "mcp", label: "MCP", icon: Plug },
   { id: "memory", label: "记忆", icon: Brain },
+  { id: "context", label: "上下文", icon: Shrink },
 ];
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -2659,6 +2661,8 @@ export function App() {
     <McpSettings />
   ) : settingsSection === "memory" ? (
     <MemorySettings />
+  ) : settingsSection === "context" ? (
+    <AutoCompactSettings />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (

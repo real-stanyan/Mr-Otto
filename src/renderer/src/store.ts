@@ -85,7 +85,15 @@ type Phase = "connecting" | "welcome" | "chat";
 
 /** 设置模式的栏目：账号 / 模型配置(API Key) / Skill 库。侧栏点会话列表区
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
-export type SettingsSection = "account" | "keys" | "appearance" | "skills" | "agents" | "mcp" | "memory";
+export type SettingsSection =
+  | "account"
+  | "keys"
+  | "appearance"
+  | "skills"
+  | "agents"
+  | "mcp"
+  | "memory"
+  | "context";
 
 /** 主区两档：work = 工程会话，game = 德州牌桌 */
 export type SessionMode = "work" | "game";

@@ -36,6 +36,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
 | 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除归档、子会话、当前会话 | ADR-0061 |
 | 历史索引（events_fts） | `events` 表的 FTS5 trigram 派生索引（user/assistant/tool_result 正文），insert 触发器同步、老库首开回填、purge 连带删；可 DROP 重建，不是事实 | ADR-0061 |
+| 自动压缩（auto compact） | 上下文占用 ≥ 窗口 × 阈值（≥512K 窗口 0.50，否则 0.75；可调 0.3–0.9）时，loop 在下一次模型调用前自动 /compact；一 turn 一次；摘要 prompt 带脱敏后的记忆快照 | ADR-0062 |
 
 ## Key invariants
 

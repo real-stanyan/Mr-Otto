@@ -16,6 +16,7 @@ import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
 import type { BrowserCapability, McpCapability } from "../world/executionWorld.js";
 import type { SessionEvent } from "../session/events.js";
+import type { AutoCompactSettings } from "../shared/autoCompact.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
     从来没落过盘，而重建只信快照（ADR-0048 决策 3），所以 `deny` 现在恒为 true ——
@@ -76,6 +77,9 @@ export function createChildAgent(opts: {
       给了也只是**挂载**——config.allowTools 那份白名单里没点名的 mcp__… 照样过滤掉，
       与活着那一侧（subagentRunner 复用父 world）是同一套规则 */
   mcp?: McpCapability;
+  /** 自动压缩设置的现读器（同 alwaysAllow 的活引用规矩）。子会话也该守同一份
+      设置——不给 = 走 createAgent 的全局默认 */
+  autoCompactSettings?: () => AutoCompactSettings;
 }): ReturnType<typeof createAgent> {
   // 刻意不传 history：重建出来的子会话没有 world.history，session_search 工具
   // 不会挂上去。活着的子会话（subagentRunner.ts）复用 `parent.world`——同一个
@@ -92,6 +96,7 @@ export function createChildAgent(opts: {
     ...(opts.getAccessToken ? { getAccessToken: opts.getAccessToken } : {}),
     ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
+    ...(opts.autoCompactSettings ? { autoCompactSettings: opts.autoCompactSettings } : {}),
     // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧
     ...(opts.config.deny
