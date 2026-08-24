@@ -35,6 +35,9 @@ export function createVisionBridge(
       model: choice.model,
       vision: true,
       readAttachment,
+      // adapter 内建的通用重试（issue #283 ①）在这关掉：本文件的五段退避是给
+      // 免费视觉档的高峰限流专门调的（总窗 ~35s），两层叠加会把等待时间乘起来
+      timing: { maxAttempts: 1 },
     });
     // 非流式、不带工具:代读没有直播价值,结果整段落事件
     const messages = [

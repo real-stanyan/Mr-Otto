@@ -160,6 +160,9 @@ export function createAgent(opts: {
   /** 自动压缩设置的现读器（index.ts 从设置页状态注入，ADR-0062）。
       不给 = 用全局默认（DEFAULT_AUTO_COMPACT，开启，按窗口两档阈值） */
   autoCompactSettings?: () => AutoCompactSettings;
+  /** 长 turn 软告警（issue #283 ⑥）：单 turn 模型步数踩线时喊一次。
+      不给 = 不喊（子会话/测试/裸装配照旧）。index.ts 拿它发系统通知 */
+  onLongTurn?: (rounds: number) => void;
 }) {
   const { store } = opts;
 
@@ -413,6 +416,7 @@ export function createAgent(opts: {
       contextWindow: () => (current.contextWindowKnown ? current.contextWindow : undefined),
       settings: opts.autoCompactSettings ?? (() => DEFAULT_AUTO_COMPACT),
     },
+    ...(opts.onLongTurn ? { onLongTurn: opts.onLongTurn } : {}),
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。

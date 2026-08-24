@@ -16,6 +16,11 @@ export interface Tool {
   def: ToolDefinition;
   /** true = 执行前必须过人工审批门（下一课接入管线） */
   requiresApproval: boolean;
+  /** true = 只读且无共享状态，模型同一步里连续的这类调用可以并发执行
+      （issue #283 ③）。缺席 = 串行（老工具/有副作用的一个字不用改）。
+      只给真正"怎么并发都无所谓"的工具贴：读文件、搜网页这类；bash/写文件
+      天然串行，browser_read 共享同一个浏览器实例的当前页，也不贴 */
+  parallelSafe?: boolean;
   /** 挂载(mounted) 和可用(available) 是两件事，别混：挂载答"这次装配拥不拥有
       这把刀"（由 agent.ts 组装时的固定条件决定，一次定终身）；available 答
       "此刻用它能不能干出点什么"（可以每次现算，随外部状态变化）。缺席 = 恒可用，

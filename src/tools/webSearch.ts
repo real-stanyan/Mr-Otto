@@ -18,6 +18,7 @@ export function createWebSearchTool(getKey: GetKey): Tool {
       },
     },
     requiresApproval: false,
+    parallelSafe: true, // 只读外呼,无共享状态(issue #283 ③)
 
     async run(args, world) {
       const { query, max_results } = args as { query?: unknown; max_results?: unknown };

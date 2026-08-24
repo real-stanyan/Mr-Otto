@@ -143,3 +143,65 @@ describe("自动压缩", () => {
     expect(store.load("s").at(-1)).toMatchObject({ type: "turn_ended", outcome: "aborted" });
   });
 });
+
+describe("同 turn 二次自动压缩（增长闸，issue #283 ⑤）", () => {
+  const toolWorld = {
+    fs: { read: async () => "内容", write: async () => {} },
+    exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    http: { postJson: async () => ({}) },
+  } as unknown as ExecutionWorld;
+  const readTool = {
+    def: { name: "read_file", description: "", parameters: { type: "object", properties: {} } },
+    requiresApproval: false,
+    run: async () => "内容",
+  };
+
+  it("压缩后占用再度爆表且增长够档 → 同 turn 第二刀", async () => {
+    const store = seeded();
+    const { adapter } = scripted([
+      { content: "摘要1" } as ModelReply, // compact #1（占用落回小水位 = 地板低）
+      {
+        content: "",
+        toolCalls: [{ id: "c1", name: "read_file", args: {} }],
+        // 大账单把锚点抬回 86k：> 80% 阈值，且距地板的增长远超 20k
+        usage: { promptTokens: 85_000, completionTokens: 1_000 },
+      } as ModelReply,
+      { content: "摘要2" } as ModelReply, // compact #2
+      { content: "答" } as ModelReply,
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [readTool],
+      world: toolWorld,
+      sessionId: "s",
+      autoCompact: { contextWindow: () => 100_000, settings: () => ({ enabled: true }) },
+    });
+    await engine.runTurn("超长任务");
+    const types = store.load("s").map((e) => e.type);
+    expect(types.filter((t) => t === "context_compacted")).toHaveLength(2);
+    expect(store.load("s").at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed" });
+  });
+
+  it("摘要仍胖但占用没新增长 → 不原地重压（重复烧钱回归）", async () => {
+    const store = seeded();
+    // 摘要 34 万 ASCII 字符 ≈ 85k 估算 token：压完仍超 80% 阈值，但增长≈0
+    const fat = "x".repeat(340_000);
+    const { adapter } = scripted([
+      { content: fat } as ModelReply, // compact #1，摘要没瘦
+      { content: "", toolCalls: [{ id: "c1", name: "read_file", args: {} }] } as ModelReply,
+      { content: "答" } as ModelReply,
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [readTool],
+      world: toolWorld,
+      sessionId: "s",
+      autoCompact: { contextWindow: () => 100_000, settings: () => ({ enabled: true }) },
+    });
+    await engine.runTurn("超长任务");
+    const types = store.load("s").map((e) => e.type);
+    expect(types.filter((t) => t === "context_compacted")).toHaveLength(1);
+  });
+});

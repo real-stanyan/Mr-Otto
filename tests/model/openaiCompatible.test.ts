@@ -152,18 +152,138 @@ describe("openaiCompatible 流式（SSE）", () => {
     expect(reply.usage).not.toHaveProperty("cachedTokens");
   });
 
-  it("signal 透传给 fetch：中断从这一根线穿进请求和 SSE 读流（ADR-0006）", async () => {
-    let seenSignal: AbortSignal | undefined;
+  it("外部 abort 传导：中断掐断在飞的请求（ADR-0006）", async () => {
+    // 重试/超时改造后（issue #283）fetch 拿到的是 adapter 自建的 signal（看门狗要能
+    // 自己掐断单次请求），契约从"同一个对象"改成"外部 abort 单向传导进来"
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: string, init: { signal?: AbortSignal }) => {
-        seenSignal = init.signal;
-        return { ok: true, json: async () => ({ choices: [{ message: { content: "嗯" } }] }) };
-      })
+      vi.fn(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_res, rej) => {
+            init.signal.addEventListener("abort", () => rej(init.signal.reason), { once: true });
+          })
+      )
     );
     const ctrl = new AbortController();
-    await adapter.chat([], undefined, undefined, ctrl.signal);
-    expect(seenSignal).toBe(ctrl.signal);
+    const pending = adapter.chat([], undefined, undefined, ctrl.signal);
+    const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    ctrl.abort();
+    await assertion;
+  });
+});
+
+describe("传输层重试与超时（issue #283）", () => {
+  /** 退避清零的适配器：测试不等真退避 */
+  const fastAdapter = (timing?: Partial<import("../../src/model/openaiCompatible.js").AdapterTiming>) =>
+    createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      timing: { backoffMs: [0], ...timing },
+    });
+
+  const okJson = { ok: true, json: async () => ({ choices: [{ message: { content: "好了" } }] }) };
+
+  it("429 后重试成功：一次限流不报废整个 turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "rate limited" })
+      .mockResolvedValueOnce(okJson);
+    vi.stubGlobal("fetch", fetchMock);
+    const reply = await fastAdapter().chat([]);
+    expect(reply.content).toBe("好了");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("网络层失败（fetch reject）后重试成功", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(okJson);
+    vi.stubGlobal("fetch", fetchMock);
+    const reply = await fastAdapter().chat([]);
+    expect(reply.content).toBe("好了");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("400（请求非法）不重试：重试只会得到同一个答案", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => "bad request" });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fastAdapter().chat([])).rejects.toThrow("model API 400");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("重试次数用尽 → 抛最后一次的错误", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 503, text: async () => "overloaded" });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fastAdapter({ maxAttempts: 3 }).chat([])).rejects.toThrow("model API 503");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("用户 abort 不重试：停止是意志不是故障（ADR-0006）", async () => {
+    const ctrl = new AbortController();
+    const fetchMock = vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      ctrl.abort(); // 请求在天上时用户按了停止
+      throw init.signal.reason ?? new DOMException("aborted", "AbortError");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fastAdapter().chat([], undefined, undefined, ctrl.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("响应头超时：挂死的连接被掐断并重试", async () => {
+    const fetchMock = vi
+      .fn()
+      // 首发永远不返回，但认 signal——被看门狗掐断后 reject
+      .mockImplementationOnce(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_res, rej) => {
+            init.signal.addEventListener("abort", () => rej(init.signal.reason), { once: true });
+          })
+      )
+      .mockResolvedValueOnce(okJson);
+    vi.stubGlobal("fetch", fetchMock);
+    const reply = await fastAdapter({ headersTimeoutMs: 20 }).chat([]);
+    expect(reply.content).toBe("好了");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("SSE 首字节前静默超时：可重试（什么都没直播过）", async () => {
+    const hangingBody = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: hangingBody })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: streamOf(['data: {"choices":[{"delta":{"content":"迟到"}}]}\n\n', "data: [DONE]\n\n"]),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const reply = await fastAdapter({ idleTimeoutMs: 20 }).chat([], undefined, () => {});
+    expect(reply.content).toBe("迟到");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("SSE 首字节后静默超时：不重试（半条消息续不上），报静默错误", async () => {
+    const enc = new TextEncoder();
+    const partialBody = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"说了一半"}}]}\n\n'));
+        // 之后永远不再吐字，也不 close
+      },
+      pull: () => new Promise(() => {}),
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: partialBody });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      fastAdapter({ idleTimeoutMs: 30 }).chat([], undefined, () => {})
+    ).rejects.toThrow("无数据");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

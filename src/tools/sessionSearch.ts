@@ -187,6 +187,7 @@ export function createSessionSearchTool(): Tool {
       },
     },
     requiresApproval: false,
+    parallelSafe: true, // 只读历史日志,无共享状态(issue #283 ③)
     run,
   };
 }
