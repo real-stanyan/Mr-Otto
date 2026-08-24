@@ -178,11 +178,28 @@ export class EventStore {
       @returns 真正被抹掉的 sessionId（含自己）——调用方据此把终端/浏览器/
                agent 注册表里对应的活资源一并注销 */
   purge(sessionId: string): string[] {
+    // fork 删除保护（issue #352）：有分支引用本会话 = 分支的历史前缀住在
+    // 本会话的事件行里，删父等于把分支的记忆连根抽走——拒绝，让用户先删分支。
+    // 刻意不做级联：分支在侧栏里是用户看得见的独立会话，静默连坐删除
+    // 与"删除 = 用户明确要抹掉的那一段"的心智模型相悖（ADR-0002 语义是
+    // 对单个会话的承诺，不是对一棵树的）
+    const forks = (
+      this.db
+        .prepare(
+          `SELECT session_id FROM events
+            WHERE type = 'session_created'
+              AND json_extract(payload, '$.forkedFrom.sessionId') = ?`
+        )
+        .all(sessionId) as { session_id: string }[]
+    ).map((r) => r.session_id);
+    if (forks.length > 0) {
+      throw new Error(`会话有 ${forks.length} 个分支引用它（${forks.join("、")}），先删除分支才能删除本会话`);
+    }
     const children = (
       this.db
         .prepare(
           `SELECT session_id FROM events
-            WHERE seq = 0 AND type = 'session_created'
+            WHERE type = 'session_created'
               AND json_extract(payload, '$.spawnedBy.sessionId') = ?`
         )
         .all(sessionId) as { session_id: string }[]
@@ -232,7 +249,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     const notIn = exclude.length ? `AND f.session_id NOT IN (${exclude.map(() => "?").join(",")})` : "";
     const common = `
       AND f.session_id NOT IN (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
-      AND f.session_id NOT IN (SELECT session_id FROM events WHERE seq = 0 AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
+      AND f.session_id NOT IN (SELECT session_id FROM events WHERE type = 'session_created' AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
       ${notIn}`;
     if ([...q].length >= 3) {
       // bm25() 函数出不了 FTS 查询语境（子查询外层就报 unable to use function
@@ -263,8 +280,79 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       .all(`%${likeEscape(q)}%`, ...exclude, limit) as FtsHit[];
   }
 
-  /** 按 seq 顺序读出一个会话的全部事件 */
-  load(sessionId: string, opts: { afterSeq?: number; untilSeq?: number } = {}): SessionEvent[] {
+  /** fork 元数据：本会话是不是从别的会话分出来的（session_created.forkedFrom）。
+      null = 普通会话。单条索引查询，链式 load 的每一跳都要问一次 */
+  forkOrigin(sessionId: string): { sessionId: string; endSeq: number } | null {
+    const row = this.prep(
+      `SELECT json_extract(payload, '$.forkedFrom.sessionId') AS src,
+              json_extract(payload, '$.forkedFrom.seq') AS endSeq
+         FROM events WHERE session_id = ? AND type = 'session_created' LIMIT 1`
+    ).get(sessionId) as { src: string | null; endSeq: number | null } | undefined;
+    if (!row || row.src === null || row.endSeq === null) return null;
+    return { sessionId: row.src, endSeq: row.endSeq };
+  }
+
+  /** 引用型零拷贝 fork（issue #352，codex ForkPersistence::Referenced 对照）：
+      不复制父会话的事件行，只在新会话的 session_created 里存 (源会话, seq)
+      位置引用（events.ts 早就预留了 forkedFrom 字段，schema 零改动）——读取（load）沿链取数，父子共享不可变前缀。
+
+      seq 播种是关键一招：子会话首事件的 seq = endSeq + 1（不是 0），此后
+      append 的 MAX(seq)+1 自然续上。链式视图因此**全局严格递增**——micro 的
+      coversUpTo、engine 增量快照的 afterSeq、steer 的 turnId 全是 seq 语义，
+      一个都不用翻译。
+
+      边界语义：endSeq 必须指向一条 turn_ended（到某 turn 含收口为止）——源会话
+      正在跑时最后的半截 turn 根本没有 turn_ended 可指，"不继承半截 turn"由此
+      是结构保证，不靠中断标记。 */
+  fork(sourceSessionId: string, endSeq: number, newSessionId: string, ts: number): SessionEvent {
+    const boundary = this.prep(
+      "SELECT type FROM events WHERE session_id = ? AND seq = ?"
+    ).get(sourceSessionId, endSeq) as { type: string } | undefined;
+    if (!boundary) throw new Error(`fork 点不存在：${sourceSessionId} 没有 seq=${endSeq} 的事件`);
+    if (boundary.type !== "turn_ended") {
+      throw new Error(`fork 点必须是 turn 收口（turn_ended），seq=${endSeq} 是 ${boundary.type}——不继承半截 turn`);
+    }
+    if (this.has(newSessionId)) throw new Error(`会话已存在：${newSessionId}`);
+    const src = this.prep(
+      `SELECT json_extract(payload, '$.title') AS title,
+              json_extract(payload, '$.workspace') AS workspace
+         FROM events WHERE session_id = ? AND type = 'session_created' LIMIT 1`
+    ).get(sourceSessionId) as { title: string | null; workspace: string | null } | undefined;
+    // 围栏必须一致：分支上的模型对工作目录的认知与父会话同源
+    const payload = {
+      title: `${src?.title ?? "会话"}（分支）`,
+      ...(src?.workspace ? { workspace: src.workspace } : {}),
+      forkedFrom: { sessionId: sourceSessionId, seq: endSeq },
+    };
+    this.prep(
+      "INSERT INTO events (session_id, seq, ts, type, sandbox_id, payload) VALUES (?, ?, ?, 'session_created', NULL, ?)"
+    ).run(newSessionId, endSeq + 1, ts, JSON.stringify(payload));
+    return { sessionId: newSessionId, seq: endSeq + 1, ts, type: "session_created", ...payload } as SessionEvent;
+  }
+
+  /** 按 seq 顺序读出一个会话的全部事件。
+      fork 链（issue #352）：本会话是分支时，先沿链读父会话 seq ≤ endSeq 的
+      前缀（递归——父亲也可能是分支），再接自己的事件；前缀的 sessionId 改写成
+      本会话（投影呈现"这是我的历史"，日志一个字节不动），seq 原样保留
+      （播种保证全链严格递增）。afterSeq/untilSeq 自然穿透——seq 全链一把尺 */
+  load(sessionId: string, opts: { afterSeq?: number; untilSeq?: number } = {}, depth = 0): SessionEvent[] {
+    if (depth > 16) throw new Error("fork 链深度超限（>16）——日志疑似被外部改出了环");
+    const origin = this.forkOrigin(sessionId);
+    const own = this.loadRaw(sessionId, opts);
+    if (!origin) return own;
+    const parent = this.load(
+      origin.sessionId,
+      {
+        ...(opts.afterSeq !== undefined ? { afterSeq: opts.afterSeq } : {}),
+        untilSeq: Math.min(origin.endSeq, opts.untilSeq ?? Number.MAX_SAFE_INTEGER),
+      },
+      depth + 1
+    );
+    return [...parent.map((e) => ({ ...e, sessionId })), ...own];
+  }
+
+  /** 单会话裸读（不解 fork 链）——load 的原子步 */
+  private loadRaw(sessionId: string, opts: { afterSeq?: number; untilSeq?: number } = {}): SessionEvent[] {
     // afterSeq = 只读这个 seq 之后的事件（issue #197）：微压缩写侧收口前的
     // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读。
     // untilSeq（含，issue #351）：有界重建取"某个 user turn 到 checkpoint"的
@@ -332,7 +420,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 MAX(ts)    AS lastTs,
                 (SELECT json_extract(payload, '$.workspace')
                    FROM events e0
-                  WHERE e0.session_id = e.session_id AND e0.seq = 0) AS workspace,
+                  WHERE e0.session_id = e.session_id AND e0.type = 'session_created') AS workspace,
                 (SELECT json_extract(payload, '$.content')
                    FROM events e1
                   WHERE e1.session_id = e.session_id AND e1.type = 'user_message'
@@ -347,7 +435,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                   ORDER BY e4.seq DESC LIMIT 1) AS autotitled,
                 (SELECT json_extract(payload, '$.spawnedBy.sessionId')
                    FROM events e3
-                  WHERE e3.session_id = e.session_id AND e3.seq = 0) AS spawnedFrom
+                  WHERE e3.session_id = e.session_id AND e3.type = 'session_created') AS spawnedFrom
            FROM events e
           WHERE session_id NOT IN
                 (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
