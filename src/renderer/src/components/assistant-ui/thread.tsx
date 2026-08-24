@@ -302,6 +302,18 @@ const ThreadWelcome: FC = () => {
   );
 };
 
+// 模块级常量而不是渲染内联:内联调用每次渲染都产出新的分组函数引用,
+// 每条 assistant 消息每次重渲染都要重新分组(同 markdown-text.tsx:28 的既有写法)
+const GROUP_PARTS_BY = groupPartByType({
+  reasoning: ["group-chainOfThought", "group-reasoning"],
+  "tool-call": ["group-chainOfThought", "group-tool"],
+  "standalone-tool-call": [],
+  // 本仓加的:来源 chip 挨在一起时排成一行(每条自己一行会把回复撑散)。
+  // 与 tool 组不同,这一组不进 chain-of-thought:它是"这次回答引了哪些页",
+  // 属于结论的一部分,不该跟着思考过程一起折叠
+  source: ["group-sources"],
+});
+
 const AssistantMessage: FC = () => {
   const {
     ToolFallback: ToolFallbackComponent = ToolFallback,
@@ -334,17 +346,7 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-content"
         className="text-foreground px-2 leading-relaxed wrap-break-word"
       >
-        <MessagePrimitive.GroupedParts
-          groupBy={groupPartByType({
-            reasoning: ["group-chainOfThought", "group-reasoning"],
-            "tool-call": ["group-chainOfThought", "group-tool"],
-            "standalone-tool-call": [],
-            // 本仓加的:来源 chip 挨在一起时排成一行(每条自己一行会把回复撑散)。
-            // 与 tool 组不同,这一组不进 chain-of-thought:它是"这次回答引了哪些页",
-            // 属于结论的一部分,不该跟着思考过程一起折叠
-            source: ["group-sources"],
-          })}
-        >
+        <MessagePrimitive.GroupedParts groupBy={GROUP_PARTS_BY}>
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":

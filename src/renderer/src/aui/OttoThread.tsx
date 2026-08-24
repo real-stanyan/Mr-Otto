@@ -39,7 +39,9 @@ import { parseSessionSearchResult, type SessionSearchResult } from "../../../sha
 import { toDocumentProps, toRetrievalProps } from "../lib/sessionSearchCard.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
-import { EventRow } from "../components/Timeline.js";
+import { EventRow, TimelineProjectionContext } from "../components/Timeline.js";
+import { buildToolIndex } from "../lib/toolIndex.js";
+import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
@@ -296,6 +298,11 @@ function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
   );
 }
 
+/** 派活出去的 task 工具行名单(spawnedToolCallIds 的结果)。在 OttoThread 顶层
+    算一次、Context 分发——不让每条工具行自己订阅 events 各扫一遍(#115 教训,
+    同下面 SectionAnchorsContext 的理由) */
+const SpawnedToolCallsContext = createContext<ReadonlySet<string>>(new Set());
+
 /** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 + 一张出错卡。
     直播尾巴:ToolFallback 没有「执行中的输出」这个概念,而 bash 跑长命令时
     那条尾巴是唯一的进度信号。
@@ -305,9 +312,15 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   // 派活的那条 task 工具行压掉（issue #141）：同一次派活在时间线上还有一张
   // 派活卡，卡上已经有 agent、任务、状态、汇报和"点进子会话"的入口，
   // 工具行是同一份信息的原始形态。只压真的派出去了的那些——派活之前就失败
-  // 的那次没有卡，压掉等于把唯一的报错也吞了（判据见 spawnedToolCallIds）
-  const events = useChat((s) => s.events);
-  const spawned = useMemo(() => spawnedToolCallIds(events), [events]);
+  // 的那次没有卡，压掉等于把唯一的报错也吞了（判据见 spawnedToolCallIds）。
+  // 名单从 Context 读,不在这订阅 events:本组件每条工具行一个实例,
+  // 各自订阅 + 各自全量扫一遍日志就是 #115 教训里的 O(行数×事件数)
+  const spawned = useContext(SpawnedToolCallsContext);
+  // label 记忆化:ToolFallback 包着 memo,内联元素每次渲染都是新引用,等于把 memo 拆了
+  const label = useMemo(
+    () => <ToolRowLabel name={part.toolName} args={part.args} />,
+    [part.toolName, part.args]
+  );
   const call: ToolCallRequest = { id: part.toolCallId, name: part.toolName, args: part.args };
   if (part.toolName === "task" && spawned.has(part.toolCallId)) return null;
   const summary = toolSummary(call);
@@ -360,7 +373,7 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
     <>
       <ToolFallback
         {...part}
-        label={<ToolRowLabel name={part.toolName} args={part.args} />}
+        label={label}
         // 悬停给完整路径:行里只留了 basename(短才读得快),而同名文件在
         // src/ 和 tests/ 下各有一个是常事
         {...(path !== null ? { title: path } : {})}
@@ -511,10 +524,15 @@ function TurnMeta({ events, toolDefs, output }: {
 
   // 送进去的 ≈ 此刻上下文有多大(和上下文圆环读同一份估算,两处数字不会打架)
   const promptTokens = useMemo(() => contextBreakdown(events, toolDefs).total, [events, toolDefs]);
+  // 吐出来的字跟着 1 秒的钟重估,不跟着 token 流:output 每个 token 都变,
+  // 每次都对全量已累积文本重估是 O(n²)——回答越长掉帧越狠。数字本来就 1 秒一跳,
+  // 估算也只需要 1 秒一次(deps 刻意只挂 now,不挂 output)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const completionTokens = useMemo(() => estimateTokens(output), [now]);
   const stats = liveTimingStats({
     elapsedMs: now - start,
     promptTokens,
-    completionTokens: estimateTokens(output),
+    completionTokens,
   });
   return <MessageTiming stats={stats} streaming className="w-auto" />;
 }
@@ -675,6 +693,13 @@ export function OttoThread({
     () => buildSectionAnchors(events, sections),
     [events, sections]
   );
+  // 每次事件追加算一次,所有工具行共读(替代原来每行各订阅各扫的写法)
+  const spawnedIds = useMemo(() => spawnedToolCallIds(events), [events]);
+  // 时间线行(派活卡/交接行)共读的投影,同上理由(#115):顶层算一次,Context 分发
+  const timelineProjection = useMemo(
+    () => ({ index: buildToolIndex(events), groups: groupSubagentSpawns(events), events }),
+    [events]
+  );
   // 用户正文里的 `$skill名` 画成 chip(directive-text)。名单来自已装的 skill ——
   // 没有名单的话 `$100`、`$PATH` 也会被画成 chip(见 aui/ottoDirectives.ts)
   const components = useMemo<ThreadComponents>(
@@ -690,7 +715,11 @@ export function OttoThread({
   );
   return (
     <SectionAnchorsContext.Provider value={anchorsByMessageId}>
-      <Thread components={components} viewportRef={viewportRef} />
+      <SpawnedToolCallsContext.Provider value={spawnedIds}>
+        <TimelineProjectionContext.Provider value={timelineProjection}>
+          <Thread components={components} viewportRef={viewportRef} />
+        </TimelineProjectionContext.Provider>
+      </SpawnedToolCallsContext.Provider>
     </SectionAnchorsContext.Provider>
   );
 }

@@ -2,7 +2,7 @@
 // 都是事件日志的直接投影——UI 不持有自己的对话状态。
 // 从 App.tsx 抽出来:那个文件 2500+ 行,消息区的改动全挤在里面没法看
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type {
   ContextCompactedEvent,
@@ -39,6 +39,16 @@ import { findProvider, type ProviderId } from "../../../shared/providerCatalog.j
 import { findModel } from "../../../shared/modelCatalog.js";
 import { estimateTokens } from "../../../shared/contextEstimate.js";
 import { useChat } from "../store.js";
+
+/** 时间线行共读的日志投影,OttoThread 顶层每次事件追加算一次、Context 分发。
+    原来 SubagentSpawnedRow 每张卡各订阅 events、各自 buildToolIndex +
+    groupSubagentSpawns 全量扫两遍——O(卡数×事件数),正是 #115 教训的复发。
+    没有 Provider 时值为 null,行组件自己退回从 store 算(单测/孤立渲染还能用) */
+export const TimelineProjectionContext = createContext<{
+  index: ToolIndex;
+  groups: SubagentSpawnedEvent[][];
+  events: SessionEvent[];
+} | null>(null);
 
 /** 一次工具调用 = 一行：请求 + 结果 + 耗时合并展示（都是日志投影，按 toolCallId 配对）。
     点开看详情：完整参数、完整输出、执行耗时（tool_execution_started 配对推导，ADR-0004）。
@@ -126,8 +136,12 @@ function sideMark(side: ModelSide) {
 }
 
 const ModelHandoffRow = memo(function ModelHandoffRow({ event }: { event: ModelChangedEvent }) {
-  const events = useChat((s) => s.events);
-  const handoff = modelHandoff(events, event.seq);
+  // Provider 在场就读共享投影;不在场(孤立渲染)才自己订阅 store。
+  // proj 在场时选择器恒返回 null——订阅还挂着但值不再变,不会跟着 events 白重渲染
+  const proj = useContext(TimelineProjectionContext);
+  const storeEvents = useChat((s) => (proj ? null : s.events));
+  const events = proj?.events ?? storeEvents ?? [];
+  const handoff = useMemo(() => modelHandoff(events, event.seq), [events, event.seq]);
   // 投影不出来(日志里找不到这条)时退回一行朴素文字:交接行画不了,
   // 但"换过模型"这个事实还是得留在时间线上
   if (!handoff) {
@@ -184,7 +198,10 @@ function modelLabelFor(
     时间线上出现两张卡。执行是串行的,组会随日志节奏从 1 长到 N,卡自然跟着
     "长"到最新落盘的那个位置,不需要额外的过渡去模拟"多出一行" */
 const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: SubagentSpawnedEvent }) {
-  const events = useChat((s) => s.events);
+  // 共享投影同 ModelHandoffRow:Provider 在场就不订阅 events、不自己扫日志
+  const proj = useContext(TimelineProjectionContext);
+  const storeEvents = useChat((s) => (proj ? null : s.events));
+  const events = proj?.events ?? storeEvents ?? [];
   const sessionId = useChat((s) => s.sessionId);
   const pendingApproval = useChat((s) => s.approvals[s.sessionId] !== undefined);
   const pendingAsk = useChat((s) => s.asks[s.sessionId] !== undefined);
@@ -200,8 +217,8 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const toggle = (id: string) => setExpandedId((cur) => (cur === id ? null : id));
 
-  const index = useMemo(() => buildToolIndex(events), [events]);
-  const groups = useMemo(() => groupSubagentSpawns(events), [events]);
+  const index = useMemo(() => proj?.index ?? buildToolIndex(events), [proj, events]);
+  const groups = useMemo(() => proj?.groups ?? groupSubagentSpawns(events), [proj, events]);
   const group = groups.find((g) => g.some((e) => e.toolCallId === event.toolCallId)) ?? [event];
   const isLastOfGroup = group[group.length - 1]?.toolCallId === event.toolCallId;
   const anyRunning = group.some((e) => !index.results.has(e.toolCallId));
