@@ -60,6 +60,12 @@ export class UIApprover implements Approver {
     return this.pendingTool.get(toolCallId)?.call.name;
   }
 
+  /** 挂起中的完整调用（含 args）。授权 key 要从参数算（issue #342），
+      光有工具名不够——同 toolFor 的语义：不认识 = 不授权 */
+  callFor(toolCallId: string): ToolCallRequest | undefined {
+    return this.pendingTool.get(toolCallId)?.call;
+  }
+
   /** 此刻挂着的审批(给 UI 补快照用)。一个会话同一时刻至多挂一张卡 ——
       工具管线是串行的,审批门里悬停的只会有一个 —— 所以取第一个就是那一个。
       没有挂起项返 undefined:岛窗据此显示"没有待审批" */
@@ -69,19 +75,21 @@ export class UIApprover implements Approver {
   }
 }
 
-/** 授权感知的 Approver：这个工具已经被授过权(本会话 / 永久)就直接放行，不弹卡。
-    ADR-0041。放行照旧流经审批门 → approval_decision 照常落盘，reason 写明是
-    哪一档授权放的行 —— 日志里不会出现"没人批过就跑了"的危险操作。
+/** 授权感知的 Approver：这次调用已经被授过权(本会话 / 永久)就直接放行，不弹卡。
+    ADR-0041；判定粒度是规范化 key 而非整个工具（issue #342，见 shared/grantKey.ts），
+    所以把完整调用（含 args）递给判定函数。放行照旧流经审批门 → approval_decision
+    照常落盘，reason 写明是哪一档授权放的行 —— 日志里不会出现"没人批过就跑了"
+    的危险操作。
 
     每次 decide 现查（两个都是活引用）：会话中途授的权，下一个调用立即生效；
     永久授权文件被改了，也不用重启。 */
 export function createGrantAwareApprover(
-  isGranted: (tool: string) => "session" | "always" | undefined,
+  isGranted: (call: ToolCallRequest) => "session" | "always" | undefined,
   ui: Approver
 ): Approver {
   return {
     decide(call, tool, signal) {
-      const scope = isGranted(call.name);
+      const scope = isGranted(call);
       if (scope) {
         return Promise.resolve({
           decision: "approved",

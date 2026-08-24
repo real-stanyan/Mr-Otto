@@ -1897,7 +1897,8 @@ void app.whenReady().then(() => {
     // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
     // 下一个调用就该享受到这条授权了（ADR-0041）
     if (incoming.decision === "approved" && incoming.grant) {
-      agent.grant(toolCallId, incoming.grant);
+      // revisedArgs 一起递过去：授权 key 从实际执行的参数算（issue #342）
+      agent.grant(toolCallId, incoming.grant, incoming.revisedArgs);
     }
     agent.approver.resolve(toolCallId, outcome);
   }
