@@ -3,6 +3,7 @@
 
 import Database from "better-sqlite3";
 import type { SessionEvent } from "./events.js";
+import { shouldPersist } from "./persistencePolicy.js";
 import { BILLED_EVENT_TYPES } from "./deriveUsage.js";
 import type { BilledRow } from "../shared/usageStats.js";
 
@@ -136,8 +137,15 @@ export class EventStore {
     })();
   }
 
-  /** 追加一条事件，seq 由存储层分配，返回完整事件 */
+  /** 追加一条事件，seq 由存储层分配，返回完整事件。
+      唯一写入口在这用持久化策略把门（issue #339）：类型系统已经挡住了瞬态
+      推送（它们不在 SessionEvent union 里），这道运行时闸防的是将来有人把
+      瞬态类型加进 union 却在 persistencePolicy 里判成 transient——两处矛盾
+      要在写入时炸出来，而不是静默落一条不该存在的日志 */
   append(event: NewSessionEvent): SessionEvent {
+    if (!shouldPersist(event.type)) {
+      throw new Error(`事件类型 ${event.type} 被持久化策略判为 transient，不允许进 append-only 日志`);
+    }
     const insert = this.db.transaction((e: NewSessionEvent): SessionEvent => {
       const row = this.prep(
         "SELECT COALESCE(MAX(seq) + 1, 0) AS next FROM events WHERE session_id = ?"
