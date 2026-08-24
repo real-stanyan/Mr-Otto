@@ -8,6 +8,7 @@
 // AGENTS.md 的 MVP 边界"明确不做多 agent 编排"靠这两处一起成立。
 
 import { createAgent, type AgentPush } from "./agent.js";
+import type { ExecRule } from "../shared/execPolicy.js";
 import { SESSION_SEARCH_TOOL_NAME } from "../tools/sessionSearch.js";
 import { activeSkills } from "../session/activeSkills.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
@@ -41,6 +42,9 @@ export interface SubagentRunnerDeps {
   };
   getAccessToken?: () => Promise<string | null>;
   alwaysAllow?: () => ReadonlySet<string>;
+  /** execpolicy 规则现读器（issue #347，同 alwaysAllow 的活引用规矩）：
+      forbidden 对子 agent 同样生效，用户写的"永不放行"不被派活绕过 */
+  execPolicy?: () => { rules: ExecRule[] };
   /** 自动压缩设置的现读器（同 alwaysAllow 的活引用规矩）。子 agent 也该守同一份
       设置——不给 = 走 createAgent 的全局默认 */
   autoCompactSettings?: () => AutoCompactSettings;
@@ -111,9 +115,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         // 用户永久授过权的工具在子 agent 里照样免问——授权授的是工具，不是会话
         ...(def.approval === "deny"
           ? { approver: denyingApprover }
-          : deps.alwaysAllow
-            ? { alwaysAllow: deps.alwaysAllow }
-            : {}),
+          : {
+              ...(deps.alwaysAllow ? { alwaysAllow: deps.alwaysAllow } : {}),
+              // forbidden 规则跟着常规链走（deny 档整条链已被替换，无处可挂也不需要）
+              ...(deps.execPolicy ? { execPolicy: deps.execPolicy } : {}),
+            }),
         // 刻意不传 subagentRunner —— 子 agent 因此没有 task 工具，递归到此为止
       });
 

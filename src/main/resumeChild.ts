@@ -11,6 +11,7 @@
 // "记得别传"，靠类型系统。
 
 import { createAgent, type AgentPush } from "./agent.js";
+import type { ExecRule } from "../shared/execPolicy.js";
 import { denyingApprover } from "./uiApprover.js";
 import type { EventStore } from "../session/store.js";
 import type { AttachmentStore } from "../session/attachments.js";
@@ -72,6 +73,9 @@ export function createChildAgent(opts: {
   getAccessToken?: () => Promise<string | null>;
   makeBrowser?: (sessionId: string) => BrowserCapability;
   alwaysAllow?: () => ReadonlySet<string>;
+  /** execpolicy 规则现读器（issue #347，同 alwaysAllow 的活引用规矩）：
+      forbidden 对子 agent 同样生效，用户写的"永不放行"不被派活绕过 */
+  execPolicy?: () => { rules: ExecRule[] };
   /** MCP 能力（ADR-0054）。这里必须显式传：重建走的是新造的 LocalWorld，
       父 agent 可能早已不在内存里，没有一个带着 withMcp 的 world 可以继承。
       给了也只是**挂载**——config.allowTools 那份白名单里没点名的 mcp__… 照样过滤掉，
@@ -101,9 +105,11 @@ export function createChildAgent(opts: {
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧
     ...(opts.config.deny
       ? { approver: denyingApprover }
-      : opts.alwaysAllow
-        ? { alwaysAllow: opts.alwaysAllow }
-        : {}),
+      : {
+          ...(opts.alwaysAllow ? { alwaysAllow: opts.alwaysAllow } : {}),
+          // forbidden 规则跟着常规链走（同创建侧 subagentRunner）
+          ...(opts.execPolicy ? { execPolicy: opts.execPolicy } : {}),
+        }),
     // 刻意不传 subagentRunner —— 这个参数在本函数的签名里根本不存在
   });
 }
