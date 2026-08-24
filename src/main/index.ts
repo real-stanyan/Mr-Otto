@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, ipcMain, Notification, shell } from "electron";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
@@ -132,6 +132,14 @@ if (!app.requestSingleInstanceLock()) {
 app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)));
+
+// Windows/Linux 摘掉 Electron 默认菜单栏（File/Edit/View/Window，issue #320）：
+// UI 全在窗体内，那排菜单只占一行还暴露 DevTools。剪贴板/输入快捷键是 Chromium
+// 原生行为，不靠菜单 accelerator。macOS 的应用菜单要留——Cmd+C/V/Q 挂在上面，
+// 摘了整个键盘习惯就废了。
+if (process.platform !== "darwin") {
+  Menu.setApplicationMenu(null);
+}
 
 let accountManager: AccountManager | null = null;
 let pendingAuthUrl: string | null = null;
