@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  createNotifier, dmNotification, friendRequestNotification, inviteNotification,
-  newIncomingInvites, newIncomingRequests, truncate, turnCompleteNotification,
+  approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
+  friendRequestNotification, inviteNotification, newIncomingInvites, newIncomingRequests,
+  truncate, turnCompleteNotification, turnFailedNotification,
 } from "../../src/main/friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../../src/shared/friends.js";
 
@@ -44,8 +45,37 @@ describe("通知文案", () => {
       title: "重构登录 · 任务完成",
       body: "把登录页改成 OAuth",
       target: { kind: "session", sessionId: "s1" },
-      sound: "Glass",
+      sound: "Funk",
     });
+  });
+
+  it("任务失败:错误信息进正文,音效与完成不同(听声辨事)", () => {
+    expect(turnFailedNotification("重构登录", "API 限流", "s1")).toEqual({
+      title: "重构登录 · 任务失败",
+      body: "API 限流",
+      target: { kind: "session", sessionId: "s1" },
+      sound: "Sosumi",
+    });
+    expect(turnFailedNotification(null, "", "s1")).toMatchObject({ title: "会话 · 任务失败", body: "任务中途出错了" });
+  });
+
+  it("权限申请:工具名进正文,等着人回来点批准", () => {
+    expect(approvalRequestNotification("重构登录", "bash", "s1")).toEqual({
+      title: "重构登录 · 等待审批",
+      body: "水獭想用 bash,回来批一下",
+      target: { kind: "session", sessionId: "s1" },
+      sound: "Ping",
+    });
+  });
+
+  it("问题:第一条问题文本进正文", () => {
+    expect(askUserNotification("重构登录", "用哪个数据库?", "s1")).toEqual({
+      title: "重构登录 · 有问题问你",
+      body: "用哪个数据库?",
+      target: { kind: "session", sessionId: "s1" },
+      sound: "Pop",
+    });
+    expect(askUserNotification(null, "", "s1")).toMatchObject({ title: "会话 · 有问题问你", body: "水獭有问题要问你" });
   });
 
   it("任务完成:没标题不留空,超长标题/正文都截断", () => {
@@ -82,16 +112,29 @@ describe("全量快照的去重", () => {
 });
 
 describe("createNotifier", () => {
-  it("窗口聚焦时不打断(UI 里的角标已经说明问题)", () => {
+  it("窗口聚焦时不弹横幅;带音的事件只响声(人在屏幕前,声音够了)", () => {
     const show = vi.fn();
-    createNotifier({ isFocused: () => true, show, activate: vi.fn() })(dmNotification("A", "hi", "u2"));
+    const playSound = vi.fn();
+    const notify = createNotifier({ isFocused: () => true, show, activate: vi.fn(), playSound });
+    notify(turnCompleteNotification("t", "task", "s1"));
     expect(show).not.toHaveBeenCalled();
+    expect(playSound).toHaveBeenCalledWith("Funk");
   });
 
-  it("没聚焦才发,点击回调把 target 交给 activate", () => {
+  it("聚焦 + 无音效的通知(好友类)= 完全静默,维持原状", () => {
+    const show = vi.fn();
+    const playSound = vi.fn();
+    createNotifier({ isFocused: () => true, show, activate: vi.fn(), playSound })(dmNotification("A", "hi", "u2"));
+    expect(show).not.toHaveBeenCalled();
+    expect(playSound).not.toHaveBeenCalled();
+  });
+
+  it("没聚焦才发,声音交给 show 的组装层按平台播,纯层不重复响", () => {
     const show = vi.fn((_spec, onClick: () => void) => onClick());
     const activate = vi.fn();
-    createNotifier({ isFocused: () => false, show, activate })(dmNotification("A", "hi", "u2"));
+    const playSound = vi.fn();
+    createNotifier({ isFocused: () => false, show, activate, playSound })(dmNotification("A", "hi", "u2"));
     expect(activate).toHaveBeenCalledWith({ kind: "dm", friendId: "u2" });
+    expect(playSound).not.toHaveBeenCalled();
   });
 });

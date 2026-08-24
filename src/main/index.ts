@@ -105,7 +105,8 @@ import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
-  createNotifier, dmNotification, friendRequestNotification, inviteNotification, turnCompleteNotification,
+  approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
+  friendRequestNotification, inviteNotification, turnCompleteNotification, turnFailedNotification,
   newIncomingInvites, newIncomingRequests,
 } from "./friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
@@ -311,19 +312,30 @@ void app.whenReady().then(() => {
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
   const supabase = createSupabaseAuthClient(join(app.getPath("userData"), "auth.json"));
-  // 系统通知:窗口没聚焦才发,点了就聚焦 + 告诉渲染层落到哪个面板(friendNotifier.ts)
+  // 提示音走渲染层播 wav(mac/win 同一份音频):聚焦分支两端都用它;
+  // 失焦分支只有 win 用(toast 不支持自定义音),mac 用原生音名——
+  // 这样 mac 窗口已关(Cmd+W,渲染层不在)时失焦通知的声音也不丢
+  const playSound = (sound: string) => {
+    if (!win.isDestroyed()) send(CHANNELS.playSound, sound);
+  };
+  // 系统通知:窗口没聚焦才发横幅,聚焦只响声;点了就聚焦 + 告诉渲染层落到哪个面板(friendNotifier.ts)
   const notify = createNotifier({
     isFocused: () => !win.isDestroyed() && win.isFocused(),
+    playSound,
     show: (spec, onClick) => {
       if (!Notification.isSupported()) return;
-      // sound 是 macOS 系统音名(Notification 原生支持);不设 = 静默,好友通知维持原状
+      // sound 是 macOS 系统音名(Notification 原生支持);不设 = 静默,好友通知维持原状。
+      // win 的 toast 不认自定义音:静音掉系统默认"叮",换成渲染层播同名 wav,
+      // 两个平台听到同一份音频(win 上窗口全关 = app 退出,渲染层必在,不漏)
+      const mac = process.platform === "darwin";
       const n = new Notification({
         title: spec.title,
         body: spec.body,
-        ...(spec.sound ? { sound: spec.sound } : {}),
+        ...(spec.sound ? (mac ? { sound: spec.sound } : { silent: true }) : {}),
       });
       n.on("click", onClick);
       n.show();
+      if (spec.sound && !mac) playSound(spec.sound);
     },
     activate: (target) => {
       if (win.isDestroyed()) return;
@@ -830,9 +842,14 @@ void app.whenReady().then(() => {
       const req = approvalPayload(sessionId, call, tool, preview, fromAgent);
       send(CHANNELS.approvalRequest, req);
       feedIsland({ kind: "approvalRequest", req });
+      // agent 停在原地等人批(#336):聚焦只响声,失焦弹横幅,点了落回那个会话
+      notify(approvalRequestNotification(store.titleOf(sessionId), call.name, sessionId));
     },
-    askUserRequest: (sessionId, toolCallId, questions) =>
-      send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
+    askUserRequest: (sessionId, toolCallId, questions) => {
+      send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions });
+      // 同审批:turn 悬停在等答案(#336)
+      notify(askUserNotification(store.titleOf(sessionId), questions[0]?.question ?? "", sessionId));
+    },
     // 两条流式通道走合帧器（issue #278），不直发：50-100 次/秒的 IPC 压到 ~60
     assistantDelta: (sessionId, text, kind) => deltas.assistantDelta(sessionId, text, kind),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
@@ -1737,6 +1754,16 @@ void app.whenReady().then(() => {
         send(CHANNELS.event, descEvent);
       }
       outcome = await agent.engine.runTurn(text, refs, textFiles);
+    } catch (err) {
+      // 任务失败通知(#336):失败比完成更该把人叫回来。aborted 不进这里
+      // (runTurn 把中断吞成返回值),vision-bridge 代读失败也算 turn 失败,一并覆盖。
+      // 通知完原样上抛——落盘/报错链路不动
+      notify(turnFailedNotification(
+        store.titleOf(sessionId),
+        err instanceof Error ? err.message : String(err),
+        sessionId
+      ));
+      throw err;
     } finally {
       runningSessions.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });

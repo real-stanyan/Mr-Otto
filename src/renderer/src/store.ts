@@ -2,6 +2,10 @@
 // 只在 boot() 里订阅一次；所有跨进程调用都收敛在这，组件不直接摸 window.otter。
 
 import { create } from "zustand";
+import soundFunk from "./assets/sounds/Funk.wav";
+import soundSosumi from "./assets/sounds/Sosumi.wav";
+import soundPing from "./assets/sounds/Ping.wav";
+import soundPop from "./assets/sounds/Pop.wav";
 import type { SessionEvent, UserMessageEvent } from "../../session/events.js";
 import {
   dropTask,
@@ -1537,6 +1541,16 @@ export const useChat = create<ChatState>((set, get) => ({
     // 已经在看它就不重复 resume(那会白跑一次全量事件回放)
     window.otter.onIslandFocusSession((sessionId: string) => {
       if (get().sessionId !== sessionId) void get().resume(sessionId);
+    });
+    // 主进程要播提示音(#336):mac 系统音名 → 打包的同名 wav,mac/win 同一份音频。
+    // 聚焦时的"只响声不弹横幅"和 win 失焦通知的声音都从这走。播失败(自动播放
+    // 策略/设备占用)吞掉——提示音丢一声不值得炸 UI
+    const notifySounds: Record<string, string> = {
+      Funk: soundFunk, Sosumi: soundSosumi, Ping: soundPing, Pop: soundPop,
+    };
+    window.otter.onPlaySound((sound: string) => {
+      const url = notifySounds[sound];
+      if (url) void new Audio(url).play().catch(() => {});
     });
     // 点系统通知 = 用户已经表达了"我要看这个",直接把对应面板掀开(主进程已聚焦窗口)
     window.otter.onNotificationActivated((target: NotificationTarget) => {
