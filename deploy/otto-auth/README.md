@@ -197,7 +197,9 @@ cp .env.example .env
 SITE_URL=https://otto-auth.duckdns.org
 API_EXTERNAL_URL=https://otto-auth.duckdns.org/auth/v1
 SUPABASE_PUBLIC_URL=https://otto-auth.duckdns.org
-ADDITIONAL_REDIRECT_URLS=mrotto://auth-callback,http://127.0.0.1:43110/callback
+# 落地页在最前:app ≥ 落地页版本的 redirect_to 都指它(浏览器要有个看得见的终点,
+# 深链那跳在落地页内发生);mrotto:// 留着兼容旧版 app 直连深链
+ADDITIONAL_REDIRECT_URLS=https://otto-auth.stan.damianslife.com/gw/auth/landing,mrotto://auth-callback,http://127.0.0.1:43110/callback
 API_GW_HTTP_PORT=8100
 KONG_HTTP_PORT=8100
 POSTGRES_PORT=5433

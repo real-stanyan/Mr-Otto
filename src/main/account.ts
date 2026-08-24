@@ -14,6 +14,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./authConfig.js";
+import { authLandingUrl } from "../shared/gatewayConfig.js";
 import type { AccountInfo } from "../shared/shellBridge.js";
 
 export type { AccountInfo };
@@ -40,7 +41,10 @@ export type SupabaseLike = {
   };
 };
 
-const REDIRECT_TO = "mrotto://auth-callback";
+// 授权完成后浏览器去落地页（不是直接 mrotto:// 深链）：深链浏览器渲染不了，
+// 标签页停在 Google 旧页面上像卡死。落地页显示结果、页内 JS 再转发深链唤起
+// app——app 侧收到的仍是 mrotto://auth-callback?code=…，parseAuthCallback 不变
+const REDIRECT_TO = authLandingUrl();
 
 /** supabase error（形态不定，AuthError 或任意 unknown）→ 可读消息 */
 function errorMessage(error: unknown): string {
