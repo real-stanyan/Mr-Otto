@@ -1080,7 +1080,7 @@ void app.whenReady().then(() => {
       onLongTurn: (rounds) => {
         if (win.isDestroyed() || win.isFocused() || !Notification.isSupported()) return;
         const n = new Notification({
-          title: "水獭还在干活",
+          title: "Mr Otto 还在干活",
           body: `本轮已连续跑了 ${rounds} 步模型调用，仍在继续。若不符合预期，回来按停止。`,
         });
         n.on("click", () => {

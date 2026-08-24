@@ -62,7 +62,7 @@ describe("通知文案", () => {
   it("权限申请:工具名进正文,等着人回来点批准", () => {
     expect(approvalRequestNotification("重构登录", "bash", "s1")).toEqual({
       title: "重构登录 · 等待审批",
-      body: "水獭想用 bash,回来批一下",
+      body: "Mr Otto 想用 bash,回来批一下",
       target: { kind: "session", sessionId: "s1" },
       sound: "Ping",
     });
@@ -75,7 +75,7 @@ describe("通知文案", () => {
       target: { kind: "session", sessionId: "s1" },
       sound: "Pop",
     });
-    expect(askUserNotification(null, "", "s1")).toMatchObject({ title: "会话 · 有问题问你", body: "水獭有问题要问你" });
+    expect(askUserNotification(null, "", "s1")).toMatchObject({ title: "会话 · 有问题问你", body: "Mr Otto 有问题要问你" });
   });
 
   it("任务完成:没标题不留空,超长标题/正文都截断", () => {

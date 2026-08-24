@@ -83,7 +83,7 @@ export function approvalRequestNotification(
   toolName: string,
   sessionId: string
 ): NotifySpec {
-  return sessionNotification(sessionTitle, "等待审批", `水獭想用 ${toolName},回来批一下`, sessionId, "Ping");
+  return sessionNotification(sessionTitle, "等待审批", `Mr Otto 想用 ${toolName},回来批一下`, sessionId, "Ping");
 }
 
 /** ask_user 提问:同审批,turn 悬停在等人回答 */
@@ -92,7 +92,7 @@ export function askUserNotification(
   question: string,
   sessionId: string
 ): NotifySpec {
-  return sessionNotification(sessionTitle, "有问题问你", question || "水獭有问题要问你", sessionId, "Pop");
+  return sessionNotification(sessionTitle, "有问题问你", question || "Mr Otto 有问题要问你", sessionId, "Pop");
 }
 
 /** 两次快照之间**新增**的收到请求(按 friendshipId 差集)。全量推送的去重口 */
