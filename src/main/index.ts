@@ -88,7 +88,7 @@ import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
-import { mcpToolName } from "../shared/mcp.js";
+import { assignMcpToolNames } from "../shared/mcp.js";
 import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -956,9 +956,13 @@ void app.whenReady().then(() => {
   const mcpToolNamesNow = (): string[] => {
     const live = mcpHub.servers().filter((s) => s.live);
     if (live.length === 0) return [];
+    // 分配跑在**全体** server 上再滤 live（issue #349）：撞名的哈希后缀取决于
+    // 整桌顺序，与 createMcpTools（装配时也是全体）保持同一份分配才对得上号
+    const all = mcpHub.servers().flatMap((s) => s.tools.map((t) => ({ server: s.name, tool: t.name, live: s.live })));
+    const names = assignMcpToolNames(all.map(({ server, tool }) => ({ server, tool })));
     return [
       "mcp_read_resource",
-      ...live.flatMap((s) => s.tools.map((t) => mcpToolName(s.name, t.name))),
+      ...all.flatMap((e, i) => (e.live && names[i] !== null ? [names[i]!] : [])),
     ];
   };
 

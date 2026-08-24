@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  assignMcpToolNames,
   mcpToolName,
   renderMcpContent,
   maskMcpConfig,
@@ -106,5 +107,46 @@ describe("maskMcpConfig", () => {
     if (masked.kind !== "http") throw new Error("窄化失败");
     expect(masked.headers["Authorization"]).toContain("*****");
     expect(masked.url).toBe("https://mcp.linear.app/mcp");
+  });
+});
+
+describe("assignMcpToolNames（整桌统一分配，issue #349）", () => {
+  it("两个 server 提供同名工具：都能拿到名字且互不覆盖", () => {
+    const names = assignMcpToolNames([
+      { server: "github", tool: "search" },
+      { server: "slack", tool: "search" },
+    ]);
+    expect(names[0]).toBe("mcp__github__search");
+    expect(names[1]).toBe("mcp__slack__search");
+    expect(names[0]).not.toBe(names[1]);
+  });
+
+  it("完全相同的原始身份：去重跳过（null）", () => {
+    const names = assignMcpToolNames([
+      { server: "gh", tool: "search" },
+      { server: "gh", tool: "search" },
+    ]);
+    expect(names[0]).toBe("mcp__gh__search");
+    expect(names[1]).toBeNull();
+  });
+
+  it("净化塌名 + 指纹仍撞：换哈希输入重试直到唯一", () => {
+    // foo.bar 与 foo_bar 净化后同串，指纹分开——先验证常规路
+    const sanitized = assignMcpToolNames([
+      { server: "foo.bar", tool: "x" },
+      { server: "foo_bar", tool: "x" },
+    ]);
+    expect(new Set(sanitized).size).toBe(2);
+
+    // 同一份输入跑两遍 = 同一份分配（approvalPreview 反查依赖这个确定性）
+    const pairs = [
+      { server: "含中文的服务", tool: "工具" },
+      { server: "含中文的服务", tool: "另一把" },
+      { server: "plain", tool: "tool" },
+    ];
+    expect(assignMcpToolNames(pairs)).toEqual(assignMcpToolNames(pairs));
+    const out = assignMcpToolNames(pairs).filter((n): n is string => n !== null);
+    expect(new Set(out).size).toBe(out.length); // 全体唯一
+    for (const n of out) expect(n).toMatch(/^mcp__[A-Za-z0-9_-]+$/); // 全部合法
   });
 });

@@ -4,18 +4,26 @@
 
 import type { Tool } from "./tool.js";
 import type { McpCapability } from "../world/executionWorld.js";
-import { mcpToolName, renderMcpContent } from "../shared/mcp.js";
+import { assignMcpToolNames, renderMcpContent } from "../shared/mcp.js";
 
 /** 装配时把每台**已连上**的 server 的工具全挂上。
     没连上的不出刀 —— 它的工具清单是空的，没有 def 就无从挂起（spec §四第 3 点）。
     挂上之后能不能用由 available() 管：engine 按 available() 过滤声明表喂模型，
     掉线时工具从模型看到的清单消失。工具仍在 toolsByName 里，掉线前发出的调用
-    能收到一句人话而不是"未知工具"。 */
+    能收到一句人话而不是"未知工具"。
+
+    双 ID 分离（issue #349）：模型可见名由 assignMcpToolNames 整桌统一分配
+    （消毒 + 冲突哈希后缀 + 相同原始身份去重）；raw 名（server.id + t.name）
+    走闭包进 run 的回调路由——两套 ID 的映射就是这个闭包本身。 */
 export function createMcpTools(mcp: McpCapability): Tool[] {
-  return mcp.servers().flatMap((server) =>
-    server.tools.map<Tool>((t) => ({
+  const entries = mcp.servers().flatMap((server) => server.tools.map((t) => ({ server, t })));
+  const names = assignMcpToolNames(entries.map((e) => ({ server: e.server.name, tool: e.t.name })));
+  return entries.flatMap<Tool>(({ server, t }, i) => {
+    const name = names[i];
+    if (name == null) return []; // 相同原始身份的重复条目：去重跳过
+    return [{
       def: {
-        name: mcpToolName(server.name, t.name),
+        name,
         description: t.description,
         parameters: t.inputSchema as object,
       },
@@ -29,9 +37,10 @@ export function createMcpTools(mcp: McpCapability): Tool[] {
         if (!world.mcp.servers().some((s) => s.id === server.id && s.live)) {
           throw new Error(`MCP server「${server.name}」当前没连上，这次调用没发出去`);
         }
+        // 回调用 raw 名（server.id + 协议原名），不是模型可见名——收口有损，反推不回去
         const content = await world.mcp.callTool(server.id, t.name, args, ctx?.signal);
         return renderMcpContent(content);
       },
-    }))
-  );
+    }];
+  });
 }
