@@ -105,7 +105,7 @@ import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
 import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
-  createNotifier, dmNotification, friendRequestNotification, inviteNotification,
+  createNotifier, dmNotification, friendRequestNotification, inviteNotification, turnCompleteNotification,
   newIncomingInvites, newIncomingRequests,
 } from "./friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
@@ -273,7 +273,12 @@ void app.whenReady().then(() => {
     isFocused: () => !win.isDestroyed() && win.isFocused(),
     show: (spec, onClick) => {
       if (!Notification.isSupported()) return;
-      const n = new Notification({ title: spec.title, body: spec.body });
+      // sound 是 macOS 系统音名(Notification 原生支持);不设 = 静默,好友通知维持原状
+      const n = new Notification({
+        title: spec.title,
+        body: spec.body,
+        ...(spec.sound ? { sound: spec.sound } : {}),
+      });
       n.on("click", onClick);
       n.show();
     },
@@ -1683,6 +1688,10 @@ void app.whenReady().then(() => {
     // + 倒着找最后一条 turn_ended，把 engine 早一帧就知道的事实又推导了一遍——
     // 每个 turn 一次、同步跑在主进程，长会话上是白读整份日志
     if (outcome === "completed") {
+      // 任务完成通知(issue #290):notify 内部自带"窗口聚焦不打扰"判定(ADR-0027),
+      // 人在屏幕前时答案已经渲染出来了,不必再弹。aborted 不通知——停止是用户自己按的。
+      // titleOf 是单条 SQL 投影,不是全量 load
+      notify(turnCompleteNotification(store.titleOf(sessionId), text, sessionId));
       enqueueSectionClassify(sessionId);
       // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
       // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,

@@ -696,11 +696,13 @@ export type UpdaterState =
   | { phase: "error"; currentVersion: string; message: string }
   | { phase: "disabled"; currentVersion: string; reason: string };
 
-/** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区 */
+/** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区,
+    任务完成落到那个会话 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
   | { kind: "invite" }
-  | { kind: "friendRequest" };
+  | { kind: "friendRequest" }
+  | { kind: "session"; sessionId: string };
 
 export interface OllamaModelInfo {
   /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createNotifier, dmNotification, friendRequestNotification, inviteNotification,
-  newIncomingInvites, newIncomingRequests, truncate,
+  newIncomingInvites, newIncomingRequests, truncate, turnCompleteNotification,
 } from "../../src/main/friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../../src/shared/friends.js";
 
@@ -37,6 +37,27 @@ describe("通知文案", () => {
   it("邀请与好友请求各自落到自己的面板", () => {
     expect(inviteNotification("阿关", "夜场")).toMatchObject({ target: { kind: "invite" } });
     expect(friendRequestNotification("阿关")).toMatchObject({ target: { kind: "friendRequest" } });
+  });
+
+  it("任务完成:会话名进标题,任务文本进正文,带提示音,落点是那个会话", () => {
+    expect(turnCompleteNotification("重构登录", "把登录页改成 OAuth", "s1")).toEqual({
+      title: "重构登录 · 任务完成",
+      body: "把登录页改成 OAuth",
+      target: { kind: "session", sessionId: "s1" },
+      sound: "Glass",
+    });
+  });
+
+  it("任务完成:没标题不留空,超长标题/正文都截断", () => {
+    expect(turnCompleteNotification(null, "hi", "s1").title).toBe("会话 · 任务完成");
+    expect(turnCompleteNotification("x".repeat(60), "hi", "s1").title).toBe(`${"x".repeat(39)}… · 任务完成`);
+    expect(turnCompleteNotification("t", "y".repeat(200), "s1").body).toBe(`${"y".repeat(119)}…`);
+  });
+
+  it("好友类通知不带声音(角标即可,别把静默行为改吵)", () => {
+    expect(dmNotification("A", "hi", "u2").sound).toBeUndefined();
+    expect(inviteNotification("A", "夜场").sound).toBeUndefined();
+    expect(friendRequestNotification("A").sound).toBeUndefined();
   });
 });
 
