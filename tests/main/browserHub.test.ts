@@ -6,6 +6,8 @@ import type { BrowserBounds } from "../../src/shared/browser.js";
 function fakeView() {
   const subs = new Set<(e: BrowserViewEvent) => void>();
   const loaded: string[] = [];
+  // pick/cancel 走的都是 executeJavaScript,不记下代码本身就没法断言"发的是哪段脚本"
+  const scriptCalls: string[] = [];
   const boundsLog: Array<BrowserBounds | null> = [];
   let url = "";
   let title = "";
@@ -40,7 +42,7 @@ function fakeView() {
     goBack: () => { nav.back++; },
     goForward: () => { nav.forward++; },
     reload: () => { nav.reload++; },
-    executeJavaScript: () => script(),
+    executeJavaScript: (code) => { scriptCalls.push(code); return script(); },
     setBounds: (b) => { boundsLog.push(b); },
     // 支持多订阅者:read() 在 hub 常驻监听还挂着的时候,
     // 会临时再订一份自己的——单回调的假实现会把常驻监听挤掉
@@ -60,6 +62,7 @@ function fakeView() {
     setScript: (f: () => Promise<unknown>) => { script = f; },
     setLoadURLError: (err: Error | null) => { loadURLError = err; },
     get loaded() { return loaded; },
+    get scriptCalls() { return scriptCalls; },
     get boundsLog() { return boundsLog; },
     get destroyed() { return destroyed; },
     get nav() { return nav; },
@@ -402,6 +405,74 @@ describe("browserHub.read", () => {
     const baseline = views[0]!.subscriberCount;
     views[0]!.setLoadURLError(new Error("ERR_CONNECTION_REFUSED"));
     await expect(hub.read("s1", { url: "a.com" })).rejects.toThrow(/ERR_CONNECTION_REFUSED/);
+    expect(views[0]!.subscriberCount).toBe(baseline);
+  });
+});
+
+describe("browserHub 选取元素(pickElement)", () => {
+  const pagePayload = () =>
+    JSON.stringify({
+      selector: "#app > button",
+      tag: "button",
+      html: "<button>提交</button>",
+      text: "提交",
+    });
+
+  it("没开过页面就抛:选取的前提是屏上有一张页面", async () => {
+    const { hub } = makeHub();
+    hub.open("s1");
+    await expect(hub.pickElement("s1")).rejects.toThrow(/没有打开任何页面/);
+  });
+
+  it("页面 resolve 出 payload,解析后带上主进程的权威 url", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    views[0]!.setScript(async () => pagePayload());
+    const r = await hub.pickElement("s1");
+    expect(r).toMatchObject({
+      selector: "#app > button",
+      tag: "button",
+      url: "https://a.com",
+    });
+  });
+
+  it("页面 resolve null(Esc)= 取消,返回 null", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    views[0]!.setScript(async () => null);
+    expect(await hub.pickElement("s1")).toBeNull();
+  });
+
+  it("选取途中页面开始导航 = 取消:脚本随旧页面死了,promise 不该跟着悬着", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    views[0]!.setScript(() => new Promise(() => {})); // 永不 settle,逼 hub 靠事件收尾
+    const picking = hub.pickElement("s1");
+    views[0]!.fire({ type: "loading", loading: true });
+    expect(await picking).toBeNull();
+  });
+
+  it("executeJavaScript reject(view 中途被销毁)= 取消而不是报错", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    views[0]!.setScript(async () => { throw new Error("Object has been destroyed"); });
+    expect(await hub.pickElement("s1")).toBeNull();
+  });
+
+  it("cancelPick 往页面发取消脚本;没浏览器时静默返回", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    hub.cancelPick("s1");
+    expect(views[0]!.scriptCalls.some((c) => c.includes("__ottoPickCancel"))).toBe(true);
+    hub.cancelPick("没有这个会话"); // 不抛即可
+  });
+
+  it("pick 的临时订阅在收尾后退订干净", async () => {
+    const { hub, views } = makeHub();
+    await hub.navigate("s1", "a.com");
+    const baseline = views[0]!.subscriberCount;
+    views[0]!.setScript(async () => pagePayload());
+    await hub.pickElement("s1");
     expect(views[0]!.subscriberCount).toBe(baseline);
   });
 });

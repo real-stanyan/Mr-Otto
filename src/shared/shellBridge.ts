@@ -16,7 +16,7 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
 import type { TerminalInfo } from "./terminal.js";
-import type { BrowserTabInfo, BrowserBounds } from "./browser.js";
+import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
@@ -499,6 +499,12 @@ export interface ShellBridge {
   browserReload(sessionId: string): Promise<void>;
   /** 关浏览器 = 销毁 webContents,登录态之外的一切(历史/前进后退)都没了 */
   browserClose(sessionId: string): Promise<void>;
+  /** 「选取元素」:页面进入取景模式,等用户点一个元素。
+      payload = 点中;null = 取消(Esc / cancelPick / 页面导航走了 / 浏览器被结束)。
+      没开任何页面时 reject */
+  browserPickElement(sessionId: string): Promise<BrowserPickedElement | null>;
+  /** 退出选取模式(按钮再点一下 / 面板卸载)。页面没在选取时是 no-op */
+  browserCancelPick(sessionId: string): Promise<void>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文档转 md/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -807,6 +813,8 @@ export const CHANNELS = {
   browserForward: "otter:browserForward",
   browserReload: "otter:browserReload",
   browserClose: "otter:browserClose",
+  browserPickElement: "otter:browserPickElement",
+  browserCancelPick: "otter:browserCancelPick",
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",

@@ -17,6 +17,21 @@ export interface BrowserTabInfo {
   lastError?: string;
 }
 
+/** 「选取元素」的结果:页面自证的部分(selector/tag/html/text + React 尽力而为)
+    加上主进程补的权威 url。页面侧字段全部过了截断闸门(browserPicker.parsePickPayload) */
+export interface BrowserPickedElement {
+  selector: string;
+  tag: string;
+  html: string;
+  text: string;
+  /** React dev build 的 "文件:行号",生产页没有 */
+  source?: string;
+  /** React 组件名链(由内向外),dev 尽力而为 */
+  components?: string[];
+  /** 选中时页面的地址。主进程 getURL() 的权威值,不收页面报的 */
+  url: string;
+}
+
 /** WebContentsView 的窗口内坐标(DIP)。null = 从窗口上摘下来(面板收起) */
 export interface BrowserBounds {
   x: number;

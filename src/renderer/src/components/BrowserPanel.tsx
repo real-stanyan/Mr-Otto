@@ -10,10 +10,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import { HEADER_H } from "../settingsShell.js";
-import { ArrowLeft, ArrowRight, RotateCw, X, Maximize2, Minimize2, Power } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  RotateCw,
+  X,
+  Maximize2,
+  Minimize2,
+  Power,
+  SquareDashedMousePointer,
+} from "lucide-react";
 import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";
 import { rectToBounds } from "../lib/browserBounds.js";
+import { formatPickedElement } from "../lib/pickedElement.js";
 import type { BrowserTabInfo } from "../../../shared/shellBridge.js";
 
 export function BrowserPanel() {
@@ -22,9 +32,15 @@ export function BrowserPanel() {
   const panelWide = useChat((s) => s.panelWide);
   const togglePanelWide = useChat((s) => s.togglePanelWide);
 
+  const injectComposer = useChat((s) => s.injectComposer);
+
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [info, setInfo] = useState<BrowserTabInfo | null>(null);
   const [draft, setDraft] = useState("");
+  // 选取模式。state 给按钮上色,ref 给卸载清理用——effect 的 cleanup
+  // 闭包里读 state 是旧值,ref 永远是现值
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
 
   // 挂载:拿这个会话浏览器的当前快照(agent 可能已经先开着某一页了)
   useEffect(() => {
@@ -85,6 +101,40 @@ export function BrowserPanel() {
     void window.otter.browserNavigate(sessionId, draft);
   };
 
+  // 「选取元素」:进入取景模式,用户在页面里点一个元素,结果注入 composer,
+  // 用户接着打修改指令再发——不自动发送,选错了还能删。
+  // 再点一下 = 取消(主进程会让挂起的 pick resolve null,finally 统一收尾)
+  const pick = () => {
+    if (!sessionId) return;
+    if (pickingRef.current) {
+      void window.otter.browserCancelPick(sessionId);
+      return;
+    }
+    pickingRef.current = true;
+    setPicking(true);
+    window.otter
+      .browserPickElement(sessionId)
+      .then((r) => {
+        if (r) injectComposer(formatPickedElement(r), true);
+      })
+      // 没开页面时主进程 reject;按钮已经按 hasPage 禁用了,这里只兜底
+      .catch(() => {})
+      .finally(() => {
+        pickingRef.current = false;
+        setPicking(false);
+      });
+  };
+
+  // 面板卸载时退出选取:取景器挂在页面里,面板没了它还在页面上吃着点击
+  useEffect(() => {
+    if (!sessionId) return;
+    return () => {
+      if (pickingRef.current) void window.otter.browserCancelPick(sessionId);
+    };
+  }, [sessionId]);
+
+  const hasPage = !!info?.url && info.url !== "about:blank";
+
   // 真正把这个会话的浏览器销毁掉。
   //
   // 为什么要单独一颗按钮:右边那颗 X 是"收面板",按前提只摘不杀
@@ -122,6 +172,11 @@ export function BrowserPanel() {
         <Button variant="ghost" size="icon"
           onClick={() => sessionId && void window.otter.browserReload(sessionId)}>
           <RotateCw className={`size-4 ${info?.loading ? "animate-spin" : ""}`} />
+        </Button>
+        <Button variant={picking ? "secondary" : "ghost"} size="icon"
+          onClick={pick} disabled={!sessionId || !hasPage} aria-pressed={picking}
+          title={picking ? "退出选取（页面里按 Esc 也行）" : "选取页面元素，插进输入框做局部修改"}>
+          <SquareDashedMousePointer className="size-4" />
         </Button>
         <input
           data-browser-url="1"
