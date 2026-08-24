@@ -1781,7 +1781,15 @@ void app.whenReady().then(() => {
         });
         send(CHANNELS.event, descEvent);
       }
-      outcome = await agent.engine.runTurn(text, refs, textFiles);
+      // runTurn 的开场 append 同步执行（首个 await 之前）——调用返回瞬间
+      // runningTurnId 已就位。第二拍 running 推送带上它：渲染层拿这个 seq
+      // 做插话的乐观锁（issue #344）。岛不吃 turnId，不重复喂
+      const turnPromise = agent.engine.runTurn(text, refs, textFiles);
+      const turnId = agent.engine.runningTurnId;
+      if (turnId !== null) {
+        send(CHANNELS.turnStatus, { sessionId, status: "running", turnId });
+      }
+      outcome = await turnPromise;
     } catch (err) {
       // 任务失败通知(#336):失败比完成更该把人叫回来。aborted 不进这里
       // (runTurn 把中断吞成返回值),vision-bridge 代读失败也算 turn 失败,一并覆盖。
@@ -1867,6 +1875,19 @@ void app.whenReady().then(() => {
     agents.get(sessionId)?.engine.abortTurn();
     // 收尾（turnStatus idle、runningSessions 清理）仍由 sendMessage 的 finally 负责：
     // 中断只是翻信号，turn 的退出路径全程只有一条
+  });
+
+  // 插话（issue #344）：sendMessage 的 turn 锁（runningSessions 守卫）对它
+  // 刻意不适用——它就是要在 turn 跑着时进去。乐观锁与"特殊 turn 拒绝"都在
+  // engine.steer 里判，这里只做路由；reject 原样回渲染层展示（消息没发出去，
+  // 用户重发即可）
+  ipcMain.handle(CHANNELS.steerTurn, (_e, sessionId: string, text: string, expectedTurnId: number) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    if (typeof text !== "string" || typeof expectedTurnId !== "number") {
+      throw new Error("插话参数形状非法");
+    }
+    agent.engine.steer(text, expectedTurnId);
   });
 
   ipcMain.handle(CHANNELS.compact, async (_e, sessionId: string) => {

@@ -107,6 +107,8 @@ const bridge: ShellBridge = {
   pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),
   attachmentDataUrl: (id) => ipcRenderer.invoke(CHANNELS.attachmentDataUrl, id),
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
+  steerTurn: (sessionId, text, expectedTurnId) =>
+    ipcRenderer.invoke(CHANNELS.steerTurn, sessionId, text, expectedTurnId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, outcome) =>
     ipcRenderer.invoke(CHANNELS.decideApproval, sessionId, toolCallId, outcome),
