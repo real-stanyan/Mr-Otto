@@ -435,6 +435,19 @@ export function deriveMessages(
         });
         break;
 
+      case "project_instructions":
+        // 注入为 user 消息（同 skill_invoked：中途插 system 各家方言兼容性参差）。
+        // 每段带来源路径——模型知道"这是哪份文件说的"，与 UI 的 provenance 同源
+        messages.push({
+          role: "user",
+          content:
+            `[以下是本工作区的项目指令文件，按 root → 工作目录顺序拼接，请在完成任务时遵循]\n` +
+            event.segments
+              .map((seg) => `── 来自 ${seg.path} ──\n${seg.content}`)
+              .join("\n\n"),
+        });
+        break;
+
       case "image_described":
         // 视觉模型的代读结果,注入为 user 消息(同 skill_invoked:中途插 system
         // 各家方言兼容性参差)。位置就是事件位置——紧贴在它服务的 user_message 之前

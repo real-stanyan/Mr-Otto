@@ -358,6 +358,19 @@ export interface ToolHookEvent extends SessionEventBase {
   originalOutput?: string;
 }
 
+/** 额外 18：项目指令注入（issue #353）。工作区里的 AGENTS.md/CLAUDE.md 类
+    文件在会话开场注入模型上下文——模型可见的新信息必须落盘（先落盘再喂模型），
+    且 content 是注入时刻的快照：文件之后被改/被删，重放不失真（skill_invoked
+    同款自包含）。segments 保留每段来源路径（provenance），UI 据此展示
+    "本次注入了哪几份指令"。只有**已信任**的工作区才会产生此事件（信任门禁
+    在装配层，见 main/workspaceTrust.ts） */
+export interface ProjectInstructionsEvent extends SessionEventBase {
+  type: "project_instructions";
+  segments: { path: string; content: string }[];
+  /** true = 有指令文件因总量预算被整段丢弃 */
+  truncated?: boolean;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -383,4 +396,5 @@ export type SessionEvent =
   | MemoryNudgeEvent
   | MicroCompactedEvent
   | SessionAutoTitledEvent
-  | ToolHookEvent;
+  | ToolHookEvent
+  | ProjectInstructionsEvent;
