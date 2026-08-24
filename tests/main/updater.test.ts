@@ -52,19 +52,24 @@ function makeDeps(over: Partial<UpdaterDeps> = {}) {
 }
 
 describe("updater 状态机", () => {
-  it("全绿路径：checking → downloading（带进度）→ ready；installAndRestart 换包", async () => {
+  it("全绿路径：检查停在 available，点了才下载（issue #316），装的是暂存物", async () => {
     const { deps, states } = makeDeps();
     const u = createUpdater(deps);
-    const final = await u.checkNow();
+    const found = await u.checkNow();
+    expect(found.phase).toBe("available");
+    expect(deps.downloadFile).not.toHaveBeenCalled(); // 没点之前一个字节都不下
+
+    const final = await u.startDownload();
     expect(final.phase).toBe("ready");
     expect(states.map((s) => s.phase)).toEqual([
       "checking",
+      "available",
       "downloading", // download() 起步的 0 字节帧
       "downloading",
       "downloading",
       "ready",
     ]);
-    const dl = states[2] as Extract<UpdaterState, { phase: "downloading" }>;
+    const dl = states[3] as Extract<UpdaterState, { phase: "downloading" }>;
     expect(dl.received).toBe(50);
     expect(dl.total).toBe(100);
     expect(deps.stage).toHaveBeenCalledWith(`/tmp/updates/${ZIP_NAME}`);
@@ -73,13 +78,21 @@ describe("updater 状态机", () => {
     expect(deps.installAndQuit).toHaveBeenCalledWith("/tmp/updates/extracted/Mr Otto.app");
   });
 
+  it("非 available 时 startDownload 是空操作", async () => {
+    const { deps } = makeDeps();
+    const u = createUpdater(deps);
+    expect((await u.startDownload()).phase).toBe("idle"); // 还没检查过
+    expect(deps.downloadFile).not.toHaveBeenCalled();
+  });
+
   it("win 席位：按 exe 后缀认资产、免解包暂存、装的是安装器（issue #314）", async () => {
     const { deps } = makeDeps({
       assetSuffix: UPDATE_ASSET_SUFFIX.win32,
       stage: vi.fn(async (p: string) => p), // win 的 stage 是恒等：产物即安装器
     });
     const u = createUpdater(deps);
-    expect((await u.checkNow()).phase).toBe("ready");
+    expect((await u.checkNow()).phase).toBe("available");
+    expect((await u.startDownload()).phase).toBe("ready");
     expect(deps.downloadFile).toHaveBeenCalledWith(
       "https://dl/exe",
       `/tmp/updates/${EXE_NAME}`,
@@ -131,14 +144,16 @@ describe("updater 状态机", () => {
         throw new Error("zip 解开后没找到 .app——发布产物形状不对");
       }),
     });
-    const s = await createUpdater(deps).checkNow();
-    expect(s.phase).toBe("error");
+    const u = createUpdater(deps);
+    await u.checkNow();
+    expect((await u.startDownload()).phase).toBe("error");
   });
 
   it("SHA256 不匹配 → error 且清掉下载目录；Release 缺 SHA256SUMS → error 拒下", async () => {
     const bad = makeDeps({ fileSha256: vi.fn(async () => "ff".repeat(32)) });
-    const s1 = await createUpdater(bad.deps).checkNow();
-    expect(s1.phase).toBe("error");
+    const u1 = createUpdater(bad.deps);
+    await u1.checkNow();
+    expect((await u1.startDownload()).phase).toBe("error");
     expect(bad.deps.resetDir).toHaveBeenCalledTimes(2); // 下载前建目录 + 校验失败清理
 
     const noSums = makeDeps({
@@ -148,8 +163,9 @@ describe("updater 状态机", () => {
         throw new Error("unexpected");
       }),
     });
-    const s2 = await createUpdater(noSums.deps).checkNow();
-    expect(s2.phase).toBe("error");
+    const u2 = createUpdater(noSums.deps);
+    await u2.checkNow(); // 缺 SHA256SUMS 仍能识别出新版 → available
+    expect((await u2.startDownload()).phase).toBe("error");
     expect(noSums.deps.downloadFile).not.toHaveBeenCalled();
   });
 
@@ -165,7 +181,7 @@ describe("updater 状态机", () => {
     });
     const u = createUpdater(deps);
     expect((await u.checkNow()).phase).toBe("error");
-    expect((await u.checkNow()).phase).toBe("ready");
+    expect((await u.checkNow()).phase).toBe("available");
   });
 
   it("checkNow 重入互斥：进行中再点只共享同一轮", async () => {
@@ -185,13 +201,14 @@ describe("updater 状态机", () => {
     resolveFetch!(releaseJson());
     const [s1, s2] = await Promise.all([p1, p2]);
     expect(s1).toBe(s2);
-    expect(deps.fetchText).toHaveBeenCalledTimes(2); // API 一次 + sums 一次，没有第二轮
+    expect(deps.fetchText).toHaveBeenCalledTimes(1); // API 只查一次，没有第二轮（sums 在下载阶段才拉）
   });
 
-  it("ready 后再检查同一版本：不重下，状态保持 ready", async () => {
+  it("ready 后再检查同一版本：不打回 available 也不重下，状态保持 ready", async () => {
     const { deps } = makeDeps();
     const u = createUpdater(deps);
     await u.checkNow();
+    await u.startDownload();
     const again = await u.checkNow();
     expect(again.phase).toBe("ready");
     expect(deps.downloadFile).toHaveBeenCalledTimes(1);

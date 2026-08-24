@@ -42,6 +42,7 @@ const bridge: ShellBridge = {
   setIslandSettings: (settings) => ipcRenderer.invoke(CHANNELS.setIslandSettings, settings),
   updaterGetState: () => ipcRenderer.invoke(CHANNELS.updaterGetState),
   updaterCheckNow: () => ipcRenderer.invoke(CHANNELS.updaterCheckNow),
+  updaterStartDownload: () => ipcRenderer.invoke(CHANNELS.updaterStartDownload),
   updaterInstallAndRestart: () => ipcRenderer.invoke(CHANNELS.updaterInstallAndRestart),
   updaterOpenReleasePage: () => ipcRenderer.invoke(CHANNELS.updaterOpenReleasePage),
   onUpdaterState: subscribe(CHANNELS.updaterState),

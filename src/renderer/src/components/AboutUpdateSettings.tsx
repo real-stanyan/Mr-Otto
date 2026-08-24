@@ -21,6 +21,8 @@ function describe(state: UpdaterState): string {
       return "已是最新版本";
     case "checking":
       return "正在检查更新…";
+    case "available":
+      return `发现新版 v${state.version}，点「下载」开始`;
     case "downloading": {
       const got = formatMb(state.received);
       return state.total > 0
@@ -90,6 +92,14 @@ export function AboutUpdateSettings() {
               >
                 重启更新
               </Button>
+            ) : state?.phase === "available" ? (
+              <Button
+                size="sm"
+                className="active:scale-[0.97]"
+                onClick={() => call(window.otter.updaterStartDownload())}
+              >
+                下载
+              </Button>
             ) : state?.phase === "manual" ? (
               <Button
                 size="sm"
@@ -112,8 +122,8 @@ export function AboutUpdateSettings() {
             )}
           </div>
           <p className={`${HINT} border-t border-border pt-3`}>
-            发现新版会静默下载，装好前不打断任何会话；点「重启更新」才换新版。
-            更新源是本项目的 GitHub Releases。
+            发现新版会先在侧栏出卡片，点了才开始下载；点「重启更新」才换新版，
+            全程不打断任何会话。更新源是本项目的 GitHub Releases。
           </p>
         </div>
         {error !== null && <p className="text-destructive text-[13px]">{error}</p>}

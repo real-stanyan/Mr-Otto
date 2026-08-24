@@ -1277,6 +1277,7 @@ void app.whenReady().then(() => {
   };
   ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
+  ipcMain.handle(CHANNELS.updaterStartDownload, () => updater?.startDownload() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
   ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
   if (updater !== null) {

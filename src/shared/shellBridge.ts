@@ -411,6 +411,9 @@ export interface ShellBridge {
   /** 手动查一次（设置页按钮）。返回这一轮查完落定的状态——按钮要即时反馈，
       不必等推送。查询/下载进行中时重入直接回当前状态，不并发起第二轮 */
   updaterCheckNow(): Promise<UpdaterState>;
+  /** available 时才有效（issue #316）：开始下载新版。返回这一轮落定的状态
+      （ready / error）。非 available 调用回当前状态，不并发起第二轮 */
+  updaterStartDownload(): Promise<UpdaterState>;
   /** ready 时才有效：spawn 换包脚本并退出 app。非 ready 调用是空操作 */
   updaterInstallAndRestart(): Promise<void>;
   /** 用系统浏览器打开 GitHub Releases 页（manual 降级 / 用户想看更新日志）。
@@ -691,6 +694,8 @@ export interface IslandSettings {
 export type UpdaterState =
   | { phase: "idle"; currentVersion: string }
   | { phase: "checking"; currentVersion: string }
+  /** 发现新版但还没下载（issue #316）：出卡片等用户点，点了才走 downloading */
+  | { phase: "available"; currentVersion: string; version: string }
   | { phase: "downloading"; currentVersion: string; version: string; received: number; total: number }
   | { phase: "ready"; currentVersion: string; version: string }
   | { phase: "manual"; currentVersion: string; version: string; reason: string }
@@ -761,6 +766,7 @@ export const CHANNELS = {
   setIslandSettings: "otter:setIslandSettings",
   updaterGetState: "otter:updaterGetState",
   updaterCheckNow: "otter:updaterCheckNow",
+  updaterStartDownload: "otter:updaterStartDownload",
   updaterInstallAndRestart: "otter:updaterInstallAndRestart",
   updaterOpenReleasePage: "otter:updaterOpenReleasePage",
   updaterState: "otter:updaterState",
