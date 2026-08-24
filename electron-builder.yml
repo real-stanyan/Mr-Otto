@@ -42,8 +42,14 @@ mac:
   # zip 的 -arm64-mac.zip 后缀是线上更新器（updaterCore）认资产的暗号，动不得
   artifactName: Mr.Otto-${version}-${arch}-mac.${ext}
   # napi-rs 平台包按平台裁剪:ensure-win-bindings（dist:win 前置）会把 win32-x64
-  # binding 补进 node_modules 且常驻,mac 包别把它带上（issue #308）
+  # binding 补进 node_modules 且常驻,mac 包别把它带上（issue #308）。
+  # 列表必须带正模式（与顶层 files 相同）:electron-builder 对"只含排除模式"的
+  # fileset 会隐式补 **/*,纯排除列表等于把整个仓库目录打进 asar
+  # （issue #312,v1.0.1 win 包 1.6GB 就是这么来的）
   files:
+    - out/**
+    - resources/**
+    - package.json
     - "!**/node_modules/**/*-win32-*/**"
   # dmg 给首次安装；zip 给 OTA 换包下载（ADR-0075,src/main/updater.ts 认
   # -arm64-mac.zip 后缀的 Release 资产）
@@ -87,7 +93,11 @@ dmg:
 # 用户点"仍要运行"放行 —— 与 mac 无公证同一档待遇)。
 win:
   icon: resources/icon.png
+  # 同 mac:正模式必须在,否则纯排除列表触发隐式 **/*（issue #312）
   files:
+    - out/**
+    - resources/**
+    - package.json
     - "!**/node_modules/node-pty/build/**"
     # 反向裁剪:win 包不带 darwin/linux 的 napi 平台包（issue #308）。
     # 模式带前缀连字符,不会误伤 node-pty/better-sqlite3 包内的 prebuilds 目录
