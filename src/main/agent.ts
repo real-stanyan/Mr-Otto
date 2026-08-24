@@ -41,6 +41,8 @@ import {
   type McpCapability,
 } from "../world/executionWorld.js";
 import { createMcpTools } from "../tools/mcpTool.js";
+import { applyExposurePolicy } from "../tools/exposure.js";
+import { createToolSearchTool } from "../tools/toolSearch.js";
 import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
@@ -381,8 +383,10 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
-    // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂
-    ...(mcp ? createMcpTools(mcp) : []),
+    // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂。
+    // 暴露策略（issue #348）：超阈值整批 Deferred + 体积超预算降 Hidden——
+    // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见
+    ...(mcp ? applyExposurePolicy(createMcpTools(mcp)) : []),
     ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
     // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
     // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
@@ -394,6 +398,17 @@ export function createAgent(opts: {
       ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
       : []),
   ];
+  // Deferred 检索口（issue #348）：可见集是共享活 Set——tool_search 命中写入，
+  // engine 每轮过滤声明表时读（deferredExposed）。工具表里有 deferred 才挂
+  // （available() 再兜一层：deferred 集合空时这把刀自己也从声明表消失）
+  const deferredExposed = new Set<string>();
+  const listDeferred = () =>
+    tools
+      .filter((t) => t.exposure === "deferred" && !deferredExposed.has(t.def.name))
+      .map((t) => ({ name: t.def.name, description: t.def.description ?? "" }));
+  if (tools.some((t) => t.exposure === "deferred")) {
+    tools.push(createToolSearchTool(listDeferred, deferredExposed));
+  }
 
   // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件
   // （world.browser 才挂 browser_read）是"这个装配有没有这把刀"，白名单是
@@ -454,6 +469,7 @@ export function createAgent(opts: {
       settings: opts.autoCompactSettings ?? (() => DEFAULT_AUTO_COMPACT),
     },
     ...(opts.onLongTurn ? { onLongTurn: opts.onLongTurn } : {}),
+    deferredExposed, // issue #348：tool_search 写、engine 声明表过滤读
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。
@@ -526,8 +542,16 @@ export function createAgent(opts: {
     get toolDefs() {
       // available() 为 false 的工具（挂着但此刻用不出东西，比如清单还空着的
       // task）不进这份表——模型不该被告知一把只会失败的工具，UI 的上下文占用
-      // 账也不该替它算钱
-      return mounted.filter((t) => t.available?.() ?? true).map((t) => t.def);
+      // 账也不该替它算钱。
+      // exposure（issue #348）同一把尺：hidden 永不进账；deferred 只有已被
+      // tool_search 曝光的才算——账要贴着模型此刻真看到的那份表
+      return mounted
+        .filter((t) => {
+          const e = t.exposure ?? "direct";
+          return e === "direct" || (e === "deferred" && deferredExposed.has(t.def.name));
+        })
+        .filter((t) => t.available?.() ?? true)
+        .map((t) => t.def);
     },
     switchModel,
     /** 设置页存了新 key 后调：现 adapter 捏的还是旧 key，重建一个 */

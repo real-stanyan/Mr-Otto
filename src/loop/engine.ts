@@ -61,6 +61,9 @@ export interface LoopEngineOptions {
   /** 单 turn 模型步数到 LONG_TURN_ROUNDS 时喊一次（每 turn 至多一次）。
       不给 = 不喊（测试和裸装配照旧）。装配层拿它发系统通知 */
   onLongTurn?: (rounds: number) => void;
+  /** Deferred 工具的可见集（issue #348）：活 Set 引用，tool_search 命中时写入，
+      这里每轮过滤声明表时读。不给 = deferred 工具永不可见（等同 hidden） */
+  deferredExposed?: ReadonlySet<string>;
 }
 
 export class LoopEngine {
@@ -118,6 +121,15 @@ export class LoopEngine {
   /** 换模型 = 换实现。engine 对"有哪些模型"一无所知，只认 ModelAdapter 接口 */
   setAdapter(adapter: ModelAdapter): void {
     this.adapter = adapter;
+  }
+
+  /** exposure 三态的可见性判定（issue #348）。hidden 不在这里拦调用——
+      toolsByName 仍有它，dispatch 照常（"注册了但模型看不到"≠"不存在"） */
+  private toolVisible(t: Tool): boolean {
+    const exposure = t.exposure ?? "direct";
+    if (exposure === "direct") return true;
+    if (exposure === "deferred") return this.opts.deferredExposed?.has(t.def.name) ?? false;
+    return false; // hidden
   }
 
   /** 落盘 + 通知，loop 里所有写日志走这一个口 */
@@ -414,8 +426,13 @@ export class LoopEngine {
         messages,
         // available() 为 false 的工具不进模型看到的声明表——挂着(toolsByName 里还在,
         // 万一模型误调也能给出清楚的错误)不等于此刻用得出东西，报一把只会失败的工具
-        // 只会让模型白试一次
-        this.opts.tools.filter((t) => t.available?.() ?? true).map((t) => t.def),
+        // 只会让模型白试一次。
+        // exposure（issue #348）同一道滤网：hidden 永不进表；deferred 只有被
+        // tool_search 搜到（进了 deferredExposed）才进表；direct/缺席照旧
+        this.opts.tools
+          .filter((t) => this.toolVisible(t))
+          .filter((t) => t.available?.() ?? true)
+          .map((t) => t.def),
         onDelta
           ? (text, kind) => {
               clock.observe(kind);
