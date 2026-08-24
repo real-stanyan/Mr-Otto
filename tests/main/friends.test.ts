@@ -51,7 +51,7 @@ describe("buildSnapshot", () => {
 function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
   return {
     getUserId: vi.fn(async () => "me"),
-    findProfileByEmail: vi.fn(async () => null),
+    searchProfiles: vi.fn(async () => []),
     insertFriendship: vi.fn(async () => {}),
     acceptFriendship: vi.fn(async () => {}),
     deleteFriendship: vi.fn(async () => {}),
@@ -114,17 +114,17 @@ function fakeTimers(): FriendsTimers & { tick(ms: number): void } {
 }
 
 describe("FriendsManager 关系链", () => {
-  it("search:邮箱命中回 FriendProfile", async () => {
-    const api = fakeApi({ findProfileByEmail: vi.fn(async () => P("u2", "hit@x.com")) });
+  it("search:模糊命中回 FriendProfile 列表,自己被过滤(uid=me)", async () => {
+    const api = fakeApi({ searchProfiles: vi.fn(async () => [P("me"), P("u2", "hit@x.com")]) });
     const m = new FriendsManager({ api, push: noPush });
-    expect(await m.search("hit@x.com")).toEqual({
-      ok: true, value: { id: "u2", email: "hit@x.com", name: "U2", avatarUrl: "" },
+    expect(await m.search("hit")).toEqual({
+      ok: true, value: [{ id: "u2", email: "hit@x.com", name: "U2", avatarUrl: "" }],
     });
   });
 
-  it("search:查无此人 = ok:true value:null(不是错误)", async () => {
+  it("search:没有匹配 = ok:true value:[](不是错误)", async () => {
     const m = new FriendsManager({ api: fakeApi(), push: noPush });
-    expect(await m.search("none@x.com")).toEqual({ ok: true, value: null });
+    expect(await m.search("none")).toEqual({ ok: true, value: [] });
   });
 
   it("未登录:一律 ok:false", async () => {

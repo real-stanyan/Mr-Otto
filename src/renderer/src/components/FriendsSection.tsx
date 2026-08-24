@@ -54,7 +54,7 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const refreshInvites = useChat((s) => s.refreshInvites);
 
   const [query, setQuery] = useState("");
-  const [hit, setHit] = useState<FriendProfile | null | "none">(null); // "none" = 搜过没命中
+  const [hits, setHits] = useState<FriendProfile[] | null>(null); // null = 没搜过,[] = 搜过没命中
 
   // 推送不回放:主进程在登录那一刻推过一次邀请列表,而这块 UI 可能是后来才挂上的。
   // 挂上时补拉一次,别让人对着空列表以为没人约过
@@ -62,6 +62,26 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     if (signedIn) void refreshInvites();
   }, [signedIn, refreshInvites]);
+
+  // 边输边搜(防抖 300ms)。单字符太散(ilike %x% 半个库都命中),从 2 个字符起搜;
+  // stale 位挡住乱序返回——慢的旧响应不许覆盖新查询的结果
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setHits(null);
+      return;
+    }
+    let stale = false;
+    const t = setTimeout(() => {
+      void searchFriend(q).then((found) => {
+        if (!stale) setHits(found);
+      });
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [query, searchFriend]);
 
   if (!account.signedIn) {
     // embedded(抽屉里)= 标题由弹窗自己出,这里只留状态文案
@@ -71,11 +91,11 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const online = new Set(onlineIds);
   const incomingInvites = invites.filter((i) => i.direction === "incoming" && i.status === "pending");
   const outgoingInvites = invites.filter((i) => i.direction === "outgoing" && i.status === "pending");
+  // Enter/放大镜 = 立即搜,不等防抖,也不受 2 字符下限(贴整串邮箱直接回车的老习惯)
   const doSearch = async () => {
-    const email = query.trim();
-    if (!email) return;
-    const found = await searchFriend(email);
-    setHit(found ?? "none");
+    const q = query.trim();
+    if (!q) return;
+    setHits(await searchFriend(q));
   };
 
   return (
@@ -88,15 +108,15 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
           实时推送不通,已切轮询兜底 · 消息会慢几秒
         </div>
       )}
-      {/* 添加好友:邮箱精确搜索 → 命中卡片一键发请求。
+      {/* 添加好友:用户名/邮箱模糊搜索(边输边搜)→ 命中列表逐个一键发请求。
           搜索键 = 输入框内的放大镜 icon(不占一行、不吃文字),Enter 同效 */}
       <div className="px-[10px] pb-1">
         <div className="relative flex items-center">
           <input
             className="w-full min-w-0 bg-transparent border border-border rounded-md pl-[9px] pr-[30px] py-[6px] text-xs placeholder:text-muted-foreground/70 focus:outline-none focus:border-ring transition-colors duration-150"
-            placeholder="按邮箱加好友"
+            placeholder="搜用户名或邮箱加好友"
             value={query}
-            onChange={(e) => { setQuery(e.target.value); setHit(null); }}
+            onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") void doSearch(); }}
           />
           <button
@@ -110,18 +130,16 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
           </button>
         </div>
       </div>
-      {hit === "none" && <p className="px-[10px] text-xs text-muted-foreground">没有这个邮箱的用户。</p>}
-      {hit !== null && hit !== "none" && (
-        <div className="mx-[10px] mb-1 px-2 py-1 border border-border rounded text-xs flex items-center gap-1">
+      {hits?.length === 0 && <p className="px-[10px] text-xs text-muted-foreground">没有匹配的用户。</p>}
+      {hits?.map((hit) => (
+        <div key={hit.id} className="mx-[10px] mb-1 px-2 py-1 border border-border rounded text-xs flex items-center gap-1">
           <span className="flex-1 min-w-0 truncate">{hit.name || hit.email}</span>
-          {hit.email === account.email ? null : (
-            <Button variant="ghost" size="sm" className="px-2 text-xs"
-              onClick={() => { void addFriend(hit.id); setHit(null); setQuery(""); }}>
-              发请求
-            </Button>
-          )}
+          <Button variant="ghost" size="sm" className="px-2 text-xs"
+            onClick={() => { void addFriend(hit.id); setHits(null); setQuery(""); }}>
+            发请求
+          </Button>
         </div>
-      )}
+      ))}
       {friendError && <p className="px-[10px] text-xs text-err">{friendError}</p>}
 
       {/* 收到的牌局邀请:浮层可能已经被别的窗口挡住/用户切走过,抽屉里留一份账 */}

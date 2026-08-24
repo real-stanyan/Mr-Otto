@@ -499,8 +499,8 @@ interface ChatState {
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
   rename(title: string): Promise<void>;
   refreshFriends(): Promise<void>;
-  /** 邮箱精确搜索。null = 查无此人;错误落 friendError 并回 null */
-  searchFriend(email: string): Promise<FriendProfile | null>;
+  /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
+  searchFriend(query: string): Promise<FriendProfile[]>;
   addFriend(userId: string): Promise<void>;
   respondFriend(friendshipId: string, accept: boolean): Promise<void>;
   removeFriend(friendshipId: string): Promise<void>;
@@ -1289,11 +1289,11 @@ export const useChat = create<ChatState>((set, get) => ({
     else set({ friendError: r.message });
   },
 
-  async searchFriend(email) {
-    const r = await window.otter.friendsSearch(email);
+  async searchFriend(query) {
+    const r = await window.otter.friendsSearch(query);
     if (!r.ok) {
       set({ friendError: r.message });
-      return null;
+      return [];
     }
     set({ friendError: null });
     return r.value;

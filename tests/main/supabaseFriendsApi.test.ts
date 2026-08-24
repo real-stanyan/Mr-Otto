@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createSupabaseFriendsApi, isMissingColumn, mergeChannelHealth, presenceStateToEntries, presenceStateToIds } from "../../src/main/supabaseFriendsApi.js";
+import { createSupabaseFriendsApi, isMissingColumn, mergeChannelHealth, presenceStateToEntries, presenceStateToIds, profileSearchOr } from "../../src/main/supabaseFriendsApi.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 describe("presenceStateToIds", () => {
@@ -8,6 +8,22 @@ describe("presenceStateToIds", () => {
   });
   it("空 state → 空数组", () => {
     expect(presenceStateToIds({})).toEqual([]);
+  });
+});
+
+describe("profileSearchOr", () => {
+  it("普通词:name/email 双列 ilike 子串", () => {
+    expect(profileSearchOr("stan")).toBe("name.ilike.%stan%,email.ilike.%stan%");
+  });
+
+  // 逗号/括号/引号是 PostgREST or 语法字符,留着会被当过滤器边界解析 → 剥掉
+  it("or 语法字符被剥掉", () => {
+    expect(profileSearchOr(`a,b(c)"d'e`)).toBe("name.ilike.%abcde%,email.ilike.%abcde%");
+  });
+
+  // % 和 _ 是 LIKE 通配符:不转义的话 "a_b" 会命中 "aXb"
+  it("LIKE 通配符转义成字面量", () => {
+    expect(profileSearchOr("a_b%")).toBe("name.ilike.%a\\_b\\%%,email.ilike.%a\\_b\\%%");
   });
 });
 

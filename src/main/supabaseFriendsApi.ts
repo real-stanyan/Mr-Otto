@@ -10,6 +10,8 @@ import type {
 import type { WorkspacePresence } from "../shared/friends.js";
 
 const PAGE = 50;
+/** 好友搜索一页大小:侧栏窄条里超过这个数只会变成滚动噪音,输更多字符收敛比翻页好 */
+const SEARCH_PAGE = 8;
 /** 一次轮询最多补多少条积压消息(离线久了不至于一口气推爆渲染层) */
 const INBOX_PAGE = 200;
 /** 邀请收件箱只看近半小时:再早的邀请桌早散了,留着只会堆在 UI 上 */
@@ -41,6 +43,14 @@ export function presenceStateToEntries(state: Record<string, unknown[]>): Presen
     宁可整体判 degraded 让轮询兜住,也不要"看着是好的但其实哑了" */
 export function mergeChannelHealth(statuses: string[]): "live" | "degraded" {
   return statuses.every((s) => s === "SUBSCRIBED") ? "live" : "degraded";
+}
+
+/** 模糊搜索的 .or() 过滤串。PostgREST 的 or 语法用逗号/括号做分隔,引号会开始 quoted 段,
+    这些字符出现在搜索词里会被当语法解析 → 直接剥掉(用户名/邮箱里本就罕见);
+    % 和 _ 是 LIKE 通配符,反斜杠转义成字面量,防止 "a_b" 匹配到 "aXb" */
+export function profileSearchOr(query: string): string {
+  const q = query.replace(/[,()"'\\]/g, "").replace(/[%_]/g, (c) => `\\${c}`);
+  return `name.ilike.%${q}%,email.ilike.%${q}%`;
 }
 
 /** 列不存在:PostgREST 对 update 未知列报 PGRST204,对 select 未知列透传 pg 的 42703。
@@ -77,10 +87,10 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
       return data.user?.id ?? null;
     },
 
-    async findProfileByEmail(email) {
+    async searchProfiles(query) {
       const res = await client.from("profiles").select("id,email,name,avatar_url")
-        .eq("email", email).maybeSingle();
-      return unwrap(res) as ProfileRow | null;
+        .or(profileSearchOr(query)).order("name").limit(SEARCH_PAGE);
+      return (unwrap(res) ?? []) as ProfileRow[];
     },
 
     async insertFriendship(requester, addressee) {
