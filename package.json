@@ -1,6 +1,6 @@
 {
   "name": "mr-otto",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "productName": "Mr Otto",
   "description": "Mr Otto — macOS desktop GUI agent",
   "scripts": {
