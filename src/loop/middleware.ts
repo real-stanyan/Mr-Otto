@@ -26,6 +26,52 @@ export interface ToolOutcome {
   concludesTurn?: true;
 }
 
+// ─── Pre/PostToolUse 钩子（issue #350，codex dispatch 对照）────
+// 中间件是"包住执行"的洋葱层；钩子是更窄的一等语义：Pre 可拦截/改参，
+// Post 可拒绝/注入反馈。窄接口的价值：三种返回语义都由 engine 统一落盘
+// （tool_hook 事件），钩子作者不碰日志，也碰不坏日志。
+
+/** Pre 钩子的裁决。空返回/undefined = 放行不干预 */
+export interface PreHookResult {
+  /** 拦截：工具不执行，这条消息作为 error 回模型 */
+  block?: string;
+  /** 改写入参：执行用这一份（同审批 revisedArgs 的先例，engine 换新对象不原地改） */
+  reviseArgs?: unknown;
+}
+
+/** Post 钩子的裁决。空返回/undefined = 结果原样放行 */
+export interface PostHookResult {
+  /** 拒绝结果：模型收到的 tool_result 变成这条 error；原始输出进 tool_hook 事件（审计） */
+  reject?: string;
+  /** 注入反馈：日志仍存原始输出，投影把这条包装进模型看到的 tool 消息尾部 */
+  feedback?: string;
+}
+
+/** 钩子按工具名匹配时的 alias 表（issue #350 可选项）：兼容 Claude Code 风格
+    的钩子配置——那边叫 Bash/Write/Read，本仓叫 bash/write_file/read_file。
+    将来开放用户钩子时低成本兼容生态；内部钩子直接写本仓名即可 */
+export const HOOK_TOOL_ALIASES: Record<string, string> = {
+  Bash: "bash",
+  Write: "write_file",
+  Edit: "write_file",
+  Read: "read_file",
+};
+
+export interface ToolHook {
+  /** 钩子名：落进 tool_hook 事件（谁干预的） */
+  name: string;
+  /** 匹配哪些工具："*" 全部；数组按名（可写 alias，见 HOOK_TOOL_ALIASES） */
+  tools: "*" | string[];
+  pre?(ctx: ToolCallContext): PreHookResult | void | Promise<PreHookResult | void>;
+  post?(ctx: ToolCallContext, outcome: ToolOutcome): PostHookResult | void | Promise<PostHookResult | void>;
+}
+
+/** 这只钩子管不管这把工具 */
+export function hookMatches(hook: ToolHook, toolName: string): boolean {
+  if (hook.tools === "*") return true;
+  return hook.tools.some((t) => t === toolName || HOOK_TOOL_ALIASES[t] === toolName);
+}
+
 /**
  * 中间件：看 ctx，决定放行（调 next）还是短路（直接返回 outcome）。
  * next 之前的代码 = pre-execute，next 之后的代码 = post-execute。
