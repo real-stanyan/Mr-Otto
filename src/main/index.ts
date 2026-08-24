@@ -31,7 +31,7 @@ import { configDir } from "./configDir.js";
 import { connectMcpClient } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
-import { EventStore } from "../session/store.js";
+import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
@@ -415,9 +415,22 @@ void app.whenReady().then(() => {
     return islandUsageCache.rows;
   };
 
+  // sessions() 是全表扫描级的查询(标题/归档子查询),而 pushFleet 跟着**每条**
+  // 事件跑——工具密集的 turn 一秒好几次。1s 记忆化:岛上会用到的字段里只有
+  // lastTs 排序会随普通事件漂移,晚 1 秒重排无感;真正改会话表形状的三类事件
+  // (建会话/改名/归档)在 feedIsland 里当场失效缓存,岛上立即可见
+  let fleetSessionsCache: { at: number; rows: SessionSummary[] } | null = null;
+  const fleetSessions = (): SessionSummary[] => {
+    const now = Date.now();
+    if (!fleetSessionsCache || now - fleetSessionsCache.at > 1_000) {
+      fleetSessionsCache = { at: now, rows: store.sessions() };
+    }
+    return fleetSessionsCache.rows;
+  };
+
   const pushFleet = (): void => {
     if (!bridge) return;
-    const fleet = flattenFleet(islandStates, store.sessions(), activeSessionId);
+    const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId);
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge.pushState(fleet);
@@ -432,6 +445,15 @@ void app.whenReady().then(() => {
       const cur = islandStates.get(sid) ?? { ...initialIsland, sessionId: sid };
       const next = reduceIsland(cur, input);
       if (next !== cur) islandStates.set(sid, next);
+    }
+    // 改会话表形状的事件让缓存立即失效,岛上不吃 1s 延迟
+    if (
+      input.kind === "event" &&
+      (input.event.type === "session_created" ||
+        input.event.type === "session_renamed" ||
+        input.event.type === "session_archived")
+    ) {
+      fleetSessionsCache = null;
     }
     pushFleet();
   };
@@ -1449,6 +1471,7 @@ void app.whenReady().then(() => {
       islandStates.delete(id); // 岛的 Map 投影也剪掉——不然拍平出来的 fleet 会带一行死会话
     }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
+    fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
     pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
   });
 
@@ -1459,6 +1482,8 @@ void app.whenReady().then(() => {
     // 改名不碰 agent、不限 turn 状态：纯追加一条事件，投影层自然换标题
     const appended = store.append({ sessionId, ts: Date.now(), type: "session_renamed", title: t });
     send(CHANNELS.event, appended); // 时间线同款直播通道
+    fleetSessionsCache = null; // 这条路不走 push.event,缓存不会自己失效
+    pushFleet(); // 岛上的行标题立即换,不等下一个事件
   });
 
   ipcMain.handle(CHANNELS.switchModel, (_e, model: string, lane?: ModelLane) => {
