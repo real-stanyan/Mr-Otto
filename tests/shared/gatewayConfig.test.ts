@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  authLandingUrl,
   DEFAULT_GATEWAY_BASE_URL,
   gatewayBaseUrl,
   parseGatewayError,
@@ -13,6 +14,19 @@ describe("gatewayBaseUrl", () => {
   it("OTTO_GATEWAY_URL 可覆盖（本地调试网关）", () => {
     const env = { OTTO_GATEWAY_URL: "http://127.0.0.1:8787/v1" } as unknown as NodeJS.ProcessEnv;
     expect(gatewayBaseUrl(env)).toBe("http://127.0.0.1:8787/v1");
+  });
+});
+
+describe("authLandingUrl", () => {
+  it("生产:网关 base 去掉 /v1 段拼 /auth/landing", () => {
+    expect(authLandingUrl({} as NodeJS.ProcessEnv)).toBe(
+      "https://otto-auth.stan.damianslife.com/gw/auth/landing"
+    );
+  });
+
+  it("本地覆盖同样生效（落地页跟着网关走,调试时才能全链路走通）", () => {
+    const env = { OTTO_GATEWAY_URL: "http://127.0.0.1:8787/v1" } as unknown as NodeJS.ProcessEnv;
+    expect(authLandingUrl(env)).toBe("http://127.0.0.1:8787/auth/landing");
   });
 });
 

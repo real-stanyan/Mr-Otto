@@ -10,6 +10,7 @@
 // 互不流通。
 
 import { randomUUID } from "node:crypto";
+import { authLandingResponse } from "./authLanding.js";
 import { bucketOf, grantFor, TIERS, tokensSpent, type Tier } from "./buckets.js";
 import { verifyJwt } from "./jwt.js";
 import { createUsageSniffer, sniffJson, type SniffedUsage } from "./usage.js";
@@ -262,6 +263,12 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
     const { pathname } = new URL(req.url);
 
     if (pathname === "/healthz") return json(200, { ok: true });
+    // OAuth 落地页(无鉴权,浏览器裸访问):深链转发让登录流在浏览器里有个明确终点
+    if (pathname === "/auth/landing") {
+      return req.method === "GET"
+        ? authLandingResponse()
+        : apiError(405, "只收 GET", "method_not_allowed");
+    }
     if (pathname === "/v1/chat/completions") {
       return req.method === "POST"
         ? chatCompletions(req)

@@ -11,6 +11,17 @@ export function gatewayBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env[GATEWAY_BASE_URL_ENV] ?? DEFAULT_GATEWAY_BASE_URL;
 }
 
+/**
+ * OAuth 落地页（gateway 的 GET /auth/landing，无 /v1 前缀——它不是 API）。
+ * OAuth 的 redirect_to 指它而不是直接指 mrotto:// 深链：浏览器渲染不了深链，
+ * 标签页会停在 Google 的旧页面上像卡死；落地页给流程一个看得见的终点，
+ * 再由页内 JS 转发 code 唤起 app（services/gateway/src/authLanding.ts）。
+ * 跟着 gatewayBaseUrl 走：本地起网关调试时全链路照样通。
+ */
+export function authLandingUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return gatewayBaseUrl(env).replace(/\/v1\/?$/, "") + "/auth/landing";
+}
+
 /** 网关自己的错误形状(gateway.ts / pokerApi.ts 的 apiError)。402 = 额度用尽。
     牌桌端点的 type 是 "otto_poker",同一形状 —— 两种都认,否则引擎给人看的
     整句报错会被吞成"牌桌请求失败(400)" */

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { parseAuthCallback, toAccountInfo, AccountManager } from "../../src/main/account.js";
 import type { SupabaseLike } from "../../src/main/account.js";
+import { authLandingUrl } from "../../src/shared/gatewayConfig.js";
 
 describe("parseAuthCallback", () => {
   it("mrotto 深链带 code → 提取 code", () => {
@@ -125,7 +126,8 @@ describe("AccountManager", () => {
 
     expect(client.auth.signInWithOAuth).toHaveBeenCalledWith({
       provider: "google",
-      options: { redirectTo: "mrotto://auth-callback", skipBrowserRedirect: true },
+      // redirect_to 是落地页(浏览器要有个看得见的终点),深链那一跳在落地页内发生
+      options: { redirectTo: authLandingUrl(), skipBrowserRedirect: true },
     });
     expect(openExternal).toHaveBeenCalledWith("https://oauth.example/authorize");
   });

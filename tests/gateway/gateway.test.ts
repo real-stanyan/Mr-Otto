@@ -117,6 +117,19 @@ describe("路由", () => {
     expect((await h.handle(new Request("http://gw/v1/chat/completions"))).status).toBe(405);
     expect((await h.handle(new Request("http://gw/v1/wallet", { method: "POST" }))).status).toBe(405);
   });
+
+  it("/auth/landing 不要令牌:回 HTML,内含 mrotto 深链转发(OAuth 落地页)", async () => {
+    const res = await harness().handle(new Request("http://gw/auth/landing?code=abc"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await drain(res);
+    expect(body).toContain("mrotto://auth-callback");
+  });
+
+  it("/auth/landing 只收 GET", async () => {
+    const res = await harness().handle(new Request("http://gw/auth/landing", { method: "POST" }));
+    expect(res.status).toBe(405);
+  });
 });
 
 describe("认证与额度门槛", () => {
