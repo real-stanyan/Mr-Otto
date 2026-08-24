@@ -27,6 +27,7 @@ import type {
   StagedAttachment,
   StartSessionOptions,
   TurnStatus,
+  UpdaterState,
   PokerAction,
   PokerHandView,
   PokerTableInput,
@@ -146,6 +147,9 @@ interface ChatState {
   pendingWorkspace: string | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
+  /** OTA 更新器镜像（ADR-0075）。null = 快照还没回来；ready/manual 时侧栏
+      出更新 pill + 齿轮亮点（UpdatePill.tsx）。boot() 拉首帧 + 订阅推送 */
+  updater: UpdaterState | null;
   /** 正在压缩上下文的会话。主进程把 compact 复用成 running 灯（挡并发），
       渲染层分不出"在想"还是"在压"——这个标记只在 compact() 调用期间为 true，
       让相位指示器能把文案换成「压缩中」。不进事件日志：它是调用期的瞬时状态 */
@@ -606,6 +610,7 @@ export const useChat = create<ChatState>((set, get) => ({
   streamingBySession: {},
   toolOutputByCall: {},
   runningToolCallBySession: {},
+  updater: null,
   error: null,
   approvalMode: "ask",
   thinking: DEFAULT_THINKING,
@@ -1504,6 +1509,14 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
+
+    // OTA 更新镜像：先订阅再拉首帧——反过来的话，订阅生效前主进程恰好推的
+    // 那一条会丢。首帧只在推送还没写过时才落（invoke 响应可能晚于更新的推送到达，
+    // 无条件 set 会拿旧快照盖新状态）
+    window.otter.onUpdaterState((updater) => set({ updater }));
+    void window.otter.updaterGetState().then((updater) => {
+      if (get().updater === null) set({ updater });
+    });
     // 全程订阅,不等进了 MCP 栏目才订:一台 server 从 connecting 转 connected/failed
     // 是 ready() 在后台跑完才知道的异步结果，用户可能这时候根本没打开设置页——
     // 镜像照样要更新，等他下次打开时看到的才是新鲜的，不是"进页面那一刻"的旧快照

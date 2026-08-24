@@ -84,6 +84,7 @@ import { McpSettings } from "./components/McpSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
 import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
+import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
@@ -1386,6 +1387,11 @@ function AppSidebar() {
   const setSessionSearchOpen = useChat((s) => s.setSessionSearchOpen);
   const openSettings = useChat((s) => s.openSettings);
   const closeSettings = useChat((s) => s.closeSettings);
+  // 齿轮角标点:更新待装时亮(pill 是主入口,这颗点管的是 pill 被无视之后——
+  // 设置里「关于与更新」还有一条路)
+  const updatePending = useChat(
+    (s) => s.updater !== null && (s.updater.phase === "ready" || s.updater.phase === "manual"),
+  );
   const deleteSession = useChat((s) => s.deleteSession);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
@@ -1673,6 +1679,8 @@ function AppSidebar() {
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
           这一行只留用户卡片 + 一颗进「模型配置」首屏的齿轮 */}
       <SidebarFooter>
+        {/* OTA 更新 pill（ADR-0075）:ready/manual 才出现,点击换包重启/开下载页 */}
+        <UpdatePill />
         <div className="flex items-center gap-[6px]">
           {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做）。
               低调侧栏风:文字色 dim,悬停亮起 */}
@@ -1723,10 +1731,16 @@ function AppSidebar() {
                 // 纯图标按钮：Tooltip 只在悬停时才挂 aria-describedby，读屏和自动化
                 // 平时看到的是一颗没有名字的按钮。aria-label 才是它的名字
                 aria-label="设置"
-                className="shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
-                onClick={() => void openSettings("keys")}
+                className="relative shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
+                onClick={() => void openSettings(updatePending ? "about" : "keys")}
               >
                 <GearIcon />
+                {updatePending && (
+                  <span
+                    className="absolute top-0 right-[2px] w-[7px] h-[7px] rounded-full bg-brand"
+                    aria-label="有可用更新"
+                  />
+                )}
               </button>
             </TooltipTrigger>
             <TooltipContent>设置</TooltipContent>
