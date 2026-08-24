@@ -598,6 +598,11 @@ void app.whenReady().then(() => {
     // 同 classifyAndAppend：出了 turn 锁，这一跑期间会话可能已被 purge，
     // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
     if (!agents.has(sessionId)) return;
+    // turn 在跑就丢弃（issue #283 ②）：cheap 模型这几十秒里用户可能已开下一个
+    // turn，此刻落 micro_compacted = 该 turn 后续每圈投影中段突变，prefix cache
+    // 全废——ADR-0073 攒批省下的又赔回去。丢弃无害：摘要没落盘，下个收口的
+    // enqueue 重算一份（microCompactOnce 本来就是"失败=不落事件，下一 turn 自愈"）
+    if (runningSessions.has(sessionId)) return;
     // 跑的这几十秒里下一个 turn 可能已经 auto-compact 了：那份摘要描述的是被 compact
     // 替换掉的历史，投影侧（latestMicroCompacted）会按 coversUpTo 丢弃它，这里干脆
     // 不落——落了也只是一条永远不投影、却记在账上的事件。
@@ -1579,27 +1584,36 @@ void app.whenReady().then(() => {
     // TS 安心；真正的取值只有 runTurn 的返回
     let outcome: "completed" | "aborted" = "aborted";
     try {
-      if (invoked) {
-        // 快照落在 user_message 之前：模型先看到说明书，再看到任务
-        const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
-        send(CHANNELS.event, fullEvent);
-      }
       // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
       // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
       // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
       // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
       // "模型看不见图还装看过"
       // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
+      //
+      // 调用先于任何 append（issue #283 ⑦）：skill_invoked 若先落、代读再失败，
+      // 日志里就留下一条没有任务跟随的孤儿 skill 事件——而台账语义是"启用过=
+      // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，
+      // 全成了再按原序落盘，失败一条不落
       const modelText = composeUserText(text, textFiles);
+      let described: { content: string; model: string } | null = null;
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
         // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
         // 真正代读的那一款，不是常量
         const bridgeModel = visionModel();
         const describeImages = createVisionBridge((id) => attachmentStore.read(id), undefined, bridgeModel);
-        const described = await describeImages(refs, modelText);
+        described = { content: await describeImages(refs, modelText), model: bridgeModel };
+      }
+      if (invoked) {
+        // 快照落在 user_message 之前：模型先看到说明书，再看到任务
+        const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
+        send(CHANNELS.event, fullEvent);
+      }
+      if (described) {
+        // 紧贴 user_message 之前（barrenTurns 按 events[i-1] 认领它，中间不能夹别的）
         const descEvent = store.append({
           sessionId, ts: Date.now(), type: "image_described",
-          content: described, model: bridgeModel,
+          content: described.content, model: described.model,
         });
         send(CHANNELS.event, descEvent);
       }
