@@ -62,6 +62,7 @@ import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
@@ -2917,6 +2918,9 @@ export function App() {
           <GameInviteToast />
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型
+              (接力逻辑在 store 的 setProfileSetupOpen,盖章见 lib/modelSetup.ts) */}
+          <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
         </SidebarInset>

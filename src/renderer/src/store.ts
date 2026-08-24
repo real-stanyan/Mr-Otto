@@ -66,6 +66,7 @@ import {
   type ChatMessage,
 } from "./lib/friendsState.js";
 import { needsOnboarding } from "./lib/identity.js";
+import { hasModelSetupStamp, needsModelSetup, stampModelSetup } from "./lib/modelSetup.js";
 import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
@@ -301,6 +302,9 @@ interface ChatState {
   /** 首登引导弹窗开着没有。它由 needsOnboarding() 决定何时**首次**打开,
       之后归用户(关了就是关了,不该被下一次 profile 刷新重新掀开) */
   profileSetupOpen: boolean;
+  /** 首登引导第二步:「配第一个大模型」弹窗开着没有。profile 弹窗关闭时
+      由 needsModelSetup() 决定接不接力(lib/modelSetup.ts,issue #328) */
+  modelSetupOpen: boolean;
   /** 会话搜索面板(⌘K)开着没有。纯 UI 开合,不进日志 */
   sessionSearchOpen: boolean;
   /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
@@ -522,6 +526,8 @@ interface ChatState {
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
   saveMyProfile(patch: ProfilePatch): Promise<string | null>;
   setProfileSetupOpen(open: boolean): void;
+  /** 关闭时盖本机章（以后再说=只弹一次,见 lib/modelSetup.ts） */
+  setModelSetupOpen(open: boolean): void;
   setSessionSearchOpen(open: boolean): void;
   /** 审批卡的返程（ADR-0041）。四种意志一个对象：批/拒、拒绝原因、
       顺带授予的长期许可、以及人改过的参数（write_file 的分块取舍） */
@@ -661,6 +667,7 @@ export const useChat = create<ChatState>((set, get) => ({
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   myProfile: null,
   profileSetupOpen: false,
+  modelSetupOpen: false,
   sessionSearchOpen: false,
   wallet: null,
   walletError: "",
@@ -1422,7 +1429,25 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ friendError: r.ok ? null : r.message });
   },
 
-  setProfileSetupOpen: (open) => set({ profileSetupOpen: open }),
+  setProfileSetupOpen: (open) =>
+    set((s) => {
+      // 关闭那一下是引导链的接力点(issue #328):起完名字(或"以后再说")后,
+      // 一把 key 都没配的新用户接着被引导配第一个模型。挂在这里而不是挂在
+      // 弹窗组件的 onOpenChange 上——Esc/点遮罩/× 全都收敛到这一个 setter
+      const chainModelSetup =
+        s.profileSetupOpen && !open && needsModelSetup(s.keyStatus, hasModelSetupStamp());
+      return {
+        profileSetupOpen: open,
+        modelSetupOpen: s.modelSetupOpen || chainModelSetup,
+      };
+    }),
+
+  setModelSetupOpen: (open) => {
+    // 任何方式关掉都盖章:这个弹窗没有第二次触发点(profile 章已盖),
+    // "不盖章下次再问"在这里是一句空话,不如把"只弹一次"写成确定的事
+    if (!open) stampModelSetup();
+    set({ modelSetupOpen: open });
+  },
 
   setSessionSearchOpen: (open) => set({ sessionSearchOpen: open }),
 
@@ -1472,7 +1497,7 @@ export const useChat = create<ChatState>((set, get) => ({
               gameInvites: [], realtimeHealth: "connecting", friendsPanelOpen: false,
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
-              myProfile: null, profileSetupOpen: false,
+              myProfile: null, profileSetupOpen: false, modelSetupOpen: false,
               // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
               wallet: null, walletError: "",
             }
