@@ -22,7 +22,7 @@ function describe(state: UpdaterState): string {
     case "checking":
       return "正在检查更新…";
     case "available":
-      return `发现新版 v${state.version}，点「下载」开始`;
+      return `发现新版 v${state.version}，即将开始下载…`;
     case "downloading": {
       const got = formatMb(state.received);
       return state.total > 0
@@ -122,7 +122,7 @@ export function AboutUpdateSettings() {
             )}
           </div>
           <p className={`${HINT} border-t border-border pt-3`}>
-            发现新版会先在侧栏出卡片，点了才开始下载；点「重启更新」才换新版，
+            发现新版会自动下载并在侧栏出卡片（带进度）；点「重启更新」才换新版，
             全程不打断任何会话。更新源是本项目的 GitHub Releases。
           </p>
         </div>

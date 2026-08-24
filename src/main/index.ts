@@ -117,21 +117,23 @@ import { findMrottoDeepLink } from "./deepLink.js";
 // 才能实例化，中间这段空档收到的 URL 先缓存，ready 后 flush。
 app.setAsDefaultProtocolClient("mrotto");
 
-// Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
-// 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
-// URL 经 second-instance 事件转交给存活实例。锁文件在 userData 里——OTTO_PROFILE
-// 双开（docs/dev-two-accounts.md）各有各的 userData，互不抢锁。
-// 抢不到锁 = 本进程只是个送信的，用 app.exit 立即退（此刻什么都没初始化，无需清理）。
-if (!app.requestSingleInstanceLock()) {
-  app.exit(0);
-}
-
 // 品牌名 Mr Otto,但 userData 目录钉死在 mr-otto:Electron 的 userData 路径默认跟
 // app.name 走,改名会把 keys.json/sessions.db/attachments 留在旧目录里"凭空消失"。
 // 先 setName 再显式 setPath,老数据原地不动。
 app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)));
+
+// Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
+// 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
+// URL 经 second-instance 事件转交给存活实例。锁文件在 userData 里——所以必须在
+// 上面 setPath("userData") 之后再抢锁（issue #322 发现的 bug：原来锁在 setPath
+// 之前抢，落在默认目录，OTTO_PROFILE 双开 / e2e 会跟已安装版互相抢锁秒退）。
+// OTTO_PROFILE 双开（docs/dev-two-accounts.md）各有各的 userData，互不抢锁。
+// 抢不到锁 = 本进程只是个送信的，用 app.exit 立即退（此刻什么都没初始化，无需清理）。
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
 
 // Windows/Linux 摘掉 Electron 默认菜单栏（File/Edit/View/Window，issue #320）：
 // UI 全在窗体内，那排菜单只占一行还暴露 DevTools。剪贴板/输入快捷键是 Chromium
@@ -1272,8 +1274,11 @@ void app.whenReady().then(() => {
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
   // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
-  // 定时节奏：启动 30s 后一次（别挤开冷启动关键路径）+ 每 6h 一次；
-  // checkNow 内部有互斥，定时器和设置页按钮撞上也只跑一轮
+  // 节奏（issue #322，推翻 #316 的「停在 available 等点击」）：
+  // 启动 30s 后一次（别挤开冷启动关键路径）+ 每 30min 一次 + 窗口 focus
+  // 触发（节流 10min——「发完版切回 app」就能撞上，不用等定时器）；
+  // 查到新版直接自动下载，卡片带着进度自己弹出来。
+  // checkNow 内部有互斥，定时器 / focus / 设置页按钮撞上也只跑一轮
   const updater =
     (process.platform === "darwin" || process.platform === "win32") && app.isPackaged
       ? createUpdater(createUpdaterHostDeps((s) => send(CHANNELS.updaterState, s)))
@@ -1284,13 +1289,28 @@ void app.whenReady().then(() => {
     reason: app.isPackaged ? "仅支持 macOS 与 Windows" : "开发模式不检查更新",
   };
   ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
-  ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
+  // 手动检测也串自动下载（issue #322）：available 一律是过渡态，查到就下
+  ipcMain.handle(CHANNELS.updaterCheckNow, async () => {
+    if (updater === null) return updaterDisabled;
+    const s = await updater.checkNow();
+    if (s.phase === "available") void updater.startDownload();
+    return s;
+  });
   ipcMain.handle(CHANNELS.updaterStartDownload, () => updater?.startDownload() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
   ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
   if (updater !== null) {
-    setTimeout(() => void updater.checkNow(), 30_000);
-    setInterval(() => void updater.checkNow(), 6 * 60 * 60 * 1000);
+    let lastAutoCheckAt = 0;
+    const autoCheck = async () => {
+      lastAutoCheckAt = Date.now();
+      const s = await updater.checkNow();
+      if (s.phase === "available") void updater.startDownload();
+    };
+    setTimeout(() => void autoCheck(), 30_000);
+    setInterval(() => void autoCheck(), 30 * 60 * 1000);
+    win.on("focus", () => {
+      if (Date.now() - lastAutoCheckAt >= 10 * 60 * 1000) void autoCheck();
+    });
   }
 
   // ── MCP ─────────────────────────────────────────────────────────
