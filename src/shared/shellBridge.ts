@@ -627,6 +627,9 @@ export interface ShellBridge {
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
   onNotificationActivated(cb: (target: NotificationTarget) => void): Unsubscribe;
+  /** 主进程要播提示音(#336):sound 是 macOS 系统音名(Funk/Sosumi/Ping/Pop),
+      渲染层播打包的同名 wav——mac/win 听到同一份音频。不认识的名字忽略 */
+  onPlaySound(cb: (sound: string) => void): Unsubscribe;
   /** 用户点了灵动岛列表里的会话行(#210)→ 主进程已聚焦窗口,渲染层负责切会话
       (走 store.resume,同侧栏点行一条路) */
   onIslandFocusSession(cb: (sessionId: string) => void): Unsubscribe;
@@ -854,6 +857,7 @@ export const CHANNELS = {
   gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
+  playSound: "otter:playSound",
   islandFocusSession: "otter:islandFocusSession",
   getWindowFullscreen: "otter:getWindowFullscreen",
   windowFullscreen: "otter:windowFullscreen",
