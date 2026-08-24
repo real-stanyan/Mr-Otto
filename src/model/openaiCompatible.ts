@@ -45,6 +45,61 @@ export interface OpenAICompatibleOptions {
       image_url;false/缺省 = 换占位文本——无视觉模型发 base64 必 400,
       图片内容由 vision-bridge 的 image_described 事件以文字供给 */
   vision?: boolean;
+  /** 重试/超时参数覆盖（测试用——生产装配一律用下面的默认常量）。 */
+  timing?: Partial<AdapterTiming>;
+}
+
+/** 传输层健壮性参数（issue #283）。原则：**首 token 前**的失败可重试（限流/网络闪断/
+    响应头超时/静默流），首 token 后一律不重试——半条消息续不上，重试等于把已直播给
+    UI 的内容重放一遍。用户 abort 永不重试（停止是意志，不是故障，ADR-0006）。 */
+export interface AdapterTiming {
+  /** 总尝试次数（含首发）。turn 后外挂有各自的 AbortSignal.timeout 兜底，
+      这里的重试主要救主 loop——一次 429 不该报废整个 turn */
+  maxAttempts: number;
+  /** 第 n 次重试前的退避毫秒数；越界取末位 */
+  backoffMs: readonly number[];
+  /** fetch 发出后多久没收到响应头就掐断（连接挂死的 TCP 会让 await 永远不回） */
+  headersTimeoutMs: number;
+  /** SSE 流上多久没有任何字节就掐断（连上了但服务端不再吐字的挂死态） */
+  idleTimeoutMs: number;
+}
+
+const DEFAULT_TIMING: AdapterTiming = {
+  maxAttempts: 3,
+  backoffMs: [500, 2000],
+  headersTimeoutMs: 30_000,
+  idleTimeoutMs: 90_000,
+};
+
+/** 可重试的状态码：限流 + 服务端瞬时故障。4xx 其余（key 错/请求非法/额度用尽）
+    重试只会得到同一个答案 */
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+
+/** 可重试标记贴在错误对象上（不建子类：错误要跨 try 边界原样上抛，标记比 instanceof 皮实） */
+function markRetryable<T extends Error>(err: T): T {
+  (err as T & { retryable?: boolean }).retryable = true;
+  return err;
+}
+
+function isRetryable(err: unknown): boolean {
+  return err instanceof Error && (err as { retryable?: boolean }).retryable === true;
+}
+
+/** 可中断的退避睡眠：用户在退避窗口里按停止，立刻醒来抛 AbortError，不傻等 */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(signal?.reason ?? new DOMException("aborted", "AbortError"));
+    if (signal?.aborted) return fail();
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      fail();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** 挡位 → 请求体片段。各家的写法不一样，方言由目录给（ModelChoice.thinking.wire）。
@@ -213,60 +268,100 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
     };
   };
 
-  return {
-    model: opts.model,
+  const timing: AdapterTiming = { ...DEFAULT_TIMING, ...opts.timing };
 
-    async chat(
-      messages: ChatMessage[],
-      tools?: ToolDefinition[],
-      onDelta?: (text: string, kind: DeltaKind) => void,
-      signal?: AbortSignal
-    ): Promise<ModelReply> {
-      // fetch 原生认 signal：请求阶段和 SSE body 读流共用同一根线——
-      // abort 时 reader.read() 也会 reject AbortError，不用逐处手查
-      const endpoint: ResolvedEndpoint = opts.resolveEndpoint
-        ? await opts.resolveEndpoint()
-        : { baseUrl: opts.baseUrl, apiKey: opts.apiKey };
+  /** 单次尝试：fetch + 读完整回复。可重试性在这里判定并贴标记，重试循环在 chat() 里。
+      自建 AbortController 而不是把外部 signal 直接递给 fetch：响应头超时和 SSE
+      静默超时都要能自己掐断这一次请求，而外部 signal 是整个 turn 的（掐了就停不回来）。
+      外部 abort 单向传导进来；我们自己掐断时用 failure 记住真实原因——
+      有的运行时 abort(reason) 后 reject 出来的仍是笼统的 AbortError */
+  async function attemptChat(
+    body: string,
+    onDelta: ((text: string, kind: DeltaKind) => void) | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<ModelReply> {
+    const endpoint: ResolvedEndpoint = opts.resolveEndpoint
+      ? await opts.resolveEndpoint()
+      : { baseUrl: opts.baseUrl, apiKey: opts.apiKey };
 
-      const res = await fetch(`${endpoint.baseUrl}/chat/completions`, {
-        method: "POST",
-        ...(signal ? { signal } : {}),
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${endpoint.apiKey}`,
-          ...endpoint.headers,
-        },
-        body: JSON.stringify({
-          model: opts.wireModel ?? opts.model,
-          messages: messages.map(toWireMessage),
-          ...thinkingBody(opts.thinking),
-          ...(tools && tools.length > 0
-            ? {
-                tools: tools.map((t) => ({
-                  type: "function",
-                  function: { name: t.name, description: t.description, parameters: t.parameters },
-                })),
-              }
-            : {}),
-          // usage 默认不随流回来，得显式要（OpenAI 方言标准字段，DeepSeek 文档明载）；
-          // 少了它 assistant_message 就没账单，context 圆环全瞎
-          ...(onDelta ? { stream: true, stream_options: { include_usage: true } } : {}),
-        }),
-      });
+    const ctrl = new AbortController();
+    let failure: Error | null = null;
+    const abortWith = (err: Error) => {
+      failure = err;
+      ctrl.abort(err);
+    };
+    const onExtAbort = () => ctrl.abort(signal?.reason ?? new DOMException("aborted", "AbortError"));
+    signal?.addEventListener("abort", onExtAbort, { once: true });
+    /** 我们掐的换成真实原因；用户按停的原样上抛（engine 按 AbortError 收口成 aborted） */
+    const normalize = (err: unknown): never => {
+      if (failure && !signal?.aborted) throw failure;
+      throw err;
+    };
+
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const headersTimer = setTimeout(
+        () =>
+          abortWith(
+            markRetryable(new Error(`model API ${timing.headersTimeoutMs}ms 未返回响应头，已掐断`))
+          ),
+        timing.headersTimeoutMs
+      );
+      let res: Response;
+      try {
+        res = await fetch(`${endpoint.baseUrl}/chat/completions`, {
+          method: "POST",
+          signal: ctrl.signal,
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${endpoint.apiKey}`,
+            ...endpoint.headers,
+          },
+          body,
+        });
+      } catch (err) {
+        // 网络层失败（DNS/连接重置/断网）：一个字节都没消费，安全重试
+        if (!signal?.aborted && !failure && err instanceof Error) markRetryable(err);
+        normalize(err);
+        throw err; // normalize 必抛，这行只为 TS 收敛
+      } finally {
+        clearTimeout(headersTimer);
+      }
 
       if (!res.ok) {
-        const body = await res.text();
+        const errBody = await res.text();
         // 网关的错误本来就是写给人看的("额度用尽,去设置填自己的 key"),
         // 再裹一层 "model API 402:" 只会把那句话埋进一行技术噪音里
-        const gatewayError = parseGatewayError(body);
-        if (gatewayError) throw new Error(gatewayError.message || `otto-gateway ${res.status}`);
-        throw new Error(`model API ${res.status}: ${body.slice(0, 500)}`);
+        const gatewayError = parseGatewayError(errBody);
+        const err = gatewayError
+          ? new Error(gatewayError.message || `otto-gateway ${res.status}`)
+          : new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`);
+        throw RETRYABLE_STATUS.has(res.status) ? markRetryable(err) : err;
       }
 
       // ---- 流式分支：SSE 攒完整消息，途中 onDelta 直播 ----
       if (onDelta) {
         if (!res.body) throw new Error("model API 返回流式响应但没有 body");
-        const acc = await readSSE(res.body, onDelta);
+        // 静默看门狗：每收到一块字节就重上发条。首字节前掐断可重试（什么都没直播），
+        // 首字节后掐断不可重试——重试会把 UI 已经播出去的碎片再播一遍
+        let consumed = false;
+        const armIdle = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            const err = new Error(`model API 流 ${timing.idleTimeoutMs}ms 无数据，已掐断`);
+            abortWith(consumed ? err : markRetryable(err));
+          }, timing.idleTimeoutMs);
+        };
+        armIdle();
+        const watched = withActivity(
+          res.body,
+          () => {
+            consumed = true;
+            armIdle();
+          },
+          ctrl.signal
+        );
+        const acc = await readSSE(watched, onDelta).catch(normalize);
         return {
           content: acc.content,
           ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
@@ -304,6 +399,86 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
             }
           : {}),
       };
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+      signal?.removeEventListener("abort", onExtAbort);
+    }
+  }
+
+  return {
+    model: opts.model,
+
+    async chat(
+      messages: ChatMessage[],
+      tools?: ToolDefinition[],
+      onDelta?: (text: string, kind: DeltaKind) => void,
+      signal?: AbortSignal
+    ): Promise<ModelReply> {
+      // 请求体在重试间不变，拼一次
+      const body = JSON.stringify({
+        model: opts.wireModel ?? opts.model,
+        messages: messages.map(toWireMessage),
+        ...thinkingBody(opts.thinking),
+        ...(tools && tools.length > 0
+          ? {
+              tools: tools.map((t) => ({
+                type: "function",
+                function: { name: t.name, description: t.description, parameters: t.parameters },
+              })),
+            }
+          : {}),
+        // usage 默认不随流回来，得显式要（OpenAI 方言标准字段，DeepSeek 文档明载）；
+        // 少了它 assistant_message 就没账单，context 圆环全瞎
+        ...(onDelta ? { stream: true, stream_options: { include_usage: true } } : {}),
+      });
+
+      // 重试循环（issue #283）：只重试贴了 retryable 标记的失败（首 token 前的
+      // 限流/瞬时故障/网络闪断/静默）。用户 abort 优先于一切——退避窗口里也能醒
+      for (let attempt = 1; ; attempt++) {
+        signal?.throwIfAborted();
+        try {
+          return await attemptChat(body, onDelta, signal);
+        } catch (err) {
+          if (!isRetryable(err) || attempt >= timing.maxAttempts || signal?.aborted) throw err;
+          await sleep(
+            timing.backoffMs[Math.min(attempt - 1, timing.backoffMs.length - 1)] ?? 0,
+            signal
+          );
+        }
+      }
     },
   };
+}
+
+/** 字节活动探针：原样透传流，每收到一块就喊一声——SSE 静默看门狗的发条挂在这。
+    读操作和 signal 赛跑：真 fetch 的 body 虽然自己也绑着 signal，但那是实现细节——
+    看门狗掐断必须能打断挂着的 read，不指望流的来源替我们兜 */
+function withActivity(
+  body: ReadableStream<Uint8Array>,
+  onActivity: () => void,
+  signal: AbortSignal
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const abortedRead = new Promise<never>((_, reject) => {
+    const bail = () => {
+      // 先 reject 再 cancel：cancel 会让挂着的 read 以 done 收尾，顺序反了
+      // 竞速会赢在"干净收流"上，掐断就静默变成了正常结束
+      reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+      void reader.cancel(signal.reason).catch(() => {});
+    };
+    if (signal.aborted) bail();
+    else signal.addEventListener("abort", bail, { once: true });
+  });
+  abortedRead.catch(() => {}); // 流正常走完时它悬着，別变成 unhandledRejection
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await Promise.race([reader.read(), abortedRead]);
+      onActivity();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
 }
