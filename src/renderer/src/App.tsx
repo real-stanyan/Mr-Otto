@@ -28,7 +28,12 @@ import { PermissionGrant } from "@/components/elements/permission-grant.js";
 import { TodoList } from "@/components/elements/todo-list.js";
 import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
-import type { ApprovalRequest, IslandDisplay, McpToolPreview } from "../../shared/shellBridge.js";
+import type {
+  ApprovalDecisionKind,
+  ApprovalRequest,
+  IslandDisplay,
+  McpToolPreview,
+} from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -707,6 +712,25 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   const [reason, setReason] = useState("");
   const [discarded, setDiscarded] = useState<ReadonlySet<string>>(() => new Set());
 
+  // 按钮集合由后端下发（issue #341 规则①）：这里只做「种类 → 按钮」的通用映射，
+  // 新增审批场景不改前端按钮代码。缺席 = 旧主进程的包，退回全集（向后兼容）
+  const kinds =
+    approval.availableDecisions ??
+    (["deny", "abort", "approve_session", "approve_always", "approve"] satisfies ApprovalDecisionKind[]);
+  const has = (k: ApprovalDecisionKind): boolean => kinds.includes(k);
+
+  // Esc 永远 = 取消，收敛到「不执行」（issue #341 规则③ fail-closed）：
+  // 关掉这张卡的唯一键盘路径就是拒绝，不存在"关了卡但操作还挂着"的状态
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      void decide({ decision: "denied", reason: "用户取消了审批（Esc）" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [decide]);
+
   const preview = approval.preview;
   // 三种预览各管各的：write_file 那一路要 diff，MCP 那一路要 server + 参数表，
   // 没有预览的退回通用卡。先分家再取字段——联合类型不分家就取不到字段
@@ -768,36 +792,54 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
           className="max-w-none"
           actions={
             <>
-              <button
-                type="button"
-                className={`${PILL} text-destructive hover:bg-destructive/10`}
-                onClick={() => void decide({ decision: "denied" })}
-              >
-                拒绝
-              </button>
-              <button
-                type="button"
-                className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
-                title={`本次会话内不再为 ${approval.call.name} 弹审批（换会话恢复询问）`}
-                onClick={() => approve("session")}
-              >
-                本次会话
-              </button>
-              <button
-                type="button"
-                className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
-                title={`以后永远不再为 ${approval.call.name} 弹审批（存在 userData/permissions.json）`}
-                onClick={() => approve("always")}
-              >
-                永久
-              </button>
-              <button
-                type="button"
-                className={`${PILL} bg-ok text-white hover:bg-ok/90`}
-                onClick={() => approve()}
-              >
-                批准
-              </button>
+              {has("abort") && (
+                <button
+                  type="button"
+                  className={`${PILL} text-destructive/70 hover:bg-destructive/10 hover:text-destructive`}
+                  title="拒绝这一步并中止整个 turn"
+                  onClick={() => void decide({ decision: "abort" })}
+                >
+                  中止
+                </button>
+              )}
+              {has("deny") && (
+                <button
+                  type="button"
+                  className={`${PILL} text-destructive hover:bg-destructive/10`}
+                  onClick={() => void decide({ decision: "denied" })}
+                >
+                  拒绝
+                </button>
+              )}
+              {has("approve_session") && (
+                <button
+                  type="button"
+                  className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
+                  title={`本次会话内不再为这次调用的规范化 key 弹审批（换会话恢复询问）`}
+                  onClick={() => approve("session")}
+                >
+                  本次会话
+                </button>
+              )}
+              {has("approve_always") && (
+                <button
+                  type="button"
+                  className={`${PILL} text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground/90`}
+                  title={`以后不再为这次调用的规范化 key 弹审批（存在 userData/permissions.json）`}
+                  onClick={() => approve("always")}
+                >
+                  永久
+                </button>
+              )}
+              {has("approve") && (
+                <button
+                  type="button"
+                  className={`${PILL} bg-ok text-white hover:bg-ok/90`}
+                  onClick={() => approve()}
+                >
+                  批准
+                </button>
+              )}
             </>
           }
         />
@@ -842,37 +884,57 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
-        <Button
-          variant="outline"
-          className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => void decide({ decision: "denied", ...(reason.trim() ? { reason: reason.trim() } : {}) })}
-        >
-          拒绝
-        </Button>
+        {has("abort") && (
+          <Button
+            variant="ghost"
+            className="text-destructive/70 hover:text-destructive hover:bg-destructive/10"
+            title="拒绝这一步并中止整个 turn"
+            onClick={() =>
+              void decide({ decision: "abort", ...(reason.trim() ? { reason: reason.trim() } : {}) })
+            }
+          >
+            中止
+          </Button>
+        )}
+        {has("deny") && (
+          <Button
+            variant="outline"
+            className="bg-transparent dark:bg-transparent text-destructive border-destructive hover:bg-destructive/10 dark:hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => void decide({ decision: "denied", ...(reason.trim() ? { reason: reason.trim() } : {}) })}
+          >
+            拒绝
+          </Button>
+        )}
         {/* 两档长期许可（ADR-0041）。都顺带批准这一次 —— 授权是"以后也别问了"，
             不是"这次不算"。改过参数的那一次照旧只应用留下的块 */}
-        <Button
-          variant="ghost"
-          className="text-muted-foreground hover:text-foreground"
-          title={`本次会话内不再为 ${approval.call.name} 弹审批（换会话恢复询问）`}
-          onClick={() => approve("session")}
-        >
-          本次会话
-        </Button>
-        <Button
-          variant="ghost"
-          className="text-muted-foreground hover:text-foreground"
-          title={`以后永远不再为 ${approval.call.name} 弹审批（存在 userData/permissions.json）`}
-          onClick={() => approve("always")}
-        >
-          永久
-        </Button>
-        <Button
-          className="bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
-          onClick={() => approve()}
-        >
-          {approveLabel}
-        </Button>
+        {has("approve_session") && (
+          <Button
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            title={`本次会话内不再为这次调用的规范化 key 弹审批（换会话恢复询问）`}
+            onClick={() => approve("session")}
+          >
+            本次会话
+          </Button>
+        )}
+        {has("approve_always") && (
+          <Button
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            title={`以后不再为这次调用的规范化 key 弹审批（存在 userData/permissions.json）`}
+            onClick={() => approve("always")}
+          >
+            永久
+          </Button>
+        )}
+        {has("approve") && (
+          <Button
+            className="bg-ok border-ok text-white hover:bg-ok/90 hover:border-ok/90"
+            onClick={() => approve()}
+          >
+            {approveLabel}
+          </Button>
+        )}
       </div>
     </div>
   );

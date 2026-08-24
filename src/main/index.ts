@@ -89,7 +89,7 @@ import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/provid
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
 import { mcpToolName } from "../shared/mcp.js";
 import { singleFlight } from "../shared/singleFlight.js";
-import type { ApprovalOutcome } from "../loop/approvalGate.js";
+import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 import {
@@ -447,6 +447,14 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // fail-closed（issue #341 规则③）：渲染进程崩了 = 审批通道断了。挂起的审批
+  // 立刻按拒绝收场（approval_decision 照常落盘），不悬停等一个回不来的人。
+  // 只挂崩溃，不挂正常关窗——mac 惯例关窗不退 app，岛窗还能替人点按钮
+  win.webContents.on("render-process-gone", (_e, details) => {
+    for (const agent of agents.values()) {
+      agent.approver.failPending(`渲染进程断开（${details.reason}），审批通道失效，按拒绝收场`);
+    }
+  });
   // 本次进程运行里派出去过的子会话 id。只增不减，且只在本次运行内有意义：
   // 它是 resumeSession 那道"绝不重建第二个 agent"守卫的判据（见那里的注释）。
   // 上一轮 app 留下的子会话不在里面 —— 它们本来就该按崩溃修复重建（issue #141）
@@ -845,6 +853,9 @@ void app.whenReady().then(() => {
     sessionId,
     call,
     toolDescription: tool.def.description,
+    // 按钮集合后端下发（issue #341 规则①）：渲染层只做种类 → 按钮的通用映射。
+    // 主装配永远有永久授权存储（下面的 persistAlwaysAllow 接线），所以是全集
+    availableDecisions: availableDecisionsFor({ hasAlwaysStore: true }),
     ...(preview ? { preview } : {}),
     ...(fromAgent ? { fromAgent } : {}),
   });
@@ -1888,19 +1899,19 @@ void app.whenReady().then(() => {
   ): Promise<void> {
     const agent = agents.get(sessionId);
     if (!agent) return;
-    const outcome: ApprovalOutcome = {
-      decision: incoming.decision,
-      ...(incoming.reason ? { reason: incoming.reason } : {}),
-      ...(incoming.grant ? { grant: incoming.grant } : {}),
-      ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
-    };
+    // "abort" 在这被映射成 denied + 中止 turn（issue #341 规则②）：
+    // approval_decision 事件 schema 不加宽，中止以 turn_ended:"aborted" 落盘
+    const { outcome, abortTurn } = mapApprovalDecision(incoming);
     // 授权先记下再唤醒：唤醒之后管线立刻往下跑，同一个 turn 里紧跟着的
     // 下一个调用就该享受到这条授权了（ADR-0041）
-    if (incoming.decision === "approved" && incoming.grant) {
+    if (outcome.decision === "approved" && outcome.grant) {
       // revisedArgs 一起递过去：授权 key 从实际执行的参数算（issue #342）
-      agent.grant(toolCallId, incoming.grant, incoming.revisedArgs);
+      agent.grant(toolCallId, outcome.grant, outcome.revisedArgs);
     }
     agent.approver.resolve(toolCallId, outcome);
+    // 中止放在 resolve 之后：先让挂起的审批以 denied 收场（approval_decision
+    // 照常落盘），engine 在下一个检查点看到信号翻转，turn 以 aborted 收口
+    if (abortTurn) agent.engine.abortTurn();
   }
 
   ipcMain.handle(
