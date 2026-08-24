@@ -33,7 +33,7 @@ import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
-import { dispatchSlash, SLASH_COMMANDS } from "./commands.js";
+import { dispatchSlash, slashCommandName, SLASH_COMMANDS } from "./commands.js";
 import { mcpPromptCommandDescription } from "./lib/mcpPromptMenu.js";
 import { TrajectoryView } from "./replay/TrajectoryView.js";
 import { ProtocolView } from "./components/ProtocolView.js";
@@ -2460,9 +2460,10 @@ function ChatComposer() {
     // (开面板、改标题),等一个 turn 跑完再执行没有道理。
     // MCP prompt 和本地指令共用 `/` 菜单,回车时先认 MCP prompt 的名字
     // (本地指令表里没有的才轮到它),认上了就开表单卡/直接展开(store 判)
-    if (text.startsWith("/")) {
-      const space = text.search(/\s/);
-      const name = space === -1 ? text : text.slice(0, space);
+    // slashCommandName 判"命令形"：/Users/... 这类路径开头的消息判不上，照常走 send
+    const slashName = slashCommandName(text);
+    if (slashName !== null) {
+      const name = slashName;
       if (!(name in SLASH_COMMANDS)) {
         const prompt = mcpPrompts.find((p) => `/${p.name}` === name);
         if (prompt) {

@@ -23,12 +23,21 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
   },
 };
 
+/** 命令形判定：首个空白前的 token 形如 "/名字"（字母数字下划线连字符）才算指令名。
+    绝对路径（/Users/... /usr/local/...）的首 token 必含第二个 "/"，判不上——
+    这样贴一个文件路径开头的消息不会被吞成"未知指令"。命中返回指令名，否则 null。 */
+export function slashCommandName(text: string): string | null {
+  const space = text.search(/\s/);
+  const name = space === -1 ? text : text.slice(0, space);
+  return /^\/[\w-]+$/.test(name) ? name : null;
+}
+
 /** true = 已按指令处理（含未知指令的报错），false = 普通消息，走 send。
     首个空白前 = 指令名，其余 = 参数（"/rename 修 bug 那次" 整段都是标题） */
 export function dispatchSlash(text: string): boolean {
-  if (!text.startsWith("/")) return false;
+  const name = slashCommandName(text);
+  if (name === null) return false;
   const space = text.search(/\s/);
-  const name = space === -1 ? text : text.slice(0, space);
   const args = space === -1 ? "" : text.slice(space + 1).trim();
   const cmd = SLASH_COMMANDS[name];
   if (cmd) {
