@@ -1,7 +1,9 @@
-// 侧栏更新 pill（ADR-0075）：更新器 ready / manual 时出现在 SidebarFooter 用户行
-// 上方，其余状态整个不渲染——checking/downloading 是后台的事，侧栏不值得为它们闪。
+// 侧栏更新 pill（ADR-0075，节奏改版 issue #316）：更新器 available / downloading /
+// ready / manual 时出现在 SidebarFooter 用户行上方，其余状态整个不渲染
+// ——idle/checking 是后台的事，侧栏不值得为它们闪。
 //
-// 点击语义（用户裁定）：ready 直接换包重启；但有会话正在跑时先弹确认——重启是
+// 点击语义（用户裁定，issue #316）：available 点击开始下载；downloading 只展示
+// 进度（点了没动作）；ready 直接换包重启——但有会话正在跑时先弹确认：重启是
 // 全 app 唯一会打断跑着的 turn 的动作，误点的代价配得上一步确认；全闲则不啰嗦。
 // manual（Translocation/不可写）点击开 Release 页手动装。
 //
@@ -9,7 +11,7 @@
 // keyframes（状态快速翻转时可中断重定向），reduced-motion 降为纯淡入。
 
 import { useEffect, useState } from "react";
-import { ArrowUpCircle } from "lucide-react";
+import { ArrowUpCircle, DownloadCloud } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +23,17 @@ import {
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
 
+const VISIBLE_PHASES = ["available", "downloading", "ready", "manual"] as const;
+type VisiblePhase = (typeof VISIBLE_PHASES)[number];
+
+function isVisiblePhase(phase: string): phase is VisiblePhase {
+  return (VISIBLE_PHASES as readonly string[]).includes(phase);
+}
+
+function formatMb(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(0);
+}
+
 export function UpdatePill() {
   const updater = useChat((s) => s.updater);
   const statusBySession = useChat((s) => s.statusBySession);
@@ -29,7 +42,7 @@ export function UpdatePill() {
   // 挂上后下一帧翻真，transition 接管
   const [mounted, setMounted] = useState(false);
 
-  const visible = updater !== null && (updater.phase === "ready" || updater.phase === "manual");
+  const visible = updater !== null && isVisiblePhase(updater.phase);
   useEffect(() => {
     if (!visible) {
       setMounted(false);
@@ -39,7 +52,8 @@ export function UpdatePill() {
     return () => cancelAnimationFrame(raf);
   }, [visible]);
 
-  if (updater === null || !(updater.phase === "ready" || updater.phase === "manual")) return null;
+  if (updater === null || !isVisiblePhase(updater.phase)) return null;
+  const phase = updater.phase;
 
   const runningCount = Object.values(statusBySession).filter((s) => s === "running").length;
 
@@ -49,14 +63,33 @@ export function UpdatePill() {
   };
 
   const onClick = () => {
-    if (updater.phase === "manual") {
+    if (phase === "available") {
+      void window.otter.updaterStartDownload();
+    } else if (phase === "manual") {
       void window.otter.updaterOpenReleasePage();
-    } else if (runningCount > 0) {
-      setConfirmOpen(true);
-    } else {
-      install();
+    } else if (phase === "ready") {
+      if (runningCount > 0) setConfirmOpen(true);
+      else install();
     }
+    // downloading：纯展示，点了不做事
   };
+
+  const label = (() => {
+    switch (phase) {
+      case "available":
+        return `发现新版 v${updater.version} · 点击下载`;
+      case "downloading":
+        return updater.total > 0
+          ? `正在下载 v${updater.version} · ${formatMb(updater.received)}/${formatMb(updater.total)} MB`
+          : `正在下载 v${updater.version} · ${formatMb(updater.received)} MB`;
+      case "ready":
+        return `新版 v${updater.version} 已就绪 · 重启更新`;
+      case "manual":
+        return `发现新版 v${updater.version} · 去下载页`;
+    }
+  })();
+
+  const Icon = phase === "available" || phase === "downloading" ? DownloadCloud : ArrowUpCircle;
 
   return (
     <>
@@ -67,17 +100,14 @@ export function UpdatePill() {
           "text-xs text-brand hover:bg-brand/15 active:scale-[0.97] " +
           "transition-[transform,opacity] duration-[240ms] ease-[cubic-bezier(0.23,1,0.32,1)] " +
           "data-[mounted=false]:translate-y-[6px] data-[mounted=false]:opacity-0 " +
-          "motion-reduce:data-[mounted=false]:translate-y-0"
+          "motion-reduce:data-[mounted=false]:translate-y-0" +
+          (phase === "downloading" ? " cursor-default" : "")
         }
         onClick={onClick}
-        title={updater.phase === "manual" ? updater.reason : undefined}
+        title={phase === "manual" ? updater.reason : undefined}
       >
-        <ArrowUpCircle className="w-[14px] h-[14px] shrink-0" />
-        <span className="flex-1 min-w-0 truncate text-left">
-          {updater.phase === "ready"
-            ? `新版 v${updater.version} 已就绪 · 重启更新`
-            : `发现新版 v${updater.version} · 去下载页`}
-        </span>
+        <Icon className="w-[14px] h-[14px] shrink-0" />
+        <span className="flex-1 min-w-0 truncate text-left">{label}</span>
       </button>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
