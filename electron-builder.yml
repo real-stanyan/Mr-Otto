@@ -63,3 +63,26 @@ dmg:
       y: 220
       type: link
       path: /Applications
+
+# Windows:NSIS .exe,x64。灵动岛是 macOS 专属,三处守卫保证 win 包干净:
+# build-island.mjs 非 mac 跳过、afterPack.cjs 非 darwin 直接 return、
+# 运行时 resolveIslandBinPath() 找不到二进制则岛静默不启动。
+# 原生模块:node-pty 与 better-sqlite3 都是 NAPI + 包内自带 win32-x64 prebuilds,
+# 运行时按 process.platform 挑对应二进制 —— 所以 win 出包不重编原生模块
+# (dist:win 带 --config.npmRebuild=false;交叉 node-gyp 本来就不可能)。
+# node-pty 的 build/Release 是本机 mac 编译产物,win 包里排掉,逼 loader 走
+# prebuilds/win32-x64。不签名(没有代码签名证书,SmartScreen 会拦,
+# 用户点"仍要运行"放行 —— 与 mac 无公证同一档待遇)。
+win:
+  icon: resources/icon.png
+  files:
+    - "!**/node_modules/node-pty/build/**"
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-win-x64-setup.${ext}
