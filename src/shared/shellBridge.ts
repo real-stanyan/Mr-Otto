@@ -589,8 +589,8 @@ export interface ShellBridge {
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
   onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
   onPokerError(cb: (message: string) => void): Unsubscribe;
-  /** 邮箱精确匹配搜用户。value null = 查无此人(不是错误) */
-  friendsSearch(email: string): Promise<FriendsResult<FriendProfile | null>>;
+  /** 用户名/邮箱模糊搜用户(不含自己)。value [] = 没有匹配(不是错误) */
+  friendsSearch(query: string): Promise<FriendsResult<FriendProfile[]>>;
   /** 发好友请求。重复请求/已是好友 → ok:false 带人话理由 */
   friendsSendRequest(userId: string): Promise<FriendsResult<null>>;
   /** 接受(accept=true,pending→accepted)或拒绝(accept=false,删行) */

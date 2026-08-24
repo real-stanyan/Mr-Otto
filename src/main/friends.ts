@@ -45,7 +45,8 @@ export type FriendsSubscribeHandlers = {
 
 export type FriendsApi = {
   getUserId(): Promise<string | null>;
-  findProfileByEmail(email: string): Promise<ProfileRow | null>;
+  /** 用户名/邮箱模糊搜索(ilike 子串匹配),按名字序返回一小页 */
+  searchProfiles(query: string): Promise<ProfileRow[]>;
   insertFriendship(requester: string, addressee: string): Promise<void>;
   acceptFriendship(id: string): Promise<void>;
   deleteFriendship(id: string): Promise<void>;
@@ -264,10 +265,11 @@ export class FriendsManager {
     this.push.friendsChanged(await this.snapshot(uid));
   }
 
-  async search(email: string): Promise<FriendsResult<FriendProfile | null>> {
-    return this.withUid(async () => {
-      const row = await this.api.findProfileByEmail(email);
-      return row ? toFriendProfile(row) : null;
+  async search(query: string): Promise<FriendsResult<FriendProfile[]>> {
+    return this.withUid(async (uid) => {
+      const rows = await this.api.searchProfiles(query);
+      // 自己不出现在结果里:对自己"发请求"没有意义,过滤比 UI 特判干净
+      return rows.filter((r) => r.id !== uid).map(toFriendProfile);
     });
   }
 

@@ -1506,7 +1506,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.updateProfile, (_e, patch: ProfilePatch) => userProfile.save(patch));
 
   // 好友系统:全部结构化回流(FriendsResult),渲染层按 ok 分支,不靠 invoke reject
-  ipcMain.handle(CHANNELS.friendsSearch, (_e, email: string) => friends.search(email));
+  ipcMain.handle(CHANNELS.friendsSearch, (_e, query: string) => friends.search(query));
   ipcMain.handle(CHANNELS.friendsSendRequest, (_e, userId: string) => friends.sendRequest(userId));
   ipcMain.handle(CHANNELS.friendsRespond, (_e, id: string, accept: boolean) => friends.respond(id, accept));
   ipcMain.handle(CHANNELS.friendsRemove, (_e, id: string) => friends.remove(id));

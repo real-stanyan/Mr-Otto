@@ -126,7 +126,7 @@ const bridge: ShellBridge = {
   onAccountChanged: subscribe(CHANNELS.accountChanged),
   onPokerHand: subscribe(CHANNELS.pokerHand),
   onPokerError: subscribe(CHANNELS.pokerError),
-  friendsSearch: (email) => ipcRenderer.invoke(CHANNELS.friendsSearch, email),
+  friendsSearch: (query) => ipcRenderer.invoke(CHANNELS.friendsSearch, query),
   friendsSendRequest: (userId) => ipcRenderer.invoke(CHANNELS.friendsSendRequest, userId),
   friendsRespond: (friendshipId, accept) =>
     ipcRenderer.invoke(CHANNELS.friendsRespond, friendshipId, accept),
