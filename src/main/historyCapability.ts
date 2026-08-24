@@ -17,6 +17,7 @@ export function createHistoryCapability(
     // 长会话为 11 条事件付整份 JSON.parse
     window: (sessionId, fromSeq, toSeq) => store.window(sessionId, fromSeq, toSeq),
     load: (sessionId) => store.load(sessionId),
+    title: (sessionId) => store.titleOf(sessionId),
     recent: (limit) => {
       const list = store
         .sessions()

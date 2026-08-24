@@ -136,6 +136,9 @@ export interface HistoryCapability {
   window(sessionId: string, fromSeq: number, toSeq: number): SessionEvent[];
   /** 整段事件；未知会话 = [] */
   load(sessionId: string): SessionEvent[];
+  /** 标题投影（改名胜出，否则第一条用户消息首行）；未知会话/没标题 = null。
+      discovery 给非榜首会话标卡片名用——只要标题就别付整段 load（issue #279） */
+  title(sessionId: string): string | null;
   /** 最近会话（排除归档/子会话/当前会话） */
   recent(limit: number): HistorySession[];
 }

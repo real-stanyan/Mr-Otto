@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SECTION_MODEL,
+  classifyLogView,
   classifySection,
   currentSectionTitle,
   parseSectionReply,
   summarizeSpan,
   unclassifiedSpan,
 } from "../../src/main/sectionClassifier.js";
+import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 // 没 key 就根本不出门（见 classifySection 的 key 闸门），所以要打到网络的用例
@@ -232,5 +234,71 @@ describe("classifySection", () => {
     ];
     await expect(classifySection(events)).resolves.toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// issue #279：分类不再全量 load，切片必须和全量在两条投影上逐点等价
+describe("classifyLogView —— 尾段切片与全量 load 等价", () => {
+  const mk = () => new EventStore(":memory:");
+  const put = (store: EventStore, e: Record<string, unknown>) =>
+    store.append({ sessionId: "s", ts: 1, ...e } as never);
+  const ask = (store: EventStore, content: string) => put(store, { type: "user_message", content });
+  const answer = (store: EventStore, content: string) => put(store, { type: "assistant_message", content, model: "m" });
+  const end = (store: EventStore) => put(store, { type: "turn_ended", outcome: "completed" });
+  const classify = (store: EventStore, title: string | null) =>
+    put(store, { type: "section_classified", title, model: "c" });
+
+  const expectEquivalent = (store: EventStore) => {
+    const view = classifyLogView(store, "s");
+    const full = store.load("s");
+    expect(unclassifiedSpan(view).map((e) => e.seq)).toEqual(unclassifiedSpan(full).map((e) => e.seq));
+    expect(currentSectionTitle(view)).toBe(currentSectionTitle(full));
+  };
+
+  it("还没分过类 = 整段就是未分类跨度，退回全量", () => {
+    const store = mk();
+    ask(store, "一"); answer(store, "答"); end(store);
+    expect(classifyLogView(store, "s")).toEqual(store.load("s"));
+    store.close();
+  });
+
+  it("常态锚点：标题在更早的分类事件里（隔着 title:null 的延续）也取得到", () => {
+    const store = mk();
+    ask(store, "一"); answer(store, "答一"); end(store); classify(store, "修登录");
+    ask(store, "二"); answer(store, "答二"); end(store); classify(store, null);
+    ask(store, "三");
+    expectEquivalent(store);
+    expect(currentSectionTitle(classifyLogView(store, "s"))).toBe("修登录");
+    store.close();
+  });
+
+  it("锚点落在 turn 中间：往回补 user_message 的扫描在切片里同样成立", () => {
+    const store = mk();
+    ask(store, "一"); answer(store, "答一"); end(store);
+    ask(store, "改成深色模式"); classify(store, "旧章节"); answer(store, "改好了"); end(store);
+    expectEquivalent(store);
+    expect(summarizeSpan(unclassifiedSpan(classifyLogView(store, "s")))).toContain("改成深色模式");
+    store.close();
+  });
+
+  it("锚点之前一条 turn_ended 都没有：退到全量尾段，不越界", () => {
+    const store = mk();
+    ask(store, "一"); classify(store, "开局就分"); ask(store, "二");
+    expectEquivalent(store);
+    store.close();
+  });
+
+  it("确实只读尾段：多轮已分类的历史不进切片", () => {
+    const store = mk();
+    for (let i = 0; i < 5; i++) { ask(store, `问${i}`); answer(store, `答${i}`); end(store); }
+    classify(store, "前情");
+    ask(store, "新问题");
+    const view = classifyLogView(store, "s");
+    const full = store.load("s");
+    expectEquivalent(store);
+    expect(view.length).toBeLessThan(full.length);
+    // 切片 = 全部分类事件 + 锚点所在 turn 开头起的尾段，仍然有序
+    expect(view.map((e) => e.seq)).toEqual([...view.map((e) => e.seq)].sort((a, b) => a - b));
+    store.close();
   });
 });
