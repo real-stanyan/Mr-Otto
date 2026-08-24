@@ -264,12 +264,14 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
   }
 
   /** 按 seq 顺序读出一个会话的全部事件 */
-  load(sessionId: string, opts: { afterSeq?: number } = {}): SessionEvent[] {
+  load(sessionId: string, opts: { afterSeq?: number; untilSeq?: number } = {}): SessionEvent[] {
     // afterSeq = 只读这个 seq 之后的事件（issue #197）：微压缩写侧收口前的
-    // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读
+    // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读。
+    // untilSeq（含，issue #351）：有界重建取"某个 user turn 到 checkpoint"的
+    // 连续段——上下界都给才是段，不然还是半个全量
     const rows = this.prep(
-      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq"
-    ).all(sessionId, opts.afterSeq ?? -1) as {
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq"
+    ).all(sessionId, opts.afterSeq ?? -1, opts.untilSeq ?? Number.MAX_SAFE_INTEGER) as {
       seq: number;
       ts: number;
       type: string;
@@ -282,6 +284,36 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       sessionId,
       ts: r.ts,
       type: r.type,
+      ...(r.sandbox_id !== null ? { sandboxId: r.sandbox_id } : {}),
+      ...JSON.parse(r.payload),
+    })) as SessionEvent[];
+  }
+
+  /** 某会话某类型的最后一条（beforeSeq 给了 = 该 seq 之前最近的一条）。
+      events_session_type_seq 索引直达，不整段扫（issue #351 反向扫描的原子步） */
+  lastOfType(sessionId: string, type: SessionEvent["type"], opts: { beforeSeq?: number } = {}): SessionEvent | null {
+    const row = this.prep(
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND type = ? AND seq < ? ORDER BY seq DESC LIMIT 1"
+    ).get(sessionId, type, opts.beforeSeq ?? Number.MAX_SAFE_INTEGER) as
+      | { seq: number; ts: number; type: string; sandbox_id: string | null; payload: string }
+      | undefined;
+    if (!row) return null;
+    return {
+      seq: row.seq, sessionId, ts: row.ts, type: row.type,
+      ...(row.sandbox_id !== null ? { sandboxId: row.sandbox_id } : {}),
+      ...JSON.parse(row.payload),
+    } as SessionEvent;
+  }
+
+  /** 某会话某类型的全部事件（beforeSeq 给了 = 只取该 seq 之前的），seq 升序。
+      走同一条索引；skill_invoked / memory_loaded 这类每会话只有个位数条 */
+  ofType(sessionId: string, type: SessionEvent["type"], opts: { beforeSeq?: number } = {}): SessionEvent[] {
+    const rows = this.prep(
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND type = ? AND seq < ? ORDER BY seq"
+    ).all(sessionId, type, opts.beforeSeq ?? Number.MAX_SAFE_INTEGER) as
+      { seq: number; ts: number; type: string; sandbox_id: string | null; payload: string }[];
+    return rows.map((r) => ({
+      seq: r.seq, sessionId, ts: r.ts, type: r.type,
       ...(r.sandbox_id !== null ? { sandboxId: r.sandbox_id } : {}),
       ...JSON.parse(r.payload),
     })) as SessionEvent[];
