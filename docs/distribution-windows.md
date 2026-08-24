@@ -49,7 +49,9 @@ SmartScreen 会拦：「更多信息」→「仍要运行」放行。与 mac 无
   prebuilds 就绪，但发布前应在一台真 Windows 上过一遍冒烟。
 - **OTA 更新是 mac 专属**（ADR-0075，更新器只认 `-arm64-mac.zip` 资产），win 版
   不会自动更新，出新版要用户重新下载安装。
-- **深链 `mrotto://auth-callback`**：NSIS 装完由注册表接管 scheme，electron-builder
-  的 `protocols` 配置会写入；未在真机验证。
+- **深链 `mrotto://auth-callback`**：NSIS 装完由注册表接管 scheme（electron-builder
+  的 `protocols` 配置写入）。Windows 上深链不走 macOS 的 `open-url` 事件，而是以
+  命令行参数启动第二个实例——主进程用 single instance lock + `second-instance`
+  扫 argv 接住（issue #310，v1.0.1 真机翻过车：没接 argv 通道，登录回调回不来）。
 - win 包里带着 darwin/linux 的 prebuilds（每平台几 MB），死重但无害，未来可用
   `files` 排除法瘦身。
