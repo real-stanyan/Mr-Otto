@@ -6,6 +6,7 @@
 //   请求/响应（renderer 问，main 答）：boot / sendMessage / decideApproval
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
+import type { DiffViewLine } from "./diffView.js";
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
@@ -149,6 +150,29 @@ export interface TurnStatusUpdate {
       分配），engine 落下开场 user_message 后再推一次带上——渲染层拿它做
       插话的乐观锁。idle 推送永远不带 */
   turnId?: number;
+}
+
+/** 本 turn 里一个文件的聚合改动（issue #345）：同文件多次写盘叠加成一份
+    （基线 = 本 turn 第一次碰它之前的内容，最新 = 最后一次写入的内容）。
+    lines 是与审批卡同一份取景（shared/diffView.ts）；超大文件算不动时缺席，
+    只留统计（additions/deletions 退化为行数计数），UI 显示"文件过大"兜底 */
+export interface TurnDiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  lines?: DiffViewLine[];
+}
+
+/** turn 级聚合 diff（issue #345，codex turn/diff/updated 同款）：主进程在每次
+    写文件工具完成后推一份**该 turn 迄今全部改动**的聚合，前端整体替换渲染，
+    不做增量缝合。这是投影不是事实——从工具调用参数 + 写前基线推导，不落盘；
+    turnId 换代 = 新一轮开始，旧的整份作废 */
+export interface TurnDiffUpdate {
+  sessionId: string;
+  turnId: number;
+  files: TurnDiffFile[];
+  additions: number;
+  deletions: number;
 }
 
 /** 流式文本碎片（临时直播，不落日志）：渲染层攒着显示，
@@ -602,6 +626,8 @@ export interface ShellBridge {
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
   onAskUserRequest(cb: (req: AskUserRequest) => void): Unsubscribe;
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
+  /** turn 级聚合 diff 推送（issue #345）：每次写文件工具完成后整份替换 */
+  onTurnDiff(cb: (update: TurnDiffUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
   onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
@@ -703,6 +729,10 @@ export interface IslandAgent {
   /** 工程文件夹全路径(SessionSummary.workspace,#206 分组键;显示名由 Swift 取
       basename)。orderedVisibleSessions 已滤掉 null,但类型跟着源头如实标可空 */
   workspace: string | null;
+  /** 本轮聚合改动摘要（issue #345，"3 文件 +120 −45"）。与对话视图消费同一份
+      TurnDiffUpdate 的统计——两处只能显示同一个数。可选：旧 helper 解码时忽略，
+      turn 没写过文件时缺席 */
+  turnDiff?: { files: number; additions: number; deletions: number };
 }
 
 /** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行)。
@@ -908,6 +938,7 @@ export const CHANNELS = {
   approvalRequest: "otter:approvalRequest",
   askUserRequest: "otter:askUserRequest",
   turnStatus: "otter:turnStatus",
+  turnDiff: "otter:turnDiff",
   assistantDelta: "otter:assistantDelta",
   toolOutput: "otter:toolOutput",
 } as const;

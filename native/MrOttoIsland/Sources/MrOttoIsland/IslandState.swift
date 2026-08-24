@@ -11,6 +11,14 @@ struct PendingApproval: Codable, Equatable {
   let fullPath: String?
 }
 
+/// 本轮聚合改动摘要(issue #345):"N 文件 +A −D"。主进程从 turn 级聚合 diff
+/// 拍平——与主窗对话视图消费同一份推送,两处数字必然一致。
+struct TurnDiffSummary: Codable, Equatable {
+  let files: Int
+  let additions: Int
+  let deletions: Int
+}
+
 /// 一只水獭(一个 session)在灵动岛里的状态。
 /// workspace = 工程文件夹全路径(#206 分组键;旧主进程不带 → nil,
 /// synthesized Codable 对 Optional 走 decodeIfPresent,天然向后兼容)。
@@ -22,6 +30,8 @@ struct IslandAgent: Codable, Equatable, Identifiable {
   let turnStartedAt: Double?
   let pendingApproval: PendingApproval?
   var workspace: String?
+  /// Optional → decodeIfPresent,旧主进程不带此字段照常解码(向后兼容同 workspace)
+  var turnDiff: TurnDiffSummary?
   var id: String { sessionId }
 
   /// 组头显示名:路径末段。nil(旧主进程)归到"其他"组。

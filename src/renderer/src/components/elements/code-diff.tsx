@@ -7,7 +7,7 @@ import { codeScroll, codeSurface, mono, paper } from "@/lib/surfaces.js";
 
 // 本仓改动:多一种 skip —— 折叠掉的连续未变段("… N 行未变 …")。
 // 上游假设 diff 整段摊开;审批卡不能这么干,一个几百行的文件里改三行,
-// 摊开等于让审批人自己去找。折叠是本仓的产品判断(见 lib/diffView.ts)
+// 摊开等于让审批人自己去找。折叠是本仓的产品判断(见 shared/diffView.ts)
 export type DiffKind = "context" | "added" | "removed" | "skip";
 
 export interface DiffLine {

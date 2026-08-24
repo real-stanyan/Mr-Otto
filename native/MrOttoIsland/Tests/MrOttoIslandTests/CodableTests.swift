@@ -44,6 +44,19 @@ final class CodableTests: XCTestCase {
     XCTAssertNil(old.state.agents[0].workspace)
   }
 
+  /// #345:turnDiff 是后加的可选字段("N 文件 +A −D" 摘要)。带上要解出来,
+  /// 旧主进程不带 → nil,解码不炸(协议向后兼容,同 workspace 的规矩)。
+  func testDecodeAgentTurnDiff() throws {
+    let with = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"active","currentTool":null,"turnStartedAt":null,"pendingApproval":null,"turnDiff":{"files":3,"additions":120,"deletions":45}}],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: with.data(using: .utf8)!)
+    XCTAssertEqual(inbound.state.agents[0].turnDiff,
+                   TurnDiffSummary(files: 3, additions: 120, deletions: 45))
+
+    let without = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null}],"focusedSessionId":null}}"#
+    let old = try JSONDecoder().decode(Inbound.self, from: without.data(using: .utf8)!)
+    XCTAssertNil(old.state.agents[0].turnDiff)
+  }
+
   func testOutboundJSON() throws {
     let line = Outbound.approve(sessionId: "s", callId: "c", grant: "session").jsonLine()
     let o = try JSONSerialization.jsonObject(with: line.data(using: .utf8)!) as! [String: Any]

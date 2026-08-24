@@ -289,6 +289,13 @@ struct IslandExpandedView: View {
       Image(systemName: agent.currentTool == nil ? "circle.dashed" : "terminal")
       Text(agent.currentTool.map { "\($0.verb) \($0.target)" } ?? "思考中…")
         .lineLimit(1)
+      // 本轮聚合改动(issue #345):有写盘才出现,与主窗「本轮改动」同一份统计
+      if let d = agent.turnDiff {
+        Text("\(d.files) 文件 +\(d.additions) −\(d.deletions)")
+          .foregroundStyle(.secondary)
+          .monospacedDigit()
+          .lineLimit(1)
+      }
       if let start = agent.turnStartedAt {
         Text("\(Int(now.timeIntervalSince1970 - start / 1000))s")
           .foregroundStyle(.secondary)

@@ -1,4 +1,6 @@
 // 审批卡 diff 预览的取景逻辑 —— 从 App.tsx 的 DiffPreview 里搬出来的纯函数部分。
+// 再从 renderer/lib 搬进 shared（issue #345）：turn 级聚合 diff 由主进程缝合，
+// 取景规则必须与审批卡同一份——两处各写一份就会"同一次改动两个样子"。
 //
 // 搬出来的理由不是"App.tsx 太长":折叠规则(连续未变行只留首尾各两行)是一条
 // **产品判断** —— 审批人要看的是"改了什么",不是全文。判断该有测试钉住,
@@ -7,7 +9,7 @@
 // 输出直接是 assistant-ui code-diff element 吃的形状(kind: context/added/removed),
 // 外加本仓多出来的一种 skip("… N 行未变 …")。
 
-import { diffLines } from "../../../shared/diff.js";
+import { diffLines } from "./diff.js";
 
 export type DiffViewKind = "context" | "added" | "removed" | "skip";
 

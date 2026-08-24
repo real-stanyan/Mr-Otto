@@ -118,6 +118,7 @@ const bridge: ShellBridge = {
   onApprovalRequest: subscribe(CHANNELS.approvalRequest),
   onAskUserRequest: subscribe(CHANNELS.askUserRequest),
   onTurnStatus: subscribe(CHANNELS.turnStatus),
+  onTurnDiff: subscribe(CHANNELS.turnDiff),
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),
   onTerminalData: subscribe(CHANNELS.terminalData),

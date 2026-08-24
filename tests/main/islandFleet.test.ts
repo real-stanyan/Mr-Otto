@@ -114,3 +114,39 @@ describe("reduceIsland 的 seed 契约(回归 feedIsland Map-miss 丢事件的 b
     expect(next.phase).toBe("active");
   });
 });
+
+describe("reduceIsland turnDiff(issue #345)", () => {
+  const seeded: IslandState = { ...initialIsland, sessionId: "s1" };
+  const update = (files: number, additions: number, deletions: number) => ({
+    kind: "turnDiff" as const,
+    update: {
+      sessionId: "s1",
+      turnId: 1,
+      files: Array.from({ length: files }, (_, i) => ({ path: `/f${i}`, additions: 0, deletions: 0 })),
+      additions,
+      deletions,
+    },
+  });
+
+  it("整份替换:后一次推送覆盖前一次;flattenAgent 带上摘要", () => {
+    let s = reduceIsland(seeded, update(1, 5, 0));
+    s = reduceIsland(s, update(3, 120, 45));
+    expect(s.turnDiff).toEqual({ files: 3, additions: 120, deletions: 45 });
+    const fleet = flattenFleet(new Map([["s1", s]]), [sess("s1")], null);
+    expect(fleet.agents[0]!.turnDiff).toEqual({ files: 3, additions: 120, deletions: 45 });
+  });
+
+  it("空清单清空;别的会话的推送不串;turn 谢幕(idle)跟着清", () => {
+    let s = reduceIsland(seeded, update(2, 10, 2));
+    const other = reduceIsland(s, { ...update(9, 9, 9), update: { ...update(9, 9, 9).update, sessionId: "s2" } });
+    expect(other.turnDiff).toEqual({ files: 2, additions: 10, deletions: 2 }); // s2 的推送被拦
+    s = reduceIsland(s, update(0, 0, 0));
+    expect(s.turnDiff).toBeNull();
+    s = reduceIsland(reduceIsland(seeded, update(1, 1, 0)), {
+      kind: "turnStatus",
+      update: { sessionId: "s1", status: "idle" },
+      now: 0,
+    });
+    expect(s.turnDiff).toBeNull();
+  });
+});
