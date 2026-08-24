@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  UPDATE_ASSET_SUFFIX,
   appBundlePathFromExe,
   isNewerVersion,
   isTranslocated,
@@ -32,40 +33,49 @@ describe("parseVersion / isNewerVersion", () => {
 });
 
 describe("parseLatestRelease", () => {
+  const MAC = UPDATE_ASSET_SUFFIX.darwin;
   const release = (over: object = {}) => ({
     tag_name: "v1.2.0",
     html_url: "https://github.com/real-stanyan/Mr-Otto/releases/tag/v1.2.0",
     assets: [
-      { name: "Mr Otto-1.2.0-arm64.dmg", browser_download_url: "https://dl/dmg" },
-      { name: "Mr Otto-1.2.0-arm64-mac.zip", browser_download_url: "https://dl/zip" },
+      { name: "Mr.Otto-1.2.0-arm64.dmg", browser_download_url: "https://dl/dmg" },
+      { name: "Mr.Otto-1.2.0-arm64-mac.zip", browser_download_url: "https://dl/zip" },
+      { name: "Mr.Otto-1.2.0-win-x64-setup.exe", browser_download_url: "https://dl/exe" },
       { name: "SHA256SUMS", browser_download_url: "https://dl/sums" },
     ],
     ...over,
   });
 
-  it("完整 Release：按后缀认 zip，带上 SHA256SUMS 和页面 URL", () => {
-    expect(parseLatestRelease(release())).toEqual({
+  it("完整 Release：mac 按 zip 后缀认，带上 SHA256SUMS 和页面 URL", () => {
+    expect(parseLatestRelease(release(), MAC)).toEqual({
       version: "1.2.0",
-      zipUrl: "https://dl/zip",
-      zipName: "Mr Otto-1.2.0-arm64-mac.zip",
+      assetUrl: "https://dl/zip",
+      assetName: "Mr.Otto-1.2.0-arm64-mac.zip",
       shasumsUrl: "https://dl/sums",
       pageUrl: "https://github.com/real-stanyan/Mr-Otto/releases/tag/v1.2.0",
     });
   });
 
-  it("缺 zip 资产 = null；缺 SHA256SUMS 仍解析（拒绝下载在 updater 那层）", () => {
-    expect(parseLatestRelease(release({ assets: [] }))).toBeNull();
-    const noSums = parseLatestRelease(
-      release({ assets: [{ name: "a-arm64-mac.zip", browser_download_url: "https://dl/z" }] }),
-    );
-    expect(noSums?.shasumsUrl).toBeNull();
+  it("win 按 setup.exe 后缀认同一个 Release（issue #314）", () => {
+    const info = parseLatestRelease(release(), UPDATE_ASSET_SUFFIX.win32);
+    expect(info?.assetName).toBe("Mr.Otto-1.2.0-win-x64-setup.exe");
+    expect(info?.assetUrl).toBe("https://dl/exe");
+    expect(info?.shasumsUrl).toBe("https://dl/sums");
+  });
+
+  it("缺自家平台资产 = null；缺 SHA256SUMS 仍解析（拒绝下载在 updater 那层）", () => {
+    expect(parseLatestRelease(release({ assets: [] }), MAC)).toBeNull();
+    // 只有 mac 资产的 Release，win 端当没有新版
+    const macOnly = release({ assets: [{ name: "a-arm64-mac.zip", browser_download_url: "https://dl/z" }] });
+    expect(parseLatestRelease(macOnly, UPDATE_ASSET_SUFFIX.win32)).toBeNull();
+    expect(parseLatestRelease(macOnly, MAC)?.shasumsUrl).toBeNull();
   });
 
   it("形状不对不炸：null / 数组 / tag 不是版本号 → null", () => {
-    expect(parseLatestRelease(null)).toBeNull();
-    expect(parseLatestRelease([])).toBeNull();
-    expect(parseLatestRelease(release({ tag_name: "nightly" }))).toBeNull();
-    expect(parseLatestRelease({ tag_name: "v1.0.0" })).toBeNull(); // 没 assets
+    expect(parseLatestRelease(null, MAC)).toBeNull();
+    expect(parseLatestRelease([], MAC)).toBeNull();
+    expect(parseLatestRelease(release({ tag_name: "nightly" }), MAC)).toBeNull();
+    expect(parseLatestRelease({ tag_name: "v1.0.0" }, MAC)).toBeNull(); // 没 assets
   });
 });
 

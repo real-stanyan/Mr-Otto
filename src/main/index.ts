@@ -1262,18 +1262,18 @@ void app.whenReady().then(() => {
     pushFleet();
   });
 
-  // ── OTA 更新（ADR-0075）──────────────────────────────────────────
-  // 打包的 mac 版才启用：开发模式没有可换的 .app，查了也白查。
+  // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
+  // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
   // 定时节奏：启动 30s 后一次（别挤开冷启动关键路径）+ 每 6h 一次；
   // checkNow 内部有互斥，定时器和设置页按钮撞上也只跑一轮
   const updater =
-    process.platform === "darwin" && app.isPackaged
+    (process.platform === "darwin" || process.platform === "win32") && app.isPackaged
       ? createUpdater(createUpdaterHostDeps((s) => send(CHANNELS.updaterState, s)))
       : null;
   const updaterDisabled: UpdaterState = {
     phase: "disabled",
     currentVersion: app.getVersion(),
-    reason: app.isPackaged ? "仅支持 macOS" : "开发模式不检查更新",
+    reason: app.isPackaged ? "仅支持 macOS 与 Windows" : "开发模式不检查更新",
   };
   ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);

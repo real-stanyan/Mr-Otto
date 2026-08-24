@@ -7,14 +7,21 @@ export const UPDATE_REPO = "real-stanyan/Mr-Otto";
 export const LATEST_RELEASE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 export const RELEASES_PAGE_URL = `https://github.com/${UPDATE_REPO}/releases/latest`;
 
+/** 各平台认自家更新资产的后缀（issue #314）：mac 是 OTA 换包用的 zip，
+    win 是 NSIS 安装器本身。后缀是更新器与发布产物之间的契约，动了就断更新 */
+export const UPDATE_ASSET_SUFFIX = {
+  darwin: "-arm64-mac.zip",
+  win32: "-win-x64-setup.exe",
+} as const;
+
 /** 一次发布里换包要用的三样东西。shasumsUrl 可空——老 Release 没传校验文件时
     仍能识别出新版（但下载会因无从校验而拒绝，见 updater.ts） */
 export interface ReleaseInfo {
   /** 去掉 v 前缀的版本号（tag v1.2.3 → 1.2.3） */
   version: string;
-  zipUrl: string;
-  /** zip 资产在 Release 里的文件名——SHA256SUMS 里按它查行 */
-  zipName: string;
+  assetUrl: string;
+  /** 更新资产在 Release 里的文件名——SHA256SUMS 里按它查行 */
+  assetName: string;
   shasumsUrl: string | null;
   /** Release 网页（manual 降级时开给用户） */
   pageUrl: string;
@@ -38,9 +45,9 @@ export function isNewerVersion(remote: string, current: string): boolean {
   return false;
 }
 
-/** releases/latest 的响应 → ReleaseInfo。形状不对/缺 zip 资产回 null。
-    资产按后缀认（-arm64-mac.zip），不硬编码 productName——改名不炸更新 */
-export function parseLatestRelease(json: unknown): ReleaseInfo | null {
+/** releases/latest 的响应 → ReleaseInfo。形状不对/缺更新资产回 null。
+    资产按平台后缀认（UPDATE_ASSET_SUFFIX），不硬编码 productName——改名不炸更新 */
+export function parseLatestRelease(json: unknown, assetSuffix: string): ReleaseInfo | null {
   if (typeof json !== "object" || json === null) return null;
   const rel = json as Record<string, unknown>;
   const tag = rel["tag_name"];
@@ -48,8 +55,8 @@ export function parseLatestRelease(json: unknown): ReleaseInfo | null {
   const assets = rel["assets"];
   if (!Array.isArray(assets)) return null;
 
-  let zipUrl: string | null = null;
-  let zipName: string | null = null;
+  let assetUrl: string | null = null;
+  let assetName: string | null = null;
   let shasumsUrl: string | null = null;
   for (const a of assets) {
     if (typeof a !== "object" || a === null) continue;
@@ -57,17 +64,17 @@ export function parseLatestRelease(json: unknown): ReleaseInfo | null {
     const name = asset["name"];
     const url = asset["browser_download_url"];
     if (typeof name !== "string" || typeof url !== "string") continue;
-    if (name.endsWith("-arm64-mac.zip")) {
-      zipUrl = url;
-      zipName = name;
+    if (name.endsWith(assetSuffix)) {
+      assetUrl = url;
+      assetName = name;
     } else if (name === "SHA256SUMS") {
       shasumsUrl = url;
     }
   }
-  if (zipUrl === null || zipName === null) return null;
+  if (assetUrl === null || assetName === null) return null;
 
   const pageUrl = typeof rel["html_url"] === "string" ? rel["html_url"] : RELEASES_PAGE_URL;
-  return { version: tag.replace(/^v/, ""), zipUrl, zipName, shasumsUrl, pageUrl };
+  return { version: tag.replace(/^v/, ""), assetUrl, assetName, shasumsUrl, pageUrl };
 }
 
 /** `shasum -a 256` 输出格式：`<hex>  <filename>`（两个空格，二进制模式是 ` *`）。

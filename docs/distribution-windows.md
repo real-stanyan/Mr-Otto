@@ -47,8 +47,10 @@ SmartScreen 会拦：「更多信息」→「仍要运行」放行。与 mac 无
 
 - **未在真实 Windows 机器上验证过**。原生模块（终端 node-pty / SQLite）理论上
   prebuilds 就绪，但发布前应在一台真 Windows 上过一遍冒烟。
-- **OTA 更新是 mac 专属**（ADR-0075，更新器只认 `-arm64-mac.zip` 资产），win 版
-  不会自动更新，出新版要用户重新下载安装。
+- ~~OTA 更新是 mac 专属~~ **win 也有 OTA 了**（ADR-0081）：更新器按
+  `-win-x64-setup.exe` 后缀认资产，SHA256SUMS 校验后静默跑 NSIS `/S` 重装。
+  所以每个 release 必须带 exe 资产（release.mjs 已管）——缺了那个版本对 win
+  用户就是不存在。
 - **深链 `mrotto://auth-callback`**：NSIS 装完由注册表接管 scheme（electron-builder
   的 `protocols` 配置写入）。Windows 上深链不走 macOS 的 `open-url` 事件，而是以
   命令行参数启动第二个实例——主进程用 single instance lock + `second-instance`
