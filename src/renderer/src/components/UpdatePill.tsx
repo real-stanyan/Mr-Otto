@@ -4,7 +4,8 @@
 // 上方，其余状态整个不渲染——idle/checking 是后台的事，侧栏不值得为它们闪。
 //
 // 布局照设计稿：左边 otto 升级像素图，中间 "New Version Available" + 版本号，
-// 右边胶囊按钮。点 Download 后版本号那一行原地变成进度条；下载完成按钮变
+// 右边胶囊按钮（设计稿那支手写字不跟——侧栏其余文字全是系统字，单这一颗
+// 破例会显脏）。点 Download 后版本号那一行原地变成进度条；下载完成按钮变
 // Restart（有会话在跑先弹确认：重启是全 app 唯一会打断跑着的 turn 的动作）。
 // manual（Translocation/不可写）按钮仍叫 Download，落到 Release 页手动装。
 //
@@ -136,10 +137,7 @@ export function UpdatePill() {
           variant="outline"
           disabled={phase === "downloading"}
           onClick={onAction}
-          className={
-            "shrink-0 rounded-full px-[12px] font-semibold active:scale-[0.97] " +
-            "font-['Marker_Felt',cursive]"
-          }
+          className="shrink-0 rounded-full px-[12px] font-semibold active:scale-[0.97]"
         >
           {buttonLabel}
         </Button>
