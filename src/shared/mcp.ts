@@ -111,23 +111,54 @@ function fingerprint(s: string): string {
     指纹算在**原始**的 `server\u0000tool` 上，不是算在净化后的字符串上：
     净化后再算等于把已经塌掉的两个名字喂给同一个哈希，指纹也跟着塌。
     `\u0000` 当分隔符是同一个道理——它不可能出现在任何一侧。 */
-export function mcpToolName(server: string, tool: string): string {
+export function mcpToolName(server: string, tool: string, salt = 0): string {
   const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
   const safeServer = safe(server);
   const safeTool = safe(tool);
   const full = `mcp__${safeServer}__${safeTool}`;
-  // 读得回原来那两截、也不超长 = 这个名字完整地表达了它自己，不必加料
+  // 读得回原来那两截、也不超长 = 这个名字完整地表达了它自己，不必加料。
+  // salt > 0 = 上一轮产出的名字与别的工具撞了（assignMcpToolNames），
+  // 换哈希输入重试——faithful 捷径此时必须关掉，不然重试永远产出同一个名字
   const faithful =
+    salt === 0 &&
     safeServer === server &&
     safeTool === tool &&
     !safeServer.includes("__") &&
     !safeServer.endsWith("_");
   if (faithful && full.length <= NAME_MAX) return full;
-  const fp = fingerprint(`${server}\u0000${tool}`);
+  const fp = fingerprint(`${server}\u0000${tool}${salt > 0 ? `\u0000${salt}` : ""}`);
   // "_" + 4 位 = 5 个字符
   return full.length + 5 <= NAME_MAX
     ? `${full}_${fp}`
     : `${full.slice(0, NAME_MAX - 5)}_${fp}`;
+}
+
+/** 整桌 MCP 工具的模型可见名统一分配（issue #349）——名字必须在**全体**里唯一，
+    逐个独立算保证不了：净化/截断把不同原名折到同一串时指纹只有 16 位，撞上
+    就是"调 A 执行 B"。三条规则（codex normalize_tools_for_model 同款）：
+    ① 完全相同的原始身份（同 server 名 + 同 tool 名）去重跳过——返回 null，
+      调用方不重复注册
+    ② 名字冲突：换哈希输入（salt 递增）重试直到唯一
+    ③ raw 名（协议回调用）不在这管——它跟着 server.id + tool 原名走闭包，
+      本函数只管模型可见的那一套 ID
+    返回数组与入参一一对应；顺序敏感（salt 依赖先来后到），同一份清单
+    永远同一份分配——approvalPreview 反查时用同一函数重算即可对上 */
+export function assignMcpToolNames(
+  pairs: readonly { server: string; tool: string }[]
+): (string | null)[] {
+  const seenRaw = new Set<string>();
+  const used = new Set<string>();
+  return pairs.map(({ server, tool }) => {
+    const rawId = `${server}\u0000${tool}`;
+    if (seenRaw.has(rawId)) return null;
+    seenRaw.add(rawId);
+    let name = mcpToolName(server, tool);
+    for (let salt = 1; used.has(name); salt++) {
+      name = mcpToolName(server, tool, salt);
+    }
+    used.add(name);
+    return name;
+  });
 }
 
 /** content 数组压成喂给模型的字符串。

@@ -8,7 +8,7 @@
 import type { ToolCallRequest } from "../session/events.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { ApprovalPreview, McpPreviewArg } from "../shared/shellBridge.js";
-import { mcpToolName } from "../shared/mcp.js";
+import { assignMcpToolNames } from "../shared/mcp.js";
 
 /** 单边文本超过此长度就放弃预览（IPC 别扛巨物，diff 也算不动），退回 JSON 展示 */
 const MAX_PREVIEW_CHARS = 200_000;
@@ -45,17 +45,19 @@ export async function buildApprovalPreview(
 function mcpPreview(call: ToolCallRequest, world: ExecutionWorld): ApprovalPreview | undefined {
   const mcp = world.mcp;
   if (!mcp) return undefined;
-  for (const server of mcp.servers()) {
-    for (const tool of server.tools) {
-      if (mcpToolName(server.name, tool.name) !== call.name) continue;
-      return {
-        kind: "mcp_tool",
-        server: server.name,
-        tool: tool.name,
-        description: tool.description ?? "",
-        args: previewArgs(call.args),
-      };
-    }
+  // 与 createMcpTools 同一份分配（issue #349）：名字唯一性依赖整桌统一算
+  // （撞名的哈希后缀取决于先来后到），逐个独立算会对不上号
+  const entries = mcp.servers().flatMap((server) => server.tools.map((tool) => ({ server, tool })));
+  const names = assignMcpToolNames(entries.map((e) => ({ server: e.server.name, tool: e.tool.name })));
+  for (const [i, { server, tool }] of entries.entries()) {
+    if (names[i] !== call.name) continue;
+    return {
+      kind: "mcp_tool",
+      server: server.name,
+      tool: tool.name,
+      description: tool.description ?? "",
+      args: previewArgs(call.args),
+    };
   }
   return undefined;
 }

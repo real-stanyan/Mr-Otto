@@ -104,3 +104,29 @@ describe("LoopEngine × ToolExposure", () => {
     store.close();
   });
 });
+
+describe("撞名保护（issue #349 ⑤）", () => {
+  it("同名后到者拒绝注册：先到的赢，声明表只有一份，调用命中先到的", async () => {
+    const { adapter, seenTools } = adapterRecordingTools([
+      { content: "", toolCalls: [{ id: "c1", name: "dup", args: {} }] },
+      { content: "完" },
+    ]);
+    const store = new EventStore(":memory:");
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [
+        tool("dup", { run: async () => "first" }),
+        tool("dup", { run: async () => "second" }), // 外部工具占内置名的形状
+      ],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("跑");
+
+    expect(seenTools[0]).toEqual(["dup"]); // 不是两份
+    const result = store.load("s1").find((e) => e.type === "tool_result")!;
+    expect(result).toMatchObject({ output: "first" }); // 先到的赢
+    store.close();
+  });
+});

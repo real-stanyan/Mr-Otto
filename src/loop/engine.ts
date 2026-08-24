@@ -68,6 +68,8 @@ export interface LoopEngineOptions {
 
 export class LoopEngine {
   private readonly toolsByName: Map<string, Tool>;
+  /** 去重后的工具表（撞名后到者已被拒）：声明表/过滤都用它，不用 opts.tools */
+  private readonly tools: Tool[];
   private readonly pipeline: ToolMiddleware[];
   private adapter: ModelAdapter;
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
@@ -97,7 +99,19 @@ export class LoopEngine {
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
-    this.toolsByName = new Map(opts.tools.map((t) => [t.def.name, t]));
+    // 撞名保护（issue #349 ⑤）：同名后到者拒绝注册（先到的赢），不静默覆盖。
+    // 内置工具在装配数组里排在 MCP 工具前面——外部工具因此永远占不了内置名；
+    // Map 构造器的 last-wins 恰好是反的，所以显式跳过
+    this.toolsByName = new Map();
+    this.tools = [];
+    for (const t of opts.tools) {
+      if (this.toolsByName.has(t.def.name)) {
+        console.warn(`工具「${t.def.name}」已注册，后到的同名工具被拒绝挂载`);
+        continue;
+      }
+      this.toolsByName.set(t.def.name, t);
+      this.tools.push(t);
+    }
     // 审批门永远是第一层 —— 没人能插队到它前面绕过审批
     this.pipeline = [
       createApprovalGate({
@@ -429,7 +443,7 @@ export class LoopEngine {
         // 只会让模型白试一次。
         // exposure（issue #348）同一道滤网：hidden 永不进表；deferred 只有被
         // tool_search 搜到（进了 deferredExposed）才进表；direct/缺席照旧
-        this.opts.tools
+        this.tools
           .filter((t) => this.toolVisible(t))
           .filter((t) => t.available?.() ?? true)
           .map((t) => t.def),
