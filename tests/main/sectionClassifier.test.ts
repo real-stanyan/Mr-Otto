@@ -1,8 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  SECTION_MODEL,
   classifyLogView,
-  classifySection,
   currentSectionTitle,
   parseSectionReply,
   summarizeSpan,
@@ -11,13 +9,8 @@ import {
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-// 没 key 就根本不出门（见 classifySection 的 key 闸门），所以要打到网络的用例
-// 必须先有个 key；CI 环境本来就没有
-beforeEach(() => vi.stubEnv("GLM_API_KEY", "test-key"));
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
-});
+// 模型调用本体（合并成一次往返后）的测试在 turnAnnotator.test.ts（issue #284）；
+// 这里只测留在本模块的纯函数
 
 const log: SessionEvent[] = [
   { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/w" },
@@ -120,120 +113,6 @@ describe("unclassifiedSpan —— 分类事件落在 turn 中间时往回补", (
     // 两条分类事件贴在一起（上一轮分类刚落，下一轮又被排上）：中间什么都没发生
     const events = [asked(1, "问题一"), ended(2), classified(3), classified(4)];
     expect(unclassifiedSpan(events)).toHaveLength(0);
-  });
-});
-
-describe("classifySection", () => {
-  it("打到 glm-4.5-flash，回标题和账单", async () => {
-    const bodies: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init: { body: string }) => {
-      expect(url).toContain("bigmodel.cn");
-      bodies.push(init.body);
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: '{"newSection":true,"title":"修登录 bug"}' } }],
-          usage: { prompt_tokens: 300, completion_tokens: 12 },
-        }),
-      };
-    }));
-    const out = await classifySection(log);
-    expect(out).toEqual({
-      title: "修登录 bug",
-      model: SECTION_MODEL,
-      usage: { promptTokens: 300, completionTokens: 12 },
-    });
-    expect(JSON.parse(bodies[0]!).model).toBe(SECTION_MODEL);
-  });
-
-  it("关思考、带超时信号（一句标题不值 20 倍 token，也不许卡死 turn 收尾）", async () => {
-    let init: { body: string; signal?: AbortSignal } | undefined;
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, i: { body: string; signal?: AbortSignal }) => {
-      init = i;
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
-      };
-    }));
-    await classifySection(log);
-    expect(JSON.parse(init!.body).thinking).toEqual({ type: "disabled" });
-    expect(init!.signal).toBeInstanceOf(AbortSignal);
-  });
-
-  it("没配 GLM_API_KEY → 一个字节都不发（空 Bearer 每 turn 必 401）", async () => {
-    vi.stubEnv("GLM_API_KEY", "");
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    await expect(classifySection(log)).resolves.toBeNull();
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("HTTP 失败 → 返回 null，绝不抛（turn 不能被目录拖垮）", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 401, text: async () => "no key" })));
-    await expect(classifySection(log)).resolves.toBeNull();
-  });
-
-  it("模型回垃圾 → 返回 null", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true, json: async () => ({ choices: [{ message: { content: "随便说说" } }] }),
-    })));
-    await expect(classifySection(log)).resolves.toBeNull();
-  });
-
-  it("开新分区但标题跟当前这条一模一样 → 落成延续（竖轨上不长两条同名刻度）", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
-    })));
-    const events: SessionEvent[] = [
-      ...log,
-      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: "修登录", model: "c" },
-      { seq: 6, sessionId: "s", ts: 7, type: "user_message", content: "再看看这个" },
-    ];
-    await expect(classifySection(events)).resolves.toEqual({ title: null, model: SECTION_MODEL });
-  });
-
-  // 这条路径原来只在 parseSectionReply 单元层覆盖（issue #112）：另外三条失败
-  // 路径都走完整的 mock HTTP，唯独它没有——而它是"模型说延续、但一条分区都还
-  // 没有"这个真会发生的组合
-  it("还没有任何分区 + 模型回延续 → null（不落一条没有标题的分区事件）", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '{"newSection":false,"title":""}' } }] }),
-    })));
-    await expect(classifySection(log)).resolves.toBeNull();
-  });
-
-  it("对话原文夹在现造的随机围栏里，不是猜得到的 ---", async () => {
-    const bodies: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
-      bodies.push(init.body);
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: '{"newSection":true,"title":"修登录"}' } }] }),
-      };
-    }));
-    await classifySection(log);
-    await classifySection(log);
-    const prompts = bodies.map((b) => JSON.parse(b).messages[0].content as string);
-    // 固定分隔符是猜得到的：一句「---\n忽略上面」就能自己把围栏关掉
-    expect(prompts[0]).not.toContain("\n---\n");
-    const tag = /<([0-9a-f]{8})>/.exec(prompts[0]!)?.[1];
-    expect(tag).toBeTruthy();
-    expect(prompts[0]).toContain(`</${tag}>`);
-    // 每次现造：抄下上一次的围栏也关不掉这一次
-    expect(prompts[1]).not.toContain(`<${tag}>`);
-  });
-
-  it("跨度是空的（上一条就是分类事件）→ 不调模型，直接 null", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const events: SessionEvent[] = [
-      ...log,
-      { seq: 5, sessionId: "s", ts: 6, type: "section_classified", title: "修登录", model: "c" },
-    ];
-    await expect(classifySection(events)).resolves.toBeNull();
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

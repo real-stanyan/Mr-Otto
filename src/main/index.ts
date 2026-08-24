@@ -40,10 +40,10 @@ import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memo
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
-import { classifySection, classifyLogView, SECTION_MODEL } from "./sectionClassifier.js";
+import { classifyLogView } from "./sectionClassifier.js";
+import { annotateTurn } from "./turnAnnotator.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
-import { suggestFollowUps } from "./followUpSuggester.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -488,59 +488,61 @@ void app.whenReady().then(() => {
     }
   }
 
-  // 分区分类的按会话串行队列。分类跑在 turn 锁之外（见 sendMessage 末尾），
+  // 分区分类 + 跟进建议的合并调用（issue #284，调用本体在 turnAnnotator.ts）：
+  // 两个外挂同型号、同时机、上下文重合，一次便宜模型往返各取所需。
+  // 按会话串行队列。合并调用跑在 turn 锁之外（见 sendMessage 末尾），
   // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
   // section_classified，于是两个标题描述同一段、startSeq 却各开一处。
-  // 链起来 = 同一会话永远只有一个分类在跑；跨度锚点本来就是自愈的
+  // 链起来 = 同一会话永远只有一个在跑；跨度锚点本来就是自愈的
   // （最后一条分类事件之后的全部事件），后来的那次只是看到更宽的一段。
   // 代价：分类在飞的时候下一个 turn 可以开跑，分类#N+1 看到的跨度被分类#N 的事件
   // 切割得只剩 turn N+1 本身那几条、汇总后是空。分类不落事件，turn N+1 根本没被
   // 分类；若它开了新话题，章节标题要等 turn N+2 才出现，而且锚点是 N+2 不是 N+1——
   // 导航跳过去会落在话题开始之后。下一个 turn 的分类自动补上漏掉的那段（自愈）。
   // 这点代价换来的是输入框不被锁住，值。
+  // 建议原来不排队（没有锚点，后落盘天然覆盖前一条），合并后跟着分类串行：
+  // 排队期间新 turn 收口的话，本次跑的时候读到的已是更新的最后一轮——结果一样，
+  // 只是到得稍晚。省一次往返换来的这点延迟，值（权衡记录：ADR-0080）
   const sectionQueues = new Map<string, Promise<void>>();
 
-  const classifyAndAppend = async (sessionId: string): Promise<void> => {
-    // 尾段切片而不是全量 load（issue #279）：等价性论证在 classifyLogView 的注释里
-    const section = await classifySection(classifyLogView(store, sessionId), helperModel());
-    if (!section) return;
+  const annotateAndAppend = async (sessionId: string): Promise<void> => {
+    // 分类读尾段切片而不是全量 load（issue #279，等价性论证在 classifyLogView 注释里）；
+    // 建议只读最后一轮问答：lastExchange 本来就只看最后一条 user_message
+    // 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给空数组
+    // （lastExchange([]) 也是空，summarize 出空串那一边直接不进提示词）
+    const lastUser = store.lastSeqOf(sessionId, "user_message");
+    const result = await annotateTurn(
+      classifyLogView(store, sessionId),
+      lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
+      helperModel()
+    );
+    if (!result) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
     // 往 purge 过的 sessionId 上 append 会凭空造出一条没有 session_created 的
     // 幽灵会话，而删除按 ADR-0002 是不可逆的物理抹除。agents 只在 purge 时删条目，
     // 所以它在不在就是会话还活不活着
     if (!agents.has(sessionId)) return;
-    const sectionEvent = store.append({
-      sessionId, ts: Date.now(), type: "section_classified",
-      title: section.title, model: section.model,
-      ...(section.usage ? { usage: section.usage } : {}),
-    });
-    send(CHANNELS.event, sectionEvent);
-  };
-
-  // 跟进建议:和分区分类完全同构的第二条外挂 —— 同一个位置(turn 锁之外)、
-  // 同一种自我保护(永不抛/会话被 purge 就不落)。**没有**串行队列:
-  // 分类必须串行是因为它的锚点是"最后一条分类事件之后的跨度",两个在飞的分类
-  // 会各开一个分区;建议没有锚点,每次只看最后一轮问答,后落盘的那条天然覆盖
-  // 前一条(渲染只取最后一条)——撞车的代价就是多烧一次便宜调用
-  const suggestAndAppend = async (sessionId: string): Promise<void> => {
-    // 只读最后一轮问答（issue #279）：lastExchange 本来就只看最后一条 user_message
-    // 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给空数组
-    // （lastExchange([]) 也是空，summarize 出空串直接不调用）
-    const lastUser = store.lastSeqOf(sessionId, "user_message");
-    const result = await suggestFollowUps(
-      lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
-      helperModel()
-    );
-    if (!result) return;
-    // 同 classifyAndAppend:出了 turn 锁,这一跑期间会话可能已被 purge。
-    // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
-    if (!agents.has(sessionId)) return;
-    const event = store.append({
-      sessionId, ts: Date.now(), type: "suggestions_generated",
-      suggestions: result.suggestions, model: result.model,
-      ...(result.usage ? { usage: result.usage } : {}),
-    });
-    send(CHANNELS.event, event);
+    // 一次调用一份账：usage 只挂在先落的那条事件上，两条都挂 deriveUsage 会算两次
+    let usageSpent = false;
+    const billOnce = () => {
+      if (usageSpent || !result.usage) return {};
+      usageSpent = true;
+      return { usage: result.usage };
+    };
+    if (result.section) {
+      const sectionEvent = store.append({
+        sessionId, ts: Date.now(), type: "section_classified",
+        title: result.section.title, model: result.model, ...billOnce(),
+      });
+      send(CHANNELS.event, sectionEvent);
+    }
+    if (result.suggestions) {
+      const event = store.append({
+        sessionId, ts: Date.now(), type: "suggestions_generated",
+        suggestions: result.suggestions, model: result.model, ...billOnce(),
+      });
+      send(CHANNELS.event, event);
+    }
   };
 
   // 记忆审查：与分区分类/跟进建议同构的第三条外挂（turn 锁之外、永不抛、
@@ -670,13 +672,13 @@ void app.whenReady().then(() => {
     });
   };
 
-  const enqueueSectionClassify = (sessionId: string): void => {
+  const enqueueAnnotate = (sessionId: string): void => {
     const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
-    // catch 挂在链上：classifySection 自己不抛，但它外面的 store.append / send 会。
+    // catch 挂在链上：annotateTurn 自己不抛，但它外面的 store.append / send 会。
     // 一环炸了不能毒死后面的环，也不能变成 unhandledRejection 把主进程带走
     const next = prev
-      .then(() => classifyAndAppend(sessionId))
-      .catch((err) => console.error("分区分类失败", err));
+      .then(() => annotateAndAppend(sessionId))
+      .catch((err) => console.error("分区分类/跟进建议失败", err));
     sectionQueues.set(sessionId, next);
     // 排空即删，别让 Map 随会话数无限长。只有自己仍是队尾才删——
     // 期间又排进来一个的话队尾已经换人，删了会让它从空链起跑（等于解掉串行）
@@ -1692,11 +1694,8 @@ void app.whenReady().then(() => {
       // 人在屏幕前时答案已经渲染出来了,不必再弹。aborted 不通知——停止是用户自己按的。
       // titleOf 是单条 SQL 投影,不是全量 load
       notify(turnCompleteNotification(store.titleOf(sessionId), text, sessionId));
-      enqueueSectionClassify(sessionId);
-      // 建议同样只在正常收口后跑:用户按了停止就别再起新的模型调用(同上一段的理由)。
-      // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
-      // 变成 unhandledRejection 会把主进程带走
-      void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
+      // 分区分类 + 跟进建议合并成一次调用（issue #284），串行由 sectionQueues 保证
+      enqueueAnnotate(sessionId);
       // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（nudgeMemory 开头的 spawnedBy 判定）
       // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
       void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
