@@ -1744,7 +1744,7 @@ function AppSidebar() {
       {/* Skill 库/设置入口搬进了设置栏目导航（上方 SETTINGS_SECTIONS），
           这一行只留用户卡片 + 一颗进「模型配置」首屏的齿轮 */}
       <SidebarFooter>
-        {/* OTA 更新 pill（ADR-0075）:ready/manual 才出现,点击换包重启/开下载页 */}
+        {/* OTA 更新卡片（ADR-0075，设计改版 issue #362）:available/downloading/ready/manual 才出现 */}
         <UpdatePill />
         <div className="flex items-center gap-[6px]">
           {/* 槽位兑现：点击进设置账号区（登出入口在那，这里不重复做）。

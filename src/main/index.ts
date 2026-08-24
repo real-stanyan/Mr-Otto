@@ -1322,7 +1322,8 @@ void app.whenReady().then(() => {
   // 节奏（issue #322，推翻 #316 的「停在 available 等点击」）：
   // 启动 30s 后一次（别挤开冷启动关键路径）+ 每 30min 一次 + 窗口 focus
   // 触发（节流 10min——「发完版切回 app」就能撞上，不用等定时器）；
-  // 查到新版直接自动下载，卡片带着进度自己弹出来。
+  // 查到新版停在 available 出卡片，用户点了 Download 才下载（issue #362 回到
+  // #316 的手动节奏，推翻 #322 的自动下载——设计稿把按钮定成下载入口）。
   // checkNow 内部有互斥，定时器 / focus / 设置页按钮撞上也只跑一轮
   const updater =
     (process.platform === "darwin" || process.platform === "win32") && app.isPackaged
@@ -1334,13 +1335,7 @@ void app.whenReady().then(() => {
     reason: app.isPackaged ? "仅支持 macOS 与 Windows" : "开发模式不检查更新",
   };
   ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
-  // 手动检测也串自动下载（issue #322）：available 一律是过渡态，查到就下
-  ipcMain.handle(CHANNELS.updaterCheckNow, async () => {
-    if (updater === null) return updaterDisabled;
-    const s = await updater.checkNow();
-    if (s.phase === "available") void updater.startDownload();
-    return s;
-  });
+  ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterStartDownload, () => updater?.startDownload() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
   ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
@@ -1348,8 +1343,7 @@ void app.whenReady().then(() => {
     let lastAutoCheckAt = 0;
     const autoCheck = async () => {
       lastAutoCheckAt = Date.now();
-      const s = await updater.checkNow();
-      if (s.phase === "available") void updater.startDownload();
+      await updater.checkNow();
     };
     setTimeout(() => void autoCheck(), 30_000);
     setInterval(() => void autoCheck(), 30 * 60 * 1000);

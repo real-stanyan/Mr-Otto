@@ -1,18 +1,17 @@
-// 侧栏更新卡片（ADR-0075；节奏改版 issue #322，推翻 #316 的「点了才下载」）：
+// 侧栏更新卡片（ADR-0075；设计稿改版 issue #362，节奏回到 #316 的「点了才下载」，
+// 推翻 #322 的自动下载——设计稿把 Download 按钮定成下载入口）：
 // 更新器 available / downloading / ready / manual 时出现在 SidebarFooter 用户行
 // 上方，其余状态整个不渲染——idle/checking 是后台的事，侧栏不值得为它们闪。
 //
-// 新节奏（用户裁定，issue #322）：查到新版主进程直接自动下载，卡片自己弹出来：
-// available 是一闪而过的过渡态（「即将开始下载」）；downloading 显示进度条 + MB；
-// ready 出「重启更新」按钮——有会话正在跑时先弹确认：重启是全 app 唯一会打断
-// 跑着的 turn 的动作，误点的代价配得上一步确认；全闲则不啰嗦。
-// manual（Translocation/不可写）出「去下载页」按钮手动装。
+// 布局照设计稿：左边 otto 升级像素图，中间 "New Version Available" + 版本号，
+// 右边胶囊按钮。点 Download 后版本号那一行原地变成进度条；下载完成按钮变
+// Restart（有会话在跑先弹确认：重启是全 app 唯一会打断跑着的 turn 的动作）。
+// manual（Translocation/不可写）按钮仍叫 Download，落到 Release 页手动装。
 //
 // 入场动画：稀有事件（几周一次），值得一段 240ms 上滑淡入；用 transition 而非
 // keyframes（状态快速翻转时可中断重定向），reduced-motion 降为纯淡入。
 
 import { useEffect, useState } from "react";
-import { ArrowUpCircle, DownloadCloud } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -23,16 +22,17 @@ import {
 } from "@/components/ui/dialog.js";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
+import updateOtto from "../assets/update-otto.webp";
+import type { UpdaterState } from "../../../shared/shellBridge.js";
 
 const VISIBLE_PHASES = ["available", "downloading", "ready", "manual"] as const;
 type VisiblePhase = (typeof VISIBLE_PHASES)[number];
+type VisibleState = Extract<UpdaterState, { phase: VisiblePhase }>;
 
-function isVisiblePhase(phase: string): phase is VisiblePhase {
-  return (VISIBLE_PHASES as readonly string[]).includes(phase);
-}
-
-function formatMb(bytes: number): string {
-  return (bytes / 1024 / 1024).toFixed(0);
+// 守卫作用在整个 state 上（不是 phase 字符串）：四个可见 phase 都带 version，
+// 收窄后 JSX 里直接取
+function isVisibleState(s: UpdaterState): s is VisibleState {
+  return (VISIBLE_PHASES as readonly string[]).includes(s.phase);
 }
 
 export function UpdatePill() {
@@ -43,7 +43,7 @@ export function UpdatePill() {
   // 挂上后下一帧翻真，transition 接管
   const [mounted, setMounted] = useState(false);
 
-  const visible = updater !== null && isVisiblePhase(updater.phase);
+  const visible = updater !== null && isVisibleState(updater);
   useEffect(() => {
     if (!visible) {
       setMounted(false);
@@ -53,7 +53,7 @@ export function UpdatePill() {
     return () => cancelAnimationFrame(raf);
   }, [visible]);
 
-  if (updater === null || !isVisiblePhase(updater.phase)) return null;
+  if (updater === null || !isVisibleState(updater)) return null;
   const phase = updater.phase;
 
   const runningCount = Object.values(statusBySession).filter((s) => s === "running").length;
@@ -63,81 +63,86 @@ export function UpdatePill() {
     void window.otter.updaterInstallAndRestart();
   };
 
-  const onRestart = () => {
-    if (runningCount > 0) setConfirmOpen(true);
-    else install();
-  };
-
-  const title = (() => {
+  const onAction = () => {
     switch (phase) {
       case "available":
-        return `发现新版 v${updater.version} · 即将开始下载`;
-      case "downloading":
-        return `正在下载 v${updater.version}`;
+        void window.otter.updaterStartDownload();
+        break;
       case "ready":
-        return `新版 v${updater.version} 已就绪`;
+        if (runningCount > 0) setConfirmOpen(true);
+        else install();
+        break;
       case "manual":
-        return `发现新版 v${updater.version}`;
+        void window.otter.updaterOpenReleasePage();
+        break;
+      case "downloading":
+        break; // 按钮 disabled，到不了这里
     }
-  })();
+  };
 
-  const Icon = phase === "available" || phase === "downloading" ? DownloadCloud : ArrowUpCircle;
+  const buttonLabel = phase === "ready" ? "Restart" : "Download";
+  const pct =
+    phase === "downloading" && updater.total > 0
+      ? Math.min(100, (updater.received / updater.total) * 100)
+      : null;
 
   return (
     <>
       <div
         data-mounted={mounted}
         className={
-          "flex w-full flex-col gap-[6px] rounded-[8px] border border-brand/30 bg-brand/10 px-[10px] py-[8px] " +
-          "text-xs text-brand " +
+          "flex w-full items-center gap-[10px] rounded-[14px] border border-border bg-card " +
+          "px-[10px] py-[8px] " +
           "transition-[transform,opacity] duration-[240ms] ease-[cubic-bezier(0.23,1,0.32,1)] " +
           "data-[mounted=false]:translate-y-[6px] data-[mounted=false]:opacity-0 " +
           "motion-reduce:data-[mounted=false]:translate-y-0"
         }
         title={phase === "manual" ? updater.reason : undefined}
       >
-        <div className="flex items-center gap-2">
-          <Icon className="w-[14px] h-[14px] shrink-0" />
-          <span className="flex-1 min-w-0 truncate text-left">{title}</span>
-        </div>
+        <img
+          src={updateOtto}
+          alt=""
+          className="w-[38px] h-[38px] shrink-0 select-none"
+          style={{ imageRendering: "pixelated" }}
+          draggable={false}
+        />
 
-        {phase === "downloading" && (
-          <>
-            <div className="h-[4px] w-full overflow-hidden rounded-full bg-brand/15">
-              {updater.total > 0 ? (
+        <div className="flex flex-1 min-w-0 flex-col gap-[4px]">
+          <span className="truncate text-left text-xs font-medium text-foreground">
+            New Version Available
+          </span>
+          {phase === "downloading" ? (
+            // 设计稿：点了 Download，版本号那一行原地变成进度条
+            <div className="h-[5px] w-full overflow-hidden rounded-full bg-muted">
+              {pct !== null ? (
                 <div
                   className="h-full rounded-full bg-brand transition-[width] duration-300 ease-out"
-                  style={{ width: `${Math.min(100, (updater.received / updater.total) * 100)}%` }}
+                  style={{ width: `${pct}%` }}
                 />
               ) : (
                 // 服务器没报 Content-Length：进度未知，整条低速呼吸代替假百分比
                 <div className="h-full w-full rounded-full bg-brand/50 animate-pulse" />
               )}
             </div>
-            <span className="text-[10px] text-brand/70">
-              {updater.total > 0
-                ? `${formatMb(updater.received)} / ${formatMb(updater.total)} MB`
-                : `已下载 ${formatMb(updater.received)} MB`}
+          ) : (
+            <span className="truncate text-left text-[11px] text-muted-foreground">
+              V {updater.version}
             </span>
-          </>
-        )}
+          )}
+        </div>
 
-        {phase === "ready" && (
-          <Button size="sm" className="w-full active:scale-[0.97]" onClick={onRestart}>
-            重启更新
-          </Button>
-        )}
-
-        {phase === "manual" && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-full active:scale-[0.97]"
-            onClick={() => void window.otter.updaterOpenReleasePage()}
-          >
-            去下载页
-          </Button>
-        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={phase === "downloading"}
+          onClick={onAction}
+          className={
+            "shrink-0 rounded-full px-[12px] font-semibold active:scale-[0.97] " +
+            "font-['Marker_Felt',cursive]"
+          }
+        >
+          {buttonLabel}
+        </Button>
       </div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

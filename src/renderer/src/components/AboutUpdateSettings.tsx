@@ -122,8 +122,9 @@ export function AboutUpdateSettings() {
             )}
           </div>
           <p className={`${HINT} border-t border-border pt-3`}>
-            发现新版会自动下载并在侧栏出卡片（带进度）；点「重启更新」才换新版，
-            全程不打断任何会话。更新源是本项目的 GitHub Releases。
+            发现新版会在侧栏出卡片；点「Download」开始下载（带进度），
+            下载完成点「Restart」才换新版，全程不打断任何会话。
+            更新源是本项目的 GitHub Releases。
           </p>
         </div>
         {error !== null && <p className="text-destructive text-[13px]">{error}</p>}
