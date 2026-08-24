@@ -110,11 +110,21 @@ import {
 } from "./friendNotifier.js";
 import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
+import { findMrottoDeepLink } from "./deepLink.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
 // 才能实例化，中间这段空档收到的 URL 先缓存，ready 后 flush。
 app.setAsDefaultProtocolClient("mrotto");
+
+// Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
+// 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
+// URL 经 second-instance 事件转交给存活实例。锁文件在 userData 里——OTTO_PROFILE
+// 双开（docs/dev-two-accounts.md）各有各的 userData，互不抢锁。
+// 抢不到锁 = 本进程只是个送信的，用 app.exit 立即退（此刻什么都没初始化，无需清理）。
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
 
 // 品牌名 Mr Otto,但 userData 目录钉死在 mr-otto:Electron 的 userData 路径默认跟
 // app.name 走,改名会把 keys.json/sessions.db/attachments 留在旧目录里"凭空消失"。
@@ -141,8 +151,9 @@ function focusMainWindow(): void {
   if (process.platform === "darwin") app.focus({ steal: true });
 }
 
-app.on("open-url", (event, url) => {
-  event.preventDefault();
+// open-url（macOS）与 second-instance（Windows/Linux）两个入口共用一条回调通道：
+// AccountManager 就绪则直接处理，否则缓存到 ready 后 flush（那边带 restore 互斥逻辑）
+function handleAuthUrl(url: string): void {
   if (accountManager) {
     accountManager
       .handleCallback(url)
@@ -151,7 +162,29 @@ app.on("open-url", (event, url) => {
   } else {
     pendingAuthUrl = url;
   }
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleAuthUrl(url);
 });
+
+app.on("second-instance", (_event, argv) => {
+  const url = findMrottoDeepLink(argv);
+  if (url) {
+    handleAuthUrl(url);
+  } else {
+    // 没带深链的二次启动（用户又点了图标）：把已有窗口拉回前台
+    focusMainWindow();
+  }
+});
+
+// Windows/Linux 冷启动深链：URL 在本进程 argv 里。此刻 AccountManager 必然未建
+// （ready 前），走 pendingAuthUrl 缓存。macOS 上 argv 不会有 mrotto://，无害。
+{
+  const coldStartUrl = findMrottoDeepLink(process.argv);
+  if (coldStartUrl) pendingAuthUrl = coldStartUrl;
+}
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
