@@ -22,6 +22,7 @@ import {
   unclassifiedSpan,
 } from "./sectionClassifier.js";
 import { WANT, lastExchange, parseSuggestions, summarizeExchange } from "./followUpSuggester.js";
+import { parseSessionTitle, titleBlock } from "./sessionTitler.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
 /** 型号出厂默认。用户可以在设置页改（shared/helperModel.ts），
@@ -36,6 +37,8 @@ export interface TurnAnnotation {
   section: { title: string | null } | null;
   /** 跟进建议。null = 这一边解析失败/没跑（下个 turn 自然有新的） */
   suggestions: string[] | null;
+  /** 会话自动命名（issue #335）。null = 没跑（不需要）或解析失败（触发条件仍在，自愈） */
+  sessionTitle: string | null;
   model: string;
   usage?: TokenUsage;
 }
@@ -77,6 +80,7 @@ function buildPrompt(opts: {
   currentTitle: string | null;
   span: string | null;
   exchange: string | null;
+  titleSource: string | null;
   tag: string;
 }): string {
   const parts: string[] = ["你是一个 AI 编程助手会话的后勤员，一次回复完成下面的任务。\n"];
@@ -89,6 +93,11 @@ function buildPrompt(opts: {
     parts.push(suggestBlock(opts.exchange, opts.tag));
     shape.push('"suggestions": ["…", "…", "…"]');
   }
+  // 键叫 sessionTitle 不叫 title：title 归任务一的分区标题，撞键会互相污染
+  if (opts.titleSource !== null) {
+    parts.push(titleBlock(opts.titleSource, opts.tag));
+    shape.push('"sessionTitle": "会话标题"');
+  }
   parts.push(`只回一个 JSON，不要解释，不要围栏：{${shape.join(", ")}}`);
   return parts.join("\n");
 }
@@ -100,13 +109,17 @@ export async function annotateTurn(
   classifyEvents: SessionEvent[],
   exchangeEvents: SessionEvent[],
   /** 用哪一款（设置页可改，见 shared/helperModel.ts）。不传 = 出厂默认 */
-  model: string = ANNOTATE_MODEL
+  model: string = ANNOTATE_MODEL,
+  /** 会话自动命名的素材（autoTitleSource 的产出）。null = 不需要命名（已有
+      标题/首行够短），这一边不进提示词——判定住在调用方，本函数只管跑 */
+  titleSource: string | null = null
 ): Promise<TurnAnnotation | null> {
   const span = summarizeSpan(unclassifiedSpan(classifyEvents));
   const exchange = summarizeExchange(lastExchange(exchangeEvents));
   const wantSection = span.trim() !== "";
   const wantSuggest = exchange.trim() !== "";
-  if (!wantSection && !wantSuggest) return null; // 两边都没内容：别浪费一次调用
+  const wantTitle = titleSource !== null;
+  if (!wantSection && !wantSuggest && !wantTitle) return null; // 全都没内容：别浪费一次调用
 
   try {
     // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
@@ -125,6 +138,7 @@ export async function annotateTurn(
             currentTitle,
             span: wantSection ? span : null,
             exchange: wantSuggest ? exchange : null,
+            titleSource,
             tag: fence(),
           }),
         },
@@ -146,10 +160,12 @@ export async function annotateTurn(
       }
     }
     const suggestions = wantSuggest ? parseSuggestions(reply.content) : null;
-    if (!section && !suggestions) return null; // 两边都烂：等于这次调用没发生
+    const sessionTitle = wantTitle ? parseSessionTitle(reply.content) : null;
+    if (!section && !suggestions && !sessionTitle) return null; // 全烂：等于这次调用没发生
     return {
       section,
       suggestions,
+      sessionTitle,
       model,
       ...(reply.usage ? { usage: reply.usage } : {}),
     };

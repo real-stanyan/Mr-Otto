@@ -323,6 +323,18 @@ export interface MicroCompactedEvent extends SessionEventBase {
   usage?: TokenUsage;    // 本次（含 defrag 那次）烧的 token
 }
 
+/** 额外 18：会话自动命名（issue #335）。第一条 user_message 首行过长时，turn 收口后
+    的合并调用（turnAnnotator）顺手把它浓缩成短标题。标题出自模型、日志推不出 → 必须
+    落盘；给人看的侧栏/岛上标题，不喂回模型 → 投影丢弃（同 section_classified 纪律）。
+    标题优先级：session_renamed（手动，最后一条胜出）> 本事件（最后一条胜出）>
+    第一条 user_message 首行。已有本事件或手动改名后不再触发（一次会话最多一条）。 */
+export interface SessionAutoTitledEvent extends SessionEventBase {
+  type: "session_autotitled";
+  title: string;
+  model: string;                 // 标题出自哪个模型（溯源）
+  usage?: TokenUsage;            // 本次浓缩烧的 token
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -346,4 +358,5 @@ export type SessionEvent =
   | MemoryLoadedEvent
   | MemoryUserEditEvent
   | MemoryNudgeEvent
-  | MicroCompactedEvent;
+  | MicroCompactedEvent
+  | SessionAutoTitledEvent;

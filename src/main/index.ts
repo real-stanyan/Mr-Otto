@@ -42,6 +42,7 @@ import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
 import { annotateTurn } from "./turnAnnotator.js";
+import { autoTitleSource } from "./sessionTitler.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
@@ -514,6 +515,7 @@ void app.whenReady().then(() => {
       input.kind === "event" &&
       (input.event.type === "session_created" ||
         input.event.type === "session_renamed" ||
+        input.event.type === "session_autotitled" ||
         input.event.type === "session_archived")
     ) {
       fleetSessionsCache = null;
@@ -554,10 +556,18 @@ void app.whenReady().then(() => {
     // 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给空数组
     // （lastExchange([]) 也是空，summarize 出空串那一边直接不进提示词）
     const lastUser = store.lastSeqOf(sessionId, "user_message");
+    // 会话自动命名（issue #335）搭同一次便宜模型往返：手动改过名或已命名过就不再跑
+    // （一次会话最多一条），首行够短也不跑（现状已是合格标题，判定在 autoTitleSource）
+    const titleSource =
+      store.lastSeqOf(sessionId, "session_renamed") >= 0 ||
+      store.lastSeqOf(sessionId, "session_autotitled") >= 0
+        ? null
+        : autoTitleSource(store.firstUserMessage(sessionId));
     const result = await annotateTurn(
       classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
-      helperModel()
+      helperModel(),
+      titleSource
     );
     if (!result) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
@@ -583,6 +593,13 @@ void app.whenReady().then(() => {
       const event = store.append({
         sessionId, ts: Date.now(), type: "suggestions_generated",
         suggestions: result.suggestions, model: result.model, ...billOnce(),
+      });
+      send(CHANNELS.event, event);
+    }
+    if (result.sessionTitle) {
+      const event = store.append({
+        sessionId, ts: Date.now(), type: "session_autotitled",
+        title: result.sessionTitle, model: result.model, ...billOnce(),
       });
       send(CHANNELS.event, event);
     }

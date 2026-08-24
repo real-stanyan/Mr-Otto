@@ -23,14 +23,17 @@ export interface ModelUsage {
   cachedTokens: number;
 }
 
-/** 会计上"算一次模型调用"的五类事件。导出是为了让主进程的 SQL 用同一份清单筛行
-    （设置页的跨会话用量），而不是在 store.ts 里再抄一遍这几个字符串 */
+/** 会计上"算一次模型调用"的几类事件。导出是为了让主进程的 SQL 用同一份清单筛行
+    （设置页的跨会话用量），而不是在 store.ts 里再抄一遍这几个字符串。
+    session_autotitled 通常搭 section/suggestions 的合并调用（账只挂先落那条，
+    billOnce），但解析只活下来标题那一边时账就挂在它身上——所以必须在清单里 */
 export const BILLED_EVENT_TYPES = [
   "assistant_message",
   "context_compacted",
   "section_classified",
   "suggestions_generated",
   "micro_compacted",
+  "session_autotitled",
 ] as const;
 
 type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;

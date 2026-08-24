@@ -47,6 +47,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 历史索引（events_fts） | `events` 表的 FTS5 trigram 派生索引（user/assistant/tool_result 正文），insert 触发器同步、老库首开回填、purge 连带删；可 DROP 重建，不是事实 | ADR-0065 |
 | 自动压缩（auto compact） | 上下文占用 ≥ 窗口 × 阈值（≥512K 窗口 0.50，否则 0.75；可调 0.3–0.9）时，loop 在下一次模型调用前自动 /compact；一 turn 一次；摘要 prompt 带脱敏后的记忆快照 | ADR-0062 |
 | OTA 换包更新（swap update） | 打包版自升级：定时查 GitHub Releases，新版 zip 静默下载 + SHA256SUMS 校验 + `ditto -xk` 解包待命，用户点「重启更新」后由 detached 脚本换 .app 并重启（旧版留 `.app.bak` 可回滚）。无签名公证（ADR-0026）走不了 electron-updater，才有这套；Translocation / 目录不可写降级为开 Release 页手装 | ADR-0075；`src/main/updater{,Core,Host}.ts`、`scripts/release.mjs` |
+| 会话自动命名（session_autotitled） | 第一条 user_message 首行超过 24 字时，turn 收口后的合并调用（turnAnnotator 任务三）把它浓缩成短标题落 `session_autotitled` 事件。标题优先级：`session_renamed`（手动）> `session_autotitled` > 首行原文；已有任一命名事件不再触发（一会话最多一条）；失败静默、下 turn 自愈；不喂回模型 | #335；`src/main/sessionTitler.ts` |
 | 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0064 |
 
 ## Key invariants

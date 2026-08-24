@@ -124,6 +124,16 @@ describe("EventStore", () => {
     expect(store.load("s1")).toHaveLength(4); // 改名不改旧事件，只追加
   });
 
+  it("sessions()：浓缩标题（session_autotitled）压过首行、被手动改名压过（issue #335）", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
+    store.append(userMsg("s1", "搜一下 vite 官网，把找到的链接写进 sources-test.md"));
+    store.append({ sessionId: "s1", ts: 3, type: "session_autotitled", title: "搜 vite 官网写文档", model: "cheap" });
+    expect(store.sessions()[0]?.title).toBe("搜 vite 官网写文档");
+
+    store.append({ sessionId: "s1", ts: 4, type: "session_renamed", title: "手动名" });
+    expect(store.sessions()[0]?.title).toBe("手动名"); // 手动永远压过模型
+  });
+
   it("sessions()：日志里混进空白改名 → 当没有，退回自动标题", () => {
     // 主进程会拒绝空白标题，但投影不赌上游守规矩：日志是别人也能写的
     store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
@@ -349,13 +359,24 @@ describe("尾段读取原语（issue #279）", () => {
     expect(store.has("nope")).toBe(false);
   });
 
-  it("titleOf：改名胜出，否则第一条 user_message 首行，否则 null（同 sessions() 规则）", () => {
+  it("titleOf：改名胜出，否则浓缩标题，否则第一条 user_message 首行，否则 null（同 sessions() 规则）", () => {
     store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/w" });
     expect(store.titleOf("s1")).toBeNull();
     store.append(userMsg("s1", "修登录\n第二行不要"));
     expect(store.titleOf("s1")).toBe("修登录");
-    store.append({ sessionId: "s1", ts: 3, type: "session_renamed", title: "手动改的名" });
+    store.append({ sessionId: "s1", ts: 3, type: "session_autotitled", title: "浓缩的名", model: "cheap" });
+    expect(store.titleOf("s1")).toBe("浓缩的名");
+    store.append({ sessionId: "s1", ts: 4, type: "session_renamed", title: "手动改的名" });
     expect(store.titleOf("s1")).toBe("手动改的名");
     expect(store.titleOf("nope")).toBeNull();
+  });
+
+  it("firstUserMessage：第一条 user_message 全文（自动命名素材），没有 = null", () => {
+    expect(store.firstUserMessage("s1")).toBeNull();
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/w" });
+    expect(store.firstUserMessage("s1")).toBeNull();
+    store.append(userMsg("s1", "第一条\n带第二行"));
+    store.append(userMsg("s1", "第二条"));
+    expect(store.firstUserMessage("s1")).toBe("第一条\n带第二行");
   });
 });

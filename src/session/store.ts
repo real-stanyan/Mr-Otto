@@ -301,6 +301,10 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                    FROM events e2
                   WHERE e2.session_id = e.session_id AND e2.type = 'session_renamed'
                   ORDER BY e2.seq DESC LIMIT 1) AS renamed,
+                (SELECT json_extract(payload, '$.title')
+                   FROM events e4
+                  WHERE e4.session_id = e.session_id AND e4.type = 'session_autotitled'
+                  ORDER BY e4.seq DESC LIMIT 1) AS autotitled,
                 (SELECT json_extract(payload, '$.spawnedBy.sessionId')
                    FROM events e3
                   WHERE e3.session_id = e.session_id AND e3.seq = 0) AS spawnedFrom
@@ -310,12 +314,13 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
           GROUP BY session_id
           ORDER BY lastTs DESC`
       )
-      .all() as (SessionSummary & { renamed: string | null })[];
-    // 手动改名（最后一条胜出）压过自动标题；自动标题只取首行；
+      .all() as (SessionSummary & { renamed: string | null; autotitled: string | null })[];
+    // 手动改名（最后一条胜出）压过模型浓缩标题（session_autotitled，issue #335），
+    // 浓缩标题压过自动标题（第一条 user_message 首行）；
     // 空白一律算没有（显示截断交给 UI 的 ellipsis）
-    return rows.map(({ renamed, ...r }) => ({
+    return rows.map(({ renamed, autotitled, ...r }) => ({
       ...r,
-      title: renamed?.trim() || r.title?.split("\n")[0]?.trim() || null,
+      title: renamed?.trim() || autotitled?.trim() || r.title?.split("\n")[0]?.trim() || null,
     }));
   }
 
@@ -418,18 +423,35 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
   }
 
   /** 单个会话的标题投影——和 sessions() 同一条规则（最后一条 session_renamed
-      胜出，否则第一条 user_message 首行，否则 null）。discovery 只要标题时
-      不必为它全量 load 整段日志 */
+      胜出，其次最后一条 session_autotitled，否则第一条 user_message 首行，
+      否则 null）。discovery 只要标题时不必为它全量 load 整段日志 */
   titleOf(sessionId: string): string | null {
     const row = this.prep(
       `SELECT (SELECT json_extract(payload, '$.title') FROM events
                 WHERE session_id = ? AND type = 'session_renamed'
                 ORDER BY seq DESC LIMIT 1) AS renamed,
+              (SELECT json_extract(payload, '$.title') FROM events
+                WHERE session_id = ? AND type = 'session_autotitled'
+                ORDER BY seq DESC LIMIT 1) AS autotitled,
               (SELECT json_extract(payload, '$.content') FROM events
                 WHERE session_id = ? AND type = 'user_message'
                 ORDER BY seq LIMIT 1) AS first`
-    ).get(sessionId, sessionId) as { renamed: string | null; first: string | null };
-    return row.renamed?.trim() || row.first?.split("\n")[0]?.trim() || null;
+    ).get(sessionId, sessionId, sessionId) as {
+      renamed: string | null;
+      autotitled: string | null;
+      first: string | null;
+    };
+    return row.renamed?.trim() || row.autotitled?.trim() || row.first?.split("\n")[0]?.trim() || null;
+  }
+
+  /** 第一条 user_message 全文（会话自动命名的素材，issue #335）。
+      单行 SQL 投影，不为一条消息 load 整段日志 */
+  firstUserMessage(sessionId: string): string | null {
+    const row = this.prep(
+      `SELECT json_extract(payload, '$.content') AS content FROM events
+        WHERE session_id = ? AND type = 'user_message' ORDER BY seq LIMIT 1`
+    ).get(sessionId) as { content: string | null } | undefined;
+    return row?.content ?? null;
   }
 
   /** 按 seq 闭区间读一小段事件（session_search 的 scroll 模式用）。

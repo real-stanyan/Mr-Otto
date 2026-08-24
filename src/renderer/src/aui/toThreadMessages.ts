@@ -57,6 +57,7 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "session_created":
     case "session_archived":
     case "session_renamed":
+    case "session_autotitled":
     case "model_changed":
     case "skill_invoked":
     case "image_described":
