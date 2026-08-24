@@ -46,11 +46,15 @@ export function groupSubagentSpawns(
   return order.map((k) => groups.get(k)!);
 }
 
-export type SubagentRowState = "working" | "waiting" | "done";
+export type SubagentRowState = "working" | "waiting" | "done" | "failed";
 
 /** 单个 subagent_spawned 行的状态。
-    done = 父会话里这次 task 调用已经有 tool_result(task 工具走标准工具管线，
-    这条落盘就是子 turn 收口的事实)。
+    done / failed = 父会话里这次 task 调用已经有 tool_result(task 工具走标准工具
+    管线，这条落盘就是子 turn 收口的事实)，两者的分水岭是它的 status：
+    只有 `ok` 才是 done，`error`/`denied` 一律 failed（issue #267）。
+    曾经这里只问"有没有 tool_result"，于是被用户按停的子任务和顺利跑完的
+    在时间线上长得一模一样——日志里明明写着 `status: "error"` 和
+    `outcome: "aborted"`，卡片却挂着绿勾。日志是对的，卡片在说谎。
     没结果时看有没有审批/问卷冒泡到父会话——子会话的审批卡挂在父 sessionId 上
     (ADR-0047:人正看着父会话界面，卡不能挂子会话，不然死锁)。
     执行是串行的：任一时刻至多一个 subagent 没有结果，所以这里不需要按 agent
@@ -62,7 +66,8 @@ export function subagentRowState(
   pendingApproval: boolean,
   pendingAsk: boolean,
 ): SubagentRowState {
-  if (index.results.has(spawn.toolCallId)) return "done";
+  const result = index.results.get(spawn.toolCallId);
+  if (result) return result.status === "ok" ? "done" : "failed";
   return pendingApproval || pendingAsk ? "waiting" : "working";
 }
 

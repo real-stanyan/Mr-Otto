@@ -223,8 +223,9 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
     const spawn = group[0]!;
     const state = subagentRowState(spawn, index, pendingApproval, pendingAsk);
     const resultTs = index.results.get(spawn.toolCallId)?.ts;
-    const elapsedMs = (state === "done" ? (resultTs ?? now) : now) - spawn.ts;
-    const fact = state === "done" ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+    const elapsedMs = (state === "done" || state === "failed" ? (resultTs ?? now) : now) - spawn.ts;
+    const settled = state === "done" || state === "failed";
+    const fact = settled ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
     const model = modelLabelFor(spawn, subagentLogCache, subagents);
     const runningToolCallId = runningToolCallBySession[spawn.childSessionId];
     return (
@@ -239,7 +240,9 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
           {...(fact !== null ? { fact } : { elapsed: formatElapsed(elapsedMs) })}
           {...(model !== null ? { model } : {})}
         >
-          <SubagentTranscriptPanel childSessionId={spawn.childSessionId} done={state === "done"} />
+          {/* done 在这儿的意思是"日志定型了没",不是"跑成功了没"——被中断的那份
+              同样定了型，`state === "done"` 会让它的转录永远停在「还在跑」 */}
+          <SubagentTranscriptPanel childSessionId={spawn.childSessionId} done={settled} />
         </AgentStatus>
         {/* 直播尾巴:只在跑着、且子会话真有一个工具调用开着的时候才挂——
             没有就没有,不摆一个空壳子(同 ToolRow 的做法) */}
@@ -250,9 +253,13 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
     );
   }
 
-  const items: SubagentItem[] = group.map((spawn) => {
-    const done = index.results.has(spawn.toolCallId);
-    const fact = done ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
+  const states = group.map((spawn) => subagentRowState(spawn, index, pendingApproval, pendingAsk));
+  const items: SubagentItem[] = group.map((spawn, i) => {
+    const state = states[i]!;
+    // 收口了才有"步数/token"这条事实——失败/被中断的也收口了，它的 0 步 0 token
+    // 同样是事实（红叉在旁边说清楚了那是怎么个 0，issue #267）
+    const settled = state === "done" || state === "failed";
+    const fact = settled ? subagentFact(subagentLogCache[spawn.childSessionId]) : null;
     const model = modelLabelFor(spawn, subagentLogCache, subagents) ?? "";
     return {
       name: spawn.agent,
@@ -261,13 +268,15 @@ const SubagentSpawnedRow = memo(function SubagentSpawnedRow({ event }: { event: 
       // key 用 toolCallId：同一条消息里把同一个 agent 派两次是常事，
       // 按名字做 key 就是两个一模一样的 key（React 会认错行）
       id: spawn.toolCallId,
+      state,
       ...(fact !== null ? { fact } : {}),
     };
   });
-  const completedCount = group.filter((spawn) => index.results.has(spawn.toolCallId)).length;
+  const completedCount = states.filter((s) => s === "done").length;
   // 二值色带,不是真进度:我们不知道子 agent 跑到几成了(design brief 的
-  // "no fake progress")——done=完整色带,working=四成占位,只区分两态
-  const progress = group.map((spawn) => (index.results.has(spawn.toolCallId) ? 100 : 40));
+  // "no fake progress")——收口(不论成败)=完整色带,还在跑=四成占位,只区分两态；
+  // 成败之分靠颜色（绿/红），不靠长短
+  const progress = states.map((s) => (s === "done" || s === "failed" ? 100 : 40));
   // 执行是串行的:任一时刻至多一个成员还没结果,直播尾巴只可能属于它
   // (Task 8 review Important 1)
   const runningSpawn = group.find((spawn) => !index.results.has(spawn.toolCallId));
