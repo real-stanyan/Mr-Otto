@@ -1423,6 +1423,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.browserForward, (_e, sessionId: string) => browsers.forward(sessionId));
   ipcMain.handle(CHANNELS.browserReload, (_e, sessionId: string) => browsers.reload(sessionId));
   ipcMain.handle(CHANNELS.browserClose, (_e, sessionId: string) => browsers.close(sessionId));
+  ipcMain.handle(CHANNELS.browserPickElement, (_e, sessionId: string) => browsers.pickElement(sessionId));
+  ipcMain.handle(CHANNELS.browserCancelPick, (_e, sessionId: string) => browsers.cancelPick(sessionId));
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());

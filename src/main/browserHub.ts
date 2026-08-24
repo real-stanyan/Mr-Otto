@@ -9,7 +9,13 @@
 // 它是人的旁路工具,不是某个事实的投影。agent 的 read() 是工具调用,照旧落盘。
 
 import { randomUUID } from "node:crypto";
-import { normalizeUrl, type BrowserBounds, type BrowserTabInfo } from "../shared/browser.js";
+import {
+  normalizeUrl,
+  type BrowserBounds,
+  type BrowserPickedElement,
+  type BrowserTabInfo,
+} from "../shared/browser.js";
+import { parsePickPayload, PICKER_JS, PICKER_CANCEL_JS } from "./browserPicker.js";
 import type { BrowserReadOptions, BrowserReadResult } from "../world/executionWorld.js";
 
 const READ_TIMEOUT_MS = 30_000;
@@ -318,6 +324,49 @@ export function createBrowserHub(deps: BrowserHubDeps) {
         truncated,
         ...(requestedUrl !== undefined ? { requestedUrl } : {}),
       };
+    },
+
+    /** 「选取元素」:注入取景器,等用户点。resolve 的三种收尾——
+        payload(点中了)/ null(Esc、取消、页面导航走了、view 死了)。
+        取消族一律 null 而不是抛:面板只需要退出选取态,没有要报的错。
+        前提是屏上有一张页面,理由同 read 无 url 时的判断 */
+    async pickElement(sessionId: string): Promise<BrowserPickedElement | null> {
+      const r = browsers.get(sessionId);
+      if (!r || isNoPage(r.view.getURL())) {
+        throw new Error("选取元素：当前没有打开任何页面");
+      }
+      const url = r.view.getURL();
+      const raw = await new Promise<unknown>((resolve) => {
+        let done = false;
+        const finish = (v: unknown) => {
+          if (done) return;
+          done = true;
+          off();
+          resolve(v);
+        };
+        // 页面一开始导航,旧文档里的取景器连同它的 Promise 一起没了——
+        // executeJavaScript 那个 Promise 从此悬着。靠事件收尾,别等一个死人回话
+        const off = r.view.on((e) => {
+          if (e.type === "navigated" || (e.type === "loading" && e.loading)) finish(null);
+        });
+        // reject(view 中途被销毁是最常见的一种)也归进取消:
+        // 用户把浏览器结束掉,选取跟着结束,不是错
+        r.view.executeJavaScript(PICKER_JS).then(finish, () => finish(null));
+      });
+      const payload = parsePickPayload(raw);
+      if (payload === null) return null;
+      // url 只认主进程。收尾后 view 若还活着用现值(点击不改地址,但 SPA 的
+      // pushState 会),死了就用开始时那份
+      const live = browsers.get(sessionId) === r;
+      return { ...payload, url: live ? r.view.getURL() : url };
+    },
+
+    /** 请页面里的取景器自行收尾(pickElement 那头会 resolve null)。
+        fire-and-forget:页面没在选取时是 no-op,view 死了 reject 也没人需要知道 */
+    cancelPick(sessionId: string): void {
+      const r = browsers.get(sessionId);
+      if (!r) return;
+      r.view.executeJavaScript(PICKER_CANCEL_JS).catch(() => {});
     },
 
     info(sessionId: string): BrowserTabInfo | null {
