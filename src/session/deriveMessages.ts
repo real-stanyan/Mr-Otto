@@ -266,16 +266,21 @@ function healDanglingToolCalls(messages: ChatMessage[], startedIds: Set<string>)
     共用这一个常量：文案只能有一处出口，不然"投影里到底长什么样"就是猜的 */
 const MICRO_SUMMARY_PREFIX = "[对话摘要]\n";
 
-export function deriveMessages(events: SessionEvent[], compression?: CompressionOptions): ChatMessage[] {
-  const messages: ChatMessage[] = [];
-  // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
-  let systemMessage: SystemChatMessage | null = null;
+export function deriveMessages(
+  events: SessionEvent[],
+  compression?: CompressionOptions,
   // 压缩只瘦身内容，永不增删消息：tool_call_id 与 assistant.tool_calls 的配对
   // 是 API 协议要求，删一条 tool 消息整个请求就废——结构神圣，内容可瘦。
   // 什么也没产出的 turn 不进上下文(ADR-0042):模型压根没读到过那条消息,
   // 留着只会让每一次重试都把同一句话再囤一份。日志一个字节不改,跳的是投影。
-  // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）
-  const barren = barrenEventIndexes(events);
+  // 必须先算它：保真区名额也要跳过空跑（见 fidelityBoundary 注释）。
+  // 算过的话传进来（issue #277 perf，同 absorbedIndexes 的先例）：engine 每圈
+  // 对同一份日志既投影又估占用，barren 不该在同一数组上重算两遍。缺省自算
+  barren: ReadonlySet<number> = barrenEventIndexes(events)
+): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
+  let systemMessage: SystemChatMessage | null = null;
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，

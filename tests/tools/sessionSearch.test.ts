@@ -28,6 +28,11 @@ const history: HistoryCapability = {
   window: (id, a, b) => (sessions[id] ?? []).filter((e) => e.seq >= a && e.seq <= b),
   load: (id) => sessions[id] ?? [],
   recent: (n) => [{ sessionId: "s2", title: "另一个会话也有关键词", workspace: "/w", startedTs: 0, lastTs: 5, userTurns: 1 }].slice(0, n),
+  // 同 store.titleOf 的投影规则：第一条 user_message 首行（这批会话没有改名事件）
+  title: (id) => {
+    const first = (sessions[id] ?? []).find((e) => e.type === "user_message");
+    return first && first.type === "user_message" ? first.content.split("\n")[0]!.trim() : null;
+  },
 };
 const world = { history } as unknown as ExecutionWorld;
 const tool = createSessionSearchTool();
@@ -79,6 +84,7 @@ describe("session_search", () => {
       window: (id, a, b) => (withGaps[id] ?? []).filter((e) => e.seq >= a && e.seq <= b),
       load: (id) => withGaps[id] ?? [],
       recent: () => [],
+      title: () => null, // 唯一命中就是榜首，标题走 load 那条路，这里不会被调
     };
     const gapWorld = { history: gapHistory } as unknown as ExecutionWorld;
     const r = await tool.run({ query: "插播关键词" }, gapWorld);
@@ -115,6 +121,7 @@ describe("session_search", () => {
       window: () => [],
       load: (id) => (id === "s4" ? renamedEvents : []),
       recent: () => [],
+      title: () => null, // 同上：单命中 = 榜首，不走 title
     };
     const renamedWorld = { history: renamedHistory } as unknown as ExecutionWorld;
     const discoveryOut = await (async () => {

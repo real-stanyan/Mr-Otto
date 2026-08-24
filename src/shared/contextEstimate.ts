@@ -81,11 +81,15 @@ function microAtAnchor(events: SessionEvent[], anchorIdx: number): { covers: num
 
 /** 锚点之后、会进入下一次 prompt 的事件按字符估算。
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计 */
-function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
-  let pending = 0;
+function pendingAfter(
+  events: SessionEvent[],
+  anchorIdx: number,
   // 什么也没产出的 turn 投影里就不进上下文(ADR-0042),这里也不能计 ——
-  // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截
-  const barren = barrenEventIndexes(events);
+  // 圆环和真实 prompt 要用同一把尺子,不然重试几次之后环会虚高一截。
+  // 算过的话传进来（issue #277 perf，同 absorbedIndexes 的先例），缺省自算
+  barren: ReadonlySet<number> = barrenEventIndexes(events)
+): number {
+  let pending = 0;
   // 微压缩（ADR-0064）：被吸收的 assistant/tool 不会进下一次 prompt，换成一条摘要——
   // 和 deriveMessages 同一个 absorbedIndexes。
   const micro = absorbedIndexes(events, barren);
@@ -160,11 +164,14 @@ function pendingAfter(events: SessionEvent[], anchorIdx: number): number {
     锚点：最近一次带 usage 的事件（API 报的账单，事实）；compact 锚点 = 摘要体积
     （之后历史只剩摘要）。尾巴：锚点之后会进入下一次 prompt 的事件，按字符估算——
     投影会丢弃的 human-only 事件（审批、turn_ended、reasoning…）不计。 */
-export function contextUsed(events: SessionEvent[]): number {
+export function contextUsed(
+  events: SessionEvent[],
+  barren: ReadonlySet<number> = barrenEventIndexes(events)
+): number {
   const anchor = billingAnchor(events);
   // 微压缩的锚点前扣减可能让总量瞬间探到 0 以下（估算误差,不是真实账单）——
   // 圆环没有"负占用"这种读数,钳到 0
-  return Math.max(0, anchor.value + pendingAfter(events, anchor.idx));
+  return Math.max(0, anchor.value + pendingAfter(events, anchor.idx, barren));
 }
 
 // ─── 分类拆分（用量弹窗的数据源）────────────────────────────

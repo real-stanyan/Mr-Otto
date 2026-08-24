@@ -66,6 +66,37 @@ export function unclassifiedSpan(events: SessionEvent[]): SessionEvent[] {
   return events.slice(anchor + 1);
 }
 
+/** classifyLogView 需要的最小存储面（EventStore 结构性满足） */
+export interface ClassifyLogSource {
+  lastSeqOf(sessionId: string, type: SessionEvent["type"], beforeSeq?: number): number;
+  load(sessionId: string, opts?: { afterSeq?: number }): SessionEvent[];
+  eventsOfType(sessionId: string, type: SessionEvent["type"]): SessionEvent[];
+}
+
+/** 分类要看的最小日志切片（issue #279）：等价于全量 load，但只真正读
+    「锚点所在 turn 的开头之后的尾段」+「全部 section_classified 事件」。
+
+    为什么这两块就够（对照 unclassifiedSpan / currentSectionTitle 逐条核）：
+    - unclassifiedSpan 的锚点 = 最后一条 section_classified，它在尾段里；
+      锚点往回补 user_message 的扫描最远走到上一条 turn_ended / section_classified
+      就 break——尾段从「锚点前最近的 turn_ended 之后」起读，覆盖了整个扫描范围；
+      扫描越过尾段开头时（锚点前没有 turn_ended），退到的是更早的 section_classified，
+      break 条件同样成立，结果与全量一致。
+    - currentSectionTitle 要的是最后一条**非空标题**的分类事件——它可能在任意早的
+      位置（中间隔着一串 title:null 的"延续"），所以全部分类事件都得在场。
+      分类事件一个分区才一条，全取也只有几十条。
+    还没分过类（锚点不存在）= 未分类跨度就是整段日志，退回全量 load（一次性）。
+    等价性由 tests/main/sectionClassifier.test.ts 里的对照测试钉住 */
+export function classifyLogView(store: ClassifyLogSource, sessionId: string): SessionEvent[] {
+  const anchor = store.lastSeqOf(sessionId, "section_classified");
+  if (anchor < 0) return store.load(sessionId);
+  const turnEnd = store.lastSeqOf(sessionId, "turn_ended", anchor);
+  const tail = store.load(sessionId, { afterSeq: turnEnd });
+  const inTail = new Set(tail.map((e) => e.seq));
+  // 尾段之外的分类事件 seq 全在 turnEnd 之前，且两边各自升序——直接拼接就有序
+  return [...store.eventsOfType(sessionId, "section_classified").filter((e) => !inTail.has(e.seq)), ...tail];
+}
+
 /** 把一段事件压成给分类员看的摘要。tool_result 全文不进——
     bash 吐的几万字对"在聊什么"毫无贡献，只会把上下文烧光 */
 export function summarizeSpan(events: SessionEvent[]): string {

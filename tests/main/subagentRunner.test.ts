@@ -120,6 +120,7 @@ describe("createSubagentRunner", () => {
       window: () => [],
       load: () => [],
       recent: () => [],
+      title: () => null,
     };
     const worldWithHistory = withHistory(base.world, history);
     const parentWith = () => ({ ...base.parent()(), world: worldWithHistory });

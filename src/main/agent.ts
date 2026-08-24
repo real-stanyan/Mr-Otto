@@ -208,9 +208,10 @@ export function createAgent(opts: {
   // 本会话授过权的工具（ADR-0041）。resume 时从日志重建 —— 会话中途授的权
   // 必须跟着会话回来，而日志是它唯一的凭据（approval_decision.grant）。
   // 新会话那份日志是空的，扫出来就是空集合
-  const sessionAllow = new Set<string>(
-    opts.resumeSessionId ? sessionGrants(store.load(opts.resumeSessionId)) : []
-  );
+  // resume 的日志读一次、三处共用（授权重建 / 崩溃修复 / 型号投影，issue #279）：
+  // 构造期间没有并发写者，这份快照对三处都是新鲜的。新会话 = null（日志还是空的）
+  const resumeLog = opts.resumeSessionId ? store.load(opts.resumeSessionId) : null;
+  const sessionAllow = new Set<string>(resumeLog ? sessionGrants(resumeLog) : []);
   if (!opts.resumeSessionId) {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
     // system 消息（deriveMessages）和文件围栏（LocalWorld root）都从这个事实派生。
@@ -238,7 +239,7 @@ export function createAgent(opts: {
     // 会有悬空 toolCall（无配对 tool_result）。补合成结果事件——修复 = 追加，
     // 永不改写。文案按 tool_execution_started 区分"跑了一半"和"没开跑"。
     // 幂等：补过即配对，再 resume 不重复。事故从此是时间线事实，UI/回放可见。
-    const log = store.load(sessionId);
+    const log = resumeLog!;
     const answered = new Set(
       log.filter((e) => e.type === "tool_result").map((e) => e.toolCallId)
     );
@@ -268,8 +269,9 @@ export function createAgent(opts: {
 
   // 当前模型 = 日志投影：最后一条 model_changed 说了算，没有就用默认。
   // resume 时上次的选择自动回来——和 workspace 同一招，零额外持久化。
-  const lastSwitch = store
-    .load(sessionId)
+  // 新会话此刻的日志里不可能有 model_changed（上面刚落的只有 session_created /
+  // memory_loaded），resume 用同一份快照——崩溃修复补的 tool_result 不影响这条投影
+  const lastSwitch = (resumeLog ?? [])
     .filter((e) => e.type === "model_changed")
     .at(-1);
   let current: ModelChoice = resolveWithCapabilities(

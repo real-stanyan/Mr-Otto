@@ -835,3 +835,76 @@ describe("长 turn 软告警（issue #283 ⑥）", () => {
     store.close();
   });
 });
+
+// issue #277：快照增量维护——首圈全量、之后补尾段，投影必须与全量重读逐字等价
+describe("日志快照增量维护（issue #277）", () => {
+  it("三步 turn 只全量 load 一次；每圈投影与全量重读等价", async () => {
+    const store = new EventStore(":memory:");
+    const seen: unknown[][] = [];
+    let step = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(messages) {
+        // 每次模型被调时，把引擎喂来的投影和「此刻全量重读再投影」对表——
+        // 这是快照等价性的定义本身
+        const { deriveMessages, DEFAULT_COMPRESSION } = await import("../../src/session/deriveMessages.js");
+        expect(messages).toEqual(deriveMessages(store.load("s1"), DEFAULT_COMPRESSION));
+        seen.push(messages);
+        step++;
+        if (step <= 2) return { content: "", toolCalls: [{ id: `c${step}`, name: "read_file", args: { path: "/a.txt" } }] };
+        return { content: "收口" };
+      },
+    };
+    const loadSpy = vi.spyOn(store, "load");
+    const engine = new LoopEngine({ store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("连跑三步");
+    // 全量 load（不带 afterSeq 的调用；等价性断言里测试自己那三次要刨掉）
+    const fullLoads = loadSpy.mock.calls.filter((c) => !c[1]).length - step;
+    expect(fullLoads).toBe(1);
+    store.close();
+  });
+
+  it("带外追加（外挂异步落的事件）在下一圈进入投影", async () => {
+    const store = new EventStore(":memory:");
+    let step = 0;
+    let sawInjected = false;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(messages) {
+        step++;
+        if (step === 1) {
+          // 模拟外挂在 turn 中途带外落事件（不经引擎的 append）
+          store.append({ sessionId: "s1", ts: 99, type: "skill_invoked", name: "sk", content: "带外注入的说明" });
+          return { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] };
+        }
+        sawInjected = messages.some((m) => typeof m.content === "string" && m.content.includes("带外注入的说明"));
+        return { content: "收口" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [readFileTool], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("测带外");
+    expect(sawInjected).toBe(true);
+    store.close();
+  });
+
+  it("快照只活一个 turn：第二个 turn 重新全量 load（不吃常驻内存）", async () => {
+    const store = new EventStore(":memory:");
+    const mk = () => {
+      let called = false;
+      const adapter: ModelAdapter = {
+        model: "fake-model",
+        async chat() { if (called) throw new Error("多余的调用"); called = true; return { content: "好" }; },
+      };
+      return adapter;
+    };
+    const engine = new LoopEngine({ store, adapter: mk(), tools: [], world: fakeWorld, sessionId: "s1" });
+    await engine.runTurn("一");
+    const loadSpy = vi.spyOn(store, "load");
+    engine.setAdapter(mk());
+    await engine.runTurn("二");
+    expect(loadSpy.mock.calls.filter((c) => !c[1]).length).toBe(1); // 新 turn 首圈全量一次
+    const types = store.load("s1").map((e) => e.type);
+    expect(types.filter((t) => t === "user_message")).toHaveLength(2);
+    store.close();
+  });
+});

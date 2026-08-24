@@ -128,19 +128,25 @@ export function createSessionSearchTool(): Tool {
     const sections: string[] = [];
     const chunks: NonNullable<SessionSearchResult["chunks"]> = [];
     top.forEach((hit, rank) => {
-      const all = h.load(hit.sessionId);
-      const title = titleOf(all);
+      // 只有榜首要正文（±5 + 首尾各 3），只有它值得整段 load；其余会话只要
+      // 标题（h.title 的 SQL 投影，规则同 titleOf）和命中行的时间戳
+      // （单行 PK 查询）——原来为这两个数各付一整段 JSON.parse（issue #279）
+      const all = rank === 0 ? h.load(hit.sessionId) : null;
+      const title = all ? titleOf(all) : (h.title(hit.sessionId)?.slice(0, 60) ?? "(无标题)");
+      const hitTs = all
+        ? (all.find((e) => e.seq === hit.seq)?.ts ?? all[0]?.ts ?? 0)
+        : (h.window(hit.sessionId, hit.seq, hit.seq)[0]?.ts ?? 0);
       chunks.push({
         id: `${hit.sessionId}#${hit.seq}`,
         sessionId: hit.sessionId,
         seq: hit.seq,
         source: title,
-        locator: `${fmtTs(all.find((e) => e.seq === hit.seq)?.ts ?? all[0]?.ts ?? 0)} · #${hit.seq}`,
+        locator: `${fmtTs(hitTs)} · #${hit.seq}`,
         // 卡片两行截断，比正文的 SNIPPET(300) 短是有意的：discovery 命中列表要一眼扫过去，不是逐字读
         text: clip(hit.text, 160),
         score: hit.score,
       });
-      if (rank === 0) {
+      if (all) {
         // 第一名：命中 ±5 + 首尾各 3（hermes 的 adaptive hydration）。
         // ±5 按"消息条数"数，不按原始 seq 数——seq 里混着 turn_ended/tool_call
         // 这类无文本的路标事件，按 seq ±5 会被它们稀释，实际看到的有文本消息
