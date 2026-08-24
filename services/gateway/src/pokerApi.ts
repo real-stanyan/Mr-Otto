@@ -130,20 +130,6 @@ export function createPokerApi(deps: PokerApiDeps) {
   // 扫描器不该是进程活着的理由(也别拖住测试退出)
   sweeper.unref?.();
 
-  async function myFriends(userId: string): Promise<Set<string>> {
-    const rows = await rest.select(
-      `friendships?status=eq.accepted&or=(requester.eq.${userId},addressee.eq.${userId})&select=requester,addressee`
-    );
-    const out = new Set<string>();
-    for (const r of rows) {
-      if (!isRecord(r)) continue;
-      const a = String(r["requester"]);
-      const b = String(r["addressee"]);
-      out.add(a === userId ? b : a);
-    }
-    return out;
-  }
-
   async function listTables(userId: string): Promise<Response> {
     const rows = await rest.select("poker_tables?closed_at=is.null&select=*");
     const seatRows = await rest.select(`poker_stacks?user_id=eq.${userId}&select=table_id`);
@@ -155,12 +141,9 @@ export function createPokerApi(deps: PokerApiDeps) {
       const t = String(r["table_id"]);
       players.set(t, (players.get(t) ?? 0) + 1);
     }
-    const friends = await myFriends(userId);
-    // service_role 绕过 RLS，所以可见性得在这里自己判 —— 与 0005 的 policy 同一套规则
-    const visible = rows.filter(isRecord).filter((r) => {
-      const owner = String(r["created_by"]);
-      return owner === userId || seated.has(String(r["id"])) || friends.has(owner);
-    });
+    // 开着的桌对所有登录用户可见（issue #318 / ADR-0082，好友门已取消，
+    // 与 migration 0010 的 policy 同一套规则）
+    const visible = rows.filter(isRecord);
     return json(200, {
       tables: visible.map((r) => ({
         ...toTableInfo(r),

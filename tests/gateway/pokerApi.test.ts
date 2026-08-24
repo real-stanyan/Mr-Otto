@@ -43,10 +43,6 @@ function harness() {
           { table_id: "t1", user_id: "b", seat_index: 1, stack_tokens: 1000 },
         ];
       }
-      if (path.startsWith("friendships")) {
-        const who = /(?:requester|addressee)\.eq\.([^,)]+)/.exec(path)?.[1];
-        return who === "a" ? [{ requester: "a", addressee: "z" }] : [];
-      }
       return [];
     },
     insert: async (_t, row) => ({ ...TABLE_ROW, ...row, id: "t2" }),
@@ -92,7 +88,7 @@ describe("动作解析", () => {
 });
 
 describe("路由", () => {
-  it("列桌只列看得见的：自己建的 / 自己坐着的 / 好友建的", async () => {
+  it("开着的桌对所有人可见（issue #318，好友门已取消）", async () => {
     const { api } = harness();
     const res = await api.handle("a", get(), "");
     const body = await res.json() as { tables: { id: string; players: number; online: number }[] };
@@ -107,9 +103,11 @@ describe("路由", () => {
     expect(body2.tables[0]!.online).toBe(1);
     await sse.body!.cancel();
 
-    // 与建桌人 a 无关的 outsider 看不到
+    // 与建桌人 a 非好友的 outsider 也看得见（原好友门在这里挡人，已取消）
     const res2 = await api.handle("outsider", get(), "");
-    expect(((await res2.json()) as { tables: unknown[] }).tables).toEqual([]);
+    const body3 = await res2.json() as { tables: { id: string; seated: boolean }[] };
+    expect(body3.tables.map((t) => t.id)).toEqual(["t1"]);
+    expect(body3.tables[0]!.seated).toBe(false);
   });
 
   it("建桌把档位钉死，非法档位落回 flash", async () => {
