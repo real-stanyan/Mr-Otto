@@ -53,6 +53,20 @@ describe("EventStore", () => {
     expect(store.load("s1", { afterSeq: e2.seq })).toEqual([]);
   });
 
+  // 性能一轮（issue #275）：session_search 的 scroll 模式只要 ±5 条，
+  // 区间查询下推到 SQL，不再全量 load 后 filter
+  it("window()：按 seq 闭区间读一小段，与 load 同一种事件形状", () => {
+    const all = [
+      store.append({ sessionId: "s1", ts: 1, type: "session_created", title: "t" }),
+      store.append(userMsg("s1", "a")),
+      store.append(userMsg("s1", "b")),
+      store.append(userMsg("s1", "c")),
+    ];
+    expect(store.window("s1", 1, 2)).toEqual([all[1], all[2]]);
+    expect(store.window("s1", 3, 99)).toEqual([all[3]]);
+    expect(store.window("nope", 0, 9)).toEqual([]);
+  });
+
   it("sandboxId 缺省时读回的事件不带该字段", () => {
     store.append(userMsg("s1", "x"));
     expect(store.load("s1")[0]).not.toHaveProperty("sandboxId");
