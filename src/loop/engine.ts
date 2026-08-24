@@ -4,6 +4,7 @@
 import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
+import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
@@ -58,6 +59,13 @@ export class LoopEngine {
   /** 本 turn 是否已经自动压缩过；runTurn 里每 turn 重置一次。
       同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱 */
   private compactedThisTurn = false;
+  /** 本 turn 的日志快照（issue #277）：每圈全量 SELECT + JSON.parse + 重投影
+      在工具密集的 turn 里是 O(事件数×步数)。快照只在 turn 的第一圈全量读，
+      之后每圈用 load({afterSeq}) 补尾段——引擎自己 append 的和带外落的
+      （分类/建议/改名等异步外挂）都在尾段里，谁先谁后由 store 的 seq 定序，
+      不用在内存里做合并。turn 结束即丢（runTurn 的 finally）：agent 长活，
+      一直攥着整段日志是拿常驻内存换查询，不值——turn 内攥着才是纯赚 */
+  private turnLog: SessionEvent[] | null = null;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -96,6 +104,21 @@ export class LoopEngine {
 
   private env() {
     return { sessionId: this.opts.sessionId, ts: Date.now() };
+  }
+
+  /** 当前日志快照：第一次全量，之后增量补尾段。首圈持有的是 load() 现造的
+      数组（没有第二个持有者），增量圈拼接出新数组——两种情况下已交出去的
+      旧快照都不会被原地改动（这里从不 push 已交出的数组） */
+  private snapshot(): SessionEvent[] {
+    const { store, sessionId } = this.opts;
+    if (this.turnLog === null) {
+      this.turnLog = store.load(sessionId);
+    } else {
+      const lastSeq = this.turnLog.at(-1)?.seq ?? -1;
+      const fresh = store.load(sessionId, { afterSeq: lastSeq });
+      if (fresh.length > 0) this.turnLog = [...this.turnLog, ...fresh];
+    }
+    return this.turnLog;
   }
 
   /** 洋葱芯：真正跑 tool.run 的执行器 —— 只有穿过全部中间件才到得了这 */
@@ -226,6 +249,7 @@ export class LoopEngine {
       throw err;
     } finally {
       this.turnAbort = null;
+      this.turnLog = null; // 快照只活一个 turn：长会话不常驻在内存里
     }
   }
 
@@ -234,7 +258,7 @@ export class LoopEngine {
       concludesTurn（提前收口）。失控空转的兜底是用户停止键（abort 信号，
       ADR-0006），不是预设步数天花板。 */
   private async loop(signal: AbortSignal): Promise<void> {
-    const { store, sessionId } = this.opts;
+    const { sessionId } = this.opts;
     // 工具拿到的 world 天生带中断信号（装饰器），工具代码对中断无感——
     // 硬规则"工具只依赖 ExecutionWorld"原样成立
     const world = withAbortSignal(this.opts.world, signal);
@@ -242,15 +266,18 @@ export class LoopEngine {
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
 
-      // 每圈只 load 一次（issue #193）：占用检查和投影读同一份日志快照，
-      // 只有 compact 真的落了新事件才重读
-      let log = store.load(sessionId);
+      // 每圈只取一次快照（issue #193），且快照是增量维护的（issue #277）：
+      // 首圈全量、之后补尾段，占用检查和投影读同一份
+      let log = this.snapshot();
+      // barren 也只算一次（issue #277）：占用估计和投影是同一把尺子，
+      // 传同一个集合进去，不在同一数组上重算两遍
+      let barren = barrenEventIndexes(log);
 
       // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
       // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
       if (this.opts.autoCompact && !this.compactedThisTurn) {
         const { contextWindow, settings } = this.opts.autoCompact;
-        if (shouldAutoCompact(contextUsed(log), contextWindow(), settings())) {
+        if (shouldAutoCompact(contextUsed(log, barren), contextWindow(), settings())) {
           this.compactedThisTurn = true;
           try {
             await this.compact({ trigger: "auto", signal });
@@ -260,13 +287,14 @@ export class LoopEngine {
             if (isAbort(err)) throw err;
             console.warn("自动压缩失败，本 turn 不再尝试", err);
           }
-          log = store.load(sessionId); // compact 落了 context_compacted，快照过期
+          log = this.snapshot(); // compact 落了 context_compacted，尾段补进快照
+          barren = barrenEventIndexes(log);
         }
       }
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
-      const messages = deriveMessages(log, DEFAULT_COMPRESSION);
+      const messages = deriveMessages(log, DEFAULT_COMPRESSION, barren);
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
       const clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;
