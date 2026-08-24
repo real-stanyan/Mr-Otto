@@ -1545,6 +1545,11 @@ export const useChat = create<ChatState>((set, get) => ({
         if (profile) void get().openFriendChat(profile);
         return;
       }
+      // 任务完成通知落到那个会话,同灵动岛点行的逻辑:已在看它就不重复 resume
+      if (target.kind === "session") {
+        if (get().sessionId !== target.sessionId) void get().resume(target.sessionId);
+        return;
+      }
       set({ friendsPanelOpen: true });
     });
     // dock 角标 = 所有"有人在等你"的总和。未读只有渲染层算得出(它知道哪个面板开着),

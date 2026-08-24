@@ -12,6 +12,8 @@ export interface NotifySpec {
   title: string;
   body: string;
   target: NotificationTarget;
+  /** macOS 系统音名(如 "Glass")。不设 = 静默——好友类通知一直没有声音,保持原样 */
+  sound?: string;
 }
 
 /** 通知正文最多这么长,再长就截断——通知中心本来也不给显示完 */
@@ -36,6 +38,22 @@ export function inviteNotification(inviterName: string, tableName: string): Noti
 
 export function friendRequestNotification(name: string): NotifySpec {
   return { title: "新的好友请求", body: truncate(`${name || "有人"} 想加你好友`), target: { kind: "friendRequest" } };
+}
+
+/** turn 正常收口(outcome=completed)的完成通知(issue #290)。文件名虽叫 friend——
+    它实际是"系统通知判定层"(ADR-0027),完成通知走同一套聚焦判定/点击落点。
+    带提示音:完成是用户在等的事,不同于好友动静的静默角标 */
+export function turnCompleteNotification(
+  sessionTitle: string | null,
+  userText: string,
+  sessionId: string
+): NotifySpec {
+  return {
+    title: `${truncate(sessionTitle ?? "", 40) || "会话"} · 任务完成`,
+    body: truncate(userText),
+    target: { kind: "session", sessionId },
+    sound: "Glass",
+  };
 }
 
 /** 两次快照之间**新增**的收到请求(按 friendshipId 差集)。全量推送的去重口 */
