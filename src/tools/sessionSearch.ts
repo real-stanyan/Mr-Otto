@@ -63,6 +63,10 @@ function titleOf(events: SessionEvent[]): string {
     e.type === "session_renamed"
   );
   if (renamed && renamed.title.trim()) return renamed.title.trim().slice(0, 60);
+  const autotitled = [...events].reverse().find((e): e is Extract<SessionEvent, { type: "session_autotitled" }> =>
+    e.type === "session_autotitled"
+  );
+  if (autotitled && autotitled.title.trim()) return autotitled.title.trim().slice(0, 60);
   const first = events.find((e) => e.type === "user_message");
   return first && first.type === "user_message" ? first.content.split("\n")[0]!.trim().slice(0, 60) : "(无标题)";
 }

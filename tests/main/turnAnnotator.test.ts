@@ -50,6 +50,7 @@ describe("annotateTurn —— 一次往返两边各取所需", () => {
     expect(out).toEqual({
       section: { title: "修登录 bug" },
       suggestions: ["跑一下测试", "解释一下这段"],
+      sessionTitle: null,
       model: ANNOTATE_MODEL,
       usage: { promptTokens: 300, completionTokens: 20 },
     });
@@ -176,5 +177,51 @@ describe("annotateTurn —— 一次往返两边各取所需", () => {
     const prompt = JSON.parse(bodies[0]!).messages[0].content as string;
     expect(prompt).toContain("章节目录");
     expect(prompt).not.toContain("跟进建议");
+  });
+
+  // ── 任务三：会话自动命名（issue #335）──────────────────────
+
+  it("带 titleSource → 提示词多任务三，sessionTitle 键与分区 title 键互不污染", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return okReply(
+        '{"newSection":true,"title":"修登录 bug","suggestions":["跑一下测试"],"sessionTitle":"搜 vite 官网写文档"}'
+      );
+    }));
+    const out = await annotateTurn(log, exchange, ANNOTATE_MODEL, "搜一下 vite 官网，把找到的链接写进 sources-test.md");
+    expect(out?.section).toEqual({ title: "修登录 bug" });
+    expect(out?.sessionTitle).toBe("搜 vite 官网写文档");
+    const prompt = JSON.parse(bodies[0]!).messages[0].content as string;
+    expect(prompt).toContain("会话标题");
+    expect(prompt).toContain("sessionTitle");
+  });
+
+  it("不带 titleSource（默认）→ 提示词没有任务三，sessionTitle 恒 null", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(init.body);
+      // 便宜模型爱多回键：就算它幻觉出 sessionTitle 也不该被采纳
+      return okReply('{"newSection":true,"title":"修登录","suggestions":["跑一下测试"],"sessionTitle":"幻觉标题"}');
+    }));
+    const out = await annotateTurn(log, exchange);
+    expect(out?.sessionTitle).toBeNull();
+    expect(JSON.parse(bodies[0]!).messages[0].content as string).not.toContain("会话标题");
+  });
+
+  it("只有任务三有内容（分区/建议两边都空）→ 照样出门，只回标题", async () => {
+    const fetchSpy = vi.fn(async () => okReply('{"sessionTitle":"搜 vite 官网写文档"}'));
+    vi.stubGlobal("fetch", fetchSpy);
+    const out = await annotateTurn([], [], ANNOTATE_MODEL, "搜一下 vite 官网，把找到的链接写进 sources-test.md");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ section: null, suggestions: null, sessionTitle: "搜 vite 官网写文档", model: ANNOTATE_MODEL });
+  });
+
+  it("标题那一边形状烂 → 只废标题（触发条件仍在，下个 turn 自愈）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      okReply('{"newSection":true,"title":"修登录 bug","suggestions":["跑一下测试"],"sessionTitle":""}')));
+    const out = await annotateTurn(log, exchange, ANNOTATE_MODEL, "很长很长的第一条消息".repeat(5));
+    expect(out?.section).toEqual({ title: "修登录 bug" });
+    expect(out?.sessionTitle).toBeNull();
   });
 });

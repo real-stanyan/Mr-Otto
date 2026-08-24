@@ -81,6 +81,8 @@ function systemSummary(e: SessionEvent): string {
       return `micro_compacted ${clip(e.summary, 80)}`;
     case "session_renamed":
       return `session_renamed → ${e.title}`;
+    case "session_autotitled":
+      return `session_autotitled → ${e.title}`;
     case "subagent_spawned":
       return `subagent_spawned ${e.agent}`;
     default:

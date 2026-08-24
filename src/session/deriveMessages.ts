@@ -489,6 +489,8 @@ export function deriveMessages(
       // memory_nudge 只是计数触发点——两者都不喂回模型
       case "memory_user_edit":
       case "memory_nudge":
+      // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
+      case "session_autotitled":
         break;
     }
   }

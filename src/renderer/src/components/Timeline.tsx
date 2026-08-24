@@ -389,6 +389,9 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "session_renamed":
       return <div className={AUDIT}>会话改名 → {event.title}</div>;
 
+    case "session_autotitled":
+      return <div className={AUDIT}>会话自动命名 → {event.title}</div>;
+
     case "context_compacted":
       return <CompactSummaryRow event={event} />;
 

@@ -1625,6 +1625,11 @@ export const useChat = create<ChatState>((set, get) => ({
       // 工具结果落地 = agent 可能动了 git(checkout/merge/commit)。git 状态不属于事件
       // 日志投影,只能重新问 git——防抖 600ms,连环工具调用只刷尾部一次。
       // 分支恒刷(composer 上方常显当前分支),图只在开着时刷
+      // 自动命名落地 = 侧栏标题该换了。手动 rename 在自己的 action 里刷,
+      // 这条是主进程 turn 收口后自己落的事件,只有这里能听见(含后台会话)
+      if (e.type === "session_autotitled") {
+        void window.otter.listSessions().then((sessions) => set({ sessions }));
+      }
       if (e.type === "tool_result") {
         clearTimeout(gitGraphAutoRefresh);
         gitGraphAutoRefresh = setTimeout(() => {
