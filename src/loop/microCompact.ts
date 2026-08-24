@@ -4,7 +4,7 @@
 // 住在 src/loop 而不是 engine 里：它不在 turn 的闭环上（turn 锁外跑），和 engine 只共享投影规则。
 //
 // 型号 id 不在这里定：src/loop 不允许 import src/main（tests/architecture.test.ts），
-// 调用方（main/index.ts 装配处）自己接 MICRO_MODEL = SECTION_MODEL。
+// 调用方（main/index.ts 装配处）自己传 helperModel()（shared/helperModel.ts 的默认款）。
 //
 // 注入面（residual risk 记在 ADR-0064）：这条摘要落盘后，会作为一条 assistant 消息
 // 进模型自己的投影（deriveMessages 的 [对话摘要] 前缀行）——不是旁路的元数据，是模型
