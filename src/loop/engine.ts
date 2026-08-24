@@ -76,6 +76,14 @@ export class LoopEngine {
       烧钱（老的一压一次就锁死整 turn），但工具密集的超长 turn 里摘要后又胀
       回去是真实场景，新料够多时第二刀是值得的 */
   private compactFloor: number | null = null;
+  /** 正在跑的 turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer）。
+      idle / compact 专场时为 null。seq 是日志分配的稳定身份——渲染层从事件流
+      里看到的就是它，乐观锁两端说的天然是同一个数 */
+  private currentTurnId: number | null = null;
+  /** 压缩进行中（auto compact 在 turn 中途触发时为 true）。此时拒绝 steer：
+      compact 以它开跑那一刻的日志为准，之后落的 user_message 会被
+      context_compacted 的"之前一切被替换"语义静默吞掉——宁可让用户重发 */
+  private compacting = false;
   /** 本 turn 的日志快照（issue #277）：每圈全量 SELECT + JSON.parse + 重投影
       在工具密集的 turn 里是 O(事件数×步数)。快照只在 turn 的第一圈全量读，
       之后每圈用 load({afterSeq}) 补尾段——引擎自己 append 的和带外落的
@@ -203,6 +211,17 @@ export class LoopEngine {
       auto 是上下文超阈值自动触发（trigger 字段落盘，溯源谁点的火）。
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
   async compact(opts: { trigger: "auto" | "manual"; signal?: AbortSignal } = { trigger: "manual" }): Promise<void> {
+    // 压缩是"特殊 turn"，拒绝 steer（issue #344）：compact 以此刻的日志为准，
+    // 中途落的 user_message 会被 context_compacted 的替换语义吞掉
+    this.compacting = true;
+    try {
+      await this.compactInner(opts);
+    } finally {
+      this.compacting = false;
+    }
+  }
+
+  private async compactInner(opts: { trigger: "auto" | "manual"; signal?: AbortSignal }): Promise<void> {
     const { store, sessionId } = this.opts;
     const log = store.load(sessionId);
     // 摘要专用投影（ADR-0003）：整段历史无保真区，长工具输出/参数都截断——
@@ -263,6 +282,32 @@ export class LoopEngine {
     this.turnAbort?.abort();
   }
 
+  /** 正在跑的 turn 的身份（给 UI 做乐观锁的另一端）。idle = null */
+  get runningTurnId(): number | null {
+    return this.currentTurnId;
+  }
+
+  /** 插话（issue #344，codex turn/steer 同款）：不中断，把用户输入注入正在跑的
+      turn。先落盘（user_message 事件）——loop 每圈都从日志重新投影，模型下一次
+      采样自然看到它并转向，已完成的工具调用全部保留。
+      expectedTurnId 乐观锁：提交瞬间 turn 可能刚好结束/换代，id 对不上就拒绝并
+      让用户重发——绝不把话注进错的 turn。压缩进行中同样拒绝（见 compacting）。
+      投影层保证乱序安全：工具组进行中落的 user_message 会被推迟到组的结果之后
+      再进上下文（deriveMessages 的顺序修复），OpenAI 方言的配对约束不被打破 */
+  steer(text: string, expectedTurnId: number): void {
+    if (this.compacting) {
+      throw new Error("正在压缩上下文，暂时不能插话——请稍后重发这句话");
+    }
+    if (this.currentTurnId === null) {
+      throw new Error("turn 已结束，插话没有目标——这句话请作为新消息发送");
+    }
+    if (this.currentTurnId !== expectedTurnId) {
+      throw new Error("turn 对不上号（它可能刚结束、新 turn 又开了）——请确认现场后重发");
+    }
+    if (!text.trim()) throw new Error("插话内容为空");
+    this.append({ ...this.env(), type: "user_message", content: text });
+  }
+
   /** 跑一个完整 turn：直到模型不再要工具为止。
       收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
       中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障。
@@ -275,7 +320,7 @@ export class LoopEngine {
     attachments?: UserAttachmentRef[],
     textFiles?: UserTextFile[]
   ): Promise<"completed" | "aborted"> {
-    this.append({
+    const opening = this.append({
       ...this.env(),
       type: "user_message",
       content: userInput,
@@ -283,6 +328,8 @@ export class LoopEngine {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
     });
+    // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
+    this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
     this.compactFloor = null;
     try {
@@ -303,6 +350,7 @@ export class LoopEngine {
       throw err;
     } finally {
       this.turnAbort = null;
+      this.currentTurnId = null; // steer 的目标随 turn 一起消失
       this.turnLog = null; // 快照只活一个 turn：长会话不常驻在内存里
     }
   }

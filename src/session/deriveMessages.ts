@@ -305,6 +305,19 @@ export function deriveMessages(
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
   const micro = absorbedIndexes(events, barren);
 
+  // 插话顺序修复（issue #344）：steer 落盘时工具组可能正开着——日志序是
+  // assistant(toolCalls) → user_message(插话) → tool_result…，照事件位置直投就是
+  // OpenAI 方言非法序列（tool 消息必须紧跟它的 assistant），自愈层还会误判
+  // "组没答完"补出重复占位。修法：组开着（pendingToolIds 非空）时落的用户
+  // 消息先攒着，组的结果齐了再进上下文——模型晚一拍看到插话，配对约束不破。
+  // 组永远没答完（中断后新 turn / turn_ended）就地冲账，插话不丢
+  let pendingToolIds = new Set<string>();
+  let deferredUsers: UserChatMessage[] = [];
+  const flushDeferred = () => {
+    messages.push(...deferredUsers);
+    deferredUsers = [];
+  };
+
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {
       messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
@@ -318,7 +331,8 @@ export function deriveMessages(
         // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)。
         // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)
         const text = composeUserText(event.content, event.textFiles);
-        messages.push(
+        const target = pendingToolIds.size > 0 ? deferredUsers : messages;
+        target.push(
           event.attachments && event.attachments.length > 0
             ? {
                 role: "user",
@@ -337,6 +351,10 @@ export function deriveMessages(
       }
 
       case "assistant_message":
+        // 上一组若没答完就到此为止（中断后的下一轮）：先把攒着的插话放出来，
+        // 别让它们隔着新组越攒越远
+        flushDeferred();
+        pendingToolIds = new Set((event.toolCalls ?? []).map((tc) => tc.id));
         messages.push({
           role: "assistant",
           content: event.content,
@@ -372,6 +390,8 @@ export function deriveMessages(
               ? clip(event.output, compression.maxOldToolOutputChars, "工具输出")
               : event.output,
         });
+        pendingToolIds.delete(event.toolCallId);
+        if (pendingToolIds.size === 0) flushDeferred(); // 组齐了，攒着的插话跟上
         break;
 
       case "session_created":
@@ -435,6 +455,10 @@ export function deriveMessages(
         // ② 摘要注入为 user 消息——中途插 system 各家方言兼容性参差，user 谁都认。
         // 二次 compact 自然复合：第二份摘要清掉的历史里含第一份摘要。
         messages.length = 0;
+        // 清场连攒着的插话一起清：compact 只发生在组与组之间（engine 在
+        // compacting 期间拒 steer），真走到这说明它们已在被替换的历史里
+        deferredUsers = [];
+        pendingToolIds = new Set();
         if (systemMessage) messages.push(systemMessage);
         messages.push({
           role: "user",
@@ -476,7 +500,6 @@ export function deriveMessages(
       case "session_archived":
       case "session_renamed":
       case "tool_execution_started":
-      case "turn_ended":
       // 分区目录是给人的导航，不是对话内容——喂回去只会污染上下文
       case "section_classified":
       // 跟进建议同理：那是给人点的快捷键。喂回去等于让模型读自己上一轮的猜测，
@@ -492,8 +515,16 @@ export function deriveMessages(
       // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
       case "session_autotitled":
         break;
+
+      case "turn_ended":
+        // lifecycle 事件本身不投影（同上），但 turn 收口 = 工具组不可能再答完：
+        // 攒着的插话就地放出（缺失的 tool 回应由自愈层补占位，顺序仍合法）
+        flushDeferred();
+        pendingToolIds = new Set();
+        break;
     }
   }
+  flushDeferred(); // 日志停在组中间（app 退出/正在跑）：插话不丢
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {
