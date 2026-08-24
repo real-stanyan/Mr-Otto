@@ -960,6 +960,23 @@ void app.whenReady().then(() => {
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+      // 长 turn 软告警（issue #283 ⑥）：不拦不停（无步数上限是 DSH 式决定，
+      // 兜底是停止键），只把"还在跑、已经烧了很多步"送到不在屏幕前的用户眼前。
+      // 同 friendNotifier 的纪律：通知是打断，窗口聚焦（人就在看）时不发
+      onLongTurn: (rounds) => {
+        if (win.isDestroyed() || win.isFocused() || !Notification.isSupported()) return;
+        const n = new Notification({
+          title: "水獭还在干活",
+          body: `本轮已连续跑了 ${rounds} 步模型调用，仍在继续。若不符合预期，回来按停止。`,
+        });
+        n.on("click", () => {
+          if (!win.isDestroyed()) {
+            win.show();
+            win.focus();
+          }
+        });
+        n.show();
+      },
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
       // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，

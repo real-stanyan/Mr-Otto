@@ -15,6 +15,7 @@ export const readFileTool: Tool = {
     },
   },
   requiresApproval: false,
+  parallelSafe: true, // 纯读文件,无共享状态(issue #283 ③)
 
   async run(args, world) {
     const { path } = args as { path: string };

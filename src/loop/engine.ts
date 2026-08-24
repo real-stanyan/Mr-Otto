@@ -21,6 +21,16 @@ function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+/** 同 turn 二次自动压缩的增长闸（issue #283 ⑤）：距上次压缩尝试后占用至少
+    再涨这么多估算 token 才允许再压。取值凑合在"防原地重压"（摘要仍超阈值时
+    占用近乎不动，永远够不着闸）和"超长 turn 别顶着窗口上限跑死"之间 */
+export const REAUTO_MIN_GROWTH_TOKENS = 20_000;
+
+/** 长 turn 软告警阈值（issue #283 ⑥）：单 turn 模型步数到这就喊一声。
+    不拦不停——无步数上限是 DSH 式的明确决定（失控兜底是停止键，ADR-0006），
+    这只是把"还在跑"送到不在屏幕前的用户眼前 */
+export const LONG_TURN_ROUNDS = 30;
+
 export interface LoopEngineOptions {
   store: EventStore;
   adapter: ModelAdapter;
@@ -46,6 +56,9 @@ export interface LoopEngineOptions {
     contextWindow: () => number | undefined; // 当前型号的窗口；换型号后现算
     settings: () => AutoCompactSettings; // 现读（设置页改了当场生效）
   };
+  /** 单 turn 模型步数到 LONG_TURN_ROUNDS 时喊一次（每 turn 至多一次）。
+      不给 = 不喊（测试和裸装配照旧）。装配层拿它发系统通知 */
+  onLongTurn?: (rounds: number) => void;
 }
 
 export class LoopEngine {
@@ -55,9 +68,12 @@ export class LoopEngine {
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
       AbortSignal 是一次性的，翻过去就回不来 */
   private turnAbort: AbortController | null = null;
-  /** 本 turn 是否已经自动压缩过；runTurn 里每 turn 重置一次。
-      同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱 */
-  private compactedThisTurn = false;
+  /** 上次自动压缩尝试后的上下文占用（估算 token）；null = 本 turn 还没压过。
+      runTurn 里每 turn 重置。增长闸（issue #283 ⑤）：距上次压缩后占用至少再涨
+      REAUTO_MIN_GROWTH_TOKENS 才允许再压——"摘要本身仍超阈值"时原地重压只是
+      烧钱（老的一压一次就锁死整 turn），但工具密集的超长 turn 里摘要后又胀
+      回去是真实场景，新料够多时第二刀是值得的 */
+  private compactFloor: number | null = null;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -96,6 +112,36 @@ export class LoopEngine {
 
   private env() {
     return { sessionId: this.opts.sessionId, ts: Date.now() };
+  }
+
+  /** 单次工具调用走完整条管线（审批门→中间件→执行器），返回结果不落盘——
+      落盘归调用方（并发组要按原调用序落）。中断后的调用不执行，补"没执行"
+      的事实结果——OpenAI 方言要求每个 tool_call 都有答复，缺一个 = 会话投影
+      永久 400（ADR-0005 的教训） */
+  private async dispatch(
+    call: { id: string; name: string; args: unknown },
+    world: ExecutionWorld,
+    signal: AbortSignal
+  ): Promise<ToolOutcome> {
+    if (signal.aborted) {
+      return {
+        status: "error",
+        output: "调用未执行：用户中断了 turn。执行器未达，世界未被此调用变更。",
+      };
+    }
+    // 按调用再包一层：输出直播的回调在这绑上 toolCallId——
+    // world 到工具手里已经"知道"该把碎片挂到哪次调用，工具自己无感
+    const onToolOutput = this.opts.onToolOutput;
+    const callWorld = onToolOutput
+      ? withExecOutput(world, (chunk, stream) => onToolOutput(call.id, chunk, stream))
+      : world;
+    return runPipeline(this.pipeline, (ctx) => this.execute(ctx), {
+      call,
+      tool: this.toolsByName.get(call.name),
+      world: callWorld,
+      sessionId: this.opts.sessionId,
+      signal,
+    });
   }
 
   /** 洋葱芯：真正跑 tool.run 的执行器 —— 只有穿过全部中间件才到得了这 */
@@ -159,8 +205,10 @@ export class LoopEngine {
             "请把以上对话压缩成一份摘要，供后续对话作为唯一的历史记忆使用。保留：任务目标、" +
             "已完成的动作（含涉及的文件路径与命令）、关键决定及其理由、未完成事项。" +
             (memText ? "MEMORY CONTEXT 里已有的事实不要重复写进摘要。" : "") +
-            "直接输出摘要正文，不要开场白。" +
-            "用户最新的那条请求（最后一条 user 消息）原文逐字保留，放在摘要末尾的「当前请求」段。",
+            "直接输出摘要正文，不要开场白。",
+          // 不再要求摘要人「逐字保留最后一条 user 消息」（issue #283 ④）：#193 之后
+          // 投影层已确定性重注原文（deriveMessages 的当前请求兜底），提示词那半是
+          // 双份——摘要人逐不逐字本就不可控，正因为不可控才有 #193，可控的那份赢
         },
       ],
       undefined, // 不带工具：这一步只要文字
@@ -207,7 +255,7 @@ export class LoopEngine {
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
     });
     this.turnAbort = new AbortController();
-    this.compactedThisTurn = false;
+    this.compactFloor = null;
     try {
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
@@ -238,6 +286,8 @@ export class LoopEngine {
     // 工具拿到的 world 天生带中断信号（装饰器），工具代码对中断无感——
     // 硬规则"工具只依赖 ExecutionWorld"原样成立
     const world = withAbortSignal(this.opts.world, signal);
+    // 本 turn 的模型步数（长 turn 软告警用；恰好踩线喊一次，之后不再重复）
+    let rounds = 0;
 
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
@@ -247,26 +297,34 @@ export class LoopEngine {
       let log = store.load(sessionId);
 
       // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
-      // 工具密集的 turn 中途也会胀。同一 turn 只压一次：摘要本身若仍超阈值，再压只是烧钱
-      if (this.opts.autoCompact && !this.compactedThisTurn) {
+      // 工具密集的 turn 中途也会胀。同 turn 再压过增长闸（见 compactFloor 注释）
+      if (this.opts.autoCompact) {
         const { contextWindow, settings } = this.opts.autoCompact;
-        if (shouldAutoCompact(contextUsed(log), contextWindow(), settings())) {
-          this.compactedThisTurn = true;
+        const used = contextUsed(log);
+        const grown =
+          this.compactFloor === null || used >= this.compactFloor + REAUTO_MIN_GROWTH_TOKENS;
+        if (grown && shouldAutoCompact(used, contextWindow(), settings())) {
           try {
             await this.compact({ trigger: "auto", signal });
+            log = store.load(sessionId); // compact 落了 context_compacted，快照过期
           } catch (err) {
             // 中断不是"失败"——是用户意志（ADR-0006）。让它原样冒到 runTurn 的
             // catch，落 turn_ended:"aborted"；只有真失败（模型没吐摘要等）才吞
             if (isAbort(err)) throw err;
-            console.warn("自动压缩失败，本 turn 不再尝试", err);
+            console.warn("自动压缩失败，占用再涨一档前不再尝试", err);
           }
-          log = store.load(sessionId); // compact 落了 context_compacted，快照过期
+          // 成败都记地板：成 = 压后的新占用（从这起算增长），败 = 当前占用
+          // （同一水位不再撞墙，涨够一档再试——失败原因多半还在）
+          this.compactFloor = contextUsed(log);
         }
       }
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）
       const messages = deriveMessages(log, DEFAULT_COMPRESSION);
+      rounds++;
+      if (rounds === LONG_TURN_ROUNDS) this.opts.onLongTurn?.(rounds);
+
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
       const clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;
@@ -302,43 +360,40 @@ export class LoopEngine {
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了
 
-      for (const call of reply.toolCalls) {
-        // 中断后剩余调用不再执行，但必须补上结果——OpenAI 方言要求每个
-        // tool_call 都有答复，缺一个 = 会话投影永久 400（ADR-0005 的教训）。
-        // 补的是事实（"没执行"），不是伪造的输出
-        if (signal.aborted) {
+      // 工具执行（issue #283 ③）：**连续的并发安全调用**（parallelSafe 且免审批）
+      // 并发跑；有副作用/要审批的工具是屏障，前后仍严格串行——模型按顺序想事，
+      // "先写后跑"的依赖不能被并发打乱。结果按原调用序落盘：投影按 toolCallId
+      // 配对不吃顺序，但重放/测试读日志时顺序确定性是白捡的，别丢
+      const calls = reply.toolCalls;
+      const isSafe = (c: { name: string }) => {
+        const t = this.toolsByName.get(c.name);
+        return t?.parallelSafe === true && !t.requiresApproval;
+      };
+      let idx = 0;
+      while (idx < calls.length) {
+        let end = idx + 1;
+        if (isSafe(calls[idx]!)) {
+          while (end < calls.length && isSafe(calls[end]!)) end++;
+        }
+        const group = calls.slice(idx, end);
+        idx = end;
+        const outcomes = await Promise.all(group.map((call) => this.dispatch(call, world, signal)));
+        let concluded = false;
+        for (let g = 0; g < group.length; g++) {
+          const outcome = outcomes[g]!;
           this.append({
             ...this.env(),
             type: "tool_result",
-            toolCallId: call.id,
-            status: "error",
-            output: "调用未执行：用户中断了 turn。执行器未达，世界未被此调用变更。",
+            toolCallId: group[g]!.id,
+            status: outcome.status,
+            output: outcome.output,
           });
-          continue;
+          // concludesTurn = 数据驱动的提前收口（DSH 同款）：本步到此为止，
+          // 不给模型补答的机会，turn 直接 completed。组内已执行的结果都要落
+          //（每个 tool_call 必须有答复），组后未执行的靠投影自愈层补文案
+          if (outcome.concludesTurn) concluded = true;
         }
-        // 按调用再包一层：输出直播的回调在这绑上 toolCallId——
-        // world 到工具手里已经"知道"该把碎片挂到哪次调用，工具自己无感
-        const onToolOutput = this.opts.onToolOutput;
-        const callWorld = onToolOutput
-          ? withExecOutput(world, (chunk, stream) => onToolOutput(call.id, chunk, stream))
-          : world;
-        const outcome = await runPipeline(this.pipeline, (ctx) => this.execute(ctx), {
-          call,
-          tool: this.toolsByName.get(call.name),
-          world: callWorld,
-          sessionId,
-          signal,
-        });
-        this.append({
-          ...this.env(),
-          type: "tool_result",
-          toolCallId: call.id,
-          status: outcome.status,
-          output: outcome.output,
-        });
-        // concludesTurn = 数据驱动的提前收口（DSH 同款）：本步到此为止，
-        // 不给模型补答的机会，turn 直接 completed
-        if (outcome.concludesTurn) return;
+        if (concluded) return;
       }
       // 结果已落盘 → 下一圈 deriveMessages 自然带上它们
     }

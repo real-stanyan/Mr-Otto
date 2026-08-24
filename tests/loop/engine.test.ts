@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { LoopEngine } from "../../src/loop/engine.js";
+import { LoopEngine, LONG_TURN_ROUNDS } from "../../src/loop/engine.js";
 import { EventStore } from "../../src/session/store.js";
 import { readFileTool } from "../../src/tools/readFile.js";
 import { bashTool } from "../../src/tools/bash.js";
@@ -724,6 +724,114 @@ describe("lifecycle 事件（ADR-0004）", () => {
     await running;
 
     expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "aborted" });
+    store.close();
+  });
+});
+
+describe("并发安全工具组（issue #283 ③）", () => {
+  /** 慢工具：记录并发水位和起止顺序 */
+  function slowTool(name: string, parallelSafe: boolean, trace: string[], gauge: { inFlight: number; max: number }): Tool {
+    return {
+      def: { name, description: "", parameters: { type: "object", properties: {} } },
+      requiresApproval: false,
+      ...(parallelSafe ? { parallelSafe: true } : {}),
+      async run(args) {
+        const n = (args as { n: string }).n;
+        trace.push(`start-${n}`);
+        gauge.inFlight++;
+        gauge.max = Math.max(gauge.max, gauge.inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        gauge.inFlight--;
+        trace.push(`end-${n}`);
+        return `done-${n}`;
+      },
+    };
+  }
+
+  it("连续的 parallelSafe 调用并发执行，结果按调用序落盘", async () => {
+    const store = new EventStore(":memory:");
+    const trace: string[] = [];
+    const gauge = { inFlight: 0, max: 0 };
+    const { adapter } = fakeAdapter([
+      {
+        content: "",
+        toolCalls: [
+          { id: "c1", name: "p", args: { n: "1" } },
+          { id: "c2", name: "p", args: { n: "2" } },
+        ],
+      },
+      { content: "收口" },
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [slowTool("p", true, trace, gauge)],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("并发读");
+
+    expect(gauge.max).toBe(2); // 真的并发了
+    const results = store.load("s1").filter((e) => e.type === "tool_result");
+    expect(results.map((e) => (e.type === "tool_result" ? e.toolCallId : ""))).toEqual(["c1", "c2"]);
+    expect(results.map((e) => (e.type === "tool_result" ? e.output : ""))).toEqual([
+      "done-1",
+      "done-2",
+    ]); // 原调用序，不是完成序
+    store.close();
+  });
+
+  it("非 parallelSafe 工具是屏障：夹在中间时前后严格串行", async () => {
+    const store = new EventStore(":memory:");
+    const trace: string[] = [];
+    const gauge = { inFlight: 0, max: 0 };
+    const { adapter } = fakeAdapter([
+      {
+        content: "",
+        toolCalls: [
+          { id: "c1", name: "p", args: { n: "1" } },
+          { id: "c2", name: "serial", args: { n: "2" } },
+          { id: "c3", name: "p", args: { n: "3" } },
+        ],
+      },
+      { content: "收口" },
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [slowTool("p", true, trace, gauge), slowTool("serial", false, trace, gauge)],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("读-跑-读");
+
+    // 屏障语义：1 完成后 2 才开始，2 完成后 3 才开始
+    expect(trace).toEqual(["start-1", "end-1", "start-2", "end-2", "start-3", "end-3"]);
+    expect(gauge.max).toBe(1);
+    store.close();
+  });
+});
+
+describe("长 turn 软告警（issue #283 ⑥）", () => {
+  it("模型步数踩到 LONG_TURN_ROUNDS 喊一次，且只喊一次", async () => {
+    const store = new EventStore(":memory:");
+    const script: ModelReply[] = Array.from({ length: LONG_TURN_ROUNDS + 1 }, (_, k) =>
+      k < LONG_TURN_ROUNDS
+        ? { content: "", toolCalls: [{ id: `c${k}`, name: "read_file", args: { path: "/a" } }] }
+        : { content: "完" }
+    );
+    const { adapter } = fakeAdapter(script);
+    const alerts: number[] = [];
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [readFileTool],
+      world: fakeWorld,
+      sessionId: "s1",
+      onLongTurn: (rounds) => alerts.push(rounds),
+    });
+    await engine.runTurn("超长任务");
+    expect(alerts).toEqual([LONG_TURN_ROUNDS]); // 恰好一次，越过阈值后不再重复喊
     store.close();
   });
 });
