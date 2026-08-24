@@ -48,6 +48,8 @@ import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { findProjectInstructions } from "./projectInstructions.js";
+import { loadTrustedWorkspaces, addTrustedWorkspace } from "./workspaceTrust.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
@@ -263,6 +265,7 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
+  const trustPath = join(app.getPath("userData"), "trustedWorkspaces.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
   const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
@@ -1050,6 +1053,12 @@ void app.whenReady().then(() => {
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
     child?: ChildAgentConfig;
   }): ReturnType<typeof createAgent> => {
+    // 项目指令（issue #353）：信任门禁在这——未信任的工作区**不加载**其指令
+    // 文件（陌生仓库的 AGENTS.md 是现成的 prompt injection 载体）。找到了但
+    // 没信任 → 建完 agent 后推通知，UI 给"信任并加载"入口；resume 不重找
+    //（历史会话的模型视野不因今天的文件/信任状态改写）
+    const instructions = args.resumeSessionId ? null : findProjectInstructions(args.workspace);
+    const trusted = loadTrustedWorkspaces(trustPath).has(args.workspace);
     const base = {
       store,
       workspace: args.workspace,
@@ -1154,9 +1163,39 @@ void app.whenReady().then(() => {
           spawnedThisRun.add(child.sessionId);
         },
       }),
+      ...(instructions && instructions.segments.length > 0 && trusted
+        ? { projectInstructions: instructions }
+        : {}),
     });
+    if (instructions && instructions.segments.length > 0 && !trusted) {
+      send(CHANNELS.instructionsNotice, {
+        sessionId: self.sessionId,
+        workspace: args.workspace,
+        files: instructions.segments.map((seg) => seg.path),
+      });
+    }
     return self;
   };
+
+  // 信任并当场注入（issue #353）：信任跨会话持久（trustedWorkspaces.json），
+  // 注入以事件落盘（model-visible means logged）——下一次模型调用自然看到
+  ipcMain.handle(CHANNELS.trustWorkspace, (_e, sessionId: string) => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error("会话不存在或未激活");
+    addTrustedWorkspace(trustPath, agent.workspace);
+    const found = findProjectInstructions(agent.workspace);
+    if (found.segments.length === 0) return;
+    // 已注入过（本会话早前信任过/新建时就是信任的）就别重复灌
+    if (store.load(sessionId).some((ev) => ev.type === "project_instructions")) return;
+    const full = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "project_instructions",
+      segments: found.segments,
+      ...(found.truncated ? { truncated: true } : {}),
+    });
+    send(CHANNELS.event, full);
+  });
 
   ipcMain.handle(CHANNELS.boot, () => bootInfo());
 

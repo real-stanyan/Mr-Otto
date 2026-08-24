@@ -148,6 +148,10 @@ export function createAgent(opts: {
   /** Pre/PostToolUse 钩子（issue #350）：拦截/改参/拒绝/反馈，engine 统一落
       tool_hook 事件。今天没有内置钩子——这是给将来（用户钩子/技能钩子）的口 */
   toolHooks?: ToolHook[];
+  /** 项目指令注入（issue #353）：装配层已过信任门禁的快照。只在**新建**会话时
+      落一条 project_instructions（resume 的日志里已有/没有都不追加——
+      不改写历史会话的模型视野）。不给 = 无注入（子会话/测试/裸装配照旧） */
+  projectInstructions?: { segments: { path: string; content: string }[]; truncated: boolean };
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
   /** MCP 能力（index.ts 从 mcpHub 注入）。hub 要管子进程生命周期、要向渲染层推状态，
@@ -258,6 +262,18 @@ export function createAgent(opts: {
         type: "memory_loaded",
         memory: opts.memory.memory,
         user: opts.memory.user,
+      });
+    }
+    // 项目指令注入（issue #353）：记忆之后、第一条 user_message 之前——模型先
+    // 知道自己是谁（记忆）、再读项目规矩、最后看任务。content 是此刻快照，
+    // 文件之后被改重放不失真（skill_invoked 同款自包含）
+    if (opts.projectInstructions && opts.projectInstructions.segments.length > 0) {
+      store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "project_instructions",
+        segments: opts.projectInstructions.segments,
+        ...(opts.projectInstructions.truncated ? { truncated: true } : {}),
       });
     }
   } else {

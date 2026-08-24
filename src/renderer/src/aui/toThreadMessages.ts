@@ -72,6 +72,8 @@ function isAuditEvent(e: SessionEvent): boolean {
     // 钩子干预（issue #350）：拦截/改参/拒绝/反馈都是"模型视野被改写"的
     // 审计事实——同 micro_compacted 一类，时间线上必须留痕
     case "tool_hook":
+    // 项目指令注入（issue #353）：注入了什么、从哪来——审计事实，时间线留痕
+    case "project_instructions":
       return true;
     case "approval_decision":
       return e.decision === "denied";

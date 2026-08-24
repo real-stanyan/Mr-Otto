@@ -438,6 +438,22 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         />
       );
 
+    case "project_instructions":
+      // provenance 展示位（issue #353，与 skill 注入同一手法）：头行列出
+      // 注入了哪几份，点开看各段全文——正文是"给模型的说明书"存档，默认折叠
+      return (
+        <details className={THINKING_DETAILS}>
+          <summary className={`${THINKING_SUMMARY} text-brand`}>
+            ⛰ 注入项目指令 {event.segments.length} 份（
+            {event.segments.map((s) => s.path.split("/").pop()).join("、")}）
+            {event.truncated ? "——部分文件超预算被丢弃" : ""}——已进上下文
+          </summary>
+          <div className={THINKING_BODY}>
+            {event.segments.map((s) => `── ${s.path} ──\n${s.content}`).join("\n\n")}
+          </div>
+        </details>
+      );
+
     case "skill_invoked":
       // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
       return (
