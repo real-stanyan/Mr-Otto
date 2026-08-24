@@ -41,11 +41,16 @@ describe("bash 工具", () => {
     expect(out).not.toContain("stderr:");
   });
 
-  it("超长输出截断并标注原始长度", async () => {
-    const { world } = fakeWorld({ stdout: "x".repeat(20_000), stderr: "", exitCode: 0 });
+  it("超长输出中间截断:头尾都在,警告头带原始字符数与估算 token(issue #343 第三层)", async () => {
+    const head = "HEAD-MARK" + "x".repeat(10_000);
+    const tail = "y".repeat(9_000) + "TAIL-MARK";
+    const { world } = fakeWorld({ stdout: head + tail, stderr: "", exitCode: 0 });
     const out = (await bashTool.run({ cmd: "cat big" }, world)) as string;
     expect(out.length).toBeLessThan(10_000);
-    expect(out).toContain("截断，共 20000 字符");
+    expect(out).toContain("HEAD-MARK"); // 头 = 启动报错
+    expect(out).toContain("TAIL-MARK"); // 尾 = 最终结果(旧实现只留头,尾全丢)
+    expect(out).toContain("原始 19018 字符");
+    expect(out).toMatch(/≈ \d+ tokens/); // 模型知道被截、知道原本多大
   });
 
   it("cmd 非法（空/非字符串）→ throw（这才是管线故障）", async () => {
