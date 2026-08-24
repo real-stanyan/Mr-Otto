@@ -12,8 +12,17 @@ export interface ToolRunContext {
   signal?: AbortSignal;
 }
 
+/** 可见性三态（issue #348，codex ToolExposure 对照）：
+    - direct    模型初始工具表就有（缺席时的默认——老工具零改动）
+    - deferred  注册了但初始不可见；tool_search 搜到后进入可见集
+    - hidden    永不进模型工具表，但仍在 toolsByName 里（内部可调、
+                模型误调能收到明确错误而不是崩溃） */
+export type ToolExposure = "direct" | "deferred" | "hidden";
+
 export interface Tool {
   def: ToolDefinition;
+  /** 缺席 = "direct"。事后改数据结构很痛——趁工具还少先把字段落进注册表（#348） */
+  exposure?: ToolExposure;
   /** true = 执行前必须过人工审批门（下一课接入管线） */
   requiresApproval: boolean;
   /** true = 只读且无共享状态，模型同一步里连续的这类调用可以并发执行
