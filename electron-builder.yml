@@ -35,6 +35,12 @@ mac:
   category: public.app-category.developer-tools
   icon: resources/icon.png
   darkModeSupport: true
+  # 产物名不能带空格（issue #306）：GitHub Release 上传时把空格改写成点
+  # （Mr Otto-… 变 Mr.Otto-…），release.mjs 按本地名写的 SHA256SUMS 就跟
+  # 资产名对不上，更新器查不到条目直接报错。索性本地名就用点，三处
+  # （本地文件 / Release 资产 / SHA256SUMS 条目）从此同名。
+  # zip 的 -arm64-mac.zip 后缀是线上更新器（updaterCore）认资产的暗号，动不得
+  artifactName: Mr.Otto-${version}-${arch}-mac.${ext}
   # dmg 给首次安装；zip 给 OTA 换包下载（ADR-0075,src/main/updater.ts 认
   # -arm64-mac.zip 后缀的 Release 资产）
   target:
@@ -54,6 +60,8 @@ mac:
   hardenedRuntime: false
 
 dmg:
+  # dmg 不进 OTA 链路，不用 -mac 后缀，保持 v1.0.x 以来的 Mr.Otto-<版本>-arm64.dmg 形状
+  artifactName: Mr.Otto-${version}-${arch}.${ext}
   title: Mr Otto ${version}
   contents:
     - x: 130
@@ -85,4 +93,5 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-  artifactName: ${productName}-${version}-win-x64-setup.${ext}
+  # 同 mac：不用 ${productName}（带空格，GitHub 会改名成点），直接写死点名
+  artifactName: Mr.Otto-${version}-win-x64-setup.${ext}

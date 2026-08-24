@@ -8,8 +8,14 @@ npm run dist:mac
 
 产物在 `dist/`：
 
-- `Mr Otto-<version>-arm64.dmg` —— 给别人的就是这个
+- `Mr.Otto-<version>-arm64.dmg` —— 给别人的就是这个
+- `Mr.Otto-<version>-arm64-mac.zip` —— OTA 更新下载的那份
 - `mac-arm64/Mr Otto.app` —— 未打包的 app，本机调试用
+
+产物名用点不用空格（issue #306）：GitHub Release 上传时会把文件名里的空格改写成
+点（`Mr Otto-…` 变 `Mr.Otto-…`），而 release.mjs 按本地文件名写 SHA256SUMS、
+更新器按 Release 资产名查条目——名字一带空格，三者就对不上（v1.0.1 首发时更新器
+报「SHA256SUMS 里没有 … 的条目」就是这个）。本地名直接用点，三处永远同名。
 
 只出 **Apple Silicon（arm64）**。Intel Mac 跑不了这个包。
 
