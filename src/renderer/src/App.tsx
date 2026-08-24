@@ -2262,10 +2262,12 @@ function ComposerTextarea({
   segments: readonly Unstable_DirectiveSegment[];
   /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
   inputRef: React.Ref<HTMLTextAreaElement>;
-  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"排队",
-      不是"发不出去"(见 lib/messageQueue.ts)。这里只用来换一句提示语 */
+  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"插话"
+      (注入正在跑的 turn，issue #344)，⌥回车才是排队(lib/messageQueue.ts)。
+      这里只用来换一句提示语 */
   running: boolean;
-  onSubmit: () => void;
+  /** queue = 用户按住 ⌥ 敲的回车：跑着时明确要排队，不插话 */
+  onSubmit: (opts: { queue: boolean }) => void;
   onPasteFiles: (files: File[]) => void;
 }) {
   const aria = unstable_useTriggerPopoverAriaProps();
@@ -2306,7 +2308,7 @@ function ComposerTextarea({
         autoFocus
         rows={1}
         placeholder={
-          running ? "回车排队，这一条跑完自动发出" : "输入消息，回车发送，Shift+回车换行"
+          running ? "回车插话（注入当前任务），⌥回车排队" : "输入消息，回车发送，Shift+回车换行"
         }
         onPaste={(e) => {
           // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
@@ -2325,7 +2327,7 @@ function ComposerTextarea({
           // preventDefault 必须有：不拦的话换行会先插进 textarea 再被清空,闪一帧
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
-            onSubmit();
+            onSubmit({ queue: e.altKey });
           }
         }}
       />
@@ -2356,6 +2358,7 @@ function ChatComposer() {
   const staged = useChat((s) => s.staged);
   const send = useChat((s) => s.send);
   const enqueue = useChat((s) => s.enqueue);
+  const steer = useChat((s) => s.steer);
   const stop = useChat((s) => s.stop);
   const attachPasted = useChat((s) => s.attachPasted);
   const composer = useAui().thread.composer();
@@ -2476,18 +2479,22 @@ function ChatComposer() {
   // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
   const canSend = input.trim() !== "" || staged.length > 0;
 
-  /** 发出去,还是排进队里。turn 跑着时敲的回车是"排队",不是"发不出去"
-      (队列本身见 lib/messageQueue.ts)。分岔只在这一处 —— 上面那些解析
-      ($skill / 空正文校验)两条路共用,排队的那条不该少走一遍校验 */
-  const dispatch = (text: string, skill?: string, skillArgs?: string) => {
+  /** 发出去、插话，还是排进队里。turn 跑着时敲的回车默认是"插话"
+      （注入正在跑的 turn，issue #344），⌥回车明确排队；带 $skill 的
+      也退回排队——skill 注入（skill_invoked 快照）是 turn 开场的事，
+      往跑到一半的 turn 里塞说明书没有清晰语义。分岔只在这一处 ——
+      上面那些解析($skill / 空正文校验)几条路共用 */
+  const dispatch = (text: string, skill?: string, skillArgs?: string, queue = false) => {
     if (status === "running") {
-      enqueue(text, skill, skillArgs);
+      if (queue || skill) enqueue(text, skill, skillArgs);
+      else void steer(text);
       return;
     }
     void send(text, skill, skillArgs);
   };
 
-  const submit = () => {
+  const submit = (opts?: { queue?: boolean }) => {
+    const queue = opts?.queue ?? false;
     const text = input.trim();
     // 只贴了图不打字也算一条消息:附件本身就是内容
     if (!text && staged.length === 0) return;
@@ -2515,7 +2522,7 @@ function ChatComposer() {
         return;
       }
       setInput("");
-      dispatch(task, name, skillArgs);
+      dispatch(task, name, skillArgs, queue);
       return;
     }
     setInput("");
@@ -2537,7 +2544,7 @@ function ChatComposer() {
       dispatchSlash(text);
       return;
     }
-    dispatch(text);
+    dispatch(text, undefined, undefined, queue);
   };
 
   return (
