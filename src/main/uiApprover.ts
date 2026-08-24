@@ -4,6 +4,7 @@
 // 引擎对此毫无感知——它只是在 await 一个接口方法。
 
 import type { Approver, ApprovalOutcome } from "../loop/approvalGate.js";
+import { evaluateCommand, type ExecRule } from "../shared/execPolicy.js";
 import type { Tool } from "../tools/tool.js";
 import type { ToolCallRequest } from "../session/events.js";
 import type {
@@ -159,6 +160,37 @@ export function createGrantAwareApprover(
     每次 decide 现读模式（getMode 是活引用）——turn 跑到一半切模式，下一个
     工具调用立即遵守新模式。批准照样流经审批门 → approval_decision 照常落盘，
     日志永远记着"这一步是自动批的"（reason 说明），行为可从日志推导。 */
+/** execpolicy 感知的 Approver（issue #347）：bash 命令先过声明式前缀规则。
+    forbidden = 硬拒（放在链条最外层——连 bypass 模式都压不过它：规则是用户
+    亲手写的"永不放行"）；allow = 免弹卡放行；prompt/没意见 = 交给内层
+    （审批记忆 → 模式 → 弹卡）。每次 decide 现读规则（getPolicy 是活引用）——
+    审批 UI 追加规则后下一次判定立即生效（热更新），跨会话由文件天然承担。
+    非 bash 工具、复杂脚本（token 化失败）不掺和——静态判定只管它说得清的 */
+export function createPolicyAwareApprover(
+  getPolicy: () => { rules: ExecRule[] },
+  cwd: string | undefined,
+  inner: Approver
+): Approver {
+  return {
+    decide(call, tool, signal) {
+      if (call.name === "bash") {
+        const cmd = (call.args as { cmd?: unknown } | null)?.cmd;
+        if (typeof cmd === "string") {
+          const verdict = evaluateCommand(cmd, getPolicy().rules, cwd);
+          if (verdict?.decision === "forbidden") {
+            return Promise.resolve({ decision: "denied", reason: verdict.reason } satisfies ApprovalOutcome);
+          }
+          if (verdict?.decision === "allow") {
+            return Promise.resolve({ decision: "approved", reason: verdict.reason } satisfies ApprovalOutcome);
+          }
+          // prompt / undefined：往里走，弹不弹由内层各级决定
+        }
+      }
+      return inner.decide(call, tool, signal);
+    },
+  };
+}
+
 export function createModeAwareApprover(getMode: () => ApprovalMode, ui: Approver): Approver {
   return {
     decide(call, tool, signal) {

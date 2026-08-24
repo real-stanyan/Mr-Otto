@@ -47,6 +47,7 @@ import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
+import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
@@ -261,6 +262,7 @@ void app.whenReady().then(() => {
   // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
+  const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
   const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
@@ -670,6 +672,9 @@ void app.whenReady().then(() => {
       }),
       getAccessToken,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+      // forbidden 规则对子 agent 同样生效（用户写的"永不放行"不该被派活绕过）；
+      // 不接 persistAllowRule——子 agent 没有审批 UI，产不出规则
+      execPolicy: () => loadExecPolicy(execPolicyPath),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
@@ -1062,6 +1067,7 @@ void app.whenReady().then(() => {
         resumeSessionId: args.resumeSessionId,
         config: args.child,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
@@ -1091,6 +1097,10 @@ void app.whenReady().then(() => {
       history: createHistoryCapability(store, () => self.sessionId),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
+      // execpolicy（issue #347）：现读现校验（热更新与 alwaysAllow 同款）；
+      // 文件坏了 loadExecPolicy 返回空规则 + error（fail-safe），这里只消费规则
+      execPolicy: () => loadExecPolicy(execPolicyPath),
+      persistAllowRule: (pattern, cwd) => appendAllowRule(execPolicyPath, pattern, cwd),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 长 turn 软告警（issue #283 ⑥）：不拦不停（无步数上限是 DSH 式决定，
       // 兜底是停止键），只把"还在跑、已经烧了很多步"送到不在屏幕前的用户眼前。
@@ -1131,6 +1141,7 @@ void app.whenReady().then(() => {
         }),
         getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
+        execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）

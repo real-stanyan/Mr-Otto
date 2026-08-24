@@ -49,13 +49,17 @@ import {
   UIApprover,
   createGrantAwareApprover,
   createModeAwareApprover,
+  createPolicyAwareApprover,
   type ApprovalMode,
 } from "./uiApprover.js";
 import { sessionGrants, type GrantScope } from "../shared/permissionGrants.js";
-import { grantKeysFor, grantedScope } from "../shared/grantKey.js";
+import { grantKeysFor, grantedScope, canonicalizeCommand } from "../shared/grantKey.js";
+import type { ExecRule } from "../shared/execPolicy.js";
 
 /** 没配永久授权文件时的空集（每次现建一个 Set 是白扔的分配） */
 const EMPTY_GRANTS: ReadonlySet<string> = new Set();
+/** 没配 execpolicy 时的空规则（同上，别每次现建） */
+const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
@@ -132,6 +136,12 @@ export function createAgent(opts: {
       活引用：查的是"此刻"的名单，不是装配时的快照。
       不给 = 这个装配没有永久授权（测试和裸装配照旧，每次都问人） */
   alwaysAllow?: () => ReadonlySet<string>;
+  /** execpolicy 规则（issue #347）：每次 decide 现读（热更新与 alwaysAllow 同款）。
+      不给 = 无静态判定，链条与从前逐字节一致 */
+  execPolicy?: () => { rules: ExecRule[] };
+  /** 审批 UI「永久」产出 allow 前缀规则（issue #347 ③）。返回 false = 候选规则
+      没过禁止前缀校验，调用方退回精确 key。不给 = 永久授权只走精确 key（旧路） */
+  persistAllowRule?: (pattern: string[], cwd: string | undefined) => boolean;
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
   /** MCP 能力（index.ts 从 mcpHub 注入）。hub 要管子进程生命周期、要向渲染层推状态，
@@ -415,14 +425,20 @@ export function createAgent(opts: {
     // （subagent 唯一用途：denyingApprover——没人盯屏幕，弹卡等人等于永久挂起）
     approver:
       opts.approver ??
-      createModeAwareApprover(
-        () => approvalMode,
-        createGrantAwareApprover(
-          // 判定粒度是规范化 key（issue #342，shared/grantKey.ts）：bash 按命令、
-          // write_file 按路径、其余按工具，全部掺 cwd；旧的裸工具名条目按宽语义兼容
-          (call) =>
-            grantedScope(call, opts.workspace, sessionAllow, opts.alwaysAllow?.() ?? EMPTY_GRANTS),
-          approver
+      // execpolicy 最外层（issue #347）：forbidden 硬拒连 bypass 模式都压不过
+      // ——规则是用户亲手写的"永不放行"；allow 免弹卡；其余往里走
+      createPolicyAwareApprover(
+        () => opts.execPolicy?.() ?? EMPTY_POLICY,
+        opts.workspace,
+        createModeAwareApprover(
+          () => approvalMode,
+          createGrantAwareApprover(
+            // 判定粒度是规范化 key（issue #342，shared/grantKey.ts）：bash 按命令、
+            // write_file 按路径、其余按工具，全部掺 cwd；旧的裸工具名条目按宽语义兼容
+            (call) =>
+              grantedScope(call, opts.workspace, sessionAllow, opts.alwaysAllow?.() ?? EMPTY_GRANTS),
+            approver
+          )
         )
       ),
     onEvent: opts.push.event,
@@ -477,6 +493,18 @@ export function createAgent(opts: {
       const call = approver.callFor(toolCallId);
       if (!call) return;
       const effective = revisedArgs !== undefined ? { ...call, args: revisedArgs } : call;
+      // 「永久」的 bash 命令优先产出 execpolicy allow 规则（issue #347 ③）：
+      // 整条精确 token + cwd，前缀语义让"同命令多带一个参数"不再重问。
+      // 候选没过禁止前缀校验（裸 git 这类）→ 退回 #342 的精确 key，宁窄勿宽
+      if (scope === "always" && effective.name === "bash" && opts.persistAllowRule) {
+        const cmd = (effective.args as { cmd?: unknown } | null)?.cmd;
+        if (typeof cmd === "string") {
+          const c = canonicalizeCommand(cmd);
+          if (c.kind === "cmd" && opts.persistAllowRule(JSON.parse(c.canon) as string[], opts.workspace)) {
+            return; // 规则已落盘并热生效，精确 key 不再重复记
+          }
+        }
+      }
       for (const key of grantKeysFor(effective, opts.workspace)) {
         if (scope === "session") sessionAllow.add(key);
         else opts.persistAlwaysAllow?.(key);
