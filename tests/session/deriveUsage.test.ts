@@ -6,12 +6,12 @@ let seq = 0;
 const ev = (e: Partial<SessionEvent> & { type: SessionEvent["type"] }): SessionEvent =>
   ({ seq: seq++, sessionId: "s1", ts: 1000 + seq, ...e }) as SessionEvent;
 
-const said = (model: string, p: number, c: number): SessionEvent =>
+const said = (model: string, p: number, c: number, cached?: number): SessionEvent =>
   ev({
     type: "assistant_message",
     content: "",
     model,
-    usage: { promptTokens: p, completionTokens: c },
+    usage: { promptTokens: p, completionTokens: c, ...(cached !== undefined ? { cachedTokens: cached } : {}) },
   });
 
 describe("usageByModel", () => {
@@ -21,7 +21,13 @@ describe("usageByModel", () => {
 
   it("同一型号累加", () => {
     expect(usageByModel([said("m1", 10, 2), said("m1", 5, 3)])).toEqual([
-      { model: "m1", promptTokens: 15, completionTokens: 5 },
+      { model: "m1", promptTokens: 15, completionTokens: 5, cachedTokens: 0 },
+    ]);
+  });
+
+  it("cachedTokens 跨调用累加,缺席的调用按 0 计 —— 给缓存价计费用", () => {
+    expect(usageByModel([said("m1", 100, 1, 80), said("m1", 50, 1)])).toEqual([
+      { model: "m1", promptTokens: 150, completionTokens: 2, cachedTokens: 80 },
     ]);
   });
 
@@ -41,7 +47,7 @@ describe("usageByModel", () => {
       ev({ type: "section_classified", title: null, model: "cheap", usage: { promptTokens: 2, completionTokens: 1 } }),
       ev({ type: "suggestions_generated", suggestions: ["a"], model: "cheap", usage: { promptTokens: 3, completionTokens: 1 } }),
     ]);
-    expect(rows).toEqual([{ model: "cheap", promptTokens: 12, completionTokens: 3 }]);
+    expect(rows).toEqual([{ model: "cheap", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
   });
 
   it("没记用量的调用不进账 —— 当 0 会让「没记」和「没花」看起来一样", () => {
@@ -64,8 +70,8 @@ describe("totalTokens", () => {
       ev({ type: "micro_compacted", summary: "S", coversUpTo: 3, model: "cheap", usage: { promptTokens: 30, completionTokens: 6 } }),
     ];
     expect(usageByModel(events)).toEqual([
-      { model: "cheap", promptTokens: 30, completionTokens: 6 },
-      { model: "a", promptTokens: 10, completionTokens: 5 },
+      { model: "cheap", promptTokens: 30, completionTokens: 6, cachedTokens: 0 },
+      { model: "a", promptTokens: 10, completionTokens: 5, cachedTokens: 0 },
     ]);
     expect(totalTokens(events)).toBe(51);
   });

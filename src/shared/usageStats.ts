@@ -26,6 +26,9 @@ export interface BilledRow {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  /** promptTokens 里命中 prompt cache 的部分。SQL 里 json_extract 提不到就是
+      null（旧日志/不报 cache 的 API）——计价时当 0（按全价），见 modelPricing */
+  cachedTokens?: number | null;
 }
 
 /** 一家厂商在最近这个窗口里的用量 */
@@ -119,7 +122,7 @@ export function usageByProviderDaily(
     row[key - first] = (row[key - first] ?? 0) + tokens;
     acc.modelTotal.set(r.model, (acc.modelTotal.get(r.model) ?? 0) + tokens);
     acc.total += tokens;
-    const usd = costUsd(r.model, r);
+    const usd = costUsd(r.model, { ...r, cachedTokens: r.cachedTokens ?? 0 });
     if (usd === undefined) acc.priced = false;
     else acc.usd += usd;
   }

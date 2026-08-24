@@ -30,6 +30,37 @@ describe("costUsd", () => {
   it("免费档算出来是 0", () => {
     expect(costUsd("glm-4.5-flash", usage)).toBe(0);
   });
+
+  it("缓存命中按 cachedInput 档计价 —— 命中部分不再按全价", () => {
+    // deepseek-v4-pro: input 1.32 / cachedInput 0.044。100 万 prompt 全命中:
+    // 全价算是 $1.32,命中价算是 $0.044
+    const hit = { promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 };
+    expect(costUsd("deepseek-v4-pro", hit)).toBeCloseTo(0.044, 6);
+  });
+
+  it("部分命中:未命中按 input、命中按 cachedInput 分段", () => {
+    const half = { promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 500_000 };
+    expect(costUsd("deepseek-v4-pro", half)).toBeCloseTo(0.5 * 1.32 + 0.5 * 0.044, 6);
+  });
+
+  it("cachedTokens 缺席 = 全按未命中价（旧日志/不报 cache 的 API,行为不变）", () => {
+    expect(costUsd("deepseek-v4-pro", { promptTokens: 1_000_000, completionTokens: 0 })).toBeCloseTo(
+      1.32,
+      6
+    );
+  });
+
+  it("表里没有 cachedInput 的型号,报了 cachedTokens 也按全价 —— 宁可报高不报错", () => {
+    const hit = { promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 };
+    expect(costUsd("glm-4.6", hit)).toBeCloseTo(0.6, 6);
+  });
+
+  it("cachedTokens 超过 promptTokens 时按 promptTokens 截断 —— 上游报错数不至于算出负钱", () => {
+    const bogus = { promptTokens: 100, completionTokens: 0, cachedTokens: 999_999 };
+    const usd = costUsd("deepseek-v4-pro", bogus);
+    expect(usd).toBeGreaterThanOrEqual(0);
+    expect(usd).toBeCloseTo((100 * 0.044) / 1_000_000, 12);
+  });
 });
 
 describe("fmtUsd", () => {

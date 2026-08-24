@@ -96,6 +96,19 @@ describe("usageByProviderDaily", () => {
     expect(unpriced[0]?.costUsd).toBeNull();
   });
 
+  it("带 cachedTokens 的行按缓存价计费 —— 命中部分不再按全价虚高", () => {
+    const full = usageByProviderDaily([row(NOW, "deepseek-v4-pro", 1_000_000, 0)], {
+      now: NOW,
+      days: 1,
+    });
+    const cached = usageByProviderDaily(
+      [{ ts: NOW, model: "deepseek-v4-pro", promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 }],
+      { now: NOW, days: 1 }
+    );
+    expect(full[0]!.costUsd).toBeCloseTo(1.32, 6);
+    expect(cached[0]!.costUsd).toBeCloseTo(0.044, 6);
+  });
+
   it("本机 Ollama 是 $0,不是查不到价 —— 免费和不知道是两回事", () => {
     const out = usageByProviderDaily([row(NOW, "ollama/qwen3:8b", 10, 10)], { now: NOW, days: 1 });
     expect(out[0]?.provider).toBe("ollama");
