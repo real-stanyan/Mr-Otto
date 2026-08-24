@@ -8,7 +8,8 @@ npm run dist:win
 
 在 macOS 上交叉出包即可，产物在 `dist/`：
 
-- `Mr Otto-<version>-win-x64-setup.exe` —— NSIS 安装器，给别人的就是这个
+- `Mr.Otto-<version>-win-x64-setup.exe` —— NSIS 安装器，给别人的就是这个
+  （名字用点不用空格：GitHub Release 会把空格改写成点，本地名与资产名保持一致，见 issue #306）
 
 只出 **x64**。arm64 Windows 设备走 x64 模拟也能跑，暂不单独出包。
 
