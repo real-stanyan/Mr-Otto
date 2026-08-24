@@ -9,7 +9,7 @@
 import gsap from "gsap";
 import { useEffect, useRef, useState } from "react";
 import { RANKS, SUITS, rankOf, suitOf } from "../../../../services/gateway/src/poker/cards.js";
-import type { PokerHandView, PokerTableSummary } from "../../../shared/shellBridge.js";
+import type { PokerHandView, PokerTableSummary, WalletBalance } from "../../../shared/shellBridge.js";
 import { actionLabel, applyUnit, seatIdentity, seatPosition } from "../lib/pokerSeat.js";
 import { splitFlapFrame, splitFlapTotalTicks } from "../lib/splitFlap.js";
 import { useChat } from "../store.js";
@@ -649,44 +649,58 @@ function CreateTable() {
         建桌
       </AsyncButton>
       <span className="text-[11px] text-muted-foreground">
-        买入 {fmt(bigBlind * 20)}–{fmt(bigBlind * 100)} token，只有好友能同桌
+        谁都能同桌；买入不设区间，手上有多少筹码都能带上桌（issue #318）
       </span>
     </div>
   );
 }
 
+/** 某档位桶里现在有多少 token 可以带上桌。整数化——买入接口只收整数 */
+function bucketBalance(wallet: WalletBalance | null, tier: string): number {
+  return Math.floor(wallet?.buckets[tier]?.balanceTokens ?? 0);
+}
+
 function Lobby({ tables }: { tables: PokerTableSummary[] }) {
   const join = useChat((s) => s.joinPokerTable);
   const watch = useChat((s) => s.watchPokerTable);
+  const wallet = useChat((s) => s.wallet);
+  const refreshWallet = useChat((s) => s.refreshWallet);
+  // 买入额 = 桶的全部余额（issue #318），所以进大厅先把余额拉新
+  useEffect(() => {
+    void refreshWallet();
+  }, [refreshWallet]);
   return (
     <div className="mx-auto flex w-full max-w-[640px] flex-col gap-3 px-5 py-6">
       <CreateTable />
       {tables.length === 0 ? (
         <div className="py-8 text-center text-sm text-muted-foreground">
-          还没有桌子。建一张，或等好友建。
+          还没有桌子。建一张，或等别人建。
         </div>
       ) : (
-        tables.map((t) => (
-          <div
-            key={t.id}
-            className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/40 px-3.5 py-2.5 transition-[border-color,background-color] duration-200 ease-[var(--ease-strong)] hover:border-border hover:bg-card/80"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium">{t.name || "无名桌"}</div>
-              <div className="text-[11px] tabular-nums text-muted-foreground">
-                {t.tier} · 盲注 {fmt(t.smallBlind)}/{fmt(t.bigBlind)} · 买入 {fmt(t.minBuyin)}–{fmt(t.maxBuyin)}
-                {t.live && " · 打着"}
+        tables.map((t) => {
+          const balance = bucketBalance(wallet, t.tier);
+          return (
+            <div
+              key={t.id}
+              className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/40 px-3.5 py-2.5 transition-[border-color,background-color] duration-200 ease-[var(--ease-strong)] hover:border-border hover:bg-card/80"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{t.name || "无名桌"}</div>
+                <div className="text-[11px] tabular-nums text-muted-foreground">
+                  {t.tier} · 盲注 {fmt(t.smallBlind)}/{fmt(t.bigBlind)}
+                  {t.live && " · 打着"}
+                </div>
               </div>
+              {t.seated ? (
+                <AsyncButton size="sm" variant="outline" onClick={() => watch(t.id)}>回到牌桌</AsyncButton>
+              ) : (
+                <AsyncButton size="sm" disabled={balance <= 0} onClick={() => join(t.id, balance)}>
+                  {balance > 0 ? `全部买入 ${fmt(balance)}` : `${t.tier} 桶没余额`}
+                </AsyncButton>
+              )}
             </div>
-            {t.seated ? (
-              <AsyncButton size="sm" variant="outline" onClick={() => watch(t.id)}>回到牌桌</AsyncButton>
-            ) : (
-              <AsyncButton size="sm" onClick={() => join(t.id, t.minBuyin)}>
-                买入 {fmt(t.minBuyin)}
-              </AsyncButton>
-            )}
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );
@@ -799,12 +813,19 @@ function TableIdle({ tableId }: { tableId: string }) {
   const start = useChat((s) => s.startPokerHand);
   const leave = useChat((s) => s.leavePokerTable);
   const refresh = useChat((s) => s.refreshPokerTables);
+  const wallet = useChat((s) => s.wallet);
+  const refreshWallet = useChat((s) => s.refreshWallet);
+  const balance = bucketBalance(wallet, table?.tier ?? "");
 
-  // 人数是会变的(好友随时买入),等桌页自己轮询;牌一开 SSE 会把整个页面换掉
+  // 人数是会变的(玩家随时买入),等桌页自己轮询;牌一开 SSE 会把整个页面换掉
   useEffect(() => {
     const id = setInterval(() => void refresh(), 5000);
     return () => clearInterval(id);
   }, [refresh]);
+  // 买入额 = 桶的全部余额（issue #318），开页把余额拉新
+  useEffect(() => {
+    void refreshWallet();
+  }, [refreshWallet]);
 
   const players = table?.players ?? 0;
   const online = table?.online ?? 0;
@@ -818,10 +839,11 @@ function TableIdle({ tableId }: { tableId: string }) {
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <OrbitCards count={online} total={maxSeats} />
         <p className="max-w-[320px] text-center leading-relaxed">
-          还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转。
+          还没买入。买入的 token 从 {table.tier} 桶里出，输赢只在这张桌上转；
+          手上有多少都能带上桌（issue #318）。
         </p>
-        <AsyncButton size="sm" onClick={() => join(tableId, table.minBuyin)}>
-          买入 {fmt(table.minBuyin)}
+        <AsyncButton size="sm" disabled={balance <= 0} onClick={() => join(tableId, balance)}>
+          {balance > 0 ? `全部买入 ${fmt(balance)}` : `${table.tier} 桶没余额`}
         </AsyncButton>
       </div>
     );
@@ -836,11 +858,17 @@ function TableIdle({ tableId }: { tableId: string }) {
         </span>
       ) : (
         <span className="max-w-[320px] text-center leading-relaxed">
-          已入座，等好友上桌（在场 {online}，已买入 {players}，都到 2 才开得起来）。
+          已入座，等玩家上桌（在场 {online}，已买入 {players}，都到 2 才开得起来）。
         </span>
       )}
       <div className="flex gap-2">
         <AsyncButton size="sm" disabled={!ready} onClick={() => start()}>开一手</AsyncButton>
+        {/* 补充筹码 = 再买入（服务端 rebuy 路径,座位不变）:把桶里剩下的也带上桌 */}
+        {balance > 0 && (
+          <AsyncButton size="sm" variant="outline" onClick={() => join(tableId, balance)}>
+            补充筹码 {fmt(balance)}
+          </AsyncButton>
+        )}
         <AsyncButton size="sm" variant="ghost" onClick={() => leave()}>离桌</AsyncButton>
       </div>
       {!ready && <InviteFriendsBar tableId={tableId} tableName={table?.name ?? ""} />}
