@@ -48,7 +48,7 @@ function ModelSetupBody() {
       <DialogHeader>
         <DialogTitle>先接一个大模型</DialogTitle>
         <DialogDescription>
-          水獭得有个大脑才能干活。挑一家、贴上 API key 就行——key 只存本机，
+          Mr Otto 得有个大脑才能干活。挑一家、贴上 API key 就行——key 只存本机，
           不进日志不上传，之后随时能在「模型配置」里增删。
         </DialogDescription>
       </DialogHeader>
