@@ -96,16 +96,26 @@ export function createIslandBridge(opts: {
       restarts += 1;
       log(`岛桥:helper 退出,第 ${restarts} 次重启`);
       start();
-      // ready 握手会由 helper 侧发起并回推;这里重启后把最后一份快照也补推一次
+      // ready 握手会由 helper 侧发起并回推;这里重启后把最后一份快照也补推一次。
+      // 新 helper 是空的,去重基线必须先清掉,否则"和上次一样"会把快照吞了
+      lastEncoded = null;
       if (last) pushState(last);
     });
   };
 
+  // 上一次真正写下去的线格式。pushFleet 每条事件都会被叫一次,其中大多数
+  // 对岛毫无变化(reducer 状态没变、会话表没变)——线格式一致就不再过管道,
+  // 省掉 helper 侧的解析和重渲染。helper 重启时基线清空(见 exit 回调):
+  // 新 helper 是空的,快照必须重推
+  let lastEncoded: string | null = null;
   const pushState = (s: IslandFleet) => {
     last = s;
     if (!child) return;
+    const wire = encodeState(s);
+    if (wire === lastEncoded) return;
     try {
-      child.stdin.write(encodeState(s));
+      child.stdin.write(wire);
+      lastEncoded = wire;
     } catch (e) {
       log(`岛桥:写 stdin 失败 ${String(e)}`);
     }

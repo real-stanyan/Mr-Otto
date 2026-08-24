@@ -50,6 +50,15 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete
 BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;
+
+-- 二级索引（纯派生，随时可 DROP 重建，不碰事件 schema 本身）：
+-- 没有它们时 sessions() 的 session_archived 子查询、purge 的子会话查找、
+-- billedUsage 的按类型筛行全是全表扫描——每次追加事件都要跑一遍 sessions()
+-- 的路径上（灵动岛投影），长库里实测 31ms/次。
+-- (session_id, type, seq) 服务"某会话里某类型的最后/全部若干条"；
+-- (type, ts) 服务全库按类型 + 时间窗的账单/归档查询
+CREATE INDEX IF NOT EXISTS events_session_type_seq ON events(session_id, type, seq);
+CREATE INDEX IF NOT EXISTS events_type_ts ON events(type, ts);
 `;
 
 /** 派生索引，不是事实：events 是日志，events_fts 随时可 DROP 重建。
@@ -88,10 +97,29 @@ export interface FtsHit {
 
 export class EventStore {
   private db: Database.Database;
+  /** 预编译语句缓存（按 SQL 文本键控）。better-sqlite3 的 prepare() 没有内建缓存，
+      每次调用都是一遍 sqlite3_prepare_v2——append 是全库最热的函数，不该每条事件
+      重编译两条 SQL。schema 变更（purge 里临时卸 trigger）后的 reprepare 由
+      better-sqlite3 自己透明处理，缓存不用管失效 */
+  private stmts = new Map<string, Database.Statement>();
+
+  private prep(sql: string): Database.Statement {
+    let s = this.stmts.get(sql);
+    if (!s) {
+      s = this.db.prepare(sql);
+      this.stmts.set(sql, s);
+    }
+    return s;
+  }
 
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
+    // WAL 的标准搭配：NORMAL 只在 checkpoint 时 fsync，不是每笔提交一次。
+    // append() 每条事件一个事务，FULL 意味着每条事件一次 fsync——工具密集的
+    // turn 一秒落好几条。丢失窗口仅限"操作系统级断电时最后几笔提交"（进程崩溃
+    // 不丢），而日志层本来就设计了断尾自愈（deriveMessages 的 dangling 工具调用修复）
+    this.db.pragma("synchronous = NORMAL");
     this.db.exec(SCHEMA);
 
     // 建表 + 回填一次性焊死在一个事务里：不然崩在"表建完、回填还没跑"那道缝上，
@@ -111,17 +139,15 @@ export class EventStore {
   /** 追加一条事件，seq 由存储层分配，返回完整事件 */
   append(event: NewSessionEvent): SessionEvent {
     const insert = this.db.transaction((e: NewSessionEvent): SessionEvent => {
-      const row = this.db
-        .prepare("SELECT COALESCE(MAX(seq) + 1, 0) AS next FROM events WHERE session_id = ?")
-        .get(e.sessionId) as { next: number };
+      const row = this.prep(
+        "SELECT COALESCE(MAX(seq) + 1, 0) AS next FROM events WHERE session_id = ?"
+      ).get(e.sessionId) as { next: number };
 
       // 信封拆列，其余进 payload JSON
       const { sessionId, ts, sandboxId, type, ...payload } = e;
-      this.db
-        .prepare(
-          "INSERT INTO events (session_id, seq, ts, type, sandbox_id, payload) VALUES (?, ?, ?, ?, ?, ?)"
-        )
-        .run(sessionId, row.next, ts, type, sandboxId ?? null, JSON.stringify(payload));
+      this.prep(
+        "INSERT INTO events (session_id, seq, ts, type, sandbox_id, payload) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(sessionId, row.next, ts, type, sandboxId ?? null, JSON.stringify(payload));
 
       return { ...e, seq: row.next } as SessionEvent;
     });
@@ -233,11 +259,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
   load(sessionId: string, opts: { afterSeq?: number } = {}): SessionEvent[] {
     // afterSeq = 只读这个 seq 之后的事件（issue #197）：微压缩写侧收口前的
     // 新鲜度检查只关心"开跑之后落了什么"，长会话不用全量重读
-    const rows = this.db
-      .prepare(
-        "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq"
-      )
-      .all(sessionId, opts.afterSeq ?? -1) as {
+    const rows = this.prep(
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq"
+    ).all(sessionId, opts.afterSeq ?? -1) as {
       seq: number;
       ts: number;
       type: string;
@@ -261,9 +285,8 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     // 用 json_extract 在 SQL 层投影出来——又一个"从日志推导"的例子。
     // 旧日志可能没有 workspace 字段 → null（schema 向后兼容硬规则）。
     // 归档的会话（日志里出现过 session_archived）不进列表：删除 = 投影里消失，日志原封不动。
-    const rows = this.db
-      .prepare(
-        `SELECT session_id AS sessionId,
+    const rows = this.prep(
+      `SELECT session_id AS sessionId,
                 COUNT(*)   AS events,
                 MIN(ts)    AS startedTs,
                 MAX(ts)    AS lastTs,
@@ -311,9 +334,8 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
    */
   billedUsage(since: number): BilledRow[] {
     const marks = BILLED_EVENT_TYPES.map(() => "?").join(", ");
-    const rows = this.db
-      .prepare(
-        `SELECT ts,
+    const rows = this.prep(
+      `SELECT ts,
                 json_extract(payload, '$.model')                  AS model,
                 json_extract(payload, '$.usage.promptTokens')     AS promptTokens,
                 json_extract(payload, '$.usage.completionTokens') AS completionTokens
@@ -335,16 +357,40 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       里直接不出现——调用方按需 `?? 0` */
   userTurnCounts(sessionIds: string[]): Map<string, number> {
     if (sessionIds.length === 0) return new Map();
+    // prep 缓存按 SQL 文本键控——marks 随 sessionIds.length 变，缓存条数被
+    // 实际出现过的会话数上限住，不会无界增长
     const marks = sessionIds.map(() => "?").join(", ");
-    const rows = this.db
-      .prepare(
-        `SELECT session_id AS sessionId, COUNT(*) AS n
+    const rows = this.prep(
+      `SELECT session_id AS sessionId, COUNT(*) AS n
            FROM events
           WHERE type = 'user_message' AND session_id IN (${marks})
           GROUP BY session_id`
       )
       .all(...sessionIds) as { sessionId: string; n: number }[];
     return new Map(rows.map((r) => [r.sessionId, r.n]));
+  }
+
+  /** 按 seq 闭区间读一小段事件（session_search 的 scroll 模式用）。
+      原来走 load() 全量读整个会话再 filter 出 ±5 条——PK 索引本来就能直接
+      服务这个区间查询，长会话不必为 11 条事件付整份 JSON.parse */
+  window(sessionId: string, fromSeq: number, toSeq: number): SessionEvent[] {
+    const rows = this.prep(
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq"
+    ).all(sessionId, fromSeq, toSeq) as {
+      seq: number;
+      ts: number;
+      type: string;
+      sandbox_id: string | null;
+      payload: string;
+    }[];
+    return rows.map((r) => ({
+      seq: r.seq,
+      sessionId,
+      ts: r.ts,
+      type: r.type,
+      ...(r.sandbox_id !== null ? { sandboxId: r.sandbox_id } : {}),
+      ...JSON.parse(r.payload),
+    })) as SessionEvent[];
   }
 
   close(): void {

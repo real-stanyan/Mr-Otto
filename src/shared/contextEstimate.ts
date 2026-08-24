@@ -19,7 +19,11 @@ export function estimateTokens(text: string): number {
   let rest = 0;
   for (const ch of text) {
     // CJK 统一表意 + 日文假名/标点 + 全角区
-    if (/[　-ヿ一-鿿＀-￯]/.test(ch)) cjk++;
+    // 码点区间比较而不是正则字符类:这个循环跑在流式热路径上
+    // (每个 token 对全量已累积文本跑一遍),循环体里的正则字面量
+    // 每次求值都要新建 RegExp,几十 KB 的 tool_result 就是几万次分配
+    const cp = ch.codePointAt(0)!;
+    if ((cp >= 0x3000 && cp <= 0x30ff) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xff00 && cp <= 0xffef)) cjk++;
     else rest++;
   }
   return Math.ceil(cjk * 0.6 + rest / 4);

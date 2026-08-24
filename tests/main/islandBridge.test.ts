@@ -64,6 +64,30 @@ describe("createIslandBridge", () => {
     expect(children.length).toBe(4);
   });
 
+  // 性能一轮（issue #275）：pushFleet 每条事件跑一次,大多数推送对岛毫无变化,
+  // 线格式一致就不过管道
+  it("pushState 去重:同一份 fleet 连推两次只写一次管道", () => {
+    const c = fakeChild();
+    const bridge = createIslandBridge({ binPath: "/x", spawn: () => c as never, onCommand: () => {} });
+    const fleet = { agents: [], focusedSessionId: null };
+    bridge.pushState(fleet);
+    bridge.pushState({ ...fleet });
+    expect(c.stdin.writes.length).toBe(1);
+    bridge.pushState({ agents: [], focusedSessionId: "s1" });
+    expect(c.stdin.writes.length).toBe(2);
+  });
+
+  it("helper 重启后去重基线清空:同一份快照重推给新进程", () => {
+    const children: ReturnType<typeof fakeChild>[] = [];
+    const spawn = () => { const c = fakeChild(); children.push(c); return c as never; };
+    const bridge = createIslandBridge({ binPath: "/x", spawn, onCommand: () => {} });
+    const fleet = { agents: [], focusedSessionId: null };
+    bridge.pushState(fleet);
+    expect(children[0]!.stdin.writes.length).toBe(1);
+    children[0]!.emitExit(); // 重启:exit 回调里自动补推最后一份快照
+    expect(children[1]!.stdin.writes.length).toBe(1);
+  });
+
   it("stdout 整行才解码,onCommand 收到 send", () => {
     let got: unknown = null;
     const c = fakeChild();

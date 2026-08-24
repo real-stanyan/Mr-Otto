@@ -13,8 +13,9 @@ export function createHistoryCapability(
         ...(opts?.limit ? { limit: opts.limit } : {}),
         excludeSessions: [currentSessionId()],
       }),
-    window: (sessionId, fromSeq, toSeq) =>
-      store.load(sessionId).filter((e) => e.seq >= fromSeq && e.seq <= toSeq),
+    // 区间查询下推到 SQL（store.window）：原来全量 load 再 filter，
+    // 长会话为 11 条事件付整份 JSON.parse
+    window: (sessionId, fromSeq, toSeq) => store.window(sessionId, fromSeq, toSeq),
     load: (sessionId) => store.load(sessionId),
     recent: (limit) => {
       const list = store

@@ -491,7 +491,9 @@ function ComposerPrefsBar() {
   const choice = useModelChoice(model);
   const ctxWindow = choice?.contextWindowKnown ? choice.contextWindow : null;
   // 环和弹窗读同一份拆分：两处数字永远对得上（弹窗展开时不会"忽然变个数"）
-  const used = contextBreakdown(events, toolDefs).total;
+  // memo 在 [events, toolDefs] 上：这条链里有对全量事件的多次线性扫描,
+  // 不 memo 的话流式期间每个 token 的重渲染都要全量重算一遍
+  const used = useMemo(() => contextBreakdown(events, toolDefs).total, [events, toolDefs]);
 
   // 审批模式是两态,用开关不用下拉框(理由见 BypassSwitch 的开篇)
   const approvalToggle = (
@@ -2571,7 +2573,16 @@ function ChatComposer() {
 
 
 export function App() {
-  const { phase, sessionId, workspace, events, boot, stop, resume } = useChat();
+  // 逐字段选择器,不整店订阅:App 在树根,无选择器的 useChat() 让**每次** set()
+  // (每个流式 token、每段 bash 输出、每次 presence 推送)都重渲染整棵树。
+  // boot/stop/resume 是建店时定义的 action,引用稳定,单选不会多触发
+  const phase = useChat((s) => s.phase);
+  const sessionId = useChat((s) => s.sessionId);
+  const workspace = useChat((s) => s.workspace);
+  const events = useChat((s) => s.events);
+  const boot = useChat((s) => s.boot);
+  const stop = useChat((s) => s.stop);
+  const resume = useChat((s) => s.resume);
   // 这个会话是不是被派活派出来的子会话(ADR-0047)——是就带上父会话 id，
   // header 露一颗"← 回到父会话"。纯粹从 events[0] 的 spawnedBy 推导
   const spawnedFrom = useMemo(() => spawnedFromOf(events), [events]);

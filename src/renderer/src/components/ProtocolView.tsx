@@ -15,6 +15,11 @@ import { Separator } from "@/components/ui/separator.js";
 import { useChat } from "../store.js";
 import { parseHandoff, type IssueRole, type IssuesResult } from "../../../shared/protocol.js";
 
+// 插件数组提到模块级:内联的 [remarkGfm] 每次渲染都是新引用,react-markdown
+// 会当成"插件换了"而重解析整篇正文
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+
 /** 角色标签:gearbox 三角色的视觉词汇。染色只用语义令牌,不写裸色 */
 const ROLE_BADGE: Record<IssueRole, { label: string; cls: string }> = {
   task: { label: "Task", cls: "bg-muted text-muted-foreground" },
@@ -53,7 +58,7 @@ function CommentBody({ body }: { body: string }) {
   if (!parts)
     return (
       <div className="md max-w-full">
-        <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+        <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
           {body}
         </Markdown>
       </div>
@@ -78,10 +83,19 @@ function CommentBody({ body }: { body: string }) {
 }
 
 export function ProtocolView() {
-  const {
-    protocolRepo, adrs, adrView, issues, issueView,
-    closeProtocol, closeProtocolDetail, pickProtocolRepo, refreshProtocol, openAdr, openIssue,
-  } = useChat();
+  // 逐字段选择器,不整店订阅:面板开着的时候流式 turn 的每次 set() 都会打到这里,
+  // 整店订阅意味着每个 token 都重渲染整个面板并让 react-markdown 重解析 ADR 正文
+  const protocolRepo = useChat((s) => s.protocolRepo);
+  const adrs = useChat((s) => s.adrs);
+  const adrView = useChat((s) => s.adrView);
+  const issues = useChat((s) => s.issues);
+  const issueView = useChat((s) => s.issueView);
+  const closeProtocol = useChat((s) => s.closeProtocol);
+  const closeProtocolDetail = useChat((s) => s.closeProtocolDetail);
+  const pickProtocolRepo = useChat((s) => s.pickProtocolRepo);
+  const refreshProtocol = useChat((s) => s.refreshProtocol);
+  const openAdr = useChat((s) => s.openAdr);
+  const openIssue = useChat((s) => s.openIssue);
   const tab = useChat((s) => s.protocolTab);
   const detailPending = useChat((s) => s.protocolDetailPending);
   const error = useChat((s) => s.error);
@@ -109,7 +123,7 @@ export function ProtocolView() {
     </div>
   ) : adrView ? (
     <article className="md max-w-[760px]">
-      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
         {adrView.markdown}
       </Markdown>
     </article>
@@ -126,7 +140,7 @@ export function ProtocolView() {
           <span className="text-xs text-muted-foreground">{issueView.issue.state}</span>
         </div>
         <div className="md mt-3">
-          <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+          <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
             {issueView.issue.body || "_(无正文)_"}
           </Markdown>
         </div>
