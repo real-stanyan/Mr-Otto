@@ -9,6 +9,7 @@
 
 import type { AccountInfo } from "../../../shared/shellBridge.js";
 import type { MyProfile } from "../../../shared/profile.js";
+import { isOnboardingTestAccount } from "../../../shared/onboardingTestAccount.js";
 
 export interface Identity {
   name: string;
@@ -39,7 +40,11 @@ export function displayIdentity(account: AccountInfo, profile: MyProfile | null)
  * 三个条件缺一不可:登录了、资料行已经读到了、这行还没盖过引导章。
  * 中间那条(profile 非 null)是防闪:资料是登录之后才异步拉回来的,
  * 少了它,每次登录都会先弹半秒引导再消失。
+ *
+ * 测试账号(issue #332)无视盖章每次都弹,但防闪条件照样要过——
+ * 它重放的是真实新用户看到的东西,不该带上真实用户看不到的闪烁。
  */
 export function needsOnboarding(account: AccountInfo, profile: MyProfile | null): boolean {
-  return account.signedIn && profile !== null && !profile.onboarded;
+  if (!account.signedIn || profile === null) return false;
+  return !profile.onboarded || isOnboardingTestAccount(account.email);
 }

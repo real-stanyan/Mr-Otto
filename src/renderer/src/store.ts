@@ -67,6 +67,7 @@ import {
 } from "./lib/friendsState.js";
 import { needsOnboarding } from "./lib/identity.js";
 import { hasModelSetupStamp, needsModelSetup, stampModelSetup } from "./lib/modelSetup.js";
+import { isOnboardingTestAccount } from "../../shared/onboardingTestAccount.js";
 import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
@@ -1433,9 +1434,12 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => {
       // 关闭那一下是引导链的接力点(issue #328):起完名字(或"以后再说")后,
       // 一把 key 都没配的新用户接着被引导配第一个模型。挂在这里而不是挂在
-      // 弹窗组件的 onOpenChange 上——Esc/点遮罩/× 全都收敛到这一个 setter
+      // 弹窗组件的 onOpenChange 上——Esc/点遮罩/× 全都收敛到这一个 setter。
+      // 测试账号(issue #332)无视 keyStatus/盖章,永远接力——它就是来看这个的
       const chainModelSetup =
-        s.profileSetupOpen && !open && needsModelSetup(s.keyStatus, hasModelSetupStamp());
+        s.profileSetupOpen && !open &&
+        (needsModelSetup(s.keyStatus, hasModelSetupStamp()) ||
+          isOnboardingTestAccount(s.account.email));
       return {
         profileSetupOpen: open,
         modelSetupOpen: s.modelSetupOpen || chainModelSetup,
@@ -1444,8 +1448,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setModelSetupOpen: (open) => {
     // 任何方式关掉都盖章:这个弹窗没有第二次触发点(profile 章已盖),
-    // "不盖章下次再问"在这里是一句空话,不如把"只弹一次"写成确定的事
-    if (!open) stampModelSetup();
+    // "不盖章下次再问"在这里是一句空话,不如把"只弹一次"写成确定的事。
+    // 测试账号例外:章是整台机器一枚,替它盖了,同机后来的真新用户就看不到引导了
+    if (!open && !isOnboardingTestAccount(get().account.email)) stampModelSetup();
     set({ modelSetupOpen: open });
   },
 
