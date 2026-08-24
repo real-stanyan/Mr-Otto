@@ -6,14 +6,14 @@ import {
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
 
 const s = (workspace: string | null, lastTs: number): SessionSummary =>
-  ({ workspace, lastTs, spawnedFrom: null }) as unknown as SessionSummary;
+  ({ workspace, lastTs, startedTs: lastTs, spawnedFrom: null }) as unknown as SessionSummary;
 
 describe("subagentScopeOptions", () => {
   it("第一项永远是「用户」", () => {
     expect(subagentScopeOptions([])[0]).toEqual({ workspace: null, label: "用户" });
   });
 
-  it("工作区按最近用过排在后面,短名取路径末段", () => {
+  it("工作区按首次使用倒序(新工程在前),短名取路径末段", () => {
     const opts = subagentScopeOptions([s("/a/proj-x", 2), s("/a/proj-y", 5)]);
     expect(opts.slice(1)).toEqual([
       { workspace: "/a/proj-y", label: "proj-y" },

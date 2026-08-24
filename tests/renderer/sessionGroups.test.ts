@@ -8,8 +8,9 @@ const s = (
   workspace: string | null,
   lastTs: number,
   spawnedFrom: string | null = null,
+  startedTs: number = lastTs - 1,
 ): SessionSummary => ({
-  sessionId, workspace, lastTs, startedTs: lastTs - 1, events: 1, title: null, spawnedFrom,
+  sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom,
 });
 
 describe("folderName", () => {
@@ -31,11 +32,29 @@ describe("groupSessionsByWorkspace", () => {
     expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["b", "c", "a"]);
   });
 
-  it("组序 = 组内最近会话时间倒序", () => {
-    const g = groupSessionsByWorkspace([s("a", "/p/old", 100), s("b", "/p/new", 900), s("c", "/p/old", 50)]);
+  it("组序 = 组内最早会话 startedTs 倒序(新工程在上),不随活动变", () => {
+    // old 工程先用(startedTs 10/40),new 工程后用(startedTs 500)
+    const g = groupSessionsByWorkspace([
+      s("a", "/p/old", 100, null, 10),
+      s("b", "/p/new", 900, null, 500),
+      s("c", "/p/old", 50, null, 40),
+    ]);
     expect(g.map((x) => x.workspace)).toEqual(["/p/new", "/p/old"]);
     expect(g[0]!.lastTs).toBe(900);
-    expect(g[1]!.lastTs).toBe(100); // 组的时间戳取组内最大,不是第一个遇到的
+    expect(g[1]!.lastTs).toBe(100); // 组的 lastTs 仍取组内最大,展示用
+  });
+
+  it("组内会话完成(lastTs 变大)不改组序——工作目录位置定死,只在组内上移", () => {
+    // old 工程更早进场;old 里的会话 c 刚完成任务,lastTs=9999 全场最新
+    const g = groupSessionsByWorkspace([
+      s("a", "/p/old", 100, null, 10),
+      s("b", "/p/new", 900, null, 500),
+      s("c", "/p/old", 9999, null, 40),
+    ]);
+    // 组序不变:new(500) 仍在 old(10) 上面,old 不因 c 完成而蹿顶
+    expect(g.map((x) => x.workspace)).toEqual(["/p/new", "/p/old"]);
+    // 组内:c 上移到最前
+    expect(g[1]!.sessions.map((x) => x.sessionId)).toEqual(["c", "a"]);
   });
 
   it("workspace 为 null 的史前会话直接丢弃,不伪造未知组", () => {
