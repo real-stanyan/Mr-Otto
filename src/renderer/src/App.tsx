@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, Users } from "lucide-react";
+import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1761,7 +1761,13 @@ function AppSidebar() {
                 <span className="flex-1 min-w-0 truncate">{identity.name}</span>
               </>
             ) : (
-              "未登录 · 点击登录"
+              <>
+                {/* 未登录也占同一个头像槽：登录前后这一行的左起点不跳 */}
+                <span className="w-5 h-5 rounded-full shrink-0 bg-accent inline-flex items-center justify-center">
+                  <UserRound className="w-[12px] h-[12px]" />
+                </span>
+                <span className="flex-1 min-w-0 truncate">未登录 · 点击登录</span>
+              </>
             )}
           </button>
           {/* 好友 icon:好友区从侧栏常驻收进这里(齿轮左边),点开/收起。
