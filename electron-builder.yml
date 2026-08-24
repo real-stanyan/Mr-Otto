@@ -41,6 +41,10 @@ mac:
   # （本地文件 / Release 资产 / SHA256SUMS 条目）从此同名。
   # zip 的 -arm64-mac.zip 后缀是线上更新器（updaterCore）认资产的暗号，动不得
   artifactName: Mr.Otto-${version}-${arch}-mac.${ext}
+  # napi-rs 平台包按平台裁剪:ensure-win-bindings（dist:win 前置）会把 win32-x64
+  # binding 补进 node_modules 且常驻,mac 包别把它带上（issue #308）
+  files:
+    - "!**/node_modules/**/*-win32-*/**"
   # dmg 给首次安装；zip 给 OTA 换包下载（ADR-0075,src/main/updater.ts 认
   # -arm64-mac.zip 后缀的 Release 资产）
   target:
@@ -85,6 +89,10 @@ win:
   icon: resources/icon.png
   files:
     - "!**/node_modules/node-pty/build/**"
+    # 反向裁剪:win 包不带 darwin/linux 的 napi 平台包（issue #308）。
+    # 模式带前缀连字符,不会误伤 node-pty/better-sqlite3 包内的 prebuilds 目录
+    - "!**/node_modules/**/*-darwin-*/**"
+    - "!**/node_modules/**/*-linux-*/**"
   target:
     - target: nsis
       arch:

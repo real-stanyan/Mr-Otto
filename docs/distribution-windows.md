@@ -25,6 +25,12 @@ npm run dist:win
      `null`，岛静默不启动，主窗和其余功能照常
 2. **原生模块不重编**。node-pty 和 better-sqlite3 都是 NAPI，包内自带
    `prebuilds/win32-x64` 预编译二进制，运行时按 `process.platform` 挑对应文件。
+   另一类是 napi-rs 风格的平台包（如 `@firecrawl/anydoc`）：各平台二进制拆成
+   optionalDependencies，mac 上 `npm install` 只装 darwin 那个——
+   `scripts/ensure-win-bindings.mjs`（dist:win 前置）自动把缺的 win32-x64
+   binding 包 `npm pack` 下来解进 node_modules（不动 package.json/lockfile）。
+   少这一步 win 包启动即崩「Cannot find native binding」（v1.0.1 真机翻过车，
+   issue #308）。electron-builder 两侧的 `files` 排除按平台裁剪这些包。
    `dist:win` 带 `--config.npmRebuild=false` 跳过 electron-builder 的重编步骤
    （交叉 node-gyp 本来就不可能，这一步不关就直接报
    `node-gyp does not support cross-compiling`）。
