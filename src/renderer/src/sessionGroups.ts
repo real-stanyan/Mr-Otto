@@ -8,8 +8,10 @@ export interface SessionGroup {
   label: string;
   /** 组内会话,lastTs 倒序 */
   sessions: SessionSummary[];
-  /** 组内最近一条会话的 lastTs——组序就按它排 */
+  /** 组内最近一条会话的 lastTs——展示用,不参与组序 */
   lastTs: number;
+  /** 组内最早会话的 startedTs——工程首次使用时间,组序按它排 */
+  firstTs: number;
 }
 
 /** 路径末段;尾随 / 不算一段(/a/b/ 的名字是 b,不是空串) */
@@ -22,7 +24,8 @@ export function folderName(path: string): string {
     因为它们压根没有工程可归,归到"未知"组等于伪造事实。
     子会话(spawnedFrom 非空,ADR-0047)同样不进任何组:它们只能从派出它们的
     父会话时间线那张卡进去,混进侧栏/⌘K 搜索会让人以为能独立打开一个"工程会话"。
-    组序 = 组内最近会话时间倒序(最近用过的工程在上),组内也是时间倒序。 */
+    组序 = 组内最早会话 startedTs 倒序(新工程进场排最上,之后位置定死,
+    不随组内会话完成/活动而蹿顶——会话完成只在组内上移),组内 = lastTs 倒序。 */
 export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGroup[] {
   const byDir = new Map<string, SessionSummary[]>();
   for (const s of sessions) {
@@ -39,7 +42,8 @@ export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGro
         label: folderName(workspace),
         sessions: sorted,
         lastTs: sorted[0]?.lastTs ?? 0,
+        firstTs: Math.min(...list.map((s) => s.startedTs)),
       };
     })
-    .sort((a, b) => b.lastTs - a.lastTs);
+    .sort((a, b) => b.firstTs - a.firstTs);
 }
