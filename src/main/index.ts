@@ -1274,8 +1274,11 @@ void app.whenReady().then(() => {
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
   // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
-  // 定时节奏：启动 30s 后一次（别挤开冷启动关键路径）+ 每 6h 一次；
-  // checkNow 内部有互斥，定时器和设置页按钮撞上也只跑一轮
+  // 节奏（issue #322，推翻 #316 的「停在 available 等点击」）：
+  // 启动 30s 后一次（别挤开冷启动关键路径）+ 每 30min 一次 + 窗口 focus
+  // 触发（节流 10min——「发完版切回 app」就能撞上，不用等定时器）；
+  // 查到新版直接自动下载，卡片带着进度自己弹出来。
+  // checkNow 内部有互斥，定时器 / focus / 设置页按钮撞上也只跑一轮
   const updater =
     (process.platform === "darwin" || process.platform === "win32") && app.isPackaged
       ? createUpdater(createUpdaterHostDeps((s) => send(CHANNELS.updaterState, s)))
@@ -1286,13 +1289,28 @@ void app.whenReady().then(() => {
     reason: app.isPackaged ? "仅支持 macOS 与 Windows" : "开发模式不检查更新",
   };
   ipcMain.handle(CHANNELS.updaterGetState, () => updater?.getState() ?? updaterDisabled);
-  ipcMain.handle(CHANNELS.updaterCheckNow, () => updater?.checkNow() ?? updaterDisabled);
+  // 手动检测也串自动下载（issue #322）：available 一律是过渡态，查到就下
+  ipcMain.handle(CHANNELS.updaterCheckNow, async () => {
+    if (updater === null) return updaterDisabled;
+    const s = await updater.checkNow();
+    if (s.phase === "available") void updater.startDownload();
+    return s;
+  });
   ipcMain.handle(CHANNELS.updaterStartDownload, () => updater?.startDownload() ?? updaterDisabled);
   ipcMain.handle(CHANNELS.updaterInstallAndRestart, () => updater?.installAndRestart());
   ipcMain.handle(CHANNELS.updaterOpenReleasePage, () => shell.openExternal(RELEASES_PAGE_URL));
   if (updater !== null) {
-    setTimeout(() => void updater.checkNow(), 30_000);
-    setInterval(() => void updater.checkNow(), 6 * 60 * 60 * 1000);
+    let lastAutoCheckAt = 0;
+    const autoCheck = async () => {
+      lastAutoCheckAt = Date.now();
+      const s = await updater.checkNow();
+      if (s.phase === "available") void updater.startDownload();
+    };
+    setTimeout(() => void autoCheck(), 30_000);
+    setInterval(() => void autoCheck(), 30 * 60 * 1000);
+    win.on("focus", () => {
+      if (Date.now() - lastAutoCheckAt >= 10 * 60 * 1000) void autoCheck();
+    });
   }
 
   // ── MCP ─────────────────────────────────────────────────────────
