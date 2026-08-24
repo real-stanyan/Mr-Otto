@@ -5,17 +5,25 @@
 // 只有参数非法才 throw（那才是管线故障）。超时由 world 层负责（LocalWorld 30s）。
 
 import type { Tool } from "./tool.js";
+import { estimateTokens } from "../shared/contextEstimate.js";
 
-/** 单段输出上限：防某条命令 cat 出几 MB 把上下文撑爆 */
+/** 模型可见预算（字符/流）——三层截断的第三层（issue #343）。与内存层
+    （world/localWorld.ts 的 EXEC_BUFFER_CAP）、IPC 层（shared/execStream.ts）
+    **分开配置**：调小这个数只影响模型看到多少，不影响日志/直播 */
 const MAX_CHARS = 8_000;
+/** 中间截断的头尾配比：头 = 启动报错，尾 = 最终结果，中段进度最没用 */
+const HEAD_CHARS = 4_800;
+const TAIL_CHARS = MAX_CHARS - HEAD_CHARS;
 
 function clip(label: string, text: string): string {
   if (!text) return "";
-  const clipped =
-    text.length > MAX_CHARS
-      ? `${text.slice(0, MAX_CHARS)}\n…（截断，共 ${text.length} 字符）`
-      : text;
-  return `${label}:\n${clipped}\n`;
+  if (text.length <= MAX_CHARS) return `${label}:\n${text}\n`;
+  // 中间截断 + 警告头（codex 同款）：模型知道被截、知道原本多大，
+  // 可自行决定重跑加 head/tail/grep 取所需段
+  const warn =
+    `Warning: 输出被中间截断（原始 ${text.length} 字符 ≈ ${estimateTokens(text)} tokens，` +
+    `保留头 ${HEAD_CHARS} + 尾 ${TAIL_CHARS} 字符）。需要完整内容请用 head/tail/grep 重跑。`;
+  return `${label}:\n${warn}\n${text.slice(0, HEAD_CHARS)}\n…[中间省略]…\n${text.slice(-TAIL_CHARS)}\n`;
 }
 
 export const bashTool: Tool = {

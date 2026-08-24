@@ -5,13 +5,18 @@
 // exec 只把 cwd 设为 root（挡不住 `cd ..`，诚实说明）——硬隔离是 v2 Docker world 的活。
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { exec as cpExec } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
+import { HeadTailBuffer } from "../shared/headTail.js";
 
-const execAsync = promisify(cpExec);
+/** exec 输出的内存上限（字符，每条流各一份，头尾各半）——三层截断的第一层
+    （issue #343）。与 IPC 限流（shared/execStream.ts）、模型可见预算（tools/bash.ts）
+    **分开配置**：这个数管的是主进程内存和日志体量，调小模型预算不该让日志变瞎。
+    旧实现是 execAsync 默认 maxBuffer=1MiB **超限直接杀进程**——命令没跑完、
+    尾部（往往是最终结果）全丢；HeadTail 让进程跑到自然结束，只丢中段 */
+const EXEC_BUFFER_CAP = 1_000_000;
 
 /** 把 path 解析到 root 下并验证没越界；没配 root = 不设防（旧行为）。
     what：错误文案里叫什么围栏——fs 用「工程文件夹」，config 用「配置目录」 */
@@ -54,10 +59,15 @@ export function createLocalWorld(
       write: async (path, content) => writeFile(fence(root, path), content, "utf8"),
     },
 
-    async exec(cmd, opts): Promise<ExecResult> {
-      try {
-        const pending = execAsync(cmd, {
+    exec(cmd, opts): Promise<ExecResult> {
+      // spawn + HeadTail 而不是 execAsync（issue #343）：exec 的 maxBuffer 超限
+      // 会直接杀进程（默认 1MiB），死循环打印的命令拿不到任何结果；HeadTail
+      // 内存有界且**读到 EOF**——不停读，管道不会 back-pressure 卡死子进程
+      return new Promise<ExecResult>((done, fail) => {
+        const child = spawn(cmd, {
+          shell: true,
           timeout: 30_000,
+          killSignal: "SIGTERM",
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
           // （issue #153）。其余原样继承——PATH/nvm/语言设置都在里面
           env: childEnv(),
@@ -65,31 +75,47 @@ export function createLocalWorld(
           // child_process 原生认 signal：abort = 给进程组发 SIGTERM
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
-        // 直播搭车：promisify(exec) 的 promise 挂着 .child，旁听它的输出流。
-        // exec 自己的缓冲收集不受影响——data 事件可以多方订阅，
-        // 完整结果仍从 await 拿（直播丢一段也不丢事实）
+        const out = new HeadTailBuffer(EXEC_BUFFER_CAP);
+        const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const onOutput = opts?.onOutput;
-        if (onOutput) {
-          pending.child.stdout?.setEncoding("utf8");
-          pending.child.stderr?.setEncoding("utf8");
-          pending.child.stdout?.on("data", (chunk: string) => onOutput(chunk, "stdout"));
-          pending.child.stderr?.on("data", (chunk: string) => onOutput(chunk, "stderr"));
-        }
-        const { stdout, stderr } = await pending;
-        return { stdout, stderr, exitCode: 0 };
-      } catch (err) {
-        // 中断不是命令自己的失败——exitCode ≠ 0 是"世界的正常反馈"（bash 工具
-        // 会原样拼给模型），被杀是外力，必须抛出去按 error 结果落盘（ADR-0006）
-        if (opts?.signal?.aborted) {
-          throw new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）");
-        }
-        const e = err as { stdout?: string; stderr?: string; code?: number; message: string };
-        return {
-          stdout: e.stdout ?? "",
-          stderr: e.stderr ?? e.message,
-          exitCode: e.code ?? 1,
-        };
-      }
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        // 直播与缓冲同源旁听:data 事件可多方订阅,直播丢一段也不丢事实
+        child.stdout?.on("data", (chunk: string) => {
+          out.push(chunk);
+          onOutput?.(chunk, "stdout");
+        });
+        child.stderr?.on("data", (chunk: string) => {
+          err.push(chunk);
+          onOutput?.(chunk, "stderr");
+        });
+        child.on("error", (e) => {
+          // 中断不是命令自己的失败——被杀是外力，必须抛出去按 error 结果落盘（ADR-0006）
+          if (opts?.signal?.aborted) {
+            fail(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"));
+            return;
+          }
+          // 起不来（shell 不存在等）:按"世界的正常反馈"返回,和旧 execAsync 一致
+          done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
+        });
+        child.on("close", (code, signal) => {
+          if (opts?.signal?.aborted) {
+            fail(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"));
+            return;
+          }
+          if (signal !== null) {
+            // 不是用户中断却挨了信号 = 30s 超时被 killSignal 终止（或外力 kill）。
+            // 按世界反馈返回:HeadTail 里已经攒下的输出照给,模型能看到跑到哪了
+            done({
+              stdout: out.text(),
+              stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 30s 或外部 kill）]`.trim(),
+              exitCode: 124,
+            });
+            return;
+          }
+          done({ stdout: out.text(), stderr: err.text(), exitCode: code ?? 1 });
+        });
+      });
     },
 
     http: {

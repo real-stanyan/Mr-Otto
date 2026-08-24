@@ -16,6 +16,7 @@ import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.
 import { createApprovalGate } from "./approvalGate.js";
 import type { Approver } from "./approvalGate.js";
 import { createReasoningClock } from "./reasoningClock.js";
+import { createExecStreamLimiter } from "../shared/execStream.js";
 
 /** AbortError 判定：fetch 中止、signal.reason、throwIfAborted 抛的都是它 */
 function isAbort(err: unknown): boolean {
@@ -153,10 +154,15 @@ export class LoopEngine {
       };
     }
     // 按调用再包一层：输出直播的回调在这绑上 toolCallId——
-    // world 到工具手里已经"知道"该把碎片挂到哪次调用，工具自己无感
+    // world 到工具手里已经"知道"该把碎片挂到哪次调用，工具自己无感。
+    // 限流器（issue #343 第二层，per-call 配额）：单 chunk 上限 + 总条数配额，
+    // 保护 IPC 与渲染进程；配额烧完直播静默结束，读取由 world 层继续到 EOF
     const onToolOutput = this.opts.onToolOutput;
     const callWorld = onToolOutput
-      ? withExecOutput(world, (chunk, stream) => onToolOutput(call.id, chunk, stream))
+      ? withExecOutput(
+          world,
+          createExecStreamLimiter((chunk, stream) => onToolOutput(call.id, chunk, stream))
+        )
       : world;
     return runPipeline(this.pipeline, (ctx) => this.execute(ctx), {
       call,

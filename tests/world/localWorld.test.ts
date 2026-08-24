@@ -102,6 +102,20 @@ describe("LocalWorld exec 输出直播", () => {
   });
 });
 
+describe("LocalWorld exec 内存有界（issue #343 第一层 HeadTail）", () => {
+  it("超大输出:进程跑到自然结束,头尾保留、中段丢弃(旧 execAsync maxBuffer 会直接杀进程)", async () => {
+    const world = createLocalWorld({ root });
+    // ~3.2MB 输出,远超 1M 字符缓冲上限;末尾的 TAIL-END 是"最终结果"的替身
+    const script =
+      'const s="x".repeat(65536); for (let i=0;i<50;i++) process.stdout.write(s); process.stdout.write("TAIL-END");';
+    const result = await world.exec(`node -e '${script}'`);
+    expect(result.exitCode).toBe(0); // 自然结束,不是被 maxBuffer 杀掉
+    expect(result.stdout.length).toBeLessThan(1_100_000); // 内存有界
+    expect(result.stdout).toContain("TAIL-END"); // 尾巴在 —— 旧实现这里什么都拿不到
+    expect(result.stdout).toContain("中间省略");
+  }, 30_000);
+});
+
 describe("http.postJson", () => {
   const okResponse = (json: unknown) =>
     ({ ok: true, status: 200, json: async () => json, text: async () => "" }) as Response;
