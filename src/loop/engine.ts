@@ -5,6 +5,7 @@ import type { EventStore, NewSessionEvent } from "../session/store.js";
 import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
+import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
@@ -166,7 +167,10 @@ export class LoopEngine {
   private snapshot(): SessionEvent[] {
     const { store, sessionId } = this.opts;
     if (this.turnLog === null) {
-      this.turnLog = store.load(sessionId);
+      // 首圈的全量读换成有界重建（issue #351）：checkpoint 之前对模型视野
+      // 再无贡献的事件不读。boundedContextEvents 返回 null（无 checkpoint /
+      // 逃生舱）时退回全量——保守正确 > 优化；等价性由一致性测试钉住
+      this.turnLog = boundedContextEvents(store, sessionId) ?? store.load(sessionId);
     } else {
       const lastSeq = this.turnLog.at(-1)?.seq ?? -1;
       const fresh = store.load(sessionId, { afterSeq: lastSeq });
