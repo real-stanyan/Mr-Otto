@@ -96,6 +96,7 @@ import {
 } from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
+import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
@@ -243,7 +244,21 @@ void app.whenReady().then(() => {
 
   // 主进程里所有推给渲染层的消息都走这一个出口——窗口销毁后静默丢弃(issue #53)。
   // 别在别处直接 win.webContents.send：那正是这个 bug 上次只修了一半的原因
-  const send = createSend(win);
+  const rawSend = createSend(win);
+  // 流式合帧（issue #278）：assistantDelta/toolOutput 先进 16ms 缓冲再走 rawSend
+  //（接线在下面的 push 里）。任何非 delta 推送之前必须把缓冲放行——完整事件落地
+  // 时渲染层会清直播缓冲，压着的尾段晚到会把幽灵字写回去（deltaCoalescer.ts 顶注）。
+  // 把 flush 焊进统一出口：所有非 delta 推送本来就都走 send，这条纪律自动覆盖全部
+  const deltas = createDeltaCoalescer({
+    assistantDelta: (sessionId, text, kind) =>
+      rawSend(CHANNELS.assistantDelta, { sessionId, text, kind }),
+    toolOutput: (sessionId, toolCallId, chunk, stream) =>
+      rawSend(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
+  });
+  const send: typeof rawSend = (channel, ...args) => {
+    deltas.flush();
+    rawSend(channel, ...args);
+  };
 
   // 全屏状态推给渲染层:macOS 全屏隐红绿灯,左上角 logo 该让位/回来。
   // 变化走推送给已订阅的 renderer,首帧快照走 getWindowFullscreen(见下方 handle)
@@ -763,10 +778,10 @@ void app.whenReady().then(() => {
     },
     askUserRequest: (sessionId, toolCallId, questions) =>
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions }),
-    assistantDelta: (sessionId, text, kind) =>
-      send(CHANNELS.assistantDelta, { sessionId, text, kind }),
+    // 两条流式通道走合帧器（issue #278），不直发：50-100 次/秒的 IPC 压到 ~60
+    assistantDelta: (sessionId, text, kind) => deltas.assistantDelta(sessionId, text, kind),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
-      send(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
+      deltas.toolOutput(sessionId, toolCallId, chunk, stream),
   };
 
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
