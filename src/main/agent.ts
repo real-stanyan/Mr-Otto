@@ -52,6 +52,10 @@ import {
   type ApprovalMode,
 } from "./uiApprover.js";
 import { sessionGrants, type GrantScope } from "../shared/permissionGrants.js";
+import { grantKeysFor, grantedScope } from "../shared/grantKey.js";
+
+/** 没配永久授权文件时的空集（每次现建一个 Set 是白扔的分配） */
+const EMPTY_GRANTS: ReadonlySet<string> = new Set();
 import { buildApprovalPreview } from "./approvalPreview.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
@@ -398,12 +402,10 @@ export function createAgent(opts: {
       createModeAwareApprover(
         () => approvalMode,
         createGrantAwareApprover(
-          (tool) =>
-            sessionAllow.has(tool)
-              ? "session"
-              : opts.alwaysAllow?.().has(tool)
-                ? "always"
-                : undefined,
+          // 判定粒度是规范化 key（issue #342，shared/grantKey.ts）：bash 按命令、
+          // write_file 按路径、其余按工具，全部掺 cwd；旧的裸工具名条目按宽语义兼容
+          (call) =>
+            grantedScope(call, opts.workspace, sessionAllow, opts.alwaysAllow?.() ?? EMPTY_GRANTS),
           approver
         )
       ),
@@ -450,13 +452,19 @@ export function createAgent(opts: {
     engine,
     approver,
     /** IPC：审批卡上按下的不只是"批准"，还捎带一条长期许可（ADR-0041）。
-        授权的粒度是工具，而 IPC 回来的只有 toolCallId —— 从挂起表里查回工具名。
-        查不到（卡已过期/重复点击）就什么也不授：宁可再问一次，不能给错工具开门 */
-    grant(toolCallId: string, scope: GrantScope): void {
-      const tool = approver.toolFor(toolCallId);
-      if (!tool) return;
-      if (scope === "session") sessionAllow.add(tool);
-      else opts.persistAlwaysAllow?.(tool);
+        授权的粒度是规范化 key（issue #342），而 IPC 回来的只有 toolCallId ——
+        从挂起表里查回完整调用（含 args）现算 key。查不到（卡已过期/重复点击）
+        就什么也不授：宁可再问一次，不能给错调用开门。
+        revisedArgs：用户在卡上改过参数时，实际执行、也是用户实际同意的是那一份
+        （ADR-0041 分块审批）——key 必须从它算，与日志重建（sessionGrants）同规则 */
+    grant(toolCallId: string, scope: GrantScope, revisedArgs?: unknown): void {
+      const call = approver.callFor(toolCallId);
+      if (!call) return;
+      const effective = revisedArgs !== undefined ? { ...call, args: revisedArgs } : call;
+      for (const key of grantKeysFor(effective, opts.workspace)) {
+        if (scope === "session") sessionAllow.add(key);
+        else opts.persistAlwaysAllow?.(key);
+      }
     },
     /** IPC 唤醒挂起的问卷（与 approver.resolve 同构） */
     answerQuestions(toolCallId: string, outcome: AskUserOutcome): void {

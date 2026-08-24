@@ -8,15 +8,18 @@
 // 授权发生的**那一刻**照旧在日志里（approval_decision.grant），所以每个会话
 // 仍然自解释：谁在什么时候授的权，日志上写着；权现在还在不在，问这个文件。
 //
-// 文件形状故意做成最钝的一版：一个工具名数组。没有过期时间、没有路径限定 ——
-// 那些都是"说不清就别做"的东西（见 shared/permissionGrants.ts 的粒度那段）。
-// 撤销：目前只能删这个文件（设置页还没有入口）。
+// 文件形状是一个字符串数组。条目有两代（issue #342，兼容策略见 shared/grantKey.ts）：
+// - 旧条目 = 裸工具名（"bash"）——按「整个工具放行」的宽语义继续兑现，
+//   已经授出去的许可不静默收窄
+// - 新条目 = 规范化 key（bash 按命令、write_file 按路径，掺 cwd，U+001F 分隔）
+//   ——宁窄勿宽，"永久"不再等于"这个工具从此不问"
+// 没有过期时间；撤销目前只能删这个文件（设置页还没有入口）。
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 
 interface PermissionFile {
-  /** 永久允许、不再弹审批的工具名 */
+  /** 永久允许、不再弹审批的授权 key（旧条目是裸工具名，宽语义兼容） */
   alwaysAllow: string[];
 }
 
@@ -31,10 +34,10 @@ export function loadAlwaysAllow(path: string): Set<string> {
   }
 }
 
-/** 记一条永久授权。幂等：授过的再授一次不变形状 */
-export function addAlwaysAllow(path: string, tool: string): Set<string> {
+/** 记一条永久授权（授权 key，issue #342）。幂等：授过的再授一次不变形状 */
+export function addAlwaysAllow(path: string, key: string): Set<string> {
   const allow = loadAlwaysAllow(path);
-  allow.add(tool);
+  allow.add(key);
   const body: PermissionFile = { alwaysAllow: [...allow].sort() };
   mkdirSync(dirname(path), { recursive: true });
   // 0600:这份文件说的是"哪些危险操作不再问人",别人可写 = 别人可以替你点头

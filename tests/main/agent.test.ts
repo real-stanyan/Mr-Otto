@@ -385,8 +385,8 @@ describe("createGrantAwareApprover 长期授权（ADR-0041）", () => {
       .toBe("已授权（永久）");
   });
 
-  it("查的是工具名 —— 授了 bash 不等于授了 write_file", async () => {
-    const approver = createGrantAwareApprover((t) => (t === "bash" ? "session" : undefined), {
+  it("判定拿到完整调用 —— 授了 bash 不等于授了 write_file（粒度细化见 grantKey 测试）", async () => {
+    const approver = createGrantAwareApprover((c) => (c.name === "bash" ? "session" : undefined), {
       decide: async () => ({ decision: "denied", reason: "问了人" }),
     });
     expect((await approver.decide(call, bashTool)).decision).toBe("approved");
@@ -397,7 +397,7 @@ describe("createGrantAwareApprover 长期授权（ADR-0041）", () => {
   it("活引用:授权是中途给的,下一次调用立即生效", async () => {
     const granted = new Set<string>();
     const approver = createGrantAwareApprover(
-      (t) => (granted.has(t) ? "session" : undefined),
+      (c) => (granted.has(c.name) ? "session" : undefined),
       { decide: async () => ({ decision: "denied" }) }
     );
     expect((await approver.decide(call, bashTool)).decision).toBe("denied");
