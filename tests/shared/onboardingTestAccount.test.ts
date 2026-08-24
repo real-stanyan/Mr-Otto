@@ -5,8 +5,8 @@ import { isOnboardingTestAccount } from "../../src/shared/onboardingTestAccount.
 
 describe("isOnboardingTestAccount", () => {
   it("命中测试邮箱（大小写/首尾空白不敏感——邮箱本来就不区分大小写）", () => {
-    expect(isOnboardingTestAccount("otto.test.onboarding@gmail.com")).toBe(true);
-    expect(isOnboardingTestAccount("  Otto.Test.Onboarding@Gmail.com ")).toBe(true);
+    expect(isOnboardingTestAccount("stan@herzpharmaceuticals.com")).toBe(true);
+    expect(isOnboardingTestAccount("  Stan@HerzPharmaceuticals.com ")).toBe(true);
   });
 
   it("普通账号不命中；空串（未登录）不命中", () => {

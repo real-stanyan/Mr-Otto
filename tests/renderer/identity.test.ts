@@ -65,7 +65,7 @@ describe("needsOnboarding", () => {
   });
 
   it("测试账号无视盖章,每次登录都弹(issue #332)", () => {
-    const tester: AccountInfo = { ...account, email: "otto.test.onboarding@gmail.com" };
+    const tester: AccountInfo = { ...account, email: "stan@herzpharmaceuticals.com" };
     expect(needsOnboarding(tester, profile({ onboarded: true }))).toBe(true);
     // 防闪那条对测试账号同样成立:资料没读到就先不弹
     expect(needsOnboarding(tester, null)).toBe(false);

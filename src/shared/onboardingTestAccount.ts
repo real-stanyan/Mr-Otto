@@ -5,10 +5,7 @@
 // 为什么是常量而不是 DB 标记：登录只有 OAuth，"测试账号"本质是一个真能
 // OAuth 登录的备用邮箱；两个引导的"已看过"记号又分居两处（服务端
 // onboarded_at / 本机 localStorage），只有代码里这一个开关能同时罩住两边。
-//
-// 占位邮箱，换成你真实的备用账号即可。
-
-const TEST_ONBOARDING_EMAILS = ["otto.test.onboarding@gmail.com"];
+const TEST_ONBOARDING_EMAILS = ["stan@herzpharmaceuticals.com"];
 
 /** 邮箱不区分大小写；空串（未登录）永远不命中 */
 export function isOnboardingTestAccount(email: string): boolean {
