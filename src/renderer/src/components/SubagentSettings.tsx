@@ -32,6 +32,7 @@ import { useChat } from "../store.js";
 import type { SubagentDef } from "../../../shared/shellBridge.js";
 import { initialSubagentScope } from "../lib/subagentScopes.js";
 import { createSubagentFile, fileFieldsOf } from "../lib/createSubagentFile.js";
+import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { useSubagentScope, type SubagentScopeView } from "../lib/useSubagentScope.js";
 import { VisionModelSetting } from "./VisionModelSetting.js";
@@ -194,6 +195,10 @@ function rowKey(def: SubagentDef): string {
 const ROW =
   "w-full flex items-center gap-[10px] px-[14px] py-3 text-left border border-border rounded-[10px] transition-colors duration-150 hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
 
+/** 磁盘定义的行。跟内置行一样在行上留一个模型下拉快捷口（issue #304）：
+    换模型 = 把这份文件按原路径重写一遍、只动 model 字段。只读定义（改不了
+    文件）退回纯文字。外层不是 <button>：行里嵌着 ModelPicker（本身是按钮），
+    按钮套按钮是非法 DOM —— 与 BuiltinSubagentRow 同一个理由 */
 function SubagentRow({
   def,
   scope,
@@ -204,36 +209,88 @@ function SubagentRow({
   onOpen: () => void;
 }) {
   const draft = useSubagentDraft(def);
+  const saveSubagent = useChat((s) => s.saveSubagent);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const saveModel = async (model: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      // 与 createSubagentFile 的 saveSubagent 调用同形：字段来自磁盘那份现状，
+      // 只盖 model。身份字段原样带上——IPC 那侧按 name 重查路径，这里给的是线索
+      await saveSubagent({
+        name: def.name,
+        ...fileFieldsOf(def, { model }),
+        scope: def.scope,
+        path: def.path,
+        source: def.source,
+        readOnly: def.readOnly,
+      });
+    } catch (e) {
+      setError(bridgeErrorMessage(e));
+    }
+    setBusy(false);
+  };
+
   return (
-    <button type="button" className={ROW} onClick={onOpen}>
-      <span className="font-mono text-[13px] font-semibold text-brand shrink-0">{def.name}</span>
-      {scope.showScope && (
-        <Badge variant="outline" className="shrink-0 text-muted-foreground" title={`来自 ${def.source}`}>
-          {def.scope === "workspace" ? "工作区" : "用户"}
-        </Badge>
-      )}
-      {def.overridesBuiltin && (
-        <Badge variant="secondary" className="shrink-0" title="盖住内置那份的磁盘定义，删掉文件就回到出厂">
-          已自定义
-        </Badge>
-      )}
-      {def.unknownTools.length > 0 && (
-        <Badge
-          variant="outline"
-          className="shrink-0 text-muted-foreground"
-          title={`认不出的工具名：${def.unknownTools.join("、")}`}
-        >
-          {def.unknownTools.length} 个工具名无法识别
-        </Badge>
-      )}
-      <span className="text-muted-foreground text-[12.5px] flex-1 min-w-0 truncate">
-        {def.description || "（还没写 description）"}
-      </span>
-      <span className="text-muted-foreground text-[11px] shrink-0 font-mono">
-        {draft.modelLabel} · {def.tools.length} 把工具
-      </span>
-      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
-    </button>
+    <div className="flex flex-col">
+      <div
+        role="button"
+        tabIndex={0}
+        className={cn(ROW, "cursor-pointer")}
+        onClick={onOpen}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen();
+          }
+        }}
+      >
+        <span className="font-mono text-[13px] font-semibold text-brand shrink-0">{def.name}</span>
+        {scope.showScope && (
+          <Badge variant="outline" className="shrink-0 text-muted-foreground" title={`来自 ${def.source}`}>
+            {def.scope === "workspace" ? "工作区" : "用户"}
+          </Badge>
+        )}
+        {def.overridesBuiltin && (
+          <Badge variant="secondary" className="shrink-0" title="盖住内置那份的磁盘定义，删掉文件就回到出厂">
+            已自定义
+          </Badge>
+        )}
+        {def.unknownTools.length > 0 && (
+          <Badge
+            variant="outline"
+            className="shrink-0 text-muted-foreground"
+            title={`认不出的工具名：${def.unknownTools.join("、")}`}
+          >
+            {def.unknownTools.length} 个工具名无法识别
+          </Badge>
+        )}
+        <span className="text-muted-foreground text-[12.5px] flex-1 min-w-0 truncate">
+          {def.description || "（还没写 description）"}
+        </span>
+        <span className="text-muted-foreground text-[11px] shrink-0 font-mono">
+          {def.tools.length} 把工具
+        </span>
+        {def.readOnly ? (
+          <span className="text-muted-foreground text-[11px] shrink-0 font-mono">{draft.modelLabel}</span>
+        ) : (
+          // 行里的控件:点它不该进编辑页
+          <span className="shrink-0" onClick={(e) => e.stopPropagation()}>
+            <ModelPicker
+              value={draft.effectiveModel}
+              onChange={(m) => void saveModel(m)}
+              disabled={busy}
+              placeholder="跟随主会话"
+              className="border border-border rounded-md px-2 py-1"
+            />
+          </span>
+        )}
+        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
+      </div>
+      {error && <p className={cn(ERR_TXT, "px-[14px] pt-1")}>{error}</p>}
+    </div>
   );
 }
 
