@@ -250,7 +250,7 @@ describe("EventStore", () => {
       sessionId: string,
       ts: number,
       model: string,
-      usage?: { promptTokens: number; completionTokens: number }
+      usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number }
     ): NewSessionEvent => ({
       sessionId,
       ts,
@@ -273,9 +273,17 @@ describe("EventStore", () => {
       });
 
       expect(store.billedUsage(0)).toEqual([
-        { ts: 100, model: "deepseek-v4-pro", promptTokens: 10, completionTokens: 2 },
-        { ts: 200, model: "claude-opus-5", promptTokens: 30, completionTokens: 4 },
-        { ts: 300, model: "deepseek-v4-flash", promptTokens: 7, completionTokens: 1 },
+        // cachedTokens: 不报 cache 的调用提出来是 null（≠0,计价时才归 0）
+        { ts: 100, model: "deepseek-v4-pro", promptTokens: 10, completionTokens: 2, cachedTokens: null },
+        { ts: 200, model: "claude-opus-5", promptTokens: 30, completionTokens: 4, cachedTokens: null },
+        { ts: 300, model: "deepseek-v4-flash", promptTokens: 7, completionTokens: 1, cachedTokens: null },
+      ]);
+    });
+
+    it("报了 cachedTokens 的调用原样过桥 —— 缓存价计费靠它", () => {
+      store.append(assistant("s1", 100, "deepseek-v4-pro", { promptTokens: 10, completionTokens: 2, cachedTokens: 8 }));
+      expect(store.billedUsage(0)).toEqual([
+        { ts: 100, model: "deepseek-v4-pro", promptTokens: 10, completionTokens: 2, cachedTokens: 8 },
       ]);
     });
 

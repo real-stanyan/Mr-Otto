@@ -13,15 +13,20 @@
 //
 // 命中规则：先按型号 id 精确查；Ollama 的 id 带 `ollama/` 前缀，整族都是 0。
 //
-// **抄表日期：2026-08-20**，来源是各厂自己的定价页（下面每一组标了出处）。
+// **抄表日期：2026-08-24**，来源是各厂自己的定价页（下面每一组标了出处）。
 // 这个日期比价格本身重要：它是判断"这张表还能不能信"的唯一依据。
 // 加/改一行的时候连日期一起改。
 
 export interface ModelPrice {
-  /** 输入（prompt）单价，美元 / 百万 token */
+  /** 输入（prompt）单价，美元 / 百万 token（缓存未命中档） */
   input: number;
   /** 输出（completion）单价，美元 / 百万 token */
   output: number;
+  /** 缓存命中的输入单价，美元 / 百万 token。只写确知的：缺席 = 这家没查到
+      缓存价（或没有缓存机制），命中部分按 input 全价算——宁可报高不报错。
+      注意这是**读**价；Anthropic 的缓存**写**入还有 1.25×/2× 的溢价，
+      OpenAI 兼容 usage 里看不到写入 token 数，算不了，接受轻微低估 */
+  cachedInput?: number;
 }
 
 /** 本机推理的型号前缀。整族免费——电费不算在这张表里 */
@@ -30,21 +35,22 @@ const LOCAL_PREFIX = "ollama/";
 /**
  * 现价表。key = modelCatalog 里的型号 id（不是 wireModel）。
  *
- * 只有确知的才写进来。要加一款：查厂商定价页，抄"每百万 token"那两个数。
- * 阶梯价（按上下文长度分档、缓存命中价）一律取**未命中的标准档**——
+ * 只有确知的才写进来。要加一款：查厂商定价页，抄"每百万 token"那两个数
+ * （有缓存命中价的连 cachedInput 一起抄——命中率高的会话按全价算会虚高好几倍，
+ * 见 issue #298）。按上下文长度分档的阶梯价仍取标准档，时段价取**高峰档**——
  * 页脚那个数字是"这一次大概花了多少"，不是账单。
  */
 const PRICES: Readonly<Record<string, ModelPrice>> = {
   // OpenAI — developers.openai.com/api/docs/pricing
-  "gpt-5": { input: 1.25, output: 10 },
-  "gpt-5-mini": { input: 0.25, output: 2 },
-  "gpt-4.1": { input: 2, output: 8 },
+  "gpt-5": { input: 1.25, output: 10, cachedInput: 0.125 },
+  "gpt-5-mini": { input: 0.25, output: 2, cachedInput: 0.025 },
+  "gpt-4.1": { input: 2, output: 8, cachedInput: 0.5 },
 
   // Anthropic — platform.claude.com/docs/en/about-claude/pricing
-  // 取 Base Input（非缓存）；fast mode 是另一档价，本仓不发那个参数
-  "claude-opus-5": { input: 5, output: 25 },
-  "claude-sonnet-5": { input: 2, output: 10 },
-  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
+  // cachedInput = Cache Hits 档（0.1× base）；fast mode 是另一档价，本仓不发那个参数
+  "claude-opus-5": { input: 5, output: 25, cachedInput: 0.5 },
+  "claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2 },
+  "claude-haiku-4-5-20251001": { input: 1, output: 5, cachedInput: 0.1 },
 
   // Google — ai.google.dev/gemini-api/docs/pricing（付费档，提示 ≤200k 那一档）
   "gemini-2.5-pro": { input: 1.25, output: 10 },
@@ -53,8 +59,9 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   // DeepSeek — api-docs.deepseek.com/quick_start/pricing
   // 它按时段分两档（错峰半价）。这里取**高峰价**：页脚那个数是"这一次大概花了多少"，
   // 报低了会让人以为便宜一半，而错峰是碰运气碰上的，不是常态
-  "deepseek-v4-flash": { input: 0.44, output: 1.32 },
-  "deepseek-v4-pro": { input: 1.32, output: 3.96 },
+  // cachedInput = 缓存命中档（同取高峰价）
+  "deepseek-v4-flash": { input: 0.44, output: 1.32, cachedInput: 0.014 },
+  "deepseek-v4-pro": { input: 1.32, output: 3.96, cachedInput: 0.044 },
 
   // 智谱 — docs.z.ai/guides/overview/pricing。两款 flash 官网标的就是 Free
   "glm-4.5-flash": { input: 0, output: 0 },
@@ -81,8 +88,8 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
 
   // OpenRouter — 它是转售，按上游原价计费（平台的抽成收在充值那一步，不在 token 上），
   // 所以这两条与第一方同价。上游改价它跟着改，这里也就跟着改
-  "anthropic/claude-sonnet-5": { input: 2, output: 10 },
-  "openai/gpt-5": { input: 1.25, output: 10 },
+  "anthropic/claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2 },
+  "openai/gpt-5": { input: 1.25, output: 10, cachedInput: 0.125 },
 
   // 硅基流动 — siliconflow.com/pricing
   "deepseek-ai/DeepSeek-V3.2-Exp": { input: 0.27, output: 0.41 },
@@ -108,14 +115,24 @@ export function priceOf(model: string): ModelPrice | undefined {
   return PRICES[model];
 }
 
-/** 一次调用花了多少美元。价目表里没有这款 = undefined（不是 0） */
+/** 一次调用花了多少美元。价目表里没有这款 = undefined（不是 0）。
+    cachedTokens（promptTokens 里命中缓存的那部分）在场且该型号有缓存价时，
+    命中按 cachedInput、未命中按 input 分段计价；缺席 = 全按未命中价（旧日志/
+    不报 cache 的 API，行为与从前一致）。截断到 [0, promptTokens]：上游报错数
+    不至于算出负钱 */
 export function costUsd(
   model: string,
-  usage: { promptTokens: number; completionTokens: number }
+  usage: { promptTokens: number; completionTokens: number; cachedTokens?: number }
 ): number | undefined {
   const price = priceOf(model);
   if (!price) return undefined;
-  return (usage.promptTokens * price.input + usage.completionTokens * price.output) / 1_000_000;
+  const cached =
+    price.cachedInput === undefined
+      ? 0
+      : Math.min(Math.max(usage.cachedTokens ?? 0, 0), usage.promptTokens);
+  const promptUsd =
+    (usage.promptTokens - cached) * price.input + cached * (price.cachedInput ?? 0);
+  return (promptUsd + usage.completionTokens * price.output) / 1_000_000;
 }
 
 /** 钱数的写法：不足一分显示 `<$0.01`（四舍五入成 $0.00 会读成"免费"）。

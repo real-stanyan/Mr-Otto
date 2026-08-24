@@ -17,6 +17,10 @@ export interface ModelUsage {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  /** promptTokens 里命中 prompt cache 的部分。不报 cache 的调用按 0 计——
+      计费上"没报"只能当"没命中"（按全价），与 cacheStats 的口径刻意不同：
+      那边是命中率度量,分母要剔掉不报数的调用;这边是钱,漏算命中只会报高不报错 */
+  cachedTokens: number;
 }
 
 /** 会计上"算一次模型调用"的五类事件。导出是为了让主进程的 SQL 用同一份清单筛行
@@ -38,13 +42,16 @@ function isBilledEvent(e: SessionEvent): e is BilledEvent {
 /** 这条事件是不是一次模型调用的账。是就返回(型号, 用量),不是返回 null。
     usage 缺省的事件不算账:旧日志里有没记用量的调用,当 0 会让"没记"和"没花"
     看起来一样 —— 这里的做法是压根不出现在账里 */
-function billed(e: SessionEvent): { model: string; promptTokens: number; completionTokens: number } | null {
+function billed(
+  e: SessionEvent
+): { model: string; promptTokens: number; completionTokens: number; cachedTokens: number } | null {
   if (!isBilledEvent(e)) return null;
   if (!e.usage) return null;
   return {
     model: e.model,
     promptTokens: e.usage.promptTokens,
     completionTokens: e.usage.completionTokens,
+    cachedTokens: e.usage.cachedTokens ?? 0,
   };
 }
 
@@ -59,11 +66,13 @@ export function usageByModel(events: SessionEvent[]): ModelUsage[] {
     if (cur) {
       cur.promptTokens += b.promptTokens;
       cur.completionTokens += b.completionTokens;
+      cur.cachedTokens += b.cachedTokens;
     } else {
       byModel.set(b.model, {
         model: b.model,
         promptTokens: b.promptTokens,
         completionTokens: b.completionTokens,
+        cachedTokens: b.cachedTokens,
       });
     }
   }

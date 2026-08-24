@@ -338,7 +338,8 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       `SELECT ts,
                 json_extract(payload, '$.model')                  AS model,
                 json_extract(payload, '$.usage.promptTokens')     AS promptTokens,
-                json_extract(payload, '$.usage.completionTokens') AS completionTokens
+                json_extract(payload, '$.usage.completionTokens') AS completionTokens,
+                json_extract(payload, '$.usage.cachedTokens')     AS cachedTokens
            FROM events
           WHERE type IN (${marks})
             AND ts >= ?
