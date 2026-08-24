@@ -26,7 +26,7 @@ import {
 } from "@/components/elements/composer.js";
 import { PermissionGrant } from "@/components/elements/permission-grant.js";
 import { TodoList } from "@/components/elements/todo-list.js";
-import { composeContent, diffDoc, diffView } from "./lib/diffView.js";
+import { composeContent, diffDoc, diffView } from "../../shared/diffView.js";
 import type { GrantScope } from "../../shared/permissionGrants.js";
 import type {
   ApprovalDecisionKind,
@@ -46,6 +46,7 @@ import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
 import { BrowserPanel } from "./components/BrowserPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
+import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
@@ -2925,6 +2926,7 @@ export function App() {
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <WorkTreePill />
+            <TurnDiffPanel />
             <TodoPanel />
             <QueuePanel />
             {/* 「消息没发出去」= 输入框的回执,所以贴着输入框,不在消息流里 */}

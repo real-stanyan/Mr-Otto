@@ -31,6 +31,7 @@ import type {
   StagedAttachment,
   StartSessionOptions,
   TurnStatus,
+  TurnDiffUpdate,
   UpdaterState,
   PokerAction,
   PokerHandView,
@@ -157,6 +158,10 @@ interface ChatState {
       第二拍（带 turnId 的 running）。缺失 = 还不知道/没在跑——插话按钮灰着，
       排队照旧。idle 一到就清 */
   turnIdBySession: Record<string, number>;
+  /** turn 级聚合 diff（issue #345）：主进程每次写盘后整份替换推送。
+      保留到下一轮的第一次推送（turnId 换代自动覆盖）——turn 刚收尾时
+      "刚才那轮改了什么"正是要读的东西，不随 idle 清 */
+  turnDiffBySession: Record<string, TurnDiffUpdate>;
   /** OTA 更新器镜像（ADR-0075）。null = 快照还没回来；ready/manual 时侧栏
       出更新 pill + 齿轮亮点（UpdatePill.tsx）。boot() 拉首帧 + 订阅推送 */
   updater: UpdaterState | null;
@@ -677,6 +682,7 @@ export const useChat = create<ChatState>((set, get) => ({
   pendingWorkspace: null,
   statusBySession: {},
   turnIdBySession: {},
+  turnDiffBySession: {},
   compactingBySession: {},
   queuedBySession: {},
   approvals: {},
@@ -1769,6 +1775,11 @@ export const useChat = create<ChatState>((set, get) => ({
       // 排着的活不该因为上一条没善终就永远卡在队列里
       if (status === "idle") void get().drainQueue(sessionId);
     });
+    window.otter.onTurnDiff((update) =>
+      set((s) => ({
+        turnDiffBySession: { ...s.turnDiffBySession, [update.sessionId]: update },
+      }))
+    );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,

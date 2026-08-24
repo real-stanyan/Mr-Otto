@@ -57,9 +57,10 @@ import { grantKeysFor, grantedScope } from "../shared/grantKey.js";
 /** 没配永久授权文件时的空集（每次现建一个 Set 是白扔的分配） */
 const EMPTY_GRANTS: ReadonlySet<string> = new Set();
 import { buildApprovalPreview } from "./approvalPreview.js";
+import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import type { DeltaKind } from "../model/adapter.js";
-import type { ApprovalPreview } from "../shared/shellBridge.js";
+import type { ApprovalPreview, TurnDiffUpdate } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
 import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
@@ -94,6 +95,11 @@ export interface AgentPush {
   /** 工具输出直播碎片（bash 的 stdout/stderr）——同上，不落日志，
       完整输出以 tool_result 事件为准 */
   toolOutput(sessionId: string, toolCallId: string, chunk: string, stream: "stdout" | "stderr"): void;
+  /** turn 级聚合 diff（issue #345）：每次写文件工具完成后整份替换。
+      对话视图与灵动岛消费同一份——统计只能有一个出处。
+      可选：探名字的 probe 装配、subagent（父会话从 tool_result 读汇报，
+      不看子会话的实时改动面板）不接这条线 */
+  turnDiff?(update: TurnDiffUpdate): void;
 }
 
 /** 会话 id：秒级时间戳 + 随机段。
@@ -386,12 +392,22 @@ export function createAgent(opts: {
     ? tools.filter((t) => opts.allowTools!.includes(t.def.name))
     : tools;
 
+  // turn 级聚合 diff（issue #345）：per-agent 一只 tracker，中间件挂在审批门
+  // 之后（engine 把审批门永远排第一）——被拒的写盘进不了聚合。
+  // getTurnId 闭包现读 engine.runningTurnId：engine 在下面才构造，调用时已就位
+  const turnDiffTracker = new TurnDiffTracker();
+
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
     tools: mounted,
     world,
     sessionId,
+    middlewares: [
+      createTurnDiffMiddleware(turnDiffTracker, sessionId, () => engine.runningTurnId, (u) =>
+        opts.push.turnDiff?.(u)
+      ),
+    ],
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
     // 两层短路，顺序有意：先看模式（"完全访问"是对整台机器说的话），
     // 再看授权（对某个工具说的话）。都不命中才弹卡。

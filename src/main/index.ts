@@ -548,6 +548,7 @@ void app.whenReady().then(() => {
     switch (input.kind) {
       case "event": return input.event.sessionId;
       case "turnStatus": return input.update.sessionId;
+      case "turnDiff": return input.update.sessionId;
       case "approvalRequest": return input.req.sessionId;
       case "activeSession": return input.boot.activeSessionId;
     }
@@ -882,6 +883,12 @@ void app.whenReady().then(() => {
     assistantDelta: (sessionId, text, kind) => deltas.assistantDelta(sessionId, text, kind),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
       deltas.toolOutput(sessionId, toolCallId, chunk, stream),
+    // turn 级聚合 diff（issue #345）：整份替换语义、每次写盘一推，频率 = 写盘
+    // 次数（远低于 delta），不走合帧器。对话视图与灵动岛同一份数据源
+    turnDiff: (update) => {
+      send(CHANNELS.turnDiff, update);
+      feedIsland({ kind: "turnDiff", update });
+    },
   };
 
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session

@@ -5,7 +5,7 @@
 // 此处成唯一副本),搬到主进程可达位置是为原生 Swift helper 铺路:投影在日志
 // 所有者(主进程)处算一次,flattenFleet 拍平成线上 fleet,helper 纯渲染。
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
-import type { ApprovalRequest, IslandBoot, TurnStatusUpdate } from "../shared/shellBridge.js";
+import type { ApprovalRequest, IslandBoot, TurnDiffUpdate, TurnStatusUpdate } from "../shared/shellBridge.js";
 import { toolFilePath, toolSummary } from "../shared/toolSummary.js";
 import type { SessionSummary } from "../session/store.js";
 import type { IslandAgent, IslandFleet } from "../shared/shellBridge.js";
@@ -20,11 +20,15 @@ export interface IslandState {
   pendingApproval: ApprovalRequest | null;
   /** tool_execution_started 只带 id,名字要从 assistant_message.toolCalls 里找 */
   callsById: Record<string, ToolCallRequest>;
+  /** 本轮聚合改动摘要（issue #345）。主进程推的 TurnDiffUpdate 的统计部分——
+      与对话视图同一份数据源；turn 谢幕跟着清（quiescent 状态里没有"本轮"） */
+  turnDiff: { files: number; additions: number; deletions: number } | null;
 }
 
 export type IslandInput =
   | { kind: "event"; event: SessionEvent }
   | { kind: "turnStatus"; update: TurnStatusUpdate; now: number }
+  | { kind: "turnDiff"; update: TurnDiffUpdate }
   | { kind: "approvalRequest"; req: ApprovalRequest }
   /** 岛窗 boot / 主窗切会话:带的是一整份快照,不只是 id —— 中途切进来的会话
       可能正跑着 turn / 挂着审批,只靠增量推送岛会永远显示空闲(#175 I1) */
@@ -37,6 +41,7 @@ export const initialIsland: IslandState = {
   turnStartedAt: null,
   pendingApproval: null,
   callsById: {},
+  turnDiff: null,
 };
 
 export function reduceIsland(s: IslandState, input: IslandInput): IslandState {
@@ -73,6 +78,16 @@ export function reduceIsland(s: IslandState, input: IslandInput): IslandState {
     case "approvalRequest":
       if (input.req.sessionId !== s.sessionId) return s;
       return { ...s, phase: "approval", pendingApproval: input.req };
+    case "turnDiff": {
+      if (input.update.sessionId !== s.sessionId) return s;
+      const { files, additions, deletions } = input.update;
+      // 整份替换语义：每次推送都是该 turn 迄今的全量,直接覆盖。
+      // 空清单（改动被聚合成零）也照覆盖——"曾经有改动"不是此刻的事实
+      return {
+        ...s,
+        turnDiff: files.length > 0 ? { files: files.length, additions, deletions } : null,
+      };
+    }
     case "event": {
       const e = input.event;
       if (e.sessionId !== s.sessionId) return s;
@@ -131,6 +146,7 @@ export function flattenAgent(state: IslandState | undefined, session: SessionSum
     turnStartedAt: s.turnStartedAt,
     pendingApproval: pending,
     workspace: session.workspace,
+    ...(s.turnDiff ? { turnDiff: s.turnDiff } : {}),
   };
 }
 

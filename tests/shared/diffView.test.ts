@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffView, diffDoc, composeContent } from "../../src/renderer/src/lib/diffView.js";
+import { diffView, diffDoc, composeContent } from "../../src/shared/diffView.js";
 
 describe("diffView", () => {
   it("新文件:全是 added,删除计数为 0", () => {
