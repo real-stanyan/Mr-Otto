@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
-import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
+import { createOpenAICompatibleAdapter, localTiming } from "../model/openaiCompatible.js";
 import {
   DEFAULT_MODEL,
   describeModelWith,
@@ -327,6 +327,9 @@ export function createAgent(opts: {
       // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
       vision: choice.supportsVision,
       readAttachment: (id) => opts.attachments.read(id),
+      // 本机推理（Ollama）：首 token 前的冷加载 + prefill 是在干活不是挂死，
+      // 看门狗放宽到 10 分钟（见 localTiming 的注释）；云端型号 {} = 默认
+      timing: localTiming(choice),
     });
 
   // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,

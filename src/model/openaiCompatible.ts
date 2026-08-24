@@ -45,7 +45,8 @@ export interface OpenAICompatibleOptions {
       image_url;false/缺省 = 换占位文本——无视觉模型发 base64 必 400,
       图片内容由 vision-bridge 的 image_described 事件以文字供给 */
   vision?: boolean;
-  /** 重试/超时参数覆盖（测试用——生产装配一律用下面的默认常量）。 */
+  /** 重试/超时参数覆盖。生产装配用默认常量；唯一例外是本机推理
+      （keyless，装配时传 localTiming()）；测试也走这里。 */
   timing?: Partial<AdapterTiming>;
 }
 
@@ -70,6 +71,21 @@ const DEFAULT_TIMING: AdapterTiming = {
   headersTimeoutMs: 30_000,
   idleTimeoutMs: 90_000,
 };
+
+/** 本机推理（keyless，Ollama）的超时上限：10 分钟。
+    默认的 30s/90s 是给云端 API 定的——那里的静默意味着连接挂死。本机大模型
+    在**首 token 前**要冷加载权重 + 整段上下文 prefill，期间 Ollama 的
+    OpenAI 兼容流一个字节都不发，27B 级模型带长上下文轻松超 90s；这是在干活，
+    不是挂死。两个看门狗都放宽（headers 也可能等到模型加载后才回）；用户等不及
+    随时能手动停（abort 不受影响）。不无限：本机也存在真挂死（Ollama 卡死/OOM） */
+export const LOCAL_IDLE_TIMEOUT_MS = 600_000;
+
+/** keyless（本机）型号的 timing 覆盖；云端型号返回 {}（用默认） */
+export function localTiming(choice: { keyless: boolean }): Partial<AdapterTiming> {
+  return choice.keyless
+    ? { headersTimeoutMs: LOCAL_IDLE_TIMEOUT_MS, idleTimeoutMs: LOCAL_IDLE_TIMEOUT_MS }
+    : {};
+}
 
 /** 可重试的状态码：限流 + 服务端瞬时故障。4xx 其余（key 错/请求非法/额度用尽）
     重试只会得到同一个答案 */
