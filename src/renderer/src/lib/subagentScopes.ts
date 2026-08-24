@@ -44,19 +44,3 @@ export function initialSubagentScope(
   if (!workspace) return null;
   return options.some((o) => o.workspace === workspace) ? workspace : null;
 }
-
-/** 复制一份时用哪个名字。挑第一个当前清单里没被占的 —— `-copy`、`-copy-2`…
-    不挑的话「再点一次」是一条走不通的路：第一次点击已经把 `X-copy` 建出来了
-    （只是内容还没抄过去），第二次点撞的就是「已经有一个叫 X-copy 的子智能体了」，
-    而那个空壳文件谁也够不着。让死路不存在，比让一句提示活下来更可靠 ——
-    提示会被切作用域时的清单重置连同整行一起卸载掉。
-    比较不分大小写：落地的是 macOS 文件名，APFS 大小写不敏感。 */
-export function freeCopyName(base: string, taken: readonly string[]): string {
-  const used = new Set(taken.map((n) => n.toLowerCase()));
-  const first = `${base}-copy`;
-  if (!used.has(first.toLowerCase())) return first;
-  for (let i = 2; ; i++) {
-    const candidate = `${first}-${i}`;
-    if (!used.has(candidate.toLowerCase())) return candidate;
-  }
-}

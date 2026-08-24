@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  freeCopyName,
   initialSubagentScope,
   subagentScopeOptions,
 } from "../../src/renderer/src/lib/subagentScopes.js";
@@ -48,20 +47,5 @@ describe("initialSubagentScope", () => {
     // store 里没会话时那个字段是空串,不是 null
     expect(initialSubagentScope("", opts)).toBeNull();
     expect(initialSubagentScope(undefined, opts)).toBeNull();
-  });
-});
-
-describe("freeCopyName", () => {
-  it("没占就用 -copy", () => {
-    expect(freeCopyName("reviewer", [])).toBe("reviewer-copy");
-  });
-
-  it("占了就往后数,让「再点一次」永远走得通", () => {
-    expect(freeCopyName("reviewer", ["reviewer-copy"])).toBe("reviewer-copy-2");
-    expect(freeCopyName("reviewer", ["reviewer-copy", "reviewer-copy-2"])).toBe("reviewer-copy-3");
-  });
-
-  it("比较不分大小写——落地的是 macOS 文件名", () => {
-    expect(freeCopyName("reviewer", ["Reviewer-Copy"])).toBe("reviewer-copy-2");
   });
 });

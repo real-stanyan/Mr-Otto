@@ -88,7 +88,18 @@ export function SubagentSettings() {
   }
   if (page.kind === "edit") {
     const def = subagents.find((d) => rowKey(d) === page.key);
-    if (def) return <EditSubagentPage key={page.key} def={def} scope={view} onBack={toList} />;
+    if (def)
+      return (
+        <EditSubagentPage
+          key={page.key}
+          def={def}
+          scope={view}
+          onBack={toList}
+          // 内置那份 materialize 之后，这一页的 key 会当场失效（rowKey 从
+          // `builtin:<名字>` 变成磁盘路径）—— 换成新那份，别把用户甩回列表
+          onMaterialized={(path) => setPage({ kind: "edit", key: path })}
+        />
+      );
   }
 
   return (
@@ -206,7 +217,6 @@ function SubagentRow({
           已自定义
         </Badge>
       )}
-      {def.readOnly && <Badge variant="secondary" className="shrink-0">只读</Badge>}
       {def.unknownTools.length > 0 && (
         <Badge
           variant="outline"
