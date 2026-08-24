@@ -156,6 +156,7 @@ describe("history 能力（可选）", () => {
     window: () => [],
     load: () => [],
     recent: () => [],
+    title: () => null,
   };
 
   it("withHistory 把能力焊上去", () => {

@@ -159,7 +159,7 @@ describe("createAgent 会话生命周期", () => {
     store.close();
 
     const store2 = new EventStore(":memory:");
-    const history = { search: () => [], window: () => [], load: () => [], recent: () => [] };
+    const history = { search: () => [], window: () => [], load: () => [], recent: () => [], title: () => null };
     const withHistory = createAgent({ store: store2, workspace: "/proj/x", push, attachments, history });
     expect(withHistory.toolDefs.map((d) => d.name)).toContain("session_search");
     store2.close();

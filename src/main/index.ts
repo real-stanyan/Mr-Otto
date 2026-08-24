@@ -36,11 +36,11 @@ import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { shouldNudge, settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
-import { classifySection, SECTION_MODEL } from "./sectionClassifier.js";
+import { classifySection, classifyLogView, SECTION_MODEL } from "./sectionClassifier.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { suggestFollowUps } from "./followUpSuggester.js";
@@ -481,7 +481,8 @@ void app.whenReady().then(() => {
   const sectionQueues = new Map<string, Promise<void>>();
 
   const classifyAndAppend = async (sessionId: string): Promise<void> => {
-    const section = await classifySection(store.load(sessionId), helperModel());
+    // 尾段切片而不是全量 load（issue #279）：等价性论证在 classifyLogView 的注释里
+    const section = await classifySection(classifyLogView(store, sessionId), helperModel());
     if (!section) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
     // 往 purge 过的 sessionId 上 append 会凭空造出一条没有 session_created 的
@@ -502,7 +503,14 @@ void app.whenReady().then(() => {
   // 会各开一个分区;建议没有锚点,每次只看最后一轮问答,后落盘的那条天然覆盖
   // 前一条(渲染只取最后一条)——撞车的代价就是多烧一次便宜调用
   const suggestAndAppend = async (sessionId: string): Promise<void> => {
-    const result = await suggestFollowUps(store.load(sessionId), helperModel());
+    // 只读最后一轮问答（issue #279）：lastExchange 本来就只看最后一条 user_message
+    // 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给空数组
+    // （lastExchange([]) 也是空，summarize 出空串直接不调用）
+    const lastUser = store.lastSeqOf(sessionId, "user_message");
+    const result = await suggestFollowUps(
+      lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
+      helperModel()
+    );
     if (!result) return;
     // 同 classifyAndAppend:出了 turn 锁,这一跑期间会话可能已被 purge。
     // 往 purge 过的 sessionId 上 append 会凭空造出一条幽灵会话
@@ -526,8 +534,15 @@ void app.whenReady().then(() => {
   const nudgeMemory = async (sessionId: string): Promise<void> => {
     const agent = agents.get(sessionId);
     if (!agent) return;
+    // 该不该提醒不用全量 load（issue #279），与 shouldNudge(全量日志) 语义逐条对齐：
+    // spawnedBy 判定 = 第 0 条 session_created（单行 PK 查询）；
+    // "距上次提醒过了几轮" = 最后一条 memory_nudge 之后的 user_message 条数（COUNT）。
+    // 触发了（1/10 个 turn）才为 reviewer 转写全量读一次——转写要整段投影，省不掉
+    const created = store.window(sessionId, 0, 0)[0];
+    if (created?.type === "session_created" && created.spawnedBy) return;
+    const turns = store.countType(sessionId, "user_message", store.lastSeqOf(sessionId, "memory_nudge"));
+    if (turns < MEMORY_NUDGE_EVERY) return;
     const log = store.load(sessionId);
-    if (!shouldNudge(log)) return;
     const nudgeEvent = store.append({
       sessionId, ts: Date.now(), type: "memory_nudge", userTurns: MEMORY_NUDGE_EVERY,
     });
@@ -1023,8 +1038,9 @@ void app.whenReady().then(() => {
   // 静默通道：resumeSession 好歹会切视图，是"看得见"的；这个不会，读了不留痕迹。
   // currentSessionId 是渲染层此刻唯一正当的"我在哪"
   ipcMain.handle(CHANNELS.readSessionEvents, (_e, sessionId: string) => {
-    const events = store.load(sessionId);
-    const first = events[0];
+    // 授权判据只在第 0 条里——先单行 PK 查询把门守住，过了门才全量读（issue #279）：
+    // 被拒的调用不该先付一整个会话的 JSON.parse
+    const first = store.window(sessionId, 0, 0)[0];
     if (
       !first ||
       first.type !== "session_created" ||
@@ -1033,7 +1049,7 @@ void app.whenReady().then(() => {
     ) {
       throw new Error("只能读取当前会话派出的子会话");
     }
-    return events;
+    return store.load(sessionId);
   });
 
   // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）
@@ -1478,7 +1494,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {
     const t = title.trim();
     if (!t) throw new Error("标题不能为空（用法：/rename 新标题）");
-    if (store.load(sessionId).length === 0) throw new Error("会话不存在"); // 别给幽灵会话开日志
+    if (!store.has(sessionId)) throw new Error("会话不存在"); // 别给幽灵会话开日志
     // 改名不碰 agent、不限 turn 状态：纯追加一条事件，投影层自然换标题
     const appended = store.append({ sessionId, ts: Date.now(), type: "session_renamed", title: t });
     send(CHANNELS.event, appended); // 时间线同款直播通道
@@ -1626,7 +1642,7 @@ void app.whenReady().then(() => {
       // catch 挂在这:suggestFollowUps 自己不抛,但它外面的 store.append / send 会,
       // 变成 unhandledRejection 会把主进程带走
       void suggestAndAppend(sessionId).catch((err) => console.error("跟进建议失败", err));
-      // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（shouldNudge）
+      // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（nudgeMemory 开头的 spawnedBy 判定）
       // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程
       void nudgeMemory(sessionId).catch((err) => console.error("记忆审查失败", err));
       // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回

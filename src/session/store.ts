@@ -370,6 +370,67 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     return new Map(rows.map((r) => [r.sessionId, r.n]));
   }
 
+  /** 某会话里某类型最后一条的 seq；beforeSeq 给了就只看它之前（不含）。
+      没有 = -1。events_session_type_seq 索引直接服务——turn 收口钩子
+      （issue #279）用它算"该从哪儿开始读尾段"，别再全量 load */
+  lastSeqOf(sessionId: string, type: SessionEvent["type"], beforeSeq?: number): number {
+    const row = this.prep(
+      "SELECT MAX(seq) AS s FROM events WHERE session_id = ? AND type = ? AND seq < ?"
+    ).get(sessionId, type, beforeSeq ?? Number.MAX_SAFE_INTEGER) as { s: number | null };
+    return row.s ?? -1;
+  }
+
+  /** 某会话里某类型在 afterSeq 之后（不含）有几条。memory nudge 的
+      "距上次提醒过了几轮"从这条 COUNT 出，不用把整段日志读进内存数 */
+  countType(sessionId: string, type: SessionEvent["type"], afterSeq = -1): number {
+    const row = this.prep(
+      "SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND type = ? AND seq > ?"
+    ).get(sessionId, type, afterSeq) as { n: number };
+    return row.n;
+  }
+
+  /** 某会话里某类型的全部事件（seq 升序）。适合天然稀疏的类型
+      （section_classified 一个分区一条）——密集类型请走 load/window */
+  eventsOfType(sessionId: string, type: SessionEvent["type"]): SessionEvent[] {
+    const rows = this.prep(
+      "SELECT seq, ts, type, sandbox_id, payload FROM events WHERE session_id = ? AND type = ? ORDER BY seq"
+    ).all(sessionId, type) as {
+      seq: number;
+      ts: number;
+      type: string;
+      sandbox_id: string | null;
+      payload: string;
+    }[];
+    return rows.map((r) => ({
+      seq: r.seq,
+      sessionId,
+      ts: r.ts,
+      type: r.type,
+      ...(r.sandbox_id !== null ? { sandboxId: r.sandbox_id } : {}),
+      ...JSON.parse(r.payload),
+    })) as SessionEvent[];
+  }
+
+  /** 会话存在吗（有任何事件 = 存在）。比 load().length 便宜一整个会话的 JSON.parse */
+  has(sessionId: string): boolean {
+    return this.prep("SELECT 1 AS one FROM events WHERE session_id = ? LIMIT 1").get(sessionId) !== undefined;
+  }
+
+  /** 单个会话的标题投影——和 sessions() 同一条规则（最后一条 session_renamed
+      胜出，否则第一条 user_message 首行，否则 null）。discovery 只要标题时
+      不必为它全量 load 整段日志 */
+  titleOf(sessionId: string): string | null {
+    const row = this.prep(
+      `SELECT (SELECT json_extract(payload, '$.title') FROM events
+                WHERE session_id = ? AND type = 'session_renamed'
+                ORDER BY seq DESC LIMIT 1) AS renamed,
+              (SELECT json_extract(payload, '$.content') FROM events
+                WHERE session_id = ? AND type = 'user_message'
+                ORDER BY seq LIMIT 1) AS first`
+    ).get(sessionId, sessionId) as { renamed: string | null; first: string | null };
+    return row.renamed?.trim() || row.first?.split("\n")[0]?.trim() || null;
+  }
+
   /** 按 seq 闭区间读一小段事件（session_search 的 scroll 模式用）。
       原来走 load() 全量读整个会话再 filter 出 ±5 条——PK 索引本来就能直接
       服务这个区间查询，长会话不必为 11 条事件付整份 JSON.parse */

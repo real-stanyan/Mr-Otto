@@ -303,3 +303,51 @@ describe("EventStore", () => {
     });
   });
 });
+
+// issue #279：turn 收口钩子的尾段读取靠这批小查询，语义各自钉死
+describe("尾段读取原语（issue #279）", () => {
+  it("lastSeqOf：最后一条的 seq；beforeSeq 只看它之前（不含）；没有 = -1", () => {
+    store.append(userMsg("s1", "一"));                                        // seq 0
+    store.append({ sessionId: "s1", ts: 2, type: "turn_ended", outcome: "completed" }); // seq 1
+    store.append(userMsg("s1", "二"));                                        // seq 2
+    expect(store.lastSeqOf("s1", "user_message")).toBe(2);
+    expect(store.lastSeqOf("s1", "user_message", 2)).toBe(0);
+    expect(store.lastSeqOf("s1", "turn_ended", 1)).toBe(-1);
+    expect(store.lastSeqOf("nope", "user_message")).toBe(-1);
+  });
+
+  it("countType：afterSeq 之后（不含）某类型的条数", () => {
+    store.append(userMsg("s1", "一")); // 0
+    store.append(userMsg("s1", "二")); // 1
+    store.append({ sessionId: "s1", ts: 3, type: "memory_nudge", userTurns: 10 }); // 2
+    store.append(userMsg("s1", "三")); // 3
+    expect(store.countType("s1", "user_message")).toBe(3);
+    expect(store.countType("s1", "user_message", 2)).toBe(1);
+    expect(store.countType("nope", "user_message")).toBe(0);
+  });
+
+  it("eventsOfType：某类型全部事件，seq 升序，形状和 load 一致", () => {
+    store.append(userMsg("s1", "一"));
+    const c1 = store.append({ sessionId: "s1", ts: 2, type: "section_classified", title: "甲", model: "c" });
+    store.append(userMsg("s1", "二"));
+    const c2 = store.append({ sessionId: "s1", ts: 4, type: "section_classified", title: null, model: "c" });
+    expect(store.eventsOfType("s1", "section_classified")).toEqual([c1, c2]);
+    expect(store.eventsOfType("s1", "memory_nudge")).toEqual([]);
+  });
+
+  it("has：有任何事件 = 存在", () => {
+    store.append(userMsg("s1", "一"));
+    expect(store.has("s1")).toBe(true);
+    expect(store.has("nope")).toBe(false);
+  });
+
+  it("titleOf：改名胜出，否则第一条 user_message 首行，否则 null（同 sessions() 规则）", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/w" });
+    expect(store.titleOf("s1")).toBeNull();
+    store.append(userMsg("s1", "修登录\n第二行不要"));
+    expect(store.titleOf("s1")).toBe("修登录");
+    store.append({ sessionId: "s1", ts: 3, type: "session_renamed", title: "手动改的名" });
+    expect(store.titleOf("s1")).toBe("手动改的名");
+    expect(store.titleOf("nope")).toBeNull();
+  });
+});
