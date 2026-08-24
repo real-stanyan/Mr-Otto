@@ -1,46 +1,49 @@
 import { describe, it, expect, vi } from "vitest";
 import { createUpdater, type UpdaterDeps } from "../../src/main/updater.js";
-import { LATEST_RELEASE_API } from "../../src/main/updaterCore.js";
+import { LATEST_RELEASE_API, UPDATE_ASSET_SUFFIX } from "../../src/main/updaterCore.js";
 import type { UpdaterState } from "../../src/shared/shellBridge.js";
 
-const ZIP_NAME = "Mr Otto-1.1.0-arm64-mac.zip";
-const ZIP_SHA = "aa".repeat(32);
+const ZIP_NAME = "Mr.Otto-1.1.0-arm64-mac.zip";
+const EXE_NAME = "Mr.Otto-1.1.0-win-x64-setup.exe";
+const ASSET_SHA = "aa".repeat(32);
 
-/** releases/latest 的最小可用响应 */
+/** releases/latest 的最小可用响应（mac + win 资产都带） */
 function releaseJson(over: object = {}) {
   return JSON.stringify({
     tag_name: "v1.1.0",
     html_url: "https://page",
     assets: [
       { name: ZIP_NAME, browser_download_url: "https://dl/zip" },
+      { name: EXE_NAME, browser_download_url: "https://dl/exe" },
       { name: "SHA256SUMS", browser_download_url: "https://dl/sums" },
     ],
     ...over,
   });
 }
 
-/** 全绿路径的假依赖；单测按需拧坏其中一颗螺丝 */
+const SUMS = `${ASSET_SHA}  ${ZIP_NAME}\n${ASSET_SHA}  ${EXE_NAME}\n`;
+
+/** 全绿路径的假依赖（mac 席位形状）；单测按需拧坏其中一颗螺丝 */
 function makeDeps(over: Partial<UpdaterDeps> = {}) {
   const states: UpdaterState[] = [];
   const deps: UpdaterDeps = {
     currentVersion: "1.0.0",
-    exePath: "/Applications/Mr Otto.app/Contents/MacOS/Mr Otto",
+    assetSuffix: UPDATE_ASSET_SUFFIX.darwin,
     updatesDir: "/tmp/updates",
     fetchText: vi.fn(async (url: string) => {
       if (url === LATEST_RELEASE_API) return releaseJson();
-      if (url === "https://dl/sums") return `${ZIP_SHA}  ${ZIP_NAME}\n`;
+      if (url === "https://dl/sums") return SUMS;
       throw new Error(`unexpected fetch ${url}`);
     }),
     downloadFile: vi.fn(async (_u, _d, onProgress) => {
       onProgress(50, 100);
       onProgress(100, 100);
     }),
-    fileSha256: vi.fn(async () => ZIP_SHA),
-    extractZip: vi.fn(async () => {}),
-    findAppBundle: vi.fn(async () => "/tmp/updates/extracted/Mr Otto.app"),
+    fileSha256: vi.fn(async () => ASSET_SHA),
     resetDir: vi.fn(async () => {}),
-    canWrite: vi.fn(() => true),
-    spawnSwapAndQuit: vi.fn(),
+    preflight: vi.fn(() => null),
+    stage: vi.fn(async () => "/tmp/updates/extracted/Mr Otto.app"),
+    installAndQuit: vi.fn(),
     openExternal: vi.fn(async () => {}),
     onState: (s) => states.push(s),
     ...over,
@@ -64,12 +67,44 @@ describe("updater 状态机", () => {
     const dl = states[2] as Extract<UpdaterState, { phase: "downloading" }>;
     expect(dl.received).toBe(50);
     expect(dl.total).toBe(100);
+    expect(deps.stage).toHaveBeenCalledWith(`/tmp/updates/${ZIP_NAME}`);
 
     await u.installAndRestart();
-    expect(deps.spawnSwapAndQuit).toHaveBeenCalledWith(
-      "/Applications/Mr Otto.app",
-      "/tmp/updates/extracted/Mr Otto.app",
+    expect(deps.installAndQuit).toHaveBeenCalledWith("/tmp/updates/extracted/Mr Otto.app");
+  });
+
+  it("win 席位：按 exe 后缀认资产、免解包暂存、装的是安装器（issue #314）", async () => {
+    const { deps } = makeDeps({
+      assetSuffix: UPDATE_ASSET_SUFFIX.win32,
+      stage: vi.fn(async (p: string) => p), // win 的 stage 是恒等：产物即安装器
+    });
+    const u = createUpdater(deps);
+    expect((await u.checkNow()).phase).toBe("ready");
+    expect(deps.downloadFile).toHaveBeenCalledWith(
+      "https://dl/exe",
+      `/tmp/updates/${EXE_NAME}`,
+      expect.any(Function),
     );
+    await u.installAndRestart();
+    expect(deps.installAndQuit).toHaveBeenCalledWith(`/tmp/updates/${EXE_NAME}`);
+  });
+
+  it("Release 缺自家平台资产 → idle 当没有新版（win 端遇到 mac-only 的老 Release）", async () => {
+    const { deps } = makeDeps({
+      assetSuffix: UPDATE_ASSET_SUFFIX.win32,
+      fetchText: vi.fn(async (url: string) => {
+        if (url === LATEST_RELEASE_API)
+          return releaseJson({
+            assets: [
+              { name: ZIP_NAME, browser_download_url: "https://dl/zip" },
+              { name: "SHA256SUMS", browser_download_url: "https://dl/sums" },
+            ],
+          });
+        throw new Error("unexpected");
+      }),
+    });
+    expect((await createUpdater(deps).checkNow()).phase).toBe("idle");
+    expect(deps.downloadFile).not.toHaveBeenCalled();
   });
 
   it("远端不比本地新 → 回 idle，不下载", async () => {
@@ -79,21 +114,25 @@ describe("updater 状态机", () => {
     expect(deps.downloadFile).not.toHaveBeenCalled();
   });
 
-  it("Translocation → manual，不下载", async () => {
+  it("preflight 回 reason → manual，不下载", async () => {
     const { deps } = makeDeps({
-      exePath: "/private/var/folders/x/AppTranslocation/AB/d/Mr Otto.app/Contents/MacOS/Mr Otto",
+      preflight: vi.fn(() => "app 运行在受限路径（App Translocation），只能手动更新"),
     });
     const u = createUpdater(deps);
     const s = await u.checkNow();
     expect(s.phase).toBe("manual");
+    expect((s as Extract<UpdaterState, { phase: "manual" }>).reason).toContain("Translocation");
     expect(deps.downloadFile).not.toHaveBeenCalled();
   });
 
-  it(".app 父目录不可写 → manual，reason 带路径", async () => {
-    const { deps } = makeDeps({ canWrite: vi.fn(() => false) });
+  it("stage 丢异常（zip 里没 .app）→ error", async () => {
+    const { deps } = makeDeps({
+      stage: vi.fn(async () => {
+        throw new Error("zip 解开后没找到 .app——发布产物形状不对");
+      }),
+    });
     const s = await createUpdater(deps).checkNow();
-    expect(s.phase).toBe("manual");
-    expect((s as Extract<UpdaterState, { phase: "manual" }>).reason).toContain("/Applications");
+    expect(s.phase).toBe("error");
   });
 
   it("SHA256 不匹配 → error 且清掉下载目录；Release 缺 SHA256SUMS → error 拒下", async () => {
@@ -121,7 +160,7 @@ describe("updater 状态机", () => {
         calls++;
         if (calls === 1) throw new Error("offline");
         if (url === LATEST_RELEASE_API) return releaseJson();
-        return `${ZIP_SHA}  ${ZIP_NAME}\n`;
+        return SUMS;
       }),
     });
     const u = createUpdater(deps);
@@ -136,7 +175,7 @@ describe("updater 状态机", () => {
         (url: string) =>
           new Promise<string>((res) => {
             if (url === LATEST_RELEASE_API) resolveFetch = res;
-            else res(`${ZIP_SHA}  ${ZIP_NAME}\n`);
+            else res(SUMS);
           }),
       ),
     });
@@ -162,6 +201,6 @@ describe("updater 状态机", () => {
     const { deps } = makeDeps();
     const u = createUpdater(deps);
     await u.installAndRestart();
-    expect(deps.spawnSwapAndQuit).not.toHaveBeenCalled();
+    expect(deps.installAndQuit).not.toHaveBeenCalled();
   });
 });

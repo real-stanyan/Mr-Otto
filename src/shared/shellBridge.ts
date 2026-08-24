@@ -686,7 +686,8 @@ export interface IslandSettings {
 /** OTA 更新器状态（main/updater.ts 维护并推送，设置页「关于与更新」卡消费）。
     无开发者账号签不了名（ADR-0026）→ electron-updater 走不通，自研换包（ADR-0075）。
     manual = 检测到新版但本机没法自动换包（App Translocation / 目录不可写），
-    只能提示用户去 Release 页手动装；disabled = 开发模式/非 mac，压根不查 */
+    只能提示用户去 Release 页手动装；disabled = 开发模式/不支持的平台
+    （mac 换 .app、win 静默重装安装器，见 ADR-0081），压根不查 */
 export type UpdaterState =
   | { phase: "idle"; currentVersion: string }
   | { phase: "checking"; currentVersion: string }

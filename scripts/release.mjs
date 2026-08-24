@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // 本地发布一条龙（ADR-0075）：npm run release -- patch|minor|major
-// 升版本号 → dist:mac（dmg + zip）→ SHA256SUMS → gh release create → push。
+// 升版本号 → dist:mac（dmg + zip）+ dist:win（exe）→ SHA256SUMS → gh release create → push。
+// win 的 exe 必须每个 release 都带（issue #314）：win 端 OTA 按 -win-x64-setup.exe
+// 后缀认资产、按 SHA256SUMS 校验，缺了 exe 那个版本对 win 用户就是不存在。
 // 为什么本地不走 CI：单人发版，本机就是构建环境（Swift island + native 模块都在），
 // 管线越短越不容易断。app 内更新器（src/main/updater.ts）消费这里传上去的三个资产。
 //
@@ -39,13 +41,18 @@ const tag = `v${version}`;
 console.log(`\n== 构建 ${tag} ==\n`);
 
 run("npm", ["run", "dist:mac"]);
+run("npm", ["run", "dist:win"]);
 
 // 只收本次版本号的产物——dist/ 里可能躺着上次构建的旧包
 const assets = readdirSync("dist").filter(
-  (f) => f.includes(`-${version}-`) && (f.endsWith(".dmg") || f.endsWith("-arm64-mac.zip")),
+  (f) =>
+    f.includes(`-${version}-`) &&
+    (f.endsWith(".dmg") || f.endsWith("-arm64-mac.zip") || f.endsWith("-win-x64-setup.exe")),
 );
-if (assets.length !== 2) {
-  console.error(`dist/ 里没找齐 ${version} 的 dmg + zip，只有：${assets.join(", ") || "（空）"}`);
+if (assets.length !== 3) {
+  console.error(
+    `dist/ 里没找齐 ${version} 的 dmg + zip + exe，只有：${assets.join(", ") || "（空）"}`,
+  );
   process.exit(1);
 }
 
