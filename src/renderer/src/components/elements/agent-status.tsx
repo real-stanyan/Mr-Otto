@@ -15,16 +15,19 @@
 //  ③ 加一个 onSelect —— 整张卡可点，点进去是这一行对应的子会话（时间线上这
 //     张卡存在的意义就是"点进去看过程"）。给了 onSelect 才具备按钮语义
 //     （role/tabIndex/回车-空格键），没给就保持纯展示，不强加交互。
+//  ④′ 加一档 failed —— registry 原版只有 working/waiting/done，于是"被按停的"和
+//     "顺利跑完的"长得一模一样（issue #267：日志里写着 status:"error"，卡片挂着
+//     绿勾）。失败态是红叉，不是另一种绿。
 //  ④ elapsed 之外加一个 fact —— 收口后显示"N 步 · Xk tokens"这类从子会话日志
 //     算出来的事实，不是花哨的装饰。fact 存在时优先于 elapsed（done 状态本来
 //     就不显示 elapsed，两者不会同时出现）。
 
 import type { ComponentProps, KeyboardEvent } from "react";
-import { BotIcon, CheckIcon } from "lucide-react";
+import { BotIcon, CheckIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
 
-export type AgentState = "working" | "waiting" | "done";
+export type AgentState = "working" | "waiting" | "done" | "failed";
 
 export interface StatusStep {
   state: AgentState;
@@ -91,6 +94,8 @@ export function AgentStatus({
       <BotIcon aria-hidden className="text-foreground/60 size-3.5 shrink-0" />
       {state === "done" ? (
         <CheckIcon aria-hidden className="size-3 shrink-0 text-emerald-500" />
+      ) : state === "failed" ? (
+        <XIcon aria-hidden className="size-3 shrink-0 text-red-500" />
       ) : (
         <span
           aria-hidden
@@ -105,7 +110,7 @@ export function AgentStatus({
       <span className="min-w-0 max-w-80 flex-1 truncate text-xs">{label}</span>
       {fact !== undefined ? (
         <span className={cn(mono, "text-foreground/35 shrink-0 tabular-nums")}>{fact}</span>
-      ) : elapsed !== undefined && state !== "done" ? (
+      ) : elapsed !== undefined && state !== "done" && state !== "failed" ? (
         <span className={cn(mono, "text-foreground/30 shrink-0 tabular-nums")}>{elapsed}</span>
       ) : null}
       {model !== undefined && (

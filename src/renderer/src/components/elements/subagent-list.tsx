@@ -14,6 +14,10 @@
 //     这一刻的事实）。
 //  ③ 加一个 onSelectAgent —— 每一行可点，点进去是这一行对应的子会话。给了才
 //     具备按钮语义（role/tabIndex/回车-空格键），没给保持纯展示。
+//  ③″ 加一个 state 字段 —— registry 原版按 `index < completedCount` 的**位次**
+//     判完成（串行执行下完成的总是前缀）。位次答不了"这一条是成功还是失败"：
+//     被按停的子任务照样有 tool_result、照样算"完成"，于是挂着绿勾（issue #267）。
+//     给了 state 就按它画（含 failed 的红叉 + 红色色带），没给保持原来的位次判定。
 //  ③′ 加 task / id 两个字段 —— 见 SubagentItem 上的注释（同一个 agent 被派
 //     两次时，registry 原版的 key={name} 会撞车）。
 //  ④ 去掉入场/交错动效（完成时 CheckIcon 的 zoom-in、summary 卡的 slide-in）
@@ -26,10 +30,11 @@
 //     写在这里而不是当成疏漏，免得下一次升级/复核把它"修"回 160ms。
 
 import type { ComponentProps, KeyboardEvent, ReactNode } from "react";
-import { BotIcon, CheckIcon, Loader2Icon } from "lucide-react";
+import { BotIcon, CheckIcon, Loader2Icon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { mono, paper } from "@/lib/surfaces.js";
 import { pct } from "@/lib/range.js";
+import type { AgentState } from "./agent-status.js";
 
 export interface SubagentItem {
   name: string;
@@ -39,6 +44,9 @@ export interface SubagentItem {
   /** 派下去那件事的首行（spec §五：名字 + 任务首行）。同一条消息里把同一个
       agent 派两次是常事，只印名字的话两行一模一样，看不出谁是谁 */
   task?: string;
+  /** 这一条此刻的状态。给了就按它画，不给退回 `index < completedCount` 的位次判定
+      （见文件头 ③″）。失败态必须由调用方给：位次推不出来 */
+  state?: AgentState;
   /** React key。**不能用 name**：同一个 agent 派两次，两行同名 = 重复 key，
       React 会认错行（状态串行、重排丢失）。调用方传 toolCallId */
   id?: string;
@@ -86,7 +94,9 @@ export function SubagentList({
       {...props}
     >
       {agents.map((agent, index) => {
-        const done = index < completedCount;
+        const state = agent.state ?? (index < completedCount ? "done" : "working");
+        const done = state === "done";
+        const failed = state === "failed";
         const width = progress[index] ?? 0;
         const clickable = onSelectAgent !== undefined;
         const expanded = expandedIndex === index;
@@ -119,6 +129,8 @@ export function SubagentList({
               <BotIcon className="text-foreground/60 size-3.5 shrink-0" />
               {done ? (
                 <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
+              ) : failed ? (
+                <XIcon className="size-3.5 shrink-0 text-red-500" />
               ) : (
                 <Loader2Icon className="text-foreground/35 size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
               )}
@@ -141,7 +153,7 @@ export function SubagentList({
               <span
                 className={cn(
                   "block h-full rounded-full transition-[width] duration-700 motion-reduce:transition-none",
-                  done ? "bg-emerald-500/70" : "bg-foreground/60",
+                  done ? "bg-emerald-500/70" : failed ? "bg-red-500/70" : "bg-foreground/60",
                 )}
                 style={{ width: `${pct(width, 100)}%` }}
               />

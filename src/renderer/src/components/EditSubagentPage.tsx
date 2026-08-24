@@ -10,6 +10,13 @@
 //
 // 内置那份也走这一页,只读展示 + 「改成我自己的一份」:在当前作用域写出同名定义
 // 盖住它(materialize 的取舍见 SubagentSettings 的头注)。
+//
+// 「磁盘上的只读定义」这一档没有了(issue #268):ADR-0056 撤掉 ~/.claude/agents
+// 之后,subagentRoots 返回的两条根 readOnly 都是 false —— 不改不了的只剩内置那三份。
+// 于是原来那条「只读 → 复制一份(freeCopyName 取 -copy / -copy-2)→ 编辑副本」的
+// 分支整条删了,连同它的取名函数。将来真接了第二层只读来源(比如团队共享目录),
+// 这段 UI 重写,因为那时要一并处理的是同步和冲突,不只是取个不重名的名字。
+// SubagentDef.readOnly 这个字段留着 —— 它是数据模型,不是死代码。
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge.js";
@@ -21,7 +28,6 @@ import { SubagentFields, useSubagentDraft, ERR_TXT } from "./SubagentFields.js";
 import { useChat } from "../store.js";
 import type { SubagentDef } from "../../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
-import { freeCopyName } from "../lib/subagentScopes.js";
 import { createSubagentFile, fileFieldsOf } from "../lib/createSubagentFile.js";
 import type { SubagentScopeView } from "../lib/useSubagentScope.js";
 
@@ -29,10 +35,14 @@ export function EditSubagentPage({
   def,
   scope,
   onBack,
+  onMaterialized,
 }: {
   def: SubagentDef;
   scope: SubagentScopeView;
   onBack: () => void;
+  /** 刚在磁盘上写出的那份的 path —— 调用方据此把这一页换成"编辑新那份"。
+      不给就退回原地显示一句「已写出…」（见 materialize 里的注释） */
+  onMaterialized?: (path: string) => void;
 }) {
   const saveSubagent = useChat((s) => s.saveSubagent);
   const draft = useSubagentDraft(def);
@@ -43,7 +53,8 @@ export function EditSubagentPage({
   const [copying, setCopying] = useState(false);
   const [copiedAs, setCopiedAs] = useState<string | null>(null);
 
-  const editable = !def.builtin && !def.readOnly;
+  // 改不了的只剩内置那三份(见文件头):磁盘上的定义一律可写
+  const editable = !def.builtin;
 
   const save = async () => {
     if (draft.blocked) return;
@@ -69,9 +80,7 @@ export function EditSubagentPage({
   // 能改的副本,不是把眼前这份顶掉;顶掉该是用户明说的动作)。
   // 抄的都是**磁盘/代码现状**(def)而不是草稿:这两种都没有"改了但没存"的状态
   const materialize = async () => {
-    const name = def.builtin
-      ? def.name
-      : freeCopyName(def.name, useChat.getState().subagents.map((d) => d.name));
+    const name = def.name; // 同名覆盖:materialize 只有内置那条路走得到
     setCopying(true);
     setCopyError(null);
     setCopiedAs(null);
@@ -82,8 +91,20 @@ export function EditSubagentPage({
       scopeDir: scope.scopeDir,
     });
     setCopyError(err);
-    if (!err) setCopiedAs(name);
     setCopying(false);
+    if (err) return;
+
+    // 走到这儿的用户刚说了「我要改它」。原来这里只 setCopiedAs 一句提示，
+    // 而内置那条路上**那句提示永远看不到**（issue #268）：这一页是调用方按
+    // rowKey 从清单里找 def 的，materialize 之后 `builtin:<名字>` 这个 key
+    // 就没了（它变成一份磁盘定义了），组件当场卸载 —— 用户看到的是"按钮按下去、
+    // 页面跳走、没有任何说法"。所以直接把这一页换成新那份的编辑页：
+    // 那份的路径行 + 「已自定义」徽章 + 能改的表单，本身就是最实在的回执。
+    const made = useChat.getState().subagents.find((d) => d.name === name && !d.builtin);
+    if (made && onMaterialized) onMaterialized(made.path);
+    // 找不到（理论不可达：createSubagentFile 成功就意味着它在清单里）或者调用方
+    // 没给这条路时，退回原来那句提示——它在只读定义那条路上仍然是有效反馈
+    else setCopiedAs(name);
   };
 
   const copyPath = async () => {
@@ -115,9 +136,6 @@ export function EditSubagentPage({
               内置 · 已自定义
             </Badge>
           )}
-          {!def.builtin && def.readOnly && (
-            <Badge variant="secondary" className="shrink-0">只读</Badge>
-          )}
           {!def.builtin && scope.showScope && (
             <Badge variant="outline" className="shrink-0 text-muted-foreground" title={`来自 ${def.source}`}>
               {def.scope === "workspace" ? "工作区" : "用户"}
@@ -139,7 +157,6 @@ export function EditSubagentPage({
         ) : (
           <p className={HINT} title={def.path}>
             <code>{def.path}</code>
-            {def.readOnly && " —— 这份是只读的，想改就先复制到当前作用域。"}
           </p>
         )}
 
@@ -164,7 +181,7 @@ export function EditSubagentPage({
                 {saving ? "保存中…" : draft.dirty ? "保存" : "已保存"}
               </Button>
             )}
-            {!editable && (
+            {def.builtin && (
               <Button
                 variant="outline"
                 size="sm"
@@ -172,11 +189,7 @@ export function EditSubagentPage({
                 title={scope.scopeDir}
                 onClick={() => void materialize()}
               >
-                {copying
-                  ? "写入中…"
-                  : def.builtin
-                    ? "改成我自己的一份"
-                    : `复制到${scope.current.label}这一层`}
+                {copying ? "写入中…" : "改成我自己的一份"}
               </Button>
             )}
             {!def.builtin && (

@@ -202,14 +202,14 @@ test("#142-15 跑到一半按停止：父会话拿到的是 error 且文案说�
       sqlite(otto, "select count(*) from events where type='turn_ended' and payload like '%aborted%'")
     ).not.toBe("0");
 
-    // 界面上能看见的只有 turn 那一层的「已中断」
+    // 界面上：turn 那一层的「已中断」
     await expect(win.getByText("已中断")).toBeVisible();
 
-    // 现状记一笔（不在本次改动范围内，另开单）：那张派活卡此刻显示的是
-    // **绿勾 + 「0 步 · 0 tokens」** —— subagentRowState 只看「有没有 tool_result」，
-    // 不看它是 ok 还是 error，AgentState 里也没有 error 这一档。也就是说
-    // 「被我按停的」和「顺利跑完的」在时间线上长得一模一样。日志是对的，界面在说谎。
-    await expect(win.getByRole("button", { name: /slowpoke · 慢慢数到一百/ })).toContainText("0 步");
+    // 卡片那一层也得说实话（issue #267）：被按停的子任务是**红叉**，
+    // 不是绿勾。曾经这里两种情况长得一模一样 —— subagentRowState 只问
+    // 「有没有 tool_result」，不问它是 ok 还是 error
+    await expect(card.locator("svg.lucide-x")).toBeVisible();
+    await expect(card.locator("svg.lucide-check")).toHaveCount(0);
 
     expectNoRendererErrors(otto);
   } finally {

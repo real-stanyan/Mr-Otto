@@ -76,26 +76,26 @@ test("#142-7 内置那份「改成我自己的一份」；ADR-0056 撤掉的 ~/.
     await expect(materialize).toHaveAttribute("title", `~/${CONFIG_DIR}/agents`);
     await materialize.click();
 
-    // 现状记一笔：点完会**直接弹回列表**，EditSubagentPage 里那句「已写出「X」到…」
-    // 永远看不到 —— 那一页是按 rowKey 找 def 的，materialize 之后 `builtin:Explore`
-    // 这个 key 没了（变成磁盘定义了），组件当场卸载。人在真机上点这一下，得到的是
-    // 「按钮按下去、页面跳走、没有任何说法」。不在这里改，另开单。
+    // 点完**留在编辑页**，只是这一页现在编的是磁盘上那份（issue #268）：
+    // 走到这一步的用户刚说了「我要改它」，原来却会被甩回列表、且那句
+    // 「已写出「X」到…」永远看不到（组件按 rowKey 找 def，materialize 之后
+    // `builtin:Explore` 这个 key 当场失效）
+    await expect(win.getByLabel("Description")).toBeEnabled({ timeout: 10_000 });
+    // 这一页的身份换了：不再是「内置」，而是「内置 · 已自定义」+ 磁盘路径
+    await expect(win.getByText("内置 · 已自定义")).toBeVisible();
+    await expect(win.getByText(new RegExp(`${CONFIG_DIR}/agents/Explore\\.md$`))).toBeVisible();
 
-    // 落盘：同名定义写进当前作用域，内容抄的是内置那份
-    await expect(win.getByRole("button", { name: /^Explore/ })).toHaveCount(1, { timeout: 10_000 });
     const written = readFileSync(join(userAgentsDir, "Explore.md"), "utf8");
     expect(written).toMatch(/^---\nname: Explore\n/);
-    // 盖住了内置那份：清单里仍然只有一行 Explore（不是内置一行 + 磁盘一行），
-    // 它留在「内置」那一栏、挂着「内置 · 已自定义」的徽章 —— 那份磁盘定义是
-    // 内置那份的覆盖层，不是另一个东西
+
+    // 回列表：清单里仍然只有一行 Explore（不是内置一行 + 磁盘一行），
+    // 它留在「内置」那一栏挂着「已自定义」—— 那份文件是内置那份的覆盖层
+    await win.getByRole("button", { name: "返回列表" }).click();
+    await expect(win.getByRole("button", { name: /^Explore/ })).toHaveCount(1);
     await expect(win.getByText("内置子智能体").locator("xpath=following-sibling::span[1]")).toHaveText(
       "3 项"
     );
     await expect(win.getByRole("button", { name: /^Explore/ })).toContainText("已自定义");
-
-    // 这一份现在是自己的：点开能改（Description 不再禁用）
-    await win.getByRole("button", { name: /^Explore/ }).click();
-    await expect(win.getByLabel("Description")).toBeEnabled();
 
     expectNoRendererErrors(otto);
   } finally {

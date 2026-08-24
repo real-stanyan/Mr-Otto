@@ -38,15 +38,19 @@ function spawned(seq: number, toolCallId: string, agent = "reviewer"): SessionEv
   };
 }
 
-function toolResult(seq: number, toolCallId: string): SessionEvent {
+function toolResult(
+  seq: number,
+  toolCallId: string,
+  status: "ok" | "error" | "denied" = "ok"
+): SessionEvent {
   return {
     sessionId: "parent",
     seq,
     ts: seq * 1000,
     type: "tool_result",
     toolCallId,
-    status: "ok",
-    output: "报告正文",
+    status,
+    output: status === "ok" ? "报告正文" : "子任务被用户中断。",
   };
 }
 
@@ -130,6 +134,23 @@ describe("subagentRowState —— 状态全从父会话自己的日志/实时镜
   it("done 优先于 waiting：哪怕审批状态还没来得及清，有结果就是有结果", () => {
     const index = buildToolIndex([spawn, toolResult(3, "call_1")]);
     expect(subagentRowState(spawn, index, true, false)).toBe("done");
+  });
+
+  // issue #267：曾经这里只问"有没有 tool_result"，于是被用户按停的子任务和
+  // 顺利跑完的在时间线上长得一模一样（绿勾 + 「0 步 · 0 tokens」）
+  it("tool_result 是 error（比如被用户按停）→ failed，不是 done", () => {
+    const index = buildToolIndex([spawn, toolResult(3, "call_1", "error")]);
+    expect(subagentRowState(spawn, index, false, false)).toBe("failed");
+  });
+
+  it("tool_result 是 denied → 同样是 failed", () => {
+    const index = buildToolIndex([spawn, toolResult(3, "call_1", "denied")]);
+    expect(subagentRowState(spawn, index, false, false)).toBe("failed");
+  });
+
+  it("failed 也优先于 waiting：收口了就是收口了，成败另说", () => {
+    const index = buildToolIndex([spawn, toolResult(3, "call_1", "error")]);
+    expect(subagentRowState(spawn, index, true, true)).toBe("failed");
   });
 });
 
