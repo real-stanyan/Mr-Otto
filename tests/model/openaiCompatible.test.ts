@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOpenAICompatibleAdapter } from "../../src/model/openaiCompatible.js";
+import {
+  createOpenAICompatibleAdapter,
+  localTiming,
+  LOCAL_IDLE_TIMEOUT_MS,
+} from "../../src/model/openaiCompatible.js";
 
 /** 把字符串数组变成字节流——每个元素模拟一次网络分块（分块边界 ≠ 行边界） */
 function streamOf(parts: string[]): ReadableStream<Uint8Array> {
@@ -563,5 +567,19 @@ describe("思考过程的字段名不止一个", () => {
     const reply = await adapter.chat([], undefined, (_t, k) => kinds.push(k));
     expect(reply.reasoning).toBe("先想想");
     expect(kinds).toEqual(["reasoning", "content"]);
+  });
+});
+
+describe("localTiming — 本机推理的看门狗放宽（issue #300）", () => {
+  it("keyless（本机 Ollama）：headers/idle 都放宽到 10 分钟 —— 冷加载 + prefill 是干活不是挂死", () => {
+    expect(localTiming({ keyless: true })).toEqual({
+      headersTimeoutMs: LOCAL_IDLE_TIMEOUT_MS,
+      idleTimeoutMs: LOCAL_IDLE_TIMEOUT_MS,
+    });
+    expect(LOCAL_IDLE_TIMEOUT_MS).toBe(600_000);
+  });
+
+  it("云端型号：{} = 沿用默认看门狗（30s/90s，那里的静默才是挂死）", () => {
+    expect(localTiming({ keyless: false })).toEqual({});
   });
 });
