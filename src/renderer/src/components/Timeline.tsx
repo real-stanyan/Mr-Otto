@@ -395,6 +395,25 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "context_compacted":
       return <CompactSummaryRow event={event} />;
 
+    // 钩子干预（issue #350）：模型视野被改写的审计事实——一行说清谁、对哪次调用、
+    // 干了什么。原始输出/改后参数在回放（轨迹视图读原始事件）里看
+    case "tool_hook": {
+      const verb =
+        event.action === "block"
+          ? "拦截"
+          : event.action === "revise_args"
+            ? "改写入参"
+            : event.action === "reject"
+              ? "拒绝结果"
+              : "注入反馈";
+      return (
+        <div className={AUDIT}>
+          ⛩ 钩子「{event.hook}」{event.phase === "pre" ? "执行前" : "执行后"}{verb}
+          {event.message ? `：${event.message}` : ""}
+        </div>
+      );
+    }
+
     case "micro_compacted":
       return (
         <div className={AUDIT}>

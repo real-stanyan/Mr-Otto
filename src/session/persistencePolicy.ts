@@ -66,6 +66,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "memory_nudge":
     case "micro_compacted":
     case "session_autotitled":
+    case "tool_hook": // 钩子干预是"模型视野被改写"的事实，投影推导依赖它
       return true;
 
     // ── transient：live 投影的临时燃料，落盘即违反「终态覆盖」契约 ──

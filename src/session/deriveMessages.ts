@@ -305,6 +305,17 @@ export function deriveMessages(
   // 规则和用量估算共用 absorbedIndexes：圆环和真实 prompt 一把尺子
   const micro = absorbedIndexes(events, barren);
 
+  // PostToolUse feedback（issue #350）：日志里 tool_result 存的是原始输出，
+  // 模型看到的版本要把钩子反馈包装进去——包装规则在这（投影），事实在
+  // tool_hook 事件里，模型视野因此仍可从日志逐字节推导。多条反馈按序拼接
+  const feedbackByCall = new Map<string, string[]>();
+  for (const e of events) {
+    if (e.type !== "tool_hook" || e.action !== "feedback" || e.message === undefined) continue;
+    const list = feedbackByCall.get(e.toolCallId) ?? [];
+    list.push(e.message);
+    feedbackByCall.set(e.toolCallId, list);
+  }
+
   // 插话顺序修复（issue #344）：steer 落盘时工具组可能正开着——日志序是
   // assistant(toolCalls) → user_message(插话) → tool_result…，照事件位置直投就是
   // OpenAI 方言非法序列（tool 消息必须紧跟它的 assistant），自愈层还会误判
@@ -382,14 +393,20 @@ export function deriveMessages(
         // ok / error / denied 一视同仁：都是"这个调用的结果"。
         // 老区（保真边界之前）的长输出截断——工具输出是上下文里最肥的部分
         if (!knownToolCallIds.has(event.toolCallId)) break; // 孤儿收口事件（见上）
-        messages.push({
-          role: "tool",
-          tool_call_id: event.toolCallId,
-          content:
+        {
+          const clipped =
             compression && i < boundary
               ? clip(event.output, compression.maxOldToolOutputChars, "工具输出")
-              : event.output,
-        });
+              : event.output;
+          const fb = feedbackByCall.get(event.toolCallId);
+          messages.push({
+            role: "tool",
+            tool_call_id: event.toolCallId,
+            // 反馈包装（issue #350）：模型消费者看到 原始输出 + 钩子反馈；
+            // 无反馈时逐字节不变（老日志回归测试的前提）
+            content: fb ? `${clipped}\n\n[工具钩子反馈] ${fb.join("\n")}` : clipped,
+          });
+        }
         pendingToolIds.delete(event.toolCallId);
         if (pendingToolIds.size === 0) flushDeferred(); // 组齐了，攒着的插话跟上
         break;
@@ -514,6 +531,12 @@ export function deriveMessages(
       case "memory_nudge":
       // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
       case "session_autotitled":
+        break;
+
+      // 钩子干预事件本身不直接投影（issue #350）：pre/block 与 post/reject 的
+      // 模型可见面已在配对的 tool_result 里；post/feedback 的包装在上面的
+      // tool_result case 读 feedbackByCall 完成
+      case "tool_hook":
         break;
 
       case "turn_ended":

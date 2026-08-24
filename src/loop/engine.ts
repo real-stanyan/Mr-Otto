@@ -11,8 +11,8 @@ import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompa
 import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
-import { runPipeline } from "./middleware.js";
-import type { ToolCallContext, ToolMiddleware, ToolOutcome } from "./middleware.js";
+import { runPipeline, hookMatches } from "./middleware.js";
+import type { ToolCallContext, ToolHook, ToolMiddleware, ToolOutcome } from "./middleware.js";
 import { createApprovalGate } from "./approvalGate.js";
 import type { Approver } from "./approvalGate.js";
 import { createReasoningClock } from "./reasoningClock.js";
@@ -64,6 +64,9 @@ export interface LoopEngineOptions {
   /** Deferred 工具的可见集（issue #348）：活 Set 引用，tool_search 命中时写入，
       这里每轮过滤声明表时读。不给 = deferred 工具永不可见（等同 hidden） */
   deferredExposed?: ReadonlySet<string>;
+  /** Pre/PostToolUse 钩子（issue #350）。跑在审批门与执行器之间：拦截/改参/
+      拒绝/反馈四种裁决都由 engine 统一落 tool_hook 事件。不给 = 无钩子 */
+  hooks?: ToolHook[];
 }
 
 export class LoopEngine {
@@ -212,24 +215,78 @@ export class LoopEngine {
     if (!ctx.tool) {
       return { status: "error", output: `未知工具: ${ctx.call.name}` };
     }
+    // PreToolUse 钩子（issue #350）：在留痕/碰世界**之前**——block 的调用
+    // 不产生 tool_execution_started（同 denied：执行器未达，世界未变）。
+    // 干预本身落 tool_hook 事件（model-visible means logged 的钩子版）
+    for (const hook of this.hooksFor(ctx.call.name)) {
+      if (!hook.pre) continue;
+      const r = await hook.pre(ctx);
+      if (!r) continue;
+      if (r.block !== undefined) {
+        this.append({
+          ...this.env(), type: "tool_hook", toolCallId: ctx.call.id,
+          hook: hook.name, phase: "pre", action: "block", message: r.block,
+        });
+        return { status: "error", output: `[PreToolUse 拦截] ${r.block}` };
+      }
+      if (r.reviseArgs !== undefined) {
+        this.append({
+          ...this.env(), type: "tool_hook", toolCallId: ctx.call.id,
+          hook: hook.name, phase: "pre", action: "revise_args", revisedArgs: r.reviseArgs,
+        });
+        // 换新对象不原地改（同审批门 revisedArgs 的纪律）；后续钩子看到的是改后的
+        ctx.call = { ...ctx.call, args: r.reviseArgs };
+      }
+    }
     // 碰世界之前先留痕（ADR-0004）：崩溃后"有 started 无 result" = 悬空执行。
     // 被拒绝的调用到不了这（审批门短路），所以 denied 没有此事件
     this.append({ ...this.env(), type: "tool_execution_started", toolCallId: ctx.call.id });
+    let outcome: ToolOutcome;
     try {
       const raw = await ctx.tool.run(ctx.call.args, ctx.world, {
         toolCallId: ctx.call.id,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
       // run 可返回字符串（现状）或 { output, concludesTurn }（DSH 式提前收口）
-      if (typeof raw === "string") return { status: "ok", output: raw };
-      return {
-        status: "ok",
-        output: raw.output,
-        ...(raw.concludesTurn ? { concludesTurn: true } : {}),
-      };
+      outcome =
+        typeof raw === "string"
+          ? { status: "ok", output: raw }
+          : { status: "ok", output: raw.output, ...(raw.concludesTurn ? { concludesTurn: true } : {}) };
     } catch (err) {
+      // 中断（AbortError）原样上抛语义不变：外面的收口逻辑靠它。
+      // 普通异常照旧折成 error 结果——但 error 也过 Post 钩子？不：钩子管的是
+      // "成功结果该不该被接受"，失败已经是失败，注入反馈只会把错误信息搅浑
       return { status: "error", output: err instanceof Error ? err.message : String(err) };
     }
+    // PostToolUse 钩子（issue #350）：可拒绝结果 / 注入反馈。只对 ok 结果跑
+    for (const hook of this.hooksFor(ctx.call.name)) {
+      if (!hook.post) continue;
+      const r = await hook.post(ctx, outcome);
+      if (!r) continue;
+      if (r.reject !== undefined) {
+        // 原始输出进事件（审计不丢），模型收到的 tool_result 是拒绝后的 error
+        this.append({
+          ...this.env(), type: "tool_hook", toolCallId: ctx.call.id,
+          hook: hook.name, phase: "post", action: "reject",
+          message: r.reject, originalOutput: outcome.output,
+        });
+        return { status: "error", output: `[PostToolUse 拒绝] ${r.reject}` };
+      }
+      if (r.feedback !== undefined) {
+        // 结果原样放行：日志/UI 存原始输出；投影读本事件把反馈包装进模型
+        // 看到的 tool 消息（deriveMessages）——两个消费者分离
+        this.append({
+          ...this.env(), type: "tool_hook", toolCallId: ctx.call.id,
+          hook: hook.name, phase: "post", action: "feedback", message: r.feedback,
+        });
+      }
+    }
+    return outcome;
+  }
+
+  /** 匹配这把工具的钩子（注册序即执行序） */
+  private hooksFor(toolName: string): ToolHook[] {
+    return (this.opts.hooks ?? []).filter((h) => hookMatches(h, toolName));
   }
 
   /** /compact：把现有上下文交给模型写摘要，摘要落盘成 context_compacted 事件，

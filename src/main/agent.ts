@@ -57,6 +57,7 @@ import {
 import { sessionGrants, type GrantScope } from "../shared/permissionGrants.js";
 import { grantKeysFor, grantedScope, canonicalizeCommand } from "../shared/grantKey.js";
 import type { ExecRule } from "../shared/execPolicy.js";
+import type { ToolHook } from "../loop/middleware.js";
 
 /** 没配永久授权文件时的空集（每次现建一个 Set 是白扔的分配） */
 const EMPTY_GRANTS: ReadonlySet<string> = new Set();
@@ -144,6 +145,9 @@ export function createAgent(opts: {
   /** 审批 UI「永久」产出 allow 前缀规则（issue #347 ③）。返回 false = 候选规则
       没过禁止前缀校验，调用方退回精确 key。不给 = 永久授权只走精确 key（旧路） */
   persistAllowRule?: (pattern: string[], cwd: string | undefined) => boolean;
+  /** Pre/PostToolUse 钩子（issue #350）：拦截/改参/拒绝/反馈，engine 统一落
+      tool_hook 事件。今天没有内置钩子——这是给将来（用户钩子/技能钩子）的口 */
+  toolHooks?: ToolHook[];
   /** 授一条永久许可（落进那个文件）。不给 = 「永久」这一档在本装配里不生效 */
   persistAlwaysAllow?: (tool: string) => void;
   /** MCP 能力（index.ts 从 mcpHub 注入）。hub 要管子进程生命周期、要向渲染层推状态，
@@ -470,6 +474,7 @@ export function createAgent(opts: {
     },
     ...(opts.onLongTurn ? { onLongTurn: opts.onLongTurn } : {}),
     deferredExposed, // issue #348：tool_search 写、engine 声明表过滤读
+    ...(opts.toolHooks ? { hooks: opts.toolHooks } : {}),
   });
 
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。

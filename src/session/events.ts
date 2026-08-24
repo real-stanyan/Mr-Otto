@@ -335,6 +335,29 @@ export interface SessionAutoTitledEvent extends SessionEventBase {
   usage?: TokenUsage;            // 本次浓缩烧的 token
 }
 
+/** 额外 17：工具钩子干预（issue #350，Pre/PostToolUse）。钩子改变了
+    "模型看到什么 / 执行用什么"，干预本身必须落盘——model-visible means
+    logged 的钩子版，也是投影可推导（硬规则）的前提。四种 action：
+    - pre + block：工具未执行；配对的 tool_result(error) 回模型，本事件是审计凭据
+    - pre + revise_args：执行用 revisedArgs（同 approval_decision.revisedArgs 先例）
+    - post + reject：tool_result 落的是拒绝后的 error；originalOutput 存原始输出（审计不丢）
+    - post + feedback：tool_result 照旧落**原始**输出（日志/UI 消费者）；投影把
+      message 包装到对应 tool 消息尾部（模型消费者）——两个消费者分离，
+      模型视野仍可从日志逐字节推导 */
+export interface ToolHookEvent extends SessionEventBase {
+  type: "tool_hook";
+  toolCallId: string;
+  /** 钩子名（谁干预的，溯源用） */
+  hook: string;
+  phase: "pre" | "post";
+  action: "block" | "revise_args" | "reject" | "feedback";
+  /** block 的拦截理由 / reject 的拒绝理由 / feedback 正文 */
+  message?: string;
+  revisedArgs?: unknown;
+  /** post+reject 时的原始工具输出——tool_result 已被替换成 error，原件在这 */
+  originalOutput?: string;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -359,4 +382,5 @@ export type SessionEvent =
   | MemoryUserEditEvent
   | MemoryNudgeEvent
   | MicroCompactedEvent
-  | SessionAutoTitledEvent;
+  | SessionAutoTitledEvent
+  | ToolHookEvent;

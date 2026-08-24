@@ -69,6 +69,9 @@ function isAuditEvent(e: SessionEvent): boolean {
     // 同 model_changed 那一类,是审计事实不是对话正文
     case "subagent_spawned":
     case "subagent_briefed":
+    // 钩子干预（issue #350）：拦截/改参/拒绝/反馈都是"模型视野被改写"的
+    // 审计事实——同 micro_compacted 一类，时间线上必须留痕
+    case "tool_hook":
       return true;
     case "approval_decision":
       return e.decision === "denied";
