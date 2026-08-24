@@ -558,6 +558,61 @@ export const clearApprovalOnDecision = (
   return cur?.call.id === e.toolCallId ? without(approvals, e.sessionId) : approvals;
 };
 
+/** onEvent 的归约核心——「delta 不落盘 + 终态覆盖」契约的落地处（issue #340）。
+    完整 assistant_message / tool_result 落地 = 对应直播缓冲整体作废（事实覆盖
+    预览，不信任 delta 拼接结果），此后对话视图与轨迹视图读的都是同一份日志
+    投影，两个 tab 不可能不一致。export 理由同 enterChat：纯函数，契约靠单测
+    锁住（tests/renderer/deltaContract.test.ts），不靠肉眼。 */
+export const absorbEvent = (
+  s: {
+    sessionId: string;
+    events: SessionEvent[];
+    streamingBySession: Record<string, { content: string; reasoning: string }>;
+    toolOutputByCall: Record<string, string>;
+    runningToolCallBySession: Record<string, string>;
+    approvals: Record<string, ApprovalRequest>;
+  },
+  e: SessionEvent
+) => {
+  // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
+  // 这步在分流之前：后台会话的缓冲也要清，不然工具循环里越攒越错
+  const streaming =
+    e.type === "assistant_message" ? without(s.streamingBySession, e.sessionId) : s.streamingBySession;
+  // 工具输出直播同款作废：事实（tool_result）落地，该调用的碎片扔掉。
+  // 不分会话——callId 全局唯一，后台会话的缓冲也要清，不然只涨不消
+  const toolOutput =
+    e.type === "tool_result" ? without(s.toolOutputByCall, e.toolCallId) : s.toolOutputByCall;
+  // 会话 → 正在跑的 toolCallId，同样不分会话地维护（见字段注释）：
+  // 开跑记下，配对的结果落地就清
+  const runningToolCall =
+    e.type === "tool_execution_started"
+      ? { ...s.runningToolCallBySession, [e.sessionId]: e.toolCallId }
+      : e.type === "tool_result"
+        ? without(s.runningToolCallBySession, e.sessionId)
+        : s.runningToolCallBySession;
+  // 审批跨窗收卡同理不分流：岛上点了,approval_decision 流回来时后台
+  // 会话的卡也要收,不然切回去看到一张早就点掉的死卡
+  const approvals = clearApprovalOnDecision(s.approvals, e);
+  // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
+  // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
+  if (e.sessionId !== s.sessionId)
+    return {
+      streamingBySession: streaming,
+      toolOutputByCall: toolOutput,
+      runningToolCallBySession: runningToolCall,
+      approvals,
+    };
+  return {
+    streamingBySession: streaming,
+    toolOutputByCall: toolOutput,
+    runningToolCallBySession: runningToolCall,
+    approvals,
+    events: [...s.events, e],
+    // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
+    ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
+  };
+};
+
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
     export 是为了让这份"换会话该清什么"能被单测直接断言（见
     tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
@@ -1641,47 +1696,8 @@ export const useChat = create<ChatState>((set, get) => ({
           void s.refreshGitStatus();
         }, 600);
       }
-      set((s) => {
-        // 完整 assistant_message 落地 = 直播缓冲作废（事实覆盖预览）。
-        // 这步在分流之前：后台会话的缓冲也要清，不然工具循环里越攒越错
-        const streaming =
-          e.type === "assistant_message"
-            ? without(s.streamingBySession, e.sessionId)
-            : s.streamingBySession;
-        // 工具输出直播同款作废：事实（tool_result）落地，该调用的碎片扔掉。
-        // 不分会话——callId 全局唯一，后台会话的缓冲也要清，不然只涨不消
-        const toolOutput =
-          e.type === "tool_result" ? without(s.toolOutputByCall, e.toolCallId) : s.toolOutputByCall;
-        // 会话 → 正在跑的 toolCallId，同样不分会话地维护（见字段注释）：
-        // 开跑记下，配对的结果落地就清
-        const runningToolCall =
-          e.type === "tool_execution_started"
-            ? { ...s.runningToolCallBySession, [e.sessionId]: e.toolCallId }
-            : e.type === "tool_result"
-              ? without(s.runningToolCallBySession, e.sessionId)
-              : s.runningToolCallBySession;
-        // 审批跨窗收卡同理不分流：岛上点了,approval_decision 流回来时后台
-        // 会话的卡也要收,不然切回去看到一张早就点掉的死卡
-        const approvals = clearApprovalOnDecision(s.approvals, e);
-        // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
-        // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
-        if (e.sessionId !== s.sessionId)
-          return {
-            streamingBySession: streaming,
-            toolOutputByCall: toolOutput,
-            runningToolCallBySession: runningToolCall,
-            approvals,
-          };
-        return {
-          streamingBySession: streaming,
-          toolOutputByCall: toolOutput,
-          runningToolCallBySession: runningToolCall,
-          approvals,
-          events: [...s.events, e],
-          // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
-          ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
-        };
-      });
+      // 归约核心抽成了纯函数 absorbEvent（issue #340）——契约在单测里锁
+      set((s) => absorbEvent(s, e));
     });
     window.otter.onAssistantDelta(({ sessionId, text, kind }) =>
       set((s) => {
