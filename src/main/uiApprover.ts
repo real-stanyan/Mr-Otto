@@ -6,9 +6,50 @@
 import type { Approver, ApprovalOutcome } from "../loop/approvalGate.js";
 import type { Tool } from "../tools/tool.js";
 import type { ToolCallRequest } from "../session/events.js";
-import type { ApprovalMode } from "../shared/shellBridge.js";
+import type {
+  ApprovalDecisionKind,
+  ApprovalDecisionOutcome,
+  ApprovalMode,
+} from "../shared/shellBridge.js";
 
 export type { ApprovalMode };
+
+/** 这张审批卡可以出示哪些按钮（issue #341 规则①：后端下发，前端不硬编码）。
+    永久档只有装配里真有永久授权存储时才出现——按不出效果的按钮不该被画出来 */
+export function availableDecisionsFor(opts: { hasAlwaysStore: boolean }): ApprovalDecisionKind[] {
+  return [
+    "deny",
+    "abort",
+    "approve_session",
+    ...(opts.hasAlwaysStore ? (["approve_always"] as const) : []),
+    "approve",
+  ];
+}
+
+/** IPC 进来的决定 → 审批门吃的 outcome + 是否要顺带中止 turn（issue #341 规则②）。
+    "abort" 映射成 denied + abortTurn：approval_decision 事件 schema 不加宽
+    （旧日志重放路径零变化），中止本身以 turn_ended:"aborted" 落盘。
+    reason 兜底：abort 没写原因也要给模型一句能懂的话 */
+export function mapApprovalDecision(incoming: ApprovalDecisionOutcome): {
+  outcome: ApprovalOutcome;
+  abortTurn: boolean;
+} {
+  if (incoming.decision === "abort") {
+    return {
+      outcome: { decision: "denied", reason: incoming.reason ?? "用户在审批卡上中止了整个 turn" },
+      abortTurn: true,
+    };
+  }
+  return {
+    outcome: {
+      decision: incoming.decision,
+      ...(incoming.reason ? { reason: incoming.reason } : {}),
+      ...(incoming.grant ? { grant: incoming.grant } : {}),
+      ...(incoming.revisedArgs !== undefined ? { revisedArgs: incoming.revisedArgs } : {}),
+    },
+    abortTurn: false,
+  };
+}
 
 export class UIApprover implements Approver {
   private pending = new Map<string, (outcome: ApprovalOutcome) => void>();
@@ -53,6 +94,19 @@ export class UIApprover implements Approver {
     this.pending.delete(toolCallId);
     this.pendingTool.delete(toolCallId);
     wake(outcome);
+  }
+
+  /** fail-closed（issue #341 规则③）：审批等待通道断了（渲染进程崩/永远回不来），
+      把所有挂起审批立刻按拒绝收场——决定照旧流经审批门落 approval_decision，
+      日志能解释"为什么没执行"。任何异常路径收敛到「不执行」，永远不悬停等一个
+      不存在的人。幂等：没有挂起项就是 no-op */
+  failPending(reason: string): void {
+    const outcome: ApprovalOutcome = { decision: "denied", reason };
+    for (const [id, wake] of [...this.pending]) {
+      this.pending.delete(id);
+      this.pendingTool.delete(id);
+      wake(outcome);
+    }
   }
 
   /** 这个挂起中的调用是哪个工具。已收场/不认识的返 undefined —— 调用方据此不授权 */

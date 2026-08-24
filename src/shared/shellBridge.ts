@@ -206,6 +206,20 @@ export interface McpPreviewArg {
 /** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */
 export type ApprovalPreview = WriteFilePreview | McpToolPreview;
 
+/** 审批卡上可出现的决策种类（issue #341 规则①：按钮集合由后端下发，
+    渲染层只做「种类 → 按钮」的通用映射，新增审批场景不改前端按钮代码）。
+    - approve          批准这一次
+    - approve_session  批准 + 本会话不再问（ADR-0041）
+    - approve_always   批准 + 永久（只有装配里有永久授权存储时才下发）
+    - deny             拒绝（可带原因，模型会看到）
+    - abort            拒绝并中止整个 turn（codex ReviewDecision::Abort 同款） */
+export type ApprovalDecisionKind =
+  | "approve"
+  | "approve_session"
+  | "approve_always"
+  | "deny"
+  | "abort";
+
 /** 主进程请渲染层出示审批卡时推的包 */
 export interface ApprovalRequest {
   /** 审批挂靠的会话——卡只在这个会话的视图里渲染 */
@@ -213,6 +227,9 @@ export interface ApprovalRequest {
   call: ToolCallRequest;
   /** 工具的自我介绍，给人看的（来自 tool.def.description） */
   toolDescription: string;
+  /** 这张卡可以出示哪些按钮（后端下发，issue #341）。
+      缺席 = 旧主进程推的包，渲染层退回全集（向后兼容） */
+  availableDecisions?: ApprovalDecisionKind[];
   /** 有 = 这把工具有专门的排版（write_file 的 diff / MCP 的 server+参数表），
       没有 = 审批卡退回通用的 PermissionGrant + 原样 JSON */
   preview?: ApprovalPreview;
@@ -222,9 +239,11 @@ export interface ApprovalRequest {
 }
 
 /** 审批卡按钮的返程（ADR-0041）。与 answerQuestions 同构：一个 outcome 对象，
-    不是一串位置参数 —— 这里已经有四种意志要表达（批/拒/授权档位/改过的参数） */
+    不是一串位置参数 —— 这里已经有五种意志要表达（批/拒/中止/授权档位/改过的参数）。
+    "abort" 在主进程被映射成 denied + 中止 turn（mapApprovalDecision）——
+    approval_decision 事件的 schema 不加宽，中止以 turn_ended:"aborted" 落盘 */
 export interface ApprovalDecisionOutcome {
-  decision: "approved" | "denied";
+  decision: "approved" | "denied" | "abort";
   /** 拒绝原因（模型会看到）。批准时不带 */
   reason?: string;
   /** 顺手授予的长期许可：以后这个工具不再问。缺席 = 只批这一次 */
