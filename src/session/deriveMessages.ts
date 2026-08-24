@@ -414,7 +414,10 @@ export function deriveMessages(
       case "session_created":
         // 有 workspace → 投影成 system 消息（模型对工作目录的认知来自日志，不是配置）。
         // 没有（旧日志）→ 照旧丢弃，投影结果与从前逐字节一致。
-        if (event.workspace) {
+        // 围栏只认第一条（issue #352）：fork 链视图里父的 session_created 之后
+        // 还有分支自己那条（fork 标记，带同一个 workspace）——它是元数据，
+        // 不是第二道围栏；普通日志只有一条，行为逐字节不变
+        if (event.workspace && systemMessage === null) {
           systemMessage = { role: "system", content: systemPromptText(event.workspace) };
           messages.push(systemMessage);
         }

@@ -32,6 +32,10 @@ import { barrenEventIndexes } from "./barrenTurns.js";
 const MAX_BACKTRACK = 5;
 
 export function boundedContextEvents(store: EventStore, sessionId: string): SessionEvent[] | null {
+  // fork 链（issue #352）：typed 原子步（lastOfType/ofType）是单会话查询，
+  // 看不到父会话前缀里的 checkpoint / skill / memory——分支一律退回全量
+  // （load 沿链取数，正确性不受影响；分支的有界重建留给真实需求出现时）
+  if (store.forkOrigin(sessionId) !== null) return null;
   const cp = store.lastOfType(sessionId, "context_compacted");
   if (!cp) return null; // 没有 checkpoint = 没有可跳过的历史，全量本来就是答案
 
