@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { InviteTableMenu } from "./InviteTableMenu.js";
+import { POKER_ENABLED } from "../../../shared/features.js";
 
 const SECTION_LABEL = "text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]";
 
@@ -142,8 +143,9 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
       ))}
       {friendError && <p className="px-[10px] text-xs text-err">{friendError}</p>}
 
-      {/* 收到的牌局邀请:浮层可能已经被别的窗口挡住/用户切走过,抽屉里留一份账 */}
-      {incomingInvites.length > 0 && (
+      {/* 收到的牌局邀请:浮层可能已经被别的窗口挡住/用户切走过,抽屉里留一份账。
+          德州隐藏(ADR-0085)时整段不画——邀请无处赴约 */}
+      {POKER_ENABLED && incomingInvites.length > 0 && (
         <>
           <div className={SECTION_LABEL}>牌局邀请 · {incomingInvites.length}</div>
           {incomingInvites.map((i) => (
@@ -208,16 +210,18 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
               )}
             </SidebarMenuButton>
             {/* 约打牌排在删除左边:右边缘那颗是破坏性操作,固定位置不该被挤动 */}
-            <InviteTableMenu friendId={e.profile.id} label={`约 ${e.profile.name || e.profile.email} 打牌`}>
-              <SidebarMenuAction
-                showOnHover
-                className="right-7"
-                title="约打牌"
-                onClick={(ev) => ev.stopPropagation()}
-              >
-                <Spade />
-              </SidebarMenuAction>
-            </InviteTableMenu>
+            {POKER_ENABLED && (
+              <InviteTableMenu friendId={e.profile.id} label={`约 ${e.profile.name || e.profile.email} 打牌`}>
+                <SidebarMenuAction
+                  showOnHover
+                  className="right-7"
+                  title="约打牌"
+                  onClick={(ev) => ev.stopPropagation()}
+                >
+                  <Spade />
+                </SidebarMenuAction>
+              </InviteTableMenu>
+            )}
             <SidebarMenuAction
               showOnHover
               title="删除好友"
