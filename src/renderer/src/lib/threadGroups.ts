@@ -45,6 +45,9 @@ function isInvisible(e: SessionEvent): boolean {
     case "memory_user_edit":           // 人手改记忆的留证,模型不可见,UI 也不渲染
     case "memory_nudge":               // 审查触发点只为计数,派活本身有 subagent_spawned 卡说话
       return true;
+    case "checkpoint_created":         // 检查点锚点(issue #395):回退入口在轨迹视图,聊天区不占行
+    case "workspace_restored":         // 文件恢复留证,同上——都落在 turn 边界上,更不该打断分组
+      return true;
     default:
       return false;
   }

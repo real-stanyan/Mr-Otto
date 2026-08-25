@@ -85,6 +85,10 @@ function systemSummary(e: SessionEvent): string {
       return `session_autotitled → ${e.title}`;
     case "subagent_spawned":
       return `subagent_spawned ${e.agent}`;
+    case "checkpoint_created":
+      return `checkpoint ${e.checkpointId.slice(0, 8)}`;
+    case "workspace_restored":
+      return `workspace_restored ← ${e.checkpointId.slice(0, 8)}`;
     default:
       return e.type;
   }

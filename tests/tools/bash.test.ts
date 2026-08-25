@@ -163,4 +163,80 @@ describe("bash 工具", () => {
     expect(out).toContain("输出被中间截断");
     expect(out).toContain("[沙箱拦截] 读 ~/.ssh 被拒");
   });
+
+  // ── 前台自动转后台（issue #395，CC auto-background 对照）──────
+
+  it("armed 装配：前台命令跑满阈值自动转后台——不杀进程，登记同一个 in-flight", async () => {
+    let resolveExec!: (r: ExecResult) => void;
+    const seenOpts: unknown[] = [];
+    const world: ExecutionWorld = {
+      fs: {
+        read: () => Promise.reject(new Error("no fs")),
+        write: () => Promise.reject(new Error("no fs")),
+      },
+      exec: (_cmd, opts) => {
+        seenOpts.push(opts);
+        return new Promise<ExecResult>((r) => { resolveExec = r; });
+      },
+      http: { postJson: async () => ({}) },
+    };
+    const completions: ExecResult[] = [];
+    const tool = createBashTool(
+      {
+        armed: true,
+        start: (_cmd, run) => {
+          void run().then((r) => completions.push(r));
+          return "bg-7";
+        },
+      },
+      { autoBackgroundAfterMs: 10 }
+    );
+    const out = (await tool.run({ cmd: "npm test" }, world)) as string;
+    expect(out).toContain("bg-7"); // 转后台的答复带任务 id
+    expect(out).toContain("自动转入后台");
+    // 超时放宽是显式请求：world 收到的是 30 分钟档，不是默认 30s
+    expect((seenOpts[0] as { timeoutMs?: number }).timeoutMs).toBe(1_800_000);
+    // 完成后结果经登记口交出——同一个进程的结果，不是重跑
+    resolveExec({ stdout: "all green", stderr: "", exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(completions).toEqual([{ stdout: "all green", stderr: "", exitCode: 0 }]);
+  });
+
+  it("armed 装配：阈值内跑完的命令原样返回，不转后台", async () => {
+    const started: string[] = [];
+    const world: ExecutionWorld = {
+      fs: {
+        read: () => Promise.reject(new Error("no fs")),
+        write: () => Promise.reject(new Error("no fs")),
+      },
+      exec: async () => ({ stdout: "quick\n", stderr: "", exitCode: 0 }),
+      http: { postJson: async () => ({}) },
+    };
+    const tool = createBashTool(
+      { armed: true, start: (cmd) => { started.push(cmd); return "bg-x"; } },
+      { autoBackgroundAfterMs: 1_000 }
+    );
+    const out = (await tool.run({ cmd: "echo quick" }, world)) as string;
+    expect(out).toContain("exit code: 0");
+    expect(out).toContain("quick");
+    expect(started).toEqual([]); // 没转后台
+  });
+
+  it("未 armed（subagent 装配）：前台维持 30s 硬杀语义——不带 timeoutMs 放宽", async () => {
+    const seenOpts: unknown[] = [];
+    const world: ExecutionWorld = {
+      fs: {
+        read: () => Promise.reject(new Error("no fs")),
+        write: () => Promise.reject(new Error("no fs")),
+      },
+      exec: async (_cmd, opts) => {
+        seenOpts.push(opts);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      http: { postJson: async () => ({}) },
+    };
+    const tool = createBashTool({ armed: false, start: () => "bg-x" });
+    await tool.run({ cmd: "ls" }, world);
+    expect(seenOpts[0]).toBeUndefined(); // 旧调用形状：没有 opts，超时归 world 默认
+  });
 });

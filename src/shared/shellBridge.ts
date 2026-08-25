@@ -425,6 +425,12 @@ export interface ShellBridge {
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
+  /** 回到检查点（issue #395 / ADR-0090）：fork 会话到该检查点前最近的 turn
+      收口（零拷贝，ADR-0084）+ 把工作区文件 reset 回检查点快照，返回新分支
+      会话 id——切换视图由渲染层随后走 resumeSession。checkpointSeq 是
+      checkpoint_created 事件的 seq。turn 进行中 reject；文件回退是破坏性
+      动作，确认门在渲染层（同删除会话的模式） */
+  rewindToCheckpoint(sessionId: string, checkpointSeq: number): Promise<string>;
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
       返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
       主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
@@ -866,6 +872,7 @@ export const CHANNELS = {
   archiveSession: "otter:archiveSession",
   unarchiveSession: "otter:unarchiveSession",
   renameSession: "otter:renameSession",
+  rewindToCheckpoint: "otter:rewindToCheckpoint",
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",

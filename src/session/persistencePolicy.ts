@@ -71,6 +71,8 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "project_instructions": // 注入快照（issue #353）：model-visible means logged
     case "request_envelope": // 请求信封（issue #383）：请求可重构性的凭据，log-only 审计快照
     case "background_task_completed": // 后台任务完成（issue #389）：完成时刻的审计事实，模型可见载体是回注 user_message
+    case "checkpoint_created": // 工作区检查点（issue #395）：回退锚点，id 推不出必须落
+    case "workspace_restored": // 文件恢复事实（issue #395）：分支会话的磁盘对齐凭据
       return true;
 
     // ── transient：live 投影的临时燃料，落盘即违反「终态覆盖」契约 ──

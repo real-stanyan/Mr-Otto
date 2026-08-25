@@ -28,6 +28,17 @@ export interface ExecOptions {
       直播是 UI 增强，不是事实——完整输出仍由 ExecResult 一次性返回并落盘，
       和 assistantDelta 同款边界：碎片永不进日志，日志只收凝固后的整体 */
   onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
+  /** 进程硬超时上限（ms）。缺省 = 实现自定（LocalWorld 30s）。
+      给它的理由（issue #395 自动转后台）：bash 前台命令超 30s 不再一刀杀死，
+      而是放宽到后台档位继续跑、由工具层把"还在跑"这个事实转成后台任务——
+      放宽必须是调用方的显式请求，不是 world 偷偷改默认。实现可忽略
+      （假 world 零改动），忽略 = 维持它自己的默认超时 */
+  timeoutMs?: number;
+  /** 写给子进程 stdin 的内容（写完即关）。用户钩子（issue #395）靠它递
+      JSON 上下文——环境变量/argv 都过 shell 转义，stdin 不过。缺席 = 不写
+      不关（旧行为：读 stdin 的命令等到超时，诚实反映"没人喂它"）。
+      实现可忽略（假 world 零改动） */
+  stdin?: string;
 }
 
 export interface HttpPostOptions {
@@ -104,6 +115,20 @@ export interface McpCapability {
   callTool(serverId: string, tool: string, args: unknown, signal?: AbortSignal): Promise<McpContent[]>;
   readResource(serverId: string, uri: string, signal?: AbortSignal): Promise<McpContent[]>;
   getPrompt(serverId: string, name: string, args: Record<string, string>): Promise<string>;
+}
+
+/** 工作区检查点能力（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
+    save = 把工作区文件此刻的状态存成一个可寻址的快照；restore = 把文件恢复
+    到某个快照（**摧毁**快照之后对被跟踪文件的改动——调用方负责确认门）。
+    模型看不到这把能力（不是工具）：消费者是装配根（每个用户 turn 前自动
+    save）和「回到这一步」UI（fork 会话 + restore 文件成对使用）。
+    v1 由 world/checkpoints.ts 的影子 git 实现（LocalWorld 系）；
+    v2 SandboxWorld 可换 docker commit——接口在 seam 上，实现随 world 走 */
+export interface CheckpointCapability {
+  /** 返回快照 id（内容寻址，影子 git 下是 commit sha）。失败抛错——
+      调用方决定要不要吞（自动存档吞掉只警告，不挡 turn） */
+  save(label: string): Promise<string>;
+  restore(id: string): Promise<void>;
 }
 
 /** 配置目录能力。rel 相对配置目录根，越界抛错。read 不存在 = null（不是抛错：
@@ -194,6 +219,11 @@ export interface ExecutionWorld {
       v1 由 index.ts 用 withHistory 焊 historyCapability.ts 的实现进来；
       v2 SandboxWorld 这一层接口不变，换成 RPC 到宿主 */
   history?: HistoryCapability;
+  /** 可选：工作区检查点（issue #395）。注入方向同 browser/mcp——影子 git
+      要知道配置目录（快照库住在 ~/.mr-otto/checkpoints），LocalWorld 单靠
+      workspace 造不出来，由组装根用 withCheckpoint 焊进来。缺席 = 该装配
+      没有检查点（自动存档跳过、回退入口不出现）。工具层永远不消费它 */
+  checkpoint?: CheckpointCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -228,6 +258,7 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
       : {}),
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
+    ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
   };
 }
 
@@ -249,6 +280,7 @@ export function withExecOutput(
     ...(world.mcp ? { mcp: world.mcp } : {}),
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
+    ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
   };
 }
 
@@ -272,4 +304,10 @@ export function withMcp(world: ExecutionWorld, mcp: McpCapability): ExecutionWor
     (硬规则原样成立)。 */
 export function withHistory(world: ExecutionWorld, history: HistoryCapability): ExecutionWorld {
   return { ...world, history };
+}
+
+/** 把检查点能力焊进 world —— withBrowser/withMcp 同款手法（issue #395）。
+    组装根用 world/checkpoints.ts 的影子 git 实现焊进来；工具层不消费它 */
+export function withCheckpoint(world: ExecutionWorld, checkpoint: CheckpointCapability): ExecutionWorld {
+  return { ...world, checkpoint };
 }

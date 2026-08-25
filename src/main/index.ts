@@ -22,7 +22,8 @@ import {
   type ApprovalRequest,
   type ApprovalPreview,
 } from "../shared/shellBridge.js";
-import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { createAgent, loadDotEnv, newSessionId, type AgentPush } from "./agent.js";
+import { createShadowGitCheckpoints, workspaceStoreName } from "../world/checkpoints.js";
 import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
 import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -50,6 +51,9 @@ import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { loadUserHooks } from "./userHooksStore.js";
+import { buildUserToolHooks } from "./userToolHooks.js";
+import { createLocalWorld } from "../world/localWorld.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadTrustedWorkspaces, addTrustedWorkspace } from "./workspaceTrust.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -287,6 +291,7 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
+  const userHooksPath = join(app.getPath("userData"), "hooks.json");
   const trustPath = join(app.getPath("userData"), "trustedWorkspaces.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
@@ -1124,9 +1129,28 @@ void app.whenReady().then(() => {
     // 进得了 task 工具的清单。绑定点放在组装根，SubagentRunner / createTaskTool
     // 的签名一个字不用改——工具那层不需要知道有"作用域"这回事
     const listForSession = () => listSubagents(args.workspace);
+    // 用户钩子（issue #395）：只挂主会话装配——子会话没人盯着，用户钩子的
+    // 干预面不该静默扩大（ADR-0047 收权同款）。钩子命令跑在专用 LocalWorld
+    // 里（cwd = 工作区、凭据环境变量已剥、stdin 递 JSON 上下文），不借
+    // agent 的 world：那个被 engine 按调用包了直播/信号层，钩子输出会被
+    // 误标成命令输出。getter 现读 hooks.json（热更新，与 execPolicy 同款）
+    const hookWorld = createLocalWorld({ root: args.workspace });
+    const userToolHooks = () => {
+      const loaded = loadUserHooks(userHooksPath);
+      if (loaded.error) console.warn(`[userHooks] ${loaded.error}`);
+      return buildUserToolHooks(loaded.hooks, (cmd, o) => hookWorld.exec(cmd, o), args.workspace);
+    };
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      toolHooks: userToolHooks,
+      // 工作区检查点（issue #395）：影子 git 库住配置目录（快照跨会话共享——
+      // 同一工作区的多个会话回退的是同一份磁盘现实）。只挂主会话：子会话共享
+      // 父 world，自动存档只发生在用户 turn 的入口（handleSendMessage）
+      checkpoints: createShadowGitCheckpoints({
+        workspace: args.workspace,
+        gitDir: join(configDir(homedir()), "checkpoints", workspaceStoreName(args.workspace)),
+      }),
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
@@ -1362,6 +1386,48 @@ void app.whenReady().then(() => {
     if (!info) throw new Error("恢复会话失败"); // 理论不可达，让 TS 安心
     return info;
   });
+
+  // 回到检查点（issue #395 / ADR-0090）：对话侧 fork（零拷贝，ADR-0084）+
+  // 文件侧 restore（影子 git reset）成对发生。顺序是安全设计：先分叉后动文件，
+  // fork 抛错时磁盘一个字节没动。返回新分支会话 id，切视图由渲染层随后
+  // 走 resumeSession（注册/重建复用唯一入口，不再造第二条装配路）
+  ipcMain.handle(
+    CHANNELS.rewindToCheckpoint,
+    async (_e, sessionId: string, checkpointSeq: number): Promise<string> => {
+      const agent = agents.get(sessionId);
+      if (!agent) throw new Error("会话不存在或未激活——先打开它再回退");
+      if (runningSessions.has(sessionId)) throw new Error("turn 正在跑——先停止再回退");
+      const capability = agent.world.checkpoint;
+      if (!capability) throw new Error("该会话的装配没有检查点能力");
+      const log = store.load(sessionId);
+      const cp = log.find((e) => e.seq === checkpointSeq);
+      if (!cp || cp.type !== "checkpoint_created") {
+        throw new Error(`seq ${checkpointSeq} 不是检查点事件`);
+      }
+      let newId: string;
+      const boundary = log.filter((e) => e.seq < checkpointSeq && e.type === "turn_ended").at(-1);
+      if (boundary) {
+        newId = newSessionId();
+        store.fork(sessionId, boundary.seq, newId, Date.now());
+      } else {
+        // 检查点落在第一个 turn 之前：没有可分叉的收口点 = 「回到对话开始」，
+        // 建同工作区的全新会话（startSession 同款装配 + 注册）
+        await mcpHub.ready();
+        const fresh = createSessionAgent({ workspace: agent.workspace });
+        agents.set(fresh.sessionId, fresh);
+        newId = fresh.sessionId;
+      }
+      await capability.restore(cp.checkpointId);
+      const restored = store.append({
+        sessionId: newId, ts: Date.now(), type: "workspace_restored",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        checkpointId: cp.checkpointId,
+        fromSessionId: sessionId,
+      });
+      send(CHANNELS.event, restored);
+      return newId;
+    }
+  );
 
   // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
   // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
@@ -1884,6 +1950,22 @@ void app.whenReady().then(() => {
       // "模型看不见图还装看过"
       // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
       //
+      // 工作区检查点（issue #395）：turn 开跑前把文件状态存进影子 git——
+      // 「回到这一步」的文件侧锚点。失败只警告不挡 turn（检查点是便利品，
+      // 不是这个 turn 的前置条件）；没有能力的装配（子会话/裸装配）跳过
+      if (agent.world.checkpoint) {
+        try {
+          const cpId = await agent.world.checkpoint.save(`turn @ ${new Date().toISOString()}`);
+          const cpEvent = store.append({
+            sessionId, ts: Date.now(), type: "checkpoint_created",
+            ignorable: true, // 模型不消费，旧版本跳过照常重放
+            checkpointId: cpId,
+          });
+          send(CHANNELS.event, cpEvent);
+        } catch (err) {
+          console.warn("检查点保存失败（跳过，不挡 turn）", err);
+        }
+      }
       // 调用先于任何 append（issue #283 ⑦）：skill_invoked 若先落、代读再失败，
       // 日志里就留下一条没有任务跟随的孤儿 skill 事件——而台账语义是"启用过=
       // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，

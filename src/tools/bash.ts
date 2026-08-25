@@ -50,11 +50,24 @@ function sandboxLines(s: SandboxEnforcementFacts | undefined): string {
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
+/** 前台命令自动转后台的等待阈值（issue #395，Claude Code auto-background 对照）：
+    跑满这么久还没完 = 它是个长活，别杀——转成后台任务继续跑（同一进程，
+    副作用不重跑），完成走既有回注链路。可注入是给测试的（真值 30s 等不起） */
+export const AUTO_BACKGROUND_AFTER_MS = 30_000;
+/** 转后台后进程还能跑多久（与 LocalWorld 的 DETACHED_TIMEOUT_MS 同数同理：
+    无限 = 泄漏出走的进程，30 分钟够全量构建/测试）。经 ExecOptions.timeoutMs
+    显式传给 world——放宽超时是调用方的请求，不是 world 偷偷改默认 */
+const MIGRATED_TIMEOUT_MS = 1_800_000;
+
 /** bash 工厂（issue #389）：给了 background 才在参数表上宣称 run_in_background——
     工具表同时是模型的能力清单，报一个用不了的参数和报一把用不了的工具同罪
     （browser_read 的既有原则）。默认导出 bashTool = 无后台能力的旧形态，
     既有装配/测试零改动 */
-export function createBashTool(background?: BackgroundStarter): Tool {
+export function createBashTool(
+  background?: BackgroundStarter,
+  timings?: { autoBackgroundAfterMs?: number }
+): Tool {
+  const autoAfterMs = timings?.autoBackgroundAfterMs ?? AUTO_BACKGROUND_AFTER_MS;
   return {
     def: {
       name: "bash",
@@ -62,7 +75,8 @@ export function createBashTool(background?: BackgroundStarter): Tool {
         "在工程文件夹内执行一条 shell 命令（cwd = 工程文件夹，30 秒超时）。" +
         "返回 stdout / stderr / exit code；退出码非零不代表失败，自行判断。" +
         (background
-          ? "run_in_background=true 时立即返回任务 id（30 分钟超时），完成后结果自动以新消息注回会话——给跑得比一轮对话长的命令用（构建/全量测试）。"
+          ? "跑满 30 秒还没完的命令会自动转入后台继续跑（同一进程，不重跑），完成后结果以新消息注回会话。" +
+            "预判会跑很久的命令（构建/全量测试）可直接 run_in_background=true：立即返回任务 id（30 分钟超时），不占等待。"
           : ""),
       parameters: {
         type: "object",
@@ -94,6 +108,35 @@ export function createBashTool(background?: BackgroundStarter): Tool {
         }
         const id = background.start(cmd, () => world.execDetached!(cmd));
         return `后台任务 ${id} 已启动（30 分钟超时）。完成后结果会以新消息注回会话，无需轮询等待。`;
+      }
+      // 前台自动转后台（issue #395）：回注已接线（armed）的装配里，前台命令
+      // 不再 30s 一刀杀——超时放宽到后台档位，工具层等 30s，没等到就把
+      // **还在跑的同一个进程**登记成后台任务（不杀不重跑：重跑 = 副作用重放，
+      // 批过的是这一次执行）。没接线的装配（subagent）维持旧行为：30s 硬杀，
+      // 结果没人注回就不该让进程活过这个 turn。
+      // 已知取舍：① 迁移后的进程仍绑着 turn 中断信号（withAbortSignal 焊死的）
+      // ——用户按停止会连它一起杀，与显式 run_in_background 的"不绑信号"不同；
+      // 立场：停止键停的是"这个 turn 发起的一切"，显式后台是用户经模型明确
+      // 要求的例外。② 直播碎片继续流向原工具卡（对账诚实，略显冗余）
+      if (background?.armed) {
+        const inflight = world.exec(cmd, { timeoutMs: MIGRATED_TIMEOUT_MS });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = Symbol("timeout");
+        const winner = await Promise.race([
+          inflight,
+          new Promise<typeof timedOut>((r) => {
+            timer = setTimeout(() => r(timedOut), autoAfterMs);
+          }),
+        ]).finally(() => clearTimeout(timer));
+        if (winner === timedOut) {
+          const id = background.start(cmd, () => inflight);
+          return (
+            `命令已运行超 ${Math.round(autoAfterMs / 1000)} 秒，自动转入后台任务 ${id} 继续执行` +
+            `（同一进程，上限 30 分钟）。完成后结果会以新消息注回会话，无需轮询等待。`
+          );
+        }
+        const { stdout, stderr, exitCode, sandbox } = winner;
+        return `exit code: ${exitCode}\n${sandboxLines(sandbox)}${clip("stdout", stdout)}${clip("stderr", stderr)}`.trimEnd();
       }
       const { stdout, stderr, exitCode, sandbox } = await world.exec(cmd);
       return `exit code: ${exitCode}\n${sandboxLines(sandbox)}${clip("stdout", stdout)}${clip("stderr", stderr)}`.trimEnd();

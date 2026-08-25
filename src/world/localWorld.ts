@@ -67,10 +67,11 @@ export function createLocalWorld(
       // spawn + HeadTail 而不是 execAsync（issue #343）：exec 的 maxBuffer 超限
       // 会直接杀进程（默认 1MiB），死循环打印的命令拿不到任何结果；HeadTail
       // 内存有界且**读到 EOF**——不停读，管道不会 back-pressure 卡死子进程
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
       return new Promise<ExecResult>((done, fail) => {
         const child = spawn(cmd, {
           shell: true,
-          timeout: 30_000,
+          timeout: timeoutMs,
           killSignal: "SIGTERM",
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
           // （issue #153）。其余原样继承——PATH/nvm/语言设置都在里面
@@ -79,6 +80,13 @@ export function createLocalWorld(
           // child_process 原生认 signal：abort = 给进程组发 SIGTERM
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
+        // stdin（issue #395 用户钩子）：给了就写完即关；EPIPE（命令不读就退出）
+        // 是常态不是错误，吞掉——裁决看 exit code 和输出，不看喂没喂进去
+        if (opts?.stdin !== undefined) {
+          child.stdin?.on("error", () => {});
+          child.stdin?.write(opts.stdin);
+          child.stdin?.end();
+        }
         const out = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const onOutput = opts?.onOutput;
@@ -108,11 +116,11 @@ export function createLocalWorld(
             return;
           }
           if (signal !== null) {
-            // 不是用户中断却挨了信号 = 30s 超时被 killSignal 终止（或外力 kill）。
+            // 不是用户中断却挨了信号 = 超时被 killSignal 终止（或外力 kill）。
             // 按世界反馈返回:HeadTail 里已经攒下的输出照给,模型能看到跑到哪了
             done({
               stdout: out.text(),
-              stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 30s 或外部 kill）]`.trim(),
+              stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 ${Math.round(timeoutMs / 1000)}s 或外部 kill）]`.trim(),
               exitCode: 124,
             });
             return;
