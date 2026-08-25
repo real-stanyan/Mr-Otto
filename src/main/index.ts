@@ -1217,7 +1217,7 @@ void app.whenReady().then(() => {
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
     child?: ChildAgentConfig;
   }): ReturnType<typeof createAgent> => {
-    // 项目指令（issue #353，门禁在 #425 撤掉）：选了工作区并开口说话本身就是
+    // 项目指令（issue #353，门禁在 #426 撤掉）：选了工作区并开口说话本身就是
     // 授权，不再单独问一次"信不信任"——找到就注入。注入了哪几份仍以
     // project_instructions 事件落盘，日志里自解释（model-visible means logged）。
     // resume 不重找（历史会话的模型视野不因今天的文件改写）
