@@ -10,6 +10,7 @@ import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { DeltaKind, ModelAdapter, ToolDefinition } from "../model/adapter.js";
+import { errorClassOf } from "../model/errorClass.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
@@ -485,11 +486,14 @@ export class LoopEngine {
         this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
         return "aborted";
       }
+      // errorClass = 抛错处（adapter）贴的分类（issue #389）；error 存原文不动
+      const errorClass = errorClassOf(err);
       this.append({
         ...this.env(),
         type: "turn_ended",
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),
+        ...(errorClass ? { errorClass } : {}),
       });
       throw err;
     } finally {

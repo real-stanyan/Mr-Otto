@@ -208,6 +208,11 @@ export interface TurnEndedEvent extends SessionEventBase {
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
       推得出的不落盘（同一原则砍掉了 turn_started） */
   error?: string;
+  /** 仅 outcome = "error"：错误分类（issue #389，抛错处贴的 errorClass）。
+      error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错
+      那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
+      缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
+  errorClass?: "rate-limit" | "retryable" | "fatal";
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md

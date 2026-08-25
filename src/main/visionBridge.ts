@@ -4,6 +4,7 @@
 // 代读就是一次普通的非流式 vision 调用,不新增方言。
 
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
+import { errorClassOf } from "../model/errorClass.js";
 import { findModel } from "../shared/modelCatalog.js";
 import { DEFAULT_VISION_MODEL } from "../shared/visionModel.js";
 import type { UserAttachmentRef } from "../session/events.js";
@@ -61,10 +62,11 @@ export function createVisionBridge(
         if (!reply.content.trim()) throw new Error("视觉模型没有产出图片解析,turn 已放弃");
         return reply.content;
       } catch (e) {
-        // 只重试 429(免费档高峰限流,瞬态);其他错误(401 无 key/400/断网)重试无意义
-        const msg = e instanceof Error ? e.message : String(e);
+        // 只重试限流(免费档高峰,瞬态);其他错误(401 无 key/400/断网)重试无意义。
+        // 判据是抛错处贴的 errorClass(issue #389)——不再从错误文案里正则倒推,
+        // 网关限流(人话文案,没有 "API 429" 字样)从此也能被认出来
         const delay = RETRY_DELAYS_MS[attempt];
-        if (!/API 429/.test(msg) || delay === undefined) throw e;
+        if (errorClassOf(e) !== "rate-limit" || delay === undefined) throw e;
         await sleep(delay);
       }
     }
