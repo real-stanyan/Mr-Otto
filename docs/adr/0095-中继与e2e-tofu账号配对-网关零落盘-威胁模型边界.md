@@ -1,8 +1,11 @@
-# ADR-0094: 中继与端到端加密——TOFU 账号配对、网关零落盘、威胁模型边界
+# ADR-0095: 中继与端到端加密——TOFU 账号配对、网关零落盘、威胁模型边界
+
+> 原为 ADR-0094。撞号改号（ADR-0074 的 claim-at-merge）：合并前重新 fetch，发现 0093 已被「分支切换是一条日志事实」占用，本批四份整体上移一位。**本分支的 commit message 里仍写着旧号**——那些改不动，靠这一行认领。
+
 
 日期：2026-08-25
 状态：已接受
-关联：spec `docs/superpowers/specs/2026-08-25-mobile-remote-control-design.md` 第二节；ADR-0093（手机是第三个投影窗口）、ADR-0096（一套 AEAD 两把寿命不同的密钥）、ADR-0027 / ADR-0055（自托管 Realtime 链路不可靠，issue #77）；`services/gateway/src/relay.ts`、`src/shared/remote/handshake.ts`、`supabase/migrations/0011_remote_devices.sql`
+关联：spec `docs/superpowers/specs/2026-08-25-mobile-remote-control-design.md` 第二节；ADR-0094（手机是第三个投影窗口）、ADR-0097（一套 AEAD 两把寿命不同的密钥）、ADR-0027 / ADR-0055（自托管 Realtime 链路不可靠，issue #77）；`services/gateway/src/relay.ts`、`src/shared/remote/handshake.ts`、`supabase/migrations/0011_remote_devices.sql`
 
 ## 背景
 
