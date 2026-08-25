@@ -84,3 +84,27 @@ describe("background_task_completed 事件", () => {
     expect(deriveMessages(withEvent)).toEqual(deriveMessages(log));
   });
 });
+
+describe("回注 user_message 的 origin 标（issue #428）", () => {
+  const base = { sessionId: "s1", ts: 1 };
+  const human: SessionEvent[] = [
+    { ...base, seq: 0, type: "session_created", workspace: "/w" },
+    { ...base, seq: 1, type: "user_message", content: "[后台任务 bg-1 完成] npm test" },
+  ];
+  const reinjected: SessionEvent[] = [
+    human[0]!,
+    { ...base, seq: 1, type: "user_message", content: "[后台任务 bg-1 完成] npm test", origin: "background" },
+  ];
+
+  it("模型投影读都不读它——带标与不带标逐字节一致", () => {
+    expect(deriveMessages(reinjected)).toEqual(deriveMessages(human));
+  });
+
+  it("UI 分得出来：标只在事件上，不靠正文前缀猜", () => {
+    const e = reinjected[1]!;
+    expect(e.type === "user_message" && e.origin).toBe("background");
+    // 人打的字里凑巧写了同样的正文也不会被认成后台任务
+    const h = human[1]!;
+    expect(h.type === "user_message" && h.origin).toBeUndefined();
+  });
+});

@@ -466,7 +466,10 @@ export class LoopEngine {
   async runTurn(
     userInput: string,
     attachments?: UserAttachmentRef[],
-    textFiles?: UserTextFile[]
+    textFiles?: UserTextFile[],
+    /** 非人类来源(issue #428):后台任务回注打 "background",UI 据此换皮。
+        缺席 = 人亲手发的,事件形状与从前逐字节一致 */
+    origin?: "background"
   ): Promise<"completed" | "aborted"> {
     const opening = this.append({
       ...this.env(),
@@ -475,6 +478,7 @@ export class LoopEngine {
       // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
+      ...(origin ? { origin } : {}),
     });
     // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
     this.currentTurnId = opening.seq;
