@@ -1,4 +1,4 @@
-# ADR-0101：手机端的加密原语用纯 JS 的 @noble/*，不用 react-native-libsodium
+# ADR-0102：手机端的加密原语用纯 JS 的 @noble/*，不用 react-native-libsodium
 
 日期：2026-08-25
 状态：已接受（推翻 spec 第二节末尾那句「Expo 侧仍需 `react-native-libsodium`」）
