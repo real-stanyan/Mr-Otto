@@ -4,13 +4,13 @@
 // 错误哲学:业务/网络失败 → FriendsResult ok:false(渲染层内联提示),不 throw。
 //
 // 这一层还负责"推送到底通不通"(ADR-0027):Realtime 是快的那条路,不是唯一那条路。
-// 订阅报错/超时 → health 转 degraded → 起轮询兜底(关系链/收件箱/邀请),
+// 订阅报错/超时 → health 转 degraded → 起轮询兜底(关系链/收件箱),
 // 并周期性重建订阅;订阅恢复 → 停轮询。在线状态永远是 presence ∪ 心跳窗口的并集,
 // 因为线上 /realtime/v1 经 Kong 返 503(issue #77)时 presence 是空的,而心跳只要 REST 活着就准。
 
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, FriendshipEntry,
-  FriendWorkspace, GameInvite, RealtimeHealth, WorkspacePresence, WorkspacesSnapshot,
+  FriendWorkspace, RealtimeHealth, WorkspacePresence, WorkspacesSnapshot,
 } from "../shared/friends.js";
 
 // email 可空:auth.users.email 本就可为 null(手机/匿名注册),见 docs/adr/0025。
@@ -18,11 +18,6 @@ import type {
 export type ProfileRow = { id: string; email: string | null; name: string | null; avatar_url: string | null };
 export type FriendshipRow = { id: string; requester: string; addressee: string; status: "pending" | "accepted" };
 export type MessageRow = { id: number; sender: string; recipient: string; body: string; created_at: string };
-export type InviteRow = {
-  id: string; inviter: string; invitee: string; table_id: string; table_name: string;
-  status: "pending" | "accepted" | "declined" | "cancelled";
-  created_at: string; expires_at: string;
-};
 /** 心跳行。repo_key/repo_branch 是 0008 加的列:心跳那条腿顺便把"我在哪"带上(issue #167),
     可选是因为没跑 0008 的库 select 不到这两列——此时只有在线点,没有分支 */
 export type LastSeenRow = {
@@ -38,8 +33,7 @@ export type FriendsSubscribeHandlers = {
   onMessage(row: MessageRow): void;
   /** presence sync:在线的人 + 各自 track 出来的工作区(没带的为 null) */
   onPresence(entries: PresenceEntry[]): void;
-  onInvite(row: InviteRow): void;
-  /** 订阅通道健康度:四条通道全 SUBSCRIBED 才算 live,任一报错/超时/关闭即 degraded */
+  /** 订阅通道健康度:所有通道全 SUBSCRIBED 才算 live,任一报错/超时/关闭即 degraded */
   onHealth(health: "live" | "degraded"): void;
 };
 
@@ -64,10 +58,6 @@ export type FriendsApi = {
   trackWorkspace(workspace: WorkspacePresence | null): void;
   /** 读一批人的心跳时间 */
   listLastSeen(ids: string[]): Promise<LastSeenRow[]>;
-  insertInvite(inviter: string, invitee: string, tableId: string, tableName: string): Promise<InviteRow>;
-  updateInviteStatus(id: string, status: "accepted" | "declined" | "cancelled"): Promise<void>;
-  /** 与我有关的近期邀请(收发两向,含终态——邀请人要看得见"对方拒了") */
-  listInvites(uid: string): Promise<InviteRow[]>;
   subscribe(uid: string, handlers: FriendsSubscribeHandlers): () => void;
 };
 
@@ -77,7 +67,6 @@ export type FriendsPush = {
   /** 我 + 在线好友各自在哪个仓库哪个分支(issue #167) */
   workspacesChanged(snapshot: WorkspacesSnapshot): void;
   directMessage(message: DirectMessage): void;
-  invitesChanged(invites: GameInvite[]): void;
   healthChanged(health: RealtimeHealth): void;
 };
 
@@ -109,25 +98,6 @@ export function toFriendProfile(row: ProfileRow): FriendProfile {
 
 export function toDirectMessage(row: MessageRow): DirectMessage {
   return { id: row.id, sender: row.sender, recipient: row.recipient, body: row.body, createdAt: row.created_at };
-}
-
-/** 邀请行 + 对方 profile → 渲染层形态。profile 缺席 = 丢弃(别渲染幽灵,同 buildSnapshot) */
-export function toGameInvite(
-  uid: string, row: InviteRow, profiles: Map<string, ProfileRow>
-): GameInvite | null {
-  const incoming = row.invitee === uid;
-  const peer = profiles.get(incoming ? row.inviter : row.invitee);
-  if (!peer) return null;
-  return {
-    id: row.id,
-    peer: toFriendProfile(peer),
-    direction: incoming ? "incoming" : "outgoing",
-    tableId: row.table_id,
-    tableName: row.table_name,
-    status: row.status,
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-  };
 }
 
 /** 关系行 + 对方 profile → 三组快照。profile 缺席的行丢弃(别渲染幽灵) */
@@ -323,60 +293,6 @@ export class FriendsManager {
     );
   }
 
-  // ── 牌局邀请 ────────────────────────────────────────────────────
-
-  async sendInvite(friendId: string, tableId: string, tableName: string): Promise<FriendsResult<null>> {
-    return this.withUid(async (uid) => {
-      try {
-        await this.api.insertInvite(uid, friendId, tableId, tableName);
-      } catch (e) {
-        // pending 唯一索引冲突 = 已经邀过还没回应,给人话不给 SQL 报错
-        if (typeof e === "object" && e !== null && (e as { code?: string }).code === "23505") {
-          throw new Error("已经邀过了,等对方回应");
-        }
-        throw e;
-      }
-      await this.pushInvites(uid);
-      return null;
-    });
-  }
-
-  /** 接受/拒绝一条收到的邀请。接受只改状态——买入是花真 token 的动作,
-      必须由用户在牌桌页再确认一次(ADR-0021/0027),这里绝不代劳 */
-  async respondInvite(inviteId: string, accept: boolean): Promise<FriendsResult<null>> {
-    return this.withUid(async (uid) => {
-      await this.api.updateInviteStatus(inviteId, accept ? "accepted" : "declined");
-      await this.pushInvites(uid);
-      return null;
-    });
-  }
-
-  /** 撤回自己发出的邀请 */
-  async cancelInvite(inviteId: string): Promise<FriendsResult<null>> {
-    return this.withUid(async (uid) => {
-      await this.api.updateInviteStatus(inviteId, "cancelled");
-      await this.pushInvites(uid);
-      return null;
-    });
-  }
-
-  async listInvites(): Promise<FriendsResult<GameInvite[]>> {
-    return this.withUid((uid) => this.invites(uid));
-  }
-
-  private async invites(uid: string): Promise<GameInvite[]> {
-    const rows = await this.api.listInvites(uid);
-    const ids = [...new Set(rows.map((r) => (r.invitee === uid ? r.inviter : r.invitee)))];
-    const profiles = new Map((await this.api.listProfiles(ids)).map((p) => [p.id, p]));
-    return rows
-      .map((r) => toGameInvite(uid, r, profiles))
-      .filter((x): x is GameInvite => x !== null);
-  }
-
-  private async pushInvites(uid: string): Promise<void> {
-    this.push.invitesChanged(await this.invites(uid));
-  }
-
   // ── 在线状态:presence ∪ 心跳 ───────────────────────────────────
 
   /** 并集变了才推。realtime presence 与心跳轮询都汇到这一个出口 */
@@ -437,7 +353,7 @@ export class FriendsManager {
     this.push.healthChanged(health);
   }
 
-  /** degraded 一拍:关系链 + 收件箱增量 + 邀请。全部尽力而为,错了下一拍再来 */
+  /** degraded 一拍:关系链 + 收件箱增量。全部尽力而为,错了下一拍再来 */
   private async pollOnce(uid: string, gen: number): Promise<void> {
     try {
       await this.pushSnapshot(uid);
@@ -447,7 +363,6 @@ export class FriendsManager {
         if (row.id > this.inboxWatermark) this.inboxWatermark = row.id;
         this.push.directMessage(toDirectMessage(row));
       }
-      await this.pushInvites(uid);
     } catch {
       // 网络/RLS 抖动:保持 degraded,下一拍继续试
     }
@@ -496,11 +411,9 @@ export class FriendsManager {
       this.subscribeNow(uid, gen);
     }, RESUBSCRIBE_MS);
     await this.pushSnapshot(uid).catch(() => {});
-    if (gen !== this.generation) return;
-    await this.pushInvites(uid).catch(() => {});
   }
 
-  /** 建(或重建)四条 Realtime 通道。旧的先退订,健康度由通道状态驱动 */
+  /** 建(或重建) Realtime 通道。旧的先退订,健康度由通道状态驱动 */
   private subscribeNow(uid: string, gen: number): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -515,7 +428,6 @@ export class FriendsManager {
         this.realtimeOnline = entries.map((e) => e.id).sort();
         this.pushPresence();
       },
-      onInvite: () => { void this.pushInvites(uid).catch(() => {}); },
       onHealth: (health) => {
         if (gen !== this.generation) return;
         this.setHealth(health);
@@ -566,7 +478,6 @@ export class FriendsManager {
     this.push.presenceChanged([]);
     // 自己在哪不随登出清(那是本机事实),好友那半清空
     this.push.workspacesChanged({ mine: this.workspace, friends: [] });
-    this.push.invitesChanged([]);
     this.push.healthChanged("connecting");
   }
 }

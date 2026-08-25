@@ -35,8 +35,6 @@ export interface GatewayDeps {
   grants?: (tier: Tier) => number;
   /** 记账失败只记日志,不影响已经发给用户的响应 */
   onError?: (where: string, err: unknown) => void;
-  /** 牌桌那一面(issue #58)。不注入就没有 /v1/poker/* */
-  poker?: { handle(userId: string, req: Request, path: string): Promise<Response> };
   /** 远程中继(spec 2026-08-25)。不注入就没有 /rl/v1/* */
   relay?: {
     attach(userId: string, role: "desktop" | "mobile", sink: { write(c: string): void }): () => void;
@@ -349,14 +347,6 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
       return req.method === "POST"
         ? chatCompletions(req)
         : apiError(405, "只收 POST", "method_not_allowed");
-    }
-    // 牌桌:身份一律从 JWT 来,路径里的 userId 一概不信
-    if (pathname === "/v1/poker" || pathname.startsWith("/v1/poker/")) {
-      if (!deps.poker) return apiError(404, "这个网关没开牌桌", "poker_disabled");
-      const who = identify(req);
-      if (who instanceof Response) return who;
-      const rest = pathname.slice("/v1/poker".length).replace(/^\/+/, "");
-      return deps.poker.handle(who.userId, req, rest);
     }
     if (pathname === "/v1/wallet") {
       return req.method === "GET"

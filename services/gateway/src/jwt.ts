@@ -1,9 +1,9 @@
 // Supabase JWT(HS256)验签 —— 网关的身份边界。
 //
-// 手写而不装 jose：自建 Supabase 走的是对称 HS256(deploy/otto-auth/README.md 记着
-// 新版非对称体系留空、auth/rest/realtime 都读 JWT_SECRET),验一个 HS256 就是
-// 一次 HMAC + 一次定长比较,依赖换不来更少的代码。代价是必须自己堵住
-// JWT 的经典坑,下面三条注释标的就是那三个坑,tests/gateway/jwt.test.ts 逐条钉住。
+// 手写而不装 jose：迁到 Supabase Cloud 后签发密钥被切回 legacy HS256(docs/adr/0098),
+// 所以对称验签这条路仍然成立。验一个 HS256 就是一次 HMAC + 一次定长比较,
+// 依赖换不来更少的代码。代价是必须自己堵住 JWT 的经典坑,
+// 下面三条注释标的就是那三个坑,tests/gateway/jwt.test.ts 逐条钉住。
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 

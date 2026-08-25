@@ -1,7 +1,7 @@
 -- migration 0008 的真库一致性校验(工作区在场的两列 + 它们借用的读写权限)。
 -- 整段包在事务里，最后 rollback，**不留痕**。
 -- 跑法:
---   ssh -p 2222 stan@<vps> "docker exec -i otto-db-1 psql -U postgres" < supabase/checks/0008_workspace_presence.check.sql
+--   OTTO_DB_URL='postgresql://...' scripts/db-checks.sh 0008
 --
 -- 0008 只有两行 `add column if not exists`，看着不需要校验——需要校验的不是那两行，
 -- 是它头注里那句「写权限沿用 0001 的 profiles_update_self，读权限沿用既有的 select

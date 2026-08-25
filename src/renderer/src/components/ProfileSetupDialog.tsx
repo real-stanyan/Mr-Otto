@@ -80,7 +80,7 @@ function ProfileSetupBody() {
       <DialogHeader>
         <DialogTitle>先给自己起个名字</DialogTitle>
         <DialogDescription>
-          好友列表、聊天和牌桌上显示的都是这里的名字和头像。随时能在「账号」里改。
+          好友列表和聊天里显示的都是这里的名字和头像。随时能在「账号」里改。
         </DialogDescription>
       </DialogHeader>
 

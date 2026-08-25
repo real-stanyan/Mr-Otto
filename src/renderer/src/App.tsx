@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { type SessionMode, useChat } from "./store.js";
+import { useChat } from "./store.js";
 import type { SettingsSection } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
@@ -58,9 +58,7 @@ import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
-import { PokerTable } from "./components/PokerTable.js";
-import { GameInviteToast } from "./components/GameInviteToast.js";
-import { POKER_ENABLED, OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
+import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
@@ -1036,7 +1034,7 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[1
 const BUCKET_LABEL: Record<string, string> = { flash: "Flash", pro: "Pro" };
 
 /** 官方额度卡（账号页内）。单位是 token 不是钱（ADR-0021）：
-    额度要能直接当德州筹码，美元每押一注都得换算一次。
+    模型按 token 计费，用美元记账等于每次都得换算一次。
     数字是读的不是玩的——不给进度条做入场动画：这块每次进设置都会看一次，
     动一下就是每次都拖一下。 */
 function QuotaCard() {
@@ -1525,127 +1523,10 @@ function ArchivedGroup({
   );
 }
 
-/** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
-function TableList() {
-  const tables = useChat((s) => s.pokerTables);
-  const current = useChat((s) => s.pokerTableId);
-  const watch = useChat((s) => s.watchPokerTable);
-  const refresh = useChat((s) => s.refreshPokerTables);
-  const signedIn = useChat((s) => s.account.signedIn);
-
-  useEffect(() => {
-    if (signedIn) void refresh();
-  }, [signedIn, refresh]);
-
-  return (
-    <div className="px-2 py-1 flex flex-col gap-1">
-      <div className="px-1 pt-1 pb-[2px] text-[11px] text-muted-foreground">牌桌</div>
-      {current && (
-        <button
-          className="w-full rounded-md px-2 py-[6px] text-left text-[13px] hover:bg-foreground/[0.06]"
-          onClick={() => void watch(null)}
-        >
-          ← 回到大厅
-        </button>
-      )}
-      {tables.length === 0 ? (
-        <div className="px-1 py-2 text-xs text-muted-foreground">
-          {signedIn ? "还没有桌子" : "登录后可见"}
-        </div>
-      ) : (
-        tables.map((t) => (
-          <button
-            key={t.id}
-            className={`w-full rounded-md px-2 py-[6px] text-left transition-colors duration-150 hover:bg-foreground/[0.06] ${
-              t.id === current ? "bg-foreground/[0.08]" : ""
-            }`}
-            onClick={() => void watch(t.id)}
-          >
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-[13px]">{t.name || "无名桌"}</span>
-              {t.live && <span className="shrink-0 text-[11px] text-primary">打着</span>}
-              {t.seated && !t.live && <span className="shrink-0 text-[11px] text-muted-foreground">在座</span>}
-            </div>
-            <div className="text-[11px] tabular-nums text-muted-foreground">
-              {t.tier} · {t.smallBlind}/{t.bigBlind}
-            </div>
-          </button>
-        ))
-      )}
-    </div>
-  );
-}
-
-/** game 档下的侧栏内容：work 那边的会话在干什么。
-    只列"有动静"的（跑着 / 等审批 / 等回答），其余折成一行计数 ——
-    牌桌上的人要的是"有没有事找我"，不是完整会话列表 */
-function WorkStatusList() {
-  const sessions = useChat((s) => s.sessions);
-  const statusBySession = useChat((s) => s.statusBySession);
-  const approvals = useChat((s) => s.approvals);
-  const asks = useChat((s) => s.asks);
-  const resume = useChat((s) => s.resume);
-  const setSessionMode = useChat((s) => s.setSessionMode);
-
-  // 子会话（spawnedFrom 非空，ADR-0047）不在这露面：它们只能从父会话时间线
-  // 那张卡进去，这里再列一遍会在父会话旁边重复一条"运行中"，正是 Task 8
-  // 要把这个信号收拢到时间线卡上、不在别处重复的那件事（Task 8 review Important 2）
-  const visible = sessions.filter((s) => s.spawnedFrom === null);
-
-  const rows = visible
-    .map((s) => {
-      // 顺序即优先级：等人的排在跑着的前面，因为只有前者卡着不动
-      if (approvals[s.sessionId]) return { s, label: "等审批", live: true, urgent: true };
-      if (asks[s.sessionId]) return { s, label: "等回答", live: true, urgent: true };
-      if (statusBySession[s.sessionId] === "running") {
-        return { s, label: "运行中", live: true, urgent: false };
-      }
-      return { s, label: "空闲", live: false, urgent: false };
-    })
-    .filter((r) => r.live)
-    .sort((a, b) => Number(b.urgent) - Number(a.urgent));
-
-  const idle = visible.length - rows.length;
-
-  return (
-    <div className="px-2 py-1 flex flex-col gap-1">
-      <div className="px-1 pt-1 pb-[2px] text-[11px] text-muted-foreground">Work 状态</div>
-      {rows.length === 0 ? (
-        <div className="px-1 py-2 text-xs text-muted-foreground">没有跑着的任务</div>
-      ) : (
-        rows.map(({ s, label, urgent }) => (
-          <button
-            key={s.sessionId}
-            className="w-full text-left rounded-md px-2 py-[6px] hover:bg-foreground/[0.06] transition-colors duration-150"
-            // 点一行 = 回 work 并落到那个会话上：看见了却过不去等于没看见
-            onClick={() => {
-              setSessionMode("work");
-              void resume(s.sessionId);
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <span className={`size-1.5 shrink-0 rounded-full ${urgent ? "bg-primary" : "bg-muted-foreground"}`} />
-              <span className="min-w-0 flex-1 truncate text-[13px]">{s.title ?? s.sessionId}</span>
-              <span className={`shrink-0 text-[11px] ${urgent ? "text-primary" : "text-muted-foreground"}`}>
-                {label}
-              </span>
-            </div>
-          </button>
-        ))
-      )}
-      {idle > 0 && (
-        <div className="px-2 pt-1 text-[11px] text-muted-foreground">另有 {idle} 个空闲会话</div>
-      )}
-    </div>
-  );
-}
-
 /** 左侧常驻侧栏（shadcn Sidebar,offcanvas）：会话列表（设置模式下换成栏目导航）
     + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
 function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
-  const mode = useChat((s) => s.sessionMode);
-  const setSessionMode = useChat((s) => s.setSessionMode);
   const asks = useChat((s) => s.asks);
   const sessionId = useChat((s) => s.sessionId);
   const phase = useChat((s) => s.phase);
@@ -1683,20 +1564,14 @@ function AppSidebar() {
   // 是因为点系统通知要能把它掀开(store.onNotificationActivated)
   const friendsOpen = useChat((s) => s.friendsPanelOpen);
   const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
-  const gameInvites = useChat((s) => s.gameInvites);
   // 窗口模式(mac + 非全屏)下红绿灯叠在侧栏左上角,logo 得让位;全屏红绿灯隐掉,logo 回来
   const fullscreen = useChat((s) => s.fullscreen);
   const trafficInset = IS_MAC && !fullscreen;
 
-  // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求 + 待回应牌局邀请。
-  // 区收着也能被看见
+  // icon 角标 = 好友区"有事"的总和:未读 DM + 待处理请求。区收着也能被看见
   const friendActivity =
     Object.values(unreadByFriend).reduce((a, b) => a + b, 0) +
-    friendsSnapshot.incoming.length +
-    // 德州隐藏时邀请不计入:看不见的邀请挂个角标 = 一个消不掉的红点
-    (POKER_ENABLED
-      ? gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length
-      : 0);
+    friendsSnapshot.incoming.length;
   // 抽屉是模态层,盖在主区上;点开 DM 面板时弹窗让位——不然 DM 被抽屉挡住看不见
   useEffect(() => {
     if (friendChat) setFriendsOpen(false);
@@ -1805,7 +1680,7 @@ function AppSidebar() {
           {/* 搜索钮:窗口模式下和红绿灯、开关钮排成一行(绝对定位到开关右侧,
               top 与 SidebarToggle 同值(TOGGLE_TOP));全屏没有红绿灯,照旧靠右 */}
           <div className={cn("flex shrink-0 items-center", trafficInset ? `absolute ${TOGGLE_TOP} ${SEARCH_LEFT}` : "ml-auto")}>
-            {settingsSection === null && mode !== "game" && (
+            {settingsSection === null && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -1819,32 +1694,9 @@ function AppSidebar() {
             )}
           </div>
         </div>
-        {/* 档位切换：work = 工程会话，game = 德州牌桌。放侧栏顶部 ——
-            它切的是整个主区在展示什么，属于导航，不是输入区的控件。
-            面板不在这棵树里（在 SidebarInset 那侧），所以 Root 只当分段控件用：
-            试过把 Root 提到最外层罩住两边，display:contents 会让 shadcn sidebar
-            的 peer 兄弟选择器算错宽度，主区不被推开。键盘导航和视觉照旧，
-            代价是 trigger 的 aria-controls 指向一个不存在的 id */}
-        {/* POKER_ENABLED=false(ADR-0085)时整个分段控件不画:只剩 work 一档,
-            一个单选项的开关只会让人找不存在的第二档 */}
-        {POKER_ENABLED && (
-          <Tabs value={mode} onValueChange={(v) => setSessionMode(v as SessionMode)}>
-          <TabsList className="w-full">
-            <TabsTrigger value="work">
-              <SquareTerminal aria-hidden />
-              Work
-            </TabsTrigger>
-            <TabsTrigger value="game">
-              <Spade aria-hidden />
-              Game
-            </TabsTrigger>
-          </TabsList>
-          </Tabs>
-        )}
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
-        {/* game 档下这颗也隐掉:牌桌模式里"新会话"没有落点(建牌桌是 #59 的事) */}
-        {settingsSection === null && mode !== "game" && (
+        {settingsSection === null && (
           <>
             <Button
               variant="ghost"
@@ -1879,15 +1731,7 @@ function AppSidebar() {
         )}
       </SidebarHeader>
       <SidebarContent>
-        {mode === "game" ? (
-          // 上半是牌桌导航（这一档的主业），下半是 work 那边的状态：
-          // game 档里看不见会话列表也看不见审批卡，静默挂起才是真的坏 ——
-          // turn 停在等审批上而人在牌桌上，不给出口等于把 agent 关在门外
-          <>
-            <TableList />
-            <WorkStatusList />
-          </>
-        ) : settingsSection !== null ? (
+        {settingsSection !== null ? (
           // 设置模式：会话列表让位给栏目导航（同一块地皮，互斥展示）。
           // 会话那边包在 SidebarGroup(p-2)里,这边裸 SidebarMenu 得自己补同样的边距
           <SidebarMenu className="p-2">
@@ -3053,7 +2897,6 @@ export function App() {
   // 这个会话是不是被派活派出来的子会话(ADR-0047)——是就带上父会话 id，
   // header 露一颗"← 回到父会话"。纯粹从 events[0] 的 spawnedBy 推导
   const spawnedFrom = useMemo(() => spawnedFromOf(events), [events]);
-  const mode = useChat((s) => s.sessionMode);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
@@ -3191,13 +3034,7 @@ export function App() {
     : filesPanelOpen ? <FilesView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
-  const base = mode === "game" ? (
-    // game 是另一套模式，不是会话的一个视图：头部（会话名/工程/分支）和输入框
-    // 都是 work 的语境，带过来只会让人以为这行字会发给牌桌
-    <div className={MAIN_COL}>
-      <PokerTable />
-    </div>
-  ) : settingsSection === "account" ? (
+  const base = settingsSection === "account" ? (
     <AccountPage />
   ) : settingsSection === "keys" ? (
     <KeysPage />
@@ -3409,8 +3246,6 @@ export function App() {
             侧栏一展开整列右溢出窗(会话视图代码块/composer 被裁) */}
         <SidebarInset className="relative min-w-0">
           {main}
-          {/* 牌局邀请浮层:抽屉收着也得看得见,而邀请是有时效的(见组件顶部注释) */}
-          {POKER_ENABLED && <GameInviteToast />}
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
           {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型

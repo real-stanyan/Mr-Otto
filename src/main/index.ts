@@ -12,8 +12,6 @@ import {
   type BootInfo,
   type StartSessionOptions,
   type OutgoingAttachment,
-  type PokerAction,
-  type PokerTableInput,
   type BrowserBounds,
   type ApprovalDecisionOutcome,
   type McpServerConfig,
@@ -108,9 +106,6 @@ import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
-import {
-  closeTable, createTable, joinTable, leaveTable, listTables, sendAction, startHand, watchTable,
-} from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
@@ -123,10 +118,10 @@ import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
   approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
-  friendRequestNotification, inviteNotification, turnCompleteNotification, turnFailedNotification,
-  newIncomingInvites, newIncomingRequests,
+  friendRequestNotification, turnCompleteNotification, turnFailedNotification,
+  newIncomingRequests,
 } from "./friendNotifier.js";
-import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
+import type { FriendsSnapshot } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
 import { findMrottoDeepLink } from "./deepLink.js";
 
@@ -385,9 +380,8 @@ void app.whenReady().then(() => {
       send(CHANNELS.notificationActivated, target);
     },
   });
-  // 好友请求/邀请是全量快照式推送,不做差集会把同一条反复弹成通知
+  // 好友请求是全量快照式推送,不做差集会把同一条反复弹成通知
   let lastSnapshot: FriendsSnapshot | null = null;
-  let lastInvites: GameInvite[] | null = null;
   const friends = new FriendsManager({
     api: createSupabaseFriendsApi(supabase.raw),
     push: {
@@ -408,13 +402,6 @@ void app.whenReady().then(() => {
         notify(dmNotification(sender?.name || sender?.email || "", m.body, m.sender));
         send(CHANNELS.directMessage, m);
       },
-      invitesChanged: (invites) => {
-        for (const invite of newIncomingInvites(lastInvites, invites)) {
-          notify(inviteNotification(invite.peer.name || invite.peer.email, invite.tableName));
-        }
-        lastInvites = invites;
-        send(CHANNELS.gameInvitesChanged, invites);
-      },
       healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
     },
   });
@@ -433,7 +420,6 @@ void app.whenReady().then(() => {
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
       lastSnapshot = null;
-      lastInvites = null;
     },
     client: supabase.auth,
   });
@@ -1814,43 +1800,6 @@ void app.whenReady().then(() => {
   // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
   ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
 
-  // ── 牌桌 ────────────────────────────────────────────────────────
-  // 同一时刻只订一张桌：换桌先退订。两条流同时推会互相盖着，
-  // 而"盖着"在牌桌上意味着看到的是上一张桌的底牌
-  let unwatchPoker: (() => void) | null = null;
-  ipcMain.handle(CHANNELS.pokerTables, () => listTables(getAccessToken));
-  ipcMain.handle(CHANNELS.pokerCreateTable, (_e, input: PokerTableInput) =>
-    createTable(getAccessToken, input)
-  );
-  ipcMain.handle(CHANNELS.pokerJoin, (_e, tableId: string, amount: number) =>
-    joinTable(getAccessToken, tableId, amount)
-  );
-  ipcMain.handle(CHANNELS.pokerLeave, (_e, tableId: string) =>
-    leaveTable(getAccessToken, tableId)
-  );
-  ipcMain.handle(CHANNELS.pokerClose, (_e, tableId: string) =>
-    closeTable(getAccessToken, tableId)
-  );
-  ipcMain.handle(CHANNELS.pokerStart, (_e, tableId: string) =>
-    startHand(getAccessToken, tableId)
-  );
-  ipcMain.handle(CHANNELS.pokerAct, (_e, tableId: string, action: PokerAction) =>
-    sendAction(getAccessToken, tableId, action)
-  );
-  ipcMain.handle(CHANNELS.pokerWatch, (_e, tableId: string | null) => {
-    unwatchPoker?.();
-    unwatchPoker = null;
-    if (!tableId) {
-      send(CHANNELS.pokerHand, null);
-      return;
-    }
-    unwatchPoker = watchTable(
-      getAccessToken,
-      tableId,
-      (view) => send(CHANNELS.pokerHand, view),
-      (err) => send(CHANNELS.pokerError, err instanceof Error ? err.message : String(err))
-    );
-  });
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
   ipcMain.handle(CHANNELS.signInWithPassword, (_e, email: string, password: string) =>
@@ -1877,12 +1826,6 @@ void app.whenReady().then(() => {
     friends.sendMessage(friendId, body));
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
-  ipcMain.handle(CHANNELS.friendsSendInvite, (_e, friendId: string, tableId: string, tableName: string) =>
-    friends.sendInvite(friendId, tableId, tableName));
-  ipcMain.handle(CHANNELS.friendsRespondInvite, (_e, inviteId: string, accept: boolean) =>
-    friends.respondInvite(inviteId, accept));
-  ipcMain.handle(CHANNELS.friendsCancelInvite, (_e, inviteId: string) => friends.cancelInvite(inviteId));
-  ipcMain.handle(CHANNELS.friendsListInvites, () => friends.listInvites());
   // dock 角标:未读数只有渲染层算得出(它知道哪个面板开着),主进程只负责画。
   // 非 mac 平台没有 dock,setBadgeCount 在那边是 no-op,不用分支
   ipcMain.handle(CHANNELS.setBadgeCount, (_e, count: number) => {

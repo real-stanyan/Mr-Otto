@@ -1,6 +1,9 @@
 # otto-gateway 的服务器侧配置
 
-服务器：`ssh -p 2222 stan@65.109.113.168`（与 `deploy/otto-auth` 同一台）。
+服务器：`ssh -p 2222 stan@65.109.113.168`。这台曾经还跑着自托管 Supabase 的 docker 栈，
+那套 2026-08-25 迁去 Supabase Cloud 后退役了（见 `src/main/authConfig.ts` 头注）——
+**网关本身没跟着退**，它还在这台上服务 `/gw/`。
+
 本目录是**服务器上已生效配置的副本**，改这边记得同步过去，反之亦然。
 
 | 文件 | 服务器路径 |
@@ -8,23 +11,28 @@
 | `otto-gateway.service` | `/etc/systemd/system/otto-gateway.service` |
 | `nginx-gw-location.conf` | 插在 `/etc/nginx/sites-available/otto-auth` 的 server 块里 |
 
-代码本体在 `~/otto-gateway`，`.env`（chmod 600）不在 git 里。
+vhost 文件名和域名里的 `otto-auth` 是历史遗留：这个 host 上 `/auth/v1/`、`/rest/v1/`、
+`/realtime/v1/` 那几个反代随自托管栈一起死了，`/gw/` 这一条还活着，也是现在唯一活着的。
+看见 `otto-auth.stan.damianslife.com` 别当成死链接删——先分清是哪一半。
 
-## 部署状态（2026-08-18）
+代码本体在 `~/otto-gateway`，`.env`（chmod 600）不在 git 里。数据不在这台机器上：
+网关经 `SUPABASE_URL` + service role key 走 HTTPS 打 Cloud 项目
+（`services/gateway/.env.example`），本地不再有库。
 
-- `supabase/migrations/0002_token_wallets.sql`、`0003_token_denominated_wallet.sql`
-  均已在 `otto-db-1` 执行并逐条验过行为（0003 起计费单位是 token、按 flash/pro 分桶，ADR-0021）
-- `0004_poker_ledger.sql`、`0005_poker_tables.sql` 已执行，对应的
-  `supabase/checks/*.check.sql` 全项 PASS（两份 check 都包在事务里，跑完 rollback）
-- 牌桌端点 `/v1/poker/*` 已上线（issue #58）。端到端验过：建桌 → 列桌 →
-  入座（座位 0）→ 单人开牌被拒 → 离桌带回 1000 → 无 token 401，
-  桶余额一进一出净零
-- `src/poker/` 子目录随本次部署一起上传，systemd 服务不需要改
+## 部署状态（2026-08-25）
+
+- 钱包 schema（`0002_token_wallets.sql`、`0003_token_denominated_wallet.sql`，
+  0003 起计费单位是 token、按 flash/pro 分桶，ADR-0021）随整套 schema 迁到了
+  Cloud 项目，网关的扣额度走它
+- 服务器 `.env` 的 `SUPABASE_URL` / `SUPABASE_JWT_SECRET` /
+  `SUPABASE_SERVICE_ROLE_KEY` 已换成 Cloud 项目的值，旧值备份在
+  `~/otto-gateway/.env.bak-selfhosted`。这三个值还指着旧栈时的症状是
+  **所有请求 401**（验不过客户端 JWT），不像"库搬走了"——别往上游 key 上找
 - 服务已 `systemctl enable --now`，开机自启
 - 公网入口：`https://otto-auth.stan.damianslife.com/gw/`（`/gw/healthz` 返回 200）
 - **`OTTO_UPSTREAM_API_KEY` still 是占位值** `REPLACE_ME_ROTATED_DEEPSEEK_KEY`
 
-## 填官方 key（唯一未完成的一步）
+## 填官方 key
 
 key 不要贴进聊天/工单/仓库任何地方。直接在服务器上改：
 

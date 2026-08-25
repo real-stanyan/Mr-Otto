@@ -28,7 +28,7 @@ import type {
 import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
 import type {
-  DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
+  DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, RealtimeHealth,
   WorkspacesSnapshot,
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
@@ -69,8 +69,7 @@ export interface AccountInfo {
   avatarUrl: string;
 }
 
-/** 一个额度桶的余额。单位是 token，不是钱（ADR-0021）：
-    额度要能直接当德州筹码，美元每押一注都得换算一次 */
+/** 一个额度桶的余额。单位是 token，不是钱（ADR-0021） */
 export interface WalletBucket {
   balanceTokens: number;
   /** 注册赠额，用于画"还剩多少 / 一共给了多少" */
@@ -318,89 +317,6 @@ export interface ApprovalDecisionOutcome {
 
 export type Unsubscribe = () => void;
 
-
-/** ── 牌桌（issue #59）──────────────────────────────────────────────
-    这些是**裁剪过的**视图类型：别人的底牌在这里就是 null，
-    渲染层拿不到也就不可能不小心画出来 */
-export interface PokerTableSummary {
-  id: string;
-  name: string;
-  tier: string;
-  smallBlind: number;
-  bigBlind: number;
-  minBuyin: number;
-  maxBuyin: number;
-  maxSeats: number;
-  /** 自己是否已在这张桌上 */
-  seated: boolean;
-  /** 这张桌是不是自己建的（删桌入口只给建桌人）。旧网关不带此字段 */
-  mine?: boolean;
-  /** 桌上是否有牌正在打 */
-  live: boolean;
-  /** 有筹码的在座人数。旧网关不带此字段 */
-  players?: number;
-  /** 正开着这张桌牌桌页的人数(SSE 订阅去重)。旧网关不带此字段 */
-  online?: number;
-}
-
-export interface PokerTableInput {
-  name: string;
-  tier: string;
-  smallBlind: number;
-  bigBlind: number;
-  minBuyin: number;
-  maxBuyin: number;
-  maxSeats: number;
-}
-
-export type PokerActionOption =
-  | { readonly type: "fold" }
-  | { readonly type: "check" }
-  | { readonly type: "call"; readonly amount: number }
-  | { readonly type: "raise"; readonly minTo: number; readonly maxTo: number };
-
-export type PokerAction =
-  | { readonly type: "fold" }
-  | { readonly type: "check" }
-  | { readonly type: "call" }
-  | { readonly type: "raise"; readonly to: number };
-
-export interface PokerSeatView {
-  userId: string;
-  seatIndex: number;
-  /** 服务端标的"这是你"。客户端不自己判断身份 */
-  isMe: boolean;
-  startStack: number;
-  stack: number;
-  bet: number;
-  committed: number;
-  folded: boolean;
-  allIn: boolean;
-  /** null = 看不到（别人的牌，且还没摊牌） */
-  hole: number[] | null;
-  /** 当前街的最后一个公开动作；null = 这条街还没动过。旧网关不带此字段,客户端按 null 处理 */
-  lastAction?: { kind: "blind" | "fold" | "check" | "call" | "raise"; amount: number } | null;
-  /** 此刻是否开着这张桌的页面(服务端按 SSE 订阅判)。旧网关不带此字段,按在场处理 */
-  online?: boolean;
-}
-
-export interface PokerHandView {
-  handId: string;
-  tableId: string;
-  tier: string;
-  button: number;
-  street: string;
-  board: number[];
-  pot: number;
-  currentBet: number;
-  toAct: string | null;
-  seats: PokerSeatView[];
-  legal: PokerActionOption[];
-  done: boolean;
-  deltas: Record<string, number> | null;
-  /** deck/salt 只在摊牌后非空，玩家拿它自验庄家没换牌 */
-  commitment: { hash: string; deck: number[] | null; salt: string | null };
-}
 
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
@@ -677,17 +593,6 @@ export interface ShellBridge {
   usageByProvider(days: number): Promise<UsageSnapshot>;
   /** 各厂商账户余额。见 ProviderBalance —— 拿不到的厂商不在数组里 */
   providerBalances(): Promise<ProviderBalance[]>;
-  /** 牌桌：列/建/入座/离桌/开牌/行动。全部经主进程 —— token 不过桥 */
-  pokerTables(): Promise<PokerTableSummary[]>;
-  pokerCreateTable(input: PokerTableInput): Promise<PokerTableSummary>;
-  pokerJoin(tableId: string, amount: number): Promise<number>;
-  pokerLeave(tableId: string): Promise<number>;
-  /** 删自己建的桌（软删除，服务端退还桌上所有筹码） */
-  pokerClose(tableId: string): Promise<void>;
-  pokerStart(tableId: string): Promise<void>;
-  pokerAct(tableId: string, action: PokerAction): Promise<void>;
-  /** 订阅一张桌；传 null = 退订。同一时刻只订一张 */
-  pokerWatch(tableId: string | null): Promise<void>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
@@ -751,8 +656,6 @@ export interface ShellBridge {
   onMcpChanged(cb: (snapshot: McpServersSnapshot) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
-  onPokerHand(cb: (view: PokerHandView | null) => void): Unsubscribe;
-  onPokerError(cb: (message: string) => void): Unsubscribe;
   /** 用户名/邮箱模糊搜用户(不含自己)。value [] = 没有匹配(不是错误) */
   friendsSearch(query: string): Promise<FriendsResult<FriendProfile[]>>;
   /** 发好友请求。重复请求/已是好友 → ok:false 带人话理由 */
@@ -767,14 +670,6 @@ export interface ShellBridge {
   friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<DirectMessage>>;
   /** 拉历史,新→旧;beforeId 翻旧页(取 id < beforeId 的一页,每页 50) */
   friendsListMessages(friendId: string, beforeId?: number): Promise<FriendsResult<DirectMessage[]>>;
-  /** 约好友上某张牌桌。重复邀请(还没回应)→ ok:false 带人话理由 */
-  friendsSendInvite(friendId: string, tableId: string, tableName: string): Promise<FriendsResult<null>>;
-  /** 回应收到的邀请。接受**只改状态**——买入花真 token,仍要用户在牌桌页确认(ADR-0027) */
-  friendsRespondInvite(inviteId: string, accept: boolean): Promise<FriendsResult<null>>;
-  /** 撤回自己发出的邀请 */
-  friendsCancelInvite(inviteId: string): Promise<FriendsResult<null>>;
-  /** 近期邀请(收发两向,含终态)。变化推送走 onGameInvitesChanged */
-  friendsListInvites(): Promise<FriendsResult<GameInvite[]>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -785,8 +680,6 @@ export interface ShellBridge {
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
   onDirectMessage(cb: (message: DirectMessage) => void): Unsubscribe;
-  /** 邀请集合变化(本端操作 / 对端 Realtime / 轮询兜底,同一条出口) */
-  onGameInvitesChanged(cb: (invites: GameInvite[]) => void): Unsubscribe;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 该如实说"慢几秒"而不是装作正常 */
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
@@ -879,11 +772,10 @@ export type UpdaterState =
   | { phase: "error"; currentVersion: string; message: string }
   | { phase: "disabled"; currentVersion: string; reason: string };
 
-/** 点系统通知要落到哪:DM 落到那个人的聊天面板,邀请落到好友抽屉的邀请区,
+/** 点系统通知要落到哪:DM 落到那个人的聊天面板,好友请求落到好友抽屉,
     任务完成落到那个会话 */
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
-  | { kind: "invite" }
   | { kind: "friendRequest" }
   | { kind: "session"; sessionId: string };
 
@@ -1022,16 +914,6 @@ export const CHANNELS = {
   accountChanged: "otter:accountChanged",
   myProfile: "otter:myProfile",
   updateProfile: "otter:updateProfile",
-  pokerTables: "otter:pokerTables",
-  pokerCreateTable: "otter:pokerCreateTable",
-  pokerJoin: "otter:pokerJoin",
-  pokerLeave: "otter:pokerLeave",
-  pokerClose: "otter:pokerClose",
-  pokerStart: "otter:pokerStart",
-  pokerAct: "otter:pokerAct",
-  pokerWatch: "otter:pokerWatch",
-  pokerHand: "otter:pokerHand",
-  pokerError: "otter:pokerError",
   friendsSearch: "otter:friendsSearch",
   friendsSendRequest: "otter:friendsSendRequest",
   friendsRespond: "otter:friendsRespond",
@@ -1039,16 +921,11 @@ export const CHANNELS = {
   friendsList: "otter:friendsList",
   friendsSendMessage: "otter:friendsSendMessage",
   friendsListMessages: "otter:friendsListMessages",
-  friendsSendInvite: "otter:friendsSendInvite",
-  friendsRespondInvite: "otter:friendsRespondInvite",
-  friendsCancelInvite: "otter:friendsCancelInvite",
-  friendsListInvites: "otter:friendsListInvites",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
   workspacesChanged: "otter:workspacesChanged",
   directMessage: "otter:directMessage",
-  gameInvitesChanged: "otter:gameInvitesChanged",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",
   playSound: "otter:playSound",
