@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { folderName, groupSessionsByWorkspace } from "../../src/renderer/src/sessionGroups.js";
+import {
+  folderName,
+  groupArchivedByWorkspace,
+  groupSessionsByWorkspace,
+} from "../../src/renderer/src/sessionGroups.js";
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
 
 /** 造会话的速记:分组只关心 workspace / lastTs / spawnedFrom */
@@ -93,5 +97,47 @@ describe("groupSessionsByWorkspace", () => {
     const input = [s("a", "/p/x", 100), s("b", "/p/x", 300)];
     groupSessionsByWorkspace(input);
     expect(input.map((x) => x.sessionId)).toEqual(["a", "b"]);
+  });
+});
+
+describe("groupArchivedByWorkspace", () => {
+  /** 归档版速记:archived 默认为 true——这一屏只认归档会话 */
+  const a = (
+    sessionId: string,
+    workspace: string | null,
+    lastTs: number,
+    spawnedFrom: string | null = null,
+    startedTs: number = lastTs - 1,
+  ): SessionSummary => ({ ...s(sessionId, workspace, lastTs, spawnedFrom, startedTs), archived: true });
+
+  it("按工程分组,组序/组内序与主列表同规则", () => {
+    const { groups } = groupArchivedByWorkspace([
+      a("x1", "/p/old", 100, null, 10),
+      a("y1", "/p/new", 900, null, 500),
+      a("x2", "/p/old", 800, null, 40),
+    ]);
+    expect(groups.map((g) => g.workspace)).toEqual(["/p/new", "/p/old"]);
+    expect(groups[1]!.sessions.map((x) => x.sessionId)).toEqual(["x2", "x1"]);
+  });
+
+  it("没归档的会话不进这一屏", () => {
+    const { groups, ungrouped } = groupArchivedByWorkspace([s("live", "/p/x", 100)]);
+    expect(groups).toEqual([]);
+    expect(ungrouped).toEqual([]);
+  });
+
+  it("子会话不进这一屏——它们只从父会话时间线进去", () => {
+    const { groups } = groupArchivedByWorkspace([a("kid", "/p/x", 100, "parent")]);
+    expect(groups).toEqual([]);
+  });
+
+  it("workspace 为 null 的史前归档会话走 ungrouped,不伪造未知组也不藏起来", () => {
+    const { groups, ungrouped } = groupArchivedByWorkspace([
+      a("ghost", null, 300),
+      a("ghost2", null, 900),
+      a("real", "/p/x", 100),
+    ]);
+    expect(groups.map((g) => g.workspace)).toEqual(["/p/x"]);
+    expect(ungrouped.map((x) => x.sessionId)).toEqual(["ghost2", "ghost"]);
   });
 });

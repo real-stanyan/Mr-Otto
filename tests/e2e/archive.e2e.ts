@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { expectNoRendererErrors, launchOtto, startSession, type Otto } from "./harness.js";
 import { fakeModelEnv, startFakeModel } from "./fakeModel.js";
@@ -41,8 +41,20 @@ test("归档 → 已归档视图 → 恢复：列表投影来回走，日志只�
       sqlite(otto, "select type, json_extract(payload,'$.reason') from events order by seq desc limit 1")
     ).toBe("session_archived|user");
 
-    // 切到「已归档会话」视图 → 恢复归档
+    // 切到「已归档会话」视图 → 归档区也按工程分组（组标题 = 工作区文件夹名）
     await win.getByRole("button", { name: /已归档会话/ }).click();
+    const group = win.getByRole("button", { name: new RegExp(basename(ws)) });
+    await expect(group).toBeVisible({ timeout: 10_000 });
+    // 组可收放：收起来行不见了（条数顶上），再点回来行回来
+    const archivedRow = win.getByRole("button", { name: "这个会话要被归档" });
+    await expect(archivedRow).toBeVisible();
+    await group.click();
+    await expect(archivedRow).toHaveCount(0);
+    await expect(group).toContainText("1");
+    await group.click();
+    await expect(archivedRow).toBeVisible();
+
+    // → 恢复归档
     await win.getByRole("button", { name: "会话操作" }).click();
     await win.getByRole("menuitem", { name: "恢复归档" }).click();
 
