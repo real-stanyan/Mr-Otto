@@ -10,7 +10,7 @@ const s = (
   spawnedFrom: string | null = null,
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
-  sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom,
+  sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
 });
 
 describe("folderName", () => {
@@ -68,6 +68,15 @@ describe("groupSessionsByWorkspace", () => {
     ]);
     expect(g).toHaveLength(1);
     expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["parent"]);
+  });
+
+  it("归档会话(archived)不进任何组——收在侧栏「已归档」区(ADR-0087)", () => {
+    const g = groupSessionsByWorkspace([
+      s("live", "/p/x", 100),
+      { ...s("shelved", "/p/x", 200), archived: true },
+    ]);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["live"]);
   });
 
   it("label 是文件夹名,workspace 仍是全路径", () => {

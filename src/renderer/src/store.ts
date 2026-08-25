@@ -498,6 +498,12 @@ interface ChatState {
       不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
   loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  /** 归档/恢复（ADR-0087）：归档收进「已归档」区（正看着的会话被归档 → 回欢迎页），
+      恢复回主列表。都只是状态事件，日志不动 */
+  archiveSession(sessionId: string): Promise<void>;
+  unarchiveSession(sessionId: string): Promise<void>;
+  /** 侧栏菜单改任意会话的标题（rename 只改当前会话） */
+  renameSessionById(sessionId: string, title: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn。
       skillArgs = `$名字(参数)` 里的参数，随事件进投影头 */
   send(text: string, skill?: string, skillArgs?: string): Promise<void>;
@@ -1941,6 +1947,43 @@ export const useChat = create<ChatState>((set, get) => ({
       // 被 dispose 掉(Task 6 review finding 5 附带项,虽然复核没能实际撞出崩溃,
       // 但顺序反过来更脆)
       for (const t of terminals) terminalRegistry.dispose(t.id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async archiveSession(sessionId) {
+    try {
+      // 主进程 archiveSession 会注销活资源（含 pty），流程同 deleteSession：
+      // 终端列表在归档前问、xterm 实例在状态落地后 dispose（顺序理由见上）
+      const terminals = await window.otter.terminalList(sessionId);
+      await window.otter.archiveSession(sessionId);
+      const sessions = await window.otter.listSessions();
+      if (get().sessionId === sessionId) {
+        // 归档的是正看着的会话 → 回欢迎页。队列留着:会话还在,恢复后照常发
+        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+      } else {
+        set({ sessions });
+      }
+      for (const t of terminals) terminalRegistry.dispose(t.id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async unarchiveSession(sessionId) {
+    try {
+      await window.otter.unarchiveSession(sessionId);
+      set({ sessions: await window.otter.listSessions() }); // 行从「已归档」区回主列表
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async renameSessionById(sessionId, title) {
+    try {
+      await window.otter.renameSession(sessionId, title);
+      set({ sessions: await window.otter.listSessions() });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

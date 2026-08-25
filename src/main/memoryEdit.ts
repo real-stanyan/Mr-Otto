@@ -35,7 +35,7 @@ export async function applyUserEdit(
     await deps.writeFile(rel, after);
     if (sessionId === MEMORY_EDITS_SESSION && deps.store.load(sessionId).length === 0) {
       deps.store.append({ sessionId, ts: Date.now(), type: "session_created" });
-      deps.store.append({ sessionId, ts: Date.now(), type: "session_archived" });
+      deps.store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "system" });
     }
     deps.store.append({ sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after });
   });

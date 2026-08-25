@@ -512,7 +512,8 @@ void app.whenReady().then(() => {
   const fleetSessions = (): SessionSummary[] => {
     const now = Date.now();
     if (!fleetSessionsCache || now - fleetSessionsCache.at > 1_000) {
-      fleetSessionsCache = { at: now, rows: store.sessions() };
+      // 归档的会话不上岛:岛是"活跃舰队"视图,收起来的不算（ADR-0087）
+      fleetSessionsCache = { at: now, rows: store.sessions().filter((s) => !s.archived) };
     }
     return fleetSessionsCache.rows;
   };
@@ -541,7 +542,8 @@ void app.whenReady().then(() => {
       (input.event.type === "session_created" ||
         input.event.type === "session_renamed" ||
         input.event.type === "session_autotitled" ||
-        input.event.type === "session_archived")
+        input.event.type === "session_archived" ||
+        input.event.type === "session_unarchived")
     ) {
       fleetSessionsCache = null;
     }
@@ -1712,6 +1714,33 @@ void app.whenReady().then(() => {
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
     fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
     pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
+  });
+
+  ipcMain.handle(CHANNELS.archiveSession, (_e, sessionId: string) => {
+    if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能归档会话");
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    // 归档（ADR-0087）= 收起，不是删除：日志一字不动，只落一条状态事件。
+    // 活资源照删除的清单注销——归档的会话不该继续占着 pty/浏览器/agent，
+    // 恢复后走 resumeSession 的正常懒加载路径重建
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "user" });
+    terminals.killSession(sessionId);
+    browsers.close(sessionId);
+    agents.delete(sessionId);
+    islandStates.delete(sessionId);
+    if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null; // 会话表形状变了,岛不吃 1s 延迟
+    pushFleet();
+  });
+
+  ipcMain.handle(CHANNELS.unarchiveSession, (_e, sessionId: string) => {
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    // ignorable：模型不可见（投影丢弃它），旧版本跳过它只是把会话继续当归档看——
+    // 降级但不说谎，够格标可跳过（向前兼容拒读契约，issue #383）
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_unarchived", ignorable: true });
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null;
+    pushFleet();
   });
 
   ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {

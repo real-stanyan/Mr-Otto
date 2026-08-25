@@ -167,6 +167,7 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
       case "image_described":
       case "subagent_briefed":
       case "session_archived":
+      case "session_unarchived":
         break;
 
       default:
