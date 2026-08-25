@@ -77,12 +77,48 @@ describe("createSubagentRunner", () => {
     });
     const out = await runner.run({ agent: "searcher", task: "找调用点", parentToolCallId: "call_1" });
 
-    const child = store.load(out.childSessionId);
+    // model_changed 可能占掉 seq 1（型号继承跑在 append 之前，ADR-0108；
+    // resumeChild 的 `.find()` 早就为这条让过路）——滤掉它再看顺序
+    const child = store.load(out.childSessionId).filter((e) => e.type !== "model_changed");
     expect(child[0]?.type).toBe("session_created");
     expect(child[1]?.type).toBe("subagent_briefed");
     const spawned = store.load("s-parent").find((e) => e.type === "subagent_spawned");
     expect(spawned).toBeTruthy();
     expect(order).toEqual([`turn:${out.childSessionId}`]);
+  });
+
+  // 「跟随主会话」曾经是假的（ADR-0108）：这里只有 `if (def.model)`，没写型号的
+  // 子智能体靠 createAgent 的兜底默认落到 DEFAULT_MODEL，而设置页文案、
+  // SubagentDef.model 的注释都写着"跟主会话当前模型"。父这里是 deepseek-chat，
+  // 与 DEFAULT_MODEL 不同——这条断言才区分得开"继承"和"兜底"
+  it("没写型号 = 跟父此刻那一档，不是掉回 DEFAULT_MODEL", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def()], // 没有 model 字段
+      parent: parent(),
+      runTurn: async () => {},
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    const briefed = store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
+    expect(briefed?.type === "subagent_briefed" && briefed.model).toBe("deepseek-chat");
+  });
+
+  it("写了型号 = 定义说了算，父那一档不参与", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    const runner = createSubagentRunner({
+      store,
+      attachments,
+      push,
+      list: () => [def({ model: "deepseek-v4-flash" })],
+      parent: parent(), // 父是 deepseek-chat
+      runTurn: async () => {},
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    const briefed = store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
+    expect(briefed?.type === "subagent_briefed" && briefed.model).toBe("deepseek-v4-flash");
   });
 
   it("subagent_briefed 记的是实际给出去的工具和内置前言拼过的全文", async () => {
@@ -227,8 +263,8 @@ describe("createSubagentRunner", () => {
     });
     const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
 
-    const child = store.load(out.childSessionId);
-    const types = child.map((e) => e.type);
+    const child = store.load(out.childSessionId).filter((e) => e.type !== "model_changed");
+    const types = child.map((e) => e.type); // 同上：型号继承那条不参与顺序断言
     expect(types.slice(0, 4)).toEqual([
       "session_created", "subagent_briefed", "skill_invoked", "skill_invoked",
     ]);
