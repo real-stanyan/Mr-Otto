@@ -136,6 +136,8 @@ describe("findSkillDirective —— 发的那头和画的那头是同一件事(i
       "$review 这段",
       "先看看 $review-pr 再说",
       "$apple-design(lite) 干活",
+      "`$apple-design` 是什么",
+      "https://x.com/$review 看这个",
     ]) {
       const chipped = f438.parse(text).some((s) => s.kind === "mention" && s.type === "skill");
       expect([text, chipped]).toEqual([text, find(text) !== null]);
@@ -191,5 +193,45 @@ describe("findSkillDirective —— 发的那头和画的那头是同一件事(i
     expect(find("价格是 $50")).toBeNull();
     expect(find("echo $PATH")).toBeNull();
     expect(find("用$aple-design 干活")).toBeNull();
+  });
+});
+
+describe("转义:反引号和斜杠打头的 $ 不是指令(issue #441)", () => {
+  const names = ["apple-design", "review"];
+  const find = (t: string) => findSkillDirective(t, names);
+  const f441 = ottoDirectiveFormatter(names);
+
+  it("反引号 = 正式的转义写法:提到 skill 名而不是调用它", () => {
+    // #439 改出来的新伤:用户只是想问「这个 skill 是什么」,结果 skill 被注入、
+    // 名字被摘走,正文只剩一对空反引号
+    expect(find("`$apple-design` 是什么")).toBeNull();
+  });
+
+  it("斜杠打头 = URL / 路径,不是指令", () => {
+    expect(find("https://x.com/$review 看这个")).toBeNull();
+    expect(find("./$review 这个文件")).toBeNull();
+  });
+
+  it("转义的那一份在输入框里也不画 chip —— 两头一起不认", () => {
+    expect(f441.parse("`$apple-design` 是什么")).toEqual([
+      { kind: "text", text: "`$apple-design` 是什么" },
+    ]);
+  });
+
+  it("#438 的正例不能因为转义而回退", () => {
+    expect(find("用$apple-design 重新设计右边的布局")).toEqual({
+      name: "apple-design",
+      task: "用 重新设计右边的布局",
+    });
+  });
+
+  it("只看贴身的前一个字符:代码块里顶行首的照旧算指令(已知代价)", () => {
+    // 前一个字符是换行,不是反引号 —— 真解析 markdown 围栏是另一个量级的事
+    expect(find("```\n$review foo\n```")).not.toBeNull();
+  });
+
+  it("斜杠指令那个 sigil 走同一个判定", () => {
+    const cmd = ottoSlashFormatter(["compact"]);
+    expect(cmd.parse("`/compact` 是什么")).toEqual([{ kind: "text", text: "`/compact` 是什么" }]);
   });
 });
