@@ -14,7 +14,15 @@ import { Input } from "./ui/input.js";
 import { Switch } from "./ui/switch.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
-import { joinRel, type FileEntry, type FileHit } from "../../../shared/files.js";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { previewLang } from "../lib/previewLang.js";
+import { joinRel, type FileEntry, type FileHit, type FilePreview } from "../../../shared/files.js";
+
+// 插件数组提到模块级:内联的 [remarkGfm] 每次渲染都是新引用(同 ProtocolView 的理由)
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
 
 /** 一层目录的缓存:相对路径 → 这层的条目。折叠不清缓存,再展开不重发 */
 type DirCache = Map<string, FileEntry[]>;
@@ -32,6 +40,8 @@ export function FilesView() {
   const [hits, setHits] = useState<FileHit[] | null>(null);
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [previewNote, setPreviewNote] = useState("");
 
   const loadDir = useCallback(
     async (rel: string) => {
@@ -91,6 +101,31 @@ export function FilesView() {
     }, 150);
     return () => clearTimeout(timer);
   }, [query, includeIgnored, root]);
+
+  // 选中变了就读。读失败要清掉上一份——留着上一份文件的内容配着新文件名,
+  // 是最坏的一种错:用户会以为自己在看这个文件
+  useEffect(() => {
+    if (selected === null || root === "") {
+      setPreview(null);
+      setPreviewNote("");
+      return;
+    }
+    void (async () => {
+      const r = await window.otter.filesRead(root, selected);
+      if (r.ok) {
+        setPreview(r.value);
+        setPreviewNote(r.value.truncated ? "文件较大,只显示前 512KB" : "");
+        return;
+      }
+      setPreview(null);
+      setPreviewNote(
+        r.kind === "binary" ? `二进制文件 · ${Number(r.detail).toLocaleString()} 字节`
+        : r.kind === "denied" ? "无权限读取"
+        : r.kind === "outside-root" ? "无法打开"
+        : "文件不存在"
+      );
+    })();
+  }, [selected, root]);
 
   function toggleDir(rel: string) {
     setExpanded((prev) => {
@@ -219,6 +254,47 @@ export function FilesView() {
           ))
         )}
       </div>
+
+      {selected !== null && (
+        <div className="flex min-h-0 shrink-0 basis-[40%] flex-col border-t border-border/60">
+          <div className="flex shrink-0 items-center gap-1 px-3 py-1.5">
+            <FileTypeIcon path={selected} />
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={selected}>{selected}</span>
+            <Button variant="ghost" size="sm" title="引用到输入框" onClick={() => mention(selected)}>
+              <AtSign className="size-[13px]" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" title="复制路径"
+              onClick={() => void navigator.clipboard.writeText(selected)}
+            >
+              <Copy className="size-[13px]" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" title="用外部程序打开"
+              onClick={() => void window.otter.filesReveal(root, selected, "open")}
+            >
+              <ExternalLink className="size-[13px]" />
+            </Button>
+            <Button variant="ghost" size="sm" title="关闭预览" onClick={() => setSelected(null)}>
+              <X className="size-[13px]" />
+            </Button>
+          </div>
+          {previewNote !== "" && (
+            <p className="px-3 pb-1 text-[11px] text-muted-foreground" data-testid="files-preview-note">
+              {previewNote}
+            </p>
+          )}
+          {preview !== null && (
+            <div className="min-h-0 flex-1 overflow-auto px-3 pb-3 text-[12px]" data-testid="files-preview">
+              <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+                {selected.toLowerCase().endsWith(".md")
+                  ? preview.text
+                  : "```" + previewLang(selected) + "\n" + preview.text + "\n```"}
+              </Markdown>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
