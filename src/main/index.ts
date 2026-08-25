@@ -239,12 +239,22 @@ function createWindow(): BrowserWindow {
     // 红绿灯是原生 chrome 留在原地 —— 不跟一次,一行三样东西就散了。
     // did-finish-load 那次是给「上次的 zoom 被 Chromium 按 origin 记住」兜底:
     // 构造时按 zoom=1 钉的坐标,页面加载完才知道真实倍率
+    let lastZoom = 1;
     const syncLights = () => {
       if (win.isDestroyed()) return;
-      win.setWindowButtonPosition(trafficLightPosition(win.webContents.getZoomFactor()));
+      lastZoom = win.webContents.getZoomFactor();
+      win.setWindowButtonPosition(trafficLightPosition(lastZoom));
     };
+    // zoom-changed 只覆盖 ctrl/⌘+滚轮那一条路;⌘+ / ⌘- / 触控板捏合都**不发**这个事件,
+    // 实测缩放完灯留在原地。Electron 没有"zoom 变了"的通用事件,所以补一条低频回读:
+    // 每 500ms 比一次 zoomFactor,变了才动灯。一个 getter 的开销,换"任何路子缩放都跟得上"
     win.webContents.on("zoom-changed", syncLights);
     win.webContents.on("did-finish-load", syncLights);
+    const zoomWatch = setInterval(() => {
+      if (win.isDestroyed()) return;
+      if (win.webContents.getZoomFactor() !== lastZoom) syncLights();
+    }, 500);
+    win.on("closed", () => clearInterval(zoomWatch));
   }
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
