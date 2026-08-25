@@ -1538,8 +1538,8 @@ function AppSidebar() {
           className={cn(
             "pr-2 pb-[6px] font-[650] flex items-center gap-2",
             // 行首是 fixed 开关钮(SidebarToggle)的占位:钮本身不在这棵树里,
-            // 展开/收起两态同一坐标。窗口模式 x=72 贴红绿灯右侧,全屏 x=12
-            trafficInset ? "pl-[64px]" : "pt-1 pl-1"
+            // 展开/收起两态同一坐标。窗口模式 x=88(红绿灯右侧留一段空当),全屏 x=12
+            trafficInset ? "pl-[80px]" : "pt-1 pl-1"
           )}
         >
           <SidebarTriggerSlot />
