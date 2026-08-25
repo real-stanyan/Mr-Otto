@@ -1,0 +1,158 @@
+// filesService 的合同 —— 重点是三条安全边界(越狱路径、大文件、二进制)
+// 和 rg 缺失时的降级。全部喂假 deps,不碰真文件系统。
+
+import { describe, expect, it, vi } from "vitest";
+import { createFilesService, type FilesDeps } from "../../src/main/filesService.js";
+
+const ROOT = "/w";
+
+function deps(over: Partial<FilesDeps> = {}): FilesDeps {
+  return {
+    listDir: () => [
+      { name: "src", isDir: true, size: 0, mtime: 1 },
+      { name: "a.ts", isDir: false, size: 10, mtime: 2 },
+    ],
+    statSize: () => 10,
+    readHead: () => new TextEncoder().encode("hello"),
+    realpath: (p) => p,
+    execRg: async () => ({ stdout: "" }),
+    openPath: () => {},
+    showInFolder: () => {},
+    ...over,
+  };
+}
+
+describe("list", () => {
+  it("列一层,目录在前", () => {
+    const svc = createFilesService(deps());
+    const r = svc.list(ROOT, "");
+    expect(r.ok && r.value.map((e) => e.name)).toEqual(["src", "a.ts"]);
+  });
+
+  it("目录读不了 = no-dir,不抛", () => {
+    const svc = createFilesService(deps({
+      listDir: () => { throw Object.assign(new Error("nope"), { code: "ENOENT" }); },
+    }));
+    const r = svc.list(ROOT, "gone");
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.kind).toBe("no-dir");
+  });
+
+  it("没权限 = denied", () => {
+    const svc = createFilesService(deps({
+      listDir: () => { throw Object.assign(new Error("nope"), { code: "EACCES" }); },
+    }));
+    const r = svc.list(ROOT, "secret");
+    expect(!r.ok && r.kind).toBe("denied");
+  });
+
+  it("../ 越狱挡在读之前", () => {
+    const listDir = vi.fn();
+    const svc = createFilesService(deps({ listDir }));
+    const r = svc.list(ROOT, "../etc");
+    expect(!r.ok && r.kind).toBe("outside-root");
+    expect(listDir).not.toHaveBeenCalled();
+  });
+});
+
+describe("read", () => {
+  it("普通文本文件读出来", () => {
+    const svc = createFilesService(deps());
+    const r = svc.read(ROOT, "a.ts");
+    expect(r.ok && r.value).toEqual({ text: "hello", truncated: false });
+  });
+
+  it("符号链接指向根外 = outside-root(realpath 之后才判)", () => {
+    const svc = createFilesService(deps({ realpath: () => "/etc/passwd" }));
+    const r = svc.read(ROOT, "link.txt");
+    expect(!r.ok && r.kind).toBe("outside-root");
+  });
+
+  it("超过 512KB 只读前 512KB 并标 truncated", () => {
+    const big = 600 * 1024;
+    const readHead = vi.fn(() => new TextEncoder().encode("head"));
+    const svc = createFilesService(deps({ statSize: () => big, readHead }));
+    const r = svc.read(ROOT, "big.log");
+    expect(r.ok && r.value.truncated).toBe(true);
+    expect(readHead).toHaveBeenCalledWith("/w/big.log", 512 * 1024);
+  });
+
+  it("二进制不预览 = binary,detail 带大小", () => {
+    const svc = createFilesService(deps({
+      readHead: () => new Uint8Array([0x89, 0x50, 0x00, 0x01]),
+      statSize: () => 2048,
+    }));
+    const r = svc.read(ROOT, "logo.png");
+    expect(!r.ok && r.kind).toBe("binary");
+    expect(!r.ok && r.detail).toContain("2048");
+  });
+});
+
+describe("search", () => {
+  it("名字模式:rg --files 的路径表在主进程侧 fuzzy 筛", async () => {
+    const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "src/fileIcon.ts\nsrc/store.ts\n" }));
+    const svc = createFilesService(deps({ execRg }));
+    const r = await svc.search(ROOT, "fic", { content: false, includeIgnored: false });
+    expect(r.ok && r.value.map((h) => h.rel)).toEqual(["src/fileIcon.ts"]);
+    expect(execRg.mock.calls[0]![0]).toContain("--files");
+  });
+
+  it("includeIgnored 才加 --no-ignore --hidden", async () => {
+    const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
+    const svc = createFilesService(deps({ execRg }));
+    await svc.search(ROOT, "x", { content: false, includeIgnored: false });
+    expect(execRg.mock.calls[0]![0]).not.toContain("--no-ignore");
+    await svc.search(ROOT, "x", { content: false, includeIgnored: true });
+    expect(execRg.mock.calls[1]![0]).toContain("--no-ignore");
+  });
+
+  it("内容模式:query 走 -- 之后,不会被当成 rg 的选项", async () => {
+    const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
+    const svc = createFilesService(deps({ execRg }));
+    await svc.search(ROOT, "-foo", { content: true, includeIgnored: false });
+    const args = execRg.mock.calls[0]![0];
+    expect(args[args.indexOf("--") + 1]).toBe("-foo");
+  });
+
+  it("退出码 1(没匹配)= 空结果,不是错误", async () => {
+    const svc = createFilesService(deps({
+      execRg: async () => { throw Object.assign(new Error("no match"), { code: 1 }); },
+    }));
+    const r = await svc.search(ROOT, "zzz", { content: true, includeIgnored: false });
+    expect(r.ok && r.value).toEqual([]);
+  });
+
+  it("没装 rg = rg-missing,渲染层据此标降级", async () => {
+    const svc = createFilesService(deps({
+      execRg: async () => { throw Object.assign(new Error("nope"), { code: "ENOENT" }); },
+    }));
+    const r = await svc.search(ROOT, "x", { content: true, includeIgnored: false });
+    expect(!r.ok && r.kind).toBe("rg-missing");
+  });
+
+  it("空查询不起子进程", async () => {
+    const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
+    const svc = createFilesService(deps({ execRg }));
+    const r = await svc.search(ROOT, "", { content: false, includeIgnored: false });
+    expect(r.ok && r.value).toEqual([]);
+    expect(execRg).not.toHaveBeenCalled();
+  });
+});
+
+describe("reveal", () => {
+  it("外部打开同样过根内校验", () => {
+    const openPath = vi.fn();
+    const svc = createFilesService(deps({ openPath, realpath: () => "/etc/passwd" }));
+    const r = svc.reveal(ROOT, "link.txt", "open");
+    expect(!r.ok && r.kind).toBe("outside-root");
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it("正常路径转给 shell", () => {
+    const showInFolder = vi.fn();
+    const svc = createFilesService(deps({ showInFolder }));
+    const r = svc.reveal(ROOT, "a.ts", "folder");
+    expect(r.ok).toBe(true);
+    expect(showInFolder).toHaveBeenCalledWith("/w/a.ts");
+  });
+});
