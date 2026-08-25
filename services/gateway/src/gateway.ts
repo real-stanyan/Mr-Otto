@@ -294,13 +294,15 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
             /* 连接没了 */
           }
         };
-        detach = relay.attach(who.userId, role, { write });
         // 开场白。**不是可有可无的礼貌,是这条流能用的前提**:
         // node:http 的 res.writeHead() 只把响应头记在内存里,要等第一个 body
         // 字节才连头一起冲刷。开流时一字节不写,客户端连状态行都收不到——
         // 实测 fetch 与 curl 都要卡满一个心跳(25s)才拿到头,握手在那之前无从开始。
         // 单测覆盖:tests/gateway/relay.test.ts「开流即刻有字节可读」。
         write(":ok\n\n");
+        // attach 在开场白之后:对端已在线时它会立刻回写一条 :peer,
+        // 那条必须排在开场白后面,不能抢在响应头冲刷之前
+        detach = relay.attach(who.userId, role, { write });
         // nginx 的 proxy_read_timeout 是 600s,不发东西就会被掐。
         // 注释行(以 ':' 开头)不是 data 帧,客户端的 SSE 解析器会跳过它
         timer = setInterval(() => write(":\n\n"), HEARTBEAT_MS);

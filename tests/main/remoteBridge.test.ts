@@ -25,14 +25,18 @@ const BUSY: IslandFleet = {
 function fakeTransport() {
   const sent: string[] = [];
   let onMsg: (p: string) => void = () => {};
+  let onPeer: () => void = () => {};
   let onClose: () => void = () => {};
   return {
     sent,
     send(p: string) { sent.push(p); },
     onMessage(cb: (p: string) => void) { onMsg = cb; },
+    onPeer(cb: () => void) { onPeer = cb; },
     onClose(cb: () => void) { onClose = cb; },
     close: vi.fn(),
     emit(p: string) { onMsg(p); },
+    /** 中继报告对端已在场(SSE 的 :peer)。握手唯一的起点 */
+    emitPeer() { onPeer(); },
     emitClose() { onClose(); },
   };
 }
@@ -91,11 +95,25 @@ function harness() {
     peerIdentity: () => peer.identity.publicKey,
   });
   const peer = newPeer();
+  t.emitPeer(); // 对端到场:这之后才有 hello。不发信号的那条路径由专门的用例覆盖
   return { identity, t, onCommand, b, peer };
 }
 
 describe("createRemoteBridge", () => {
-  it("构造即发出自己的 hello（明文 JSON）", () => {
+  it("构造之后一言不发：没有在场信号就没有 hello（中继不排队，盲发只是喂虚空）", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t,
+      onCommand: vi.fn(), peerIdentity: () => P.generateEd25519().publicKey,
+    });
+    expect(t.sent).toHaveLength(0);
+    t.emitPeer();
+    expect(t.sent).toHaveLength(1);
+    b.dispose();
+  });
+
+  it("收到在场信号 → 发出自己的 hello（明文 JSON）", () => {
     const { t, b } = harness();
     expect(t.sent).toHaveLength(1);
     expect(t.sent[0]!.startsWith("{")).toBe(true);
@@ -170,13 +188,17 @@ describe("createRemoteBridge", () => {
     b.dispose();
   });
 
-  it("断开 → 重发 hello；重握手当场把快照补推给新对端（去重基线已清）", () => {
+  it("断开只清状态；下一条在场信号才开新一轮，并当场把快照补推给新对端（去重基线已清）", () => {
     const { t, b, peer, identity } = harness();
     shake(t, peer, identity.publicKey, 0);
     b.pushFleet(BUSY);
     const afterFirst = t.sent.length;
 
+    // 连接都断了,这时候发 hello 只是丢进虚空
     t.emitClose();
+    expect(t.sent.length).toBe(afterFirst);
+
+    t.emitPeer();
     expect(t.sent.length).toBe(afterFirst + 1); // 新一轮 hello
     expect(t.sent[t.sent.length - 1]!.startsWith("{")).toBe(true);
 

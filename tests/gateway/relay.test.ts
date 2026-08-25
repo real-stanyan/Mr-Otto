@@ -18,12 +18,45 @@ describe("createRelay", () => {
     r.attach("u1", "desktop", desktop);
     r.attach("u1", "mobile", mobile);
 
+    // 两端都在了 → 各自先收到一条在场信号,后面的断言只看载荷
+    desktop.chunks.length = 0;
+    mobile.chunks.length = 0;
+
     expect(r.deliver("u1", "desktop", "AAAA")).toBe(true);
     expect(mobile.chunks.join("")).toContain("AAAA");
     expect(desktop.chunks.join("")).toBe(""); // 不回声给发送方
 
     expect(r.deliver("u1", "mobile", "BBBB")).toBe(true);
     expect(desktop.chunks.join("")).toContain("BBBB");
+  });
+
+  // ── 在场信号 ──
+  //
+  // 握手是双向的:两端都要拿到对方的 hello 才能派生密钥。而中继按设计不排队,
+  // 桌面又是长命的那一端 —— 它开机时若盲发 hello,必然掉进虚空。
+  // 于是"对端到场"这件事必须由中继说出来:它是唯一同时看得见两个槽的人。
+  //
+  // 用 SSE 注释行(':' 开头)而不是 data 帧:控制信道与端到端载荷彻底分开,
+  // 中继依旧只知道"谁在线",一个字节的内容都不碰。
+  it("对端到场时,两侧各收到一条 :peer", () => {
+    const r = createRelay();
+    const desktop = sink();
+    const mobile = sink();
+    r.attach("u1", "desktop", desktop);
+    expect(desktop.chunks.join("")).toBe(""); // 独自在线:没有对端,不发信号
+
+    r.attach("u1", "mobile", mobile);
+    expect(desktop.chunks.join("")).toBe(":peer\n\n"); // 在位的那端被叫醒
+    expect(mobile.chunks.join("")).toBe(":peer\n\n");  // 新来的那端也要知道对端已在
+  });
+
+  it("同角色重连也重发 :peer（手机切后台再回来,整轮握手要重开）", () => {
+    const r = createRelay();
+    const desktop = sink();
+    r.attach("u1", "desktop", desktop);
+    r.attach("u1", "mobile", sink());
+    r.attach("u1", "mobile", sink()); // 重连顶掉旧的
+    expect(desktop.chunks.join("")).toBe(":peer\n\n:peer\n\n");
   });
 
   it("不同 user 之间绝不串线", () => {
