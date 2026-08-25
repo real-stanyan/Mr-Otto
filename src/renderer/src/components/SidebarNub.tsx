@@ -43,9 +43,11 @@ export function SidebarToggle() {
       size="icon"
       className={cn(
         "sidebar-toggle fixed z-50 size-7",
-        // 窗口模式:红绿灯 (16,16) 占到 x=68,钮从 72 起;top 8 + 钮高 28 → 中心 22,
-        // 和 h-11 顶栏、红绿灯中心同一条线(搜索钮在 App.tsx 里以同一 top 贴在它右侧,
-        // 数字见 TOGGLE_TOP / SEARCH_LEFT);全屏没有红绿灯:贴左上
+        // 窗口模式:红绿灯左边距 16、占到 x≈71,钮从 72 起;top 8 + 钮高 28 → 中心 22,
+        // 和 h-11 顶栏同一条线。灯那边是反过来对齐这条线的:它是原生 chrome,坐标随
+        // zoomFactor 现算(src/main/trafficLights.ts),不能写死一组数
+        // (搜索钮在 App.tsx 里以同一 top 贴在它右侧,数字见 TOGGLE_TOP / SEARCH_LEFT);
+        // 全屏没有红绿灯:贴左上
         clear ? `${TOGGLE_TOP} left-[72px]` : "top-3 left-3",
         // 收起态:从侧栏消失的左缘滑入(空间一致性);展开态它就是侧栏里的收起钮
         collapsed && "collapsed-nub",
