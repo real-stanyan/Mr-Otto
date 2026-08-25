@@ -1511,7 +1511,7 @@ function AppSidebar() {
   const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
   // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复
   const archivedList = sessions.filter((s) => s.archived && s.spawnedFrom === null);
-  // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0088）：
+  // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0089）：
   // 归档的会话越攒越多时，折叠区在长列表最底下，等于藏在滚动条尽头；
   // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
   // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
@@ -1670,7 +1670,7 @@ function AppSidebar() {
             ))}
           </SidebarMenu>
         ) : archivedView ? (
-          // 已归档视图（ADR-0088，取代 ADR-0087 那截底部折叠区）：整个侧栏切过去。
+          // 已归档视图（ADR-0089，取代 ADR-0087 那截底部折叠区）：整个侧栏切过去。
           // 行点击只是看历史，不自动恢复——归档是用户的判断，不该被"点一下"推翻
           <SidebarMenu className="p-2">
             <SidebarMenuItem className="mb-1">
