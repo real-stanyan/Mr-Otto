@@ -100,6 +100,7 @@ import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { folderName, groupArchivedByWorkspace, groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
+import { Input } from "@/components/ui/input.js";
 import {
   Drawer,
   DrawerContent,
@@ -1096,6 +1097,81 @@ function QuotaCard() {
   );
 }
 
+/** 邮箱密码登录/注册表单（AccountPage 未登录态,OAuth 按钮下方）。
+    登录成功由 onAccountChanged 推账号,表单自己只管两件事:
+    注册后"去邮箱点确认链接"的提示,和转圈期间禁点。错误走 store.error 统一显示 */
+function EmailPasswordForm() {
+  const signInWithPassword = useChat((s) => s.signInWithPassword);
+  const signUpWithPassword = useChat((s) => s.signUpWithPassword);
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const canSubmit = !busy && email.includes("@") && password.length >= 6;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      if (mode === "sign-in") {
+        await signInWithPassword(email, password);
+      } else {
+        const result = await signUpWithPassword(email, password);
+        if (result === "confirm-email") {
+          setNotice("确认邮件已发送,点完邮件里的链接后回来登录。");
+          setMode("sign-in");
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-[8px] max-w-[320px]"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <Input
+        type="email"
+        placeholder="邮箱"
+        autoComplete="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <Input
+        type="password"
+        placeholder={mode === "sign-up" ? "密码（至少 6 位）" : "密码"}
+        autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <div className="flex items-center gap-[10px]">
+        <Button type="submit" disabled={!canSubmit}>
+          {busy ? "…" : mode === "sign-in" ? "用邮箱登录" : "注册"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            setMode(mode === "sign-in" ? "sign-up" : "sign-in");
+            setNotice(null);
+          }}
+        >
+          {mode === "sign-in" ? "没有账号？注册" : "已有账号？登录"}
+        </Button>
+      </div>
+      {notice && <p className={HINT}>{notice}</p>}
+    </form>
+  );
+}
+
 /** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
 function AccountPage() {
   const account = useChat((s) => s.account);
@@ -1124,6 +1200,7 @@ function AccountPage() {
               <Button onClick={() => void signIn("google")}>用 Google 登录</Button>
               <Button onClick={() => void signIn("github")}>用 GitHub 登录</Button>
             </div>
+            <EmailPasswordForm />
             <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
           </>
         )}

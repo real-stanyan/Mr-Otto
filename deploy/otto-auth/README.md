@@ -1,5 +1,22 @@
 # otto-auth: 服务器上的第二套 Supabase 栈
 
+> **⚠️ 已退役(2026-08-25):迁到 Supabase Cloud。**
+> 项目 `kpeemypbhkynapkjzewr`(https://kpeemypbhkynapkjzewr.supabase.co,ap-northeast-1)。
+> 迁移动机:邮箱密码注册要发验证邮件,自托管还得配 SMTP relay(VPS 直发 25 端口被
+> Hetzner 封),托管版邮件通道白送,docker 栈也不用养了。
+>
+> 已迁的东西:auth.users + identities(4 用户全 OAuth)、public 全部 11 表 + 数据 +
+> RLS(19 条 policy)+ 函数 + `on_auth_user_upsert` 触发器;auth 配置(site_url =
+> 网关落地页、redirect 白名单、Google/GitHub provider 沿用同一对 client id/secret);
+> 签名密钥**手动从默认 ES256 切回 legacy HS256**(网关 jwt.ts 只认 HS256;以后升
+> ES256/JWKS 是网关侧独立任务)。网关 `.env` 的 SUPABASE_URL / JWT_SECRET /
+> SERVICE_ROLE_KEY 已指向 cloud(旧值备份在 `~/otto-gateway/.env.bak-selfhosted`)。
+> app 侧 anon key/URL 在 `src/main/authConfig.ts`。
+>
+> 本栈(`~/otto-supabase/docker`,compose project `otto`)确认 cloud 稳定后可
+> `docker compose -p otto down` 停掉;下文仅作历史记录。
+
+
 Task 1(login-v1 SDD)产物。目标:在已经跑着一套 dryrun 项目 Supabase 的服务器上,
 再起一套独立的 Supabase(compose project 名 `otto`),给 Mr Otto 的 Google/GitHub
 OAuth 登录用,和 dryrun 的容器/端口互不干扰。
