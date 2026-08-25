@@ -206,16 +206,18 @@ export function FilesView() {
         style={{ height: HEADER_H }}
       >
         <SidebarNub />
-        <FolderOpen className="size-[14px] opacity-70" />
-        <span className="text-sm font-[650]">文件</span>
-        <div className="flex-1" />
-        <Button variant="ghost" size="sm" title="刷新" onClick={() => void loadDir("")}>
+        {/* 面板能被拖到很窄:标题和图标都必须 shrink-0,否则 flex 会把这两项
+            压到比内容还窄,「文件」两个字竖着摞起来 */}
+        <FolderOpen className="size-[14px] shrink-0 opacity-70" />
+        <span className="shrink-0 whitespace-nowrap text-sm font-[650]">文件</span>
+        <div className="min-w-0 flex-1" />
+        <Button variant="ghost" size="sm" className="shrink-0" title="刷新" onClick={() => void loadDir("")}>
           <RefreshCw className="size-[14px]" />
         </Button>
-        <Button variant="ghost" size="sm" title={panelWide ? "收起" : "展开"} onClick={togglePanelWide}>
+        <Button variant="ghost" size="sm" className="shrink-0" title={panelWide ? "收起" : "展开"} onClick={togglePanelWide}>
           {panelWide ? <Minimize2 className="size-[14px]" /> : <Maximize2 className="size-[14px]" />}
         </Button>
-        <Button variant="ghost" size="sm" title="关闭" onClick={closePanel}>
+        <Button variant="ghost" size="sm" className="shrink-0" title="关闭" onClick={closePanel}>
           <X className="size-[14px]" />
         </Button>
       </header>
