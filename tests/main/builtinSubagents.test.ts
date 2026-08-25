@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_SOURCE, builtinSubagents, withBuiltins } from "../../src/main/builtinSubagents.js";
 import type { SubagentDef } from "../../src/shared/subagent.js";
+import { DEFAULT_MODEL } from "../../src/shared/modelCatalog.js";
 
 const ALL = [
   "read_file",
@@ -30,6 +31,14 @@ function onDisk(name: string): SubagentDef {
 }
 
 describe("builtinSubagents", () => {
+  // ADR-0108：不写 model 的含义从"兜底默认"变成了"跟着父会话走"，所以内置这三份
+  // 必须显式钉档——不钉的话贵档会话里随手派一个 Explore，账单量级就变了
+  it("三份都显式钉了型号：便宜是写出来的选择，不是没人做过选择", () => {
+    for (const d of builtinSubagents([...ALL, "memory"])) {
+      expect(d.model).toBe(DEFAULT_MODEL);
+    }
+  });
+
   it("三份，都标 builtin + readOnly，没有磁盘路径", () => {
     const b = builtinSubagents([...ALL, "memory"]);
     expect(b.map((d) => d.name)).toEqual(["general-purpose", "Explore", "memory-reviewer"]);

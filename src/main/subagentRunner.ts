@@ -152,8 +152,12 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
       // 到不了这里
       if (def.approval === "inherit") child.setApprovalMode(parent.approvalMode);
       else if (def.approval === "ask" || def.approval === "auto") child.setApprovalMode(def.approval);
-      // 型号跟着定义走；没写就跟父。switchModel 与当前相同时内部 no-op，零多余事件
-      if (def.model) child.switchModel(def.model);
+      // 型号跟着定义走；没写 = 跟父此刻那一档（设置页那句「跟随主会话」的兑现，
+      // ADR-0108）。曾经这里只有前半句，后半句靠 createAgent 的兜底默认
+      // （DEFAULT_MODEL）冒充"跟随"——用户在 Pro 会话里派活，子会话静默用 flash 干，
+      // 而三处文档（这行注释、SubagentDef.model 的注释、设置页文案）都写着继承。
+      // switchModel 与当前相同时内部 no-op，零多余事件——所以父就是默认档时这行不落事件
+      child.switchModel(def.model ?? parent.model);
       if (def.thinking) child.setThinking(def.thinking);
 
       // 先落子侧的"我是谁"（模型可见的新信息，先落盘再喂模型），
