@@ -110,6 +110,7 @@ export function SimulatorPanel() {
       <div className={`flex ${HEADER_H} items-center gap-1 border-b px-2 drag-region`}>
         <Smartphone className="size-4 shrink-0 opacity-60" />
         <select
+          aria-label="模拟器设备"
           className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm outline-none"
           value={selected}
           onChange={(e) => void act("select", () => window.otter.simSelect(e.target.value || null))}
