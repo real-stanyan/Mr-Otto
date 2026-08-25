@@ -1819,7 +1819,7 @@ describe("createRemoteBridge", () => {
     b.dispose();
   });
 
-  it("断开 → 重发 hello、清去重基线，重握手后整份快照重推", () => {
+  it("断开 → 重发 hello；重握手当场把快照补推给新对端（去重基线已清）", () => {
     const { t, b, peer, identity } = harness();
     shake(t, peer, identity.publicKey, 0);
     b.pushFleet(BUSY);
@@ -1829,15 +1829,26 @@ describe("createRemoteBridge", () => {
     expect(t.sent.length).toBe(afterFirst + 1); // 新一轮 hello
     expect(t.sent[t.sent.length - 1]!.startsWith("{")).toBe(true);
 
-    const peer2 = newPeer();
-    // 换连接换了身份的话 peerIdentity 也会换；这里复用同一台手机
-    const keys2 = shake(t, { ...peer, eph: peer2.eph, nonceHalf: peer2.nonceHalf },
-                        identity.publicKey, t.sent.length - 1);
-    const before = t.sent.length;
-    b.pushFleet(BUSY); // 内容没变，但换了连接 → 必须重推
-    expect(t.sent.length).toBe(before + 1);
+    // 同一台手机、新一次连接：身份密钥不变，临时密钥和 nonce 换新
+    const fresh = newPeer();
+    const keys2 = shake(
+      t,
+      { ...peer, eph: fresh.eph, nonceHalf: fresh.nonceHalf },
+      identity.publicKey,
+      t.sent.length - 1
+    );
+
+    // 关键断言:握手完成这一刻就该有一帧快照过线 —— 对端是新的,它什么都还没有。
+    // 内容和断线前**一样**,所以这一帧能过线,证明去重基线确实被清掉了。
+    const wire = t.sent[t.sent.length - 1]!;
+    expect(wire.startsWith("{")).toBe(false);
     const opener = createOpener(P, keys2.recv.key, keys2.recv.prefix);
-    expect(JSON.parse(dec(opener.open(b64decode(t.sent[t.sent.length - 1]!)!)!)).type).toBe("fleet");
+    expect(JSON.parse(dec(opener.open(b64decode(wire)!)!))).toEqual({ type: "fleet", fleet: BUSY });
+
+    // 补推之后基线重新生效:同一份再推一次不该过线
+    const before = t.sent.length;
+    b.pushFleet(BUSY);
+    expect(t.sent.length).toBe(before);
     b.dispose();
   });
 
