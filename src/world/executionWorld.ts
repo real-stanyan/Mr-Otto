@@ -6,11 +6,17 @@ import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
+import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** 沙箱 enforcement 事实（issue #389）：命令跑完了但沙箱拦了什么/自身
+      出了什么状况。可选 = 向后兼容：v1 LocalWorld 无沙箱永不产出，旧实现/
+      假 world 零改动。生产者是 v2 SandboxWorld；工具层（bash）负责把它
+      摆到模型眼前（BrowserReadResult.truncated 同款约定） */
+  sandbox?: SandboxEnforcementFacts;
 }
 
 /** exec 的可选项。signal（ADR-0006）：中止 = 杀死运行中的进程——

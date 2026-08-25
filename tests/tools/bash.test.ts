@@ -63,4 +63,56 @@ describe("bash 工具", () => {
   it("requiresApproval = true：最危险的工具必须过门", () => {
     expect(bashTool.requiresApproval).toBe(true);
   });
+
+  // ── 沙箱 enforcement 事实上报（issue #389）────────────────
+  // 生产者是 v2 SandboxWorld；v1 这里钉住的是消费侧协议（ADR-0083「协议即测试」同款）
+
+  it("sandbox 字段缺席：输出与从前逐字节一致（v1 LocalWorld 永远走这条）", async () => {
+    const { world } = fakeWorld({ stdout: "hello\n", stderr: "", exitCode: 0 });
+    const out = await bashTool.run({ cmd: "echo hello" }, world);
+    expect(out).toBe("exit code: 0\nstdout:\nhello");
+  });
+
+  it("沙箱拦截/异常事实摆到模型眼前，拦截与异常措辞分开", async () => {
+    const { world } = fakeWorld({
+      stdout: "done\n",
+      stderr: "",
+      exitCode: 0,
+      sandbox: {
+        enforcement: "partial",
+        denials: ["写 /etc/hosts 被拒"],
+        failures: ["seccomp profile 加载失败"],
+      },
+    });
+    const out = (await bashTool.run({ cmd: "deploy" }, world)) as string;
+    expect(out).toContain("[沙箱] enforcement: partial");
+    expect(out).toContain("[沙箱拦截] 写 /etc/hosts 被拒");
+    expect(out).toContain("[沙箱异常] seccomp profile 加载失败");
+    // 事实行在 stdout 段之前——正常输出再长也埋不掉它
+    expect(out.indexOf("[沙箱拦截]")).toBeLessThan(out.indexOf("stdout:"));
+  });
+
+  it("enforcement: full 且无拦截无异常：不加噪音行", async () => {
+    const { world } = fakeWorld({
+      stdout: "ok\n",
+      stderr: "",
+      exitCode: 0,
+      sandbox: { enforcement: "full" },
+    });
+    const out = (await bashTool.run({ cmd: "ls" }, world)) as string;
+    expect(out).not.toContain("[沙箱");
+    expect(out).toBe("exit code: 0\nstdout:\nok");
+  });
+
+  it("沙箱事实行不进截断预算：超长输出被截，事实行完好", async () => {
+    const { world } = fakeWorld({
+      stdout: "x".repeat(20_000),
+      stderr: "",
+      exitCode: 0,
+      sandbox: { enforcement: "full", denials: ["读 ~/.ssh 被拒"] },
+    });
+    const out = (await bashTool.run({ cmd: "cat big" }, world)) as string;
+    expect(out).toContain("输出被中间截断");
+    expect(out).toContain("[沙箱拦截] 读 ~/.ssh 被拒");
+  });
 });

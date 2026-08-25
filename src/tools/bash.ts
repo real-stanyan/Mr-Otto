@@ -6,6 +6,7 @@
 
 import type { Tool } from "./tool.js";
 import { estimateTokens } from "../shared/contextEstimate.js";
+import type { SandboxEnforcementFacts } from "../world/sandbox.js";
 
 /** 模型可见预算（字符/流）——三层截断的第三层（issue #343）。与内存层
     （world/localWorld.ts 的 EXEC_BUFFER_CAP）、IPC 层（shared/execStream.ts）
@@ -24,6 +25,19 @@ function clip(label: string, text: string): string {
     `Warning: 输出被中间截断（原始 ${text.length} 字符 ≈ ${estimateTokens(text)} tokens，` +
     `保留头 ${HEAD_CHARS} + 尾 ${TAIL_CHARS} 字符）。需要完整内容请用 head/tail/grep 重跑。`;
   return `${label}:\n${warn}\n${text.slice(0, HEAD_CHARS)}\n…[中间省略]…\n${text.slice(-TAIL_CHARS)}\n`;
+}
+
+/** 沙箱 enforcement 事实 → 模型可见行（issue #389）。放在 clip 之外：
+    截断永远吃不掉它（BrowserReadResult.truncated「摆到模型眼前」同款约定）。
+    v1 LocalWorld 不产 sandbox 字段 = 这里永远返回空串，输出逐字节不变 */
+function sandboxLines(s: SandboxEnforcementFacts | undefined): string {
+  if (!s) return "";
+  const lines: string[] = [];
+  if (s.enforcement === "partial")
+    lines.push("[沙箱] enforcement: partial——有约束未能实施，隔离不完整");
+  for (const d of s.denials ?? []) lines.push(`[沙箱拦截] ${d}`);
+  for (const f of s.failures ?? []) lines.push(`[沙箱异常] ${f}（约束可能已失效）`);
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
 export const bashTool: Tool = {
@@ -47,7 +61,7 @@ export const bashTool: Tool = {
     if (typeof cmd !== "string" || cmd.trim().length === 0) {
       throw new Error("bash: 参数 cmd 必须是非空字符串");
     }
-    const { stdout, stderr, exitCode } = await world.exec(cmd);
-    return `exit code: ${exitCode}\n${clip("stdout", stdout)}${clip("stderr", stderr)}`.trimEnd();
+    const { stdout, stderr, exitCode, sandbox } = await world.exec(cmd);
+    return `exit code: ${exitCode}\n${sandboxLines(sandbox)}${clip("stdout", stdout)}${clip("stderr", stderr)}`.trimEnd();
   },
 };
