@@ -44,6 +44,7 @@ import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
+import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
@@ -477,6 +478,13 @@ void app.whenReady().then(() => {
   const store = new EventStore(dbPath);
   // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
   const attachmentStore = new AttachmentStore(join(app.getPath("userData"), "attachments"));
+  /**
+   * 手机传上来的附件先在这里拼回整个文件,再走**和 ＋ 按钮同一道闸门**
+   * (attachmentIntake 的 intakeFile):图片入库、文档转 Markdown、文本带内容、
+   * 其余拒收。准入策略只有一套 —— 手机端不该有第二套,否则两边迟早不一样。
+   */
+  const remoteUploads = createUploadPool();
+
 
   // agent 注册表：会话隔离的核心。切走不杀旧 agent——它的 turn 继续跑，
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
@@ -559,8 +567,9 @@ void app.whenReady().then(() => {
       transport,
       peerIdentity: () => idStore.peerIdentity(),
       onCommand: (c) => handleRemoteCommand(c),
-      // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影
-      onReset: () => { watchedSession = null; },
+      // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
+      // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
+      onReset: () => { watchedSession = null; remoteUploads.reset(); },
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -2389,14 +2398,58 @@ void app.whenReady().then(() => {
   /** 手机上行的五个词。三个能原样落到岛的那条路(同一套审批/发消息逻辑,
       不另起一份);watch/unwatch 是时间线订阅,还没做。
       刻意不透传 grant —— UpFrame 里根本没有那个字段(ADR-0096:永久授权不给手机) */
+  /** 把手机声明的那几个 uploadId 变成能随消息走的附件。
+      **少一个就整条不发**:消息正文很可能是"看看这张图",把文字单独发过去
+      等于让模型对着一句没有指代对象的话开工 */
+  async function remoteAttachments(ids: string[]): Promise<OutgoingAttachment[] | null> {
+    const out: OutgoingAttachment[] = [];
+    for (const id of ids) {
+      const file = remoteUploads.take(id);
+      if (!file) {
+        remoteBridge?.pushNotice("有附件没传完,这条消息没发出去");
+        return null;
+      }
+      const staged = await intakeFile(file.name, file.data, attachmentStore);
+      if (staged.kind === "rejected") {
+        // 静默丢弃在手机上和"传成功了"长得一模一样,必须回话
+        remoteBridge?.pushNotice(`${staged.name} 没收下:${staged.reason}`);
+        return null;
+      }
+      out.push(
+        staged.kind === "image"
+          ? { kind: "image", ref: staged.ref }
+          : { kind: "text", name: staged.name, content: staged.content }
+      );
+    }
+    return out;
+  }
+
   function handleRemoteCommand(c: UpFrame): void {
     switch (c.type) {
       case "approve":
         return handleIslandCommand({ type: "approve", sessionId: c.sessionId, callId: c.callId });
       case "deny":
         return handleIslandCommand({ type: "deny", sessionId: c.sessionId, callId: c.callId });
-      case "send":
-        return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
+      case "upload": {
+        const r = remoteUploads.accept(c);
+        if (!r.ok) remoteBridge?.pushNotice(`${c.name} 没收下:${r.reason}`);
+        return;
+      }
+      case "send": {
+        if (!c.uploads?.length) {
+          return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
+        }
+        void (async () => {
+          const attachments = await remoteAttachments(c.uploads ?? []);
+          if (!attachments) return; // 理由已经回给手机了
+          await handleSendMessage(c.sessionId, c.text, undefined, attachments);
+        })().catch((e) => {
+          const why = e instanceof Error ? e.message : String(e);
+          console.warn("远程带附件发消息失败", e);
+          remoteBridge?.pushNotice(`没发出去:${why}`);
+        });
+        return;
+      }
       case "watch":
         // 一次只订一个:换会话直接顶掉上一个,不做多路订阅 —— 手机上看不见两屏
         console.warn(`远程:手机订阅了 ${c.sessionId}`);

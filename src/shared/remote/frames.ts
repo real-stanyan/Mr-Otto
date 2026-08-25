@@ -25,13 +25,24 @@ export type DownFrame =
   /** 保活。nginx 的 proxy_read_timeout 是 600s，心跳必须比它短得多。
       **生产者在 plan B**：真实现 SSE 传输那一层才会挂定时器发它。
       现在只有解码这一半，因为手机端从第一天起就要认得它。 */
-  | { type: "ping"; ts: number };
+  | { type: "ping"; ts: number }
+  /** 一句给人看的话,不进日志、不影响状态。**存在的理由是"静默丢弃"**:
+      手机传上来的附件由桌面那道闸门(attachmentIntake)分类,认不出的会被拒收,
+      而拒收如果不回话,在手机上和"传成功了"长得一模一样 */
+  | { type: "notice"; text: string };
 
-/** 手机 → 桌面。恰好五个词，没有 focusSession，approve 没有 grant 档 */
+/** 手机 → 桌面。没有 focusSession，approve 没有 grant 档 */
 export type UpFrame =
   | { type: "approve"; sessionId: string; callId: string }
   | { type: "deny"; sessionId: string; callId: string }
-  | { type: "send"; sessionId: string; text: string }
+  /** uploads = 这条消息带的附件,值是先前 upload 帧里的 uploadId。
+      **附件和文字必须同一条帧发**:分两条的话中间断线就会留下一半 */
+  | { type: "send"; sessionId: string; text: string; uploads?: string[] }
+  /** 一个附件的一片。中继单帧上限 256 KiB(gateway.ts 的 MAX_UPLINK_BYTES),
+      而随手一张照片是几 MB —— 分片不是优化,是能不能传的问题。
+      顺序和防重放由密封流保证(sealedStream 的严格递增计数器),所以这里
+      只带 seq 让接收侧断言"正好是下一片",不需要自己做窗口 */
+  | { type: "upload"; uploadId: string; seq: number; total: number; name: string; data: string }
   | { type: "watch"; sessionId: string }
   | { type: "unwatch"; sessionId: string };
 
@@ -52,6 +63,16 @@ function parseObject(line: string): Record<string, unknown> | null {
 
 function str(v: unknown): v is string {
   return typeof v === "string";
+}
+
+/** 非负整数。**必须挡住小数和 NaN**:seq 用来当数组下标和"下一片"的判据,
+    一个 1.5 或 NaN 能让重组器的状态永远对不上而不报错 */
+function nat(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+function strArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every(str);
 }
 
 /** 认得的字段集合之外还有别的键 = 整条丢弃。
@@ -80,9 +101,22 @@ export function decodeUpFrame(line: string): UpFrame | null {
       return exactKeys(o, ["type", "sessionId", "callId"]) && str(o.sessionId) && str(o.callId)
         ? { type: o.type, sessionId: o.sessionId, callId: o.callId }
         : null;
-    case "send":
-      return exactKeys(o, ["type", "sessionId", "text"]) && str(o.sessionId) && str(o.text)
+    case "send": {
+      if (!keysWithin(o, ["type", "sessionId", "text"], ["uploads"])) return null;
+      if (!str(o.sessionId) || !str(o.text)) return null;
+      if (o.uploads !== undefined && !strArray(o.uploads)) return null;
+      return o.uploads === undefined
         ? { type: "send", sessionId: o.sessionId, text: o.text }
+        : { type: "send", sessionId: o.sessionId, text: o.text, uploads: o.uploads };
+    }
+    case "upload":
+      return exactKeys(o, ["type", "uploadId", "seq", "total", "name", "data"]) &&
+        str(o.uploadId) && str(o.name) && str(o.data) &&
+        nat(o.seq) && nat(o.total) && o.total > 0 && o.seq < o.total
+        ? {
+            type: "upload", uploadId: o.uploadId, seq: o.seq,
+            total: o.total, name: o.name, data: o.data,
+          }
         : null;
     case "watch":
     case "unwatch":
@@ -121,6 +155,8 @@ export function decodeDownFrame(line: string): DownFrame | null {
     }
     case "ping":
       return typeof o.ts === "number" ? { type: "ping", ts: o.ts } : null;
+    case "notice":
+      return exactKeys(o, ["type", "text"]) && str(o.text) ? { type: "notice", text: o.text } : null;
     default:
       return null;
   }

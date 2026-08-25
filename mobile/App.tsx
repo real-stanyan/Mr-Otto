@@ -9,12 +9,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Image, Keyboard, LayoutAnimation, Platform, Pressable,
+  ActionSheetIOS, ActivityIndicator, Image, Keyboard, LayoutAnimation, Platform, Pressable,
   SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
   type ViewStyle,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
-import type { MobileMessage } from "../src/shared/remote/frames.js";
+import type { MobileMessage, UpFrame } from "../src/shared/remote/frames.js";
+import { chunkUpload, UPLOAD_LIMITS } from "../src/shared/remote/uploads.js";
 import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../src/shared/remote/groups.js";
 import { parseMarkdown, type Span as MdSpan } from "../src/shared/remote/markdown.js";
 import { groupTimeline, splitTool } from "../src/shared/remote/timeline.js";
@@ -22,6 +23,9 @@ import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.j
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
 import { listFriends, type FriendRow } from "./src/friendsApi.js";
+import {
+  MAX_MB, NeedsRebuild, pickFiles, pickPhotos, readBytes, takePhoto, tooBig, type Picked,
+} from "./src/attach.js";
 import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
@@ -516,6 +520,9 @@ function Fleet({ store, onRepair, onDetailChange }: {
   /** 收起的工作区(全路径为键)。**内存态,不持久化** —— 和灵动岛那侧同一个决定:
       收起是"这会儿别占地方",不是一条要记住的偏好 */
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  /** 桌面回过来的一句话(附件被拒之类)。**只有它能说"这个文件没收下"** ——
+      静默丢弃在手机上和"传成功了"长得一模一样 */
+  const [notice, setNotice] = useState<string | null>(null);
   /** 手机上没有终端。这两样是详情屏在"等不到内容"时唯一能给人看的东西 */
   const [diag, setDiag] = useState<{ frames: number; timelines: number; log: string[] }>(
     { frames: 0, timelines: 0, log: [] },
@@ -530,7 +537,8 @@ function Fleet({ store, onRepair, onDetailChange }: {
           frames: d.frames + 1,
           timelines: d.timelines + (f.type === "timeline" ? 1 : 0),
         }));
-        if (f.type === "fleet") setFleet(f.fleet);
+        if (f.type === "notice") setNotice(f.text);
+        else if (f.type === "fleet") setFleet(f.fleet);
         // 只认自己订的那一个:换会话时旧订阅的迟到帧不该覆盖新屏
         else if (f.type === "timeline" && f.sessionId === watching.current) setTimeline(f.messages);
       },
@@ -576,10 +584,54 @@ function Fleet({ store, onRepair, onDetailChange }: {
   // 有会话在跑才让钟走 —— 空闲时不必每秒唤醒 JS 线程
   const now = useTicker((fleet?.agents ?? []).some((a) => a.phase === "active"));
 
-  /** 回 false = 会话没建立。**不乐观回显**:把一条没发出去的消息画在时间线上,
-      比直接说"没连上"糟糕得多 —— 用户会以为电脑那边已经在跑了 */
-  const sendText = (sessionId: string, text: string): boolean =>
-    bridge.current?.send({ type: "send", sessionId, text }) ?? false;
+  /**
+   * 发一条消息,可以带附件。**不乐观回显**:把一条没发出去的消息画在时间线上,
+   * 比直接说"没连上"糟糕得多 —— 用户会以为电脑那边已经在跑了。
+   *
+   * 附件先分片传完,最后那条 send 才带上它们的 id。**顺序是要紧的**:
+   * 反过来的话桌面会拿着一串还没到的 id,只能整条拒收。
+   *
+   * 回 null = 发出去了;回字符串 = 没发出去的理由。
+   */
+  const submitMessage = async (
+    sessionId: string,
+    text: string,
+    files: readonly Picked[],
+    onProgress: (done: number, total: number) => void,
+  ): Promise<string | null> => {
+    const post = (f: UpFrame): boolean => bridge.current?.send(f) ?? false;
+    const offline = "没发出去 —— 你的 Mac 不在线";
+
+    const ids: string[] = [];
+    // 先把总片数算出来:进度条要在读第一个文件之前就有个分母
+    let sent = 0;
+    const chunks: { name: string; parts: string[] }[] = [];
+    for (const f of files) {
+      const data = await readBytes(f.uri);
+      if (data.byteLength > UPLOAD_LIMITS.maxBytes) return `${f.name} 超过 ${MAX_MB}MB`;
+      chunks.push({ name: f.name, parts: chunkUpload(data) });
+    }
+    const total = chunks.reduce((n, c) => n + c.parts.length, 0);
+
+    for (const [i, c] of chunks.entries()) {
+      // uploadId 只在这一条连接里有意义(桌面那侧断线就清空),所以不用全局唯一,
+      // 只要这一轮里不撞
+      const uploadId = `u${i}-${sent}-${text.length}-${c.parts.length}`;
+      for (const [seq, data] of c.parts.entries()) {
+        if (!post({ type: "upload", uploadId, seq, total: c.parts.length, name: c.name, data })) {
+          return offline;
+        }
+        sent += 1;
+        onProgress(sent, total);
+      }
+      ids.push(uploadId);
+    }
+
+    const ok = ids.length
+      ? post({ type: "send", sessionId, text, uploads: ids })
+      : post({ type: "send", sessionId, text });
+    return ok ? null : offline;
+  };
 
   // 断了先当抖动看:这么久还没回来才认定是真离线(而且只在**一无所有**时才翻脸,
   // 手里有快照就一直留着,见 onReady)。冷启动同样走这条——刚打开 app 的
@@ -629,8 +681,9 @@ function Fleet({ store, onRepair, onDetailChange }: {
     return (
       <SessionView
         agent={opened} now={now} messages={timeline} diag={diag} online={ready}
+        notice={notice} onDismissNotice={() => setNotice(null)}
         onBack={closeSession} onDecide={decide}
-        onSend={(text) => sendText(opened.sessionId, text)}
+        onSubmit={(text, files, p) => submitMessage(opened.sessionId, text, files, p)}
         onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
       />
     );
@@ -840,7 +893,10 @@ function AgentCard({ agent: a, now, onDecide, onOpen, online }: {
       这里不再截,只把 truncated 标记翻译成一句"在电脑上看全文"。
    3. **新消息到了自动滚到底**,但只在人本来就贴着底的时候 —— 正在往回翻的人
       被拽回底部比不自动滚更烦。 */
-function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, onSend, onRetry }: {
+function SessionView({
+  agent: a, now, messages, diag, online, notice, onDismissNotice,
+  onBack, onDecide, onSubmit, onRetry,
+}: {
   agent: IslandAgent;
   now: number;
   messages: MobileMessage[] | null;
@@ -848,9 +904,17 @@ function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, 
       说清楚它是旧的,同时把审批和发送都锁上 */
   online: boolean;
   diag: { frames: number; timelines: number; log: string[] };
+  /** 桌面回过来的一句话,通常是"这个附件没收下"加理由 */
+  notice: string | null;
+  onDismissNotice: () => void;
   onBack: () => void;
   onDecide: (a: IslandAgent, ok: boolean) => void;
-  onSend: (text: string) => boolean;
+  /** 回 null = 发出去了;回字符串 = 没发出去的理由 */
+  onSubmit: (
+    text: string,
+    files: readonly Picked[],
+    onProgress: (done: number, total: number) => void,
+  ) => Promise<string | null>;
   onRetry: () => void;
 }) {
   const { c } = usePalette();
@@ -971,36 +1035,95 @@ function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, 
             <Approval agent={a} onDecide={onDecide} online={online} />
           </View>
         ) : null}
-        <Composer onSend={onSend} online={online} />
+        <Composer onSubmit={onSubmit} online={online}
+          notice={notice} onDismissNotice={onDismissNotice} />
       </View>
     </View>
   );
 }
 
-/** 回一条消息。范围就到这里(ADR-0094):不建会话、不切模型、不带附件 ——
+/** 回一条消息,可以带附件。范围仍然到这里(ADR-0094):不建会话、不切模型 ——
     手机端是"看 + 审批"的第三个投影窗口,不是第二个完整客户端。
+    附件是后加的一条(ADR-0106):手机上最常见的一句话就是"看看这张图"。
 
-    发送键是个圆的、只有一个箭头 —— 和桌面输入区右下角那个同一个形状。
-    多行输入里的回车是换行不是发送:手机上没有 Shift 可以按,把回车做成发送
-    等于让人没法打第二段。 */
-function Composer({ onSend, online }: {
-  onSend: (text: string) => boolean;
+    发送键是个圆的、只有一个箭头,＋ 在左边 —— 和桌面输入区那两个同一个形状、
+    同一个位置。多行输入里的回车是换行不是发送:手机上没有 Shift 可以按,
+    把回车做成发送等于让人没法打第二段。
+
+    **附件先传完,最后那条消息才带上它们的 id。** 反过来的话桌面会拿着一串
+    还没到的 id,只能整条拒收。 */
+function Composer({ onSubmit, online, notice, onDismissNotice }: {
+  onSubmit: (
+    text: string,
+    files: readonly Picked[],
+    onProgress: (done: number, total: number) => void,
+  ) => Promise<string | null>;
   online: boolean;
+  notice: string | null;
+  onDismissNotice: () => void;
 }) {
   const { c } = usePalette();
   const [text, setText] = useState("");
+  const [files, setFiles] = useState<readonly Picked[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  /** 传到第几片 / 一共几片。null = 没在传 */
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const busy = progress !== null;
   // 断线时输入框**不禁用**,只是发不出去:人可以照打,连接回来再按发送。
   // 禁用输入框会把已经打了一半的字连同光标一起抢走
-  const ready = online && text.trim().length > 0;
+  const ready = online && !busy && (text.trim().length > 0 || files.length > 0);
+
+  const add = (picked: Picked[]): void => {
+    const big = picked.filter(tooBig);
+    if (big.length) setErr(`${big.map((f) => f.name).join("、")} 超过 ${MAX_MB}MB,没加上`);
+    const ok = picked.filter((f) => !tooBig(f));
+    // 上限在这儿也挡一道:桌面那侧的重组器会拒,但让人选完了才被拒是坏的
+    setFiles((prev) => [...prev, ...ok].slice(0, UPLOAD_LIMITS.maxPending));
+  };
+
+  const pick = (how: () => Promise<Picked[]>): void => {
+    void (async () => {
+      try {
+        add(await how());
+      } catch (e: unknown) {
+        setErr(e instanceof NeedsRebuild ? e.message : e instanceof Error ? e.message : String(e));
+      }
+    })();
+  };
+
+  const openPicker = (): void => {
+    setErr(null);
+    const choices: { label: string; go: () => Promise<Picked[]> }[] = [
+      { label: "照片", go: pickPhotos },
+      { label: "拍照", go: takePhoto },
+      { label: "文件", go: pickFiles },
+    ];
+    if (Platform.OS !== "ios") return pick(choices[0]!.go);
+    ActionSheetIOS.showActionSheetWithOptions(
+      { options: [...choices.map((x) => x.label), "取消"], cancelButtonIndex: choices.length },
+      (i) => { if (i < choices.length) pick(choices[i]!.go); },
+    );
+  };
 
   const submit = (): void => {
-    const t = text.trim();
-    if (!t) return;
-    if (!onSend(t)) return setErr("没发出去 —— 你的 Mac 不在线");
-    // 发出去了才清空:失败时把人打的字吞掉是不可接受的
+    const t2 = text.trim();
+    if (!t2 && files.length === 0) return;
     setErr(null);
-    setText("");
+    onDismissNotice();
+    setProgress({ done: 0, total: 0 });
+    void (async () => {
+      try {
+        const why = await onSubmit(t2, files, (done, total) => setProgress({ done, total }));
+        if (why) return setErr(why);
+        // 发出去了才清空:失败时把人打的字和选的文件一起吞掉是不可接受的
+        setText("");
+        setFiles([]);
+      } catch (e: unknown) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setProgress(null);
+      }
+    })();
   };
 
   return (
@@ -1009,8 +1132,44 @@ function Composer({ onSend, online }: {
       borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
       backgroundColor: c.background,
     }}>
+      {/* 桌面回来的话在最上面,而且要能按掉 —— 它说的是上一次发送的事 */}
+      {notice ? (
+        <Pressable onPress={onDismissNotice} accessibilityRole="button">
+          <Note tone="error">{notice}</Note>
+        </Pressable>
+      ) : null}
       {err ? <Note tone="error">{err}</Note> : null}
+      {progress ? (
+        <Meta>{progress.total ? `传附件 ${progress.done}/${progress.total} 片…` : "读文件…"}</Meta>
+      ) : null}
+
+      {files.length ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: space.xs, paddingVertical: 2 }}>
+          {files.map((f, i) => (
+            <Chip key={`${f.uri}#${i}`} file={f}
+              onRemove={busy ? undefined : () => setFiles((p) => p.filter((_x, j) => j !== i))} />
+          ))}
+        </ScrollView>
+      ) : null}
+
       <View style={{ flexDirection: "row", alignItems: "flex-end", gap: space.sm }}>
+        {/* ＋ 和桌面输入区左下角那个同一个位置、同一个意思 */}
+        <Pressable
+          accessibilityRole="button" accessibilityLabel="加附件"
+          onPress={openPicker} disabled={busy} hitSlop={8}
+          style={({ pressed }) => [
+            {
+              width: 44, height: 44, borderRadius: radius.pill,
+              alignItems: "center", justifyContent: "center",
+              borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+            },
+            busy && { opacity: 0.35 },
+            pressed && !busy && { opacity: 0.6 },
+          ]}
+        >
+          <Text style={{ ...t.title, color: c.foreground, marginTop: -2 }}>＋</Text>
+        </Pressable>
         <TextInput
           style={{
             flex: 1, backgroundColor: c.card, color: c.foreground,
@@ -1036,9 +1195,42 @@ function Composer({ onSend, online }: {
             pressed && ready && { opacity: 0.8 },
           ]}
         >
-          <Text style={{ ...t.headline, color: c.primaryForeground }}>↑</Text>
+          {busy
+            ? <ActivityIndicator color={c.primaryForeground} />
+            : <Text style={{ ...t.headline, color: c.primaryForeground }}>↑</Text>}
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+/** 一个待发的附件。名字一行截断 —— 手机上文件名能有半屏那么长 */
+function Chip({ file, onRemove }: { file: Picked; onRemove?: () => void }) {
+  const { c } = usePalette();
+  const kb = file.bytes ? `${Math.max(1, Math.round(file.bytes / 1024))}KB` : "";
+  return (
+    <View style={{
+      flexDirection: "row", alignItems: "center", gap: space.xs, maxWidth: 220,
+      paddingLeft: space.sm, paddingRight: onRemove ? 4 : space.sm, paddingVertical: 6,
+      borderRadius: radius.pill,
+      borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+    }}>
+      <Text style={{ ...t.footnote, color: c.foreground, flexShrink: 1 }} numberOfLines={1}>
+        {file.name}
+      </Text>
+      {kb ? <Meta>{kb}</Meta> : null}
+      {onRemove ? (
+        <Pressable
+          accessibilityRole="button" accessibilityLabel={`移除 ${file.name}`}
+          onPress={onRemove} hitSlop={8}
+          style={({ pressed }) => [
+            { width: 22, height: 22, alignItems: "center", justifyContent: "center" },
+            pressed && { opacity: 0.5 },
+          ]}
+        >
+          <Text style={{ ...t.footnote, color: c.mutedForeground }}>✕</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

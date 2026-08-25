@@ -45,6 +45,54 @@ export function createXhrTransport(opts: {
   let xhr: XMLHttpRequest | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * 上行队列。**同时只发一条,按入队顺序。**
+   *
+   * 不是为了省资源,是正确性:密封流(sealedStream.ts)按严格递增的计数器收帧,
+   * 计数器在 seal 的那一刻就定了,而并发的 POST 到达顺序由 NSURLSession 说了算 ——
+   * 后 seal 的先到,先 seal 的那条就成了"迟到帧",被**永久丢弃**。
+   * 单帧的时候这个洞看不见(一条一条发,中间隔着人的操作);附件一分片就是
+   * 连着几十帧,当场就会撞上。
+   *
+   * 失败重试两次:丢一片 = 整个附件在桌面那侧作废,而一次瞬时的网络抖动
+   * 不该让用户重选一遍文件。重试仍然按顺序 —— 队列没往前走。
+   */
+  const uplink: string[] = [];
+  let sending = false;
+
+  async function pump(): Promise<void> {
+    if (sending || closed) return;
+    sending = true;
+    try {
+      while (uplink.length > 0 && !closed) {
+        const payload = uplink[0]!;
+        let ok = false;
+        for (let tryNo = 0; tryNo < 3 && !closed && !ok; tryNo += 1) {
+          const token = await opts.authToken();
+          if (closed) return;
+          if (!token) break;
+          try {
+            const r = await fetch(`${base}/rl/v1/send${q}`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+              body: payload,
+            });
+            // 409 = 对端不在线。**这不是可重试的失败**,重试只是把同一帧
+            // 再喂一次虚空;桌面重连后会自己重开一轮,那时手机会重发该发的
+            if (r.status === 204 || r.status === 409) ok = true;
+            else log(`手机传输:上行 ${r.status}`);
+          } catch {
+            log("手机传输:上行发不出去");
+          }
+        }
+        if (!ok) log("手机传输:一帧上行放弃了(重试三次都没成功)");
+        uplink.shift();
+      }
+    } finally {
+      sending = false;
+    }
+  }
+
   function scheduleReconnect(): void {
     if (closed || timer) return;
     const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;
@@ -147,24 +195,17 @@ export function createXhrTransport(opts: {
   return {
     send(payload) {
       if (closed) return;
-      // 不 await、不因失败触发 onClose:409(对端不在线)是常态而不是"连接断了",
+      // 入队即返回,失败不触发 onClose:409(对端不在线)是常态而不是"连接断了",
       // 而 send → onClose → startRound → send 会当场变成同步死循环
-      void (async () => {
-        const token = await opts.authToken();
-        if (closed || !token) return;
-        const r = await fetch(`${base}/rl/v1/send${q}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: payload,
-        });
-        if (r.status !== 204 && r.status !== 409) log(`手机传输:上行 ${r.status}`);
-      })().catch(() => log("手机传输:上行发不出去"));
+      uplink.push(payload);
+      void pump();
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;
+      uplink.length = 0;
       appState.remove();
       if (timer) { clearTimeout(timer); timer = null; }
       xhr?.abort();

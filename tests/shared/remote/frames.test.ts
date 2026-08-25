@@ -52,6 +52,44 @@ describe("decodeUpFrame", () => {
   });
 });
 
+describe("decodeUpFrame — 附件", () => {
+  const chunk = { type: "upload", uploadId: "u1", seq: 0, total: 2, name: "a.png", data: "AAAA" };
+
+  it("解 upload", () => {
+    expect(decodeUpFrame(JSON.stringify(chunk))).toEqual(chunk);
+  });
+
+  it("send 可以不带 uploads(旧手机),带了就必须是字符串数组", () => {
+    expect(decodeUpFrame('{"type":"send","sessionId":"s","text":"hi"}'))
+      .toEqual({ type: "send", sessionId: "s", text: "hi" });
+    expect(decodeUpFrame('{"type":"send","sessionId":"s","text":"hi","uploads":["u1"]}'))
+      .toEqual({ type: "send", sessionId: "s", text: "hi", uploads: ["u1"] });
+    expect(decodeUpFrame('{"type":"send","sessionId":"s","text":"hi","uploads":[1]}')).toBeNull();
+    expect(decodeUpFrame('{"type":"send","sessionId":"s","text":"hi","uploads":"u1"}')).toBeNull();
+  });
+
+  it("send 的白名单之外还是整条丢 —— 可选字段不等于开了口子", () => {
+    expect(decodeUpFrame('{"type":"send","sessionId":"s","text":"hi","origin":"background"}'))
+      .toBeNull();
+  });
+
+  it("seq/total 必须是非负整数 —— 小数和 NaN 会让重组器永远对不上而不报错", () => {
+    expect(decodeUpFrame(JSON.stringify({ ...chunk, seq: 1.5 }))).toBeNull();
+    expect(decodeUpFrame(JSON.stringify({ ...chunk, seq: -1 }))).toBeNull();
+    expect(decodeUpFrame('{"type":"upload","uploadId":"u","seq":null,"total":1,"name":"a","data":""}'))
+      .toBeNull();
+  });
+
+  it("total 至少 1,seq 必须落在 total 之内", () => {
+    expect(decodeUpFrame(JSON.stringify({ ...chunk, total: 0 }))).toBeNull();
+    expect(decodeUpFrame(JSON.stringify({ ...chunk, seq: 2, total: 2 }))).toBeNull();
+  });
+
+  it("upload 缺字段整条丢", () => {
+    expect(decodeUpFrame('{"type":"upload","uploadId":"u","seq":0,"total":1,"name":"a"}')).toBeNull();
+  });
+});
+
 describe("decodeDownFrame", () => {
   it("解 fleet", () => {
     const f = decodeDownFrame(encodeFrame({ type: "fleet", fleet: IDLE }));
@@ -59,6 +97,16 @@ describe("decodeDownFrame", () => {
   });
   it("解 ping", () => {
     expect(decodeDownFrame('{"type":"ping","ts":17}')).toEqual({ type: "ping", ts: 17 });
+  });
+  it("解 notice", () => {
+    expect(decodeDownFrame('{"type":"notice","text":"传不上去"}'))
+      .toEqual({ type: "notice", text: "传不上去" });
+    expect(decodeDownFrame('{"type":"notice","text":1}')).toBeNull();
+  });
+  it("upload 是上行词汇,不能从下行口进来", () => {
+    expect(decodeDownFrame(JSON.stringify(
+      { type: "upload", uploadId: "u", seq: 0, total: 1, name: "a", data: "" },
+    ))).toBeNull();
   });
   it("上行词汇不能从下行口进来", () => {
     expect(decodeDownFrame('{"type":"approve","sessionId":"s","callId":"c"}')).toBeNull();

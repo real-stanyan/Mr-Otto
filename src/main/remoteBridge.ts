@@ -47,6 +47,7 @@ export function createRemoteBridge(opts: {
 }): {
   pushFleet(f: IslandFleet): void;
   pushTimeline(sessionId: string, messages: MobileMessage[]): void;
+  pushNotice(text: string): void;
   dispose(): void;
 } {
   const p = opts.crypto;
@@ -187,6 +188,14 @@ export function createRemoteBridge(opts: {
     opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
   }
 
+  /** 一句给人看的话。**刻意不去重**:两次同样的拒收是两件事,
+      第二次被吞掉的话用户会以为第二个文件传上去了 */
+  function pushNotice(text: string): void {
+    if (phase !== "ready" || !sealer) return log(`远程桥:会话没建立(${phase}),提示没发出去:${text}`);
+    const wire = encodeFrame({ type: "notice", text });
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+  }
+
   opts.transport.onMessage((payload) => {
     if (phase === "closed") return;
     // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
@@ -209,6 +218,7 @@ export function createRemoteBridge(opts: {
   return {
     pushFleet,
     pushTimeline,
+    pushNotice,
     dispose() {
       phase = "closed";
       sealer = null;
