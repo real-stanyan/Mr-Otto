@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,6 +46,7 @@ import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
 import { BrowserPanel } from "./components/BrowserPanel.js";
+import { FilesView } from "./components/FilesView.js";
 import { SimulatorPanel } from "./components/SimulatorPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
@@ -158,7 +159,7 @@ import {
 } from "@/components/assistant-ui/context-display.js";
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
-import { ottoDirectiveFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
+import { ottoDirectiveFormatter, ottoPathFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
 import { segmentComposerText } from "./aui/composerDirectives.js";
 import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
@@ -2774,9 +2775,11 @@ function ChatComposer() {
     () => ({ formatter: ottoSlashFormatter(slashItems.map((i) => i.id)) }),
     [slashItems]
   );
+  // 路径那份不依赖任何名单(靠形状判定),造一次就够
+  const pathFormatter = useMemo(() => ottoPathFormatter(), []);
   const composerSegments = useMemo(
-    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter]),
-    [input, skillFormatter, slashDirective]
+    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter, pathFormatter]),
+    [input, skillFormatter, slashDirective, pathFormatter]
   );
 
 
@@ -2986,6 +2989,7 @@ export function App() {
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
+  const filesPanelOpen = useChat((s) => s.filesPanelOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
@@ -3085,6 +3089,20 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // ⌘⇧E = 开/关 Files 面板(VS Code 的 Explorer 同款肌肉记忆)。挂 window:
+  // 焦点可能在树或预览区里,输入框收不到
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        if (useChat.getState().filesPanelOpen) useChat.getState().closeFilesPanel();
+        else useChat.getState().openFilesPanel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
@@ -3095,6 +3113,7 @@ export function App() {
     : browserPanelOpen ? <BrowserPanel />
     : simPanelOpen ? <SimulatorPanel />
     : terminalPanelOpen ? <TerminalView />
+    : filesPanelOpen ? <FilesView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
   const base = mode === "game" ? (
@@ -3178,6 +3197,9 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => void openGitGraph()}>
               <GitBranch /> Git Graph
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => useChat.getState().openFilesPanel()}>
+              <FolderOpen /> 文件
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openTerminalPanel()}>
               <TerminalIcon /> 终端

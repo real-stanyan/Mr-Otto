@@ -72,6 +72,12 @@ const bridge: ShellBridge = {
   gitBranches: (repoDir) => ipcRenderer.invoke(CHANNELS.gitBranches, repoDir),
   gitCheckout: (repoDir, branch) => ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch),
   gitStatus: (repoDir) => ipcRenderer.invoke(CHANNELS.gitStatus, repoDir),
+  filesList: (root, relDir) => ipcRenderer.invoke(CHANNELS.filesList, root, relDir),
+  filesSearch: (root, query, opts) => ipcRenderer.invoke(CHANNELS.filesSearch, root, query, opts),
+  filesRead: (root, rel) => ipcRenderer.invoke(CHANNELS.filesRead, root, rel),
+  filesReveal: (root, rel, how, appName) =>
+    ipcRenderer.invoke(CHANNELS.filesReveal, root, rel, how, appName),
+  filesEditors: () => ipcRenderer.invoke(CHANNELS.filesEditors),
   setPresenceWorkspace: (repoDir) => ipcRenderer.invoke(CHANNELS.setPresenceWorkspace, repoDir),
   terminalList: (sessionId) => ipcRenderer.invoke(CHANNELS.terminalList, sessionId),
   terminalOpen: (sessionId, cols, rows) => ipcRenderer.invoke(CHANNELS.terminalOpen, sessionId, cols, rows),
