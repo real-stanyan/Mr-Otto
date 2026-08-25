@@ -24,10 +24,21 @@ export interface HandshakeHello {
 }
 
 export interface SelfParty {
+  /** 长期状态:身份不变,可以跨连接复用 */
   role: Role;
   deviceId: string;
   identity: KeyPair;
+  /**
+   * 每连接一次性状态 —— 绝不可跨连接复用。
+   * `deriveSession` 用它派生会话密钥,而 `createSealer` 每次都从 counter=0n 起算
+   * (sealedStream.ts);同一把 `eph`/`nonceHalf` 用在第二次连接上,会算出同一把
+   * key 和同一条 nonce 前缀,于是第 0 帧的 nonce 在两次连接里完全相同 ——
+   * 同 key 同 nonce 加密不同明文,ChaCha20-Poly1305 的机密性和认证性一起崩掉
+   * (keystream 可还原、Poly1305 一次性密钥可还原)。
+   * 用 `newConnectionParty` 构造,不要手搭这个字段。
+   */
   eph: KeyPair;
+  /** 同上:每连接一次性,绝不可跨连接复用 */
   nonceHalf: Uint8Array;
 }
 
@@ -42,6 +53,24 @@ export interface SessionKeys {
 }
 
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+/**
+ * 构造一个"新连接"用的 SelfParty:每次连接都要调用一次,不要缓存/复用返回值。
+ * 长期身份(identity)由调用方传入并可以跨连接复用;eph 和 nonceHalf 在这里
+ * 现场生成,是让"每连接必须新鲜"这件事变成默认路径,而不是靠调用方自觉。
+ */
+export function newConnectionParty(
+  p: RemoteCryptoPrimitives,
+  args: { role: Role; deviceId: string; identity: KeyPair }
+): SelfParty {
+  return {
+    role: args.role,
+    deviceId: args.deviceId,
+    identity: args.identity,
+    eph: p.generateX25519(),
+    nonceHalf: p.randomBytes(16),
+  };
+}
 
 /** 被签的字节:角色 + 设备 id + 临时公钥 + 自己那半个 nonce。
     角色进签名,是为了让"把桌面的 hello 原样转发给另一台桌面"这种反射攻击签不过 */
@@ -105,7 +134,19 @@ export function deriveSession(
   const payload = signedPayload(peerHello.role, peerHello.deviceId, ephPub, peerHalf);
   if (!p.ed25519Verify(peerIdentityPub, payload, sig)) return null;
 
-  const shared = p.x25519(self.eph.privateKey, ephPub);
+  // 低阶(如全零)对端公钥会让 node 的 diffieHellman 抛
+  // ERR_OSSL_FAILED_DURING_DERIVATION 而不是回一个零共享秘密。
+  // 这里的每一条其它拒绝路径都回 null,x25519 也不能例外——
+  // 对端公钥是 pin 过身份的攻击者也能塞进来的字段,不能让它把整条连接炸掉。
+  // 放在调用点(而不是塞进 nodeRemoteCrypto)是因为 RN 侧实现同一个接口时
+  // 也要经过这同一道 deriveSession,防线不能只补一半。
+  let shared: Uint8Array;
+  try {
+    shared = p.x25519(self.eph.privateKey, ephPub);
+  } catch {
+    return null;
+  }
+
   const salt = connectionNonce(self.role, self.nonceHalf, peerHalf);
   const d2m = directionKeys(p, shared, salt, "otto-stream-v1:d2m");
   const m2d = directionKeys(p, shared, salt, "otto-stream-v1:m2d");

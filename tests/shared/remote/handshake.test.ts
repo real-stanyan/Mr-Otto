@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { b64encode } from "../../../src/shared/remote/b64.js";
-import { buildHello, deriveSession, fingerprint } from "../../../src/shared/remote/handshake.js";
+import { b64decode, b64encode } from "../../../src/shared/remote/b64.js";
+import { buildHello, deriveSession, fingerprint, newConnectionParty } from "../../../src/shared/remote/handshake.js";
 import { createOpener, createSealer } from "../../../src/shared/remote/sealedStream.js";
 import { nodeRemoteCrypto } from "../../../src/main/remoteCryptoNode.js";
 
@@ -8,9 +8,7 @@ const P = nodeRemoteCrypto();
 
 function party(role: "desktop" | "mobile", deviceId: string) {
   const identity = P.generateEd25519();
-  const eph = P.generateX25519();
-  const nonceHalf = P.randomBytes(16);
-  return { role, deviceId, identity, eph, nonceHalf } as const;
+  return newConnectionParty(P, { role, deviceId, identity });
 }
 
 function connect(a: ReturnType<typeof party>, b: ReturnType<typeof party>) {
@@ -20,6 +18,16 @@ function connect(a: ReturnType<typeof party>, b: ReturnType<typeof party>) {
   const sb = deriveSession(P, { self: b, peerHello: helloA, peerIdentityPub: a.identity.publicKey });
   return { helloA, helloB, sa, sb };
 }
+
+describe("newConnectionParty", () => {
+  it("同一个 identity 连续调用两次 → eph 和 nonceHalf 都不同(每连接必须新鲜)", () => {
+    const identity = P.generateEd25519();
+    const a = newConnectionParty(P, { role: "desktop", deviceId: "d1", identity });
+    const b = newConnectionParty(P, { role: "desktop", deviceId: "d1", identity });
+    expect([...a.eph.publicKey]).not.toEqual([...b.eph.publicKey]);
+    expect([...a.nonceHalf]).not.toEqual([...b.nonceHalf]);
+  });
+});
 
 describe("握手", () => {
   it("双方派生出对得上的两条单向密钥", () => {
@@ -50,7 +58,13 @@ describe("握手", () => {
     const d = party("desktop", "d1");
     const m = party("mobile", "m1");
     const helloD = buildHello(P, d);
-    const tampered = { ...helloD, sig: helloD.sig.slice(0, -2) + (helloD.sig.endsWith("A") ? "B" : "A") };
+    // 翻转签名里的一个 bit,而不是切字符串:切字符串会把 base64url 长度变成
+    // 4n+1,在 b64decode 的长度守卫那一步就被拒了,ed25519Verify 根本没被跑到
+    // (删掉验签那一行这条用例照样绿) —— 这里要的是真的走到验签失败那条分支。
+    const sigBytes = b64decode(helloD.sig)!;
+    const tamperedSig = new Uint8Array(sigBytes);
+    tamperedSig[0] = (tamperedSig[0] as number) ^ 1;
+    const tampered = { ...helloD, sig: b64encode(tamperedSig) };
     expect(deriveSession(P, { self: m, peerHello: tampered, peerIdentityPub: d.identity.publicKey })).toBeNull();
   });
 
@@ -83,11 +97,29 @@ describe("握手", () => {
   it("重放上一次连接的 hello → 派生出的密钥不同（nonce 参与了 KDF）", () => {
     const d = party("desktop", "d1");
     const m1 = party("mobile", "m1");
-    const m2 = { ...m1, nonceHalf: P.randomBytes(16) }; // 同一台手机，新一次连接
+    // 同一台手机、同一个身份，新一次连接 —— 走 newConnectionParty 拿到全新的 eph/nonceHalf
+    const m2 = newConnectionParty(P, { role: "mobile", deviceId: "m1", identity: m1.identity });
     const helloD = buildHello(P, d);
     const s1 = deriveSession(P, { self: m1, peerHello: helloD, peerIdentityPub: d.identity.publicKey });
     const s2 = deriveSession(P, { self: m2, peerHello: helloD, peerIdentityPub: d.identity.publicKey });
     expect([...s1!.recv.key]).not.toEqual([...s2!.recv.key]);
+  });
+
+  it("对端临时公钥是全零(低阶点) → deriveSession 回 null 而不是抛", () => {
+    const d = party("desktop", "d1");
+    const m = party("mobile", "m1");
+    // 全零公钥让 node 的 diffieHellman 抛 ERR_OSSL_FAILED_DURING_DERIVATION,
+    // 而不是回一个零共享秘密。把 hello 里的 ephPub 换成全零、但签名照常用
+    // d 的真实身份签(payload 里签的就是这个全零公钥),这样才能测到
+    // "验签通过之后、x25519 那一步"这条真正会抛的路径。
+    const lowOrderEph = { privateKey: d.eph.privateKey, publicKey: new Uint8Array(32) };
+    const helloLowOrder = buildHello(P, { ...d, eph: lowOrderEph });
+    expect(() =>
+      deriveSession(P, { self: m, peerHello: helloLowOrder, peerIdentityPub: d.identity.publicKey })
+    ).not.toThrow();
+    expect(
+      deriveSession(P, { self: m, peerHello: helloLowOrder, peerIdentityPub: d.identity.publicKey })
+    ).toBeNull();
   });
 });
 
