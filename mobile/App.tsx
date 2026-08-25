@@ -3,11 +3,14 @@
 //
 // 范围就到这里(ADR-0094):不建会话、不改设置、不切模型、不管 MCP。
 // 屏幕少到不值得上路由 —— 一个 phase 字段比 expo-router 少一整层依赖。
+//
+// 视觉语言全部来自 src/theme.ts,那张表逐个值抄自桌面的 app.css:同一套
+// Apple 四色底盘、同一套语义色、同样跟随系统深浅色。组件在 src/ui.tsx。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Pressable, SafeAreaView, ScrollView,
-  StatusBar, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, SafeAreaView, ScrollView, StatusBar,
+  StyleSheet, Text, TextInput, View,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
@@ -15,6 +18,10 @@ import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
 import { connect, devices, openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
+import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
+import {
+  Button, Card, CodeTiles, Headline, Hint, Mono, Note, StatusLine, Strong, Title, Warn,
+} from "./src/ui.js";
 
 type Phase = "loading" | "signIn" | "pair" | "fleet";
 
@@ -33,12 +40,11 @@ export default function App() {
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
-  if (error) return <Center><Text style={s.err}>{error}</Text></Center>;
-  if (phase === "loading" || !store) return <Center><ActivityIndicator /></Center>;
+  if (error) return <Screen center><Note tone="error">{error}</Note></Screen>;
+  if (phase === "loading" || !store) return <Screen center><Spinner /></Screen>;
 
   return (
-    <SafeAreaView style={s.root}>
-      <StatusBar barStyle="light-content" />
+    <Screen>
       {phase === "signIn" ? (
         <SignIn onDone={() => setPhase(store.peerIdentity() ? "fleet" : "pair")} />
       ) : phase === "pair" ? (
@@ -46,19 +52,49 @@ export default function App() {
       ) : (
         <Fleet store={store} onRepair={() => setPhase("pair")} />
       )}
+    </Screen>
+  );
+}
+
+/** 地面。状态栏跟着主题走 —— 深色底配浅色状态栏,反过来读不出来 */
+function Screen({ children, center }: { children: React.ReactNode; center?: boolean }) {
+  const { c, isDark } = usePalette();
+  return (
+    <SafeAreaView style={[
+      { flex: 1, backgroundColor: c.background },
+      center && { alignItems: "center", justifyContent: "center", padding: space.lg },
+    ]}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+      {children}
     </SafeAreaView>
   );
 }
 
-function Center({ children }: { children: React.ReactNode }) {
-  return <SafeAreaView style={[s.root, s.center]}>{children}</SafeAreaView>;
+function Spinner() {
+  const { c } = usePalette();
+  return <ActivityIndicator color={c.mutedForeground} />;
+}
+
+/** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的 */
+function Page({ children }: { children: React.ReactNode }) {
+  return (
+    <ScrollView
+      contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
+      keyboardShouldPersistTaps="handled"
+    >
+      {children}
+    </ScrollView>
+  );
 }
 
 /* ── 登录 ───────────────────────────────────────────────
    OAuth 在上、邮箱密码在下,是因为**这个账号体系里注册走的是 OAuth**:
    用 Google 注册的账号根本没有密码,只留密码那条路的话它永远登不进来
    (虚拟机上实测就是这条:一个 Google 账号在这屏反复报 Invalid login credentials)。
-   密码那半留着但收进折叠里 —— 桌面支持 signUpWithPassword,确实存在有密码的账号。 */
+   密码那半留着但收进折叠里 —— 桌面支持 signUpWithPassword,确实存在有密码的账号。
+
+   两个 provider 按钮都是 secondary,不是两个蓝按钮:用户有哪个账号就点哪个,
+   两者平权。蓝色(primary)一屏只留给一个真正的主动作。 */
 function SignIn({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -81,28 +117,32 @@ function SignIn({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={s.page}>
-      <Text style={s.h1}>Mr Otto</Text>
-      <Text style={s.hint}>
-        用<Text style={s.strong}>和电脑上同一个</Text>账号登录。
-      </Text>
-      {err ? <Text style={s.err}>{err}</Text> : null}
-      <Button
-        label={busy === "google" ? "登录中…" : "用 Google 登录"}
-        disabled={busy !== null}
-        onPress={() => oauth("google")}
-      />
-      <Button
-        label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
-        disabled={busy !== null}
-        onPress={() => oauth("github")}
-      />
+    <Page>
+      <View style={{ gap: space.xs, paddingTop: space.lg }}>
+        <Title>Mr Otto</Title>
+        <Hint>用<Strong>和电脑上同一个</Strong>账号登录。</Hint>
+      </View>
+      {err ? <Note tone="error">{err}</Note> : null}
+      <View style={{ gap: space.sm }}>
+        <Button
+          variant="secondary"
+          label={busy === "google" ? "登录中…" : "用 Google 登录"}
+          disabled={busy !== null}
+          onPress={() => oauth("google")}
+        />
+        <Button
+          variant="secondary"
+          label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
+          disabled={busy !== null}
+          onPress={() => oauth("github")}
+        />
+      </View>
       {showPassword ? (
         <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
       ) : (
         <Button label="用邮箱密码登录" variant="ghost" onPress={() => setShowPassword(true)} />
       )}
-    </ScrollView>
+    </Page>
   );
 }
 
@@ -112,6 +152,7 @@ function PasswordForm(props: {
   onError: (m: string | null) => void;
   onDone: () => void;
 }) {
+  const { c } = usePalette();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -125,15 +166,26 @@ function PasswordForm(props: {
     props.onDone();
   };
 
+  const input = {
+    backgroundColor: c.card, color: c.foreground, borderRadius: radius.control,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+    paddingHorizontal: space.md, paddingVertical: 13, ...t.body,
+  };
+
   return (
-    <View style={s.pwBlock}>
+    // 上边一条线,把它和上面那两个 OAuth 按钮分开
+    <View style={{
+      gap: space.sm, borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border, paddingTop: space.md,
+    }}>
       <TextInput
-        style={s.input} placeholder="邮箱" placeholderTextColor="#6b7280"
-        autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}
+        style={input} placeholder="邮箱" placeholderTextColor={c.mutedForeground}
+        autoCapitalize="none" autoComplete="email" keyboardType="email-address"
+        value={email} onChangeText={setEmail}
       />
       <TextInput
-        style={s.input} placeholder="密码" placeholderTextColor="#6b7280"
-        secureTextEntry value={password} onChangeText={setPassword}
+        style={input} placeholder="密码" placeholderTextColor={c.mutedForeground}
+        autoComplete="current-password" secureTextEntry value={password} onChangeText={setPassword}
       />
       <Button
         label={busy ? "登录中…" : "登录"}
@@ -147,7 +199,8 @@ function PasswordForm(props: {
 /* ── 配对 ───────────────────────────────────────────────
    这一屏真正要人做的只有一件事:把这里的 6 位数和电脑上那个比一遍。
    账号目录不是信任来源(ADR-0095):公钥从 Supabase 下发,掌握库的人能发一把假的。
-   对上了才 pin —— 所以文案必须把"对不上就别配"说在按钮前面。 */
+   对上了才 pin —— 所以文案必须把"对不上就别配"说在按钮前面。
+   数字拆成一格一格,因为它的唯一用途是**逐位比对**。 */
 function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => void }) {
   const [peers, setPeers] = useState<RemotePeer[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -175,32 +228,37 @@ function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => voi
   };
 
   return (
-    <ScrollView contentContainerStyle={s.page}>
-      <Text style={s.h1}>配对电脑</Text>
-      <Text style={s.hint}>
-        下面的 6 位数会同时显示在电脑的「设置 → 手机」里。
-        <Text style={s.strong}>对不上就不要配</Text>——那说明中间有人换掉了公钥。
-      </Text>
-      {err ? <Text style={s.err}>{err}</Text> : null}
+    <Page>
+      <View style={{ gap: space.xs, paddingTop: space.sm }}>
+        <Title>配对电脑</Title>
+        <Hint>
+          下面的 6 位数会同时显示在电脑的「设置 → 手机」里。
+          <Warn>对不上就不要配</Warn>——那说明中间有人换掉了公钥。
+        </Hint>
+      </View>
+      {err ? <Note tone="error">{err}</Note> : null}
       {peers === null ? (
-        <ActivityIndicator />
+        <Spinner />
       ) : peers.length === 0 ? (
-        <Text style={s.hint}>这个账号下还没有电脑登记。在电脑上打开「设置 → 手机」看一眼。</Text>
+        <Card>
+          <Headline>还没有电脑登记</Headline>
+          <Hint>在电脑上打开「设置 → 手机」,这里下拉刷新就能看到它。</Hint>
+        </Card>
       ) : (
         peers.map((p) => (
-          <View key={p.deviceId} style={s.card}>
-            <Text style={s.cardTitle}>{p.label || p.deviceId}</Text>
-            <Text style={s.code}>{p.code}</Text>
+          <Card key={p.deviceId} style={{ gap: space.md }}>
+            <Headline>{p.label || p.deviceId}</Headline>
+            <CodeTiles code={p.code} />
             <Button
               label={busy === p.deviceId ? "配对中…" : p.pinned ? "重新配对" : "安全码一致，配对"}
               disabled={busy === p.deviceId}
               onPress={() => void pin(p.deviceId)}
             />
-          </View>
+          </Card>
         ))
       )}
       <Button label="刷新" variant="ghost" onPress={refresh} />
-    </ScrollView>
+    </Page>
   );
 }
 
@@ -239,106 +297,69 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
 
   if (!ready || !fleet) {
     return (
-      <View style={[s.page, s.center]}>
-        <Text style={s.h1}>你的 Mac 不在线</Text>
-        <Text style={s.hint}>它上线之后这里会自动出现。</Text>
+      <Page>
+        <View style={{ gap: space.sm, paddingTop: space.xl }}>
+          <Title>你的 Mac 不在线</Title>
+          <Hint>它上线之后这里会自动出现。中继不落盘,期间发生的事不会补播。</Hint>
+        </View>
         <Button label="重新配对" variant="ghost" onPress={onRepair} />
-      </View>
+      </Page>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={s.page}>
-      <Text style={s.h1}>会话</Text>
+    <Page>
+      <View style={{ gap: space.xs, paddingTop: space.sm }}>
+        <Title>会话</Title>
+        <StatusLine tone="ok">已连上你的 Mac</StatusLine>
+      </View>
       {fleet.agents.length === 0 ? (
-        <Text style={s.hint}>电脑上现在没有打开的会话。</Text>
+        <Card>
+          <Headline>没有打开的会话</Headline>
+          <Hint>在电脑上开一个,这里会自己出现。</Hint>
+        </Card>
       ) : (
-        fleet.agents.map((a) => (
-          <View key={a.sessionId} style={s.card}>
-            <Text style={s.cardTitle}>{a.title ?? a.sessionId}</Text>
-            <Text style={s.hint}>
-              {a.phase === "approval" ? "等你批" : a.phase === "active" ? "跑着" : "空闲"}
-              {a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
-            </Text>
-            {a.pendingApproval ? (
-              <View style={s.approval}>
-                <Text style={s.strong}>
-                  {a.pendingApproval.verb} {a.pendingApproval.target}
-                </Text>
-                {a.pendingApproval.fullPath ? (
-                  <Text style={s.path}>{a.pendingApproval.fullPath}</Text>
-                ) : null}
-                <View style={s.row}>
-                  <Button grow label="批准" onPress={() => decide(a, true)} />
-                  <Button grow label="拒绝" variant="danger" onPress={() => decide(a, false)} />
-                </View>
-              </View>
-            ) : null}
-          </View>
-        ))
+        fleet.agents.map((a) => <AgentCard key={a.sessionId} agent={a} onDecide={decide} />)
       )}
-    </ScrollView>
+    </Page>
   );
 }
 
-function Button(props: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "danger" | "ghost";
-  /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
-  grow?: boolean;
+function AgentCard({ agent: a, onDecide }: {
+  agent: IslandAgent;
+  onDecide: (a: IslandAgent, ok: boolean) => void;
 }) {
-  const v = props.variant ?? "primary";
+  const { c } = usePalette();
+  const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
+  const what = a.phase === "approval" ? "等你批" : a.phase === "active" ? "跑着" : "空闲";
+
   return (
-    <Pressable
-      onPress={props.onPress}
-      disabled={props.disabled}
-      style={[
-        s.btn,
-        props.grow && s.btnRow,
-        v === "danger" && s.btnDanger,
-        v === "ghost" && s.btnGhost,
-        props.disabled && s.btnOff,
-      ]}
-    >
-      <Text style={[s.btnText, v === "ghost" && s.btnGhostText]}>{props.label}</Text>
-    </Pressable>
+    <Card style={{ gap: space.sm }}>
+      <Headline>{a.title ?? a.sessionId}</Headline>
+      <StatusLine tone={tone}>
+        {what}{a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
+      </StatusLine>
+      {a.pendingApproval ? (
+        // 待批的那一块单独浮一层,左边一条 warn 色边 —— 一眼能在一列卡片里找到它
+        <View style={{
+          backgroundColor: c.background, borderRadius: radius.control, padding: space.md,
+          gap: space.sm, marginTop: space.xs,
+          borderLeftWidth: 3, borderLeftColor: c.warn,
+          borderTopWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth,
+          borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+        }}>
+          <Text style={{ ...t.body, color: c.foreground, fontFamily: MONO }}>
+            {a.pendingApproval.verb} {a.pendingApproval.target}
+          </Text>
+          {a.pendingApproval.fullPath ? <Mono>{a.pendingApproval.fullPath}</Mono> : null}
+          {/* 顺序和轻重跟桌面的 permission-grant 一致:拒绝是不着色的那个,
+              批准是实底的那个;确认动作在右,和 iOS 的弹窗一个方向 */}
+          <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.xs }}>
+            <Button grow variant="secondary" label="拒绝" onPress={() => onDecide(a, false)} />
+            <Button grow label="批准" onPress={() => onDecide(a, true)} />
+          </View>
+        </View>
+      ) : null}
+    </Card>
   );
 }
-
-const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0b0d10" },
-  center: { alignItems: "center", justifyContent: "center" },
-  page: { padding: 20, gap: 12 },
-  h1: { color: "#f3f4f6", fontSize: 24, fontWeight: "700" },
-  hint: { color: "#9ca3af", fontSize: 14, lineHeight: 20 },
-  strong: { color: "#f3f4f6", fontWeight: "700" },
-  path: { color: "#9ca3af", fontSize: 12, fontFamily: "Menlo" },
-  err: { color: "#f87171", fontSize: 14 },
-  input: {
-    backgroundColor: "#15181d", color: "#f3f4f6", borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 12, fontSize: 16,
-  },
-  card: { backgroundColor: "#15181d", borderRadius: 12, padding: 16, gap: 8 },
-  /** 折叠出来的邮箱密码块。上边一条线,把它和上面那两个 OAuth 按钮分开 */
-  pwBlock: { gap: 12, borderTopWidth: 1, borderTopColor: "#262b33", paddingTop: 16, marginTop: 4 },
-  cardTitle: { color: "#f3f4f6", fontSize: 16, fontWeight: "600" },
-  // 等宽 + 拉开字距:这串数字是拿来跟另一块屏幕逐位比对的
-  code: { color: "#f3f4f6", fontSize: 32, fontFamily: "Menlo", letterSpacing: 6, textAlign: "center" },
-  approval: { borderTopWidth: 1, borderTopColor: "#262b33", paddingTop: 10, gap: 8 },
-  row: { flexDirection: "row", gap: 10 },
-  /** 并排那一行里的按钮才平分宽度 */
-  btnRow: { flex: 1 },
-  btn: {
-    backgroundColor: "#2563eb", borderRadius: 10, paddingVertical: 14,
-    // alignItems + justifyContent 都要:少一个,文字在某些容器里会跑到看不见的地方
-    // (虚拟机上第一版就是一条没有字的蓝条)
-    alignItems: "center", justifyContent: "center", minHeight: 48,
-  },
-  btnDanger: { backgroundColor: "#b91c1c" },
-  btnGhost: { backgroundColor: "transparent" },
-  btnOff: { opacity: 0.5 },
-  btnText: { color: "#fff", fontSize: 15, fontWeight: "600" },
-  btnGhostText: { color: "#9ca3af" },
-});

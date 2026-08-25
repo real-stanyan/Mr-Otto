@@ -16,8 +16,15 @@ npm --prefix mobile install
 npm --prefix mobile start        # 扫码用 Expo Go 打开
 ```
 
-**不需要 `expo prebuild`。** 加密走纯 JS 的 `@noble/*`（ADR-0101），没有 native
-module，Expo Go 直接能跑。要 prebuild 的只剩计划 C 的 APNs / NSE。
+**Expo Go 就能跑。** 加密走纯 JS 的 `@noble/*`（ADR-0101），没有 native module。
+
+装到真机（或用 `mrotto://` 那条回跳）才需要 prebuild：
+
+```bash
+npm --prefix mobile run ios        # 走 mobile/ios/，需要 Apple 开发者账号签名
+```
+
+`mobile/ios/`、`mobile/android/` 是 prebuild 产物，进了 `.gitignore`。
 
 ## 登录（Google / GitHub）
 
@@ -25,17 +32,13 @@ module，Expo Go 直接能跑。要 prebuild 的只剩计划 C 的 APNs / NSE。
 邮箱密码那条路留着但收进折叠里：**这个账号体系里注册走的是 OAuth**，
 用 Google 注册的账号根本没有密码，只留密码登录的话它永远登不进来。
 
-回跳地址是 `Linking.createURL("auth-callback")`，**两种运行形态给出的值不一样**：
+回跳走**网关的 landing 页**（`services/gateway/src/authLanding.ts`），不是 app 自己的
+deep link：那个地址早就在 Supabase 的 Redirect URLs 白名单里、桌面天天在用。
+`mrotto://auth-callback` 只作 `ASWebAuthenticationSession` 的拦截 scheme
+（`app.json` 的 `scheme` 注册进 Info.plist，拦截是确定的，不经过白名单）。
 
-| 形态 | 回跳地址 |
-|---|---|
-| Expo Go | `exp://<局域网 IP>:8081/--/auth-callback`（IP 随网络变） |
-| 独立构建 | `mrotto://auth-callback` |
-
-两者都必须进 Supabase → Authentication → URL Configuration → **Redirect URLs**，
-否则 GoTrue 会悄悄回落到 SITE_URL，表现为「授权页转完圈却没回到 app」。
-开发期加 `exp://**`，发布前删掉；`mrotto://**` 长期留着。
-失败信息里会把当前这台机器算出来的地址原样打出来，照抄进白名单即可。
+这样绕开了 GoTrue 的一个坑：`redirect_to` 不在白名单里时它**不报错**，
+只是悄悄回落到 SITE_URL，表现为「授权页转完圈却没回到 app」。
 
 ## 和桌面共用的那一份代码
 
@@ -54,3 +57,16 @@ npm --prefix mobile run typecheck
 
 **暂时不在根门禁里**——根 `tsconfig.json` 排除了 `mobile/`。这是临时状态，
 原因和三条备选路都记在 issue #422（Protocol gap）。
+
+## UI
+
+设计令牌在 `src/theme.ts`，**逐个值抄自桌面的 `src/renderer/src/app.css`**：
+同一套 Apple 四色底盘（`#000` 地面 / `#1d1d1f` 浮起的表面 / `#f5f5f7` 正文 /
+`#0071e3` 点缀）、同一套语义色、同样跟随系统深浅色。
+
+抄一份而不是 import 一份，是因为 app.css 是 CSS 自定义属性、RN 没有 CSS。
+代价是两边可能漂，所以**令牌名和 CSS 变量名逐字对齐**（`background` / `card` /
+`mutedForeground`…），漂了 grep 得出来。
+
+组件层在 `src/ui.tsx`，只管三件事：按下就有反馈（不等抬手）、层级靠材质而不是
+堆颜色（蓝色一屏只给一个主动作）、动效能被系统的「减弱动态效果」关掉。
