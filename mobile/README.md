@@ -19,6 +19,24 @@ npm --prefix mobile start        # 扫码用 Expo Go 打开
 **不需要 `expo prebuild`。** 加密走纯 JS 的 `@noble/*`（ADR-0101），没有 native
 module，Expo Go 直接能跑。要 prebuild 的只剩计划 C 的 APNs / NSE。
 
+## 登录（Google / GitHub）
+
+和桌面同一个 Supabase 项目、同一套 PKCE，代码在 `src/oauth.ts`。
+邮箱密码那条路留着但收进折叠里：**这个账号体系里注册走的是 OAuth**，
+用 Google 注册的账号根本没有密码，只留密码登录的话它永远登不进来。
+
+回跳地址是 `Linking.createURL("auth-callback")`，**两种运行形态给出的值不一样**：
+
+| 形态 | 回跳地址 |
+|---|---|
+| Expo Go | `exp://<局域网 IP>:8081/--/auth-callback`（IP 随网络变） |
+| 独立构建 | `mrotto://auth-callback` |
+
+两者都必须进 Supabase → Authentication → URL Configuration → **Redirect URLs**，
+否则 GoTrue 会悄悄回落到 SITE_URL，表现为「授权页转完圈却没回到 app」。
+开发期加 `exp://**`，发布前删掉；`mrotto://**` 长期留着。
+失败信息里会把当前这台机器算出来的地址原样打出来，照抄进白名单即可。
+
 ## 和桌面共用的那一份代码
 
 `src/shared/remote/` 里的东西手机端**直接 import 同一份文件**，不是抄一份：
