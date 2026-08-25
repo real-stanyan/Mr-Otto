@@ -246,8 +246,9 @@ export function describeModelWith(
   return caps ? ollamaChoiceFrom(caps) : base;
 }
 
-/** 开箱默认型号。不用 MODEL_CATALOG[0]——目录顺序是 UI 顺序（OpenAI 排头），
-    而"默认"得挑一个**不填 key 也能跑**的：官方赠额只覆盖 DeepSeek（main/modelRoute.ts）。
+/** 开箱默认型号。不用 MODEL_CATALOG[0]——目录顺序是 UI 顺序（OpenAI 排头）。
+    历史上挑 DeepSeek 是因为官方赠额只覆盖它;赠额停供之后（ADR-0085）
+    哪款都得自己配 key,这个默认保留只是给触发器一个确定的初值。
     与 main/agent.ts 里 OTTER_MODEL 的兜底值同源 */
 export const DEFAULT_MODEL = "deepseek-v4-flash";
 

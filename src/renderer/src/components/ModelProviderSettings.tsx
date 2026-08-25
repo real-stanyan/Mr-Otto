@@ -268,7 +268,7 @@ export function ModelProviderSettings() {
 
       <p className="px-1 text-[12px] leading-[1.6] text-muted-foreground">
         key 存在本机 <code>keys.json</code>（仅当前用户可读），不进会话日志，不回传界面；
-        此处配置的 key 优先于 <code>.env</code>。DeepSeek 不填 key 也能用——登录后走官方赠额。
+        此处配置的 key 优先于 <code>.env</code>。
       </p>
     </>
   );

@@ -83,7 +83,7 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
   {
     id: "deepseek",
     name: "DeepSeek",
-    blurb: "深度求索。官方赠额唯一覆盖的一家",
+    blurb: "深度求索",
     baseUrl: "https://api.deepseek.com/v1",
     baseUrlEnv: "DEEPSEEK_BASE_URL",
     apiKeyEnv: "DEEPSEEK_API_KEY",

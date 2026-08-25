@@ -4,6 +4,7 @@
 
 import type { ModelChoice } from "../shared/modelCatalog.js";
 import type { ModelLane } from "../shared/modelLane.js";
+import { OFFICIAL_GRANT_ENABLED } from "../shared/features.js";
 
 export type ModelRoute =
   /** 直连上游:用户自带 key,自己付钱 */
@@ -25,10 +26,31 @@ export interface RouteInput {
   /** 走哪条路（ADR-0045）。缺省 auto = 老规矩（自带 key 优先）；
       "grant" = 用户在选单里点的是赠额那一份，明确要花官方额度 */
   lane?: ModelLane;
+  /** 官方赠额这条路还存不存在。缺省读产品开关（ADR-0085 之后 = false）；
+      参数化是给测试留的缝——两种形态的路由规矩都得钉在测试里 */
+  officialGrant?: boolean;
 }
 
 export function routeModel(input: RouteInput): ModelRoute {
   const { choice, ownKey, ownBaseUrl, accessToken, gatewayBaseUrl, lane } = input;
+  const officialGrant = input.officialGrant ?? OFFICIAL_GRANT_ENABLED;
+
+  // 官方停止供 token（ADR-0085）:赠额/网关这条路整条不存在。
+  // 老会话日志里 lane=grant 的选择照样能重放出来,只是路由到这里得到
+  // 一句说人话的 blocked,而不是打给一个不再放行的网关
+  if (!officialGrant) {
+    if (ownKey) {
+      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
+    }
+    if (choice.keyless) {
+      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
+    }
+    const grantGone = lane === "grant" ? "官方赠额已停止提供，" : "";
+    return {
+      kind: "blocked",
+      reason: `${grantGone}还没配 key：在设置里填自己的 ${choice.apiKeyEnv} 即可使用 ${choice.label}。`,
+    };
+  }
 
   // 明确点了赠额那一份:走网关,哪怕自己配了 key（ADR-0045）。
   // 这一支排在最前面 —— 它是用户刚刚亲手做的选择,不该被"你配过 key"这个
