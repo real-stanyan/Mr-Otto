@@ -4,6 +4,7 @@ import { EventStore } from "../../src/session/store.js";
 import { readFileTool } from "../../src/tools/readFile.js";
 import { bashTool } from "../../src/tools/bash.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
+import { markErrorClass } from "../../src/model/errorClass.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { UserAttachmentRef } from "../../src/session/events.js";
 import type { Tool } from "../../src/tools/tool.js";
@@ -622,6 +623,28 @@ describe("lifecycle 事件（ADR-0004）", () => {
     await expect(engine.runTurn("你好")).rejects.toThrow("API 超时了");
     expect(store.load("s1").at(-1)).toMatchObject({
       type: "turn_ended", outcome: "error", error: "API 超时了",
+    });
+    // 未分类的错误不落 errorClass 字段（不硬猜，issue #389）
+    expect(store.load("s1").at(-1)).not.toHaveProperty("errorClass");
+    store.close();
+  });
+
+  it("adapter 抛的分类错误：turn_ended 落 errorClass，error 存原文（issue #389）", async () => {
+    const store = new EventStore(":memory:");
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat() {
+        throw markErrorClass(new Error("model API 429: rate limited"), "rate-limit");
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s1" });
+
+    await expect(engine.runTurn("你好")).rejects.toThrow("429");
+    expect(store.load("s1").at(-1)).toMatchObject({
+      type: "turn_ended",
+      outcome: "error",
+      error: "model API 429: rate limited", // 原文不动——人话是渲染层的事
+      errorClass: "rate-limit",
     });
     store.close();
   });

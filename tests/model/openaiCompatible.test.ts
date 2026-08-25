@@ -4,6 +4,7 @@ import {
   localTiming,
   LOCAL_IDLE_TIMEOUT_MS,
 } from "../../src/model/openaiCompatible.js";
+import { errorClassOf } from "../../src/model/errorClass.js";
 
 /** 把字符串数组变成字节流——每个元素模拟一次网络分块（分块边界 ≠ 行边界） */
 function streamOf(parts: string[]): ReadableStream<Uint8Array> {
@@ -581,5 +582,46 @@ describe("localTiming — 本机推理的看门狗放宽（issue #300）", () =>
 
   it("云端型号：{} = 沿用默认看门狗（30s/90s，那里的静默才是挂死）", () => {
     expect(localTiming({ keyless: false })).toEqual({});
+  });
+});
+
+describe("errorClass 标记（issue #389）——抛错处分类，下游读标记", () => {
+  const clsAdapter = () =>
+    createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      timing: { backoffMs: [0], maxAttempts: 1 },
+    });
+
+  it.each([
+    [429, "rate-limit"],
+    [503, "retryable"],
+    [400, "fatal"],
+  ] as const)("HTTP %i → errorClass %s", async (status, cls) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status, text: async () => "x" }));
+    const err = await clsAdapter().chat([]).catch((e: unknown) => e);
+    expect(errorClassOf(err)).toBe(cls);
+  });
+
+  it("网关限流（人话文案，无 'API 429' 字样）也带 rate-limit 分类", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () =>
+          JSON.stringify({ error: { type: "otto_gateway", message: "访问量过大，稍后再试" } }),
+      })
+    );
+    const err = await clsAdapter().chat([]).catch((e: unknown) => e);
+    expect((err as Error).message).toBe("访问量过大，稍后再试");
+    expect(errorClassOf(err)).toBe("rate-limit");
+  });
+
+  it("网络层失败带 retryable 分类", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    const err = await clsAdapter().chat([]).catch((e: unknown) => e);
+    expect(errorClassOf(err)).toBe("retryable");
   });
 });

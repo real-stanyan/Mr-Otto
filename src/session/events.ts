@@ -221,6 +221,11 @@ export interface TurnEndedEvent extends SessionEventBase {
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
       推得出的不落盘（同一原则砍掉了 turn_started） */
   error?: string;
+  /** 仅 outcome = "error"：错误分类（issue #389，抛错处贴的 errorClass）。
+      error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错
+      那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
+      缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
+  errorClass?: "rate-limit" | "retryable" | "fatal";
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md
@@ -426,6 +431,20 @@ export interface RequestEnvelopeEvent extends SessionEventBase {
   tools: { name: string; description: string; parameters: object }[];
 }
 
+/** 后台任务完成（issue #389，dsh completion re-injection 对照）。
+    审计注记：哪个后台任务（bash run_in_background）、什么命令、什么退出码、
+    何时完成。**模型不消费**——模型可见的载体是回注 turn 的 user_message
+    （文案带完整输出，"先落盘再喂模型"由 runTurn 既有路径满足），这条事件
+    是把「任务其实是那时完成的」与「回注 turn 是这时开始的」两个时刻分开
+    记账的凭据（turn 在跑时完成的任务会攒到收口后才回注）。
+    ignorable：旧版本跳过它照常重放——不参与模型视野推导 */
+export interface BackgroundTaskCompletedEvent extends SessionEventBase {
+  type: "background_task_completed";
+  taskId: string;
+  cmd: string;
+  exitCode: number;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -454,7 +473,8 @@ export type SessionEvent =
   | SessionAutoTitledEvent
   | ToolHookEvent
   | ProjectInstructionsEvent
-  | RequestEnvelopeEvent;
+  | RequestEnvelopeEvent
+  | BackgroundTaskCompletedEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -494,6 +514,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_hook: true,
   project_instructions: true,
   request_envelope: true,
+  background_task_completed: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

@@ -6,11 +6,17 @@ import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
+import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** 沙箱 enforcement 事实（issue #389）：命令跑完了但沙箱拦了什么/自身
+      出了什么状况。可选 = 向后兼容：v1 LocalWorld 无沙箱永不产出，旧实现/
+      假 world 零改动。生产者是 v2 SandboxWorld；工具层（bash）负责把它
+      摆到模型眼前（BrowserReadResult.truncated 同款约定） */
+  sandbox?: SandboxEnforcementFacts;
 }
 
 /** exec 的可选项。signal（ADR-0006）：中止 = 杀死运行中的进程——
@@ -149,6 +155,14 @@ export interface ExecutionWorld {
     write(path: string, content: string): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
+  /** 可选：后台执行（issue #389）——不绑 turn 信号、超时放宽（LocalWorld 30 分钟）。
+      给"跑得比一个 turn 长"的命令用（构建/测试全量跑）：turn 收口了它还活着，
+      结果由组装根（backgroundTasks）以新 turn 注回会话。
+      **刻意是独立方法而不是 ExecOptions 里的 flag**：withAbortSignal 把 turn
+      信号焊进每个 exec 调用，后台任务必须躲开那次注入——分开的方法让装饰器
+      "透传不加签"成为显式决定而不是遗漏。可选 = 向后兼容（假 world 零改动）；
+      缺席 = 该装配不支持后台执行（bash 的 run_in_background 报错说明） */
+  execDetached?(cmd: string): Promise<ExecResult>;
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
@@ -189,6 +203,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
+    // 后台执行透传**不加签**（issue #389）：turn 中止不该杀后台任务——
+    // 它的生命周期本来就设计成跨 turn 的
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
     },
@@ -224,6 +241,8 @@ export function withExecOutput(
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
+    // 后台执行不接直播（v1）：完整结果在完成回注时整段给
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: world.http,
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser ? { browser: world.browser } : {}),
