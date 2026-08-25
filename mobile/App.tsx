@@ -12,6 +12,7 @@ import {
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
+import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
 import { connect, devices, openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 
@@ -54,27 +55,78 @@ function Center({ children }: { children: React.ReactNode }) {
 }
 
 /* ── 登录 ───────────────────────────────────────────────
-   只做邮箱密码。OAuth 要深链回跳,而手机端的范围里没有"注册"这件事 ——
-   账号在桌面上已经有了,这里是同一个账号的第二台设备。 */
+   OAuth 在上、邮箱密码在下,是因为**这个账号体系里注册走的是 OAuth**:
+   用 Google 注册的账号根本没有密码,只留密码那条路的话它永远登不进来
+   (虚拟机上实测就是这条:一个 Google 账号在这屏反复报 Invalid login credentials)。
+   密码那半留着但收进折叠里 —— 桌面支持 signUpWithPassword,确实存在有密码的账号。 */
 function SignIn({ onDone }: { onDone: () => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
-  const submit = async (): Promise<void> => {
-    setBusy(true);
-    setErr(null);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    setBusy(false);
-    if (error) return setErr(error.message);
-    onDone();
+  const oauth = (provider: OAuthProvider): void => {
+    void (async () => {
+      setBusy(provider);
+      setErr(null);
+      try {
+        await signInWithProvider(provider);
+        onDone();
+      } catch (e: unknown) {
+        // 取消不是故障,不报红
+        if (!(e instanceof AuthCancelled)) setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(null);
+      }
+    })();
   };
 
   return (
-    <View style={s.page}>
+    <ScrollView contentContainerStyle={s.page}>
       <Text style={s.h1}>Mr Otto</Text>
-      <Text style={s.hint}>用**和电脑上同一个**账号登录。</Text>
+      <Text style={s.hint}>
+        用<Text style={s.strong}>和电脑上同一个</Text>账号登录。
+      </Text>
+      {err ? <Text style={s.err}>{err}</Text> : null}
+      <Button
+        label={busy === "google" ? "登录中…" : "用 Google 登录"}
+        disabled={busy !== null}
+        onPress={() => oauth("google")}
+      />
+      <Button
+        label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
+        disabled={busy !== null}
+        onPress={() => oauth("github")}
+      />
+      {showPassword ? (
+        <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
+      ) : (
+        <Button label="用邮箱密码登录" variant="ghost" onPress={() => setShowPassword(true)} />
+      )}
+    </ScrollView>
+  );
+}
+
+/** 邮箱密码那一半。只有桌面上用 signUpWithPassword 注册过的账号能走这条 */
+function PasswordForm(props: {
+  disabled: boolean;
+  onError: (m: string | null) => void;
+  onDone: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    props.onError(null);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) return props.onError(error.message);
+    props.onDone();
+  };
+
+  return (
+    <View style={s.pwBlock}>
       <TextInput
         style={s.input} placeholder="邮箱" placeholderTextColor="#6b7280"
         autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}
@@ -83,8 +135,11 @@ function SignIn({ onDone }: { onDone: () => void }) {
         style={s.input} placeholder="密码" placeholderTextColor="#6b7280"
         secureTextEntry value={password} onChangeText={setPassword}
       />
-      {err ? <Text style={s.err}>{err}</Text> : null}
-      <Button label={busy ? "登录中…" : "登录"} disabled={busy} onPress={() => void submit()} />
+      <Button
+        label={busy ? "登录中…" : "登录"}
+        disabled={busy || props.disabled}
+        onPress={() => void submit()}
+      />
     </View>
   );
 }
@@ -214,8 +269,8 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
                   <Text style={s.path}>{a.pendingApproval.fullPath}</Text>
                 ) : null}
                 <View style={s.row}>
-                  <Button label="批准" onPress={() => decide(a, true)} />
-                  <Button label="拒绝" variant="danger" onPress={() => decide(a, false)} />
+                  <Button grow label="批准" onPress={() => decide(a, true)} />
+                  <Button grow label="拒绝" variant="danger" onPress={() => decide(a, false)} />
                 </View>
               </View>
             ) : null}
@@ -231,13 +286,21 @@ function Button(props: {
   onPress: () => void;
   disabled?: boolean;
   variant?: "primary" | "danger" | "ghost";
+  /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
+  grow?: boolean;
 }) {
   const v = props.variant ?? "primary";
   return (
     <Pressable
       onPress={props.onPress}
       disabled={props.disabled}
-      style={[s.btn, v === "danger" && s.btnDanger, v === "ghost" && s.btnGhost, props.disabled && s.btnOff]}
+      style={[
+        s.btn,
+        props.grow && s.btnRow,
+        v === "danger" && s.btnDanger,
+        v === "ghost" && s.btnGhost,
+        props.disabled && s.btnOff,
+      ]}
     >
       <Text style={[s.btnText, v === "ghost" && s.btnGhostText]}>{props.label}</Text>
     </Pressable>
@@ -258,12 +321,21 @@ const s = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 16,
   },
   card: { backgroundColor: "#15181d", borderRadius: 12, padding: 16, gap: 8 },
+  /** 折叠出来的邮箱密码块。上边一条线,把它和上面那两个 OAuth 按钮分开 */
+  pwBlock: { gap: 12, borderTopWidth: 1, borderTopColor: "#262b33", paddingTop: 16, marginTop: 4 },
   cardTitle: { color: "#f3f4f6", fontSize: 16, fontWeight: "600" },
   // 等宽 + 拉开字距:这串数字是拿来跟另一块屏幕逐位比对的
   code: { color: "#f3f4f6", fontSize: 32, fontFamily: "Menlo", letterSpacing: 6, textAlign: "center" },
   approval: { borderTopWidth: 1, borderTopColor: "#262b33", paddingTop: 10, gap: 8 },
   row: { flexDirection: "row", gap: 10 },
-  btn: { backgroundColor: "#2563eb", borderRadius: 10, paddingVertical: 12, alignItems: "center", flex: 1 },
+  /** 并排那一行里的按钮才平分宽度 */
+  btnRow: { flex: 1 },
+  btn: {
+    backgroundColor: "#2563eb", borderRadius: 10, paddingVertical: 14,
+    // alignItems + justifyContent 都要:少一个,文字在某些容器里会跑到看不见的地方
+    // (虚拟机上第一版就是一条没有字的蓝条)
+    alignItems: "center", justifyContent: "center", minHeight: 48,
+  },
   btnDanger: { backgroundColor: "#b91c1c" },
   btnGhost: { backgroundColor: "transparent" },
   btnOff: { opacity: 0.5 },

@@ -18,6 +18,9 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL } from "../../src/shared/authConfig.js"
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
+    // 和桌面同一套(src/main/account.ts createSupabaseAuthClient)。
+    // OAuth 回来只拿到一个 code,没有 pkce 就没有 verifier,exchangeCodeForSession 换不出 session
+    flowType: "pkce",
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,

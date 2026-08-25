@@ -21,6 +21,10 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "scheme": "mrotto"
+    "scheme": "mrotto",
+    "plugins": [
+      "expo-sqlite",
+      "expo-web-browser"
+    ]
   }
 }
