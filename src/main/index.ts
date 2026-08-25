@@ -3,7 +3,7 @@
 
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
 import { join, dirname } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -62,7 +62,9 @@ import { loadTrustedWorkspaces, addTrustedWorkspace } from "./workspaceTrust.js"
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
-import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
+import type { IslandSettings, UpdaterState,
+  RemoteStatus,
+} from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
 import { createUpdaterHostDeps } from "./updaterHost.js";
@@ -112,6 +114,8 @@ import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { createRemoteBridge } from "./remoteBridge.js";
+import { createRemoteDevices } from "./remoteDevices.js";
+import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
@@ -528,10 +532,11 @@ void app.whenReady().then(() => {
   // 没 pin 过对端的话每次握手都会被拒 —— 默认开着只是白连中继。
   // 配对 UI 落地时把这个开关摘掉。
   const remote = (() => {
-    if (process.env.OTTO_REMOTE !== "1") return null;
+    if (process.env.OTTO_REMOTE !== "1") return { off: "disabled" as const };
+    const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
       path: join(app.getPath("userData"), "remote-identity.bin"),
-      crypto: nodeRemoteCrypto(),
+      crypto,
       box: {
         available: () => safeStorage.isEncryptionAvailable(),
         encrypt: (plain) => new Uint8Array(safeStorage.encryptString(plain)),
@@ -539,15 +544,17 @@ void app.whenReady().then(() => {
       },
       log: (m) => console.warn(m),
     });
-    if (!idStore) return null; // 系统封装不可用 = 不开远程,而不是明文落盘
+    // 系统封装不可用 = 不开远程,而不是明文落盘。这两种"关着"要分得开:
+    // 用户该做的事完全不同(去开开关 vs 去解锁钥匙串)
+    if (!idStore) return { off: "no-secure-storage" as const };
     const transport = createSseTransport({
       baseUrl: relayBaseUrl(),
       role: "desktop",
       authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
       log: (m) => console.warn(m),
     });
-    return createRemoteBridge({
-      crypto: nodeRemoteCrypto(),
+    const bridge = createRemoteBridge({
+      crypto,
       identity: idStore.identity,
       deviceId: idStore.deviceId, // 随机,跟身份存在同一个封装里 —— hello 是明文过中继的
       transport,
@@ -555,7 +562,17 @@ void app.whenReady().then(() => {
       onCommand: (c) => handleRemoteCommand(c),
       log: (m) => console.warn(m),
     });
+    const devices = createRemoteDevices({
+      api: createSupabaseDevicesApi(supabase.raw),
+      store: idStore,
+      crypto,
+      log: (m) => console.warn(m),
+    });
+    return { bridge, devices };
   })();
+
+  /** 装配好的远程桥;没开/开不了时是 undefined */
+  const remoteBridge = "bridge" in remote ? remote.bridge : undefined;
 
   // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
   // 沿用 ADR-0059 的"丢弃成本可忽略"
@@ -587,19 +604,19 @@ void app.whenReady().then(() => {
   };
 
   const pushFleet = (): void => {
-    if (!bridge && !remote) return;
+    if (!bridge && !remoteBridge) return;
     const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId);
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge?.pushState(fleet);
     // 出机器的那一份要过闸门:用量和岛的显示设置不上公网(shared/remote/trim.ts)
-    remote?.pushFleet(trimForMobile(fleet));
+    remoteBridge?.pushFleet(trimForMobile(fleet));
   };
 
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
       reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
-    if (!bridge && !remote) return;
+    if (!bridge && !remoteBridge) return;
     const sid = islandInputSessionId(input);
     if (sid) {
       const cur = islandStates.get(sid) ?? { ...initialIsland, sessionId: sid };
@@ -1599,6 +1616,30 @@ void app.whenReady().then(() => {
     saveVisionModel(visionModelPath, model));
   // 灵动岛设置(#199):normalise 在 store 层做(渲染层传什么不直接信),
   // set 完立刻重推岛快照——切换即时生效,不等下一个事件
+  // 读状态时顺手把自己登记进 devices:目录里没有这台桌面的话,手机那边根本看不见它。
+  // 放在读这一侧而不是启动时无条件跑 —— 没登录时登记必然失败,而设置页被打开
+  // 恰好是"用户此刻在意这件事"的时刻
+  ipcMain.handle(CHANNELS.remoteStatus, async (): Promise<RemoteStatus> => {
+    if (!("devices" in remote)) return { on: false, reason: remote.off };
+    try {
+      await remote.devices.registerSelf(hostname());
+      return { on: true, peers: await remote.devices.listPeers() };
+    } catch (err) {
+      console.warn("远程设备目录读不到", err);
+      return { on: true, peers: [] }; // 离线/库出错:空列表,而不是把设置页炸掉
+    }
+  });
+
+  ipcMain.handle(CHANNELS.remotePairDevice, async (_e, deviceId: string): Promise<boolean> => {
+    if (!("devices" in remote)) return false;
+    try {
+      return await remote.devices.pin(deviceId);
+    } catch (err) {
+      console.warn("远程配对失败", err);
+      return false;
+    }
+  });
+
   ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
   ipcMain.handle(CHANNELS.setIslandSettings, (_e, settings: IslandSettings) => {
     islandSettings = normaliseIslandSettings(settings);
