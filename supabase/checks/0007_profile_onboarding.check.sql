@@ -1,7 +1,7 @@
 -- migration 0007 的真库一致性校验(引导标记 + 触发器不再覆盖用户自设头像)。
 -- 整段包在事务里，最后 rollback，**不留痕**。
 -- 跑法:
---   ssh -p 2222 stan@<vps> "docker exec -i otto-db-1 psql -U postgres" < supabase/checks/0007_profile_onboarding.check.sql
+--   OTTO_DB_URL='postgresql://...' scripts/db-checks.sh 0007
 begin;
 do $$
 declare

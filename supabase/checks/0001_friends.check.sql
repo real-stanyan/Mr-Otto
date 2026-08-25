@@ -1,7 +1,7 @@
 -- migration 0001 的真库一致性校验(重点是 issue #62 修的 profiles 形状)。
 -- 整段包在事务里，最后 rollback，**不留痕**。
 -- 跑法:
---   ssh -p 2222 stan@<vps> "docker exec -i otto-db-1 psql -U postgres" < supabase/checks/0001_friends.check.sql
+--   OTTO_DB_URL='postgresql://...' scripts/db-checks.sh 0001
 begin;
 do $$
 declare

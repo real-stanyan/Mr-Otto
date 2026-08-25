@@ -1,9 +1,12 @@
 -- migration 0009 的真库一致性校验(execute 权限收掉了，而注册链路没被收坏)。
 -- 整段包在事务里，最后 rollback，**不留痕**。
--- 跑法(注意用 supabase_admin，不是 postgres —— postgres 没有 set role
--- supabase_auth_admin 的权限，而注册链路正是以那个角色跑的):
---   ssh -p 2222 stan@<vps> "docker exec -i otto-db-1 sh -lc 'PGPASSWORD=\$POSTGRES_PASSWORD psql -U supabase_admin -d postgres'" \
---     < supabase/checks/0009_revoke_trigger_function_execute.check.sql
+-- 跑法:
+--   OTTO_DB_URL='postgresql://...' scripts/db-checks.sh 0009
+--
+-- 这一份对连接串的角色有额外要求:它得能 `set role supabase_auth_admin`——注册链路
+-- 正是以那个角色跑的，②那一半没法换个角色模拟。权限不够时脚本停在
+-- `permission denied to set role "supabase_auth_admin"` 上，那是连接串选错了角色，
+-- 不是断言失败，别当成 0009 回归了。
 --
 -- 这份脚本要回答的是两个方向相反的问题，缺一个都不算验过:
 --   ① 口子真的关上了吗(anon/authenticated/PUBLIC 都不能 execute)
