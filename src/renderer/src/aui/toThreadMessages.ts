@@ -92,6 +92,11 @@ function isAuditEvent(e: SessionEvent): boolean {
       // 跟进建议不是对话事实,它挂在输入框上方(ThreadFollowupSuggestions),
       // 不在时间线里占一行 —— 同 section_classified
       return false;
+    case "checkpoint_created":
+    case "workspace_restored":
+      // 检查点/文件恢复(issue #395):审计事实,但回退入口在轨迹视图——
+      // 聊天区不渲染(同 threadGroups.isInvisible 的同名分支,显式列出防 default 漂移)
+      return false;
     default:
       return false;
   }

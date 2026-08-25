@@ -445,6 +445,27 @@ export interface BackgroundTaskCompletedEvent extends SessionEventBase {
   exitCode: number;
 }
 
+/** 工作区检查点（issue #395 / ADR-0089，Claude Code checkpoint 对照）。
+    每个用户 turn 开跑前，装配根把工作区文件快照进影子 git，id 落此事件——
+    「回到这一步」的文件侧锚点（对话侧锚点是它前面的 turn_ended，fork 用）。
+    模型不消费（投影丢弃）；ignorable：旧版本跳过照常重放——它不参与模型
+    视野推导。快照本体在 ~/.mr-otto/checkpoints（内容寻址），日志只存 id
+    ——重放依赖快照库（attachments 同款取舍，见 docs/adr/0009） */
+export interface CheckpointCreatedEvent extends SessionEventBase {
+  type: "checkpoint_created";
+  checkpointId: string;
+}
+
+/** 工作区文件被恢复到某个检查点（issue #395）。落在**恢复动作产生的新分支
+    会话**里（fork + restore 成对发生）：这个分支的对话前缀与磁盘状态从这一刻
+    对齐。模型不消费；ignorable 同 checkpoint_created。
+    fromSessionId = 从哪个会话的时间线上发起的恢复（审计溯源） */
+export interface WorkspaceRestoredEvent extends SessionEventBase {
+  type: "workspace_restored";
+  checkpointId: string;
+  fromSessionId?: string;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -474,7 +495,9 @@ export type SessionEvent =
   | ToolHookEvent
   | ProjectInstructionsEvent
   | RequestEnvelopeEvent
-  | BackgroundTaskCompletedEvent;
+  | BackgroundTaskCompletedEvent
+  | CheckpointCreatedEvent
+  | WorkspaceRestoredEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -515,6 +538,8 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   project_instructions: true,
   request_envelope: true,
   background_task_completed: true,
+  checkpoint_created: true,
+  workspace_restored: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

@@ -37,7 +37,9 @@ import {
   withBrowser,
   withMcp,
   withHistory,
+  withCheckpoint,
   type BrowserCapability,
+  type CheckpointCapability,
   type HistoryCapability,
   type McpCapability,
 } from "../world/executionWorld.js";
@@ -120,7 +122,7 @@ export interface AgentPush {
     而日志不可编辑，事后拆不开（#111）。
     旧日志里的 `s-<14 位>` 不受影响：全仓没有任何地方解析这个形状，
     resume 只按字符串原样取（AGENTS.md 硬规则：旧日志必须永远可重放）。 */
-function newSessionId(): string {
+export function newSessionId(): string {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   return `s-${stamp}-${randomBytes(4).toString("hex")}`;
 }
@@ -169,6 +171,10 @@ export function createAgent(opts: {
       挂了才装 session_search 工具——子 agent 复用父 world 时自带（withHistory 焊在
       父身上），resumeChild 走的是父的旧世界，同理不用重复传（ADR-0060 的另一半） */
   history?: HistoryCapability;
+  /** 工作区检查点能力（issue #395，index.ts 用影子 git 实现焊进来）。
+      挂了 = 每个用户 turn 前自动存档、轨迹视图出现「回到这一步」；
+      不给 = 该装配没有检查点（测试/裸装配/子会话照旧）。注入方向同 mcp/history */
+  checkpoints?: CheckpointCapability;
   /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
@@ -222,7 +228,9 @@ export function createAgent(opts: {
   const withMcpLayer = opts.mcp ? withMcp(base, opts.mcp) : base;
   // history 叠在 mcp 之外——同一件事：子 agent 复用父的 world 实例时这层已经在了，
   // 不会被重复包一层（world.history 是不是在只问 world，不问 opts.history 给没给）
-  const world = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
+  const withHistoryLayer = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
+  // 检查点叠在最外（issue #395）：同上，子 agent 复用父 world 时这层已经在了
+  const world = opts.checkpoints ? withCheckpoint(withHistoryLayer, opts.checkpoints) : withHistoryLayer;
   // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0054）：子 agent 跑在
   // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
   // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
