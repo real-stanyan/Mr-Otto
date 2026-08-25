@@ -287,6 +287,11 @@ export function FilesView() {
                     title={ed.appPath}
                     onClick={() => void window.otter.filesReveal(root, selected, "app", ed.name)}
                   >
+                    {/* 图标是名字的复述(名字就在旁边),读屏器不该念第二遍;
+                        取不到图标的那条自然退回纯文字,不占位 */}
+                    {ed.icon !== "" && (
+                      <img src={ed.icon} alt="" aria-hidden draggable={false} className="size-4 shrink-0" />
+                    )}
                     {ed.name}
                   </DropdownMenuItem>
                 ))}

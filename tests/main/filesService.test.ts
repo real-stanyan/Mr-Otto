@@ -21,6 +21,7 @@ function deps(over: Partial<FilesDeps> = {}): FilesDeps {
     exists: (abs) => abs === "/Applications/Visual Studio Code.app",
     homeDir: () => "/Users/me",
     openWith: () => {},
+    appIcon: async () => "data:image/png;base64,ICON",
     ...over,
   };
 }
@@ -153,22 +154,41 @@ describe("search", () => {
 });
 
 describe("editors", () => {
-  it("只列探到的那几个,顺序照名单", () => {
+  it("只列探到的那几个,顺序照名单", async () => {
     const svc = createFilesService(deps({
       exists: (abs) => abs.endsWith("/Visual Studio Code.app") || abs.endsWith("/Zed.app"),
     }));
-    expect(svc.editors().map((e) => e.name)).toEqual(["Visual Studio Code", "Zed"]);
+    expect((await svc.editors()).map((e) => e.name)).toEqual(["Visual Studio Code", "Zed"]);
   });
 
-  it("两层都装了只算一条——菜单里出现两条同名项没有意义", () => {
+  it("两层都装了只算一条——菜单里出现两条同名项没有意义", async () => {
     const svc = createFilesService(deps({ exists: () => true }));
-    const names = svc.editors().map((e) => e.name);
+    const names = (await svc.editors()).map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("一个都没装 = 空数组,不是错误(菜单只剩「系统默认」)", () => {
+  it("一个都没装 = 空数组,不是错误(菜单只剩「系统默认」)", async () => {
     const svc = createFilesService(deps({ exists: () => false }));
-    expect(svc.editors()).toEqual([]);
+    expect(await svc.editors()).toEqual([]);
+  });
+
+  it("每条带自己那枚图标(data URI)", async () => {
+    const svc = createFilesService(deps({
+      exists: (abs) => abs.endsWith("/Zed.app"),
+      appIcon: async (p) => `icon-of:${p}`,
+    }));
+    expect((await svc.editors())[0]!.icon).toBe("icon-of:/Applications/Zed.app");
+  });
+
+  it("图标取不到只让那一条退回纯文字,不拖垮整份名单", async () => {
+    const svc = createFilesService(deps({
+      exists: (abs) => abs.endsWith("/Visual Studio Code.app") || abs.endsWith("/Zed.app"),
+      appIcon: async (p) => {
+        if (p.includes("Zed")) throw new Error("icns 坏了");
+        return "ok";
+      },
+    }));
+    expect((await svc.editors()).map((e) => e.icon)).toEqual(["ok", ""]);
   });
 });
 

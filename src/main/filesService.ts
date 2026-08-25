@@ -11,8 +11,10 @@
 // 由 agent 自己走 read 工具,那条路径才有日志。
 
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { EDITOR_CATALOG, editorSearchDirs, type EditorApp } from "../shared/editors.js";
 import {
@@ -39,14 +41,64 @@ export interface FilesDeps {
   exists(abs: string): boolean;
   /** 当前用户的家目录(~/Applications 那一层) */
   homeDir(): string;
+  /** 那个 app 的图标,png 的 data URI。取不到回空串(菜单退回纯文字) */
+  appIcon(appPath: string): Promise<string>;
   /** 用指定 app 打开:macOS 的 `open -a <app> <file>`。失败不抛给调用方,
       只记一笔——用户能看见的失败信号是"文件没在编辑器里打开" */
   openWith(appPath: string, target: string): void;
 }
 
-/** fs/rg 那五个的真实现。electron 那两个由 index.ts 补上——这里补不了,
-    import electron 会让本模块在 vitest 里加载失败 */
+/** fs/rg/图标那几个的真实现。electron 那两个(openPath / showInFolder)由
+    index.ts 补上——这里补不了,import electron 会让本模块在 vitest 里加载失败 */
+/** 一枚图标解出来就记住:同一次开面板要问十几个 app,而 .app 的图标在
+    app 自己升级前不会变。进程内缓存,重启即失效 */
+const iconCache = new Map<string, string>();
+
+function run(cmd: string, args: string[]): Promise<string> {
+  return new Promise((res, rej) => {
+    execFile(cmd, args, { maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      if (err) rej(err);
+      else res(String(stdout));
+    });
+  });
+}
+
+/** app bundle 里那枚 .icns 的路径。先问 Info.plist 的 CFBundleIconFile
+    (plutil 认二进制 plist),问不出来就退回 Resources 里第一枚 .icns */
+async function icnsPath(appPath: string): Promise<string> {
+  const resources = `${appPath}/Contents/Resources`;
+  try {
+    const raw = (
+      await run("plutil", ["-extract", "CFBundleIconFile", "raw", "-o", "-", `${appPath}/Contents/Info.plist`])
+    ).trim();
+    if (raw !== "") {
+      const file = raw.endsWith(".icns") ? raw : `${raw}.icns`;
+      if (existsSync(`${resources}/${file}`)) return `${resources}/${file}`;
+    }
+  } catch {
+    // 没这个键 / plist 读不了 —— 退回扫目录
+  }
+  const found = readdirSync(resources).find((f) => f.endsWith(".icns"));
+  if (found === undefined) throw new Error(`no icns in ${resources}`);
+  return `${resources}/${found}`;
+}
+
 export const nodeFilesDeps: Omit<FilesDeps, "openPath" | "showInFolder"> = {
+  // electron 的 app.getFileIcon 对 .app 包回的是通用占位图(三个编辑器长一个样),
+  // 所以自己去 bundle 里取那枚 .icns,用系统自带的 sips 转成 png
+  async appIcon(appPath) {
+    const hit = iconCache.get(appPath);
+    if (hit !== undefined) return hit;
+    const out = `${tmpdir()}/otto-editor-icon-${appPath.replace(/[^a-zA-Z0-9]/g, "_")}.png`;
+    try {
+      await run("sips", ["-s", "format", "png", "--resampleHeightWidthMax", "64", await icnsPath(appPath), "--out", out]);
+      const uri = `data:image/png;base64,${readFileSync(out).toString("base64")}`;
+      iconCache.set(appPath, uri);
+      return uri;
+    } finally {
+      rmSync(out, { force: true });
+    }
+  },
   exists(abs) {
     return existsSync(abs);
   },
@@ -118,9 +170,9 @@ function classifyFsError(err: unknown): "no-dir" | "denied" {
 }
 
 export interface FilesService {
-  /** 本机装了哪些编辑器(按 EDITOR_CATALOG 的顺序)。现探不缓存:
+  /** 本机装了哪些编辑器(按 EDITOR_CATALOG 的顺序,带各自的图标)。现探不缓存:
       用户装完新编辑器不该重启 app 才看得见 */
-  editors(): EditorApp[];
+  editors(): Promise<EditorApp[]>;
   list(root: string, relDir: string): FilesResult<FileEntry[]>;
   search(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
   read(root: string, rel: string): FilesResult<FilePreview>;
@@ -143,20 +195,31 @@ export function createFilesService(deps: FilesDeps): FilesService {
     return abs;
   }
 
-  return {
-    editors() {
-      const dirs = editorSearchDirs(deps.homeDir());
-      const out: EditorApp[] = [];
-      for (const name of EDITOR_CATALOG) {
-        for (const dir of dirs) {
-          const appPath = `${dir}/${name}.app`;
-          if (deps.exists(appPath)) {
-            out.push({ name, appPath });
-            break; // 两层都装了只算一个:菜单里出现两条同名项没有意义
-          }
+  /** 装了哪些(不含图标)。reveal 的白名单校验走这个同步版本——
+      为了校验一个名字去解码十几枚图标是白花的力气 */
+  function probe(): EditorApp[] {
+    const dirs = editorSearchDirs(deps.homeDir());
+    const out: EditorApp[] = [];
+    for (const name of EDITOR_CATALOG) {
+      for (const dir of dirs) {
+        const appPath = `${dir}/${name}.app`;
+        if (deps.exists(appPath)) {
+          out.push({ name, appPath, icon: "" });
+          break; // 两层都装了只算一个:菜单里出现两条同名项没有意义
         }
       }
-      return out;
+    }
+    return out;
+  }
+
+  return {
+    async editors() {
+      const found = probe();
+      const icons = await Promise.all(
+        // 一枚取不到不该拖垮整份名单:那一项退回纯文字条目
+        found.map((e) => deps.appIcon(e.appPath).catch(() => ""))
+      );
+      return found.map((e, i) => ({ ...e, icon: icons[i] ?? "" }));
     },
 
     list(root, relDir) {
@@ -230,7 +293,7 @@ export function createFilesService(deps: FilesDeps): FilesService {
       if (how === "app") {
         // 只认自己探出来的那份名单:菜单给什么就只能开什么。渲染层被注入了
         // 别的字符串也进不了 `open -a`
-        const app = this.editors().find((e) => e.name === appName);
+        const app = probe().find((e) => e.name === appName);
         if (app === undefined) return fail("unknown-app", String(appName));
         deps.openWith(app.name, abs);
         return { ok: true, value: null };

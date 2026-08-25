@@ -10,6 +10,10 @@ export interface EditorApp {
   name: string;
   /** 探到的 bundle 绝对路径(菜单不显示,用来做 tooltip 和去重) */
   appPath: string;
+  /** app 自己那枚图标的 data URI(png)。取不到 = 空串,菜单退回纯文字。
+      为什么内嵌而不是给路径:.app 里的图标是 .icns,渲染层直接 <img> 认不了,
+      而且那是 app 包内部的路径,不该让渲染进程去读 */
+  icon: string;
 }
 
 /** 常见编辑器/IDE。顺序 = 菜单顺序,前面的更常用 */
