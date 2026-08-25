@@ -67,10 +67,11 @@ export function createLocalWorld(
       // spawn + HeadTail 而不是 execAsync（issue #343）：exec 的 maxBuffer 超限
       // 会直接杀进程（默认 1MiB），死循环打印的命令拿不到任何结果；HeadTail
       // 内存有界且**读到 EOF**——不停读，管道不会 back-pressure 卡死子进程
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
       return new Promise<ExecResult>((done, fail) => {
         const child = spawn(cmd, {
           shell: true,
-          timeout: 30_000,
+          timeout: timeoutMs,
           killSignal: "SIGTERM",
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
           // （issue #153）。其余原样继承——PATH/nvm/语言设置都在里面
@@ -108,11 +109,11 @@ export function createLocalWorld(
             return;
           }
           if (signal !== null) {
-            // 不是用户中断却挨了信号 = 30s 超时被 killSignal 终止（或外力 kill）。
+            // 不是用户中断却挨了信号 = 超时被 killSignal 终止（或外力 kill）。
             // 按世界反馈返回:HeadTail 里已经攒下的输出照给,模型能看到跑到哪了
             done({
               stdout: out.text(),
-              stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 30s 或外部 kill）]`.trim(),
+              stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 ${Math.round(timeoutMs / 1000)}s 或外部 kill）]`.trim(),
               exitCode: 124,
             });
             return;

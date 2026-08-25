@@ -28,6 +28,12 @@ export interface ExecOptions {
       直播是 UI 增强，不是事实——完整输出仍由 ExecResult 一次性返回并落盘，
       和 assistantDelta 同款边界：碎片永不进日志，日志只收凝固后的整体 */
   onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
+  /** 进程硬超时上限（ms）。缺省 = 实现自定（LocalWorld 30s）。
+      给它的理由（issue #395 自动转后台）：bash 前台命令超 30s 不再一刀杀死，
+      而是放宽到后台档位继续跑、由工具层把"还在跑"这个事实转成后台任务——
+      放宽必须是调用方的显式请求，不是 world 偷偷改默认。实现可忽略
+      （假 world 零改动），忽略 = 维持它自己的默认超时 */
+  timeoutMs?: number;
 }
 
 export interface HttpPostOptions {

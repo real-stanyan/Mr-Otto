@@ -203,4 +203,12 @@ describe("装饰器透传 http", () => {
     expect(seen[0]).toBeDefined();
     expect(seen[0]?.aborted).toBe(true);
   });
+
+  // issue #395：timeoutMs 是调用方的显式放宽/收紧请求
+  it("exec 尊重 opts.timeoutMs：超限被 SIGTERM 终止，exitCode 124", async () => {
+    const world = createLocalWorld();
+    const r = await world.exec("sleep 5", { timeoutMs: 300 });
+    expect(r.exitCode).toBe(124);
+    expect(r.stderr).toContain("终止");
+  });
 });
