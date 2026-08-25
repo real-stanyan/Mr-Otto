@@ -10,6 +10,8 @@
 //
 // 上行用普通 fetch POST(没有流,fetch 够用)。
 
+import { AppState, type NativeEventSubscription } from "react-native";
+
 import { createSseParser } from "../../src/shared/remote/sse.js";
 import type { RemoteTransport } from "../../src/shared/remote/transport.js";
 
@@ -17,6 +19,13 @@ const BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 /** 连接活满这么久才算"真连上了",退避才归零 —— 只看"拿到 200" 的话,
     一条连上就断的连接会让退避永远停在第一档(同桌面侧 remoteTransport.ts) */
 const STABLE_MS = 30_000;
+
+/** responseText 到这么大就主动换一条连接。
+    XHR 的下行是**只增不减**的一个字符串:这条流永远不结束,`responseText`
+    于是把这次连接收到的每一帧都攒着,而时间线帧是几十 KB 一条、每次更新推一次。
+    读增量要 `.slice(read)`,在 Hermes 上会把 rope 摊平 —— 攒得越久,每来一帧
+    越慢,内存也一直涨。主动回收比等它拖垮 JS 线程好:重连只是一次握手。 */
+const RECYCLE_BYTES = 4 * 1024 * 1024;
 
 export function createXhrTransport(opts: {
   baseUrl: string;
@@ -46,6 +55,39 @@ export function createXhrTransport(opts: {
     }, wait);
   }
 
+  /**
+   * 立刻换一条连接,不等退避。
+   *
+   * 只给两个**已知连接不可用**的调用者用:回前台(见下),和 responseText 撑太大。
+   * 不能拿它当通用重连 —— 退避存在的理由是别把网关刷爆。
+   */
+  function reconnectNow(why: string): void {
+    if (closed) return;
+    log(`手机传输:${why},立刻换一条连接`);
+    if (timer) { clearTimeout(timer); timer = null; }
+    const dying = xhr;
+    xhr = null;          // 先摘,免得 abort 触发的回调把它当"当前连接"
+    dying?.abort();
+    attempt = 0;         // 这不是失败重试,是主动换,退避从头算
+    onClose();           // 桥要知道这一轮作废了(密钥跟着连接走)
+    void connect();
+  }
+
+  /**
+   * 回前台就换一条连接。
+   *
+   * iOS 会在切后台时把 socket 掐掉,**但 XHR 未必知道**:回来时它可能还停在
+   * readyState 3,既不报错也再不来一个字节 —— 桥那侧仍然是 ready,发出去的
+   * 每一帧都 409,而屏幕上一切正常。这是"手机看着连着、其实什么都收不到"
+   * 的唯一成因,比断线难查得多。
+   *
+   * 反过来,就算 socket 真断了,退避的 setTimeout 在后台也不走 —— 回来最长
+   * 要再等 30s。两种情况一条修法:回前台一律重连,不去猜旧连接还活着没有。
+   */
+  const appState: NativeEventSubscription = AppState.addEventListener("change", (next) => {
+    if (next === "active") reconnectNow("回到前台");
+  });
+
   async function connect(): Promise<void> {
     if (closed) return;
     const token = await opts.authToken();
@@ -72,6 +114,8 @@ export function createXhrTransport(opts: {
     };
 
     req.onreadystatechange = () => {
+      // 已被 close / reconnectNow 换掉的那条连接,后续事件一律不算数
+      if (closed || req !== xhr) return;
       if (req.readyState === 2) {
         // 头到了。网关开流就写一个字节(`:ok`),所以这一步不会卡到第一次心跳
         if (req.status !== 200) log(`手机传输:开流失败 ${req.status}`);
@@ -86,9 +130,11 @@ export function createXhrTransport(opts: {
         feed.push(text.slice(read));
         read = text.length;
       }
+      // 回收放在喂完之后:手里这一截先交出去,一帧都不丢
+      if (read >= RECYCLE_BYTES) reconnectNow(`这条连接攒到 ${Math.round(read / 1024)}KB`);
     };
     req.onerror = finish;
-    req.onabort = () => { /* 主动 close,不重连 */ };
+    req.onabort = () => { /* 主动摘的(close 或 reconnectNow),两条路都已自己安排好后续 */ };
     req.onload = finish;
 
     req.open("GET", `${base}/rl/v1/stream${q}`);
@@ -119,6 +165,7 @@ export function createXhrTransport(opts: {
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;
+      appState.remove();
       if (timer) { clearTimeout(timer); timer = null; }
       xhr?.abort();
       xhr = null;

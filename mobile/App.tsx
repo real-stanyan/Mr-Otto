@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable,
   SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
   type ViewStyle,
 } from "react-native";
@@ -536,12 +536,12 @@ function Fleet({ store, onRepair, onDetailChange }: {
       },
       onReady: (r) => {
         setReady(r);
-        if (!r) {
-          setFleet(null); // 断了就别再展示一份陈旧快照
-          setTimeline(null);
-        } else if (watching.current) {
-          b.send({ type: "watch", sessionId: watching.current });
-        }
+        // **断线不清屏**。第一版这里把 fleet 和 timeline 都清成 null,于是
+        // 每一次抖动(切后台回来、Wi-Fi 切蜂窝、网关掐 idle)都会把人正在读的
+        // 那一屏换成整页"你的 Mac 不在线",两秒后又换回来。断线是常态,
+        // 而"清屏"是个不可逆的动作——它把内容和连接状态混成了一件事。
+        // 现在只有连接状态会变,内容留着,由横幅说清楚它是断线前的。
+        if (r && watching.current) b.send({ type: "watch", sessionId: watching.current });
       },
     });
     bridge.current = b;
@@ -581,6 +581,17 @@ function Fleet({ store, onRepair, onDetailChange }: {
   const sendText = (sessionId: string, text: string): boolean =>
     bridge.current?.send({ type: "send", sessionId, text }) ?? false;
 
+  // 断了先当抖动看:这么久还没回来才认定是真离线(而且只在**一无所有**时才翻脸,
+  // 手里有快照就一直留着,见 onReady)。冷启动同样走这条——刚打开 app 的
+  // 头一两秒握手还没完,直接甩一句"你的 Mac 不在线"是在说谎
+  const GRACE_MS = 6_000;
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (ready) return setSettled(false);
+    const id = setTimeout(() => setSettled(true), GRACE_MS);
+    return () => clearTimeout(id);
+  }, [ready]);
+
   const decide = (a: IslandAgent, ok: boolean): void => {
     const callId = a.pendingApproval?.callId;
     if (!callId) return;
@@ -591,7 +602,17 @@ function Fleet({ store, onRepair, onDetailChange }: {
     });
   };
 
-  if (!ready || !fleet) {
+  // 一无所有的两种:还在等第一份(转圈),和等够了还没有(说实话)
+  if (!fleet) {
+    if (!settled) {
+      return (
+        <Page grow>
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+            <Spinner />
+          </View>
+        </Page>
+      );
+    }
     return (
       <Page>
         <View style={{ gap: space.sm, paddingTop: space.xl }}>
@@ -607,7 +628,7 @@ function Fleet({ store, onRepair, onDetailChange }: {
   if (opened) {
     return (
       <SessionView
-        agent={opened} now={now} messages={timeline} diag={diag}
+        agent={opened} now={now} messages={timeline} diag={diag} online={ready}
         onBack={closeSession} onDecide={decide}
         onSend={(text) => sendText(opened.sessionId, text)}
         onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
@@ -619,7 +640,9 @@ function Fleet({ store, onRepair, onDetailChange }: {
     <Page>
       <View style={{ gap: space.xs, paddingTop: space.sm }}>
         <Title>会话</Title>
-        <StatusLine tone="ok">已连上你的 Mac</StatusLine>
+        {ready
+          ? <StatusLine tone="ok">已连上你的 Mac</StatusLine>
+          : <StatusLine tone="warn">{settled ? "断开了,下面是断线前的" : "重连中…"}</StatusLine>}
       </View>
       {fleet.agents.length === 0 ? (
         <Card>
@@ -643,7 +666,7 @@ function Fleet({ store, onRepair, onDetailChange }: {
               />
               {shut ? null : g.agents.map((a) => (
                 <AgentCard
-                  key={a.sessionId} agent={a} now={now} onDecide={decide}
+                  key={a.sessionId} agent={a} now={now} onDecide={decide} online={ready}
                   onOpen={() => openSession(a.sessionId)}
                 />
               ))}
@@ -703,11 +726,12 @@ function WorkspaceHeader({ group: g, collapsed, onToggle }: {
   );
 }
 
-function AgentCard({ agent: a, now, onDecide, onOpen }: {
+function AgentCard({ agent: a, now, onDecide, onOpen, online }: {
   agent: IslandAgent;
   now: number;
   onDecide: (a: IslandAgent, ok: boolean) => void;
   onOpen: () => void;
+  online: boolean;
 }) {
   const { c } = usePalette();
   const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
@@ -750,7 +774,7 @@ function AgentCard({ agent: a, now, onDecide, onOpen }: {
         </View>
       ) : null}
 
-      {a.pendingApproval ? <Approval agent={a} onDecide={onDecide} /> : null}
+      {a.pendingApproval ? <Approval agent={a} onDecide={onDecide} online={online} /> : null}
     </Card>
   );
 }
@@ -764,10 +788,13 @@ function AgentCard({ agent: a, now, onDecide, onOpen }: {
       这里不再截,只把 truncated 标记翻译成一句"在电脑上看全文"。
    3. **新消息到了自动滚到底**,但只在人本来就贴着底的时候 —— 正在往回翻的人
       被拽回底部比不自动滚更烦。 */
-function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, onRetry }: {
+function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, onSend, onRetry }: {
   agent: IslandAgent;
   now: number;
   messages: MobileMessage[] | null;
+  /** 连接活着没有。断了这一屏**不清空**——留着断线前的内容,顶上挂一条横幅
+      说清楚它是旧的,同时把审批和发送都锁上 */
+  online: boolean;
   diag: { frames: number; timelines: number; log: string[] };
   onBack: () => void;
   onDecide: (a: IslandAgent, ok: boolean) => void;
@@ -793,8 +820,27 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, 
     if (atBottom.current) list.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
+  // 键盘顶上来的时候把最后几条跟着推上去。KeyboardAvoidingView 只负责让输入框
+  // 别被盖住,它不会动 ScrollView 的滚动位置——不补这一下,人一点输入框,
+  // 刚才在读的那几条就被键盘吃掉了
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      () => { if (atBottom.current) list.current?.scrollToEnd({ animated: true }); },
+    );
+    return () => show.remove();
+  }, []);
+
   return (
-    <View style={{ flex: 1 }}>
+    // **整屏**都是 KeyboardAvoidingView,不能只包底下那一条。
+    // behavior="padding" 是按这个容器自己的 frame 和键盘 frame 求交集算出来的:
+    // 包在一个内容高度的小条上时,交集恒为 0——第一版就是这样,键盘一上来
+    // 输入框就跟着被盖住了。包整屏,padding 才落在有 flex 可压缩的
+    // ScrollView 上面,输入框被顶上去,时间线相应变短。
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       {/* 顶栏。返回在左上,和 iOS 的方向一致 */}
       <View style={{
         paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm,
@@ -815,8 +861,22 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, 
         <Dot tone={tone} />
       </View>
 
+      {online ? null : (
+        <View style={{
+          paddingHorizontal: space.md, paddingVertical: space.xs,
+          borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+        }}>
+          <StatusLine tone="warn">断开了 —— 下面是断线前的</StatusLine>
+        </View>
+      )}
+
       <ScrollView
         ref={list}
+        style={{ flex: 1 }}
+        // 往回翻就收键盘(iOS 的 interactive:跟着手指走,不是硬收);
+        // 键盘还开着时点审批键要一次就中,所以 taps 不被键盘吃掉
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ padding: space.md, gap: space.sm, paddingBottom: space.lg }}
         onScroll={(e) => {
           const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -856,20 +916,20 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, 
         )}
       </ScrollView>
 
-      {/* 待批的和输入框一起躲键盘。审批在上:它是有时限的那个 */}
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      {/* 审批在输入框上面:它是有时限的那个 */}
+      <View>
         {a.pendingApproval ? (
           <View style={{
             padding: space.md,
             borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
             backgroundColor: c.background,
           }}>
-            <Approval agent={a} onDecide={onDecide} />
+            <Approval agent={a} onDecide={onDecide} online={online} />
           </View>
         ) : null}
-        <Composer onSend={onSend} />
-      </KeyboardAvoidingView>
-    </View>
+        <Composer onSend={onSend} online={online} />
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -879,11 +939,16 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, 
     发送键是个圆的、只有一个箭头 —— 和桌面输入区右下角那个同一个形状。
     多行输入里的回车是换行不是发送:手机上没有 Shift 可以按,把回车做成发送
     等于让人没法打第二段。 */
-function Composer({ onSend }: { onSend: (text: string) => boolean }) {
+function Composer({ onSend, online }: {
+  onSend: (text: string) => boolean;
+  online: boolean;
+}) {
   const { c } = usePalette();
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const ready = text.trim().length > 0;
+  // 断线时输入框**不禁用**,只是发不出去:人可以照打,连接回来再按发送。
+  // 禁用输入框会把已经打了一半的字连同光标一起抢走
+  const ready = online && text.trim().length > 0;
 
   const submit = (): void => {
     const t = text.trim();
@@ -910,7 +975,8 @@ function Composer({ onSend }: { onSend: (text: string) => boolean }) {
             // 长文本自己长高,但到五六行就封顶——再高就把时间线挤没了
             maxHeight: 132, ...t.body,
           }}
-          placeholder="回一条…" placeholderTextColor={c.mutedForeground}
+          placeholder={online ? "回一条…" : "断开了,连回来再发"}
+          placeholderTextColor={c.mutedForeground}
           multiline value={text} onChangeText={setText}
         />
         <Pressable
@@ -1104,9 +1170,12 @@ function ToolGroup({ tools }: { tools: MobileMessage[] }) {
 /** 待批的那一块。形状照着桌面的 permission-grant:一条细边围出来的板、行首方块、
     动作行**右对齐的小胶囊**——安静,不抢卡片的主体。
     刻意不做左侧色条、不给它更深的底:更深的底在卡片里读成一个洞,而不是浮起来的一层。 */
-function Approval({ agent: a, onDecide }: {
+function Approval({ agent: a, onDecide, online }: {
   agent: IslandAgent;
   onDecide: (a: IslandAgent, ok: boolean) => void;
+  /** 断线时两个键都按不动。**能按但按了没用是最坏的一种**:审批有时限,
+      而一个"批过了"的错觉会让人放下手机走开 */
+  online: boolean;
 }) {
   const { c } = usePalette();
   const p = a.pendingApproval;
@@ -1133,9 +1202,10 @@ function Approval({ agent: a, onDecide }: {
       {/* 顺序和轻重跟桌面 permission-grant 一致:拒绝是不着色的纯文字,批准是实底的;
           确认动作在右,和 iOS 弹窗一个方向。拒绝不染红——红是"这个动作危险"的意思,
           而这里危险的是批准 */}
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.xs }}>
-        <Button size="auto" variant="quiet" label="拒绝" onPress={() => onDecide(a, false)} />
-        <Button size="auto" label="批准" onPress={() => onDecide(a, true)} />
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.xs }}>
+        {online ? null : <Meta>断开了,按不了</Meta>}
+        <Button size="auto" variant="quiet" label="拒绝" disabled={!online} onPress={() => onDecide(a, false)} />
+        <Button size="auto" label="批准" disabled={!online} onPress={() => onDecide(a, true)} />
       </View>
     </View>
   );
