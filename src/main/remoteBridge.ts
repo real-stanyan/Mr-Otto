@@ -26,12 +26,16 @@ import type { IslandFleet } from "../shared/shellBridge.js";
 /**
  * 传输层的契约。**连接生命周期归传输所有**,桥不管:
  *
- * - **重连、重连时机、退避,全部是实现方的事。** 桥收到 onClose 只做一件事:
- *   重新握手(换新的临时密钥),并且是**同步**做的 —— 它假设 onClose 意味着
- *   "下一条连接已经/即将可用",不做任何延迟或次数限制。
- * - **onClose 不得从 send 内部同步触发。** 发送失败请自己吞掉或异步上报:
- *   桥的 startHandshake() 里就有一次 transport.send(hello),
- *   send → onClose → startHandshake → send 会当场变成同步死循环。
+ * - **重连、重连时机、退避,全部是实现方的事。**
+ * - **握手由 onPeer 驱动,不由 onClose 驱动。** 中继在对端 attach 时往两侧各写
+ *   一条 `:peer`(services/gateway/src/relay.ts),传输把它转成 onPeer。
+ *   这是握手唯一的起点:握手是双向的,而中继不排队 —— 桌面是长命的那一端,
+ *   它开机时盲发的 hello 必然掉进虚空,手机几小时后才连上来。
+ *   谁到场只有中继知道(它是唯一同时看得见两个槽的人),所以由它说。
+ * - **onClose 只清状态,不发东西**:连接都断了,发出去也是丢。重连后中继会
+ *   重新发 `:peer`(同角色重连也发),下一轮由那条信号开。于是"传输在内部
+ *   悄悄重建了 SSE 却没触发 onClose"不再是致命的 —— 新连接自带一条 `:peer`。
+ * - **onClose 不得从 send 内部同步触发。** 发送失败请自己吞掉或异步上报;
  *   对端不在线(网关回 409)本来也不是"连接断了",不该走 onClose。
  *
  * 与 islandBridge.ts 的**刻意分歧**:那边有 MAX_RESTARTS = 3,helper 反复崩就
@@ -46,7 +50,9 @@ export interface RemoteTransport {
   /** 发一帧。对端不在线不是错误(网关回 409),由实现自己吞掉——桥不关心 */
   send(payload: string): void;
   onMessage(cb: (payload: string) => void): void;
-  /** 连接已断、且实现方已经准备好承接下一条连接时调用。见接口注释:不许在 send 里同步调 */
+  /** 中继报告对端已在场(SSE 的 `:peer` 注释行)。每来一条,桥就开一轮新握手 */
+  onPeer(cb: () => void): void;
+  /** 连接已断。见接口注释:桥只清状态、不发东西;不许在 send 里同步调 */
   onClose(cb: () => void): void;
   close(): void;
 }
@@ -77,14 +83,22 @@ export function createRemoteBridge(opts: {
   /** 上一次真正写下去的线格式(明文帧,不是密文——密文每次都不同,去重不了) */
   let lastEncoded: string | null = null;
 
-  function startHandshake(): void {
+  /** 把这一轮的全部状态清干净。连接断了走这条:不发任何东西,发了也是丢 */
+  function resetRound(): void {
     if (phase === "closed") return;
     phase = "handshaking";
+    self = null;
     sealer = null;
     opener = null;
     // 新连接 = 新密钥 + 对端是空的。基线不清的话"和上次一样"会把整份快照吞掉
     // (islandBridge 里 helper 重启踩过同一个坑)
     lastEncoded = null;
+  }
+
+  /** 开一轮握手。**唯一的触发者是 onPeer** —— 对端不在场时发 hello 只是喂虚空 */
+  function startRound(): void {
+    if (phase === "closed") return;
+    resetRound();
     // 每连接必须新鲜的 eph/nonceHalf 由 newConnectionParty 现场生成——
     // 手搭字面量会让"忘记换新"变成默认路径而不是需要主动犯的错
     // (同 key 同 nonce 复用 = ChaCha20-Poly1305 机密性和认证性一起崩掉)
@@ -108,11 +122,21 @@ export function createRemoteBridge(opts: {
     // 重新打开 sealedStream 严格递增计数器本来封死的上行重放窗口;
     // 而重新派生密钥却不清 lastEncoded,会让重握手后的补推被去重整帧吞掉。
     //
-    // 合法的重新握手只有一条路:onClose → startHandshake() —— 那里才会
+    // 合法的重新握手只有一条路:onPeer → startRound() —— 那里才会
     // 用 newConnectionParty 换一套新鲜的 eph/nonceHalf 并清掉 lastEncoded。
+    // 而中继在对端每次 attach(含同角色重连)时都会发 `:peer`,所以手机切后台
+    // 回来那条最常见的路径本来就走 startRound,不需要在这儿开后门。
     // 这里只放一道门,不要在这儿长出一套 re-key 协议。
-    if (phase !== "handshaking") return;
-    if (!self) return;
+    if (phase !== "handshaking") {
+      log("远程桥:已建立会话,忽略这一轮之外的握手包");
+      return;
+    }
+    if (!self) {
+      // 还没收到 :peer 就来了握手包。中继保证 :peer 排在对端任何一帧之前,
+      // 所以到这儿说明对面不是通过中继来的
+      log("远程桥:这一轮还没开始(没收到在场信号),忽略握手包");
+      return;
+    }
     const pinned = opts.peerIdentity();
     if (!pinned) {
       log("远程桥:还没配对过任何手机,拒绝握手");
@@ -176,13 +200,17 @@ export function createRemoteBridge(opts: {
     else onSealed(payload);
   });
 
-  opts.transport.onClose(() => {
+  opts.transport.onPeer(() => {
     if (phase === "closed") return;
-    log("远程桥:连接断开,重新握手");
-    startHandshake();
+    log("远程桥:对端到场,开一轮握手");
+    startRound();
   });
 
-  startHandshake();
+  opts.transport.onClose(() => {
+    if (phase === "closed") return;
+    log("远程桥:连接断开,等下一条在场信号");
+    resetRound();
+  });
 
   return {
     pushFleet,

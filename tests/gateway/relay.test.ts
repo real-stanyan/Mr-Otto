@@ -18,12 +18,45 @@ describe("createRelay", () => {
     r.attach("u1", "desktop", desktop);
     r.attach("u1", "mobile", mobile);
 
+    // 两端都在了 → 各自先收到一条在场信号,后面的断言只看载荷
+    desktop.chunks.length = 0;
+    mobile.chunks.length = 0;
+
     expect(r.deliver("u1", "desktop", "AAAA")).toBe(true);
     expect(mobile.chunks.join("")).toContain("AAAA");
     expect(desktop.chunks.join("")).toBe(""); // 不回声给发送方
 
     expect(r.deliver("u1", "mobile", "BBBB")).toBe(true);
     expect(desktop.chunks.join("")).toContain("BBBB");
+  });
+
+  // ── 在场信号 ──
+  //
+  // 握手是双向的:两端都要拿到对方的 hello 才能派生密钥。而中继按设计不排队,
+  // 桌面又是长命的那一端 —— 它开机时若盲发 hello,必然掉进虚空。
+  // 于是"对端到场"这件事必须由中继说出来:它是唯一同时看得见两个槽的人。
+  //
+  // 用 SSE 注释行(':' 开头)而不是 data 帧:控制信道与端到端载荷彻底分开,
+  // 中继依旧只知道"谁在线",一个字节的内容都不碰。
+  it("对端到场时,两侧各收到一条 :peer", () => {
+    const r = createRelay();
+    const desktop = sink();
+    const mobile = sink();
+    r.attach("u1", "desktop", desktop);
+    expect(desktop.chunks.join("")).toBe(""); // 独自在线:没有对端,不发信号
+
+    r.attach("u1", "mobile", mobile);
+    expect(desktop.chunks.join("")).toBe(":peer\n\n"); // 在位的那端被叫醒
+    expect(mobile.chunks.join("")).toBe(":peer\n\n");  // 新来的那端也要知道对端已在
+  });
+
+  it("同角色重连也重发 :peer（手机切后台再回来,整轮握手要重开）", () => {
+    const r = createRelay();
+    const desktop = sink();
+    r.attach("u1", "desktop", desktop);
+    r.attach("u1", "mobile", sink());
+    r.attach("u1", "mobile", sink()); // 重连顶掉旧的
+    expect(desktop.chunks.join("")).toBe(":peer\n\n:peer\n\n");
   });
 
   it("不同 user 之间绝不串线", () => {
@@ -189,6 +222,7 @@ describe("/rl/v1 路由", () => {
     expect(res.status).toBe(200);
     // 增量读:这条流永远不结束,await 整个 body 会挂死
     const reader = res.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(":ok\n\n"); // 开场白
 
     const sent = await g(
       authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
@@ -207,12 +241,33 @@ describe("/rl/v1 路由", () => {
     expect(after.status).toBe(409);
   });
 
+  // 这条钉的是一条**只在 node:http 那一侧才现形**的失败:
+  // res.writeHead() 不会把响应头推到 socket 上,node 要等第一个 body 字节才一起冲刷。
+  // 于是"开流时一个字节都不写"的 SSE 端点,客户端连响应状态行都收不到——
+  // 实测桌面侧 fetch 与 curl 都卡满 25s(第一次心跳)才拿到头。
+  // 上面那条接缝用例测不出来:它总是先让对端 POST 一帧,自带了第一个字节。
+  it("开流即刻有字节可读（否则 node:http 不冲刷响应头，客户端要卡到第一次心跳）", async () => {
+    const g = makeGateway();
+    const res = await g(authed("http://x/rl/v1/stream?role=desktop"));
+    const reader = res.body!.getReader();
+    // 没有任何对端发送、没有推进任何定时器
+    const first = await Promise.race([
+      reader.read(),
+      new Promise<"TIMEOUT">((r) => setTimeout(() => r("TIMEOUT"), 200)),
+    ]);
+    expect(first).not.toBe("TIMEOUT");
+    expect(new TextDecoder().decode((first as ReadableStreamReadResult<Uint8Array>).value))
+      .toBe(":ok\n\n");
+    await reader.cancel();
+  });
+
   it("心跳是注释行 :\\n\\n（不是 data 帧，客户端解析器会跳过）", async () => {
     vi.useFakeTimers();
     try {
       const g = makeGateway();
       const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
       const reader = res.body!.getReader();
+      await reader.read(); // 开场白 :ok，先读掉
       // nginx 的 proxy_read_timeout 是 600s,心跳必须远短于它
       await vi.advanceTimersByTimeAsync(25_000);
       const { value } = await reader.read();
