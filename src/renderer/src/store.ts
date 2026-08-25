@@ -251,6 +251,9 @@ interface ChatState {
   /** 终端面板开关(与 Protocol / Git Graph / DM 互斥:同一个右侧槽位)。
       注意别和 ShellBridge 的 terminalOpen(开一个新终端)混为一谈 */
   terminalPanelOpen: boolean;
+  /** Files 面板开关(同一个右侧槽位,与上面这些互斥)。
+      面板只读,内容不进事件日志也不进模型上下文——同终端面板(ADR-0031) */
+  filesPanelOpen: boolean;
   /** 浏览器面板开关(同一个右侧槽位,与上面这些互斥) */
   browserPanelOpen: boolean;
   /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
@@ -458,6 +461,8 @@ interface ChatState {
   openGitGraph(): Promise<void>;
   closeGitGraph(): void;
   /** 打开终端面板:同一会话已有跑着的终端就复用,没有才开新的(TerminalView 里做) */
+  openFilesPanel(): void;
+  closeFilesPanel(): void;
   openTerminalPanel(): void;
   closeTerminalPanel(): void;
   /** 打开浏览器面板:与终端同一块右侧槽位,互斥 */
@@ -665,6 +670,7 @@ export const enterChat = (info: BootInfo) => ({
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
   terminalPanelOpen: false, // 同上
+  filesPanelOpen: false, // 同上
   browserPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
@@ -740,6 +746,7 @@ export const useChat = create<ChatState>((set, get) => ({
   gitCommitView: null,
   panelWide: false,
   terminalPanelOpen: false,
+  filesPanelOpen: false,
   browserPanelOpen: false,
   workTree: null,
   workTreeDismissed: null,
@@ -823,6 +830,7 @@ export const useChat = create<ChatState>((set, get) => ({
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
+        filesPanelOpen: false,
         keyStatus: await window.otter.keyStatus(),
       });
       // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
@@ -832,18 +840,21 @@ export const useChat = create<ChatState>((set, get) => ({
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
+        filesPanelOpen: false,
         skills: await window.otter.listSkills(),
       });
     } else if (section === "mcp") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
+        filesPanelOpen: false,
         mcpServers: await window.otter.listMcpServers(),
       });
     } else {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
+        filesPanelOpen: false,
       });
       // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）。
       // ADR-0085 之后账号页没有额度卡,这一趟网关也省了(打过去只会白开一个 0 额度桶)
@@ -1124,6 +1135,7 @@ export const useChat = create<ChatState>((set, get) => ({
     set({
       protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
       terminalPanelOpen: false, browserPanelOpen: false,
+      filesPanelOpen: false,
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
@@ -1207,6 +1219,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
       gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
       protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一块主区
+      filesPanelOpen: false,
     });
     if (repo) await get().refreshGitGraph();
   },
@@ -1218,6 +1231,7 @@ export const useChat = create<ChatState>((set, get) => ({
       terminalPanelOpen: true,
       // 互斥:同一块右侧槽位
       protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null, browserPanelOpen: false,
+      filesPanelOpen: false,
     }),
 
   closeTerminalPanel: () => set({ terminalPanelOpen: false }),
@@ -1227,9 +1241,20 @@ export const useChat = create<ChatState>((set, get) => ({
       browserPanelOpen: true,
       // 互斥:同一块右侧槽位
       terminalPanelOpen: false, protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
+      filesPanelOpen: false,
     }),
 
   closeBrowserPanel: () => set({ browserPanelOpen: false }),
+
+  openFilesPanel: () =>
+    set({
+      filesPanelOpen: true,
+      // 互斥:同一块右侧槽位
+      terminalPanelOpen: false, browserPanelOpen: false, protocolOpen: false,
+      gitGraphOpen: false, settingsSection: null, friendChat: null,
+    }),
+
+  closeFilesPanel: () => set({ filesPanelOpen: false }),
 
   async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;
@@ -1438,6 +1463,7 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => ({
       friendChat: profile,
       protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一右侧槽位
+      filesPanelOpen: false,
       unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
       friendError: null,
     }));
@@ -1882,6 +1908,7 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: false, // 同上
       friendChat: null, // 同上
       terminalPanelOpen: false, // 同上
+      filesPanelOpen: false, // 同上
       browserPanelOpen: false, // 同上
       error: null,
     }),
