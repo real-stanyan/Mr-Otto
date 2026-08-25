@@ -13,6 +13,7 @@
 //
 // 加密边界:这一层只见 base64url 密文和明文握手包,不认识任何一个字段。
 
+import { createSseParser } from "../shared/remote/sse.js";
 import type { RemoteTransport } from "./remoteBridge.js";
 
 /** 退避阶梯(毫秒)。到顶就一直用 30s —— 不放弃,只是别把网关刷爆 */
@@ -61,21 +62,16 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
     }, wait);
   }
 
-  /** SSE 的最小解析:事件之间空行分隔,':' 开头是注释行(控制信道),'data: ' 是载荷 */
-  function feed(buf: string): string {
-    for (;;) {
-      const i = buf.indexOf("\n\n");
-      if (i < 0) return buf; // 半条帧:留着等下一块。TCP 想在哪断就在哪断
-      const ev = buf.slice(0, i);
-      buf = buf.slice(i + 2);
-      if (ev.startsWith(":")) {
-        // 控制信道。`:peer` = 对端到场(ADR-0100),`:ok` 开场白,`:` 心跳
-        if (ev.slice(1) === "peer") onPeer();
-      } else if (ev.startsWith("data: ")) {
-        onMsg(ev.slice(6));
-      }
-    }
-  }
+  // SSE 的解析在 shared/remote/sse.ts,和手机端共用一份 —— 手机那边的传输是
+  // XMLHttpRequest(RN 的 fetch 没有可读的 body 流),拿到的字节一样,解析不该有两份
+  const parser = () =>
+    createSseParser({
+      comment: (kind) => {
+        // `:peer` = 对端到场(ADR-0100);`:ok` 开场白;`` 心跳
+        if (kind === "peer") onPeer();
+      },
+      data: (payload) => onMsg(payload),
+    });
 
   async function connect(): Promise<void> {
     if (closed) return;
@@ -101,11 +97,11 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
       openedAt = Date.now();
       const reader = res.body.getReader();
       const dec = new TextDecoder();
-      let buf = "";
+      const feed = parser();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        buf = feed(buf + dec.decode(value, { stream: true }));
+        feed.push(dec.decode(value, { stream: true }));
       }
     } catch {
       // abort 也走这里。closed 时下面不会重连

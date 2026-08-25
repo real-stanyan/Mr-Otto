@@ -1,4 +1,5 @@
-// authConfig — Supabase 项目公开配置。
+// authConfig — Supabase 项目公开配置。桌面与手机端**共用同一份**:
+// 两个客户端连的必须是同一个项目,分成两份迟早只改一处。
 // ANON_KEY 是公开值（RLS 兜底权限），写死在代码里无害；真正的密钥/service role key 绝不进这个文件。
 //
 // 2026-08-25 起从自托管 Supabase（otto-auth.stan.damianslife.com，Hetzner VPS

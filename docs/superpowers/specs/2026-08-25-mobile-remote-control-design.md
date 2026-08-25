@@ -134,7 +134,13 @@ libsodium 恒有 chacha ietf ✅。而 **libsodium 的 AES-GCM 在 ARM 上可能
 （要 AES-NI 硬件支持，`crypto_aead_aes256gcm_is_available()` 会回 false），
 照原方案在真机上会踩。
 
-Expo 侧仍需 `react-native-libsodium`（RN 没有 node:crypto）；iOS NSE 用 CryptoKit。
+~~Expo 侧仍需 `react-native-libsodium`（RN 没有 node:crypto）~~；iOS NSE 用 CryptoKit。
+
+**订正 2026-08-25（ADR-0101）**：`react-native-libsodium` 走不通。它的 **native**
+那一半（`lib.native.ts`，真机上跑的就是它）没有 `crypto_scalarmult`（X25519 ECDH 一个都没有）、
+没有 IETF ChaCha（只有 24 字节 nonce 的 XChaCha）、没有 SHA-256。它的 web 那一半三样俱全，
+所以照文档验会全部通过，到真机才崩。改用纯 JS 的 `@noble/*`，十个原语逐项与 `node:crypto`
+交叉验过。附带结果：不需要 native module，于是也不需要 `expo prebuild`。
 
 secretstream 没了，nonce 管理自己做：**每方向一条 nonce 序列 = 4 字节随机前缀
 （握手时随会话密钥一起派生）+ 8 字节大端计数器**。计数器不回绕（到顶就断开重连），

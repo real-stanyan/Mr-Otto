@@ -1,4 +1,8 @@
-// devices 表这一侧的桌面逻辑:登记自己、列出同账号的手机、pin 住其中一台。
+// devices 表这一侧的逻辑:登记自己、列出同账号的**对端**、pin 住其中一台。
+//
+// **两端共用同一份。** 桌面登记 desktop / 列 mobile,手机反过来 —— 除了角色,
+// 该做的检查一模一样。抄两份的话,下面那条"公钥长度不对就不 pin"迟早只剩一份。
+// 住在 src/shared/remote/ 而不是 src/main/:手机端 import 的就是这个文件。
 //
 // **账号目录不是信任来源。** 按账号配对与 E2E 天然打架(spec 第二节):
 // 密钥若从账号体系下发,掌握 Supabase 的人就能发一把假的,中间人当场成立。
@@ -9,10 +13,9 @@
 // 因此这里对库里读回来的每一个字段都当外部输入校验:长度不对的公钥不 pin,
 // 不是"先 pin 了再说"。
 
-import { b64decode, b64encode } from "../shared/remote/b64.js";
-import type { RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
-import { fingerprint } from "../shared/remote/handshake.js";
-import type { IdentityStore } from "./remoteIdentity.js";
+import { b64decode, b64encode } from "./b64.js";
+import type { KeyPair, RemoteCryptoPrimitives } from "./crypto.js";
+import { fingerprint, type Role } from "./handshake.js";
 
 /** devices 表的一行(列名跟 SQL 走,不驼峰化 —— 少一层翻译少一处 drift) */
 export interface DeviceRow {
@@ -22,6 +25,17 @@ export interface DeviceRow {
   kx_pub: string;
   label: string;
   last_seen: string;
+}
+
+/** 这个模块要用到的身份存储那一小块。桌面的 IdentityStore(main/remoteIdentity.ts,
+    过 safeStorage)和手机的实现(expo-secure-store)各自满足它 —— 怎么落盘是各自的事,
+    这里只要"我的公钥是什么"和"pin 存哪儿" */
+export interface PinnedPeerStore {
+  identity: KeyPair;
+  kx: KeyPair;
+  deviceId: string;
+  peerIdentity(): Uint8Array | null;
+  pinPeer(pub: Uint8Array): void;
 }
 
 export interface DevicesApi {
@@ -51,8 +65,10 @@ function decodePub(s: string): Uint8Array | null {
 
 export function createRemoteDevices(deps: {
   api: DevicesApi;
-  store: IdentityStore;
+  store: PinnedPeerStore;
   crypto: RemoteCryptoPrimitives;
+  /** 本机是哪一端。对端就是另一端 —— 桌面不跟桌面配对,手机也不跟手机配 */
+  selfKind: Role;
   log?: (m: string) => void;
 }): {
   registerSelf(label: string): Promise<boolean>;
@@ -61,9 +77,10 @@ export function createRemoteDevices(deps: {
 } {
   const log = deps.log ?? (() => {});
   const mine = deps.store.identity.publicKey;
+  const peerKind: Role = deps.selfKind === "desktop" ? "mobile" : "desktop";
 
   return {
-    /** 把自己登记进目录。**只上传公钥** —— 私钥两把都不出系统封装 */
+    /** 把自己登记进目录。**只上传公钥** —— 私钥两把都不出各自的系统安全存储 */
     async registerSelf(label) {
       const uid = await deps.api.userId();
       if (!uid) {
@@ -73,7 +90,7 @@ export function createRemoteDevices(deps: {
       await deps.api.upsert({
         user_id: uid,
         device_id: deps.store.deviceId,
-        kind: "desktop",
+        kind: deps.selfKind,
         identity_pub: b64encode(mine),
         kx_pub: b64encode(deps.store.kx.publicKey),
         label,
@@ -88,7 +105,7 @@ export function createRemoteDevices(deps: {
       const pinnedB64 = pinned ? b64encode(pinned) : null;
       const out: RemotePeer[] = [];
       for (const row of await deps.api.list(uid)) {
-        if (row.kind !== "mobile") continue; // 桌面不跟桌面配对
+        if (row.kind !== peerKind) continue; // 桌面不跟桌面配对,手机不跟手机配
         const pub = decodePub(row.identity_pub);
         if (!pub) {
           // 目录里的坏行不该让整个列表炸掉,也不该被当成一台能配的设备
@@ -111,7 +128,7 @@ export function createRemoteDevices(deps: {
       const uid = await deps.api.userId();
       if (!uid) return false;
       const row = (await deps.api.list(uid)).find(
-        (r) => r.device_id === deviceId && r.kind === "mobile"
+        (r) => r.device_id === deviceId && r.kind === peerKind
       );
       if (!row) {
         log(`远程设备:目录里没有 ${deviceId}`);

@@ -5,7 +5,7 @@
 // 最终由人核对 6 位安全码才 pin(spec 第二节)。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { DeviceRow, DevicesApi } from "./remoteDevices.js";
+import type { DeviceRow, DevicesApi } from "../shared/remote/devices.js";
 
 const COLUMNS = "device_id,kind,identity_pub,kx_pub,label,last_seen";
 
