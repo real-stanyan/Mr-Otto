@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { MobileMessage } from "../src/shared/remote/frames.js";
+import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../src/shared/remote/groups.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
@@ -287,6 +288,9 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   /** 订阅状态归手机(桌面那侧的 watch 是连接级的,断了就忘)。
       重连后要靠这个 ref 把 watch 补发一次 —— 否则详情屏会永远停在旧内容 */
   const watching = useRef<string | null>(null);
+  /** 收起的工作区(全路径为键)。**内存态,不持久化** —— 和灵动岛那侧同一个决定:
+      收起是"这会儿别占地方",不是一条要记住的偏好 */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   /** 手机上没有终端。这两样是详情屏在"等不到内容"时唯一能给人看的东西 */
   const [diag, setDiag] = useState<{ frames: number; timelines: number; log: string[] }>(
     { frames: 0, timelines: 0, log: [] },
@@ -396,12 +400,29 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
           <Hint>在电脑上开一个,这里会自己出现。</Hint>
         </Card>
       ) : (
-        fleet.agents.map((a) => (
-          <AgentCard
-            key={a.sessionId} agent={a} now={now} onDecide={decide}
-            onOpen={() => openSession(a.sessionId)}
-          />
-        ))
+        // 分组和灵动岛同一套(shared/remote/groups.ts):同一份 IslandFleet
+        // 在桌面、岛、手机上不该长得不一样
+        groupByWorkspace(fleet.agents).map((g, i) => {
+          const shut = collapsed.has(g.key);
+          return (
+            <View key={`${g.key}#${i}`} style={{ gap: space.sm }}>
+              <WorkspaceHeader
+                group={g} collapsed={shut}
+                onToggle={() => setCollapsed((prev) => {
+                  const next = new Set(prev);
+                  if (!next.delete(g.key)) next.add(g.key);
+                  return next;
+                })}
+              />
+              {shut ? null : g.agents.map((a) => (
+                <AgentCard
+                  key={a.sessionId} agent={a} now={now} onDecide={decide}
+                  onOpen={() => openSession(a.sessionId)}
+                />
+              ))}
+            </View>
+          );
+        })
       )}
     </Page>
   );
@@ -421,6 +442,38 @@ function useTicker(active: boolean): number {
 function elapsed(since: number, now: number): string {
   const sec = Math.max(0, Math.round((now - since) / 1000));
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+}
+
+/** 工作区组头。整行可点收放,和灵动岛的 workspaceHeader 一个形状。
+    **收起时组内状态不能凭空消失**:组里有等审批的给 warn 点(要人动手的那种,
+    绝不能被收起藏没),否则有 active 给 busy 点 —— 这是收起功能能不能用的前提。 */
+function WorkspaceHeader({ group: g, collapsed, onToggle }: {
+  group: WorkspaceGroup;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const { c } = usePalette();
+  const tone = collapsed ? groupTone(g) : null;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: !collapsed }}
+      onPress={onToggle}
+      hitSlop={8}
+      style={({ pressed }) => [
+        { flexDirection: "row", alignItems: "center", gap: space.xs, paddingTop: space.xs },
+        pressed && { opacity: 0.5 },
+      ]}
+    >
+      <Text style={{ ...t.footnote, color: c.mutedForeground, width: 12 }}>
+        {collapsed ? "▸" : "▾"}
+      </Text>
+      <Text style={{ ...t.footnote, color: c.mutedForeground }} numberOfLines={1}>
+        {g.label}
+      </Text>
+      {tone ? <Dot tone={tone} /> : null}
+    </Pressable>
+  );
 }
 
 function AgentCard({ agent: a, now, onDecide, onOpen }: {
