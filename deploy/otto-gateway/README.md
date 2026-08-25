@@ -19,7 +19,7 @@ vhost 文件名和域名里的 `otto-auth` 是历史遗留：这个 host 上 `/a
 网关经 `SUPABASE_URL` + service role key 走 HTTPS 打 Cloud 项目
 （`services/gateway/.env.example`），本地不再有库。
 
-## 部署状态（2026-08-25）
+## 部署状态（2026-08-25，第二次：加上远程中继）
 
 - 钱包 schema（`0002_token_wallets.sql`、`0003_token_denominated_wallet.sql`，
   0003 起计费单位是 token、按 flash/pro 分桶，ADR-0021）随整套 schema 迁到了
@@ -31,6 +31,32 @@ vhost 文件名和域名里的 `otto-auth` 是历史遗留：这个 host 上 `/a
 - 服务已 `systemctl enable --now`，开机自启
 - 公网入口：`https://otto-auth.stan.damianslife.com/gw/`（`/gw/healthz` 返回 200）
 - **`OTTO_UPSTREAM_API_KEY` still 是占位值** `REPLACE_ME_ROTATED_DEEPSEEK_KEY`
+
+### 远程中继（`/gw/rl/v1/*`，2026-08-25 部署）
+
+在这次之前，服务器上跑的还是计划 A 之前的旧构建：`/rl/v1/stream` 回 404 `not_found`，
+手机端在生产链路上一个字节也走不通。
+
+- `~/otto-gateway/src/` 已按 `services/gateway/src/` 全量覆盖；覆盖前备份在 `src.bak-20260825`
+- 顺手删掉了服务器上残留的 `poker/`、`pokerApi.ts`、`pokerStore.ts`、`tables.ts`
+  —— 仓库里那一层已整层删除（ADR-0099），`server.ts` 不再 import 它们
+- nginx 那条 location 早就配好了（`proxy_buffering off` / `proxy_read_timeout 600s`），
+  这次不用动
+
+**自检脚本 `checks/relay.mjs` 在服务器上跑**（它要读 `.env` 里的
+`SUPABASE_JWT_SECRET` 现签一个 120 秒的 token，那个 secret 不出机器）：
+
+```bash
+cd ~/otto-gateway && node checks/relay.mjs
+```
+
+默认打**公网**地址而不是 `127.0.0.1:8787` —— 要验的东西有一半在 nginx：
+缓冲关没关、`Connection ''` 会不会掐流、`:peer` 那条注释行能不能原样穿过去。
+给它 `http://127.0.0.1:8787` 可以跳过 nginx 单独看网关。
+
+首次部署后的结果：**11/11 通过**，开流首字节 14ms。
+（首字节这一项专门盯 ADR 之外的那个坑：`res.writeHead()` 不冲刷响应头时，
+客户端要卡满一个 25s 心跳才拿到状态行。）
 
 ## 填官方 key
 
