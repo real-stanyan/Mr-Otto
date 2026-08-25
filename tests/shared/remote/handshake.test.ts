@@ -94,7 +94,12 @@ describe("握手", () => {
     expect(deriveSession(P, { self: d1, peerHello: hello2, peerIdentityPub: d2.identity.publicKey })).toBeNull();
   });
 
-  it("重放上一次连接的 hello → 派生出的密钥不同（nonce 参与了 KDF）", () => {
+  // 标题曾是「重放上一次连接的 hello → 拒」，但断言的是"派生出的密钥不同"——
+  // 那是弱得多的一句话，而且 deriveSession 这一层**根本不做**重放拒绝
+  // （它是纯函数，看不见"上一次"）。spec 必测负例三「重放旧 connectionNonce → 拒」
+  // 落在桥那一层的 phase 门上，见 tests/main/remoteBridge.test.ts
+  // 「重放上一次的 hello → 拒」。这条留下来守它自己那句真话。
+  it("换一次连接就换一套密钥（自己的 nonceHalf 进了 KDF 的 salt）", () => {
     const d = party("desktop", "d1");
     const m1 = party("mobile", "m1");
     // 同一台手机、同一个身份，新一次连接 —— 走 newConnectionParty 拿到全新的 eph/nonceHalf

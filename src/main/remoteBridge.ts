@@ -73,6 +73,25 @@ export function createRemoteBridge(opts: {
   }
 
   function onHello(line: string): void {
+    // 只有 handshaking 阶段收握手包。**这道门挡的是灾难性的 nonce 复用**:
+    // ready 之后再收一条 hello,等于攻击者把手机先前那条原样回放(握手包是明文过中继的,
+    // 网关运营者手里始终有一份副本)。此时 self.eph / self.nonceHalf 一个都没换过,
+    // deriveSession 于是算出**与上一次完全相同**的会话密钥和 nonce 前缀,
+    // 而 createSealer 又从 counter=0n 重新起算 —— 同一把 key、同一个 nonce
+    // 加密了两段不同明文:c1^c2 = p1^p2 直接还原桌面→手机的明文(会话标题、
+    // pendingApproval 的动词/目标/全路径、workspace 路径),而且 Poly1305 的一次性密钥
+    // 取自同一个 keystream 块,连该计数器上的帧伪造也一并送出去。
+    // 攻击者不需要任何密钥材料,只需要能重放一帧 —— 正是 spec 威胁模型里
+    // 「服务器/网络主动篡改运行中的连接 → 签名挡住 ✅」那一行声称挡住的对手。
+    //
+    // 顺带两条同源缺陷也一起关掉:重开 opener 会把 highest 退回 -1n,
+    // 重新打开 sealedStream 严格递增计数器本来封死的上行重放窗口;
+    // 而重新派生密钥却不清 lastEncoded,会让重握手后的补推被去重整帧吞掉。
+    //
+    // 合法的重新握手只有一条路:onClose → startHandshake() —— 那里才会
+    // 用 newConnectionParty 换一套新鲜的 eph/nonceHalf 并清掉 lastEncoded。
+    // 这里只放一道门,不要在这儿长出一套 re-key 协议。
+    if (phase !== "handshaking") return;
     if (!self) return;
     const pinned = opts.peerIdentity();
     if (!pinned) {

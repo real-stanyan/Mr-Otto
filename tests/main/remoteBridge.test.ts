@@ -58,6 +58,30 @@ function shake(
   return keys!;
 }
 
+/** 同 shake，但把手机那条 hello 的**线格式**一起交回来。
+    握手包是明文过中继的，网关运营者手里始终有一份逐字节的副本——
+    重放测试要的就是这一串，不是"再生成一条差不多的"。 */
+function shakeRecording(
+  t: ReturnType<typeof fakeTransport>,
+  peer: SelfParty,
+  desktopIdentityPub: Uint8Array
+): { keys: SessionKeys; line: string } {
+  const desktopHello = JSON.parse(t.sent[t.sent.length - 1]!) as HandshakeHello;
+  const keys = deriveSession(P, {
+    self: peer, peerHello: desktopHello, peerIdentityPub: desktopIdentityPub,
+  });
+  expect(keys).not.toBeNull();
+  const line = JSON.stringify(buildHello(P, peer));
+  t.emit(line);
+  return { keys: keys!, line };
+}
+
+/** 密文帧头 8 字节 = 大端计数器。nonce = 前缀||计数器，所以计数器相同 = nonce 相同 */
+function counterOf(wire: string): bigint {
+  const raw = b64decode(wire)!;
+  return new DataView(raw.buffer, raw.byteOffset, raw.byteLength).getBigUint64(0, false);
+}
+
 function harness() {
   const identity = P.generateEd25519();
   const t = fakeTransport();
@@ -176,6 +200,76 @@ describe("createRemoteBridge", () => {
     const before = t.sent.length;
     b.pushFleet(BUSY);
     expect(t.sent.length).toBe(before);
+    b.dispose();
+  });
+
+  // ── ready 之后不再收握手包（src/main/remoteBridge.ts 的 phase 门）──
+  //
+  // 这三条守的是同一个性质:**一次连接里 nonce 绝不重复**。
+  // 没有那道门时,重放一条 hello 就能让 deriveSession 用没换过的 self.eph/nonceHalf
+  // 算出同一把密钥,再让 createSealer 从 counter=0n 重新起算 —— 同 key 同 nonce。
+
+  it("ready 之后又来一条合法签名的 hello → 忽略,不重新握手（第一次的密钥照旧管用）", () => {
+    const { t, b, peer, identity } = harness();
+    const { keys } = shakeRecording(t, peer, identity.publicKey);
+    const opener = createOpener(P, keys.recv.key, keys.recv.prefix);
+    b.pushFleet(BUSY);
+    const afterFirst = t.sent.length;
+
+    // 同一台手机、同一把身份密钥，但换了全新的 eph/nonceHalf：签名完全合法，
+    // 换成"合法的第二次握手"也一样必须被挡——重新握手只走 startHandshake 那条路
+    const fresh = newConnectionParty(P, {
+      role: "mobile", deviceId: "m1", identity: peer.identity,
+    });
+    t.emit(JSON.stringify(buildHello(P, fresh)));
+    expect(t.sent.length).toBe(afterFirst); // 没有补推快照 = 根本没重新派生
+
+    // 第一次握手那套密钥仍然开得开后续帧；真被重新 key 过的话这里解不开
+    b.pushFleet(IDLE);
+    const plain = opener.open(b64decode(t.sent[t.sent.length - 1]!)!);
+    expect(JSON.parse(dec(plain!))).toEqual({ type: "fleet", fleet: IDLE });
+    b.dispose();
+  });
+
+  it("重放上一次的 hello → 拒（spec 必测负例三：旧 connectionNonce 不得被接受）", () => {
+    const { t, b, peer, identity } = harness();
+    const { keys, line } = shakeRecording(t, peer, identity.publicKey);
+    const opener = createOpener(P, keys.recv.key, keys.recv.prefix);
+    b.pushFleet(BUSY);
+    const afterFirst = t.sent.length;
+
+    // 攻击者手里那份逐字节的副本，原样再喂一遍
+    t.emit(line);
+    // 拒绝的可观测面：没有补推快照（onHello 成功那一路一定会补推）
+    expect(t.sent.length).toBe(afterFirst);
+
+    // 而且 sealer 没被换掉：下一帧还是接着数，不是回到 0
+    b.pushFleet(IDLE);
+    const wire = t.sent[t.sent.length - 1]!;
+    expect(counterOf(wire)).not.toBe(0n);
+    expect(JSON.parse(dec(opener.open(b64decode(wire)!)!))).toEqual({ type: "fleet", fleet: IDLE });
+    b.dispose();
+  });
+
+  it("一次会话里没有两帧共用一个计数器 —— 中间夹一次 hello 重放也不回零", () => {
+    const { t, b, peer, identity } = harness();
+    const { line } = shakeRecording(t, peer, identity.publicKey);
+
+    const counters: bigint[] = [];
+    const push = (f: IslandFleet) => {
+      b.pushFleet(f);
+      counters.push(counterOf(t.sent[t.sent.length - 1]!));
+    };
+
+    push(BUSY);
+    push(IDLE);
+    t.emit(line); // 重放攻击就插在这里
+    push(BUSY);
+    push(IDLE);
+
+    expect(counters).toEqual([0n, 1n, 2n, 3n]);
+    // 上面那条是"严格递增"，这条是它守的那个性质本身：nonce 不重复
+    expect(new Set(counters).size).toBe(counters.length);
     b.dispose();
   });
 
