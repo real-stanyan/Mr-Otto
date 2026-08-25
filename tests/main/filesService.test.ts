@@ -102,24 +102,24 @@ describe("search", () => {
   it("名字模式:rg --files 的路径表在主进程侧 fuzzy 筛", async () => {
     const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "src/fileIcon.ts\nsrc/store.ts\n" }));
     const svc = createFilesService(deps({ execRg }));
-    const r = await svc.search(ROOT, "fic", { content: false, includeIgnored: false });
+    const r = await svc.search(ROOT, "fic", { content: false });
     expect(r.ok && r.value.map((h) => h.rel)).toEqual(["src/fileIcon.ts"]);
     expect(execRg.mock.calls[0]![0]).toContain("--files");
   });
 
-  it("includeIgnored 才加 --no-ignore --hidden", async () => {
+  it("恒含被忽略/隐藏的文件——树全显,搜索另设规矩会变成\"树里看得见、搜不出来\"", async () => {
     const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
     const svc = createFilesService(deps({ execRg }));
-    await svc.search(ROOT, "x", { content: false, includeIgnored: false });
-    expect(execRg.mock.calls[0]![0]).not.toContain("--no-ignore");
-    await svc.search(ROOT, "x", { content: false, includeIgnored: true });
-    expect(execRg.mock.calls[1]![0]).toContain("--no-ignore");
+    await svc.search(ROOT, "x", { content: false });
+    expect(execRg.mock.calls[0]![0]).toEqual(expect.arrayContaining(["--no-ignore", "--hidden"]));
+    await svc.search(ROOT, "x", { content: true });
+    expect(execRg.mock.calls[1]![0]).toEqual(expect.arrayContaining(["--no-ignore", "--hidden"]));
   });
 
   it("内容模式:query 走 -- 之后,不会被当成 rg 的选项", async () => {
     const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
     const svc = createFilesService(deps({ execRg }));
-    await svc.search(ROOT, "-foo", { content: true, includeIgnored: false });
+    await svc.search(ROOT, "-foo", { content: true });
     const args = execRg.mock.calls[0]![0];
     expect(args[args.indexOf("--") + 1]).toBe("-foo");
   });
@@ -128,7 +128,7 @@ describe("search", () => {
     const svc = createFilesService(deps({
       execRg: async () => { throw Object.assign(new Error("no match"), { code: 1 }); },
     }));
-    const r = await svc.search(ROOT, "zzz", { content: true, includeIgnored: false });
+    const r = await svc.search(ROOT, "zzz", { content: true });
     expect(r.ok && r.value).toEqual([]);
   });
 
@@ -136,14 +136,14 @@ describe("search", () => {
     const svc = createFilesService(deps({
       execRg: async () => { throw Object.assign(new Error("nope"), { code: "ENOENT" }); },
     }));
-    const r = await svc.search(ROOT, "x", { content: true, includeIgnored: false });
+    const r = await svc.search(ROOT, "x", { content: true });
     expect(!r.ok && r.kind).toBe("rg-missing");
   });
 
   it("空查询不起子进程", async () => {
     const execRg = vi.fn(async (_args: string[], _cwd: string) => ({ stdout: "" }));
     const svc = createFilesService(deps({ execRg }));
-    const r = await svc.search(ROOT, "", { content: false, includeIgnored: false });
+    const r = await svc.search(ROOT, "", { content: false });
     expect(r.ok && r.value).toEqual([]);
     expect(execRg).not.toHaveBeenCalled();
   });

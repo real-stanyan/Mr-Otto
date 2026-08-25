@@ -143,7 +143,9 @@ export function createFilesService(deps: FilesDeps): FilesService {
 
     async search(root, query, opts) {
       if (query === "") return { ok: true, value: [] };
-      const ignore = opts.includeIgnored ? ["--no-ignore", "--hidden"] : [];
+      // 恒含被忽略的文件:树是全显的,搜索另设一套规矩会让"树里看得见、搜不出来"
+      // 变成一个要解释的怪现象。一条规矩管两处
+      const ignore = ["--no-ignore", "--hidden"];
       // 查询一律走 `--` 之后:参数是数组传的、不过 shell,这里防的是
       // "-foo" 被 rg 当成选项(选项注入),不是命令注入
       const args = opts.content

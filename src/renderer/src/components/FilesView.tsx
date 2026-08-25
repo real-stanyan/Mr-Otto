@@ -11,7 +11,6 @@ import { HEADER_H } from "../settingsShell.js";
 import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
-import { Switch } from "./ui/switch.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
 import Markdown from "react-markdown";
@@ -36,7 +35,6 @@ export function FilesView() {
   const [cache, setCache] = useState<DirCache>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
-  const [includeIgnored, setIncludeIgnored] = useState(false);
   const [hits, setHits] = useState<FileHit[] | null>(null);
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
@@ -88,7 +86,7 @@ export function FilesView() {
     const timer = setTimeout(() => {
       void (async () => {
         if (root === "") return;
-        const r = await window.otter.filesSearch(root, term, { content, includeIgnored });
+        const r = await window.otter.filesSearch(root, term, { content });
         if (r.ok) {
           setHits(r.value);
           setNotice("");
@@ -100,7 +98,7 @@ export function FilesView() {
       })();
     }, 150);
     return () => clearTimeout(timer);
-  }, [query, includeIgnored, root]);
+  }, [query, root]);
 
   // 选中变了就读。读失败要清掉上一份——留着上一份文件的内容配着新文件名,
   // 是最坏的一种错:用户会以为自己在看这个文件
@@ -200,10 +198,6 @@ export function FilesView() {
         <FolderOpen className="size-[14px] opacity-70" />
         <span className="text-sm font-[650]">文件</span>
         <div className="flex-1" />
-        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          含忽略文件
-          <Switch checked={includeIgnored} onCheckedChange={setIncludeIgnored} />
-        </label>
         <Button variant="ghost" size="sm" title="刷新" onClick={() => void loadDir("")}>
           <RefreshCw className="size-[14px]" />
         </Button>

@@ -74,7 +74,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 前台自动转后台（auto-background） | 回注已接线（armed）的装配里，前台 bash 超 30 秒不再 SIGTERM 硬杀：超时经 `ExecOptions.timeoutMs` 显式放宽到后台档（30 分钟），工具层把还在跑的**同一个 in-flight** 登记成后台任务（不重跑副作用），完成走既有回注链路。未 armed 的装配维持 30s 硬杀。迁移进程仍绑 turn 中断信号（停止键停一切；显式 run_in_background 才是不绑信号的例外） | ADR-0090 决定 3、issue #395；`src/tools/bash.ts`（AUTO_BACKGROUND_AFTER_MS） |
 | 派活总量上限（SUBAGENT_SESSION_CAP） | 单会话派活硬上限 100：计数从父日志 `subagent_spawned` 推导（不另立计数器），闸在建子会话之前，超限抛错给模型让它收手。与长 turn 软告警互补：那边喊的是模型步数，这边拦的是「每次派活烧一整个子会话」的失控循环 | ADR-0090 决定 4、issue #395；`src/main/subagentRunner.ts` |
 
-- **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0091，同 ADR-0031 的边界）。
+- **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。树和搜索都全显（含 `node_modules`、隐藏文件），一条规矩管两处。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0091，同 ADR-0031 的边界）。
 - **懒加载列目录**：Files 面板展开哪个目录才发一次 `filesList`，不是开面板扫全树。树能全显（含 `node_modules`）的前提就是这条（ADR-0091）。
 
 ## Key invariants

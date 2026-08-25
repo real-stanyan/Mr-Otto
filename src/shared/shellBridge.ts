@@ -574,8 +574,8 @@ export interface ShellBridge {
       不卡的前提是一次只列一层(懒加载),不是靠过滤 */
   filesList(root: string, relDir: string): Promise<FilesResult<FileEntry[]>>;
   /** 文件名 fuzzy(content:false)或内容搜索(content:true,? 前缀触发)。
-      默认尊重 .gitignore——树全显是为了"找得到",搜索全显是让 node_modules
-      淹没结果;includeIgnored 是面板头那个开关 */
+      跟树一样全显:被 .gitignore 忽略的、隐藏的一并搜。结果有上限
+      (名字 500 / 内容 200),不靠忽略规则控体量 */
   filesSearch(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
   /** 只读预览。>512KB 截断,二进制不预览(kind: "binary",detail 是字节数) */
   filesRead(root: string, rel: string): Promise<FilesResult<FilePreview>>;

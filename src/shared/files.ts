@@ -40,8 +40,6 @@ export type FilesResult<T> =
 export interface FilesSearchOpts {
   /** true = 搜文件内容(? 前缀);false = 只过滤文件名 */
   content: boolean;
-  /** true = 连 .gitignore 忽略掉的一起搜(面板头那个开关) */
-  includeIgnored: boolean;
 }
 
 /** 预览上限:超过就只读前这么多字节 */
