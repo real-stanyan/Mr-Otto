@@ -1,9 +1,9 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, Menu, dialog, ipcMain, Notification, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, shell } from "electron";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -27,6 +27,10 @@ import { createShadowGitCheckpoints, workspaceStoreName } from "../world/checkpo
 import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
 import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
+import { createSimulatorHub } from "./simulatorHub.js";
+import type { SimButton } from "../shared/simulator.js";
+import { createSimInputBridge } from "./simInputBridge.js";
+import { resolveSimInputBinPath } from "./simInputBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
@@ -841,6 +845,82 @@ void app.whenReady().then(() => {
     push: { state: (info) => send(CHANNELS.browserState, info) },
   });
 
+  // iOS 模拟器台账(issue #401):app 级、不按会话分——一台机器只有一套模拟器,
+  // 人在面板上点的和任一会话里 agent 点的是同一台设备(与浏览器一会话一个相反)。
+  // 两件 hub 不该知道的事在这里注入:怎么跑 xcrun(child_process)、怎么把
+  // 截图缩小编码(nativeImage)。hub 因此能在普通 vitest 里跑,不用 Xcode。
+  const runSimctl = (file: string, args: string[], o?: { timeoutMs?: number }) =>
+    new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
+      const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), o?.timeoutMs ?? 60_000);
+      child.stdout?.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
+      child.stderr?.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ stdout, stderr, code: code ?? -1 });
+      });
+    });
+
+  // 输入通道:helper 二进制不在(非 macOS、或 dev 下还没 swift build)就是 null,
+  // 面板照样能看画面、能开关机,只是点不了——退化路径写在 hub 的 requireInput 里
+  const simInputBin = process.platform === "darwin" ? resolveSimInputBinPath() : null;
+  const simInput = simInputBin
+    ? createSimInputBridge({
+        binPath: simInputBin,
+        spawn: (bin) => {
+          const c = spawn(bin, [], { stdio: ["pipe", "pipe", "ignore"] });
+          return {
+            stdin: { write: (str: string) => void c.stdin?.write(str) },
+            stdout: { on: (_ev: "data", cb: (b: Buffer) => void) => void c.stdout?.on("data", cb) },
+            on: (_ev: "exit", cb: () => void) => void c.on("exit", cb),
+            kill: () => void c.kill(),
+          };
+        },
+        log: (m) => console.warn(`[simInput] ${m}`),
+      })
+    : null;
+
+  const simulators = createSimulatorHub({
+    run: runSimctl,
+    capture: async (udid) => {
+      // simctl 只会写文件(命令行里的 "-" 会被当成一个**叫 - 的文件**,实测),
+      // 所以走临时文件再读回来。同一台设备固定一个文件名:轮询下每帧都新建
+      // 文件名的话,tmp 目录会被几百个 PNG 塞满
+      const shotPath = join(tmpdir(), `mr-otto-sim-${udid}.png`);
+      const r = await runSimctl("xcrun", ["simctl", "io", udid, "screenshot", "--type=png", shotPath], {
+        timeoutMs: 20_000,
+      });
+      if (r.code !== 0) {
+        throw new Error(`截屏失败:${r.stderr.trim() || `exit ${r.code}`}`);
+      }
+      const raw = nativeImage.createFromPath(shotPath);
+      if (raw.isEmpty()) throw new Error("截屏失败:读不出图像(设备可能刚关机)");
+      // 缩到 480 宽再编 JPEG:原图一帧近 3MB,按 2fps 推过 IPC 是每秒 6MB。
+      // 缩放之后的尺寸就是**全系统统一的那套坐标**(shared/simulator.ts 文件头):
+      // 面板上点的、describe 报的、agent tap 的,全都在这张缩略图的像素空间里
+      const shrunk = raw.getSize().width > 480 ? raw.resize({ width: 480 }) : raw;
+      const size = shrunk.getSize();
+      return {
+        image: shrunk.toJPEG(80).toString("base64"),
+        mime: "image/jpeg" as const,
+        width: size.width,
+        height: size.height,
+      };
+    },
+    input: simInput,
+    push: {
+      state: (st) => send(CHANNELS.simStatePush, st),
+      frame: (f) => send(CHANNELS.simFrame, f),
+    },
+    log: (m) => console.warn(`[simulator] ${m}`),
+  });
+
   // MCP server 登记表:配置存 userData 外的 ~/.mr-otto/mcp.json(与 skill 目录同一条口径,
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
@@ -1160,6 +1240,10 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
+      // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
+      // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
+      // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
+      simulator: simulators.capability(),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // execpolicy（issue #347）：现读现校验（热更新与 alwaysAllow 同款）；
@@ -1655,6 +1739,23 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.browserClose, (_e, sessionId: string) => browsers.close(sessionId));
   ipcMain.handle(CHANNELS.browserPickElement, (_e, sessionId: string) => browsers.pickElement(sessionId));
   ipcMain.handle(CHANNELS.browserCancelPick, (_e, sessionId: string) => browsers.cancelPick(sessionId));
+
+  // 模拟器面板(issue #401)。都不带 sessionId:一台机器一套模拟器。
+  // 这些 handler 是**人**那一侧的入口;agent 那一侧走 simulator 工具,
+  // 两条路最终落在同一个 hub 的同一台设备上
+  ipcMain.handle(CHANNELS.simState, () => simulators.state());
+  ipcMain.handle(CHANNELS.simSelect, (_e, udid: string | null) => simulators.select(udid));
+  ipcMain.handle(CHANNELS.simBoot, (_e, udid?: string) => simulators.capability().boot(udid));
+  ipcMain.handle(CHANNELS.simShutdown, (_e, udid?: string) => simulators.capability().shutdown(udid));
+  ipcMain.handle(CHANNELS.simStartStream, () => simulators.startStream());
+  ipcMain.handle(CHANNELS.simStopStream, () => simulators.stopStream());
+  ipcMain.handle(CHANNELS.simTap, (_e, x: number, y: number) => simulators.capability().tap(x, y));
+  ipcMain.handle(CHANNELS.simSwipe, (_e, x: number, y: number, x2: number, y2: number, ms?: number) =>
+    simulators.capability().swipe({ x, y }, { x: x2, y: y2 }, ms)
+  );
+  ipcMain.handle(CHANNELS.simType, (_e, text: string) => simulators.capability().typeText(text));
+  ipcMain.handle(CHANNELS.simButton, (_e, button: SimButton) => simulators.capability().pressButton(button));
+  ipcMain.handle(CHANNELS.simRequestInputPermission, () => simulators.requestInputPermission());
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
@@ -2243,6 +2344,9 @@ void app.whenReady().then(() => {
     // Electron 就继续退出流程,那两个定时器永远没机会触发,子进程变孤儿
     // (review finding 1;kill() 的同步保证见 mcpClient.ts / mcpHub.ts 的注释)
     void mcpHub.closeAll();
+    // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
+    simulators.dispose();
+    simInput?.dispose();
     store.close();
   });
 });

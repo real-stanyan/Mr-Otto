@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +45,7 @@ import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
 import { BrowserPanel } from "./components/BrowserPanel.js";
+import { SimulatorPanel } from "./components/SimulatorPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
@@ -1478,6 +1479,7 @@ function AppSidebar() {
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const simPanelOpen = useChat((s) => s.simPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1768,7 +1770,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-row items-center gap-2 py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !simPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
@@ -2815,6 +2817,8 @@ export function App() {
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const simPanelOpen = useChat((s) => s.simPanelOpen);
+  const openSimPanel = useChat((s) => s.openSimPanel);
   const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const openSettings = useChat((s) => s.openSettings);
   const friendChat = useChat((s) => s.friendChat);
@@ -2917,6 +2921,7 @@ export function App() {
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView />
     : browserPanelOpen ? <BrowserPanel />
+    : simPanelOpen ? <SimulatorPanel />
     : terminalPanelOpen ? <TerminalView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
@@ -3007,6 +3012,11 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openBrowserPanel()}>
               <Globe /> 浏览器
+            </DropdownMenuItem>
+            {/* iOS 模拟器(issue #401):macOS + Xcode 才有意义,但入口常驻——
+                没设备时面板自己会说"没有可用设备",比藏起来让人猜好 */}
+            <DropdownMenuItem onClick={() => openSimPanel()}>
+              <Smartphone /> iOS 模拟器
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
