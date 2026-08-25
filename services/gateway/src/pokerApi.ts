@@ -148,6 +148,8 @@ export function createPokerApi(deps: PokerApiDeps) {
       tables: visible.map((r) => ({
         ...toTableInfo(r),
         name: String(r["name"] ?? ""),
+        // 自己建的桌 —— 客户端据此决定要不要给"删桌"入口，权威判定仍在 close 端点
+        mine: String(r["created_by"] ?? "") === userId,
         seated: seated.has(String(r["id"])),
         live: tables.hasLiveHand(String(r["id"])),
         players: players.get(String(r["id"])) ?? 0,
@@ -173,6 +175,40 @@ export function createPokerApi(deps: PokerApiDeps) {
       created_by: userId,
     });
     return json(200, { table: { ...toTableInfo(row), name: String(row["name"] ?? "") } });
+  }
+
+  /**
+   * 删桌（软删除，issue #379）。只有建桌的人能删；有牌在打不能删。
+   *
+   * 顺序是安全性的全部：先置 closed_at（poker_join 的 RPC 拒绝已关的桌，
+   * 从这一刻起没有新买入能挤进来），再把桌上每个人的筹码退回各自的桶
+   * （走 poker_leave 同一条幂等 RPC —— 钱的动作全部复用已有的账本路径，
+   * 这里不发明新的转账）。中途崩了也不丢钱：桌已关、剩下的栈还在
+   * poker_stacks 里，重发一次 close 会把剩余的退完（重复 close 幂等）。
+   */
+  async function close(userId: string, tableId: string): Promise<Response> {
+    const rows = await rest.select(`poker_tables?id=eq.${encodeURIComponent(tableId)}&select=*`);
+    const row = rows.filter(isRecord)[0];
+    if (!row) return apiError(404, "没有这张桌", "not_found");
+    if (String(row["created_by"] ?? "") !== userId) {
+      return apiError(403, "只有建桌的人能删这张桌", "not_owner");
+    }
+    if (tables.hasLiveHand(tableId)) {
+      return apiError(409, "这手牌打完才能删桌", "hand_in_progress");
+    }
+    if (row["closed_at"] == null) {
+      await rest.update(`poker_tables?id=eq.${encodeURIComponent(tableId)}`, {
+        closed_at: new Date().toISOString(),
+      });
+    }
+    const seats = await rest.select(
+      `poker_stacks?table_id=eq.${encodeURIComponent(tableId)}&select=*`
+    );
+    for (const s of seats.filter(isRecord)) {
+      await store.leave({ userId: String(s["user_id"]), tableId, requestId: `close:${newId()}` });
+    }
+    push(tableId);
+    return json(200, { closed: true });
   }
 
   async function join(userId: string, tableId: string, body: unknown): Promise<Response> {
@@ -301,6 +337,7 @@ export function createPokerApi(deps: PokerApiDeps) {
       switch (verb) {
         case "join": return await join(userId, tableId, body);
         case "leave": return await leave(userId, tableId);
+        case "close": return await close(userId, tableId);
         case "start": return await start(tableId);
         case "action": return await act(userId, tableId, body);
         case "stream": return stream(userId, tableId);

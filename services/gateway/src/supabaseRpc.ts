@@ -37,6 +37,8 @@ export function createRpc(opts: RpcOptions): Rpc {
 export interface Rest {
   select(path: string): Promise<unknown[]>;
   insert(table: string, row: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** PATCH。path 自带过滤（如 `poker_tables?id=eq.X`）——无过滤的整表 UPDATE 不该存在 */
+  update(path: string, patch: Record<string, unknown>): Promise<void>;
 }
 
 export function createRest(opts: RpcOptions): Rest {
@@ -68,6 +70,10 @@ export function createRest(opts: RpcOptions): Rest {
       const first = Array.isArray(out) ? out[0] : out;
       if (!first || typeof first !== "object") throw new Error(`${table} 插入没回行`);
       return first as Record<string, unknown>;
+    },
+    async update(path, patch) {
+      if (!path.includes("?")) throw new Error(`update 必须带过滤条件：${path}`);
+      await call(path, { method: "PATCH", headers, body: JSON.stringify(patch) });
     },
   };
 }

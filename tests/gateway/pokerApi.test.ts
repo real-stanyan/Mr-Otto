@@ -19,7 +19,10 @@ const TABLE_ROW = {
 };
 
 function harness() {
-  const calls: { join: unknown[]; leave: unknown[] } = { join: [], leave: [] };
+  const calls: { join: unknown[]; leave: unknown[]; update: { path: string; patch: Record<string, unknown> }[] } =
+    { join: [], leave: [], update: [] };
+  // 每个 harness 一份可变桌行:close 会把 closed_at 写进去,测试要能看到写后的样子
+  const tableRow: Record<string, unknown> = { ...TABLE_ROW };
   const store: PokerStore = {
     join: async (p) => { calls.join.push(p); return 0; },
     leave: async (p) => { calls.leave.push(p); return 1234; },
@@ -30,7 +33,7 @@ function harness() {
   };
   const rest: Rest = {
     select: async (path) => {
-      if (path.startsWith("poker_tables")) return [TABLE_ROW];
+      if (path.startsWith("poker_tables")) return [tableRow];
       // 只有 a、b 坐在 t1 上 —— 桩要跟真库一样按 user 过滤，
       // 否则"外人看不见"这条测的是桩而不是代码
       if (path.startsWith("poker_stacks?user_id")) {
@@ -46,6 +49,10 @@ function harness() {
       return [];
     },
     insert: async (_t, row) => ({ ...TABLE_ROW, ...row, id: "t2" }),
+    update: async (path, patch) => {
+      calls.update.push({ path, patch });
+      Object.assign(tableRow, patch);
+    },
   };
   const tables = new Tables({
     store,
@@ -175,6 +182,61 @@ describe("路由", () => {
 });
 
 describe("在场门禁与掉线处理", () => {
+  it("列表带 mine:建桌人 true,别人 false(删桌入口只给建桌人)", async () => {
+    const { api } = harness();
+    const body = await (await api.handle("a", get(), "")).json() as { tables: { mine: boolean }[] };
+    expect(body.tables[0]!.mine).toBe(true);
+    const body2 = await (await api.handle("b", get(), "")).json() as { tables: { mine: boolean }[] };
+    expect(body2.tables[0]!.mine).toBe(false);
+  });
+
+  it("删桌:建桌人可删,先关门再把每个座位的筹码退回桶(issue #379)", async () => {
+    const { api, calls } = harness();
+    const res = await api.handle("a", post(), "t1/close");
+    expect(res.status).toBe(200);
+    // 关门写在退钱之前:poker_join 拒绝已关的桌,退码过程中不会有新买入挤进来
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]!.path).toContain("poker_tables?id=eq.t1");
+    expect(calls.update[0]!.patch["closed_at"]).toBeTruthy();
+    // a、b 的筹码都退了,幂等键各不相同
+    const left = calls.leave as { userId: string; requestId: string }[];
+    expect(left.map((l) => l.userId).sort()).toEqual(["a", "b"]);
+    for (const l of left) expect(l.requestId).toMatch(/^close:/);
+  });
+
+  it("删桌:不是建桌人 403,一个子儿都不动", async () => {
+    const { api, calls } = harness();
+    const res = await api.handle("b", post(), "t1/close");
+    expect(res.status).toBe(403);
+    expect(calls.update).toHaveLength(0);
+    expect(calls.leave).toHaveLength(0);
+  });
+
+  it("删桌:有牌在打 409;重复删幂等(桌已关只补退款,不再写 closed_at)", async () => {
+    const { api, calls } = harness();
+    const sseA = await api.handle("a", get(), "t1/stream");
+    const sseB = await api.handle("b", get(), "t1/stream");
+    expect((await api.handle("a", post(), "t1/start")).status).toBe(200);
+    expect((await api.handle("a", post(), "t1/close")).status).toBe(409);
+    expect(calls.update).toHaveLength(0);
+    await sseA.body!.cancel();
+    await sseB.body!.cancel();
+
+    // 把牌打完再删。全员弃到只剩一人即结束
+    const view = async () =>
+      (await (await api.handle("a", get(), "t1")).json()) as { hand: { toAct: string | null; done: boolean } };
+    let v = await view();
+    while (!v.hand.done && v.hand.toAct) {
+      await api.handle(v.hand.toAct, post({ action: { type: "fold" } }), "t1/action");
+      v = await view();
+    }
+    expect((await api.handle("a", post(), "t1/close")).status).toBe(200);
+    expect(calls.update).toHaveLength(1);
+    // 再删一次:closed_at 已在,不再 PATCH,只把(桩里仍返回的)座位再退一遍 —— RPC 侧幂等
+    expect((await api.handle("a", post(), "t1/close")).status).toBe(200);
+    expect(calls.update).toHaveLength(1);
+  });
+
   it("开牌要求在场(SSE 订阅)∩在座 ≥ 2:筹码留桌不等于人在", async () => {
     const { api } = harness();
     // 没人开着牌桌页:a、b 的筹码都在座,也不许开
