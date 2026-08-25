@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { createSubagentRunner } from "../../src/main/subagentRunner.js";
+import { createSubagentRunner, SUBAGENT_SESSION_CAP } from "../../src/main/subagentRunner.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
@@ -517,5 +517,31 @@ describe("createSubagentRunner", () => {
       `[前置@${parent()().workspace}]正文`
     );
     expect(seen.some((e) => e.type === "subagent_briefed")).toBe(true);
+  });
+
+  // issue #395（Claude Code spawn cap 对照）：单会话派活总量硬上限。
+  // 计数从父日志的 subagent_spawned 推导，不另立计数器（投影硬规则）
+  it("父会话 subagent_spawned 达到上限后再派活：抛错且不建子会话", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    for (let i = 0; i < SUBAGENT_SESSION_CAP; i++) {
+      store.append({
+        sessionId: "s-parent", ts: Date.now(), type: "subagent_spawned",
+        toolCallId: `call_${i}`, childSessionId: `s-child-${i}`, agent: "searcher", task: "t",
+      });
+    }
+    const runTurn = vi.fn();
+    const runner = createSubagentRunner({
+      store, attachments, push,
+      list: () => [def()],
+      parent: parent(),
+      runTurn,
+    });
+    await expect(
+      runner.run({ agent: "searcher", task: "再派一个", parentToolCallId: "call_x" })
+    ).rejects.toThrow(/上限/);
+    expect(runTurn).not.toHaveBeenCalled();
+    // 上限那次没有落 subagent_spawned——闸在建会话之前
+    const spawns = store.load("s-parent").filter((e) => e.type === "subagent_spawned");
+    expect(spawns.length).toBe(SUBAGENT_SESSION_CAP);
   });
 });

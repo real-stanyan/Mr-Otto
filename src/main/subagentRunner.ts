@@ -70,6 +70,15 @@ export interface SubagentRunnerDeps {
     它的汇报"，而事实是这条线断了 */
 const ABORTED = "子任务被用户中断";
 
+/** 单会话派活总量硬上限（issue #395，Claude Code spawn cap 对照）。
+    递归已由构造挡死（子 agent 没有 task 工具），但"每 turn 派一个"的失控
+    循环没有任何闸——长 turn 软告警（LONG_TURN_ROUNDS）喊的是步数，每步
+    烧的是一次模型调用，而每次派活烧的是**一整个子会话**，量级不同，值得
+    一道自己的硬闸。计数从父日志的 subagent_spawned 推导（投影硬规则：
+    不另立计数器），fork 链上祖先派的也算——上限管的是"这条血脉烧了多少"。
+    100 = 远高于任何正常用法的兜底值，撞线唯一合理解释是失控 */
+export const SUBAGENT_SESSION_CAP = 100;
+
 export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
   const runTurn =
     deps.runTurn ?? ((agent: Agent, _push: AgentPush, task: string) => agent.engine.runTurn(task));
@@ -89,6 +98,18 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
       if (signal?.aborted) throw new Error(`${ABORTED}：还没派出去就停了，什么都没发生。`);
 
       const parent = deps.parent();
+
+      // 总量硬闸（issue #395）：先数账再花钱。抛错 = engine 落 tool_result:
+      // error，模型看得见、能收手改由自己完成——比静默排队诚实
+      const spawned = deps.store
+        .load(parent.sessionId)
+        .filter((e) => e.type === "subagent_spawned").length;
+      if (spawned >= SUBAGENT_SESSION_CAP) {
+        throw new Error(
+          `本会话已派活 ${spawned} 次，达到上限（${SUBAGENT_SESSION_CAP}）——不再派新的子任务。` +
+            `剩下的活请自己完成，或让用户新开会话。`
+        );
+      }
 
       // 审批和问卷冒泡到父会话：卡挂到子 sessionId 的话，用户正看着父会话，
       // 看不见卡、子 agent 干等——死锁。审批是"问人"，人就在父会话界面上。
