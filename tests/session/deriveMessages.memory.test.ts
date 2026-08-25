@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveMessages, renderMemoryBlocks, systemPromptText } from "../../src/session/deriveMessages.js";
+import { deriveMessages, renderMemoryBlocks, systemPromptText, dayOfLastEvent } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 const base = (seq: number) => ({ seq, sessionId: "s", ts: 0 });
@@ -35,7 +35,10 @@ describe("memory_loaded 投影", () => {
   // 这是老日志兼容性的保证，必须逐字节钉住
   it("没有 memory_loaded：system 与 systemPromptText 原文逐字节一致（老日志兼容）", () => {
     const without = deriveMessages([created, userMsg]);
-    expect((without[0] as { content: string }).content).toBe(systemPromptText("/w"));
+    // 日期那一行也归 systemPromptText 出（issue #430）：同一处出口，两边不能各写一份
+    expect((without[0] as { content: string }).content).toBe(
+      systemPromptText("/w", dayOfLastEvent([created, userMsg]))
+    );
   });
   // 两个文件都空也要说这段话：模型得知道自己能写记忆，不是只在已经有内容时才提——
   // 但没内容就不该出现 MEMORY (/USER ( 这两块空壳
@@ -77,5 +80,52 @@ describe("memory_loaded 投影", () => {
       { ...base(5), type: "memory_nudge", userTurns: 10 },
     ]);
     expect(b).toEqual(a);
+  });
+});
+
+// 系统提示词的四条硬事实（issue #430）：自称、日期、围栏的真实边界、审批被拒时的规矩。
+// 前三条都曾经和代码对不上——名字是旧的、日期靠猜、对模型宣布了 bash 兑现不了的保证。
+describe("systemPromptText 的口径", () => {
+  it("自称 Mr. Otto，不是改名前的 otter", () => {
+    expect(systemPromptText("/w")).toContain("你是 Mr. Otto");
+    expect(systemPromptText("/w")).not.toContain("你是 otter");
+  });
+
+  it("日期从日志的 ts 推，不读时钟——同一份日志永远投出同一串字节", () => {
+    // 本地时间 2020-01-02 12:00（用本地构造器，断言与机器时区无关）
+    const ts = new Date(2020, 0, 2, 12, 0, 0).getTime();
+    const log: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts, type: "session_created", workspace: "/w" },
+      { seq: 2, sessionId: "s", ts, type: "user_message", content: "hi" },
+    ];
+    expect((deriveMessages(log)[0] as { content: string }).content).toContain("今天是 2020-01-02");
+    // 纯函数：同样的输入再投一次，逐字节一致
+    expect(deriveMessages(log)).toEqual(deriveMessages(log));
+  });
+
+  it("跨夜的会话取最后一条事件的日期，不是开会话那天", () => {
+    const day1 = new Date(2020, 0, 2, 23, 0, 0).getTime();
+    const day2 = new Date(2020, 0, 3, 1, 0, 0).getTime();
+    const log: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: day1, type: "session_created", workspace: "/w" },
+      { seq: 2, sessionId: "s", ts: day2, type: "user_message", content: "hi" },
+    ];
+    expect((deriveMessages(log)[0] as { content: string }).content).toContain("今天是 2020-01-03");
+  });
+
+  it("对 bash 说实话：圈住的是文件工具，bash 出得去", () => {
+    const s = systemPromptText("/w");
+    expect(s).toContain("read_file / write_file 圈在这个文件夹内");
+    expect(s).toContain("cd 出得去");
+    // 曾经那句更强的保证不许回来——代码兑现不了它
+    expect(s).not.toContain("所有文件读写都发生在这个文件夹内");
+  });
+
+  it("说清审批被拒后的规矩：停下来问，不许换写法绕", () => {
+    expect(systemPromptText("/w")).toContain("别换一种写法绕过去");
+  });
+
+  it("ask_user 的规矩只在工具描述里说一次，system 不再重复", () => {
+    expect(systemPromptText("/w")).not.toContain("ask_user");
   });
 });
