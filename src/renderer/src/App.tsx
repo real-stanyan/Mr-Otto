@@ -156,7 +156,7 @@ import {
 } from "@/components/assistant-ui/context-display.js";
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
-import { ottoDirectiveFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
+import { ottoDirectiveFormatter, ottoPathFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
 import { segmentComposerText } from "./aui/composerDirectives.js";
 import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
@@ -2601,9 +2601,11 @@ function ChatComposer() {
     () => ({ formatter: ottoSlashFormatter(slashItems.map((i) => i.id)) }),
     [slashItems]
   );
+  // 路径那份不依赖任何名单(靠形状判定),造一次就够
+  const pathFormatter = useMemo(() => ottoPathFormatter(), []);
   const composerSegments = useMemo(
-    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter]),
-    [input, skillFormatter, slashDirective]
+    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter, pathFormatter]),
+    [input, skillFormatter, slashDirective, pathFormatter]
   );
 
 
