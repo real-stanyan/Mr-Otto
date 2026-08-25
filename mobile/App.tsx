@@ -9,10 +9,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Image, SafeAreaView, ScrollView, StatusBar,
+  ActivityIndicator, Image, Pressable, SafeAreaView, ScrollView, StatusBar,
   StyleSheet, Text, TextInput, View,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
+import type { MobileMessage } from "../src/shared/remote/frames.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
@@ -279,22 +280,57 @@ function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => voi
 function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => void }) {
   const [fleet, setFleet] = useState<IslandFleet | null>(null);
   const [ready, setReady] = useState(false);
+  /** 打开的会话。null = 停在列表上 */
+  const [open, setOpen] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<MobileMessage[] | null>(null);
   const bridge = useRef<MobileBridge | null>(null);
+  /** 订阅状态归手机(桌面那侧的 watch 是连接级的,断了就忘)。
+      重连后要靠这个 ref 把 watch 补发一次 —— 否则详情屏会永远停在旧内容 */
+  const watching = useRef<string | null>(null);
 
   useEffect(() => {
     const b = connect(store, {
       onFrame: (f) => {
         if (f.type === "fleet") setFleet(f.fleet);
-        // timeline / ping 在下一刀接:watch/unwatch 桌面那侧还没实现
+        // 只认自己订的那一个:换会话时旧订阅的迟到帧不该覆盖新屏
+        else if (f.type === "timeline" && f.sessionId === watching.current) setTimeline(f.messages);
       },
       onReady: (r) => {
         setReady(r);
-        if (!r) setFleet(null); // 断了就别再展示一份陈旧快照
+        if (!r) {
+          setFleet(null); // 断了就别再展示一份陈旧快照
+          setTimeline(null);
+        } else if (watching.current) {
+          b.send({ type: "watch", sessionId: watching.current });
+        }
       },
     });
     bridge.current = b;
     return () => b.dispose();
   }, [store]);
+
+  const openSession = (sessionId: string): void => {
+    watching.current = sessionId;
+    setTimeline(null); // 上一个会话的内容一帧都不要留在屏上
+    setOpen(sessionId);
+    bridge.current?.send({ type: "watch", sessionId });
+  };
+
+  // 打开的那个会话可能从舰队里消失(电脑上关掉了):退回列表,别停在一屏死内容。
+  // 放 effect 里而不是渲染里 —— 渲染期 setState 是 React 的未定义行为
+  useEffect(() => {
+    if (open !== null && fleet && !fleet.agents.some((a) => a.sessionId === open)) closeSession();
+    // closeSession 每次 render 新建,不进依赖:它只读 ref + setState
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, fleet]);
+
+  const closeSession = (): void => {
+    const sid = watching.current;
+    watching.current = null;
+    setOpen(null);
+    setTimeline(null);
+    if (sid) bridge.current?.send({ type: "unwatch", sessionId: sid });
+  };
 
   // 有会话在跑才让钟走 —— 空闲时不必每秒唤醒 JS 线程
   const now = useTicker((fleet?.agents ?? []).some((a) => a.phase === "active"));
@@ -321,6 +357,16 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
     );
   }
 
+  const opened = open === null ? null : fleet.agents.find((a) => a.sessionId === open) ?? null;
+  if (opened) {
+    return (
+      <SessionView
+        agent={opened} now={now} messages={timeline}
+        onBack={closeSession} onDecide={decide}
+      />
+    );
+  }
+
   return (
     <Page>
       <View style={{ gap: space.xs, paddingTop: space.sm }}>
@@ -334,7 +380,10 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
         </Card>
       ) : (
         fleet.agents.map((a) => (
-          <AgentCard key={a.sessionId} agent={a} now={now} onDecide={decide} />
+          <AgentCard
+            key={a.sessionId} agent={a} now={now} onDecide={decide}
+            onOpen={() => openSession(a.sessionId)}
+          />
         ))
       )}
     </Page>
@@ -357,10 +406,11 @@ function elapsed(since: number, now: number): string {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
 }
 
-function AgentCard({ agent: a, now, onDecide }: {
+function AgentCard({ agent: a, now, onDecide, onOpen }: {
   agent: IslandAgent;
   now: number;
   onDecide: (a: IslandAgent, ok: boolean) => void;
+  onOpen: () => void;
 }) {
   const { c } = usePalette();
   const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
@@ -370,7 +420,15 @@ function AgentCard({ agent: a, now, onDecide }: {
   return (
     <Card style={{ gap: space.sm }}>
       {/* 行首方块 + 标题,和桌面 permission-grant 的头一行同构 */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+      {/* 整行可点:点进去看时间线。审批那两个键是各自的 Pressable,不会被这一层截走 */}
+      <Pressable
+        accessibilityRole="button"
+        onPress={onOpen}
+        style={({ pressed }) => [
+          { flexDirection: "row", alignItems: "center", gap: space.sm },
+          pressed && { opacity: 0.6 },
+        ]}
+      >
         <Tile><Dot tone={tone} /></Tile>
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
           <Headline>{a.title ?? a.sessionId}</Headline>
@@ -381,7 +439,9 @@ function AgentCard({ agent: a, now, onDecide }: {
             {a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
           </Meta>
         </View>
-      </View>
+        {/* 可点的记号。没有它,一张卡片看不出能不能按 */}
+        <Text style={{ ...t.title, color: c.mutedForeground, marginTop: -2 }}>›</Text>
+      </Pressable>
 
       {/* 本轮改了多少 —— 桌面和对话视图消费同一份统计,两处只能显示同一个数 */}
       {d ? (
@@ -394,6 +454,133 @@ function AgentCard({ agent: a, now, onDecide }: {
 
       {a.pendingApproval ? <Approval agent={a} onDecide={onDecide} /> : null}
     </Card>
+  );
+}
+
+/* ── 会话详情 ───────────────────────────────────────────
+   点进来看时间线 + 就地审批。三件事值得说清楚:
+
+   1. **待批那一块钉在底部**,不跟着时间线滚。审批是这一屏唯一的动作,
+      而它在日志里的位置可能在几十条之上 —— 让人为了按一下先滚半天是坏的。
+   2. **时间线只有三种角色**,而且已经在桌面那侧截过了(shared/remote/timeline.ts)。
+      这里不再截,只把 truncated 标记翻译成一句"在电脑上看全文"。
+   3. **新消息到了自动滚到底**,但只在人本来就贴着底的时候 —— 正在往回翻的人
+      被拽回底部比不自动滚更烦。 */
+function SessionView({ agent: a, now, messages, onBack, onDecide }: {
+  agent: IslandAgent;
+  now: number;
+  messages: MobileMessage[] | null;
+  onBack: () => void;
+  onDecide: (a: IslandAgent, ok: boolean) => void;
+}) {
+  const { c } = usePalette();
+  const list = useRef<ScrollView | null>(null);
+  const atBottom = useRef(true);
+  const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
+  const what = a.phase === "approval" ? "等你批" : a.phase === "active" ? "跑着" : "空闲";
+
+  useEffect(() => {
+    if (atBottom.current) list.current?.scrollToEnd({ animated: true });
+  }, [messages]);
+
+  return (
+    <View style={{ flex: 1 }}>
+      {/* 顶栏。返回在左上,和 iOS 的方向一致 */}
+      <View style={{
+        paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm,
+        borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+        flexDirection: "row", alignItems: "center", gap: space.xs,
+      }}>
+        <Pressable
+          accessibilityRole="button" onPress={onBack} hitSlop={12}
+          style={({ pressed }) => [{ paddingVertical: 6, paddingRight: space.xs }, pressed && { opacity: 0.5 }]}
+        >
+          <Text style={{ ...t.body, color: c.brand }}>‹ 会话</Text>
+        </Pressable>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ ...t.headline, color: c.foreground }} numberOfLines={1}>
+            {a.title ?? a.sessionId}
+          </Text>
+        </View>
+        <Dot tone={tone} />
+      </View>
+
+      <ScrollView
+        ref={list}
+        contentContainerStyle={{ padding: space.md, gap: space.sm, paddingBottom: space.lg }}
+        onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          // 24pt 的容差:滚动位置是浮点的,严格相等永远不成立
+          atBottom.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 24;
+        }}
+        scrollEventThrottle={100}
+      >
+        <Meta>
+          {what}
+          {a.phase === "active" && a.turnStartedAt ? ` · ${elapsed(a.turnStartedAt, now)}` : ""}
+          {a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
+        </Meta>
+        {messages === null ? (
+          <View style={{ paddingVertical: space.xl, alignItems: "center" }}>
+            <Spinner />
+          </View>
+        ) : messages.length === 0 ? (
+          <Hint>这个会话还没有内容。</Hint>
+        ) : (
+          messages.map((m, i) => <Msg key={i} msg={m} />)
+        )}
+      </ScrollView>
+
+      {a.pendingApproval ? (
+        <View style={{
+          padding: space.md,
+          borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
+          backgroundColor: c.background,
+        }}>
+          <Approval agent={a} onDecide={onDecide} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** 一条消息。三种角色三种读法:
+    user 是右边的蓝气泡(和桌面对话视图同一个位置和颜色);
+    assistant 是左边的裸正文,不套气泡 —— 它占的篇幅最长,套上去整屏都是框;
+    tool 是等宽的暗块,第一行是工具名。 */
+function Msg({ msg: m }: { msg: MobileMessage }) {
+  const { c } = usePalette();
+  const tail = m.truncated ? <Meta>… 太长了,在电脑上看全文</Meta> : null;
+
+  if (m.role === "user") {
+    return (
+      <View style={{ alignItems: "flex-end", gap: 2 }}>
+        <View style={{
+          backgroundColor: c.primary, borderRadius: radius.control,
+          paddingHorizontal: space.md, paddingVertical: space.sm, maxWidth: "88%",
+        }}>
+          <Text style={{ ...t.body, color: c.primaryForeground }}>{m.text}</Text>
+        </View>
+        {tail}
+      </View>
+    );
+  }
+  if (m.role === "assistant") {
+    return (
+      <View style={{ gap: 2, paddingVertical: space.xs }}>
+        <Text style={{ ...t.body, color: c.foreground }}>{m.text}</Text>
+        {tail}
+      </View>
+    );
+  }
+  return (
+    <View style={{
+      borderRadius: radius.control, padding: space.sm + 2, gap: 2,
+      borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+    }}>
+      <Text style={{ ...t.footnote, color: c.mutedForeground, fontFamily: MONO }}>{m.text}</Text>
+      {tail}
+    </View>
   );
 }
 

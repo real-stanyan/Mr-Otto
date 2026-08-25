@@ -14,7 +14,9 @@
 // 本文件之内的 transport 只见 base64url 密文。两侧互不知道对方存在。
 
 import { b64decode, b64encode } from "../shared/remote/b64.js";
-import { decodeUpFrame, encodeFrame, type UpFrame } from "../shared/remote/frames.js";
+import {
+  decodeUpFrame, encodeFrame, type MobileMessage, type UpFrame,
+} from "../shared/remote/frames.js";
 import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type SelfParty, type SessionKeys,
@@ -38,8 +40,15 @@ export function createRemoteBridge(opts: {
   /** 已 pin 住的对端身份公钥。null = 还没配对过 → 一律拒绝握手。
       TOFU 的存储与首次确认在调用方,本文件只负责"对不上就不进 ready" */
   peerIdentity: () => Uint8Array | null;
+  /** 这一轮结束了(断线/重握手)。上层用它丢掉"手机正在看哪个会话":
+      订阅是连接级的,连接没了还接着投影等于替一个不存在的观众干活 */
+  onReset?: () => void;
   log?: (m: string) => void;
-}): { pushFleet(f: IslandFleet): void; dispose(): void } {
+}): {
+  pushFleet(f: IslandFleet): void;
+  pushTimeline(sessionId: string, messages: MobileMessage[]): void;
+  dispose(): void;
+} {
   const p = opts.crypto;
   const log = opts.log ?? (() => {});
 
@@ -49,8 +58,10 @@ export function createRemoteBridge(opts: {
   let opener: ReturnType<typeof createOpener> | null = null;
   /** 最后一份 fleet。重连后要靠它把快照补推给新的对端 */
   let last: IslandFleet | null = null;
-  /** 上一次真正写下去的线格式(明文帧,不是密文——密文每次都不同,去重不了) */
+  /** 上一次真正写下去的 fleet 线格式(明文帧,不是密文——密文每次都不同,去重不了) */
   let lastEncoded: string | null = null;
+  /** 时间线的去重要和 fleet 分开:两条流各推各的,共用一个基线会互相把对方吞掉 */
+  let lastTimeline: string | null = null;
 
   /** 把这一轮的全部状态清干净。连接断了走这条:不发任何东西,发了也是丢 */
   function resetRound(): void {
@@ -62,6 +73,8 @@ export function createRemoteBridge(opts: {
     // 新连接 = 新密钥 + 对端是空的。基线不清的话"和上次一样"会把整份快照吞掉
     // (islandBridge 里 helper 重启踩过同一个坑)
     lastEncoded = null;
+    lastTimeline = null;
+    opts.onReset?.();
   }
 
   /** 开一轮握手。**唯一的触发者是 onPeer** —— 对端不在场时发 hello 只是喂虚空 */
@@ -162,6 +175,16 @@ export function createRemoteBridge(opts: {
     opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
   }
 
+  /** 时间线只在对端明确 watch 之后才有内容,所以**不做重连补推**:
+      新连接上手机会自己重发 watch(订阅状态归它)。桌面这侧不留隔夜的订阅。 */
+  function pushTimeline(sessionId: string, messages: MobileMessage[]): void {
+    if (phase !== "ready" || !sealer) return;
+    const wire = encodeFrame({ type: "timeline", sessionId, messages });
+    if (wire === lastTimeline) return;
+    lastTimeline = wire;
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+  }
+
   opts.transport.onMessage((payload) => {
     if (phase === "closed") return;
     // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
@@ -183,6 +206,7 @@ export function createRemoteBridge(opts: {
 
   return {
     pushFleet,
+    pushTimeline,
     dispose() {
       phase = "closed";
       sealer = null;

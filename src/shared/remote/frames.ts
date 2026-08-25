@@ -84,6 +84,15 @@ export function decodeUpFrame(line: string): UpFrame | null {
   }
 }
 
+function isMobileMessage(v: unknown): v is MobileMessage {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const m = v as Record<string, unknown>;
+  if (m.role !== "user" && m.role !== "assistant" && m.role !== "tool") return false;
+  if (!str(m.text)) return false;
+  if (m.truncated !== undefined && typeof m.truncated !== "boolean") return false;
+  return exactKeys(m, ["role", "text", "truncated"]);
+}
+
 export function decodeDownFrame(line: string): DownFrame | null {
   const o = parseObject(line);
   if (!o) return null;
@@ -92,10 +101,14 @@ export function decodeDownFrame(line: string): DownFrame | null {
       return o.fleet && typeof o.fleet === "object" && Array.isArray((o.fleet as IslandFleet).agents)
         ? { type: "fleet", fleet: o.fleet as IslandFleet }
         : null;
-    case "timeline":
-      return str(o.sessionId) && Array.isArray(o.messages)
-        ? { type: "timeline", sessionId: o.sessionId, messages: o.messages as MobileMessage[] }
-        : null;
+    case "timeline": {
+      // 元素也要逐字段查。这一条来自已认证的桌面,不是公网上的任意人,
+      // 但"整条丢弃"是这个文件的规矩,而 UI 会直接 .map 出 role/text ——
+      // 少查一层,一条畸形消息就是一次白屏
+      if (!str(o.sessionId) || !Array.isArray(o.messages)) return null;
+      if (!o.messages.every(isMobileMessage)) return null;
+      return { type: "timeline", sessionId: o.sessionId, messages: o.messages };
+    }
     case "ping":
       return typeof o.ts === "number" ? { type: "ping", ts: o.ts } : null;
     default:

@@ -118,6 +118,7 @@ import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
+import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
 import { relayBaseUrl } from "../shared/gatewayConfig.js";
@@ -558,6 +559,8 @@ void app.whenReady().then(() => {
       transport,
       peerIdentity: () => idStore.peerIdentity(),
       onCommand: (c) => handleRemoteCommand(c),
+      // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影
+      onReset: () => { watchedSession = null; },
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -612,6 +615,30 @@ void app.whenReady().then(() => {
     remoteBridge?.pushFleet(trimForMobile(fleet));
   };
 
+  /** 手机端正在看的那个会话(watch/unwatch,ADR-0094 的"看"那一半)。
+      只有一个:手机上一次只看得见一屏。null = 没人在看,一帧都不投 */
+  let watchedSession: string | null = null;
+  /** 合并推送用。store.load() 是整条日志的读,而工具密集的 turn 一秒好几条事件 —— 
+      逐条重投等于把手机端的这一屏做成 O(事件数 × 日志长度) */
+  let timelineTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const pushTimelineNow = (): void => {
+    if (timelineTimer) { clearTimeout(timelineTimer); timelineTimer = null; }
+    const sid = watchedSession;
+    if (!remoteBridge || !sid) return;
+    // 出机器的那一份要过闸门:只有三种事件、不含 reasoning、超长就截
+    // (shared/remote/timeline.ts)
+    remoteBridge.pushTimeline(sid, projectTimelineForMobile(store.load(sid)));
+  };
+
+  /** 这条事件属于手机正在看的会话才安排重投。sid=null(说不清是谁的)也投一次:
+      漏投的代价是手机上停在旧内容,比多投一次糟糕 */
+  const pushTimelineFor = (sid: string | null): void => {
+    if (!watchedSession || (sid !== null && sid !== watchedSession)) return;
+    if (timelineTimer) return;
+    timelineTimer = setTimeout(() => { timelineTimer = null; pushTimelineNow(); }, 250);
+  };
+
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
       reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
@@ -634,6 +661,7 @@ void app.whenReady().then(() => {
       fleetSessionsCache = null;
     }
     pushFleet();
+    pushTimelineFor(sid);
   };
 
   /** 从 IslandInput 取它作用的 sessionId(activeSession 用 boot.activeSessionId) */
@@ -2365,8 +2393,13 @@ void app.whenReady().then(() => {
       case "send":
         return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
       case "watch":
+        // 一次只订一个:换会话直接顶掉上一个,不做多路订阅 —— 手机上看不见两屏
+        watchedSession = c.sessionId;
+        pushTimelineNow();
+        return;
       case "unwatch":
-        console.warn(`远程:时间线订阅还没做,忽略 ${c.type}`);
+        // 只有当前订的那个能取消:退出旧屏的迟到 unwatch 不该把新订的掐掉
+        if (watchedSession === c.sessionId) watchedSession = null;
         return;
     }
   }
