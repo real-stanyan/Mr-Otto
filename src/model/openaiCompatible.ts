@@ -6,6 +6,7 @@ import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adap
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
 import { parseGatewayError } from "../shared/gatewayConfig.js";
+import { classifyStatus, errorClassOf, markErrorClass } from "./errorClass.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
 /** 一次请求真正用的端点 */
@@ -87,9 +88,8 @@ export function localTiming(choice: { keyless: boolean }): Partial<AdapterTiming
     : {};
 }
 
-/** 可重试的状态码：限流 + 服务端瞬时故障。4xx 其余（key 错/请求非法/额度用尽）
-    重试只会得到同一个答案 */
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+// 可重试状态码的判定收进 errorClass.ts（issue #389）：分类（rate-limit/
+// retryable/fatal）是错误的种类，这里在种类之上再叠"流位置"定 retryable
 
 /** 可重试标记贴在错误对象上（不建子类：错误要跨 try 边界原样上抛，标记比 instanceof 皮实） */
 function markRetryable<T extends Error>(err: T): T {
@@ -319,7 +319,12 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       const headersTimer = setTimeout(
         () =>
           abortWith(
-            markRetryable(new Error(`model API ${timing.headersTimeoutMs}ms 未返回响应头，已掐断`))
+            markRetryable(
+              markErrorClass(
+                new Error(`model API ${timing.headersTimeoutMs}ms 未返回响应头，已掐断`),
+                "retryable"
+              )
+            )
           ),
         timing.headersTimeoutMs
       );
@@ -337,7 +342,8 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         });
       } catch (err) {
         // 网络层失败（DNS/连接重置/断网）：一个字节都没消费，安全重试
-        if (!signal?.aborted && !failure && err instanceof Error) markRetryable(err);
+        if (!signal?.aborted && !failure && err instanceof Error)
+          markRetryable(markErrorClass(err, "retryable"));
         normalize(err);
         throw err; // normalize 必抛，这行只为 TS 收敛
       } finally {
@@ -349,10 +355,13 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         // 网关的错误本来就是写给人看的("额度用尽,去设置填自己的 key"),
         // 再裹一层 "model API 402:" 只会把那句话埋进一行技术噪音里
         const gatewayError = parseGatewayError(errBody);
-        const err = gatewayError
-          ? new Error(gatewayError.message || `otto-gateway ${res.status}`)
-          : new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`);
-        throw RETRYABLE_STATUS.has(res.status) ? markRetryable(err) : err;
+        const err = markErrorClass(
+          gatewayError
+            ? new Error(gatewayError.message || `otto-gateway ${res.status}`)
+            : new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
+          classifyStatus(res.status)
+        );
+        throw errorClassOf(err) === "fatal" ? err : markRetryable(err);
       }
 
       // ---- 流式分支：SSE 攒完整消息，途中 onDelta 直播 ----
@@ -364,7 +373,12 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         const armIdle = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            const err = new Error(`model API 流 ${timing.idleTimeoutMs}ms 无数据，已掐断`);
+            // 种类是瞬态（errorClass），但首字节后不可重试（retryable 不标）——
+            // 分类和重试许可正交，见 errorClass.ts 头注
+            const err = markErrorClass(
+              new Error(`model API 流 ${timing.idleTimeoutMs}ms 无数据，已掐断`),
+              "retryable"
+            );
             abortWith(consumed ? err : markRetryable(err));
           }, timing.idleTimeoutMs);
         };

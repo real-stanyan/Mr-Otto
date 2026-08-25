@@ -28,7 +28,8 @@ import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
-import { bashTool } from "../tools/bash.js";
+import { createBashTool } from "../tools/bash.js";
+import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
@@ -66,6 +67,7 @@ const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import { assertReplayable } from "../session/events.js";
+import { checkInvariants } from "../session/invariants.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
 import type { ToolGuard } from "../loop/middleware.js";
@@ -289,6 +291,9 @@ export function createAgent(opts: {
     // 永不改写。文案按 tool_execution_started 区分"跑了一半"和"没开跑"。
     // 幂等：补过即配对，再 resume 不重复。事故从此是时间线事实，UI/回放可见。
     const log = resumeLog!;
+    // 修复追加的事件攒着（供下面的不变量校验用）：校验必须看「修复后」的流——
+    // ADR-0005 / 崩溃合成收口本身就是把不变量修回来的动作，只看快照必然误报
+    const repairs: SessionEvent[] = [];
     const answered = new Set(
       log.filter((e) => e.type === "tool_result").map((e) => e.toolCallId)
     );
@@ -311,6 +316,7 @@ export function createAgent(opts: {
             : "执行中断：调用未开始执行就被中断（审批未决或 app 退出）。" +
               "执行器未达，世界未被此调用变更。",
         });
+        repairs.push(full);
         opts.push.event(full);
       }
     }
@@ -331,7 +337,14 @@ export function createAgent(opts: {
     }
     if (openTurn) {
       const full = store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "interrupted" });
+      repairs.push(full);
       opts.push.event(full);
+    }
+    // 运行时不变量校验（issue #389，dsh invariant registry 对照）：修复之后跑。
+    // 违例只告警不拦——硬规则「旧日志永远可重放」优先于结构洁癖，违例是
+    // 「写入方有 bug」的诊断线索，不是拒读理由（拒读那道门只属于 assertReplayable）
+    for (const v of checkInvariants([...log, ...repairs])) {
+      console.warn(`[invariant] 会话 ${sessionId} seq ${v.seq} ${v.invariant}：${v.detail}`);
     }
   }
 
@@ -410,6 +423,11 @@ export function createAgent(opts: {
   // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
   void mcp?.ready();
 
+  // 后台任务登记口（issue #389）：bash run_in_background 起的任务在这跟踪，
+  // 完成回调由组装根（index.ts）接线——没接线（subagent 装配）时 armed=false，
+  // bash 会拒绝后台参数而不是丢结果
+  const backgroundTasks = new BackgroundTasks();
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
@@ -421,7 +439,7 @@ export function createAgent(opts: {
     ...(world.history ? [createSessionSearchTool()] : []),
     readFileTool,
     writeFileTool,
-    bashTool,
+    createBashTool(backgroundTasks),
     createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
@@ -597,6 +615,9 @@ export function createAgent(opts: {
     },
     sessionId,
     workspace: opts.workspace,
+    /** 后台任务登记口（issue #389）：index.ts 在这上面接完成回调（onCompletion），
+        决定回注时机；没接线的装配 bash 拒绝 run_in_background */
+    backgroundTasks,
     /** 这个 agent 的 ExecutionWorld——终端接线要靠它才能走 seam 而不是绕过去
         (ADR-0031)：v2 SandboxWorld 把 openTerminal 实现成 docker exec，
         终端得开在 agent 这个 world 里，不能在 index.ts 里另起一个 LocalWorld */

@@ -49,3 +49,23 @@ export class SandboxDeniedError extends Error {
 export function isSandboxDenied(err: unknown): err is SandboxDeniedError {
   return err instanceof SandboxDeniedError;
 }
+
+/** 沙箱 enforcement 事实（issue #389，dsh 对照）：命令**跑完了**、但沙箱
+    在过程中拦了什么/自身出了什么状况——随 ExecResult 回来的事实，不是错误。
+    与 SandboxDeniedError 的分工：整条命令被拒 = 抛错走升级环；命令跑完但
+    部分操作被拦（写日志失败但主任务成功这类）= 事实上报，模型自己判断。
+    生产者是沙箱实现（v2 SandboxWorld）——判定责任与 SandboxDeniedError 同款
+    钉在沙箱侧（确定性依据：seccomp/OCI 错误码），**不做 stderr 关键词启发式**
+    （issue #346 ④ 的既有立场，这里只是把判定结果的载体定下来）。
+    v1 LocalWorld 无沙箱，永远不产这个字段——协议即测试（ADR-0083 同款交付形态） */
+export interface SandboxEnforcementFacts {
+  /** full = 策略里的全部约束都在实施中；partial = 有约束没能实施
+      （external 档全盘放行只守网络，就是天然的 partial） */
+  enforcement: "full" | "partial";
+  /** 「沙箱拦了」：被拒绝的具体操作，人话（"写 /etc/hosts 被拒"）。
+      每条都该让模型能决定下一步（换路径 / 请求升级 / 放弃） */
+  denials?: string[];
+  /** 「沙箱坏了」：沙箱自身的异常（profile 加载失败、监控进程退出）——
+      与 denials 严格分开：拦截是约束在工作，异常是约束可能已失效 */
+  failures?: string[];
+}

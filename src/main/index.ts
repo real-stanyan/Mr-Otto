@@ -23,6 +23,7 @@ import {
   type ApprovalPreview,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
 import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
@@ -452,6 +453,10 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // 后台任务完成、但 turn 正在跑时攒下的回注文案（issue #389）：mid-splice 会把
+  // 投影中段改掉、prefix cache 全废（ADR-0073 的教训——微压缩同处境时宁可丢弃），
+  // 后台结果不能丢，所以攒着，turn 正常收口后合并成一条注回
+  const pendingBg = new Map<string, string[]>();
   // fail-closed（issue #341 规则③）：渲染进程崩了 = 审批通道断了。挂起的审批
   // 立刻按拒绝收场（approval_decision 照常落盘），不悬停等一个回不来的人。
   // 只挂崩溃，不挂正常关窗——mac 惯例关窗不退 app，岛窗还能替人点按钮
@@ -1176,6 +1181,10 @@ void app.whenReady().then(() => {
         files: instructions.segments.map((seg) => seg.path),
       });
     }
+    // 后台任务完成回注接线（issue #389）：只有主会话装配走到这——子会话
+    // （createChildAgent / subagentRunner 两条路）不接线，armed=false，
+    // bash 对它们拒绝 run_in_background（没人管的结果不该被承诺"会注回"）
+    self.backgroundTasks.onCompletion((c) => handleBackgroundDone(self.sessionId, c));
     return self;
   };
 
@@ -1928,6 +1937,48 @@ void app.whenReady().then(() => {
       // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
       enqueueMicroCompact(sessionId);
     }
+    // 后台回注排空（issue #389）：turn 在跑时完成的后台任务攒在 pendingBg，
+    // 正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
+    // 这时自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；
+    // 攒着的结果不丢，下一次 turn 正常收口或新完成事件到来时再排。
+    // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
+    if (outcome === "completed") {
+      const queued = pendingBg.get(sessionId);
+      if (queued && queued.length > 0) {
+        pendingBg.delete(sessionId);
+        queueMicrotask(() => {
+          void handleSendMessage(sessionId, queued.join("\n\n")).catch((e) =>
+            console.error("后台任务回注失败", e)
+          );
+        });
+      }
+    }
+  }
+
+  /** 后台任务完成（issue #389）：落审计事件，再按 turn 状态决定立即回注还是攒着。
+      回注 = 以新 turn 走 handleSendMessage 的唯一入口——不 mid-splice（ADR-0073）。
+      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足） */
+  function handleBackgroundDone(sessionId: string, c: BackgroundCompletion): void {
+    // 会话已被 purge：结果无处可去（enqueueMicroCompact 同款守卫）
+    if (!agents.has(sessionId)) return;
+    const full = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "background_task_completed",
+      ignorable: true, // 模型不消费，旧版本跳过照常重放
+      taskId: c.id,
+      cmd: c.cmd,
+      exitCode: c.result.exitCode,
+    });
+    send(CHANNELS.event, full);
+    const text = formatCompletion(c);
+    if (runningSessions.has(sessionId)) {
+      const queued = pendingBg.get(sessionId) ?? [];
+      queued.push(text);
+      pendingBg.set(sessionId, queued);
+      return;
+    }
+    void handleSendMessage(sessionId, text).catch((e) => console.error("后台任务回注失败", e));
   }
 
   ipcMain.handle(
