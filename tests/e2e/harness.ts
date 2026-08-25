@@ -43,9 +43,18 @@ export interface SubagentSeed {
   raw?: string;
 }
 
+export interface SkillSeed {
+  name: string;
+  description?: string;
+  /** frontmatter 之后的正文（注入进上下文的就是它） */
+  body?: string;
+}
+
 export interface LaunchOptions {
   /** 播进 `$HOME/.mr-otto/agents/` 的定义 */
   userAgents?: SubagentSeed[];
+  /** 播进 `$HOME/.mr-otto/skills/<名字>/SKILL.md` 的 skill */
+  skills?: SkillSeed[];
   /** 播进 `$HOME/.claude/agents/` 的定义（只读那一层） */
   claudeAgents?: SubagentSeed[];
   /** 追加/覆盖环境变量（假模型端点、key 之类） */
@@ -97,6 +106,19 @@ function seedInto(dir: string, seeds: SubagentSeed[] | undefined): void {
   for (const s of seeds) writeFileSync(join(dir, `${s.name}.md`), subagentFile(s));
 }
 
+/** skill 是**目录**不是单文件（`<根>/<名字>/SKILL.md`），所以不能跟 agent 共用
+    seedInto。名字用目录名和 frontmatter 两处写同一个 —— 产品取 frontmatter，
+    目录名只是路径 */
+function seedSkills(root: string, seeds: SkillSeed[] | undefined): void {
+  if (!seeds?.length) return;
+  for (const s of seeds) {
+    const dir = join(root, s.name);
+    mkdirSync(dir, { recursive: true });
+    const fm = [`name: ${s.name}`, `description: ${s.description ?? "测试用 skill。"}`];
+    writeFileSync(join(dir, "SKILL.md"), `---\n${fm.join("\n")}\n---\n\n${s.body ?? "测试用 skill 正文。"}\n`);
+  }
+}
+
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   if (!opts.packaged) {
     expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
@@ -107,6 +129,7 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   const userAgentsDir = join(home, CONFIG_DIR, "agents");
   seedInto(userAgentsDir, opts.userAgents);
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
+  seedSkills(join(home, CONFIG_DIR, "skills"), opts.skills);
 
   const app = await electron.launch({
     // 打好包的那一只从自己的 asar 里读入口，不能再把仓库根塞给它

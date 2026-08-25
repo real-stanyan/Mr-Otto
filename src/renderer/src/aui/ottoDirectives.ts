@@ -43,6 +43,57 @@ export function ottoDirectiveFormatter(skillNames: readonly string[]): Unstable_
 }
 
 /**
+ * 从输入框文本里找出 skill 指令（issue #438）。
+ *
+ * 为什么要有这个函数：`parse` 那头扫**整串**找 `$`，在哪都画 chip；而 submit()
+ * 那头原来只认 `text.startsWith("$")`。于是「用$apple-design 干活」在输入框里
+ * 亮着像被认出来了，回车却按纯文本发走——skill 没注入，模型收到一个它不认识的
+ * token 只能瞎猜。**界面骗人比功能没生效更坏**，所以发的这头对齐画的那头：
+ * 同一份名单、同一套「一路吃到底再回头比名单」的最长优先判定，扫全串。
+ *
+ * 判定与取舍：
+ * - 第一个命中的已安装名字算数；一句里写两个，后面那个留在正文里当字面量，
+ *   不报错也不注入（真有人这么写再说，现在猜不出他想要哪个）
+ * - 正文 = 原文摘掉 `$名字(参数)` 这个 token，**别的字一个不删**。
+ *   「用$apple-design 干活」的正文是「用 干活」——读着有点怪，但比自作聪明
+ *   砍掉「用」诚实。摘完只把接缝处的连续空白折成一个，不动别处
+ * - `$` 在行首时逐字节等价于旧行为（token 在最前面，摘掉再 trim = 旧的 slice）
+ *
+ * 认不出来返回 null —— 这时 submit() 还有第二道：行首打了 `$` 却没命中，
+ * 说明是打错了名字，当场报错，不能悄悄发给模型。
+ */
+export function findSkillDirective(
+  text: string,
+  skillNames: readonly string[]
+): { name: string; args?: string; task: string } | null {
+  const known = new Set(skillNames);
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "$") continue;
+    const name = readName(text, i);
+    if (name === "" || !known.has(name)) continue;
+
+    // 名字后面紧跟 `(...)` 才是参数；括号没闭合就当没写参数，`(` 留在正文里
+    let end = i + 1 + name.length;
+    let args: string | undefined;
+    if (text[end] === "(") {
+      const close = text.indexOf(")", end + 1);
+      if (close !== -1) {
+        args = text.slice(end + 1, close).trim() || undefined;
+        end = close + 1;
+      }
+    }
+
+    const before = text.slice(0, i);
+    const after = text.slice(end);
+    // 摘掉 token 之后两边各剩一个空白 = 接缝，折成一个；别处的空白不碰
+    const seam = /\s$/.test(before) && /^\s/.test(after);
+    const task = (seam ? before + after.replace(/^\s+/, "") : before + after).trim();
+    return { name, ...(args !== undefined ? { args } : {}), task };
+  }
+  return null;
+}
+
+/**
  * 斜杠指令的那一份(`/` 打头,type = "command")。名单传**不带斜杠**的名字
  * (`compact`、`rename`、MCP prompt 的 name)。选中只把 `/名字 ` 填进输入框,
  * 真正执行等回车 —— submit() 那头按首个空白前的名字分发(commands.ts)。

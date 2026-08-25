@@ -159,7 +159,12 @@ import {
 } from "@/components/assistant-ui/context-display.js";
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
-import { ottoDirectiveFormatter, ottoPathFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
+import {
+  findSkillDirective,
+  ottoDirectiveFormatter,
+  ottoPathFormatter,
+  ottoSlashFormatter,
+} from "./aui/ottoDirectives.js";
 import { segmentComposerText } from "./aui/composerDirectives.js";
 import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
@@ -2745,26 +2750,31 @@ function ChatComposer() {
     // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
     // 把图悄悄丢掉发一条空消息
     if (status === "running" && !text) return;
-    // "$skill名(参数) 任务正文"：名字和参数给 harness（注入 skill），正文才是给模型的话。
-    // 参数在括号里显式分隔（issue #214，ponytail 的 argument-hint 档位同款需求），
-    // 单 token、不含空格——首个空白之前整段是指令头。报错时不清输入框——让用户就地改
-    if (text.startsWith("$")) {
-      const space = text.search(/\s/);
-      const token = (space === -1 ? text : text.slice(0, space)).slice(1);
-      const paren = token.match(/^(.+?)\((.*)\)$/);
-      const name = paren ? paren[1]! : token;
-      const skillArgs = paren?.[2]?.trim() || undefined;
-      const task = space === -1 ? "" : text.slice(space + 1).trim();
-      if (!useChat.getState().skills.some((s) => s.name === name)) {
-        useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名，可带参数：$名字(参数)）` });
-        return;
-      }
-      if (!task) {
-        useChat.setState({ error: `任务不能为空（用法：$${name} 任务描述）` });
+    // "$skill名(参数)"：名字和参数给 harness（注入 skill），剩下的正文才是给模型的话。
+    // 参数在括号里显式分隔（issue #214，ponytail 的 argument-hint 档位同款需求）。
+    // 指令头**在句中也算**（issue #438）——判定和输入框高亮共用一份名单、同一套
+    // 最长优先规则（findSkillDirective），画的和发的从此是同一件事。
+    // 报错时不清输入框——让用户就地改
+    const directive = findSkillDirective(
+      text,
+      useChat.getState().skills.map((s) => s.name)
+    );
+    if (directive) {
+      if (!directive.task) {
+        useChat.setState({ error: `任务不能为空（用法：$${directive.name} 任务描述）` });
         return;
       }
       setInput("");
-      dispatch(task, name, skillArgs, queue);
+      dispatch(directive.task, directive.name, directive.args, queue);
+      return;
+    }
+    // 行首打了 `$` 却一个已安装的名字都没命中 = 名字打错了。当场说，别悄悄发给
+    // 模型——模型收到一个不认识的 token 只会瞎猜，这正是 #438 的病根
+    if (text.startsWith("$")) {
+      const space = text.search(/\s/);
+      const token = (space === -1 ? text : text.slice(0, space)).slice(1);
+      const name = token.match(/^(.+?)\((.*)\)$/)?.[1] ?? token;
+      useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名，可带参数：$名字(参数)）` });
       return;
     }
     setInput("");
