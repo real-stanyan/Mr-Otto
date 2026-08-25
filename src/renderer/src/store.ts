@@ -1374,7 +1374,10 @@ export const useChat = create<ChatState>((set, get) => ({
     if (get().checkoutBusyDir) return; // 一次只切一个,防连点把仓库切成薛定谔态
     set({ checkoutBusyDir: dir, checkoutError: null });
     try {
-      const result = await window.otter.gitCheckout(dir, branch);
+      // 当前会话在场就把它带上:主进程据此往日志追加 branch_checked_out,
+      // 时间线上那一行才有事实来源(ADR-0093)。没有会话(欢迎页)就只切不记
+      const sid = get().sessionId;
+      const result = await window.otter.gitCheckout(dir, branch, sid || undefined);
       if (result.ok) {
         await get().loadBranches(dir);
         // 图开着的话顺带刷新:切完分支还看着旧图会误导

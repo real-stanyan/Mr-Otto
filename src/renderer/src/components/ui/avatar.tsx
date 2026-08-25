@@ -1,5 +1,8 @@
-// shadcn/ui avatar(new-york-v4 registry)。改动仅两处,与仓库既有 ui/* 一致:
-// ① 去掉 "use client"(Electron 渲染层不是 RSC)② import 带 .js 后缀(nodenext)。
+// shadcn/ui avatar(new-york-v4 registry)。改动三处,前两处与仓库既有 ui/* 一致:
+// ① 去掉 "use client"(Electron 渲染层不是 RSC)② import 带 .js 后缀(nodenext)
+// ③ AvatarImage 加 object-cover(issue #411):registry 版只有 aspect-square size-full,
+//    非方图会被拉变形。本仓的头像来源不止本地上传(那条路 fileToAvatarDataUrl 会裁方),
+//    还有网关下发的第三方 URL——裁剪规则收在这一处,别让每个调用点各写一遍。
 import { Avatar as AvatarPrimitive } from "radix-ui";
 import type * as React from "react";
 
@@ -32,7 +35,7 @@ function AvatarImage({
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
-      className={cn("aspect-square size-full", className)}
+      className={cn("aspect-square size-full object-cover", className)}
       {...props}
     />
   );

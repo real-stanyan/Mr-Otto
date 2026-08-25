@@ -14,7 +14,12 @@ import { EventStore, type NewSessionEvent } from "../../src/session/store.js";
 
 // 类型级穷尽检查：这两个数组必须恰好覆盖各自的 union——多了少了 tsc 都红。
 // （satisfies 挡"写错的成员"，Exclude 检查挡"漏写的成员"。）
-const DURABLE: SessionEvent["type"][] = [
+//
+// 数组**不能写类型标注**（issue #411）：写了 `: SessionEvent["type"][]` 之后
+// `(typeof DURABLE)[number]` 就是整个 union 而不是实际写下的那几个字面量，
+// Exclude 恒为 never，"漏写的成员"这道检查静默失效——它当时确实漏了七个类型
+// 没人发现。让推断出字面量联合，这行才真的在挡人。
+const DURABLE = [
   "session_created",
   "user_message",
   "assistant_message",
@@ -38,13 +43,20 @@ const DURABLE: SessionEvent["type"][] = [
   "memory_nudge",
   "micro_compacted",
   "session_autotitled",
+  "tool_hook",
+  "project_instructions",
+  "request_envelope",
+  "background_task_completed",
+  "checkpoint_created",
+  "workspace_restored",
+  "branch_checked_out",
 ] satisfies SessionEvent["type"][];
 type MissingDurable = Exclude<SessionEvent["type"], (typeof DURABLE)[number]>;
 // union 有类型不在数组里时,这行赋值编译红
 const durableCovered: MissingDurable extends never ? true : never = true;
 void durableCovered;
 
-const TRANSIENT: TransientPushKind[] = [
+const TRANSIENT = [
   "assistant_delta",
   "tool_output",
   "approval_request",
