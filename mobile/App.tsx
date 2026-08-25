@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, Image, Keyboard, LayoutAnimation, Platform, Pressable,
   SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
   type ViewStyle,
 } from "react-native";
@@ -678,6 +678,58 @@ function Fleet({ store, onRepair, onDetailChange }: {
   );
 }
 
+/**
+ * 键盘占了屏幕底下多少,给一个直接能当 paddingBottom 用的数。
+ *
+ * **为什么不是 KeyboardAvoidingView**:它的 behavior="padding" 拿
+ * `_frame.y + _frame.height` 和键盘的 screenY 求差,而 `_frame` 来自 onLayout ——
+ * 那是**相对父级**的坐标,不是屏幕坐标。这一屏挂在 SafeAreaView 里(顶上还有
+ * 一条安全区),KAV 于是以为自己的底边比实际高了整整一个顶部安全区,让位就少
+ * 那么多,输入框照样被盖掉一截。包错层是一点不让,包对层是让少了——两次都不对,
+ * 原因不同,而第二次比第一次更难看出来。
+ *
+ * 自己量没这个歧义:measureInWindow 给的是屏幕坐标,和 endCoordinates.screenY
+ * 同一套系。只在 layout 时量一次存下来,键盘事件里就不必等异步回调——让位得和
+ * 键盘同一帧开始动,晚一帧就看得出来。
+ *
+ * Android 不接:系统的 adjustResize 已经把窗口缩过了,再让一次是双份。
+ */
+function useKeyboardInset(onShow: () => void): {
+  root: { ref: React.RefObject<View | null>; onLayout: () => void };
+  keyboard: number;
+} {
+  const ref = useRef<View | null>(null);
+  /** 这一屏底边在屏幕坐标里的位置 */
+  const bottom = useRef<number | null>(null);
+  const [inset, setInset] = useState(0);
+  const onLayout = (): void => {
+    ref.current?.measureInWindow((_x, y, _w, h) => { bottom.current = y + h; });
+  };
+
+  // 回调每次 render 都是新的,但监听只装一次:存进 ref,别让它进依赖
+  const shown = useRef(onShow);
+  shown.current = onShow;
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    // willChangeFrame 一个事件管收放两头:收起时 screenY 就是屏幕高度,差值自然归零
+    const sub = Keyboard.addListener("keyboardWillChangeFrame", (e) => {
+      const b = bottom.current;
+      if (b === null) return;
+      const next = Math.max(0, b - e.endCoordinates.screenY);
+      LayoutAnimation.configureNext({
+        duration: e.duration || 250,
+        update: { type: LayoutAnimation.Types.keyboard },
+      });
+      setInset(next);
+      if (next > 0) shown.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  return { root: { ref, onLayout }, keyboard: inset };
+}
+
 /** 一秒一跳的钟。只在有会话真的在跑时才装 —— 空闲时不必让 JS 线程每秒醒一次 */
 function useTicker(active: boolean): number {
   const [, bump] = useState(0);
@@ -820,26 +872,18 @@ function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, 
     if (atBottom.current) list.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
-  // 键盘顶上来的时候把最后几条跟着推上去。KeyboardAvoidingView 只负责让输入框
-  // 别被盖住,它不会动 ScrollView 的滚动位置——不补这一下,人一点输入框,
-  // 刚才在读的那几条就被键盘吃掉了
-  useEffect(() => {
-    const show = Keyboard.addListener(
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
-      () => { if (atBottom.current) list.current?.scrollToEnd({ animated: true }); },
-    );
-    return () => show.remove();
-  }, []);
+  const { root, keyboard } = useKeyboardInset(() => {
+    if (atBottom.current) list.current?.scrollToEnd({ animated: true });
+  });
 
   return (
-    // **整屏**都是 KeyboardAvoidingView,不能只包底下那一条。
-    // behavior="padding" 是按这个容器自己的 frame 和键盘 frame 求交集算出来的:
-    // 包在一个内容高度的小条上时,交集恒为 0——第一版就是这样,键盘一上来
-    // 输入框就跟着被盖住了。包整屏,padding 才落在有 flex 可压缩的
-    // ScrollView 上面,输入框被顶上去,时间线相应变短。
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    // paddingBottom 让位给键盘。**这里不能用 KeyboardAvoidingView**——见 useKeyboardInset。
+    // 之所以把内边距加在 flex:1 的外层而不是加在输入框上:外层的高度由父级定,
+    // 内边距不改变它自己的 frame,所以量出来的位置在键盘开合期间是稳的(不会自激)
+    <View
+      ref={root.ref}
+      onLayout={root.onLayout}
+      style={{ flex: 1, paddingBottom: keyboard }}
     >
       {/* 顶栏。返回在左上,和 iOS 的方向一致 */}
       <View style={{
@@ -929,7 +973,7 @@ function SessionView({ agent: a, now, messages, diag, online, onBack, onDecide, 
         ) : null}
         <Composer onSend={onSend} online={online} />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
