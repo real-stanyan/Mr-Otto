@@ -78,6 +78,24 @@ describe("sealedStream", () => {
     expect(o.open(s.seal(msg("x")))).toBeNull();
   });
 
+  // sealedStream.ts 里那句"只有验签通过才推进水位线"的可执行版。
+  // 没有这条，把 `highest = counter` 挪到 chachaOpen **之前**，整个文件照样全绿：
+  // 多帧用例都是先开成功再继续，失败用例又都是一次性的新 opener。
+  // 而挪上去的后果是:攻击者塞一帧带巨大计数器的**垃圾**(不需要任何密钥),
+  // 水位线就被顶到天上,之后每一帧真帧都因为 counter <= highest 被丢 —— 饿死。
+  it("伪造的大计数器帧验签失败 → 水位线不动，后面的真帧照开（不被饿死）", () => {
+    const s = createSealer(P, KEY, PREFIX);
+    const o = createOpener(P, KEY, PREFIX);
+    const real = s.seal(msg("real")); // 计数器 0
+
+    // 计数器 9999，tag 全零（对不上 nonce||key，必然验签失败）
+    const forged = new Uint8Array(8 + 4 + 16);
+    new DataView(forged.buffer).setBigUint64(0, 9999n, false);
+    expect(o.open(forged)).toBeNull();
+
+    expect(str(o.open(real))).toBe("real");
+  });
+
   it("截断的帧 → null，不抛", () => {
     const o = createOpener(P, KEY, PREFIX);
     expect(o.open(new Uint8Array(3))).toBeNull();
