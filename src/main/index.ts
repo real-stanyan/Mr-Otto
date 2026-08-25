@@ -114,7 +114,7 @@ import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { createRemoteBridge } from "./remoteBridge.js";
-import { createRemoteDevices } from "./remoteDevices.js";
+import { createRemoteDevices } from "../shared/remote/devices.js";
 import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
@@ -566,6 +566,7 @@ void app.whenReady().then(() => {
       api: createSupabaseDevicesApi(supabase.raw),
       store: idStore,
       crypto,
+      selfKind: "desktop",
       log: (m) => console.warn(m),
     });
     return { bridge, devices };
