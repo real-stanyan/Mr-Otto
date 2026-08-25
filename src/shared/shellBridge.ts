@@ -179,16 +179,6 @@ export interface TurnStatusUpdate {
     （基线 = 本 turn 第一次碰它之前的内容，最新 = 最后一次写入的内容）。
     lines 是与审批卡同一份取景（shared/diffView.ts）；超大文件算不动时缺席，
     只留统计（additions/deletions 退化为行数计数），UI 显示"文件过大"兜底 */
-/** 项目指令通知（issue #353）：发现指令文件但工作区未信任——注入为空，
-    UI 提示并给"信任并加载"入口。transient：事实是 project_instructions 事件
-    （信任后追加），本通知只是弹提示的信号 */
-export interface InstructionsNotice {
-  sessionId: string;
-  workspace: string;
-  /** 发现的指令文件路径（provenance 预览——用户决定信不信任前先看清是哪几份） */
-  files: string[];
-}
-
 export interface TurnDiffFile {
   path: string;
   additions: number;
@@ -636,11 +626,6 @@ export interface ShellBridge {
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
   /** turn 级聚合 diff 推送（issue #345）：每次写文件工具完成后整份替换 */
   onTurnDiff(cb: (update: TurnDiffUpdate) => void): Unsubscribe;
-  /** 项目指令通知（issue #353）：发现指令文件但工作区未信任 */
-  onInstructionsNotice(cb: (notice: InstructionsNotice) => void): Unsubscribe;
-  /** 信任工作区并当场注入项目指令（issue #353）：project_instructions 事件
-      随后从 onEvent 流回。跨会话持久（trustedWorkspaces.json） */
-  trustWorkspace(sessionId: string): Promise<void>;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
   onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
@@ -974,8 +959,6 @@ export const CHANNELS = {
   askUserRequest: "otter:askUserRequest",
   turnStatus: "otter:turnStatus",
   turnDiff: "otter:turnDiff",
-  instructionsNotice: "otter:instructionsNotice",
-  trustWorkspace: "otter:trustWorkspace",
   assistantDelta: "otter:assistantDelta",
   toolOutput: "otter:toolOutput",
 } as const;

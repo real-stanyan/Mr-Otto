@@ -140,8 +140,6 @@ const bridge: ShellBridge = {
   onAskUserRequest: subscribe(CHANNELS.askUserRequest),
   onTurnStatus: subscribe(CHANNELS.turnStatus),
   onTurnDiff: subscribe(CHANNELS.turnDiff),
-  onInstructionsNotice: subscribe(CHANNELS.instructionsNotice),
-  trustWorkspace: (sessionId) => ipcRenderer.invoke(CHANNELS.trustWorkspace, sessionId),
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),
   onTerminalData: subscribe(CHANNELS.terminalData),

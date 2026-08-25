@@ -1,17 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { join } from "node:path";
 import {
   findProjectInstructions,
   INSTRUCTIONS_BYTE_BUDGET,
   type InstructionFsReader,
 } from "../../src/main/projectInstructions.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { loadTrustedWorkspaces, addTrustedWorkspace } from "../../src/main/workspaceTrust.js";
 import { deriveMessages } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-// 项目指令文件加载（issue #353）：拼接不覆盖 + 字节预算 + 信任门禁 + provenance。
+// 项目指令文件加载（issue #353；信任门禁在 #425 撤掉）：拼接不覆盖 + 字节预算 + provenance。
 
 /** 假文件系统：{路径: 内容}，目录用 "<dir>/.git": "" 标记 */
 function fakeFs(files: Record<string, string>): InstructionFsReader {
@@ -77,19 +73,6 @@ describe("findProjectInstructions", () => {
     expect(
       findProjectInstructions("/repo", fakeFs({ "/repo/.git": "", "/repo/AGENTS.md": "  \n" })).segments
     ).toEqual([]);
-  });
-});
-
-describe("workspaceTrust（信任门禁）", () => {
-  it("默认一个都不信任（fail-closed）；addTrustedWorkspace 跨读取持久且幂等", () => {
-    const p = join(mkdtempSync(join(tmpdir(), "trust-")), "trusted.json");
-    expect(loadTrustedWorkspaces(p).size).toBe(0);
-    addTrustedWorkspace(p, "/repo");
-    addTrustedWorkspace(p, "/repo");
-    expect([...loadTrustedWorkspaces(p)]).toEqual(["/repo"]);
-    // 坏文件 = 全不信任，不是全信任
-    writeFileSync(p, "{broken");
-    expect(loadTrustedWorkspaces(p).size).toBe(0);
   });
 });
 

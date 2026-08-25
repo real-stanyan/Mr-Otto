@@ -394,8 +394,8 @@ export interface ToolHookEvent extends SessionEventBase {
     文件在会话开场注入模型上下文——模型可见的新信息必须落盘（先落盘再喂模型），
     且 content 是注入时刻的快照：文件之后被改/被删，重放不失真（skill_invoked
     同款自包含）。segments 保留每段来源路径（provenance），UI 据此展示
-    "本次注入了哪几份指令"。只有**已信任**的工作区才会产生此事件（信任门禁
-    在装配层，见 main/workspaceTrust.ts） */
+    "本次注入了哪几份指令"。开场发现指令文件就产生此事件——#353 那道
+    "先问信不信任"的门禁在 #425 撤掉了（选工作区 + 开口说话即授权） */
 export interface ProjectInstructionsEvent extends SessionEventBase {
   type: "project_instructions";
   segments: { path: string; content: string }[];

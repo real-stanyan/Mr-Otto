@@ -51,7 +51,6 @@ import { SimulatorPanel } from "./components/SimulatorPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
-import { InstructionsNoticeBanner } from "./components/InstructionsNoticeBanner.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
@@ -3194,7 +3193,6 @@ export function App() {
             {/* 「消息没发出去」= 输入框的回执,所以贴着输入框,不在消息流里 */}
             <SendErrorBanner />
             {/* 项目指令信任横幅(issue #353):开工前的决定,同样贴着输入框 */}
-            <InstructionsNoticeBanner />
             {/* 会话框 = 单一容器：输入行 + 控件行融为一体（Claude Code 版式）。
                 焦点环挂在容器上(focus-within)——整个会话框是一个控件。
                 外面再套一层投放区:文件拖到会话框上就是附件(与粘贴同一道闸门) */}

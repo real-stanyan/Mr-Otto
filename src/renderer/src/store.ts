@@ -32,7 +32,6 @@ import type {
   StartSessionOptions,
   TurnStatus,
   TurnDiffUpdate,
-  InstructionsNotice,
   UpdaterState,
   McpServerConfig,
   McpServersSnapshot,
@@ -157,9 +156,6 @@ interface ChatState {
       保留到下一轮的第一次推送（turnId 换代自动覆盖）——turn 刚收尾时
       "刚才那轮改了什么"正是要读的东西，不随 idle 清 */
   turnDiffBySession: Record<string, TurnDiffUpdate>;
-  /** 项目指令通知（issue #353）：发现指令文件但工作区未信任。按会话挂靠，
-      信任/忽略后清掉；不落日志（事实是信任后追加的 project_instructions 事件） */
-  instructionsNoticeBySession: Record<string, InstructionsNotice>;
   /** OTA 更新器镜像（ADR-0075）。null = 快照还没回来；ready/manual 时侧栏
       出更新 pill + 齿轮亮点（UpdatePill.tsx）。boot() 拉首帧 + 订阅推送 */
   updater: UpdaterState | null;
@@ -515,10 +511,6 @@ interface ChatState {
   /** 插话（issue #344）：turn 跑着时把话注进去，不中断、已完成的步骤不作废。
       乐观锁失败（turn 恰好收尾/换代）reject——错误横幅提示重发，消息未发出 */
   steer(text: string): Promise<void>;
-  /** 信任当前会话的工作区并注入项目指令（issue #353）。事件从 onEvent 流回 */
-  trustWorkspace(sessionId: string): Promise<void>;
-  /** 本次不信任：收起横幅（不持久——下次在该工作区新建会话会再问） */
-  dismissInstructionsNotice(sessionId: string): void;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
@@ -682,7 +674,6 @@ export const useChat = create<ChatState>((set, get) => ({
   statusBySession: {},
   turnIdBySession: {},
   turnDiffBySession: {},
-  instructionsNoticeBySession: {},
   compactingBySession: {},
   queuedBySession: {},
   approvals: {},
@@ -1706,11 +1697,6 @@ export const useChat = create<ChatState>((set, get) => ({
         turnDiffBySession: { ...s.turnDiffBySession, [update.sessionId]: update },
       }))
     );
-    window.otter.onInstructionsNotice((notice) =>
-      set((s) => ({
-        instructionsNoticeBySession: { ...s.instructionsNoticeBySession, [notice.sessionId]: notice },
-      }))
-    );
 
     // 会话列表是侧栏常驻数据，不分 phase 都要；skill 列表给 $ 菜单和库页；账号同理
     // keyStatus 也进冷启动:型号下拉框要按"这家配了 key 没"排序和标记,
@@ -2013,23 +1999,6 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
-  },
-
-  async trustWorkspace(sessionId) {
-    try {
-      await window.otter.trustWorkspace(sessionId);
-      set((s) => ({
-        instructionsNoticeBySession: without(s.instructionsNoticeBySession, sessionId),
-      }));
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  dismissInstructionsNotice(sessionId) {
-    set((s) => ({
-      instructionsNoticeBySession: without(s.instructionsNoticeBySession, sessionId),
-    }));
   },
 
   async steer(text) {

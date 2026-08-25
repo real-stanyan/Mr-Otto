@@ -4,7 +4,8 @@
 // ① 查找：从 workspace 向上找 project root（标记 .git），收集 root → workspace
 //    沿途每层的指令文件，**按序拼接**（不是就近覆盖）；不越过 project root
 // ② 字节预算：总量上限，递减耗尽即停——防超大指令文件撑爆上下文
-// ③ 信任门禁在调用方（index.ts + workspaceTrust.ts）：未信任的工作区不调本函数
+// ③ 无信任门禁（issue #425 撤掉 #353 的那一条）：选了工作区并开口说话即授权，
+//    找到就注入；注入了哪几份由 project_instructions 事件在日志里自解释
 // ④ provenance：每段带来源路径，注入事件原样携带，UI 展示"注入了哪几份"
 // ⑤ `.override` 局部覆盖文件名优先（个人 gitignore 覆盖共享那份）
 //
