@@ -1,4 +1,6 @@
-# ADR-0085：harness 加固一轮——对照 dsh 与 hermes 的六笔借鉴
+# ADR-0086：harness 加固一轮——对照 dsh 与 hermes 的六笔借鉴
+
+> 原为 ADR-0085：与 main 上先合入的「官方停供 token」ADR 撞号，按 ADR-0074 在合并前改号。
 
 - 状态：已接受
 - 关联：issue #383；对照研究 deepseek-harness（dsh）与 NousResearch/hermes-agent
