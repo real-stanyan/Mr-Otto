@@ -12,11 +12,15 @@ import { useChat } from "../store.js";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
 import { SidebarNub } from "./SidebarNub.js";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "./ui/dropdown-menu.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { previewLang } from "../lib/previewLang.js";
+import type { EditorApp } from "../../../shared/editors.js";
 import { joinRel, type FileEntry, type FileHit, type FilePreview } from "../../../shared/files.js";
 
 // 插件数组提到模块级:内联的 [remarkGfm] 每次渲染都是新引用(同 ProtocolView 的理由)
@@ -40,6 +44,7 @@ export function FilesView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewNote, setPreviewNote] = useState("");
+  const [editors, setEditors] = useState<EditorApp[]>([]);
 
   const loadDir = useCallback(
     async (rel: string) => {
@@ -59,6 +64,12 @@ export function FilesView() {
     },
     [root]
   );
+
+  // 装了哪些编辑器现探一次(开面板时)。不缓存进 store:用户装完新编辑器
+  // 关了面板再开就该看得见,不必重启 app
+  useEffect(() => {
+    void (async () => setEditors(await window.otter.filesEditors()))();
+  }, []);
 
   // 换会话 = 换根:清树、清搜索,重新列根目录
   useEffect(() => {
@@ -263,12 +274,35 @@ export function FilesView() {
             >
               <Copy className="size-[13px]" />
             </Button>
-            <Button
-              variant="ghost" size="sm" title="用外部程序打开"
-              onClick={() => void window.otter.filesReveal(root, selected, "open")}
-            >
-              <ExternalLink className="size-[13px]" />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" title="打开方式" data-testid="files-open-with">
+                  <ExternalLink className="size-[13px]" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {editors.map((ed) => (
+                  <DropdownMenuItem
+                    key={ed.name}
+                    title={ed.appPath}
+                    onClick={() => void window.otter.filesReveal(root, selected, "app", ed.name)}
+                  >
+                    {ed.name}
+                  </DropdownMenuItem>
+                ))}
+                {editors.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  onClick={() => void window.otter.filesReveal(root, selected, "open")}
+                >
+                  系统默认程序
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => void window.otter.filesReveal(root, selected, "folder")}
+                >
+                  在访达中显示
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button variant="ghost" size="sm" title="关闭预览" onClick={() => setSelected(null)}>
               <X className="size-[13px]" />
             </Button>

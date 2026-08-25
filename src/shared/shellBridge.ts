@@ -24,6 +24,7 @@ import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResul
 import type {
   FileEntry, FileHit, FilePreview, FilesResult, FilesSearchOpts,
 } from "./files.js";
+import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -579,8 +580,14 @@ export interface ShellBridge {
   filesSearch(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
   /** 只读预览。>512KB 截断,二进制不预览(kind: "binary",detail 是字节数) */
   filesRead(root: string, rel: string): Promise<FilesResult<FilePreview>>;
-  /** 交给系统:open = 默认程序,folder = 在 Finder 中显示。同样过根内校验 */
-  filesReveal(root: string, rel: string, how: "open" | "folder"): Promise<FilesResult<null>>;
+  /** 交给系统:open = 默认程序,folder = 在 Finder 中显示,app = 指定编辑器。
+      同样过根内校验;appName 必须是 filesEditors() 给过的名字 */
+  filesReveal(
+    root: string, rel: string, how: "open" | "folder" | "app", appName?: string
+  ): Promise<FilesResult<null>>;
+  /** 本机装了哪些编辑器(固定名单探 /Applications 与 ~/Applications)。
+      现探不缓存:装完新编辑器不该重启 app 才看得见 */
+  filesEditors(): Promise<EditorApp[]>;
   /** 告诉主进程"我此刻在哪个工作区":它据此算 repoKey/分支并向好友广播(issue #167)。
       null = 没有会话。只读 git,不写;主进程按已知会话围栏校验这个路径 */
   setPresenceWorkspace(repoDir: string | null): Promise<void>;
@@ -937,6 +944,7 @@ export const CHANNELS = {
   filesSearch: "otter:filesSearch",
   filesRead: "otter:filesRead",
   filesReveal: "otter:filesReveal",
+  filesEditors: "otter:filesEditors",
   setPresenceWorkspace: "otter:setPresenceWorkspace",
   terminalList: "otter:terminalList",
   terminalOpen: "otter:terminalOpen",

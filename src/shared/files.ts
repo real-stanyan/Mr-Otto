@@ -31,7 +31,10 @@ export type FilesErrorKind =
   | "too-large"
   | "binary"
   | "rg-missing"
-  | "search-error";
+  | "search-error"
+  // 要求用一个不在候选名单里的 app 打开。名单是主进程探出来的,
+  // 渲染层只会回传它给过的项——出现这个 kind 说明有人绕过了菜单
+  | "unknown-app";
 
 export type FilesResult<T> =
   | { ok: true; value: T }

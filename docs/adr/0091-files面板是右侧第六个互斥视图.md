@@ -28,6 +28,8 @@ Otto 这边有一半是现成的：图标那套（material-icon-theme@5.37.0，6
 
 6. **主进程直用 fs / child_process 合规**，不经 `ExecutionWorld`。这是 app 功能不是 agent 工具，同 `protocolService` / `gitGraphService` / SQLite 日志的先例；架构门禁（`tests/architecture.test.ts`）管的是 `src/tools`。`filesService.ts` 刻意也不 import electron——`shell.openPath` / `showItemInFolder` 由 `index.ts` 注入（同 browserHub 的 `webContentsViewFactory`），否则模块在 vitest 里加载不起来，三条安全边界就没法在单测里钉。
 
+7. **「用编辑器打开」给候选，不替用户决定**：那颗外部打开按钮是个下拉菜单，列出本机装了的编辑器（固定名单探 `/Applications` 与 `~/Applications`）+ 系统默认 + 在访达中显示。每次点都弹菜单，不记忆上次选择——同一个人对不同文件用不同编辑器是常态（`.md` 用一个、`.ts` 用另一个），记忆只会让人不断地改回来。名单是主进程探出来的，`reveal` 只认名单里的名字，渲染层塞别的字符串进不了 `open -a`。
+
 ## 权衡与后果
 
 - **多一条 ripgrep 的软依赖**。缺失时降级到 Node 遍历，功能不断，只是慢且忽略规则只能近似。

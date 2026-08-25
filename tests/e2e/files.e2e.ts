@@ -35,6 +35,11 @@ test("#400 Files 面板:⌘⇧E 开、展开一层、点文件出预览、开终
     await fileRow.click();
     await expect(win.getByTestId("files-preview")).toContainText("export const hello", { timeout: 10_000 });
 
+    // 「打开方式」菜单:系统默认那条恒在(本机装没装编辑器都不影响这条)
+    await win.getByTestId("files-open-with").click();
+    await expect(win.getByRole("menuitem", { name: "系统默认程序" })).toBeVisible();
+    await win.keyboard.press("Escape");
+
     // 互斥:开终端,Files 面板整个消失
     await win.keyboard.press("Control+`");
     await expect(win.getByTestId("files-tree")).toHaveCount(0);

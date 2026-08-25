@@ -75,6 +75,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 派活总量上限（SUBAGENT_SESSION_CAP） | 单会话派活硬上限 100：计数从父日志 `subagent_spawned` 推导（不另立计数器），闸在建子会话之前，超限抛错给模型让它收手。与长 turn 软告警互补：那边喊的是模型步数，这边拦的是「每次派活烧一整个子会话」的失控循环 | ADR-0090 决定 4、issue #395；`src/main/subagentRunner.ts` |
 
 - **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。树和搜索都全显（含 `node_modules`、隐藏文件），一条规矩管两处。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0091，同 ADR-0031 的边界）。
+- **打开方式菜单**：Files 面板预览头上那颗外部打开按钮，列出本机探到的编辑器（`EDITOR_CATALOG` 固定名单 × `/Applications`、`~/Applications`）+ 系统默认 + 访达。每次弹菜单不记忆；`filesReveal` 只认 `filesEditors()` 给过的名字（ADR-0091 决策 7）。
 - **懒加载列目录**：Files 面板展开哪个目录才发一次 `filesList`，不是开面板扫全树。树能全显（含 `node_modules`）的前提就是这条（ADR-0091）。
 
 ## Key invariants

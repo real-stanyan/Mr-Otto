@@ -1624,9 +1624,12 @@ void app.whenReady().then(() => {
     files.search(root, query, opts)
   );
   ipcMain.handle(CHANNELS.filesRead, (_e, root: string, rel: string) => files.read(root, rel));
-  ipcMain.handle(CHANNELS.filesReveal, (_e, root: string, rel: string, how: "open" | "folder") =>
-    files.reveal(root, rel, how)
+  ipcMain.handle(
+    CHANNELS.filesReveal,
+    (_e, root: string, rel: string, how: "open" | "folder" | "app", appName?: string) =>
+      files.reveal(root, rel, how, appName)
   );
+  ipcMain.handle(CHANNELS.filesEditors, () => files.editors());
 
   // 好友分支在场(issue #167):渲染层报当前会话的工作区,这里盯 HEAD、算 repoKey/分支,
   // 交 FriendsManager 两条腿广播。路径按 known() 校验——虽然这条只读 git 不写盘,

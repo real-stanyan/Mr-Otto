@@ -11,8 +11,10 @@
 // 由 agent 自己走 read 工具,那条路径才有日志。
 
 import { execFile } from "node:child_process";
-import { closeSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
+import { EDITOR_CATALOG, editorSearchDirs, type EditorApp } from "../shared/editors.js";
 import {
   classifyRgError, isBinaryish, matchesFilter, parseRgJson, sortEntries, PREVIEW_MAX_BYTES,
   type FileEntry, type FileHit, type FilePreview, type FilesErrorKind, type FilesResult,
@@ -33,11 +35,28 @@ export interface FilesDeps {
   openPath(abs: string): void;
   /** 在 Finder 里选中它(同上) */
   showInFolder(abs: string): void;
+  /** 路径存在吗(探编辑器 bundle 用) */
+  exists(abs: string): boolean;
+  /** 当前用户的家目录(~/Applications 那一层) */
+  homeDir(): string;
+  /** 用指定 app 打开:macOS 的 `open -a <app> <file>`。失败不抛给调用方,
+      只记一笔——用户能看见的失败信号是"文件没在编辑器里打开" */
+  openWith(appPath: string, target: string): void;
 }
 
 /** fs/rg 那五个的真实现。electron 那两个由 index.ts 补上——这里补不了,
     import electron 会让本模块在 vitest 里加载失败 */
 export const nodeFilesDeps: Omit<FilesDeps, "openPath" | "showInFolder"> = {
+  exists(abs) {
+    return existsSync(abs);
+  },
+  homeDir() {
+    return homedir();
+  },
+  openWith(appPath, target) {
+    // 参数走数组不过 shell;appPath 只可能来自本服务探出来的名单(reveal 里校验过)
+    execFile("open", ["-a", appPath, target], () => {});
+  },
   listDir(abs) {
     return readdirSync(abs, { withFileTypes: true }).map((d) => {
       // 符号链接按目标类型归类;目标读不到(断链)就退回 dirent 自己的判断
@@ -99,10 +118,15 @@ function classifyFsError(err: unknown): "no-dir" | "denied" {
 }
 
 export interface FilesService {
+  /** 本机装了哪些编辑器(按 EDITOR_CATALOG 的顺序)。现探不缓存:
+      用户装完新编辑器不该重启 app 才看得见 */
+  editors(): EditorApp[];
   list(root: string, relDir: string): FilesResult<FileEntry[]>;
   search(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
   read(root: string, rel: string): FilesResult<FilePreview>;
-  reveal(root: string, rel: string, how: "open" | "folder"): FilesResult<null>;
+  /** open = 系统默认程序,folder = 在 Finder 中显示,app = 指定编辑器
+      (appName 必须是 editors() 给过的名字) */
+  reveal(root: string, rel: string, how: "open" | "folder" | "app", appName?: string): FilesResult<null>;
 }
 
 export function createFilesService(deps: FilesDeps): FilesService {
@@ -120,6 +144,21 @@ export function createFilesService(deps: FilesDeps): FilesService {
   }
 
   return {
+    editors() {
+      const dirs = editorSearchDirs(deps.homeDir());
+      const out: EditorApp[] = [];
+      for (const name of EDITOR_CATALOG) {
+        for (const dir of dirs) {
+          const appPath = `${dir}/${name}.app`;
+          if (deps.exists(appPath)) {
+            out.push({ name, appPath });
+            break; // 两层都装了只算一个:菜单里出现两条同名项没有意义
+          }
+        }
+      }
+      return out;
+    },
+
     list(root, relDir) {
       const abs = inside(root, relDir);
       if (abs === null) return fail("outside-root", relDir);
@@ -185,9 +224,17 @@ export function createFilesService(deps: FilesDeps): FilesService {
       }
     },
 
-    reveal(root, rel, how) {
+    reveal(root, rel, how, appName) {
       const abs = inside(root, rel);
       if (abs === null) return fail("outside-root", rel);
+      if (how === "app") {
+        // 只认自己探出来的那份名单:菜单给什么就只能开什么。渲染层被注入了
+        // 别的字符串也进不了 `open -a`
+        const app = this.editors().find((e) => e.name === appName);
+        if (app === undefined) return fail("unknown-app", String(appName));
+        deps.openWith(app.name, abs);
+        return { ok: true, value: null };
+      }
       if (how === "open") deps.openPath(abs);
       else deps.showInFolder(abs);
       return { ok: true, value: null };

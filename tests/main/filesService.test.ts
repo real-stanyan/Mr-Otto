@@ -18,6 +18,9 @@ function deps(over: Partial<FilesDeps> = {}): FilesDeps {
     execRg: async () => ({ stdout: "" }),
     openPath: () => {},
     showInFolder: () => {},
+    exists: (abs) => abs === "/Applications/Visual Studio Code.app",
+    homeDir: () => "/Users/me",
+    openWith: () => {},
     ...over,
   };
 }
@@ -149,7 +152,44 @@ describe("search", () => {
   });
 });
 
+describe("editors", () => {
+  it("只列探到的那几个,顺序照名单", () => {
+    const svc = createFilesService(deps({
+      exists: (abs) => abs.endsWith("/Visual Studio Code.app") || abs.endsWith("/Zed.app"),
+    }));
+    expect(svc.editors().map((e) => e.name)).toEqual(["Visual Studio Code", "Zed"]);
+  });
+
+  it("两层都装了只算一条——菜单里出现两条同名项没有意义", () => {
+    const svc = createFilesService(deps({ exists: () => true }));
+    const names = svc.editors().map((e) => e.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("一个都没装 = 空数组,不是错误(菜单只剩「系统默认」)", () => {
+    const svc = createFilesService(deps({ exists: () => false }));
+    expect(svc.editors()).toEqual([]);
+  });
+});
+
 describe("reveal", () => {
+  it("指定编辑器:走 open -a,传的是探出来的那份 bundle 名", () => {
+    const openWith = vi.fn();
+    const svc = createFilesService(deps({ openWith }));
+    const r = svc.reveal(ROOT, "a.ts", "app", "Visual Studio Code");
+    expect(r.ok).toBe(true);
+    expect(openWith).toHaveBeenCalledWith("Visual Studio Code", "/w/a.ts");
+  });
+
+  it("名单外的 app 一律拒绝——菜单给什么就只能开什么", () => {
+    const openWith = vi.fn();
+    const svc = createFilesService(deps({ openWith }));
+    const r = svc.reveal(ROOT, "a.ts", "app", "/tmp/evil.app");
+    expect(!r.ok && r.kind).toBe("unknown-app");
+    expect(openWith).not.toHaveBeenCalled();
+  });
+
+
   it("外部打开同样过根内校验", () => {
     const openPath = vi.fn();
     const svc = createFilesService(deps({
