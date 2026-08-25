@@ -160,6 +160,25 @@ function pendingAfter(
   return pending;
 }
 
+/** 此刻**已经缓存**在服务端的 prompt token 数 —— 取最近一次带账单的
+    assistant_message 的 cachedTokens（issue #434）。
+
+    用途只有一个：换型号之前告诉人这一下要作废多少。缓存是**按型号**存的，
+    换过去那一刻新型号从没见过这段前缀，整个上下文按未命中价重算一次
+    （DeepSeek 的命中价约为未命中的十分之一，所以那一轮≈连跑十轮）。
+
+    只是"上一次账单说缓存了这么多"，不是服务端此刻的真实状态：缓存会过期、
+    会被挤掉（实测换走再换回来只捡回一半）。所以文案说的是量级，不承诺精确。
+    没有账单（新会话/本机模型不报 cache）= 0，调用方据此不显示这句话。 */
+export function cachedTokensNow(events: SessionEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "assistant_message" || !e.usage) continue;
+    return Math.max(0, e.usage.cachedTokens ?? 0);
+  }
+  return 0;
+}
+
 /** 当前上下文占用估计。
     锚点：最近一次带 usage 的事件（API 报的账单，事实）；compact 锚点 = 摘要体积
     （之后历史只剩摘要）。尾巴：锚点之后会进入下一次 prompt 的事件，按字符估算——
