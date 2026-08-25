@@ -187,3 +187,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `tests/e2e/` — Playwright-electron 端到端（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）。既是冒烟，也是四张真机验收清单的落地处：`harness.ts` 换 `HOME` 做隔离、`fakeModel.ts` 是本机假模型，见 ADR-0076
 - `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）
 - `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）
+- `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/gateway/src/relay.ts`（ADR-0093 / 0094 / 0095 / 0096）

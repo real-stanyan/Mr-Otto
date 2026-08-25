@@ -63,6 +63,10 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 合成收口（interrupted） | resume 时发现开着的 turn（最后一条 turn_ended 之后仍有 turn 活动）补 `turn_ended{outcome:"interrupted"}`——loop 永不产生这个值，「修的」和「跑出来的」永远可区分。追加不改写、幂等；崩溃空跑 turn 从此被 barrenTurns 正确跳出上下文 | ADR-0086 决定 4；agent.ts resume 修复块 |
 | 新鲜区折叠（maxFreshToolOutputChars） | 投影对保真区 tool_result 的独立上限（默认 50K 字符；老区仍 400）——此前新鲜区无上限，read_file/MCP 一条超长输出直接吃穿窗口。日志存全文不动（UI/摘要人照读），折叠只住投影层；hermes 的 spill-to-disk 在本仓不需要：日志本身就是那块盘 | ADR-0086 决定 5；deriveMessages tool_result case |
 | 微压缩（micro compact） | 设置开启时每 turn 收口后（turn 锁外、串行）把最老的未吸收 exchange 的 assistant/tool 部分并进 running summary，落 `micro_compacted{summary, coversUpTo(seq)}`；投影只认最新一条，把被吸收事件换成一条 `[对话摘要]` assistant 消息，user_message 永不吸收；保护区 = 最新 context_compacted 后第一个 exchange + 尾部 keepRecentTurns；摘要 >2000 token 先 defrag；默认关（每轮改写历史会让前缀缓存失效） | ADR-0064 |
+| 盲管道（blind pipe） | `services/gateway` 的 `/rl/v1/*` 中继：只按 `user_id` 把桌面那一端与手机那一端的字节互转，**不解析负载、不落盘、不打印**。三条都是安全性质而非省事——端到端加密的密文对中继就该是不透明字节。对端不在线直接丢弃，不排队（排队 = 落盘）。有专门的测试守着"负载从不进日志" | ADR-0094；`services/gateway/src/relay.ts`、`tests/gateway/relay.test.ts` |
+| TOFU pin | 首次信任的落地：手机首次连某台桌面时把它的 `identity_pub`（Ed25519）pin 进本地，之后握手一律用**pin 住的**那把公钥验签，对不上就拒绝连接并红字告警，不静默接受；换电脑要用户显式确认一次。选它是因为「按账号配对」与 E2E 天然打架——密钥若从账号体系下发，掌握 Supabase 的人就能发一把假的。代价写在 ADR-0094 的威胁模型表里：首次 pin 之前的假公钥挡不住 | ADR-0094；`src/shared/remote/handshake.ts` 的 `deriveSession` |
+| 上行帧 / 下行帧（UpFrame / DownFrame） | 手机与桌面之间的加密载荷，方向分明：下行（桌面→手机）是 `fleet` / `timeline` / `ping`；上行（手机→桌面）恰好五个词 `approve` / `deny` / `send` / `watch` / `unwatch`，没有 `focusSession`，`approve` 没有 grant 档（ADR-0095）。解码规矩是"认得的键集合之外还有别的键 = 整条丢弃"，不是剥掉多余字段放行。**与握手包 `HandshakeHello` 不是一回事**：后者是明文、走同一根线、在加密建立之前发 | ADR-0093 / ADR-0095；`src/shared/remote/frames.ts` |
+| 密封流（sealed stream） | 单向加密流的线格式：`[8 字节大端计数器][密文][16 字节 tag]`，nonce = 4 字节前缀（握手派生，每方向一条）+ 8 字节计数器。丢掉 libsodium secretstream 换桌面侧零依赖，代价是 nonce 管理与重放检测自己写：计数器不回绕（到顶抛错、断线重连）、收端拒收不严格递增的计数器、**水位线只在验签通过后推进**（否则伪造一个大计数器就能饿死后续真帧）。同 key 同 nonce 是灾难性失效，所以每连接的临时密钥绝不可复用 | ADR-0094 / ADR-0096；`src/shared/remote/sealedStream.ts` |
 
 ## Key invariants
 
