@@ -24,8 +24,11 @@ function useClearTrafficLights(): boolean {
 
 /** 窗口模式下开关钮和搜索钮共用的 top:(44 - 28) / 2 = 8,中心 22 = HEADER_H 的中心 */
 export const TOGGLE_TOP = "top-[8px]";
-/** 搜索钮紧贴开关钮右侧:72 + 28 + 4 */
-export const SEARCH_LEFT = "left-[104px]";
+/** 开关钮左缘。三颗灯占到 x≈71,留 11 的空当再起这一组 —— 贴着灯排会看成"五颗一排",
+    而它们是两组东西:系统的窗口控制 vs 应用的导航 */
+export const TOGGLE_LEFT = "left-[82px]";
+/** 搜索钮紧贴开关钮右侧:82 + 28 + 4 */
+export const SEARCH_LEFT = "left-[114px]";
 
 /** 真正的开关钮。挂一次在应用根部(SidebarInset 之外,不跟任何头部走) */
 export function SidebarToggle() {
@@ -43,10 +46,13 @@ export function SidebarToggle() {
       size="icon"
       className={cn(
         "sidebar-toggle fixed z-50 size-7",
-        // 窗口模式:红绿灯 (16,16) 占到 x=68,钮从 72 起;top 8 + 钮高 28 → 中心 22,
-        // 和 h-11 顶栏、红绿灯中心同一条线(搜索钮在 App.tsx 里以同一 top 贴在它右侧,
-        // 数字见 TOGGLE_TOP / SEARCH_LEFT);全屏没有红绿灯:贴左上
-        clear ? `${TOGGLE_TOP} left-[72px]` : "top-3 left-3",
+        // 窗口模式:红绿灯左边距 16、占到 x≈71,钮从 82 起(中间留空当分组);
+        // top 8 + 钮高 28 → 中心 22,
+        // 和 h-11 顶栏同一条线。灯那边是反过来对齐这条线的:它是原生 chrome,坐标随
+        // zoomFactor 现算(src/main/trafficLights.ts),不能写死一组数
+        // (搜索钮在 App.tsx 里以同一 top 贴在它右侧,数字见 TOGGLE_TOP / SEARCH_LEFT);
+        // 全屏没有红绿灯:贴左上
+        clear ? `${TOGGLE_TOP} ${TOGGLE_LEFT}` : "top-3 left-3",
         // 收起态:从侧栏消失的左缘滑入(空间一致性);展开态它就是侧栏里的收起钮
         collapsed && "collapsed-nub",
         // 展开态坐在侧栏头部(drag-region)之上:.sidebar-toggle 显式 no-drag(app.css)
@@ -78,7 +84,7 @@ export function SidebarNub() {
   const { state } = useSidebar();
   const clear = useClearTrafficLights();
   if (state !== "collapsed") return null;
-  return <span aria-hidden className={cn("size-7 shrink-0 self-center", clear ? "ml-[52px]" : "-ml-2")} />;
+  return <span aria-hidden className={cn("size-7 shrink-0 self-center", clear ? "ml-[62px]" : "-ml-2")} />;
 }
 
 /** 侧栏头部行首的占位:展开态下 fixed 钮就压在这里 */

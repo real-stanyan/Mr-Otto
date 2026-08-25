@@ -30,6 +30,7 @@ import { createTerminalHub } from "./terminalHub.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
+import { trafficLightPosition } from "./trafficLights.js";
 import { connectMcpClient } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
@@ -215,12 +216,12 @@ function createWindow(): BrowserWindow {
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
     // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
     // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
-    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,16)pt:顶栏统一 h-11(44px,见 App.tsx
-    // HEADER_H),中心 22;y=19 让灯的视觉中心落在 22(截图实测:y=16 时灯比中心高 3px,
-    // 这个 y 不是灯的几何顶边),和侧栏开关钮 / 搜索钮(SidebarNub.tsx 的 TOGGLE_TOP)
-    // 同一条水平线。三颗灯占到 x=68,开关钮从 72 起
+    // 左边距(8px)对不齐、又贴顶 —— 显式算一组坐标钉住:顶栏统一 h-11(44px,见 App.tsx
+    // HEADER_H),灯心与开关钮 / 搜索钮(SidebarNub.tsx 的 TOGGLE_TOP)同一条水平线。
+    // 坐标随 zoomFactor 现算(trafficLights.ts):灯是原生 chrome 不跟着缩放走,
+    // 写死一组数只在 zoom=1 时对得上
     ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 19 } }
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: trafficLightPosition(1) }
       : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
@@ -239,6 +240,26 @@ function createWindow(): BrowserWindow {
       e.preventDefault();
       win.hide();
     });
+    // 缩放之后重新钉一次灯:顶栏那两颗钮是网页元素,zoom 一变就放大下移,
+    // 红绿灯是原生 chrome 留在原地 —— 不跟一次,一行三样东西就散了。
+    // did-finish-load 那次是给「上次的 zoom 被 Chromium 按 origin 记住」兜底:
+    // 构造时按 zoom=1 钉的坐标,页面加载完才知道真实倍率
+    let lastZoom = 1;
+    const syncLights = () => {
+      if (win.isDestroyed()) return;
+      lastZoom = win.webContents.getZoomFactor();
+      win.setWindowButtonPosition(trafficLightPosition(lastZoom));
+    };
+    // zoom-changed 只覆盖 ctrl/⌘+滚轮那一条路;⌘+ / ⌘- / 触控板捏合都**不发**这个事件,
+    // 实测缩放完灯留在原地。Electron 没有"zoom 变了"的通用事件,所以补一条低频回读:
+    // 每 500ms 比一次 zoomFactor,变了才动灯。一个 getter 的开销,换"任何路子缩放都跟得上"
+    win.webContents.on("zoom-changed", syncLights);
+    win.webContents.on("did-finish-load", syncLights);
+    const zoomWatch = setInterval(() => {
+      if (win.isDestroyed()) return;
+      if (win.webContents.getZoomFactor() !== lastZoom) syncLights();
+    }, 500);
+    win.on("closed", () => clearInterval(zoomWatch));
   }
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
