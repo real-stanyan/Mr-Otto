@@ -100,6 +100,7 @@ import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
 import { folderName, groupArchivedByWorkspace, groupSessionsByWorkspace } from "./sessionGroups.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import {
@@ -1009,17 +1010,25 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
 }
 
 /** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片。
-    sizeCls 让侧栏登录槽用小一号(20px),设置页默认 28px */
-function AccountAvatar({ name, avatarUrl, sizeCls = "w-7 h-7 text-[13px]" }: {
+    sizeCls 让侧栏登录槽用小一号(20px),设置页默认 28px。
+    走 shadcn Avatar(issue #411):原来手写的 img 只有"没有 url"这一档降级,
+    url 在但加载不出来(网关下发的第三方图挂了)时会把裂图标留在脸上——
+    Radix 的 fallback 认的是加载结果,不是字符串空不空。
+    字号单独一个 prop:Avatar 的 fallback 自带 text-sm,跟着 sizeCls 放在根上会被它盖掉 */
+function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[13px]" }: {
   name: string;
   avatarUrl: string;
   sizeCls?: string;
+  textCls?: string;
 }) {
-  const cls = `${sizeCls} rounded-full shrink-0 object-cover bg-accent inline-flex items-center justify-center font-semibold text-foreground`;
-  if (avatarUrl) {
-    return <img className={cls} src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
-  }
-  return <span className={cls}>{name.charAt(0).toUpperCase() || "?"}</span>;
+  return (
+    <Avatar className={`${sizeCls} shrink-0`}>
+      <AvatarImage src={avatarUrl} alt={name} referrerPolicy="no-referrer" />
+      <AvatarFallback className={`bg-accent font-semibold text-foreground ${textCls}`}>
+        {name.charAt(0).toUpperCase() || "?"}
+      </AvatarFallback>
+    </Avatar>
+  );
 }
 
 /** 桶名 → 显示名。对得上模型下拉里的叫法，别让用户猜 flash 是哪个 */
@@ -2069,7 +2078,7 @@ function AppSidebar() {
           >
             {account.signedIn ? (
               <>
-                <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
+                <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="size-5" textCls="text-[11px]" />
                 <span className="flex-1 min-w-0 truncate">{identity.name}</span>
               </>
             ) : (

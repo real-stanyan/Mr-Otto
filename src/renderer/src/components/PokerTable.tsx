@@ -205,15 +205,17 @@ function ActionBubble({ action }: { action: { kind: string; amount: number } | n
   );
 }
 
-/** 座位头像。没有图就用名字首字的圆片,别让 img 的裂图标出来 */
+/** 座位头像。没有图就用名字首字的圆片,别让 img 的裂图标出来——
+    「链接坏掉也别裂」这件事交给 shadcn Avatar(Radix 会自己落回 fallback),
+    手写 img 只有"没有 url"这一档降级,url 有但 404 时照样裂给你看 */
 function SeatAvatar({ name, url }: { name: string; url: string }) {
-  if (url) {
-    return <img src={url} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" draggable={false} />;
-  }
   return (
-    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
-      {(name || "?").slice(0, 1).toUpperCase()}
-    </span>
+    <Avatar className="size-5">
+      <AvatarImage src={url} alt="" draggable={false} />
+      <AvatarFallback className="bg-primary/15 text-[10px] font-semibold text-primary">
+        {(name || "?").slice(0, 1).toUpperCase()}
+      </AvatarFallback>
+    </Avatar>
   );
 }
 
@@ -304,18 +306,12 @@ function WinOverlay({ hand }: { hand: PokerHandView }) {
     >
       <div ref={contentRef} className="flex flex-col items-center gap-4">
         <div className="flex flex-col items-center gap-2">
-          {who.avatarUrl ? (
-            <img
-              src={who.avatarUrl}
-              alt=""
-              className="h-16 w-16 rounded-full object-cover ring-2 ring-primary/40 ring-offset-2 ring-offset-background"
-              draggable={false}
-            />
-          ) : (
-            <span className="grid h-16 w-16 place-items-center rounded-full bg-primary/15 text-2xl font-semibold text-primary ring-2 ring-primary/40 ring-offset-2 ring-offset-background">
+          <Avatar className="size-16 ring-2 ring-primary/40 ring-offset-2 ring-offset-background">
+            <AvatarImage src={who.avatarUrl} alt="" draggable={false} />
+            <AvatarFallback className="bg-primary/15 text-2xl font-semibold text-primary">
               {(who.name || "?").slice(0, 1).toUpperCase()}
-            </span>
-          )}
+            </AvatarFallback>
+          </Avatar>
           <div className="text-xl font-semibold tracking-tight">{who.name}</div>
           <div className="text-sm tabular-nums text-muted-foreground">
             原有 {fmt(from)}
