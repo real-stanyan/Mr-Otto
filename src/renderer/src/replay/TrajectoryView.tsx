@@ -28,6 +28,13 @@ import {
 } from "./trajectory.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { Input } from "@/components/ui/input.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog.js";
 
 /* 三类角色三种色：input 绿 / model 紫 / tools 橙（对齐 deepseek-harness 的泳道配色）。
    system 行归 input 道但灰显——它们不是人说的话 */
@@ -60,6 +67,50 @@ const KV = "grid grid-cols-[96px_1fr] gap-y-[6px] text-[12.5px] items-baseline";
 const KV_K = "text-muted-foreground";
 
 const json = (v: unknown): string => JSON.stringify(v, null, 2) ?? "undefined";
+
+/** Summary tab 的截断阈值。超过就截前 CLAMP 字符，整块可点，弹窗看全文。
+    payload / result 两个 tab 本来就有全文，但那是另一次导航；弹窗是就地放大。 */
+const CLAMP = 600;
+
+function ClampedPre({ label, text, hl }: { label: string; text: string; hl?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const body = (src: string) => (hl ? <Hl src={src} /> : src);
+  if (text.length <= CLAMP) return <pre className={PRE}>{body(text)}</pre>;
+  return (
+    <>
+      {/* 不包 <button>：pre 是流内容，塞进 button 是非法嵌套 → 自己长键盘手 */}
+      <pre
+        role="button"
+        tabIndex={0}
+        title="点击查看完整内容"
+        className={
+          PRE +
+          " cursor-zoom-in transition-shadow hover:ring-1 hover:ring-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        }
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(true); }
+        }}
+      >
+        {body(text.slice(0, CLAMP))}
+        <span className="text-muted-foreground select-none">…（共 {text.length} 字符，点击看全文）</span>
+      </pre>
+      <Dialog open={open} onOpenChange={setOpen}>
+        {/* grid-rows：header 定高 + 内容行 minmax(0,1fr)，滚动发生在内容行里，
+            不然长文把整个弹窗撑出 85vh，关闭钮都飘出屏外 */}
+        <DialogContent className="sm:max-w-[880px] max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] gap-3">
+          <DialogHeader>
+            <DialogTitle>{label}</DialogTitle>
+            <DialogDescription>共 {text.length} 字符</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-y-auto">
+            <pre className={PRE}>{body(text)}</pre>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
 /** 工具行的状态：结果落了看 status；没结果看走到了哪一步 */
 function toolStatus(row: TrajRow): string {
@@ -338,11 +389,11 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
               )}
             </div>
             <h4 className={SEC_H}>Payload</h4>
-            <pre className={PRE}><Hl src={payload.length > 600 ? payload.slice(0, 600) + `…（共 ${payload.length} 字符）` : payload} /></pre>
+            <ClampedPre label="Payload" text={payload} hl />
             {result !== null && (
               <>
                 <h4 className={SEC_H}>Result</h4>
-                <pre className={PRE}>{result.length > 600 ? result.slice(0, 600) + `…（共 ${result.length} 字符）` : result}</pre>
+                <ClampedPre label="Result" text={result} />
               </>
             )}
             <h4 className={SEC_H}>Timing</h4>
