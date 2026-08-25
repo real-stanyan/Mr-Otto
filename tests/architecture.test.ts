@@ -1,12 +1,18 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 四条边界,前三条是 AGENTS.md 原文,第四条是 ADR-0064 落下来的分层约束:
+// 六条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余四条是各自 ADR 落下来的分层约束:
 //   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API
-//   3. @modelcontextprotocol/sdk 只允许 src/main/mcpClient.ts import(ADR-0050)
-//   4. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
+//   3. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
 //      通道、设置文件路径)是 main 的事(ADR-0064 的微压缩就踩在这条线上)
+//   4. @modelcontextprotocol/sdk 只允许 src/main/mcpClient.ts import(ADR-0050)
+//   5. src/shared 不碰 node builtin / electron —— 这一层手机端(Expo/RN)会直接 import
+//      同一份源码,碰了 Node 就断了那条路
+//   6. 移动端复用名单里的那批 src/session 投影文件,同样不碰 node builtin
+//
+// 5 和 6 的意义和前四条略有不同:它们把"src/shared 目前碰巧是纯的"这个**事实**,
+// 变成一条会红的**规则**。名单写死在用例里 —— 想把新文件放进复用面得显式加进来。
 //
 // 纯 grep 级:读源码文本找 import 语句,不做 AST。简单到一眼能看懂,也够用——
 // 这里挡的是"顺手"犯的错,不是刻意绕过。

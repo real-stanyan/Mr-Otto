@@ -14,12 +14,17 @@ export interface MobileMessage {
   truncated?: boolean;
 }
 
-/** 桌面 → 手机 */
+/** 桌面 → 手机。
+    注意这里**没有** hello：握手包（handshake.ts 的 HandshakeHello）是**明文**、
+    走同一条线、在加密建立之前发的，和这里的加密帧是两种完全不同的东西。
+    曾经有过一个同名的 DownFrame 变体，零个生产者，留下的只是"同一根线上两个 hello"
+    这个给下一个读代码的人挖的坑，已删。 */
 export type DownFrame =
-  | { type: "hello"; deviceId: string; fingerprint: string }
   | { type: "fleet"; fleet: IslandFleet }
   | { type: "timeline"; sessionId: string; messages: MobileMessage[] }
-  /** 保活。nginx 的 proxy_read_timeout 是 600s，心跳必须比它短得多 */
+  /** 保活。nginx 的 proxy_read_timeout 是 600s，心跳必须比它短得多。
+      **生产者在 plan B**：真实现 SSE 传输那一层才会挂定时器发它。
+      现在只有解码这一半，因为手机端从第一天起就要认得它。 */
   | { type: "ping"; ts: number };
 
 /** 手机 → 桌面。恰好五个词，没有 focusSession，approve 没有 grant 档 */
@@ -83,10 +88,6 @@ export function decodeDownFrame(line: string): DownFrame | null {
   const o = parseObject(line);
   if (!o) return null;
   switch (o.type) {
-    case "hello":
-      return str(o.deviceId) && str(o.fingerprint)
-        ? { type: "hello", deviceId: o.deviceId, fingerprint: o.fingerprint }
-        : null;
     case "fleet":
       return o.fleet && typeof o.fleet === "object" && Array.isArray((o.fleet as IslandFleet).agents)
         ? { type: "fleet", fleet: o.fleet as IslandFleet }

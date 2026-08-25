@@ -38,6 +38,7 @@
 | `trimForMobile` 与 `timeline` 帧的**生产** | 计划 B（切片 6） | 本计划只定义帧的**类型**，不产出内容 |
 | `pushKey` 派生、APNs、NSE | 计划 C（切片 7–8） | 卡在付费开发者账号 |
 | Expo 侧的 `RemoteCryptoPrimitives` 实现 | 计划 B | 需要 RN 工具链 |
+| `services/gateway/checks/` 补一条中继检查（spec 切片 3 列了它） | 计划 B | 要检查出东西，得有一条真起来的中继和两个真端点；对着零连接的网关只能断言 404/401，而那两条 `tests/gateway/relay.test.ts` 已经在测了 |
 
 ### 一个已知风险，留给计划 B 验
 
