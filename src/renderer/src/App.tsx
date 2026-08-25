@@ -1283,11 +1283,6 @@ function SkillsPage() {
         <SettingsTitle id="skills" />
       </header>
       <section className={SETTINGS_BODY}>
-        <p className={HINT}>
-          聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
-          （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
-          {" "}放进 <code>~/.mr-otto/skills</code>，或从其他厂家 agent 已装的 skill 里导入。
-        </p>
         <SkillImportDialog />
         {skills.map((s) => (
           <details key={s.name} className="border border-border rounded-[10px]">
