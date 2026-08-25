@@ -72,6 +72,7 @@ describe("LoopEngine", () => {
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([
       "user_message",
+      "request_envelope",       // 先落信封再喂模型（issue #383）；第二圈信封没变不重复落
       "assistant_message",      // 带 toolCall
       "tool_execution_started", // 碰世界前留痕（ADR-0004）
       "tool_result",            // ok
@@ -173,6 +174,7 @@ describe("LoopEngine", () => {
     const log = store.load("s1");
     expect(log.map((e) => e.type)).toEqual([
       "user_message",
+      "request_envelope",
       "assistant_message",
       "tool_execution_started",
       "tool_result",
@@ -480,7 +482,8 @@ describe("turn 中断（ADR-0006）", () => {
     await expect(turn).resolves.toBe("aborted");
 
     const log = store.load("s1");
-    expect(log.map((e) => e.type)).toEqual(["user_message", "turn_ended"]);
+    // request_envelope 在喂模型前落（issue #383）——中断的 turn 也留着它：信封是"发过请求"的事实
+    expect(log.map((e) => e.type)).toEqual(["user_message", "request_envelope", "turn_ended"]);
     expect(log.at(-1)).toMatchObject({ outcome: "aborted" }); // 无 assistant_message：半截不是消息
     store.close();
   });
@@ -597,6 +600,7 @@ describe("lifecycle 事件（ADR-0004）", () => {
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([
       "user_message",
+      "request_envelope",
       "assistant_message",
       "tool_execution_started", // 碰世界前留痕
       "tool_result",

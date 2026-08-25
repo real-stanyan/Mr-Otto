@@ -423,6 +423,14 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
   return {
     model: opts.model,
+    // 请求信封的原料（issue #383）：这两样是"实际发出的请求"的一部分，
+    // 但都不在会话日志里（wireModel 是构造参数，thinking 是运行时偏好）
+    requestConfig: {
+      ...(opts.wireModel !== undefined && opts.wireModel !== opts.model
+        ? { wireModel: opts.wireModel }
+        : {}),
+      ...(opts.thinking ? { thinking: opts.thinking.mode } : {}),
+    },
 
     async chat(
       messages: ChatMessage[],

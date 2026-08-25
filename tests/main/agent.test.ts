@@ -15,6 +15,7 @@ import { createLocalWorld } from "../../src/world/localWorld.js";
 import { withMcp } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import { tempDir } from "../helpers/tempDir.js";
+import Database from "better-sqlite3";
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
@@ -39,7 +40,11 @@ describe("createAgent 会话生命周期", () => {
     const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-old", attachments });
 
     expect(agent.sessionId).toBe("s-old");
-    expect(store.load("s-old")).toHaveLength(2); // 一条没多
+    // 开着的 turn（user_message 无收口）被合成 turn_ended(interrupted) 关掉（issue #383）——
+    // 除此之外一条没多（session_created 不重复落）
+    const resumed = store.load("s-old");
+    expect(resumed).toHaveLength(3);
+    expect(resumed.at(-1)).toMatchObject({ type: "turn_ended", outcome: "interrupted" });
     store.close();
   });
 
@@ -113,7 +118,8 @@ describe("createAgent 会话生命周期", () => {
     });
 
     expect(agent.sessionId).toBe("s-20260818123456");
-    expect(store.load("s-20260818123456")).toHaveLength(2);
+    // 长度 3 = 原 2 条 + 合成 turn_ended(interrupted)（开着的 turn 被收口，issue #383）
+    expect(store.load("s-20260818123456")).toHaveLength(3);
     store.close();
   });
 
@@ -325,10 +331,14 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
       attachments,
     });
 
-    const last = store.load("s-x").at(-1);
-    expect(last).toMatchObject({ type: "tool_result", toolCallId: "c1", status: "error" });
-    expect((last as { output: string }).output).toContain("世界可能已被部分变更");
+    // 修复序：先补悬空 tool_result，再合成 turn_ended(interrupted) 收口（issue #383）
+    const log = store.load("s-x");
+    expect(log.at(-1)).toMatchObject({ type: "turn_ended", outcome: "interrupted" });
+    const repaired = log.at(-2);
+    expect(repaired).toMatchObject({ type: "tool_result", toolCallId: "c1", status: "error" });
+    expect((repaired as { output: string }).output).toContain("世界可能已被部分变更");
     expect(pushed).toContain("tool_result");
+    expect(pushed).toContain("turn_ended");
     store.close();
   });
 
@@ -336,7 +346,7 @@ describe("resume 崩溃修复（ADR-0005 留痕层）", () => {
     const store = new EventStore(":memory:");
     crashedLog(store, false);
     createAgent({ store, workspace: "/w", resumeSessionId: "s-x", push, attachments });
-    expect((store.load("s-x").at(-1) as { output: string }).output).toContain("世界未被此调用变更");
+    expect((store.load("s-x").at(-2) as { output: string }).output).toContain("世界未被此调用变更");
     store.close();
   });
 
@@ -550,5 +560,66 @@ describe("自动压缩：目录外的型号 id（窗口未知）不能顶着假�
       expect(types).not.toContain("context_compacted");
       store.close();
     });
+  });
+});
+
+describe("resume 崩溃合成收口 + 向前兼容拒读（issue #383）", () => {
+  it("收口过的日志：不追加合成 turn_ended（幂等）", () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s-c", ts: 1, type: "session_created", workspace: "/w" });
+    store.append({ sessionId: "s-c", ts: 2, type: "user_message", content: "问" });
+    store.append({ sessionId: "s-c", ts: 3, type: "assistant_message", model: "m", content: "答" });
+    store.append({ sessionId: "s-c", ts: 4, type: "turn_ended", outcome: "completed" });
+    // turn 收口后落的注记类事件不算 turn 活动，不该骗出一条合成收口
+    store.append({ sessionId: "s-c", ts: 5, type: "section_classified", title: null, model: "m" });
+
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-c", push, attachments });
+    expect(store.load("s-c").filter((e) => e.type === "turn_ended")).toHaveLength(1);
+    store.close();
+  });
+
+  it("开着的 turn：合成 turn_ended(interrupted) 收口，再 resume 不重复", () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s-o", ts: 1, type: "session_created", workspace: "/w" });
+    store.append({ sessionId: "s-o", ts: 2, type: "user_message", content: "问完就崩了" });
+
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-o", push, attachments });
+    const closed = store.load("s-o");
+    expect(closed.at(-1)).toMatchObject({ type: "turn_ended", outcome: "interrupted" });
+
+    createAgent({ store, workspace: "/w", resumeSessionId: "s-o", push, attachments });
+    expect(store.load("s-o")).toHaveLength(closed.length); // 幂等：一条没多
+    store.close();
+  });
+
+  // 模拟"更新版本写的日志"：append 的持久化闸只认本版本的 union（这正是它的职责），
+  // 所以用文件库 + 第二条裸连接直接 INSERT 一行未知类型——真实场景这行来自新版本的合法 append
+  function storeWithAlienEvent(payload: string): { store: EventStore; sessionId: string } {
+    const dir = tempDir("otter-alien-");
+    const path = `${dir}/events.db`;
+    const seed = new EventStore(path);
+    seed.append({ sessionId: "s-n", ts: 1, type: "session_created", workspace: "/w" });
+    seed.close();
+    const raw = new Database(path);
+    raw.prepare(
+      "INSERT INTO events (session_id, seq, ts, type, sandbox_id, payload) VALUES (?, ?, ?, ?, NULL, ?)"
+    ).run("s-n", 1, 2, "hologram_projected", payload);
+    raw.close();
+    return { store: new EventStore(path), sessionId: "s-n" };
+  }
+
+  it("日志里有本版本不认识且未标 ignorable 的事件：拒绝装配（提示升级）", () => {
+    const { store, sessionId } = storeWithAlienEvent(JSON.stringify({ content: "?" }));
+    expect(() =>
+      createAgent({ store, workspace: "/w", resumeSessionId: sessionId, push, attachments })
+    ).toThrow(/升级/);
+    store.close();
+  });
+
+  it("未知但标了 ignorable：照常装配（新版本声明了跳过安全）", () => {
+    const { store, sessionId } = storeWithAlienEvent(JSON.stringify({ ignorable: true }));
+    const agent = createAgent({ store, workspace: "/w", resumeSessionId: sessionId, push, attachments });
+    expect(agent.sessionId).toBe(sessionId);
+    store.close();
   });
 });

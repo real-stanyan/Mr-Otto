@@ -65,7 +65,10 @@ const EMPTY_GRANTS: ReadonlySet<string> = new Set();
 const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
+import { assertReplayable } from "../session/events.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
+import { evaluateCommand } from "../shared/execPolicy.js";
+import type { ToolGuard } from "../loop/middleware.js";
 import type { DeltaKind } from "../model/adapter.js";
 import type { ApprovalPreview, TurnDiffUpdate } from "../shared/shellBridge.js";
 import type { Tool } from "../tools/tool.js";
@@ -241,6 +244,10 @@ export function createAgent(opts: {
   // resume 的日志读一次、三处共用（授权重建 / 崩溃修复 / 型号投影，issue #279）：
   // 构造期间没有并发写者，这份快照对三处都是新鲜的。新会话 = null（日志还是空的）
   const resumeLog = opts.resumeSessionId ? store.load(opts.resumeSessionId) : null;
+  // 向前兼容拒读（issue #383）：日志里有本版本不认识、且没标 ignorable 的事件
+  // 类型 = 更新版本写的。静默跳过会在残缺的模型视野上继续对话——拒绝装配，
+  // 话术指向升级（UnknownSessionEventError）。列表/只读回看不设这道门
+  if (resumeLog) assertReplayable(resumeLog);
   const sessionAllow = new Set<string>(resumeLog ? sessionGrants(resumeLog) : []);
   if (!opts.resumeSessionId) {
     // workspace 写进日志第 0 条：它是会话事实，不是运行时配置。
@@ -306,6 +313,25 @@ export function createAgent(opts: {
         });
         opts.push.event(full);
       }
+    }
+    // 崩溃合成收口（issue #383，dsh 对照：恢复不截断，用合成事件关掉开着的 turn）。
+    // 判据：最后一条 turn_ended 之后还有 turn 活动（消息/工具事件）= 上一进程在
+    // turn 进行中退出，收口没落盘。补 outcome:"interrupted"——loop 永不产生这个值，
+    // "修的"和"跑出来的"永远可区分。幂等：补过之后活动不再晚于 turn_ended。
+    // 副产品：崩溃在模型开口前的空跑 turn（user_message → 无产出 → 崩），
+    // barrenTurns 对非 completed 的既有语义从此把它正确跳出上下文——
+    // 此前它"判不出来→留着"，用户每次崩溃重试都在上下文里多囤一句同样的话
+    const TURN_ACTIVITY = new Set<SessionEvent["type"]>([
+      "user_message", "assistant_message", "tool_result", "tool_execution_started",
+    ]);
+    let openTurn = false;
+    for (const e of log) {
+      if (e.type === "turn_ended") openTurn = false;
+      else if (TURN_ACTIVITY.has(e.type)) openTurn = true;
+    }
+    if (openTurn) {
+      const full = store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "interrupted" });
+      opts.push.event(full);
     }
   }
 
@@ -442,12 +468,30 @@ export function createAgent(opts: {
   // getTurnId 闭包现读 engine.runningTurnId：engine 在下面才构造，调用时已就位
   const turnDiffTracker = new TurnDiffTracker();
 
+  // 单调守卫（issue #383）：execpolicy forbidden 对**最终生效参数**复查。
+  // 审批链最外层那次判定看的是模型请求的原参数——审批改参（revisedArgs）和
+  // Pre 钩子改参都发生在它之后，改后的命令没人再看一眼。守卫在执行留痕前
+  // 补上这一眼；deny-only，永远只收紧。规则现读（与 approver 链同款热更新）
+  const forbiddenGuard: ToolGuard = {
+    name: "execpolicy-forbidden",
+    tools: ["bash"],
+    check(ctx) {
+      const cmd = (ctx.call.args as { cmd?: unknown } | null)?.cmd;
+      if (typeof cmd !== "string") return undefined;
+      const rules = (opts.execPolicy?.() ?? EMPTY_POLICY).rules;
+      if (rules.length === 0) return undefined;
+      const r = evaluateCommand(cmd, rules, opts.workspace);
+      return r?.decision === "forbidden" ? r.reason : undefined;
+    },
+  };
+
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
     tools: mounted,
     world,
     sessionId,
+    guards: [forbiddenGuard],
     middlewares: [
       createTurnDiffMiddleware(turnDiffTracker, sessionId, () => engine.runningTurnId, (u) =>
         opts.push.turnDiff?.(u)

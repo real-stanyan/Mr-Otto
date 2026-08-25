@@ -143,6 +143,13 @@ export interface CompressionOptions {
       write_file 的 content 参数是上下文里另一大肥肉——写 700 字文章，
       这 700 字就永远躺在历史里，每个后续请求都重复计费 */
   maxOldToolArgChars: number;
+  /** **新鲜区**（保真区内）tool_result 输出的字符上限（issue #383，hermes
+      spillover 对照的投影级实现）。此前新鲜区完全不设限——bash 自截 8K，但
+      read_file/MCP 工具没有任何上限，一条超长输出直接吃穿窗口。日志本就存
+      全文（事实不丢，UI 照常整段渲染），折叠住在投影层 = 确定性纯函数，
+      可推导性白捡。上限取得远比老区宽：新鲜区是模型正在干活的现场。
+      缺席 = 不折叠（旧行为逐字节一致；COMPACT 档无新鲜区用不上它） */
+  maxFreshToolOutputChars?: number;
 }
 
 /** engine 用的默认档：改这里 = 改所有会话的压缩行为（值本身是行为的一部分） */
@@ -150,6 +157,7 @@ export const DEFAULT_COMPRESSION: CompressionOptions = {
   keepRecentTurns: 2,
   maxOldToolOutputChars: 400,
   maxOldToolArgChars: 400,
+  maxFreshToolOutputChars: 50_000,
 };
 
 /** /compact 摘要专用档（ADR-0003）：摘要人只需要"发生了什么"，不需要逐字证据。
@@ -394,10 +402,15 @@ export function deriveMessages(
         // 老区（保真边界之前）的长输出截断——工具输出是上下文里最肥的部分
         if (!knownToolCallIds.has(event.toolCallId)) break; // 孤儿收口事件（见上）
         {
+          // 老区折到 maxOld；新鲜区折到 maxFresh（宽得多，缺席 = 不折）。
+          // 折叠标记带原始长度（见 clip）：模型知道被折过、知道原文有多长——
+          // 需要完整内容时它可以分段重新获取，而不是被无声变短的输出误导
           const clipped =
             compression && i < boundary
               ? clip(event.output, compression.maxOldToolOutputChars, "工具输出")
-              : event.output;
+              : compression?.maxFreshToolOutputChars !== undefined
+                ? clip(event.output, compression.maxFreshToolOutputChars, "工具输出")
+                : event.output;
           const fb = feedbackByCall.get(event.toolCallId);
           messages.push({
             role: "tool",
@@ -548,6 +561,9 @@ export function deriveMessages(
       case "memory_nudge":
       // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
       case "session_autotitled":
+      // 请求信封（issue #383）是 log-only 审计快照：它记录"模型看到了什么"，
+      // 自己绝不能成为模型看到的东西（喂回去 = 信封套信封，永动机）
+      case "request_envelope":
         break;
 
       // 钩子干预事件本身不直接投影（issue #350）：pre/block 与 post/reject 的

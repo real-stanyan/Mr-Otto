@@ -9,7 +9,8 @@ function ev(e: Partial<SessionEvent> & Pick<SessionEvent, "type">): SessionEvent
 }
 const user = (content = "喂") => ev({ type: "user_message", content });
 const assistant = (content = "好") => ev({ type: "assistant_message", content, model: "m" });
-const ended = (outcome: "completed" | "error" | "aborted") => ev({ type: "turn_ended", outcome });
+const ended = (outcome: "completed" | "error" | "aborted" | "interrupted") =>
+  ev({ type: "turn_ended", outcome });
 const toolResult = () =>
   ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "ok" });
 
@@ -66,5 +67,13 @@ describe("barrenEventIndexes —— 什么也没产出的 turn", () => {
       ended("completed"),
     ];
     expect(barrenEventIndexes(events).size).toBe(0);
+  });
+
+  it("interrupted（issue #383 合成收口）：崩溃空跑 turn 跳掉，有产出的留着", () => {
+    const events = [
+      user("崩前发的"), ended("interrupted"),           // 无产出：跳
+      user("有回话的"), assistant(), ended("interrupted"), // 有产出：留
+    ];
+    expect([...barrenEventIndexes(events)]).toEqual([0]);
   });
 });

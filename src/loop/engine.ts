@@ -9,11 +9,12 @@ import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
-import type { DeltaKind, ModelAdapter } from "../model/adapter.js";
+import type { DeltaKind, ModelAdapter, ToolDefinition } from "../model/adapter.js";
+import type { ChatMessage } from "../session/deriveMessages.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
-import { runPipeline, hookMatches } from "./middleware.js";
-import type { ToolCallContext, ToolHook, ToolMiddleware, ToolOutcome } from "./middleware.js";
+import { runPipeline, hookMatches, guardMatches, hookWithTimeout } from "./middleware.js";
+import type { ToolCallContext, ToolGuard, ToolHook, ToolMiddleware, ToolOutcome } from "./middleware.js";
 import { createApprovalGate } from "./approvalGate.js";
 import type { Approver } from "./approvalGate.js";
 import { createReasoningClock } from "./reasoningClock.js";
@@ -68,6 +69,9 @@ export interface LoopEngineOptions {
   /** Pre/PostToolUse 钩子（issue #350）。跑在审批门与执行器之间：拦截/改参/
       拒绝/反馈四种裁决都由 engine 统一落 tool_hook 事件。不给 = 无钩子 */
   hooks?: ToolHook[];
+  /** 单调守卫（issue #383）：Pre 钩子之后、执行留痕之前的 deny-only 闸。
+      看到的是最终生效参数（过完审批改参与钩子改参）。不给 = 无守卫 */
+  guards?: ToolGuard[];
 }
 
 export class LoopEngine {
@@ -93,6 +97,10 @@ export class LoopEngine {
       compact 以它开跑那一刻的日志为准，之后落的 user_message 会被
       context_compacted 的"之前一切被替换"语义静默吞掉——宁可让用户重发 */
   private compacting = false;
+  /** 上一条已落盘的请求信封的比较键（issue #383）。null = 本进程还没落过，
+      首次比较时从日志快照里找最后一条 request_envelope 播种（resume 后不重复落）。
+      信封变了才落新的——典型会话整场一两条 */
+  private lastEnvelopeKey: string | null = null;
   /** 本 turn 的日志快照（issue #277）：每圈全量 SELECT + JSON.parse + 重投影
       在工具密集的 turn 里是 O(事件数×步数)。快照只在 turn 的第一圈全量读，
       之后每圈用 load({afterSeq}) 补尾段——引擎自己 append 的和带外落的
@@ -224,7 +232,8 @@ export class LoopEngine {
     // 干预本身落 tool_hook 事件（model-visible means logged 的钩子版）
     for (const hook of this.hooksFor(ctx.call.name)) {
       if (!hook.pre) continue;
-      const r = await hook.pre(ctx);
+      // 超时按弃权处理（issue #383，见 HOOK_TIMEOUT_MS）：挂死的钩子不挂死 turn
+      const r = await hookWithTimeout(hook.pre(ctx));
       if (!r) continue;
       if (r.block !== undefined) {
         this.append({
@@ -241,6 +250,19 @@ export class LoopEngine {
         // 换新对象不原地改（同审批门 revisedArgs 的纪律）；后续钩子看到的是改后的
         ctx.call = { ...ctx.call, args: r.reviseArgs };
       }
+    }
+    // 单调守卫（issue #383）：钩子表完态之后、留痕碰世界之前的最后一道闸。
+    // deny-only——守卫之间没有翻案（后一只无法放行前一只拒掉的）；它看到的
+    // ctx.call.args 是最终生效参数（审批改参、钩子改参都已发生），execpolicy
+    // 的 forbidden 规则在这复查——堵"批的是原参数、执行的是改后参数"的洞
+    for (const guard of (this.opts.guards ?? []).filter((g) => guardMatches(g, ctx.call.name))) {
+      const reason = await guard.check(ctx);
+      if (reason === undefined) continue;
+      this.append({
+        ...this.env(), type: "tool_hook", toolCallId: ctx.call.id,
+        hook: guard.name, phase: "pre", action: "guard_deny", message: reason,
+      });
+      return { status: "denied", output: `[守卫拒绝] ${reason}` };
     }
     // 碰世界之前先留痕（ADR-0004）：崩溃后"有 started 无 result" = 悬空执行。
     // 被拒绝的调用到不了这（审批门短路），所以 denied 没有此事件
@@ -265,7 +287,8 @@ export class LoopEngine {
     // PostToolUse 钩子（issue #350）：可拒绝结果 / 注入反馈。只对 ok 结果跑
     for (const hook of this.hooksFor(ctx.call.name)) {
       if (!hook.post) continue;
-      const r = await hook.post(ctx, outcome);
+      // 超时同 Pre：弃权（fail-open）——Post 只影响"结果怎么被接受"，不碰世界
+      const r = await hookWithTimeout(hook.post(ctx, outcome));
       if (!r) continue;
       if (r.reject !== undefined) {
         // 原始输出进事件（审计不丢），模型收到的 tool_result 是拒绝后的 error
@@ -291,6 +314,40 @@ export class LoopEngine {
   /** 匹配这把工具的钩子（注册序即执行序） */
   private hooksFor(toolName: string): ToolHook[] {
     return (this.opts.hooks ?? []).filter((h) => hookMatches(h, toolName));
+  }
+
+  /** 请求信封落盘（issue #383）：信封与上一条不同才落。比较键 = 信封内容的
+      JSON（不含 seq/ts 这些信封外壳）——同样内容的请求不重复记账 */
+  private appendEnvelopeIfChanged(
+    log: SessionEvent[],
+    messages: ChatMessage[],
+    defs: ToolDefinition[]
+  ): void {
+    const system = messages[0]?.role === "system" ? messages[0].content : "";
+    const cfg = this.adapter.requestConfig ?? {};
+    const payload = {
+      model: this.adapter.model,
+      ...(cfg.wireModel !== undefined ? { wireModel: cfg.wireModel } : {}),
+      ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
+      system,
+      tools: defs,
+    };
+    const key = JSON.stringify(payload);
+    if (this.lastEnvelopeKey === null) {
+      // 播种：resume/进程重启后先看日志里最后一条信封，相同就不再落。
+      // 快照可能是有界重建（#351）截过头部的——找不到就当没有，代价是
+      // 多落一条内容相同的信封（审计冗余，无害）
+      for (let i = log.length - 1; i >= 0; i--) {
+        const e = log[i]!;
+        if (e.type !== "request_envelope") continue;
+        const { seq: _s, sessionId: _i, ts: _t, type: _y, ignorable: _g, ...prev } = e;
+        this.lastEnvelopeKey = JSON.stringify(prev);
+        break;
+      }
+    }
+    if (key === this.lastEnvelopeKey) return;
+    this.append({ ...this.env(), type: "request_envelope", ignorable: true, ...payload });
+    this.lastEnvelopeKey = key;
   }
 
   /** /compact：把现有上下文交给模型写摘要，摘要落盘成 context_compacted 事件，
@@ -494,20 +551,27 @@ export class LoopEngine {
       rounds++;
       if (rounds === LONG_TURN_ROUNDS) this.opts.onLongTurn?.(rounds);
 
+      // available() 为 false 的工具不进模型看到的声明表——挂着(toolsByName 里还在,
+      // 万一模型误调也能给出清楚的错误)不等于此刻用得出东西，报一把只会失败的工具
+      // 只会让模型白试一次。
+      // exposure（issue #348）同一道滤网：hidden 永不进表；deferred 只有被
+      // tool_search 搜到（进了 deferredExposed）才进表；direct/缺席照旧
+      const defs = this.tools
+        .filter((t) => this.toolVisible(t))
+        .filter((t) => t.available?.() ?? true)
+        .map((t) => t.def);
+
+      // 请求信封（issue #383）：先落盘再喂模型——信封里是这次请求中日志推不出的
+      // 那半（渲染后的 system、工具声明表、model/wireModel/thinking）。与上一条
+      // 相同就不落；本进程首次比较时从快照里播种（resume 后不重复落一条一样的）
+      this.appendEnvelopeIfChanged(log, messages, defs);
+
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
       const clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;
       const reply = await this.adapter.chat(
         messages,
-        // available() 为 false 的工具不进模型看到的声明表——挂着(toolsByName 里还在,
-        // 万一模型误调也能给出清楚的错误)不等于此刻用得出东西，报一把只会失败的工具
-        // 只会让模型白试一次。
-        // exposure（issue #348）同一道滤网：hidden 永不进表；deferred 只有被
-        // tool_search 搜到（进了 deferredExposed）才进表；direct/缺席照旧
-        this.tools
-          .filter((t) => this.toolVisible(t))
-          .filter((t) => t.available?.() ?? true)
-          .map((t) => t.def),
+        defs,
         onDelta
           ? (text, kind) => {
               clock.observe(kind);

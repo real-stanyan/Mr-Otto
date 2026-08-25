@@ -75,6 +75,8 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "tool_hook":
     // 项目指令注入（issue #353）：注入了什么、从哪来——审计事实，时间线留痕
     case "project_instructions":
+    // 请求信封（issue #383）：请求配置从这一刻起变了——审计事实，时间线留痕
+    case "request_envelope":
       return true;
     case "approval_decision":
       return e.decision === "denied";

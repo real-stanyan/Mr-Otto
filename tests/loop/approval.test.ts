@@ -66,6 +66,7 @@ describe("审批门（engine 集成）", () => {
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([
       "user_message",
+      "request_envelope",
       "assistant_message",
       "approval_decision",      // 决定先落盘……
       "tool_execution_started", // ……批准了才碰世界（ADR-0004）

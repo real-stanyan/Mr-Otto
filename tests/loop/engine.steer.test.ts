@@ -64,6 +64,7 @@ describe("LoopEngine.steer（issue #344）", () => {
     const types = store.load("s1").map((e) => e.type);
     expect(types).toEqual([
       "user_message",
+      "request_envelope",
       "assistant_message",
       "tool_execution_started",
       "user_message", // steer
