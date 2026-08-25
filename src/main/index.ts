@@ -2035,7 +2035,10 @@ void app.whenReady().then(() => {
     text: string,
     skill?: string,
     attachments?: OutgoingAttachment[],
-    skillArgs?: string
+    skillArgs?: string,
+    /** 非人类来源（issue #428）：只有主进程自己的回注路径会传它——IPC 入口
+        不透传，所以渲染层伪造不出"这条是后台任务发的" */
+    origin?: "background"
   ): Promise<void> {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
@@ -2145,7 +2148,7 @@ void app.whenReady().then(() => {
       // runTurn 的开场 append 同步执行（首个 await 之前）——调用返回瞬间
       // runningTurnId 已就位。第二拍 running 推送带上它：渲染层拿这个 seq
       // 做插话的乐观锁（issue #344）。岛不吃 turnId，不重复喂
-      const turnPromise = agent.engine.runTurn(text, refs, textFiles);
+      const turnPromise = agent.engine.runTurn(text, refs, textFiles, origin);
       const turnId = agent.engine.runningTurnId;
       if (turnId !== null) {
         send(CHANNELS.turnStatus, { sessionId, status: "running", turnId });
@@ -2200,9 +2203,9 @@ void app.whenReady().then(() => {
       if (queued && queued.length > 0) {
         pendingBg.delete(sessionId);
         queueMicrotask(() => {
-          void handleSendMessage(sessionId, queued.join("\n\n")).catch((e) =>
-            console.error("后台任务回注失败", e)
-          );
+          void handleSendMessage(
+            sessionId, queued.join("\n\n"), undefined, undefined, undefined, "background"
+          ).catch((e) => console.error("后台任务回注失败", e));
         });
       }
     }
@@ -2210,7 +2213,9 @@ void app.whenReady().then(() => {
 
   /** 后台任务完成（issue #389）：落审计事件，再按 turn 状态决定立即回注还是攒着。
       回注 = 以新 turn 走 handleSendMessage 的唯一入口——不 mid-splice（ADR-0073）。
-      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足） */
+      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足），
+      该事件带 origin:"background"（issue #428）——UI 据此把气泡和人打的字分开，
+      模型投影不读这个字段 */
   function handleBackgroundDone(sessionId: string, c: BackgroundCompletion): void {
     // 会话已被 purge：结果无处可去（enqueueMicroCompact 同款守卫）
     if (!agents.has(sessionId)) return;
@@ -2231,7 +2236,9 @@ void app.whenReady().then(() => {
       pendingBg.set(sessionId, queued);
       return;
     }
-    void handleSendMessage(sessionId, text).catch((e) => console.error("后台任务回注失败", e));
+    void handleSendMessage(sessionId, text, undefined, undefined, undefined, "background").catch(
+      (e) => console.error("后台任务回注失败", e)
+    );
   }
 
   ipcMain.handle(

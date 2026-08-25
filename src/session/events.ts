@@ -31,6 +31,13 @@ export interface UserMessageEvent extends SessionEventBase {
       UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
       再拼全文。可选 = 旧日志照常重放 */
   textFiles?: UserTextFile[];
+  /** 这条消息不是人打的(issue #428)。目前唯一来源是后台任务回注(issue #389):
+      任务在 turn 之外完成,结果以新 turn 注回,载体就是一条 user_message。
+      缺席 = 人亲手发的(旧日志照常重放,schema 向后兼容硬规则)。
+      **只影响 UI**(气泡换皮,人能分清哪句是自己说的);模型投影(deriveMessages)
+      读都不读它——对模型来说这就是一条用户消息,和从前逐字节一致。
+      主进程独占写入:IPC 的 sendMessage 入口不透传,渲染层伪造不了身份 */
+  origin?: "background";
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */

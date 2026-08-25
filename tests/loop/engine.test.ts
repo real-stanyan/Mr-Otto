@@ -935,3 +935,22 @@ describe("日志快照增量维护（issue #277）", () => {
     store.close();
   });
 });
+
+describe("runTurn 的 origin 标（issue #428）", () => {
+  it("传了才落 origin：不传时事件形状与从前逐字节一致", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([{ content: "好" }, { content: "好" }]);
+    const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s" });
+
+    await engine.runTurn("人打的字");
+    await engine.runTurn("[后台任务 bg-1 完成] npm test", undefined, undefined, "background");
+
+    const users = store
+      .load("s")
+      .filter((e): e is Extract<typeof e, { type: "user_message" }> => e.type === "user_message");
+    expect(users).toHaveLength(2);
+    expect("origin" in users[0]!).toBe(false); // 缺席 = 人发的
+    expect(users[1]!.origin).toBe("background");
+  });
+});
+

@@ -23,6 +23,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import { cn } from "@/lib/utils.js";
+import type { SessionEvent } from "../../../../session/events.js";
 import {
   AuiIf,
   type AssistantState,
@@ -42,6 +43,7 @@ import {
   ArrowDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  TerminalIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -471,16 +473,39 @@ const UserMessage: FC = () => {
     UserAttachments: UserAttachmentsComponent = UserMessageAttachments,
     UserText,
   } = useContext(ThreadComponentsContext);
+  // 本仓改动(issue #428):后台任务回注的消息载体也是 user_message,但它不是人
+  // 打的字。同样的蓝气泡会让人翻历史时分不清哪句是自己说的 —— 事件上带着
+  // origin 就别让 UI 去猜:静音气泡 + 一行来源标记,位置和对齐不动(它仍然是
+  // 这一轮的开场白,挪到左边会让时间线读起来像模型在自言自语)
+  const otto = useAuiState(
+    (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
+  );
+  const fromBackground =
+    otto?.type === "user_message" && otto.origin === "background";
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
       className="grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
       data-role="user"
+      data-origin={fromBackground ? "background" : undefined}
     >
       <UserAttachmentsComponent />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        <div className="aui-user-message-content peer bg-primary text-primary-foreground rounded-[12px_12px_2px_12px] px-3 py-2 wrap-break-word empty:hidden">
+        {fromBackground && (
+          <div className="text-muted-foreground mb-1 flex items-center justify-end gap-1 text-[11px]">
+            <TerminalIcon className="size-3" />
+            后台任务回注 · 不是你发的
+          </div>
+        )}
+        <div
+          className={cn(
+            "aui-user-message-content peer rounded-[12px_12px_2px_12px] px-3 py-2 wrap-break-word empty:hidden",
+            fromBackground
+              ? "bg-muted text-muted-foreground border-border/60 border font-mono text-[12px]"
+              : "bg-primary text-primary-foreground"
+          )}
+        >
           <MessagePrimitive.Parts
             components={{
               File: UserFilePart,
