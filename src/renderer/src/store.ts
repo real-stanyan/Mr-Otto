@@ -99,6 +99,7 @@ export type SettingsSection =
   | "mcp"
   | "memory"
   | "context"
+  | "remote"
   | "about";
 
 /** composer 里正在填的 MCP prompt 参数表单——server/name 钉死是**哪一个**

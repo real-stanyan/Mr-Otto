@@ -93,6 +93,7 @@ import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
+import { RemoteDevicesSettings } from "./components/RemoteDevicesSettings.js";
 import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
@@ -3050,6 +3051,8 @@ export function App() {
     <MemorySettings />
   ) : settingsSection === "context" ? (
     <AutoCompactSettings />
+  ) : settingsSection === "remote" ? (
+    <RemoteDevicesSettings />
   ) : settingsSection === "about" ? (
     <AboutUpdateSettings />
   ) : phase === "welcome" ? (

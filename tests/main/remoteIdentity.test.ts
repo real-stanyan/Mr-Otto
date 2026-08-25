@@ -111,3 +111,19 @@ describe("deviceId", () => {
     expect(other.deviceId).not.toBe(a.deviceId);
   });
 });
+
+describe("kx（推送用的静态 X25519）", () => {
+  it("与 identity 是两把不同的密钥，跨重启稳定，私钥不出封装", () => {
+    const fs = memFs();
+    const box = fakeBox();
+    const a = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(Array.from(a.kx.publicKey)).not.toEqual(Array.from(a.identity.publicKey));
+    expect(a.kx.privateKey).toHaveLength(32);
+
+    const b = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(Array.from(b.kx.privateKey)).toEqual(Array.from(a.kx.privateKey));
+
+    const onDisk = new TextDecoder().decode(fs.files.get("/x/id.bin")!);
+    expect(onDisk).not.toContain(Buffer.from(a.kx.privateKey).toString("base64url"));
+  });
+});

@@ -422,6 +422,11 @@ export interface ShellBridge {
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
+  /** 手机端远程(设置页「手机」栏目)。读一次就顺手把自己登记进 devices ——
+      目录里没有这台桌面的话,手机那边根本看不见它 */
+  remoteStatus(): Promise<RemoteStatus>;
+  /** 用户核对完 6 位安全码之后 pin 住这台手机。回 false = 目录里没有 / 公钥不合法 */
+  remotePairDevice(deviceId: string): Promise<boolean>;
   /** OTA 更新（ADR-0075）。快照现问现答；变化走 onUpdaterState 推送 */
   updaterGetState(): Promise<UpdaterState>;
   /** 手动查一次（设置页按钮）。返回这一轮查完落定的状态——按钮要即时反馈，
@@ -748,6 +753,23 @@ export interface IslandFleet {
   usage?: IslandUsageRow[];
 }
 
+/** 设置页「手机」栏目里的一台已登记手机(main/remoteDevices.ts 的 RemotePeer)。
+    code 是两端各自算出的 6 位安全码 —— 账号目录不是信任来源(ADR-0095),
+    人核对上了才 pin */
+export interface RemotePeerInfo {
+  deviceId: string;
+  label: string;
+  lastSeen: string;
+  code: string;
+  pinned: boolean;
+}
+
+/** 远程功能在这台机器上的状态。off 的原因要分得开:没开开关 / 系统封装不可用,
+    两者都会让列表是空的,但用户该做的事完全不同 */
+export type RemoteStatus =
+  | { on: false; reason: "disabled" | "no-secure-storage" }
+  | { on: true; peers: RemotePeerInfo[] };
+
 /** 灵动岛展开态上半区的两种内容(#199) */
 export type IslandDisplay = "sessions" | "usage";
 
@@ -838,6 +860,8 @@ export const CHANNELS = {
   setVisionModel: "otter:setVisionModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
+  remoteStatus: "otter:remoteStatus",
+  remotePairDevice: "otter:remotePairDevice",
   updaterGetState: "otter:updaterGetState",
   updaterCheckNow: "otter:updaterCheckNow",
   updaterStartDownload: "otter:updaterStartDownload",
