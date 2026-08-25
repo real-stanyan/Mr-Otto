@@ -66,6 +66,7 @@ const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import { assertReplayable } from "../session/events.js";
+import { checkInvariants } from "../session/invariants.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
 import type { ToolGuard } from "../loop/middleware.js";
@@ -289,6 +290,9 @@ export function createAgent(opts: {
     // 永不改写。文案按 tool_execution_started 区分"跑了一半"和"没开跑"。
     // 幂等：补过即配对，再 resume 不重复。事故从此是时间线事实，UI/回放可见。
     const log = resumeLog!;
+    // 修复追加的事件攒着（供下面的不变量校验用）：校验必须看「修复后」的流——
+    // ADR-0005 / 崩溃合成收口本身就是把不变量修回来的动作，只看快照必然误报
+    const repairs: SessionEvent[] = [];
     const answered = new Set(
       log.filter((e) => e.type === "tool_result").map((e) => e.toolCallId)
     );
@@ -311,6 +315,7 @@ export function createAgent(opts: {
             : "执行中断：调用未开始执行就被中断（审批未决或 app 退出）。" +
               "执行器未达，世界未被此调用变更。",
         });
+        repairs.push(full);
         opts.push.event(full);
       }
     }
@@ -331,7 +336,14 @@ export function createAgent(opts: {
     }
     if (openTurn) {
       const full = store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "interrupted" });
+      repairs.push(full);
       opts.push.event(full);
+    }
+    // 运行时不变量校验（issue #389，dsh invariant registry 对照）：修复之后跑。
+    // 违例只告警不拦——硬规则「旧日志永远可重放」优先于结构洁癖，违例是
+    // 「写入方有 bug」的诊断线索，不是拒读理由（拒读那道门只属于 assertReplayable）
+    for (const v of checkInvariants([...log, ...repairs])) {
+      console.warn(`[invariant] 会话 ${sessionId} seq ${v.seq} ${v.invariant}：${v.detail}`);
     }
   }
 
