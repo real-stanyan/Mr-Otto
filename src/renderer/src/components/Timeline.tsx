@@ -405,10 +405,14 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
             ? "改写入参"
             : event.action === "reject"
               ? "拒绝结果"
-              : "注入反馈";
+              : event.action === "guard_deny"
+                ? "拒绝执行"
+                : "注入反馈";
+      // guard_deny（issue #383）：干预者是守卫不是钩子，行首身份跟着换
+      const who = event.action === "guard_deny" ? "守卫" : "钩子";
       return (
         <div className={AUDIT}>
-          ⛩ 钩子「{event.hook}」{event.phase === "pre" ? "执行前" : "执行后"}{verb}
+          ⛩ {who}「{event.hook}」{event.phase === "pre" ? "执行前" : "执行后"}{verb}
           {event.message ? `：${event.message}` : ""}
         </div>
       );
@@ -419,6 +423,16 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         <div className={AUDIT}>
           ✻ {microCompactedHeadline(estimateTokens(event.summary))}（{event.model}
           {event.usage ? ` · 耗 ${event.usage.promptTokens + event.usage.completionTokens} tokens` : ""}）
+        </div>
+      );
+
+    // 请求信封（issue #383）：log-only 审计快照——一行说清这之后的请求长什么样。
+    // 全文（system/工具 schema）在回放/日志里看，时间线不摊开
+    case "request_envelope":
+      return (
+        <div className={AUDIT}>
+          ✉ 请求信封已更新：{event.model}
+          {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
         </div>
       );
 
