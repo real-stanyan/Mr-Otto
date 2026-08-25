@@ -32,8 +32,14 @@ compose project `otto`）整体迁到 Supabase Cloud，项目 ref `kpeemypbhkyna
 ## 遗留
 
 - 那台 VPS 上的 `otto` compose 栈**当时没有停**：nginx 日志显示还有未升级的
-  打包版客户端在按 30 秒心跳打 `/rest/v1/`。停栈的前提是发一版指向 Cloud 的
-  构建并确认老栈日志静默（`docker compose -p otto down`，不带 `-v`，卷保留）。
+  打包版客户端在按 30 秒心跳打 `/rest/v1/`，而且不是维护者自己那台 —— 是另一位
+  已注册用户的安装。停栈会直接把他打断线，且他不会看到任何解释，只会看到好友
+  和私信突然空掉。停栈的前提因此是**先发版再停**：发一版指向 Cloud 的构建、
+  让在用的人装上、确认老栈日志静默，再 `docker compose -p otto down`
+  （不带 `-v`，卷保留）。
+- 迁移**没有搬用户的会话数据**这件事需要澄清：会话日志是本机 SQLite，从来不在
+  Supabase 里；云上只有账号、资料、好友关系和私信。老栈上那几个账号的资料/好友
+  关系已经随迁移复制到 Cloud，所以升级后的客户端看到的是同一份。
 - `otto-auth.stan.damianslife.com` 这个域名**不随栈退役**：otto-gateway 仍然
   跑在那台 VPS 上，靠这个 vhost 的 `/gw/` location 对外，`src/shared/gatewayConfig.ts`
   指的就是它。死掉的只是同一个 vhost 上 `/auth/v1/`、`/rest/v1/`、`/realtime/v1/`
