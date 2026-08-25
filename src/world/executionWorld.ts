@@ -6,6 +6,7 @@ import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
+import type { SimButton, SimDevice, SimFrame, SimUiElement } from "../shared/simulator.js";
 import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
@@ -174,6 +175,52 @@ export interface HistoryCapability {
   recent(limit: number): HistorySession[];
 }
 
+/** iOS 模拟器能力（issue #401）。这块屏是人和 agent 共用的（同 browser 的立场）：
+    人在右栏面板上点，agent 用 simulator 工具点，点的是同一台机器上同一个
+    Simulator.app 窗口。坐标一律是**截图像素**（见 shared/simulator.ts 文件头）。
+
+    注入方向同 browser/mcp（ADR-0035）：simctl 子进程生命周期、画面轮询、
+    向渲染层推状态都是组装根的活，LocalWorld 造不出来，由 index.ts 用
+    withSimulator 焊进来。v2 SandboxWorld 若把模拟器放在别的宿主上，
+    这一层接口一字不改，换实现即可。 */
+export interface SimulatorCapability {
+  /** 可用设备清单（simctl list 的投影） */
+  list(): Promise<SimDevice[]>;
+  /** 开机并把 Simulator.app 的窗口切到这台。udid 省略 = 当前选中那台。
+      幂等：已经开着的不重开。返回开完之后那台的状态 */
+  boot(udid?: string): Promise<SimDevice>;
+  /** 关机。udid 省略 = 当前选中那台 */
+  shutdown(udid?: string): Promise<void>;
+  /** 截一帧当前画面 */
+  screenshot(): Promise<SimFrame>;
+  /** 读屏幕上的无障碍元素（agent 的主力「看」手段：带 label 和框，
+      不用从像素里猜）。frame 已换算到截图像素空间 */
+  describe(): Promise<SimUiElement[]>;
+  /** 点一下。坐标 = 截图像素 */
+  tap(x: number, y: number): Promise<void>;
+  /** 划一下。起止都是截图像素；durationMs 缺省由实现定 */
+  swipe(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    durationMs?: number
+  ): Promise<void>;
+  /** 往当前焦点里打字（先得有个输入框在焦点上——调用方负责先 tap 它） */
+  typeText(text: string): Promise<void>;
+  /** 按硬件键 */
+  pressButton(button: SimButton): Promise<void>;
+  /** 开深链 / 网址（simctl openurl） */
+  openUrl(url: string): Promise<void>;
+  /** 装一个 .app 目录 */
+  install(appPath: string): Promise<void>;
+  /** 起一个已装的 app */
+  launch(bundleId: string): Promise<void>;
+  /** 杀一个正在跑的 app */
+  terminate(bundleId: string): Promise<void>;
+  /** 输入通道（Swift helper）此刻能不能用。false = 点击/打字这几把会明确报错，
+      而不是静默无反应——最常见的原因是没给「辅助功能」授权 */
+  inputReady(): boolean;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -224,6 +271,10 @@ export interface ExecutionWorld {
       workspace 造不出来，由组装根用 withCheckpoint 焊进来。缺席 = 该装配
       没有检查点（自动存档跳过、回退入口不出现）。工具层永远不消费它 */
   checkpoint?: CheckpointCapability;
+  /** 可选：iOS 模拟器（issue #401）。注入方向同 browser/mcp——由组装根用
+      withSimulator 焊进来。缺席 = 该装配没有模拟器（simulator 工具不挂，
+      右栏面板入口不出现）。只在 macOS + 装了 Xcode 的机器上会被焊上 */
+  simulator?: SimulatorCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -259,6 +310,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
     ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
+    // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
+    // 中断收益为零（同 fs 的取舍）
+    ...(world.simulator ? { simulator: world.simulator } : {}),
   };
 }
 
@@ -281,6 +335,9 @@ export function withExecOutput(
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
     ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
+    // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
+    // 中断收益为零（同 fs 的取舍）
+    ...(world.simulator ? { simulator: world.simulator } : {}),
   };
 }
 
@@ -310,4 +367,11 @@ export function withHistory(world: ExecutionWorld, history: HistoryCapability): 
     组装根用 world/checkpoints.ts 的影子 git 实现焊进来；工具层不消费它 */
 export function withCheckpoint(world: ExecutionWorld, checkpoint: CheckpointCapability): ExecutionWorld {
   return { ...world, checkpoint };
+}
+
+/** 把 iOS 模拟器能力焊进 world —— withBrowser 同款手法（issue #401）。
+    组装根从 simulatorHub 注入；工具照旧只调 world.simulator.tap(...)，
+    对 hub、对 Swift helper 的存在一概无感（硬规则原样成立） */
+export function withSimulator(world: ExecutionWorld, simulator: SimulatorCapability): ExecutionWorld {
+  return { ...world, simulator };
 }
