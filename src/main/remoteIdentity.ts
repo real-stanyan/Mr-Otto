@@ -40,12 +40,19 @@ interface Sealed {
   did: string;
   priv: string;
   pub: string;
+  /** 推送密钥协商用的静态 X25519(spec 第二节「每台设备两把静态密钥」)。
+      与 identity 显式分开而不是做 Ed25519 → X25519 转换:转换能做,
+      但两把各司其职不容易出错。公钥两把都进 devices,私钥两把都不出封装 */
+  kxPriv: string;
+  kxPub: string;
   /** pin 住的对端身份公钥;还没配对过就是 null */
   peer: string | null;
 }
 
 export interface IdentityStore {
   identity: KeyPair;
+  /** 推送密钥协商用的静态 X25519(plan C 的 NSE 用;公钥现在就要登记进 devices) */
+  kx: KeyPair;
   /** 随机设备 id(握手签名里的一项,做反射防护) */
   deviceId: string;
   /** 已 pin 住的对端身份公钥,还没配对过回 null(remoteBridge 的 peerIdentity) */
@@ -74,6 +81,7 @@ function parse(raw: Uint8Array, box: SecretBox): Sealed | null {
     const s = JSON.parse(box.decrypt(raw)) as Sealed;
     if (s.v !== 1 || typeof s.priv !== "string" || typeof s.pub !== "string") return null;
     if (typeof s.did !== "string" || s.did === "") return null;
+    if (typeof s.kxPriv !== "string" || typeof s.kxPub !== "string") return null;
     return s;
   } catch {
     return null; // 解不开 / 不是我们写的 = 当成还没配过
@@ -95,32 +103,31 @@ export function openIdentityStore(deps: {
     return null;
   }
 
-  const existing = parse(fs.read(deps.path) ?? new Uint8Array(0), deps.box);
-  let state: Sealed = existing ?? (() => {
+  const fresh = (): Sealed => {
     const kp = deps.crypto.generateEd25519();
-    log("远程身份:生成新的身份密钥");
+    const kx = deps.crypto.generateX25519();
     return {
       v: 1,
       did: b64encode(deps.crypto.randomBytes(16)),
       priv: b64encode(kp.privateKey),
       pub: b64encode(kp.publicKey),
+      kxPriv: b64encode(kx.privateKey),
+      kxPub: b64encode(kx.publicKey),
       peer: null,
     };
+  };
+
+  const existing = parse(fs.read(deps.path) ?? new Uint8Array(0), deps.box);
+  let state: Sealed = existing ?? (() => {
+    log("远程身份:生成新的身份密钥");
+    return fresh();
   })();
 
-  const priv = b64decode(state.priv);
-  const pub = b64decode(state.pub);
-  if (!priv || !pub) {
+  if (!b64decode(state.priv) || !b64decode(state.pub) ||
+      !b64decode(state.kxPriv) || !b64decode(state.kxPub)) {
     // 封装解开了但内容坏了。重新生成,而不是拿一把半截的身份上线
     log("远程身份:文件内容坏了,重新生成");
-    const kp = deps.crypto.generateEd25519();
-    state = {
-      v: 1,
-      did: b64encode(deps.crypto.randomBytes(16)),
-      priv: b64encode(kp.privateKey),
-      pub: b64encode(kp.publicKey),
-      peer: null,
-    };
+    state = fresh();
   }
 
   const flush = (): void => {
@@ -130,6 +137,7 @@ export function openIdentityStore(deps: {
 
   return {
     identity: { privateKey: b64decode(state.priv)!, publicKey: b64decode(state.pub)! },
+    kx: { privateKey: b64decode(state.kxPriv)!, publicKey: b64decode(state.kxPub)! },
     deviceId: state.did,
     peerIdentity() {
       return state.peer === null ? null : b64decode(state.peer);
