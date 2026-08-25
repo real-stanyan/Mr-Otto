@@ -24,7 +24,8 @@ import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, Dot, Headline, Hint, Meta, Note, StatusLine, Strong, Tile, Title, Warn,
+  Button, Card, CodeTiles, Dot, Headline, Hint, Meta, Note, StatusLine, Strong,
+  TabIcon, Tile, Title, Warn,
 } from "./src/ui.js";
 
 type Phase = "loading" | "signIn" | "pair" | "fleet";
@@ -310,6 +311,8 @@ function Shell({ store, onRepair, onSignedOut }: {
 
   return (
     <View style={{ flex: 1 }}>
+      {/* 品牌栏。翻进详情屏时让位给那一屏自己的返回栏——两条顶栏叠着没有意义 */}
+      {inDetail ? null : <BrandBar />}
       <View style={pane("sessions")}>
         <Fleet store={store} onRepair={onRepair} onDetailChange={setInDetail} />
       </View>
@@ -318,6 +321,21 @@ function Shell({ store, onRepair, onSignedOut }: {
         <Settings store={store} onRepair={onRepair} onSignedOut={onSignedOut} />
       </View>
       {inDetail ? null : <TabBar tab={tab} onTab={setTab} />}
+    </View>
+  );
+}
+
+/** 顶部品牌栏:和桌面同一张脸 + 字标。只出现一次,不跟着页签变 */
+function BrandBar() {
+  const { c } = usePalette();
+  return (
+    <View style={{
+      flexDirection: "row", alignItems: "center", gap: space.xs,
+      paddingHorizontal: space.md, paddingVertical: space.sm,
+      borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+    }}>
+      <Image source={require("./assets/otto-mark.png")} style={{ width: 26, height: 26 }} />
+      <Text style={{ ...t.headline, color: c.foreground }}>Mr Otto</Text>
     </View>
   );
 }
@@ -338,13 +356,16 @@ function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
           onPress={() => onTab(x.id)}
           // 49pt = iOS 底栏的标准高度。整格可点,不是只有字可点
           style={({ pressed }) => [
-            { flex: 1, minHeight: 49, alignItems: "center", justifyContent: "center" },
+            { flex: 1, minHeight: 49, alignItems: "center", justifyContent: "center", gap: 3,
+              paddingVertical: 6 },
             pressed && { opacity: 0.5 },
           ]}
         >
+          <TabIcon name={x.id} color={tab === x.id ? c.foreground : c.mutedForeground} />
           <Text style={{
-            ...t.callout,
-            // 选中只靠颜色,不加下划线/底色:底栏本来就窄,多一层装饰就挤
+            // 11pt:iOS 底栏标签的量。用 footnote(13)的话图标+文字挤不进 49pt
+            fontSize: 11, lineHeight: 13, letterSpacing: 0.05,
+            // 选中只靠颜色和字重,不加下划线/底色:底栏本来就窄,多一层装饰就挤
             color: tab === x.id ? c.foreground : c.mutedForeground,
             fontWeight: tab === x.id ? "600" : "400",
           }}>
@@ -406,7 +427,7 @@ function FriendRowView({ row: f }: { row: FriendRow }) {
               {(f.profile.name || f.profile.email || "?").slice(0, 1).toUpperCase()}
             </Text></Tile>}
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <Headline>{f.profile.name || f.profile.email}</Headline>
+          <Headline lines={1}>{f.profile.name || f.profile.email}</Headline>
           <Meta>{f.profile.name ? `${f.profile.email} · ${what}` : what}</Meta>
         </View>
         {waiting && f.direction === "incoming" ? <Dot tone="warn" /> : null}
@@ -705,7 +726,8 @@ function AgentCard({ agent: a, now, onDecide, onOpen }: {
       >
         <Tile><Dot tone={tone} /></Tile>
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <Headline>{a.title ?? a.sessionId}</Headline>
+          {/* 标题是用户起的,长度没有上限:限一行,超了省略号收尾 */}
+          <Headline lines={1}>{a.title ?? a.sessionId}</Headline>
           {/* 元信息一律等宽 + 暗:桌面那侧 `1 步 · 120 tokens` 就是这个样式 */}
           <Meta>
             {what}
