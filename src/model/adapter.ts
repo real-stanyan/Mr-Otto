@@ -27,6 +27,10 @@ export type DeltaKind = "content" | "reasoning";
 export interface ModelAdapter {
   /** 实际型号 id，落进 assistant_message.model（事实记录用） */
   readonly model: string;
+  /** 请求配置里日志推不出的那几样（issue #383，request_envelope 的原料）：
+      发上线的 id（方言前缀时与 model 不同）、实际随请求发出的思考档位。
+      可选 = 不报的 adapter（测试假模型等）信封里就没有这两样 */
+  readonly requestConfig?: { wireModel?: string; thinking?: string };
   /** onDelta 给了 = 流式：文本片段边到边回调（临时 UI 用，不是事实）。
       kind 区分频道：思考碎片先到（"reasoning"），正文碎片后到（"content"）。
       无论走不走流式，resolve 的 ModelReply 都是完整消息——落盘只认它。

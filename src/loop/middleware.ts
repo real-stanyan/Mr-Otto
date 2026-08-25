@@ -66,6 +66,59 @@ export interface ToolHook {
   post?(ctx: ToolCallContext, outcome: ToolOutcome): PostHookResult | void | Promise<PostHookResult | void>;
 }
 
+/** 钩子单次调用的超时上限（issue #383）。教训来自 hermes 的 pi/OpenCode 对比
+    RFC："Neither system has hook timeouts. Both have shipped hang-class
+    failures because of it."——一只挂死的钩子不该挂死整个 turn。
+    超时按**弃权**处理（fail-open）：钩子是观察/干预者，不是安全边界——
+    安全边界是守卫（ToolGuard，fail-closed 的那层）和审批门 */
+export const HOOK_TIMEOUT_MS = 10_000;
+
+/** 把钩子的裁决 Promise 圈进超时：超时返回 undefined（= 弃权，与钩子自己
+    返回空同义）。不 reject——超时不是错误，是"这只钩子这次没赶上表态" */
+export async function hookWithTimeout<T>(
+  p: T | Promise<T>,
+  ms: number = HOOK_TIMEOUT_MS
+): Promise<T | undefined> {
+  if (!(p instanceof Promise)) return p; // 同步裁决没有挂死一说，不掏计时器
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── 单调守卫（issue #383，dsh monotonic guard 对照）─────────
+// 钩子（waterfall，可 block/改参）之后、执行器留痕之前的最后一道闸：
+// 守卫**只能 deny 或弃权，不能 allow**——返回 reason 即拒绝，返回 undefined
+// 即弃权。没有 allow 这个返回值，注册顺序就永远翻不了案（后注册的守卫
+// 无法把前面的拒绝改回放行）。
+// 它堵的真实的洞：审批门在管线最外层，Pre 钩子的 revise_args 跑在它**之后**
+// ——批的是原参数、执行的是改后参数。守卫看到的是**最终生效的参数**
+// （过完审批改参、过完钩子改参），execpolicy 的 forbidden 规则在这复查。
+
+export interface ToolGuard {
+  /** 守卫名：落进 tool_hook 事件（action:"guard_deny"，谁拒的） */
+  name: string;
+  /** 匹配哪些工具（语义同 ToolHook.tools） */
+  tools: "*" | string[];
+  /** 返回拒绝理由 = deny；返回 undefined = 弃权。刻意没有 allow。
+      守卫是进程内受信代码（fail-closed 的安全层），不设超时——
+      挂死是代码 bug，不是可容忍的运行时状态 */
+  check(ctx: ToolCallContext): string | undefined | Promise<string | undefined>;
+}
+
+/** 这只守卫管不管这把工具（与 hookMatches 同一套 alias 规则） */
+export function guardMatches(guard: ToolGuard, toolName: string): boolean {
+  if (guard.tools === "*") return true;
+  return guard.tools.some((t) => t === toolName || HOOK_TOOL_ALIASES[t] === toolName);
+}
+
 /** 这只钩子管不管这把工具 */
 export function hookMatches(hook: ToolHook, toolName: string): boolean {
   if (hook.tools === "*") return true;
