@@ -33,6 +33,7 @@ import type {
   ApprovalRequest,
   IslandDisplay,
   McpToolPreview,
+  SessionSummary,
 } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
@@ -96,7 +97,7 @@ import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
-import { folderName, groupSessionsByWorkspace } from "./sessionGroups.js";
+import { folderName, groupArchivedByWorkspace, groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
 import {
   Drawer,
@@ -1504,8 +1505,50 @@ function AppSidebar() {
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
   const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
-  // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复
-  const archivedList = sessions.filter((s) => s.archived && s.spawnedFrom === null);
+  // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复。
+  // 归档区自己也按工程分组：这一屏和会话列表是同一批东西的两个状态，
+  // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜
+  const archived = useMemo(() => groupArchivedByWorkspace(sessions), [sessions]);
+  const archivedCount =
+    archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
+  // 归档行：分组区和"没有工程记录"那段共用同一份行，行为完全一致——
+  // 点击只是翻历史（不自动恢复归档），⋮ 里放恢复和删除
+  const archivedRow = (s: SessionSummary, groupLabel: string | null) => (
+    <SidebarMenuItem key={s.sessionId}>
+      <SidebarMenuButton
+        className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
+        onClick={() => void resume(s.sessionId)}
+        title="查看历史（不会自动恢复归档）"
+      >
+        <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+          {s.title ?? groupLabel ?? s.sessionId}
+        </span>
+      </SidebarMenuButton>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
+            <Ellipsis />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
+            恢复归档
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => {
+              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                void deleteSession(s.sessionId);
+              }
+            }}
+          >
+            删除
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuItem>
+  );
   // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0089）：
   // 归档的会话越攒越多时，折叠区在长列表最底下，等于藏在滚动条尽头；
   // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
@@ -1617,9 +1660,9 @@ function AppSidebar() {
             >
               <Archive className="size-4 shrink-0" aria-hidden />
               已归档会话
-              {archivedList.length > 0 && (
+              {archivedCount > 0 && (
                 <span className="ml-auto shrink-0 font-mono text-[10px] opacity-70">
-                  {archivedList.length}
+                  {archivedCount}
                 </span>
               )}
             </Button>
@@ -1667,60 +1710,64 @@ function AppSidebar() {
         ) : archivedView ? (
           // 已归档视图（ADR-0089，取代 ADR-0087 那截底部折叠区）：整个侧栏切过去。
           // 行点击只是看历史，不自动恢复——归档是用户的判断，不该被"点一下"推翻
-          <SidebarMenu className="p-2">
-            <SidebarMenuItem className="mb-1">
-              <button
-                className="flex w-full items-center gap-[6px] px-1 py-[6px] text-[13px] text-muted-foreground hover:text-sidebar-foreground"
-                onClick={() => setArchivedView(false)}
-              >
-                <ArrowLeft className="size-4 shrink-0" aria-hidden />
-                返回会话列表
-              </button>
-            </SidebarMenuItem>
-            {archivedList.length === 0 ? (
+          <>
+            <SidebarMenu className="p-2 pb-0">
+              <SidebarMenuItem>
+                <button
+                  className="flex w-full items-center gap-[6px] px-1 py-[6px] text-[13px] text-muted-foreground hover:text-sidebar-foreground"
+                  onClick={() => setArchivedView(false)}
+                >
+                  <ArrowLeft className="size-4 shrink-0" aria-hidden />
+                  返回会话列表
+                </button>
+              </SidebarMenuItem>
+            </SidebarMenu>
+            {archivedCount === 0 ? (
               // 空态照直说：入口常驻(不随条数显隐),那这一屏就得自己交代"空"这件事
-              <div className="px-2 py-3 text-[12px] text-muted-foreground">
+              <div className="px-[10px] py-3 text-[12px] text-muted-foreground">
                 还没有归档的会话。会话行的 ⋮ 菜单里有「归档」。
               </div>
             ) : (
-              archivedList.map((s) => (
-                <SidebarMenuItem key={s.sessionId}>
-                  <SidebarMenuButton
-                    className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
-                    onClick={() => void resume(s.sessionId)}
-                    title="查看历史（不会自动恢复归档）"
-                  >
-                    <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
-                      {s.title ?? (s.workspace ? folderName(s.workspace) : s.sessionId)}
-                    </span>
-                  </SidebarMenuButton>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
-                        <Ellipsis />
-                      </SidebarMenuAction>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
-                        恢复归档
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => {
-                          if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                            void deleteSession(s.sessionId);
-                          }
-                        }}
-                      >
-                        删除
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </SidebarMenuItem>
-              ))
+              <>
+                {/* 和会话列表同一套分组骨架(工程名 + 竖脊缩进)：归档区是同一批东西的
+                    另一个状态,平铺就把"哪个工程的"这条线索弄丢了。
+                    这里不做折叠：归档是低频翻查的一屏,一个记不住的折叠状态只添操作,
+                    组标题旁常驻条数代替"收起来才报数" */}
+                {archived.groups.map((g) => (
+                  <SidebarGroup key={g.workspace} className="py-1">
+                    <SidebarGroupLabel title={g.workspace}>
+                      <span className="min-w-0 truncate">{g.label}</span>
+                      <span className="ml-1 shrink-0 font-mono text-[10px] opacity-70">
+                        {g.sessions.length}
+                      </span>
+                    </SidebarGroupLabel>
+                    <SidebarGroupContent>
+                      <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
+                        {g.sessions.map((s) => archivedRow(s, g.label))}
+                      </SidebarMenu>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                ))}
+                {archived.ungrouped.length > 0 && (
+                  // 史前归档会话：日志里没记 workspace,归不进任何工程。
+                  // 不塞进"未知"组也不藏起来,单列一段照直说(同侧栏底部那摞)
+                  <SidebarGroup className="py-1">
+                    <SidebarGroupLabel title="日志里没记工程文件夹，归不到任何工程下">
+                      <span className="min-w-0 truncate">没有工程记录</span>
+                      <span className="ml-1 shrink-0 font-mono text-[10px] opacity-70">
+                        {archived.ungrouped.length}
+                      </span>
+                    </SidebarGroupLabel>
+                    <SidebarGroupContent>
+                      <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
+                        {archived.ungrouped.map((s) => archivedRow(s, null))}
+                      </SidebarMenu>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                )}
+              </>
             )}
-          </SidebarMenu>
+          </>
         ) : (
           <>
             {/* 一个工程一组：组序按组内最近会话时间，最近动过的工程浮上来。
