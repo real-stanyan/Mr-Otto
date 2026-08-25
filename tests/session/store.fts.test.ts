@@ -70,12 +70,30 @@ describe("EventStore FTS", () => {
     expect(hits[0]).toMatchObject({ type: "tool_result", seq: 1 });
   });
 
-  it("排除归档会话、子会话、excludeSessions", () => {
-    seed(store, "arch", ["关键词甲乙丙"], { archived: true });
+  it("排除系统归档会话（含无 reason 的遗留标记）、子会话、excludeSessions", () => {
+    seed(store, "arch", ["关键词甲乙丙"], { archived: true }); // 无 reason = 遗留 = system
     seed(store, "child", ["关键词甲乙丙"], { spawnedBy: true });
     seed(store, "me", ["关键词甲乙丙"]);
     seed(store, "ok", ["关键词甲乙丙"]);
     expect(store.searchText("关键词甲乙丙", { excludeSessions: ["me"] }).map((h) => h.sessionId)).toEqual(["ok"]);
+  });
+
+  // ADR-0086：用户归档只是从列表收起，记忆不丢——跨会话召回照常命中
+  it("用户归档（reason=user）仍可被搜到；系统归档（reason=system）不可", () => {
+    seed(store, "shelved", ["归档后仍要想得起这句话"]);
+    store.append({ sessionId: "shelved", ts: 3, type: "session_archived", reason: "user" });
+    seed(store, "sys", ["归档后仍要想得起这句话"]);
+    store.append({ sessionId: "sys", ts: 3, type: "session_archived", reason: "system" });
+
+    expect(store.searchText("归档后仍要想得起").map((h) => h.sessionId)).toEqual(["shelved"]);
+  });
+
+  it("归档状态按最后一条事件判定：恢复归档后系统归档也重新可搜", () => {
+    seed(store, "back", ["失而复得的记忆"]);
+    store.append({ sessionId: "back", ts: 3, type: "session_archived" }); // 遗留/system：不可搜
+    expect(store.searchText("失而复得")).toEqual([]);
+    store.append({ sessionId: "back", ts: 4, type: "session_unarchived" }); // 恢复：可搜
+    expect(store.searchText("失而复得").map((h) => h.sessionId)).toEqual(["back"]);
   });
 
   it("purge 连 FTS 行一起删", () => {

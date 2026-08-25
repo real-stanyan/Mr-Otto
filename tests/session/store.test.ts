@@ -158,14 +158,40 @@ describe("EventStore", () => {
     expect(byId["parent"]).toBeNull(); // 普通会话没有 spawnedBy → null
   });
 
-  it("遗留兼容：旧日志里的 session_archived 标记仍让会话从列表消失", () => {
-    // 现版本删除走 purge，不再产生 session_archived；但旧库里可能有，投影必须继续认它
+  it("遗留兼容：旧日志里的 session_archived 标记（无 reason）仍让会话从列表消失", () => {
+    // 早期"删除" = 归档标记，无 reason 字段；ADR-0086 后按 system 解读——
+    // 列表和召回都排除，跟写下它时的本意（彻底藏起）一致
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });
     store.append({ sessionId: "old-archived", ts: 2, type: "session_created", workspace: "/b" });
     store.append({ sessionId: "old-archived", ts: 3, type: "session_archived" });
 
     expect(store.sessions().map((s) => s.sessionId)).toEqual(["keep"]);
     expect(store.load("old-archived")).toHaveLength(2); // 旧日志本身原样可读
+  });
+
+  it("系统归档（reason=system）同样不进列表", () => {
+    store.append({ sessionId: "sys", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({ sessionId: "sys", ts: 2, type: "session_archived", reason: "system" });
+    expect(store.sessions()).toEqual([]);
+  });
+
+  it("用户归档（ADR-0086）：留在列表里、带 archived 标志", () => {
+    store.append({ sessionId: "active", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({ sessionId: "shelved", ts: 2, type: "session_created", workspace: "/b" });
+    store.append({ sessionId: "shelved", ts: 3, type: "session_archived", reason: "user" });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.archived]));
+    expect(byId).toEqual({ active: false, shelved: true });
+  });
+
+  it("归档状态最后一条胜出：归档→恢复→再归档", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({ sessionId: "s1", ts: 2, type: "session_archived", reason: "user" });
+    store.append({ sessionId: "s1", ts: 3, type: "session_unarchived" });
+    expect(store.sessions()[0]).toMatchObject({ sessionId: "s1", archived: false });
+
+    store.append({ sessionId: "s1", ts: 4, type: "session_archived", reason: "user" });
+    expect(store.sessions()[0]).toMatchObject({ sessionId: "s1", archived: true });
   });
 
   it("purge：整会话物理抹除，邻居会话一个字节不少", () => {
