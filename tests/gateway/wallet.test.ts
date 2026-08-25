@@ -63,7 +63,7 @@ describe("createSupabaseWallet", () => {
       userId: "u1",
       tier: "flash",
       deltaTokens: 500,
-      reason: "poker_win",
+      reason: "manual_topup",
     });
     expect(JSON.parse(f.calls[0]![1].body as string)).toMatchObject({
       p_model: "",

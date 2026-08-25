@@ -5,10 +5,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { grantFor, TIERS } from "./buckets.js";
 import { createGateway, type GatewayConfig } from "./gateway.js";
-import { createPokerApi, toSeatRow, toTableInfo } from "./pokerApi.js";
-import { createSupabasePokerStore } from "./pokerStore.js";
-import { createRest } from "./supabaseRpc.js";
-import { Tables } from "./tables.js";
 import { createSupabaseWallet } from "./wallet.js";
 
 function required(name: string): string {
@@ -81,34 +77,9 @@ const supabase = {
 const onError = (where: string, err: unknown) =>
   console.error(`[otto-gateway] ${where}:`, err);
 
-const rest = createRest(supabase);
-const pokerStore = createSupabasePokerStore(supabase);
-
-// 循环依赖手工解开：Tables 变了要通知 SSE，SSE 要读 Tables 的视图。
-// 用一个可变引用而不是把两者揉成一个类 —— 揉在一起测起来要连网
-let notifyTables: (tableId: string) => void = () => {};
-const tables = new Tables({
-  store: pokerStore,
-  loadTable: async (id) => {
-    const rows = await rest.select(`poker_tables?id=eq.${id}&select=*`);
-    const row = rows[0];
-    return row && typeof row === "object" ? toTableInfo(row as Record<string, unknown>) : null;
-  },
-  loadSeats: async (id) => {
-    const rows = await rest.select(
-      `poker_stacks?table_id=eq.${id}&select=user_id,seat_index,stack_tokens`
-    );
-    return rows.map((r) => toSeatRow(r as Record<string, unknown>));
-  },
-  onChange: (id) => notifyTables(id),
-});
-const poker = createPokerApi({ tables, store: pokerStore, rest, onError });
-notifyTables = poker.notify;
-
 const handle = createGateway({
   config,
   wallet: createSupabaseWallet(supabase),
-  poker,
   onError,
 });
 

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  toFriendProfile, buildSnapshot, presenceUnion, sameIds, toGameInvite, FriendsManager, workspaceUnion,
+  toFriendProfile, buildSnapshot, presenceUnion, sameIds, FriendsManager, workspaceUnion,
   DEGRADED_POLL_MS, HEARTBEAT_MS,
   type FriendsApi, type FriendsTimers, type FriendshipRow,
-  type InviteRow, type MessageRow, type ProfileRow,
+  type MessageRow, type ProfileRow,
 } from "../../src/main/friends.js";
 
 const P = (id: string, email = `${id}@x.com`): ProfileRow =>
@@ -65,13 +65,6 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
     touchPresence: vi.fn(async () => {}),
     trackWorkspace: vi.fn(),
     listLastSeen: vi.fn(async () => []),
-    insertInvite: vi.fn(async (inviter: string, invitee: string, tableId: string, tableName: string): Promise<InviteRow> =>
-      ({
-        id: "i1", inviter, invitee, table_id: tableId, table_name: tableName,
-        status: "pending", created_at: "t", expires_at: "t+",
-      })),
-    updateInviteStatus: vi.fn(async () => {}),
-    listInvites: vi.fn(async () => []),
     subscribe: vi.fn(() => () => {}),
     ...over,
   };
@@ -81,7 +74,7 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
 function mkPush() {
   return {
     friendsChanged: vi.fn(), presenceChanged: vi.fn(), workspacesChanged: vi.fn(), directMessage: vi.fn(),
-    invitesChanged: vi.fn(), healthChanged: vi.fn(),
+    healthChanged: vi.fn(),
   };
 }
 const noPush = mkPush();
@@ -330,73 +323,6 @@ describe("sameIds", () => {
   });
 });
 
-// ── 牌局邀请 ────────────────────────────────────────────────────
-const INVITE = (over: Partial<InviteRow> = {}): InviteRow => ({
-  id: "i1", inviter: "u2", invitee: "me", table_id: "t1", table_name: "夜场",
-  status: "pending", created_at: "2026-08-19T00:00:00Z", expires_at: "2026-08-19T00:10:00Z",
-  ...over,
-});
-
-describe("toGameInvite", () => {
-  const profiles = new Map([["u2", P("u2")], ["u3", P("u3")]]);
-
-  it("收到的邀请:peer 是邀请人,direction=incoming", () => {
-    expect(toGameInvite("me", INVITE(), profiles)).toMatchObject({
-      direction: "incoming", peer: { id: "u2" }, tableId: "t1", tableName: "夜场",
-    });
-  });
-
-  it("发出的邀请:peer 是被邀请人,direction=outgoing", () => {
-    expect(toGameInvite("me", INVITE({ inviter: "me", invitee: "u3" }), profiles))
-      .toMatchObject({ direction: "outgoing", peer: { id: "u3" } });
-  });
-
-  it("对方 profile 缺席 → null(别渲染幽灵,同 buildSnapshot)", () => {
-    expect(toGameInvite("me", INVITE({ inviter: "nobody" }), profiles)).toBeNull();
-  });
-});
-
-describe("FriendsManager 邀请", () => {
-  it("sendInvite 落库后推新的邀请列表", async () => {
-    const api = fakeApi({
-      listInvites: vi.fn(async () => [INVITE({ inviter: "me", invitee: "u2" })]),
-      listProfiles: vi.fn(async () => [P("u2")]),
-    });
-    const push = mkPush();
-    const m = new FriendsManager({ api, push });
-    expect(await m.sendInvite("u2", "t1", "夜场")).toEqual({ ok: true, value: null });
-    expect(api.insertInvite).toHaveBeenCalledWith("me", "u2", "t1", "夜场");
-    expect(push.invitesChanged).toHaveBeenCalledWith([
-      expect.objectContaining({ direction: "outgoing", tableId: "t1" }),
-    ]);
-  });
-
-  it("sendInvite:pending 唯一索引冲突映射成人话", async () => {
-    const api = fakeApi({
-      insertInvite: vi.fn(async () => { throw Object.assign(new Error("dup"), { code: "23505" }); }),
-    });
-    const m = new FriendsManager({ api, push: mkPush() });
-    expect(await m.sendInvite("u2", "t1", "夜场")).toEqual({ ok: false, message: "已经邀过了,等对方回应" });
-  });
-
-  it("respondInvite 只改状态——买入花真 token,由用户在牌桌页再确认(ADR-0027)", async () => {
-    const api = fakeApi();
-    const m = new FriendsManager({ api, push: mkPush() });
-    await m.respondInvite("i1", true);
-    expect(api.updateInviteStatus).toHaveBeenCalledWith("i1", "accepted");
-    await m.respondInvite("i2", false);
-    expect(api.updateInviteStatus).toHaveBeenCalledWith("i2", "declined");
-    // FriendsApi 里根本没有买入这种方法:接受邀请不可能顺手把钱花掉
-    expect(Object.keys(api)).not.toContain("joinTable");
-  });
-
-  it("cancelInvite 走 cancelled", async () => {
-    const api = fakeApi();
-    await new FriendsManager({ api, push: mkPush() }).cancelInvite("i1");
-    expect(api.updateInviteStatus).toHaveBeenCalledWith("i1", "cancelled");
-  });
-});
-
 // ── 好友在哪:两条腿并集(issue #167) ─────────────────────────────
 describe("workspaceUnion", () => {
   const W = { repoKey: "k1", branch: "feat" };
@@ -564,7 +490,7 @@ describe("FriendsManager 推送兜底", () => {
     });
   });
 
-  it("stop:清掉所有定时器 + 推空邀请与 connecting", async () => {
+  it("stop:清掉所有定时器 + 推 connecting", async () => {
     const h = harness();
     await h.m.start();
     await flush();
@@ -572,7 +498,6 @@ describe("FriendsManager 推送兜底", () => {
     h.timers.tick(HEARTBEAT_MS * 3);
     await flush();
     expect(h.api.touchPresence).toHaveBeenCalledTimes(1); // 只有 start 那一拍
-    expect(h.push.invitesChanged).toHaveBeenLastCalledWith([]);
     expect(h.push.healthChanged).toHaveBeenLastCalledWith("connecting");
   });
 });

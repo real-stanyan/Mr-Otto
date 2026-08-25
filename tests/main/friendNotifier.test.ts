@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
-  friendRequestNotification, inviteNotification, newIncomingInvites, newIncomingRequests,
+  friendRequestNotification, newIncomingRequests,
   truncate, turnCompleteNotification, turnFailedNotification,
 } from "../../src/main/friendNotifier.js";
-import type { FriendsSnapshot, GameInvite } from "../../src/shared/friends.js";
+import type { FriendsSnapshot } from "../../src/shared/friends.js";
 
 const PROFILE = (id: string) => ({ id, email: `${id}@x.com`, name: id.toUpperCase(), avatarUrl: "" });
 const SNAP = (incomingIds: string[]): FriendsSnapshot => ({
@@ -13,11 +13,6 @@ const SNAP = (incomingIds: string[]): FriendsSnapshot => ({
     friendshipId: id, profile: PROFILE(id), status: "pending" as const, direction: "incoming" as const,
   })),
 });
-const INVITE = (id: string, over: Partial<GameInvite> = {}): GameInvite => ({
-  id, peer: PROFILE("u2"), direction: "incoming", tableId: "t1", tableName: "夜场",
-  status: "pending", createdAt: "t", expiresAt: "t+", ...over,
-});
-
 describe("truncate", () => {
   it("压平空白,超长截断带省略号", () => {
     expect(truncate("a\n\n b")).toBe("a b");
@@ -35,8 +30,7 @@ describe("通知文案", () => {
     expect(dmNotification("", "hi", "u2").title).toBe("好友");
   });
 
-  it("邀请与好友请求各自落到自己的面板", () => {
-    expect(inviteNotification("阿关", "夜场")).toMatchObject({ target: { kind: "invite" } });
+  it("好友请求落到自己的面板", () => {
     expect(friendRequestNotification("阿关")).toMatchObject({ target: { kind: "friendRequest" } });
   });
 
@@ -86,7 +80,6 @@ describe("通知文案", () => {
 
   it("好友类通知不带声音(角标即可,别把静默行为改吵)", () => {
     expect(dmNotification("A", "hi", "u2").sound).toBeUndefined();
-    expect(inviteNotification("A", "夜场").sound).toBeUndefined();
     expect(friendRequestNotification("A").sound).toBeUndefined();
   });
 });
@@ -100,14 +93,6 @@ describe("全量快照的去重", () => {
 
   it("第一份快照是补课不是新事件 → 一条都不弹", () => {
     expect(newIncomingRequests(null, SNAP(["a", "b"]))).toEqual([]);
-    expect(newIncomingInvites(null, [INVITE("i1")])).toEqual([]);
-  });
-
-  it("邀请只报新到的、还待回应的、收到的那一向", () => {
-    expect(newIncomingInvites([], [INVITE("i1")]).map((i) => i.id)).toEqual(["i1"]);
-    expect(newIncomingInvites([], [INVITE("i2", { status: "declined" })])).toEqual([]);
-    expect(newIncomingInvites([], [INVITE("i3", { direction: "outgoing" })])).toEqual([]);
-    expect(newIncomingInvites([INVITE("i1")], [INVITE("i1")])).toEqual([]);
   });
 });
 

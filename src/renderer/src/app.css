@@ -756,39 +756,6 @@
   }
 }
 
-/* 等桌页:卡背绕中心的 3D 轨道(PokerTable 的 OrbitCards) */
-@keyframes orbit-spin {
-  from { transform: rotateY(0deg); }
-  to { transform: rotateY(360deg); }
-}
-
-/* 牌局邀请浮层:半透明材质,进场时模糊+缩放一起收敛 —— 让它读作"一层玻璃落下来",
-   而不是一张图片淡入(Apple 的 materialize,而非 fade)。离场即卸载,无对称需求 */
-.invite-toast {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  transition:
-    opacity 260ms var(--ease-strong),
-    transform 260ms var(--ease-strong);
-  @starting-style {
-    opacity: 0;
-    transform: translateY(-10px) scale(0.96);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .invite-toast {
-    transform: none;
-    transition: opacity 200ms ease;
-  }
-}
-/* 降低透明度偏好:材质变实,别让文字压在模糊的背景上 */
-@media (prefers-reduced-transparency: reduce) {
-  .invite-toast {
-    background-color: var(--card);
-    backdrop-filter: none;
-  }
-}
-
 /* DM 气泡入场:只走 6px 的位移 + 淡入。位移再大就成了"飞进来",
    聊天是连续的对话流,新的一条应该像被推上来,不是被扔进来 */
 .dm-bubble {
@@ -807,13 +774,6 @@
     transform: none;
     transition: opacity 150ms ease;
   }
-}
-
-/* 牌桌:轮到谁行动,谁的座位牌向外扩一圈光环。光环只用 box-shadow,
-   不动布局;motion-reduce 时座位仍有静态高亮边框(颜色不减) */
-@keyframes seat-pulse {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
-  70%, 100% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--primary) 0%, transparent); }
 }
 
 /* ── 弹窗(shadcn dialog)的进出场 ─────────────────────────────────────

@@ -12,7 +12,7 @@ import { asNumber, createRpc, type FetchLike } from "./supabaseRpc.js";
 export interface SpendEntry {
   userId: string;
   tier: Tier;
-  /** 正 = 进账(赠额/德州赢),负 = 出账(API 用量/德州输) */
+  /** 正 = 进账(注册赠额/补发),负 = 出账(API 用量) */
   deltaTokens: number;
   reason: string;
   model?: string;
@@ -34,7 +34,7 @@ export interface Wallet {
 export type { FetchLike };
 
 export interface WalletOptions {
-  /** Supabase 根地址,例如 https://otto-auth.stan.damianslife.com */
+  /** Supabase 根地址,例如 https://kpeemypbhkynapkjzewr.supabase.co */
   url: string;
   serviceRoleKey: string;
   fetchImpl?: FetchLike;

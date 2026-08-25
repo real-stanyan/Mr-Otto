@@ -15,10 +15,8 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import {
   Message, MessageAvatar, MessageContent, MessageFooter, MessageGroup,
 } from "@/components/ui/message.js";
-import { X, Maximize2, Minimize2, Spade, AlertCircle } from "lucide-react";
+import { X, Maximize2, Minimize2, AlertCircle } from "lucide-react";
 import { SidebarNub } from "./SidebarNub.js";
-import { InviteTableMenu } from "./InviteTableMenu.js";
-import { POKER_ENABLED } from "../../../shared/features.js";
 import { buildChatRows, timeLabel, type ChatMessage } from "../lib/friendsState.js";
 
 // 好友未选中/dmByFriend 里没这个人时的兜底——模块级常量而非每次渲染 `?? []`,
@@ -100,13 +98,6 @@ export function FriendChatView() {
             {health === "degraded" ? "实时推送不通,轮询兜底(慢几秒)" : online ? "在线" : "离线"}
           </div>
         </div>
-        {POKER_ENABLED && (
-          <InviteTableMenu friendId={friend.id} label={`约 ${name} 打牌`}>
-            <Button variant="ghost" size="icon-sm" title={`约 ${name} 打牌`} aria-label="约打牌">
-              <Spade />
-            </Button>
-          </InviteTableMenu>
-        )}
         <Button variant="ghost" size="icon-sm" onClick={togglePanelWide}
           title={panelWide ? "收回半屏" : "展开全屏"}>
           {panelWide ? <Minimize2 /> : <Maximize2 />}

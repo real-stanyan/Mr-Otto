@@ -1,9 +1,9 @@
 // FriendsSection — 好友区(收在侧栏 footer 的抽屉里):加好友(邮箱精确搜索)/
-// 待处理请求 / 好友列表(在线点 + 未读 + 约打牌) / 牌局邀请。
+// 待处理请求 / 好友列表(在线点 + 未读)。
 // 全部状态走 store,不直接摸 window.otter(硬规则)。未登录显示占位。
 
 import { useEffect, useState } from "react";
-import { Search, Spade } from "lucide-react";
+import { Search } from "lucide-react";
 import { useChat } from "../store.js";
 import type { FriendProfile } from "../../../shared/friends.js";
 import {
@@ -11,8 +11,6 @@ import {
 } from "@/components/ui/sidebar.js";
 import { Button } from "@/components/ui/button.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
-import { InviteTableMenu } from "./InviteTableMenu.js";
-import { POKER_ENABLED } from "../../../shared/features.js";
 
 const SECTION_LABEL = "text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]";
 
@@ -42,27 +40,15 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   const unread = useChat((s) => s.unreadByFriend);
   const friendError = useChat((s) => s.friendError);
   const health = useChat((s) => s.realtimeHealth);
-  const invites = useChat((s) => s.gameInvites);
   const searchFriend = useChat((s) => s.searchFriend);
   const addFriend = useChat((s) => s.addFriend);
   const respondFriend = useChat((s) => s.respondFriend);
   const removeFriend = useChat((s) => s.removeFriend);
   const openFriendChat = useChat((s) => s.openFriendChat);
   const friendChat = useChat((s) => s.friendChat);
-  const respondGameInvite = useChat((s) => s.respondGameInvite);
-  const cancelGameInvite = useChat((s) => s.cancelGameInvite);
-
-  const refreshInvites = useChat((s) => s.refreshInvites);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<FriendProfile[] | null>(null); // null = 没搜过,[] = 搜过没命中
-
-  // 推送不回放:主进程在登录那一刻推过一次邀请列表,而这块 UI 可能是后来才挂上的。
-  // 挂上时补拉一次,别让人对着空列表以为没人约过
-  const signedIn = account.signedIn;
-  useEffect(() => {
-    if (signedIn) void refreshInvites();
-  }, [signedIn, refreshInvites]);
 
   // 边输边搜(防抖 300ms)。单字符太散(ilike %x% 半个库都命中),从 2 个字符起搜;
   // stale 位挡住乱序返回——慢的旧响应不许覆盖新查询的结果
@@ -90,8 +76,6 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
   }
 
   const online = new Set(onlineIds);
-  const incomingInvites = invites.filter((i) => i.direction === "incoming" && i.status === "pending");
-  const outgoingInvites = invites.filter((i) => i.direction === "outgoing" && i.status === "pending");
   // Enter/放大镜 = 立即搜,不等防抖,也不受 2 字符下限(贴整串邮箱直接回车的老习惯)
   const doSearch = async () => {
     const q = query.trim();
@@ -143,29 +127,6 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
       ))}
       {friendError && <p className="px-[10px] text-xs text-err">{friendError}</p>}
 
-      {/* 收到的牌局邀请:浮层可能已经被别的窗口挡住/用户切走过,抽屉里留一份账。
-          德州隐藏(ADR-0085)时整段不画——邀请无处赴约 */}
-      {POKER_ENABLED && incomingInvites.length > 0 && (
-        <>
-          <div className={SECTION_LABEL}>牌局邀请 · {incomingInvites.length}</div>
-          {incomingInvites.map((i) => (
-            <div key={i.id} className="mx-[10px] mb-1 flex items-center gap-1 rounded-md border border-border px-2 py-1">
-              <span className="min-w-0 flex-1 truncate text-xs">
-                {i.peer.name || i.peer.email} · {i.tableName || "无名桌"}
-              </span>
-              <Button variant="ghost" size="xs" className="text-muted-foreground"
-                onClick={() => void respondGameInvite(i.id, false)}>
-                忽略
-              </Button>
-              <Button variant="ghost" size="xs" className="text-brand"
-                onClick={() => void respondGameInvite(i.id, true)}>
-                去牌桌
-              </Button>
-            </div>
-          ))}
-        </>
-      )}
-
       {/* 收到的请求:就地 接受/拒绝 */}
       {snapshot.incoming.length > 0 && (
         <>
@@ -193,7 +154,7 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         </>
       )}
 
-      {/* 好友列表:在线点 + 未读角标,点开 DM 面板;悬停出"约打牌"和"删好友"两颗。
+      {/* 好友列表:在线点 + 未读角标,点开 DM 面板;悬停出"删好友"。
           发出未回应的好友请求灰显在最后 */}
       <SidebarMenu>
         {snapshot.friends.map((e) => (
@@ -209,19 +170,6 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
                 <span className="text-[10px] font-semibold text-brand">{unread[e.profile.id]}</span>
               )}
             </SidebarMenuButton>
-            {/* 约打牌排在删除左边:右边缘那颗是破坏性操作,固定位置不该被挤动 */}
-            {POKER_ENABLED && (
-              <InviteTableMenu friendId={e.profile.id} label={`约 ${e.profile.name || e.profile.email} 打牌`}>
-                <SidebarMenuAction
-                  showOnHover
-                  className="right-7"
-                  title="约打牌"
-                  onClick={(ev) => ev.stopPropagation()}
-                >
-                  <Spade />
-                </SidebarMenuAction>
-              </InviteTableMenu>
-            )}
             <SidebarMenuAction
               showOnHover
               title="删除好友"
@@ -250,23 +198,6 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         ))}
       </SidebarMenu>
 
-      {/* 自己发出去、还没被回应的邀请:看得见才撤得回 */}
-      {outgoingInvites.length > 0 && (
-        <>
-          <div className={SECTION_LABEL}>已发出的邀请</div>
-          {outgoingInvites.map((i) => (
-            <div key={i.id} className="mx-[10px] mb-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-              <span className="min-w-0 flex-1 truncate">
-                约 {i.peer.name || i.peer.email} 去 {i.tableName || "无名桌"}
-              </span>
-              <Button variant="ghost" size="xs" className="text-muted-foreground"
-                onClick={() => void cancelGameInvite(i.id)}>
-                撤回
-              </Button>
-            </div>
-          ))}
-        </>
-      )}
     </>
   );
 }

@@ -34,10 +34,6 @@ import type {
   TurnDiffUpdate,
   InstructionsNotice,
   UpdaterState,
-  PokerAction,
-  PokerHandView,
-  PokerTableInput,
-  PokerTableSummary,
   McpServerConfig,
   McpServersSnapshot,
   McpPromptInfo,
@@ -61,9 +57,9 @@ import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
-  DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth, WorkspacesSnapshot,
+  DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
-import { POKER_ENABLED, OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
+import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
@@ -77,14 +73,10 @@ import { hasModelSetupStamp, needsModelSetup, stampModelSetup } from "./lib/mode
 import { isOnboardingTestAccount } from "../../shared/onboardingTestAccount.js";
 import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
-/** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测)。
-    德州隐藏(ADR-0085)时邀请不计:看不见的邀请挂角标 = 一个消不掉的红点 */
-export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
+/** dock 角标数 = 未读 DM + 待处理好友请求(纯投影,好测) */
+export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot">): number {
   const unread = Object.values(s.unreadByFriend).reduce((a, b) => a + b, 0);
-  const invites = POKER_ENABLED
-    ? s.gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length
-    : 0;
-  return unread + s.friendsSnapshot.incoming.length + invites;
+  return unread + s.friendsSnapshot.incoming.length;
 }
 
 /** 从 Record 里删一个 key 的不可变写法 */
@@ -108,9 +100,6 @@ export type SettingsSection =
   | "memory"
   | "context"
   | "about";
-
-/** 主区两档：work = 工程会话，game = 德州牌桌 */
-export type SessionMode = "work" | "game";
 
 /** composer 里正在填的 MCP prompt 参数表单——server/name 钉死是**哪一个**
     prompt(同名 prompt 可能挂在不同 server 上),values 是用户此刻填的草稿,
@@ -210,16 +199,6 @@ interface ChatState {
   /** 设置模式当前栏目（覆盖在任意 phase 之上）；null = 不在设置模式，
       会话高亮判断也看这个 */
   settingsSection: SettingsSection | null;
-  /** 看得见的牌桌（自己建的 / 自己坐着的 / 好友建的） */
-  pokerTables: PokerTableSummary[];
-  /** 当前订阅的桌;null = 没进桌 */
-  pokerTableId: string | null;
-  /** 服务端推来的**裁剪过的**牌局视图。别人的底牌在这里就是 null */
-  pokerHand: PokerHandView | null;
-  pokerError: string;
-  /** 主区档位:work = 工程会话,game = 德州牌桌。纯本机视图偏好,
-      不落事件日志、不进投影(同 ADR-0017/0018 的法理) */
-  sessionMode: SessionMode;
   /** Protocol 仪表盘开关(覆盖在任意 phase 之上,与设置模式互斥) */
   protocolOpen: boolean;
   /** 仪表盘目标仓库(绝对路径):当前会话 workspace ?? localStorage 记忆 */
@@ -362,8 +341,6 @@ interface ChatState {
   unreadByFriend: Record<string, number>;
   /** 好友区/DM 面板的内联错误(FriendsResult ok:false 的 message 落这) */
   friendError: string | null;
-  /** 近期牌局邀请(收发两向,含终态)。主进程推,渲染层只投影 */
-  gameInvites: GameInvite[];
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
@@ -436,16 +413,6 @@ interface ChatState {
       认不出的两种情形:这份表单被取消/重开/再提交过(review finding 1),
       或者用户已经切到别的会话了(review finding 2) */
   submitMcpPromptForm(): Promise<void>;
-  setSessionMode(mode: SessionMode): void;
-  refreshPokerTables(): Promise<void>;
-  createPokerTable(input: PokerTableInput): Promise<void>;
-  joinPokerTable(tableId: string, amount: number): Promise<void>;
-  closePokerTable(tableId: string): Promise<void>;
-  leavePokerTable(): Promise<void>;
-  startPokerHand(): Promise<void>;
-  pokerAct(action: PokerAction): Promise<void>;
-  /** 进桌/退桌。同一时刻只订一张 */
-  watchPokerTable(tableId: string | null): Promise<void>;
   closeSettings(): void;
   /** 打开 Protocol 仪表盘:目标仓库跟当前 workspace(无会话才取记忆),有仓库就顺带刷新一次 */
   openProtocol(): Promise<void>;
@@ -568,12 +535,6 @@ interface ChatState {
   /** DM 面板顶部"加载更早"——按当前最旧 id 往前翻一页 */
   loadOlderDms(): Promise<void>;
   setFriendsPanelOpen(open: boolean): void;
-  refreshInvites(): Promise<void>;
-  /** 约好友上某张牌桌(tableName 是发出那刻的桌名快照) */
-  inviteToTable(friendId: string, tableId: string, tableName: string): Promise<void>;
-  /** 回应邀请。接受 = 切到 game 档并进那张桌,**不代付买入**(ADR-0027) */
-  respondGameInvite(inviteId: string, accept: boolean): Promise<void>;
-  cancelGameInvite(inviteId: string): Promise<void>;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
@@ -734,11 +695,6 @@ export const useChat = create<ChatState>((set, get) => ({
   thinking: DEFAULT_THINKING,
   replayCursor: null,
   settingsSection: null,
-  sessionMode: "work",
-  pokerTables: [],
-  pokerTableId: null,
-  pokerHand: null,
-  pokerError: "",
   protocolOpen: false,
   protocolRepo: null,
   protocolDetailPending: false,
@@ -794,7 +750,6 @@ export const useChat = create<ChatState>((set, get) => ({
   dmByFriend: {},
   unreadByFriend: {},
   friendError: null,
-  gameInvites: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -886,97 +841,6 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  setSessionMode: (mode) => set({ sessionMode: mode }),
-
-  async refreshPokerTables() {
-    try {
-      set({ pokerTables: await window.otter.pokerTables(), pokerError: "" });
-    } catch (err) {
-      // 列不出来和"一张桌都没有"是两回事,后者是事实,前者是故障
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async createPokerTable(input) {
-    try {
-      const table = await window.otter.pokerCreateTable(input);
-      set({ pokerError: "" });
-      await get().refreshPokerTables();
-      // 建完直接进桌:建桌的人显然是要玩,不是要看一眼列表
-      await get().watchPokerTable(table.id);
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async closePokerTable(tableId) {
-    try {
-      await window.otter.pokerClose(tableId);
-      set({ pokerError: "" });
-      await get().refreshPokerTables();
-      // 删桌把桌上筹码退回桶里,桶余额跟着变
-      await get().refreshWallet();
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async joinPokerTable(tableId, amount) {
-    try {
-      await window.otter.pokerJoin(tableId, amount);
-      set({ pokerError: "" });
-      await get().refreshPokerTables();
-      await get().watchPokerTable(tableId);
-      // 买入把 token 从桶挪到桌上,桶余额跟着变
-      await get().refreshWallet();
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async leavePokerTable() {
-    const tableId = get().pokerTableId;
-    if (!tableId) return;
-    try {
-      await window.otter.pokerLeave(tableId);
-      await get().watchPokerTable(null);
-      await get().refreshPokerTables();
-      await get().refreshWallet();
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async startPokerHand() {
-    const tableId = get().pokerTableId;
-    if (!tableId) return;
-    try {
-      await window.otter.pokerStart(tableId);
-      set({ pokerError: "" });
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async pokerAct(action) {
-    const tableId = get().pokerTableId;
-    if (!tableId) return;
-    try {
-      await window.otter.pokerAct(tableId, action);
-      set({ pokerError: "" });
-    } catch (err) {
-      set({ pokerError: err instanceof Error ? err.message : String(err) });
-      // 动作被拒最常见的原因是本地视图过期(SSE 断流后冻住)。重订阅时服务端
-      // 会先推一份当前视图,冻结状态被新鲜的覆盖 —— 报错留着,视图自愈
-      await window.otter.pokerWatch(tableId);
-    }
-  },
-
-  async watchPokerTable(tableId) {
-    // 先清旧牌局再订新的:留着上一张桌的视图会让人对着别人的桌做决定
-    set({ pokerTableId: tableId, pokerHand: null, pokerError: "" });
-    await window.otter.pokerWatch(tableId);
-  },
   closeSettings: () => set({ settingsSection: null }),
 
   // 下面四个 action 共一条规矩:谁换掉 subagents,谁就得把 subagentsError 一起落定。
@@ -1570,45 +1434,6 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
 
-  async refreshInvites() {
-    const r = await window.otter.friendsListInvites();
-    if (r.ok) {
-      set({ gameInvites: r.value });
-      return;
-    }
-    // 不写 friendError:这是挂载时的后台补拉,不是用户刚按下的动作。写进去会在
-    // 好友区顶上钉一条谁也关不掉的红字(migration 0006 没跑时就是这个样子 ——
-    // 一句 "Could not find the table 'public.game_invites'" 一直挂在搜索框下面)。
-    // 用户主动发/回应邀请那几条路径仍然照常报错,那才是他在等回音的地方
-    console.error("邀请列表读取失败", r.message);
-  },
-
-  async inviteToTable(friendId, tableId, tableName) {
-    const r = await window.otter.friendsSendInvite(friendId, tableId, tableName);
-    set({ friendError: r.ok ? null : r.message }); // 成功后的列表由主进程推,不本地猜
-  },
-
-  async respondGameInvite(inviteId, accept) {
-    const invite = get().gameInvites.find((i) => i.id === inviteId);
-    const r = await window.otter.friendsRespondInvite(inviteId, accept);
-    if (!r.ok) {
-      set({ friendError: r.message });
-      return;
-    }
-    set({ friendError: null });
-    if (!accept || !invite) return;
-    // 接受 = 把人送到桌边,**不替他掏钱**:买入花的是真 token(ADR-0021),
-    // 那一步留在牌桌页由本人按(ADR-0027)
-    set({ sessionMode: "game", friendsPanelOpen: false });
-    await get().refreshPokerTables();
-    await get().watchPokerTable(invite.tableId);
-  },
-
-  async cancelGameInvite(inviteId) {
-    const r = await window.otter.friendsCancelInvite(inviteId);
-    set({ friendError: r.ok ? null : r.message });
-  },
-
   setProfileSetupOpen: (open) =>
     set((s) => {
       // 关闭那一下是引导链的接力点(issue #328):起完名字(或"以后再说")后,
@@ -1678,7 +1503,7 @@ export const useChat = create<ChatState>((set, get) => ({
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
-              gameInvites: [], realtimeHealth: "connecting", friendsPanelOpen: false,
+              realtimeHealth: "connecting", friendsPanelOpen: false,
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
               myProfile: null, profileSetupOpen: false, modelSetupOpen: false,
@@ -1695,13 +1520,6 @@ export const useChat = create<ChatState>((set, get) => ({
         void get().refreshMyProfile();
       }
     });
-    window.otter.onPokerHand((pokerHand) => {
-      set({ pokerHand });
-      // 等桌状态下服务端推来的一定是 null,而它推送的时机(有人上桌/离桌/
-      // 开关桌页)恰是在场人数变化的时刻 —— 立刻刷列表,5s 轮询只当兜底
-      if (pokerHand === null && get().pokerTableId) void get().refreshPokerTables();
-    });
-    window.otter.onPokerError((pokerError) => set({ pokerError }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onWorkspacesChanged((workspaces) => set({ workspaces }));
@@ -1715,7 +1533,6 @@ export const useChat = create<ChatState>((set, get) => ({
       if (s.sessionId === prev.sessionId) return;
       void window.otter.setActiveSession(s.sessionId || null);
     });
-    window.otter.onGameInvitesChanged((gameInvites) => set({ gameInvites }));
     window.otter.onRealtimeHealth((realtimeHealth) => set({ realtimeHealth }));
     window.otter.onWindowFullscreen((fullscreen) => set({ fullscreen }));
 
@@ -1776,8 +1593,7 @@ export const useChat = create<ChatState>((set, get) => ({
     useChat.subscribe((s, prev) => {
       if (
         s.unreadByFriend === prev.unreadByFriend &&
-        s.friendsSnapshot === prev.friendsSnapshot &&
-        s.gameInvites === prev.gameInvites
+        s.friendsSnapshot === prev.friendsSnapshot
       ) return;
       void window.otter.setBadgeCount(pendingAttention(s));
     });

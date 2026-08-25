@@ -5,7 +5,7 @@
 
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import type {
-  FriendsApi, FriendshipRow, InviteRow, LastSeenRow, MessageRow, PresenceEntry, ProfileRow,
+  FriendsApi, FriendshipRow, LastSeenRow, MessageRow, PresenceEntry, ProfileRow,
 } from "./friends.js";
 import type { WorkspacePresence } from "../shared/friends.js";
 
@@ -14,8 +14,6 @@ const PAGE = 50;
 const SEARCH_PAGE = 8;
 /** 一次轮询最多补多少条积压消息(离线久了不至于一口气推爆渲染层) */
 const INBOX_PAGE = 200;
-/** 邀请收件箱只看近半小时:再早的邀请桌早散了,留着只会堆在 UI 上 */
-const INVITE_WINDOW_MS = 30 * 60 * 1000;
 
 /** presenceState() 的形状 {key: metas[]} → 在线 userId 列表(key 即 uid) */
 export function presenceStateToIds(state: Record<string, unknown[]>): string[] {
@@ -183,32 +181,10 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
       return (unwrap(res) ?? []) as LastSeenRow[];
     },
 
-    async insertInvite(inviter, invitee, tableId, tableName) {
-      const res = await client.from("game_invites")
-        .insert({ inviter, invitee, table_id: tableId, table_name: tableName })
-        .select("id,inviter,invitee,table_id,table_name,status,created_at,expires_at").single();
-      return unwrap(res) as InviteRow;
-    },
-
-    async updateInviteStatus(id, status) {
-      unwrap(await client.from("game_invites").update({ status }).eq("id", id));
-    },
-
-    async listInvites(uid) {
-      const since = new Date(Date.now() - INVITE_WINDOW_MS).toISOString();
-      const res = await client.from("game_invites")
-        .select("id,inviter,invitee,table_id,table_name,status,created_at,expires_at")
-        .or(`inviter.eq.${uid},invitee.eq.${uid}`)
-        .gte("created_at", since)
-        .order("created_at", { ascending: false }).limit(PAGE);
-      return (unwrap(res) ?? []) as InviteRow[];
-    },
-
     subscribe(uid, handlers) {
-      // 四条通道各自报状态,合成一个健康度推给上层(哑掉的那条会把整体拖成 degraded)
+      // 三条通道各自报状态,合成一个健康度推给上层(哑掉的那条会把整体拖成 degraded)
       const status: Record<string, string> = {
-        friendships: "CONNECTING", messages: "CONNECTING",
-        presence: "CONNECTING", invites: "CONNECTING",
+        friendships: "CONNECTING", messages: "CONNECTING", presence: "CONNECTING",
       };
       let lastHealth = "";
       const report = (name: string, s: string): void => {
@@ -236,16 +212,6 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
           (payload) => handlers.onMessage(payload.new as MessageRow))
         .subscribe((s) => report("messages", s));
 
-      // game_invites:收到的(新邀请)和发出的(对方回应)都要看见 —— 两个方向各一条订阅
-      const inviteChannel = client.channel(`invites-${uid}`)
-        .on("postgres_changes",
-          { event: "*", schema: "public", table: "game_invites", filter: `invitee=eq.${uid}` },
-          (payload) => handlers.onInvite(payload.new as InviteRow))
-        .on("postgres_changes",
-          { event: "*", schema: "public", table: "game_invites", filter: `inviter=eq.${uid}` },
-          (payload) => handlers.onInvite(payload.new as InviteRow))
-        .subscribe((s) => report("invites", s));
-
       // presence:track key = 自己 uid,sync 时把整个 state 的 key 集推出去
       const channel = client.channel("online-users", {
         config: { presence: { key: uid } },
@@ -264,7 +230,6 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
         if (presenceChannel === channel) presenceChannel = null;
         void client.removeChannel(fsChannel);
         void client.removeChannel(msgChannel);
-        void client.removeChannel(inviteChannel);
         void client.removeChannel(channel);
       };
     },

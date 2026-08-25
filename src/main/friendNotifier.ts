@@ -2,9 +2,9 @@
 // 纯函数在上,碰 Electron 的组装在下(同 supabaseFriendsApi 的分层),单测只吃上半段。
 //
 // 判定原则:通知是打断,不是日志。只在**窗口没聚焦**时发,而且只发"新出现的东西"——
-// 快照式推送(好友请求/邀请)每次都是全量,不做差集会把同一条请求反复弹出来。
+// 快照式推送(好友请求)每次都是全量,不做差集会把同一条请求反复弹出来。
 
-import type { FriendsSnapshot, GameInvite } from "../shared/friends.js";
+import type { FriendsSnapshot } from "../shared/friends.js";
 import type { NotificationTarget } from "../shared/shellBridge.js";
 
 /** 一条待发的系统通知。target 决定用户点它之后落到哪个面板 */
@@ -26,14 +26,6 @@ export function truncate(text: string, max = BODY_MAX): string {
 
 export function dmNotification(senderName: string, body: string, friendId: string): NotifySpec {
   return { title: senderName || "好友", body: truncate(body), target: { kind: "dm", friendId } };
-}
-
-export function inviteNotification(inviterName: string, tableName: string): NotifySpec {
-  return {
-    title: `${inviterName || "好友"}约你打牌`,
-    body: truncate(tableName ? `牌桌:${tableName}` : "点开看看是哪张桌"),
-    target: { kind: "invite" },
-  };
 }
 
 export function friendRequestNotification(name: string): NotifySpec {
@@ -100,13 +92,6 @@ export function newIncomingRequests(prev: FriendsSnapshot | null, next: FriendsS
   if (!prev) return []; // 第一份快照是"补课",不是"来了新东西",不该弹一屏通知
   const had = new Set(prev.incoming.map((e) => e.friendshipId));
   return next.incoming.filter((e) => !had.has(e.friendshipId)).map((e) => e.friendshipId);
-}
-
-/** 两次邀请列表之间**新到的、还待回应的**收到邀请。同上,首份不弹 */
-export function newIncomingInvites(prev: GameInvite[] | null, next: GameInvite[]): GameInvite[] {
-  if (!prev) return [];
-  const had = new Set(prev.map((i) => i.id));
-  return next.filter((i) => i.direction === "incoming" && i.status === "pending" && !had.has(i.id));
 }
 
 /** Electron 侧的接线口:窗口聚焦时不弹横幅只响声,点通知则聚焦窗口 + 告诉渲染层去哪 */
