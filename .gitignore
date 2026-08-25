@@ -9,3 +9,7 @@ test-results/
 playwright-report/
 # supabase CLI 的本地缓存（`supabase --version` 就会生成 cli-latest），不是部署产物
 supabase/.temp/
+
+# expo prebuild 的产物（真机 build 才需要；Expo Go 那条路用不到）
+mobile/ios/
+mobile/android/
