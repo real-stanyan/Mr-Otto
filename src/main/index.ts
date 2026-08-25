@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
@@ -111,6 +111,13 @@ import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
+import { createRemoteBridge } from "./remoteBridge.js";
+import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
+import { openIdentityStore } from "./remoteIdentity.js";
+import { createSseTransport } from "./remoteTransport.js";
+import { trimForMobile } from "../shared/remote/trim.js";
+import type { UpFrame } from "../shared/remote/frames.js";
+import { relayBaseUrl } from "../shared/gatewayConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -513,6 +520,43 @@ void app.whenReady().then(() => {
         })()
       : null;
 
+  // 手机端远程投影(ADR-0094/0095/0100):与灵动岛平级的第三个投影窗口 ——
+  // 同一份 IslandFleet,同一套"状态下行、命令上行",只是传输从本机 stdio
+  // 换成了隔着公网的加密 SSE + POST。
+  //
+  // **暂时挂在 OTTO_REMOTE=1 后面**:配对(TOFU 首次确认那一步)还没有 UI,
+  // 没 pin 过对端的话每次握手都会被拒 —— 默认开着只是白连中继。
+  // 配对 UI 落地时把这个开关摘掉。
+  const remote = (() => {
+    if (process.env.OTTO_REMOTE !== "1") return null;
+    const idStore = openIdentityStore({
+      path: join(app.getPath("userData"), "remote-identity.bin"),
+      crypto: nodeRemoteCrypto(),
+      box: {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (plain) => new Uint8Array(safeStorage.encryptString(plain)),
+        decrypt: (buf) => safeStorage.decryptString(Buffer.from(buf)),
+      },
+      log: (m) => console.warn(m),
+    });
+    if (!idStore) return null; // 系统封装不可用 = 不开远程,而不是明文落盘
+    const transport = createSseTransport({
+      baseUrl: relayBaseUrl(),
+      role: "desktop",
+      authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+      log: (m) => console.warn(m),
+    });
+    return createRemoteBridge({
+      crypto: nodeRemoteCrypto(),
+      identity: idStore.identity,
+      deviceId: idStore.deviceId, // 随机,跟身份存在同一个封装里 —— hello 是明文过中继的
+      transport,
+      peerIdentity: () => idStore.peerIdentity(),
+      onCommand: (c) => handleRemoteCommand(c),
+      log: (m) => console.warn(m),
+    });
+  })();
+
   // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
   // 沿用 ADR-0059 的"丢弃成本可忽略"
   // display=usage 时每次推送都要一份用量表,但账单 SQL + 聚合不值得跟着每个
@@ -543,17 +587,19 @@ void app.whenReady().then(() => {
   };
 
   const pushFleet = (): void => {
-    if (!bridge) return;
+    if (!bridge && !remote) return;
     const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId);
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
-    bridge.pushState(fleet);
+    bridge?.pushState(fleet);
+    // 出机器的那一份要过闸门:用量和岛的显示设置不上公网(shared/remote/trim.ts)
+    remote?.pushFleet(trimForMobile(fleet));
   };
 
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
       reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
-    if (!bridge) return;
+    if (!bridge && !remote) return;
     const sid = islandInputSessionId(input);
     if (sid) {
       const cur = islandStates.get(sid) ?? { ...initialIsland, sessionId: sid };
@@ -2288,6 +2334,24 @@ void app.whenReady().then(() => {
 
   // 岛发来的命令（stdio 桥的另一半）：ready 补一次快照,send/approve/deny 复用
   // 上面两个命名函数——发消息/审批这两条路,不管是主窗输入框还是岛,只走一份逻辑
+  /** 手机上行的五个词。三个能原样落到岛的那条路(同一套审批/发消息逻辑,
+      不另起一份);watch/unwatch 是时间线订阅,还没做。
+      刻意不透传 grant —— UpFrame 里根本没有那个字段(ADR-0096:永久授权不给手机) */
+  function handleRemoteCommand(c: UpFrame): void {
+    switch (c.type) {
+      case "approve":
+        return handleIslandCommand({ type: "approve", sessionId: c.sessionId, callId: c.callId });
+      case "deny":
+        return handleIslandCommand({ type: "deny", sessionId: c.sessionId, callId: c.callId });
+      case "send":
+        return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
+      case "watch":
+      case "unwatch":
+        console.warn(`远程:时间线订阅还没做,忽略 ${c.type}`);
+        return;
+    }
+  }
+
   function handleIslandCommand(c: IslandCommand): void {
     if (c.type === "ready") {
       // helper 起来了:把当前 fleet 补推一次(等价旧 islandBoot)

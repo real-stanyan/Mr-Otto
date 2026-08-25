@@ -3,8 +3,7 @@ import {
   authLandingUrl,
   DEFAULT_GATEWAY_BASE_URL,
   gatewayBaseUrl,
-  parseGatewayError,
-} from "../../src/shared/gatewayConfig.js";
+  parseGatewayError, relayBaseUrl } from "../../src/shared/gatewayConfig.js";
 
 describe("gatewayBaseUrl", () => {
   it("默认走生产网关", () => {
@@ -53,5 +52,17 @@ describe("parseGatewayError", () => {
     for (const bad of ["", "<html>502</html>", "null", "[]", '{"error":"字符串"}', "{}"]) {
       expect(parseGatewayError(bad)).toBeNull();
     }
+  });
+});
+
+describe("relayBaseUrl", () => {
+  it("剥掉 /v1 —— 中继不挂在 OpenAI 兼容那套 API 下面", () => {
+    expect(relayBaseUrl({} as NodeJS.ProcessEnv))
+      .toBe("https://otto-auth.stan.damianslife.com/gw");
+  });
+
+  it("跟着本地覆盖走（本机起网关调试时全链路照样通）", () => {
+    expect(relayBaseUrl({ OTTO_GATEWAY_URL: "http://127.0.0.1:8788/v1" } as NodeJS.ProcessEnv))
+      .toBe("http://127.0.0.1:8788");
   });
 });

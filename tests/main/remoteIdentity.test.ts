@@ -97,3 +97,17 @@ describe("openIdentityStore", () => {
     expect(s!.peerIdentity()).toBeNull();
   });
 });
+
+describe("deviceId", () => {
+  it("随机且跨重启稳定；不含任何本机可辨识的东西（hello 是明文过中继的）", () => {
+    const fs = memFs();
+    const box = fakeBox();
+    const a = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    const b = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(a.deviceId).toBe(b.deviceId);
+    expect(a.deviceId.length).toBeGreaterThan(10);
+
+    const other = openIdentityStore({ path: "/y/id.bin", crypto: P, box, fs })!;
+    expect(other.deviceId).not.toBe(a.deviceId);
+  });
+});

@@ -27,8 +27,10 @@ export interface SseTransportOpts {
   /** 网关根,不含 /v1。例:https://otto-auth.example/gw */
   baseUrl: string;
   role: "desktop" | "mobile";
-  /** 当前的 Supabase access token。没登录回 null —— 那就不连 */
-  authToken: () => string | null;
+  /** 当前的 Supabase access token。没登录回 null —— 那就不连。
+      异步是因为上游 AccountManager.getAccessToken() 每次读 supabase 的 session
+      而不是缓存令牌:令牌会过期,缓存一份等于把"过期"变成一次静默失联 */
+  authToken: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
   log?: (m: string) => void;
 }
@@ -77,7 +79,8 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
 
   async function connect(): Promise<void> {
     if (closed) return;
-    const token = opts.authToken();
+    const token = await opts.authToken();
+    if (closed) return;
     if (!token) {
       log("远程传输:还没登录,不连");
       return; // 登录之后由调用方重新建这条传输
@@ -118,19 +121,20 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
 
   return {
     send(payload) {
-      const token = opts.authToken();
-      if (closed || !token) return;
+      if (closed) return;
       // 刻意不 await、刻意不因失败触发 onClose:
       // 409(对端不在线)是常态而不是"连接断了",而 send → onClose → startRound
       // → send 会当场变成同步死循环(见 RemoteTransport 的合同)
-      void doFetch(`${base}/rl/v1/send${q}`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: payload,
-      }).then(
-        (r) => { if (r.status !== 204 && r.status !== 409) log(`远程传输:上行 ${r.status}`); },
-        () => { log("远程传输:上行发不出去"); }
-      );
+      void (async () => {
+        const token = await opts.authToken();
+        if (closed || !token) return;
+        const r = await doFetch(`${base}/rl/v1/send${q}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: payload,
+        });
+        if (r.status !== 204 && r.status !== 409) log(`远程传输:上行 ${r.status}`);
+      })().catch(() => log("远程传输:上行发不出去"));
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },

@@ -41,7 +41,7 @@ function harness(opts: { status?: number } = {}) {
   const t = createSseTransport({
     baseUrl: "https://gw.example/gw",
     role: "desktop",
-    authToken: () => "TOKEN",
+    authToken: async () => "TOKEN",
     fetchImpl,
     log: () => {},
   });
@@ -198,7 +198,7 @@ describe("createSseTransport", () => {
     }) as unknown as typeof fetch;
     const t = createSseTransport({
       baseUrl: "https://gw.example/gw", role: "desktop",
-      authToken: () => null, fetchImpl, log: () => {},
+      authToken: async () => null, fetchImpl, log: () => {},
     });
     await settle();
     expect(opened).toHaveLength(0);

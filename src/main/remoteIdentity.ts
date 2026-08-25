@@ -35,6 +35,9 @@ interface FsPort {
 /** 封装里的明文形状。版本号在最外层,将来换形状时旧文件仍然认得出来 */
 interface Sealed {
   v: 1;
+  /** 本机的稳定设备 id。随机生成而不是用路径/主机名:hello 是**明文**过中继的,
+      任何有辨识度的东西(用户名、home 路径、机器名)都会当场送给网关运营者 */
+  did: string;
   priv: string;
   pub: string;
   /** pin 住的对端身份公钥;还没配对过就是 null */
@@ -43,6 +46,8 @@ interface Sealed {
 
 export interface IdentityStore {
   identity: KeyPair;
+  /** 随机设备 id(握手签名里的一项,做反射防护) */
+  deviceId: string;
   /** 已 pin 住的对端身份公钥,还没配对过回 null(remoteBridge 的 peerIdentity) */
   peerIdentity(): Uint8Array | null;
   /** TOFU 首次确认之后调一次。覆盖旧的 pin = 用户换了手机,由调用方负责先问 */
@@ -68,6 +73,7 @@ function parse(raw: Uint8Array, box: SecretBox): Sealed | null {
   try {
     const s = JSON.parse(box.decrypt(raw)) as Sealed;
     if (s.v !== 1 || typeof s.priv !== "string" || typeof s.pub !== "string") return null;
+    if (typeof s.did !== "string" || s.did === "") return null;
     return s;
   } catch {
     return null; // 解不开 / 不是我们写的 = 当成还没配过
@@ -93,7 +99,13 @@ export function openIdentityStore(deps: {
   let state: Sealed = existing ?? (() => {
     const kp = deps.crypto.generateEd25519();
     log("远程身份:生成新的身份密钥");
-    return { v: 1, priv: b64encode(kp.privateKey), pub: b64encode(kp.publicKey), peer: null };
+    return {
+      v: 1,
+      did: b64encode(deps.crypto.randomBytes(16)),
+      priv: b64encode(kp.privateKey),
+      pub: b64encode(kp.publicKey),
+      peer: null,
+    };
   })();
 
   const priv = b64decode(state.priv);
@@ -102,7 +114,13 @@ export function openIdentityStore(deps: {
     // 封装解开了但内容坏了。重新生成,而不是拿一把半截的身份上线
     log("远程身份:文件内容坏了,重新生成");
     const kp = deps.crypto.generateEd25519();
-    state = { v: 1, priv: b64encode(kp.privateKey), pub: b64encode(kp.publicKey), peer: null };
+    state = {
+      v: 1,
+      did: b64encode(deps.crypto.randomBytes(16)),
+      priv: b64encode(kp.privateKey),
+      pub: b64encode(kp.publicKey),
+      peer: null,
+    };
   }
 
   const flush = (): void => {
@@ -112,6 +130,7 @@ export function openIdentityStore(deps: {
 
   return {
     identity: { privateKey: b64decode(state.priv)!, publicKey: b64decode(state.pub)! },
+    deviceId: state.did,
     peerIdentity() {
       return state.peer === null ? null : b64decode(state.peer);
     },
