@@ -1387,7 +1387,7 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  // 回到检查点（issue #395 / ADR-0089）：对话侧 fork（零拷贝，ADR-0084）+
+  // 回到检查点（issue #395 / ADR-0090）：对话侧 fork（零拷贝，ADR-0084）+
   // 文件侧 restore（影子 git reset）成对发生。顺序是安全设计：先分叉后动文件，
   // fork 抛错时磁盘一个字节没动。返回新分支会话 id，切视图由渲染层随后
   // 走 resumeSession（注册/重建复用唯一入口，不再造第二条装配路）

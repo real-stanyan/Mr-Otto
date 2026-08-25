@@ -425,7 +425,7 @@ export interface ShellBridge {
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
-  /** 回到检查点（issue #395 / ADR-0089）：fork 会话到该检查点前最近的 turn
+  /** 回到检查点（issue #395 / ADR-0090）：fork 会话到该检查点前最近的 turn
       收口（零拷贝，ADR-0084）+ 把工作区文件 reset 回检查点快照，返回新分支
       会话 id——切换视图由渲染层随后走 resumeSession。checkpointSeq 是
       checkpoint_created 事件的 seq。turn 进行中 reject；文件回退是破坏性

@@ -1,4 +1,4 @@
-// 影子 git 检查点（issue #395 / ADR-0089，Claude Code shadow-repo 对照）——
+// 影子 git 检查点（issue #395 / ADR-0090，Claude Code shadow-repo 对照）——
 // CheckpointCapability 的 LocalWorld 系实现。
 //
 // 形态：每个工作区一个独立 git 仓（--git-dir 指到 ~/.mr-otto/checkpoints/<hash>，

@@ -232,7 +232,7 @@ function Swimlanes({
 
 /* ─── 详情面板 ─── */
 
-/** 「回到这一步」（issue #395 / ADR-0089）：fork 会话（零拷贝）+ 文件 reset
+/** 「回到这一步」（issue #395 / ADR-0090）：fork 会话（零拷贝）+ 文件 reset
     回检查点，成功后直接切进新分支会话。破坏性动作走 confirm（同删除会话的模式） */
 function RewindButton({ checkpointId, seq }: { checkpointId: string; seq: number }) {
   const sessionId = useChat((s) => s.sessionId);

@@ -445,7 +445,7 @@ export interface BackgroundTaskCompletedEvent extends SessionEventBase {
   exitCode: number;
 }
 
-/** 工作区检查点（issue #395 / ADR-0089，Claude Code checkpoint 对照）。
+/** 工作区检查点（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
     每个用户 turn 开跑前，装配根把工作区文件快照进影子 git，id 落此事件——
     「回到这一步」的文件侧锚点（对话侧锚点是它前面的 turn_ended，fork 用）。
     模型不消费（投影丢弃）；ignorable：旧版本跳过照常重放——它不参与模型

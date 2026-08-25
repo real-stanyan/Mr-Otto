@@ -117,7 +117,7 @@ export interface McpCapability {
   getPrompt(serverId: string, name: string, args: Record<string, string>): Promise<string>;
 }
 
-/** 工作区检查点能力（issue #395 / ADR-0089，Claude Code checkpoint 对照）。
+/** 工作区检查点能力（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
     save = 把工作区文件此刻的状态存成一个可寻址的快照；restore = 把文件恢复
     到某个快照（**摧毁**快照之后对被跟踪文件的改动——调用方负责确认门）。
     模型看不到这把能力（不是工具）：消费者是装配根（每个用户 turn 前自动
