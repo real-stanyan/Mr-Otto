@@ -107,12 +107,15 @@ export interface FilesService {
 
 export function createFilesService(deps: FilesDeps): FilesService {
   /** 根内校验:先按字面 resolve 挡 ../,再 realpath 挡指向根外的符号链接。
-      两道都要——realpath 对不存在的路径解不出来,字面那道才是常态防线 */
+      两道都要——realpath 对不存在的路径解不出来,字面那道才是常态防线。
+      第二道比的是**解过的根**:macOS 的 /var/folders/... 本身就是 /private/var
+      的软链,拿字面根去比,整个工作区都会被判成越狱(e2e 在这翻过车)。 */
   function inside(root: string, rel: string): string | null {
     const abs = resolve(root, rel);
     if (abs !== root && !abs.startsWith(root + sep)) return null;
+    const realRoot = deps.realpath(root);
     const real = deps.realpath(abs);
-    if (real !== root && !real.startsWith(root + sep)) return null;
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
     return abs;
   }
 

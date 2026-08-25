@@ -62,8 +62,18 @@ describe("read", () => {
     expect(r.ok && r.value).toEqual({ text: "hello", truncated: false });
   });
 
+  it("根自己是软链时不算越狱——macOS 的 /var/folders 就是 /private/var 的软链,\n     拿字面根去比会把整个工作区判成越狱(e2e 在这翻过车)", () => {
+    const svc = createFilesService(deps({
+      realpath: (p) => p.replace(/^\/w/, "/private/w"),
+    }));
+    const r = svc.read(ROOT, "a.ts");
+    expect(r.ok).toBe(true);
+  });
+
   it("符号链接指向根外 = outside-root(realpath 之后才判)", () => {
-    const svc = createFilesService(deps({ realpath: () => "/etc/passwd" }));
+    const svc = createFilesService(deps({
+      realpath: (p) => (p === ROOT ? ROOT : "/etc/passwd"),
+    }));
     const r = svc.read(ROOT, "link.txt");
     expect(!r.ok && r.kind).toBe("outside-root");
   });
@@ -142,7 +152,9 @@ describe("search", () => {
 describe("reveal", () => {
   it("外部打开同样过根内校验", () => {
     const openPath = vi.fn();
-    const svc = createFilesService(deps({ openPath, realpath: () => "/etc/passwd" }));
+    const svc = createFilesService(deps({
+      openPath, realpath: (p) => (p === ROOT ? ROOT : "/etc/passwd"),
+    }));
     const r = svc.reveal(ROOT, "link.txt", "open");
     expect(!r.ok && r.kind).toBe("outside-root");
     expect(openPath).not.toHaveBeenCalled();
