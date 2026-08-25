@@ -251,11 +251,10 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       align="end"
       sideOffset={8}
       // 版式照旧：卡片底色/圆角/阴影都沿用原来的浮窗，只是开合改由 Tooltip 管。
-      // 箭头藏掉——这是一张信息卡，不是一句提示气泡
-      // 藏箭头:这是一张信息卡,不是一句提示气泡。本仓 tooltip 的箭头是
-      // Radix 的 TooltipPrimitive.Arrow(见 ui/tooltip.tsx),它渲染成一个 <svg>,
-      // 身上没有 data-slot —— 按标签选
-      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
+      // 不要箭头:这是一张信息卡,不是一句提示气泡(原先那句 [&>svg]:hidden 从来没生效,
+      // 见 ui/tooltip.tsx 里 arrow 这个 prop 的注释)
+      arrow={false}
+      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default"
       aria-label="上下文用量详情"
     >
       {/* 标题位换成会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
