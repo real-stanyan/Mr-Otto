@@ -7,6 +7,7 @@ import { grantFor, TIERS } from "./buckets.js";
 import { createGateway, type GatewayConfig } from "./gateway.js";
 import { createPokerApi, toSeatRow, toTableInfo } from "./pokerApi.js";
 import { createSupabasePokerStore } from "./pokerStore.js";
+import { createRelay } from "./relay.js";
 import { createRest } from "./supabaseRpc.js";
 import { Tables } from "./tables.js";
 import { createSupabaseWallet } from "./wallet.js";
@@ -109,6 +110,7 @@ const handle = createGateway({
   config,
   wallet: createSupabaseWallet(supabase),
   poker,
+  relay: createRelay(),
   onError,
 });
 

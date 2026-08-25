@@ -1,12 +1,18 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 四条边界,前三条是 AGENTS.md 原文,第四条是 ADR-0064 落下来的分层约束:
+// 六条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余四条是各自 ADR 落下来的分层约束:
 //   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API
-//   3. @modelcontextprotocol/sdk 只允许 src/main/mcpClient.ts import(ADR-0050)
-//   4. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
+//   3. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
 //      通道、设置文件路径)是 main 的事(ADR-0064 的微压缩就踩在这条线上)
+//   4. @modelcontextprotocol/sdk 只允许 src/main/mcpClient.ts import(ADR-0050)
+//   5. src/shared 不碰 node builtin / electron —— 这一层手机端(Expo/RN)会直接 import
+//      同一份源码,碰了 Node 就断了那条路
+//   6. 移动端复用名单里的那批 src/session 投影文件,同样不碰 node builtin
+//
+// 5 和 6 的意义和前四条略有不同:它们把"src/shared 目前碰巧是纯的"这个**事实**,
+// 变成一条会红的**规则**。名单写死在用例里 —— 想把新文件放进复用面得显式加进来。
 //
 // 纯 grep 级:读源码文本找 import 语句,不做 AST。简单到一眼能看懂,也够用——
 // 这里挡的是"顺手"犯的错,不是刻意绕过。
@@ -89,6 +95,37 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
       bad,
       `这些文件越过 mcpClient 直接用了 MCP SDK:\n  ${bad.join("\n  ")}\n` +
         "修法:需要的能力加到 src/main/mcpClient.ts 的导出里,其它地方只依赖那层包装"
+    ).toEqual([]);
+  });
+
+  it("src/shared 不 import 任何 node builtin / electron —— 这批文件手机端也要跑", () => {
+    const bad = offenders(join(ROOT, "shared"), NODE_BUILTIN);
+    expect(
+      bad,
+      `这些 shared 文件碰了 Node/Electron:\n  ${bad.join("\n  ")}\n` +
+        "修法:src/shared 是三边共享的纯类型/纯逻辑层,手机端(Expo/RN)会直接 import 同一份," +
+        "碰了 Node 就断了那条路。要用 Node 能力请放 src/main,或把能力收成一个注入接口" +
+        "(见 src/shared/remote/crypto.ts 的 RemoteCryptoPrimitives)"
+    ).toEqual([]);
+  });
+
+  it("移动端复用的那批 src/session 文件不 import node builtin", () => {
+    // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
+    // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
+    // 而不是"碰巧还没碰 Node 就算数"
+    const MOBILE_SAFE = [
+      "events.ts", "deriveMessages.ts", "deriveSections.ts", "deriveTodos.ts",
+      "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
+      "modelContextScan.ts", "persistencePolicy.ts",
+    ];
+    const bad = MOBILE_SAFE.filter((f) =>
+      imports(join(ROOT, "session", f)).some(NODE_BUILTIN)
+    );
+    expect(
+      bad,
+      `这些 session 文件在移动端复用名单里,却碰了 Node:\n  ${bad.join("\n  ")}\n` +
+        "修法:要么把 Node 依赖挪走,要么把文件从 MOBILE_SAFE 名单里去掉" +
+        "(去掉意味着手机端不能用它投影,想清楚再改)"
     ).toEqual([]);
   });
 });

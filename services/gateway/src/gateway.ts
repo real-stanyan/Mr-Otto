@@ -37,6 +37,12 @@ export interface GatewayDeps {
   onError?: (where: string, err: unknown) => void;
   /** 牌桌那一面(issue #58)。不注入就没有 /v1/poker/* */
   poker?: { handle(userId: string, req: Request, path: string): Promise<Response> };
+  /** 远程中继(spec 2026-08-25)。不注入就没有 /rl/v1/* */
+  relay?: {
+    attach(userId: string, role: "desktop" | "mobile", sink: { write(c: string): void }): () => void;
+    deliver(userId: string, fromRole: "desktop" | "mobile", payload: string): boolean;
+    peerOnline(userId: string, role: "desktop" | "mobile"): boolean;
+  };
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -259,6 +265,76 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
     }
   }
 
+  const MAX_UPLINK_BYTES = 256 * 1024;
+  const HEARTBEAT_MS = 25_000;
+
+  function relayRole(req: Request): "desktop" | "mobile" | null {
+    const r = new URL(req.url).searchParams.get("role");
+    return r === "desktop" || r === "mobile" ? r : null;
+  }
+
+  function relayStream(req: Request): Response {
+    const who = identify(req);
+    if (who instanceof Response) return who;
+    if (!deps.relay) return apiError(404, "这个网关没开远程中继", "relay_disabled");
+    const role = relayRole(req);
+    if (!role) return apiError(400, "role 必须是 desktop 或 mobile", "bad_role");
+    const relay = deps.relay;
+
+    let detach: (() => void) | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        const write = (s: string) => {
+          // 客户端已断开时 enqueue 会抛。这里静默吞掉:掉线是常态,
+          // 而 cancel 回调未必先于最后一次心跳到达
+          try {
+            controller.enqueue(enc.encode(s));
+          } catch {
+            /* 连接没了 */
+          }
+        };
+        detach = relay.attach(who.userId, role, { write });
+        // nginx 的 proxy_read_timeout 是 600s,不发东西就会被掐。
+        // 注释行(以 ':' 开头)不是 data 帧,客户端的 SSE 解析器会跳过它
+        timer = setInterval(() => write(":\n\n"), HEARTBEAT_MS);
+      },
+      cancel() {
+        detach?.();
+        if (timer) clearInterval(timer);
+      },
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        // 双保险:nginx 那侧已经 proxy_buffering off,这个头让任何一层代理都别攒
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+
+  async function relaySend(req: Request): Promise<Response> {
+    const who = identify(req);
+    if (who instanceof Response) return who;
+    if (!deps.relay) return apiError(404, "这个网关没开远程中继", "relay_disabled");
+    const role = relayRole(req);
+    if (!role) return apiError(400, "role 必须是 desktop 或 mobile", "bad_role");
+
+    const body = await req.text();
+    // 只看长度,不看内容 —— 盲管道。上限挡的是内存,不是"内容不合法"
+    if (body.length > MAX_UPLINK_BYTES) {
+      return apiError(413, "单帧超过 256 KiB", "frame_too_large");
+    }
+    return deps.relay.deliver(who.userId, role, body)
+      ? new Response(null, { status: 204 })
+      : apiError(409, "对端不在线", "peer_offline");
+  }
+
   return async function handle(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
 
@@ -286,6 +362,12 @@ export function createGateway(deps: GatewayDeps): (req: Request) => Promise<Resp
       return req.method === "GET"
         ? walletBalance(req)
         : apiError(405, "只收 GET", "method_not_allowed");
+    }
+    if (pathname === "/rl/v1/stream") {
+      return req.method === "GET" ? relayStream(req) : apiError(405, "只收 GET", "method_not_allowed");
+    }
+    if (pathname === "/rl/v1/send") {
+      return req.method === "POST" ? relaySend(req) : apiError(405, "只收 POST", "method_not_allowed");
     }
     return apiError(404, `没有这个端点:${pathname}`, "not_found");
   };
