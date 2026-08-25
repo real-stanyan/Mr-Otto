@@ -1307,12 +1307,17 @@ function SkillsPage() {
 
 /** 侧栏工程分组的折叠状态：UI 偏好，不是会话事实，走 localStorage 不进事件日志
     （沿用 theme.ts 的先例）。存路径数组；读坏了就当全展开——折叠记忆丢了是小事，
-    白屏是大事 */
+    白屏是大事。
+    两屏各存一份：同一个工程在会话列表里收着、在归档区展开着是两件独立的事，
+    共用一个键会让人在这屏收一下、那屏跟着没了 */
 const COLLAPSED_KEY = "otter-sidebar-collapsed-projects";
+const ARCHIVED_COLLAPSED_KEY = "otter-sidebar-collapsed-archived";
+/** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
+const NO_WORKSPACE_KEY = "\u0000no-workspace";
 
-function loadCollapsedProjects(): Set<string> {
+function loadCollapsedProjects(key: string): Set<string> {
   try {
-    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
@@ -1321,8 +1326,54 @@ function loadCollapsedProjects(): Set<string> {
   }
 }
 
-function saveCollapsedProjects(dirs: Set<string>): void {
-  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...dirs]));
+function saveCollapsedProjects(key: string, dirs: Set<string>): void {
+  localStorage.setItem(key, JSON.stringify([...dirs]));
+}
+
+/** 归档区的一组：会话列表那套折叠组的精简版——同样的箭头/标题/收起才报数,
+    去掉了「在此工程下开新会话」的 +（归档区是翻旧账的地方,不是开工的地方） */
+function ArchivedGroup({
+  groupKey,
+  label,
+  title,
+  count,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  groupKey: string;
+  label: string;
+  title: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: (key: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <SidebarGroup className="py-1">
+      <SidebarGroupLabel asChild>
+        <button
+          className="w-full gap-1 pr-2 hover:text-sidebar-foreground"
+          onClick={() => onToggle(groupKey)}
+          title={title}
+        >
+          <ChevronRight
+            className={`w-[13px] h-[13px] shrink-0 transition-transform duration-150 ease-out ${collapsed ? "" : "rotate-90"}`}
+          />
+          <span className="min-w-0 truncate">{label}</span>
+          {collapsed && <span className="shrink-0 font-mono text-[10px] opacity-70">{count}</span>}
+        </button>
+      </SidebarGroupLabel>
+      {!collapsed && (
+        <SidebarGroupContent>
+          {/* 竖脊 + 缩进:和会话列表同一条视觉线索——这些行挂在上面那个标题下 */}
+          <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
+            {children}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  );
 }
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -1560,14 +1611,22 @@ function AppSidebar() {
   }, [settingsSection]);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
   const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedProjects);
-  const toggleGroup = (dir: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(dir)) next.add(dir);
-      saveCollapsedProjects(next);
-      return next;
-    });
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedProjects(COLLAPSED_KEY));
+  const [archivedCollapsed, setArchivedCollapsed] = useState<Set<string>>(() =>
+    loadCollapsedProjects(ARCHIVED_COLLAPSED_KEY)
+  );
+  /** 收/放一组。两屏各自的 Set + 各自的存储键，互不影响 */
+  const makeToggle =
+    (setter: typeof setCollapsed, key: string) =>
+    (dir: string) =>
+      setter((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(dir)) next.add(dir);
+        saveCollapsedProjects(key, next);
+        return next;
+      });
+  const toggleGroup = makeToggle(setCollapsed, COLLAPSED_KEY);
+  const toggleArchivedGroup = makeToggle(setArchivedCollapsed, ARCHIVED_COLLAPSED_KEY);
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -1729,41 +1788,36 @@ function AppSidebar() {
               </div>
             ) : (
               <>
-                {/* 和会话列表同一套分组骨架(工程名 + 竖脊缩进)：归档区是同一批东西的
-                    另一个状态,平铺就把"哪个工程的"这条线索弄丢了。
-                    这里不做折叠：归档是低频翻查的一屏,一个记不住的折叠状态只添操作,
-                    组标题旁常驻条数代替"收起来才报数" */}
+                {/* 和会话列表同一套分组骨架(可收放的工程名 + 竖脊缩进)：归档区是同一批
+                    东西的另一个状态,平铺就把"哪个工程的"这条线索弄丢了;
+                    收放也照抄——归档攒多了,一屏全展开同样翻不动。
+                    折叠状态另存一个键:两屏的收放互不牵连 */}
                 {archived.groups.map((g) => (
-                  <SidebarGroup key={g.workspace} className="py-1">
-                    <SidebarGroupLabel title={g.workspace}>
-                      <span className="min-w-0 truncate">{g.label}</span>
-                      <span className="ml-1 shrink-0 font-mono text-[10px] opacity-70">
-                        {g.sessions.length}
-                      </span>
-                    </SidebarGroupLabel>
-                    <SidebarGroupContent>
-                      <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
-                        {g.sessions.map((s) => archivedRow(s, g.label))}
-                      </SidebarMenu>
-                    </SidebarGroupContent>
-                  </SidebarGroup>
+                  <ArchivedGroup
+                    key={g.workspace}
+                    groupKey={g.workspace}
+                    label={g.label}
+                    title={g.workspace}
+                    count={g.sessions.length}
+                    collapsed={archivedCollapsed.has(g.workspace)}
+                    onToggle={toggleArchivedGroup}
+                  >
+                    {g.sessions.map((s) => archivedRow(s, g.label))}
+                  </ArchivedGroup>
                 ))}
                 {archived.ungrouped.length > 0 && (
                   // 史前归档会话：日志里没记 workspace,归不进任何工程。
                   // 不塞进"未知"组也不藏起来,单列一段照直说(同侧栏底部那摞)
-                  <SidebarGroup className="py-1">
-                    <SidebarGroupLabel title="日志里没记工程文件夹，归不到任何工程下">
-                      <span className="min-w-0 truncate">没有工程记录</span>
-                      <span className="ml-1 shrink-0 font-mono text-[10px] opacity-70">
-                        {archived.ungrouped.length}
-                      </span>
-                    </SidebarGroupLabel>
-                    <SidebarGroupContent>
-                      <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
-                        {archived.ungrouped.map((s) => archivedRow(s, null))}
-                      </SidebarMenu>
-                    </SidebarGroupContent>
-                  </SidebarGroup>
+                  <ArchivedGroup
+                    groupKey={NO_WORKSPACE_KEY}
+                    label="没有工程记录"
+                    title="日志里没记工程文件夹，归不到任何工程下"
+                    count={archived.ungrouped.length}
+                    collapsed={archivedCollapsed.has(NO_WORKSPACE_KEY)}
+                    onToggle={toggleArchivedGroup}
+                  >
+                    {archived.ungrouped.map((s) => archivedRow(s, null))}
+                  </ArchivedGroup>
                 )}
               </>
             )}
