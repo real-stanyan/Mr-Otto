@@ -33,9 +33,17 @@ function TooltipTrigger({
 function TooltipContent({
   className,
   sideOffset = 0,
+  arrow = true,
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content> & {
+  /** 本仓改动:信息卡型的浮层不要那颗箭头。
+      为什么给个 prop 而不是在调用处用 CSS 藏:Radix 给箭头 svg 打了内联
+      style="display:block",class 里的 hidden 压不过内联样式 —— 老写法
+      ([&>svg]:hidden / [&_[data-slot=tooltip-arrow]]:hidden)看着合理,
+      实际一直没生效,菱形照旧露在卡片角上 */
+  arrow?: boolean;
+}) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
@@ -48,7 +56,12 @@ function TooltipContent({
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground" />
+        {arrow && (
+          <TooltipPrimitive.Arrow
+            data-slot="tooltip-arrow"
+            className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground"
+          />
+        )}
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

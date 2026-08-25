@@ -11,7 +11,7 @@ import type { BootInfo } from "../../src/shared/shellBridge.js";
 
 function reset() {
   useChat.setState({
-    filesPanelOpen: false, terminalPanelOpen: false, browserPanelOpen: false,
+    filesPanelOpen: false, terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
     protocolOpen: false, gitGraphOpen: false, friendChat: null, settingsSection: null,
   });
 }
@@ -42,6 +42,18 @@ describe("Files 面板与其它右侧视图互斥", () => {
     useChat.getState().openFilesPanel();
     useChat.setState({ gitGraphOpen: true, filesPanelOpen: false }); // openGitGraph 要打 IPC,这里只验状态位
     expect(useChat.getState().filesPanelOpen).toBe(false);
+  });
+
+  it("开 iOS 模拟器关掉 Files（两条 lane 并行开发时各自漏了对方，这条测试抓到的）", () => {
+    useChat.getState().openFilesPanel();
+    useChat.getState().openSimPanel();
+    expect(useChat.getState().filesPanelOpen).toBe(false);
+  });
+
+  it("开 Files 关掉 iOS 模拟器", () => {
+    useChat.getState().openSimPanel();
+    useChat.getState().openFilesPanel();
+    expect(useChat.getState().simPanelOpen).toBe(false);
   });
 
   it("关自己只关自己", () => {

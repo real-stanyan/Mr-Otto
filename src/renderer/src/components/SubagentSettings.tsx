@@ -126,11 +126,6 @@ export function SubagentSettings() {
               <h2 className="text-[13px] font-[650] text-foreground">内置子智能体</h2>
               <span className={HINT}>{builtins.length} 项</span>
             </div>
-            <p className={HINT}>
-              随 app 一起发的，不在磁盘上，删不掉也改不了；点开可以「改成我自己的一份」。
-              改过的挂「已自定义」留在这栏，删掉那份文件就回到出厂。
-              审批档是「跟随主会话」：你开了免审批它就免审批，没开就把卡弹给你。
-            </p>
             {builtins.map((def) =>
               def.builtin ? (
                 <BuiltinSubagentRow
@@ -162,11 +157,6 @@ export function SubagentSettings() {
         {own.length === 0 && !listError && (
           <div className="border border-dashed border-border rounded-[10px] px-[18px] py-8 flex flex-col items-center gap-3 text-center">
             <p className="text-[13px] text-foreground">你还没定义自己的子智能体</p>
-            <p className={cn(HINT, "max-w-[420px]")}>
-              点右上角「新建」起一个，或者手写一份 <code>&lt;名字&gt;.md</code>
-              （带 YAML frontmatter）放进 <code>{view.scopeDir}</code>。主 agent
-              靠每个子智能体的 description 挑人——写清楚它是干什么的，模型才派得对。
-            </p>
             <Button variant="outline" size="sm" onClick={() => setPage({ kind: "new" })}>
               <Plus className="size-3.5" />
               新建

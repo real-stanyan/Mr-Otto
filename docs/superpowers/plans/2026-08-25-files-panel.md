@@ -1562,7 +1562,7 @@ npm run e2e -- files.e2e.ts
 
 - [ ] **Step 3: 写 ADR**
 
-新建 `docs/adr/0091-files面板是右侧第六个互斥视图.md`（编号在合并前按 ADR-0074 复核；若被抢号，改成 `max+1` 并在文件顶部加 `原为 ADR-0091` 一行）：
+新建 `docs/adr/0091-files面板是右侧第六个互斥视图.md`（编号在合并前按 ADR-0074 复核；若被抢号，改成 `max+1` 并在文件顶部加 `原为 ADR-0092` 一行）：
 
 内容要点（照 `docs/adr/` 现有格式：标题 / 状态 / 背景 / 决策 / 后果）：
 - **背景**：图标那套早在仓里但没有浏览入口；ShellBridge 一条文件通道都没有。
@@ -1576,8 +1576,8 @@ npm run e2e -- files.e2e.ts
 在「产品/技术术语」一节加两条：
 
 ```markdown
-- **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。纯人用旁路：内容不进事件日志、不进模型上下文（ADR-0091，同 ADR-0031 的边界）。
-- **懒加载列目录**：Files 面板展开哪个目录才发一次 `filesList`，不是开面板扫全树。树全显（含 `node_modules`）的前提就是这条（ADR-0091）。
+- **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。纯人用旁路：内容不进事件日志、不进模型上下文（ADR-0092，同 ADR-0031 的边界）。
+- **懒加载列目录**：Files 面板展开哪个目录才发一次 `filesList`，不是开面板扫全树。树全显（含 `node_modules`）的前提就是这条（ADR-0092）。
 ```
 
 - [ ] **Step 5: AGENTS.md 索引加一行**
@@ -1585,7 +1585,7 @@ npm run e2e -- files.e2e.ts
 「Where to find things」里加：
 
 ```markdown
-- `src/main/filesService.ts` / `src/shared/files.ts` — Files 面板的主进程数据源与纯逻辑层（只读；三条安全边界在 `tests/main/filesService.test.ts`，ADR-0091）
+- `src/main/filesService.ts` / `src/shared/files.ts` — Files 面板的主进程数据源与纯逻辑层（只读；三条安全边界在 `tests/main/filesService.test.ts`，ADR-0092）
 ```
 
 > 这是 L2（索引），可自主合并；ADR + issue + PR 三件套本任务已齐。
@@ -1593,7 +1593,7 @@ npm run e2e -- files.e2e.ts
 - [ ] **Step 6: 跑门禁 + 提交**
 
 ```bash
-npm test && git add -A && git commit -m "test(files): 端到端 + ADR-0091 + 词条（#400）
+npm test && git add -A && git commit -m "test(files): 端到端 + ADR-0092 + 词条（#400）
 
 e2e 钉的是读代码验不了的那几件事:IPC 真接上了、树真的一层层懒加载、
 互斥真的把终端关掉了。
@@ -1612,7 +1612,7 @@ gh pr create --title "feat(files): 右侧栏 Files 面板——文件树 + 过�
 
 设计:docs/superpowers/specs/2026-08-25-files-panel-design.md
 计划:docs/superpowers/plans/2026-08-25-files-panel.md
-决策:ADR-0091
+决策:ADR-0092
 
 gate 绿;e2e 结果贴在下面评论。"
 ```

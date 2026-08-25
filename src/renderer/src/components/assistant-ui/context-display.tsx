@@ -208,8 +208,9 @@ function ContextDisplayContent({
       side={side}
       sideOffset={8}
       data-slot="context-display-popover"
+      arrow={false}
       className={cn(
-        "bg-popover text-popover-foreground w-56 rounded-lg border p-3 text-left [&_[data-slot=tooltip-arrow]]:hidden",
+        "bg-popover text-popover-foreground w-56 rounded-lg border p-3 text-left",
         className,
       )}
     >

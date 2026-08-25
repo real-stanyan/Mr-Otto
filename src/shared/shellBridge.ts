@@ -18,6 +18,7 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
+import type { SimButton, SimFrame, SimState } from "./simulator.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
@@ -621,6 +622,25 @@ export interface ShellBridge {
   browserPickElement(sessionId: string): Promise<BrowserPickedElement | null>;
   /** 退出选取模式(按钮再点一下 / 面板卸载)。页面没在选取时是 no-op */
   browserCancelPick(sessionId: string): Promise<void>;
+
+  // iOS 模拟器面板(issue #401)。不带 sessionId:一台机器只有一套模拟器,
+  // 人和所有会话里的 agent 共用同一台设备(与浏览器一会话一个相反)
+  /** 当前状态快照(设备列表 / 选中哪台 / 开着没 / 输入通道可用没) */
+  simState(): Promise<SimState>;
+  /** 选一台设备当"当前设备"。null = 不选 */
+  simSelect(udid: string | null): Promise<void>;
+  simBoot(udid?: string): Promise<void>;
+  simShutdown(udid?: string): Promise<void>;
+  /** 开/停画面轮询。面板挂载时开,卸载时停——没人看的时候不该一直截图 */
+  simStartStream(): Promise<void>;
+  simStopStream(): Promise<void>;
+  /** 面板上点一下(坐标 = 截图像素) */
+  simTap(x: number, y: number): Promise<void>;
+  simSwipe(x: number, y: number, x2: number, y2: number, durationMs?: number): Promise<void>;
+  simType(text: string): Promise<void>;
+  simButton(button: SimButton): Promise<void>;
+  /** 弹系统的「辅助功能」授权框。返回授权后的状态 */
+  simRequestInputPermission(): Promise<boolean>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文档转 md/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -709,6 +729,11 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** 模拟器状态推送(设备列表/选中/开关机/授权状态变了) */
+  onSimState(cb: (s: SimState) => void): Unsubscribe;
+  /** 模拟器画面推送。一帧一整张 PNG(base64):面板直接塞进 <img>,
+      不做差分——差分要解码,收益不抵复杂度 */
+  onSimFrame(cb: (f: SimFrame) => void): Unsubscribe;
   /** 活跃会话的工具声明变了（issue #141）。BootInfo.toolDefs 是 boot/resume 那一刻
       的快照，而 agent.toolDefs 是活 getter：用户建出第一个子智能体、或者一台 MCP
       server 连上/掉线，主进程那份当场就变了，渲染层那份镜像却要等下一次 boot。
@@ -963,6 +988,19 @@ export const CHANNELS = {
   browserClose: "otter:browserClose",
   browserPickElement: "otter:browserPickElement",
   browserCancelPick: "otter:browserCancelPick",
+  simState: "otter:simState",
+  simSelect: "otter:simSelect",
+  simBoot: "otter:simBoot",
+  simShutdown: "otter:simShutdown",
+  simStartStream: "otter:simStartStream",
+  simStopStream: "otter:simStopStream",
+  simTap: "otter:simTap",
+  simSwipe: "otter:simSwipe",
+  simType: "otter:simType",
+  simButton: "otter:simButton",
+  simRequestInputPermission: "otter:simRequestInputPermission",
+  simStatePush: "otter:simStatePush",
+  simFrame: "otter:simFrame",
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",

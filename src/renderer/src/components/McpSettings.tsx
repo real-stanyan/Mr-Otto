@@ -101,13 +101,6 @@ export function McpSettings() {
         </Button>
       </header>
       <section className={SETTINGS_BODY}>
-        <p className={HINT}>
-          每个 server 是 <code>~/.mr-otto/mcp.json</code> 里 <code>mcpServers</code> 下的一条记录，
-          带来工具、资源、prompt 三种能力。<strong className="font-medium text-foreground/80">
-          增删或改配置只在下一次新开的会话里生效</strong>——正在进行的会话装配那一刻就已经定好了
-          用哪些工具，之后不会被这里的改动打断，也不会中途补上新连上的 server。
-        </p>
-
         {snapshot.errors.length > 0 && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-err/30 bg-err/[0.06] px-[14px] py-3">
             <span className="flex items-center gap-[6px] text-[12.5px] font-medium text-err">
@@ -125,10 +118,6 @@ export function McpSettings() {
         {snapshot.servers.length === 0 && snapshot.errors.length === 0 && (
           <div className="flex flex-col items-center gap-3 rounded-[10px] border border-dashed border-border px-[18px] py-8 text-center">
             <p className="text-[13px] text-foreground">还没配置任何 MCP server</p>
-            <p className={cn(HINT, "max-w-[420px]")}>
-              点右上角「新建」起一台，或者手写一份 <code>~/.mr-otto/mcp.json</code>
-              （格式与 Claude Code 的 <code>.mcp.json</code> 兼容，能直接粘过来）。
-            </p>
             <Button variant="outline" size="sm" onClick={() => setNewOpen(true)}>
               <Plus className="size-3.5" />
               新建
