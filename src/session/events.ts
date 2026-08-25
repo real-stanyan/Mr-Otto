@@ -10,6 +10,12 @@ export interface SessionEventBase {
   sessionId: string;
   ts: number;         // epoch ms，只给人看，不参与逻辑
   sandboxId?: string; // v2 预留：事件发生在哪个沙箱
+  /** 向前兼容标记（issue #383，dsh ignorable 对照）：true = 不认识这个类型的
+      旧版本可以安全跳过它继续重放。**写新事件类型时必须表态**：模型不可见的
+      注记类事件（审计/统计/给人看的）标 true；参与模型视野推导的事件不标——
+      旧版本跳过它会静默复活一个残缺会话，宁可拒读（见 assertReplayable）。
+      已有类型都在 KNOWN_EVENT_TYPES 里，不需要补标 */
+  ignorable?: true;
 }
 
 // ─── 事件类型 ───────────────────────────────────────────────
@@ -189,10 +195,15 @@ export interface ToolExecutionStartedEvent extends SessionEventBase {
     错误信息是只存在于一帧屏幕上的"平行真相"。现在成为日志事实。
     错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。
     aborted（ADR-0006）= 用户主动停止，不是错误：不向上抛，UI 不当故障渲染。
-    union 加宽向后兼容——投影本来就丢弃 turn_ended，旧日志照常重放。 */
+    union 加宽向后兼容——投影本来就丢弃 turn_ended，旧日志照常重放。
+    interrupted（issue #383，dsh 崩溃恢复对照）= resume 时发现的合成收口：
+    上一进程在 turn 进行中退出，日志里有活动无 turn_ended。**loop 永不产生
+    这个值**——它是"修复补的"和"loop 落的"永远可区分的凭据。修复 = 追加，
+    不截断不改写；barrenTurns 对非 completed 的既有语义顺带把崩溃空跑 turn
+    从上下文里正确跳掉 */
 export interface TurnEndedEvent extends SessionEventBase {
   type: "turn_ended";
-  outcome: "completed" | "error" | "aborted";
+  outcome: "completed" | "error" | "aborted" | "interrupted";
   /** 仅 outcome = "error"：异常信息。
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
       推得出的不落盘（同一原则砍掉了 turn_started） */
@@ -347,11 +358,14 @@ export interface SessionAutoTitledEvent extends SessionEventBase {
 export interface ToolHookEvent extends SessionEventBase {
   type: "tool_hook";
   toolCallId: string;
-  /** 钩子名（谁干预的，溯源用） */
+  /** 钩子名（谁干预的，溯源用）；guard_deny 时是守卫名 */
   hook: string;
   phase: "pre" | "post";
-  action: "block" | "revise_args" | "reject" | "feedback";
-  /** block 的拦截理由 / reject 的拒绝理由 / feedback 正文 */
+  /** guard_deny（issue #383）：单调守卫在钩子之后、执行留痕之前拒了这次调用
+      ——与 pre+block 分开记：守卫是 deny-only 的安全层，钩子是可干预的观察者，
+      审计时"谁的哪种权力拒的"必须可区分。union 加宽向后兼容（同 turn_ended 先例） */
+  action: "block" | "revise_args" | "reject" | "feedback" | "guard_deny";
+  /** block 的拦截理由 / reject 的拒绝理由 / feedback 正文 / guard_deny 的拒绝理由 */
   message?: string;
   revisedArgs?: unknown;
   /** post+reject 时的原始工具输出——tool_result 已被替换成 error，原件在这 */
@@ -369,6 +383,34 @@ export interface ProjectInstructionsEvent extends SessionEventBase {
   segments: { path: string; content: string }[];
   /** true = 有指令文件因总量预算被整段丢弃 */
   truncated?: boolean;
+}
+
+/** 额外 19：请求信封（issue #383，dsh request/header 对照）。每次模型调用前，
+    把**实际发出去的请求**里日志推不出的那半落盘：渲染后的 system prompt、
+    工具声明表、model/wireModel/thinking。对话消息那半本来就是日志的投影，不重复存。
+
+    为什么必须落盘：工具表来自磁盘/MCP 的动态状态（server 今天挂 30 把刀、明天 3 把），
+    thinking 是刻意不落日志的运行时偏好，system prompt 的渲染代码会随版本变——
+    三样都不在日志里，于是「模型当时到底看到了什么」重放不出来，debug 全靠猜。
+    落了它，任何一次历史请求都能从日志逐字节重构（"每个请求是日志的纯函数"）。
+
+    去重：信封与本会话上一条 request_envelope 相同就不落——典型会话整场只有一两条
+    （换模型/工具表变化/记忆变化才产生新的）。模型不可见（投影丢弃），纯审计快照。
+    ignorable：旧版本跳过它照常重放——它不参与模型视野推导（投影本来就丢弃它） */
+export interface RequestEnvelopeEvent extends SessionEventBase {
+  type: "request_envelope";
+  /** 落日志的型号 id（与 assistant_message.model 同口径） */
+  model: string;
+  /** 发上线的 id（Ollama 等带前缀方言时与 model 不同）。缺席 = 同 model */
+  wireModel?: string;
+  /** 实际随请求发出的思考档位。缺席 = 该型号无思考开关/未发该字段 */
+  thinking?: string;
+  /** 渲染后的 system 消息全文（含记忆快照等 volatile 尾部）。
+      空串 = 本次请求没有 system 消息（子会话等） */
+  system: string;
+  /** 本次请求携带的工具声明表（name/description/parameters 全量快照）。
+      这是信封里最大的一块，也是最没法从日志推导的一块 */
+  tools: { name: string; description: string; parameters: object }[];
 }
 
 // ─── 联合类型 ───────────────────────────────────────────────
@@ -397,4 +439,68 @@ export type SessionEvent =
   | MicroCompactedEvent
   | SessionAutoTitledEvent
   | ToolHookEvent
-  | ProjectInstructionsEvent;
+  | ProjectInstructionsEvent
+  | RequestEnvelopeEvent;
+
+// ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
+// 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
+// 给旧代码读**。OTA 自动更新上线后新旧版本共存是现实——升级后回滚、
+// 一台机器新版另一台旧版（将来同步时）。
+// 契约：读到本版本不认识、且没有 ignorable 标记的事件类型 → 拒绝装配而不是
+// 静默跳过。默认拒是刻意的：忘了标 ignorable 的代价是多拒一次（不便），
+// 静默跳过的代价是复活一个模型视野残缺的会话（说谎）。
+
+/** 本版本认识的全部事件类型。新增事件类型时 persistencePolicy 的穷尽 switch
+    会强制表态落不落盘，这份集合靠 SessionEvent["type"] 派生保持同步——
+    Record 的键约束是编译期的：漏一个类型 tsc 直接红 */
+const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
+  session_created: true,
+  user_message: true,
+  assistant_message: true,
+  approval_decision: true,
+  tool_result: true,
+  model_changed: true,
+  session_archived: true,
+  session_renamed: true,
+  context_compacted: true,
+  tool_execution_started: true,
+  turn_ended: true,
+  skill_invoked: true,
+  image_described: true,
+  section_classified: true,
+  suggestions_generated: true,
+  subagent_spawned: true,
+  subagent_briefed: true,
+  memory_loaded: true,
+  memory_user_edit: true,
+  memory_nudge: true,
+  micro_compacted: true,
+  session_autotitled: true,
+  tool_hook: true,
+  project_instructions: true,
+  request_envelope: true,
+};
+export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
+
+/** 拒读错误：会话由更新版本写入，本版本无法忠实重建模型视野。
+    与"日志损坏"是两种病，话术分开——这个的处方是升级，不是修库 */
+export class UnknownSessionEventError extends Error {
+  constructor(public readonly eventType: string, public readonly seq: number) {
+    super(
+      `会话日志包含本版本不认识的事件类型「${eventType}」（seq ${seq}），` +
+        `可能由更新版本的 Mr Otto 写入。为避免在残缺的上下文上继续对话，已拒绝打开——请升级后重试。`
+    );
+    this.name = "UnknownSessionEventError";
+  }
+}
+
+/** resume 装配前过一遍：未知且未标 ignorable 的事件 → 拒绝重建。
+    只把继续对话的门（createAgent resume）——列表/只读回看保持宽容，
+    看得见"有不认识的事件"总好过整个列表打不开 */
+export function assertReplayable(events: readonly SessionEvent[]): void {
+  for (const e of events) {
+    if (!KNOWN_EVENT_TYPES.has(e.type) && e.ignorable !== true) {
+      throw new UnknownSessionEventError(e.type, e.seq);
+    }
+  }
+}
