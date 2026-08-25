@@ -628,7 +628,12 @@ void app.whenReady().then(() => {
     if (!remoteBridge || !sid) return;
     // 出机器的那一份要过闸门:只有三种事件、不含 reasoning、超长就截
     // (shared/remote/timeline.ts)
-    remoteBridge.pushTimeline(sid, projectTimelineForMobile(store.load(sid)));
+    const events = store.load(sid);
+    const messages = projectTimelineForMobile(events);
+    // 这三个数是这条链路唯一的诊断:日志里 0 条,问题在投影或会话 id;
+    // 有条数但手机上空,问题在线上那一段。第一版全哑,查了一轮才定位
+    console.warn(`远程:推时间线 ${sid} —— ${events.length} 事件 → ${messages.length} 条`);
+    remoteBridge.pushTimeline(sid, messages);
   };
 
   /** 这条事件属于手机正在看的会话才安排重投。sid=null(说不清是谁的)也投一次:
@@ -2394,6 +2399,7 @@ void app.whenReady().then(() => {
         return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
       case "watch":
         // 一次只订一个:换会话直接顶掉上一个,不做多路订阅 —— 手机上看不见两屏
+        console.warn(`远程:手机订阅了 ${c.sessionId}`);
         watchedSession = c.sessionId;
         pushTimelineNow();
         return;

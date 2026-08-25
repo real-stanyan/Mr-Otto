@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { decodeDownFrame, encodeFrame } from "../../../src/shared/remote/frames.js";
 import { projectTimelineForMobile } from "../../../src/shared/remote/timeline.js";
 
 /** 只填投影关心的字段;其余用 as 补齐 —— 这些测试钉的是"什么出机器",不是事件构造 */
@@ -93,5 +94,41 @@ describe("projectTimelineForMobile", () => {
       ev({ type: "user_message", content: `第${i}条` }));
     const out = projectTimelineForMobile(many, { maxMessages: 3 });
     expect(out.map((m) => m.text)).toEqual(["第7条", "第8条", "第9条"]);
+  });
+});
+
+/** 上面那些测的是"投影出什么",这一组测的是**投影出来的东西过不过得了线**。
+    少了这一环,decodeDownFrame 里一条过严的键校验就能让整条时间线在手机上
+    永远加载不出来,而全部单测照样绿 —— 真发生过一次。 */
+describe("投影 → 编码 → 解码 的往返", () => {
+  it("没有 truncated 的普通消息不能被解码丢掉", () => {
+    const msgs = projectTimelineForMobile([
+      ev({ type: "user_message", content: "短消息" }),
+      ev({ type: "assistant_message", content: "短回复", model: "v4" }),
+    ]);
+    const back = decodeDownFrame(encodeFrame({ type: "timeline", sessionId: "s1", messages: msgs }));
+    expect(back).toEqual({ type: "timeline", sessionId: "s1", messages: msgs });
+  });
+
+  it("带 truncated 的也能往返", () => {
+    const msgs = projectTimelineForMobile([ev({ type: "user_message", content: "abcdef" })], { maxChars: 3 });
+    expect(msgs[0]?.truncated).toBe(true);
+    const back = decodeDownFrame(encodeFrame({ type: "timeline", sessionId: "s1", messages: msgs }));
+    expect(back).not.toBeNull();
+  });
+
+  it("白名单之外的键仍然整条丢弃", () => {
+    const line = JSON.stringify({
+      type: "timeline", sessionId: "s1",
+      messages: [{ role: "user", text: "x", 夹带: 1 }],
+    });
+    expect(decodeDownFrame(line)).toBeNull();
+  });
+
+  it("role 不认识 / text 不是字符串,整条丢弃", () => {
+    for (const bad of [{ role: "system", text: "x" }, { role: "user", text: 1 }]) {
+      const line = JSON.stringify({ type: "timeline", sessionId: "s1", messages: [bad] });
+      expect(decodeDownFrame(line)).toBeNull();
+    }
   });
 });

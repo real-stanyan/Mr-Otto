@@ -61,6 +61,16 @@ function exactKeys(o: Record<string, unknown>, keys: string[]): boolean {
   return own.length === keys.length && keys.every((k) => own.includes(k));
 }
 
+/** exactKeys 的"有可选字段"版:必填的都在,而且没有白名单之外的键。
+    **不能拿 exactKeys 代替**——它要求键集完全相等,一个缺席的可选字段就会
+    让整条合法帧被丢掉(timeline 的 truncated 就踩过:大多数消息没有这个键,
+    整条时间线于是在手机上永远加载不出来)。 */
+function keysWithin(o: Record<string, unknown>, required: string[], optional: string[]): boolean {
+  const own = Object.keys(o);
+  if (!required.every((k) => own.includes(k))) return false;
+  return own.every((k) => required.includes(k) || optional.includes(k));
+}
+
 export function decodeUpFrame(line: string): UpFrame | null {
   const o = parseObject(line);
   if (!o) return null;
@@ -90,7 +100,7 @@ function isMobileMessage(v: unknown): v is MobileMessage {
   if (m.role !== "user" && m.role !== "assistant" && m.role !== "tool") return false;
   if (!str(m.text)) return false;
   if (m.truncated !== undefined && typeof m.truncated !== "boolean") return false;
-  return exactKeys(m, ["role", "text", "truncated"]);
+  return keysWithin(m, ["role", "text"], ["truncated"]);
 }
 
 export function decodeDownFrame(line: string): DownFrame | null {

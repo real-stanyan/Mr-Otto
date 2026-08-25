@@ -178,7 +178,9 @@ export function createRemoteBridge(opts: {
   /** 时间线只在对端明确 watch 之后才有内容,所以**不做重连补推**:
       新连接上手机会自己重发 watch(订阅状态归它)。桌面这侧不留隔夜的订阅。 */
   function pushTimeline(sessionId: string, messages: MobileMessage[]): void {
-    if (phase !== "ready" || !sealer) return;
+    // 没建立会话就丢掉,但要说一声:上层刚算完一整份时间线,静默丢弃看起来
+    // 和"算出来是空的"一模一样
+    if (phase !== "ready" || !sealer) return log(`远程桥:会话没建立(${phase}),时间线没发出去`);
     const wire = encodeFrame({ type: "timeline", sessionId, messages });
     if (wire === lastTimeline) return;
     lastTimeline = wire;
