@@ -6,7 +6,7 @@
 
 import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import { systemPromptText, renderMemoryPrompt } from "../session/deriveMessages.js";
+import { systemPromptText, renderMemoryPrompt, dayOfLastEvent } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { absorbedIndexes, latestMicroCompacted } from "../session/microCompact.js";
 
@@ -227,9 +227,11 @@ export function contextBreakdown(
 ): ContextBreakdown {
   const workspace = workspaceOf(events);
   const memoryEvent = events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded");
+  // 日期那一行也算进去:估算和真实请求共用同一处文案,少算一行就是又开始猜
+  const today = dayOfLastEvent(events);
   const system = workspace
     ? estimateTokens(
-        systemPromptText(workspace) +
+        systemPromptText(workspace, today) +
           (memoryEvent ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user) : "")
       )
     : 0;

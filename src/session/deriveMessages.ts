@@ -26,14 +26,40 @@ export interface SystemChatMessage {
   content: string;
 }
 
+/** 日志时间戳 → 「今天」(本机时区,YYYY-MM-DD)。
+    刻意不读时钟:投影是纯函数,同一份日志必须永远投出同一串字节(硬规则)。
+    日期从事件的 ts 推——它本来就在日志里,重放到哪天就是哪天。
+    只取到天:系统提示词是缓存前缀,按天变 = 一天失效一次,按 turn 变 = 每轮都白付 */
+function dayOf(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 日志里最后一条事件的日期 —— 投影和用量估算共用同一处口径（两边各算一遍
+    就会出现"估算里没有日期那一行、真实请求里有"的偏差）。空日志 = 没有日期 */
+export function dayOfLastEvent(events: { ts: number }[]): string | undefined {
+  const last = events[events.length - 1];
+  return last ? dayOf(last.ts) : undefined;
+}
+
 /** 围栏 system 消息的正文——投影(下面)和上下文用量估算(shared/contextEstimate)
-    共用这一处出口:两边不能各写一份文案,不然"系统提示词占多少"就是猜的 */
-export function systemPromptText(workspace: string): string {
+    共用这一处出口:两边不能各写一份文案,不然"系统提示词占多少"就是猜的。
+
+    today 缺席 = 不写日期那一行(老调用方/老日志投影逐字节不变) */
+export function systemPromptText(workspace: string, today?: string): string {
   return (
-    `你是 otter，一个会使用工具的助手。当前工程文件夹：${workspace}\n` +
-    `所有文件读写都发生在这个文件夹内，请使用其中的路径（可用相对路径）。\n` +
-    `动手规划一个非平凡任务之前，如果不同的合理理解会导出完全不同的做法，` +
-    `先用 ask_user 把关键抉择问清楚，别替用户拍板。\n` +
+    `你是 Mr. Otto（叫我 Otto），一个会用工具的桌面 agent。当前工程文件夹：${workspace}\n` +
+    (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
+    // 说实话而不是说得更强:read_file/write_file 真被 world 的 fence 圈住(越界抛错),
+    // bash 只是把 cwd 设在这儿,cd 出得去(localWorld.ts 开头那句"诚实说明")。
+    // 对模型宣布一个代码兑现不了的保证,等于教它在越界时也不必打招呼
+    `read_file / write_file 圈在这个文件夹内，越界直接报错；bash 只是把 cwd 设在这里，` +
+    `cd 出得去——真要碰文件夹外的东西，先说一声再动。\n` +
+    // 审批是用户的决定,不是路障。模型的默认脾气是"换个写法再试一次",
+    // 而那正好是审批要拦的事(write_file 被拒 → 改用 bash 写同一个文件)
+    `危险操作会弹给用户审批。被拒 = 用户不想让你做这件事：停下来问清楚，` +
+    `别换一种写法绕过去。\n` +
     STRUCTURED_BLOCKS
   );
 }
@@ -287,6 +313,9 @@ export function deriveMessages(
   barren: ReadonlySet<number> = barrenEventIndexes(events)
 ): ChatMessage[] {
   const messages: ChatMessage[] = [];
+  // 「今天」= 日志里最后一条事件的日期(见 dayOf)。空日志没有日期可推,
+  // 那条 system 消息也不会被投出来(要 session_created 才有)
+  const today = dayOfLastEvent(events);
   // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
   let systemMessage: SystemChatMessage | null = null;
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
@@ -431,7 +460,9 @@ export function deriveMessages(
         // 还有分支自己那条（fork 标记，带同一个 workspace）——它是元数据，
         // 不是第二道围栏；普通日志只有一条，行为逐字节不变
         if (event.workspace && systemMessage === null) {
-          systemMessage = { role: "system", content: systemPromptText(event.workspace) };
+          // 「今天」取日志里最后一条事件的日期:直播时就是此刻,重放时就是当时。
+          // 不取 session_created 自己的 ts——跨夜的会话会一直以为还是开会话那天
+          systemMessage = { role: "system", content: systemPromptText(event.workspace, today) };
           messages.push(systemMessage);
         }
         break;
