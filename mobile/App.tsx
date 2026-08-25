@@ -9,8 +9,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, Image, Pressable, SafeAreaView, ScrollView, StatusBar,
-  StyleSheet, Text, TextInput, View,
+  ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable,
+  SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { MobileMessage } from "../src/shared/remote/frames.js";
@@ -345,6 +345,11 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   // 有会话在跑才让钟走 —— 空闲时不必每秒唤醒 JS 线程
   const now = useTicker((fleet?.agents ?? []).some((a) => a.phase === "active"));
 
+  /** 回 false = 会话没建立。**不乐观回显**:把一条没发出去的消息画在时间线上,
+      比直接说"没连上"糟糕得多 —— 用户会以为电脑那边已经在跑了 */
+  const sendText = (sessionId: string, text: string): boolean =>
+    bridge.current?.send({ type: "send", sessionId, text }) ?? false;
+
   const decide = (a: IslandAgent, ok: boolean): void => {
     const callId = a.pendingApproval?.callId;
     if (!callId) return;
@@ -373,6 +378,7 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
       <SessionView
         agent={opened} now={now} messages={timeline} diag={diag}
         onBack={closeSession} onDecide={decide}
+        onSend={(text) => sendText(opened.sessionId, text)}
         onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
       />
     );
@@ -477,13 +483,14 @@ function AgentCard({ agent: a, now, onDecide, onOpen }: {
       这里不再截,只把 truncated 标记翻译成一句"在电脑上看全文"。
    3. **新消息到了自动滚到底**,但只在人本来就贴着底的时候 —— 正在往回翻的人
       被拽回底部比不自动滚更烦。 */
-function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onRetry }: {
+function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, onRetry }: {
   agent: IslandAgent;
   now: number;
   messages: MobileMessage[] | null;
   diag: { frames: number; timelines: number; log: string[] };
   onBack: () => void;
   onDecide: (a: IslandAgent, ok: boolean) => void;
+  onSend: (text: string) => boolean;
   onRetry: () => void;
 }) {
   const { c } = usePalette();
@@ -563,15 +570,79 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onRetry 
         )}
       </ScrollView>
 
-      {a.pendingApproval ? (
-        <View style={{
-          padding: space.md,
-          borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
-          backgroundColor: c.background,
-        }}>
-          <Approval agent={a} onDecide={onDecide} />
-        </View>
-      ) : null}
+      {/* 待批的和输入框一起躲键盘。审批在上:它是有时限的那个 */}
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        {a.pendingApproval ? (
+          <View style={{
+            padding: space.md,
+            borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
+            backgroundColor: c.background,
+          }}>
+            <Approval agent={a} onDecide={onDecide} />
+          </View>
+        ) : null}
+        <Composer onSend={onSend} />
+      </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+/** 回一条消息。范围就到这里(ADR-0094):不建会话、不切模型、不带附件 ——
+    手机端是"看 + 审批"的第三个投影窗口,不是第二个完整客户端。
+
+    发送键是个圆的、只有一个箭头 —— 和桌面输入区右下角那个同一个形状。
+    多行输入里的回车是换行不是发送:手机上没有 Shift 可以按,把回车做成发送
+    等于让人没法打第二段。 */
+function Composer({ onSend }: { onSend: (text: string) => boolean }) {
+  const { c } = usePalette();
+  const [text, setText] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const ready = text.trim().length > 0;
+
+  const submit = (): void => {
+    const t = text.trim();
+    if (!t) return;
+    if (!onSend(t)) return setErr("没发出去 —— 你的 Mac 不在线");
+    // 发出去了才清空:失败时把人打的字吞掉是不可接受的
+    setErr(null);
+    setText("");
+  };
+
+  return (
+    <View style={{
+      paddingHorizontal: space.md, paddingTop: space.sm, paddingBottom: space.md, gap: space.xs,
+      borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
+      backgroundColor: c.background,
+    }}>
+      {err ? <Note tone="error">{err}</Note> : null}
+      <View style={{ flexDirection: "row", alignItems: "flex-end", gap: space.sm }}>
+        <TextInput
+          style={{
+            flex: 1, backgroundColor: c.card, color: c.foreground,
+            borderRadius: radius.control, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+            paddingHorizontal: space.md, paddingTop: 11, paddingBottom: 11,
+            // 长文本自己长高,但到五六行就封顶——再高就把时间线挤没了
+            maxHeight: 132, ...t.body,
+          }}
+          placeholder="回一条…" placeholderTextColor={c.mutedForeground}
+          multiline value={text} onChangeText={setText}
+        />
+        <Pressable
+          accessibilityRole="button" accessibilityLabel="发送"
+          onPress={submit} disabled={!ready} hitSlop={8}
+          style={({ pressed }) => [
+            {
+              width: 44, height: 44, borderRadius: radius.pill,
+              alignItems: "center", justifyContent: "center",
+              backgroundColor: c.primary,
+            },
+            !ready && { opacity: 0.35 },
+            pressed && ready && { opacity: 0.8 },
+          ]}
+        >
+          <Text style={{ ...t.headline, color: c.primaryForeground }}>↑</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
