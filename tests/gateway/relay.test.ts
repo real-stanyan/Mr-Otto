@@ -189,6 +189,7 @@ describe("/rl/v1 路由", () => {
     expect(res.status).toBe(200);
     // 增量读:这条流永远不结束,await 整个 body 会挂死
     const reader = res.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(":ok\n\n"); // 开场白
 
     const sent = await g(
       authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
@@ -207,12 +208,33 @@ describe("/rl/v1 路由", () => {
     expect(after.status).toBe(409);
   });
 
+  // 这条钉的是一条**只在 node:http 那一侧才现形**的失败:
+  // res.writeHead() 不会把响应头推到 socket 上,node 要等第一个 body 字节才一起冲刷。
+  // 于是"开流时一个字节都不写"的 SSE 端点,客户端连响应状态行都收不到——
+  // 实测桌面侧 fetch 与 curl 都卡满 25s(第一次心跳)才拿到头。
+  // 上面那条接缝用例测不出来:它总是先让对端 POST 一帧,自带了第一个字节。
+  it("开流即刻有字节可读（否则 node:http 不冲刷响应头，客户端要卡到第一次心跳）", async () => {
+    const g = makeGateway();
+    const res = await g(authed("http://x/rl/v1/stream?role=desktop"));
+    const reader = res.body!.getReader();
+    // 没有任何对端发送、没有推进任何定时器
+    const first = await Promise.race([
+      reader.read(),
+      new Promise<"TIMEOUT">((r) => setTimeout(() => r("TIMEOUT"), 200)),
+    ]);
+    expect(first).not.toBe("TIMEOUT");
+    expect(new TextDecoder().decode((first as ReadableStreamReadResult<Uint8Array>).value))
+      .toBe(":ok\n\n");
+    await reader.cancel();
+  });
+
   it("心跳是注释行 :\\n\\n（不是 data 帧，客户端解析器会跳过）", async () => {
     vi.useFakeTimers();
     try {
       const g = makeGateway();
       const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
       const reader = res.body!.getReader();
+      await reader.read(); // 开场白 :ok，先读掉
       // nginx 的 proxy_read_timeout 是 600s,心跳必须远短于它
       await vi.advanceTimersByTimeAsync(25_000);
       const { value } = await reader.read();
