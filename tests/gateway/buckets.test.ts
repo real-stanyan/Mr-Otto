@@ -56,15 +56,12 @@ describe("grantFor", () => {
     }
   });
 
-  // 这条断言的作用不是"锁死数字"，是拦住"手滑多打一个零"。
-  // 上界是钱的闸门：注册是敞开的（issue #122），赠额 × 任何人都能注册 = 漏钱速度。
-  // 下界拦的是反向手滑：赠额掉到零附近，新用户第一次对话就报余额不足，
-  // 表现成"登录了但用不了"，比多送钱更难查
-  it("默认赠额的最坏成本落在 5 USD 以内（flash 出价 0.42、pro 出价 2.19 USD/1M）", () => {
-    const worstUsd =
-      (DEFAULT_GRANTS.flash * 0.42 + DEFAULT_GRANTS.pro * 2.19) / 1_000_000;
-    expect(worstUsd).toBeLessThanOrEqual(5);
-    expect(worstUsd).toBeGreaterThan(3);
+  // ADR-0085:官方停止供 token,注册不送任何额度。这条钉住"默认就是零"——
+  // 谁想开回赠额得先改这条测试,顺便被逼着重读那份 ADR 的恢复清单。
+  // (此前这里是 3~5 USD 的最坏成本区间断言,拦手滑;赠额归零后上下界都失义)
+  it("默认赠额为零：注册不再送 token（ADR-0085）", () => {
+    expect(DEFAULT_GRANTS.flash).toBe(0);
+    expect(DEFAULT_GRANTS.pro).toBe(0);
   });
 });
 

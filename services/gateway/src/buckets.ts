@@ -28,24 +28,17 @@ export function bucketOf(model: string): Tier | null {
   return MODEL_BUCKETS[model] ?? null;
 }
 
-/** 注册赠额(token)。按最坏成本折算:
-      flash 500 万 × 0.42 USD/1M(输出价) = $2.10
-      pro   100 万 × 2.19 USD/1M(输出价) = $2.19
-    合计最坏 $4.29;正常用量远低于此。
+/** 注册赠额(token)。2026-08-25 归零(ADR-0085):官方停止供 token,
+    模型一律用户自配 key,注册不再送任何额度。此前是 flash 500 万 / pro 100 万
+    (2026-08-23 由 2000 万 / 500 万降下来,理由见 issue #122:注册口子敞开,
+    赠额 × 任何人都能注册 = 漏钱速度)。
 
-    2026-08-23 从 flash 2000 万 / pro 500 万(最坏 $19.35)降到这个数(issue #122)。
-    降的理由不是"用不完",是**注册口子是敞开的**:GOTRUE_DISABLE_SIGNUP=false、
-    Google/GitHub 两个 provider 都开着、没有白名单——赠额乘以"任何人都能注册"
-    就是敞着门漏钱。维护者拍板开放注册不改,那就只能从单人金额这一侧收。
-    这一轮没加速率限制:赠额降到这个量级之后刷号的收益已经很低,限流单独立单
-    (见 #122 的收尾留言),等真出现滥用再做。
-
-    改这两个数就改这里:env 覆盖(OTTO_GRANT_*_TOKENS)是给服务器临时调的,
-    默认值才是"我们打算送多少"的事实来源。ADR-0021 记的是折算方法,
-    不是这两个具体数字——数字变了不用推翻那份 ADR,补一条后续即可 */
+    发放机制原样保留:grant_tokens 仍然幂等,已发出去的余额不动;
+    env 覆盖(OTTO_GRANT_*_TOKENS)仍可在服务器侧临时开回来。
+    改这两个数就改这里:默认值才是"我们打算送多少"的事实来源。 */
 export const DEFAULT_GRANTS: Record<Tier, number> = {
-  flash: 5_000_000,
-  pro: 1_000_000,
+  flash: 0,
+  pro: 0,
 };
 
 const GRANT_ENV: Record<Tier, string> = {
