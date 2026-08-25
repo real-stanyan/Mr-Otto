@@ -204,10 +204,13 @@ describe("装饰器透传 http", () => {
     expect(seen[0]?.aborted).toBe(true);
   });
 
-  // issue #395：timeoutMs 是调用方的显式放宽/收紧请求
-  it("exec 尊重 opts.timeoutMs：超限被 SIGTERM 终止，exitCode 124", async () => {
+  // issue #395：timeoutMs 是调用方的显式放宽/收紧请求。
+  // sleep 2 而不是更长：CI 上 close 事件可能等到管道随子进程自然退出才来
+  //（SIGTERM 已发、exitCode 已定，只是 close 迟到）——断言只看结果不掐表，
+  // 测试超时给足 15s
+  it("exec 尊重 opts.timeoutMs：超限被 SIGTERM 终止，exitCode 124", { timeout: 15_000 }, async () => {
     const world = createLocalWorld();
-    const r = await world.exec("sleep 5", { timeoutMs: 300 });
+    const r = await world.exec("sleep 2", { timeoutMs: 300 });
     expect(r.exitCode).toBe(124);
     expect(r.stderr).toContain("终止");
   });
