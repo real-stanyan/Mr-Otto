@@ -25,6 +25,8 @@ const bridge: ShellBridge = {
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
   setThinking: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, mode),
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
+  listExternalSkills: () => ipcRenderer.invoke(CHANNELS.listExternalSkills),
+  importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
   saveMemory: (target, text, sessionId) =>
     ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),

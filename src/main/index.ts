@@ -57,7 +57,7 @@ import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
 import { createUpdater } from "./updater.js";
 import { createUpdaterHostDeps } from "./updaterHost.js";
 import { RELEASES_PAGE_URL } from "./updaterCore.js";
-import { scanSkills } from "./skills.js";
+import { externalSkillSources, importExternalSkills, scanExternalSkills, scanSkills } from "./skills.js";
 import {
   scanSubagents,
   subagentRoots,
@@ -1331,10 +1331,22 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  // skill 根目录：Mr Otto 自己的排前（同名覆盖优先），其后兼容 Claude Code 的安装位
-  const skillRoots = [join(configDir(homedir()), "skills"), join(homedir(), ".claude", "skills")];
+  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
+  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
+  const skillRoots = [join(configDir(homedir()), "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
+  ipcMain.handle(CHANNELS.listExternalSkills, () => {
+    const installed = new Set(scanSkills(skillRoots).map((s) => s.name));
+    return scanExternalSkills(externalSkillSources(homedir()), installed);
+  });
+  ipcMain.handle(CHANNELS.importSkills, (_e, names: unknown) => {
+    // 渲染层送来的不可信输入：只收字符串数组，坏形状整条拒
+    if (!Array.isArray(names) || names.some((n) => typeof n !== "string")) {
+      throw new Error("导入清单形状非法(应为 skill 名字符串数组)");
+    }
+    return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
+  });
 
   // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
   ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
