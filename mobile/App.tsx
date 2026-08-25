@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable,
   SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
+  type ViewStyle,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { MobileMessage } from "../src/shared/remote/frames.js";
@@ -18,7 +19,8 @@ import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../src/shared/
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
-import { connect, devices, openStore } from "./src/session.js";
+import { listFriends, type FriendRow } from "./src/friendsApi.js";
+import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
@@ -52,7 +54,11 @@ export default function App() {
       ) : phase === "pair" ? (
         <Pair store={store} onPaired={() => setPhase("fleet")} />
       ) : (
-        <Fleet store={store} onRepair={() => setPhase("pair")} />
+        <Shell
+          store={store}
+          onRepair={() => setPhase("pair")}
+          onSignedOut={() => setPhase("signIn")}
+        />
       )}
     </Screen>
   );
@@ -275,10 +281,206 @@ function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => voi
   );
 }
 
+/* ── 底栏与三个页签 ─────────────────────────────────────
+   会话 / 好友 / 设置。**三个都常驻挂载,靠 display 切**,不是卸载重建:
+   会话那页里握着到电脑的连接(握手 + 密封流),切个页签就断线重连是不可接受的。
+
+   翻进详情屏时底栏收起来 —— 那是"推进去"的一层,不是第四个页签。 */
+type Tab = "sessions" | "friends" | "settings";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "sessions", label: "会话" },
+  { id: "friends", label: "好友" },
+  { id: "settings", label: "设置" },
+];
+
+function Shell({ store, onRepair, onSignedOut }: {
+  store: PinnedPeerStore;
+  onRepair: () => void;
+  onSignedOut: () => void;
+}) {
+  const [tab, setTab] = useState<Tab>("sessions");
+  const [inDetail, setInDetail] = useState(false);
+
+  const pane = (id: Tab): ViewStyle => ({
+    flex: 1,
+    // display:"none" 而不是条件渲染:见上面为什么不能卸载
+    display: tab === id ? "flex" : "none",
+  });
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={pane("sessions")}>
+        <Fleet store={store} onRepair={onRepair} onDetailChange={setInDetail} />
+      </View>
+      <View style={pane("friends")}><Friends /></View>
+      <View style={pane("settings")}>
+        <Settings store={store} onRepair={onRepair} onSignedOut={onSignedOut} />
+      </View>
+      {inDetail ? null : <TabBar tab={tab} onTab={setTab} />}
+    </View>
+  );
+}
+
+function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  const { c } = usePalette();
+  return (
+    <View style={{
+      flexDirection: "row",
+      borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
+      backgroundColor: c.background,
+    }}>
+      {TABS.map((x) => (
+        <Pressable
+          key={x.id}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: tab === x.id }}
+          onPress={() => onTab(x.id)}
+          // 49pt = iOS 底栏的标准高度。整格可点,不是只有字可点
+          style={({ pressed }) => [
+            { flex: 1, minHeight: 49, alignItems: "center", justifyContent: "center" },
+            pressed && { opacity: 0.5 },
+          ]}
+        >
+          <Text style={{
+            ...t.callout,
+            // 选中只靠颜色,不加下划线/底色:底栏本来就窄,多一层装饰就挤
+            color: tab === x.id ? c.foreground : c.mutedForeground,
+            fontWeight: tab === x.id ? "600" : "400",
+          }}>
+            {x.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+/* ── 好友 ───────────────────────────────────────────────
+   **只读**。加好友、收发私信、接受请求这些写操作留在电脑上 —— 手机端是第三个
+   投影窗口(ADR-0094),不是第二个完整客户端。 */
+function Friends() {
+  const [rows, setRows] = useState<FriendRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setErr(null);
+    listFriends().then(setRows).catch((e: unknown) =>
+      setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+  useEffect(load, [load]);
+
+  return (
+    <Page>
+      <View style={{ gap: space.xs, paddingTop: space.sm }}>
+        <Title>好友</Title>
+        <Hint>加好友、私信、接受请求都在电脑上做,这里只看。</Hint>
+      </View>
+      {err ? <Note tone="error">{err}</Note> : null}
+      {rows === null ? (
+        <View style={{ paddingVertical: space.xl, alignItems: "center" }}><Spinner /></View>
+      ) : rows.length === 0 ? (
+        <Card>
+          <Headline>还没有好友</Headline>
+          <Hint>在电脑上的「好友」里加一个,这里会出现。</Hint>
+        </Card>
+      ) : (
+        rows.map((f) => <FriendRowView key={f.profile.id} row={f} />)
+      )}
+      <Button label="刷新" variant="plain" onPress={load} />
+    </Page>
+  );
+}
+
+function FriendRowView({ row: f }: { row: FriendRow }) {
+  const { c } = usePalette();
+  const waiting = f.status === "pending";
+  const what = !waiting ? "好友"
+    : f.direction === "incoming" ? "等你在电脑上通过" : "等对方通过";
+  return (
+    <Card style={{ gap: space.sm }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        {f.profile.avatarUrl
+          ? <Image source={{ uri: f.profile.avatarUrl }} style={{ width: 36, height: 36, borderRadius: radius.pill }} />
+          : <Tile><Text style={{ ...t.footnote, color: c.mutedForeground }}>
+              {(f.profile.name || f.profile.email || "?").slice(0, 1).toUpperCase()}
+            </Text></Tile>}
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Headline>{f.profile.name || f.profile.email}</Headline>
+          <Meta>{f.profile.name ? `${f.profile.email} · ${what}` : what}</Meta>
+        </View>
+        {waiting && f.direction === "incoming" ? <Dot tone="warn" /> : null}
+      </View>
+    </Card>
+  );
+}
+
+/* ── 设置 ───────────────────────────────────────────────
+   只放**这台手机自己**的事:账号、配对、连的哪个中继。电脑上的设置
+   (模型、MCP、审批策略)不在这儿改 —— ADR-0094 的边界没动。 */
+function Settings({ store, onRepair, onSignedOut }: {
+  store: PinnedPeerStore;
+  onRepair: () => void;
+  onSignedOut: () => void;
+}) {
+  const [email, setEmail] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
+  }, []);
+
+  const signOut = (): void => {
+    void (async () => {
+      setBusy(true);
+      await supabase.auth.signOut();
+      setBusy(false);
+      onSignedOut();
+    })();
+  };
+
+  return (
+    <Page>
+      <View style={{ paddingTop: space.sm }}><Title>设置</Title></View>
+
+      <Card style={{ gap: space.sm }}>
+        <Headline>账号</Headline>
+        <Meta>{email ?? "读取中…"}</Meta>
+        <Button
+          variant="outline" label={busy ? "退出中…" : "退出登录"}
+          disabled={busy} onPress={signOut}
+        />
+      </Card>
+
+      <Card style={{ gap: space.sm }}>
+        <Headline>配对的电脑</Headline>
+        <Hint>
+          {store.peerIdentity()
+            ? "已配对。换电脑、或安全码对不上时重新配一次。"
+            : "还没配对。"}
+        </Hint>
+        <Button variant="outline" label="重新配对" onPress={onRepair} />
+      </Card>
+
+      <Card style={{ gap: space.sm }}>
+        <Headline>连接</Headline>
+        {/* 中继看不见内容(端到端加密),但连的是哪一台是排查时的第一个问题 */}
+        <Meta>{`中继 ${RELAY_BASE}`}</Meta>
+        <Meta>{`本机 ${store.deviceId}`}</Meta>
+      </Card>
+    </Page>
+  );
+}
+
 /* ── 舰队 ───────────────────────────────────────────────
    看 + 审批。桌面不在线时不假装有内容:一句"你的 Mac 不在线"
    (中继零落盘,没有队列可回放 —— 这是设计,不是缺陷)。 */
-function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => void }) {
+function Fleet({ store, onRepair, onDetailChange }: {
+  store: PinnedPeerStore;
+  onRepair: () => void;
+  /** 翻进详情屏时底栏要收起来 */
+  onDetailChange: (inDetail: boolean) => void;
+}) {
   const [fleet, setFleet] = useState<IslandFleet | null>(null);
   const [ready, setReady] = useState(false);
   /** 打开的会话。null = 停在列表上 */
@@ -324,6 +526,7 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   }, [store]);
 
   const openSession = (sessionId: string): void => {
+    onDetailChange(true);
     watching.current = sessionId;
     setTimeline(null); // 上一个会话的内容一帧都不要留在屏上
     setOpen(sessionId);
@@ -339,6 +542,7 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   }, [open, fleet]);
 
   const closeSession = (): void => {
+    onDetailChange(false);
     const sid = watching.current;
     watching.current = null;
     setOpen(null);
