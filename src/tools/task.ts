@@ -31,14 +31,29 @@ function parseArgs(raw: unknown): TaskArgs {
 }
 
 /** 把清单写进工具描述——模型是靠每个 subagent 的 description 挑人的，
-    光有 enum 里的名字它没法判断谁合适 */
+    光有 enum 里的名字它没法判断谁合适。
+
+    「什么时候派 / 什么时候别派」这两行也在这儿，不在 systemPromptText：
+    system prompt 跟着**每一次**请求走（issue #431 的纪律），而 task 这把刀
+    子会话压根没有、清单空时也从声明表消失——写死在那儿对这两种装配就是一句
+    谎话（同 session_search 指引跟着 memory_loaded 走的理由，deriveMessages）。
+    工具描述本来就只在挂着它的那次装配里出现，天然自带这个条件。
+
+    给判据而不是给形容词的理由是实测：本机日志 100 条 user_message 里，模型
+    自己调 task 只有 1 次（另外 3 次 subagent_spawned 全是 memory-nudge 自动派
+    的，模型没参与）。原文案只说"适合翻很多文件的调查"——"很多"是感觉，模型
+    的默认脾气是自己 grep 铺一屏，判据不落到数字上就压不过这个脾气。
+    反向那行同样必要：派一次烧的是一整个子会话，比自己做贵一个量级 */
 function describe(defs: readonly SubagentDef[]): string {
   const roster = defs.map((d) => `- ${d.name}：${d.description || "（无描述）"}`).join("\n");
   return (
     "把一件可以独立完成的子任务派给一个 subagent。它在自己的会话里干活，" +
     "干完把结论交回来——过程不占你的上下文。\n" +
-    "适合：需要翻很多文件才能回答的调查、可以并行推进的独立小活、" +
-    "你不想让中间输出淹没主线的脏活。\n" +
+    "什么时候派（判据，不是感觉）：要翻 3 个以上文件、或者还不知道该翻哪个文件" +
+    "才答得上来的问题，派出去，别自己 grep + read_file 铺一屏；" +
+    "可以并行推进的独立小活、会淹掉主线的脏活同理。\n" +
+    "什么时候别派：路径已经确切知道的单个文件、一两步就能收口的小事、" +
+    "要跟用户来回确认才推得动的活——派一次烧的是一整个子会话。\n" +
     "task 要写成一段自足的指令：subagent 看不到你和用户的对话，" +
     "它只能看到你写在 task 里的东西。\n\n" +
     `可派的 subagent：\n${roster}`
