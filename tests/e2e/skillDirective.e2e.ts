@@ -53,3 +53,34 @@ test("#438 句中的 $skill 也注入：「用$apple-design …」发出去时 s
     await fake.close();
   }
 });
+
+test("#441 反引号里提到 skill 名 = 不调用它：skill 正文不进上下文，整句原样发出去", async () => {
+  const fake = await startFakeModel(() => ({ content: "它是一套 Apple 风格的界面设计说明。" }));
+  const otto = await launchOtto({
+    skills: [{ name: "apple-design", description: "Apple 风格的界面设计", body: MARKER }],
+    env: fakeModelEnv(fake),
+  });
+  const ws = mkdtempSync(join(tmpdir(), "otto-ws-"));
+  try {
+    const { win } = otto;
+    await startSession(otto, ws, "开个会话");
+    await expect.poll(() => fake.requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    const before = fake.requests.length;
+
+    // 只是想问它是什么。#439 之后这一句会白注入一次 skill、还把名字摘走
+    const composer = win.getByRole("textbox", { name: /输入消息/ });
+    await composer.fill("`$apple-design` 是什么");
+    await composer.press("Enter");
+
+    await expect.poll(() => fake.requests.length, { timeout: 20_000 }).toBeGreaterThan(before);
+    const req = fake.requests[fake.requests.length - 1]!;
+    expect(bodyOf(req), "skill 被白注入了 —— 反引号没挡住").not.toContain(MARKER);
+    // 整句原样送达：名字没被摘走，反引号也还在
+    expect(bodyOf(req)).toContain("`$apple-design` 是什么");
+
+    expectNoRendererErrors(otto);
+  } finally {
+    await otto.close();
+    await fake.close();
+  }
+});

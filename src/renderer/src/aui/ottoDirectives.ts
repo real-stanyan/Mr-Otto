@@ -32,6 +32,27 @@ function readName(text: string, i: number): string {
 }
 
 /**
+ * sigil 被转义了吗 —— 看**前一个字符**(issue #441)。
+ *
+ * 扫全串(#438)带来的代价:「`$apple-design` 是什么」这种**提到**名字的写法
+ * 也会被当成指令,skill 白注入一次、名字还被摘走,正文只剩一对空反引号。
+ * 两个出口:
+ * - **反引号** = 正式的转义写法。想提名字就 `` `$名字` ``,跟 markdown 里
+ *   引用代码同一个手势,不用另学一套
+ * - **斜杠** = URL 和路径。`https://x.com/$foo`、`./$foo` 不是指令
+ *
+ * 刻意只看贴身的那一个字符,不解析成对的代码段/围栏:三反引号代码块里
+ * `$名字` 顶在行首(前一个字符是换行)的照旧算指令。真解析 markdown 结构是
+ * 另一个量级的事,而输入框里贴多行代码块本来就少见 —— 真撞上了再说。
+ *
+ * parse 和 findSkillDirective 共用这一个 —— 判定只有一份(ADR-0106)。
+ */
+function escapedAt(text: string, i: number): boolean {
+  const prev = i > 0 ? text[i - 1] : "";
+  return prev === "`" || prev === "/";
+}
+
+/**
  * 造一个只认这批名字的 formatter(skill 用,`$` 打头)。
  *
  * 匹配用"最长优先":名单里同时有 `review` 和 `review-pr` 时,
@@ -68,7 +89,7 @@ export function findSkillDirective(
 ): { name: string; args?: string; task: string } | null {
   const known = new Set(skillNames);
   for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "$") continue;
+    if (text[i] !== "$" || escapedAt(text, i)) continue;
     const name = readName(text, i);
     if (name === "" || !known.has(name)) continue;
 
@@ -184,7 +205,9 @@ function makeFormatter(
       };
 
       while (i < text.length) {
-        if (text[i] !== sigil) {
+        // 转义(反引号/斜杠打头)的那一份跟 find 共用判定 —— 画的和发的必须
+        // 一起认、一起不认,否则 ADR-0106 立的规矩当场就破
+        if (text[i] !== sigil || escapedAt(text, i)) {
           plain += text[i];
           i++;
           continue;
