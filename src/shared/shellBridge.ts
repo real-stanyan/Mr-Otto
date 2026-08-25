@@ -309,6 +309,8 @@ export interface PokerTableSummary {
   maxSeats: number;
   /** 自己是否已在这张桌上 */
   seated: boolean;
+  /** 这张桌是不是自己建的（删桌入口只给建桌人）。旧网关不带此字段 */
+  mine?: boolean;
   /** 桌上是否有牌正在打 */
   live: boolean;
   /** 有筹码的在座人数。旧网关不带此字段 */
@@ -596,6 +598,8 @@ export interface ShellBridge {
   pokerCreateTable(input: PokerTableInput): Promise<PokerTableSummary>;
   pokerJoin(tableId: string, amount: number): Promise<number>;
   pokerLeave(tableId: string): Promise<number>;
+  /** 删自己建的桌（软删除，服务端退还桌上所有筹码） */
+  pokerClose(tableId: string): Promise<void>;
   pokerStart(tableId: string): Promise<void>;
   pokerAct(tableId: string, action: PokerAction): Promise<void>;
   /** 订阅一张桌；传 null = 退订。同一时刻只订一张 */
@@ -908,6 +912,7 @@ export const CHANNELS = {
   pokerCreateTable: "otter:pokerCreateTable",
   pokerJoin: "otter:pokerJoin",
   pokerLeave: "otter:pokerLeave",
+  pokerClose: "otter:pokerClose",
   pokerStart: "otter:pokerStart",
   pokerAct: "otter:pokerAct",
   pokerWatch: "otter:pokerWatch",

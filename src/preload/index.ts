@@ -91,6 +91,7 @@ const bridge: ShellBridge = {
   pokerCreateTable: (input) => ipcRenderer.invoke(CHANNELS.pokerCreateTable, input),
   pokerJoin: (tableId, amount) => ipcRenderer.invoke(CHANNELS.pokerJoin, tableId, amount),
   pokerLeave: (tableId) => ipcRenderer.invoke(CHANNELS.pokerLeave, tableId),
+  pokerClose: (tableId) => ipcRenderer.invoke(CHANNELS.pokerClose, tableId),
   pokerStart: (tableId) => ipcRenderer.invoke(CHANNELS.pokerStart, tableId),
   pokerAct: (tableId, action) => ipcRenderer.invoke(CHANNELS.pokerAct, tableId, action),
   pokerWatch: (tableId) => ipcRenderer.invoke(CHANNELS.pokerWatch, tableId),

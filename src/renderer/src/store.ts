@@ -429,6 +429,7 @@ interface ChatState {
   refreshPokerTables(): Promise<void>;
   createPokerTable(input: PokerTableInput): Promise<void>;
   joinPokerTable(tableId: string, amount: number): Promise<void>;
+  closePokerTable(tableId: string): Promise<void>;
   leavePokerTable(): Promise<void>;
   startPokerHand(): Promise<void>;
   pokerAct(action: PokerAction): Promise<void>;
@@ -869,6 +870,18 @@ export const useChat = create<ChatState>((set, get) => ({
       await get().refreshPokerTables();
       // 建完直接进桌:建桌的人显然是要玩,不是要看一眼列表
       await get().watchPokerTable(table.id);
+    } catch (err) {
+      set({ pokerError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  async closePokerTable(tableId) {
+    try {
+      await window.otter.pokerClose(tableId);
+      set({ pokerError: "" });
+      await get().refreshPokerTables();
+      // 删桌把桌上筹码退回桶里,桶余额跟着变
+      await get().refreshWallet();
     } catch (err) {
       set({ pokerError: err instanceof Error ? err.message : String(err) });
     }

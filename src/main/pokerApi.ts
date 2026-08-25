@@ -80,6 +80,12 @@ export async function leaveTable(
   return out.taken;
 }
 
+export async function closeTable(
+  getToken: GetToken, tableId: string, deps: PokerDeps = {}
+): Promise<void> {
+  await call(getToken, `/${tableId}/close`, postInit(), deps);
+}
+
 export async function startHand(getToken: GetToken, tableId: string, deps: PokerDeps = {}): Promise<void> {
   await call(getToken, `/${tableId}/start`, postInit(), deps);
 }
