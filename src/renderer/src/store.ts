@@ -394,6 +394,8 @@ interface ChatState {
   createSubagent(name: string): Promise<SubagentDef[]>;
   /** 切作用域 = 换一份清单。见实现处注释 */
   setSubagentScope(workspace: string | null): Promise<void>;
+  /** 重扫已装 skill 清单（导入弹窗导入成功后调——刚复制进来的 skill 要立刻可见） */
+  refreshSkills(): Promise<void>;
   /** 重扫 MCP server 清单(MCP 栏目挂载时调一次,照 skills/subagents 的做法)。
       开着栏目期间还有 onMcpChanged 的推送兜底,这次是"进页面先拿一份新鲜的" */
   refreshMcp(): Promise<void>;
@@ -1005,6 +1007,10 @@ export const useChat = create<ChatState>((set, get) => ({
       if (gen !== subagentScopeGen) return;
       set({ subagentsError: bridgeErrorMessage(e) });
     }
+  },
+
+  async refreshSkills() {
+    set({ skills: await window.otter.listSkills() });
   },
 
   async refreshMcp() {

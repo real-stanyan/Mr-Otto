@@ -101,12 +101,31 @@ export interface SkillInfo {
   description: string;
   /** SKILL.md 绝对路径 */
   path: string;
-  /** 来自哪个 skill 根目录（~/.mr-otto/skills 或 ~/.claude/skills） */
+  /** 来自哪个 skill 根目录（默认只有 ~/.mr-otto/skills；别家目录不再混入，走导入） */
   source: string;
   content: string;
   /** frontmatter `argument-hint`（Claude Code 同名约定，如 "[lite|full|ultra]"）：
       给用户看的参数提示，$ 菜单展示用。没有 = 该 skill 不声明参数 */
   argumentHint?: string;
+}
+
+/** 其他厂家 agent 安装位里的一个可导入 skill（导入弹窗清单项）。
+    不带路径——导入按 name 走，路径由主进程现扫现配（渲染层指定不了复制来源） */
+export interface ExternalSkillInfo {
+  name: string;
+  description: string;
+  /** 来源厂家名（如 "Claude Code"） */
+  vendor: string;
+  /** 与已装 skill 同名 = 不可导入（列表置灰用） */
+  installed: boolean;
+}
+
+/** 导入一条 skill 的结果（逐条回，不整批 reject） */
+export interface SkillImportResult {
+  name: string;
+  ok: boolean;
+  /** 失败原因（ok = false 时有） */
+  reason?: string;
 }
 
 /** ＋ 按钮选完文件、主进程分类后的暂存项(渲染层 chips 用)。
@@ -428,6 +447,10 @@ export interface ShellBridge {
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
   listSkills(): Promise<SkillInfo[]>;
+  /** 其他厂家 agent 已装的 skill（导入弹窗清单，每次现扫磁盘） */
+  listExternalSkills(): Promise<ExternalSkillInfo[]>;
+  /** 按 name 把别家 skill 复制进 ~/.mr-otto/skills，逐条返回结果 */
+  importSkills(names: string[]): Promise<SkillImportResult[]>;
   /** 两个记忆文件的当前内容（设置页读，ADR-0060） */
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
@@ -839,6 +862,8 @@ export const CHANNELS = {
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listSkills: "otter:listSkills",
+  listExternalSkills: "otter:listExternalSkills",
+  importSkills: "otter:importSkills",
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",

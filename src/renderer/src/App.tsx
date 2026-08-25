@@ -46,6 +46,7 @@ import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
 import { BrowserPanel } from "./components/BrowserPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
+import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
 import { InstructionsNoticeBanner } from "./components/InstructionsNoticeBanner.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
@@ -1266,8 +1267,9 @@ function AppearancePage() {
   );
 }
 
-/** skill 库页（设置栏目之一）：本机已安装 skill 的只读清单（磁盘扫描的投影，零持久化）。
-    安装/卸载 = 在根目录里增删 <名字>/SKILL.md 文件夹——这里只看不改 */
+/** skill 库页（设置栏目之一）：本机已安装 skill 的清单（磁盘扫描的投影，零持久化）。
+    只认 ~/.mr-otto/skills——别家 agent 的安装位不再静默混入，走「导入 skill」弹窗
+    复制进来。手动安装/卸载 = 在根目录里增删 <名字>/SKILL.md 文件夹 */
 function SkillsPage() {
   const skills = useChat((s) => s.skills);
   const closeSettings = useChat((s) => s.closeSettings);
@@ -1282,8 +1284,9 @@ function SkillsPage() {
         <p className={HINT}>
           聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
           （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
-          {" "}放进 <code>~/.mr-otto/skills</code> 或 <code>~/.claude/skills</code>。
+          {" "}放进 <code>~/.mr-otto/skills</code>，或从其他厂家 agent 已装的 skill 里导入。
         </p>
+        <SkillImportDialog />
         {skills.map((s) => (
           <details key={s.name} className="border border-border rounded-[10px]">
             <summary className="flex items-baseline gap-[10px] px-[14px] py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">

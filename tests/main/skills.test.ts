@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { parseSkillMd, scanSkills, type SkillDirReader } from "../../src/main/skills.js";
+import {
+  externalSkillSources,
+  importExternalSkills,
+  parseSkillMd,
+  scanExternalSkills,
+  scanSkills,
+  type SkillCopier,
+  type SkillDirReader,
+} from "../../src/main/skills.js";
 
 /** 假文件系统：dirs = root → 子目录名；files = 绝对路径 → 内容 */
 function fakeReader(dirs: Record<string, string[]>, files: Record<string, string>): SkillDirReader {
@@ -96,5 +104,124 @@ describe("scanSkills", () => {
       }
     );
     expect(scanSkills([rootA, rootB], r).map((s) => s.name)).toEqual(["alpha", "zeta"]);
+  });
+});
+
+/** 假复制器：记录复制动作，existing 里的路径视为已占用 */
+function fakeCopier(existing: string[] = []) {
+  const copies: Array<{ src: string; dest: string }> = [];
+  const copier: SkillCopier = {
+    exists: (path) => existing.includes(path),
+    copyDir: (src, dest) => {
+      copies.push({ src, dest });
+    },
+  };
+  return { copier, copies };
+}
+
+const claudeRoot = "/home/.claude/skills";
+const codexRoot = "/home/.codex/skills";
+const SOURCES = [
+  { vendor: "Claude Code", root: claudeRoot },
+  { vendor: "Codex", root: codexRoot },
+];
+const destRoot = "/home/.mr-otto/skills";
+
+describe("externalSkillSources", () => {
+  it("都在 home 下、且不含 Mr Otto 自己的根目录", () => {
+    const roots = externalSkillSources("/home").map((s) => s.root);
+    expect(roots.every((r) => r.startsWith("/home/"))).toBe(true);
+    expect(roots).not.toContain(join("/home", ".mr-otto", "skills"));
+  });
+});
+
+describe("scanExternalSkills", () => {
+  it("带厂家名；与已装同名的标 installed", () => {
+    const r = fakeReader(
+      { [claudeRoot]: ["tdd"], [codexRoot]: ["fmt"] },
+      {
+        [join(claudeRoot, "tdd", "SKILL.md")]: md("tdd", "别家的"),
+        [join(codexRoot, "fmt", "SKILL.md")]: md("fmt", "格式化"),
+      }
+    );
+    const out = scanExternalSkills(SOURCES, new Set(["tdd"]), r);
+    expect(out).toEqual([
+      { name: "fmt", description: "格式化", vendor: "Codex", installed: false },
+      { name: "tdd", description: "别家的", vendor: "Claude Code", installed: true },
+    ]);
+  });
+
+  it("跨厂家同名先到先得（sources 顺序）", () => {
+    const r = fakeReader(
+      { [claudeRoot]: ["x"], [codexRoot]: ["x"] },
+      {
+        [join(claudeRoot, "x", "SKILL.md")]: md("x", "claude 版"),
+        [join(codexRoot, "x", "SKILL.md")]: md("x", "codex 版"),
+      }
+    );
+    const out = scanExternalSkills(SOURCES, new Set(), r);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.vendor).toBe("Claude Code");
+  });
+});
+
+describe("importExternalSkills", () => {
+  const reader = fakeReader(
+    { [claudeRoot]: ["tdd", "mine"], [codexRoot]: ["fmt"], [destRoot]: ["mine"] },
+    {
+      [join(claudeRoot, "tdd", "SKILL.md")]: md("tdd", "别家的"),
+      [join(claudeRoot, "mine", "SKILL.md")]: md("mine", "别家同名版"),
+      [join(codexRoot, "fmt", "SKILL.md")]: md("fmt", "格式化"),
+      [join(destRoot, "mine", "SKILL.md")]: md("mine", "已装"),
+    }
+  );
+
+  it("整目录复制进 destRoot，沿用来源目录名", () => {
+    const { copier, copies } = fakeCopier();
+    const out = importExternalSkills(["tdd", "fmt"], SOURCES, destRoot, reader, copier);
+    expect(out).toEqual([
+      { name: "tdd", ok: true },
+      { name: "fmt", ok: true },
+    ]);
+    expect(copies).toEqual([
+      { src: join(claudeRoot, "tdd"), dest: join(destRoot, "tdd") },
+      { src: join(codexRoot, "fmt"), dest: join(destRoot, "fmt") },
+    ]);
+  });
+
+  it("找不到 / 同名已装 / 目标目录被占 = 逐条失败带原因，不拖垮其余", () => {
+    const { copier, copies } = fakeCopier([join(destRoot, "fmt")]);
+    const out = importExternalSkills(["ghost", "mine", "fmt", "tdd"], SOURCES, destRoot, reader, copier);
+    expect(out).toEqual([
+      { name: "ghost", ok: false, reason: "来源里找不到该 skill" },
+      { name: "mine", ok: false, reason: "同名 skill 已存在" },
+      { name: "fmt", ok: false, reason: "目标目录已存在" },
+      { name: "tdd", ok: true },
+    ]);
+    expect(copies).toEqual([{ src: join(claudeRoot, "tdd"), dest: join(destRoot, "tdd") }]);
+  });
+
+  it("同一批里勾了两次同名：第二条按已存在挡下（不重复复制）", () => {
+    const { copier, copies } = fakeCopier();
+    const out = importExternalSkills(["tdd", "tdd"], SOURCES, destRoot, reader, copier);
+    expect(out).toEqual([
+      { name: "tdd", ok: true },
+      { name: "tdd", ok: false, reason: "同名 skill 已存在" },
+    ]);
+    expect(copies).toHaveLength(1);
+  });
+
+  it("复制抛异常 = 该条失败带信息，其余照常", () => {
+    const copier: SkillCopier = {
+      exists: () => false,
+      copyDir: (src) => {
+        if (src.includes("tdd")) throw new Error("磁盘满了");
+      },
+    };
+    const out = importExternalSkills(["tdd", "fmt"], SOURCES, destRoot, reader, copier);
+    expect(out).toEqual([
+      { name: "tdd", ok: false, reason: "磁盘满了" },
+      { name: "fmt", ok: true },
+    ]);
   });
 });

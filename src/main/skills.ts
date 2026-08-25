@@ -3,9 +3,9 @@
 // 不引入任何可执行扩展面（MVP 边界里"不做插件系统"原样成立，见 docs/adr/0007）。
 // 主进程模块（组装根特权可碰 fs）；解析是纯函数，fs 以接口注入，测试喂假实现。
 
-import { readdirSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SkillInfo } from "../shared/shellBridge.js";
+import type { ExternalSkillInfo, SkillImportResult, SkillInfo } from "../shared/shellBridge.js";
 
 export interface SkillDirReader {
   /** root 下的子目录名；root 不存在/读不了 = [] */
@@ -80,4 +80,109 @@ export function scanSkills(roots: string[], reader: SkillDirReader = nodeReader)
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ── 导入其他厂家 agent 的 skill ──────────────────────────────────────
+// skill 库默认只读 Mr Otto 自己的根目录（不再静默混入别家的安装位）：
+// 别家目录里的 skill 是"可导入的候选"，不是"已安装"。导入 = 整个 skill
+// 目录复制进 ~/.mr-otto/skills——复制而非引用，别家卸载/改动不影响这边。
+
+export interface ExternalSkillSource {
+  /** 展示给用户的厂家名 */
+  vendor: string;
+  root: string;
+}
+
+/** 已知的其他厂家 skill 安装位（都是 Claude Code 兼容格式：<根>/<名字>/SKILL.md）。
+    新厂家往这里加一行即可 */
+export function externalSkillSources(home: string): ExternalSkillSource[] {
+  return [
+    { vendor: "Claude Code", root: join(home, ".claude", "skills") },
+    { vendor: "Codex", root: join(home, ".codex", "skills") },
+  ];
+}
+
+/** 内部富类型：比过桥的 ExternalSkillInfo 多 srcDir（导入复制的来源路径）。
+    渲染层拿不到路径——导入按 name 走，主进程现扫现配，渲染层被攻破也
+    指定不了任意目录去复制 */
+interface ExternalSkillEntry extends ExternalSkillInfo {
+  srcDir: string;
+  /** 目标目录名（沿用来源目录名，不用 frontmatter name——路径是文件系统的事） */
+  dirName: string;
+}
+
+function scanExternalEntries(
+  sources: ExternalSkillSource[],
+  installedNames: ReadonlySet<string>,
+  reader: SkillDirReader
+): ExternalSkillEntry[] {
+  const byName = new Map<string, ExternalSkillEntry>();
+  for (const { vendor, root } of sources) {
+    for (const dirName of reader.listDirs(root)) {
+      const content = reader.readFile(join(root, dirName, "SKILL.md"));
+      if (content === null) continue;
+      const fm = parseSkillMd(content);
+      const name = fm.name ?? dirName;
+      if (!byName.has(name)) {
+        byName.set(name, {
+          name,
+          description: fm.description ?? "",
+          vendor,
+          installed: installedNames.has(name),
+          srcDir: join(root, dirName),
+          dirName,
+        });
+      }
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 弹窗清单：别家装了哪些 skill，各来自谁，哪些与已装同名（同名不可导入） */
+export function scanExternalSkills(
+  sources: ExternalSkillSource[],
+  installedNames: ReadonlySet<string>,
+  reader: SkillDirReader = nodeReader
+): ExternalSkillInfo[] {
+  return scanExternalEntries(sources, installedNames, reader).map(
+    ({ name, description, vendor, installed }) => ({ name, description, vendor, installed })
+  );
+}
+
+export interface SkillCopier {
+  exists(path: string): boolean;
+  /** 递归复制整个目录（skill 可能带 references/ 等附属文件） */
+  copyDir(src: string, dest: string): void;
+}
+
+const nodeCopier: SkillCopier = {
+  exists: (path) => existsSync(path),
+  copyDir: (src, dest) => cpSync(src, dest, { recursive: true }),
+};
+
+/** 按 name 把别家 skill 复制进 destRoot。逐条返回结果，不整批 reject——
+    一条撞名不该拖垮其余的导入 */
+export function importExternalSkills(
+  names: string[],
+  sources: ExternalSkillSource[],
+  destRoot: string,
+  reader: SkillDirReader = nodeReader,
+  copier: SkillCopier = nodeCopier
+): SkillImportResult[] {
+  const installed = new Set(scanSkills([destRoot], reader).map((s) => s.name));
+  const externals = scanExternalEntries(sources, installed, reader);
+  return names.map((name) => {
+    const found = externals.find((e) => e.name === name);
+    if (!found) return { name, ok: false, reason: "来源里找不到该 skill" };
+    if (installed.has(name)) return { name, ok: false, reason: "同名 skill 已存在" };
+    const dest = join(destRoot, found.dirName);
+    if (copier.exists(dest)) return { name, ok: false, reason: "目标目录已存在" };
+    try {
+      copier.copyDir(found.srcDir, dest);
+    } catch (e) {
+      return { name, ok: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+    installed.add(name); // 同一批里重复勾了同名项，后一条按"已存在"挡下
+    return { name, ok: true };
+  });
 }
