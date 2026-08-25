@@ -96,7 +96,7 @@ import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
 import {
-  createTable, joinTable, leaveTable, listTables, sendAction, startHand, watchTable,
+  closeTable, createTable, joinTable, leaveTable, listTables, sendAction, startHand, watchTable,
 } from "./pokerApi.js";
 import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
@@ -1574,6 +1574,9 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.pokerLeave, (_e, tableId: string) =>
     leaveTable(getAccessToken, tableId)
+  );
+  ipcMain.handle(CHANNELS.pokerClose, (_e, tableId: string) =>
+    closeTable(getAccessToken, tableId)
   );
   ipcMain.handle(CHANNELS.pokerStart, (_e, tableId: string) =>
     startHand(getAccessToken, tableId)

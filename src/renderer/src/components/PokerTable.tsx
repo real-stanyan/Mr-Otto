@@ -17,6 +17,9 @@ import ottoLogo from "../assets/otto.png";
 import { Button } from "./ui/button.js";
 import { Input } from "./ui/input.js";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar.js";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "./ui/dialog.js";
 
 /**
  * 请求飞行期间禁用自己的按钮。
@@ -663,8 +666,11 @@ function bucketBalance(wallet: WalletBalance | null, tier: string): number {
 function Lobby({ tables }: { tables: PokerTableSummary[] }) {
   const join = useChat((s) => s.joinPokerTable);
   const watch = useChat((s) => s.watchPokerTable);
+  const close = useChat((s) => s.closePokerTable);
   const wallet = useChat((s) => s.wallet);
   const refreshWallet = useChat((s) => s.refreshWallet);
+  // 右键"删桌"的确认对象。存整个 summary 而不是 id:弹窗里要念出桌名
+  const [deleteTarget, setDeleteTarget] = useState<PokerTableSummary | null>(null);
   // 买入额 = 桶的全部余额（issue #318），所以进大厅先把余额拉新
   useEffect(() => {
     void refreshWallet();
@@ -683,25 +689,59 @@ function Lobby({ tables }: { tables: PokerTableSummary[] }) {
             <div
               key={t.id}
               className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/40 px-3.5 py-2.5 transition-[border-color,background-color] duration-200 ease-[var(--ease-strong)] hover:border-border hover:bg-card/80"
+              onContextMenu={(e) => {
+                // 删桌入口只给建桌人;别人的桌右键走系统默认,不劫持
+                if (!t.mine) return;
+                e.preventDefault();
+                setDeleteTarget(t);
+              }}
             >
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{t.name || "无名桌"}</div>
                 <div className="text-[11px] tabular-nums text-muted-foreground">
                   {t.tier} · 盲注 {fmt(t.smallBlind)}/{fmt(t.bigBlind)}
                   {t.live && " · 打着"}
+                  {t.mine && " · 右键可删"}
                 </div>
               </div>
               {t.seated ? (
                 <AsyncButton size="sm" variant="outline" onClick={() => watch(t.id)}>回到牌桌</AsyncButton>
               ) : (
+                // 买入额恒为全部余额(issue #318),数字在钱包页看得到,按钮不再复读
                 <AsyncButton size="sm" disabled={balance <= 0} onClick={() => join(t.id, balance)}>
-                  {balance > 0 ? `全部买入 ${fmt(balance)}` : `${t.tier} 桶没余额`}
+                  {balance > 0 ? "进入" : `${t.tier} 桶没余额`}
                 </AsyncButton>
               )}
             </div>
           );
         })
       )}
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>删除「{deleteTarget?.name || "无名桌"}」？</DialogTitle>
+            <DialogDescription>
+              桌上所有人的筹码会退回各自的 {deleteTarget?.tier} 桶。牌局进行中删不了。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setDeleteTarget(null)}>
+              取消
+            </Button>
+            <AsyncButton
+              variant="destructive"
+              size="sm"
+              onClick={async () => {
+                if (!deleteTarget) return;
+                await close(deleteTarget.id);
+                setDeleteTarget(null);
+              }}
+            >
+              删除
+            </AsyncButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
