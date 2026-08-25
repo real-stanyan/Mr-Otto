@@ -22,6 +22,7 @@ const DURABLE: SessionEvent["type"][] = [
   "tool_result",
   "model_changed",
   "session_archived",
+  "session_unarchived",
   "session_renamed",
   "context_compacted",
   "tool_execution_started",

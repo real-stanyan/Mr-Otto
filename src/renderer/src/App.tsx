@@ -96,7 +96,7 @@ import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
-import { groupSessionsByWorkspace } from "./sessionGroups.js";
+import { folderName, groupSessionsByWorkspace } from "./sessionGroups.js";
 import { Button } from "@/components/ui/button.js";
 import {
   Drawer,
@@ -1465,6 +1465,9 @@ function AppSidebar() {
     (s) => s.updater !== null && (s.updater.phase === "ready" || s.updater.phase === "manual"),
   );
   const deleteSession = useChat((s) => s.deleteSession);
+  const archiveSession = useChat((s) => s.archiveSession);
+  const unarchiveSession = useChat((s) => s.unarchiveSession);
+  const renameSessionById = useChat((s) => s.renameSessionById);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
   const account = useChat((s) => s.account);
@@ -1505,7 +1508,10 @@ function AppSidebar() {
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
-  const prehistoric = sessions.filter((s) => s.workspace === null);
+  const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
+  // 用户归档的会话（ADR-0087）：不进工程组，收在侧栏底部「已归档」折叠区，可恢复
+  const archivedList = sessions.filter((s) => s.archived && s.spawnedFrom === null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
   const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedProjects);
@@ -1690,18 +1696,47 @@ function AppSidebar() {
                                 {s.title ?? g.label}
                               </span>
                             </SidebarMenuButton>
-                            <SidebarMenuAction
-                              showOnHover
-                              title="删除会话（整段日志从库里抹除，不可恢复）"
-                              onClick={(e) => {
-                                e.stopPropagation(); // 别触发外层的"切换到该会话"
-                                if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                                  void deleteSession(s.sessionId);
-                                }
-                              }}
-                            >
-                              ✕
-                            </SidebarMenuAction>
+                            {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
+                                后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
+                                删除不可逆才弹 confirm */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <SidebarMenuAction
+                                  showOnHover
+                                  title="会话操作"
+                                  onClick={(e) => e.stopPropagation() /* 别触发外层的"切换到该会话" */}
+                                >
+                                  <Ellipsis />
+                                </SidebarMenuAction>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    const t = prompt("新标题", s.title ?? "");
+                                    if (t?.trim()) void renameSessionById(s.sessionId, t.trim());
+                                  }}
+                                >
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={statusBySession[s.sessionId] === "running"}
+                                  onClick={() => void archiveSession(s.sessionId)}
+                                >
+                                  归档
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={() => {
+                                    if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                                      void deleteSession(s.sessionId);
+                                    }
+                                  }}
+                                >
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </SidebarMenuItem>
                         ))}
                       </SidebarMenu>
@@ -1717,6 +1752,59 @@ function AppSidebar() {
                 g.sessions.some((s) => approvals[s.sessionId] || statusBySession[s.sessionId] === "running")
             ) && (
               <div className="px-[10px] pb-1 text-[11px] text-warn">收起的工程里有会话在动</div>
+            )}
+            {archivedList.length > 0 && (
+              // 已归档区（ADR-0087）:默认收起——归档的本意就是眼不见,
+              // 但必须有回来的路:展开 → 恢复/删除。行点击只是看历史,不自动恢复
+              <SidebarMenu>
+                <button
+                  className="flex w-full items-center gap-1 px-[10px] pt-[10px] pb-[2px] text-[11px] text-muted-foreground tracking-[0.04em] hover:text-sidebar-foreground"
+                  onClick={() => setArchivedOpen((v) => !v)}
+                >
+                  <ChevronRight
+                    className={`w-[13px] h-[13px] shrink-0 transition-transform duration-150 ease-out ${archivedOpen ? "rotate-90" : ""}`}
+                  />
+                  已归档
+                  <span className="shrink-0 font-mono text-[10px] opacity-70">{archivedList.length}</span>
+                </button>
+                {archivedOpen &&
+                  archivedList.map((s) => (
+                    <SidebarMenuItem key={s.sessionId}>
+                      <SidebarMenuButton
+                        className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
+                        onClick={() => void resume(s.sessionId)}
+                        title="查看历史（不会自动恢复归档）"
+                      >
+                        <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+                          {s.title ?? (s.workspace ? folderName(s.workspace) : s.sessionId)}
+                        </span>
+                      </SidebarMenuButton>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
+                            <Ellipsis />
+                          </SidebarMenuAction>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+                          <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
+                            恢复归档
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onClick={() => {
+                              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                                void deleteSession(s.sessionId);
+                              }
+                            }}
+                          >
+                            删除
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </SidebarMenuItem>
+                  ))}
+              </SidebarMenu>
             )}
             {prehistoric.length > 0 && (
               // 没工程可归,不塞进任何组:垫底单列一段

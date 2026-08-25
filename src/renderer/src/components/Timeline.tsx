@@ -386,6 +386,9 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "session_archived":
       return <div className={AUDIT}>会话已归档</div>;
 
+    case "session_unarchived":
+      return <div className={AUDIT}>会话已取消归档</div>;
+
     case "session_renamed":
       return <div className={AUDIT}>会话改名 → {event.title}</div>;
 

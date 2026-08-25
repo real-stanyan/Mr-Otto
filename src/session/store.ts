@@ -31,6 +31,10 @@ export interface SessionSummary {
       从第 0 条 session_created 的 spawnedBy.sessionId 投影出来。
       不是子会话 / 旧日志没有 spawnedBy 字段 → null（schema 向后兼容硬规则） */
   spawnedFrom: string | null;
+  /** 用户归档（ADR-0087）：true = 收进「已归档」区，可恢复、仍可被跨会话召回。
+      系统归档（reason 缺席或 "system"）根本不出现在返回值里。
+      归档状态 = 最后一条 session_archived / session_unarchived 事件说了算 */
+  archived: boolean;
 }
 
 const SCHEMA = `
@@ -247,8 +251,17 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     const limit = opts.limit ?? 300;
     const exclude = opts.excludeSessions ?? [];
     const notIn = exclude.length ? `AND f.session_id NOT IN (${exclude.map(() => "?").join(",")})` : "";
+    // 归档与召回（ADR-0087 修订 ADR-0065 第 4 条）：用户归档（reason="user"）
+    // 只是从列表收起，记忆不丢——照常可搜；系统归档（reason 缺席/"system"，
+    // 即 sys-memory-edits 这类保留会话与 ADR-0087 之前的旧标记）仍永远排除。
     const common = `
-      AND f.session_id NOT IN (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
+      AND f.session_id NOT IN (
+        SELECT a.session_id FROM events a
+         WHERE a.type = 'session_archived'
+           AND COALESCE(json_extract(a.payload, '$.reason'), 'system') = 'system'
+           AND a.seq = (SELECT MAX(b.seq) FROM events b
+                         WHERE b.session_id = a.session_id
+                           AND b.type IN ('session_archived', 'session_unarchived')))
       AND f.session_id NOT IN (SELECT session_id FROM events WHERE type = 'session_created' AND json_extract(payload, '$.spawnedBy') IS NOT NULL)
       ${notIn}`;
     if ([...q].length >= 3) {
@@ -412,7 +425,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     // workspace 藏在第 0 条事件（session_created）的 payload JSON 里，
     // 用 json_extract 在 SQL 层投影出来——又一个"从日志推导"的例子。
     // 旧日志可能没有 workspace 字段 → null（schema 向后兼容硬规则）。
-    // 归档的会话（日志里出现过 session_archived）不进列表：删除 = 投影里消失，日志原封不动。
+    // 归档（ADR-0087）：状态 = 最后一条 archived/unarchived 事件说了算。
+    // 系统归档（reason 缺席 = 旧事件，或 "system"）整个从返回值消失；
+    // 用户归档（reason = "user"）照常返回、带 archived 标志，UI 分区呈现。
     const rows = this.prep(
       `SELECT session_id AS sessionId,
                 COUNT(*)   AS events,
@@ -435,20 +450,29 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                   ORDER BY e4.seq DESC LIMIT 1) AS autotitled,
                 (SELECT json_extract(payload, '$.spawnedBy.sessionId')
                    FROM events e3
-                  WHERE e3.session_id = e.session_id AND e3.type = 'session_created') AS spawnedFrom
+                  WHERE e3.session_id = e.session_id AND e3.type = 'session_created') AS spawnedFrom,
+                (SELECT CASE WHEN e5.type = 'session_archived'
+                             THEN COALESCE(json_extract(e5.payload, '$.reason'), 'system')
+                        END
+                   FROM events e5
+                  WHERE e5.session_id = e.session_id
+                    AND e5.type IN ('session_archived', 'session_unarchived')
+                  ORDER BY e5.seq DESC LIMIT 1) AS archivedReason
            FROM events e
-          WHERE session_id NOT IN
-                (SELECT DISTINCT session_id FROM events WHERE type = 'session_archived')
           GROUP BY session_id
+          HAVING archivedReason IS NULL OR archivedReason <> 'system'
           ORDER BY lastTs DESC`
       )
-      .all() as (SessionSummary & { renamed: string | null; autotitled: string | null })[];
+      .all() as (Omit<SessionSummary, "archived"> & {
+        renamed: string | null; autotitled: string | null; archivedReason: string | null;
+      })[];
     // 手动改名（最后一条胜出）压过模型浓缩标题（session_autotitled，issue #335），
     // 浓缩标题压过自动标题（第一条 user_message 首行）；
     // 空白一律算没有（显示截断交给 UI 的 ellipsis）
-    return rows.map(({ renamed, autotitled, ...r }) => ({
+    return rows.map(({ renamed, autotitled, archivedReason, ...r }) => ({
       ...r,
       title: renamed?.trim() || autotitled?.trim() || r.title?.split("\n")[0]?.trim() || null,
+      archived: archivedReason === "user", // system 归档已被 HAVING 滤掉,能到这的非空值只有 "user"
     }));
   }
 

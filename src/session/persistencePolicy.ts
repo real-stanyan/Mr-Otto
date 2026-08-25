@@ -51,6 +51,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "tool_result": // 终态：完整输出，覆盖 tool_output 拼出的预览
     case "model_changed":
     case "session_archived":
+    case "session_unarchived": // 归档/恢复都是列表投影的事实来源（ADR-0087）
     case "session_renamed":
     case "context_compacted":
     case "tool_execution_started":
