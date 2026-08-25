@@ -75,6 +75,21 @@ describe("LocalWorld exec 中断（ADR-0006）", () => {
   });
 });
 
+describe("LocalWorld execDetached（issue #389 后台执行）", () => {
+  it("跑完返回完整结果，cwd 同 root", async () => {
+    const world = createLocalWorld({ root });
+    const result = await world.execDetached!("pwd; echo bg-ok");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("bg-ok");
+  });
+
+  it("起不来按世界反馈返回（exitCode 1），不 reject", async () => {
+    const world = createLocalWorld({ root });
+    const result = await world.execDetached!("exit 7");
+    expect(result.exitCode).toBe(7);
+  });
+});
+
 describe("LocalWorld exec 输出直播", () => {
   it("onOutput 收到碎片（stdout/stderr 分流标注），完整结果不受直播影响", async () => {
     const world = createLocalWorld({ root });

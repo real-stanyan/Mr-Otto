@@ -28,7 +28,8 @@ import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
-import { bashTool } from "../tools/bash.js";
+import { createBashTool } from "../tools/bash.js";
+import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
@@ -422,6 +423,11 @@ export function createAgent(opts: {
   // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
   void mcp?.ready();
 
+  // 后台任务登记口（issue #389）：bash run_in_background 起的任务在这跟踪，
+  // 完成回调由组装根（index.ts）接线——没接线（subagent 装配）时 armed=false，
+  // bash 会拒绝后台参数而不是丢结果
+  const backgroundTasks = new BackgroundTasks();
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
@@ -433,7 +439,7 @@ export function createAgent(opts: {
     ...(world.history ? [createSessionSearchTool()] : []),
     readFileTool,
     writeFileTool,
-    bashTool,
+    createBashTool(backgroundTasks),
     createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
@@ -609,6 +615,9 @@ export function createAgent(opts: {
     },
     sessionId,
     workspace: opts.workspace,
+    /** 后台任务登记口（issue #389）：index.ts 在这上面接完成回调（onCompletion），
+        决定回注时机；没接线的装配 bash 拒绝 run_in_background */
+    backgroundTasks,
     /** 这个 agent 的 ExecutionWorld——终端接线要靠它才能走 seam 而不是绕过去
         (ADR-0031)：v2 SandboxWorld 把 openTerminal 实现成 docker exec，
         终端得开在 agent 这个 world 里，不能在 index.ts 里另起一个 LocalWorld */

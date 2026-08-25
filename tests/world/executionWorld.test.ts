@@ -175,3 +175,32 @@ describe("history 能力（可选）", () => {
     expect(Object.hasOwn(withExecOutput(fakeWorld(), () => {}), "history")).toBe(false);
   });
 });
+
+describe("装饰器透传 execDetached（issue #389）", () => {
+  it("withAbortSignal 透传且**不加签**：turn 中止不该杀后台任务", async () => {
+    const seen: string[] = [];
+    const base: ExecutionWorld = {
+      ...fakeWorld(),
+      execDetached: async (cmd) => {
+        seen.push(cmd);
+        return { stdout: "bg", stderr: "", exitCode: 0 };
+      },
+    };
+    const ac = new AbortController();
+    const wrapped = withAbortSignal(base, ac.signal);
+    ac.abort(); // 先中止再调：后台执行必须不受影响
+    const r = await wrapped.execDetached!("sleep 999");
+    expect(r.stdout).toBe("bg");
+    expect(seen).toEqual(["sleep 999"]);
+  });
+
+  it("withExecOutput 透传；世界本来没有时不凭空造一个", () => {
+    const base: ExecutionWorld = {
+      ...fakeWorld(),
+      execDetached: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    };
+    expect(withExecOutput(base, () => {}).execDetached).toBeDefined();
+    expect(Object.hasOwn(withAbortSignal(fakeWorld(), new AbortController().signal), "execDetached")).toBe(false);
+    expect(Object.hasOwn(withExecOutput(fakeWorld(), () => {}), "execDetached")).toBe(false);
+  });
+});

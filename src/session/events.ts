@@ -418,6 +418,20 @@ export interface RequestEnvelopeEvent extends SessionEventBase {
   tools: { name: string; description: string; parameters: object }[];
 }
 
+/** 后台任务完成（issue #389，dsh completion re-injection 对照）。
+    审计注记：哪个后台任务（bash run_in_background）、什么命令、什么退出码、
+    何时完成。**模型不消费**——模型可见的载体是回注 turn 的 user_message
+    （文案带完整输出，"先落盘再喂模型"由 runTurn 既有路径满足），这条事件
+    是把「任务其实是那时完成的」与「回注 turn 是这时开始的」两个时刻分开
+    记账的凭据（turn 在跑时完成的任务会攒到收口后才回注）。
+    ignorable：旧版本跳过它照常重放——不参与模型视野推导 */
+export interface BackgroundTaskCompletedEvent extends SessionEventBase {
+  type: "background_task_completed";
+  taskId: string;
+  cmd: string;
+  exitCode: number;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -445,7 +459,8 @@ export type SessionEvent =
   | SessionAutoTitledEvent
   | ToolHookEvent
   | ProjectInstructionsEvent
-  | RequestEnvelopeEvent;
+  | RequestEnvelopeEvent
+  | BackgroundTaskCompletedEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -484,6 +499,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_hook: true,
   project_instructions: true,
   request_envelope: true,
+  background_task_completed: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

@@ -155,6 +155,14 @@ export interface ExecutionWorld {
     write(path: string, content: string): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
+  /** 可选：后台执行（issue #389）——不绑 turn 信号、超时放宽（LocalWorld 30 分钟）。
+      给"跑得比一个 turn 长"的命令用（构建/测试全量跑）：turn 收口了它还活着，
+      结果由组装根（backgroundTasks）以新 turn 注回会话。
+      **刻意是独立方法而不是 ExecOptions 里的 flag**：withAbortSignal 把 turn
+      信号焊进每个 exec 调用，后台任务必须躲开那次注入——分开的方法让装饰器
+      "透传不加签"成为显式决定而不是遗漏。可选 = 向后兼容（假 world 零改动）；
+      缺席 = 该装配不支持后台执行（bash 的 run_in_background 报错说明） */
+  execDetached?(cmd: string): Promise<ExecResult>;
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
@@ -195,6 +203,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
+    // 后台执行透传**不加签**（issue #389）：turn 中止不该杀后台任务——
+    // 它的生命周期本来就设计成跨 turn 的
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
     },
@@ -230,6 +241,8 @@ export function withExecOutput(
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
+    // 后台执行不接直播（v1）：完整结果在完成回注时整段给
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: world.http,
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser ? { browser: world.browser } : {}),

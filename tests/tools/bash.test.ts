@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bashTool } from "../../src/tools/bash.js";
+import { bashTool, createBashTool } from "../../src/tools/bash.js";
 import type { ExecutionWorld, ExecResult } from "../../src/world/executionWorld.js";
 
 /** 假 world：exec 回放预设结果，顺带记录收到的命令 */
@@ -102,6 +102,54 @@ describe("bash 工具", () => {
     const out = (await bashTool.run({ cmd: "ls" }, world)) as string;
     expect(out).not.toContain("[沙箱");
     expect(out).toBe("exit code: 0\nstdout:\nok");
+  });
+
+  // ── 后台执行（issue #389）────────────────────────────────
+
+  it("默认 bashTool：参数表不宣称 run_in_background，传了也拒（无登记口）", async () => {
+    const props = (bashTool.def.parameters as { properties: Record<string, unknown> }).properties;
+    expect(props).not.toHaveProperty("run_in_background");
+    const { world } = fakeWorld({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(bashTool.run({ cmd: "ls", run_in_background: true }, world)).rejects.toThrow(
+      /不支持后台执行/
+    );
+  });
+
+  it("带登记口且 armed：立即返回任务 id，走 execDetached 不走 exec", async () => {
+    const started: string[] = [];
+    const tool = createBashTool({
+      armed: true,
+      start: (cmd) => {
+        started.push(cmd);
+        return "bg-1";
+      },
+    });
+    const props = (tool.def.parameters as { properties: Record<string, unknown> }).properties;
+    expect(props).toHaveProperty("run_in_background");
+
+    const { world, calls } = fakeWorld({ stdout: "", stderr: "", exitCode: 0 });
+    world.execDetached = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+    const out = await tool.run({ cmd: "npm run build", run_in_background: true }, world);
+    expect(out).toContain("bg-1");
+    expect(started).toEqual(["npm run build"]);
+    expect(calls).toEqual([]); // 前台 exec 没被碰
+  });
+
+  it("登记口未接线（armed=false，subagent 装配）：拒绝而不是丢结果", async () => {
+    const tool = createBashTool({ armed: false, start: () => "bg-x" });
+    const { world } = fakeWorld({ stdout: "", stderr: "", exitCode: 0 });
+    world.execDetached = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(tool.run({ cmd: "ls", run_in_background: true }, world)).rejects.toThrow(
+      /不支持后台执行/
+    );
+  });
+
+  it("world 无 execDetached 能力：拒绝（装配没有后台执行的世界）", async () => {
+    const tool = createBashTool({ armed: true, start: () => "bg-x" });
+    const { world } = fakeWorld({ stdout: "", stderr: "", exitCode: 0 });
+    await expect(tool.run({ cmd: "ls", run_in_background: true }, world)).rejects.toThrow(
+      /不支持后台执行/
+    );
   });
 
   it("沙箱事实行不进截断预算：超长输出被截，事实行完好", async () => {

@@ -18,6 +18,10 @@ import { HeadTailBuffer } from "../shared/headTail.js";
     尾部（往往是最终结果）全丢；HeadTail 让进程跑到自然结束，只丢中段 */
 const EXEC_BUFFER_CAP = 1_000_000;
 
+/** 后台执行的超时（issue #389）：无限 = 泄漏出走的进程，30 秒 = 后台没意义。
+    30 分钟够全量构建/测试跑完 */
+const DETACHED_TIMEOUT_MS = 1_800_000;
+
 /** 把 path 解析到 root 下并验证没越界；没配 root = 不设防（旧行为）。
     what：错误文案里叫什么围栏——fs 用「工程文件夹」，config 用「配置目录」 */
 function fence(root: string | undefined, path: string, what = "工程文件夹"): string {
@@ -109,6 +113,41 @@ export function createLocalWorld(
             done({
               stdout: out.text(),
               stderr: `${err.text()}\n[进程被 ${signal} 终止（超时 30s 或外部 kill）]`.trim(),
+              exitCode: 124,
+            });
+            return;
+          }
+          done({ stdout: out.text(), stderr: err.text(), exitCode: code ?? 1 });
+        });
+      });
+    },
+
+    // 后台执行（issue #389）：exec 的孪生减配版——不绑 turn 信号（跨 turn 存活
+    // 是它存在的意义）、不接直播、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
+    // 30 分钟够全量构建/测试，真要更久的活该上 CI）。同款 HeadTail 有界缓冲、
+    // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。app 退出时随主进程死
+    // （不 detach 进程组——孤儿进程比丢结果糟）
+    execDetached(cmd: string): Promise<ExecResult> {
+      return new Promise<ExecResult>((done) => {
+        const child = spawn(cmd, {
+          shell: true,
+          timeout: DETACHED_TIMEOUT_MS,
+          killSignal: "SIGTERM",
+          env: childEnv(),
+          ...(root ? { cwd: root } : {}),
+        });
+        const out = new HeadTailBuffer(EXEC_BUFFER_CAP);
+        const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => out.push(chunk));
+        child.stderr?.on("data", (chunk: string) => err.push(chunk));
+        child.on("error", (e) => done({ stdout: out.text(), stderr: e.message, exitCode: 1 }));
+        child.on("close", (code, signal) => {
+          if (signal !== null) {
+            done({
+              stdout: out.text(),
+              stderr: `${err.text()}\n[进程被 ${signal} 终止（后台超时 30 分钟或外部 kill）]`.trim(),
               exitCode: 124,
             });
             return;
