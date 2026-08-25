@@ -70,19 +70,18 @@ export function Card({ children, style }: { children: React.ReactNode; style?: S
   );
 }
 
-/** 提示条。错误不是一行裸红字 —— 给它一块底,人才知道这是"一条消息"而不是标签 */
+/** 提示条。错误不是一行裸红字 —— 给它一块底,人才知道这是"一条消息"而不是标签。
+    整条用同色细边 + 同色文字,不加左侧色条:桌面那侧没有色条这个语汇,
+    多一种别处不用的装饰就是多一条要记的规矩 */
 export function Note({ tone, children }: { tone: "error" | "warn"; children: React.ReactNode }) {
   const { c } = usePalette();
   const hue = tone === "error" ? c.destructive : c.warn;
   return (
     <View style={{
       backgroundColor: c.card, borderRadius: radius.control, padding: space.sm + 2,
-      // 左边一条色边:比整块染色克制,在深浅两套底上都不会糊
-      borderLeftWidth: 3, borderLeftColor: hue,
-      borderTopWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth,
-      borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth, borderColor: hue,
     }}>
-      <Text style={{ ...type.footnote, color: c.foreground }}>{children}</Text>
+      <Text style={{ ...type.footnote, color: hue }}>{children}</Text>
     </View>
   );
 }
@@ -164,10 +163,11 @@ export function Tile({ children }: { children: React.ReactNode }) {
  * 实底只留给真正的主动作。手机端跟同一条:
  *   primary  实底蓝——一屏只给一个
  *   outline  透明底 + 细边——绝大多数按钮
- *   plain    纯文字——"刷新""重新配对"这种退到背景里的
+ *   plain    纯文字 + 点缀色——"刷新""用邮箱密码登录"这种读成链接的
+ *   quiet    纯文字 + 暗色——"拒绝"这种和主动作并排、要让位的
  *   destructive 透明底 + 红字红边——不实底,因为它不是主动作
  */
-export type ButtonVariant = "primary" | "outline" | "plain" | "destructive";
+export type ButtonVariant = "primary" | "outline" | "plain" | "quiet" | "destructive";
 
 export function Button(props: {
   label: string;
@@ -176,6 +176,9 @@ export function Button(props: {
   variant?: ButtonVariant;
   /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
   grow?: boolean;
+  /** auto = 自己多宽算多宽的小胶囊,右对齐成一行。桌面 permission-grant 的动作行
+      就是这个形状:安静、不抢卡片的主体。整屏的主按钮才用默认的通栏 */
+  size?: "full" | "auto";
 }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
@@ -199,6 +202,7 @@ export function Button(props: {
     v === "primary" ? c.primaryForeground
     : v === "destructive" ? c.destructive
     : v === "outline" ? c.foreground
+    : v === "quiet" ? c.mutedForeground
     : c.brand; // plain = 纯文字按钮,用点缀色让它读成"可点",而不是一段说明
 
   return (
@@ -213,10 +217,13 @@ export function Button(props: {
         // 命中区往外放一点:手指落点和视觉边界从来不完全重合
         hitSlop={8}
         style={({ pressed }) => [
-          { borderRadius: radius.control, paddingVertical: 15, paddingHorizontal: space.md,
+          props.size === "auto"
+            ? { borderRadius: radius.pill, paddingVertical: 11, paddingHorizontal: space.lg, minHeight: 44 }
+            : { borderRadius: radius.control, paddingVertical: 15, paddingHorizontal: space.md, minHeight: 50 },
+          {
             // alignItems + justifyContent 都要:少一个,文字在某些容器里会跑到看不见的地方
             // (虚拟机上第一版就是一条没有字的蓝条)
-            alignItems: "center", justifyContent: "center", minHeight: 50 },
+            alignItems: "center", justifyContent: "center" },
           face,
           // 关了动效时,按下的反馈退成变暗——反馈本身不能没有
           reduce && pressed && { opacity: 0.7 },

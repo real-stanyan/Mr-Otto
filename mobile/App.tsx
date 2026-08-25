@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator, SafeAreaView, ScrollView, StatusBar,
+  ActivityIndicator, Image, SafeAreaView, ScrollView, StatusBar,
   StyleSheet, Text, TextInput, View,
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
@@ -75,11 +75,15 @@ function Spinner() {
   return <ActivityIndicator color={c.mutedForeground} />;
 }
 
-/** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的 */
-function Page({ children }: { children: React.ReactNode }) {
+/** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的。
+    grow = 内容不足一屏时把容器撑满,好让里面自己去配平上下 */
+function Page({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
   return (
     <ScrollView
-      contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
+      contentContainerStyle={[
+        { padding: space.lg, paddingBottom: space.xl, gap: space.md },
+        grow && { flexGrow: 1 },
+      ]}
       keyboardShouldPersistTaps="handled"
     >
       {children}
@@ -117,12 +121,18 @@ function SignIn({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <Page>
-      <View style={{ gap: space.xs, paddingTop: space.lg }}>
-        <Title>Mr Otto</Title>
-        <Hint>用<Strong>和电脑上同一个</Strong>账号登录。</Hint>
-      </View>
-      {err ? <Note tone="error">{err}</Note> : null}
+    // 这一屏只有三个按钮,顶到天花板会在下面留一大片空。撑满高度、内容居中,
+    // 按钮正好落在拇指够得着的地方
+    <Page grow>
+      <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
+        <View style={{ gap: space.sm, alignItems: "flex-start" }}>
+          {/* 和桌面同一张脸(resources/icon.png 的副本):这是两端唯一的共同标记。
+              不再叠 borderRadius —— 图本身已经是圆角的,再圆一次会切掉边 */}
+          <Image source={require("./assets/otto-mark.png")} style={{ width: 68, height: 68 }} />
+          <Title>Mr Otto</Title>
+          <Hint>用<Strong>和电脑上同一个</Strong>账号登录。</Hint>
+        </View>
+        {err ? <Note tone="error">{err}</Note> : null}
       <View style={{ gap: space.sm }}>
         <Button
           variant="outline"
@@ -137,11 +147,12 @@ function SignIn({ onDone }: { onDone: () => void }) {
           onPress={() => oauth("github")}
         />
       </View>
-      {showPassword ? (
-        <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
-      ) : (
-        <Button label="用邮箱密码登录" variant="plain" onPress={() => setShowPassword(true)} />
-      )}
+        {showPassword ? (
+          <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
+        ) : (
+          <Button label="用邮箱密码登录" variant="plain" onPress={() => setShowPassword(true)} />
+        )}
+      </View>
     </Page>
   );
 }
@@ -386,8 +397,9 @@ function AgentCard({ agent: a, now, onDecide }: {
   );
 }
 
-/** 待批的那一块。形状照着桌面的 permission-grant:大圆角、行首方块、
-    等宽的动作行,右边是实底的确认键,左边是不着色的拒绝 */
+/** 待批的那一块。形状照着桌面的 permission-grant:一条细边围出来的板、行首方块、
+    动作行**右对齐的小胶囊**——安静,不抢卡片的主体。
+    刻意不做左侧色条、不给它更深的底:更深的底在卡片里读成一个洞,而不是浮起来的一层。 */
 function Approval({ agent: a, onDecide }: {
   agent: IslandAgent;
   onDecide: (a: IslandAgent, ok: boolean) => void;
@@ -397,17 +409,16 @@ function Approval({ agent: a, onDecide }: {
   if (!p) return null;
   return (
     <View style={{
-      backgroundColor: c.background, borderRadius: radius.card, padding: space.md,
-      gap: space.sm, marginTop: space.xs,
-      // 左边一条 warn 色边 —— 一列卡片里一眼能找到"这条在等我"
-      borderLeftWidth: 3, borderLeftColor: c.warn,
-      borderTopWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth,
-      borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+      borderRadius: radius.card, padding: space.md, gap: space.sm, marginTop: space.xs,
+      borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
     }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        <Tile>
-          <Text style={{ ...t.headline, color: c.warn, fontFamily: MONO }}>!</Text>
-        </Tile>
+      <View style={{ flexDirection: "row", gap: space.sm }}>
+        {/* 方块对齐第一行文字,不是对齐整块的中线 —— 路径换行之后中线会跑偏 */}
+        <View style={{ marginTop: 1 }}>
+          <Tile>
+            <Text style={{ ...t.headline, color: c.warn, fontFamily: MONO }}>!</Text>
+          </Tile>
+        </View>
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
           <Text style={{ ...t.body, color: c.foreground, fontFamily: MONO }} numberOfLines={1}>
             {p.verb} {p.target}
@@ -415,11 +426,12 @@ function Approval({ agent: a, onDecide }: {
           {p.fullPath ? <Meta>{p.fullPath}</Meta> : null}
         </View>
       </View>
-      {/* 顺序和轻重跟桌面 permission-grant 一致:拒绝是不着色的那个,
-          批准是实底的那个;确认动作在右,和 iOS 的弹窗一个方向 */}
-      <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.xs }}>
-        <Button grow variant="destructive" label="拒绝" onPress={() => onDecide(a, false)} />
-        <Button grow label="批准" onPress={() => onDecide(a, true)} />
+      {/* 顺序和轻重跟桌面 permission-grant 一致:拒绝是不着色的纯文字,批准是实底的;
+          确认动作在右,和 iOS 弹窗一个方向。拒绝不染红——红是"这个动作危险"的意思,
+          而这里危险的是批准 */}
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.xs }}>
+        <Button size="auto" variant="quiet" label="拒绝" onPress={() => onDecide(a, false)} />
+        <Button size="auto" label="批准" onPress={() => onDecide(a, true)} />
       </View>
     </View>
   );
