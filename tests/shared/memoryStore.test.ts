@@ -95,3 +95,57 @@ describe("parseMemoryResult", () => {
     expect(parseMemoryResult(`${MEMORY_RESULT_MARK}{"target":"user","added":[],"updated":[],"removed":[],"used":0,"limit":1375}-->`)).toBeNull();
   });
 });
+
+import { memoryRelPath, isMemoryTarget, withMemoryFileLock } from "../../src/shared/memoryStore.js";
+
+describe("三档路径与上限", () => {
+  it("memoryRelPath：三档各自的相对路径", () => {
+    expect(memoryRelPath("user")).toBe("memories/USER.md");
+    expect(memoryRelPath("memory")).toBe("memories/MEMORY.md");
+    expect(memoryRelPath("project", "memories/projects/abc123")).toBe("memories/projects/abc123/MEMORY.md");
+  });
+
+  it("memoryRelPath：project 没给 projectDir 就抛——绝不静默落到全局档", () => {
+    expect(() => memoryRelPath("project")).toThrow(/projectDir/);
+    expect(() => memoryRelPath("project", null)).toThrow(/projectDir/);
+  });
+
+  it("isMemoryTarget 认得第三档", () => {
+    expect(isMemoryTarget("project")).toBe(true);
+    expect(isMemoryTarget("projects")).toBe(false);
+  });
+
+  it("三档上限：全局档让位给项目档", () => {
+    expect(MEMORY_LIMITS).toEqual({ memory: 1100, user: 1375, project: 2200 });
+  });
+
+  it("project 超限的报错文案带 PROJECT 字样", () => {
+    const long = "x".repeat(2300);
+    const r = applyOps("project", [], [{ action: "add", target: "project", content: long }]);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("PROJECT") });
+    expect((r as { error: string }).error).toContain("2200");
+  });
+});
+
+describe("withMemoryFileLock 按文件路径加锁", () => {
+  it("同一路径串行", async () => {
+    const order: string[] = [];
+    const p = "memories/MEMORY.md";
+    const a = withMemoryFileLock(p, async () => { order.push("a-in"); await Promise.resolve(); order.push("a-out"); });
+    const b = withMemoryFileLock(p, async () => { order.push("b-in"); });
+    await Promise.all([a, b]);
+    expect(order).toEqual(["a-in", "a-out", "b-in"]);
+  });
+
+  it("不同项目的项目档互不阻塞（锁 key 是路径不是 target）", async () => {
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const gate = new Promise<void>((r) => (releaseA = r));
+    const a = withMemoryFileLock("memories/projects/aaa/MEMORY.md", async () => { order.push("a-in"); await gate; order.push("a-out"); });
+    const b = withMemoryFileLock("memories/projects/bbb/MEMORY.md", async () => { order.push("b-in"); });
+    await b;
+    expect(order).toEqual(["a-in", "b-in"]); // b 没被 a 堵住
+    releaseA();
+    await a;
+  });
+});

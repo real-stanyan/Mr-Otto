@@ -39,7 +39,12 @@ import {
   type MemoryTarget,
 } from "../../../shared/memoryStore.js";
 
-const FIELDS: { target: MemoryTarget; label: string }[] = [
+// memoryStore.ts 的 MemoryTarget 已经加了第三档 "project"（tiered-memory Task 2），
+// 但这个设置页栏目和 getMemory() 的 IPC 返回值（{ memory, user }）都还只认两档——
+// 项目档的 UI 是后续任务（Task 4 起）要补的，这里先窄化类型，不提前实现
+type TwoTierTarget = Extract<MemoryTarget, "memory" | "user">;
+
+const FIELDS: { target: TwoTierTarget; label: string }[] = [
   { target: "memory", label: "MEMORY · 笔记" },
   { target: "user", label: "USER · 关于用户" },
 ];
@@ -47,7 +52,7 @@ const FIELDS: { target: MemoryTarget; label: string }[] = [
 /** "已保存"在屏幕上停留的时间,同 ProfileCard 那颗钮一个数 */
 const SAVED_HINT_MS = 2000;
 
-function MemoryField({ target, label }: { target: MemoryTarget; label: string }) {
+function MemoryField({ target, label }: { target: TwoTierTarget; label: string }) {
   // null = 还没从主进程读到(disabled 状态);读到之后即使是空字符串也不再是 null
   const [loaded, setLoaded] = useState<string | null>(null);
   const [text, setText] = useState("");

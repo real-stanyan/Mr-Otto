@@ -2,7 +2,7 @@
 // 没有当前会话时落到保留会话——事件必须挂在某个 sessionId 上，而"设置页"不是会话。
 
 import type { EventStore } from "../session/store.js";
-import { formatEntries, isMemoryTarget, parseEntries, withMemoryFileLock, MEMORY_FILES, type MemoryTarget } from "../shared/memoryStore.js";
+import { formatEntries, isMemoryTarget, parseEntries, withMemoryFileLock, memoryRelPath, type MemoryTarget } from "../shared/memoryStore.js";
 
 export const MEMORY_EDITS_SESSION = "sys-memory-edits";
 
@@ -22,13 +22,13 @@ export async function applyUserEdit(
   text: string,
   sessionId: string = MEMORY_EDITS_SESSION
 ): Promise<void> {
-  // IPC 入参是 unknown（issue #186）：非法 target 会让 MEMORY_FILES[target] 变
-  // undefined，一路传进路径拼接——在唯一入口处挡掉
+  // IPC 入参是 unknown（issue #186）：非法 target 会让 memoryRelPath(target) 抛出
+  // 一个语义不明的错误，在唯一入口处先挡掉
   if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-  const rel = MEMORY_FILES[target];
-  // 与 memory 工具共用同一把 per-target 锁（issue #185）：工具的 read-modify-write
+  const rel = memoryRelPath(target);
+  // 与 memory 工具共用同一把 per-file 锁（issue #185）：工具的 read-modify-write
   // 进行中时这里进不来，before 永远是写入时刻的真实磁盘原文
-  await withMemoryFileLock(target, async () => {
+  await withMemoryFileLock(rel, async () => {
     const before = await deps.readFile(rel);
     const after = formatEntries(parseEntries(text));
     if (before === after) return;

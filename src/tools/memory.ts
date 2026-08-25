@@ -9,7 +9,7 @@ import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
   applyOps, charCount, formatEntries, formatMemoryResultLine, isMemoryTarget, parseEntries, withMemoryFileLock,
-  MEMORY_FILES, MEMORY_LIMITS,
+  memoryRelPath, MEMORY_LIMITS,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
 import { scanThreat } from "../shared/threatPatterns.js";
@@ -60,10 +60,10 @@ export function createMemoryTool(): Tool {
       if (hit) throw new Error(`内容含可疑指令（${hit}），拒绝写入记忆`);
     }
 
-    const rel = MEMORY_FILES[target];
-    // read→apply→write 整段持 per-target 锁（issue #185）：并发的另一次写在这段
+    const rel = memoryRelPath(target);
+    // read→apply→write 整段持 per-file 锁（issue #185）：并发的另一次写在这段
     // 结束前进不来，读到的永远是上一次写完之后的最新视图
-    const result = await withMemoryFileLock(target, async (): Promise<MemoryToolResult> => {
+    const result = await withMemoryFileLock(rel, async (): Promise<MemoryToolResult> => {
       let raw: string | null;
       try {
         raw = await world.config!.read(rel);

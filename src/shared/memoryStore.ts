@@ -2,19 +2,33 @@
 // 放 shared：工具（主进程）和设置页（渲染层）都要算占用、都要认同一种格式。
 // 字符上限而不是 token：字符数与模型无关（hermes 同款理由）。
 
-export type MemoryTarget = "memory" | "user";
+export type MemoryTarget = "memory" | "user" | "project";
 
-/** 运行时守卫（issue #186）：IPC/工具入参都是 unknown，MEMORY_FILES[target]
-    对非法值回 undefined，会把 undefined 一路传进文件路径拼接 */
+/** 运行时守卫（issue #186）：IPC/工具入参都是 unknown，非法值会一路传进文件路径拼接 */
 export function isMemoryTarget(v: unknown): v is MemoryTarget {
-  return v === "memory" || v === "user";
+  return v === "memory" || v === "user" || v === "project";
 }
 
-export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 2200, user: 1375 };
-export const MEMORY_FILES: Record<MemoryTarget, string> = {
-  memory: "memories/MEMORY.md",
-  user: "memories/USER.md",
-};
+// 三档预算（ADR 见 docs/adr/）。全局 MEMORY 从 2200 降到 1100：三档之后它的职责
+// 变窄了——项目约定全搬去项目档，它只装「换个项目也成立」的事（本机环境、工具怪癖）。
+// 不做成配置：紧上限不是为了省 token，是为了逼出策展；可配置会诱导调数字而非合并条目。
+export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200 };
+
+export const MEMORY_DIR = "memories";
+/** 项目记忆目录里的两个文件。root.txt 让目录自描述（设置页要显示「这份记忆属于
+    哪个项目」），不引入中心索引——索引是派生物，会和磁盘现实脱节 */
+export const PROJECT_MEMORY_FILE = "MEMORY.md";
+export const PROJECT_ROOT_FILE = "root.txt";
+
+/** 记忆文件的配置目录相对路径。projectDir 由主进程算好传进来（形如
+    "memories/projects/<hash16>"）——src/shared 不许 import node:crypto（手机端要跑这一层） */
+export function memoryRelPath(target: MemoryTarget, projectDir?: string | null): string {
+  if (target === "user") return `${MEMORY_DIR}/USER.md`;
+  if (target === "memory") return `${MEMORY_DIR}/MEMORY.md`;
+  if (!projectDir) throw new Error("project 档需要 projectDir——没有项目根时不该走到这里");
+  return `${projectDir}/${PROJECT_MEMORY_FILE}`;
+}
+
 export const ENTRY_DELIMITER = "\n§\n";
 
 export function charCount(s: string): number {
@@ -41,17 +55,16 @@ export function formatEntries(entries: string[]): string {
   return entries.join(ENTRY_DELIMITER);
 }
 
-// 写互斥（issue #185）：memory 工具与设置页 applyUserEdit 都是 read-modify-write，
-// nudge 派出的 memory-reviewer 与父会话可能同时写同一文件——无锁时后写者覆盖前者，
-// 且前者的 tool_result 仍报成功。主进程单线程，一条 per-target promise 链就够；
-// 模块级共享，跨工具实例、跨会话都走同一条链。
-const fileLocks = new Map<MemoryTarget, Promise<unknown>>();
+// 写互斥（issue #185）：memory 工具与设置页 applyUserEdit 都是 read-modify-write。
+// key 是**文件相对路径**而不是 target——三档之后两个不同项目的项目档是两个文件，
+// 按 target 加锁会把它们无谓地串起来。
+const fileLocks = new Map<string, Promise<unknown>>();
 
-export function withMemoryFileLock<T>(target: MemoryTarget, fn: () => Promise<T>): Promise<T> {
-  const prev = fileLocks.get(target) ?? Promise.resolve();
+export function withMemoryFileLock<T>(relPath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = fileLocks.get(relPath) ?? Promise.resolve();
   // 前一次成功失败都不影响这一次排队（失败的写不该把后面的写都堵死）
   const run = prev.then(fn, fn);
-  fileLocks.set(target, run.catch(() => {}));
+  fileLocks.set(relPath, run.catch(() => {}));
   return run;
 }
 
@@ -64,7 +77,7 @@ export type ApplyResult =
   | { ok: true; entries: string[]; changed: { added: string[]; updated: string[]; removed: string[] } }
   | { ok: false; error: string };
 
-const LABEL: Record<MemoryTarget, string> = { memory: "MEMORY", user: "USER" };
+const LABEL: Record<MemoryTarget, string> = { memory: "MEMORY", user: "USER", project: "PROJECT" };
 
 /** 按 old_text 子串找唯一一条。0 条 / 多条都是错：模型给的定位词不够具体，
     让它换个更长的——绝不猜 */

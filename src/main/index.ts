@@ -88,7 +88,7 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
-import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import { memoryRelPath, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
@@ -1174,7 +1174,7 @@ void app.whenReady().then(() => {
         return "";
       }
     };
-    return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+    return { memory: read(memoryRelPath("memory")), user: read(memoryRelPath("user")) };
   };
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
@@ -1569,9 +1569,9 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
     // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
-    // MEMORY_FILES[target] 拼了路径，得在拼之前挡
+    // memoryRelPath(target) 拼了路径，得在拼之前挡
     if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-    const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
+    const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target)));
     await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
   });
 
