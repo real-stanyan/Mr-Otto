@@ -171,5 +171,55 @@ describe("/rl/v1 路由", () => {
     const r = await g(authed("http://x/rl/v1/stream?role=desktop"));
     expect(r.headers.get("content-type")).toContain("text/event-stream");
     expect(r.headers.get("x-accel-buffering")).toBe("no");
+    // 必须 cancel:ReadableStream 的 start() 在构造时就跑了,25s 心跳的
+    // setInterval 已经挂上。不取消,这个定时器会一直活到 worker 结束
+    await r.body?.cancel();
+  });
+
+  // ── 路由 ↔ 中继的接缝 ──
+  //
+  // createRelay 单独测过,路由的 401/400/405/409/413/响应头也单独测过,
+  // 但**没有一条**把两者接起来:把 relayStream 里的 relay.attach(...) 整行删掉,
+  // 上面那些用例全绿。而"管子端到端通"恰恰是这个分支的全部交付物。
+  // 这条同时是 write 闭包、detach 赋值、cancel 拆装的唯一覆盖。
+
+  it("stream 挂上去之后，peer POST 的字节原样出现在流上（route ↔ relay 接通）", async () => {
+    const g = makeGateway();
+    const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
+    expect(res.status).toBe(200);
+    // 增量读:这条流永远不结束,await 整个 body 会挂死
+    const reader = res.body!.getReader();
+
+    const sent = await g(
+      authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
+    );
+    expect(sent.status).toBe(204); // 对端在线 → 不是 409
+
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toBe("data: PAYLOAD\n\n");
+
+    // cancel 走 ReadableStream 的 cancel 回调:detach + clearInterval。
+    // 一并断言 detach 真的接上了——之后对端就该是离线的
+    await reader.cancel();
+    const after = await g(
+      authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
+    );
+    expect(after.status).toBe(409);
+  });
+
+  it("心跳是注释行 :\\n\\n（不是 data 帧，客户端解析器会跳过）", async () => {
+    vi.useFakeTimers();
+    try {
+      const g = makeGateway();
+      const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
+      const reader = res.body!.getReader();
+      // nginx 的 proxy_read_timeout 是 600s,心跳必须远短于它
+      await vi.advanceTimersByTimeAsync(25_000);
+      const { value } = await reader.read();
+      expect(new TextDecoder().decode(value)).toBe(":\n\n");
+      await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
