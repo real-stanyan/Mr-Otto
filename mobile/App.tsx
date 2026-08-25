@@ -287,10 +287,20 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   /** 订阅状态归手机(桌面那侧的 watch 是连接级的,断了就忘)。
       重连后要靠这个 ref 把 watch 补发一次 —— 否则详情屏会永远停在旧内容 */
   const watching = useRef<string | null>(null);
+  /** 手机上没有终端。这两样是详情屏在"等不到内容"时唯一能给人看的东西 */
+  const [diag, setDiag] = useState<{ frames: number; timelines: number; log: string[] }>(
+    { frames: 0, timelines: 0, log: [] },
+  );
 
   useEffect(() => {
     const b = connect(store, {
+      onLog: (m) => setDiag((d) => ({ ...d, log: [...d.log, m].slice(-6) })),
       onFrame: (f) => {
+        setDiag((d) => ({
+          ...d,
+          frames: d.frames + 1,
+          timelines: d.timelines + (f.type === "timeline" ? 1 : 0),
+        }));
         if (f.type === "fleet") setFleet(f.fleet);
         // 只认自己订的那一个:换会话时旧订阅的迟到帧不该覆盖新屏
         else if (f.type === "timeline" && f.sessionId === watching.current) setTimeline(f.messages);
@@ -361,8 +371,9 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
   if (opened) {
     return (
       <SessionView
-        agent={opened} now={now} messages={timeline}
+        agent={opened} now={now} messages={timeline} diag={diag}
         onBack={closeSession} onDecide={decide}
+        onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
       />
     );
   }
@@ -466,16 +477,27 @@ function AgentCard({ agent: a, now, onDecide, onOpen }: {
       这里不再截,只把 truncated 标记翻译成一句"在电脑上看全文"。
    3. **新消息到了自动滚到底**,但只在人本来就贴着底的时候 —— 正在往回翻的人
       被拽回底部比不自动滚更烦。 */
-function SessionView({ agent: a, now, messages, onBack, onDecide }: {
+function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onRetry }: {
   agent: IslandAgent;
   now: number;
   messages: MobileMessage[] | null;
+  diag: { frames: number; timelines: number; log: string[] };
   onBack: () => void;
   onDecide: (a: IslandAgent, ok: boolean) => void;
+  onRetry: () => void;
 }) {
   const { c } = usePalette();
   const list = useRef<ScrollView | null>(null);
   const atBottom = useRef(true);
+  /** 4 秒还没等到内容就别再转圈了。**一个永远转下去的菊花是最差的状态**:
+      它和"这个会话是空的"、"帧被丢了"、"根本没连上"长得一模一样,
+      而这三种情况用户该做的事完全不同 */
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    setWaited(false);
+    const id = setTimeout(() => setWaited(true), 4_000);
+    return () => clearTimeout(id);
+  }, [a.sessionId, messages]);
   const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
   const what = a.phase === "approval" ? "等你批" : a.phase === "active" ? "跑着" : "空闲";
 
@@ -521,9 +543,19 @@ function SessionView({ agent: a, now, messages, onBack, onDecide }: {
           {a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
         </Meta>
         {messages === null ? (
-          <View style={{ paddingVertical: space.xl, alignItems: "center" }}>
-            <Spinner />
-          </View>
+          waited ? (
+            <Card style={{ gap: space.sm }}>
+              <Headline>没等到时间线</Headline>
+              <Hint>电脑那侧收到订阅了才会推。下面是这条连接说过的话:</Hint>
+              <Meta>{`收到 ${diag.frames} 帧,其中时间线 ${diag.timelines} 条`}</Meta>
+              {diag.log.map((line, i) => <Meta key={i}>{line}</Meta>)}
+              <Button variant="outline" label="重新订阅" onPress={onRetry} />
+            </Card>
+          ) : (
+            <View style={{ paddingVertical: space.xl, alignItems: "center" }}>
+              <Spinner />
+            </View>
+          )
         ) : messages.length === 0 ? (
           <Hint>这个会话还没有内容。</Hint>
         ) : (
