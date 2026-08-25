@@ -416,11 +416,11 @@ export interface ShellBridge {
   readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
-  /** 归档会话（ADR-0086）：落一条 session_archived(reason:"user")。
+  /** 归档会话（ADR-0087）：落一条 session_archived(reason:"user")。
       从主列表收进「已归档」区，日志完整保留、仍可被跨会话召回、可恢复。
       turn 进行中拒绝（同删除）；归档顺带注销活资源（终端/浏览器/agent） */
   archiveSession(sessionId: string): Promise<void>;
-  /** 取消归档（ADR-0086）：落一条 session_unarchived，会话回主列表 */
+  /** 取消归档（ADR-0087）：落一条 session_unarchived，会话回主列表 */
   unarchiveSession(sessionId: string): Promise<void>;
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */

@@ -150,22 +150,22 @@ export interface SessionCreatedEvent extends SessionEventBase {
   };
 }
 
-/** 额外 3：会话归档（ADR-0086 复活；曾为遗留类型）。
+/** 额外 3：会话归档（ADR-0087 复活；曾为遗留类型）。
     早期版本"删除" = 追加此标记 + 列表滤掉；ADR-0002 后删除改为物理抹除
-    （EventStore.purge）。ADR-0086 把归档作为独立功能加回：
+    （EventStore.purge）。ADR-0087 把归档作为独立功能加回：
     归档 = 从主列表收进「已归档」区 + 日志完整保留 + 可恢复（session_unarchived）。
     归档状态 = 本会话最后一条 archived/unarchived 事件说了算。 */
 export interface SessionArchivedEvent extends SessionEventBase {
   type: "session_archived";
   /** 谁归档的，决定跨会话召回（session_search）可见性：
-      - "user"：用户手动归档——只从列表收起，仍可被召回（记忆不丢，ADR-0086）
+      - "user"：用户手动归档——只从列表收起，仍可被召回（记忆不丢，ADR-0087）
       - "system"：系统保留会话（如 sys-memory-edits）——列表和召回都排除
-      - 缺席：ADR-0086 之前写下的旧事件，按 "system" 解读（旧日志全部来自
+      - 缺席：ADR-0087 之前写下的旧事件，按 "system" 解读（旧日志全部来自
         早期"删除"或系统保留会话，两者本意都是彻底藏起——安全默认） */
   reason?: "user" | "system";
 }
 
-/** 额外 3b：取消归档（ADR-0086）——把会话从「已归档」区恢复回主列表。
+/** 额外 3b：取消归档（ADR-0087）——把会话从「已归档」区恢复回主列表。
     与 session_archived 成对：最后一条胜出（归档→恢复→再归档 = 三条事件，全留）。 */
 export interface SessionUnarchivedEvent extends SessionEventBase {
   type: "session_unarchived";
@@ -475,6 +475,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_result: true,
   model_changed: true,
   session_archived: true,
+  session_unarchived: true,
   session_renamed: true,
   context_compacted: true,
   tool_execution_started: true,

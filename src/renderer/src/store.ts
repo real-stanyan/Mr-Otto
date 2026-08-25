@@ -498,7 +498,7 @@ interface ChatState {
       不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
   loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  /** 归档/恢复（ADR-0086）：归档收进「已归档」区（正看着的会话被归档 → 回欢迎页），
+  /** 归档/恢复（ADR-0087）：归档收进「已归档」区（正看着的会话被归档 → 回欢迎页），
       恢复回主列表。都只是状态事件，日志不动 */
   archiveSession(sessionId: string): Promise<void>;
   unarchiveSession(sessionId: string): Promise<void>;

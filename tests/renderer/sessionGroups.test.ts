@@ -70,7 +70,7 @@ describe("groupSessionsByWorkspace", () => {
     expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["parent"]);
   });
 
-  it("归档会话(archived)不进任何组——收在侧栏「已归档」区(ADR-0086)", () => {
+  it("归档会话(archived)不进任何组——收在侧栏「已归档」区(ADR-0087)", () => {
     const g = groupSessionsByWorkspace([
       s("live", "/p/x", 100),
       { ...s("shelved", "/p/x", 200), archived: true },

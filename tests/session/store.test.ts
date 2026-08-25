@@ -159,7 +159,7 @@ describe("EventStore", () => {
   });
 
   it("遗留兼容：旧日志里的 session_archived 标记（无 reason）仍让会话从列表消失", () => {
-    // 早期"删除" = 归档标记，无 reason 字段；ADR-0086 后按 system 解读——
+    // 早期"删除" = 归档标记，无 reason 字段；ADR-0087 后按 system 解读——
     // 列表和召回都排除，跟写下它时的本意（彻底藏起）一致
     store.append({ sessionId: "keep", ts: 1, type: "session_created", workspace: "/a" });
     store.append({ sessionId: "old-archived", ts: 2, type: "session_created", workspace: "/b" });
@@ -175,7 +175,7 @@ describe("EventStore", () => {
     expect(store.sessions()).toEqual([]);
   });
 
-  it("用户归档（ADR-0086）：留在列表里、带 archived 标志", () => {
+  it("用户归档（ADR-0087）：留在列表里、带 archived 标志", () => {
     store.append({ sessionId: "active", ts: 1, type: "session_created", workspace: "/a" });
     store.append({ sessionId: "shelved", ts: 2, type: "session_created", workspace: "/b" });
     store.append({ sessionId: "shelved", ts: 3, type: "session_archived", reason: "user" });

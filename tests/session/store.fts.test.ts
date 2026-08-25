@@ -78,7 +78,7 @@ describe("EventStore FTS", () => {
     expect(store.searchText("关键词甲乙丙", { excludeSessions: ["me"] }).map((h) => h.sessionId)).toEqual(["ok"]);
   });
 
-  // ADR-0086：用户归档只是从列表收起，记忆不丢——跨会话召回照常命中
+  // ADR-0087：用户归档只是从列表收起，记忆不丢——跨会话召回照常命中
   it("用户归档（reason=user）仍可被搜到；系统归档（reason=system）不可", () => {
     seed(store, "shelved", ["归档后仍要想得起这句话"]);
     store.append({ sessionId: "shelved", ts: 3, type: "session_archived", reason: "user" });

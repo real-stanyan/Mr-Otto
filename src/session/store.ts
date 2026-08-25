@@ -31,7 +31,7 @@ export interface SessionSummary {
       从第 0 条 session_created 的 spawnedBy.sessionId 投影出来。
       不是子会话 / 旧日志没有 spawnedBy 字段 → null（schema 向后兼容硬规则） */
   spawnedFrom: string | null;
-  /** 用户归档（ADR-0086）：true = 收进「已归档」区，可恢复、仍可被跨会话召回。
+  /** 用户归档（ADR-0087）：true = 收进「已归档」区，可恢复、仍可被跨会话召回。
       系统归档（reason 缺席或 "system"）根本不出现在返回值里。
       归档状态 = 最后一条 session_archived / session_unarchived 事件说了算 */
   archived: boolean;
@@ -251,9 +251,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     const limit = opts.limit ?? 300;
     const exclude = opts.excludeSessions ?? [];
     const notIn = exclude.length ? `AND f.session_id NOT IN (${exclude.map(() => "?").join(",")})` : "";
-    // 归档与召回（ADR-0086 修订 ADR-0065 第 4 条）：用户归档（reason="user"）
+    // 归档与召回（ADR-0087 修订 ADR-0065 第 4 条）：用户归档（reason="user"）
     // 只是从列表收起，记忆不丢——照常可搜；系统归档（reason 缺席/"system"，
-    // 即 sys-memory-edits 这类保留会话与 ADR-0086 之前的旧标记）仍永远排除。
+    // 即 sys-memory-edits 这类保留会话与 ADR-0087 之前的旧标记）仍永远排除。
     const common = `
       AND f.session_id NOT IN (
         SELECT a.session_id FROM events a
@@ -425,7 +425,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     // workspace 藏在第 0 条事件（session_created）的 payload JSON 里，
     // 用 json_extract 在 SQL 层投影出来——又一个"从日志推导"的例子。
     // 旧日志可能没有 workspace 字段 → null（schema 向后兼容硬规则）。
-    // 归档（ADR-0086）：状态 = 最后一条 archived/unarchived 事件说了算。
+    // 归档（ADR-0087）：状态 = 最后一条 archived/unarchived 事件说了算。
     // 系统归档（reason 缺席 = 旧事件，或 "system"）整个从返回值消失；
     // 用户归档（reason = "user"）照常返回、带 archived 标志，UI 分区呈现。
     const rows = this.prep(

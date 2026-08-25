@@ -1509,7 +1509,7 @@ function AppSidebar() {
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
   const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
-  // 用户归档的会话（ADR-0086）：不进工程组，收在侧栏底部「已归档」折叠区，可恢复
+  // 用户归档的会话（ADR-0087）：不进工程组，收在侧栏底部「已归档」折叠区，可恢复
   const archivedList = sessions.filter((s) => s.archived && s.spawnedFrom === null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
@@ -1696,7 +1696,7 @@ function AppSidebar() {
                                 {s.title ?? g.label}
                               </span>
                             </SidebarMenuButton>
-                            {/* ✕ 直删换成 ⋮ 菜单（ADR-0086）：删除旁边有了"归档"这条
+                            {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
                                 后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
                                 删除不可逆才弹 confirm */}
                             <DropdownMenu>
@@ -1754,7 +1754,7 @@ function AppSidebar() {
               <div className="px-[10px] pb-1 text-[11px] text-warn">收起的工程里有会话在动</div>
             )}
             {archivedList.length > 0 && (
-              // 已归档区（ADR-0086）:默认收起——归档的本意就是眼不见,
+              // 已归档区（ADR-0087）:默认收起——归档的本意就是眼不见,
               // 但必须有回来的路:展开 → 恢复/删除。行点击只是看历史,不自动恢复
               <SidebarMenu>
                 <button
