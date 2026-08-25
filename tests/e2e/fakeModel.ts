@@ -26,6 +26,9 @@ export interface FakeTurn {
   toolCalls?: FakeToolCall[];
   /** 流式时每个文本碎片之间停多久 —— 给「跑着的时候点那枚 pill」这类用例留出手速 */
   delayMs?: number;
+  /** 这一轮报多少 prompt 缓存命中（DeepSeek 方言的 prompt_cache_hit_tokens）。
+      给了才带这个字段 —— 「API 不报」和「命中 0」是两回事（issue #213） */
+  cachedTokens?: number;
 }
 
 export interface FakeRequest {
@@ -96,7 +99,11 @@ export async function startFakeModel(responder: FakeResponder): Promise<FakeMode
         const index = requests.length;
         requests.push(body);
         const turn = await responder(body, index);
-        const usage = { prompt_tokens: 100, completion_tokens: 20 };
+        const usage = {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          ...(turn.cachedTokens === undefined ? {} : { prompt_cache_hit_tokens: turn.cachedTokens }),
+        };
 
         if (!body.stream) {
           res.writeHead(200, { "content-type": "application/json" });
