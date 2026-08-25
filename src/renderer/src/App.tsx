@@ -1260,7 +1260,11 @@ function AccountPage() {
             {OFFICIAL_GRANT_ENABLED && <QuotaCard />}
           </>
         ) : (
-          <SignInCard />
+          /* 未登录时这一屏只有一张登录卡,水平垂直都居中:
+             flex-1 吃掉 SETTINGS_BODY(flex-col)的剩余高度,再在其中定心 */
+          <div className="flex flex-1 items-center justify-center">
+            <SignInCard />
+          </div>
         )}
         {/* 会话热力图。放这一页而不是新会话屏:它是"我用了多久"这类统计,
             和额度卡是同一类东西;而新会话屏的正事是开始干活,一张半年统计摆在
