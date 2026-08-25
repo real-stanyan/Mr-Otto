@@ -21,6 +21,9 @@ import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./brow
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type {
+  FileEntry, FileHit, FilePreview, FilesResult, FilesSearchOpts,
+} from "./files.js";
 import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -567,6 +570,17 @@ export interface ShellBridge {
   gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** Files 面板(只读):列一层目录。全显——node_modules/out/点文件都列,
+      不卡的前提是一次只列一层(懒加载),不是靠过滤 */
+  filesList(root: string, relDir: string): Promise<FilesResult<FileEntry[]>>;
+  /** 文件名 fuzzy(content:false)或内容搜索(content:true,? 前缀触发)。
+      默认尊重 .gitignore——树全显是为了"找得到",搜索全显是让 node_modules
+      淹没结果;includeIgnored 是面板头那个开关 */
+  filesSearch(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
+  /** 只读预览。>512KB 截断,二进制不预览(kind: "binary",detail 是字节数) */
+  filesRead(root: string, rel: string): Promise<FilesResult<FilePreview>>;
+  /** 交给系统:open = 默认程序,folder = 在 Finder 中显示。同样过根内校验 */
+  filesReveal(root: string, rel: string, how: "open" | "folder"): Promise<FilesResult<null>>;
   /** 告诉主进程"我此刻在哪个工作区":它据此算 repoKey/分支并向好友广播(issue #167)。
       null = 没有会话。只读 git,不写;主进程按已知会话围栏校验这个路径 */
   setPresenceWorkspace(repoDir: string | null): Promise<void>;
@@ -919,6 +933,10 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  filesList: "otter:filesList",
+  filesSearch: "otter:filesSearch",
+  filesRead: "otter:filesRead",
+  filesReveal: "otter:filesReveal",
   setPresenceWorkspace: "otter:setPresenceWorkspace",
   terminalList: "otter:terminalList",
   terminalOpen: "otter:terminalOpen",

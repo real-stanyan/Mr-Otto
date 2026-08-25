@@ -60,6 +60,7 @@ import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
+import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
 import { createUpdaterHostDeps } from "./updaterHost.js";
 import { RELEASES_PAGE_URL } from "./updaterCore.js";
@@ -82,6 +83,7 @@ import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
+import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
@@ -1608,6 +1610,22 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
     gitGraph.commit(repoDir, hash)
+  );
+
+  // Files 面板(只读):service 无状态,建一次全局复用。fs/rg 那五个能力用
+  // nodeFilesDeps,shell 那两个在这补——filesService 刻意不 import electron
+  const files = createFilesService({
+    ...nodeFilesDeps,
+    openPath: (abs) => void shell.openPath(abs),
+    showInFolder: (abs) => shell.showItemInFolder(abs),
+  });
+  ipcMain.handle(CHANNELS.filesList, (_e, root: string, relDir: string) => files.list(root, relDir));
+  ipcMain.handle(CHANNELS.filesSearch, (_e, root: string, query: string, opts: FilesSearchOpts) =>
+    files.search(root, query, opts)
+  );
+  ipcMain.handle(CHANNELS.filesRead, (_e, root: string, rel: string) => files.read(root, rel));
+  ipcMain.handle(CHANNELS.filesReveal, (_e, root: string, rel: string, how: "open" | "folder") =>
+    files.reveal(root, rel, how)
   );
 
   // 好友分支在场(issue #167):渲染层报当前会话的工作区,这里盯 HEAD、算 repoKey/分支,
