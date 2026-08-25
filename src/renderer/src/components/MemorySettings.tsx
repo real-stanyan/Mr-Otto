@@ -245,12 +245,6 @@ export function MemorySettings() {
         <SettingsTitle id="memory" className="flex-1" />
       </header>
       <section className={SETTINGS_BODY}>
-        <p className={HINT}>
-          模型用 memory 工具自己攒的两份笔记——
-          <strong className="font-medium text-foreground/80">MEMORY</strong> 是随手记的事,
-          <strong className="font-medium text-foreground/80">USER</strong> 是关于你的了解。
-          在这改也算数:会留一条 memory_user_edit 记录，和模型自己写的一视同仁。
-        </p>
         {FIELDS.map((f) => (
           <MemoryField key={f.target} target={f.target} label={f.label} />
         ))}
@@ -319,10 +313,6 @@ function SearchIndexCard() {
       <div className="flex items-baseline gap-2 text-[13px]">
         <span className="font-[650]">搜索索引 · 跨会话回忆</span>
       </div>
-      <p className={HINT}>
-        模型用 session_search 回忆历史会话时查的就是这份索引。在这试搜可以验证索引是否健康
-        （模型搜索时会额外排除当前会话）。
-      </p>
       <div className="flex items-center gap-2">
         <Input
           value={query}
@@ -374,9 +364,7 @@ function SearchIndexCard() {
         >
           {rebuildState === "busy" ? "重建中…" : "重建搜索索引"}
         </Button>
-        <span className={HINT}>
-          {rebuildState === "done" ? "已重建" : "搜不到明明存在的历史时，从事件日志重灌一次索引"}
-        </span>
+        {rebuildState === "done" && <span className={HINT}>已重建</span>}
       </div>
     </div>
   );

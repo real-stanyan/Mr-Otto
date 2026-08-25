@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +33,7 @@ import type {
   ApprovalRequest,
   IslandDisplay,
   McpToolPreview,
+  SessionSummary,
 } from "../../shared/shellBridge.js";
 import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
@@ -45,6 +46,8 @@ import { ProtocolView } from "./components/ProtocolView.js";
 import { GitGraphView } from "./components/GitGraphView.js";
 import { TerminalView } from "./components/TerminalView.js";
 import { BrowserPanel } from "./components/BrowserPanel.js";
+import { FilesView } from "./components/FilesView.js";
+import { SimulatorPanel } from "./components/SimulatorPanel.js";
 import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
@@ -96,8 +99,11 @@ import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
-import { groupSessionsByWorkspace } from "./sessionGroups.js";
+import { folderName, groupArchivedByWorkspace, groupSessionsByWorkspace } from "./sessionGroups.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
+import { Input } from "@/components/ui/input.js";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.js";
 import {
   Drawer,
   DrawerContent,
@@ -155,7 +161,7 @@ import {
 } from "@/components/assistant-ui/context-display.js";
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
-import { ottoDirectiveFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
+import { ottoDirectiveFormatter, ottoPathFormatter, ottoSlashFormatter } from "./aui/ottoDirectives.js";
 import { segmentComposerText } from "./aui/composerDirectives.js";
 import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
@@ -250,11 +256,10 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       align="end"
       sideOffset={8}
       // 版式照旧：卡片底色/圆角/阴影都沿用原来的浮窗，只是开合改由 Tooltip 管。
-      // 箭头藏掉——这是一张信息卡，不是一句提示气泡
-      // 藏箭头:这是一张信息卡,不是一句提示气泡。本仓 tooltip 的箭头是
-      // Radix 的 TooltipPrimitive.Arrow(见 ui/tooltip.tsx),它渲染成一个 <svg>,
-      // 身上没有 data-slot —— 按标签选
-      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default [&>svg]:hidden"
+      // 不要箭头:这是一张信息卡,不是一句提示气泡(原先那句 [&>svg]:hidden 从来没生效,
+      // 见 ui/tooltip.tsx 里 arrow 这个 prop 的注释)
+      arrow={false}
+      className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default"
       aria-label="上下文用量详情"
     >
       {/* 标题位换成会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
@@ -1006,17 +1011,25 @@ function KeyRow({ envName, label }: { envName: string; label: string }) {
 }
 
 /** 账号区头像:avatarUrl 有就用图,没有就拿 name 首字符垫个圆片。
-    sizeCls 让侧栏登录槽用小一号(20px),设置页默认 28px */
-function AccountAvatar({ name, avatarUrl, sizeCls = "w-7 h-7 text-[13px]" }: {
+    sizeCls 让侧栏登录槽用小一号(20px),设置页默认 28px。
+    走 shadcn Avatar(issue #411):原来手写的 img 只有"没有 url"这一档降级,
+    url 在但加载不出来(网关下发的第三方图挂了)时会把裂图标留在脸上——
+    Radix 的 fallback 认的是加载结果,不是字符串空不空。
+    字号单独一个 prop:Avatar 的 fallback 自带 text-sm,跟着 sizeCls 放在根上会被它盖掉 */
+function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[13px]" }: {
   name: string;
   avatarUrl: string;
   sizeCls?: string;
+  textCls?: string;
 }) {
-  const cls = `${sizeCls} rounded-full shrink-0 object-cover bg-accent inline-flex items-center justify-center font-semibold text-foreground`;
-  if (avatarUrl) {
-    return <img className={cls} src={avatarUrl} alt={name} referrerPolicy="no-referrer" />;
-  }
-  return <span className={cls}>{name.charAt(0).toUpperCase() || "?"}</span>;
+  return (
+    <Avatar className={`${sizeCls} shrink-0`}>
+      <AvatarImage src={avatarUrl} alt={name} referrerPolicy="no-referrer" />
+      <AvatarFallback className={`bg-accent font-semibold text-foreground ${textCls}`}>
+        {name.charAt(0).toUpperCase() || "?"}
+      </AvatarFallback>
+    </Avatar>
+  );
 }
 
 /** 桶名 → 显示名。对得上模型下拉里的叫法，别让用户猜 flash 是哪个 */
@@ -1095,10 +1108,148 @@ function QuotaCard() {
   );
 }
 
+/** Google 官方四色 G(品牌规范配色,path 数据是官方 SVG)。尺寸交给按钮的 [&_svg] 规则 */
+function GoogleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.27 14.29A7.16 7.16 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a11.99 11.99 0 0 0 0 10.76l3.98-3.09Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.69 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"
+      />
+    </svg>
+  );
+}
+
+/** GitHub mark(官方 octocat 轮廓),currentColor 跟随按钮文字色,暗色主题下自动反白 */
+function GitHubIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+      <path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.81 1.1.81 2.22l-.01 3.29c0 .32.22.7.83.57A12 12 0 0 0 12 .3Z" />
+    </svg>
+  );
+}
+
+/** 邮箱密码登录/注册表单（登录卡片内,OAuth 按钮下方）。
+    登录成功由 onAccountChanged 推账号,表单自己只管两件事:
+    注册后"去邮箱点确认链接"的提示,和转圈期间禁点。错误走 store.error 统一显示 */
+function EmailPasswordForm() {
+  const signInWithPassword = useChat((s) => s.signInWithPassword);
+  const signUpWithPassword = useChat((s) => s.signUpWithPassword);
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const canSubmit = !busy && email.includes("@") && password.length >= 6;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      if (mode === "sign-in") {
+        await signInWithPassword(email, password);
+      } else {
+        const result = await signUpWithPassword(email, password);
+        if (result === "confirm-email") {
+          setNotice("确认邮件已发送,点完邮件里的链接后回来登录。");
+          setMode("sign-in");
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-[8px]"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <Input
+        type="email"
+        placeholder="邮箱"
+        autoComplete="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <Input
+        type="password"
+        placeholder={mode === "sign-up" ? "密码（至少 6 位）" : "密码"}
+        autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <Button type="submit" disabled={!canSubmit} className="w-full mt-[2px]">
+        {busy ? "…" : mode === "sign-in" ? "用邮箱登录" : "注册"}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground"
+        onClick={() => {
+          setMode(mode === "sign-in" ? "sign-up" : "sign-in");
+          setNotice(null);
+        }}
+      >
+        {mode === "sign-in" ? "没有账号？注册" : "已有账号？登录"}
+      </Button>
+      {notice && <p className={HINT}>{notice}</p>}
+    </form>
+  );
+}
+
+/** 未登录态的登录卡片:OAuth 在上(老用户全走这),分隔线,邮箱密码在下 */
+function SignInCard() {
+  const signIn = useChat((s) => s.signIn);
+
+  return (
+    <Card className="w-full max-w-[360px]">
+      <CardHeader>
+        <CardTitle>登录 Mr Otto</CardTitle>
+        <CardDescription>登录后可在多台设备同步配置（即将上线）</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-[16px]">
+        <div className="flex flex-col gap-[8px]">
+          <Button variant="outline" className="w-full" onClick={() => void signIn("google")}>
+            <GoogleIcon />
+            用 Google 登录
+          </Button>
+          <Button variant="outline" className="w-full" onClick={() => void signIn("github")}>
+            <GitHubIcon />
+            用 GitHub 登录
+          </Button>
+        </div>
+        {/* 分隔线上嵌一句话:比孤零零一个「或」更说明下半段是什么 */}
+        <div className="relative text-center text-xs text-muted-foreground after:absolute after:inset-x-0 after:top-1/2 after:border-t after:border-border">
+          <span className="relative z-10 bg-card px-[8px]">或用邮箱</span>
+        </div>
+        <EmailPasswordForm />
+      </CardContent>
+    </Card>
+  );
+}
+
 /** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
 function AccountPage() {
   const account = useChat((s) => s.account);
-  const signIn = useChat((s) => s.signIn);
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
 
@@ -1118,18 +1269,17 @@ function AccountPage() {
             {OFFICIAL_GRANT_ENABLED && <QuotaCard />}
           </>
         ) : (
-          <>
-            <div className="flex items-center gap-[10px]">
-              <Button onClick={() => void signIn("google")}>用 Google 登录</Button>
-              <Button onClick={() => void signIn("github")}>用 GitHub 登录</Button>
-            </div>
-            <p className={HINT}>登录后可在多台设备同步配置（即将上线）</p>
-          </>
+          /* 未登录时这一屏只有一张登录卡,水平垂直都居中:
+             flex-1 吃掉 SETTINGS_BODY(flex-col)的剩余高度,再在其中定心 */
+          <div className="flex flex-1 items-center justify-center">
+            <SignInCard />
+          </div>
         )}
         {/* 会话热力图。放这一页而不是新会话屏:它是"我用了多久"这类统计,
             和额度卡是同一类东西;而新会话屏的正事是开始干活,一张半年统计摆在
-            输入框底下只是让人多看一眼。登录与否都画 —— 数据是本机日志,不靠账号 */}
-        <SessionActivity workspace={null} className="max-w-none" />
+            输入框底下只是让人多看一眼。只在登录后画 —— 数据虽是本机日志,
+            但未登录时这一屏的正事是登录,一张半年统计只会把登录卡挤成配角 */}
+        {account.signedIn && <SessionActivity workspace={null} className="max-w-none" />}
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </div>
@@ -1283,11 +1433,6 @@ function SkillsPage() {
         <SettingsTitle id="skills" />
       </header>
       <section className={SETTINGS_BODY}>
-        <p className={HINT}>
-          聊天里输入 <code>$</code> 选一个 skill，它的指令全文会随那条消息注入模型
-          （发送时刻快照，落 skill_invoked 事件）。安装 = 把 <code>skill 名/SKILL.md</code>
-          {" "}放进 <code>~/.mr-otto/skills</code>，或从其他厂家 agent 已装的 skill 里导入。
-        </p>
         <SkillImportDialog />
         {skills.map((s) => (
           <details key={s.name} className="border border-border rounded-[10px]">
@@ -1311,12 +1456,17 @@ function SkillsPage() {
 
 /** 侧栏工程分组的折叠状态：UI 偏好，不是会话事实，走 localStorage 不进事件日志
     （沿用 theme.ts 的先例）。存路径数组；读坏了就当全展开——折叠记忆丢了是小事，
-    白屏是大事 */
+    白屏是大事。
+    两屏各存一份：同一个工程在会话列表里收着、在归档区展开着是两件独立的事，
+    共用一个键会让人在这屏收一下、那屏跟着没了 */
 const COLLAPSED_KEY = "otter-sidebar-collapsed-projects";
+const ARCHIVED_COLLAPSED_KEY = "otter-sidebar-collapsed-archived";
+/** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
+const NO_WORKSPACE_KEY = "\u0000no-workspace";
 
-function loadCollapsedProjects(): Set<string> {
+function loadCollapsedProjects(key: string): Set<string> {
   try {
-    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
@@ -1325,8 +1475,54 @@ function loadCollapsedProjects(): Set<string> {
   }
 }
 
-function saveCollapsedProjects(dirs: Set<string>): void {
-  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...dirs]));
+function saveCollapsedProjects(key: string, dirs: Set<string>): void {
+  localStorage.setItem(key, JSON.stringify([...dirs]));
+}
+
+/** 归档区的一组：会话列表那套折叠组的精简版——同样的箭头/标题/收起才报数,
+    去掉了「在此工程下开新会话」的 +（归档区是翻旧账的地方,不是开工的地方） */
+function ArchivedGroup({
+  groupKey,
+  label,
+  title,
+  count,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  groupKey: string;
+  label: string;
+  title: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: (key: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <SidebarGroup className="py-1">
+      <SidebarGroupLabel asChild>
+        <button
+          className="w-full gap-1 pr-2 hover:text-sidebar-foreground"
+          onClick={() => onToggle(groupKey)}
+          title={title}
+        >
+          <ChevronRight
+            className={`w-[13px] h-[13px] shrink-0 transition-transform duration-150 ease-out ${collapsed ? "" : "rotate-90"}`}
+          />
+          <span className="min-w-0 truncate">{label}</span>
+          {collapsed && <span className="shrink-0 font-mono text-[10px] opacity-70">{count}</span>}
+        </button>
+      </SidebarGroupLabel>
+      {!collapsed && (
+        <SidebarGroupContent>
+          {/* 竖脊 + 缩进:和会话列表同一条视觉线索——这些行挂在上面那个标题下 */}
+          <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
+            {children}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  );
 }
 
 /** game 档下的牌桌导航：看得见的桌 + 当前在哪张桌上 */
@@ -1465,6 +1661,9 @@ function AppSidebar() {
     (s) => s.updater !== null && (s.updater.phase === "ready" || s.updater.phase === "manual"),
   );
   const deleteSession = useChat((s) => s.deleteSession);
+  const archiveSession = useChat((s) => s.archiveSession);
+  const unarchiveSession = useChat((s) => s.unarchiveSession);
+  const renameSessionById = useChat((s) => s.renameSessionById);
   const statusBySession = useChat((s) => s.statusBySession);
   const approvals = useChat((s) => s.approvals);
   const account = useChat((s) => s.account);
@@ -1475,6 +1674,7 @@ function AppSidebar() {
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const simPanelOpen = useChat((s) => s.simPanelOpen);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1505,17 +1705,78 @@ function AppSidebar() {
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
-  const prehistoric = sessions.filter((s) => s.workspace === null);
+  const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
+  // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复。
+  // 归档区自己也按工程分组：这一屏和会话列表是同一批东西的两个状态，
+  // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜
+  const archived = useMemo(() => groupArchivedByWorkspace(sessions), [sessions]);
+  const archivedCount =
+    archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
+  // 归档行：分组区和"没有工程记录"那段共用同一份行，行为完全一致——
+  // 点击只是翻历史（不自动恢复归档），⋮ 里放恢复和删除
+  const archivedRow = (s: SessionSummary, groupLabel: string | null) => (
+    <SidebarMenuItem key={s.sessionId}>
+      <SidebarMenuButton
+        className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
+        onClick={() => void resume(s.sessionId)}
+        title="查看历史（不会自动恢复归档）"
+      >
+        <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+          {s.title ?? groupLabel ?? s.sessionId}
+        </span>
+      </SidebarMenuButton>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
+            <Ellipsis />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
+            恢复归档
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => {
+              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                void deleteSession(s.sessionId);
+              }
+            }}
+          >
+            删除
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuItem>
+  );
+  // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0089）：
+  // 归档的会话越攒越多时，折叠区在长列表最底下，等于藏在滚动条尽头；
+  // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
+  // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
+  const [archivedView, setArchivedView] = useState(false);
+  // 进设置就退出归档视图：两者抢同一块地皮，回来时该落在会话列表上
+  useEffect(() => {
+    if (settingsSection !== null) setArchivedView(false);
+  }, [settingsSection]);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
   const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedProjects);
-  const toggleGroup = (dir: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(dir)) next.add(dir);
-      saveCollapsedProjects(next);
-      return next;
-    });
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedProjects(COLLAPSED_KEY));
+  const [archivedCollapsed, setArchivedCollapsed] = useState<Set<string>>(() =>
+    loadCollapsedProjects(ARCHIVED_COLLAPSED_KEY)
+  );
+  /** 收/放一组。两屏各自的 Set + 各自的存储键，互不影响 */
+  const makeToggle =
+    (setter: typeof setCollapsed, key: string) =>
+    (dir: string) =>
+      setter((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(dir)) next.add(dir);
+        saveCollapsedProjects(key, next);
+        return next;
+      });
+  const toggleGroup = makeToggle(setCollapsed, COLLAPSED_KEY);
+  const toggleArchivedGroup = makeToggle(setArchivedCollapsed, ARCHIVED_COLLAPSED_KEY);
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -1524,8 +1785,8 @@ function AppSidebar() {
           className={cn(
             "pr-2 pb-[6px] font-[650] flex items-center gap-2",
             // 行首是 fixed 开关钮(SidebarToggle)的占位:钮本身不在这棵树里,
-            // 展开/收起两态同一坐标。窗口模式 x=72 贴红绿灯右侧,全屏 x=12
-            trafficInset ? "pl-[64px]" : "pt-1 pl-1"
+            // 展开/收起两态同一坐标。窗口模式 x=82(红绿灯右侧留一段空当),全屏 x=12
+            trafficInset ? "pl-[74px]" : "pt-1 pl-1"
           )}
         >
           <SidebarTriggerSlot />
@@ -1584,13 +1845,37 @@ function AppSidebar() {
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {/* game 档下这颗也隐掉:牌桌模式里"新会话"没有落点(建牌桌是 #59 的事) */}
         {settingsSection === null && mode !== "game" && (
-          <Button
-            variant="ghost"
-            className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
-            onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
-          >
-            ＋ 新会话
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+              onClick={() => {
+                setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
+                newSession(); // 裸传会把 MouseEvent 当 dir 塞进去
+              }}
+            >
+              ＋ 新会话
+            </Button>
+            {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
+                上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
+            <Button
+              variant="ghost"
+              aria-pressed={archivedView}
+              className={cn(
+                "justify-start gap-2 px-3 py-[6px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground",
+                archivedView && "bg-foreground/[0.06] text-sidebar-foreground"
+              )}
+              onClick={() => setArchivedView((v) => !v)}
+            >
+              <Archive className="size-4 shrink-0" aria-hidden />
+              已归档会话
+              {archivedCount > 0 && (
+                <span className="ml-auto shrink-0 font-mono text-[10px] opacity-70">
+                  {archivedCount}
+                </span>
+              )}
+            </Button>
+          </>
         )}
       </SidebarHeader>
       <SidebarContent>
@@ -1631,6 +1916,62 @@ function AppSidebar() {
               </SidebarMenuItem>
             ))}
           </SidebarMenu>
+        ) : archivedView ? (
+          // 已归档视图（ADR-0089，取代 ADR-0087 那截底部折叠区）：整个侧栏切过去。
+          // 行点击只是看历史，不自动恢复——归档是用户的判断，不该被"点一下"推翻
+          <>
+            <SidebarMenu className="p-2 pb-0">
+              <SidebarMenuItem>
+                <button
+                  className="flex w-full items-center gap-[6px] px-1 py-[6px] text-[13px] text-muted-foreground hover:text-sidebar-foreground"
+                  onClick={() => setArchivedView(false)}
+                >
+                  <ArrowLeft className="size-4 shrink-0" aria-hidden />
+                  返回会话列表
+                </button>
+              </SidebarMenuItem>
+            </SidebarMenu>
+            {archivedCount === 0 ? (
+              // 空态照直说：入口常驻(不随条数显隐),那这一屏就得自己交代"空"这件事
+              <div className="px-[10px] py-3 text-[12px] text-muted-foreground">
+                还没有归档的会话。会话行的 ⋮ 菜单里有「归档」。
+              </div>
+            ) : (
+              <>
+                {/* 和会话列表同一套分组骨架(可收放的工程名 + 竖脊缩进)：归档区是同一批
+                    东西的另一个状态,平铺就把"哪个工程的"这条线索弄丢了;
+                    收放也照抄——归档攒多了,一屏全展开同样翻不动。
+                    折叠状态另存一个键:两屏的收放互不牵连 */}
+                {archived.groups.map((g) => (
+                  <ArchivedGroup
+                    key={g.workspace}
+                    groupKey={g.workspace}
+                    label={g.label}
+                    title={g.workspace}
+                    count={g.sessions.length}
+                    collapsed={archivedCollapsed.has(g.workspace)}
+                    onToggle={toggleArchivedGroup}
+                  >
+                    {g.sessions.map((s) => archivedRow(s, g.label))}
+                  </ArchivedGroup>
+                ))}
+                {archived.ungrouped.length > 0 && (
+                  // 史前归档会话：日志里没记 workspace,归不进任何工程。
+                  // 不塞进"未知"组也不藏起来,单列一段照直说(同侧栏底部那摞)
+                  <ArchivedGroup
+                    groupKey={NO_WORKSPACE_KEY}
+                    label="没有工程记录"
+                    title="日志里没记工程文件夹，归不到任何工程下"
+                    count={archived.ungrouped.length}
+                    collapsed={archivedCollapsed.has(NO_WORKSPACE_KEY)}
+                    onToggle={toggleArchivedGroup}
+                  >
+                    {archived.ungrouped.map((s) => archivedRow(s, null))}
+                  </ArchivedGroup>
+                )}
+              </>
+            )}
+          </>
         ) : (
           <>
             {/* 一个工程一组：组序按组内最近会话时间，最近动过的工程浮上来。
@@ -1673,7 +2014,7 @@ function AppSidebar() {
                           <SidebarMenuItem key={s.sessionId}>
                             <SidebarMenuButton
                               className="h-auto flex-row items-center gap-2 py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !friendChat && s.sessionId === sessionId}
+                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !simPanelOpen && !friendChat && s.sessionId === sessionId}
                               onClick={() => void resume(s.sessionId)}
                             >
                               {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
@@ -1690,18 +2031,47 @@ function AppSidebar() {
                                 {s.title ?? g.label}
                               </span>
                             </SidebarMenuButton>
-                            <SidebarMenuAction
-                              showOnHover
-                              title="删除会话（整段日志从库里抹除，不可恢复）"
-                              onClick={(e) => {
-                                e.stopPropagation(); // 别触发外层的"切换到该会话"
-                                if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                                  void deleteSession(s.sessionId);
-                                }
-                              }}
-                            >
-                              ✕
-                            </SidebarMenuAction>
+                            {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
+                                后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
+                                删除不可逆才弹 confirm */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <SidebarMenuAction
+                                  showOnHover
+                                  title="会话操作"
+                                  onClick={(e) => e.stopPropagation() /* 别触发外层的"切换到该会话" */}
+                                >
+                                  <Ellipsis />
+                                </SidebarMenuAction>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    const t = prompt("新标题", s.title ?? "");
+                                    if (t?.trim()) void renameSessionById(s.sessionId, t.trim());
+                                  }}
+                                >
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={statusBySession[s.sessionId] === "running"}
+                                  onClick={() => void archiveSession(s.sessionId)}
+                                >
+                                  归档
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={() => {
+                                    if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                                      void deleteSession(s.sessionId);
+                                    }
+                                  }}
+                                >
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </SidebarMenuItem>
                         ))}
                       </SidebarMenu>
@@ -1770,7 +2140,7 @@ function AppSidebar() {
           >
             {account.signedIn ? (
               <>
-                <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="w-5 h-5 text-[11px]" />
+                <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="size-5" textCls="text-[11px]" />
                 <span className="flex-1 min-w-0 truncate">{identity.name}</span>
               </>
             ) : (
@@ -2030,7 +2400,11 @@ function BranchPicker({
       >
         {/* 文案必须走 SelectValue:SelectContent 默认 item-aligned 定位,拿它当对齐锚点,
             换成自制 span 会让锚点为 null、定位计算直接放弃,弹层掉到视口外(看着像"点不开") */}
-        <SelectTrigger className={BAR_SELECT + " max-w-[180px]"} title={busy ? "切换中…" : "当前分支——可切换"}>
+        <SelectTrigger
+          data-testid="branch-select"
+          className={BAR_SELECT + " max-w-[180px]"}
+          title={busy ? "切换中…" : "当前分支——可切换"}
+        >
           <GitBranch className="w-3 h-3 shrink-0" />
           <SelectValue placeholder="(detached HEAD)" />
         </SelectTrigger>
@@ -2476,9 +2850,11 @@ function ChatComposer() {
     () => ({ formatter: ottoSlashFormatter(slashItems.map((i) => i.id)) }),
     [slashItems]
   );
+  // 路径那份不依赖任何名单(靠形状判定),造一次就够
+  const pathFormatter = useMemo(() => ottoPathFormatter(), []);
   const composerSegments = useMemo(
-    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter]),
-    [input, skillFormatter, slashDirective]
+    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter, pathFormatter]),
+    [input, skillFormatter, slashDirective, pathFormatter]
   );
 
 
@@ -2688,9 +3064,12 @@ export function App() {
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
+  const filesPanelOpen = useChat((s) => s.filesPanelOpen);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
+  const simPanelOpen = useChat((s) => s.simPanelOpen);
+  const openSimPanel = useChat((s) => s.openSimPanel);
   const openBrowserPanel = useChat((s) => s.openBrowserPanel);
   const openSettings = useChat((s) => s.openSettings);
   const friendChat = useChat((s) => s.friendChat);
@@ -2785,6 +3164,20 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // ⌘⇧E = 开/关 Files 面板(VS Code 的 Explorer 同款肌肉记忆)。挂 window:
+  // 焦点可能在树或预览区里,输入框收不到
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        if (useChat.getState().filesPanelOpen) useChat.getState().closeFilesPanel();
+        else useChat.getState().openFilesPanel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
@@ -2793,7 +3186,9 @@ export function App() {
   // friendChat 优先——DM 面板打开时不该被 Protocol/GitGraph 顶掉
   const panel = friendChat ? <FriendChatView />
     : browserPanelOpen ? <BrowserPanel />
+    : simPanelOpen ? <SimulatorPanel />
     : terminalPanelOpen ? <TerminalView />
+    : filesPanelOpen ? <FilesView />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
   const base = mode === "game" ? (
@@ -2878,11 +3273,19 @@ export function App() {
             <DropdownMenuItem onClick={() => void openGitGraph()}>
               <GitBranch /> Git Graph
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => useChat.getState().openFilesPanel()}>
+              <FolderOpen /> 文件
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openTerminalPanel()}>
               <TerminalIcon /> 终端
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => openBrowserPanel()}>
               <Globe /> 浏览器
+            </DropdownMenuItem>
+            {/* iOS 模拟器(issue #401):macOS + Xcode 才有意义,但入口常驻——
+                没设备时面板自己会说"没有可用设备",比藏起来让人猜好 */}
+            <DropdownMenuItem onClick={() => openSimPanel()}>
+              <Smartphone /> iOS 模拟器
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层

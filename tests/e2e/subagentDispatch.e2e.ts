@@ -75,10 +75,11 @@ test("#142-8/9/10/13 派一次活：卡片长出来、跑着点它不炸、收�
     await expect(win.getByText("找到了：src/foo.ts 第 1 行。")).toBeVisible({ timeout: 15_000 });
 
     // 13. 子会话不进侧栏
-    // 侧栏的会话行 = 带删除钮的那种 listitem（转录面板也是 list，别把它算进来）
+    // 侧栏的会话行 = 带 ⋮ 操作菜单的那种 listitem（转录面板也是 list，别把它算进来；
+    // ✕ 直删已换成菜单，ADR-0087）
     const sessionRows = win
       .getByRole("listitem")
-      .filter({ has: win.getByRole("button", { name: "✕" }) });
+      .filter({ has: win.getByRole("button", { name: "会话操作" }) });
     await expect(sessionRows).toHaveCount(1);
 
     expectNoRendererErrors(otto);
@@ -240,11 +241,13 @@ test("#142-16 删掉派过活的父会话：子会话的事件行**一起**物�
     // 父 + 子 = 两条会话的行都在库里
     expect(sqlite(otto, "select count(distinct session_id) from events")).toBe("2");
 
-    // 删父会话（侧栏那颗 ✕）。ADR-0002 承诺删除不可逆 —— 子会话不能留在库里
+    // 删父会话（侧栏 ⋮ 菜单 → 删除，ADR-0087 后 ✕ 直删已换成菜单）。
+    // ADR-0002 承诺删除不可逆 —— 子会话不能留在库里
     win.once("dialog", (d) => void d.accept());
-    await win.getByRole("listitem").filter({ has: win.getByRole("button", { name: "✕" }) })
-      .getByRole("button", { name: "✕" })
+    await win.getByRole("listitem").filter({ has: win.getByRole("button", { name: "会话操作" }) })
+      .getByRole("button", { name: "会话操作" })
       .click();
+    await win.getByRole("menuitem", { name: "删除" }).click();
     await expect
       .poll(() => sqlite(otto, "select count(distinct session_id) from events"), { timeout: 15_000 })
       .toBe("0");

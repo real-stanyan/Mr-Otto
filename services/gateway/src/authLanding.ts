@@ -7,6 +7,8 @@
 // code 只在 URL query 里过一手，页面不存不发；换 token 发生在 app 内
 // （PKCE，code 单独没有 verifier 换不出任何东西）。
 
+import { OTTO_MARK_DATA_URI } from "./ottoMark.js";
+
 /** 深链前缀。app 侧的解析在 src/main/account.ts parseAuthCallback，两边要一致 */
 const DEEP_LINK = "mrotto://auth-callback";
 
@@ -25,7 +27,10 @@ const PAGE = `<!doctype html>
   }
   @media (prefers-color-scheme: light) { body { background: #fafafa; color: #1c1c1e; } }
   main { text-align: center; padding: 32px; max-width: 420px; }
-  .mark { font-size: 44px; }
+  /* 这一屏是 app 的门口:摆 app 自己的 logo,不是随便一个水獭 emoji
+     （emoji 由系统字体渲染,每个平台长得都不一样,更谈不上是我们的标识）。
+     圆角同 app 内的图标块,尺寸取 56 —— 比标题重,但不至于喧宾夺主 */
+  .mark { width: 56px; height: 56px; border-radius: 14px; display: block; margin: 0 auto; }
   h1 { font-size: 19px; margin: 14px 0 8px; }
   p { font-size: 14px; opacity: .75; line-height: 1.6; margin: 0; }
   a.open {
@@ -35,24 +40,37 @@ const PAGE = `<!doctype html>
 </style>
 </head>
 <body>
-<main id="main"><span class="mark">🦦</span><h1>正在回到 Mr Otto…</h1><p>请稍候</p></main>
+<main id="main"><img class="mark" src="${OTTO_MARK_DATA_URI}" alt="Mr Otto"><h1>正在回到 Mr Otto…</h1><p>请稍候</p></main>
 <script>
   (function () {
+    // 重绘时复用同一份 data URI:两个分支各内联一份等于把 10KB 抄两遍
+    var MARK = document.querySelector(".mark").src;
     var q = new URLSearchParams(location.search);
+    // GoTrue 的邮箱确认链接把结果放 fragment(#access_token=…&type=signup 或
+    // #error_description=…),不是 query——服务器日志里看不到,只有页内 JS 读得到
+    var h = new URLSearchParams(location.hash.replace(/^#/, ""));
     var main = document.getElementById("main");
     if (q.has("code")) {
       var target = ${JSON.stringify(DEEP_LINK)} + location.search;
       main.innerHTML =
-        '<span class="mark">🦦</span><h1>登录成功</h1>' +
+        '<img class="mark" src="' + MARK + '" alt="Mr Otto"><h1>登录成功</h1>' +
         '<p>已回到 Mr Otto，本页可以关掉了。<br>如果 app 没有自己跳出来，点下面的按钮。</p>' +
         '<a class="open" href="' + target + '">打开 Mr Otto</a>';
       // 自动唤起放在渲染之后:location.replace 触发系统弹"打开 Mr Otto?"确认框,
       // 页面内容此刻已经是成功态,不会出现空白页顶着确认框的样子
       location.replace(target);
-    } else {
-      var reason = q.get("error_description") || q.get("error") || "回调里没有授权码";
+    } else if (h.get("type") === "signup" || h.get("access_token") || q.get("type") === "signup") {
+      // 邮箱注册的确认链接:GoTrue verify 成功后跳回来,凭证在 fragment 里
+      // (本页不碰它,刷新即丢)。这不是 OAuth,没有 code,也不该按失败渲染——
+      // 用户该做的事是回 app 用刚设的密码登录
       main.innerHTML =
-        '<span class="mark">🦦</span><h1>登录没成功</h1>' +
+        '<img class="mark" src="' + MARK + '" alt="Mr Otto"><h1>邮箱验证成功</h1>' +
+        '<p>本页可以关掉了。<br>回 Mr Otto 用邮箱密码登录即可。</p>';
+    } else {
+      var reason = h.get("error_description") || q.get("error_description") ||
+        h.get("error") || q.get("error") || "回调里没有授权码";
+      main.innerHTML =
+        '<img class="mark" src="' + MARK + '" alt="Mr Otto"><h1>登录没成功</h1>' +
         '<p>' + reason.replace(/[<>&]/g, "") + '</p>' +
         '<p style="margin-top:10px">回 Mr Otto 里重新点一次登录即可。</p>';
     }

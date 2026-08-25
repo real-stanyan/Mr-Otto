@@ -640,3 +640,26 @@ describe("保真区名额不算空跑（ADR-0042 × 压缩）", () => {
     expect(tools[1]!.content).toBe(long); // u2 是倒数第 2 轮真实对话，保真
   });
 });
+
+describe("检查点事件不进模型视野（issue #395）", () => {
+  it("checkpoint_created / workspace_restored 被投影丢弃，消息逐字节不变", () => {
+    seq = 0;
+    const base: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "user_message", content: "u1" },
+      { ...env(), type: "assistant_message", content: "a1", model: "m" },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+    const expected = deriveMessages(base);
+    seq = 0;
+    const withCp: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "checkpoint_created", ignorable: true, checkpointId: "a".repeat(40) },
+      { ...env(), type: "workspace_restored", ignorable: true, checkpointId: "b".repeat(40), fromSessionId: "s-x" },
+      { ...env(), type: "user_message", content: "u1" },
+      { ...env(), type: "assistant_message", content: "a1", model: "m" },
+      { ...env(), type: "turn_ended", outcome: "completed" },
+    ];
+    expect(deriveMessages(withCp)).toEqual(expected);
+  });
+});

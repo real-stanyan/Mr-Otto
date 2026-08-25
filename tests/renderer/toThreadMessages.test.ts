@@ -249,22 +249,23 @@ describe("toThreadMessages — 边界", () => {
     expect(out[2]?.role).toBe("user");
   });
 
-  it("八类审计事件一个不漏", () => {
+  it("九类审计事件一个不漏", () => {
     const events = [
       ev({ type: "session_created" }, 0),
       ev({ type: "session_archived" }, 1),
-      ev({ type: "session_renamed", title: "新名字" }, 2),
-      ev({ type: "model_changed", provider: "deepseek", model: "deepseek-chat" }, 3),
-      ev({ type: "skill_invoked", name: "tdd", content: "# TDD" }, 4),
-      ev({ type: "image_described", content: "图里是只水獭", model: "v" }, 5),
-      ev({ type: "approval_decision", toolCallId: "c1", decision: "denied", reason: "不行" }, 6),
-      ev({ type: "context_compacted", summary: "摘要", model: "m" }, 7),
+      ev({ type: "session_unarchived" }, 2),
+      ev({ type: "session_renamed", title: "新名字" }, 3),
+      ev({ type: "model_changed", provider: "deepseek", model: "deepseek-chat" }, 4),
+      ev({ type: "skill_invoked", name: "tdd", content: "# TDD" }, 5),
+      ev({ type: "image_described", content: "图里是只水獭", model: "v" }, 6),
+      ev({ type: "approval_decision", toolCallId: "c1", decision: "denied", reason: "不行" }, 7),
+      ev({ type: "context_compacted", summary: "摘要", model: "m" }, 8),
     ];
     const out = toThreadMessages(events);
-    expect(out).toHaveLength(8);
+    expect(out).toHaveLength(9);
     expect(out.every((m) => m.role === "system")).toBe(true);
     expect(out.map((m) => (m.metadata?.custom?.["otto"] as { type: string }).type)).toEqual([
-      "session_created", "session_archived", "session_renamed", "model_changed",
+      "session_created", "session_archived", "session_unarchived", "session_renamed", "model_changed",
       "skill_invoked", "image_described", "approval_decision", "context_compacted",
     ]);
   });
@@ -514,5 +515,14 @@ describe("turnTiming 只挂在最终回复上", () => {
     expect(assistants[1]!.metadata?.custom?.["turnTiming"]).toMatchObject({
       wallMs: 3000, modelMs: 2500, promptTokens: 300, completionTokens: 30,
     });
+  });
+});
+
+describe("branch_checked_out（issue #411）", () => {
+  it("投成 system 审计消息 —— 聊天区要占一行：往回翻时它是「这段话在哪个分支上说的」唯一答案", () => {
+    const e = ev({ type: "branch_checked_out", repoDir: "/repo", branch: "feature/x", from: "main" }, 0);
+    expect(toThreadMessages([e])).toEqual([
+      { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
+    ]);
   });
 });

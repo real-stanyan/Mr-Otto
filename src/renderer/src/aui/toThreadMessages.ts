@@ -56,6 +56,7 @@ function isAuditEvent(e: SessionEvent): boolean {
   switch (e.type) {
     case "session_created":
     case "session_archived":
+    case "session_unarchived":
     case "session_renamed":
     case "session_autotitled":
     case "model_changed":
@@ -76,6 +77,9 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "project_instructions":
     // 请求信封（issue #383）：请求配置从这一刻起变了——审计事实，时间线留痕
     case "request_envelope":
+    // 分支切换（issue #411）：往回翻时「这段话是在哪个分支上说的」只有这一行能答——
+    // 它比模型切换管得更宽，聊天区当然要占一行
+    case "branch_checked_out":
       return true;
     case "approval_decision":
       return e.decision === "denied";
@@ -90,6 +94,11 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "suggestions_generated":
       // 跟进建议不是对话事实,它挂在输入框上方(ThreadFollowupSuggestions),
       // 不在时间线里占一行 —— 同 section_classified
+      return false;
+    case "checkpoint_created":
+    case "workspace_restored":
+      // 检查点/文件恢复(issue #395):审计事实,但回退入口在轨迹视图——
+      // 聊天区不渲染(同 threadGroups.isInvisible 的同名分支,显式列出防 default 漂移)
       return false;
     default:
       return false;

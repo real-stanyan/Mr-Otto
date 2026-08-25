@@ -9,6 +9,7 @@ const sess = (id: string, over: Partial<{ title: string | null; workspace: strin
   workspace: over.workspace === undefined ? "/w/a" : over.workspace,
   title: over.title ?? id,
   spawnedFrom: over.spawnedFrom ?? null,
+  archived: false, // 归档会话在 fleetSessions 缓存层就被滤掉,到不了投影
 });
 
 describe("orderedVisibleSessions", () => {

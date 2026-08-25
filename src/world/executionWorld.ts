@@ -6,11 +6,18 @@ import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
+import type { SimButton, SimDevice, SimFrame, SimUiElement } from "../shared/simulator.js";
+import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** 沙箱 enforcement 事实（issue #389）：命令跑完了但沙箱拦了什么/自身
+      出了什么状况。可选 = 向后兼容：v1 LocalWorld 无沙箱永不产出，旧实现/
+      假 world 零改动。生产者是 v2 SandboxWorld；工具层（bash）负责把它
+      摆到模型眼前（BrowserReadResult.truncated 同款约定） */
+  sandbox?: SandboxEnforcementFacts;
 }
 
 /** exec 的可选项。signal（ADR-0006）：中止 = 杀死运行中的进程——
@@ -22,6 +29,17 @@ export interface ExecOptions {
       直播是 UI 增强，不是事实——完整输出仍由 ExecResult 一次性返回并落盘，
       和 assistantDelta 同款边界：碎片永不进日志，日志只收凝固后的整体 */
   onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
+  /** 进程硬超时上限（ms）。缺省 = 实现自定（LocalWorld 30s）。
+      给它的理由（issue #395 自动转后台）：bash 前台命令超 30s 不再一刀杀死，
+      而是放宽到后台档位继续跑、由工具层把"还在跑"这个事实转成后台任务——
+      放宽必须是调用方的显式请求，不是 world 偷偷改默认。实现可忽略
+      （假 world 零改动），忽略 = 维持它自己的默认超时 */
+  timeoutMs?: number;
+  /** 写给子进程 stdin 的内容（写完即关）。用户钩子（issue #395）靠它递
+      JSON 上下文——环境变量/argv 都过 shell 转义，stdin 不过。缺席 = 不写
+      不关（旧行为：读 stdin 的命令等到超时，诚实反映"没人喂它"）。
+      实现可忽略（假 world 零改动） */
+  stdin?: string;
 }
 
 export interface HttpPostOptions {
@@ -100,6 +118,20 @@ export interface McpCapability {
   getPrompt(serverId: string, name: string, args: Record<string, string>): Promise<string>;
 }
 
+/** 工作区检查点能力（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
+    save = 把工作区文件此刻的状态存成一个可寻址的快照；restore = 把文件恢复
+    到某个快照（**摧毁**快照之后对被跟踪文件的改动——调用方负责确认门）。
+    模型看不到这把能力（不是工具）：消费者是装配根（每个用户 turn 前自动
+    save）和「回到这一步」UI（fork 会话 + restore 文件成对使用）。
+    v1 由 world/checkpoints.ts 的影子 git 实现（LocalWorld 系）；
+    v2 SandboxWorld 可换 docker commit——接口在 seam 上，实现随 world 走 */
+export interface CheckpointCapability {
+  /** 返回快照 id（内容寻址，影子 git 下是 commit sha）。失败抛错——
+      调用方决定要不要吞（自动存档吞掉只警告，不挡 turn） */
+  save(label: string): Promise<string>;
+  restore(id: string): Promise<void>;
+}
+
 /** 配置目录能力。rel 相对配置目录根，越界抛错。read 不存在 = null（不是抛错：
     "还没配过"是常态不是故障）；write 自动建父目录 */
 export interface ConfigCapability {
@@ -143,12 +175,66 @@ export interface HistoryCapability {
   recent(limit: number): HistorySession[];
 }
 
+/** iOS 模拟器能力（issue #401）。这块屏是人和 agent 共用的（同 browser 的立场）：
+    人在右栏面板上点，agent 用 simulator 工具点，点的是同一台机器上同一个
+    Simulator.app 窗口。坐标一律是**截图像素**（见 shared/simulator.ts 文件头）。
+
+    注入方向同 browser/mcp（ADR-0035）：simctl 子进程生命周期、画面轮询、
+    向渲染层推状态都是组装根的活，LocalWorld 造不出来，由 index.ts 用
+    withSimulator 焊进来。v2 SandboxWorld 若把模拟器放在别的宿主上，
+    这一层接口一字不改，换实现即可。 */
+export interface SimulatorCapability {
+  /** 可用设备清单（simctl list 的投影） */
+  list(): Promise<SimDevice[]>;
+  /** 开机并把 Simulator.app 的窗口切到这台。udid 省略 = 当前选中那台。
+      幂等：已经开着的不重开。返回开完之后那台的状态 */
+  boot(udid?: string): Promise<SimDevice>;
+  /** 关机。udid 省略 = 当前选中那台 */
+  shutdown(udid?: string): Promise<void>;
+  /** 截一帧当前画面 */
+  screenshot(): Promise<SimFrame>;
+  /** 读屏幕上的无障碍元素（agent 的主力「看」手段：带 label 和框，
+      不用从像素里猜）。frame 已换算到截图像素空间 */
+  describe(): Promise<SimUiElement[]>;
+  /** 点一下。坐标 = 截图像素 */
+  tap(x: number, y: number): Promise<void>;
+  /** 划一下。起止都是截图像素；durationMs 缺省由实现定 */
+  swipe(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    durationMs?: number
+  ): Promise<void>;
+  /** 往当前焦点里打字（先得有个输入框在焦点上——调用方负责先 tap 它） */
+  typeText(text: string): Promise<void>;
+  /** 按硬件键 */
+  pressButton(button: SimButton): Promise<void>;
+  /** 开深链 / 网址（simctl openurl） */
+  openUrl(url: string): Promise<void>;
+  /** 装一个 .app 目录 */
+  install(appPath: string): Promise<void>;
+  /** 起一个已装的 app */
+  launch(bundleId: string): Promise<void>;
+  /** 杀一个正在跑的 app */
+  terminate(bundleId: string): Promise<void>;
+  /** 输入通道（Swift helper）此刻能不能用。false = 点击/打字这几把会明确报错，
+      而不是静默无反应——最常见的原因是没给「辅助功能」授权 */
+  inputReady(): boolean;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
     write(path: string, content: string): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
+  /** 可选：后台执行（issue #389）——不绑 turn 信号、超时放宽（LocalWorld 30 分钟）。
+      给"跑得比一个 turn 长"的命令用（构建/测试全量跑）：turn 收口了它还活着，
+      结果由组装根（backgroundTasks）以新 turn 注回会话。
+      **刻意是独立方法而不是 ExecOptions 里的 flag**：withAbortSignal 把 turn
+      信号焊进每个 exec 调用，后台任务必须躲开那次注入——分开的方法让装饰器
+      "透传不加签"成为显式决定而不是遗漏。可选 = 向后兼容（假 world 零改动）；
+      缺席 = 该装配不支持后台执行（bash 的 run_in_background 报错说明） */
+  execDetached?(cmd: string): Promise<ExecResult>;
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
@@ -180,6 +266,15 @@ export interface ExecutionWorld {
       v1 由 index.ts 用 withHistory 焊 historyCapability.ts 的实现进来；
       v2 SandboxWorld 这一层接口不变，换成 RPC 到宿主 */
   history?: HistoryCapability;
+  /** 可选：工作区检查点（issue #395）。注入方向同 browser/mcp——影子 git
+      要知道配置目录（快照库住在 ~/.mr-otto/checkpoints），LocalWorld 单靠
+      workspace 造不出来，由组装根用 withCheckpoint 焊进来。缺席 = 该装配
+      没有检查点（自动存档跳过、回退入口不出现）。工具层永远不消费它 */
+  checkpoint?: CheckpointCapability;
+  /** 可选：iOS 模拟器（issue #401）。注入方向同 browser/mcp——由组装根用
+      withSimulator 焊进来。缺席 = 该装配没有模拟器（simulator 工具不挂，
+      右栏面板入口不出现）。只在 macOS + 装了 Xcode 的机器上会被焊上 */
+  simulator?: SimulatorCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -189,6 +284,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
+    // 后台执行透传**不加签**（issue #389）：turn 中止不该杀后台任务——
+    // 它的生命周期本来就设计成跨 turn 的
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
     },
@@ -211,6 +309,10 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
       : {}),
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
+    ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
+    // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
+    // 中断收益为零（同 fs 的取舍）
+    ...(world.simulator ? { simulator: world.simulator } : {}),
   };
 }
 
@@ -224,12 +326,18 @@ export function withExecOutput(
   return {
     fs: world.fs,
     exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
+    // 后台执行不接直播（v1）：完整结果在完成回注时整段给
+    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: world.http,
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser ? { browser: world.browser } : {}),
     ...(world.mcp ? { mcp: world.mcp } : {}),
     ...(world.config ? { config: world.config } : {}),
     ...(world.history ? { history: world.history } : {}),
+    ...(world.checkpoint ? { checkpoint: world.checkpoint } : {}),
+    // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
+    // 中断收益为零（同 fs 的取舍）
+    ...(world.simulator ? { simulator: world.simulator } : {}),
   };
 }
 
@@ -253,4 +361,17 @@ export function withMcp(world: ExecutionWorld, mcp: McpCapability): ExecutionWor
     (硬规则原样成立)。 */
 export function withHistory(world: ExecutionWorld, history: HistoryCapability): ExecutionWorld {
   return { ...world, history };
+}
+
+/** 把检查点能力焊进 world —— withBrowser/withMcp 同款手法（issue #395）。
+    组装根用 world/checkpoints.ts 的影子 git 实现焊进来；工具层不消费它 */
+export function withCheckpoint(world: ExecutionWorld, checkpoint: CheckpointCapability): ExecutionWorld {
+  return { ...world, checkpoint };
+}
+
+/** 把 iOS 模拟器能力焊进 world —— withBrowser 同款手法（issue #401）。
+    组装根从 simulatorHub 注入；工具照旧只调 world.simulator.tap(...)，
+    对 hub、对 Swift helper 的存在一概无感（硬规则原样成立） */
+export function withSimulator(world: ExecutionWorld, simulator: SimulatorCapability): ExecutionWorld {
+  return { ...world, simulator };
 }

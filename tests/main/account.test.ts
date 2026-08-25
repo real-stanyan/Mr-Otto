@@ -107,6 +107,8 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
         },
         error: null,
       })),
+      signInWithPassword: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
+      signUp: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
       signOut: vi.fn(async () => ({ error: null })),
       getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
       getSession: vi.fn(async () => ({ data: { session: null }, error: null })),
@@ -346,5 +348,100 @@ describe("AccountManager", () => {
     expect(consoleErrorSpy).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe("AccountManager 邮箱密码", () => {
+  const aliceUser = {
+    email: "alice@example.com",
+    user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
+  };
+
+  it("signInWithPassword 成功 → onChange 收到 signedIn=true", async () => {
+    const signInWithPassword = vi.fn(async () => ({
+      data: { user: aliceUser, session: { access_token: "tok" } },
+      error: null,
+    }));
+    const client = fakeClient({ auth: { signInWithPassword } });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await manager.signInWithPassword("alice@example.com", "hunter22");
+
+    expect(signInWithPassword).toHaveBeenCalledWith({ email: "alice@example.com", password: "hunter22" });
+    expect(onChange).toHaveBeenCalledWith({
+      signedIn: true,
+      email: "alice@example.com",
+      name: "Alice",
+      avatarUrl: "https://g.example/a.png",
+    });
+    expect(manager.getAccount().signedIn).toBe(true);
+  });
+
+  it("signInWithPassword 密码错 → throw，不调 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        signInWithPassword: vi.fn(async () => ({
+          data: { user: null, session: null },
+          error: { message: "Invalid login credentials" },
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await expect(manager.signInWithPassword("alice@example.com", "wrong")).rejects.toThrow(
+      "Invalid login credentials",
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    expect(manager.getAccount().signedIn).toBe(false);
+  });
+
+  it("signUpWithPassword 拿到 session（免验证）→ 'signed-in' 且 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        signUp: vi.fn(async () => ({
+          data: { user: aliceUser, session: { access_token: "tok" } },
+          error: null,
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await expect(manager.signUpWithPassword("alice@example.com", "hunter22")).resolves.toBe("signed-in");
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ signedIn: true, email: "alice@example.com" }));
+  });
+
+  it("signUpWithPassword 有 user 无 session（需邮箱验证）→ 'confirm-email'，不调 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        signUp: vi.fn(async () => ({ data: { user: aliceUser, session: null }, error: null })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await expect(manager.signUpWithPassword("alice@example.com", "hunter22")).resolves.toBe("confirm-email");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(manager.getAccount().signedIn).toBe(false);
+  });
+
+  it("signUpWithPassword 回 error（如邮箱已注册）→ throw，不调 onChange", async () => {
+    const client = fakeClient({
+      auth: {
+        signUp: vi.fn(async () => ({
+          data: { user: null, session: null },
+          error: { message: "User already registered" },
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await expect(manager.signUpWithPassword("alice@example.com", "hunter22")).rejects.toThrow(
+      "User already registered",
+    );
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

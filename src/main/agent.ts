@@ -28,15 +28,21 @@ import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
-import { bashTool } from "../tools/bash.js";
+import { createBashTool } from "../tools/bash.js";
+import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
+import { simulatorTool } from "../tools/simulator.js";
 import {
   withBrowser,
+  withSimulator,
   withMcp,
   withHistory,
+  withCheckpoint,
   type BrowserCapability,
+  type SimulatorCapability,
+  type CheckpointCapability,
   type HistoryCapability,
   type McpCapability,
 } from "../world/executionWorld.js";
@@ -66,6 +72,7 @@ const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import { assertReplayable } from "../session/events.js";
+import { checkInvariants } from "../session/invariants.js";
 import type { SessionEvent, ToolCallRequest } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
 import type { ToolGuard } from "../loop/middleware.js";
@@ -118,7 +125,7 @@ export interface AgentPush {
     而日志不可编辑，事后拆不开（#111）。
     旧日志里的 `s-<14 位>` 不受影响：全仓没有任何地方解析这个形状，
     resume 只按字符串原样取（AGENTS.md 硬规则：旧日志必须永远可重放）。 */
-function newSessionId(): string {
+export function newSessionId(): string {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   return `s-${stamp}-${randomBytes(4).toString("hex")}`;
 }
@@ -149,8 +156,10 @@ export function createAgent(opts: {
       没过禁止前缀校验，调用方退回精确 key。不给 = 永久授权只走精确 key（旧路） */
   persistAllowRule?: (pattern: string[], cwd: string | undefined) => boolean;
   /** Pre/PostToolUse 钩子（issue #350）：拦截/改参/拒绝/反馈，engine 统一落
-      tool_hook 事件。今天没有内置钩子——这是给将来（用户钩子/技能钩子）的口 */
-  toolHooks?: ToolHook[];
+      tool_hook 事件。用户钩子（issue #395）从这进：index.ts 给 getter，
+      每次工具调用现读 hooks.json（热更新）。子会话装配刻意不传——派出去的
+      agent 没人盯着，用户钩子的干预面不该静默扩大（ADR-0047 收权同款立场） */
+  toolHooks?: ToolHook[] | (() => ToolHook[]);
   /** 项目指令注入（issue #353）：装配层已过信任门禁的快照。只在**新建**会话时
       落一条 project_instructions（resume 的日志里已有/没有都不追加——
       不改写历史会话的模型视野）。不给 = 无注入（子会话/测试/裸装配照旧） */
@@ -165,6 +174,15 @@ export function createAgent(opts: {
       挂了才装 session_search 工具——子 agent 复用父 world 时自带（withHistory 焊在
       父身上），resumeChild 走的是父的旧世界，同理不用重复传（ADR-0060 的另一半） */
   history?: HistoryCapability;
+  /** 工作区检查点能力（issue #395，index.ts 用影子 git 实现焊进来）。
+      挂了 = 每个用户 turn 前自动存档、轨迹视图出现「回到这一步」；
+      不给 = 该装配没有检查点（测试/裸装配/子会话照旧）。注入方向同 mcp/history */
+  checkpoints?: CheckpointCapability;
+  /** iOS 模拟器能力（issue #401，index.ts 从 simulatorHub 注入）。注入方向同
+      browser/mcp：hub 要管 simctl 子进程、画面轮询、向渲染层推状态，LocalWorld
+      造不出来。不给 = 这个装配没有模拟器（simulator 工具不挂）。
+      子 agent 走 opts.world 那条路时自带（父身上已经焊着这层） */
+  simulator?: SimulatorCapability;
   /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
@@ -218,7 +236,15 @@ export function createAgent(opts: {
   const withMcpLayer = opts.mcp ? withMcp(base, opts.mcp) : base;
   // history 叠在 mcp 之外——同一件事：子 agent 复用父的 world 实例时这层已经在了，
   // 不会被重复包一层（world.history 是不是在只问 world，不问 opts.history 给没给）
-  const world = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
+  const withHistoryLayer = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
+  // 检查点叠在最外（issue #395）：同上，子 agent 复用父 world 时这层已经在了
+  const withCheckpointLayer = opts.checkpoints
+    ? withCheckpoint(withHistoryLayer, opts.checkpoints)
+    : withHistoryLayer;
+  // 模拟器叠在最外（issue #401）：同上，子 agent 复用父 world 时这层已经在了
+  const world = opts.simulator
+    ? withSimulator(withCheckpointLayer, opts.simulator)
+    : withCheckpointLayer;
   // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0054）：子 agent 跑在
   // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
   // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
@@ -289,6 +315,9 @@ export function createAgent(opts: {
     // 永不改写。文案按 tool_execution_started 区分"跑了一半"和"没开跑"。
     // 幂等：补过即配对，再 resume 不重复。事故从此是时间线事实，UI/回放可见。
     const log = resumeLog!;
+    // 修复追加的事件攒着（供下面的不变量校验用）：校验必须看「修复后」的流——
+    // ADR-0005 / 崩溃合成收口本身就是把不变量修回来的动作，只看快照必然误报
+    const repairs: SessionEvent[] = [];
     const answered = new Set(
       log.filter((e) => e.type === "tool_result").map((e) => e.toolCallId)
     );
@@ -311,6 +340,7 @@ export function createAgent(opts: {
             : "执行中断：调用未开始执行就被中断（审批未决或 app 退出）。" +
               "执行器未达，世界未被此调用变更。",
         });
+        repairs.push(full);
         opts.push.event(full);
       }
     }
@@ -331,7 +361,14 @@ export function createAgent(opts: {
     }
     if (openTurn) {
       const full = store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "interrupted" });
+      repairs.push(full);
       opts.push.event(full);
+    }
+    // 运行时不变量校验（issue #389，dsh invariant registry 对照）：修复之后跑。
+    // 违例只告警不拦——硬规则「旧日志永远可重放」优先于结构洁癖，违例是
+    // 「写入方有 bug」的诊断线索，不是拒读理由（拒读那道门只属于 assertReplayable）
+    for (const v of checkInvariants([...log, ...repairs])) {
+      console.warn(`[invariant] 会话 ${sessionId} seq ${v.seq} ${v.invariant}：${v.detail}`);
     }
   }
 
@@ -410,6 +447,11 @@ export function createAgent(opts: {
   // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
   void mcp?.ready();
 
+  // 后台任务登记口（issue #389）：bash run_in_background 起的任务在这跟踪，
+  // 完成回调由组装根（index.ts）接线——没接线（subagent 装配）时 armed=false，
+  // bash 会拒绝后台参数而不是丢结果
+  const backgroundTasks = new BackgroundTasks();
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
@@ -421,7 +463,7 @@ export function createAgent(opts: {
     ...(world.history ? [createSessionSearchTool()] : []),
     readFileTool,
     writeFileTool,
-    bashTool,
+    createBashTool(backgroundTasks),
     createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
     // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
@@ -429,6 +471,9 @@ export function createAgent(opts: {
     // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
     // 报一把用不了的工具连账也是错的
     ...(world.browser ? [browserReadTool] : []),
+    // 挂载条件同 browser:问的是 world 有没有这把能力,不是参数给没给
+    // (issue #401。非 macOS / 没装 Xcode 的机器上组装根压根不焊,工具表里也就没有)
+    ...(world.simulator ? [simulatorTool] : []),
     // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂。
     // 暴露策略（issue #348）：超阈值整批 Deferred + 体积超预算降 Hidden——
     // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见
@@ -597,6 +642,9 @@ export function createAgent(opts: {
     },
     sessionId,
     workspace: opts.workspace,
+    /** 后台任务登记口（issue #389）：index.ts 在这上面接完成回调（onCompletion），
+        决定回注时机；没接线的装配 bash 拒绝 run_in_background */
+    backgroundTasks,
     /** 这个 agent 的 ExecutionWorld——终端接线要靠它才能走 seam 而不是绕过去
         (ADR-0031)：v2 SandboxWorld 把 openTerminal 实现成 docker exec，
         终端得开在 agent 这个 world 里，不能在 index.ts 里另起一个 LocalWorld */

@@ -1,9 +1,9 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, Menu, dialog, ipcMain, Notification, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, shell } from "electron";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -22,12 +22,20 @@ import {
   type ApprovalRequest,
   type ApprovalPreview,
 } from "../shared/shellBridge.js";
-import { createAgent, loadDotEnv, type AgentPush } from "./agent.js";
+import { createAgent, loadDotEnv, newSessionId, type AgentPush } from "./agent.js";
+import { createShadowGitCheckpoints, workspaceStoreName } from "../world/checkpoints.js";
+import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
 import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
+import { createSimulatorHub } from "./simulatorHub.js";
+import type { SimButton } from "../shared/simulator.js";
+import type { GitCheckoutResult } from "../shared/gitGraph.js";
+import { createSimInputBridge } from "./simInputBridge.js";
+import { resolveSimInputBinPath } from "./simInputBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
+import { trafficLightPosition } from "./trafficLights.js";
 import { connectMcpClient } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
@@ -48,12 +56,16 @@ import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { loadUserHooks } from "./userHooksStore.js";
+import { buildUserToolHooks } from "./userToolHooks.js";
+import { createLocalWorld } from "../world/localWorld.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadTrustedWorkspaces, addTrustedWorkspace } from "./workspaceTrust.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, UpdaterState } from "../shared/shellBridge.js";
+import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
 import { createUpdaterHostDeps } from "./updaterHost.js";
 import { RELEASES_PAGE_URL } from "./updaterCore.js";
@@ -76,6 +88,7 @@ import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
+import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
@@ -210,12 +223,12 @@ function createWindow(): BrowserWindow {
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
     // 与侧栏收起钮同一行(Claude 桌面端同款)。非 mac 平台保持默认标题栏。
     // hiddenInset 默认把红绿灯钉死在左上角(约 12,11pt),和下面 work/game 分段控件的
-    // 左边距(8px)对不齐、又贴顶 —— 显式挪到 (16,16)pt:顶栏统一 h-11(44px,见 App.tsx
-    // HEADER_H),中心 22;y=19 让灯的视觉中心落在 22(截图实测:y=16 时灯比中心高 3px,
-    // 这个 y 不是灯的几何顶边),和侧栏开关钮 / 搜索钮(SidebarNub.tsx 的 TOGGLE_TOP)
-    // 同一条水平线。三颗灯占到 x=68,开关钮从 72 起
+    // 左边距(8px)对不齐、又贴顶 —— 显式算一组坐标钉住:顶栏统一 h-11(44px,见 App.tsx
+    // HEADER_H),灯心与开关钮 / 搜索钮(SidebarNub.tsx 的 TOGGLE_TOP)同一条水平线。
+    // 坐标随 zoomFactor 现算(trafficLights.ts):灯是原生 chrome 不跟着缩放走,
+    // 写死一组数只在 zoom=1 时对得上
     ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 19 } }
+      ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: trafficLightPosition(1) }
       : {}),
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.mjs"),
@@ -234,6 +247,26 @@ function createWindow(): BrowserWindow {
       e.preventDefault();
       win.hide();
     });
+    // 缩放之后重新钉一次灯:顶栏那两颗钮是网页元素,zoom 一变就放大下移,
+    // 红绿灯是原生 chrome 留在原地 —— 不跟一次,一行三样东西就散了。
+    // did-finish-load 那次是给「上次的 zoom 被 Chromium 按 origin 记住」兜底:
+    // 构造时按 zoom=1 钉的坐标,页面加载完才知道真实倍率
+    let lastZoom = 1;
+    const syncLights = () => {
+      if (win.isDestroyed()) return;
+      lastZoom = win.webContents.getZoomFactor();
+      win.setWindowButtonPosition(trafficLightPosition(lastZoom));
+    };
+    // zoom-changed 只覆盖 ctrl/⌘+滚轮那一条路;⌘+ / ⌘- / 触控板捏合都**不发**这个事件,
+    // 实测缩放完灯留在原地。Electron 没有"zoom 变了"的通用事件,所以补一条低频回读:
+    // 每 500ms 比一次 zoomFactor,变了才动灯。一个 getter 的开销,换"任何路子缩放都跟得上"
+    win.webContents.on("zoom-changed", syncLights);
+    win.webContents.on("did-finish-load", syncLights);
+    const zoomWatch = setInterval(() => {
+      if (win.isDestroyed()) return;
+      if (win.webContents.getZoomFactor() !== lastZoom) syncLights();
+    }, 500);
+    win.on("closed", () => clearInterval(zoomWatch));
   }
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
@@ -265,6 +298,7 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
+  const userHooksPath = join(app.getPath("userData"), "hooks.json");
   const trustPath = join(app.getPath("userData"), "trustedWorkspaces.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
@@ -452,6 +486,10 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // 后台任务完成、但 turn 正在跑时攒下的回注文案（issue #389）：mid-splice 会把
+  // 投影中段改掉、prefix cache 全废（ADR-0073 的教训——微压缩同处境时宁可丢弃），
+  // 后台结果不能丢，所以攒着，turn 正常收口后合并成一条注回
+  const pendingBg = new Map<string, string[]>();
   // fail-closed（issue #341 规则③）：渲染进程崩了 = 审批通道断了。挂起的审批
   // 立刻按拒绝收场（approval_decision 照常落盘），不悬停等一个回不来的人。
   // 只挂崩溃，不挂正常关窗——mac 惯例关窗不退 app，岛窗还能替人点按钮
@@ -512,7 +550,8 @@ void app.whenReady().then(() => {
   const fleetSessions = (): SessionSummary[] => {
     const now = Date.now();
     if (!fleetSessionsCache || now - fleetSessionsCache.at > 1_000) {
-      fleetSessionsCache = { at: now, rows: store.sessions() };
+      // 归档的会话不上岛:岛是"活跃舰队"视图,收起来的不算（ADR-0087）
+      fleetSessionsCache = { at: now, rows: store.sessions().filter((s) => !s.archived) };
     }
     return fleetSessionsCache.rows;
   };
@@ -541,7 +580,8 @@ void app.whenReady().then(() => {
       (input.event.type === "session_created" ||
         input.event.type === "session_renamed" ||
         input.event.type === "session_autotitled" ||
-        input.event.type === "session_archived")
+        input.event.type === "session_archived" ||
+        input.event.type === "session_unarchived")
     ) {
       fleetSessionsCache = null;
     }
@@ -806,6 +846,82 @@ void app.whenReady().then(() => {
       return createWebContentsViewHandle(mainWindow, "persist:otto-browser");
     },
     push: { state: (info) => send(CHANNELS.browserState, info) },
+  });
+
+  // iOS 模拟器台账(issue #401):app 级、不按会话分——一台机器只有一套模拟器,
+  // 人在面板上点的和任一会话里 agent 点的是同一台设备(与浏览器一会话一个相反)。
+  // 两件 hub 不该知道的事在这里注入:怎么跑 xcrun(child_process)、怎么把
+  // 截图缩小编码(nativeImage)。hub 因此能在普通 vitest 里跑,不用 Xcode。
+  const runSimctl = (file: string, args: string[], o?: { timeoutMs?: number }) =>
+    new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
+      const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), o?.timeoutMs ?? 60_000);
+      child.stdout?.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
+      child.stderr?.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ stdout, stderr, code: code ?? -1 });
+      });
+    });
+
+  // 输入通道:helper 二进制不在(非 macOS、或 dev 下还没 swift build)就是 null,
+  // 面板照样能看画面、能开关机,只是点不了——退化路径写在 hub 的 requireInput 里
+  const simInputBin = process.platform === "darwin" ? resolveSimInputBinPath() : null;
+  const simInput = simInputBin
+    ? createSimInputBridge({
+        binPath: simInputBin,
+        spawn: (bin) => {
+          const c = spawn(bin, [], { stdio: ["pipe", "pipe", "ignore"] });
+          return {
+            stdin: { write: (str: string) => void c.stdin?.write(str) },
+            stdout: { on: (_ev: "data", cb: (b: Buffer) => void) => void c.stdout?.on("data", cb) },
+            on: (_ev: "exit", cb: () => void) => void c.on("exit", cb),
+            kill: () => void c.kill(),
+          };
+        },
+        log: (m) => console.warn(`[simInput] ${m}`),
+      })
+    : null;
+
+  const simulators = createSimulatorHub({
+    run: runSimctl,
+    capture: async (udid) => {
+      // simctl 只会写文件(命令行里的 "-" 会被当成一个**叫 - 的文件**,实测),
+      // 所以走临时文件再读回来。同一台设备固定一个文件名:轮询下每帧都新建
+      // 文件名的话,tmp 目录会被几百个 PNG 塞满
+      const shotPath = join(tmpdir(), `mr-otto-sim-${udid}.png`);
+      const r = await runSimctl("xcrun", ["simctl", "io", udid, "screenshot", "--type=png", shotPath], {
+        timeoutMs: 20_000,
+      });
+      if (r.code !== 0) {
+        throw new Error(`截屏失败:${r.stderr.trim() || `exit ${r.code}`}`);
+      }
+      const raw = nativeImage.createFromPath(shotPath);
+      if (raw.isEmpty()) throw new Error("截屏失败:读不出图像(设备可能刚关机)");
+      // 缩到 480 宽再编 JPEG:原图一帧近 3MB,按 2fps 推过 IPC 是每秒 6MB。
+      // 缩放之后的尺寸就是**全系统统一的那套坐标**(shared/simulator.ts 文件头):
+      // 面板上点的、describe 报的、agent tap 的,全都在这张缩略图的像素空间里
+      const shrunk = raw.getSize().width > 480 ? raw.resize({ width: 480 }) : raw;
+      const size = shrunk.getSize();
+      return {
+        image: shrunk.toJPEG(80).toString("base64"),
+        mime: "image/jpeg" as const,
+        width: size.width,
+        height: size.height,
+      };
+    },
+    input: simInput,
+    push: {
+      state: (st) => send(CHANNELS.simStatePush, st),
+      frame: (f) => send(CHANNELS.simFrame, f),
+    },
+    log: (m) => console.warn(`[simulator] ${m}`),
   });
 
   // MCP server 登记表:配置存 userData 外的 ~/.mr-otto/mcp.json(与 skill 目录同一条口径,
@@ -1096,9 +1212,28 @@ void app.whenReady().then(() => {
     // 进得了 task 工具的清单。绑定点放在组装根，SubagentRunner / createTaskTool
     // 的签名一个字不用改——工具那层不需要知道有"作用域"这回事
     const listForSession = () => listSubagents(args.workspace);
+    // 用户钩子（issue #395）：只挂主会话装配——子会话没人盯着，用户钩子的
+    // 干预面不该静默扩大（ADR-0047 收权同款）。钩子命令跑在专用 LocalWorld
+    // 里（cwd = 工作区、凭据环境变量已剥、stdin 递 JSON 上下文），不借
+    // agent 的 world：那个被 engine 按调用包了直播/信号层，钩子输出会被
+    // 误标成命令输出。getter 现读 hooks.json（热更新，与 execPolicy 同款）
+    const hookWorld = createLocalWorld({ root: args.workspace });
+    const userToolHooks = () => {
+      const loaded = loadUserHooks(userHooksPath);
+      if (loaded.error) console.warn(`[userHooks] ${loaded.error}`);
+      return buildUserToolHooks(loaded.hooks, (cmd, o) => hookWorld.exec(cmd, o), args.workspace);
+    };
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      toolHooks: userToolHooks,
+      // 工作区检查点（issue #395）：影子 git 库住配置目录（快照跨会话共享——
+      // 同一工作区的多个会话回退的是同一份磁盘现实）。只挂主会话：子会话共享
+      // 父 world，自动存档只发生在用户 turn 的入口（handleSendMessage）
+      checkpoints: createShadowGitCheckpoints({
+        workspace: args.workspace,
+        gitDir: join(configDir(homedir()), "checkpoints", workspaceStoreName(args.workspace)),
+      }),
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
@@ -1108,6 +1243,10 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
+      // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
+      // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
+      // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
+      simulator: simulators.capability(),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // execpolicy（issue #347）：现读现校验（热更新与 alwaysAllow 同款）；
@@ -1174,6 +1313,10 @@ void app.whenReady().then(() => {
         files: instructions.segments.map((seg) => seg.path),
       });
     }
+    // 后台任务完成回注接线（issue #389）：只有主会话装配走到这——子会话
+    // （createChildAgent / subagentRunner 两条路）不接线，armed=false，
+    // bash 对它们拒绝 run_in_background（没人管的结果不该被承诺"会注回"）
+    self.backgroundTasks.onCompletion((c) => handleBackgroundDone(self.sessionId, c));
     return self;
   };
 
@@ -1330,6 +1473,48 @@ void app.whenReady().then(() => {
     if (!info) throw new Error("恢复会话失败"); // 理论不可达，让 TS 安心
     return info;
   });
+
+  // 回到检查点（issue #395 / ADR-0090）：对话侧 fork（零拷贝，ADR-0084）+
+  // 文件侧 restore（影子 git reset）成对发生。顺序是安全设计：先分叉后动文件，
+  // fork 抛错时磁盘一个字节没动。返回新分支会话 id，切视图由渲染层随后
+  // 走 resumeSession（注册/重建复用唯一入口，不再造第二条装配路）
+  ipcMain.handle(
+    CHANNELS.rewindToCheckpoint,
+    async (_e, sessionId: string, checkpointSeq: number): Promise<string> => {
+      const agent = agents.get(sessionId);
+      if (!agent) throw new Error("会话不存在或未激活——先打开它再回退");
+      if (runningSessions.has(sessionId)) throw new Error("turn 正在跑——先停止再回退");
+      const capability = agent.world.checkpoint;
+      if (!capability) throw new Error("该会话的装配没有检查点能力");
+      const log = store.load(sessionId);
+      const cp = log.find((e) => e.seq === checkpointSeq);
+      if (!cp || cp.type !== "checkpoint_created") {
+        throw new Error(`seq ${checkpointSeq} 不是检查点事件`);
+      }
+      let newId: string;
+      const boundary = log.filter((e) => e.seq < checkpointSeq && e.type === "turn_ended").at(-1);
+      if (boundary) {
+        newId = newSessionId();
+        store.fork(sessionId, boundary.seq, newId, Date.now());
+      } else {
+        // 检查点落在第一个 turn 之前：没有可分叉的收口点 = 「回到对话开始」，
+        // 建同工作区的全新会话（startSession 同款装配 + 注册）
+        await mcpHub.ready();
+        const fresh = createSessionAgent({ workspace: agent.workspace });
+        agents.set(fresh.sessionId, fresh);
+        newId = fresh.sessionId;
+      }
+      await capability.restore(cp.checkpointId);
+      const restored = store.append({
+        sessionId: newId, ts: Date.now(), type: "workspace_restored",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        checkpointId: cp.checkpointId,
+        fromSessionId: sessionId,
+      });
+      send(CHANNELS.event, restored);
+      return newId;
+    }
+  );
 
   // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
   // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
@@ -1505,12 +1690,51 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.gitGraphLog, (_e, repoDir: string, limit?: number) => gitGraph.log(repoDir, limit));
   ipcMain.handle(CHANNELS.gitBranches, (_e, repoDir: string) => gitGraph.branches(repoDir));
   ipcMain.handle(CHANNELS.gitStatus, (_e, repoDir: string) => gitGraph.status(repoDir));
-  ipcMain.handle(CHANNELS.gitCheckout, (_e, repoDir: string, branch: string) =>
-    gitGraph.checkout(repoDir, branch)
+  // 切分支是唯一的 git 写操作。带上 sessionId 时,成功后往那条会话的日志追加
+  // 一条 branch_checked_out(ADR-0093):时间线上那一行是日志投影,不是渲染层
+  // 自己记的一笔——刷新即失忆的东西不配叫事实。
+  // 「切之前在哪」在切之前问一次 git:切完再问只能得到切之后的答案。
+  ipcMain.handle(
+    CHANNELS.gitCheckout,
+    async (_e, repoDir: string, branch: string, sessionId?: string): Promise<GitCheckoutResult> => {
+      const before = sessionId ? await gitGraph.branches(repoDir) : null;
+      const result = await gitGraph.checkout(repoDir, branch);
+      if (!result.ok || !sessionId) return result;
+      const from = before?.ok ? before.current : null;
+      // 原地切 = 什么都没发生,时间线上不该多一行(顶栏点当前分支也会走到这)
+      if (from === branch) return result;
+      const ev = store.append({
+        sessionId, ts: Date.now(), type: "branch_checked_out",
+        ignorable: true, // 模型不消费,旧版本跳过照常重放
+        repoDir, branch,
+        ...(from ? { from } : {}), // detached HEAD / 问不出来:不编一个名字上去
+      });
+      send(CHANNELS.event, ev);
+      return result;
+    }
   );
   ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
     gitGraph.commit(repoDir, hash)
   );
+
+  // Files 面板(只读):service 无状态,建一次全局复用。fs/rg 那五个能力用
+  // nodeFilesDeps,shell 那两个在这补——filesService 刻意不 import electron
+  const files = createFilesService({
+    ...nodeFilesDeps,
+    openPath: (abs) => void shell.openPath(abs),
+    showInFolder: (abs) => shell.showItemInFolder(abs),
+  });
+  ipcMain.handle(CHANNELS.filesList, (_e, root: string, relDir: string) => files.list(root, relDir));
+  ipcMain.handle(CHANNELS.filesSearch, (_e, root: string, query: string, opts: FilesSearchOpts) =>
+    files.search(root, query, opts)
+  );
+  ipcMain.handle(CHANNELS.filesRead, (_e, root: string, rel: string) => files.read(root, rel));
+  ipcMain.handle(
+    CHANNELS.filesReveal,
+    (_e, root: string, rel: string, how: "open" | "folder" | "app", appName?: string) =>
+      files.reveal(root, rel, how, appName)
+  );
+  ipcMain.handle(CHANNELS.filesEditors, () => files.editors());
 
   // 好友分支在场(issue #167):渲染层报当前会话的工作区,这里盯 HEAD、算 repoKey/分支,
   // 交 FriendsManager 两条腿广播。路径按 known() 校验——虽然这条只读 git 不写盘,
@@ -1557,6 +1781,23 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.browserClose, (_e, sessionId: string) => browsers.close(sessionId));
   ipcMain.handle(CHANNELS.browserPickElement, (_e, sessionId: string) => browsers.pickElement(sessionId));
   ipcMain.handle(CHANNELS.browserCancelPick, (_e, sessionId: string) => browsers.cancelPick(sessionId));
+
+  // 模拟器面板(issue #401)。都不带 sessionId:一台机器一套模拟器。
+  // 这些 handler 是**人**那一侧的入口;agent 那一侧走 simulator 工具,
+  // 两条路最终落在同一个 hub 的同一台设备上
+  ipcMain.handle(CHANNELS.simState, () => simulators.state());
+  ipcMain.handle(CHANNELS.simSelect, (_e, udid: string | null) => simulators.select(udid));
+  ipcMain.handle(CHANNELS.simBoot, (_e, udid?: string) => simulators.capability().boot(udid));
+  ipcMain.handle(CHANNELS.simShutdown, (_e, udid?: string) => simulators.capability().shutdown(udid));
+  ipcMain.handle(CHANNELS.simStartStream, () => simulators.startStream());
+  ipcMain.handle(CHANNELS.simStopStream, () => simulators.stopStream());
+  ipcMain.handle(CHANNELS.simTap, (_e, x: number, y: number) => simulators.capability().tap(x, y));
+  ipcMain.handle(CHANNELS.simSwipe, (_e, x: number, y: number, x2: number, y2: number, ms?: number) =>
+    simulators.capability().swipe({ x, y }, { x: x2, y: y2 }, ms)
+  );
+  ipcMain.handle(CHANNELS.simType, (_e, text: string) => simulators.capability().typeText(text));
+  ipcMain.handle(CHANNELS.simButton, (_e, button: SimButton) => simulators.capability().pressButton(button));
+  ipcMain.handle(CHANNELS.simRequestInputPermission, () => simulators.requestInputPermission());
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
@@ -1612,6 +1853,12 @@ void app.whenReady().then(() => {
   });
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
+  ipcMain.handle(CHANNELS.signInWithPassword, (_e, email: string, password: string) =>
+    manager.signInWithPassword(email, password)
+  );
+  ipcMain.handle(CHANNELS.signUpWithPassword, (_e, email: string, password: string) =>
+    manager.signUpWithPassword(email, password)
+  );
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 本人资料:读/写 profiles 自己那一行。结构化回流(ProfileResult),不靠 invoke reject
@@ -1712,6 +1959,33 @@ void app.whenReady().then(() => {
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
     fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
     pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
+  });
+
+  ipcMain.handle(CHANNELS.archiveSession, (_e, sessionId: string) => {
+    if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能归档会话");
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    // 归档（ADR-0087）= 收起，不是删除：日志一字不动，只落一条状态事件。
+    // 活资源照删除的清单注销——归档的会话不该继续占着 pty/浏览器/agent，
+    // 恢复后走 resumeSession 的正常懒加载路径重建
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "user" });
+    terminals.killSession(sessionId);
+    browsers.close(sessionId);
+    agents.delete(sessionId);
+    islandStates.delete(sessionId);
+    if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null; // 会话表形状变了,岛不吃 1s 延迟
+    pushFleet();
+  });
+
+  ipcMain.handle(CHANNELS.unarchiveSession, (_e, sessionId: string) => {
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    // ignorable：模型不可见（投影丢弃它），旧版本跳过它只是把会话继续当归档看——
+    // 降级但不说谎，够格标可跳过（向前兼容拒读契约，issue #383）
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_unarchived", ignorable: true });
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null;
+    pushFleet();
   });
 
   ipcMain.handle(CHANNELS.renameSession, (_e, sessionId: string, title: string) => {
@@ -1825,6 +2099,22 @@ void app.whenReady().then(() => {
       // "模型看不见图还装看过"
       // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
       //
+      // 工作区检查点（issue #395）：turn 开跑前把文件状态存进影子 git——
+      // 「回到这一步」的文件侧锚点。失败只警告不挡 turn（检查点是便利品，
+      // 不是这个 turn 的前置条件）；没有能力的装配（子会话/裸装配）跳过
+      if (agent.world.checkpoint) {
+        try {
+          const cpId = await agent.world.checkpoint.save(`turn @ ${new Date().toISOString()}`);
+          const cpEvent = store.append({
+            sessionId, ts: Date.now(), type: "checkpoint_created",
+            ignorable: true, // 模型不消费，旧版本跳过照常重放
+            checkpointId: cpId,
+          });
+          send(CHANNELS.event, cpEvent);
+        } catch (err) {
+          console.warn("检查点保存失败（跳过，不挡 turn）", err);
+        }
+      }
       // 调用先于任何 append（issue #283 ⑦）：skill_invoked 若先落、代读再失败，
       // 日志里就留下一条没有任务跟随的孤儿 skill 事件——而台账语义是"启用过=
       // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，
@@ -1899,6 +2189,48 @@ void app.whenReady().then(() => {
       // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
       enqueueMicroCompact(sessionId);
     }
+    // 后台回注排空（issue #389）：turn 在跑时完成的后台任务攒在 pendingBg，
+    // 正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
+    // 这时自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；
+    // 攒着的结果不丢，下一次 turn 正常收口或新完成事件到来时再排。
+    // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
+    if (outcome === "completed") {
+      const queued = pendingBg.get(sessionId);
+      if (queued && queued.length > 0) {
+        pendingBg.delete(sessionId);
+        queueMicrotask(() => {
+          void handleSendMessage(sessionId, queued.join("\n\n")).catch((e) =>
+            console.error("后台任务回注失败", e)
+          );
+        });
+      }
+    }
+  }
+
+  /** 后台任务完成（issue #389）：落审计事件，再按 turn 状态决定立即回注还是攒着。
+      回注 = 以新 turn 走 handleSendMessage 的唯一入口——不 mid-splice（ADR-0073）。
+      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足） */
+  function handleBackgroundDone(sessionId: string, c: BackgroundCompletion): void {
+    // 会话已被 purge：结果无处可去（enqueueMicroCompact 同款守卫）
+    if (!agents.has(sessionId)) return;
+    const full = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "background_task_completed",
+      ignorable: true, // 模型不消费，旧版本跳过照常重放
+      taskId: c.id,
+      cmd: c.cmd,
+      exitCode: c.result.exitCode,
+    });
+    send(CHANNELS.event, full);
+    const text = formatCompletion(c);
+    if (runningSessions.has(sessionId)) {
+      const queued = pendingBg.get(sessionId) ?? [];
+      queued.push(text);
+      pendingBg.set(sessionId, queued);
+      return;
+    }
+    void handleSendMessage(sessionId, text).catch((e) => console.error("后台任务回注失败", e));
   }
 
   ipcMain.handle(
@@ -2060,6 +2392,9 @@ void app.whenReady().then(() => {
     // Electron 就继续退出流程,那两个定时器永远没机会触发,子进程变孤儿
     // (review finding 1;kill() 的同步保证见 mcpClient.ts / mcpHub.ts 的注释)
     void mcpHub.closeAll();
+    // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
+    simulators.dispose();
+    simInput?.dispose();
     store.close();
   });
 });

@@ -75,6 +75,21 @@ describe("LocalWorld exec 中断（ADR-0006）", () => {
   });
 });
 
+describe("LocalWorld execDetached（issue #389 后台执行）", () => {
+  it("跑完返回完整结果，cwd 同 root", async () => {
+    const world = createLocalWorld({ root });
+    const result = await world.execDetached!("pwd; echo bg-ok");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("bg-ok");
+  });
+
+  it("起不来按世界反馈返回（exitCode 1），不 reject", async () => {
+    const world = createLocalWorld({ root });
+    const result = await world.execDetached!("exit 7");
+    expect(result.exitCode).toBe(7);
+  });
+});
+
 describe("LocalWorld exec 输出直播", () => {
   it("onOutput 收到碎片（stdout/stderr 分流标注），完整结果不受直播影响", async () => {
     const world = createLocalWorld({ root });
@@ -187,5 +202,16 @@ describe("装饰器透传 http", () => {
     // 验证 fetchImpl 收到的 signal 确实是中止状态（AbortSignal.any 合成了外部 signal）
     expect(seen[0]).toBeDefined();
     expect(seen[0]?.aborted).toBe(true);
+  });
+
+  // issue #395：timeoutMs 是调用方的显式放宽/收紧请求。
+  // sleep 2 而不是更长：CI 上 close 事件可能等到管道随子进程自然退出才来
+  //（SIGTERM 已发、exitCode 已定，只是 close 迟到）——断言只看结果不掐表，
+  // 测试超时给足 15s
+  it("exec 尊重 opts.timeoutMs：超限被 SIGTERM 终止，exitCode 124", { timeout: 15_000 }, async () => {
+    const world = createLocalWorld();
+    const r = await world.exec("sleep 2", { timeoutMs: 300 });
+    expect(r.exitCode).toBe(124);
+    expect(r.stderr).toContain("终止");
   });
 });

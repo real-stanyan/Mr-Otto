@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Camera, Loader2 } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Input } from "@/components/ui/input.js";
 import { AVATAR_MAX_CHARS, NAME_MAX } from "../../../shared/profile.js";
 import { fileToAvatarDataUrl } from "../lib/avatarImage.js";
@@ -15,22 +16,18 @@ export interface ProfileDraft {
   avatarUrl: string;
 }
 
-/** 头像位。有图显示图,没图显示首字母 —— 空白圆圈会让人以为是加载中 */
+/** 头像位。有图显示图,没图显示首字母 —— 空白圆圈会让人以为是加载中。
+    走 shadcn Avatar:图链接坏掉时 Radix 自己落回首字母,不会留一个裂图标在脸上。
+    圆和裁剪由外层那颗按钮做(它本来就是 rounded-full + overflow-hidden),
+    这里只负责铺满 */
 function AvatarWell({ draft, initial }: { draft: ProfileDraft; initial: string }) {
-  if (draft.avatarUrl) {
-    return (
-      <img
-        className="size-full object-cover"
-        src={draft.avatarUrl}
-        alt=""
-        referrerPolicy="no-referrer"
-      />
-    );
-  }
   return (
-    <span className="flex size-full items-center justify-center text-[26px] font-semibold text-foreground/70">
-      {initial}
-    </span>
+    <Avatar className="size-full">
+      <AvatarImage src={draft.avatarUrl} alt="" referrerPolicy="no-referrer" />
+      <AvatarFallback className="bg-transparent text-[26px] font-semibold text-foreground/70">
+        {initial}
+      </AvatarFallback>
+    </Avatar>
   );
 }
 

@@ -544,6 +544,7 @@ export function deriveMessages(
       case "approval_decision":
       case "model_changed":
       case "session_archived":
+      case "session_unarchived":
       case "session_renamed":
       case "tool_execution_started":
       // 分区目录是给人的导航，不是对话内容——喂回去只会污染上下文

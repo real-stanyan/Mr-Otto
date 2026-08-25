@@ -184,7 +184,10 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/docs/adrNumbers.test.ts` — `docs/adr/` 编号唯一 + 不跳号的可执行版（撞号在这里红，ADR-0074）
+- `src/main/filesService.ts` / `src/shared/files.ts` — Files 面板的主进程数据源与纯逻辑层（只读；三条安全边界钉在 `tests/main/filesService.test.ts`，ADR-0092）
 - `tests/e2e/` — Playwright-electron 端到端（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）。既是冒烟，也是四张真机验收清单的落地处：`harness.ts` 换 `HOME` 做隔离、`fakeModel.ts` 是本机假模型，见 ADR-0076
 - `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）
 - `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）
+- `src/main/simulatorHub.ts` / `src/main/simInputBridge.ts` — iOS 模拟器：simctl 台账 + 画面轮询 + 输入桥（ADR-0092）
+- `native/MrOttoSimInput/` — iOS 模拟器输入/无障碍 helper（Swift，CGEvent + AXUIElement；ADR-0092）
 - `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/gateway/src/relay.ts`（ADR-0093 / 0094 / 0095 / 0096）

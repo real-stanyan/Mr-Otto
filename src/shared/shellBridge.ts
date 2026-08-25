@@ -18,9 +18,14 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
+import type { SimButton, SimFrame, SimState } from "./simulator.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type {
+  FileEntry, FileHit, FilePreview, FilesResult, FilesSearchOpts,
+} from "./files.js";
+import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, GameInvite, RealtimeHealth,
@@ -416,9 +421,21 @@ export interface ShellBridge {
   readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
+  /** 归档会话（ADR-0087）：落一条 session_archived(reason:"user")。
+      从主列表收进「已归档」区，日志完整保留、仍可被跨会话召回、可恢复。
+      turn 进行中拒绝（同删除）；归档顺带注销活资源（终端/浏览器/agent） */
+  archiveSession(sessionId: string): Promise<void>;
+  /** 取消归档（ADR-0087）：落一条 session_unarchived，会话回主列表 */
+  unarchiveSession(sessionId: string): Promise<void>;
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
+  /** 回到检查点（issue #395 / ADR-0090）：fork 会话到该检查点前最近的 turn
+      收口（零拷贝，ADR-0084）+ 把工作区文件 reset 回检查点快照，返回新分支
+      会话 id——切换视图由渲染层随后走 resumeSession。checkpointSeq 是
+      checkpoint_created 事件的 seq。turn 进行中 reject；文件回退是破坏性
+      动作，确认门在渲染层（同删除会话的模式） */
+  rewindToCheckpoint(sessionId: string, checkpointSeq: number): Promise<string>;
   /** 切模型。生效凭证是流回来的 model_changed 事件，不是这个 Promise。
       返回值是换完之后的 thinking 档——新型号的挡位表未必装得下旧的那一档，
       主进程钳过一次，渲染层照它更新镜像（两边各钳各的迟早会分叉） */
@@ -551,10 +568,30 @@ export interface ShellBridge {
   gitGraphCommit(repoDir: string, hash: string): Promise<GitCommitResult>;
   /** 本地分支列表 + 当前分支(只读) */
   gitBranches(repoDir: string): Promise<GitBranchesResult>;
-  /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014) */
-  gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
+  /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014)。
+      sessionId 给了就在那条会话的日志上追加一条 branch_checked_out(ADR-0093):
+      时间线要画这一行,而投影必须可从日志推导。切换失败或原地切(from === branch)
+      不落——日志只记发生过的事 */
+  gitCheckout(repoDir: string, branch: string, sessionId?: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** Files 面板(只读):列一层目录。全显——node_modules/out/点文件都列,
+      不卡的前提是一次只列一层(懒加载),不是靠过滤 */
+  filesList(root: string, relDir: string): Promise<FilesResult<FileEntry[]>>;
+  /** 文件名 fuzzy(content:false)或内容搜索(content:true,? 前缀触发)。
+      跟树一样全显:被 .gitignore 忽略的、隐藏的一并搜。结果有上限
+      (名字 500 / 内容 200),不靠忽略规则控体量 */
+  filesSearch(root: string, query: string, opts: FilesSearchOpts): Promise<FilesResult<FileHit[]>>;
+  /** 只读预览。>512KB 截断,二进制不预览(kind: "binary",detail 是字节数) */
+  filesRead(root: string, rel: string): Promise<FilesResult<FilePreview>>;
+  /** 交给系统:open = 默认程序,folder = 在 Finder 中显示,app = 指定编辑器。
+      同样过根内校验;appName 必须是 filesEditors() 给过的名字 */
+  filesReveal(
+    root: string, rel: string, how: "open" | "folder" | "app", appName?: string
+  ): Promise<FilesResult<null>>;
+  /** 本机装了哪些编辑器(固定名单探 /Applications 与 ~/Applications)。
+      现探不缓存:装完新编辑器不该重启 app 才看得见 */
+  filesEditors(): Promise<EditorApp[]>;
   /** 告诉主进程"我此刻在哪个工作区":它据此算 repoKey/分支并向好友广播(issue #167)。
       null = 没有会话。只读 git,不写;主进程按已知会话围栏校验这个路径 */
   setPresenceWorkspace(repoDir: string | null): Promise<void>;
@@ -588,6 +625,25 @@ export interface ShellBridge {
   browserPickElement(sessionId: string): Promise<BrowserPickedElement | null>;
   /** 退出选取模式(按钮再点一下 / 面板卸载)。页面没在选取时是 no-op */
   browserCancelPick(sessionId: string): Promise<void>;
+
+  // iOS 模拟器面板(issue #401)。不带 sessionId:一台机器只有一套模拟器,
+  // 人和所有会话里的 agent 共用同一台设备(与浏览器一会话一个相反)
+  /** 当前状态快照(设备列表 / 选中哪台 / 开着没 / 输入通道可用没) */
+  simState(): Promise<SimState>;
+  /** 选一台设备当"当前设备"。null = 不选 */
+  simSelect(udid: string | null): Promise<void>;
+  simBoot(udid?: string): Promise<void>;
+  simShutdown(udid?: string): Promise<void>;
+  /** 开/停画面轮询。面板挂载时开,卸载时停——没人看的时候不该一直截图 */
+  simStartStream(): Promise<void>;
+  simStopStream(): Promise<void>;
+  /** 面板上点一下(坐标 = 截图像素) */
+  simTap(x: number, y: number): Promise<void>;
+  simSwipe(x: number, y: number, x2: number, y2: number, durationMs?: number): Promise<void>;
+  simType(text: string): Promise<void>;
+  simButton(button: SimButton): Promise<void>;
+  /** 弹系统的「辅助功能」授权框。返回授权后的状态 */
+  simRequestInputPermission(): Promise<boolean>;
   /** ＋ 按钮:弹系统文件选择器(多选),主进程分类(图片入库/文档转 md/文本读内容/拒收)。
       用户取消 = 空数组 */
   pickAttachments(): Promise<StagedAttachment[]>;
@@ -601,6 +657,11 @@ export interface ShellBridge {
   getAccount(): Promise<AccountInfo>;
   /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
   signIn(provider: "google" | "github"): Promise<void>;
+  /** 邮箱密码登录：成功由 onAccountChanged 推账号，失败（密码错等）抛可读错误 */
+  signInWithPassword(email: string, password: string): Promise<void>;
+  /** 邮箱密码注册："signed-in" = 注册即登录；"confirm-email" = 去邮箱点确认
+      链接后回来登录（此时还不是登录态）。失败（邮箱已注册等）抛可读错误 */
+  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email">;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
   /** 本人在 profiles 表里的那一行（好友看到的就是它）。未登录 → value: null。
@@ -676,6 +737,11 @@ export interface ShellBridge {
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
   onBrowserState(cb: (info: BrowserTabInfo) => void): Unsubscribe;
+  /** 模拟器状态推送(设备列表/选中/开关机/授权状态变了) */
+  onSimState(cb: (s: SimState) => void): Unsubscribe;
+  /** 模拟器画面推送。一帧一整张 PNG(base64):面板直接塞进 <img>,
+      不做差分——差分要解码,收益不抵复杂度 */
+  onSimFrame(cb: (f: SimFrame) => void): Unsubscribe;
   /** 活跃会话的工具声明变了（issue #141）。BootInfo.toolDefs 是 boot/resume 那一刻
       的快照，而 agent.toolDefs 是活 getter：用户建出第一个子智能体、或者一台 MCP
       server 连上/掉线，主进程那份当场就变了，渲染层那份镜像却要等下一次 boot。
@@ -857,7 +923,10 @@ export const CHANNELS = {
   resumeSession: "otter:resumeSession",
   readSessionEvents: "otter:readSessionEvents",
   deleteSession: "otter:deleteSession",
+  archiveSession: "otter:archiveSession",
+  unarchiveSession: "otter:unarchiveSession",
   renameSession: "otter:renameSession",
+  rewindToCheckpoint: "otter:rewindToCheckpoint",
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
@@ -904,6 +973,11 @@ export const CHANNELS = {
   gitBranches: "otter:gitBranches",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
+  filesList: "otter:filesList",
+  filesSearch: "otter:filesSearch",
+  filesRead: "otter:filesRead",
+  filesReveal: "otter:filesReveal",
+  filesEditors: "otter:filesEditors",
   setPresenceWorkspace: "otter:setPresenceWorkspace",
   terminalList: "otter:terminalList",
   terminalOpen: "otter:terminalOpen",
@@ -922,6 +996,19 @@ export const CHANNELS = {
   browserClose: "otter:browserClose",
   browserPickElement: "otter:browserPickElement",
   browserCancelPick: "otter:browserCancelPick",
+  simState: "otter:simState",
+  simSelect: "otter:simSelect",
+  simBoot: "otter:simBoot",
+  simShutdown: "otter:simShutdown",
+  simStartStream: "otter:simStartStream",
+  simStopStream: "otter:simStopStream",
+  simTap: "otter:simTap",
+  simSwipe: "otter:simSwipe",
+  simType: "otter:simType",
+  simButton: "otter:simButton",
+  simRequestInputPermission: "otter:simRequestInputPermission",
+  simStatePush: "otter:simStatePush",
+  simFrame: "otter:simFrame",
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
@@ -929,6 +1016,8 @@ export const CHANNELS = {
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",
+  signInWithPassword: "otter:signInWithPassword",
+  signUpWithPassword: "otter:signUpWithPassword",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
   myProfile: "otter:myProfile",

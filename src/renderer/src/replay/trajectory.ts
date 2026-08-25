@@ -85,6 +85,12 @@ function systemSummary(e: SessionEvent): string {
       return `session_autotitled → ${e.title}`;
     case "subagent_spawned":
       return `subagent_spawned ${e.agent}`;
+    case "checkpoint_created":
+      return `checkpoint ${e.checkpointId.slice(0, 8)}`;
+    case "workspace_restored":
+      return `workspace_restored ← ${e.checkpointId.slice(0, 8)}`;
+    case "branch_checked_out":
+      return e.from ? `branch ${e.from} → ${e.branch}` : `branch → ${e.branch}`;
     default:
       return e.type;
   }
@@ -167,6 +173,7 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
       case "image_described":
       case "subagent_briefed":
       case "session_archived":
+      case "session_unarchived":
         break;
 
       default:

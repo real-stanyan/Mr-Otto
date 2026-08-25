@@ -150,12 +150,25 @@ export interface SessionCreatedEvent extends SessionEventBase {
   };
 }
 
-/** 额外 3：会话归档 —— 遗留类型。
-    早期版本"删除" = 追加此标记 + 列表滤掉；现版本删除改为整会话物理抹除
-    （EventStore.purge，ADR-0002），不再产生此事件。
-    类型保留：旧日志里可能有它，必须永远可重放（schema 向后兼容硬规则）。 */
+/** 额外 3：会话归档（ADR-0087 复活；曾为遗留类型）。
+    早期版本"删除" = 追加此标记 + 列表滤掉；ADR-0002 后删除改为物理抹除
+    （EventStore.purge）。ADR-0087 把归档作为独立功能加回：
+    归档 = 从主列表收进「已归档」区 + 日志完整保留 + 可恢复（session_unarchived）。
+    归档状态 = 本会话最后一条 archived/unarchived 事件说了算。 */
 export interface SessionArchivedEvent extends SessionEventBase {
   type: "session_archived";
+  /** 谁归档的，决定跨会话召回（session_search）可见性：
+      - "user"：用户手动归档——只从列表收起，仍可被召回（记忆不丢，ADR-0087）
+      - "system"：系统保留会话（如 sys-memory-edits）——列表和召回都排除
+      - 缺席：ADR-0087 之前写下的旧事件，按 "system" 解读（旧日志全部来自
+        早期"删除"或系统保留会话，两者本意都是彻底藏起——安全默认） */
+  reason?: "user" | "system";
+}
+
+/** 额外 3b：取消归档（ADR-0087）——把会话从「已归档」区恢复回主列表。
+    与 session_archived 成对：最后一条胜出（归档→恢复→再归档 = 三条事件，全留）。 */
+export interface SessionUnarchivedEvent extends SessionEventBase {
+  type: "session_unarchived";
 }
 
 /** 额外 7：用户手动改名（/rename）。
@@ -208,6 +221,11 @@ export interface TurnEndedEvent extends SessionEventBase {
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
       推得出的不落盘（同一原则砍掉了 turn_started） */
   error?: string;
+  /** 仅 outcome = "error"：错误分类（issue #389，抛错处贴的 errorClass）。
+      error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错
+      那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
+      缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
+  errorClass?: "rate-limit" | "retryable" | "fatal";
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md
@@ -413,6 +431,54 @@ export interface RequestEnvelopeEvent extends SessionEventBase {
   tools: { name: string; description: string; parameters: object }[];
 }
 
+/** 后台任务完成（issue #389，dsh completion re-injection 对照）。
+    审计注记：哪个后台任务（bash run_in_background）、什么命令、什么退出码、
+    何时完成。**模型不消费**——模型可见的载体是回注 turn 的 user_message
+    （文案带完整输出，"先落盘再喂模型"由 runTurn 既有路径满足），这条事件
+    是把「任务其实是那时完成的」与「回注 turn 是这时开始的」两个时刻分开
+    记账的凭据（turn 在跑时完成的任务会攒到收口后才回注）。
+    ignorable：旧版本跳过它照常重放——不参与模型视野推导 */
+export interface BackgroundTaskCompletedEvent extends SessionEventBase {
+  type: "background_task_completed";
+  taskId: string;
+  cmd: string;
+  exitCode: number;
+}
+
+/** 工作区检查点（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
+    每个用户 turn 开跑前，装配根把工作区文件快照进影子 git，id 落此事件——
+    「回到这一步」的文件侧锚点（对话侧锚点是它前面的 turn_ended，fork 用）。
+    模型不消费（投影丢弃）；ignorable：旧版本跳过照常重放——它不参与模型
+    视野推导。快照本体在 ~/.mr-otto/checkpoints（内容寻址），日志只存 id
+    ——重放依赖快照库（attachments 同款取舍，见 docs/adr/0009） */
+export interface CheckpointCreatedEvent extends SessionEventBase {
+  type: "checkpoint_created";
+  checkpointId: string;
+}
+
+/** 工作区文件被恢复到某个检查点（issue #395）。落在**恢复动作产生的新分支
+    会话**里（fork + restore 成对发生）：这个分支的对话前缀与磁盘状态从这一刻
+    对齐。模型不消费；ignorable 同 checkpoint_created。
+    fromSessionId = 从哪个会话的时间线上发起的恢复（审计溯源） */
+export interface WorkspaceRestoredEvent extends SessionEventBase {
+  type: "workspace_restored";
+  checkpointId: string;
+  fromSessionId?: string;
+}
+
+/** 分支切换（issue #411）：用户在顶栏切了 git 分支，脚下这一层代码底座换了。
+    落日志的理由不是审计洁癖，是硬规则：时间线要画出这一行，而任何投影
+    （UI 的也算）必须可从日志推导——渲染层自己记一份 = 刷新即失忆，且日志
+    与屏幕两份说法。模型不消费（投影丢弃：分支名不是对话内容，工作区的实际
+    内容由文件工具当场读到）；ignorable：旧版本跳过它照常重放。
+    from 缺席 = 切之前是 detached HEAD，或没问出来（不编一个名字上去）。 */
+export interface BranchCheckedOutEvent extends SessionEventBase {
+  type: "branch_checked_out";
+  repoDir: string;               // 哪个仓库切的（会话的工程文件夹）
+  branch: string;                // 切到哪
+  from?: string;                 // 切之前在哪
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -423,6 +489,7 @@ export type SessionEvent =
   | ToolResultEvent
   | ModelChangedEvent
   | SessionArchivedEvent
+  | SessionUnarchivedEvent
   | SessionRenamedEvent
   | ContextCompactedEvent
   | ToolExecutionStartedEvent
@@ -440,7 +507,11 @@ export type SessionEvent =
   | SessionAutoTitledEvent
   | ToolHookEvent
   | ProjectInstructionsEvent
-  | RequestEnvelopeEvent;
+  | RequestEnvelopeEvent
+  | BackgroundTaskCompletedEvent
+  | CheckpointCreatedEvent
+  | WorkspaceRestoredEvent
+  | BranchCheckedOutEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -461,6 +532,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_result: true,
   model_changed: true,
   session_archived: true,
+  session_unarchived: true,
   session_renamed: true,
   context_compacted: true,
   tool_execution_started: true,
@@ -479,6 +551,10 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_hook: true,
   project_instructions: true,
   request_envelope: true,
+  background_task_completed: true,
+  checkpoint_created: true,
+  workspace_restored: true,
+  branch_checked_out: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

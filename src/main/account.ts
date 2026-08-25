@@ -31,6 +31,14 @@ export type SupabaseLike = {
       options: { redirectTo: string; skipBrowserRedirect: boolean };
     }): Promise<{ data: { url: string | null }; error: unknown }>;
     exchangeCodeForSession(code: string): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
+    signInWithPassword(args: {
+      email: string;
+      password: string;
+    }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
+    signUp(args: {
+      email: string;
+      password: string;
+    }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
     // 用 authStorage 里恢复出来的 session 换一个当下有效的 user；离线/过期时 user 为 null。
@@ -138,6 +146,32 @@ export class AccountManager {
       throw new Error("signInWithOAuth 未返回授权 URL");
     }
     this.openExternal(data.url);
+  }
+
+  async signInWithPassword(email: string, password: string): Promise<void> {
+    const { data, error } = await this.client.auth.signInWithPassword({ email, password });
+    if (error) {
+      throw new Error(errorMessage(error));
+    }
+    this.account = toAccountInfo(data.user);
+    this.onChange(this.account);
+  }
+
+  /**
+   * 邮箱密码注册。两种正常结局，调用方据此提示用户：
+   * - "signed-in"：服务端免邮箱验证（autoconfirm），注册即登录，已触发 onChange。
+   * - "confirm-email"：服务端要求邮箱验证（user 有、session 无），去邮箱点完
+   *   确认链接后回来用密码登录；此时**不是**登录态，不触发 onChange。
+   */
+  async signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email"> {
+    const { data, error } = await this.client.auth.signUp({ email, password });
+    if (error) {
+      throw new Error(errorMessage(error));
+    }
+    if (!data.session) return "confirm-email";
+    this.account = toAccountInfo(data.user);
+    this.onChange(this.account);
+    return "signed-in";
   }
 
   async handleCallback(url: string): Promise<void> {

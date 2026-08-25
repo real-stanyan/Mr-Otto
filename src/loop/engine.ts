@@ -10,6 +10,7 @@ import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { DeltaKind, ModelAdapter, ToolDefinition } from "../model/adapter.js";
+import { errorClassOf } from "../model/errorClass.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
 import type { Tool } from "../tools/tool.js";
 import { withAbortSignal, withExecOutput, type ExecutionWorld } from "../world/executionWorld.js";
@@ -67,8 +68,10 @@ export interface LoopEngineOptions {
       这里每轮过滤声明表时读。不给 = deferred 工具永不可见（等同 hidden） */
   deferredExposed?: ReadonlySet<string>;
   /** Pre/PostToolUse 钩子（issue #350）。跑在审批门与执行器之间：拦截/改参/
-      拒绝/反馈四种裁决都由 engine 统一落 tool_hook 事件。不给 = 无钩子 */
-  hooks?: ToolHook[];
+      拒绝/反馈四种裁决都由 engine 统一落 tool_hook 事件。不给 = 无钩子。
+      可给 getter（issue #395 用户钩子）：每次工具调用现取——用户改了
+      hooks.json 下一次调用立即生效（与 execPolicy 现读同款热更新语义） */
+  hooks?: ToolHook[] | (() => ToolHook[]);
   /** 单调守卫（issue #383）：Pre 钩子之后、执行留痕之前的 deny-only 闸。
       看到的是最终生效参数（过完审批改参与钩子改参）。不给 = 无守卫 */
   guards?: ToolGuard[];
@@ -311,9 +314,10 @@ export class LoopEngine {
     return outcome;
   }
 
-  /** 匹配这把工具的钩子（注册序即执行序） */
+  /** 匹配这把工具的钩子（注册序即执行序）。getter 形态现取现算（热更新） */
   private hooksFor(toolName: string): ToolHook[] {
-    return (this.opts.hooks ?? []).filter((h) => hookMatches(h, toolName));
+    const hooks = typeof this.opts.hooks === "function" ? this.opts.hooks() : (this.opts.hooks ?? []);
+    return hooks.filter((h) => hookMatches(h, toolName));
   }
 
   /** 请求信封落盘（issue #383）：信封与上一条不同才落。比较键 = 信封内容的
@@ -485,11 +489,14 @@ export class LoopEngine {
         this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
         return "aborted";
       }
+      // errorClass = 抛错处（adapter）贴的分类（issue #389）；error 存原文不动
+      const errorClass = errorClassOf(err);
       this.append({
         ...this.env(),
         type: "turn_ended",
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),
+        ...(errorClass ? { errorClass } : {}),
       });
       throw err;
     } finally {

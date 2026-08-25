@@ -232,6 +232,39 @@ function Swimlanes({
 
 /* ─── 详情面板 ─── */
 
+/** 「回到这一步」（issue #395 / ADR-0090）：fork 会话（零拷贝）+ 文件 reset
+    回检查点，成功后直接切进新分支会话。破坏性动作走 confirm（同删除会话的模式） */
+function RewindButton({ checkpointId, seq }: { checkpointId: string; seq: number }) {
+  const sessionId = useChat((s) => s.sessionId);
+  const resume = useChat((s) => s.resume);
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      disabled={busy}
+      className="mt-4 w-full text-[12.5px] px-3 py-[7px] rounded-lg border border-border bg-foreground/[0.04] hover:bg-foreground/[0.08] transition-colors disabled:opacity-50 disabled:cursor-wait"
+      onClick={async () => {
+        if (
+          !confirm(
+            `回到这一步？\n将从这里分叉出一个新会话（原会话原样保留），并把工作区文件恢复到检查点 ${checkpointId.slice(0, 8)} 时刻。\n此后对存过档文件的改动会被覆盖；从未进过检查点的新文件保留。`
+          )
+        )
+          return;
+        setBusy(true);
+        try {
+          const newId = await window.otter.rewindToCheckpoint(sessionId, seq);
+          await resume(newId);
+        } catch (err) {
+          alert(`回退失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? "回退中…" : "⤺ 回到这一步（分叉会话 + 恢复文件）"}
+    </button>
+  );
+}
+
 function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
   const ev = row.ev;
   const tag = KIND_TAG[row.kind];
@@ -318,6 +351,9 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
               <span className="font-mono tabular-nums">{formatTs(row.started?.ts ?? row.ts)}</span>
               {dur !== null && (<><span className={KV_K}>Duration</span><span className="font-mono tabular-nums">{formatMs(dur)}</span></>)}
             </div>
+            {ev.type === "checkpoint_created" && (
+              <RewindButton checkpointId={ev.checkpointId} seq={ev.seq} />
+            )}
           </TabsContent>
 
           <TabsContent value="payload">

@@ -51,6 +51,65 @@ export function ottoSlashFormatter(commandNames: readonly string[]): Unstable_Di
   return makeFormatter("/", "command", commandNames);
 }
 
+/**
+ * `@路径` 的那一份(type = "path")。
+ *
+ * 和 `$skill` / `/命令` 不是同一种判定:那两种有名单可比对,认不出就当普通字符;
+ * 路径**没有名单**——工作区里任何一条路径都可能是真的,而且用户手打一半的路径
+ * 也该跟着亮。所以这里靠**形状**:
+ *   ① `@` 前面必须是行首或空白 —— 挡住 foo@bar.com 这类邮箱
+ *   ② 后面至少一个非空白字符 —— 光一个 `@` 不闪
+ *   ③ 吃到下一个空白为止,末尾的中英文标点不算路径的一部分(`@a.md。`)
+ *
+ * 代价是会认错:`@某人` 这种非路径写法也会被画成 chip。接受——它进不了模型
+ * 上下文,只是输入框里的一层高亮,而漏亮真路径比错亮一个词更烦人。
+ */
+export function ottoPathFormatter(): Unstable_DirectiveFormatter {
+  return {
+    serialize: (item: Unstable_TriggerItem) => `@${item.id} `,
+
+    parse(text: string): readonly Unstable_DirectiveSegment[] {
+      const out: Unstable_DirectiveSegment[] = [];
+      let plain = "";
+      let i = 0;
+      const flush = (): void => {
+        if (plain !== "") {
+          out.push({ kind: "text", text: plain });
+          plain = "";
+        }
+      };
+
+      while (i < text.length) {
+        const atBoundary = i === 0 || /\s/.test(text[i - 1]!);
+        if (text[i] !== "@" || !atBoundary) {
+          plain += text[i];
+          i++;
+          continue;
+        }
+        let j = i + 1;
+        while (j < text.length && !/\s/.test(text[j]!)) j++;
+        // 句末标点不属于路径:`看 @a.md。` 的路径是 a.md
+        while (j > i + 1 && TRAILING_PUNCT.test(text[j - 1]!)) j--;
+        const path = text.slice(i + 1, j);
+        if (path === "") {
+          plain += text[i];
+          i++;
+          continue;
+        }
+        flush();
+        out.push({ kind: "mention", type: "path", label: `@${path}`, id: path });
+        i = j;
+      }
+
+      flush();
+      return out.length === 0 ? [{ kind: "text", text }] : out;
+    },
+  };
+}
+
+/** 跟在路径后面的这些字符是句子的一部分,不是路径的一部分 */
+const TRAILING_PUNCT = /[.,;:!?)\]}，。；：、！？）】」]/;
+
 function makeFormatter(
   sigil: string,
   type: string,

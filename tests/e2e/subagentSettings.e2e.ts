@@ -13,15 +13,15 @@ import { join } from "node:path";
 
 import { CONFIG_DIR, expectNoRendererErrors, launchOtto, openSettings } from "./harness.js";
 
-test("#142-1/2/3 空态讲清楚怎么建；新建落盘；中文名在发 IPC 前就被挡住", async () => {
+test("#142-1/2/3 空态有交代；新建落盘；中文名在发 IPC 前就被挡住", async () => {
   const otto = await launchOtto();
   try {
     const { win, userAgentsDir } = otto;
     await openSettings(win, "子智能体");
 
-    // 1. 空态不能只是「空」：要说清楚 subagent 是干什么的、怎么建
+    // 1. 空态要说清楚这一栏是空的（原先那句"怎么建"的引导文案随 f250f1d 一并删了，
+    //    界面上只留标题 + 新建钮，断言跟着收窄到还在的那半）
     await expect(win.getByText("你还没定义自己的子智能体")).toBeVisible();
-    await expect(win.getByText("主 agent 靠每个子智能体的 description 挑人")).toBeVisible();
 
     // 2. 新建 → ASCII 名字 → 提交：回列表、出现新行、磁盘上有带 frontmatter 的文件
     await win.getByRole("button", { name: "新建" }).first().click();

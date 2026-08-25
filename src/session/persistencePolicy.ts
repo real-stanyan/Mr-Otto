@@ -51,6 +51,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "tool_result": // 终态：完整输出，覆盖 tool_output 拼出的预览
     case "model_changed":
     case "session_archived":
+    case "session_unarchived": // 归档/恢复都是列表投影的事实来源（ADR-0087）
     case "session_renamed":
     case "context_compacted":
     case "tool_execution_started":
@@ -69,6 +70,10 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "tool_hook": // 钩子干预是"模型视野被改写"的事实，投影推导依赖它
     case "project_instructions": // 注入快照（issue #353）：model-visible means logged
     case "request_envelope": // 请求信封（issue #383）：请求可重构性的凭据，log-only 审计快照
+    case "background_task_completed": // 后台任务完成（issue #389）：完成时刻的审计事实，模型可见载体是回注 user_message
+    case "checkpoint_created": // 工作区检查点（issue #395）：回退锚点，id 推不出必须落
+    case "workspace_restored": // 文件恢复事实（issue #395）：分支会话的磁盘对齐凭据
+    case "branch_checked_out": // 分支切换（issue #411）：时间线上那一行的唯一事实来源，推不出必须落
       return true;
 
     // ── transient：live 投影的临时燃料，落盘即违反「终态覆盖」契约 ──

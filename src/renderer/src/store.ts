@@ -251,8 +251,13 @@ interface ChatState {
   /** 终端面板开关(与 Protocol / Git Graph / DM 互斥:同一个右侧槽位)。
       注意别和 ShellBridge 的 terminalOpen(开一个新终端)混为一谈 */
   terminalPanelOpen: boolean;
+  /** Files 面板开关(同一个右侧槽位,与上面这些互斥)。
+      面板只读,内容不进事件日志也不进模型上下文——同终端面板(ADR-0031) */
+  filesPanelOpen: boolean;
   /** 浏览器面板开关(同一个右侧槽位,与上面这些互斥) */
   browserPanelOpen: boolean;
+  /** iOS 模拟器面板(issue #401)。与浏览器/终端同一块右侧槽位,互斥 */
+  simPanelOpen: boolean;
   /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
       不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
   workTree: GitStatusResult | null;
@@ -458,11 +463,17 @@ interface ChatState {
   openGitGraph(): Promise<void>;
   closeGitGraph(): void;
   /** 打开终端面板:同一会话已有跑着的终端就复用,没有才开新的(TerminalView 里做) */
+  openFilesPanel(): void;
+  closeFilesPanel(): void;
   openTerminalPanel(): void;
   closeTerminalPanel(): void;
   /** 打开浏览器面板:与终端同一块右侧槽位,互斥 */
   openBrowserPanel(): void;
   closeBrowserPanel(): void;
+  /** 打开 iOS 模拟器面板:同一块槽位,互斥。设备/画面的状态不进 store——
+      它们住在主进程的 hub 里,面板挂载时拉一次快照 + 订推送(同 BrowserPanel) */
+  openSimPanel(): void;
+  closeSimPanel(): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
   refreshGitGraph(silent?: boolean): Promise<void>;
   /** 滚近底部时把窗口 +300 整窗重拉。到底/在拉/没图时是空操作 */
@@ -486,6 +497,10 @@ interface ChatState {
   refreshProviderStats(days: number): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
+  /** 邮箱密码登录；成功走 onAccountChanged，失败落 error。回 true = 没抛错 */
+  signInWithPassword(email: string, password: string): Promise<boolean>;
+  /** 邮箱密码注册；"signed-in"|"confirm-email" 由 UI 提示，出错回 null（error 已置） */
+  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email" | null>;
   signOut(): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
@@ -498,6 +513,12 @@ interface ChatState {
       不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
   loadSubagentLog(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  /** 归档/恢复（ADR-0087）：归档收进「已归档」区（正看着的会话被归档 → 回欢迎页），
+      恢复回主列表。都只是状态事件，日志不动 */
+  archiveSession(sessionId: string): Promise<void>;
+  unarchiveSession(sessionId: string): Promise<void>;
+  /** 侧栏菜单改任意会话的标题（rename 只改当前会话） */
+  renameSessionById(sessionId: string, title: string): Promise<void>;
   /** skill = 随消息注入的 skill 名（$ 指令）；主进程落 skill_invoked 后才跑 turn。
       skillArgs = `$名字(参数)` 里的参数，随事件进投影头 */
   send(text: string, skill?: string, skillArgs?: string): Promise<void>;
@@ -659,7 +680,8 @@ export const enterChat = (info: BootInfo) => ({
   gitGraphOpen: false, // 同上
   friendChat: null, // 同上
   terminalPanelOpen: false, // 同上
-  browserPanelOpen: false, // 同上
+  browserPanelOpen: false, simPanelOpen: false, // 同上
+  filesPanelOpen: false, // 同上
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   // 同上:composer 是按会话摆的,填到一半的 MCP prompt 参数卡跟着旧会话走,
@@ -734,7 +756,8 @@ export const useChat = create<ChatState>((set, get) => ({
   gitCommitView: null,
   panelWide: false,
   terminalPanelOpen: false,
-  browserPanelOpen: false,
+  browserPanelOpen: false, simPanelOpen: false,
+  filesPanelOpen: false,
   workTree: null,
   workTreeDismissed: null,
   branchesByDir: {},
@@ -816,7 +839,8 @@ export const useChat = create<ChatState>((set, get) => ({
     if (section === "keys") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
+        filesPanelOpen: false,
         keyStatus: await window.otter.keyStatus(),
       });
       // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
@@ -825,19 +849,22 @@ export const useChat = create<ChatState>((set, get) => ({
     } else if (section === "skills") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
+        filesPanelOpen: false,
         skills: await window.otter.listSkills(),
       });
     } else if (section === "mcp") {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
+        filesPanelOpen: false,
         mcpServers: await window.otter.listMcpServers(),
       });
     } else {
       set({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false,
+        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
+        filesPanelOpen: false,
       });
       // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）。
       // ADR-0085 之后账号页没有额度卡,这一趟网关也省了(打过去只会白开一个 0 额度桶)
@@ -1117,7 +1144,8 @@ export const useChat = create<ChatState>((set, get) => ({
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({
       protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
-      terminalPanelOpen: false, browserPanelOpen: false,
+      terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
+      filesPanelOpen: false,
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
@@ -1200,7 +1228,8 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
       // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
       gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
-      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一块主区
+      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false, // 互斥:同一块主区
+      filesPanelOpen: false,
     });
     if (repo) await get().refreshGitGraph();
   },
@@ -1211,7 +1240,8 @@ export const useChat = create<ChatState>((set, get) => ({
     set({
       terminalPanelOpen: true,
       // 互斥:同一块右侧槽位
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null, browserPanelOpen: false,
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null, browserPanelOpen: false, simPanelOpen: false,
+      filesPanelOpen: false,
     }),
 
   closeTerminalPanel: () => set({ terminalPanelOpen: false }),
@@ -1221,9 +1251,30 @@ export const useChat = create<ChatState>((set, get) => ({
       browserPanelOpen: true,
       // 互斥:同一块右侧槽位
       terminalPanelOpen: false, protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
+      filesPanelOpen: false,
     }),
 
   closeBrowserPanel: () => set({ browserPanelOpen: false }),
+
+  openSimPanel: () =>
+    set({
+      simPanelOpen: true,
+      // 互斥:同一块右侧槽位
+      browserPanelOpen: false, terminalPanelOpen: false, protocolOpen: false,
+      gitGraphOpen: false, settingsSection: null, friendChat: null, filesPanelOpen: false,
+    }),
+
+  closeSimPanel: () => set({ simPanelOpen: false }),
+
+  openFilesPanel: () =>
+    set({
+      filesPanelOpen: true,
+      // 互斥:同一块右侧槽位
+      terminalPanelOpen: false, browserPanelOpen: false, protocolOpen: false,
+      gitGraphOpen: false, settingsSection: null, friendChat: null, simPanelOpen: false,
+    }),
+
+  closeFilesPanel: () => set({ filesPanelOpen: false }),
 
   async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;
@@ -1323,7 +1374,10 @@ export const useChat = create<ChatState>((set, get) => ({
     if (get().checkoutBusyDir) return; // 一次只切一个,防连点把仓库切成薛定谔态
     set({ checkoutBusyDir: dir, checkoutError: null });
     try {
-      const result = await window.otter.gitCheckout(dir, branch);
+      // 当前会话在场就把它带上:主进程据此往日志追加 branch_checked_out,
+      // 时间线上那一行才有事实来源(ADR-0093)。没有会话(欢迎页)就只切不记
+      const sid = get().sessionId;
+      const result = await window.otter.gitCheckout(dir, branch, sid || undefined);
       if (result.ok) {
         await get().loadBranches(dir);
         // 图开着的话顺带刷新:切完分支还看着旧图会误导
@@ -1389,6 +1443,27 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async signInWithPassword(email, password) {
+    set({ error: null });
+    try {
+      await window.otter.signInWithPassword(email, password); // 生效凭证走 onAccountChanged
+      return true;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
+  },
+
+  async signUpWithPassword(email, password) {
+    set({ error: null });
+    try {
+      return await window.otter.signUpWithPassword(email, password);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
+  },
+
   async signOut() {
     try {
       await window.otter.signOut();
@@ -1431,7 +1506,8 @@ export const useChat = create<ChatState>((set, get) => ({
   async openFriendChat(profile) {
     set((s) => ({
       friendChat: profile,
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, browserPanelOpen: false, // 互斥:同一右侧槽位
+      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false, // 互斥:同一右侧槽位
+      filesPanelOpen: false,
       unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
       friendError: null,
     }));
@@ -1876,7 +1952,8 @@ export const useChat = create<ChatState>((set, get) => ({
       gitGraphOpen: false, // 同上
       friendChat: null, // 同上
       terminalPanelOpen: false, // 同上
-      browserPanelOpen: false, // 同上
+      browserPanelOpen: false, simPanelOpen: false, // 同上
+      filesPanelOpen: false, // 同上
       error: null,
     }),
 
@@ -1941,6 +2018,43 @@ export const useChat = create<ChatState>((set, get) => ({
       // 被 dispose 掉(Task 6 review finding 5 附带项,虽然复核没能实际撞出崩溃,
       // 但顺序反过来更脆)
       for (const t of terminals) terminalRegistry.dispose(t.id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async archiveSession(sessionId) {
+    try {
+      // 主进程 archiveSession 会注销活资源（含 pty），流程同 deleteSession：
+      // 终端列表在归档前问、xterm 实例在状态落地后 dispose（顺序理由见上）
+      const terminals = await window.otter.terminalList(sessionId);
+      await window.otter.archiveSession(sessionId);
+      const sessions = await window.otter.listSessions();
+      if (get().sessionId === sessionId) {
+        // 归档的是正看着的会话 → 回欢迎页。队列留着:会话还在,恢复后照常发
+        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+      } else {
+        set({ sessions });
+      }
+      for (const t of terminals) terminalRegistry.dispose(t.id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async unarchiveSession(sessionId) {
+    try {
+      await window.otter.unarchiveSession(sessionId);
+      set({ sessions: await window.otter.listSessions() }); // 行从「已归档」区回主列表
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async renameSessionById(sessionId, title) {
+    try {
+      await window.otter.renameSession(sessionId, title);
+      set({ sessions: await window.otter.listSessions() });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
