@@ -26,14 +26,19 @@ config.resolver.nodeModulesPaths = [
 //    是 `.ts` —— tsc 与 node 都认这套(module: nodenext),metro 不认:
 //    它会照字面去找 events.js,找不到就报 "Unable to resolve"。
 //    这一条只对**相对路径**生效,不碰 node_modules 里任何东西。
+//    .ts 和 .tsx 都要试:带 JSX 的模块(组件层)只能是 .tsx,而它的 import
+//    写出来同样是 './ui.js' —— 只试 .ts 的话组件层永远解析不到。
 const upstream = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName.startsWith(".") && moduleName.endsWith(".js")) {
-    try {
-      return context.resolveRequest(context, moduleName.slice(0, -3) + ".ts", platform);
-    } catch {
-      // 真的是一个 .js 文件(或者 .ts 那个也不存在):照原样再走一遍,
-      // 让 metro 自己报它本来会报的错 —— 别把解析失败伪装成"找不到 .ts"
+    const stem = moduleName.slice(0, -3);
+    for (const ext of [".ts", ".tsx"]) {
+      try {
+        return context.resolveRequest(context, stem + ext, platform);
+      } catch {
+        // 试下一个扩展名;都不中就照原样再走一遍,让 metro 自己报它本来会报的错
+        // —— 别把解析失败伪装成"找不到 .ts"
+      }
     }
   }
   return (upstream ?? context.resolveRequest)(context, moduleName, platform);
