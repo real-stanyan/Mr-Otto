@@ -54,16 +54,6 @@ export function Warn({ children }: { children: React.ReactNode }) {
   const { c } = usePalette();
   return <Text style={{ color: c.warn, fontWeight: "600" }}>{children}</Text>;
 }
-/** 路径、ID 这类要逐字看的东西 */
-export function Mono({ children }: { children: React.ReactNode }) {
-  const { c } = usePalette();
-  return (
-    <Text style={{ ...type.footnote, color: c.mutedForeground, fontFamily: MONO }} numberOfLines={2}>
-      {children}
-    </Text>
-  );
-}
-
 /* ── 面 ───────────────────────────────────────────────── */
 
 /** 浮在地面之上的一块板。桌面那侧就是 --card 压在 --background 上 */
@@ -142,9 +132,42 @@ export function CodeTiles({ code }: { code: string }) {
   );
 }
 
+/**
+ * 元信息。**等宽 + 暗**是桌面那侧最认得出的一条:`1 步 · 120 tokens`、
+ * `elapsed 13ms tok/s 8000`、模型名,全走这个样式。跟着它,手机端才读成同一个产品。
+ */
+export function Meta({ children }: { children: React.ReactNode }) {
+  const { c } = usePalette();
+  return (
+    <Text style={{ ...type.footnote, color: c.mutedForeground, fontFamily: MONO }}>{children}</Text>
+  );
+}
+
+/** 行首那个小方块。桌面的 permission-grant 就是 `size-7 rounded-lg bg-foreground/[0.05]`
+    里放一个图标 —— 手机端没装图标库(要 native 的 expo-font),放状态点或一个等宽字符 */
+export function Tile({ children }: { children: React.ReactNode }) {
+  const { c } = usePalette();
+  return (
+    <View style={{
+      width: 28, height: 28, borderRadius: radius.tile, backgroundColor: c.muted,
+      alignItems: "center", justifyContent: "center",
+    }}>
+      {children}
+    </View>
+  );
+}
+
 /* ── 按钮 ─────────────────────────────────────────────── */
 
-export type ButtonVariant = "primary" | "secondary" | "destructive" | "ghost";
+/**
+ * 桌面那侧的常规控件是**描边**的(侧栏那个「+ 新会话」= 透明底 + 一条细边),
+ * 实底只留给真正的主动作。手机端跟同一条:
+ *   primary  实底蓝——一屏只给一个
+ *   outline  透明底 + 细边——绝大多数按钮
+ *   plain    纯文字——"刷新""重新配对"这种退到背景里的
+ *   destructive 透明底 + 红字红边——不实底,因为它不是主动作
+ */
+export type ButtonVariant = "primary" | "outline" | "plain" | "destructive";
 
 export function Button(props: {
   label: string;
@@ -165,17 +188,18 @@ export function Button(props: {
     Animated.spring(scale, { toValue: value, useNativeDriver: true, ...PRESS_SPRING }).start();
   };
 
+  const hair = { borderWidth: StyleSheet.hairlineWidth };
   const face: ViewStyle =
     v === "primary" ? { backgroundColor: c.primary }
-    : v === "destructive" ? { backgroundColor: c.destructive }
-    : v === "secondary" ? { backgroundColor: c.secondary, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border }
+    : v === "outline" ? { backgroundColor: "transparent", ...hair, borderColor: c.border }
+    : v === "destructive" ? { backgroundColor: "transparent", ...hair, borderColor: c.destructive }
     : { backgroundColor: "transparent" };
 
   const fg =
     v === "primary" ? c.primaryForeground
-    : v === "destructive" ? c.destructiveForeground
-    : v === "secondary" ? c.secondaryForeground
-    : c.brand; // ghost = 纯文字按钮,用点缀色让它读成"可点",而不是一段说明
+    : v === "destructive" ? c.destructive
+    : v === "outline" ? c.foreground
+    : c.brand; // plain = 纯文字按钮,用点缀色让它读成"可点",而不是一段说明
 
   return (
     <Animated.View style={[props.grow ? { flex: 1 } : null, { transform: [{ scale }] }]}>

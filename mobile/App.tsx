@@ -20,7 +20,7 @@ import { connect, devices, openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, Headline, Hint, Mono, Note, StatusLine, Strong, Title, Warn,
+  Button, Card, CodeTiles, Dot, Headline, Hint, Meta, Note, StatusLine, Strong, Tile, Title, Warn,
 } from "./src/ui.js";
 
 type Phase = "loading" | "signIn" | "pair" | "fleet";
@@ -125,13 +125,13 @@ function SignIn({ onDone }: { onDone: () => void }) {
       {err ? <Note tone="error">{err}</Note> : null}
       <View style={{ gap: space.sm }}>
         <Button
-          variant="secondary"
+          variant="outline"
           label={busy === "google" ? "登录中…" : "用 Google 登录"}
           disabled={busy !== null}
           onPress={() => oauth("google")}
         />
         <Button
-          variant="secondary"
+          variant="outline"
           label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
           disabled={busy !== null}
           onPress={() => oauth("github")}
@@ -140,7 +140,7 @@ function SignIn({ onDone }: { onDone: () => void }) {
       {showPassword ? (
         <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
       ) : (
-        <Button label="用邮箱密码登录" variant="ghost" onPress={() => setShowPassword(true)} />
+        <Button label="用邮箱密码登录" variant="plain" onPress={() => setShowPassword(true)} />
       )}
     </Page>
   );
@@ -257,7 +257,7 @@ function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => voi
           </Card>
         ))
       )}
-      <Button label="刷新" variant="ghost" onPress={refresh} />
+      <Button label="刷新" variant="plain" onPress={refresh} />
     </Page>
   );
 }
@@ -285,6 +285,9 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
     return () => b.dispose();
   }, [store]);
 
+  // 有会话在跑才让钟走 —— 空闲时不必每秒唤醒 JS 线程
+  const now = useTicker((fleet?.agents ?? []).some((a) => a.phase === "active"));
+
   const decide = (a: IslandAgent, ok: boolean): void => {
     const callId = a.pendingApproval?.callId;
     if (!callId) return;
@@ -302,7 +305,7 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
           <Title>你的 Mac 不在线</Title>
           <Hint>它上线之后这里会自动出现。中继不落盘,期间发生的事不会补播。</Hint>
         </View>
-        <Button label="重新配对" variant="ghost" onPress={onRepair} />
+        <Button label="重新配对" variant="plain" onPress={onRepair} />
       </Page>
     );
   }
@@ -319,47 +322,105 @@ function Fleet({ store, onRepair }: { store: PinnedPeerStore; onRepair: () => vo
           <Hint>在电脑上开一个,这里会自己出现。</Hint>
         </Card>
       ) : (
-        fleet.agents.map((a) => <AgentCard key={a.sessionId} agent={a} onDecide={decide} />)
+        fleet.agents.map((a) => (
+          <AgentCard key={a.sessionId} agent={a} now={now} onDecide={decide} />
+        ))
       )}
     </Page>
   );
 }
 
-function AgentCard({ agent: a, onDecide }: {
+/** 一秒一跳的钟。只在有会话真的在跑时才装 —— 空闲时不必让 JS 线程每秒醒一次 */
+function useTicker(active: boolean): number {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => bump((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return Date.now();
+}
+
+function elapsed(since: number, now: number): string {
+  const sec = Math.max(0, Math.round((now - since) / 1000));
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+}
+
+function AgentCard({ agent: a, now, onDecide }: {
   agent: IslandAgent;
+  now: number;
   onDecide: (a: IslandAgent, ok: boolean) => void;
 }) {
   const { c } = usePalette();
   const tone = a.phase === "approval" ? "warn" : a.phase === "active" ? "busy" : "idle";
   const what = a.phase === "approval" ? "等你批" : a.phase === "active" ? "跑着" : "空闲";
+  const d = a.turnDiff;
 
   return (
     <Card style={{ gap: space.sm }}>
-      <Headline>{a.title ?? a.sessionId}</Headline>
-      <StatusLine tone={tone}>
-        {what}{a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
-      </StatusLine>
-      {a.pendingApproval ? (
-        // 待批的那一块单独浮一层,左边一条 warn 色边 —— 一眼能在一列卡片里找到它
-        <View style={{
-          backgroundColor: c.background, borderRadius: radius.control, padding: space.md,
-          gap: space.sm, marginTop: space.xs,
-          borderLeftWidth: 3, borderLeftColor: c.warn,
-          borderTopWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth,
-          borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border,
-        }}>
-          <Text style={{ ...t.body, color: c.foreground, fontFamily: MONO }}>
-            {a.pendingApproval.verb} {a.pendingApproval.target}
-          </Text>
-          {a.pendingApproval.fullPath ? <Mono>{a.pendingApproval.fullPath}</Mono> : null}
-          {/* 顺序和轻重跟桌面的 permission-grant 一致:拒绝是不着色的那个,
-              批准是实底的那个;确认动作在右,和 iOS 的弹窗一个方向 */}
-          <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.xs }}>
-            <Button grow variant="secondary" label="拒绝" onPress={() => onDecide(a, false)} />
-            <Button grow label="批准" onPress={() => onDecide(a, true)} />
-          </View>
+      {/* 行首方块 + 标题,和桌面 permission-grant 的头一行同构 */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <Tile><Dot tone={tone} /></Tile>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Headline>{a.title ?? a.sessionId}</Headline>
+          {/* 元信息一律等宽 + 暗:桌面那侧 `1 步 · 120 tokens` 就是这个样式 */}
+          <Meta>
+            {what}
+            {a.phase === "active" && a.turnStartedAt ? ` · ${elapsed(a.turnStartedAt, now)}` : ""}
+            {a.currentTool ? ` · ${a.currentTool.verb} ${a.currentTool.target}` : ""}
+          </Meta>
+        </View>
+      </View>
+
+      {/* 本轮改了多少 —— 桌面和对话视图消费同一份统计,两处只能显示同一个数 */}
+      {d ? (
+        <View style={{ flexDirection: "row", gap: space.sm, paddingLeft: 28 + space.sm }}>
+          <Meta>{d.files} 文件</Meta>
+          <Text style={{ ...t.footnote, color: c.ok, fontFamily: MONO }}>+{d.additions}</Text>
+          <Text style={{ ...t.footnote, color: c.destructive, fontFamily: MONO }}>−{d.deletions}</Text>
         </View>
       ) : null}
+
+      {a.pendingApproval ? <Approval agent={a} onDecide={onDecide} /> : null}
     </Card>
+  );
+}
+
+/** 待批的那一块。形状照着桌面的 permission-grant:大圆角、行首方块、
+    等宽的动作行,右边是实底的确认键,左边是不着色的拒绝 */
+function Approval({ agent: a, onDecide }: {
+  agent: IslandAgent;
+  onDecide: (a: IslandAgent, ok: boolean) => void;
+}) {
+  const { c } = usePalette();
+  const p = a.pendingApproval;
+  if (!p) return null;
+  return (
+    <View style={{
+      backgroundColor: c.background, borderRadius: radius.card, padding: space.md,
+      gap: space.sm, marginTop: space.xs,
+      // 左边一条 warn 色边 —— 一列卡片里一眼能找到"这条在等我"
+      borderLeftWidth: 3, borderLeftColor: c.warn,
+      borderTopWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth,
+      borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+    }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <Tile>
+          <Text style={{ ...t.headline, color: c.warn, fontFamily: MONO }}>!</Text>
+        </Tile>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text style={{ ...t.body, color: c.foreground, fontFamily: MONO }} numberOfLines={1}>
+            {p.verb} {p.target}
+          </Text>
+          {p.fullPath ? <Meta>{p.fullPath}</Meta> : null}
+        </View>
+      </View>
+      {/* 顺序和轻重跟桌面 permission-grant 一致:拒绝是不着色的那个,
+          批准是实底的那个;确认动作在右,和 iOS 的弹窗一个方向 */}
+      <View style={{ flexDirection: "row", gap: space.sm, marginTop: space.xs }}>
+        <Button grow variant="destructive" label="拒绝" onPress={() => onDecide(a, false)} />
+        <Button grow label="批准" onPress={() => onDecide(a, true)} />
+      </View>
+    </View>
   );
 }
