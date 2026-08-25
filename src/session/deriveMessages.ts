@@ -64,23 +64,30 @@ export function systemPromptText(workspace: string, today?: string): string {
   );
 }
 
-/** 界面认得的六种结构化围栏。写进提示词而不是留给模型自己发挥：
+/** 界面认得的结构化围栏。写进提示词而不是留给模型自己发挥：
     界面只认这几种语言 + 这几个字段（渲染在 lib/ottoBlocks.ts 里逐字段校验），
     没写清楚的话模型的每一次即兴发挥都会退回成一段裸 JSON。
 
-    刻意不长：它跟着**每一次**请求走，多一行就是每轮都多付一次。所以只列
-    语言名和字段，不给示例、不解释各字段长什么样——字段名自己就是解释。
-    也明说"平铺直叙能说清就别用"：这些卡是给真有结构的内容准备的，
-    不是给每段话都套一个框。 */
+    刻意短：它跟着**每一次**请求走，多一行就是每轮都多付一次。所以只列语言名
+    和字段，不给示例、不解释字段长什么样——字段名自己就是解释；每行尾巴留两三个
+    字的用途标签（字段形状说不出「这卡什么时候用」，那两个字才是选型依据）。
+
+    瘦身实测（issue #431）：480 条回复里只有 7 条真用了围栏（1.46%），
+    而这块说明每轮 222 token。删掉同义反复的长尾巴 + 零使用的 otto-job 之后
+    是 170（−24%）——省不到一半，因为大头是字段清单本身，而字段少一个模型就
+    开始猜、卡片就退化成裸 JSON。tests 里钉了 180 的预算，别再往回长。**otto-job 只是不再向模型宣传，渲染器仍然认它**——老日志里那些
+    卡照常渲染，将来真要用再把它加回这份名单。
+    没有走「改成一把 card_schema 工具」那条路（能再省 80%）的理由也在 #431：
+    使用率 1.46% 的时候，为它引入「模型忘了调工具、凭记忆写字段」这条新的
+    出错路径不划算——而防的正是这件事。 */
 const STRUCTURED_BLOCKS =
-  `\n界面能把下面六种围栏渲染成卡片（围栏里只放严格 JSON——键名带双引号，不是 JS 对象字面量；字段不全或写错会原样显示成代码块）：\n` +
-  `\`\`\`otto-spec  {title, subtitle?, rows:[{label, value, emphasis?}]} —— 参数表/规格表\n` +
-  `\`\`\`otto-compare  {traitLabels:[…], options:[{id, name, headline, traits:[字符串或 false]}], recommendedId, reason} —— 几个方案对比\n` +
+  `\n界面能把下面五种围栏渲染成卡片（围栏内只放严格 JSON，键名带双引号；字段缺漏或写错会退化成代码块）：\n` +
+  `\`\`\`otto-spec  {title, subtitle?, rows:[{label, value, emphasis?}]} —— 规格表\n` +
+  `\`\`\`otto-compare  {traitLabels:[…], options:[{id, name, headline, traits:[字符串或 false]}], recommendedId, reason} —— 方案对比\n` +
   `\`\`\`otto-score  {verdict, total, outOf, criteria:[{label, score, weight, note?}]} —— 打分\n` +
-  `\`\`\`otto-flow  {nodes:[{id, label, column, row, state:"done"|"active"|"pending"}], edges:[{from, to}]} —— 步骤流转（column/row 是非负整数格子坐标）\n` +
+  `\`\`\`otto-flow  {nodes:[{id, label, column, row, state:"done"|"active"|"pending"}], edges:[{from, to}]} —— 流程（column/row 非负整数）\n` +
   `\`\`\`otto-timeline  {events:[{id, when:"past"|"now"|"future", time, title, detail?}]} —— 时间线\n` +
-  `\`\`\`otto-job  {title, stages:[{name, weight}], stageIndex, stageProgress, eta} —— 多阶段任务走到哪了（stageProgress 是 0~1）\n` +
-  `平铺直叙能说清的就别用；一段话套一个框只是噪音。`;
+  `平铺直叙能说清的就别用。`
 
 const MEMORY_RULE = "═".repeat(46);
 

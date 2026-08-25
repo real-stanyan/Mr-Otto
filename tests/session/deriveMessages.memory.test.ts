@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deriveMessages, renderMemoryBlocks, systemPromptText, dayOfLastEvent } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import { estimateTokens } from "../../src/shared/contextEstimate.js";
 
 const base = (seq: number) => ({ seq, sessionId: "s", ts: 0 });
 const created: SessionEvent = { ...base(1), type: "session_created", workspace: "/w" };
@@ -127,5 +128,21 @@ describe("systemPromptText 的口径", () => {
 
   it("ask_user 的规矩只在工具描述里说一次，system 不再重复", () => {
     expect(systemPromptText("/w")).not.toContain("ask_user");
+  });
+});
+
+// 围栏说明的 token 预算（issue #431）。它跟着每一次请求走，而 480 条回复里
+// 只有 7 条真用了围栏（1.46%）——这块说明是全系统提示词里最贵的一段闲置成本。
+// 钉一个上限，让"顺手多写一行说明"这件事在门禁里可见，而不是半年后再量一次
+// 才发现它又涨回去了。
+describe("围栏说明的体积（issue #431）", () => {
+  it("不超过 180 token —— 要加新围栏就得先给旧的减肥", () => {
+    const s = systemPromptText("/w");
+    const fence = s.slice(s.indexOf("\n界面能把"));
+    expect(estimateTokens(fence)).toBeLessThanOrEqual(180);
+  });
+
+  it("零使用的 otto-job 不再向模型宣传（渲染器仍然认它，老日志照常渲染）", () => {
+    expect(systemPromptText("/w")).not.toContain("otto-job");
   });
 });
