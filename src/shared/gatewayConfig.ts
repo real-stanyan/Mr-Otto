@@ -22,6 +22,14 @@ export function authLandingUrl(env: NodeJS.ProcessEnv = process.env): string {
   return gatewayBaseUrl(env).replace(/\/v1\/?$/, "") + "/auth/landing";
 }
 
+/**
+ * 远程中继的根(`/rl/v1/*` 挂在这里,不在 `/v1` 下 —— 它不是 OpenAI 兼容那套 API)。
+ * 跟着 gatewayBaseUrl 走,本地起网关调试时全链路照样通。
+ */
+export function relayBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return gatewayBaseUrl(env).replace(/\/v1\/?$/, "");
+}
+
 /** 网关自己的错误形状(gateway.ts 的 apiError)。402 = 额度用尽 */
 export interface GatewayErrorBody {
   error: { message: string; type: "otto_gateway"; code: string };
