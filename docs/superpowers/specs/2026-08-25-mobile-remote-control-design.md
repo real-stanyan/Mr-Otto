@@ -22,7 +22,13 @@
 - 现有基建：Supabase 自托管（OAuth + 表 + RLS + Realtime）、`services/gateway`（Hetzner VPS，
   验 Supabase JWT，nginx 已关 `proxy_buffering`）。
 - ADR-0027 / ADR-0055 已记载自托管 Realtime 链路不可靠（#77 静默死了半个多月），
-  故**不用 Realtime 做中继**，在网关上新开 WSS 端点。
+  故**不用 Realtime 做中继**，在网关上新开端点。
+- **传输是 SSE 下行 + POST 上行，不是 WebSocket**（订正 2026-08-25）。两条硬理由：
+  ① `deploy/otto-gateway/nginx-gw-location.conf` 里 `proxy_set_header Connection '';`
+  直接掐死 WS upgrade；② 网关目前**零运行时依赖**（`package.json` 只有 `tsx` 一个 devDep），
+  加 `ws` 破了这个性质。而 SSE 那条路 nginx 已为 `/v1/chat/completions` 调好
+  （`proxy_buffering off`）。上行命令稀疏（点一次审批一条），一条一个 POST 够用。
+  代价：`proxy_read_timeout 600s`，下行必须有 <600s 的心跳帧保活。
 
 ---
 
@@ -31,10 +37,11 @@
 ### 四方
 
 **桌面主进程** 新增 `src/main/remoteBridge.ts`，与 `islandBridge.ts` 平级、共用同一个投影源
-（`islandProjection.ts` 的 `reduceIsland` / `IslandFleet`）。对外持一条**出站** WSS 长连接到网关，
-用户机器不开任何入站端口，NAT 后可用。
+（`islandProjection.ts` 的 `reduceIsland` / `IslandFleet`）。对外持一条**出站** SSE 长连接
+（`GET /rl/v1/stream`）收命令，用 `POST /rl/v1/send` 发状态帧。用户机器不开任何入站端口，NAT 后可用。
 
-**otto-gateway** 新增中继端点 `/rl/v1`。只做三件事：
+**otto-gateway** 新增中继端点 `/rl/v1/*`（`GET /stream` 收，`POST /send` 发，两端对称）。
+只做三件事：
 
 1. 验 Supabase JWT，认出是哪个 `user_id`
 2. 把同一 `user_id` 名下的桌面连接与手机连接的字节互转
@@ -93,10 +100,30 @@ Otto 前面说了什么。所以：
 
 > 本节涉及安全边界，用词从严。
 
-### 不自己搓密码学
+### 一套 AEAD，桌面侧零新依赖
 
-两端实时流都用 libsodium（桌面 `libsodium-wrappers`，Expo 侧 `react-native-libsodium`）——
-它把 nonce 管理、乱序检测、rekey 都包掉了。iOS 推送侧的解密用 CryptoKit（见「推送」）。
+**订正 2026-08-25**：原方案是「实时流用 libsodium secretstream + 推送用 AES-GCM」两套。
+本机实测（Node 22）后改成**一套 ChaCha20-Poly1305-IETF**：
+
+```
+x25519 shared equal: true 32
+chacha20-poly1305 roundtrip: hello otto
+ed25519 verify: true sig 64
+```
+
+`node:crypto` 原生就有 X25519 / Ed25519 / HKDF / ChaCha20-Poly1305，
+**桌面侧一个新 npm 依赖都不需要**（`libsodium-wrappers` 删掉）。
+
+选 ChaCha 而非 AES-GCM 的理由是三家的交集：node ✅ / CryptoKit `ChaChaPoly` ✅ /
+libsodium 恒有 chacha ietf ✅。而 **libsodium 的 AES-GCM 在 ARM 上可能不可用**
+（要 AES-NI 硬件支持，`crypto_aead_aes256gcm_is_available()` 会回 false），
+照原方案在真机上会踩。
+
+Expo 侧仍需 `react-native-libsodium`（RN 没有 node:crypto）；iOS NSE 用 CryptoKit。
+
+secretstream 没了，nonce 管理自己做：**每方向一条 nonce 序列 = 4 字节随机前缀
+（握手时随会话密钥一起派生）+ 8 字节大端计数器**。计数器不回绕（到顶就断开重连），
+收端拒收计数器不严格递增的帧——这条替代 secretstream 的乱序/重放检测，必须有测试钉住。
 
 ### 每台设备两把静态密钥
 
@@ -121,8 +148,9 @@ Otto 前面说了什么。所以：
 
 `connectionNonce` 由双方各出一半拼成，防跨连接重放。验签用**对端已 pin 住的** Ed25519 公钥。
 
-会话密钥 = `crypto_kx_*_session_keys(ephPair, peerEphPub)`，两个方向各一把。
-传输用 `crypto_secretstream_xchacha20poly1305`。
+会话密钥：`HKDF-SHA256(X25519(ephPriv, peerEphPub), salt=connectionNonce, info="otto-stream-v1")`
+拉出 **2×(32 字节密钥 + 4 字节 nonce 前缀)**，两个方向各一套（info 里带方向标签区分）。
+传输用 ChaCha20-Poly1305-IETF。
 
 得到：**前向保密**（临时密钥每连接一换，事后拿到静态私钥也解不开旧密文）+ 双向认证。
 
@@ -164,15 +192,14 @@ pushKey = HKDF-SHA256( X25519(mobile_kx_priv, desktop_kx_pub), "otto-push-v1" )
 唯一缓解：**推送负载只放摘要**（动词 + 目标 + 会话标题，截断），
 永不放文件内容、命令全文、工具输出。实时流的前向保密不受影响。
 
-**② 两套 AEAD。** CryptoKit 没有 libsodium 的 `secretstream`，读不了它的密文格式。
+**② 一套算法，两把不同寿命的密钥。**
 
-| 信道 | 算法 | 密钥 | 前向保密 |
-|---|---|---|---|
-| 实时流 | libsodium `secretstream_xchacha20poly1305` | 每连接临时 | 有 |
-| 推送负载 | **AES-256-GCM** 一次性封装 | `pushKey`（长期） | 无 |
+| 信道 | 算法 | 密钥 | nonce | 前向保密 |
+|---|---|---|---|---|
+| 实时流 | ChaCha20-Poly1305-IETF | 每连接临时派生 | 前缀 + 递增计数器 | 有 |
+| 推送负载 | ChaCha20-Poly1305-IETF | `pushKey`（静态派生） | 每条随机 12 字节 | 无 |
 
-AES-GCM 三家（CryptoKit / Node `crypto` / libsodium）都有，互通。
-硬凑一套的代价是在 Swift 侧手搓 XChaCha20，不划算。
+同一个算法，NSE 侧 `ChaChaPoly.open` 就能读，不用在 Swift 里手搓任何东西。
 
 APNs 负载上限 4KB，摘要绰绰有余。
 
@@ -248,7 +275,7 @@ Metro 默认解析不了，要在 `metro.config.js` 加 `resolveRequest` 把 `.j
 ### 测试策略：零网络
 
 照搬 `islandBridge.ts` 已在用的注入模式（`SpawnFn` / `IslandChild`）——
-传输层收窄成可注入接口，单测塞假 socket。
+传输层收窄成可注入接口，单测塞假连接（不起 http）。
 
 | 对象 | 测法 |
 |---|---|
@@ -256,7 +283,7 @@ Metro 默认解析不了，要在 `metro.config.js` 加 `resolveRequest` 把 `.j
 | 握手 | 两侧都是纯函数，同进程对打。**必测三条负例**：签名被篡改 → 拒；pin 的公钥对不上 → 拒；重放旧 `connectionNonce` → 拒 |
 | 命令白名单 | 每个非白名单形状逐条断言被丢弃。`approve_always` / `approve_session` 各写一条**具名**测试——这是上面那个安全取舍的可执行版本，具名才能在有人想「顺手开一下」时红得清楚 |
 | `trimForMobile` | 纯函数，断言输出体积上界 + 截断处留了标记 |
-| 网关中继 | 两个假 socket 对接，断言字节原样穿过，**且从没被 `JSON.parse` 过、没进日志**——「盲管道」这个性质要有测试守着，否则三个月后有人为调试加一行 `console.log(payload)`，E2E 就漏了 |
+| 网关中继 | 两个假连接对接，断言字节原样穿过，**且从没被 `JSON.parse` 过、没进日志**——「盲管道」这个性质要有测试守着，否则三个月后有人为调试加一行 `console.log(payload)`，E2E 就漏了 |
 | e2e | `tests/e2e/` 已有 HOME 隔离 + 假模型（ADR-0076）。后续加「桌面起会话 → 假手机客户端连本地中继 → 点同意 → 桌面 turn 继续」。**不进 v1 门禁** |
 
 ### ADR（一文件一决策，编号合并时 claim，ADR-0074）
@@ -277,7 +304,7 @@ Metro 默认解析不了，要在 `metro.config.js` 加 `resolveRequest` 把 `.j
 | 1 | 帧协议 + 命令白名单（纯 TS，零传输） | — |
 | 2 | 握手与加密（纯 TS，进程内对打） | — |
 | 3 | 网关中继端点 + `devices` 表 + RLS + `services/gateway/checks/` 补一条 | — |
-| 4 | 桌面 `remoteBridge.ts`（注入式 socket，与 islandBridge 平级） | 1,2,3 |
+| 4 | 桌面 `remoteBridge.ts`（注入式传输接口，与 islandBridge 平级） | 1,2,3 |
 | 5 | Expo 骨架：metro 解析、登录、设备列表、pin、fleet 列表页 | 4；免费个人 team 够 |
 | 6 | `timeline` 订阅 + 审批两档 | 5 |
 | 7 | **无内容**推送打通链路（验 APNs 通了） | **付费开发者账号** |
