@@ -91,4 +91,35 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
         "修法:需要的能力加到 src/main/mcpClient.ts 的导出里,其它地方只依赖那层包装"
     ).toEqual([]);
   });
+
+  it("src/shared 不 import 任何 node builtin / electron —— 这批文件手机端也要跑", () => {
+    const bad = offenders(join(ROOT, "shared"), NODE_BUILTIN);
+    expect(
+      bad,
+      `这些 shared 文件碰了 Node/Electron:\n  ${bad.join("\n  ")}\n` +
+        "修法:src/shared 是三边共享的纯类型/纯逻辑层,手机端(Expo/RN)会直接 import 同一份," +
+        "碰了 Node 就断了那条路。要用 Node 能力请放 src/main,或把能力收成一个注入接口" +
+        "(见 src/shared/remote/crypto.ts 的 RemoteCryptoPrimitives)"
+    ).toEqual([]);
+  });
+
+  it("移动端复用的那批 src/session 文件不 import node builtin", () => {
+    // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
+    // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
+    // 而不是"碰巧还没碰 Node 就算数"
+    const MOBILE_SAFE = [
+      "events.ts", "deriveMessages.ts", "deriveSections.ts", "deriveTodos.ts",
+      "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
+      "modelContextScan.ts", "persistencePolicy.ts",
+    ];
+    const bad = MOBILE_SAFE.filter((f) =>
+      imports(join(ROOT, "session", f)).some(NODE_BUILTIN)
+    );
+    expect(
+      bad,
+      `这些 session 文件在移动端复用名单里,却碰了 Node:\n  ${bad.join("\n  ")}\n` +
+        "修法:要么把 Node 依赖挪走,要么把文件从 MOBILE_SAFE 名单里去掉" +
+        "(去掉意味着手机端不能用它投影,想清楚再改)"
+    ).toEqual([]);
+  });
 });
