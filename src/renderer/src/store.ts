@@ -486,6 +486,10 @@ interface ChatState {
   refreshProviderStats(days: number): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
+  /** 邮箱密码登录；成功走 onAccountChanged，失败落 error。回 true = 没抛错 */
+  signInWithPassword(email: string, password: string): Promise<boolean>;
+  /** 邮箱密码注册；"signed-in"|"confirm-email" 由 UI 提示，出错回 null（error 已置） */
+  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email" | null>;
   signOut(): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
@@ -1392,6 +1396,27 @@ export const useChat = create<ChatState>((set, get) => ({
       await window.otter.signIn(provider); // 生效凭证是 onAccountChanged 推来的事件，不是这个 Promise
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async signInWithPassword(email, password) {
+    set({ error: null });
+    try {
+      await window.otter.signInWithPassword(email, password); // 生效凭证走 onAccountChanged
+      return true;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
+  },
+
+  async signUpWithPassword(email, password) {
+    set({ error: null });
+    try {
+      return await window.otter.signUpWithPassword(email, password);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return null;
     }
   },
 

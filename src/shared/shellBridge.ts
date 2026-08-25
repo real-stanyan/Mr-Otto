@@ -613,6 +613,11 @@ export interface ShellBridge {
   getAccount(): Promise<AccountInfo>;
   /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
   signIn(provider: "google" | "github"): Promise<void>;
+  /** 邮箱密码登录：成功由 onAccountChanged 推账号，失败（密码错等）抛可读错误 */
+  signInWithPassword(email: string, password: string): Promise<void>;
+  /** 邮箱密码注册："signed-in" = 注册即登录；"confirm-email" = 去邮箱点确认
+      链接后回来登录（此时还不是登录态）。失败（邮箱已注册等）抛可读错误 */
+  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email">;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
   /** 本人在 profiles 表里的那一行（好友看到的就是它）。未登录 → value: null。
@@ -944,6 +949,8 @@ export const CHANNELS = {
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",
+  signInWithPassword: "otter:signInWithPassword",
+  signUpWithPassword: "otter:signUpWithPassword",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
   myProfile: "otter:myProfile",

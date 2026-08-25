@@ -1710,6 +1710,12 @@ void app.whenReady().then(() => {
   });
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
+  ipcMain.handle(CHANNELS.signInWithPassword, (_e, email: string, password: string) =>
+    manager.signInWithPassword(email, password)
+  );
+  ipcMain.handle(CHANNELS.signUpWithPassword, (_e, email: string, password: string) =>
+    manager.signUpWithPassword(email, password)
+  );
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 本人资料:读/写 profiles 自己那一行。结构化回流(ProfileResult),不靠 invoke reject
