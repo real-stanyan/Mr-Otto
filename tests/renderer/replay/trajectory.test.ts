@@ -148,3 +148,18 @@ describe("formatMs", () => {
     expect(formatMs(125_000)).toBe("2 min 5 s");
   });
 });
+
+describe("branch_checked_out 的轨迹摘要（issue #411）", () => {
+  const at = (e: Partial<SessionEvent>): SessionEvent =>
+    ({ seq: 1, sessionId: "s", ts: 1000, type: "branch_checked_out", repoDir: "/proj/x", ...e }) as SessionEvent;
+
+  it("知道从哪来就写成 a → b —— 只写落点的话读的人得自己往上翻", () => {
+    const t = buildTrajectory([at({ branch: "feature/x", from: "main" })]);
+    expect(t.rows[0]!.summary).toBe("branch main → feature/x");
+  });
+
+  it("detached HEAD（from 缺席）只写落点，不编一个来处", () => {
+    const t = buildTrajectory([at({ branch: "feature/x" })]);
+    expect(t.rows[0]!.summary).toBe("branch → feature/x");
+  });
+});

@@ -3,7 +3,7 @@
 -- 跑法:
 --   OTTO_DB_URL='postgresql://...' scripts/db-checks.sh 0006
 --
--- 0006 另一半的 `game_invites` 已随 `0011_drop_poker.sql` 从库里消失，对应断言一起摘掉；
+-- 0006 另一半的 `game_invites` 已随 `0012_drop_poker.sql` 从库里消失，对应断言一起摘掉；
 -- 心跳这一半跟牌局无关,它是在线点的第二来源(Realtime 断了走它),照旧要验。
 begin;
 do $$

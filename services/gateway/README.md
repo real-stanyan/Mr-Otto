@@ -32,6 +32,13 @@ Electron 客户端 ──Supabase JWT──> otto-gateway ──官方 key──
 | POST | `/v1/chat/completions` | OpenAI 方言，流式/非流式都收。客户端 adapter 不用改形状 |
 | GET | `/v1/wallet` | 逐桶查余额（余额为 0 也照查） |
 | GET | `/healthz` | 存活探针，不要令牌 |
+| GET | `/rl/v1/stream?role=desktop\|mobile` | 远程中继下行（SSE 长连接）。`200` 挂上，`400` role 不合法，`404` 未开中继，`405` 非 GET |
+| POST | `/rl/v1/send?role=desktop\|mobile` | 远程中继上行（一帧一个 POST）。`204` 已转给对端，`409` 对端不在线（丢弃，不排队），`413` 单帧超 256 KiB，`400` role 不合法，`404` 未开中继，`405` 非 POST |
+
+`/rl/v1/*` 是**盲管道**：负载是端到端加密的密文，网关只按 `user_id` 把桌面那一端和
+手机那一端的字节互转，不解析、不落盘、不打印（`src/relay.ts`，spec
+`docs/superpowers/specs/2026-08-25-mobile-remote-control-design.md`）。
+下行每 25s 发一条 SSE 注释行 `:\n\n` 保活 —— nginx 的 `proxy_read_timeout` 是 600s。
 
 请求头：`Authorization: Bearer <Supabase JWT>`；
 可选 `X-Otto-Request-Id: <uuid>` 作幂等键（重试同一次调用不会扣两遍）。

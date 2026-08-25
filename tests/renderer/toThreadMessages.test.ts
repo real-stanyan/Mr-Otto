@@ -517,3 +517,12 @@ describe("turnTiming 只挂在最终回复上", () => {
     });
   });
 });
+
+describe("branch_checked_out（issue #411）", () => {
+  it("投成 system 审计消息 —— 聊天区要占一行：往回翻时它是「这段话在哪个分支上说的」唯一答案", () => {
+    const e = ev({ type: "branch_checked_out", repoDir: "/repo", branch: "feature/x", from: "main" }, 0);
+    expect(toThreadMessages([e])).toEqual([
+      { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
+    ]);
+  });
+});

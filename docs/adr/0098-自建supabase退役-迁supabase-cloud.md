@@ -1,4 +1,7 @@
-# ADR-0093: 自建 Supabase 退役，迁到 Supabase Cloud
+# ADR-0098: 自建 Supabase 退役，迁到 Supabase Cloud
+
+> 原为 ADR-0093。并行 lane 的 0093–0097 先落地，按 ADR-0074 在合并前改号；
+> 早于本次改号的 commit 与代码注释里若还写着 0093，指的就是本篇。
 
 日期：2026-08-25
 状态：已接受（stanyan 会话指示；实现见 PR #406，本 ADR 是补记）
@@ -46,7 +49,7 @@ compose project `otto`）整体迁到 Supabase Cloud，项目 ref `kpeemypbhkyna
   这三个转给自建栈的前缀。
 - 迁移漏了 `supabase_realtime` publication 的成员关系（pg_dump 不会为它生成
   alter），云库上它一直是空的 —— 好友/私信的 postgres_changes 一条都没推，
-  客户端按 ADR-0027 静默走轮询兜底。由 `supabase/migrations/0012` 补回。
+  客户端按 ADR-0027 静默走轮询兜底。由 `supabase/migrations/0013` 补回。
 
 ## 会被推翻的前提
 

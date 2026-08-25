@@ -1,4 +1,4 @@
--- 0012：把好友三张表重新加回 supabase_realtime publication。
+-- 0013：把好友三张表重新加回 supabase_realtime publication。
 --
 -- 为什么需要这一条：2026-08-25 从自建栈迁到 Supabase Cloud 时，schema 和数据都
 -- 过去了，publication 的成员关系没有 —— pg_dump 不会为一个不属于本次转储的

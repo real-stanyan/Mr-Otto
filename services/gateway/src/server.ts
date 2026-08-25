@@ -5,6 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { grantFor, TIERS } from "./buckets.js";
 import { createGateway, type GatewayConfig } from "./gateway.js";
+import { createRelay } from "./relay.js";
 import { createSupabaseWallet } from "./wallet.js";
 
 function required(name: string): string {
@@ -80,6 +81,7 @@ const onError = (where: string, err: unknown) =>
 const handle = createGateway({
   config,
   wallet: createSupabaseWallet(supabase),
+  relay: createRelay(),
   onError,
 });
 

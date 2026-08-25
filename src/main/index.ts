@@ -27,6 +27,7 @@ import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createSimulatorHub } from "./simulatorHub.js";
 import type { SimButton } from "../shared/simulator.js";
+import type { GitCheckoutResult } from "../shared/gitGraph.js";
 import { createSimInputBridge } from "./simInputBridge.js";
 import { resolveSimInputBinPath } from "./simInputBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
@@ -1675,8 +1676,28 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.gitGraphLog, (_e, repoDir: string, limit?: number) => gitGraph.log(repoDir, limit));
   ipcMain.handle(CHANNELS.gitBranches, (_e, repoDir: string) => gitGraph.branches(repoDir));
   ipcMain.handle(CHANNELS.gitStatus, (_e, repoDir: string) => gitGraph.status(repoDir));
-  ipcMain.handle(CHANNELS.gitCheckout, (_e, repoDir: string, branch: string) =>
-    gitGraph.checkout(repoDir, branch)
+  // 切分支是唯一的 git 写操作。带上 sessionId 时,成功后往那条会话的日志追加
+  // 一条 branch_checked_out(ADR-0093):时间线上那一行是日志投影,不是渲染层
+  // 自己记的一笔——刷新即失忆的东西不配叫事实。
+  // 「切之前在哪」在切之前问一次 git:切完再问只能得到切之后的答案。
+  ipcMain.handle(
+    CHANNELS.gitCheckout,
+    async (_e, repoDir: string, branch: string, sessionId?: string): Promise<GitCheckoutResult> => {
+      const before = sessionId ? await gitGraph.branches(repoDir) : null;
+      const result = await gitGraph.checkout(repoDir, branch);
+      if (!result.ok || !sessionId) return result;
+      const from = before?.ok ? before.current : null;
+      // 原地切 = 什么都没发生,时间线上不该多一行(顶栏点当前分支也会走到这)
+      if (from === branch) return result;
+      const ev = store.append({
+        sessionId, ts: Date.now(), type: "branch_checked_out",
+        ignorable: true, // 模型不消费,旧版本跳过照常重放
+        repoDir, branch,
+        ...(from ? { from } : {}), // detached HEAD / 问不出来:不编一个名字上去
+      });
+      send(CHANNELS.event, ev);
+      return result;
+    }
   );
   ipcMain.handle(CHANNELS.gitGraphCommit, (_e, repoDir: string, hash: string) =>
     gitGraph.commit(repoDir, hash)

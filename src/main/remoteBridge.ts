@@ -1,0 +1,196 @@
+// 桌面侧的远程中继装配。与 islandBridge.ts 平级:同一个投影源(IslandFleet),
+// 同一套"状态下行、命令上行"的契约,只是传输从 stdio 管道换成了隔着公网的
+// 加密 SSE + POST。
+//
+// 传输收窄成 RemoteTransport 接口而不是直接 fetch:单测能塞假连接、零网络
+// (同 islandBridge 的 SpawnFn 注入)。真实现(fetch SSE + POST)是一层薄壳,
+// 放在装配处,不混进这里的状态机。
+//
+// 线上两种东西,靠首字符区分,零歧义:
+//   握手包 = 明文 JSON,首字符必然 '{'
+//   数据帧 = base64url,字母表里没有 '{'
+//
+// 加密边界:本文件之外只见明文(IslandFleet / UpFrame),
+// 本文件之内的 transport 只见 base64url 密文。两侧互不知道对方存在。
+
+import { b64decode, b64encode } from "../shared/remote/b64.js";
+import { decodeUpFrame, encodeFrame, type UpFrame } from "../shared/remote/frames.js";
+import {
+  buildHello, deriveSession, newConnectionParty,
+  type HandshakeHello, type SelfParty, type SessionKeys,
+} from "../shared/remote/handshake.js";
+import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
+import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
+import type { IslandFleet } from "../shared/shellBridge.js";
+
+/**
+ * 传输层的契约。**连接生命周期归传输所有**,桥不管:
+ *
+ * - **重连、重连时机、退避,全部是实现方的事。** 桥收到 onClose 只做一件事:
+ *   重新握手(换新的临时密钥),并且是**同步**做的 —— 它假设 onClose 意味着
+ *   "下一条连接已经/即将可用",不做任何延迟或次数限制。
+ * - **onClose 不得从 send 内部同步触发。** 发送失败请自己吞掉或异步上报:
+ *   桥的 startHandshake() 里就有一次 transport.send(hello),
+ *   send → onClose → startHandshake → send 会当场变成同步死循环。
+ *   对端不在线(网关回 409)本来也不是"连接断了",不该走 onClose。
+ *
+ * 与 islandBridge.ts 的**刻意分歧**:那边有 MAX_RESTARTS = 3,helper 反复崩就
+ * 放弃并出声。差别在于谁拥有对面那个东西 —— islandBridge **自己 spawn** 那个子进程,
+ * 生命周期就是它的,连崩三次是它唯一能观察到的"这台机器上装不起来";
+ * 这里对面是公网另一头的一条 HTTP 连接,断开是常态(Wi-Fi 切蜂窝、笔记本合盖、
+ * nginx 到点掐 idle),按次数放弃只会让手机端在最正常的场景下永久失联。
+ * 谁该退避、退多久,是**传输**才看得见的信息(HTTP 状态码、网络可达性、前后台状态),
+ * 所以那个决定留在传输里。当前分支(plan A)不含真实现,这段是写给 plan B 的合同。
+ */
+export interface RemoteTransport {
+  /** 发一帧。对端不在线不是错误(网关回 409),由实现自己吞掉——桥不关心 */
+  send(payload: string): void;
+  onMessage(cb: (payload: string) => void): void;
+  /** 连接已断、且实现方已经准备好承接下一条连接时调用。见接口注释:不许在 send 里同步调 */
+  onClose(cb: () => void): void;
+  close(): void;
+}
+
+type Phase = "handshaking" | "ready" | "closed";
+
+export function createRemoteBridge(opts: {
+  crypto: RemoteCryptoPrimitives;
+  /** 本机身份密钥(私钥来自 Keychain,不是 keyVault.ts 那个明文文件) */
+  identity: KeyPair;
+  deviceId: string;
+  transport: RemoteTransport;
+  onCommand: (c: UpFrame) => void;
+  /** 已 pin 住的对端身份公钥。null = 还没配对过 → 一律拒绝握手。
+      TOFU 的存储与首次确认在调用方,本文件只负责"对不上就不进 ready" */
+  peerIdentity: () => Uint8Array | null;
+  log?: (m: string) => void;
+}): { pushFleet(f: IslandFleet): void; dispose(): void } {
+  const p = opts.crypto;
+  const log = opts.log ?? (() => {});
+
+  let phase: Phase = "handshaking";
+  let self: SelfParty | null = null;
+  let sealer: ReturnType<typeof createSealer> | null = null;
+  let opener: ReturnType<typeof createOpener> | null = null;
+  /** 最后一份 fleet。重连后要靠它把快照补推给新的对端 */
+  let last: IslandFleet | null = null;
+  /** 上一次真正写下去的线格式(明文帧,不是密文——密文每次都不同,去重不了) */
+  let lastEncoded: string | null = null;
+
+  function startHandshake(): void {
+    if (phase === "closed") return;
+    phase = "handshaking";
+    sealer = null;
+    opener = null;
+    // 新连接 = 新密钥 + 对端是空的。基线不清的话"和上次一样"会把整份快照吞掉
+    // (islandBridge 里 helper 重启踩过同一个坑)
+    lastEncoded = null;
+    // 每连接必须新鲜的 eph/nonceHalf 由 newConnectionParty 现场生成——
+    // 手搭字面量会让"忘记换新"变成默认路径而不是需要主动犯的错
+    // (同 key 同 nonce 复用 = ChaCha20-Poly1305 机密性和认证性一起崩掉)
+    self = newConnectionParty(p, { role: "desktop", deviceId: opts.deviceId, identity: opts.identity });
+    opts.transport.send(JSON.stringify(buildHello(p, self)));
+  }
+
+  function onHello(line: string): void {
+    // 只有 handshaking 阶段收握手包。**这道门挡的是灾难性的 nonce 复用**:
+    // ready 之后再收一条 hello,等于攻击者把手机先前那条原样回放(握手包是明文过中继的,
+    // 网关运营者手里始终有一份副本)。此时 self.eph / self.nonceHalf 一个都没换过,
+    // deriveSession 于是算出**与上一次完全相同**的会话密钥和 nonce 前缀,
+    // 而 createSealer 又从 counter=0n 重新起算 —— 同一把 key、同一个 nonce
+    // 加密了两段不同明文:c1^c2 = p1^p2 直接还原桌面→手机的明文(会话标题、
+    // pendingApproval 的动词/目标/全路径、workspace 路径),而且 Poly1305 的一次性密钥
+    // 取自同一个 keystream 块,连该计数器上的帧伪造也一并送出去。
+    // 攻击者不需要任何密钥材料,只需要能重放一帧 —— 正是 spec 威胁模型里
+    // 「服务器/网络主动篡改运行中的连接 → 签名挡住 ✅」那一行声称挡住的对手。
+    //
+    // 顺带两条同源缺陷也一起关掉:重开 opener 会把 highest 退回 -1n,
+    // 重新打开 sealedStream 严格递增计数器本来封死的上行重放窗口;
+    // 而重新派生密钥却不清 lastEncoded,会让重握手后的补推被去重整帧吞掉。
+    //
+    // 合法的重新握手只有一条路:onClose → startHandshake() —— 那里才会
+    // 用 newConnectionParty 换一套新鲜的 eph/nonceHalf 并清掉 lastEncoded。
+    // 这里只放一道门,不要在这儿长出一套 re-key 协议。
+    if (phase !== "handshaking") return;
+    if (!self) return;
+    const pinned = opts.peerIdentity();
+    if (!pinned) {
+      log("远程桥:还没配对过任何手机,拒绝握手");
+      return;
+    }
+    let hello: HandshakeHello;
+    try {
+      hello = JSON.parse(line) as HandshakeHello;
+    } catch {
+      log("远程桥:握手包不是合法 JSON,丢弃");
+      return;
+    }
+    const keys: SessionKeys | null = deriveSession(p, {
+      self, peerHello: hello, peerIdentityPub: pinned,
+    });
+    if (!keys) {
+      // 这里包含了 TOFU 报警的那一路:公钥对不上就是对不上,不静默接受
+      log("远程桥:对端身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
+      return;
+    }
+    sealer = createSealer(p, keys.send.key, keys.send.prefix);
+    opener = createOpener(p, keys.recv.key, keys.recv.prefix);
+    phase = "ready";
+    if (last) pushFleet(last); // 补推快照:对端是新的,它什么都还没有
+  }
+
+  function onSealed(payload: string): void {
+    if (!opener) return;
+    const raw = b64decode(payload);
+    if (!raw) {
+      log("远程桥:收到非 base64url 的帧,丢弃");
+      return;
+    }
+    const plain = opener.open(raw);
+    if (!plain) {
+      // 解不开 = 篡改 / 重放 / 迟到。日志里**不带负载**
+      log("远程桥:帧解密或计数器校验失败,丢弃");
+      return;
+    }
+    const cmd = decodeUpFrame(new TextDecoder().decode(plain));
+    if (!cmd) {
+      log("远程桥:命令不在白名单里,整条丢弃");
+      return;
+    }
+    opts.onCommand(cmd);
+  }
+
+  function pushFleet(f: IslandFleet): void {
+    last = f;
+    if (phase !== "ready" || !sealer) return;
+    const wire = encodeFrame({ type: "fleet", fleet: f });
+    if (wire === lastEncoded) return;
+    lastEncoded = wire;
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+  }
+
+  opts.transport.onMessage((payload) => {
+    if (phase === "closed") return;
+    // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
+    if (payload.startsWith("{")) onHello(payload);
+    else onSealed(payload);
+  });
+
+  opts.transport.onClose(() => {
+    if (phase === "closed") return;
+    log("远程桥:连接断开,重新握手");
+    startHandshake();
+  });
+
+  startHandshake();
+
+  return {
+    pushFleet,
+    dispose() {
+      phase = "closed";
+      sealer = null;
+      opener = null;
+      opts.transport.close();
+    },
+  };
+}

@@ -4,7 +4,7 @@
 // 2026-08-25 起从自托管 Supabase（otto-auth.stan.damianslife.com，Hetzner VPS
 // docker 栈）迁到 Supabase Cloud 托管项目 kpeemypbhkynapkjzewr：托管版自带
 // 验证邮件通道（邮箱密码注册要发确认邮件，自托管得自己配 SMTP relay），
-// 且不用再养那套 docker 栈。迁移与退役的全部权衡见 ADR-0093。
+// 且不用再养那套 docker 栈。迁移与退役的全部权衡见 ADR-0098。
 
 export const SUPABASE_URL = "https://kpeemypbhkynapkjzewr.supabase.co";
 
