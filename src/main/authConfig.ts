@@ -1,12 +1,12 @@
 // authConfig — Supabase 项目公开配置。
 // ANON_KEY 是公开值（RLS 兜底权限），写死在代码里无害；真正的密钥/service role key 绝不进这个文件。
-// SUPABASE_URL 域名 2026-08-17 从 otto-auth.duckdns.org 改为
-// otto-auth.stan.damianslife.com（duckdns 前面的网关只对手动登记的规则放行，
-// 这个域名从未登记过；改用网关持有通配符证书、自动放行的 *.stan.damianslife.com
-// 子域，详见 deploy/otto-auth/README.md「TLS 部署」）。公网通道已验证可达
-// （curl /auth/v1/health 返回 200 JSON）。
+//
+// 2026-08-25 起从自托管 Supabase（otto-auth.stan.damianslife.com，Hetzner VPS
+// docker 栈）迁到 Supabase Cloud 托管项目 kpeemypbhkynapkjzewr：托管版自带
+// 验证邮件通道（邮箱密码注册要发确认邮件，自托管得自己配 SMTP relay），
+// 且不用再养那套 docker 栈。旧栈迁移完成后退役，见 deploy/otto-auth/README.md。
 
-export const SUPABASE_URL = "https://otto-auth.stan.damianslife.com";
+export const SUPABASE_URL = "https://kpeemypbhkynapkjzewr.supabase.co";
 
 export const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzg2OTQwMzY4LCJleHAiOjIxMDIzMDAzNjh9.fAajGeN-r_OVpUE0Cm-PhUeQTHxH7bHC7VpbdNQ-D8c";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwZWVteXBiaGt5bmFwa2p6ZXdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MzM4MzQsImV4cCI6MjEwMzIwOTgzNH0.Gedo9lfFzPf_WS4KpWmfYCMt9mMl_8T2Q9slZuFJCQo";
