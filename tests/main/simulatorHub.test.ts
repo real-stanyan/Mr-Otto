@@ -100,6 +100,23 @@ describe("模拟器 hub", () => {
     expect((await hub.state()).selectedUdid).toBe("U-2");
   });
 
+  it("一台都没开机时也要选中一台 —— 停在 null 会让开机按钮永远是灰的", async () => {
+    const allShutdown = JSON.stringify({
+      devices: {
+        "com.apple.CoreSimulator.SimRuntime.iOS-26-4": [
+          { udid: "U-1", name: "iPhone 17 Pro", state: "Shutdown", isAvailable: true },
+          { udid: "U-2", name: "iPhone Air", state: "Shutdown", isAvailable: true },
+        ],
+      },
+    });
+    const f = fakeRun({ list: { stdout: allShutdown } });
+    const { hub } = makeHub({ run: f.run });
+    await hub.capability().list();
+    const st = await hub.state();
+    expect(st.selectedUdid).toBe("U-1");
+    expect(st.booted).toBe(false);
+  });
+
   it("boot:simctl 说「已经开着了」不算失败,并且顺带把 Simulator.app 切过去", async () => {
     const f = fakeRun({ boot: { code: 164, stderr: "Unable to boot device in current state: Booted" } });
     const { hub } = makeHub({ run: f.run });

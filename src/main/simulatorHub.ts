@@ -136,8 +136,10 @@ export function createSimulatorHub(opts: {
     devices = parseDeviceList(r.stdout);
     // 选中的那台没了(删设备/换 Xcode)就松手,别让后续操作打在一个不存在的 udid 上
     if (selected && !devices.some((d) => d.udid === selected)) selected = null;
-    // 没选过就跟着"已经开着的那台"走:人多半刚在 Simulator.app 里开了一台
-    if (!selected) selected = devices.find((d) => d.booted)?.udid ?? null;
+    // 没选过就跟着"已经开着的那台"走(人多半刚在 Simulator.app 里开了一台);
+    // 一台都没开机时退到列表第一台——**不能停在 null**:面板的下拉在 value=""
+    // 时照样显示第一台,于是屏幕上看着选了一台、状态里却没有,开机按钮永远是灰的
+    if (!selected) selected = devices.find((d) => d.booted)?.udid ?? devices[0]?.udid ?? null;
     return devices;
   };
 

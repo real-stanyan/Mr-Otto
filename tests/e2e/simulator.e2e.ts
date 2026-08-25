@@ -62,6 +62,12 @@ test("#401 面板开得出来：有 Xcode 就列出设备，没有就明说没�
           timeout: 30_000,
         })
         .toMatch(/iOS|iPadOS|watchOS/);
+      // 有设备就一定有一台被选中,于是开机(或关机)那颗按钮是可按的。
+      // 这条是回归钉:曾经"一台都没开机时 selected 停在 null",屏幕上下拉
+      // 显示着第一台、按钮却永远是灰的——看着有设备,点不动
+      await expect(
+        win.getByRole("button", { name: /^开机|^关机/ })
+      ).toBeEnabled({ timeout: 20_000 });
     } else {
       await expect(picker.locator("option")).toHaveText(/没有可用设备/, { timeout: 20_000 });
     }
