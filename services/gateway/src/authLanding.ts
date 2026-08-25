@@ -46,6 +46,9 @@ const PAGE = `<!doctype html>
     // 重绘时复用同一份 data URI:两个分支各内联一份等于把 10KB 抄两遍
     var MARK = document.querySelector(".mark").src;
     var q = new URLSearchParams(location.search);
+    // GoTrue 的邮箱确认链接把结果放 fragment(#access_token=…&type=signup 或
+    // #error_description=…),不是 query——服务器日志里看不到,只有页内 JS 读得到
+    var h = new URLSearchParams(location.hash.replace(/^#/, ""));
     var main = document.getElementById("main");
     if (q.has("code")) {
       var target = ${JSON.stringify(DEEP_LINK)} + location.search;
@@ -56,8 +59,16 @@ const PAGE = `<!doctype html>
       // 自动唤起放在渲染之后:location.replace 触发系统弹"打开 Mr Otto?"确认框,
       // 页面内容此刻已经是成功态,不会出现空白页顶着确认框的样子
       location.replace(target);
+    } else if (h.get("type") === "signup" || h.get("access_token") || q.get("type") === "signup") {
+      // 邮箱注册的确认链接:GoTrue verify 成功后跳回来,凭证在 fragment 里
+      // (本页不碰它,刷新即丢)。这不是 OAuth,没有 code,也不该按失败渲染——
+      // 用户该做的事是回 app 用刚设的密码登录
+      main.innerHTML =
+        '<img class="mark" src="' + MARK + '" alt="Mr Otto"><h1>邮箱验证成功</h1>' +
+        '<p>本页可以关掉了。<br>回 Mr Otto 用邮箱密码登录即可。</p>';
     } else {
-      var reason = q.get("error_description") || q.get("error") || "回调里没有授权码";
+      var reason = h.get("error_description") || q.get("error_description") ||
+        h.get("error") || q.get("error") || "回调里没有授权码";
       main.innerHTML =
         '<img class="mark" src="' + MARK + '" alt="Mr Otto"><h1>登录没成功</h1>' +
         '<p>' + reason.replace(/[<>&]/g, "") + '</p>' +
