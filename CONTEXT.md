@@ -73,6 +73,9 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 用户钩子（user hooks） | `userData/hooks.json` 声明的 shell 命令挂进 Pre/PostToolUse（#350 基础设施的用户侧）：stdin 收 JSON 上下文，stdout 回 JSON 裁决（pre: block/reviseArgs；post: reject/feedback），exit 2 = 快捷否决（stderr 作理由），其余失败一律弃权（fail-open——安全边界仍是守卫和审批门）。加载 fail-safe（坏文件 = 空钩子）、每次工具调用现读（热更新）；只挂主会话，钩子命令跑在专用 LocalWorld（cwd=工作区、凭据已剥、10s 超时） | ADR-0090 决定 2、issue #395；`src/main/userToolHooks.ts`、`src/shared/userHooks.ts` |
 | 前台自动转后台（auto-background） | 回注已接线（armed）的装配里，前台 bash 超 30 秒不再 SIGTERM 硬杀：超时经 `ExecOptions.timeoutMs` 显式放宽到后台档（30 分钟），工具层把还在跑的**同一个 in-flight** 登记成后台任务（不重跑副作用），完成走既有回注链路。未 armed 的装配维持 30s 硬杀。迁移进程仍绑 turn 中断信号（停止键停一切；显式 run_in_background 才是不绑信号的例外） | ADR-0090 决定 3、issue #395；`src/tools/bash.ts`（AUTO_BACKGROUND_AFTER_MS） |
 | 派活总量上限（SUBAGENT_SESSION_CAP） | 单会话派活硬上限 100：计数从父日志 `subagent_spawned` 推导（不另立计数器），闸在建子会话之前，超限抛错给模型让它收手。与长 turn 软告警互补：那边喊的是模型步数，这边拦的是「每次派活烧一整个子会话」的失控循环 | ADR-0090 决定 4、issue #395；`src/main/subagentRunner.ts` |
+| 模拟器面板（Simulator panel） | 右侧栏那块 iOS 模拟器：人能看能点，agent 用 `simulator` 工具操控同一台设备。与浏览器/终端/GitGraph 共用同一块右侧槽位（互斥）。**app 级单例**，不按会话分——一台机器只有一套模拟器，人和任一会话里的 agent 点的必然是同一台。画面走 500ms 轮询截图（缩到 480 宽转 JPEG），不进事件日志、不进模型上下文（ADR-0031 延伸） | ADR-0091、issue #401；`src/main/simulatorHub.ts`、`src/renderer/src/components/SimulatorPanel.tsx` |
+| 截图像素坐标（frame pixels） | 模拟器这块屏**唯一**的坐标系。面板上点的、`describe` 报的元素框、agent `tap` 给的坐标全在这套空间里（= 缩放后那张帧的像素）；macOS 屏幕坐标只活在 Swift helper 那一侧，两者之间的换算是纯算术、住在 hub 里可单测。窗口矩形每次现问 helper 不缓存——窗口会被拖走，缓存旧值的代价是点歪且无症状 | ADR-0091 决定 1；`src/shared/simulator.ts`（pixelToScreen / screenToPixel） |
+| 输入通道（input channel） | `native/MrOttoSimInput`（Swift，CGEvent 发点击/打字、AXUIElement 读 iOS 无障碍树）+ `simInputBridge` 那条**请求-响应** NDJSON 管子（与岛的单向推桥不同：点一下要知道点没点上，故带 id 配对与超时）。降级是分层的：helper 缺席或没「辅助功能」授权时，看画面/开关机/装 app/起 app 照常，只有点击/打字/读屏不可用 | ADR-0091 决定 3；`src/main/simInputBridge.ts` |
 
 ## Key invariants
 
