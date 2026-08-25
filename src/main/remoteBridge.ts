@@ -23,10 +23,30 @@ import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import type { IslandFleet } from "../shared/shellBridge.js";
 
+/**
+ * 传输层的契约。**连接生命周期归传输所有**,桥不管:
+ *
+ * - **重连、重连时机、退避,全部是实现方的事。** 桥收到 onClose 只做一件事:
+ *   重新握手(换新的临时密钥),并且是**同步**做的 —— 它假设 onClose 意味着
+ *   "下一条连接已经/即将可用",不做任何延迟或次数限制。
+ * - **onClose 不得从 send 内部同步触发。** 发送失败请自己吞掉或异步上报:
+ *   桥的 startHandshake() 里就有一次 transport.send(hello),
+ *   send → onClose → startHandshake → send 会当场变成同步死循环。
+ *   对端不在线(网关回 409)本来也不是"连接断了",不该走 onClose。
+ *
+ * 与 islandBridge.ts 的**刻意分歧**:那边有 MAX_RESTARTS = 3,helper 反复崩就
+ * 放弃并出声。差别在于谁拥有对面那个东西 —— islandBridge **自己 spawn** 那个子进程,
+ * 生命周期就是它的,连崩三次是它唯一能观察到的"这台机器上装不起来";
+ * 这里对面是公网另一头的一条 HTTP 连接,断开是常态(Wi-Fi 切蜂窝、笔记本合盖、
+ * nginx 到点掐 idle),按次数放弃只会让手机端在最正常的场景下永久失联。
+ * 谁该退避、退多久,是**传输**才看得见的信息(HTTP 状态码、网络可达性、前后台状态),
+ * 所以那个决定留在传输里。当前分支(plan A)不含真实现,这段是写给 plan B 的合同。
+ */
 export interface RemoteTransport {
   /** 发一帧。对端不在线不是错误(网关回 409),由实现自己吞掉——桥不关心 */
   send(payload: string): void;
   onMessage(cb: (payload: string) => void): void;
+  /** 连接已断、且实现方已经准备好承接下一条连接时调用。见接口注释:不许在 send 里同步调 */
   onClose(cb: () => void): void;
   close(): void;
 }
