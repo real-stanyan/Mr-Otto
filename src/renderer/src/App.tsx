@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, GitBranch, Globe, ListChecks, Plug, Plus, Search, Spade, SquareTerminal, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1509,9 +1509,17 @@ function AppSidebar() {
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
   const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
-  // 用户归档的会话（ADR-0087）：不进工程组，收在侧栏底部「已归档」折叠区，可恢复
+  // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复
   const archivedList = sessions.filter((s) => s.archived && s.spawnedFrom === null);
-  const [archivedOpen, setArchivedOpen] = useState(false);
+  // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0088）：
+  // 归档的会话越攒越多时，折叠区在长列表最底下，等于藏在滚动条尽头；
+  // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
+  // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
+  const [archivedView, setArchivedView] = useState(false);
+  // 进设置就退出归档视图：两者抢同一块地皮，回来时该落在会话列表上
+  useEffect(() => {
+    if (settingsSection !== null) setArchivedView(false);
+  }, [settingsSection]);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
   const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedProjects);
@@ -1590,13 +1598,37 @@ function AppSidebar() {
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {/* game 档下这颗也隐掉:牌桌模式里"新会话"没有落点(建牌桌是 #59 的事) */}
         {settingsSection === null && mode !== "game" && (
-          <Button
-            variant="ghost"
-            className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
-            onClick={() => newSession()} // 裸传会把 MouseEvent 当 dir 塞进去
-          >
-            ＋ 新会话
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+              onClick={() => {
+                setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
+                newSession(); // 裸传会把 MouseEvent 当 dir 塞进去
+              }}
+            >
+              ＋ 新会话
+            </Button>
+            {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
+                上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
+            <Button
+              variant="ghost"
+              aria-pressed={archivedView}
+              className={cn(
+                "justify-start gap-2 px-3 py-[6px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground",
+                archivedView && "bg-foreground/[0.06] text-sidebar-foreground"
+              )}
+              onClick={() => setArchivedView((v) => !v)}
+            >
+              <Archive className="size-4 shrink-0" aria-hidden />
+              已归档会话
+              {archivedList.length > 0 && (
+                <span className="ml-auto shrink-0 font-mono text-[10px] opacity-70">
+                  {archivedList.length}
+                </span>
+              )}
+            </Button>
+          </>
         )}
       </SidebarHeader>
       <SidebarContent>
@@ -1636,6 +1668,63 @@ function AppSidebar() {
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}
+          </SidebarMenu>
+        ) : archivedView ? (
+          // 已归档视图（ADR-0088，取代 ADR-0087 那截底部折叠区）：整个侧栏切过去。
+          // 行点击只是看历史，不自动恢复——归档是用户的判断，不该被"点一下"推翻
+          <SidebarMenu className="p-2">
+            <SidebarMenuItem className="mb-1">
+              <button
+                className="flex w-full items-center gap-[6px] px-1 py-[6px] text-[13px] text-muted-foreground hover:text-sidebar-foreground"
+                onClick={() => setArchivedView(false)}
+              >
+                <ArrowLeft className="size-4 shrink-0" aria-hidden />
+                返回会话列表
+              </button>
+            </SidebarMenuItem>
+            {archivedList.length === 0 ? (
+              // 空态照直说：入口常驻(不随条数显隐),那这一屏就得自己交代"空"这件事
+              <div className="px-2 py-3 text-[12px] text-muted-foreground">
+                还没有归档的会话。会话行的 ⋮ 菜单里有「归档」。
+              </div>
+            ) : (
+              archivedList.map((s) => (
+                <SidebarMenuItem key={s.sessionId}>
+                  <SidebarMenuButton
+                    className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
+                    onClick={() => void resume(s.sessionId)}
+                    title="查看历史（不会自动恢复归档）"
+                  >
+                    <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+                      {s.title ?? (s.workspace ? folderName(s.workspace) : s.sessionId)}
+                    </span>
+                  </SidebarMenuButton>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
+                        <Ellipsis />
+                      </SidebarMenuAction>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
+                        恢复归档
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={() => {
+                          if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                            void deleteSession(s.sessionId);
+                          }
+                        }}
+                      >
+                        删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </SidebarMenuItem>
+              ))
+            )}
           </SidebarMenu>
         ) : (
           <>
@@ -1752,59 +1841,6 @@ function AppSidebar() {
                 g.sessions.some((s) => approvals[s.sessionId] || statusBySession[s.sessionId] === "running")
             ) && (
               <div className="px-[10px] pb-1 text-[11px] text-warn">收起的工程里有会话在动</div>
-            )}
-            {archivedList.length > 0 && (
-              // 已归档区（ADR-0087）:默认收起——归档的本意就是眼不见,
-              // 但必须有回来的路:展开 → 恢复/删除。行点击只是看历史,不自动恢复
-              <SidebarMenu>
-                <button
-                  className="flex w-full items-center gap-1 px-[10px] pt-[10px] pb-[2px] text-[11px] text-muted-foreground tracking-[0.04em] hover:text-sidebar-foreground"
-                  onClick={() => setArchivedOpen((v) => !v)}
-                >
-                  <ChevronRight
-                    className={`w-[13px] h-[13px] shrink-0 transition-transform duration-150 ease-out ${archivedOpen ? "rotate-90" : ""}`}
-                  />
-                  已归档
-                  <span className="shrink-0 font-mono text-[10px] opacity-70">{archivedList.length}</span>
-                </button>
-                {archivedOpen &&
-                  archivedList.map((s) => (
-                    <SidebarMenuItem key={s.sessionId}>
-                      <SidebarMenuButton
-                        className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
-                        onClick={() => void resume(s.sessionId)}
-                        title="查看历史（不会自动恢复归档）"
-                      >
-                        <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
-                          {s.title ?? (s.workspace ? folderName(s.workspace) : s.sessionId)}
-                        </span>
-                      </SidebarMenuButton>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <SidebarMenuAction showOnHover title="会话操作" onClick={(e) => e.stopPropagation()}>
-                            <Ellipsis />
-                          </SidebarMenuAction>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
-                          <DropdownMenuItem onClick={() => void unarchiveSession(s.sessionId)}>
-                            恢复归档
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onClick={() => {
-                              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                                void deleteSession(s.sessionId);
-                              }
-                            }}
-                          >
-                            删除
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </SidebarMenuItem>
-                  ))}
-              </SidebarMenu>
             )}
             {prehistoric.length > 0 && (
               // 没工程可归,不塞进任何组:垫底单列一段
