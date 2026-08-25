@@ -1,6 +1,6 @@
 // RemoteCryptoPrimitives 的**手机端**实现,纯 JS(@noble/*)。
 //
-// 为什么不是 react-native-libsodium(spec 原本写的那个,ADR-0101 推翻):
+// 为什么不是 react-native-libsodium(spec 原本写的那个,ADR-0102 推翻):
 // 那个包的 **native** 那一半(lib.native.ts,真机上跑的就是它)缺三样我们必须有的东西 ——
 // `crypto_scalarmult`(X25519 ECDH,一个都没有)、`crypto_aead_chacha20poly1305_ietf`
 // (只有 24 字节 nonce 的 XChaCha,而我们的线格式是 12 字节 IETF)、`crypto_hash_sha256`。
