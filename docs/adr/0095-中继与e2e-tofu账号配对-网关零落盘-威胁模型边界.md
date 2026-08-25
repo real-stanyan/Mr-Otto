@@ -5,7 +5,7 @@
 
 日期：2026-08-25
 状态：已接受
-关联：spec `docs/superpowers/specs/2026-08-25-mobile-remote-control-design.md` 第二节；ADR-0094（手机是第三个投影窗口）、ADR-0097（一套 AEAD 两把寿命不同的密钥）、ADR-0027 / ADR-0055（自托管 Realtime 链路不可靠，issue #77）；`services/gateway/src/relay.ts`、`src/shared/remote/handshake.ts`、`supabase/migrations/0011_remote_devices.sql`
+关联：spec `docs/superpowers/specs/2026-08-25-mobile-remote-control-design.md` 第二节；ADR-0094（手机是第三个投影窗口）、ADR-0097（一套 AEAD 两把寿命不同的密钥）、ADR-0027 / ADR-0055（自托管 Realtime 链路不可靠，issue #77 —— 见正文订正块，迁云后这条不再是本决定的理由）；`services/gateway/src/relay.ts`、`src/shared/remote/handshake.ts`、`supabase/migrations/0011_remote_devices.sql`
 
 ## 背景
 
@@ -14,8 +14,21 @@
 但那台机器是**我们运维的**——把会话标题、待审批命令的全路径明文交给它，
 等于把"人不在电脑前"这个场景里最敏感的一段内容托管给一台随时可能被入侵的 VPS。
 
-不用 Supabase Realtime 做中继：ADR-0027 / ADR-0055 已记载自托管链路不可靠
-（#77 静默死了半个多月），且 broadcast 不落盘、手机冷启动拿不到快照。
+不用 Supabase Realtime 做中继：broadcast 不落盘，手机冷启动拿不到快照。
+
+> **订正（2026-08-25，迁云之后）**：本条的理由需要换一半。`2797488` / `84fb628` 之后，
+> 库已从自托管 docker 栈迁到 Supabase Cloud 项目 `kpeemypbhkynapkjzewr`，自建栈退役。
+> 于是「自托管链路不可靠」（ADR-0027 / 0055，#77 静默死了半个多月）这条前提**对本决定
+> 不再成立**——Cloud 的 Realtime 不由我们运维，它的历史故障记录不能拿来推断。
+>
+> 但结论不变，理由改成一条**不依赖谁在运维**的：**broadcast 不落盘**。中继要的是
+> 「桌面在线时点对点转字节 + 手机一连上就拿到当前快照」，而 broadcast 只保证在线者收到
+> 此刻发出的消息，冷启动的手机拿不到任何东西。要补这个洞就得在服务端存快照，
+> 那正是「网关零落盘」这条不变量拒绝的事。
+>
+> 另一半（不上 WebSocket）与迁云无关，仍成立：nginx 的 `proxy_set_header Connection '';`
+> 掐 upgrade，且网关零运行时依赖。
+
 
 ## 决定
 
@@ -82,5 +95,6 @@ Poly1305 的一次性密钥也一并泄漏（连帧伪造都送）。已修：re
 - **若要防主动作恶的服务端**：TOFU 不够（威胁模型第三行），得补带外验证。
 - **若一户要接多台桌面或多台手机**：现在的中继是"一户一桌面一手机、同角色重连顶掉旧的"。
   多设备会让"该发给谁"变成一个需要路由的问题，中继就不再是纯粹的盲管道。
-- **若 Supabase Realtime 被证明长期稳定**：中继理论上可退回 broadcast 省一个端点，
-  但 ADR-0027 的理由不变，且 broadcast 不落盘、手机冷启动拿不到快照，大概率仍不划算。
+- **若 Realtime 将来能给出「冷启动能拿到当前快照」的语义**（不只是 broadcast）：
+  中继可退回去省一个端点。迁云之后稳定性不再是障碍，真正挡路的是 broadcast 不落盘
+  —— 见上面的订正块。

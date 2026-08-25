@@ -1,6 +1,13 @@
 # Supabase migrations
 
-自托管实例:https://otto-auth.stan.damianslife.com(配置见 src/main/authConfig.ts)。
+真库 = **Supabase Cloud 项目 `kpeemypbhkynapkjzewr`**
+(`https://kpeemypbhkynapkjzewr.supabase.co`,ap-northeast-1;配置见 `src/main/authConfig.ts`)。
+
+> **订正(2026-08-25)**:本文原先写的是自托管实例 `https://otto-auth.stan.damianslife.com`。
+> `2797488` 把 authConfig 指向 Cloud、`84fb628` 让自建栈退役之后,那个地址与 VPS 上的
+> `otto-db-1` / `supabase-db-1` 容器**都是退役旧栈**——它们的表还停在 0010,数据也不再更新。
+> 对着它们执行 migration 或跑 checks 是无效的,而且**不会报错**,只会静静地改错一个库。
+> 本次订正的直接起因就是踩了这一脚。
 
 执行方式:Supabase Studio → SQL editor 粘贴整个 migration 文件运行(按文件名顺序)。
 无 CLI 管线——本目录是唯一事实来源,改 schema 必须新增编号 migration 文件,不改旧文件。
@@ -28,9 +35,14 @@ Realtime 暂时坏着(issue #77)时,好友/私信/牌局邀请仍然可用,只�
 
 ## 真库执行状态
 
-截至 **2026-08-23**,`0001`–`0009` 全部已在自托管实例执行完毕,并对着真库跑过
+截至 **2026-08-23**,`0001`–`0009` 全部已在**当时的自托管实例**执行完毕,并对着那个库跑过
 `checks/` 下现有的全部校验脚本(`0001` / `0004` / `0005` / `0006` / `0007` / `0008` /
 `0009`),逐条 PASS。
+
+**2026-08-25 迁云后的状态**:数据已迁到 Cloud 项目 `kpeemypbhkynapkjzewr`,`profiles` 等表在。
+但 **`0011_remote_devices.sql` 尚未执行**——用 anon key 探 PostgREST,`profiles` 回 200 而
+`devices` 回 404(与一个不存在的表同码,已用对照组确认)。手机端远程投影(ADR-0094 起四篇)
+的配对一连就会 404,计划 B 开工前必须先补这一条。`0010` 的执行状态未核。
 
 这一行会过期,所以它记的是**日期**不是「已完成」:新增 migration 之后要么补一行,
 要么直接跑一遍 checks —— 校验脚本不留痕,想知道真库是什么形状,跑它比读这段字准。
@@ -40,8 +52,15 @@ Realtime 暂时坏着(issue #77)时,好友/私信/牌局邀请仍然可用,只�
 
 ## 跑法(补充 README 开头那句「Studio → SQL editor」)
 
-Studio 是给人用的路径;agent 也可以直接从这台开发机执行 —— 服务器 SSH 免密可达,
-数据库容器是 `otto-db-1`:
+Studio 是给人用的路径。
+
+> **订正(2026-08-25)**:下面这条 SSH 路径**通向已退役的自托管栈**,不再是真库。
+> 留着它是因为那两个容器还在跑、还回得出数据,不写清楚下一个人照抄就会改错库。
+> 迁云之后 agent 要动真库,走 `supabase` CLI(`supabase login` + `link` + `db push`)
+> 或仓库 `.mcp.json` 里那台指向 `kpeemypbhkynapkjzewr` 的 Supabase MCP;两条都要凭据,
+> 不是免密可达的。
+
+~~以下为自托管时代的跑法,已失效~~ —— 服务器 SSH 免密可达,数据库容器是 `otto-db-1`:
 
 ```bash
 ssh -p 2222 stan@<vps> \
