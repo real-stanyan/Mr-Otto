@@ -568,8 +568,11 @@ export interface ShellBridge {
   gitGraphCommit(repoDir: string, hash: string): Promise<GitCommitResult>;
   /** 本地分支列表 + 当前分支(只读) */
   gitBranches(repoDir: string): Promise<GitBranchesResult>;
-  /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014) */
-  gitCheckout(repoDir: string, branch: string): Promise<GitCheckoutResult>;
+  /** 切分支——唯一的 git 写操作,只由用户在 UI 显式选分支触发(ADR-0014)。
+      sessionId 给了就在那条会话的日志上追加一条 branch_checked_out(ADR-0093):
+      时间线要画这一行,而投影必须可从日志推导。切换失败或原地切(from === branch)
+      不落——日志只记发生过的事 */
+  gitCheckout(repoDir: string, branch: string, sessionId?: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
   /** Files 面板(只读):列一层目录。全显——node_modules/out/点文件都列,

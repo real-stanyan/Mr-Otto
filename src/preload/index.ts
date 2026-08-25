@@ -70,7 +70,8 @@ const bridge: ShellBridge = {
   gitGraphLog: (repoDir, limit) => ipcRenderer.invoke(CHANNELS.gitGraphLog, repoDir, limit),
   gitGraphCommit: (repoDir, hash) => ipcRenderer.invoke(CHANNELS.gitGraphCommit, repoDir, hash),
   gitBranches: (repoDir) => ipcRenderer.invoke(CHANNELS.gitBranches, repoDir),
-  gitCheckout: (repoDir, branch) => ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch),
+  gitCheckout: (repoDir, branch, sessionId) =>
+    ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch, sessionId),
   gitStatus: (repoDir) => ipcRenderer.invoke(CHANNELS.gitStatus, repoDir),
   filesList: (root, relDir) => ipcRenderer.invoke(CHANNELS.filesList, root, relDir),
   filesSearch: (root, query, opts) => ipcRenderer.invoke(CHANNELS.filesSearch, root, query, opts),

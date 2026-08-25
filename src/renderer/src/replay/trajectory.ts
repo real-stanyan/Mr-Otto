@@ -89,6 +89,8 @@ function systemSummary(e: SessionEvent): string {
       return `checkpoint ${e.checkpointId.slice(0, 8)}`;
     case "workspace_restored":
       return `workspace_restored ← ${e.checkpointId.slice(0, 8)}`;
+    case "branch_checked_out":
+      return e.from ? `branch ${e.from} → ${e.branch}` : `branch → ${e.branch}`;
     default:
       return e.type;
   }

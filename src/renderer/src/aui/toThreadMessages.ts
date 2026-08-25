@@ -77,6 +77,9 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "project_instructions":
     // 请求信封（issue #383）：请求配置从这一刻起变了——审计事实，时间线留痕
     case "request_envelope":
+    // 分支切换（issue #411）：往回翻时「这段话是在哪个分支上说的」只有这一行能答——
+    // 它比模型切换管得更宽，聊天区当然要占一行
+    case "branch_checked_out":
       return true;
     case "approval_decision":
       return e.decision === "denied";

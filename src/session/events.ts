@@ -466,6 +466,19 @@ export interface WorkspaceRestoredEvent extends SessionEventBase {
   fromSessionId?: string;
 }
 
+/** 分支切换（issue #411）：用户在顶栏切了 git 分支，脚下这一层代码底座换了。
+    落日志的理由不是审计洁癖，是硬规则：时间线要画出这一行，而任何投影
+    （UI 的也算）必须可从日志推导——渲染层自己记一份 = 刷新即失忆，且日志
+    与屏幕两份说法。模型不消费（投影丢弃：分支名不是对话内容，工作区的实际
+    内容由文件工具当场读到）；ignorable：旧版本跳过它照常重放。
+    from 缺席 = 切之前是 detached HEAD，或没问出来（不编一个名字上去）。 */
+export interface BranchCheckedOutEvent extends SessionEventBase {
+  type: "branch_checked_out";
+  repoDir: string;               // 哪个仓库切的（会话的工程文件夹）
+  branch: string;                // 切到哪
+  from?: string;                 // 切之前在哪
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -497,7 +510,8 @@ export type SessionEvent =
   | RequestEnvelopeEvent
   | BackgroundTaskCompletedEvent
   | CheckpointCreatedEvent
-  | WorkspaceRestoredEvent;
+  | WorkspaceRestoredEvent
+  | BranchCheckedOutEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -540,6 +554,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   background_task_completed: true,
   checkpoint_created: true,
   workspace_restored: true,
+  branch_checked_out: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

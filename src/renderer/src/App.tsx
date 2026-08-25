@@ -2338,7 +2338,11 @@ function BranchPicker({
       >
         {/* 文案必须走 SelectValue:SelectContent 默认 item-aligned 定位,拿它当对齐锚点,
             换成自制 span 会让锚点为 null、定位计算直接放弃,弹层掉到视口外(看着像"点不开") */}
-        <SelectTrigger className={BAR_SELECT + " max-w-[180px]"} title={busy ? "切换中…" : "当前分支——可切换"}>
+        <SelectTrigger
+          data-testid="branch-select"
+          className={BAR_SELECT + " max-w-[180px]"}
+          title={busy ? "切换中…" : "当前分支——可切换"}
+        >
           <GitBranch className="w-3 h-3 shrink-0" />
           <SelectValue placeholder="(detached HEAD)" />
         </SelectTrigger>

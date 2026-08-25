@@ -4,6 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
+import { GitBranch } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -25,6 +26,7 @@ import { AgentStatus } from "./elements/agent-status.js";
 import { SubagentList, type SubagentItem } from "./elements/subagent-list.js";
 import { SubagentTranscriptPanel } from "./SubagentTranscriptPanel.js";
 import { ProviderMark } from "./ProviderMark.js";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
 import {
@@ -441,6 +443,24 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
 
     case "model_changed":
       return <ModelHandoffRow event={event} />;
+
+    // 分支切换（issue #411 / ADR-0093）：往回翻的时候，「这一段话是在哪个分支上说的」
+    // 只有这一行能回答。用 Marker 的 separator 变体——它是一条横穿时间线的界线，
+    // 而切分支正是一条界线：线之上和线之下，脚下的代码不是同一份。
+    // 不用 AUDIT 那种缩进小字：模型切换是「谁在说话」变了，分支切换是「说的是哪份代码」
+    // 变了，后者管得更宽，值一条真的分隔线
+    case "branch_checked_out":
+      return (
+        <Marker variant="separator" className="py-1" data-testid="branch-marker">
+          <MarkerIcon>
+            <GitBranch />
+          </MarkerIcon>
+          <MarkerContent>
+            切到分支 <span className="font-medium text-foreground">{event.branch}</span>
+            {event.from ? `（自 ${event.from}）` : ""}
+          </MarkerContent>
+        </Marker>
+      );
 
     case "subagent_spawned":
       return <SubagentSpawnedRow event={event} />;
