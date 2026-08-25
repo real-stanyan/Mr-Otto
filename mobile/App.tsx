@@ -16,6 +16,8 @@ import {
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { MobileMessage } from "../src/shared/remote/frames.js";
 import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../src/shared/remote/groups.js";
+import { parseMarkdown, type Span as MdSpan } from "../src/shared/remote/markdown.js";
+import { groupTimeline, splitTool } from "../src/shared/remote/timeline.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
@@ -845,7 +847,12 @@ function SessionView({ agent: a, now, messages, diag, onBack, onDecide, onSend, 
         ) : messages.length === 0 ? (
           <Hint>这个会话还没有内容。</Hint>
         ) : (
-          messages.map((m, i) => <Msg key={i} msg={m} />)
+          // 连续的工具调用先并成一组再画(shared/remote/timeline.ts)
+          groupTimeline(messages).map((item) =>
+            item.kind === "tools"
+              ? <ToolGroup key={item.index} tools={item.tools} />
+              : <Msg key={item.index} msg={item.message} />,
+          )
         )}
       </ScrollView>
 
@@ -926,10 +933,10 @@ function Composer({ onSend }: { onSend: (text: string) => boolean }) {
   );
 }
 
-/** 一条消息。三种角色三种读法:
-    user 是右边的蓝气泡(和桌面对话视图同一个位置和颜色);
-    assistant 是左边的裸正文,不套气泡 —— 它占的篇幅最长,套上去整屏都是框;
-    tool 是等宽的暗块,第一行是工具名。 */
+/** 一条消息。三种角色三种读法,和桌面对话视图一致:
+    user 是右边的蓝气泡;
+    assistant 是左边的裸正文走 markdown(它篇幅最长,套气泡整屏都是框);
+    tool 不在这里 —— 它被 groupTimeline 折叠成一行了。 */
 function Msg({ msg: m }: { msg: MobileMessage }) {
   const { c } = usePalette();
   const tail = m.truncated ? <Meta>… 太长了,在电脑上看全文</Meta> : null;
@@ -941,27 +948,155 @@ function Msg({ msg: m }: { msg: MobileMessage }) {
           backgroundColor: c.primary, borderRadius: radius.control,
           paddingHorizontal: space.md, paddingVertical: space.sm, maxWidth: "88%",
         }}>
+          {/* 用户打的是纯文本,不当 markdown 解析:把人手打的 * 渲染成粗体是错的 */}
           <Text style={{ ...t.body, color: c.primaryForeground }}>{m.text}</Text>
         </View>
         {tail}
       </View>
     );
   }
-  if (m.role === "assistant") {
-    return (
-      <View style={{ gap: 2, paddingVertical: space.xs }}>
-        <Text style={{ ...t.body, color: c.foreground }}>{m.text}</Text>
-        {tail}
-      </View>
-    );
-  }
+  return (
+    <View style={{ gap: space.xs, paddingVertical: space.xs }}>
+      <Markdown source={m.text} />
+      {tail}
+    </View>
+  );
+}
+
+/** 助手正文。解析在 shared/remote/markdown.ts(纯的、跟着根门禁跑),
+    这里只负责把块和片段画出来。 */
+function Markdown({ source }: { source: string }) {
+  const { c } = usePalette();
+  const blocks = parseMarkdown(source);
+  return (
+    <View style={{ gap: space.sm }}>
+      {blocks.map((b, i) => {
+        if (b.kind === "code") return <CodeBlock key={i} lang={b.lang} text={b.text} />;
+        if (b.kind === "heading") {
+          // 标题只用字号和字重拉开,不加下划线/色块 —— 桌面那侧也是
+          const size = b.level <= 2 ? 20 : 17;
+          return (
+            <Text key={i} style={{ fontSize: size, lineHeight: size + 7, fontWeight: "700",
+              letterSpacing: -0.3, color: c.foreground, marginTop: space.xs }}>
+              <Spans spans={b.spans} />
+            </Text>
+          );
+        }
+        if (b.kind === "bullet" || b.kind === "ordered") {
+          return (
+            <View key={i} style={{ flexDirection: "row", gap: space.xs }}>
+              {/* 记号列固定宽:序号 1 和 10 的正文要对齐 */}
+              <Text style={{ ...t.body, color: c.mutedForeground, minWidth: 18, textAlign: "right" }}>
+                {b.kind === "bullet" ? "•" : `${b.marker}.`}
+              </Text>
+              <Text style={{ ...t.body, color: c.foreground, flex: 1 }}>
+                <Spans spans={b.spans} />
+              </Text>
+            </View>
+          );
+        }
+        return (
+          <Text key={i} style={{ ...t.body, color: c.foreground }}>
+            <Spans spans={b.spans} />
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+/** 行内片段。code 片给一块浅底 + 等宽,和桌面的 `--code-bg` 一个意思 */
+function Spans({ spans }: { spans: MdSpan[] }) {
+  const { c } = usePalette();
+  return (
+    <>
+      {spans.map((s, i) =>
+        s.code ? (
+          <Text key={i} style={{
+            fontFamily: MONO, fontSize: 14, color: c.foreground, backgroundColor: c.muted,
+          }}>
+            {` ${s.text} `}
+          </Text>
+        ) : (
+          <Text key={i} style={s.bold ? { fontWeight: "700", color: c.foreground } : undefined}>
+            {s.text}
+          </Text>
+        ),
+      )}
+    </>
+  );
+}
+
+/** 代码块。**横向滚动,不换行** —— 代码换行之后缩进就没意义了,
+    而缩进是读代码的第一层信息(桌面那侧的代码块也是横着滚的)。 */
+function CodeBlock({ lang, text }: { lang: string; text: string }) {
+  const { c } = usePalette();
   return (
     <View style={{
-      borderRadius: radius.control, padding: space.sm + 2, gap: 2,
-      borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+      borderRadius: radius.control, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+      backgroundColor: c.card, overflow: "hidden",
     }}>
-      <Text style={{ ...t.footnote, color: c.mutedForeground, fontFamily: MONO }}>{m.text}</Text>
-      {tail}
+      {lang ? (
+        <View style={{
+          paddingHorizontal: space.sm + 2, paddingTop: space.xs, paddingBottom: 2,
+        }}>
+          <Meta>{lang}</Meta>
+        </View>
+      ) : null}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ padding: space.sm + 2 }}>
+        <Text style={{ fontFamily: MONO, fontSize: 13, lineHeight: 19, color: c.foreground }}>
+          {text}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+/** 折叠起来的一组工具调用。**默认收起** —— 一次 bash 的输出能把整屏占满,
+    而人翻这一屏是为了看模型说了什么。和桌面的 `2 tool calls ›` 同一个形状。 */
+function ToolGroup({ tools }: { tools: MobileMessage[] }) {
+  const { c } = usePalette();
+  const [open, setOpen] = useState(false);
+  const names = tools.map((x) => splitTool(x).name);
+  const label = tools.length === 1 ? names[0] : `${tools.length} 次工具调用`;
+
+  return (
+    <View style={{ gap: space.xs }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((v) => !v)}
+        hitSlop={8}
+        style={({ pressed }) => [
+          { flexDirection: "row", alignItems: "center", gap: space.xs, paddingVertical: 2 },
+          pressed && { opacity: 0.5 },
+        ]}
+      >
+        <Text style={{ ...t.footnote, color: c.mutedForeground, fontFamily: MONO }}>
+          {label}
+        </Text>
+        <Text style={{ ...t.footnote, color: c.mutedForeground }}>{open ? "▾" : "›"}</Text>
+      </Pressable>
+      {open
+        ? tools.map((x, i) => {
+            const { name, output } = splitTool(x);
+            return (
+              <View key={i} style={{
+                borderRadius: radius.control, borderWidth: StyleSheet.hairlineWidth,
+                borderColor: c.border, padding: space.sm + 2, gap: 2,
+              }}>
+                <Meta>{name}</Meta>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <Text style={{ fontFamily: MONO, fontSize: 13, lineHeight: 19, color: c.mutedForeground }}>
+                    {output}
+                  </Text>
+                </ScrollView>
+                {x.truncated ? <Meta>… 太长了,在电脑上看全文</Meta> : null}
+              </View>
+            );
+          })
+        : null}
     </View>
   );
 }

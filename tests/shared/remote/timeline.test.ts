@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { decodeDownFrame, encodeFrame } from "../../../src/shared/remote/frames.js";
-import { projectTimelineForMobile } from "../../../src/shared/remote/timeline.js";
+import {
+  groupTimeline, projectTimelineForMobile, splitTool,
+} from "../../../src/shared/remote/timeline.js";
 
 /** 只填投影关心的字段;其余用 as 补齐 —— 这些测试钉的是"什么出机器",不是事件构造 */
 function ev(e: Partial<SessionEvent> & { type: SessionEvent["type"] }): SessionEvent {
@@ -130,5 +132,36 @@ describe("投影 → 编码 → 解码 的往返", () => {
       const line = JSON.stringify({ type: "timeline", sessionId: "s1", messages: [bad] });
       expect(decodeDownFrame(line)).toBeNull();
     }
+  });
+});
+
+describe("groupTimeline —— 连续的工具调用并成一组", () => {
+  const m = (role: "user" | "assistant" | "tool", text: string) => ({ role, text }) as const;
+
+  it("相邻的工具消息并成一组", () => {
+    const items = groupTimeline([m("tool", "a\nx"), m("tool", "b\ny")]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "tools" });
+  });
+
+  it("中间夹一句正文就是两组 —— 并了会看不出顺序", () => {
+    const items = groupTimeline([m("tool", "a\nx"), m("assistant", "说了句话"), m("tool", "b\ny")]);
+    expect(items.map((i) => i.kind)).toEqual(["tools", "message", "tools"]);
+  });
+
+  it("非工具消息原样一条一项", () => {
+    const items = groupTimeline([m("user", "问"), m("assistant", "答")]);
+    expect(items.map((i) => i.kind)).toEqual(["message", "message"]);
+  });
+});
+
+describe("splitTool", () => {
+  it("第一行是工具名,正文从第二行起", () => {
+    expect(splitTool({ role: "tool", text: "read_file\n文件内容\n第二行" }))
+      .toEqual({ name: "read_file", output: "文件内容\n第二行" });
+  });
+
+  it("没有正文时不产出一个假的空行", () => {
+    expect(splitTool({ role: "tool", text: "bash" })).toEqual({ name: "bash", output: "" });
   });
 });

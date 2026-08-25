@@ -78,3 +78,36 @@ function push(out: MobileMessage[], role: MobileMessage["role"], text: string, c
   if (t.length <= cap) return void out.push({ role, text: t });
   out.push({ role, text: t.slice(0, cap), truncated: true });
 }
+
+/* ── 渲染前的一次归并 ───────────────────────────────────
+   桌面那侧连着几次工具调用只显示一行 `2 tool calls ›`,展开才看内容。
+   手机上更需要这个:一次 bash 的输出能把整屏占满,而人翻这一屏是为了看
+   模型说了什么。**连续的工具消息并成一组,默认收起。** */
+
+/** 时间线渲染的一项:要么是一条普通消息,要么是一组折叠起来的工具调用 */
+export type TimelineItem =
+  | { kind: "message"; message: MobileMessage; index: number }
+  | { kind: "tools"; tools: MobileMessage[]; index: number };
+
+export function groupTimeline(messages: readonly MobileMessage[]): TimelineItem[] {
+  const out: TimelineItem[] = [];
+  for (const [index, message] of messages.entries()) {
+    const last = out[out.length - 1];
+    if (message.role === "tool") {
+      // 只并**相邻**的:中间夹一句助手正文就是两次独立的动作,并了会看不出顺序
+      if (last?.kind === "tools") last.tools.push(message);
+      else out.push({ kind: "tools", tools: [message], index });
+    } else {
+      out.push({ kind: "message", message, index });
+    }
+  }
+  return out;
+}
+
+/** 工具消息的第一行是工具名(投影时拼上去的),正文从第二行起 */
+export function splitTool(m: MobileMessage): { name: string; output: string } {
+  const i = m.text.indexOf("\n");
+  return i < 0
+    ? { name: m.text, output: "" }
+    : { name: m.text.slice(0, i), output: m.text.slice(i + 1) };
+}
