@@ -19,10 +19,25 @@
 
 - **Apple Developer 账号（99 USD/年）是硬前提**。免费个人 team 能签能装（7 天过期），够开发切片 1–6；
   APNs 推送必须付费账号。桌面签名（ADR-0026 / ADR-0075）本来也需要，一次买断两处。
-- 现有基建：Supabase 自托管（OAuth + 表 + RLS + Realtime）、`services/gateway`（Hetzner VPS，
+- 现有基建：Supabase（OAuth + 表 + RLS + Realtime）、`services/gateway`（Hetzner VPS，
   验 Supabase JWT，nginx 已关 `proxy_buffering`）。
-- ADR-0027 / ADR-0055 已记载自托管 Realtime 链路不可靠（#77 静默死了半个多月），
-  故**不用 Realtime 做中继**，在网关上新开端点。
+
+  > **订正（2026-08-25）**：本文写作时这是**自托管** docker 栈。`2797488` / `84fb628` 之后
+  > 已迁到 Supabase Cloud 项目 `kpeemypbhkynapkjzewr`，自建栈退役。对本设计的影响只有一处，
+  > 见下一条。网关仍在那台 VPS 上，未动。
+- **不用 Realtime 做中继**，在网关上新开端点。
+  > **订正（2026-08-25，迁云之后）**：本条的理由需要换一半。`2797488` / `84fb628` 之后，
+  > 库已从自托管 docker 栈迁到 Supabase Cloud 项目 `kpeemypbhkynapkjzewr`，自建栈退役。
+  > 于是「自托管链路不可靠」（ADR-0027 / 0055，#77 静默死了半个多月）这条前提**对本决定
+  > 不再成立**——Cloud 的 Realtime 不由我们运维，它的历史故障记录不能拿来推断。
+  >
+  > 但结论不变，理由改成一条**不依赖谁在运维**的：**broadcast 不落盘**。中继要的是
+  > 「桌面在线时点对点转字节 + 手机一连上就拿到当前快照」，而 broadcast 只保证在线者收到
+  > 此刻发出的消息，冷启动的手机拿不到任何东西。要补这个洞就得在服务端存快照，
+  > 那正是「网关零落盘」这条不变量拒绝的事。
+  >
+  > 另一半（不上 WebSocket）与迁云无关，仍成立：nginx 的 `proxy_set_header Connection '';`
+  > 掐 upgrade，且网关零运行时依赖。
 - **传输是 SSE 下行 + POST 上行，不是 WebSocket**（订正 2026-08-25）。两条硬理由：
   ① `deploy/otto-gateway/nginx-gw-location.conf` 里 `proxy_set_header Connection '';`
   直接掐死 WS upgrade；② 网关目前**零运行时依赖**（`package.json` 只有 `tsx` 一个 devDep），
@@ -323,6 +338,7 @@ keychain 共享、Swift 解密）搅在一起排查会很痛苦。分开每次�
   且远程唤起 agent loop 的风险面完全是另一回事。
 - **若 `IslandFleet` 将来要装对话内容**：两种帧的分工失效，`fleet` 帧也得进裁剪路径。
 - **若接 Android**：FCM data message + headless JS 解密，机制与 NSE 完全不同，需另写一节。
-- **若 Supabase Realtime 被证明长期稳定**：中继理论上可以退回 Realtime broadcast 省一个端点，
-  但 ADR-0027 的理由（自托管链路不可靠）不变，且 broadcast 不落盘、手机冷启动拿不到快照，
-  大概率仍不划算。
+- **若 Realtime 将来能给出「冷启动能拿到当前快照」的语义**（而不只是 broadcast）：
+  中继就该重议，可以退回去省一个端点。注意这个前提比原文写的更严——原文写的是
+  「若 Realtime 被证明长期稳定」，那是自托管时代的问法；迁云之后稳定性不再是障碍，
+  真正挡路的是 broadcast 不落盘（见「约束与前提」的订正块）。
