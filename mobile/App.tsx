@@ -24,7 +24,8 @@ import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
 import { listFriends, type FriendRow } from "./src/friendsApi.js";
 import {
-  MAX_MB, NeedsRebuild, pickFiles, pickPhotos, readBytes, takePhoto, tooBig, type Picked,
+  MAX_MB, NeedsRebuild, pickFiles, pickPhotos, prepareForUpload, takePhoto, tooBig,
+  type Picked,
 } from "./src/attach.js";
 import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
@@ -603,13 +604,13 @@ function Fleet({ store, onRepair, onDetailChange }: {
     const offline = "没发出去 —— 你的 Mac 不在线";
 
     const ids: string[] = [];
-    // 先把总片数算出来:进度条要在读第一个文件之前就有个分母
+    // 先全部备好再开始发:进度条要有个分母,而且**图片要先转码缩放**
+    // (prepareForUpload:HEIC → JPEG,超上限的按阶梯降)。它抛的错由调用方接住
     let sent = 0;
     const chunks: { name: string; parts: string[] }[] = [];
     for (const f of files) {
-      const data = await readBytes(f.uri);
-      if (data.byteLength > UPLOAD_LIMITS.maxBytes) return `${f.name} 超过 ${MAX_MB}MB`;
-      chunks.push({ name: f.name, parts: chunkUpload(data) });
+      const ready = await prepareForUpload(f);
+      chunks.push({ name: ready.name, parts: chunkUpload(ready.data) });
     }
     const total = chunks.reduce((n, c) => n + c.parts.length, 0);
 
@@ -1074,6 +1075,7 @@ function Composer({ onSubmit, online, notice, onDismissNotice }: {
   const ready = online && !busy && (text.trim().length > 0 || files.length > 0);
 
   const add = (picked: Picked[]): void => {
+    // 这里只挡非图片:图片有缩放这条路,原图多大都先收下(见 attach.ts 的 tooBig)
     const big = picked.filter(tooBig);
     if (big.length) setErr(`${big.map((f) => f.name).join("、")} 超过 ${MAX_MB}MB,没加上`);
     const ok = picked.filter((f) => !tooBig(f));
@@ -1140,7 +1142,7 @@ function Composer({ onSubmit, online, notice, onDismissNotice }: {
       ) : null}
       {err ? <Note tone="error">{err}</Note> : null}
       {progress ? (
-        <Meta>{progress.total ? `传附件 ${progress.done}/${progress.total} 片…` : "读文件…"}</Meta>
+        <Meta>{progress.total ? `传附件 ${progress.done}/${progress.total} 片…` : "处理附件…"}</Meta>
       ) : null}
 
       {files.length ? (
