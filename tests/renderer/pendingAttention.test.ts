@@ -16,12 +16,12 @@ const INVITE = (over: Partial<GameInvite> = {}): GameInvite => ({
 });
 
 describe("pendingAttention(dock 角标)", () => {
-  it("未读 DM + 待处理请求 + 待回应邀请三项相加", () => {
+  it("未读 DM + 待处理请求相加;牌局邀请不计(德州隐藏,ADR-0085)", () => {
     expect(pendingAttention({
       unreadByFriend: { a: 2, b: 1 },
       friendsSnapshot: SNAP(1),
       gameInvites: [INVITE()],
-    })).toBe(5); // 未读 2+1、请求 1、邀请 1
+    })).toBe(4); // 未读 2+1、请求 1;邀请那 1 不算——看不见的邀请挂角标 = 消不掉的红点
   });
 
   it("自己发出去的邀请、已回应的邀请都不算'有人在等你'", () => {

@@ -6,16 +6,54 @@ const deepseek = findModel("deepseek-v4-flash")!;
 const glm = findModel("glm-4.5-flash")!;
 const GW = "https://gw.example/gw/v1";
 
+// officialGrant: true = 赠额还存在的旧形态（ADR-0085 之前）。这些测试钉住的是
+// "开关掰回 true 时的路由规矩"——机制保留,只是产品形态下不再走到
 const route = (over: Partial<Parameters<typeof routeModel>[0]> = {}) =>
   routeModel({
     choice: deepseek,
     ownKey: "",
     accessToken: null,
     gatewayBaseUrl: GW,
+    officialGrant: true,
     ...over,
   });
 
-describe("routeModel", () => {
+describe("routeModel（ADR-0085 默认形态:官方不供 token）", () => {
+  // 不传 officialGrant = 读产品开关(false):赠额/网关整条不存在
+  const now = (over: Partial<Parameters<typeof routeModel>[0]> = {}) =>
+    routeModel({ choice: deepseek, ownKey: "", accessToken: null, gatewayBaseUrl: GW, ...over });
+
+  it("自带 key → 直连,一切照旧", () => {
+    expect(now({ ownKey: "sk-mine" })).toEqual({
+      kind: "direct",
+      baseUrl: deepseek.baseUrl,
+      apiKey: "sk-mine",
+    });
+  });
+
+  it("登录了也不走网关:没 key 就是 blocked,出路只有自己配", () => {
+    const r = now({ accessToken: "jwt-abc" });
+    expect(r.kind).toBe("blocked");
+    expect(r.kind === "blocked" && r.reason).toContain(deepseek.apiKeyEnv);
+  });
+
+  it("老日志里 lane=grant 重放到路由 → blocked 且说清赠额已停,不打网关", () => {
+    const r = now({ accessToken: "jwt", ownKey: "", lane: "grant" });
+    expect(r.kind).toBe("blocked");
+    expect(r.kind === "blocked" && r.reason).toContain("停止");
+  });
+
+  it("lane=grant 但配了自己的 key → 直连自己的:选择失效后回落到能跑的那条路", () => {
+    expect(now({ ownKey: "sk-mine", lane: "grant" }).kind).toBe("direct");
+  });
+
+  it("免 key 厂商(Ollama)不受影响:照常直连", () => {
+    const ollama = resolveModel("ollama/qwen3:30b");
+    expect(now({ choice: ollama }).kind).toBe("direct");
+  });
+});
+
+describe("routeModel（officialGrant=true 的旧形态）", () => {
   it("自带 key → 直连，用目录里的端点", () => {
     expect(route({ ownKey: "sk-mine" })).toEqual({
       kind: "direct",
@@ -107,6 +145,7 @@ describe("lane=grant：明确要花赠额", () => {
       accessToken: "token",
       gatewayBaseUrl: "https://gw/v1",
       lane: "grant",
+      officialGrant: true,
     });
     expect(route).toEqual({ kind: "gateway", baseUrl: "https://gw/v1", apiKey: "token" });
   });
@@ -118,6 +157,7 @@ describe("lane=grant：明确要花赠额", () => {
       accessToken: null,
       gatewayBaseUrl: "https://gw/v1",
       lane: "grant",
+      officialGrant: true,
     });
     expect(route.kind).toBe("blocked");
   });
@@ -129,6 +169,7 @@ describe("lane=grant：明确要花赠额", () => {
       accessToken: "token",
       gatewayBaseUrl: "https://gw/v1",
       lane: "grant",
+      officialGrant: true,
     });
     expect(route.kind).toBe("blocked");
   });
@@ -139,6 +180,7 @@ describe("lane=grant：明确要花赠额", () => {
       ownKey: "sk-mine",
       accessToken: "token",
       gatewayBaseUrl: "https://gw/v1",
+      officialGrant: true,
     });
     expect(route.kind).toBe("direct");
   });

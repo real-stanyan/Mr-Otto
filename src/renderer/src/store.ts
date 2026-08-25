@@ -63,6 +63,7 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, GameInvite, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
+import { POKER_ENABLED, OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
@@ -76,10 +77,13 @@ import { hasModelSetupStamp, needsModelSetup, stampModelSetup } from "./lib/mode
 import { isOnboardingTestAccount } from "../../shared/onboardingTestAccount.js";
 import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
-/** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测) */
+/** dock 角标数 = 未读 DM + 待处理好友请求 + 待回应牌局邀请(纯投影,好测)。
+    德州隐藏(ADR-0085)时邀请不计:看不见的邀请挂角标 = 一个消不掉的红点 */
 export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "gameInvites">): number {
   const unread = Object.values(s.unreadByFriend).reduce((a, b) => a + b, 0);
-  const invites = s.gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length;
+  const invites = POKER_ENABLED
+    ? s.gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length
+    : 0;
   return unread + s.friendsSnapshot.incoming.length + invites;
 }
 
@@ -835,8 +839,9 @@ export const useChat = create<ChatState>((set, get) => ({
         settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
         terminalPanelOpen: false, browserPanelOpen: false,
       });
-      // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）
-      void get().refreshWallet();
+      // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）。
+      // ADR-0085 之后账号页没有额度卡,这一趟网关也省了(打过去只会白开一个 0 额度桶)
+      if (OFFICIAL_GRANT_ENABLED) void get().refreshWallet();
     }
   },
 

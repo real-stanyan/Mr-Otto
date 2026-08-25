@@ -36,6 +36,7 @@ import type { WalletBalance } from "../../../shared/shellBridge.js";
 import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
+import { OFFICIAL_GRANT_ENABLED } from "../../../shared/features.js";
 import {
   thinkingLabel,
   thinkingSwitchable,
@@ -116,7 +117,8 @@ export function ModelPicker({
   // 那几款该待在 DeepSeek 那一组里，而不是挂在"赠额"底下谎报免费
   // 赠额这一组:登录了就显示（ADR-0045）。配了自己的 key 也照样显示 ——
   // 点它就是明确要花赠额,路由认这个选择(lane=grant),不再被"你配过 key"推翻
-  const grantOn = signedIn;
+  // ADR-0085 之后官方不再供 token:开关关着,这一组整组不存在
+  const grantOn = OFFICIAL_GRANT_ENABLED && signedIn;
   const ownDeepseek = (keyStatus["DEEPSEEK_API_KEY"] ?? "") !== "";
 
   // 余额只在需要显示的时候取一次:这个浮层开得很勤,每开一次打一趟网关是白打
@@ -127,8 +129,9 @@ export function ModelPicker({
   const choice = describeModel(value);
   const groups = useMemo(() => {
     const ready = (id: ProviderId) => {
-      // DeepSeek 没配 key 也能用（登录后走官方赠额，见 main/modelRoute.ts）
-      if (id === "deepseek") return true;
+      // DeepSeek 没配 key 也能用（登录后走官方赠额，见 main/modelRoute.ts）——
+      // 仅在赠额还存在的形态下;ADR-0085 之后它和别家一样看 key
+      if (id === "deepseek" && OFFICIAL_GRANT_ENABLED) return true;
       const info = findProvider(id);
       if (!info) return false;
       if (info.keyless) return true; // 本机 Ollama:能连上就能用

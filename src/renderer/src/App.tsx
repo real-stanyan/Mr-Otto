@@ -57,6 +57,7 @@ import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP 
 import { FriendChatView } from "./components/FriendChatView.js";
 import { PokerTable } from "./components/PokerTable.js";
 import { GameInviteToast } from "./components/GameInviteToast.js";
+import { POKER_ENABLED, OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
@@ -1113,7 +1114,8 @@ function AccountPage() {
             {/* 显示即编辑:名字和头像就地可改,和首登引导共用同一张表单
                 (components/ProfileCard.tsx → ProfileEditor.tsx) */}
             <ProfileCard />
-            <QuotaCard />
+            {/* 官方额度卡:ADR-0085 之后官方不供 token,没有这回事就不画这张卡 */}
+            {OFFICIAL_GRANT_ENABLED && <QuotaCard />}
           </>
         ) : (
           <>
@@ -1491,7 +1493,10 @@ function AppSidebar() {
   const friendActivity =
     Object.values(unreadByFriend).reduce((a, b) => a + b, 0) +
     friendsSnapshot.incoming.length +
-    gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length;
+    // 德州隐藏时邀请不计入:看不见的邀请挂个角标 = 一个消不掉的红点
+    (POKER_ENABLED
+      ? gameInvites.filter((i) => i.direction === "incoming" && i.status === "pending").length
+      : 0);
   // 抽屉是模态层,盖在主区上;点开 DM 面板时弹窗让位——不然 DM 被抽屉挡住看不见
   useEffect(() => {
     if (friendChat) setFriendsOpen(false);
@@ -1559,18 +1564,22 @@ function AppSidebar() {
             试过把 Root 提到最外层罩住两边，display:contents 会让 shadcn sidebar
             的 peer 兄弟选择器算错宽度，主区不被推开。键盘导航和视觉照旧，
             代价是 trigger 的 aria-controls 指向一个不存在的 id */}
-        <Tabs value={mode} onValueChange={(v) => setSessionMode(v as SessionMode)}>
-        <TabsList className="w-full">
-          <TabsTrigger value="work">
-            <SquareTerminal aria-hidden />
-            Work
-          </TabsTrigger>
-          <TabsTrigger value="game">
-            <Spade aria-hidden />
-            Game
-          </TabsTrigger>
-        </TabsList>
-        </Tabs>
+        {/* POKER_ENABLED=false(ADR-0085)时整个分段控件不画:只剩 work 一档,
+            一个单选项的开关只会让人找不存在的第二档 */}
+        {POKER_ENABLED && (
+          <Tabs value={mode} onValueChange={(v) => setSessionMode(v as SessionMode)}>
+          <TabsList className="w-full">
+            <TabsTrigger value="work">
+              <SquareTerminal aria-hidden />
+              Work
+            </TabsTrigger>
+            <TabsTrigger value="game">
+              <Spade aria-hidden />
+              Game
+            </TabsTrigger>
+          </TabsList>
+          </Tabs>
+        )}
         {/* ＋ 只是导航去 composer 视图：文件夹/偏好在那里配齐才建会话。
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {/* game 档下这颗也隐掉:牌桌模式里"新会话"没有落点(建牌桌是 #59 的事) */}
@@ -2998,7 +3007,7 @@ export function App() {
         <SidebarInset className="relative min-w-0">
           {main}
           {/* 牌局邀请浮层:抽屉收着也得看得见,而邀请是有时效的(见组件顶部注释) */}
-          <GameInviteToast />
+          {POKER_ENABLED && <GameInviteToast />}
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
           {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型
