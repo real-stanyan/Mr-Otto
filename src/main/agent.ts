@@ -151,8 +151,10 @@ export function createAgent(opts: {
       没过禁止前缀校验，调用方退回精确 key。不给 = 永久授权只走精确 key（旧路） */
   persistAllowRule?: (pattern: string[], cwd: string | undefined) => boolean;
   /** Pre/PostToolUse 钩子（issue #350）：拦截/改参/拒绝/反馈，engine 统一落
-      tool_hook 事件。今天没有内置钩子——这是给将来（用户钩子/技能钩子）的口 */
-  toolHooks?: ToolHook[];
+      tool_hook 事件。用户钩子（issue #395）从这进：index.ts 给 getter，
+      每次工具调用现读 hooks.json（热更新）。子会话装配刻意不传——派出去的
+      agent 没人盯着，用户钩子的干预面不该静默扩大（ADR-0047 收权同款立场） */
+  toolHooks?: ToolHook[] | (() => ToolHook[]);
   /** 项目指令注入（issue #353）：装配层已过信任门禁的快照。只在**新建**会话时
       落一条 project_instructions（resume 的日志里已有/没有都不追加——
       不改写历史会话的模型视野）。不给 = 无注入（子会话/测试/裸装配照旧） */

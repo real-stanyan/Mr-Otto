@@ -142,4 +142,34 @@ describe("hookMatches（alias，issue #350 可选项）", () => {
     expect(hookMatches(h, "read_file")).toBe(false);
     expect(hookMatches({ name: "h", tools: "*" }, "anything")).toBe(true);
   });
+
+  // issue #395：hooks 可给 getter——每次工具调用现取，热更新（用户改 hooks.json
+  // 下一次调用立即生效，与 execPolicy 现读同款语义）
+  it("hooks 给 getter：每次调用现取，中途换出的钩子对后续调用生效", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = recordingAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "echo", args: { x: 1 } }] },
+      { content: "", toolCalls: [{ id: "c2", name: "echo", args: { x: 2 } }] },
+      { content: "收到" },
+    ]);
+    let active: ToolHook[] = [];
+    const engine = new LoopEngine({
+      store, adapter, tools: [echoTool], world: fakeWorld, sessionId: "s1",
+      hooks: () => active,
+    });
+    // 第一次调用时还没有钩子；第一只工具跑完后"用户写了 hooks.json"
+    const originalRun = echoTool.run.bind(echoTool);
+    echoTool.run = async (args, w, c) => {
+      active = [{ name: "late", tools: "*", pre: () => ({ block: "后来者拦截" }) }];
+      echoTool.run = originalRun;
+      return originalRun(args, w, c);
+    };
+    await engine.runTurn("跑");
+    const events = store.load("s1");
+    const results = events.filter((e) => e.type === "tool_result");
+    expect(results[0]).toMatchObject({ status: "ok" });            // 第一发：无钩子
+    expect(results[1]).toMatchObject({ status: "error" });         // 第二发：被换进来的钩子拦下
+    expect(events.some((e) => e.type === "tool_hook" && e.hook === "late")).toBe(true);
+    store.close();
+  });
 });

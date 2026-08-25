@@ -34,6 +34,11 @@ export interface ExecOptions {
       放宽必须是调用方的显式请求，不是 world 偷偷改默认。实现可忽略
       （假 world 零改动），忽略 = 维持它自己的默认超时 */
   timeoutMs?: number;
+  /** 写给子进程 stdin 的内容（写完即关）。用户钩子（issue #395）靠它递
+      JSON 上下文——环境变量/argv 都过 shell 转义，stdin 不过。缺席 = 不写
+      不关（旧行为：读 stdin 的命令等到超时，诚实反映"没人喂它"）。
+      实现可忽略（假 world 零改动） */
+  stdin?: string;
 }
 
 export interface HttpPostOptions {

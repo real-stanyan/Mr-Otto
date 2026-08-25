@@ -80,6 +80,13 @@ export function createLocalWorld(
           // child_process 原生认 signal：abort = 给进程组发 SIGTERM
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
+        // stdin（issue #395 用户钩子）：给了就写完即关；EPIPE（命令不读就退出）
+        // 是常态不是错误，吞掉——裁决看 exit code 和输出，不看喂没喂进去
+        if (opts?.stdin !== undefined) {
+          child.stdin?.on("error", () => {});
+          child.stdin?.write(opts.stdin);
+          child.stdin?.end();
+        }
         const out = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const onOutput = opts?.onOutput;

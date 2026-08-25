@@ -49,6 +49,9 @@ import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
 import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
 import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { loadUserHooks } from "./userHooksStore.js";
+import { buildUserToolHooks } from "./userToolHooks.js";
+import { createLocalWorld } from "../world/localWorld.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadTrustedWorkspaces, addTrustedWorkspace } from "./workspaceTrust.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -266,6 +269,7 @@ void app.whenReady().then(() => {
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
   const permissionsPath = join(app.getPath("userData"), "permissions.json");
   const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
+  const userHooksPath = join(app.getPath("userData"), "hooks.json");
   const trustPath = join(app.getPath("userData"), "trustedWorkspaces.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
@@ -1103,9 +1107,21 @@ void app.whenReady().then(() => {
     // 进得了 task 工具的清单。绑定点放在组装根，SubagentRunner / createTaskTool
     // 的签名一个字不用改——工具那层不需要知道有"作用域"这回事
     const listForSession = () => listSubagents(args.workspace);
+    // 用户钩子（issue #395）：只挂主会话装配——子会话没人盯着，用户钩子的
+    // 干预面不该静默扩大（ADR-0047 收权同款）。钩子命令跑在专用 LocalWorld
+    // 里（cwd = 工作区、凭据环境变量已剥、stdin 递 JSON 上下文），不借
+    // agent 的 world：那个被 engine 按调用包了直播/信号层，钩子输出会被
+    // 误标成命令输出。getter 现读 hooks.json（热更新，与 execPolicy 同款）
+    const hookWorld = createLocalWorld({ root: args.workspace });
+    const userToolHooks = () => {
+      const loaded = loadUserHooks(userHooksPath);
+      if (loaded.error) console.warn(`[userHooks] ${loaded.error}`);
+      return buildUserToolHooks(loaded.hooks, (cmd, o) => hookWorld.exec(cmd, o), args.workspace);
+    };
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      toolHooks: userToolHooks,
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
