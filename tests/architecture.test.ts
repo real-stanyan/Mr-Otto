@@ -98,6 +98,29 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     ).toEqual([]);
   });
 
+  // 这条守的是一个**只在 Electron 里现形**的失败:Electron 链的是 BoringSSL,
+  // 它只在 AEAD API 里提供 ChaCha20-Poly1305,没注册进 EVP_get_cipherbyname 那张表。
+  // 于是 createCipheriv("chacha20-poly1305", …) 在产品里抛 Unknown cipher,
+  // 而 vitest 跑在真 Node(OpenSSL)上,同一行代码永远绿。
+  // 实测 Electron 43.4.0:crypto.getCiphers() 里含 "chacha" 的条目一个都没有。
+  //
+  // 真机联调时它伪装成了"网络断流"——异常从 SSE 读循环里窜出去,被外层 catch
+  // 当成连接错误。付出的代价是一整轮排查,所以这里钉死。
+  it("远程加密不走 node 的 EVP 密码表(Electron 是 BoringSSL,没有 chacha)", () => {
+    // 先剥注释再找:那个文件的头注里正当地引用了这两个名字来解释为什么不能用,
+    // 直接 includes 会把解释本身当成违规
+    const code = readFileSync(join(ROOT, "main/remoteCryptoNode.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+    const bad = ["createCipheriv", "createDecipheriv"].filter((n) => code.includes(n));
+    expect(
+      bad,
+      `src/main/remoteCryptoNode.ts 用了 ${bad.join(" / ")}。\n` +
+        "Electron 的 BoringSSL 没有 chacha20-poly1305 这个 EVP 名字,运行时会抛 Unknown cipher。" +
+        "修法:AEAD 用 @noble/ciphers 的 chacha20poly1305(纯 JS,和手机端同一份实现,字节兼容)"
+    ).toEqual([]);
+  });
+
   it("src/shared 不 import 任何 node builtin / electron —— 这批文件手机端也要跑", () => {
     const bad = offenders(join(ROOT, "shared"), NODE_BUILTIN);
     expect(

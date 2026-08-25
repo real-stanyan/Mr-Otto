@@ -1,15 +1,27 @@
-// RemoteCryptoPrimitives 的桌面实现。全部走 node:crypto —— 零新 npm 依赖。
+// RemoteCryptoPrimitives 的桌面实现。非对称那半走 node:crypto,
+// **AEAD 那半走 @noble/ciphers** —— 后者不是偏好,是被 Electron 逼的,见下。
 //
 // 为什么是 ChaCha20-Poly1305 而不是 AES-GCM:三家的交集在这里。
-// node ✅ / CryptoKit ChaChaPoly ✅ / libsodium 的 chacha ietf 恒有 ✅,
-// 而 libsodium 的 AES-GCM 要 AES-NI 硬件支持,在 ARM 上
-// crypto_aead_aes256gcm_is_available() 会回 false —— 真机上会踩(spec 第二节订正)。
+// node ✅ / CryptoKit ChaChaPoly ✅ / @noble/ciphers ✅,
+// 而 AES-GCM 在 libsodium 那侧要 AES-NI 硬件支持,ARM 上
+// crypto_aead_aes256gcm_is_available() 会回 false(spec 第二节订正)。
+//
+// ── 为什么 AEAD 不用 node:crypto ──
+//
+// **Electron 链的是 BoringSSL,不是 OpenSSL。** BoringSSL 只在 AEAD API 里
+// 提供 ChaCha20-Poly1305,没把它注册进 EVP_get_cipherbyname 那张表,于是
+// `createCipheriv("chacha20-poly1305", …)` 在 Electron 里直接抛 `Unknown cipher`。
+// 实测 Electron 43.4.0:`crypto.getCiphers()` 里含 "chacha" 的条目**一个都没有**;
+// 同一行代码在 Node 22 上正常。
+//
+// 这个缺陷单测抓不到 —— vitest 跑在真 Node 上,2680 条全绿,而产品在 Electron 里
+// 一帧都加不了密。真机联调时它伪装成了"网络断流":异常从 SSE 读循环里窜出来,
+// 被外层 catch 当成连接错误。守它的可执行版在 tests/architecture.test.ts。
 //
 // 主进程组装根特权:允许直接 import node builtin(src/shared 那边不行)。
 
+import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import {
-  createCipheriv,
-  createDecipheriv,
   createHash,
   createPrivateKey,
   createPublicKey,
@@ -93,23 +105,12 @@ export function nodeRemoteCrypto(): RemoteCryptoPrimitives {
       new Uint8Array(hkdfSync("sha256", Buffer.from(ikm), Buffer.from(salt), Buffer.from(info), length)),
     sha256: (data) => new Uint8Array(createHash("sha256").update(Buffer.from(data)).digest()),
 
-    chachaSeal: (key, nonce, plaintext) => {
-      const c = createCipheriv("chacha20-poly1305", Buffer.from(key), Buffer.from(nonce), {
-        authTagLength: TAG_BYTES,
-      });
-      const ct = Buffer.concat([c.update(Buffer.from(plaintext)), c.final()]);
-      return new Uint8Array(Buffer.concat([ct, c.getAuthTag()]));
-    },
+    // noble 的 encrypt 已经把 tag 接在密文尾部,和 node 那版的线格式一致
+    chachaSeal: (key, nonce, plaintext) => chacha20poly1305(key, nonce).encrypt(plaintext),
     chachaOpen: (key, nonce, box) => {
       if (box.length < TAG_BYTES) return null;
       try {
-        const d = createDecipheriv("chacha20-poly1305", Buffer.from(key), Buffer.from(nonce), {
-          authTagLength: TAG_BYTES,
-        });
-        d.setAuthTag(Buffer.from(box.slice(box.length - TAG_BYTES)));
-        return new Uint8Array(
-          Buffer.concat([d.update(Buffer.from(box.slice(0, box.length - TAG_BYTES))), d.final()])
-        );
+        return chacha20poly1305(key, nonce).decrypt(box);
       } catch {
         return null; // 认证失败是常态分支(乱序/篡改),不是异常
       }

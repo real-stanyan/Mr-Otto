@@ -68,10 +68,31 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
     createSseParser({
       comment: (kind) => {
         // `:peer` = 对端到场(ADR-0100);`:ok` 开场白;`` 心跳
-        if (kind === "peer") onPeer();
+        if (kind === "peer") guard("在场信号", onPeer);
       },
-      data: (payload) => onMsg(payload),
+      data: (payload) => guard("下行帧", () => onMsg(payload)),
     });
+
+  /**
+   * 回调里的异常**不是网络故障**,必须在这里落地。
+   *
+   * 解析器是在读循环里同步调回调的:桥里抛一个异常,它会一路窜出 reader.read()
+   * 的 for 循环,落进外层那个本来只该接网络错误的 catch,于是被报成"流断了"
+   * 并触发退避重连 —— 连接其实好端端的。
+   *
+   * 真机联调踩的就是这个:Electron 的 BoringSSL 没有 chacha20-poly1305 这个 EVP 名字
+   * (见 remoteCryptoNode.ts 的头注),握手一开就抛 Unknown cipher,日志上却显示成
+   * 一条条断线 + 1s/2s/5s/15s/30s 退避,把排查带偏了一整轮。
+   *
+   * 吞掉之后流继续跑:一帧解不开不该让整条连接陪葬(sealedStream 本来就按帧丢弃)。
+   */
+  function guard(what: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e: unknown) {
+      log(`远程传输:${what}的回调抛了(不是断线):${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+    }
+  }
 
   async function connect(): Promise<void> {
     if (closed) return;
@@ -84,6 +105,9 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
     const ac = new AbortController();
     abort = ac;
     let openedAt: number | null = null;
+    // 断流的原因必须进日志。第一版这里是个空 catch,结果真机联调时
+    // "流断了" 是唯一的线索 —— 断在第几秒、是被谁断的,全看不到
+    let why = "对端关闭";
     try {
       const res = await doFetch(`${base}/rl/v1/stream${q}`, {
         headers: { authorization: `Bearer ${token}` },
@@ -103,12 +127,15 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
         if (done) break;
         feed.push(dec.decode(value, { stream: true }));
       }
-    } catch {
+    } catch (e: unknown) {
       // abort 也走这里。closed 时下面不会重连
+      why = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      const cause = (e as { cause?: unknown } | null)?.cause;
+      if (cause instanceof Error) why += ` ← ${cause.name}: ${cause.message}`;
     }
     if (closed || ac !== abort) return; // 已经被 close 或被更新的一条连接接替
     if (openedAt !== null && Date.now() - openedAt >= STABLE_MS) attempt = 0;
-    log("远程传输:流断了");
+    log(`远程传输:流断了(活了 ${openedAt === null ? "?" : Date.now() - openedAt}ms,${why})`);
     onClose();
     scheduleReconnect();
   }
