@@ -30,11 +30,11 @@ const BUSY: IslandFleet = {
   focusedSessionId: "s1",
 };
 
-/** services/gateway/src/relay.ts 的行为模型:一户两槽、不排队、attach 时两侧各发一条在场信号。
+/** services/edge/src/relay.ts 的行为模型:一户两槽、不排队、attach 时两侧各发一条在场信号。
     投递走一条 FIFO 队列而不是同步调用 —— 真中继两条 `:peer` 是先**写进**两条 SSE 流的,
     任何一端的 hello 都不可能抢在对端读到自己那条信号之前到达。同步模型会凭空造出
     一个现实里不存在的竞态(新来的那端先发 hello,而在位的那端还没开始这一轮)。 */
-/** 两端各一条连接时中继给的 cid(ADR-0129)。这个 harness 只模两条 */
+/** 两端各一条连接时中继给的 cid(ADR-0130)。这个 harness 只模两条 */
 const CID: Record<Role, string> = { desktop: "cd", mobile: "cm" };
 
 function fakeRelay() {

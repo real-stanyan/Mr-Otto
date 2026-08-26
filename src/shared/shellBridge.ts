@@ -10,6 +10,7 @@ import type { DiffViewLine } from "./diffView.js";
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
+import type { ExecRule } from "./execPolicy.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary, FtsHit } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
@@ -67,20 +68,6 @@ export interface AccountInfo {
   email: string;
   name: string;
   avatarUrl: string;
-}
-
-/** 一个额度桶的余额。单位是 token，不是钱（ADR-0021） */
-export interface WalletBucket {
-  balanceTokens: number;
-  /** 注册赠额，用于画"还剩多少 / 一共给了多少" */
-  grantTokens: number;
-}
-
-/** 官方额度余额（otto-gateway 的 GET /v1/wallet）。
-    未登录时 ShellBridge 回 null——没登录就没有"官方额度"这回事。
-    桶名（flash / pro）由网关定，这里不写死：加一档模型不该牵动这个类型 */
-export interface WalletBalance {
-  buckets: Record<string, WalletBucket>;
 }
 
 /** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
@@ -359,6 +346,16 @@ export interface ApprovalDecisionOutcome {
 
 export type Unsubscribe = () => void;
 
+/** 设置页权限总览的形状（issue #370）。grants = permissions.json 的
+    alwaysAllow（旧条目是裸工具名，新条目是 U+001F 分隔的规范化 key——
+    可读化在渲染层 lib/grantDisplay.ts）；execRules/execError 是
+    loadExecPolicy 的原样产出 */
+export interface PermissionsSnapshot {
+  grants: string[];
+  execRules: ExecRule[];
+  execError?: string;
+}
+
 
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
@@ -434,6 +431,16 @@ export interface ShellBridge {
       不 reject——Ollama 没装/没跑是常态，结构化回流让 UI 自己降级 */
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
+  /** 设置页的权限总览（issue #370）：permissions.json 的永久授权 key +
+      execPolicy.json 的规则（execError 非空 = 文件没通过校验、规则未生效，
+      loadExecPolicy 的 fail-safe 口径原样透传给用户看） */
+  listPermissions(): Promise<PermissionsSnapshot>;
+  /** 撤销一条永久授权 key。热生效：审批链每次 decide 现读文件。
+      返回删除后的快照（一次往返刷新 UI） */
+  revokeGrant(key: string): Promise<PermissionsSnapshot>;
+  /** 删一条 execpolicy 规则（pattern+decision+cwd 精确匹配——按内容不按下标，
+      列表和删除之间文件可能已被别的会话改写）。同样返回删除后的快照 */
+  removeExecRule(rule: ExecRule): Promise<PermissionsSnapshot>;
   listSkills(): Promise<SkillInfo[]>;
   /** 其他厂家 agent 已装的 skill（导入弹窗清单，每次现扫磁盘） */
   listExternalSkills(): Promise<ExternalSkillInfo[]>;
@@ -665,9 +672,6 @@ export interface ShellBridge {
   myProfile(): Promise<ProfileResult<MyProfile | null>>;
   /** 改本人资料（名字/头像/引导标记），回改完的真行。校验不过也走 ok:false */
   updateProfile(patch: ProfilePatch): Promise<ProfileResult<MyProfile>>;
-  /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
-      （"没有额度"和"查不到额度"必须可区分） */
-  walletBalance(): Promise<WalletBalance | null>;
   /** 全库用量按厂商 + 按天投影（设置页那张柱状图）。
       窗口 days 天，另附紧邻的前 days 天合计供对比 */
   usageByProvider(days: number): Promise<UsageSnapshot>;
@@ -945,6 +949,9 @@ export const CHANNELS = {
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
+  listPermissions: "otter:listPermissions",
+  revokeGrant: "otter:revokeGrant",
+  removeExecRule: "otter:removeExecRule",
   listSkills: "otter:listSkills",
   listExternalSkills: "otter:listExternalSkills",
   importSkills: "otter:importSkills",
@@ -1035,7 +1042,6 @@ export const CHANNELS = {
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
-  walletBalance: "otter:walletBalance",
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",

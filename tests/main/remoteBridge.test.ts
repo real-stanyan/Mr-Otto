@@ -22,7 +22,7 @@ const BUSY: IslandFleet = {
   focusedSessionId: "s1",
 };
 
-/** 默认那条连接的 cid。多连接的用例自己传别的(ADR-0129) */
+/** 默认那条连接的 cid。多连接的用例自己传别的(ADR-0130) */
 const C1 = "c1";
 
 function fakeTransport() {
@@ -65,7 +65,7 @@ function shake(
   helloIndex: number,
   cid = C1
 ): SessionKeys {
-  // 多连接时桌面给每条各发一份 hello,要挑发给这条的那份(ADR-0129)
+  // 多连接时桌面给每条各发一份 hello,要挑发给这条的那份(ADR-0130)
   const mine = t.sentTo(cid);
   const desktopHello = JSON.parse((cid === C1 ? t.sent[helloIndex] : mine[helloIndex])!) as HandshakeHello;
   const keys = deriveSession(P, {
@@ -174,7 +174,7 @@ describe("createRemoteBridge", () => {
     const up = (json: string) => t.emit(b64encode(sealer.seal(enc(json))));
 
     up('{"type":"approve","sessionId":"s","callId":"c"}');
-    // 第二个参数是发件人的 cid:上层靠它把订阅、回话分到各台手机(ADR-0129)
+    // 第二个参数是发件人的 cid:上层靠它把订阅、回话分到各台手机(ADR-0130)
     expect(onCommand).toHaveBeenCalledWith({ type: "approve", sessionId: "s", callId: "c" }, C1);
 
     onCommand.mockClear();
@@ -272,7 +272,7 @@ describe("createRemoteBridge", () => {
     b.dispose();
   });
 
-  // ── 几台手机同时连着(ADR-0129)──
+  // ── 几台手机同时连着(ADR-0130)──
   //
   // 原来桥只有一套会话状态,第二台连上来会把第一台的密钥顶掉,而第一台毫不知情:
   // 它接着往一根用旧密钥封的管子里发,对面每一帧都解不开。

@@ -57,7 +57,7 @@ describe("createSseTransport", () => {
   it("开流的 URL 带 role 和 v=2,鉴权走 Bearer", async () => {
     const { t, opened, fetchImpl } = harness();
     await settle();
-    // v=2 声明"我认按 cid 寻址那一套"(ADR-0129)。不声明的话中继按老格式发,
+    // v=2 声明"我认按 cid 寻址那一套"(ADR-0130)。不声明的话中继按老格式发,
     // 帧上就没有发件人 —— 桌面接着几台手机时不知道该用哪套密钥解
     expect(opened[0]).toBe("https://gw.example/gw/rl/v1/stream?role=desktop&v=2");
     const init = (fetchImpl as unknown as { mock: { calls: [unknown, RequestInit][] } }).mock.calls[0]![1];
@@ -118,7 +118,7 @@ describe("createSseTransport", () => {
     t.close();
   });
 
-  // 多连接(ADR-0129):to 决定这一帧塞进哪根管子。空串 = 老中继,不带这个参数 ——
+  // 多连接(ADR-0130):to 决定这一帧塞进哪根管子。空串 = 老中继,不带这个参数 ——
   // 带上去老网关会当成未知 query 忽略,但把它写进 URL 会让"老路径"多一种形态,
   // 而这条路径正是升级期唯一还能用的那条
   it("send 带 to 时 URL 上有 to；空串时按老路径发", async () => {

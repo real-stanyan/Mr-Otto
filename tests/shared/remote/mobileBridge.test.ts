@@ -10,7 +10,7 @@ import type { Role } from "../../../src/shared/remote/handshake.js";
 
 // 这个文件把**两个真桥**对接起来:桌面那只用 node:crypto,手机这只用 @noble/*,
 // 中间是一个会丢包、按 FIFO 投递、attach 时发 :peer 的中继模型
-// (services/gateway/src/relay.ts 的行为)。
+// (services/edge/src/relay.ts 的行为)。
 //
 // 分开测两边各自"能跑"没有意义:这条链路的失败方式是"连上了、解不开"。
 
@@ -35,7 +35,7 @@ const IDLE: IslandFleet = {
   focusedSessionId: "s1",
 };
 
-/** 两端各一条连接时中继给的 cid(ADR-0129)。这个 harness 只模两条 */
+/** 两端各一条连接时中继给的 cid(ADR-0130)。这个 harness 只模两条 */
 const CID: Record<Role, string> = { desktop: "cd", mobile: "cm" };
 
 function fakeRelay() {

@@ -52,7 +52,7 @@ export function createMobileBridge(opts: {
   /** 当前这套 self 已经派生过的对端 ephPub。见 onHello 上面那段 */
   let usedPeerEphs = new Set<string>();
   /**
-   * 当前对着哪一条电脑连接(中继编的 cid,ADR-0129)。空串 = 老中继,不带地址。
+   * 当前对着哪一条电脑连接(中继编的 cid,ADR-0130)。空串 = 老中继,不带地址。
    *
    * **手机这侧只维持一条**,和桌面那侧刻意不对称:桌面接几台手机是常态(手机、
    * 另一台手机、模拟器),而手机同时看两台电脑的舰队在界面上没有位置放 ——

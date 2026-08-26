@@ -64,12 +64,34 @@ export function appendAllowRule(path: string, pattern: string[], cwd: string | u
       r.cwd === rule.cwd &&
       JSON.stringify(r.pattern) === JSON.stringify(rule.pattern)
   );
-  if (!dup) {
-    const body: ExecPolicyFile = { rules: [...current.rules, rule] };
-    mkdirSync(dirname(path), { recursive: true });
-    // 0600 同 permissions.json：这份文件说的是"哪些命令不再问人"
-    writeFileSync(path, JSON.stringify(body, null, 2), { mode: 0o600 });
-    chmodSync(path, 0o600);
-  }
+  if (!dup) writeRules(path, [...current.rules, rule]);
   return true;
+}
+
+/** 删一条规则（设置页的入口，issue #370）：pattern + decision + cwd 三者
+    精确匹配。按内容而不是按下标删——列表展示和删除之间文件可能已被别的
+    会话改写，下标会删错行，内容匹配最坏只是删不到（返回 false）。
+    文件当前是坏的也拒绝：先修文件，别在没生效的规则集上做手术 */
+export function removeExecRule(path: string, rule: ExecRule): boolean {
+  const current = loadExecPolicy(path);
+  if (current.error) return false;
+  const next = current.rules.filter(
+    (r) =>
+      !(
+        r.decision === rule.decision &&
+        r.cwd === rule.cwd &&
+        JSON.stringify(r.pattern) === JSON.stringify(rule.pattern)
+      )
+  );
+  if (next.length === current.rules.length) return false;
+  writeRules(path, next);
+  return true;
+}
+
+function writeRules(path: string, rules: ExecRule[]): void {
+  const body: ExecPolicyFile = { rules };
+  mkdirSync(dirname(path), { recursive: true });
+  // 0600 同 permissions.json：这份文件说的是"哪些命令不再问人"
+  writeFileSync(path, JSON.stringify(body, null, 2), { mode: 0o600 });
+  chmodSync(path, 0o600);
 }

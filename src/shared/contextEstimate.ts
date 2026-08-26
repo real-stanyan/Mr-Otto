@@ -6,7 +6,12 @@
 
 import type { MemoryLoadedEvent, SessionEvent } from "../session/events.js";
 import type { ToolDefinition } from "../model/adapter.js";
-import { systemPromptText, renderMemoryPrompt, dayOfLastEvent } from "../session/deriveMessages.js";
+import {
+  systemPromptText,
+  renderMemoryPrompt,
+  projectInstructionsText,
+  dayOfLastEvent,
+} from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { absorbedIndexes, latestMicroCompacted } from "../session/microCompact.js";
 
@@ -135,6 +140,12 @@ function pendingAfter(
       case "skill_invoked":
         pending += estimateTokens(e.content); // 投影成 user 消息进上下文，得计
         break;
+      case "project_instructions":
+        // 同 skill_invoked：整份项目指令被投影成一条 user 消息（issue #525）。
+        // 不计的话，"新会话开着、第一句还没发出去"那一小段窗口里，圆环少算
+        // 一整份 AGENTS.md（本仓自己那份 24K 字符 ≈ 7K token）
+        pending += estimateTokens(projectInstructionsText(e.segments));
+        break;
       case "subagent_briefed":
         // 同 skill_invoked：整份 instructions 快照（含内置前言）被投影成子会话的
         // 第一条 user 消息。不计的话，子会话的圆环从头到尾少算一整篇说明书
@@ -194,19 +205,27 @@ export function contextUsed(
 }
 
 // ─── 分类拆分（用量弹窗的数据源）────────────────────────────
-// 圆环只回答"还剩多少"；弹窗要回答"被谁吃掉了"。三类:
+// 圆环只回答"还剩多少"；弹窗要回答"被谁吃掉了"。四类:
 //   系统提示词 = 围栏 system 消息（每次请求都在最前面）
 //   工具       = 工具 schema（每次请求都随 prompt 发，与会话长度无关的固定开销）
+//   项目指令   = AGENTS.md / CLAUDE.md 拼接成的那条 user 消息（issue #524）
 //   对话消息   = 剩下的一切（用户/助手/工具结果/skill/摘要）
-// 前两类可精确定位（文本就摆在那），第三类取差额——总量以账单锚点为准，
-// 减掉两块固定开销剩下的就是对话。这样三段之和 === 圆环读数，不会自相矛盾。
+// 前三类可精确定位（文本就摆在那），第四类取差额——总量以账单锚点为准，
+// 减掉三块固定开销剩下的就是对话。这样四段之和 === 圆环读数，不会自相矛盾。
+//
+// 项目指令为什么必须自己占一栏而不是并进"对话消息"：它随**每一轮**请求重发，
+// 是固定开销不是对话（本仓自己那份 24K 字符 ≈ 7K token）。归进对话消息，
+// 这张卡就会声称每轮底噪只有系统提示词那 800 token —— 差了一个数量级，
+// 而"每轮固定要付多少"恰恰是看这张卡的人要的答案。
 
 export interface ContextBreakdown {
   /** 系统提示词估算 */
   system: number;
   /** 工具 schema 估算 */
   tools: number;
-  /** 对话消息 = 总量 − 系统提示词 − 工具（不小于 0） */
+  /** 项目指令估算（还在投影里的那些，见 instructionsTokens） */
+  instructions: number;
+  /** 对话消息 = 总量 − 系统提示词 − 工具 − 项目指令（不小于 0） */
   messages: number;
   /** 总量：与 contextUsed 同源（无账单时另加固定开销，见下） */
   total: number;
@@ -226,6 +245,21 @@ export function estimateToolTokens(tools: ToolDefinition[]): number {
   );
 }
 
+/** 还在投影里的项目指令估算。
+    只数最近一次 context_compacted **之后**的那些：清场把此前的一切消息都扔了
+    （deriveMessages 里只有围栏 system 消息幸存），compact 之前注入的项目指令
+    不再进上下文，照旧计进去就是报一笔模型看不见的账。
+    正常会话里这就是开头那一条（一个工作区一份）。 */
+function instructionsTokens(events: SessionEvent[]): number {
+  let total = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "context_compacted") break;
+    if (e.type === "project_instructions") total += estimateTokens(projectInstructionsText(e.segments));
+  }
+  return total;
+}
+
 /** 会话的围栏 workspace（日志第一条 session_created）。老日志可能没有 */
 function workspaceOf(events: SessionEvent[]): string | null {
   for (const e of events) {
@@ -234,12 +268,14 @@ function workspaceOf(events: SessionEvent[]): string | null {
   return null;
 }
 
-/** 上下文占用按来源拆三份。tools 缺省 = 空（拿不到工具表时该项显示 0，不瞎猜）。
+/** 上下文占用按来源拆四份。tools 缺省 = 空（拿不到工具表时该项显示 0，不瞎猜）。
 
     有账单锚点时：total = contextUsed（事实优先），对话消息取差额——账单里
-    本来就含系统提示词和工具，重复加就是双记。
+    本来就含系统提示词、工具和项目指令，重复加就是双记。
     还没有任何账单（会话刚开、第一句还没发出去）时：估算侧看不见系统提示词和
-    工具，于是显式补上——不然弹窗会声称"占用 0"，而下一次请求其实已经有底噪。 */
+    工具，于是显式补上——不然弹窗会声称"占用 0"，而下一次请求其实已经有底噪。
+    项目指令这时已经在 pending 里（pendingAfter 计它），所以只从 pending 里
+    分出来，不再另加一笔。 */
 export function contextBreakdown(
   events: SessionEvent[],
   tools: ToolDefinition[] = []
@@ -257,13 +293,26 @@ export function contextBreakdown(
       )
     : 0;
   const toolTokens = estimateToolTokens(tools);
+  const instructions = instructionsTokens(events);
   const anchor = billingAnchor(events);
   const pending = pendingAfter(events, anchor.idx);
 
   if (anchor.idx === -1) {
     const total = Math.max(0, system + toolTokens + pending);
-    return { system, tools: toolTokens, messages: Math.max(0, pending), total };
+    return {
+      system,
+      tools: toolTokens,
+      instructions,
+      messages: Math.max(0, pending - instructions),
+      total,
+    };
   }
   const total = Math.max(0, anchor.value + pending);
-  return { system, tools: toolTokens, messages: Math.max(0, total - system - toolTokens), total };
+  return {
+    system,
+    tools: toolTokens,
+    instructions,
+    messages: Math.max(0, total - system - toolTokens - instructions),
+    total,
+  };
 }

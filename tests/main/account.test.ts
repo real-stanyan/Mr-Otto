@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { parseAuthCallback, toAccountInfo, AccountManager } from "../../src/main/account.js";
 import type { SupabaseLike } from "../../src/main/account.js";
-import { authLandingUrl } from "../../src/shared/gatewayConfig.js";
+import { authLandingUrl } from "../../src/shared/edgeConfig.js";
 
 describe("parseAuthCallback", () => {
   it("mrotto 深链带 code → 提取 code", () => {

@@ -55,8 +55,9 @@ import { autoTitleSource } from "./sessionTitler.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
-import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
-import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { loadAlwaysAllow, addAlwaysAllow, removeAlwaysAllow } from "./permissionStore.js";
+import { loadExecPolicy, appendAllowRule, removeExecRule } from "./execPolicyStore.js";
+import type { ExecRule } from "../shared/execPolicy.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
@@ -67,6 +68,7 @@ import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, UpdaterState,
   RemoteStatus,
+  PermissionsSnapshot,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
@@ -116,7 +118,6 @@ import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
-import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
@@ -132,7 +133,7 @@ import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { MobileMessage, UpFrame } from "../shared/remote/frames.js";
 import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
-import { relayBaseUrl } from "../shared/gatewayConfig.js";
+import { relayBaseUrl } from "../shared/edgeConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -459,9 +460,6 @@ void app.whenReady().then(() => {
     client: supabase.auth,
   });
   const manager = accountManager;
-  // otto-gateway 的进门凭据取用器。传给 createAgent 决定走网关还是直连,
-  // 也给查余额用。token 只在主进程流转,永不过桥
-  const getAccessToken = (): Promise<string | null> => manager.getAccessToken();
   // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
   // account——两条都跑的话，restore() 的 getUser() 若晚于 handleCallback() 的
   // exchangeCodeForSession 完成，刚建立的新登录会被 restore 带来的旧 session 投影覆盖，
@@ -667,7 +665,7 @@ void app.whenReady().then(() => {
 
   /**
    * 每台手机正在看的那个会话(watch/unwatch,ADR-0094 的"看"那一半)。
-   * 键是中继编的连接 cid(ADR-0129)。
+   * 键是中继编的连接 cid(ADR-0130)。
    *
    * **一台手机一屏,但几台手机各看各的。** 原来这是一个 `string | null` ——
    * 一户一手机的年代那样够用;多台之后共用一个的话,B 打开一个会话会把 A 的
@@ -861,7 +859,6 @@ void app.whenReady().then(() => {
         model: agent.model,
         approvalMode: agent.approvalMode,
       }),
-      getAccessToken,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       // forbidden 规则对子 agent 同样生效（用户写的"永不放行"不该被派活绕过）；
       // 不接 persistAllowRule——子 agent 没有审批 UI，产不出规则
@@ -1422,7 +1419,6 @@ void app.whenReady().then(() => {
       workspace: args.workspace,
       push,
       attachments: attachmentStore,
-      getAccessToken,
       makeBrowser: (sid: string) => ({
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
@@ -1545,7 +1541,6 @@ void app.whenReady().then(() => {
           model: self.model,
           approvalMode: self.approvalMode,
         }),
-        getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
@@ -1772,6 +1767,30 @@ void app.whenReady().then(() => {
       return newId;
     }
   );
+
+  // 设置页权限总览（issue #370）：两份文件都现读——审批链也是现读，
+  // 这里看到的就是下一次判定会用的那份（热生效的两端是同一个事实）
+  const permissionsSnapshot = (): PermissionsSnapshot => {
+    const policy = loadExecPolicy(execPolicyPath);
+    return {
+      grants: [...loadAlwaysAllow(permissionsPath)].sort(),
+      execRules: policy.rules,
+      ...(policy.error !== undefined ? { execError: policy.error } : {}),
+    };
+  };
+  ipcMain.handle(CHANNELS.listPermissions, () => permissionsSnapshot());
+  ipcMain.handle(CHANNELS.revokeGrant, (_e, key: string) => {
+    if (typeof key === "string" && key !== "") removeAlwaysAllow(permissionsPath, key);
+    return permissionsSnapshot();
+  });
+  ipcMain.handle(CHANNELS.removeExecRule, (_e, rule: ExecRule) => {
+    // 形状不赌（来自渲染层的输入）：removeExecRule 按内容精确匹配，
+    // 畸形规则最坏匹配不到、返回原样快照
+    if (rule !== null && typeof rule === "object" && Array.isArray(rule.pattern)) {
+      removeExecRule(execPolicyPath, rule);
+    }
+    return permissionsSnapshot();
+  });
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
   ipcMain.handle(CHANNELS.listExternalSkills, () => {
@@ -2165,7 +2184,6 @@ void app.whenReady().then(() => {
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
-  ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
 
   // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
   // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切
@@ -2731,7 +2749,7 @@ void app.whenReady().then(() => {
     return out;
   }
 
-  /** cid = 哪一台手机发来的(ADR-0129)。回话一律回给它,不广播 */
+  /** cid = 哪一台手机发来的(ADR-0130)。回话一律回给它,不广播 */
   function handleRemoteCommand(c: UpFrame, cid: string): void {
     switch (c.type) {
       case "approve":

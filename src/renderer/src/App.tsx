@@ -60,7 +60,6 @@ import { FriendsSection } from "./components/FriendsSection.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
-import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
@@ -94,6 +93,7 @@ import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
+import { PermissionsSettings } from "./components/PermissionsSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
 import { RemoteDevicesSettings } from "./components/RemoteDevicesSettings.js";
 import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
@@ -229,11 +229,14 @@ function fmtCtx(n: number): string {
   return String(n);
 }
 
-/** 三类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
-    对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，系统提示词用灰 */
+/** 四类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
+    对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，项目指令用青，
+    系统提示词用灰。前三段是**每轮都要重付**的固定开销，排在一起，
+    条形上看到的第一截就是"这个会话的底噪有多厚"（issue #524） */
 const CTX_CATEGORIES = [
   { key: "system" as const, label: "系统提示词", color: "color-mix(in srgb, var(--foreground) 45%, transparent)" },
   { key: "tools" as const, label: "工具", color: "#8b7fe0" },
+  { key: "instructions" as const, label: "项目指令", color: "#5fa8b8" },
   { key: "messages" as const, label: "对话消息", color: "var(--brand)" },
 ];
 
@@ -242,7 +245,7 @@ const CTX_CATEGORIES = [
 
     壳换成了 assistant-ui 的 ContextDisplay（悬停 Tooltip，Root 管百分比/配色/开合），
     内容仍是本仓这一份：上游 Content 报的是"上一次请求的 usage 分项"（入/缓存/出/推理），
-    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/对话消息）——两码事，换不得。
+    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/项目指令/对话消息）——两码事，换不得。
     因此只用官方的 Root + Trigger + 环（ContextDisplayRingVisual），Content 自己写 */
 function CtxDetails({ events, toolDefs, ctxWindow }: {
   events: SessionEvent[];
@@ -284,7 +287,7 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       <div
         className="flex h-[6px] rounded-full overflow-hidden bg-foreground/10 gap-[1px]"
         role="img"
-        aria-label={`上下文占用 ${pct}%：系统提示词 ${breakdown.system}、工具 ${breakdown.tools}、对话消息 ${breakdown.messages} tokens`}
+        aria-label={`上下文占用 ${pct}%：系统提示词 ${breakdown.system}、工具 ${breakdown.tools}、项目指令 ${breakdown.instructions}、对话消息 ${breakdown.messages} tokens`}
       >
         {CTX_CATEGORIES.map((c) => (
           <i
@@ -1232,81 +1235,6 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[1
 }
 
 /** 桶名 → 显示名。对得上模型下拉里的叫法，别让用户猜 flash 是哪个 */
-const BUCKET_LABEL: Record<string, string> = { flash: "Flash", pro: "Pro" };
-
-/** 官方额度卡（账号页内）。单位是 token 不是钱（ADR-0021）：
-    模型按 token 计费，用美元记账等于每次都得换算一次。
-    数字是读的不是玩的——不给进度条做入场动画：这块每次进设置都会看一次，
-    动一下就是每次都拖一下。 */
-function QuotaCard() {
-  const wallet = useChat((s) => s.wallet);
-  const walletError = useChat((s) => s.walletError);
-  const refreshWallet = useChat((s) => s.refreshWallet);
-
-  if (walletError) {
-    return (
-      <div className="rounded-[10px] border border-border px-[14px] py-[10px]">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-[650]">官方额度</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs"
-            onClick={() => void refreshWallet()}
-          >
-            重试
-          </Button>
-        </div>
-        {/* "查不到"和"没有额度"不是一回事，别把故障显示成 0 */}
-        <p className={ERR_TXT}>查不到额度：{walletError}</p>
-      </div>
-    );
-  }
-
-  if (!wallet) return <p className={HINT}>正在查官方额度…</p>;
-
-  const entries = Object.entries(wallet.buckets);
-  const allEmpty = entries.every(([, b]) => b.balanceTokens <= 0);
-
-  return (
-    <div className="rounded-[10px] border border-border px-[14px] py-[10px] flex flex-col gap-[10px]">
-      <span className="text-xs font-[650]">官方额度</span>
-
-      {entries.map(([name, b]) => {
-        const pct = b.grantTokens > 0
-          ? Math.max(0, Math.min(100, (b.balanceTokens / b.grantTokens) * 100))
-          : 0;
-        const empty = b.balanceTokens <= 0;
-        return (
-          <div key={name} className="flex flex-col gap-[4px]">
-            <div className="flex items-baseline gap-2 text-[13px]">
-              <span className="font-[650]">{BUCKET_LABEL[name] ?? name}</span>
-              <span className="ml-auto tabular-nums">
-                {Math.max(0, b.balanceTokens).toLocaleString("en-US")}
-              </span>
-              <span className={`${HINT} tabular-nums`}>
-                / {b.grantTokens.toLocaleString("en-US")}
-              </span>
-            </div>
-            <div className="h-[3px] rounded-full bg-muted overflow-hidden">
-              <div
-                className={`h-full rounded-full ${empty ? "bg-destructive" : "bg-primary"}`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-          </div>
-        );
-      })}
-
-      <p className={HINT}>
-        {allEmpty
-          ? "额度都用完了。去「模型配置」填自己的 API key 即可继续。"
-          : "单位是 token（进 + 出）。两档各扣各的，互不流通；填了自己的 key 就走自己的，不动这份额度。"}
-      </p>
-    </div>
-  );
-}
-
 /** Google 官方四色 G(品牌规范配色,path 数据是官方 SVG)。尺寸交给按钮的 [&_svg] 规则 */
 function GoogleIcon() {
   return (
@@ -1464,8 +1392,6 @@ function AccountPage() {
             {/* 显示即编辑:名字和头像就地可改,和首登引导共用同一张表单
                 (components/ProfileCard.tsx → ProfileEditor.tsx) */}
             <ProfileCard />
-            {/* 官方额度卡:ADR-0085 之后官方不供 token,没有这回事就不画这张卡 */}
-            {OFFICIAL_GRANT_ENABLED && <QuotaCard />}
           </>
         ) : (
           /* 未登录时这一屏只有一张登录卡,水平垂直都居中:
@@ -3255,6 +3181,8 @@ export function App() {
     <SubagentSettings />
   ) : settingsSection === "mcp" ? (
     <McpSettings />
+  ) : settingsSection === "permissions" ? (
+    <PermissionsSettings />
   ) : settingsSection === "memory" ? (
     <MemorySettings />
   ) : settingsSection === "context" ? (

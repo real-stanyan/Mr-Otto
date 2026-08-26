@@ -179,7 +179,7 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
     // "流断了" 是唯一的线索 —— 断在第几秒、是被谁断的,全看不到
     let why = "对端关闭";
     try {
-      // v=2 = "我认按 cid 寻址那一套"(ADR-0129)。**必须自己声明**:
+      // v=2 = "我认按 cid 寻址那一套"(ADR-0130)。**必须自己声明**:
       // 老解析器整块前缀匹配,收到两行的事件会整条丢掉 —— 中继不能单方面改格式
       myCid = ""; // 每条新连接一个新 cid,旧的不能带过去
       const res = await doFetch(`${base}/rl/v1/stream${q}&v=2`, {

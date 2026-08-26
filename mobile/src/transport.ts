@@ -39,7 +39,7 @@ export function createXhrTransport(opts: {
   let onMsg: (p: string, from: string) => void = () => {};
   let onPeer: (cid: string) => void = () => {};
   let onGone: (cid: string) => void = () => {};
-  /** 收到过 `:cid` = 对面是新中继(ADR-0129)。之后裸 `:peer` 是发给老客户端的,不再理它 */
+  /** 收到过 `:cid` = 对面是新中继(ADR-0130)。之后裸 `:peer` 是发给老客户端的,不再理它 */
   let addressed = false;
   /** 中继给这条连接编的 id。发出去的每一帧都带上它,对端才知道是谁发的 */
   let myCid = "";
@@ -199,7 +199,7 @@ export function createXhrTransport(opts: {
     req.onabort = () => { /* 主动摘的(close 或 reconnectNow),两条路都已自己安排好后续 */ };
     req.onload = finish;
 
-    // v=2 = "我认按 cid 寻址那一套"(ADR-0129),见桌面侧同名注释
+    // v=2 = "我认按 cid 寻址那一套"(ADR-0130),见桌面侧同名注释
     req.open("GET", `${base}/rl/v1/stream${q}&v=2`);
     req.setRequestHeader("authorization", `Bearer ${token}`);
     req.send();
