@@ -229,11 +229,14 @@ function fmtCtx(n: number): string {
   return String(n);
 }
 
-/** 三类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
-    对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，系统提示词用灰 */
+/** 四类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
+    对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，项目指令用青，
+    系统提示词用灰。前三段是**每轮都要重付**的固定开销，排在一起，
+    条形上看到的第一截就是"这个会话的底噪有多厚"（issue #524） */
 const CTX_CATEGORIES = [
   { key: "system" as const, label: "系统提示词", color: "color-mix(in srgb, var(--foreground) 45%, transparent)" },
   { key: "tools" as const, label: "工具", color: "#8b7fe0" },
+  { key: "instructions" as const, label: "项目指令", color: "#5fa8b8" },
   { key: "messages" as const, label: "对话消息", color: "var(--brand)" },
 ];
 
@@ -242,7 +245,7 @@ const CTX_CATEGORIES = [
 
     壳换成了 assistant-ui 的 ContextDisplay（悬停 Tooltip，Root 管百分比/配色/开合），
     内容仍是本仓这一份：上游 Content 报的是"上一次请求的 usage 分项"（入/缓存/出/推理），
-    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/对话消息）——两码事，换不得。
+    本仓要回答的是"当前上下文由什么构成"（系统提示词/工具/项目指令/对话消息）——两码事，换不得。
     因此只用官方的 Root + Trigger + 环（ContextDisplayRingVisual），Content 自己写 */
 function CtxDetails({ events, toolDefs, ctxWindow }: {
   events: SessionEvent[];
@@ -284,7 +287,7 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       <div
         className="flex h-[6px] rounded-full overflow-hidden bg-foreground/10 gap-[1px]"
         role="img"
-        aria-label={`上下文占用 ${pct}%：系统提示词 ${breakdown.system}、工具 ${breakdown.tools}、对话消息 ${breakdown.messages} tokens`}
+        aria-label={`上下文占用 ${pct}%：系统提示词 ${breakdown.system}、工具 ${breakdown.tools}、项目指令 ${breakdown.instructions}、对话消息 ${breakdown.messages} tokens`}
       >
         {CTX_CATEGORIES.map((c) => (
           <i

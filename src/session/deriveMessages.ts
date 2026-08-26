@@ -132,6 +132,18 @@ export function renderMemoryPrompt(memory: string, user: string, project?: strin
   );
 }
 
+/** project_instructions 投影成的那条 user 消息的正文——投影(下面)和上下文用量
+    估算(shared/contextEstimate)共用这一处出口，同 systemPromptText 的先例：
+    两边各写一份文案，"项目指令占多少"就又是猜的（issue #524）。
+
+    每段带来源路径——模型知道"这是哪份文件说的"，与 UI 的 provenance 同源 */
+export function projectInstructionsText(segments: { path: string; content: string }[]): string {
+  return (
+    `[以下是本工作区的项目指令文件，按 root → 工作目录顺序拼接，请在完成任务时遵循]\n` +
+    segments.map((seg) => `── 来自 ${seg.path} ──\n${seg.content}`).join("\n\n")
+  );
+}
+
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
     解 bytes 是 adapter 的事(注入的 readAttachment) */
 export type UserContentPart =
@@ -503,15 +515,8 @@ export function deriveMessages(
 
       case "project_instructions":
         // 注入为 user 消息（同 skill_invoked：中途插 system 各家方言兼容性参差）。
-        // 每段带来源路径——模型知道"这是哪份文件说的"，与 UI 的 provenance 同源
-        messages.push({
-          role: "user",
-          content:
-            `[以下是本工作区的项目指令文件，按 root → 工作目录顺序拼接，请在完成任务时遵循]\n` +
-            event.segments
-              .map((seg) => `── 来自 ${seg.path} ──\n${seg.content}`)
-              .join("\n\n"),
-        });
+        // 文案出口在 projectInstructionsText——投影和用量估算共用一处，见那儿的注释
+        messages.push({ role: "user", content: projectInstructionsText(event.segments) });
         break;
 
       case "image_described":
