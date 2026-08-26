@@ -9,9 +9,10 @@
 // 是两回事：那边测的是不依赖 SDK 就能测干净的状态机，这里测的正是
 // mcpClient.ts 自己那一小块可以脱离进程单测的纯逻辑。
 import { describe, it, expect } from "vitest";
-import { isAuthError } from "../../src/main/mcpClient.js";
+import { isAuthError, describeAuthError, authRequiredError, scrubOAuthError } from "../../src/main/mcpClient.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InvalidGrantError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 describe("isAuthError", () => {
   it("UnauthorizedError 总是要授权", () => {
@@ -40,5 +41,57 @@ describe("isAuthError", () => {
     expect(isAuthError(new Error("connection reset"))).toBe(false);
     expect(isAuthError("just a string")).toBe(false);
     expect(isAuthError(undefined)).toBe(false);
+  });
+});
+
+// #470：SDK 的错误 message 里可能带 token 端点的响应体原文（parseErrorResponse
+// 的 "Raw body: ..." 兜底），而这段文本会沿 McpAuthRequiredError → hub 的
+// e.error → tool_result 落进 append-only 事件日志。下面这串扮演"混进错误
+// 文本里的凭据"——断言它在任何一个出口的措辞里都不出现。
+const TAINT = "access_token-绝不能入日志-9d3ab7e1";
+
+describe("describeAuthError —— 白名单式折叠，凭据文本进不来", () => {
+  it("StreamableHTTPError 折成状态码，不带 message", () => {
+    expect(describeAuthError(new StreamableHTTPError(401, `nope: ${TAINT}`))).toBe("HTTP 401");
+    expect(describeAuthError(new StreamableHTTPError(undefined, TAINT))).toBe("HTTP 状态码未知");
+  });
+
+  it("OAuthError 子类折成 spec 的 error code（这正是诊断价值所在）", () => {
+    expect(describeAuthError(new InvalidGrantError(`desc with ${TAINT}`))).toBe("invalid_grant");
+    expect(describeAuthError(new ServerError(`Raw body: {"access_token":"${TAINT}"}`))).toBe("server_error");
+  });
+
+  it("普通 Error 只留类名；非 Error 只留 typeof —— message/原值一律不带", () => {
+    expect(describeAuthError(new UnauthorizedError(TAINT))).toBe("Error");
+    expect(describeAuthError(new Error(`401 ${TAINT}`))).toBe("Error");
+    expect(describeAuthError(`raw string ${TAINT}`)).toBe("string");
+    expect(describeAuthError(undefined)).toBe("undefined");
+  });
+});
+
+describe("authRequiredError —— 两处 throw 共用的构造点", () => {
+  it("消息含 server id 和折叠后的原因，不含原始错误文本", () => {
+    const err = authRequiredError("supabase", new StreamableHTTPError(401, `denied: ${TAINT}`));
+    expect(err.message).toContain("supabase");
+    expect(err.message).toContain("HTTP 401");
+    expect(err.message).not.toContain(TAINT);
+  });
+});
+
+describe("scrubOAuthError —— 只重写带服务端文本的 OAuthError，其余原样放行", () => {
+  it("OAuthError 的 message 被换掉，error code 保留", () => {
+    const out = scrubOAuthError(new ServerError(`HTTP 400: Invalid OAuth error response. Raw body: ${TAINT}`));
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toContain("server_error");
+    expect((out as Error).message).not.toContain(TAINT);
+  });
+
+  it("我们自己的人话错误原样放行（loopback 超时那类诊断不能丢）", () => {
+    const own = new Error("授权超时：5 分钟内没等到浏览器回调");
+    expect(scrubOAuthError(own)).toBe(own);
+  });
+
+  it("非 Error 原样放行", () => {
+    expect(scrubOAuthError("boom")).toBe("boom");
   });
 });
