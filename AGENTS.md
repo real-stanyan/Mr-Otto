@@ -195,3 +195,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/gateway/src/relay.ts`（ADR-0094 / 0095 / 0096 / 0097 / 0100 / 0106）
 - `mobile/src/friends.tsx` / `mobile/src/friendsApi.ts` / `src/shared/friendsQuery.ts` — 手机端好友：加好友 / 收发请求 / 私信（直连 Supabase，不经中继；纯逻辑与桌面共用 `friendsQuery.ts`，ADR-0114）
 - `src/shared/remote/stats.ts` / `src/shared/sessionActivity.ts` — 手机端设置页那两块：会话热力图 + 各模型用量。**拉取不订阅**（`stats` 帧对），`trim.ts` 那道闸门不动（ADR-0115）
+- `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）

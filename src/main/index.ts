@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
   CHANNELS,
   type BootInfo,
@@ -42,7 +42,7 @@ import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
@@ -89,8 +89,12 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
-import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import {
+  memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
+  PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
+} from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
+import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -796,7 +800,7 @@ void app.whenReady().then(() => {
     // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
-    const mem = readMemoryFiles();
+    const mem = readMemoryFiles(agent.workspace);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -830,7 +834,7 @@ void app.whenReady().then(() => {
       sessionId, toolCallId,
       () => runner.run({
         agent: "memory-reviewer",
-        task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+        task: buildReviewerTask(mem, transcript),
         parentToolCallId: toolCallId,
       }),
     );
@@ -1204,25 +1208,40 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
-  /** 两个记忆文件的当前内容（ADR-0060）。读不到 = 空——"没记过"不是故障。
-      同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
-      createAgent 是同步的，这份快照必须在调它之前就手上有值 */
-  const readMemoryFiles = (): { memory: string; user: string } => {
-    const root = configDir(homedir());
-    const read = (rel: string): string => {
-      try {
-        return readFileSync(join(root, rel), "utf8");
-      } catch (err) {
-        // ENOENT = 没记过，不是故障。别的错误（EACCES 之类）不能装没看见——
-        // 那会让"文件在但读不了"呈现成"记忆是空的"（issue #186）。但会话装配
-        // 也不该因此挂掉：记下来，快照按空处理
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-          console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
-        }
-        return "";
+  /** 单份记忆文件的当前内容（配置目录相对路径）。读不到 = 空——"没记过"不是
+      故障。ENOENT = 没记过；别的错误（EACCES 之类）不能装没看见——那会让
+      "文件在但读不了"呈现成"记忆是空的"（issue #186）。调用方也不该因此
+      挂掉：记下来，按空处理。两个调用点（会话装配的 readMemoryFiles / 设置页
+      的 getMemory handler）共用这一份，别各写一份 ENOENT 分支出来 */
+  const readMemoryFile = (rel: string): string => {
+    try {
+      return readFileSync(join(configDir(homedir()), rel), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
       }
+      return "";
+    }
+  };
+
+  /** 三档记忆的当前内容（ADR-0060，项目档见 ADR-0116）。同步读：index.ts
+      是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；createAgent
+      是同步的，这份快照必须在调它之前就手上有值。project/projectRoot 缺席 =
+      workspace 不在任何 git 仓库里 */
+  const readMemoryFiles = (
+    workspace: string
+  ): { memory: string; user: string; project?: string; projectRoot?: string } => {
+    const base = {
+      memory: readMemoryFile(memoryRelPath("memory")),
+      user: readMemoryFile(memoryRelPath("user")),
     };
-    return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+    const projectRoot = resolveProjectRoot(workspace);
+    if (!projectRoot) return base;
+    return {
+      ...base,
+      project: readMemoryFile(memoryRelPath("project", projectMemoryDir(projectRoot))),
+      projectRoot,
+    };
   };
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
@@ -1245,6 +1264,12 @@ void app.whenReady().then(() => {
       await writeFile(abs, c, "utf8");
     },
   };
+
+  /** 渲染层给的 projectRoot 折成 applyUserEdit 要的那对 {root, dir}（形状同
+      agent.ts 给 createMemoryTool 的那份）。缺省 = 全局档。两个记忆 handler
+      共用这一份，免得一处传 dir、一处传 root，落出对不上号的证据 */
+  const memoryProject = (projectRoot?: string): { root: string; dir: string } | null =>
+    projectRoot ? { root: projectRoot, dir: projectMemoryDir(projectRoot) } : null;
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -1333,7 +1358,7 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: configDir(homedir()),
-      memory: readMemoryFiles(),
+      memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
@@ -1610,10 +1635,24 @@ void app.whenReady().then(() => {
     return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
   });
 
-  // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
-  ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
-  ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
-    applyUserEdit(memoryEditDeps, target, text, sessionId));
+  // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────
+  // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读写
+  // 走下面新增的 listProjectMemories / saveMemory(projectRoot) / deleteProjectMemory，
+  // 不借这条 handler。复用 readMemoryFile：ENOENT-vs-其他错误的处理只该有一份
+  // （issue #186 那条不能只在一条调用路径上生效）
+  ipcMain.handle(CHANNELS.getMemory, () => ({
+    memory: readMemoryFile(memoryRelPath("memory")),
+    user: readMemoryFile(memoryRelPath("user")),
+  }));
+  // projectRoot 缺省 = 全局档（project 传 null，memoryRelPath 按 target 走
+  // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
+  // 否则 memoryRelPath 在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
+  // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
+  ipcMain.handle(
+    CHANNELS.saveMemory,
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot))
+  );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
   // 设置页的试搜框。不排除当前会话（用户验证「索引里有没有」，不是模型回忆）；
@@ -1624,12 +1663,47 @@ void app.whenReady().then(() => {
       .searchText(query, { limit: 20 })
       .map((h) => ({ ...h, text: [...h.text].length > 200 ? [...h.text].slice(0, 200).join("") + "…" : h.text }));
   });
-  ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
-    // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
-    // MEMORY_FILES[target] 拼了路径，得在拼之前挡
-    if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-    const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
-    await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
+  ipcMain.handle(
+    CHANNELS.forgetMemory,
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string) => {
+      // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
+      // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
+      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+      const project = memoryProject(projectRoot);
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project);
+    }
+  );
+  // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
+  // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
+  // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
+  ipcMain.handle(CHANNELS.listProjectMemories, async () => {
+    const dir = join(configDir(homedir()), "memories", "projects");
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return [];
+    }
+    const out: { root: string; text: string }[] = [];
+    for (const n of names) {
+      const read = async (f: string) => {
+        try {
+          return await readFile(join(dir, n, f), "utf8");
+        } catch {
+          return null;
+        }
+      };
+      const root = await read(PROJECT_ROOT_FILE);
+      if (root === null) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
+      out.push({ root: root.trim(), text: (await read(PROJECT_MEMORY_FILE)) ?? "" });
+    }
+    return out.sort((a, b) => a.root.localeCompare(b.root));
+  });
+  // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
+  ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
+    if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
+    await rm(join(configDir(homedir()), projectMemoryDir(root)), { recursive: true, force: true });
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────

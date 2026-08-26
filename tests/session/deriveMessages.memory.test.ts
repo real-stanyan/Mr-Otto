@@ -15,7 +15,9 @@ describe("renderMemoryBlocks", () => {
   it("带占用百分比的标题 + 条目；只渲非空的那块", () => {
     const s = renderMemoryBlocks("a\n§\nb", "");
     expect(s).toContain("MEMORY (your personal notes) [");
-    expect(s).toMatch(/\d+% — 5\/2,200 chars\]/);
+    // MEMORY 上限 2200 → 1100（tiered-memory Task 2）：三档之后全局 MEMORY 只装
+    // 「换个项目也成立」的事，职责变窄，上限也跟着降
+    expect(s).toMatch(/\d+% — 5\/1,100 chars\]/);
     expect(s).toContain("a\n§\nb");
     expect(s).not.toContain("USER (");
   });

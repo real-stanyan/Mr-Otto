@@ -15,6 +15,7 @@ import {
 import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
+import { projectMemoryDir } from "./projectRoot.js";
 
 /** 目录查表 + Ollama 能力补齐（装了什么、能不能看图、思不思考、窗多大只有探测知道）。
     会话里所有拿到 ModelChoice 的地方都走它。
@@ -73,7 +74,7 @@ import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
-import type { SessionEvent, ToolCallRequest } from "../session/events.js";
+import type { SessionEvent, ToolCallRequest, MemoryLoadedEvent } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
 import type { ToolGuard } from "../loop/middleware.js";
 import type { DeltaKind } from "../model/adapter.js";
@@ -202,8 +203,9 @@ export function createAgent(opts: {
   /** 现扫磁盘的 subagent 清单，task 工具的 def 每轮现算 */
   listSubagents?: () => SubagentDef[];
   /** 新 session 的长期记忆快照（ADR-0060）。由 index.ts 在造 agent 之前读好——
-      createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的 */
-  memory?: { memory: string; user: string };
+      createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的。
+      project/projectRoot 缺席 = 这个 workspace 不在任何 git 仓库里 */
+  memory?: { memory: string; user: string; project?: string; projectRoot?: string };
   /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
@@ -295,6 +297,12 @@ export function createAgent(opts: {
         type: "memory_loaded",
         memory: opts.memory.memory,
         user: opts.memory.user,
+        // 条件展开而不是无条件写 project: opts.memory.project ——后者会让没有
+        // 项目根的会话事件对象凭空多出两个值为 undefined 的 key，破坏「旧日志
+        // 形状逐字节不变」这条断言
+        ...(opts.memory.projectRoot
+          ? { project: opts.memory.project ?? "", projectRoot: opts.memory.projectRoot }
+          : {}),
       });
     }
     // 项目指令注入（issue #353）：记忆之后、第一条 user_message 之前——模型先
@@ -452,12 +460,25 @@ export function createAgent(opts: {
   // bash 会拒绝后台参数而不是丢结果
   const backgroundTasks = new BackgroundTasks();
 
+  // 工具要挂的项目根：新会话看 opts.memory（本次刚读的快照）；resume 会话
+  // opts.memory 被忽略（日志里那条才算数），从日志里那条 memory_loaded 取——
+  // 工具挂载在两条路径上都要发生，不能只认"刚落盘"这一种情况。
+  // 反向查找最新一条（一个 session 通常只有一条，但保险起见找最后一条，
+  // 与 engine.ts 里同一种查找同一种事件的写法保持一致）
+  const loadedProjectRoot =
+    opts.memory?.projectRoot ??
+    [...(resumeLog ?? [])].reverse().find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")
+      ?.projectRoot;
+  const memoryProject = loadedProjectRoot
+    ? { root: loadedProjectRoot, dir: projectMemoryDir(loadedProjectRoot) }
+    : null;
+
   const tools: Tool[] = [
     createAskUserTool(questioner),
     todoWriteTool,
     // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
     // 的装配（裸装配/测试）不该对模型宣称有记忆
-    ...(world.config ? [createMemoryTool()] : []),
+    ...(world.config ? [createMemoryTool(memoryProject)] : []),
     // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
     // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
     ...(world.history ? [createSessionSearchTool()] : []),

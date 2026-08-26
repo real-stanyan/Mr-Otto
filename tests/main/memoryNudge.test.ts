@@ -5,6 +5,7 @@ import {
   settleNudgeSpawn,
   MEMORY_NUDGE_EVERY,
   reviewerTranscript,
+  buildReviewerTask,
 } from "../../src/main/memoryNudge.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { ChatMessage } from "../../src/session/deriveMessages.js";
@@ -95,6 +96,38 @@ describe("reviewerTranscript", () => {
     expect(out.length).toBe(50);
     expect(out).toContain("第49条消息");
     expect(out).not.toContain("第0条消息");
+  });
+});
+
+// memory-reviewer 认三档：项目档的内容和项目根是运行时事实，进 task 字符串
+// 而不是静态 instructions（后者放不下"当次是哪个项目"）
+describe("buildReviewerTask", () => {
+  it("有项目档时拼出 PROJECT 段落，带项目根", () => {
+    const task = buildReviewerTask(
+      { memory: "M", user: "U", project: "P", projectRoot: "/repo" },
+      "最近对话转写",
+    );
+    expect(task).toContain("当前 MEMORY:\nM");
+    expect(task).toContain("当前 USER:\nU");
+    expect(task).toContain("当前 PROJECT（/repo）:\nP");
+    expect(task).toContain("最近对话：\n最近对话转写");
+  });
+
+  // 没有项目档时（workspace 不在 git 仓库里）task 字符串里不该出现 PROJECT 段落——
+  // reviewer 手上的 memory 工具那时也没有 project 这个选项，给它看一个写不了的档
+  // 只会制造困惑
+  it("没有项目档时不出现 PROJECT 段落", () => {
+    const task = buildReviewerTask({ memory: "M", user: "U" }, "转写");
+    expect(task).not.toContain("PROJECT");
+    expect(task).toContain("当前 MEMORY:\nM");
+    expect(task).toContain("当前 USER:\nU");
+  });
+
+  it("MEMORY/USER/PROJECT 都空时落 (空) 占位", () => {
+    const task = buildReviewerTask({ memory: "", user: "", project: "", projectRoot: "/repo" }, "转写");
+    expect(task).toContain("当前 MEMORY:\n(空)");
+    expect(task).toContain("当前 USER:\n(空)");
+    expect(task).toContain("当前 PROJECT（/repo）:\n(空)");
   });
 });
 

@@ -75,6 +75,14 @@ describe("builtinSubagents", () => {
     const without = builtinSubagents(["read_file"]).find((d) => d.name === "memory-reviewer")!;
     expect(without.tools).toEqual([]);
   });
+
+  // 三档判据（ADR-0116 记忆按项目分级）：nudge 派出去的 reviewer 不认三档的话，
+  // 会把项目级条目往全局档塞，正好和这次改动反着来
+  it("memory-reviewer 的指令写明三档判据", () => {
+    const def = builtinSubagents(["memory"]).find((s) => s.name === "memory-reviewer")!;
+    expect(def.instructions).toContain("PROJECT");
+    expect(def.instructions).toContain("拿不准");
+  });
 });
 
 describe("withBuiltins", () => {
