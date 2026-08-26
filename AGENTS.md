@@ -191,3 +191,5 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/main/simulatorHub.ts` / `src/main/simInputBridge.ts` — iOS 模拟器：simctl 台账 + 画面轮询 + 输入桥（ADR-0092）
 - `native/MrOttoSimInput/` — iOS 模拟器输入/无障碍 helper（Swift，CGEvent + AXUIElement；ADR-0092）
 - `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/gateway/src/relay.ts`（ADR-0094 / 0095 / 0096 / 0097 / 0100）
+- `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0112）
+- `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0113）
