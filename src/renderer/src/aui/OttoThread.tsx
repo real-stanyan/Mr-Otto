@@ -24,7 +24,7 @@ import {
 } from "../components/assistant-ui/tool-group.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
-import { Sparkles } from "lucide-react";
+import { MessageCircleQuestion, Sparkles } from "lucide-react";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
@@ -32,11 +32,14 @@ import { WebPreview } from "../components/elements/web-preview.js";
 import { MemoryChips } from "../components/elements/memory-chips.js";
 import { RetrievalChunks } from "../components/elements/retrieval-chunks.js";
 import { DocumentReference } from "../components/elements/document-reference.js";
+import { ElicitationForm } from "../components/elements/elicitation-form.js";
 import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
 import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
 import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memoryStore.js";
 import { parseSessionSearchResult, type SessionSearchResult } from "../../../shared/sessionSearch.js";
 import { toDocumentProps, toRetrievalProps } from "../lib/sessionSearchCard.js";
+import { askCardRows } from "../lib/askUserCard.js";
+import { parseAskUserResult, type AskUserOutcome } from "../../../shared/askUser.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow, TimelineProjectionContext } from "../components/Timeline.js";
@@ -44,6 +47,8 @@ import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
+import { cn } from "../lib/utils.js";
+import { field, mono } from "../lib/surfaces.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
 import { useChat } from "../store.js";
 import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
@@ -259,9 +264,36 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       return part?.type === "tool-call" && part.isError === true;
     }),
   );
+  // 这一组里有一次「问过你、你也答了」→ 默认展开。折起来的理由是"一屏五个 read_file
+  // 谁也不想逐个看",而这一条不是模型自己干的事,是**我说过的话**:把它收进折叠区
+  // 等于要求用户点开才能看见自己的回答,而后面每一步都以这个回答为前提。
+  // 展开的是整组(可能连带露出同组的读文件行):assistant-ui 的"单独成行"要走
+  // 工具 UI 注册表(standalone 那条路,见 thread.tsx 的 GROUP_PARTS_BY),
+  // 那是另一件事;在此之前,多露几行远好过把回答藏起来。仍然可以手动折回去
+  const answered = useAuiState((s) =>
+    group.indices.some((i) => {
+      const part = s.message.content[i];
+      return (
+        part?.type === "tool-call" &&
+        part.toolName === "ask_user" &&
+        typeof part.result === "string" &&
+        part.isError !== true
+      );
+    }),
+  );
+  // 受控而不是 defaultOpen:答案是**后到**的(提问那一刻这组已经挂载了,
+  // defaultOpen 只在挂载那一次读),答完之后弹开一次,之后用户想折回去随时可以
+  const [open, setOpen] = useState(false);
+  const [autoOpened, setAutoOpened] = useState(false);
+  useEffect(() => {
+    if (answered && !autoOpened) {
+      setAutoOpened(true);
+      setOpen(true);
+    }
+  }, [answered, autoOpened]);
 
   return (
-    <ToolGroupRoot variant="ghost">
+    <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
       <ToolGroupTrigger
         count={group.indices.length}
         active={group.status.type === "running"}
@@ -297,6 +329,70 @@ function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
     </span>
   );
 }
+
+/** ask_user 答完之后留在时间线上的那张卡:问了什么、我选了哪个。
+    活着的那张问卷卡(QuestionnaireCard)答完就消失,而"我当时答了什么"是后面每一步的
+    前提——只留一行折起来的工具行,等于把这个前提藏进了折叠区。
+
+    壳沿用 elicitation-form:和活着的那张问卷是同一件衣服的两种状态(request → accepted),
+    读者不用学第二套长相。选项全画出来、只把选中的填实——比只写答案多一层信息:
+    当时的备选是什么、这个决定是在多大的空间里做的。
+
+    没有进场动效:这是历史,不是刚发生的事;往回翻时每张卡都淡入一遍只会让滚动发晕。 */
+const AnsweredAskCard: FC<{ args: unknown; outcome: AskUserOutcome }> = ({ args, outcome }) => {
+  const rows = askCardRows(args, outcome);
+  // args 认不出来(旧日志/坏形状)就退回通用工具行——半张卡比没有卡更糟
+  if (rows.length === 0) return null;
+  const cancelled = outcome.status === "cancelled";
+  return (
+    <ElicitationForm
+      server={cancelled ? "Otto 问了你几件事" : "你回答了 Otto 的提问"}
+      state={cancelled ? "declined" : "accepted"}
+      icon={<MessageCircleQuestion className="size-3.5" />}
+      headerEnd={<span className={cn(mono, "text-foreground/30 shrink-0")}>
+        {cancelled ? "没作答" : "已作答"}
+      </span>}
+      /* 底部那排动作不要:这一步已经过去了,没有可按的东西。
+         状态字挪到头部尾槽——元件自带的那句是英文的 "Sent to …",在这儿也不是实情 */
+      actions={null}
+      className="my-1 max-w-none gap-3"
+    >
+      <div className="flex flex-col gap-3">
+        {rows.map((row, i) => (
+          <div key={i} className="flex min-w-0 flex-col gap-1.5">
+            <span className={cn(mono, "text-foreground/35")}>{row.header}</span>
+            <span className="text-foreground/80 text-[13px] leading-relaxed">{row.question}</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {row.options.map((o) => (
+                <span
+                  key={o.label}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs",
+                    o.picked ? "bg-foreground text-background" : cn(field, "text-foreground/45"),
+                  )}
+                >
+                  {o.label}
+                </span>
+              ))}
+              {row.custom !== undefined && (
+                // 自填不画成选项:它不是我给出的选项之一,填实的圆角 chip 会把它说成是
+                <span className="text-foreground/80 border-foreground/20 rounded-full border border-dashed px-2.5 py-1 text-xs">
+                  自填 · {row.custom}
+                </span>
+              )}
+              {row.skipped && <span className="text-foreground/35 text-xs">跳过了这题</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {cancelled && (
+        <p className="text-foreground/45 text-xs leading-relaxed">
+          没人作答（{outcome.reason}）——模型就此收手,没有拿着空答卷往下猜
+        </p>
+      )}
+    </ElicitationForm>
+  );
+};
 
 /** 派活出去的 task 工具行名单(spawnedToolCallIds 的结果)。在 OttoThread 顶层
     算一次、Context 分发——不让每条工具行自己订阅 events 各扫一遍(#115 教训,
@@ -355,6 +451,15 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
     const parsed = typeof part.result === "string" ? parseSessionSearchResult(part.result) : null;
     if (parsed?.mode === "discovery" && parsed.chunks) return <RetrievalCard result={parsed} />;
     if (parsed?.mode === "read" && parsed.document) return <DocumentCard result={parsed} />;
+  }
+  // ask_user 这一步答完就换成上面那张只读卡:通用工具行只会写「提问 <第一题>」+
+  // 一坨折起来的答卷文本,而"我答了什么"是后面每一步的前提,不该收在折叠区里。
+  // 工具名写字面量而不是 import ASK_USER_TOOL_NAME(那在 src/tools/,渲染进程不许 import,
+  // 硬规则),同上面 memory / web_search 那几支。
+  // 解析不出来 → 落回通用工具行,不猜
+  if (part.toolName === "ask_user" && typeof part.result === "string") {
+    const outcome = parseAskUserResult(part.result);
+    if (outcome) return <AnsweredAskCard args={part.args} outcome={outcome} />;
   }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路
