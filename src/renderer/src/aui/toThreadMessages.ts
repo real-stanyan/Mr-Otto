@@ -12,7 +12,7 @@ import { buildToolIndex, effectiveArgs } from "../lib/toolIndex.js";
 import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
-import { filePartFor, sourcePartsFor, type Part } from "./toolArtifacts.js";
+import { sourcePartsFor, type Part } from "./toolArtifacts.js";
 
 /** 流式直播缓冲(store.streamingBySession 的一项)。事件未落盘前的预览 */
 export interface LiveBuffer {
@@ -203,7 +203,6 @@ export function toThreadMessages(
           seenSources.add(p.id);
           artifacts.push(p);
         }
-        artifacts.push(...filePartFor(call, result, effectiveArgs(call, index)));
       }
       parts.push(...artifacts);
 
