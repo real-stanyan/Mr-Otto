@@ -192,3 +192,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `native/MrOttoSimInput/` — iOS 模拟器输入/无障碍 helper（Swift，CGEvent + AXUIElement；ADR-0092）
 - `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/gateway/src/relay.ts`（ADR-0094 / 0095 / 0096 / 0097 / 0100 / 0106）
 - `mobile/src/friends.tsx` / `mobile/src/friendsApi.ts` / `src/shared/friendsQuery.ts` — 手机端好友：加好友 / 收发请求 / 私信（直连 Supabase，不经中继；纯逻辑与桌面共用 `friendsQuery.ts`，ADR-0108）
+- `src/shared/remote/stats.ts` / `src/shared/sessionActivity.ts` — 手机端设置页那两块：会话热力图 + 各模型用量。**拉取不订阅**（`stats` 帧对），`trim.ts` 那道闸门不动（ADR-0109）
