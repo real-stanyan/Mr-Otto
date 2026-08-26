@@ -670,7 +670,7 @@ describe("记忆分级的投影", () => {
     // 而 MEMORY 的上限从 2200 降到了 1100，同一份 1800 字符的旧日志现在渲成
     // `[164% — 1,800/1,100 chars]` 而不是 `[81% — 1,800/2,200 chars]`。
     // 真正让「加可选字段」这个方案成立的是**向前兼容**：assertReplayable 只拒未知
-    // 事件类型，认得已知类型上的多余字段（ADR-0109）。这里能钉住的是块的**结构**：
+    // 事件类型，认得已知类型上的多余字段（ADR-0112）。这里能钉住的是块的**结构**：
     // 没有 project 字段的旧日志不会凭空多出一块 PROJECT。
     const before = renderMemoryBlocks("笔记一", "用户住悉尼");
     expect(before).toContain("MEMORY (your personal notes)");

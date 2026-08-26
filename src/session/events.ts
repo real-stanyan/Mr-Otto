@@ -330,7 +330,7 @@ export interface SubagentBriefedEvent extends SessionEventBase {
     session 看到的就是这一份（投影拼进 system 尾部），中途写盘下个 session 才可见
     （前缀缓存不被打穿，hermes 同款取舍）。快照语义同 skill_invoked：文件后来
     改了/丢了，重放不失真。
-    project/projectRoot 是**可选**字段（记忆分级 ADR-0109）。它们必须可选的理由是
+    project/projectRoot 是**可选**字段（记忆分级 ADR-0112）。它们必须可选的理由是
     **向前兼容**：新日志被旧版本读到时，assertReplayable 拒的是未知**事件类型**，
     已知类型上的多余字段它认得——新开一个 project_memory_loaded 类型会让旧版本
     直接拒读整个会话。
@@ -358,7 +358,7 @@ export interface MemoryUserEditEvent extends SessionEventBase {
   /** 项目档改的是**哪个项目**（项目根绝对路径）。两档时 target 就是完整地址；
       三档之后 `target: "project"` 在多个项目之间不再唯一——不带这个字段的话，
       两个不同 repo 的手编在日志里长得一模一样，上面那句"记忆文件可从日志重建"
-      就不再成立（ADR-0109）。
+      就不再成立（ADR-0112）。
       **可选**字段，理由同 MemoryLoadedEvent：旧日志没有它照旧可重放，新日志被
       旧版本读到时 assertReplayable 拒的是未知事件类型，已知类型上的多余字段
       它认得。target 不是 "project" 时缺席 */

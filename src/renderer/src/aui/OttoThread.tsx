@@ -136,7 +136,7 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
     forgetMemory 失败(比如条目已经不在文件里了)要把 chip 退回来——
     不然本地状态和磁盘对不上,用户以为忘掉了其实压根没生效。
     result.target 是 "project" 时,forgetMemory 得知道忘哪个项目的——从这个
-    会话自己的 memory_loaded 事件取 projectRoot（三档记忆快照,ADR-0060 / ADR-0109），
+    会话自己的 memory_loaded 事件取 projectRoot（三档记忆快照,ADR-0060 / ADR-0112），
     不是当前 workspace 现算一遍:重放时模型看到的是那份快照,忘掉操作也该照着它走 */
 const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
   const sessionId = useChat((s) => s.sessionId);

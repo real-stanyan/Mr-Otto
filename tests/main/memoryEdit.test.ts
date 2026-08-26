@@ -82,7 +82,7 @@ describe("applyUserEdit", () => {
     expect(files.get("memories/projects/abc123/MEMORY.md")).toBe("本项目门禁是 npm test");
     const ev = store.load("s1").find((e) => e.type === "memory_user_edit");
     // projectRoot 是"记忆文件可从日志重建"的必要部分：三档之后光看 target: "project"
-    // 分不出改的是哪个 repo（ADR-0109）
+    // 分不出改的是哪个 repo（ADR-0112）
     expect(ev).toMatchObject({ target: "project", after: "本项目门禁是 npm test", projectRoot: "/repo" });
   });
 

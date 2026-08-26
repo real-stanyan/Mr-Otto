@@ -9,7 +9,7 @@ export function isMemoryTarget(v: unknown): v is MemoryTarget {
   return v === "memory" || v === "user" || v === "project";
 }
 
-// 三档预算（ADR-0109）。全局 MEMORY 从 2200 降到 1100：三档之后它的职责
+// 三档预算（ADR-0112）。全局 MEMORY 从 2200 降到 1100：三档之后它的职责
 // 变窄了——项目约定全搬去项目档，它只装「换个项目也成立」的事（本机环境、工具怪癖）。
 // 不做成配置：紧上限不是为了省 token，是为了逼出策展；可配置会诱导调数字而非合并条目。
 export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200 };
@@ -127,7 +127,7 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
   const before = charCount(formatEntries(entries));
   const used = charCount(formatEntries(next));
   const limit = MEMORY_LIMITS[target];
-  // 超限判据：超限**且没变小**才拒（ADR-0109）。原来只看 `used > limit`，于是存量
+  // 超限判据：超限**且没变小**才拒（ADR-0112）。原来只看 `used > limit`，于是存量
   // 超限的文件是个死局：旧上限 2200 下写满的 MEMORY（1806 字符）在新上限 1100 下，
   // 模型删掉一条降到 1203 仍然整批被拒、一个字都不写；memory 工具连续失败 3 次就
   // 返回终态「本轮放弃」，模型就此停手。设计里预期的「第一次写入时被自然逼着整理」
@@ -150,7 +150,7 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
     用在"先拼好候选全文、再决定写不写"的场景(比如设置页「移到项目档」)：
     写之前就该知道写不写得下，不是写了一半才发现——那种半成品比直接拒绝更糟。
 
-    判据**故意比 applyOps 严**，两处不是同一条规则（ADR-0109）：applyOps 放宽成
+    判据**故意比 applyOps 严**，两处不是同一条规则（ADR-0112）：applyOps 放宽成
     "超限且未变小才拒"，是为了不锁死存量超限的档（模型减到一半也得让它落盘）；
     而这里唯一的调用方「移到项目档」是**纯增**操作——往目标档里塞一条，用量只会
     涨不会跌，放宽的那半个分支在这里永远走不到。所以这里保持"超限就拒"：
