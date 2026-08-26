@@ -79,6 +79,9 @@ describe("buildApprovalPreview：MCP 工具", () => {
       callTool: async () => [],
       readResource: async () => [],
       getPrompt: async () => "",
+      configure: async () => {},
+      authorize: async () => {},
+      configOf: () => undefined,
     },
   });
 
@@ -166,6 +169,9 @@ describe("buildApprovalPreview：MCP 工具", () => {
         callTool: async () => [],
         readResource: async () => [],
         getPrompt: async () => "",
+        configure: async () => {},
+        authorize: async () => {},
+        configOf: () => undefined,
       },
     };
     const preview = await buildApprovalPreview(

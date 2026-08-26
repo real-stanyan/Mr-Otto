@@ -867,3 +867,45 @@ describe("authorize", () => {
     expect(cleared).toEqual(["s"]);
   });
 });
+
+describe("configure（agent 侧的写配置能力）", () => {
+  it("configure 新增一台，落盘并尝试连接", async () => {
+    const saved: Record<string, unknown>[] = [];
+    const hub = createMcpHub({
+      load: () => ({ servers: {}, errors: [], unrecognizedIds: [], fatal: false }),
+      save: (servers) => { saved.push(servers); },
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.configure("s", http());
+    expect(saved.at(-1)).toHaveProperty("s");
+    expect(hub.servers().find((x) => x.id === "s")?.live).toBe(true);
+  });
+
+  it("configure(id, null) = 删除", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http() }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    await hub.configure("s", null);
+    expect(hub.servers().find((x) => x.id === "s")).toBeUndefined();
+  });
+
+  it("configOf 拿得到当前配置（审批预览要对照「改之前是什么」）", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http("https://a/mcp") }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    expect(hub.configOf("s")).toMatchObject({ kind: "http", url: "https://a/mcp" });
+    expect(hub.configOf("没有这台")).toBeUndefined();
+  });
+});

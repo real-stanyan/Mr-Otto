@@ -248,6 +248,45 @@ export function createMcpHub(opts: {
     await connectOne(id);
   }
 
+  async function saveOne(id: string, cfg: McpServerConfig): Promise<void> {
+    syncFromDisk();
+    // 表单可能是拿 list() 的遮罩值预填的,原样合并回真值——不然一次没碰
+    // 凭据字段的保存就会拿星号覆盖真 key（review finding 3，见上方
+    // mergeMaskedCreds 的注释和 mcpHub.test.ts 里那条同名测试）
+    const merged = mergeMaskedCreds(entries.get(id)?.cfg, cfg);
+    const next = Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg]));
+    next[id] = merged;
+    // 磁盘写在前、内存状态变更在后——opts.save 抛（F1 half 2：prevText
+    // 解析不动）时，不能让下面的 close()/entries.set() 抢跑：写都没写成,
+    // 内存不该假装这次保存已经生效
+    opts.save(next, unrecognizedIds);
+    // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    // 同 syncFromDisk 的口径：还没试连不等于连不上，见上面那条注释
+    entries.set(id, { cfg: merged, status: "connecting" });
+    await connectOne(id);
+  }
+
+  async function removeOne(id: string): Promise<void> {
+    syncFromDisk();
+    const remaining = Object.fromEntries(
+      [...entries.entries()].filter(([k]) => k !== id).map(([k, e]) => [k, e.cfg])
+    );
+    // 同 save()：写在前、关连接/删内存记录在后——opts.save 抛的话
+    // （F1 half 2）这台 server 的连接和内存记录都原样留着，不因为一次
+    // 没写成的删除就先斩后奏关掉一条还活着的连接。同时把 unrecognizedIds
+    // 原样带上：删除一台健康 server 不该连带冲掉磁盘上解析不动的 broken
+    // sibling（F1 half 1 在 remove() 路径上的同款问题，见上面 save 的注释）
+    opts.save(remaining, unrecognizedIds);
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    entries.delete(id);
+    // 配置没了，凭据也不该留 —— 见 opts.clearAuth 的注释
+    opts.clearAuth(id);
+    emit();
+  }
+
   return {
     async ready() {
       // 并发调只连一次；连完清空,下次 ready() 会重试 failed 的那些
@@ -303,46 +342,24 @@ export function createMcpHub(opts: {
       });
     },
 
-    async save(id, cfg) {
-      syncFromDisk();
-      // 表单可能是拿 list() 的遮罩值预填的,原样合并回真值——不然一次没碰
-      // 凭据字段的保存就会拿星号覆盖真 key（review finding 3，见上方
-      // mergeMaskedCreds 的注释和 mcpHub.test.ts 里那条同名测试）
-      const merged = mergeMaskedCreds(entries.get(id)?.cfg, cfg);
-      const next = Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg]));
-      next[id] = merged;
-      // 磁盘写在前、内存状态变更在后——opts.save 抛（F1 half 2：prevText
-      // 解析不动）时，不能让下面的 close()/entries.set() 抢跑：写都没写成,
-      // 内存不该假装这次保存已经生效
-      opts.save(next, unrecognizedIds);
-      // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      // 同 syncFromDisk 的口径：还没试连不等于连不上，见上面那条注释
-      entries.set(id, { cfg: merged, status: "connecting" });
-      await connectOne(id);
-    },
+    save: saveOne,
 
-    async remove(id) {
-      syncFromDisk();
-      const remaining = Object.fromEntries(
-        [...entries.entries()].filter(([k]) => k !== id).map(([k, e]) => [k, e.cfg])
-      );
-      // 同 save()：写在前、关连接/删内存记录在后——opts.save 抛的话
-      // （F1 half 2）这台 server 的连接和内存记录都原样留着，不因为一次
-      // 没写成的删除就先斩后奏关掉一条还活着的连接。同时把 unrecognizedIds
-      // 原样带上：删除一台健康 server 不该连带冲掉磁盘上解析不动的 broken
-      // sibling（F1 half 1 在 remove() 路径上的同款问题，见上面 save 的注释）
-      opts.save(remaining, unrecognizedIds);
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      entries.delete(id);
-      // 配置没了，凭据也不该留 —— 见 opts.clearAuth 的注释
-      opts.clearAuth(id);
-      emit();
-    },
+    remove: removeOne,
 
     reconnect: reconnectOne,
+
+    async configure(id, cfg) {
+      // 复用 save/remove 的全部既有语义（遮罩合并、写在前状态变更在后、
+      // unrecognizedIds 保护、删除时清 OAuth 凭据）——agent 这条路不该
+      // 有一套"简化版"的写盘逻辑，那必然与设置页那条 drift
+      if (cfg === null) await removeOne(id);
+      else await saveOne(id, cfg);
+    },
+
+    configOf: (id) => {
+      syncFromDisk();
+      return entries.get(id)?.cfg;
+    },
 
     async authorize(id) {
       syncFromDisk();

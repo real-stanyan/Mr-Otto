@@ -434,6 +434,9 @@ describe("MCP 接进装配", () => {
     callTool: async () => [{ kind: "text" as const, text: "ok" }],
     readResource: async () => [],
     getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
   });
 
   const names = (a: { toolDefs: { name: string }[] }) => a.toolDefs.map((d) => d.name);

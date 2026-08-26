@@ -97,6 +97,9 @@ const fakeMcp = (): McpCapability => ({
   callTool: async () => [{ kind: "text", text: "ok" }],
   readResource: async () => [{ kind: "text", text: "料" }],
   getPrompt: async () => "展开后的提示词",
+  configure: async () => {},
+  authorize: async () => {},
+  configOf: () => undefined,
 });
 
 describe("装饰器透传 mcp", () => {
