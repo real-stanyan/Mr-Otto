@@ -322,9 +322,13 @@ export interface SubagentBriefedEvent extends SessionEventBase {
     session 看到的就是这一份（投影拼进 system 尾部），中途写盘下个 session 才可见
     （前缀缓存不被打穿，hermes 同款取舍）。快照语义同 skill_invoked：文件后来
     改了/丢了，重放不失真。
-    project/projectRoot 是**可选**字段（记忆分级）：旧日志没有它们 ⇒ 投影与今天
-    逐字节一致；反过来新日志被旧版本读到时，assertReplayable 拒的是未知**事件类型**，
-    已知类型上的多余字段它认得——所以绝不能新开一个 project_memory_loaded 类型 */
+    project/projectRoot 是**可选**字段（记忆分级 ADR-0109）。它们必须可选的理由是
+    **向前兼容**：新日志被旧版本读到时，assertReplayable 拒的是未知**事件类型**，
+    已知类型上的多余字段它认得——新开一个 project_memory_loaded 类型会让旧版本
+    直接拒读整个会话。
+    注意不是"旧日志的投影逐字节不变"：MEMORY 的上限同时从 2200 降到了 1100，而
+    memoryBlock 把 limit 渲进标题，所以旧日志的记忆块**数字会变**。不变的是结构
+    （没有 project 字段就不多渲一块）和可读性——重放不失败，这才是硬规则要的 */
 export interface MemoryLoadedEvent extends SessionEventBase {
   type: "memory_loaded";
   memory: string;

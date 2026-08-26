@@ -34,6 +34,15 @@ describe("resolveProjectRoot", () => {
     expect(resolveProjectRoot("/repo/wt/a", fs)).toBe("/repo");
   });
 
+  // 返回值会被 projectMemoryDir 哈希成目录名：不归一化的话 "/repo" 和 "/repo/"
+  // 是两个哈希 = 同一个仓库分裂出两份项目记忆
+  it("尾斜杠/冗余段归一化：同一个仓库的几种写法解析成同一个根", () => {
+    const fs = fakeFs({ "/repo/.git": null });
+    expect(resolveProjectRoot("/repo/", fs)).toBe("/repo");
+    expect(resolveProjectRoot("/repo//", fs)).toBe("/repo");
+    expect(resolveProjectRoot("/repo/src/..", fs)).toBe("/repo");
+  });
+
   it("submodule：gitdir 含 /modules/，不折叠，就地当独立项目", () => {
     const fs = fakeFs({ "/repo/vendor/lib/.git": "gitdir: /repo/.git/modules/lib" });
     expect(resolveProjectRoot("/repo/vendor/lib", fs)).toBe("/repo/vendor/lib");

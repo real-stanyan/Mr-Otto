@@ -23,7 +23,12 @@ const nodeReader: GitFsReader = {
     try {
       return readFileSync(path, "utf8");
     } catch {
-      return null; // ENOENT 或 EISDIR（.git 是目录）
+      // **任何**读失败都当成「不是文件」——不只是 EISDIR（.git 是目录 = 普通仓库）
+      // 和 ENOENT，还有 EACCES / ELOOP / EIO。这是有意的:调用方对 null 的处理是
+      // 「就地当项目根」,而在普通仓库下那正是正确答案,不值得为区分错误码加一层。
+      // 代价写明:一个 .git 文件读不了(权限错)的 worktree 不会折叠回主仓,它会得到
+      // 自己那份项目记忆——比整个会话没有项目档要好,但确实不是我们想要的那份
+      return null;
     }
   },
   exists(path) {
@@ -53,7 +58,11 @@ export function resolveProjectRoot(
   workspace: string,
   reader: GitFsReader = nodeReader
 ): string | null {
-  let dir = workspace;
+  // 先归一化再爬:返回值会被 projectMemoryDir 哈希成目录名,`/repo` 和 `/repo/`
+  // 不归一化就是两个不同的哈希 = 同一个仓库分裂出两份项目记忆。
+  // join(dir, ".git") 只归一化了**查找**,没归一化返回值——普通仓库那条分支
+  // `return dir` 返回的就是入参原样
+  let dir = resolve(workspace);
   for (let i = 0; i <= MAX_ASCEND; i++) {
     const gitPath = join(dir, ".git");
     if (reader.exists(gitPath)) {
