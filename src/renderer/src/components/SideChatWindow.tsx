@@ -19,6 +19,9 @@ export function SideChatWindow() {
   const sendSide = useChat((s) => s.sendSide);
   const closeSideChat = useChat((s) => s.closeSideChat);
   const setSidePos = useChat((s) => s.setSidePos);
+  // side 会话的审批卡（issue #512）：全权装配的旁聊会过审批门，而主视图只
+  // 渲染 approvals[当前会话]——不在这里给出口，side 一碰需审批的工具就永远挂起
+  const approval = useChat((s) => (s.sideChat ? s.approvals[s.sideChat.sessionId] : undefined));
 
   // 宽度阈值：resize 时重判；从宽缩到窄，浮窗连同内容一起消失
   // （会话本体还活着，再敲 /btw 抬回来）。
@@ -125,6 +128,39 @@ export function SideChatWindow() {
           </p>
         )}
       </div>
+
+      {/* 最小审批行（issue #512）：只给 批/拒 两档——长期授权（session/always）
+          这类重决定不进小窗，要授权请回主会话做。返程与主视图同一条通道 */}
+      {approval && (
+        <div className="flex items-center gap-2 border-t border-border/60 px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-xs" title={approval.toolDescription}>
+            请求使用 <span className="font-mono">{approval.call.name}</span>
+          </span>
+          <button
+            type="button"
+            className="rounded-full bg-primary px-2.5 py-1 text-xs text-primary-foreground hover:opacity-90"
+            onClick={() =>
+              void window.otter.decideApproval(side.sessionId, approval.call.id, {
+                decision: "approved",
+              })
+            }
+          >
+            允许
+          </button>
+          <button
+            type="button"
+            className="rounded-full border border-border/60 px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() =>
+              void window.otter.decideApproval(side.sessionId, approval.call.id, {
+                decision: "denied",
+                reason: "用户在旁聊浮窗里拒绝了",
+              })
+            }
+          >
+            拒绝
+          </button>
+        </div>
+      )}
 
       {/* 输入行 */}
       <div className="border-t border-border/60 p-2">
