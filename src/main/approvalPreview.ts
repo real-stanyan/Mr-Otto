@@ -82,8 +82,12 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
   const mcp = world.mcp;
   if (!mcp) return undefined;
   const a = call.args as Record<string, unknown> | null;
-  const id = a?.["id"];
-  if (typeof id !== "string" || id === "") return undefined;
+  const rawId = a?.["id"];
+  if (typeof rawId !== "string" || rawId.trim() === "") return undefined;
+  // 与 parseConfigureArgs 同一把尺子（终审 B Minor）：那边存的是 trim 后的
+  // id，这里不 trim 的话 configOf(" supabase ") 查不到磁盘上那台 supabase，
+  // 卡片会把一次 update 显示成 add——卡和现实说的不是同一台 server
+  const id = rawId.trim();
 
   const existing = mcp.configOf(id);
   const before = existing

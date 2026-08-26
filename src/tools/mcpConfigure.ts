@@ -23,10 +23,15 @@ const asStringMap = (v: unknown): Record<string, string> =>
     tool_result 里的错误文本，它能照着改；写进配置的垃圾则要用户去手删 */
 export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerConfig | null } {
   const a = asRecord(raw);
-  const id = a["id"];
-  if (typeof id !== "string" || id.trim() === "") {
+  const rawId = a["id"];
+  if (typeof rawId !== "string" || rawId.trim() === "") {
     throw new Error("id 必填，且必须是字符串（这是这台 server 在配置里的名字）");
   }
+  // 判空用 trim、存的却是原值 = 两把尺子（终审 B Minor）：`" supabase "` 和
+  // `"supabase"` 会成为两台不同的 server，而审批卡上这两个 id 长得一模一样
+  // （首尾空白在卡片上不可见），用户看不出这是新建了一台而不是改了那台。
+  // 统一存 trim 后的值，判空和落盘用同一把尺子
+  const id = rawId.trim();
   if (a["action"] === "remove") return { id, cfg: null };
 
   const kind = a["kind"];

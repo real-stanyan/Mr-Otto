@@ -38,6 +38,31 @@ describe("mcp_configure", () => {
     });
   });
 
+  // 终审 B Minor：判空用的是 id.trim()，存的却是原始 id ——两把尺子。
+  // `" supabase "` 和 `"supabase"` 会成为两台不同的 server，而首尾空白在
+  // 审批卡上根本看不见，用户分不出这是新建了一台还是改了那台
+  it("id 存 trim 后的值——判空和落盘用同一把尺子", async () => {
+    const c = cap();
+    await createMcpConfigureTool(c).run(
+      { id: "  supabase\t", kind: "http", url: "https://mcp.supabase.com/mcp" },
+      world(c)
+    );
+    expect(c.configure).toHaveBeenCalledWith("supabase", expect.anything());
+  });
+
+  // B-Minor 3-5：断言"存盘的 url 是归一化后的"，输入本身就得是**会在归一化中
+  // 发生变化**的形式——否则把 normalizeMcpHttpUrl 整个删掉这条也照样绿
+  it("url 存归一化后的 href（大写协议/主机 + 补上根路径）", async () => {
+    const c = cap();
+    await createMcpConfigureTool(c).run(
+      { id: "s", kind: "http", url: "HTTPS://MCP.Supabase.COM" },
+      world(c)
+    );
+    expect(c.configure).toHaveBeenCalledWith("s", {
+      kind: "http", url: "https://mcp.supabase.com/", headers: {}, enabled: true,
+    });
+  });
+
   it("stdio：command + args + env 一起过去", async () => {
     const c = cap();
     await createMcpConfigureTool(c).run(
