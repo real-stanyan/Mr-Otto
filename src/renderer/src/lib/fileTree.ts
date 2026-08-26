@@ -13,6 +13,15 @@
 
 import { toWorkspaceRel } from "../../../shared/fileRefs.js";
 
+/** 树的输入：这一组动过的一个文件。行数缺席 = 那次写盘的日志里没有 diffStat
+    （改这条之前的旧日志），此时那一行就不报数字——不猜 */
+export interface ChangedFile {
+  /** 绝对路径 */
+  path: string;
+  additions?: number;
+  deletions?: number;
+}
+
 export interface FileTreeNode {
   /** 树里的唯一键 = 展示路径（工作区相对；区外文件就是绝对路径） */
   path: string;
@@ -22,31 +31,63 @@ export interface FileTreeNode {
   kind: "folder" | "file";
   /** 文件才有：点它要打开的那个路径（原样，绝对） */
   full?: string;
+  /** 文件才有：这一组对它加/删了多少行。两个都缺 = 日志里没有这份账 */
+  additions?: number;
+  deletions?: number;
 }
 
 /** 内部搭树用的可变节点。目录的 children 用 Map 保插入序 */
 interface Dir {
   dirs: Map<string, Dir>;
-  files: Map<string, string>; // 展示名 → 原始绝对路径
+  files: Map<string, ChangedFile>; // 展示名 → 那个文件
 }
 
 const emptyDir = (): Dir => ({ dirs: new Map(), files: new Map() });
 
+/** 同一个文件在一组里被写了两次 → 一行,行数相加。
+    「有账」和「没账」混在一起时,只把有账的加起来:一次旧日志的写盘不该
+    把这个文件的行数抹成 0,也不该让它冒充"这次只改了后一半"。
+    全都没账才真的没账（返回的那条不带 additions/deletions） */
+export function mergeChangedFiles(entries: readonly ChangedFile[]): ChangedFile[] {
+  const byPath = new Map<string, ChangedFile>();
+  for (const e of entries) {
+    const prev = byPath.get(e.path);
+    if (prev === undefined) {
+      byPath.set(e.path, { ...e });
+      continue;
+    }
+    const add = sum(prev.additions, e.additions);
+    const del = sum(prev.deletions, e.deletions);
+    byPath.set(e.path, {
+      path: e.path,
+      ...(add === undefined ? {} : { additions: add }),
+      ...(del === undefined ? {} : { deletions: del }),
+    });
+  }
+  return [...byPath.values()];
+}
+
+function sum(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return a + b;
+}
+
 /**
- * @param paths 这一组动过的文件（绝对路径，调用方已去重）
+ * @param files 这一组动过的文件（绝对路径；重复的先过 mergeChangedFiles）
  * @param workspace 当前会话的工作区。空串 = 没有工作区，所有路径按区外处理
  */
 export function fileTreeNodes(
-  paths: readonly string[],
+  files: readonly ChangedFile[],
   workspace: string
 ): FileTreeNode[] {
   const root = emptyDir();
-  const outside: string[] = [];
+  const outside: ChangedFile[] = [];
 
-  for (const abs of [...paths].sort()) {
-    const rel = toWorkspaceRel(workspace, abs);
+  for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    const rel = toWorkspaceRel(workspace, file.path);
     if (rel === null) {
-      outside.push(abs);
+      outside.push(file);
       continue;
     }
     const segs = rel.split("/");
@@ -61,16 +102,30 @@ export function fileTreeNodes(
       }
       dir = next;
     }
-    dir.files.set(name, abs);
+    dir.files.set(name, file);
   }
 
   const out: FileTreeNode[] = [];
   walk(root, "", "", 0, out);
   // 区外的排在最后:它们不属于那棵树,但仍然是这次改动的一部分,不能不说
-  for (const abs of outside.sort()) {
-    out.push({ path: abs, name: abs, depth: 0, kind: "file", full: abs });
+  for (const file of outside) {
+    out.push({ ...leaf(file.path, file), path: file.path, name: file.path, depth: 0 });
   }
   return out;
+}
+
+/** 一个文件节点的公共部分。行数只在真有的时候带上——`additions: undefined`
+    和"没有这个键"在 toEqual 里不是一回事,单测会为此吵架 */
+function leaf(path: string, file: ChangedFile): FileTreeNode {
+  return {
+    path,
+    name: path,
+    depth: 0,
+    kind: "file",
+    full: file.path,
+    ...(file.additions === undefined ? {} : { additions: file.additions }),
+    ...(file.deletions === undefined ? {} : { deletions: file.deletions }),
+  };
 }
 
 /** 目录优先、再文件，各自按名字（Map 的插入序已经是排过的路径序）。
@@ -91,13 +146,8 @@ function walk(dir: Dir, prefix: string, label: string, depth: number, out: FileT
     const nextPrefix = prefix === "" ? name : `${prefix}/${name}`;
     walk(sub, nextPrefix, name, childDepth, out);
   }
-  for (const [name, abs] of dir.files) {
-    out.push({
-      path: prefix === "" ? name : `${prefix}/${name}`,
-      name,
-      depth: childDepth,
-      kind: "file",
-      full: abs,
-    });
+  for (const [name, file] of dir.files) {
+    const path = prefix === "" ? name : `${prefix}/${name}`;
+    out.push({ ...leaf(path, file), name, depth: childDepth });
   }
 }

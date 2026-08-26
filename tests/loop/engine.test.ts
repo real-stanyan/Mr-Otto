@@ -1102,3 +1102,46 @@ describe("工具表按 turn 重算（MCP server 中途连上要能用）", () =>
   });
 });
 
+
+describe("LoopEngine —— 中间件给的行数账落进 tool_result（ADR-0141）", () => {
+  it("outcome.diffStat 原样进日志:时间线上历史工具组的 +N/−M 只能从这儿来", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] },
+      { content: "好了" },
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [readFileTool],
+      world: fakeWorld,
+      sessionId: "s1",
+      middlewares: [
+        async (_ctx, next) => ({ ...(await next()), diffStat: { additions: 24, deletions: 6 } }),
+      ],
+    });
+    await engine.runTurn("走一趟");
+
+    const result = store.load("s1").find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({ diffStat: { additions: 24, deletions: 6 } });
+  });
+
+  it("中间件没给就不写这个键:旧日志和新日志里的「没有账」长得一样", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] },
+      { content: "好了" },
+    ]);
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [readFileTool],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("走一趟");
+
+    const result = store.load("s1").find((e) => e.type === "tool_result");
+    expect(result).not.toHaveProperty("diffStat");
+  });
+});
