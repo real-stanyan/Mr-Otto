@@ -73,6 +73,7 @@ import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
 import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
@@ -2482,6 +2483,18 @@ function Welcome() {
   const pendingWorkspace = useChat((s) => s.pendingWorkspace);
   const [workspace, setWorkspace] = useState<string | null>(pendingWorkspace);
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
+  // 兜底工作区(#559):会话永远有工作区。空白开局时预填默认工作文件夹——
+  // 只填空不覆盖(用户手选的和侧栏 ＋ 带来的都不动),没读到镜像就先补一次
+  const workspaceSettings = useChat((s) => s.workspaceSettings);
+  const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
+  useEffect(() => {
+    void loadWorkspaceSettings();
+  }, [loadWorkspaceSettings]);
+  useEffect(() => {
+    if (!pendingWorkspace && workspaceSettings) {
+      setWorkspace((w) => w ?? workspaceSettings.defaultWorkspace);
+    }
+  }, [pendingWorkspace, workspaceSettings]);
   const [text, setText] = useState("");
   // 招呼语只抽一次:Welcome 常驻不卸载,放进 render 体里的话每敲一个字都换一句话
   const myProfile = useChat((s) => s.myProfile);
@@ -2629,6 +2642,15 @@ function Welcome() {
         </div>
       </ComposerBar>
       </AttachDropZone>
+      {/* 新手提示:正用着内置 Default 兜底时说清产出去哪了、怎么换。
+          自己选过文件夹(或设置里改过默认)就不聒噪 */}
+      {workspace !== null &&
+        workspaceSettings?.builtin === true &&
+        workspace === workspaceSettings.defaultWorkspace && (
+          <p className="text-muted-foreground text-xs w-[min(640px,90%)] text-center">
+            水獭会在「文档 › Mr Otto › Default」文件夹里干活——想让它做你自己的项目，点上面的文件夹名换一个。
+          </p>
+        )}
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );
@@ -3247,6 +3269,8 @@ export function App() {
     : protocolOpen ? <ProtocolView /> : null;
   const base = settingsSection === "account" ? (
     <AccountPage />
+  ) : settingsSection === "workspace" ? (
+    <WorkspaceSettings />
   ) : settingsSection === "keys" ? (
     <KeysPage />
   ) : settingsSection === "appearance" ? (

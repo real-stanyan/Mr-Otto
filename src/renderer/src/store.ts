@@ -59,7 +59,7 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
-import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
+import type { NotificationTarget, ProviderBalance, WorkspaceSettingsInfo } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
@@ -91,6 +91,7 @@ type Phase = "connecting" | "welcome" | "chat";
     在设置模式下会换成这三个栏目的导航，互斥展示（同一块地皮） */
 export type SettingsSection =
   | "account"
+  | "workspace"
   | "keys"
   | "appearance"
   | "skills"
@@ -150,6 +151,9 @@ interface ChatState {
   /** 新会话 composer 的文件夹初值：侧栏工程分组的 ＋ 塞进来，Welcome 消费。
       null = 空白开局（顶部那颗 ＋ 新会话） */
   pendingWorkspace: string | null;
+  /** 兜底工作区镜像(#559):Welcome 预填与设置页「工作区」栏目共用。
+      null = 还没从主进程读到(loadWorkspaceSettings 补) */
+  workspaceSettings: WorkspaceSettingsInfo | null;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
   /** 正在跑的 turn 的身份（issue #344 插话乐观锁），来自 turnStatus 推送的
@@ -491,6 +495,10 @@ interface ChatState {
   signOut(): Promise<void>;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
+  /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
+  loadWorkspaceSettings(): Promise<void>;
+  /** 设置默认工作文件夹;null = 恢复内置 Default。落盘后镜像跟着更新 */
+  setDefaultWorkspace(dir: string | null): Promise<void>;
   /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西。
       dir = 预填的工程文件夹（侧栏工程分组上那颗 ＋）；不传就是空白开局 */
   newSession(dir?: string): void;
@@ -715,6 +723,7 @@ export const useChat = create<ChatState>((set, get) => ({
   subagentLogCache: {},
   sideChat: null,
   pendingWorkspace: null,
+  workspaceSettings: null,
   statusBySession: {},
   turnIdBySession: {},
   turnDiffBySession: {},
@@ -1795,6 +1804,23 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
       return null;
+    }
+  },
+
+  async loadWorkspaceSettings() {
+    if (get().workspaceSettings) return;
+    try {
+      set({ workspaceSettings: await window.otter.getWorkspaceSettings() });
+    } catch {
+      // 读不到就保持 null:Welcome 退回"手动选文件夹"路径,不挡开会话
+    }
+  },
+
+  async setDefaultWorkspace(dir) {
+    try {
+      set({ workspaceSettings: await window.otter.setDefaultWorkspace(dir) });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 
