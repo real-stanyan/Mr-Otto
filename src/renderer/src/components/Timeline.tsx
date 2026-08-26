@@ -503,6 +503,11 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         </details>
       );
 
+    // 停用（本任务新增，最小分支）：来源标注 + 停用按钮是 Task 6 的事，这里先给
+    // 一行占位，跟启用卡片同族（✦ + accent 色），不做折叠——没有正文可摊开
+    case "skill_released":
+      return <div className={`${AUDIT} text-brand`}>✦ 停用 skill「{event.name}」</div>;
+
     case "image_described":
       // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
       // 不是对话内容；摊开能看到视觉模型到底读出了什么（解析质量一目了然）
