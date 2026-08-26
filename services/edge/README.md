@@ -88,9 +88,18 @@ npx wrangler secret put SUPABASE_JWT_SECRET # 只做一次，值不进 git
 没有报错。所以：
 
 ```bash
-npm --prefix services/edge run check:relay                     # 打生产
-npm --prefix services/edge run check:relay http://127.0.0.1:8799  # 打本地 dev
+# 打生产：要真 secret（脚本要现签一个 120 秒的 token）
+SUPABASE_JWT_SECRET='...' npm --prefix services/edge run check:relay
+
+# 打本地 wrangler dev：secret 自动从 .dev.vars 取（假值，两边一致就够）
+npm --prefix services/edge run check:relay http://127.0.0.1:8799
 ```
+
+生产地址是 `https://mrotto-edge.dryrun-agency.workers.dev`（脚本的默认值）。
+
+拿 `.dev.vars` 里的假 secret 打生产会被脚本**直接拦掉**：那样跑，中继那些断言会
+全部 401，看起来像"服务坏了"，实际是签的 token 对不上——这是这个脚本最容易
+骗到人的一种失败。
 
 17 条端到端断言（配对、互转、顶替、心跳、隔离、帧上限）。**不进门禁**（它要网络和 secret），
 改中继的 PR 贴它的结果。
