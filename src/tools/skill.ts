@@ -48,32 +48,51 @@ export interface SkillToolDeps {
   appendReleased(name: string): void;
 }
 
-/** 索引拼装。装得下全列；装不下**按传入序**列前 N，尾注还有几条、怎么找——
-    静默截半句会让模型以为清单就这些。
-    传入序此刻是**磁盘序**（三个调用点给的都是 `scanSkills(skillRoots)`：主会话
-    装配、subagentRunner 的子会话装配，以及 src/main/index.ts 的
-    probeToolDefs——开机探针，也读 t.def 拼一次索引）：
-    D6 说的「按最近启用时间排序」没有实现。留在这里当公开的欠账，不是假声明——
-    真要实现得让装配层把台账（activeSkills 的启用次序）也喂进来排一次，
-    是另一条改动。今天的后果：skill 装得多到超预算时，被截掉的是磁盘上排在
-    后面的那些，而不是最久没用过的那些 */
+const indexLine = (s: { name: string; description: string }) =>
+  `- ${s.name} — ${s.description || "（无描述）"}`;
+
+/** 「最近启用在前，其余按磁盘序」的重排（D6）。recent 里没有的一把不丢，
+    只是排在后面——被截掉的因此是「最久没启用过的」，而不是「磁盘上排最后的」 */
+function byRecency<T extends { name: string }>(skills: T[], recent: readonly string[]): T[] {
+  const rank = new Map(recent.map((n, i) => [n, i] as const));
+  const active: T[] = [];
+  const rest: T[] = [];
+  for (const s of skills) (rank.has(s.name) ? active : rest).push(s);
+  active.sort((a, b) => rank.get(a.name)! - rank.get(b.name)!);
+  return [...active, ...rest];
+}
+
+/** 索引拼装。装得下全列；装不下按**最近启用**排序列前 N（D6），尾注还有几条、
+    怎么找——静默截半句会让模型以为清单就这些。
+    `recentFirst` 是个 thunk 而不是一份现成的名单：这个函数在 `def` getter 里，
+    engine 每轮取一次工具声明表就调一次，而台账要现查库（activeSkillsOf）。
+    只有真的超预算才需要知道次序——装得下的时候列全，谁先谁后无所谓——所以
+    那一路把台账查询整个跳过。装了七八十把 skill 的机器才走得到截断那一路。
+    不给 thunk（测试/裸装配）= 退回磁盘序，行为同这条 D6 落地之前 */
 export function composeSkillIndex(
   skills: { name: string; description: string }[],
-  maxBytes: number = INDEX_BUDGET
+  maxBytes: number = INDEX_BUDGET,
+  recentFirst?: () => readonly string[]
 ): string {
+  const size = (s: { name: string; description: string }) =>
+    Buffer.byteLength(indexLine(s), "utf8") + 1;
+  // 装不装得下与次序无关，所以这一步在重排之前——问台账的钱只花在真截断时
+  const total = skills.reduce((n, s) => n + size(s), 0);
+  if (total <= maxBytes) return skills.map(indexLine).join("\n");
+
+  const ordered = byRecency(skills, recentFirst?.() ?? []);
   const lines: string[] = [];
   let used = 0;
   let listed = 0;
-  for (const s of skills) {
-    const line = `- ${s.name} — ${s.description || "（无描述）"}`;
-    const bytes = Buffer.byteLength(line, "utf8") + 1;
+  for (const s of ordered) {
+    const bytes = size(s);
     // 尾注本身也要装得下，所以留出余量再收
     if (used + bytes > maxBytes - 120) break;
-    lines.push(line);
+    lines.push(indexLine(s));
     used += bytes;
     listed++;
   }
-  const rest = skills.length - listed;
+  const rest = ordered.length - listed;
   if (rest > 0) {
     lines.push(`（另有 ${rest} 个未列出，用 action:"list" 加关键词检索）`);
   }
@@ -99,7 +118,11 @@ export function createSkillTool(deps: SkillToolDeps): Tool {
           'action："list" 按关键词检索（清单装不下时用）、"acquire" 启用、"release" 停用。\n' +
           "只能 release 你自己 acquire 的；用户启用的那些你动不了。\n\n" +
           "可用 skill：\n" +
-          composeSkillIndex(deps.listSkills()),
+          // 台账的迭代序 = 启用序，最近启用的排在**尾部**（activeSkills 覆盖时
+          // 先删再设），所以倒过来就是「最近启用在前」。thunk：只有超预算时才求值
+          composeSkillIndex(deps.listSkills(), undefined, () =>
+            [...deps.activeSkills().keys()].reverse()
+          ),
         parameters: {
           type: "object",
           properties: {

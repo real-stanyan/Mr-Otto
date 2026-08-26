@@ -130,6 +130,21 @@ describe("skill 工具", () => {
     await expect(tool.run({ action: "eat", name: "tdd" }, W)).rejects.toThrow();
     await expect(tool.run({ action: "acquire" }, W)).rejects.toThrow();
   });
+  // 接线钉子（D6 / issue #482 欠账 ③）：纯函数会排序不等于工具真的把台账喂给它。
+  // 上一轮 review 抓到的两处「单测绿着、功能不存在」都是这个形状
+  it("索引真的按台账重排：模型 acquire 过的那把，超预算时还留在索引里", async () => {
+    const many = Array.from({ length: 300 }, (_, i) => ({
+      name: `skill-${i}`,
+      description: `第 ${i} 把的描述`,
+      content: `正文 ${i}`,
+    }));
+    const { tool } = harness(many);
+    // 磁盘序排最后的那把，截断时本来必被切掉
+    const last = "skill-299";
+    expect(tool.def.description).not.toContain(`${last} —`);
+    await tool.run({ action: "acquire", name: last }, W);
+    expect(tool.def.description).toContain(`${last} —`);
+  });
 });
 
 describe("composeSkillIndex（索引拼装与截断）", () => {
@@ -150,6 +165,34 @@ describe("composeSkillIndex（索引拼装与截断）", () => {
     expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(1024);
     expect(out).toMatch(/另有 \d+ 个未列出/);
     expect(out).toContain("list");
+  });
+
+  // D6（issue #482 欠账 ③）：截断时该被留下的是「最近启用过的」，
+  // 而不是「磁盘上排在前面的」
+  it("截断时按最近启用排序：台账里的排最前，其余照旧磁盘序", () => {
+    // 磁盘序里排 190/195 的两把，只因为最近启用过就该活下来
+    const out = composeSkillIndex(many, 1024, () => ["skill-195", "skill-190"]);
+    const lines = out.split("\n").filter((l) => l.startsWith("- "));
+    expect(lines[0]).toContain("skill-195"); // 最近启用的在最前
+    expect(lines[1]).toContain("skill-190");
+    expect(lines[2]).toContain("skill-0"); // 之后才是磁盘序
+    expect(out).toMatch(/另有 \d+ 个未列出/);
+  });
+
+  it("装得下就不问台账——thunk 一次都不求值", () => {
+    let asked = 0;
+    const out = composeSkillIndex(many.slice(0, 3), 8 * 1024, () => {
+      asked++;
+      return [];
+    });
+    expect(asked).toBe(0);
+    expect(out).toContain("skill-0");
+  });
+
+  it("不给 thunk 也不炸：退回磁盘序（裸装配/测试照旧）", () => {
+    const out = composeSkillIndex(many, 1024);
+    const first = out.split("\n")[0]!;
+    expect(first).toContain("skill-0");
   });
 });
 
