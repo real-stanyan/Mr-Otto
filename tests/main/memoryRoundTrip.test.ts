@@ -29,7 +29,7 @@ describe("记忆全链路：memory 工具落盘 → 下个 session 的 system �
     const configRoot = tempDir("otter-memory-e2e-config-");
     const world = createLocalWorld({ configRoot });
 
-    const result = await createMemoryTool().run(
+    const result = await createMemoryTool(null).run(
       { target: "user", action: "add", content: "用户住悉尼" },
       world
     );

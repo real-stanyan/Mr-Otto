@@ -53,7 +53,7 @@ describe("applyUserEdit", () => {
   it("与 memory 工具并发：编辑排在工具写之后，before 是工具写完的最新内容", async () => {
     const d = deps();
     d.store.append({ sessionId: "s1", ts: 0, type: "session_created", workspace: "/w" });
-    const tool = createMemoryTool();
+    const tool = createMemoryTool(null);
     const world = {
       config: {
         read: async (rel: string) => d.files.get(rel) ?? null,

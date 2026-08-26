@@ -457,7 +457,9 @@ export function createAgent(opts: {
     todoWriteTool,
     // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
     // 的装配（裸装配/测试）不该对模型宣称有记忆
-    ...(world.config ? [createMemoryTool()] : []),
+    // TODO(Task 5): 真实项目根装配还没接线，先传 null——tsc 过、行为不变
+    // （不给模型看 project 选项，等价于三档功能落地前的旧行为）
+    ...(world.config ? [createMemoryTool(null)] : []),
     // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
     // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
     ...(world.history ? [createSessionSearchTool()] : []),
