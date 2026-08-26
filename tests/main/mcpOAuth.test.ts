@@ -67,6 +67,13 @@ describe("startLoopback", () => {
     await assertion;
   });
 
+  it("waitForCode 之前连来两次回调：第一次说了算，不被后到的覆盖（#474）", async () => {
+    const cb = await startLoopback();
+    await hit(cb.redirectUri, { state: cb.state, code: "第一次的" });
+    await hit(cb.redirectUri, { state: cb.state, code: "后到想顶掉的" });
+    await expect(cb.waitForCode(1000)).resolves.toBe("第一次的");
+  });
+
   it("收完一次立刻关端口——不留长期监听的本地口子", async () => {
     const cb = await startLoopback();
     const waiting = cb.waitForCode(AUTH_TIMEOUT_MS);

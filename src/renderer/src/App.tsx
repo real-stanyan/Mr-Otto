@@ -710,6 +710,54 @@ function McpToolApproval({ preview }: { preview: McpToolPreview }) {
   );
 }
 
+/** McpConfigureApproval 的三件排版积木。模块级而不是组件体内（#474）：
+    体内声明 = 每次父组件重渲染都得到一个**新的组件类型**，React 按类型
+    对不上就整棵子树卸载重挂——长值 <pre> 的滚动位置每次重渲染都归零 */
+const McpCfgRow = ({ label, children }: { label: string; children: ReactNode }) => (
+  <div className="flex flex-col gap-[2px]">
+    <div className="flex items-baseline gap-2">
+      <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+    </div>
+    {children}
+  </div>
+);
+const McpCfgValue = ({ text }: { text: string }) => (
+  <pre className="max-h-[160px] overflow-y-auto rounded-md bg-foreground/[0.04] px-2 py-[6px] font-mono text-xs whitespace-pre-wrap break-all text-foreground/75">
+    {text === "" ? "（空）" : text}
+  </pre>
+);
+// url / command / 每条 args 都可能在主进程被截断（Task 9 审查 Important 2）——
+// 截断了就在标签同一行说清"只显示前 N 字符，共 M"，照抄 McpToolApproval
+// 参数表那一行的写法（那边 a.truncated 也是这么挂在标签旁边的）
+const McpCfgField = ({
+  label,
+  text,
+  truncated,
+  fullLength,
+  note,
+}: {
+  label: string;
+  text: string;
+  truncated?: boolean;
+  fullLength?: number;
+  /** 挂在标签旁边的一句提醒（同 truncated 的位置）。目前只有 enabled 用它
+      说"这次调用会改变启用状态" */
+  note?: string;
+}) => (
+  <div className="flex flex-col gap-[2px]">
+    <div className="flex items-baseline gap-2">
+      <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+      {note !== undefined && <span className="text-[11px] text-warn">{note}</span>}
+      {truncated === true && (
+        <span className="text-[11px] text-warn">
+          只显示前 {text.length} 字符，共 {fullLength}
+        </span>
+      )}
+    </div>
+    <McpCfgValue text={text} />
+  </div>
+);
+
 /** mcp_configure 的审批卡正文（Task 9）。这张卡是"agent 自助配置 MCP server"
     这条路上**唯一**的安全闸：stdio 的配置就是 command + args + env，折成
     一句"配置一台 MCP server"等于闸形同虚设——所以逐字段列，一格不省。
@@ -725,50 +773,9 @@ function McpToolApproval({ preview }: { preview: McpToolPreview }) {
 export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
   const actionLabel =
     preview.action === "add" ? "新增" : preview.action === "update" ? "更新" : "删除";
-  const Row = ({ label, children }: { label: string; children: ReactNode }) => (
-    <div className="flex flex-col gap-[2px]">
-      <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[11px] text-foreground/45">{label}</span>
-      </div>
-      {children}
-    </div>
-  );
-  const Value = ({ text }: { text: string }) => (
-    <pre className="max-h-[160px] overflow-y-auto rounded-md bg-foreground/[0.04] px-2 py-[6px] font-mono text-xs whitespace-pre-wrap break-all text-foreground/75">
-      {text === "" ? "（空）" : text}
-    </pre>
-  );
-  // url / command / 每条 args 都可能在主进程被截断（Task 9 审查 Important 2）——
-  // 截断了就在标签同一行说清"只显示前 N 字符，共 M"，照抄 McpToolApproval
-  // 参数表那一行的写法（那边 a.truncated 也是这么挂在标签旁边的）
-  const Field = ({
-    label,
-    text,
-    truncated,
-    fullLength,
-    note,
-  }: {
-    label: string;
-    text: string;
-    truncated?: boolean;
-    fullLength?: number;
-    /** 挂在标签旁边的一句提醒（同 truncated 的位置）。目前只有 enabled 用它
-        说"这次调用会改变启用状态" */
-    note?: string;
-  }) => (
-    <div className="flex flex-col gap-[2px]">
-      <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[11px] text-foreground/45">{label}</span>
-        {note !== undefined && <span className="text-[11px] text-warn">{note}</span>}
-        {truncated === true && (
-          <span className="text-[11px] text-warn">
-            只显示前 {text.length} 字符，共 {fullLength}
-          </span>
-        )}
-      </div>
-      <Value text={text} />
-    </div>
-  );
+  const Row = McpCfgRow;
+  const Value = McpCfgValue;
+  const Field = McpCfgField;
   // enabled 是唯一一个"有执行后果却曾经不在卡上"的字段（终审 B Important）：
   // stdio 的 enabled: true 就是"这条 command 会被 spawn"。而它翻转的那一次，
   // command/url 可能与 before 逐字相同——只显示新值的话，用户看到的是一次

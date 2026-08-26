@@ -16,7 +16,7 @@
 
 ### 一、`mcp_configure` 必须过审批门
 
-agent 调 `mcp_configure` 工具，`requiresApproval: true`（`src/tools/mcpConfigure.ts`），审批卡片展示完整的 `command` / `args` / `url` / `headers` 明细（值遮罩、键名保留），用户点同意才落盘。
+agent 调 `mcp_configure` 工具，`requiresApproval: true`（`src/tools/mcpConfigure.ts`），审批卡片展示完整的 `command` / `args` / `url` / `headers` 明细（凭据只出键名，值根本不过桥——#474 订正：实现比「值遮罩」更强，遮罩意味着值以某种形式到过卡上，实际是值从不离开主进程），用户点同意才落盘。
 
 **理由**：stdio 类型的 server 配置就是 `command + args + env`——agent 能自由写盘，等于**绕开了 `bash` 工具的审批门拿到任意命令执行**，还附带任意环境变量。这不是「MCP 功能的一个选项」，是权限系统上的一个洞。
 
@@ -32,15 +32,15 @@ agent 调 `mcp_configure` 工具，`requiresApproval: true`（`src/tools/mcpConf
 
 审批预览（`src/main/approvalPreview.ts`）为 `mcp_configure` 加一种预览：
 
-- **stdio**：逐行列出 `command`、每一条 `arg`、`env` 的**键名**（值遮罩）
-- **http**：`url` 全文、`headers` 键名（值遮罩）
+- **stdio**：逐行列出 `command`、每一条 `arg`、`env` 的**键名**（值不过桥）
+- **http**：`url` 全文、`headers` 键名（值不过桥）
 - **删除**：列出被删的是哪台、它当前有几把工具
 
 这张卡片是这条路上**唯一的安全闸**。卡片含糊 = 闸形同虚设，所以明细必须逐字段列。
 
 ### 三、内置小目录 + 搜索兜底
 
-仓内维护 `src/shared/mcpCatalog.ts`，十几条常见 server（supabase / github / notion / linear / sentry / …），每条含 URL 或 npm 包名、必填参数、认证方式。做成 `mcp_catalog` 工具给 agent 查；不在单上的走 `web_search`。
+仓内维护 `src/shared/mcpCatalog.ts`，8 条常见 server（#474 订正：写「十几条」时是愿景，落地是 8 条，会随需求增长）（supabase / github / notion / linear / sentry / …），每条含 URL 或 npm 包名、必填参数、认证方式。做成 `mcp_catalog` 工具给 agent 查；不在单上的走 `web_search`。
 
 **理由**：目录会过时，但它覆盖绝大多数请求且结果确定。纯靠搜索每次多花几秒且可能拿到错 URL——虽然有审批门兜底，但**让用户在审批卡片上判断一个 URL 对不对，是把认知负担还给了用户**。
 

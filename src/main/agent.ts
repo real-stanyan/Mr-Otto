@@ -536,7 +536,7 @@ export function createAgent(opts: {
       // tool_search 是纯子串打分，搜不到这把刀，链条前面全白搭。另外两把
       // （mcp_configure / mcp_authorize）仍是 deferred，由 mcp_catalog 的
       // 返回文案顺次引出（见 mcpCatalog.ts run() 末尾那句）
-      ...(mcp ? [mcpCatalogTool, createMcpConfigureTool(mcp), createMcpAuthorizeTool(mcp)] : []),
+      ...(mcp ? [mcpCatalogTool, createMcpConfigureTool(), createMcpAuthorizeTool()] : []),
       // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
       // 是不是空的"——清单是不是空的这件事归 task 自己的 available()答，
       // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它

@@ -124,4 +124,23 @@ describe("McpSettings 的授权按钮", () => {
     await userEvent.click(await screen.findByRole("button", { name: "授权" }));
     expect(await screen.findByText(/等授权超时/)).toBeInTheDocument();
   });
+
+  // #474：authError 从前只有下一次点「授权」才会清——save/remove/reconnect
+  // 把这台修好/删掉之后，旁边还挂着「授权失败」，两个信号打架。
+  // 走 remove 这条路驱动（needs-auth 的卡上没有重连按钮）
+  it("删除会清掉上一次的授权失败文案（#474）", async () => {
+    stubBridge({
+      authorizeMcpServer: vi.fn(() => Promise.reject(new Error("等授权超时（300 秒没等到浏览器回调）"))),
+      removeMcpServer: vi.fn((): Promise<McpServersSnapshot> => Promise.resolve({ servers: [], errors: [] })),
+    } as Partial<ShellBridge>);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderMcpSettings();
+    await userEvent.click(await screen.findByRole("button", { name: "授权" }));
+    expect(await screen.findByText(/等授权超时/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => {
+      expect(screen.queryByText(/等授权超时/)).not.toBeInTheDocument();
+    });
+  });
 });

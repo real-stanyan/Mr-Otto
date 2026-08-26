@@ -221,6 +221,19 @@ export function mcpNewToolsNotice(toolNames: readonly string[]): string {
   );
 }
 
+/** mcp_configure / mcp_authorize 共用的收尾通报（#474：从前两把刀各写一遍
+    「查这台现状并报工具数」，平行实现迟早漂移）。connected / notConnected
+    是两把刀各自的措辞前缀；needsAuth 只有 configure 用（authorize 收尾时
+    还 needs-auth 就是失败，走 notConnected 那句）。 */
+export function mcpOutcomeReport(
+  hit: { live: boolean; status: string; tools: readonly { name: string }[]; error?: string } | undefined,
+  wording: { connected: string; notConnected: string; needsAuth?: string }
+): string {
+  if (hit?.live) return `${wording.connected}，${mcpNewToolsNotice(hit.tools.map((t) => t.name))}`;
+  if (wording.needsAuth !== undefined && hit?.status === "needs-auth") return wording.needsAuth;
+  return `${wording.notConnected}：${hit?.error ?? "原因未知"}`;
+}
+
 /** 遮罩凭据。键名保留 —— 用户要认出"这一格配的是哪一把"（同 ADR-0044 的判断） */
 export function maskMcpConfig(cfg: McpServerConfig): McpServerConfig {
   const maskAll = (r: Record<string, string>): Record<string, string> =>

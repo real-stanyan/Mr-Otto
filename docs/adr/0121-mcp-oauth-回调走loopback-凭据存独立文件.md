@@ -94,7 +94,8 @@ SDK 类型（`OAuthTokens` / `OAuthClientInformation`）只出现在 `mcpClient.
   ↓
 hub.authorize(id)
   ├─ 起 loopback 127.0.0.1:0 /callback，一次性，5 分钟超时自杀
-  ├─ 造 transport（authProvider = createOAuthProvider(store, id, loopback)）
+  ├─ 造 transport（authProvider = createOAuthProvider({ redirectUri, state, read, write, openBrowser })，
+  │   #474 订正：设计期伪代码写的 (store, id, loopback) 不是落地签名——存取按把手注入，见 McpOAuthDeps）
   ├─ client.connect() → SDK 走发现 / DCR / PKCE，调 provider.redirectToAuthorization
   │   → shell.openExternal 开浏览器 → connect 抛 UnauthorizedError（预期内）
   ├─ 等 loopback 收到回调：校验 state（不匹配立即拒绝并关端口），拿 code
@@ -106,6 +107,8 @@ hub.authorize(id)
 ```
 
 一处实现期才浮出来的时序细节：**回调可能早于 `waitForCode` 到达**。真实时序是 `client.connect()` 先开浏览器、抛 `UnauthorizedError`，调用方接住之后才轮到 `waitForCode`——中间这段窗口里用户完全可能已经点完同意了。所以 loopback 里留了一个 `pending` 缓冲；没有它就会丢掉那次回调然后干等到超时，一个只在「用户手速快」时复现的 bug。
+
+**连接路径何时带 authProvider**（#474 补录——这条决策此前只活在 `src/main/index.ts` 的代码注释里）：只有盘上**已有 token** 的 http server，重连时才给 `connectMcpClient` 带 provider；没有 token 就不带。不带的含义是 SDK 不会在连接路径上做动态客户端注册（DCR）——否则连接路径那个没有真端口的占位 `redirect_uri` 会被注册进服务端，等用户真点「授权」时（带真端口的 redirect_uri）就会被精确匹配的授权服务器拒掉。不带 provider 的结果正是想要的：401 → `needs-auth` → 用户点授权按钮。#471 之后连接路径的 provider 进一步只许写 tokens（`persistFlowState: false`），flow-state（codeVerifier / clientInformation）一律不落盘。
 
 ### 六、`mcp_authorize` 不设审批门
 

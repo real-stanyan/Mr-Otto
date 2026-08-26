@@ -371,6 +371,9 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
     if (!dirty || invalid) return;
     setSaving(true);
     setSaveError(null);
+    // 上一次授权失败的残留一并清掉（#474）：save/remove/reconnect 都可能
+    // 把这台修好，状态灯变绿了旁边还挂着「授权失败」是在撒谎
+    setAuthError(null);
     try {
       await saveMcpServer(server.id, draftConfig);
       // 存成功后拿 store 里刚落地的那份重置草稿，不是这次渲染闭包里的旧
@@ -392,6 +395,7 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
     if (!window.confirm(`删除「${server.id}」？下一次新开的会话就不会再挂载它。`)) return;
     setRemoving(true);
     setSaveError(null);
+    setAuthError(null); // 同 save：别让旧的授权失败文案留在一台已删除/重建的 server 旁
     try {
       await removeMcpServer(server.id);
       // 成功之后这一行会随 mcpServers 整份刷新而从列表里消失，不用自己复位 removing
@@ -404,6 +408,7 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
   const reconnect = async () => {
     setReconnecting(true);
     setSaveError(null);
+    setAuthError(null); // 同 save：重连成功后旧的「授权失败」不该继续挂着
     try {
       await reconnectMcpServer(server.id);
     } catch (e) {

@@ -40,7 +40,10 @@ export interface LoopEngineOptions {
   store: EventStore;
   adapter: ModelAdapter;
   /** 工具表。传函数 = 每个 turn 开始时重算一次（MCP server 中途连上/掉线
-      要能被这个会话看见）；传数组 = 一次定终身（老调用方零改动）。
+      要能被这个会话看见）；传数组 = 也是每 turn 惰性重读**同一个数组引用**
+      （#474：不是"一次定终身"——调用方原地 push 会在下个 turn 生效，撞名
+      warn 也会从整场一次变成每 turn 一次。生产代码唯一的调用方走函数模式，
+      数组模式只有测试在用；别把它当成不可变快照）。
 
       为什么是"每 turn 重算、turn 内冻结"而不是"随时重算"：模型看到的声明表
       和 dispatch 时查的 toolsByName 必须是同一份。turn 中途换表，模型按旧表

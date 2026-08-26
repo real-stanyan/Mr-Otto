@@ -41,7 +41,11 @@ describe("mcp_catalog 工具", () => {
     expect(String(out)).toMatch(/没有|web_search/);
   });
 
-  it("参数不是对象也不炸", async () => {
-    await expect(mcpCatalogTool.run(null, world)).resolves.toBeTruthy();
+  it("参数不是对象也不炸——当空查询处理，返回的是真目录不是报错话术", async () => {
+    // 只断 resolves.toBeTruthy() 是"只断不崩"的原型（#474）：哪怕 run 回一句
+    // "出错了"它也绿。空查询 = 列全目录，断言目录里的条目真的在
+    const out = String(await mcpCatalogTool.run(null, world));
+    expect(out).toContain("supabase");
+    expect(out).toContain("github");
   });
 });

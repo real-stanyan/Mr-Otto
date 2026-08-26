@@ -14,7 +14,7 @@
 
 ## 决定
 
-`LoopEngineOptions.tools` 从 `Tool[]` 放宽成 `Tool[] | (() => Tool[])`，**每个 turn 开始时重算一次（`rebuildTools()`），turn 内冻结**。传数组的老调用方行为完全不变（内部包成 `() => opts.tools`）。
+`LoopEngineOptions.tools` 从 `Tool[]` 放宽成 `Tool[] | (() => Tool[])`，**每个 turn 开始时重算一次（`rebuildTools()`），turn 内冻结**。传数组的老调用方行为基本不变（内部包成 `() => opts.tools`）。#474 订正：严格说不是「完全不变」——provider 每 turn 惰性重读同一个数组引用，调用方原地 push 会在下个 turn 生效，撞名 warn 从整场一次变成每 turn 一次；生产代码唯一的调用方走函数模式，数组模式只有测试在用，所以没有实际影响面。
 
 ### 关键取舍：turn 内必须冻结
 

@@ -29,14 +29,21 @@ export interface McpAuthRecord {
 
 export type McpAuthFile = Record<string, McpAuthRecord>;
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
 export function loadMcpAuth(path: string): McpAuthFile {
   try {
     const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
     // 顶层必须是普通对象。数组/字符串/null 都当"还没授权过"——
-    // 一份被写坏的文件不该让授权流程整个抛死，用户重新授权一次就能修好
-    return raw !== null && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as McpAuthFile)
-      : {};
+    // 一份被写坏的文件不该让授权流程整个抛死，用户重新授权一次就能修好。
+    // 每台 server 的记录同样只认普通对象（#474）：一条被手编坏的记录
+    // （字符串/数组）只废它自己那台，不连累同伴，也不让 readMcpAuth 的
+    // 调用方拿到一个形状不对的东西
+    if (!isPlainObject(raw)) return {};
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, rec]) => isPlainObject(rec))
+    ) as McpAuthFile;
   } catch {
     return {}; // 没有文件 / 坏 JSON = 还没授权过（同 keyVault.loadKeys 的口径）
   }
@@ -50,18 +57,17 @@ export function readMcpAuth(path: string, id: string): McpAuthRecord {
     回调落盘（先 saveClientInformation、再 saveCodeVerifier、最后 saveTokens），
     每次都整条覆盖会把上一步刚存的擦掉，授权流程会在换 token 那步找不到
     code_verifier 而失败。 */
-export function writeMcpAuth(path: string, id: string, patch: Partial<McpAuthRecord>): McpAuthFile {
+export function writeMcpAuth(path: string, id: string, patch: Partial<McpAuthRecord>): void {
   const all = loadMcpAuth(path);
   all[id] = { ...all[id], ...patch };
   persist(path, all);
-  return all;
 }
 
 /** 丢掉一台 server 的动态客户端注册（#471）：二次授权的 loopback 端口和
     注册时不一样，精确匹配 redirect_uri 的授权服务器会拒——丢掉
     clientInformation 让 SDK 重跑一次注册。codeVerifier 是那次注册配套的
     流程残留，一起丢；tokens 保留（可能还能 refresh，丢了就得整个重来）。 */
-export function dropMcpAuthClientRegistration(path: string, id: string): McpAuthFile {
+export function dropMcpAuthClientRegistration(path: string, id: string): void {
   const all = loadMcpAuth(path);
   const rec = all[id];
   if (rec !== undefined) {
@@ -69,15 +75,13 @@ export function dropMcpAuthClientRegistration(path: string, id: string): McpAuth
     delete rec.codeVerifier;
     persist(path, all);
   }
-  return all;
 }
 
 /** 清一台（删除 server、或用户点"重新授权"时）。同伴的记录不动 */
-export function clearMcpAuth(path: string, id: string): McpAuthFile {
+export function clearMcpAuth(path: string, id: string): void {
   const all = loadMcpAuth(path);
   delete all[id];
   persist(path, all);
-  return all;
 }
 
 function persist(path: string, all: McpAuthFile): void {
