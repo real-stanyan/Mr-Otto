@@ -9,6 +9,7 @@ import { useAuiState } from "@assistant-ui/react";
 import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
+import { LiquidGlass } from "@/components/LiquidGlass.js";
 import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
 import {
   ReasoningContent,
@@ -706,16 +707,20 @@ const RunIndicator: ComponentType = () => {
 
   if (status !== "running" && approval === null) return null;
 
+  // 玻璃是给这一条挑的,不是全局皮肤:它悬在正文之上、只在 turn 跑着时存在,
+  // 背后是滚动的消息——折射有东西可折。静止的面板上放同一块玻璃只会看见模糊
   return (
-    <Marker role="status" className="py-[2px] text-[13px]">
-      <MarkerIcon className="size-5">
-        <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
-      </MarkerIcon>
-      <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
-      <span className="ml-auto shrink-0 text-xs">
-        <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
-      </span>
-    </Marker>
+    <LiquidGlass radius={14} className="px-3 py-[6px]">
+      <Marker role="status" className="py-[2px] text-[13px]">
+        <MarkerIcon className="size-5">
+          <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
+        </MarkerIcon>
+        <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
+        <span className="ml-auto shrink-0 text-xs">
+          <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
+        </span>
+      </Marker>
+    </LiquidGlass>
   );
 };
 
