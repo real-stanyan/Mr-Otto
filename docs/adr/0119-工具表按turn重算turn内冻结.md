@@ -4,7 +4,7 @@
 
 日期：2026-08-26
 状态：已接受
-相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.4）、ADR-0117（OAuth 授权）、ADR-0118（agent 自助配置的权限边界）、ADR-0050（MCP 双 ID / 撞名分配）
+相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.4）、ADR-0121（OAuth 授权）、ADR-0118（agent 自助配置的权限边界）、ADR-0050（MCP 双 ID / 撞名分配）
 
 ## 背景
 
