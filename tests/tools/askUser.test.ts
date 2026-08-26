@@ -2,10 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ASK_USER_TOOL_NAME,
   createAskUserTool,
-  formatAnswers,
   parseAskUserArgs,
 } from "../../src/tools/askUser.js";
-import type { AskUserOutcome, Asker } from "../../src/shared/askUser.js";
+import {
+  formatAnswers,
+  parseAskUserResult,
+  type AskUserOutcome,
+  type Asker,
+} from "../../src/shared/askUser.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 /** 摸一下 world 就炸 —— 钉住"ask_user 的世界是人，不是文件系统" */
@@ -100,6 +104,50 @@ describe("formatAnswers", () => {
 
   it("一题都没答", () => {
     expect(formatAnswers([])).toBe("用户没有作答任何一题。");
+  });
+});
+
+describe("parseAskUserResult", () => {
+  // 往返是这组测试的主张：UI 读的那张卡和模型读的那段文本必须是同一份答卷。
+  // formatAnswers 改了格式而 parseAskUserResult 没跟上，这里立刻红
+  const roundTrip = (answers: Parameters<typeof formatAnswers>[0]) =>
+    parseAskUserResult(formatAnswers(answers));
+
+  it("单选 / 多选 / 自填 都能原样还原", () => {
+    const answers = [
+      { header: "路线", selected: ["A"] },
+      { header: "开关", selected: ["x", "y"], custom: "还要 z" },
+    ];
+    expect(roundTrip(answers)).toEqual({ status: "answered", answers });
+  });
+
+  it("跳过的题还原成空 selected —— 不是「没这道题」", () => {
+    expect(roundTrip([{ header: "路线", selected: [] }])).toEqual({
+      status: "answered",
+      answers: [{ header: "路线", selected: [] }],
+    });
+  });
+
+  it("自填里带分号也不被切碎 —— 分隔符从「（自填）」起就不再生效", () => {
+    const answers = [{ header: "备注", selected: [], custom: "先 A；再 B" }];
+    expect(roundTrip(answers)).toEqual({ status: "answered", answers });
+  });
+
+  it("一题没答 / 被取消 各还原成自己的结局", () => {
+    expect(parseAskUserResult("用户没有作答任何一题。")).toEqual({
+      status: "answered",
+      answers: [],
+    });
+    expect(parseAskUserResult("用户没有作答（turn 被用户中断）。")).toEqual({
+      status: "cancelled",
+      reason: "turn 被用户中断",
+    });
+  });
+
+  it("不是这把工具的输出 → null，让 UI 落回通用工具行而不是编一张卡", () => {
+    expect(parseAskUserResult("")).toBeNull();
+    expect(parseAskUserResult("Error: 参数必须是 { questions: [...] }")).toBeNull();
+    expect(parseAskUserResult("【路线】A\n这行没有题头")).toBeNull();
   });
 });
 

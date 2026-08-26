@@ -379,6 +379,29 @@
     font-size: 12.5px;
     line-height: 1.55;
   }
+  /* 预览里的逐行包装(lib/codeLines 产出)。行号走 ::before + attr:
+     不塞进 DOM 文本,否则选中一段代码复制会把行号一起拷走 */
+  .md pre code .code-line {
+    display: block;
+  }
+  .md pre code .code-line::before {
+    content: attr(data-line);
+    display: inline-block;
+    width: 3em;
+    margin-right: 0.9em;
+    text-align: right;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+    user-select: none;
+  }
+  /* 跳过来的那一行。底色一直留着(滚开再滚回来还认得出是哪一行),
+     进场那一下用 keyframes 闪一次 —— 一屏代码里"到了"这件事得看得见 */
+  .md pre code .code-line-hit {
+    background: color-mix(in oklab, var(--brand) 22%, transparent);
+    border-radius: 3px;
+    animation: code-line-hit 900ms ease-out;
+  }
+
   .md blockquote {
     margin: 0.6em 0;
     padding: 2px 12px;
@@ -1102,3 +1125,11 @@
   -webkit-app-region: no-drag;
 }
 
+@keyframes code-line-hit {
+  0% {
+    background: color-mix(in oklab, var(--brand) 60%, transparent);
+  }
+  100% {
+    background: color-mix(in oklab, var(--brand) 22%, transparent);
+  }
+}
