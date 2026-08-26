@@ -388,8 +388,11 @@ describe("mcp_configure 的审批预览", () => {
   });
 
   it("credentialKeys：键名数量与单个键名长度都有上限，超出的部分明说不静默丢", async () => {
-    const env = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`K${i}`, "v"]));
-    env["超长键名" + "N".repeat(500)] = "v";
+    // 超长键名必须排在前 50 个之内，否则 slice(0, MAX_CRED_KEYS) 会把它连同
+    // 「单个键名截断」这条断言一起切掉（终审 N-1：曾经排在第 60 位，前 50
+    // 个键的最大长度只有 3，断言看着覆盖了截断、其实从未真正跑到那条分支）。
+    const env: Record<string, string> = { ["超长键名" + "N".repeat(500)]: "v" };
+    for (let i = 0; i < 60; i++) env[`K${i}`] = "v";
     const preview = await buildApprovalPreview(
       { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", env } },
       worldWithMcp()
@@ -398,6 +401,8 @@ describe("mcp_configure 的审批预览", () => {
     // 50 个键名 + 一句"还有 N 个未显示"
     expect(keys).toHaveLength(51);
     expect(keys.at(-1)).toMatch(/还有 11 个键名未显示/);
+    // 超长键名排在第一个，必然落在保留的前 50 个里，真正验证到 120 字符截断
+    expect(keys[0]).toHaveLength(120);
     expect(Math.max(...keys.slice(0, 50).map((k) => k.length))).toBeLessThanOrEqual(120);
   });
 });

@@ -497,7 +497,11 @@ export function createAgent(opts: {
       ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
       // 自助配置三件套（spec §5.2）：查目录免审批、配置过审批门、授权免审批
       // （浏览器必然弹出、用户必须亲手点同意，人天然在环里）。
-      // 三把都是 deferred：绝大多数会话用不到它们，不该占初始工具表的位置
+      // mcp_catalog 是 direct（终审 A Critical）：它是整条链的入口，模型得先
+      // 在初始工具表里看见它才可能想起「我能接新 server」——deferred 的话
+      // tool_search 是纯子串打分，搜不到这把刀，链条前面全白搭。另外两把
+      // （mcp_configure / mcp_authorize）仍是 deferred，由 mcp_catalog 的
+      // 返回文案顺次引出（见 mcpCatalog.ts run() 末尾那句）
       ...(mcp ? [mcpCatalogTool, createMcpConfigureTool(mcp), createMcpAuthorizeTool(mcp)] : []),
       // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
       // 是不是空的"——清单是不是空的这件事归 task 自己的 available()答，
