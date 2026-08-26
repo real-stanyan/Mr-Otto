@@ -17,6 +17,7 @@ import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
+import { useNow } from "../lib/useNow.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -169,20 +170,6 @@ const ModelHandoffRow = memo(function ModelHandoffRow({ event }: { event: ModelC
     </div>
   );
 });
-
-/** 跑着/等着的行需要一颗会走的表——父会话自己的日志在子会话跑的时候纹丝不动
-    (task 调用是 await 的,父 turn 整段卡在这里,没有新事件可落),不挂个定时器
-    elapsed 就会在初次渲染的那个数字上钉死。intervalMs=null 时不走表(收口的
-    行不需要再滴答) */
-function useNow(intervalMs: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (intervalMs === null) return;
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 /** 卡右边那个模型名:优先子日志里 subagent_briefed 的快照(派活那一刻真用的),
     子日志还没取到(跑着 / 刚收口)才退回定义文件当前的 model。显示用目录里的

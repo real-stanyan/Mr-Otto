@@ -1,34 +1,37 @@
 import { describe, it, expect } from "vitest";
-import { summarizeGroup, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
-import type { ToolCallRequest } from "../../src/session/events.js";
+import { timelineLabel, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
 
-const read = (path: string): ToolCallRequest => ({ id: path, name: "read_file", args: { path } });
-const write = (path: string): ToolCallRequest => ({
-  id: "w" + path,
-  name: "write_file",
-  args: { path, content: "x" },
-});
-const bash = (cmd: string): ToolCallRequest => ({ id: "b" + cmd, name: "bash", args: { cmd } });
-
-describe("summarizeGroup", () => {
-  it("空组给空串", () => {
-    expect(summarizeGroup([])).toBe("");
+describe("timelineLabel —— 折叠头那一行", () => {
+  // 换掉的是「终端 ×26 · 读取 ×2」那份按动作归并的清单:折叠头不该抄一遍
+  // 展开后的内容(产品决定见 OttoToolGroup 的注释),这里钉住新口径
+  it("收工后报耗时 + 用了几把工具 + 动了几个文件", () => {
+    expect(timelineLabel(5, 2, 12_400, false)).toBe("工作了 12.4s · 5 tools used, 2 files changed");
   });
 
-  it("同一种动作归并计数", () => {
-    expect(summarizeGroup([read("a"), read("b"), read("c")])).toBe("读取 ×3");
+  it("跑着的时候换成「工作中」", () => {
+    expect(timelineLabel(3, 0, 8_000, true)).toBe("工作中 8.0s · 3 tools used");
   });
 
-  it("多种动作按首次出现的顺序排,不重排", () => {
-    expect(summarizeGroup([write("a"), read("b"), read("c")])).toBe("写入 ×1 · 读取 ×2");
+  it("一个文件 / 一把工具走单数", () => {
+    expect(timelineLabel(1, 1, 900, false)).toBe("工作了 900ms · 1 tool used, 1 file changed");
   });
 
-  it("认不出的工具用工具名当动作", () => {
-    expect(summarizeGroup([{ id: "x", name: "web_search", args: {} }])).toBe("web_search ×1");
+  it("一个文件都没动就不提这一段 —— 「0 files changed」是句废话", () => {
+    expect(timelineLabel(4, 0, 3_000, false)).toBe("工作了 3.0s · 4 tools used");
   });
 
-  it("终端调用归在一起", () => {
-    expect(summarizeGroup([bash("ls"), bash("pwd")])).toBe("终端 ×2");
+  it("推不出耗时就不报耗时,不硬凑一个数", () => {
+    expect(timelineLabel(2, 0, null, false)).toBe("2 tools used");
+    expect(timelineLabel(2, 0, null, true)).toBe("工作中 · 2 tools used");
+  });
+
+  it("过一分钟不再报小数", () => {
+    expect(timelineLabel(9, 0, 185_000, false)).toBe("工作了 3分5秒 · 9 tools used");
+  });
+
+  it("时钟跳变那种离谱耗时当坏数据丢掉", () => {
+    expect(timelineLabel(4, 0, -1, false)).toBe("4 tools used");
+    expect(timelineLabel(4, 0, 7_200_000, false)).toBe("4 tools used");
   });
 });
 

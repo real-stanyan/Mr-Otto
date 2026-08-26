@@ -59,13 +59,14 @@ import { parseAskUserResult, type AskUserOutcome } from "../../../shared/askUser
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow, TimelineProjectionContext } from "../components/Timeline.js";
-import { buildToolIndex } from "../lib/toolIndex.js";
+import { buildToolIndex, effectiveArgs, groupElapsed, groupStartedAt } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
 import { cn } from "../lib/utils.js";
 import { field, mono } from "../lib/surfaces.js";
 import { thinkingLabel } from "../lib/thinkingLabel.js";
+import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
 import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
@@ -76,7 +77,7 @@ import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimat
 import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { MemoryLoadedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { summarizeGroup, toolFilePath, toolIcon, toolSummary } from "../../../shared/toolSummary.js";
+import { timelineLabel, toolFilePath, toolIcon, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
@@ -275,10 +276,12 @@ const WebPageCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
   );
 };
 
-/** 工具组:tool-timeline 版式 —— 折叠头一行(chevron + 按动作归并的摘要,比如
-    「终端 ×5 · 读取 ×2」),展开后每步一行真实工具行(图标 + 动词 + 目标,每行自己
-    还能再展开看参数/输出)。思考步(reasoning)与工具同组共享 chainOfThought path,
-    由这里按 index 边界从 children 里切出、并进 steps,按原时间序混排。
+/** 工具组:tool-timeline 版式 —— 折叠头一行(chevron +「工作了 12.4s · 5 步」),
+    展开后每步一行真实工具行(图标 + 动词 + 目标,每行自己还能再展开看参数/输出)。
+    折叠头故意**不**列工具清单:那份清单展开就在下面,抄到头上等于把折叠白折了,
+    步数一多还撑满一行(见 shared/toolSummary.ts 的 timelineLabel)。
+    思考不在这一组里(它自己一条折叠头,分组见 lib/partGrouping.ts);进来的是
+    工具步 + 旁白步,按原时间序混排。
     默认折起;组里有一次「问过你也答了」的 ask_user 就默认展开(那是用户说过的话,
     不能藏进折叠区);出错不自动弹开,只在折叠头挂一枚黄色三角。 */
 const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, children }) => {
@@ -308,31 +311,51 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
     }
   }, [answered, autoOpened]);
 
-  // 本组吃「上一组之后到本组最后一个 index」那一段。上一组的尾(通常是文字)是最终回复,
-  // 留在时间线外;本组的 reasoning/工具步进 steps。选择器返回原始数组引用(不可变才替换),
-  // 不能 map/filter 出新数组——那会引用不等触发无限重渲
-  const childArr = useMemo(() => React.Children.toArray(children), [children]);
-  const lastIdx = group.indices[group.indices.length - 1] ?? 0;
+  // 折叠头那行数字要的是「跑了多久 / 用了几把工具 / 动了几个文件」。耗时的起止在
+  // 事件日志里(tool_execution_started / tool_result),不在 part 上。
+  // 选择器返回原始数组引用(不可变才替换),不能 map/filter 出新数组
+  // ——那会引用不等触发无限重渲
   const messageParts = useAuiState((s) => s.message.parts);
-  const groupParts = useMemo(
-    () => group.indices.map((i) => messageParts?.[i]).filter((p) => p !== undefined),
+  const calls = useMemo(
+    () =>
+      group.indices
+        .map((i) => messageParts?.[i])
+        .filter((p) => p?.type === "tool-call")
+        .map((p) => {
+          const part = p as { toolCallId: string; toolName: string; args?: unknown };
+          return { id: part.toolCallId, name: part.toolName, args: part.args };
+        }),
     [group.indices, messageParts],
   );
-  const hasReasoning = groupParts.some((p) => p.type === "reasoning");
-  const segment = hasReasoning ? childArr.slice(0, lastIdx + 1) : childArr;
-
-  // 折叠头摘要:只数工具(思考/旁白不计),按动作归并
-  const toolNames = useMemo(
-    () =>
-      groupParts
-        .filter((p) => p.type === "tool-call")
-        .map((p) => (p as { toolName?: string }).toolName ?? ""),
-    [groupParts],
-  );
-  const restingLabel =
-    summarizeGroup(toolNames.map((name) => ({ id: "", name, args: undefined }))) ||
-    `${group.indices.length} 个工具调用`;
   const running = group.status.type === "running";
+  // 跑着时才挂表:收口的组耗时已经定死,再滴答只是白重渲
+  const now = useNow(running ? 1000 : null);
+  const proj = useContext(TimelineProjectionContext);
+  const elapsed = useMemo(() => {
+    const index = proj?.index;
+    if (index === undefined) return null;
+    const done = groupElapsed(calls, index);
+    if (!running && done !== null) return done;
+    const started = groupStartedAt(calls, index);
+    // 一个都没开跑(全卡在审批门前 / 被拒)= "跑了多久"不成立,那一段就不报
+    return started === null ? null : Math.max(0, now - started);
+  }, [proj, calls, running, now]);
+  // 动了几个文件:只数写入,按路径去重(同一个文件改两次是一个文件)。
+  // 读取不算 —— 那不是"改变"。路径取**实际执行**用的那份(人在审批时可能改过参数,
+  // ADR-0041):这一行回答的是"到底什么东西碰了磁盘"
+  const filesChanged = useMemo(() => {
+    const index = proj?.index;
+    const paths = new Set<string>();
+    for (const call of calls) {
+      if (call.name !== "write_file") continue;
+      const path = toolFilePath(
+        index === undefined ? call : { ...call, args: effectiveArgs(call, index) },
+      );
+      if (path !== null) paths.add(path);
+    }
+    return paths.size;
+  }, [proj, calls]);
+  const restingLabel = timelineLabel(calls.length, filesChanged, elapsed, running);
 
   const label = (
     <span className="inline-flex items-center gap-1.5">
@@ -348,7 +371,7 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       activeLabel={running ? label : undefined}
       streaming={running}
     >
-      {segment}
+      {children}
     </ToolTimeline>
   );
 };

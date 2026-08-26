@@ -23,6 +23,9 @@ export interface FakeToolCall {
 
 export interface FakeTurn {
   content?: string;
+  /** 思考过程(DeepSeek 方言的 reasoning_content)。给了才发 ——
+      「模型没开 thinking」和「思考是空串」是两回事 */
+  reasoning?: string;
   toolCalls?: FakeToolCall[];
   /** 流式时每个文本碎片之间停多久 —— 给「跑着的时候点那枚 pill」这类用例留出手速 */
   delayMs?: number;
@@ -113,6 +116,7 @@ export async function startFakeModel(responder: FakeResponder): Promise<FakeMode
                 {
                   message: {
                     content: turn.content ?? "",
+                    ...(turn.reasoning === undefined ? {} : { reasoning_content: turn.reasoning }),
                     ...(turn.toolCalls?.length
                       ? {
                           tool_calls: turn.toolCalls.map((c, i) => ({
@@ -136,6 +140,8 @@ export async function startFakeModel(responder: FakeResponder): Promise<FakeMode
           connection: "keep-alive",
         });
         const send = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+        // 思考先于正文 —— 真模型就是这个顺序,投影按到达顺序拼 part
+        for (const ch of turn.reasoning ?? "") send({ choices: [{ delta: { reasoning_content: ch } }] });
         // 正文按字符发：验的是「直播尾巴真的在动」，一块吐完看不出流没流
         for (const ch of turn.content ?? "") {
           send({ choices: [{ delta: { content: ch } }] });
