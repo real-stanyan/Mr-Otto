@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// 旁聊浮窗的审批出口（issue #512）：side 会话是全权装配（#507 的 rationale），
+// SideChat 浮窗的审批出口（issue #512）：side 会话是全权装配（#507 的 rationale），
 // bash / write_file 都过审批门，但主视图只渲染 approvals[当前会话] 的卡——
 // side 会话的卡没有出口就是一张看不见的卡、一个永远 pending 的工具。
 // 这里钉：卡出现在浮窗里、批/拒的返程都走 decideApproval(sideSessionId, ...)。

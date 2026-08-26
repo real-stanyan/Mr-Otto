@@ -22,9 +22,9 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
     run: (args) => useChat.getState().rename(args),
   },
   "/btw": {
-    desc: "打开旁聊小浮窗（/btw 内容 = 顺手把内容发成旁聊首条；不带参只开窗）",
+    desc: "打开 SideChat 小浮窗（/btw 内容 = 顺手把内容发成 SideChat 首条；不带参只开窗）",
     // args = "/btw " 后面连带的正文（dispatchSlash 已 trim）。带参首开时
-    // 直接发进旁聊（issue #516）——不然用户敲了一整段，窗开了内容却丢了
+    // 直接发进 SideChat（issue #516）——不然用户敲了一整段，窗开了内容却丢了
     run: (args) => useChat.getState().openSideChat(args || undefined),
   },
 };

@@ -162,7 +162,7 @@ export interface SessionCreatedEvent extends SessionEventBase {
     sessionId: string;
     toolCallId: string;
     agent: string;
-    /** "subagent"（缺省/旧日志）= 派活子会话；"side" = /btw 旁聊（issue #502）。
+    /** "subagent"（缺省/旧日志）= 派活子会话；"side" = /btw SideChat（issue #502）。
         可见性口径一致（都滤出侧栏）；kind 只影响 resume 时按哪套装配重建 */
     kind?: "subagent" | "side";
   };

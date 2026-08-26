@@ -35,13 +35,13 @@ describe("openSideChat", () => {
     expect(window.otter.startSideSession).toHaveBeenCalledWith("main-session");
   });
 
-  it("/btw 带参：首开时把内容发成旁聊首条（issue #516）", async () => {
+  it("/btw 带参：首开时把内容发成 SideChat 首条（issue #516）", async () => {
     stubBridge();
     await useChat.getState().openSideChat("顺便查一下明天天气");
     expect(window.otter.sendMessage).toHaveBeenCalledWith(SIDE_ID, "顺便查一下明天天气");
   });
 
-  it("/btw 带参 + 旁聊已存在：只抬回可见，不重发（内容已在日志里）", async () => {
+  it("/btw 带参 + SideChat 已存在：只抬回可见，不重发（内容已在日志里）", async () => {
     stubBridge();
     await useChat.getState().openSideChat();
     useChat.getState().closeSideChat();
@@ -73,14 +73,14 @@ describe("openSideChat", () => {
 });
 
 describe("sendSide", () => {
-  it("按旁聊自己的 sessionId 寻址，不碰主会话", async () => {
+  it("按 SideChat 自己的 sessionId 寻址，不碰主会话", async () => {
     const { sendMessage } = stubBridge();
     await useChat.getState().openSideChat();
     await useChat.getState().sendSide("hello");
     expect(sendMessage).toHaveBeenCalledWith(SIDE_ID, "hello");
   });
 
-  it("没开旁聊时发送是空操作", async () => {
+  it("没开 SideChat 时发送是空操作", async () => {
     const { sendMessage } = stubBridge();
     await useChat.getState().sendSide("hello");
     expect(sendMessage).not.toHaveBeenCalled();

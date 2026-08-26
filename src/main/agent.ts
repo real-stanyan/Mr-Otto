@@ -197,7 +197,7 @@ export function createAgent(opts: {
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
   world?: ExecutionWorld;
   /** 这个会话是被派活派出来的：写进 session_created 第 0 条。
-      kind: "subagent"（缺省）= task 工具派活；"side" = /btw 旁聊浮窗（issue #502）
+      kind: "subagent"（缺省）= task 工具派活；"side" = /btw SideChat 浮窗（issue #502）
       ——同走子会话可见性口径（侧栏/灵动岛滤掉），但创建时是按主会话装配的全权
       agent，只是借这个标记隐藏。旧日志没有 kind → 按 subagent 对待（向后兼容） */
   spawnedBy?: { sessionId: string; toolCallId: string; agent: string; kind?: "subagent" | "side" };
