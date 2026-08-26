@@ -145,6 +145,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.decideApproval, sessionId, toolCallId, outcome),
   answerQuestions: (sessionId, toolCallId, outcome) =>
     ipcRenderer.invoke(CHANNELS.answerQuestions, sessionId, toolCallId, outcome),
+  sessionRuntime: (sessionId) => ipcRenderer.invoke(CHANNELS.sessionRuntime, sessionId),
   onEvent: subscribe(CHANNELS.event),
   onApprovalRequest: subscribe(CHANNELS.approvalRequest),
   onAskUserRequest: subscribe(CHANNELS.askUserRequest),

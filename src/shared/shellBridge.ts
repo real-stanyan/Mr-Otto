@@ -164,6 +164,30 @@ export interface TurnStatusUpdate {
   turnId?: number;
 }
 
+/** 一条会话此刻的运行时状态（issue #548）。**推送之外的那一半**：
+    turn 状态、压缩标记、挂起的审批/问卷都只在**发生的那一刻**推一次
+    （onTurnStatus / onApprovalRequest / onAskUserRequest），渲染进程重载后
+    那些推送早已过去，store 里查无此会话 → 运行指示条整个不渲染，一直空到
+    这一轮结束。主进程一直握着真相（runningSessions / 挂起表），这里把它开一扇
+    可查询的窗：进聊天时问一次，补上错过的那一拍。
+
+    灵动岛早就有同一件东西（islandSnapshot），只是没开给主窗——同一份事实，
+    第二个消费者。 */
+export interface SessionRuntime {
+  status: TurnStatus;
+  /** 正在跑的 turn 的身份（插话乐观锁，同 TurnStatusUpdate.turnId）。
+      idle、或 engine 还没分配时缺席 */
+  turnId?: number;
+  /** 正在压缩上下文。它复用 running 灯，靠这一位才分得出「压缩中」和「思考中」 */
+  compacting: boolean;
+  /** 此刻挂着的审批卡，没有就是 null。形状与 onApprovalRequest 推的那张**完全一致**
+      （同一个 approvalPayload 拼的，含 preview）——"中途切进来看到的卡"和"刚推来的卡"
+      说的是同一件事，不该长得不一样（#175 I1） */
+  approval: ApprovalRequest | null;
+  /** 此刻挂着的问卷，没有就是 null。同审批：问人也是管线悬停等一次 UI 往返 */
+  ask: AskUserRequest | null;
+}
+
 /** 本 turn 里一个文件的聚合改动（issue #345）：同文件多次写盘叠加成一份
     （基线 = 本 turn 第一次碰它之前的内容，最新 = 最后一次写入的内容）。
     lines 是与审批卡同一份取景（shared/diffView.ts）；超大文件算不动时缺席，
@@ -711,6 +735,10 @@ export interface ShellBridge {
   /** 问卷卡交卷（或被用户关掉）——resolve 对应会话里挂起的 Asker。
       与 decideApproval 同构：一次 UI 往返的返程 */
   answerQuestions(sessionId: string, toolCallId: string, outcome: AskUserOutcome): Promise<void>;
+  /** 这条会话此刻在跑吗、有没有卡在审批/问卷上（issue #548）。
+      订阅只覆盖「变化的那一刻」，这一问覆盖「我来晚了」——渲染进程重载、
+      新窗口、切到一条后台跑着的会话，都靠它补上错过的那一拍 */
+  sessionRuntime(sessionId: string): Promise<SessionRuntime>;
   onEvent(cb: (event: SessionEvent) => void): Unsubscribe;
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
   onAskUserRequest(cb: (req: AskUserRequest) => void): Unsubscribe;
@@ -1087,6 +1115,7 @@ export const CHANNELS = {
   event: "otter:event",
   approvalRequest: "otter:approvalRequest",
   askUserRequest: "otter:askUserRequest",
+  sessionRuntime: "otter:sessionRuntime",
   turnStatus: "otter:turnStatus",
   turnDiff: "otter:turnDiff",
   assistantDelta: "otter:assistantDelta",

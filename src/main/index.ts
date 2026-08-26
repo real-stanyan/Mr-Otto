@@ -19,6 +19,8 @@ import {
   type IslandBoot,
   type ApprovalRequest,
   type ApprovalPreview,
+  type AskUserRequest,
+  type SessionRuntime,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, newSessionId, type AgentPush } from "./agent.js";
 import { createShadowGitCheckpoints, workspaceStoreName } from "../world/checkpoints.js";
@@ -512,6 +514,16 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  // 「压缩中」是 running 灯的一个子档：compact 复用 turn 状态灯（下面的 compact
+  // handler），光看 runningSessions 分不出它和普通 turn。渲染层原来靠自己发起
+  // compact 时记的本地标记分辨——那份标记活不过一次重载（issue #548）
+  const compactingSessions = new Set<string>();
+  // 此刻挂着的审批 / 问卷，按会话记（issue #548）。推送只发生在「弹出的那一刻」，
+  // 渲染进程重载后那一拍已经过去；这两张表让 sessionRuntime 能把同一张卡原样交出来。
+  // 存的是**已经拼好的载荷**而不是 approver 里的原始 call：卡上的 preview 是异步
+  // 现算的（buildApprovalPreview），事后重算等于交出一张和推送时不一样的卡
+  const pendingApprovals = new Map<string, ApprovalRequest>();
+  const pendingAsks = new Map<string, AskUserRequest>();
   // 后台任务完成、但 turn 正在跑时攒下的回注文案（issue #389）：mid-splice 会把
   // 投影中段改掉、prefix cache 全废（ADR-0073 的教训——微压缩同处境时宁可丢弃），
   // 后台结果不能丢，所以攒着，turn 正常收口后合并成一条注回。
@@ -1189,12 +1201,14 @@ void app.whenReady().then(() => {
     },
     approvalRequest: (sessionId, call, tool, preview, fromAgent) => {
       const req = approvalPayload(sessionId, call, tool, preview, fromAgent);
+      pendingApprovals.set(sessionId, req);
       send(CHANNELS.approvalRequest, req);
       feedIsland({ kind: "approvalRequest", req });
       // agent 停在原地等人批(#336):聚焦只响声,失焦弹横幅,点了落回那个会话
       notify(approvalRequestNotification(store.titleOf(sessionId), call.name, sessionId));
     },
     askUserRequest: (sessionId, toolCallId, questions) => {
+      pendingAsks.set(sessionId, { sessionId, toolCallId, questions });
       send(CHANNELS.askUserRequest, { sessionId, toolCallId, questions });
       // 同审批:turn 悬停在等答案(#336)
       notify(askUserNotification(store.titleOf(sessionId), questions[0]?.question ?? "", sessionId));
@@ -2509,6 +2523,11 @@ void app.whenReady().then(() => {
       throw err;
     } finally {
       runningSessions.delete(sessionId);
+      // turn 收口 = 不可能还有人挂在审批/问卷门上（fail-closed 已经把它们
+      // 按拒绝收场了）。挂起表跟着清，别让下一次 sessionRuntime 交出一张
+      // 早就谢幕的卡（issue #548）
+      pendingApprovals.delete(sessionId);
+      pendingAsks.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
     }
@@ -2673,6 +2692,7 @@ void app.whenReady().then(() => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能压缩上下文");
     // compact 是一次真实的模型调用（几秒），复用 turn 状态灯让 UI 有反馈、挡并发
     runningSessions.add(sessionId);
+    compactingSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
     // compact 也是一次真实的 turn 状态变化——旧岛窗(单进程内共享 IPC 推送)本就
     // 会收到这条,喂投影器保持同样的观感,不因这次重接线悄悄丢一种状态
@@ -2681,6 +2701,12 @@ void app.whenReady().then(() => {
       await agent.engine.compact();
     } finally {
       runningSessions.delete(sessionId);
+      compactingSessions.delete(sessionId);
+      // turn 收口 = 不可能还有人挂在审批/问卷门上（fail-closed 已经把它们
+      // 按拒绝收场了）。挂起表跟着清，别让下一次 sessionRuntime 交出一张
+      // 早就谢幕的卡（issue #548）
+      pendingApprovals.delete(sessionId);
+      pendingAsks.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
     }
@@ -2706,11 +2732,31 @@ void app.whenReady().then(() => {
       // revisedArgs 一起递过去：授权 key 从实际执行的参数算（issue #342）
       agent.grant(toolCallId, outcome.grant, outcome.revisedArgs);
     }
+    pendingApprovals.delete(sessionId);
     agent.approver.resolve(toolCallId, outcome);
     // 中止放在 resolve 之后：先让挂起的审批以 denied 收场（approval_decision
     // 照常落盘），engine 在下一个检查点看到信号翻转，turn 以 aborted 收口
     if (abortTurn) agent.engine.abortTurn();
   }
+
+  // 「我来晚了」的那一问（issue #548）。订阅（turnStatus / approvalRequest /
+  // askUserRequest）只在**变化的那一刻**推一次，渲染进程重载后那些推送早已过去，
+  // store 里查无此会话 → 运行指示条整个不渲染。主进程一直握着真相，这里开一扇窗。
+  //
+  // 不认识的会话（还没激活 / 已删）不报错，一律按"闲着、什么都没挂"回答：
+  // 这是一次补状态的查询，不是一个操作；查无此人时最诚实的答案就是"没有"
+  ipcMain.handle(CHANNELS.sessionRuntime, (_e, sessionId: string): SessionRuntime => {
+    // engine 现问：turnId 是 turn 开场那条 user_message 的 seq，engine 自己就是
+    // 它的唯一权威，没必要在这边再存一份会走味的副本
+    const turnId = agents.get(sessionId)?.engine.runningTurnId ?? null;
+    return {
+      status: runningSessions.has(sessionId) ? "running" : "idle",
+      ...(turnId !== null ? { turnId } : {}),
+      compacting: compactingSessions.has(sessionId),
+      approval: pendingApprovals.get(sessionId) ?? null,
+      ask: pendingAsks.get(sessionId) ?? null,
+    };
+  });
 
   ipcMain.handle(
     CHANNELS.decideApproval,
@@ -2833,6 +2879,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(
     CHANNELS.answerQuestions,
     (_e, sessionId: string, toolCallId: string, outcome: AskUserOutcome) => {
+      pendingAsks.delete(sessionId);
       agents.get(sessionId)?.answerQuestions(toolCallId, outcome);
     }
   );
