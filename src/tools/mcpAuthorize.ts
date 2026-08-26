@@ -6,10 +6,12 @@
 // 能造成的最坏结果是浏览器白开一次。
 
 import type { Tool } from "./tool.js";
-import type { McpCapability, ExecutionWorld } from "../world/executionWorld.js";
-import { mcpNewToolsNotice } from "../shared/mcp.js";
+import type { ExecutionWorld } from "../world/executionWorld.js";
+import { mcpOutcomeReport } from "../shared/mcp.js";
 
-export function createMcpAuthorizeTool(_mcp: McpCapability): Tool {
+// 无参（#474）：同 createMcpConfigureTool——run 用调用时的 world.mcp，
+// 工厂参数是死的
+export function createMcpAuthorizeTool(): Tool {
   return {
     def: {
       name: "mcp_authorize",
@@ -32,10 +34,10 @@ export function createMcpAuthorizeTool(_mcp: McpCapability): Tool {
       // 具体原因才能告诉用户下一步该做什么
       await world.mcp.authorize(id);
       const hit = world.mcp.servers().find((s) => s.id === id);
-      if (hit?.live) {
-        return `「${id}」授权完成并已连上，${mcpNewToolsNotice(hit.tools.map((t) => t.name))}`;
-      }
-      return `「${id}」的授权流程跑完了，但还没连上：${hit?.error ?? "原因未知"}`;
+      return mcpOutcomeReport(hit, {
+        connected: `「${id}」授权完成并已连上`,
+        notConnected: `「${id}」的授权流程跑完了，但还没连上`,
+      });
     },
   };
 }

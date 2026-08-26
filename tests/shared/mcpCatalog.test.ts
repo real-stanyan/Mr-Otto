@@ -14,9 +14,12 @@ describe("mcpCatalog", () => {
     }
   });
 
-  it("url 模板里出现的占位符都在 params 里声明过", () => {
+  it("url / stdio args 模板里出现的占位符都在 params 里声明过", () => {
+    // 也扫 stdio 的 args（#474）：filesystem 条目的 {root} 此前不被覆盖——
+    // 今天没缺陷，但未来的 stdio 条目漏声明占位符不会被抓到
     for (const e of MCP_CATALOG) {
-      const holes = [...(e.url ?? "").matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+      const sources = [e.url ?? "", ...(e.args ?? [])];
+      const holes = sources.flatMap((s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]));
       for (const h of holes) {
         expect(e.params.map((p) => p.name), `${e.id} 的 {${h}}`).toContain(h);
       }
@@ -28,7 +31,8 @@ describe("mcpCatalog", () => {
   });
 
   it("按名字/描述模糊命中，大小写无关", () => {
-    expect(searchCatalog("SUPABASE").length).toBeGreaterThan(0);
+    // length > 0 断不出命中的是谁（#474）——命中一堆无关条目也绿
+    expect(searchCatalog("SUPABASE").map((e) => e.id)).toContain("supabase");
   });
 
   it("查不到就是空数组，不抛", () => {

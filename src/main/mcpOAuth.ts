@@ -58,9 +58,12 @@ export async function startLoopback(): Promise<LoopbackCallback> {
           `<body style="font:16px/1.6 system-ui;padding:3rem;max-width:32rem">${text}</body>`
       );
     };
+    // 只认第一个回调（#474）：waitForCode 之前若连来两次（浏览器重放/用户
+    // 双击），从前 pending 会被后者覆盖、前者静默丢弃——而先到的那次才是
+    // 授权服务器真正发的 code
     const done = (r: Settled): void => {
       if (settle) settle(r);
-      else pending = r;
+      else pending ??= r;
     };
 
     // state 不匹配 = 这次回调不是我们发出去的那一次。SDK 的 finishAuth(code)

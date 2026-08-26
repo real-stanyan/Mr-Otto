@@ -170,20 +170,10 @@ describe("knownMcpToolNames（issue #473）", () => {
     const { mcpCatalogTool } = await import("../../src/tools/mcpCatalog.js");
     const { createMcpConfigureTool } = await import("../../src/tools/mcpConfigure.js");
     const { createMcpAuthorizeTool } = await import("../../src/tools/mcpAuthorize.js");
-    const cap = {
-      ready: async () => {},
-      servers: () => [],
-      callTool: async () => [],
-      readResource: async () => [],
-      getPrompt: async () => "",
-      configure: async () => {},
-      authorize: async () => {},
-      configOf: () => undefined,
-    } as unknown as Parameters<typeof createMcpConfigureTool>[0];
     const real = [
       mcpCatalogTool.def.name,
-      createMcpConfigureTool(cap).def.name,
-      createMcpAuthorizeTool(cap).def.name,
+      createMcpConfigureTool().def.name,
+      createMcpAuthorizeTool().def.name,
     ];
     expect([...MCP_SELF_CONFIG_TOOL_NAMES]).toEqual(real);
   });

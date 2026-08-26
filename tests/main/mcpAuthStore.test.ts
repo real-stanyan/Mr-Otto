@@ -1,19 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, it, expect, beforeEach } from "vitest";
+import { statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadMcpAuth, readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration,
 } from "../../src/main/mcpAuthStore.js";
+// 走本仓的 tempDir（#474）：清理挂在 setupFiles 上，不用每个文件自己记得删
+import { tempDir } from "../helpers/tempDir.js";
 
 let dir: string;
 let path: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "mcp-auth-"));
+  dir = tempDir("mcp-auth-");
   path = join(dir, "sub", "mcp-auth.json");
 });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe("mcpAuthStore", () => {
   it("没有文件时读出空表——「还没授权过」不是错误", () => {
@@ -29,6 +29,14 @@ describe("mcpAuthStore", () => {
   it("顶层不是对象（数组/字符串）也当空表", () => {
     writeFileSync(join(dir, "arr.json"), "[1,2,3]");
     expect(loadMcpAuth(join(dir, "arr.json"))).toEqual({});
+  });
+
+  it("单台记录形状不对只废它自己，不连累同伴（#474）", () => {
+    writeFileSync(
+      join(dir, "mixed.json"),
+      JSON.stringify({ good: { codeVerifier: "v" }, bad: "一条字符串", worse: [1, 2] })
+    );
+    expect(loadMcpAuth(join(dir, "mixed.json"))).toEqual({ good: { codeVerifier: "v" } });
   });
 
   it("部分更新不擦掉上一步存的字段——SDK 分三次回调落盘", () => {

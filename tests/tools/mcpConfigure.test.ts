@@ -20,16 +20,16 @@ const world = (mcp: McpCapability) => ({ mcp }) as ExecutionWorld;
 
 describe("mcp_configure", () => {
   it("必须过审批门——这是这条路上唯一的安全闸", () => {
-    expect(createMcpConfigureTool(cap()).requiresApproval).toBe(true);
+    expect(createMcpConfigureTool().requiresApproval).toBe(true);
   });
 
   it("绝不是 parallelSafe（写盘 + 重连，有副作用）", () => {
-    expect(createMcpConfigureTool(cap()).parallelSafe).not.toBe(true);
+    expect(createMcpConfigureTool().parallelSafe).not.toBe(true);
   });
 
   it("http：把 url 交给 configure", async () => {
     const c = cap();
-    await createMcpConfigureTool(c).run(
+    await createMcpConfigureTool().run(
       { id: "supabase", kind: "http", url: "https://mcp.supabase.com/mcp" },
       world(c)
     );
@@ -43,7 +43,7 @@ describe("mcp_configure", () => {
   // 审批卡上根本看不见，用户分不出这是新建了一台还是改了那台
   it("id 存 trim 后的值——判空和落盘用同一把尺子", async () => {
     const c = cap();
-    await createMcpConfigureTool(c).run(
+    await createMcpConfigureTool().run(
       { id: "  supabase\t", kind: "http", url: "https://mcp.supabase.com/mcp" },
       world(c)
     );
@@ -54,7 +54,7 @@ describe("mcp_configure", () => {
   // 发生变化**的形式——否则把 normalizeMcpHttpUrl 整个删掉这条也照样绿
   it("url 存归一化后的 href（大写协议/主机 + 补上根路径）", async () => {
     const c = cap();
-    await createMcpConfigureTool(c).run(
+    await createMcpConfigureTool().run(
       { id: "s", kind: "http", url: "HTTPS://MCP.Supabase.COM" },
       world(c)
     );
@@ -65,7 +65,7 @@ describe("mcp_configure", () => {
 
   it("stdio：command + args + env 一起过去", async () => {
     const c = cap();
-    await createMcpConfigureTool(c).run(
+    await createMcpConfigureTool().run(
       { id: "fs", kind: "stdio", command: "npx", args: ["-y", "pkg"], env: { K: "v" } },
       world(c)
     );
@@ -76,37 +76,76 @@ describe("mcp_configure", () => {
 
   it("remove：传 null 给 configure", async () => {
     const c = cap();
-    await createMcpConfigureTool(c).run({ id: "s", action: "remove" }, world(c));
+    await createMcpConfigureTool().run({ id: "s", action: "remove" }, world(c));
     expect(c.configure).toHaveBeenCalledWith("s", null);
   });
 
   it("id 缺失/不是字符串 → 抛人话，不把垃圾写进配置", async () => {
     const c = cap();
-    await expect(createMcpConfigureTool(c).run({ kind: "http", url: "https://x" }, world(c)))
+    await expect(createMcpConfigureTool().run({ kind: "http", url: "https://x" }, world(c)))
       .rejects.toThrow(/id/);
     expect(c.configure).not.toHaveBeenCalled();
   });
 
   it("http 少了 url → 抛人话", async () => {
     const c = cap();
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http" }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "http" }, world(c)))
       .rejects.toThrow(/url/);
   });
 
   it("stdio 少了 command → 抛人话", async () => {
     const c = cap();
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "stdio" }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "stdio" }, world(c)))
       .rejects.toThrow(/command/);
   });
 
   it("url 不是 http/https → 拒绝（file:// 之类没有意义，且是个惊喜面）", async () => {
     const c = cap();
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: "file:///etc/passwd" }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "http", url: "file:///etc/passwd" }, world(c)))
       .rejects.toThrow(/http/);
   });
 
+  // #474：enabled 从前是 `!== false` 的松散转换——"false"/0/null 全被当 true。
+  // 模型传字符串 "false" 的本意明明是关，落盘却成了开（stdio 的开 = 命令会被
+  // spawn）。宽收严出在这里是错的方向：吞下歧义值等于替用户做安全决定
+  it('enabled 传了但不是布尔（"false"/0/null）→ 抛人话，不猜（#474）', async () => {
+    const tool = createMcpConfigureTool();
+    for (const bad of ["false", 0, null]) {
+      await expect(
+        tool.run({ id: "s", kind: "http", url: "https://mcp.example.com/mcp", enabled: bad }, world(cap()))
+      ).rejects.toThrow(/enabled/);
+    }
+  });
+
+  it("action 传了但既不是 upsert 也不是 remove → 抛人话（#474：schema 的 enum 曾只是摆设）", async () => {
+    const tool = createMcpConfigureTool();
+    await expect(
+      tool.run({ id: "s", action: "delete", kind: "http", url: "https://mcp.example.com/mcp" }, world(cap()))
+    ).rejects.toThrow(/action/);
+  });
+
+  it('显式 action: "upsert" 照常走配置路径', async () => {
+    const c = cap();
+    await createMcpConfigureTool().run(
+      { id: "s", action: "upsert", kind: "http", url: "https://mcp.example.com/mcp" },
+      world(c)
+    );
+    expect(c.configure).toHaveBeenCalled();
+  });
+
+  it("url 里还有没替换的 {占位符} → 抛人话点名那个占位符，不落盘（#474）", async () => {
+    const c = cap();
+    await expect(
+      createMcpConfigureTool().run(
+        { id: "supabase", kind: "http", url: "https://mcp.supabase.com/mcp?project_ref={project_ref}" },
+        world(c)
+      )
+    ).rejects.toThrow(/project_ref/);
+    expect(c.configure).not.toHaveBeenCalled();
+  });
+
   it("world 没有 mcp 能力时给人话", async () => {
-    await expect(createMcpConfigureTool(cap()).run({ id: "s", action: "remove" }, {} as ExecutionWorld))
+    await expect(createMcpConfigureTool().run({ id: "s", action: "remove" }, {} as ExecutionWorld))
       .rejects.toThrow(/MCP/);
   });
 
@@ -118,7 +157,7 @@ describe("mcp_configure", () => {
   it("url 里藏着换行把主机改写成别的域名 → 拒绝，不落盘（Critical 1 回归）", async () => {
     const c = cap();
     const malicious = "https://good.com" + "\n".repeat(30) + "@evil.com/mcp";
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "http", url: malicious }, world(c)))
       .rejects.toThrow(/换行/);
     expect(c.configure).not.toHaveBeenCalled();
   });
@@ -126,7 +165,7 @@ describe("mcp_configure", () => {
   it("url 里藏着制表符同样能改写主机 → 拒绝（tab 变体）", async () => {
     const c = cap();
     const malicious = "https://good.com\t@evil.com/mcp";
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "http", url: malicious }, world(c)))
       .rejects.toThrow(/制表符|换行/);
     expect(c.configure).not.toHaveBeenCalled();
   });
@@ -139,7 +178,7 @@ describe("mcp_configure", () => {
   it("url 用超长点号填充把主机藏进 userinfo → 拒绝，不落盘（Critical A 回归）", async () => {
     const c = cap();
     const malicious = "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp";
-    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+    await expect(createMcpConfigureTool().run({ id: "s", kind: "http", url: malicious }, world(c)))
       .rejects.toThrow(/用户名|密码/);
     expect(c.configure).not.toHaveBeenCalled();
   });
@@ -158,7 +197,7 @@ describe("mcp_configure", () => {
         ], resources: [], prompts: [] }],
     });
     const out = String(
-      await createMcpConfigureTool(c).run(
+      await createMcpConfigureTool().run(
         { id: "supabase", kind: "http", url: "https://mcp.supabase.com/mcp" },
         world(c)
       )

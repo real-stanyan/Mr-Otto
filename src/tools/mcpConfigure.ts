@@ -9,9 +9,9 @@
 // 文件、也不知道 hub 和 SDK 的存在。
 
 import type { Tool } from "./tool.js";
-import type { McpCapability, ExecutionWorld } from "../world/executionWorld.js";
+import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { McpServerConfig } from "../shared/mcp.js";
-import { mcpNewToolsNotice, normalizeMcpHttpUrl } from "../shared/mcp.js";
+import { mcpOutcomeReport, normalizeMcpHttpUrl } from "../shared/mcp.js";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -32,12 +32,35 @@ export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerCo
   // （首尾空白在卡片上不可见），用户看不出这是新建了一台而不是改了那台。
   // 统一存 trim 后的值，判空和落盘用同一把尺子
   const id = rawId.trim();
-  if (a["action"] === "remove") return { id, cfg: null };
+  // schema 的 enum 写着 upsert/remove，实现从前只判 remove——传 "delete" 的
+  // 会被静默当 upsert 落盘（#474）。enum 不该只是给模型看的摆设
+  const action = a["action"];
+  if (action !== undefined && action !== "upsert" && action !== "remove") {
+    throw new Error('action 只认 "upsert" 或 "remove"（不传默认 upsert）');
+  }
+  if (action === "remove") return { id, cfg: null };
+
+  // "false" / 0 / null 从前全被 `!== false` 折成 true（#474）——模型传字符串
+  // "false" 的本意明明是关，落盘却成了开（stdio 的开 = 命令会被 spawn）。
+  // 歧义值抛回去让模型改，不猜
+  const enabledRaw = a["enabled"];
+  if (enabledRaw !== undefined && typeof enabledRaw !== "boolean") {
+    throw new Error("enabled 必须是布尔值 true/false（收到了非布尔值，不猜它的意思）");
+  }
+  const enabled = enabledRaw !== false;
 
   const kind = a["kind"];
   if (kind === "http") {
     const url = a["url"];
     if (typeof url !== "string" || url === "") throw new Error("http 传输必须给 url");
+    // 目录给的 URL 是带 {param} 的模板（mcpCatalog.ts）。忘了替换的占位符
+    // 此前没有任何一层拦（#474）——审批卡上人眼看得见，但不该指望人兜底
+    const hole = /\{(\w+)\}/.exec(url);
+    if (hole !== null) {
+      throw new Error(
+        `url 里还有没替换的占位符 {${hole[1]}}——用 mcp_catalog 查这个参数该填什么，替换成真实值再来`
+      );
+    }
     // 归一化 + 校验挪进 shared/mcp.ts 的 normalizeMcpHttpUrl（Task 9 审查 Critical 1）：
     // 存盘的必须是 URL.href，不是模型给的原始字符串——WHATWG 解析器会在解析前
     // 悄悄剥掉 tab/换行，原始字符串和解析结果能对应到两个不同的主机。
@@ -49,7 +72,7 @@ export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerCo
         kind: "http",
         url: normalizedUrl,
         headers: asStringMap(a["headers"]),
-        enabled: a["enabled"] !== false,
+        enabled,
       },
     };
   }
@@ -63,14 +86,16 @@ export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerCo
         command,
         args: Array.isArray(a["args"]) ? a["args"].map(String) : [],
         env: asStringMap(a["env"]),
-        enabled: a["enabled"] !== false,
+        enabled,
       },
     };
   }
   throw new Error('kind 必须是 "http" 或 "stdio"（删除请传 action: "remove"）');
 }
 
-export function createMcpConfigureTool(mcp: McpCapability): Tool {
+// 无参（#474）：run 用的是调用时传进来的 world.mcp，工厂参数从第一版起就
+// 是个没人读的死参数——留着会误导读者以为工具绑死了构造时那个 hub
+export function createMcpConfigureTool(): Tool {
   return {
     def: {
       name: "mcp_configure",
@@ -101,13 +126,11 @@ export function createMcpConfigureTool(mcp: McpCapability): Tool {
       await world.mcp.configure(id, cfg);
       if (cfg === null) return `已删除 MCP server「${id}」。`;
       const hit = world.mcp.servers().find((s) => s.id === id);
-      if (hit?.live) {
-        return `MCP server「${id}」已配置并连上，${mcpNewToolsNotice(hit.tools.map((t) => t.name))}`;
-      }
-      if (hit?.status === "needs-auth") {
-        return `MCP server「${id}」已配置，但需要授权。调用 mcp_authorize 拉起授权（会打开浏览器让用户点同意）。`;
-      }
-      return `MCP server「${id}」已配置，但暂时没连上：${hit?.error ?? "原因未知"}`;
+      return mcpOutcomeReport(hit, {
+        connected: `MCP server「${id}」已配置并连上`,
+        needsAuth: `MCP server「${id}」已配置，但需要授权。调用 mcp_authorize 拉起授权（会打开浏览器让用户点同意）。`,
+        notConnected: `MCP server「${id}」已配置，但暂时没连上`,
+      });
     },
   };
 }

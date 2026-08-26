@@ -343,6 +343,10 @@ export function createOAuthProvider(
       if (persistFlow) opts.write({ clientInformation: info as Record<string, unknown> });
     },
     tokens: () => opts.read().tokens as OAuthTokens | undefined,
+    // 两处 as 的层数不同不是笔误（#474）：OAuthClientInformation 是纯
+    // interface，与 Record<string, unknown> 结构兼容，单层 as 就够；
+    // OAuthTokens 经过 zod 推导带了索引签名的交叉类型，TS 判定两边
+    // "不够重叠"，得先过一趟 unknown
     saveTokens: (t) => { opts.write({ tokens: t as unknown as Record<string, unknown> }); },
     saveCodeVerifier: (v) => {
       if (persistFlow) opts.write({ codeVerifier: v });
@@ -413,6 +417,12 @@ export async function authorizeMcpServer(
     } catch (e) {
       throw scrubOAuthError(e);
     }
+    // 这条路关 transport 而上面成功路径关 client，不是笔误（#474）：
+    // connect() 抛了 UnauthorizedError 之后，"client 是否已把这条传输接管
+    // 到能被 close() 收到"取决于 SDK 在哪一步失败（protocol.js 是先赋
+    // _transport 再 start()，但这属于内部实现，版本间可变）。transport
+    // 是我们自己 new 的、必然在手上的把手，直接关它不赌 SDK 内部时序；
+    // 成功路径 connect 已收尾完整，关 client 是官方出口
     await transport.close();
   } finally {
     // 成功路径里 waitForCode 已经关过一次；close() 是幂等的，
