@@ -82,6 +82,37 @@ export const isAuthError = (e: unknown): boolean => {
   return /\b401\b|unauthor|forbidden|\b403\b/i.test(msg);
 };
 
+/** 把一次鉴权失败折成**不含自由文本**的短描述（#470）。
+    这句话最终沿 McpAuthRequiredError → hub 的 e.error → tool_result 落进
+    append-only 事件日志，而 SDK 在 token 端点失败时会把响应体原文塞进
+    e.message（client/auth.js 的 parseErrorResponse："Raw body: ..."）——
+    响应体里完全可能有凭据，日志删不掉，所以 message 一个字都不能带。
+    白名单只放三样结构化信息：HTTP 状态码、OAuth spec 的 error code
+    （invalid_grant / access_denied 这类，本身就是最有用的诊断）、错误类名。 */
+export const describeAuthError = (e: unknown): string => {
+  if (e instanceof StreamableHTTPError) return e.code === undefined ? "HTTP 状态码未知" : `HTTP ${e.code}`;
+  // 鸭子类型认 SDK 的 OAuthError 子类（errorCode 是 spec 枚举串）——
+  // 不 import server/auth 路径，client 侧只吃这个形状
+  const code = (e as { errorCode?: unknown } | null | undefined)?.errorCode;
+  if (typeof code === "string") return code;
+  if (e instanceof Error) return e.name;
+  return typeof e;
+};
+
+/** 两处 throw 共用的构造点——保证"需要授权"这句话永远只经 describeAuthError 措辞 */
+export const authRequiredError = (id: string, e: unknown): McpAuthRequiredError =>
+  new McpAuthRequiredError(`${id} 需要授权（${describeAuthError(e)}）`);
+
+/** 只重写带服务端文本的 OAuthError（message 里可能有响应体原文），
+    其余错误原样放行——SDK 自己的静态 message（不支持 DCR / 发现失败）和
+    本仓的人话错误（loopback 超时）是安全且必要的诊断，不能一刀切丢掉。 */
+export const scrubOAuthError = (e: unknown): unknown => {
+  if (!(e instanceof Error)) return e;
+  const code = (e as unknown as { errorCode?: unknown }).errorCode;
+  if (typeof code !== "string") return e;
+  return new Error(`授权服务端返回错误：${code}（${e.name}；响应原文已略去，防止凭据进事件日志）`);
+};
+
 /** 连一台 server,握手 + 拉三份清单。失败原样抛(hub 负责分类) */
 export async function connectMcpClient(
   id: string,
@@ -121,8 +152,10 @@ export async function connectMcpClient(
     // 这里断言掉，不因此放松 tsconfig。
     await client.connect(transport as unknown as Transport);
   } catch (e) {
-    if (isAuthError(e)) throw new McpAuthRequiredError(`${id} 需要授权：${String(e)}`);
-    throw e;
+    // 不带原始错误文本（#470，见 describeAuthError）；非鉴权失败也过一遍
+    // scrub——OAuthError 的 message 同样会沿 hub 的 e.error 进 tool_result
+    if (isAuthError(e)) throw authRequiredError(id, e);
+    throw scrubOAuthError(e);
   }
 
   // 留传输对象本身,不留 pid 数字——kill() 可能在连接建立后很久才被调用
@@ -243,8 +276,8 @@ export async function connectMcpClient(
   } catch (e) {
     // 关闭失败就吞掉,不能让一次收尾失败盖过更有信息量的原始错误
     await client.close().catch(() => {});
-    if (isAuthError(e)) throw new McpAuthRequiredError(`${id} 需要授权：${String(e)}`);
-    throw e;
+    if (isAuthError(e)) throw authRequiredError(id, e);
+    throw scrubOAuthError(e);
   }
   // refresh 现在是 McpClientConn 的一等公民（见上方接口声明），直接赋值即可，
   // 不需要再拿一个不受类型检查的 cast 去够一个接口里本不存在的字段。
@@ -333,12 +366,19 @@ export async function authorizeMcpServer(
       await client.close();
       return;
     } catch (e) {
-      if (!(e instanceof UnauthorizedError)) throw e;
+      // 这条路和下面 finishAuth 的失败最终都会变成 mcp_authorize 的
+      // tool_result 落日志——OAuthError 的响应体原文在这里拦掉（#470）
+      if (!(e instanceof UnauthorizedError)) throw scrubOAuthError(e);
     }
     const code = await loopback.waitForCode(AUTH_TIMEOUT_MS);
     // finishAuth 内部用盘上的 code_verifier 把 code 换成 token，
-    // 换到之后走 provider.saveTokens 落盘
-    await transport.finishAuth(code);
+    // 换到之后走 provider.saveTokens 落盘。失败的典型场景正是 token 端点
+    // 拒绝（invalid_grant），SDK 会把响应解析成 OAuthError——同样要 scrub
+    try {
+      await transport.finishAuth(code);
+    } catch (e) {
+      throw scrubOAuthError(e);
+    }
     await transport.close();
   } finally {
     // 成功路径里 waitForCode 已经关过一次；close() 是幂等的，
