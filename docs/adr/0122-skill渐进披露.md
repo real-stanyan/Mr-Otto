@@ -126,24 +126,28 @@ compact 后重注入、派子 agent 时继承——不给模型开小灶，也�
   （代价是多一份要维护的名单）。缓解现状：每次自取都落 `skill_invoked`
   （`source: "model"`），聊天区和轨迹视图都标着「Otto 启用了 skill「x」」，
   用户随时能点「停用」——事后可见 + 可撤销，但不是事前同意。
-- **`src/main/resumeChild.ts` 没接 `skills`**：这是恢复子会话的重建口，
-  `createChildAgent` 传给 `createAgent` 的参数表里没有 `skills` 这一项——
-  恢复出来的子会话拿不到 `skill` 工具，与活着那一侧（`subagentRunner.ts`
-  复用父 world、正常挂上 `skill` 工具）不对称。该文件对「恢复侧少若干
-  能力」已有成文先例（文件头刻意写明不传 `history`、不传 `subagentRunner`），
-  这次的 `skills` 缺席是同一类取舍的延续，不是遗漏——只是这次没有专门写
-  注释说明，留在这里记一笔：如果日后有人抱怨「resume 回来的子会话怎么用不了
-  skill 工具了」，答案在这条 ADR，不用重新排查一遍。
-- **`agent.ts` 里 `activeSkills` 闭包每次 acquire/release 都全量扫描**：
-  接线在 `createSkillTool` 的 `activeSkills` 闭包里是
-  `store.load(sessionId)` 读整份日志 + `barrenEventIndexes(log)` 对整份日志
-  再扫一遍，然后才喂给 `activeSkills()` 做线性台账重算。`EventStore` 已经有
-  `ofType(sessionId, type, { beforeSeq? })` 这个按类型的稀疏索引（见
-  `src/session/store.ts:411`），理论上可以只捞 `skill_invoked` /
-  `skill_released` 两类事件、不用搬整份日志。这一次没有借道 `ofType`：
-  `barrenEventIndexes` 判定「是不是空跑 turn」时依赖的是事件在整份日志里
-  的下标，`ofType` 拿到的事件序列丢失了这份原始下标，要用就得让 `ofType`
-  或调用方多带一份下标映射，属于另一层改动。长会话上 `store.load` 全量
-  搬运是一笔看得见的开销（每次 `acquire`/`release` 一次，不是每轮一次，
-  代价随会话长度线性增长但触发频率低），值得在下一次碰这段代码时顺手改，
-  这里先记账，不在本次范围内动。
+- ~~**`src/main/resumeChild.ts` 没接 `skills`**~~ **已偿（issue #482 / 2026-08-26）**：
+  当初记这笔账时把它归进「恢复侧刻意少若干能力」那一类（同不传 `history`、
+  不传 `subagentRunner`），理由是怕 `skills: "none"` 的子 agent 恢复回来
+  又拿到这把刀。**那个顾虑不成立**：白名单 `config.allowTools` 来自
+  `subagent_briefed` 快照，而快照记的 `tools` 是当初**实际挂上**的那几把
+  （`subagentRunner` 落 briefed 时写的是 `child.toolDefs.map(...)`，不是
+  定义文件里写的那几个字）。`skills: "none"` 的子 agent 当初就没挂上
+  `"skill"`，快照里没有它，恢复回来照样没有——不靠恢复侧记得别传，靠快照
+  本身。skill 功能之前的旧日志同理。现在两侧对称了。
+- ~~**`agent.ts` 里 `activeSkills` 闭包每次 acquire/release 都全量扫描**~~
+  **已偿（issue #482 / 2026-08-26）**：改走 `ofType` 稀疏索引
+  （`activeSkillsOf`，`src/session/activeSkills.ts`）。当初判断「要用 `ofType`
+  就得多带一份下标映射」——**那个判断偏严了**：`barrenEventIndexes` 今天只标
+  `user_message`（和它前面的 `image_described`），两者都不在这份稀疏集里，
+  所以全量路径算出来的 barren 与 skill 事件的交集恒为空，两条路径逐条等价。
+  等价性测试把这个前提本身钉住：空跑规则哪天扩到 `skill_invoked`，那条断言
+  先红，这条捷径就得撤回。fork 链退回全量（`ofType` 是单会话查询，看不见
+  父会话前缀里的 skill 事件），同 `boundedContextEvents` 的处理。
+- ~~**D6 的「按最近启用排序」未实现**~~ **已偿（issue #482 / 2026-08-26）**：
+  台账以 thunk 注入 `composeSkillIndex`——这个函数在 `def` getter 里，engine
+  每轮取一次工具声明表就调一次，而台账要现查库，所以「装不装得下」先算
+  （与次序无关），只有真截断那一路才求值 thunk。装了七八十把 skill 的机器
+  才走得到那一路。同一次顺带修掉一处旧行为：之前的循环无条件预留 120 字节
+  给尾注，于是总量落在 `[maxBytes-120, maxBytes]` 区间时会截掉最后一把、
+  再贴一句「另有 1 个未列出」——明明装得下。
