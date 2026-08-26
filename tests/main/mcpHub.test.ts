@@ -908,4 +908,46 @@ describe("configure（agent 侧的写配置能力）", () => {
     expect(hub.configOf("s")).toMatchObject({ kind: "http", url: "https://a/mcp" });
     expect(hub.configOf("没有这台")).toBeUndefined();
   });
+
+  // #504：mcp_configure / mcp_authorize 会长时间阻塞 turn（连接兜底 60s /
+  // 等授权 5 分钟），用户点停止必须能穿进来
+  describe("中断（#504）", () => {
+    it("authorize 把 signal 透传给 opts.authorize（真取消发生在 mcpClient 那一层）", async () => {
+      const authorize = vi.fn(async () => {});
+      const hub = createMcpHub({ ...memStore({ a: http() }), connect: async () => conn(), authorize });
+      await hub.ready();
+      const ac = new AbortController();
+      await hub.authorize("a", ac.signal);
+      expect(authorize).toHaveBeenCalledWith("a", expect.anything(), ac.signal);
+    });
+
+    it("configure 连接卡住时中断：调用立即 reject，配置已落盘，连接在后台跑到底收尾（不留半连接）", async () => {
+      let release!: (c: McpClientConn) => void;
+      const store = memStore();
+      const connect: McpConnect = () => new Promise((r) => { release = r; });
+      const hub = createMcpHub({ ...store, connect });
+      const ac = new AbortController();
+      const p = hub.configure("a", stdio(), ac.signal);
+      const assertion = expect(p).rejects.toMatchObject({ name: "AbortError" });
+      ac.abort();
+      await assertion;
+      // 中断只是弃等，不是撤销：审批已经过了，配置必须已在盘上
+      expect(store.load().servers["a"]).toBeDefined();
+      // 后台那次连接跑完后状态自己收尾——同 ready() 超时的取舍，
+      // 不因为中断对同一台发起第二次 connect（stdio 下那是孤儿子进程）
+      release(conn());
+      await new Promise((r) => { setTimeout(r, 0); });
+      expect(hub.servers().find((s) => s.id === "a")?.live).toBe(true);
+    });
+
+    it("signal 已中断时 configure 直接 reject，不写盘", async () => {
+      const store = memStore();
+      const saveSpy = vi.spyOn(store, "save");
+      const hub = createMcpHub({ ...store, connect: async () => conn() });
+      const ac = new AbortController();
+      ac.abort();
+      await expect(hub.configure("a", stdio(), ac.signal)).rejects.toMatchObject({ name: "AbortError" });
+      expect(saveSpy).not.toHaveBeenCalled();
+    });
+  });
 });

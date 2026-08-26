@@ -17,7 +17,7 @@ export function createMcpAuthorizeTool(): Tool {
       name: "mcp_authorize",
       description:
         "对一台需要授权（needs-auth）的 MCP server 拉起 OAuth 授权：会打开系统浏览器，" +
-        "用户在服务商页面登录并点同意后自动重连。授权期间这次调用会一直等（最多 5 分钟）。",
+        "用户在服务商页面登录并点同意后自动重连。授权期间这次调用会一直等（最多 5 分钟；用户点停止可随时中断）。",
       parameters: {
         type: "object",
         properties: { id: { type: "string", description: "server 在配置里的名字" } },

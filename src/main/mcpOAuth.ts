@@ -21,8 +21,10 @@ export interface LoopbackCallback {
   readonly redirectUri: string;
   /** 这一次授权的 state，交给 OAuthClientProvider.state() */
   readonly state: string;
-  /** 等浏览器回调。校验 state；服务端回错误时抛人话。无论成败都关端口 */
-  waitForCode(timeoutMs: number): Promise<string>;
+  /** 等浏览器回调。校验 state；服务端回错误时抛人话。无论成败都关端口。
+      signal（#504）= turn 的中断信号：用户点停止时立即 reject（AbortError）
+      并关端口，不顶着中断干等满超时 */
+  waitForCode(timeoutMs: number, signal?: AbortSignal): Promise<string>;
   /** 提前放弃（上游抛了别的错、用户取消） */
   close(): void;
 }
@@ -116,7 +118,7 @@ export async function startLoopback(): Promise<LoopbackCallback> {
     redirectUri,
     state,
     close,
-    waitForCode(timeoutMs) {
+    waitForCode(timeoutMs, signal) {
       return new Promise<string>((resolve, reject) => {
         const finish = (r: Settled): void => {
           // 只收一次：收完立刻关端口
@@ -124,12 +126,25 @@ export async function startLoopback(): Promise<LoopbackCallback> {
           if ("code" in r) resolve(r.code);
           else reject(new Error(r.error));
         };
+        // 中断优先于 pending：turn 已经停了，回来的 code 没有下游会用
+        if (signal?.aborted) { close(); reject(signal.reason); return; }
         if (pending !== null) { finish(pending); return; }
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          close();
+          reject(signal!.reason);
+        };
         const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
           close();
           reject(new Error(`等授权超时（${Math.round(timeoutMs / 1000)} 秒没等到浏览器回调）`));
         }, timeoutMs);
-        settle = (r) => { clearTimeout(timer); finish(r); };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        settle = (r) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          finish(r);
+        };
       });
     },
   };

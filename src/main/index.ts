@@ -1098,13 +1098,18 @@ void app.whenReady().then(() => {
           : undefined
       );
     },
-    authorize: (id, cfg) =>
-      authorizeMcpServer(id, cfg, {
-        read: () => readMcpAuth(mcpAuthPath, id),
-        write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
-        resetClientRegistration: () => { dropMcpAuthClientRegistration(mcpAuthPath, id); },
-        openBrowser: (url) => { void shell.openExternal(url); },
-      }),
+    authorize: (id, cfg, signal) =>
+      authorizeMcpServer(
+        id,
+        cfg,
+        {
+          read: () => readMcpAuth(mcpAuthPath, id),
+          write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+          resetClientRegistration: () => { dropMcpAuthClientRegistration(mcpAuthPath, id); },
+          openBrowser: (url) => { void shell.openExternal(url); },
+        },
+        signal
+      ),
     clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
