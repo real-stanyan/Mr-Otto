@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadExecPolicy, appendAllowRule } from "../../src/main/execPolicyStore.js";
+import { loadExecPolicy, appendAllowRule, removeExecRule } from "../../src/main/execPolicyStore.js";
 import { createPolicyAwareApprover } from "../../src/main/uiApprover.js";
 import type { Approver } from "../../src/loop/approvalGate.js";
 import type { Tool } from "../../src/tools/tool.js";
@@ -65,6 +65,36 @@ describe("appendAllowRule（审批 UI 产出，issue #347 ③）", () => {
     writeFileSync(p, "{broken");
     expect(appendAllowRule(p, ["ls"], undefined)).toBe(false);
     expect(readFileSync(p, "utf8")).toBe("{broken"); // 原文不动
+  });
+});
+
+describe("removeExecRule（设置页的删除入口，issue #370）", () => {
+  it("按 pattern+decision+cwd 精确匹配删一条，其余保留，热生效", () => {
+    const p = tmp();
+    appendAllowRule(p, ["npm", "test"], "/proj/a");
+    appendAllowRule(p, ["npm", "run", "lint"], "/proj/a");
+    expect(
+      removeExecRule(p, { pattern: ["npm", "test"], decision: "allow", cwd: "/proj/a" })
+    ).toBe(true);
+    expect(loadExecPolicy(p).rules).toEqual([
+      { pattern: ["npm", "run", "lint"], decision: "allow", cwd: "/proj/a" },
+    ]);
+  });
+
+  it("匹配不到（pattern 或 cwd 不同）= false，文件不动", () => {
+    const p = tmp();
+    appendAllowRule(p, ["npm", "test"], "/proj/a");
+    expect(
+      removeExecRule(p, { pattern: ["npm", "test"], decision: "allow", cwd: "/proj/b" })
+    ).toBe(false);
+    expect(loadExecPolicy(p).rules).toHaveLength(1);
+  });
+
+  it("文件是坏的：拒绝操作（先修文件，别在没生效的规则集上做手术）", () => {
+    const p = tmp();
+    writeFileSync(p, "{broken");
+    expect(removeExecRule(p, { pattern: ["ls"], decision: "allow" })).toBe(false);
+    expect(readFileSync(p, "utf8")).toBe("{broken");
   });
 });
 

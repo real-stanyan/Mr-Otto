@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadAlwaysAllow, addAlwaysAllow } from "../../src/main/permissionStore.js";
+import { loadAlwaysAllow, addAlwaysAllow, removeAlwaysAllow } from "../../src/main/permissionStore.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 function storePath() {
@@ -50,5 +50,22 @@ describe("permissionStore", () => {
     const path = storePath();
     writeFileSync(path, JSON.stringify({ alwaysAllow: ["bash", 42, null] }));
     expect(loadAlwaysAllow(path)).toEqual(new Set(["bash"]));
+  });
+
+  // issue #370：设置页的撤销入口。删除 = 下一次 loadAlwaysAllow 就没有它（热生效）
+  it("removeAlwaysAllow：删掉一条，其余保留，文件权限仍 0600", () => {
+    const path = storePath();
+    addAlwaysAllow(path, "bash");
+    addAlwaysAllow(path, "write_file");
+    const left = removeAlwaysAllow(path, "bash");
+    expect(left).toEqual(new Set(["write_file"]));
+    expect(loadAlwaysAllow(path)).toEqual(new Set(["write_file"]));
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("removeAlwaysAllow：删不存在的 key 是无害空操作", () => {
+    const path = storePath();
+    addAlwaysAllow(path, "bash");
+    expect(removeAlwaysAllow(path, "没这条")).toEqual(new Set(["bash"]));
   });
 });

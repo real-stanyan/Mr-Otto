@@ -97,6 +97,7 @@ export type SettingsSection =
   | "skills"
   | "agents"
   | "mcp"
+  | "permissions"
   | "memory"
   | "context"
   | "remote"

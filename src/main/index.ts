@@ -55,8 +55,9 @@ import { autoTitleSource } from "./sessionTitler.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
-import { loadAlwaysAllow, addAlwaysAllow } from "./permissionStore.js";
-import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
+import { loadAlwaysAllow, addAlwaysAllow, removeAlwaysAllow } from "./permissionStore.js";
+import { loadExecPolicy, appendAllowRule, removeExecRule } from "./execPolicyStore.js";
+import type { ExecRule } from "../shared/execPolicy.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
@@ -67,6 +68,7 @@ import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, UpdaterState,
   RemoteStatus,
+  PermissionsSnapshot,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
@@ -1753,6 +1755,30 @@ void app.whenReady().then(() => {
       return newId;
     }
   );
+
+  // 设置页权限总览（issue #370）：两份文件都现读——审批链也是现读，
+  // 这里看到的就是下一次判定会用的那份（热生效的两端是同一个事实）
+  const permissionsSnapshot = (): PermissionsSnapshot => {
+    const policy = loadExecPolicy(execPolicyPath);
+    return {
+      grants: [...loadAlwaysAllow(permissionsPath)].sort(),
+      execRules: policy.rules,
+      ...(policy.error !== undefined ? { execError: policy.error } : {}),
+    };
+  };
+  ipcMain.handle(CHANNELS.listPermissions, () => permissionsSnapshot());
+  ipcMain.handle(CHANNELS.revokeGrant, (_e, key: string) => {
+    if (typeof key === "string" && key !== "") removeAlwaysAllow(permissionsPath, key);
+    return permissionsSnapshot();
+  });
+  ipcMain.handle(CHANNELS.removeExecRule, (_e, rule: ExecRule) => {
+    // 形状不赌（来自渲染层的输入）：removeExecRule 按内容精确匹配，
+    // 畸形规则最坏匹配不到、返回原样快照
+    if (rule !== null && typeof rule === "object" && Array.isArray(rule.pattern)) {
+      removeExecRule(execPolicyPath, rule);
+    }
+    return permissionsSnapshot();
+  });
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
   ipcMain.handle(CHANNELS.listExternalSkills, () => {

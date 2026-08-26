@@ -13,7 +13,7 @@
 //   已经授出去的许可不静默收窄
 // - 新条目 = 规范化 key（bash 按命令、write_file 按路径，掺 cwd，U+001F 分隔）
 //   ——宁窄勿宽，"永久"不再等于"这个工具从此不问"
-// 没有过期时间；撤销目前只能删这个文件（设置页还没有入口）。
+// 没有过期时间；撤销走设置页（removeAlwaysAllow，issue #370）或直接删文件。
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
@@ -38,10 +38,22 @@ export function loadAlwaysAllow(path: string): Set<string> {
 export function addAlwaysAllow(path: string, key: string): Set<string> {
   const allow = loadAlwaysAllow(path);
   allow.add(key);
+  writeAllow(path, allow);
+  return allow;
+}
+
+/** 撤销一条永久授权（设置页的入口，issue #370）。热生效：读取方每次
+    decide 现读文件，删完下一次判定就会重新弹卡。删不存在的 key = 空操作 */
+export function removeAlwaysAllow(path: string, key: string): Set<string> {
+  const allow = loadAlwaysAllow(path);
+  if (allow.delete(key)) writeAllow(path, allow);
+  return allow;
+}
+
+function writeAllow(path: string, allow: Set<string>): void {
   const body: PermissionFile = { alwaysAllow: [...allow].sort() };
   mkdirSync(dirname(path), { recursive: true });
   // 0600:这份文件说的是"哪些危险操作不再问人",别人可写 = 别人可以替你点头
   writeFileSync(path, JSON.stringify(body, null, 2), { mode: 0o600 });
   chmodSync(path, 0o600);
-  return allow;
 }

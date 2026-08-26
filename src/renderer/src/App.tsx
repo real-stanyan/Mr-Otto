@@ -94,6 +94,7 @@ import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
+import { PermissionsSettings } from "./components/PermissionsSettings.js";
 import { MemorySettings } from "./components/MemorySettings.js";
 import { RemoteDevicesSettings } from "./components/RemoteDevicesSettings.js";
 import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
@@ -3255,6 +3256,8 @@ export function App() {
     <SubagentSettings />
   ) : settingsSection === "mcp" ? (
     <McpSettings />
+  ) : settingsSection === "permissions" ? (
+    <PermissionsSettings />
   ) : settingsSection === "memory" ? (
     <MemorySettings />
   ) : settingsSection === "context" ? (
