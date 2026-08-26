@@ -87,20 +87,26 @@ turn 内必须冻结：模型看到的声明表和 dispatch 时查的 `toolsByNa
 
 有一条既有不变量约束了切法：`tests/architecture.test.ts:90` 钉死 **只有 `src/main/mcpClient.ts` 能 import `@modelcontextprotocol/sdk`**（ADR-0050）。OAuth 要用 SDK 的 `OAuthClientProvider` 接口，新建一个 import SDK 的文件会直接撞红这条断言。
 
-因此切成两层：
+另一个事实决定了要写多少代码：**SDK 1.30.0 的 `StreamableHTTPClientTransport` 已经接受 `authProvider`**，授权服务器元数据发现、动态客户端注册、PKCE、code 换 token、401 时用 refresh_token 续期——这几件事 SDK 全做了。我们要供的只有两样：一个把凭据存到磁盘的 `OAuthClientProvider` 实现，和一个能收回调 code 的 loopback 服务器。**不自己实现 OAuth 协议**。
+
+因此切成三层：
 
 ```
-src/main/mcpOAuth.ts      纯本仓形状：PKCE、loopback 回调服务器、开浏览器、
-                          DCR、token 刷新。零 SDK import，可纯单测覆盖
-                          （假 fetch、假浏览器打开器，不起真 transport）
-src/main/mcpAuthStore.ts  ~/.mr-otto/mcp-auth.json 读写，0600，抄 keyVault 口径
-src/main/mcpClient.ts     +薄适配器：把 mcpOAuth 的形状包成 SDK 的
-                          OAuthClientProvider，塞进 StreamableHTTPClientTransport
+src/main/mcpAuthStore.ts  ~/.mr-otto/mcp-auth.json 读写，0600，抄 keyVault 口径。
+                          按 server id 分组存 client 信息 / tokens / code_verifier。
+                          纯存储，零 SDK import，纯函数可单测
+src/main/mcpOAuth.ts      loopback 回调服务器（node:http）+ 开浏览器。
+                          零 SDK import；起端口/收一次/校验 state/超时自杀 全在这
+src/main/mcpClient.ts     +createOAuthProvider(): 把上面两个包成 SDK 的
+                          OAuthClientProvider，塞进 StreamableHTTPClientTransport；
+                          +authorizeMcpServer(): 编排一次完整授权
 src/shared/mcpCatalog.ts  常见 server 目录（纯数据 + 纯函数）
 src/tools/mcpCatalog.ts   查目录
 src/tools/mcpConfigure.ts 增/改/删 server（过审批门）
 src/tools/mcpAuthorize.ts 拉起授权
 ```
+
+SDK 类型（`OAuthTokens` / `OAuthClientInformation`）只出现在 `mcpClient.ts` 里；`mcpAuthStore.ts` 用自己的等价形状（都是普通 JSON 对象，适配就是一处结构性赋值），这样架构断言不破、存储层也能脱离 SDK 单测。
 
 工具层照旧只依赖 `ExecutionWorld` / `McpCapability`（硬规则）。`mcp_configure` / `mcp_authorize` 需要的是「写配置」和「发起授权」两个新能力，加在 `McpCapability` 接口上，由 `mcpHub` 实现、`index.ts` 用 `withMcp` 注入——与既有的 `callTool` / `readResource` 同一条路，工具层依然不知道 hub 和 SDK 的存在。
 
@@ -112,16 +118,20 @@ src/tools/mcpAuthorize.ts 拉起授权
 连接失败 → McpAuthRequiredError → hub 标 needs-auth（现状已有）
   ↓
 hub.authorize(id)
-  ├─ 起 loopback 127.0.0.1:0 /callback，一次性，60s 超时自杀
-  ├─ 拉 .well-known/oauth-authorization-server（结果缓存进 mcp-auth.json）
-  ├─ 没注册过 → DCR，client 信息落盘
-  ├─ PKCE(code_verifier/challenge) + state，shell.openExternal 开浏览器
-  ├─ 回调：校验 state（不匹配立即拒绝并关端口），code 换 token，落盘，关端口
+  ├─ 起 loopback 127.0.0.1:0 /callback，一次性，5 分钟超时自杀
+  │   （人要在浏览器里登录 + 点同意，60s 不够）
+  ├─ 造 transport（authProvider = createOAuthProvider(store, id, loopback)）
+  ├─ client.connect() → SDK 走发现 / DCR / PKCE，调 provider.redirectToAuthorization
+  │   → shell.openExternal 开浏览器 → connect 抛 UnauthorizedError（预期内）
+  ├─ 等 loopback 收到回调：校验 state（不匹配立即拒绝并关端口），拿 code
+  ├─ transport.finishAuth(code) → SDK 换 token → provider.saveTokens 落盘
   └─ hub.reconnect(id)
   ↓
-后续每次连接：authProvider 从 store 读 token
-  401 → 用 refresh_token 静默续 → 续不动才回落 needs-auth
+后续每次连接：SDK 从 provider.tokens() 读 token
+  过期/401 → SDK 用 refresh_token 静默续 → 续不动才回落 needs-auth
 ```
+
+`state` 的校验必须由我们做：SDK 的 `finishAuth(code)` 只收 code，不验 state。provider 的 `state()` 生成的那串同时交给 loopback，回调里对不上就拒。
 
 ### 5.2 agent 自助配置
 
@@ -170,8 +180,9 @@ agent：「接好了，现在能查你的表结构了」
 
 | 文件 | 钉住什么 |
 |---|---|
-| `tests/main/mcpOAuth.test.ts` | PKCE 生成；`state` 不匹配必须拒绝；loopback 只接受一次请求；超时后端口关闭；DCR 结果复用不重复注册；refresh 失败回落 needs-auth |
-| `tests/main/mcpAuthStore.test.ts` | 文件 0600；刷新覆盖旧 token；坏 JSON 当「还没授权过」而不是抛错 |
+| `tests/main/mcpOAuth.test.ts` | `state` 不匹配必须拒绝；loopback 只接受一次请求；超时后端口关闭；回调带 `error=access_denied` 时给人话而不是干等 |
+| `tests/main/mcpAuthStore.test.ts` | 文件 0600；刷新覆盖旧 token；坏 JSON 当「还没授权过」而不是抛错；清除只清一台不误伤同伴 |
+| `tests/main/mcpOAuthProvider.test.ts` | provider 的读写往返（client 信息 / tokens / verifier）；`redirectUrl` 跟着 loopback 走 |
 | `tests/tools/mcpConfigure.test.ts` | `requiresApproval: true` 钉死（回归闸）；参数校验；审批预览包含 command 全文与 env 键名 |
 | `tests/tools/mcpCatalog.test.ts` | 查得到 / 查不到时的返回形状 |
 | `tests/loop/engine.test.ts` | turn 之间工具表会变；turn 之内不变；`deferredExposed` 集合跨轮存活；传数组的老调用方行为不变 |
