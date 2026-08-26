@@ -150,3 +150,58 @@ describe("assignMcpToolNames（整桌统一分配，issue #349）", () => {
     for (const n of out) expect(n).toMatch(/^mcp__[A-Za-z0-9_-]+$/); // 全部合法
   });
 });
+
+// issue #473：known 名单的 MCP 半边。三件套的挂载条件是「装配有 mcp 能力」，
+// 与有没有连上 server 无关——known 名单必须同样认得它们，否则子 agent 的
+// frontmatter 点名会被 unknownTools 静默剔除（写得出、看着生效、实际被吞）
+describe("knownMcpToolNames（issue #473）", () => {
+  it("零 server 也认得自助配置三把刀 + mcp_read_resource——点名即有", async () => {
+    const { knownMcpToolNames } = await import("../../src/shared/mcp.js");
+    expect(knownMcpToolNames([])).toEqual([
+      "mcp_catalog",
+      "mcp_configure",
+      "mcp_authorize",
+      "mcp_read_resource",
+    ]);
+  });
+
+  it("三个名字与工具真身的 def.name 逐字一致（防两边各改各的）", async () => {
+    const { MCP_SELF_CONFIG_TOOL_NAMES } = await import("../../src/shared/mcp.js");
+    const { mcpCatalogTool } = await import("../../src/tools/mcpCatalog.js");
+    const { createMcpConfigureTool } = await import("../../src/tools/mcpConfigure.js");
+    const { createMcpAuthorizeTool } = await import("../../src/tools/mcpAuthorize.js");
+    const cap = {
+      ready: async () => {},
+      servers: () => [],
+      callTool: async () => [],
+      readResource: async () => [],
+      getPrompt: async () => "",
+      configure: async () => {},
+      authorize: async () => {},
+      configOf: () => undefined,
+    } as unknown as Parameters<typeof createMcpConfigureTool>[0];
+    const real = [
+      mcpCatalogTool.def.name,
+      createMcpConfigureTool(cap).def.name,
+      createMcpAuthorizeTool(cap).def.name,
+    ];
+    expect([...MCP_SELF_CONFIG_TOOL_NAMES]).toEqual(real);
+  });
+
+  it("live server 的工具名进表、掉线的不进，但哈希分配按整桌算（issue #349 同款）", async () => {
+    const { knownMcpToolNames } = await import("../../src/shared/mcp.js");
+    const servers = [
+      { name: "gh", live: true, tools: [{ name: "create_pr" }] },
+      { name: "dead", live: false, tools: [{ name: "zombie" }] },
+    ];
+    const known = knownMcpToolNames(servers);
+    expect(known).toContain("mcp__gh__create_pr");
+    expect(known.some((n) => n.includes("zombie"))).toBe(false);
+    // 分配确定性：与 assignMcpToolNames 在全体上的结果同源
+    const assigned = assignMcpToolNames([
+      { server: "gh", tool: "create_pr" },
+      { server: "dead", tool: "zombie" },
+    ]);
+    expect(known).toContain(assigned[0]!);
+  });
+});

@@ -576,15 +576,22 @@ export function createAgent(opts: {
           ]
         : []),
     ];
-    // deferred 检索口（issue #348）：可见集是共享活 Set（deferredExposed，闭包外
-    // 声明，跨 turn 存活）——tool_search 命中写入，engine 每轮过滤声明表时读
-    if (list.some((t) => t.exposure === "deferred")) {
-      list.push(createToolSearchTool(() => listDeferred(list), deferredExposed));
-    }
     // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件
     // （world.browser 才挂 browser_read）是"这个装配有没有这把刀"，白名单是
     // "这次准不准用"，两件事，别搅在一起
-    return opts.allowTools ? list.filter((t) => opts.allowTools!.includes(t.def.name)) : list;
+    const kept = opts.allowTools
+      ? list.filter((t) => opts.allowTools!.includes(t.def.name))
+      : list;
+    // deferred 检索口（issue #348）：可见集是共享活 Set（deferredExposed，闭包外
+    // 声明，跨 turn 存活）——tool_search 命中写入，engine 每轮过滤声明表时读。
+    // 挂在白名单**之后**（issue #473）：deferred 的刀只有被 tool_search 曝光才
+    // 进声明表，白名单点了 mcp_configure 却没点 tool_search 的话，检索口被滤掉
+    // = 那把刀永不出现，"点名即有"（spec §7）就是空话。顺带把可搜集合也换成
+    // 过滤后的表——检索口不该报出白名单外的刀名
+    if (kept.some((t) => t.exposure === "deferred")) {
+      kept.push(createToolSearchTool(() => listDeferred(kept), deferredExposed));
+    }
+    return kept;
   };
 
   // turn 级聚合 diff（issue #345）：per-agent 一只 tracker，中间件挂在审批门
@@ -744,6 +751,17 @@ export function createAgent(opts: {
           const e = t.exposure ?? "direct";
           return e === "direct" || (e === "deferred" && deferredExposed.has(t.def.name));
         })
+        .filter((t) => t.available?.() ?? true)
+        .map((t) => t.def);
+    },
+    /** 工具目录（issue #473）：与 toolDefs 的差别只有一条——deferred 不论曝没曝光
+        都列出来。toolDefs 是"模型此刻真看到的账"，这份是"这个装配一共有哪些刀"：
+        设置页的勾选框勾的是白名单（点名即有，曝光是之后 tool_search 的事），
+        用账那份表的话 mcp_configure / mcp_authorize 这类天生 deferred 的刀在
+        勾选框里永远不出现。hidden 仍然不列：那是"这次装配裁定不给用"，不是"没曝光" */
+    get catalogToolDefs() {
+      return buildTools()
+        .filter((t) => (t.exposure ?? "direct") !== "hidden")
         .filter((t) => t.available?.() ?? true)
         .map((t) => t.def);
     },

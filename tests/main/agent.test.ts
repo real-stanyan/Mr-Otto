@@ -834,4 +834,50 @@ describe("MCP 自助配置的三把刀", () => {
     expect(names).not.toContain("mcp_authorize");
     store.close();
   });
+
+  // issue #473：spec §7 的措辞是"不点名即无"——蕴含"点名即有"。下面三条钉
+  // 后一半：白名单真点了名，刀就真的在（direct 立刻在；deferred 搜到就在）
+
+  it("白名单点名 mcp_catalog：点名即有，立刻出现在声明表（issue #473）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments, mcp: cap(),
+      allowTools: ["read_file", "mcp_catalog"],
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toContain("mcp_catalog");
+    store.close();
+  });
+
+  it("白名单点名 deferred 的刀：tool_search 自动带上，搜到即可用（issue #473）", async () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments, mcp: cap(),
+      allowTools: ["read_file", "mcp_configure"],
+    });
+    // deferred 语义不变：曝光之前不进声明表
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
+
+    // 白名单没点 tool_search，但点了一把 deferred——没有检索口这把刀永不出现，
+    // "点名即有"就是空话。所以 tool_search 必须自动跟上
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    const after = agent.toolDefs.map((d) => d.name);
+    expect(after).toContain("mcp_configure");
+    // 白名单没点的另一把不跟着进来：tool_search 的可搜集合是过滤后的表
+    expect(after).not.toContain("mcp_authorize");
+    store.close();
+  });
+
+  it("catalogToolDefs：目录连未曝光的 deferred 也列出来——设置页勾选框靠它（issue #473）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    // toolDefs（上下文占用的账）看不见未曝光的 deferred——这正是勾选框此前
+    // 缺这两把的原因；目录走单独的 getter，与账各管各的
+    const names = agent.catalogToolDefs.map((d) => d.name);
+    expect(names).toContain("mcp_catalog");
+    expect(names).toContain("mcp_configure");
+    expect(names).toContain("mcp_authorize");
+    store.close();
+  });
 });
