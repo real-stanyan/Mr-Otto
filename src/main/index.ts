@@ -60,6 +60,7 @@ import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
+import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
@@ -306,6 +307,13 @@ void app.whenReady().then(() => {
     }
   }
   app.setAboutPanelOptions({ applicationName: "Mr Otto", applicationVersion: app.getVersion() });
+
+  // Dock/Finder 起的 app 只有 launchd 的最小 PATH，spawn 出去的 npm/node 全
+  // exit 127（issue #453）——启动时跑一次登录 shell 把用户的 PATH 捞回来。
+  // 只在打包后做：终端 `npm run dev` 起的进程 PATH 本来就对，白跑一次 rc 纯付
+  // 副作用（本机实测 zsh -ilc 约 0.9s）。不 await：晚到之前 childEnv 维持现状，
+  // 到了之后新起的子进程自动用上——比拖住整条启动链强
+  if (app.isPackaged) void primeLoginShellPath();
 
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
