@@ -74,5 +74,9 @@ export async function openIdentity(p: RemoteCryptoPrimitives): Promise<PinnedPee
       state = { ...state, peer: b64encode(pub) };
       void flush();
     },
+    unpinPeer() {
+      state = { ...state, peer: null };
+      void flush();
+    },
   };
 }

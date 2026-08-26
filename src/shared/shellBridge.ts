@@ -432,6 +432,9 @@ export interface ShellBridge {
   remoteStatus(): Promise<RemoteStatus>;
   /** 用户核对完 6 位安全码之后 pin 住这台手机。回 false = 目录里没有 / 公钥不合法 */
   remotePairDevice(deviceId: string): Promise<boolean>;
+  /** 把一台设备从目录里删掉。删的是**目录行**,装着的 app 会重新登记;
+      删到的正好是已配对那台时,配对一起解除(devices.ts 的 forget) */
+  remoteForgetDevice(deviceId: string): Promise<boolean>;
   /** OTA 更新（ADR-0075）。快照现问现答；变化走 onUpdaterState 推送 */
   updaterGetState(): Promise<UpdaterState>;
   /** 手动查一次（设置页按钮）。返回这一轮查完落定的状态——按钮要即时反馈，
@@ -865,6 +868,7 @@ export const CHANNELS = {
   setIslandSettings: "otter:setIslandSettings",
   remoteStatus: "otter:remoteStatus",
   remotePairDevice: "otter:remotePairDevice",
+  remoteForgetDevice: "otter:remoteForgetDevice",
   updaterGetState: "otter:updaterGetState",
   updaterCheckNow: "otter:updaterCheckNow",
   updaterStartDownload: "otter:updaterStartDownload",

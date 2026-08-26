@@ -49,6 +49,7 @@ const bridge: ShellBridge = {
   setVisionModel: (model) => ipcRenderer.invoke(CHANNELS.setVisionModel, model),
   remoteStatus: () => ipcRenderer.invoke(CHANNELS.remoteStatus),
   remotePairDevice: (deviceId) => ipcRenderer.invoke(CHANNELS.remotePairDevice, deviceId),
+  remoteForgetDevice: (deviceId) => ipcRenderer.invoke(CHANNELS.remoteForgetDevice, deviceId),
   getIslandSettings: () => ipcRenderer.invoke(CHANNELS.getIslandSettings),
   setIslandSettings: (settings) => ipcRenderer.invoke(CHANNELS.setIslandSettings, settings),
   updaterGetState: () => ipcRenderer.invoke(CHANNELS.updaterGetState),

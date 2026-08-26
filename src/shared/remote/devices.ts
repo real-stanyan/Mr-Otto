@@ -36,6 +36,9 @@ export interface PinnedPeerStore {
   deviceId: string;
   peerIdentity(): Uint8Array | null;
   pinPeer(pub: Uint8Array): void;
+  /** 取消配对。**删一台设备必须连着它走** —— 目录里的行没了而 pin 还在,
+      等于"删掉了但仍然信任",删除这个动作就不再是撤销 */
+  unpinPeer(): void;
 }
 
 export interface DevicesApi {
@@ -43,6 +46,8 @@ export interface DevicesApi {
   userId(): Promise<string | null>;
   upsert(row: Omit<DeviceRow, "last_seen"> & { user_id: string }): Promise<void>;
   list(userId: string): Promise<DeviceRow[]>;
+  /** 从目录里删掉一行。RLS 只允许删自己名下的(migration 0011 的 devices_delete_own) */
+  remove(userId: string, deviceId: string): Promise<void>;
 }
 
 /** 设置页要显示的一台手机 */
@@ -74,6 +79,7 @@ export function createRemoteDevices(deps: {
   registerSelf(label: string): Promise<boolean>;
   listPeers(): Promise<RemotePeer[]>;
   pin(deviceId: string): Promise<boolean>;
+  forget(deviceId: string): Promise<boolean>;
 } {
   const log = deps.log ?? (() => {});
   const mine = deps.store.identity.publicKey;
@@ -140,6 +146,28 @@ export function createRemoteDevices(deps: {
         return false;
       }
       deps.store.pinPeer(pub);
+      return true;
+    },
+
+    /**
+     * 从目录里删掉一台设备。**同一台手机换个安装就是新的一行**(身份存在各自的
+     * Keychain 里,按 bundle id 隔离),旧安装卸了之后那行会一直留着 —— 目录里没有
+     * 过期这回事,只有删。
+     *
+     * 删的是**目录行,不是那台设备**:装着的 app 下次打开会重新登记自己,行会回来。
+     * 真正被撤销的是信任 —— 删掉的正好是已 pin 的那台时,pin 一起清掉。顺序是
+     * 先删行再清 pin:删失败就整个不生效,而不是留下一个"没配对也没删掉"的中间态。
+     */
+    async forget(deviceId) {
+      const uid = await deps.api.userId();
+      if (!uid) return false;
+      const row = (await deps.api.list(uid)).find((r) => r.device_id === deviceId);
+      const pinned = deps.store.peerIdentity();
+      await deps.api.remove(uid, deviceId);
+      if (row && pinned && b64encode(pinned) === row.identity_pub) {
+        log(`远程设备:${deviceId} 是已配对的那台,连 pin 一起清掉`);
+        deps.store.unpinPeer();
+      }
       return true;
     },
   };
