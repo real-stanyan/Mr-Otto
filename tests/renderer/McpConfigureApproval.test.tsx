@@ -35,6 +35,59 @@ function preview(over: Partial<McpConfigurePreview> = {}): McpConfigurePreview {
   };
 }
 
+// #472：模型不带 env/headers 更新一台已配好的 server 时，旧凭据键被整批丢掉
+// ——一台能用的 server 在一次「更新」后变成 401，而这一项此前不在用户签的
+// 字里。update 的卡要把「改之前 / 改之后」的键名集合并排画出来，掉键要点破。
+describe("McpConfigureApproval 的凭据键渲染（#472）", () => {
+  it("更新丢掉旧凭据键时显示「旧 → 新」并点破后果", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "update",
+          transport: "http",
+          command: null,
+          args: [],
+          host: "mcp.example.com",
+          url: "https://mcp.example.com/mcp",
+          credentialKeys: [],
+          before: {
+            url: "https://mcp.example.com/mcp",
+            command: null,
+            enabled: true,
+            toolCount: 3,
+            credentialKeys: ["Authorization"],
+          },
+          truncated: { server: false, url: false, command: false, args: [] },
+          fullLength: { server: 2, url: 27, command: 0, args: [] },
+        })}
+      />
+    );
+    expect(screen.getByText("Authorization → （不含凭据）")).toBeInTheDocument();
+    expect(screen.getByText(/这次更新会去掉凭据键/)).toBeInTheDocument();
+  });
+
+  it("键名集合没变时不画箭头也不告警", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "update",
+          credentialKeys: ["TOKEN"],
+          before: { url: null, command: "npx", enabled: true, toolCount: 3, credentialKeys: ["TOKEN"] },
+        })}
+      />
+    );
+    expect(screen.getByText("TOKEN")).toBeInTheDocument();
+    expect(screen.queryByText(/→/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/去掉凭据键/)).not.toBeInTheDocument();
+  });
+
+  it("新增（没有 before）时照旧只显示这次配的键", () => {
+    render(<McpConfigureApproval preview={preview({ credentialKeys: ["TOKEN"] })} />);
+    expect(screen.getByText("TOKEN")).toBeInTheDocument();
+    expect(screen.queryByText(/→/)).not.toBeInTheDocument();
+  });
+});
+
 describe("McpConfigureApproval 的 args 渲染", () => {
   it("每条 arg 是它自己的节点，不折成一句 join 后的字符串", () => {
     render(<McpConfigureApproval preview={preview()} />);
@@ -58,7 +111,7 @@ describe("McpConfigureApproval 的 enabled 渲染", () => {
           command: "rm",
           args: ["-rf", "/"],
           enabled: true,
-          before: { url: null, command: "rm", enabled: false, toolCount: 0 },
+          before: { url: null, command: "rm", enabled: false, toolCount: 0, credentialKeys: [] },
         })}
       />
     );
@@ -73,7 +126,7 @@ describe("McpConfigureApproval 的 enabled 渲染", () => {
         preview={preview({
           action: "update",
           enabled: false,
-          before: { url: null, command: "npx", enabled: true, toolCount: 3 },
+          before: { url: null, command: "npx", enabled: true, toolCount: 3, credentialKeys: [] },
         })}
       />
     );
@@ -87,7 +140,7 @@ describe("McpConfigureApproval 的 enabled 渲染", () => {
         preview={preview({
           action: "update",
           enabled: true,
-          before: { url: null, command: "npx", enabled: true, toolCount: 3 },
+          before: { url: null, command: "npx", enabled: true, toolCount: 3, credentialKeys: [] },
         })}
       />
     );
@@ -103,7 +156,7 @@ describe("McpConfigureApproval 的 enabled 渲染", () => {
           command: null,
           args: [],
           enabled: null,
-          before: { url: "https://x/mcp", command: null, enabled: true, toolCount: 2 },
+          before: { url: "https://x/mcp", command: null, enabled: true, toolCount: 2, credentialKeys: [] },
         })}
       />
     );

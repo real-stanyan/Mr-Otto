@@ -125,6 +125,13 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
         // 有执行后果的翻转显示成"什么都没变的更新"
         enabled: existing.enabled,
         toolCount: mcp.servers().find((s) => s.id === id)?.tools.length ?? 0,
+        // 旧凭据的键名（#472）：不带 env/headers 的更新会把旧键整批丢掉
+        // （mergeMaskedCreds 只遍历 incoming 的键），卡片要画得出
+        // 「改之前 / 改之后」这两个集合，用户才看得见自己正在丢掉哪几把。
+        // 键名同样过 clipCredentialKeys 的长度纪律；值照旧绝不过桥
+        credentialKeys: clipCredentialKeys(
+          Object.keys(existing.kind === "http" ? existing.headers : existing.env)
+        ),
       }
     : null;
 
