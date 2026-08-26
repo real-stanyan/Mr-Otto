@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   extractSources,
-  filePartFor,
   sourcePartsFor,
 } from "../../src/renderer/src/aui/toolArtifacts.js";
 import type { ToolCallRequest, ToolResultEvent } from "../../src/session/events.js";
@@ -97,68 +96,5 @@ describe("sourcePartsFor", () => {
 
   it("别的工具不产来源(bash 输出里的网址不是「查到的东西」)", () => {
     expect(sourcePartsFor(call("bash", { cmd: "curl" }), ok("https://a.com"))).toEqual([]);
-  });
-});
-
-describe("filePartFor — 实际执行的参数（ADR-0041）", () => {
-  it("人在审批时改过内容:卡片画的是写出去的那份,不是模型请求的那份", () => {
-    const out = filePartFor(
-      call("write_file", { path: "/w/a.md", content: "模型想写的" }),
-      ok("已写入"),
-      { path: "/w/a.md", content: "人保留下来的" }
-    );
-    expect(out).toHaveLength(1);
-    // data 是 base64,解回来比对 —— 卡片必须和磁盘上的一致
-    const decoded = new TextDecoder().decode(
-      Uint8Array.from(atob((out[0] as { data: string }).data), (c) => c.charCodeAt(0))
-    );
-    expect(decoded).toBe("人保留下来的");
-  });
-
-  it("没改过就用模型请求的那份(不传第三个参数 = 原样执行)", () => {
-    const out = filePartFor(call("write_file", { path: "/w/a.md", content: "原样" }), ok("已写入"));
-    expect(out).toHaveLength(1);
-  });
-});
-
-describe("filePartFor", () => {
-  it("写成功 → 一张文件卡,内容 base64 带在 part 里", () => {
-    const out = filePartFor(call("write_file", { path: "/w/notes/a.md", content: "# 标题" }), ok("已写入"));
-    expect(out).toEqual([
-      {
-        type: "file",
-        filename: "a.md",
-        mimeType: "text/markdown",
-        // UTF-8 安全:btoa 直接吃中文会抛 InvalidCharacterError
-        data: Buffer.from("# 标题", "utf8").toString("base64"),
-      },
-    ]);
-  });
-
-  it("扩展名认不出来就当纯文本", () => {
-    const out = filePartFor(call("write_file", { path: "/w/x.ts", content: "a" }), ok("已写入"));
-    expect(out[0]).toMatchObject({ filename: "x.ts", mimeType: "text/plain" });
-  });
-
-  it("被拒/出错/没结果:盘上没这个文件,不给能下载的卡", () => {
-    const c = call("write_file", { path: "/w/a.md", content: "x" });
-    expect(filePartFor(c, undefined)).toEqual([]);
-    expect(filePartFor(c, { ...ok("no"), status: "denied" })).toEqual([]);
-    expect(filePartFor(c, { ...ok("no"), status: "error" })).toEqual([]);
-  });
-
-  it("坏日志:args 不是预期形状就整条不产卡,不抛", () => {
-    expect(filePartFor(call("write_file", null), ok("已写入"))).toEqual([]);
-    expect(filePartFor(call("write_file", { path: "", content: "x" }), ok("已写入"))).toEqual([]);
-    expect(filePartFor(call("write_file", { path: "/w/a", content: 42 }), ok("已写入"))).toEqual([]);
-  });
-
-  it("超大写盘不出卡(仍然有工具行)—— 投影每落一条事件就要重跑一遍 base64", () => {
-    const big = "x".repeat(256 * 1024 + 1);
-    expect(filePartFor(call("write_file", { path: "/w/a.txt", content: big }), ok("已写入"))).toEqual([]);
-  });
-
-  it("别的工具不产文件卡", () => {
-    expect(filePartFor(call("read_file", { path: "/w/a.md" }), ok("内容"))).toEqual([]);
   });
 });

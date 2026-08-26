@@ -27,6 +27,7 @@ export function ToolTimeline({
   restingLabel,
   activeLabel,
   children,
+  footer,
   className,
   ...props
 }: Omit<ComponentProps<"div">, "children"> & {
@@ -40,6 +41,9 @@ export function ToolTimeline({
   activeLabel?: ReactNode;
   /** 展开后的步骤行，调用方逐个传 */
   children?: ReactNode;
+  /** 折叠头**底下**常驻的一块（本仓用来挂「这一组动了哪些文件」的树）。
+      不在 CollapsibleContent 里:它讲的是这一组的结果,折起来也该看得见 */
+  footer?: ReactNode;
 }) {
   return (
     <Collapsible
@@ -66,6 +70,7 @@ export function ToolTimeline({
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
         <div className="flex flex-col gap-1 ps-6 pt-1.5">{children}</div>
       </CollapsibleContent>
+      {footer !== undefined && <div className="ps-6 pt-1.5">{footer}</div>}
     </Collapsible>
   );
 }

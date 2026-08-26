@@ -359,7 +359,7 @@ describe("toThreadMessages — 边界", () => {
   });
 });
 
-describe("toThreadMessages —— 工具产物(来源 / 文件卡)", () => {
+describe("toThreadMessages —— 工具产物(来源)", () => {
   it("web_search 成功 → 同一条 assistant 消息里多出一条 url 型 source part", () => {
     const events = [
       ev(
@@ -396,23 +396,18 @@ describe("toThreadMessages —— 工具产物(来源 / 文件卡)", () => {
     expect(toThreadMessages(events)[0]?.content).toHaveLength(1);
   });
 
-  it("write_file 成功后跟一张文件卡;没结果时只有工具行(还在等审批)", () => {
+  // 「write_file 成功 → 一张可下载的文件卡」这条产物删了(issue #582 / ADR-0140):
+  // 动过的文件改由工具组底下那棵树画(lib/fileTree.ts + elements/file-tree.tsx),
+  // 那棵树读的是事件日志里的 write_file 参数,不再往消息里塞 file part
+  it("write_file 不再产文件卡:写成功之后消息里仍然只有那一条工具行", () => {
     const call = { id: "c1", name: "write_file", args: { path: "/w/a.md", content: "hi" } };
-    const pending = [ev({ type: "assistant_message", content: "", model: "m", toolCalls: [call] }, 0)];
-    expect(toThreadMessages(pending)[0]?.content).toHaveLength(1);
-
-    const done = [
-      ...pending,
+    const events = [
+      ev({ type: "assistant_message", content: "", model: "m", toolCalls: [call] }, 0),
       ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "已写入" }, 1),
     ];
-    const parts = toThreadMessages(done)[0]?.content;
-    expect(parts).toHaveLength(2);
-    expect(parts?.[1]).toEqual({
-      type: "file",
-      filename: "a.md",
-      mimeType: "text/markdown",
-      data: Buffer.from("hi", "utf8").toString("base64"),
-    });
+    const parts = toThreadMessages(events)[0]?.content;
+    expect(parts).toHaveLength(1);
+    expect(parts?.[0]).toMatchObject({ type: "tool-call" });
   });
 });
 
@@ -435,7 +430,7 @@ describe("toThreadMessages —— 产物的排布", () => {
       ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "已写入" }, 2),
     ];
     const kinds = (toThreadMessages(events)[0]?.content as readonly { type: string }[]).map((p) => p.type);
-    expect(kinds).toEqual(["tool-call", "tool-call", "source", "file"]);
+    expect(kinds).toEqual(["tool-call", "tool-call", "source"]);
   });
 
   it("同一条消息里搜到同一个地址两次,只出一条来源", () => {

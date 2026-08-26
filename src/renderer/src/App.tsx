@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Plug, Plus, Search, Smartphone, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Loader2 as Loader2Icon, Plug, Plus, Search, Smartphone, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,7 +53,9 @@ import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
-import { BackgroundInbox } from "./components/BackgroundInbox.js";
+import { BackgroundTasksPanel } from "./components/BackgroundTasksPanel.js";
+import { useBackgroundWatch } from "./lib/useBackgroundWatch.js";
+import { panelKeyOf } from "./lib/sidePanel.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
@@ -365,7 +367,7 @@ function QueuePanel() {
       hint="这条跑完自动发出"
       // element 默认 max-w-sm(它设想自己是一张独立卡);这里它贴着输入框,
       // 宽度该由输入框那一栏定
-      className="mb-2 max-w-none"
+      className="max-w-none"
     />
   );
 }
@@ -405,7 +407,7 @@ function TodoPanel() {
         .join(" · ");
 
   return (
-    <div className="mb-[6px] bg-card border border-border/60 rounded-xl overflow-hidden transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[2px]">
+    <div className="bg-card border border-border/60 rounded-xl overflow-hidden transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-[2px]">
       <button
         type="button"
         className="flex items-center gap-2 w-full text-left bg-transparent border-none px-3 py-[7px] text-[13px] text-muted-foreground transition-colors duration-[120ms] hover:bg-foreground/5"
@@ -1687,11 +1689,10 @@ function AppSidebar() {
   // 侧栏那一行显示的是"好友看到的我",所以以 profiles 为准而不是 auth.users(ADR-0028)
   const myProfile = useChat((s) => s.myProfile);
   const identity = displayIdentity(account, myProfile);
-  const protocolOpen = useChat((s) => s.protocolOpen);
-  const gitGraphOpen = useChat((s) => s.gitGraphOpen);
-  const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
-  const browserPanelOpen = useChat((s) => s.browserPanelOpen);
-  const simPanelOpen = useChat((s) => s.simPanelOpen);
+  /** 右侧槽位现在开着哪块(null = 空着)。会话行的"我在聊天视图"就是这个判据——
+      原来那串手抄的 !aOpen && !bOpen 漏了 filesPanelOpen,开着文件面板时侧栏
+      仍然把那条会话画成"正在看" */
+  const openPanel = useChat(panelKeyOf);
   const friendChat = useChat((s) => s.friendChat);
   const unreadByFriend = useChat((s) => s.unreadByFriend);
   const friendsSnapshot = useChat((s) => s.friendsSnapshot);
@@ -1802,7 +1803,7 @@ function AppSidebar() {
     <SidebarMenuItem key={s.sessionId}>
       <SidebarMenuButton
         className="h-auto flex-row items-center gap-2 py-[7px]"
-        isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !simPanelOpen && !friendChat && s.sessionId === sessionId}
+        isActive={phase === "chat" && settingsSection === null && openPanel === null && !friendChat && s.sessionId === sessionId}
         onClick={() => void resume(s.sessionId)}
       >
         {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
@@ -3113,9 +3114,6 @@ function ChatComposer() {
           ["--composer-padding" as string]: "8px",
         }}
       >
-        {/* 后台任务面板(issue #452):贴着输入框上沿,有任务才出现。
-            摆这儿而不是顶栏角标:现在的问题正是"没被告知",弱信号治不了 */}
-        <BackgroundInbox />
         {/* 投放区是本仓自己的:附件归 store(ADR-0040),不走 assistant-ui 的
             AttachmentDropzone —— 那条路会把文件交给它的附件通道 */}
         <AttachDropZone disabled={status === "running"}>
@@ -3222,6 +3220,9 @@ export function App() {
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
   const openGitGraph = useChat((s) => s.openGitGraph);
   const filesPanelOpen = useChat((s) => s.filesPanelOpen);
+  const bgPanelOpen = useChat((s) => s.bgPanelOpen);
+  /** 现在开着哪块面板 —— 每会话的面板记忆记的就是它 */
+  const panelKey = useChat(panelKeyOf);
   const terminalPanelOpen = useChat((s) => s.terminalPanelOpen);
   const openTerminalPanel = useChat((s) => s.openTerminalPanel);
   const browserPanelOpen = useChat((s) => s.browserPanelOpen);
@@ -3336,6 +3337,18 @@ export function App() {
   }, []);
 
 
+  // 后台任务:轮询 live 名单 + 「刚从没有变成有」时自己把面板掀开。
+  // 挂在这儿(不在面板组件里)是因为面板默认关着——关着的时候也得有人盯着
+  useBackgroundWatch();
+
+  // 每个会话上次开着哪块右侧面板,记一笔;切回来时 enterChat 按这份还原
+  // (issue #578)。写在 effect 里而不是每个 open/close action 里:开关面板的
+  // 入口有十几个(菜单/快捷键/工具结果/自动开),挂在**结果**上只需要一处
+  useEffect(() => {
+    if (!sessionId) return;
+    useChat.getState().rememberPanel(sessionId, panelKey);
+  }, [sessionId, panelKey]);
+
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
@@ -3346,6 +3359,7 @@ export function App() {
     : simPanelOpen ? <SimulatorPanel />
     : terminalPanelOpen ? <TerminalView />
     : filesPanelOpen ? <FilesView />
+    : bgPanelOpen ? <BackgroundTasksPanel />
     : gitGraphOpen ? <GitGraphView />
     : protocolOpen ? <ProtocolView /> : null;
   const base = settingsSection === "account" ? (
@@ -3444,6 +3458,11 @@ export function App() {
             <DropdownMenuItem onClick={() => openSimPanel()}>
               <Smartphone /> iOS 模拟器
             </DropdownMenuItem>
+            {/* 自动开面板只在"槽位空着"时发生(见 lib/useBackgroundWatch.ts),
+                所以必须有一条手动的路把它叫回来 */}
+            <DropdownMenuItem onClick={() => useChat.getState().openBgPanel()}>
+              <Loader2Icon /> 后台任务
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
                 (SubagentSettings 的 initialSubagentScope),所以从这进去编的就是
@@ -3505,9 +3524,18 @@ export function App() {
             {/* 滚动缘渐隐:对话内容淡入 footer 底色,消掉硬切割线(scroll edge effect,非 1px 分隔) */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
             <WorkTreePill />
-            <TurnDiffPanel />
-            <TodoPanel />
-            <QueuePanel />
+            {/* 输入框上方那三条(任务 / 本轮改动 / 排队消息)横排,不再上下摞:
+                它们各自只有一行高,摞起来却按"有几条"往上顶掉几行对话——而这块
+                地方最贵的是**竖向**空间。有几条显示几列,每列等宽摊满整行。
+                左起顺序 = 用户指定的「任务在左、消息在右」。
+                :empty 时整行不占地方(三条都 return null 时这个 div 是空的);
+                窄面板下 basis-[200px] + flex-wrap 让它们自己折回去摞着,
+                不至于挤成三条读不出字的窄条 */}
+            <div className="mb-2 flex flex-wrap items-start gap-2 empty:hidden empty:mb-0 [&>*]:min-w-0 [&>*]:grow [&>*]:basis-[200px]">
+              <TodoPanel />
+              <TurnDiffPanel />
+              <QueuePanel />
+            </div>
             {/* 「消息没发出去」= 输入框的回执,所以贴着输入框,不在消息流里 */}
             <SendErrorBanner />
             {/* 项目指令信任横幅(issue #353):开工前的决定,同样贴着输入框 */}

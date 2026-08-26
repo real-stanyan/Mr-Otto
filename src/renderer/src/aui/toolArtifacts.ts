@@ -1,4 +1,4 @@
-// 工具调用 → 可展示产物(来源链接 / 文件卡)的抠取。
+// 工具调用 → 可展示产物(来源链接 / 读回来的网页)的抠取。
 //
 // 为什么单独一个文件:toThreadMessages 是"事件流 → 消息流"的骨架,而这里是
 // "一条工具调用到底产出了什么给人看"的启发式。后者靠猜(云端返回的文本没有
@@ -16,7 +16,6 @@ import type { ToolCallRequest, ToolResultEvent } from "../../../session/events.j
 export type Part = NonNullable<Exclude<ThreadMessageLike["content"], string>>[number];
 
 type SourcePart = Extract<Part, { type: "source" }>;
-type FilePart = Extract<Part, { type: "file" }>;
 
 /** 一条来源:url + 展示用标题。标题在这一层就定好(没有 markdown 链接文案时
     退回域名)—— 渲染组件因此不需要自己再算一遍域名 */
@@ -109,75 +108,6 @@ export function sourcePartsFor(call: ToolCallRequest, result: ToolResultEvent | 
     跨消息重复也无妨 —— assistant-ui 只拿它当 React key 用 */
 function source(url: string, title: string): SourcePart {
   return { type: "source", sourceType: "url", id: url, url, title };
-}
-
-const MIME_BY_EXT: Record<string, string> = {
-  md: "text/markdown",
-  markdown: "text/markdown",
-  json: "application/json",
-  html: "text/html",
-  htm: "text/html",
-  css: "text/css",
-  csv: "text/csv",
-  svg: "image/svg+xml",
-  xml: "application/xml",
-  yml: "application/yaml",
-  yaml: "application/yaml",
-};
-
-function mimeOf(path: string): string {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  return MIME_BY_EXT[ext] ?? "text/plain";
-}
-
-/** 路径的最后一段。分隔符两种都认:工作区是 POSIX 路径,但日志里可能有 Windows 写法 */
-function basename(path: string): string {
-  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return i < 0 ? path : path.slice(i + 1);
-}
-
-/** 超过这个大小就不出文件卡(仍然有工具行)。
-    卡片的用处是"看一眼 / 存下来刚写的东西";再大就不是这张卡该承担的东西了,
-    而 data: URI 要把正文整个 base64 一遍,投影每落一条事件就重跑一次 —— 不设上限
-    等于让一次大写盘长期拖慢整条渲染链 */
-const MAX_FILE_CARD_BYTES = 256 * 1024;
-
-/** UTF-8 安全的 base64:btoa 只吃 latin1,中文直接抛 InvalidCharacterError */
-function toBase64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
-
-/** write_file 的一次成功调用 → 一张文件卡。
-    只认写成功的:被拒/出错时盘上根本没有这个文件,给张能下载的卡是在撒谎。
-    数据直接带在 part 里(base64),不走 IPC 回读 —— 内容本来就在事件日志的
-    args 里躺着,再去问一次盘反而可能读到之后被改过的版本 */
-export function filePartFor(
-  call: ToolCallRequest,
-  result: ToolResultEvent | undefined,
-  /** 实际执行用的参数(ADR-0041:人在审批时可能只保留了一部分改动)。
-      不给 = 原样执行。这张卡说的是"写出去的文件",拿模型请求的那份来画
-      就是在替模型说话 —— 大小和内容都会和磁盘上的对不上 */
-  executedArgs?: unknown
-): Part[] {
-  if (call.name !== "write_file") return [];
-  if (result === undefined || result.status !== "ok") return [];
-
-  const args = (executedArgs ?? call.args) as { path?: unknown; content?: unknown } | null;
-  const path = args?.path;
-  const content = args?.content;
-  if (typeof path !== "string" || path === "" || typeof content !== "string") return [];
-  if (content.length > MAX_FILE_CARD_BYTES) return [];
-
-  const part: FilePart = {
-    type: "file",
-    filename: basename(path),
-    mimeType: mimeOf(path),
-    data: toBase64(content),
-  };
-  return [part];
 }
 
 /** browser_read / web_extract 读回来的一页 → 地址 + 正文。

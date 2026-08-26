@@ -20,6 +20,8 @@ import {
 } from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolTimeline } from "../components/elements/tool-timeline.js";
+import { FileTree } from "../components/elements/file-tree.js";
+import { fileTreeNodes } from "../lib/fileTree.js";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -349,7 +351,7 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
   // 动了几个文件:只数写入,按路径去重(同一个文件改两次是一个文件)。
   // 读取不算 —— 那不是"改变"。路径取**实际执行**用的那份(人在审批时可能改过参数,
   // ADR-0041):这一行回答的是"到底什么东西碰了磁盘"
-  const filesChanged = useMemo(() => {
+  const changedPaths = useMemo(() => {
     const index = proj?.index;
     const paths = new Set<string>();
     for (const call of calls) {
@@ -359,9 +361,19 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       );
       if (path !== null) paths.add(path);
     }
-    return paths.size;
+    return [...paths];
   }, [proj, calls]);
-  const restingLabel = timelineLabel(calls.length, filesChanged, elapsed, running);
+  const restingLabel = timelineLabel(calls.length, changedPaths.length, elapsed, running);
+
+  // 动过的文件画成一棵树,挂在折叠头底下常驻(issue #582 / ADR-0140)。
+  // 取代原来"每个写入一张可下载的文件卡":文件就在本机磁盘上,"点开看看"
+  // 比"下载一份副本"更贴近这里真正要做的事
+  const workspace = useChat((s) => s.workspace);
+  const openFileAt = useChat((s) => s.openFileAt);
+  const treeNodes = useMemo(
+    () => fileTreeNodes(changedPaths, workspace),
+    [changedPaths, workspace],
+  );
 
   const label = (
     <span className="inline-flex items-center gap-1.5">
@@ -376,6 +388,11 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       restingLabel={label}
       activeLabel={running ? label : undefined}
       streaming={running}
+      footer={
+        treeNodes.length > 0 ? (
+          <FileTree nodes={treeNodes} onSelect={(path) => openFileAt(path)} />
+        ) : undefined
+      }
     >
       {children}
     </ToolTimeline>

@@ -73,7 +73,7 @@ export function TurnDiffPanel() {
   if (!diff || diff.files.length === 0) return null;
 
   return (
-    <div className="mb-2 rounded-xl border border-border/60 bg-card/80 shadow-sm">
+    <div className="rounded-xl border border-border/60 bg-card/80 shadow-sm">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
