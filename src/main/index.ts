@@ -157,7 +157,7 @@ app.setAsDefaultProtocolClient("mrotto");
 // 先 setName 再显式 setPath,老数据原地不动。
 app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
-app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)));
+app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
 
 // Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
 // 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
@@ -1378,6 +1378,10 @@ void app.whenReady().then(() => {
     resumeSessionId?: string;
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
     child?: ChildAgentConfig;
+    /** /btw 旁聊（issue #502）：按主会话装配建，但第 0 条打上 spawnedBy(kind:"side")
+        ——可见性借子会话口径（侧栏/⌘K/灵动岛滤掉），resume 时 resumeChild 认
+        kind:"side" 回主装配。toolCallId 没有真实的（没人派活），用约定串 */
+    sideOf?: string;
   }): ReturnType<typeof createAgent> => {
     // 项目指令（issue #353，门禁在 #426 撤掉）：选了工作区并开口说话本身就是
     // 授权，不再单独问一次"信不信任"——找到就注入。注入了哪几份仍以
@@ -1438,6 +1442,10 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      // 旁聊标记进第 0 条（append-only：建会话那一刻一次写对，事后补不了）
+      ...(args.sideOf
+        ? { spawnedBy: { sessionId: args.sideOf, toolCallId: "side-chat", agent: "side", kind: "side" as const } }
+        : {}),
       toolHooks: userToolHooks,
       // 工作区检查点（issue #395）：影子 git 库住配置目录（快照跨会话共享——
       // 同一工作区的多个会话回退的是同一份磁盘现实）。只挂主会话：子会话共享
@@ -1588,6 +1596,24 @@ void app.whenReady().then(() => {
       throw new Error("只能读取当前会话派出的子会话");
     }
     return store.load(sessionId);
+  });
+
+  // /btw 旁聊（issue #502）：挂在某个活着的主会话上建一个独立会话。
+  // 刻意走 createSessionAgent 主装配（全权 agent：工具/记忆/history 都在）——
+  // 旁聊是"跟人并排聊的第二张嘴"，不是派活派出去的只读子智能体。
+  // 打 spawnedBy 标记的唯一目的是可见性：侧栏/⌘K/灵动岛的口径（spawnedFrom
+  // 非空即滤）自动把它藏起来，浮窗自己管进出（resumeSession 的门照样认识
+  // spawnedBy 会话）。副作用是重启后 resume 它会走子会话收权装配——接受：
+  // 旁聊本来就是一次性随口的，重启后能看历史、工具面收窄不碍事。
+  // 不动 currentSessionId——主视线的"我在哪"不因为开了个浮窗而变。
+  ipcMain.handle(CHANNELS.startSideSession, async (_e, fromSessionId: string) => {
+    const from = agents.get(fromSessionId);
+    if (!from) throw new Error("旁聊必须挂在一个活着的会话上（先打开那个会话）");
+    // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready
+    await mcpHub.ready();
+    const agent = createSessionAgent({ workspace: from.workspace, sideOf: fromSessionId });
+    agents.set(agent.sessionId, agent);
+    return { sessionId: agent.sessionId };
   });
 
   // 选文件夹和建会话拆开：新会话 composer 里用户先配齐（文件夹/模型/模式/thinking）

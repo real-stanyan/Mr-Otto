@@ -48,7 +48,10 @@ export interface ChildAgentConfig {
  */
 export function childAgentConfig(events: readonly SessionEvent[]): ChildAgentConfig | null {
   const first = events[0];
-  if (!first || first.type !== "session_created" || !first.spawnedBy) return null;
+  // kind === "side"（/btw 旁聊，issue #502）：可见性借子会话口径，但它是按
+  // 主会话装配建的全权 agent——resume 也回主装配，不按 subagent 白名单收权。
+  // 旧日志没有 kind → undefined ≠ "side"，照旧按子会话重建（向后兼容）
+  if (!first || first.type !== "session_created" || !first.spawnedBy || first.spawnedBy.kind === "side") return null;
   const briefed = events.find((e) => e.type === "subagent_briefed");
   return {
     agent: first.spawnedBy.agent,

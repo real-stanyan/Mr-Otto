@@ -185,6 +185,19 @@ interface ChatState {
       补上"会话 → 正在跑的调用"这一层，卡才能挂上直播尾巴（Task 8 review
       Important 1） */
   runningToolCallBySession: Record<string, string>;
+  /** /btw 旁聊浮窗（issue #502）。null = 没开。sessionId 是独立会话（spawnedBy
+      kind:"side" 标记，侧栏/灵动岛滤掉）；events 是它自己的事件镜像——主
+      absorbEvent 只收"正在看的会话"，旁聊的事件在 boot() 的 onEvent 里入库前
+      分流到这份镜像（openedAt 之前的历史 = 建会话那两条 session_created/
+      memory_loaded，从镜像里滤掉不如就摆着，浮窗渲染时跳过非消息事件）。
+      pos 是浮窗位置（渲染层本地状态，不进日志）；dragging 防止拖拽中触发
+      React 高频 setState 之外的副作用 */
+  sideChat: {
+    sessionId: string;
+    events: SessionEvent[];
+    open: boolean;
+    pos: { x: number; y: number };
+  } | null;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
   approvalMode: ApprovalMode;
@@ -526,6 +539,17 @@ interface ChatState {
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
   rename(title: string): Promise<void>;
+  /** /btw 指令的落点：从当前会话建旁聊浮窗。已开着 = 只把它抬回可见
+      （再敲一次 /btw 不重建会话——旁聊是同一段对话，不是每次新开） */
+  openSideChat(): Promise<void>;
+  /** 关掉浮窗（会话和日志都在，只是不显示） */
+  closeSideChat(): void;
+  /** 旁聊里发一条消息（走普通 sendMessage，按它自己的 sessionId 寻址） */
+  sendSide(text: string): Promise<void>;
+  /** 中断旁聊的 turn */
+  stopSide(): Promise<void>;
+  /** 拖拽浮窗（渲染层本地位置） */
+  setSidePos(pos: { x: number; y: number }): void;
   refreshFriends(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
@@ -682,6 +706,7 @@ export const useChat = create<ChatState>((set, get) => ({
   toolCatalog: null,
   sessions: [],
   subagentLogCache: {},
+  sideChat: null,
   pendingWorkspace: null,
   statusBySession: {},
   turnIdBySession: {},
@@ -1657,6 +1682,18 @@ export const useChat = create<ChatState>((set, get) => ({
           void s.refreshGitStatus();
         }, 600);
       }
+      // 旁聊浮窗的事件在入库前分流到自己的镜像（issue #502）：absorbEvent 只收
+      // "正在看的会话"，旁聊永远不是那个会话，不分流它的对话就丢了（DB 里有，
+      // 但浮窗要的是直播）。只追加消息类事件；turn_ended 等系统事件浮窗不渲染，
+      // 但 turn 收口的错误横幅（turn_ended.error）要在浮窗里看得见才留
+      set((s) => {
+        const side = s.sideChat;
+        if (!side || e.sessionId !== side.sessionId) return s;
+        if (e.type === "user_message" || e.type === "assistant_message") {
+          return { sideChat: { ...side, events: [...side.events, e] } };
+        }
+        return s;
+      });
       // 归约核心抽成了纯函数 absorbEvent（issue #340）——契约在单测里锁
       set((s) => absorbEvent(s, e));
     });
@@ -2076,6 +2113,60 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
+  },
+
+  async openSideChat() {
+    const s = get();
+    // 已开着：抬回可见（关了浮窗会话还活着，再敲 /btw 是回到它，不是新开）
+    if (s.sideChat) {
+      set({ sideChat: { ...s.sideChat, open: true } });
+      return;
+    }
+    if (!s.sessionId) {
+      set({ error: "先打开一个会话，旁聊才有地方挂" });
+      return;
+    }
+    set({ error: null });
+    try {
+      const { sessionId } = await window.otter.startSideSession(s.sessionId);
+      // 默认位置：主内容区右上（右栏槽位被占时也不压它——浮窗在更上面一层）
+      set({
+        sideChat: {
+          sessionId,
+          events: [],
+          open: true,
+          pos: { x: Math.max(24, window.innerWidth - 420), y: 72 },
+        },
+      });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  closeSideChat() {
+    const side = get().sideChat;
+    if (side) set({ sideChat: { ...side, open: false } });
+  },
+
+  async sendSide(text) {
+    const side = get().sideChat;
+    if (!side) return;
+    set({ error: null });
+    try {
+      await window.otter.sendMessage(side.sessionId, text);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async stopSide() {
+    const side = get().sideChat;
+    if (side) await window.otter.stopTurn(side.sessionId);
+  },
+
+  setSidePos(pos) {
+    const side = get().sideChat;
+    if (side) set({ sideChat: { ...side, pos } });
   },
 
   async decide(outcome) {

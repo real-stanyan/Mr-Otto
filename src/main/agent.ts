@@ -201,8 +201,11 @@ export function createAgent(opts: {
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
   world?: ExecutionWorld;
-  /** 这个会话是被派活派出来的：写进 session_created 第 0 条 */
-  spawnedBy?: { sessionId: string; toolCallId: string; agent: string };
+  /** 这个会话是被派活派出来的：写进 session_created 第 0 条。
+      kind: "subagent"（缺省）= task 工具派活；"side" = /btw 旁聊浮窗（issue #502）
+      ——同走子会话可见性口径（侧栏/灵动岛滤掉），但创建时是按主会话装配的全权
+      agent，只是借这个标记隐藏。旧日志没有 kind → 按 subagent 对待（向后兼容） */
+  spawnedBy?: { sessionId: string; toolCallId: string; agent: string; kind?: "subagent" | "side" };
   /** 只挂名字在这份名单里的工具。不给 = 全套（现有装配一字不受影响）。
       task 不在这里挡——它压根不会被挂上（见 subagentRunner：建子 agent 时
       不传 subagentRunner，递归由构造挡死） */

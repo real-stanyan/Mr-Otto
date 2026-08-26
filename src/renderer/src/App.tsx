@@ -59,6 +59,7 @@ import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
+import { SideChatWindow } from "./components/SideChatWindow.js";
 import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
@@ -3441,6 +3442,9 @@ export function App() {
             的话侧栏头部的 drag 矩形会盖掉它的 no-drag,真鼠标点击被当成拖窗口吞掉
             (CDP 模拟点击正常、真点无反应,就是这个) */}
         <SidebarToggle />
+        {/* /btw 旁聊浮窗(issue #502):fixed 定位自己找位置,不占布局;
+            宽度 < 阈值时组件内部自己 return null(显示不下) */}
+        <SideChatWindow />
       </TooltipProvider>
     </SidebarProvider>
   );
