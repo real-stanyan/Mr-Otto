@@ -21,7 +21,7 @@ import {
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolTimeline } from "../components/elements/tool-timeline.js";
 import { FileTree } from "../components/elements/file-tree.js";
-import { fileTreeNodes } from "../lib/fileTree.js";
+import { fileTreeNodes, mergeChangedFiles, type ChangedFile } from "../lib/fileTree.js";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -348,22 +348,27 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
     // 一个都没开跑(全卡在审批门前 / 被拒)= "跑了多久"不成立,那一段就不报
     return started === null ? null : Math.max(0, now - started);
   }, [proj, calls, running, now]);
-  // 动了几个文件:只数写入,按路径去重(同一个文件改两次是一个文件)。
-  // 读取不算 —— 那不是"改变"。路径取**实际执行**用的那份(人在审批时可能改过参数,
-  // ADR-0041):这一行回答的是"到底什么东西碰了磁盘"
-  const changedPaths = useMemo(() => {
+  // 动了哪些文件、各自加删了多少行。只数写入,按路径去重(同一个文件改两次是
+  // 一个文件,行数相加)。读取不算 —— 那不是"改变"。路径取**实际执行**用的那份
+  // (人在审批时可能改过参数,ADR-0041):这一行回答的是"到底什么东西碰了磁盘"。
+  // 行数不是这里算的:write_file 是整份覆盖,渲染层手里只有新内容——那份账在
+  // 写盘那一刻由 turnDiff 中间件算好、落进 tool_result.diffStat(ADR-0141)。
+  // 旧日志没有这个字段,那样的行就不报数字
+  const changedFiles = useMemo(() => {
     const index = proj?.index;
-    const paths = new Set<string>();
+    const entries: ChangedFile[] = [];
     for (const call of calls) {
       if (call.name !== "write_file") continue;
       const path = toolFilePath(
         index === undefined ? call : { ...call, args: effectiveArgs(call, index) },
       );
-      if (path !== null) paths.add(path);
+      if (path === null) continue;
+      const stat = index?.results.get(call.id)?.diffStat;
+      entries.push({ path, ...(stat ?? {}) });
     }
-    return [...paths];
+    return mergeChangedFiles(entries);
   }, [proj, calls]);
-  const restingLabel = timelineLabel(calls.length, changedPaths.length, elapsed, running);
+  const restingLabel = timelineLabel(calls.length, changedFiles.length, elapsed, running);
 
   // 动过的文件画成一棵树,挂在折叠头底下常驻(issue #582 / ADR-0140)。
   // 取代原来"每个写入一张可下载的文件卡":文件就在本机磁盘上,"点开看看"
@@ -371,8 +376,8 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
   const workspace = useChat((s) => s.workspace);
   const openFileAt = useChat((s) => s.openFileAt);
   const treeNodes = useMemo(
-    () => fileTreeNodes(changedPaths, workspace),
-    [changedPaths, workspace],
+    () => fileTreeNodes(changedFiles, workspace),
+    [changedFiles, workspace],
   );
 
   const label = (

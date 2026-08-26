@@ -202,7 +202,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0121）
 - `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0118）
 - `src/renderer/src/lib/runtimeHydration.ts` / `src/main/index.ts` 的 `sessionRuntime` handler — 推送之外那扇查询窗口：重载后补回 turn 状态/压缩标记/挂起的审批问卷。**只填空不覆盖**（为什么这条规则就够，见 ADR-0133）
-- `src/renderer/src/lib/fileTree.ts` / `src/renderer/src/components/elements/file-tree.tsx` — 「这一组工具动了哪些文件」那棵树：独生目录链压一行、工作区外的文件不进树（纯逻辑）+ 挂在工具组折叠头底下、点一行在 Files 面板打开。取代原来每个写入一张可下载的文件卡（ADR-0140）
+- `src/renderer/src/lib/fileTree.ts` / `src/renderer/src/components/elements/file-tree.tsx` — 「这一组工具动了哪些文件」那棵树：独生目录链压一行、工作区外的文件不进树、同一文件写两次行数相加（纯逻辑）+ 挂在工具组折叠头底下、点一行在 Files 面板打开。取代原来每个写入一张可下载的文件卡（ADR-0140）。行末那对 `+N/−M` 来自 `tool_result.diffStat`（写盘那一刻由 `main/turnDiff.ts` 的 `writeStat` 算好落盘，**不是**渲染层现算，也不是 turn 级聚合那一份，ADR-0141）
 - `src/renderer/src/lib/sidePanel.ts` / `src/renderer/src/lib/useBackgroundWatch.ts` — 右侧槽位那一族面板的单一开关（`panelKeyOf` / `panelFlags`，互斥由构造保证，不再每个 action 手抄一遍）+ 后台任务的常驻盯梢：轮询 live 名单、0→非 0 时自己把面板掀开。**只在槽位空着时掀**（ADR-0139）
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）

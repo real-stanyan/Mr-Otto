@@ -44,6 +44,23 @@ function fileDiff(path: string, st: FileState): TurnDiffFile {
   return { path, additions: view.additions, deletions: view.deletions, lines: view.lines };
 }
 
+/** 一次写盘的行数账。算不动(超大/diffLines 超预算)时退化成行数计数——
+    与 fileDiff 同一套退化规则:宁可给个粗的数,也不留空让读者以为"没改" */
+export function writeStat(
+  oldText: string | null,
+  newText: string
+): { additions: number; deletions: number } {
+  if (oldText !== null && oldText.length > MAX_DIFF_CHARS) {
+    return { additions: countLines(newText), deletions: countLines(oldText) };
+  }
+  if (newText.length > MAX_DIFF_CHARS) {
+    return { additions: countLines(newText), deletions: countLines(oldText) };
+  }
+  const view = diffView(oldText, newText);
+  if (!view) return { additions: countLines(newText), deletions: countLines(oldText) };
+  return { additions: view.additions, deletions: view.deletions };
+}
+
 /** 每个会话一只：跟着 agent 活。turnId 换代 = 新一轮，上一轮的聚合整份作废 */
 export class TurnDiffTracker {
   private files = new Map<string, FileState>();
@@ -115,9 +132,12 @@ export function createTurnDiffMiddleware(
     tracker.noteBaseline(turnId, args.path, oldText);
 
     const outcome = await next();
-    if (outcome.status === "ok") {
-      onUpdate(tracker.noteWrite(sessionId, turnId, args.path, args.content));
-    }
-    return outcome;
+    if (outcome.status !== "ok") return outcome;
+    onUpdate(tracker.noteWrite(sessionId, turnId, args.path, args.content));
+    // 顺手给这一次写盘算一份行数,挂在 outcome 上由 engine 落进 tool_result。
+    // 和上面那份 turn 级聚合不是一回事:那份的基线是"本 turn 第一次碰它之前",
+    // 这份的基线是"这一次写之前" —— 同一个文件在一个 turn 里写两次,
+    // 聚合报一次总账,而日志里是两笔各自的账(时间线上一步一行,要的正是后者)
+    return { ...outcome, diffStat: writeStat(oldText, args.content) };
   };
 }

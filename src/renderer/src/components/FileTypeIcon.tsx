@@ -11,7 +11,7 @@
 // 谁出现才读谁，不进主包。
 
 import { cn } from "@/lib/utils.js";
-import { DEFAULT_FILE_ICON, fileIconName } from "@/lib/fileIcon.js";
+import { DEFAULT_FILE_ICON, FOLDER_ICON, fileIconName } from "@/lib/fileIcon.js";
 
 // eager:true 只把**地址**收进来（?url），不是把 SVG 内容打进包里
 const URLS = import.meta.glob<string>("../assets/file-icons/*.svg", {
@@ -27,12 +27,16 @@ function urlOf(icon: string): string | undefined {
 export function FileTypeIcon({
   path,
   className,
+  folder = false,
 }: {
   /** 完整路径或纯文件名都行（lib/fileIcon 自己取最后一段） */
   path: string;
   className?: string;
+  /** 这一行是目录：走 assets 里那枚 folder.svg，不按扩展名查表。
+      理由同上面那段注释——一列里目录和文件靠图标就能分开，不用读字 */
+  folder?: boolean;
 }) {
-  const src = urlOf(fileIconName(path)) ?? urlOf(DEFAULT_FILE_ICON);
+  const src = urlOf(folder ? FOLDER_ICON : fileIconName(path)) ?? urlOf(DEFAULT_FILE_ICON);
   if (src === undefined) return null; // 连兜底那枚都没有 = 生成产物坏了，宁可不画
   return (
     <img

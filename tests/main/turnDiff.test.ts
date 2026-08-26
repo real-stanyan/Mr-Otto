@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TurnDiffTracker, createTurnDiffMiddleware } from "../../src/main/turnDiff.js";
+import { TurnDiffTracker, createTurnDiffMiddleware, writeStat } from "../../src/main/turnDiff.js";
 import type { ToolCallContext, ToolOutcome } from "../../src/loop/middleware.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { TurnDiffUpdate } from "../../src/shared/shellBridge.js";
@@ -126,5 +126,91 @@ describe("createTurnDiffMiddleware", () => {
     await idleMw(ctx(w, "write_file", { path: "/a", content: "x" }), mkNext());
 
     expect(updates).toEqual([]);
+  });
+});
+
+describe("writeStat —— 一次写盘的行数账（ADR-0141）", () => {
+  it("新文件:全是新增,没有删除", () => {
+    expect(writeStat(null, "a\nb\nc")).toEqual({ additions: 3, deletions: 0 });
+  });
+
+  it("改一行:一加一删", () => {
+    expect(writeStat("a\nb\nc", "a\nB\nc")).toEqual({ additions: 1, deletions: 1 });
+  });
+
+  it("写了一模一样的内容:零加零删(调用方据此判断这次没改动)", () => {
+    expect(writeStat("same", "same")).toEqual({ additions: 0, deletions: 0 });
+  });
+
+  it("清空文件:全是删除", () => {
+    expect(writeStat("a\nb", "")).toEqual({ additions: 0, deletions: 2 });
+  });
+
+  it("超大文件算不动就退化成行数计数,不留空——粗的数也比让人以为没改好", () => {
+    const big = `${"x\n".repeat(120_000)}`;
+    const stat = writeStat(big, "a");
+    expect(stat.deletions).toBeGreaterThan(0);
+    expect(stat.additions).toBe(1);
+  });
+});
+
+describe("createTurnDiffMiddleware —— 把这一次的行数挂在 outcome 上", () => {
+  const world2 = (files: Record<string, string>): ExecutionWorld => ({
+    fs: {
+      read: async (p) => {
+        if (p in files) return files[p]!;
+        throw new Error("ENOENT");
+      },
+      write: async (p, c) => {
+        files[p] = c;
+      },
+    },
+    exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    http: { postJson: async () => ({}) },
+  });
+
+  it("写成功 → outcome 带 diffStat(engine 据此落进 tool_result)", async () => {
+    const files: Record<string, string> = { "/a.txt": "a\nb" };
+    const w = world2(files);
+    const mw = createTurnDiffMiddleware(new TurnDiffTracker(), "s1", () => 7, () => {});
+    const outcome = await mw(
+      { call: { id: "c1", name: "write_file", args: { path: "/a.txt", content: "a\nB\nc" } }, tool: undefined, world: w, sessionId: "s1" },
+      async () => {
+        await w.fs.write("/a.txt", "a\nB\nc");
+        return { status: "ok", output: "写好了" } satisfies ToolOutcome;
+      }
+    );
+    expect(outcome.diffStat).toEqual({ additions: 2, deletions: 1 });
+  });
+
+  it("同一个 turn 里写第二次:这一笔的基线是**上一次写完的样子**,不是 turn 开头", async () => {
+    const files: Record<string, string> = {};
+    const w = world2(files);
+    const tracker = new TurnDiffTracker();
+    const mw = createTurnDiffMiddleware(tracker, "s1", () => 7, () => {});
+    const write = async (content: string) =>
+      mw(
+        { call: { id: "c1", name: "write_file", args: { path: "/a.txt", content } }, tool: undefined, world: w, sessionId: "s1" },
+        async () => {
+          await w.fs.write("/a.txt", content);
+          return { status: "ok", output: "ok" } satisfies ToolOutcome;
+        }
+      );
+
+    await write("a\nb");
+    const second = await write("a\nb\nc");
+    // turn 级聚合会说「相对 turn 开头加了 3 行」;这一笔说的是「这次加了 1 行」
+    expect(second.diffStat).toEqual({ additions: 1, deletions: 0 });
+  });
+
+  it("被拒/出错不带账:盘上没变过,报个数字就是撒谎", async () => {
+    const files: Record<string, string> = { "/a.txt": "a" };
+    const w = world2(files);
+    const mw = createTurnDiffMiddleware(new TurnDiffTracker(), "s1", () => 7, () => {});
+    const outcome = await mw(
+      { call: { id: "c1", name: "write_file", args: { path: "/a.txt", content: "b" } }, tool: undefined, world: w, sessionId: "s1" },
+      async () => ({ status: "denied", output: "拒了" }) satisfies ToolOutcome
+    );
+    expect(outcome.diffStat).toBeUndefined();
   });
 });

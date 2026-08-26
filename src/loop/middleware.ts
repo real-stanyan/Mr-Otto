@@ -24,6 +24,10 @@ export interface ToolOutcome {
   output: string;
   /** DSH 式数据驱动收口：true = 本步结束整个 turn，不给模型补答的机会 */
   concludesTurn?: true;
+  /** 这一次写盘改了多少行（只有 write_file 走到这里会带；由 turnDiff 中间件填）。
+      落进 tool_result 事件 —— 时间线上历史工具组的 +N/−M 从日志读，
+      而 turn 级那份聚合是运行时的，重启就没了 */
+  diffStat?: { additions: number; deletions: number };
 }
 
 // ─── Pre/PostToolUse 钩子（issue #350，codex dispatch 对照）────
