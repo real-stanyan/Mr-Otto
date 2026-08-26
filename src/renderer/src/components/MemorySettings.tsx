@@ -30,6 +30,7 @@ import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { useChat } from "../store.js";
 import type { FtsHit } from "../../../shared/shellBridge.js";
+import type { MemoryLoadedEvent } from "../../../session/events.js";
 import {
   charCount,
   formatEntries,
@@ -313,12 +314,18 @@ function MoveToProjectSelect({
 
 /** 项目档区:哪个项目要靠一个下拉切——只看得见当前会话那份的话,历史项目的记忆
     就成了看不见的黑洞。key={current.root} 强制切换项目时重挂载 MemoryField:
-    不同项目是不同的草稿,切换该跟打开一个新字段一样干净,不带上一个的草稿 */
+    不同项目是不同的草稿,切换该跟打开一个新字段一样干净,不带上一个的草稿。
+    sessionRoot 是当前会话的项目根:它可能还没有磁盘目录(见 MemorySettings 的
+    注释),这时候它照样出现在下拉里、且默认选中——新仓库里第一次写项目档就是
+    从这儿开始的 */
 function ProjectMemoryCard({
   projects,
+  sessionRoot,
   refreshProjects,
 }: {
   projects: ProjectMemory[];
+  /** exactOptionalPropertyTypes：这里是"可能没有"而不是"可以不传"，显式带上 undefined */
+  sessionRoot: string | undefined;
   refreshProjects: () => Promise<void>;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
@@ -329,12 +336,16 @@ function ProjectMemoryCard({
     return (
       <div className="flex flex-col gap-2 rounded-[10px] border border-border px-[14px] py-3">
         <span className="text-[13px] font-[650]">PROJECT · 项目档</span>
-        <p className="text-[13px] text-muted-foreground">还没有任何项目记忆</p>
+        <p className="text-[13px] text-muted-foreground">
+          还没有任何项目记忆。项目档按当前会话所在的 git 仓库走——在一个 git 仓库里开会话，它的项目档就会出现在这里。
+        </p>
       </div>
     );
   }
-  // 走到这里 projects 非空(上面的 length 判断是证据),断言安全
-  const current = (projects.find((p) => p.root === picked) ?? projects[0])!;
+  // 没手动切过就默认停在当前会话那个项目上:打开设置页最想看的是"我现在这个仓库
+  // 记了什么",不是按字母序排第一的那个。走到这里 projects 非空(上面的 length
+  // 判断是证据),最后那个 ?? 兜底断言安全
+  const current = (projects.find((p) => p.root === (picked ?? sessionRoot)) ?? projects[0])!;
 
   const deleteCurrent = async () => {
     if (!window.confirm(`删掉「${current.root}」的项目记忆？不可恢复。`)) return;
@@ -388,11 +399,29 @@ function ProjectMemoryCard({
 }
 
 export function MemorySettings() {
-  const [projects, setProjects] = useState<ProjectMemory[]>([]);
-  const refreshProjects = () => window.otter.listProjectMemories().then(setProjects);
+  const [onDisk, setOnDisk] = useState<ProjectMemory[]>([]);
+  const refreshProjects = () => window.otter.listProjectMemories().then(setOnDisk);
   useEffect(() => {
     void refreshProjects();
   }, []);
+
+  /** 当前会话的项目根,取自它自己的 memory_loaded 事件(同 OttoThread 的 MemoryCard):
+      渲染层不认得 git,也不该自己去爬 .git——那是主进程算好落进事件里的事实 */
+  const sessionRoot = useChat(
+    (s) => s.events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot
+  );
+
+  /** 磁盘上那份 + 当前会话的项目根（哪怕它还没有目录）。
+      为什么必须补这一条:root.txt 只有真正写过项目档才会出现,而
+      listProjectMemories 跳过没有 root.txt 的目录,设置页的一切又都从这个列表推导——
+      于是在一个**新仓库**里,用户既不能创建也不能预填它的项目档,得先设法诱使模型
+      自己选 project 才行。而「移到项目档」这颗按钮是「不迁移存量」这个决定的配套,
+      它恰恰在最需要的场景(新仓库、项目约定还堵在超限的全局档里)不可用（ADR-0109）。
+      合成的那条 text 是空串:它在磁盘上还不存在,保存一次就由主进程连 root.txt 一起造出来 */
+  const projects = useMemo<ProjectMemory[]>(() => {
+    if (!sessionRoot || onDisk.some((p) => p.root === sessionRoot)) return onDisk;
+    return [...onDisk, { root: sessionRoot, text: "" }].sort((a, b) => a.root.localeCompare(b.root));
+  }, [onDisk, sessionRoot]);
 
   /** MEMORY 区某条「移到项目档」:先写项目档、再从全局删,顺序不许调换——中途失败
       宁可重复一条(用户看得见、能删),不可丢失。第二步不传 sessionId:主进程
@@ -441,7 +470,7 @@ export function MemorySettings() {
           fetchText={() => window.otter.getMemory().then((m) => m.user)}
           onSave={(text) => window.otter.saveMemory("user", text)}
         />
-        <ProjectMemoryCard projects={projects} refreshProjects={refreshProjects} />
+        <ProjectMemoryCard projects={projects} sessionRoot={sessionRoot} refreshProjects={refreshProjects} />
         <SearchIndexCard />
       </section>
     </div>
