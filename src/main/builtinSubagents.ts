@@ -10,6 +10,7 @@
 // 现在有了，它的 def 也常驻上下文。这是要的效果，不是副作用，但不是纯增量。
 
 import { type SubagentDef } from "../shared/subagent.js";
+import { DEFAULT_MODEL } from "../shared/modelCatalog.js";
 
 /** 内置定义的 source —— 设置页拿它当"这份来自哪儿"显示。不是路径：它没有路径 */
 export const BUILTIN_SOURCE = "内置";
@@ -25,6 +26,14 @@ const ALL_TOOLS = [
   "browser_read",
   "todo_write",
 ];
+
+/** 内置那三份钉死在便宜档（ADR-0108）。以前它们不写 model，靠 createAgent 的
+    兜底默认落到同一个型号上——数值一样，但那是"没人做过的选择"，而现在
+    「不写 model」的含义已经变成**跟着父会话走**：不钉的话，用户在贵档会话里
+    随手派个 Explore 横扫目录，账单量级就变了，而他从没为这件事做过决定。
+    钉上之后"便宜"是写出来的选择，想让某一份跟着会话走，materialize 成自己
+    那份、清掉型号即可——那条路是显式的（同这个文件开头那条规则） */
+const BUILTIN_MODEL = DEFAULT_MODEL;
 
 /** 只读那几把：去掉 write_file 和 bash */
 const READ_ONLY_TOOLS = ["read_file", "web_search", "web_extract", "browser_read", "todo_write"];
@@ -43,6 +52,7 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
       "跑不通、或者任务本身的前提就不成立时，把这件事写进汇报，别绕过去交一份看着像完成的结果。",
     tools: ALL_TOOLS,
     approval: "inherit",
+    model: BUILTIN_MODEL,
     preamble: { mode: "default" },
     context: [],
     scope: "user",
@@ -57,6 +67,7 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
       "找遍了也没有，就说没有，并说清你按哪几种命名方式找过：一个准确的\"不存在\"比一个含糊的猜测有用。",
     tools: READ_ONLY_TOOLS,
     approval: "inherit",
+    model: BUILTIN_MODEL,
     preamble: { mode: "default" },
     context: [],
   scope: "user",
@@ -71,6 +82,7 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
       "不记任务进度、文件清单、PR/issue 号、commit、正在做的事。汇报一句话：记了什么/没记为什么。",
     tools: ["memory"],
     approval: "inherit",
+    model: BUILTIN_MODEL,
     preamble: { mode: "default" },
     context: [],
     scope: "user",

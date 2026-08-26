@@ -47,6 +47,7 @@ const DURABLE = [
   "project_instructions",
   "request_envelope",
   "background_task_completed",
+  "background_task_started",
   "checkpoint_created",
   "workspace_restored",
   "branch_checked_out",

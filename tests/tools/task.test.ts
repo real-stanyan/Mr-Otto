@@ -44,6 +44,19 @@ describe("createTaskTool", () => {
     expect(tool.def.description).toContain("只读搜索员");
   });
 
+  it("description 给的是判据不是形容词：正反两向都写着（模型的默认脾气是自己 grep 铺一屏）", () => {
+    const d = createTaskTool(okRunner, () => [def("searcher", "只读搜索员")]).def.description;
+    expect(d).toContain("3 个以上文件"); // 正向门槛落到数字上，"很多文件"压不过那个脾气
+    expect(d).toContain("什么时候别派"); // 反向同样必要：派一次烧的是一整个子会话
+  });
+
+  it("description 有预算：它跟着每一轮请求走（issue #431 的纪律），别再往回长", () => {
+    // 清单本身不算——那部分随用户装了几个 subagent 变。量的是固定前言。
+    const d = createTaskTool(okRunner, () => [def("searcher", "只读搜索员")]).def.description;
+    const preamble = d.slice(0, d.indexOf("可派的 subagent：")); // 现在 278
+    expect(preamble.length).toBeLessThanOrEqual(300);
+  });
+
   it("不需要审批：派活本身不危险，危险动作在子 agent 里各自过门", () => {
     expect(createTaskTool(okRunner, () => [def("a", "")]).requiresApproval).toBe(false);
   });

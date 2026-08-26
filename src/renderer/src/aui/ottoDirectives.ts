@@ -32,6 +32,27 @@ function readName(text: string, i: number): string {
 }
 
 /**
+ * sigil 被转义了吗 —— 看**前一个字符**(issue #441)。
+ *
+ * 扫全串(#438)带来的代价:「`$apple-design` 是什么」这种**提到**名字的写法
+ * 也会被当成指令,skill 白注入一次、名字还被摘走,正文只剩一对空反引号。
+ * 两个出口:
+ * - **反引号** = 正式的转义写法。想提名字就 `` `$名字` ``,跟 markdown 里
+ *   引用代码同一个手势,不用另学一套
+ * - **斜杠** = URL 和路径。`https://x.com/$foo`、`./$foo` 不是指令
+ *
+ * 刻意只看贴身的那一个字符,不解析成对的代码段/围栏:三反引号代码块里
+ * `$名字` 顶在行首(前一个字符是换行)的照旧算指令。真解析 markdown 结构是
+ * 另一个量级的事,而输入框里贴多行代码块本来就少见 —— 真撞上了再说。
+ *
+ * parse 和 findSkillDirective 共用这一个 —— 判定只有一份(ADR-0106)。
+ */
+function escapedAt(text: string, i: number): boolean {
+  const prev = i > 0 ? text[i - 1] : "";
+  return prev === "`" || prev === "/";
+}
+
+/**
  * 造一个只认这批名字的 formatter(skill 用,`$` 打头)。
  *
  * 匹配用"最长优先":名单里同时有 `review` 和 `review-pr` 时,
@@ -40,6 +61,57 @@ function readName(text: string, i: number): string {
  */
 export function ottoDirectiveFormatter(skillNames: readonly string[]): Unstable_DirectiveFormatter {
   return makeFormatter("$", "skill", skillNames);
+}
+
+/**
+ * 从输入框文本里找出 skill 指令（issue #438）。
+ *
+ * 为什么要有这个函数：`parse` 那头扫**整串**找 `$`，在哪都画 chip；而 submit()
+ * 那头原来只认 `text.startsWith("$")`。于是「用$apple-design 干活」在输入框里
+ * 亮着像被认出来了，回车却按纯文本发走——skill 没注入，模型收到一个它不认识的
+ * token 只能瞎猜。**界面骗人比功能没生效更坏**，所以发的这头对齐画的那头：
+ * 同一份名单、同一套「一路吃到底再回头比名单」的最长优先判定，扫全串。
+ *
+ * 判定与取舍：
+ * - 第一个命中的已安装名字算数；一句里写两个，后面那个留在正文里当字面量，
+ *   不报错也不注入（真有人这么写再说，现在猜不出他想要哪个）
+ * - 正文 = 原文摘掉 `$名字(参数)` 这个 token，**别的字一个不删**。
+ *   「用$apple-design 干活」的正文是「用 干活」——读着有点怪，但比自作聪明
+ *   砍掉「用」诚实。摘完只把接缝处的连续空白折成一个，不动别处
+ * - `$` 在行首时逐字节等价于旧行为（token 在最前面，摘掉再 trim = 旧的 slice）
+ *
+ * 认不出来返回 null —— 这时 submit() 还有第二道：行首打了 `$` 却没命中，
+ * 说明是打错了名字，当场报错，不能悄悄发给模型。
+ */
+export function findSkillDirective(
+  text: string,
+  skillNames: readonly string[]
+): { name: string; args?: string; task: string } | null {
+  const known = new Set(skillNames);
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "$" || escapedAt(text, i)) continue;
+    const name = readName(text, i);
+    if (name === "" || !known.has(name)) continue;
+
+    // 名字后面紧跟 `(...)` 才是参数；括号没闭合就当没写参数，`(` 留在正文里
+    let end = i + 1 + name.length;
+    let args: string | undefined;
+    if (text[end] === "(") {
+      const close = text.indexOf(")", end + 1);
+      if (close !== -1) {
+        args = text.slice(end + 1, close).trim() || undefined;
+        end = close + 1;
+      }
+    }
+
+    const before = text.slice(0, i);
+    const after = text.slice(end);
+    // 摘掉 token 之后两边各剩一个空白 = 接缝，折成一个；别处的空白不碰
+    const seam = /\s$/.test(before) && /^\s/.test(after);
+    const task = (seam ? before + after.replace(/^\s+/, "") : before + after).trim();
+    return { name, ...(args !== undefined ? { args } : {}), task };
+  }
+  return null;
 }
 
 /**
@@ -133,7 +205,9 @@ function makeFormatter(
       };
 
       while (i < text.length) {
-        if (text[i] !== sigil) {
+        // 转义(反引号/斜杠打头)的那一份跟 find 共用判定 —— 画的和发的必须
+        // 一起认、一起不认,否则 ADR-0106 立的规矩当场就破
+        if (text[i] !== sigil || escapedAt(text, i)) {
           plain += text[i];
           i++;
           continue;

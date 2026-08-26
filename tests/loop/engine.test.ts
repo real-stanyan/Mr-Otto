@@ -943,14 +943,20 @@ describe("runTurn 的 origin 标（issue #428）", () => {
     const engine = new LoopEngine({ store, adapter, tools: [], world: fakeWorld, sessionId: "s" });
 
     await engine.runTurn("人打的字");
-    await engine.runTurn("[后台任务 bg-1 完成] npm test", undefined, undefined, "background");
+    await engine.runTurn("[后台任务 bg-1 完成] npm test", undefined, undefined, {
+      taskIds: ["bg-1"],
+    });
 
     const users = store
       .load("s")
       .filter((e): e is Extract<typeof e, { type: "user_message" }> => e.type === "user_message");
     expect(users).toHaveLength(2);
     expect("origin" in users[0]!).toBe(false); // 缺席 = 人发的
+    expect("backgroundTaskIds" in users[0]!).toBe(false);
     expect(users[1]!.origin).toBe("background");
+    // 驮的是哪几个任务也记在事件上(issue #452 / ADR-0109)：面板据此知道
+    // 结果真的进了对话，不用去正文里认 `[后台任务 bg-N 完成]` 那个前缀
+    expect(users[1]!.backgroundTaskIds).toEqual(["bg-1"]);
   });
 });
 

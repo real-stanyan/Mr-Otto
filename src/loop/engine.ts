@@ -467,9 +467,11 @@ export class LoopEngine {
     userInput: string,
     attachments?: UserAttachmentRef[],
     textFiles?: UserTextFile[],
-    /** 非人类来源(issue #428):后台任务回注打 "background",UI 据此换皮。
-        缺席 = 人亲手发的,事件形状与从前逐字节一致 */
-    origin?: "background"
+    /** 非人类来源(issue #428):后台任务回注传它,UI 据此换皮。缺席 = 人亲手发的,
+        事件形状与从前逐字节一致。
+        taskIds = 这条回注驮的后台任务(issue #452 / ADR-0109):后台任务面板据此
+        知道结果**真的进了对话**——那比"任务完成了"晚一整个 turn */
+    background?: { taskIds: string[] }
   ): Promise<"completed" | "aborted"> {
     const opening = this.append({
       ...this.env(),
@@ -478,7 +480,7 @@ export class LoopEngine {
       // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
-      ...(origin ? { origin } : {}),
+      ...(background ? { origin: "background" as const, backgroundTaskIds: background.taskIds } : {}),
     });
     // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
     this.currentTurnId = opening.seq;
