@@ -22,8 +22,10 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
     run: (args) => useChat.getState().rename(args),
   },
   "/btw": {
-    desc: "打开旁聊小浮窗（独立的第二会话，可拖动，不打断当前会话）",
-    run: () => useChat.getState().openSideChat(),
+    desc: "打开旁聊小浮窗（/btw 内容 = 顺手把内容发成旁聊首条；不带参只开窗）",
+    // args = "/btw " 后面连带的正文（dispatchSlash 已 trim）。带参首开时
+    // 直接发进旁聊（issue #516）——不然用户敲了一整段，窗开了内容却丢了
+    run: (args) => useChat.getState().openSideChat(args || undefined),
   },
 };
 

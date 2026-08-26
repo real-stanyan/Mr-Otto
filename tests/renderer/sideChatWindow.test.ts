@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   SIDE_W,
+  SIDE_MIN_W,
+  SIDE_MIN_H,
   sideChatMinWidth,
   sideChatHidden,
   clampPos,
+  clampSize,
   initialPos,
 } from "../../src/renderer/src/lib/sideChatWindow.js";
 import { AUTO_COLLAPSE_WIDTH } from "../../src/renderer/src/lib/sidebarNarrow.js";
@@ -49,5 +52,34 @@ describe("initialPos", () => {
     expect(p.y + 480).toBeLessThanOrEqual(600 - 8);
     expect(p.x).toBeGreaterThanOrEqual(8);
     expect(p.y).toBeGreaterThanOrEqual(8);
+  });
+});
+
+describe("clampSize（issue #516 可缩放）", () => {
+  it("小于最小尺寸 → 顶到 MIN", () => {
+    expect(clampSize({ w: 100, h: 100 }, 1280, 800)).toEqual({ w: SIDE_MIN_W, h: SIDE_MIN_H });
+  });
+
+  it("正常区间 → 原样", () => {
+    expect(clampSize({ w: 500, h: 600 }, 1280, 800)).toEqual({ w: 500, h: 600 });
+  });
+
+  it("超出视口 → 收到视口-margin", () => {
+    expect(clampSize({ w: 5000, h: 5000 }, 1280, 800)).toEqual({ w: 1264, h: 784 });
+  });
+
+  it("视口比 MIN 还小 → 不崩（取 MIN）", () => {
+    expect(clampSize({ w: 500, h: 500 }, 200, 200)).toEqual({ w: SIDE_MIN_W, h: SIDE_MIN_H });
+  });
+});
+
+describe("clampPos 可缩放后（size 参数化）", () => {
+  it("默认尺寸 = 旧行为（380×480 钉死）", () => {
+    expect(clampPos({ x: 2000, y: 2000 }, 1280, 800)).toEqual({ x: 892, y: 312 });
+  });
+
+  it("自定义大尺寸 → 钳制用新尺寸算", () => {
+    // 800×700 的窗在 1280×800 里：maxX = 1280-800-8 = 472, maxY = 800-700-8 = 92
+    expect(clampPos({ x: 2000, y: 2000 }, 1280, 800, { w: 800, h: 700 })).toEqual({ x: 472, y: 92 });
   });
 });

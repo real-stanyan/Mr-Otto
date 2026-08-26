@@ -196,6 +196,8 @@ interface ChatState {
     events: SessionEvent[];
     open: boolean;
     pos: { x: number; y: number };
+    /** 浮窗尺寸（issue #516 可缩放）：缩放只改这个；钳制逻辑在 lib/sideChatWindow.ts */
+    size: { w: number; h: number };
   } | null;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
@@ -534,7 +536,8 @@ interface ChatState {
   rename(title: string): Promise<void>;
   /** /btw 指令的落点：从当前会话建旁聊浮窗。已开着 = 只把它抬回可见
       （再敲一次 /btw 不重建会话——旁聊是同一段对话，不是每次新开） */
-  openSideChat(): Promise<void>;
+  /** initialText = /btw 连带的内容（issue #516）：新建时作为首条发进去，已存在不重发 */
+  openSideChat(initialText?: string): Promise<void>;
   /** 关掉浮窗（会话和日志都在，只是不显示） */
   closeSideChat(): void;
   /** 旁聊里发一条消息（走普通 sendMessage，按它自己的 sessionId 寻址） */
@@ -543,6 +546,8 @@ interface ChatState {
   stopSide(): Promise<void>;
   /** 拖拽浮窗（渲染层本地位置） */
   setSidePos(pos: { x: number; y: number }): void;
+  /** 缩放浮窗（右下角 resize handle 报进来；钳制在组件侧用纯函数先算好，issue #516） */
+  setSideSize(size: { w: number; h: number }): void;
   refreshFriends(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
@@ -2082,9 +2087,10 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async openSideChat() {
+  async openSideChat(initialText?: string) {
     const s = get();
-    // 已开着：抬回可见（关了浮窗会话还活着，再敲 /btw 是回到它，不是新开）
+    // 已开着：抬回可见（关了浮窗会话还活着，再敲 /btw 是回到它，不是新开）。
+    // initialText 只在「新建」这条路发——会话已存在时内容已在日志里，重发是复读
     if (s.sideChat) {
       set({ sideChat: { ...s.sideChat, open: true } });
       return;
@@ -2096,15 +2102,21 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ error: null });
     try {
       const { sessionId } = await window.otter.startSideSession(s.sessionId);
-      // 默认位置：主内容区右上（右栏槽位被占时也不压它——浮窗在更上面一层）
+      // 默认位置：主内容区右上（右栏槽位被占时也不压它——浮窗在更上面一层）。
+      // 尺寸给默认值：右下角的 resize handle 从这里起步（issue #516）
       set({
         sideChat: {
           sessionId,
           events: [],
           open: true,
           pos: { x: Math.max(24, window.innerWidth - 420), y: 72 },
+          size: { w: 380, h: 480 },
         },
       });
+      // /btw 连带的内容：建完会话顺手发成首条（sendSide 读 sideChat.sessionId，
+      // 所以要等上面的 set 落完再调——它内部按 id 寻址，不依赖"正在看的会话"）
+      const text = initialText?.trim();
+      if (text) await get().sendSide(text);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -2134,6 +2146,11 @@ export const useChat = create<ChatState>((set, get) => ({
   setSidePos(pos) {
     const side = get().sideChat;
     if (side) set({ sideChat: { ...side, pos } });
+  },
+
+  setSideSize(size) {
+    const side = get().sideChat;
+    if (side) set({ sideChat: { ...side, size } });
   },
 
   async decide(outcome) {
