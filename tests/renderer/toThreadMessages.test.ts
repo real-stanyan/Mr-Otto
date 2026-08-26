@@ -510,8 +510,11 @@ describe("投影产物必须过 assistant-ui 自己的校验(fromThreadMessageLi
   });
 });
 
-describe("turnTiming 只挂在最终回复上", () => {
-  it("带工具调用的中间消息没有,最后那条有且是累计", () => {
+describe("turnTiming 挂在 turn 的最终回复上", () => {
+  // 同一 turn 的多个 assistant_message 已合并成一条 UI 消息(见上一个 describe),
+  // 所以这里只有**一条** assistant 消息:turnTiming 由最后那条(无工具的最终回复)
+  // 写入,累计整 turn 的 modelMs/token
+  it("同 turn 合并成一条,turnTiming 是整 turn 的累计", () => {
     const events = [
       { type: "user_message", content: "看看", seq: 1, ts: 0, sessionId: "s" },
       { type: "assistant_message", content: "", model: "m", seq: 2, ts: 1000, sessionId: "s",
@@ -523,8 +526,9 @@ describe("turnTiming 只挂在最终回复上", () => {
     ] as unknown as SessionEvent[];
     const msgs = toThreadMessages(events);
     const assistants = msgs.filter((m) => m.role === "assistant");
-    expect(assistants[0]!.metadata?.custom?.["turnTiming"]).toBeUndefined();
-    expect(assistants[1]!.metadata?.custom?.["turnTiming"]).toMatchObject({
+    // 合并后一个 turn 一条消息
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.metadata?.custom?.["turnTiming"]).toMatchObject({
       wallMs: 3000, modelMs: 2500, promptTokens: 300, completionTokens: 30,
     });
   });
@@ -536,5 +540,52 @@ describe("branch_checked_out（issue #411）", () => {
     expect(toThreadMessages([e])).toEqual([
       { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
     ]);
+  });
+});
+
+describe("同一 turn 的多个 assistant_message 合并成一条 UI 消息", () => {
+  it("一个 turn 里 6 个 bash 各自一条事件 → 合并成一条消息,工具行连续可折叠", () => {
+    // 复刻真实场景:user 发问,模型边想边干 6 次 bash,最后一段总结
+    const events = [
+      ev({ type: "user_message", content: "看下" }, 0),
+      ev({ type: "assistant_message", content: "我看下", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }] }, 1),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "a" }, 2),
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c2", name: "bash", args: { cmd: "pwd" } }] }, 3),
+      ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "b" }, 4),
+      ev({ type: "assistant_message", content: "再看这个", model: "m",
+           toolCalls: [{ id: "c3", name: "bash", args: { cmd: "cat x" } }] }, 5),
+      ev({ type: "tool_result", toolCallId: "c3", status: "ok", output: "c" }, 6),
+      ev({ type: "assistant_message", content: "总结一下:都正常", model: "m", toolCalls: [] }, 7),
+      ev({ type: "turn_ended", outcome: "completed" }, 8),
+    ];
+    const msgs = toThreadMessages(events);
+    const assistants = msgs.filter((m) => m.role === "assistant");
+    // 一个 turn 一条 assistant 消息(不是 4 条)
+    expect(assistants).toHaveLength(1);
+    const parts = assistants[0]!.content as Array<{ type: string; toolName?: string }>;
+    // 3 个 tool-call part 都在同一条消息里
+    const tools = parts.filter((p) => p.type === "tool-call");
+    expect(tools).toHaveLength(3);
+    // 旁白进 narration reasoning,最终回复进 text
+    expect(parts.some((p) => p.type === "text" && (p as { text?: string }).text === "总结一下:都正常")).toBe(true);
+  });
+
+  it("合并后中间消息的旁白(reasoning narration)与工具保持时间序", () => {
+    const events = [
+      ev({ type: "user_message", content: "x" }, 0),
+      ev({ type: "assistant_message", content: "第一句", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: {} }] }, 1),
+      ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "o" }, 2),
+      ev({ type: "assistant_message", content: "第二句", model: "m",
+           toolCalls: [{ id: "c2", name: "bash", args: {} }] }, 3),
+      ev({ type: "tool_result", toolCallId: "c2", status: "ok", output: "o2" }, 4),
+    ];
+    const parts = toThreadMessages(events).find((m) => m.role === "assistant")!
+      .content as Array<{ type: string; text?: string }>;
+    // 顺序:旁白1 → tool1 → 旁白2 → tool2(时间序,不是旁白堆前面)
+    const seq = parts.map((p) => (p.type === "tool-call" ? "tool" : p.text ?? p.type));
+    expect(seq).toEqual(["第一句", "tool", "第二句", "tool"]);
   });
 });
