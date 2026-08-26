@@ -113,6 +113,7 @@ import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import {
+  builtinDefaultWorkspace,
   loadWorkspaceSettings,
   normaliseWorkspaceSettings,
   resolveDefaultWorkspace,
@@ -355,6 +356,7 @@ void app.whenReady().then(() => {
     return {
       defaultWorkspace: resolveDefaultWorkspace(app.getPath("documents"), s),
       builtin: s.defaultWorkspace === null,
+      builtinWorkspace: builtinDefaultWorkspace(app.getPath("documents")),
     };
   };
   applyToEnv(loadKeys(keyVaultPath), process.env);
