@@ -28,6 +28,9 @@ describe("package_project 引导注入", () => {
     expect(content).toBe(systemPromptText("/w", "1970-01-01", "default"));
     expect(content).toContain("package_project");
     expect(content).toContain("打包");
+    // 共用文件夹的防串扰句(Default 被所有任务会话共写):通名警示 + 同名先读再写
+    expect(content).toContain("report.md");
+    expect(content).toContain("别静默覆盖");
   });
 
   it("systemPromptText 不传 kind 与传 undefined 逐字节一致(老调用方不变)", () => {
