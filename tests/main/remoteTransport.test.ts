@@ -204,4 +204,70 @@ describe("createSseTransport", () => {
     expect(opened).toHaveLength(0);
     t.close();
   });
+
+  // 「不连」本身没问题，问题是它**不排重连** —— 没有 retryNow 的话，冷启动时
+  // 未登录的用户登录之后要重开 app 才连得上（issue #484）
+  it("登录之后 retryNow() 就连上了", async () => {
+    const opened: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      opened.push(String(input));
+      return new Response(fakeStream().body, { status: 200 });
+    }) as unknown as typeof fetch;
+    let token: string | null = null;
+    const t = createSseTransport({
+      baseUrl: "https://gw.example/gw", role: "desktop",
+      authToken: async () => token, fetchImpl, log: () => {},
+    });
+    await settle();
+    expect(opened).toHaveLength(0);
+
+    token = "TOKEN"; // 用户登录了
+    t.retryNow();
+    await settle();
+    expect(opened).toHaveLength(1);
+    t.close();
+  });
+
+  it("连接活着时 retryNow() 是空操作 —— 不开第二条流", async () => {
+    const { t, opened } = harness();
+    await settle();
+    expect(opened).toHaveLength(1);
+    t.retryNow();
+    await settle();
+    expect(opened).toHaveLength(1);
+    t.close();
+  });
+
+  it("正在退避等待时 retryNow() 把等待掐掉，当场重连", async () => {
+    // 「用户刚登录」是新信息，没有理由再等剩下的退避时间
+    vi.useFakeTimers();
+    try {
+      const { t, streams, opened } = harness();
+      await settle();
+      streams[0]!.finish(); // 断了 → 排一个 1s 后的重连
+      await settle();
+      expect(opened).toHaveLength(1);
+
+      t.retryNow();
+      await settle();
+      expect(opened, "不该等满退避").toHaveLength(2);
+
+      // 掐掉的那个定时器不该在后面又醒过来开第三条流
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+      t.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("close 之后 retryNow() 叫不醒它", async () => {
+    const { t, opened } = harness();
+    await settle();
+    t.close();
+    t.retryNow();
+    await settle();
+    expect(opened).toHaveLength(1);
+  });
 });

@@ -17,10 +17,10 @@ import { SidebarNub } from "./SidebarNub.js";
 import { useChat } from "../store.js";
 import type { RemoteRejection, RemoteStatus } from "../../../shared/shellBridge.js";
 
-const OFF_TEXT: Record<"disabled" | "no-secure-storage", { title: string; hint: string }> = {
-  disabled: {
-    title: "远程功能没有开启",
-    hint: "这一版还在灰度:用 OTTO_REMOTE=1 启动才会开。配对流程稳定之后会去掉这个开关。",
+const OFF_TEXT: Record<"no-secure-storage" | "unavailable", { title: string; hint: string }> = {
+  unavailable: {
+    title: "读不到远程功能的状态",
+    hint: "跟主进程这一问没问到。重开 Mr Otto 再看看。",
   },
   "no-secure-storage": {
     title: "这台机器没有可用的系统安全存储",
@@ -53,7 +53,7 @@ export function RemoteDevicesSettings() {
     window.otter
       .remoteStatus()
       .then(setStatus)
-      .catch(() => setStatus({ on: false, reason: "disabled" }));
+      .catch(() => setStatus({ on: false, reason: "unavailable" }));
   }, []);
 
   useEffect(refresh, [refresh]);

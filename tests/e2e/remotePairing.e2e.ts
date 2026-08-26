@@ -2,28 +2,20 @@
 //
 // 这一页有一件事只有在真 Electron 里才成立:身份私钥进 safeStorage
 // (macOS 上就是钥匙串托管的密钥)。单测里那是一个注入的假实现,
-// 这里跑的是真的 —— 开着 OTTO_REMOTE=1 还能把页面渲染出来,
-// 就说明 openIdentityStore 在这台机器上真的拿到了系统封装。
+// 这里跑的是真的 —— 页面能渲染出配对那段文案,就说明 openIdentityStore
+// 在这台机器上真的拿到了系统封装。
+//
+// 曾经这里有两条用例,一条跑默认(那时默认 = 灰度开关没开,断言「远程功能没有开启」)、
+// 一条跑 OTTO_REMOTE=1。开关随 issue #484 摘掉之后这两条塌成同一条:
+// **默认启动就该看见配对那一屏**。
 
 import { expect, test } from "@playwright/test";
 import { expectNoRendererErrors, launchOtto, openSettings, type Otto } from "./harness.js";
 
-test("没开开关时：说清楚是没开，而不是空列表", async () => {
+test("默认启动：真机上拿得到系统封装，页面讲清楚要核对安全码", async () => {
   let otto: Otto | null = null;
   try {
     otto = await launchOtto();
-    await openSettings(otto.win, "手机");
-    await expect(otto.win.getByText("远程功能没有开启")).toBeVisible();
-    expectNoRendererErrors(otto);
-  } finally {
-    await otto?.close();
-  }
-});
-
-test("OTTO_REMOTE=1：真机上拿得到系统封装，页面讲清楚要核对安全码", async () => {
-  let otto: Otto | null = null;
-  try {
-    otto = await launchOtto({ env: { OTTO_REMOTE: "1" } });
     await openSettings(otto.win, "手机");
 
     // 这一条同时是 openIdentityStore 的真机断言:safeStorage 不可用的话

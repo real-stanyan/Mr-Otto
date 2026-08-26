@@ -425,6 +425,9 @@ void app.whenReady().then(() => {
       healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
     },
   });
+  /** 叫醒远程传输(登录那一刻)。远程那一块装配得比 accountManager 晚,
+      所以这里先留个空位,由它填上 —— null = 远程没起来(系统封装不可用) */
+  let remoteRetryNow: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -436,6 +439,10 @@ void app.whenReady().then(() => {
       // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
       if (info.signedIn) void friends.start();
       else friends.stop();
+      // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
+      // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
+      // 令牌就自己停住了
+      if (info.signedIn) remoteRetryNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -546,15 +553,13 @@ void app.whenReady().then(() => {
   // 同一份 IslandFleet,同一套"状态下行、命令上行",只是传输从本机 stdio
   // 换成了隔着公网的加密 SSE + POST。
   //
-  // **暂时挂在 OTTO_REMOTE=1 后面**:配对(TOFU 首次确认那一步)还没有 UI,
-  // 没 pin 过对端的话每次握手都会被拒 —— 默认开着只是白连中继。
-  // 配对 UI 落地时把这个开关摘掉。
+  // 曾经挂在 OTTO_REMOTE=1 后面(issue #484 摘掉)。挂它的理由是"配对还没有 UI,
+  // 默认开着只是白连中继" —— 配对 UI 落地(设置页「手机」栏目)之后这条不再成立。
   /** 被挡下的握手台账(issue #485)。在 remote 之外声明:设置页的 remoteStatus
       要读它,而它的写入方在桥的回调里 */
   const rejections = createRejectionLedger({ now: () => Date.now() });
 
   const remote = (() => {
-    if (process.env.OTTO_REMOTE !== "1") return { off: "disabled" as const };
     const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
       path: join(app.getPath("userData"), "remote-identity.bin"),
@@ -575,6 +580,9 @@ void app.whenReady().then(() => {
       authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
       log: (m) => console.warn(m),
     });
+    // 没登录时 connect() 直接返回、不排重连,所以登录那一刻要有人叫醒它。
+    // 摘掉开关之前这条路很少走到(会去设开关的人基本已经登录了),之后它是默认路径
+    remoteRetryNow = () => transport.retryNow();
     const bridge = createRemoteBridge({
       crypto,
       identity: idStore.identity,
