@@ -14,7 +14,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const BASE = (process.argv[2] ?? "https://mrotto-edge.workers.dev").replace(/\/+$/, "");
+const BASE = (process.argv[2] ?? "https://mrotto-edge.dryrun-agency.workers.dev").replace(/\/+$/, "");
 const WS_BASE = BASE.replace(/^http/, "ws");
 const SUBPROTOCOL = "mrotto.v1";
 const PING = ":ping";
@@ -33,13 +33,25 @@ const unframe = (msg) => {
   return sp <= 0 ? null : { cid: msg.slice(0, sp), payload: msg.slice(sp + 1) };
 };
 
+const LOCAL = /^https?:\/\/(127\.0\.0\.1|localhost)\b/.test(BASE);
+
 function secret() {
   if (process.env.SUPABASE_JWT_SECRET) return process.env.SUPABASE_JWT_SECRET;
-  // 本地 wrangler dev 用 .dev.vars
+  // 本地 wrangler dev 用 .dev.vars（里面是假值）
   try {
     const line = readFileSync(new URL("../.dev.vars", import.meta.url), "utf8")
       .split("\n").find((l) => l.startsWith("SUPABASE_JWT_SECRET="));
-    if (line) return line.slice("SUPABASE_JWT_SECRET=".length).trim();
+    if (line) {
+      // ↓ 拿本地假 secret 打生产,所有中继断言都会 401,而那看起来像"服务坏了"。
+      //   这是这个脚本最容易骗到人的一种失败,所以直接拦掉而不是只警告
+      if (!LOCAL) {
+        console.error(`打的是 ${BASE}，但 secret 取自 .dev.vars（本地假值）。`);
+        console.error("中继那些断言会全部 401 —— 那不是服务坏了，是签的 token 对不上。");
+        console.error("传真的进来：SUPABASE_JWT_SECRET='...' node checks/relay.mjs " + BASE);
+        process.exit(2);
+      }
+      return line.slice("SUPABASE_JWT_SECRET=".length).trim();
+    }
   } catch { /* 没有就往下报错 */ }
   console.error("没有 SUPABASE_JWT_SECRET —— 传 env 或放进 services/edge/.dev.vars");
   process.exit(2);
