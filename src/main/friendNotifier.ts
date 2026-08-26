@@ -87,6 +87,27 @@ export function askUserNotification(
   return sessionNotification(sessionTitle, "有问题问你", question || "Mr Otto 有问题要问你", sessionId, "Pop");
 }
 
+/** 一台手机来握手被挡下了(issue #485)。点通知落到设置页「手机」栏目——
+    这两种情况该做的事都在那一页上(核对安全码 / 看清是哪台设备)。
+
+    **静默**:上面那四个音各自钉着一件会话里的事(听声辨事),给远程再借一个
+    会把那套对应关系搅浑。提示的强度靠"通知 + 设置页横幅"两处同时在,不靠响声。 */
+export function remotePairingNotification(reason: "unpaired" | "identity-mismatch"): NotifySpec {
+  const target: NotificationTarget = { kind: "settings", section: "remote" };
+  return reason === "unpaired"
+    ? {
+        title: "有手机想连上来",
+        body: truncate("它还没配对过。去「设置 → 手机」核对 6 位安全码。"),
+        target,
+      }
+    : {
+        // 告警语气:这条也可能只是手机重装,但分不出来——文案不替用户下结论
+        title: "有手机连不上来:身份对不上",
+        body: truncate("它的身份跟已配对的那把公钥不一致。你刚重装过手机端就重新核对安全码;没有的话,这是有人在中间换了公钥。"),
+        target,
+      };
+}
+
 /** 两次快照之间**新增**的收到请求(按 friendshipId 差集)。全量推送的去重口 */
 export function newIncomingRequests(prev: FriendsSnapshot | null, next: FriendsSnapshot): string[] {
   if (!prev) return []; // 第一份快照是"补课",不是"来了新东西",不该弹一屏通知

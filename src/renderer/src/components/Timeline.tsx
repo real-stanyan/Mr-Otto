@@ -4,11 +4,12 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch } from "lucide-react";
+import { GitBranch, Mail } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
   SessionEvent,
+  SkillInvokedEvent,
   SubagentSpawnedEvent,
   ToolCallRequest,
 } from "../../../session/events.js";
@@ -27,6 +28,7 @@ import { SubagentList, type SubagentItem } from "./elements/subagent-list.js";
 import { SubagentTranscriptPanel } from "./SubagentTranscriptPanel.js";
 import { ProviderMark } from "./ProviderMark.js";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
+import { Button } from "@/components/ui/button.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
 import {
@@ -40,6 +42,10 @@ import {
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { findModel } from "../../../shared/modelCatalog.js";
 import { estimateTokens } from "../../../shared/contextEstimate.js";
+import { skillCardLabel, skillReleasedLabel } from "../../../shared/skillCard.js";
+import { bridgeErrorMessage } from "../lib/bridgeError.js";
+import { activeSkills } from "../../../session/activeSkills.js";
+import { barrenEventIndexes } from "../../../session/barrenTurns.js";
 import { useChat } from "../store.js";
 
 /** 时间线行共读的日志投影,OttoThread 顶层每次事件追加算一次、Context 分发。
@@ -360,6 +366,63 @@ const CompactSummaryRow = memo(function CompactSummaryRow({ event }: { event: Co
   );
 });
 
+/** skill 启用卡:折叠版式同旧版(全文是"给模型的说明书"存档,默认收着),
+    文案改走 skillCardLabel(主/渲共用,来源标注不在这重复拼)。
+    新增「停用」按钮——用户是老大,不管这把是 $ 启用的还是模型自己取的都能点掉
+    (模型侧的 release 才校验来源)。按钮只在这把 skill 此刻还在台账里才出现:
+    判定复用 session/activeSkills 这份唯一台账,不在渲染层另写一套——两套判断
+    迟早 drift(deriveMessages 的清场重注入、subagentRunner 的派活复制已经在用
+    这份台账,第三个消费者不该抄一份自己的)。
+    按钮消失不是本地状态控制的:点击只管调 releaseSkill 落事件,活不活由
+    events 数组重新过一遍台账决定——UI 是投影,不是自己维护的开关 */
+const SkillInvokedRow = memo(function SkillInvokedRow({ event }: { event: SkillInvokedEvent }) {
+  // 同 ModelHandoffRow 的退路:Provider 在场就读共享投影,孤立渲染(单测/无 Provider)
+  // 才退回 store 自己订阅
+  const proj = useContext(TimelineProjectionContext);
+  const storeEvents = useChat((s) => (proj ? null : s.events));
+  const events = proj?.events ?? storeEvents ?? [];
+  const sessionId = useChat((s) => s.sessionId);
+  const active = useMemo(
+    () => activeSkills(events, barrenEventIndexes(events)).has(event.name),
+    [events, event.name]
+  );
+  const [releasing, setReleasing] = useState(false);
+
+  return (
+    <details className={THINKING_DETAILS}>
+      {/* skill 注入行:thinking 折叠版式 + accent 点题 */}
+      <summary className={`${THINKING_SUMMARY} text-brand flex items-center justify-between gap-2`}>
+        <span>✦ {skillCardLabel(event)}——指令已注入上下文</span>
+        {active && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={releasing}
+            // 卡片里可能不止一把 skill,纯文字"停用"对屏幕阅读器是同名多份——
+            // aria-label 把名字带上,报出来的是"停用 skill tdd"而不是四个一样的"停用"
+            aria-label={`停用 skill「${event.name}」`}
+            // 阻止事件冒泡到 <summary>:不然点「停用」的同时把 <details> 也开合了
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setReleasing(true);
+              window.otter.releaseSkill(sessionId, event.name).catch((err: unknown) => {
+                // 没有本地"已停用"状态要回滚——按钮活不活看台账,失败了台账没变,
+                // 按钮自己还在,这里只用把 disabled 松开、把错误亮出来
+                setReleasing(false);
+                console.error("停用 skill 失败:", bridgeErrorMessage(err));
+              });
+            }}
+          >
+            停用
+          </Button>
+        )}
+      </summary>
+      <div className={THINKING_BODY}>{event.content}</div>
+    </details>
+  );
+});
+
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
@@ -435,9 +498,12 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     // 全文（system/工具 schema）在回放/日志里看，时间线不摊开
     case "request_envelope":
       return (
-        <div className={AUDIT}>
-          ✉ 请求信封已更新：{event.model}
-          {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
+        <div className={`${AUDIT} inline-flex items-center gap-1.5`}>
+          <Mail className="size-3.5 shrink-0" aria-hidden />
+          <span>
+            请求信封已更新：{event.model}
+            {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
+          </span>
         </div>
       );
 
@@ -492,16 +558,14 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
       );
 
     case "skill_invoked":
-      // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容
-      return (
-        <details className={THINKING_DETAILS}>
-          {/* skill 注入行:thinking 折叠版式 + accent 点题 */}
-          <summary className={`${THINKING_SUMMARY} text-brand`}>
-            ✦ 启用 skill「{event.name}」{event.args ? `（参数：${event.args}）` : ""}——指令已注入上下文
-          </summary>
-          <div className={THINKING_BODY}>{event.content}</div>
-        </details>
-      );
+      // 默认折叠：全文是"给模型的说明书"的存档快照，不是对话内容。
+      // 来源标注 + 停用入口是 Task 6 的事，落在独立组件里(需要订阅台账)
+      return <SkillInvokedRow event={event} />;
+
+    // 停用：一行灰字——不是新的对话事实，只是台账变了(启用卡才值得用 accent 强调，
+    // 停用没有正文可摊开，混进 accent 色反而抢启用卡的注意力)
+    case "skill_released":
+      return <div className={AUDIT}>{skillReleasedLabel(event)}</div>;
 
     case "image_described":
       // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，

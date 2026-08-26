@@ -132,6 +132,26 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     ).toEqual([]);
   });
 
+  // spec §7 的头两条安全不变量：OAuth token 不进事件日志（append-only，
+  // 进去 = 永久泄漏）、不过 ShellBridge 回渲染层。它们目前靠**结构性保证**
+  // 成立——McpAuthRecord 这个类型在 src/session/ 和 shellBridge.ts 里根本
+  // 不出现。结构性保证是好的，但它正是那种会被一次无心的字段扩充悄悄推翻、
+  // 且没有任何东西会变红的保证（终审 A）。这里把它钉成会红的规则。
+  it("src/session 与 shellBridge 都不 import mcpAuthStore —— token 不进日志、不过桥", () => {
+    const files = [...walk(join(ROOT, "session")), join(ROOT, "shared/shellBridge.ts")];
+    const bad = files
+      .filter((f) => imports(f).some((s) => /(^|\/)mcpAuthStore(\.js)?$/.test(s)))
+      .map((f) => relative(ROOT, f));
+    expect(
+      bad,
+      `这些文件 import 了 mcpAuthStore:\n  ${bad.join("\n  ")}\n` +
+        "修法:OAuth token 只许留在 src/main/mcpAuthStore.ts 与 mcpClient.ts 之间。" +
+        "事件日志是 append-only 的,token 进去就是永久泄漏;渲染层只该问" +
+        '"这台授权了没"(McpServerStatus.status),拿不到也不需要 token 本身。' +
+        "要展示授权状态请扩 McpServerStatus,不要把凭据记录搬过来"
+    ).toEqual([]);
+  });
+
   it("移动端复用的那批 src/session 文件不 import node builtin", () => {
     // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
     // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,

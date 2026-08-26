@@ -15,16 +15,32 @@ import { Button } from "@/components/ui/button.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { useChat } from "../store.js";
-import type { RemoteStatus } from "../../../shared/shellBridge.js";
+import type { RemoteRejection, RemoteStatus } from "../../../shared/shellBridge.js";
 
-const OFF_TEXT: Record<"disabled" | "no-secure-storage", { title: string; hint: string }> = {
-  disabled: {
-    title: "远程功能没有开启",
-    hint: "这一版还在灰度:用 OTTO_REMOTE=1 启动才会开。配对流程稳定之后会去掉这个开关。",
+const OFF_TEXT: Record<"no-secure-storage" | "unavailable", { title: string; hint: string }> = {
+  unavailable: {
+    title: "读不到远程功能的状态",
+    hint: "跟主进程这一问没问到。重开 Mr Otto 再看看。",
   },
   "no-secure-storage": {
     title: "这台机器没有可用的系统安全存储",
     hint: "身份私钥必须放进钥匙串,不会退而求其次写成明文文件。先解锁钥匙串再重开 Mr Otto。",
+  },
+};
+
+/** 被挡下的握手,两种 reason 两套文案(issue #485)。
+    合并成一条会把告警稀释成例行提示 —— 而 identity-mismatch 的另一半可能性
+    是"有人在中间换了公钥",这句话必须出现在用户眼前 */
+const REJECTED_TEXT: Record<RemoteRejection["reason"], { title: string; hint: string }> = {
+  unpaired: {
+    title: "有一台手机连过来,但还没配对",
+    hint: "它在下面的列表里。核对 6 位安全码之后再配 —— 对不上就不要配。",
+  },
+  "identity-mismatch": {
+    title: "有一台手机连不上来:身份对不上",
+    hint:
+      "它的身份跟这台桌面已配对的那把公钥不一致。你刚在手机上重装或重新登录过,就在下面重新核对安全码再配一次;" +
+      "如果没有,那说明中间有人换掉了公钥 —— 这时候不要配。",
   },
 };
 
@@ -37,7 +53,7 @@ export function RemoteDevicesSettings() {
     window.otter
       .remoteStatus()
       .then(setStatus)
-      .catch(() => setStatus({ on: false, reason: "disabled" }));
+      .catch(() => setStatus({ on: false, reason: "unavailable" }));
   }, []);
 
   useEffect(refresh, [refresh]);
@@ -87,6 +103,24 @@ export function RemoteDevicesSettings() {
           </div>
         ) : (
           <>
+            {status.rejected ? (
+              /* 告警用 destructive,例行提示用普通边框:这两条的紧急程度不一样 */
+              <div
+                className={`rounded-lg border p-4 ${
+                  status.rejected.reason === "identity-mismatch"
+                    ? "border-destructive/60 bg-destructive/5"
+                    : "border-border"
+                }`}
+              >
+                <p className="font-[650]">{REJECTED_TEXT[status.rejected.reason].title}</p>
+                <p className={`${HINT} mt-1`}>{REJECTED_TEXT[status.rejected.reason].hint}</p>
+                <p className={`${HINT} mt-1`}>
+                  设备 <code className="font-mono">{status.rejected.deviceId}</code> ·{" "}
+                  {new Date(status.rejected.at).toLocaleString()}
+                </p>
+              </div>
+            ) : null}
+
             <div className="rounded-lg border border-border p-4">
               <p className="font-[650]">配对前先核对安全码</p>
               <p className={`${HINT} mt-1`}>

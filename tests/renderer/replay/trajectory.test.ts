@@ -163,3 +163,41 @@ describe("branch_checked_out 的轨迹摘要（issue #411）", () => {
     expect(t.rows[0]!.summary).toBe("branch → feature/x");
   });
 });
+
+// ADR-0122 D8：用户必须知道是谁把说明书塞进上下文的。这件事在聊天区成立
+// （skillCardLabel），在轨迹视图里也得成立——AGENTS.md 把轨迹视图列为一个真实界面
+describe("skill 的启用/停用在轨迹里怎么写（ADR-0122 D8）", () => {
+  const at = (e: Partial<SessionEvent>): SessionEvent =>
+    ({ seq: 1, sessionId: "s", ts: 1000, ...e }) as SessionEvent;
+
+  it("模型自取的标出来源，不再伪装成用户敲的 $tdd", () => {
+    const t = buildTrajectory([
+      at({ type: "skill_invoked", name: "tdd", content: "先写测试", source: "model" }),
+    ]);
+    expect(t.rows[0]!.summary).toBe("Otto 启用了 skill「tdd」 先写测试");
+    expect(t.rows[0]!.summary.startsWith("$")).toBe(false);
+  });
+
+  it("用户 $ 启用的（旧日志无 source 字段）写「已启用」，args 带出来", () => {
+    const t = buildTrajectory([
+      at({ type: "skill_invoked", name: "caveman", content: "少说话", args: "ultra" }),
+    ]);
+    expect(t.rows[0]!.summary).toBe("已启用 skill「caveman」（参数：ultra） 少说话");
+  });
+
+  it("停用占一行，且说得出停的是哪一把——落 default 的话只有光秃秃的事件类型名", () => {
+    const t = buildTrajectory([at({ type: "skill_released", name: "tdd" })]);
+    expect(t.rows).toHaveLength(1);
+    expect(t.rows[0]!.summary).toBe("已停用 skill「tdd」");
+  });
+
+  // R1 修复：skill_released 事件只带 { type, name }，没有 source 字段，
+  // 任何投影都无法归因于谁发起的停用——"system" 是唯一诚实的 kind。
+  // "user" 会让 TrajectoryView 给它挂绿色 USER 徽章，在唯一回答「agent 做了什么」
+  // 的视图里，把模型自己发起的 release 说成是用户干的
+  it("停用行不是 kind: user——没有 source 字段就不能栽给用户", () => {
+    const t = buildTrajectory([at({ type: "skill_released", name: "tdd" })]);
+    expect(t.rows[0]!.kind).not.toBe("user");
+    expect(t.rows[0]!.kind).toBe("system");
+  });
+});

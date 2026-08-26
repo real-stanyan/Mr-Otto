@@ -39,7 +39,14 @@ export const LONG_TURN_ROUNDS = 30;
 export interface LoopEngineOptions {
   store: EventStore;
   adapter: ModelAdapter;
-  tools: Tool[];
+  /** 工具表。传函数 = 每个 turn 开始时重算一次（MCP server 中途连上/掉线
+      要能被这个会话看见）；传数组 = 一次定终身（老调用方零改动）。
+
+      为什么是"每 turn 重算、turn 内冻结"而不是"随时重算"：模型看到的声明表
+      和 dispatch 时查的 toolsByName 必须是同一份。turn 中途换表，模型按旧表
+      发出的调用会在新表里查不到，收到一句"未知工具"——那正是 mcpTool.ts
+      顶部注释要避免的失败。 */
+  tools: Tool[] | (() => Tool[]);
   world: ExecutionWorld;
   sessionId: string;
   /** 每条事件落盘后回调 —— CLI 打印、将来 UI 实时刷新都挂这 */
@@ -78,9 +85,12 @@ export interface LoopEngineOptions {
 }
 
 export class LoopEngine {
-  private readonly toolsByName: Map<string, Tool>;
-  /** 去重后的工具表（撞名后到者已被拒）：声明表/过滤都用它，不用 opts.tools */
-  private readonly tools: Tool[];
+  private toolsByName: Map<string, Tool>;
+  /** 去重后的工具表（撞名后到者已被拒）：声明表/过滤都用它，不用 opts.tools。
+      每 turn 由 rebuildTools() 重算，turn 内冻结——见 LoopEngineOptions.tools 注释 */
+  private tools: Tool[];
+  /** 每 turn 重算的来源；传数组时包成常量函数 */
+  private readonly toolsProvider: () => Tool[];
   private readonly pipeline: ToolMiddleware[];
   private adapter: ModelAdapter;
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
@@ -114,19 +124,10 @@ export class LoopEngine {
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
-    // 撞名保护（issue #349 ⑤）：同名后到者拒绝注册（先到的赢），不静默覆盖。
-    // 内置工具在装配数组里排在 MCP 工具前面——外部工具因此永远占不了内置名；
-    // Map 构造器的 last-wins 恰好是反的，所以显式跳过
+    this.toolsProvider = typeof opts.tools === "function" ? opts.tools : () => opts.tools as Tool[];
     this.toolsByName = new Map();
     this.tools = [];
-    for (const t of opts.tools) {
-      if (this.toolsByName.has(t.def.name)) {
-        console.warn(`工具「${t.def.name}」已注册，后到的同名工具被拒绝挂载`);
-        continue;
-      }
-      this.toolsByName.set(t.def.name, t);
-      this.tools.push(t);
-    }
+    this.rebuildTools();
     // 审批门永远是第一层 —— 没人能插队到它前面绕过审批
     this.pipeline = [
       createApprovalGate({
@@ -150,6 +151,26 @@ export class LoopEngine {
   /** 换模型 = 换实现。engine 对"有哪些模型"一无所知，只认 ModelAdapter 接口 */
   setAdapter(adapter: ModelAdapter): void {
     this.adapter = adapter;
+  }
+
+  /** 重算工具表。撞名保护（issue #349 ⑤）：同名后到者拒绝注册（先到的赢），
+      不静默覆盖——内置工具在装配数组里排在 MCP 工具前面，外部工具因此永远
+      占不了内置名；Map 构造器的 last-wins 恰好是反的，所以显式跳过。
+      每 turn 跑一次，所以撞名警告也每 turn 打一次——这是刻意的：一台 server
+      反复挂同名刀，用户该一直看得到，而不是只在会话开头看到一次。 */
+  private rebuildTools(): void {
+    const byName = new Map<string, Tool>();
+    const list: Tool[] = [];
+    for (const t of this.toolsProvider()) {
+      if (byName.has(t.def.name)) {
+        console.warn(`工具「${t.def.name}」已注册，后到的同名工具被拒绝挂载`);
+        continue;
+      }
+      byName.set(t.def.name, t);
+      list.push(t);
+    }
+    this.toolsByName = byName;
+    this.tools = list;
   }
 
   /** exposure 三态的可见性判定（issue #348）。hidden 不在这里拦调用——
@@ -487,6 +508,13 @@ export class LoopEngine {
     this.turnAbort = new AbortController();
     this.compactFloor = null;
     try {
+      // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释。
+      // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
+      // createMcpTools/applyExposurePolicy），抛错要走下面的 catch 落 turn_ended:
+      // outcome:"error"，不能让已经落盘的 user_message 和已置位的 currentTurnId/
+      // turnAbort 永远没有对应的收口（append-only 日志的配对不变量、steer 的乐观锁
+      // 目标都靠 turn_ended/finally 收场）
+      this.rebuildTools();
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
       return "completed";

@@ -57,6 +57,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "tool_execution_started":
     case "turn_ended": // 错误只在这落一次（outcome:"error"）
     case "skill_invoked":
+    case "skill_released": // 停用是台账的事实来源，倒推不出来
     case "image_described":
     case "section_classified":
     case "suggestions_generated":

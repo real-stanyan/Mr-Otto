@@ -9,6 +9,10 @@ const stdio = (command = "npx"): McpServerConfig => ({
   kind: "stdio", command, args: [], env: {}, enabled: true,
 });
 
+const http = (url = "https://mcp.example.com/mcp"): McpServerConfig => ({
+  kind: "http", url, headers: {}, enabled: true,
+});
+
 function conn(over: Partial<McpClientConn> = {}): McpClientConn {
   return {
     tools: [{ name: "t1", description: "一把刀", inputSchema: {} }],
@@ -33,6 +37,10 @@ function memStore(initial: Record<string, McpServerConfig> = {}) {
     save: (next: Record<string, McpServerConfig>, _unrecognizedIds: readonly string[]) => {
       servers = { ...next };
     },
+    // 大多数测试不关心授权/清凭据这两条通道——给个啥都不做的默认值，
+    // 免得每处 createMcpHub 调用都要补这两个字段
+    authorize: async () => {},
+    clearAuth: () => {},
   };
 }
 
@@ -58,6 +66,9 @@ function fileStore(initialText = "") {
     load: () => loadMcpConfig("mcp.json", reader),
     save: (servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]) =>
       saveMcpConfig("mcp.json", servers, unrecognizedIds, reader),
+    // 同 memStore：F1 场景不关心授权/清凭据，给默认空实现
+    authorize: async () => {},
+    clearAuth: () => {},
   };
 }
 
@@ -565,6 +576,8 @@ describe("configErrors()（review finding 4）", () => {
       load: () => ({ servers: {}, errors, unrecognizedIds: [], fatal: false }),
       save: () => {},
       connect: vi.fn(),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     expect(hub.configErrors()).toEqual([]);
     hub.list(); // list() 内部会 syncFromDisk()
@@ -590,6 +603,8 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
       }),
       save: (_servers, unrecognizedIds) => { savedUnrecognized.push(unrecognizedIds); },
       connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.save("good", stdio("npx-changed"));
     // 如果 mcpHub.save() 忘了把 unrecognizedIds 转给 opts.save（比如改回
@@ -608,6 +623,8 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
       }),
       save: (servers, unrecognizedIds) => { savedCalls.push({ servers, unrecognizedIds }); },
       connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.ready();
     await hub.remove("good");
@@ -624,6 +641,8 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
         throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
       },
       connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.ready();
     await expect(hub.save("a", stdio("changed"))).rejects.toThrow(/不是合法 JSON/);
@@ -640,6 +659,8 @@ describe("save()/remove() 不冲掉解析不动的邻居（F1 half 1）", () => 
         throw new Error("mcp.json 当前不是合法 JSON，为避免连带删掉其余内容，这次保存已取消");
       },
       connect: async () => conn({ close }),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.ready();
     await expect(hub.remove("a")).rejects.toThrow(/不是合法 JSON/);
@@ -713,6 +734,8 @@ describe("mcp.json 中途被改坏时不牵连活着的连接（issue #159）", 
           : { servers: { a: stdio(), b: stdio() }, errors: [], unrecognizedIds: [], fatal: false },
       save: () => {},
       connect: async () => conn({ close }),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.ready();
     expect(hub.servers().map((s) => s.status)).toEqual(["connected", "connected"]);
@@ -735,6 +758,8 @@ describe("mcp.json 中途被改坏时不牵连活着的连接（issue #159）", 
       }),
       save: () => {},
       connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     hub.list();
     expect(hub.configErrors()).toEqual(["mcp.json 不是合法 JSON，整份配置本次被忽略"]);
@@ -755,6 +780,8 @@ describe("mcp.json 中途被改坏时不牵连活着的连接（issue #159）", 
             },
       save: () => {},
       connect: async (id) => conn({ close: async () => { closed.push(id); } }),
+      authorize: async () => {},
+      clearAuth: () => {},
     });
     await hub.ready();
     phase = "fatal";
@@ -780,5 +807,105 @@ describe("mcp.json 中途被改坏时不牵连活着的连接（issue #159）", 
     // 从前这里两条连接已经先被关掉了，而且用户看不到任何提示
     expect(hub.servers().map((s) => s.id)).toEqual(["a", "b"]);
     expect(hub.servers().every((s) => s.live)).toBe(true);
+  });
+});
+
+describe("authorize", () => {
+  it("授权成功后自动重连，状态从 needs-auth 变 connected", async () => {
+    let authed = false;
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http() }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => {
+        if (!authed) throw new McpAuthRequiredError("s 需要授权");
+        return conn();
+      },
+      authorize: async () => { authed = true; },
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    expect(hub.list()[0]!.status).toBe("needs-auth");
+    await hub.authorize("s");
+    expect(hub.list()[0]!.status).toBe("connected");
+  });
+
+  it("授权失败原样抛出去，状态不被伪造成 connected", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http() }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => { throw new McpAuthRequiredError("s 需要授权"); },
+      authorize: async () => { throw new Error("用户点了拒绝"); },
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    await expect(hub.authorize("s")).rejects.toThrow("用户点了拒绝");
+    expect(hub.list()[0]!.status).toBe("needs-auth");
+  });
+
+  it("不存在的 id 给人话", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: {}, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await expect(hub.authorize("不存在")).rejects.toThrow(/不存在/);
+  });
+
+  it("删除一台 server 顺手清掉它的 OAuth 凭据——留着就是一份没人管的长期授权", async () => {
+    const cleared: string[] = [];
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http() }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: (id) => { cleared.push(id); },
+    });
+    await hub.ready();
+    await hub.remove("s");
+    expect(cleared).toEqual(["s"]);
+  });
+});
+
+describe("configure（agent 侧的写配置能力）", () => {
+  it("configure 新增一台，落盘并尝试连接", async () => {
+    const saved: Record<string, unknown>[] = [];
+    const hub = createMcpHub({
+      load: () => ({ servers: {}, errors: [], unrecognizedIds: [], fatal: false }),
+      save: (servers) => { saved.push(servers); },
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.configure("s", http());
+    expect(saved.at(-1)).toHaveProperty("s");
+    expect(hub.servers().find((x) => x.id === "s")?.live).toBe(true);
+  });
+
+  it("configure(id, null) = 删除", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http() }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    await hub.configure("s", null);
+    expect(hub.servers().find((x) => x.id === "s")).toBeUndefined();
+  });
+
+  it("configOf 拿得到当前配置（审批预览要对照「改之前是什么」）", async () => {
+    const hub = createMcpHub({
+      load: () => ({ servers: { s: http("https://a/mcp") }, errors: [], unrecognizedIds: [], fatal: false }),
+      save: () => {},
+      connect: async () => conn(),
+      authorize: async () => {},
+      clearAuth: () => {},
+    });
+    await hub.ready();
+    expect(hub.configOf("s")).toMatchObject({ kind: "http", url: "https://a/mcp" });
+    expect(hub.configOf("没有这台")).toBeUndefined();
   });
 });

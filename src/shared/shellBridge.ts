@@ -255,8 +255,56 @@ export interface McpPreviewArg {
   fullLength: number;
 }
 
+/** mcp_configure 的审批预览。这张卡是 agent 自助配置那条路上**唯一**的
+    安全闸：stdio 的配置就是 command + args + env，卡片含糊等于闸形同虚设。
+    所以明细逐字段列，不折成一句"配置一台 MCP server"。
+
+    凭据只出键名不出值（同 ADR-0044 的口径）：用户要认出"这一格配的是哪一把"，
+    不需要、也不该在审批卡上看到真值。 */
+export interface McpConfigurePreview {
+  kind: "mcp_configure";
+  server: string;
+  action: "add" | "update" | "remove";
+  /** remove 时为 null */
+  transport: "http" | "stdio" | null;
+  /** http 传输解析出的真实主机名（`URL.host`）。这是复审要求的独立字段
+      （Critical A 修法②）：无论 url 字符串本身怎么变形、多长、被截成什么样，
+      "到底连哪个主机"必须始终是折叠线以上能看到的东西——不截断，因为它本身
+      就短，也不该短。stdio 传输 / 解析失败 = null。 */
+  host: string | null;
+  url: string | null;
+  command: string | null;
+  args: string[];
+  /** env（stdio）或 headers（http）的**键名**；值不过桥 */
+  credentialKeys: string[];
+  /** 这次调用之后这台 server 的启用状态（终审 B Important）。它有执行后果——
+      stdio 的 `enabled: true` 就是「这条 command 会被 spawn」（mcpHub.ts）——
+      而 mcp_configure 的默认是 `a["enabled"] !== false`，即缺省为 true。
+      不上卡的话有一条无声路径：用户手动关掉过一台 stdio server，agent 用
+      同样的 id/command/args 调一次 mcp_configure，卡片显示 action: update、
+      command 与 before.command 逐字相同 = 一次「看起来什么都没变」的更新，
+      用户点同意，enabled 从 false 翻成 true，命令当场被 spawn。
+      remove 时无意义 = null（那张卡不谈"改成什么状态"）。 */
+  enabled: boolean | null;
+  /** 改已有的一台时，改之前是什么。新增时为 null。
+      enabled 也在里面：渲染层要能显示「false → true」这种翻转，只显示新值
+      看不出"这次会启用它" */
+  before: { url: string | null; command: string | null; enabled: boolean; toolCount: number } | null;
+  /** url / command / 每条 args 是否在主进程就被截断（Task 9 审查 Important 2：
+      这个预览此前没有 mcp_tool 参数预览、write_file 都有的那道 MAX_ARG_CHARS
+      长度纪律——模型给一个几 MB 的 command 就整个过 IPC 落到卡片上）。
+      url/command 没有值（null）时恒为 false；args 与 preview.args 一一对应，
+      长度相同——渲染层统一按下标配对，不用判断"有没有这一条"。
+      server 也在里面（终审 C 8+9）：它是完全由模型控制的 id，且渲染在 host
+      那一行**之前**——一个几千字符的 id 会把"到底连哪个主机"推下折叠线，
+      正好挤掉卡上唯一那条永不截断的安全闸。 */
+  truncated: { server: boolean; url: boolean; command: boolean; args: readonly boolean[] };
+  /** 截断前的原长，配合 truncated 渲染"只显示前 N 字符，共 M"（同 McpPreviewArg 的口径） */
+  fullLength: { server: number; url: number; command: number; args: readonly number[] };
+}
+
 /** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */
-export type ApprovalPreview = WriteFilePreview | McpToolPreview;
+export type ApprovalPreview = WriteFilePreview | McpToolPreview | McpConfigurePreview;
 
 /** 审批卡上可出现的决策种类（issue #341 规则①：按钮集合由后端下发，
     渲染层只做「种类 → 按钮」的通用映射，新增审批场景不改前端按钮代码）。
@@ -381,6 +429,9 @@ export interface ShellBridge {
   listExternalSkills(): Promise<ExternalSkillInfo[]>;
   /** 按 name 把别家 skill 复制进 ~/.mr-otto/skills，逐条返回结果 */
   importSkills(names: string[]): Promise<SkillImportResult[]>;
+  /** 停用一个已启用的 skill（落 skill_released）。用户是老大：不校验来源，
+      模型自取的和 $ 启用的都能点掉；模型那侧的 release 才有来源校验 */
+  releaseSkill(sessionId: string, name: string): Promise<void>;
   /** 两个记忆文件的当前内容（设置页读，ADR-0060） */
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
@@ -461,6 +512,10 @@ export interface ShellBridge {
   removeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 手动重连（failed 的那台，用户修好环境后自己点） */
   reconnectMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 跑一次 OAuth 授权：主进程开系统浏览器，用户点完同意后自动重连。
+      URL 由主进程从这台 server 的配置推出来，渲染层递不进任意外链
+      （同 updaterOpenReleasePage 的规矩）。失败原样 reject，设置页显示原因 */
+  authorizeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
   listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
@@ -767,11 +822,36 @@ export interface RemotePeerInfo {
   pinned: boolean;
 }
 
-/** 远程功能在这台机器上的状态。off 的原因要分得开:没开开关 / 系统封装不可用,
-    两者都会让列表是空的,但用户该做的事完全不同 */
+/** 一次被挡下的握手(issue #485)。桌面只认 pin 住的那把公钥,对不上就不进 ready ——
+    但"被挡下"过去只有一行 console.warn,用户不打开设置页就永远不知道要去打开它。
+
+    reason 的两支不能合并成一条文案:
+    - unpaired = 例行状态(还没配对过),该做的事是去核对 6 位安全码
+    - identity-mismatch = 告警。deriveSession 分不出"手机重装换了身份"和
+      "有人在中间换了公钥"(两者都只表现为签名验不过),所以文案要把两种可能
+      都摆出来让人判断,不能写成"重新配一次就好" */
+export interface RemoteRejection {
+  deviceId: string;
+  reason: "unpaired" | "identity-mismatch";
+  /** 发生时刻(epoch ms) */
+  at: number;
+}
+
+/** 远程功能在这台机器上的状态。
+    off 的两个原因**只有一个来自主进程**:
+    - no-secure-storage = 身份私钥进不了系统安全存储 → 不开远程,而不是明文落盘
+    - unavailable = 渲染层自己兜的:remoteStatus() 这一问就没问到(桥挂了/主进程没起来)
+    (曾经还有 disabled = OTTO_REMOTE 没开,那个灰度开关已随 issue #484 摘掉) */
 export type RemoteStatus =
-  | { on: false; reason: "disabled" | "no-secure-storage" }
-  | { on: true; peers: RemotePeerInfo[] };
+  | { on: false; reason: "no-secure-storage" | "unavailable" }
+  | {
+      on: true;
+      peers: RemotePeerInfo[];
+      /** 最近一次被挡下的握手;null = 这一轮启动以来没有过。
+          设置页据此在列表上方出提示 —— 它和 peers 是同一件事的两个视角:
+          peers 说"目录里有谁",这个说"刚才有谁来敲过门却进不来" */
+      rejected: RemoteRejection | null;
+    };
 
 /** 灵动岛展开态上半区的两种内容(#199) */
 export type IslandDisplay = "sessions" | "usage";
@@ -802,7 +882,11 @@ export type UpdaterState =
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
   | { kind: "friendRequest" }
-  | { kind: "session"; sessionId: string };
+  | { kind: "session"; sessionId: string }
+  /** 落到设置页的某个栏目。section 是渲染层 SettingsSection 的子集 ——
+      shared 不能 import 渲染层的类型,而这里只需要通知真能落到的那几个,
+      写成窄字面量比把整个联合搬过来更不容易漂 */
+  | { kind: "settings"; section: "remote" };
 
 export interface OllamaModelInfo {
   /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */
@@ -851,6 +935,7 @@ export const CHANNELS = {
   listSkills: "otter:listSkills",
   listExternalSkills: "otter:listExternalSkills",
   importSkills: "otter:importSkills",
+  releaseSkill: "otter:releaseSkill",
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
@@ -879,6 +964,7 @@ export const CHANNELS = {
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
+  authorizeMcpServer: "otter:authorizeMcpServer",
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",

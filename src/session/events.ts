@@ -254,6 +254,19 @@ export interface SkillInvokedEvent extends SessionEventBase {
   /** `$名字(参数) 任务` 里的参数（如档位 lite/ultra），随快照进投影头。
       可选 = 向后兼容：旧日志没有这个字段，投影不带参数段，逐字节不变 */
   args?: string;
+  /** 谁启用的（issue 待开）。缺省 = "user"（$ 指令）——旧日志没有这个字段，
+      投影逐字节不变。"model" = 模型自己调 skill 工具取的；停用时按它校验来源：
+      模型只能停自己取的，用户 $ 启用的动不了 */
+  source?: "user" | "model";
+}
+
+/** 额外 N：skill 停用。台账（activeSkills）按它剔除——ADR-0066 结尾预留的口子。
+    只记名字：正文快照在对应的 skill_invoked 里，重复存一份没有意义。
+    模型 release 自己 acquire 的、或用户在 UI 上点掉，都落这一条（来源校验发生在
+    落盘之前，被拒的 release 不留痕迹） */
+export interface SkillReleasedEvent extends SessionEventBase {
+  type: "skill_released";
+  name: string;
 }
 
 /** 额外 9：图片解析(vision-bridge)。当前模型不支持看图时,发送路径先请视觉
@@ -543,6 +556,7 @@ export type SessionEvent =
   | ToolExecutionStartedEvent
   | TurnEndedEvent
   | SkillInvokedEvent
+  | SkillReleasedEvent
   | ImageDescribedEvent
   | SectionClassifiedEvent
   | SuggestionsGeneratedEvent
@@ -587,6 +601,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   tool_execution_started: true,
   turn_ended: true,
   skill_invoked: true,
+  skill_released: true,
   image_described: true,
   section_classified: true,
   suggestions_generated: true,

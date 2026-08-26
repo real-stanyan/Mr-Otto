@@ -32,6 +32,7 @@ const bridge: ShellBridge = {
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
   listExternalSkills: () => ipcRenderer.invoke(CHANNELS.listExternalSkills),
   importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
+  releaseSkill: (sessionId, name) => ipcRenderer.invoke(CHANNELS.releaseSkill, sessionId, name),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
   saveMemory: (target, text, sessionId, projectRoot) =>
     ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId, projectRoot),
@@ -62,6 +63,7 @@ const bridge: ShellBridge = {
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),
   reconnectMcpServer: (id) => ipcRenderer.invoke(CHANNELS.reconnectMcpServer, id),
+  authorizeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.authorizeMcpServer, id),
   listMcpPrompts: () => ipcRenderer.invoke(CHANNELS.listMcpPrompts),
   expandMcpPrompt: (server, name, args) =>
     ipcRenderer.invoke(CHANNELS.expandMcpPrompt, server, name, args),

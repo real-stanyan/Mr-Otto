@@ -188,6 +188,52 @@ describe("createRemoteBridge", () => {
     b.dispose();
   });
 
+  // 被挡下的握手要报上去(issue #485)。桥只负责"如实报每一次",去重在上层 ——
+  // 下面第三条用例钉的就是这个分工:同一台手机连着敲门,桥不会自作主张吞掉
+  it("还没配对过任何手机时被挡下 → onRejected 报 unpaired", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onRejected = vi.fn();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t,
+      onCommand: vi.fn(), peerIdentity: () => null, onRejected,
+    });
+    t.emitPeer();
+    t.emit(JSON.stringify(buildHello(P, newPeer())));
+    expect(onRejected).toHaveBeenCalledWith({ deviceId: "m1", reason: "unpaired" });
+    b.dispose();
+  });
+
+  it("pin 住的公钥对不上 → onRejected 报 identity-mismatch（两种 reason 分得开）", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onRejected = vi.fn();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(),
+      peerIdentity: () => P.generateEd25519().publicKey, // 配过对，但不是这台手机
+      onRejected,
+    });
+    t.emitPeer();
+    t.emit(JSON.stringify(buildHello(P, newPeer())));
+    expect(onRejected).toHaveBeenCalledWith({ deviceId: "m1", reason: "identity-mismatch" });
+    b.dispose();
+  });
+
+  it("桥不替上层节流：敲三次门就报三次", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onRejected = vi.fn();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t,
+      onCommand: vi.fn(), peerIdentity: () => null, onRejected,
+    });
+    t.emitPeer();
+    // 每次都是新的 eph —— 同一把会被 usedPeerEphs 挡在 adopt 之前，那是另一条路径
+    for (let i = 0; i < 3; i++) t.emit(JSON.stringify(buildHello(P, newPeer())));
+    expect(onRejected).toHaveBeenCalledTimes(3);
+    b.dispose();
+  });
+
   it("断开只清状态；下一条在场信号才开新一轮，并当场把快照补推给新对端（去重基线已清）", () => {
     const { t, b, peer, identity } = harness();
     shake(t, peer, identity.publicKey, 0);

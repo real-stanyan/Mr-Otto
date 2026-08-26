@@ -394,6 +394,9 @@ interface ChatState {
   removeMcpServer(id: string): Promise<void>;
   /** 手动重连(failed 的那台，用户修好环境/网络后自己点) */
   reconnectMcpServer(id: string): Promise<void>;
+  /** 跑一次 OAuth 授权(needs-auth 的那台,用户点完系统浏览器的同意页后自动重连)。
+      失败原样抛出——组件自己 catch 显示原因,不在这一层吞掉 */
+  authorizeMcpServer(id: string): Promise<void>;
   /** 重拉一份连上的 server 的 prompt 清单(composer `/` 菜单用)。boot 冷启动拉一次,
       此后跟着 onMcpChanged 的推送自动补拉——一台 server 掉线/重连会改变这份清单,
       不能只在打开菜单那一刻现问一次 */
@@ -927,6 +930,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async reconnectMcpServer(id) {
     set({ mcpServers: await window.otter.reconnectMcpServer(id) });
+  },
+
+  async authorizeMcpServer(id) {
+    set({ mcpServers: await window.otter.authorizeMcpServer(id) });
   },
 
   async refreshMcpPrompts() {
@@ -1597,6 +1604,11 @@ export const useChat = create<ChatState>((set, get) => ({
       // 任务完成通知落到那个会话,同灵动岛点行的逻辑:已在看它就不重复 resume
       if (target.kind === "session") {
         if (get().sessionId !== target.sessionId) void get().resume(target.sessionId);
+        return;
+      }
+      // 远程握手被挡下(issue #485):该做的事全在设置页那一栏上
+      if (target.kind === "settings") {
+        void get().openSettings(target.section);
         return;
       }
       set({ friendsPanelOpen: true });

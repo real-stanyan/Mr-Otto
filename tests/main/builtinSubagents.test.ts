@@ -56,6 +56,17 @@ describe("builtinSubagents", () => {
     expect(explore.tools).not.toContain("write_file");
   });
 
+  // ADR-0122 D9：子会话自己也拿得到说明书。这份白名单就是 allowTools，
+  // 不点名 = 挂不上，所以漏了它 general-purpose 连 skill 工具的影子都见不到
+  it("general-purpose 拿得到 skill —— 装配认得这个名字的前提下", () => {
+    const gp = builtinSubagents([...ALL, "skill"]).find((d) => d.name === "general-purpose")!;
+    expect(gp.tools).toContain("skill");
+    // 一把 skill 都没装的机器上 skill ∉ knownTools，过滤掉而不是记成"不认识"
+    const bare = builtinSubagents(ALL).find((d) => d.name === "general-purpose")!;
+    expect(bare.tools).not.toContain("skill");
+    expect(bare.unknownTools).toEqual([]);
+  });
+
   // task 是设计边界(子 agent 不能再派子 agent),内置也不例外
   it("谁都拿不到 task", () => {
     expect(builtinSubagents([...ALL, "task"]).some((d) => d.tools.includes("task"))).toBe(false);

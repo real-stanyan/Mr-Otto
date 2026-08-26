@@ -430,6 +430,60 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
   });
 });
 
+describe("模型自取 skill 的投影（本次新增）", () => {
+  it("中途 acquire：说明书排在 tool 消息之后，不夹在 tool_call 与 tool_result 中间", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "写测试" },
+      {
+        seq: 2, sessionId: "s", ts: 2, type: "assistant_message", content: "", model: "m",
+        toolCalls: [{ id: "c1", name: "skill", args: { action: "acquire", name: "tdd" } }],
+      },
+      { seq: 3, sessionId: "s", ts: 3, type: "skill_invoked", name: "tdd", content: "先写测试", source: "model" },
+      { seq: 4, sessionId: "s", ts: 4, type: "tool_result", toolCallId: "c1", status: "ok", output: "skill「tdd」已启用" },
+    ];
+    const msgs = deriveMessages(events);
+    const roles = msgs.map((m) => m.role);
+    // assistant(tool_call) 之后必须直接是 tool，说明书排在它后面
+    expect(roles.slice(-3)).toEqual(["assistant", "tool", "user"]);
+    expect(msgs.at(-1)!.content).toContain("先写测试");
+  });
+
+  it("skill_released 不投影任何消息（它只改台账）", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "先写测试" },
+      { seq: 2, sessionId: "s", ts: 2, type: "skill_released", name: "tdd" },
+      { seq: 3, sessionId: "s", ts: 3, type: "user_message", content: "活" },
+    ];
+    const msgs = deriveMessages(events);
+    // 按条数 + role 序列钉死：整段投影只有三条——围栏 system、skill 说明书（已发出的
+    // 历史事实，停用不追认不撤回）、用户消息。skill_released 自己不产生第四条消息。
+    // 不用 not.toContain 排除某个措辞的字符串：那种写法只钉住"这句话没出现"，钉不住
+    // "什么都没多出来"——真要在 skill_released 上注入一条别的消息，换个措辞就能溜过去
+    expect(msgs.map((m) => m.role)).toEqual(["system", "user", "user"]);
+    expect((msgs[1] as { content: string }).content).toContain("先写测试");
+    expect(msgs[2]).toEqual({ role: "user", content: "活" });
+  });
+
+  it("停用之后 compact 清场：重注入里没有它", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "skill_invoked", name: "keep", content: "留着" },
+      { seq: 2, sessionId: "s", ts: 2, type: "skill_invoked", name: "drop", content: "扔掉" },
+      { seq: 3, sessionId: "s", ts: 3, type: "skill_released", name: "drop" },
+      { seq: 4, sessionId: "s", ts: 4, type: "context_compacted", summary: "摘要", model: "m" },
+      { seq: 5, sessionId: "s", ts: 5, type: "user_message", content: "接着干" },
+    ];
+    const contents = deriveMessages(events)
+      .map((m) => m.content)
+      .filter((c): c is string => typeof c === "string")
+      .join("\n");
+    expect(contents).toContain("留着");
+    expect(contents).not.toContain("扔掉");
+  });
+});
+
 describe("user_message 附件投影(file-input-v1)", () => {
   it("带 attachments → content 变 parts:[text, ...image_ref]", () => {
     const events: SessionEvent[] = [

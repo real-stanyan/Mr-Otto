@@ -33,6 +33,7 @@ const DURABLE = [
   "tool_execution_started",
   "turn_ended",
   "skill_invoked",
+  "skill_released",
   "image_described",
   "section_classified",
   "suggestions_generated",

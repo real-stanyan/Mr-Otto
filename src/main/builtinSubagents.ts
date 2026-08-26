@@ -16,7 +16,11 @@ import { DEFAULT_MODEL } from "../shared/modelCatalog.js";
 export const BUILTIN_SOURCE = "内置";
 
 /** 除 task 外全给。task 不在这里排除也会被 parse/装配剔掉（子 agent 不能再派子
-    agent 是设计边界），列在这里只是不想让读代码的人以为它漏了 */
+    agent 是设计边界），列在这里只是不想让读代码的人以为它漏了。
+    skill 在里面（ADR-0122 的 D9：子会话自己也拿得到说明书）——这份白名单是
+    `allowTools`，不点名就等于没有，所以漏了它 general-purpose 连挂都挂不上。
+    一把 skill 都没装的机器上它会被下面的 knownTools 过滤掉，这是对的：
+    那种机器上这把刀本来就 available() === false */
 const ALL_TOOLS = [
   "read_file",
   "write_file",
@@ -25,6 +29,7 @@ const ALL_TOOLS = [
   "web_extract",
   "browser_read",
   "todo_write",
+  "skill",
 ];
 
 /** 内置那三份钉死在便宜档（ADR-0108）。以前它们不写 model，靠 createAgent 的

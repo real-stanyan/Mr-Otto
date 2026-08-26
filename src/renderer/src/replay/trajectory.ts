@@ -14,6 +14,7 @@ import type {
   ToolExecutionStartedEvent,
   ToolResultEvent,
 } from "../../../session/events.js";
+import { skillCardLabel, skillReleasedLabel } from "../../../shared/skillCard.js";
 
 /** 泳道：时间轴上三行。system 类事件（诞生/切模型/turn 边界…）归 input 道——
     它们都是"外部推进来的"，不是模型也不是工具产出 */
@@ -123,10 +124,28 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
         });
         break;
 
+      // 启用/停用（ADR-0122 D8：用户必须知道是谁把说明书塞进上下文的）。
+      // 文案走 skillCardLabel——与聊天区那张卡同一份话术，「Otto 启用了 skill「x」」
+      // vs「已启用 skill「x」」。原来这里硬拼 `$` 前缀，把模型自取的渲染得像
+      // 用户敲了 `$tdd`，恰好抹掉 D8 唯一要说的那件事
       case "skill_invoked":
         push({
           key: String(e.seq), kind: "user", lane: "input", seq: e.seq, ts: e.ts,
-          summary: `$${e.name}${e.args ? `(${e.args})` : ""} ${clip(e.content, 100)}`, deny: false, ev: e,
+          summary: `${skillCardLabel(e)} ${clip(e.content, 100)}`, deny: false, ev: e,
+        });
+        break;
+
+      // 停用同样占一行：漏了的话轨迹视图会显示每一把 skill 都还生效着。
+      // 落 default 也会出一行，但那行的 summary 是光秃秃的事件类型名
+      // （systemSummary 的兜底），说不出停的是哪一把。
+      // kind 是 system 不是 user：events.ts 里 skill_released 只带 { type, name }，
+      // 没有 source 字段，任何投影都无法归因于谁把它停掉的——"system" 是唯一诚实的选择，
+      // "user" 会给模型自己发起的 release 挂一个绿色 USER 徽章，在这个唯一回答
+      // "agent 做了什么"的视图里说谎
+      case "skill_released":
+        push({
+          key: String(e.seq), kind: "system", lane: "input", seq: e.seq, ts: e.ts,
+          summary: skillReleasedLabel(e), deny: false, ev: e,
         });
         break;
 

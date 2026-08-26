@@ -4,7 +4,7 @@
 // 上方，其余状态整个不渲染——idle/checking 是后台的事，侧栏不值得为它们闪。
 //
 // 布局照设计稿：左边 otto 升级像素图（资产已裁掉四周的透明留白——原图 1024²
-// 里图形只占中间 545×572，不裁的话那 32px 有一半在画空气），
+// 里图形只占中间 545×572，不裁的话那 24px 有一半在画空气），
 // 中间 "New Version Available" + 版本号，
 // 右边胶囊按钮（设计稿那支手写字不跟——侧栏其余文字全是系统字，单这一颗
 // 破例会显脏）。点 Download 后版本号那一行原地变成进度条；下载完成按钮变
@@ -105,7 +105,7 @@ export function UpdatePill() {
         <img
           src={updateOtto}
           alt=""
-          className="w-[32px] h-[32px] shrink-0 select-none"
+          className="w-[24px] h-[24px] shrink-0 select-none"
           style={{ imageRendering: "pixelated" }}
           draggable={false}
         />

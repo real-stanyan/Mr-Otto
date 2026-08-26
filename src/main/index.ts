@@ -34,13 +34,15 @@ import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
-import { connectMcpClient } from "./mcpClient.js";
+import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth } from "./mcpAuthStore.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
+import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
@@ -58,6 +60,7 @@ import { loadExecPolicy, appendAllowRule } from "./execPolicyStore.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
+import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
@@ -93,6 +96,7 @@ import {
   memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
+import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
@@ -107,7 +111,7 @@ import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
-import { assignMcpToolNames } from "../shared/mcp.js";
+import { knownMcpToolNames } from "../shared/mcp.js";
 import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -123,6 +127,7 @@ import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
+import { createRejectionLedger, visibleRejection } from "./remoteRejections.js";
 import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
@@ -135,8 +140,8 @@ import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
   approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
-  friendRequestNotification, turnCompleteNotification, turnFailedNotification,
-  newIncomingRequests,
+  friendRequestNotification, remotePairingNotification, turnCompleteNotification,
+  turnFailedNotification, newIncomingRequests,
 } from "./friendNotifier.js";
 import type { FriendsSnapshot } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
@@ -303,6 +308,13 @@ void app.whenReady().then(() => {
   }
   app.setAboutPanelOptions({ applicationName: "Mr Otto", applicationVersion: app.getVersion() });
 
+  // Dock/Finder 起的 app 只有 launchd 的最小 PATH，spawn 出去的 npm/node 全
+  // exit 127（issue #453）——启动时跑一次登录 shell 把用户的 PATH 捞回来。
+  // 只在打包后做：终端 `npm run dev` 起的进程 PATH 本来就对，白跑一次 rc 纯付
+  // 副作用（本机实测 zsh -ilc 约 0.9s）。不 await：晚到之前 childEnv 维持现状，
+  // 到了之后新起的子进程自动用上——比拖住整条启动链强
+  if (app.isPackaged) void primeLoginShellPath();
+
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
   const keyVaultPath = join(app.getPath("userData"), "keys.json");
@@ -421,6 +433,9 @@ void app.whenReady().then(() => {
       healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
     },
   });
+  /** 叫醒远程传输(登录那一刻)。远程那一块装配得比 accountManager 晚,
+      所以这里先留个空位,由它填上 —— null = 远程没起来(系统封装不可用) */
+  let remoteRetryNow: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -432,6 +447,10 @@ void app.whenReady().then(() => {
       // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
       if (info.signedIn) void friends.start();
       else friends.stop();
+      // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
+      // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
+      // 令牌就自己停住了
+      if (info.signedIn) remoteRetryNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -542,11 +561,13 @@ void app.whenReady().then(() => {
   // 同一份 IslandFleet,同一套"状态下行、命令上行",只是传输从本机 stdio
   // 换成了隔着公网的加密 SSE + POST。
   //
-  // **暂时挂在 OTTO_REMOTE=1 后面**:配对(TOFU 首次确认那一步)还没有 UI,
-  // 没 pin 过对端的话每次握手都会被拒 —— 默认开着只是白连中继。
-  // 配对 UI 落地时把这个开关摘掉。
+  // 曾经挂在 OTTO_REMOTE=1 后面(issue #484 摘掉)。挂它的理由是"配对还没有 UI,
+  // 默认开着只是白连中继" —— 配对 UI 落地(设置页「手机」栏目)之后这条不再成立。
+  /** 被挡下的握手台账(issue #485)。在 remote 之外声明:设置页的 remoteStatus
+      要读它,而它的写入方在桥的回调里 */
+  const rejections = createRejectionLedger({ now: () => Date.now() });
+
   const remote = (() => {
-    if (process.env.OTTO_REMOTE !== "1") return { off: "disabled" as const };
     const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
       path: join(app.getPath("userData"), "remote-identity.bin"),
@@ -567,6 +588,9 @@ void app.whenReady().then(() => {
       authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
       log: (m) => console.warn(m),
     });
+    // 没登录时 connect() 直接返回、不排重连,所以登录那一刻要有人叫醒它。
+    // 摘掉开关之前这条路很少走到(会去设开关的人基本已经登录了),之后它是默认路径
+    remoteRetryNow = () => transport.retryNow();
     const bridge = createRemoteBridge({
       crypto,
       identity: idStore.identity,
@@ -580,6 +604,11 @@ void app.whenReady().then(() => {
       // 重新派生密钥之后订阅还在(手机重连不等于换了观众):fleet 桥自己补推了,
       // 时间线得这儿补 —— 手机那条 watch 可能正好封在旧密钥里,已经丢了
       onRekey: () => pushTimelineNow(),
+      // 被挡下的握手要有人看得见(issue #485):台账负责去重(重连=重新握手,
+      // 一分钟能来好几次),这儿只管把过了闸的那次弹成通知
+      onRejected: (r) => {
+        if (rejections.record(r)) notify(remotePairingNotification(r.reason));
+      },
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -1028,10 +1057,50 @@ void app.whenReady().then(() => {
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
   const mcpConfigPath = join(configDir(homedir()), "mcp.json");
+  // OAuth 凭据落在同一个配置目录下的独立文件（Task 1，0600），与 mcp.json
+  // 分开存：一份是人手编的连接配置，一份是程序读写的密态
+  const mcpAuthPath = join(configDir(homedir()), "mcp-auth.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
     save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
-    connect: connectMcpClient,
+    connect: (id, cfg) => {
+      // 只有已经授权过（盘上有 token）的 http server 才走 authProvider：
+      // SDK 此时只会拿 token 去用、过期了拿 refresh_token 去续，不会发起
+      // 新授权、也不会做动态客户端注册。
+      //
+      // 没有 token 就不给 authProvider——否则 SDK 会在连接路径上跑一次 DCR，
+      // 把这里这个没有真端口的占位 redirect_uri 注册进去；等用户真去点
+      // 「授权」时，authorizeMcpServer 用的是带真端口的 redirect_uri，
+      // 复用同一份注册就会被服务端以 redirect_uri 不匹配拒掉。
+      // 不给的结果正是我们要的：401 → needs-auth → 用户点那颗按钮。
+      const authed = cfg.kind === "http" && readMcpAuth(mcpAuthPath, id).tokens !== undefined;
+      return connectMcpClient(
+        id,
+        cfg,
+        authed
+          ? createOAuthProvider({
+              // 连接路径不发起新授权，这两个字段用不上；真授权走
+              // authorizeMcpServer 里另造的、带真端口的 provider
+              redirectUri: "http://127.0.0.1/callback",
+              state: "",
+              read: () => readMcpAuth(mcpAuthPath, id),
+              write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+              openBrowser: () => {
+                // 连接路径上不发浏览器：一台 server 的 token 过期不该劫持
+                // 用户的屏幕。让它抛 Unauthorized → hub 标 needs-auth →
+                // 用户自己点那颗按钮
+              },
+            })
+          : undefined
+      );
+    },
+    authorize: (id, cfg) =>
+      authorizeMcpServer(id, cfg, {
+        read: () => readMcpAuth(mcpAuthPath, id),
+        write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+        openBrowser: (url) => { void shell.openExternal(url); },
+      }),
+    clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
@@ -1115,6 +1184,12 @@ void app.whenReady().then(() => {
     },
   };
 
+  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
+  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装。
+  // 声明位置提到探针之前：探针也要给 skills（见下），而它跑在 whenReady 早期，
+  // 留在下面会撞 TDZ
+  const skillRoots = [join(configDir(homedir()), "skills")];
+
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
@@ -1153,13 +1228,27 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      // 同理给 skills（ADR-0122）：不给的话 skill 这把刀根本不挂，于是
+      // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
+      // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
+      // 「子会话自己也拿得到」在真实装配里就永远兑现不了。
+      // 用真的 scanSkills 而不是桩：这份表的 description 会原样出现在设置页的
+      // 工具目录里（CHANNELS.toolCatalog 走的是同一个函数），桩里的假 skill 名
+      // 会当场漏给用户看。代价是 skill 的 available() 判定「一把都没装就不出这把刀」
+      // 也跟着生效：装机时零 skill 的话开机这一发探针里没有它，装了 skill
+      // 重开一次才进 TOOL_NAMES（设置页那一发是现装的，不受这条影响）
+      skills: { listSkills: () => scanSkills(skillRoots) },
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 开机那次刻意不给 mcp（与 browser 的桩子相反）：那一步跑在注册第一个 IPC
       // 通道之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
       // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
       ...(mcp ? { mcp } : {}),
-    }).toolDefs;
+      // catalogToolDefs 而不是 toolDefs（issue #473）：toolDefs 是"模型此刻真
+      // 看到的账"，未被 tool_search 曝光的 deferred 不在里面——用它的话
+      // mcp_configure / mcp_authorize 这类天生 deferred 的刀在设置页勾选框里
+      // 永远不出现，TOOL_NAMES 也认不得它们。目录要的是"一共有哪些刀"
+    }).catalogToolDefs;
   };
 
   let TOOL_NAMES: string[];
@@ -1168,29 +1257,29 @@ void app.whenReady().then(() => {
   } catch {
     TOOL_NAMES = [];
   }
-  /** 此刻活着的那些 server 提供的工具名（ADR-0054）。TOOL_NAMES 那个探针装配
-      刻意不给 mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、
-      改清单，快照会让"认不认得这个名字"停在装配那一刻。
-      mcp_read_resource 一并算上：它同样只在有 mcp 能力时才挂 */
-  const mcpToolNamesNow = (): string[] => {
-    const live = mcpHub.servers().filter((s) => s.live);
-    if (live.length === 0) return [];
-    // 分配跑在**全体** server 上再滤 live（issue #349）：撞名的哈希后缀取决于
-    // 整桌顺序，与 createMcpTools（装配时也是全体）保持同一份分配才对得上号
-    const all = mcpHub.servers().flatMap((s) => s.tools.map((t) => ({ server: s.name, tool: t.name, live: s.live })));
-    const names = assignMcpToolNames(all.map(({ server, tool }) => ({ server, tool })));
-    return [
-      "mcp_read_resource",
-      ...all.flatMap((e, i) => (e.live && names[i] !== null ? [names[i]!] : [])),
-    ];
-  };
+  /** 此刻认得的 MCP 系工具名（ADR-0054）。TOOL_NAMES 那个探针装配刻意不给
+      mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、改清单，
+      快照会让"认不认得这个名字"停在装配那一刻。逻辑本体在 shared/mcp.ts
+      （issue #473 拎出去的，纯函数才测得到）：自助配置三件套 + mcp_read_resource
+      无条件在列（挂载条件是"有 mcp 能力"，零 server 也挂），server 工具只算 live */
+  const mcpToolNamesNow = (): string[] => knownMcpToolNames(mcpHub.servers());
 
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) => {
     // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
-    // 在两边一个认得一个不认得
-    const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    // 在两边一个认得一个不认得。
+    // skill 工具同样不能只信 TOOL_NAMES 那份开机快照：它的 available() 只问
+    // "此刻有没有装 skill"，零 skill 开机时 probeToolDefs 装不出它，TOOL_NAMES
+    // 里没有 "skill"。之后用户在设置页导入第一把 skill：复选框列表用的是现算的
+    // 活工具表，能勾上；但这里若还信旧快照，保存时就会把 skill 打进
+    // unknownTools，报"1 个工具名无法识别"。knownSkillToolName 同 mcpToolNamesNow
+    // 挨着的既有惯用法（ADR-0054）：认不认得这个名字不能停在装配那一刻，这里也现扫
+    const known = [
+      ...TOOL_NAMES,
+      ...mcpToolNamesNow(),
+      ...knownSkillToolName(scanSkills(skillRoots).length),
+    ];
     // subagentRoots 只拼路径;搬家(.otter → .mr-otto)在这里先做一遍,用户级和工作区级都搬
     configDir(homedir());
     if (workspace) configDir(workspace);
@@ -1322,6 +1411,9 @@ void app.whenReady().then(() => {
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
         mcp: mcpHub,
+        // skill 库同理（issue #482）：挂载归挂载，白名单说了算。skills: "none"
+        // 的子 agent 当初就没挂上这把刀，快照里没有它的名字，恢复回来照样没有
+        skills: { listSkills: () => scanSkills(skillRoots) },
       });
     }
     // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
@@ -1363,6 +1455,11 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
+      // skill 渐进披露（ADR-0122）。四条装配路径都给：这条（主会话）、
+      // subagentRunner（活着的子会话）、createChildAgent（恢复出来的子会话）、
+      // probeToolDefs（开机探针）。listSkills 现扫磁盘（scanSkills 不缓存），
+      // 工具层不碰 fs
+      skills: { listSkills: () => scanSkills(skillRoots) },
       // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
       // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
       // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
@@ -1415,6 +1512,9 @@ void app.whenReady().then(() => {
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+        // 子会话默认也挂 skill 工具（subagentRunner 按 def.skills === "none" 决定
+        // 挂不挂）；listSkills 与主会话共用同一份现扫闭包
+        skills: { listSkills: () => scanSkills(skillRoots) },
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
         register: (child) => {
@@ -1618,10 +1718,6 @@ void app.whenReady().then(() => {
     }
   );
 
-  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
-  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
-  const skillRoots = [join(configDir(homedir()), "skills")];
-
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
   ipcMain.handle(CHANNELS.listExternalSkills, () => {
     const installed = new Set(scanSkills(skillRoots).map((s) => s.name));
@@ -1633,6 +1729,17 @@ void app.whenReady().then(() => {
       throw new Error("导入清单形状非法(应为 skill 名字符串数组)");
     }
     return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
+  });
+  // 用户侧停用入口（Task 6）：不校验来源——模型自取的和 $ 启用的都能点掉，
+  // 模型那侧的 release 才校验"只能停自己取的"。形状把关先于 append（同
+  // handleSendMessage 的规矩）：name 非字符串、会话不存在都是坏请求零痕迹拒发。
+  // 把关逻辑抽成 validateReleaseSkillRequest（src/shared/releaseSkillRequest.ts）——
+  // 这个文件顶层有 app.whenReady 副作用，vitest 没法直接 import 它测 handler，
+  // 纯函数才测得到（tests/shared/releaseSkillRequest.test.ts）
+  ipcMain.handle(CHANNELS.releaseSkill, (_e, sessionId: string, name: unknown) => {
+    validateReleaseSkillRequest(name, store.has(sessionId));
+    const appended = store.append({ sessionId, ts: Date.now(), type: "skill_released", name });
+    send(CHANNELS.event, appended);
   });
 
   // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────
@@ -1725,10 +1832,13 @@ void app.whenReady().then(() => {
     if (!("devices" in remote)) return { on: false, reason: remote.off };
     try {
       await remote.devices.registerSelf(hostname());
-      return { on: true, peers: await remote.devices.listPeers() };
+      const peers = await remote.devices.listPeers();
+      return { on: true, peers, rejected: visibleRejection(rejections.latest(), peers) };
     } catch (err) {
       console.warn("远程设备目录读不到", err);
-      return { on: true, peers: [] }; // 离线/库出错:空列表,而不是把设置页炸掉
+      // 离线/库出错:空列表,而不是把设置页炸掉。被挡下的握手照报 ——
+      // 它不依赖目录,而且"目录读不到"时它恰恰是唯一的线索
+      return { on: true, peers: [], rejected: rejections.latest() };
     }
   });
 
@@ -1807,6 +1917,10 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
     await mcpHub.reconnect(id);
+    return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.authorizeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
+    await mcpHub.authorize(id);
     return mcpSnapshot();
   });
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>

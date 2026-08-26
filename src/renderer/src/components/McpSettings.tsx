@@ -295,6 +295,7 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
   const saveMcpServer = useChat((s) => s.saveMcpServer);
   const removeMcpServer = useChat((s) => s.removeMcpServer);
   const reconnectMcpServer = useChat((s) => s.reconnectMcpServer);
+  const authorizeMcpServer = useChat((s) => s.authorizeMcpServer);
 
   const cfg = server.config;
 
@@ -313,6 +314,8 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [authorizing, setAuthorizing] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // resetDraft(打开态收起时)和"存成功之后"都要把草稿拉回某一份 config，
   // 但拉回的对象不一样：收起时用的是这一次渲染闭包里的 cfg（没有异步间隙，
@@ -410,6 +413,22 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
     }
   };
 
+  // 跑一次 OAuth 授权：主进程开系统浏览器，用户点完同意后 mcpHub.authorize
+  // 自动重连——这里只管按钮的三态(等待/成功/失败)和失败原因的显示。
+  // 失败原因逐台显示而不是统一吞成"授权失败"：超时/用户拒绝/服务端报错
+  // 是三件不同的事，混成一句话会让用户第二次点之前完全不知道该改什么
+  const authorize = async () => {
+    setAuthorizing(true);
+    setAuthError(null);
+    try {
+      await authorizeMcpServer(server.id);
+    } catch (e) {
+      setAuthError(bridgeErrorMessage(e));
+    } finally {
+      setAuthorizing(false);
+    }
+  };
+
   const capabilityRows: SpecRow[] = [
     { label: "传输", value: cfg.kind === "stdio" ? "本地命令" : "HTTP" },
     { label: "工具", value: String(server.tools.length), emphasis: server.tools.length > 0 },
@@ -444,6 +463,21 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
       <div className="flex flex-col gap-4 border-t border-border px-[14px] py-4">
         {server.error && (display === "failed" || display === "needs-auth") && (
           <p className={ERR_TXT}>{server.error}</p>
+        )}
+
+        {display === "needs-auth" && cfg.kind === "http" && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={authorizing}
+              className="mcp-authorize-btn"
+              onClick={() => void authorize()}
+            >
+              {authorizing ? "等浏览器…" : "授权"}
+            </Button>
+            {authError && <p className={cn(ERR_TXT, "mcp-auth-error")}>{authError}</p>}
+          </div>
         )}
 
         <div className="flex items-center justify-between gap-3">
