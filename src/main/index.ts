@@ -1852,6 +1852,16 @@ void app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle(CHANNELS.remoteForgetDevice, async (_e, deviceId: string): Promise<boolean> => {
+    if (!("devices" in remote)) return false;
+    try {
+      return await remote.devices.forget(deviceId);
+    } catch (err) {
+      console.warn("远程设备删除失败", err);
+      return false;
+    }
+  });
+
   ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
   ipcMain.handle(CHANNELS.setIslandSettings, (_e, settings: IslandSettings) => {
     islandSettings = normaliseIslandSettings(settings);

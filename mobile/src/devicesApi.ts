@@ -25,4 +25,10 @@ export const devicesApi: DevicesApi = {
     if (error) throw new Error(error.message);
     return (data ?? []) as DeviceRow[];
   },
+
+  async remove(userId, deviceId) {
+    const { error } = await supabase
+      .from("devices").delete().eq("user_id", userId).eq("device_id", deviceId);
+    if (error) throw new Error(error.message);
+  },
 };

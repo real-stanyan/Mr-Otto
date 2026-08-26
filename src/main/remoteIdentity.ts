@@ -59,6 +59,8 @@ export interface IdentityStore {
   peerIdentity(): Uint8Array | null;
   /** TOFU 首次确认之后调一次。覆盖旧的 pin = 用户换了手机,由调用方负责先问 */
   pinPeer(pub: Uint8Array): void;
+  /** 解除配对。删设备行时连着走(devices.ts 的 forget) */
+  unpinPeer(): void;
 }
 
 const realFs: FsPort = {
@@ -144,6 +146,10 @@ export function openIdentityStore(deps: {
     },
     pinPeer(peerPub) {
       state = { ...state, peer: b64encode(peerPub) };
+      flush();
+    },
+    unpinPeer() {
+      state = { ...state, peer: null };
       flush();
     },
   };

@@ -27,12 +27,18 @@ function newStore() {
 
 function fakeApi(rows: DeviceRow[] = [], uid: string | null = "u1") {
   const upserts: unknown[] = [];
+  const removed: { userId: string; deviceId: string }[] = [];
   const api: DevicesApi = {
     userId: async () => uid,
     upsert: async (r) => { upserts.push(r); },
     list: async () => rows,
+    remove: async (userId, deviceId) => {
+      removed.push({ userId, deviceId });
+      const i = rows.findIndex((r) => r.device_id === deviceId);
+      if (i >= 0) rows.splice(i, 1);
+    },
   };
-  return { api, upserts, rows };
+  return { api, upserts, removed, rows };
 }
 
 function phoneRow(over: Partial<DeviceRow> = {}): DeviceRow & { pub: Uint8Array } {
@@ -119,6 +125,69 @@ describe("createRemoteDevices", () => {
     const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P, log: () => {} });
     await d.pin("m1");
     expect(await d.pin("不存在")).toBe(false);
+    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(phone.pub));
+  });
+
+  // 一台手机换个安装(Expo Go / 正式 app / 重装)就是新的一行 —— 身份私钥在各自的
+  // 钥匙串里,新安装读不到旧的。目录里没有过期这回事,只有删。
+  it("删掉一台没配对的：行没了，已有的 pin 不受影响", async () => {
+    const store = newStore();
+    const live = phoneRow({ device_id: "m1" });
+    const stale = phoneRow({ device_id: "m2", label: "iPhone（旧安装）" });
+    const { api, removed } = fakeApi([live, stale]);
+    const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
+
+    await d.pin("m1");
+    expect(await d.forget("m2")).toBe(true);
+
+    expect(removed).toEqual([{ userId: "u1", deviceId: "m2" }]);
+    expect((await d.listPeers()).map((p) => p.deviceId)).toEqual(["m1"]);
+    // 删的是别人那一行,配对必须原样还在
+    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(live.pub));
+  });
+
+  // 这条是删除这个动作的**意义**所在:行删了而 pin 还在 = "删掉了但仍然信任",
+  // 那就不是撤销,只是从列表里藏起来
+  it("删掉的正好是已配对那台：pin 一起清掉", async () => {
+    const store = newStore();
+    const phone = phoneRow();
+    const { api } = fakeApi([phone]);
+    const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P, log: () => {} });
+
+    await d.pin("m1");
+    expect(store.peerIdentity()).not.toBeNull();
+
+    expect(await d.forget("m1")).toBe(true);
+    expect(store.peerIdentity()).toBeNull();
+  });
+
+  it("没登录 → 不删，也不碰 pin", async () => {
+    const store = newStore();
+    const phone = phoneRow();
+    const { api, removed } = fakeApi([phone]);
+    const signedIn = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
+    await signedIn.pin("m1");
+
+    const { api: anon } = fakeApi([phone], null);
+    const d = createRemoteDevices({ api: anon, selfKind: "desktop", store, crypto: P });
+    expect(await d.forget("m1")).toBe(false);
+    expect(removed).toEqual([]);
+    expect(store.peerIdentity()).not.toBeNull();
+  });
+
+  // 删库这一步失败时不能先把 pin 清了:那会留下"没配对、也没删掉"的中间态,
+  // 用户看见的还是同一行,却已经连不上了
+  it("库里删失败 → 抛出去，pin 不动", async () => {
+    const store = newStore();
+    const phone = phoneRow();
+    const { api } = fakeApi([phone]);
+    const d = createRemoteDevices({
+      api: { ...api, remove: async () => { throw new Error("网络断了"); } },
+      selfKind: "desktop", store, crypto: P,
+    });
+    await d.pin("m1");
+
+    await expect(d.forget("m1")).rejects.toThrow("网络断了");
     expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(phone.pub));
   });
 });

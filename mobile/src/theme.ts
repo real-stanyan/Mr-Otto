@@ -26,6 +26,9 @@ export interface Palette {
       只有 3.58:1,13px 的字在那个对比度上发暗(桌面 issue #123 的结论) */
   brand: string;
   border: string;
+  /** 输入框的描边。比 border 亮半档(深色 0.14 vs 0.12)——桌面 app.css 就是分开的两条:
+      一块板的边可以若隐若现,一个**能往里打字的框**必须先让人看见它在哪 */
+  input: string;
   destructive: string;
   destructiveForeground: string;
   ok: string;
@@ -46,6 +49,7 @@ const light: Palette = {
   mutedForeground: "rgba(0, 0, 0, 0.55)",
   brand: "#4a70a9",
   border: "rgba(0, 0, 0, 0.12)",
+  input: "rgba(0, 0, 0, 0.12)",
   destructive: "#c92a2a",
   destructiveForeground: "#ffffff",
   ok: "#2b8a3e",
@@ -66,6 +70,7 @@ const dark: Palette = {
   mutedForeground: "rgba(245, 245, 247, 0.56)",
   brand: "#0a84ff",
   border: "rgba(245, 245, 247, 0.12)",
+  input: "rgba(245, 245, 247, 0.14)",
   destructive: "#ff453a",
   destructiveForeground: "#ffffff",
   ok: "#30d158",

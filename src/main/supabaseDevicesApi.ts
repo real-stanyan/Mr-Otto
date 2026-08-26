@@ -36,5 +36,17 @@ export function createSupabaseDevicesApi(client: SupabaseClient): DevicesApi {
       const res = await client.from("devices").select(COLUMNS).eq("user_id", userId);
       return (unwrap(res) ?? []) as DeviceRow[];
     },
+
+    async remove(userId, deviceId) {
+      // 主键是 (user_id, device_id),两个都给:少一个就成了"删这个 id 的所有行",
+      // 靠 RLS 兜住不是理由 —— 查询本身该是精确的
+      const res = await client
+        .from("devices")
+        .delete()
+        .eq("user_id", userId)
+        .eq("device_id", deviceId)
+        .select(COLUMNS);
+      unwrap(res);
+    },
   };
 }

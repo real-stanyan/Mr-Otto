@@ -242,8 +242,9 @@ export function Button(props: {
   onPress: () => void;
   disabled?: boolean;
   variant?: ButtonVariant;
-  /** 左边那个标记(第三方登录的 logo)。**绝对定位在左边,文字仍然居中** ——
-      跟着文字排的话,两个按钮的文字会因为 logo 宽度不同而错开一两个点 */
+  /** 标记(第三方登录的 logo)。**跟着文字排,整组居中**——logo 钉在左边、
+      文字自己居中的话,两者读不成一个东西,像一枚贴纸压在按钮上。
+      前提是同一组按钮的 logo 等宽(都按 20pt 给),否则文字会左右错开一两个点 */
   icon?: React.ReactNode;
   /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
   grow?: boolean;
@@ -262,11 +263,17 @@ export function Button(props: {
     Animated.spring(scale, { toValue: value, useNativeDriver: true, ...PRESS_SPRING }).start();
   };
 
-  const hair = { borderWidth: StyleSheet.hairlineWidth };
+  // **1pt,不是 hairlineWidth。** 桌面那侧一律 `1px solid var(--border)`;hairline 在
+  // 3x 屏上只有 0.33pt,压在 rgba(...,0.12) 这种若隐若现的边色上等于没有边——
+  // 登录页那两个 OAuth 按钮就是这么丢的。控件跟桌面同宽,板(Card/Group)留 hairline:
+  // 板坐在实底上,边只负责分层;控件常常坐在会动的背景上,边要先说清"我到哪儿为止"
+  const line = { borderWidth: 1 };
   const face: ViewStyle =
     v === "primary" ? { backgroundColor: c.primary }
-    : v === "outline" ? { backgroundColor: "transparent", ...hair, borderColor: c.border }
-    : v === "destructive" ? { backgroundColor: "transparent", ...hair, borderColor: c.destructive }
+    // outline 是**实底**加一道细线,不是透明:登录页那块波场会动,
+    // 透明按钮压上去时边界随着波一起闪,按钮读成了背景的一部分
+    : v === "outline" ? { backgroundColor: c.card, ...line, borderColor: c.border }
+    : v === "destructive" ? { backgroundColor: "transparent", ...line, borderColor: c.destructive }
     : { backgroundColor: "transparent" };
 
   const fg =
@@ -294,16 +301,15 @@ export function Button(props: {
           {
             // alignItems + justifyContent 都要:少一个,文字在某些容器里会跑到看不见的地方
             // (虚拟机上第一版就是一条没有字的蓝条)
-            alignItems: "center", justifyContent: "center" },
+            alignItems: "center", justifyContent: "center",
+            flexDirection: "row", gap: space.sm },
           face,
           // 关了动效时,按下的反馈退成变暗——反馈本身不能没有
           reduce && pressed && { opacity: 0.7 },
           props.disabled && { opacity: 0.4 },
         ]}
       >
-        {props.icon ? (
-          <View style={{ position: "absolute", left: space.md }}>{props.icon}</View>
-        ) : null}
+        {props.icon}
         <Text style={{ ...type.headline, color: fg }}>{props.label}</Text>
       </Pressable>
     </Animated.View>
