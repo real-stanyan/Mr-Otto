@@ -80,6 +80,7 @@ const EMPTY_GRANTS: ReadonlySet<string> = new Set();
 const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
+import { createBranchWatchMiddleware } from "./branchWatch.js";
 import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
 import type { SessionEvent, ToolCallRequest, MemoryLoadedEvent } from "../session/events.js";
@@ -635,6 +636,20 @@ export function createAgent(opts: {
       createTurnDiffMiddleware(turnDiffTracker, sessionId, () => engine.runningTurnId, (u) =>
         opts.push.turnDiff?.(u)
       ),
+      // bash 里 git checkout 也是切分支（issue #568）：顶栏 handler 之外的
+      // 第二个发射点，事件形状与 ADR-0093 完全一致，渲染端零改动
+      createBranchWatchMiddleware({
+        workspace: opts.workspace,
+        onSwitch: ({ repoDir, branch, from }) => {
+          const ev = store.append({
+            sessionId, ts: Date.now(), type: "branch_checked_out",
+            ignorable: true, // 同顶栏那条：模型不消费，旧版本跳过照常重放
+            repoDir, branch,
+            ...(from ? { from } : {}),
+          });
+          opts.push.event(ev);
+        },
+      }),
     ],
     // auto 模式短路 UI 审批；决定照常过审批门落 approval_decision
     // 两层短路，顺序有意：先看模式（"完全访问"是对整台机器说的话），
