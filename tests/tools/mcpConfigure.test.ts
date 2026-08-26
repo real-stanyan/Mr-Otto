@@ -118,4 +118,30 @@ describe("mcp_configure", () => {
       .rejects.toThrow(/用户名|密码/);
     expect(c.configure).not.toHaveBeenCalled();
   });
+
+  // 终审 B Important：新工具要到下一个 turn 才进模型的工具表
+  // （engine.rebuildTools()）。旧文案"可用工具 3 个：list_tables、…"是在
+  // 鼓励模型这一轮就调它们，而这一轮它们根本不存在——命中的是"未知工具"，
+  // 逃生舱 tool_search 也不通（listDeferred 闭包捕获的是这一轮的 list）。
+  // 断关键子串不断整句，否则改一次文案就脆
+  it("连上之后的文案说清「下一轮才生效」，别鼓励模型这一轮就调", async () => {
+    const c = cap({
+      servers: () => [{ id: "supabase", name: "supabase", status: "connected", live: true,
+        tools: [
+          { name: "list_tables", description: "", inputSchema: {} },
+          { name: "execute_sql", description: "", inputSchema: {} },
+        ], resources: [], prompts: [] }],
+    });
+    const out = String(
+      await createMcpConfigureTool(c).run(
+        { id: "supabase", kind: "http", url: "https://mcp.supabase.com/mcp" },
+        world(c)
+      )
+    );
+    // 工具名照旧要说（用户要知道接上了什么）……
+    expect(out).toContain("list_tables");
+    // ……但必须紧跟着"什么时候能用"
+    expect(out).toContain("下一条消息");
+    expect(out).toContain("不要在这一轮直接调用");
+  });
 });

@@ -176,6 +176,26 @@ export function renderMcpContent(content: readonly McpContent[]): string {
     .join("\n\n");
 }
 
+/** 一台 server 刚连上时，回给模型的那句"新工具什么时候能用"。
+    mcp_configure / mcp_authorize 共用一份（终审 B Important）。
+
+    工具表是按 turn 重算的（engine.rebuildTools() 在下一个 turn 才跑），所以
+    刚连上的那几把**这一轮不在模型的工具表里**：模型照着"可用工具 3 个：
+    list_tables、execute_sql、apply_migration"在同一轮直接调，命中的是"未知
+    工具"。逃生舱也不通——tool_search 的 listDeferred 闭包捕获的是这一轮的
+    list（agent.ts）。
+
+    设计上就是"下一个 turn 生效"（spec §5.2），实现也对；出问题的是没人告诉
+    模型。所以这句话必须点明"从用户的下一条消息开始"和"本轮不要直接调"。 */
+export function mcpNewToolsNotice(toolNames: readonly string[]): string {
+  const list = toolNames.length === 0 ? "（这台没有暴露工具）" : toolNames.join(" / ");
+  return (
+    `新增 ${toolNames.length} 把工具（${list}）。` +
+    "它们从**用户的下一条消息**开始才会出现在你的工具列表里——" +
+    "本轮请先把结果告诉用户，不要在这一轮直接调用它们。"
+  );
+}
+
 /** 遮罩凭据。键名保留 —— 用户要认出"这一格配的是哪一把"（同 ADR-0044 的判断） */
 export function maskMcpConfig(cfg: McpServerConfig): McpServerConfig {
   const maskAll = (r: Record<string, string>): Record<string, string> =>

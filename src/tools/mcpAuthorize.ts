@@ -7,6 +7,7 @@
 
 import type { Tool } from "./tool.js";
 import type { McpCapability, ExecutionWorld } from "../world/executionWorld.js";
+import { mcpNewToolsNotice } from "../shared/mcp.js";
 
 export function createMcpAuthorizeTool(_mcp: McpCapability): Tool {
   return {
@@ -32,7 +33,7 @@ export function createMcpAuthorizeTool(_mcp: McpCapability): Tool {
       await world.mcp.authorize(id);
       const hit = world.mcp.servers().find((s) => s.id === id);
       if (hit?.live) {
-        return `「${id}」授权完成并已连上，可用工具 ${hit.tools.length} 个：${hit.tools.map((t) => t.name).join("、")}`;
+        return `「${id}」授权完成并已连上，${mcpNewToolsNotice(hit.tools.map((t) => t.name))}`;
       }
       return `「${id}」的授权流程跑完了，但还没连上：${hit?.error ?? "原因未知"}`;
     },

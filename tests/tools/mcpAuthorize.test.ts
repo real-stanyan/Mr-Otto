@@ -32,6 +32,20 @@ describe("mcp_authorize", () => {
     expect(String(out)).toContain("list_tables");
   });
 
+  // 终审 B Important：新工具要到下一个 turn 才进模型的工具表
+  // （engine.rebuildTools()），这一轮照着"可用工具 N 个"直接调会命中"未知
+  // 工具"，逃生舱 tool_search 也不通（listDeferred 闭包捕获的是这一轮的
+  // list）。断关键子串不断整句——否则改一次文案就脆
+  it("成功文案说清「下一轮才生效」，别鼓励模型这一轮就调", async () => {
+    const c = cap({
+      servers: () => [{ id: "s", name: "s", status: "connected", live: true,
+        tools: [{ name: "list_tables", description: "", inputSchema: {} }], resources: [], prompts: [] }],
+    });
+    const out = String(await createMcpAuthorizeTool(c).run({ id: "s" }, world(c)));
+    expect(out).toContain("下一条消息");
+    expect(out).toContain("不要在这一轮直接调用");
+  });
+
   it("授权失败把原因转述给模型，让它能告诉用户下一步", async () => {
     const c = cap({ authorize: vi.fn(async () => { throw new Error("等授权超时（300 秒没等到浏览器回调）"); }) });
     await expect(createMcpAuthorizeTool(c).run({ id: "s" }, world(c))).rejects.toThrow(/超时/);

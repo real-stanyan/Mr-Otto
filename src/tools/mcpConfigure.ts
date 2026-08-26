@@ -11,7 +11,7 @@
 import type { Tool } from "./tool.js";
 import type { McpCapability, ExecutionWorld } from "../world/executionWorld.js";
 import type { McpServerConfig } from "../shared/mcp.js";
-import { normalizeMcpHttpUrl } from "../shared/mcp.js";
+import { mcpNewToolsNotice, normalizeMcpHttpUrl } from "../shared/mcp.js";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -97,7 +97,7 @@ export function createMcpConfigureTool(mcp: McpCapability): Tool {
       if (cfg === null) return `已删除 MCP server「${id}」。`;
       const hit = world.mcp.servers().find((s) => s.id === id);
       if (hit?.live) {
-        return `MCP server「${id}」已配置并连上，可用工具 ${hit.tools.length} 个：${hit.tools.map((t) => t.name).join("、")}`;
+        return `MCP server「${id}」已配置并连上，${mcpNewToolsNotice(hit.tools.map((t) => t.name))}`;
       }
       if (hit?.status === "needs-auth") {
         return `MCP server「${id}」已配置，但需要授权。调用 mcp_authorize 拉起授权（会打开浏览器让用户点同意）。`;
