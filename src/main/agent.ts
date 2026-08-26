@@ -57,8 +57,7 @@ import { createMcpAuthorizeTool } from "../tools/mcpAuthorize.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import { createSkillTool } from "../tools/skill.js";
-import { activeSkills } from "../session/activeSkills.js";
-import { barrenEventIndexes } from "../session/barrenTurns.js";
+import { activeSkillsOf } from "../session/activeSkills.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import {
   UIApprover,
@@ -552,10 +551,9 @@ export function createAgent(opts: {
         ? [
             createSkillTool({
               listSkills: opts.skills.listSkills,
-              activeSkills: () => {
-                const log = store.load(sessionId);
-                return activeSkills(log, barrenEventIndexes(log));
-              },
+              // 稀疏索引现算，不搬整份日志（issue #482 欠账 ②）；
+              // 分支会话它自己退回全量
+              activeSkills: () => activeSkillsOf(store, sessionId),
               appendInvoked: (name, content, args) => {
                 opts.push.event(
                   store.append({
