@@ -34,9 +34,13 @@ const BUSY: IslandFleet = {
     投递走一条 FIFO 队列而不是同步调用 —— 真中继两条 `:peer` 是先**写进**两条 SSE 流的,
     任何一端的 hello 都不可能抢在对端读到自己那条信号之前到达。同步模型会凭空造出
     一个现实里不存在的竞态(新来的那端先发 hello,而在位的那端还没开始这一轮)。 */
+/** 两端各一条连接时中继给的 cid(ADR-0129)。这个 harness 只模两条 */
+const CID: Record<Role, string> = { desktop: "cd", mobile: "cm" };
+
 function fakeRelay() {
-  const sink: Record<Role, ((p: string) => void) | null> = { desktop: null, mobile: null };
-  const peerCb: Record<Role, (() => void) | null> = { desktop: null, mobile: null };
+  const sink: Record<Role, ((p: string, from: string) => void) | null> =
+    { desktop: null, mobile: null };
+  const peerCb: Record<Role, ((cid: string) => void) | null> = { desktop: null, mobile: null };
   const dropped: string[] = [];
   const queue: Array<() => void> = [];
   const peerOf = (r: Role): Role => (r === "desktop" ? "mobile" : "desktop");
@@ -47,32 +51,33 @@ function fakeRelay() {
 
   return {
     dropped,
-    attach(role: Role, onMsg: (p: string) => void, onPeer: () => void) {
+    attach(role: Role, onMsg: (p: string, from: string) => void, onPeer: (cid: string) => void) {
       sink[role] = onMsg;
       peerCb[role] = onPeer;
       if (sink[peerOf(role)]) {
-        queue.push(onPeer);                       // 新来的这端
-        queue.push(peerCb[peerOf(role)]!);        // 在位的那端
+        queue.push(() => onPeer(CID[peerOf(role)]));             // 新来的这端
+        queue.push(() => peerCb[peerOf(role)]!(CID[role]));      // 在位的那端
       }
       flush();
     },
     send(from: Role, payload: string): boolean {
       const peer = sink[peerOf(from)];
       if (!peer) { dropped.push(payload); return false; }
-      queue.push(() => peer(payload));
+      queue.push(() => peer(payload, CID[from]));
       return true;
     },
   };
 }
 
 function desktopTransport(relay: ReturnType<typeof fakeRelay>): RemoteTransport {
-  let onMsg: (p: string) => void = () => {};
-  let onPeer: () => void = () => {};
-  relay.attach("desktop", (p) => onMsg(p), () => onPeer());
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeer: (cid: string) => void = () => {};
+  relay.attach("desktop", (p, from) => onMsg(p, from), (cid) => onPeer(cid));
   return {
     send(p) { relay.send("desktop", p); },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
+    onGone() { /* 这一组不测对端离场 */ },
     onClose() { /* 这一组不测自身断线 */ },
     close() { /* 同上 */ },
   };

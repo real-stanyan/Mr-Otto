@@ -36,8 +36,13 @@ export function createXhrTransport(opts: {
   const base = opts.baseUrl.replace(/\/+$/, "");
   const q = "?role=mobile";
 
-  let onMsg: (p: string) => void = () => {};
-  let onPeer: () => void = () => {};
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeer: (cid: string) => void = () => {};
+  let onGone: (cid: string) => void = () => {};
+  /** 收到过 `:cid` = 对面是新中继(ADR-0129)。之后裸 `:peer` 是发给老客户端的,不再理它 */
+  let addressed = false;
+  /** 中继给这条连接编的 id。发出去的每一帧都带上它,对端才知道是谁发的 */
+  let myCid = "";
   let onClose: () => void = () => {};
 
   let closed = false;
@@ -57,7 +62,7 @@ export function createXhrTransport(opts: {
    * 失败重试两次:丢一片 = 整个附件在桌面那侧作废,而一次瞬时的网络抖动
    * 不该让用户重选一遍文件。重试仍然按顺序 —— 队列没往前走。
    */
-  const uplink: string[] = [];
+  const uplink: { payload: string; to: string }[] = [];
   let sending = false;
 
   async function pump(): Promise<void> {
@@ -65,14 +70,18 @@ export function createXhrTransport(opts: {
     sending = true;
     try {
       while (uplink.length > 0 && !closed) {
-        const payload = uplink[0]!;
+        const { payload, to } = uplink[0]!;
         let ok = false;
         for (let tryNo = 0; tryNo < 3 && !closed && !ok; tryNo += 1) {
           const token = await opts.authToken();
           if (closed) return;
           if (!token) break;
           try {
-            const r = await fetch(`${base}/rl/v1/send${q}`, {
+            // to 空串 = 老中继(没发过 :cid),不带参数走原来的单对端路径
+            const url = to
+              ? `${base}/rl/v1/send${q}&to=${encodeURIComponent(to)}&from=${encodeURIComponent(myCid)}`
+              : `${base}/rl/v1/send${q}`;
+            const r = await fetch(url, {
               method: "POST",
               headers: { authorization: `Bearer ${token}` },
               body: payload,
@@ -150,8 +159,13 @@ export function createXhrTransport(opts: {
     let read = 0;
     let openedAt: number | null = null;
     const feed = createSseParser({
-      comment: (kind) => { if (kind === "peer") onPeer(); },
-      data: (payload) => onMsg(payload),
+      comment: (kind) => {
+        if (kind.startsWith("cid ")) { addressed = true; myCid = kind.slice(4); return; }
+        if (kind === "peer") { if (!addressed) onPeer(""); return; }
+        if (kind.startsWith("peer ")) onPeer(kind.slice(5));
+        else if (kind.startsWith("gone ")) onGone(kind.slice(5));
+      },
+      data: (payload, from) => onMsg(payload, from),
     });
 
     const finish = (): void => {
@@ -185,7 +199,8 @@ export function createXhrTransport(opts: {
     req.onabort = () => { /* 主动摘的(close 或 reconnectNow),两条路都已自己安排好后续 */ };
     req.onload = finish;
 
-    req.open("GET", `${base}/rl/v1/stream${q}`);
+    // v=2 = "我认按 cid 寻址那一套"(ADR-0129),见桌面侧同名注释
+    req.open("GET", `${base}/rl/v1/stream${q}&v=2`);
     req.setRequestHeader("authorization", `Bearer ${token}`);
     req.send();
   }
@@ -193,15 +208,16 @@ export function createXhrTransport(opts: {
   void connect();
 
   return {
-    send(payload) {
+    send(payload, to) {
       if (closed) return;
       // 入队即返回,失败不触发 onClose:409(对端不在线)是常态而不是"连接断了",
       // 而 send → onClose → startRound → send 会当场变成同步死循环
-      uplink.push(payload);
+      uplink.push({ payload, to });
       void pump();
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
+    onGone(cb) { onGone = cb; },
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;

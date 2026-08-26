@@ -18,7 +18,7 @@ describe("createRelay", () => {
     r.attach("u1", "desktop", desktop);
     r.attach("u1", "mobile", mobile);
 
-    // 两端都在了 → 各自先收到一条在场信号,后面的断言只看载荷
+    // 两端都在了 → 各自先收到 cid / 在场信号,后面的断言只看载荷
     desktop.chunks.length = 0;
     mobile.chunks.length = 0;
 
@@ -34,29 +34,45 @@ describe("createRelay", () => {
   //
   // 握手是双向的:两端都要拿到对方的 hello 才能派生密钥。而中继按设计不排队,
   // 桌面又是长命的那一端 —— 它开机时若盲发 hello,必然掉进虚空。
-  // 于是"对端到场"这件事必须由中继说出来:它是唯一同时看得见两个槽的人。
+  // 于是"对端到场"这件事必须由中继说出来:它是唯一同时看得见所有连接的人。
   //
   // 用 SSE 注释行(':' 开头)而不是 data 帧:控制信道与端到端载荷彻底分开,
   // 中继依旧只知道"谁在线",一个字节的内容都不碰。
-  it("对端到场时,两侧各收到一条 :peer", () => {
+  it("接上就先知道自己的 cid；对端到场时两侧各收到 :peer", () => {
     const r = createRelay();
     const desktop = sink();
     const mobile = sink();
     r.attach("u1", "desktop", desktop);
-    expect(desktop.chunks.join("")).toBe(""); // 独自在线:没有对端,不发信号
+    // 独自在线:知道自己是谁,但没有对端,不发在场信号
+    expect(desktop.chunks.join("")).toBe(":cid c1\n\n");
 
     r.attach("u1", "mobile", mobile);
-    expect(desktop.chunks.join("")).toBe(":peer\n\n"); // 在位的那端被叫醒
-    expect(mobile.chunks.join("")).toBe(":peer\n\n");  // 新来的那端也要知道对端已在
+    // 在位的那端被叫醒,并且知道新来的是哪一条
+    expect(desktop.chunks.join("")).toBe(":cid c1\n\n:peer\n\n:peer c2\n\n");
+    // 新来的那端也要知道对端已在、是哪一条
+    expect(mobile.chunks.join("")).toBe(":cid c2\n\n:peer\n\n:peer c1\n\n");
+  });
+
+  // 裸 :peer 是发给**老客户端**的:它们不认 cid,只认这一条来开握手。
+  // 新客户端收到过 :cid 就知道对面是新中继,忽略裸的那条(否则会开一轮没有收件人的握手)
+  it("裸 :peer 只发一条，不随对端条数增加", () => {
+    const r = createRelay();
+    const desktop = sink();
+    r.attach("u1", "desktop", desktop);
+    r.attach("u1", "mobile", sink());
+    r.attach("u1", "mobile", sink());
+    const bare = desktop.chunks.join("").match(/:peer\n\n/g) ?? [];
+    expect(bare).toHaveLength(2); // 两次 attach 各一条,而不是"第二次发两条"
   });
 
   it("同角色重连也重发 :peer（手机切后台再回来,整轮握手要重开）", () => {
     const r = createRelay();
     const desktop = sink();
     r.attach("u1", "desktop", desktop);
+    const off = r.attach("u1", "mobile", sink())!;
+    off();
     r.attach("u1", "mobile", sink());
-    r.attach("u1", "mobile", sink()); // 重连顶掉旧的
-    expect(desktop.chunks.join("")).toBe(":peer\n\n:peer\n\n");
+    expect(desktop.chunks.join("")).toContain(":peer c3\n\n");
   });
 
   it("不同 user 之间绝不串线", () => {
@@ -66,7 +82,7 @@ describe("createRelay", () => {
     r.attach("u1", "mobile", a);
     r.attach("u2", "mobile", b);
     r.deliver("u1", "desktop", "SECRET");
-    expect(b.chunks.join("")).toBe("");
+    expect(b.chunks.join("")).toBe(":cid c2\n\n");
   });
 
   it("对端不在线 → deliver 回 false，字节丢弃", () => {
@@ -79,21 +95,91 @@ describe("createRelay", () => {
   it("detach 之后不再收", () => {
     const r = createRelay();
     const m = sink();
-    const off = r.attach("u1", "mobile", m);
+    const off = r.attach("u1", "mobile", m)!;
     off();
     expect(r.deliver("u1", "desktop", "X")).toBe(false);
-    expect(m.chunks.join("")).toBe("");
+    expect(m.chunks.join("")).toBe(":cid c1\n\n");
   });
 
-  it("同角色重连顶掉旧连接（一户一桌面一手机）", () => {
+  // ── 多连接(ADR-0129)──
+  //
+  // 原来是"同角色重连顶掉旧的,一户一桌面一手机"。现在几条并存,靠 cid 寻址。
+  // 为什么必须寻址而不是广播:每条连接有自己一套会话密钥,广播过去的帧在别人
+  // 那儿解不开,而 sealedStream 还带计数器校验——收到别人的帧会被判成异常
+  it("两台手机并存，按 cid 各收各的", () => {
     const r = createRelay();
-    const old = sink();
-    const fresh = sink();
-    r.attach("u1", "mobile", old);
-    r.attach("u1", "mobile", fresh);
-    r.deliver("u1", "desktop", "X");
-    expect(old.chunks.join("")).toBe("");
-    expect(fresh.chunks.join("")).toContain("X");
+    const desktop = sink();
+    const m1 = sink();
+    const m2 = sink();
+    r.attach("u1", "desktop", desktop); // c1
+    r.attach("u1", "mobile", m1);       // c2
+    r.attach("u1", "mobile", m2);       // c3
+    m1.chunks.length = 0;
+    m2.chunks.length = 0;
+
+    expect(r.deliver("u1", "desktop", "FOR-M1", { to: "c2" })).toBe(true);
+    expect(m1.chunks.join("")).toBe("data: FOR-M1\n\n");
+    expect(m2.chunks.join("")).toBe("");
+
+    expect(r.deliver("u1", "desktop", "FOR-M2", { to: "c3" })).toBe(true);
+    expect(m2.chunks.join("")).toBe("data: FOR-M2\n\n");
+  });
+
+  it("桌面知道每一条手机的 cid（新来的那条也会通知在位的）", () => {
+    const r = createRelay();
+    const desktop = sink();
+    r.attach("u1", "desktop", desktop);
+    r.attach("u1", "mobile", sink());
+    r.attach("u1", "mobile", sink());
+    expect(desktop.chunks.join("")).toContain(":peer c2\n\n");
+    expect(desktop.chunks.join("")).toContain(":peer c3\n\n");
+  });
+
+  it("对端断了要说一声 :gone —— 否则那套密钥会一直挂着，往断管子里封帧", () => {
+    const r = createRelay();
+    const desktop = sink();
+    r.attach("u1", "desktop", desktop);
+    const off = r.attach("u1", "mobile", sink())!;
+    desktop.chunks.length = 0;
+    off();
+    expect(desktop.chunks.join("")).toBe(":gone c2\n\n");
+  });
+
+  // 猜一条发过去,收的那端解不开、发的那端以为发成功了 —— 最难查的那种失败
+  it("对端不止一条而 to 缺席 → 丢弃，不猜", () => {
+    const r = createRelay();
+    r.attach("u1", "desktop", sink());
+    r.attach("u1", "mobile", sink());
+    r.attach("u1", "mobile", sink());
+    expect(r.deliver("u1", "desktop", "X")).toBe(false);
+  });
+
+  // 老客户端不带 to。对端只有一条时行为和从前一模一样
+  it("对端只有一条时 to 可以缺席（老客户端还能用）", () => {
+    const r = createRelay();
+    const m = sink();
+    r.attach("u1", "desktop", sink());
+    r.attach("u1", "mobile", m);
+    m.chunks.length = 0;
+    expect(r.deliver("u1", "desktop", "X")).toBe(true);
+    expect(m.chunks.join("")).toBe("data: X\n\n");
+  });
+
+  it("to 指到不存在的 / 同角色的连接 → 丢弃", () => {
+    const r = createRelay();
+    const d2 = sink();
+    r.attach("u1", "desktop", sink()); // c1
+    r.attach("u1", "desktop", d2);     // c2 同角色
+    r.attach("u1", "mobile", sink());  // c3
+    expect(r.deliver("u1", "desktop", "X", { to: "c2" })).toBe(false); // 桌面→桌面不给发
+    expect(r.deliver("u1", "desktop", "X", { to: "c99" })).toBe(false);
+    expect(d2.chunks.join("")).not.toContain("data:");
+  });
+
+  it("一户连接数封顶 → attach 回 null（挡的是内存）", () => {
+    const r = createRelay();
+    for (let i = 0; i < 16; i++) expect(r.attach("u1", "mobile", sink())).not.toBeNull();
+    expect(r.attach("u1", "mobile", sink())).toBeNull();
   });
 
   // ↓ 盲管道这个性质要有测试守着，否则三个月后有人为调试加一行 console.log
@@ -121,6 +207,7 @@ describe("createRelay", () => {
     const r = createRelay();
     const m = sink();
     r.attach("u1", "mobile", m);
+    m.chunks.length = 0;
     r.deliver("u1", "desktop", "PAYLOAD");
     expect(m.chunks.join("")).toBe("data: PAYLOAD\n\n");
   });
@@ -223,6 +310,8 @@ describe("/rl/v1 路由", () => {
     // 增量读:这条流永远不结束,await 整个 body 会挂死
     const reader = res.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe(":ok\n\n"); // 开场白
+    // 接着是这条连接的 cid(ADR-0129)。控制行,不是载荷
+    expect(new TextDecoder().decode((await reader.read()).value)).toMatch(/^:cid /);
 
     const sent = await g(
       authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
@@ -268,6 +357,7 @@ describe("/rl/v1 路由", () => {
       const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
       const reader = res.body!.getReader();
       await reader.read(); // 开场白 :ok，先读掉
+      await reader.read(); // 这条连接的 cid，也先读掉
       // nginx 的 proxy_read_timeout 是 600s,心跳必须远短于它
       await vi.advanceTimersByTimeAsync(25_000);
       const { value } = await reader.read();

@@ -77,7 +77,8 @@ describe("node:http 适配层", () => {
     const ac = new AbortController();
     const res = await fetch(`${base}/rl/v1/stream?role=desktop`, { headers: auth, signal: ac.signal });
     const reader = res.body!.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toBe(":ok\n\n");
+    // node:http 会把开场白和紧跟着的 :cid 合进同一次读(ADR-0129 加的那一行)
+    expect(new TextDecoder().decode((await reader.read()).value)).toMatch(/^:ok\n\n/);
 
     // 桌面在线 → 手机上行送得出去
     expect((await post(base, "mobile", "X")).status).toBe(204);
