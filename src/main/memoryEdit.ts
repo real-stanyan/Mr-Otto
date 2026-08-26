@@ -20,12 +20,15 @@ export async function applyUserEdit(
   deps: MemoryEditDeps,
   target: MemoryTarget,
   text: string,
-  sessionId: string = MEMORY_EDITS_SESSION
+  sessionId: string = MEMORY_EDITS_SESSION,
+  // 三档记忆（Task 6）：project 档需要知道写哪个项目目录，缺省 null = 不是项目档。
+  // 缺 projectDir 时 memoryRelPath 会抛——绝不能悄悄落到全局档
+  projectDir?: string | null
 ): Promise<void> {
   // IPC 入参是 unknown（issue #186）：非法 target 会让 memoryRelPath(target) 抛出
   // 一个语义不明的错误，在唯一入口处先挡掉
-  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-  const rel = memoryRelPath(target);
+  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+  const rel = memoryRelPath(target, projectDir);
   // 与 memory 工具共用同一把 per-file 锁（issue #185）：工具的 read-modify-write
   // 进行中时这里进不来，before 永远是写入时刻的真实磁盘原文
   await withMemoryFileLock(rel, async () => {

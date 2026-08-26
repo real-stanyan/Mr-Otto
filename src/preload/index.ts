@@ -32,10 +32,12 @@ const bridge: ShellBridge = {
   listExternalSkills: () => ipcRenderer.invoke(CHANNELS.listExternalSkills),
   importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
-  saveMemory: (target, text, sessionId) =>
-    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),
-  forgetMemory: (target, entry, sessionId) =>
-    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId),
+  saveMemory: (target, text, sessionId, projectRoot) =>
+    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId, projectRoot),
+  forgetMemory: (target, entry, sessionId, projectRoot) =>
+    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId, projectRoot),
+  listProjectMemories: () => ipcRenderer.invoke(CHANNELS.listProjectMemories),
+  deleteProjectMemory: (root) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, root),
   rebuildSearchIndex: () => ipcRenderer.invoke(CHANNELS.rebuildSearchIndex),
   searchIndex: (query) => ipcRenderer.invoke(CHANNELS.searchIndex, query),
   getAutoCompact: () => ipcRenderer.invoke(CHANNELS.getAutoCompact),

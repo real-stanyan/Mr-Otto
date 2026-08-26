@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
   CHANNELS,
   type BootInfo,
@@ -88,7 +88,10 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
-import { memoryRelPath, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import {
+  memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
+  PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
+} from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
@@ -1569,16 +1572,23 @@ void app.whenReady().then(() => {
     return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
   });
 
-  // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
-  // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读取
-  // 走 Task 6 新增的 listProjectMemories，不借这条 handler。复用 readMemoryFile：
-  // ENOENT-vs-其他错误的处理只该有一份（issue #186 那条不能只在一条调用路径上生效）
+  // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────
+  // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读写
+  // 走下面新增的 listProjectMemories / saveMemory(projectRoot) / deleteProjectMemory，
+  // 不借这条 handler。复用 readMemoryFile：ENOENT-vs-其他错误的处理只该有一份
+  // （issue #186 那条不能只在一条调用路径上生效）
   ipcMain.handle(CHANNELS.getMemory, () => ({
     memory: readMemoryFile(memoryRelPath("memory")),
     user: readMemoryFile(memoryRelPath("user")),
   }));
-  ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
-    applyUserEdit(memoryEditDeps, target, text, sessionId));
+  // projectRoot 缺省 = 全局档（projectDir 传 null，memoryRelPath 按 target 走
+  // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
+  // 否则 memoryRelPath 在 applyUserEdit 里抛
+  ipcMain.handle(
+    CHANNELS.saveMemory,
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, projectRoot ? projectMemoryDir(projectRoot) : null)
+  );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
   // 设置页的试搜框。不排除当前会话（用户验证「索引里有没有」，不是模型回忆）；
@@ -1589,12 +1599,47 @@ void app.whenReady().then(() => {
       .searchText(query, { limit: 20 })
       .map((h) => ({ ...h, text: [...h.text].length > 200 ? [...h.text].slice(0, 200).join("") + "…" : h.text }));
   });
-  ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
-    // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
-    // memoryRelPath(target) 拼了路径，得在拼之前挡
-    if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-    const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target)));
-    await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
+  ipcMain.handle(
+    CHANNELS.forgetMemory,
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string) => {
+      // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
+      // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
+      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+      const dir = projectRoot ? projectMemoryDir(projectRoot) : null;
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, dir)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, dir);
+    }
+  );
+  // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
+  // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
+  // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
+  ipcMain.handle(CHANNELS.listProjectMemories, async () => {
+    const dir = join(configDir(homedir()), "memories", "projects");
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return [];
+    }
+    const out: { root: string; text: string }[] = [];
+    for (const n of names) {
+      const read = async (f: string) => {
+        try {
+          return await readFile(join(dir, n, f), "utf8");
+        } catch {
+          return null;
+        }
+      };
+      const root = await read(PROJECT_ROOT_FILE);
+      if (root === null) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
+      out.push({ root: root.trim(), text: (await read(PROJECT_MEMORY_FILE)) ?? "" });
+    }
+    return out.sort((a, b) => a.root.localeCompare(b.root));
+  });
+  // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
+  ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
+    if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
+    await rm(join(configDir(homedir()), projectMemoryDir(root)), { recursive: true, force: true });
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────

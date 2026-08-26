@@ -67,4 +67,29 @@ describe("applyUserEdit", () => {
     expect(d.files.get("memories/MEMORY.md")).toBe("手编");
     expect(d.store.load("s1").at(-1)).toMatchObject({ type: "memory_user_edit", before: "甲", after: "手编" });
   });
+
+  it("项目档的手编也落 memory_user_edit，target 是 project", async () => {
+    const files = new Map<string, string>();
+    const store = new EventStore(":memory:");
+    const deps = {
+      store,
+      readFile: async (rel: string) => files.get(rel) ?? "",
+      writeFile: async (rel: string, c: string) => void files.set(rel, c),
+    };
+    await applyUserEdit(deps, "project", "本项目门禁是 npm test", "s1", "memories/projects/abc123");
+    expect(files.get("memories/projects/abc123/MEMORY.md")).toBe("本项目门禁是 npm test");
+    const ev = store.load("s1").find((e) => e.type === "memory_user_edit");
+    expect(ev).toMatchObject({ target: "project", after: "本项目门禁是 npm test" });
+  });
+
+  it("project 没给 projectDir 就抛，绝不落到全局档", async () => {
+    const files = new Map<string, string>();
+    const deps = {
+      store: new EventStore(":memory:"),
+      readFile: async (rel: string) => files.get(rel) ?? "",
+      writeFile: async (rel: string, c: string) => void files.set(rel, c),
+    };
+    await expect(applyUserEdit(deps, "project", "x", "s1")).rejects.toThrow(/projectDir/);
+    expect(files.get("memories/MEMORY.md")).toBeUndefined();
+  });
 });

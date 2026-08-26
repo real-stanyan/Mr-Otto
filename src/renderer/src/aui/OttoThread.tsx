@@ -54,7 +54,7 @@ import { liveTimingStats, turnTimingStats, type TurnTimingAgg } from "./messageT
 import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
 import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
-import type { SessionEvent, ToolCallRequest } from "../../../session/events.js";
+import type { MemoryLoadedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { toolFilePath, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
 import type { OrbState } from "../../../shared/toolSummary.js";
@@ -129,9 +129,15 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
     forgetMemory 已经把 remove 操作落成一条新的 memory_user_edit 事件,
     这一条历史工具卡还是"当时发生的事"的忠实记录。
     forgetMemory 失败(比如条目已经不在文件里了)要把 chip 退回来——
-    不然本地状态和磁盘对不上,用户以为忘掉了其实压根没生效 */
+    不然本地状态和磁盘对不上,用户以为忘掉了其实压根没生效。
+    result.target 是 "project" 时,forgetMemory 得知道忘哪个项目的——从这个
+    会话自己的 memory_loaded 事件取 projectRoot（三档记忆快照,ADR-0060/tiered-memory），
+    不是当前 workspace 现算一遍:重放时模型看到的是那份快照,忘掉操作也该照着它走 */
 const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
   const sessionId = useChat((s) => s.sessionId);
+  const projectRoot = useChat(
+    (s) => s.events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot
+  );
   const [forgotten, setForgotten] = useState<Set<string>>(new Set());
   const chips = memoryChipsFromResult(result).filter((c) => !forgotten.has(c.id));
   if (chips.length === 0) return null;
@@ -140,7 +146,7 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
       chips={chips}
       onForget={(id) => {
         setForgotten((prev) => new Set(prev).add(id));
-        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId).catch((e: unknown) => {
+        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId, projectRoot).catch((e: unknown) => {
           setForgotten((prev) => {
             const next = new Set(prev);
             next.delete(id);

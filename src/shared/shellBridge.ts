@@ -377,11 +377,19 @@ export interface ShellBridge {
   /** 两个记忆文件的当前内容（设置页读，ADR-0060） */
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
-      MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts） */
-  saveMemory(target: MemoryTarget, text: string, sessionId?: string): Promise<void>;
+      MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts）。
+      projectRoot 缺省 = 全局档（memory/user）；target 是 "project" 时必填——
+      主进程按 projectRoot 现算 projectDir，渲染层不用认得 hash 怎么拼 */
+  saveMemory(target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string): Promise<void>;
   /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
-      的会话——留证要知道是谁忘的 */
-  forgetMemory(target: MemoryTarget, entry: string, sessionId: string): Promise<void>;
+      的会话——留证要知道是谁忘的。projectRoot 同 saveMemory：缺省 = 全局档 */
+  forgetMemory(target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string): Promise<void>;
+  /** 全部项目记忆的现状（设置页项目档区读，Task 6）。现扫
+      memories/projects/ 下每个子目录的 root.txt——没有中心索引，目录自描述。
+      没有 root.txt 的孤儿目录不列进来 */
+  listProjectMemories(): Promise<{ root: string; text: string }[]>;
+  /** 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复 */
+  deleteProjectMemory(root: string): Promise<void>;
   /** 重建跨会话回忆的全文索引（issue #190）。索引是 events 的派生物，幂等重灌；
       平时只在老库首开时自动跑一次，这个口子是索引损坏时的修复路径 */
   rebuildSearchIndex(): Promise<void>;
@@ -835,6 +843,8 @@ export const CHANNELS = {
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",
+  listProjectMemories: "otter:listProjectMemories",
+  deleteProjectMemory: "otter:deleteProjectMemory",
   rebuildSearchIndex: "otter:rebuildSearchIndex",
   searchIndex: "otter:searchIndex",
   getAutoCompact: "otter:getAutoCompact",
