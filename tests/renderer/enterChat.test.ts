@@ -38,3 +38,25 @@ describe("enterChat(换会话的状态落位)", () => {
     expect(enterChat(boot({ sessionId: "session-b" })).sessionId).toBe("session-b");
   });
 });
+
+describe("enterChat(每会话的右侧面板记忆,issue #578)", () => {
+  it("这个会话上次开着哪块,就还原哪块——切走再切回来面板还在", () => {
+    const next = enterChat(boot({ sessionId: "session-b" }), { "session-b": "files" });
+    expect(next.filesPanelOpen).toBe(true);
+    // 互斥仍然成立:还原一块不等于把别的也点亮
+    expect(next.terminalPanelOpen).toBe(false);
+    expect(next.bgPanelOpen).toBe(false);
+  });
+
+  it("记忆是按会话分的:别的会话开着的面板不该跟到这个会话头上", () => {
+    const next = enterChat(boot({ sessionId: "session-b" }), { "session-a": "terminal" });
+    expect(next.terminalPanelOpen).toBe(false);
+  });
+
+  it("设置模式 / DM 照旧让位,不进记忆——它们不是「在这个会话里干活的姿势」", () => {
+    const next = enterChat(boot({ sessionId: "session-b" }), { "session-b": "git" });
+    expect(next.gitGraphOpen).toBe(true);
+    expect(next.settingsSection).toBeNull();
+    expect(next.friendChat).toBeNull();
+  });
+});

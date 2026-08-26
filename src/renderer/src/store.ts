@@ -15,6 +15,7 @@ import {
   type QueuedTask,
 } from "./lib/messageQueue.js";
 import { toWorkspaceRel } from "../../shared/fileRefs.js";
+import { panelFlags, type PanelKey } from "./lib/sidePanel.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
@@ -265,6 +266,18 @@ interface ChatState {
   browserPanelOpen: boolean;
   /** iOS 模拟器面板(issue #401)。与浏览器/终端同一块右侧槽位,互斥 */
   simPanelOpen: boolean;
+  /** 后台任务面板(issue #578)。同一块右侧槽位,互斥。
+      它是唯一一块会**自己打开**的面板:任务多半不是用户点单的,是前台命令跑满
+      30 秒自动转的(tools/bash.ts 的 AUTO_BACKGROUND_AFTER_MS) */
+  bgPanelOpen: boolean;
+  /** 主进程手里那张「后台任务进程还活着吗」的名单(BackgroundTasks.live())。
+      日志推不出这一件事(started 没配上 completed 的,可能是随上次退出一起死的),
+      所以单独存一份;面板和自动开面板的判据都从 events + 这份名单推 */
+  liveBgIds: readonly string[];
+  /** 每个会话上次开着哪块右侧面板(issue #578)。切走再切回来该还在那儿——
+      面板是「我在这个会话里干活的姿势」,不是一次性的弹窗。
+      只在内存里活着:重启后从零开始,不值得为它落盘 */
+  panelBySession: Readonly<Record<string, PanelKey | null>>;
   /** 当前 workspace 此刻的未提交改动。null = 还没问过 git;ok:false = 非 git 目录等降级。
       不是事件日志的投影(工作区脏不脏日志里没有),只能重新问 git——所以它单独存一份 */
   workTree: GitStatusResult | null;
@@ -469,6 +482,13 @@ interface ChatState {
       它们住在主进程的 hub 里,面板挂载时拉一次快照 + 订推送(同 BrowserPanel) */
   openSimPanel(): void;
   closeSimPanel(): void;
+  /** 打开后台任务面板:同一块槽位,互斥 */
+  openBgPanel(): void;
+  closeBgPanel(): void;
+  /** 主进程那张 live 名单的落位(轮询在 useBackgroundWatch 里) */
+  setLiveBgIds(ids: readonly string[]): void;
+  /** 记下某会话此刻开着哪块面板,供切回来时还原 */
+  rememberPanel(sessionId: string, key: PanelKey | null): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
   refreshGitGraph(silent?: boolean): Promise<void>;
   /** 滚近底部时把窗口 +300 整窗重拉。到底/在拉/没图时是空操作 */
@@ -671,7 +691,12 @@ export const absorbEvent = (
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
     export 是为了让这份"换会话该清什么"能被单测直接断言（见
     tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
-export const enterChat = (info: BootInfo) => ({
+export const enterChat = (
+  info: BootInfo,
+  /** 上次这个会话开着哪块右侧面板(store 的 panelBySession)。切会话不带这份记忆
+      就是每次回来都从"槽位空着"重新开始——面板是干活的姿势,不是弹窗 */
+  remembered: Readonly<Record<string, PanelKey | null>> = {}
+) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
   model: info.model,
@@ -683,13 +708,10 @@ export const enterChat = (info: BootInfo) => ({
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
-  settingsSection: null, // 侧栏点会话 = 想看聊天，设置模式让位
-  protocolOpen: false, // 同上，仪表盘也让位
-  gitGraphOpen: false, // 同上
-  friendChat: null, // 同上
-  terminalPanelOpen: false, // 同上
-  browserPanelOpen: false, simPanelOpen: false, // 同上
-  filesPanelOpen: false, // 同上
+  // 设置模式 / DM 让位（侧栏点会话 = 想看聊天），右侧面板则**还原成这个会话
+  // 上次的样子**——同一块槽位,两种待遇:前者是"我刚才在别处",后者是"我在这个
+  // 会话里就是这么摆的"
+  ...panelFlags(remembered[info.sessionId] ?? null),
   fileJump: null, // 换会话 = 换工作区:上个工程的跳转目标当场作废
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
@@ -745,8 +767,6 @@ export const useChat = create<ChatState>((set, get) => ({
   approvalMode: "ask",
   thinking: DEFAULT_THINKING,
   replayCursor: null,
-  settingsSection: null,
-  protocolOpen: false,
   protocolRepo: null,
   protocolDetailPending: false,
   adrs: [],
@@ -754,7 +774,6 @@ export const useChat = create<ChatState>((set, get) => ({
   issues: null,
   issueView: null,
   protocolTab: "adr",
-  gitGraphOpen: false,
   gitGraphRepo: null,
   gitGraph: null,
   gitGraphLimit: GIT_GRAPH_PAGE,
@@ -762,9 +781,9 @@ export const useChat = create<ChatState>((set, get) => ({
   gitGraphLoadingMore: false,
   gitCommitView: null,
   panelWide: false,
-  terminalPanelOpen: false,
-  browserPanelOpen: false, simPanelOpen: false,
-  filesPanelOpen: false,
+  ...panelFlags(null),
+  liveBgIds: [],
+  panelBySession: {},
   fileJump: null,
   workTree: null,
   workTreeDismissed: null,
@@ -843,9 +862,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的
     if (section === "keys") {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
-        filesPanelOpen: false,
+        ...panelFlags(null), settingsSection: section,
         keyStatus: await window.otter.keyStatus(),
       });
       // 本机型号清单同理要新鲜。不 await：Ollama 没跑时这一问要等到超时，
@@ -853,23 +870,17 @@ export const useChat = create<ChatState>((set, get) => ({
       void get().refreshOllamaModels();
     } else if (section === "skills") {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
-        filesPanelOpen: false,
+        ...panelFlags(null), settingsSection: section,
         skills: await window.otter.listSkills(),
       });
     } else if (section === "mcp") {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
-        filesPanelOpen: false,
+        ...panelFlags(null), settingsSection: section,
         mcpServers: await window.otter.listMcpServers(),
       });
     } else {
       set({
-        settingsSection: section, protocolOpen: false, gitGraphOpen: false, friendChat: null,
-        terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
-        filesPanelOpen: false,
+        ...panelFlags(null), settingsSection: section,
       });
     }
   },
@@ -1044,9 +1055,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 没有会话 workspace 才退回上次手选记忆
     const repo = get().workspace || localStorage.getItem("otter-protocol-repo") || null;
     set({
-      protocolOpen: true, settingsSection: null, gitGraphOpen: false, friendChat: null,
-      terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
-      filesPanelOpen: false,
+      ...panelFlags("protocol"),
       protocolRepo: repo, adrView: null, issueView: null,
     });
     if (repo) await get().refreshProtocol(); // refreshProtocol 自己兜错,这里不重复 try/catch
@@ -1126,56 +1135,40 @@ export const useChat = create<ChatState>((set, get) => ({
   async openGitGraph() {
     const repo = get().workspace || null;
     set({
-      gitGraphOpen: true, gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
+      ...panelFlags("git"), // 互斥:同一块右侧槽位
+      gitGraphRepo: repo, gitGraph: null, gitCommitView: null,
       // 每次开图从首屏窗口起步:上次翻到第 3000 条不该让这次开图等 3000 条
       gitGraphLimit: GIT_GRAPH_PAGE, gitGraphAtEnd: false, gitGraphLoadingMore: false,
-      protocolOpen: false, settingsSection: null, friendChat: null, terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false, // 互斥:同一块主区
-      filesPanelOpen: false,
     });
     if (repo) await get().refreshGitGraph();
   },
 
   closeGitGraph: () => set({ gitGraphOpen: false }),
 
-  openTerminalPanel: () =>
-    set({
-      terminalPanelOpen: true,
-      // 互斥:同一块右侧槽位
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null, browserPanelOpen: false, simPanelOpen: false,
-      filesPanelOpen: false,
-    }),
-
+  // 互斥由 panelFlags 保证(全关再点亮一个),不再各自手抄一遍"把别的关掉"
+  openTerminalPanel: () => set(panelFlags("terminal")),
   closeTerminalPanel: () => set({ terminalPanelOpen: false }),
 
-  openBrowserPanel: () =>
-    set({
-      browserPanelOpen: true,
-      // 互斥:同一块右侧槽位
-      terminalPanelOpen: false, protocolOpen: false, gitGraphOpen: false, settingsSection: null, friendChat: null,
-      filesPanelOpen: false,
-    }),
-
+  openBrowserPanel: () => set(panelFlags("browser")),
   closeBrowserPanel: () => set({ browserPanelOpen: false }),
 
-  openSimPanel: () =>
-    set({
-      simPanelOpen: true,
-      // 互斥:同一块右侧槽位
-      browserPanelOpen: false, terminalPanelOpen: false, protocolOpen: false,
-      gitGraphOpen: false, settingsSection: null, friendChat: null, filesPanelOpen: false,
-    }),
-
+  openSimPanel: () => set(panelFlags("sim")),
   closeSimPanel: () => set({ simPanelOpen: false }),
 
-  openFilesPanel: () =>
-    set({
-      filesPanelOpen: true,
-      // 互斥:同一块右侧槽位
-      terminalPanelOpen: false, browserPanelOpen: false, protocolOpen: false,
-      gitGraphOpen: false, settingsSection: null, friendChat: null, simPanelOpen: false,
-    }),
-
+  openFilesPanel: () => set(panelFlags("files")),
   closeFilesPanel: () => set({ filesPanelOpen: false }),
+
+  openBgPanel: () => set(panelFlags("bg")),
+  closeBgPanel: () => set({ bgPanelOpen: false }),
+
+  setLiveBgIds: (ids) => set({ liveBgIds: ids }),
+
+  rememberPanel: (sessionId, key) =>
+    set((s) =>
+      s.panelBySession[sessionId] === key
+        ? {} // 同值不写:这条每次开关面板都会跑一趟,没变化就别多一次 render
+        : { panelBySession: { ...s.panelBySession, [sessionId]: key } }
+    ),
 
   openFileAt: (path, line = null) => {
     const rel = toWorkspaceRel(get().workspace, path);
@@ -1414,9 +1407,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async openFriendChat(profile) {
     set((s) => ({
-      friendChat: profile,
-      protocolOpen: false, gitGraphOpen: false, settingsSection: null, terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false, // 互斥:同一右侧槽位
-      filesPanelOpen: false,
+      ...panelFlags(null), friendChat: profile, // 互斥:同一右侧槽位
       unreadByFriend: without(s.unreadByFriend, profile.id), // 打开即已读
       friendError: null,
     }));
@@ -1789,7 +1780,7 @@ export const useChat = create<ChatState>((set, get) => ({
     ]);
     set(
       info
-        ? { ...enterChat(info), sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
     );
     // 冷启动命中的那条会话可能正跑着（后台 turn、上一次是崩溃/重载）。推送这一路
@@ -1839,20 +1830,14 @@ export const useChat = create<ChatState>((set, get) => ({
       sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
       events: [],
       replayCursor: null,
-      settingsSection: null, // ＋新会话退出设置模式，回 composer
-      protocolOpen: false, // 同上，退出仪表盘
-      gitGraphOpen: false, // 同上
-      friendChat: null, // 同上
-      terminalPanelOpen: false, // 同上
-      browserPanelOpen: false, simPanelOpen: false, // 同上
-      filesPanelOpen: false, // 同上
+      ...panelFlags(null), // ＋新会话退出设置模式/面板，回 composer
       error: null,
     }),
 
   async startSession(opts) {
     try {
       const info = await window.otter.startSession(opts);
-      set(enterChat(info));
+      set((s) => enterChat(info, s.panelBySession));
       set({ sessions: await window.otter.listSessions() }); // 新会话进侧栏
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -1874,7 +1859,7 @@ export const useChat = create<ChatState>((set, get) => ({
   async resume(sessionId) {
     try {
       const info = await window.otter.resumeSession(sessionId);
-      set(enterChat(info));
+      set((s) => enterChat(info, s.panelBySession));
       // 切进来的这条可能正跑着（另一条会话的 turn 不会因为没人看就停）——
       // 同 boot 的理由（issue #548）
       void get().hydrateRuntime(sessionId);
