@@ -255,8 +255,56 @@ export interface McpPreviewArg {
   fullLength: number;
 }
 
+/** mcp_configure 的审批预览。这张卡是 agent 自助配置那条路上**唯一**的
+    安全闸：stdio 的配置就是 command + args + env，卡片含糊等于闸形同虚设。
+    所以明细逐字段列，不折成一句"配置一台 MCP server"。
+
+    凭据只出键名不出值（同 ADR-0044 的口径）：用户要认出"这一格配的是哪一把"，
+    不需要、也不该在审批卡上看到真值。 */
+export interface McpConfigurePreview {
+  kind: "mcp_configure";
+  server: string;
+  action: "add" | "update" | "remove";
+  /** remove 时为 null */
+  transport: "http" | "stdio" | null;
+  /** http 传输解析出的真实主机名（`URL.host`）。这是复审要求的独立字段
+      （Critical A 修法②）：无论 url 字符串本身怎么变形、多长、被截成什么样，
+      "到底连哪个主机"必须始终是折叠线以上能看到的东西——不截断，因为它本身
+      就短，也不该短。stdio 传输 / 解析失败 = null。 */
+  host: string | null;
+  url: string | null;
+  command: string | null;
+  args: string[];
+  /** env（stdio）或 headers（http）的**键名**；值不过桥 */
+  credentialKeys: string[];
+  /** 这次调用之后这台 server 的启用状态（终审 B Important）。它有执行后果——
+      stdio 的 `enabled: true` 就是「这条 command 会被 spawn」（mcpHub.ts）——
+      而 mcp_configure 的默认是 `a["enabled"] !== false`，即缺省为 true。
+      不上卡的话有一条无声路径：用户手动关掉过一台 stdio server，agent 用
+      同样的 id/command/args 调一次 mcp_configure，卡片显示 action: update、
+      command 与 before.command 逐字相同 = 一次「看起来什么都没变」的更新，
+      用户点同意，enabled 从 false 翻成 true，命令当场被 spawn。
+      remove 时无意义 = null（那张卡不谈"改成什么状态"）。 */
+  enabled: boolean | null;
+  /** 改已有的一台时，改之前是什么。新增时为 null。
+      enabled 也在里面：渲染层要能显示「false → true」这种翻转，只显示新值
+      看不出"这次会启用它" */
+  before: { url: string | null; command: string | null; enabled: boolean; toolCount: number } | null;
+  /** url / command / 每条 args 是否在主进程就被截断（Task 9 审查 Important 2：
+      这个预览此前没有 mcp_tool 参数预览、write_file 都有的那道 MAX_ARG_CHARS
+      长度纪律——模型给一个几 MB 的 command 就整个过 IPC 落到卡片上）。
+      url/command 没有值（null）时恒为 false；args 与 preview.args 一一对应，
+      长度相同——渲染层统一按下标配对，不用判断"有没有这一条"。
+      server 也在里面（终审 C 8+9）：它是完全由模型控制的 id，且渲染在 host
+      那一行**之前**——一个几千字符的 id 会把"到底连哪个主机"推下折叠线，
+      正好挤掉卡上唯一那条永不截断的安全闸。 */
+  truncated: { server: boolean; url: boolean; command: boolean; args: readonly boolean[] };
+  /** 截断前的原长，配合 truncated 渲染"只显示前 N 字符，共 M"（同 McpPreviewArg 的口径） */
+  fullLength: { server: number; url: number; command: number; args: readonly number[] };
+}
+
 /** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */
-export type ApprovalPreview = WriteFilePreview | McpToolPreview;
+export type ApprovalPreview = WriteFilePreview | McpToolPreview | McpConfigurePreview;
 
 /** 审批卡上可出现的决策种类（issue #341 规则①：按钮集合由后端下发，
     渲染层只做「种类 → 按钮」的通用映射，新增审批场景不改前端按钮代码）。
@@ -458,6 +506,10 @@ export interface ShellBridge {
   removeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 手动重连（failed 的那台，用户修好环境后自己点） */
   reconnectMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 跑一次 OAuth 授权：主进程开系统浏览器，用户点完同意后自动重连。
+      URL 由主进程从这台 server 的配置推出来，渲染层递不进任意外链
+      （同 updaterOpenReleasePage 的规矩）。失败原样 reject，设置页显示原因 */
+  authorizeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
   listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
@@ -875,6 +927,7 @@ export const CHANNELS = {
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
+  authorizeMcpServer: "otter:authorizeMcpServer",
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",

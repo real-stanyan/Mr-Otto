@@ -32,6 +32,7 @@ import type {
   ApprovalDecisionKind,
   ApprovalRequest,
   IslandDisplay,
+  McpConfigurePreview,
   McpToolPreview,
   SessionSummary,
 } from "../../shared/shellBridge.js";
@@ -709,6 +710,166 @@ function McpToolApproval({ preview }: { preview: McpToolPreview }) {
   );
 }
 
+/** mcp_configure 的审批卡正文（Task 9）。这张卡是"agent 自助配置 MCP server"
+    这条路上**唯一**的安全闸：stdio 的配置就是 command + args + env，折成
+    一句"配置一台 MCP server"等于闸形同虚设——所以逐字段列，一格不省。
+
+    排版照抄 McpToolApproval：同样的间距尺度、同样的标签/值排版、
+    同样的等宽字体处理，值长了自己滚，不发明新的视觉语言。
+
+    凭据只出键名不出值（ADR-0044 口径）：credentialKeys 只列名字，
+    真值从来不会走到这张卡上。 */
+/** 导出：tests/renderer/McpConfigureApproval.test.tsx 直接渲染这个组件——
+    Task 9 复审 Important 1 指出，光测预览数据层测不出渲染层把 args 重新
+    join 回一句话这种回归，得有一层真的渲染 DOM 的测试。 */
+export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
+  const actionLabel =
+    preview.action === "add" ? "新增" : preview.action === "update" ? "更新" : "删除";
+  const Row = ({ label, children }: { label: string; children: ReactNode }) => (
+    <div className="flex flex-col gap-[2px]">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+      </div>
+      {children}
+    </div>
+  );
+  const Value = ({ text }: { text: string }) => (
+    <pre className="max-h-[160px] overflow-y-auto rounded-md bg-foreground/[0.04] px-2 py-[6px] font-mono text-xs whitespace-pre-wrap break-all text-foreground/75">
+      {text === "" ? "（空）" : text}
+    </pre>
+  );
+  // url / command / 每条 args 都可能在主进程被截断（Task 9 审查 Important 2）——
+  // 截断了就在标签同一行说清"只显示前 N 字符，共 M"，照抄 McpToolApproval
+  // 参数表那一行的写法（那边 a.truncated 也是这么挂在标签旁边的）
+  const Field = ({
+    label,
+    text,
+    truncated,
+    fullLength,
+    note,
+  }: {
+    label: string;
+    text: string;
+    truncated?: boolean;
+    fullLength?: number;
+    /** 挂在标签旁边的一句提醒（同 truncated 的位置）。目前只有 enabled 用它
+        说"这次调用会改变启用状态" */
+    note?: string;
+  }) => (
+    <div className="flex flex-col gap-[2px]">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+        {note !== undefined && <span className="text-[11px] text-warn">{note}</span>}
+        {truncated === true && (
+          <span className="text-[11px] text-warn">
+            只显示前 {text.length} 字符，共 {fullLength}
+          </span>
+        )}
+      </div>
+      <Value text={text} />
+    </div>
+  );
+  // enabled 是唯一一个"有执行后果却曾经不在卡上"的字段（终审 B Important）：
+  // stdio 的 enabled: true 就是"这条 command 会被 spawn"。而它翻转的那一次，
+  // command/url 可能与 before 逐字相同——只显示新值的话，用户看到的是一次
+  // "什么都没变的更新"。所以变化时显示 "false → true"，并在标签旁点破
+  const enabledFlipped =
+    preview.enabled !== null && preview.before !== null && preview.before.enabled !== preview.enabled;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="rounded-md bg-foreground/[0.06] px-[6px] py-[2px] font-mono text-[11px] text-foreground/60">
+          MCP 配置 · {actionLabel}
+        </span>
+        <span className="font-mono text-[13.5px] font-medium">{preview.server}</span>
+      </div>
+      <div className="flex flex-col gap-[6px]">
+        <Field label="action" text={preview.action} />
+        <Field
+          label="server"
+          text={preview.server}
+          truncated={preview.truncated.server}
+          fullLength={preview.fullLength.server}
+        />
+        {preview.transport !== null && <Field label="transport" text={preview.transport} />}
+        {preview.enabled !== null && (
+          <Field
+            label="enabled"
+            text={
+              enabledFlipped
+                ? `${String(preview.before?.enabled)} → ${String(preview.enabled)}`
+                : String(preview.enabled)
+            }
+            {...(enabledFlipped
+              ? {
+                  note: preview.enabled
+                    ? "这次调用会启用这台 server（stdio = 这条命令会被执行）"
+                    : "这次调用会停用这台 server",
+                }
+              : {})}
+          />
+        )}
+        {/* 独立、永不截断的真实主机名（Task 9 复审 Critical A 修法②）：放在
+            url 那一行之前——无论下面那行怎么变形、多长、被截成什么样，
+            "到底连哪个主机"必须先出现、且必须完整 */}
+        {preview.host !== null && <Field label="host" text={preview.host} />}
+        {preview.url !== null && (
+          <Field
+            label="url"
+            text={preview.url}
+            truncated={preview.truncated.url}
+            fullLength={preview.fullLength.url}
+          />
+        )}
+        {preview.command !== null && (
+          <>
+            <Field
+              label="command"
+              text={preview.command}
+              truncated={preview.truncated.command}
+              fullLength={preview.fullLength.command}
+            />
+            {preview.args.length === 0 ? (
+              <Row label="args">
+                <div className="text-xs text-muted-foreground">（这次调用没有参数）</div>
+              </Row>
+            ) : (
+              // 每条 arg 自己一行、自己一个框——不 join 成一句话（Task 9 审查
+              // Important 1）：`["-y", "some pkg"]` 和 `["-y", "some", "pkg"]`
+              // join 之后长得一模一样，用户分不清是几个参数
+              preview.args.map((argValue, i) => (
+                <Field
+                  key={i}
+                  label={`args[${i}]`}
+                  text={argValue}
+                  truncated={preview.truncated.args[i] ?? false}
+                  fullLength={preview.fullLength.args[i] ?? 0}
+                />
+              ))
+            )}
+          </>
+        )}
+        <Row label="credentialKeys">
+          {preview.credentialKeys.length === 0 ? (
+            <div className="text-xs text-muted-foreground">（不含凭据）</div>
+          ) : (
+            <Value text={preview.credentialKeys.join("、")} />
+          )}
+        </Row>
+        {preview.before && (
+          <Row label="before（改之前）">
+            <Value
+              text={`${preview.before.url ?? preview.before.command ?? "（无）"} · ${
+                preview.before.enabled ? "已启用" : "已停用"
+              } · 现有 ${preview.before.toolCount} 把工具`}
+            />
+          </Row>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ApprovalCard() {
   // 只渲染挂靠在当前会话上的卡——别的会话的审批留在它自己的视图里
   const approval = useChat((s) => s.approvals[s.sessionId] ?? null);
@@ -747,10 +908,12 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   }, [decide]);
 
   const preview = approval.preview;
-  // 三种预览各管各的：write_file 那一路要 diff，MCP 那一路要 server + 参数表，
-  // 没有预览的退回通用卡。先分家再取字段——联合类型不分家就取不到字段
+  // 四种预览各管各的：write_file 那一路要 diff，MCP 工具那一路要 server + 参数表，
+  // mcp_configure 那一路要逐字段的配置卡，没有预览的退回通用卡。
+  // 先分家再取字段——联合类型不分家就取不到字段
   const filePreview = preview?.kind === "write_file" ? preview : null;
   const mcpPreview = preview?.kind === "mcp_tool" ? preview : null;
+  const configurePreview = preview?.kind === "mcp_configure" ? preview : null;
   // 分块只对"改文件"有意义:新文件整份都是新增,拆块之后每一块都是"要不要这一段",
   // 而模型给的是一整个文件 —— 拼出半个文件不是任何人想要的结果
   const doc = useMemo(
@@ -794,7 +957,7 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
   // 通用工具那一路:PermissionGrant 自己就是一张卡,外面不再套橙框/标题/拒绝原因框,
   // 四颗钮塞进卡的动作条(元件自带的那排形状:h-8 胶囊)。拒绝因此不带原因 ——
   // 模型只看到 denied;要说理由的场景走输入框里的下一句话
-  if (!filePreview && !mcpPreview) {
+  if (!filePreview && !mcpPreview && !configurePreview) {
     const PILL =
       "h-8 rounded-full px-3 text-xs font-medium transition-[background-color,color,scale] duration-150 active:scale-[0.96]";
     return (
@@ -888,8 +1051,10 @@ function ApprovalCardBody({ approval }: { approval: ApprovalRequest }) {
               newText={filePreview.newText}
             />
           </>
+        ) : mcpPreview ? (
+          <McpToolApproval preview={mcpPreview} />
         ) : (
-          <McpToolApproval preview={mcpPreview!} />
+          <McpConfigureApproval preview={configurePreview!} />
         )}
       </div>
       <div className="flex flex-wrap gap-2 px-[14px] pb-3">

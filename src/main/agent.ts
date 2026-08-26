@@ -51,6 +51,9 @@ import { createMcpTools } from "../tools/mcpTool.js";
 import { applyExposurePolicy } from "../tools/exposure.js";
 import { createToolSearchTool } from "../tools/toolSearch.js";
 import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
+import { mcpCatalogTool } from "../tools/mcpCatalog.js";
+import { createMcpConfigureTool } from "../tools/mcpConfigure.js";
+import { createMcpAuthorizeTool } from "../tools/mcpAuthorize.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import type { SubagentDef } from "../shared/subagent.js";
@@ -447,12 +450,12 @@ export function createAgent(opts: {
 
   // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,
   // 见 ADR-0008 追记);ANYSEARCH_API_KEY 环境变量可覆盖 = 换 key 不用改代码。
-  // 拎成变量而不是内联进 engine:渲染层要拿这份表的 def 算上下文占用(BootInfo.toolDefs),
-  // 两处必须是同一个数组——engine 挂的和 UI 报的不能各说各话
-  // 工具表是一次性拼好的（挂载一次定终身，见 tool.ts 的注释），
-  // 拼之前必须已经知道每台 server 提供了什么。createAgent 是同步的，
-  // 所以 ready() 在 index.ts 里、造 agent 之前就 await 过了；
-  // 这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
+  // 拎成函数（buildTools）而不是内联进 engine:渲染层要拿这份表的 def 算上下文
+  // 占用(BootInfo.toolDefs),两处必须调同一个函数——engine 挂的和 UI 报的不能
+  // 各说各话。工具表现在是每 turn 现算（issue #6：engine 的 rebuildTools 调它），
+  // 不再挂载一次定终身，所以 MCP server 中途连上/改清单也能被跟上；
+  // createAgent 仍是同步的，index.ts 造 agent 之前先 await 过 ready() 是给
+  // "boot 第一轮就用得上"打底，这里再叫一次是幂等的兜底（并发调只连一次，见 mcpHub）
   void mcp?.ready();
 
   // 后台任务登记口（issue #389）：bash run_in_background 起的任务在这跟踪，
@@ -473,61 +476,71 @@ export function createAgent(opts: {
     ? { root: loadedProjectRoot, dir: projectMemoryDir(loadedProjectRoot) }
     : null;
 
-  const tools: Tool[] = [
-    createAskUserTool(questioner),
-    todoWriteTool,
-    // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
-    // 的装配（裸装配/测试）不该对模型宣称有记忆
-    ...(world.config ? [createMemoryTool(memoryProject)] : []),
-    // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
-    // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
-    ...(world.history ? [createSessionSearchTool()] : []),
-    readFileTool,
-    writeFileTool,
-    createBashTool(backgroundTasks),
-    createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
-    createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
-    // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
-    // 会对模型宣称有这把工具,模型试一次、吃一个"这个世界没有内置浏览器",
-    // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
-    // 报一把用不了的工具连账也是错的
-    ...(world.browser ? [browserReadTool] : []),
-    // 挂载条件同 browser:问的是 world 有没有这把能力,不是参数给没给
-    // (issue #401。非 macOS / 没装 Xcode 的机器上组装根压根不焊,工具表里也就没有)
-    ...(world.simulator ? [simulatorTool] : []),
-    // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂。
-    // 暴露策略（issue #348）：超阈值整批 Deferred + 体积超预算降 Hidden——
-    // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见
-    ...(mcp ? applyExposurePolicy(createMcpTools(mcp)) : []),
-    ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
-    // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
-    // 是不是空的"——LoopEngine 把 toolsByName 冻在构造那一刻(src/loop/engine.ts)，
-    // 挂没挂必须一次定终身，否则组装时清单恰好是空的那个 agent 一辈子看不到 task，
-    // 哪怕用户后来在设置页建了第一个 subagent 也救不回来(这是每个新用户都会撞的
-    // 首次使用路径)。清单是不是空的这件事现在归 task 自己的 available()答，
-    // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
-    ...(opts.subagentRunner
-      ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
-      : []),
-  ];
-  // Deferred 检索口（issue #348）：可见集是共享活 Set——tool_search 命中写入，
-  // engine 每轮过滤声明表时读（deferredExposed）。工具表里有 deferred 才挂
-  // （available() 再兜一层：deferred 集合空时这把刀自己也从声明表消失）
+  // Deferred 检索口（issue #348）：可见集是**闭包外**的共享活 Set，跨 turn 存活——
+  // tool_search 搜出来的刀不该因为下一轮重算又缩回去。声明提到 buildTools 之前
+  // （TDZ：buildTools 里引用它没问题，因为调用发生在之后，但可读性上还是前置）
   const deferredExposed = new Set<string>();
-  const listDeferred = () =>
-    tools
+  const listDeferred = (list: readonly Tool[]) =>
+    list
       .filter((t) => t.exposure === "deferred" && !deferredExposed.has(t.def.name))
       .map((t) => ({ name: t.def.name, description: t.def.description ?? "" }));
-  if (tools.some((t) => t.exposure === "deferred")) {
-    tools.push(createToolSearchTool(listDeferred, deferredExposed));
-  }
 
-  // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件
-  // （world.browser 才挂 browser_read）是"这个装配有没有这把刀"，白名单是
-  // "这次准不准用"，两件事，别搅在一起
-  const mounted = opts.allowTools
-    ? tools.filter((t) => opts.allowTools!.includes(t.def.name))
-    : tools;
+  // 工具表现在是"每 turn 现算"（engine 的 rebuildTools 调它）：MCP server
+  // 在会话中途连上/掉线/改清单，这个会话就能跟着看见。内置工具每轮重建
+  // 开销可以忽略（纯对象字面量），换来的是"agent 配完 MCP 当场能用"。
+  const buildTools = (): Tool[] => {
+    const list: Tool[] = [
+      createAskUserTool(questioner),
+      todoWriteTool,
+      // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
+      // 的装配（裸装配/测试）不该对模型宣称有记忆
+      ...(world.config ? [createMemoryTool(memoryProject)] : []),
+      // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
+      // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
+      ...(world.history ? [createSessionSearchTool()] : []),
+      readFileTool,
+      writeFileTool,
+      createBashTool(backgroundTasks),
+      createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+      createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+      // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
+      // 会对模型宣称有这把工具,模型试一次、吃一个"这个世界没有内置浏览器",
+      // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
+      // 报一把用不了的工具连账也是错的
+      ...(world.browser ? [browserReadTool] : []),
+      // 挂载条件同 browser:问的是 world 有没有这把能力,不是参数给没给
+      // (issue #401。非 macOS / 没装 Xcode 的机器上组装根压根不焊,工具表里也就没有)
+      ...(world.simulator ? [simulatorTool] : []),
+      // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂。
+      // 暴露策略（issue #348）：超阈值整批 Deferred + 体积超预算降 Hidden——
+      // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见
+      ...(mcp ? applyExposurePolicy(createMcpTools(mcp)) : []),
+      ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
+      // 自助配置三件套（spec §5.2）：查目录免审批、配置过审批门、授权免审批
+      // （浏览器必然弹出、用户必须亲手点同意，人天然在环里）。
+      // mcp_catalog 是 direct（终审 A Critical）：它是整条链的入口，模型得先
+      // 在初始工具表里看见它才可能想起「我能接新 server」——deferred 的话
+      // tool_search 是纯子串打分，搜不到这把刀，链条前面全白搭。另外两把
+      // （mcp_configure / mcp_authorize）仍是 deferred，由 mcp_catalog 的
+      // 返回文案顺次引出（见 mcpCatalog.ts run() 末尾那句）
+      ...(mcp ? [mcpCatalogTool, createMcpConfigureTool(mcp), createMcpAuthorizeTool(mcp)] : []),
+      // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
+      // 是不是空的"——清单是不是空的这件事归 task 自己的 available()答，
+      // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
+      ...(opts.subagentRunner
+        ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
+        : []),
+    ];
+    // deferred 检索口（issue #348）：可见集是共享活 Set（deferredExposed，闭包外
+    // 声明，跨 turn 存活）——tool_search 命中写入，engine 每轮过滤声明表时读
+    if (list.some((t) => t.exposure === "deferred")) {
+      list.push(createToolSearchTool(() => listDeferred(list), deferredExposed));
+    }
+    // 白名单：给了就只留名单里的。放在数组构造之后而不是之前——上面那些条件
+    // （world.browser 才挂 browser_read）是"这个装配有没有这把刀"，白名单是
+    // "这次准不准用"，两件事，别搅在一起
+    return opts.allowTools ? list.filter((t) => opts.allowTools!.includes(t.def.name)) : list;
+  };
 
   // turn 级聚合 diff（issue #345）：per-agent 一只 tracker，中间件挂在审批门
   // 之后（engine 把审批门永远排第一）——被拒的写盘进不了聚合。
@@ -554,7 +567,7 @@ export function createAgent(opts: {
   const engine = new LoopEngine({
     store,
     adapter: makeAdapter(current),
-    tools: mounted,
+    tools: buildTools,
     world,
     sessionId,
     guards: [forbiddenGuard],
@@ -678,8 +691,10 @@ export function createAgent(opts: {
       // task）不进这份表——模型不该被告知一把只会失败的工具，UI 的上下文占用
       // 账也不该替它算钱。
       // exposure（issue #348）同一把尺：hidden 永不进账；deferred 只有已被
-      // tool_search 曝光的才算——账要贴着模型此刻真看到的那份表
-      return mounted
+      // tool_search 曝光的才算——账要贴着模型此刻真看到的那份表。
+      // 现算 buildTools()（不复用某次快照）：MCP 中途连上/改清单，UI 报的
+      // 上下文占用账也要跟着变，不能停在装配那一刻
+      return buildTools()
         .filter((t) => {
           const e = t.exposure ?? "direct";
           return e === "direct" || (e === "deferred" && deferredExposed.has(t.def.name));

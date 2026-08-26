@@ -858,6 +858,46 @@
   }
 }
 
+/* MCP「授权」按钮(needs-auth 那行新增的可点项,task-5):按下要有反馈——
+   按不动的按钮让人觉得界面没听见。过渡只写 transform,不写 transition: all
+   ——hover 的背景色变化仍由 Button 组件自带的过渡负责,这里只管这一下按感。
+   min-width 钉住"授权"/"等浏览器…"两种文案里最宽的那个,防止切换文案时
+   同一行里的其它元素(失败原因文字)跟着跳一下 */
+.mcp-authorize-btn {
+  min-width: 76px;
+  transition: transform 160ms ease-out;
+}
+.mcp-authorize-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-authorize-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* 授权失败原因的入场:凭空出现像坏了,给一个 160ms 的 opacity + 轻微上移；
+   reduced-motion 只留 opacity,去掉位移(同一件事的降级版,不是另一套动效) */
+.mcp-auth-error {
+  animation: mcp-auth-error-in 160ms ease-out;
+}
+@keyframes mcp-auth-error-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-auth-error {
+    animation: mcp-auth-error-in-reduced 160ms ease-out;
+  }
+}
+@keyframes mcp-auth-error-in-reduced {
+  from {
+    opacity: 0;
+  }
+}
+
 /* "已保存"提示:淡入即可。它是一句确认,不是一个事件,不该有位移 */
 .saved-hint {
   opacity: 1;

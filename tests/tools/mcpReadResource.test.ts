@@ -10,7 +10,16 @@ function capWith(
   servers: McpServerHandle[],
   readResource: McpCapability["readResource"] = async () => [{ kind: "text", text: "料" }]
 ): McpCapability {
-  return { ready: async () => {}, servers: () => servers, callTool: async () => [], readResource, getPrompt: async () => "" };
+  return {
+    ready: async () => {},
+    servers: () => servers,
+    callTool: async () => [],
+    readResource,
+    getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
+  };
 }
 
 const worldWith = (mcp: McpCapability): ExecutionWorld => ({

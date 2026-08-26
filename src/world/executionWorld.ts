@@ -3,7 +3,7 @@
 // v1: LocalWorld（本机）。v2: SandboxWorld（每 bot 一个容器，fork 时 docker commit）。
 
 import type {
-  McpContent, McpPromptInfo, McpResourceInfo, McpStatus, McpToolInfo,
+  McpContent, McpPromptInfo, McpResourceInfo, McpServerConfig, McpStatus, McpToolInfo,
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
 import type { SimButton, SimDevice, SimFrame, SimUiElement } from "../shared/simulator.js";
@@ -116,6 +116,17 @@ export interface McpCapability {
   callTool(serverId: string, tool: string, args: unknown, signal?: AbortSignal): Promise<McpContent[]>;
   readResource(serverId: string, uri: string, signal?: AbortSignal): Promise<McpContent[]>;
   getPrompt(serverId: string, name: string, args: Record<string, string>): Promise<string>;
+  /** 增 / 改 / 删一台 server（cfg 为 null = 删）。落盘后立刻尝试连接。
+      模型走 mcp_configure 工具到这儿，那把工具 requiresApproval：stdio 的
+      配置就是 command + args + env，能自由写盘等于绕开 bash 的审批门拿到
+      任意命令执行（spec §3.1）。这一层不设门——门在工具那一层，这里只是
+      能力本身。 */
+  configure(id: string, cfg: McpServerConfig | null): Promise<void>;
+  /** 跑一次 OAuth 授权（开浏览器、等回调、换 token 落盘），成功后自动重连 */
+  authorize(id: string): Promise<void>;
+  /** 这台 server 此刻的配置（含真凭据——只在主进程内流转，
+      审批预览要靠它对照"改之前是什么"）。没有这台 = undefined */
+  configOf(id: string): McpServerConfig | undefined;
 }
 
 /** 工作区检查点能力（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
@@ -304,6 +315,12 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
             readResource: (id: string, uri: string) => world.mcp!.readResource(id, uri, signal),
             getPrompt: (id: string, name: string, args: Record<string, string>) =>
               world.mcp!.getPrompt(id, name, args),
+            // 下面三个不带 signal——configure/authorize 是落盘 + 连接的完整流程，
+            // 不是"这次调用要不要被中断"的一次性请求；configOf 是同步读取。
+            // 直接透传到底层能力，不经过这层的信号绑定
+            configure: (id: string, cfg: McpServerConfig | null) => world.mcp!.configure(id, cfg),
+            authorize: (id: string) => world.mcp!.authorize(id),
+            configOf: (id: string) => world.mcp!.configOf(id),
           },
         }
       : {}),

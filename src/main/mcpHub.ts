@@ -14,6 +14,10 @@ export interface McpHub extends McpCapability {
   save(id: string, cfg: McpServerConfig): Promise<void>;
   remove(id: string): Promise<void>;
   reconnect(id: string): Promise<void>;
+  /** 跑一次 OAuth 授权（开浏览器、等回调、换 token 落盘），成功后自动重连。
+      失败原样抛给调用方：设置页要把原因显示出来，agent 要把原因转述给用户。
+      只对 http 传输有意义——stdio 的凭据走 env，调到会拿到一句人话 */
+  authorize(id: string): Promise<void>;
   onChange(cb: () => void): () => void;
   closeAll(): Promise<void>;
   /** 上一次读 ~/.mr-otto/mcp.json 时,解析不动的那几行的人话原因(mcpConfig.ts
@@ -119,6 +123,13 @@ export function createMcpHub(opts: {
       失败的错误抛给上层，一路穿透到 IPC 和设置页 */
   save(servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]): void;
   connect: McpConnect;
+  /** 跑一次完整 OAuth 授权。真实现是 mcpClient.authorizeMcpServer（它才认识
+      SDK），hub 只管什么时候调、调完做什么——同 connect 的注入方向，
+      hub 因此完全不碰 SDK，状态机能用假实现测干净 */
+  authorize(id: string, cfg: McpServerConfig): Promise<void>;
+  /** 抹掉一台 server 的 OAuth 凭据。remove() 时调 —— 配置删了而凭据留着，
+      就是一份没有任何界面能看到、也没人会想起来撤销的长期授权 */
+  clearAuth(id: string): void;
 }): McpHub {
   const entries = new Map<string, Entry>();
   const listeners = new Set<() => void>();
@@ -228,6 +239,54 @@ export function createMcpHub(opts: {
     return e.conn;
   }
 
+  async function reconnectOne(id: string): Promise<void> {
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    // 状态先推成 failed 再连：connectOne 对 status === "connected" 的直接返回，
+    // 不推的话"重连一台已经连上的"会变成空操作
+    if (cur) { delete cur.conn; cur.status = "failed"; }
+    await connectOne(id);
+  }
+
+  async function saveOne(id: string, cfg: McpServerConfig): Promise<void> {
+    syncFromDisk();
+    // 表单可能是拿 list() 的遮罩值预填的,原样合并回真值——不然一次没碰
+    // 凭据字段的保存就会拿星号覆盖真 key（review finding 3，见上方
+    // mergeMaskedCreds 的注释和 mcpHub.test.ts 里那条同名测试）
+    const merged = mergeMaskedCreds(entries.get(id)?.cfg, cfg);
+    const next = Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg]));
+    next[id] = merged;
+    // 磁盘写在前、内存状态变更在后——opts.save 抛（F1 half 2：prevText
+    // 解析不动）时，不能让下面的 close()/entries.set() 抢跑：写都没写成,
+    // 内存不该假装这次保存已经生效
+    opts.save(next, unrecognizedIds);
+    // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    // 同 syncFromDisk 的口径：还没试连不等于连不上，见上面那条注释
+    entries.set(id, { cfg: merged, status: "connecting" });
+    await connectOne(id);
+  }
+
+  async function removeOne(id: string): Promise<void> {
+    syncFromDisk();
+    const remaining = Object.fromEntries(
+      [...entries.entries()].filter(([k]) => k !== id).map(([k, e]) => [k, e.cfg])
+    );
+    // 同 save()：写在前、关连接/删内存记录在后——opts.save 抛的话
+    // （F1 half 2）这台 server 的连接和内存记录都原样留着，不因为一次
+    // 没写成的删除就先斩后奏关掉一条还活着的连接。同时把 unrecognizedIds
+    // 原样带上：删除一台健康 server 不该连带冲掉磁盘上解析不动的 broken
+    // sibling（F1 half 1 在 remove() 路径上的同款问题，见上面 save 的注释）
+    opts.save(remaining, unrecognizedIds);
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    entries.delete(id);
+    // 配置没了，凭据也不该留 —— 见 opts.clearAuth 的注释
+    opts.clearAuth(id);
+    emit();
+  }
+
   return {
     async ready() {
       // 并发调只连一次；连完清空,下次 ready() 会重试 failed 的那些
@@ -283,48 +342,34 @@ export function createMcpHub(opts: {
       });
     },
 
-    async save(id, cfg) {
-      syncFromDisk();
-      // 表单可能是拿 list() 的遮罩值预填的,原样合并回真值——不然一次没碰
-      // 凭据字段的保存就会拿星号覆盖真 key（review finding 3，见上方
-      // mergeMaskedCreds 的注释和 mcpHub.test.ts 里那条同名测试）
-      const merged = mergeMaskedCreds(entries.get(id)?.cfg, cfg);
-      const next = Object.fromEntries([...entries.entries()].map(([k, e]) => [k, e.cfg]));
-      next[id] = merged;
-      // 磁盘写在前、内存状态变更在后——opts.save 抛（F1 half 2：prevText
-      // 解析不动）时，不能让下面的 close()/entries.set() 抢跑：写都没写成,
-      // 内存不该假装这次保存已经生效
-      opts.save(next, unrecognizedIds);
-      // 配置变了就断开重连 —— 旧连接用的是旧 env/url,留着只会骗人
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      // 同 syncFromDisk 的口径：还没试连不等于连不上，见上面那条注释
-      entries.set(id, { cfg: merged, status: "connecting" });
-      await connectOne(id);
+    save: saveOne,
+
+    remove: removeOne,
+
+    reconnect: reconnectOne,
+
+    async configure(id, cfg) {
+      // 复用 save/remove 的全部既有语义（遮罩合并、写在前状态变更在后、
+      // unrecognizedIds 保护、删除时清 OAuth 凭据）——agent 这条路不该
+      // 有一套"简化版"的写盘逻辑，那必然与设置页那条 drift
+      if (cfg === null) await removeOne(id);
+      else await saveOne(id, cfg);
     },
 
-    async remove(id) {
+    configOf: (id) => {
       syncFromDisk();
-      const remaining = Object.fromEntries(
-        [...entries.entries()].filter(([k]) => k !== id).map(([k, e]) => [k, e.cfg])
-      );
-      // 同 save()：写在前、关连接/删内存记录在后——opts.save 抛的话
-      // （F1 half 2）这台 server 的连接和内存记录都原样留着，不因为一次
-      // 没写成的删除就先斩后奏关掉一条还活着的连接。同时把 unrecognizedIds
-      // 原样带上：删除一台健康 server 不该连带冲掉磁盘上解析不动的 broken
-      // sibling（F1 half 1 在 remove() 路径上的同款问题，见上面 save 的注释）
-      opts.save(remaining, unrecognizedIds);
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      entries.delete(id);
-      emit();
+      return entries.get(id)?.cfg;
     },
 
-    async reconnect(id) {
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      if (cur) { delete cur.conn; cur.status = "failed"; }
-      await connectOne(id);
+    async authorize(id) {
+      syncFromDisk();
+      const e = entries.get(id);
+      if (!e) throw new Error(`没有名叫「${id}」的 MCP server，无法授权`);
+      // 授权失败原样抛：状态停在 needs-auth 是诚实的——用户点了拒绝、
+      // 或者超时没点，这台确实还是"需要授权"，不该被改成 failed（那会
+      // 让设置页把"你还没授权"显示成"这台坏了"）
+      await opts.authorize(id, e.cfg);
+      await reconnectOne(id);
     },
 
     onChange(cb) {

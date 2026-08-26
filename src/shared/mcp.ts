@@ -176,6 +176,26 @@ export function renderMcpContent(content: readonly McpContent[]): string {
     .join("\n\n");
 }
 
+/** 一台 server 刚连上时，回给模型的那句"新工具什么时候能用"。
+    mcp_configure / mcp_authorize 共用一份（终审 B Important）。
+
+    工具表是按 turn 重算的（engine.rebuildTools() 在下一个 turn 才跑），所以
+    刚连上的那几把**这一轮不在模型的工具表里**：模型照着"可用工具 3 个：
+    list_tables、execute_sql、apply_migration"在同一轮直接调，命中的是"未知
+    工具"。逃生舱也不通——tool_search 的 listDeferred 闭包捕获的是这一轮的
+    list（agent.ts）。
+
+    设计上就是"下一个 turn 生效"（spec §5.2），实现也对；出问题的是没人告诉
+    模型。所以这句话必须点明"从用户的下一条消息开始"和"本轮不要直接调"。 */
+export function mcpNewToolsNotice(toolNames: readonly string[]): string {
+  const list = toolNames.length === 0 ? "（这台没有暴露工具）" : toolNames.join(" / ");
+  return (
+    `新增 ${toolNames.length} 把工具（${list}）。` +
+    "它们从**用户的下一条消息**开始才会出现在你的工具列表里——" +
+    "本轮请先把结果告诉用户，不要在这一轮直接调用它们。"
+  );
+}
+
 /** 遮罩凭据。键名保留 —— 用户要认出"这一格配的是哪一把"（同 ADR-0044 的判断） */
 export function maskMcpConfig(cfg: McpServerConfig): McpServerConfig {
   const maskAll = (r: Record<string, string>): Record<string, string> =>
@@ -183,4 +203,47 @@ export function maskMcpConfig(cfg: McpServerConfig): McpServerConfig {
   return cfg.kind === "stdio"
     ? { ...cfg, env: maskAll(cfg.env) }
     : { ...cfg, headers: maskAll(cfg.headers) };
+}
+
+/** 归一化 + 校验一个 http 传输的 url（Task 9 审查 Critical 1）。
+    WHATWG 的 URL 解析器会在解析**之前**把输入里所有的 ASCII tab / LF / CR
+    悄悄剥掉：`"https://good.com" + "\n".repeat(30) + "@evil.com/mcp"` 解析出
+    的 host 是 evil.com。如果写盘的、审批卡上显示的都是那个带隐藏换行的原始
+    字符串，用户读到的是掉在滚动框可视范围内的 "https://good.com"，而
+    "@evil.com/mcp" 被换行推到看不见的地方——审批等于在给一个他没读到的主机
+    签字。所以：含这类字符直接拒绝（合法的 MCP 端点不会有它们），而不是
+    静默吃掉后再归一化——静默归一化会把"模型/用户的错误输入"伪装成
+    "系统悄悄接受了一次改写"。
+
+    返回值统一是 `URL.href`：写盘的配置、mcp_configure 的审批预览，都必须
+    是同一个归一化后的字符串——不存在"原始串"和"解析后"两种读法的空间。 */
+export function normalizeMcpHttpUrl(url: string): string {
+  if (/[\t\r\n]/.test(url)) {
+    throw new Error(
+      "url 里不能有制表符或换行——它们会被 URL 解析器悄悄吃掉，卡片上看到的和实际连的会是两个地址"
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`url 不是合法的地址：${url}`);
+  }
+  // 只认 http/https：file:// / data: 之类在这里没有任何正当用途，
+  // 而它们能让一次"配置 MCP"变成读本地文件的惊喜面
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`url 只支持 http/https，收到的是 ${parsed.protocol}`);
+  }
+  // 拒绝非空的 userinfo（Task 9 复审 Critical A）：控制字符那条路堵上之后，
+  // 同一个漏洞换个填充字符仍然完全可利用——
+  // "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp" 解析出的
+  // host 是 evil.com，而这个 href 逐字节等于输入本身（没有隐藏字符可剥），
+  // 卡片上折叠线以上看到的却是 "https://mcp.supabase.com...."。合法的 MCP
+  // 端点不会带 userinfo——OAuth 正是这个功能存在的理由，这里没有正当用途。
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error(
+      "url 里不能带用户名/密码段（@ 之前的部分）——它会让地址栏看起来是一个主机、实际连的是另一个"
+    );
+  }
+  return parsed.href;
 }

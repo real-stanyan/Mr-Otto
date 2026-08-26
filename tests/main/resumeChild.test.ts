@@ -122,6 +122,9 @@ describe("createChildAgent", () => {
     callTool: async () => [{ kind: "text" as const, text: "ok" }],
     readResource: async () => [],
     getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
   });
 
   it("快照点了名的 mcp 工具，重建回来还在", () => {
