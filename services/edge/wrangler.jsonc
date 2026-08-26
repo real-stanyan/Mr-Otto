@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mrotto-edge",
+  // 地址是 <worker名>.<账号子域>.workers.dev,而子域已经是 mrotto ——
+  // 叫 mrotto-edge 会得到 mrotto-edge.mrotto.workers.dev,结巴
+  "name": "edge",
   "main": "src/worker.ts",
   // Mr Otto 自己的 Cloudflare 账号。**钉死而不是靠 wrangler 当前登录的默认账号**:
   // 一个登录可以是多个账号的成员,不钉的话「部署到哪儿」取决于谁在跑这条命令,
