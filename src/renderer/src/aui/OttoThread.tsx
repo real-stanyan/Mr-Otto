@@ -10,6 +10,7 @@ import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { LiquidGlass } from "@/components/LiquidGlass.js";
+import { agentPhase } from "../lib/agentPhase.js";
 import { Thread, type ThreadComponents } from "../components/assistant-ui/thread.js";
 import {
   ReasoningContent,
@@ -77,7 +78,6 @@ import type { Section } from "../../../session/deriveSections.js";
 import type { MemoryLoadedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { summarizeGroup, toolFilePath, toolIcon, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
-import type { OrbState } from "../../../shared/toolSummary.js";
 
 /** 审计行:原始事件挂在 metadata.custom.otto 上(Task 3 的投影)。metadata.custom
     的类型是 Record<string, unknown> ——不认识 SessionEvent,这一转型没有更窄的写法。
@@ -724,28 +724,6 @@ function currentTool(events: SessionEvent[]): ToolCallRequest | null {
   return null;
 }
 
-/** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
-     检索(read_file) / 执行(bash·write_file) / 思考(reasoning) / 作答(正文)——都是日志投影。
-     四段对应 orbs 的 Searching / Working / Thinking / Solving */
-function agentPhase(opts: {
-  status: "idle" | "running";
-  hasApproval: boolean;
-  compacting?: boolean;
-  streamingThinking: string;
-  streamingText: string;
-  tool: ToolCallRequest | null;
-}): { orb: OrbState; label: string } {
-  if (opts.hasApproval) return { orb: "listening", label: "等待审批…" };
-  if (opts.status !== "running") return { orb: "breathing", label: "空闲" };
-  // 压缩上下文:主进程把它复用成 running 灯,靠 store 里的瞬时标记分辨。
-  // weaving = 把一长段历史织成一份摘要,比"思考"的旋转更贴这件事
-  if (opts.compacting) return { orb: "weaving", label: "压缩中…" };
-  if (opts.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };
-  if (opts.tool) return { orb: "working", label: "执行中…" };
-  if (opts.streamingText) return { orb: "solving", label: "作答中…" };
-  return { orb: "composing", label: "思考中…" }; // reasoning 或模型首次调用：都还在想
-}
-
 /** ViewportFooter 里的相位指示器:数据照旧从 store 订阅(statusBySession / approvals /
     events / streamingBySession)。status 不是 running 且没有挂起审批就不渲染——
     这两个条件合起来正是原来 App.tsx 里 `(status === "running" || approval !== null)` */
@@ -758,16 +736,16 @@ const RunIndicator: ComponentType = () => {
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const compacting = useChat((s) => s.compactingBySession[s.sessionId] === true);
 
+  // 闸门排在算相位之前(issue #549):不渲染的时候连算都不用算,agentPhase 那边
+  // 也就可以理直气壮地假定"turn 在跑或有审批",不必再留一档走不到的「空闲」
+  if (status !== "running" && approval === null) return null;
+
   const turnPhase = agentPhase({
-    status,
     hasApproval: approval !== null,
     compacting,
-    streamingThinking,
     streamingText,
     tool: currentTool(events),
   });
-
-  if (status !== "running" && approval === null) return null;
 
   // 玻璃是给这一条挑的,不是全局皮肤:它悬在正文之上、只在 turn 跑着时存在,
   // 背后是滚动的消息——折射有东西可折。静止的面板上放同一块玻璃只会看见模糊。

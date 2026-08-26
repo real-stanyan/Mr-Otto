@@ -52,6 +52,7 @@ import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/p
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
@@ -495,6 +496,9 @@ interface ChatState {
   newSession(dir?: string): void;
   startSession(opts: StartSessionOptions): Promise<void>;
   resume(sessionId: string): Promise<void>;
+  /** 进聊天时向主进程问一次这条会话的运行时状态，补上错过的推送（issue #548）。
+      失败静默——补不上就维持原样 */
+  hydrateRuntime(sessionId: string): Promise<void>;
   /** 取一次某个子会话的日志，塞进 subagentLogCache（已缓存就不重问）。
       不切视图——纯粹为了父时间线上那张卡能报出收口后的步数/token */
   loadSubagentLog(sessionId: string): Promise<void>;
@@ -1725,6 +1729,10 @@ export const useChat = create<ChatState>((set, get) => ({
           ? {
               streamingBySession: without(s.streamingBySession, sessionId),
               approvals: without(s.approvals, sessionId),
+              // 压缩标记同理。本窗口自己发起的 compact 由那次调用的 finally 清，
+              // 但补状态补进来的那一份（issue #548）没有对应的 finally——
+              // turn 谢幕就是它的终点，不清的话指示条永远停在"压缩中…"
+              compactingBySession: without(s.compactingBySession, sessionId),
               // 问卷同理：turn 谢幕时主进程侧已把挂起的提问收成"已取消"，
               // 留一张点了没人听的问卷只会骗人
               asks: without(s.asks, sessionId),
@@ -1769,6 +1777,9 @@ export const useChat = create<ChatState>((set, get) => ({
         ? { ...enterChat(info), sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
     );
+    // 冷启动命中的那条会话可能正跑着（后台 turn、上一次是崩溃/重载）。推送这一路
+    // 只在状态**变化**时开火，错过的那一拍靠这一问补（issue #548）
+    if (info) void get().hydrateRuntime(info.sessionId);
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
     void get().refreshOllamaModels();
@@ -1814,10 +1825,25 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async hydrateRuntime(sessionId) {
+    if (!sessionId) return;
+    try {
+      const rt = await window.otter.sessionRuntime(sessionId);
+      // 只填空、不覆盖：判定全在 runtimePatch 里（连同为什么这样判，见那份注释）
+      set((s) => runtimePatch(s, sessionId, rt));
+    } catch {
+      // 问不到不弹错：这是背后补一笔事实的动作，不是用户按下的操作。
+      // 补不上就维持原样——指示条该空还是空，和这次修复之前一模一样
+    }
+  },
+
   async resume(sessionId) {
     try {
       const info = await window.otter.resumeSession(sessionId);
       set(enterChat(info));
+      // 切进来的这条可能正跑着（另一条会话的 turn 不会因为没人看就停）——
+      // 同 boot 的理由（issue #548）
+      void get().hydrateRuntime(sessionId);
       set({ sessions: await window.otter.listSessions() });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
