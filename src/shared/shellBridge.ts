@@ -521,6 +521,12 @@ export interface ShellBridge {
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
+  /** 兜底工作区(#559:会话永远有工作区,没选就用它)。设置页「工作区」栏目
+      与新会话 composer 的预填都从这儿读。落 userData/workspace.json */
+  getWorkspaceSettings(): Promise<WorkspaceSettingsInfo>;
+  /** dir = 设置页选的默认工作文件夹;null = 恢复内置 Default(文档区 Mr Otto/Default)。
+      回值是落盘后的最新解析结果,调用方直接拿去更新镜像 */
+  setDefaultWorkspace(dir: string | null): Promise<WorkspaceSettingsInfo>;
   /** 手机端远程(设置页「手机」栏目)。读一次就顺手把自己登记进 devices ——
       目录里没有这台桌面的话,手机那边根本看不见它 */
   remoteStatus(): Promise<RemoteStatus>;
@@ -907,6 +913,16 @@ export interface IslandSettings {
   display: IslandDisplay;
 }
 
+/** 兜底工作区的解析结果(main/workspaceSettingsStore.ts 落盘,#559)。
+    渲染层只见解析后的绝对路径——「设置的还是内置的」用 builtin 区分,
+    别让 UI 自己拼文档区路径(平台差异是主进程的事) */
+export interface WorkspaceSettingsInfo {
+  /** 兜底工作区绝对路径:用户设置的,或内置 Default(文档区 Mr Otto/Default) */
+  defaultWorkspace: string;
+  /** true = 用户没设置过,用的是内置 Default(UI 据此出新手提示文案) */
+  builtin: boolean;
+}
+
 /** OTA 更新器状态（main/updater.ts 维护并推送，设置页「关于与更新」卡消费）。
     无开发者账号签不了名（ADR-0026）→ electron-updater 走不通，自研换包（ADR-0075）。
     manual = 检测到新版但本机没法自动换包（App Translocation / 目录不可写），
@@ -1001,6 +1017,8 @@ export const CHANNELS = {
   setVisionModel: "otter:setVisionModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
+  getWorkspaceSettings: "otter:getWorkspaceSettings",
+  setDefaultWorkspace: "otter:setDefaultWorkspace",
   remoteStatus: "otter:remoteStatus",
   remotePairDevice: "otter:remotePairDevice",
   remoteUnpairDevice: "otter:remoteUnpairDevice",
