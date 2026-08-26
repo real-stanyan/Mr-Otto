@@ -9,6 +9,7 @@
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",
     "dev": "node scripts/build-island.mjs --debug && node scripts/build-siminput.mjs --debug && electron-vite dev",
+    "dev:sync": "node scripts/sync-dev-data.mjs",
     "build": "electron-vite build",
     "postinstall": "node scripts/fix-pty-perms.mjs",
     "rebuild-native": "electron-rebuild -f -w better-sqlite3 -w node-pty",

@@ -1156,6 +1156,7 @@ void app.whenReady().then(() => {
           approvalMode: agent.approvalMode,
           thinking: agent.thinking,
           toolDefs: agent.toolDefs,
+          isPackaged: app.isPackaged,
         }
       : null;
   };
