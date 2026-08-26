@@ -965,6 +965,10 @@ function SessionView({
     if (atBottom.current) list.current?.scrollToEnd({ animated: true });
   });
 
+  /** 返回按钮量出来的宽度。标题左右各留这么多,居中才是相对整条栏的 */
+  const [lead, setLead] = useState(0);
+  const titleInset = space.md + lead + space.xs;
+
   return (
     // paddingBottom 让位给键盘。**这里不能用 KeyboardAvoidingView**——见 useKeyboardInset。
     // 之所以把内边距加在 flex:1 的外层而不是加在输入框上:外层的高度由父级定,
@@ -974,19 +978,34 @@ function SessionView({
       onLayout={root.onLayout}
       style={{ flex: 1, paddingBottom: keyboard }}
     >
-      {/* 顶栏。返回在左上,和 iOS 的方向一致 */}
+      {/* 顶栏。返回在左上,和 iOS 的方向一致;标题压在**整条栏**的正中。
+          标题单独一层绝对定位,是因为 iOS 导航栏的标题居中是相对整条栏的,
+          不是相对"返回按钮剩下的那块地方" —— 后者会让标题随返回按钮的字宽
+          左右漂,同一个界面在中英文标题下站的位置都不一样。
+          左右各留出返回按钮那么宽的余量:居中是真的居中,长标题也不会钻到
+          返回按钮底下去。 */}
       <View style={{
         paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm,
         borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
-        flexDirection: "row", alignItems: "center", gap: space.xs,
+        flexDirection: "row", alignItems: "center", justifyContent: "space-between",
       }}>
         <Pressable
           accessibilityRole="button" onPress={onBack} hitSlop={12}
+          onLayout={(e) => setLead(e.nativeEvent.layout.width)}
           style={({ pressed }) => [{ paddingVertical: 6, paddingRight: space.xs }, pressed && { opacity: 0.5 }]}
         >
           <Text style={{ ...t.body, color: c.brand }}>‹ 会话</Text>
         </Pressable>
-        <View style={{ flex: 1, minWidth: 0 }}>
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute", left: titleInset, right: titleInset,
+            // 上下按内边距对齐内容框,不是对齐整块 View —— 这条栏上下内边距不一样,
+            // 贴着 0 会让标题比返回按钮低两个点
+            top: space.xs, bottom: space.sm,
+            alignItems: "center", justifyContent: "center",
+          }}
+        >
           <Text style={{ ...t.headline, color: c.foreground }} numberOfLines={1}>
             {a.title ?? a.sessionId}
           </Text>
