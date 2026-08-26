@@ -4,7 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch } from "lucide-react";
+import { GitBranch, Mail } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -435,9 +435,12 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     // 全文（system/工具 schema）在回放/日志里看，时间线不摊开
     case "request_envelope":
       return (
-        <div className={AUDIT}>
-          ✉ 请求信封已更新：{event.model}
-          {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
+        <div className={`${AUDIT} inline-flex items-center gap-1.5`}>
+          <Mail className="size-3.5 shrink-0" aria-hidden />
+          <span>
+            请求信封已更新：{event.model}
+            {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
+          </span>
         </div>
       );
 
