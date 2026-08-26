@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_COMPRESSION, deriveMessages } from "../../src/session/deriveMessages.js";
+import { DEFAULT_COMPRESSION, deriveMessages, renderMemoryBlocks, renderMemoryPrompt } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 // 信封字段工厂：测试里只关心 payload，信封统一生成
@@ -661,5 +661,39 @@ describe("检查点事件不进模型视野（issue #395）", () => {
       { ...env(), type: "turn_ended", outcome: "completed" },
     ];
     expect(deriveMessages(withCp)).toEqual(expected);
+  });
+});
+
+describe("记忆分级的投影", () => {
+  it("renderMemoryBlocks 两参调用的输出不变（旧日志的记忆块逐字节一致）", () => {
+    // 硬规则的可执行版：旧日志必须永远可重放。三档改动不许动到两档的输出。
+    const before = renderMemoryBlocks("笔记一", "用户住悉尼");
+    expect(before).toContain("MEMORY (your personal notes)");
+    expect(before).toContain("USER (about the user)");
+    expect(before).not.toContain("PROJECT");
+  });
+
+  it("有 project 时渲三块，标题带项目根", () => {
+    const out = renderMemoryBlocks("笔记一", "用户住悉尼", "本项目门禁是 npm test");
+    expect(out).toContain("MEMORY (your personal notes)");
+    expect(out).toContain("USER (about the user)");
+    expect(out).toContain("PROJECT (this project only)");
+    expect(out).toContain("本项目门禁是 npm test");
+  });
+
+  it("project 是空串时不渲那一块（同 memory/user 的语义）", () => {
+    expect(renderMemoryBlocks("a", "b", "")).not.toContain("PROJECT");
+  });
+
+  it("三个都空 = 空串（投影与无记忆逐字节一致）", () => {
+    expect(renderMemoryBlocks("", "", "")).toBe("");
+  });
+
+  it("有项目根时，机制说明里点名当前项目；没有时不提项目档", () => {
+    const withP = renderMemoryPrompt("a", "b", "c", "/repo");
+    expect(withP).toContain("/repo");
+    expect(withP).toContain("项目");
+    const noP = renderMemoryPrompt("a", "b");
+    expect(noP).not.toContain("PROJECT");
   });
 });

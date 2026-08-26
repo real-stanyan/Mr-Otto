@@ -318,14 +318,21 @@ export interface SubagentBriefedEvent extends SessionEventBase {
   model: string;
 }
 
-/** 额外 14：长期记忆快照（ADR-0060）。session 开头把 ~/.mr-otto/memories/ 两个文件
-    的内容落盘——模型整个 session 看到的就是这一份（投影拼进 system 尾部），中途
-    写盘下个 session 才可见（前缀缓存不被打穿，hermes 同款取舍）。快照语义同
-    skill_invoked：文件后来改了/丢了，重放不失真 */
+/** 额外 14：长期记忆快照（ADR-0060）。session 开头把记忆文件的内容落盘——模型整个
+    session 看到的就是这一份（投影拼进 system 尾部），中途写盘下个 session 才可见
+    （前缀缓存不被打穿，hermes 同款取舍）。快照语义同 skill_invoked：文件后来
+    改了/丢了，重放不失真。
+    project/projectRoot 是**可选**字段（记忆分级）：旧日志没有它们 ⇒ 投影与今天
+    逐字节一致；反过来新日志被旧版本读到时，assertReplayable 拒的是未知**事件类型**，
+    已知类型上的多余字段它认得——所以绝不能新开一个 project_memory_loaded 类型 */
 export interface MemoryLoadedEvent extends SessionEventBase {
   type: "memory_loaded";
   memory: string;
   user: string;
+  /** 项目档内容。缺席 = 这个会话没有项目根（workspace 一路没有 .git） */
+  project?: string;
+  /** 项目档归属的项目根绝对路径（UI 显示 + 审计） */
+  projectRoot?: string;
 }
 
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。

@@ -251,7 +251,9 @@ export function contextBreakdown(
   const system = workspace
     ? estimateTokens(
         systemPromptText(workspace, today) +
-          (memoryEvent ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user) : "")
+          (memoryEvent
+            ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user, memoryEvent.project, memoryEvent.projectRoot)
+            : "")
       )
     : 0;
   const toolTokens = estimateToolTokens(tools);
