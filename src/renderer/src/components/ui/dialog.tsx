@@ -54,6 +54,12 @@ function DialogContent({
         className={cn(
           "dialog-content fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2",
           "gap-4 rounded-xl border border-border bg-card p-6 shadow-lg sm:max-w-lg",
+          // grid 子项默认 min-width:auto —— 里头只要有一个 nowrap 的东西
+          // （`truncate` 的那类行、等宽长串），它的 min-content 就是整行宽度，
+          // 撑开轨道，把内容画到卡片外面去：卡片底色还是 720px 那一块，
+          // 文字却跑到了页面上，看起来就是"弹窗变透明了"。这一条是兜底，
+          // 每个 dialog 不必各自记得写
+          "[&>*]:min-w-0",
           className
         )}
         {...props}

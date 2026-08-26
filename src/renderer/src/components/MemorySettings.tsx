@@ -211,7 +211,9 @@ function MemoryField({
       </div>
 
       <Dialog open={open} onOpenChange={requestClose}>
-        <DialogContent className="sm:max-w-[720px]">
+        {/* 高度也要有个头：条目一多，field-sizing-content 的 textarea 会一直长，
+            弹窗顶穿视口，页脚那两个按钮就够不着了。超出的部分自己滚 */}
+        <DialogContent className="sm:max-w-[720px] max-h-[calc(100dvh-4rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{label}</DialogTitle>
             <DialogDescription>
@@ -219,7 +221,7 @@ function MemoryField({
               不写任务进度。
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-2">
+          <div className="flex min-w-0 flex-col gap-2">
             <div className="flex items-baseline">
               <span className="ml-auto">
                 <Count n={used} />
@@ -236,8 +238,10 @@ function MemoryField({
             {entryAction && savedEntries.length > 0 && (
               <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
                 {savedEntries.map((e) => (
-                  <li key={e} className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1">
-                    <span className="flex-1 truncate font-mono text-xs" title={e}>
+                  <li key={e} className="flex min-w-0 items-center gap-2 rounded-md bg-muted/50 px-2 py-1">
+                    {/* truncate = white-space:nowrap，它的 min-content 是一整行宽。
+                        没有 min-w-0，这一行会把弹窗的栅格轨道一路撑出卡片外 */}
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs" title={e}>
                       {e}
                     </span>
                     {entryAction(e, { allEntries: savedEntries, disabled: dirty || busy, refresh: syncFromDisk })}
