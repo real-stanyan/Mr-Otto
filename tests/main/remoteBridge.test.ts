@@ -225,31 +225,59 @@ describe("createRemoteBridge", () => {
     b.dispose();
   });
 
-  // ── ready 之后不再收握手包（src/main/remoteBridge.ts 的 phase 门）──
+  // ── 重新握手这一门（src/main/remoteBridge.ts 的 onHello）──
   //
-  // 这三条守的是同一个性质:**一次连接里 nonce 绝不重复**。
-  // 没有那道门时,重放一条 hello 就能让 deriveSession 用没换过的 self.eph/nonceHalf
-  // 算出同一把密钥,再让 createSealer 从 counter=0n 重新起算 —— 同 key 同 nonce。
+  // 守的性质没变:**一次连接里 nonce 绝不重复**。变的是门的位置。
+  // 原来是「ready 之后一概不收握手包」,那道门连**对端真的重开了一轮**也一起挡掉,
+  // 于是两端各自锁死在错配的一对上,每一帧都解不开且永无出口(真机上就是那屏
+  // "没等到时间线")。现在的门是「同一对 (self.eph, peerEph) 只许派生一次」——
+  // 密钥 = HKDF(x25519(selfEph, peerEph), …),这一对没用过就等于这把密钥没用过,
+  // counter 从 0 起算才是安全的。重放挡得一样死,合法的重来放得过去。
+  //
+  // 下面四条:一条钉"合法的重来要放过去",三条钉"重放一步都不许进"。
 
-  it("ready 之后又来一条合法签名的 hello → 忽略,不重新握手（第一次的密钥照旧管用）", () => {
+  it("ready 之后来一条**新**的合法 hello → 重新派生并补推快照（对端重开了一轮，不跟就永远解不开）", () => {
     const { t, b, peer, identity } = harness();
     const { keys } = shakeRecording(t, peer, identity.publicKey);
-    const opener = createOpener(P, keys.recv.key, keys.recv.prefix);
+    const stale = createOpener(P, keys.recv.key, keys.recv.prefix);
     b.pushFleet(BUSY);
     const afterFirst = t.sent.length;
 
-    // 同一台手机、同一把身份密钥，但换了全新的 eph/nonceHalf：签名完全合法，
-    // 换成"合法的第二次握手"也一样必须被挡——重新握手只走 startHandshake 那条路
+    // 同一台手机、同一把身份密钥，换了全新的 eph/nonceHalf —— 手机重连一次就是这个样子
     const fresh = newConnectionParty(P, {
       role: "mobile", deviceId: "m1", identity: peer.identity,
     });
+    const desktopHello = JSON.parse(t.sent[0]!) as HandshakeHello;
+    const next = deriveSession(P, {
+      self: fresh, peerHello: desktopHello, peerIdentityPub: identity.publicKey,
+    })!;
     t.emit(JSON.stringify(buildHello(P, fresh)));
-    expect(t.sent.length).toBe(afterFirst); // 没有补推快照 = 根本没重新派生
 
-    // 第一次握手那套密钥仍然开得开后续帧；真被重新 key 过的话这里解不开
+    // 补推了快照:对端是新的一轮，它手里什么都没有（去重基线也跟着清了）
+    expect(t.sent.length).toBe(afterFirst + 1);
+    const opener = createOpener(P, next.recv.key, next.recv.prefix);
+    const wire = t.sent[t.sent.length - 1]!;
+    expect(JSON.parse(dec(opener.open(b64decode(wire)!)!))).toEqual({ type: "fleet", fleet: BUSY });
+    // 而且真的换了钥匙:上一轮那把开不开这一帧
+    expect(stale.open(b64decode(wire)!)).toBeNull();
+
+    // 新密钥下计数器重新从 0 起算——安全，因为这把钥匙此前一帧都没封过
+    expect(counterOf(wire)).toBe(0n);
+    b.dispose();
+  });
+
+  it("同一条 hello 再来一次（同一对 eph）→ 一步都不进：不重新派生、不补推、计数器不回零", () => {
+    const { t, b, peer, identity } = harness();
+    const { line } = shakeRecording(t, peer, identity.publicKey);
+    b.pushFleet(BUSY);
+    const afterFirst = t.sent.length;
+
+    t.emit(line);
+    t.emit(line);
+    expect(t.sent.length).toBe(afterFirst);
+
     b.pushFleet(IDLE);
-    const plain = opener.open(b64decode(t.sent[t.sent.length - 1]!)!);
-    expect(JSON.parse(dec(plain!))).toEqual({ type: "fleet", fleet: IDLE });
+    expect(counterOf(t.sent[t.sent.length - 1]!)).not.toBe(0n);
     b.dispose();
   });
 

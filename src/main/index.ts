@@ -44,6 +44,7 @@ import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
+import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
@@ -118,8 +119,10 @@ import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
+import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
+import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { relayBaseUrl } from "../shared/gatewayConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
@@ -476,6 +479,13 @@ void app.whenReady().then(() => {
   const store = new EventStore(dbPath);
   // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
   const attachmentStore = new AttachmentStore(join(app.getPath("userData"), "attachments"));
+  /**
+   * 手机传上来的附件先在这里拼回整个文件,再走**和 ＋ 按钮同一道闸门**
+   * (attachmentIntake 的 intakeFile):图片入库、文档转 Markdown、文本带内容、
+   * 其余拒收。准入策略只有一套 —— 手机端不该有第二套,否则两边迟早不一样。
+   */
+  const remoteUploads = createUploadPool();
+
 
   // agent 注册表：会话隔离的核心。切走不杀旧 agent——它的 turn 继续跑，
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
@@ -560,6 +570,12 @@ void app.whenReady().then(() => {
       transport,
       peerIdentity: () => idStore.peerIdentity(),
       onCommand: (c) => handleRemoteCommand(c),
+      // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
+      // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
+      onReset: () => { watchedSession = null; remoteUploads.reset(); },
+      // 重新派生密钥之后订阅还在(手机重连不等于换了观众):fleet 桥自己补推了,
+      // 时间线得这儿补 —— 手机那条 watch 可能正好封在旧密钥里,已经丢了
+      onRekey: () => pushTimelineNow(),
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -614,6 +630,35 @@ void app.whenReady().then(() => {
     remoteBridge?.pushFleet(trimForMobile(fleet));
   };
 
+  /** 手机端正在看的那个会话(watch/unwatch,ADR-0094 的"看"那一半)。
+      只有一个:手机上一次只看得见一屏。null = 没人在看,一帧都不投 */
+  let watchedSession: string | null = null;
+  /** 合并推送用。store.load() 是整条日志的读,而工具密集的 turn 一秒好几条事件 —— 
+      逐条重投等于把手机端的这一屏做成 O(事件数 × 日志长度) */
+  let timelineTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const pushTimelineNow = (): void => {
+    if (timelineTimer) { clearTimeout(timelineTimer); timelineTimer = null; }
+    const sid = watchedSession;
+    if (!remoteBridge || !sid) return;
+    // 出机器的那一份要过闸门:只有三种事件、不含 reasoning、超长就截
+    // (shared/remote/timeline.ts)
+    const events = store.load(sid);
+    const messages = projectTimelineForMobile(events);
+    // 这三个数是这条链路唯一的诊断:日志里 0 条,问题在投影或会话 id;
+    // 有条数但手机上空,问题在线上那一段。第一版全哑,查了一轮才定位
+    console.warn(`远程:推时间线 ${sid} —— ${events.length} 事件 → ${messages.length} 条`);
+    remoteBridge.pushTimeline(sid, messages);
+  };
+
+  /** 这条事件属于手机正在看的会话才安排重投。sid=null(说不清是谁的)也投一次:
+      漏投的代价是手机上停在旧内容,比多投一次糟糕 */
+  const pushTimelineFor = (sid: string | null): void => {
+    if (!watchedSession || (sid !== null && sid !== watchedSession)) return;
+    if (timelineTimer) return;
+    timelineTimer = setTimeout(() => { timelineTimer = null; pushTimelineNow(); }, 250);
+  };
+
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
       reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
@@ -636,6 +681,7 @@ void app.whenReady().then(() => {
       fleetSessionsCache = null;
     }
     pushFleet();
+    pushTimelineFor(sid);
   };
 
   /** 从 IslandInput 取它作用的 sessionId(activeSession 用 boot.activeSessionId) */
@@ -2395,18 +2441,79 @@ void app.whenReady().then(() => {
   /** 手机上行的五个词。三个能原样落到岛的那条路(同一套审批/发消息逻辑,
       不另起一份);watch/unwatch 是时间线订阅,还没做。
       刻意不透传 grant —— UpFrame 里根本没有那个字段(ADR-0096:永久授权不给手机) */
+  /** 把手机声明的那几个 uploadId 变成能随消息走的附件。
+      **少一个就整条不发**:消息正文很可能是"看看这张图",把文字单独发过去
+      等于让模型对着一句没有指代对象的话开工 */
+  async function remoteAttachments(ids: string[]): Promise<OutgoingAttachment[] | null> {
+    const out: OutgoingAttachment[] = [];
+    for (const id of ids) {
+      const file = remoteUploads.take(id);
+      if (!file) {
+        remoteBridge?.pushNotice("有附件没传完,这条消息没发出去");
+        return null;
+      }
+      const staged = await intakeFile(file.name, file.data, attachmentStore);
+      if (staged.kind === "rejected") {
+        // 静默丢弃在手机上和"传成功了"长得一模一样,必须回话
+        remoteBridge?.pushNotice(`${staged.name} 没收下:${staged.reason}`);
+        return null;
+      }
+      out.push(
+        staged.kind === "image"
+          ? { kind: "image", ref: staged.ref }
+          : { kind: "text", name: staged.name, content: staged.content }
+      );
+    }
+    return out;
+  }
+
   function handleRemoteCommand(c: UpFrame): void {
     switch (c.type) {
       case "approve":
         return handleIslandCommand({ type: "approve", sessionId: c.sessionId, callId: c.callId });
       case "deny":
         return handleIslandCommand({ type: "deny", sessionId: c.sessionId, callId: c.callId });
-      case "send":
-        return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
-      case "watch":
-      case "unwatch":
-        console.warn(`远程:时间线订阅还没做,忽略 ${c.type}`);
+      case "upload": {
+        const r = remoteUploads.accept(c);
+        if (!r.ok) remoteBridge?.pushNotice(`${c.name} 没收下:${r.reason}`);
         return;
+      }
+      case "send": {
+        if (!c.uploads?.length) {
+          return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
+        }
+        void (async () => {
+          const attachments = await remoteAttachments(c.uploads ?? []);
+          if (!attachments) return; // 理由已经回给手机了
+          await handleSendMessage(c.sessionId, c.text, undefined, attachments);
+        })().catch((e) => {
+          const why = e instanceof Error ? e.message : String(e);
+          console.warn("远程带附件发消息失败", e);
+          remoteBridge?.pushNotice(`没发出去:${why}`);
+        });
+        return;
+      }
+      case "watch":
+        // 一次只订一个:换会话直接顶掉上一个,不做多路订阅 —— 手机上看不见两屏
+        console.warn(`远程:手机订阅了 ${c.sessionId}`);
+        watchedSession = c.sessionId;
+        pushTimelineNow();
+        return;
+      case "unwatch":
+        // 只有当前订的那个能取消:退出旧屏的迟到 unwatch 不该把新订的掐掉
+        if (watchedSession === c.sessionId) watchedSession = null;
+        return;
+      case "stats": {
+        // 两条查询都是全表扫描级的,所以**只在手机开口问的时候跑** ——
+        // 挂在 pushFleet 上会让每条工具事件都拖一次全表扫描(见上面 sessions() 的备注)
+        const now = Date.now();
+        // 子会话不算:派一次活热力图就多一格的话,它说的不再是"你开过多少会话"
+        // (同 renderer 的 SessionActivity,issue #141)
+        const roots = store.sessions().filter((x) => x.spawnedFrom === null);
+        const billed = store.billedUsage(now - USAGE_DAYS * 86_400_000);
+        remoteBridge?.pushStats(projectStats(roots, billed, now));
+        return;
+      }
     }
   }
 

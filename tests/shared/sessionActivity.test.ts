@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dayKey, sessionActivity } from "../../src/renderer/src/lib/sessionActivity.js";
+import { dayKey, heatLevel, heatWeeks, sessionActivity } from "../../src/shared/sessionActivity.js";
 
 /** 固定一个本地时刻当"现在"：2026-08-20 15:00 本地 */
 const NOW = new Date(2026, 7, 20, 15, 0, 0).getTime();
@@ -48,5 +48,46 @@ describe("sessionActivity", () => {
   it("dayKey 按本地日期算，不按 UTC", () => {
     const local = new Date(2026, 0, 2, 1, 30);
     expect(dayKey(local.getTime())).toBe("2026-01-02");
+  });
+});
+
+describe("heatWeeks", () => {
+  it("每列七格,周日在最上面", () => {
+    const weeks = heatWeeks(sessionActivity([], NOW, 30));
+    expect(weeks.every((w) => w.length === 7)).toBe(true);
+    // 第一列的第一格要么是 null(窗口起点不是周日),要么就是窗口第一天
+    const flat = weeks.flat();
+    const first = flat.findIndex((c) => c !== null);
+    expect(first % 7).toBe(new Date(sessionActivity([], NOW, 30).start).getDay());
+  });
+
+  it("窗口外的边角是 null,不是 count 0", () => {
+    const weeks = heatWeeks(sessionActivity([], NOW, 30));
+    const flat = weeks.flat();
+    expect(flat.some((c) => c === null)).toBe(true);
+    expect(flat.filter((c) => c !== null)).toHaveLength(30);
+  });
+
+  it("有会话的那天带着计数", () => {
+    const w = sessionActivity([{ startedTs: daysAgo(3) }, { startedTs: daysAgo(3) }], NOW, 30);
+    const hit = heatWeeks(w).flat().find((c) => c && c.count > 0);
+    expect(hit?.count).toBe(2);
+  });
+});
+
+describe("heatLevel", () => {
+  it("0 是 0 档 —— 没干活和干得少不是一回事", () => {
+    expect(heatLevel(0, 10)).toBe(0);
+  });
+
+  it("按窗口最大值分四档", () => {
+    expect(heatLevel(1, 100)).toBe(1);
+    expect(heatLevel(50, 100)).toBe(2);
+    expect(heatLevel(75, 100)).toBe(3);
+    expect(heatLevel(100, 100)).toBe(4);
+  });
+
+  it("最大值就是 1 时,有就是满档(不然整张图都只有最浅那一档)", () => {
+    expect(heatLevel(1, 1)).toBe(4);
   });
 });

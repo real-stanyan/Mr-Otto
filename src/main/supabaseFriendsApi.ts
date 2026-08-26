@@ -8,6 +8,12 @@ import type {
   FriendsApi, FriendshipRow, LastSeenRow, MessageRow, PresenceEntry, ProfileRow,
 } from "./friends.js";
 import type { WorkspacePresence } from "../shared/friends.js";
+import { dmOr, mergeChannelHealth, profileSearchOr } from "../shared/friendsQuery.js";
+
+// 这两条搬去了 src/shared(手机端 import 同一份源码,见那个文件开头的理由)。
+// 从这里原样再导出去:它们本来就是这个模块的公开面,调用方和测试不该因为
+// 文件搬家而跟着改 —— 搬的是实现的位置,不是它属于谁
+export { mergeChannelHealth, profileSearchOr };
 
 const PAGE = 50;
 /** 好友搜索一页大小:侧栏窄条里超过这个数只会变成滚动噪音,输更多字符收敛比翻页好 */
@@ -34,21 +40,6 @@ export function presenceStateToEntries(state: Record<string, unknown[]>): Presen
     }
     return { id, workspace };
   });
-}
-
-/** 每条通道的订阅状态汇成一个健康度:全 SUBSCRIBED 才叫 live。
-    只要有一条没通,推送就是残的(比如 messages 断了 = 收不到消息),
-    宁可整体判 degraded 让轮询兜住,也不要"看着是好的但其实哑了" */
-export function mergeChannelHealth(statuses: string[]): "live" | "degraded" {
-  return statuses.every((s) => s === "SUBSCRIBED") ? "live" : "degraded";
-}
-
-/** 模糊搜索的 .or() 过滤串。PostgREST 的 or 语法用逗号/括号做分隔,引号会开始 quoted 段,
-    这些字符出现在搜索词里会被当语法解析 → 直接剥掉(用户名/邮箱里本就罕见);
-    % 和 _ 是 LIKE 通配符,反斜杠转义成字面量,防止 "a_b" 匹配到 "aXb" */
-export function profileSearchOr(query: string): string {
-  const q = query.replace(/[,()"'\\]/g, "").replace(/[%_]/g, (c) => `\\${c}`);
-  return `name.ilike.%${q}%,email.ilike.%${q}%`;
 }
 
 /** 列不存在:PostgREST 对 update 未知列报 PGRST204,对 select 未知列透传 pg 的 42703。
@@ -125,7 +116,7 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
 
     async listMessages(uid, friendId, beforeId) {
       let q = client.from("messages").select("id,sender,recipient,body,created_at")
-        .or(`and(sender.eq.${uid},recipient.eq.${friendId}),and(sender.eq.${friendId},recipient.eq.${uid})`)
+        .or(dmOr(uid, friendId))
         .order("id", { ascending: false }).limit(PAGE);
       if (beforeId !== undefined) q = q.lt("id", beforeId);
       return (unwrap(await q) ?? []) as MessageRow[];

@@ -45,42 +45,106 @@ export function createMobileBridge(opts: {
   let self: SelfParty | null = null;
   let sealer: ReturnType<typeof createSealer> | null = null;
   let opener: ReturnType<typeof createOpener> | null = null;
+  /** 对端最近一条验过的 hello。**活过自己这一轮** —— 换了自己的 eph 之后要拿它
+      当场重新派生:对端可能早就 ready 了,不会为我这一轮再送一次 */
+  let lastPeerHello: HandshakeHello | null = null;
+  /** 当前这套 self 已经派生过的对端 ephPub。见 onHello 上面那段 */
+  let usedPeerEphs = new Set<string>();
 
-  function resetRound(): void {
+  /** 一次连接里最多重新派生这么多次。对端是中继送来的,次数不该由它说了算 */
+  const MAX_DERIVES = 64;
+
+  /** 只清这一轮的会话状态。self / lastPeerHello 属于**这条连接**,不在这儿动 */
+  function clearSession(): void {
     if (phase === "closed") return;
     const wasReady = phase === "ready";
     phase = "handshaking";
-    self = null;
     sealer = null;
     opener = null;
     if (wasReady) opts.onReady(false);
   }
 
+  /** 连接没了:这条连接上的一切都作废,包括记住的那份对端 hello */
+  function resetRound(): void {
+    clearSession();
+    self = null;
+    lastPeerHello = null;
+    usedPeerEphs = new Set();
+  }
+
+  /**
+   * 用 (当前 self, 这条 peer hello) 派生并装上密钥。
+   * **调用方负责保证这一对没用过** —— 见 onHello。
+   */
+  function adopt(hello: HandshakeHello): void {
+    if (!self) return;
+    const pinned = opts.peerIdentity();
+    if (!pinned) return log("手机桥:还没配对过任何电脑,拒绝握手");
+    const keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pinned });
+    if (!keys) {
+      // TOFU 报警就在这条路上:公钥对不上就是对不上,不静默接受
+      return log("手机桥:电脑的身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
+    }
+    usedPeerEphs.add(hello.ephPub);
+    lastPeerHello = hello;
+    sealer = createSealer(p, keys.send.key, keys.send.prefix);
+    opener = createOpener(p, keys.recv.key, keys.recv.prefix);
+    phase = "ready";
+    // 每次派生都报一次 ready:上层据此重发 watch —— 换了密钥之后
+    // 桌面那侧的订阅是听不见旧密钥封的帧的
+    opts.onReady(true);
+  }
+
   /** 唯一的触发者是 onPeer:对端不在场时发 hello 只是喂虚空(中继不排队) */
   function startRound(): void {
     if (phase === "closed") return;
-    resetRound();
+    clearSession();
     // 每连接必须新鲜的 eph/nonceHalf —— 同 key 同 nonce 复用 =
     // ChaCha20-Poly1305 的机密性和认证性一起崩掉(见 handshake.ts 的注释)
+    // 先把上一轮记住的那份接住:下面的 adopt 会覆写 lastPeerHello
+    const carried = lastPeerHello;
     self = newConnectionParty(p, { role: "mobile", deviceId: opts.deviceId, identity: opts.identity });
+    // self 换了 ⇒ 同一个对端 eph 也会算出一把新钥匙,旧的"用过"名单跟着作废
+    usedPeerEphs = new Set();
     opts.transport.send(JSON.stringify(buildHello(p, self)));
+    // 对端不会为我这一轮再发一次 hello(它可能早就 ready 了),拿记住的那份当场重派生。
+    // **phase 这一问是必须的**:上面那行 send 可能是同步投递的,对端崭新的 hello
+    // 说不定已经在里面派生完了 —— 那份比手上这份旧的新,别拿旧的盖回去
+    if (carried && phase !== "ready") adopt(carried);
   }
 
+  /**
+   * 收到对端的握手包。**规则是"永远用对端最新的那一条",不是"只认第一条"**。
+   *
+   * 只认第一条会死锁,而且是这条链路上最常见的死法:中继在**任何一端 attach 时
+   * 都会给两边各发一次 `:peer`**(relay.ts),而手机重连一次,桌面那侧就会收到
+   * 一条 `:peer` 并重开一轮;手机自己那条 `:peer` 却是写给正在被拆掉的旧连接的,
+   * 收不到。于是桌面开了两轮(D1、D2)、手机只开了一轮(M1):手机锁死在先到的
+   * D1 上,桌面锁死在 M1 + 自己最新的 D2 上。两边都自认为 ready,而每一帧都
+   * 解不开 —— 就是真机上那屏"没等到时间线"加满屏"帧解密或计数器校验失败"。
+   * 死锁没有出口:不再有 `:peer`,就不再有新的一轮。
+   *
+   * 改成"取最新"之后两边收敛:各自永远用 (我最新的 self, 对端最新的 hello),
+   * 而这两样都会经由有序的中继流告诉对方,最终一定落到同一对上。
+   *
+   * **那道 phase 门原本挡的东西必须原样挡住**:重放一条 hello 会让
+   * deriveSession 用没换过的 self.eph/nonceHalf 算出**同一把密钥和同一条 nonce
+   * 前缀**,而 createSealer 又从 counter=0n 起算 —— 同 key 同 nonce 加密两段不同
+   * 明文,ChaCha20-Poly1305 的机密性和认证性一起崩(keystream 可还原、Poly1305
+   * 一次性密钥可还原)。握手包是明文过中继的,网关运营者手里始终有副本。
+   *
+   * 换成一道**更准的**门:同一对 (self.eph, peerEph) 只许派生一次。
+   * 密钥 = HKDF(x25519(selfEph, peerEph), salt=两半 nonce),所以
+   * 「这一对没用过」⇒「这把密钥没用过」⇒ counter 从 0 起算是安全的。
+   * 换了 self(startRound)才清空名单 —— 那时 x25519 的另一半也换了。
+   *
+   * 剩下的余地只有 DoS:中继可以塞旧 hello 逼我们反复重派生。它本来就能直接
+   * 丢包,拿不到比这更多的东西;MAX_DERIVES 给它封了顶。
+   */
   function onHello(line: string): void {
-    // 与桌面侧同一道门,理由也同一条:ready 之后再收 hello 等于让攻击者重放一条
-    // 明文握手包,而 self.eph/nonceHalf 一个都没换 —— 会算出同一把密钥和同一条
-    // nonce 前缀,而 createSealer 又从 counter=0n 起算。合法的重来只走 onPeer。
-    if (phase !== "handshaking") {
-      log("手机桥:已建立会话,忽略这一轮之外的握手包");
-      return;
-    }
+    if (phase === "closed") return;
     if (!self) {
       log("手机桥:这一轮还没开始(没收到在场信号),忽略握手包");
-      return;
-    }
-    const pinned = opts.peerIdentity();
-    if (!pinned) {
-      log("手机桥:还没配对过任何电脑,拒绝握手");
       return;
     }
     let hello: HandshakeHello;
@@ -90,16 +154,20 @@ export function createMobileBridge(opts: {
       log("手机桥:握手包不是合法 JSON,丢弃");
       return;
     }
-    const keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pinned });
-    if (!keys) {
-      // TOFU 报警就在这条路上:公钥对不上就是对不上,不静默接受
-      log("手机桥:电脑的身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
+    // 名单以 ephPub 为键,先确认它真是个字符串再拿去查
+    if (typeof hello?.ephPub !== "string") {
+      log("手机桥:握手包缺 ephPub,丢弃");
       return;
     }
-    sealer = createSealer(p, keys.send.key, keys.send.prefix);
-    opener = createOpener(p, keys.recv.key, keys.recv.prefix);
-    phase = "ready";
-    opts.onReady(true);
+    if (usedPeerEphs.has(hello.ephPub)) {
+      log("手机桥:这条握手包这一轮已经派生过(重放或重复),忽略");
+      return;
+    }
+    if (usedPeerEphs.size >= MAX_DERIVES) {
+      log("手机桥:这一轮重新派生的次数到顶了,忽略");
+      return;
+    }
+    adopt(hello);
   }
 
   function onSealed(payload: string): void {
