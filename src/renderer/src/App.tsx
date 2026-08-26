@@ -775,6 +775,17 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
   // "什么都没变的更新"。所以变化时显示 "false → true"，并在标签旁点破
   const enabledFlipped =
     preview.enabled !== null && preview.before !== null && preview.before.enabled !== preview.enabled;
+  // 凭据键的集合变化（#472）：只在 update 上画「旧 → 新」——remove 本来就是
+  // 整台删掉，add 没有旧集合可比。掉键单独点破：那可能是一把 Authorization，
+  // 丢了这台 server 就 401，而「不带 headers 的更新」在其他字段上看起来
+  // 什么都没变
+  const beforeCredKeys = preview.action === "update" ? (preview.before?.credentialKeys ?? null) : null;
+  const credKeysChanged =
+    beforeCredKeys !== null && JSON.stringify(beforeCredKeys) !== JSON.stringify(preview.credentialKeys);
+  const droppedCredKeys = credKeysChanged
+    ? beforeCredKeys.filter((k) => !preview.credentialKeys.includes(k))
+    : [];
+  const fmtCredKeys = (keys: string[]) => (keys.length === 0 ? "（不含凭据）" : keys.join("、"));
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -850,7 +861,16 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
           </>
         )}
         <Row label="credentialKeys">
-          {preview.credentialKeys.length === 0 ? (
+          {credKeysChanged ? (
+            <>
+              {droppedCredKeys.length > 0 && (
+                <span className="text-[11px] text-warn">
+                  这次更新会去掉凭据键：{droppedCredKeys.join("、")}（对应的旧值会被丢弃）
+                </span>
+              )}
+              <Value text={`${fmtCredKeys(beforeCredKeys)} → ${fmtCredKeys(preview.credentialKeys)}`} />
+            </>
+          ) : preview.credentialKeys.length === 0 ? (
             <div className="text-xs text-muted-foreground">（不含凭据）</div>
           ) : (
             <Value text={preview.credentialKeys.join("、")} />

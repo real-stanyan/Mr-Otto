@@ -288,8 +288,12 @@ export interface McpConfigurePreview {
   enabled: boolean | null;
   /** 改已有的一台时，改之前是什么。新增时为 null。
       enabled 也在里面：渲染层要能显示「false → true」这种翻转，只显示新值
-      看不出"这次会启用它" */
-  before: { url: string | null; command: string | null; enabled: boolean; toolCount: number } | null;
+      看不出"这次会启用它"。
+      credentialKeys（#472）：旧 env/headers 的**键名**（值同样不过桥）。
+      没有它有一条无声路径：模型不带 headers 更新一台已配好的 server，
+      mergeMaskedCreds 只遍历 incoming 的键，旧的 Authorization 被整批丢掉
+      ——一台能用的 server 在一次「更新」后变成 401，而用户签的字里没有这一项 */
+  before: { url: string | null; command: string | null; enabled: boolean; toolCount: number; credentialKeys: string[] } | null;
   /** url / command / 每条 args 是否在主进程就被截断（Task 9 审查 Important 2：
       这个预览此前没有 mcp_tool 参数预览、write_file 都有的那道 MAX_ARG_CHARS
       长度纪律——模型给一个几 MB 的 command 就整个过 IPC 落到卡片上）。

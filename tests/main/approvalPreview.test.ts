@@ -282,6 +282,38 @@ describe("mcp_configure 的审批预览", () => {
     });
   });
 
+  // #472：模型对已配好的一台调 mcp_configure 而没带 env/headers 时，旧的键
+  // 会被整批丢掉（mergeMaskedCreds 只遍历 incoming 的键）——一台好端端的
+  // server 在一次「更新」之后变成 401，而用户签的字里没有这一项。before
+  // 必须带上旧凭据的键名，卡片才画得出「改之前 / 改之后」
+  it("before 带上旧凭据的键名——不带 headers 的更新在卡上看得出正在丢掉哪几把（#472）", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://mcp.example.com/mcp" } },
+      worldWithMcp({
+        s: { kind: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer sk-旧的" }, enabled: true },
+      })
+    );
+    expect(preview).toMatchObject({
+      kind: "mcp_configure",
+      credentialKeys: [],
+      before: { credentialKeys: ["Authorization"] },
+    });
+    // 键名过桥，值仍然绝不过桥（ADR-0044 口径不变）
+    expect(JSON.stringify(preview)).not.toContain("sk-旧的");
+  });
+
+  it("stdio 的 before.credentialKeys 来自旧 env 的键名（#472）", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", env: { NEW_KEY: "v" } } },
+      worldWithMcp({ fs: { kind: "stdio", command: "npx", args: [], env: { OLD_TOKEN: "sk-旧的" }, enabled: true } })
+    );
+    expect(preview).toMatchObject({
+      credentialKeys: ["NEW_KEY"],
+      before: { credentialKeys: ["OLD_TOKEN"] },
+    });
+    expect(JSON.stringify(preview)).not.toContain("sk-旧的");
+  });
+
   it("before 带上旧的启用状态——只有新值看不出这次是不是翻转", async () => {
     const preview = await buildApprovalPreview(
       { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://新的/mcp" } },
