@@ -11,6 +11,7 @@
 import type { Tool } from "./tool.js";
 import type { McpCapability, ExecutionWorld } from "../world/executionWorld.js";
 import type { McpServerConfig } from "../shared/mcp.js";
+import { normalizeMcpHttpUrl } from "../shared/mcp.js";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -32,20 +33,19 @@ export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerCo
   if (kind === "http") {
     const url = a["url"];
     if (typeof url !== "string" || url === "") throw new Error("http 传输必须给 url");
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error(`url 不是合法的地址：${url}`);
-    }
-    // 只认 http/https：file:// / data: 之类在这里没有任何正当用途，
-    // 而它们能让一次"配置 MCP"变成读本地文件的惊喜面
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error(`url 只支持 http/https，收到的是 ${parsed.protocol}`);
-    }
+    // 归一化 + 校验挪进 shared/mcp.ts 的 normalizeMcpHttpUrl（Task 9 审查 Critical 1）：
+    // 存盘的必须是 URL.href，不是模型给的原始字符串——WHATWG 解析器会在解析前
+    // 悄悄剥掉 tab/换行，原始字符串和解析结果能对应到两个不同的主机。
+    // mcpConfigurePreview 复用同一个函数，卡片和落盘的值因此永远是同一份。
+    const normalizedUrl = normalizeMcpHttpUrl(url);
     return {
       id,
-      cfg: { kind: "http", url, headers: asStringMap(a["headers"]), enabled: a["enabled"] !== false },
+      cfg: {
+        kind: "http",
+        url: normalizedUrl,
+        headers: asStringMap(a["headers"]),
+        enabled: a["enabled"] !== false,
+      },
     };
   }
   if (kind === "stdio") {

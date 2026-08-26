@@ -735,6 +735,32 @@ function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
       {text === "" ? "（空）" : text}
     </pre>
   );
+  // url / command / 每条 args 都可能在主进程被截断（Task 9 审查 Important 2）——
+  // 截断了就在标签同一行说清"只显示前 N 字符，共 M"，照抄 McpToolApproval
+  // 参数表那一行的写法（那边 a.truncated 也是这么挂在标签旁边的）
+  const Field = ({
+    label,
+    text,
+    truncated,
+    fullLength,
+  }: {
+    label: string;
+    text: string;
+    truncated?: boolean;
+    fullLength?: number;
+  }) => (
+    <div className="flex flex-col gap-[2px]">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+        {truncated === true && (
+          <span className="text-[11px] text-warn">
+            只显示前 {text.length} 字符，共 {fullLength}
+          </span>
+        )}
+      </div>
+      <Value text={text} />
+    </div>
+  );
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -744,34 +770,43 @@ function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
         <span className="font-mono text-[13.5px] font-medium">{preview.server}</span>
       </div>
       <div className="flex flex-col gap-[6px]">
-        <Row label="action">
-          <Value text={preview.action} />
-        </Row>
-        <Row label="server">
-          <Value text={preview.server} />
-        </Row>
-        {preview.transport !== null && (
-          <Row label="transport">
-            <Value text={preview.transport} />
-          </Row>
-        )}
+        <Field label="action" text={preview.action} />
+        <Field label="server" text={preview.server} />
+        {preview.transport !== null && <Field label="transport" text={preview.transport} />}
         {preview.url !== null && (
-          <Row label="url">
-            <Value text={preview.url} />
-          </Row>
+          <Field
+            label="url"
+            text={preview.url}
+            truncated={preview.truncated.url}
+            fullLength={preview.fullLength.url}
+          />
         )}
         {preview.command !== null && (
           <>
-            <Row label="command">
-              <Value text={preview.command} />
-            </Row>
-            <Row label="args">
-              {preview.args.length === 0 ? (
+            <Field
+              label="command"
+              text={preview.command}
+              truncated={preview.truncated.command}
+              fullLength={preview.fullLength.command}
+            />
+            {preview.args.length === 0 ? (
+              <Row label="args">
                 <div className="text-xs text-muted-foreground">（这次调用没有参数）</div>
-              ) : (
-                <Value text={preview.args.join(" ")} />
-              )}
-            </Row>
+              </Row>
+            ) : (
+              // 每条 arg 自己一行、自己一个框——不 join 成一句话（Task 9 审查
+              // Important 1）：`["-y", "some pkg"]` 和 `["-y", "some", "pkg"]`
+              // join 之后长得一模一样，用户分不清是几个参数
+              preview.args.map((argValue, i) => (
+                <Field
+                  key={i}
+                  label={`args[${i}]`}
+                  text={argValue}
+                  truncated={preview.truncated.args[i] ?? false}
+                  fullLength={preview.fullLength.args[i] ?? 0}
+                />
+              ))
+            )}
           </>
         )}
         <Row label="credentialKeys">

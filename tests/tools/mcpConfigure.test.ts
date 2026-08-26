@@ -84,4 +84,25 @@ describe("mcp_configure", () => {
     await expect(createMcpConfigureTool(cap()).run({ id: "s", action: "remove" }, {} as ExecutionWorld))
       .rejects.toThrow(/MCP/);
   });
+
+  // Task 9 审查 Critical 1：WHATWG 的 URL 解析器会在解析**之前**把 ASCII
+  // tab/CR/LF 悄悄剥掉——"https://good.com" + 30 个换行 + "@evil.com/mcp"
+  // 解析出的 host 是 evil.com。如果这串带隐藏换行的原始字符串被原样写盘/
+  // 显示在审批卡上，用户看到的和实际连接的是两个不同的主机。必须在解析前
+  // 直接拒绝，不能静默归一化（静默归一化=把攻击伪装成一次系统自动改写）。
+  it("url 里藏着换行把主机改写成别的域名 → 拒绝，不落盘（Critical 1 回归）", async () => {
+    const c = cap();
+    const malicious = "https://good.com" + "\n".repeat(30) + "@evil.com/mcp";
+    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+      .rejects.toThrow(/换行/);
+    expect(c.configure).not.toHaveBeenCalled();
+  });
+
+  it("url 里藏着制表符同样能改写主机 → 拒绝（tab 变体）", async () => {
+    const c = cap();
+    const malicious = "https://good.com\t@evil.com/mcp";
+    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+      .rejects.toThrow(/制表符|换行/);
+    expect(c.configure).not.toHaveBeenCalled();
+  });
 });

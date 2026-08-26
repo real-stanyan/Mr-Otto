@@ -245,4 +245,16 @@ describe("mcp_configure 的审批预览", () => {
     );
     expect(preview).toMatchObject({ action: "remove", server: "s" });
   });
+
+  // Task 9 审查 Important 1：args 必须留在数组里、一格一项，不能在预览这一层
+  // 就被 join 成一句话——`["-y", "some pkg"]` 和 `["-y", "some", "pkg"]` join
+  // 之后长得一模一样，用户分不清是一个参数还是两个。渲染层（App.tsx 的
+  // McpConfigureApproval）逐项建行，前提是这里给的就是逐项的数组。
+  it("args 保持数组、逐项分开，不折成一个 join 后的字符串", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "some pkg"] } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.args).toEqual(["-y", "some pkg"]);
+  });
 });

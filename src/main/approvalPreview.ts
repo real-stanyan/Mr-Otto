@@ -39,6 +39,29 @@ export async function buildApprovalPreview(
   return { kind: "write_file", path: args.path, oldText, newText: args.content };
 }
 
+/** 预览这一步的最佳展示：能规范化就规范化，展示的是 URL 解析器实际会看到
+    的主机，不是可能藏着隐藏 tab/换行的原始输入（Task 9 审查 Critical 1——
+    "https://good.com" + 30 个换行 + "@evil.com/mcp" 解析出的 host 是
+    evil.com，卡片必须露出这个真相，不能停留在被换行推没了的原始字符串）。
+    解析失败（语法错误/协议不对）时 run() 那层会真正拒绝这次调用——这里仍
+    展示原始值，让卡片至少说得出模型传了什么，而不是直接哑掉退回 JSON 兜底。 */
+function previewUrl(raw: string): string {
+  try {
+    return new URL(raw).href;
+  } catch {
+    return raw;
+  }
+}
+
+/** 单个字符串值按 MAX_ARG_CHARS 截断，和 clip() 同一份纪律（Task 9 审查
+    Important 2：这个预览此前没有 mcp_tool 参数预览、write_file 都有的
+    长度上限，一个几 MB 的 command/url/arg 会整个原样过 IPC 落到卡片上）。 */
+function clipValue(value: string): { value: string; truncated: boolean; fullLength: number } {
+  return value.length <= MAX_ARG_CHARS
+    ? { value, truncated: false, fullLength: value.length }
+    : { value: value.slice(0, MAX_ARG_CHARS), truncated: true, fullLength: value.length };
+}
+
 /** mcp_configure 的预览。参数出自模型，形状一律不赌——认不出来就不预览，
     审批卡照常弹、走 JSON 兜底（同 write_file 分支的口径）。 */
 function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): ApprovalPreview | undefined {
@@ -58,27 +81,51 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
     : null;
 
   if (a?.["action"] === "remove") {
-    return { kind: "mcp_configure", server: id, action: "remove", transport: null,
-      url: null, command: null, args: [], credentialKeys: [], before };
+    return {
+      kind: "mcp_configure", server: id, action: "remove", transport: null,
+      url: null, command: null, args: [], credentialKeys: [], before,
+      truncated: { url: false, command: false, args: [] },
+      fullLength: { url: 0, command: 0, args: [] },
+    };
   }
 
   const kind = a?.["kind"];
   if (kind !== "http" && kind !== "stdio") return undefined;
   const creds = kind === "http" ? a?.["headers"] : a?.["env"];
+
+  // url 走 previewUrl 归一化再截断——卡片和最终写盘的 URL.href 因此永远是
+  // 同一份（normalizeMcpHttpUrl 在 mcpConfigure.ts 里存的也是 href）
+  const urlClip =
+    kind === "http" && typeof a?.["url"] === "string" ? clipValue(previewUrl(a["url"] as string)) : null;
+  const commandClip =
+    kind === "stdio" && typeof a?.["command"] === "string" ? clipValue(a["command"] as string) : null;
+  const argsClip = Array.isArray(a?.["args"]) ? (a["args"] as unknown[]).map((x) => clipValue(String(x))) : [];
+
   return {
     kind: "mcp_configure",
     server: id,
     action: before ? "update" : "add",
     transport: kind,
-    url: kind === "http" && typeof a?.["url"] === "string" ? (a["url"] as string) : null,
-    command: kind === "stdio" && typeof a?.["command"] === "string" ? (a["command"] as string) : null,
-    args: Array.isArray(a?.["args"]) ? (a["args"] as unknown[]).map(String) : [],
+    url: urlClip?.value ?? null,
+    command: commandClip?.value ?? null,
+    // 一格一项，不 join——每一条 arg 是它自己的一行（Task 9 审查 Important 1）
+    args: argsClip.map((c) => c.value),
     // 只出键名。真值绝不过桥（ADR-0044）——审批卡要回答的是"配了哪几把"，
     // 不是"每把长什么样"
     credentialKeys: Object.keys(
       creds !== null && typeof creds === "object" && !Array.isArray(creds) ? creds : {}
     ),
     before,
+    truncated: {
+      url: urlClip?.truncated ?? false,
+      command: commandClip?.truncated ?? false,
+      args: argsClip.map((c) => c.truncated),
+    },
+    fullLength: {
+      url: urlClip?.fullLength ?? 0,
+      command: commandClip?.fullLength ?? 0,
+      args: argsClip.map((c) => c.fullLength),
+    },
   };
 }
 

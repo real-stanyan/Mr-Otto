@@ -184,3 +184,35 @@ export function maskMcpConfig(cfg: McpServerConfig): McpServerConfig {
     ? { ...cfg, env: maskAll(cfg.env) }
     : { ...cfg, headers: maskAll(cfg.headers) };
 }
+
+/** 归一化 + 校验一个 http 传输的 url（Task 9 审查 Critical 1）。
+    WHATWG 的 URL 解析器会在解析**之前**把输入里所有的 ASCII tab / LF / CR
+    悄悄剥掉：`"https://good.com" + "\n".repeat(30) + "@evil.com/mcp"` 解析出
+    的 host 是 evil.com。如果写盘的、审批卡上显示的都是那个带隐藏换行的原始
+    字符串，用户读到的是掉在滚动框可视范围内的 "https://good.com"，而
+    "@evil.com/mcp" 被换行推到看不见的地方——审批等于在给一个他没读到的主机
+    签字。所以：含这类字符直接拒绝（合法的 MCP 端点不会有它们），而不是
+    静默吃掉后再归一化——静默归一化会把"模型/用户的错误输入"伪装成
+    "系统悄悄接受了一次改写"。
+
+    返回值统一是 `URL.href`：写盘的配置、mcp_configure 的审批预览，都必须
+    是同一个归一化后的字符串——不存在"原始串"和"解析后"两种读法的空间。 */
+export function normalizeMcpHttpUrl(url: string): string {
+  if (/[\t\r\n]/.test(url)) {
+    throw new Error(
+      "url 里不能有制表符或换行——它们会被 URL 解析器悄悄吃掉，卡片上看到的和实际连的会是两个地址"
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`url 不是合法的地址：${url}`);
+  }
+  // 只认 http/https：file:// / data: 之类在这里没有任何正当用途，
+  // 而它们能让一次"配置 MCP"变成读本地文件的惊喜面
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`url 只支持 http/https，收到的是 ${parsed.protocol}`);
+  }
+  return parsed.href;
+}
