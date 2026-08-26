@@ -149,3 +149,29 @@ describe("withMemoryFileLock 按文件路径加锁", () => {
     await a;
   });
 });
+
+import { assertMemoryFits } from "../../src/shared/memoryStore.js";
+
+// moveToProject（设置页「移到项目档」，src/renderer/src/components/MemorySettings.tsx）
+// 在写盘前用 assertMemoryFits 做前置超限检查，写盘本身发生在渲染层，没有 RTL 测不了
+// 组件本体（见 MemorySettings.tsx 顶部注释）——但这条检查底下就是纯函数组合，这里
+// 直接测这一层，覆盖 moveToProject 会撞到的三种情况：不超限、超限、去重后没超限。
+describe("assertMemoryFits（moveToProject 的超限前置检查用的是这条）", () => {
+  it("没超限：不抛", () => {
+    expect(() => assertMemoryFits("project", "x".repeat(2200))).not.toThrow();
+  });
+
+  it("超限：抛错，文案带 target 的大写标签 + used/limit 数字，同 applyOps 的报错语义", () => {
+    expect(() => assertMemoryFits("project", "x".repeat(2201))).toThrow(/PROJECT 超限.*2201\/2200/);
+  });
+
+  it("按归一化后的长度算，不是原始字符串长度——三条重复条目归一化后只剩一条", () => {
+    const text = ["x".repeat(2200), "x".repeat(2200), "x".repeat(2200)].join(ENTRY_DELIMITER);
+    expect(() => assertMemoryFits("project", text)).not.toThrow();
+  });
+
+  it("三档各自认自己的上限", () => {
+    expect(() => assertMemoryFits("memory", "x".repeat(1101))).toThrow(/MEMORY 超限/);
+    expect(() => assertMemoryFits("user", "x".repeat(1376))).toThrow(/USER 超限/);
+  });
+});

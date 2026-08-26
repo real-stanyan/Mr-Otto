@@ -36,6 +36,7 @@ import {
   parseEntries,
   ENTRY_DELIMITER,
   MEMORY_LIMITS,
+  assertMemoryFits,
   type MemoryTarget,
 } from "../../../shared/memoryStore.js";
 
@@ -117,8 +118,8 @@ function MemoryField({
   };
 
   // 保存/清空之后不拿本地 text 直接当 loaded:主进程归一化过(去空条目、保序去重)
-  // 才落盘,本地这份是归一化*之前*的草稿,两者在有重复/空条目时会不一样——
-  // 磁盘上真正写了什么,只有重新问一次才知道,不在这重新实现一遍归一化
+  // 才落盘,本地这份是归一化*之前*的草稿,两者在有重复/空条目时会不一样——不重新
+  // 问一次的话,loaded 会被设成没归一化的草稿,dirty 判不出来,保存钮跟着锁死
   const syncFromDisk = async () => {
     const t = await fetchText();
     setLoaded(t);
@@ -273,29 +274,40 @@ function MoveToProjectSelect({
 }: {
   projects: ProjectMemory[];
   disabled: boolean;
-  onMove: (root: string) => void;
+  /** 返回 Promise 而不是 void:失败(超限/IPC 报错)要能在这里接住并显示——
+      跟 submit/clear/deleteCurrent 那几个动作同一个模式,不做成静默失败 */
+  onMove: (root: string) => Promise<void>;
 }) {
   const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   return (
-    <Select
-      value={value}
-      disabled={disabled}
-      onValueChange={(root) => {
-        setValue("");
-        onMove(root);
-      }}
-    >
-      <SelectTrigger size="sm" className="h-6 w-32 shrink-0 text-[11px]">
-        <SelectValue placeholder="移到项目档" />
-      </SelectTrigger>
-      <SelectContent align="end">
-        {projects.map((p) => (
-          <SelectItem key={p.root} value={p.root} className="text-[11px]">
-            {p.root}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="flex flex-col items-end gap-1">
+      <Select
+        value={value}
+        disabled={disabled || busy}
+        onValueChange={(root) => {
+          setValue("");
+          setBusy(true);
+          setError(null);
+          onMove(root)
+            .catch((e: unknown) => setError(bridgeErrorMessage(e)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <SelectTrigger size="sm" className="h-6 w-32 shrink-0 text-[11px]">
+          <SelectValue placeholder={busy ? "移动中…" : "移到项目档"} />
+        </SelectTrigger>
+        <SelectContent align="end">
+          {projects.map((p) => (
+            <SelectItem key={p.root} value={p.root} className="text-[11px]">
+              {p.root}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error !== null && <span className="max-w-40 text-right text-[11px] text-destructive">{error}</span>}
+    </div>
   );
 }
 
@@ -385,10 +397,15 @@ export function MemorySettings() {
   /** MEMORY 区某条「移到项目档」:先写项目档、再从全局删,顺序不许调换——中途失败
       宁可重复一条(用户看得见、能删),不可丢失。第二步不传 sessionId:主进程
       applyUserEdit 的默认参数落到 MEMORY_EDITS_SESSION（main/memoryEdit.ts 的内部常量),
-      渲染层因此不需要 import 那个主进程模块——两次整份写,不借 forgetMemory */
+      渲染层因此不需要 import 那个主进程模块——两次整份写,不借 forgetMemory。
+      超限检查在任何 saveMemory 之前做:跟 memory 工具的 applyOps 同一个语义——超限
+      报错、不自动淘汰、不截断,逼用户先腾地。检查放在两次写之前,是因为"项目档写完、
+      发现超限、全局档没删"比"直接拒绝"更糟——用户会看到同一条记忆凭空出现在两档里,
+      且不知道该信哪一份。调用方(MoveToProjectSelect)负责把这里抛出的错误显示出来 */
   const moveToProject = async (entry: string, allEntries: string[], root: string) => {
     const proj = projects.find((p) => p.root === root);
     const nextProject = proj?.text ? `${proj.text}${ENTRY_DELIMITER}${entry}` : entry;
+    assertMemoryFits("project", nextProject); // 抛的话下面两次 saveMemory 都不会跑，见 memoryStore.ts 的注释
     await window.otter.saveMemory("project", nextProject, undefined, root);
     await window.otter.saveMemory("memory", formatEntries(allEntries.filter((x) => x !== entry)));
     await refreshProjects();
@@ -413,7 +430,7 @@ export function MemorySettings() {
                   <MoveToProjectSelect
                     projects={projects}
                     disabled={disabled}
-                    onMove={(root) => void moveToProject(entry, allEntries, root).then(refresh)}
+                    onMove={(root) => moveToProject(entry, allEntries, root).then(refresh)}
                   />
                 ),
               })}

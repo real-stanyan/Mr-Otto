@@ -136,6 +136,22 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
   return { ok: true, entries: next, changed };
 }
 
+/** 校验"如果某档写成这段文本会不会超限"，不写盘，纯前置检查——不做截断/淘汰，
+    超限就抛，跟上面 applyOps 里那条超限分支同一个语义(memory 工具的老规矩：
+    超限报错，逼用户自己先腾地)，错误文案也复用同一个 LABEL 映射，保持一致。
+    用在"先拼好候选全文、再决定写不写"的场景(比如设置页「移到项目档」)：
+    写之前就该知道写不写得下，不是写了一半才发现——那种半成品比直接拒绝更糟 */
+export function assertMemoryFits(target: MemoryTarget, text: string): void {
+  const used = charCount(formatEntries(parseEntries(text)));
+  const limit = MEMORY_LIMITS[target];
+  if (used > limit) {
+    throw new Error(
+      `${LABEL[target]} 超限：这段文本 ${used}/${limit} 字符。` +
+        `不会自动淘汰——先清理这一档腾出空间，再写。`
+    );
+  }
+}
+
 // Memory tool result interface and parser
 
 export interface MemoryToolResult {
