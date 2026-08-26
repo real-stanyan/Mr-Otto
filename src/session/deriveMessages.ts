@@ -479,16 +479,26 @@ export function deriveMessages(
         }
         break;
 
-      case "skill_invoked":
+      case "skill_invoked": {
         // 注入为 user 消息，与 compact 摘要同理：中途插 system 各家方言兼容性参差。
         // 位置就是事件位置——skill 在哪条消息前启用，模型就从哪开始看到它。
-        // args 段只在有参数时出现：旧日志（无 args 字段）投影逐字节不变
-        messages.push({
+        // args 段只在有参数时出现：旧日志（无 args 字段）投影逐字节不变。
+        // 组开着时走延后队列（同插话，:389）：模型自取 skill 时这条正好落在
+        // tool_call 与 tool_result 之间，直接 push 会插进这一对中间——API 要求
+        // tool 结果紧跟发起它的 assistant 消息，夹一条 user 进去就是非法请求
+        const target = pendingToolIds.size > 0 ? deferredUsers : messages;
+        target.push({
           role: "user",
           content:
             `[本轮启用 skill「${event.name}」${event.args ? `（参数：${event.args}）` : ""}` +
             `，以下是它的指令，请在完成任务时遵循]\n${event.content}`,
         });
+        break;
+      }
+
+      case "skill_released":
+        // 不投影：停用只改台账（activeSkills），已经发出去的那份说明书是历史事实，
+        // 不追认、不撤回。效果体现在下一次 compact 清场时不再重注入
         break;
 
       case "project_instructions":

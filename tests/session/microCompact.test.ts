@@ -179,6 +179,25 @@ describe("fix round 1", () => {
     expect(pick.coversUpTo).toBe(events[pick.end]!.seq);
   });
 
+  it("skill_released 不进吸收区（被吸收 = 停用记录消失 = skill 复活）", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      { ...base(), type: "session_created", workspace: "/w" },
+      user("u0"), assistant("a0"), ended(),
+      // 一段可吸收的老 turn：release 夹在它的 assistant 回复和收口之间
+      user("u1"), assistant("a1"), { ...base(), type: "skill_released", name: "foo" }, ended(),
+      user("u2"), assistant("a2"), ended(),
+      user("u3"), assistant("a3"), ended(),
+    ];
+    const releaseIdx = events.findIndex((e) => e.type === "skill_released");
+    const pick = nextMicroExchange(events, 2)!;
+    // u1 那段（含中间的 release）整段落进本次可吸收区间
+    expect(pick.coversUpTo).toBeGreaterThanOrEqual(events[releaseIdx]!.seq);
+    events.push(micro("S", pick.coversUpTo));
+    const got = absorbedIndexes(events)!;
+    expect(got.absorbed.has(releaseIdx)).toBe(false);
+  });
+
   it("absorbedIndexes 防孤儿：最后吸收的是带 toolCalls 的 assistant_message，" +
     "但它的 tool_result 落在 coversUpTo 之外时要把它踢出去，其余已吸收的不受影响", () => {
     seq = 0;

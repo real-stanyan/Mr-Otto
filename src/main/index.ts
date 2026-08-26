@@ -42,6 +42,7 @@ import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
+import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
@@ -94,6 +95,7 @@ import {
   memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
+import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
@@ -1156,6 +1158,12 @@ void app.whenReady().then(() => {
     },
   };
 
+  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
+  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装。
+  // 声明位置提到探针之前：探针也要给 skills（见下），而它跑在 whenReady 早期，
+  // 留在下面会撞 TDZ
+  const skillRoots = [join(configDir(homedir()), "skills")];
+
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
@@ -1194,6 +1202,16 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      // 同理给 skills（ADR-0122）：不给的话 skill 这把刀根本不挂，于是
+      // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
+      // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
+      // 「子会话自己也拿得到」在真实装配里就永远兑现不了。
+      // 用真的 scanSkills 而不是桩：这份表的 description 会原样出现在设置页的
+      // 工具目录里（CHANNELS.toolCatalog 走的是同一个函数），桩里的假 skill 名
+      // 会当场漏给用户看。代价是 skill 的 available() 判定「一把都没装就不出这把刀」
+      // 也跟着生效：装机时零 skill 的话开机这一发探针里没有它，装了 skill
+      // 重开一次才进 TOOL_NAMES（设置页那一发是现装的，不受这条影响）
+      skills: { listSkills: () => scanSkills(skillRoots) },
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 开机那次刻意不给 mcp（与 browser 的桩子相反）：那一步跑在注册第一个 IPC
       // 通道之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
@@ -1230,8 +1248,18 @@ void app.whenReady().then(() => {
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) => {
     // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
-    // 在两边一个认得一个不认得
-    const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    // 在两边一个认得一个不认得。
+    // skill 工具同样不能只信 TOOL_NAMES 那份开机快照：它的 available() 只问
+    // "此刻有没有装 skill"，零 skill 开机时 probeToolDefs 装不出它，TOOL_NAMES
+    // 里没有 "skill"。之后用户在设置页导入第一把 skill：复选框列表用的是现算的
+    // 活工具表，能勾上；但这里若还信旧快照，保存时就会把 skill 打进
+    // unknownTools，报"1 个工具名无法识别"。knownSkillToolName 同 mcpToolNamesNow
+    // 挨着的既有惯用法（ADR-0054）：认不认得这个名字不能停在装配那一刻，这里也现扫
+    const known = [
+      ...TOOL_NAMES,
+      ...mcpToolNamesNow(),
+      ...knownSkillToolName(scanSkills(skillRoots).length),
+    ];
     // subagentRoots 只拼路径;搬家(.otter → .mr-otto)在这里先做一遍,用户级和工作区级都搬
     configDir(homedir());
     if (workspace) configDir(workspace);
@@ -1404,6 +1432,9 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
+      // skill 渐进披露：只有主会话这条装配路径才挂 skill 工具（issue 待开）。
+      // listSkills 现扫磁盘（scanSkills 不缓存），工具层不碰 fs
+      skills: { listSkills: () => scanSkills(skillRoots) },
       // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
       // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
       // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
@@ -1456,6 +1487,9 @@ void app.whenReady().then(() => {
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+        // 子会话默认也挂 skill 工具（subagentRunner 按 def.skills === "none" 决定
+        // 挂不挂）；listSkills 与主会话共用同一份现扫闭包
+        skills: { listSkills: () => scanSkills(skillRoots) },
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
         register: (child) => {
@@ -1659,10 +1693,6 @@ void app.whenReady().then(() => {
     }
   );
 
-  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
-  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
-  const skillRoots = [join(configDir(homedir()), "skills")];
-
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
   ipcMain.handle(CHANNELS.listExternalSkills, () => {
     const installed = new Set(scanSkills(skillRoots).map((s) => s.name));
@@ -1674,6 +1704,17 @@ void app.whenReady().then(() => {
       throw new Error("导入清单形状非法(应为 skill 名字符串数组)");
     }
     return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
+  });
+  // 用户侧停用入口（Task 6）：不校验来源——模型自取的和 $ 启用的都能点掉，
+  // 模型那侧的 release 才校验"只能停自己取的"。形状把关先于 append（同
+  // handleSendMessage 的规矩）：name 非字符串、会话不存在都是坏请求零痕迹拒发。
+  // 把关逻辑抽成 validateReleaseSkillRequest（src/shared/releaseSkillRequest.ts）——
+  // 这个文件顶层有 app.whenReady 副作用，vitest 没法直接 import 它测 handler，
+  // 纯函数才测得到（tests/shared/releaseSkillRequest.test.ts）
+  ipcMain.handle(CHANNELS.releaseSkill, (_e, sessionId: string, name: unknown) => {
+    validateReleaseSkillRequest(name, store.has(sessionId));
+    const appended = store.append({ sessionId, ts: Date.now(), type: "skill_released", name });
+    send(CHANNELS.event, appended);
   });
 
   // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────

@@ -12,7 +12,10 @@
 //
 // checkpoint 之前仍要带上的少数事件（deriveMessages 的清场逻辑读它们）：
 //   - session_created（围栏 system 消息）+ memory_loaded（system 尾部）
-//   - 全部 skill_invoked（台账语义"启用过=仍生效"，清场后重注入，ADR-0066）
+//   - 全部 skill_invoked / skill_released（台账语义"启用过=仍生效，停用即出账"，
+//     清场后重注入，ADR-0066）——两者必须成对地捞：只捞启用的话，checkpoint
+//     之前更早历史里的那条停用会被有界重建连同它所在的旧历史一起丢掉，
+//     台账看不到"已经停了"，被停用的 skill 会在 compact 之后诈尸
 //   - 最后一个非空跑 user turn 的连续段（compact 中途触发时投影兜底重注
 //     当前请求原文，issue #193）——从该 user_message 到 checkpoint 连续取，
 //     空跑判定（barren）在段内自洽
@@ -42,11 +45,14 @@ export function boundedContextEvents(store: EventStore, sessionId: string): Sess
   // 尾段：checkpoint（含）到日志末尾
   const tail = store.load(sessionId, { afterSeq: cp.seq - 1 });
 
-  // checkpoint 之前的三类"清场幸存者"
+  // checkpoint 之前的清场幸存者
   const head: SessionEvent[] = [
     ...store.ofType(sessionId, "session_created", { beforeSeq: cp.seq }),
     ...store.ofType(sessionId, "memory_loaded", { beforeSeq: cp.seq }),
     ...store.ofType(sessionId, "skill_invoked", { beforeSeq: cp.seq }),
+    // 停用与启用必须成对地捞：只捞启用的话，checkpoint 之前的停用落在扫描窗口
+    // 外面，台账算不出它，被停用的 skill 会在 compact 之后诈尸
+    ...store.ofType(sessionId, "skill_released", { beforeSeq: cp.seq }),
   ];
 
   // 最后一个活的 user turn 段：从候选 user_message 连续取到 checkpoint 前，

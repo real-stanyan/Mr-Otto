@@ -429,6 +429,9 @@ export interface ShellBridge {
   listExternalSkills(): Promise<ExternalSkillInfo[]>;
   /** 按 name 把别家 skill 复制进 ~/.mr-otto/skills，逐条返回结果 */
   importSkills(names: string[]): Promise<SkillImportResult[]>;
+  /** 停用一个已启用的 skill（落 skill_released）。用户是老大：不校验来源，
+      模型自取的和 $ 启用的都能点掉；模型那侧的 release 才有来源校验 */
+  releaseSkill(sessionId: string, name: string): Promise<void>;
   /** 两个记忆文件的当前内容（设置页读，ADR-0060） */
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
@@ -900,6 +903,7 @@ export const CHANNELS = {
   listSkills: "otter:listSkills",
   listExternalSkills: "otter:listExternalSkills",
   importSkills: "otter:importSkills",
+  releaseSkill: "otter:releaseSkill",
   getMemory: "otter:getMemory",
   saveMemory: "otter:saveMemory",
   forgetMemory: "otter:forgetMemory",

@@ -160,7 +160,8 @@ export interface MicroExchange {
   /** 区间首个 exchange 的 user_message 下标（ADR-0073 攒批后区间可跨多个 exchange） */
   start: number;
   /** 区间末个可吸收 exchange 的最后一个下标（含）：其 next 之前最后一个 assistant_message /
-      tool_result / turn_ended，跳过夹在中间、其实是下一轮前导的 skill_invoked / image_described */
+      tool_result / turn_ended，跳过夹在中间、其实是下一轮前导的 skill_invoked / image_described /
+      skill_released（停用同样可能紧贴在下一条 user_message 之前发生，见规则⑥） */
   end: number;
   /** events[end].seq——落进事件的 coversUpTo */
   coversUpTo: number;
@@ -178,10 +179,12 @@ export const MICRO_BATCH_MIN_EXCHANGES = 4;
     ① 只看最新 context_compacted 之后；② 其后第一个（非空跑）exchange 是保护区不碰；
     ③ 尾部 keepRecentTurns 个 turn 保真不碰；④ 上一条 micro 的 coversUpTo 之后接着数；
     ⑤ 没有 assistant/tool 可吸收的 exchange 不计入批量（它的 user_message 反正原样保留，
-    夹在区间中段的照常被 coversUpTo 覆盖——absorbedIndexes 只收 assistant/tool）；
-    ⑥ end 不越过下一条 user_message 的前导事件——skill_invoked/image_described 是紧贴在
-    *下一条* user_message 之前为它生成的（见 barrenTurns.ts、events.ts 对应注释），不属于
-    这一轮，不能被这一轮的 coversUpTo 吞进去；
+    夹在区间中段的照常被 coversUpTo 覆盖——absorbedIndexes 只收 assistant/tool，
+    skill_invoked / skill_released 同样不收：停用记录被吸收 = 从模型视野消失 = 台账
+    看不到它、被停用的 skill 悄悄复活，所以这条类型白名单本身就是护栏，不用额外判定）；
+    ⑥ end 不越过下一条 user_message 的前导事件——skill_invoked/image_described/
+    skill_released 都可能紧贴在*下一条* user_message 之前发生（见 barrenTurns.ts、
+    events.ts 对应注释），不属于这一轮，不能被这一轮的 coversUpTo 吞进去；
     ⑦ 攒批（ADR-0073）：一次返回从最老未吸收 exchange 到边界前最后一个可吸收 exchange
     的整个区间（一条 micro_compacted 覆盖全部），且可吸收 exchange 不足 batchMin 个
     就返回 null——不动手 = 这一 turn 投影零变化，前缀缓存完整。
@@ -213,7 +216,9 @@ export function nextMicroExchange(
     while (end > start) {
       const t = events[end]!.type;
       if (t === "assistant_message" || t === "tool_result" || t === "turn_ended") break;
-      end--; // 跳过属于下一轮前导的 skill_invoked / image_described
+      end--; // 跳过属于下一轮前导的 skill_invoked / image_described / skill_released——
+      // 这里按"停在三个真内容类型上"判定，不按名字枚举要跳过谁，新事件类型
+      // 天然落进"继续跳过"分支，不用每加一种前导事件就改一遍这个循环
     }
     let hasBody = false;
     for (let i = start + 1; i <= end; i++) {

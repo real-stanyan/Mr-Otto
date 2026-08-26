@@ -1,6 +1,6 @@
 // 已启用 skill 的台账 —— 「这个日志走到某一刻，哪些 skill 正在生效」的唯一出口。
 //
-// 语义（ADR-0066）：启用过 = 仍然生效（当前没有「停用」动作）；按名去重、
+// 语义（ADR-0066）：启用过 = 仍然生效，直到显式停用（skill_released）；按名去重、
 // 后启用的快照覆盖先启用的。
 //
 // barren：今天的 barrenEventIndexes 只收 user_message（和它前面的 image_described），
@@ -17,6 +17,8 @@ import type { SessionEvent } from "./events.js";
 export interface ActiveSkill {
   content: string;
   args?: string;
+  /** 谁启用的。缺省 = user（旧日志/$ 指令）。release 的来源校验读它 */
+  source?: "user" | "model";
 }
 
 /** [0, before) 区间内的台账。barren 由调用方传入（deriveMessages 手上已有一份，
@@ -29,11 +31,20 @@ export function activeSkills(
   const out = new Map<string, ActiveSkill>();
   for (let i = 0; i < before && i < events.length; i++) {
     const e = events[i]!;
-    if (e.type !== "skill_invoked" || barren.has(i)) continue;
+    if (barren.has(i)) continue;
+    if (e.type === "skill_released") {
+      out.delete(e.name); // 停用即出台账；停一个不在台账里的是空操作
+      continue;
+    }
+    if (e.type !== "skill_invoked") continue;
     // 覆盖时先删再设：后启用的排到台账尾部——重注入次序反映的是最近一次
     // 启用的先后，不是石化的首见序
     out.delete(e.name);
-    out.set(e.name, { content: e.content, ...(e.args !== undefined ? { args: e.args } : {}) });
+    out.set(e.name, {
+      content: e.content,
+      ...(e.args !== undefined ? { args: e.args } : {}),
+      ...(e.source !== undefined ? { source: e.source } : {}),
+    });
   }
   return out;
 }
