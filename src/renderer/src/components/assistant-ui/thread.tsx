@@ -43,12 +43,15 @@ import {
   ArrowDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   TerminalIcon,
 } from "lucide-react";
 import {
   createContext,
   useContext,
+  useState,
   type ComponentType,
+  type ReactNode,
   type FC,
   type PropsWithChildren,
   type Ref,
@@ -466,6 +469,64 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
   </div>
 );
 
+/** 后台任务回注的结果卡（issue #452 / ADR-0109）。
+    居中、默认折叠成一行，展开才摊全文。
+    - **居中**：时间线上系统事件的惯用位。右对齐的圆角气泡再怎么调灰，扫一眼
+      仍然是「我发的」——这正是要治的那句「觉得自己莫名其妙发一条消息」。
+    - **默认折叠**：回注正文是命令的完整输出（最长 8000 字符，见 formatCompletion），
+      摊在时间线上会把真正的对话挤没。任务本身已经在输入框上方的面板里露过脸，
+      这里只需要一个「结果落地了」的锚点。
+    - **展开态没有出场动效**：这是键盘/鼠标一按就要看到的东西，动效只会让它显得慢。
+      高度动画同理不做——正文可以很长，animate height 要么抖要么卡。 */
+function BackgroundResultCard({
+  taskIds,
+  children,
+}: {
+  taskIds: string[];
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  // 标题只用事件上的 id，不去正文里认 `[后台任务 bg-N 完成]` 那个前缀
+  // ——ADR-0103 已经把「靠前缀反解」那条路否掉过一次。
+  // 旧日志（#452 之前）没有 taskIds，那时只能说"后台任务"
+  const label = taskIds.length > 0 ? taskIds.join(" · ") : "后台任务";
+  return (
+    <MessagePrimitive.Root
+      data-slot="aui_user-message-root"
+      data-role="user"
+      data-origin="background"
+      className="flex flex-col items-center px-2 transition-[opacity,transform] duration-150 ease-strong starting:translate-y-1 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0"
+    >
+      <div className="w-full max-w-[min(100%,42rem)] overflow-hidden rounded-[10px] border border-border/60 bg-muted/40">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors duration-[120ms] hover:bg-foreground/[0.04]"
+        >
+          <TerminalIcon className="size-3 shrink-0" />
+          <span className="font-mono">{label}</span>
+          <span className="truncate">的结果 · 不是你发的</span>
+          <ChevronDownIcon
+            className={cn(
+              "ml-auto size-3.5 shrink-0 transition-transform duration-150 ease-strong motion-reduce:transition-none",
+              open && "rotate-180"
+            )}
+          />
+        </button>
+        {open && (
+          // whitespace-pre-wrap 是必需的:回注正文是命令的原始输出,
+          // 换行就是它的结构(exit code 一行、stdout 一行)。用户气泡那份 pre-wrap
+          // 来自 .aui-user-message-content,这张卡不走那个类,得自己声明
+          <div className="border-t border-border/60 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-muted-foreground wrap-break-word">
+            {children}
+          </div>
+        )}
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
 const UserMessage: FC = () => {
   // 本仓改动:附件槽默认仍是上游的 UserMessageAttachments(它读 message.attachments,
   // 本仓一直是空的),有槽值时换成 OttoUserAttachments(读 metadata.custom.otto)
@@ -473,39 +534,44 @@ const UserMessage: FC = () => {
     UserAttachments: UserAttachmentsComponent = UserMessageAttachments,
     UserText,
   } = useContext(ThreadComponentsContext);
-  // 本仓改动(issue #428):后台任务回注的消息载体也是 user_message,但它不是人
-  // 打的字。同样的蓝气泡会让人翻历史时分不清哪句是自己说的 —— 事件上带着
-  // origin 就别让 UI 去猜:静音气泡 + 一行来源标记,位置和对齐不动(它仍然是
-  // 这一轮的开场白,挪到左边会让时间线读起来像模型在自言自语)
+  // 本仓改动(issue #428 起,issue #452 / ADR-0109 改定):后台任务回注的消息载体
+  // 也是 user_message,但它不是人打的字。事件上带着 origin,别让 UI 去猜。
+  //
+  // #428 那次只做了「静音气泡 + 一行来源标记」,位置和对齐没动,理由是
+  // 「挪到左边会让时间线读起来像模型在自言自语」。那个顾虑成立,但它反对的是
+  // **挪到左边**,没覆盖到居中这一档 —— 而居中恰恰是时间线上系统事件的惯用位:
+  // 读起来是「发生了一件事 → 模型回应它」。右对齐的圆角气泡再怎么调灰,
+  // 扫一眼仍然是「我发的」,这正是维护者反馈的那句「觉得自己莫名其妙发一条消息」。
   const otto = useAuiState(
     (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
   );
   const fromBackground =
     otto?.type === "user_message" && otto.origin === "background";
+  if (fromBackground) {
+    return (
+      <BackgroundResultCard
+        taskIds={otto.type === "user_message" ? (otto.backgroundTaskIds ?? []) : []}
+      >
+        <MessagePrimitive.Parts
+          components={{
+            File: UserFilePart,
+            Image: UserImagePart,
+            ...(UserText ? { Text: UserText } : {}),
+          }}
+        />
+      </BackgroundResultCard>
+    );
+  }
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
       className="grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 transition-[opacity,transform] duration-150 ease-strong starting:opacity-0 starting:translate-y-1 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
       data-role="user"
-      data-origin={fromBackground ? "background" : undefined}
     >
       <UserAttachmentsComponent />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        {fromBackground && (
-          <div className="text-muted-foreground mb-1 flex items-center justify-end gap-1 text-[11px]">
-            <TerminalIcon className="size-3" />
-            后台任务回注 · 不是你发的
-          </div>
-        )}
-        <div
-          className={cn(
-            "aui-user-message-content peer rounded-[12px_12px_2px_12px] px-3 py-2 wrap-break-word empty:hidden",
-            fromBackground
-              ? "bg-muted text-muted-foreground border-border/60 border font-mono text-[12px]"
-              : "bg-primary text-primary-foreground"
-          )}
-        >
+        <div className="aui-user-message-content peer rounded-[12px_12px_2px_12px] bg-primary px-3 py-2 text-primary-foreground wrap-break-word empty:hidden">
           <MessagePrimitive.Parts
             components={{
               File: UserFilePart,

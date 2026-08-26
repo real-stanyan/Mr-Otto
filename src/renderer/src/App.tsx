@@ -52,6 +52,7 @@ import { WorkTreePill } from "./components/WorkTreePill.js";
 import { SkillImportDialog } from "./components/SkillImportDialog.js";
 import { TurnDiffPanel } from "./components/TurnDiffPanel.js";
 import { AttachDropZone } from "./components/AttachDropZone.js";
+import { BackgroundInbox } from "./components/BackgroundInbox.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
@@ -2815,6 +2816,9 @@ function ChatComposer() {
           ["--composer-padding" as string]: "8px",
         }}
       >
+        {/* 后台任务面板(issue #452):贴着输入框上沿,有任务才出现。
+            摆这儿而不是顶栏角标:现在的问题正是"没被告知",弱信号治不了 */}
+        <BackgroundInbox />
         {/* 投放区是本仓自己的:附件归 store(ADR-0040),不走 assistant-ui 的
             AttachmentDropzone —— 那条路会把文件交给它的附件通道 */}
         <AttachDropZone disabled={status === "running"}>
