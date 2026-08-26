@@ -157,7 +157,7 @@ app.setAsDefaultProtocolClient("mrotto");
 // 先 setName 再显式 setPath,老数据原地不动。
 app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
-app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
+app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env)));
 
 // Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
 // 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
