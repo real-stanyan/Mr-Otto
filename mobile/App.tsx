@@ -311,6 +311,8 @@ function Shell({ store, onRepair, onSignedOut }: {
 }) {
   const [tab, setTab] = useState<Tab>("sessions");
   const [inDetail, setInDetail] = useState(false);
+  /** 连接状态由会话页那只桥算出来(它握着连接),显示在品牌栏上 */
+  const [status, setStatus] = useState<ConnStatus | null>(null);
 
   const pane = (id: Tab): ViewStyle => ({
     flex: 1,
@@ -321,9 +323,12 @@ function Shell({ store, onRepair, onSignedOut }: {
   return (
     <View style={{ flex: 1 }}>
       {/* 品牌栏。翻进详情屏时让位给那一屏自己的返回栏——两条顶栏叠着没有意义 */}
-      {inDetail ? null : <BrandBar />}
+      {inDetail ? null : <BrandBar status={status} />}
       <View style={pane("sessions")}>
-        <Fleet store={store} onRepair={onRepair} onDetailChange={setInDetail} />
+        <Fleet
+          store={store} onRepair={onRepair}
+          onDetailChange={setInDetail} onStatus={setStatus}
+        />
       </View>
       <View style={pane("friends")}><Friends /></View>
       <View style={pane("settings")}>
@@ -334,8 +339,14 @@ function Shell({ store, onRepair, onSignedOut }: {
   );
 }
 
-/** 顶部品牌栏:和桌面同一张脸 + 字标。只出现一次,不跟着页签变 */
-function BrandBar() {
+/** 顶栏右边那一句。tone 只承担"哪一类",话由 text 说全 —— 不靠颜色单独传信息 */
+interface ConnStatus { tone: "ok" | "warn"; text: string }
+
+/** 顶部品牌栏:和桌面同一张脸 + 字标,右边挂连接状态。只出现一次,不跟着页签变。
+    状态放这儿而不是放"会话"标题底下,是因为它**不属于任何一个页签** ——
+    连的是同一条链路,在好友页和设置页一样是真的。挂在标题下面就成了会话页的
+    一个属性,切到别的页签它凭空消失,而链路并没有变。 */
+function BrandBar({ status }: { status: ConnStatus | null }) {
   const { c } = usePalette();
   return (
     <View style={{
@@ -345,6 +356,16 @@ function BrandBar() {
     }}>
       <Image source={require("./assets/otto-mark.png")} style={{ width: 26, height: 26 }} />
       <Text style={{ ...t.headline, color: c.foreground }}>Mr Otto</Text>
+      {/* 撑开:状态靠右,和字标之间不留固定间距——名字多长都不影响它站的位置 */}
+      <View style={{ flex: 1 }} />
+      {status ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <Dot tone={status.tone} />
+          <Text style={{ ...t.footnote, color: c.mutedForeground }} numberOfLines={1}>
+            {status.text}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -521,11 +542,13 @@ function Settings({ store, onRepair, onSignedOut }: {
 /* ── 舰队 ───────────────────────────────────────────────
    看 + 审批。桌面不在线时不假装有内容:一句"你的 Mac 不在线"
    (中继零落盘,没有队列可回放 —— 这是设计,不是缺陷)。 */
-function Fleet({ store, onRepair, onDetailChange }: {
+function Fleet({ store, onRepair, onDetailChange, onStatus }: {
   store: PinnedPeerStore;
   onRepair: () => void;
   /** 翻进详情屏时底栏要收起来 */
   onDetailChange: (inDetail: boolean) => void;
+  /** 连接状态报给品牌栏 —— 桥在这儿,栏在上面 */
+  onStatus: (s: ConnStatus) => void;
 }) {
   const [fleet, setFleet] = useState<IslandFleet | null>(null);
   const [ready, setReady] = useState(false);
@@ -663,6 +686,12 @@ function Fleet({ store, onRepair, onDetailChange }: {
     return () => clearTimeout(id);
   }, [ready]);
 
+  useEffect(() => {
+    onStatus(ready
+      ? { tone: "ok", text: "已连上你的 Mac" }
+      : { tone: "warn", text: settled ? "断开了" : "重连中…" });
+  }, [ready, settled, onStatus]);
+
   const decide = (a: IslandAgent, ok: boolean): void => {
     const callId = a.pendingApproval?.callId;
     if (!callId) return;
@@ -710,12 +739,12 @@ function Fleet({ store, onRepair, onDetailChange }: {
 
   return (
     <Page>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>会话</Title>
-        {ready
-          ? <StatusLine tone="ok">已连上你的 Mac</StatusLine>
-          : <StatusLine tone="warn">{settled ? "断开了,下面是断线前的" : "重连中…"}</StatusLine>}
-      </View>
+      <View style={{ paddingTop: space.sm }}><Title>会话</Title></View>
+      {/* 品牌栏上那个点只说"断了",说不出"你正在看的是旧的"。这一句只在
+          真断线、而且手里确实还留着上一份快照时出现 */}
+      {ready || !settled ? null : (
+        <StatusLine tone="warn">断开了 —— 下面是断线前的</StatusLine>
+      )}
       {fleet.agents.length === 0 ? (
         <Card>
           <Headline>没有打开的会话</Headline>
