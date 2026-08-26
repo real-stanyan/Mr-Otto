@@ -4,7 +4,7 @@
 
 日期：2026-08-26
 状态：已接受
-相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.1 / §6 / §7）、ADR-0117（OAuth 授权）、ADR-0119（工具表按 turn 重算）、ADR-0054（子 agent 的 MCP 工具靠白名单点名）、ADR-0041（授权记忆与 hunk 级审批）
+相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.1 / §6 / §7）、ADR-0121（OAuth 授权）、ADR-0119（工具表按 turn 重算）、ADR-0054（子 agent 的 MCP 工具靠白名单点名）、ADR-0041（授权记忆与 hunk 级审批）
 
 ## 背景
 
@@ -95,6 +95,6 @@ WHATWG 的 URL 解析在解析前会剥掉所有 ASCII tab / LF / CR。于是：
 ## 后果
 
 - **子 agent 默认拿不到这三把刀**（`mcp_catalog` / `mcp_configure` / `mcp_authorize`）。ADR-0054 的白名单点名制，不点名即无——派活给子 agent 时不该顺带给出改系统配置的能力。
-- `mcp_authorize` **不设审批门**（理由见 ADR-0117 第六条：人天然在环里）。
+- `mcp_authorize` **不设审批门**（理由见 ADR-0121 第六条：人天然在环里）。
 - **目录会过时**：`mcpCatalog.ts` 是手工维护的快照，不在单上的 server 靠 `web_search` 兜底。
 - 审批门是**这条路上唯一的闸**这件事，本身就是脆弱点：任何绕过审批的机制（bypass 模式、钩子改参、未来的批量授权）落到 `mcp_configure` 上都要单独想一遍，不能默认它跟别的工具一档。
