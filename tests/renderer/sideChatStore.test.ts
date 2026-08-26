@@ -35,6 +35,22 @@ describe("openSideChat", () => {
     expect(window.otter.startSideSession).toHaveBeenCalledWith("main-session");
   });
 
+  it("/btw 带参：首开时把内容发成旁聊首条（issue #516）", async () => {
+    stubBridge();
+    await useChat.getState().openSideChat("顺便查一下明天天气");
+    expect(window.otter.sendMessage).toHaveBeenCalledWith(SIDE_ID, "顺便查一下明天天气");
+  });
+
+  it("/btw 带参 + 旁聊已存在：只抬回可见，不重发（内容已在日志里）", async () => {
+    stubBridge();
+    await useChat.getState().openSideChat();
+    useChat.getState().closeSideChat();
+    await useChat.getState().openSideChat("这条不该重发");
+    // 只发过一次都没有——sendMessage 全程没被调（首开没传参，重开传了但走的是抬回路径）
+    expect(window.otter.sendMessage).not.toHaveBeenCalled();
+    expect(useChat.getState().sideChat!.open).toBe(true);
+  });
+
   it("已开着：再敲 /btw 只抬回可见，不重建会话", async () => {
     stubBridge();
     await useChat.getState().openSideChat();

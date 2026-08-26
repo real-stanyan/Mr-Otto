@@ -5,39 +5,37 @@
 // syntax-highlighting」)一直没交付。这里换成 @assistant-ui/react-streamdown 的
 // StreamdownTextPrimitive,导出的 MarkdownText 名字/签名不变(见 task-9-brief)。
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
-import { defaultRehypePlugins } from "streamdown";
 import type { StreamdownTextComponents } from "@assistant-ui/react-streamdown";
-// 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
-import { math } from "@streamdown/math";
 import { useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 
+// 渲染配置(plugins/rehype/语言表/动画)抽到了 lib/markdownConfig.ts ——
+// 旁聊浮窗(SideChatWindow)的 <Streamdown> 共用同一份(issue #516),
+// 本文件只留「主聊天这条路的组件怎么接」。
+import {
+  MD_PLUGINS,
+  MD_BY_LANGUAGE,
+  MD_REHYPE_PLUGINS,
+  MD_COMPONENTS,
+  MD_ANIMATED,
+} from "@/lib/markdownConfig.js";
 import { DataTable } from "@/components/elements/data-table.js";
 import { MathBlock } from "@/components/elements/math-block.js";
-import { MermaidDiagram } from "@/components/assistant-ui/mermaid-diagram.js";
-import { ShikiCodeBlock } from "@/components/assistant-ui/code-block.js";
-import { OTTO_BLOCK_COMPONENTS } from "@/components/assistant-ui/otto-blocks.js";
 import { plainTable } from "@/lib/hastTable.js";
-import { rehypeFileRefs } from "@/lib/rehypeFileRefs.js";
 import { parseFileRef } from "../../../../shared/fileRefs.js";
 import { FileRefChip } from "@/components/assistant-ui/file-ref.js";
 import { cn } from "@/lib/utils.js";
 
-// 模块级常量:每次渲染新建对象会让整棵子树白重挂。
+// 配置常量(plugins/rehype)在 lib/markdownConfig.ts——下面这些「为什么」的注
+// 留在原地当指针，常量本体挪过去是因为旁聊浮窗要共用同一份(issue #516)。
 // cjk 不是可选项——本仓界面和内容都是中文,缺了 CJK 断行插件排版会散。
 // math:$$…$$ 走 KaTeX(样式表在 app.css 里 @import,版本钉死见那条注释)。
-// 默认只认双美元的行间公式,不认单美元 —— 单美元在正文里更常见的身份是钱
-const PLUGINS = { code, cjk, math };
-
-// 正文里的「文件:行号」认成可点的 chip(见 lib/rehypeFileRefs)。
+// 默认只认双美元的行间公式,不认单美元 —— 单美元在正文里更常见的身份是钱。
+// rehype 那串:正文里的「文件:行号」认成可点的 chip(见 lib/rehypeFileRefs)。
 // **必须**把 streamdown 的默认 rehype 摊在前面:传了这个 prop 就是整个替掉默认值,
 // 只写自己那一枚等于顺手关掉了 raw/sanitize/harden 三道消毒。
 // 也**必须**排在最后一节:sanitize 按白名单削属性,排在它前面的话 data-file-ref
 // 会被削掉,chip 当场哑火。
-// defaultRehypePlugins 是个 { raw, sanitize, harden } 的表(不是数组),摊开取值
-const REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypeFileRefs];
 
 // 逐字出场的参数（效果本身见 app.css 的 sd-ottoInk）。同样是模块级常量:
 // 每次渲染新建对象会让 streamdown 认成"插件换了"而重建整条管线。
@@ -49,21 +47,6 @@ const REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypeFileRefs];
 // stagger 8ms 不是 40(默认):一次推送常有十几二十个字,40ms 一个的话尾巴要拖
 // 快一秒,读起来是"字在追着光标跑"而不是"字落下来"。
 // easing 用 ease-out 那条强曲线(与全仓入场同一条):出场是"进来",起手就得快。
-const BY_LANGUAGE = {
-  mermaid: { SyntaxHighlighter: MermaidDiagram, CodeHeader: () => null },
-  // ```otto-spec / otto-compare / otto-score / otto-flow —— 模型自己产出的
-  // 结构化块(约定写在系统提示词里,见 session/deriveMessages.ts)
-  ...OTTO_BLOCK_COMPONENTS,
-};
-
-const ANIMATED = {
-  animation: "ottoInk",
-  sep: "char",
-  duration: 420,
-  easing: "cubic-bezier(0.23, 1, 0.32, 1)",
-  stagger: 8,
-} as const;
-
 // 没有显式传 shikiTheme:StreamdownTextPrimitive 在 plugins.code 存在时,
 // 主题最终取的是 code.getThemes()(见 node_modules/streamdown/dist/chunk-*.js
 // 里 `shikiTheme:(...)=>g?.code?.getThemes()??d`),不是这层的 shikiTheme prop——
@@ -84,8 +67,8 @@ const MarkdownTextImpl = () => {
     <StreamdownTextPrimitive
       className="aui-md"
       components={defaultComponents}
-      plugins={PLUGINS}
-      animated={running ? ANIMATED : false}
+      plugins={MD_PLUGINS}
+      animated={running ? MD_ANIMATED : false}
       // 原 dot.css 的流式小圆点是靠 react-markdown 那层 [data-status="running"]
       // 和 .aui-md 同挂一个元素才生效的;换到 streamdown 后 data-status 挂在
       // 外层 wrapper div、aui-md 挂在内层内容 div,两者不再同源,dot.css 已经
@@ -95,8 +78,8 @@ const MarkdownTextImpl = () => {
       // ```mermaid 不走普通代码块:交给 MermaidDiagram（elements/diagram 的画框
       // + mermaid 渲染的 SVG）。CodeHeader 一起换掉——画框自己有标题栏，
       // 上面再顶一条"mermaid + 复制"是两层标题
-      componentsByLanguage={BY_LANGUAGE}
-      rehypePlugins={REHYPE_PLUGINS}
+      componentsByLanguage={MD_BY_LANGUAGE}
+      rehypePlugins={MD_REHYPE_PLUGINS}
       caret="block"
       defer
     />
@@ -117,7 +100,7 @@ const defaultComponents = {
   // 语言表(componentsByLanguage)之外的代码块的兜底。**不能省** —— 只要传了
   // componentsByLanguage,aui 的 adapter 就接管所有 code 元素,没有这一项时
   // 别的语言会掉进一个裸 <pre>(理由与出处写在 code-block.tsx 开头)
-  SyntaxHighlighter: ShikiCodeBlock,
+  SyntaxHighlighter: MD_COMPONENTS.SyntaxHighlighter,
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
