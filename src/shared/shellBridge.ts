@@ -530,8 +530,20 @@ export interface ShellBridge {
   /** 手机端远程(设置页「手机」栏目)。读一次就顺手把自己登记进 devices ——
       目录里没有这台桌面的话,手机那边根本看不见它 */
   remoteStatus(): Promise<RemoteStatus>;
-  /** 用户核对完 6 位安全码之后 pin 住这台手机。回 false = 目录里没有 / 公钥不合法 */
+  /** 用户核对完 6 位安全码之后 pin 住这台手机。回 false = 目录里没有 / 公钥不合法。
+      **这是降级路径**:主路径是扫码(remoteStartPairing),手机没摄像头权限时走这条 */
   remotePairDevice(deviceId: string): Promise<boolean>;
+  /**
+   * 开一张配对二维码(issue #583)。手机扫一下就完成双向配对 —— 人只动一次,
+   * 桌面这边不用再点第二次「安全码一致」。
+   *
+   * 回 null = 远程没开(同 remoteStatus 的 off)。`qr` 是要画成二维码的那串字,
+   * `expiresAt` 是它的死期(epoch ms) —— 界面据此倒计时,过期了自己换一张。
+   * **一次性**:配上一台之后这张就废了,再配下一台要重新开。
+   */
+  remoteStartPairing(): Promise<{ qr: string; expiresAt: number } | null>;
+  /** 关掉二维码面板时调 —— 码不该在没人看着的时候还活着 */
+  remoteCancelPairing(): Promise<void>;
   /** 只解除配对,目录行留着(devices.ts 的 unpin) */
   remoteUnpairDevice(deviceId: string): Promise<boolean>;
   /** 把一台设备从目录里删掉。删的是**目录行**,装着的 app 会重新登记;
@@ -1025,6 +1037,8 @@ export const CHANNELS = {
   setDefaultWorkspace: "otter:setDefaultWorkspace",
   remoteStatus: "otter:remoteStatus",
   remotePairDevice: "otter:remotePairDevice",
+  remoteStartPairing: "otter:remoteStartPairing",
+  remoteCancelPairing: "otter:remoteCancelPairing",
   remoteUnpairDevice: "otter:remoteUnpairDevice",
   remoteForgetDevice: "otter:remoteForgetDevice",
   updaterGetState: "otter:updaterGetState",
