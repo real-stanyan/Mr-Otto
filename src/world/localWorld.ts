@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
+import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
 
 /** exec 输出的内存上限（字符，每条流各一份，头尾各半）——三层截断的第一层
@@ -46,15 +47,26 @@ export function createLocalWorld(
     /** 用户级配置目录（如 ~/.mr-otto）。给了才挂 config 能力——记忆文件跨
         workspace 共享，圈在这里而不是 root（工程文件夹）内 */
     configRoot?: string;
+    /** 子进程该用的 PATH（issue #453）。缺省 = 全局登记处（启动时 prime 过的
+        登录 shell PATH）；返回 null = 维持原样继承。可注入是为了测试不碰全局态 */
+    loginPath?: () => string | null;
   } = {}
 ): ExecutionWorld {
   const { root } = opts;
   // 每次起子进程都现算一遍：名单会随用户在设置页存/清 key 而变，
-  // 装配时抓一次快照就会留下一个"配 key 之前建的会话永远不设防"的窟窿
-  const childEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
-    ...stripSecretEnv(process.env, opts.secretEnvNames?.()),
-    ...extra,
-  });
+  // 装配时抓一次快照就会留下一个"配 key 之前建的会话永远不设防"的窟窿。
+  // PATH 同理现问：prime 是异步的，装配时快照会把「还没取到」定格成永远没有
+  const childEnv = (extra: Record<string, string> = {}): Record<string, string> => {
+    const path = (opts.loginPath ?? loginShellPath)();
+    return {
+      ...stripSecretEnv(process.env, opts.secretEnvNames?.()),
+      // Dock 起的 app 只有 launchd 的最小 PATH，npm/node 全 127（issue #453）；
+      // 登录 shell 那份才是用户心里的"我的 PATH"。exec / execDetached / 终端
+      // 三个出口同源，都从这儿走
+      ...(path ? { PATH: path } : {}),
+      ...extra,
+    };
+  };
   return {
     fs: {
       // async 包一层：fence 的同步抛错变成 Promise rejection（接口约定返回 Promise，
