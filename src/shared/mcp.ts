@@ -161,6 +161,31 @@ export function assignMcpToolNames(
   });
 }
 
+/** 自助配置三件套的模型可见名（spec §5.2 / issue #473）。挂载条件是「装配有
+    mcp 能力」，与有没有连上 server 无关——known 名单必须同样无条件认得它们，
+    否则子 agent frontmatter 里点名会落进 unknownTools 被静默剔除：一条写得出、
+    看起来生效、实际被吞掉的配置。字符串必须与 tools/mcpCatalog.ts /
+    mcpConfigure.ts / mcpAuthorize.ts 的 def.name 逐字一致——
+    tests/shared/mcp.test.ts 有一致性钉子，改名会先红在那 */
+export const MCP_SELF_CONFIG_TOOL_NAMES = ["mcp_catalog", "mcp_configure", "mcp_authorize"] as const;
+
+/** 「此刻认得哪些 MCP 系工具名」的纯逻辑（issue #473，从 index.ts 的
+    mcpToolNamesNow 拎出来才测得到）。自助配置三件套 + mcp_read_resource
+    无条件在列（挂载条件都是"有 mcp 能力"，零 server 也挂）；server 提供的
+    工具只算 live 的，但名字分配跑在**全体**上再滤（issue #349）：撞名的哈希
+    后缀取决于整桌顺序，与 createMcpTools（装配时也是全体）同一份分配才对得上号 */
+export function knownMcpToolNames(
+  servers: readonly { name: string; live: boolean; tools: readonly { name: string }[] }[]
+): string[] {
+  const all = servers.flatMap((s) => s.tools.map((t) => ({ server: s.name, tool: t.name, live: s.live })));
+  const names = assignMcpToolNames(all.map(({ server, tool }) => ({ server, tool })));
+  return [
+    ...MCP_SELF_CONFIG_TOOL_NAMES,
+    "mcp_read_resource",
+    ...all.flatMap((e, i) => (e.live && names[i] !== null ? [names[i]!] : [])),
+  ];
+}
+
 /** content 数组压成喂给模型的字符串。
     image 本版不进视觉桥（ADR-0009 的附件库是另一条路），折成一行说明 ——
     但必须说出来：模型该知道"有一张图我没给你看"，而不是以为工具返回了空。 */

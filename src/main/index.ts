@@ -111,7 +111,7 @@ import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
-import { assignMcpToolNames } from "../shared/mcp.js";
+import { knownMcpToolNames } from "../shared/mcp.js";
 import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
@@ -1244,7 +1244,11 @@ void app.whenReady().then(() => {
       // MCP 的工具名走另一条路补进来——mcpToolNamesNow() 现算（ADR-0054），
       // 因为它本来就会随 server 连上/掉线变，快照在这里表达不了
       ...(mcp ? { mcp } : {}),
-    }).toolDefs;
+      // catalogToolDefs 而不是 toolDefs（issue #473）：toolDefs 是"模型此刻真
+      // 看到的账"，未被 tool_search 曝光的 deferred 不在里面——用它的话
+      // mcp_configure / mcp_authorize 这类天生 deferred 的刀在设置页勾选框里
+      // 永远不出现，TOOL_NAMES 也认不得它们。目录要的是"一共有哪些刀"
+    }).catalogToolDefs;
   };
 
   let TOOL_NAMES: string[];
@@ -1253,22 +1257,12 @@ void app.whenReady().then(() => {
   } catch {
     TOOL_NAMES = [];
   }
-  /** 此刻活着的那些 server 提供的工具名（ADR-0054）。TOOL_NAMES 那个探针装配
-      刻意不给 mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、
-      改清单，快照会让"认不认得这个名字"停在装配那一刻。
-      mcp_read_resource 一并算上：它同样只在有 mcp 能力时才挂 */
-  const mcpToolNamesNow = (): string[] => {
-    const live = mcpHub.servers().filter((s) => s.live);
-    if (live.length === 0) return [];
-    // 分配跑在**全体** server 上再滤 live（issue #349）：撞名的哈希后缀取决于
-    // 整桌顺序，与 createMcpTools（装配时也是全体）保持同一份分配才对得上号
-    const all = mcpHub.servers().flatMap((s) => s.tools.map((t) => ({ server: s.name, tool: t.name, live: s.live })));
-    const names = assignMcpToolNames(all.map(({ server, tool }) => ({ server, tool })));
-    return [
-      "mcp_read_resource",
-      ...all.flatMap((e, i) => (e.live && names[i] !== null ? [names[i]!] : [])),
-    ];
-  };
+  /** 此刻认得的 MCP 系工具名（ADR-0054）。TOOL_NAMES 那个探针装配刻意不给
+      mcp，所以这份得单独现算——现算而不是快照：server 会连上、掉线、改清单，
+      快照会让"认不认得这个名字"停在装配那一刻。逻辑本体在 shared/mcp.ts
+      （issue #473 拎出去的，纯函数才测得到）：自助配置三件套 + mcp_read_resource
+      无条件在列（挂载条件是"有 mcp 能力"，零 server 也挂），server 工具只算 live */
+  const mcpToolNamesNow = (): string[] => knownMcpToolNames(mcpHub.servers());
 
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
