@@ -1569,6 +1569,15 @@ void app.whenReady().then(() => {
     }
     return importExternalSkills(names as string[], externalSkillSources(homedir()), skillRoots[0]!);
   });
+  // 用户侧停用入口（Task 6）：不校验来源——模型自取的和 $ 启用的都能点掉，
+  // 模型那侧的 release 才校验"只能停自己取的"。形状把关先于 append（同
+  // handleSendMessage 的规矩）：name 非字符串、会话不存在都是坏请求零痕迹拒发
+  ipcMain.handle(CHANNELS.releaseSkill, (_e, sessionId: string, name: unknown) => {
+    if (typeof name !== "string") throw new Error("skill 名字形状非法(应为字符串)");
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    const appended = store.append({ sessionId, ts: Date.now(), type: "skill_released", name });
+    send(CHANNELS.event, appended);
+  });
 
   // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
   ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());

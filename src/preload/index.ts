@@ -32,6 +32,7 @@ const bridge: ShellBridge = {
   listSkills: () => ipcRenderer.invoke(CHANNELS.listSkills),
   listExternalSkills: () => ipcRenderer.invoke(CHANNELS.listExternalSkills),
   importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
+  releaseSkill: (sessionId, name) => ipcRenderer.invoke(CHANNELS.releaseSkill, sessionId, name),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
   saveMemory: (target, text, sessionId) =>
     ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),
