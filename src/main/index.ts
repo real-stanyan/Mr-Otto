@@ -90,6 +90,7 @@ import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import { memoryRelPath, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
 import { applyUserEdit } from "./memoryEdit.js";
+import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -748,7 +749,7 @@ void app.whenReady().then(() => {
     // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
-    const mem = readMemoryFiles();
+    const mem = readMemoryFiles(agent.workspace);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -1156,10 +1157,13 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
-  /** 两个记忆文件的当前内容（ADR-0060）。读不到 = 空——"没记过"不是故障。
-      同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
-      createAgent 是同步的，这份快照必须在调它之前就手上有值 */
-  const readMemoryFiles = (): { memory: string; user: string } => {
+  /** 三档记忆的当前内容（ADR-0060，项目档见记忆分级方案）。读不到 = 空——
+      "没记过"不是故障。同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md
+      的硬规则挡的是工具层）；createAgent 是同步的，这份快照必须在调它之前
+      就手上有值。project/projectRoot 缺席 = workspace 不在任何 git 仓库里 */
+  const readMemoryFiles = (
+    workspace: string
+  ): { memory: string; user: string; project?: string; projectRoot?: string } => {
     const root = configDir(homedir());
     const read = (rel: string): string => {
       try {
@@ -1174,7 +1178,10 @@ void app.whenReady().then(() => {
         return "";
       }
     };
-    return { memory: read(memoryRelPath("memory")), user: read(memoryRelPath("user")) };
+    const base = { memory: read(memoryRelPath("memory")), user: read(memoryRelPath("user")) };
+    const projectRoot = resolveProjectRoot(workspace);
+    if (!projectRoot) return base;
+    return { ...base, project: read(memoryRelPath("project", projectMemoryDir(projectRoot))), projectRoot };
   };
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
@@ -1285,7 +1292,7 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: configDir(homedir()),
-      memory: readMemoryFiles(),
+      memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
@@ -1554,7 +1561,19 @@ void app.whenReady().then(() => {
   });
 
   // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
-  ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
+  // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读取
+  // 走 Task 6 新增的 listProjectMemories，不借这条 handler
+  ipcMain.handle(CHANNELS.getMemory, () => {
+    const root = configDir(homedir());
+    const read = (rel: string): string => {
+      try {
+        return readFileSync(join(root, rel), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return { memory: read(memoryRelPath("memory")), user: read(memoryRelPath("user")) };
+  });
   ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
     applyUserEdit(memoryEditDeps, target, text, sessionId));
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
