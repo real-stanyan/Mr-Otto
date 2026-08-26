@@ -346,8 +346,18 @@ const AssistantMessage: FC = () => {
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":
-                // 过程区:只是个容器,自己不折叠 —— 折叠头在下面两个子组身上
-                return <div data-slot="aui_chain-of-thought">{children}</div>;
+                // 过程区:只是个容器,自己不折叠 —— 折叠头在下面两个子组身上。
+                // gap 在这一层给:思考头和工作头一上一下交替,两条 trigger 自己的
+                // py 加起来只有几 px,不撑开就糊成一坨;给在子组身上则会漏到
+                // 过程区外面(思考的 mb-4 就是这么冒出来的,见 PR #575)
+                return (
+                  <div
+                    data-slot="aui_chain-of-thought"
+                    className="flex flex-col gap-y-2"
+                  >
+                    {children}
+                  </div>
+                );
               case "group-tool":
                 // 工具(+旁白)收成一条 Tool Timeline;思考不在这里,它在 group-reasoning
                 if (ToolGroup) {
