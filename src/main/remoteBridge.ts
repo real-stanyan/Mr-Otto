@@ -48,6 +48,10 @@ export function createRemoteBridge(opts: {
   /** 重新派生过密钥了(手机重连 / 中继补发在场信号都会走到)。fleet 快照桥自己
       会补推,时间线得上层来 —— 它才知道 watchedSession 和怎么算那份投影 */
   onRekey?: () => void;
+  /** 一次握手被挡下了(issue #485)。**这里不做节流** —— 传输层是退避重连的,
+      每次重连都要重新握手,所以这个回调天然会重复触发;去重是上层的事
+      (main/remoteRejections.ts),桥只负责如实报告每一次 */
+  onRejected?: (r: { deviceId: string; reason: "unpaired" | "identity-mismatch" }) => void;
   log?: (m: string) => void;
 }): {
   pushFleet(f: IslandFleet): void;
@@ -111,6 +115,7 @@ export function createRemoteBridge(opts: {
     const pinned = opts.peerIdentity();
     if (!pinned) {
       log("远程桥:还没配对过任何手机,拒绝握手");
+      opts.onRejected?.({ deviceId: hello.deviceId, reason: "unpaired" });
       return;
     }
     const keys: SessionKeys | null = deriveSession(p, {
@@ -119,6 +124,7 @@ export function createRemoteBridge(opts: {
     if (!keys) {
       // 这里包含了 TOFU 报警的那一路:公钥对不上就是对不上,不静默接受
       log("远程桥:对端身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
+      opts.onRejected?.({ deviceId: hello.deviceId, reason: "identity-mismatch" });
       return;
     }
     usedPeerEphs.add(hello.ephPub);

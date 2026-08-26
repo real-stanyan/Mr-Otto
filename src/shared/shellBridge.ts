@@ -819,11 +819,33 @@ export interface RemotePeerInfo {
   pinned: boolean;
 }
 
+/** 一次被挡下的握手(issue #485)。桌面只认 pin 住的那把公钥,对不上就不进 ready ——
+    但"被挡下"过去只有一行 console.warn,用户不打开设置页就永远不知道要去打开它。
+
+    reason 的两支不能合并成一条文案:
+    - unpaired = 例行状态(还没配对过),该做的事是去核对 6 位安全码
+    - identity-mismatch = 告警。deriveSession 分不出"手机重装换了身份"和
+      "有人在中间换了公钥"(两者都只表现为签名验不过),所以文案要把两种可能
+      都摆出来让人判断,不能写成"重新配一次就好" */
+export interface RemoteRejection {
+  deviceId: string;
+  reason: "unpaired" | "identity-mismatch";
+  /** 发生时刻(epoch ms) */
+  at: number;
+}
+
 /** 远程功能在这台机器上的状态。off 的原因要分得开:没开开关 / 系统封装不可用,
     两者都会让列表是空的,但用户该做的事完全不同 */
 export type RemoteStatus =
   | { on: false; reason: "disabled" | "no-secure-storage" }
-  | { on: true; peers: RemotePeerInfo[] };
+  | {
+      on: true;
+      peers: RemotePeerInfo[];
+      /** 最近一次被挡下的握手;null = 这一轮启动以来没有过。
+          设置页据此在列表上方出提示 —— 它和 peers 是同一件事的两个视角:
+          peers 说"目录里有谁",这个说"刚才有谁来敲过门却进不来" */
+      rejected: RemoteRejection | null;
+    };
 
 /** 灵动岛展开态上半区的两种内容(#199) */
 export type IslandDisplay = "sessions" | "usage";
@@ -854,7 +876,11 @@ export type UpdaterState =
 export type NotificationTarget =
   | { kind: "dm"; friendId: string }
   | { kind: "friendRequest" }
-  | { kind: "session"; sessionId: string };
+  | { kind: "session"; sessionId: string }
+  /** 落到设置页的某个栏目。section 是渲染层 SettingsSection 的子集 ——
+      shared 不能 import 渲染层的类型,而这里只需要通知真能落到的那几个,
+      写成窄字面量比把整个联合搬过来更不容易漂 */
+  | { kind: "settings"; section: "remote" };
 
 export interface OllamaModelInfo {
   /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */
