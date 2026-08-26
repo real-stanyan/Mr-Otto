@@ -3,8 +3,8 @@
 // 「保留 Mr Otto 现有视觉」这条决定的落点在 SystemMessage:八类审计行直接喂回
 // 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { ComponentType, FC, Ref } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import type { ComponentType, FC, ReactNode, Ref } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -17,6 +17,7 @@ import {
   ReasoningTrigger,
 } from "../components/assistant-ui/reasoning.js";
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
+import { ToolTimeline } from "../components/elements/tool-timeline.js";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -24,7 +25,20 @@ import {
 } from "../components/assistant-ui/tool-group.js";
 import { Sources } from "../components/assistant-ui/sources.js";
 import { createDirectiveText } from "../components/assistant-ui/directive-text.js";
-import { MessageCircleQuestion, Sparkles } from "lucide-react";
+import {
+  Bot,
+  Brain,
+  FileText,
+  Globe,
+  ListChecks,
+  MessageCircleQuestion,
+  Search,
+  Sparkles,
+  SquareTerminal,
+  TriangleAlertIcon,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import { ToolLiveTail } from "../components/ToolLiveTail.js";
 import { ToolError } from "../components/elements/tool-error.js";
 import { WebSearch } from "../components/elements/web-search.js";
@@ -60,7 +74,7 @@ import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimat
 import type { ToolDefinition } from "../../../model/adapter.js";
 import type { Section } from "../../../session/deriveSections.js";
 import type { MemoryLoadedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
-import { toolFilePath, toolSummary } from "../../../shared/toolSummary.js";
+import { summarizeGroup, toolFilePath, toolIcon, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
 import type { OrbState } from "../../../shared/toolSummary.js";
 
@@ -260,9 +274,12 @@ const WebPageCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
   );
 };
 
-/** 工具组:默认折起,出了错的那一组**不自动弹开**,只在折叠头右边挂一枚黄色
-    三角感叹号。一屏五个 read_file 谁也不想逐个看,但"这一步没成"也不能
-    藏得无声无息 —— 标一下,要看的人自己点开 */
+/** 工具组:tool-timeline 版式 —— 折叠头一行(chevron + 按动作归并的摘要,比如
+    「终端 ×5 · 读取 ×2」),展开后每步一行真实工具行(图标 + 动词 + 目标,每行自己
+    还能再展开看参数/输出)。思考步(reasoning)与工具同组共享 chainOfThought path,
+    由这里按 index 边界从 children 里切出、并进 steps,按原时间序混排。
+    默认折起;组里有一次「问过你也答了」的 ask_user 就默认展开(那是用户说过的话,
+    不能藏进折叠区);出错不自动弹开,只在折叠头挂一枚黄色三角。 */
 const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, children }) => {
   const failed = useAuiState((s) =>
     group.indices.some((i) => {
@@ -270,12 +287,6 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       return part?.type === "tool-call" && part.isError === true;
     }),
   );
-  // 这一组里有一次「问过你、你也答了」→ 默认展开。折起来的理由是"一屏五个 read_file
-  // 谁也不想逐个看",而这一条不是模型自己干的事,是**我说过的话**:把它收进折叠区
-  // 等于要求用户点开才能看见自己的回答,而后面每一步都以这个回答为前提。
-  // 展开的是整组(可能连带露出同组的读文件行):assistant-ui 的"单独成行"要走
-  // 工具 UI 注册表(standalone 那条路,见 thread.tsx 的 GROUP_PARTS_BY),
-  // 那是另一件事;在此之前,多露几行远好过把回答藏起来。仍然可以手动折回去
   const answered = useAuiState((s) =>
     group.indices.some((i) => {
       const part = s.message.content[i];
@@ -287,8 +298,6 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       );
     }),
   );
-  // 受控而不是 defaultOpen:答案是**后到**的(提问那一刻这组已经挂载了,
-  // defaultOpen 只在挂载那一次读),答完之后弹开一次,之后用户想折回去随时可以
   const [open, setOpen] = useState(false);
   const [autoOpened, setAutoOpened] = useState(false);
   useEffect(() => {
@@ -298,16 +307,63 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
     }
   }, [answered, autoOpened]);
 
-  return (
-    <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
-      <ToolGroupTrigger
-        count={group.indices.length}
-        active={group.status.type === "running"}
-        warning={failed}
-      />
-      <ToolGroupContent>{children}</ToolGroupContent>
-    </ToolGroupRoot>
+  // 本组吃「上一组之后到本组最后一个 index」那一段。上一组的尾(通常是文字)是最终回复,
+  // 留在时间线外;本组的 reasoning/工具步进 steps。选择器返回原始数组引用(不可变才替换),
+  // 不能 map/filter 出新数组——那会引用不等触发无限重渲
+  const childArr = useMemo(() => React.Children.toArray(children), [children]);
+  const lastIdx = group.indices[group.indices.length - 1] ?? 0;
+  const messageParts = useAuiState((s) => s.message.parts);
+  const groupParts = useMemo(
+    () => group.indices.map((i) => messageParts?.[i]).filter((p) => p !== undefined),
+    [group.indices, messageParts],
   );
+  const hasReasoning = groupParts.some((p) => p.type === "reasoning");
+  const segment = hasReasoning ? childArr.slice(0, lastIdx + 1) : childArr;
+
+  // 折叠头摘要:只数工具(思考/旁白不计),按动作归并
+  const toolNames = useMemo(
+    () =>
+      groupParts
+        .filter((p) => p.type === "tool-call")
+        .map((p) => (p as { toolName?: string }).toolName ?? ""),
+    [groupParts],
+  );
+  const restingLabel =
+    summarizeGroup(toolNames.map((name) => ({ id: "", name, args: undefined }))) ||
+    `${group.indices.length} 个工具调用`;
+  const running = group.status.type === "running";
+
+  const label = (
+    <span className="inline-flex items-center gap-1.5">
+      {restingLabel}
+      {failed && <TriangleAlertIcon className="size-3.5 text-amber-500" />}
+    </span>
+  );
+  return (
+    <ToolTimeline
+      open={open}
+      onOpenChange={setOpen}
+      restingLabel={label}
+      activeLabel={running ? label : undefined}
+      streaming={running}
+    >
+      {segment}
+    </ToolTimeline>
+  );
+};
+
+/** toolIcon() 给的是名字不是组件(shared 层不 import React),渲染层在这里查表。
+    读写文件返回 null —— 它们走 FileTypeIcon(文件类型图标),不在这里占位 */
+const TOOL_ICONS: Record<string, LucideIcon> = {
+  SquareTerminal,
+  Search,
+  Globe,
+  Bot,
+  MessageCircleQuestion,
+  ListChecks,
+  Brain,
+  Wrench,
+  FileText,
 };
 
 /** 工具行那一句话。上游写死的是 "Used tool: read_file" —— 中文界面里冒一句英文
@@ -321,10 +377,16 @@ function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
   const call: ToolCallRequest = { id: "", name, args };
   const { verb, target, stat } = toolSummary(call);
   const path = toolFilePath(call);
+  const iconName = toolIcon(name);
+  const FallbackIcon = iconName ? TOOL_ICONS[iconName] : undefined;
   return (
     <span className="flex min-w-0 items-center gap-1.5">
+      {path !== null ? (
+        <FileTypeIcon path={path} className="size-[15px]" />
+      ) : (
+        FallbackIcon && <FallbackIcon className="size-[13px] shrink-0 opacity-60" />
+      )}
       <span className="shrink-0">{verb}</span>
-      {path !== null && <FileTypeIcon path={path} className="size-[15px]" />}
       {target !== "" && (
         // 封顶 42ch:bash 的目标是一整条命令,不封顶会把这一行拉到屏幕外
         <span className="max-w-[42ch] truncate font-mono text-[13px] text-foreground/75">

@@ -310,8 +310,11 @@ const ThreadWelcome: FC = () => {
 // 模块级常量而不是渲染内联:内联调用每次渲染都产出新的分组函数引用,
 // 每条 assistant 消息每次重渲染都要重新分组(同 markdown-text.tsx:28 的既有写法)
 const GROUP_PARTS_BY = groupPartByType({
-  reasoning: ["group-chainOfThought", "group-reasoning"],
-  "tool-call": ["group-chainOfThought", "group-tool"],
+  // 思考与工具同进一条时间线(Tool Timeline 版式:Thinking 就是其中一步)。
+  // 分组是相邻合并的:reasoning 若留在独立父组,一段「bash → 思考 → bash」会被
+  // 拆成三条单步时间线;共享同一个父 path 后,思考不再拆组,该段收成一条多步时间线
+  reasoning: ["group-chainOfThought"],
+  "tool-call": ["group-chainOfThought"],
   "standalone-tool-call": [],
   // 本仓加的:来源 chip 挨在一起时排成一行(每条自己一行会把回复撑散)。
   // 与 tool 组不同,这一组不进 chain-of-thought:它是"这次回答引了哪些页",
@@ -337,6 +340,11 @@ const AssistantMessage: FC = () => {
   const hasFooter = useAuiState(
     (s) => s.message.metadata.custom["turnTiming"] !== undefined,
   );
+  // chainOfThought 组(思考+工具混合)里有没有至少一个工具调用:
+  // 有才把整条交给 ToolGroup 渲染成时间线;纯思考组维持独立可折叠块
+  const chainOfThoughtHasTool = useAuiState((s) =>
+    s.message.parts.some((p) => p.type === "tool-call"),
+  );
 
   return (
     <MessagePrimitive.Root
@@ -355,36 +363,12 @@ const AssistantMessage: FC = () => {
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":
-                return <div data-slot="aui_chain-of-thought">{children}</div>;
-              case "group-tool":
-                if (ToolGroup) {
+                // 带工具的混合组 → ToolGroup 渲染成时间线(思考步由它按 index 切出并进 steps);
+                // 纯思考组维持原样的独立可折叠块
+                if (chainOfThoughtHasTool && ToolGroup) {
                   return <ToolGroup group={part}>{children}</ToolGroup>;
                 }
-                return (
-                  <ToolGroupRoot variant="ghost">
-                    <ToolGroupTrigger
-                      count={part.indices.length}
-                      active={part.status.type === "running"}
-                    />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
-                );
-              case "group-reasoning": {
-                if (ReasoningGroup) {
-                  return (
-                    <ReasoningGroup group={part}>{children}</ReasoningGroup>
-                  );
-                }
-                const running = part.status.type === "running";
-                return (
-                  <ReasoningRoot streaming={running}>
-                    <ReasoningTrigger active={running} />
-                    <ReasoningContent aria-busy={running}>
-                      <ReasoningText>{children}</ReasoningText>
-                    </ReasoningContent>
-                  </ReasoningRoot>
-                );
-              }
+                return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-sources":
                 return (
                   <div
