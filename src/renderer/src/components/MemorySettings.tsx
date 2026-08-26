@@ -41,7 +41,13 @@ import {
   type MemoryTarget,
 } from "../../../shared/memoryStore.js";
 
-type ProjectMemory = { root: string; text: string };
+type ProjectMemory = {
+  root: string;
+  text: string;
+  /** 磁盘上还没有这个项目的目录（当前会话的项目根，第一次保存时才由主进程造出来）。
+      带这个标记的那条不给「删掉这个项目的记忆」——没东西可删，点了也只会看起来没反应 */
+  pending?: true;
+};
 
 /** entryAction 渲染时拿到的上下文，见 MemoryField 的 entryAction 参数注释 */
 type MoveCtx = { allEntries: string[]; disabled: boolean; refresh: () => Promise<void> };
@@ -377,9 +383,11 @@ function ProjectMemoryCard({
             ))}
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" disabled={deleting} onClick={() => void deleteCurrent()}>
-          删掉这个项目的记忆
-        </Button>
+        {current.pending !== true && (
+          <Button variant="outline" size="sm" disabled={deleting} onClick={() => void deleteCurrent()}>
+            删掉这个项目的记忆
+          </Button>
+        )}
       </div>
       {error !== null && <p className="px-1 text-[13px] text-destructive">{error}</p>}
       <MemoryField
@@ -420,7 +428,9 @@ export function MemorySettings() {
       合成的那条 text 是空串:它在磁盘上还不存在,保存一次就由主进程连 root.txt 一起造出来 */
   const projects = useMemo<ProjectMemory[]>(() => {
     if (!sessionRoot || onDisk.some((p) => p.root === sessionRoot)) return onDisk;
-    return [...onDisk, { root: sessionRoot, text: "" }].sort((a, b) => a.root.localeCompare(b.root));
+    return [...onDisk, { root: sessionRoot, text: "", pending: true as const }].sort((a, b) =>
+      a.root.localeCompare(b.root)
+    );
   }, [onDisk, sessionRoot]);
 
   /** MEMORY 区某条「移到项目档」:先写项目档、再从全局删,顺序不许调换——中途失败
