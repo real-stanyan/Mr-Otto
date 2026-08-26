@@ -58,7 +58,7 @@
 
 **决定**：`~/.mr-otto/mcp-auth.json`，0600，与 `mcp.json` 平级。结构按 server id 分组，存 DCR 拿到的 client 信息（`client_id` / `client_secret`）、`access_token` / `refresh_token` / 过期时间、以及 PKCE 的 `code_verifier`。
 
-> 2026-08-26 订正：本句原本还列了「授权服务器元数据缓存」一项，那是写在「以为要自己实现 OAuth 协议」的阶段。§4 后来订正为「不自己实现 OAuth 协议」——元数据发现归 SDK，`OAuthClientProvider` 上的 `saveDiscoveryState` / `discoveryState` 是可选成员，本仓不实现，元数据每次连接由 SDK 自己重新发现、不落盘。这句字段清单当时漏改，实现（`McpAuthRecord`）始终只有上面三项。详见 ADR-0112。
+> 2026-08-26 订正：本句原本还列了「授权服务器元数据缓存」一项，那是写在「以为要自己实现 OAuth 协议」的阶段。§4 后来订正为「不自己实现 OAuth 协议」——元数据发现归 SDK，`OAuthClientProvider` 上的 `saveDiscoveryState` / `discoveryState` 是可选成员，本仓不实现，元数据每次连接由 SDK 自己重新发现、不落盘。这句字段清单当时漏改，实现（`McpAuthRecord`）始终只有上面三项。详见 ADR-0117。
 
 **理由**：`mcp.json` 有两条性质决定了 token 不能进去——它要保持与 Claude Code 的 `.mcp.json` 格式兼容（用户能把已有配置直接粘过来，反过来也一样），而且用户会手编它。OAuth token 会被程序定期刷新重写，把「程序拥有的、频繁变动的状态」和「用户拥有的、手写的配置」混在一个文件里，两边都会出问题。
 

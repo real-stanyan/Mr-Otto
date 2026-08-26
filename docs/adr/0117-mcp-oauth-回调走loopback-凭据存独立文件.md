@@ -1,8 +1,10 @@
-# ADR-0112：MCP 的 OAuth 授权——回调走 loopback 临时端口，凭据存独立文件
+# ADR-0117：MCP 的 OAuth 授权——回调走 loopback 临时端口，凭据存独立文件
+
+> 原为 ADR-0112。合并前 origin/main 上另一条车道先落了 0112 这个号，按项目 ADR-0074 在本 PR 内顺延改号；照旧号来的引用按这行解析。
 
 日期：2026-08-26
 状态：已接受
-相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.2 / §3.3 / §4 / §5.1 / §7）、ADR-0049（MCP 进入范围）、ADR-0050（MCP 骑在 world 接缝上、SDK 单点 import）、ADR-0113（agent 自助配置的权限边界）、ADR-0114（工具表按 turn 重算）
+相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.2 / §3.3 / §4 / §5.1 / §7）、ADR-0049（MCP 进入范围）、ADR-0050（MCP 骑在 world 接缝上、SDK 单点 import）、ADR-0118（agent 自助配置的权限边界）、ADR-0119（工具表按 turn 重算）
 
 ## 背景
 
@@ -107,7 +109,7 @@ hub.authorize(id)
 
 ### 六、`mcp_authorize` 不设审批门
 
-它必然弹出浏览器、用户必须亲手在服务商页面点同意——**人天然在环里**，再加一道门是重复劳动而非安全增益。（与 ADR-0113 里 `mcp_configure` 必须过门形成对照：那一条人不在环里，所以门是唯一的闸。）
+它必然弹出浏览器、用户必须亲手在服务商页面点同意——**人天然在环里**，再加一道门是重复劳动而非安全增益。（与 ADR-0118 里 `mcp_configure` 必须过门形成对照：那一条人不在环里，所以门是唯一的闸。）
 
 ## 后果
 

@@ -145,6 +145,29 @@ describe("createAgent 会话生命周期", () => {
     store2.close();
   });
 
+  it("memory 快照带项目档时，落盘的 memory_loaded 带 project/projectRoot", () => {
+    const store = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
+    const memory = { memory: "全局", user: "用户", project: "项目", projectRoot: "/repo" };
+
+    const a = createAgent({ store, workspace: "/repo", push, attachments, world, memory });
+    const ev = store.load(a.sessionId).find((e) => e.type === "memory_loaded");
+    expect(ev).toMatchObject({ memory: "全局", user: "用户", project: "项目", projectRoot: "/repo" });
+    store.close();
+  });
+
+  it("没有项目根时，memory_loaded 不带那两个字段（旧日志形状）", () => {
+    const store = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
+    const memory = { memory: "全局", user: "用户" };
+
+    const a = createAgent({ store, workspace: "/tmp/scratch", push, attachments, world, memory });
+    const ev = store.load(a.sessionId).find((e) => e.type === "memory_loaded")!;
+    expect("project" in ev).toBe(false);
+    expect("projectRoot" in ev).toBe(false);
+    store.close();
+  });
+
   it("world 有 config 才挂 memory 工具", () => {
     const store = new EventStore(":memory:");
     const bare = createAgent({ store, workspace: "/proj/x", push, attachments });

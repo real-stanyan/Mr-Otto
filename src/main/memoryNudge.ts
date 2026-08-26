@@ -85,3 +85,20 @@ export function reviewerTranscript(messages: ChatMessage[], cap = 12_000): strin
     });
   return lines.join("\n\n").slice(-cap);
 }
+
+/** 拼给 memory-reviewer 的任务字符串：当前 MEMORY/USER，有项目档时再加 PROJECT
+    段（带项目根，reviewer 认三档要知道"当前项目"是哪个），最后接对话转写。
+    没有项目档（workspace 不在任何 git 仓库里，`mem.projectRoot` 缺席）时不拼
+    PROJECT 段落——那时 memory 工具的 target 枚举里也没有 project 这个选项
+    （createMemoryTool 的动态枚举），给 reviewer 看一个它写不了的档只会制造困惑。
+    三档判据本身是不随会话变的静态事实，写进了 builtinSubagents.ts 的
+    instructions；这里只管拼"当次"的内容 */
+export function buildReviewerTask(
+  mem: { memory: string; user: string; project?: string; projectRoot?: string },
+  transcript: string,
+): string {
+  const projectBlock = mem.projectRoot
+    ? `当前 PROJECT（${mem.projectRoot}）:\n${mem.project || "(空)"}\n\n`
+    : "";
+  return `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n${projectBlock}最近对话：\n${transcript}`;
+}

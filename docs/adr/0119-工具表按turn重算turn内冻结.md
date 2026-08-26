@@ -1,14 +1,16 @@
-# ADR-0114：LoopEngine 的工具表按 turn 重算，turn 内冻结
+# ADR-0119：LoopEngine 的工具表按 turn 重算，turn 内冻结
+
+> 原为 ADR-0114。合并前 origin/main 上另一条车道先落了 0114 这个号，按项目 ADR-0074 在本 PR 内顺延改号；照旧号来的引用按这行解析。
 
 日期：2026-08-26
 状态：已接受
-相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.4）、ADR-0112（OAuth 授权）、ADR-0113（agent 自助配置的权限边界）、ADR-0050（MCP 双 ID / 撞名分配）
+相关：设计文档 `docs/superpowers/specs/2026-08-26-mcp-oauth-agent-config-design.md`（§3.4）、ADR-0117（OAuth 授权）、ADR-0118（agent 自助配置的权限边界）、ADR-0050（MCP 双 ID / 撞名分配）
 
 ## 背景
 
 `engine.ts` 把 `toolsByName` 折在**构造那一刻**，`createMcpTools` 也是装配时快照（`agent.ts`）。
 
-所以 agent 配完一台 MCP server、连上了，**本会话它自己用不了那批新工具**——这正好毁掉「在聊天里配」（ADR-0113）想要的那种顺畅：配好了，但要重开会话才能用。
+所以 agent 配完一台 MCP server、连上了，**本会话它自己用不了那批新工具**——这正好毁掉「在聊天里配」（ADR-0118）想要的那种顺畅：配好了，但要重开会话才能用。
 
 ## 决定
 

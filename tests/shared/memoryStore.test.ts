@@ -95,3 +95,132 @@ describe("parseMemoryResult", () => {
     expect(parseMemoryResult(`${MEMORY_RESULT_MARK}{"target":"user","added":[],"updated":[],"removed":[],"used":0,"limit":1375}-->`)).toBeNull();
   });
 });
+
+import { memoryRelPath, isMemoryTarget, withMemoryFileLock } from "../../src/shared/memoryStore.js";
+
+describe("三档路径与上限", () => {
+  it("memoryRelPath：三档各自的相对路径", () => {
+    expect(memoryRelPath("user")).toBe("memories/USER.md");
+    expect(memoryRelPath("memory")).toBe("memories/MEMORY.md");
+    expect(memoryRelPath("project", "memories/projects/abc123")).toBe("memories/projects/abc123/MEMORY.md");
+  });
+
+  it("memoryRelPath：project 没给 projectDir 就抛——绝不静默落到全局档", () => {
+    expect(() => memoryRelPath("project")).toThrow(/projectDir/);
+    expect(() => memoryRelPath("project", null)).toThrow(/projectDir/);
+  });
+
+  it("isMemoryTarget 认得第三档", () => {
+    expect(isMemoryTarget("project")).toBe(true);
+    expect(isMemoryTarget("projects")).toBe(false);
+  });
+
+  it("三档上限：全局档让位给项目档", () => {
+    expect(MEMORY_LIMITS).toEqual({ memory: 1100, user: 1375, project: 2200 });
+  });
+
+  it("project 超限的报错文案带 PROJECT 字样", () => {
+    const long = "x".repeat(2300);
+    const r = applyOps("project", [], [{ action: "add", target: "project", content: long }]);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("PROJECT") });
+    expect((r as { error: string }).error).toContain("2200");
+  });
+});
+
+// 存量超限的档不许锁死（ADR-0116）。判据是「超限**且未变小**才拒」而不是「超限就拒」：
+// 旧上限 2200 下写满的 MEMORY 在新上限 1100 下，模型删一条降到 1203 仍然整批被拒，
+// 而 memory 工具连续失败 3 次就返回终态「本轮放弃」——静默锁死。
+describe("applyOps 超限判据：净减少的批次允许落盘", () => {
+  /** 造一份超过 MEMORY 上限的存量条目（每条 300 字符，5 条 = 1500 + 分隔符 > 1100） */
+  const stale = ["a", "b", "c", "d", "e"].map((c) => c.repeat(300));
+  const usedOf = (entries: string[]) => charCount(formatEntries(entries));
+
+  it("从超限状态净减少、但仍然超限 → 允许（不惩罚有进展但没到位）", () => {
+    expect(usedOf(stale)).toBeGreaterThan(MEMORY_LIMITS.memory);
+    const r = applyOps("memory", stale, [{ action: "remove", target: "memory", old_text: "aaa" }]);
+    expect(r.ok).toBe(true);
+    // 仍然超限，但确实小了——这正是老判据会拒掉的那一批
+    const next = (r as { entries: string[] }).entries;
+    expect(usedOf(next)).toBeGreaterThan(MEMORY_LIMITS.memory);
+    expect(usedOf(next)).toBeLessThan(usedOf(stale));
+  });
+
+  it("从超限状态原地不动（等量替换）或变大 → 拒", () => {
+    const flat = applyOps("memory", stale, [
+      { action: "replace", target: "memory", old_text: "aaa", content: "z".repeat(300) },
+    ]);
+    expect(flat).toMatchObject({ ok: false, error: expect.stringContaining("MEMORY 超限") });
+    const bigger = applyOps("memory", stale, [{ action: "add", target: "memory", content: "z".repeat(10) }]);
+    expect(bigger.ok).toBe(false);
+    // 报错文案把 before / used / limit 三个数都说出来，模型才知道自己还得继续减
+    expect((bigger as { error: string }).error).toContain(String(MEMORY_LIMITS.memory));
+    expect((bigger as { error: string }).error).toContain(String(usedOf(stale)));
+  });
+
+  it("从合规状态写到超限 → 拒（老行为不变）", () => {
+    const ok = ["x".repeat(1000)];
+    expect(usedOf(ok)).toBeLessThanOrEqual(MEMORY_LIMITS.memory);
+    const r = applyOps("memory", ok, [{ action: "add", target: "memory", content: "y".repeat(200) }]);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("MEMORY 超限") });
+  });
+
+  it("减到上限以内当然也允许（连减两批就能收敛）", () => {
+    const first = applyOps("memory", stale, [{ action: "remove", target: "memory", old_text: "aaa" }]);
+    expect(first.ok).toBe(true);
+    const second = applyOps("memory", (first as { entries: string[] }).entries, [
+      { action: "remove", target: "memory", old_text: "bbb" },
+      { action: "remove", target: "memory", old_text: "ccc" },
+    ]);
+    expect(second.ok).toBe(true);
+    expect(usedOf((second as { entries: string[] }).entries)).toBeLessThanOrEqual(MEMORY_LIMITS.memory);
+  });
+});
+
+describe("withMemoryFileLock 按文件路径加锁", () => {
+  it("同一路径串行", async () => {
+    const order: string[] = [];
+    const p = "memories/MEMORY.md";
+    const a = withMemoryFileLock(p, async () => { order.push("a-in"); await Promise.resolve(); order.push("a-out"); });
+    const b = withMemoryFileLock(p, async () => { order.push("b-in"); });
+    await Promise.all([a, b]);
+    expect(order).toEqual(["a-in", "a-out", "b-in"]);
+  });
+
+  it("不同项目的项目档互不阻塞（锁 key 是路径不是 target）", async () => {
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const gate = new Promise<void>((r) => (releaseA = r));
+    const a = withMemoryFileLock("memories/projects/aaa/MEMORY.md", async () => { order.push("a-in"); await gate; order.push("a-out"); });
+    const b = withMemoryFileLock("memories/projects/bbb/MEMORY.md", async () => { order.push("b-in"); });
+    await b;
+    expect(order).toEqual(["a-in", "b-in"]); // b 没被 a 堵住
+    releaseA();
+    await a;
+  });
+});
+
+import { assertMemoryFits } from "../../src/shared/memoryStore.js";
+
+// moveToProject（设置页「移到项目档」，src/renderer/src/components/MemorySettings.tsx）
+// 在写盘前用 assertMemoryFits 做前置超限检查，写盘本身发生在渲染层，没有 RTL 测不了
+// 组件本体（见 MemorySettings.tsx 顶部注释）——但这条检查底下就是纯函数组合，这里
+// 直接测这一层，覆盖 moveToProject 会撞到的三种情况：不超限、超限、去重后没超限。
+describe("assertMemoryFits（moveToProject 的超限前置检查用的是这条）", () => {
+  it("没超限：不抛", () => {
+    expect(() => assertMemoryFits("project", "x".repeat(2200))).not.toThrow();
+  });
+
+  it("超限：抛错，文案带 target 的大写标签 + used/limit 数字，同 applyOps 的报错语义", () => {
+    expect(() => assertMemoryFits("project", "x".repeat(2201))).toThrow(/PROJECT 超限.*2201\/2200/);
+  });
+
+  it("按归一化后的长度算，不是原始字符串长度——三条重复条目归一化后只剩一条", () => {
+    const text = ["x".repeat(2200), "x".repeat(2200), "x".repeat(2200)].join(ENTRY_DELIMITER);
+    expect(() => assertMemoryFits("project", text)).not.toThrow();
+  });
+
+  it("三档各自认自己的上限", () => {
+    expect(() => assertMemoryFits("memory", "x".repeat(1101))).toThrow(/MEMORY 超限/);
+    expect(() => assertMemoryFits("user", "x".repeat(1376))).toThrow(/USER 超限/);
+  });
+});
