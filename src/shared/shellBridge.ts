@@ -377,6 +377,12 @@ export interface ShellBridge {
       点进去看全过程走的是 resumeSession，这个方法只用来"顺路看一眼事实"。
       未知 sessionId 回空数组，同 EventStore.load 的语义 */
   readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
+  /** /btw 浮窗的旁聊：从 fromSessionId 的工作区建一个独立会话（append-only 日志
+      照常），打上 spawnedBy 标记——侧栏/灵动岛/⌘K 的可见性口径（spawnedFrom
+      非空即滤）自动对它生效，不重启动不动 currentSessionId（视线不切）。
+      只建会话不发消息；首条消息走普通 sendMessage(sessionId)。
+      fromSessionId 不存在/未激活 = 抛错（旁聊必须挂在一个活着的主会话上） */
+  startSideSession(fromSessionId: string): Promise<{ sessionId: string }>;
   /** 这个会话此刻**真的还在跑**的后台任务（issue #452 / ADR-0109）。
       面板本身是日志的投影（background_task_started / _completed 推得出），
       日志唯一推不出的是：started 没配上 completed 的那些，进程到底还活着，
@@ -927,6 +933,7 @@ export const CHANNELS = {
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
   readSessionEvents: "otter:readSessionEvents",
+  startSideSession: "otter:startSideSession",
   liveBackgroundTasks: "otter:liveBackgroundTasks",
   deleteSession: "otter:deleteSession",
   archiveSession: "otter:archiveSession",
