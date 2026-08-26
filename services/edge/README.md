@@ -72,8 +72,14 @@ npx wrangler secret put SUPABASE_JWT_SECRET # 只做一次，值不进 git
 `SUPABASE_JWT_SECRET` 是 Dashboard → Settings → API → JWT Settings 里的 legacy JWT secret
 （`src/jwt.ts` 只认 HS256，所以项目的签名 key 必须停在 legacy HS256 那把）。
 
-本地开发：`npm --prefix services/edge run dev` 起 `wrangler dev`（真 workerd + 真 DO），
+本地开发：`npm --prefix services/edge install` 一次（装 wrangler），然后
+`npm --prefix services/edge run dev` 起 `wrangler dev`（真 workerd + 真 DO），
 假 secret 放 `services/edge/.dev.vars`（已 gitignore）。
+
+> **`@cloudflare/workers-types` 装在根**，不在这个目录：`npm test` 里那条
+> `tsc -p services/edge` 属于门禁，而门禁必须是「clone 完 `npm ci` + `npm test`」
+> 一条路走完。装在这里的话 CI 只在根 `npm ci` 就找不到它（实测 TS2688）。
+> wrangler 留在这里是因为它只在部署和本地 dev 用，不进门禁。
 
 ### 运行时那一层怎么验
 
