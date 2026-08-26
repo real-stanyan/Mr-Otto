@@ -36,7 +36,7 @@ import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
 import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
-import { readMcpAuth, writeMcpAuth, clearMcpAuth } from "./mcpAuthStore.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration } from "./mcpAuthStore.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
@@ -1083,6 +1083,10 @@ void app.whenReady().then(() => {
               // authorizeMcpServer 里另造的、带真端口的 provider
               redirectUri: "http://127.0.0.1/callback",
               state: "",
+              // 连接路径只许写 tokens（#471）：token 过期且 refresh 失败时
+              // SDK 会在这条路上跑完整 auth()，把进行中授权的 codeVerifier
+              // 覆盖掉——用户点完同意换 token 时 invalid_grant
+              persistFlowState: false,
               read: () => readMcpAuth(mcpAuthPath, id),
               write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
               openBrowser: () => {
@@ -1098,6 +1102,7 @@ void app.whenReady().then(() => {
       authorizeMcpServer(id, cfg, {
         read: () => readMcpAuth(mcpAuthPath, id),
         write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+        resetClientRegistration: () => { dropMcpAuthClientRegistration(mcpAuthPath, id); },
         openBrowser: (url) => { void shell.openExternal(url); },
       }),
     clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },

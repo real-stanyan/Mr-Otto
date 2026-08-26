@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadMcpAuth, readMcpAuth, writeMcpAuth, clearMcpAuth } from "../../src/main/mcpAuthStore.js";
+import {
+  loadMcpAuth, readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration,
+} from "../../src/main/mcpAuthStore.js";
 
 let dir: string;
 let path: string;
@@ -70,5 +72,28 @@ describe("mcpAuthStore", () => {
   it("父目录不存在时自己建出来", () => {
     writeMcpAuth(path, "a", { codeVerifier: "v" });
     expect(existsSync(path)).toBe(true);
+  });
+
+  // #471：二次授权时 loopback 端口换了，盘上的动态客户端注册绑的还是旧
+  // redirect_uri——精确匹配的授权服务器会直接拒。丢注册要保 token：
+  // token 可能还能 refresh，丢了用户就得整个重授权
+  it("丢客户端注册：clientInformation/codeVerifier 删掉，tokens/redirectUri 保留（#471）", () => {
+    writeMcpAuth(path, "s", {
+      clientInformation: { client_id: "c1" },
+      codeVerifier: "v1",
+      tokens: { access_token: "a1" },
+      redirectUri: "http://127.0.0.1:1111/callback",
+    });
+    dropMcpAuthClientRegistration(path, "s");
+    expect(readMcpAuth(path, "s")).toEqual({
+      tokens: { access_token: "a1" },
+      redirectUri: "http://127.0.0.1:1111/callback",
+    });
+  });
+
+  it("丢一台不存在的注册是 no-op，不误伤同伴", () => {
+    writeMcpAuth(path, "b", { codeVerifier: "vb" });
+    dropMcpAuthClientRegistration(path, "没这台");
+    expect(readMcpAuth(path, "b")).toEqual({ codeVerifier: "vb" });
   });
 });

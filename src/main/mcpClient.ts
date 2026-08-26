@@ -286,12 +286,25 @@ export async function connectMcpClient(
   return conn;
 }
 
-/** 存取凭据的两个把手 + 一个开浏览器的把手。hub 注入真实现，测试注入假的 */
+/** 存取凭据的把手 + 开浏览器的把手。hub 注入真实现，测试注入假的 */
 export interface McpOAuthDeps {
   read(): McpAuthRecord;
   write(patch: Partial<McpAuthRecord>): void;
+  /** 丢掉盘上的动态客户端注册（保 tokens），见 needsFreshRegistration（#471）。
+      真实现是 mcpAuthStore.dropMcpAuthClientRegistration */
+  resetClientRegistration(): void;
   openBrowser(url: string): void;
 }
+
+/** 盘上的动态客户端注册还能不能用这次的 redirect_uri（#471）。
+    注册只在盘上没有 clientInformation 时跑一次，注册进服务端的
+    redirect_uris 绑着那一次的随机端口；loopback 每次授权都换端口，
+    RFC 8252 §7.3 只是 SHOULD 允许 loopback 变端口——精确匹配的授权服务器
+    （相当一部分企业 IdP）会直接 invalid_redirect_uri。老记录没存过
+    redirectUri 的一律当过期：重注册的代价是多一次请求，误判"还能用"的
+    代价是用户永远授不动、还没有界面能清。 */
+export const needsFreshRegistration = (rec: McpAuthRecord, redirectUri: string): boolean =>
+  rec.clientInformation !== undefined && rec.redirectUri !== redirectUri;
 
 /** SDK 的 OAuthClientProvider 适配器 —— 本仓这一侧只负责"存哪、怎么开浏览器"。
     协议本身（元数据发现、动态客户端注册、PKCE、code 换 token、refresh 续期）
@@ -301,8 +314,18 @@ export interface McpOAuthDeps {
     mcpAuthStore 用等价的 Record<string, unknown> 形状存盘，两边都是普通
     JSON 对象，适配就是下面这几处结构性断言（ADR-0050 的 SDK 单点 import）。 */
 export function createOAuthProvider(
-  opts: { redirectUri: string; state: string } & McpOAuthDeps
+  opts: {
+    redirectUri: string;
+    state: string;
+    /** false = 连接路径的 provider（#471）：token 过期且 refresh 失败时 SDK
+        会在连接路径上跑完整 auth()，把盘上进行中授权的 codeVerifier 覆盖掉
+        ——用户点完同意，finishAuth 拿新 verifier 去换旧 verifier 的 code，
+        invalid_grant。连接路径只许写 tokens（refresh 续期要落盘），
+        saveCodeVerifier / saveClientInformation 一律 no-op。缺省 true（授权路径）。 */
+    persistFlowState?: boolean;
+  } & Pick<McpOAuthDeps, "read" | "write" | "openBrowser">
 ): OAuthClientProvider {
+  const persistFlow = opts.persistFlowState !== false;
   const metadata: OAuthClientMetadata = {
     client_name: "Mr Otto",
     redirect_uris: [opts.redirectUri],
@@ -316,10 +339,14 @@ export function createOAuthProvider(
     get clientMetadata() { return metadata; },
     state: () => opts.state,
     clientInformation: () => opts.read().clientInformation as OAuthClientInformation | undefined,
-    saveClientInformation: (info) => { opts.write({ clientInformation: info as Record<string, unknown> }); },
+    saveClientInformation: (info) => {
+      if (persistFlow) opts.write({ clientInformation: info as Record<string, unknown> });
+    },
     tokens: () => opts.read().tokens as OAuthTokens | undefined,
     saveTokens: (t) => { opts.write({ tokens: t as unknown as Record<string, unknown> }); },
-    saveCodeVerifier: (v) => { opts.write({ codeVerifier: v }); },
+    saveCodeVerifier: (v) => {
+      if (persistFlow) opts.write({ codeVerifier: v });
+    },
     codeVerifier: () => {
       const v = opts.read().codeVerifier;
       // 抛人话而不是返回 undefined：SDK 会把它直接塞进 token 请求，
@@ -345,10 +372,17 @@ export async function authorizeMcpServer(
   }
   const loopback = await startLoopback();
   try {
+    // 二次授权（#471）：盘上的动态客户端注册绑着上一次的随机端口，精确匹配
+    // redirect_uri 的授权服务器会拒——先丢注册（保 tokens）让 SDK 重跑一次
+    // DCR，再记下这次用的 redirect_uri 供下一次对照
+    if (needsFreshRegistration(deps.read(), loopback.redirectUri)) deps.resetClientRegistration();
+    deps.write({ redirectUri: loopback.redirectUri });
     const provider = createOAuthProvider({
       redirectUri: loopback.redirectUri,
       state: loopback.state,
-      ...deps,
+      read: deps.read,
+      write: deps.write,
+      openBrowser: deps.openBrowser,
     });
     const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
       requestInit: { headers: cfg.headers },
