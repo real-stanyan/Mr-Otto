@@ -5,7 +5,7 @@
 // 树是**全显**的(node_modules/out/点文件都列),不卡的前提是一次只列一层:
 // 展开哪个目录才发一次 filesList,不是开面板扫全树。
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AtSign, ChevronDown, ChevronRight, Copy, ExternalLink, FolderOpen, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { HEADER_H } from "../settingsShell.js";
 import { useChat } from "../store.js";
@@ -20,12 +20,14 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { previewLang } from "../lib/previewLang.js";
+import { rehypeCodeLines } from "../lib/codeLines.js";
 import type { EditorApp } from "../../../shared/editors.js";
 import { joinRel, type FileEntry, type FileHit, type FilePreview } from "../../../shared/files.js";
 
 // 插件数组提到模块级:内联的 [remarkGfm] 每次渲染都是新引用(同 ProtocolView 的理由)
 const REMARK_PLUGINS = [remarkGfm];
-const REHYPE_PLUGINS = [rehypeHighlight];
+// 切行要排在高亮**之后**:反过来的话切出来的是没上色的行(见 lib/codeLines 开头)
+const REHYPE_PLUGINS = [rehypeHighlight, rehypeCodeLines];
 
 /** 一层目录的缓存:相对路径 → 这层的条目。折叠不清缓存,再展开不重发 */
 type DirCache = Map<string, FileEntry[]>;
@@ -45,6 +47,13 @@ export function FilesView() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewNote, setPreviewNote] = useState("");
   const [editors, setEditors] = useState<EditorApp[]>([]);
+  // 正文里点来的那一跳:line = 要滚到的行(没有就只开文件),seq 用来让"再点同一条"
+  // 也重新滚一次。jumpNote 单独一格 —— 它说的是"这条路径打不开",与读文件的失败
+  // 不是同一件事,混在一格里会互相盖掉
+  const [jump, setJump] = useState<{ line: number | null; seq: number } | null>(null);
+  const [jumpNote, setJumpNote] = useState("");
+  const fileJump = useChat((s) => s.fileJump);
+  const previewRef = useRef<HTMLDivElement | null>(null);
 
   const loadDir = useCallback(
     async (rel: string) => {
@@ -80,6 +89,37 @@ export function FilesView() {
     setSelected(null);
     void loadDir("");
   }, [root, loadDir]);
+
+  // 正文里点了一条「文件:行号」——选中那个文件,记下要滚到哪一行
+  useEffect(() => {
+    if (fileJump === null) return;
+    if (fileJump.rel === null) {
+      // 说清楚为什么打不开:面板只认工作区里的路径(同 filesService 的那道边界)
+      setJumpNote(`${fileJump.raw} 不在当前工作区`);
+      setJump(null);
+      return;
+    }
+    setJumpNote("");
+    setQuery(""); // 正在过滤时跳过来,树上看不到那个文件,只有预览是孤的
+    setSelected(fileJump.rel);
+    setJump({ line: fileJump.line, seq: fileJump.seq });
+  }, [fileJump]);
+
+  // 内容到了才滚:预览是异步读的,在读回来之前 DOM 里根本没有那一行
+  useEffect(() => {
+    if (preview === null || jump === null || jump.line === null) return;
+    const host = previewRef.current;
+    if (host === null) return;
+    host.querySelector(".code-line-hit")?.classList.remove("code-line-hit");
+    const target = host.querySelector(`[data-line="${jump.line}"]`);
+    if (target === null) {
+      // 截断的大文件里跳到 60000 行:说出来,别让人对着第一屏猜哪儿高亮了
+      if (preview.truncated) setJumpNote(`第 ${jump.line} 行在未显示的部分`);
+      return;
+    }
+    target.classList.add("code-line-hit");
+    target.scrollIntoView({ block: "center" });
+  }, [preview, jump]);
 
   // 过滤/搜索去抖 150ms。空查询 = 回到树
   useEffect(() => {
@@ -233,6 +273,9 @@ export function FilesView() {
         {notice !== "" && (
           <p className="mt-1 text-[11px] text-muted-foreground" data-testid="files-notice">{notice}</p>
         )}
+        {jumpNote !== "" && (
+          <p className="mt-1 text-[11px] text-muted-foreground" data-testid="files-jump-note">{jumpNote}</p>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-2" data-testid="files-tree">
@@ -320,11 +363,13 @@ export function FilesView() {
             </p>
           )}
           {preview !== null && (
-            <div className="min-h-0 flex-1 overflow-auto px-3 pb-3 text-[12px]" data-testid="files-preview">
+            <div ref={previewRef} className="md min-h-0 flex-1 overflow-auto px-3 pb-3 text-[12px]" data-testid="files-preview">
               <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-                {selected.toLowerCase().endsWith(".md")
+                {/* .md 平时是渲染出来读的;但带行号跳过来时渲染稿里没有"行",
+                    只能退回源码视图 —— 跳转的落点比排版重要 */}
+                {selected.toLowerCase().endsWith(".md") && (jump === null || jump.line === null)
                   ? preview.text
-                  : "```" + previewLang(selected) + "\n" + preview.text + "\n```"}
+                  : "```" + previewLang(selected) + "\n" + preview.text.replace(/\n$/, "") + "\n```"}
               </Markdown>
             </div>
           )}
