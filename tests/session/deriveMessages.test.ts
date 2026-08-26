@@ -430,6 +430,56 @@ describe("skill_invoked（$ 指令的注入投影）", () => {
   });
 });
 
+describe("模型自取 skill 的投影（本次新增）", () => {
+  it("中途 acquire：说明书排在 tool 消息之后，不夹在 tool_call 与 tool_result 中间", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "写测试" },
+      {
+        seq: 2, sessionId: "s", ts: 2, type: "assistant_message", content: "", model: "m",
+        toolCalls: [{ id: "c1", name: "skill", args: { action: "acquire", name: "tdd" } }],
+      },
+      { seq: 3, sessionId: "s", ts: 3, type: "skill_invoked", name: "tdd", content: "先写测试", source: "model" },
+      { seq: 4, sessionId: "s", ts: 4, type: "tool_result", toolCallId: "c1", status: "ok", output: "skill「tdd」已启用" },
+    ];
+    const msgs = deriveMessages(events);
+    const roles = msgs.map((m) => m.role);
+    // assistant(tool_call) 之后必须直接是 tool，说明书排在它后面
+    expect(roles.slice(-3)).toEqual(["assistant", "tool", "user"]);
+    expect(msgs.at(-1)!.content).toContain("先写测试");
+  });
+
+  it("skill_released 不投影任何消息（它只改台账）", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "skill_invoked", name: "tdd", content: "先写测试" },
+      { seq: 2, sessionId: "s", ts: 2, type: "skill_released", name: "tdd" },
+      { seq: 3, sessionId: "s", ts: 3, type: "user_message", content: "活" },
+    ];
+    const contents = deriveMessages(events).map((m) => m.content);
+    expect(contents.filter((c) => typeof c === "string" && c.includes("skill「tdd」已停用")).length).toBe(0);
+    // 已发出的那份说明书照旧留在上下文里：它是历史事实，停用只影响此后
+    expect(contents.some((c) => typeof c === "string" && c.includes("先写测试"))).toBe(true);
+  });
+
+  it("停用之后 compact 清场：重注入里没有它", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 1, type: "skill_invoked", name: "keep", content: "留着" },
+      { seq: 2, sessionId: "s", ts: 2, type: "skill_invoked", name: "drop", content: "扔掉" },
+      { seq: 3, sessionId: "s", ts: 3, type: "skill_released", name: "drop" },
+      { seq: 4, sessionId: "s", ts: 4, type: "context_compacted", summary: "摘要", model: "m" },
+      { seq: 5, sessionId: "s", ts: 5, type: "user_message", content: "接着干" },
+    ];
+    const contents = deriveMessages(events)
+      .map((m) => m.content)
+      .filter((c): c is string => typeof c === "string")
+      .join("\n");
+    expect(contents).toContain("留着");
+    expect(contents).not.toContain("扔掉");
+  });
+});
+
 describe("user_message 附件投影(file-input-v1)", () => {
   it("带 attachments → content 变 parts:[text, ...image_ref]", () => {
     const events: SessionEvent[] = [
