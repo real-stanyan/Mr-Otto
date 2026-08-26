@@ -51,7 +51,11 @@ function toToolCallPart(call: ToolCallRequest, index: ToolIndex): Part {
     且不需要第二条渲染路径。
     这份名单照抄 Timeline.tsx 里 EventRow 不返回 null 的那些分支:
     tool_result / tool_execution_started 已被 tool-call part 吸收,
-    approval_decision(approved) 是正常放行不是对话事实(免审模式下全是噪音) */
+    approval_decision(approved) 是正常放行不是对话事实(免审模式下全是噪音)。
+    「照抄」这件事本身有测试守着(tests/renderer/timelineLists.test.ts):
+    三份名单(这里 / EventRow / threadGroups.isInvisible)读同一份源码互相对表——
+    skill_released 曾经只加进 EventRow、漏了这里,于是那个 case 成了死代码,
+    时间线上永远不出现停用行。靠人肉记住"还有两处要改"已经失败过两次 */
 function isAuditEvent(e: SessionEvent): boolean {
   switch (e.type) {
     case "session_created":
@@ -61,6 +65,10 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "session_autotitled":
     case "model_changed":
     case "skill_invoked":
+    // 停用（ADR-0110）：和 skill_invoked 一对——启用那行上了时间线，停用那行
+    // 也必须上，否则用户只能靠「停用按钮消失」这个隐式信号猜到底停没停。
+    // 漏在这里的代价不是少一行灰字：EventRow 那个 case 会变成永不执行的死代码
+    case "skill_released":
     case "image_described":
     case "context_compacted":
     // 微压缩(ADR-0064):和 context_compacted 同列——"哪一段对话被并进摘要了"
