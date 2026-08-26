@@ -187,9 +187,9 @@ interface ChatState {
       补上"会话 → 正在跑的调用"这一层，卡才能挂上直播尾巴（Task 8 review
       Important 1） */
   runningToolCallBySession: Record<string, string>;
-  /** /btw 旁聊浮窗（issue #502）。null = 没开。sessionId 是独立会话（spawnedBy
+  /** /btw SideChat 浮窗（issue #502）。null = 没开。sessionId 是独立会话（spawnedBy
       kind:"side" 标记，侧栏/灵动岛滤掉）；events 是它自己的事件镜像——主
-      absorbEvent 只收"正在看的会话"，旁聊的事件在 boot() 的 onEvent 里入库前
+      absorbEvent 只收"正在看的会话"，SideChat 的事件在 boot() 的 onEvent 里入库前
       分流到这份镜像（openedAt 之前的历史 = 建会话那两条 session_created/
       memory_loaded，从镜像里滤掉不如就摆着，浮窗渲染时跳过非消息事件）。
       pos 是浮窗位置（渲染层本地状态，不进日志）；dragging 防止拖拽中触发
@@ -537,15 +537,15 @@ interface ChatState {
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
   rename(title: string): Promise<void>;
-  /** /btw 指令的落点：从当前会话建旁聊浮窗。已开着 = 只把它抬回可见
-      （再敲一次 /btw 不重建会话——旁聊是同一段对话，不是每次新开） */
+  /** /btw 指令的落点：从当前会话建 SideChat 浮窗。已开着 = 只把它抬回可见
+      （再敲一次 /btw 不重建会话——SideChat 是同一段对话，不是每次新开） */
   /** initialText = /btw 连带的内容（issue #516）：新建时作为首条发进去，已存在不重发 */
   openSideChat(initialText?: string): Promise<void>;
   /** 关掉浮窗（会话和日志都在，只是不显示） */
   closeSideChat(): void;
-  /** 旁聊里发一条消息（走普通 sendMessage，按它自己的 sessionId 寻址） */
+  /** SideChat 里发一条消息（走普通 sendMessage，按它自己的 sessionId 寻址） */
   sendSide(text: string): Promise<void>;
-  /** 中断旁聊的 turn */
+  /** 中断 SideChat 的 turn */
   stopSide(): Promise<void>;
   /** 拖拽浮窗（渲染层本地位置） */
   setSidePos(pos: { x: number; y: number }): void;
@@ -1659,8 +1659,8 @@ export const useChat = create<ChatState>((set, get) => ({
           void s.refreshGitStatus();
         }, 600);
       }
-      // 旁聊浮窗的事件在入库前分流到自己的镜像（issue #502）：absorbEvent 只收
-      // "正在看的会话"，旁聊永远不是那个会话，不分流它的对话就丢了（DB 里有，
+      // SideChat 浮窗的事件在入库前分流到自己的镜像（issue #502）：absorbEvent 只收
+      // "正在看的会话"，SideChat 永远不是那个会话，不分流它的对话就丢了（DB 里有，
       // 但浮窗要的是直播）。只追加消息类事件；turn_ended 等系统事件浮窗不渲染，
       // 但 turn 收口的错误横幅（turn_ended.error）要在浮窗里看得见才留
       set((s) => {
@@ -2101,7 +2101,7 @@ export const useChat = create<ChatState>((set, get) => ({
       return;
     }
     if (!s.sessionId) {
-      set({ error: "先打开一个会话，旁聊才有地方挂" });
+      set({ error: "先打开一个会话，SideChat 才有地方挂" });
       return;
     }
     set({ error: null });

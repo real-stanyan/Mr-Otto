@@ -1,4 +1,4 @@
-// /btw 旁聊浮窗的纯逻辑（issue #502）：宽度阈值、拖拽位置钳制。
+// /btw SideChat 浮窗的纯逻辑（issue #502）：宽度阈值、拖拽位置钳制。
 // 不碰 React/DOM——拖拽的 pointer 事件接线在 SideChatWindow.tsx，
 // 这里只算「该在哪」，方便单测把边界逼出来。
 

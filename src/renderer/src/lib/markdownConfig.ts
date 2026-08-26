@@ -1,5 +1,5 @@
 // 助手正文的 streamdown 渲染配置——主聊天（markdown-text.tsx 的 MarkdownTextPrimitive）
-// 和旁聊浮窗（SideChatWindow，裸 streamdown 的 <Streamdown>，issue #516）共用这一份。
+// 和 SideChat 浮窗（SideChatWindow，裸 streamdown 的 <Streamdown>，issue #516）共用这一份。
 // 两条路的「组件」不同（aui 的 primitive 要 useAuiState 在消息上下文里，浮窗没有
 // aui runtime），但**配置**必须同源：字体排版/代码高亮/CJK 断行/mermaid/otto 块，
 // 一处改了另一处自动跟上——不然就是两套「差不多」的模板慢慢 drift。
@@ -52,7 +52,7 @@ export const MD_ANIMATED = {
   stagger: 8,
 } as const;
 
-// ── 裸 <Streamdown> 的接法（旁聊浮窗用；主聊天走 aui 的 primitive 自带这层适配）──
+// ── 裸 <Streamdown> 的接法（SideChat 浮窗用；主聊天走 aui 的 primitive 自带这层适配）──
 // 逻辑照搬 @assistant-ui/react-streamdown 的 adapters/code-adapter +
 // components-adapter：componentsByLanguage 按语言分发 + SyntaxHighlighter 兜底 +
 // pre 给 code 打 data-block 标记。裸 Streamdown 拿不到 aui 那层，自己接——

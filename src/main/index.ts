@@ -1405,7 +1405,7 @@ void app.whenReady().then(() => {
     resumeSessionId?: string;
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
     child?: ChildAgentConfig;
-    /** /btw 旁聊（issue #502）：按主会话装配建，但第 0 条打上 spawnedBy(kind:"side")
+    /** /btw SideChat（issue #502）：按主会话装配建，但第 0 条打上 spawnedBy(kind:"side")
         ——可见性借子会话口径（侧栏/⌘K/灵动岛滤掉），resume 时 resumeChild 认
         kind:"side" 回主装配。toolCallId 没有真实的（没人派活），用约定串 */
     sideOf?: string;
@@ -1468,7 +1468,7 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
-      // 旁聊标记进第 0 条（append-only：建会话那一刻一次写对，事后补不了）
+      // SideChat 标记进第 0 条（append-only：建会话那一刻一次写对，事后补不了）
       ...(args.sideOf
         ? { spawnedBy: { sessionId: args.sideOf, toolCallId: "side-chat", agent: "side", kind: "side" as const } }
         : {}),
@@ -1623,17 +1623,17 @@ void app.whenReady().then(() => {
     return store.load(sessionId);
   });
 
-  // /btw 旁聊（issue #502）：挂在某个活着的主会话上建一个独立会话。
+  // /btw SideChat（issue #502）：挂在某个活着的主会话上建一个独立会话。
   // 刻意走 createSessionAgent 主装配（全权 agent：工具/记忆/history 都在）——
-  // 旁聊是"跟人并排聊的第二张嘴"，不是派活派出去的只读子智能体。
+  // SideChat 是"跟人并排聊的第二张嘴"，不是派活派出去的只读子智能体。
   // 打 spawnedBy 标记的唯一目的是可见性：侧栏/⌘K/灵动岛的口径（spawnedFrom
   // 非空即滤）自动把它藏起来，浮窗自己管进出（resumeSession 的门照样认识
   // spawnedBy 会话）。副作用是重启后 resume 它会走子会话收权装配——接受：
-  // 旁聊本来就是一次性随口的，重启后能看历史、工具面收窄不碍事。
+  // SideChat 本来就是一次性随口的，重启后能看历史、工具面收窄不碍事。
   // 不动 currentSessionId——主视线的"我在哪"不因为开了个浮窗而变。
   ipcMain.handle(CHANNELS.startSideSession, async (_e, fromSessionId: string) => {
     const from = agents.get(fromSessionId);
-    if (!from) throw new Error("旁聊必须挂在一个活着的会话上（先打开那个会话）");
+    if (!from) throw new Error("SideChat 必须挂在一个活着的会话上（先打开那个会话）");
     // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready
     await mcpHub.ready();
     const agent = createSessionAgent({ workspace: from.workspace, sideOf: fromSessionId });

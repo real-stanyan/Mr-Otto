@@ -1,4 +1,4 @@
-// SideChatWindow — /btw 打开的旁聊浮窗（issue #502；可缩放 + markdown 见 #516；
+// SideChatWindow — /btw 打开的 SideChat 浮窗（issue #502；可缩放 + markdown 见 #516；
 // 8 向缩放 + 流式渲染见 #538）。
 // 自由漂浮、可全窗口拖动的小会话：不进右侧互斥面板槽，挂在 App 最外层
 // 自己管 fixed 定位（位置/尺寸都在 store.sideChat，拖拽和缩放只改它）。
@@ -13,7 +13,6 @@ import { useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { X } from "lucide-react";
 import { useChat } from "../store.js";
-import { Bubble, BubbleContent } from "./ui/bubble.js";
 import {
   SIDE_W,
   SIDE_H,
@@ -56,13 +55,13 @@ export function SideChatWindow() {
   const sideRunning = useChat((s) =>
     s.sideChat ? s.statusBySession[s.sideChat.sessionId] === "running" : false
   );
-  // 流式缓冲：旁聊 turn 跑着时模型正往外吐的正文（assistant_message 落下前）。
+  // 流式缓冲：SideChat turn 跑着时模型正往外吐的正文（assistant_message 落下前）。
   // 读 streamingBySession 而不是自己拼——store 已按 sessionId 分好桶、落终态时自清，
   // 组件再攒一份就是两份「正在流的这条」互相 drift（issue #538）
   const streaming = useChat((s) =>
     s.sideChat ? s.streamingBySession[s.sideChat.sessionId]?.content ?? "" : ""
   );
-  // side 会话的审批卡（issue #512）：全权装配的旁聊会过审批门，而主视图只
+  // side 会话的审批卡（issue #512）：全权装配的 SideChat 会过审批门，而主视图只
   // 渲染 approvals[当前会话]——不在这里给出口，side 一碰需审批的工具就永远挂起
   const approval = useChat((s) =>
     s.sideChat ? s.approvals[s.sideChat.sessionId] : undefined
@@ -151,7 +150,7 @@ export function SideChatWindow() {
       className="fixed z-50 flex flex-col overflow-hidden rounded-xl border bg-card shadow-2xl"
       style={{ left: side.pos.x, top: side.pos.y, width: size.w, height: size.h }}
       role="dialog"
-      aria-label="旁聊"
+      aria-label="SideChat"
     >
       {/* 标题栏 = 拖拽把手 */}
       <div
@@ -160,7 +159,7 @@ export function SideChatWindow() {
         onPointerMove={onDragPointerMove}
         onPointerUp={onDragPointerUp}
       >
-        <span className="flex-1 truncate text-xs font-medium text-muted-foreground">旁聊</span>
+        <span className="flex-1 truncate text-xs font-medium text-muted-foreground">SideChat</span>
         <button
           className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           title="关闭（会话保留）"
@@ -180,51 +179,50 @@ export function SideChatWindow() {
           <div className="flex flex-col gap-2">
             {messages.map((e, i) =>
               e.type === "user_message" ? (
-                <Bubble key={i} data-variant="user" className="justify-end">
-                  <BubbleContent data-variant="user" className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-primary px-3 py-1.5 text-sm text-primary-foreground">
+                // 用户消息：右对齐蓝气泡，圆角缺右下角——与主聊天
+                // （assistant-ui/thread.tsx 的 UserMessage）同一套版式
+                <div key={i} className="flex justify-end">
+                  <div className="max-w-[85%] min-w-0 rounded-[12px_12px_2px_12px] bg-primary px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground wrap-break-word">
                     {e.content}
-                  </BubbleContent>
-                </Bubble>
+                  </div>
+                </div>
               ) : (
-                <Bubble key={i} data-variant="assistant" className="justify-start">
-                  <BubbleContent data-variant="assistant" className="max-w-[92%] text-sm">
-                    {/* 主聊天同一份 streamdown 配置（lib/markdownConfig.ts）——
-                        代码高亮/CJK 断行/mermaid/otto 块/逐字动画全对齐。
-                        最后一条且还在流 = 开逐字动画；落下后静态（同主聊天） */}
-                    <Streamdown
-                      animated={i === messages.length - 1 && sideRunning ? MD_ANIMATED : false}
-                      caret="block"
-                      components={mdComponents}
-                      isAnimating={i === messages.length - 1 && sideRunning}
-                      mode={i === messages.length - 1 && sideRunning ? "streaming" : "static"}
-                      parseIncompleteMarkdown={i === messages.length - 1 && sideRunning}
-                      plugins={MD_PLUGINS}
-                      rehypePlugins={MD_REHYPE_PLUGINS}
-                    >
-                      {e.content}
-                    </Streamdown>
-                  </BubbleContent>
-                </Bubble>
+                // 助手正文：主聊天里它不是气泡——满宽裸正文，没有背景色
+                <div key={i} className="min-w-0 text-sm leading-relaxed text-foreground wrap-break-word">
+                  {/* 主聊天同一份 streamdown 配置（lib/markdownConfig.ts）——
+                      代码高亮/CJK 断行/mermaid/otto 块/逐字动画全对齐。
+                      最后一条且还在流 = 开逐字动画；落下后静态（同主聊天） */}
+                  <Streamdown
+                    animated={i === messages.length - 1 && sideRunning ? MD_ANIMATED : false}
+                    caret="block"
+                    components={mdComponents}
+                    isAnimating={i === messages.length - 1 && sideRunning}
+                    mode={i === messages.length - 1 && sideRunning ? "streaming" : "static"}
+                    parseIncompleteMarkdown={i === messages.length - 1 && sideRunning}
+                    plugins={MD_PLUGINS}
+                    rehypePlugins={MD_REHYPE_PLUGINS}
+                  >
+                    {e.content}
+                  </Streamdown>
+                </div>
               )
             )}
             {/* 正在流的这条：还在 streamingBySession 里、没落成事件（落了就并进上面列表） */}
             {streaming && (
-              <Bubble data-variant="assistant" className="justify-start">
-                <BubbleContent data-variant="assistant" className="max-w-[92%] text-sm">
-                  <Streamdown
-                    animated={MD_ANIMATED}
-                    caret="block"
-                    components={mdComponents}
-                    isAnimating
-                    mode="streaming"
-                    parseIncompleteMarkdown
-                    plugins={MD_PLUGINS}
-                    rehypePlugins={MD_REHYPE_PLUGINS}
-                  >
-                    {streaming}
-                  </Streamdown>
-                </BubbleContent>
-              </Bubble>
+              <div className="min-w-0 text-sm leading-relaxed text-foreground wrap-break-word">
+                <Streamdown
+                  animated={MD_ANIMATED}
+                  caret="block"
+                  components={mdComponents}
+                  isAnimating
+                  mode="streaming"
+                  parseIncompleteMarkdown
+                  plugins={MD_PLUGINS}
+                  rehypePlugins={MD_REHYPE_PLUGINS}
+                >
+                  {streaming}
+                </Streamdown>
+              </div>
             )}
           </div>
         )}
@@ -255,7 +253,7 @@ export function SideChatWindow() {
             onClick={() =>
               void window.otter.decideApproval(side.sessionId, approval.call.id, {
                 decision: "denied",
-                reason: "用户在旁聊浮窗里拒绝了",
+                reason: "用户在 SideChat 浮窗里拒绝了",
               })
             }
           >

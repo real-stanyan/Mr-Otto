@@ -10,7 +10,7 @@ import { useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 
 // 渲染配置(plugins/rehype/语言表/动画)抽到了 lib/markdownConfig.ts ——
-// 旁聊浮窗(SideChatWindow)的 <Streamdown> 共用同一份(issue #516),
+// SideChat 浮窗(SideChatWindow)的 <Streamdown> 共用同一份(issue #516),
 // 本文件只留「主聊天这条路的组件怎么接」。
 import {
   MD_PLUGINS,
@@ -27,7 +27,7 @@ import { FileRefChip } from "@/components/assistant-ui/file-ref.js";
 import { cn } from "@/lib/utils.js";
 
 // 配置常量(plugins/rehype)在 lib/markdownConfig.ts——下面这些「为什么」的注
-// 留在原地当指针，常量本体挪过去是因为旁聊浮窗要共用同一份(issue #516)。
+// 留在原地当指针，常量本体挪过去是因为 SideChat 浮窗要共用同一份(issue #516)。
 // cjk 不是可选项——本仓界面和内容都是中文,缺了 CJK 断行插件排版会散。
 // math:$$…$$ 走 KaTeX(样式表在 app.css 里 @import,版本钉死见那条注释)。
 // 默认只认双美元的行间公式,不认单美元 —— 单美元在正文里更常见的身份是钱。
