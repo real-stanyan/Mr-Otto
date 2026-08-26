@@ -35,13 +35,16 @@ import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { browserReadTool } from "../tools/browserRead.js";
 import { simulatorTool } from "../tools/simulator.js";
+import { packageProjectTool } from "../tools/packageProject.js";
 import {
   withBrowser,
   withSimulator,
+  withProjects,
   withMcp,
   withHistory,
   withCheckpoint,
   type BrowserCapability,
+  type ProjectsCapability,
   type SimulatorCapability,
   type CheckpointCapability,
   type HistoryCapability,
@@ -146,6 +149,9 @@ export function createAgent(opts: {
   /** app 级资源，由外面注入——欢迎页列会话时 agent 还不存在，库必须先活着 */
   store: EventStore;
   workspace: string;
+  /** "default" = workspace 是内置 Default 工作区（#559 后续）。写进 session_created,
+      投影据此多注入「打包为项目」引导段。缺席 = 项目会话/子会话/测试,一字不变 */
+  workspaceKind?: "default";
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
@@ -192,6 +198,10 @@ export function createAgent(opts: {
       造不出来。不给 = 这个装配没有模拟器（simulator 工具不挂）。
       子 agent 走 opts.world 那条路时自带（父身上已经焊着这层） */
   simulator?: SimulatorCapability;
+  /** 打包为项目能力（#559 后续，index.ts 只对内置 Default 工作区的主会话注入）。
+      挂了才装 package_project 工具。注入方向同 simulator：文档区路径是组装根
+      的事,工具层只认接口 */
+  projects?: ProjectsCapability;
   /** 复用现成的 world 而不是新造（ADR-0047）。子 agent 必须跑在父的 world 实例里：
       LocalWorld 下两者等价，但 v2 换 SandboxWorld 时"同一个容器"就是硬要求
       （方向同 ADR-0031）。给了它就不再 createLocalWorld / makeBrowser */
@@ -258,9 +268,11 @@ export function createAgent(opts: {
     ? withCheckpoint(withHistoryLayer, opts.checkpoints)
     : withHistoryLayer;
   // 模拟器叠在最外（issue #401）：同上，子 agent 复用父 world 时这层已经在了
-  const world = opts.simulator
+  const withSimulatorLayer = opts.simulator
     ? withSimulator(withCheckpointLayer, opts.simulator)
     : withCheckpointLayer;
+  // 打包为项目（#559 后续）：同上。组装根只对内置 Default 工作区的主会话传
+  const world = opts.projects ? withProjects(withSimulatorLayer, opts.projects) : withSimulatorLayer;
   // "这次装配有没有 MCP 能力"问的是 world，不是参数（ADR-0054）：子 agent 跑在
   // 父的 world 实例里，父身上那份 mcp 就是它的。工具照旧要过 allowTools 白名单——
   // 挂载不等于给用（子 agent 的白名单里没点名 mcp__… 就是一把都没有）
@@ -300,6 +312,9 @@ export function createAgent(opts: {
       ts: Date.now(),
       type: "session_created",
       workspace: opts.workspace,
+      // 条件展开（memory_loaded 同款）：无条件写会让项目会话的事件对象凭空
+      // 多一个值为 undefined 的 key，破坏「旧日志形状逐字节不变」
+      ...(opts.workspaceKind ? { workspaceKind: opts.workspaceKind } : {}),
       ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
     });
     // 长期记忆快照落盘（ADR-0060）：紧跟 session_created 之后，先落盘再喂模型。
@@ -514,6 +529,9 @@ export function createAgent(opts: {
       // 挂载条件同 browser:问的是 world 有没有这把能力,不是参数给没给
       // (issue #401。非 macOS / 没装 Xcode 的机器上组装根压根不焊,工具表里也就没有)
       ...(world.simulator ? [simulatorTool] : []),
+      // 打包为项目(#559 后续):只有内置 Default 工作区的主会话被焊上这层能力,
+      // 项目会话/子会话的工具表里没有它(提示词里的引导段也只注给 Default 会话)
+      ...(world.projects ? [packageProjectTool] : []),
       // 同理：world 里没有 mcp 的装配（裸装配/测试）一把 mcp 工具都不挂。
       // 暴露策略（issue #348）：超阈值整批 Deferred + 体积超预算降 Hidden——
       // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见

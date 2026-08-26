@@ -92,6 +92,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **`@路径` 高亮**：输入框里 `@` 开头的路径跟 `$skill` / `/命令` 一样画成 chip。判定方式不同——那两种比名单，路径没有名单可比，靠形状（`@` 前是行首或空白、后跟非空白、句末标点不吃进去），见 `aui/ottoDirectives.ts` 的 `ottoPathFormatter`。
 - **打开方式菜单**：Files 面板预览头上那颗外部打开按钮，列出本机探到的编辑器（`EDITOR_CATALOG` 固定名单 × `/Applications`、`~/Applications`）+ 系统默认 + 访达。每次弹菜单不记忆；`filesReveal` 只认 `filesEditors()` 给过的名字（ADR-0092 决策 7）。
 - **懒加载列目录**：Files 面板展开哪个目录才发一次 `filesList`，不是开面板扫全树。树能全显（含 `node_modules`）的前提就是这条（ADR-0092）。
+- **任务 / 项目（侧栏分栏）**：任务 = 内置 Default 工作区（文档区 `Mr Otto/Default`，#559）的会话，平铺不露路径——新手不用先懂「文件夹」；项目 = 其余工程的分组视图。语义钉在内置路径（`builtinWorkspace`）上，与设置里改没改默认工作文件夹无关。档位纯本机视图状态，不落日志。
+- **打包为项目**：Default 会话里产出成形时 agent 主动询问、经审批把点名的文件搬进 `文档区/Mr Otto/<项目名>`（`package_project` 工具，唯一故意越出围栏的能力）。旧对话留在任务栏不动（日志 append-only）；时间线上出一张带「在新项目开会话」CTA 的卡（ADR-0135）。
 
 ## Key invariants
 

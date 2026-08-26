@@ -151,6 +151,11 @@ export interface SessionCreatedEvent extends SessionEventBase {
   /** 本会话的工程文件夹（绝对路径）。文件工具被圈在这里面；
       同时投影成 system 消息告诉模型。可选 = 旧日志无此字段照样重放（硬规则） */
   workspace?: string;
+  /** "default" = workspace 是内置 Default 工作区（侧栏「任务」栏,#559 后续）。
+      建会话那一刻由主进程判定并**记进日志**——提示词要按它多注入一段
+      「打包为项目」引导,而投影必须可从日志推导（硬规则）,不能现场读设置。
+      可选 = 旧日志/项目会话缺席,投影逐字节不变 */
+  workspaceKind?: "default";
   forkedFrom?: {                 // 普通新会话 = 不填
     sessionId: string;
     seq: number;                 // 从源会话哪个位置分叉

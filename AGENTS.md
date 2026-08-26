@@ -205,3 +205,4 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
 - `src/shared/mcpCatalog.ts` — 常见 MCP server 的目录数据（人手维护、会过时；字段与占位符自洽由 `tests/shared/mcpCatalog.test.ts` 钉住，ADR-0118）
+- `src/main/projectPackager.ts` / `src/tools/packageProject.ts` — 「打包为项目」：把 Default 工作区的产出搬进 `文档区/Mr Otto/<项目名>`（唯一故意越出围栏的工具能力，两道闸与被否掉的路见 ADR-0135）；`src/main/workspaceSettingsStore.ts` 是默认工作文件夹/内置 Default 的落盘与解析（#559）
