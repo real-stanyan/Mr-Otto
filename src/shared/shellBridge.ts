@@ -325,6 +325,13 @@ export interface ShellBridge {
       点进去看全过程走的是 resumeSession，这个方法只用来"顺路看一眼事实"。
       未知 sessionId 回空数组，同 EventStore.load 的语义 */
   readSessionEvents(sessionId: string): Promise<SessionEvent[]>;
+  /** 这个会话此刻**真的还在跑**的后台任务（issue #452 / ADR-0109）。
+      面板本身是日志的投影（background_task_started / _completed 推得出），
+      日志唯一推不出的是：started 没配上 completed 的那些，进程到底还活着，
+      还是随上一次 app 退出一起死了——重放会把上次的孤儿一并放出来。
+      这个判据只有主进程手里那张 live map 有，所以单开一路问。
+      未知/未激活的 sessionId 回空数组（同 readSessionEvents 的语义） */
+  liveBackgroundTasks(sessionId: string): Promise<Array<{ id: string; cmd: string }>>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** 归档会话（ADR-0087）：落一条 session_archived(reason:"user")。
@@ -829,6 +836,7 @@ export const CHANNELS = {
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
   readSessionEvents: "otter:readSessionEvents",
+  liveBackgroundTasks: "otter:liveBackgroundTasks",
   deleteSession: "otter:deleteSession",
   archiveSession: "otter:archiveSession",
   unarchiveSession: "otter:unarchiveSession",

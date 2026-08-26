@@ -487,8 +487,10 @@ void app.whenReady().then(() => {
   const runningSessions = new Set<string>();
   // 后台任务完成、但 turn 正在跑时攒下的回注文案（issue #389）：mid-splice 会把
   // 投影中段改掉、prefix cache 全废（ADR-0073 的教训——微压缩同处境时宁可丢弃），
-  // 后台结果不能丢，所以攒着，turn 正常收口后合并成一条注回
-  const pendingBg = new Map<string, string[]>();
+  // 后台结果不能丢，所以攒着，turn 正常收口后合并成一条注回。
+  // 连 taskId 一起攒（issue #452 / ADR-0109）：注回那条 user_message 要写明自己
+  // 驮的是哪几个任务，面板才知道这几行什么时候该摘掉
+  const pendingBg = new Map<string, Array<{ taskId: string; text: string }>>();
   // fail-closed（issue #341 规则③）：渲染进程崩了 = 审批通道断了。挂起的审批
   // 立刻按拒绝收场（approval_decision 照常落盘），不悬停等一个回不来的人。
   // 只挂崩溃，不挂正常关窗——mac 惯例关窗不退 app，岛窗还能替人点按钮
@@ -1382,6 +1384,7 @@ void app.whenReady().then(() => {
     // （createChildAgent / subagentRunner 两条路）不接线，armed=false，
     // bash 对它们拒绝 run_in_background（没人管的结果不该被承诺"会注回"）
     self.backgroundTasks.onCompletion((c) => handleBackgroundDone(self.sessionId, c));
+    self.backgroundTasks.onStart((s) => handleBackgroundStarted(self.sessionId, s));
     return self;
   };
 
@@ -1410,6 +1413,14 @@ void app.whenReady().then(() => {
   });
 
   ipcMain.handle(CHANNELS.listSessions, () => store.sessions());
+
+  // 「谁还真的活着」（issue #452 / ADR-0109）：后台任务面板剩下的那一半事实。
+  // 面板本身从日志投影，但日志里 started-without-completed 的那些分不出
+  // 「还在跑」和「上次 app 崩了」——只有主进程这张 map 知道。
+  // 没有 agent（会话没激活/已 purge）= 空数组：那时确实一个都没在跑
+  ipcMain.handle(CHANNELS.liveBackgroundTasks, (_e, sessionId: string) =>
+    agents.get(sessionId)?.backgroundTasks.live() ?? []
+  );
 
   // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
   // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)
@@ -2111,8 +2122,12 @@ void app.whenReady().then(() => {
     attachments?: OutgoingAttachment[],
     skillArgs?: string,
     /** 非人类来源（issue #428）：只有主进程自己的回注路径会传它——IPC 入口
-        不透传，所以渲染层伪造不出"这条是后台任务发的" */
-    origin?: "background"
+        不透传（下面那个 handler 显式只转发前五个参数），所以渲染层伪造不出
+        "这条是后台任务发的"。
+        传了就是后台来源，taskIds 是这条回注驮的任务（issue #452 / ADR-0109）——
+        合成一个参数而不是并列两个，是为了拼不出「说自己是后台来源却没说驮了谁」
+        这种没有意义的组合 */
+    background?: { taskIds: string[] }
   ): Promise<void> {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
@@ -2222,7 +2237,7 @@ void app.whenReady().then(() => {
       // runTurn 的开场 append 同步执行（首个 await 之前）——调用返回瞬间
       // runningTurnId 已就位。第二拍 running 推送带上它：渲染层拿这个 seq
       // 做插话的乐观锁（issue #344）。岛不吃 turnId，不重复喂
-      const turnPromise = agent.engine.runTurn(text, refs, textFiles, origin);
+      const turnPromise = agent.engine.runTurn(text, refs, textFiles, background);
       const turnId = agent.engine.runningTurnId;
       if (turnId !== null) {
         send(CHANNELS.turnStatus, { sessionId, status: "running", turnId });
@@ -2278,7 +2293,12 @@ void app.whenReady().then(() => {
         pendingBg.delete(sessionId);
         queueMicrotask(() => {
           void handleSendMessage(
-            sessionId, queued.join("\n\n"), undefined, undefined, undefined, "background"
+            sessionId,
+            queued.map((q) => q.text).join("\n\n"),
+            undefined,
+            undefined,
+            undefined,
+            { taskIds: queued.map((q) => q.taskId) }
           ).catch((e) => console.error("后台任务回注失败", e));
         });
       }
@@ -2306,12 +2326,31 @@ void app.whenReady().then(() => {
     const text = formatCompletion(c);
     if (runningSessions.has(sessionId)) {
       const queued = pendingBg.get(sessionId) ?? [];
-      queued.push(text);
+      queued.push({ taskId: c.id, text });
       pendingBg.set(sessionId, queued);
       return;
     }
-    void handleSendMessage(sessionId, text, undefined, undefined, undefined, "background").catch(
-      (e) => console.error("后台任务回注失败", e)
+    void handleSendMessage(sessionId, text, undefined, undefined, undefined, {
+      taskIds: [c.id],
+    }).catch((e) => console.error("后台任务回注失败", e));
+  }
+
+  /** 后台任务启动（issue #452 / ADR-0109）：落审计事件，推给渲染层。
+      与 handleBackgroundDone 对称——面板要画「在跑」这一档，就得有起点事件；
+      没有它，投影只能从 completed 倒推，而倒推不出"现在正在跑"这件事。
+      不回注、不起 turn：模型在 bash 的返回值里当场就知道任务起了 */
+  function handleBackgroundStarted(sessionId: string, s: { id: string; cmd: string }): void {
+    if (!agents.has(sessionId)) return;
+    send(
+      CHANNELS.event,
+      store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "background_task_started",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        taskId: s.id,
+        cmd: s.cmd,
+      })
     );
   }
 

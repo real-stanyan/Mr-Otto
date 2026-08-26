@@ -5,6 +5,7 @@
 // syntax-highlighting」)一直没交付。这里换成 @assistant-ui/react-streamdown 的
 // StreamdownTextPrimitive,导出的 MarkdownText 名字/签名不变(见 task-9-brief)。
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
+import { defaultRehypePlugins } from "streamdown";
 import type { StreamdownTextComponents } from "@assistant-ui/react-streamdown";
 // 具名导出,不是默认导出(实测 @streamdown/code@1.1.1 / @streamdown/cjk@1.0.3 的 .d.ts)
 import { code } from "@streamdown/code";
@@ -19,6 +20,9 @@ import { MermaidDiagram } from "@/components/assistant-ui/mermaid-diagram.js";
 import { ShikiCodeBlock } from "@/components/assistant-ui/code-block.js";
 import { OTTO_BLOCK_COMPONENTS } from "@/components/assistant-ui/otto-blocks.js";
 import { plainTable } from "@/lib/hastTable.js";
+import { rehypeFileRefs } from "@/lib/rehypeFileRefs.js";
+import { parseFileRef } from "../../../../shared/fileRefs.js";
+import { FileRefChip } from "@/components/assistant-ui/file-ref.js";
 import { cn } from "@/lib/utils.js";
 
 // 模块级常量:每次渲染新建对象会让整棵子树白重挂。
@@ -26,6 +30,14 @@ import { cn } from "@/lib/utils.js";
 // math:$$…$$ 走 KaTeX(样式表在 app.css 里 @import,版本钉死见那条注释)。
 // 默认只认双美元的行间公式,不认单美元 —— 单美元在正文里更常见的身份是钱
 const PLUGINS = { code, cjk, math };
+
+// 正文里的「文件:行号」认成可点的 chip(见 lib/rehypeFileRefs)。
+// **必须**把 streamdown 的默认 rehype 摊在前面:传了这个 prop 就是整个替掉默认值,
+// 只写自己那一枚等于顺手关掉了 raw/sanitize/harden 三道消毒。
+// 也**必须**排在最后一节:sanitize 按白名单削属性,排在它前面的话 data-file-ref
+// 会被削掉,chip 当场哑火。
+// defaultRehypePlugins 是个 { raw, sanitize, harden } 的表(不是数组),摊开取值
+const REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypeFileRefs];
 
 // 逐字出场的参数（效果本身见 app.css 的 sd-ottoInk）。同样是模块级常量:
 // 每次渲染新建对象会让 streamdown 认成"插件换了"而重建整条管线。
@@ -84,6 +96,7 @@ const MarkdownTextImpl = () => {
       // + mermaid 渲染的 SVG）。CodeHeader 一起换掉——画框自己有标题栏，
       // 上面再顶一条"mermaid + 复制"是两层标题
       componentsByLanguage={BY_LANGUAGE}
+      rehypePlugins={REHYPE_PLUGINS}
       caret="block"
       defer
     />
@@ -168,15 +181,31 @@ const defaultComponents = {
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  // href 本身就是仓里的路径时(本仓的 AGENTS.md 要求模型这么写引用:
+  // [engine.ts:386](src/loop/engine.ts:386)),这条链接的去处不是浏览器而是
+  // 右边的文件面板 —— 交给 chip。外链照旧
+  a: ({ className, href, children, ...props }) => {
+    const ref = typeof href === "string" ? parseFileRef(href) : null;
+    if (ref !== null) {
+      return (
+        <FileRefChip path={ref.path} line={ref.line} className={className}>
+          {children}
+        </FileRefChip>
+      );
+    }
+    return (
+      <a
+        href={href}
+        className={cn(
+          "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
@@ -217,14 +246,24 @@ const defaultComponents = {
   // 那层 math-display 包裹,所以只能从这一层认)。认出来就套上 elements/math-block
   // 的纸面:公式在正文里是一个"块",给它自己的边界比裸着夹在段落之间好读。
   // 行内公式(span.katex 但没有 katex-display)照旧,不套卡
-  span: ({ className, node, ...props }) => {
+  span: ({ className, node, children, ...props }) => {
+    // rehypeFileRefs 标出来的那一枚(纯文本/行内代码里的 src/a.ts:12)
+    const ref = node?.properties?.["dataFileRef"];
+    if (typeof ref === "string") {
+      const raw = node?.properties?.["dataFileLine"];
+      return (
+        <FileRefChip path={ref} line={typeof raw === "string" ? Number(raw) : null} className={className}>
+          {children}
+        </FileRefChip>
+      );
+    }
     const classes = node?.properties?.["className"];
     const display =
       Array.isArray(classes) && classes.includes("katex-display");
-    if (!display) return <span className={className} {...props} />;
+    if (!display) return <span className={className} {...props}>{children}</span>;
     return (
       <MathBlock
-        steps={[{ expression: <span className={className} {...props} /> }]}
+        steps={[{ expression: <span className={className} {...props}>{children}</span> }]}
         visibleSteps={1}
         // KaTeX 自带整套排版,让位(理由见 math-block 的 expressionClassName)
         expressionClassName=""

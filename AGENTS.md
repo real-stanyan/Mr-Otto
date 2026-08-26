@@ -184,6 +184,8 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/docs/adrNumbers.test.ts` — `docs/adr/` 编号唯一 + 不跳号的可执行版（撞号在这里红，ADR-0074）
+- `src/shared/fileRefs.ts` / `src/renderer/src/lib/rehypeFileRefs.ts` / `src/renderer/src/lib/codeLines.ts` — 正文里的「文件:行号」认成可点 chip，点了跳到 Files 面板的那一行（ADR-0110；rehype 插件的装配顺序有两条不会报错的坑，见该 ADR 第二节）
+- `src/shared/askUser.ts` / `src/renderer/src/lib/askUserCard.ts` — 问卷答卷的编解码（`formatAnswers` 的逆函数在这儿）+ 时间线上那张「已作答」卡的纯逻辑（ADR-0111）
 - `src/main/filesService.ts` / `src/shared/files.ts` — Files 面板的主进程数据源与纯逻辑层（只读；三条安全边界钉在 `tests/main/filesService.test.ts`，ADR-0092）
 - `tests/e2e/` — Playwright-electron 端到端（`npm run e2e`，不在 gate 里；GUI 改动的 PR 贴它的结果，ADR-0058）。既是冒烟，也是四张真机验收清单的落地处：`harness.ts` 换 `HOME` 做隔离、`fakeModel.ts` 是本机假模型，见 ADR-0076
 - `src/main/islandBridge.ts` / `src/main/islandProjection.ts` — macOS 灵动岛：主进程 stdio 桥 + 事件投影器，接一个原生 Swift helper 进程（ADR-0059 推翻版）

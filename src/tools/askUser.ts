@@ -5,7 +5,10 @@
 // 依赖注入的 Asker 决定"问人"怎么实现——GUI 是一次 IPC 往返，测试是脚本假人。
 
 import type { Tool } from "./tool.js";
-import type { AskUserAnswer, AskUserQuestion, Asker } from "../shared/askUser.js";
+import type { AskUserQuestion, Asker } from "../shared/askUser.js";
+// 答卷的编解码住在 shared/：渲染进程要读同一份答卷，而它不许 import src/tools/
+// （工具层是主进程的东西，同 shared/sessionSearch.ts 顶上那条理由）
+import { formatAnswers } from "../shared/askUser.js";
 
 export const ASK_USER_TOOL_NAME = "ask_user";
 
@@ -54,18 +57,6 @@ export function parseAskUserArgs(args: unknown): AskUserQuestion[] | null {
     });
   }
   return questions;
-}
-
-/** 答案 → 喂回模型的文本。逐题原样回述，不做归纳——
-    模型下一步要照着这个做决定，任何"帮它总结"都是在替用户改口供 */
-export function formatAnswers(answers: AskUserAnswer[]): string {
-  if (answers.length === 0) return "用户没有作答任何一题。";
-  return answers
-    .map((a) => {
-      const picked = [...a.selected, ...(a.custom ? [`（自填）${a.custom}`] : [])];
-      return `【${a.header}】${picked.length > 0 ? picked.join("；") : "用户跳过了这题"}`;
-    })
-    .join("\n");
 }
 
 /** 造一把 ask_user。asker 决定"问人"落到哪——注入而非 import，

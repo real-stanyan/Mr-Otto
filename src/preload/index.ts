@@ -19,6 +19,7 @@ const bridge: ShellBridge = {
   listSessions: () => ipcRenderer.invoke(CHANNELS.listSessions),
   resumeSession: (sessionId) => ipcRenderer.invoke(CHANNELS.resumeSession, sessionId),
   readSessionEvents: (sessionId) => ipcRenderer.invoke(CHANNELS.readSessionEvents, sessionId),
+  liveBackgroundTasks: (sessionId) => ipcRenderer.invoke(CHANNELS.liveBackgroundTasks, sessionId),
   deleteSession: (sessionId) => ipcRenderer.invoke(CHANNELS.deleteSession, sessionId),
   archiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.archiveSession, sessionId),
   unarchiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.unarchiveSession, sessionId),

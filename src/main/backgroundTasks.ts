@@ -25,6 +25,7 @@ export class BackgroundTasks implements BackgroundStarter {
   private n = 0;
   private liveMap = new Map<string, string>();
   private cb: ((c: BackgroundCompletion) => void) | null = null;
+  private startCb: ((s: { id: string; cmd: string }) => void) | null = null;
 
   get armed(): boolean {
     return this.cb !== null;
@@ -35,7 +36,19 @@ export class BackgroundTasks implements BackgroundStarter {
     this.cb = cb;
   }
 
-  /** 存活任务（id + 命令）——UI/调试用 */
+  /** 起点订阅（issue #452 / ADR-0109）：组装根据此落 background_task_started。
+      与 onCompletion 分开而不是塞进同一个回调：起点不是"完成的一种"，
+      两者的落盘时机和事件形状都不同。
+      **armed 只看 onCompletion**——它守的是"结果有没有人接"，起点没人听
+      不影响这个承诺，所以没接 startCb 的装配（subagent）照样该被 bash 拒绝，
+      判据不能被这个新回调稀释 */
+  onStart(cb: (s: { id: string; cmd: string }) => void): void {
+    this.startCb = cb;
+  }
+
+  /** 存活任务（id + 命令）。这是"谁还真的活着"的唯一判据：事件日志会把上一次
+      app 运行留下的 started-without-completed 一起重放出来，但那些进程早没了，
+      渲染层分不出来（ADR-0109 的投影表） */
   live(): Array<{ id: string; cmd: string }> {
     return [...this.liveMap].map(([id, cmd]) => ({ id, cmd }));
   }
@@ -43,6 +56,7 @@ export class BackgroundTasks implements BackgroundStarter {
   start(cmd: string, run: () => Promise<ExecResult>): string {
     const id = `bg-${++this.n}`;
     this.liveMap.set(id, cmd);
+    this.startCb?.({ id, cmd });
     // execDetached 不该 reject（起不来也按 ExecResult 返回，LocalWorld 契约），
     // 这里仍兜一层：万一实现抛了，完成事实不能丢
     run()
