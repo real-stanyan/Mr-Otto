@@ -44,6 +44,27 @@ interface Dir {
 
 const emptyDir = (): Dir => ({ dirs: new Map(), files: new Map() });
 
+/** 一组工具调用 → 树的输入。三件事各有出处，混在组件里就没人验得了：
+    ① 只数写入（读取不是"改变"）；
+    ② 路径取**实际执行**用的那份（人在审批时可能改过参数，ADR-0041）——
+       这里回答的是"到底什么东西碰了磁盘"；
+    ③ 行数取 `tool_result.diffStat`（ADR-0141），日志里没有就不报数字。 */
+export function changedFilesOf<C extends { id: string; name: string }>(
+  calls: readonly C[],
+  pathOf: (call: C) => string | null,
+  statOf: (id: string) => { additions: number; deletions: number } | undefined
+): ChangedFile[] {
+  const entries: ChangedFile[] = [];
+  for (const call of calls) {
+    if (call.name !== "write_file") continue;
+    const path = pathOf(call);
+    if (path === null) continue;
+    const stat = statOf(call.id);
+    entries.push({ path, ...(stat ?? {}) });
+  }
+  return mergeChangedFiles(entries);
+}
+
 /** 同一个文件在一组里被写了两次 → 一行,行数相加。
     「有账」和「没账」混在一起时,只把有账的加起来:一次旧日志的写盘不该
     把这个文件的行数抹成 0,也不该让它冒充"这次只改了后一半"。
