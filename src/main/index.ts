@@ -1176,7 +1176,7 @@ void app.whenReady().then(() => {
     }
   };
 
-  /** 三档记忆的当前内容（ADR-0060，项目档见记忆分级方案）。同步读：index.ts
+  /** 三档记忆的当前内容（ADR-0060，项目档见 ADR-0109）。同步读：index.ts
       是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；createAgent
       是同步的，这份快照必须在调它之前就手上有值。project/projectRoot 缺席 =
       workspace 不在任何 git 仓库里 */
