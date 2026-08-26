@@ -126,6 +126,7 @@ import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
+import { createRejectionLedger, visibleRejection } from "./remoteRejections.js";
 import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
@@ -138,8 +139,8 @@ import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
   approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
-  friendRequestNotification, turnCompleteNotification, turnFailedNotification,
-  newIncomingRequests,
+  friendRequestNotification, remotePairingNotification, turnCompleteNotification,
+  turnFailedNotification, newIncomingRequests,
 } from "./friendNotifier.js";
 import type { FriendsSnapshot } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
@@ -548,6 +549,10 @@ void app.whenReady().then(() => {
   // **暂时挂在 OTTO_REMOTE=1 后面**:配对(TOFU 首次确认那一步)还没有 UI,
   // 没 pin 过对端的话每次握手都会被拒 —— 默认开着只是白连中继。
   // 配对 UI 落地时把这个开关摘掉。
+  /** 被挡下的握手台账(issue #485)。在 remote 之外声明:设置页的 remoteStatus
+      要读它,而它的写入方在桥的回调里 */
+  const rejections = createRejectionLedger({ now: () => Date.now() });
+
   const remote = (() => {
     if (process.env.OTTO_REMOTE !== "1") return { off: "disabled" as const };
     const crypto = nodeRemoteCrypto();
@@ -583,6 +588,11 @@ void app.whenReady().then(() => {
       // 重新派生密钥之后订阅还在(手机重连不等于换了观众):fleet 桥自己补推了,
       // 时间线得这儿补 —— 手机那条 watch 可能正好封在旧密钥里,已经丢了
       onRekey: () => pushTimelineNow(),
+      // 被挡下的握手要有人看得见(issue #485):台账负责去重(重连=重新握手,
+      // 一分钟能来好几次),这儿只管把过了闸的那次弹成通知
+      onRejected: (r) => {
+        if (rejections.record(r)) notify(remotePairingNotification(r.reason));
+      },
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -1807,10 +1817,13 @@ void app.whenReady().then(() => {
     if (!("devices" in remote)) return { on: false, reason: remote.off };
     try {
       await remote.devices.registerSelf(hostname());
-      return { on: true, peers: await remote.devices.listPeers() };
+      const peers = await remote.devices.listPeers();
+      return { on: true, peers, rejected: visibleRejection(rejections.latest(), peers) };
     } catch (err) {
       console.warn("远程设备目录读不到", err);
-      return { on: true, peers: [] }; // 离线/库出错:空列表,而不是把设置页炸掉
+      // 离线/库出错:空列表,而不是把设置页炸掉。被挡下的握手照报 ——
+      // 它不依赖目录,而且"目录读不到"时它恰恰是唯一的线索
+      return { on: true, peers: [], rejected: rejections.latest() };
     }
   });
 

@@ -1606,6 +1606,11 @@ export const useChat = create<ChatState>((set, get) => ({
         if (get().sessionId !== target.sessionId) void get().resume(target.sessionId);
         return;
       }
+      // 远程握手被挡下(issue #485):该做的事全在设置页那一栏上
+      if (target.kind === "settings") {
+        void get().openSettings(target.section);
+        return;
+      }
       set({ friendsPanelOpen: true });
     });
     // dock 角标 = 所有"有人在等你"的总和。未读只有渲染层算得出(它知道哪个面板开着),
