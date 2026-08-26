@@ -48,6 +48,7 @@ v2：Docker per bot（dockerode，自托管 VPS）
 - Non-trivial changes go through a branch + PR; typo-level tweaks can go straight into main
 - **Project-owned** architectural decisions go in `docs/adr/` (one decision per file, starting at 0001); protocol ADRs live in `docs/gearbox-adr/`, managed by the gearbox tooling — don't hand-edit them. **Project ADR numbers are claimed at merge, not at branch time** (project ADR-0074, mirroring what "Parallel shifts" already says for protocol ADRs): before merging, re-fetch; if another PR landed on your number, renumber your ADR to `max + 1` inside your PR, add an `原为 ADR-00XX` line at the top of the file, and update every in-repo reference to it. Commit messages can't be rewritten, so the alias line is what keeps old references resolvable. The gate asserts no two files share a four-digit prefix (`tests/docs/adrNumbers.test.ts`)
 - Look up domain-term definitions in `CONTEXT.md` — **two sections: protocol terms and product/technical terms** (ADR-0070); add new terms to the matching section as they come up (product concepts belong there too; no back-filling of historical debt)
+- **读到「做不了 / 不在本仓 / 只能维护者做」这类判断时，先花五分钟验前提本身再决定跳过**（`ssh` 能不能连、`ls` 有没有那个目录、`grep` 有没有那个符号）——这类判断读起来像调查结论，实际往往只是上一班没试，写进 handoff 就成了下一班的既定前提，本仓已连错四次（ADR-0134）。验完确实做不了，把**验的方法和结果**写进 issue，让下一班不用再验
 
 ### Roles of issues & PRs
 
