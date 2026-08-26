@@ -8,7 +8,8 @@
 
 import { Children, Fragment, useEffect, useRef, useState } from "react";
 import {
-  AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View,
+  AccessibilityInfo, ActivityIndicator, Animated, Easing, Image, Keyboard, LayoutAnimation,
+  Platform, Pressable, ScrollView, StyleSheet, Text, View,
   type StyleProp, type TextStyle, type ViewStyle,
 } from "react-native";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, type Palette } from "./theme.js";
@@ -442,5 +443,150 @@ export function Row(props: {
       />
       {body}
     </Pressable>
+  );
+}
+
+/* ── 屏与容器 ──────────────────────────────────────────
+   Page/Spinner 原本住在 App.tsx。好友那一屏搬出去自己一个文件之后,
+   它们成了两个文件共用的东西 —— 共用的组件归组件层,这是这个文件存在的理由。 */
+
+export function Spinner() {
+  const { c } = usePalette();
+  return <ActivityIndicator color={c.mutedForeground} />;
+}
+
+/** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的。
+    grow = 内容不足一屏时把容器撑满,好让里面自己去配平上下 */
+export function Page({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
+  return (
+    <ScrollView
+      contentContainerStyle={[
+        { padding: space.lg, paddingBottom: space.xl, gap: space.md },
+        grow && { flexGrow: 1 },
+      ]}
+      keyboardShouldPersistTaps="handled"
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+/** 头像。没有图就退成首字母 —— 一个灰色空圆和"这个人没头像"长得一样,
+    首字母至少还能在一列人里认出是谁 */
+export function Avatar({ url, name, size = 36 }: { url?: string; name: string; size?: number }) {
+  const { c } = usePalette();
+  if (url) {
+    return <Image source={{ uri: url }} style={{ width: size, height: size, borderRadius: radius.pill }} />;
+  }
+  return (
+    <View style={{
+      width: size, height: size, borderRadius: radius.pill, backgroundColor: c.muted,
+      alignItems: "center", justifyContent: "center",
+    }}>
+      <Text style={{ ...type.footnote, color: c.mutedForeground }}>
+        {(name || "?").slice(0, 1).toUpperCase()}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * 键盘占了屏幕底下多少,给一个直接能当 paddingBottom 用的数。
+ *
+ * **为什么不是 KeyboardAvoidingView**:它的 behavior="padding" 拿
+ * `_frame.y + _frame.height` 和键盘的 screenY 求差,而 `_frame` 来自 onLayout ——
+ * 那是**相对父级**的坐标,不是屏幕坐标。这一屏挂在 SafeAreaView 里(顶上还有
+ * 一条安全区),KAV 于是以为自己的底边比实际高了整整一个顶部安全区,让位就少
+ * 那么多,输入框照样被盖掉一截。包错层是一点不让,包对层是让少了——两次都不对,
+ * 原因不同,而第二次比第一次更难看出来。
+ *
+ * 自己量没这个歧义:measureInWindow 给的是屏幕坐标,和 endCoordinates.screenY
+ * 同一套系。只在 layout 时量一次存下来,键盘事件里就不必等异步回调——让位得和
+ * 键盘同一帧开始动,晚一帧就看得出来。
+ *
+ * Android 不接:系统的 adjustResize 已经把窗口缩过了,再让一次是双份。
+ */
+export function useKeyboardInset(onShow: () => void): {
+  root: { ref: React.RefObject<View | null>; onLayout: () => void };
+  keyboard: number;
+} {
+  const ref = useRef<View | null>(null);
+  /** 这一屏底边在屏幕坐标里的位置 */
+  const bottom = useRef<number | null>(null);
+  const [inset, setInset] = useState(0);
+  const onLayout = (): void => {
+    ref.current?.measureInWindow((_x, y, _w, h) => { bottom.current = y + h; });
+  };
+
+  // 回调每次 render 都是新的,但监听只装一次:存进 ref,别让它进依赖
+  const shown = useRef(onShow);
+  shown.current = onShow;
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    // willChangeFrame 一个事件管收放两头:收起时 screenY 就是屏幕高度,差值自然归零
+    const sub = Keyboard.addListener("keyboardWillChangeFrame", (e) => {
+      const b = bottom.current;
+      if (b === null) return;
+      const next = Math.max(0, b - e.endCoordinates.screenY);
+      LayoutAnimation.configureNext({
+        duration: e.duration || 250,
+        update: { type: LayoutAnimation.Types.keyboard },
+      });
+      setInset(next);
+      if (next > 0) shown.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  return { root: { ref, onLayout }, keyboard: inset };
+}
+
+/**
+ * 详情屏的顶栏。返回在左上(和 iOS 的方向一致),标题压在**整条栏**的正中。
+ *
+ * 标题单独一层绝对定位,是因为 iOS 导航栏的标题居中是相对整条栏的,不是相对
+ * "返回按钮剩下的那块地方" —— 后者会让标题随返回按钮的字宽左右漂,同一个界面
+ * 在中英文标题下站的位置都不一样。左右各留出返回按钮那么宽的余量:居中是真的
+ * 居中,长标题也不会钻到返回按钮底下去。
+ */
+export function DetailBar({ back, title, onBack, right }: {
+  /** 返回按钮上的字,不带 ‹ */
+  back: string;
+  title: string;
+  onBack: () => void;
+  right?: React.ReactNode;
+}) {
+  const { c } = usePalette();
+  /** 返回按钮量出来的宽度。标题左右各留这么多,居中才是相对整条栏的 */
+  const [lead, setLead] = useState(0);
+  const inset = space.md + lead + space.xs;
+  return (
+    <View style={{
+      paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm,
+      borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+      flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    }}>
+      <Pressable
+        accessibilityRole="button" onPress={onBack} hitSlop={12}
+        onLayout={(e) => setLead(e.nativeEvent.layout.width)}
+        style={({ pressed }) => [
+          { paddingVertical: 6, paddingRight: space.xs }, pressed && { opacity: 0.5 },
+        ]}
+      >
+        <Text style={{ ...type.body, color: c.brand }}>‹ {back}</Text>
+      </Pressable>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute", left: inset, right: inset,
+          top: space.xs, bottom: space.sm,
+          alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <Text style={{ ...type.headline, color: c.foreground }} numberOfLines={1}>{title}</Text>
+      </View>
+      {right ?? <View style={{ width: lead }} />}
+    </View>
   );
 }

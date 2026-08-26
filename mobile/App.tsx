@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActionSheetIOS, ActivityIndicator, Image, Keyboard, LayoutAnimation, Platform, Pressable,
+  ActionSheetIOS, ActivityIndicator, Image, Platform, Pressable,
   SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
   type ViewStyle,
 } from "react-native";
@@ -22,7 +22,7 @@ import { groupTimeline, splitTool } from "../src/shared/remote/timeline.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
-import { listFriends, type FriendRow } from "./src/friendsApi.js";
+import { Friends } from "./src/friends.js";
 import {
   MAX_MB, NeedsRebuild, pickFiles, pickPhotos, prepareForUpload, takePhoto, tooBig,
   type Picked,
@@ -31,8 +31,8 @@ import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, Dot, Group, Headline, Hint, Meta, Note, Row, StatusLine, Strong,
-  TabIcon, Tile, Title, Warn,
+  Button, Card, CodeTiles, DetailBar, Dot, Group, Headline, Hint, Meta, Note, Page, Row, Spinner,
+  StatusLine, Strong, TabIcon, Tile, Title, useKeyboardInset, Warn,
 } from "./src/ui.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "./app.json";
@@ -85,27 +85,6 @@ function Screen({ children, center }: { children: React.ReactNode; center?: bool
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
       {children}
     </SafeAreaView>
-  );
-}
-
-function Spinner() {
-  const { c } = usePalette();
-  return <ActivityIndicator color={c.mutedForeground} />;
-}
-
-/** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的。
-    grow = 内容不足一屏时把容器撑满,好让里面自己去配平上下 */
-function Page({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
-  return (
-    <ScrollView
-      contentContainerStyle={[
-        { padding: space.lg, paddingBottom: space.xl, gap: space.md },
-        grow && { flexGrow: 1 },
-      ]}
-      keyboardShouldPersistTaps="handled"
-    >
-      {children}
-    </ScrollView>
   );
 }
 
@@ -311,6 +290,8 @@ function Shell({ store, onRepair, onSignedOut }: {
 }) {
   const [tab, setTab] = useState<Tab>("sessions");
   const [inDetail, setInDetail] = useState(false);
+  /** 好友页签上那个数:待我处理的请求 + 没看过的私信。由好友那一屏算(它握着订阅) */
+  const [friendBadge, setFriendBadge] = useState(0);
   /** 连接状态由会话页那只桥算出来(它握着连接),显示在品牌栏上 */
   const [status, setStatus] = useState<ConnStatus | null>(null);
 
@@ -330,11 +311,13 @@ function Shell({ store, onRepair, onSignedOut }: {
           onDetailChange={setInDetail} onStatus={setStatus}
         />
       </View>
-      <View style={pane("friends")}><Friends /></View>
+      <View style={pane("friends")}>
+        <Friends onDetailChange={setInDetail} onBadge={setFriendBadge} />
+      </View>
       <View style={pane("settings")}>
         <Settings store={store} onRepair={onRepair} onSignedOut={onSignedOut} />
       </View>
-      {inDetail ? null : <TabBar tab={tab} onTab={setTab} />}
+      {inDetail ? null : <TabBar tab={tab} onTab={setTab} badges={{ friends: friendBadge }} />}
     </View>
   );
 }
@@ -370,7 +353,12 @@ function BrandBar({ status }: { status: ConnStatus | null }) {
   );
 }
 
-function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+function TabBar({ tab, onTab, badges }: {
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  /** 每个页签上那个数。0 或缺省 = 不画 —— 一个"0"的角标和一个红点一样吵 */
+  badges?: Partial<Record<Tab, number>>;
+}) {
   const { c } = usePalette();
   return (
     <View style={{
@@ -391,7 +379,24 @@ function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
             pressed && { opacity: 0.5 },
           ]}
         >
-          <TabIcon name={x.id} color={tab === x.id ? c.foreground : c.mutedForeground} />
+          <View>
+            <TabIcon name={x.id} color={tab === x.id ? c.foreground : c.mutedForeground} />
+            {/* 角标压在图标右上角,溢出图标一点点 —— iOS 的位置就是这样,
+                贴在图标里会跟线条糊在一起 */}
+            {(badges?.[x.id] ?? 0) > 0 ? (
+              <View style={{
+                position: "absolute", top: -4, right: -8,
+                minWidth: 16, height: 16, borderRadius: radius.pill, paddingHorizontal: 4,
+                backgroundColor: c.destructive, alignItems: "center", justifyContent: "center",
+              }}>
+                <Text style={{
+                  fontSize: 10, lineHeight: 12, fontWeight: "700", color: c.destructiveForeground,
+                }}>
+                  {badges![x.id]! > 99 ? "99+" : badges![x.id]}
+                </Text>
+              </View>
+            ) : null}
+          </View>
           <Text style={{
             // 11pt:iOS 底栏标签的量。用 footnote(13)的话图标+文字挤不进 49pt
             fontSize: 11, lineHeight: 13, letterSpacing: 0.05,
@@ -404,65 +409,6 @@ function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
         </Pressable>
       ))}
     </View>
-  );
-}
-
-/* ── 好友 ───────────────────────────────────────────────
-   **只读**。加好友、收发私信、接受请求这些写操作留在电脑上 —— 手机端是第三个
-   投影窗口(ADR-0094),不是第二个完整客户端。 */
-function Friends() {
-  const [rows, setRows] = useState<FriendRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setErr(null);
-    listFriends().then(setRows).catch((e: unknown) =>
-      setErr(e instanceof Error ? e.message : String(e)));
-  }, []);
-  useEffect(load, [load]);
-
-  return (
-    <Page>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>好友</Title>
-        <Hint>加好友、私信、接受请求都在电脑上做,这里只看。</Hint>
-      </View>
-      {err ? <Note tone="error">{err}</Note> : null}
-      {rows === null ? (
-        <View style={{ paddingVertical: space.xl, alignItems: "center" }}><Spinner /></View>
-      ) : rows.length === 0 ? (
-        <Card>
-          <Headline>还没有好友</Headline>
-          <Hint>在电脑上的「好友」里加一个,这里会出现。</Hint>
-        </Card>
-      ) : (
-        rows.map((f) => <FriendRowView key={f.profile.id} row={f} />)
-      )}
-      <Button label="刷新" variant="plain" onPress={load} />
-    </Page>
-  );
-}
-
-function FriendRowView({ row: f }: { row: FriendRow }) {
-  const { c } = usePalette();
-  const waiting = f.status === "pending";
-  const what = !waiting ? "好友"
-    : f.direction === "incoming" ? "等你在电脑上通过" : "等对方通过";
-  return (
-    <Card style={{ gap: space.sm }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        {f.profile.avatarUrl
-          ? <Image source={{ uri: f.profile.avatarUrl }} style={{ width: 36, height: 36, borderRadius: radius.pill }} />
-          : <Tile><Text style={{ ...t.footnote, color: c.mutedForeground }}>
-              {(f.profile.name || f.profile.email || "?").slice(0, 1).toUpperCase()}
-            </Text></Tile>}
-        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <Headline lines={1}>{f.profile.name || f.profile.email}</Headline>
-          <Meta>{f.profile.name ? `${f.profile.email} · ${what}` : what}</Meta>
-        </View>
-        {waiting && f.direction === "incoming" ? <Dot tone="warn" /> : null}
-      </View>
-    </Card>
   );
 }
 
@@ -779,58 +725,6 @@ function Fleet({ store, onRepair, onDetailChange, onStatus }: {
   );
 }
 
-/**
- * 键盘占了屏幕底下多少,给一个直接能当 paddingBottom 用的数。
- *
- * **为什么不是 KeyboardAvoidingView**:它的 behavior="padding" 拿
- * `_frame.y + _frame.height` 和键盘的 screenY 求差,而 `_frame` 来自 onLayout ——
- * 那是**相对父级**的坐标,不是屏幕坐标。这一屏挂在 SafeAreaView 里(顶上还有
- * 一条安全区),KAV 于是以为自己的底边比实际高了整整一个顶部安全区,让位就少
- * 那么多,输入框照样被盖掉一截。包错层是一点不让,包对层是让少了——两次都不对,
- * 原因不同,而第二次比第一次更难看出来。
- *
- * 自己量没这个歧义:measureInWindow 给的是屏幕坐标,和 endCoordinates.screenY
- * 同一套系。只在 layout 时量一次存下来,键盘事件里就不必等异步回调——让位得和
- * 键盘同一帧开始动,晚一帧就看得出来。
- *
- * Android 不接:系统的 adjustResize 已经把窗口缩过了,再让一次是双份。
- */
-function useKeyboardInset(onShow: () => void): {
-  root: { ref: React.RefObject<View | null>; onLayout: () => void };
-  keyboard: number;
-} {
-  const ref = useRef<View | null>(null);
-  /** 这一屏底边在屏幕坐标里的位置 */
-  const bottom = useRef<number | null>(null);
-  const [inset, setInset] = useState(0);
-  const onLayout = (): void => {
-    ref.current?.measureInWindow((_x, y, _w, h) => { bottom.current = y + h; });
-  };
-
-  // 回调每次 render 都是新的,但监听只装一次:存进 ref,别让它进依赖
-  const shown = useRef(onShow);
-  shown.current = onShow;
-
-  useEffect(() => {
-    if (Platform.OS !== "ios") return;
-    // willChangeFrame 一个事件管收放两头:收起时 screenY 就是屏幕高度,差值自然归零
-    const sub = Keyboard.addListener("keyboardWillChangeFrame", (e) => {
-      const b = bottom.current;
-      if (b === null) return;
-      const next = Math.max(0, b - e.endCoordinates.screenY);
-      LayoutAnimation.configureNext({
-        duration: e.duration || 250,
-        update: { type: LayoutAnimation.Types.keyboard },
-      });
-      setInset(next);
-      if (next > 0) shown.current();
-    });
-    return () => sub.remove();
-  }, []);
-
-  return { root: { ref, onLayout }, keyboard: inset };
-}
-
 /** 一秒一跳的钟。只在有会话真的在跑时才装 —— 空闲时不必让 JS 线程每秒醒一次 */
 function useTicker(active: boolean): number {
   const [, bump] = useState(0);
@@ -994,10 +888,6 @@ function SessionView({
     if (atBottom.current) list.current?.scrollToEnd({ animated: true });
   });
 
-  /** 返回按钮量出来的宽度。标题左右各留这么多,居中才是相对整条栏的 */
-  const [lead, setLead] = useState(0);
-  const titleInset = space.md + lead + space.xs;
-
   return (
     // paddingBottom 让位给键盘。**这里不能用 KeyboardAvoidingView**——见 useKeyboardInset。
     // 之所以把内边距加在 flex:1 的外层而不是加在输入框上:外层的高度由父级定,
@@ -1007,40 +897,10 @@ function SessionView({
       onLayout={root.onLayout}
       style={{ flex: 1, paddingBottom: keyboard }}
     >
-      {/* 顶栏。返回在左上,和 iOS 的方向一致;标题压在**整条栏**的正中。
-          标题单独一层绝对定位,是因为 iOS 导航栏的标题居中是相对整条栏的,
-          不是相对"返回按钮剩下的那块地方" —— 后者会让标题随返回按钮的字宽
-          左右漂,同一个界面在中英文标题下站的位置都不一样。
-          左右各留出返回按钮那么宽的余量:居中是真的居中,长标题也不会钻到
-          返回按钮底下去。 */}
-      <View style={{
-        paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm,
-        borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
-        flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-      }}>
-        <Pressable
-          accessibilityRole="button" onPress={onBack} hitSlop={12}
-          onLayout={(e) => setLead(e.nativeEvent.layout.width)}
-          style={({ pressed }) => [{ paddingVertical: 6, paddingRight: space.xs }, pressed && { opacity: 0.5 }]}
-        >
-          <Text style={{ ...t.body, color: c.brand }}>‹ 会话</Text>
-        </Pressable>
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute", left: titleInset, right: titleInset,
-            // 上下按内边距对齐内容框,不是对齐整块 View —— 这条栏上下内边距不一样,
-            // 贴着 0 会让标题比返回按钮低两个点
-            top: space.xs, bottom: space.sm,
-            alignItems: "center", justifyContent: "center",
-          }}
-        >
-          <Text style={{ ...t.headline, color: c.foreground }} numberOfLines={1}>
-            {a.title ?? a.sessionId}
-          </Text>
-        </View>
-        <Dot tone={tone} />
-      </View>
+      <DetailBar
+        back="会话" title={a.title ?? a.sessionId} onBack={onBack}
+        right={<Dot tone={tone} />}
+      />
 
       {online ? null : (
         <View style={{
