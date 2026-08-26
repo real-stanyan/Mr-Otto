@@ -668,20 +668,31 @@ describe("MCP 自助配置的三把刀", () => {
     configOf: () => undefined,
   });
 
-  it("world 有 mcp 能力时三把都挂上，且都是 deferred（tool_search 搜到才可见）", async () => {
+  // 终审 A Critical 的可执行版：整条自助配置链路的第一步靠这把 direct 的
+  // 入口存在。它一旦被改回 deferred，模型的初始工具表里就一把 MCP 配置刀都
+  // 没有，而 tool_search 是纯子串打分（"supabase" 命中不了 "mcp_catalog"）——
+  // 代码全对，功能仍然为零，且其余所有测试照样绿。所以这条单独钉住
+  it("mcp_catalog 在初始工具表里（direct）——这条链路的唯一入口", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    expect(agent.toolDefs.map((d) => d.name)).toContain("mcp_catalog");
+    store.close();
+  });
+
+  it("world 有 mcp 能力时三把都挂上：catalog 直接可见，另两把 tool_search 搜到才可见", async () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
 
-    // 挂载但未曝光：初始声明表看不见任何一把
+    // 入口直接可见，改配置 / 拉授权那两把挂载但未曝光
     const before = agent.toolDefs.map((d) => d.name);
-    expect(before).not.toContain("mcp_catalog");
+    expect(before).toContain("mcp_catalog");
     expect(before).not.toContain("mcp_configure");
     expect(before).not.toContain("mcp_authorize");
 
     // 假 adapter 模拟模型调 tool_search 搜"mcp_"——deferred 检索口按子串匹配
-    // name+description（toolSearch.ts），这个装配里除了三把刀没有别的 deferred
+    // name+description（toolSearch.ts），这个装配里除了那两把没有别的 deferred
     // 工具（cap() 的 servers() 是空的，createMcpTools 不会生成任何 mcp__* 工具），
-    // 一次搜索同时命中三把
+    // 一次搜索同时命中两把
     agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
     await agent.engine.runTurn("帮我接上 supabase");
 
@@ -709,7 +720,7 @@ describe("MCP 自助配置的三把刀", () => {
     store.close();
   });
 
-  it("子 agent 的白名单没点名时拿不到 mcp_configure（ADR-0054）——搜也搜不到", async () => {
+  it("子 agent 的白名单没点名时三把刀一把都拿不到（ADR-0054）——搜也搜不到", async () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({
       store, workspace: "/proj/x", push, attachments, mcp: cap(), allowTools: ["read_file"],
@@ -717,11 +728,18 @@ describe("MCP 自助配置的三把刀", () => {
 
     // allowTools 过滤发生在 buildTools() 最末尾，晚于"list.some(deferred) 才挂
     // tool_search"那次判定——mcp_configure 进过 list（deferred 判定为真），
-    // 但白名单只留 read_file，tool_search 和 mcp_configure 一起被滤掉
+    // 但白名单只留 read_file，tool_search 和 mcp_configure 一起被滤掉。
+    // mcp_catalog 现在是 direct（终审 A Critical），白名单这道闸对它同样有效：
+    // 没点名就不该出现——spec §7 说的是"这三把刀"，所以三条都断（B-Minor 3-3）
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_catalog");
+
     agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_configure"));
     await agent.engine.runTurn("帮我接上 supabase");
 
-    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
+    const names = agent.toolDefs.map((d) => d.name);
+    expect(names).not.toContain("mcp_catalog");
+    expect(names).not.toContain("mcp_configure");
+    expect(names).not.toContain("mcp_authorize");
     store.close();
   });
 });
