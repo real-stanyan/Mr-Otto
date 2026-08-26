@@ -28,7 +28,8 @@ import {
 } from "react";
 
 /** code/cjk/math 三件套（为什么缺一不可：markdown-text.tsx 的 PLUGINS 注） */
-export const MD_PLUGINS = { code, cjk, math };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同 MD_REHYPE_PLUGINS 的 cast 理由
+export const MD_PLUGINS = { code, cjk, math } as any;
 
 /** ```mermaid 走画框不走普通代码块 + otto 结构化块（出处同上 BY_LANGUAGE 注） */
 export const MD_BY_LANGUAGE = {

@@ -8,6 +8,8 @@ import {
   clampPos,
   clampSize,
   initialPos,
+  applyResize,
+  RESIZE_CURSORS,
 } from "../../src/renderer/src/lib/sideChatWindow.js";
 import { AUTO_COLLAPSE_WIDTH } from "../../src/renderer/src/lib/sidebarNarrow.js";
 
@@ -83,3 +85,82 @@ describe("clampPos 可缩放后（size 参数化）", () => {
     expect(clampPos({ x: 2000, y: 2000 }, 1280, 800, { w: 800, h: 700 })).toEqual({ x: 472, y: 92 });
   });
 });
+
+describe("applyResize — 8 向缩放（issue #538）", () => {
+  const base = { pos: { x: 100, y: 100 }, size: { w: 400, h: 400 } };
+  const VW = 1400, VH = 900;
+
+  it("se（右下角）：只长尺寸，位置不动", () => {
+    const r = applyResize(base.pos, base.size, "se", 50, 30, VW, VH);
+    expect(r.size).toEqual({ w: 450, h: 430 });
+    expect(r.pos).toEqual(base.pos);
+  });
+
+  it("e（右边）：只动宽；w（左边）：拉左边向左 = 变宽且右边锚死", () => {
+    const e = applyResize(base.pos, base.size, "e", 50, 999, VW, VH); // dy 不吃
+    expect(e.size.w).toBe(450);
+    expect(e.size.h).toBe(400);
+    expect(e.pos).toEqual(base.pos);
+
+    // 拉左边向左（dx<0）= 变宽，x 跟着往左走、右缘（x+w）不动
+    const w = applyResize(base.pos, base.size, "w", -50, 0, VW, VH);
+    expect(w.size.w).toBe(450);
+    expect(w.pos.x).toBe(50); // 100 + (400-450)
+    expect(w.pos.x + w.size.w).toBe(base.pos.x + base.size.w); // 右缘锚死
+  });
+
+  it("nw（左上角）：两轴都动，右下两缘锚死", () => {
+    const r = applyResize(base.pos, base.size, "nw", -40, -30, VW, VH);
+    expect(r.size).toEqual({ w: 440, h: 430 });
+    expect(r.pos).toEqual({ x: 60, y: 70 });
+    expect(r.pos.x + r.size.w).toBe(500);
+    expect(r.pos.y + r.size.h).toBe(500);
+  });
+
+  it("尺寸钳最小：窄窗拉 e 边，宽钳到 MIN 停、位置不动（被钳方向不同步跑）", () => {
+    // 200 宽的窗拉右边向左（dx<0 = 变窄）：钳到 MIN=300 停（不能比 MIN 还窄），
+    // e 方向位置本来就不动——这条钉「尺寸钳到下限」，与 maxW 谁先到的边界在上面那条
+    const narrow = { pos: { x: 100, y: 100 }, size: { w: 200, h: 400 } };
+    const r = applyResize(narrow.pos, narrow.size, "e", -500, 0, VW, VH);
+    expect(r.size.w).toBe(SIDE_MIN_W);
+    expect(r.pos).toEqual(narrow.pos);
+  });
+
+  it("拉 w 边被钳时位置只退实际量：宽从 400 拉到 MIN 停，x 只退 100（对边锚定）", () => {
+    // 400 宽拉左边向右（dx>0 = 变窄）：w 方向位置跟着走，但只走「400→300 实际变的 100」，
+    // 不是跟着 dx=500 跑飞——右缘锚死，左缘退到「右缘 - MIN」
+    const r = applyResize(base.pos, base.size, "w", 500, 0, VW, VH);
+    expect(r.size.w).toBe(SIDE_MIN_W);
+    expect(r.pos.x).toBe(base.pos.x + (base.size.w - SIDE_MIN_W)); // 200
+    expect(r.pos.x + r.size.w).toBe(base.pos.x + base.size.w); // 右缘锚死 500
+  });
+
+  it("尺寸钳最大优先于 MIN：视口不够大时宽直接钳到 maxW，位置被 clampPos 兜回 margin", () => {
+    // 大视口（maxW = 1400-32 = 1368）：拉左边一直向左，宽先到 maxW（不是 MIN），
+    // x 算出负数 → clampPos 兜回 margin=8。这条钉「maxW 和 MIN 谁先到」的边界
+    const big = applyResize(base.pos, base.size, "w", -9999, 0, VW, VH);
+    expect(big.size.w).toBe(VW - 2 * 16);
+    expect(big.pos.x).toBe(8);
+  });
+
+  it("尺寸钳最大：不超过视口 - margin", () => {
+    const r = applyResize(base.pos, base.size, "se", 99999, 99999, VW, VH);
+    expect(r.size.w).toBeLessThanOrEqual(VW - 2 * 16);
+    expect(r.size.h).toBeLessThanOrEqual(VH - 2 * 16);
+  });
+
+  it("变大顶出屏的部分被 clampPos 兜底拉回", () => {
+    // 贴着右下缘的窗往右下拉大：尺寸钳完还可能出屏，pos 被拉回
+    const edge = { pos: { x: VW - 420, y: VH - 420 }, size: { w: 400, h: 400 } };
+    const r = applyResize(edge.pos, edge.size, "se", 100, 100, VW, VH);
+    expect(r.pos.x + r.size.w).toBeLessThanOrEqual(VW - 8);
+    expect(r.pos.y + r.size.h).toBeLessThanOrEqual(VH - 8);
+  });
+
+  it("八个 handle 都有光标定义", () => {
+    expect(Object.keys(RESIZE_CURSORS).sort()).toEqual(
+      ["e", "n", "ne", "nw", "s", "se", "sw", "w"]
+    );
+  });
+});
+
