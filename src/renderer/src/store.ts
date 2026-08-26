@@ -154,6 +154,10 @@ interface ChatState {
   /** 兜底工作区镜像(#559):Welcome 预填与设置页「工作区」栏目共用。
       null = 还没从主进程读到(loadWorkspaceSettings 补) */
   workspaceSettings: WorkspaceSettingsInfo | null;
+  /** 侧栏「任务/项目」档位(#559 后续)。进 store 而不是留在 AppSidebar 本地:
+      Welcome composer 要按它决定「锁死 Default 还是让选文件夹」。
+      纯本机视图状态,不落日志(60e0479 的先例) */
+  sidebarTab: "tasks" | "projects";
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
   /** 正在跑的 turn 的身份（issue #344 插话乐观锁），来自 turnStatus 推送的
@@ -497,6 +501,7 @@ interface ChatState {
   pickWorkspace(): Promise<string | null>;
   /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
   loadWorkspaceSettings(): Promise<void>;
+  setSidebarTab(tab: "tasks" | "projects"): void;
   /** 设置默认工作文件夹;null = 恢复内置 Default。落盘后镜像跟着更新 */
   setDefaultWorkspace(dir: string | null): Promise<void>;
   /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西。
@@ -724,6 +729,7 @@ export const useChat = create<ChatState>((set, get) => ({
   sideChat: null,
   pendingWorkspace: null,
   workspaceSettings: null,
+  sidebarTab: "tasks",
   statusBySession: {},
   turnIdBySession: {},
   turnDiffBySession: {},
@@ -1806,6 +1812,8 @@ export const useChat = create<ChatState>((set, get) => ({
       return null;
     }
   },
+
+  setSidebarTab: (tab) => set({ sidebarTab: tab }),
 
   async loadWorkspaceSettings() {
     if (get().workspaceSettings) return;

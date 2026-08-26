@@ -1713,16 +1713,50 @@ function AppSidebar() {
     if (friendChat) setFriendsOpen(false);
   }, [friendChat]);
 
+  // 任务/项目切换器（60e0479 那颗 Work/Game 分段控件的还魂，位置照旧）：
+  // 任务 = 内置 Default 工作区的会话——新手不用先懂「文件夹」就能开聊；
+  // 项目 = 其余工程的分组视图。语义钉在内置路径上（builtinWorkspace，与设置里
+  // 改没改默认无关）：钉在「当前默认」上的话，用户一改默认，整批会话就在
+  // 两栏之间跳来跳去。档位在 store 里(Welcome 要按它锁 Default),不落日志
+  const workspaceSettings = useChat((s) => s.workspaceSettings);
+  const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
+  useEffect(() => {
+    void loadWorkspaceSettings();
+  }, [loadWorkspaceSettings]);
+  const builtin = workspaceSettings?.builtinWorkspace ?? null;
+  const tab = useChat((s) => s.sidebarTab);
+  const setTab = useChat((s) => s.setSidebarTab);
+  // 初值只定一次：库里已有项目会话的老用户落「项目」，全新用户落「任务」。
+  // 之后完全听点击——别在用户切走后又被数据变化拽回来
+  const tabDecided = useRef(false);
+  useEffect(() => {
+    if (tabDecided.current || !builtin || sessions.length === 0) return;
+    tabDecided.current = true;
+    if (sessions.some((s) => !s.archived && s.workspace !== null && s.workspace !== builtin)) {
+      setTab("projects");
+    }
+  }, [sessions, builtin, setTab]);
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
   const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
   // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复。
   // 归档区自己也按工程分组：这一屏和会话列表是同一批东西的两个状态，
-  // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜
-  const archived = useMemo(() => groupArchivedByWorkspace(sessions), [sessions]);
+  // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜。
+  // 归档也分栏(#559 后续)：任务栏只看 Default 的旧账、项目栏只看工程的——
+  // 两栏各自的「已归档」计数和列表互不掺和
+  const archivedTask = useMemo(
+    () => sessions.filter((s) => s.archived && s.workspace !== null && s.workspace === builtin),
+    [sessions, builtin]
+  );
+  const archived = useMemo(
+    () => groupArchivedByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
+    [sessions, builtin]
+  );
   const archivedCount =
-    archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
+    tab === "tasks"
+      ? archivedTask.length
+      : archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
   // 归档行：分组区和"没有工程记录"那段共用同一份行，行为完全一致——
   // 点击只是翻历史（不自动恢复归档），⋮ 里放恢复和删除
   const archivedRow = (s: SessionSummary, groupLabel: string | null) => (
@@ -1838,28 +1872,6 @@ function AppSidebar() {
   useEffect(() => {
     if (settingsSection !== null) setArchivedView(false);
   }, [settingsSection]);
-  // 任务/项目切换器（60e0479 那颗 Work/Game 分段控件的还魂，位置照旧）：
-  // 任务 = 内置 Default 工作区的会话——新手不用先懂「文件夹」就能开聊；
-  // 项目 = 其余工程的分组视图。语义钉在内置路径上（builtinWorkspace，与设置里
-  // 改没改默认无关）：钉在「当前默认」上的话，用户一改默认，整批会话就在
-  // 两栏之间跳来跳去。档位是纯本机视图状态，不落日志（60e0479 的先例）
-  const workspaceSettings = useChat((s) => s.workspaceSettings);
-  const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
-  useEffect(() => {
-    void loadWorkspaceSettings();
-  }, [loadWorkspaceSettings]);
-  const builtin = workspaceSettings?.builtinWorkspace ?? null;
-  const [tab, setTab] = useState<"tasks" | "projects">("tasks");
-  // 初值只定一次：库里已有项目会话的老用户落「项目」，全新用户落「任务」。
-  // 之后完全听点击——别在用户切走后又被数据变化拽回来
-  const tabDecided = useRef(false);
-  useEffect(() => {
-    if (tabDecided.current || !builtin || sessions.length === 0) return;
-    tabDecided.current = true;
-    if (sessions.some((s) => !s.archived && s.workspace !== null && s.workspace !== builtin)) {
-      setTab("projects");
-    }
-  }, [sessions, builtin]);
   // 任务平铺列表：sessions 本来就是最近活跃在前,不再分组
   const taskSessions = useMemo(
     () => sessions.filter((s) => !s.archived && s.workspace !== null && s.workspace === builtin),
@@ -2036,6 +2048,12 @@ function AppSidebar() {
               <div className="px-[10px] py-3 text-[12px] text-muted-foreground">
                 还没有归档的会话。会话行的 ⋮ 菜单里有「归档」。
               </div>
+            ) : tab === "tasks" ? (
+              // 任务栏的归档:只看 Default 的旧账,平铺(#559 后续)——
+              // 和任务列表同一个道理,这一栏不谈"工程"
+              <SidebarMenu className="p-2 pt-0">
+                {archivedTask.map((s) => archivedRow(s, "任务"))}
+              </SidebarMenu>
             ) : (
               <>
                 {/* 和会话列表同一套分组骨架(可收放的工程名 + 竖脊缩进)：归档区是同一批
@@ -2077,12 +2095,6 @@ function AppSidebar() {
           // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」
           <SidebarMenu className="p-2">
             {taskSessions.map((s) => sessionRow(s, "任务"))}
-            {taskSessions.length === 0 && (
-              <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
-                还没有任务。点上面的「＋ 新会话」直接开聊——不用选文件夹，
-                水獭会把做出来的东西放进「文档 › Mr Otto › Default」。
-              </div>
-            )}
           </SidebarMenu>
         ) : (
           <>
@@ -2558,18 +2570,17 @@ function Welcome() {
   const pendingWorkspace = useChat((s) => s.pendingWorkspace);
   const [workspace, setWorkspace] = useState<string | null>(pendingWorkspace);
   useEffect(() => setWorkspace(pendingWorkspace), [pendingWorkspace]);
-  // 兜底工作区(#559):会话永远有工作区。空白开局时预填默认工作文件夹——
-  // 只填空不覆盖(用户手选的和侧栏 ＋ 带来的都不动),没读到镜像就先补一次
   const workspaceSettings = useChat((s) => s.workspaceSettings);
   const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
   useEffect(() => {
     void loadWorkspaceSettings();
   }, [loadWorkspaceSettings]);
-  useEffect(() => {
-    if (!pendingWorkspace && workspaceSettings) {
-      setWorkspace((w) => w ?? workspaceSettings.defaultWorkspace);
-    }
-  }, [pendingWorkspace, workspaceSettings]);
+  // 任务档锁死内置 Default(#559 后续):不出现文件夹/分支 UI,零决策开聊;
+  // 项目档保持"自己选文件夹"——两档各是一条完整的路,不再互相兜底
+  const taskMode = useChat((s) => s.sidebarTab) === "tasks";
+  const effectiveWorkspace = taskMode
+    ? (workspaceSettings?.builtinWorkspace ?? null)
+    : workspace;
   const [text, setText] = useState("");
   // 招呼语只抽一次:Welcome 常驻不卸载,放进 render 体里的话每敲一个字都换一句话
   const myProfile = useChat((s) => s.myProfile);
@@ -2593,11 +2604,11 @@ function Welcome() {
   const attachPasted = useChat((s) => s.attachPasted);
 
   const launch = async () => {
-    if (!workspace || busy) return;
+    if (!effectiveWorkspace || busy) return;
     setBusy(true);
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
-      await startSession({ workspace, model, lane, approvalMode: mode, thinking });
+      await startSession({ workspace: effectiveWorkspace, model, lane, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
@@ -2634,16 +2645,20 @@ function Welcome() {
           蓝框太响 —— 这一屏上它是唯一的彩色，眼睛会先落在框上而不是要写的字上，
           而"光标在这儿"这件事本来就有光标在说 */}
       <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 w-full text-left transition-colors duration-[120ms]">
-        <div className="flex items-center gap-2 min-w-0">
-          <WorkspacePicker value={workspace} onChange={setWorkspace} />
-          {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
-          <BranchPicker dir={workspace} disabled={busy} />
-          {workspace && (
-            <span className="text-muted-foreground text-[11px] min-w-0 truncate" title={workspace}>
-              {workspace}
-            </span>
-          )}
-        </div>
+        {/* 任务档整行文件夹 UI 都不出现:那一档统一 Default,零决策——
+            出一排锁死的控件只会引人去点(#559 后续) */}
+        {!taskMode && (
+          <div className="flex items-center gap-2 min-w-0">
+            <WorkspacePicker value={workspace} onChange={setWorkspace} />
+            {/* 有 git 才出现：开工前先挑分支，省得进了会话才发现站错枝 */}
+            <BranchPicker dir={workspace} disabled={busy} />
+            {workspace && (
+              <span className="text-muted-foreground text-[11px] min-w-0 truncate" title={workspace}>
+                {workspace}
+              </span>
+            )}
+          </div>
+        )}
         <StagedChips />
         {/* 与会话中的输入框逐字同款(见 ComposerTextarea):
             bg-transparent 得连 dark: 一起写 —— shadcn 的 Textarea 自带
@@ -2707,25 +2722,16 @@ function Welcome() {
           />
           <ComposerSend
             streaming={false}
-            idle={!workspace || busy}
-            disabled={!workspace || busy}
+            idle={!effectiveWorkspace || busy}
+            disabled={!effectiveWorkspace || busy}
             className="shrink-0 disabled:pointer-events-none"
-            title={workspace ? "开始会话" : "先选工程文件夹"}
+            title={effectiveWorkspace ? "开始会话" : "先选工程文件夹"}
             aria-label="开始会话"
             onClick={() => void launch()}
           />
         </div>
       </ComposerBar>
       </AttachDropZone>
-      {/* 新手提示:正用着内置 Default 兜底时说清产出去哪了、怎么换。
-          自己选过文件夹(或设置里改过默认)就不聒噪 */}
-      {workspace !== null &&
-        workspaceSettings?.builtin === true &&
-        workspace === workspaceSettings.defaultWorkspace && (
-          <p className="text-muted-foreground text-xs w-[min(640px,90%)] text-center">
-            水獭会在「文档 › Mr Otto › Default」文件夹里干活——想让它做你自己的项目，点上面的文件夹名换一个。
-          </p>
-        )}
       {error && <p className={ERR_TXT}>{error}</p>}
     </div>
   );
