@@ -25,7 +25,9 @@ import { groupTimeline, splitTool } from "../src/shared/remote/timeline.js";
 import type { PinnedPeerStore, RemotePeer } from "../src/shared/remote/devices.js";
 import type { MobileBridge } from "../src/shared/remote/mobileBridge.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
+import { myLabel } from "./src/deviceLabel.js";
 import { Friends } from "./src/friends.js";
+import { DitherBackground } from "./src/dither.js";
 import {
   MAX_MB, NeedsRebuild, pickFiles, pickPhotos, prepareForUpload, takePhoto, tooBig,
   type Picked,
@@ -58,11 +60,21 @@ export default function App() {
   }, []);
 
   if (error) return <Screen center><Note tone="error">{error}</Note></Screen>;
-  if (phase === "loading" || !store) return <Screen center><Spinner /></Screen>;
+
+  const booting = !store || phase === "loading";
 
   return (
-    <Screen>
-      {phase === "signIn" ? (
+    /* 抖动波场**只在开屏和登录页**:进了 app 之后每一屏都在说事(会话、好友、设置),
+       背景再有花纹就是抢戏;这两屏上除了一个图标和三个输入框什么都没有,
+       空着反而像没加载完。
+
+       两屏共用**同一个** `<Screen>`,不是两次 return:拆开的话中间那块 WebView 会
+       卸载再挂载,拿到 session 的那一刻波场从头重启一次——开屏刚起好的浪突然回到
+       第 0 帧,比一直不动还显眼。同一个元素位置,React 认它是同一棵子树,波场连着走 */
+    <Screen dither={booting || phase === "signIn"} center={booting}>
+      {booting ? (
+        <BootSpinner />
+      ) : phase === "signIn" ? (
         <SignIn onDone={() => setPhase(store.peerIdentity() ? "fleet" : "pair")} />
       ) : phase === "pair" ? (
         <Pair store={store} onPaired={() => setPhase("fleet")} />
@@ -77,17 +89,45 @@ export default function App() {
   );
 }
 
-/** 地面。状态栏跟着主题走 —— 深色底配浅色状态栏,反过来读不出来 */
-function Screen({ children, center }: { children: React.ReactNode; center?: boolean }) {
+/** 开屏那个转圈。**自带一块底**,理由和登录页那两个 OAuth 按钮同一条:
+    mutedForeground 的圈压在会动的波场上,走到亮的那半就没了 ——
+    一个看不见的 loading 指示等于没有 loading 指示。给它 card + 一道边,
+    它就站在自己的地面上,底下的浪怎么走都不影响 */
+function BootSpinner() {
+  const { c } = usePalette();
+  return (
+    <View style={{
+      width: 56, height: 56, borderRadius: radius.control,
+      backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+      alignItems: "center", justifyContent: "center",
+    }}>
+      <Spinner />
+    </View>
+  );
+}
+
+/**
+ * 地面。状态栏跟着主题走 —— 深色底配浅色状态栏,反过来读不出来。
+ *
+ * `dither` 打开时那块波场铺在 **SafeAreaView 外面**:背景就该顶到屏幕边,
+ * 缩在安全区里会在刘海和 home 条那儿各留一条底色,看着像没加载完。
+ * 内容仍然在安全区内 —— 通栏的是背景,不是表单。
+ */
+function Screen({ children, center, dither }: {
+  children: React.ReactNode; center?: boolean; dither?: boolean;
+}) {
   const { c, isDark } = usePalette();
   return (
-    <SafeAreaView style={[
-      { flex: 1, backgroundColor: c.background },
-      center && { alignItems: "center", justifyContent: "center", padding: space.lg },
-    ]}>
-      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-      {children}
-    </SafeAreaView>
+    <View style={{ flex: 1, backgroundColor: c.background }}>
+      {dither ? <DitherBackground isDark={isDark} /> : null}
+      <SafeAreaView style={[
+        { flex: 1 },
+        center && { alignItems: "center", justifyContent: "center", padding: space.lg },
+      ]}>
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+        {children}
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -130,19 +170,6 @@ function SignIn({ onDone }: { onDone: () => void }) {
 
   return (
     <View ref={root.ref} onLayout={root.onLayout} style={{ flex: 1, paddingBottom: keyboard }}>
-      {/* 抖动波场,**只有这一屏有**。登录页是唯一一个没有内容可看的屏 ——
-          进了 app 之后每一屏都在说事(会话、好友、设置),背景再有花纹就是抢戏;
-          这一屏上除了一个图标和三个输入框什么都没有,空着反而像没加载完。
-
-          是一张预渲染的 PNG 不是 shader:见 scripts/gen-dither.mjs 开头。
-          放在第一个子节点 = 压在最底下,表单画在它上面,不抢触摸 */}
-      <Image
-        source={isDark
-          ? require("./assets/dither-dark.png")
-          : require("./assets/dither-light.png")}
-        style={StyleSheet.absoluteFill}
-        resizeMode="cover"
-      />
       {/* 撑满高度、内容居中:这一屏东西不多,顶到天花板会在下面留一大片空 */}
       <Page grow>
         <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
@@ -228,9 +255,11 @@ function PasswordForm(props: {
     props.onDone();
   };
 
+  // 边框 1pt + c.input(比 c.border 亮半档):理由同 ui.tsx 的 Button——
+  // hairline 在 3x 屏上是 0.33pt,这两个框原本看不出边界在哪
   const input = {
     backgroundColor: c.card, color: c.foreground, borderRadius: radius.control,
-    borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+    borderWidth: 1, borderColor: c.input,
     paddingHorizontal: space.md, paddingVertical: 13, ...t.body,
   };
 
@@ -271,7 +300,7 @@ function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: () => voi
   const refresh = useCallback(() => {
     void (async () => {
       setErr(null);
-      await api.registerSelf("iPhone");
+      await api.registerSelf(myLabel());
       setPeers(await api.listPeers());
     })().catch((e: unknown) => setErr(String(e)));
     // api 每次 render 新建一个,不进依赖 —— 它没有状态
