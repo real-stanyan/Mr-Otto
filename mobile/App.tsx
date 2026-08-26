@@ -835,14 +835,20 @@ function WorkspaceHeader({ group: g, collapsed, onToggle }: {
       onPress={onToggle}
       hitSlop={8}
       style={({ pressed }) => [
-        { flexDirection: "row", alignItems: "center", gap: space.xs, paddingTop: space.xs },
+        { flexDirection: "row", alignItems: "center", gap: space.xs, paddingTop: space.sm },
         pressed && { opacity: 0.5 },
       ]}
     >
-      <Text style={{ ...t.footnote, color: c.mutedForeground, width: 12 }}>
+      {/* 组头原来和卡片里的元信息一样是 13px,一列卡片扫下来它读成又一条注脚,
+          而不是"下面这些属于同一个工作区"的分界。提到 callout(15)+600:
+          比卡片标题(17)小一档、又还是暗色,层级仍然在下面,但一眼能看见 */}
+      <Text style={{ ...t.callout, fontWeight: "600", color: c.mutedForeground, width: 14 }}>
         {collapsed ? "▸" : "▾"}
       </Text>
-      <Text style={{ ...t.footnote, color: c.mutedForeground }} numberOfLines={1}>
+      <Text
+        style={{ ...t.callout, fontWeight: "600", color: c.mutedForeground }}
+        numberOfLines={1}
+      >
         {g.label}
       </Text>
       {tone ? <Dot tone={tone} /> : null}
