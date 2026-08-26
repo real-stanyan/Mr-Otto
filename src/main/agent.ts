@@ -462,10 +462,13 @@ export function createAgent(opts: {
 
   // 工具要挂的项目根：新会话看 opts.memory（本次刚读的快照）；resume 会话
   // opts.memory 被忽略（日志里那条才算数），从日志里那条 memory_loaded 取——
-  // 工具挂载在两条路径上都要发生，不能只认"刚落盘"这一种情况
+  // 工具挂载在两条路径上都要发生，不能只认"刚落盘"这一种情况。
+  // 反向查找最新一条（一个 session 通常只有一条，但保险起见找最后一条，
+  // 与 engine.ts 里同一种查找同一种事件的写法保持一致）
   const loadedProjectRoot =
     opts.memory?.projectRoot ??
-    (resumeLog?.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot);
+    [...(resumeLog ?? [])].reverse().find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")
+      ?.projectRoot;
   const memoryProject = loadedProjectRoot
     ? { root: loadedProjectRoot, dir: projectMemoryDir(loadedProjectRoot) }
     : null;
