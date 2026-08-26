@@ -6,7 +6,7 @@
 // 中继(ADR-0094)投的是"这台电脑上的会话",两件事没有关系。让加好友绕一圈电脑
 // 的唯一后果是:电脑不在线,手机就加不了好友 —— 而这跟好友系统本身毫无关系。
 // 手机端仍然不是第二个完整客户端:它不碰 presence / 工作区在场 / 好友分支徽章
-// 那一层,只做加好友、收发请求、私信这三件"人对人"的事(ADR-0108)。
+// 那一层,只做加好友、收发请求、私信这三件"人对人"的事(ADR-0114)。
 
 import type { DirectMessage, FriendProfile } from "../../src/shared/friends.js";
 import {
@@ -14,7 +14,7 @@ import {
 } from "../../src/shared/friendsQuery.js";
 import { supabase } from "./supabase.js";
 
-/** 一页私信。手机屏一屏放不下 50 条,再多是往上翻的事(还没做,见 ADR-0108 的余量) */
+/** 一页私信。手机屏一屏放不下 50 条,再多是往上翻的事(还没做,见 ADR-0114 的余量) */
 const PAGE = 50;
 /** 搜索一页大小:窄屏上超过这个数只会变成滚动噪音,多输两个字符比翻页收敛得快 */
 const SEARCH_PAGE = 8;

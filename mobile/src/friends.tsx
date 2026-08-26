@@ -5,7 +5,7 @@
 // 会话那条链路(握手、密封流、审批)和好友这条链路(Supabase、RLS、Realtime)
 // 之间没有任何共享状态,挤在一个文件里只会让两边都更难读。
 //
-// 数据全部直连 Supabase,不经中继 —— 理由写在 friendsApi.ts 开头(ADR-0108)。
+// 数据全部直连 Supabase,不经中继 —— 理由写在 friendsApi.ts 开头(ADR-0114)。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {

@@ -1,6 +1,6 @@
 // 会话热力图的数据 —— 每天开了几个会话。
 //
-// 住在 src/shared 而不是 renderer/lib:手机端的设置页也画这张图(ADR-0109),
+// 住在 src/shared 而不是 renderer/lib:手机端的设置页也画这张图(ADR-0115),
 // 而它 import 的是同一份源码。同一张图两处算,迟早对不上。
 // 纯文件:不许 import node builtin / electron。
 //
