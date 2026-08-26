@@ -89,6 +89,7 @@ import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
@@ -1571,10 +1572,12 @@ void app.whenReady().then(() => {
   });
   // 用户侧停用入口（Task 6）：不校验来源——模型自取的和 $ 启用的都能点掉，
   // 模型那侧的 release 才校验"只能停自己取的"。形状把关先于 append（同
-  // handleSendMessage 的规矩）：name 非字符串、会话不存在都是坏请求零痕迹拒发
+  // handleSendMessage 的规矩）：name 非字符串、会话不存在都是坏请求零痕迹拒发。
+  // 把关逻辑抽成 validateReleaseSkillRequest（src/shared/releaseSkillRequest.ts）——
+  // 这个文件顶层有 app.whenReady 副作用，vitest 没法直接 import 它测 handler，
+  // 纯函数才测得到（tests/shared/releaseSkillRequest.test.ts）
   ipcMain.handle(CHANNELS.releaseSkill, (_e, sessionId: string, name: unknown) => {
-    if (typeof name !== "string") throw new Error("skill 名字形状非法(应为字符串)");
-    if (!store.has(sessionId)) throw new Error("会话不存在");
+    validateReleaseSkillRequest(name, store.has(sessionId));
     const appended = store.append({ sessionId, ts: Date.now(), type: "skill_released", name });
     send(CHANNELS.event, appended);
   });

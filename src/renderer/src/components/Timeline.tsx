@@ -398,6 +398,9 @@ const SkillInvokedRow = memo(function SkillInvokedRow({ event }: { event: SkillI
             variant="ghost"
             size="xs"
             disabled={releasing}
+            // 卡片里可能不止一把 skill,纯文字"停用"对屏幕阅读器是同名多份——
+            // aria-label 把名字带上,报出来的是"停用 skill tdd"而不是四个一样的"停用"
+            aria-label={`停用 skill「${event.name}」`}
             // 阻止事件冒泡到 <summary>:不然点「停用」的同时把 <details> 也开合了
             onClick={(e) => {
               e.preventDefault();
