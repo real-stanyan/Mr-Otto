@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { deriveMessages, projectInstructionsText } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-// 项目指令进上下文的通道（ADR-0129，issue #527）。
+// 项目指令进上下文的通道（ADR-0130，issue #527）。
 // 曾经是一条 user 消息，于是 /compact 的清场把它扫掉了——压一次之后模型再也
 // 看不到 AGENTS.md。这一组钉的就是那件事不许再发生。
 
@@ -14,7 +14,7 @@ const instructions: SessionEvent = { ...base(2), type: "project_instructions", s
 const userMsg: SessionEvent = { ...base(3), type: "user_message", content: "hi" };
 const compacted: SessionEvent = { ...base(4), type: "context_compacted", summary: "摘要", model: "m" };
 
-describe("项目指令焊进围栏 system（ADR-0129）", () => {
+describe("项目指令焊进围栏 system（ADR-0130）", () => {
   it("不再是独立的 user 消息：正文进 system", () => {
     const msgs = deriveMessages([created, instructions, userMsg]);
     expect(msgs[0]!.role).toBe("system");

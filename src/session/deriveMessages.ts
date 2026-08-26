@@ -514,7 +514,7 @@ export function deriveMessages(
         break;
 
       case "project_instructions":
-        // 焊进围栏 system 消息，走记忆那条通道（ADR-0129，issue #527）。
+        // 焊进围栏 system 消息，走记忆那条通道（ADR-0130，issue #527）。
         // 曾经是一条 user 消息，于是 context_compacted 的 `messages.length = 0`
         // 把它扫掉了——压一次之后模型再也看不到 AGENTS.md。项目约定不是历史，
         // 是每轮都该在的围栏；焊进 system 就天然免疫任何清场，而不是往
