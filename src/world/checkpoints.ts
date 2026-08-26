@@ -35,6 +35,17 @@ export function workspaceStoreName(workspace: string): string {
   return createHash("sha256").update(workspace).digest("hex").slice(0, 16);
 }
 
+/** Default 工作区的影子仓按会话一份（#573）：同一个文件夹被所有「任务」会话
+    共写,共享一份影子仓时 A 会话的 reset --hard 会把 B 会话的文件一起回退。
+    按会话拆开后,B 在 A 的快照之后新建的文件在 A 的仓里是 untracked——
+    reset --hard 天然不碰,A 回退不再吞 B 的新产出（B 对早已存在的共享文件的
+    改动仍会被波及,那一半靠提示词的通名警示压概率,见 PACKAGE_NUDGE）。
+    项目工作区维持共享一份:大仓按会话复制血亏,且串扰概率低。
+    sessionId 形状是 `s-<时间戳>-<hex>`（newSessionId）,直接可作目录名 */
+export function sessionCheckpointStoreName(workspace: string, sessionId: string): string {
+  return `${workspaceStoreName(workspace)}-${sessionId}`;
+}
+
 interface GitResult {
   stdout: string;
   stderr: string;
