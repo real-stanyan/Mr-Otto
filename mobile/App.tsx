@@ -103,7 +103,7 @@ function Screen({ children, center }: { children: React.ReactNode; center?: bool
    这条不再靠"把 OAuth 摆前面"来暗示,改成在密码真的被拒时当场说破 ——
    提示出现在人已经撞上问题的那一刻,比事前的一句话有用得多。 */
 function SignIn({ onDone }: { onDone: () => void }) {
-  const { c } = usePalette();
+  const { c, isDark } = usePalette();
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // 键盘要让位:输入框在上半屏,但「登录」就贴在密码框下面
@@ -130,6 +130,19 @@ function SignIn({ onDone }: { onDone: () => void }) {
 
   return (
     <View ref={root.ref} onLayout={root.onLayout} style={{ flex: 1, paddingBottom: keyboard }}>
+      {/* 抖动波场,**只有这一屏有**。登录页是唯一一个没有内容可看的屏 ——
+          进了 app 之后每一屏都在说事(会话、好友、设置),背景再有花纹就是抢戏;
+          这一屏上除了一个图标和三个输入框什么都没有,空着反而像没加载完。
+
+          是一张预渲染的 PNG 不是 shader:见 scripts/gen-dither.mjs 开头。
+          放在第一个子节点 = 压在最底下,表单画在它上面,不抢触摸 */}
+      <Image
+        source={isDark
+          ? require("./assets/dither-dark.png")
+          : require("./assets/dither-light.png")}
+        style={StyleSheet.absoluteFill}
+        resizeMode="cover"
+      />
       {/* 撑满高度、内容居中:这一屏东西不多,顶到天花板会在下面留一大片空 */}
       <Page grow>
         <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
