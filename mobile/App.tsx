@@ -15,6 +15,9 @@ import {
 } from "react-native";
 import type { IslandAgent, IslandFleet } from "../src/shared/shellBridge.js";
 import type { MobileMessage, UpFrame } from "../src/shared/remote/frames.js";
+import { fmtTokens, type RemoteStats } from "../src/shared/remote/stats.js";
+import { activityWindow, heatLevel, heatWeeks } from "../src/shared/sessionActivity.js";
+import { fmtUsd } from "../src/shared/modelPricing.js";
 import { chunkUpload, UPLOAD_LIMITS } from "../src/shared/remote/uploads.js";
 import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../src/shared/remote/groups.js";
 import { parseMarkdown, type Span as MdSpan } from "../src/shared/remote/markdown.js";
@@ -323,6 +326,11 @@ function Shell({ store, onRepair, onSignedOut }: {
   const [inDetail, setInDetail] = useState(false);
   /** 好友页签上那个数:待我处理的请求 + 没看过的私信。由好友那一屏算(它握着订阅) */
   const [friendBadge, setFriendBadge] = useState(0);
+  /** 设置页那两块统计。桥在会话那一屏手里,所以数从那儿回流到这儿再发下去 */
+  const [stats, setStats] = useState<RemoteStats | null>(null);
+  /** 向桌面要一份统计。**拉取,不订阅** —— 由 Fleet 在连上之后填进来 */
+  const askStats = useRef<(() => void) | null>(null);
+  const refreshStats = useCallback(() => { askStats.current?.(); }, []);
   /** 连接状态由会话页那只桥算出来(它握着连接),显示在品牌栏上 */
   const [status, setStatus] = useState<ConnStatus | null>(null);
 
@@ -340,13 +348,18 @@ function Shell({ store, onRepair, onSignedOut }: {
         <Fleet
           store={store} onRepair={onRepair}
           onDetailChange={setInDetail} onStatus={setStatus}
+          onStats={setStats} askStats={askStats}
         />
       </View>
       <View style={pane("friends")}>
         <Friends onDetailChange={setInDetail} onBadge={setFriendBadge} />
       </View>
       <View style={pane("settings")}>
-        <Settings store={store} onRepair={onRepair} onSignedOut={onSignedOut} />
+        <Settings
+          store={store} onRepair={onRepair} onSignedOut={onSignedOut}
+          stats={stats} online={status?.tone === "ok"}
+          active={tab === "settings"} onRefreshStats={refreshStats}
+        />
       </View>
       {inDetail ? null : <TabBar tab={tab} onTab={setTab} badges={{ friends: friendBadge }} />}
     </View>
@@ -454,10 +467,18 @@ function TabBar({ tab, onTab, badges }: {
 
    退出登录单独一组、居中、红字,是 iOS 的老规矩:破坏性动作不跟只读信息
    同一块板 —— 挨着邮箱那行放,手指会顺着往下点。 */
-function Settings({ store, onRepair, onSignedOut }: {
+function Settings({
+  store, onRepair, onSignedOut, stats, online, active, onRefreshStats,
+}: {
   store: PinnedPeerStore;
   onRepair: () => void;
   onSignedOut: () => void;
+  /** 桌面答回来的统计。null = 还没问到(没连上,或刚翻进来) */
+  stats: RemoteStats | null;
+  online: boolean;
+  /** 这一屏此刻是不是当前页签。三个页签都常驻挂载,不看这个就不知道人翻过来了 */
+  active: boolean;
+  onRefreshStats: () => void;
 }) {
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -466,6 +487,13 @@ function Settings({ store, onRepair, onSignedOut }: {
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
   }, []);
+
+  // 翻到这一屏(而且连着)才问。**不订阅** —— 那两条查询在桌面上是全表扫描级的,
+  // 挂在推送上等于每条工具事件都拖一次;而且用量本来就不该跟着每一帧出机器
+  // (shared/remote/trim.ts 那道闸门的理由,见 shared/remote/stats.ts 开头)
+  useEffect(() => {
+    if (active && online) onRefreshStats();
+  }, [active, online, onRefreshStats]);
 
   const signOut = (): void => {
     void (async () => {
@@ -504,6 +532,8 @@ function Settings({ store, onRepair, onSignedOut }: {
           <Row label="重新配对" chevron onPress={onRepair} />
         </Group>
 
+        <StatsSection stats={stats} online={online} onRefresh={onRefreshStats} />
+
         {/* 中继看不见内容(端到端加密),但连的是哪一台是排查时的第一个问题。
             这三行是纯诊断信息 —— 不做成按钮,长按能选中拷走就够了 */}
         <Group header="连接" footer="出问题时把这三行长按拷下来一起发过来。">
@@ -516,16 +546,145 @@ function Settings({ store, onRepair, onSignedOut }: {
   );
 }
 
+/* ── 统计 ───────────────────────────────────────────────
+   会话热力图 + 各模型用量。数在电脑上(全库事件日志),手机开口问一次、
+   桌面答一次 —— 不订阅、不跟着 fleet 走(理由在 shared/remote/stats.ts 开头)。 */
+function StatsSection({ stats, online, onRefresh }: {
+  stats: RemoteStats | null;
+  online: boolean;
+  onRefresh: () => void;
+}) {
+  if (!stats) {
+    return (
+      <Group header="记录与用量" footer={online ? undefined : "连上电脑才看得到 —— 数在电脑上。"}>
+        <Row
+          label={online ? "读取中…" : "电脑不在线"}
+          leading={<Dot tone={online ? "busy" : "warn"} />}
+        />
+      </Group>
+    );
+  }
+  return (
+    <View style={{ gap: space.lg }}>
+      <ActivityCard stats={stats} />
+      <UsageGroup stats={stats} onRefresh={onRefresh} />
+    </View>
+  );
+}
+
+/** 一格多大。8+2 是挑过的:27 列(半年)乘 10 = 270pt,最窄的 iPhone 也放得下,
+    再小一档格子就分不出深浅了 */
+const CELL = 8;
+const CELL_GAP = 2;
+
+/** 会话热力图。和桌面那张同一份投影(shared/sessionActivity.ts),同一个跨度 */
+function ActivityCard({ stats }: { stats: RemoteStats }) {
+  const { c } = usePalette();
+  const scroll = useRef<ScrollView | null>(null);
+  const weeks = heatWeeks(activityWindow(stats.activity, stats.sessions, stats.now, stats.activityDays));
+  const max = stats.activity.reduce((m, d) => Math.max(m, d.count), 0);
+
+  // 0 档不是"浅一点的蓝",是**没有颜色的底** —— 没干活和干得少必须一眼分得开。
+  // 深浅用 opacity 而不是拼 rgba:主题给的是十六进制,拆通道要么多存一份
+  // rgb 三元组,要么在这儿写个解析器,两样都比一个 opacity 贵
+  const face = (level: number): ViewStyle =>
+    level === 0 ? { backgroundColor: c.muted } : { backgroundColor: c.brand, opacity: 0.25 * level };
+
+  return (
+    <Card style={{ gap: space.sm }}>
+      <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" }}>
+        <Headline>会话记录</Headline>
+        <Meta>{`${stats.sessions} 个 · ${stats.activityDays} 天`}</Meta>
+      </View>
+
+      {/* 横向可滚:窄屏上宁可让人推一下,也不要把格子压到分不出深浅。
+          默认停在最右边 —— 最近那几天才是人要看的 */}
+      <ScrollView
+        ref={scroll} horizontal showsHorizontalScrollIndicator={false}
+        onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: false })}
+      >
+        <View style={{ flexDirection: "row", gap: CELL_GAP }}>
+          {weeks.map((week, i) => (
+            <View key={i} style={{ gap: CELL_GAP }}>
+              {week.map((cell, j) => (
+                <View
+                  key={j}
+                  style={{
+                    width: CELL, height: CELL, borderRadius: 2,
+                    // 窗口外的边角**不画** —— 画成空格子等于说"那天没干活",而那天根本不在窗口里
+                    ...(cell === null ? { backgroundColor: "transparent" } : face(heatLevel(cell.count, max))),
+                  }}
+                />
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: CELL_GAP }}>
+        <Meta>少</Meta>
+        {[0, 1, 2, 3, 4].map((l) => (
+          <View key={l} style={{ width: CELL, height: CELL, borderRadius: 2, ...face(l) }} />
+        ))}
+        <Meta>多</Meta>
+      </View>
+    </Card>
+  );
+}
+
+/** 各模型用量。一行一款:左边名字 + 厂商,右边花费 + 进/出。
+    **查不到价的那一款右边是破折号,不是 $0** —— 0 是"免费"这个事实,不是"我不知道" */
+function UsageGroup({ stats, onRefresh }: { stats: RemoteStats; onRefresh: () => void }) {
+  const { c } = usePalette();
+  const total = stats.models.reduce((n, m) => n + m.inTokens + m.outTokens, 0);
+  return (
+    <Group
+      header={`各模型用量 · 近 ${stats.usageDays} 天`}
+      footer={stats.totalCostUsd === null
+        ? "有型号查不到价，所以不报合计——把查得到的几款加起来当总数，报的是一个偏小的数。"
+        : `合计 ${fmtUsd(stats.totalCostUsd)} · ${fmtTokens(total)} tokens`}
+    >
+      {stats.models.length === 0 ? (
+        <Row label={`近 ${stats.usageDays} 天没有调用`} />
+      ) : (
+        stats.models.map((m) => (
+          <View key={`${m.provider}/${m.label}`} style={{
+            flexDirection: "row", alignItems: "center", gap: space.sm,
+            paddingHorizontal: space.md, paddingVertical: 10, minHeight: 56,
+          }}>
+            <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+              <Text style={{ ...t.body, color: c.foreground }} numberOfLines={1}>{m.label}</Text>
+              <Meta>{m.provider}</Meta>
+            </View>
+            <View style={{ alignItems: "flex-end", gap: 1 }}>
+              <Text style={{ ...t.body, color: c.foreground }}>
+                {m.costUsd === null ? "—" : fmtUsd(m.costUsd)}
+              </Text>
+              <Meta>{`入 ${fmtTokens(m.inTokens)} · 出 ${fmtTokens(m.outTokens)}`}</Meta>
+            </View>
+          </View>
+        ))
+      )}
+      <Row label="重新读一次" align="center" onPress={onRefresh} />
+    </Group>
+  );
+}
+
 /* ── 舰队 ───────────────────────────────────────────────
    看 + 审批。桌面不在线时不假装有内容:一句"你的 Mac 不在线"
    (中继零落盘,没有队列可回放 —— 这是设计,不是缺陷)。 */
-function Fleet({ store, onRepair, onDetailChange, onStatus }: {
+function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askStats }: {
   store: PinnedPeerStore;
   onRepair: () => void;
   /** 翻进详情屏时底栏要收起来 */
   onDetailChange: (inDetail: boolean) => void;
   /** 连接状态报给品牌栏 —— 桥在这儿,栏在上面 */
   onStatus: (s: ConnStatus) => void;
+  /** 桌面答回来的统计。设置页要,而桥在这儿 */
+  onStats: (s: RemoteStats) => void;
+  /** 把"问一次"这个动作交出去。**只交动作,不交桥** ——
+      桥的生命周期归这一屏,别的屏能做的只有开口问 */
+  askStats: React.RefObject<(() => void) | null>;
 }) {
   const [fleet, setFleet] = useState<IslandFleet | null>(null);
   const [ready, setReady] = useState(false);
@@ -558,6 +717,7 @@ function Fleet({ store, onRepair, onDetailChange, onStatus }: {
         }));
         if (f.type === "notice") setNotice(f.text);
         else if (f.type === "fleet") setFleet(f.fleet);
+        else if (f.type === "stats") onStats(f.stats);
         // 只认自己订的那一个:换会话时旧订阅的迟到帧不该覆盖新屏
         else if (f.type === "timeline" && f.sessionId === watching.current) setTimeline(f.messages);
       },
@@ -572,7 +732,14 @@ function Fleet({ store, onRepair, onDetailChange, onStatus }: {
       },
     });
     bridge.current = b;
-    return () => b.dispose();
+    askStats.current = () => { b.send({ type: "stats" }); };
+    return () => {
+      askStats.current = null;
+      b.dispose();
+    };
+    // onStats 每次 render 都是新的(Shell 的 setState 其实是稳的,但类型上不保证),
+    // 而这条连接一辈子只建一次 —— 让它进依赖等于每次渲染都重连
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
   const openSession = (sessionId: string): void => {
