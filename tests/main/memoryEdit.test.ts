@@ -68,7 +68,7 @@ describe("applyUserEdit", () => {
     expect(d.store.load("s1").at(-1)).toMatchObject({ type: "memory_user_edit", before: "甲", after: "手编" });
   });
 
-  it("项目档的手编也落 memory_user_edit，target 是 project", async () => {
+  it("项目档的手编也落 memory_user_edit，target 是 project，且带 projectRoot", async () => {
     const files = new Map<string, string>();
     const store = new EventStore(":memory:");
     const deps = {
@@ -76,13 +76,35 @@ describe("applyUserEdit", () => {
       readFile: async (rel: string) => files.get(rel) ?? "",
       writeFile: async (rel: string, c: string) => void files.set(rel, c),
     };
-    await applyUserEdit(deps, "project", "本项目门禁是 npm test", "s1", "memories/projects/abc123");
+    await applyUserEdit(deps, "project", "本项目门禁是 npm test", "s1", {
+      root: "/repo", dir: "memories/projects/abc123",
+    });
     expect(files.get("memories/projects/abc123/MEMORY.md")).toBe("本项目门禁是 npm test");
     const ev = store.load("s1").find((e) => e.type === "memory_user_edit");
-    expect(ev).toMatchObject({ target: "project", after: "本项目门禁是 npm test" });
+    // projectRoot 是"记忆文件可从日志重建"的必要部分：三档之后光看 target: "project"
+    // 分不出改的是哪个 repo（ADR-0109）
+    expect(ev).toMatchObject({ target: "project", after: "本项目门禁是 npm test", projectRoot: "/repo" });
   });
 
-  it("project 没给 projectDir 就抛，绝不落到全局档", async () => {
+  it("全局档不带 projectRoot（可选字段，缺席就是缺席）", async () => {
+    const d = deps();
+    await applyUserEdit(d, "memory", "甲", "s1");
+    const ev = d.store.load("s1").find((e) => e.type === "memory_user_edit")!;
+    expect("projectRoot" in ev).toBe(false);
+  });
+
+  it("项目档写盘同时补 root.txt，目录自描述（否则 listProjectMemories 永远不列它）", async () => {
+    const files = new Map<string, string>();
+    const deps = {
+      store: new EventStore(":memory:"),
+      readFile: async (rel: string) => files.get(rel) ?? "",
+      writeFile: async (rel: string, c: string) => void files.set(rel, c),
+    };
+    await applyUserEdit(deps, "project", "约定一", "s1", { root: "/repo", dir: "memories/projects/abc123" });
+    expect(files.get("memories/projects/abc123/root.txt")).toBe("/repo");
+  });
+
+  it("project 没给 project 就抛，绝不落到全局档", async () => {
     const files = new Map<string, string>();
     const deps = {
       store: new EventStore(":memory:"),

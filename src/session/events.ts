@@ -343,6 +343,14 @@ export interface MemoryUserEditEvent extends SessionEventBase {
   target: MemoryTarget;
   before: string;
   after: string;
+  /** 项目档改的是**哪个项目**（项目根绝对路径）。两档时 target 就是完整地址；
+      三档之后 `target: "project"` 在多个项目之间不再唯一——不带这个字段的话，
+      两个不同 repo 的手编在日志里长得一模一样，上面那句"记忆文件可从日志重建"
+      就不再成立（ADR-0109）。
+      **可选**字段，理由同 MemoryLoadedEvent：旧日志没有它照旧可重放，新日志被
+      旧版本读到时 assertReplayable 拒的是未知事件类型，已知类型上的多余字段
+      它认得。target 不是 "project" 时缺席 */
+  projectRoot?: string;
 }
 
 /** 额外 16：记忆审查触发点。每 10 个 user_message 落一条，随后派 memory-reviewer

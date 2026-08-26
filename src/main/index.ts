@@ -1217,6 +1217,12 @@ void app.whenReady().then(() => {
     },
   };
 
+  /** 渲染层给的 projectRoot 折成 applyUserEdit 要的那对 {root, dir}（形状同
+      agent.ts 给 createMemoryTool 的那份）。缺省 = 全局档。两个记忆 handler
+      共用这一份，免得一处传 dir、一处传 root，落出对不上号的证据 */
+  const memoryProject = (projectRoot?: string): { root: string; dir: string } | null =>
+    projectRoot ? { root: projectRoot, dir: projectMemoryDir(projectRoot) } : null;
+
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
    *
@@ -1581,13 +1587,14 @@ void app.whenReady().then(() => {
     memory: readMemoryFile(memoryRelPath("memory")),
     user: readMemoryFile(memoryRelPath("user")),
   }));
-  // projectRoot 缺省 = 全局档（projectDir 传 null，memoryRelPath 按 target 走
+  // projectRoot 缺省 = 全局档（project 传 null，memoryRelPath 按 target 走
   // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
-  // 否则 memoryRelPath 在 applyUserEdit 里抛
+  // 否则 memoryRelPath 在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
+  // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
   ipcMain.handle(
     CHANNELS.saveMemory,
     (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
-      applyUserEdit(memoryEditDeps, target, text, sessionId, projectRoot ? projectMemoryDir(projectRoot) : null)
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot))
   );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
@@ -1605,9 +1612,9 @@ void app.whenReady().then(() => {
       // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
       // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
       if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
-      const dir = projectRoot ? projectMemoryDir(projectRoot) : null;
-      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, dir)));
-      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, dir);
+      const project = memoryProject(projectRoot);
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project);
     }
   );
   // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
