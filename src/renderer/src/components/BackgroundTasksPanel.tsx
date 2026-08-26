@@ -1,4 +1,4 @@
-// 后台任务面板（issue #452 / ADR-0109，槽位改在 issue #578 / ADR-0137）。
+// 后台任务面板（issue #452 / ADR-0109，槽位改在 issue #578 / ADR-0139）。
 //
 // 为什么需要它：后台任务的主要来源不是用户点单，是**前台命令跑满 30 秒自动
 // 转的**（tools/bash.ts 的 AUTO_BACKGROUND_AFTER_MS，issue #395）。用户从没
