@@ -36,7 +36,11 @@ export interface SseTransportOpts {
   log?: (m: string) => void;
 }
 
-export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
+/** 真实现比 RemoteTransport 多一个 retryNow() —— 见它自己的注释。
+    不加进 RemoteTransport:那个接口手机端也在实现,而这件事只有桌面有 */
+export type SseTransport = RemoteTransport & { retryNow(): void };
+
+export function createSseTransport(opts: SseTransportOpts): SseTransport {
   const doFetch = opts.fetchImpl ?? ((u: string | URL | Request, i?: RequestInit) => fetch(u, i));
   const log = opts.log ?? (() => {});
   const base = opts.baseUrl.replace(/\/+$/, "");
@@ -50,6 +54,10 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
   let attempt = 0;
   let abort: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** connect() 正在跑。**整条流的生命周期**都算在内(它 await 着读循环),
+      所以这一个布尔量就够判断"现在有没有一条活着的连接" —— abort 判断不了:
+      流结束之后它仍指着那个已经用完的 controller */
+  let connecting = false;
 
   /** 上行队列。同时只发一条,按入队顺序 —— 理由和手机侧那份一字不差:
       密封流按严格递增的计数器收帧,计数器在 seal 那一刻就定了,而并发 POST 的
@@ -130,11 +138,22 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
 
   async function connect(): Promise<void> {
     if (closed) return;
+    connecting = true;
+    try {
+      await connectOnce();
+    } finally {
+      connecting = false;
+    }
+  }
+
+  async function connectOnce(): Promise<void> {
     const token = await opts.authToken();
     if (closed) return;
     if (!token) {
+      // 没登录不连,**也不重连** —— 退避重连一个必然失败的东西没有意义。
+      // 出路是登录时由调用方叫 retryNow()(index.ts 的 accountManager.onChange)
       log("远程传输:还没登录,不连");
-      return; // 登录之后由调用方重新建这条传输
+      return;
     }
     const ac = new AbortController();
     abort = ac;
@@ -177,6 +196,20 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
   void connect();
 
   return {
+    /**
+     * 立刻再试一次。唯一的调用场景是**登录**:没登录时 connect() 直接返回、
+     * 不排重连,所以没有 retryNow 的话,冷启动时未登录的用户登录之后要重开 app
+     * 才连得上(issue #484)。
+     *
+     * 连接活着 / 已 close 时是空操作;正在退避等待时把等待掐掉马上连 ——
+     * 「用户刚登录」是新信息,没有理由再等剩下的 30 秒。
+     */
+    retryNow() {
+      if (closed || connecting) return;
+      if (timer) { clearTimeout(timer); timer = null; }
+      attempt = 0;
+      void connect();
+    },
     send(payload) {
       if (closed) return;
       // 入队即返回,刻意不因失败触发 onClose:

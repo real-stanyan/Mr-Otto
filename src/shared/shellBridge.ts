@@ -834,10 +834,13 @@ export interface RemoteRejection {
   at: number;
 }
 
-/** 远程功能在这台机器上的状态。off 的原因要分得开:没开开关 / 系统封装不可用,
-    两者都会让列表是空的,但用户该做的事完全不同 */
+/** 远程功能在这台机器上的状态。
+    off 的两个原因**只有一个来自主进程**:
+    - no-secure-storage = 身份私钥进不了系统安全存储 → 不开远程,而不是明文落盘
+    - unavailable = 渲染层自己兜的:remoteStatus() 这一问就没问到(桥挂了/主进程没起来)
+    (曾经还有 disabled = OTTO_REMOTE 没开,那个灰度开关已随 issue #484 摘掉) */
 export type RemoteStatus =
-  | { on: false; reason: "disabled" | "no-secure-storage" }
+  | { on: false; reason: "no-secure-storage" | "unavailable" }
   | {
       on: true;
       peers: RemotePeerInfo[];

@@ -91,10 +91,10 @@ describe("RemoteDevicesSettings 的「被挡下的握手」提示", () => {
     expect(screen.getByText("m2")).toBeInTheDocument();
   });
 
-  it("远程没开时不显示这条提示（那一屏只该说「没开」）", async () => {
-    stubBridge({ on: false, reason: "disabled" });
+  it("远程开不起来时不显示这条提示（那一屏只该说开不起来的原因）", async () => {
+    stubBridge({ on: false, reason: "no-secure-storage" });
     renderPage();
-    expect(await screen.findByText("远程功能没有开启")).toBeInTheDocument();
+    expect(await screen.findByText("这台机器没有可用的系统安全存储")).toBeInTheDocument();
     expect(screen.queryByText(/连过来/)).not.toBeInTheDocument();
   });
 });
