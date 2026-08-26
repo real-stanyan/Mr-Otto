@@ -39,7 +39,9 @@ export interface SkillToolDeps {
 
 /** 索引拼装。装得下全列；装不下**按传入序**列前 N，尾注还有几条、怎么找——
     静默截半句会让模型以为清单就这些。
-    传入序此刻是**磁盘序**（两个调用点给的都是 `scanSkills(skillRoots)`）：
+    传入序此刻是**磁盘序**（三个调用点给的都是 `scanSkills(skillRoots)`：主会话
+    装配、subagentRunner 的子会话装配，以及 src/main/index.ts 的
+    probeToolDefs——开机探针，也读 t.def 拼一次索引）：
     D6 说的「按最近启用时间排序」没有实现。留在这里当公开的欠账，不是假声明——
     真要实现得让装配层把台账（activeSkills 的启用次序）也喂进来排一次，
     是另一条改动。今天的后果：skill 装得多到超预算时，被截掉的是磁盘上排在
