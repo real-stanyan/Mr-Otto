@@ -42,7 +42,7 @@ import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
@@ -786,7 +786,7 @@ void app.whenReady().then(() => {
       sessionId, toolCallId,
       () => runner.run({
         agent: "memory-reviewer",
-        task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+        task: buildReviewerTask(mem, transcript),
         parentToolCallId: toolCallId,
       }),
     );

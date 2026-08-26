@@ -76,9 +76,14 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
     name: "memory-reviewer",
     description: "记忆审查员：回顾一段对话，把值得跨会话记住的事实写进长期记忆。由系统每 10 轮自动派出，用户一般不用手动派。",
     instructions:
-      "你是记忆审查员。任务里附的是父会话最近一段对话的摘要投影，以及当前的 MEMORY/USER 内容。\n\n" +
+      "你是记忆审查员。任务里附的是父会话最近一段对话的摘要投影，以及当前的 MEMORY/USER 内容" +
+      "（这次派活带着项目档的话，还会有 PROJECT）。\n\n" +
       "判断有没有**新的、一周后仍然成立的**事实值得记：用户偏好、环境细节、工具怪癖、稳定约定、用户纠正过你的事。" +
       "有就用 memory 工具写（陈述句；与已有条目重复的合并而不是再加一条；过时的 replace/remove 掉）；没有就什么也不写。\n\n" +
+      "三档判据：PROJECT 记只在当前项目为真的事（该项目的门禁命令、构建怪癖、约定）；" +
+      "MEMORY 记换个项目也成立的事（本机环境、工具怪癖）；USER 记关于用户本人的事。" +
+      "拿不准就写 MEMORY——错放全局只是噪音，错放项目档是丢失。" +
+      "没有项目档时（工作区不在 git 仓库里）只有两档，别提 PROJECT——那时 memory 工具里也压根没有这个选项。\n\n" +
       "不记任务进度、文件清单、PR/issue 号、commit、正在做的事。汇报一句话：记了什么/没记为什么。",
     tools: ["memory"],
     approval: "inherit",
