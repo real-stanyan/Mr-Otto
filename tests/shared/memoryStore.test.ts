@@ -127,6 +127,55 @@ describe("三档路径与上限", () => {
   });
 });
 
+// 存量超限的档不许锁死（ADR-0109）。判据是「超限**且未变小**才拒」而不是「超限就拒」：
+// 旧上限 2200 下写满的 MEMORY 在新上限 1100 下，模型删一条降到 1203 仍然整批被拒，
+// 而 memory 工具连续失败 3 次就返回终态「本轮放弃」——静默锁死。
+describe("applyOps 超限判据：净减少的批次允许落盘", () => {
+  /** 造一份超过 MEMORY 上限的存量条目（每条 300 字符，5 条 = 1500 + 分隔符 > 1100） */
+  const stale = ["a", "b", "c", "d", "e"].map((c) => c.repeat(300));
+  const usedOf = (entries: string[]) => charCount(formatEntries(entries));
+
+  it("从超限状态净减少、但仍然超限 → 允许（不惩罚有进展但没到位）", () => {
+    expect(usedOf(stale)).toBeGreaterThan(MEMORY_LIMITS.memory);
+    const r = applyOps("memory", stale, [{ action: "remove", target: "memory", old_text: "aaa" }]);
+    expect(r.ok).toBe(true);
+    // 仍然超限，但确实小了——这正是老判据会拒掉的那一批
+    const next = (r as { entries: string[] }).entries;
+    expect(usedOf(next)).toBeGreaterThan(MEMORY_LIMITS.memory);
+    expect(usedOf(next)).toBeLessThan(usedOf(stale));
+  });
+
+  it("从超限状态原地不动（等量替换）或变大 → 拒", () => {
+    const flat = applyOps("memory", stale, [
+      { action: "replace", target: "memory", old_text: "aaa", content: "z".repeat(300) },
+    ]);
+    expect(flat).toMatchObject({ ok: false, error: expect.stringContaining("MEMORY 超限") });
+    const bigger = applyOps("memory", stale, [{ action: "add", target: "memory", content: "z".repeat(10) }]);
+    expect(bigger.ok).toBe(false);
+    // 报错文案把 before / used / limit 三个数都说出来，模型才知道自己还得继续减
+    expect((bigger as { error: string }).error).toContain(String(MEMORY_LIMITS.memory));
+    expect((bigger as { error: string }).error).toContain(String(usedOf(stale)));
+  });
+
+  it("从合规状态写到超限 → 拒（老行为不变）", () => {
+    const ok = ["x".repeat(1000)];
+    expect(usedOf(ok)).toBeLessThanOrEqual(MEMORY_LIMITS.memory);
+    const r = applyOps("memory", ok, [{ action: "add", target: "memory", content: "y".repeat(200) }]);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("MEMORY 超限") });
+  });
+
+  it("减到上限以内当然也允许（连减两批就能收敛）", () => {
+    const first = applyOps("memory", stale, [{ action: "remove", target: "memory", old_text: "aaa" }]);
+    expect(first.ok).toBe(true);
+    const second = applyOps("memory", (first as { entries: string[] }).entries, [
+      { action: "remove", target: "memory", old_text: "bbb" },
+      { action: "remove", target: "memory", old_text: "ccc" },
+    ]);
+    expect(second.ok).toBe(true);
+    expect(usedOf((second as { entries: string[] }).entries)).toBeLessThanOrEqual(MEMORY_LIMITS.memory);
+  });
+});
+
 describe("withMemoryFileLock 按文件路径加锁", () => {
   it("同一路径串行", async () => {
     const order: string[] = [];
