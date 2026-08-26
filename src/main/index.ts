@@ -4,7 +4,7 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
@@ -71,6 +71,7 @@ import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, UpdaterState,
   RemoteStatus,
   PermissionsSnapshot,
+  WorkspaceSettingsInfo,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
 import { createUpdater } from "./updater.js";
@@ -111,6 +112,12 @@ import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
+import {
+  loadWorkspaceSettings,
+  normaliseWorkspaceSettings,
+  resolveDefaultWorkspace,
+  saveWorkspaceSettings,
+} from "./workspaceSettingsStore.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
@@ -340,6 +347,16 @@ void app.whenReady().then(() => {
   // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
   const islandSettingsPath = join(app.getPath("userData"), "island.json");
   let islandSettings = loadIslandSettings(islandSettingsPath);
+  // 兜底工作区(#559)。现读不缓存(islandSettingsStore 顶注的另一半理由):
+  // 读的频率是"开设置页/开新会话"量级,不值得为它维护一份内存镜像
+  const workspaceSettingsPath = join(app.getPath("userData"), "workspace.json");
+  const workspaceSettingsInfo = (): WorkspaceSettingsInfo => {
+    const s = loadWorkspaceSettings(workspaceSettingsPath);
+    return {
+      defaultWorkspace: resolveDefaultWorkspace(app.getPath("documents"), s),
+      builtin: s.defaultWorkspace === null,
+    };
+  };
   applyToEnv(loadKeys(keyVaultPath), process.env);
   // .env 那条路不经过 keyVault，登记不到（loadDotEnv 只认"补空缺"这一件事）。
   // 补登记：本仓认识的那几个 provider key 变量，此刻有值的都算凭据——
@@ -1670,6 +1687,12 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
+    // 兜底工作区惰性创建(#559):只在它真被用作会话工作区的这一刻 mkdir——
+    // 从没用过兜底的人,文档区永远不会长出 Mr Otto/Default。
+    // 只认"等于当前兜底路径"这一种,别替渲染层传来的任意路径 mkdir
+    if (opts.workspace === workspaceSettingsInfo().defaultWorkspace) {
+      mkdirSync(opts.workspace, { recursive: true });
+    }
     // 工具表是一次性拼好的（挂载一次定终身）：必须在 createSessionAgent 之前
     // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
     // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位。
@@ -1967,6 +1990,17 @@ void app.whenReady().then(() => {
     saveIslandSettings(islandSettingsPath, islandSettings);
     islandUsageCache = null; // 切换瞬间给最新数,别端上一份 30s 前的缓存
     pushFleet();
+  });
+
+  ipcMain.handle(CHANNELS.getWorkspaceSettings, () => workspaceSettingsInfo());
+  // dir 是渲染层传来的外部输入——normalise 整形(非字符串/空串都落成 null),
+  // 不做存在性校验:设置的是"以后兜底用哪儿",真用到那刻 startSession 会 mkdir
+  ipcMain.handle(CHANNELS.setDefaultWorkspace, (_e, dir: unknown) => {
+    saveWorkspaceSettings(
+      workspaceSettingsPath,
+      normaliseWorkspaceSettings({ defaultWorkspace: dir })
+    );
+    return workspaceSettingsInfo();
   });
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
