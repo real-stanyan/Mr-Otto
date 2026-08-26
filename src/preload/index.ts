@@ -59,6 +59,7 @@ const bridge: ShellBridge = {
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),
   reconnectMcpServer: (id) => ipcRenderer.invoke(CHANNELS.reconnectMcpServer, id),
+  authorizeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.authorizeMcpServer, id),
   listMcpPrompts: () => ipcRenderer.invoke(CHANNELS.listMcpPrompts),
   expandMcpPrompt: (server, name, args) =>
     ipcRenderer.invoke(CHANNELS.expandMcpPrompt, server, name, args),

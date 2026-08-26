@@ -450,6 +450,10 @@ export interface ShellBridge {
   removeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 手动重连（failed 的那台，用户修好环境后自己点） */
   reconnectMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 跑一次 OAuth 授权：主进程开系统浏览器，用户点完同意后自动重连。
+      URL 由主进程从这台 server 的配置推出来，渲染层递不进任意外链
+      （同 updaterOpenReleasePage 的规矩）。失败原样 reject，设置页显示原因 */
+  authorizeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
   listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
@@ -865,6 +869,7 @@ export const CHANNELS = {
   saveMcpServer: "otter:saveMcpServer",
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
+  authorizeMcpServer: "otter:authorizeMcpServer",
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",

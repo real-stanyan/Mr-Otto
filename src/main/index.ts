@@ -1720,6 +1720,10 @@ void app.whenReady().then(() => {
     await mcpHub.reconnect(id);
     return mcpSnapshot();
   });
+  ipcMain.handle(CHANNELS.authorizeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
+    await mcpHub.authorize(id);
+    return mcpSnapshot();
+  });
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>
     mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
   );
