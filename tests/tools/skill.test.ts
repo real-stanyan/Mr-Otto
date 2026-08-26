@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeSkillIndex, createSkillTool } from "../../src/tools/skill.js";
+import { composeSkillIndex, createSkillTool, knownSkillToolName } from "../../src/tools/skill.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 const W = {} as ExecutionWorld;
@@ -150,5 +150,22 @@ describe("composeSkillIndex（索引拼装与截断）", () => {
     expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(1024);
     expect(out).toMatch(/另有 \d+ 个未列出/);
     expect(out).toContain("list");
+  });
+});
+
+// R3 修复（residuals）：index.ts 的 `known`（子智能体设置页保存时拿来校验工具名的
+// 那份清单）不能只信开机那一刻的 TOOL_NAMES 快照——available() 只问"此刻有没有装
+// skill"，零 skill 开机时装不出这把刀，之后装了第一把、设置页却还报"工具名无法
+// 识别"。knownSkillToolName 是 index.ts 里那处 known 计算抽出来的纯逻辑，
+// 这里独立验证；index.ts 怎么接线（连着 scanSkills 现扫磁盘）本身要起 Electron
+// 才能跑，不在这个文件的覆盖范围内
+describe("knownSkillToolName（R3：known 名单不吃开机快照）", () => {
+  it("零 skill：不补这个名字", () => {
+    expect(knownSkillToolName(0)).toEqual([]);
+  });
+
+  it("装了至少一把：补上 \"skill\"", () => {
+    expect(knownSkillToolName(1)).toEqual(["skill"]);
+    expect(knownSkillToolName(5)).toEqual(["skill"]);
   });
 });

@@ -42,6 +42,7 @@ import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
+import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
@@ -1247,8 +1248,18 @@ void app.whenReady().then(() => {
       null = 只看用户级（设置页的「用户」视图、探针装配） */
   const listSubagents = (workspace: string | null) => {
     // 磁盘定义和内置定义用的必须是同一份已知工具名单，否则同一个 mcp__… 名字
-    // 在两边一个认得一个不认得
-    const known = [...TOOL_NAMES, ...mcpToolNamesNow()];
+    // 在两边一个认得一个不认得。
+    // skill 工具同样不能只信 TOOL_NAMES 那份开机快照：它的 available() 只问
+    // "此刻有没有装 skill"，零 skill 开机时 probeToolDefs 装不出它，TOOL_NAMES
+    // 里没有 "skill"。之后用户在设置页导入第一把 skill：复选框列表用的是现算的
+    // 活工具表，能勾上；但这里若还信旧快照，保存时就会把 skill 打进
+    // unknownTools，报"1 个工具名无法识别"。knownSkillToolName 同 mcpToolNamesNow
+    // 挨着的既有惯用法（ADR-0054）：认不认得这个名字不能停在装配那一刻，这里也现扫
+    const known = [
+      ...TOOL_NAMES,
+      ...mcpToolNamesNow(),
+      ...knownSkillToolName(scanSkills(skillRoots).length),
+    ];
     // subagentRoots 只拼路径;搬家(.otter → .mr-otto)在这里先做一遍,用户级和工作区级都搬
     configDir(homedir());
     if (workspace) configDir(workspace);

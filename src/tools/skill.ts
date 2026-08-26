@@ -14,6 +14,17 @@ import type { Tool } from "./tool.js";
 
 export const SKILL_TOOL_NAME = "skill";
 
+/** 「已知工具名单」要不要算上 "skill"：工具本身的 available() 只问"此刻有没有
+    装 skill"（见下方 available），所以判断"这个名字认不认识"的一方也不能吃
+    开机那一刻的旧快照——零 skill 开机时开机探针装不出这把刀，之后用户在设置页
+    导入第一把 skill：设置页复选框列表用的是现算的活工具表，能勾上，但保存时若
+    校验方还信旧快照，"skill" 就会被打进 unknownTools，报"1 个工具名无法识别"。
+    同 mcpToolNamesNow 的既有惯用法（ADR-0054）：认不认得这个名字不能停在装配
+    那一刻——调用方现扫磁盘算出 installedCount，这里只管现算这条件，不碰 fs */
+export function knownSkillToolName(installedCount: number): string[] {
+  return installedCount > 0 ? [SKILL_TOOL_NAME] : [];
+}
+
 /** 索引体积上限。数值取自 exposure.ts 的单工具预算（8KB）减 1KB 给动作说明，
     但那是**自我约束，无人强制**：`applyExposurePolicy` 只套在 MCP 工具上
     （agent.ts:488），没有任何东西在量这把内置工具。写清楚免得下一个人以为
