@@ -921,6 +921,10 @@ export interface WorkspaceSettingsInfo {
   defaultWorkspace: string;
   /** true = 用户没设置过,用的是内置 Default(UI 据此出新手提示文案) */
   builtin: boolean;
+  /** 内置 Default 的绝对路径,与设置无关恒定。侧栏「任务/项目」切换器按它分栏:
+      任务 = workspace 等于这条路径的会话——用户自定义的默认文件夹算项目,
+      不算任务(语义钉在内置路径上,改默认不会让会话在两栏之间跳来跳去) */
+  builtinWorkspace: string;
 }
 
 /** OTA 更新器状态（main/updater.ts 维护并推送，设置页「关于与更新」卡消费）。

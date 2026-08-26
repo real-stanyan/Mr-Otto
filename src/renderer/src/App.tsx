@@ -1761,6 +1761,70 @@ function AppSidebar() {
       </DropdownMenu>
     </SidebarMenuItem>
   );
+  /** 会话行:任务平铺列表和项目分组视图共用同一副行（球+标题+⋮ 菜单），
+      长得不一样就像两种东西——其实都是会话。fallbackLabel = 还没发话时的标题
+      （项目视图给文件夹名，任务视图给「任务」） */
+  const sessionRow = (s: SessionSummary, fallbackLabel: string) => (
+    <SidebarMenuItem key={s.sessionId}>
+      <SidebarMenuButton
+        className="h-auto flex-row items-center gap-2 py-[7px]"
+        isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !simPanelOpen && !friendChat && s.sessionId === sessionId}
+        onClick={() => void resume(s.sessionId)}
+      >
+        {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
+            原来那行「日期 · 条数 运行中」里,只有最后两个字会改变你的
+            下一步动作,前两样不会 —— 所以留状态、去掉日期和条数 */}
+        <SessionOrb
+          state={orbState({
+            waiting: Boolean(approvals[s.sessionId] ?? asks[s.sessionId]),
+            running: statusBySession[s.sessionId] === "running",
+          })}
+        />
+        {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回 fallback */}
+        <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
+          {s.title ?? fallbackLabel}
+        </span>
+      </SidebarMenuButton>
+      {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
+          后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
+          删除不可逆才弹 confirm */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction
+            showOnHover
+            title="会话操作"
+            onClick={(e) => e.stopPropagation() /* 别触发外层的"切换到该会话" */}
+          >
+            <Ellipsis />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuItem
+            onClick={() => setRenaming({ sessionId: s.sessionId, title: s.title ?? fallbackLabel })}
+          >
+            重命名
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={statusBySession[s.sessionId] === "running"}
+            onClick={() => void archiveSession(s.sessionId)}
+          >
+            归档
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => {
+              if (confirm(`彻底删除会话 ${fallbackLabel} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+                void deleteSession(s.sessionId);
+              }
+            }}
+          >
+            删除
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuItem>
+  );
   // 已归档是侧栏的一个**视图**，不是列表底部的一截折叠区（ADR-0089）：
   // 归档的会话越攒越多时，折叠区在长列表最底下，等于藏在滚动条尽头；
   // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
@@ -1774,8 +1838,39 @@ function AppSidebar() {
   useEffect(() => {
     if (settingsSection !== null) setArchivedView(false);
   }, [settingsSection]);
-  // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着
-  const groups = useMemo(() => groupSessionsByWorkspace(sessions), [sessions]);
+  // 任务/项目切换器（60e0479 那颗 Work/Game 分段控件的还魂，位置照旧）：
+  // 任务 = 内置 Default 工作区的会话——新手不用先懂「文件夹」就能开聊；
+  // 项目 = 其余工程的分组视图。语义钉在内置路径上（builtinWorkspace，与设置里
+  // 改没改默认无关）：钉在「当前默认」上的话，用户一改默认，整批会话就在
+  // 两栏之间跳来跳去。档位是纯本机视图状态，不落日志（60e0479 的先例）
+  const workspaceSettings = useChat((s) => s.workspaceSettings);
+  const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
+  useEffect(() => {
+    void loadWorkspaceSettings();
+  }, [loadWorkspaceSettings]);
+  const builtin = workspaceSettings?.builtinWorkspace ?? null;
+  const [tab, setTab] = useState<"tasks" | "projects">("tasks");
+  // 初值只定一次：库里已有项目会话的老用户落「项目」，全新用户落「任务」。
+  // 之后完全听点击——别在用户切走后又被数据变化拽回来
+  const tabDecided = useRef(false);
+  useEffect(() => {
+    if (tabDecided.current || !builtin || sessions.length === 0) return;
+    tabDecided.current = true;
+    if (sessions.some((s) => !s.archived && s.workspace !== null && s.workspace !== builtin)) {
+      setTab("projects");
+    }
+  }, [sessions, builtin]);
+  // 任务平铺列表：sessions 本来就是最近活跃在前,不再分组
+  const taskSessions = useMemo(
+    () => sessions.filter((s) => !s.archived && s.workspace !== null && s.workspace === builtin),
+    [sessions, builtin]
+  );
+  // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着。
+  // 内置 Default 的会话归任务栏,不在这儿再出现一组
+  const groups = useMemo(
+    () => groupSessionsByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
+    [sessions, builtin]
+  );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedProjects(COLLAPSED_KEY));
   const [archivedCollapsed, setArchivedCollapsed] = useState<Set<string>>(() =>
     loadCollapsedProjects(ARCHIVED_COLLAPSED_KEY)
@@ -1838,12 +1933,25 @@ function AppSidebar() {
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {settingsSection === null && (
           <>
+            {/* 任务/项目档位（原 Work/Game 的位置与实现套路,60e0479）：它切的是
+                整个会话列表在展示什么,属于导航。面板不在这棵树里,Root 只当分段
+                控件用——把 Root 提出去罩住两边会让 shadcn sidebar 的 peer 兄弟
+                选择器算错宽度(主区不被推开);代价是 trigger 的 aria-controls
+                指向一个不存在的 panel id */}
+            <Tabs value={tab} onValueChange={(v) => setTab(v as "tasks" | "projects")}>
+              <TabsList className="w-full">
+                <TabsTrigger value="tasks">任务</TabsTrigger>
+                <TabsTrigger value="projects">项目</TabsTrigger>
+              </TabsList>
+            </Tabs>
             <Button
               variant="ghost"
               className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
               onClick={() => {
                 setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
-                newSession(); // 裸传会把 MouseEvent 当 dir 塞进去
+                // 任务档的新会话直接落进内置 Default(不用选文件夹);
+                // 项目档保持空白开局,文件夹在 composer 里配
+                newSession(tab === "tasks" && builtin ? builtin : undefined);
               }}
             >
               ＋ 新会话
@@ -1956,6 +2064,18 @@ function AppSidebar() {
               </>
             )}
           </>
+        ) : tab === "tasks" ? (
+          // 任务视图：内置 Default 工作区的会话平铺（最近活跃在前，列表本来的序）。
+          // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」
+          <SidebarMenu className="p-2">
+            {taskSessions.map((s) => sessionRow(s, "任务"))}
+            {taskSessions.length === 0 && (
+              <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
+                还没有任务。点上面的「＋ 新会话」直接开聊——不用选文件夹，
+                水獭会把做出来的东西放进「文档 › Mr Otto › Default」。
+              </div>
+            )}
+          </SidebarMenu>
         ) : (
           <>
             {/* 一个工程一组：组序按组内最近会话时间，最近动过的工程浮上来。
@@ -1994,73 +2114,20 @@ function AppSidebar() {
                       {/* 缩进只能吃自己的 padding:w-full 上再加 margin 会把总宽顶出侧栏,
                           冒出一条横滚动条 */}
                       <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
-                        {g.sessions.map((s) => (
-                          <SidebarMenuItem key={s.sessionId}>
-                            <SidebarMenuButton
-                              className="h-auto flex-row items-center gap-2 py-[7px]"
-                              isActive={phase === "chat" && settingsSection === null && !protocolOpen && !gitGraphOpen && !terminalPanelOpen && !browserPanelOpen && !simPanelOpen && !friendChat && s.sessionId === sessionId}
-                              onClick={() => void resume(s.sessionId)}
-                            >
-                              {/* 后台会话的动静收进这颗球:等你 > 在跑 > 闲着(lib/sessionOrb)。
-                                  原来那行「日期 · 条数 运行中」里,只有最后两个字会改变你的
-                                  下一步动作,前两样不会 —— 所以留状态、去掉日期和条数 */}
-                              <SessionOrb
-                                state={orbState({
-                                  waiting: Boolean(approvals[s.sessionId] ?? asks[s.sessionId]),
-                                  running: statusBySession[s.sessionId] === "running",
-                                })}
-                              />
-                              {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回文件夹名 */}
-                              <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
-                                {s.title ?? g.label}
-                              </span>
-                            </SidebarMenuButton>
-                            {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
-                                后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
-                                删除不可逆才弹 confirm */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <SidebarMenuAction
-                                  showOnHover
-                                  title="会话操作"
-                                  onClick={(e) => e.stopPropagation() /* 别触发外层的"切换到该会话" */}
-                                >
-                                  <Ellipsis />
-                                </SidebarMenuAction>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
-                                <DropdownMenuItem
-                                  onClick={() => setRenaming({ sessionId: s.sessionId, title: s.title ?? g.label })}
-                                >
-                                  重命名
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  disabled={statusBySession[s.sessionId] === "running"}
-                                  onClick={() => void archiveSession(s.sessionId)}
-                                >
-                                  归档
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onClick={() => {
-                                    if (confirm(`彻底删除会话 ${g.label} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                                      void deleteSession(s.sessionId);
-                                    }
-                                  }}
-                                >
-                                  删除
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </SidebarMenuItem>
-                        ))}
+                        {g.sessions.map((s) => sessionRow(s, g.label))}
                       </SidebarMenu>
                     </SidebarGroupContent>
                   )}
                 </SidebarGroup>
               );
             })}
+            {groups.length === 0 && (
+              // 新手第一次切过来的空态:顺手把「项目是什么」讲了
+              <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
+                还没有项目。项目就是在你自己指定的文件夹里开的会话——
+                点「＋ 新会话」，在输入框上方选一个文件夹就有了。
+              </div>
+            )}
             {/* 收起的组里有动静(跑 turn / 等审批)时提醒一句,免得折叠把事实藏了 */}
             {groups.some(
               (g) =>
