@@ -168,7 +168,7 @@ export function createRemoteBridge(opts: {
    * 收到对端的握手包。**规则是"永远用对端最新的那一条",不是"只认第一条"**。
    *
    * 只认第一条会死锁,而且是这条链路上最常见的死法:中继在**任何一端 attach 时
-   * 都会给两边各发一次 `:peer`**(services/gateway/src/relay.ts)。手机重连一次,
+   * 都会给两边各发一次 `:peer`**(services/edge/src/relay.ts)。手机重连一次,
    * 桌面这侧就收到一条 `:peer` 并重开一轮;手机自己那条 `:peer` 却写给了正在被
    * 拆掉的旧连接,收不到。于是桌面开了两轮(D1、D2)、手机只开了一轮(M1):
    * 手机锁死在先到的 D1 上,桌面停在 (D2, M1)。两边都自认为 ready,而每一帧都

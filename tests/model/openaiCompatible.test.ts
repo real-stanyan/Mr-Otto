@@ -384,7 +384,7 @@ describe("图片附件(image_ref → image_url,file-input-v1)", () => {
   });
 });
 
-describe("端点解析（otto-gateway 路线）", () => {
+describe("端点解析（resolveEndpoint 路线）", () => {
   /** 记下每次请求的 url / headers,用来断言"用的是哪一套凭据" */
   function mockFetchJSON(status = 200, body = '{"choices":[{"message":{"content":"ok"}}]}') {
     const calls: { url: string; headers: Record<string, string> }[] = [];
@@ -602,21 +602,6 @@ describe("errorClass 标记（issue #389）——抛错处分类，下游读标�
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status, text: async () => "x" }));
     const err = await clsAdapter().chat([]).catch((e: unknown) => e);
     expect(errorClassOf(err)).toBe(cls);
-  });
-
-  it("网关限流（人话文案，无 'API 429' 字样）也带 rate-limit 分类", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        text: async () =>
-          JSON.stringify({ error: { type: "otto_gateway", message: "访问量过大，稍后再试" } }),
-      })
-    );
-    const err = await clsAdapter().chat([]).catch((e: unknown) => e);
-    expect((err as Error).message).toBe("访问量过大，稍后再试");
-    expect(errorClassOf(err)).toBe("rate-limit");
   });
 
   it("网络层失败带 retryable 分类", async () => {

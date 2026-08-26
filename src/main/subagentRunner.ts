@@ -40,7 +40,6 @@ export interface SubagentRunnerDeps {
         "用户有没有打开免审批"是个运行时状态，读一次快照会在长会话里过期 */
     approvalMode: "ask" | "auto";
   };
-  getAccessToken?: () => Promise<string | null>;
   alwaysAllow?: () => ReadonlySet<string>;
   /** execpolicy 规则现读器（issue #347，同 alwaysAllow 的活引用规矩）：
       forbidden 对子 agent 同样生效，用户写的"永不放行"不被派活绕过 */
@@ -135,7 +134,6 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         attachments: deps.attachments,
         allowTools: def.tools,
         spawnedBy: { sessionId: parent.sessionId, toolCallId: parentToolCallId, agent: def.name },
-        ...(deps.getAccessToken ? { getAccessToken: deps.getAccessToken } : {}),
         ...(deps.autoCompactSettings ? { autoCompactSettings: deps.autoCompactSettings } : {}),
         // deny 换掉整条审批链（mode/授权都不参与）；ask/auto/inherit 走常规链，
         // 用户永久授过权的工具在子 agent 里照样免问——授权授的是工具，不是会话
