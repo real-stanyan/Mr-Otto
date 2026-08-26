@@ -192,8 +192,10 @@ export function createAgent(opts: {
   history?: HistoryCapability;
   /** 工作区检查点能力（issue #395，index.ts 用影子 git 实现焊进来）。
       挂了 = 每个用户 turn 前自动存档、轨迹视图出现「回到这一步」；
-      不给 = 该装配没有检查点（测试/裸装配/子会话照旧）。注入方向同 mcp/history */
-  checkpoints?: CheckpointCapability;
+      不给 = 该装配没有检查点（测试/裸装配/子会话照旧）。注入方向同 mcp/history。
+      也收工厂（#573）：sessionId 在 createAgent 里才出生,Default 工作区要按
+      会话选影子仓落点时,组装根只能给「拿到 id 再造」的函数（makeBrowser 同款） */
+  checkpoints?: CheckpointCapability | ((sessionId: string) => CheckpointCapability);
   /** iOS 模拟器能力（issue #401，index.ts 从 simulatorHub 注入）。注入方向同
       browser/mcp：hub 要管 simctl 子进程、画面轮询、向渲染层推状态，LocalWorld
       造不出来。不给 = 这个装配没有模拟器（simulator 工具不挂）。
@@ -264,9 +266,13 @@ export function createAgent(opts: {
   // history 叠在 mcp 之外——同一件事：子 agent 复用父的 world 实例时这层已经在了，
   // 不会被重复包一层（world.history 是不是在只问 world，不问 opts.history 给没给）
   const withHistoryLayer = opts.history ? withHistory(withMcpLayer, opts.history) : withMcpLayer;
-  // 检查点叠在最外（issue #395）：同上，子 agent 复用父 world 时这层已经在了
-  const withCheckpointLayer = opts.checkpoints
-    ? withCheckpoint(withHistoryLayer, opts.checkpoints)
+  // 检查点叠在最外（issue #395）：同上，子 agent 复用父 world 时这层已经在了。
+  // 工厂形态（#573）：Default 工作区的影子仓按会话一份,而 sessionId 在这个
+  // 函数里才出生——组装根给不了值,只能给「拿到 id 再选址」的函数(makeBrowser 同款)
+  const checkpointCap =
+    typeof opts.checkpoints === "function" ? opts.checkpoints(sessionId) : opts.checkpoints;
+  const withCheckpointLayer = checkpointCap
+    ? withCheckpoint(withHistoryLayer, checkpointCap)
     : withHistoryLayer;
   // 模拟器叠在最外（issue #401）：同上，子 agent 复用父 world 时这层已经在了
   const withSimulatorLayer = opts.simulator

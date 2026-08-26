@@ -4,7 +4,7 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
@@ -23,7 +23,7 @@ import {
   type SessionRuntime,
 } from "../shared/shellBridge.js";
 import { createAgent, loadDotEnv, newSessionId, type AgentPush } from "./agent.js";
-import { createShadowGitCheckpoints, workspaceStoreName } from "../world/checkpoints.js";
+import { createShadowGitCheckpoints, sessionCheckpointStoreName, workspaceStoreName } from "../world/checkpoints.js";
 import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
 import { createHistoryCapability } from "./historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
@@ -1514,13 +1514,27 @@ void app.whenReady().then(() => {
         ? { spawnedBy: { sessionId: args.sideOf, toolCallId: "side-chat", agent: "side", kind: "side" as const } }
         : {}),
       toolHooks: userToolHooks,
-      // 工作区检查点（issue #395）：影子 git 库住配置目录（快照跨会话共享——
-      // 同一工作区的多个会话回退的是同一份磁盘现实）。只挂主会话：子会话共享
-      // 父 world，自动存档只发生在用户 turn 的入口（handleSendMessage）
-      checkpoints: createShadowGitCheckpoints({
-        workspace: args.workspace,
-        gitDir: join(configDir(homedir()), "checkpoints", workspaceStoreName(args.workspace)),
-      }),
+      // 工作区检查点（issue #395）：影子 git 库住配置目录。只挂主会话：子会话共享
+      // 父 world，自动存档只发生在用户 turn 的入口（handleSendMessage）。
+      // 项目工作区快照跨会话共享（同一工程的多个会话回退的是同一份磁盘现实）；
+      // Default 工作区按会话一份（#573）——所有任务会话共写同一个文件夹,共享
+      // 影子仓时 A 的回退会吞 B 的产出。sessionId 在 createAgent 里才出生,
+      // 所以 Default 这边给的是工厂(makeBrowser 同款);resume 时 id 不变,
+      // 同一会话恢复后仍指回自己那份仓
+      checkpoints: isDefaultWorkspace
+        ? (sessionId: string) =>
+            createShadowGitCheckpoints({
+              workspace: args.workspace,
+              gitDir: join(
+                configDir(homedir()),
+                "checkpoints",
+                sessionCheckpointStoreName(args.workspace, sessionId)
+              ),
+            })
+        : createShadowGitCheckpoints({
+            workspace: args.workspace,
+            gitDir: join(configDir(homedir()), "checkpoints", workspaceStoreName(args.workspace)),
+          }),
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
@@ -2364,11 +2378,21 @@ void app.whenReady().then(() => {
     // 删除 = 整会话物理抹除（ADR-0002）。用户点删就是要它从库里消失，不可逆。
     // purge 会连它派出去的子会话一起抹（否则子会话成孤儿：够不着、删不掉、
     // 账还在算），返回真正被抹掉的那几个 id——活资源按同一份名单注销
+    // 会话级影子仓要在 purge 前拿 workspace（purge 之后查不到了）。
+    // 只有 Default 会话有这份仓(#573);按名字直接试删,不存在就静默过——
+    // 项目会话的共享仓名字里没有 sessionId,不会被误删
+    const doomedWorkspace = store.sessions().find((s) => s.sessionId === sessionId)?.workspace;
     for (const id of store.purge(sessionId)) {
       terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
       browsers.close(id); // 会话没了,它的浏览器也该没
       agents.delete(id); // 注册表里的活 agent 一并注销（空闲状态，无挂起可丢）
       islandStates.delete(id); // 岛的 Map 投影也剪掉——不然拍平出来的 fleet 会带一行死会话
+      if (doomedWorkspace) {
+        rmSync(
+          join(configDir(homedir()), "checkpoints", sessionCheckpointStoreName(doomedWorkspace, id)),
+          { recursive: true, force: true } // force: 不存在不算错（项目会话本来就没有）
+        );
+      }
     }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
     fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
