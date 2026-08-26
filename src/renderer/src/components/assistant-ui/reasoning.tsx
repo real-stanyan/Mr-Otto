@@ -38,12 +38,16 @@ const ReasoningPreviewContext = createContext(false);
  */
 const ReasoningScrolledContext = createContext<((scrolled: boolean) => void) | null>(null);
 
-const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
+// mb-4 跟着「有框的那两种」走,不在 base 上:ghost 变体在本仓是时间线里的一行
+// (工作头 / 思考头交替出现,见 aui/OttoThread.tsx),行与行之间靠列表自己的 gap
+// 排版,base 上的 mb-4 会在每条思考底下多顶出一段空,看着像分了组。
+// 有框的 outline/muted 是独立卡片,它自己得留出与下文的距离
+const reasoningVariants = cva("aui-reasoning-root w-full", {
   variants: {
     variant: {
-      outline: "rounded-lg border px-3 py-2",
+      outline: "mb-4 rounded-lg border px-3 py-2",
       ghost: "",
-      muted: "bg-muted/50 rounded-lg px-3 py-2",
+      muted: "mb-4 bg-muted/50 rounded-lg px-3 py-2",
     },
   },
   defaultVariants: {
