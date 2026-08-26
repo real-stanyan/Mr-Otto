@@ -269,6 +269,15 @@ function workspaceOf(events: SessionEvent[]): string | null {
   return null;
 }
 
+/** workspaceKind 同 workspaceOf 的取法(#559 后续):估算和真实请求共用同一份
+    文案,Default 会话多那段引导也得算进来,少算一段就是又开始猜 */
+function workspaceKindOf(events: SessionEvent[]): "default" | undefined {
+  for (const e of events) {
+    if (e.type === "session_created" && e.workspace) return e.workspaceKind;
+  }
+  return undefined;
+}
+
 /** 上下文占用按来源拆四份。tools 缺省 = 空（拿不到工具表时该项显示 0，不瞎猜）。
 
     有账单锚点时：total = contextUsed（事实优先），对话消息取差额——账单里
@@ -287,7 +296,7 @@ export function contextBreakdown(
   const today = dayOfLastEvent(events);
   const system = workspace
     ? estimateTokens(
-        systemPromptText(workspace, today) +
+        systemPromptText(workspace, today, workspaceKindOf(events)) +
           (memoryEvent
             ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user, memoryEvent.project, memoryEvent.projectRoot)
             : "")

@@ -233,6 +233,16 @@ export interface SimulatorCapability {
   inputReady(): boolean;
 }
 
+/** 打包为项目能力（#559 后续）：把 Default 工作区里的产出搬进一个新项目文件夹。
+    这是唯一一把**故意越出围栏**的工具能力——落点在文档区 Mr Otto/ 下,不在
+    workspace 里,所以不能用 fs.write 表达。注入方向同 simulator(ADR-0035):
+    文档区路径、跨盘搬移都是组装根的活;只在内置 Default 工作区的主会话上焊。
+    安全边界在实现侧:name 不得含路径分隔符、files 必须解析在 workspace 内、
+    目标已存在即拒;工具本身 requiresApproval,审批卡列出全部参数 */
+export interface ProjectsCapability {
+  packageProject(name: string, files: string[]): Promise<{ dir: string; moved: string[] }>;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -287,6 +297,10 @@ export interface ExecutionWorld {
       withSimulator 焊进来。缺席 = 该装配没有模拟器（simulator 工具不挂，
       右栏面板入口不出现）。只在 macOS + 装了 Xcode 的机器上会被焊上 */
   simulator?: SimulatorCapability;
+  /** 可选：打包为项目（#559 后续）。注入方向同 simulator——由组装根用
+      withProjects 焊进来。缺席 = 该装配没有打包能力（package_project 不挂）。
+      只在内置 Default 工作区的主会话上会被焊上 */
+  projects?: ProjectsCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -332,6 +346,8 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
     // 中断收益为零（同 fs 的取舍）
     ...(world.simulator ? { simulator: world.simulator } : {}),
+    // 打包同理:一次性的 mkdir + 搬文件,不绑信号
+    ...(world.projects ? { projects: world.projects } : {}),
   };
 }
 
@@ -357,6 +373,7 @@ export function withExecOutput(
     // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
     // 中断收益为零（同 fs 的取舍）
     ...(world.simulator ? { simulator: world.simulator } : {}),
+    ...(world.projects ? { projects: world.projects } : {}),
   };
 }
 
@@ -393,4 +410,11 @@ export function withCheckpoint(world: ExecutionWorld, checkpoint: CheckpointCapa
     对 hub、对 Swift helper 的存在一概无感（硬规则原样成立） */
 export function withSimulator(world: ExecutionWorld, simulator: SimulatorCapability): ExecutionWorld {
   return { ...world, simulator };
+}
+
+/** 把打包为项目能力焊进 world —— withSimulator 同款手法（#559 后续）。
+    组装根只在内置 Default 工作区的主会话上焊;工具照旧只调
+    world.projects.packageProject(...),对文档区路径的存在无感 */
+export function withProjects(world: ExecutionWorld, projects: ProjectsCapability): ExecutionWorld {
+  return { ...world, projects };
 }

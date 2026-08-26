@@ -112,6 +112,7 @@ import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
+import { packageProject } from "./projectPackager.js";
 import {
   builtinDefaultWorkspace,
   loadWorkspaceSettings,
@@ -1448,9 +1449,16 @@ void app.whenReady().then(() => {
     // project_instructions 事件落盘，日志里自解释（model-visible means logged）。
     // resume 不重找（历史会话的模型视野不因今天的文件改写）
     const instructions = args.resumeSessionId ? null : findProjectInstructions(args.workspace);
+    // 内置 Default 工作区的主会话（#559 后续）：session_created 打 workspaceKind、
+    // 挂打包能力。判定在建会话这一刻做完并落日志——重放不读设置。
+    // 子会话/SideChat 不算：引导是给用户看的，派出去的 agent 轮不到
+    const isDefaultWorkspace =
+      !args.child && !args.sideOf &&
+      args.workspace === builtinDefaultWorkspace(app.getPath("documents"));
     const base = {
       store,
       workspace: args.workspace,
+      ...(isDefaultWorkspace ? { workspaceKind: "default" as const } : {}),
       push,
       attachments: attachmentStore,
       makeBrowser: (sid: string) => ({
@@ -1531,6 +1539,22 @@ void app.whenReady().then(() => {
       // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
       // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
       simulator: simulators.capability(),
+      // 打包为项目（#559 后续）：只挂内置 Default 工作区的主会话——项目会话
+      // 用不上（已经是项目），子会话拿不到（继承面同 simulator 的立场）。
+      // 落点固定在文档区 Mr Otto/ 下,由主进程实现(工具层只认接口)
+      ...(isDefaultWorkspace
+        ? {
+            projects: {
+              packageProject: (name: string, files: string[]) =>
+                packageProject({
+                  documentsDir: app.getPath("documents"),
+                  workspace: args.workspace,
+                  name,
+                  files,
+                }),
+            },
+          }
+        : {}),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       persistAlwaysAllow: (tool) => void addAlwaysAllow(permissionsPath, tool),
       // execpolicy（issue #347）：现读现校验（热更新与 alwaysAllow 同款）；

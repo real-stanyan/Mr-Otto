@@ -31,6 +31,7 @@ import {
   Bot,
   Brain,
   FileText,
+  FolderOpen,
   Globe,
   ListChecks,
   MessageCircleQuestion,
@@ -55,6 +56,11 @@ import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memory
 import { parseSessionSearchResult, type SessionSearchResult } from "../../../shared/sessionSearch.js";
 import { toDocumentProps, toRetrievalProps } from "../lib/sessionSearchCard.js";
 import { askCardRows } from "../lib/askUserCard.js";
+import {
+  packagedProjectName,
+  parsePackageProjectResult,
+  type PackagedProject,
+} from "../lib/packagedProjectCard.js";
 import { parseAskUserResult, type AskUserOutcome } from "../../../shared/askUser.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
@@ -422,6 +428,42 @@ function ToolRowLabel({ name, args }: { name: string; args: unknown }) {
   );
 }
 
+/** package_project 成功后的那张卡(#559 后续):打包这件事的意义在「接下来去
+    项目里干活」,通用工具行给不了这条出路。CTA 只开一个指向新项目文件夹的
+    新会话草稿(newSession 是纯导航,反悔零痕迹)——旧对话留在任务栏:
+    日志 append-only,它的 workspace 改不了,也不该改。
+    壳沿用 elicitation-form(accepted 态),和问卷卡同一件衣服 */
+const PackagedProjectCard: FC<{ result: PackagedProject }> = ({ result }) => (
+  <ElicitationForm
+    server="打包为项目"
+    state="accepted"
+    icon={<FolderOpen className="size-3.5" />}
+    headerEnd={<span className={cn(mono, "text-foreground/30 shrink-0")}>已打包</span>}
+    actions={null}
+    className="my-1 max-w-none gap-3"
+  >
+    <div className="flex min-w-0 flex-col gap-2">
+      <span className="text-foreground/80 text-[13px] leading-relaxed">
+        「{packagedProjectName(result.dir)}」现在是一个独立项目了，文件在{" "}
+        <span className={cn(mono, "break-all text-foreground/60")}>{result.dir}</span>
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {result.moved.map((m) => (
+          <span key={m} className={cn(field, "rounded-full px-2.5 py-1 text-xs text-foreground/60")}>
+            {m}
+          </span>
+        ))}
+      </div>
+      <button
+        className="self-start rounded-lg border border-border px-3 py-[6px] text-[13px] font-[550] hover:bg-foreground/[0.06]"
+        onClick={() => useChat.getState().newSession(result.dir)}
+      >
+        在新项目开会话
+      </button>
+    </div>
+  </ElicitationForm>
+);
+
 /** ask_user 答完之后留在时间线上的那张卡:问了什么、我选了哪个。
     活着的那张问卷卡(QuestionnaireCard)答完就消失,而"我当时答了什么"是后面每一步的
     前提——只留一行折起来的工具行,等于把这个前提藏进了折叠区。
@@ -552,6 +594,12 @@ const ToolFallbackWithLiveTail: NonNullable<ThreadComponents["ToolFallback"]> = 
   if (part.toolName === "ask_user" && typeof part.result === "string") {
     const outcome = parseAskUserResult(part.result);
     if (outcome) return <AnsweredAskCard args={part.args} outcome={outcome} />;
+  }
+  // 打包成功换成带出路的卡(#559 后续):通用工具行只会写一坨 JSON,而这一步
+  // 真正的产出是"有了一个新项目,可以去那儿继续"。出错的那次不走这条路
+  if (part.toolName === "package_project" && part.isError !== true && typeof part.result === "string") {
+    const packaged = parsePackageProjectResult(part.result);
+    if (packaged) return <PackagedProjectCard result={packaged} />;
   }
   // 搜索这一步换成 web-search element:通用工具行只会写「web_search」+ 一坨折起来的
   // JSON,而这一步真正发生的事是"用这句话去查,读回了这几条"。出错的那次不走这条路

@@ -46,11 +46,18 @@ export function dayOfLastEvent(events: { ts: number }[]): string | undefined {
 /** 围栏 system 消息的正文——投影(下面)和上下文用量估算(shared/contextEstimate)
     共用这一处出口:两边不能各写一份文案,不然"系统提示词占多少"就是猜的。
 
-    today 缺席 = 不写日期那一行(老调用方/老日志投影逐字节不变) */
-export function systemPromptText(workspace: string, today?: string): string {
+    today 缺席 = 不写日期那一行(老调用方/老日志投影逐字节不变)。
+    workspaceKind 来自 session_created(#559 后续):"default" = 内置 Default 工作区,
+    多注入「打包为项目」引导段;缺席 = 项目会话/旧日志,逐字节不变 */
+export function systemPromptText(
+  workspace: string,
+  today?: string,
+  workspaceKind?: "default"
+): string {
   return (
     `你是 Mr. Otto（叫我 Otto），一个会用工具的桌面 agent。当前工程文件夹：${workspace}\n` +
     (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
+    (workspaceKind === "default" ? PACKAGE_NUDGE : "") +
     // 说实话而不是说得更强:read_file/write_file 真被 world 的 fence 圈住(越界抛错),
     // bash 只是把 cwd 设在这儿,cd 出得去(localWorld.ts 开头那句"诚实说明")。
     // 对模型宣布一个代码兑现不了的保证,等于教它在越界时也不必打招呼
@@ -88,6 +95,16 @@ const STRUCTURED_BLOCKS =
   `\`\`\`otto-flow  {nodes:[{id, label, column, row, state:"done"|"active"|"pending"}], edges:[{from, to}]} —— 流程（column/row 非负整数）\n` +
   `\`\`\`otto-timeline  {events:[{id, when:"past"|"now"|"future", time, title, detail?}]} —— 时间线\n` +
   `平铺直叙能说清的就别用。`
+
+/** Default 工作区专属的「打包为项目」引导（#559 后续）。目标用户是第一次用
+    AI 智能体的人——不懂「工作区/项目」概念,由模型在产出成形时主动引一把。
+    门槛写明(一两个一次性文件别问):不然每个小任务都被问一遍,引导变骚扰 */
+const PACKAGE_NUDGE =
+  `这里是共享的 Default 工作区（侧栏「任务」栏）：用户没为这次对话指定自己的文件夹，` +
+  `多半还不熟悉「项目」这个概念。当这次任务的产出已经成形为一个项目——一组相关文件、` +
+  `一个会持续迭代的东西——主动问用户要不要把它打包成项目，征得同意后用 package_project ` +
+  `工具（它会把文件搬进以项目命名的新文件夹）。解释时用白话，别甩「工作区」「仓库」这类词；` +
+  `产出只是一两个一次性文件就别问。\n`;
 
 const MEMORY_RULE = "═".repeat(46);
 
@@ -486,7 +503,10 @@ export function deriveMessages(
         if (event.workspace && systemMessage === null) {
           // 「今天」取日志里最后一条事件的日期:直播时就是此刻,重放时就是当时。
           // 不取 session_created 自己的 ts——跨夜的会话会一直以为还是开会话那天
-          systemMessage = { role: "system", content: systemPromptText(event.workspace, today) };
+          systemMessage = {
+            role: "system",
+            content: systemPromptText(event.workspace, today, event.workspaceKind),
+          };
           messages.push(systemMessage);
         }
         break;
