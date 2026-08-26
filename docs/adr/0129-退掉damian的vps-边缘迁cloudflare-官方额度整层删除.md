@@ -81,3 +81,29 @@ Hibernation 之后离天花板很远，但如果将来中继的消息频率数�
   本 ADR 之后也退役。
 - **`0012_drop_poker.sql` 保留钱包的理由**：见上。
 - **`remoteTransport.ts` 头注「不用 EventSource / WebSocket」**：前提随迁移消失。
+
+## 实现时的补充（#518 落地，2026-08-26）
+
+原文写这份决定时有三个未决问题，实现第一步全部验掉了，**都不用退路**：
+
+- **token 走 `Sec-WebSocket-Protocol`**：`new WebSocket(url, [SUBPROTOCOL, jwt])` 实测把两个值
+  拼进 header（741 字节的 Supabase JWT → 752 字节 header），服务端只 echo 回常量。
+  query 参数那条路仍然否决：access token 不该出现在 URL 里。
+- **Electron 主进程有全局 `WebSocket`**：Electron 43 内嵌 Node 24.18.1。不用 `ws` 包。
+- **DO 的 tags 可用**：`acceptWebSocket(ws, tags?)` / `getWebSockets(tag?)` / `getTags(ws)`
+  都在类型定义里，所以 role 存 tag，不用 `serializeAttachment`。
+
+**一处原文没预料到的改动：`jwt.ts` 从 `node:crypto` 换成 WebCrypto。** Worker 运行时没有
+`node:crypto`，要有得开 `nodejs_compat` —— 为一次 HMAC 拉进整个 Node 兼容层不划算。
+换成 `crypto.subtle` 之后这个文件运行时无关，附带收益是 `subtle.verify` 自己就是定长比较，
+手写的 `timingSafeEqual` 和它那个"先比长度（不等长会抛）"的补丁一起没了。
+代价：验签变成异步，调用方要 `await`。三个经典坑（alg 白名单、定长比较、exp 必须存在）
+一条没动，`tests/edge/jwt.test.ts` 逐条照旧。
+
+**`server.ts` / `nodeAdapter.ts` 的删除从 #517 挪到了 #518**：过渡期里生产上跑的仍然是那个
+Node 进程，main 上不留一份能构建的源码，就没法在旧服务上改东西。Worker 入口落地后才删。
+
+**运行时那一层怎么验**：单测跑纯逻辑 + 一个照着 `worker.ts` 写的假 DO，覆盖不到
+`acceptWebSocket` 的休眠语义、tag 存取、101 响应形状、子协议 echo —— 那几件事坏掉的样子是
+"连上了但什么都不发生"，没有报错。所以 `services/edge/checks/relay.mjs` 打真 workerd
+（`wrangler dev --local` 或生产地址）跑 17 条端到端断言，不进门禁，改中继的 PR 贴它的结果。

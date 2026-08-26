@@ -13,3 +13,7 @@ supabase/.temp/
 # expo prebuild 的产物（真机 build 才需要；Expo Go 那条路用不到）
 mobile/ios/
 mobile/android/
+
+# wrangler 本地开发的假 secret 与缓存（services/edge）
+.dev.vars
+.wrangler/

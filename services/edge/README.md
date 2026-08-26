@@ -5,8 +5,10 @@ Mr Otto 的边缘服务。两件事，互不相干：**OAuth 落地页**和**远
 ```
 浏览器（OAuth 回调）──> /auth/landing ──页内 JS──> mrotto://auth-callback
 
-桌面 ──┐                                    ┌── 手机
-       └──> /rl/v1/stream + /rl/v1/send <──┘     （盲管道，密文互转）
+桌面 ──┐                              ┌── 手机
+       └──> /rl/v1/connect (WS) <────┘     （盲管道，密文互转）
+                    │
+              Durable Object：一户一个实例，闲时休眠
 ```
 
 > **它曾经是 otto-gateway**（`services/gateway/`）——拿官方 DeepSeek key 代理模型调用、
@@ -20,10 +22,13 @@ Mr Otto 的边缘服务。两件事，互不相干：**OAuth 落地页**和**远
 |---|---|---|
 | GET | `/healthz` | 存活探针，不要令牌 |
 | GET | `/auth/landing` | OAuth 落地页。不要令牌，浏览器裸访问，回 HTML |
-| GET | `/rl/v1/stream?role=desktop\|mobile` | 中继下行（SSE 长连接）。`200` 挂上，`400` role 不合法，`404` 未开中继，`405` 非 GET |
-| POST | `/rl/v1/send?role=desktop\|mobile` | 中继上行（一帧一个 POST）。`204` 已转给对端，`409` 对端不在线（丢弃，不排队），`413` 单帧超 256 KiB |
+| GET | `/rl/v1/connect?role=desktop\|mobile` | 中继。WebSocket upgrade，上下行同一条。`101` 接上，`400` role 不合法，`401` 凭据问题，`404` 未开中继，`426` 不是 upgrade 请求 |
 
-中继要 `Authorization: Bearer <Supabase JWT>`；落地页不要。
+**凭据走子协议**：客户端发 `Sec-WebSocket-Protocol: mrotto.v1, <Supabase JWT>`，服务端只
+echo 回 `mrotto.v1`。标准 `WebSocket` 构造函数带不了自定义头，而放 query 参数等于把
+access token 写进各层访问日志和 Referer。落地页不要凭据。
+
+验签在**门口**（`edge.ts`）做完，转给 DO 的请求里没有 token —— DO 只需要知道 role。
 
 ## 落地页为什么要存在
 
@@ -45,39 +50,51 @@ OAuth 的 `redirect_to` 直接填 `mrotto://` 深链时，浏览器把深链丢�
 3. **不打印负载** —— `tests/edge/relay.test.ts` 有一条测试专门钉这个，因为
    「调试时顺手 console.log 一下」是这类系统最常见的泄漏方式
 
-一户一桌面一手机，同角色重连顶掉旧的。**信任多台、同时连一台**的取舍见 ADR-0128。
+一户一桌面一手机，同角色重连顶掉旧的。**信任多台、同时连一台**的取舍见 ADR-0128；
+要真正同时在线见 issue #530。
 
-下行每 25s 发一条 SSE 注释行 `:\n\n` 保活 —— nginx 的 `proxy_read_timeout` 是 600s。
+控制信道（`:peer` 在场信号、`:ping`/`:pong` 心跳）靠 `:` 前缀与载荷分开：载荷是 base64url，
+字母表 `A-Za-z0-9-_` 里没有冒号，所以一个字节的前缀就够，中继依旧不碰内容。约定在
+`src/shared/remote/wire.ts`，**三方共用一份**。
+
+心跳由 `setWebSocketAutoResponse` 在**边缘**直接应答，**不唤醒 DO** —— 既探得出半开连接
+（iOS 切后台掐 socket 而 WebSocket 未必立刻 onclose），又不产生计费时长。
 
 ## 部署
 
-**这个目录正在搬去 Cloudflare Workers**（ADR-0129，#518）。下面写的是**当前**仍在跑的
-VPS 形态；Worker 入口落地后 `server.ts` / `nodeAdapter.ts` 一并删除。
-
-公网入口：`https://otto-auth.stan.damianslife.com/gw/`
-
 ```bash
-ssh -p 2222 stan@65.109.113.168 'mkdir -p ~/otto-gateway/src'
-scp -P 2222 services/edge/src/*.ts stan@65.109.113.168:~/otto-gateway/src/
-ssh -p 2222 stan@65.109.113.168 'sudo systemctl restart otto-gateway'
+npm --prefix services/edge run deploy       # wrangler deploy
+npx wrangler secret put SUPABASE_JWT_SECRET # 只做一次，值不进 git
 ```
 
-服务器上的目录名与 systemd 单元名仍叫 `otto-gateway`——**不要**顺手改：改名要停服务、
-改 unit、改 nginx，而这台机器整个要退役（#521），为一个即将消失的东西冒一次停机风险
-不划算。
+`wrangler.jsonc` 里 `compatibility_date` 定住运行时行为，**别顺手往上抬** —— 抬它等于换一批默认值。
 
-nginx 反代**必须** `proxy_buffering off`，否则 SSE 会被攒成一坨等到最后才吐。
-（服务器侧的 nginx location 与 systemd unit 曾经在 `deploy/otto-gateway/`，随 ADR-0129
-一起删了——它们描述的是一台正在退役的机器。真值以服务器上的为准。）
+`SUPABASE_JWT_SECRET` 是 Dashboard → Settings → API → JWT Settings 里的 legacy JWT secret
+（`src/jwt.ts` 只认 HS256，所以项目的签名 key 必须停在 legacy HS256 那把）。
 
-用 `tsx` 而不是 `node src/server.ts`：Node 24 自带类型擦除，但不会把 `./x.js`
-说明符解析到 `./x.ts`，而仓库的 import 都带 `.js` 扩展。
+本地开发：`npm --prefix services/edge run dev` 起 `wrangler dev`（真 workerd + 真 DO），
+假 secret 放 `services/edge/.dev.vars`（已 gitignore）。
+
+### 运行时那一层怎么验
+
+单测跑的是纯逻辑 + 一个照着 `worker.ts` 写的假 DO，**覆盖不到** `acceptWebSocket` 的休眠
+语义、tag 存取、101 响应形状、子协议 echo。那几件事坏掉的样子是"连上了但什么都不发生"，
+没有报错。所以：
+
+```bash
+npm --prefix services/edge run check:relay                     # 打生产
+npm --prefix services/edge run check:relay http://127.0.0.1:8799  # 打本地 dev
+```
+
+17 条端到端断言（配对、互转、顶替、心跳、隔离、帧上限）。**不进门禁**（它要网络和 secret），
+改中继的 PR 贴它的结果。
 
 ## 已知取舍
 
-- **`server.ts` / `nodeAdapter.ts` 是过渡件**。它们只做 node:http ⇄ Web Request 的协议
-  转换和读 env，逻辑全在 `edge.ts`，那一侧测得很细（`tests/edge/`）。留着是因为过渡期里
-  生产上跑的仍然是这个进程——main 上没有一份能构建的源码，想在旧服务上改点什么就会
-  发现无从下手。
-- **`edge.ts` 不碰 node:http**，纯 `Request` → `Response`。这既是为了能测（直接造
-  `Request` 打它，不起端口），也是为什么搬 Worker 的成本这么低。
+- **`edge.ts` 与 `relay.ts` 不碰任何运行时**，纯 `Request` → `Response` / 纯函数。所以它们
+  跟着根门禁跑，安全不变量的测试不需要起 workerd —— 那种测试必须便宜到每次提交都跑。
+  运行时那一层只剩 `worker.ts`，薄到几乎没有分支。
+- **`jwt.ts` 用 WebCrypto 而不是 `node:crypto`**：Worker 里要有 `node:crypto` 得开
+  `nodejs_compat`，为一次 HMAC 拉进整个 Node 兼容层不划算。代价是验签变成异步的。
+- **中继一个 storage API 都不调**。「不落盘」因此是字面意义的，不是靠纪律；顺带也没有
+  SQLite 存储计费。

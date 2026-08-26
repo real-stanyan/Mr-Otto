@@ -445,7 +445,7 @@ describe("端点解析（resolveEndpoint 路线）", () => {
     expect(calls.map((c) => c.headers.authorization)).toEqual(["Bearer jwt-1", "Bearer jwt-2"]);
   });
 
-  it("resolveEndpoint 抛错（没登录也没 key）→ 原样上抛，不发请求", async () => {
+  it("resolveEndpoint 抛错（没配 key）→ 原样上抛，不发请求", async () => {
     const calls = mockFetchJSON();
     await expect(
       createOpenAICompatibleAdapter({
@@ -453,28 +453,16 @@ describe("端点解析（resolveEndpoint 路线）", () => {
         apiKey: "",
         model: "m",
         resolveEndpoint: async () => {
-          throw new Error("还没法调用模型：登录即可用官方赠额");
+          throw new Error("还没配 key：在设置里填自己的 DEEPSEEK_API_KEY 即可使用 DeepSeek。");
         },
       }).chat([{ role: "user", content: "hi" }])
-    ).rejects.toThrow("登录即可用官方赠额");
+    ).rejects.toThrow("还没配 key");
     expect(calls).toHaveLength(0);
   });
 
-  it("网关 402 → 只报那句人话，不裹 'model API 402:'", async () => {
-    mockFetchJSON(
-      402,
-      JSON.stringify({
-        error: { message: "token 额度已用尽。可在设置里改用自己的 API key。", type: "otto_gateway", code: "quota_exhausted" },
-      })
-    );
-    await expect(
-      createOpenAICompatibleAdapter({ baseUrl: "x", apiKey: "k", model: "m" }).chat([
-        { role: "user", content: "hi" },
-      ])
-    ).rejects.toThrow("token 额度已用尽。可在设置里改用自己的 API key。");
-  });
-
-  it("上游自己的错误照旧带状态码报——那不是网关说的话", async () => {
+  // ADR-0129 之后没有"网关说的话"这回事了(官方额度通路整层删除,parseGatewayError
+  // 跟着走)。上游错误一视同仁:带状态码报,原文截 500 字
+  it("上游错误带状态码报，错误体原样跟在后面", async () => {
     mockFetchJSON(401, JSON.stringify({ error: { message: "Authentication Fails", type: "authentication_error" } }));
     await expect(
       createOpenAICompatibleAdapter({ baseUrl: "x", apiKey: "k", model: "m" }).chat([

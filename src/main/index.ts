@@ -127,7 +127,7 @@ import { createRemoteDevices } from "../shared/remote/devices.js";
 import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
-import { createSseTransport } from "./remoteTransport.js";
+import { createWsTransport } from "../shared/remote/wsTransport.js";
 import { createRejectionLedger, visibleRejection } from "./remoteRejections.js";
 import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
@@ -580,7 +580,7 @@ void app.whenReady().then(() => {
     // 系统封装不可用 = 不开远程,而不是明文落盘。这两种"关着"要分得开:
     // 用户该做的事完全不同(去开开关 vs 去解锁钥匙串)
     if (!idStore) return { off: "no-secure-storage" as const };
-    const transport = createSseTransport({
+    const transport = createWsTransport({
       baseUrl: relayBaseUrl(),
       role: "desktop",
       authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
@@ -588,7 +588,7 @@ void app.whenReady().then(() => {
     });
     // 没登录时 connect() 直接返回、不排重连,所以登录那一刻要有人叫醒它。
     // 摘掉开关之前这条路很少走到(会去设开关的人基本已经登录了),之后它是默认路径
-    remoteRetryNow = () => transport.retryNow();
+    remoteRetryNow = () => transport.reconnectNow("刚登录");
     const bridge = createRemoteBridge({
       crypto,
       identity: idStore.identity,

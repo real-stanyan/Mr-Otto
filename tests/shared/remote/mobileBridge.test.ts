@@ -60,6 +60,8 @@ function fakeRelay() {
         onMessage(cb) { onMsg = cb; },
         onPeer(cb) { onPeer = cb; },
         onClose(cb) { onClose = cb; },
+        /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
+        reconnectNow() {},
         close() { onClose(); },
       };
     },

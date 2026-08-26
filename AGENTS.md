@@ -192,7 +192,9 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `native/MrOttoIsland/` — macOS 灵动岛原生 Swift helper（ADR-0061，推翻 0059；ADR-0063 演进为多会话 fleet 列表）
 - `src/main/simulatorHub.ts` / `src/main/simInputBridge.ts` — iOS 模拟器：simctl 台账 + 画面轮询 + 输入桥（ADR-0092）
 - `native/MrOttoSimInput/` — iOS 模拟器输入/无障碍 helper（Swift，CGEvent + AXUIElement；ADR-0092）
-- `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配。中继端点在 `services/edge/src/relay.ts`（ADR-0094 / 0095 / 0096 / 0097 / 0100 / 0106）
+- `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配（ADR-0094 / 0095 / 0096 / 0097 / 0100 / 0106）
+- `src/shared/remote/wire.ts` / `wsTransport.ts` — 中继的线上约定（`:peer` 等控制消息、子协议、帧上限，**三方共用一份**）+ 桌面与手机**共用的那一份** WebSocket 传输（两个运行时都有原生 WebSocket，ADR-0129）
+- `services/edge/` — 边缘服务：OAuth 落地页 + 中继。`src/relay.ts` 是配对的纯逻辑（跑在根门禁里），`src/worker.ts` 是 Cloudflare Worker 入口 + Durable Object（唯一依赖运行时的文件，单独一份 tsconfig）。运行时那一层由 `checks/relay.mjs` 打真 workerd 验（ADR-0129）
 - `mobile/src/friends.tsx` / `mobile/src/friendsApi.ts` / `src/shared/friendsQuery.ts` — 手机端好友：加好友 / 收发请求 / 私信（直连 Supabase，不经中继；纯逻辑与桌面共用 `friendsQuery.ts`，ADR-0114）
 - `src/shared/remote/stats.ts` / `src/shared/sessionActivity.ts` — 手机端设置页那两块：会话热力图 + 各模型用量。**拉取不订阅**（`stats` 帧对），`trim.ts` 那道闸门不动（ADR-0115）
 - `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mrotto-edge",
+  "main": "src/worker.ts",
+  // 这个日期定住运行时行为。别顺手往上抬 —— 抬它等于换一批默认值
+  "compatibility_date": "2026-04-07",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    // 一户一个实例：getByName(userId)。中继一个 storage API 都不调，
+    // 所以下面的 migration 用 new_sqlite_classes（免费版只给 SQLite 后端），
+    // 但实际不存任何行 —— 「不落盘」在这里是字面意义的
+    "bindings": [{ "name": "RELAY", "class_name": "Relay" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }]
+  // SUPABASE_JWT_SECRET 是 secret，不写在这里：
+  //   npx wrangler secret put SUPABASE_JWT_SECRET
+}
