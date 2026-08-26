@@ -64,3 +64,57 @@ export function clampSize(
 export function initialPos(w: number, h: number): { x: number; y: number } {
   return clampPos({ x: w - SIDE_W - 24, y: 72 }, w, h);
 }
+
+// ── 8 向缩放（issue #538）──
+// handle 命名用方位（n/s/e/w/ne/nw/se/sw，同 CSS resize 属性），pointer 在
+// 对应 handle 上按下后，移动增量 (dx,dy) 按方向拆给 w/h 或 w/h+x/y：
+//   e/w 只动 w，n/s 只动 h，角动两轴；
+//   带 w 的方向拉左边 = 右边锚死（x 跟着 dx 走），带 n 的方向拉上边 = 底边锚死；
+//   e/s 方向就是原来的「右下角」语义（位置不动、只长尺寸）。
+// 钳制：尺寸钳进 [MIN, 视口-MARGIN]，被钳住的方向位置用「对边锚定」反推
+// （拉左边拉到顶，右边不能跟着跑）。结果再整窗过一遍 clampPos 兜底出屏。
+
+export type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+/** 从 (pos, size) 起按 handle 方向加增量 (dx,dy)，返回钳制后的新 (pos, size)。
+    vw/vh = 视口宽高（组件侧读 window.innerWidth/innerHeight）。 */
+export function applyResize(
+  pos: { x: number; y: number },
+  size: { w: number; h: number },
+  handle: ResizeHandle,
+  dx: number,
+  dy: number,
+  vw: number,
+  vh: number
+): { pos: { x: number; y: number }; size: { w: number; h: number } } {
+  const maxW = Math.max(SIDE_MIN_W, vw - 2 * VIEWPORT_MARGIN);
+  const maxH = Math.max(SIDE_MIN_H, vh - 2 * VIEWPORT_MARGIN);
+
+  // 各方向的尺寸增量（拉对边 = 负增量：拉左边向左 = dx<0 = 变宽）
+  const dW = handle.includes("e") ? dx : handle.includes("w") ? -dx : 0;
+  const dH = handle.includes("s") ? dy : handle.includes("n") ? -dy : 0;
+
+  const w = Math.min(maxW, Math.max(SIDE_MIN_W, size.w + dW));
+  const h = Math.min(maxH, Math.max(SIDE_MIN_H, size.h + dH));
+
+  // 位置：只有「拉左/上边」的方向才动，且动多少 = 尺寸实际变了多少
+  // （被钳住时位置同步停，对边锚定不跑）
+  const x = handle.includes("w") ? pos.x + (size.w - w) : pos.x;
+  const y = handle.includes("n") ? pos.y + (size.h - h) : pos.y;
+
+  // 整窗过一遍 clampPos 兜底（尺寸变大可能把右/下边顶出屏）
+  const clamped = clampPos({ x, y }, vw, vh, { w, h });
+  return { pos: clamped, size: { w, h } };
+}
+
+/** 各 handle 的 CSS 光标（同 macOS 原生窗的方位光标） */
+export const RESIZE_CURSORS: Record<ResizeHandle, string> = {
+  n: "ns-resize",
+  s: "ns-resize",
+  e: "ew-resize",
+  w: "ew-resize",
+  ne: "nesw-resize",
+  sw: "nesw-resize",
+  nw: "nwse-resize",
+  se: "nwse-resize",
+};
