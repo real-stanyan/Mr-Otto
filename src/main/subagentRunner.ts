@@ -7,7 +7,7 @@
 // 一扇后门。见 index.ts 的 createSessionAgent（子会话分支）。
 // AGENTS.md 的 MVP 边界"明确不做多 agent 编排"靠这两处一起成立。
 
-import { createAgent, type AgentPush } from "./agent.js";
+import { createAgent, type AgentPush, type SkillLibrary } from "./agent.js";
 import type { ExecRule } from "../shared/execPolicy.js";
 import { SESSION_SEARCH_TOOL_NAME } from "../tools/sessionSearch.js";
 import { activeSkills } from "../session/activeSkills.js";
@@ -66,9 +66,7 @@ export interface SubagentRunnerDeps {
       这把刀——除非 def.skills === "none"："不被行为 skill 污染"的本意里，
       自己去取也该一起关掉，不只是不继承父台账。不给 = 这条装配没有 skill 库
       （测试/裸装配照旧） */
-  skills?: {
-    listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
-  };
+  skills?: SkillLibrary;
 }
 
 /** 中断落到父侧的那句话。spec §3「中断传播」：父侧 tool_result 写「子任务被

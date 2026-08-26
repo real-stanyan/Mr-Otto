@@ -10,7 +10,7 @@
 // createChildAgent 的参数表里**没有 subagentRunner 这一项**：递归不再靠
 // "记得别传"，靠类型系统。
 
-import { createAgent, type AgentPush } from "./agent.js";
+import { createAgent, type AgentPush, type SkillLibrary } from "./agent.js";
 import type { ExecRule } from "../shared/execPolicy.js";
 import { denyingApprover } from "./uiApprover.js";
 import type { EventStore } from "../session/store.js";
@@ -84,6 +84,15 @@ export function createChildAgent(opts: {
   /** 自动压缩设置的现读器（同 alwaysAllow 的活引用规矩）。子会话也该守同一份
       设置——不给 = 走 createAgent 的全局默认 */
   autoCompactSettings?: () => AutoCompactSettings;
+  /** skill 库（ADR-0122 / issue #482）。同 mcp 的理由必须显式传：重建走的是
+      新造的 LocalWorld，没有父 world 可继承。
+      **给了也只是挂载**——`config.allowTools` 那份白名单说了算，而快照记的
+      `tools` 是当初**实际挂上**的那几把（subagentRunner 落 briefed 时写的是
+      `child.toolDefs.map(...)`，不是定义文件里写的那几个字）。于是
+      `skills: "none"` 的子 agent 当初根本没挂上 "skill"，快照里也就没有它，
+      恢复回来照样没有——「不被行为 skill 污染」这条不靠这一侧记得别传，
+      靠快照本身。skill 功能之前的旧日志同理：那时候没有这把刀，快照里没有。 */
+  skills?: SkillLibrary;
 }): ReturnType<typeof createAgent> {
   // 刻意不传 history：重建出来的子会话没有 world.history，session_search 工具
   // 不会挂上去。活着的子会话（subagentRunner.ts）复用 `parent.world`——同一个
@@ -100,6 +109,7 @@ export function createChildAgent(opts: {
     ...(opts.getAccessToken ? { getAccessToken: opts.getAccessToken } : {}),
     ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
+    ...(opts.skills ? { skills: opts.skills } : {}),
     ...(opts.autoCompactSettings ? { autoCompactSettings: opts.autoCompactSettings } : {}),
     // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧

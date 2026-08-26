@@ -145,6 +145,47 @@ describe("createChildAgent", () => {
     expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
   });
 
+  // issue #482 欠账 ①：恢复侧曾经不传 skills，于是 resume 回来的子会话
+  // 拿不到 skill 工具，与活着那一侧（subagentRunner）不对称。
+  // 白名单是唯一的闸——而快照记的是**实际挂上**的那几把
+  const skills = () => ({
+    listSkills: () => [
+      { name: "ponytail", description: "扎马尾", content: "把头发扎起来。" },
+    ],
+  });
+
+  it("快照点了名的 skill 工具，重建回来还在（与活着那一侧对称）", () => {
+    const { dir, store, attachments } = fixtures(["read_file", "skill"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config,
+      skills: skills(),
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toContain("skill");
+  });
+
+  // skills: "none" 的子 agent 当初根本没挂上这把刀（subagentRunner 落 briefed
+  // 时写的是 child.toolDefs 的实际名单），所以快照里没有 "skill"。恢复侧不靠
+  // "记得别传 skills" 挡它，靠快照本身——skill 功能之前的旧日志同理
+  it("快照没点名 skill = 挂了也过不了白名单（skills:none 的子 agent 恢复回来照样没有）", () => {
+    const { dir, store, attachments } = fixtures(["read_file"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config,
+      skills: skills(),
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
+  });
+
+  it("不给 skills 就没有这把刀（裸装配/测试照旧）", () => {
+    const { dir, store, attachments } = fixtures(["read_file", "skill"]);
+    const config = childAgentConfig(store.load("s-child"))!;
+    const agent = createChildAgent({
+      store, workspace: dir, resumeSessionId: "s-child", push, attachments, config,
+    });
+    expect(agent.toolDefs.map((d) => d.name)).toEqual(["read_file"]);
+  });
+
   it("不给 mcp 就一把都没有（旧行为，裸装配/测试照旧）", () => {
     const { dir, store, attachments } = fixtures(["read_file", "mcp__gh__create_pr"]);
     const config = childAgentConfig(store.load("s-child"))!;
