@@ -71,6 +71,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "project_instructions": // 注入快照（issue #353）：model-visible means logged
     case "request_envelope": // 请求信封（issue #383）：请求可重构性的凭据，log-only 审计快照
     case "background_task_completed": // 后台任务完成（issue #389）：完成时刻的审计事实，模型可见载体是回注 user_message
+    case "background_task_started": // 后台任务启动（issue #452）：面板画「在跑」那一档的唯一事实来源，倒推不出来
     case "checkpoint_created": // 工作区检查点（issue #395）：回退锚点，id 推不出必须落
     case "workspace_restored": // 文件恢复事实（issue #395）：分支会话的磁盘对齐凭据
     case "branch_checked_out": // 分支切换（issue #411）：时间线上那一行的唯一事实来源，推不出必须落

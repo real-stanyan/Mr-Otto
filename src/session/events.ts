@@ -38,6 +38,14 @@ export interface UserMessageEvent extends SessionEventBase {
       读都不读它——对模型来说这就是一条用户消息,和从前逐字节一致。
       主进程独占写入:IPC 的 sendMessage 入口不透传,渲染层伪造不了身份 */
   origin?: "background";
+  /** 这条回注驮的后台任务 id(issue #452 / ADR-0109)。只在 origin==="background"
+      时出现。数组不是单值:turn 在跑时完成的任务攒进 pendingBg,收口后**合并成
+      一条**注回,一条消息驮多个任务是常态。
+      有了它,后台任务面板才能知道「结果真的进对话了」(而不是「任务完成了」——
+      两者之间隔着一整个 turn),点一行也才能按 id 跳到这条消息。
+      刻意不靠正文前缀 `[后台任务 bg-N 完成]` 反解:那是给模型读的文案不是身份,
+      ADR-0103 已经把那条路否掉过一次。写入权同 origin:IPC 入口不透传 */
+  backgroundTaskIds?: string[];
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
@@ -452,6 +460,20 @@ export interface BackgroundTaskCompletedEvent extends SessionEventBase {
   exitCode: number;
 }
 
+/** 后台任务启动（issue #452 / ADR-0109，与 completed 对称）。
+    审计注记：哪个后台任务、什么命令、什么时候起的。**模型不消费**——
+    模型知道自己起了后台任务是因为 `bash` 工具的返回值当场就说了
+    （「后台任务 bg-N 已启动」），不需要再来一条事件重复告诉它。
+    落它是给 UI 的：起点有了事件，后台任务面板就是**日志的投影**而不是
+    主进程另开的一路推送（硬规则：任何投影必须可从日志推导）。elapsed 从
+    这条事件的 ts 算，不用另存 startedAt。
+    ignorable：旧版本跳过它照常重放——不参与模型视野推导 */
+export interface BackgroundTaskStartedEvent extends SessionEventBase {
+  type: "background_task_started";
+  taskId: string;
+  cmd: string;
+}
+
 /** 工作区检查点（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
     每个用户 turn 开跑前，装配根把工作区文件快照进影子 git，id 落此事件——
     「回到这一步」的文件侧锚点（对话侧锚点是它前面的 turn_ended，fork 用）。
@@ -516,6 +538,7 @@ export type SessionEvent =
   | ProjectInstructionsEvent
   | RequestEnvelopeEvent
   | BackgroundTaskCompletedEvent
+  | BackgroundTaskStartedEvent
   | CheckpointCreatedEvent
   | WorkspaceRestoredEvent
   | BranchCheckedOutEvent;
@@ -559,6 +582,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   project_instructions: true,
   request_envelope: true,
   background_task_completed: true,
+  background_task_started: true,
   checkpoint_created: true,
   workspace_restored: true,
   branch_checked_out: true,
