@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeGroup, toolFilePath } from "../../src/shared/toolSummary.js";
+import { summarizeGroup, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 
 const read = (path: string): ToolCallRequest => ({ id: path, name: "read_file", args: { path } });
@@ -49,5 +49,21 @@ describe("toolFilePath —— 这一步动的是哪个文件", () => {
     expect(toolFilePath({ id: "1", name: "read_file", args: {} })).toBeNull();
     expect(toolFilePath({ id: "1", name: "read_file", args: { path: "" } })).toBeNull();
     expect(toolFilePath({ id: "1", name: "read_file", args: { path: 42 } })).toBeNull();
+  });
+});
+
+describe("toolIcon —— 工具行打头的小图标（lucide 名字，组件在渲染层查表）", () => {
+  it("读/写文件给 null：走 FileTypeIcon，不用通用图标说假话", () => {
+    expect(toolIcon("read_file")).toBeNull();
+    expect(toolIcon("write_file")).toBeNull();
+  });
+  it("常见工具各认各的图标", () => {
+    expect(toolIcon("bash")).toBe("SquareTerminal");
+    expect(toolIcon("web_search")).toBe("Search");
+    expect(toolIcon("task")).toBe("Bot");
+    expect(toolIcon("ask_user")).toBe("MessageCircleQuestion");
+  });
+  it("认不出的（MCP 工具）给通用扳手", () => {
+    expect(toolIcon("mcp__github__create_issue")).toBe("Wrench");
   });
 });

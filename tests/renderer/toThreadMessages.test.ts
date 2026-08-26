@@ -164,15 +164,27 @@ describe("toThreadMessages — 工具调用", () => {
     expect(msg.content?.[0]).toEqual({ type: "tool-call", toolCallId: "c1", toolName: "bash", args: {} });
   });
 
-  it("正文和工具调用同时出现时,text part 在前", () => {
+  it("旁白(带工具的 content)投成 narration reasoning 步,不当正文断点 —— 不然它会把时间线拆开", () => {
     const events = [
       ev({ type: "assistant_message", content: "我看一下", model: "m",
            toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a" } }] }, 0),
       ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "x" }, 1),
     ];
     const parts = toThreadMessages(events)[0]?.content;
-    expect(parts?.[0]).toMatchObject({ type: "text" });
-    expect(parts?.[1]).toMatchObject({ type: "tool-call" });
+    // 带工具的 content = 旁白,投成 narration reasoning(与工具同组进时间线);
+    // 不再是 text part —— text part 是分组的硬断点
+    expect(parts).toMatchObject([
+      { type: "reasoning", text: "我看一下", narration: true },
+      { type: "tool-call", toolCallId: "c1" },
+    ]);
+  });
+
+  it("最终回复(不带工具的 content)仍是 text part 正文,留在时间线外", () => {
+    const events = [
+      ev({ type: "assistant_message", content: "做完了", model: "m" }, 0),
+    ];
+    const parts = toThreadMessages(events)[0]?.content;
+    expect(parts).toMatchObject([{ type: "text", text: "做完了" }]);
   });
 
   it("args 不是对象时退回 argsText,不硬塞进 args", () => {

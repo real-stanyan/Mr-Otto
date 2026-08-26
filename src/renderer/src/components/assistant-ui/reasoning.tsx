@@ -356,7 +356,20 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+// 旁白步(narration:true,投影层把「带工具的 content」投成这个):模型边干边说的一句
+// 过渡话,渲染成一行灰字小字,收进时间线;不是真思考,别用正文字号也别走折叠块。
+// 真思考(narration 为 undefined)维持原样 MarkdownText
+const ReasoningImpl: ReasoningMessagePartComponent = (part) => {
+  const narration = (part as { narration?: boolean }).narration === true;
+  if (narration) {
+    return (
+      <p className="text-muted-foreground/80 truncate py-0.5 pl-1 text-[13px] italic">
+        {part.text}
+      </p>
+    );
+  }
+  return <MarkdownText />;
+};
 
 const ReasoningGroupImpl: ReasoningGroupComponent = ({
   children,
