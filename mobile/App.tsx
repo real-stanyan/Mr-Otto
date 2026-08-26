@@ -103,6 +103,7 @@ function Screen({ children, center }: { children: React.ReactNode; center?: bool
    这条不再靠"把 OAuth 摆前面"来暗示,改成在密码真的被拒时当场说破 ——
    提示出现在人已经撞上问题的那一刻,比事前的一句话有用得多。 */
 function SignIn({ onDone }: { onDone: () => void }) {
+  const { c } = usePalette();
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // 键盘要让位:输入框在上半屏,但「登录」就贴在密码框下面
@@ -132,11 +133,16 @@ function SignIn({ onDone }: { onDone: () => void }) {
       {/* 撑满高度、内容居中:这一屏东西不多,顶到天花板会在下面留一大片空 */}
       <Page grow>
         <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
-          <View style={{ gap: space.sm, alignItems: "flex-start" }}>
-            {/* 和桌面同一张脸(resources/icon.png 的副本):这是两端唯一的共同标记。
-                不再叠 borderRadius —— 图本身已经是圆角的,再圆一次会切掉边 */}
-            <Image source={require("./assets/otto-mark.png")} style={{ width: 68, height: 68 }} />
-            <Title>Mr Otto</Title>
+          {/* 图标 + 字标是一个**竖排居中的锁定组合**,不是左上角的两行。
+              这一屏的重心在下面那三样(邮箱/密码/登录),标识居中反而不跟输入框
+              抢左对齐那条线 —— 一列左对齐的东西里混一个更大的图,眼睛会先去够它。
+
+              图用**透明底**那张(头,不带白色圆角底板):底板是给桌面图标用的,
+              贴在米色页面上会变成一块方形的白斑。字标比图小一档:大的是脸,
+              名字只是把脸念出来。 */}
+          <View style={{ alignItems: "center", gap: space.sm }}>
+            <Image source={require("./assets/otto-head.png")} style={{ width: 96, height: 96 }} />
+            <Text style={{ ...t.headline, color: c.foreground }}>Mr Otto</Text>
           </View>
           {err ? <Note tone="error">{err}</Note> : null}
 
