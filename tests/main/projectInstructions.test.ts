@@ -77,7 +77,7 @@ describe("findProjectInstructions", () => {
 });
 
 describe("project_instructions 投影（model-visible means logged）", () => {
-  // ADR-0130：从"独立的 user 消息"改成"焊进围栏 system"——compact 清场
+  // ADR-0131：从"独立的 user 消息"改成"焊进围栏 system"——compact 清场
   // 会把 user 消息扫掉，而项目约定不是历史，是每轮都该在的围栏（issue #527）
   it("焊进围栏 system，带每段来源路径（provenance）；未注入时投影不变", () => {
     const base: SessionEvent[] = [

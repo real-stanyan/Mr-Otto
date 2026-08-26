@@ -1,4 +1,8 @@
-# ADR-0130：项目指令焊进围栏 system，而不是加进 compact 的重注入名单
+# ADR-0131：项目指令焊进围栏 system，而不是加进 compact 的重注入名单
+
+> 原为 ADR-0130 —— 与 #531 的「中继按连接寻址」撞号（两条并行的 lane 各自 claim 了 0130，
+> 合进 main 才撞上，门禁在 main 上红了一轮）。这一篇是后合的，所以让号。
+> issue #527 与 PR #532 的 commit message 里指的 ADR-0130 就是这一篇。
 
 > 原为 ADR-0129 —— 合并前 main 上先落了同号的「退掉 damian 的 VPS」（ADR-0074 的改号规矩）。commit 信息改不了，这行是让旧引用还能解析的那把钥匙。
 
