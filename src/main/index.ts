@@ -1401,6 +1401,9 @@ void app.whenReady().then(() => {
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
         mcp: mcpHub,
+        // skill 库同理（issue #482）：挂载归挂载，白名单说了算。skills: "none"
+        // 的子 agent 当初就没挂上这把刀，快照里没有它的名字，恢复回来照样没有
+        skills: { listSkills: () => scanSkills(skillRoots) },
       });
     }
     // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
@@ -1442,8 +1445,10 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
-      // skill 渐进披露：只有主会话这条装配路径才挂 skill 工具（issue 待开）。
-      // listSkills 现扫磁盘（scanSkills 不缓存），工具层不碰 fs
+      // skill 渐进披露（ADR-0122）。四条装配路径都给：这条（主会话）、
+      // subagentRunner（活着的子会话）、createChildAgent（恢复出来的子会话）、
+      // probeToolDefs（开机探针）。listSkills 现扫磁盘（scanSkills 不缓存），
+      // 工具层不碰 fs
       skills: { listSkills: () => scanSkills(skillRoots) },
       // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
       // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有

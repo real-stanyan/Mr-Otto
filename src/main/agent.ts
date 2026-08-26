@@ -57,8 +57,7 @@ import { createMcpAuthorizeTool } from "../tools/mcpAuthorize.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import { createSkillTool } from "../tools/skill.js";
-import { activeSkills } from "../session/activeSkills.js";
-import { barrenEventIndexes } from "../session/barrenTurns.js";
+import { activeSkillsOf } from "../session/activeSkills.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import {
   UIApprover,
@@ -135,6 +134,14 @@ export interface AgentPush {
 export function newSessionId(): string {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   return `s-${stamp}-${randomBytes(4).toString("hex")}`;
+}
+
+/** skill 库接线的形状。四处装配路径共用一份（主会话 index.ts、活着的子会话
+    subagentRunner、恢复出来的子会话 resumeChild、开机探针 probeToolDefs）——
+    曾经是四份逐字相同的内联字面量，改一个字段要改四处才不分叉 */
+export interface SkillLibrary {
+  /** 现扫磁盘的已装 skill（装配期注入——工具层不碰 fs） */
+  listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
 }
 
 export function createAgent(opts: {
@@ -224,9 +231,7 @@ export function createAgent(opts: {
   onLongTurn?: (rounds: number) => void;
   /** skill 库接线（issue 待开）。缺席 = 不挂 skill 工具（裸装配/测试照旧）。
       listSkills 现扫磁盘由组装根注入——工具层不碰 fs */
-  skills?: {
-    listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
-  };
+  skills?: SkillLibrary;
 }) {
   const { store } = opts;
 
@@ -546,10 +551,9 @@ export function createAgent(opts: {
         ? [
             createSkillTool({
               listSkills: opts.skills.listSkills,
-              activeSkills: () => {
-                const log = store.load(sessionId);
-                return activeSkills(log, barrenEventIndexes(log));
-              },
+              // 稀疏索引现算，不搬整份日志（issue #482 欠账 ②）；
+              // 分支会话它自己退回全量
+              activeSkills: () => activeSkillsOf(store, sessionId),
               appendInvoked: (name, content, args) => {
                 opts.push.event(
                   store.append({

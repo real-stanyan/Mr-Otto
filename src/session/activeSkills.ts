@@ -13,6 +13,8 @@
 // - subagentRunner 派活时把父会话的台账复制进子日志（ADR-0068）
 
 import type { SessionEvent } from "./events.js";
+import type { EventStore } from "./store.js";
+import { barrenEventIndexes } from "./barrenTurns.js";
 
 export interface ActiveSkill {
   content: string;
@@ -47,4 +49,36 @@ export function activeSkills(
     });
   }
   return out;
+}
+
+/** 空跑集常量：下面那条稀疏路径永远传它，省一次没意义的分配 */
+const NO_BARREN: ReadonlySet<number> = new Set();
+
+/**
+ * 从库里现算台账 —— skill 工具那两个动作（acquire 的去重、release 的来源校验）
+ * 每次都要一份"此刻谁在生效"。
+ *
+ * 借 `ofType` 的类型稀疏索引只捞两类事件，不搬整份日志（issue #482 欠账 ②；
+ * 那个索引的注释自己就点名了 skill_invoked 这类"每会话个位数条"的事件）。
+ *
+ * **barren 传空集，不是偷懒**：`barrenEventIndexes` 认的是事件在**整份日志**里
+ * 的下标，喂给它一份稀疏序列算出来的下标毫无意义。而今天的空跑判定只标
+ * user_message（和它前面的 image_described），两者都不在这份稀疏集里——所以
+ * 全量路径算出来的 barren 与 skill 事件的交集恒为空，两条路径逐条等价
+ * （tests/session/activeSkills.test.ts 钉住）。哪天空跑规则扩到 skill_invoked，
+ * 这条捷径就得撤回，那条等价性测试会先红。
+ *
+ * **fork 链退回全量**：`ofType` 是单会话查询，看不到父会话前缀里的 skill 事件
+ * （`load` 会沿链取数）——分支会话一律走全量，同 `boundedContextEvents` 的处理。
+ */
+export function activeSkillsOf(store: EventStore, sessionId: string): Map<string, ActiveSkill> {
+  if (store.forkOrigin(sessionId) !== null) {
+    const log = store.load(sessionId);
+    return activeSkills(log, barrenEventIndexes(log));
+  }
+  const sparse = [
+    ...store.ofType(sessionId, "skill_invoked"),
+    ...store.ofType(sessionId, "skill_released"),
+  ].sort((a, b) => a.seq - b.seq);
+  return activeSkills(sparse, NO_BARREN);
 }

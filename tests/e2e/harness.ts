@@ -61,6 +61,13 @@ export interface LaunchOptions {
   env?: Record<string, string>;
   /** 起打好包的那个 .app 而不是 out/ 里的产物（见 PACKAGED_APP） */
   packaged?: boolean;
+  /** 复用一份现成的 HOME + Electron profile（app 重启后还是同一台机器、同一份库）。
+      给了就**不在 close() 里删**——两只共用同一份目录，谁都不该抢着删；
+      清理归用例自己（`rmSync(otto.home)` + `rmSync(otto.userData)`）。
+      resume 这类"重启之后会怎样"的用例要它：不重启的话 resumeSession 走的是
+      "agent 还在内存里，只切视线"那条路，压根到不了 createChildAgent */
+  home?: string;
+  profile?: string;
 }
 
 /** electron-builder 产出的 .app 里的可执行文件。`npm run dist:mac` 跑过才有；
@@ -86,6 +93,8 @@ export interface Otto {
   userAgentsDir: string;
   /** Electron 的 userData（sessions.db 在里面）。删会话那类用例要直接查库 */
   userData: string;
+  /** 这一只的 OTTO_PROFILE。重启复用同一份库时要原样传回去（LaunchOptions.profile） */
+  profile: string;
   /** 关窗 + 删临时目录。用例用 try/finally 保证它跑到 */
   close(): Promise<void>;
 }
@@ -124,8 +133,10 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
   }
 
-  const home = mkdtempSync(join(tmpdir(), "otto-e2e-home-"));
-  const profile = `e2e${randomBytes(4).toString("hex")}`;
+  // 自己造的才自己删（见 LaunchOptions.home）
+  const own = opts.home === undefined;
+  const home = opts.home ?? mkdtempSync(join(tmpdir(), "otto-e2e-home-"));
+  const profile = opts.profile ?? `e2e${randomBytes(4).toString("hex")}`;
   const userAgentsDir = join(home, CONFIG_DIR, "agents");
   seedInto(userAgentsDir, opts.userAgents);
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
@@ -155,8 +166,10 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     errors,
     userAgentsDir,
     userData,
+    profile,
     async close() {
       await app.close().catch(() => {});
+      if (!own) return; // 复用的那份归用例清，见 LaunchOptions.home
       rmSync(home, { recursive: true, force: true });
       // userData 落在真实 ~/Library/Application Support（Electron 不认 $HOME），
       // 名字带随机后缀，不删就每跑一次攒一个
