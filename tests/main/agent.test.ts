@@ -12,7 +12,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
-import { withMcp } from "../../src/world/executionWorld.js";
+import { withMcp, type McpCapability } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import { tempDir } from "../helpers/tempDir.js";
 import Database from "better-sqlite3";
@@ -623,6 +623,66 @@ describe("resume 崩溃合成收口 + 向前兼容拒读（issue #383）", () =>
     const { store, sessionId } = storeWithAlienEvent(JSON.stringify({ ignorable: true }));
     const agent = createAgent({ store, workspace: "/w", resumeSessionId: sessionId, push, attachments });
     expect(agent.sessionId).toBe(sessionId);
+    store.close();
+  });
+});
+
+describe("MCP 自助配置的三把刀", () => {
+  // createAgent 没有 hasTool()/toolDefs() 这两个方法——toolDefs 是个 getter，
+  // 只报 direct + 已被 tool_search 曝光的 deferred（见 agent.ts 的 get toolDefs()
+  // 注释）。三把刀刻意都是 deferred 且没人搜过，所以"挂没挂上"这件事在 toolDefs
+  // 里根本看不出来——已挂载但未曝光的 deferred 工具和完全没挂载，在 toolDefs
+  // 眼里是同一张脸。
+  //
+  // 探查手法：agent.engine 是 createAgent 返回值上公开暴露的字段（读它不是
+  // 越界），它内部的 toolsByName（LoopEngine 装配一次就定的挂载表，见
+  // engine.ts 的 rebuildTools）才是"挂没挂上"的真相来源，与 toolDefs 那份
+  // "模型此刻看不看得见"的声明表是两件事。toolsByName 在 TS 里是 private，
+  // 但那只是编译期的可见性——运行时字段照样在，cast 到一个只声明这一个字段
+  // 的结构类型即可绕过编译期检查读到它，不违反其只读语义。
+  function mounted(agent: { engine: unknown }, name: string): boolean {
+    return (agent.engine as { toolsByName: Map<string, unknown> }).toolsByName.has(name);
+  }
+
+  const cap = (): McpCapability => ({
+    ready: vi.fn(async () => {}),
+    servers: () => [],
+    callTool: async () => [],
+    readResource: async () => [],
+    getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
+  });
+
+  it("world 有 mcp 能力时三把都挂上，且都是 deferred（不进初始声明表）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    expect(mounted(agent, "mcp_catalog")).toBe(true);
+    expect(mounted(agent, "mcp_configure")).toBe(true);
+    expect(mounted(agent, "mcp_authorize")).toBe(true);
+    const names = agent.toolDefs.map((d) => d.name);
+    expect(names).not.toContain("mcp_catalog");
+    expect(names).not.toContain("mcp_configure");
+    expect(names).not.toContain("mcp_authorize");
+    store.close();
+  });
+
+  it("没有 mcp 能力的装配一把都不挂", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(mounted(agent, "mcp_catalog")).toBe(false);
+    expect(mounted(agent, "mcp_configure")).toBe(false);
+    expect(mounted(agent, "mcp_authorize")).toBe(false);
+    store.close();
+  });
+
+  it("子 agent 的白名单没点名时拿不到 mcp_configure（ADR-0054）", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments, mcp: cap(), allowTools: ["read_file"],
+    });
+    expect(mounted(agent, "mcp_configure")).toBe(false);
     store.close();
   });
 });

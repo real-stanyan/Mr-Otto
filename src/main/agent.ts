@@ -50,6 +50,9 @@ import { createMcpTools } from "../tools/mcpTool.js";
 import { applyExposurePolicy } from "../tools/exposure.js";
 import { createToolSearchTool } from "../tools/toolSearch.js";
 import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
+import { mcpCatalogTool } from "../tools/mcpCatalog.js";
+import { createMcpConfigureTool } from "../tools/mcpConfigure.js";
+import { createMcpAuthorizeTool } from "../tools/mcpAuthorize.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
 import type { SubagentDef } from "../shared/subagent.js";
@@ -492,6 +495,10 @@ export function createAgent(opts: {
       // MCP server 挂 30 把刀时模型初始工具表不膨胀，tool_search 搜到才可见
       ...(mcp ? applyExposurePolicy(createMcpTools(mcp)) : []),
       ...(mcp ? [createMcpReadResourceTool(mcp)] : []),
+      // 自助配置三件套（spec §5.2）：查目录免审批、配置过审批门、授权免审批
+      // （浏览器必然弹出、用户必须亲手点同意，人天然在环里）。
+      // 三把都是 deferred：绝大多数会话用不到它们，不该占初始工具表的位置
+      ...(mcp ? [mcpCatalogTool, createMcpConfigureTool(mcp), createMcpAuthorizeTool(mcp)] : []),
       // 挂载只问"这次装配有没有派活的能力"(subagentRunner 给没给)，不再问"清单此刻
       // 是不是空的"——清单是不是空的这件事归 task 自己的 available()答，
       // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
