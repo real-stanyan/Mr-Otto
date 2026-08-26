@@ -131,6 +131,9 @@ interface ChatState {
       toolDefs 是"当前这个 agent 挂着什么"，没有会话时是空的；这份是"能有什么"。
       子智能体设置页的工具勾选框在没会话时靠它——首次使用路径正是
       「新用户 → 设置 → 新建」。null = 还没拉过 */
+  /** 是否打包版（生产）。dev 实例 = false，App 拿它挂右下角 dev 角标。
+      从 BootInfo 来；boot 完成前保守按生产算（不亮角标） */
+  isPackaged: boolean;
   toolCatalog: ToolDefinition[] | null;
   /** 全部会话（含子会话）的摘要镜像——原样对着 window.otter.listSessions()，
       不在这里过滤：正看着一个子会话时，header 的会话名要靠这份镜像查到标题
@@ -659,6 +662,7 @@ export const enterChat = (info: BootInfo) => ({
   workspace: info.workspace,
   events: info.events,
   toolDefs: info.toolDefs ?? [],
+  isPackaged: info.isPackaged,
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
@@ -701,6 +705,7 @@ export const useChat = create<ChatState>((set, get) => ({
   workspace: "",
   events: [],
   toolDefs: [],
+  isPackaged: true, // 保守:boot 前不亮角标
   toolCatalog: null,
   sessions: [],
   subagentLogCache: {},

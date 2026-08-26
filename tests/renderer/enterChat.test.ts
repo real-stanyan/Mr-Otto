@@ -13,6 +13,7 @@ function boot(overrides: Partial<BootInfo> = {}): BootInfo {
     approvalMode: "ask",
     thinking: "off",
     toolDefs: [],
+    isPackaged: true,
     ...overrides,
   };
 }

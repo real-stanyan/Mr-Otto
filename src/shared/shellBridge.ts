@@ -147,6 +147,8 @@ export interface BootInfo {
       渲染层拿它算"工具 schema 吃掉多少上下文"——这块开销不在日志里，
       日志推不出来，只能由持有工具表的主进程报过来 */
   toolDefs: ToolDefinition[];
+  /** 是否打包版（生产）。dev 实例 = false，渲染层拿它挂右下角 dev 角标 */
+  isPackaged: boolean;
 }
 
 export type TurnStatus = "idle" | "running";

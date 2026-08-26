@@ -3038,6 +3038,7 @@ export function App() {
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
+  const isPackaged = useChat((s) => s.isPackaged);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
@@ -3386,6 +3387,7 @@ export function App() {
           {main}
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {!isPackaged && <DevBadge />}
           {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型
               (接力逻辑在 store 的 setProfileSetupOpen,盖章见 lib/modelSetup.ts) */}
           <ModelSetupDialog />
@@ -3402,5 +3404,21 @@ export function App() {
         <SideChatWindow />
       </TooltipProvider>
     </SidebarProvider>
+  );
+}
+
+/** dev 角标（未打包的 dev 实例）：右下角一枚小三角，别和线上版搞混。
+    fixed 挂在视口上，不占布局；pointer-events-none 不挡点击 */
+function DevBadge() {
+  return (
+    <div
+      aria-label="dev 实例"
+      className="pointer-events-none fixed bottom-0 right-0 z-50 flex h-8 w-8 items-end justify-end overflow-hidden"
+    >
+      <div className="h-0 w-0 border-b-[32px] border-l-[32px] border-b-amber-500/90 border-l-transparent" />
+      <span className="absolute bottom-px right-px text-[8px] font-bold leading-none text-black">
+        dev
+      </span>
+    </div>
   );
 }
