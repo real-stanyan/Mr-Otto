@@ -81,25 +81,33 @@ export function toolFilePath(call: ToolCallRequest): string | null {
   return typeof path === "string" && path !== "" ? path : null;
 }
 
-/** 折叠头那一行:这一段干了多久、几步。
+/** 折叠头那一行:这一段干了多久、用了几把工具、动了几个文件。
     以前这里按动作归并计数(「终端 ×26 · 读取 ×2」)—— 那是一张工具清单,
-    折着看等于把展开后的内容抄一遍到头上,步数一多还会撑满一行。折叠头该回答的是
-    「这一段花了多久」,清单展开自己看(对齐 assistant-ui tool-timeline 的
-    "Worked for 12s"/"Working for 0s · 4 steps")。
+    折着看等于把展开后的内容抄一遍到头上,步数一多还撑满一行。折叠头该回答的是
+    「这一段花了多久、动静有多大」,清单展开自己看(对齐 assistant-ui
+    tool-timeline 的 "Worked for 12s · 4 steps · 2 files changed")。
+
+    后半段用英文:这两个数是同一句话里的两个计量,中文量词("2 把工具、1 个文件")
+    在这一行里比英文更占地方,而 "tools used / files changed" 本来就是这个版式的原话。
 
     elapsedMs 为 null = 日志里推不出起止(还没开跑 / 调用被拒,执行器未达),
-    那就只报步数 —— UI 不许拿别的 ts 硬凑一个耗时出来。
-    steps 数的是时间线上的步(工具行 + 旁白行),不是"用了几个工具" */
+    那就不报耗时 —— UI 不许拿别的 ts 硬凑一个数。
+    filesChanged 为 0 时整段不出现:「0 files changed」是句废话。 */
 export function timelineLabel(
-  steps: number,
+  tools: number,
+  filesChanged: number,
   elapsedMs: number | null,
   running: boolean,
 ): string {
   const t = formatSpan(elapsedMs);
-  const stepText = `${steps} 步`;
-  if (running) return t === null ? `工作中 · ${stepText}` : `工作中 ${t} · ${stepText}`;
-  return t === null ? stepText : `工作了 ${t} · ${stepText}`;
+  const head = running ? (t === null ? "工作中" : `工作中 ${t}`) : t === null ? null : `工作了 ${t}`;
+  const counts = `${tools} ${plural(tools, "tool")} used${
+    filesChanged > 0 ? `, ${filesChanged} ${plural(filesChanged, "file")} changed` : ""
+  }`;
+  return head === null ? counts : `${head} · ${counts}`;
 }
+
+const plural = (n: number, word: string): string => (n === 1 ? word : `${word}s`);
 
 /** 明显不可能的耗时(时钟跳变、系统挂起)当坏数据丢掉 —— 同 thinkingLabel 的立场 */
 const MAX_SANE_MS = 3_600_000;

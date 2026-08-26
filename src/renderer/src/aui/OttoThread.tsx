@@ -58,7 +58,7 @@ import { parseAskUserResult, type AskUserOutcome } from "../../../shared/askUser
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { MessageTiming } from "../components/elements/message-timing.js";
 import { EventRow, TimelineProjectionContext } from "../components/Timeline.js";
-import { buildToolIndex, groupElapsed, groupStartedAt } from "../lib/toolIndex.js";
+import { buildToolIndex, effectiveArgs, groupElapsed, groupStartedAt } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { UserAttachments } from "../components/UserAttachments.js";
 import { CHIP } from "../timelineStyles.js";
@@ -311,16 +311,20 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
     }
   }, [answered, autoOpened]);
 
-  // 折叠头那行数字要的是「这一段跑了多久」——起止在事件日志里(tool_execution_started
-  // / tool_result),不在 part 上。选择器返回原始数组引用(不可变才替换),
-  // 不能 map/filter 出新数组——那会引用不等触发无限重渲
+  // 折叠头那行数字要的是「跑了多久 / 用了几把工具 / 动了几个文件」。耗时的起止在
+  // 事件日志里(tool_execution_started / tool_result),不在 part 上。
+  // 选择器返回原始数组引用(不可变才替换),不能 map/filter 出新数组
+  // ——那会引用不等触发无限重渲
   const messageParts = useAuiState((s) => s.message.parts);
-  const toolCallIds = useMemo(
+  const calls = useMemo(
     () =>
       group.indices
         .map((i) => messageParts?.[i])
         .filter((p) => p?.type === "tool-call")
-        .map((p) => ({ id: (p as { toolCallId: string }).toolCallId })),
+        .map((p) => {
+          const part = p as { toolCallId: string; toolName: string; args?: unknown };
+          return { id: part.toolCallId, name: part.toolName, args: part.args };
+        }),
     [group.indices, messageParts],
   );
   const running = group.status.type === "running";
@@ -330,13 +334,28 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
   const elapsed = useMemo(() => {
     const index = proj?.index;
     if (index === undefined) return null;
-    const done = groupElapsed(toolCallIds, index);
+    const done = groupElapsed(calls, index);
     if (!running && done !== null) return done;
-    const started = groupStartedAt(toolCallIds, index);
-    // 一个都没开跑(全卡在审批门前 / 被拒)= "跑了多久"不成立,只报步数
+    const started = groupStartedAt(calls, index);
+    // 一个都没开跑(全卡在审批门前 / 被拒)= "跑了多久"不成立,那一段就不报
     return started === null ? null : Math.max(0, now - started);
-  }, [proj, toolCallIds, running, now]);
-  const restingLabel = timelineLabel(group.indices.length, elapsed, running);
+  }, [proj, calls, running, now]);
+  // 动了几个文件:只数写入,按路径去重(同一个文件改两次是一个文件)。
+  // 读取不算 —— 那不是"改变"。路径取**实际执行**用的那份(人在审批时可能改过参数,
+  // ADR-0041):这一行回答的是"到底什么东西碰了磁盘"
+  const filesChanged = useMemo(() => {
+    const index = proj?.index;
+    const paths = new Set<string>();
+    for (const call of calls) {
+      if (call.name !== "write_file") continue;
+      const path = toolFilePath(
+        index === undefined ? call : { ...call, args: effectiveArgs(call, index) },
+      );
+      if (path !== null) paths.add(path);
+    }
+    return paths.size;
+  }, [proj, calls]);
+  const restingLabel = timelineLabel(calls.length, filesChanged, elapsed, running);
 
   const label = (
     <span className="inline-flex items-center gap-1.5">

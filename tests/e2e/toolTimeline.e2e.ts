@@ -20,12 +20,12 @@ test("折叠头报的是「工作了多久」,思考画在时间线外", async (
           reasoning: "先看看这个目录里有什么。",
           // 带工具的 content = 旁白,它该留在时间线里当一步
           content: "我先列一下。",
-          // read_file 而不是 bash:bash 过审批门,卡在门前的调用**没有**开跑标记,
-          // 折叠头就没有耗时可报(那时报一个数才是说假话)。这条用例要验的是
-          // 真跑完之后那行文案,所以挑一把不需要审批的工具
+          // 读两个、写一个 —— 折叠头要报「3 tools used, 1 file changed」:
+          // 只有写入算"动了文件",读取不算。写入过审批门,所以下面先开免审批
           toolCalls: [
             { name: "read_file", args: { path: "one.txt" } },
             { name: "read_file", args: { path: "two.txt" } },
+            { name: "write_file", args: { path: "three.txt", content: "第三份\n" } },
           ],
         }
       : { content: "看完了。" }
@@ -37,14 +37,19 @@ test("折叠头报的是「工作了多久」,思考画在时间线外", async (
   try {
     const { win } = otto;
     await startSession(otto, ws, "看看这个目录");
+    // 免审批:这一条验的是折叠头那行文案,不是审批卡(审批那条路自己有用例)。
+    // 不开的话写入卡在门前,既没开跑标记也没结果,量到的是"还没干"的那一行
+    await win.getByRole("switch", { name: "免审批" }).click();
 
     const timeline = win.locator('[data-slot="tool-timeline"]');
     await expect(timeline).toBeVisible({ timeout: 30_000 });
 
-    // ① 折叠头是耗时 + 步数,不是那份按动作归并的工具清单
+    // ① 折叠头是耗时 + 用了几把工具 + 动了几个文件,不是那份按动作归并的工具清单
     const trigger = timeline.getByRole("button").first();
-    await expect(trigger).toHaveText(/(工作了|工作中).*步/, { timeout: 30_000 });
-    await expect(trigger).not.toContainText("×");
+    await expect(trigger).toHaveText(/(工作了|工作中).*3 tools used, 1 file changed/, {
+      timeout: 30_000,
+    });
+    await expect(trigger).not.toContainText("×"); // 「终端 ×2」那种清单
 
     // ② 思考在时间线**外**:它自己一条折叠头,不在时间线的子树里
     const thinking = win.getByText(/思考 \d+ 字/);
@@ -55,6 +60,7 @@ test("折叠头报的是「工作了多久」,思考画在时间线外", async (
     await trigger.click();
     await expect(timeline).toContainText("one.txt");
     await expect(timeline).toContainText("two.txt");
+    await expect(timeline).toContainText("three.txt");
     await expect(timeline).toContainText("我先列一下。");
 
     expectNoRendererErrors(otto);
