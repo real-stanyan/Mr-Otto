@@ -63,6 +63,8 @@ function fakeRelay() {
           queue.push(() => peer(p, CID[role]));
           flush();
         },
+        /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
+        reconnectNow() {},
         onMessage(cb) { onMsg = cb; },
         onPeer(cb) { onPeer = cb; },
         onGone(cb) { onGone = cb; },

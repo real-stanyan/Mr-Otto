@@ -79,6 +79,8 @@ function desktopTransport(relay: ReturnType<typeof fakeRelay>): RemoteTransport 
     onPeer(cb) { onPeer = cb; },
     onGone() { /* 这一组不测对端离场 */ },
     onClose() { /* 这一组不测自身断线 */ },
+    /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
+    reconnectNow() {},
     close() { /* 同上 */ },
   };
 }

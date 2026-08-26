@@ -2,6 +2,8 @@
 // 逻辑本身一点都不在这儿 —— 桥在 src/shared/remote/mobileBridge.ts(跟着根门禁跑),
 // 这里只负责"用哪个实现"。
 
+import { AppState } from "react-native";
+
 import { nobleRemoteCrypto } from "../../src/shared/remote/nobleCrypto.js";
 import { createMobileBridge, type MobileBridge } from "../../src/shared/remote/mobileBridge.js";
 import { createRemoteDevices } from "../../src/shared/remote/devices.js";
@@ -11,11 +13,11 @@ import type { PinnedPeerStore } from "../../src/shared/remote/devices.js";
 import { devicesApi } from "./devicesApi.js";
 import { openIdentity } from "./identity.js";
 import { supabase } from "./supabase.js";
-import { createXhrTransport } from "./transport.js";
+import { createWsTransport } from "../../src/shared/remote/wsTransport.js";
 
 export const crypto = nobleRemoteCrypto();
 
-/** RN 里没有 process.env,relayBaseUrl 读的那个 env 传空对象即可 —— 走默认生产网关 */
+/** RN 里没有 process.env,relayBaseUrl 读的那个 env 传空对象即可 —— 走默认生产地址 */
 export const RELAY_BASE = relayBaseUrl({} as never);
 
 export async function openStore(): Promise<PinnedPeerStore> {
@@ -41,10 +43,23 @@ export function connect(
     console.warn(m);
     handlers.onLog?.(m);
   };
-  const transport = createXhrTransport({
+  const transport = createWsTransport({
     baseUrl: RELAY_BASE,
+    role: "mobile",
     authToken: async () => (await supabase.auth.getSession()).data.session?.access_token ?? null,
     log,
+  });
+  // **回前台就换一条连接。** iOS 切后台会把 socket 掐掉,而 WebSocket 未必立刻
+  // onclose:回来时它可能还"连着",既不报错也再不来一个字节 —— 桥那侧仍然是
+  // ready,发出去的每一帧都掉进虚空,而屏幕上一切正常。这是"手机看着连着、
+  // 其实什么都收不到"的主要成因,比断线难查得多。
+  // 反过来,就算 socket 真断了,退避的 setTimeout 在后台也不走 —— 回来最长要再等
+  // 30s。两种情况一条修法:回前台一律重连,不去猜旧连接还活着没有。
+  //
+  // 接在这里而不是传输里(桌面那条对称的触发是"刚登录",见 src/main/index.ts):
+  // AppState 是 RN 独有的,而传输层现在两个平台共用一份。
+  AppState.addEventListener("change", (next) => {
+    if (next === "active") transport.reconnectNow("回到前台");
   });
   return createMobileBridge({
     crypto,

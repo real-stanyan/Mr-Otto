@@ -1,347 +1,277 @@
-import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createRelay } from "../../services/edge/src/relay.js";
-import { createEdge, type EdgeConfig } from "../../services/edge/src/edge.js";
+import {
+  CTRL_CID,
+  CTRL_GONE,
+  CTRL_PEER,
+  MAX_CONNS_PER_USER,
+  MAX_FRAME_BYTES,
+  decodeFrame,
+  encodeFrame,
+  newCid,
+  otherRole,
+  parseRole,
+  peersOf,
+  targetOf,
+  type RelayRole,
+} from "../../services/edge/src/relay.js";
 
-function sink() {
-  const chunks: string[] = [];
-  return { chunks, write(c: string) { chunks.push(c); } };
+// ---- 假 DO ----
+//
+// relay.ts 是纯函数,状态归 Durable Object(一户一个实例,连接由运行时持有,
+// role 与 cid 存在 tag 里)。下面这个 FakeRelay **照着 services/edge/src/worker.ts
+// 的动作顺序写**,好让"多连接互转""按 cid 寻址""负载不进日志"这些性质仍然有
+// 端到端的测试,而不必为了它们起一个 workerd —— 安全不变量的测试必须便宜到
+// 每次提交都跑。
+//
+// 它**不**覆盖的:DO 的运行时接缝本身(acceptWebSocket 的休眠语义、tag 存取、
+// 101 响应的形状、子协议 echo)。那一层由 services/edge/checks/relay.mjs
+// 打真 workerd 兜。改 worker.ts 的动作顺序时,这里要跟着改。
+
+interface FakeConn {
+  cid: string;
+  role: RelayRole;
+  open: boolean;
+  sent: string[];
+  closed: { code: number; reason: string } | null;
 }
 
-describe("createRelay", () => {
-  it("同一 user 的两端互转字节", () => {
-    const r = createRelay();
-    const desktop = sink();
-    const mobile = sink();
-    r.attach("u1", "desktop", desktop);
-    r.attach("u1", "mobile", mobile);
+function fakeRelay() {
+  const conns: FakeConn[] = [];
+  const send = (c: FakeConn, s: string): void => {
+    if (c.open) c.sent.push(s);
+  };
+  const self = {
+    conns,
+    /** 照 worker.ts 的 fetch() */
+    connect(role: RelayRole): FakeConn | "full" {
+      if (conns.filter((c) => c.open).length >= MAX_CONNS_PER_USER) return "full";
+      const existing = conns.slice();
+      const me: FakeConn = { cid: newCid(), role, open: true, sent: [], closed: null };
+      conns.push(me);
+      send(me, `${CTRL_CID} ${me.cid}`);
+      for (const p of peersOf(existing, role)) {
+        send(me, `${CTRL_PEER} ${p.cid}`);
+        send(p, `${CTRL_PEER} ${me.cid}`);
+      }
+      return me;
+    },
+    /** 照 worker.ts 的 webSocketMessage() */
+    frame(from: FakeConn, to: string, payload: string): "delivered" | "dropped" | "too-large" {
+      const msg = encodeFrame(to, payload);
+      if (msg.length > MAX_FRAME_BYTES) {
+        from.open = false;
+        from.closed = { code: 1009, reason: "frame too large" };
+        return "too-large";
+      }
+      const target = targetOf(conns, from.role, to);
+      if (!target) return "dropped";
+      send(target, encodeFrame(from.cid, payload));
+      return "delivered";
+    },
+    /** 照 worker.ts 的 webSocketClose() */
+    drop(c: FakeConn): void {
+      c.open = false;
+      for (const p of peersOf(conns, c.role)) {
+        if (p.cid !== c.cid) send(p, `${CTRL_GONE} ${c.cid}`);
+      }
+    },
+  };
+  return self;
+}
 
-    // 两端都在了 → 各自先收到 cid / 在场信号,后面的断言只看载荷
-    desktop.chunks.length = 0;
-    mobile.chunks.length = 0;
+const conn = (r: fakeRelayConn): FakeConn => r as FakeConn;
+type fakeRelayConn = FakeConn | "full";
 
-    expect(r.deliver("u1", "desktop", "AAAA")).toBe(true);
-    expect(mobile.chunks.join("")).toContain("AAAA");
-    expect(desktop.chunks.join("")).toBe(""); // 不回声给发送方
-
-    expect(r.deliver("u1", "mobile", "BBBB")).toBe(true);
-    expect(desktop.chunks.join("")).toContain("BBBB");
+describe("配对的纯逻辑", () => {
+  it("otherRole / parseRole", () => {
+    expect(otherRole("desktop")).toBe("mobile");
+    expect(otherRole("mobile")).toBe("desktop");
+    expect(parseRole("desktop")).toBe("desktop");
+    for (const bad of [null, "", "DESKTOP", "both", "server"]) {
+      expect(parseRole(bad)).toBeNull();
+    }
   });
 
-  // ── 在场信号 ──
-  //
-  // 握手是双向的:两端都要拿到对方的 hello 才能派生密钥。而中继按设计不排队,
-  // 桌面又是长命的那一端 —— 它开机时若盲发 hello,必然掉进虚空。
-  // 于是"对端到场"这件事必须由中继说出来:它是唯一同时看得见所有连接的人。
-  //
-  // 用 SSE 注释行(':' 开头)而不是 data 帧:控制信道与端到端载荷彻底分开,
-  // 中继依旧只知道"谁在线",一个字节的内容都不碰。
-  it("接上就先知道自己的 cid；对端到场时两侧各收到 :peer", () => {
-    const r = createRelay();
-    const desktop = sink();
-    const mobile = sink();
-    r.attach("u1", "desktop", desktop);
-    // 独自在线:知道自己是谁,但没有对端,不发在场信号
-    expect(desktop.chunks.join("")).toBe(":cid c1\n\n");
-
-    r.attach("u1", "mobile", mobile);
-    // 在位的那端被叫醒,并且知道新来的是哪一条
-    expect(desktop.chunks.join("")).toBe(":cid c1\n\n:peer\n\n:peer c2\n\n");
-    // 新来的那端也要知道对端已在、是哪一条
-    expect(mobile.chunks.join("")).toBe(":cid c2\n\n:peer\n\n:peer c1\n\n");
+  it("peersOf 只挑对端角色、且还活着的", () => {
+    const conns = [
+      { cid: "a", role: "desktop" as const, open: true },
+      { cid: "b", role: "mobile" as const, open: true },
+      { cid: "c", role: "mobile" as const, open: false },
+      { cid: "d", role: "mobile" as const, open: true },
+    ];
+    expect(peersOf(conns, "desktop").map((c) => c.cid)).toEqual(["b", "d"]);
+    expect(peersOf(conns, "mobile").map((c) => c.cid)).toEqual(["a"]);
   });
 
-  // 裸 :peer 是发给**老客户端**的:它们不认 cid,只认这一条来开握手。
-  // 新客户端收到过 :cid 就知道对面是新中继,忽略裸的那条(否则会开一轮没有收件人的握手)
-  it("裸 :peer 只发一条，不随对端条数增加", () => {
-    const r = createRelay();
-    const desktop = sink();
-    r.attach("u1", "desktop", desktop);
-    r.attach("u1", "mobile", sink());
-    r.attach("u1", "mobile", sink());
-    const bare = desktop.chunks.join("").match(/:peer\n\n/g) ?? [];
-    expect(bare).toHaveLength(2); // 两次 attach 各一条,而不是"第二次发两条"
+  // 同角色之间不该能互相发东西:桌面发给另一台桌面在这套协议里没有意义,
+  // 而它会让"我在跟谁说话"多一种可能性
+  it("targetOf 不认同角色的 cid", () => {
+    const conns = [
+      { cid: "d1", role: "desktop" as const, open: true },
+      { cid: "d2", role: "desktop" as const, open: true },
+      { cid: "m1", role: "mobile" as const, open: true },
+    ];
+    expect(targetOf(conns, "desktop", "m1")?.cid).toBe("m1");
+    expect(targetOf(conns, "desktop", "d2")).toBeUndefined();
   });
 
-  it("同角色重连也重发 :peer（手机切后台再回来,整轮握手要重开）", () => {
-    const r = createRelay();
-    const desktop = sink();
-    r.attach("u1", "desktop", desktop);
-    const off = r.attach("u1", "mobile", sink())!;
-    off();
-    r.attach("u1", "mobile", sink());
-    expect(desktop.chunks.join("")).toContain(":peer c3\n\n");
+  // cid 撞号 = 两条连接抢同一根管子。DO 睡醒后构造函数重跑、内存清零,
+  // 所以它不能是实例字段上的计数器(ADR-0129 的实现补充)
+  it("newCid 随机、以字母开头、不含空格", () => {
+    const ids = new Set(Array.from({ length: 500 }, () => newCid()));
+    expect(ids.size).toBe(500);
+    for (const id of ids) {
+      expect(id).toMatch(/^c[0-9a-f]+$/);
+      expect(id).not.toContain(" ");
+    }
   });
 
-  it("不同 user 之间绝不串线", () => {
-    const r = createRelay();
-    const a = sink();
-    const b = sink();
-    r.attach("u1", "mobile", a);
-    r.attach("u2", "mobile", b);
-    r.deliver("u1", "desktop", "SECRET");
-    expect(b.chunks.join("")).toBe(":cid c2\n\n");
+  it("encodeFrame / decodeFrame 是一对，密文原样出来", () => {
+    const payload = "AAAA-BB_CC-dd";
+    const f = decodeFrame(encodeFrame("c123", payload));
+    expect(f).toEqual({ cid: "c123", payload });
   });
 
-  it("对端不在线 → deliver 回 false，字节丢弃", () => {
-    const r = createRelay();
-    r.attach("u1", "desktop", sink());
-    expect(r.deliver("u1", "desktop", "X")).toBe(false);
-    expect(r.peerOnline("u1", "desktop")).toBe(false);
+  it("decodeFrame 解不开的回 null，不抛", () => {
+    for (const bad of ["", "nospace", " leading", ":peer c1"]) {
+      expect(() => decodeFrame(bad)).not.toThrow();
+    }
+    expect(decodeFrame("nospace")).toBeNull();
+    expect(decodeFrame(" leading")).toBeNull();
+  });
+});
+
+describe("中继（照 worker.ts 的动作顺序）", () => {
+  it("接上先收到自己的 cid", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    expect(d.sent).toEqual([`${CTRL_CID} ${d.cid}`]);
   });
 
-  it("detach 之后不再收", () => {
-    const r = createRelay();
-    const m = sink();
-    const off = r.attach("u1", "mobile", m)!;
-    off();
-    expect(r.deliver("u1", "desktop", "X")).toBe(false);
-    expect(m.chunks.join("")).toBe(":cid c1\n\n");
+  it("对端到场：两侧各收到一条带 cid 的 :peer", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    d.sent.length = 0;
+    const m = conn(r.connect("mobile"));
+    expect(d.sent).toEqual([`${CTRL_PEER} ${m.cid}`]);
+    expect(m.sent).toEqual([`${CTRL_CID} ${m.cid}`, `${CTRL_PEER} ${d.cid}`]);
   });
 
-  // ── 多连接(ADR-0130)──
-  //
-  // 原来是"同角色重连顶掉旧的,一户一桌面一手机"。现在几条并存,靠 cid 寻址。
-  // 为什么必须寻址而不是广播:每条连接有自己一套会话密钥,广播过去的帧在别人
-  // 那儿解不开,而 sealedStream 还带计数器校验——收到别人的帧会被判成异常
-  it("两台手机并存，按 cid 各收各的", () => {
-    const r = createRelay();
-    const desktop = sink();
-    const m1 = sink();
-    const m2 = sink();
-    r.attach("u1", "desktop", desktop); // c1
-    r.attach("u1", "mobile", m1);       // c2
-    r.attach("u1", "mobile", m2);       // c3
-    m1.chunks.length = 0;
-    m2.chunks.length = 0;
+  // ADR-0130 的核心:几台手机可以同时连着,各是各的
+  it("两台手机同时在线：桌面收到两条 :peer，各发各的不串", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m1 = conn(r.connect("mobile"));
+    const m2 = conn(r.connect("mobile"));
+    expect(d.sent.filter((s) => s.startsWith(CTRL_PEER))).toEqual([
+      `${CTRL_PEER} ${m1.cid}`,
+      `${CTRL_PEER} ${m2.cid}`,
+    ]);
 
-    expect(r.deliver("u1", "desktop", "FOR-M1", { to: "c2" })).toBe(true);
-    expect(m1.chunks.join("")).toBe("data: FOR-M1\n\n");
-    expect(m2.chunks.join("")).toBe("");
-
-    expect(r.deliver("u1", "desktop", "FOR-M2", { to: "c3" })).toBe(true);
-    expect(m2.chunks.join("")).toBe("data: FOR-M2\n\n");
+    m1.sent.length = 0;
+    m2.sent.length = 0;
+    expect(r.frame(d, m2.cid, "ONLY-FOR-M2")).toBe("delivered");
+    expect(m2.sent).toEqual([encodeFrame(d.cid, "ONLY-FOR-M2")]);
+    expect(m1.sent).toEqual([]); // ← 广播就会在这里红
   });
 
-  it("桌面知道每一条手机的 cid（新来的那条也会通知在位的）", () => {
-    const r = createRelay();
-    const desktop = sink();
-    r.attach("u1", "desktop", desktop);
-    r.attach("u1", "mobile", sink());
-    r.attach("u1", "mobile", sink());
-    expect(desktop.chunks.join("")).toContain(":peer c2\n\n");
-    expect(desktop.chunks.join("")).toContain(":peer c3\n\n");
+  it("新连的手机也知道桌面在（两侧都通知，不是只通知新来的）", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m1 = conn(r.connect("mobile"));
+    m1.sent.length = 0;
+    const m2 = conn(r.connect("mobile"));
+    expect(m2.sent).toContain(`${CTRL_PEER} ${d.cid}`);
+    expect(m1.sent).toEqual([]); // 同角色之间不互相通知
   });
 
-  it("对端断了要说一声 :gone —— 否则那套密钥会一直挂着，往断管子里封帧", () => {
-    const r = createRelay();
-    const desktop = sink();
-    r.attach("u1", "desktop", desktop);
-    const off = r.attach("u1", "mobile", sink())!;
-    desktop.chunks.length = 0;
-    off();
-    expect(desktop.chunks.join("")).toBe(":gone c2\n\n");
+  it("收件人知道是谁发的（不知道就不知道用哪套密钥解）", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    m.sent.length = 0;
+    r.frame(d, m.cid, "PAYLOAD");
+    expect(decodeFrame(m.sent[0]!)).toEqual({ cid: d.cid, payload: "PAYLOAD" });
   });
 
-  // 猜一条发过去,收的那端解不开、发的那端以为发成功了 —— 最难查的那种失败
-  it("对端不止一条而 to 缺席 → 丢弃，不猜", () => {
-    const r = createRelay();
-    r.attach("u1", "desktop", sink());
-    r.attach("u1", "mobile", sink());
-    r.attach("u1", "mobile", sink());
-    expect(r.deliver("u1", "desktop", "X")).toBe(false);
+  // 猜一条发过去,收到的那端解不开,而发的那端以为发成功了 —— 最难查的那种
+  it("收件人认不出 → 丢弃，不猜一条发", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    m.sent.length = 0;
+    expect(r.frame(d, "c-nobody", "PAYLOAD")).toBe("dropped");
+    expect(m.sent).toEqual([]);
   });
 
-  // 老客户端不带 to。对端只有一条时行为和从前一模一样
-  it("对端只有一条时 to 可以缺席（老客户端还能用）", () => {
-    const r = createRelay();
-    const m = sink();
-    r.attach("u1", "desktop", sink());
-    r.attach("u1", "mobile", m);
-    m.chunks.length = 0;
-    expect(r.deliver("u1", "desktop", "X")).toBe(true);
-    expect(m.chunks.join("")).toBe("data: X\n\n");
+  it("对端一条都没有 → 丢弃，不排队（排队 = 落盘）", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    expect(r.frame(d, "c-anything", "AAAA")).toBe("dropped");
+    const m = conn(r.connect("mobile"));
+    expect(m.sent.some((s) => s.includes("AAAA"))).toBe(false);
   });
 
-  it("to 指到不存在的 / 同角色的连接 → 丢弃", () => {
-    const r = createRelay();
-    const d2 = sink();
-    r.attach("u1", "desktop", sink()); // c1
-    r.attach("u1", "desktop", d2);     // c2 同角色
-    r.attach("u1", "mobile", sink());  // c3
-    expect(r.deliver("u1", "desktop", "X", { to: "c2" })).toBe(false); // 桌面→桌面不给发
-    expect(r.deliver("u1", "desktop", "X", { to: "c99" })).toBe(false);
-    expect(d2.chunks.join("")).not.toContain("data:");
+  it("连接没了 → 对端收到 :gone，同侧的不收", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m1 = conn(r.connect("mobile"));
+    const m2 = conn(r.connect("mobile"));
+    d.sent.length = 0;
+    m2.sent.length = 0;
+    r.drop(m1);
+    expect(d.sent).toEqual([`${CTRL_GONE} ${m1.cid}`]);
+    expect(m2.sent).toEqual([]);
   });
 
-  it("一户连接数封顶 → attach 回 null（挡的是内存）", () => {
-    const r = createRelay();
-    for (let i = 0; i < 16; i++) expect(r.attach("u1", "mobile", sink())).not.toBeNull();
-    expect(r.attach("u1", "mobile", sink())).toBeNull();
+  it("走掉那条不再收帧", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    r.drop(m);
+    m.sent.length = 0;
+    expect(r.frame(d, m.cid, "PAYLOAD")).toBe("dropped");
+    expect(m.sent).toEqual([]);
+  });
+
+  it("超过 256 KiB → 关连接，且不看内容", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    expect(r.frame(d, m.cid, "x".repeat(MAX_FRAME_BYTES))).toBe("too-large");
+    expect(d.closed?.code).toBe(1009);
+  });
+
+  it("一户最多 16 条，满了就不再接", () => {
+    const r = fakeRelay();
+    for (let i = 0; i < MAX_CONNS_PER_USER; i += 1) {
+      expect(r.connect(i % 2 === 0 ? "desktop" : "mobile")).not.toBe("full");
+    }
+    expect(r.connect("mobile")).toBe("full");
   });
 
   // ↓ 盲管道这个性质要有测试守着，否则三个月后有人为调试加一行 console.log
-  it("负载从不被解析：deliver 收到坏 JSON 也照转不误", () => {
-    const r = createRelay();
-    const m = sink();
-    r.attach("u1", "mobile", m);
-    expect(r.deliver("u1", "desktop", "{{{ not json at all")).toBe(true);
-    expect(m.chunks.join("")).toContain("{{{ not json at all");
+  it("负载从不被解析：坏 JSON 也照转不误", () => {
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    m.sent.length = 0;
+    expect(r.frame(d, m.cid, "{{{ not json at all")).toBe("delivered");
+    expect(decodeFrame(m.sent[0]!)?.payload).toBe("{{{ not json at all");
   });
 
   it("负载从不进日志", () => {
     const spyLog = vi.spyOn(console, "log").mockImplementation(() => {});
     const spyErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    const r = createRelay();
-    r.attach("u1", "mobile", sink());
-    r.deliver("u1", "desktop", "TOP-SECRET-PAYLOAD");
-    const all = [...spyLog.mock.calls, ...spyErr.mock.calls].flat().join(" ");
+    const spyWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = fakeRelay();
+    const d = conn(r.connect("desktop"));
+    const m = conn(r.connect("mobile"));
+    r.frame(d, m.cid, "TOP-SECRET-PAYLOAD");
+    const all = [...spyLog.mock.calls, ...spyErr.mock.calls, ...spyWarn.mock.calls].flat().join(" ");
     expect(all).not.toContain("TOP-SECRET-PAYLOAD");
     spyLog.mockRestore();
     spyErr.mockRestore();
-  });
-
-  it("SSE 线格式：data: 一行 + 空行收尾", () => {
-    const r = createRelay();
-    const m = sink();
-    r.attach("u1", "mobile", m);
-    m.chunks.length = 0;
-    r.deliver("u1", "desktop", "PAYLOAD");
-    expect(m.chunks.join("")).toBe("data: PAYLOAD\n\n");
-  });
-});
-
-// ---- 路由层：本文件独有的小型 harness ----
-//
-// 与 tests/edge/edge.test.ts 的模式一致（token()/config），但那些 helper 没有导出，
-// 这里是特意保留的重复。
-
-const SECRET = "jwt-secret";
-const NOW_MS = 1_800_000_000_000;
-
-const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");
-function token(sub = "u1", expOffset = 3600): string {
-  const head = b64({ alg: "HS256", typ: "JWT" });
-  const body = b64({ sub, email: "a@b.c", exp: Math.floor(NOW_MS / 1000) + expOffset });
-  const sig = createHmac("sha256", SECRET).update(`${head}.${body}`).digest("base64url");
-  return `${head}.${body}.${sig}`;
-}
-
-const config: EdgeConfig = { jwtSecret: SECRET };
-
-function makeEdge(): (req: Request) => Promise<Response> {
-  return createEdge({ config, now: () => NOW_MS, relay: createRelay() });
-}
-
-function authed(url: string, init: RequestInit = {}): Request {
-  return new Request(url, {
-    ...init,
-    headers: { authorization: `Bearer ${token()}`, ...(init.headers ?? {}) },
-  });
-}
-
-describe("/rl/v1 路由", () => {
-  it("没 token → 401；role 非法 → 400；方法不对 → 405", async () => {
-    const g = makeEdge();
-    expect((await g(new Request("http://x/rl/v1/stream?role=desktop"))).status).toBe(401);
-    expect((await g(authed("http://x/rl/v1/stream?role=wat"))).status).toBe(400);
-    expect((await g(authed("http://x/rl/v1/send?role=desktop", { method: "GET" }))).status).toBe(405);
-  });
-
-  it("对端不在线 → POST /send 回 409", async () => {
-    const g = makeEdge();
-    const r = await g(authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "AAAA" }));
-    expect(r.status).toBe(409);
-  });
-
-  it("超过 256 KiB → 413，且不解析内容", async () => {
-    const g = makeEdge();
-    const r = await g(authed("http://x/rl/v1/send?role=desktop", {
-      method: "POST",
-      body: "A".repeat(256 * 1024 + 1),
-    }));
-    expect(r.status).toBe(413);
-  });
-
-  it("SSE 响应头带 text/event-stream 与 x-accel-buffering: no", async () => {
-    const g = makeEdge();
-    const r = await g(authed("http://x/rl/v1/stream?role=desktop"));
-    expect(r.headers.get("content-type")).toContain("text/event-stream");
-    expect(r.headers.get("x-accel-buffering")).toBe("no");
-    // 必须 cancel:ReadableStream 的 start() 在构造时就跑了,25s 心跳的
-    // setInterval 已经挂上。不取消,这个定时器会一直活到 worker 结束
-    await r.body?.cancel();
-  });
-
-  // ── 路由 ↔ 中继的接缝 ──
-  //
-  // createRelay 单独测过,路由的 401/400/405/409/413/响应头也单独测过,
-  // 但**没有一条**把两者接起来:把 relayStream 里的 relay.attach(...) 整行删掉,
-  // 上面那些用例全绿。而"管子端到端通"恰恰是这个分支的全部交付物。
-  // 这条同时是 write 闭包、detach 赋值、cancel 拆装的唯一覆盖。
-
-  it("stream 挂上去之后，peer POST 的字节原样出现在流上（route ↔ relay 接通）", async () => {
-    const g = makeEdge();
-    const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
-    expect(res.status).toBe(200);
-    // 增量读:这条流永远不结束,await 整个 body 会挂死
-    const reader = res.body!.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toBe(":ok\n\n"); // 开场白
-    // 接着是这条连接的 cid(ADR-0130)。控制行,不是载荷
-    expect(new TextDecoder().decode((await reader.read()).value)).toMatch(/^:cid /);
-
-    const sent = await g(
-      authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
-    );
-    expect(sent.status).toBe(204); // 对端在线 → 不是 409
-
-    const { value } = await reader.read();
-    expect(new TextDecoder().decode(value)).toBe("data: PAYLOAD\n\n");
-
-    // cancel 走 ReadableStream 的 cancel 回调:detach + clearInterval。
-    // 一并断言 detach 真的接上了——之后对端就该是离线的
-    await reader.cancel();
-    const after = await g(
-      authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "PAYLOAD" })
-    );
-    expect(after.status).toBe(409);
-  });
-
-  // 这条钉的是一条**只在 node:http 那一侧才现形**的失败:
-  // res.writeHead() 不会把响应头推到 socket 上,node 要等第一个 body 字节才一起冲刷。
-  // 于是"开流时一个字节都不写"的 SSE 端点,客户端连响应状态行都收不到——
-  // 实测桌面侧 fetch 与 curl 都卡满 25s(第一次心跳)才拿到头。
-  // 上面那条接缝用例测不出来:它总是先让对端 POST 一帧,自带了第一个字节。
-  it("开流即刻有字节可读（否则 node:http 不冲刷响应头，客户端要卡到第一次心跳）", async () => {
-    const g = makeEdge();
-    const res = await g(authed("http://x/rl/v1/stream?role=desktop"));
-    const reader = res.body!.getReader();
-    // 没有任何对端发送、没有推进任何定时器
-    const first = await Promise.race([
-      reader.read(),
-      new Promise<"TIMEOUT">((r) => setTimeout(() => r("TIMEOUT"), 200)),
-    ]);
-    expect(first).not.toBe("TIMEOUT");
-    expect(new TextDecoder().decode((first as ReadableStreamReadResult<Uint8Array>).value))
-      .toBe(":ok\n\n");
-    await reader.cancel();
-  });
-
-  it("心跳是注释行 :\\n\\n（不是 data 帧，客户端解析器会跳过）", async () => {
-    vi.useFakeTimers();
-    try {
-      const g = makeEdge();
-      const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
-      const reader = res.body!.getReader();
-      await reader.read(); // 开场白 :ok，先读掉
-      await reader.read(); // 这条连接的 cid，也先读掉
-      // nginx 的 proxy_read_timeout 是 600s,心跳必须远短于它
-      await vi.advanceTimersByTimeAsync(25_000);
-      const { value } = await reader.read();
-      expect(new TextDecoder().decode(value)).toBe(":\n\n");
-      await reader.cancel();
-    } finally {
-      vi.useRealTimers();
-    }
+    spyWarn.mockRestore();
   });
 });

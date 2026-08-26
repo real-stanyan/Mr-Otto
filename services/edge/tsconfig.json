@@ -1,0 +1,30 @@
+{
+  // Worker 单独一份。理由很具体：@cloudflare/workers-types 会重声明
+  // fetch / Request / Response / WebSocket 这些全局，塞进根 tsconfig 就会和
+  // Electron 主进程那边的 Node 声明打架（同名不同签名）。所以根那边把
+  // src/worker.ts 排除掉，由这一份管，npm test 里跑两条 tsc。
+  //
+  // 只收 worker.ts：edge.ts / relay.ts / jwt.ts 这些是运行时无关的纯文件，
+  // 它们跟着根门禁跑（那边有 strict 的全套开关，也有 tests/edge/ 的测试）。
+  //
+  // @cloudflare/workers-types 装在**根**的 devDependencies，不是这里：门禁必须
+  // 是「clone 完 npm ci + npm test」一条路。装在这个目录下的话，CI 只在根 npm ci
+  // 就找不到它（实测 TS2688），修法要么给 CI 加一步安装、要么给本地埋一个
+  // 「你还得 npm --prefix services/edge install」的雷 —— 那正是 mobile/ 现在的
+  // 处境（issue #422）。tsc 会从这个目录往上找 node_modules，所以放根就够了。
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["esnext"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/worker.ts"]
+}

@@ -4,7 +4,7 @@
   "productName": "Mr Otto",
   "description": "Mr Otto — macOS desktop GUI agent",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p services/edge",
     "pretest": "node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",
@@ -24,6 +24,7 @@
   "private": "true",
   "type": "module",
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260826.1",
     "@electron/rebuild": "^4.2.0",
     "@noble/ciphers": "^2.3.0",
     "@noble/curves": "^2.3.0",

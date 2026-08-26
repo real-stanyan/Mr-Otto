@@ -49,5 +49,14 @@
   // **这是临时状态**:三条备选路和各自的代价记在 issue #422(Protocol gap),
   // 收口之前手机端的类型错误进不了门禁。手机端的加密适配层没有这个问题——
   // 它是纯 JS、住在 src/shared/remote/,跟着根门禁跑(ADR-0101)。
-  "exclude": ["mobile", "node_modules", "out", "dist"],
+  "exclude": [
+    "mobile",
+    "node_modules",
+    "out",
+    "dist",
+    // Worker 入口带 @cloudflare/workers-types，它重声明 fetch/Request/WebSocket
+    // 这些全局，跟这边的 Node 声明打架。它由 services/edge/tsconfig.json 管，
+    // npm test 里单跑一条 tsc（同一道门禁，只是两条命令）
+    "services/edge/src/worker.ts",
+  ],
 }

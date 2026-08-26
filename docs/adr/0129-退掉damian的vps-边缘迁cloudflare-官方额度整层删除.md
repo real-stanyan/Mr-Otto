@@ -81,3 +81,52 @@ Hibernation 之后离天花板很远，但如果将来中继的消息频率数�
   本 ADR 之后也退役。
 - **`0012_drop_poker.sql` 保留钱包的理由**：见上。
 - **`remoteTransport.ts` 头注「不用 EventSource / WebSocket」**：前提随迁移消失。
+
+## 实现时的补充（#518 落地，2026-08-26）
+
+原文写这份决定时有三个未决问题，实现第一步全部验掉了，**都不用退路**：
+
+- **token 走 `Sec-WebSocket-Protocol`**：`new WebSocket(url, [SUBPROTOCOL, jwt])` 实测把两个值
+  拼进 header（741 字节的 Supabase JWT → 752 字节 header），服务端只 echo 回常量。
+  query 参数那条路仍然否决：access token 不该出现在 URL 里。
+- **Electron 主进程有全局 `WebSocket`**：Electron 43 内嵌 Node 24.18.1。不用 `ws` 包。
+- **DO 的 tags 可用**：`acceptWebSocket(ws, tags?)` / `getWebSockets(tag?)` / `getTags(ws)`
+  都在类型定义里，所以 role 存 tag，不用 `serializeAttachment`。
+
+**一处原文没预料到的改动：`jwt.ts` 从 `node:crypto` 换成 WebCrypto。** Worker 运行时没有
+`node:crypto`，要有得开 `nodejs_compat` —— 为一次 HMAC 拉进整个 Node 兼容层不划算。
+换成 `crypto.subtle` 之后这个文件运行时无关，附带收益是 `subtle.verify` 自己就是定长比较，
+手写的 `timingSafeEqual` 和它那个"先比长度（不等长会抛）"的补丁一起没了。
+代价：验签变成异步，调用方要 `await`。三个经典坑（alg 白名单、定长比较、exp 必须存在）
+一条没动，`tests/edge/jwt.test.ts` 逐条照旧。
+
+**`server.ts` / `nodeAdapter.ts` 的删除从 #517 挪到了 #518**：过渡期里生产上跑的仍然是那个
+Node 进程，main 上不留一份能构建的源码，就没法在旧服务上改东西。Worker 入口落地后才删。
+
+**运行时那一层怎么验**：单测跑纯逻辑 + 一个照着 `worker.ts` 写的假 DO，覆盖不到
+`acceptWebSocket` 的休眠语义、tag 存取、101 响应形状、子协议 echo —— 那几件事坏掉的样子是
+"连上了但什么都不发生"，没有报错。所以 `services/edge/checks/relay.mjs` 打真 workerd
+（`wrangler dev --local` 或生产地址）跑 17 条端到端断言，不进门禁，改中继的 PR 贴它的结果。
+
+## 与 ADR-0130 的合并（#518 与 #530 并行落地）
+
+本 ADR 的实现（#518，PR #539）和 ADR-0130（中继按连接寻址，#530）是两条并行的 lane，
+在 PR 合并时撞上：0130 把中继从「一户一桌面一手机」改成「一户多连接、按 cid 寻址」，
+而它做在 SSE 那版中继上；本 ADR 把中继整个换成 WebSocket + Durable Object。
+
+合的方式：**桥层与契约全取 0130 的**（`remoteBridge` 的 `Map<cid, Peer>`、
+`mobileBridge`、`RemoteTransport` 的 `send(payload, to)` / `onMessage(p, from)` /
+`onPeer(cid)` / `onGone(cid)`），wire 那一半在 WebSocket 上重做。
+
+**0130 里有两样没跟过来，因为它们是 SSE 的迁就：**
+
+- **`event: <cid>` 行**：SSE 是按行的文本流，让收件人知道发件人是谁只能加一行。
+  WebSocket 是离散消息，发件人直接编进帧头（`<cid> <payload>`，读到第一个空格就够）。
+- **`v=2` 协商**：加那行会让只认单行 `data:` 的老解析器整条丢掉（「连上了却一帧都收不到」），
+  所以必须客户端先声明认新格式。WebSocket 这边没有老客户端 —— 它们连的是旧 VPS 上那个
+  SSE 中继，两套在过渡期并存（见发布顺序），各说各的话。
+
+**一处 0130 的实现在 DO 上会坏，改掉了**：cid 用递增计数器（`c${++seq}`）。
+DO 睡醒后构造函数重跑、内存清零，计数器归零，而那时还开着的连接仍持着老 cid ——
+撞号的表现是两条连接抢同一根管子。改成随机（`crypto.randomUUID()` 截段），
+不需要为它落盘，也就不破坏「中继一个 storage API 都不调」。

@@ -41,6 +41,8 @@ function fakeTransport() {
     onPeer(cb: (cid: string) => void) { onPeer = cb; },
     onGone(cb: (cid: string) => void) { onGone = cb; },
     onClose(cb: () => void) { onClose = cb; },
+    /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
+    reconnectNow() {},
     close: vi.fn(),
     emit(p: string, from = C1) { onMsg(p, from); },
     /** 中继报告某条对端连接已在场(SSE 的 :peer <cid>)。握手唯一的起点 */

@@ -1,14 +1,19 @@
-// Supabase JWT(HS256)验签 —— 网关的身份边界。
+// Supabase JWT(HS256)验签 —— 这个服务的身份边界。
 //
 // 手写而不装 jose：迁到 Supabase Cloud 后签发密钥被切回 legacy HS256(docs/adr/0098),
 // 所以对称验签这条路仍然成立。验一个 HS256 就是一次 HMAC + 一次定长比较,
 // 依赖换不来更少的代码。代价是必须自己堵住 JWT 的经典坑,
 // 下面三条注释标的就是那三个坑,tests/edge/jwt.test.ts 逐条钉住。
-
-import { createHmac, timingSafeEqual } from "node:crypto";
+//
+// **用 WebCrypto 而不是 node:crypto**(ADR-0129):Worker 运行时没有 node:crypto,
+// 要有得开 nodejs_compat —— 为一次 HMAC 拉进整个 Node 兼容层不划算。
+// WebCrypto 两个运行时都原生有,这个文件于是运行时无关。
+// 附带的好处:subtle.verify 自己就是定长比较,不用再手写 timingSafeEqual,
+// 也不用先比长度(那是 timingSafeEqual 对不等长入参会抛留下的补丁)。
+// 代价:验签变成异步的,调用方要 await。
 
 export interface JwtClaims {
-  /** Supabase user id(uuid)——钱包主键 */
+  /** Supabase user id(uuid) */
   sub: string;
   email: string;
   /** 过期时刻(秒) */
@@ -19,9 +24,27 @@ export type JwtResult =
   | { ok: true; claims: JwtClaims }
   | { ok: false; reason: string };
 
-function decodeSegment(seg: string): unknown {
+/** base64url → 字节。不用 Buffer:那也是 node 的东西。
+    返回类型写死 Uint8Array<ArrayBuffer>(而不是默认的 ArrayBufferLike):
+    WebCrypto 的 BufferSource 不收可能是 SharedArrayBuffer 的那一种 */
+function b64urlToBytes(seg: string): Uint8Array<ArrayBuffer> | null {
+  const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
   try {
-    return JSON.parse(Buffer.from(seg, "base64url").toString("utf8"));
+    const bin = atob(b64 + pad);
+    const out = new Uint8Array(new ArrayBuffer(bin.length));
+    for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function decodeSegment(seg: string): unknown {
+  const bytes = b64urlToBytes(seg);
+  if (!bytes) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return null;
   }
@@ -34,7 +57,11 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /**
  * @param nowSeconds 注入而不是读时钟：过期判断要能被测试逐秒钉死
  */
-export function verifyJwt(token: string, secret: string, nowSeconds: number): JwtResult {
+export async function verifyJwt(
+  token: string,
+  secret: string,
+  nowSeconds: number
+): Promise<JwtResult> {
   if (!secret) return { ok: false, reason: "服务端未配置 JWT secret" };
 
   const parts = token.split(".");
@@ -47,11 +74,24 @@ export function verifyJwt(token: string, secret: string, nowSeconds: number): Jw
   // "none" 和 HS/RS 混淆都是从这里进来的
   if (header.alg !== "HS256") return { ok: false, reason: `不支持的 alg: ${String(header.alg)}` };
 
-  const expected = createHmac("sha256", secret).update(`${rawHeader}.${rawPayload}`).digest();
-  const actual = Buffer.from(rawSig, "base64url");
-  // 坑二:timingSafeEqual 对不等长入参会抛,先比长度(长度本身不是秘密)
-  if (actual.length !== expected.length) return { ok: false, reason: "签名不匹配" };
-  if (!timingSafeEqual(actual, expected)) return { ok: false, reason: "签名不匹配" };
+  const sig = b64urlToBytes(rawSig);
+  if (!sig) return { ok: false, reason: "签名不匹配" };
+  // 坑二:比较必须定长。subtle.verify 内部就是定长比较,且对长度不对的签名
+  // 直接回 false —— 不会像 timingSafeEqual 那样抛
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+  const good = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    sig,
+    new TextEncoder().encode(`${rawHeader}.${rawPayload}`)
+  );
+  if (!good) return { ok: false, reason: "签名不匹配" };
 
   const payload = decodeSegment(rawPayload);
   if (!isRecord(payload)) return { ok: false, reason: "payload 解不开" };
