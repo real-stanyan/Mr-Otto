@@ -634,14 +634,27 @@ describe("MCP 自助配置的三把刀", () => {
   // 里根本看不出来——已挂载但未曝光的 deferred 工具和完全没挂载，在 toolDefs
   // 眼里是同一张脸。
   //
-  // 探查手法：agent.engine 是 createAgent 返回值上公开暴露的字段（读它不是
-  // 越界），它内部的 toolsByName（LoopEngine 装配一次就定的挂载表，见
-  // engine.ts 的 rebuildTools）才是"挂没挂上"的真相来源，与 toolDefs 那份
-  // "模型此刻看不看得见"的声明表是两件事。toolsByName 在 TS 里是 private，
-  // 但那只是编译期的可见性——运行时字段照样在，cast 到一个只声明这一个字段
-  // 的结构类型即可绕过编译期检查读到它，不违反其只读语义。
-  function mounted(agent: { engine: unknown }, name: string): boolean {
-    return (agent.engine as { toolsByName: Map<string, unknown> }).toolsByName.has(name);
+  // 探查手法改用黑盒路径（code review 指出直接读 LoopEngine 的 private
+  // toolsByName 破了封装，全仓唯一一处，且有现成的公开路径没走）：
+  // agent.engine 公开暴露了 setAdapter()（engine.ts:152）和 runTurn()
+  // （engine.ts:487）——生产代码 agent.ts 的 switchModel() 用的就是这同一套
+  // 热替换机制。注入一个假 adapter，编一次"模型调 tool_search 搜关键词"的
+  // turn，再读公开的 agent.toolDefs getter：一把「已挂载但未曝光」的 deferred
+  // 工具只有真被搜到之后才会出现在 toolDefs 里；一把「从没挂载」的工具
+  // （包括 tool_search 自己都没挂上的情形，见下面第二条测试）无论怎么搜
+  // 都不会出现——两者因此可分，不用碰任何 private 字段。
+  function searchOnceAdapter(toolName: string, query: string): ModelAdapter {
+    let step = 0;
+    return {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        step++;
+        if (step === 1) {
+          return { content: "", toolCalls: [{ id: "c1", name: toolName, args: { query } }] };
+        }
+        return { content: "好的" };
+      },
+    };
   }
 
   const cap = (): McpCapability => ({
@@ -655,34 +668,60 @@ describe("MCP 自助配置的三把刀", () => {
     configOf: () => undefined,
   });
 
-  it("world 有 mcp 能力时三把都挂上，且都是 deferred（不进初始声明表）", () => {
+  it("world 有 mcp 能力时三把都挂上，且都是 deferred（tool_search 搜到才可见）", async () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
-    expect(mounted(agent, "mcp_catalog")).toBe(true);
-    expect(mounted(agent, "mcp_configure")).toBe(true);
-    expect(mounted(agent, "mcp_authorize")).toBe(true);
-    const names = agent.toolDefs.map((d) => d.name);
-    expect(names).not.toContain("mcp_catalog");
-    expect(names).not.toContain("mcp_configure");
-    expect(names).not.toContain("mcp_authorize");
+
+    // 挂载但未曝光：初始声明表看不见任何一把
+    const before = agent.toolDefs.map((d) => d.name);
+    expect(before).not.toContain("mcp_catalog");
+    expect(before).not.toContain("mcp_configure");
+    expect(before).not.toContain("mcp_authorize");
+
+    // 假 adapter 模拟模型调 tool_search 搜"mcp_"——deferred 检索口按子串匹配
+    // name+description（toolSearch.ts），这个装配里除了三把刀没有别的 deferred
+    // 工具（cap() 的 servers() 是空的，createMcpTools 不会生成任何 mcp__* 工具），
+    // 一次搜索同时命中三把
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    const after = agent.toolDefs.map((d) => d.name);
+    expect(after).toContain("mcp_catalog");
+    expect(after).toContain("mcp_configure");
+    expect(after).toContain("mcp_authorize");
     store.close();
   });
 
-  it("没有 mcp 能力的装配一把都不挂", () => {
+  it("没有 mcp 能力的装配一把都不挂——搜也搜不到", async () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
-    expect(mounted(agent, "mcp_catalog")).toBe(false);
-    expect(mounted(agent, "mcp_configure")).toBe(false);
-    expect(mounted(agent, "mcp_authorize")).toBe(false);
+
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
+
+    // 这个装配没有任何 deferred 工具，buildTools() 里 tool_search 本身都不会
+    // 挂上（只在 list.some(exposure==="deferred") 时才挂）；假模型硬调它会
+    // 拿到"未知工具"的 tool_result，但 execute() 的 error 不中断循环，turn
+    // 照常收口——借这条路径证明"连搜的入口都没有"，不是"搜了搜不到"
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
     store.close();
   });
 
-  it("子 agent 的白名单没点名时拿不到 mcp_configure（ADR-0054）", () => {
+  it("子 agent 的白名单没点名时拿不到 mcp_configure（ADR-0054）——搜也搜不到", async () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({
       store, workspace: "/proj/x", push, attachments, mcp: cap(), allowTools: ["read_file"],
     });
-    expect(mounted(agent, "mcp_configure")).toBe(false);
+
+    // allowTools 过滤发生在 buildTools() 最末尾，晚于"list.some(deferred) 才挂
+    // tool_search"那次判定——mcp_configure 进过 list（deferred 判定为真），
+    // 但白名单只留 read_file，tool_search 和 mcp_configure 一起被滤掉
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_configure"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
     store.close();
   });
 });
