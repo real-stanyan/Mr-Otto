@@ -77,7 +77,9 @@ describe("findProjectInstructions", () => {
 });
 
 describe("project_instructions 投影（model-visible means logged）", () => {
-  it("注入为 user 消息，带每段来源路径（provenance）；未注入时投影不变", () => {
+  // ADR-0130：从"独立的 user 消息"改成"焊进围栏 system"——compact 清场
+  // 会把 user 消息扫掉，而项目约定不是历史，是每轮都该在的围栏（issue #527）
+  it("焊进围栏 system，带每段来源路径（provenance）；未注入时投影不变", () => {
     const base: SessionEvent[] = [
       { seq: 0, sessionId: "s", ts: 1, type: "session_created", workspace: "/repo" },
       { seq: 1, sessionId: "s", ts: 2, type: "user_message", content: "干活" },
@@ -96,10 +98,12 @@ describe("project_instructions 投影（model-visible means logged）", () => {
       { ...base[2]!, seq: 3 },
     ];
     const messages = deriveMessages(withInstructions);
-    const injected = messages[1]!;
-    expect(injected.role).toBe("user");
+    const injected = messages[0]!;
+    expect(injected.role).toBe("system");
     expect(injected.content).toContain("── 来自 /repo/AGENTS.md ──\n根规则");
     expect(injected.content).toContain("── 来自 /repo/pkg/AGENTS.md ──\n子目录规则");
+    // 不再自成一条消息：system + user + assistant，就三条
+    expect(messages).toHaveLength(3);
     // 没有该事件 = 投影与从前逐字节一致
     expect(deriveMessages(base)).toHaveLength(3);
   });

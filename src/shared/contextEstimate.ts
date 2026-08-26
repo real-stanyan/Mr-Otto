@@ -245,16 +245,17 @@ export function estimateToolTokens(tools: ToolDefinition[]): number {
   );
 }
 
-/** 还在投影里的项目指令估算。
-    只数最近一次 context_compacted **之后**的那些：清场把此前的一切消息都扔了
-    （deriveMessages 里只有围栏 system 消息幸存），compact 之前注入的项目指令
-    不再进上下文，照旧计进去就是报一笔模型看不见的账。
-    正常会话里这就是开头那一条（一个工作区一份）。 */
+/** 项目指令估算。全数——它焊在围栏 system 消息里（ADR-0130），清场时随
+    system 一起幸存，不像别的消息会被 context_compacted 扫掉。
+    正常会话里这就是开头那一条（一个工作区一份）。
+
+    唯一的偏差在没有围栏 system 消息的旧日志上（投影那边退回 user 消息，会被
+    清场扫掉）：那种日志既没有 workspace 也就没有 system 那一栏，压过之后这里
+    会多报一份。旧日志 + 压过 + 缺 workspace 三件套同时成立才撞得上，
+    不为它把口径拆成两套——两套尺子迟早对不上，那是更贵的病 */
 function instructionsTokens(events: SessionEvent[]): number {
   let total = 0;
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.type === "context_compacted") break;
+  for (const e of events) {
     if (e.type === "project_instructions") total += estimateTokens(projectInstructionsText(e.segments));
   }
   return total;
