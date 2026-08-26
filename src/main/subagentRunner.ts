@@ -62,6 +62,13 @@ export interface SubagentRunnerDeps {
       **派活那一刻**（工作区文档改了，下次派活就是新的），而不是接线那一刻。
       测试喂假实现 */
   composePrompt?: (def: SubagentDef, workspace: string) => string;
+  /** skill 库接线（同 agent.ts 的 skills 字段，装配根注入）。子 agent 默认也挂
+      这把刀——除非 def.skills === "none"："不被行为 skill 污染"的本意里，
+      自己去取也该一起关掉，不只是不继承父台账。不给 = 这条装配没有 skill 库
+      （测试/裸装配照旧） */
+  skills?: {
+    listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
+  };
 }
 
 /** 中断落到父侧的那句话。spec §3「中断传播」：父侧 tool_result 写「子任务被
@@ -141,6 +148,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
               // forbidden 规则跟着常规链走（deny 档整条链已被替换，无处可挂也不需要）
               ...(deps.execPolicy ? { execPolicy: deps.execPolicy } : {}),
             }),
+        // skill 工具挂不挂：def.skills === "none" 时连刀一起关掉——不只是不继承
+        // 父台账，模型自己现取一份同样算"被行为 skill 污染"，两条路都得堵
+        ...(def.skills !== "none" && deps.skills ? { skills: deps.skills } : {}),
         // 刻意不传 subagentRunner —— 子 agent 因此没有 task 工具，递归到此为止
       });
 
@@ -196,6 +206,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
               name: skillName,
               content: s.content,
               ...(s.args !== undefined ? { args: s.args } : {}),
+              // 来源跟着快照走：父会话里模型自取的，子会话里模型也能 release；
+              // 用户 $ 启用的，子会话同样动不了（release 的来源校验读这个字段）
+              ...(s.source !== undefined ? { source: s.source } : {}),
             })
           );
         }

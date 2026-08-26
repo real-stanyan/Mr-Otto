@@ -9,11 +9,12 @@ import {
 } from "../../src/main/uiApprover.js";
 import type { Approver } from "../../src/loop/approvalGate.js";
 import type { AgentPush } from "../../src/main/agent.js";
-import type { ToolCallRequest } from "../../src/session/events.js";
+import type { ToolCallRequest, SessionEvent } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
 import { withMcp } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
+import { SKILL_TOOL_NAME } from "../../src/tools/skill.js";
 import { tempDir } from "../helpers/tempDir.js";
 import Database from "better-sqlite3";
 
@@ -169,6 +170,74 @@ describe("createAgent 会话生命周期", () => {
     const withHistory = createAgent({ store: store2, workspace: "/proj/x", push, attachments, history });
     expect(withHistory.toolDefs.map((d) => d.name)).toContain("session_search");
     store2.close();
+  });
+
+  // 装配根给了 skill 库才挂这把刀（同 memory/session_search 的挂载条件，见 SKILL_TOOL_NAME）
+  it("opts.skills 给了才挂 skill 工具", () => {
+    const store = new EventStore(":memory:");
+    const bare = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(bare.toolDefs.map((d) => d.name)).not.toContain(SKILL_TOOL_NAME);
+    store.close();
+
+    const store2 = new EventStore(":memory:");
+    const withSkills = createAgent({
+      store: store2, workspace: "/proj/x", push, attachments,
+      skills: { listSkills: () => [{ name: "tdd", description: "红绿重构", content: "正文" }] },
+    });
+    expect(withSkills.toolDefs.map((d) => d.name)).toContain(SKILL_TOOL_NAME);
+    store2.close();
+  });
+});
+
+// 接线本身的正确性：不只是"挂没挂上"，闭包里的 store.append + push.event 得
+// 真的按台账/来源规则落对事件——这是 agent.ts 里手写的那段闭包,不是 skill.ts
+// 自己的逻辑（那份由 Task 4 的 tests/tools/skill.test.ts 盯着）。跑一整个真
+// LoopEngine turn（同 tests/loop/engine.test.ts 的脚本化假 adapter 手法）。
+describe("skill 工具接线：acquire/release 落盘（issue 待开）", () => {
+  it("模型 acquire 落 skill_invoked 且 source:model；release 落 skill_released", async () => {
+    const store = new EventStore(":memory:");
+    const pushed: SessionEvent[] = [];
+    const agent = createAgent({
+      store, workspace: "/proj/x",
+      push: { ...push, event: (e) => pushed.push(e) },
+      attachments,
+      skills: { listSkills: () => [{ name: "tdd", description: "红绿重构", content: "先写测试再写实现" }] },
+    });
+
+    let call = 0;
+    const script: ModelReply[] = [
+      { content: "", toolCalls: [{ id: "c1", name: SKILL_TOOL_NAME, args: { action: "acquire", name: "tdd" } }] },
+      { content: "已启用 tdd，接下来先写测试。" },
+    ];
+    agent.engine.setAdapter({
+      model: "fake",
+      async chat(): Promise<ModelReply> {
+        const reply = script[call++];
+        if (!reply) throw new Error("脚本用完了还在调");
+        return reply;
+      },
+    } as unknown as ModelAdapter);
+
+    await agent.engine.runTurn("挑一个合适的 skill 用上");
+
+    const log = store.load(agent.sessionId);
+    const invoked = log.find((e) => e.type === "skill_invoked");
+    expect(invoked).toMatchObject({
+      type: "skill_invoked", name: "tdd", content: "先写测试再写实现", source: "model",
+    });
+    // push.event 也收到了同一条（渲染层的 skill 卡片靠它出现）
+    expect(pushed.some((e) => e.type === "skill_invoked")).toBe(true);
+
+    // 第二轮：模型自己 release 刚才 acquire 的那把
+    call = 0;
+    script.length = 0;
+    script.push(
+      { content: "", toolCalls: [{ id: "c2", name: SKILL_TOOL_NAME, args: { action: "release", name: "tdd" } }] },
+      { content: "已停用 tdd。" }
+    );
+    await agent.engine.runTurn("这把 skill 不需要了，停掉");
+    expect(store.load(agent.sessionId).some((e) => e.type === "skill_released" && e.name === "tdd")).toBe(true);
+    store.close();
   });
 });
 

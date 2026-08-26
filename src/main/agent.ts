@@ -52,6 +52,9 @@ import { createToolSearchTool } from "../tools/toolSearch.js";
 import { createMcpReadResourceTool } from "../tools/mcpReadResource.js";
 import { createSessionSearchTool } from "../tools/sessionSearch.js";
 import { createTaskTool, type SubagentRunner } from "../tools/task.js";
+import { createSkillTool } from "../tools/skill.js";
+import { activeSkills } from "../session/activeSkills.js";
+import { barrenEventIndexes } from "../session/barrenTurns.js";
 import type { SubagentDef } from "../shared/subagent.js";
 import {
   UIApprover,
@@ -214,6 +217,11 @@ export function createAgent(opts: {
   /** 长 turn 软告警（issue #283 ⑥）：单 turn 模型步数踩线时喊一次。
       不给 = 不喊（子会话/测试/裸装配照旧）。index.ts 拿它发系统通知 */
   onLongTurn?: (rounds: number) => void;
+  /** skill 库接线（issue 待开）。缺席 = 不挂 skill 工具（裸装配/测试照旧）。
+      listSkills 现扫磁盘由组装根注入——工具层不碰 fs */
+  skills?: {
+    listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
+  };
 }) {
   const { store } = opts;
 
@@ -487,6 +495,39 @@ export function createAgent(opts: {
     // 报给模型的工具表(下面 toolDefs)和 LoopEngine 每轮取 def 时都会过滤掉它
     ...(opts.subagentRunner
       ? [createTaskTool(opts.subagentRunner, opts.listSubagents ?? (() => []))]
+      : []),
+    // skill 渐进披露：组装根给了 skill 库才挂（裸装配/测试不挂）。
+    // 台账与落盘都在这层闭包里——工具层只认接口，不碰 store 也不碰 fs。
+    // acquire 落的事件位置就是"此刻"：模型调用发生在 tool_call 与 tool_result
+    // 之间，投影层的插话延后队列负责把它排到 tool 消息之后（deriveMessages）
+    ...(opts.skills
+      ? [
+          createSkillTool({
+            listSkills: opts.skills.listSkills,
+            activeSkills: () => {
+              const log = store.load(sessionId);
+              return activeSkills(log, barrenEventIndexes(log));
+            },
+            appendInvoked: (name, content, args) => {
+              opts.push.event(
+                store.append({
+                  sessionId,
+                  ts: Date.now(),
+                  type: "skill_invoked",
+                  name,
+                  content,
+                  ...(args !== undefined ? { args } : {}),
+                  source: "model",
+                })
+              );
+            },
+            appendReleased: (name) => {
+              opts.push.event(
+                store.append({ sessionId, ts: Date.now(), type: "skill_released", name })
+              );
+            },
+          }),
+        ]
       : []),
   ];
   // Deferred 检索口（issue #348）：可见集是共享活 Set——tool_search 命中写入，

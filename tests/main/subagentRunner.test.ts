@@ -293,6 +293,77 @@ describe("createSubagentRunner", () => {
     expect(store.load(inherit.childSessionId).filter((e) => e.type === "skill_invoked")).toHaveLength(1);
   });
 
+  // Task 5：继承快照时 source 跟着走——父会话里模型自取的，子会话里模型也能
+  // release；用户 $ 启用的（旧日志无此字段），子会话同样动不了
+  it("继承快照透传 source：模型自取的带 source:model，用户 $ 启用的（无字段）原样缺席", async () => {
+    const { store, attachments, push, parent } = fixtures();
+    store.append({
+      sessionId: "s-parent", ts: Date.now(), type: "skill_invoked",
+      name: "自取的", content: "X", source: "model",
+    });
+    store.append({
+      sessionId: "s-parent", ts: Date.now(), type: "skill_invoked",
+      name: "用户启用的", content: "Y", // 无 source 字段 = 旧日志 / $ 指令
+    });
+    const runner = createSubagentRunner({
+      store, attachments, push,
+      list: () => [def()],
+      parent: parent(),
+      runTurn: async () => {},
+    });
+    const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+    const skills = store.load(out.childSessionId).filter((e) => e.type === "skill_invoked");
+    const byModel = skills.find((s) => s.type === "skill_invoked" && s.name === "自取的");
+    const byUser = skills.find((s) => s.type === "skill_invoked" && s.name === "用户启用的");
+    expect(byModel).toMatchObject({ source: "model" });
+    expect(byUser && "source" in byUser).toBe(false);
+  });
+
+  // Task 5：skills 接线——挂不挂 skill 工具由 deps.skills 给没给 + def.skills
+  // 是否 "none" 共同决定。allowTools 白名单里点了名的前提下才轮到这道判定
+  describe("skill 工具挂载（deps.skills 装配根注入）", () => {
+    it("deps.skills 给了、def.skills 非 none：子 agent 挂上 skill 工具", async () => {
+      const { store, attachments, push, parent } = fixtures();
+      let mounted: string[] = [];
+      const runner = createSubagentRunner({
+        store, attachments, push,
+        list: () => [def({ tools: ["read_file", "skill"] })],
+        parent: parent(),
+        skills: { listSkills: () => [{ name: "tdd", description: "红绿重构", content: "正文" }] },
+        runTurn: async (agent) => { mounted = agent.toolDefs.map((d) => d.name); },
+      });
+      await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+      expect(mounted).toContain("skill");
+    });
+
+    it("def.skills === 'none'：即便 deps.skills 给了、白名单点了名，也不挂——连刀一起关", async () => {
+      const { store, attachments, push, parent } = fixtures();
+      let mounted: string[] = [];
+      const runner = createSubagentRunner({
+        store, attachments, push,
+        list: () => [def({ tools: ["read_file", "skill"], skills: "none" })],
+        parent: parent(),
+        skills: { listSkills: () => [{ name: "tdd", description: "红绿重构", content: "正文" }] },
+        runTurn: async (agent) => { mounted = agent.toolDefs.map((d) => d.name); },
+      });
+      await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+      expect(mounted).not.toContain("skill");
+    });
+
+    it("deps.skills 不给：即便白名单点了名也不挂（测试/裸装配照旧）", async () => {
+      const { store, attachments, push, parent } = fixtures();
+      let mounted: string[] = [];
+      const runner = createSubagentRunner({
+        store, attachments, push,
+        list: () => [def({ tools: ["read_file", "skill"] })],
+        parent: parent(),
+        runTurn: async (agent) => { mounted = agent.toolDefs.map((d) => d.name); },
+      });
+      await runner.run({ agent: "searcher", task: "T", parentToolCallId: "c1" });
+      expect(mounted).not.toContain("skill");
+    });
+  });
+
   it("汇报 = 子日志最后一条 assistant_message 的正文", async () => {
     const { store, attachments, push, parent } = fixtures();
     const runner = createSubagentRunner({

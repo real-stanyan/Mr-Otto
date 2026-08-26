@@ -1292,6 +1292,9 @@ void app.whenReady().then(() => {
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
       history: createHistoryCapability(store, () => self.sessionId),
+      // skill 渐进披露：只有主会话这条装配路径才挂 skill 工具（issue 待开）。
+      // listSkills 现扫磁盘（scanSkills 不缓存），工具层不碰 fs
+      skills: { listSkills: () => scanSkills(skillRoots) },
       // iOS 模拟器(issue #401):只挂主会话这条装配路径。活着的子 agent 复用父的
       // world 实例,这层跟着一起继承;重建出来的子会话(createChildAgent)刻意没有
       // ——同 history 的取舍,派出去的 agent 不该默认拿到操控真设备的能力
@@ -1344,6 +1347,9 @@ void app.whenReady().then(() => {
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+        // 子会话默认也挂 skill 工具（subagentRunner 按 def.skills === "none" 决定
+        // 挂不挂）；listSkills 与主会话共用同一份现扫闭包
+        skills: { listSkills: () => scanSkills(skillRoots) },
         // 子 agent 也进注册表：它的 sessionId 从建好那一刻起就是活的，
         // resumeSession 必须查得到它、只切视线而不是另建一个 agent（review C1）
         register: (child) => {
