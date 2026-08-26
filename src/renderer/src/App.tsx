@@ -1940,8 +1940,16 @@ function AppSidebar() {
                 指向一个不存在的 panel id */}
             <Tabs value={tab} onValueChange={(v) => setTab(v as "tasks" | "projects")}>
               <TabsList className="w-full">
-                <TabsTrigger value="tasks">任务</TabsTrigger>
-                <TabsTrigger value="projects">项目</TabsTrigger>
+                {/* 图标沿用两栏各自的既有语汇:任务清单面板用的就是 ListChecks,
+                    工程分组/设置「工作区」用的是 FolderOpen——同一个概念一张脸 */}
+                <TabsTrigger value="tasks">
+                  <ListChecks aria-hidden />
+                  任务
+                </TabsTrigger>
+                <TabsTrigger value="projects">
+                  <FolderOpen aria-hidden />
+                  项目
+                </TabsTrigger>
               </TabsList>
             </Tabs>
             <Button
