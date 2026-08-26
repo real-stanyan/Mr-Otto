@@ -4,7 +4,7 @@
 // 又要 import 那十来个组件——从 App.tsx 导出等于全仓循环 import。能跑(只在组件体内
 // 用),但 timelineStyles.ts 早就立了正确的先例:共用的样式常量住自己的模块。
 
-import { BadgeInfo, BookMarked, Bot, Brain, KeyRound, Palette, Plug, Shrink, Smartphone, UserRound, type LucideIcon } from "lucide-react";
+import { BadgeInfo, BookMarked, Bot, Brain, KeyRound, Palette, Plug, ShieldCheck, Shrink, Smartphone, UserRound, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils.js";
 import type { SettingsSection } from "./store.js";
@@ -32,6 +32,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: Luci
   { id: "skills", label: "Skill 库", icon: BookMarked },
   { id: "agents", label: "子智能体", icon: Bot },
   { id: "mcp", label: "MCP", icon: Plug },
+  { id: "permissions", label: "权限", icon: ShieldCheck },
   { id: "memory", label: "记忆", icon: Brain },
   { id: "context", label: "上下文", icon: Shrink },
   { id: "remote", label: "手机", icon: Smartphone },

@@ -10,6 +10,7 @@ import type { DiffViewLine } from "./diffView.js";
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
+import type { ExecRule } from "./execPolicy.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import type { SessionSummary, FtsHit } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
@@ -359,6 +360,16 @@ export interface ApprovalDecisionOutcome {
 
 export type Unsubscribe = () => void;
 
+/** 设置页权限总览的形状（issue #370）。grants = permissions.json 的
+    alwaysAllow（旧条目是裸工具名，新条目是 U+001F 分隔的规范化 key——
+    可读化在渲染层 lib/grantDisplay.ts）；execRules/execError 是
+    loadExecPolicy 的原样产出 */
+export interface PermissionsSnapshot {
+  grants: string[];
+  execRules: ExecRule[];
+  execError?: string;
+}
+
 
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
@@ -434,6 +445,16 @@ export interface ShellBridge {
       不 reject——Ollama 没装/没跑是常态，结构化回流让 UI 自己降级 */
   listOllamaModels(): Promise<OllamaProbeResult>;
   /** 本机已安装 skill 列表（每次现扫磁盘，无缓存） */
+  /** 设置页的权限总览（issue #370）：permissions.json 的永久授权 key +
+      execPolicy.json 的规则（execError 非空 = 文件没通过校验、规则未生效，
+      loadExecPolicy 的 fail-safe 口径原样透传给用户看） */
+  listPermissions(): Promise<PermissionsSnapshot>;
+  /** 撤销一条永久授权 key。热生效：审批链每次 decide 现读文件。
+      返回删除后的快照（一次往返刷新 UI） */
+  revokeGrant(key: string): Promise<PermissionsSnapshot>;
+  /** 删一条 execpolicy 规则（pattern+decision+cwd 精确匹配——按内容不按下标，
+      列表和删除之间文件可能已被别的会话改写）。同样返回删除后的快照 */
+  removeExecRule(rule: ExecRule): Promise<PermissionsSnapshot>;
   listSkills(): Promise<SkillInfo[]>;
   /** 其他厂家 agent 已装的 skill（导入弹窗清单，每次现扫磁盘） */
   listExternalSkills(): Promise<ExternalSkillInfo[]>;
@@ -945,6 +966,9 @@ export const CHANNELS = {
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
+  listPermissions: "otter:listPermissions",
+  revokeGrant: "otter:revokeGrant",
+  removeExecRule: "otter:removeExecRule",
   listSkills: "otter:listSkills",
   listExternalSkills: "otter:listExternalSkills",
   importSkills: "otter:importSkills",
