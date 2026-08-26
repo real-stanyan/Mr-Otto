@@ -1,9 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createRelay } from "../../services/gateway/src/relay.js";
-import { createGateway, type GatewayConfig } from "../../services/gateway/src/gateway.js";
-import type { Tier } from "../../services/gateway/src/buckets.js";
-import type { Wallet } from "../../services/gateway/src/wallet.js";
+import { createRelay } from "../../services/edge/src/relay.js";
+import { createEdge, type EdgeConfig } from "../../services/edge/src/edge.js";
 
 function sink() {
   const chunks: string[] = [];
@@ -128,13 +126,11 @@ describe("createRelay", () => {
 
 // ---- 路由层：本文件独有的小型 harness ----
 //
-// 与 tests/gateway/gateway.test.ts 的模式一致（token()/config/fakeWallet()），
-// 但那些 helper 没有导出，这里是特意保留的重复：本任务不改那个文件
-// （见 task-6-brief 的“resolved ambiguity”）。
+// 与 tests/edge/edge.test.ts 的模式一致（token()/config），但那些 helper 没有导出，
+// 这里是特意保留的重复。
 
 const SECRET = "jwt-secret";
 const NOW_MS = 1_800_000_000_000;
-const GRANTS: Record<Tier, number> = { flash: 20_000_000, pro: 5_000_000 };
 
 const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");
 function token(sub = "u1", expOffset = 3600): string {
@@ -144,29 +140,10 @@ function token(sub = "u1", expOffset = 3600): string {
   return `${head}.${body}.${sig}`;
 }
 
-const config: GatewayConfig = {
-  jwtSecret: SECRET,
-  upstreamBaseUrl: "https://upstream.example/v1",
-  upstreamApiKey: "官方-deepseek-key",
-};
+const config: EdgeConfig = { jwtSecret: SECRET };
 
-/** relay 端点不碰钱包，随便一个不抛的假实现就够 */
-function fakeWallet(): Wallet {
-  return {
-    grant: vi.fn(async () => 0),
-    spend: vi.fn(async () => 0),
-    rebuild: vi.fn(async () => 0),
-  };
-}
-
-function makeGateway(): (req: Request) => Promise<Response> {
-  return createGateway({
-    config,
-    wallet: fakeWallet(),
-    now: () => NOW_MS,
-    grants: (tier) => GRANTS[tier],
-    relay: createRelay(),
-  });
+function makeEdge(): (req: Request) => Promise<Response> {
+  return createEdge({ config, now: () => NOW_MS, relay: createRelay() });
 }
 
 function authed(url: string, init: RequestInit = {}): Request {
@@ -178,20 +155,20 @@ function authed(url: string, init: RequestInit = {}): Request {
 
 describe("/rl/v1 路由", () => {
   it("没 token → 401；role 非法 → 400；方法不对 → 405", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     expect((await g(new Request("http://x/rl/v1/stream?role=desktop"))).status).toBe(401);
     expect((await g(authed("http://x/rl/v1/stream?role=wat"))).status).toBe(400);
     expect((await g(authed("http://x/rl/v1/send?role=desktop", { method: "GET" }))).status).toBe(405);
   });
 
   it("对端不在线 → POST /send 回 409", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     const r = await g(authed("http://x/rl/v1/send?role=desktop", { method: "POST", body: "AAAA" }));
     expect(r.status).toBe(409);
   });
 
   it("超过 256 KiB → 413，且不解析内容", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     const r = await g(authed("http://x/rl/v1/send?role=desktop", {
       method: "POST",
       body: "A".repeat(256 * 1024 + 1),
@@ -200,7 +177,7 @@ describe("/rl/v1 路由", () => {
   });
 
   it("SSE 响应头带 text/event-stream 与 x-accel-buffering: no", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     const r = await g(authed("http://x/rl/v1/stream?role=desktop"));
     expect(r.headers.get("content-type")).toContain("text/event-stream");
     expect(r.headers.get("x-accel-buffering")).toBe("no");
@@ -217,7 +194,7 @@ describe("/rl/v1 路由", () => {
   // 这条同时是 write 闭包、detach 赋值、cancel 拆装的唯一覆盖。
 
   it("stream 挂上去之后，peer POST 的字节原样出现在流上（route ↔ relay 接通）", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
     expect(res.status).toBe(200);
     // 增量读:这条流永远不结束,await 整个 body 会挂死
@@ -247,7 +224,7 @@ describe("/rl/v1 路由", () => {
   // 实测桌面侧 fetch 与 curl 都卡满 25s(第一次心跳)才拿到头。
   // 上面那条接缝用例测不出来:它总是先让对端 POST 一帧,自带了第一个字节。
   it("开流即刻有字节可读（否则 node:http 不冲刷响应头，客户端要卡到第一次心跳）", async () => {
-    const g = makeGateway();
+    const g = makeEdge();
     const res = await g(authed("http://x/rl/v1/stream?role=desktop"));
     const reader = res.body!.getReader();
     // 没有任何对端发送、没有推进任何定时器
@@ -264,7 +241,7 @@ describe("/rl/v1 路由", () => {
   it("心跳是注释行 :\\n\\n（不是 data 帧，客户端解析器会跳过）", async () => {
     vi.useFakeTimers();
     try {
-      const g = makeGateway();
+      const g = makeEdge();
       const res = await g(authed("http://x/rl/v1/stream?role=mobile"));
       const reader = res.body!.getReader();
       await reader.read(); // 开场白 :ok，先读掉

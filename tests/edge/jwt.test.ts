@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { verifyJwt } from "../../services/gateway/src/jwt.js";
+import { verifyJwt } from "../../services/edge/src/jwt.js";
 
 const SECRET = "super-secret-jwt-value";
 const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");

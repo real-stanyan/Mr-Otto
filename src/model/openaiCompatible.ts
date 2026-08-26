@@ -5,7 +5,6 @@
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
-import { parseGatewayError } from "../shared/gatewayConfig.js";
 import { classifyStatus, errorClassOf, markErrorClass } from "./errorClass.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
@@ -13,7 +12,7 @@ import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 export interface ResolvedEndpoint {
   baseUrl: string;
   apiKey: string;
-  /** 附加请求头(网关的幂等键 x-otto-request-id 走这里) */
+  /** 附加请求头 */
   headers?: Record<string, string>;
 }
 
@@ -22,8 +21,8 @@ export interface OpenAICompatibleOptions {
       各家版本段不同（GLM 是 /v4），所以由目录带，这里不写死 */
   baseUrl: string;
   apiKey: string;
-  /** 每次请求前重新解析端点。走 otto-gateway 时凭据是 Supabase access token,
-      它会过期——在 adapter 构造时静态捕获,等于 turn 跑到一半突然 401。
+  /** 每次请求前重新解析端点:用户可能在会话中途填了自己的 key,
+      在 adapter 构造时静态捕获等于要等重开会话才生效。
       给了它就以它为准,不给 = 用上面的静态 baseUrl/apiKey(老路径一字不变) */
   resolveEndpoint?: () => Promise<ResolvedEndpoint>;
   /** 事件日志里那个 id（engine 拿 adapter.model 盖进 assistant_message）。
@@ -352,13 +351,8 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       if (!res.ok) {
         const errBody = await res.text();
-        // 网关的错误本来就是写给人看的("额度用尽,去设置填自己的 key"),
-        // 再裹一层 "model API 402:" 只会把那句话埋进一行技术噪音里
-        const gatewayError = parseGatewayError(errBody);
         const err = markErrorClass(
-          gatewayError
-            ? new Error(gatewayError.message || `otto-gateway ${res.status}`)
-            : new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
+          new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
           classifyStatus(res.status)
         );
         throw errorClassOf(err) === "fatal" ? err : markRetryable(err);

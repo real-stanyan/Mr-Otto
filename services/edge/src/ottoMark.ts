@@ -1,7 +1,7 @@
 // Mr Otto 的 logo，内联成 data URI。
 //
 // 为什么不走 <img src="/static/otto.png">：网关部署只把 src/ scp 上去
-// （deploy/otto-gateway/README.md），没有静态资源目录，也没有 CDN；
+// （services/edge/README.md），没有静态资源目录，也没有 CDN；
 // 落地页又必须是自包含的单个 HTML（no-store，不该再拉第二个请求）。
 // 源图 src/renderer/src/assets/otto.png（256×256），这里缩到 128×128。
 // 换 logo 时重新生成：

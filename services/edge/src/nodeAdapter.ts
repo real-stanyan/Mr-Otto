@@ -43,7 +43,7 @@ export async function writeResponse(res: ServerResponse, response: Response): Pr
   // 活着:对中继来说是槽位永远占着(对端一直拿到 204,而字节进虚空)、25s 心跳的
   // setInterval 每条死连接泄漏一个。ReadableStream 的 cancel 回调不会自己触发 ——
   // 它等的就是这里这一次 reader.cancel()。
-  // 单测:tests/gateway/nodeAdapter.test.ts「客户端断开 → 中继的槽位要腾出来」。
+  // 单测:tests/edge/nodeAdapter.test.ts「客户端断开 → 中继的槽位要腾出来」。
   const abort = (): void => { void reader.cancel(); };
   res.on("close", abort);
   try {

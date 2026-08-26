@@ -1,17 +1,18 @@
-// 走网关还是直连 —— 一次纯判断,不碰网络不碰 env 读取(值由调用方喂)。
-// 拎出来是因为这条规矩会被问很多遍:"我明明填了 key,为什么还在扣官方额度?"
+// 能不能调这个模型 —— 一次纯判断,不碰网络不碰 env 读取(值由调用方喂)。
+// 拎出来是因为这条规矩会被问很多遍:"我明明填了 key,为什么用不了?"
 // 答案必须是一句能指着代码念的话,而不是散在 makeAdapter 里的三个 if。
+//
+// 历史:这里曾经有第三种出路 —— 走 otto-gateway 用官方赠额(ADR-0019/0021/0045)。
+// ADR-0085 关掉了那条产品线,ADR-0129 删掉了它的实现。现在只剩两种结局:
+// 有 key(或免 key 的本机 Ollama)就直连,否则 blocked。
 
 import type { ModelChoice } from "../shared/modelCatalog.js";
 import type { ModelLane } from "../shared/modelLane.js";
-import { OFFICIAL_GRANT_ENABLED } from "../shared/features.js";
 
 export type ModelRoute =
   /** 直连上游:用户自带 key,自己付钱 */
   | { kind: "direct"; baseUrl: string; apiKey: string }
-  /** 走 otto-gateway:官方 key + 官方额度,凭 Supabase access token 进门 */
-  | { kind: "gateway"; baseUrl: string; apiKey: string }
-  /** 两条路都不通,说清楚缺什么 */
+  /** 路不通,说清楚缺什么 */
   | { kind: "blocked"; reason: string };
 
 export interface RouteInput {
@@ -20,83 +21,29 @@ export interface RouteInput {
   ownKey: string;
   /** 用户自己配的端点覆盖(process.env[choice.baseUrlEnv]),没配则 undefined */
   ownBaseUrl?: string | undefined;
-  /** Supabase access token,未登录为 null */
-  accessToken: string | null;
-  gatewayBaseUrl: string;
-  /** 走哪条路（ADR-0045）。缺省 auto = 老规矩（自带 key 优先）；
-      "grant" = 用户在选单里点的是赠额那一份，明确要花官方额度 */
+  /** 老会话日志里选的是哪条路(ADR-0045)。赠额没了,但**旧日志必须永远可重放**
+      (硬规则),所以 lane=grant 仍然是一个合法的输入值 —— 它现在的作用只剩
+      让 blocked 的措辞说清楚"你当年选的那条路已经没了",而不是干巴巴一句没配 key */
   lane?: ModelLane;
-  /** 官方赠额这条路还存不存在。缺省读产品开关（ADR-0085 之后 = false）；
-      参数化是给测试留的缝——两种形态的路由规矩都得钉在测试里 */
-  officialGrant?: boolean;
 }
 
 export function routeModel(input: RouteInput): ModelRoute {
-  const { choice, ownKey, ownBaseUrl, accessToken, gatewayBaseUrl, lane } = input;
-  const officialGrant = input.officialGrant ?? OFFICIAL_GRANT_ENABLED;
+  const { choice, ownKey, ownBaseUrl, lane } = input;
 
-  // 官方停止供 token（ADR-0085）:赠额/网关这条路整条不存在。
-  // 老会话日志里 lane=grant 的选择照样能重放出来,只是路由到这里得到
-  // 一句说人话的 blocked,而不是打给一个不再放行的网关
-  if (!officialGrant) {
-    if (ownKey) {
-      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
-    }
-    if (choice.keyless) {
-      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
-    }
-    const grantGone = lane === "grant" ? "官方赠额已停止提供，" : "";
-    return {
-      kind: "blocked",
-      reason: `${grantGone}还没配 key：在设置里填自己的 ${choice.apiKeyEnv} 即可使用 ${choice.label}。`,
-    };
-  }
-
-  // 明确点了赠额那一份:走网关,哪怕自己配了 key（ADR-0045）。
-  // 这一支排在最前面 —— 它是用户刚刚亲手做的选择,不该被"你配过 key"这个
-  // 更早、更含糊的事实推翻。清 key 才能用赠额那种玩法在这里作废
-  if (lane === "grant") {
-    if (choice.provider !== "deepseek") {
-      return {
-        kind: "blocked",
-        reason: `官方赠额只覆盖 DeepSeek 型号，${choice.label} 得走自己的 ${choice.apiKeyEnv}。`,
-      };
-    }
-    if (!accessToken) {
-      return { kind: "blocked", reason: "官方赠额要先登录才能用。" };
-    }
-    return { kind: "gateway", baseUrl: gatewayBaseUrl, apiKey: accessToken };
-  }
-
-  // 以下是 lane=auto 的老规矩(ADR-0020):自带 key 优先于官方额度。他自己付的钱,
-  // 不该因为顺手登录了就被改成花官方的——反过来也一样:想省自己的钱,把 key 清掉即可
   if (ownKey) {
     return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
   }
 
   // 免 key 的厂商（本机 Ollama）：能连上 11434 就是授权，没有第二道门。
-  // 排在官方额度分支之前——它压根不该走网关，赠额也覆盖不到本机进程。
   // apiKey 仍给一个占位串："ollama" 是官方文档里 OpenAI 兼容客户端的惯用值，
   // 服务端不校验，但空 Bearer 头在某些反代前面会被当成缺鉴权直接 401
   if (choice.keyless) {
     return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
   }
 
-  // 官方额度只买了 DeepSeek。GLM 的型号 id 发给 DeepSeek 只会换回一个上游 400,
-  // 与其让用户对着看不懂的上游错误发呆,不如在这里说清楚
-  if (choice.provider !== "deepseek") {
-    return {
-      kind: "blocked",
-      reason: `官方额度只覆盖 DeepSeek 型号，${choice.label} 需要在设置里填自己的 ${choice.apiKeyEnv}。`,
-    };
-  }
-
-  if (accessToken) {
-    return { kind: "gateway", baseUrl: gatewayBaseUrl, apiKey: accessToken };
-  }
-
+  const grantGone = lane === "grant" ? "官方赠额已停止提供，" : "";
   return {
     kind: "blocked",
-    reason: `还没法调用模型：登录即可用官方赠额，或在设置里填自己的 ${choice.apiKeyEnv}。`,
+    reason: `${grantGone}还没配 key：在设置里填自己的 ${choice.apiKeyEnv} 即可使用 ${choice.label}。`,
   };
 }

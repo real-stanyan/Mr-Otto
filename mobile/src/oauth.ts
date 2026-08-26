@@ -23,7 +23,7 @@
 // 不是系统的 URL 注册表,所以 Expo Go 里也成立。
 
 import * as WebBrowser from "expo-web-browser";
-import { authLandingUrl } from "../../src/shared/gatewayConfig.js";
+import { authLandingUrl } from "../../src/shared/edgeConfig.js";
 import { supabase } from "./supabase.js";
 
 export type OAuthProvider = "google" | "github";
@@ -32,14 +32,14 @@ export type OAuthProvider = "google" | "github";
  * 授权完成后浏览器去的地方。**和桌面同一个值** —— 它已经在 Supabase 的
  * Redirect URLs 白名单里,不需要为手机端再配一条。
  *
- * env 传空对象:RN 里没有 process.env,而这个函数只在没设 OTTO_GATEWAY_URL 时
+ * env 传空对象:RN 里没有 process.env,而这个函数只在没设 OTTO_EDGE_URL 时
  * 走默认分支 —— 手机端本来也没有"本地起网关调试"这个场景。
  */
 const LANDING = authLandingUrl({} as never);
 
 /**
  * 落地页转发的深链,也是授权会话的拦截目标。必须和
- * services/gateway/src/authLanding.ts 里的 DEEP_LINK 一致 ——
+ * services/edge/src/authLanding.ts 里的 DEEP_LINK 一致 ——
  * 那边改了这边不改,表现是"授权完成后会话不关,停在落地页上"。
  */
 const DEEP_LINK = "mrotto://auth-callback";
