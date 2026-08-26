@@ -54,10 +54,12 @@ const settle = async (): Promise<void> => {
 };
 
 describe("createSseTransport", () => {
-  it("开流的 URL 带 role,鉴权走 Bearer", async () => {
+  it("开流的 URL 带 role 和 v=2,鉴权走 Bearer", async () => {
     const { t, opened, fetchImpl } = harness();
     await settle();
-    expect(opened[0]).toBe("https://gw.example/gw/rl/v1/stream?role=desktop");
+    // v=2 声明"我认按 cid 寻址那一套"(ADR-0130)。不声明的话中继按老格式发,
+    // 帧上就没有发件人 —— 桌面接着几台手机时不知道该用哪套密钥解
+    expect(opened[0]).toBe("https://gw.example/gw/rl/v1/stream?role=desktop&v=2");
     const init = (fetchImpl as unknown as { mock: { calls: [unknown, RequestInit][] } }).mock.calls[0]![1];
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer TOKEN");
     t.close();
@@ -108,11 +110,26 @@ describe("createSseTransport", () => {
     const closed = vi.fn();
     t.onClose(closed);
     await settle();
-    t.send("PAYLOAD");
+    t.send("PAYLOAD", "");
     expect(closed).not.toHaveBeenCalled(); // 同步这一刻就不能触发
     await settle();
     expect(posts[0]).toEqual({ url: "https://gw.example/gw/rl/v1/send?role=desktop", body: "PAYLOAD" });
     expect(closed).not.toHaveBeenCalled();
+    t.close();
+  });
+
+  // 多连接(ADR-0130):to 决定这一帧塞进哪根管子。空串 = 老中继,不带这个参数 ——
+  // 带上去老网关会当成未知 query 忽略,但把它写进 URL 会让"老路径"多一种形态,
+  // 而这条路径正是升级期唯一还能用的那条
+  it("send 带 to 时 URL 上有 to；空串时按老路径发", async () => {
+    const { t, posts } = harness();
+    await settle();
+    t.send("A", "c7");
+    t.send("B", "");
+    await settle();
+    // from = 自己这条连接的 cid;还没收到 :cid 时是空的(下一条用例覆盖真值)
+    expect(posts[0]!.url).toBe("https://gw.example/gw/rl/v1/send?role=desktop&to=c7&from=");
+    expect(posts[1]!.url).toBe("https://gw.example/gw/rl/v1/send?role=desktop");
     t.close();
   });
 

@@ -164,12 +164,12 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
   });
 });
 
-describe("contextBreakdown（按来源拆三份）", () => {
+describe("contextBreakdown（按来源拆四份）", () => {
   const tools = [
     { name: "read_file", description: "读取一个文本文件的完整内容", parameters: { type: "object" } },
   ];
 
-  it("三段之和 === 总量：对话消息取差额，不与账单双记", () => {
+  it("四段之和 === 总量：对话消息取差额，不与账单双记", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
       { ...env(), type: "user_message", content: "问题" },
@@ -184,7 +184,7 @@ describe("contextBreakdown（按来源拆三份）", () => {
     const b = contextBreakdown(events, tools);
     expect(b.total).toBe(5200); // 与 contextUsed 同源
     expect(b.total).toBe(contextUsed(events));
-    expect(b.system + b.tools + b.messages).toBe(b.total);
+    expect(b.system + b.tools + b.instructions + b.messages).toBe(b.total);
     expect(b.system).toBeGreaterThan(0);
     expect(b.tools).toBeGreaterThan(0);
   });
@@ -197,6 +197,51 @@ describe("contextBreakdown（按来源拆三份）", () => {
     expect(b.total).toBeGreaterThan(0);
     // 圆环（contextUsed）此刻仍读 0——它只认账单口径，底噪由弹窗补
     expect(contextUsed(events)).toBe(0);
+  });
+
+  it("项目指令自己占一栏：从对话消息里分出来，四段之和不变（issue #524）", () => {
+    const segments = [{ path: "/w/AGENTS.md", content: "x".repeat(4000) }];
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "project_instructions", segments },
+      { ...env(), type: "user_message", content: "问题" },
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 5000, completionTokens: 200 },
+      },
+    ];
+    const b = contextBreakdown(events, tools);
+    expect(b.instructions).toBeGreaterThan(900); // 4000 个 ASCII ≈ 1000 token
+    expect(b.system + b.tools + b.instructions + b.messages).toBe(b.total);
+    expect(b.total).toBe(5200); // 账单口径不动：项目指令本来就在这笔账里
+  });
+
+  it("compact 之后照旧计项目指令：它焊在 system 里，清场扫不掉（ADR-0130）", () => {
+    const segments = [{ path: "/w/AGENTS.md", content: "x".repeat(4000) }];
+    const events: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "project_instructions", segments },
+      { ...env(), type: "context_compacted", summary: "摘要", model: "m" },
+    ];
+    expect(contextBreakdown(events, tools).instructions).toBeGreaterThan(900);
+  });
+
+  it("第一次账单之前也算项目指令：圆环不会漏掉一整份 AGENTS.md（issue #525）", () => {
+    const segments = [{ path: "/w/AGENTS.md", content: "x".repeat(4000) }];
+    const bare: SessionEvent[] = [{ ...env(), type: "session_created", workspace: "/w" }];
+    const withIns: SessionEvent[] = [
+      { ...env(), type: "session_created", workspace: "/w" },
+      { ...env(), type: "project_instructions", segments },
+    ];
+    // 圆环也跟着涨：项目指令是"会进下一次 prompt"的事件，pendingAfter 计它
+    expect(contextUsed(bare)).toBe(0);
+    expect(contextUsed(withIns)).toBeGreaterThan(900);
+    const b = contextBreakdown(withIns, tools);
+    expect(b.total).toBe(contextBreakdown(bare, tools).total + b.instructions);
+    expect(b.messages).toBe(0); // 全归项目指令，不掉进对话消息
   });
 
   it("拿不到工具表：该项 0，其余照常（不瞎猜一个数）", () => {

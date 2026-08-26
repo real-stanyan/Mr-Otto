@@ -5,7 +5,7 @@
 import { nobleRemoteCrypto } from "../../src/shared/remote/nobleCrypto.js";
 import { createMobileBridge, type MobileBridge } from "../../src/shared/remote/mobileBridge.js";
 import { createRemoteDevices } from "../../src/shared/remote/devices.js";
-import { relayBaseUrl } from "../../src/shared/gatewayConfig.js";
+import { relayBaseUrl } from "../../src/shared/edgeConfig.js";
 import type { DownFrame } from "../../src/shared/remote/frames.js";
 import type { PinnedPeerStore } from "../../src/shared/remote/devices.js";
 import { devicesApi } from "./devicesApi.js";

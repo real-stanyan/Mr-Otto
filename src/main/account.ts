@@ -14,7 +14,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../shared/authConfig.js";
-import { authLandingUrl } from "../shared/gatewayConfig.js";
+import { authLandingUrl } from "../shared/edgeConfig.js";
 import type { AccountInfo } from "../shared/shellBridge.js";
 
 export type { AccountInfo };

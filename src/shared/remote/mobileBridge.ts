@@ -51,6 +51,14 @@ export function createMobileBridge(opts: {
   let lastPeerHello: HandshakeHello | null = null;
   /** 当前这套 self 已经派生过的对端 ephPub。见 onHello 上面那段 */
   let usedPeerEphs = new Set<string>();
+  /**
+   * 当前对着哪一条电脑连接(中继编的 cid,ADR-0130)。空串 = 老中继,不带地址。
+   *
+   * **手机这侧只维持一条**,和桌面那侧刻意不对称:桌面接几台手机是常态(手机、
+   * 另一台手机、模拟器),而手机同时看两台电脑的舰队在界面上没有位置放 ——
+   * 一屏就是一份 fleet。所以取**最近到场的那一条**,别的连接来的帧丢掉。
+   */
+  let peerCid = "";
 
   /** 一次连接里最多重新派生这么多次。对端是中继送来的,次数不该由它说了算 */
   const MAX_DERIVES = 64;
@@ -112,7 +120,7 @@ export function createMobileBridge(opts: {
     self = newConnectionParty(p, { role: "mobile", deviceId: opts.deviceId, identity: opts.identity });
     // self 换了 ⇒ 同一个对端 eph 也会算出一把新钥匙,旧的"用过"名单跟着作废
     usedPeerEphs = new Set();
-    opts.transport.send(JSON.stringify(buildHello(p, self)));
+    opts.transport.send(JSON.stringify(buildHello(p, self)), peerCid);
     // 对端不会为我这一轮再发一次 hello(它可能早就 ready 了),拿记住的那份当场重派生。
     // **phase 这一问是必须的**:上面那行 send 可能是同步投递的,对端崭新的 hello
     // 说不定已经在里面派生完了 —— 那份比手上这份旧的新,别拿旧的盖回去
@@ -188,17 +196,35 @@ export function createMobileBridge(opts: {
     opts.onFrame(frame);
   }
 
-  opts.transport.onMessage((payload) => {
+  opts.transport.onMessage((payload, from) => {
     if (phase === "closed") return;
+    // 只听当前对着的那条。别的电脑连接发来的帧本来也解不开(密钥不是一套),
+    // 但静默解不开会在日志里表现成"篡改/重放",把排查带偏 —— 在这里说清楚
+    if (from !== "" && from !== peerCid) {
+      return log(`手机桥:帧来自 ${from},当前对的是 ${peerCid || "老中继"},丢弃`);
+    }
     // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
     if (payload.startsWith("{")) onHello(payload);
     else onSealed(payload);
   });
 
-  opts.transport.onPeer(() => {
+  opts.transport.onPeer((cid) => {
     if (phase === "closed") return;
+    if (cid !== peerCid) {
+      // 换了一条(那台电脑重连了,或者另一台电脑上线)。旧的那套密钥作废 ——
+      // 不清的话会拿旧密钥往新连接封帧,对面每一帧都解不开
+      log(`手机桥:改对 ${cid || "老中继"} 这条连接`);
+      peerCid = cid;
+      resetRound();
+    }
     log("手机桥:电脑到场,开一轮握手");
     startRound();
+  });
+
+  opts.transport.onGone((cid) => {
+    if (phase === "closed" || cid !== peerCid) return;
+    log("手机桥:电脑那条连接没了");
+    resetRound();
   });
 
   opts.transport.onClose(() => {
@@ -210,7 +236,7 @@ export function createMobileBridge(opts: {
   return {
     send(cmd) {
       if (phase !== "ready" || !sealer) return false;
-      opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(encodeFrame(cmd)))));
+      opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(encodeFrame(cmd)))), peerCid);
       return true;
     },
     dispose() {

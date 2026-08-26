@@ -1,6 +1,6 @@
 // 手机传上来的附件的重组器。
 //
-// 为什么要分片:中继单帧卡 256 KiB(services/gateway/src/gateway.ts 的
+// 为什么要分片:中继单帧卡 256 KiB(services/edge/src/edge.ts 的
 // MAX_UPLINK_BYTES,超了回 413),而随手一张照片是几 MB。分片不是优化,
 // 是能不能传的问题。
 //

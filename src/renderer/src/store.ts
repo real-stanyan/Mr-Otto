@@ -18,7 +18,6 @@ import { toWorkspaceRel } from "../../shared/fileRefs.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
-  WalletBalance,
   ApprovalMode,
   ApprovalRequest,
   ApprovalDecisionOutcome,
@@ -59,7 +58,6 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
-import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
@@ -198,6 +196,8 @@ interface ChatState {
     events: SessionEvent[];
     open: boolean;
     pos: { x: number; y: number };
+    /** 浮窗尺寸（issue #516 可缩放）：缩放只改这个；钳制逻辑在 lib/sideChatWindow.ts */
+    size: { w: number; h: number };
   } | null;
   error: string | null;
   /** 运行时偏好（主进程 agent 持有，这里是镜像；不落日志） */
@@ -329,10 +329,6 @@ interface ChatState {
   modelSetupOpen: boolean;
   /** 会话搜索面板(⌘K)开着没有。纯 UI 开合,不进日志 */
   sessionSearchOpen: boolean;
-  /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
-  wallet: WalletBalance | null;
-  /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
-  walletError: string;
   /** ＋ 按钮暂存的附件(chips 数据源)。rejected 不进这——进 attachError */
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
@@ -377,8 +373,6 @@ interface ChatState {
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
   openSettings(section?: SettingsSection): Promise<void>;
-  /** 拉一次官方额度（账号页进入时自动调一次） */
-  refreshWallet(): Promise<void>;
   /** 重扫 subagent 清单（Subagent 栏目挂载时调一次，照 skills 的做法）。
       三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
       存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西。
@@ -542,7 +536,8 @@ interface ChatState {
   rename(title: string): Promise<void>;
   /** /btw 指令的落点：从当前会话建旁聊浮窗。已开着 = 只把它抬回可见
       （再敲一次 /btw 不重建会话——旁聊是同一段对话，不是每次新开） */
-  openSideChat(): Promise<void>;
+  /** initialText = /btw 连带的内容（issue #516）：新建时作为首条发进去，已存在不重发 */
+  openSideChat(initialText?: string): Promise<void>;
   /** 关掉浮窗（会话和日志都在，只是不显示） */
   closeSideChat(): void;
   /** 旁聊里发一条消息（走普通 sendMessage，按它自己的 sessionId 寻址） */
@@ -551,6 +546,8 @@ interface ChatState {
   stopSide(): Promise<void>;
   /** 拖拽浮窗（渲染层本地位置） */
   setSidePos(pos: { x: number; y: number }): void;
+  /** 缩放浮窗（右下角 resize handle 报进来；钳制在组件侧用纯函数先算好，issue #516） */
+  setSideSize(size: { w: number; h: number }): void;
   refreshFriends(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
@@ -769,8 +766,6 @@ export const useChat = create<ChatState>((set, get) => ({
   profileSetupOpen: false,
   modelSetupOpen: false,
   sessionSearchOpen: false,
-  wallet: null,
-  walletError: "",
   staged: [],
   attachError: null,
   composerInject: null,
@@ -852,23 +847,6 @@ export const useChat = create<ChatState>((set, get) => ({
         terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
         filesPanelOpen: false,
       });
-      // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）。
-      // ADR-0085 之后账号页没有额度卡,这一趟网关也省了(打过去只会白开一个 0 额度桶)
-      if (OFFICIAL_GRANT_ENABLED) void get().refreshWallet();
-    }
-  },
-
-  /** 拉一次官方额度。未登录 → wallet 置 null（不是错误）；查不到 → 记 walletError。
-      两者必须可区分：一个是"你没这回事"，一个是"我没查到" */
-  async refreshWallet() {
-    if (!get().account.signedIn) {
-      set({ wallet: null, walletError: "" });
-      return;
-    }
-    try {
-      set({ wallet: await window.otter.walletBalance(), walletError: "" });
-    } catch (e) {
-      set({ walletError: e instanceof Error ? e.message : String(e) });
     }
   },
 
@@ -1553,18 +1531,11 @@ export const useChat = create<ChatState>((set, get) => ({
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
               myProfile: null, profileSetupOpen: false, modelSetupOpen: false,
-              // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
-              wallet: null, walletError: "",
             }
       );
-      // 补拉余额必须在 set 之后：refreshWallet 读的是 store 里的登录态，
-      // 先调等于拿着旧的"未登录"去查，直接短路成 null。
-      // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
-      if (account.signedIn) {
-        void get().refreshWallet();
-        // 资料补拉同理要在 set 之后:needsOnboarding 读的是 store 里的登录态
-        void get().refreshMyProfile();
-      }
+      // 资料补拉必须在 set 之后:needsOnboarding 读的是 store 里的登录态,
+      // 先调等于拿着旧的"未登录"去查
+      if (account.signedIn) void get().refreshMyProfile();
     });
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
@@ -2116,9 +2087,10 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async openSideChat() {
+  async openSideChat(initialText?: string) {
     const s = get();
-    // 已开着：抬回可见（关了浮窗会话还活着，再敲 /btw 是回到它，不是新开）
+    // 已开着：抬回可见（关了浮窗会话还活着，再敲 /btw 是回到它，不是新开）。
+    // initialText 只在「新建」这条路发——会话已存在时内容已在日志里，重发是复读
     if (s.sideChat) {
       set({ sideChat: { ...s.sideChat, open: true } });
       return;
@@ -2130,15 +2102,21 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ error: null });
     try {
       const { sessionId } = await window.otter.startSideSession(s.sessionId);
-      // 默认位置：主内容区右上（右栏槽位被占时也不压它——浮窗在更上面一层）
+      // 默认位置：主内容区右上（右栏槽位被占时也不压它——浮窗在更上面一层）。
+      // 尺寸给默认值：右下角的 resize handle 从这里起步（issue #516）
       set({
         sideChat: {
           sessionId,
           events: [],
           open: true,
           pos: { x: Math.max(24, window.innerWidth - 420), y: 72 },
+          size: { w: 380, h: 480 },
         },
       });
+      // /btw 连带的内容：建完会话顺手发成首条（sendSide 读 sideChat.sessionId，
+      // 所以要等上面的 set 落完再调——它内部按 id 寻址，不依赖"正在看的会话"）
+      const text = initialText?.trim();
+      if (text) await get().sendSide(text);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -2168,6 +2146,11 @@ export const useChat = create<ChatState>((set, get) => ({
   setSidePos(pos) {
     const side = get().sideChat;
     if (side) set({ sideChat: { ...side, pos } });
+  },
+
+  setSideSize(size) {
+    const side = get().sideChat;
+    if (side) set({ sideChat: { ...side, size } });
   },
 
   async decide(outcome) {

@@ -132,6 +132,18 @@ export function renderMemoryPrompt(memory: string, user: string, project?: strin
   );
 }
 
+/** project_instructions 投影成的那条 user 消息的正文——投影(下面)和上下文用量
+    估算(shared/contextEstimate)共用这一处出口，同 systemPromptText 的先例：
+    两边各写一份文案，"项目指令占多少"就又是猜的（issue #524）。
+
+    每段带来源路径——模型知道"这是哪份文件说的"，与 UI 的 provenance 同源 */
+export function projectInstructionsText(segments: { path: string; content: string }[]): string {
+  return (
+    `[以下是本工作区的项目指令文件，按 root → 工作目录顺序拼接，请在完成任务时遵循]\n` +
+    segments.map((seg) => `── 来自 ${seg.path} ──\n${seg.content}`).join("\n\n")
+  );
+}
+
 /** 用户消息内容分片(多模态)。image_ref 只带引用——投影是纯函数,不碰磁盘,
     解 bytes 是 adapter 的事(注入的 readAttachment) */
 export type UserContentPart =
@@ -502,16 +514,19 @@ export function deriveMessages(
         break;
 
       case "project_instructions":
-        // 注入为 user 消息（同 skill_invoked：中途插 system 各家方言兼容性参差）。
-        // 每段带来源路径——模型知道"这是哪份文件说的"，与 UI 的 provenance 同源
-        messages.push({
-          role: "user",
-          content:
-            `[以下是本工作区的项目指令文件，按 root → 工作目录顺序拼接，请在完成任务时遵循]\n` +
-            event.segments
-              .map((seg) => `── 来自 ${seg.path} ──\n${seg.content}`)
-              .join("\n\n"),
-        });
+        // 焊进围栏 system 消息，走记忆那条通道（ADR-0130，issue #527）。
+        // 曾经是一条 user 消息，于是 context_compacted 的 `messages.length = 0`
+        // 把它扫掉了——压一次之后模型再也看不到 AGENTS.md。项目约定不是历史，
+        // 是每轮都该在的围栏；焊进 system 就天然免疫任何清场，而不是往
+        // compact 的重注入名单里再加一项（下一个注入类事件还会掉进同一个坑）。
+        // 文案出口在 projectInstructionsText——投影和用量估算共用一处。
+        //
+        // 没有围栏 system 消息时（旧日志缺 workspace / 裸装配）退回 user 消息：
+        // 那种日志本来就没有清场保护可言，但"指令进得去上下文"这条不能丢。
+        // 与记忆的处理刻意不同——记忆在那种日志里是直接丢的（见 memory_loaded），
+        // 因为它是锦上添花；项目指令是任务的前提，宁可退化也不能没有
+        if (systemMessage) systemMessage.content += `\n${projectInstructionsText(event.segments)}`;
+        else messages.push({ role: "user", content: projectInstructionsText(event.segments) });
         break;
 
       case "image_described":

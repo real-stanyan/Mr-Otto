@@ -32,7 +32,7 @@ npm --prefix mobile run ios        # 走 mobile/ios/，需要 Apple 开发者账
 邮箱密码那条路留着但收进折叠里：**这个账号体系里注册走的是 OAuth**，
 用 Google 注册的账号根本没有密码，只留密码登录的话它永远登不进来。
 
-回跳走**网关的 landing 页**（`services/gateway/src/authLanding.ts`），不是 app 自己的
+回跳走**边缘服务的 landing 页**（`services/edge/src/authLanding.ts`），不是 app 自己的
 deep link：那个地址早就在 Supabase 的 Redirect URLs 白名单里、桌面天天在用。
 `mrotto://auth-callback` 只作 `ASWebAuthenticationSession` 的拦截 scheme
 （`app.json` 的 `scheme` 注册进 Info.plist，拦截是确定的，不经过白名单）。

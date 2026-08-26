@@ -8,7 +8,7 @@
  *
  * - **重连、重连时机、退避,全部是实现方的事。**
  * - **握手由 onPeer 驱动,不由 onClose 驱动。** 中继在对端 attach 时往两侧各写
- *   一条 `:peer`(services/gateway/src/relay.ts),传输把它转成 onPeer。
+ *   一条 `:peer`(services/edge/src/relay.ts),传输把它转成 onPeer。
  *   这是握手唯一的起点:握手是双向的,而中继不排队 —— 桌面是长命的那一端,
  *   它开机时盲发的 hello 必然掉进虚空,手机几小时后才连上来。
  *   谁到场只有中继知道(它是唯一同时看得见两个槽的人),所以由它说。
@@ -27,12 +27,29 @@
  * 所以那个决定留在传输里。当前分支(plan A)不含真实现,这段是写给 plan B 的合同。
  */
 export interface RemoteTransport {
-  /** 发一帧。对端不在线不是错误(网关回 409),由实现自己吞掉——桥不关心 */
-  send(payload: string): void;
-  onMessage(cb: (payload: string) => void): void;
-  /** 中继报告对端已在场(SSE 的 `:peer` 注释行)。每来一条,桥就开一轮新握手 */
-  onPeer(cb: () => void): void;
-  /** 连接已断。见接口注释:桥只清状态、不发东西;不许在 send 里同步调 */
+  /**
+   * 发一帧给**某一条**对端连接。对端不在线不是错误(网关回 409),
+   * 由实现自己吞掉——桥不关心。
+   *
+   * `to` 是中继编的连接 id(ADR-0130),从 onPeer 拿到。**必须寻址、不能广播**:
+   * 每条连接有自己一套会话密钥,广播过去的帧在别人那儿解不开,
+   * 而 sealedStream 还带计数器校验 —— 收到别人的帧会被判成异常而不是无害的噪音。
+   */
+  send(payload: string, to: string): void;
+  /** from = 发件人的 cid(中继在 `event:` 行里给的)。老中继给不出,是空串 */
+  onMessage(cb: (payload: string, from: string) => void): void;
+  /**
+   * 中继报告某条对端连接到场(SSE 的 `:peer <cid>`)。每来一条,桥就跟**那一条**
+   * 开一轮新握手。同一个 cid 再来一次 = 那边重连了,旧密钥作废,重开。
+   *
+   * 老中继发的是不带 cid 的裸 `:peer`。实现只在**没收到过 `:cid`** 时才把它
+   * 转成一次 onPeer(cid 用空串) —— 收到过就说明对面是新中继,裸的那条是发给
+   * 老客户端的,再转一次会开一轮没有收件人的握手。
+   */
+  onPeer(cb: (cid: string) => void): void;
+  /** 某条对端连接没了。桥据此丢掉那一套会话状态,别再往断管子里封帧 */
+  onGone(cb: (cid: string) => void): void;
+  /** 连接已断(自己这条)。见接口注释:桥只清状态、不发东西;不许在 send 里同步调 */
   onClose(cb: () => void): void;
   close(): void;
 }

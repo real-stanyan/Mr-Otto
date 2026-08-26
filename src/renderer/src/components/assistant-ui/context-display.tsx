@@ -408,7 +408,7 @@ ContextDisplay.Text = ContextDisplayText;
 
 // 本仓改动:多导一个 RingVisual。上游只导出 Ring 预设(Root+Trigger+环+Content 打包),
 // 而本仓要的是"上游的环 + 本仓的内容":内容那半边显示的是**上下文构成**
-// (系统提示词/工具/对话消息 + 压缩次数,shared/contextEstimate.ts 的投影),
+// (系统提示词/工具/项目指令/对话消息 + 压缩次数,shared/contextEstimate.ts 的投影),
 // 与上游 Content 显示的"上一次请求的 usage 分项"是两码事,换不得
 export { RingVisual as ContextDisplayRingVisual };
 

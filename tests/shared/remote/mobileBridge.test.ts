@@ -10,7 +10,7 @@ import type { Role } from "../../../src/shared/remote/handshake.js";
 
 // 这个文件把**两个真桥**对接起来:桌面那只用 node:crypto,手机这只用 @noble/*,
 // 中间是一个会丢包、按 FIFO 投递、attach 时发 :peer 的中继模型
-// (services/gateway/src/relay.ts 的行为)。
+// (services/edge/src/relay.ts 的行为)。
 //
 // 分开测两边各自"能跑"没有意义:这条链路的失败方式是"连上了、解不开"。
 
@@ -35,9 +35,13 @@ const IDLE: IslandFleet = {
   focusedSessionId: "s1",
 };
 
+/** 两端各一条连接时中继给的 cid(ADR-0130)。这个 harness 只模两条 */
+const CID: Record<Role, string> = { desktop: "cd", mobile: "cm" };
+
 function fakeRelay() {
-  const sink: Record<Role, ((p: string) => void) | null> = { desktop: null, mobile: null };
-  const peerCb: Record<Role, (() => void) | null> = { desktop: null, mobile: null };
+  const sink: Record<Role, ((p: string, from: string) => void) | null> =
+    { desktop: null, mobile: null };
+  const peerCb: Record<Role, ((cid: string) => void) | null> = { desktop: null, mobile: null };
   const queue: Array<() => void> = [];
   const dropped: string[] = [];
   const peerOf = (r: Role): Role => (r === "desktop" ? "mobile" : "desktop");
@@ -45,22 +49,25 @@ function fakeRelay() {
   return {
     dropped,
     transport(role: Role): RemoteTransport {
-      let onMsg: (p: string) => void = () => {};
-      let onPeer: () => void = () => {};
+      let onMsg: (p: string, from: string) => void = () => {};
+      let onPeer: (cid: string) => void = () => {};
+      let onGone: (cid: string) => void = () => {};
       let onClose: () => void = () => {};
-      sink[role] = (p) => onMsg(p);
-      peerCb[role] = () => onPeer();
+      sink[role] = (p, from) => onMsg(p, from);
+      peerCb[role] = (cid) => onPeer(cid);
       return {
         send(p) {
+          // 这个 harness 一边只有一条连接,所以 to 一定指向对面那条,不用查表
           const peer = sink[peerOf(role)];
           if (!peer) { dropped.push(p); return; }
-          queue.push(() => peer(p));
+          queue.push(() => peer(p, CID[role]));
           flush();
         },
         onMessage(cb) { onMsg = cb; },
         onPeer(cb) { onPeer = cb; },
+        onGone(cb) { onGone = cb; },
         onClose(cb) { onClose = cb; },
-        close() { onClose(); },
+        close() { onClose(); void onGone; },
       };
     },
     /**
@@ -70,8 +77,8 @@ function fakeRelay() {
      */
     announce(only?: Role) {
       if (!sink.desktop || !sink.mobile) return;
-      if (only !== "desktop") queue.push(() => peerCb.mobile?.());
-      if (only !== "mobile") queue.push(() => peerCb.desktop?.());
+      if (only !== "desktop") queue.push(() => peerCb.mobile?.(CID.desktop));
+      if (only !== "mobile") queue.push(() => peerCb.desktop?.(CID.mobile));
       flush();
     },
   };

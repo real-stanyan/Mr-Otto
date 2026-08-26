@@ -88,10 +88,8 @@ import type { Tool } from "../tools/tool.js";
 import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
-import { gatewayBaseUrl } from "../shared/gatewayConfig.js";
 import { routeModel } from "./modelRoute.js";
 import type { ModelLane } from "../shared/modelLane.js";
-import { randomUUID } from "node:crypto";
 import type { Approver } from "../loop/approvalGate.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
@@ -153,9 +151,6 @@ export function createAgent(opts: {
   resumeSessionId?: string;
   /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
   attachments: AttachmentStore;
-  /** Supabase access token 取用器(index.ts 注入 AccountManager.getAccessToken)。
-      不给 = 这个装配里没有登录态,只能走自带 key 那条路(测试和裸装配照旧) */
-  getAccessToken?: () => Promise<string | null>;
   /** 浏览器能力工厂(index.ts 注入,按 sessionId 绑到 browserHub)。
       不给 = 这个装配没有浏览器,browser_read 会明确报错(测试和裸装配照旧) */
   makeBrowser?: (sessionId: string) => BrowserCapability;
@@ -422,25 +417,17 @@ export function createAgent(opts: {
 
   // key 本体只在这里碰 process.env；缺 key 不拦启动，chat 时报错给 UI。
   //
-  // 端点每次请求现算(resolveEndpoint),不在构造时定死。两个理由:
-  // ① 网关凭据是 access token,一小时就过期,静态捕获等于 turn 跑到一半 401;
-  // ② 用户可能在会话中途填了自己的 key 或登出,路线该当场改,而不是等重开会话。
+  // 端点每次请求现算(resolveEndpoint),不在构造时定死:用户可能在会话中途填了
+  // 自己的 key,路线该当场改,而不是等重开会话。
   const resolveEndpoint = async (choice: ModelChoice) => {
     const route = routeModel({
       choice,
       ownKey: process.env[choice.apiKeyEnv] ?? "",
       ownBaseUrl: process.env[choice.baseUrlEnv],
-      accessToken: opts.getAccessToken ? await opts.getAccessToken() : null,
-      gatewayBaseUrl: gatewayBaseUrl(),
-      lane, // 每次请求现读:会话中途换 lane,下一次调用就该改道(同 key/登录态)
+      lane, // 每次请求现读:会话中途换 lane,下一次调用就该改道(同 key)
     });
     if (route.kind === "blocked") throw new Error(route.reason);
-    return {
-      baseUrl: route.baseUrl,
-      apiKey: route.apiKey,
-      // 幂等键只对网关有意义:同一次调用若因网络重投递到达两次,网关据此不重复扣费
-      ...(route.kind === "gateway" ? { headers: { "x-otto-request-id": randomUUID() } } : {}),
-    };
+    return { baseUrl: route.baseUrl, apiKey: route.apiKey };
   };
 
   const makeAdapter = (choice: ModelChoice) =>

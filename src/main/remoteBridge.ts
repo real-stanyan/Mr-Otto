@@ -37,7 +37,8 @@ export function createRemoteBridge(opts: {
   identity: KeyPair;
   deviceId: string;
   transport: RemoteTransport;
-  onCommand: (c: UpFrame) => void;
+  /** cid = 哪一条手机连接发来的(ADR-0130)。上层据此分开每台手机的订阅 */
+  onCommand: (c: UpFrame, cid: string) => void;
   /** 已 pin 住的对端身份公钥,**可能有多把**(用户配了几台手机就有几把)。
       空组 = 还没配对过 → 一律拒绝握手。握手时逐把试:hello 里的 deviceId 是明文、
       由对端自称,拿它来查表等于让对端自己指定用哪把公钥验自己,所以只能挨个验签名。
@@ -46,31 +47,46 @@ export function createRemoteBridge(opts: {
   /** 这条**连接**没了。上层用它丢掉"手机正在看哪个会话":
       订阅是连接级的,连接没了还接着投影等于替一个不存在的观众干活。
       注意不再包含"重新握手":手机重连时订阅要留着,好在 onRekey 里补推 */
-  onReset?: () => void;
+  onReset?: (cid: string) => void;
   /** 重新派生过密钥了(手机重连 / 中继补发在场信号都会走到)。fleet 快照桥自己
       会补推,时间线得上层来 —— 它才知道 watchedSession 和怎么算那份投影 */
-  onRekey?: () => void;
+  onRekey?: (cid: string) => void;
   /** 一次握手被挡下了(issue #485)。**这里不做节流** —— 传输层是退避重连的,
       每次重连都要重新握手,所以这个回调天然会重复触发;去重是上层的事
       (main/remoteRejections.ts),桥只负责如实报告每一次 */
   onRejected?: (r: { deviceId: string; reason: "unpaired" | "identity-mismatch" }) => void;
   log?: (m: string) => void;
 }): {
+  /** 广播给每一台连上来的手机:fleet 是所有人共享的那份状态 */
   pushFleet(f: IslandFleet): void;
-  pushTimeline(sessionId: string, messages: MobileMessage[]): void;
-  pushNotice(text: string): void;
-  pushStats(stats: RemoteStats): void;
+  /** 只发给订阅了它的那一台。**时间线是每台手机各看各的** ——
+      广播等于把 A 正在看的会话推到 B 的屏幕上 */
+  pushTimeline(cid: string, sessionId: string, messages: MobileMessage[]): void;
+  /** 只发给问的那一台:提示和统计都是"回答某一次操作",不是共享状态 */
+  pushNotice(cid: string, text: string): void;
+  pushStats(cid: string, stats: RemoteStats): void;
+  /** 现在连着几台(诊断用) */
+  connected(): string[];
   dispose(): void;
 } {
   const p = opts.crypto;
   const log = opts.log ?? (() => {});
 
+  /** 最后一份 fleet。**这是唯一跨连接共享的东西** —— 新连上来的那台要靠它补快照 */
+  let last: IslandFleet | null = null;
+  let disposed = false;
+
+  /**
+   * 一条对端连接的全部状态。原来这些是模块级的变量 —— 一户一手机的年代那样够用,
+   * 多台之后每一样都得**按连接各存一份**:密钥是每次握手现协商的,去重基线跟着
+   * 密钥走,而"这一轮派生过哪些 eph"更是只对这一条连接有意义。
+   * 共用一份的话,第二台连上来会把第一台的密钥顶掉,而第一台毫不知情。
+   */
+  function makePeer(cid: string) {
   let phase: Phase = "handshaking";
   let self: SelfParty | null = null;
   let sealer: ReturnType<typeof createSealer> | null = null;
   let opener: ReturnType<typeof createOpener> | null = null;
-  /** 最后一份 fleet。重连后要靠它把快照补推给新的对端 */
-  let last: IslandFleet | null = null;
   /** 上一次真正写下去的 fleet 线格式(明文帧,不是密文——密文每次都不同,去重不了) */
   let lastEncoded: string | null = null;
   /** 时间线的去重要和 fleet 分开:两条流各推各的,共用一个基线会互相把对方吞掉 */
@@ -105,7 +121,7 @@ export function createRemoteBridge(opts: {
     // (islandBridge 里 helper 重启踩过同一个坑)
     lastEncoded = null;
     lastTimeline = null;
-    opts.onReset?.();
+    opts.onReset?.(cid);
   }
 
   /**
@@ -142,7 +158,7 @@ export function createRemoteBridge(opts: {
     lastEncoded = null;
     lastTimeline = null;
     if (last) pushFleet(last); // 补推快照:对端是新的,它什么都还没有
-    opts.onRekey?.();          // 上层据此把时间线也补一份(订阅还在,见 resetRound)
+    opts.onRekey?.(cid);       // 上层据此把时间线也补一份(订阅还在,见 resetRound)
   }
 
   /** 开一轮握手。**唯一的触发者是 onPeer** —— 对端不在场时发 hello 只是喂虚空 */
@@ -157,7 +173,7 @@ export function createRemoteBridge(opts: {
     self = newConnectionParty(p, { role: "desktop", deviceId: opts.deviceId, identity: opts.identity });
     // self 换了 ⇒ 同一个对端 eph 也会算出一把新钥匙,旧的"用过"名单跟着作废
     usedPeerEphs = new Set();
-    opts.transport.send(JSON.stringify(buildHello(p, self)));
+    opts.transport.send(JSON.stringify(buildHello(p, self)), cid);
     // 对端不会为我这一轮再发一次 hello(它可能早就 ready 了),拿记住的那份当场重派生。
     // **phase 这一问是必须的**:上面那行 send 可能是同步投递的,对端崭新的 hello
     // 说不定已经在里面派生完了 —— 那份比手上这份旧的新,别拿旧的盖回去
@@ -168,7 +184,7 @@ export function createRemoteBridge(opts: {
    * 收到对端的握手包。**规则是"永远用对端最新的那一条",不是"只认第一条"**。
    *
    * 只认第一条会死锁,而且是这条链路上最常见的死法:中继在**任何一端 attach 时
-   * 都会给两边各发一次 `:peer`**(services/gateway/src/relay.ts)。手机重连一次,
+   * 都会给两边各发一次 `:peer`**(services/edge/src/relay.ts)。手机重连一次,
    * 桌面这侧就收到一条 `:peer` 并重开一轮;手机自己那条 `:peer` 却写给了正在被
    * 拆掉的旧连接,收不到。于是桌面开了两轮(D1、D2)、手机只开了一轮(M1):
    * 手机锁死在先到的 D1 上,桌面停在 (D2, M1)。两边都自认为 ready,而每一帧都
@@ -246,16 +262,15 @@ export function createRemoteBridge(opts: {
       log("远程桥:命令不在白名单里,整条丢弃");
       return;
     }
-    opts.onCommand(cmd);
+    opts.onCommand(cmd, cid);
   }
 
   function pushFleet(f: IslandFleet): void {
-    last = f;
     if (phase !== "ready" || !sealer) return;
     const wire = encodeFrame({ type: "fleet", fleet: f });
     if (wire === lastEncoded) return;
     lastEncoded = wire;
-    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))), cid);
   }
 
   /** 时间线只在对端明确 watch 之后才有内容,所以**不做重连补推**:
@@ -267,7 +282,7 @@ export function createRemoteBridge(opts: {
     const wire = encodeFrame({ type: "timeline", sessionId, messages });
     if (wire === lastTimeline) return;
     lastTimeline = wire;
-    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))), cid);
   }
 
   /** 设置页那份统计。**刻意不去重**:手机是主动问的,问一次就该答一次 ——
@@ -275,7 +290,7 @@ export function createRemoteBridge(opts: {
   function pushStats(stats: RemoteStats): void {
     if (phase !== "ready" || !sealer) return log(`远程桥:会话没建立(${phase}),统计没发出去`);
     const wire = encodeFrame({ type: "stats", stats });
-    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))), cid);
   }
 
   /** 一句给人看的话。**刻意不去重**:两次同样的拒收是两件事,
@@ -283,37 +298,105 @@ export function createRemoteBridge(opts: {
   function pushNotice(text: string): void {
     if (phase !== "ready" || !sealer) return log(`远程桥:会话没建立(${phase}),提示没发出去:${text}`);
     const wire = encodeFrame({ type: "notice", text });
-    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))), cid);
   }
 
-  opts.transport.onMessage((payload) => {
-    if (phase === "closed") return;
-    // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
-    if (payload.startsWith("{")) onHello(payload);
-    else onSealed(payload);
-  });
-
-  opts.transport.onPeer(() => {
-    if (phase === "closed") return;
-    log("远程桥:对端到场,开一轮握手");
-    startRound();
-  });
-
-  opts.transport.onClose(() => {
-    if (phase === "closed") return;
-    log("远程桥:连接断开,等下一条在场信号");
-    resetRound();
-  });
-
   return {
+    onWire(payload: string): void {
+      if (phase === "closed") return;
+      // 首字符定型:'{' = 明文握手包,其余 = base64url 密文帧
+      if (payload.startsWith("{")) onHello(payload);
+      else onSealed(payload);
+    },
+    startRound,
+    resetRound,
     pushFleet,
     pushTimeline,
     pushNotice,
     pushStats,
-    dispose() {
+    close(): void {
       phase = "closed";
       sealer = null;
       opener = null;
+    },
+  };
+  }
+
+  type Peer = ReturnType<typeof makePeer>;
+  /** 每条对端连接一个,键是中继编的 cid */
+  const peers = new Map<string, Peer>();
+
+  const peerFor = (cid: string): Peer => {
+    let x = peers.get(cid);
+    if (!x) {
+      x = makePeer(cid);
+      peers.set(cid, x);
+    }
+    return x;
+  };
+
+  opts.transport.onMessage((payload, from) => {
+    if (disposed) return;
+    // from 空串 = 老中继(不带发件人)。那种中继下对端只可能有一条,
+    // 唯一那条就是发件人;一条都没有时丢掉——没有可以猜的余地
+    if (from === "") {
+      if (peers.size !== 1) return log("远程桥:老中继下收到帧但对端不止一条,丢弃");
+      [...peers.values()][0]!.onWire(payload);
+      return;
+    }
+    const peer = peers.get(from);
+    // 没见过的 cid:中继保证 :peer 排在对端任何一帧之前,所以到这儿说明
+    // 要么对面不是通过中继来的,要么我们漏了一条在场信号。不凭空建会话
+    if (!peer) return log("远程桥:帧来自没打过招呼的连接,丢弃");
+    peer.onWire(payload);
+  });
+
+  opts.transport.onPeer((cid) => {
+    if (disposed) return;
+    log(`远程桥:对端到场(${cid || "老中继"}),开一轮握手`);
+    peerFor(cid).startRound();
+  });
+
+  opts.transport.onGone((cid) => {
+    if (disposed) return;
+    log(`远程桥:对端 ${cid} 离场,丢掉它那套会话`);
+    const peer = peers.get(cid);
+    if (!peer) return;
+    peer.close();
+    peers.delete(cid);
+    // 那台手机的订阅跟着走。**必须在这儿发** —— 它不会再有 onClose 了
+    opts.onReset?.(cid);
+  });
+
+  opts.transport.onClose(() => {
+    if (disposed) return;
+    log("远程桥:连接断开,等下一条在场信号");
+    // 自己这条流断了 ⇒ 所有对端连接上的密钥都作废。**不删 peers**:
+    // 重连后中继会重新announce 每一条,那时按 cid 认回来
+    for (const peer of peers.values()) peer.resetRound();
+  });
+
+  return {
+    pushFleet(f) {
+      last = f;
+      for (const peer of peers.values()) peer.pushFleet(f);
+    },
+    pushTimeline(cid, sessionId, messages) {
+      peers.get(cid)?.pushTimeline(sessionId, messages);
+    },
+    pushNotice(cid, text) {
+      peers.get(cid)?.pushNotice(text);
+    },
+    pushStats(cid, stats) {
+      peers.get(cid)?.pushStats(stats);
+    },
+    connected() {
+      return [...peers.keys()];
+    },
+    dispose() {
+      disposed = true;
+      for (const peer of peers.values()) peer.close();
+      peers.clear();
       opts.transport.close();
     },
   };

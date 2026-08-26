@@ -73,7 +73,6 @@ export function createChildAgent(opts: {
   push: AgentPush;
   attachments: AttachmentStore;
   config: ChildAgentConfig;
-  getAccessToken?: () => Promise<string | null>;
   makeBrowser?: (sessionId: string) => BrowserCapability;
   alwaysAllow?: () => ReadonlySet<string>;
   /** execpolicy 规则现读器（issue #347，同 alwaysAllow 的活引用规矩）：
@@ -109,7 +108,6 @@ export function createChildAgent(opts: {
     push: opts.push,
     attachments: opts.attachments,
     allowTools: opts.config.allowTools,
-    ...(opts.getAccessToken ? { getAccessToken: opts.getAccessToken } : {}),
     ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
     ...(opts.skills ? { skills: opts.skills } : {}),
