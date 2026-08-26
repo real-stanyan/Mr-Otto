@@ -456,10 +456,14 @@ describe("模型自取 skill 的投影（本次新增）", () => {
       { seq: 2, sessionId: "s", ts: 2, type: "skill_released", name: "tdd" },
       { seq: 3, sessionId: "s", ts: 3, type: "user_message", content: "活" },
     ];
-    const contents = deriveMessages(events).map((m) => m.content);
-    expect(contents.filter((c) => typeof c === "string" && c.includes("skill「tdd」已停用")).length).toBe(0);
-    // 已发出的那份说明书照旧留在上下文里：它是历史事实，停用只影响此后
-    expect(contents.some((c) => typeof c === "string" && c.includes("先写测试"))).toBe(true);
+    const msgs = deriveMessages(events);
+    // 按条数 + role 序列钉死：整段投影只有三条——围栏 system、skill 说明书（已发出的
+    // 历史事实，停用不追认不撤回）、用户消息。skill_released 自己不产生第四条消息。
+    // 不用 not.toContain 排除某个措辞的字符串：那种写法只钉住"这句话没出现"，钉不住
+    // "什么都没多出来"——真要在 skill_released 上注入一条别的消息，换个措辞就能溜过去
+    expect(msgs.map((m) => m.role)).toEqual(["system", "user", "user"]);
+    expect((msgs[1] as { content: string }).content).toContain("先写测试");
+    expect(msgs[2]).toEqual({ role: "user", content: "活" });
   });
 
   it("停用之后 compact 清场：重注入里没有它", () => {
