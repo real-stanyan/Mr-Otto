@@ -14,7 +14,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const BASE = (process.argv[2] ?? "https://mrotto-edge.dryrun-agency.workers.dev").replace(/\/+$/, "");
+const BASE = (process.argv[2] ?? "https://edge.mrotto.workers.dev").replace(/\/+$/, "");
 const WS_BASE = BASE.replace(/^http/, "ws");
 const SUBPROTOCOL = "mrotto.v1";
 const PING = ":ping";
