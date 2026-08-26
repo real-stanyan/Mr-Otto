@@ -44,6 +44,16 @@ test("运行指示条的液态玻璃：折射滤镜真的挂上了（不是被�
     expect(probe.backdrop).toMatch(/blur\(/);
     expect(probe.filterFound, "url(#…) 指向的 <filter> 不在文档里").toBe(true);
 
+    // 胶囊而不是通栏：玻璃只裹相位那一句，计量在它外面。通栏的板子大半是空的，
+    // 折射无处发生 —— 这一条钉的是版式意图，不是像素
+    const hug = await glass.evaluate((el) => ({
+      glass: el.getBoundingClientRect().width,
+      row: (el.parentElement as HTMLElement).getBoundingClientRect().width,
+      metaOutside: el.parentElement?.lastElementChild !== el,
+    }));
+    expect(hug.glass, "玻璃通栏了，不是贴合文字的胶囊").toBeLessThan(hug.row * 0.8);
+    expect(hug.metaOutside, "计量还在玻璃里").toBe(true);
+
     await win.screenshot({ path: join(ROOT, "test-results", "run-indicator-glass.png") });
   } finally {
     await otto.close();

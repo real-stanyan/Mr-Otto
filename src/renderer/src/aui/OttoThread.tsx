@@ -708,19 +708,31 @@ const RunIndicator: ComponentType = () => {
   if (status !== "running" && approval === null) return null;
 
   // 玻璃是给这一条挑的,不是全局皮肤:它悬在正文之上、只在 turn 跑着时存在,
-  // 背后是滚动的消息——折射有东西可折。静止的面板上放同一块玻璃只会看见模糊
+  // 背后是滚动的消息——折射有东西可折。静止的面板上放同一块玻璃只会看见模糊。
+  //
+  // 玻璃只裹住"agent 现在在干嘛"这一件事(orb + 一句话),裹成一枚贴合文字的胶囊:
+  // 通栏的话,一块 34px 高、几百 px 宽的板子上大半是空的,折射无处发生,材质白给。
+  // 计量(elapsed / tokens)留在玻璃外面靠右——它是这一轮的账,不是相位本身,
+  // 而且它每秒都在跳:数字跳一下卡片就得重量尺寸、重算贴图,没必要
   return (
-    <LiquidGlass radius={14} className="px-3 py-[6px]">
-      <Marker role="status" className="py-[2px] text-[13px]">
-        <MarkerIcon className="size-5">
-          <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
-        </MarkerIcon>
-        <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
-        <span className="ml-auto shrink-0 text-xs">
-          <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
-        </span>
-      </Marker>
-    </LiquidGlass>
+    <div className="flex w-full items-center gap-2">
+      <LiquidGlass
+        // 胶囊 = 圆角吃满高度的一半。给个够大的数交给 CSS 去夹(贴图那边也自己夹到
+        // 短边的一半),比把 padding 和字号算成一个具体的 17px 更抗改
+        radius={999}
+        className="w-auto shrink-0 px-3 py-[6px]"
+      >
+        <Marker role="status" className="w-auto text-[13px]">
+          <MarkerIcon className="size-5">
+            <ThinkingOrb state={turnPhase.orb} size={20} theme="auto" />
+          </MarkerIcon>
+          <MarkerContent className="shimmer">{turnPhase.label}</MarkerContent>
+        </Marker>
+      </LiquidGlass>
+      <span className="ml-auto shrink-0 text-xs">
+        <TurnMeta events={events} toolDefs={toolDefs} output={streamingText + streamingThinking} />
+      </span>
+    </div>
   );
 };
 
