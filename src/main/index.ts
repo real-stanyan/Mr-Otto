@@ -570,6 +570,9 @@ void app.whenReady().then(() => {
       // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
       // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
       onReset: () => { watchedSession = null; remoteUploads.reset(); },
+      // 重新派生密钥之后订阅还在(手机重连不等于换了观众):fleet 桥自己补推了,
+      // 时间线得这儿补 —— 手机那条 watch 可能正好封在旧密钥里,已经丢了
+      onRekey: () => pushTimelineNow(),
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
