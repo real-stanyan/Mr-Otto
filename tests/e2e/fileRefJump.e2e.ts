@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { expectNoRendererErrors, launchOtto, startSession } from "./harness.js";
 import { fakeModelEnv, startFakeModel } from "./fakeModel.js";
 
-test("#449 模型提到 src/hello.ts:2 → 正文里可点 → Files 面板滚到第 2 行并高亮", async () => {
+test("#458 模型提到 src/hello.ts:2 → 正文里可点 → Files 面板滚到第 2 行并高亮", async () => {
   const fake = await startFakeModel(() => ({
     content: "问题在 src/hello.ts:2 那一行,常量写反了。",
   }));
