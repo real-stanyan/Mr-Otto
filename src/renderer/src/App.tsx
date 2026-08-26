@@ -719,7 +719,10 @@ function McpToolApproval({ preview }: { preview: McpToolPreview }) {
 
     凭据只出键名不出值（ADR-0044 口径）：credentialKeys 只列名字，
     真值从来不会走到这张卡上。 */
-function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
+/** 导出：tests/renderer/McpConfigureApproval.test.tsx 直接渲染这个组件——
+    Task 9 复审 Important 1 指出，光测预览数据层测不出渲染层把 args 重新
+    join 回一句话这种回归，得有一层真的渲染 DOM 的测试。 */
+export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
   const actionLabel =
     preview.action === "add" ? "新增" : preview.action === "update" ? "更新" : "删除";
   const Row = ({ label, children }: { label: string; children: ReactNode }) => (
@@ -773,6 +776,10 @@ function McpConfigureApproval({ preview }: { preview: McpConfigurePreview }) {
         <Field label="action" text={preview.action} />
         <Field label="server" text={preview.server} />
         {preview.transport !== null && <Field label="transport" text={preview.transport} />}
+        {/* 独立、永不截断的真实主机名（Task 9 复审 Critical A 修法②）：放在
+            url 那一行之前——无论下面那行怎么变形、多长、被截成什么样，
+            "到底连哪个主机"必须先出现、且必须完整 */}
+        {preview.host !== null && <Field label="host" text={preview.host} />}
         {preview.url !== null && (
           <Field
             label="url"

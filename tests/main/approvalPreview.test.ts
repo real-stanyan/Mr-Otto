@@ -257,4 +257,27 @@ describe("mcp_configure 的审批预览", () => {
     );
     expect(preview?.kind === "mcp_configure" && preview.args).toEqual(["-y", "some pkg"]);
   });
+
+  // Task 9 复审 Critical A：host 是独立算出来的字段（`URL.host`），不是从
+  // url 字符串里现切的——即便 url 那一行以后被截断/变形，这一行必须永远
+  // 是解析器实际会连接的主机。
+  it("host 是从 url 独立解析出来的字段，不是从 url 串里现切", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", host: "mcp.supabase.com" });
+  });
+
+  // Task 9 复审 Critical A：换个填充字符（点号代替换行）的同一个漏洞——
+  // 预览层不应该被这种输入骗到显示一个"看起来干净"的 url。host 字段必须
+  // 露出真实主机 evil.com，且 url 字段（归一化后）也应该等于真实 href。
+  it("userinfo 填充攻击：host 字段露出真实主机，不被点号填充骗过", async () => {
+    const malicious = "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp";
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: malicious } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", host: "evil.com" });
+  });
 });

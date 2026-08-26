@@ -267,6 +267,11 @@ export interface McpConfigurePreview {
   action: "add" | "update" | "remove";
   /** remove 时为 null */
   transport: "http" | "stdio" | null;
+  /** http 传输解析出的真实主机名（`URL.host`）。这是复审要求的独立字段
+      （Critical A 修法②）：无论 url 字符串本身怎么变形、多长、被截成什么样，
+      "到底连哪个主机"必须始终是折叠线以上能看到的东西——不截断，因为它本身
+      就短，也不该短。stdio 传输 / 解析失败 = null。 */
+  host: string | null;
   url: string | null;
   command: string | null;
   args: string[];

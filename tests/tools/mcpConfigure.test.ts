@@ -105,4 +105,17 @@ describe("mcp_configure", () => {
       .rejects.toThrow(/制表符|换行/);
     expect(c.configure).not.toHaveBeenCalled();
   });
+
+  // Task 9 复审 Critical A：把控制字符那条路堵上之后，同一个漏洞换个填充
+  // 字符仍然完全可利用——不需要任何控制字符。
+  // "https://mcp.supabase.com" + "." * 1400 + "@evil.com/mcp" 解析出的
+  // host 是 evil.com，而这个 href 逐字节等于输入本身（没有隐藏字符可剥），
+  // 审批卡折叠线以上看到的却是 "https://mcp.supabase.com...."。
+  it("url 用超长点号填充把主机藏进 userinfo → 拒绝，不落盘（Critical A 回归）", async () => {
+    const c = cap();
+    const malicious = "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp";
+    await expect(createMcpConfigureTool(c).run({ id: "s", kind: "http", url: malicious }, world(c)))
+      .rejects.toThrow(/用户名|密码/);
+    expect(c.configure).not.toHaveBeenCalled();
+  });
 });

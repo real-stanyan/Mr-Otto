@@ -214,5 +214,16 @@ export function normalizeMcpHttpUrl(url: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`url 只支持 http/https，收到的是 ${parsed.protocol}`);
   }
+  // 拒绝非空的 userinfo（Task 9 复审 Critical A）：控制字符那条路堵上之后，
+  // 同一个漏洞换个填充字符仍然完全可利用——
+  // "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp" 解析出的
+  // host 是 evil.com，而这个 href 逐字节等于输入本身（没有隐藏字符可剥），
+  // 卡片上折叠线以上看到的却是 "https://mcp.supabase.com...."。合法的 MCP
+  // 端点不会带 userinfo——OAuth 正是这个功能存在的理由，这里没有正当用途。
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error(
+      "url 里不能带用户名/密码段（@ 之前的部分）——它会让地址栏看起来是一个主机、实际连的是另一个"
+    );
+  }
   return parsed.href;
 }

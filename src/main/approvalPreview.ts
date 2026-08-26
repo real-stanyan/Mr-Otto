@@ -8,7 +8,7 @@
 import type { ToolCallRequest } from "../session/events.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { ApprovalPreview, McpPreviewArg } from "../shared/shellBridge.js";
-import { assignMcpToolNames } from "../shared/mcp.js";
+import { assignMcpToolNames, normalizeMcpHttpUrl } from "../shared/mcp.js";
 
 /** 单边文本超过此长度就放弃预览（IPC 别扛巨物，diff 也算不动），退回 JSON 展示 */
 const MAX_PREVIEW_CHARS = 200_000;
@@ -39,17 +39,31 @@ export async function buildApprovalPreview(
   return { kind: "write_file", path: args.path, oldText, newText: args.content };
 }
 
-/** 预览这一步的最佳展示：能规范化就规范化，展示的是 URL 解析器实际会看到
-    的主机，不是可能藏着隐藏 tab/换行的原始输入（Task 9 审查 Critical 1——
-    "https://good.com" + 30 个换行 + "@evil.com/mcp" 解析出的 host 是
-    evil.com，卡片必须露出这个真相，不能停留在被换行推没了的原始字符串）。
-    解析失败（语法错误/协议不对）时 run() 那层会真正拒绝这次调用——这里仍
-    展示原始值，让卡片至少说得出模型传了什么，而不是直接哑掉退回 JSON 兜底。 */
+/** 预览这一步的 url 展示值：直接调 normalizeMcpHttpUrl——同一份归一化 +
+    校验逻辑，run() 存盘用的也是它（Task 9 复审「Critical 1 的 check (a)
+    未通过」：此前这里自己另写了一份 `new URL(raw).href`，语义上和
+    normalizeMcpHttpUrl 刻意不同，"一份归一化、两个读者"靠人手同步而不是
+    结构上保证）。校验失败（语法错误/协议不对/带 userinfo/含 tab 换行）时，
+    run() 那层会真正拒绝这次调用——这里退回展示原始值，让卡片至少说得出
+    模型传了什么，而不是直接哑掉退回 JSON 兜底。 */
 function previewUrl(raw: string): string {
   try {
-    return new URL(raw).href;
+    return normalizeMcpHttpUrl(raw);
   } catch {
     return raw;
+  }
+}
+
+/** 卡片上独立的一行、永不截断的真实主机名（Task 9 复审 Critical A 修法②）。
+    只取 `URL.host`——它天生不含 userinfo，也不受 url 字符串本身长度/变形的
+    影响：无论 url 那一行被截成什么样、里面藏了什么，"到底连哪个主机"必须
+    永远在这一行、永远完整。解析失败（run() 那层会拒绝）= null，不编一个
+    假主机出来。 */
+function previewHost(raw: string): string | null {
+  try {
+    return new URL(raw).host;
+  } catch {
+    return null;
   }
 }
 
@@ -83,7 +97,7 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
   if (a?.["action"] === "remove") {
     return {
       kind: "mcp_configure", server: id, action: "remove", transport: null,
-      url: null, command: null, args: [], credentialKeys: [], before,
+      host: null, url: null, command: null, args: [], credentialKeys: [], before,
       truncated: { url: false, command: false, args: [] },
       fullLength: { url: 0, command: 0, args: [] },
     };
@@ -97,6 +111,9 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
   // 同一份（normalizeMcpHttpUrl 在 mcpConfigure.ts 里存的也是 href）
   const urlClip =
     kind === "http" && typeof a?.["url"] === "string" ? clipValue(previewUrl(a["url"] as string)) : null;
+  // host 独立算、永不截断（Critical A 修法②）：不从 urlClip.value 里切，
+  // 直接从原始输入解析——url 那一行截不截断、变不变形，都不影响这一行
+  const host = kind === "http" && typeof a?.["url"] === "string" ? previewHost(a["url"] as string) : null;
   const commandClip =
     kind === "stdio" && typeof a?.["command"] === "string" ? clipValue(a["command"] as string) : null;
   const argsClip = Array.isArray(a?.["args"]) ? (a["args"] as unknown[]).map((x) => clipValue(String(x))) : [];
@@ -106,6 +123,7 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
     server: id,
     action: before ? "update" : "add",
     transport: kind,
+    host,
     url: urlClip?.value ?? null,
     command: commandClip?.value ?? null,
     // 一格一项，不 join——每一条 arg 是它自己的一行（Task 9 审查 Important 1）
