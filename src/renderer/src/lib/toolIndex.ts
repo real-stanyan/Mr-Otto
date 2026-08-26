@@ -57,7 +57,7 @@ export function effectiveArgs(call: ToolCallRequest, index: ToolIndex): unknown 
     不是各调用耗时之和——并发时那个数会大于实际经过的时间。
     取 min/max 而不是"日志里第一条/最后一条":组内调用只有几个,按 ts 取极值
     比依赖落盘顺序更直白,时钟真出问题时下面那道 last < first 也兜得住 */
-export function groupElapsed(calls: ToolCallRequest[], index: ToolIndex): number | null {
+export function groupElapsed(calls: readonly { id: string }[], index: ToolIndex): number | null {
   let first: number | null = null;
   let last: number | null = null;
   for (const c of calls) {
@@ -68,4 +68,17 @@ export function groupElapsed(calls: ToolCallRequest[], index: ToolIndex): number
   }
   if (first === null || last === null || last < first) return null;
   return last - first;
+}
+
+/** 这一组**第一次开跑**的时刻(还没有结果时也有值)。
+    groupElapsed 要等最后一个结果落盘才给得出数,而跑着的时间线折叠头要报
+    「工作中 12.4s」—— 那个数是 now - 这里的返回值,由调用方拿一颗会走的表去减。
+    一个都没开跑(全被拒 / 还在审批门前)返回 null:那时"跑了多久"根本不成立 */
+export function groupStartedAt(calls: readonly { id: string }[], index: ToolIndex): number | null {
+  let first: number | null = null;
+  for (const c of calls) {
+    const s = index.starts.get(c.id);
+    if (s !== undefined && (first === null || s.ts < first)) first = s.ts;
+  }
+  return first;
 }

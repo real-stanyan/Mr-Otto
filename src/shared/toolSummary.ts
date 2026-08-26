@@ -81,16 +81,37 @@ export function toolFilePath(call: ToolCallRequest): string | null {
   return typeof path === "string" && path !== "" ? path : null;
 }
 
-/** 折叠头的摘要:按动作归并计数。
-    "读取 ×5 · 写入 ×2" 比 "7 个工具调用" 有信息量——折着也知道这一段干了什么。
-    顺序按首次出现,不按字母/数量重排:那是动作发生的顺序,读者按这个顺序理解 */
-export function summarizeGroup(calls: ToolCallRequest[]): string {
-  const byVerb = new Map<string, number>();
-  for (const c of calls) {
-    const { verb } = toolSummary(c);
-    byVerb.set(verb, (byVerb.get(verb) ?? 0) + 1);
-  }
-  return [...byVerb].map(([verb, n]) => `${verb} ×${n}`).join(" · ");
+/** 折叠头那一行:这一段干了多久、几步。
+    以前这里按动作归并计数(「终端 ×26 · 读取 ×2」)—— 那是一张工具清单,
+    折着看等于把展开后的内容抄一遍到头上,步数一多还会撑满一行。折叠头该回答的是
+    「这一段花了多久」,清单展开自己看(对齐 assistant-ui tool-timeline 的
+    "Worked for 12s"/"Working for 0s · 4 steps")。
+
+    elapsedMs 为 null = 日志里推不出起止(还没开跑 / 调用被拒,执行器未达),
+    那就只报步数 —— UI 不许拿别的 ts 硬凑一个耗时出来。
+    steps 数的是时间线上的步(工具行 + 旁白行),不是"用了几个工具" */
+export function timelineLabel(
+  steps: number,
+  elapsedMs: number | null,
+  running: boolean,
+): string {
+  const t = formatSpan(elapsedMs);
+  const stepText = `${steps} 步`;
+  if (running) return t === null ? `工作中 · ${stepText}` : `工作中 ${t} · ${stepText}`;
+  return t === null ? stepText : `工作了 ${t} · ${stepText}`;
+}
+
+/** 明显不可能的耗时(时钟跳变、系统挂起)当坏数据丢掉 —— 同 thinkingLabel 的立场 */
+const MAX_SANE_MS = 3_600_000;
+
+/** 一段时长的人话。不到一秒走毫秒(「0.4s」不如「420ms」精确,「0.0s」等于没说),
+    到分钟就别再报小数 —— 跑了三分钟的那一段,零点几秒的精度没有意义 */
+function formatSpan(ms: number | null): string | null {
+  if (ms === null || ms < 0 || ms > MAX_SANE_MS) return null;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}分${total % 60}秒`;
 }
 
 // ─── 工具行的小图标 ───

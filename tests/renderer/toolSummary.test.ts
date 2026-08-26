@@ -1,34 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { summarizeGroup, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
-import type { ToolCallRequest } from "../../src/session/events.js";
+import { timelineLabel, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
 
-const read = (path: string): ToolCallRequest => ({ id: path, name: "read_file", args: { path } });
-const write = (path: string): ToolCallRequest => ({
-  id: "w" + path,
-  name: "write_file",
-  args: { path, content: "x" },
-});
-const bash = (cmd: string): ToolCallRequest => ({ id: "b" + cmd, name: "bash", args: { cmd } });
-
-describe("summarizeGroup", () => {
-  it("空组给空串", () => {
-    expect(summarizeGroup([])).toBe("");
+describe("timelineLabel —— 折叠头那一行", () => {
+  // 换掉的是「终端 ×26 · 读取 ×2」那份按动作归并的清单:折叠头不该抄一遍
+  // 展开后的内容(产品决定见 OttoToolGroup 的注释),这里钉住新口径
+  it("收工后报耗时和步数", () => {
+    expect(timelineLabel(5, 12_400, false)).toBe("工作了 12.4s · 5 步");
   });
 
-  it("同一种动作归并计数", () => {
-    expect(summarizeGroup([read("a"), read("b"), read("c")])).toBe("读取 ×3");
+  it("跑着的时候换成「工作中」", () => {
+    expect(timelineLabel(3, 8_000, true)).toBe("工作中 8.0s · 3 步");
   });
 
-  it("多种动作按首次出现的顺序排,不重排", () => {
-    expect(summarizeGroup([write("a"), read("b"), read("c")])).toBe("写入 ×1 · 读取 ×2");
+  it("推不出耗时就只报步数,不硬凑一个数", () => {
+    expect(timelineLabel(2, null, false)).toBe("2 步");
+    expect(timelineLabel(2, null, true)).toBe("工作中 · 2 步");
   });
 
-  it("认不出的工具用工具名当动作", () => {
-    expect(summarizeGroup([{ id: "x", name: "web_search", args: {} }])).toBe("web_search ×1");
+  it("不到一秒走毫秒——「0.4s」不如「420ms」精确", () => {
+    expect(timelineLabel(1, 420, false)).toBe("工作了 420ms · 1 步");
   });
 
-  it("终端调用归在一起", () => {
-    expect(summarizeGroup([bash("ls"), bash("pwd")])).toBe("终端 ×2");
+  it("过一分钟不再报小数", () => {
+    expect(timelineLabel(9, 185_000, false)).toBe("工作了 3分5秒 · 9 步");
+  });
+
+  it("时钟跳变那种离谱耗时当坏数据丢掉", () => {
+    expect(timelineLabel(4, -1, false)).toBe("4 步");
+    expect(timelineLabel(4, 7_200_000, false)).toBe("4 步");
   });
 });
 
