@@ -112,3 +112,46 @@ describe("decodeDownFrame", () => {
     expect(decodeDownFrame('{"type":"approve","sessionId":"s","callId":"c"}')).toBeNull();
   });
 });
+
+describe("stats 帧", () => {
+  const stats = {
+    now: 1_700_000_000_000,
+    activityDays: 181,
+    usageDays: 14,
+    activity: [{ date: "2026-08-25", count: 3 }],
+    sessions: 3,
+    models: [
+      { label: "DeepSeek V4 Flash", provider: "deepseek", inTokens: 10, outTokens: 2, costUsd: 0.001 },
+      { label: "Grok 4", provider: "xai", inTokens: 5, outTokens: 1, costUsd: null },
+    ],
+    totalCostUsd: null,
+  };
+
+  it("上行的 stats 不带任何字段;多一个键就整条丢弃", () => {
+    expect(decodeUpFrame(JSON.stringify({ type: "stats" }))).toEqual({ type: "stats" });
+    expect(decodeUpFrame(JSON.stringify({ type: "stats", days: 30 }))).toBeNull();
+  });
+
+  it("下行的 stats 原样回来", () => {
+    expect(decodeDownFrame(JSON.stringify({ type: "stats", stats }))).toEqual({
+      type: "stats", stats,
+    });
+  });
+
+  it("costUsd 的 null 认得住 —— 它和 0 是两件事", () => {
+    const one = decodeDownFrame(JSON.stringify({ type: "stats", stats }));
+    expect(one?.type === "stats" && one.stats.models[1]!.costUsd).toBeNull();
+  });
+
+  it("模型行少一个字段 / 类型不对 → 整条丢弃,不是剥掉那一行", () => {
+    const bad = { ...stats, models: [{ label: "x", provider: "y", inTokens: 1, outTokens: 2 }] };
+    expect(decodeDownFrame(JSON.stringify({ type: "stats", stats: bad }))).toBeNull();
+    const wrong = { ...stats, sessions: "3" };
+    expect(decodeDownFrame(JSON.stringify({ type: "stats", stats: wrong }))).toBeNull();
+  });
+
+  it("热力图里一条形状不对的天 → 整条丢弃", () => {
+    const bad = { ...stats, activity: [{ date: "2026-08-25" }] };
+    expect(decodeDownFrame(JSON.stringify({ type: "stats", stats: bad }))).toBeNull();
+  });
+});

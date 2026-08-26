@@ -25,6 +25,7 @@ import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import type { RemoteTransport } from "../shared/remote/transport.js";
 import type { IslandFleet } from "../shared/shellBridge.js";
+import type { RemoteStats } from "../shared/remote/stats.js";
 
 export type { RemoteTransport };
 
@@ -52,6 +53,7 @@ export function createRemoteBridge(opts: {
   pushFleet(f: IslandFleet): void;
   pushTimeline(sessionId: string, messages: MobileMessage[]): void;
   pushNotice(text: string): void;
+  pushStats(stats: RemoteStats): void;
   dispose(): void;
 } {
   const p = opts.crypto;
@@ -256,6 +258,14 @@ export function createRemoteBridge(opts: {
     opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
   }
 
+  /** 设置页那份统计。**刻意不去重**:手机是主动问的,问一次就该答一次 ——
+      "和上次一样"在这里不是可以省掉的理由,那一屏正等着这个回答 */
+  function pushStats(stats: RemoteStats): void {
+    if (phase !== "ready" || !sealer) return log(`远程桥:会话没建立(${phase}),统计没发出去`);
+    const wire = encodeFrame({ type: "stats", stats });
+    opts.transport.send(b64encode(sealer.seal(new TextEncoder().encode(wire))));
+  }
+
   /** 一句给人看的话。**刻意不去重**:两次同样的拒收是两件事,
       第二次被吞掉的话用户会以为第二个文件传上去了 */
   function pushNotice(text: string): void {
@@ -287,6 +297,7 @@ export function createRemoteBridge(opts: {
     pushFleet,
     pushTimeline,
     pushNotice,
+    pushStats,
     dispose() {
       phase = "closed";
       sealer = null;

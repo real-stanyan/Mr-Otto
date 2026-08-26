@@ -122,6 +122,7 @@ import { createSseTransport } from "./remoteTransport.js";
 import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
+import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { relayBaseUrl } from "../shared/gatewayConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
@@ -2463,6 +2464,17 @@ void app.whenReady().then(() => {
         // 只有当前订的那个能取消:退出旧屏的迟到 unwatch 不该把新订的掐掉
         if (watchedSession === c.sessionId) watchedSession = null;
         return;
+      case "stats": {
+        // 两条查询都是全表扫描级的,所以**只在手机开口问的时候跑** ——
+        // 挂在 pushFleet 上会让每条工具事件都拖一次全表扫描(见上面 sessions() 的备注)
+        const now = Date.now();
+        // 子会话不算:派一次活热力图就多一格的话,它说的不再是"你开过多少会话"
+        // (同 renderer 的 SessionActivity,issue #141)
+        const roots = store.sessions().filter((x) => x.spawnedFrom === null);
+        const billed = store.billedUsage(now - USAGE_DAYS * 86_400_000);
+        remoteBridge?.pushStats(projectStats(roots, billed, now));
+        return;
+      }
     }
   }
 

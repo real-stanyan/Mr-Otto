@@ -5,6 +5,7 @@
 // 纯文件：不许 import node builtin / electron（手机端也要跑这一份）。
 
 import type { IslandFleet } from "../shellBridge.js";
+import type { ModelUsageRow, RemoteStats } from "./stats.js";
 
 /** 移动端时间线的一条消息（timeline 帧的元素，Task 之外由 trimForMobile 产出） */
 export interface MobileMessage {
@@ -26,6 +27,9 @@ export type DownFrame =
       **生产者在 plan B**：真实现 SSE 传输那一层才会挂定时器发它。
       现在只有解码这一半，因为手机端从第一天起就要认得它。 */
   | { type: "ping"; ts: number }
+  /** 设置页那两块:会话热力图 + 各模型用量。**只在手机开口问的时候发一次**,
+      不跟着 fleet 走 —— 理由见 stats.ts 开头 */
+  | { type: "stats"; stats: RemoteStats }
   /** 一句给人看的话,不进日志、不影响状态。**存在的理由是"静默丢弃"**:
       手机传上来的附件由桌面那道闸门(attachmentIntake)分类,认不出的会被拒收,
       而拒收如果不回话,在手机上和"传成功了"长得一模一样 */
@@ -44,7 +48,9 @@ export type UpFrame =
       只带 seq 让接收侧断言"正好是下一片",不需要自己做窗口 */
   | { type: "upload"; uploadId: string; seq: number; total: number; name: string; data: string }
   | { type: "watch"; sessionId: string }
-  | { type: "unwatch"; sessionId: string };
+  | { type: "unwatch"; sessionId: string }
+  /** 要一份设置页的统计。**拉取,不订阅**:人翻到那一屏才问一次 */
+  | { type: "stats" };
 
 export function encodeFrame(f: DownFrame | UpFrame): string {
   return JSON.stringify(f);
@@ -123,6 +129,8 @@ export function decodeUpFrame(line: string): UpFrame | null {
       return exactKeys(o, ["type", "sessionId"]) && str(o.sessionId)
         ? { type: o.type, sessionId: o.sessionId }
         : null;
+    case "stats":
+      return exactKeys(o, ["type"]) ? { type: "stats" } : null;
     default:
       return null;
   }
@@ -135,6 +143,41 @@ function isMobileMessage(v: unknown): v is MobileMessage {
   if (!str(m.text)) return false;
   if (m.truncated !== undefined && typeof m.truncated !== "boolean") return false;
   return keysWithin(m, ["role", "text"], ["truncated"]);
+}
+
+function num(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function isDayCount(v: unknown): v is { date: string; count: number } {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const d = v as Record<string, unknown>;
+  return exactKeys(d, ["date", "count"]) && str(d.date) && num(d.count);
+}
+
+function isModelUsageRow(v: unknown): v is ModelUsageRow {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const m = v as Record<string, unknown>;
+  if (!exactKeys(m, ["label", "provider", "inTokens", "outTokens", "costUsd"])) return false;
+  if (!str(m.label) || !str(m.provider)) return false;
+  if (!num(m.inTokens) || !num(m.outTokens)) return false;
+  // null 是"查不到价",和 0 是两件事 —— 这里要认得住这个区别
+  return m.costUsd === null || num(m.costUsd);
+}
+
+/** 逐字段查。这一条来自已认证的桌面,不是公网上的任意人,但"整条丢弃"是这个
+    文件的规矩,而 UI 会直接拿它去 map 和做除法 —— 少查一层,一条畸形统计
+    就是一次白屏 */
+function isRemoteStats(v: unknown): v is RemoteStats {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const t = v as Record<string, unknown>;
+  if (!exactKeys(t, [
+    "now", "activityDays", "usageDays", "activity", "sessions", "models", "totalCostUsd",
+  ])) return false;
+  if (!num(t.now) || !nat(t.activityDays) || !nat(t.usageDays) || !nat(t.sessions)) return false;
+  if (!Array.isArray(t.activity) || !t.activity.every(isDayCount)) return false;
+  if (!Array.isArray(t.models) || !t.models.every(isModelUsageRow)) return false;
+  return t.totalCostUsd === null || num(t.totalCostUsd);
 }
 
 export function decodeDownFrame(line: string): DownFrame | null {
@@ -155,6 +198,10 @@ export function decodeDownFrame(line: string): DownFrame | null {
     }
     case "ping":
       return typeof o.ts === "number" ? { type: "ping", ts: o.ts } : null;
+    case "stats":
+      return exactKeys(o, ["type", "stats"]) && isRemoteStats(o.stats)
+        ? { type: "stats", stats: o.stats }
+        : null;
     case "notice":
       return exactKeys(o, ["type", "text"]) && str(o.text) ? { type: "notice", text: o.text } : null;
     default:
