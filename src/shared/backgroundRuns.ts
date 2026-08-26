@@ -36,6 +36,22 @@ export function projectBackgroundRuns(
   events: readonly SessionEvent[],
   liveIds: ReadonlySet<string>
 ): BackgroundRun[] {
+  return [...fold(events).values()]
+    // 还挂着 running 但不在 live 里 = 进程随上一次 app 退出一起没了。
+    // 画成「还在跑」是撒谎，不如不画
+    .filter((r) => r.state !== "running" || liveIds.has(r.id))
+    .sort((a, b) => a.startedAt - b.startedAt);
+}
+
+/** 值不值得去问主进程「谁还活着」：日志里还有没有没被注回的后台任务。
+    面板绝大多数时间是空的，不该为了空面板常驻一趟轮询。
+    刻意不看 live 集合——这个判断正是用来决定「要不要去取 live 集合」的。 */
+export function hasUndeliveredBackgroundTasks(events: readonly SessionEvent[]): boolean {
+  return fold(events).size > 0;
+}
+
+/** 事件流 → taskId ⇒ 行。live 集合的过滤不在这里做（见两个调用方的分工）。 */
+function fold(events: readonly SessionEvent[]): Map<string, BackgroundRun> {
   const runs = new Map<string, BackgroundRun>();
   for (const e of events) {
     switch (e.type) {
@@ -63,11 +79,7 @@ export function projectBackgroundRuns(
         break;
     }
   }
-  return [...runs.values()]
-    // 还挂着 running 但不在 live 里 = 进程随上一次 app 退出一起没了。
-    // 画成「还在跑」是撒谎，不如不画
-    .filter((r) => r.state !== "running" || liveIds.has(r.id))
-    .sort((a, b) => a.startedAt - b.startedAt);
+  return runs;
 }
 
 /** 已跑多久。不满一分钟按秒（「4 秒」），之后按 分:秒，过一小时带上小时。
