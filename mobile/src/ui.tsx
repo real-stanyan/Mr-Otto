@@ -242,6 +242,9 @@ export function Button(props: {
   onPress: () => void;
   disabled?: boolean;
   variant?: ButtonVariant;
+  /** 左边那个标记(第三方登录的 logo)。**绝对定位在左边,文字仍然居中** ——
+      跟着文字排的话,两个按钮的文字会因为 logo 宽度不同而错开一两个点 */
+  icon?: React.ReactNode;
   /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
   grow?: boolean;
   /** auto = 自己多宽算多宽的小胶囊,右对齐成一行。桌面 permission-grant 的动作行
@@ -298,6 +301,9 @@ export function Button(props: {
           props.disabled && { opacity: 0.4 },
         ]}
       >
+        {props.icon ? (
+          <View style={{ position: "absolute", left: space.md }}>{props.icon}</View>
+        ) : null}
         <Text style={{ ...type.headline, color: fg }}>{props.label}</Text>
       </Pressable>
     </Animated.View>
@@ -587,6 +593,20 @@ export function DetailBar({ back, title, onBack, right }: {
         <Text style={{ ...type.headline, color: c.foreground }} numberOfLines={1}>{title}</Text>
       </View>
       {right ?? <View style={{ width: lead }} />}
+    </View>
+  );
+}
+
+/** 一条带字的分隔线。两边各一条细线,字压在中间 —— 它说的是"下面是另一条路",
+    不是"下面是下一段内容",所以不能只放一条光秃秃的线 */
+export function Divider({ label }: { label: string }) {
+  const { c } = usePalette();
+  const line = { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: c.border };
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+      <View style={line} />
+      <Text style={{ ...type.footnote, color: c.mutedForeground }}>{label}</Text>
+      <View style={line} />
     </View>
   );
 }

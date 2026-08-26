@@ -31,8 +31,8 @@ import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, DetailBar, Dot, Group, Headline, Hint, Meta, Note, Page, Row, Spinner,
-  StatusLine, Strong, TabIcon, Tile, Title, useKeyboardInset, Warn,
+  Button, Card, CodeTiles, DetailBar, Divider, Dot, Group, Headline, Hint, Meta, Note, Page, Row,
+  Spinner, StatusLine, TabIcon, Tile, Title, useKeyboardInset, Warn,
 } from "./src/ui.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "./app.json";
@@ -89,17 +89,21 @@ function Screen({ children, center }: { children: React.ReactNode; center?: bool
 }
 
 /* ── 登录 ───────────────────────────────────────────────
-   OAuth 在上、邮箱密码在下,是因为**这个账号体系里注册走的是 OAuth**:
-   用 Google 注册的账号根本没有密码,只留密码那条路的话它永远登不进来
-   (虚拟机上实测就是这条:一个 Google 账号在这屏反复报 Invalid login credentials)。
-   密码那半留着但收进折叠里 —— 桌面支持 signUpWithPassword,确实存在有密码的账号。
+   邮箱密码在上、第三方在下。**上面那块是默认展开的** —— 一个折叠起来的
+   表单在登录屏上等于让人先猜一次"我该点哪儿"。
 
-   两个 provider 按钮都是 secondary,不是两个蓝按钮:用户有哪个账号就点哪个,
-   两者平权。蓝色(primary)一屏只留给一个真正的主动作。 */
+   两个 provider 按钮都是 outline,不是两个蓝按钮:用户有哪个账号就点哪个,
+   两者平权。蓝色(primary)一屏只留给一个真正的主动作(登录)。
+
+   **这个账号体系里注册主要走 OAuth**:用 Google 注册的账号根本没有密码,
+   拿它去填上面的表单只会反复报 Invalid login credentials(虚拟机上实测过)。
+   这条不再靠"把 OAuth 摆前面"来暗示,改成在密码真的被拒时当场说破 ——
+   提示出现在人已经撞上问题的那一刻,比事前的一句话有用得多。 */
 function SignIn({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
+  // 键盘要让位:输入框在上半屏,但「登录」就贴在密码框下面
+  const { root, keyboard } = useKeyboardInset(() => {});
 
   const oauth = (provider: OAuthProvider): void => {
     void (async () => {
@@ -117,44 +121,63 @@ function SignIn({ onDone }: { onDone: () => void }) {
     })();
   };
 
+  /** logo 一律 20pt:两个标记的视觉重量差不多,给同一个尺寸就够齐 */
+  const mark = { width: 20, height: 20 };
+
   return (
-    // 这一屏只有三个按钮,顶到天花板会在下面留一大片空。撑满高度、内容居中,
-    // 按钮正好落在拇指够得着的地方
-    <Page grow>
-      <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
-        <View style={{ gap: space.sm, alignItems: "flex-start" }}>
-          {/* 和桌面同一张脸(resources/icon.png 的副本):这是两端唯一的共同标记。
-              不再叠 borderRadius —— 图本身已经是圆角的,再圆一次会切掉边 */}
-          <Image source={require("./assets/otto-mark.png")} style={{ width: 68, height: 68 }} />
-          <Title>Mr Otto</Title>
-          <Hint>用<Strong>和电脑上同一个</Strong>账号登录。</Hint>
-        </View>
-        {err ? <Note tone="error">{err}</Note> : null}
-      <View style={{ gap: space.sm }}>
-        <Button
-          variant="outline"
-          label={busy === "google" ? "登录中…" : "用 Google 登录"}
-          disabled={busy !== null}
-          onPress={() => oauth("google")}
-        />
-        <Button
-          variant="outline"
-          label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
-          disabled={busy !== null}
-          onPress={() => oauth("github")}
-        />
-      </View>
-        {showPassword ? (
+    <View ref={root.ref} onLayout={root.onLayout} style={{ flex: 1, paddingBottom: keyboard }}>
+      {/* 撑满高度、内容居中:这一屏东西不多,顶到天花板会在下面留一大片空 */}
+      <Page grow>
+        <View style={{ flex: 1, justifyContent: "center", gap: space.lg }}>
+          <View style={{ gap: space.sm, alignItems: "flex-start" }}>
+            {/* 和桌面同一张脸(resources/icon.png 的副本):这是两端唯一的共同标记。
+                不再叠 borderRadius —— 图本身已经是圆角的,再圆一次会切掉边 */}
+            <Image source={require("./assets/otto-mark.png")} style={{ width: 68, height: 68 }} />
+            <Title>Mr Otto</Title>
+          </View>
+          {err ? <Note tone="error">{err}</Note> : null}
+
           <PasswordForm disabled={busy !== null} onError={setErr} onDone={onDone} />
-        ) : (
-          <Button label="用邮箱密码登录" variant="plain" onPress={() => setShowPassword(true)} />
-        )}
-      </View>
-    </Page>
+
+          <Divider label="或" />
+
+          <View style={{ gap: space.sm }}>
+            <Button
+              variant="outline"
+              icon={<Image source={require("./assets/google-mark.png")} style={mark} />}
+              label={busy === "google" ? "登录中…" : "用 Google 登录"}
+              disabled={busy !== null}
+              onPress={() => oauth("google")}
+            />
+            <Button
+              variant="outline"
+              icon={<GitHubMark size={mark.width} />}
+              label={busy === "github" ? "登录中…" : "用 GitHub 登录"}
+              disabled={busy !== null}
+              onPress={() => oauth("github")}
+            />
+          </View>
+        </View>
+      </Page>
+    </View>
   );
 }
 
-/** 邮箱密码那一半。只有桌面上用 signUpWithPassword 注册过的账号能走这条 */
+/** GitHub 那个标记是**反白猫**:黑底挖出猫。深色下黑底就看不见了,
+    换成白底那版 —— 挖出来的猫这时露的是页面底色,和浅色下同一个读法 */
+function GitHubMark({ size }: { size: number }) {
+  const { isDark } = usePalette();
+  return (
+    <Image
+      source={isDark
+        ? require("./assets/github-mark-light.png")
+        : require("./assets/github-mark.png")}
+      style={{ width: size, height: size }}
+    />
+  );
+}
+
+/** 邮箱密码那一半 */
 function PasswordForm(props: {
   disabled: boolean;
   onError: (m: string | null) => void;
@@ -166,11 +189,20 @@ function PasswordForm(props: {
   const [busy, setBusy] = useState(false);
 
   const submit = async (): Promise<void> => {
+    if (!email.trim() || !password) return;
     setBusy(true);
     props.onError(null);
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
-    if (error) return props.onError(error.message);
+    if (error) {
+      // 「密码不对」和「这个账号压根没有密码」在 Supabase 这里回的是同一句话,
+      // 而后者才是这个产品里更常见的那种。把两种可能都说出来,别让人在
+      // 一个不存在的密码上试三遍
+      const invalid = /invalid login credentials/i.test(error.message);
+      return props.onError(invalid
+        ? "邮箱或密码不对。如果这个账号是用 Google / GitHub 注册的，它没有密码——走下面那两个按钮。"
+        : error.message);
+    }
     props.onDone();
   };
 
@@ -181,19 +213,18 @@ function PasswordForm(props: {
   };
 
   return (
-    // 上边一条线,把它和上面那两个 OAuth 按钮分开
-    <View style={{
-      gap: space.sm, borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: c.border, paddingTop: space.md,
-    }}>
+    <View style={{ gap: space.sm }}>
       <TextInput
         style={input} placeholder="邮箱" placeholderTextColor={c.mutedForeground}
-        autoCapitalize="none" autoComplete="email" keyboardType="email-address"
+        autoCapitalize="none" autoCorrect={false} autoComplete="email"
+        keyboardType="email-address" returnKeyType="next"
         value={email} onChangeText={setEmail}
       />
       <TextInput
         style={input} placeholder="密码" placeholderTextColor={c.mutedForeground}
-        autoComplete="current-password" secureTextEntry value={password} onChangeText={setPassword}
+        autoComplete="current-password" secureTextEntry
+        returnKeyType="go" onSubmitEditing={() => void submit()}
+        value={password} onChangeText={setPassword}
       />
       <Button
         label={busy ? "登录中…" : "登录"}
