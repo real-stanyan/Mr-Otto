@@ -4,6 +4,7 @@ import { boundedContextEvents } from "../../src/session/modelContextScan.js";
 import { deriveMessages, DEFAULT_COMPRESSION } from "../../src/session/deriveMessages.js";
 import { barrenEventIndexes } from "../../src/session/barrenTurns.js";
 import { contextUsed } from "../../src/shared/contextEstimate.js";
+import { activeSkills } from "../../src/session/activeSkills.js";
 import type { NewSessionEvent } from "../../src/session/store.js";
 
 // 模型上下文有界重建（issue #351）：反向扫描 + 有界 cutoff。
@@ -95,6 +96,36 @@ describe("boundedContextEvents（issue #351）", () => {
     // checkpoint 之后的微压缩：吸收第 3 轮的 assistant/tool
     const cover = store.load(S).filter((e) => e.type === "turn_ended").at(-3)!.seq;
     put(store, { type: "micro_compacted", summary: "第 3 轮的经过", coversUpTo: cover, model: "m" });
+    assertEquivalent(store);
+    store.close();
+  });
+
+  it("checkpoint 之前启用又停用的 skill 不能诈尸：停用记录必须跟启用一起被捞进扫描窗口", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w" });
+    put(store, { type: "skill_invoked", name: "review", content: "审查指令全文" });
+    turn(store, 1);
+    put(store, { type: "skill_invoked", name: "deploy", content: "部署指令全文", args: "prod" });
+    turn(store, 2);
+    // review 在 checkpoint 之前就已停用——它和上面两条 skill_invoked 一样落在
+    // 「被压缩清场」的历史区间里，只是 turn(3) 把它推得比 head 的判定窗口更远。
+    // 只捞 skill_invoked 不捞 skill_released 的话，这条停用连同它所在的那段
+    // 历史一起被有界重建丢弃，台账就看不到「review 已经停了」
+    put(store, { type: "skill_released", name: "review" });
+    turn(store, 3);
+    put(store, { type: "context_compacted", summary: "摘要", model: "m" });
+    turn(store, 4);
+
+    // 扫描结果里两种事件都要在——只有启用没有停用，台账就配不出正确答案
+    const bounded = boundedContextEvents(store, S)!;
+    expect(bounded.some((e) => e.type === "skill_invoked")).toBe(true);
+    expect(bounded.some((e) => e.type === "skill_released")).toBe(true);
+    // 喂给台账之后：review 已停用，只剩 deploy 仍然生效
+    const barren = barrenEventIndexes(bounded);
+    expect([...activeSkills(bounded, barren).keys()]).toEqual(["deploy"]);
+
+    // 等价性契约同样会炸：有界重建如果漏了这条停用，压缩摘要之后会多出一条
+    // 「review 仍然生效」的重注入消息，而全量重建不会——两边逐字节不再相等
     assertEquivalent(store);
     store.close();
   });
