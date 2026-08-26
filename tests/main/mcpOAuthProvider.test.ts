@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createOAuthProvider } from "../../src/main/mcpClient.js";
 import type { McpAuthRecord } from "../../src/main/mcpAuthStore.js";
 
-function harness(initial: McpAuthRecord = {}) {
+function harness(initial: McpAuthRecord = {}, over: { persistFlowState?: boolean } = {}) {
   let rec: McpAuthRecord = initial;
   const openBrowser = vi.fn();
   const provider = createOAuthProvider({
@@ -11,6 +11,7 @@ function harness(initial: McpAuthRecord = {}) {
     read: () => rec,
     write: (patch) => { rec = { ...rec, ...patch }; },
     openBrowser,
+    ...over,
   });
   return { provider, openBrowser, current: () => rec };
 }
@@ -70,5 +71,36 @@ describe("createOAuthProvider", () => {
     const { provider, openBrowser } = harness();
     void provider.redirectToAuthorization(new URL("https://auth.example.com/authorize?x=1"));
     expect(openBrowser).toHaveBeenCalledWith("https://auth.example.com/authorize?x=1");
+  });
+});
+
+// #471（相关问题那半）：`authed = tokens !== undefined` 时连接路径也带
+// provider。token 过期且 refresh 失败时 SDK 会在连接路径上跑完整 auth()，
+// 把盘上进行中授权的 codeVerifier 覆盖掉——用户点完同意，finishAuth 拿
+// 新 verifier 去换旧 verifier 的 code，invalid_grant。连接路径的 provider
+// 因此只许写 tokens（refresh 续期），flow-state 一律不落盘。
+describe("createOAuthProvider：persistFlowState: false（连接路径，#471）", () => {
+  it("saveCodeVerifier 是 no-op——不覆盖进行中授权的 verifier", async () => {
+    const { provider, current } = harness({ codeVerifier: "授权中的-A" }, { persistFlowState: false });
+    await provider.saveCodeVerifier("连接路径想写的-B");
+    expect(current().codeVerifier).toBe("授权中的-A");
+  });
+
+  it("saveClientInformation 是 no-op——占位 redirect_uri 的注册不落盘", async () => {
+    const { provider, current } = harness({ clientInformation: { client_id: "真的" } }, { persistFlowState: false });
+    await provider.saveClientInformation?.({ client_id: "连接路径注册的" });
+    expect(current().clientInformation).toEqual({ client_id: "真的" });
+  });
+
+  it("saveTokens 照常落盘——refresh 续上的 token 不能丢", async () => {
+    const { provider, current } = harness({}, { persistFlowState: false });
+    await provider.saveTokens({ access_token: "续上的", token_type: "Bearer" });
+    expect(current().tokens).toEqual({ access_token: "续上的", token_type: "Bearer" });
+  });
+
+  it("缺省（不传）时 flow-state 照旧落盘——授权路径行为不变", async () => {
+    const { provider, current } = harness();
+    await provider.saveCodeVerifier("v1");
+    expect(current().codeVerifier).toBe("v1");
   });
 });

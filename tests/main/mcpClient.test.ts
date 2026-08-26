@@ -9,7 +9,7 @@
 // 是两回事：那边测的是不依赖 SDK 就能测干净的状态机，这里测的正是
 // mcpClient.ts 自己那一小块可以脱离进程单测的纯逻辑。
 import { describe, it, expect } from "vitest";
-import { isAuthError, describeAuthError, authRequiredError, scrubOAuthError } from "../../src/main/mcpClient.js";
+import { isAuthError, describeAuthError, authRequiredError, scrubOAuthError, needsFreshRegistration } from "../../src/main/mcpClient.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InvalidGrantError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -93,5 +93,34 @@ describe("scrubOAuthError —— 只重写带服务端文本的 OAuthError，其
 
   it("非 Error 原样放行", () => {
     expect(scrubOAuthError("boom")).toBe("boom");
+  });
+});
+
+// #471：动态客户端注册只跑一次，注册进去的 redirect_uris 绑着第一次授权的
+// 随机端口。二次授权换了端口，复用盘上那份注册会被精确匹配的授权服务器以
+// invalid_redirect_uri 拒掉。这里判定"盘上的注册还能不能用这次的 redirect_uri"。
+describe("needsFreshRegistration（#471：二次授权的 redirect_uri 不匹配）", () => {
+  const uri = "http://127.0.0.1:2222/callback";
+
+  it("盘上有注册且绑的是另一个端口 → 要丢掉重注册", () => {
+    expect(
+      needsFreshRegistration(
+        { clientInformation: { client_id: "c" }, redirectUri: "http://127.0.0.1:1111/callback" },
+        uri
+      )
+    ).toBe(true);
+  });
+
+  it("老记录没存过 redirectUri（#471 之前落的盘）→ 视为过期注册", () => {
+    expect(needsFreshRegistration({ clientInformation: { client_id: "c" } }, uri)).toBe(true);
+  });
+
+  it("redirect_uri 一致 → 注册还能用", () => {
+    expect(needsFreshRegistration({ clientInformation: { client_id: "c" }, redirectUri: uri }, uri)).toBe(false);
+  });
+
+  it("压根没注册过 → 没东西可重置", () => {
+    expect(needsFreshRegistration({}, uri)).toBe(false);
+    expect(needsFreshRegistration({ redirectUri: "http://127.0.0.1:1111/callback" }, uri)).toBe(false);
   });
 });

@@ -20,6 +20,11 @@ export interface McpAuthRecord {
   clientInformation?: Record<string, unknown>;
   tokens?: Record<string, unknown>;
   codeVerifier?: string;
+  /** 上一次授权用的 redirect_uri（#471）。动态客户端注册把它写死进服务端的
+      注册记录，而 loopback 端口每次都随机——二次授权前拿它对一下，就知道
+      盘上的注册还能不能用（不能就丢掉重注册）。这是本仓自己的字段，
+      不对应 SDK 的哪个 save* 回调 */
+  redirectUri?: string;
 }
 
 export type McpAuthFile = Record<string, McpAuthRecord>;
@@ -49,6 +54,21 @@ export function writeMcpAuth(path: string, id: string, patch: Partial<McpAuthRec
   const all = loadMcpAuth(path);
   all[id] = { ...all[id], ...patch };
   persist(path, all);
+  return all;
+}
+
+/** 丢掉一台 server 的动态客户端注册（#471）：二次授权的 loopback 端口和
+    注册时不一样，精确匹配 redirect_uri 的授权服务器会拒——丢掉
+    clientInformation 让 SDK 重跑一次注册。codeVerifier 是那次注册配套的
+    流程残留，一起丢；tokens 保留（可能还能 refresh，丢了就得整个重来）。 */
+export function dropMcpAuthClientRegistration(path: string, id: string): McpAuthFile {
+  const all = loadMcpAuth(path);
+  const rec = all[id];
+  if (rec !== undefined) {
+    delete rec.clientInformation;
+    delete rec.codeVerifier;
+    persist(path, all);
+  }
   return all;
 }
 
