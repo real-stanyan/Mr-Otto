@@ -1066,6 +1066,12 @@ void app.whenReady().then(() => {
     },
   };
 
+  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
+  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装。
+  // 声明位置提到探针之前：探针也要给 skills（见下），而它跑在 whenReady 早期，
+  // 留在下面会撞 TDZ
+  const skillRoots = [join(configDir(homedir()), "skills")];
+
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
   // makeBrowser 给个桩：不给的话 world.browser 是 undefined，browser_read 不会
@@ -1104,6 +1110,16 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      // 同理给 skills（ADR-0110）：不给的话 skill 这把刀根本不挂，于是
+      // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
+      // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
+      // 「子会话自己也拿得到」在真实装配里就永远兑现不了。
+      // 用真的 scanSkills 而不是桩：这份表的 description 会原样出现在设置页的
+      // 工具目录里（CHANNELS.toolCatalog 走的是同一个函数），桩里的假 skill 名
+      // 会当场漏给用户看。代价是 skill 的 available() 判定「一把都没装就不出这把刀」
+      // 也跟着生效：装机时零 skill 的话开机这一发探针里没有它，装了 skill
+      // 重开一次才进 TOOL_NAMES（设置页那一发是现装的，不受这条影响）
+      skills: { listSkills: () => scanSkills(skillRoots) },
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
       // 开机那次刻意不给 mcp（与 browser 的桩子相反）：那一步跑在注册第一个 IPC
       // 通道之前，给了就得先 await mcpHub.ready()，等一轮握手才能开门。
@@ -1553,10 +1569,6 @@ void app.whenReady().then(() => {
       return newId;
     }
   );
-
-  // skill 根目录：只认 Mr Otto 自己的安装位。别家（~/.claude/skills 等）不再
-  // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装
-  const skillRoots = [join(configDir(homedir()), "skills")];
 
   ipcMain.handle(CHANNELS.listSkills, () => scanSkills(skillRoots));
   ipcMain.handle(CHANNELS.listExternalSkills, () => {

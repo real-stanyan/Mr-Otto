@@ -60,7 +60,7 @@ function branches(text: string): Branch[] {
     if (m) {
       if (body.length > 0) flush();
       types.push(m[1]!);
-      if (m[2] !== "") body.push(m[2]);
+      if (m[2] !== undefined && m[2] !== "") body.push(m[2]);
       continue;
     }
     if (/^default:/.test(line)) {
