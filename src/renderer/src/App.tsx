@@ -106,6 +106,14 @@ import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.js";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog.js";
+import {
   Drawer,
   DrawerContent,
   DrawerHeader,
@@ -1757,6 +1765,10 @@ function AppSidebar() {
   // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
   // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
   const [archivedView, setArchivedView] = useState(false);
+  // 重命名走应用内对话框：Electron 的 window.prompt 是**抛异常**的
+  // （"prompt() is not supported."），原来那句 prompt() 让整条 onClick 半路夭折，
+  // 点「重命名」什么都不发生。alert/confirm 在 Electron 里能用，prompt 不能
+  const [renaming, setRenaming] = useState<{ sessionId: string; title: string } | null>(null);
   // 进设置就退出归档视图：两者抢同一块地皮，回来时该落在会话列表上
   useEffect(() => {
     if (settingsSection !== null) setArchivedView(false);
@@ -2017,10 +2029,7 @@ function AppSidebar() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
                                 <DropdownMenuItem
-                                  onClick={() => {
-                                    const t = prompt("新标题", s.title ?? "");
-                                    if (t?.trim()) void renameSessionById(s.sessionId, t.trim());
-                                  }}
+                                  onClick={() => setRenaming({ sessionId: s.sessionId, title: s.title ?? g.label })}
                                 >
                                   重命名
                                 </DropdownMenuItem>
@@ -2173,6 +2182,15 @@ function AppSidebar() {
           </Tooltip>
         </div>
       </SidebarFooter>
+      {/* 改标题的输入框。open 由 renaming 是不是 null 决定,关掉即丢草稿 */}
+      <RenameSessionDialog
+        target={renaming}
+        onClose={() => setRenaming(null)}
+        onSubmit={(title) => {
+          if (renaming) void renameSessionById(renaming.sessionId, title);
+          setRenaming(null);
+        }}
+      />
       {/* 好友弹窗(shadcn Drawer/vaul):点 footer 的好友 icon 弹出。
           右侧抽屉——桌面应用里和 DM/Protocol/GitGraph 右侧面板同一空间语言;
           想要底部抽屉样式把 side 改成 "bottom" 即可。模态层,点外面/Esc/右滑关闭 */}
@@ -2198,6 +2216,63 @@ function AppSidebar() {
         </DrawerContent>
       </Drawer>
     </Sidebar>
+  );
+}
+
+/** 改会话标题的小对话框。Electron 里 window.prompt 直接抛
+    "prompt() is not supported."，所以这类「要一行输入」的地方只能自己搭
+    （alert/confirm 没这问题，删除那条 confirm 照旧）。
+    target 换人时 key 跟着换，草稿重新从当前标题起头，不会串到上一个会话 */
+function RenameSessionDialog({ target, onClose, onSubmit }: {
+  target: { sessionId: string; title: string } | null;
+  onClose: () => void;
+  onSubmit: (title: string) => void;
+}) {
+  return (
+    <Dialog open={target !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md" key={target?.sessionId ?? "none"}>
+        <DialogHeader>
+          <DialogTitle className="text-sm">重命名会话</DialogTitle>
+          <DialogDescription className="text-[12px]">
+            只改侧栏显示的标题，不动这条会话的事件日志。
+          </DialogDescription>
+        </DialogHeader>
+        {target && <RenameForm initial={target.title} onSubmit={onSubmit} onCancel={onClose} />}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 单独拆一层是为了拿 initial 起头 state：写在上面那层的话，
+    target 从 null 变成有值时 Dialog 已经挂着，useState 的初值吃不到新标题 */
+function RenameForm({ initial, onSubmit, onCancel }: {
+  initial: string;
+  onSubmit: (title: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const trimmed = draft.trim();
+  return (
+    <form
+      className="contents"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed) onSubmit(trimmed);
+      }}
+    >
+      <Input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="新标题"
+        aria-label="新标题"
+      />
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
+        {/* 空标题不给提交:清空不是「改名」的一种,是把侧栏那行变成无名氏 */}
+        <Button type="submit" disabled={!trimmed}>保存</Button>
+      </DialogFooter>
+    </form>
   );
 }
 
