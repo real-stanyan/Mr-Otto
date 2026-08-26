@@ -224,6 +224,55 @@ export function TabIcon({ name, color }: { name: "sessions" | "friends" | "setti
   );
 }
 
+/* ── 文件夹 ────────────────────────────────────────────
+   工作区组头左边那个东西。原来是一个 ▸/▾ 三角 —— 三角只说"这里能展开",
+   而这一行说的是"下面这些属于同一个工作区",文件夹把后半句也说了。
+
+   **几块板一律相接、绝不相叠。** 图标色是 mutedForeground,而它是半透明的
+   (rgba(…, 0.55));两块同色的板叠在一起,叠上的那条会明显更深 —— 画出来是一道
+   谁也没想画的深色缝。所以每块板的 top 正好等于上一块的底,靠拼接成形,
+   不靠覆盖。这也顺带免掉了"拿底色去盖"那种做法(那要求图标知道自己坐在什么颜色上,
+   换个容器就露馅)。
+
+   合起来 = 标签 + 一整块;打开 = 上半截立着、下半截向右倾出去。倾斜用 skewX。 */
+
+export function FolderIcon({ open, color }: { open: boolean; color: string }) {
+  // 标签那一小截。两个状态共用 —— 它是文件夹的身份,不该跟着开合动
+  const tab = (
+    <View style={{
+      position: "absolute", left: 0, top: 0, width: 7, height: 4,
+      backgroundColor: color, borderTopLeftRadius: 2, borderTopRightRadius: 2,
+    }} />
+  );
+  if (!open) {
+    return (
+      <View style={{ width: 16, height: 14 }}>
+        {tab}
+        <View style={{
+          position: "absolute", left: 0, top: 4, width: 16, height: 10,
+          backgroundColor: color, borderRadius: 2, borderTopLeftRadius: 0,
+        }} />
+      </View>
+    );
+  }
+  return (
+    <View style={{ width: 16, height: 14 }}>
+      {tab}
+      {/* 后板只剩左边一条脊:右边整片被翻出来的前板挡住了,挡住的部分本来就不该画 */}
+      <View style={{
+        position: "absolute", left: 0, top: 4, width: 5, height: 10,
+        backgroundColor: color, borderBottomLeftRadius: 2,
+      }} />
+      {/* 前板向右倾出去。斜边是"开着"的唯一线索,所以角度给足(-18°,8pt 高
+          换来约 2.6pt 的错位);再小就只剩一块方块,跟合起来那张分不出来 */}
+      <View style={{
+        position: "absolute", left: 5, top: 6, width: 11, height: 8,
+        backgroundColor: color, borderRadius: 2, transform: [{ skewX: "-18deg" }],
+      }} />
+    </View>
+  );
+}
+
 /* ── 按钮 ─────────────────────────────────────────────── */
 
 /**

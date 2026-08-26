@@ -36,8 +36,8 @@ import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, DetailBar, Divider, Dot, Group, Headline, Hint, Meta, Note, Page, Row,
-  Spinner, StatusLine, TabIcon, Tile, Title, useKeyboardInset, Warn,
+  Button, Card, CodeTiles, DetailBar, Divider, Dot, FolderIcon, Group, Headline, Hint, Meta, Note,
+  Page, Row, Spinner, StatusLine, TabIcon, Tile, Title, useKeyboardInset, Warn,
 } from "./src/ui.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "./app.json";
@@ -1008,12 +1008,10 @@ function WorkspaceHeader({ group: g, collapsed, onToggle }: {
         pressed && { opacity: 0.5 },
       ]}
     >
-      {/* 组头原来和卡片里的元信息一样是 13px,一列卡片扫下来它读成又一条注脚,
-          而不是"下面这些属于同一个工作区"的分界。提到 callout(15)+600:
-          比卡片标题(17)小一档、又还是暗色,层级仍然在下面,但一眼能看见 */}
-      <Text style={{ ...t.callout, fontWeight: "600", color: c.mutedForeground, width: 14 }}>
-        {collapsed ? "▸" : "▾"}
-      </Text>
+      {/* 开合状态用文件夹的开/合表示,不是三角:三角只说"这里能展开",
+          文件夹连"下面这些是一个工作区"一起说了。
+          不做开合动画 —— 这一行一天要点很多次,动效在这种频次上只会让人等 */}
+      <FolderIcon open={!collapsed} color={c.mutedForeground} />
       <Text
         style={{ ...t.callout, fontWeight: "600", color: c.mutedForeground }}
         numberOfLines={1}
