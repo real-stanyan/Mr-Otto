@@ -35,6 +35,31 @@ describe("skill 工具", () => {
     expect(tool.def.description).toContain("caveman — 极简回话风格");
   });
 
+  // ADR-0110 §一「动态拼」：def 是 getter,每次读都重扫。写成对象字面量里的
+  // 一次求值的话,description 在 createSkillTool 那一刻就冻住——而 app 自带
+  // 「导入 skill」弹窗,会话开着的时候导入一把,模型的索引里永远没有它
+  it("索引是活的：会话中途装的 skill,下一次读 def 就出现在索引里", () => {
+    const skills = [{ name: "tdd", description: "先写测试再写实现", content: "TDD 正文" }];
+    const { tool } = harness(skills);
+    expect(tool.def.description).not.toContain("刚导入的");
+
+    skills.push({ name: "刚导入的", description: "会话中途装进来的", content: "正文" });
+    expect(tool.def.description).toContain("刚导入的 — 会话中途装进来的");
+  });
+
+  // 零 skill 起步那条最难看的路：available() 翻成 true 的同一刻,索引也得跟上,
+  // 否则模型拿到一把 description 以光秃秃的「可用 skill：」结尾的工具
+  it("零 skill 起步：装上第一把之后,available 和索引同时变活", () => {
+    const skills: { name: string; description: string; content: string }[] = [];
+    const { tool } = harness(skills);
+    expect(tool.available?.()).toBe(false);
+    expect(tool.def.description.trimEnd().endsWith("可用 skill：")).toBe(true);
+
+    skills.push({ name: "第一把", description: "刚装的", content: "正文" });
+    expect(tool.available?.()).toBe(true);
+    expect(tool.def.description).toContain("第一把 — 刚装的");
+  });
+
   it("一把 skill 都没装时不出这把刀", () => {
     const { tool } = harness([]);
     expect(tool.available?.()).toBe(false);
