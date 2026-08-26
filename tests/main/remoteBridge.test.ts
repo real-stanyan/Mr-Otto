@@ -92,7 +92,7 @@ function harness() {
   const onCommand = vi.fn();
   const b = createRemoteBridge({
     crypto: P, identity, deviceId: "d1", transport: t, onCommand,
-    peerIdentity: () => peer.identity.publicKey,
+    peerIdentities: () => [peer.identity.publicKey],
   });
   const peer = newPeer();
   t.emitPeer(); // 对端到场:这之后才有 hello。不发信号的那条路径由专门的用例覆盖
@@ -105,7 +105,7 @@ describe("createRemoteBridge", () => {
     const t = fakeTransport();
     const b = createRemoteBridge({
       crypto: P, identity, deviceId: "d1", transport: t,
-      onCommand: vi.fn(), peerIdentity: () => P.generateEd25519().publicKey,
+      onCommand: vi.fn(), peerIdentities: () => [P.generateEd25519().publicKey],
     });
     expect(t.sent).toHaveLength(0);
     t.emitPeer();
@@ -181,7 +181,7 @@ describe("createRemoteBridge", () => {
 
   it("身份 pin 不上的对端 hello → 不进 ready，状态帧仍不过线（TOFU 的执行面）", () => {
     const { t, b } = harness();
-    const impostor = newPeer(); // peerIdentity() 返回的不是它的公钥
+    const impostor = newPeer(); // peerIdentities() 里没有它的公钥
     t.emit(JSON.stringify(buildHello(P, impostor)));
     b.pushFleet(BUSY);
     expect(t.sent).toHaveLength(1);
@@ -196,7 +196,7 @@ describe("createRemoteBridge", () => {
     const onRejected = vi.fn();
     const b = createRemoteBridge({
       crypto: P, identity, deviceId: "d1", transport: t,
-      onCommand: vi.fn(), peerIdentity: () => null, onRejected,
+      onCommand: vi.fn(), peerIdentities: () => [], onRejected,
     });
     t.emitPeer();
     t.emit(JSON.stringify(buildHello(P, newPeer())));
@@ -210,8 +210,46 @@ describe("createRemoteBridge", () => {
     const onRejected = vi.fn();
     const b = createRemoteBridge({
       crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(),
-      peerIdentity: () => P.generateEd25519().publicKey, // 配过对，但不是这台手机
+      peerIdentities: () => [P.generateEd25519().publicKey], // 配过对，但不是这台手机
       onRejected,
+    });
+    t.emitPeer();
+    t.emit(JSON.stringify(buildHello(P, newPeer())));
+    expect(onRejected).toHaveBeenCalledWith({ deviceId: "m1", reason: "identity-mismatch" });
+    b.dispose();
+  });
+
+  // 配了几台手机就有几把 pin。哪一把是对的由**签名**回答 —— hello 里的 deviceId
+  // 是明文、由对端自称,拿它查表等于让对端自己指定用哪把公钥来验自己
+  it("pin 住好几把时：组里任意一把对得上就能进 ready", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onRejected = vi.fn();
+    const second = newPeer();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(), onRejected,
+      // 第一把是别人的,要验到第二把才对上
+      peerIdentities: () => [P.generateEd25519().publicKey, second.identity.publicKey],
+    });
+    t.emitPeer();
+    shake(t, second, identity.publicKey, 0);
+
+    expect(onRejected).not.toHaveBeenCalled();
+    // 进了 ready 才会有加密的快照推下去
+    b.pushFleet(BUSY);
+    expect(t.sent.filter((l) => !l.startsWith("{"))).not.toHaveLength(0);
+    b.dispose();
+  });
+
+  it("组里一把都对不上 → 还是 identity-mismatch，不会因为试了几把就放行", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onRejected = vi.fn();
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(), onRejected,
+      peerIdentities: () => [
+        P.generateEd25519().publicKey, P.generateEd25519().publicKey, P.generateEd25519().publicKey,
+      ],
     });
     t.emitPeer();
     t.emit(JSON.stringify(buildHello(P, newPeer())));
@@ -225,7 +263,7 @@ describe("createRemoteBridge", () => {
     const onRejected = vi.fn();
     const b = createRemoteBridge({
       crypto: P, identity, deviceId: "d1", transport: t,
-      onCommand: vi.fn(), peerIdentity: () => null, onRejected,
+      onCommand: vi.fn(), peerIdentities: () => [], onRejected,
     });
     t.emitPeer();
     // 每次都是新的 eph —— 同一把会被 usedPeerEphs 挡在 adopt 之前，那是另一条路径

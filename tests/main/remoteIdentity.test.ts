@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openIdentityStore, type SecretBox } from "../../src/main/remoteIdentity.js";
 import { nodeRemoteCrypto } from "../../src/main/remoteCryptoNode.js";
+import { b64encode } from "../../src/shared/remote/b64.js";
 
 const P = nodeRemoteCrypto();
 
@@ -70,23 +71,83 @@ describe("openIdentityStore", () => {
     const fs = memFs();
     const box = fakeBox();
     const s = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
-    expect(s.peerIdentity()).toBeNull();
+    expect(s.peerIdentities()).toEqual([]);
 
     const phone = P.generateEd25519();
     s.pinPeer(phone.publicKey);
-    expect(Array.from(s.peerIdentity()!)).toEqual(Array.from(phone.publicKey));
+    expect(s.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(phone.publicKey)]);
 
     // 重开一次:pin 要活过重启
     const again = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
-    expect(Array.from(again.peerIdentity()!)).toEqual(Array.from(phone.publicKey));
+    expect(again.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(phone.publicKey)]);
 
     // 换一台机器(封装打不开)→ 当成还没配过,重新生成,而不是拿一把半截的身份上线
     const otherMachine = openIdentityStore({
       path: "/x/id.bin", crypto: P, box: fakeBox(true, "m2"), fs, log: () => {},
     })!;
-    expect(otherMachine.peerIdentity()).toBeNull();
+    expect(otherMachine.peerIdentities()).toEqual([]);
     expect(Array.from(otherMachine.identity.publicKey))
       .not.toEqual(Array.from(s.identity.publicKey));
+  });
+
+  // 单值 pin 的年代,配第二台手机是**静默顶掉**第一台。现在是一组
+  it("能同时 pin 住几台；重复 pin 同一台不会在组里多一份", () => {
+    const fs = memFs();
+    const box = fakeBox();
+    const s = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    const a = P.generateEd25519();
+    const b = P.generateEd25519();
+
+    s.pinPeer(a.publicKey);
+    s.pinPeer(b.publicKey);
+    s.pinPeer(a.publicKey); // 再配一次已经配过的
+    expect(s.peerIdentities()).toHaveLength(2);
+
+    s.unpinPeer(a.publicKey);
+    expect(s.peerIdentities().map((x) => Array.from(x))).toEqual([Array.from(b.publicKey)]);
+
+    // 解除一台没配过的 = 空操作,不该动到别人
+    s.unpinPeer(P.generateEd25519().publicKey);
+    expect(s.peerIdentities()).toHaveLength(1);
+
+    // 重启后还是这一组
+    const again = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(again.peerIdentities().map((x) => Array.from(x))).toEqual([Array.from(b.publicKey)]);
+  });
+
+  // v1 文件必须永远读得回来:装了新版就得重新配对一次,是没必要付的代价
+  it("v1 的单值 peer 能就地升级成 v2，已配好的那台不用重配", () => {
+    const fs = memFs();
+    const box = fakeBox();
+    const phone = P.generateEd25519();
+    const kp = P.generateEd25519();
+    const kx = P.generateX25519();
+    const v1 = {
+      v: 1,
+      did: b64encode(P.randomBytes(16)),
+      priv: b64encode(kp.privateKey), pub: b64encode(kp.publicKey),
+      kxPriv: b64encode(kx.privateKey), kxPub: b64encode(kx.publicKey),
+      peer: b64encode(phone.publicKey),
+    };
+    fs.write("/x/id.bin", box.encrypt(JSON.stringify(v1)));
+
+    const s = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(s.peerIdentities().map((x) => Array.from(x))).toEqual([Array.from(phone.publicKey)]);
+    // 身份密钥也得是原来那把,不能顺手重新生成
+    expect(Array.from(s.identity.publicKey)).toEqual(Array.from(kp.publicKey));
+  });
+
+  it("v1 里没配过的（peer: null）升上来就是空组", () => {
+    const fs = memFs();
+    const box = fakeBox();
+    const kp = P.generateEd25519();
+    const kx = P.generateX25519();
+    fs.write("/x/id.bin", box.encrypt(JSON.stringify({
+      v: 1, did: "d", priv: b64encode(kp.privateKey), pub: b64encode(kp.publicKey),
+      kxPriv: b64encode(kx.privateKey), kxPub: b64encode(kx.publicKey), peer: null,
+    })));
+    const s = openIdentityStore({ path: "/x/id.bin", crypto: P, box, fs })!;
+    expect(s.peerIdentities()).toEqual([]);
   });
 
   it("坏文件不炸：当成还没配过", () => {
@@ -94,7 +155,7 @@ describe("openIdentityStore", () => {
     fs.write("/x/id.bin", new TextEncoder().encode("这不是我们写的东西"));
     const s = openIdentityStore({ path: "/x/id.bin", crypto: P, box: fakeBox(), fs, log: () => {} });
     expect(s).not.toBeNull();
-    expect(s!.peerIdentity()).toBeNull();
+    expect(s!.peerIdentities()).toEqual([]);
   });
 });
 

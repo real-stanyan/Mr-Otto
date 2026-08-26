@@ -128,7 +128,7 @@ describe("远程握手的会合", () => {
       deviceId: "d1",
       transport: desktopTransport(relay),
       onCommand: () => {},
-      peerIdentity: () => phoneIdentity.publicKey,
+      peerIdentities: () => [phoneIdentity.publicKey],
     });
     expect(relay.dropped).toHaveLength(0);
     bridge.pushFleet(BUSY);
@@ -149,7 +149,7 @@ describe("远程握手的会合", () => {
       crypto: P, identity: desktopIdentity, deviceId: "d1",
       transport: desktopTransport(relay),
       onCommand: () => {},
-      peerIdentity: () => phoneIdentity.publicKey,
+      peerIdentities: () => [phoneIdentity.publicKey],
     });
     bridge.pushFleet(BUSY);
 

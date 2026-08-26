@@ -99,7 +99,7 @@ describe("createRemoteDevices", () => {
     const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
 
     expect(await d.pin("m1")).toBe(true);
-    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(phone.pub));
+    expect(store.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(phone.pub)]);
     expect((await d.listPeers())[0]!.pinned).toBe(true);
   });
 
@@ -114,7 +114,7 @@ describe("createRemoteDevices", () => {
 
     expect(await d.listPeers()).toHaveLength(0);
     expect(await d.pin("m2")).toBe(false);
-    expect(store.peerIdentity()).toBeNull();
+    expect(store.peerIdentities()).toEqual([]);
     expect(log).toHaveBeenCalled();
   });
 
@@ -125,7 +125,49 @@ describe("createRemoteDevices", () => {
     const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P, log: () => {} });
     await d.pin("m1");
     expect(await d.pin("不存在")).toBe(false);
-    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(phone.pub));
+    expect(store.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(phone.pub)]);
+  });
+
+  // 单值 pin 的年代,配第二台是**静默顶掉**第一台:第一台下次握手直接被拒,
+  // 而界面上没有任何东西提示这件事。现在两台并存
+  it("配第二台不动第一台，两台都算已配对", async () => {
+    const store = newStore();
+    const a = phoneRow({ device_id: "m1" });
+    const b = phoneRow({ device_id: "m2" });
+    const { api } = fakeApi([a, b]);
+    const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
+
+    expect(await d.pin("m1")).toBe(true);
+    expect(await d.pin("m2")).toBe(true);
+    expect(store.peerIdentities()).toHaveLength(2);
+    expect((await d.listPeers()).map((p) => p.pinned)).toEqual([true, true]);
+  });
+
+  // 停用要停得住:删了行,装着 app 的手机下次打开又会重新登记回来 ——
+  // 那是"把列表擦一遍",不是"不让它连"
+  it("unpin 只解除配对，目录行留着", async () => {
+    const store = newStore();
+    const a = phoneRow({ device_id: "m1" });
+    const b = phoneRow({ device_id: "m2" });
+    const { api, removed } = fakeApi([a, b]);
+    const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
+    await d.pin("m1");
+    await d.pin("m2");
+
+    expect(await d.unpin("m1")).toBe(true);
+    expect(removed).toEqual([]); // 没删行
+    const peers = await d.listPeers();
+    expect(peers.map((p) => [p.deviceId, p.pinned])).toEqual([["m1", false], ["m2", true]]);
+  });
+
+  it("unpin 一台目录里没有的 → false，不动别人", async () => {
+    const store = newStore();
+    const phone = phoneRow();
+    const { api } = fakeApi([phone]);
+    const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P });
+    await d.pin("m1");
+    expect(await d.unpin("不存在")).toBe(false);
+    expect(store.peerIdentities()).toHaveLength(1);
   });
 
   // 一台手机换个安装(Expo Go / 正式 app / 重装)就是新的一行 —— 身份私钥在各自的
@@ -143,7 +185,7 @@ describe("createRemoteDevices", () => {
     expect(removed).toEqual([{ userId: "u1", deviceId: "m2" }]);
     expect((await d.listPeers()).map((p) => p.deviceId)).toEqual(["m1"]);
     // 删的是别人那一行,配对必须原样还在
-    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(live.pub));
+    expect(store.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(live.pub)]);
   });
 
   // 这条是删除这个动作的**意义**所在:行删了而 pin 还在 = "删掉了但仍然信任",
@@ -155,10 +197,10 @@ describe("createRemoteDevices", () => {
     const d = createRemoteDevices({ api, selfKind: "desktop", store, crypto: P, log: () => {} });
 
     await d.pin("m1");
-    expect(store.peerIdentity()).not.toBeNull();
+    expect(store.peerIdentities()).toHaveLength(1);
 
     expect(await d.forget("m1")).toBe(true);
-    expect(store.peerIdentity()).toBeNull();
+    expect(store.peerIdentities()).toEqual([]);
   });
 
   it("没登录 → 不删，也不碰 pin", async () => {
@@ -172,7 +214,7 @@ describe("createRemoteDevices", () => {
     const d = createRemoteDevices({ api: anon, selfKind: "desktop", store, crypto: P });
     expect(await d.forget("m1")).toBe(false);
     expect(removed).toEqual([]);
-    expect(store.peerIdentity()).not.toBeNull();
+    expect(store.peerIdentities()).toHaveLength(1);
   });
 
   // 删库这一步失败时不能先把 pin 清了:那会留下"没配对、也没删掉"的中间态,
@@ -188,7 +230,7 @@ describe("createRemoteDevices", () => {
     await d.pin("m1");
 
     await expect(d.forget("m1")).rejects.toThrow("网络断了");
-    expect(Array.from(store.peerIdentity()!)).toEqual(Array.from(phone.pub));
+    expect(store.peerIdentities().map((b) => Array.from(b))).toEqual([Array.from(phone.pub)]);
   });
 });
 
