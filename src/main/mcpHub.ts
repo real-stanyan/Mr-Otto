@@ -14,6 +14,10 @@ export interface McpHub extends McpCapability {
   save(id: string, cfg: McpServerConfig): Promise<void>;
   remove(id: string): Promise<void>;
   reconnect(id: string): Promise<void>;
+  /** 跑一次 OAuth 授权（开浏览器、等回调、换 token 落盘），成功后自动重连。
+      失败原样抛给调用方：设置页要把原因显示出来，agent 要把原因转述给用户。
+      只对 http 传输有意义——stdio 的凭据走 env，调到会拿到一句人话 */
+  authorize(id: string): Promise<void>;
   onChange(cb: () => void): () => void;
   closeAll(): Promise<void>;
   /** 上一次读 ~/.mr-otto/mcp.json 时,解析不动的那几行的人话原因(mcpConfig.ts
@@ -119,6 +123,13 @@ export function createMcpHub(opts: {
       失败的错误抛给上层，一路穿透到 IPC 和设置页 */
   save(servers: Record<string, McpServerConfig>, unrecognizedIds: readonly string[]): void;
   connect: McpConnect;
+  /** 跑一次完整 OAuth 授权。真实现是 mcpClient.authorizeMcpServer（它才认识
+      SDK），hub 只管什么时候调、调完做什么——同 connect 的注入方向，
+      hub 因此完全不碰 SDK，状态机能用假实现测干净 */
+  authorize(id: string, cfg: McpServerConfig): Promise<void>;
+  /** 抹掉一台 server 的 OAuth 凭据。remove() 时调 —— 配置删了而凭据留着，
+      就是一份没有任何界面能看到、也没人会想起来撤销的长期授权 */
+  clearAuth(id: string): void;
 }): McpHub {
   const entries = new Map<string, Entry>();
   const listeners = new Set<() => void>();
@@ -228,6 +239,15 @@ export function createMcpHub(opts: {
     return e.conn;
   }
 
+  async function reconnectOne(id: string): Promise<void> {
+    const cur = entries.get(id);
+    if (cur?.conn) await cur.conn.close();
+    // 状态先推成 failed 再连：connectOne 对 status === "connected" 的直接返回，
+    // 不推的话"重连一台已经连上的"会变成空操作
+    if (cur) { delete cur.conn; cur.status = "failed"; }
+    await connectOne(id);
+  }
+
   return {
     async ready() {
       // 并发调只连一次；连完清空,下次 ready() 会重试 failed 的那些
@@ -317,14 +337,22 @@ export function createMcpHub(opts: {
       const cur = entries.get(id);
       if (cur?.conn) await cur.conn.close();
       entries.delete(id);
+      // 配置没了，凭据也不该留 —— 见 opts.clearAuth 的注释
+      opts.clearAuth(id);
       emit();
     },
 
-    async reconnect(id) {
-      const cur = entries.get(id);
-      if (cur?.conn) await cur.conn.close();
-      if (cur) { delete cur.conn; cur.status = "failed"; }
-      await connectOne(id);
+    reconnect: reconnectOne,
+
+    async authorize(id) {
+      syncFromDisk();
+      const e = entries.get(id);
+      if (!e) throw new Error(`没有名叫「${id}」的 MCP server，无法授权`);
+      // 授权失败原样抛：状态停在 needs-auth 是诚实的——用户点了拒绝、
+      // 或者超时没点，这台确实还是"需要授权"，不该被改成 failed（那会
+      // 让设置页把"你还没授权"显示成"这台坏了"）
+      await opts.authorize(id, e.cfg);
+      await reconnectOne(id);
     },
 
     onChange(cb) {

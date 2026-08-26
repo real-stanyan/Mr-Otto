@@ -34,8 +34,9 @@ import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
-import { connectMcpClient } from "./mcpClient.js";
+import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth } from "./mcpAuthStore.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
@@ -978,10 +979,50 @@ void app.whenReady().then(() => {
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
   const mcpConfigPath = join(configDir(homedir()), "mcp.json");
+  // OAuth 凭据落在同一个配置目录下的独立文件（Task 1，0600），与 mcp.json
+  // 分开存：一份是人手编的连接配置，一份是程序读写的密态
+  const mcpAuthPath = join(configDir(homedir()), "mcp-auth.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
     save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
-    connect: connectMcpClient,
+    connect: (id, cfg) => {
+      // 只有已经授权过（盘上有 token）的 http server 才走 authProvider：
+      // SDK 此时只会拿 token 去用、过期了拿 refresh_token 去续，不会发起
+      // 新授权、也不会做动态客户端注册。
+      //
+      // 没有 token 就不给 authProvider——否则 SDK 会在连接路径上跑一次 DCR，
+      // 把这里这个没有真端口的占位 redirect_uri 注册进去；等用户真去点
+      // 「授权」时，authorizeMcpServer 用的是带真端口的 redirect_uri，
+      // 复用同一份注册就会被服务端以 redirect_uri 不匹配拒掉。
+      // 不给的结果正是我们要的：401 → needs-auth → 用户点那颗按钮。
+      const authed = cfg.kind === "http" && readMcpAuth(mcpAuthPath, id).tokens !== undefined;
+      return connectMcpClient(
+        id,
+        cfg,
+        authed
+          ? createOAuthProvider({
+              // 连接路径不发起新授权，这两个字段用不上；真授权走
+              // authorizeMcpServer 里另造的、带真端口的 provider
+              redirectUri: "http://127.0.0.1/callback",
+              state: "",
+              read: () => readMcpAuth(mcpAuthPath, id),
+              write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+              openBrowser: () => {
+                // 连接路径上不发浏览器：一台 server 的 token 过期不该劫持
+                // 用户的屏幕。让它抛 Unauthorized → hub 标 needs-auth →
+                // 用户自己点那颗按钮
+              },
+            })
+          : undefined
+      );
+    },
+    authorize: (id, cfg) =>
+      authorizeMcpServer(id, cfg, {
+        read: () => readMcpAuth(mcpAuthPath, id),
+        write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+        openBrowser: (url) => { void shell.openExternal(url); },
+      }),
+    clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
