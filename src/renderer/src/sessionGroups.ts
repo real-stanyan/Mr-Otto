@@ -26,10 +26,14 @@ export function folderName(path: string): string {
     父会话时间线那张卡进去,混进侧栏/⌘K 搜索会让人以为能独立打开一个"工程会话"。
     归档会话(archived,ADR-0087)也不进组:它们走 groupArchivedByWorkspace 那一屏
     (ADR-0089),这里滤掉让 ⌘K 搜索/子会话范围等所有消费方一并不见它们。
+    side chat 会话(sideChat,issue #502)同理不进组:/btw 浮窗自己管历史,
+    混进侧栏/⌘K 会让人以为能当普通会话打开——打开了主时间线就成了浮窗的时间线。
     组序 = 组内最早会话 startedTs 倒序(新工程进场排最上,之后位置定死,
     不随组内会话完成/活动而蹿顶——会话完成只在组内上移),组内 = lastTs 倒序。 */
 export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGroup[] {
-  return buildGroups(sessions.filter((s) => !s.archived && s.spawnedFrom === null && s.workspace !== null));
+  return buildGroups(
+    sessions.filter((s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !s.sideChat)
+  );
 }
 
 /** 归档视图的分组结果:能归组的按工程分,没 workspace 的史前会话单独一摞 */
@@ -44,7 +48,7 @@ export interface ArchivedGroups {
     没 workspace 的史前归档会话不塞进"未知"组(那是伪造事实),单独走 ungrouped——
     藏起来就成了看不见也删不掉的库存垃圾,和侧栏里 prehistoric 那一摞同理。 */
 export function groupArchivedByWorkspace(sessions: SessionSummary[]): ArchivedGroups {
-  const archived = sessions.filter((s) => s.archived && s.spawnedFrom === null);
+  const archived = sessions.filter((s) => s.archived && s.spawnedFrom === null && !s.sideChat);
   return {
     groups: buildGroups(archived.filter((s) => s.workspace !== null)),
     ungrouped: archived

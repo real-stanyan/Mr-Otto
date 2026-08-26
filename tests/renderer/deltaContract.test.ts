@@ -23,6 +23,8 @@ function stateWith(over: Partial<Parameters<typeof absorbEvent>[0]> = {}) {
     toolOutputByCall: {},
     runningToolCallBySession: {},
     approvals: {},
+    sideChatSessionId: null,
+    sideChatEvents: [] as SessionEvent[],
     ...over,
   };
 }

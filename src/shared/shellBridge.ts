@@ -367,6 +367,12 @@ export interface ShellBridge {
   pickWorkspace(): Promise<string | null>;
   /** 用配好的开局参数建会话（文件夹已由 pickWorkspace 选定） */
   startSession(opts: StartSessionOptions): Promise<BootInfo>;
+  /** /btw 的 side chat 会话（issue #502）：新建一个打了 sideChat 标记的独立
+      session，**不切当前视图**（startSession 会把 currentSessionId 挪过去，
+      这条刻意不挪——主时间线原地不动，浮窗自己管历史）。事件照常进日志、
+      照常从 onEvent 流回来（按 sessionId 分流）；只回 sessionId，浮窗从
+      空白开始攒 */
+  startSideSession(workspace: string): Promise<{ sessionId: string }>;
   /** 库里所有会话的摘要（欢迎页列表用），最近活跃在前 */
   listSessions(): Promise<SessionSummary[]>;
   /** 恢复旧会话 = 从日志重新投影，没有"存档"可读。events 带回整段历史 */
@@ -924,6 +930,7 @@ export const CHANNELS = {
   boot: "otter:boot",
   pickWorkspace: "otter:pickWorkspace",
   startSession: "otter:startSession",
+  startSideSession: "otter:startSideSession",
   listSessions: "otter:listSessions",
   resumeSession: "otter:resumeSession",
   readSessionEvents: "otter:readSessionEvents",

@@ -203,6 +203,9 @@ export function createAgent(opts: {
   world?: ExecutionWorld;
   /** 这个会话是被派活派出来的：写进 session_created 第 0 条 */
   spawnedBy?: { sessionId: string; toolCallId: string; agent: string };
+  /** side chat 会话（issue #502）：写进 session_created 第 0 条，
+      侧栏列表 / ⌘K 靠它滤掉 */
+  sideChat?: true;
   /** 只挂名字在这份名单里的工具。不给 = 全套（现有装配一字不受影响）。
       task 不在这里挡——它压根不会被挂上（见 subagentRunner：建子 agent 时
       不传 subagentRunner，递归由构造挡死） */
@@ -303,6 +306,8 @@ export function createAgent(opts: {
       type: "session_created",
       workspace: opts.workspace,
       ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
+      // 条件展开同 spawnedBy：普通会话的事件对象不多出值为 undefined 的 key
+      ...(opts.sideChat ? { sideChat: true as const } : {}),
     });
     // 长期记忆快照落盘（ADR-0060）：紧跟 session_created 之后，先落盘再喂模型。
     // 只在有记忆能力的装配里落——world.config 不在 = 这个装配压根没有长期记忆

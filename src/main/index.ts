@@ -1388,6 +1388,9 @@ void app.whenReady().then(() => {
     resumeSessionId?: string;
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
     child?: ChildAgentConfig;
+    /** side chat 会话（issue #502）：session_created 第 0 条打标记，
+        侧栏列表 / ⌘K 靠它滤掉。装配与主会话完全同款（全套工具/审批门） */
+    sideChat?: true;
   }): ReturnType<typeof createAgent> => {
     // 项目指令（issue #353，门禁在 #426 撤掉）：选了工作区并开口说话本身就是
     // 授权，不再单独问一次"信不信任"——找到就注入。注入了哪几份仍以
@@ -1404,6 +1407,7 @@ void app.whenReady().then(() => {
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
       ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+      ...(args.sideChat ? { sideChat: true as const } : {}),
     };
     if (args.child && args.resumeSessionId) {
       // 子会话重建走 createChildAgent：它的签名里没有 subagentRunner 这一项，
@@ -1634,6 +1638,20 @@ void app.whenReady().then(() => {
     const info = bootInfo();
     if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
     return info;
+  });
+
+  // side chat（issue #502）：与 startSession 的关键差别是**不动 currentSessionId**
+  // ——主时间线原地不动，浮窗按 sessionId 从 onEvent 分流自己的事件。
+  // 装配与主会话同款（createSessionAgent 主路径：全套工具、审批门、检查点），
+  // 只是第 0 条打了 sideChat 标记（侧栏列表 / ⌘K 靠它滤掉）
+  ipcMain.handle(CHANNELS.startSideSession, async (_e, workspace: string): Promise<{ sessionId: string }> => {
+    if (typeof workspace !== "string" || !workspace) {
+      throw new Error("side chat 需要一个工程文件夹（先进入某个会话再 /btw）");
+    }
+    await mcpHub.ready(); // 同 startSession：工具表一次定终身，拼之前等 hub
+    const agent = createSessionAgent({ workspace, sideChat: true });
+    agents.set(agent.sessionId, agent);
+    return { sessionId: agent.sessionId };
   });
 
   // 同一个 sessionId 的两次 resume 只真正重建一次（issue #155）。

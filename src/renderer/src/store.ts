@@ -315,6 +315,19 @@ interface ChatState {
   modelSetupOpen: boolean;
   /** 会话搜索面板(⌘K)开着没有。纯 UI 开合,不进日志 */
   sessionSearchOpen: boolean;
+  /** /btw side chat 浮窗（issue #502）开着没有。纯 UI 开合,不进日志 */
+  sideChatOpen: boolean;
+  /** side chat 底下那个独立 session。本次 app 运行内首次 /btw 才创建,之后
+      复用;重启后置空,下次 /btw 再建新的(历史都在日志里,只是浮窗从空白开始)。
+      它打了 sideChat 标记,侧栏列表 / ⌘K 都看不见它——浮窗自己管历史 */
+  sideChatSessionId: string | null;
+  /** 浮窗自己的时间线。absorbEvent 按 sessionId 分流进来,不进主 events;
+      没有 resumeSession 兜底(会话对列表隐身,切不回去),所以不丢、只攒 */
+  sideChatEvents: SessionEvent[];
+  /** startSideSession 在飞(防连按 /btw 建出两个 session) */
+  sideChatCreating: boolean;
+  /** 浮窗内的错误横幅,不占用主 error(两条时间线各自报各自的错) */
+  sideChatError: string | null;
   /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
   wallet: WalletBalance | null;
   /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
@@ -526,6 +539,14 @@ interface ChatState {
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
   rename(title: string): Promise<void>;
+  /** /btw 指令的落点（issue #502）：开 side chat 浮窗。首次调用为当前会话的
+      工程文件夹建一个打了 sideChat 标记的独立 session，之后复用；
+      没有工程会话在身时报错（side chat 的 agent 也要一个工作区围栏） */
+  openSideChat(): Promise<void>;
+  /** 关浮窗。session 和已攒的时间线原样留着——再 /btw 接着聊 */
+  closeSideChat(): void;
+  /** 浮窗里发消息：走同一条 sendMessage 通道，只是目标是 side session */
+  sendSideChat(text: string): Promise<void>;
   refreshFriends(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
@@ -584,6 +605,8 @@ export const absorbEvent = (
     toolOutputByCall: Record<string, string>;
     runningToolCallBySession: Record<string, string>;
     approvals: Record<string, ApprovalRequest>;
+    sideChatSessionId: string | null;
+    sideChatEvents: SessionEvent[];
   },
   e: SessionEvent
 ) => {
@@ -608,13 +631,19 @@ export const absorbEvent = (
   const approvals = clearApprovalOnDecision(s.approvals, e);
   // 分流：不是正在看的会话的事件，直接丢——它已经在 DB 里了，
   // 切回那个会话时 resumeSession 会全量带回。DB 就是缓冲区。
-  if (e.sessionId !== s.sessionId)
-    return {
+  if (e.sessionId !== s.sessionId) {
+    const passthrough = {
       streamingBySession: streaming,
       toolOutputByCall: toolOutput,
       runningToolCallBySession: runningToolCall,
       approvals,
     };
+    // side chat 分流（issue #502）：浮窗的时间线单独攒，不进主 events 也不丢
+    // ——它对会话列表隐身、没有 resumeSession 兜底，漏一条就永远缺一条
+    if (e.sessionId === s.sideChatSessionId)
+      return { ...passthrough, sideChatEvents: [...s.sideChatEvents, e] };
+    return passthrough;
+  }
   return {
     streamingBySession: streaming,
     toolOutputByCall: toolOutput,
@@ -743,6 +772,11 @@ export const useChat = create<ChatState>((set, get) => ({
   profileSetupOpen: false,
   modelSetupOpen: false,
   sessionSearchOpen: false,
+  sideChatOpen: false,
+  sideChatSessionId: null,
+  sideChatEvents: [],
+  sideChatCreating: false,
+  sideChatError: null,
   wallet: null,
   walletError: "",
   staged: [],
@@ -2075,6 +2109,50 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ sessions: await window.otter.listSessions() }); // 侧栏标题立即换
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async openSideChat() {
+    const s = get();
+    // 已有 side session（或正在建）= 只开浮窗，不再建——一次 app 运行一个
+    if (s.sideChatSessionId !== null || s.sideChatCreating) {
+      set({ sideChatOpen: true });
+      return;
+    }
+    const workspace = s.workspace;
+    if (!workspace) {
+      set({ error: "side chat 要借当前会话的工程文件夹——先进入一个会话再 /btw" });
+      return;
+    }
+    // 浮窗先开（用户立刻看到反馈），session 在后台建；建失败再收回去
+    set({ sideChatOpen: true, sideChatCreating: true, sideChatError: null, error: null });
+    try {
+      const { sessionId } = await window.otter.startSideSession(workspace);
+      set({ sideChatSessionId: sessionId, sideChatCreating: false });
+    } catch (e) {
+      set({
+        sideChatOpen: false,
+        sideChatCreating: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  closeSideChat: () => set({ sideChatOpen: false }),
+
+  async sendSideChat(text) {
+    const sessionId = get().sideChatSessionId;
+    if (sessionId === null) return; // 还没建好（creating 中）——浮窗的输入框此时应当是禁用的
+    set({ sideChatError: null });
+    try {
+      await window.otter.sendMessage(sessionId, text);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 同 send()：turn 暴死已作为 turn_ended 事件渲染在浮窗时间线里，别叠一行
+      const last = get().sideChatEvents.at(-1);
+      if (!(last?.type === "turn_ended" && last.error && msg.includes(last.error))) {
+        set({ sideChatError: msg });
+      }
     }
   },
 

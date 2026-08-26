@@ -77,6 +77,7 @@ import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
+import { SideChatWindow } from "./components/SideChatWindow.js";
 import { displayIdentity } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { McpPromptCard } from "./components/McpPromptCard.js";
@@ -3462,6 +3463,9 @@ export function App() {
           <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
+          {/* /btw 的 side chat 浮窗(issue #502):自由漂浮,不进右侧互斥面板槽。
+              挂在 SidebarInset(relative)里,absolute 定位以内容区为容器 */}
+          <SideChatWindow />
         </SidebarInset>
         {/* 侧栏开关常驻左上角,两态同位(见 SidebarNub.tsx)。必须排在侧栏和内容区
             **之后**:Chromium 按文档顺序叠加 app-region 矩形、后者覆盖前者,放前面

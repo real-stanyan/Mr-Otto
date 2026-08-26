@@ -53,6 +53,18 @@ describe("createAgent 的 subagent 接缝", () => {
     expect(first?.type === "session_created" && first.spawnedBy).toEqual(spawnedBy);
   });
 
+  it("sideChat 写进 session_created 第 0 条；不给则连 key 都没有（issue #502）", () => {
+    const { dir, store, attachments, push } = fixtures();
+    const side = createAgent({ store, workspace: dir, push, attachments, sideChat: true });
+    const first = store.load(side.sessionId)[0];
+    expect(first?.type === "session_created" && first.sideChat).toBe(true);
+
+    // 普通会话的事件对象不能凭空多出值为 undefined 的 key（旧日志形状逐字节不变）
+    const plain = createAgent({ store, workspace: dir, push, attachments });
+    const plainFirst = store.load(plain.sessionId)[0];
+    expect(plainFirst !== undefined && Object.hasOwn(plainFirst, "sideChat")).toBe(false);
+  });
+
   it("world 给了 = 用它，不另造一个（v2 换 SandboxWorld 时子 agent 要在同一个容器里）", () => {
     const { dir, store, attachments, push } = fixtures();
     const parentWorld = createLocalWorld({ root: dir });

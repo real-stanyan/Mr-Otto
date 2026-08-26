@@ -16,6 +16,7 @@ const bridge: ShellBridge = {
   boot: () => ipcRenderer.invoke(CHANNELS.boot),
   pickWorkspace: () => ipcRenderer.invoke(CHANNELS.pickWorkspace),
   startSession: (opts) => ipcRenderer.invoke(CHANNELS.startSession, opts),
+  startSideSession: (workspace) => ipcRenderer.invoke(CHANNELS.startSideSession, workspace),
   listSessions: () => ipcRenderer.invoke(CHANNELS.listSessions),
   resumeSession: (sessionId) => ipcRenderer.invoke(CHANNELS.resumeSession, sessionId),
   readSessionEvents: (sessionId) => ipcRenderer.invoke(CHANNELS.readSessionEvents, sessionId),

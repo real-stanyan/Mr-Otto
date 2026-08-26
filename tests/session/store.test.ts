@@ -158,6 +158,15 @@ describe("EventStore", () => {
     expect(byId["parent"]).toBeNull(); // 普通会话没有 spawnedBy → null
   });
 
+  it("sessions()：sideChat 从第 0 条 session_created 投影出来（issue #502）", () => {
+    store.append({ sessionId: "main", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({ sessionId: "side", ts: 2, type: "session_created", workspace: "/p", sideChat: true });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.sideChat]));
+    expect(byId["side"]).toBe(true);
+    expect(byId["main"]).toBe(false); // 普通会话 / 旧日志没有该字段 → false
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记（无 reason）仍让会话从列表消失", () => {
     // 早期"删除" = 归档标记，无 reason 字段；ADR-0087 后按 system 解读——
     // 列表和召回都排除，跟写下它时的本意（彻底藏起）一致

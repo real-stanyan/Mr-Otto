@@ -163,6 +163,10 @@ export interface SessionCreatedEvent extends SessionEventBase {
     toolCallId: string;
     agent: string;
   };
+  /** side chat 会话（issue #502）：/btw 浮窗底下那个独立 session。
+      与 spawnedBy 同款手法：侧栏列表 / ⌘K 靠它滤掉，浮窗自己管历史。
+      可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则） */
+  sideChat?: true;
 }
 
 /** 额外 3：会话归档（ADR-0087 复活；曾为遗留类型）。

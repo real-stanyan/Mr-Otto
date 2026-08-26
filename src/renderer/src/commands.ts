@@ -21,6 +21,10 @@ export const SLASH_COMMANDS: Record<string, SlashCommand> = {
     desc: "改会话标题（/rename 新标题）",
     run: (args) => useChat.getState().rename(args),
   },
+  "/btw": {
+    desc: "开 Side chat 浮窗（独立小会话，不打断当前时间线）",
+    run: () => useChat.getState().openSideChat(),
+  },
 };
 
 /** 命令形判定：首个空白前的 token 形如 "/名字"（字母数字下划线连字符）才算指令名。

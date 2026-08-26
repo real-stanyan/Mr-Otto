@@ -31,6 +31,10 @@ export interface SessionSummary {
       从第 0 条 session_created 的 spawnedBy.sessionId 投影出来。
       不是子会话 / 旧日志没有 spawnedBy 字段 → null（schema 向后兼容硬规则） */
   spawnedFrom: string | null;
+  /** side chat 会话（issue #502）：true = /btw 浮窗的独立 session，
+      侧栏列表 / ⌘K 靠它滤掉。从第 0 条 session_created 的 sideChat 投影；
+      旧日志 / 普通会话 → false */
+  sideChat: boolean;
   /** 用户归档（ADR-0087）：true = 收进「已归档」区，可恢复、仍可被跨会话召回。
       系统归档（reason 缺席或 "system"）根本不出现在返回值里。
       归档状态 = 最后一条 session_archived / session_unarchived 事件说了算 */
@@ -451,6 +455,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.spawnedBy.sessionId')
                    FROM events e3
                   WHERE e3.session_id = e.session_id AND e3.type = 'session_created') AS spawnedFrom,
+                (SELECT json_extract(payload, '$.sideChat')
+                   FROM events e6
+                  WHERE e6.session_id = e.session_id AND e6.type = 'session_created') AS sideChatRaw,
                 (SELECT CASE WHEN e5.type = 'session_archived'
                              THEN COALESCE(json_extract(e5.payload, '$.reason'), 'system')
                         END
@@ -463,16 +470,18 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
           HAVING archivedReason IS NULL OR archivedReason <> 'system'
           ORDER BY lastTs DESC`
       )
-      .all() as (Omit<SessionSummary, "archived"> & {
+      .all() as (Omit<SessionSummary, "archived" | "sideChat"> & {
         renamed: string | null; autotitled: string | null; archivedReason: string | null;
+        sideChatRaw: number | null;
       })[];
     // 手动改名（最后一条胜出）压过模型浓缩标题（session_autotitled，issue #335），
     // 浓缩标题压过自动标题（第一条 user_message 首行）；
     // 空白一律算没有（显示截断交给 UI 的 ellipsis）
-    return rows.map(({ renamed, autotitled, archivedReason, ...r }) => ({
+    return rows.map(({ renamed, autotitled, archivedReason, sideChatRaw, ...r }) => ({
       ...r,
       title: renamed?.trim() || autotitled?.trim() || r.title?.split("\n")[0]?.trim() || null,
       archived: archivedReason === "user", // system 归档已被 HAVING 滤掉,能到这的非空值只有 "user"
+      sideChat: sideChatRaw === 1, // json_extract 把 true 投成 1；旧日志/普通会话 = null
     }));
   }
 

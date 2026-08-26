@@ -15,6 +15,7 @@ const s = (
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
   sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
+  sideChat: false,
 });
 
 describe("folderName", () => {
@@ -72,6 +73,15 @@ describe("groupSessionsByWorkspace", () => {
     ]);
     expect(g).toHaveLength(1);
     expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["parent"]);
+  });
+
+  it("side chat 会话(sideChat)不进任何组——/btw 浮窗自己管历史(issue #502)", () => {
+    const g = groupSessionsByWorkspace([
+      s("main", "/p/x", 100),
+      { ...s("side", "/p/x", 200), sideChat: true },
+    ]);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["main"]);
   });
 
   it("归档会话(archived)不进任何组——收在侧栏「已归档」区(ADR-0087)", () => {
