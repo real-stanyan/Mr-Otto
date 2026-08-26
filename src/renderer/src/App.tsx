@@ -785,7 +785,12 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
       </div>
       <div className="flex flex-col gap-[6px]">
         <Field label="action" text={preview.action} />
-        <Field label="server" text={preview.server} />
+        <Field
+          label="server"
+          text={preview.server}
+          truncated={preview.truncated.server}
+          fullLength={preview.fullLength.server}
+        />
         {preview.transport !== null && <Field label="transport" text={preview.transport} />}
         {preview.enabled !== null && (
           <Field

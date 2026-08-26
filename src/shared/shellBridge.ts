@@ -294,10 +294,13 @@ export interface McpConfigurePreview {
       这个预览此前没有 mcp_tool 参数预览、write_file 都有的那道 MAX_ARG_CHARS
       长度纪律——模型给一个几 MB 的 command 就整个过 IPC 落到卡片上）。
       url/command 没有值（null）时恒为 false；args 与 preview.args 一一对应，
-      长度相同——渲染层统一按下标配对，不用判断"有没有这一条"。 */
-  truncated: { url: boolean; command: boolean; args: readonly boolean[] };
+      长度相同——渲染层统一按下标配对，不用判断"有没有这一条"。
+      server 也在里面（终审 C 8+9）：它是完全由模型控制的 id，且渲染在 host
+      那一行**之前**——一个几千字符的 id 会把"到底连哪个主机"推下折叠线，
+      正好挤掉卡上唯一那条永不截断的安全闸。 */
+  truncated: { server: boolean; url: boolean; command: boolean; args: readonly boolean[] };
   /** 截断前的原长，配合 truncated 渲染"只显示前 N 字符，共 M"（同 McpPreviewArg 的口径） */
-  fullLength: { url: number; command: number; args: readonly number[] };
+  fullLength: { server: number; url: number; command: number; args: readonly number[] };
 }
 
 /** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */

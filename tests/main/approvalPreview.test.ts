@@ -332,4 +332,72 @@ describe("mcp_configure 的审批预览", () => {
     );
     expect(preview).toMatchObject({ kind: "mcp_configure", host: "evil.com" });
   });
+
+  // Task 9 的截断修复（clipValue / truncated / fullLength）此前一条测试都没有
+  // ——同一个文件里 mcp_tool 那条平行路径是有的（"超长参数在主进程就截断"），
+  // mcp_configure 这条没有。渲染层那份把 truncated 全写死成 false，所以
+  // "只显示前 N 字符，共 M" 那个 UI 分支从没被渲染过（终审 C 5）
+  it("超长 command 在主进程就截断，并说出原长", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "x".repeat(3_000) } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.command).toBe("x".repeat(2_000));
+    expect(preview?.kind === "mcp_configure" && preview.truncated.command).toBe(true);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.command).toBe(3_000);
+  });
+
+  it("超长 url / args 同样截断并说出原长", async () => {
+    const long = "https://mcp.example.com/" + "p".repeat(3_000);
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "z".repeat(2_500)] } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.args[1]?.length).toBe(2_000);
+    expect(preview?.kind === "mcp_configure" && preview.truncated.args).toEqual([false, true]);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.args).toEqual([2, 2_500]);
+
+    const httpPreview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: long } },
+      worldWithMcp()
+    );
+    expect(httpPreview?.kind === "mcp_configure" && httpPreview.truncated.url).toBe(true);
+    expect(httpPreview?.kind === "mcp_configure" && httpPreview.url?.length).toBe(2_000);
+  });
+
+  // 终审 C 8+9：server 完全由模型控制，且渲染在 host 那一行之前——不设上限
+  // 的话，一个几千字符的 id 会把卡上唯一那条永不截断的安全闸挤下折叠线
+  it("超长 server id 也有上限（它排在 host 之前，会把安全闸挤下折叠线）", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "S".repeat(5_000), kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.server.length).toBe(200);
+    expect(preview?.kind === "mcp_configure" && preview.truncated.server).toBe(true);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.server).toBe(5_000);
+    // 而 host 那一行照旧完整
+    expect(preview?.kind === "mcp_configure" && preview.host).toBe("mcp.supabase.com");
+  });
+
+  it("before 的 url / command 同样有上限——不让一个几 MB 的旧值原样过 IPC", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx" } },
+      worldWithMcp({ fs: { kind: "stdio", command: "y".repeat(9_000), args: [], env: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.before?.command?.length).toBe(2_000);
+  });
+
+  it("credentialKeys：键名数量与单个键名长度都有上限，超出的部分明说不静默丢", async () => {
+    const env = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`K${i}`, "v"]));
+    env["超长键名" + "N".repeat(500)] = "v";
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", env } },
+      worldWithMcp()
+    );
+    const keys = preview?.kind === "mcp_configure" ? preview.credentialKeys : [];
+    // 50 个键名 + 一句"还有 N 个未显示"
+    expect(keys).toHaveLength(51);
+    expect(keys.at(-1)).toMatch(/还有 11 个键名未显示/);
+    expect(Math.max(...keys.slice(0, 50).map((k) => k.length))).toBeLessThanOrEqual(120);
+  });
 });

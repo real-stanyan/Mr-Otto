@@ -70,10 +70,28 @@ function previewHost(raw: string): string | null {
 /** 单个字符串值按 MAX_ARG_CHARS 截断，和 clip() 同一份纪律（Task 9 审查
     Important 2：这个预览此前没有 mcp_tool 参数预览、write_file 都有的
     长度上限，一个几 MB 的 command/url/arg 会整个原样过 IPC 落到卡片上）。 */
-function clipValue(value: string): { value: string; truncated: boolean; fullLength: number } {
-  return value.length <= MAX_ARG_CHARS
+function clipValue(value: string, max = MAX_ARG_CHARS): { value: string; truncated: boolean; fullLength: number } {
+  return value.length <= max
     ? { value, truncated: false, fullLength: value.length }
-    : { value: value.slice(0, MAX_ARG_CHARS), truncated: true, fullLength: value.length };
+    : { value: value.slice(0, max), truncated: true, fullLength: value.length };
+}
+
+/** 凭据键名的两道上限。键名天生短（TOKEN / Authorization / project_ref），
+    几百字符的"键名"和几百把"键"都只有一个用途：把卡片撑长。而卡上唯一那条
+    永不截断的安全闸（host 行）离折叠线越近越好（终审 C 8+9）。
+    超出的部分不静默丢弃——末尾补一句人话，卡片可以少说，不能撒谎。 */
+const MAX_CRED_KEYS = 50;
+const MAX_CRED_KEY_CHARS = 120;
+
+/** server id 的上限。同上一条的理由，但更紧：这一行渲染在 host **之前**，
+    而 id 只是一个名字 */
+const MAX_SERVER_CHARS = 200;
+
+function clipCredentialKeys(keys: string[]): string[] {
+  const shown = keys.slice(0, MAX_CRED_KEYS).map((k) => clipValue(k, MAX_CRED_KEY_CHARS).value);
+  return keys.length > MAX_CRED_KEYS
+    ? [...shown, `…（还有 ${keys.length - MAX_CRED_KEYS} 个键名未显示）`]
+    : shown;
 }
 
 /** mcp_configure 的预览。参数出自模型，形状一律不赌——认不出来就不预览，
@@ -88,12 +106,20 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
   // id，这里不 trim 的话 configOf(" supabase ") 查不到磁盘上那台 supabase，
   // 卡片会把一次 update 显示成 add——卡和现实说的不是同一台 server
   const id = rawId.trim();
+  // server（= 完全由模型控制的 id）此前没有长度上限。它渲染在 host 那一行
+  // **之前**，所以一个几千字符的 id 会把"到底连哪个主机"那一行推下折叠线——
+  // 正好挤掉 Task 9 两轮修复才换来的那条唯一安全闸（终审 C 8+9）。
+  // 上限比 MAX_ARG_CHARS 紧得多：id 是一个名字，200 字符已经离谱得够用了
+  const serverClip = clipValue(id, MAX_SERVER_CHARS);
 
   const existing = mcp.configOf(id);
+  // before 的两个值同样上限（终审 C 8+9）：它们来自磁盘，但磁盘上那份也可能
+  // 是上一次 mcp_configure 写进去的模型输入。渲染在 host 之后，挤不掉安全闸，
+  // 但没理由让一个几 MB 的旧 command 原样过 IPC
   const before = existing
     ? {
-        url: existing.kind === "http" ? existing.url : null,
-        command: existing.kind === "stdio" ? existing.command : null,
+        url: existing.kind === "http" ? clipValue(existing.url).value : null,
+        command: existing.kind === "stdio" ? clipValue(existing.command).value : null,
         // 旧的启用状态（终审 B Important）：没有它，"这次会把用户手动关掉的
         // 那台重新启用"在卡上完全看不出来——新值和旧值都不在，卡片会把一次
         // 有执行后果的翻转显示成"什么都没变的更新"
@@ -104,12 +130,12 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
 
   if (a?.["action"] === "remove") {
     return {
-      kind: "mcp_configure", server: id, action: "remove", transport: null,
+      kind: "mcp_configure", server: serverClip.value, action: "remove", transport: null,
       host: null, url: null, command: null, args: [], credentialKeys: [],
       // 删除不谈"改成什么启用状态"
       enabled: null, before,
-      truncated: { url: false, command: false, args: [] },
-      fullLength: { url: 0, command: 0, args: [] },
+      truncated: { server: serverClip.truncated, url: false, command: false, args: [] },
+      fullLength: { server: serverClip.fullLength, url: 0, command: 0, args: [] },
     };
   }
 
@@ -130,7 +156,7 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
 
   return {
     kind: "mcp_configure",
-    server: id,
+    server: serverClip.value,
     action: before ? "update" : "add",
     transport: kind,
     host,
@@ -140,19 +166,21 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
     args: argsClip.map((c) => c.value),
     // 只出键名。真值绝不过桥（ADR-0044）——审批卡要回答的是"配了哪几把"，
     // 不是"每把长什么样"
-    credentialKeys: Object.keys(
-      creds !== null && typeof creds === "object" && !Array.isArray(creds) ? creds : {}
+    credentialKeys: clipCredentialKeys(
+      Object.keys(creds !== null && typeof creds === "object" && !Array.isArray(creds) ? creds : {})
     ),
     // 与 mcpConfigure.parseConfigureArgs 逐字同一份默认（`!== false` = 缺省
     // 为 true）：卡上写的必须就是即将落盘的那个值，两边各写一份就会漂移
     enabled: a?.["enabled"] !== false,
     before,
     truncated: {
+      server: serverClip.truncated,
       url: urlClip?.truncated ?? false,
       command: commandClip?.truncated ?? false,
       args: argsClip.map((c) => c.truncated),
     },
     fullLength: {
+      server: serverClip.fullLength,
       url: urlClip?.fullLength ?? 0,
       command: commandClip?.fullLength ?? 0,
       args: argsClip.map((c) => c.fullLength),

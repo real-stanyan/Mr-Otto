@@ -29,8 +29,8 @@ function preview(over: Partial<McpConfigurePreview> = {}): McpConfigurePreview {
     credentialKeys: [],
     enabled: true,
     before: null,
-    truncated: { url: false, command: false, args: [false, false] },
-    fullLength: { url: 0, command: 4, args: [2, 8] },
+    truncated: { server: false, url: false, command: false, args: [false, false] },
+    fullLength: { server: 2, url: 0, command: 4, args: [2, 8] },
     ...over,
   };
 }
@@ -111,21 +111,75 @@ describe("McpConfigureApproval 的 enabled 渲染", () => {
   });
 });
 
+/** 卡上每一行的 (标签, 值)，按 DOM 里的真实先后顺序。
+    Field / Row 都是「一个 div.flex.flex-col.gap-[2px]，第一个 <span> 是标签，
+    <pre> 是值」——顺序断言要的就是这份序列。 */
+function rows(container: HTMLElement): { label: string; value: string | null }[] {
+  return [...container.querySelectorAll('div[class*="gap-[2px]"]')].map((row) => ({
+    label: row.querySelector("span")?.textContent ?? "",
+    value: row.querySelector("pre")?.textContent ?? null,
+  }));
+}
+
+const labelIndex = (container: HTMLElement, label: string): number =>
+  rows(container).findIndex((r) => r.label === label);
+
+// 终审 C 8+9：Task 9 经过两轮修复才换来这条防线——卡上有一个独立的、永不
+// 截断的 host 字段，渲染在 url 那一行**之前**：无论 url 字符串怎么变形、
+// 多长、被截成什么样，"到底连哪个主机"永远在折叠线以上。
+// 这条用例名从第一版起就承诺了"host 独立一行、放在 url 之前"，但测试体只
+// 断言了 getByText("evil.com") 存在——顺序和不截断两件都没断，把 host 那行
+// 挪到 url 后面、或者给它加上截断，这条照样绿。
 describe("McpConfigureApproval 的 host / url", () => {
-  it("host 独立一行，放在 url 之前，且和 url 分开出现", () => {
-    render(
+  const attack = (over = {}) =>
+    preview({
+      transport: "http",
+      command: null,
+      args: [],
+      host: "evil.com",
+      url: "https://mcp.supabase.com" + ".".repeat(50) + "@evil.com/mcp",
+      truncated: { server: false, url: false, command: false, args: [] },
+      fullLength: { server: 2, url: 0, command: 0, args: [] },
+      ...over,
+    });
+
+  it("host 独立一行，DOM 顺序上真的排在 url 之前", () => {
+    const { container } = render(<McpConfigureApproval preview={attack()} />);
+    const hostAt = labelIndex(container, "host");
+    const urlAt = labelIndex(container, "url");
+    expect(hostAt).toBeGreaterThanOrEqual(0);
+    expect(urlAt).toBeGreaterThanOrEqual(0);
+    expect(hostAt).toBeLessThan(urlAt);
+    // 值也确实分家：host 那行是完整主机名，不是从 url 串里现切的一段
+    expect(rows(container)[hostAt]?.value).toBe("evil.com");
+  });
+
+  it("host 值永不截断——它旁边不该出现「只显示前 N 字符」那句告警", () => {
+    const { container } = render(<McpConfigureApproval preview={attack()} />);
+    const hostRow = [...container.querySelectorAll('div[class*="gap-[2px]"]')].find(
+      (r) => r.querySelector("span")?.textContent === "host"
+    );
+    expect(hostRow?.textContent).toContain("evil.com");
+    expect(hostRow?.textContent).not.toMatch(/只显示前/);
+  });
+
+  // server 是完全由模型控制的 id，且渲染在 host 之前——不设上限的话，几千
+  // 字符的 id 能把这条唯一的安全闸挤下折叠线
+  it("server 是几千字符时，host 行仍在 url 之前、host 值仍然完整", () => {
+    const { container } = render(
       <McpConfigureApproval
-        preview={preview({
-          transport: "http",
-          command: null,
-          args: [],
-          host: "evil.com",
-          url: "https://mcp.supabase.com" + ".".repeat(50) + "@evil.com/mcp",
-          truncated: { url: false, command: false, args: [] },
-          fullLength: { url: 0, command: 0, args: [] },
+        preview={attack({
+          // 主进程会截到 200；这里模拟"截断之后"的样子，连同它的告警一起渲染
+          server: "S".repeat(200),
+          truncated: { server: true, url: false, command: false, args: [] },
+          fullLength: { server: 5000, url: 0, command: 0, args: [] },
         })}
       />
     );
-    expect(screen.getByText("evil.com")).toBeInTheDocument();
+    const hostAt = labelIndex(container, "host");
+    expect(hostAt).toBeLessThan(labelIndex(container, "url"));
+    expect(rows(container)[hostAt]?.value).toBe("evil.com");
+    // 而且截断这件事说出来了，不是静默吞掉
+    expect(screen.getByText(/只显示前 200 字符，共 5000/)).toBeInTheDocument();
   });
 });
