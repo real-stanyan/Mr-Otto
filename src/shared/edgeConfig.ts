@@ -7,8 +7,20 @@
 // 拿官方 key 代理 OpenAI 兼容的 `/v1/chat/completions`。那条通路删掉之后
 // `/v1` 下面一个端点都不剩,基址于是退回到服务根,两个 helper 各自往后拼。
 
-/** 生产地址。ADR-0129 的迁移落地(#519)时改成 workers.dev 那一个 */
-export const DEFAULT_EDGE_BASE_URL = "https://otto-auth.stan.damianslife.com/gw";
+/**
+ * 生产地址。Mr Otto 自己那个 Cloudflare 账号下的 worker(ADR-0129)。
+ *
+ * **改这一行就是一次发版,而且是一次带过渡期的发版。** 它是编译期常量,写死在
+ * 每个发出去的包里,而更新走 GitHub releases、不强制 —— 旧安装会在很长一段
+ * 时间里继续打旧地址。所以 workers.dev 子域名、worker 名、账号这些都是先定死、
+ * 最后才动这一行,不是反过来。
+ *
+ * 旧地址 `https://otto-auth.stan.damianslife.com/gw` 在过渡期里**仍然活着**:
+ * 那台 VPS 上的旧网关还在跑,旧客户端连的是它。两套中继并存,互不相识 ——
+ * 所以**桌面和手机必须一起更新**(旧桌面 + 新手机永远配不上对,表现是两边都
+ * 显示在线但什么都传不过去)。停机与善后见 #521。
+ */
+export const DEFAULT_EDGE_BASE_URL = "https://edge.mrotto.workers.dev";
 
 /**
  * 覆盖用的环境变量。本地起服务调试时用(例:`http://127.0.0.1:8787`)。
