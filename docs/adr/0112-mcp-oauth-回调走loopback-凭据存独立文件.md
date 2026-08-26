@@ -46,7 +46,13 @@
 
 ### 三、token 存独立文件
 
-`~/.mr-otto/mcp-auth.json`，0600，与 `mcp.json` 平级。按 server id 分组，存 DCR 拿到的 client 信息（`client_id` / `client_secret`）、`access_token` / `refresh_token` / 过期时间、以及 `code_verifier`。
+`~/.mr-otto/mcp-auth.json`，0600，与 `mcp.json` 平级。按 server id 分组，落盘的恰好三项（`McpAuthRecord`，对应 SDK 的三个 `save*` 回调）：
+
+- `clientInformation` —— DCR 拿到的 client 信息（`client_id` / `client_secret`）
+- `tokens` —— `access_token` / `refresh_token` / 过期时间
+- `codeVerifier` —— PKCE 的 verifier
+
+**与设计文档的一处出入，在这里点明。** spec §3.3 当初还列了第四项「授权服务器元数据缓存」。实现时没有落这一项：元数据发现归 SDK，`OAuthClientProvider` 上的 `saveDiscoveryState` / `discoveryState` 是**可选**成员，本仓没有实现它们，元数据每次连接由 SDK 自己重新发现、不落盘。之所以专门写一句，是因为 spec 那句字段清单写在「以为要自己实现 OAuth 协议」的阶段——后来 §4 订正成了「不自己实现 OAuth 协议」（即本 ADR 决定一），§3.3 的字段清单没跟着改。照着设计文档去代码里找那个字段的人会找不到，那不是漏实现，是 spec 漏改。（spec 那句已随本 ADR 一并订正。）
 
 **理由**：`mcp.json` 有两条性质决定了 token 不能进去——
 
