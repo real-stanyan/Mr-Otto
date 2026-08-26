@@ -25,8 +25,15 @@ export interface EdgeDeps {
   now?: () => number;
   /** 远程中继(spec 2026-08-25)。不注入就没有 /rl/v1/* */
   relay?: {
-    attach(userId: string, role: "desktop" | "mobile", sink: { write(c: string): void }): () => void;
-    deliver(userId: string, fromRole: "desktop" | "mobile", payload: string): boolean;
+    /** null = 这一户连接数满了(ADR-0130) */
+    attach(
+      userId: string, role: "desktop" | "mobile", sink: { write(c: string): void },
+      opts?: { addressed?: boolean }
+    ): (() => void) | null;
+    deliver(
+      userId: string, fromRole: "desktop" | "mobile", payload: string,
+      opts?: { to?: string | undefined; from?: string | undefined }
+    ): boolean;
     peerOnline(userId: string, role: "desktop" | "mobile"): boolean;
   };
 }
@@ -98,7 +105,18 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
         write(":ok\n\n");
         // attach 在开场白之后:对端已在线时它会立刻回写一条 :peer,
         // 那条必须排在开场白后面,不能抢在响应头冲刷之前
-        detach = relay.attach(who.userId, role, { write });
+        // v=2 声明"我认寻址那一套"(ADR-0130)。**必须由客户端声明,不能中继单方面改格式**:
+        // 老解析器是整块前缀匹配的,两行的事件它会整条丢掉 —— 表现是连上了却一帧不收
+        const addressed = new URL(req.url).searchParams.get("v") === "2";
+        detach = relay.attach(who.userId, role, { write }, { addressed });
+        if (!detach) {
+          // 这一户开了太多连接。**在流里说,不是回 503** —— 响应头此时已经发出去了,
+          // 改状态码来不及;而且客户端拿到一条它不认识的控制行会跳过,
+          // 只是永远等不到 :peer,和"对端不在线"表现一致
+          write(":full\n\n");
+          controller.close();
+          return;
+        }
         // nginx 的 proxy_read_timeout 是 600s,不发东西就会被掐。
         // 注释行(以 ':' 开头)不是 data 帧,客户端的 SSE 解析器会跳过它
         timer = setInterval(() => write(":\n\n"), HEARTBEAT_MS);
@@ -132,7 +150,15 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     if (body.length > MAX_UPLINK_BYTES) {
       return apiError(413, "单帧超过 256 KiB", "frame_too_large");
     }
-    return deps.relay.deliver(who.userId, role, body)
+    const params = new URL(req.url).searchParams;
+    // to = 发给哪条连接(ADR-0130)。老客户端不带它 —— 对端只有一条时中继照旧转发,
+    // 不止一条时丢弃(猜一条发过去,收的那端解不开而发的那端以为成功了)
+    const to = params.get("to") ?? undefined;
+    // from = 发件人自称的 cid。**自称的,而且只用来路由** —— 收件人拿它挑用哪套
+    // 会话密钥去解,挑错就解不开,谁也占不到便宜;端到端身份始终只由握手签名决定。
+    // 而且这一切都在同一个已鉴权的账号内部,冒充别人的 cid 骗不到自己以外的人
+    const from = params.get("from") ?? undefined;
+    return deps.relay.deliver(who.userId, role, body, { to, from })
       ? new Response(null, { status: 204 })
       : apiError(409, "对端不在线", "peer_offline");
   }

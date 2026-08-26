@@ -46,8 +46,13 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
   const base = opts.baseUrl.replace(/\/+$/, "");
   const q = `?role=${opts.role}`;
 
-  let onMsg: (p: string) => void = () => {};
-  let onPeer: () => void = () => {};
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeer: (cid: string) => void = () => {};
+  let onGone: (cid: string) => void = () => {};
+  /** 收到过 `:cid` = 对面是新中继。之后裸 `:peer` 是发给老客户端的,不再理它 */
+  let addressed = false;
+  /** 中继给这条连接编的 id。发出去的每一帧都带上它,对端才知道是谁发的 */
+  let myCid = "";
   let onClose: () => void = () => {};
 
   let closed = false;
@@ -63,7 +68,7 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
       密封流按严格递增的计数器收帧,计数器在 seal 那一刻就定了,而并发 POST 的
       到达顺序由 HTTP 栈说了算。后 seal 的先到,先 seal 的那条就成了"迟到帧"
       被永久丢弃。时间线帧是几十 KB 的,最容易被别人抢先 */
-  const uplink: string[] = [];
+  const uplink: { payload: string; to: string }[] = [];
   let sending = false;
 
   async function pump(): Promise<void> {
@@ -71,12 +76,16 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
     sending = true;
     try {
       while (uplink.length > 0 && !closed) {
-        const payload = uplink[0]!;
+        const { payload, to } = uplink[0]!;
         const token = await opts.authToken();
         if (closed) return;
         if (token) {
           try {
-            const r = await doFetch(`${base}/rl/v1/send${q}`, {
+            // to 空串 = 老中继(没发过 :cid),不带这个参数走原来的单对端路径
+            const url = to
+              ? `${base}/rl/v1/send${q}&to=${encodeURIComponent(to)}&from=${encodeURIComponent(myCid)}`
+              : `${base}/rl/v1/send${q}`;
+            const r = await doFetch(url, {
               method: "POST",
               headers: { authorization: `Bearer ${token}` },
               body: payload,
@@ -109,10 +118,18 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
   const parser = () =>
     createSseParser({
       comment: (kind) => {
-        // `:peer` = 对端到场(ADR-0100);`:ok` 开场白;`` 心跳
-        if (kind === "peer") guard("在场信号", onPeer);
+        // `:cid <id>` 自己这条连接的 id;`:peer [id]` 对端到场(ADR-0100/0129);
+        // `:gone <id>` 对端某条没了;`:ok` 开场白;`` 心跳
+        if (kind.startsWith("cid ")) { addressed = true; myCid = kind.slice(4); return; }
+        if (kind === "peer") {
+          // 裸的那条只在老中继上才算数,见 addressed
+          if (!addressed) guard("在场信号", () => onPeer(""));
+          return;
+        }
+        if (kind.startsWith("peer ")) guard("在场信号", () => onPeer(kind.slice(5)));
+        else if (kind.startsWith("gone ")) guard("对端离场", () => onGone(kind.slice(5)));
       },
-      data: (payload) => guard("下行帧", () => onMsg(payload)),
+      data: (payload, from) => guard("下行帧", () => onMsg(payload, from)),
     });
 
   /**
@@ -162,7 +179,10 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
     // "流断了" 是唯一的线索 —— 断在第几秒、是被谁断的,全看不到
     let why = "对端关闭";
     try {
-      const res = await doFetch(`${base}/rl/v1/stream${q}`, {
+      // v=2 = "我认按 cid 寻址那一套"(ADR-0130)。**必须自己声明**:
+      // 老解析器整块前缀匹配,收到两行的事件会整条丢掉 —— 中继不能单方面改格式
+      myCid = ""; // 每条新连接一个新 cid,旧的不能带过去
+      const res = await doFetch(`${base}/rl/v1/stream${q}&v=2`, {
         headers: { authorization: `Bearer ${token}` },
         signal: ac.signal,
       });
@@ -210,16 +230,17 @@ export function createSseTransport(opts: SseTransportOpts): SseTransport {
       attempt = 0;
       void connect();
     },
-    send(payload) {
+    send(payload, to) {
       if (closed) return;
       // 入队即返回,刻意不因失败触发 onClose:
       // 409(对端不在线)是常态而不是"连接断了",而 send → onClose → startRound
       // → send 会当场变成同步死循环(见 RemoteTransport 的合同)
-      uplink.push(payload);
+      uplink.push({ payload, to });
       void pump();
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
+    onGone(cb) { onGone = cb; },
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;
