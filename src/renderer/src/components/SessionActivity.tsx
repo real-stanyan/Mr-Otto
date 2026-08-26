@@ -9,7 +9,7 @@
 import { useMemo } from "react";
 
 import { ActivityGraph } from "@/components/elements/activity-graph.js";
-import { sessionActivity } from "@/lib/sessionActivity.js";
+import { sessionActivity } from "../../../shared/sessionActivity.js";
 import { useChat } from "../store.js";
 
 export function SessionActivity({

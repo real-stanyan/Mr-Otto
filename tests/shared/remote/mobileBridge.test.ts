@@ -27,6 +27,14 @@ const BUSY: IslandFleet = {
   focusedSessionId: "s1",
 };
 
+const IDLE: IslandFleet = {
+  agents: [{
+    sessionId: "s1", title: "抓一下门禁为什么红", phase: "idle",
+    currentTool: null, turnStartedAt: 0, pendingApproval: null, workspace: "/w",
+  }],
+  focusedSessionId: "s1",
+};
+
 function fakeRelay() {
   const sink: Record<Role, ((p: string) => void) | null> = { desktop: null, mobile: null };
   const peerCb: Record<Role, (() => void) | null> = { desktop: null, mobile: null };
@@ -55,11 +63,15 @@ function fakeRelay() {
         close() { onClose(); },
       };
     },
-    /** 中继在两端都占上槽位时,往两侧各写一条 :peer(ADR-0100) */
-    announce() {
+    /**
+     * 中继在两端都占上槽位时,往两侧各写一条 :peer(ADR-0100)。
+     * `only` = 只有那一侧真的收到 —— 手机重连时另一条 :peer 写给了正在被拆掉的
+     * 旧连接,是真实中继下最常见的一种不对称,不是人为刁难。
+     */
+    announce(only?: Role) {
       if (!sink.desktop || !sink.mobile) return;
-      queue.push(() => peerCb.mobile?.());
-      queue.push(() => peerCb.desktop?.());
+      if (only !== "desktop") queue.push(() => peerCb.mobile?.());
+      if (only !== "mobile") queue.push(() => peerCb.desktop?.());
       flush();
     },
   };
@@ -186,6 +198,51 @@ describe("手机桥 ⇄ 桌面桥（真加密、会丢包的中继）", () => {
     expect(ready).toEqual([true, false, true]);
     expect(frames).toHaveLength(2);
     expect(frames[1]).toEqual({ type: "fleet", fleet: BUSY });
+    phone.dispose();
+    desktop.dispose();
+  });
+
+  // 这一条钉的是真机上那屏"没等到时间线 + 一串帧解密失败"的成因。
+  //
+  // relay.attach 在**任何一端接上时都给两边各写一条 :peer**。手机重连一次,
+  // 桌面就实打实收到一条并重开一轮;而手机自己那条写给了正在被拆掉的旧连接,
+  // 收不到。于是桌面开了两轮、手机只开了一轮。老实现"只认第一条 hello",
+  // 两端就此锁死在错配的一对上:都自认为 ready,每一帧都解不开,而且没有出口
+  // ——不再有 :peer 就不再有新的一轮。
+  it("在场信号一边多一边少 → 两端仍然收敛（老实现在这里死锁：都 ready，却谁也解不开谁）", () => {
+    const { relay, desktop, phone, frames, commands } = pair();
+    desktop.pushFleet(BUSY);
+    relay.announce();
+    expect(frames).toHaveLength(1);
+
+    // 手机重连两次,每次只有桌面听见;中间夹一次两边都听见的
+    relay.announce("desktop");
+    relay.announce();
+    relay.announce("desktop");
+
+    // 下行:桌面推的新快照,手机解得开
+    desktop.pushFleet(IDLE);
+    expect(frames[frames.length - 1]).toEqual({ type: "fleet", fleet: IDLE });
+
+    // 上行同样要通 —— 错配是双向的,只验一个方向会漏掉一半
+    expect(phone.send({ type: "approve", sessionId: "s1", callId: "c1" })).toBe(true);
+    expect(commands[commands.length - 1]).toEqual({
+      type: "approve", sessionId: "s1", callId: "c1",
+    });
+    phone.dispose();
+    desktop.dispose();
+  });
+
+  it("反过来也一样:只有手机听见在场信号", () => {
+    const { relay, desktop, phone, frames } = pair();
+    desktop.pushFleet(BUSY);
+    relay.announce();
+
+    relay.announce("mobile");
+    relay.announce("mobile");
+
+    desktop.pushFleet(IDLE);
+    expect(frames[frames.length - 1]).toEqual({ type: "fleet", fleet: IDLE });
     phone.dispose();
     desktop.dispose();
   });

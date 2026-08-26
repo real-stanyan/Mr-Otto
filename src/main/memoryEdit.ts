@@ -44,7 +44,7 @@ export async function applyUserEdit(
     // 目录自描述：项目档的写入必须同时补 root.txt，和 memory 工具那侧同款（幂等覆盖）。
     // 少了它，这条路径造出来的项目目录生下来就没有自描述——listProjectMemories 按
     // root.txt 列，于是它永远不出现在设置页，可注入是按哈希查目录、根本不看 root.txt，
-    // 结果是一份看不见却仍在进模型上下文的记忆（ADR-0112）
+    // 结果是一份看不见却仍在进模型上下文的记忆（ADR-0116）
     if (target === "project" && project) {
       await deps.writeFile(`${project.dir}/${PROJECT_ROOT_FILE}`, project.root);
     }
@@ -53,7 +53,7 @@ export async function applyUserEdit(
       deps.store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "system" });
     }
     // projectRoot 只在项目档上带（可选字段）：三档之后 target: "project" 不再唯一
-    // 标识一份文件，不带的话两个 repo 的手编在日志里分不开（ADR-0112）
+    // 标识一份文件，不带的话两个 repo 的手编在日志里分不开（ADR-0116）
     deps.store.append({
       sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after,
       ...(target === "project" && project ? { projectRoot: project.root } : {}),

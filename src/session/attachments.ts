@@ -8,28 +8,15 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import type { UserAttachmentRef } from "./events.js";
 
+// 嗅探搬去了 src/shared/images.ts —— 手机端在发之前要用**同一套签名**判
+// "这张图桌面收不收",两份表迟早会不一样。这里原样转出去,老 import 不用改
+import { detectImageType } from "../shared/images.js";
+
+export { detectImageType, type ImageType } from "../shared/images.js";
+
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 const ID_PATTERN = /^sha256:([a-f0-9]{64})$/;
-
-/** magic bytes 嗅探真实图片类型——扩展名和调用方声明都不可信,字节才是事实 */
-export function detectImageType(
-  data: Uint8Array
-): "image/png" | "image/jpeg" | "image/webp" | "image/gif" | null {
-  if (data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47)
-    return "image/png";
-  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff)
-    return "image/jpeg";
-  if (data.length >= 4 && data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38)
-    return "image/gif";
-  if (
-    data.length >= 12 &&
-    data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
-    data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
-  )
-    return "image/webp";
-  return null;
-}
 
 /** 两种分隔符手工剥(DSH 教训:POSIX 上 path.basename 不剥 \,Windows 客户端
     的完整本机路径会原样漏进日志)。剥完为空 = 没有可用名字 */

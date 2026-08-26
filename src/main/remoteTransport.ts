@@ -51,6 +51,40 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
   let abort: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  /** 上行队列。同时只发一条,按入队顺序 —— 理由和手机侧那份一字不差:
+      密封流按严格递增的计数器收帧,计数器在 seal 那一刻就定了,而并发 POST 的
+      到达顺序由 HTTP 栈说了算。后 seal 的先到,先 seal 的那条就成了"迟到帧"
+      被永久丢弃。时间线帧是几十 KB 的,最容易被别人抢先 */
+  const uplink: string[] = [];
+  let sending = false;
+
+  async function pump(): Promise<void> {
+    if (sending || closed) return;
+    sending = true;
+    try {
+      while (uplink.length > 0 && !closed) {
+        const payload = uplink[0]!;
+        const token = await opts.authToken();
+        if (closed) return;
+        if (token) {
+          try {
+            const r = await doFetch(`${base}/rl/v1/send${q}`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+              body: payload,
+            });
+            if (r.status !== 204 && r.status !== 409) log(`远程传输:上行 ${r.status}`);
+          } catch {
+            log("远程传输:上行发不出去");
+          }
+        }
+        uplink.shift();
+      }
+    } finally {
+      sending = false;
+    }
+  }
+
   function scheduleReconnect(): void {
     if (closed || timer) return;
     const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;
@@ -145,25 +179,18 @@ export function createSseTransport(opts: SseTransportOpts): RemoteTransport {
   return {
     send(payload) {
       if (closed) return;
-      // 刻意不 await、刻意不因失败触发 onClose:
+      // 入队即返回,刻意不因失败触发 onClose:
       // 409(对端不在线)是常态而不是"连接断了",而 send → onClose → startRound
       // → send 会当场变成同步死循环(见 RemoteTransport 的合同)
-      void (async () => {
-        const token = await opts.authToken();
-        if (closed || !token) return;
-        const r = await doFetch(`${base}/rl/v1/send${q}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: payload,
-        });
-        if (r.status !== 204 && r.status !== 409) log(`远程传输:上行 ${r.status}`);
-      })().catch(() => log("远程传输:上行发不出去"));
+      uplink.push(payload);
+      void pump();
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;
+      uplink.length = 0;
       if (timer) { clearTimeout(timer); timer = null; }
       abort?.abort();
       abort = null;

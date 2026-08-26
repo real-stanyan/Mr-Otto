@@ -1,4 +1,4 @@
-// 记忆栏目(设置页)——MEMORY.md / USER.md / 项目档三档的直接编辑口(ADR-0060,三档见 ADR-0112)。
+// 记忆栏目(设置页)——MEMORY.md / USER.md / 项目档三档的直接编辑口(ADR-0060,三档见 ADR-0116)。
 //
 // 正文不铺在页面上,收进弹窗:笔记加起来能有几千字符,平铺会把「重建搜索索引」这类入口挤到看不见。弹窗里的
 // textarea 绑的是磁盘原文(带 "\n§\n" 分隔符),不是重排过的"一行一条":getMemory()/saveMemory() 只归一化
@@ -424,7 +424,7 @@ export function MemorySettings() {
       listProjectMemories 跳过没有 root.txt 的目录,设置页的一切又都从这个列表推导——
       于是在一个**新仓库**里,用户既不能创建也不能预填它的项目档,得先设法诱使模型
       自己选 project 才行。而「移到项目档」这颗按钮是「不迁移存量」这个决定的配套,
-      它恰恰在最需要的场景(新仓库、项目约定还堵在超限的全局档里)不可用（ADR-0112）。
+      它恰恰在最需要的场景(新仓库、项目约定还堵在超限的全局档里)不可用（ADR-0116）。
       合成的那条 text 是空串:它在磁盘上还不存在,保存一次就由主进程连 root.txt 一起造出来 */
   const projects = useMemo<ProjectMemory[]>(() => {
     if (!sessionRoot || onDisk.some((p) => p.root === sessionRoot)) return onDisk;
