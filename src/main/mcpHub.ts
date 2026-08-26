@@ -3,7 +3,7 @@
 
 import { maskMcpConfig, type McpServerConfig, type McpServerStatus, type McpStatus } from "../shared/mcp.js";
 import { maskKey } from "../shared/keyMask.js";
-import { McpAuthRequiredError, type McpClientConn } from "./mcpClient.js";
+import { McpAuthRequiredError, raceAbort, type McpClientConn } from "./mcpClient.js";
 import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
 
 export type McpConnect = (id: string, cfg: McpServerConfig) => Promise<McpClientConn>;
@@ -16,8 +16,9 @@ export interface McpHub extends McpCapability {
   reconnect(id: string): Promise<void>;
   /** 跑一次 OAuth 授权（开浏览器、等回调、换 token 落盘），成功后自动重连。
       失败原样抛给调用方：设置页要把原因显示出来，agent 要把原因转述给用户。
-      只对 http 传输有意义——stdio 的凭据走 env，调到会拿到一句人话 */
-  authorize(id: string): Promise<void>;
+      只对 http 传输有意义——stdio 的凭据走 env，调到会拿到一句人话。
+      signal（#504）= turn 的中断信号，透传到 authorizeMcpServer 里真取消 */
+  authorize(id: string, signal?: AbortSignal): Promise<void>;
   onChange(cb: () => void): () => void;
   closeAll(): Promise<void>;
   /** 上一次读 ~/.mr-otto/mcp.json 时,解析不动的那几行的人话原因(mcpConfig.ts
@@ -126,7 +127,7 @@ export function createMcpHub(opts: {
   /** 跑一次完整 OAuth 授权。真实现是 mcpClient.authorizeMcpServer（它才认识
       SDK），hub 只管什么时候调、调完做什么——同 connect 的注入方向，
       hub 因此完全不碰 SDK，状态机能用假实现测干净 */
-  authorize(id: string, cfg: McpServerConfig): Promise<void>;
+  authorize(id: string, cfg: McpServerConfig, signal?: AbortSignal): Promise<void>;
   /** 抹掉一台 server 的 OAuth 凭据。remove() 时调 —— 配置删了而凭据留着，
       就是一份没有任何界面能看到、也没人会想起来撤销的长期授权 */
   clearAuth(id: string): void;
@@ -348,12 +349,18 @@ export function createMcpHub(opts: {
 
     reconnect: reconnectOne,
 
-    async configure(id, cfg) {
+    async configure(id, cfg, signal) {
       // 复用 save/remove 的全部既有语义（遮罩合并、写在前状态变更在后、
       // unrecognizedIds 保护、删除时清 OAuth 凭据）——agent 这条路不该
       // 有一套"简化版"的写盘逻辑，那必然与设置页那条 drift
-      if (cfg === null) await removeOne(id);
-      else await saveOne(id, cfg);
+      signal?.throwIfAborted();
+      // 中断 = 弃等，不是撤销（#504）：saveOne/removeOne 的落盘发生在各自
+      // 第一个 await 之前（「写在前」），弃等丢不掉已批准的写入；剩下的
+      // 连接/关闭在后台跑到底、状态机自己 emit() 收尾——同 ready() 超时的
+      // 取舍，绝不因中断对同一台 server 再发起第二次 connect（stdio 下
+      // 那是两个孤儿子进程）
+      if (cfg === null) await raceAbort(removeOne(id), signal);
+      else await raceAbort(saveOne(id, cfg), signal);
     },
 
     configOf: (id) => {
@@ -361,14 +368,16 @@ export function createMcpHub(opts: {
       return entries.get(id)?.cfg;
     },
 
-    async authorize(id) {
+    async authorize(id, signal) {
       syncFromDisk();
       const e = entries.get(id);
       if (!e) throw new Error(`没有名叫「${id}」的 MCP server，无法授权`);
       // 授权失败原样抛：状态停在 needs-auth 是诚实的——用户点了拒绝、
       // 或者超时没点，这台确实还是"需要授权"，不该被改成 failed（那会
-      // 让设置页把"你还没授权"显示成"这台坏了"）
-      await opts.authorize(id, e.cfg);
+      // 让设置页把"你还没授权"显示成"这台坏了"）。中断同理（#504）：
+      // authorizeMcpServer 收到 signal 会自己关端口收尾并抛 AbortError，
+      // 这里原样穿透、不 reconnect
+      await opts.authorize(id, e.cfg, signal);
       await reconnectOne(id);
     },
 

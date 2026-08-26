@@ -131,7 +131,9 @@ describe("装饰器透传 mcp", () => {
   // 测试，不是留言提醒）。断言方式选"记录调用的假 mcp，验证装饰后的调用打到
   // 底层"，不只是 toBeTypeOf("function")：后者在"透传成一个空函数"时照样绿，
   // 抓不住"字段还在但已经是替身"这种漂移。
-  it("withAbortSignal 把 configure / authorize / configOf 原样穿透到底层 mcp（不绑 signal——它们不是一次性请求，见接口注释）", async () => {
+  // #504 起 configure/authorize 也绑 signal：它们会长时间阻塞 turn（连接兜底
+  // 60s / 等授权 5 分钟），用户点停止必须能穿到这两条路上；configOf 仍是同步读取
+  it("withAbortSignal 把 signal 绑进 configure / authorize，configOf 原样穿透（#504）", async () => {
     const configure = vi.fn(async () => {});
     const authorize = vi.fn(async () => {});
     const configOf = vi.fn(() => ({ kind: "http" as const, url: "https://a/mcp", headers: {}, enabled: true }));
@@ -139,10 +141,10 @@ describe("装饰器透传 mcp", () => {
     const w = withAbortSignal(withMcp(fakeWorld(), { ...fakeMcp(), configure, authorize, configOf }), ac.signal);
 
     await w.mcp!.configure("s", null);
-    expect(configure).toHaveBeenCalledWith("s", null);
+    expect(configure).toHaveBeenCalledWith("s", null, ac.signal);
 
     await w.mcp!.authorize("s");
-    expect(authorize).toHaveBeenCalledWith("s");
+    expect(authorize).toHaveBeenCalledWith("s", ac.signal);
 
     expect(w.mcp!.configOf("s")).toMatchObject({ kind: "http", url: "https://a/mcp" });
     expect(configOf).toHaveBeenCalledWith("s");

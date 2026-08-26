@@ -99,4 +99,24 @@ describe("startLoopback", () => {
     cb.close();
     await expect(hit(cb.redirectUri, { state: cb.state, code: "abc" })).rejects.toThrow();
   });
+
+  // #504：用户点停止时 turn 的 AbortSignal 要能穿进来——否则 waitForCode
+  // 会顶着中断干等满 5 分钟，端口也一直开着
+  it("signal 中断：waitForCode 立即 reject（AbortError）并关端口（#504）", async () => {
+    const cb = await startLoopback();
+    const ac = new AbortController();
+    const waiting = cb.waitForCode(AUTH_TIMEOUT_MS, ac.signal);
+    const assertion = expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    ac.abort();
+    await assertion;
+    await expect(hit(cb.redirectUri, { state: cb.state, code: "abc" })).rejects.toThrow();
+  });
+
+  it("signal 已中断再调 waitForCode：同步 reject，不挂定时器（#504）", async () => {
+    const cb = await startLoopback();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(cb.waitForCode(AUTH_TIMEOUT_MS, ac.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(hit(cb.redirectUri, { state: cb.state, code: "abc" })).rejects.toThrow();
+  });
 });

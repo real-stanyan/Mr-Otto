@@ -8,7 +8,7 @@
 // isAuthError()——本身不发请求、不连网络，跟"mcpHub 的状态机测试不碰 SDK"
 // 是两回事：那边测的是不依赖 SDK 就能测干净的状态机，这里测的正是
 // mcpClient.ts 自己那一小块可以脱离进程单测的纯逻辑。
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { isAuthError, describeAuthError, authRequiredError, scrubOAuthError, needsFreshRegistration } from "../../src/main/mcpClient.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -122,5 +122,23 @@ describe("needsFreshRegistration（#471：二次授权的 redirect_uri 不匹配
   it("压根没注册过 → 没东西可重置", () => {
     expect(needsFreshRegistration({}, uri)).toBe(false);
     expect(needsFreshRegistration({ redirectUri: "http://127.0.0.1:1111/callback" }, uri)).toBe(false);
+  });
+});
+
+describe("authorizeMcpServer 的中断（#504）", () => {
+  it("signal 已中断：直接 reject，不起 loopback、不开浏览器", async () => {
+    const { authorizeMcpServer } = await import("../../src/main/mcpClient.js");
+    const openBrowser = vi.fn();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      authorizeMcpServer(
+        "s",
+        { kind: "http", url: "https://mcp.example.com/mcp", headers: {}, enabled: true },
+        { read: () => ({}), write: () => {}, resetClientRegistration: () => {}, openBrowser },
+        ac.signal
+      )
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 });

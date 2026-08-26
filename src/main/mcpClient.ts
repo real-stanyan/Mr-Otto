@@ -362,18 +362,47 @@ export function createOAuthProvider(
   };
 }
 
+/** 中断 = 弃等（#504）：底层 promise 继续在后台跑到底（接住它的 rejection，
+    不留 unhandled），调用方拿到 signal.reason（AbortError）后自己收尾。
+    SDK 的 connect() 不吃 AbortSignal，只能这样套在外面。 */
+export const raceAbort = <T>(p: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return p;
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      p.catch(() => {});
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = (): void => {
+      p.catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e: unknown) => { signal.removeEventListener("abort", onAbort); reject(e); }
+    );
+  });
+};
+
+const isAbortError = (e: unknown): boolean => e instanceof Error && e.name === "AbortError";
+
 /** 跑完一次完整授权：开浏览器 → 等回调 → 换 token 落盘。
-    成功返回即代表凭据已经在盘上，调用方（hub）接着 reconnect 即可。 */
+    成功返回即代表凭据已经在盘上，调用方（hub）接着 reconnect 即可。
+    signal（#504）= turn 的中断信号：等授权最长 5 分钟，用户点停止必须能
+    立即收尾（关 loopback 端口、关 transport），不顶着中断干等。 */
 export async function authorizeMcpServer(
   id: string,
   cfg: McpServerConfig,
-  deps: McpOAuthDeps
+  deps: McpOAuthDeps,
+  signal?: AbortSignal
 ): Promise<void> {
   if (cfg.kind !== "http") {
     // stdio 的凭据走 env，没有 OAuth 这回事——让调用方看到明确的话，
     // 而不是在 new URL(undefined) 那里炸一个看不懂的 TypeError
     throw new Error(`「${id}」是 stdio 传输的 server，凭据配在 env 里，没有 OAuth 授权这一步`);
   }
+  signal?.throwIfAborted();
   const loopback = await startLoopback();
   try {
     // 二次授权（#471）：盘上的动态客户端注册绑着上一次的随机端口，精确匹配
@@ -386,7 +415,9 @@ export async function authorizeMcpServer(
       state: loopback.state,
       read: deps.read,
       write: deps.write,
-      openBrowser: deps.openBrowser,
+      // 中断后 SDK 可能还在后台跑到 redirectToAuthorization——那时不该再
+      // 弹浏览器劫持用户屏幕（#504）
+      openBrowser: (url) => { if (!signal?.aborted) deps.openBrowser(url); },
     });
     const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
       requestInit: { headers: cfg.headers },
@@ -400,15 +431,29 @@ export async function authorizeMcpServer(
       //    就是这个异常的全部含义，不是故障
       // ② 不抛 —— 盘上的 token 还能用（或刚被 refresh 续上），这台其实
       //    不需要重新授权，关掉连接直接收工
-      await client.connect(transport as unknown as Transport);
+      await raceAbort(client.connect(transport as unknown as Transport), signal);
       await client.close();
       return;
     } catch (e) {
+      // 中断（#504）：connect 还在后台跑，关 transport 掐掉它的传输层，
+      // 原样抛 AbortError（engine 的收口逻辑按 name 认它，不能被 scrub 改写）
+      if (isAbortError(e)) {
+        void transport.close().catch(() => {});
+        throw e;
+      }
       // 这条路和下面 finishAuth 的失败最终都会变成 mcp_authorize 的
       // tool_result 落日志——OAuthError 的响应体原文在这里拦掉（#470）
       if (!(e instanceof UnauthorizedError)) throw scrubOAuthError(e);
     }
-    const code = await loopback.waitForCode(AUTH_TIMEOUT_MS);
+    let code: string;
+    try {
+      code = await loopback.waitForCode(AUTH_TIMEOUT_MS, signal);
+    } catch (e) {
+      // 中断或超时都别留 transport——它在 UnauthorizedError 之后还握着
+      // 发现/注册阶段的连接状态（loopback 端口由外层 finally 关）
+      void transport.close().catch(() => {});
+      throw e;
+    }
     // finishAuth 内部用盘上的 code_verifier 把 code 换成 token，
     // 换到之后走 provider.saveTokens 落盘。失败的典型场景正是 token 端点
     // 拒绝（invalid_grant），SDK 会把响应解析成 OAuthError——同样要 scrub
