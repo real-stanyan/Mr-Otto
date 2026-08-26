@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createShadowGitCheckpoints, workspaceStoreName } from "../../src/world/checkpoints.js";
+import {
+  createShadowGitCheckpoints,
+  sessionCheckpointStoreName,
+  workspaceStoreName,
+} from "../../src/world/checkpoints.js";
 
 let root: string;
 let ws: string;
@@ -105,5 +109,26 @@ describe("影子 git 检查点（issue #395）", () => {
     expect(workspaceStoreName("/a/b")).toBe(workspaceStoreName("/a/b"));
     expect(workspaceStoreName("/a/b")).not.toBe(workspaceStoreName("/a/c"));
     expect(workspaceStoreName("/a/b")).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("sessionCheckpointStoreName：同工作区不同会话不同仓,且带工作区前缀", () => {
+    const a = sessionCheckpointStoreName("/a/b", "s-20260826-abcd1234");
+    const b = sessionCheckpointStoreName("/a/b", "s-20260826-ffff0000");
+    expect(a).not.toBe(b);
+    expect(a.startsWith(workspaceStoreName("/a/b"))).toBe(true);
+  });
+
+  it("按会话拆仓(#573)：A 回退不吞 B 在 A 快照之后新建的文件", async () => {
+    // Default 工作区的场景:同一个 ws,两个会话各一份影子仓
+    const capA = createShadowGitCheckpoints({ workspace: ws, gitDir: join(root, "shadow-A") });
+    await writeFile(join(ws, "a.txt"), "A 的 v1");
+    const id = await capA.save("A turn 1");
+    await writeFile(join(ws, "a.txt"), "A 的 v2");
+    await capA.save("A turn 2");
+    // B 会话此后才新建自己的文件——它在 A 的仓里从没被跟踪过
+    await writeFile(join(ws, "b.txt"), "B 的产出");
+    await capA.restore(id);
+    expect(await readFile(join(ws, "a.txt"), "utf8")).toBe("A 的 v1"); // A 自己的回退生效
+    expect(await readFile(join(ws, "b.txt"), "utf8")).toBe("B 的产出"); // B 的新文件毫发无损
   });
 });
