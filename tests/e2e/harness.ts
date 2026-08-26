@@ -13,7 +13,11 @@
 //      auth.json）也是新的。跑完删掉。共用一个 e2e profile 的话，上一次跑剩下的
 //      会话会漏进下一次的侧栏，用例之间就有了顺序依赖。
 //
-// 不碰网络、不碰模型：没有 key 就没有出网的路。要验「派活」那一段的用例自己起
+//   3. 模型凭据从环境里抹掉（blankCredentials）。前两条挡不住主进程开机时
+//      读仓库根的 `.env` —— Playwright 起 Electron 的 cwd 就是仓库根，
+//      开发者本机那把真 key 会原样进来（#480）。
+//
+// 三条齐了才谈得上「不碰网络、不碰模型」。要验「派活」那一段的用例自己起
 // 一个假模型服务（fakeModel.ts），端点用 provider 的 `*_BASE_URL` 环境变量顶掉。
 
 import { _electron as electron, expect, type ElectronApplication, type Page } from "@playwright/test";
@@ -22,6 +26,8 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { providerKeyEnvs } from "../../src/shared/providerCatalog.js";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAIN = join(ROOT, "out", "main", "index.js");
@@ -128,6 +134,30 @@ function seedSkills(root: string, seeds: SkillSeed[] | undefined): void {
   }
 }
 
+/** 把这台机器上的模型凭据从 e2e 的环境里抹掉 —— 隔离的第三条腿。
+    HOME 和 OTTO_PROFILE 挡住了配置目录和 userData，但主进程还有第三条读 key 的路：
+    `src/main/index.ts` 开机时 `loadDotEnv(..., join(process.cwd(), ".env"))`，
+    而 Playwright 起 Electron 用的 cwd 就是仓库根 —— 开发者本机那份 `.env`
+    （里面通常有一把真的 DEEPSEEK_API_KEY）会原样进 e2e 的进程。后果不是"多读了
+    个变量"：会话一开就真的打给厂商、真的花钱，而且**验收结果随模型心情变**
+    （#480 就是这么红的：模型答了话、要调 bash、停在审批门上不动，
+    于是顶栏那颗分支下拉被 `status === "running"` 一直按着 disabled）。
+
+    `loadDotEnv` 的语义是"只补空缺"（`process.env[k] === undefined` 才写），
+    所以把这些变量显式置成空串就够挡住 —— 不需要改产品代码，也不需要挪 cwd。
+
+    名单从 `providerKeyEnvs()` 现取而不是在这儿手抄一份：抄一份的话，
+    以后目录里新增一家厂商，这里会**静默**漏掉它（fail-open，又是一次真出网），
+    而 CONFIG_DIR 那种手抄的失效方式是当场红一条（fail-closed），两者不同。 */
+function blankCredentials(): Record<string, string> {
+  const blanked: Record<string, string> = {};
+  for (const envName of providerKeyEnvs()) blanked[envName] = "";
+  // 型号也来自 .env（`OTTER_MODEL`）：它不是凭据，但同样让"默认开哪款模型"
+  // 跟着开发者本机的偏好走，用例就不确定了。空串 = 走目录默认款
+  blanked["OTTER_MODEL"] = "";
+  return blanked;
+}
+
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   if (!opts.packaged) {
     expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
@@ -146,7 +176,9 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     // 打好包的那一只从自己的 asar 里读入口，不能再把仓库根塞给它
     ...(opts.packaged ? { executablePath: PACKAGED_APP, args: [] } : { args: [ROOT] }),
     cwd: ROOT,
-    env: { ...process.env, ...opts.env, HOME: home, OTTO_PROFILE: profile },
+    // blankCredentials 排在 opts.env 之前：fakeModelEnv() 那类用例要自己塞
+    // 一把假 key + 假端点，它们的意志优先
+    env: { ...process.env, ...blankCredentials(), ...opts.env, HOME: home, OTTO_PROFILE: profile },
   });
   const userData = await app.evaluate(({ app }) => app.getPath("userData"));
   const errors: string[] = [];
