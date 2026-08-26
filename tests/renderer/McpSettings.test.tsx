@@ -87,11 +87,28 @@ describe("McpSettings 的授权按钮", () => {
     expect(screen.queryByRole("button", { name: "授权" })).not.toBeInTheDocument();
   });
 
+  // 这条用例名承诺的是"期间按钮禁用"（防重复点击 = 防重复开浏览器/重复跑
+  // 授权流程），但它此前只断言了桥被调用：把实现里的 disabled={authorizing}
+  // 删掉，它照样绿（终审 C 6）。要真的钉住"期间"，桥必须停在半路——所以
+  // stub 换成一个手动 resolve 的 deferred promise
   it("点授权调桥，期间按钮禁用", async () => {
-    const bridge = stubBridge();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = () => resolve();
+    });
+    const bridge = stubBridge({
+      authorizeMcpServer: vi.fn(() => pending.then(() => ({ servers: [], errors: [] }))),
+    });
     renderMcpSettings();
     const btn = await screen.findByRole("button", { name: "授权" });
     await userEvent.click(btn);
+
+    // 桥还没回来：按钮禁用 + 文案改口，用户点不动第二次
+    const waiting = await screen.findByRole("button", { name: "等浏览器…" });
+    expect(waiting).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "授权" })).not.toBeInTheDocument();
+
+    release();
     await waitFor(() => {
       expect(bridge.authorizeMcpServer).toHaveBeenCalledWith("supabase");
     });

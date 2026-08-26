@@ -45,6 +45,10 @@ describe("startLoopback", () => {
     const assertion = expect(waiting).rejects.toThrow(/state/);
     await hit(cb.redirectUri, { state: "别人的state", code: "abc123" });
     await assertion;
+    // reject 之后端口也必须关掉（B-Minor 3-2）：只断 reject 的话，一个仍在
+    // 监听的本地口子会活到进程退出，而 state 对不上正是"有人在打这个端口的
+    // 主意"的场景。同该文件另外三条（收完一次立刻关 / 超时后关 / close() 后关）
+    await expect(hit(cb.redirectUri, { state: cb.state, code: "abc" })).rejects.toThrow();
   });
 
   it("授权服务器回 error 时给人话，而不是干等到超时", async () => {
