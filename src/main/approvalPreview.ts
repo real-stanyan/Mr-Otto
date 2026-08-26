@@ -90,6 +90,10 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
     ? {
         url: existing.kind === "http" ? existing.url : null,
         command: existing.kind === "stdio" ? existing.command : null,
+        // 旧的启用状态（终审 B Important）：没有它，"这次会把用户手动关掉的
+        // 那台重新启用"在卡上完全看不出来——新值和旧值都不在，卡片会把一次
+        // 有执行后果的翻转显示成"什么都没变的更新"
+        enabled: existing.enabled,
         toolCount: mcp.servers().find((s) => s.id === id)?.tools.length ?? 0,
       }
     : null;
@@ -97,7 +101,9 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
   if (a?.["action"] === "remove") {
     return {
       kind: "mcp_configure", server: id, action: "remove", transport: null,
-      host: null, url: null, command: null, args: [], credentialKeys: [], before,
+      host: null, url: null, command: null, args: [], credentialKeys: [],
+      // 删除不谈"改成什么启用状态"
+      enabled: null, before,
       truncated: { url: false, command: false, args: [] },
       fullLength: { url: 0, command: 0, args: [] },
     };
@@ -133,6 +139,9 @@ function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): Appr
     credentialKeys: Object.keys(
       creds !== null && typeof creds === "object" && !Array.isArray(creds) ? creds : {}
     ),
+    // 与 mcpConfigure.parseConfigureArgs 逐字同一份默认（`!== false` = 缺省
+    // 为 true）：卡上写的必须就是即将落盘的那个值，两边各写一份就会漂移
+    enabled: a?.["enabled"] !== false,
     before,
     truncated: {
       url: urlClip?.truncated ?? false,

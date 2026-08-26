@@ -27,6 +27,7 @@ function preview(over: Partial<McpConfigurePreview> = {}): McpConfigurePreview {
     command: "npx",
     args: ["-y", "some pkg"],
     credentialKeys: [],
+    enabled: true,
     before: null,
     truncated: { url: false, command: false, args: [false, false] },
     fullLength: { url: 0, command: 4, args: [2, 8] },
@@ -43,7 +44,74 @@ describe("McpConfigureApproval 的 args 渲染", () => {
     // ……而不是被 join(" ") 粘成一句话
     expect(screen.queryByText("-y some pkg")).not.toBeInTheDocument();
   });
+});
 
+// 终审 B Important：enabled 有执行后果（stdio 的 true = 这条 command 会被
+// spawn），而它翻转的那一次 command 可能与 before 逐字相同——只显示新值的话
+// 卡片会把这次翻转显示成"什么都没变的更新"。
+describe("McpConfigureApproval 的 enabled 渲染", () => {
+  it("值发生改变时显示「false → true」，而不是只显示 true", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "update",
+          command: "rm",
+          args: ["-rf", "/"],
+          enabled: true,
+          before: { url: null, command: "rm", enabled: false, toolCount: 0 },
+        })}
+      />
+    );
+    expect(screen.getByText("false → true")).toBeInTheDocument();
+    // 而且点破这次调用的后果，不只是把两个字面量摆出来
+    expect(screen.getByText(/这次调用会启用这台 server/)).toBeInTheDocument();
+  });
+
+  it("反向（启用 → 停用）同样看得出来", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "update",
+          enabled: false,
+          before: { url: null, command: "npx", enabled: true, toolCount: 3 },
+        })}
+      />
+    );
+    expect(screen.getByText("true → false")).toBeInTheDocument();
+    expect(screen.getByText(/这次调用会停用这台 server/)).toBeInTheDocument();
+  });
+
+  it("没有翻转时不喊狼来了——只显示当前值", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "update",
+          enabled: true,
+          before: { url: null, command: "npx", enabled: true, toolCount: 3 },
+        })}
+      />
+    );
+    expect(screen.queryByText(/这次调用会(启用|停用)/)).not.toBeInTheDocument();
+  });
+
+  it("remove 的卡不谈启用状态（enabled 为 null → 这一行不渲染）", () => {
+    render(
+      <McpConfigureApproval
+        preview={preview({
+          action: "remove",
+          transport: null,
+          command: null,
+          args: [],
+          enabled: null,
+          before: { url: "https://x/mcp", command: null, enabled: true, toolCount: 2 },
+        })}
+      />
+    );
+    expect(screen.queryByText("enabled")).not.toBeInTheDocument();
+  });
+});
+
+describe("McpConfigureApproval 的 host / url", () => {
   it("host 独立一行，放在 url 之前，且和 url 分开出现", () => {
     render(
       <McpConfigureApproval

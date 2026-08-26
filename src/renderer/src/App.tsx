@@ -746,15 +746,20 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
     text,
     truncated,
     fullLength,
+    note,
   }: {
     label: string;
     text: string;
     truncated?: boolean;
     fullLength?: number;
+    /** 挂在标签旁边的一句提醒（同 truncated 的位置）。目前只有 enabled 用它
+        说"这次调用会改变启用状态" */
+    note?: string;
   }) => (
     <div className="flex flex-col gap-[2px]">
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-[11px] text-foreground/45">{label}</span>
+        {note !== undefined && <span className="text-[11px] text-warn">{note}</span>}
         {truncated === true && (
           <span className="text-[11px] text-warn">
             只显示前 {text.length} 字符，共 {fullLength}
@@ -764,6 +769,12 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
       <Value text={text} />
     </div>
   );
+  // enabled 是唯一一个"有执行后果却曾经不在卡上"的字段（终审 B Important）：
+  // stdio 的 enabled: true 就是"这条 command 会被 spawn"。而它翻转的那一次，
+  // command/url 可能与 before 逐字相同——只显示新值的话，用户看到的是一次
+  // "什么都没变的更新"。所以变化时显示 "false → true"，并在标签旁点破
+  const enabledFlipped =
+    preview.enabled !== null && preview.before !== null && preview.before.enabled !== preview.enabled;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -776,6 +787,23 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
         <Field label="action" text={preview.action} />
         <Field label="server" text={preview.server} />
         {preview.transport !== null && <Field label="transport" text={preview.transport} />}
+        {preview.enabled !== null && (
+          <Field
+            label="enabled"
+            text={
+              enabledFlipped
+                ? `${String(preview.before?.enabled)} → ${String(preview.enabled)}`
+                : String(preview.enabled)
+            }
+            {...(enabledFlipped
+              ? {
+                  note: preview.enabled
+                    ? "这次调用会启用这台 server（stdio = 这条命令会被执行）"
+                    : "这次调用会停用这台 server",
+                }
+              : {})}
+          />
+        )}
         {/* 独立、永不截断的真实主机名（Task 9 复审 Critical A 修法②）：放在
             url 那一行之前——无论下面那行怎么变形、多长、被截成什么样，
             "到底连哪个主机"必须先出现、且必须完整 */}
@@ -826,7 +854,9 @@ export function McpConfigureApproval({ preview }: { preview: McpConfigurePreview
         {preview.before && (
           <Row label="before（改之前）">
             <Value
-              text={`${preview.before.url ?? preview.before.command ?? "（无）"} · 现有 ${preview.before.toolCount} 把工具`}
+              text={`${preview.before.url ?? preview.before.command ?? "（无）"} · ${
+                preview.before.enabled ? "已启用" : "已停用"
+              } · 现有 ${preview.before.toolCount} 把工具`}
             />
           </Row>
         )}

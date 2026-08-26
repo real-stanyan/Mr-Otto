@@ -246,6 +246,58 @@ describe("mcp_configure 的审批预览", () => {
     expect(preview).toMatchObject({ action: "remove", server: "s" });
   });
 
+  // 终审 B Important：enabled 是唯一一个"有执行后果却不在卡上"的字段。
+  // stdio 的 enabled: true 就是"这条 command 会被 spawn"（mcpHub.ts），而
+  // mcp_configure 的默认是 `a["enabled"] !== false` = 缺省 true。没有这两个
+  // 字段的话有一条无声路径：用户手动关掉过一台 server，agent 用同样的
+  // id/command/args 调一次 mcp_configure，卡片显示 update + command 逐字相同
+  // = 一次"看起来什么都没变"的更新，用户点同意，命令当场被 spawn。
+  it("enabled 缺省为 true，与 parseConfigureArgs 同一份默认", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", enabled: true });
+  });
+
+  it("显式 enabled: false 照实上卡", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", enabled: false } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", enabled: false });
+  });
+
+  it("「看起来什么都没变的更新」也把 enabled 的翻转摊在卡上（false → true）", async () => {
+    const preview = await buildApprovalPreview(
+      // command/args 与磁盘上那台逐字相同，唯一的变化是 enabled 从 false 翻成 true
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "rm", args: ["-rf", "/"] } },
+      worldWithMcp({ fs: { kind: "stdio", command: "rm", args: ["-rf", "/"], env: {}, enabled: false } })
+    );
+    expect(preview).toMatchObject({
+      kind: "mcp_configure",
+      action: "update",
+      enabled: true,
+      before: { command: "rm", enabled: false },
+    });
+  });
+
+  it("before 带上旧的启用状态——只有新值看不出这次是不是翻转", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://新的/mcp" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.before?.enabled).toBe(true);
+  });
+
+  it("remove 不谈启用状态 —— enabled 为 null", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", action: "remove" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.enabled).toBeNull();
+  });
+
   // Task 9 审查 Important 1：args 必须留在数组里、一格一项，不能在预览这一层
   // 就被 join 成一句话——`["-y", "some pkg"]` 和 `["-y", "some", "pkg"]` join
   // 之后长得一模一样，用户分不清是一个参数还是两个。渲染层（App.tsx 的

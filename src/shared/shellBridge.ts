@@ -277,8 +277,19 @@ export interface McpConfigurePreview {
   args: string[];
   /** env（stdio）或 headers（http）的**键名**；值不过桥 */
   credentialKeys: string[];
-  /** 改已有的一台时，改之前是什么。新增时为 null */
-  before: { url: string | null; command: string | null; toolCount: number } | null;
+  /** 这次调用之后这台 server 的启用状态（终审 B Important）。它有执行后果——
+      stdio 的 `enabled: true` 就是「这条 command 会被 spawn」（mcpHub.ts）——
+      而 mcp_configure 的默认是 `a["enabled"] !== false`，即缺省为 true。
+      不上卡的话有一条无声路径：用户手动关掉过一台 stdio server，agent 用
+      同样的 id/command/args 调一次 mcp_configure，卡片显示 action: update、
+      command 与 before.command 逐字相同 = 一次「看起来什么都没变」的更新，
+      用户点同意，enabled 从 false 翻成 true，命令当场被 spawn。
+      remove 时无意义 = null（那张卡不谈"改成什么状态"）。 */
+  enabled: boolean | null;
+  /** 改已有的一台时，改之前是什么。新增时为 null。
+      enabled 也在里面：渲染层要能显示「false → true」这种翻转，只显示新值
+      看不出"这次会启用它" */
+  before: { url: string | null; command: string | null; enabled: boolean; toolCount: number } | null;
   /** url / command / 每条 args 是否在主进程就被截断（Task 9 审查 Important 2：
       这个预览此前没有 mcp_tool 参数预览、write_file 都有的那道 MAX_ARG_CHARS
       长度纪律——模型给一个几 MB 的 command 就整个过 IPC 落到卡片上）。
