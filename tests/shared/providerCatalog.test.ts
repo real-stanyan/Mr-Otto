@@ -35,6 +35,26 @@ describe("providerCatalog", () => {
     }
   });
 
+  // issue #476：Kimi 的订阅 token（sk-kimi-…）贴进按量那格必 401，而存 key 那步
+  // 不校验不探活，用户要到发第一条消息才知道贴错了家。端点/key 变量各家独占，
+  // 是"贴错家"这类事故在目录这一层唯一能钉住的不变量
+  it("端点与 key 变量各家独占 —— 同一家公司的两套服务也不共用", () => {
+    for (const key of ["baseUrl", "baseUrlEnv", "apiKeyEnv"] as const) {
+      const values = PROVIDER_CATALOG.map((p) => p[key]);
+      expect(new Set(values).size, key).toBe(values.length);
+    }
+  });
+
+  it("Kimi 的按量与订阅是两条目录条目，key 提示分得开", () => {
+    const paid = findProvider("moonshot")!;
+    const plan = findProvider("kimicode")!;
+    expect(paid.baseUrl).toContain("api.moonshot.cn");
+    expect(plan.baseUrl).toContain("api.kimi.com/coding");
+    expect(plan.keyHint).toContain("sk-kimi-");
+    // 两边的提示必须能互相区分：都写 "sk-…" 等于没提示
+    expect(paid.keyHint).not.toBe(plan.keyHint);
+  });
+
   it("key 白名单 = 厂商目录的 apiKeyEnv 集合", () => {
     expect(new Set(providerKeyEnvs())).toEqual(new Set(PROVIDER_CATALOG.map((p) => p.apiKeyEnv)));
   });

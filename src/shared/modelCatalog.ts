@@ -100,9 +100,21 @@ const MODEL_SPECS: ModelSpec[] = [
   // 兼任 vision-bridge 的代读员:纯文本款发图时由它先解析成文字(image_described)
   { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费·视觉）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: true },
 
-  // ── 月之暗面 Kimi ──
+  // ── 月之暗面 Kimi（按量）──
   { provider: "moonshot", model: "kimi-k2-0905-preview", label: "Kimi K2", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: false },
   { provider: "moonshot", model: "moonshot-v1-128k", label: "Moonshot v1 128k", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
+
+  // ── Kimi Code（订阅）──
+  // 下面这些数不是从文档抄的，是拿一把订阅 token 问它自己的 /models 拿的（2026-08-26）：
+  // context_length / supports_image_in 都在那份响应里。thinking 也实测过：
+  // 四款都吃 GLM 那套 thinking:{type:"enabled"|"disabled"} —— disabled 时 reasoning_content 消失。
+  // （k3 / k3-256k 另有 think_efforts low/high/max 三档，本仓没接，默认 high）
+  // 型号按会员档位分：kimi-for-coding 全员可用，其余几款低档位会员调不到，
+  // 目录只管"开箱能选"，调不到时上游自己会报错——不在这儿假装知道用户买的是哪档
+  { provider: "kimicode", model: "kimi-for-coding", label: "K2.7 Coding", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "kimicode", model: "kimi-for-coding-highspeed", label: "K2.7 Coding Highspeed", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "kimicode", model: "k3", label: "K3（1M）", contextWindow: 1_048_576, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "kimicode", model: "k3-256k", label: "K3 256k", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 阿里通义千问 ──（DashScope 的写法是 enable_thinking）
   { provider: "qwen", model: "qwen3-max", label: "Qwen3 Max", contextWindow: 256_000, thinking: THINKING_ENABLE, supportsVision: false },

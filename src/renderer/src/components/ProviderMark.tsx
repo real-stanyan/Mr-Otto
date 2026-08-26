@@ -22,6 +22,8 @@ import GeminiMono from "@lobehub/icons/es/Gemini/components/Mono.js";
 import * as geminiStyle from "@lobehub/icons/es/Gemini/style.js";
 import GroqMono from "@lobehub/icons/es/Groq/components/Mono.js";
 import * as groqStyle from "@lobehub/icons/es/Groq/style.js";
+import KimiMono from "@lobehub/icons/es/Kimi/components/Mono.js";
+import * as kimiStyle from "@lobehub/icons/es/Kimi/style.js";
 import MinimaxMono from "@lobehub/icons/es/Minimax/components/Mono.js";
 import * as minimaxStyle from "@lobehub/icons/es/Minimax/style.js";
 import MistralMono from "@lobehub/icons/es/Mistral/components/Mono.js";
@@ -87,6 +89,10 @@ const BRANDS: Record<ProviderId, Brand> = {
   deepseek: brand(asIcon(DeepSeekMono), deepseekStyle),
   glm: brand(asIcon(ZhipuMono), zhipuStyle),
   moonshot: brand(asIcon(MoonshotMono), moonshotStyle),
+  // 同一家公司的两条目录条目用两枚不同的字形：Moonshot 是开放平台的品牌标，
+  // Kimi 是消费端（也就是订阅制那套）的。挑同一枚的话，设置页里会出现两个
+  // 长得一模一样的方块，而它们恰恰是最容易被贴错 key 的一对
+  kimicode: brand(asIcon(KimiMono), kimiStyle),
   qwen: brand(asIcon(QwenMono), qwenStyle),
   xai: brand(asIcon(XAIMono), xaiStyle),
   minimax: brand(asIcon(MinimaxMono), minimaxStyle),
