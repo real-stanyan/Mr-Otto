@@ -219,7 +219,7 @@ describe("contextBreakdown（按来源拆四份）", () => {
     expect(b.total).toBe(5200); // 账单口径不动：项目指令本来就在这笔账里
   });
 
-  it("compact 之后照旧计项目指令：它焊在 system 里，清场扫不掉（ADR-0130）", () => {
+  it("compact 之后照旧计项目指令：它焊在 system 里，清场扫不掉（ADR-0131）", () => {
     const segments = [{ path: "/w/AGENTS.md", content: "x".repeat(4000) }];
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
