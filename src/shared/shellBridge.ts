@@ -69,20 +69,6 @@ export interface AccountInfo {
   avatarUrl: string;
 }
 
-/** 一个额度桶的余额。单位是 token，不是钱（ADR-0021） */
-export interface WalletBucket {
-  balanceTokens: number;
-  /** 注册赠额，用于画"还剩多少 / 一共给了多少" */
-  grantTokens: number;
-}
-
-/** 官方额度余额（otto-gateway 的 GET /v1/wallet）。
-    未登录时 ShellBridge 回 null——没登录就没有"官方额度"这回事。
-    桶名（flash / pro）由网关定，这里不写死：加一档模型不该牵动这个类型 */
-export interface WalletBalance {
-  buckets: Record<string, WalletBucket>;
-}
-
 /** 新会话的开局参数（ZCode 式 composer：文件夹 + 偏好一次配齐再落地）。
     model 会落 model_changed 事件（resume 记得）；审批/thinking 是运行时偏好（不落日志） */
 export interface StartSessionOptions {
@@ -665,9 +651,6 @@ export interface ShellBridge {
   myProfile(): Promise<ProfileResult<MyProfile | null>>;
   /** 改本人资料（名字/头像/引导标记），回改完的真行。校验不过也走 ok:false */
   updateProfile(patch: ProfilePatch): Promise<ProfileResult<MyProfile>>;
-  /** 官方额度余额。未登录 → null；网关/网络故障 → 抛
-      （"没有额度"和"查不到额度"必须可区分） */
-  walletBalance(): Promise<WalletBalance | null>;
   /** 全库用量按厂商 + 按天投影（设置页那张柱状图）。
       窗口 days 天，另附紧邻的前 days 天合计供对比 */
   usageByProvider(days: number): Promise<UsageSnapshot>;
@@ -1035,7 +1018,6 @@ export const CHANNELS = {
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
-  walletBalance: "otter:walletBalance",
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",

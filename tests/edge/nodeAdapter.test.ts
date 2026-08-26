@@ -1,14 +1,13 @@
 import { createHmac } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGateway, type GatewayConfig } from "../../services/gateway/src/gateway.js";
-import { createNodeHandler } from "../../services/gateway/src/nodeAdapter.js";
-import { createRelay } from "../../services/gateway/src/relay.js";
-import type { Wallet } from "../../services/gateway/src/wallet.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { createEdge, type EdgeConfig } from "../../services/edge/src/edge.js";
+import { createNodeHandler } from "../../services/edge/src/nodeAdapter.js";
+import { createRelay } from "../../services/edge/src/relay.js";
 
 // 这个文件是**唯一**跑在真 node:http 上的一层。存在的理由很具体:
-// gateway.ts 那侧只看得见 Request/Response,而计划 B 的集成探针在 node:http 这条
+// edge.ts 那侧只看得见 Request/Response,而计划 B 的集成探针在 node:http 这条
 // 接缝上一口气撞出两条,都不可能在 Response 层面现形:
 //   1. res.writeHead() 不冲刷响应头 → SSE 客户端要卡满一个心跳才拿到状态行
 //   2. 客户端断开时没人取消读端 → 中继的槽位永远占着,心跳定时器永久泄漏
@@ -24,24 +23,12 @@ function token(sub = "u1"): string {
   return `${head}.${body}.${createHmac("sha256", SECRET).update(`${head}.${body}`).digest("base64url")}`;
 }
 
-const config: GatewayConfig = {
-  jwtSecret: SECRET,
-  upstreamBaseUrl: "https://upstream.example/v1",
-  upstreamApiKey: "官方-deepseek-key",
-};
-
-const fakeWallet = (): Wallet => ({
-  grant: vi.fn(async () => 0),
-  spend: vi.fn(async () => 0),
-  rebuild: vi.fn(async () => 0),
-});
+const config: EdgeConfig = { jwtSecret: SECRET };
 
 let server: Server | null = null;
 
 async function listen(): Promise<string> {
-  const handle = createGateway({
-    config, wallet: fakeWallet(), now: () => NOW_MS, relay: createRelay(),
-  });
+  const handle = createEdge({ config, now: () => NOW_MS, relay: createRelay() });
   const s = createServer(createNodeHandler(handle, { origin: "http://127.0.0.1" }));
   server = s;
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));

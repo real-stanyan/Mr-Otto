@@ -116,7 +116,6 @@ import { singleFlight } from "../shared/singleFlight.js";
 import { availableDecisionsFor, mapApprovalDecision } from "./uiApprover.js";
 import type { AskUserOutcome } from "../shared/askUser.js";
 import { AccountManager, createSupabaseAuthClient } from "./account.js";
-import { fetchWalletBalance } from "./walletApi.js";
 import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
@@ -132,7 +131,7 @@ import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
 import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
-import { relayBaseUrl } from "../shared/gatewayConfig.js";
+import { relayBaseUrl } from "../shared/edgeConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -459,9 +458,6 @@ void app.whenReady().then(() => {
     client: supabase.auth,
   });
   const manager = accountManager;
-  // otto-gateway 的进门凭据取用器。传给 createAgent 决定走网关还是直连,
-  // 也给查余额用。token 只在主进程流转,永不过桥
-  const getAccessToken = (): Promise<string | null> => manager.getAccessToken();
   // 深链回调 flush 和冷启动 restore 都不 await、都靠"最后写入者赢"改 manager 内部的
   // account——两条都跑的话，restore() 的 getUser() 若晚于 handleCallback() 的
   // exchangeCodeForSession 完成，刚建立的新登录会被 restore 带来的旧 session 投影覆盖，
@@ -842,7 +838,6 @@ void app.whenReady().then(() => {
         model: agent.model,
         approvalMode: agent.approvalMode,
       }),
-      getAccessToken,
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       // forbidden 规则对子 agent 同样生效（用户写的"永不放行"不该被派活绕过）；
       // 不接 persistAllowRule——子 agent 没有审批 UI，产不出规则
@@ -1403,7 +1398,6 @@ void app.whenReady().then(() => {
       workspace: args.workspace,
       push,
       attachments: attachmentStore,
-      getAccessToken,
       makeBrowser: (sid: string) => ({
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
@@ -1526,7 +1520,6 @@ void app.whenReady().then(() => {
           model: self.model,
           approvalMode: self.approvalMode,
         }),
-        getAccessToken,
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
@@ -2146,7 +2139,6 @@ void app.whenReady().then(() => {
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
-  ipcMain.handle(CHANNELS.walletBalance, () => fetchWalletBalance(getAccessToken));
 
   // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
   // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切

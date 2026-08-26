@@ -18,7 +18,6 @@ import { toWorkspaceRel } from "../../shared/fileRefs.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
-  WalletBalance,
   ApprovalMode,
   ApprovalRequest,
   ApprovalDecisionOutcome,
@@ -59,7 +58,6 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
-import { OFFICIAL_GRANT_ENABLED } from "../../shared/features.js";
 import type { NotificationTarget, ProviderBalance } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
@@ -328,10 +326,6 @@ interface ChatState {
   modelSetupOpen: boolean;
   /** 会话搜索面板(⌘K)开着没有。纯 UI 开合,不进日志 */
   sessionSearchOpen: boolean;
-  /** 官方额度余额。null = 未登录或还没查过——和"余额为 0"不是一回事 */
-  wallet: WalletBalance | null;
-  /** 查余额本身失败的原因（网关不可达等）。空串 = 没出错 */
-  walletError: string;
   /** ＋ 按钮暂存的附件(chips 数据源)。rejected 不进这——进 attachError */
   staged: (StagedAttachment & { kind: "image" | "text" })[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
@@ -376,8 +370,6 @@ interface ChatState {
       （keyStatus / skills 扫描）随栏目切换保留，不搬到 boot 以外统一做——
       避免用户从没去过的栏目里存着开局时的陈旧镜像 */
   openSettings(section?: SettingsSection): Promise<void>;
-  /** 拉一次官方额度（账号页进入时自动调一次） */
-  refreshWallet(): Promise<void>;
   /** 重扫 subagent 清单（Subagent 栏目挂载时调一次，照 skills 的做法）。
       三个 subagent action 落地后都会把 subagents 状态整份换成后端回传的全量清单——
       存写完立刻在 state 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西。
@@ -768,8 +760,6 @@ export const useChat = create<ChatState>((set, get) => ({
   profileSetupOpen: false,
   modelSetupOpen: false,
   sessionSearchOpen: false,
-  wallet: null,
-  walletError: "",
   staged: [],
   attachError: null,
   composerInject: null,
@@ -851,23 +841,6 @@ export const useChat = create<ChatState>((set, get) => ({
         terminalPanelOpen: false, browserPanelOpen: false, simPanelOpen: false,
         filesPanelOpen: false,
       });
-      // 账号页要显示官方额度——余额只有主进程能查（access token 不过桥）。
-      // ADR-0085 之后账号页没有额度卡,这一趟网关也省了(打过去只会白开一个 0 额度桶)
-      if (OFFICIAL_GRANT_ENABLED) void get().refreshWallet();
-    }
-  },
-
-  /** 拉一次官方额度。未登录 → wallet 置 null（不是错误）；查不到 → 记 walletError。
-      两者必须可区分：一个是"你没这回事"，一个是"我没查到" */
-  async refreshWallet() {
-    if (!get().account.signedIn) {
-      set({ wallet: null, walletError: "" });
-      return;
-    }
-    try {
-      set({ wallet: await window.otter.walletBalance(), walletError: "" });
-    } catch (e) {
-      set({ walletError: e instanceof Error ? e.message : String(e) });
     }
   },
 
@@ -1552,18 +1525,11 @@ export const useChat = create<ChatState>((set, get) => ({
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
               myProfile: null, profileSetupOpen: false, modelSetupOpen: false,
-              // 登出后旧余额留在屏幕上会像"还有额度",实际那把令牌已经作废
-              wallet: null, walletError: "",
             }
       );
-      // 补拉余额必须在 set 之后：refreshWallet 读的是 store 里的登录态，
-      // 先调等于拿着旧的"未登录"去查，直接短路成 null。
-      // 不补的话，正停在账号页上登录的用户会看着那张卡一直"正在查…"
-      if (account.signedIn) {
-        void get().refreshWallet();
-        // 资料补拉同理要在 set 之后:needsOnboarding 读的是 store 里的登录态
-        void get().refreshMyProfile();
-      }
+      // 资料补拉必须在 set 之后:needsOnboarding 读的是 store 里的登录态,
+      // 先调等于拿着旧的"未登录"去查
+      if (account.signedIn) void get().refreshMyProfile();
     });
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
