@@ -31,9 +31,11 @@ import { connect, devices, openStore, RELAY_BASE } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, MONO, radius, space } from "./src/theme.js";
 import {
-  Button, Card, CodeTiles, Dot, Headline, Hint, Meta, Note, StatusLine, Strong,
+  Button, Card, CodeTiles, Dot, Group, Headline, Hint, Meta, Note, Row, StatusLine, Strong,
   TabIcon, Tile, Title, Warn,
 } from "./src/ui.js";
+// 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
+import appJson from "./app.json";
 
 type Phase = "loading" | "signIn" | "pair" | "fleet";
 
@@ -445,7 +447,15 @@ function FriendRowView({ row: f }: { row: FriendRow }) {
 
 /* ── 设置 ───────────────────────────────────────────────
    只放**这台手机自己**的事:账号、配对、连的哪个中继。电脑上的设置
-   (模型、MCP、审批策略)不在这儿改 —— ADR-0094 的边界没动。 */
+   (模型、MCP、审批策略)不在这儿改 —— ADR-0094 的边界没动。
+
+   形状是 iOS 的分组列表(Group/Row),不是一摞卡片。区别不在好看:一摞
+   平权的 Card 里每一张都在说"我是独立的一件事",而这屏上多数行是同一件事
+   的几个面 —— 邮箱和退出登录都属于账号。分组把从属关系画出来,footer 那句话
+   也就有了地方待:说明贴着它说明的那一组,而不是塞进卡片里跟正文抢位置。
+
+   退出登录单独一组、居中、红字,是 iOS 的老规矩:破坏性动作不跟只读信息
+   同一块板 —— 挨着邮箱那行放,手指会顺着往下点。 */
 function Settings({ store, onRepair, onSignedOut }: {
   store: PinnedPeerStore;
   onRepair: () => void;
@@ -453,6 +463,7 @@ function Settings({ store, onRepair, onSignedOut }: {
 }) {
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const paired = store.peerIdentity() !== null;
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
@@ -471,31 +482,38 @@ function Settings({ store, onRepair, onSignedOut }: {
     <Page>
       <View style={{ paddingTop: space.sm }}><Title>设置</Title></View>
 
-      <Card style={{ gap: space.sm }}>
-        <Headline>账号</Headline>
-        <Meta>{email ?? "读取中…"}</Meta>
-        <Button
-          variant="outline" label={busy ? "退出中…" : "退出登录"}
-          disabled={busy} onPress={signOut}
-        />
-      </Card>
+      {/* 组与组之间比组内的行远一档,眼睛才会先分组再读行 */}
+      <View style={{ gap: space.lg }}>
+        <Group header="账号" footer="配对的电脑必须登同一个账号,否则在列表里根本看不见它。">
+          <Row label="邮箱" value={email ?? "读取中…"} />
+        </Group>
 
-      <Card style={{ gap: space.sm }}>
-        <Headline>配对的电脑</Headline>
-        <Hint>
-          {store.peerIdentity()
-            ? "已配对。换电脑、或安全码对不上时重新配一次。"
-            : "还没配对。"}
-        </Hint>
-        <Button variant="outline" label="重新配对" onPress={onRepair} />
-      </Card>
+        <Group>
+          <Row
+            label={busy ? "退出中…" : "退出登录"}
+            align="center" tone="destructive"
+            disabled={busy} onPress={signOut}
+          />
+        </Group>
 
-      <Card style={{ gap: space.sm }}>
-        <Headline>连接</Headline>
-        {/* 中继看不见内容(端到端加密),但连的是哪一台是排查时的第一个问题 */}
-        <Meta>{`中继 ${RELAY_BASE}`}</Meta>
-        <Meta>{`本机 ${store.deviceId}`}</Meta>
-      </Card>
+        <Group
+          header="配对的电脑"
+          footer={paired
+            ? "换电脑、或安全码对不上时重新配一次。"
+            : "还没配对 —— 配完才看得到会话。"}
+        >
+          <Row label={paired ? "已配对" : "未配对"} leading={<Dot tone={paired ? "ok" : "warn"} />} />
+          <Row label="重新配对" chevron onPress={onRepair} />
+        </Group>
+
+        {/* 中继看不见内容(端到端加密),但连的是哪一台是排查时的第一个问题。
+            这三行是纯诊断信息 —— 不做成按钮,长按能选中拷走就够了 */}
+        <Group header="连接" footer="出问题时把这三行长按拷下来一起发过来。">
+          <Row label="中继" value={RELAY_BASE} mono />
+          <Row label="本机" value={store.deviceId} mono />
+          <Row label="版本" value={appJson.expo.version} mono />
+        </Group>
+      </View>
     </Page>
   );
 }

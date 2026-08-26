@@ -6,9 +6,9 @@
 //    蓝色(primary)一屏只给一个真正的主动作——两个蓝按钮等于没有主次
 // 3. **动效可被系统关掉**。开了"减弱动态效果"就退成不位移的透明度变化
 
-import { useEffect, useRef, useState } from "react";
+import { Children, Fragment, useEffect, useRef, useState } from "react";
 import {
-  AccessibilityInfo, Animated, Pressable, StyleSheet, Text, View,
+  AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View,
   type StyleProp, type TextStyle, type ViewStyle,
 } from "react-native";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, type Palette } from "./theme.js";
@@ -300,5 +300,147 @@ export function Button(props: {
         <Text style={{ ...type.headline, color: fg }}>{props.label}</Text>
       </Pressable>
     </Animated.View>
+  );
+}
+
+/* ── 分组列表 ──────────────────────────────────────────
+   设置屏的语汇是 iOS 的 inset grouped list,不是一摞表单卡片:
+   **同一类的事挤进一块板,靠细线分行**,板上一句小标题、板下一句解释。
+   区别不在好看 —— 一摞 Card 里每一张都在喊"我是独立的一件事",
+   而设置里绝大多数行是同一件事的几个面(账号的邮箱和退出是一组)。
+
+   行的反馈也和按钮不同:iOS 的列表行**整行变色**,不缩放。缩放是
+   "这是个按钮"的语汇,整行高亮是"我选中了这一行"。 */
+
+/** 一组行。header 在板上、footer 在板下,都用小字暗色,左边和行内文字对齐 */
+export function Group({ header, footer, children }: {
+  header?: string;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const { c } = usePalette();
+  // 条件渲染出来的 null 会占一个位置,不滤掉就会多画一条分隔线
+  const rows = Children.toArray(children).filter(Boolean);
+  const side = { ...type.footnote, color: c.mutedForeground, paddingHorizontal: space.md };
+  return (
+    <View style={{ gap: space.xs }}>
+      {header ? <Text style={side}>{header}</Text> : null}
+      <View style={{
+        backgroundColor: c.card, borderRadius: radius.card,
+        borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+        // 行的高亮铺满整行,不裁的话会从圆角里溢出去
+        overflow: "hidden",
+      }}>
+        {rows.map((row, i) => (
+          <Fragment key={i}>
+            {/* 分隔线左边缩进到和文字对齐 —— 通到底的线会把一组切成两组 */}
+            {i > 0 ? (
+              <View style={{
+                height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: space.md,
+              }} />
+            ) : null}
+            {row}
+          </Fragment>
+        ))}
+      </View>
+      {footer ? <Text style={side}>{footer}</Text> : null}
+    </View>
+  );
+}
+
+/** 右边那个 ›。画出来的,理由和 TabIcon 一样:不为三个形状引一个 native 依赖 */
+function Chevron({ color }: { color: string }) {
+  return (
+    <View style={{
+      width: 8, height: 8, borderRightWidth: 1.6, borderTopWidth: 1.6,
+      borderColor: color, transform: [{ rotate: "45deg" }],
+    }} />
+  );
+}
+
+export function Row(props: {
+  label: string;
+  /** 右边的值。只读信息走这里,不要做成按钮 */
+  value?: string;
+  /** 值是机器数据(中继地址、设备 id):等宽 + 小一号,和 Meta 同一条规矩。
+      **截断从中间截** —— id 和 URL 两头都要紧,掐掉尾巴等于没显示 */
+  mono?: boolean;
+  /** 行首的东西,一般是状态点 */
+  leading?: React.ReactNode;
+  onPress?: () => void;
+  disabled?: boolean;
+  /** 有下一层可去。只在真的会推进一屏时给 —— 它是个承诺 */
+  chevron?: boolean;
+  /** 单独成组、居中的动作行(iOS 的「退出登录」就是这个形状) */
+  align?: "split" | "center";
+  tone?: "default" | "destructive";
+}) {
+  const { c } = usePalette();
+  const hi = useRef(new Animated.Value(0)).current;
+  const center = props.align === "center";
+  const fg = props.tone === "destructive" ? c.destructive : c.foreground;
+
+  // **按下那一帧就变色**(setValue,不是动画);松手才淡出。
+  // 反过来做——按下淡入——延迟会直接吃掉"直接操纵"的感觉
+  const press = (down: boolean): void => {
+    if (down) return hi.setValue(1);
+    Animated.timing(hi, {
+      toValue: 0, duration: 250, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+  };
+
+  const body = (
+    <View style={{
+      flexDirection: "row", alignItems: "center", gap: space.sm,
+      paddingHorizontal: space.md, paddingVertical: 12,
+      minHeight: 44, // HIG 的最小可点高度
+      justifyContent: center ? "center" : "space-between",
+    }}>
+      {/* 左边不收缩、右边收缩:要截也该截机器数据那一串,不是"中继"这两个字 */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+        {props.leading}
+        <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
+      </View>
+      {center ? null : (
+        <View style={{
+          flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center",
+          justifyContent: "flex-end", gap: space.xs,
+        }}>
+          {props.value === undefined ? null : (
+            <Text
+              style={props.mono
+                ? { ...type.footnote, fontFamily: MONO, color: c.mutedForeground }
+                : { ...type.body, color: c.mutedForeground }}
+              numberOfLines={1}
+              ellipsizeMode={props.mono ? "middle" : "tail"}
+              // 长按能拷走。手机上没有别的办法把这串东西送进工单里
+              selectable={props.mono && !props.onPress}
+            >
+              {props.value}
+            </Text>
+          )}
+          {props.chevron ? <Chevron color={c.mutedForeground} /> : null}
+        </View>
+      )}
+    </View>
+  );
+
+  if (!props.onPress) return body;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !!props.disabled }}
+      onPressIn={() => press(true)}
+      onPressOut={() => press(false)}
+      onPress={props.onPress}
+      disabled={props.disabled}
+      style={props.disabled ? { opacity: 0.4 } : undefined}
+    >
+      <Animated.View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, { backgroundColor: c.muted, opacity: hi }]}
+      />
+      {body}
+    </Pressable>
   );
 }
