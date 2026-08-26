@@ -236,8 +236,26 @@ export function toThreadMessages(
           wallMs: turnStartTs !== undefined ? e.ts - turnStartTs : 0,
         } satisfies TurnTimingAgg;
       }
-      turnAssistantIdx = out.length;
-      out.push({ ...message, metadata: { custom } });
+      // 同一 turn 的多个 assistant_message 合并进**一条** UI 消息:
+      // 一个 turn 里模型可能「说一句 → 调 bash → 再说一句 → 再调 bash」,每次回话
+      // 都是一条独立的 assistant_message 事件。若每条各投一条 UI 消息,工具调用就
+      // 散在**不同消息**里 —— 分组(相邻合并)跨不过消息边界,6 个 bash 就渲染成
+      // 6 条「终端 ×1」的单步时间线,而不是收进一条。合并后:旁白/思考/工具按
+      // 事件序拼进同一条消息的 content,分组合并在消息内把它们收成一条时间线。
+      if (turnAssistantIdx !== null && out[turnAssistantIdx]?.role === "assistant") {
+        // 本 turn 已有 assistant 消息:把这次的 parts 续进去,计时/状态取最新
+        const prev = out[turnAssistantIdx]!;
+        const prevCustom = (prev.metadata?.custom ?? {}) as Record<string, unknown>;
+        out[turnAssistantIdx] = {
+          ...prev,
+          status: message.status, // 最新一条的完成状态(悬空/完成)以新事件为准
+          content: [...(prev.content as Part[]), ...parts],
+          metadata: { custom: { ...prevCustom, ...custom } },
+        };
+      } else {
+        turnAssistantIdx = out.length;
+        out.push({ ...message, metadata: { custom } });
+      }
       continue;
     }
 
