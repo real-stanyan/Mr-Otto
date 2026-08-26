@@ -130,6 +130,11 @@ export interface ToolResultEvent extends SessionEventBase {
   toolCallId: string;            // 对回 ToolCallRequest.id
   status: "ok" | "error" | "denied";
   output: string;                // ok=stdout/内容；error=错误信息；denied=拒绝文案
+  /** 这一次写盘改了多少行（write_file 才有）。**这一次**，不是 turn 的累计——
+      turn 级聚合另有一份运行时投影（main/turnDiff.ts），那份不落盘，
+      app 一重启就没了；时间线上历史工具组的 +N/−M 只能从日志里来。
+      可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则） */
+  diffStat?: { additions: number; deletions: number };
 }
 
 /** 额外 1：模型切换 —— 重放时必须知道每段对话当时用的谁 */

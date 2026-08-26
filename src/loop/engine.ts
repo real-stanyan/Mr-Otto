@@ -669,6 +669,8 @@ export class LoopEngine {
             toolCallId: group[g]!.id,
             status: outcome.status,
             output: outcome.output,
+            // 有才写:旧日志里没有这个字段,新日志里也只有 write_file 有
+            ...(outcome.diffStat ? { diffStat: outcome.diffStat } : {}),
           });
           // concludesTurn = 数据驱动的提前收口（DSH 同款）：本步到此为止，
           // 不给模型补答的机会，turn 直接 completed。组内已执行的结果都要落
