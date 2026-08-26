@@ -151,7 +151,7 @@ describe("时间线三份名单一致（isAuditEvent / EventRow / threadGroups.i
     expect(invisible.conditional).toEqual(sorted(CONDITIONAL));
   });
 
-  it("skill 的启用/停用两行都在（ADR-0110：谁把说明书塞进上下文的，用户得看得见）", () => {
+  it("skill 的启用/停用两行都在（ADR-0122：谁把说明书塞进上下文的，用户得看得见）", () => {
     for (const t of ["skill_invoked", "skill_released"]) {
       expect(audit.yes, `isAuditEvent 少了 ${t}`).toContain(t);
       expect(row.yes, `EventRow 少了 ${t}`).toContain(t);

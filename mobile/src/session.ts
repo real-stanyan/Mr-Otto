@@ -28,12 +28,23 @@ export function devices(store: PinnedPeerStore) {
 
 export function connect(
   store: PinnedPeerStore,
-  handlers: { onFrame: (f: DownFrame) => void; onReady: (r: boolean) => void }
+  handlers: {
+    onFrame: (f: DownFrame) => void;
+    onReady: (r: boolean) => void;
+    /** 桥和传输层说的每一句话。**手机上没有终端** —— 真机联调时 metro 的
+        console 转发时灵时不灵,而"帧被丢了"和"帧没来"在屏幕上长得一模一样。
+        接出来给 UI 显示,这一层才不是哑的 */
+    onLog?: (m: string) => void;
+  }
 ): MobileBridge {
+  const log = (m: string): void => {
+    console.warn(m);
+    handlers.onLog?.(m);
+  };
   const transport = createXhrTransport({
     baseUrl: RELAY_BASE,
     authToken: async () => (await supabase.auth.getSession()).data.session?.access_token ?? null,
-    log: (m) => console.warn(m),
+    log,
   });
   return createMobileBridge({
     crypto,
@@ -43,6 +54,6 @@ export function connect(
     peerIdentity: () => store.peerIdentity(),
     onFrame: handlers.onFrame,
     onReady: handlers.onReady,
-    log: (m) => console.warn(m),
+    log,
   });
 }

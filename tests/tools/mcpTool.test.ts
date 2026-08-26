@@ -25,6 +25,9 @@ function capWith(
     callTool,
     readResource: async () => [],
     getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
   };
 }
 

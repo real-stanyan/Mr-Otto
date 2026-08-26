@@ -97,6 +97,9 @@ const fakeMcp = (): McpCapability => ({
   callTool: async () => [{ kind: "text", text: "ok" }],
   readResource: async () => [{ kind: "text", text: "料" }],
   getPrompt: async () => "展开后的提示词",
+  configure: async () => {},
+  authorize: async () => {},
+  configOf: () => undefined,
 });
 
 describe("装饰器透传 mcp", () => {
@@ -120,6 +123,29 @@ describe("装饰器透传 mcp", () => {
     const w = withAbortSignal(withMcp(fakeWorld(), { ...fakeMcp(), readResource }), ac.signal);
     await w.mcp!.readResource("github", "file:///a");
     expect(readResource).toHaveBeenCalledWith("github", "file:///a", ac.signal);
+  });
+
+  // review Important：三个新字段（configure/authorize/configOf）只在 fakeMcp()
+  // 里补了桩，从没有测试断言 withAbortSignal 真的把它们穿透到底层——日后谁
+  // 改这段逐字段重建时漏掉一个，不会有测试变红（ADR-0050 明写这一节是回归
+  // 测试，不是留言提醒）。断言方式选"记录调用的假 mcp，验证装饰后的调用打到
+  // 底层"，不只是 toBeTypeOf("function")：后者在"透传成一个空函数"时照样绿，
+  // 抓不住"字段还在但已经是替身"这种漂移。
+  it("withAbortSignal 把 configure / authorize / configOf 原样穿透到底层 mcp（不绑 signal——它们不是一次性请求，见接口注释）", async () => {
+    const configure = vi.fn(async () => {});
+    const authorize = vi.fn(async () => {});
+    const configOf = vi.fn(() => ({ kind: "http" as const, url: "https://a/mcp", headers: {}, enabled: true }));
+    const ac = new AbortController();
+    const w = withAbortSignal(withMcp(fakeWorld(), { ...fakeMcp(), configure, authorize, configOf }), ac.signal);
+
+    await w.mcp!.configure("s", null);
+    expect(configure).toHaveBeenCalledWith("s", null);
+
+    await w.mcp!.authorize("s");
+    expect(authorize).toHaveBeenCalledWith("s");
+
+    expect(w.mcp!.configOf("s")).toMatchObject({ kind: "http", url: "https://a/mcp" });
+    expect(configOf).toHaveBeenCalledWith("s");
   });
 
   it("withExecOutput 保住 MCP 能力 —— 它是逐字段重建 world 的，最容易漏", () => {

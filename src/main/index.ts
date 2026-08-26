@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
   CHANNELS,
   type BootInfo,
@@ -34,16 +34,18 @@ import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
-import { connectMcpClient } from "./mcpClient.js";
+import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth } from "./mcpAuthStore.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
 import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
+import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
@@ -88,9 +90,13 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
-import { MEMORY_FILES, isMemoryTarget, parseEntries, formatEntries, type MemoryTarget } from "../shared/memoryStore.js";
+import {
+  memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
+  PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
+} from "../shared/memoryStore.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
+import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -119,8 +125,10 @@ import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createSseTransport } from "./remoteTransport.js";
+import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { UpFrame } from "../shared/remote/frames.js";
+import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { relayBaseUrl } from "../shared/gatewayConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
@@ -477,6 +485,13 @@ void app.whenReady().then(() => {
   const store = new EventStore(dbPath);
   // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
   const attachmentStore = new AttachmentStore(join(app.getPath("userData"), "attachments"));
+  /**
+   * 手机传上来的附件先在这里拼回整个文件,再走**和 ＋ 按钮同一道闸门**
+   * (attachmentIntake 的 intakeFile):图片入库、文档转 Markdown、文本带内容、
+   * 其余拒收。准入策略只有一套 —— 手机端不该有第二套,否则两边迟早不一样。
+   */
+  const remoteUploads = createUploadPool();
+
 
   // agent 注册表：会话隔离的核心。切走不杀旧 agent——它的 turn 继续跑，
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
@@ -561,6 +576,12 @@ void app.whenReady().then(() => {
       transport,
       peerIdentity: () => idStore.peerIdentity(),
       onCommand: (c) => handleRemoteCommand(c),
+      // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
+      // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
+      onReset: () => { watchedSession = null; remoteUploads.reset(); },
+      // 重新派生密钥之后订阅还在(手机重连不等于换了观众):fleet 桥自己补推了,
+      // 时间线得这儿补 —— 手机那条 watch 可能正好封在旧密钥里,已经丢了
+      onRekey: () => pushTimelineNow(),
       log: (m) => console.warn(m),
     });
     const devices = createRemoteDevices({
@@ -615,6 +636,35 @@ void app.whenReady().then(() => {
     remoteBridge?.pushFleet(trimForMobile(fleet));
   };
 
+  /** 手机端正在看的那个会话(watch/unwatch,ADR-0094 的"看"那一半)。
+      只有一个:手机上一次只看得见一屏。null = 没人在看,一帧都不投 */
+  let watchedSession: string | null = null;
+  /** 合并推送用。store.load() 是整条日志的读,而工具密集的 turn 一秒好几条事件 —— 
+      逐条重投等于把手机端的这一屏做成 O(事件数 × 日志长度) */
+  let timelineTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const pushTimelineNow = (): void => {
+    if (timelineTimer) { clearTimeout(timelineTimer); timelineTimer = null; }
+    const sid = watchedSession;
+    if (!remoteBridge || !sid) return;
+    // 出机器的那一份要过闸门:只有三种事件、不含 reasoning、超长就截
+    // (shared/remote/timeline.ts)
+    const events = store.load(sid);
+    const messages = projectTimelineForMobile(events);
+    // 这三个数是这条链路唯一的诊断:日志里 0 条,问题在投影或会话 id;
+    // 有条数但手机上空,问题在线上那一段。第一版全哑,查了一轮才定位
+    console.warn(`远程:推时间线 ${sid} —— ${events.length} 事件 → ${messages.length} 条`);
+    remoteBridge.pushTimeline(sid, messages);
+  };
+
+  /** 这条事件属于手机正在看的会话才安排重投。sid=null(说不清是谁的)也投一次:
+      漏投的代价是手机上停在旧内容,比多投一次糟糕 */
+  const pushTimelineFor = (sid: string | null): void => {
+    if (!watchedSession || (sid !== null && sid !== watchedSession)) return;
+    if (timelineTimer) return;
+    timelineTimer = setTimeout(() => { timelineTimer = null; pushTimelineNow(); }, 250);
+  };
+
   /** 投影器入口:四类输入都带 sessionId,路由到 Map 里对应那份 IslandState 跑
       reduceIsland;变了就重推整包 fleet。activeSession 输入顺便更新 focused */
   const feedIsland = (input: IslandInput): void => {
@@ -637,6 +687,7 @@ void app.whenReady().then(() => {
       fleetSessionsCache = null;
     }
     pushFleet();
+    pushTimelineFor(sid);
   };
 
   /** 从 IslandInput 取它作用的 sessionId(activeSession 用 boot.activeSessionId) */
@@ -751,7 +802,7 @@ void app.whenReady().then(() => {
     // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
-    const mem = readMemoryFiles();
+    const mem = readMemoryFiles(agent.workspace);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -785,7 +836,7 @@ void app.whenReady().then(() => {
       sessionId, toolCallId,
       () => runner.run({
         agent: "memory-reviewer",
-        task: `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n最近对话：\n${transcript}`,
+        task: buildReviewerTask(mem, transcript),
         parentToolCallId: toolCallId,
       }),
     );
@@ -979,10 +1030,50 @@ void app.whenReady().then(() => {
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
   const mcpConfigPath = join(configDir(homedir()), "mcp.json");
+  // OAuth 凭据落在同一个配置目录下的独立文件（Task 1，0600），与 mcp.json
+  // 分开存：一份是人手编的连接配置，一份是程序读写的密态
+  const mcpAuthPath = join(configDir(homedir()), "mcp-auth.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
     save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
-    connect: connectMcpClient,
+    connect: (id, cfg) => {
+      // 只有已经授权过（盘上有 token）的 http server 才走 authProvider：
+      // SDK 此时只会拿 token 去用、过期了拿 refresh_token 去续，不会发起
+      // 新授权、也不会做动态客户端注册。
+      //
+      // 没有 token 就不给 authProvider——否则 SDK 会在连接路径上跑一次 DCR，
+      // 把这里这个没有真端口的占位 redirect_uri 注册进去；等用户真去点
+      // 「授权」时，authorizeMcpServer 用的是带真端口的 redirect_uri，
+      // 复用同一份注册就会被服务端以 redirect_uri 不匹配拒掉。
+      // 不给的结果正是我们要的：401 → needs-auth → 用户点那颗按钮。
+      const authed = cfg.kind === "http" && readMcpAuth(mcpAuthPath, id).tokens !== undefined;
+      return connectMcpClient(
+        id,
+        cfg,
+        authed
+          ? createOAuthProvider({
+              // 连接路径不发起新授权，这两个字段用不上；真授权走
+              // authorizeMcpServer 里另造的、带真端口的 provider
+              redirectUri: "http://127.0.0.1/callback",
+              state: "",
+              read: () => readMcpAuth(mcpAuthPath, id),
+              write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+              openBrowser: () => {
+                // 连接路径上不发浏览器：一台 server 的 token 过期不该劫持
+                // 用户的屏幕。让它抛 Unauthorized → hub 标 needs-auth →
+                // 用户自己点那颗按钮
+              },
+            })
+          : undefined
+      );
+    },
+    authorize: (id, cfg) =>
+      authorizeMcpServer(id, cfg, {
+        read: () => readMcpAuth(mcpAuthPath, id),
+        write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+        openBrowser: (url) => { void shell.openExternal(url); },
+      }),
+    clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
@@ -1110,7 +1201,7 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
-      // 同理给 skills（ADR-0110）：不给的话 skill 这把刀根本不挂，于是
+      // 同理给 skills（ADR-0122）：不给的话 skill 这把刀根本不挂，于是
       // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
       // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
       // 「子会话自己也拿得到」在真实装配里就永远兑现不了。
@@ -1175,25 +1266,40 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
-  /** 两个记忆文件的当前内容（ADR-0060）。读不到 = 空——"没记过"不是故障。
-      同步读：index.ts 是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；
-      createAgent 是同步的，这份快照必须在调它之前就手上有值 */
-  const readMemoryFiles = (): { memory: string; user: string } => {
-    const root = configDir(homedir());
-    const read = (rel: string): string => {
-      try {
-        return readFileSync(join(root, rel), "utf8");
-      } catch (err) {
-        // ENOENT = 没记过，不是故障。别的错误（EACCES 之类）不能装没看见——
-        // 那会让"文件在但读不了"呈现成"记忆是空的"（issue #186）。但会话装配
-        // 也不该因此挂掉：记下来，快照按空处理
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-          console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
-        }
-        return "";
+  /** 单份记忆文件的当前内容（配置目录相对路径）。读不到 = 空——"没记过"不是
+      故障。ENOENT = 没记过；别的错误（EACCES 之类）不能装没看见——那会让
+      "文件在但读不了"呈现成"记忆是空的"（issue #186）。调用方也不该因此
+      挂掉：记下来，按空处理。两个调用点（会话装配的 readMemoryFiles / 设置页
+      的 getMemory handler）共用这一份，别各写一份 ENOENT 分支出来 */
+  const readMemoryFile = (rel: string): string => {
+    try {
+      return readFileSync(join(configDir(homedir()), rel), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
       }
+      return "";
+    }
+  };
+
+  /** 三档记忆的当前内容（ADR-0060，项目档见 ADR-0116）。同步读：index.ts
+      是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；createAgent
+      是同步的，这份快照必须在调它之前就手上有值。project/projectRoot 缺席 =
+      workspace 不在任何 git 仓库里 */
+  const readMemoryFiles = (
+    workspace: string
+  ): { memory: string; user: string; project?: string; projectRoot?: string } => {
+    const base = {
+      memory: readMemoryFile(memoryRelPath("memory")),
+      user: readMemoryFile(memoryRelPath("user")),
     };
-    return { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+    const projectRoot = resolveProjectRoot(workspace);
+    if (!projectRoot) return base;
+    return {
+      ...base,
+      project: readMemoryFile(memoryRelPath("project", projectMemoryDir(projectRoot))),
+      projectRoot,
+    };
   };
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
@@ -1216,6 +1322,12 @@ void app.whenReady().then(() => {
       await writeFile(abs, c, "utf8");
     },
   };
+
+  /** 渲染层给的 projectRoot 折成 applyUserEdit 要的那对 {root, dir}（形状同
+      agent.ts 给 createMemoryTool 的那份）。缺省 = 全局档。两个记忆 handler
+      共用这一份，免得一处传 dir、一处传 root，落出对不上号的证据 */
+  const memoryProject = (projectRoot?: string): { root: string; dir: string } | null =>
+    projectRoot ? { root: projectRoot, dir: projectMemoryDir(projectRoot) } : null;
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -1304,7 +1416,7 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: configDir(homedir()),
-      memory: readMemoryFiles(),
+      memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
@@ -1594,10 +1706,24 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended);
   });
 
-  // ── 记忆（设置页读/改，Task 8）────────────────────────────────────
-  ipcMain.handle(CHANNELS.getMemory, () => readMemoryFiles());
-  ipcMain.handle(CHANNELS.saveMemory, (_e, target: MemoryTarget, text: string, sessionId?: string) =>
-    applyUserEdit(memoryEditDeps, target, text, sessionId));
+  // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────
+  // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读写
+  // 走下面新增的 listProjectMemories / saveMemory(projectRoot) / deleteProjectMemory，
+  // 不借这条 handler。复用 readMemoryFile：ENOENT-vs-其他错误的处理只该有一份
+  // （issue #186 那条不能只在一条调用路径上生效）
+  ipcMain.handle(CHANNELS.getMemory, () => ({
+    memory: readMemoryFile(memoryRelPath("memory")),
+    user: readMemoryFile(memoryRelPath("user")),
+  }));
+  // projectRoot 缺省 = 全局档（project 传 null，memoryRelPath 按 target 走
+  // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
+  // 否则 memoryRelPath 在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
+  // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
+  ipcMain.handle(
+    CHANNELS.saveMemory,
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot))
+  );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
   // 设置页的试搜框。不排除当前会话（用户验证「索引里有没有」，不是模型回忆）；
@@ -1608,12 +1734,47 @@ void app.whenReady().then(() => {
       .searchText(query, { limit: 20 })
       .map((h) => ({ ...h, text: [...h.text].length > 200 ? [...h.text].slice(0, 200).join("") + "…" : h.text }));
   });
-  ipcMain.handle(CHANNELS.forgetMemory, async (_e, target: MemoryTarget, entry: string, sessionId: string) => {
-    // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
-    // MEMORY_FILES[target] 拼了路径，得在拼之前挡
-    if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-    const cur = parseEntries(await memoryEditDeps.readFile(MEMORY_FILES[target]));
-    await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId);
+  ipcMain.handle(
+    CHANNELS.forgetMemory,
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string) => {
+      // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
+      // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
+      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+      const project = memoryProject(projectRoot);
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project);
+    }
+  );
+  // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
+  // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
+  // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
+  ipcMain.handle(CHANNELS.listProjectMemories, async () => {
+    const dir = join(configDir(homedir()), "memories", "projects");
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return [];
+    }
+    const out: { root: string; text: string }[] = [];
+    for (const n of names) {
+      const read = async (f: string) => {
+        try {
+          return await readFile(join(dir, n, f), "utf8");
+        } catch {
+          return null;
+        }
+      };
+      const root = await read(PROJECT_ROOT_FILE);
+      if (root === null) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
+      out.push({ root: root.trim(), text: (await read(PROJECT_MEMORY_FILE)) ?? "" });
+    }
+    return out.sort((a, b) => a.root.localeCompare(b.root));
+  });
+  // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
+  ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
+    if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
+    await rm(join(configDir(homedir()), projectMemoryDir(root)), { recursive: true, force: true });
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────
@@ -1707,6 +1868,10 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(CHANNELS.reconnectMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
     await mcpHub.reconnect(id);
+    return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.authorizeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
+    await mcpHub.authorize(id);
     return mcpSnapshot();
   });
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>
@@ -2425,18 +2590,79 @@ void app.whenReady().then(() => {
   /** 手机上行的五个词。三个能原样落到岛的那条路(同一套审批/发消息逻辑,
       不另起一份);watch/unwatch 是时间线订阅,还没做。
       刻意不透传 grant —— UpFrame 里根本没有那个字段(ADR-0096:永久授权不给手机) */
+  /** 把手机声明的那几个 uploadId 变成能随消息走的附件。
+      **少一个就整条不发**:消息正文很可能是"看看这张图",把文字单独发过去
+      等于让模型对着一句没有指代对象的话开工 */
+  async function remoteAttachments(ids: string[]): Promise<OutgoingAttachment[] | null> {
+    const out: OutgoingAttachment[] = [];
+    for (const id of ids) {
+      const file = remoteUploads.take(id);
+      if (!file) {
+        remoteBridge?.pushNotice("有附件没传完,这条消息没发出去");
+        return null;
+      }
+      const staged = await intakeFile(file.name, file.data, attachmentStore);
+      if (staged.kind === "rejected") {
+        // 静默丢弃在手机上和"传成功了"长得一模一样,必须回话
+        remoteBridge?.pushNotice(`${staged.name} 没收下:${staged.reason}`);
+        return null;
+      }
+      out.push(
+        staged.kind === "image"
+          ? { kind: "image", ref: staged.ref }
+          : { kind: "text", name: staged.name, content: staged.content }
+      );
+    }
+    return out;
+  }
+
   function handleRemoteCommand(c: UpFrame): void {
     switch (c.type) {
       case "approve":
         return handleIslandCommand({ type: "approve", sessionId: c.sessionId, callId: c.callId });
       case "deny":
         return handleIslandCommand({ type: "deny", sessionId: c.sessionId, callId: c.callId });
-      case "send":
-        return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
-      case "watch":
-      case "unwatch":
-        console.warn(`远程:时间线订阅还没做,忽略 ${c.type}`);
+      case "upload": {
+        const r = remoteUploads.accept(c);
+        if (!r.ok) remoteBridge?.pushNotice(`${c.name} 没收下:${r.reason}`);
         return;
+      }
+      case "send": {
+        if (!c.uploads?.length) {
+          return handleIslandCommand({ type: "send", sessionId: c.sessionId, text: c.text });
+        }
+        void (async () => {
+          const attachments = await remoteAttachments(c.uploads ?? []);
+          if (!attachments) return; // 理由已经回给手机了
+          await handleSendMessage(c.sessionId, c.text, undefined, attachments);
+        })().catch((e) => {
+          const why = e instanceof Error ? e.message : String(e);
+          console.warn("远程带附件发消息失败", e);
+          remoteBridge?.pushNotice(`没发出去:${why}`);
+        });
+        return;
+      }
+      case "watch":
+        // 一次只订一个:换会话直接顶掉上一个,不做多路订阅 —— 手机上看不见两屏
+        console.warn(`远程:手机订阅了 ${c.sessionId}`);
+        watchedSession = c.sessionId;
+        pushTimelineNow();
+        return;
+      case "unwatch":
+        // 只有当前订的那个能取消:退出旧屏的迟到 unwatch 不该把新订的掐掉
+        if (watchedSession === c.sessionId) watchedSession = null;
+        return;
+      case "stats": {
+        // 两条查询都是全表扫描级的,所以**只在手机开口问的时候跑** ——
+        // 挂在 pushFleet 上会让每条工具事件都拖一次全表扫描(见上面 sessions() 的备注)
+        const now = Date.now();
+        // 子会话不算:派一次活热力图就多一格的话,它说的不再是"你开过多少会话"
+        // (同 renderer 的 SessionActivity,issue #141)
+        const roots = store.sessions().filter((x) => x.spawnedFrom === null);
+        const billed = store.billedUsage(now - USAGE_DAYS * 86_400_000);
+        remoteBridge?.pushStats(projectStats(roots, billed, now));
+        return;
+      }
     }
   }
 

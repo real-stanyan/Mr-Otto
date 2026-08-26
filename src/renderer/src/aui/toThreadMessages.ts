@@ -65,7 +65,7 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "session_autotitled":
     case "model_changed":
     case "skill_invoked":
-    // 停用（ADR-0110）：和 skill_invoked 一对——启用那行上了时间线，停用那行
+    // 停用（ADR-0122）：和 skill_invoked 一对——启用那行上了时间线，停用那行
     // 也必须上，否则用户只能靠「停用按钮消失」这个隐式信号猜到底停没停。
     // 漏在这里的代价不是少一行灰字：EventRow 那个 case 会变成永不执行的死代码
     case "skill_released":

@@ -111,5 +111,7 @@ export function spring(response: number, zeta = 1): { stiffness: number; damping
 /** 按下的反馈要快到"手指按下去的同一瞬间"。0.15s 临界阻尼 */
 export const PRESS_SPRING = spring(0.15);
 
-export const radius = { card: 14, control: 12, tile: 10, pill: 999 } as const;
+// 桌面那侧的圆角比一般 UI 大一档:permission-grant 是 rounded-[20px],
+// 输入区那块板同量级。跟上去,否则再对色也读不成同一个产品
+export const radius = { card: 20, control: 14, tile: 10, pill: 999 } as const;
 export const space = { xs: 6, sm: 10, md: 16, lg: 22, xl: 32 } as const;

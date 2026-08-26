@@ -56,7 +56,7 @@ describe("builtinSubagents", () => {
     expect(explore.tools).not.toContain("write_file");
   });
 
-  // ADR-0110 D9：子会话自己也拿得到说明书。这份白名单就是 allowTools，
+  // ADR-0122 D9：子会话自己也拿得到说明书。这份白名单就是 allowTools，
   // 不点名 = 挂不上，所以漏了它 general-purpose 连 skill 工具的影子都见不到
   it("general-purpose 拿得到 skill —— 装配认得这个名字的前提下", () => {
     const gp = builtinSubagents([...ALL, "skill"]).find((d) => d.name === "general-purpose")!;
@@ -85,6 +85,14 @@ describe("builtinSubagents", () => {
     expect(withMem.tools).toEqual(["memory"]);
     const without = builtinSubagents(["read_file"]).find((d) => d.name === "memory-reviewer")!;
     expect(without.tools).toEqual([]);
+  });
+
+  // 三档判据（ADR-0116 记忆按项目分级）：nudge 派出去的 reviewer 不认三档的话，
+  // 会把项目级条目往全局档塞，正好和这次改动反着来
+  it("memory-reviewer 的指令写明三档判据", () => {
+    const def = builtinSubagents(["memory"]).find((s) => s.name === "memory-reviewer")!;
+    expect(def.instructions).toContain("PROJECT");
+    expect(def.instructions).toContain("拿不准");
   });
 });
 

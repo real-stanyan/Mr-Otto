@@ -14,6 +14,7 @@ import {
   unshiftTask,
   type QueuedTask,
 } from "./lib/messageQueue.js";
+import { toWorkspaceRel } from "../../shared/fileRefs.js";
 import type { ToolDefinition } from "../../model/adapter.js";
 import type {
   AccountInfo,
@@ -230,6 +231,10 @@ interface ChatState {
   /** Files 面板开关(同一个右侧槽位,与上面这些互斥)。
       面板只读,内容不进事件日志也不进模型上下文——同终端面板(ADR-0031) */
   filesPanelOpen: boolean;
+  /** 正文里点了一条「文件:行号」之后的跳转目标。rel = 工作区相对路径,
+      null = 那条路径不在当前工作区(面板照样开,但要说清楚为什么打不开)。
+      seq 是自增序号:连点同一条也要重新滚一次,不然第二次点毫无反应 */
+  fileJump: { rel: string | null; raw: string; line: number | null; seq: number } | null;
   /** 浏览器面板开关(同一个右侧槽位,与上面这些互斥) */
   browserPanelOpen: boolean;
   /** iOS 模拟器面板(issue #401)。与浏览器/终端同一块右侧槽位,互斥 */
@@ -389,6 +394,9 @@ interface ChatState {
   removeMcpServer(id: string): Promise<void>;
   /** 手动重连(failed 的那台，用户修好环境/网络后自己点) */
   reconnectMcpServer(id: string): Promise<void>;
+  /** 跑一次 OAuth 授权(needs-auth 的那台,用户点完系统浏览器的同意页后自动重连)。
+      失败原样抛出——组件自己 catch 显示原因,不在这一层吞掉 */
+  authorizeMcpServer(id: string): Promise<void>;
   /** 重拉一份连上的 server 的 prompt 清单(composer `/` 菜单用)。boot 冷启动拉一次,
       此后跟着 onMcpChanged 的推送自动补拉——一台 server 掉线/重连会改变这份清单,
       不能只在打开菜单那一刻现问一次 */
@@ -429,6 +437,9 @@ interface ChatState {
   /** 打开终端面板:同一会话已有跑着的终端就复用,没有才开新的(TerminalView 里做) */
   openFilesPanel(): void;
   closeFilesPanel(): void;
+  /** 打开 Files 面板并跳到某个文件(有行号就滚到那一行并高亮)。
+      入口是正文里的路径 chip —— 面板仍然只读,不进事件日志(ADR-0031) */
+  openFileAt(path: string, line?: number | null): void;
   openTerminalPanel(): void;
   closeTerminalPanel(): void;
   /** 打开浏览器面板:与终端同一块右侧槽位,互斥 */
@@ -636,6 +647,7 @@ export const enterChat = (info: BootInfo) => ({
   terminalPanelOpen: false, // 同上
   browserPanelOpen: false, simPanelOpen: false, // 同上
   filesPanelOpen: false, // 同上
+  fileJump: null, // 换会话 = 换工作区:上个工程的跳转目标当场作废
   workTree: null, // 换会话可能就是换工程:旧工作区状态立刻作废,等重新问 git
   workTreeDismissed: null, // 关浮窗的意愿只对那一个工程那一刻有效
   // 同上:composer 是按会话摆的,填到一半的 MCP prompt 参数卡跟着旧会话走,
@@ -706,6 +718,7 @@ export const useChat = create<ChatState>((set, get) => ({
   terminalPanelOpen: false,
   browserPanelOpen: false, simPanelOpen: false,
   filesPanelOpen: false,
+  fileJump: null,
   workTree: null,
   workTreeDismissed: null,
   branchesByDir: {},
@@ -917,6 +930,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async reconnectMcpServer(id) {
     set({ mcpServers: await window.otter.reconnectMcpServer(id) });
+  },
+
+  async authorizeMcpServer(id) {
+    set({ mcpServers: await window.otter.authorizeMcpServer(id) });
   },
 
   async refreshMcpPrompts() {
@@ -1131,6 +1148,14 @@ export const useChat = create<ChatState>((set, get) => ({
     }),
 
   closeFilesPanel: () => set({ filesPanelOpen: false }),
+
+  openFileAt: (path, line = null) => {
+    const rel = toWorkspaceRel(get().workspace, path);
+    get().openFilesPanel();
+    // 解析不出相对路径也要开面板 + 记下这次点击:静默吞掉的表现是"点了没反应",
+    // 用户只能猜是没实现还是文件没了。rel: null 让面板去说这句话
+    set((s) => ({ fileJump: { rel, raw: path, line, seq: (s.fileJump?.seq ?? 0) + 1 } }));
+  },
 
   async refreshGitGraph(silent = false) {
     const repo = get().gitGraphRepo;

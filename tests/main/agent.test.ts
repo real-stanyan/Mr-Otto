@@ -12,7 +12,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest, SessionEvent } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
-import { withMcp } from "../../src/world/executionWorld.js";
+import { withMcp, type McpCapability } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import { SKILL_TOOL_NAME } from "../../src/tools/skill.js";
 import { tempDir } from "../helpers/tempDir.js";
@@ -144,6 +144,29 @@ describe("createAgent 会话生命周期", () => {
     });
     expect(store2.load(resumed.sessionId).filter((e) => e.type === "memory_loaded")).toHaveLength(0);
     store2.close();
+  });
+
+  it("memory 快照带项目档时，落盘的 memory_loaded 带 project/projectRoot", () => {
+    const store = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
+    const memory = { memory: "全局", user: "用户", project: "项目", projectRoot: "/repo" };
+
+    const a = createAgent({ store, workspace: "/repo", push, attachments, world, memory });
+    const ev = store.load(a.sessionId).find((e) => e.type === "memory_loaded");
+    expect(ev).toMatchObject({ memory: "全局", user: "用户", project: "项目", projectRoot: "/repo" });
+    store.close();
+  });
+
+  it("没有项目根时，memory_loaded 不带那两个字段（旧日志形状）", () => {
+    const store = new EventStore(":memory:");
+    const world = createLocalWorld({ configRoot: tempDir("otter-agent-config-") });
+    const memory = { memory: "全局", user: "用户" };
+
+    const a = createAgent({ store, workspace: "/tmp/scratch", push, attachments, world, memory });
+    const ev = store.load(a.sessionId).find((e) => e.type === "memory_loaded")!;
+    expect("project" in ev).toBe(false);
+    expect("projectRoot" in ev).toBe(false);
+    store.close();
   });
 
   it("world 有 config 才挂 memory 工具", () => {
@@ -503,6 +526,9 @@ describe("MCP 接进装配", () => {
     callTool: async () => [{ kind: "text" as const, text: "ok" }],
     readResource: async () => [],
     getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
   });
 
   const names = (a: { toolDefs: { name: string }[] }) => a.toolDefs.map((d) => d.name);
@@ -689,6 +715,123 @@ describe("resume 崩溃合成收口 + 向前兼容拒读（issue #383）", () =>
     const { store, sessionId } = storeWithAlienEvent(JSON.stringify({ ignorable: true }));
     const agent = createAgent({ store, workspace: "/w", resumeSessionId: sessionId, push, attachments });
     expect(agent.sessionId).toBe(sessionId);
+    store.close();
+  });
+});
+
+describe("MCP 自助配置的三把刀", () => {
+  // createAgent 没有 hasTool()/toolDefs() 这两个方法——toolDefs 是个 getter，
+  // 只报 direct + 已被 tool_search 曝光的 deferred（见 agent.ts 的 get toolDefs()
+  // 注释）。三把刀刻意都是 deferred 且没人搜过，所以"挂没挂上"这件事在 toolDefs
+  // 里根本看不出来——已挂载但未曝光的 deferred 工具和完全没挂载，在 toolDefs
+  // 眼里是同一张脸。
+  //
+  // 探查手法改用黑盒路径（code review 指出直接读 LoopEngine 的 private
+  // toolsByName 破了封装，全仓唯一一处，且有现成的公开路径没走）：
+  // agent.engine 公开暴露了 setAdapter()（engine.ts:152）和 runTurn()
+  // （engine.ts:487）——生产代码 agent.ts 的 switchModel() 用的就是这同一套
+  // 热替换机制。注入一个假 adapter，编一次"模型调 tool_search 搜关键词"的
+  // turn，再读公开的 agent.toolDefs getter：一把「已挂载但未曝光」的 deferred
+  // 工具只有真被搜到之后才会出现在 toolDefs 里；一把「从没挂载」的工具
+  // （包括 tool_search 自己都没挂上的情形，见下面第二条测试）无论怎么搜
+  // 都不会出现——两者因此可分，不用碰任何 private 字段。
+  function searchOnceAdapter(toolName: string, query: string): ModelAdapter {
+    let step = 0;
+    return {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        step++;
+        if (step === 1) {
+          return { content: "", toolCalls: [{ id: "c1", name: toolName, args: { query } }] };
+        }
+        return { content: "好的" };
+      },
+    };
+  }
+
+  const cap = (): McpCapability => ({
+    ready: vi.fn(async () => {}),
+    servers: () => [],
+    callTool: async () => [],
+    readResource: async () => [],
+    getPrompt: async () => "",
+    configure: async () => {},
+    authorize: async () => {},
+    configOf: () => undefined,
+  });
+
+  // 终审 A Critical 的可执行版：整条自助配置链路的第一步靠这把 direct 的
+  // 入口存在。它一旦被改回 deferred，模型的初始工具表里就一把 MCP 配置刀都
+  // 没有，而 tool_search 是纯子串打分（"supabase" 命中不了 "mcp_catalog"）——
+  // 代码全对，功能仍然为零，且其余所有测试照样绿。所以这条单独钉住
+  it("mcp_catalog 在初始工具表里（direct）——这条链路的唯一入口", () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+    expect(agent.toolDefs.map((d) => d.name)).toContain("mcp_catalog");
+    store.close();
+  });
+
+  it("world 有 mcp 能力时三把都挂上：catalog 直接可见，另两把 tool_search 搜到才可见", async () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments, mcp: cap() });
+
+    // 入口直接可见，改配置 / 拉授权那两把挂载但未曝光
+    const before = agent.toolDefs.map((d) => d.name);
+    expect(before).toContain("mcp_catalog");
+    expect(before).not.toContain("mcp_configure");
+    expect(before).not.toContain("mcp_authorize");
+
+    // 假 adapter 模拟模型调 tool_search 搜"mcp_"——deferred 检索口按子串匹配
+    // name+description（toolSearch.ts），这个装配里除了那两把没有别的 deferred
+    // 工具（cap() 的 servers() 是空的，createMcpTools 不会生成任何 mcp__* 工具），
+    // 一次搜索同时命中两把
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    const after = agent.toolDefs.map((d) => d.name);
+    expect(after).toContain("mcp_catalog");
+    expect(after).toContain("mcp_configure");
+    expect(after).toContain("mcp_authorize");
+    store.close();
+  });
+
+  it("没有 mcp 能力的装配一把都不挂——搜也搜不到", async () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
+
+    // 这个装配没有任何 deferred 工具，buildTools() 里 tool_search 本身都不会
+    // 挂上（只在 list.some(exposure==="deferred") 时才挂）；假模型硬调它会
+    // 拿到"未知工具"的 tool_result，但 execute() 的 error 不中断循环，turn
+    // 照常收口——借这条路径证明"连搜的入口都没有"，不是"搜了搜不到"
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_configure");
+    store.close();
+  });
+
+  it("子 agent 的白名单没点名时三把刀一把都拿不到（ADR-0054）——搜也搜不到", async () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments, mcp: cap(), allowTools: ["read_file"],
+    });
+
+    // allowTools 过滤发生在 buildTools() 最末尾，晚于"list.some(deferred) 才挂
+    // tool_search"那次判定——mcp_configure 进过 list（deferred 判定为真），
+    // 但白名单只留 read_file，tool_search 和 mcp_configure 一起被滤掉。
+    // mcp_catalog 现在是 direct（终审 A Critical），白名单这道闸对它同样有效：
+    // 没点名就不该出现——spec §7 说的是"这三把刀"，所以三条都断（B-Minor 3-3）
+    expect(agent.toolDefs.map((d) => d.name)).not.toContain("mcp_catalog");
+
+    agent.engine.setAdapter(searchOnceAdapter("tool_search", "mcp_configure"));
+    await agent.engine.runTurn("帮我接上 supabase");
+
+    const names = agent.toolDefs.map((d) => d.name);
+    expect(names).not.toContain("mcp_catalog");
+    expect(names).not.toContain("mcp_configure");
+    expect(names).not.toContain("mcp_authorize");
     store.close();
   });
 });

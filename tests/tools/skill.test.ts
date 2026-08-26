@@ -35,7 +35,7 @@ describe("skill 工具", () => {
     expect(tool.def.description).toContain("caveman — 极简回话风格");
   });
 
-  // ADR-0110 §一「动态拼」：def 是 getter,每次读都重扫。写成对象字面量里的
+  // ADR-0122 §一「动态拼」：def 是 getter,每次读都重扫。写成对象字面量里的
   // 一次求值的话,description 在 createSkillTool 那一刻就冻住——而 app 自带
   // 「导入 skill」弹窗,会话开着的时候导入一把,模型的索引里永远没有它
   it("索引是活的：会话中途装的 skill,下一次读 def 就出现在索引里", () => {

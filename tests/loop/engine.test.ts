@@ -960,3 +960,145 @@ describe("runTurn 的 origin 标（issue #428）", () => {
   });
 });
 
+describe("工具表按 turn 重算（MCP server 中途连上要能用）", () => {
+  // 假工具跑起来时是否触发钩子——用来模拟"provider 的返回值在工具执行期间被改掉"
+  let onToolRunHook: (() => void) | undefined;
+  // 假 adapter 每次 chat() 收到的 tools 参数的 name 列表，按调用顺序累积
+  let lastSeenTools: string[][] = [];
+  let currentStore: EventStore | null = null;
+  // engine → 它那份 deferredExposed 活 Set 的映射，供 exposeDeferred 找到写入口
+  const deferredSets = new WeakMap<LoopEngine, Set<string>>();
+
+  function fakeTool(name: string, extra: Partial<Tool> = {}): Tool {
+    return {
+      def: { name, description: "", parameters: { type: "object", properties: {} } },
+      requiresApproval: false,
+      run: async () => {
+        onToolRunHook?.();
+        return `${name} ran`;
+      },
+      ...extra,
+    };
+  }
+
+  /** 假 adapter 最后一次 chat() 收到的 tools 参数的 name 列表 */
+  function lastToolDefs(): string[] {
+    return lastSeenTools.at(-1) ?? [];
+  }
+
+  /** 日志里最后一条 tool_result 的 status */
+  function lastToolResultStatus(): string | undefined {
+    if (!currentStore) return undefined;
+    const events = currentStore.load("s1");
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.type === "tool_result") return e.status;
+    }
+    return undefined;
+  }
+
+  /** 模拟 tool_search 命中：把工具名写进这个 engine 的 deferredExposed */
+  function exposeDeferred(engine: LoopEngine, name: string): void {
+    deferredSets.get(engine)?.add(name);
+  }
+
+  function makeEngine(opts: {
+    tools: Tool[] | (() => Tool[]);
+    /** 工具执行期间的回调——用来在"上一圈工具正在跑"时改掉 provider 的返回值 */
+    onToolRun?: () => void;
+    /** 不给 = 每次 chat() 都直接收口（不调工具）；给了就按脚本走，用完再调报错 */
+    replies?: { text?: string; toolCalls?: { id: string; name: string; args: unknown }[] }[];
+  }): LoopEngine {
+    onToolRunHook = opts.onToolRun;
+    const seenTools: string[][] = [];
+    lastSeenTools = seenTools;
+    let i = 0;
+    const script = opts.replies;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_messages, tools) {
+        seenTools.push((tools ?? []).map((t) => t.name));
+        if (!script) return { content: "" };
+        const r = script[i++];
+        if (!r) throw new Error("脚本用完了还在调");
+        return { content: r.text ?? "", ...(r.toolCalls ? { toolCalls: r.toolCalls } : {}) };
+      },
+    };
+    const store = new EventStore(":memory:");
+    currentStore = store;
+    const deferredExposed = new Set<string>();
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: opts.tools,
+      world: fakeWorld,
+      sessionId: "s1",
+      deferredExposed,
+    });
+    deferredSets.set(engine, deferredExposed);
+    return engine;
+  }
+
+  it("传数组时行为与从前一致", async () => {
+    const engine = makeEngine({ tools: [fakeTool("a")] });
+    await engine.runTurn("用 a");
+    expect(lastToolDefs()).toEqual(["a"]);
+  });
+
+  it("turn 之间工具表会跟着 provider 变", async () => {
+    let live = [fakeTool("a")];
+    const engine = makeEngine({ tools: () => live });
+    await engine.runTurn("第一轮");
+    expect(lastToolDefs()).toEqual(["a"]);
+    live = [fakeTool("a"), fakeTool("mcp__supabase__list_tables")];
+    await engine.runTurn("第二轮");
+    expect(lastToolDefs()).toEqual(["a", "mcp__supabase__list_tables"]);
+  });
+
+  it("turn 之内不变——模型按这一轮的声明表发调用，中途换表会变成「未知工具」", async () => {
+    // 用两次工具调用而不是一次：第一版用例只调了一次 a，onToolRunHook 在 run()
+    // 里触发时查表早已发生，"构造时冻结"/"每 turn 重算"/"每圈重算"三种实现下
+    // 结果都是 "ok"——那条用例其实是永真式，验证不了 turn 内冻结。这里让模型
+    // 在第二圈再调一次同一把刀：只有"每 turn 重算"才会让第二圈仍查到 [a]；
+    // 若代码退化成"每圈重算"，第二圈会看到空表，查不到 a → "未知工具"
+    let live = [fakeTool("a")];
+    const engine = makeEngine({
+      tools: () => live,
+      // 第一圈工具执行期间 provider 的返回值被改掉（第二圈 onToolRun 再触发一次
+      // 也无害——live 已经是空数组，重复清空是幂等的）
+      onToolRun: () => {
+        live = [];
+      },
+      // 三圈：圈 1 调 a，圈 2 再调一次同一把刀，圈 3 收口
+      replies: [
+        { toolCalls: [{ id: "1", name: "a", args: {} }] },
+        { toolCalls: [{ id: "2", name: "a", args: {} }] },
+        { text: "好了" },
+      ],
+    });
+    await expect(engine.runTurn("跑一下")).resolves.not.toThrow();
+    const statuses = currentStore!
+      .load("s1")
+      .filter((e): e is Extract<typeof e, { type: "tool_result" }> => e.type === "tool_result")
+      .map((e) => e.status);
+    expect(statuses).toEqual(["ok", "ok"]); // 两次调用都查到了同一份 turn 内冻结的表，不是 "error: 未知工具"
+  });
+
+  it("撞名保护每轮都生效：后到的同名工具照旧被拒", async () => {
+    const engine = makeEngine({ tools: () => [fakeTool("a"), fakeTool("a")] });
+    await engine.runTurn("一轮");
+    expect(lastToolDefs()).toEqual(["a"]);
+  });
+
+  it("deferred 已暴露的集合跨轮存活——搜出来的刀不该因为重算又缩回去", async () => {
+    const engine = makeEngine({
+      tools: () => [fakeTool("a"), { ...fakeTool("deep"), exposure: "deferred" as const }],
+    });
+    await engine.runTurn("第一轮");
+    expect(lastToolDefs()).not.toContain("deep");
+    exposeDeferred(engine, "deep"); // 模拟 tool_search 命中
+    await engine.runTurn("第二轮");
+    expect(lastToolDefs()).toContain("deep");
+  });
+});
+

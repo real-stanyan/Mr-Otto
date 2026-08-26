@@ -1,19 +1,17 @@
-// 记忆栏目(设置页)——MEMORY.md / USER.md 的直接编辑口(ADR-0060)。
+// 记忆栏目(设置页)——MEMORY.md / USER.md / 项目档三档的直接编辑口(ADR-0060,三档见 ADR-0116)。
 //
-// 正文不铺在页面上,收进弹窗:两份笔记加起来能有三千多字符,平铺会把「重建搜索索引」
-// 这类入口挤到看不见,而它们平时被读的次数远多于笔记正文。卡片上只留标题/占用/条数。
+// 正文不铺在页面上,收进弹窗:笔记加起来能有几千字符,平铺会把「重建搜索索引」这类入口挤到看不见。弹窗里的
+// textarea 绑的是磁盘原文(带 "\n§\n" 分隔符),不是重排过的"一行一条":getMemory()/saveMemory() 只归一化
+// (去空条目、保序去重),不重排格式,占用条的 used 数字用同一套纯函数算,跟主进程落盘前做的是同一步计算。
 //
-// 弹窗里的 textarea 绑的是磁盘上的原文(带 ENTRY_DELIMITER 的 "\n§\n" 分隔符),不是重排过的
-// "一行一条":getMemory()/saveMemory() 只归一化(去空条目、保序去重),不重排格式,
-// 这里也不例外——归一化在 shared/memoryStore.ts 里是同一套纯函数,占用条上显示的
-// used 数字用 charCount(formatEntries(parseEntries(text))) 算,和主进程
-// applyUserEdit 真正落盘前做的是同一步计算,页面上看到的数字不会跟保存后的实际值对不上。
+// 不进 useChat store:这些文件只有这一个栏目会读/改,没有别处要订阅。
 //
-// 不进 useChat store:这两个文件只有这一个栏目会读/改,没有别处要订阅,进 store
-// 反而多一份要维护的镜像(McpSettings/SubagentSettings 那两份清单进 store 是因为
-// 别处也要用,这里不成立)。
+// MemoryField 是三档共用的一个组件:memory/user 从 getMemory() 读,project 从 listProjectMemories() 按选中
+// 的 root 现拼一份——数据源不同,靠 fetchText/onSave 两个 prop 注入,不再有一个叫 "TwoTier" 的窄化类型
+// 悬在三档界面里。
 
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import {
@@ -24,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.js";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { cn } from "@/lib/utils.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
@@ -31,23 +30,48 @@ import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { useChat } from "../store.js";
 import type { FtsHit } from "../../../shared/shellBridge.js";
+import type { MemoryLoadedEvent } from "../../../session/events.js";
 import {
   charCount,
   formatEntries,
   parseEntries,
+  ENTRY_DELIMITER,
   MEMORY_LIMITS,
+  assertMemoryFits,
   type MemoryTarget,
 } from "../../../shared/memoryStore.js";
 
-const FIELDS: { target: MemoryTarget; label: string }[] = [
-  { target: "memory", label: "MEMORY · 笔记" },
-  { target: "user", label: "USER · 关于用户" },
-];
+type ProjectMemory = {
+  root: string;
+  text: string;
+  /** 磁盘上还没有这个项目的目录（当前会话的项目根，第一次保存时才由主进程造出来）。
+      带这个标记的那条不给「删掉这个项目的记忆」——没东西可删，点了也只会看起来没反应 */
+  pending?: true;
+};
+
+/** entryAction 渲染时拿到的上下文，见 MemoryField 的 entryAction 参数注释 */
+type MoveCtx = { allEntries: string[]; disabled: boolean; refresh: () => Promise<void> };
 
 /** "已保存"在屏幕上停留的时间,同 ProfileCard 那颗钮一个数 */
 const SAVED_HINT_MS = 2000;
 
-function MemoryField({ target, label }: { target: MemoryTarget; label: string }) {
+function MemoryField({
+  target,
+  label,
+  fetchText,
+  onSave,
+  entryAction,
+}: {
+  target: MemoryTarget;
+  label: string;
+  /** 问磁盘上这个 target 当前的文本——memory/user 走 getMemory(),project 由调用方
+      按选中的 root 现问一次 listProjectMemories()，数据源不同,组件本体不关心 */
+  fetchText: () => Promise<string>;
+  onSave: (text: string) => Promise<void>;
+  /** 每条记忆旁的可选操作(只有 MEMORY 档用来渲染"移到项目档"下拉)。allEntries 是当前
+      磁盘全量条目,disabled 在草稿未保存时为真(移动直接读写磁盘,别跟草稿打架) */
+  entryAction?: (entry: string, ctx: MoveCtx) => ReactNode;
+}) {
   // null = 还没从主进程读到(disabled 状态);读到之后即使是空字符串也不再是 null
   const [loaded, setLoaded] = useState<string | null>(null);
   const [text, setText] = useState("");
@@ -58,12 +82,11 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
 
   useEffect(() => {
     let cancelled = false;
-    window.otter
-      .getMemory()
-      .then((m) => {
+    fetchText()
+      .then((t) => {
         if (cancelled) return;
-        setLoaded(m[target]);
-        setText(m[target]);
+        setLoaded(t);
+        setText(t);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(bridgeErrorMessage(e));
@@ -71,6 +94,9 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
     return () => {
       cancelled = true;
     };
+    // target 变化(挂载切换到另一档/另一个项目)才重问;fetchText/onSave 不进依赖——
+    // 那样会在父组件因别的状态重渲染时打断这里正在打的字
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
 
   useEffect(() => {
@@ -98,23 +124,20 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
     setOpen(false);
   };
 
-  // 保存/清空之后不拿本地的 text 直接当 loaded:主进程用
-  // formatEntries(parseEntries(...)) 归一化过(去空条目、保序去重)才落盘,
-  // 本地这份是归一化*之前*的草稿。两者在有重复/空条目时会不一样——
-  // 不重新拉一次的话,textarea 会停在一份磁盘上其实不存在的旧文本上,
-  // 且因为 loaded 也被错误地设成了它,dirty 判不出来,保存钮跟着锁死。
-  // 磁盘上真正写了什么,只有再读一次 getMemory() 才知道——不在这重新实现一遍归一化
+  // 保存/清空之后不拿本地 text 直接当 loaded:主进程归一化过(去空条目、保序去重)
+  // 才落盘,本地这份是归一化*之前*的草稿,两者在有重复/空条目时会不一样——不重新
+  // 问一次的话,loaded 会被设成没归一化的草稿,dirty 判不出来,保存钮跟着锁死
   const syncFromDisk = async () => {
-    const m = await window.otter.getMemory();
-    setLoaded(m[target]);
-    setText(m[target]);
+    const t = await fetchText();
+    setLoaded(t);
+    setText(t);
   };
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      await window.otter.saveMemory(target, text);
+      await onSave(text);
       await syncFromDisk();
       setSaved(true);
     } catch (e) {
@@ -129,7 +152,7 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
     setBusy(true);
     setError(null);
     try {
-      await window.otter.saveMemory(target, "");
+      await onSave("");
       await syncFromDisk();
       setSaved(true);
     } catch (e) {
@@ -192,7 +215,7 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
           <DialogHeader>
             <DialogTitle>{label}</DialogTitle>
             <DialogDescription>
-              条目之间用单独一行的 § 分隔。这两份笔记每轮都会进模型的 system prompt——写稳定的偏好和环境事实，
+              条目之间用单独一行的 § 分隔。这份笔记每轮都会进模型的 system prompt——写稳定的偏好和环境事实，
               不写任务进度。
             </DialogDescription>
           </DialogHeader>
@@ -210,6 +233,18 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
               placeholder={loaded === null ? "读取中…" : "还没有记忆"}
               className="min-h-[320px] font-mono text-xs"
             />
+            {entryAction && savedEntries.length > 0 && (
+              <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                {savedEntries.map((e) => (
+                  <li key={e} className="flex items-center gap-2 rounded-md bg-muted/50 px-2 py-1">
+                    <span className="flex-1 truncate font-mono text-xs" title={e}>
+                      {e}
+                    </span>
+                    {entryAction(e, { allEntries: savedEntries, disabled: dirty || busy, refresh: syncFromDisk })}
+                  </li>
+                ))}
+              </ul>
+            )}
             {error !== null && <p className="text-destructive text-[13px]">{error}</p>}
           </div>
           <DialogFooter className="sm:justify-between">
@@ -237,7 +272,184 @@ function MemoryField({ target, label }: { target: MemoryTarget; label: string })
   );
 }
 
+/** 一次性动作("移到某个项目"),不是常驻状态——选完立刻回落到占位符。
+    value="" 是"未选中"哨兵,合法:项目 root 都是绝对路径,不可能是空串 */
+function MoveToProjectSelect({
+  projects,
+  disabled,
+  onMove,
+}: {
+  projects: ProjectMemory[];
+  disabled: boolean;
+  /** 返回 Promise 而不是 void:失败(超限/IPC 报错)要能在这里接住并显示——
+      跟 submit/clear/deleteCurrent 那几个动作同一个模式,不做成静默失败 */
+  onMove: (root: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Select
+        value={value}
+        disabled={disabled || busy}
+        onValueChange={(root) => {
+          setValue("");
+          setBusy(true);
+          setError(null);
+          onMove(root)
+            .catch((e: unknown) => setError(bridgeErrorMessage(e)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <SelectTrigger size="sm" className="h-6 w-32 shrink-0 text-[11px]">
+          <SelectValue placeholder={busy ? "移动中…" : "移到项目档"} />
+        </SelectTrigger>
+        <SelectContent align="end">
+          {projects.map((p) => (
+            <SelectItem key={p.root} value={p.root} className="text-[11px]">
+              {p.root}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error !== null && <span className="max-w-40 text-right text-[11px] text-destructive">{error}</span>}
+    </div>
+  );
+}
+
+/** 项目档区:哪个项目要靠一个下拉切——只看得见当前会话那份的话,历史项目的记忆
+    就成了看不见的黑洞。key={current.root} 强制切换项目时重挂载 MemoryField:
+    不同项目是不同的草稿,切换该跟打开一个新字段一样干净,不带上一个的草稿。
+    sessionRoot 是当前会话的项目根:它可能还没有磁盘目录(见 MemorySettings 的
+    注释),这时候它照样出现在下拉里、且默认选中——新仓库里第一次写项目档就是
+    从这儿开始的 */
+function ProjectMemoryCard({
+  projects,
+  sessionRoot,
+  refreshProjects,
+}: {
+  projects: ProjectMemory[];
+  /** exactOptionalPropertyTypes：这里是"可能没有"而不是"可以不传"，显式带上 undefined */
+  sessionRoot: string | undefined;
+  refreshProjects: () => Promise<void>;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (projects.length === 0) {
+    return (
+      <div className="flex flex-col gap-2 rounded-[10px] border border-border px-[14px] py-3">
+        <span className="text-[13px] font-[650]">PROJECT · 项目档</span>
+        <p className="text-[13px] text-muted-foreground">
+          还没有任何项目记忆。项目档按当前会话所在的 git 仓库走——在一个 git 仓库里开会话，它的项目档就会出现在这里。
+        </p>
+      </div>
+    );
+  }
+  // 没手动切过就默认停在当前会话那个项目上:打开设置页最想看的是"我现在这个仓库
+  // 记了什么",不是按字母序排第一的那个。走到这里 projects 非空(上面的 length
+  // 判断是证据),最后那个 ?? 兜底断言安全
+  const current = (projects.find((p) => p.root === (picked ?? sessionRoot)) ?? projects[0])!;
+
+  const deleteCurrent = async () => {
+    if (!window.confirm(`删掉「${current.root}」的项目记忆？不可恢复。`)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await window.otter.deleteProjectMemory(current.root);
+      await refreshProjects();
+    } catch (e) {
+      setError(bridgeErrorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 px-1">
+        <span className="text-[13px] font-[650]">PROJECT · 项目档</span>
+        <Select value={current.root} onValueChange={setPicked}>
+          <SelectTrigger size="sm" className="ml-auto max-w-60 min-w-32 bg-card text-[12.5px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {projects.map((p) => (
+              <SelectItem key={p.root} value={p.root}>
+                {p.root}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {current.pending !== true && (
+          <Button variant="outline" size="sm" disabled={deleting} onClick={() => void deleteCurrent()}>
+            删掉这个项目的记忆
+          </Button>
+        )}
+      </div>
+      {error !== null && <p className="px-1 text-[13px] text-destructive">{error}</p>}
+      <MemoryField
+        key={current.root}
+        target="project"
+        label={`PROJECT · ${current.root}`}
+        fetchText={() =>
+          window.otter.listProjectMemories().then((ps) => ps.find((p) => p.root === current.root)?.text ?? "")
+        }
+        onSave={async (text) => {
+          await window.otter.saveMemory("project", text, undefined, current.root);
+          await refreshProjects(); // 项目文本变了,外层的 projects 列表(picker/移到项目档下拉)也要跟着新
+        }}
+      />
+    </div>
+  );
+}
+
 export function MemorySettings() {
+  const [onDisk, setOnDisk] = useState<ProjectMemory[]>([]);
+  const refreshProjects = () => window.otter.listProjectMemories().then(setOnDisk);
+  useEffect(() => {
+    void refreshProjects();
+  }, []);
+
+  /** 当前会话的项目根,取自它自己的 memory_loaded 事件(同 OttoThread 的 MemoryCard):
+      渲染层不认得 git,也不该自己去爬 .git——那是主进程算好落进事件里的事实 */
+  const sessionRoot = useChat(
+    (s) => s.events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot
+  );
+
+  /** 磁盘上那份 + 当前会话的项目根（哪怕它还没有目录）。
+      为什么必须补这一条:root.txt 只有真正写过项目档才会出现,而
+      listProjectMemories 跳过没有 root.txt 的目录,设置页的一切又都从这个列表推导——
+      于是在一个**新仓库**里,用户既不能创建也不能预填它的项目档,得先设法诱使模型
+      自己选 project 才行。而「移到项目档」这颗按钮是「不迁移存量」这个决定的配套,
+      它恰恰在最需要的场景(新仓库、项目约定还堵在超限的全局档里)不可用（ADR-0116）。
+      合成的那条 text 是空串:它在磁盘上还不存在,保存一次就由主进程连 root.txt 一起造出来 */
+  const projects = useMemo<ProjectMemory[]>(() => {
+    if (!sessionRoot || onDisk.some((p) => p.root === sessionRoot)) return onDisk;
+    return [...onDisk, { root: sessionRoot, text: "", pending: true as const }].sort((a, b) =>
+      a.root.localeCompare(b.root)
+    );
+  }, [onDisk, sessionRoot]);
+
+  /** MEMORY 区某条「移到项目档」:先写项目档、再从全局删,顺序不许调换——中途失败
+      宁可重复一条(用户看得见、能删),不可丢失。第二步不传 sessionId:主进程
+      applyUserEdit 的默认参数落到 MEMORY_EDITS_SESSION（main/memoryEdit.ts 的内部常量),
+      渲染层因此不需要 import 那个主进程模块——两次整份写,不借 forgetMemory。
+      超限检查在任何 saveMemory 之前做:跟 memory 工具的 applyOps 同一个语义——超限
+      报错、不自动淘汰、不截断,逼用户先腾地。检查放在两次写之前,是因为"项目档写完、
+      发现超限、全局档没删"比"直接拒绝"更糟——用户会看到同一条记忆凭空出现在两档里,
+      且不知道该信哪一份。调用方(MoveToProjectSelect)负责把这里抛出的错误显示出来 */
+  const moveToProject = async (entry: string, allEntries: string[], root: string) => {
+    const proj = projects.find((p) => p.root === root);
+    const nextProject = proj?.text ? `${proj.text}${ENTRY_DELIMITER}${entry}` : entry;
+    assertMemoryFits("project", nextProject); // 抛的话下面两次 saveMemory 都不会跑，见 memoryStore.ts 的注释
+    await window.otter.saveMemory("project", nextProject, undefined, root);
+    await window.otter.saveMemory("memory", formatEntries(allEntries.filter((x) => x !== entry)));
+    await refreshProjects();
+  };
+
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
@@ -245,9 +457,30 @@ export function MemorySettings() {
         <SettingsTitle id="memory" className="flex-1" />
       </header>
       <section className={SETTINGS_BODY}>
-        {FIELDS.map((f) => (
-          <MemoryField key={f.target} target={f.target} label={f.label} />
-        ))}
+        <MemoryField
+          target="memory"
+          label="MEMORY · 笔记"
+          fetchText={() => window.otter.getMemory().then((m) => m.memory)}
+          onSave={(text) => window.otter.saveMemory("memory", text)}
+          {...(projects.length === 0
+            ? {}
+            : {
+                entryAction: (entry: string, { allEntries, disabled, refresh }: MoveCtx) => (
+                  <MoveToProjectSelect
+                    projects={projects}
+                    disabled={disabled}
+                    onMove={(root) => moveToProject(entry, allEntries, root).then(refresh)}
+                  />
+                ),
+              })}
+        />
+        <MemoryField
+          target="user"
+          label="USER · 关于用户"
+          fetchText={() => window.otter.getMemory().then((m) => m.user)}
+          onSave={(text) => window.otter.saveMemory("user", text)}
+        />
+        <ProjectMemoryCard projects={projects} sessionRoot={sessionRoot} refreshProjects={refreshProjects} />
         <SearchIndexCard />
       </section>
     </div>

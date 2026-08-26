@@ -339,14 +339,25 @@ export interface SubagentBriefedEvent extends SessionEventBase {
   model: string;
 }
 
-/** 额外 14：长期记忆快照（ADR-0060）。session 开头把 ~/.mr-otto/memories/ 两个文件
-    的内容落盘——模型整个 session 看到的就是这一份（投影拼进 system 尾部），中途
-    写盘下个 session 才可见（前缀缓存不被打穿，hermes 同款取舍）。快照语义同
-    skill_invoked：文件后来改了/丢了，重放不失真 */
+/** 额外 14：长期记忆快照（ADR-0060）。session 开头把记忆文件的内容落盘——模型整个
+    session 看到的就是这一份（投影拼进 system 尾部），中途写盘下个 session 才可见
+    （前缀缓存不被打穿，hermes 同款取舍）。快照语义同 skill_invoked：文件后来
+    改了/丢了，重放不失真。
+    project/projectRoot 是**可选**字段（记忆分级 ADR-0116）。它们必须可选的理由是
+    **向前兼容**：新日志被旧版本读到时，assertReplayable 拒的是未知**事件类型**，
+    已知类型上的多余字段它认得——新开一个 project_memory_loaded 类型会让旧版本
+    直接拒读整个会话。
+    注意不是"旧日志的投影逐字节不变"：MEMORY 的上限同时从 2200 降到了 1100，而
+    memoryBlock 把 limit 渲进标题，所以旧日志的记忆块**数字会变**。不变的是结构
+    （没有 project 字段就不多渲一块）和可读性——重放不失败，这才是硬规则要的 */
 export interface MemoryLoadedEvent extends SessionEventBase {
   type: "memory_loaded";
   memory: string;
   user: string;
+  /** 项目档内容。缺席 = 这个会话没有项目根（workspace 一路没有 .git） */
+  project?: string;
+  /** 项目档归属的项目根绝对路径（UI 显示 + 审计） */
+  projectRoot?: string;
 }
 
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
@@ -357,6 +368,14 @@ export interface MemoryUserEditEvent extends SessionEventBase {
   target: MemoryTarget;
   before: string;
   after: string;
+  /** 项目档改的是**哪个项目**（项目根绝对路径）。两档时 target 就是完整地址；
+      三档之后 `target: "project"` 在多个项目之间不再唯一——不带这个字段的话，
+      两个不同 repo 的手编在日志里长得一模一样，上面那句"记忆文件可从日志重建"
+      就不再成立（ADR-0116）。
+      **可选**字段，理由同 MemoryLoadedEvent：旧日志没有它照旧可重放，新日志被
+      旧版本读到时 assertReplayable 拒的是未知事件类型，已知类型上的多余字段
+      它认得。target 不是 "project" 时缺席 */
+  projectRoot?: string;
 }
 
 /** 额外 16：记忆审查触发点。每 10 个 user_message 落一条，随后派 memory-reviewer

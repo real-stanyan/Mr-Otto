@@ -6,16 +6,19 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
   ToolListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
   PromptListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { OAuthClientInformation, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpServerConfig, McpToolInfo,
 } from "../shared/mcp.js";
+import type { McpAuthRecord } from "./mcpAuthStore.js";
+import { startLoopback, AUTH_TIMEOUT_MS } from "./mcpOAuth.js";
 
 /** 需要授权 —— hub 据此把状态标成 needs-auth 而不是 failed。
     两者对用户的意思完全不同：一个是"你去点一下授权",一个是"这台坏了"。 */
@@ -80,7 +83,11 @@ export const isAuthError = (e: unknown): boolean => {
 };
 
 /** 连一台 server,握手 + 拉三份清单。失败原样抛(hub 负责分类) */
-export async function connectMcpClient(id: string, cfg: McpServerConfig): Promise<McpClientConn> {
+export async function connectMcpClient(
+  id: string,
+  cfg: McpServerConfig,
+  authProvider?: OAuthClientProvider
+): Promise<McpClientConn> {
   const client = new Client({ name: "mr-otto", version: "1.0.0" }, { capabilities: {} });
 
   const transport =
@@ -100,6 +107,10 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
         })
       : new StreamableHTTPClientTransport(new URL(cfg.url), {
           requestInit: { headers: cfg.headers },
+          // 给了就走 OAuth：SDK 先用盘上的 access_token，过期自动 refresh，
+          // refresh 也不行才抛 UnauthorizedError（→ hub 标 needs-auth）。
+          // 不给 = 这台没配过 OAuth，照旧只用静态 header（老路径零改动）
+          ...(authProvider ? { authProvider } : {}),
         });
 
   try {
@@ -240,4 +251,98 @@ export async function connectMcpClient(id: string, cfg: McpServerConfig): Promis
   conn.refresh = refresh;
 
   return conn;
+}
+
+/** 存取凭据的两个把手 + 一个开浏览器的把手。hub 注入真实现，测试注入假的 */
+export interface McpOAuthDeps {
+  read(): McpAuthRecord;
+  write(patch: Partial<McpAuthRecord>): void;
+  openBrowser(url: string): void;
+}
+
+/** SDK 的 OAuthClientProvider 适配器 —— 本仓这一侧只负责"存哪、怎么开浏览器"。
+    协议本身（元数据发现、动态客户端注册、PKCE、code 换 token、refresh 续期）
+    全在 SDK 里，我们一行都不重写（spec §4）。
+
+    SDK 类型（OAuthTokens / OAuthClientInformation）只在这个文件里出现：
+    mcpAuthStore 用等价的 Record<string, unknown> 形状存盘，两边都是普通
+    JSON 对象，适配就是下面这几处结构性断言（ADR-0050 的 SDK 单点 import）。 */
+export function createOAuthProvider(
+  opts: { redirectUri: string; state: string } & McpOAuthDeps
+): OAuthClientProvider {
+  const metadata: OAuthClientMetadata = {
+    client_name: "Mr Otto",
+    redirect_uris: [opts.redirectUri],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    // 公开客户端：桌面 app 藏不住 client_secret，安全性靠 PKCE 而不是密钥
+    token_endpoint_auth_method: "none",
+  };
+  return {
+    get redirectUrl() { return opts.redirectUri; },
+    get clientMetadata() { return metadata; },
+    state: () => opts.state,
+    clientInformation: () => opts.read().clientInformation as OAuthClientInformation | undefined,
+    saveClientInformation: (info) => { opts.write({ clientInformation: info as Record<string, unknown> }); },
+    tokens: () => opts.read().tokens as OAuthTokens | undefined,
+    saveTokens: (t) => { opts.write({ tokens: t as unknown as Record<string, unknown> }); },
+    saveCodeVerifier: (v) => { opts.write({ codeVerifier: v }); },
+    codeVerifier: () => {
+      const v = opts.read().codeVerifier;
+      // 抛人话而不是返回 undefined：SDK 会把它直接塞进 token 请求，
+      // 服务端回一句语焉不详的 invalid_grant，那比这句话难查十倍
+      if (v === undefined) throw new Error("这台 server 还没发起过授权（缺 code_verifier），请重新点一次授权");
+      return v;
+    },
+    redirectToAuthorization: (url) => { opts.openBrowser(url.toString()); },
+  };
+}
+
+/** 跑完一次完整授权：开浏览器 → 等回调 → 换 token 落盘。
+    成功返回即代表凭据已经在盘上，调用方（hub）接着 reconnect 即可。 */
+export async function authorizeMcpServer(
+  id: string,
+  cfg: McpServerConfig,
+  deps: McpOAuthDeps
+): Promise<void> {
+  if (cfg.kind !== "http") {
+    // stdio 的凭据走 env，没有 OAuth 这回事——让调用方看到明确的话，
+    // 而不是在 new URL(undefined) 那里炸一个看不懂的 TypeError
+    throw new Error(`「${id}」是 stdio 传输的 server，凭据配在 env 里，没有 OAuth 授权这一步`);
+  }
+  const loopback = await startLoopback();
+  try {
+    const provider = createOAuthProvider({
+      redirectUri: loopback.redirectUri,
+      state: loopback.state,
+      ...deps,
+    });
+    const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
+      requestInit: { headers: cfg.headers },
+      authProvider: provider,
+    });
+    const client = new Client({ name: "mr-otto", version: "1.0.0" }, { capabilities: {} });
+    try {
+      // 预期内的两种结局：
+      // ① 抛 UnauthorizedError —— SDK 已经走完发现/注册/PKCE 并调过
+      //    redirectToAuthorization（浏览器已经开了），"人已经送去授权页"
+      //    就是这个异常的全部含义，不是故障
+      // ② 不抛 —— 盘上的 token 还能用（或刚被 refresh 续上），这台其实
+      //    不需要重新授权，关掉连接直接收工
+      await client.connect(transport as unknown as Transport);
+      await client.close();
+      return;
+    } catch (e) {
+      if (!(e instanceof UnauthorizedError)) throw e;
+    }
+    const code = await loopback.waitForCode(AUTH_TIMEOUT_MS);
+    // finishAuth 内部用盘上的 code_verifier 把 code 换成 token，
+    // 换到之后走 provider.saveTokens 落盘
+    await transport.finishAuth(code);
+    await transport.close();
+  } finally {
+    // 成功路径里 waitForCode 已经关过一次；close() 是幂等的，
+    // 这里兜的是"中途抛错"那条路——端口不能留着
+    loopback.close();
+  }
 }

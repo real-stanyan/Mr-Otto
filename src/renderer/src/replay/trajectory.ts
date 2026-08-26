@@ -124,7 +124,7 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
         });
         break;
 
-      // 启用/停用（ADR-0110 D8：用户必须知道是谁把说明书塞进上下文的）。
+      // 启用/停用（ADR-0122 D8：用户必须知道是谁把说明书塞进上下文的）。
       // 文案走 skillCardLabel——与聊天区那张卡同一份话术，「Otto 启用了 skill「x」」
       // vs「已启用 skill「x」」。原来这里硬拼 `$` 前缀，把模型自取的渲染得像
       // 用户敲了 `$tdd`，恰好抹掉 D8 唯一要说的那件事

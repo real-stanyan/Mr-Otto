@@ -100,13 +100,14 @@ function memoryBlock(title: string, raw: string, limit: number): string {
   return `${MEMORY_RULE}\n${title} [${pct}% — ${used.toLocaleString("en-US")}/${limit.toLocaleString("en-US")} chars]\n${body}\n`;
 }
 
-/** memory_loaded 渲成 system 尾部的两块。两个都空 = 空串（投影与无记忆逐字节一致）。
+/** memory_loaded 渲成 system 尾部的三块。全空 = 空串（投影与无记忆逐字节一致）。
     标题带占用百分比：模型看得见自己还剩多少地方，超限报错时不至于意外 */
-export function renderMemoryBlocks(memory: string, user: string): string {
+export function renderMemoryBlocks(memory: string, user: string, project?: string): string {
   const m = memoryBlock("MEMORY (your personal notes)", memory, MEMORY_LIMITS.memory);
   const u = memoryBlock("USER (about the user)", user, MEMORY_LIMITS.user);
-  if (!m && !u) return "";
-  return `\n${m}${u}${MEMORY_RULE}`;
+  const p = project ? memoryBlock("PROJECT (this project only)", project, MEMORY_LIMITS.project) : "";
+  if (!m && !u && !p) return "";
+  return `\n${m}${u}${p}${MEMORY_RULE}`;
 }
 
 /** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0060）。
@@ -114,16 +115,20 @@ export function renderMemoryBlocks(memory: string, user: string): string {
     （老日志 / 子会话 / 没有记忆能力的装配）不该被告知"你有 memory 工具"——
     那把工具压根没挂给它们，写死在 systemPromptText 里就是一句谎话。
     两个文件都空也要说这段话：模型得知道自己**能**写记忆，不是只在已经有内容时才提 */
-export function renderMemoryPrompt(memory: string, user: string): string {
+export function renderMemoryPrompt(memory: string, user: string, project?: string, projectRoot?: string): string {
+  const tiers = projectRoot
+    ? `记忆分三档：PROJECT 记只在当前项目（${projectRoot}）为真的事（该项目的门禁命令、构建怪癖、约定）；MEMORY 记换个项目也成立的事（本机环境、工具怪癖）；USER 记关于用户本人的事。拿不准就写 MEMORY——错放全局只是噪音，错放项目档是丢失。`
+    : `记忆分两档（这个工作区不在任何 git 仓库里，没有项目档）：MEMORY 是你的笔记，USER 是关于用户。`;
   return (
-    `\n你有跨会话的长期记忆（本消息末尾的 MEMORY/USER 块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
-    `不记任务进度、PR/issue 号、commit、一周内会过期的东西。` +
+    `\n你有跨会话的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
+    `不记任务进度、PR/issue 号、commit、一周内会过期的东西。${tiers}` +
     `过去做过什么、进度到哪、当时怎么决定的——用 session_search 查历史会话。` +
     `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
-    `\n记忆的工作机制（被问到时照实说，别脑补）：会话开始时整份快照注入（就是下面的 MEMORY/USER 块），没有按相关性检索；` +
-    `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这两份笔记；` +
+    `\n记忆的工作机制（被问到时照实说，别脑补）：会话开始时整份快照注入（就是下面的记忆块），没有按相关性检索；` +
+    (projectRoot ? `项目档按当前工作区所属的 git 仓库挑，换项目换一份（worktree 折叠回主仓）；` : ``) +
+    `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这几份笔记；` +
     `session_search 查的是历史会话正文，和记忆是分开的两条路。` +
-    renderMemoryBlocks(memory, user)
+    renderMemoryBlocks(memory, user, project)
   );
 }
 
@@ -540,7 +545,7 @@ export function deriveMessages(
         // 子会话）时上面那个 case 不会造 system 消息，这里就只能悄悄丢掉记忆
         // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
         // 只发生在子会话或旧日志上，不影响主线记忆功能。
-        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user);
+        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot);
         break;
 
       case "context_compacted":

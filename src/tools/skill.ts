@@ -70,7 +70,7 @@ export function composeSkillIndex(
 export function createSkillTool(deps: SkillToolDeps): Tool {
   return {
     // getter 而不是对象字面量里的一次求值（同 task.ts:68 的写法）：索引要**动态拼**
-    // （ADR-0110 §一），而字面量里的 `index()` 在 createSkillTool 那一刻就冻住了。
+    // （ADR-0122 §一），而字面量里的 `index()` 在 createSkillTool 那一刻就冻住了。
     // 冻住的后果不是理论问题：app 自带「导入 skill」弹窗（CHANNELS.importSkills），
     // 而「导入一把 skill 然后让 Otto 用它」正是这个功能存在的理由——会话已经开着的话，
     // 模型的索引里没有它，而 available() / list / acquire 都是活的，三者各说各话。

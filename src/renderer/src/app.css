@@ -379,6 +379,29 @@
     font-size: 12.5px;
     line-height: 1.55;
   }
+  /* 预览里的逐行包装(lib/codeLines 产出)。行号走 ::before + attr:
+     不塞进 DOM 文本,否则选中一段代码复制会把行号一起拷走 */
+  .md pre code .code-line {
+    display: block;
+  }
+  .md pre code .code-line::before {
+    content: attr(data-line);
+    display: inline-block;
+    width: 3em;
+    margin-right: 0.9em;
+    text-align: right;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+    user-select: none;
+  }
+  /* 跳过来的那一行。底色一直留着(滚开再滚回来还认得出是哪一行),
+     进场那一下用 keyframes 闪一次 —— 一屏代码里"到了"这件事得看得见 */
+  .md pre code .code-line-hit {
+    background: color-mix(in oklab, var(--brand) 22%, transparent);
+    border-radius: 3px;
+    animation: code-line-hit 900ms ease-out;
+  }
+
   .md blockquote {
     margin: 0.6em 0;
     padding: 2px 12px;
@@ -835,6 +858,46 @@
   }
 }
 
+/* MCP「授权」按钮(needs-auth 那行新增的可点项,task-5):按下要有反馈——
+   按不动的按钮让人觉得界面没听见。过渡只写 transform,不写 transition: all
+   ——hover 的背景色变化仍由 Button 组件自带的过渡负责,这里只管这一下按感。
+   min-width 钉住"授权"/"等浏览器…"两种文案里最宽的那个,防止切换文案时
+   同一行里的其它元素(失败原因文字)跟着跳一下 */
+.mcp-authorize-btn {
+  min-width: 76px;
+  transition: transform 160ms ease-out;
+}
+.mcp-authorize-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-authorize-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* 授权失败原因的入场:凭空出现像坏了,给一个 160ms 的 opacity + 轻微上移；
+   reduced-motion 只留 opacity,去掉位移(同一件事的降级版,不是另一套动效) */
+.mcp-auth-error {
+  animation: mcp-auth-error-in 160ms ease-out;
+}
+@keyframes mcp-auth-error-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-auth-error {
+    animation: mcp-auth-error-in-reduced 160ms ease-out;
+  }
+}
+@keyframes mcp-auth-error-in-reduced {
+  from {
+    opacity: 0;
+  }
+}
+
 /* "已保存"提示:淡入即可。它是一句确认,不是一个事件,不该有位移 */
 .saved-hint {
   opacity: 1;
@@ -1062,3 +1125,11 @@
   -webkit-app-region: no-drag;
 }
 
+@keyframes code-line-hit {
+  0% {
+    background: color-mix(in oklab, var(--brand) 60%, transparent);
+  }
+  100% {
+    background: color-mix(in oklab, var(--brand) 22%, transparent);
+  }
+}

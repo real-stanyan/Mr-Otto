@@ -13,6 +13,7 @@ export type ProviderId =
   | "deepseek"
   | "glm"
   | "moonshot"
+  | "kimicode"
   | "qwen"
   | "xai"
   | "minimax"
@@ -104,13 +105,28 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
   },
   {
     id: "moonshot",
-    name: "月之暗面 Kimi",
-    blurb: "Kimi 系列，长上下文见长",
+    name: "月之暗面 Kimi（按量）",
+    blurb: "开放平台，按 token 计费；Kimi 系列，长上下文见长",
     baseUrl: "https://api.moonshot.cn/v1",
     baseUrlEnv: "MOONSHOT_BASE_URL",
     apiKeyEnv: "MOONSHOT_API_KEY",
     consoleUrl: "https://platform.moonshot.cn/console/api-keys",
-    keyHint: "sk-…",
+    // 写明"不是 sk-kimi-"：这两家的 key 长得几乎一样，贴错时 401 的报错在
+    // 端点这一侧，用户看不出是贴错了家（见 issue #476）
+    keyHint: "sk-…（开放平台的，不是 sk-kimi-…）",
+    region: "cn",
+  },
+  {
+    id: "kimicode",
+    name: "Kimi Code（订阅）",
+    blurb: "编程订阅制，按月限频不限量；与上面那家同公司，但端点和 key 都不通用",
+    // 和 api.moonshot.cn 是两套账号体系：订阅 token 拿去按量端点必 401，反之亦然。
+    // 目录里因此有两条 Kimi —— ProviderId 是「一个端点 + 一把 key」，不是「一家公司」（ADR-0117）
+    baseUrl: "https://api.kimi.com/coding/v1",
+    baseUrlEnv: "KIMI_CODE_BASE_URL",
+    apiKeyEnv: "KIMI_CODE_API_KEY",
+    consoleUrl: "https://www.kimi.com/code",
+    keyHint: "sk-kimi-…",
     region: "cn",
   },
   {

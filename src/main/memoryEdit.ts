@@ -2,7 +2,10 @@
 // 没有当前会话时落到保留会话——事件必须挂在某个 sessionId 上，而"设置页"不是会话。
 
 import type { EventStore } from "../session/store.js";
-import { formatEntries, isMemoryTarget, parseEntries, withMemoryFileLock, MEMORY_FILES, type MemoryTarget } from "../shared/memoryStore.js";
+import {
+  formatEntries, isMemoryTarget, parseEntries, withMemoryFileLock, memoryRelPath,
+  PROJECT_ROOT_FILE, type MemoryTarget,
+} from "../shared/memoryStore.js";
 
 export const MEMORY_EDITS_SESSION = "sys-memory-edits";
 
@@ -20,23 +23,40 @@ export async function applyUserEdit(
   deps: MemoryEditDeps,
   target: MemoryTarget,
   text: string,
-  sessionId: string = MEMORY_EDITS_SESSION
+  sessionId: string = MEMORY_EDITS_SESSION,
+  // 三档记忆（Task 6）：project 档需要知道写哪个项目，缺省 null = 不是项目档。
+  // 缺 project 时 memoryRelPath 会抛——绝不能悄悄落到全局档。
+  // root（项目根绝对路径）和 dir（配置目录相对路径）成对传，形状同 createMemoryTool：
+  // dir 是 root 的哈希，分开传两个参数迟早会有一处只传一半，落出一条对不上号的证据
+  project?: { root: string; dir: string } | null
 ): Promise<void> {
-  // IPC 入参是 unknown（issue #186）：非法 target 会让 MEMORY_FILES[target] 变
-  // undefined，一路传进路径拼接——在唯一入口处挡掉
-  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory 或 user，收到 ${String(target)}`);
-  const rel = MEMORY_FILES[target];
-  // 与 memory 工具共用同一把 per-target 锁（issue #185）：工具的 read-modify-write
+  // IPC 入参是 unknown（issue #186）：非法 target 会让 memoryRelPath(target) 抛出
+  // 一个语义不明的错误，在唯一入口处先挡掉
+  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+  const rel = memoryRelPath(target, project?.dir);
+  // 与 memory 工具共用同一把 per-file 锁（issue #185）：工具的 read-modify-write
   // 进行中时这里进不来，before 永远是写入时刻的真实磁盘原文
-  await withMemoryFileLock(target, async () => {
+  await withMemoryFileLock(rel, async () => {
     const before = await deps.readFile(rel);
     const after = formatEntries(parseEntries(text));
     if (before === after) return;
     await deps.writeFile(rel, after);
+    // 目录自描述：项目档的写入必须同时补 root.txt，和 memory 工具那侧同款（幂等覆盖）。
+    // 少了它，这条路径造出来的项目目录生下来就没有自描述——listProjectMemories 按
+    // root.txt 列，于是它永远不出现在设置页，可注入是按哈希查目录、根本不看 root.txt，
+    // 结果是一份看不见却仍在进模型上下文的记忆（ADR-0116）
+    if (target === "project" && project) {
+      await deps.writeFile(`${project.dir}/${PROJECT_ROOT_FILE}`, project.root);
+    }
     if (sessionId === MEMORY_EDITS_SESSION && deps.store.load(sessionId).length === 0) {
       deps.store.append({ sessionId, ts: Date.now(), type: "session_created" });
       deps.store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "system" });
     }
-    deps.store.append({ sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after });
+    // projectRoot 只在项目档上带（可选字段）：三档之后 target: "project" 不再唯一
+    // 标识一份文件，不带的话两个 repo 的手编在日志里分不开（ADR-0116）
+    deps.store.append({
+      sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after,
+      ...(target === "project" && project ? { projectRoot: project.root } : {}),
+    });
   });
 }

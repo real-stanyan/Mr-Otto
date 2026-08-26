@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildApprovalPreview } from "../../src/main/approvalPreview.js";
 import type { ExecutionWorld, McpServerHandle } from "../../src/world/executionWorld.js";
 import { mcpToolName } from "../../src/shared/mcp.js";
+import type { McpServerConfig } from "../../src/shared/mcp.js";
 
 function worldWith(files: Record<string, string>): ExecutionWorld {
   return {
@@ -79,6 +80,9 @@ describe("buildApprovalPreview：MCP 工具", () => {
       callTool: async () => [],
       readResource: async () => [],
       getPrompt: async () => "",
+      configure: async () => {},
+      authorize: async () => {},
+      configOf: () => undefined,
     },
   });
 
@@ -166,6 +170,9 @@ describe("buildApprovalPreview：MCP 工具", () => {
         callTool: async () => [],
         readResource: async () => [],
         getPrompt: async () => "",
+        configure: async () => {},
+        authorize: async () => {},
+        configOf: () => undefined,
       },
     };
     const preview = await buildApprovalPreview(
@@ -173,5 +180,229 @@ describe("buildApprovalPreview：MCP 工具", () => {
       world
     );
     expect(preview).toMatchObject({ kind: "mcp_tool", server: "my.server", tool: "do.thing" });
+  });
+});
+
+// Task 9：mcp_configure 的审批预览。这张卡是"agent 自助配置 MCP server"这条路上
+// 唯一的安全闸——worldWithMcp 造一个带假 mcp 能力的 world，configOf 从传入的
+// map 里取（对照"改之前是什么"），servers() 按 map 造 handle（每台配一把工具，
+// 用来算 before.toolCount）
+function worldWithMcp(configs: Record<string, McpServerConfig> = {}): ExecutionWorld {
+  return {
+    ...worldWith({}),
+    mcp: {
+      ready: async () => {},
+      servers: () =>
+        Object.keys(configs).map((id) => ({
+          id, name: id, status: "connected", live: true,
+          tools: [{ name: "t", description: "", inputSchema: {} }],
+          resources: [], prompts: [],
+        })),
+      callTool: async () => [],
+      readResource: async () => [],
+      getPrompt: async () => "",
+      configure: async () => {},
+      authorize: async () => {},
+      configOf: (id: string) => configs[id],
+    },
+  };
+}
+
+describe("mcp_configure 的审批预览", () => {
+  it("stdio：command / 每一条 arg / env 的键名都列出来，值不列", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "pkg"], env: { TOKEN: "sk-真的" } } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({
+      kind: "mcp_configure", server: "fs", action: "add",
+      transport: "stdio", command: "npx", args: ["-y", "pkg"],
+      credentialKeys: ["TOKEN"],
+    });
+    expect(JSON.stringify(preview)).not.toContain("sk-真的");
+  });
+
+  it("http：url 全文出现在卡片上——用户要看得到自己在授权给谁", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", url: "https://mcp.supabase.com/mcp" });
+  });
+
+  it("改已有的一台时带上「改之前是什么」", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://新的/mcp" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview).toMatchObject({ action: "update", before: { url: "https://旧的/mcp" } });
+  });
+
+  it("删除时说清删的是哪台、它现在有几把刀", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", action: "remove" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview).toMatchObject({ action: "remove", server: "s" });
+  });
+
+  // 终审 B Important：enabled 是唯一一个"有执行后果却不在卡上"的字段。
+  // stdio 的 enabled: true 就是"这条 command 会被 spawn"（mcpHub.ts），而
+  // mcp_configure 的默认是 `a["enabled"] !== false` = 缺省 true。没有这两个
+  // 字段的话有一条无声路径：用户手动关掉过一台 server，agent 用同样的
+  // id/command/args 调一次 mcp_configure，卡片显示 update + command 逐字相同
+  // = 一次"看起来什么都没变"的更新，用户点同意，命令当场被 spawn。
+  it("enabled 缺省为 true，与 parseConfigureArgs 同一份默认", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", enabled: true });
+  });
+
+  it("显式 enabled: false 照实上卡", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", enabled: false } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", enabled: false });
+  });
+
+  it("「看起来什么都没变的更新」也把 enabled 的翻转摊在卡上（false → true）", async () => {
+    const preview = await buildApprovalPreview(
+      // command/args 与磁盘上那台逐字相同，唯一的变化是 enabled 从 false 翻成 true
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "rm", args: ["-rf", "/"] } },
+      worldWithMcp({ fs: { kind: "stdio", command: "rm", args: ["-rf", "/"], env: {}, enabled: false } })
+    );
+    expect(preview).toMatchObject({
+      kind: "mcp_configure",
+      action: "update",
+      enabled: true,
+      before: { command: "rm", enabled: false },
+    });
+  });
+
+  it("before 带上旧的启用状态——只有新值看不出这次是不是翻转", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://新的/mcp" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.before?.enabled).toBe(true);
+  });
+
+  it("remove 不谈启用状态 —— enabled 为 null", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", action: "remove" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.enabled).toBeNull();
+  });
+
+  // Task 9 审查 Important 1：args 必须留在数组里、一格一项，不能在预览这一层
+  // 就被 join 成一句话——`["-y", "some pkg"]` 和 `["-y", "some", "pkg"]` join
+  // 之后长得一模一样，用户分不清是一个参数还是两个。渲染层（App.tsx 的
+  // McpConfigureApproval）逐项建行，前提是这里给的就是逐项的数组。
+  it("args 保持数组、逐项分开，不折成一个 join 后的字符串", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "some pkg"] } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.args).toEqual(["-y", "some pkg"]);
+  });
+
+  // Task 9 复审 Critical A：host 是独立算出来的字段（`URL.host`），不是从
+  // url 字符串里现切的——即便 url 那一行以后被截断/变形，这一行必须永远
+  // 是解析器实际会连接的主机。
+  it("host 是从 url 独立解析出来的字段，不是从 url 串里现切", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", host: "mcp.supabase.com" });
+  });
+
+  // Task 9 复审 Critical A：换个填充字符（点号代替换行）的同一个漏洞——
+  // 预览层不应该被这种输入骗到显示一个"看起来干净"的 url。host 字段必须
+  // 露出真实主机 evil.com，且 url 字段（归一化后）也应该等于真实 href。
+  it("userinfo 填充攻击：host 字段露出真实主机，不被点号填充骗过", async () => {
+    const malicious = "https://mcp.supabase.com" + ".".repeat(1400) + "@evil.com/mcp";
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: malicious } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", host: "evil.com" });
+  });
+
+  // Task 9 的截断修复（clipValue / truncated / fullLength）此前一条测试都没有
+  // ——同一个文件里 mcp_tool 那条平行路径是有的（"超长参数在主进程就截断"），
+  // mcp_configure 这条没有。渲染层那份把 truncated 全写死成 false，所以
+  // "只显示前 N 字符，共 M" 那个 UI 分支从没被渲染过（终审 C 5）
+  it("超长 command 在主进程就截断，并说出原长", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "x".repeat(3_000) } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.command).toBe("x".repeat(2_000));
+    expect(preview?.kind === "mcp_configure" && preview.truncated.command).toBe(true);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.command).toBe(3_000);
+  });
+
+  it("超长 url / args 同样截断并说出原长", async () => {
+    const long = "https://mcp.example.com/" + "p".repeat(3_000);
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "z".repeat(2_500)] } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.args[1]?.length).toBe(2_000);
+    expect(preview?.kind === "mcp_configure" && preview.truncated.args).toEqual([false, true]);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.args).toEqual([2, 2_500]);
+
+    const httpPreview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: long } },
+      worldWithMcp()
+    );
+    expect(httpPreview?.kind === "mcp_configure" && httpPreview.truncated.url).toBe(true);
+    expect(httpPreview?.kind === "mcp_configure" && httpPreview.url?.length).toBe(2_000);
+  });
+
+  // 终审 C 8+9：server 完全由模型控制，且渲染在 host 那一行之前——不设上限
+  // 的话，一个几千字符的 id 会把卡上唯一那条永不截断的安全闸挤下折叠线
+  it("超长 server id 也有上限（它排在 host 之前，会把安全闸挤下折叠线）", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "S".repeat(5_000), kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview?.kind === "mcp_configure" && preview.server.length).toBe(200);
+    expect(preview?.kind === "mcp_configure" && preview.truncated.server).toBe(true);
+    expect(preview?.kind === "mcp_configure" && preview.fullLength.server).toBe(5_000);
+    // 而 host 那一行照旧完整
+    expect(preview?.kind === "mcp_configure" && preview.host).toBe("mcp.supabase.com");
+  });
+
+  it("before 的 url / command 同样有上限——不让一个几 MB 的旧值原样过 IPC", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx" } },
+      worldWithMcp({ fs: { kind: "stdio", command: "y".repeat(9_000), args: [], env: {}, enabled: true } })
+    );
+    expect(preview?.kind === "mcp_configure" && preview.before?.command?.length).toBe(2_000);
+  });
+
+  it("credentialKeys：键名数量与单个键名长度都有上限，超出的部分明说不静默丢", async () => {
+    // 超长键名必须排在前 50 个之内，否则 slice(0, MAX_CRED_KEYS) 会把它连同
+    // 「单个键名截断」这条断言一起切掉（终审 N-1：曾经排在第 60 位，前 50
+    // 个键的最大长度只有 3，断言看着覆盖了截断、其实从未真正跑到那条分支）。
+    const env: Record<string, string> = { ["超长键名" + "N".repeat(500)]: "v" };
+    for (let i = 0; i < 60; i++) env[`K${i}`] = "v";
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", env } },
+      worldWithMcp()
+    );
+    const keys = preview?.kind === "mcp_configure" ? preview.credentialKeys : [];
+    // 50 个键名 + 一句"还有 N 个未显示"
+    expect(keys).toHaveLength(51);
+    expect(keys.at(-1)).toMatch(/还有 11 个键名未显示/);
+    // 超长键名排在第一个，必然落在保留的前 50 个里，真正验证到 120 字符截断
+    expect(keys[0]).toHaveLength(120);
+    expect(Math.max(...keys.slice(0, 50).map((k) => k.length))).toBeLessThanOrEqual(120);
   });
 });

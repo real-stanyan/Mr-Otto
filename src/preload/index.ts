@@ -34,10 +34,12 @@ const bridge: ShellBridge = {
   importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
   releaseSkill: (sessionId, name) => ipcRenderer.invoke(CHANNELS.releaseSkill, sessionId, name),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
-  saveMemory: (target, text, sessionId) =>
-    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId),
-  forgetMemory: (target, entry, sessionId) =>
-    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId),
+  saveMemory: (target, text, sessionId, projectRoot) =>
+    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId, projectRoot),
+  forgetMemory: (target, entry, sessionId, projectRoot) =>
+    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId, projectRoot),
+  listProjectMemories: () => ipcRenderer.invoke(CHANNELS.listProjectMemories),
+  deleteProjectMemory: (root) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, root),
   rebuildSearchIndex: () => ipcRenderer.invoke(CHANNELS.rebuildSearchIndex),
   searchIndex: (query) => ipcRenderer.invoke(CHANNELS.searchIndex, query),
   getAutoCompact: () => ipcRenderer.invoke(CHANNELS.getAutoCompact),
@@ -60,6 +62,7 @@ const bridge: ShellBridge = {
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),
   reconnectMcpServer: (id) => ipcRenderer.invoke(CHANNELS.reconnectMcpServer, id),
+  authorizeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.authorizeMcpServer, id),
   listMcpPrompts: () => ipcRenderer.invoke(CHANNELS.listMcpPrompts),
   expandMcpPrompt: (server, name, args) =>
     ipcRenderer.invoke(CHANNELS.expandMcpPrompt, server, name, args),

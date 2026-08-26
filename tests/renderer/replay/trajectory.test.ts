@@ -164,9 +164,9 @@ describe("branch_checked_out 的轨迹摘要（issue #411）", () => {
   });
 });
 
-// ADR-0110 D8：用户必须知道是谁把说明书塞进上下文的。这件事在聊天区成立
+// ADR-0122 D8：用户必须知道是谁把说明书塞进上下文的。这件事在聊天区成立
 // （skillCardLabel），在轨迹视图里也得成立——AGENTS.md 把轨迹视图列为一个真实界面
-describe("skill 的启用/停用在轨迹里怎么写（ADR-0110 D8）", () => {
+describe("skill 的启用/停用在轨迹里怎么写（ADR-0122 D8）", () => {
   const at = (e: Partial<SessionEvent>): SessionEvent =>
     ({ seq: 1, sessionId: "s", ts: 1000, ...e }) as SessionEvent;
 

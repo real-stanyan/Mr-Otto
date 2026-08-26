@@ -9,7 +9,7 @@ import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
   applyOps, charCount, formatEntries, formatMemoryResultLine, isMemoryTarget, parseEntries, withMemoryFileLock,
-  MEMORY_FILES, MEMORY_LIMITS,
+  memoryRelPath, MEMORY_LIMITS, PROJECT_ROOT_FILE,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
 import { scanThreat } from "../shared/threatPatterns.js";
@@ -20,10 +20,13 @@ export const MEMORY_TOOL_NAME = "memory";
 const MAX_CONSECUTIVE_FAILURES = 3;
 
 /** 把模型给的 args 归一成 MemoryOp[]。new_text 是 content 的别名（hermes 同款） */
-function parseOps(args: unknown): { target: MemoryTarget; ops: MemoryOp[] } {
+function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; ops: MemoryOp[] } {
   const a = (args ?? {}) as Record<string, unknown>;
-  if (!isMemoryTarget(a["target"])) throw new Error("target 必填，且只能是 memory 或 user");
+  if (!isMemoryTarget(a["target"])) throw new Error("target 必填，且只能是 memory / user / project");
   const target = a["target"];
+  if (target === "project" && !hasProject) {
+    throw new Error("当前工作区不在任何 git 仓库里，没有项目档；写 memory 或 user");
+  }
   const raw: Record<string, unknown>[] = Array.isArray(a["operations"])
     ? (a["operations"] as Record<string, unknown>[])
     : a["action"] !== undefined
@@ -47,12 +50,15 @@ function parseOps(args: unknown): { target: MemoryTarget; ops: MemoryOp[] } {
   return { target, ops };
 }
 
-export function createMemoryTool(): Tool {
+/** project 由组装根传入（root = 项目根绝对路径，dir = 配置目录相对路径）。
+    null = 这个会话的 workspace 不在任何 git 仓库里 ⇒ 不给模型看 project 这个选项：
+    看不见的档就不会误写，比给它一个必然报错的选项干净 */
+export function createMemoryTool(project: { root: string; dir: string } | null): Tool {
   let consecutiveFailures = 0;
 
   async function execute(args: unknown, world: ExecutionWorld): Promise<string> {
     if (!world.config) throw new Error("这个世界没有长期记忆能力（配置目录不可用）");
-    const { target, ops } = parseOps(args);
+    const { target, ops } = parseOps(args, project !== null);
 
     for (const op of ops) {
       if (op.action === "remove") continue;
@@ -60,10 +66,10 @@ export function createMemoryTool(): Tool {
       if (hit) throw new Error(`内容含可疑指令（${hit}），拒绝写入记忆`);
     }
 
-    const rel = MEMORY_FILES[target];
-    // read→apply→write 整段持 per-target 锁（issue #185）：并发的另一次写在这段
+    const rel = memoryRelPath(target, project?.dir);
+    // read→apply→write 整段持 per-file 锁（issue #185）：并发的另一次写在这段
     // 结束前进不来，读到的永远是上一次写完之后的最新视图
-    const result = await withMemoryFileLock(target, async (): Promise<MemoryToolResult> => {
+    const result = await withMemoryFileLock(rel, async (): Promise<MemoryToolResult> => {
       let raw: string | null;
       try {
         raw = await world.config!.read(rel);
@@ -83,6 +89,11 @@ export function createMemoryTool(): Tool {
       const r = applyOps(target, entries, ops);
       if (!r.ok) throw new Error(r.error);
       await world.config!.write(rel, formatEntries(r.entries));
+      // 目录自描述（设置页要显示「这份记忆属于哪个项目」）。每次写都覆盖同样内容，
+      // 幂等；不做存在性检查是为了不引入「先读后写」的第二条竞态路径
+      if (target === "project" && project) {
+        await world.config!.write(`${project.dir}/${PROJECT_ROOT_FILE}`, project.root);
+      }
 
       return {
         ok: true, target,
@@ -92,21 +103,33 @@ export function createMemoryTool(): Tool {
     });
     const n = result.added.length + result.updated.length + result.removed.length;
     // 终态一句话，不回显条目
-    return `已更新 ${target === "memory" ? "MEMORY" : "USER"}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
+    const label = { memory: "MEMORY", user: "USER", project: "PROJECT" }[result.target];
+    return `已更新 ${label}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
   }
+
+  // 有无项目根决定判据文案的档数：看不见的档不需要判据，说了也是噪音
+  const tierRule = project
+    ? "三档：project = 只在当前项目为真的事（该项目的门禁命令、构建怪癖、约定）；" +
+      "memory = 换个项目也成立的事（本机环境、工具怪癖）；user = 关于用户本人。" +
+      "拿不准就写 memory——错放全局只是噪音，错放项目档是丢失。"
+    : "两档：memory = 你的笔记，user = 关于用户。";
 
   return {
     def: {
       name: MEMORY_TOOL_NAME,
       description:
-        "维护跨会话的长期记忆（MEMORY = 你的笔记，USER = 关于用户）。" +
+        `维护跨会话的长期记忆。${tierRule}` +
         "记：用户偏好、环境细节、工具怪癖、稳定约定——优先记能减少用户再次纠正你的事。" +
         "不记：任务进度、PR/issue 号、commit、一周内会过期的东西（用 session_search 查）；流程归 skill。" +
         "写陈述句不写祈使句。上限按字符，超了不会自动淘汰——先 remove/replace 腾地。",
       parameters: {
         type: "object",
         properties: {
-          target: { type: "string", enum: ["memory", "user"], description: "写哪个文件" },
+          target: {
+            type: "string",
+            enum: project ? ["memory", "user", "project"] : ["memory", "user"],
+            description: "写哪个文件",
+          },
           action: { type: "string", enum: ["add", "replace", "remove"], description: "单条操作" },
           content: { type: "string", description: "add/replace 的新内容（别名 new_text）" },
           old_text: { type: "string", description: "replace/remove 用：目标条目里一段短且唯一的子串" },

@@ -13,7 +13,7 @@ import { createAgent, type AgentPush } from "../../src/main/agent.js";
 import { EventStore } from "../../src/session/store.js";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { deriveMessages } from "../../src/session/deriveMessages.js";
-import { MEMORY_FILES } from "../../src/shared/memoryStore.js";
+import { memoryRelPath } from "../../src/shared/memoryStore.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 const push: AgentPush = {
@@ -29,7 +29,7 @@ describe("记忆全链路：memory 工具落盘 → 下个 session 的 system �
     const configRoot = tempDir("otter-memory-e2e-config-");
     const world = createLocalWorld({ configRoot });
 
-    const result = await createMemoryTool().run(
+    const result = await createMemoryTool(null).run(
       { target: "user", action: "add", content: "用户住悉尼" },
       world
     );
@@ -44,7 +44,7 @@ describe("记忆全链路：memory 工具落盘 → 下个 session 的 system �
         return "";
       }
     };
-    const memory = { memory: read(MEMORY_FILES.memory), user: read(MEMORY_FILES.user) };
+    const memory = { memory: read(memoryRelPath("memory")), user: read(memoryRelPath("user")) };
     expect(memory.user).toContain("用户住悉尼");
 
     const store = new EventStore(":memory:");
