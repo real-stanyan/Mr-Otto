@@ -14,7 +14,7 @@ import type {
   ToolExecutionStartedEvent,
   ToolResultEvent,
 } from "../../../session/events.js";
-import { skillCardLabel } from "../../../shared/skillCard.js";
+import { skillCardLabel, skillReleasedLabel } from "../../../shared/skillCard.js";
 
 /** 泳道：时间轴上三行。system 类事件（诞生/切模型/turn 边界…）归 input 道——
     它们都是"外部推进来的"，不是模型也不是工具产出 */
@@ -141,7 +141,7 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
       case "skill_released":
         push({
           key: String(e.seq), kind: "user", lane: "input", seq: e.seq, ts: e.ts,
-          summary: `已停用 skill「${e.name}」`, deny: false, ev: e,
+          summary: skillReleasedLabel(e), deny: false, ev: e,
         });
         break;
 

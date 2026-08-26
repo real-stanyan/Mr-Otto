@@ -42,7 +42,7 @@ import {
 import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
 import { findModel } from "../../../shared/modelCatalog.js";
 import { estimateTokens } from "../../../shared/contextEstimate.js";
-import { skillCardLabel } from "../../../shared/skillCard.js";
+import { skillCardLabel, skillReleasedLabel } from "../../../shared/skillCard.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { activeSkills } from "../../../session/activeSkills.js";
 import { barrenEventIndexes } from "../../../session/barrenTurns.js";
@@ -562,7 +562,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     // 停用：一行灰字——不是新的对话事实，只是台账变了(启用卡才值得用 accent 强调，
     // 停用没有正文可摊开，混进 accent 色反而抢启用卡的注意力)
     case "skill_released":
-      return <div className={AUDIT}>已停用 skill「{event.name}」</div>;
+      return <div className={AUDIT}>{skillReleasedLabel(event)}</div>;
 
     case "image_described":
       // vision-bridge 代读存档：默认折叠——它是给无视觉模型的"图片字幕"，
