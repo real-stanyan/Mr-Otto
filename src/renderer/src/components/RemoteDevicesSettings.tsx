@@ -68,6 +68,19 @@ export function RemoteDevicesSettings() {
     }
   };
 
+  // "已配对"那个标记同时是解除配对的入口。做成 ghost 按钮而不是另起一个红色的
+  // "解除":这一屏的主动作是配对,解除是回头路,不该在视觉上跟它平起平坐
+  const unpair = async (deviceId: string, label: string): Promise<void> => {
+    if (!window.confirm(`解除和「${label}」的配对？它就连不上这台电脑了，之后可以重新核对安全码再配。`)) return;
+    setBusy(deviceId);
+    try {
+      await window.otter.remoteUnpairDevice(deviceId);
+      refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // 确认放在渲染层(同 MemorySettings 删项目记忆的那条)。**已配对的那台要多说一句**:
   // 删它会连着解除配对,而列表上"已配对"三个字不会让人预期到这一层
   const forget = async (deviceId: string, label: string, pinned: boolean): Promise<void> => {
@@ -125,7 +138,8 @@ export function RemoteDevicesSettings() {
               <p className="font-[650]">配对前先核对安全码</p>
               <p className={`${HINT} mt-1`}>
                 手机上会显示同样的 6 位数。<b>对不上就不要配</b> —— 那说明中间有人换掉了公钥。
-                配对之后这台桌面只认这一台手机,换手机要在这里重新配一次。
+                可以配<b>多台</b>,换手机不用先解除旧的;但<b>同时只连得上一台</b> ——
+                后连上的会把先连上的顶下线。
               </p>
               <p className={`${HINT} mt-1`}>
                 同一台手机<b>换一个安装</b>(Expo Go / 正式 app / 重装)会是<b>新的一行</b> ——
@@ -162,7 +176,15 @@ export function RemoteDevicesSettings() {
                     {/* 等宽 + 拉开字距:这串数字是拿来跟另一块屏幕逐位比对的 */}
                     <code className="font-mono text-lg tracking-[0.2em] tabular-nums">{p.code}</code>
                     {p.pinned ? (
-                      <span className="text-[13px] text-muted-foreground">已配对</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground"
+                        disabled={busy === p.deviceId}
+                        onClick={() => void unpair(p.deviceId, p.label || p.deviceId)}
+                      >
+                        {busy === p.deviceId ? "解除中…" : "已配对"}
+                      </Button>
                     ) : (
                       <Button size="sm" disabled={busy === p.deviceId} onClick={() => void pair(p.deviceId)}>
                         {busy === p.deviceId ? "配对中…" : "安全码一致，配对"}

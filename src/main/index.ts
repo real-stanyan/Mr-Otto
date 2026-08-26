@@ -596,7 +596,7 @@ void app.whenReady().then(() => {
       identity: idStore.identity,
       deviceId: idStore.deviceId, // 随机,跟身份存在同一个封装里 —— hello 是明文过中继的
       transport,
-      peerIdentity: () => idStore.peerIdentity(),
+      peerIdentities: () => idStore.peerIdentities(),
       onCommand: (c) => handleRemoteCommand(c),
       // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
       // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
@@ -1858,6 +1858,16 @@ void app.whenReady().then(() => {
       return await remote.devices.pin(deviceId);
     } catch (err) {
       console.warn("远程配对失败", err);
+      return false;
+    }
+  });
+
+  ipcMain.handle(CHANNELS.remoteUnpairDevice, async (_e, deviceId: string): Promise<boolean> => {
+    if (!("devices" in remote)) return false;
+    try {
+      return await remote.devices.unpin(deviceId);
+    } catch (err) {
+      console.warn("远程解除配对失败", err);
       return false;
     }
   });

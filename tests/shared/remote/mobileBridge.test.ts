@@ -88,13 +88,13 @@ function pair() {
   const desktop = createRemoteBridge({
     crypto: N, identity: desktopIdentity, deviceId: "d1",
     transport: relay.transport("desktop"),
-    peerIdentity: () => phoneIdentity.publicKey,
+    peerIdentities: () => [phoneIdentity.publicKey],
     onCommand: (c) => commands.push(c),
   });
   const phone = createMobileBridge({
     crypto: B, identity: phoneIdentity, deviceId: "m1",
     transport: relay.transport("mobile"),
-    peerIdentity: () => desktopIdentity.publicKey,
+    peerIdentities: () => [desktopIdentity.publicKey],
     onFrame: (f) => frames.push(f),
     onReady: (r) => ready.push(r),
   });
@@ -144,13 +144,13 @@ describe("手机桥 ⇄ 桌面桥（真加密、会丢包的中继）", () => {
     const desktop = createRemoteBridge({
       crypto: N, identity: desktopIdentity, deviceId: "d1",
       transport: relay.transport("desktop"),
-      peerIdentity: () => phoneIdentity.publicKey,
+      peerIdentities: () => [phoneIdentity.publicKey],
       onCommand: () => {},
     });
     const phone = createMobileBridge({
       crypto: B, identity: phoneIdentity, deviceId: "m1",
       transport: relay.transport("mobile"),
-      peerIdentity: () => null, // 还没配对
+      peerIdentities: () => [], // 还没配对
       onFrame: () => {}, onReady: (r) => ready.push(r), log,
     });
     desktop.pushFleet(BUSY);
@@ -170,13 +170,13 @@ describe("手机桥 ⇄ 桌面桥（真加密、会丢包的中继）", () => {
     const desktop = createRemoteBridge({
       crypto: N, identity: desktopIdentity, deviceId: "d1",
       transport: relay.transport("desktop"),
-      peerIdentity: () => phoneIdentity.publicKey,
+      peerIdentities: () => [phoneIdentity.publicKey],
       onCommand: () => {},
     });
     const phone = createMobileBridge({
       crypto: B, identity: phoneIdentity, deviceId: "m1",
       transport: relay.transport("mobile"),
-      peerIdentity: () => N.generateEd25519().publicKey, // 冒牌货
+      peerIdentities: () => [N.generateEd25519().publicKey], // 冒牌货
       onFrame: () => {}, onReady: (r) => ready.push(r), log,
     });
     desktop.pushFleet(BUSY);

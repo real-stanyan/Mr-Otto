@@ -38,9 +38,11 @@ export function createRemoteBridge(opts: {
   deviceId: string;
   transport: RemoteTransport;
   onCommand: (c: UpFrame) => void;
-  /** 已 pin 住的对端身份公钥。null = 还没配对过 → 一律拒绝握手。
+  /** 已 pin 住的对端身份公钥,**可能有多把**(用户配了几台手机就有几把)。
+      空组 = 还没配对过 → 一律拒绝握手。握手时逐把试:hello 里的 deviceId 是明文、
+      由对端自称,拿它来查表等于让对端自己指定用哪把公钥验自己,所以只能挨个验签名。
       TOFU 的存储与首次确认在调用方,本文件只负责"对不上就不进 ready" */
-  peerIdentity: () => Uint8Array | null;
+  peerIdentities: () => Uint8Array[];
   /** 这条**连接**没了。上层用它丢掉"手机正在看哪个会话":
       订阅是连接级的,连接没了还接着投影等于替一个不存在的观众干活。
       注意不再包含"重新握手":手机重连时订阅要留着,好在 onRekey 里补推 */
@@ -112,15 +114,19 @@ export function createRemoteBridge(opts: {
    */
   function adopt(hello: HandshakeHello): void {
     if (!self) return;
-    const pinned = opts.peerIdentity();
-    if (!pinned) {
+    const pinned = opts.peerIdentities();
+    if (pinned.length === 0) {
       log("远程桥:还没配对过任何手机,拒绝握手");
       opts.onRejected?.({ deviceId: hello.deviceId, reason: "unpaired" });
       return;
     }
-    const keys: SessionKeys | null = deriveSession(p, {
-      self, peerHello: hello, peerIdentityPub: pinned,
-    });
+    // 逐把试。deriveSession 里就带了签名校验,验不过回 null —— 所以"哪一把是对的"
+    // 由密码学回答,而不是由 hello 里那个对端自称的 deviceId 回答
+    let keys: SessionKeys | null = null;
+    for (const pub of pinned) {
+      keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pub });
+      if (keys) break;
+    }
     if (!keys) {
       // 这里包含了 TOFU 报警的那一路:公钥对不上就是对不上,不静默接受
       log("远程桥:对端身份验不过(公钥 pin 不上 / 签名不对),不建立会话");

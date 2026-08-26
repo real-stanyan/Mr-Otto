@@ -32,9 +32,16 @@ interface FsPort {
   write(path: string, bytes: Uint8Array): void;
 }
 
-/** 封装里的明文形状。版本号在最外层,将来换形状时旧文件仍然认得出来 */
+/**
+ * 封装里的明文形状。版本号在最外层,将来换形状时旧文件仍然认得出来 —— v2 就是
+ * 兑现这句话的第一次:v1 的 `peer: string | null` 只装得下一台,v2 换成 `peers[]`。
+ *
+ * **v1 必须永远读得回来。** 读到 v1 就地升成 v2（`peer` 有值就是只有一个元素的
+ * 组），配对关系不丢；写出去一律 v2。降级读不了 —— 换回旧版本 = 重新配对一次,
+ * 这个代价是明说的（身份密钥本身不受影响,重配不用改 devices 目录）。
+ */
 interface Sealed {
-  v: 1;
+  v: 2;
   /** 本机的稳定设备 id。随机生成而不是用路径/主机名:hello 是**明文**过中继的,
       任何有辨识度的东西(用户名、home 路径、机器名)都会当场送给网关运营者 */
   did: string;
@@ -45,9 +52,14 @@ interface Sealed {
       但两把各司其职不容易出错。公钥两把都进 devices,私钥两把都不出封装 */
   kxPriv: string;
   kxPub: string;
-  /** pin 住的对端身份公钥;还没配对过就是 null */
-  peer: string | null;
+  /** pin 住的对端身份公钥,可以有多把;还没配对过就是空组 */
+  peers: string[];
 }
+
+/** 磁盘上可能读到的形状:v1 的单值 peer,或 v2 的 peers[] */
+type SealedOnDisk =
+  | (Omit<Sealed, "v" | "peers"> & { v: 1; peer: string | null })
+  | Sealed;
 
 export interface IdentityStore {
   identity: KeyPair;
@@ -55,12 +67,13 @@ export interface IdentityStore {
   kx: KeyPair;
   /** 随机设备 id(握手签名里的一项,做反射防护) */
   deviceId: string;
-  /** 已 pin 住的对端身份公钥,还没配对过回 null(remoteBridge 的 peerIdentity) */
-  peerIdentity(): Uint8Array | null;
-  /** TOFU 首次确认之后调一次。覆盖旧的 pin = 用户换了手机,由调用方负责先问 */
+  /** 已 pin 住的对端身份公钥。**可以有多把** —— 换手机不必重配,
+      握手时逐把试(remoteBridge 的 adopt)。还没配对过 = 空组 */
+  peerIdentities(): Uint8Array[];
+  /** TOFU 首次确认之后调一次。**加一把,不是换一把** —— 已经在组里就什么也不做 */
   pinPeer(pub: Uint8Array): void;
-  /** 解除配对。删设备行时连着走(devices.ts 的 forget) */
-  unpinPeer(): void;
+  /** 解除其中一台的配对。删设备行时连着走(devices.ts 的 forget) */
+  unpinPeer(pub: Uint8Array): void;
 }
 
 const realFs: FsPort = {
@@ -80,10 +93,18 @@ const realFs: FsPort = {
 
 function parse(raw: Uint8Array, box: SecretBox): Sealed | null {
   try {
-    const s = JSON.parse(box.decrypt(raw)) as Sealed;
-    if (s.v !== 1 || typeof s.priv !== "string" || typeof s.pub !== "string") return null;
+    const s = JSON.parse(box.decrypt(raw)) as SealedOnDisk;
+    if (s.v !== 1 && s.v !== 2) return null;
+    if (typeof s.priv !== "string" || typeof s.pub !== "string") return null;
     if (typeof s.did !== "string" || s.did === "") return null;
     if (typeof s.kxPriv !== "string" || typeof s.kxPub !== "string") return null;
+    // v1 就地升级:单值 peer 变成只有一个元素的组,已配好的那台不用重配
+    if (s.v === 1) {
+      const { peer, ...rest } = s;
+      return { ...rest, v: 2, peers: peer === null ? [] : [peer] };
+    }
+    // 组里混进非字符串就整条当坏的:pin 是信任根,宁可当成没配过也不带着半截上线
+    if (!Array.isArray(s.peers) || s.peers.some((x) => typeof x !== "string")) return null;
     return s;
   } catch {
     return null; // 解不开 / 不是我们写的 = 当成还没配过
@@ -109,13 +130,13 @@ export function openIdentityStore(deps: {
     const kp = deps.crypto.generateEd25519();
     const kx = deps.crypto.generateX25519();
     return {
-      v: 1,
+      v: 2,
       did: b64encode(deps.crypto.randomBytes(16)),
       priv: b64encode(kp.privateKey),
       pub: b64encode(kp.publicKey),
       kxPriv: b64encode(kx.privateKey),
       kxPub: b64encode(kx.publicKey),
-      peer: null,
+      peers: [],
     };
   };
 
@@ -141,15 +162,21 @@ export function openIdentityStore(deps: {
     identity: { privateKey: b64decode(state.priv)!, publicKey: b64decode(state.pub)! },
     kx: { privateKey: b64decode(state.kxPriv)!, publicKey: b64decode(state.kxPub)! },
     deviceId: state.did,
-    peerIdentity() {
-      return state.peer === null ? null : b64decode(state.peer);
+    peerIdentities() {
+      // 坏条目在这里静默滤掉而不是让整组失效:它进不了 deriveSession,
+      // 而为了一条烂数据把其他几台的配对一起废掉,代价不对等
+      return state.peers.map((s) => b64decode(s)).filter((b): b is Uint8Array => b !== null);
     },
     pinPeer(peerPub) {
-      state = { ...state, peer: b64encode(peerPub) };
+      const b64 = b64encode(peerPub);
+      if (state.peers.includes(b64)) return; // 重复 pin 不该让组里多一份
+      state = { ...state, peers: [...state.peers, b64] };
       flush();
     },
-    unpinPeer() {
-      state = { ...state, peer: null };
+    unpinPeer(peerPub) {
+      const b64 = b64encode(peerPub);
+      if (!state.peers.includes(b64)) return;
+      state = { ...state, peers: state.peers.filter((x) => x !== b64) };
       flush();
     },
   };

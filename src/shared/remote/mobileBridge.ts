@@ -31,8 +31,9 @@ export function createMobileBridge(opts: {
   identity: KeyPair;
   deviceId: string;
   transport: RemoteTransport;
-  /** 已 pin 住的桌面身份公钥。null = 还没配对 → 一律拒绝握手 */
-  peerIdentity: () => Uint8Array | null;
+  /** 已 pin 住的桌面身份公钥,**可能有多把**。空组 = 还没配对 → 一律拒绝握手。
+      逐把试:hello 里的 deviceId 由对端自称,不能拿它来挑用哪把验 */
+  peerIdentities: () => Uint8Array[];
   onFrame: (f: DownFrame) => void;
   /** 会话建立/断开。界面用它决定显示内容还是"你的 Mac 不在线" */
   onReady: (ready: boolean) => void;
@@ -78,9 +79,14 @@ export function createMobileBridge(opts: {
    */
   function adopt(hello: HandshakeHello): void {
     if (!self) return;
-    const pinned = opts.peerIdentity();
-    if (!pinned) return log("手机桥:还没配对过任何电脑,拒绝握手");
-    const keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pinned });
+    const pinned = opts.peerIdentities();
+    if (pinned.length === 0) return log("手机桥:还没配对过任何电脑,拒绝握手");
+    // 逐把试,理由同桌面侧:哪一把对由签名说了算,不由对端自称的 deviceId 说了算
+    let keys = null as ReturnType<typeof deriveSession>;
+    for (const pub of pinned) {
+      keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pub });
+      if (keys) break;
+    }
     if (!keys) {
       // TOFU 报警就在这条路上:公钥对不上就是对不上,不静默接受
       return log("手机桥:电脑的身份验不过(公钥 pin 不上 / 签名不对),不建立会话");

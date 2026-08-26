@@ -41,6 +41,32 @@ afterEach(() => {
   cleanup();
 });
 
+// 多设备配对(#511)：两台都能是"已配对",而"已配对"那个标记同时是解除的入口。
+// 盯的是**两台并存**这件事本身 —— 单值 pin 的年代,配第二台是静默顶掉第一台
+describe("RemoteDevicesSettings 的设备列表", () => {
+  it("配了两台就两台都标已配对，各自带解除入口", async () => {
+    stubBridge({
+      on: true,
+      rejected: null,
+      peers: [
+        { ...PEER, deviceId: "m1", label: "iPhone 16 Pro Max", pinned: true },
+        { ...PEER, deviceId: "m2", label: "iPhone 17（模拟器）", code: "068332", pinned: true },
+      ],
+    });
+    renderPage();
+    expect(await screen.findAllByRole("button", { name: "已配对" })).toHaveLength(2);
+    // 两台都配上了就不该再有"配对"按钮怂恿人再配一次
+    expect(screen.queryByRole("button", { name: /安全码一致/ })).not.toBeInTheDocument();
+  });
+
+  it("没配对的那台给的是配对按钮，不是解除", async () => {
+    stubBridge({ on: true, rejected: null, peers: [{ ...PEER, pinned: false }] });
+    renderPage();
+    expect(await screen.findByRole("button", { name: /安全码一致/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已配对" })).not.toBeInTheDocument();
+  });
+});
+
 describe("RemoteDevicesSettings 的「被挡下的握手」提示", () => {
   it("没被挡过就不出提示", async () => {
     stubBridge({ on: true, peers: [PEER], rejected: null });

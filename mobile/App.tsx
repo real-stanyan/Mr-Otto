@@ -55,7 +55,7 @@ export default function App() {
       setStore(s);
       const { data } = await supabase.auth.getSession();
       if (!data.session) return setPhase("signIn");
-      setPhase(s.peerIdentity() ? "fleet" : "pair");
+      setPhase(s.peerIdentities().length > 0 ? "fleet" : "pair");
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
@@ -75,7 +75,7 @@ export default function App() {
       {booting ? (
         <BootSpinner />
       ) : phase === "signIn" ? (
-        <SignIn onDone={() => setPhase(store.peerIdentity() ? "fleet" : "pair")} />
+        <SignIn onDone={() => setPhase(store.peerIdentities().length > 0 ? "fleet" : "pair")} />
       ) : phase === "pair" ? (
         <Pair store={store} onPaired={() => setPhase("fleet")} />
       ) : (
@@ -530,7 +530,7 @@ function Settings({
 }) {
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const paired = store.peerIdentity() !== null;
+  const paired = store.peerIdentities().length > 0;
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));

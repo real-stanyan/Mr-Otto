@@ -51,7 +51,7 @@ export function connect(
     identity: store.identity,
     deviceId: store.deviceId,
     transport,
-    peerIdentity: () => store.peerIdentity(),
+    peerIdentities: () => store.peerIdentities(),
     onFrame: handlers.onFrame,
     onReady: handlers.onReady,
     log,

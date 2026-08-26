@@ -8,7 +8,7 @@
 // 密钥若从账号体系下发,掌握 Supabase 的人就能发一把假的,中间人当场成立。
 // 所以这张表只当"目录"用 —— 它告诉你有哪几台设备、公钥长什么样,
 // 而**它说的公钥对不对由人来判断**:两端各显示同一个 6 位安全码,
-// 对上了才 pin。pin 之后握手一律只认 pin 住的那把(remoteBridge 的 peerIdentity)。
+// 对上了才 pin。pin 之后握手一律只认 pin 住的那几把(remoteBridge 的 peerIdentities)。
 //
 // 因此这里对库里读回来的每一个字段都当外部输入校验:长度不对的公钥不 pin,
 // 不是"先 pin 了再说"。
@@ -34,11 +34,13 @@ export interface PinnedPeerStore {
   identity: KeyPair;
   kx: KeyPair;
   deviceId: string;
-  peerIdentity(): Uint8Array | null;
+  /** 已 pin 住的对端身份公钥,可以有多把;还没配对过 = 空组 */
+  peerIdentities(): Uint8Array[];
+  /** 加一把。已经在组里就什么也不做 —— 重复配对不该让组里多一份 */
   pinPeer(pub: Uint8Array): void;
-  /** 取消配对。**删一台设备必须连着它走** —— 目录里的行没了而 pin 还在,
+  /** 取消其中一台的配对。**删一台设备必须连着它走** —— 目录里的行没了而 pin 还在,
       等于"删掉了但仍然信任",删除这个动作就不再是撤销 */
-  unpinPeer(): void;
+  unpinPeer(pub: Uint8Array): void;
 }
 
 export interface DevicesApi {
@@ -79,6 +81,7 @@ export function createRemoteDevices(deps: {
   registerSelf(label: string): Promise<boolean>;
   listPeers(): Promise<RemotePeer[]>;
   pin(deviceId: string): Promise<boolean>;
+  unpin(deviceId: string): Promise<boolean>;
   forget(deviceId: string): Promise<boolean>;
 } {
   const log = deps.log ?? (() => {});
@@ -107,8 +110,7 @@ export function createRemoteDevices(deps: {
     async listPeers() {
       const uid = await deps.api.userId();
       if (!uid) return [];
-      const pinned = deps.store.peerIdentity();
-      const pinnedB64 = pinned ? b64encode(pinned) : null;
+      const pinnedB64 = new Set(deps.store.peerIdentities().map(b64encode));
       const out: RemotePeer[] = [];
       for (const row of await deps.api.list(uid)) {
         if (row.kind !== peerKind) continue; // 桌面不跟桌面配对,手机不跟手机配
@@ -123,13 +125,14 @@ export function createRemoteDevices(deps: {
           label: row.label,
           lastSeen: row.last_seen,
           code: fingerprint(deps.crypto, mine, pub),
-          pinned: pinnedB64 === row.identity_pub,
+          pinned: pinnedB64.has(row.identity_pub),
         });
       }
       return out;
     },
 
-    /** 用户核对完安全码之后调。覆盖旧的 pin = 换了手机,由调用方先问清楚 */
+    /** 用户核对完安全码之后调。**加一台,不动已经配好的那些** ——
+        换手机不再需要先解除旧的(而在单值 pin 的年代,这里是一次静默的顶掉) */
     async pin(deviceId) {
       const uid = await deps.api.userId();
       if (!uid) return false;
@@ -150,6 +153,21 @@ export function createRemoteDevices(deps: {
     },
 
     /**
+     * 只解除配对,**目录行留着**。和 forget 的分工:这台设备还在、以后还想用,
+     * 只是现在不想让它连 —— 删了行它下次打开又会重新登记回来,那不是"停用",
+     * 是"把列表擦一遍"。停用要能停得住,所以给它自己的动作。
+     */
+    async unpin(deviceId) {
+      const uid = await deps.api.userId();
+      if (!uid) return false;
+      const row = (await deps.api.list(uid)).find((r) => r.device_id === deviceId);
+      const pub = row ? decodePub(row.identity_pub) : null;
+      if (!pub) return false;
+      deps.store.unpinPeer(pub);
+      return true;
+    },
+
+    /**
      * 从目录里删掉一台设备。**同一台手机换个安装就是新的一行**(身份存在各自的
      * Keychain 里,按 bundle id 隔离),旧安装卸了之后那行会一直留着 —— 目录里没有
      * 过期这回事,只有删。
@@ -162,11 +180,11 @@ export function createRemoteDevices(deps: {
       const uid = await deps.api.userId();
       if (!uid) return false;
       const row = (await deps.api.list(uid)).find((r) => r.device_id === deviceId);
-      const pinned = deps.store.peerIdentity();
+      const pub = row ? decodePub(row.identity_pub) : null;
       await deps.api.remove(uid, deviceId);
-      if (row && pinned && b64encode(pinned) === row.identity_pub) {
-        log(`远程设备:${deviceId} 是已配对的那台,连 pin 一起清掉`);
-        deps.store.unpinPeer();
+      if (pub) {
+        log(`远程设备:${deviceId} 删掉了,它那把 pin 一起清掉`);
+        deps.store.unpinPeer(pub); // 没配过就是空操作,不用先判断
       }
       return true;
     },
