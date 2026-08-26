@@ -4,9 +4,16 @@
 
 import { AUTO_COLLAPSE_WIDTH } from "./sidebarNarrow.js";
 
-/** 浮窗的逻辑尺寸（px）。宽度同时是「窗口要多宽才容得下它」的判据之一。
-    高度组件里用 vh 定（跟着窗口走），宽度定死——这条是宽度的唯一事实源 */
+/** 浮窗的默认尺寸（px）。可缩放（issue #516），缩放范围见 MIN；
+    宽度同时是「窗口要多宽才容得下它」的判据之一——这条是宽度的唯一事实源 */
 export const SIDE_W = 380;
+export const SIDE_H = 480;
+
+/** 缩放边界：最小不能让输入框和消息区互相吃掉；最大不超过视口本身
+    （拖到比屏还大 = 内容出去了拿不回来，同 drag 钳制的「无复位入口」理由） */
+export const SIDE_MIN_W = 300;
+export const SIDE_MIN_H = 320;
+const VIEWPORT_MARGIN = 16;
 
 /** 窗口至少要比浮窗宽出这么多余量，浮窗才不算「塞不下」：
     主会话区被挤得只剩一条缝时，浮窗开着也是互相挡 */
@@ -29,14 +36,27 @@ export function sideChatHidden(outerWidth: number): boolean {
 export function clampPos(
   pos: { x: number; y: number },
   w: number,
-  h: number
+  h: number,
+  size: { w: number; h: number } = { w: SIDE_W, h: SIDE_H }
 ): { x: number; y: number } {
   const margin = 8;
-  const maxX = Math.max(margin, w - SIDE_W - margin);
-  const maxY = Math.max(margin, h - 480 - margin);
+  const maxX = Math.max(margin, w - size.w - margin);
+  const maxY = Math.max(margin, h - size.h - margin);
   return {
     x: Math.min(Math.max(pos.x, margin), maxX),
     y: Math.min(Math.max(pos.y, margin), maxY),
+  };
+}
+
+/** 缩放落点钳制：尺寸不进 [MIN, 视口-margin] 区间（issue #516） */
+export function clampSize(
+  size: { w: number; h: number },
+  viewportW: number,
+  viewportH: number
+): { w: number; h: number } {
+  return {
+    w: Math.min(Math.max(size.w, SIDE_MIN_W), Math.max(SIDE_MIN_W, viewportW - VIEWPORT_MARGIN)),
+    h: Math.min(Math.max(size.h, SIDE_MIN_H), Math.max(SIDE_MIN_H, viewportH - VIEWPORT_MARGIN)),
   };
 }
 

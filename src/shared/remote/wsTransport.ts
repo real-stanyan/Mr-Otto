@@ -15,9 +15,13 @@
 //   4. **`:ok` 开场白没了。** 它只是因为 node:http 不写第一个字节就不冲刷响应头。
 //      101 响应本身就是信号。
 //
+// **一户多连接,按 cid 寻址**(ADR-0130):send 必须指名发给哪一条,onMessage 带
+// 发件人。收发两个方向同一条帧规则 `<cid> <payload>`(src/shared/remote/wire.ts) ——
+// SSE 那版为此加了 `event:` 行和 `v=2` 协商,WebSocket 是离散消息,两样都不需要。
+//
 // 加密边界:这一层只见 base64url 密文和明文握手包,不认识任何一个字段。
 
-import { CONTROL_PREFIX, PEER_PRESENT, SUBPROTOCOL } from "./wire.js";
+import { CTRL_PING, SUBPROTOCOL, decodeFrame, encodeFrame, parseControl } from "./wire.js";
 import type { RemoteTransport } from "./transport.js";
 
 /** 退避阶梯(毫秒)。到顶就一直用 30s —— 不放弃,只是别把服务刷爆 */
@@ -36,9 +40,6 @@ const PING_MS = 20_000;
     iOS 切后台会把 socket 掐掉而 WebSocket 未必立刻 onclose:表现是
     "手机看着连着、其实什么都收不到",比断线难查得多 */
 const SILENT_MS = PING_MS * 2.5;
-
-const PING = ":ping";
-const PONG = ":pong";
 
 export interface WsTransportOpts {
   /** 服务根,不含 /rl。例:https://otto-auth.example/gw */
@@ -59,9 +60,12 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
   const base = opts.baseUrl.replace(/\/+$/, "");
   const url = `${base}/rl/v1/connect?role=${opts.role}`;
 
-  let onMsg: (p: string) => void = () => {};
-  let onPeer: () => void = () => {};
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeer: (cid: string) => void = () => {};
+  let onGone: (cid: string) => void = () => {};
   let onClose: () => void = () => {};
+  /** 中继给我们编的号。只用于日志——发帧带的是**收件人**的 cid,不是自己的 */
+  let myCid = "";
 
   let closed = false;
   let attempt = 0;
@@ -161,7 +165,7 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
           try { sock.close(4000, "silent"); } catch { /* 已经在关了 */ }
           return;
         }
-        try { sock.send(PING); } catch { /* 下一次 onclose 会收拾 */ }
+        try { sock.send(CTRL_PING); } catch { /* 下一次 onclose 会收拾 */ }
       }, PING_MS);
     };
 
@@ -170,13 +174,35 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
       lastRxAt = Date.now();
       const data = ev.data;
       if (typeof data !== "string") return; // 载荷是 base64url 文本,二进制帧不该出现
-      if (data.startsWith(CONTROL_PREFIX)) {
-        // `:peer` = 对端到场(ADR-0100),握手唯一的起点;`:pong` = 心跳回声,收下即可
-        if (data === PEER_PRESENT) guard("在场信号", onPeer);
-        else if (data !== PONG) log(`远程传输:不认识的控制消息 ${data.slice(0, 16)}`);
+      const ctrl = parseControl(data);
+      if (ctrl) {
+        switch (ctrl.kind) {
+          case "cid":
+            myCid = ctrl.cid;
+            log(`远程传输:本条连接是 ${myCid}`);
+            break;
+          case "peer":
+            // 握手唯一的起点(ADR-0100)。**每条对端连接各一次** ——
+            // 同一个 cid 再来 = 那边重连了,旧密钥作废,桥该重开一轮
+            guard("在场信号", () => onPeer(ctrl.cid));
+            break;
+          case "gone":
+            guard("离场信号", () => onGone(ctrl.cid));
+            break;
+          case "pong":
+          case "ping":
+            break; // 心跳回声,收下即可
+        }
         return;
       }
-      guard("下行帧", () => onMsg(data));
+      // 载荷帧:`<发件人 cid> <密文>`。解不开就丢 —— 线上的字节永远可能是垃圾,
+      // 而一帧解不开不该让整条连接陪葬
+      const frame = decodeFrame(data);
+      if (!frame) {
+        log("远程传输:收到一帧解不开的东西,丢了");
+        return;
+      }
+      guard("下行帧", () => onMsg(frame.payload, frame.cid));
     };
 
     sock.onerror = () => {
@@ -214,6 +240,7 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
       ws = null; // 先摘,免得 close 触发的 onclose 把它当"当前连接"
       stopBeat();
       openedAt = null;
+      myCid = ""; // 换一条连接就换一个号,旧的立刻作废
       if (dying) {
         try { dying.close(1000, "reconnect"); } catch { /* 已经在关了 */ }
         onClose(); // 桥要知道这一轮作废了(密钥跟着连接走)
@@ -221,8 +248,14 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
       attempt = 0; // 主动换,不是失败重试,退避从头算
       void connect();
     },
-    send(payload) {
+    send(payload, to) {
       if (closed) return;
+      // **必须指名。** 每条对端连接有自己一套会话密钥,发错了对面解不开,
+      // 而 sealedStream 的计数器还会把它判成异常(ADR-0130)
+      if (!to) {
+        log("远程传输:没有收件人,这一帧丢了");
+        return;
+      }
       const sock = ws;
       // 连接不在/没开:丢掉。**刻意不触发 onClose** —— 对端不在线和连接没建好
       // 都是常态,而 send → onClose → startRound → send 会当场变成同步死循环
@@ -233,13 +266,14 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
         return;
       }
       try {
-        sock.send(payload);
+        sock.send(encodeFrame(to, payload));
       } catch (e: unknown) {
         log(`远程传输:上行发不出去:${e instanceof Error ? e.message : String(e)}`);
       }
     },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
+    onGone(cb) { onGone = cb; },
     onClose(cb) { onClose = cb; },
     close() {
       closed = true;

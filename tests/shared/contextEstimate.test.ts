@@ -219,14 +219,14 @@ describe("contextBreakdown（按来源拆四份）", () => {
     expect(b.total).toBe(5200); // 账单口径不动：项目指令本来就在这笔账里
   });
 
-  it("compact 清场之后不再计项目指令：模型看不见的账不报（issue #524）", () => {
+  it("compact 之后照旧计项目指令：它焊在 system 里，清场扫不掉（ADR-0131）", () => {
     const segments = [{ path: "/w/AGENTS.md", content: "x".repeat(4000) }];
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
       { ...env(), type: "project_instructions", segments },
       { ...env(), type: "context_compacted", summary: "摘要", model: "m" },
     ];
-    expect(contextBreakdown(events, tools).instructions).toBe(0);
+    expect(contextBreakdown(events, tools).instructions).toBeGreaterThan(900);
   });
 
   it("第一次账单之前也算项目指令：圆环不会漏掉一整份 AGENTS.md（issue #525）", () => {

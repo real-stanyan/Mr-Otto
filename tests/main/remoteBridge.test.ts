@@ -22,24 +22,35 @@ const BUSY: IslandFleet = {
   focusedSessionId: "s1",
 };
 
+/** 默认那条连接的 cid。多连接的用例自己传别的(ADR-0130) */
+const C1 = "c1";
+
 function fakeTransport() {
+  /** 只留载荷,和从前一样;要看发给谁的用例读 addressed */
   const sent: string[] = [];
-  let onMsg: (p: string) => void = () => {};
-  let onPeer: () => void = () => {};
+  const addressed: { payload: string; to: string }[] = [];
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeer: (cid: string) => void = () => {};
+  let onGone: (cid: string) => void = () => {};
   let onClose: () => void = () => {};
   return {
     sent,
-    send(p: string) { sent.push(p); },
-    onMessage(cb: (p: string) => void) { onMsg = cb; },
-    onPeer(cb: () => void) { onPeer = cb; },
+    addressed,
+    send(p: string, to: string) { sent.push(p); addressed.push({ payload: p, to }); },
+    onMessage(cb: (p: string, from: string) => void) { onMsg = cb; },
+    onPeer(cb: (cid: string) => void) { onPeer = cb; },
+    onGone(cb: (cid: string) => void) { onGone = cb; },
     onClose(cb: () => void) { onClose = cb; },
     /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
     reconnectNow() {},
     close: vi.fn(),
-    emit(p: string) { onMsg(p); },
-    /** 中继报告对端已在场(SSE 的 :peer)。握手唯一的起点 */
-    emitPeer() { onPeer(); },
+    emit(p: string, from = C1) { onMsg(p, from); },
+    /** 中继报告某条对端连接已在场(SSE 的 :peer <cid>)。握手唯一的起点 */
+    emitPeer(cid = C1) { onPeer(cid); },
+    emitGone(cid = C1) { onGone(cid); },
     emitClose() { onClose(); },
+    /** 只看发给某一条连接的载荷 */
+    sentTo(cid: string) { return addressed.filter((x) => x.to === cid).map((x) => x.payload); },
   };
 }
 
@@ -53,14 +64,17 @@ function shake(
   t: ReturnType<typeof fakeTransport>,
   peer: SelfParty,
   desktopIdentityPub: Uint8Array,
-  helloIndex: number
+  helloIndex: number,
+  cid = C1
 ): SessionKeys {
-  const desktopHello = JSON.parse(t.sent[helloIndex]!) as HandshakeHello;
+  // 多连接时桌面给每条各发一份 hello,要挑发给这条的那份(ADR-0130)
+  const mine = t.sentTo(cid);
+  const desktopHello = JSON.parse((cid === C1 ? t.sent[helloIndex] : mine[helloIndex])!) as HandshakeHello;
   const keys = deriveSession(P, {
     self: peer, peerHello: desktopHello, peerIdentityPub: desktopIdentityPub,
   });
   expect(keys).not.toBeNull();
-  t.emit(JSON.stringify(buildHello(P, peer)));
+  t.emit(JSON.stringify(buildHello(P, peer)), cid);
   return keys!;
 }
 
@@ -162,7 +176,8 @@ describe("createRemoteBridge", () => {
     const up = (json: string) => t.emit(b64encode(sealer.seal(enc(json))));
 
     up('{"type":"approve","sessionId":"s","callId":"c"}');
-    expect(onCommand).toHaveBeenCalledWith({ type: "approve", sessionId: "s", callId: "c" });
+    // 第二个参数是发件人的 cid:上层靠它把订阅、回话分到各台手机(ADR-0130)
+    expect(onCommand).toHaveBeenCalledWith({ type: "approve", sessionId: "s", callId: "c" }, C1);
 
     onCommand.mockClear();
     up('{"type":"approve","sessionId":"s","callId":"c","grant":"session"}');
@@ -257,6 +272,112 @@ describe("createRemoteBridge", () => {
     t.emit(JSON.stringify(buildHello(P, newPeer())));
     expect(onRejected).toHaveBeenCalledWith({ deviceId: "m1", reason: "identity-mismatch" });
     b.dispose();
+  });
+
+  // ── 几台手机同时连着(ADR-0130)──
+  //
+  // 原来桥只有一套会话状态,第二台连上来会把第一台的密钥顶掉,而第一台毫不知情:
+  // 它接着往一根用旧密钥封的管子里发,对面每一帧都解不开。
+  it("两台手机各一套密钥：给谁的帧只有谁解得开", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const a = newPeer();
+    const b = newPeer();
+    const bridge = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(),
+      peerIdentities: () => [a.identity.publicKey, b.identity.publicKey],
+    });
+
+    t.emitPeer("ca");
+    const ka = shake(t, a, identity.publicKey, 0, "ca");
+    t.emitPeer("cb");
+    const kb = shake(t, b, identity.publicKey, 0, "cb");
+
+    t.addressed.length = 0;
+    bridge.pushFleet(BUSY);
+
+    // 两条都收到了自己那一份 —— fleet 是共享状态,广播是对的
+    const toA = t.sentTo("ca");
+    const toB = t.sentTo("cb");
+    expect(toA).toHaveLength(1);
+    expect(toB).toHaveLength(1);
+    // 但**密文不同**,而且各自只有自己那把开得了
+    expect(toA[0]).not.toBe(toB[0]);
+    expect(createOpener(P, ka.recv.key, ka.recv.prefix).open(b64decode(toA[0]!)!)).not.toBeNull();
+    expect(createOpener(P, ka.recv.key, ka.recv.prefix).open(b64decode(toB[0]!)!)).toBeNull();
+
+    bridge.dispose();
+  });
+
+  it("时间线只发给订它的那一台（广播等于把 A 在看的会话推到 B 的屏上）", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const a = newPeer();
+    const b = newPeer();
+    const bridge = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(),
+      peerIdentities: () => [a.identity.publicKey, b.identity.publicKey],
+    });
+    t.emitPeer("ca");
+    shake(t, a, identity.publicKey, 0, "ca");
+    t.emitPeer("cb");
+    shake(t, b, identity.publicKey, 0, "cb");
+
+    t.addressed.length = 0;
+    bridge.pushTimeline("ca", "s1", []);
+    expect(t.sentTo("ca")).toHaveLength(1);
+    expect(t.sentTo("cb")).toHaveLength(0);
+
+    // 提示和统计同理:它们是"回答某一次操作",不是共享状态
+    t.addressed.length = 0;
+    bridge.pushNotice("cb", "你的文件没收下");
+    expect(t.sentTo("ca")).toHaveLength(0);
+    expect(t.sentTo("cb")).toHaveLength(1);
+
+    bridge.dispose();
+  });
+
+  it("一台走了只丢它那套；另一台照常收", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const a = newPeer();
+    const b = newPeer();
+    const onReset = vi.fn();
+    const bridge = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(), onReset,
+      peerIdentities: () => [a.identity.publicKey, b.identity.publicKey],
+    });
+    t.emitPeer("ca");
+    shake(t, a, identity.publicKey, 0, "ca");
+    t.emitPeer("cb");
+    shake(t, b, identity.publicKey, 0, "cb");
+
+    t.emitGone("ca");
+    // 上层据此清掉那台手机的订阅 —— 它不会再有别的机会知道这件事
+    expect(onReset).toHaveBeenCalledWith("ca");
+    expect(bridge.connected()).toEqual(["cb"]);
+
+    t.addressed.length = 0;
+    bridge.pushFleet(BUSY);
+    expect(t.sentTo("ca")).toHaveLength(0);
+    expect(t.sentTo("cb")).toHaveLength(1);
+
+    bridge.dispose();
+  });
+
+  // 中继保证 :peer 排在对端任何一帧之前。到不了这个顺序说明对面不是通过中继来的
+  it("帧来自没打过招呼的 cid → 丢弃，不凭空建会话", () => {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const onCommand = vi.fn();
+    const bridge = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand,
+      peerIdentities: () => [P.generateEd25519().publicKey],
+    });
+    t.emit(JSON.stringify(buildHello(P, newPeer())), "cx");
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(bridge.connected()).toEqual([]);
+    bridge.dispose();
   });
 
   it("桥不替上层节流：敲三次门就报三次", () => {

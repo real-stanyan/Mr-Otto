@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
-import { PEER_PRESENT, PING, PONG, SUBPROTOCOL } from "../../../src/shared/remote/wire.js";
+import {
+  CTRL_CID,
+  CTRL_GONE,
+  CTRL_PEER,
+  CTRL_PING,
+  CTRL_PONG,
+  SUBPROTOCOL,
+  decodeFrame,
+  encodeFrame,
+} from "../../../src/shared/remote/wire.js";
 
 // 假 WebSocket。只实现传输层真正用到的那几个面:构造参数、readyState、
 // 四个事件回调、send/close。测试驱动它"发生什么",而不是等真网络。
@@ -106,28 +115,65 @@ describe("建连接", () => {
 });
 
 describe("收", () => {
-  it("`:peer` → onPeer，不当载荷", async () => {
+  it("`:peer <cid>` → onPeer 带上那条连接的 cid，不当载荷", async () => {
     const { t } = make();
     await settle();
-    const peers: number[] = [];
+    const peers: string[] = [];
     const msgs: string[] = [];
-    t.onPeer(() => peers.push(1));
+    t.onPeer((cid) => peers.push(cid));
     t.onMessage((p) => msgs.push(p));
     last().open();
-    last().rx(PEER_PRESENT);
-    expect(peers).toHaveLength(1);
+    last().rx(`${CTRL_PEER} c-abc`);
+    expect(peers).toEqual(["c-abc"]);
     expect(msgs).toEqual([]);
     t.close();
   });
 
-  it("载荷 → onMessage，原样交出去（不解析）", async () => {
+  it("`:gone <cid>` → onGone（桥据此丢掉那一套密钥）", async () => {
     const { t } = make();
+    await settle();
+    const gone: string[] = [];
+    t.onGone((cid) => gone.push(cid));
+    last().open();
+    last().rx(`${CTRL_GONE} c-abc`);
+    expect(gone).toEqual(["c-abc"]);
+    t.close();
+  });
+
+  it("`:cid <我的>` 收下即可，不是载荷也不是在场信号", async () => {
+    const { t } = make();
+    await settle();
+    const msgs: string[] = [];
+    const peers: string[] = [];
+    t.onMessage((p) => msgs.push(p));
+    t.onPeer((c) => peers.push(c));
+    last().open();
+    last().rx(`${CTRL_CID} c-me`);
+    expect(msgs).toEqual([]);
+    expect(peers).toEqual([]);
+    t.close();
+  });
+
+  it("载荷 → onMessage，带发件人 cid，密文原样交出去（不解析）", async () => {
+    const { t } = make();
+    await settle();
+    const got: Array<[string, string]> = [];
+    t.onMessage((p, from) => got.push([p, from]));
+    last().open();
+    last().rx(encodeFrame("c-peer", "{{{ not json"));
+    expect(got).toEqual([["{{{ not json", "c-peer"]]);
+    t.close();
+  });
+
+  it("解不开的帧丢掉，不喂给桥", async () => {
+    const { t, logs } = make();
     await settle();
     const msgs: string[] = [];
     t.onMessage((p) => msgs.push(p));
     last().open();
-    last().rx("{{{ not json");
-    expect(msgs).toEqual(["{{{ not json"]);
+    last().rx("nospace-so-no-recipient");
+    expect(msgs).toEqual([]);
+    expect(logs.join(" ")).toContain("解不开");
     t.close();
   });
 
@@ -137,9 +183,9 @@ describe("收", () => {
     const msgs: string[] = [];
     t.onMessage((p) => msgs.push(p));
     last().open();
-    last().rx(PONG);
+    last().rx(CTRL_PONG);
     expect(msgs).toEqual([]);
-    expect(logs.join(" ")).not.toContain("不认识");
+    expect(logs.join(" ")).not.toContain("解不开");
     t.close();
   });
 
@@ -165,7 +211,7 @@ describe("收", () => {
       throw new Error("Unknown cipher");
     });
     last().open();
-    last().rx("PAYLOAD");
+    last().rx(encodeFrame("c-peer", "PAYLOAD"));
     expect(closes).toEqual([]);
     expect(FakeWs.instances).toHaveLength(1);
     expect(logs.join(" ")).toContain("不是断线");
@@ -174,13 +220,28 @@ describe("收", () => {
 });
 
 describe("发", () => {
-  it("连着就直接发，不排队", async () => {
+  it("连着就直接发，不排队，帧上带收件人", async () => {
     const { t } = make();
     await settle();
     last().open();
-    t.send("AAAA");
-    t.send("BBBB");
-    expect(last().sent).toEqual(["AAAA", "BBBB"]);
+    t.send("AAAA", "c-peer");
+    t.send("BBBB", "c-other");
+    expect(last().sent.map((s) => decodeFrame(s))).toEqual([
+      { cid: "c-peer", payload: "AAAA" },
+      { cid: "c-other", payload: "BBBB" },
+    ]);
+    t.close();
+  });
+
+  // 每条对端连接有自己一套会话密钥，发错了对面解不开，而 sealedStream 的
+  // 计数器还会把它判成异常(ADR-0130)
+  it("没有收件人 → 丢掉，不猜一条发", async () => {
+    const { t, logs } = make();
+    await settle();
+    last().open();
+    t.send("AAAA", "");
+    expect(last().sent).toEqual([]);
+    expect(logs.join(" ")).toContain("没有收件人");
     t.close();
   });
 
@@ -190,7 +251,7 @@ describe("发", () => {
     await settle();
     const closes: number[] = [];
     t.onClose(() => closes.push(1));
-    t.send("AAAA"); // 还在 CONNECTING
+    t.send("AAAA", "c-peer"); // 还在 CONNECTING
     expect(last().sent).toEqual([]);
     expect(closes).toEqual([]);
     expect(logs.join(" ")).toContain("这一帧丢了");
@@ -291,7 +352,7 @@ describe("心跳", () => {
     await settle();
     last().open();
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(last().sent).toEqual([PING]);
+    expect(last().sent).toEqual([CTRL_PING]);
     t.close();
   });
 
@@ -314,7 +375,7 @@ describe("心跳", () => {
     ws.open();
     for (let i = 0; i < 5; i += 1) {
       await vi.advanceTimersByTimeAsync(20_000);
-      ws.rx(PONG);
+      ws.rx(CTRL_PONG);
     }
     expect(ws.closedWith).toBeNull();
     t.close();

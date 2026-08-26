@@ -92,3 +92,37 @@ export function summarizeGroup(calls: ToolCallRequest[]): string {
   }
   return [...byVerb].map(([verb, n]) => `${verb} ×${n}`).join(" · ");
 }
+
+// ─── 工具行的小图标 ───
+// 返回 lucide 的图标名（string）而不是组件：这个文件在 src/shared/，
+// 主进程也在 import——直接 import lucide-react 会把 React 组件库拽进
+// 主进程的依赖图。渲染层 OttoThread 拿这个名字去查表。
+
+/** 工具名 → lucide 图标名。认不出的给 "Wrench"。
+    读写文件故意给 null：它们走 FileTypeIcon（文件类型图标比一枚通用
+    的 Read/Pencil 有信息量），调用方自己决定 fallback */
+export function toolIcon(name: string): string | null {
+  switch (name) {
+    case "read_file":
+    case "write_file":
+      return null; // 走 FileTypeIcon
+    case "bash":
+      return "SquareTerminal";
+    case "web_search":
+    case "session_search":
+      return "Search";
+    case "web_extract":
+    case "browser_read":
+      return "Globe";
+    case "task":
+      return "Bot";
+    case "ask_user":
+      return "MessageCircleQuestion";
+    case "todo_write":
+      return "ListChecks";
+    case "memory":
+      return "Brain";
+    default:
+      return "Wrench"; // MCP 工具、认不出的——通用扳手
+  }
+}

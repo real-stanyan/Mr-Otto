@@ -174,7 +174,19 @@ export function toThreadMessages(
     if (e.type === "assistant_message") {
       const parts: Part[] = [];
       if ((e.reasoning ?? "") !== "") parts.push({ type: "reasoning", text: e.reasoning! });
-      if (e.content !== "") parts.push({ type: "text", text: e.content });
+      // 旁白(模型边干边说的短句):这条消息带 toolCalls = 它是「过程中的一句」,不是
+      // 给用户的最终回复。投成带 narration 标记的 reasoning part —— 与工具共享
+      // chainOfThought 分组 path,收进同一条时间线当一步,而不是当正文 text part
+      // (正文 part path 为空,是分组的硬断点,会把「bash → 说一句 → bash」拆成两条
+      // 单步时间线)。最终回复那条不带 toolCalls,content 仍是 text part,留在时间线外
+      const hasTools = (e.toolCalls?.length ?? 0) > 0;
+      if (e.content !== "") {
+        if (hasTools) {
+          parts.push({ type: "reasoning", text: e.content, narration: true } as Part);
+        } else {
+          parts.push({ type: "text", text: e.content });
+        }
+      }
       // 工具产物(查到的来源、写出的文件)统一排在所有工具行之后,不插在每一行后面。
       // 两个理由:
       // ① 工具行靠"连续"才能合成一组折叠(thread.tsx 的 groupPartByType),中间插一条

@@ -1038,6 +1038,54 @@
   }
 }
 
+/* ── 液态玻璃（LiquidGlass）────────────────────────────────────────────
+   材质的配方全在这，组件那边只管量尺寸、挂滤镜（见 components/LiquidGlass.tsx）。
+
+   跟上面那张分区卡的区别，是这块玻璃多了一件事：**折射**。--lg-refract 由组件
+   写成 url(#…)，指向一条 feDisplacementMap 滤镜链——背后的画面在四边被推歪，
+   中央保持笔直。模糊只让背后安静，推歪才让人认出这是块有厚度的玻璃。
+
+   顺序有讲究：先折射再模糊。反过来是"把已经糊掉的画面推歪"，边缘那圈折射
+   会连同糊一起被拉开，看着像脏，不像玻璃。
+   饱和压到 1 以下同 .section-rail-card 的理由：材质不该把背景的彩色放大。 */
+.liquid-glass {
+  --lg-refract: ;
+  --lg-blur: 6px;
+  --lg-sat: 0.9;
+  position: relative;
+  isolation: isolate;
+  /* 底色只是"别让背后完全透过来"，对比度靠它，不靠模糊。
+     太实会把折射盖住——折射发生在背后的画面上，底色越不透明，看到的越少 */
+  background-color: color-mix(in srgb, var(--card) 34%, transparent);
+  backdrop-filter: var(--lg-refract) blur(var(--lg-blur)) saturate(var(--lg-sat));
+  /* 三道边，各管一件事：
+     1) 外描边：玻璃的轮廓，暗色下不能靠阴影，只有一圈亮线能把它从背景里切出来
+     2) 顶部内高光：光从上方来，倒角的上沿最亮
+     3) 底部内高光：从下面漏进来的一点回光，玻璃因此有了"厚度"而不是一张贴纸 */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--foreground) 8%, transparent),
+    inset 0 1px 0 0 color-mix(in srgb, #fff 55%, transparent),
+    inset 0 -1px 0 0 color-mix(in srgb, #fff 14%, transparent),
+    0 8px 24px color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+.dark .liquid-glass {
+  /* 暗色下白色高光要收：同样的 55% 在深底上是一道刺眼的白线 */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #fff 10%, transparent),
+    inset 0 1px 0 0 color-mix(in srgb, #fff 22%, transparent),
+    inset 0 -1px 0 0 color-mix(in srgb, #fff 6%, transparent),
+    0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+/* 降低透明度偏好：材质整块退场（折射比模糊更"晃"，这里连它一起去掉），
+   换回一张实心卡片。同 .section-rail-card 的处理 */
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-glass {
+    background-color: var(--card);
+    backdrop-filter: none;
+  }
+}
+
 /* ── 浮层(dropdown / 二级菜单)的进出场 ────────────────────────────────
    和 dialog 同一套理由:手写 keyframes 而不是 tailwindcss-animate 死类名,
    且离场也要(radix Presence 会等动画跑完再卸载)。

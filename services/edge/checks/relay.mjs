@@ -17,10 +17,21 @@ import { readFileSync } from "node:fs";
 const BASE = (process.argv[2] ?? "https://mrotto-edge.workers.dev").replace(/\/+$/, "");
 const WS_BASE = BASE.replace(/^http/, "ws");
 const SUBPROTOCOL = "mrotto.v1";
-const PEER = ":peer";
 const PING = ":ping";
 const PONG = ":pong";
 const MAX_FRAME = 256 * 1024;
+// 控制消息解析与帧编解码：与 src/shared/remote/wire.ts 同一套约定
+// （这个脚本要能单独 node 跑，不走打包，所以是刻意的一小段重复）
+const ctrl = (msg) => {
+  if (!msg.startsWith(":")) return null;
+  const sp = msg.indexOf(" ");
+  return { kind: (sp === -1 ? msg : msg.slice(0, sp)).slice(1), cid: sp === -1 ? "" : msg.slice(sp + 1) };
+};
+const frame = (cid, payload) => `${cid} ${payload}`;
+const unframe = (msg) => {
+  const sp = msg.indexOf(" ");
+  return sp <= 0 ? null : { cid: msg.slice(0, sp), payload: msg.slice(sp + 1) };
+};
 
 function secret() {
   if (process.env.SUPABASE_JWT_SECRET) return process.env.SUPABASE_JWT_SECRET;
@@ -50,8 +61,19 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function open(role, sub) {
   return new Promise((res, rej) => {
     const ws = new WebSocket(`${WS_BASE}/rl/v1/connect?role=${role}`, [SUBPROTOCOL, token(sub)]);
-    ws.rx = [];
-    ws.onmessage = (e) => ws.rx.push(e.data);
+    ws.rx = [];       // 载荷帧 {cid, payload}
+    ws.peers = [];    // 收到的 :peer <cid>
+    ws.gone = [];     // 收到的 :gone <cid>
+    ws.cid = "";      // 中继给这条连接编的号
+    ws.pongs = 0;
+    ws.onmessage = (e) => {
+      const c = ctrl(e.data);
+      if (!c) { ws.rx.push(unframe(e.data)); return; }
+      if (c.kind === "cid") ws.cid = c.cid;
+      else if (c.kind === "peer") ws.peers.push(c.cid);
+      else if (c.kind === "gone") ws.gone.push(c.cid);
+      else if (c.kind === "pong") ws.pongs += 1;
+    };
     ws.onopen = () => res(ws);
     ws.onerror = () => rej(new Error(`${role} 连不上 ${WS_BASE}`));
   });
@@ -73,54 +95,73 @@ const noAuth = await new Promise((r) => {
 });
 check("不带子协议 = 没凭据 → 拒", noAuth === "rejected", noAuth);
 
-// ---- 真配对（两个随机 user，互不干扰）----
+// ---- 真配对（cid 寻址，ADR-0130）----
 const uid = randomUUID();
 const d = await open("desktop", uid);
 check("回 echo 的是常量子协议，不含 token", d.protocol === SUBPROTOCOL, `protocol=${d.protocol}`);
-await wait(200);
-check("独自在线时没有在场信号", d.rx.length === 0, JSON.stringify(d.rx));
+await wait(300);
+check("接上先拿到自己的 cid", d.cid !== "", `cid=${d.cid}`);
+check("独自在线时没有在场信号", d.peers.length === 0, JSON.stringify(d.peers));
 
-const m = await open("mobile", uid);
+const m1 = await open("mobile", uid);
 await wait(400);
-check("对端到场 → 两侧各一条 :peer", d.rx.includes(PEER) && m.rx.includes(PEER), `d=${JSON.stringify(d.rx)} m=${JSON.stringify(m.rx)}`);
+check("对端到场 → 两侧各一条 :peer <cid>",
+  d.peers.includes(m1.cid) && m1.peers.includes(d.cid),
+  `d.peers=${JSON.stringify(d.peers)} m1.peers=${JSON.stringify(m1.peers)}`);
 
-d.rx.length = 0;
-m.rx.length = 0;
-d.send("AAAA-ciphertext");
+d.rx.length = 0; m1.rx.length = 0;
+d.send(frame(m1.cid, "AAAA-ciphertext"));
 await wait(400);
-check("桌面→手机 字节原样到达", m.rx.includes("AAAA-ciphertext"));
-check("不回声给发送方", d.rx.length === 0);
-m.send("BBBB-ciphertext");
+check("桌面→手机 字节原样到达，且带发件人",
+  d.rx.length === 0 && m1.rx.some((f) => f?.payload === "AAAA-ciphertext" && f.cid === d.cid),
+  JSON.stringify(m1.rx));
+m1.send(frame(d.cid, "BBBB-ciphertext"));
 await wait(400);
-check("手机→桌面 字节原样到达", d.rx.includes("BBBB-ciphertext"));
+check("手机→桌面 字节原样到达", d.rx.some((f) => f?.payload === "BBBB-ciphertext" && f.cid === m1.cid));
 
-// ---- 心跳在边缘应答（不唤醒 DO）----
-d.rx.length = 0;
-d.send(PING);
-await wait(400);
-check("心跳回 :pong", d.rx.includes(PONG), JSON.stringify(d.rx));
-
-// ---- 同角色重连顶掉旧的 ----
+// ---- 两台手机同时在线，各是各的（ADR-0130 的核心）----
 const m2 = await open("mobile", uid);
 await wait(500);
-check("旧手机被顶下线", m.readyState === 3, `readyState=${m.readyState}`);
-d.rx.length = 0;
-m2.rx.length = 0;
-d.send("CCCC");
+check("第二台手机上线：桌面收到第二条 :peer", d.peers.includes(m2.cid), JSON.stringify(d.peers));
+check("第一台没被顶下线", m1.readyState === 1, `readyState=${m1.readyState}`);
+check("新来的那台也知道桌面在", m2.peers.includes(d.cid), JSON.stringify(m2.peers));
+
+m1.rx.length = 0; m2.rx.length = 0;
+d.send(frame(m2.cid, "ONLY-FOR-M2"));
 await wait(400);
-check("帧走新连接不走旧的", m2.rx.includes("CCCC") && !m.rx.includes("CCCC"));
+check("按 cid 寻址，不广播",
+  m2.rx.some((f) => f?.payload === "ONLY-FOR-M2") && m1.rx.length === 0,
+  `m1.rx=${JSON.stringify(m1.rx)}`);
+
+d.rx.length = 0;
+d.send(frame("c-nobody", "SHOULD-DROP"));
+await wait(300);
+check("收件人认不出 → 丢弃，不猜一条发",
+  m1.rx.length === 0 && m2.rx.every((f) => f?.payload !== "SHOULD-DROP"));
+
+// ---- 离场 ----
+d.gone.length = 0;
+m1.close();
+await wait(500);
+check("一台走了 → 桌面收到 :gone <cid>", d.gone.includes(m1.cid), JSON.stringify(d.gone));
+
+// ---- 心跳在边缘应答（不唤醒 DO）----
+d.pongs = 0;
+d.send(PING);
+await wait(400);
+check("心跳回 :pong", d.pongs === 1, `pongs=${d.pongs}`);
 
 // ---- 不同用户不串线 ----
 const other = await open("desktop", randomUUID());
 await wait(300);
-check("另一个用户收不到别人的 :peer", other.rx.length === 0, JSON.stringify(other.rx));
+check("另一个用户收不到别人的 :peer", other.peers.length === 0, JSON.stringify(other.peers));
 
 // ---- 单帧上限 ----
-d.send("x".repeat(MAX_FRAME + 1));
+d.send(frame(m2.cid, "x".repeat(MAX_FRAME)));
 await wait(500);
 check("超 256 KiB → 关掉发送方", d.readyState === 3, `readyState=${d.readyState}`);
 
-for (const ws of [d, m, m2, other]) { try { ws.close(); } catch { /* 已关 */ } }
+for (const ws of [d, m1, m2, other]) { try { ws.close(); } catch { /* 已关 */ } }
 
 console.log(`\n${BASE}\n通过 ${ok.length} 条：`);
 for (const o of ok) console.log(`  ✓ ${o}`);

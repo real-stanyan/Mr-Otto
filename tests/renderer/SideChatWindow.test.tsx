@@ -28,7 +28,13 @@ const approvalFor = (sessionId: string): ApprovalRequest => ({
 beforeEach(() => {
   Object.defineProperty(window, "outerWidth", { value: 1400, configurable: true });
   useChat.setState({
-    sideChat: { sessionId: SIDE, events: [], open: true, pos: { x: 10, y: 10 } },
+    sideChat: {
+      sessionId: SIDE,
+      events: [],
+      open: true,
+      pos: { x: 10, y: 10 },
+      size: { w: 380, h: 480 }, // #516 起 sideChat 带尺寸（可缩放）
+    },
     approvals: {},
   });
 });

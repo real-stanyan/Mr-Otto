@@ -193,11 +193,12 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/main/simulatorHub.ts` / `src/main/simInputBridge.ts` — iOS 模拟器：simctl 台账 + 画面轮询 + 输入桥（ADR-0092）
 - `native/MrOttoSimInput/` — iOS 模拟器输入/无障碍 helper（Swift，CGEvent + AXUIElement；ADR-0092）
 - `src/shared/remote/` / `src/main/remoteBridge.ts` — 手机端远程投影与审批：帧协议、握手与密封流（`src/shared/remote/` 是纯层，手机端 import 同一份）+ 与 islandBridge 平级的桌面侧装配（ADR-0094 / 0095 / 0096 / 0097 / 0100 / 0106）
-- `src/shared/remote/wire.ts` / `wsTransport.ts` — 中继的线上约定（`:peer` 等控制消息、子协议、帧上限，**三方共用一份**）+ 桌面与手机**共用的那一份** WebSocket 传输（两个运行时都有原生 WebSocket，ADR-0129）
+- `src/shared/remote/wire.ts` / `wsTransport.ts` — 中继的线上约定（按 cid 寻址的帧、`:peer`/`:gone` 等控制消息、子协议、帧上限，**三方共用一份**）+ 桌面与手机**共用的那一份** WebSocket 传输（两个运行时都有原生 WebSocket，ADR-0129 / 0130）
 - `services/edge/` — 边缘服务：OAuth 落地页 + 中继。`src/relay.ts` 是配对的纯逻辑（跑在根门禁里），`src/worker.ts` 是 Cloudflare Worker 入口 + Durable Object（唯一依赖运行时的文件，单独一份 tsconfig）。运行时那一层由 `checks/relay.mjs` 打真 workerd 验（ADR-0129）
 - `mobile/src/friends.tsx` / `mobile/src/friendsApi.ts` / `src/shared/friendsQuery.ts` — 手机端好友：加好友 / 收发请求 / 私信（直连 Supabase，不经中继；纯逻辑与桌面共用 `friendsQuery.ts`，ADR-0114）
 - `src/shared/remote/stats.ts` / `src/shared/sessionActivity.ts` — 手机端设置页那两块：会话热力图 + 各模型用量。**拉取不订阅**（`stats` 帧对），`trim.ts` 那道闸门不动（ADR-0115）
 - `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）
 - `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0121）
 - `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0118）
+- `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
 - `src/shared/mcpCatalog.ts` — 常见 MCP server 的目录数据（人手维护、会过时；字段与占位符自洽由 `tests/shared/mcpCatalog.test.ts` 钉住，ADR-0118）

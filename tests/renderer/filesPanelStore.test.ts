@@ -68,6 +68,7 @@ describe("换会话清掉 Files 面板", () => {
     const boot: BootInfo = {
       sessionId: "s1", model: "claude", workspace: "/tmp/proj", events: [],
       dbPath: "/tmp/proj/.mr-otto/db.sqlite", approvalMode: "ask", thinking: "off", toolDefs: [],
+      isPackaged: true,
     };
     expect(enterChat(boot).filesPanelOpen).toBe(false);
   });
