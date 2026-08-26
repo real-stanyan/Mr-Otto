@@ -190,4 +190,14 @@ describe("skill 的启用/停用在轨迹里怎么写（ADR-0122 D8）", () => {
     expect(t.rows).toHaveLength(1);
     expect(t.rows[0]!.summary).toBe("已停用 skill「tdd」");
   });
+
+  // R1 修复：skill_released 事件只带 { type, name }，没有 source 字段，
+  // 任何投影都无法归因于谁发起的停用——"system" 是唯一诚实的 kind。
+  // "user" 会让 TrajectoryView 给它挂绿色 USER 徽章，在唯一回答「agent 做了什么」
+  // 的视图里，把模型自己发起的 release 说成是用户干的
+  it("停用行不是 kind: user——没有 source 字段就不能栽给用户", () => {
+    const t = buildTrajectory([at({ type: "skill_released", name: "tdd" })]);
+    expect(t.rows[0]!.kind).not.toBe("user");
+    expect(t.rows[0]!.kind).toBe("system");
+  });
 });

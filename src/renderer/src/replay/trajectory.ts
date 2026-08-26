@@ -137,10 +137,14 @@ export function buildTrajectory(events: SessionEvent[]): Trajectory {
 
       // 停用同样占一行：漏了的话轨迹视图会显示每一把 skill 都还生效着。
       // 落 default 也会出一行，但那行的 summary 是光秃秃的事件类型名
-      // （systemSummary 的兜底），说不出停的是哪一把
+      // （systemSummary 的兜底），说不出停的是哪一把。
+      // kind 是 system 不是 user：events.ts 里 skill_released 只带 { type, name }，
+      // 没有 source 字段，任何投影都无法归因于谁把它停掉的——"system" 是唯一诚实的选择，
+      // "user" 会给模型自己发起的 release 挂一个绿色 USER 徽章，在这个唯一回答
+      // "agent 做了什么"的视图里说谎
       case "skill_released":
         push({
-          key: String(e.seq), kind: "user", lane: "input", seq: e.seq, ts: e.ts,
+          key: String(e.seq), kind: "system", lane: "input", seq: e.seq, ts: e.ts,
           summary: skillReleasedLabel(e), deny: false, ev: e,
         });
         break;
