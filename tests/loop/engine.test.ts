@@ -1056,18 +1056,32 @@ describe("工具表按 turn 重算（MCP server 中途连上要能用）", () =>
   });
 
   it("turn 之内不变——模型按这一轮的声明表发调用，中途换表会变成「未知工具」", async () => {
+    // 用两次工具调用而不是一次：第一版用例只调了一次 a，onToolRunHook 在 run()
+    // 里触发时查表早已发生，"构造时冻结"/"每 turn 重算"/"每圈重算"三种实现下
+    // 结果都是 "ok"——那条用例其实是永真式，验证不了 turn 内冻结。这里让模型
+    // 在第二圈再调一次同一把刀：只有"每 turn 重算"才会让第二圈仍查到 [a]；
+    // 若代码退化成"每圈重算"，第二圈会看到空表，查不到 a → "未知工具"
     let live = [fakeTool("a")];
     const engine = makeEngine({
       tools: () => live,
-      // 第一圈模型调 a，工具执行期间 provider 的返回值被改掉
+      // 第一圈工具执行期间 provider 的返回值被改掉（第二圈 onToolRun 再触发一次
+      // 也无害——live 已经是空数组，重复清空是幂等的）
       onToolRun: () => {
         live = [];
       },
-      // 两圈：第一圈发工具调用，第二圈收口
-      replies: [{ toolCalls: [{ id: "1", name: "a", args: {} }] }, { text: "好了" }],
+      // 三圈：圈 1 调 a，圈 2 再调一次同一把刀，圈 3 收口
+      replies: [
+        { toolCalls: [{ id: "1", name: "a", args: {} }] },
+        { toolCalls: [{ id: "2", name: "a", args: {} }] },
+        { text: "好了" },
+      ],
     });
     await expect(engine.runTurn("跑一下")).resolves.not.toThrow();
-    expect(lastToolResultStatus()).toBe("ok"); // 不是 "error: 未知工具"
+    const statuses = currentStore!
+      .load("s1")
+      .filter((e): e is Extract<typeof e, { type: "tool_result" }> => e.type === "tool_result")
+      .map((e) => e.status);
+    expect(statuses).toEqual(["ok", "ok"]); // 两次调用都查到了同一份 turn 内冻结的表，不是 "error: 未知工具"
   });
 
   it("撞名保护每轮都生效：后到的同名工具照旧被拒", async () => {

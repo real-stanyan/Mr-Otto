@@ -507,9 +507,14 @@ export class LoopEngine {
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
     this.compactFloor = null;
-    // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释
-    this.rebuildTools();
     try {
+      // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释。
+      // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
+      // createMcpTools/applyExposurePolicy），抛错要走下面的 catch 落 turn_ended:
+      // outcome:"error"，不能让已经落盘的 user_message 和已置位的 currentTurnId/
+      // turnAbort 永远没有对应的收口（append-only 日志的配对不变量、steer 的乐观锁
+      // 目标都靠 turn_ended/finally 收场）
+      this.rebuildTools();
       await this.loop(this.turnAbort.signal);
       this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
       return "completed";
