@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildApprovalPreview } from "../../src/main/approvalPreview.js";
 import type { ExecutionWorld, McpServerHandle } from "../../src/world/executionWorld.js";
 import { mcpToolName } from "../../src/shared/mcp.js";
+import type { McpServerConfig } from "../../src/shared/mcp.js";
 
 function worldWith(files: Record<string, string>): ExecutionWorld {
   return {
@@ -179,5 +180,69 @@ describe("buildApprovalPreview：MCP 工具", () => {
       world
     );
     expect(preview).toMatchObject({ kind: "mcp_tool", server: "my.server", tool: "do.thing" });
+  });
+});
+
+// Task 9：mcp_configure 的审批预览。这张卡是"agent 自助配置 MCP server"这条路上
+// 唯一的安全闸——worldWithMcp 造一个带假 mcp 能力的 world，configOf 从传入的
+// map 里取（对照"改之前是什么"），servers() 按 map 造 handle（每台配一把工具，
+// 用来算 before.toolCount）
+function worldWithMcp(configs: Record<string, McpServerConfig> = {}): ExecutionWorld {
+  return {
+    ...worldWith({}),
+    mcp: {
+      ready: async () => {},
+      servers: () =>
+        Object.keys(configs).map((id) => ({
+          id, name: id, status: "connected", live: true,
+          tools: [{ name: "t", description: "", inputSchema: {} }],
+          resources: [], prompts: [],
+        })),
+      callTool: async () => [],
+      readResource: async () => [],
+      getPrompt: async () => "",
+      configure: async () => {},
+      authorize: async () => {},
+      configOf: (id: string) => configs[id],
+    },
+  };
+}
+
+describe("mcp_configure 的审批预览", () => {
+  it("stdio：command / 每一条 arg / env 的键名都列出来，值不列", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "fs", kind: "stdio", command: "npx", args: ["-y", "pkg"], env: { TOKEN: "sk-真的" } } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({
+      kind: "mcp_configure", server: "fs", action: "add",
+      transport: "stdio", command: "npx", args: ["-y", "pkg"],
+      credentialKeys: ["TOKEN"],
+    });
+    expect(JSON.stringify(preview)).not.toContain("sk-真的");
+  });
+
+  it("http：url 全文出现在卡片上——用户要看得到自己在授权给谁", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://mcp.supabase.com/mcp" } },
+      worldWithMcp()
+    );
+    expect(preview).toMatchObject({ kind: "mcp_configure", url: "https://mcp.supabase.com/mcp" });
+  });
+
+  it("改已有的一台时带上「改之前是什么」", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", kind: "http", url: "https://新的/mcp" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview).toMatchObject({ action: "update", before: { url: "https://旧的/mcp" } });
+  });
+
+  it("删除时说清删的是哪台、它现在有几把刀", async () => {
+    const preview = await buildApprovalPreview(
+      { id: "1", name: "mcp_configure", args: { id: "s", action: "remove" } },
+      worldWithMcp({ s: { kind: "http", url: "https://旧的/mcp", headers: {}, enabled: true } })
+    );
+    expect(preview).toMatchObject({ action: "remove", server: "s" });
   });
 });

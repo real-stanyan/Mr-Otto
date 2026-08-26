@@ -255,8 +255,29 @@ export interface McpPreviewArg {
   fullLength: number;
 }
 
+/** mcp_configure 的审批预览。这张卡是 agent 自助配置那条路上**唯一**的
+    安全闸：stdio 的配置就是 command + args + env，卡片含糊等于闸形同虚设。
+    所以明细逐字段列，不折成一句"配置一台 MCP server"。
+
+    凭据只出键名不出值（同 ADR-0044 的口径）：用户要认出"这一格配的是哪一把"，
+    不需要、也不该在审批卡上看到真值。 */
+export interface McpConfigurePreview {
+  kind: "mcp_configure";
+  server: string;
+  action: "add" | "update" | "remove";
+  /** remove 时为 null */
+  transport: "http" | "stdio" | null;
+  url: string | null;
+  command: string | null;
+  args: string[];
+  /** env（stdio）或 headers（http）的**键名**；值不过桥 */
+  credentialKeys: string[];
+  /** 改已有的一台时，改之前是什么。新增时为 null */
+  before: { url: string | null; command: string | null; toolCount: number } | null;
+}
+
 /** 审批卡能拿到的预览。没有 = 这把工具没有可展示的"世界现状"，退回原样 JSON */
-export type ApprovalPreview = WriteFilePreview | McpToolPreview;
+export type ApprovalPreview = WriteFilePreview | McpToolPreview | McpConfigurePreview;
 
 /** 审批卡上可出现的决策种类（issue #341 规则①：按钮集合由后端下发，
     渲染层只做「种类 → 按钮」的通用映射，新增审批场景不改前端按钮代码）。

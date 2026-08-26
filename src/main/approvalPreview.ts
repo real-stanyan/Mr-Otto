@@ -21,6 +21,7 @@ export async function buildApprovalPreview(
   call: ToolCallRequest,
   world: ExecutionWorld
 ): Promise<ApprovalPreview | undefined> {
+  if (call.name === "mcp_configure") return mcpConfigurePreview(call, world);
   if (call.name.startsWith("mcp__")) return mcpPreview(call, world);
   if (call.name !== "write_file") return undefined;
   // 参数出自模型，不赌形状：不像 {path, content} 就不预览（审批卡照常弹，走 JSON 兜底）
@@ -36,6 +37,49 @@ export async function buildApprovalPreview(
   if (oldText !== null && oldText.length > MAX_PREVIEW_CHARS) return undefined;
 
   return { kind: "write_file", path: args.path, oldText, newText: args.content };
+}
+
+/** mcp_configure 的预览。参数出自模型，形状一律不赌——认不出来就不预览，
+    审批卡照常弹、走 JSON 兜底（同 write_file 分支的口径）。 */
+function mcpConfigurePreview(call: ToolCallRequest, world: ExecutionWorld): ApprovalPreview | undefined {
+  const mcp = world.mcp;
+  if (!mcp) return undefined;
+  const a = call.args as Record<string, unknown> | null;
+  const id = a?.["id"];
+  if (typeof id !== "string" || id === "") return undefined;
+
+  const existing = mcp.configOf(id);
+  const before = existing
+    ? {
+        url: existing.kind === "http" ? existing.url : null,
+        command: existing.kind === "stdio" ? existing.command : null,
+        toolCount: mcp.servers().find((s) => s.id === id)?.tools.length ?? 0,
+      }
+    : null;
+
+  if (a?.["action"] === "remove") {
+    return { kind: "mcp_configure", server: id, action: "remove", transport: null,
+      url: null, command: null, args: [], credentialKeys: [], before };
+  }
+
+  const kind = a?.["kind"];
+  if (kind !== "http" && kind !== "stdio") return undefined;
+  const creds = kind === "http" ? a?.["headers"] : a?.["env"];
+  return {
+    kind: "mcp_configure",
+    server: id,
+    action: before ? "update" : "add",
+    transport: kind,
+    url: kind === "http" && typeof a?.["url"] === "string" ? (a["url"] as string) : null,
+    command: kind === "stdio" && typeof a?.["command"] === "string" ? (a["command"] as string) : null,
+    args: Array.isArray(a?.["args"]) ? (a["args"] as unknown[]).map(String) : [],
+    // 只出键名。真值绝不过桥（ADR-0044）——审批卡要回答的是"配了哪几把"，
+    // 不是"每把长什么样"
+    credentialKeys: Object.keys(
+      creds !== null && typeof creds === "object" && !Array.isArray(creds) ? creds : {}
+    ),
+    before,
+  };
 }
 
 /** 把 `mcp__<server>__<tool>` 还原成"哪台 server 的哪把刀"。
