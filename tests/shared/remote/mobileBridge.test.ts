@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRemoteBridge } from "../../../src/main/remoteBridge.js";
+import { b64encode } from "../../../src/shared/remote/b64.js";
+import {
+  createPairingOffers, decodePairingOffer, encodePairingOffer,
+} from "../../../src/shared/remote/pairing.js";
 import { nodeRemoteCrypto } from "../../../src/main/remoteCryptoNode.js";
 import { nobleRemoteCrypto } from "../../../src/shared/remote/nobleCrypto.js";
 import { createMobileBridge } from "../../../src/shared/remote/mobileBridge.js";
@@ -254,5 +258,78 @@ describe("手机桥 ⇄ 桌面桥（真加密、会丢包的中继）", () => {
     expect(frames[frames.length - 1]).toEqual({ type: "fleet", fleet: IDLE });
     phone.dispose();
     desktop.dispose();
+  });
+});
+
+describe("扫码配对走完整条链路（issue #583）", () => {
+  /** 全新的一台手机:桌面的 pin 组是空的,手机手里只有刚扫到的那张码 */
+  function freshScan() {
+    const relay = fakeRelay();
+    const desktopIdentity = N.generateEd25519();
+    const phoneIdentity = B.generateEd25519();
+    const ready: boolean[] = [];
+    const frames: DownFrame[] = [];
+
+    // 桌面出码
+    const offers = createPairingOffers(N, {
+      deviceId: "d1", identityPub: desktopIdentity.publicKey, now: () => 0,
+    });
+    const qr = encodePairingOffer(offers.start());
+
+    // 手机扫:直接读到桌面的身份公钥,**不经目录**
+    const scanned = decodePairingOffer(qr)!;
+    const phonePinned: Uint8Array[] = [scanned.identityPub];
+    let carriedSecret: Uint8Array | null = scanned.secret;
+
+    const desktopPinned: Uint8Array[] = [];
+    const desktop = createRemoteBridge({
+      crypto: N, identity: desktopIdentity, deviceId: "d1",
+      transport: relay.transport("desktop"),
+      peerIdentities: () => desktopPinned,
+      onCommand: () => {},
+      pairing: {
+        offer: () => offers.live(),
+        consume: () => offers.consume(),
+        onPaired: (pub) => desktopPinned.push(pub),
+      },
+    });
+    const phone = createMobileBridge({
+      crypto: B, identity: phoneIdentity, deviceId: "m1",
+      transport: relay.transport("mobile"),
+      peerIdentities: () => phonePinned,
+      pairSecret: () => carriedSecret,
+      onFrame: (f) => frames.push(f),
+      onReady: (r) => { ready.push(r); if (r) carriedSecret = null; },
+    });
+    return { relay, desktop, phone, ready, frames, desktopPinned, desktopIdentity, phoneIdentity, offers, qr };
+  }
+
+  it("扫一下就通:桌面 pin 组本来是空的,握手照样成立", () => {
+    const s = freshScan();
+    s.relay.announce();
+    expect(s.ready).toEqual([true]);
+    expect(s.desktopPinned.map(b64encode)).toEqual([b64encode(s.phoneIdentity.publicKey)]);
+    s.desktop.dispose();
+    s.phone.dispose();
+  });
+
+  it("配上之后那张码就废了,而已经 pin 住的手机重连照样通", () => {
+    const s = freshScan();
+    s.relay.announce();
+    expect(s.offers.live()).toBeNull();
+    // 重连:secret 已经清掉,这一轮不带证明,走的是 pin 组那条路
+    s.relay.announce();
+    expect(s.ready.filter(Boolean)).toHaveLength(2);
+    s.desktop.dispose();
+    s.phone.dispose();
+  });
+
+  it("投影真的能过去(配对建立的是同一套会话密钥,不是「看起来通了」)", () => {
+    const s = freshScan();
+    s.relay.announce();
+    s.desktop.pushFleet({ agents: [], focusedSessionId: null });
+    expect(s.frames.some((f) => f.type === "fleet")).toBe(true);
+    s.desktop.dispose();
+    s.phone.dispose();
   });
 });

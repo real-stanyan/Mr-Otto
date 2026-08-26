@@ -15,6 +15,7 @@ import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type SelfParty,
 } from "./handshake.js";
+import { buildPairProof } from "./pairing.js";
 import { createOpener, createSealer } from "./sealedStream.js";
 import type { RemoteTransport } from "./transport.js";
 
@@ -34,6 +35,15 @@ export function createMobileBridge(opts: {
   /** 已 pin 住的桌面身份公钥,**可能有多把**。空组 = 还没配对 → 一律拒绝握手。
       逐把试:hello 里的 deviceId 由对端自称,不能拿它来挑用哪把验 */
   peerIdentities: () => Uint8Array[];
+  /**
+   * 刚扫到的那把配对 secret(issue #583),没在配对就回 null。
+   *
+   * 有它 = 这一轮的 hello 多带一条"我刚扫过你那张码"的证明,于是桌面第一次
+   * 见到这台手机也认得下来 —— 人只在手机上动一次(扫),桌面不用再点一次。
+   * **每一轮都问一次**:重连要重发证明(那张码在桌面那边还没被用掉),
+   * 而配上之后调用方清掉它,后面的连接就走正常路径。
+   */
+  pairSecret?: () => Uint8Array | null;
   onFrame: (f: DownFrame) => void;
   /** 会话建立/断开。界面用它决定显示内容还是"你的 Mac 不在线" */
   onReady: (ready: boolean) => void;
@@ -120,7 +130,16 @@ export function createMobileBridge(opts: {
     self = newConnectionParty(p, { role: "mobile", deviceId: opts.deviceId, identity: opts.identity });
     // self 换了 ⇒ 同一个对端 eph 也会算出一把新钥匙,旧的"用过"名单跟着作废
     usedPeerEphs = new Set();
-    opts.transport.send(JSON.stringify(buildHello(p, self)), peerCid);
+    const secret = opts.pairSecret?.() ?? null;
+    const pair = secret
+      ? {
+          proof: buildPairProof(p, {
+            role: "mobile", deviceId: opts.deviceId, identity: opts.identity,
+            secret, ephPub: self.eph.publicKey, nonceHalf: self.nonceHalf,
+          }),
+        }
+      : undefined;
+    opts.transport.send(JSON.stringify(buildHello(p, self, pair)), peerCid);
     // 对端不会为我这一轮再发一次 hello(它可能早就 ready 了),拿记住的那份当场重派生。
     // **phase 这一问是必须的**:上面那行 send 可能是同步投递的,对端崭新的 hello
     // 说不定已经在里面派生完了 —— 那份比手上这份旧的新,别拿旧的盖回去

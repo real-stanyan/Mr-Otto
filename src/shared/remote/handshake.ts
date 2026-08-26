@@ -21,6 +21,17 @@ export interface HandshakeHello {
   ephPub: string;
   nonceHalf: string;
   sig: string;
+  /**
+   * 扫码配对这一轮才有的两个字段(issue #583)。**只在配对路径上被看**:
+   * 对端已经 pin 住时,身份从 pin 组里来,这里自称什么都不作数
+   * —— 否则等于让对端自己指定用哪把公钥验自己。
+   *
+   * `identityPub` 是自称的身份公钥,`pair` 是"我刚扫过你那张码"的证明
+   * (pairing.ts)。证明签的内容里带着 secret,所以没扫过码的人填不出来,
+   * 而自称的公钥正是验签用的那把 —— 冒名者签不出自己那把的证明。
+   */
+  identityPub?: string;
+  pair?: string;
 }
 
 export interface SelfParty {
@@ -83,7 +94,12 @@ function signedPayload(role: Role, deviceId: string, ephPub: Uint8Array, nonceHa
   return out;
 }
 
-export function buildHello(p: RemoteCryptoPrimitives, self: SelfParty): HandshakeHello {
+/** `pair` 传进来 = 这一轮要走扫码配对(手机刚扫完码的那一次连接) */
+export function buildHello(
+  p: RemoteCryptoPrimitives,
+  self: SelfParty,
+  pair?: { proof: string }
+): HandshakeHello {
   const payload = signedPayload(self.role, self.deviceId, self.eph.publicKey, self.nonceHalf);
   return {
     role: self.role,
@@ -91,6 +107,7 @@ export function buildHello(p: RemoteCryptoPrimitives, self: SelfParty): Handshak
     ephPub: b64encode(self.eph.publicKey),
     nonceHalf: b64encode(self.nonceHalf),
     sig: b64encode(p.ed25519Sign(self.identity.privateKey, payload)),
+    ...(pair ? { identityPub: b64encode(self.identity.publicKey), pair: pair.proof } : {}),
   };
 }
 
