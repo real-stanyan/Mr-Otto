@@ -12,7 +12,6 @@
 // (UserTextFile 的快照语义)。两者都点行就地摊开核对——附件本来就在手边,
 // 为了看一眼自己刚发出去的东西再开一层浮窗,是白绕一圈。
 
-import { useEffect, useState } from "react";
 import { ImageOff } from "lucide-react";
 import type {
   UserAttachmentRef,
@@ -24,43 +23,7 @@ import {
 } from "./elements/message-attachment.js";
 import { FileTypeIcon } from "./FileTypeIcon.js";
 import { formatBytes } from "../lib/byteSize.js";
-
-/** 附件 data URL 内存缓存:同图(内容寻址同 id)只过一次 IPC */
-const thumbCache = new Map<string, string>();
-
-/** 一批图片的 data URL:懒取 + 缓存。取不到(附件库文件丢失)记成 lost ——
-    日志重放依赖附件库是已接受的取舍(docs/adr/0009),缺图不该炸时间线。
-    一个 hook 管一批,而不是每张图一个组件:hook 不能在 map 里调,
-    "每张图一个子组件再把结果报回父级"绕的那一圈只是为了骗过这条规则 */
-function useThumbs(ids: readonly string[]): Record<string, string | "lost"> {
-  const key = ids.join("\u0000");
-  const [got, setGot] = useState<Record<string, string | "lost">>(() =>
-    Object.fromEntries(
-      ids.flatMap((id) =>
-        thumbCache.has(id) ? [[id, thumbCache.get(id)!]] : [],
-      ),
-    ),
-  );
-  useEffect(() => {
-    let alive = true;
-    for (const id of key === "" ? [] : key.split("\u0000")) {
-      if (thumbCache.has(id)) continue;
-      window.otter.attachmentDataUrl(id).then(
-        (u) => {
-          thumbCache.set(id, u);
-          if (alive) setGot((cur) => ({ ...cur, [id]: u }));
-        },
-        () => {
-          if (alive) setGot((cur) => ({ ...cur, [id]: "lost" }));
-        },
-      );
-    }
-    return () => {
-      alive = false;
-    };
-  }, [key]);
-  return got;
-}
+import { useAttachmentUrls } from "../lib/useAttachmentUrls.js";
 
 export function UserAttachments({
   attachments,
@@ -71,7 +34,7 @@ export function UserAttachments({
 }) {
   const images = attachments ?? [];
   const files = textFiles ?? [];
-  const thumbs = useThumbs(images.map((a) => a.id));
+  const thumbs = useAttachmentUrls(images.map((a) => a.id));
   if (images.length === 0 && files.length === 0) return null;
 
   const imageItem = (a: UserAttachmentRef): MessageAttachmentItem => {

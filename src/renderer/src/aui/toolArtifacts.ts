@@ -129,3 +129,45 @@ export function extractPage(
     .trim();
   return { url, title, body };
 }
+
+// ── 工具产出的图片（#594）────────────────────────────────────────
+
+/** 时间线上的一张图卡所需的一切。ref 来自 tool_result.images（日志），
+    caption 是这一层现算的 —— 元件不该知道"工具参数里可能有个 prompt" */
+export interface GeneratedImage {
+  /** 附件库 id，同时当 React key：内容寻址，同一张图重复产出本来就该合成一张 */
+  id: string;
+  /** 卡下面那行说明 */
+  caption: string;
+}
+
+/** 一组工具调用产出的图。
+    caption 取参数里的 prompt —— 出图类工具（MCP 的 text_to_image、将来的
+    Midjourney 之类）几乎都用这个参数名，而它正是人想在图下面看到的那句话。
+    **只认字符串、只认这一个名字**：往下猜 description/query/text 会把"某次
+    调用碰巧有个同名参数"也印到图上，那时候说明文字和图没有关系，比没有更糟。
+    取不到就退回文件名（imageIntake 存的是 `<工具名>.<ext>`，至少说得出出处）。
+
+    @param calls 这一组里的工具调用（顺序即时间线顺序）
+    @param resultOf 按 toolCallId 取 tool_result —— 与 changedFilesOf 同款依赖注入，
+                    这一层不认识 ToolIndex（纯函数，不碰 React、不碰 store） */
+export function generatedImagesOf(
+  calls: readonly ToolCallRequest[],
+  resultOf: (id: string) => Pick<ToolResultEvent, "images"> | undefined,
+): GeneratedImage[] {
+  const out: GeneratedImage[] = [];
+  const seen = new Set<string>();
+  for (const call of calls) {
+    const images = resultOf(call.id)?.images ?? [];
+    const prompt = (call.args as { prompt?: unknown } | null)?.prompt;
+    const caption = typeof prompt === "string" && prompt.trim() !== "" ? prompt.trim() : null;
+    for (const ref of images) {
+      // 同一张图在一组里出现两次（同 id = 逐字节相同）只画一张：
+      // 画两张不是"产出了两张图"，是同一件事被数了两遍
+      if (seen.has(ref.id)) continue;
+      seen.add(ref.id);
+      out.push({ id: ref.id, caption: caption ?? ref.name ?? call.name });
+    }
+  }
+  return out;
+}

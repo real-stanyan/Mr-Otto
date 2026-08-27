@@ -207,5 +207,6 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/sidePanel.ts` / `src/renderer/src/lib/useBackgroundWatch.ts` — 右侧槽位那一族面板的单一开关（`panelKeyOf` / `panelFlags`，互斥由构造保证，不再每个 action 手抄一遍）+ 后台任务的常驻盯梢：轮询 live 名单、0→非 0 时自己把面板掀开。**只在槽位空着时掀**（ADR-0139）
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
+- `src/main/imageIntake.ts` / `src/renderer/src/components/elements/image-generation.tsx` — 工具产出的图：字节落附件库、日志只记 ref 的那道中间件 + 显示它的卡。**上游那张卡没有 `<img>`**（完成态画的是一坨写死的渐变），本仓改动一览写在文件头（ADR-0144）
 - `src/shared/mcpCatalog.ts` — 常见 MCP server 的目录数据（人手维护、会过时；字段与占位符自洽由 `tests/shared/mcpCatalog.test.ts` 钉住，ADR-0118）
 - `src/main/projectPackager.ts` / `src/tools/packageProject.ts` — 「打包为项目」：把 Default 工作区的产出搬进 `文档区/Mr Otto/<项目名>`（唯一故意越出围栏的工具能力，两道闸与被否掉的路见 ADR-0135）；`src/main/workspaceSettingsStore.ts` 是默认工作文件夹/内置 Default 的落盘与解析（#559）

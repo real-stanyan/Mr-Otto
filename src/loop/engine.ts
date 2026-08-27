@@ -300,11 +300,17 @@ export class LoopEngine {
         toolCallId: ctx.call.id,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
-      // run 可返回字符串（现状）或 { output, concludesTurn }（DSH 式提前收口）
+      // run 可返回字符串（现状）或 { output, concludesTurn, images }（DSH 式提前收口 / 出图）
       outcome =
         typeof raw === "string"
           ? { status: "ok", output: raw }
-          : { status: "ok", output: raw.output, ...(raw.concludesTurn ? { concludesTurn: true } : {}) };
+          : {
+              status: "ok",
+              output: raw.output,
+              ...(raw.concludesTurn ? { concludesTurn: true } : {}),
+              // 原始字节到此为止：能不能落盘由 imageIntake 中间件说了算
+              ...(raw.images && raw.images.length > 0 ? { images: raw.images } : {}),
+            };
     } catch (err) {
       // 中断（AbortError）原样上抛语义不变：外面的收口逻辑靠它。
       // 普通异常照旧折成 error 结果——但 error 也过 Post 钩子？不：钩子管的是
@@ -671,6 +677,11 @@ export class LoopEngine {
             output: outcome.output,
             // 有才写:旧日志里没有这个字段,新日志里也只有 write_file 有
             ...(outcome.diffStat ? { diffStat: outcome.diffStat } : {}),
+            // 落的是 ref 不是字节(events.ts 的 images 注释)。中间件没装 = 没有
+            // imageRefs = 这个键整个不出现,旧日志形状不变
+            ...(outcome.imageRefs && outcome.imageRefs.length > 0
+              ? { images: [...outcome.imageRefs] }
+              : {}),
           });
           // concludesTurn = 数据驱动的提前收口（DSH 同款）：本步到此为止，
           // 不给模型补答的机会，turn 直接 completed。组内已执行的结果都要落

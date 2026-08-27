@@ -19,6 +19,19 @@ export interface ToolRunContext {
                 模型误调能收到明确错误而不是崩溃） */
 export type ToolExposure = "direct" | "deferred" | "hidden";
 
+/** 工具产出的一张图（原始字节，**不落日志**）。
+    工具交字节，落库交给中间件 —— 硬规则：工具只依赖 ExecutionWorld，不碰 fs。
+    管线里没装 imageIntake 中间件时（裸装配、单测）这些字节就地丢弃：
+    模型看到的正文不受影响（工具自己会在 output 里说"返回了一张图"），
+    只是时间线上不出卡。刻意做成静默降级，而不是抛错——一个展示层能力
+    不该让工具调用整个失败 */
+export interface ToolImage {
+  data: Uint8Array;
+  /** "image/png" | "image/jpeg" | "image/webp" | "image/gif"；
+      认不出的格式在落库那一刻被 AttachmentStore 挡掉 */
+  mimeType: string;
+}
+
 export interface Tool {
   def: ToolDefinition;
   /** 缺席 = "direct"。事后改数据结构很痛——趁工具还少先把字段落进注册表（#348） */
@@ -39,10 +52,11 @@ export interface Tool {
       已经发出的调用能收到人话而不是"未知工具" */
   available?: () => boolean;
   /** 返回值 = 喂回模型的 tool_result.output；抛错 = status: "error"。
-      也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn */
+      也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn。
+      images 是给人看的产出（见 ToolImage）：喂模型的仍然只有 output */
   run(
     args: unknown,
     world: ExecutionWorld,
     ctx?: ToolRunContext
-  ): Promise<string | { output: string; concludesTurn?: true }>;
+  ): Promise<string | { output: string; concludesTurn?: true; images?: readonly ToolImage[] }>;
 }

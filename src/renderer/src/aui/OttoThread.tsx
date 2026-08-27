@@ -21,6 +21,7 @@ import {
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolTimeline } from "../components/elements/tool-timeline.js";
 import { FileTree } from "../components/elements/file-tree.js";
+import { GeneratedImages } from "../components/GeneratedImages.js";
 import { changedFilesOf, fileTreeNodes } from "../lib/fileTree.js";
 import {
   ToolGroupContent,
@@ -52,7 +53,7 @@ import { MemoryChips } from "../components/elements/memory-chips.js";
 import { RetrievalChunks } from "../components/elements/retrieval-chunks.js";
 import { DocumentReference } from "../components/elements/document-reference.js";
 import { ElicitationForm } from "../components/elements/elicitation-form.js";
-import { domainOf, extractPage, extractSources } from "./toolArtifacts.js";
+import { domainOf, extractPage, extractSources, generatedImagesOf } from "./toolArtifacts.js";
 import { chipEntryText, memoryChipsFromResult } from "./memoryChips.js";
 import { parseMemoryResult, type MemoryToolResult } from "../../../shared/memoryStore.js";
 import { parseSessionSearchResult, type SessionSearchResult } from "../../../shared/sessionSearch.js";
@@ -375,6 +376,13 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
     [changedFiles, workspace],
   );
 
+  // 这一组产出的图,和那棵树平级地挂在折叠头底下(#594)。出图的价值全在
+  // 那张图上,藏进折叠区里等于没做
+  const images = useMemo(
+    () => generatedImagesOf(calls, (id) => proj?.index.results.get(id)),
+    [proj, calls],
+  );
+
   const label = (
     <span className="inline-flex items-center gap-1.5">
       {restingLabel}
@@ -389,8 +397,13 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       activeLabel={running ? label : undefined}
       streaming={running}
       footer={
-        treeNodes.length > 0 ? (
-          <FileTree nodes={treeNodes} onSelect={(path) => openFileAt(path)} />
+        treeNodes.length > 0 || images.length > 0 ? (
+          <div className="flex w-full flex-col gap-2.5">
+            {images.length > 0 && <GeneratedImages images={images} />}
+            {treeNodes.length > 0 && (
+              <FileTree nodes={treeNodes} onSelect={(path) => openFileAt(path)} />
+            )}
+          </div>
         ) : undefined
       }
     >
