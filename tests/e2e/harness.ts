@@ -237,6 +237,11 @@ export async function stubFolderPicker(app: ElectronApplication, dir: string): P
     workspace 也已经进了白名单，作用域用例要的就是这个。 */
 export async function startSession(otto: Otto, workspace: string, text = "开个会话"): Promise<void> {
   await stubFolderPicker(otto.app, workspace);
+  // #559 之后欢迎页默认落在「任务」档,那一档整行文件夹 UI 都不出现(统一走内置
+  // Default 工作区)。要指定文件夹得先切到「项目」档 —— 这一步不是 UI 细节:
+  // e2e 的隔离全靠"会话开在自己的临时目录里",落进 Default 就是往用户的
+  // 文档区丢东西了
+  await otto.win.getByRole("tab", { name: "项目" }).click();
   await otto.win.getByRole("button", { name: "选择工作区" }).click();
   await otto.win.getByRole("button", { name: "打开文件夹…" }).click();
   await otto.win.getByRole("textbox", { name: /描述任务/ }).fill(text);

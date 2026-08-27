@@ -196,7 +196,16 @@ const ThreadRoot: FC<{
     >
       <ThreadPrimitive.Viewport
         ref={viewportRef}
-        turnAnchor="top"
+        /* 本仓改动:registry 那份抄来的是 turnAnchor="top" —— 新一轮把用户那条消息钉在
+           视口顶端,然后**整轮不动**。上游那个默认值背后还藏着一条:autoScroll 的默认值
+           是 `turnAnchor !== "top"`(见 useThreadViewportAutoScroll),所以 top 锚同时
+           关掉了跟随;就算显式把 autoScroll 打开也不够,内容变高那一段还有
+           `!(isRunning && hasActiveTopAnchor())` 挡着,跑起来照样不跟。
+           本仓要的是"视线跟着模型的输出走":一轮里工具行、思考、正文一段段往下长,
+           人要看的是**最新那一段**,不是顶上那句自己刚打的话。
+           改回 bottom 锚 = autoScroll 默认为真:内容长高就贴着底,人往上滑一下就松手
+           (handleScroll 里的 isUserScrollUp),滑回底部又自动接上。 */
+        turnAnchor="bottom"
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
