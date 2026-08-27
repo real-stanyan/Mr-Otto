@@ -80,6 +80,7 @@ const EMPTY_GRANTS: ReadonlySet<string> = new Set();
 const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
+import { createImageIntakeMiddleware } from "./imageIntake.js";
 import { createBranchWatchMiddleware } from "./branchWatch.js";
 import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
@@ -639,6 +640,9 @@ export function createAgent(opts: {
     sessionId,
     guards: [forbiddenGuard],
     middlewares: [
+      // 工具产出的图片落进附件库,ref 进 tool_result(#594)。放在最外层:
+      // 里面那些中间件(审批/钩子)可能把结果整个换掉,换掉之后就不该再留图
+      createImageIntakeMiddleware(opts.attachments),
       createTurnDiffMiddleware(turnDiffTracker, sessionId, () => engine.runningTurnId, (u) =>
         opts.push.turnDiff?.(u)
       ),

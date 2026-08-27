@@ -2,8 +2,8 @@
 // 洋葱模型：middlewares[0] 包 middlewares[1] 包 … 包 executor。
 // 中间件不调 next() = 短路，后面全不跑（审批拒绝就是这么实现的）。
 
-import type { Tool } from "../tools/tool.js";
-import type { ToolCallRequest } from "../session/events.js";
+import type { Tool, ToolImage } from "../tools/tool.js";
+import type { ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 一次工具调用的完整上下文 —— 管线每一环都看得到 */
@@ -28,6 +28,14 @@ export interface ToolOutcome {
       落进 tool_result 事件 —— 时间线上历史工具组的 +N/−M 从日志读，
       而 turn 级那份聚合是运行时的，重启就没了 */
   diffStat?: { additions: number; deletions: number };
+  /** 工具交出来的原始图片字节。**运行时的东西，永远不进事件** ——
+      落库换成 ref 之后才有资格落盘（见下面的 imageRefs） */
+  images?: readonly ToolImage[];
+  /** 上面那些图入了附件库之后的 ref，由 imageIntake 中间件填，engine 落进
+      tool_result.images。两个字段而不是一个：一个字段先装字节后装 ref，
+      读的人没法从类型上分辨手里这份到底落没落盘，而"以为落了盘其实没落"
+      正是日志说谎的那种错 */
+  imageRefs?: readonly UserAttachmentRef[];
 }
 
 // ─── Pre/PostToolUse 钩子（issue #350，codex dispatch 对照）────

@@ -135,6 +135,15 @@ export interface ToolResultEvent extends SessionEventBase {
       app 一重启就没了；时间线上历史工具组的 +N/−M 只能从日志里来。
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则） */
   diffStat?: { additions: number; deletions: number };
+  /** 这次调用产出的图片（MCP server 返回的 image content、将来图片生成 API 的出图）。
+      **只记 ref，图片本体在 AttachmentStore**（内容寻址，同一张图重复产出天然去重）：
+      一张 1024×1024 的 PNG base64 ≈ 1-2MB，直接进日志会把日志撑爆，而日志是
+      append-only 的，撑爆了删不掉。ref 与用户附件共用一套（同一个库、同一个
+      attachmentDataUrl 通道），字段名叫 UserAttachmentRef 只是历史，形状是通用的。
+      落库由中间件做，不由工具做（硬规则：工具只依赖 ExecutionWorld，不碰 fs）。
+      可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
+      图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
+  images?: UserAttachmentRef[];
 }
 
 /** 额外 1：模型切换 —— 重放时必须知道每段对话当时用的谁 */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractSources,
+  generatedImagesOf,
   sourcePartsFor,
 } from "../../src/renderer/src/aui/toolArtifacts.js";
 import type { ToolCallRequest, ToolResultEvent } from "../../src/session/events.js";
@@ -96,5 +97,53 @@ describe("sourcePartsFor", () => {
 
   it("别的工具不产来源(bash 输出里的网址不是「查到的东西」)", () => {
     expect(sourcePartsFor(call("bash", { cmd: "curl" }), ok("https://a.com"))).toEqual([]);
+  });
+});
+
+// ── 工具产出的图（#594）────────────────────────────────────────
+
+const ref = (id: string, name?: string) => ({
+  id,
+  mediaType: "image/png",
+  bytes: 9,
+  ...(name !== undefined ? { name } : {}),
+});
+
+describe("generatedImagesOf —— 一组调用产出的图", () => {
+  it("caption 取参数里的 prompt", () => {
+    const out = generatedImagesOf([call("text_to_image", { prompt: " 一只水獭 " })], () => ({
+      images: [ref("sha256:a")],
+    }));
+    expect(out).toEqual([{ id: "sha256:a", caption: "一只水獭" }]);
+  });
+
+  it("没有 prompt 就退回 ref 的名字，再没有退回工具名", () => {
+    const noPrompt = generatedImagesOf([call("draw", {})], () => ({
+      images: [ref("sha256:b", "draw.png")],
+    }));
+    expect(noPrompt[0]!.caption).toBe("draw.png");
+
+    const nameless = generatedImagesOf([call("draw", {})], () => ({ images: [ref("sha256:c")] }));
+    expect(nameless[0]!.caption).toBe("draw");
+  });
+
+  it("prompt 不是字符串/是空白时不采信 —— 说明文字和图无关比没有更糟", () => {
+    for (const prompt of [42, null, {}, "   "]) {
+      const out = generatedImagesOf([call("draw", { prompt })], () => ({
+        images: [ref("sha256:d", "draw.png")],
+      }));
+      expect(out[0]!.caption).toBe("draw.png");
+    }
+  });
+
+  it("同一张图（同 id）在一组里只画一张", () => {
+    const calls = [call("draw", {}, "c1"), call("draw", {}, "c2")];
+    const out = generatedImagesOf(calls, () => ({ images: [ref("sha256:same")] }));
+    expect(out).toHaveLength(1);
+  });
+
+  it("旧日志没有 images 字段 / 没有结果 —— 一张不出，不炸", () => {
+    expect(generatedImagesOf([call("draw", {})], () => ({}))).toEqual([]);
+    expect(generatedImagesOf([call("draw", {})], () => undefined)).toEqual([]);
   });
 });

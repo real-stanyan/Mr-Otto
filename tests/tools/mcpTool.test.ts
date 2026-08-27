@@ -117,3 +117,42 @@ describe("createMcpTools", () => {
     await expect(t!.run({}, bare, { toolCallId: "c1" })).rejects.toThrow(/MCP/);
   });
 });
+
+// ── server 返回的图（#594）────────────────────────────────────────
+//
+// MCP 是这条链上的第一个消费者：协议里图片是 base64 字符串，本仓要的是字节。
+// 解码放在工具层而不是 shared/mcp.ts —— 那一层手机端会 import 同一份源码，
+// 而 Buffer 在 RN 上不存在（tests/architecture.test.ts 第 5 条）。
+
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+const PNG_B64 = Buffer.from(PNG_BYTES).toString("base64");
+
+describe("server 返回图片", () => {
+  it("image content → 字节挂在 images 上，output 仍然是给模型看的那段文字", async () => {
+    const cap = capWith([handle()], async () => [
+      { kind: "text", text: "画好了" },
+      { kind: "image", data: PNG_B64, mimeType: "image/png" },
+    ]);
+    const out = await createMcpTools(cap)[0]!.run({}, worldWith(cap));
+    expect(typeof out).toBe("object");
+    if (typeof out === "string") return;
+    expect(out.images).toEqual([{ data: PNG_BYTES, mimeType: "image/png" }]);
+    // 模型看到的那句话要点明"用户看得见"——否则它以为这次调用什么都没产出
+    expect(out.output).toContain("已显示给用户");
+  });
+
+  it("没有图时返回字符串：与从前逐字节一致", async () => {
+    const cap = capWith([handle()], async () => [{ kind: "text", text: "ok" }]);
+    const out = await createMcpTools(cap)[0]!.run({}, worldWith(cap));
+    expect(out).toBe("ok");
+  });
+
+  it("空的/解不开的 base64 跳过，调用照常成功", async () => {
+    const cap = capWith([handle()], async () => [
+      { kind: "image", data: "", mimeType: "image/png" },
+      { kind: "image", data: "!!!!", mimeType: "image/png" },
+    ]);
+    const out = await createMcpTools(cap)[0]!.run({}, worldWith(cap));
+    expect(typeof out).toBe("string");
+  });
+});

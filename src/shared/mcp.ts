@@ -187,14 +187,18 @@ export function knownMcpToolNames(
 }
 
 /** content 数组压成喂给模型的字符串。
-    image 本版不进视觉桥（ADR-0009 的附件库是另一条路），折成一行说明 ——
-    但必须说出来：模型该知道"有一张图我没给你看"，而不是以为工具返回了空。 */
+    image 不进视觉桥（ADR-0009 的附件库是另一条路），折成一行说明 ——
+    但必须说出来：模型该知道"有一张图我没给你看"，而不是以为工具返回了空。
+    图本身会入附件库、在时间线上出卡（#594 的 imagesOf → imageIntake），
+    所以这句话要点明"用户看得见"：模型据此才知道自己可以就这张图和人对话，
+    而不是以为这次调用什么都没产出。 */
 export function renderMcpContent(content: readonly McpContent[]): string {
   if (content.length === 0) return "(工具没有返回任何内容)";
   return content
     .map((c) => {
       if (c.kind === "text") return c.text;
-      if (c.kind === "image") return `(server 返回了一张 ${c.mimeType} 图片，本版不展开)`;
+      if (c.kind === "image")
+        return `(server 返回了一张 ${c.mimeType} 图片：已显示给用户，你自己看不到内容)`;
       const head = `[${c.uri}${c.mimeType ? ` · ${c.mimeType}` : ""}]`;
       return c.text ? `${head}\n${c.text}` : `${head}(无正文)`;
     })
