@@ -1,17 +1,22 @@
-// 「手机」栏目 —— 手机端远程投影的配对入口(ADR-0094/0095)。
+// 「手机」栏目 —— 手机端远程投影的配对入口(ADR-0094/0095/0142)。
 //
-// 这一页真正要人做的只有一件事:**核对 6 位安全码**。
+// 这一页真正要人做的只有一件事:**让手机扫这张码**。
 //
 // 按账号配对与 E2E 天然打架:公钥从 Supabase 下发,掌握库的人就能发一把假的。
-// 所以目录只负责"有哪几台设备",而"这把公钥是不是真的"由人判断 —— 两端各自
-// 用两把公钥算出同一个 6 位数,对上了才 pin。文案必须把这件事说清楚,
-// 否则用户会把它当成一个没有意义的确认按钮直接点掉。
+// 所以目录只负责"有哪几台设备",而"这把公钥是不是真的"不能问目录。二维码是
+// 一条带外通道:手机直接读到桌面的公钥(中间人换不掉),码里那把一次性 secret
+// 又让桌面认得出扫码的是谁 —— 一次动作,两个方向都认证了(ADR-0142)。
+//
+// 6 位安全码那条路留着当**降级路径**(手机没给摄像头权限时)。它要人在两台设备上
+// 各按一次,而文案必须把"为什么要核对"说清楚,否则用户会当成没有意义的确认点掉。
 //
 // 不进 useChat store:只有这一个栏目读它,别处没有订阅方(同 MemorySettings 的判断)。
 
-import { useCallback, useEffect, useState } from "react";
-import { Smartphone, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { QrCode, Smartphone, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
+import { PairingQr } from "./PairingQr.js";
+import { PAIRING_TTL_MS } from "../../../shared/remote/pairing.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
 import { useChat } from "../store.js";
@@ -34,7 +39,7 @@ const OFF_TEXT: Record<"no-secure-storage" | "unavailable", { title: string; hin
 const REJECTED_TEXT: Record<RemoteRejection["reason"], { title: string; hint: string }> = {
   unpaired: {
     title: "有一台手机连过来,但还没配对",
-    hint: "它在下面的列表里。核对 6 位安全码之后再配 —— 对不上就不要配。",
+    hint: "在上面开一张二维码,让它扫一下就好。扫不了码就核对 6 位安全码 —— 对不上就不要配。",
   },
   "identity-mismatch": {
     title: "有一台手机连不上来:身份对不上",
@@ -48,6 +53,14 @@ export function RemoteDevicesSettings() {
   const closeSettings = useChat((s) => s.closeSettings);
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** 屏幕上那张码。null = 没开 */
+  const [qr, setQr] = useState<{ qr: string; expiresAt: number } | null>(null);
+  /** 倒计时那一行的秒数(重算靠这个 state 触发,不靠 qr 本身) */
+  const [left, setLeft] = useState(0);
+  /** 刚扫成功的那台。显示一句"配好了"而不是让码默默消失 */
+  const [justPaired, setJustPaired] = useState<string | null>(null);
+  /** 开码那一刻已经配好的是哪几台 —— 多出来的那台就是刚扫进来的 */
+  const pinnedBefore = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
     window.otter
@@ -57,6 +70,54 @@ export function RemoteDevicesSettings() {
   }, []);
 
   useEffect(refresh, [refresh]);
+
+  const stopPairing = useCallback((): void => {
+    setQr(null);
+    void window.otter.remoteCancelPairing();
+  }, []);
+
+  // 码开着的时候盯两件事:秒数走完了自己收掉,以及有没有新的一台配进来。
+  // 用轮询而不是加一条推送通道:这个面板的生命周期以"人站在屏幕前"计,
+  // 两秒一问的成本可以忽略,而多一条 IPC 推送要多一处生命周期要管
+  useEffect(() => {
+    if (!qr) return;
+    const tick = (): void => {
+      const secs = Math.max(0, Math.ceil((qr.expiresAt - Date.now()) / 1000));
+      setLeft(secs);
+      if (secs === 0) stopPairing();
+    };
+    tick();
+    const timer = window.setInterval(tick, 500);
+    const poll = window.setInterval(() => {
+      window.otter
+        .remoteStatus()
+        .then((next) => {
+          setStatus(next);
+          if (!next.on) return;
+          const fresh = next.peers.find((p) => p.pinned && !pinnedBefore.current.has(p.deviceId));
+          if (!fresh) return;
+          setJustPaired(fresh.label || fresh.deviceId);
+          setQr(null); // 码在主进程那边已经用掉了,这儿只是把图收起来
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(poll);
+    };
+  }, [qr, stopPairing]);
+
+  // 离开这一页就把码撤掉 —— 码不该在没人看着的时候还活着
+  useEffect(() => () => void window.otter.remoteCancelPairing(), []);
+
+  const startPairing = async (): Promise<void> => {
+    setJustPaired(null);
+    pinnedBefore.current = new Set(
+      status?.on ? status.peers.filter((p) => p.pinned).map((p) => p.deviceId) : []
+    );
+    const started = await window.otter.remoteStartPairing();
+    if (started) setQr(started);
+  };
 
   const pair = async (deviceId: string): Promise<void> => {
     setBusy(deviceId);
@@ -135,7 +196,46 @@ export function RemoteDevicesSettings() {
             ) : null}
 
             <div className="rounded-lg border border-border p-4">
-              <p className="font-[650]">配对前先核对安全码</p>
+              <div className="flex items-start gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="font-[650]">用手机扫一下就配好</p>
+                  <p className={`${HINT} mt-1`}>
+                    在手机上打开 Mr Otto,点「扫码配对」,对准这张码。
+                    <b>只需要在手机上动一次</b> —— 这台电脑不用再确认第二遍。
+                  </p>
+                  <p className={`${HINT} mt-1`}>
+                    码是<b>一次性</b>的,{Math.round(PAIRING_TTL_MS / 60_000)} 分钟内有效,配好一台就作废。
+                    再配一台就再开一张。
+                  </p>
+                  {justPaired ? (
+                    <p className="mt-2 font-[650] text-foreground">配好了：{justPaired}</p>
+                  ) : null}
+                </div>
+                {qr ? (
+                  <div className="flex shrink-0 flex-col items-center gap-2">
+                    <PairingQr text={qr.qr} />
+                    <p className={HINT}>
+                      {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")} 后失效
+                    </p>
+                    <Button variant="ghost" size="sm" onClick={stopPairing}>
+                      收起
+                    </Button>
+                  </div>
+                ) : (
+                  <Button className="shrink-0" onClick={() => void startPairing()}>
+                    <QrCode className="size-4" />
+                    显示二维码
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border p-4">
+              <p className="font-[650]">扫不了码的话:核对 6 位安全码</p>
+              <p className={`${HINT} mt-1`}>
+                手机没给摄像头权限时走这条。<b>两台设备上各按一次</b>,
+                比扫码多一步 —— 而多出来的那一步正是扫码替你做掉的那半边认证。
+              </p>
               <p className={`${HINT} mt-1`}>
                 手机上会显示同样的 6 位数。<b>对不上就不要配</b> —— 那说明中间有人换掉了公钥。
                 可以配<b>多台</b>,换手机不用先解除旧的,<b>也能同时连着</b> ——

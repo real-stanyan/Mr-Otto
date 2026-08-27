@@ -24,6 +24,20 @@ export async function openStore(): Promise<PinnedPeerStore> {
   return openIdentity(crypto);
 }
 
+/**
+ * 刚扫到的那把配对 secret(issue #583)。**只在内存里**:它的寿命是"从扫完到连上"
+ * 那几秒,落盘只会让一次性的东西活得比该有的久。
+ *
+ * 放模块级而不是穿进 connect():扫码发生在配对屏,而连接是会话屏建的 ——
+ * 中间隔着一次换屏,穿参数要把它一路托过去。
+ */
+let pendingPairSecret: Uint8Array | null = null;
+
+/** 扫完码调:下一轮握手带上持有证明 */
+export function armPairing(secret: Uint8Array): void {
+  pendingPairSecret = secret;
+}
+
 export function devices(store: PinnedPeerStore) {
   return createRemoteDevices({ api: devicesApi, store, crypto, selfKind: "mobile" });
 }
@@ -67,8 +81,13 @@ export function connect(
     deviceId: store.deviceId,
     transport,
     peerIdentities: () => store.peerIdentities(),
+    pairSecret: () => pendingPairSecret,
     onFrame: handlers.onFrame,
-    onReady: handlers.onReady,
+    // 连上了 = 那张码在电脑那边已经用掉,手里这把再留着也没用了
+    onReady: (r) => {
+      if (r) pendingPairSecret = null;
+      handlers.onReady(r);
+    },
     log,
   });
 }

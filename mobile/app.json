@@ -25,7 +25,13 @@
     "scheme": "mrotto",
     "plugins": [
       "expo-sqlite",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermissionText": "扫描电脑上的配对二维码时要用一下相机。"
+        }
+      ]
     ]
   }
 }

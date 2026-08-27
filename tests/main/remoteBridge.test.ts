@@ -6,6 +6,7 @@ import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type SelfParty, type SessionKeys,
 } from "../../src/shared/remote/handshake.js";
+import { buildPairProof } from "../../src/shared/remote/pairing.js";
 import { createOpener, createSealer } from "../../src/shared/remote/sealedStream.js";
 import type { IslandFleet } from "../../src/shared/shellBridge.js";
 
@@ -543,5 +544,109 @@ describe("createRemoteBridge", () => {
     expect(t.sent.length).toBe(before);
     expect(onCommand).not.toHaveBeenCalled();
     expect(t.close).toHaveBeenCalled();
+  });
+});
+
+describe("扫码配对(issue #583)", () => {
+  /** 桌面手上有一张活着的码,pin 组是空的 —— 也就是"全新的一台手机"那一刻 */
+  function pairHarness(opts: { pinned?: Uint8Array[] } = {}) {
+    const identity = P.generateEd25519();
+    const t = fakeTransport();
+    const secret = P.randomBytes(32);
+    const onPaired = vi.fn();
+    const consume = vi.fn();
+    let liveOffer: { secret: Uint8Array } | null = { secret };
+    const b = createRemoteBridge({
+      crypto: P, identity, deviceId: "d1", transport: t, onCommand: vi.fn(),
+      peerIdentities: () => opts.pinned ?? [],
+      pairing: {
+        offer: () => liveOffer,
+        consume: () => { liveOffer = null; consume(); },
+        onPaired,
+      },
+    });
+    const peer = newPeer();
+    t.emitPeer();
+    /** 手机侧:扫到 secret 之后带着证明连过来 */
+    const connect = (withSecret: Uint8Array = secret): void => {
+      const desktopHello = JSON.parse(t.sent[t.sent.length - 1]!) as HandshakeHello;
+      expect(deriveSession(P, {
+        self: peer, peerHello: desktopHello, peerIdentityPub: identity.publicKey,
+      })).not.toBeNull();
+      const proof = buildPairProof(P, {
+        role: "mobile", deviceId: peer.deviceId, identity: peer.identity,
+        secret: withSecret, ephPub: peer.eph.publicKey, nonceHalf: peer.nonceHalf,
+      });
+      t.emit(JSON.stringify(buildHello(P, peer, { proof })));
+    };
+    const clearOffer = (): void => { liveOffer = null; };
+    return { identity, t, b, peer, secret, onPaired, consume, connect, clearOffer };
+  }
+
+  it("扫过码的手机:pin 组是空的也能连上,而且把公钥交给上层落盘", () => {
+    const h = pairHarness();
+    h.connect();
+    expect(h.onPaired).toHaveBeenCalledTimes(1);
+    expect(b64encode(h.onPaired.mock.calls[0]![0] as Uint8Array)).toBe(b64encode(h.peer.identity.publicKey));
+    // 握手真的成了:桌面开始发密文帧(明文只有那一条 hello)
+    h.b.pushFleet(BUSY);
+    expect(h.t.sent.length).toBeGreaterThan(1);
+    expect(h.t.sent[h.t.sent.length - 1]!.startsWith("{")).toBe(false);
+    h.b.dispose();
+  });
+
+  it("那张码用完即废:配上之后 consume 被调,第二台手机拿同一把 secret 连不上", () => {
+    const h = pairHarness();
+    h.connect();
+    expect(h.consume).toHaveBeenCalledTimes(1);
+    const onRejected = vi.fn();
+    // 第二台:同一把 secret,但码已经作废
+    const t2 = fakeTransport();
+    const b2 = createRemoteBridge({
+      crypto: P, identity: h.identity, deviceId: "d1", transport: t2, onCommand: vi.fn(),
+      peerIdentities: () => [],
+      pairing: { offer: () => null, consume: vi.fn(), onPaired: vi.fn() },
+      onRejected,
+    });
+    t2.emitPeer();
+    const other = newPeer();
+    const proof = buildPairProof(P, {
+      role: "mobile", deviceId: other.deviceId, identity: other.identity,
+      secret: h.secret, ephPub: other.eph.publicKey, nonceHalf: other.nonceHalf,
+    });
+    t2.emit(JSON.stringify(buildHello(P, other, { proof })));
+    expect(onRejected).toHaveBeenCalledWith({ deviceId: "m1", reason: "unpaired" });
+    b2.dispose();
+    h.b.dispose();
+  });
+
+  it("证明对不上 → 拒,而且那张码不作废(别人乱试不该把用户的码试没)", () => {
+    const h = pairHarness();
+    h.connect(P.randomBytes(32)); // 没扫过码的人
+    expect(h.onPaired).not.toHaveBeenCalled();
+    expect(h.consume).not.toHaveBeenCalled();
+  });
+
+  it("桌面没开码 → 带证明也拒(不开码就没有配对这条路)", () => {
+    const h = pairHarness();
+    h.clearOffer();
+    h.connect();
+    expect(h.onPaired).not.toHaveBeenCalled();
+  });
+
+  it("不带证明的陌生手机 → 还是拒(老行为一字不变)", () => {
+    const h = pairHarness();
+    h.t.emit(JSON.stringify(buildHello(P, h.peer)));
+    expect(h.onPaired).not.toHaveBeenCalled();
+  });
+
+  it("已经 pin 住的手机正常连 → 不碰那张码(配好的设备不该每次连接都消耗一张)", () => {
+    const peerIdentity = P.generateEd25519();
+    const h = pairHarness({ pinned: [peerIdentity.publicKey] });
+    const known = newConnectionParty(P, { role: "mobile", deviceId: "m9", identity: peerIdentity });
+    h.t.emit(JSON.stringify(buildHello(P, known)));
+    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.onPaired).not.toHaveBeenCalled();
+    h.b.dispose();
   });
 });

@@ -134,6 +134,7 @@ import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { createRemoteBridge } from "./remoteBridge.js";
+import { createPairingOffers, encodePairingOffer } from "../shared/remote/pairing.js";
 import { createRemoteDevices } from "../shared/remote/devices.js";
 import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
@@ -621,12 +622,26 @@ void app.whenReady().then(() => {
     // 没登录时 connect() 直接返回、不排重连,所以登录那一刻要有人叫醒它。
     // 摘掉开关之前这条路很少走到(会去设开关的人基本已经登录了),之后它是默认路径
     remoteRetryNow = () => transport.reconnectNow("刚登录");
+    // 扫码配对手上那张一次性的码(issue #583)。**只在内存里** ——
+    // 落盘等于把一次性变成长期,而它本来就只该活到用户扫完那一下
+    const offers = createPairingOffers(crypto, {
+      deviceId: idStore.deviceId,
+      identityPub: idStore.identity.publicKey,
+      now: () => Date.now(),
+    });
     const bridge = createRemoteBridge({
       crypto,
       identity: idStore.identity,
       deviceId: idStore.deviceId, // 随机,跟身份存在同一个封装里 —— hello 是明文过中继的
       transport,
       peerIdentities: () => idStore.peerIdentities(),
+      pairing: {
+        offer: () => offers.live(),
+        consume: () => offers.consume(),
+        // 落盘那一下和 6 位码那条路走的是同一个 pinPeer —— 配对方式不同,
+        // 信任的存法只有一处
+        onPaired: (pub) => idStore.pinPeer(pub),
+      },
       onCommand: (c, cid) => handleRemoteCommand(c, cid),
       // 订阅是连接级的:断了就忘掉手机在看哪个会话,别替一个不存在的观众接着投影。
       // 在传的附件同理:uploadId 只在一条连接里有意义,新连接上手机会重新传一遍
@@ -650,7 +665,7 @@ void app.whenReady().then(() => {
       selfKind: "desktop",
       log: (m) => console.warn(m),
     });
-    return { bridge, devices };
+    return { bridge, devices, offers };
   })();
 
   /** 装配好的远程桥;没开/开不了时是 undefined */
@@ -2002,6 +2017,18 @@ void app.whenReady().then(() => {
       console.warn("远程配对失败", err);
       return false;
     }
+  });
+
+  // 扫码配对(issue #583):开一张码 = 桌面在接下来这几分钟内愿意认下"扫过它的那台手机"。
+  // 关面板就撤 —— 码不该在没人看着的时候还活着
+  ipcMain.handle(CHANNELS.remoteStartPairing, (): { qr: string; expiresAt: number } | null => {
+    if (!("offers" in remote)) return null;
+    const offer = remote.offers.start();
+    return { qr: encodePairingOffer(offer), expiresAt: offer.expiresAt };
+  });
+
+  ipcMain.handle(CHANNELS.remoteCancelPairing, (): void => {
+    if ("offers" in remote) remote.offers.cancel();
   });
 
   ipcMain.handle(CHANNELS.remoteUnpairDevice, async (_e, deviceId: string): Promise<boolean> => {

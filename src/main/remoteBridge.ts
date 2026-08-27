@@ -21,6 +21,7 @@ import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type SelfParty, type SessionKeys,
 } from "../shared/remote/handshake.js";
+import { verifyPairProof } from "../shared/remote/pairing.js";
 import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import type { RemoteTransport } from "../shared/remote/transport.js";
@@ -44,6 +45,22 @@ export function createRemoteBridge(opts: {
       由对端自称,拿它来查表等于让对端自己指定用哪把公钥验自己,所以只能挨个验签名。
       TOFU 的存储与首次确认在调用方,本文件只负责"对不上就不进 ready" */
   peerIdentities: () => Uint8Array[];
+  /**
+   * 扫码配对(issue #583)。**没传 = 老行为**:pin 组之外的一律拒。
+   *
+   * 传了的话,握手多一条受理路径:pin 组里都验不过时,如果桌面手上还有一张
+   * 活着的二维码,而这条 hello 带着"我刚扫过它"的证明,就认下这台手机并
+   * `onPaired` 交给上层落盘。**信任来自 secret,不是 hello 自称的身份**
+   * —— 目录里插一行假公钥的人签不出这个证明(ADR-0095 那行 ❌ 堵在这)。
+   */
+  pairing?: {
+    /** 还活着的那张码(过期/用掉了就该回 null) */
+    offer: () => { secret: Uint8Array } | null;
+    /** 配上了,那张码作废 */
+    consume: () => void;
+    /** 把这把公钥 pin 进本地 —— 下一次连接就走正常路径了 */
+    onPaired: (peerIdentityPub: Uint8Array) => void;
+  };
   /** 这条**连接**没了。上层用它丢掉"手机正在看哪个会话":
       订阅是连接级的,连接没了还接着投影等于替一个不存在的观众干活。
       注意不再包含"重新握手":手机重连时订阅要留着,好在 onRekey 里补推 */
@@ -128,14 +145,38 @@ export function createRemoteBridge(opts: {
    * 用 (当前 self, 这条 peer hello) 派生并装上密钥。
    * **调用方负责保证这一对没用过** —— 见 onHello。
    */
+  /**
+   * 扫码配对那条受理路径。回一把"该用来验这条 hello 的公钥",认不下就 null。
+   * **只在 pin 组全验不过之后才走** —— 已经配好的手机不该每次连接都消耗一张码。
+   */
+  function tryPair(hello: HandshakeHello): Uint8Array | null {
+    const pairing = opts.pairing;
+    if (!pairing || !hello.pair || !hello.identityPub) return null;
+    const live = pairing.offer();
+    if (!live) return null; // 没开码 / 过期 / 已经用掉
+    const claimed = b64decode(hello.identityPub);
+    const ephPub = b64decode(hello.ephPub);
+    const nonceHalf = b64decode(hello.nonceHalf);
+    if (!claimed || !ephPub || !nonceHalf) return null;
+    const ok = verifyPairProof(p, {
+      proof: hello.pair,
+      role: hello.role,
+      deviceId: hello.deviceId,
+      identityPub: claimed,
+      secret: live.secret,
+      ephPub,
+      nonceHalf,
+    });
+    if (!ok) {
+      log("远程桥:配对证明验不过,那张码不作数");
+      return null;
+    }
+    return claimed;
+  }
+
   function adopt(hello: HandshakeHello): void {
     if (!self) return;
     const pinned = opts.peerIdentities();
-    if (pinned.length === 0) {
-      log("远程桥:还没配对过任何手机,拒绝握手");
-      opts.onRejected?.({ deviceId: hello.deviceId, reason: "unpaired" });
-      return;
-    }
     // 逐把试。deriveSession 里就带了签名校验,验不过回 null —— 所以"哪一把是对的"
     // 由密码学回答,而不是由 hello 里那个对端自称的 deviceId 回答
     let keys: SessionKeys | null = null;
@@ -143,11 +184,31 @@ export function createRemoteBridge(opts: {
       keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pub });
       if (keys) break;
     }
+    // pin 组之外还剩一条路:刚扫过码的那台手机
+    let freshlyPaired: Uint8Array | null = null;
+    if (!keys) {
+      const claimed = tryPair(hello);
+      if (claimed) {
+        keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: claimed });
+        if (keys) freshlyPaired = claimed;
+      }
+    }
     if (!keys) {
       // 这里包含了 TOFU 报警的那一路:公钥对不上就是对不上,不静默接受
-      log("远程桥:对端身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
-      opts.onRejected?.({ deviceId: hello.deviceId, reason: "identity-mismatch" });
+      if (pinned.length === 0) {
+        log("远程桥:还没配对过任何手机,拒绝握手");
+        opts.onRejected?.({ deviceId: hello.deviceId, reason: "unpaired" });
+      } else {
+        log("远程桥:对端身份验不过(公钥 pin 不上 / 签名不对),不建立会话");
+        opts.onRejected?.({ deviceId: hello.deviceId, reason: "identity-mismatch" });
+      }
       return;
+    }
+    if (freshlyPaired) {
+      // 顺序:先落 pin 再作废那张码。反过来的话,中间崩一下就成了"码没了也没配上"
+      opts.pairing?.onPaired(freshlyPaired);
+      opts.pairing?.consume();
+      log("远程桥:扫码配对成功,这台手机已 pin");
     }
     usedPeerEphs.add(hello.ephPub);
     lastPeerHello = hello;
