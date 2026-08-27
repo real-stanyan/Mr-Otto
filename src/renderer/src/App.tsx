@@ -103,7 +103,13 @@ import { AutoCompactSettings } from "./components/AutoCompactSettings.js";
 import { AboutUpdateSettings } from "./components/AboutUpdateSettings.js";
 import { UpdatePill } from "./components/UpdatePill.js";
 import { themeController, type ThemePref } from "./theme.js";
-import { folderName, groupArchivedByWorkspace, groupSessionsByWorkspace } from "./sessionGroups.js";
+import {
+  archivedTaskSessions,
+  folderName,
+  groupArchivedByWorkspace,
+  groupSessionsByWorkspace,
+  taskSessions,
+} from "./sessionGroups.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -1746,10 +1752,7 @@ function AppSidebar() {
   // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜。
   // 归档也分栏(#559 后续)：任务栏只看 Default 的旧账、项目栏只看工程的——
   // 两栏各自的「已归档」计数和列表互不掺和
-  const archivedTask = useMemo(
-    () => sessions.filter((s) => s.archived && s.workspace !== null && s.workspace === builtin),
-    [sessions, builtin]
-  );
+  const archivedTask = useMemo(() => archivedTaskSessions(sessions, builtin), [sessions, builtin]);
   const archived = useMemo(
     () => groupArchivedByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
     [sessions, builtin]
@@ -1874,10 +1877,7 @@ function AppSidebar() {
     if (settingsSection !== null) setArchivedView(false);
   }, [settingsSection]);
   // 任务平铺列表：sessions 本来就是最近活跃在前,不再分组
-  const taskSessions = useMemo(
-    () => sessions.filter((s) => !s.archived && s.workspace !== null && s.workspace === builtin),
-    [sessions, builtin]
-  );
+  const taskList = useMemo(() => taskSessions(sessions, builtin), [sessions, builtin]);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着。
   // 内置 Default 的会话归任务栏,不在这儿再出现一组
   const groups = useMemo(
@@ -2095,7 +2095,7 @@ function AppSidebar() {
           // 任务视图：内置 Default 工作区的会话平铺（最近活跃在前，列表本来的序）。
           // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」
           <SidebarMenu className="p-2">
-            {taskSessions.map((s) => sessionRow(s, "任务"))}
+            {taskList.map((s) => sessionRow(s, "任务"))}
           </SidebarMenu>
         ) : (
           <>

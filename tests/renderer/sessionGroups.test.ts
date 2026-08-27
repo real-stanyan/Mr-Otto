@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  archivedTaskSessions,
   folderName,
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
+  taskSessions,
 } from "../../src/renderer/src/sessionGroups.js";
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
 
@@ -139,5 +141,40 @@ describe("groupArchivedByWorkspace", () => {
     ]);
     expect(groups.map((g) => g.workspace)).toEqual(["/p/x"]);
     expect(ungrouped.map((x) => x.sessionId)).toEqual(["ghost2", "ghost"]);
+  });
+});
+
+describe("taskSessions —— 侧栏「任务」那一栏", () => {
+  const DEF = "/home/u/Documents/Mr Otto/Default";
+
+  it("只要内置 Default 的会话,原序不动", () => {
+    const list = taskSessions([s("a", DEF, 300), s("b", "/p/x", 200), s("c", DEF, 100)], DEF);
+    expect(list.map((x) => x.sessionId)).toEqual(["a", "c"]);
+  });
+
+  it("子会话不进任务栏——memory-reviewer 跑在 Default 里,但没人开过它(ADR-0047)", () => {
+    const list = taskSessions([s("kid", DEF, 300, "parent"), s("mine", DEF, 200)], DEF);
+    expect(list.map((x) => x.sessionId)).toEqual(["mine"]);
+  });
+
+  it("归档的不进活列表;没 builtin 时谁都不进", () => {
+    const arch = { ...s("old", DEF, 300), archived: true };
+    expect(taskSessions([arch, s("live", DEF, 200)], DEF).map((x) => x.sessionId)).toEqual(["live"]);
+    expect(taskSessions([s("live", DEF, 200)], null)).toEqual([]);
+  });
+});
+
+describe("archivedTaskSessions —— 任务栏的「已归档」", () => {
+  const DEF = "/home/u/Documents/Mr Otto/Default";
+  const arch = (id: string, workspace: string | null, spawnedFrom: string | null = null): SessionSummary => ({
+    ...s(id, workspace, 100, spawnedFrom), archived: true,
+  });
+
+  it("只要 Default 的归档会话,子会话同样滤掉", () => {
+    const list = archivedTaskSessions(
+      [arch("a", DEF), arch("kid", DEF, "parent"), arch("b", "/p/x"), s("live", DEF, 100)],
+      DEF
+    );
+    expect(list.map((x) => x.sessionId)).toEqual(["a"]);
   });
 });
