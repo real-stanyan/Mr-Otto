@@ -14,9 +14,18 @@ export interface SessionGroup {
   firstTs: number;
 }
 
-/** 路径末段;尾随 / 不算一段(/a/b/ 的名字是 b,不是空串) */
+/** Windows 形状的路径:盘符开头(C:\\…)或 UNC(\\\\server\\share)。
+    只对这两种形状把反斜杠当分隔符——POSIX 下反斜杠是合法文件名字符,
+    无条件按它切会把 /Users/stan/a\\b 的名字截成 b(issue #603 顺带) */
+function isWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+/** 路径末段;尾随分隔符不算一段(/a/b/ 的名字是 b,不是空串)。
+    Windows 路径按 \\ 和 / 一起切:electron-builder 有 win 目标(dist:win),
+    只切 / 的话侧栏和头部会把整条 C:\\Users\\…\\OneDrive 糊成一行 */
 export function folderName(path: string): string {
-  const segs = path.split("/").filter((s) => s !== "");
+  const segs = path.split(isWindowsPath(path) ? /[\\/]/ : "/").filter((s) => s !== "");
   return segs[segs.length - 1] ?? path;
 }
 

@@ -2449,7 +2449,7 @@ function WorkspacePicker({ value, onChange }: {
         title={value ?? "选择工作区"}
       >
         <FolderIcon />
-        {value ? value.split("/").pop() : "选择工作区"}
+        {value ? folderName(value) : "选择工作区"}
         <span className="text-muted-foreground text-[11px]" aria-hidden="true">⌄</span>
       </button>
       {open && (
@@ -2477,7 +2477,7 @@ function WorkspacePicker({ value, onChange }: {
                 onClick={() => choose(dir)}
               >
                 <FolderIcon />
-                <span className="shrink-0">{dir.split("/").pop()}</span>
+                <span className="shrink-0">{folderName(dir)}</span>
                 {/* rtl 省略头部留尾部:路径的尾巴才认得出 */}
                 <span className="text-muted-foreground text-[11px] flex-1 min-w-0 truncate [direction:rtl]">{dir}</span>
                 {dir === value && <span className="text-brand shrink-0" aria-hidden="true">✓</span>}
@@ -3414,7 +3414,7 @@ export function App() {
           </span>
           <span className="text-muted-foreground text-xs shrink-0">·</span>
           <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-            {workspace.split("/").pop()}
+            {folderName(workspace)}
           </span>
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}
