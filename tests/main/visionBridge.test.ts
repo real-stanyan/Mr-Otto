@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVisionBridge } from "../../src/main/visionBridge.js";
 import { DEFAULT_VISION_MODEL } from "../../src/shared/visionModel.js";
 
 const ref = { id: "sha256:" + "a".repeat(64), mediaType: "image/png", bytes: 3 };
 
-afterEach(() => vi.unstubAllGlobals());
+// 代读员的 key 由跑测试的机器决定有没有 —— 钉死它，否则同一份测试在
+// 配了 GLM key 的机器上和没配的机器上跑的是两条路
+beforeEach(() => vi.stubEnv("GLM_API_KEY", "sk-test"));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("visionBridge 代读", () => {
   it("请求打到 glm-4.6v-flash:带用户问题 + 图片 base64;返回解析文本", async () => {
@@ -76,5 +82,29 @@ describe("visionBridge 429 重试", () => {
     const describeImages = createVisionBridge(() => new Uint8Array([1]), async () => {});
     await expect(describeImages([ref], "看图")).rejects.toThrow(/401/);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("visionBridge 缺 key", () => {
+  it("没配看图模型的 key → 一个请求都不发,报错点名是看图模型 + 该填哪个变量", async () => {
+    // 主模型的 key 是好的(纯文字发得出去),坏的只是代读员那把。空 Bearer 硬发
+    // 上去,智谱回的是"令牌已过期或验证不正确"——读起来像主模型的 key 过期了
+    vi.stubEnv("GLM_API_KEY", "");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const describeImages = createVisionBridge(() => new Uint8Array([1]));
+    await expect(describeImages([ref], "看图")).rejects.toThrow(/看图模型[\s\S]*GLM_API_KEY/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("上游 401 的错误带上是哪一款代读员在报 —— 别让人以为主模型的 key 过期了", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 401,
+      text: async () => '{"error":{"code":"401","message":"令牌已过期或验证不正确"}}',
+    })));
+    const describeImages = createVisionBridge(() => new Uint8Array([1]), async () => {});
+    await expect(describeImages([ref], "看图")).rejects.toThrow(
+      /vision-bridge\(glm-4\.6v-flash\)[\s\S]*401/
+    );
   });
 });
