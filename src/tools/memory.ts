@@ -19,6 +19,39 @@ export { parseMemoryResult } from "../shared/memoryStore.js";
 export const MEMORY_TOOL_NAME = "memory";
 const MAX_CONSECUTIVE_FAILURES = 3;
 
+const SHAPE_EXAMPLE =
+  '单条：{"target":"memory","action":"add","content":"..."}；' +
+  '批量：{"target":"memory","operations":[{"action":"add","content":"..."}]}';
+
+/** 模型给的 operations 归一成数组。issue #591：只认数组的话，「意图明确但形状差一点」
+    的调用会撞同一句错误，模型看不出该改哪儿就原样重发，三次后触发终态，整轮记忆丢光。
+    宽容只在这个解析边界发生，schema 照旧只声明严格形状（继续引导模型给标准的那种）。
+    认不出的形状返回 null（≠ 空数组：空数组是「给了但一条没有」，那是另一句话） */
+function toOpList(v: unknown): Record<string, unknown>[] | null {
+  if (Array.isArray(v)) return v as Record<string, unknown>[];
+  // 单个对象当一条
+  if (v !== null && typeof v === "object") return [v as Record<string, unknown>];
+  // 多字符串化了一层（某些 OpenAI 方言的模型会把数组再 JSON.stringify 一次）
+  if (typeof v === "string") {
+    try {
+      return toOpList(JSON.parse(v));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** action 缺席时从字段反推：这三条不是猜，是三个 action 各自的定义——
+    old_text 是「定位既有条目」，content 是「新内容」，谁在谁不在就唯一确定了动作 */
+function inferAction(o: Record<string, unknown>, content: string, oldText: string): unknown {
+  if (o["action"] !== undefined) return o["action"];
+  if (oldText && content) return "replace";
+  if (oldText) return "remove";
+  if (content) return "add";
+  return undefined;
+}
+
 /** 把模型给的 args 归一成 MemoryOp[]。new_text 是 content 的别名（hermes 同款） */
 function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; ops: MemoryOp[] } {
   const a = (args ?? {}) as Record<string, unknown>;
@@ -27,16 +60,15 @@ function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; o
   if (target === "project" && !hasProject) {
     throw new Error("当前工作区不在任何 git 仓库里，没有项目档；写 memory 或 user");
   }
-  const raw: Record<string, unknown>[] = Array.isArray(a["operations"])
-    ? (a["operations"] as Record<string, unknown>[])
-    : a["action"] !== undefined
-      ? [a]
-      : [];
-  if (raw.length === 0) throw new Error("要么给 action（单条），要么给 operations（批量）");
+  const listed = a["operations"] !== undefined ? toOpList(a["operations"]) : null;
+  if (a["operations"] !== undefined && listed !== null && listed.length === 0) {
+    throw new Error("operations 是空数组：没有要写的就不用调用 memory，直接继续回答");
+  }
+  const raw: Record<string, unknown>[] = listed ?? [a];
   const ops = raw.map((o): MemoryOp => {
     const content = typeof o["content"] === "string" ? o["content"] : typeof o["new_text"] === "string" ? o["new_text"] : "";
     const oldText = typeof o["old_text"] === "string" ? o["old_text"] : "";
-    switch (o["action"]) {
+    switch (inferAction(o, content, oldText)) {
       case "add": return { action: "add", target, content };
       case "replace":
         if (!oldText) throw new Error("replace 需要 old_text");
@@ -44,7 +76,10 @@ function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; o
       case "remove":
         if (!oldText) throw new Error("remove 需要 old_text");
         return { action: "remove", target, old_text: oldText };
-      default: throw new Error(`action 只能是 add / replace / remove，收到 ${String(o["action"])}`);
+      case undefined:
+        // 既没 action 也没 content/old_text：这条什么都没说，报错带上合法示例
+        throw new Error(`要么给 action（单条），要么给 operations（批量）。${SHAPE_EXAMPLE}`);
+      default: throw new Error(`action 只能是 add / replace / remove，收到 ${String(o["action"])}。${SHAPE_EXAMPLE}`);
     }
   });
   return { target, ops };

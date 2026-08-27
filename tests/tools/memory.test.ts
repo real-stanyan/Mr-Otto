@@ -112,6 +112,46 @@ describe("memory 工具", () => {
     await expect(tool.run({ target: "memory" }, world)).rejects.toThrow(/action|operations/);
   });
 
+  // issue #591：形状差一点就整轮记忆丢失。近邻形状归一在解析边界做，schema 照旧严格
+  describe("近邻形状归一（issue #591）", () => {
+    it("operations 是单个对象而非数组：当成一条", async () => {
+      const tool = createMemoryTool(null);
+      const { world, store } = fakeWorld();
+      await tool.run({ target: "user", operations: { action: "add", content: "用户住悉尼" } }, world);
+      expect(store.get("memories/USER.md")).toBe("用户住悉尼");
+    });
+
+    it("operations 是 JSON 字符串（多字符串化了一层）：先解析", async () => {
+      const tool = createMemoryTool(null);
+      const { world, store } = fakeWorld();
+      await tool.run({ target: "user", operations: '[{"action":"add","content":"甲"},{"action":"add","content":"乙"}]' }, world);
+      expect(parseEntries(store.get("memories/USER.md") ?? null).sort()).toEqual(["乙", "甲"]);
+    });
+
+    it("省了 action：content/old_text 已经把动作说清楚了，照做", async () => {
+      const tool = createMemoryTool(null);
+      const { world, store } = fakeWorld();
+      await tool.run({ target: "memory", content: "甲" }, world);              // 只有 content = add
+      expect(store.get("memories/MEMORY.md")).toBe("甲");
+      await tool.run({ target: "memory", old_text: "甲", content: "乙" }, world); // 两者都有 = replace
+      expect(store.get("memories/MEMORY.md")).toBe("乙");
+      await tool.run({ target: "memory", operations: [{ old_text: "乙" }] }, world); // 只有 old_text = remove
+      expect(store.get("memories/MEMORY.md")).toBe("");
+    });
+
+    it("认不出的形状：错误文案带合法示例，让下一次有得改", async () => {
+      const tool = createMemoryTool(null);
+      const { world } = fakeWorld();
+      await expect(tool.run({ target: "memory" }, world)).rejects.toThrow(/"action":\s*"add"/);
+    });
+
+    it("operations 是空数组：单独一句话，别和「形状不对」混在一起", async () => {
+      const tool = createMemoryTool(null);
+      const { world } = fakeWorld();
+      await expect(tool.run({ target: "memory", operations: [] }, world)).rejects.toThrow(/空/);
+    });
+  });
+
   // issue #186：条目内容含 "-->" 或 "<!--memory:" 时，机器可读尾行的定界不能被撕裂
   it("条目内容含结果标记/终止符：chips 仍能解析", async () => {
     const tool = createMemoryTool(null);
