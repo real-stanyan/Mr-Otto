@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOps, charCount, formatEntries, parseEntries, MEMORY_LIMITS, ENTRY_DELIMITER,
-  parseMemoryResult, MEMORY_RESULT_MARK,
+  parseMemoryResult, MEMORY_RESULT_MARK, projectMentionInGlobal, tierRuleText,
 } from "../../src/shared/memoryStore.js";
 
 describe("parseEntries / formatEntries", () => {
@@ -222,5 +222,38 @@ describe("assertMemoryFits（moveToProject 的超限前置检查用的是这条�
   it("三档各自认自己的上限", () => {
     expect(() => assertMemoryFits("memory", "x".repeat(1101))).toThrow(/MEMORY 超限/);
     expect(() => assertMemoryFits("user", "x".repeat(1376))).toThrow(/USER 超限/);
+  });
+});
+
+// issue #589：判据单源 + 全局档点名项目的检测
+describe("tierRuleText", () => {
+  it("小写/大写两种档名，正文同一句判据", () => {
+    expect(tierRuleText()).toContain("换个项目还成立吗");
+    expect(tierRuleText()).toContain("project");
+    expect(tierRuleText({ upper: true })).toContain("PROJECT");
+    expect(tierRuleText({ upper: true })).not.toContain("project ");
+  });
+  it("带 projectRoot 时把根路径写进正文", () => {
+    expect(tierRuleText({ upper: true, projectRoot: "/repo/x" })).toContain("（/repo/x）");
+    expect(tierRuleText()).not.toContain("（/");
+  });
+});
+
+describe("projectMentionInGlobal", () => {
+  const root = "/Users/x/Github/Mr_Otto";
+  it("命中完整根路径：返回路径", () => {
+    expect(projectMentionInGlobal(`产物在 ${root}/dist`, root)).toBe(root);
+  });
+  it("命中目录名（大小写不敏感）：返回目录名", () => {
+    expect(projectMentionInGlobal("mr_otto 的 dev 数据目录", root)).toBe("Mr_Otto");
+  });
+  it("不点名：null", () => {
+    expect(projectMentionInGlobal("本机 gh 在 /opt/homebrew/bin", root)).toBeNull();
+  });
+  it("目录名太短（<3 字符）不认——误伤率太高", () => {
+    expect(projectMentionInGlobal("ab 出现在句子里", "/repo/ab")).toBeNull();
+  });
+  it("Windows 风格分隔符也能取出目录名", () => {
+    expect(projectMentionInGlobal("提到 MyProj 的事", "C:\\code\\MyProj")).toBe("MyProj");
   });
 });

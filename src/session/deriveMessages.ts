@@ -5,7 +5,7 @@ import type { SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
-import { charCount, MEMORY_LIMITS, parseEntries, formatEntries } from "../shared/memoryStore.js";
+import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText } from "../shared/memoryStore.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
@@ -139,7 +139,7 @@ export function renderMemoryBlocks(memory: string, user: string, project?: strin
     两个文件都空也要说这段话：模型得知道自己**能**写记忆，不是只在已经有内容时才提 */
 export function renderMemoryPrompt(memory: string, user: string, project?: string, projectRoot?: string): string {
   const tiers = projectRoot
-    ? `记忆分三档：PROJECT 记只在当前项目（${projectRoot}）为真的事（该项目的门禁命令、构建怪癖、约定）；MEMORY 记换个项目也成立的事（本机环境、工具怪癖）；USER 记关于用户本人的事。拿不准就写 MEMORY——错放全局只是噪音，错放项目档是丢失。`
+    ? `记忆分三档：${tierRuleText({ upper: true, projectRoot })}`
     : `记忆分两档（这个工作区不在任何 git 仓库里，没有项目档）：MEMORY 是你的笔记，USER 是关于用户。`;
   return (
     `\n你有跨会话的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +

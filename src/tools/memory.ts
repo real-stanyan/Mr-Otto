@@ -9,7 +9,7 @@ import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
   applyOps, charCount, formatEntries, formatMemoryResultLine, isMemoryTarget, parseEntries, withMemoryFileLock,
-  memoryRelPath, MEMORY_LIMITS, PROJECT_ROOT_FILE,
+  memoryRelPath, projectMentionInGlobal, tierRuleText, MEMORY_LIMITS, PROJECT_ROOT_FILE,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
 import { scanThreat } from "../shared/threatPatterns.js";
@@ -66,6 +66,22 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
       if (hit) throw new Error(`内容含可疑指令（${hit}），拒绝写入记忆`);
     }
 
+    // 项目归位守卫（issue #589）：全局档条目点名当前项目 = 十有八九是项目事实投错了档。
+    // 只拦 add/replace 的新内容——remove 的 old_text 是在定位既有条目，拦它会把
+    // 「清理错放存量」这条路也堵死
+    if (target === "memory" && project) {
+      for (const op of ops) {
+        if (op.action === "remove") continue;
+        const mention = projectMentionInGlobal(op.content, project.root);
+        if (mention) {
+          throw new Error(
+            `这条内容点名了当前项目（命中「${mention}」），像是只在本项目为真的事——改写 target: "project"。` +
+            `确实换个项目也成立的话，把项目名/路径从内容里去掉再写：全局条目不点名具体项目。`,
+          );
+        }
+      }
+    }
+
     const rel = memoryRelPath(target, project?.dir);
     // read→apply→write 整段持 per-file 锁（issue #185）：并发的另一次写在这段
     // 结束前进不来，读到的永远是上一次写完之后的最新视图
@@ -107,12 +123,9 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
     return `已更新 ${label}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
   }
 
-  // 有无项目根决定判据文案的档数：看不见的档不需要判据，说了也是噪音
-  const tierRule = project
-    ? "三档：project = 只在当前项目为真的事（该项目的门禁命令、构建怪癖、约定）；" +
-      "memory = 换个项目也成立的事（本机环境、工具怪癖）；user = 关于用户本人。" +
-      "拿不准就写 memory——错放全局只是噪音，错放项目档是丢失。"
-    : "两档：memory = 你的笔记，user = 关于用户。";
+  // 有无项目根决定判据文案的档数：看不见的档不需要判据，说了也是噪音。
+  // 判据正文单源在 shared/memoryStore.ts 的 tierRuleText（issue #589）
+  const tierRule = project ? `三档：${tierRuleText()}` : "两档：memory = 你的笔记，user = 关于用户。";
 
   return {
     def: {
