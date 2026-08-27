@@ -2,6 +2,7 @@
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
+import type { WebContents } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -68,7 +69,7 @@ import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
-import type { IslandSettings, UpdaterState,
+import type { IslandSettings, MotionSettings, UpdaterState,
   RemoteStatus,
   PermissionsSnapshot,
   WorkspaceSettingsInfo,
@@ -159,6 +160,8 @@ import {
 import type { FriendsSnapshot } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
 import { findMrottoDeepLink } from "./deepLink.js";
+import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
+import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -171,6 +174,40 @@ app.setAsDefaultProtocolClient("mrotto");
 app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
+
+// 动效设置(issue #607)。现读不缓存——读的频率是"开设置页/开窗"量级。
+// 落点跟着上面 setPath 之后的 userData 走,双开各算各的
+const motionSettingsPath = join(app.getPath("userData"), "motion.json");
+
+/** 覆盖动作的真身:问渲染层要 matchMedia 的结果,用 CDP 钉住那条媒体查询。
+    判定在 motionOverride.ts(有测试钉着),这里只提供能力 */
+function motionHost(wc: WebContents): MotionOverrideHost {
+  return {
+    prefersReduce: () =>
+      wc.executeJavaScript('matchMedia("(prefers-reduced-motion: reduce)").matches') as Promise<boolean>,
+    emulate: async (value) => {
+      if (value === null) {
+        if (!wc.debugger.isAttached()) return; // 没挂过 = 本来就还给系统了
+        await wc.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [] });
+        wc.debugger.detach();
+        return;
+      }
+      if (!wc.debugger.isAttached()) wc.debugger.attach("1.3");
+      await wc.debugger.sendCommand("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value }],
+      });
+    },
+    log: (m) => console.warn(`[motion] ${m}`),
+  };
+}
+
+/** 主窗上应用当前这一档。窗口没了就什么都不做 */
+async function syncMotionOverride(): Promise<void> {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  const { pref } = loadMotionSettings(motionSettingsPath);
+  await applyMotionPref(pref, motionHost(win.webContents));
+}
 
 // Windows/Linux 深链走 argv 而不是 open-url（issue #310）：浏览器跳 mrotto:// 时
 // 系统会启动第二个实例，URL 在它的 argv 里。single instance lock 把冗余实例拦下，
@@ -298,6 +335,9 @@ function createWindow(): BrowserWindow {
     }, 500);
     win.on("closed", () => clearInterval(zoomWatch));
   }
+  // 每次页面加载完对一次动效档位(#607):覆盖挂在渲染进程上,热重载/重新 load
+  // 之后要重挂。系统没减弱的机器上这一步只是问一句 matchMedia,不挂调试器
+  win.webContents.on("did-finish-load", () => void syncMotionOverride());
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
@@ -2051,6 +2091,13 @@ void app.whenReady().then(() => {
     }
   });
 
+  // 动效(#607)。set 完当场把覆盖挂上/撤掉——设置页点一下就该看见球转起来,
+  // 不该让人重启;await 是为了"存下去了"这件事先于回值成立
+  ipcMain.handle(CHANNELS.getMotionSettings, () => loadMotionSettings(motionSettingsPath));
+  ipcMain.handle(CHANNELS.setMotionSettings, async (_e, settings: MotionSettings) => {
+    saveMotionSettings(motionSettingsPath, normaliseMotionSettings(settings));
+    await syncMotionOverride();
+  });
   ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
   ipcMain.handle(CHANNELS.setIslandSettings, (_e, settings: IslandSettings) => {
     islandSettings = normaliseIslandSettings(settings);

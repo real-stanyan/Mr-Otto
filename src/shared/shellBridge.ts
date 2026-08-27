@@ -521,6 +521,10 @@ export interface ShellBridge {
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
+  /** 动效设置(设置页外观区读,落 userData/motion.json,issue #607)。
+      set 之后主进程立刻把覆盖挂上/撤掉——当场生效,不用重启 */
+  getMotionSettings(): Promise<MotionSettings>;
+  setMotionSettings(settings: MotionSettings): Promise<void>;
   /** 兜底工作区(#559:会话永远有工作区,没选就用它)。设置页「工作区」栏目
       与新会话 composer 的预填都从这儿读。落 userData/workspace.json */
   getWorkspaceSettings(): Promise<WorkspaceSettingsInfo>;
@@ -925,6 +929,16 @@ export interface IslandSettings {
   display: IslandDisplay;
 }
 
+/** 动效偏好(#607):system = 跟随系统的 prefers-reduced-motion(出厂默认);
+    always = 无视系统的"减弱动效",照常播。没有反向的"始终关闭"——系统说减弱
+    就减弱,那是无障碍设置,不给人反向覆盖 */
+export type MotionPref = "system" | "always";
+
+/** 动效设置(userData/motion.json,main/motionSettingsStore.ts 落盘) */
+export interface MotionSettings {
+  pref: MotionPref;
+}
+
 /** 兜底工作区的解析结果(main/workspaceSettingsStore.ts 落盘,#559)。
     渲染层只见解析后的绝对路径——「设置的还是内置的」用 builtin 区分,
     别让 UI 自己拼文档区路径(平台差异是主进程的事) */
@@ -1033,6 +1047,8 @@ export const CHANNELS = {
   setVisionModel: "otter:setVisionModel",
   getIslandSettings: "otter:getIslandSettings",
   setIslandSettings: "otter:setIslandSettings",
+  getMotionSettings: "otter:getMotionSettings",
+  setMotionSettings: "otter:setMotionSettings",
   getWorkspaceSettings: "otter:getWorkspaceSettings",
   setDefaultWorkspace: "otter:setDefaultWorkspace",
   remoteStatus: "otter:remoteStatus",

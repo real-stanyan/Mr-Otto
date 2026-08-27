@@ -29,6 +29,18 @@ describe("folderName", () => {
   it("根目录退回原串,不返回空名", () => {
     expect(folderName("/")).toBe("/");
   });
+  it("Windows 盘符路径按反斜杠切(dist:win 是真目标)", () => {
+    expect(folderName("C:\\Users\\Grant\\OneDrive\\Documents\\Mr Otto")).toBe("Mr Otto");
+  });
+  it("Windows 混合分隔符 + 尾随反斜杠", () => {
+    expect(folderName("C:/Users/Grant\\Github\\Mr_Otto\\")).toBe("Mr_Otto");
+  });
+  it("UNC 路径也认", () => {
+    expect(folderName("\\\\server\\share\\proj")).toBe("proj");
+  });
+  it("POSIX 路径里的反斜杠是文件名的一部分,不当分隔符", () => {
+    expect(folderName("/Users/stan/we\\ird")).toBe("we\\ird");
+  });
 });
 
 describe("groupSessionsByWorkspace", () => {

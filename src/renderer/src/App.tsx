@@ -33,6 +33,8 @@ import type {
   ApprovalRequest,
   IslandDisplay,
   McpConfigurePreview,
+  MotionPref,
+  MotionSettings,
   McpToolPreview,
   SessionSummary,
 } from "../../shared/shellBridge.js";
@@ -67,6 +69,7 @@ import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
+import { fallbackSessionLabel, sessionDisplayName } from "./lib/sessionLabel.js";
 import { cn, isMac } from "@/lib/utils.js";
 import { HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
 import { orbState } from "./lib/sessionOrb.js";
@@ -1479,6 +1482,29 @@ function AppearancePage() {
     { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
   ];
 
+  // 动效(#607)。null = 还没读回来(同 islandDisplay 的 loaded 模式)。
+  // set 完主进程当场挂/撤覆盖,不用重启,所以这里不需要"存了但还没生效"那一档
+  const [motion, setMotion] = useState<MotionSettings | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    window.otter
+      .getMotionSettings()
+      .then((m) => {
+        if (!cancelled) setMotion(m);
+      })
+      .catch(() => {
+        /* 读不到就保持禁用——灰着比假装能切要诚实 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const MOTION_OPTIONS: { value: MotionPref; label: string; hint: string }[] = [
+    { value: "system", label: "跟随系统", hint: "系统开了「减弱动效」就跟着停——Windows 的「动画效果」默认在不少机器上是关的" },
+    { value: "always", label: "始终开启", hint: "无视系统的「减弱动效」,球会转、高光会扫、卡片会滑" },
+  ];
+
   const ISLAND_OPTIONS: { value: IslandDisplay; label: string; hint: string }[] = [
     { value: "sessions", label: "会话列表", hint: "展开时显示各会话状态,点选切换、当场审批" },
     { value: "usage", label: "Token 用量", hint: "展开时显示各模型 今天/7天/14天 的 token 消耗" },
@@ -1520,6 +1546,42 @@ function AppearancePage() {
             ))}
           </div>
           <p className={HINT}>{OPTIONS.find((o) => o.value === themePref)?.hint}</p>
+        </div>
+        <div className="flex flex-col gap-[6px]">
+          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">动效</h2>
+          <div
+            role="radiogroup"
+            aria-label="动效"
+            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
+          >
+            {MOTION_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={motion?.pref === o.value}
+                disabled={motion === null}
+                title={o.hint}
+                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 disabled:opacity-50 ${
+                  motion?.pref === o.value
+                    ? "bg-foreground/[0.10] font-[550] text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                onClick={() => {
+                  if (!motion) return;
+                  setMotion({ pref: o.value });
+                  void window.otter.setMotionSettings({ pref: o.value });
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className={HINT}>
+            {motion === null
+              ? "系统开了「减弱动效」时,整个界面(包括跑 turn 时那颗球)都会停住"
+              : MOTION_OPTIONS.find((o) => o.value === motion.pref)?.hint}
+          </p>
         </div>
         <div className="flex flex-col gap-[6px]">
           <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">灵动岛</h2>
@@ -2448,7 +2510,7 @@ function WorkspacePicker({ value, onChange }: {
         title={value ?? "选择工作区"}
       >
         <FolderIcon />
-        {value ? value.split("/").pop() : "选择工作区"}
+        {value ? folderName(value) : "选择工作区"}
         <span className="text-muted-foreground text-[11px]" aria-hidden="true">⌄</span>
       </button>
       {open && (
@@ -2476,7 +2538,7 @@ function WorkspacePicker({ value, onChange }: {
                 onClick={() => choose(dir)}
               >
                 <FolderIcon />
-                <span className="shrink-0">{dir.split("/").pop()}</span>
+                <span className="shrink-0">{folderName(dir)}</span>
                 {/* rtl 省略头部留尾部:路径的尾巴才认得出 */}
                 <span className="text-muted-foreground text-[11px] flex-1 min-w-0 truncate [direction:rtl]">{dir}</span>
                 {dir === value && <span className="text-brand shrink-0" aria-hidden="true">✓</span>}
@@ -3211,6 +3273,8 @@ export function App() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
+  // 内置 Default 的路径:兜底名要按它分「任务」还是工程文件夹名(与侧栏同一口径)
+  const builtinWorkspace = useChat((s) => s.workspaceSettings?.builtinWorkspace ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -3407,11 +3471,11 @@ export function App() {
             会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
         <div className="flex-1 min-w-0 flex items-center gap-2">
           <span className="font-[650] text-sm min-w-0 truncate" title={sessionId}>
-            {sessionTitle ?? sessionId}
+            {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
           <span className="text-muted-foreground text-xs shrink-0">·</span>
           <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-            {workspace.split("/").pop()}
+            {folderName(workspace)}
           </span>
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}
