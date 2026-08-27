@@ -67,6 +67,7 @@ import { CostPanel } from "./components/CostPanel.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
+import { fallbackSessionLabel, sessionDisplayName } from "./lib/sessionLabel.js";
 import { cn, isMac } from "@/lib/utils.js";
 import { HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
 import { orbState } from "./lib/sessionOrb.js";
@@ -3211,6 +3212,8 @@ export function App() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   // 会话名走侧栏那份投影(改名/首条消息都已归一在那),不在这里重算一遍
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
+  // 内置 Default 的路径:兜底名要按它分「任务」还是工程文件夹名(与侧栏同一口径)
+  const builtinWorkspace = useChat((s) => s.workspaceSettings?.builtinWorkspace ?? null);
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -3407,7 +3410,7 @@ export function App() {
             会话名可长可短,只让它伸缩截断;工程名和分支控件定宽不挤掉 */}
         <div className="flex-1 min-w-0 flex items-center gap-2">
           <span className="font-[650] text-sm min-w-0 truncate" title={sessionId}>
-            {sessionTitle ?? sessionId}
+            {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
           <span className="text-muted-foreground text-xs shrink-0">·</span>
           <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>

@@ -1658,6 +1658,16 @@ export const useChat = create<ChatState>((set, get) => ({
       if (e.type === "session_autotitled") {
         void window.otter.listSessions().then((sessions) => set({ sessions }));
       }
+      // 首条消息落地 = 这份镜像里的标题(首条 user_message 首行)该有值了。镜像是
+      // startSession 那一刻拉的,那时人还没发话,标题必然是 null;不补这一刀,名字要
+      // 等自动命名(要 helper 模型)或下次重载才出现,侧栏和头部一直挂着兜底
+      // (issue #603)。只在标题确实空着时拉一次,不是每条消息都拉
+      if (e.type === "user_message") {
+        const known = get().sessions.find((x) => x.sessionId === e.sessionId);
+        if (known && known.title === null) {
+          void window.otter.listSessions().then((sessions) => set({ sessions }));
+        }
+      }
       if (e.type === "tool_result") {
         clearTimeout(gitGraphAutoRefresh);
         gitGraphAutoRefresh = setTimeout(() => {
