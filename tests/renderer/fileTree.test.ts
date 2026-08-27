@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fileTreeNodes, mergeChangedFiles } from "../../src/renderer/src/lib/fileTree.js";
+import { changedFilesOf, fileTreeNodes, mergeChangedFiles } from "../../src/renderer/src/lib/fileTree.js";
 
 const WS = "/w";
 
@@ -110,5 +110,56 @@ describe("mergeChangedFiles(同一组里同一个文件写两次)", () => {
     expect(mergeChangedFiles([{ path: "/w/b.ts" }, { path: "/w/a.ts" }]).map((f) => f.path)).toEqual(
       ["/w/b.ts", "/w/a.ts"]
     );
+  });
+});
+
+describe("changedFilesOf(工具组 → 树的输入)", () => {
+  const stats: Record<string, { additions: number; deletions: number }> = {
+    c1: { additions: 24, deletions: 6 },
+  };
+  const statOf = (id: string) => stats[id];
+  const pathOf = (c: { args?: unknown }) => (c.args as { path?: string })?.path ?? null;
+
+  it("只数写入:读取不是「改变」", () => {
+    const out = changedFilesOf(
+      [
+        { id: "c1", name: "write_file", args: { path: "/w/a.ts" } },
+        { id: "c2", name: "read_file", args: { path: "/w/b.ts" } },
+      ],
+      pathOf,
+      statOf
+    );
+    expect(out).toEqual([{ path: "/w/a.ts", additions: 24, deletions: 6 }]);
+  });
+
+  it("日志里有 diffStat 就报数字——这一条断的正是「写了却不显示 +x −x」那个症状", () => {
+    const out = changedFilesOf([{ id: "c1", name: "write_file", args: { path: "/w/a.ts" } }], pathOf, statOf);
+    expect(out[0]).toMatchObject({ additions: 24, deletions: 6 });
+  });
+
+  it("旧日志没有 diffStat:那一条连键都不带,不填零", () => {
+    const out = changedFilesOf([{ id: "old", name: "write_file", args: { path: "/w/a.ts" } }], pathOf, statOf);
+    expect(out).toEqual([{ path: "/w/a.ts" }]);
+  });
+
+  it("路径认不出来的整条跳过,不抛", () => {
+    const out = changedFilesOf([{ id: "c9", name: "write_file", args: null }], pathOf, statOf);
+    expect(out).toEqual([]);
+  });
+
+  it("同一个文件写两次:合成一行,行数相加", () => {
+    const two = { a: { additions: 1, deletions: 0 }, b: { additions: 2, deletions: 3 } } as Record<
+      string,
+      { additions: number; deletions: number }
+    >;
+    const out = changedFilesOf(
+      [
+        { id: "a", name: "write_file", args: { path: "/w/a.ts" } },
+        { id: "b", name: "write_file", args: { path: "/w/a.ts" } },
+      ],
+      pathOf,
+      (id) => two[id]
+    );
+    expect(out).toEqual([{ path: "/w/a.ts", additions: 3, deletions: 3 }]);
   });
 });

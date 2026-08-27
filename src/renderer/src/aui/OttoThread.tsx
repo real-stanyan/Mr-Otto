@@ -21,7 +21,7 @@ import {
 import { ToolFallback } from "../components/assistant-ui/tool-fallback.js";
 import { ToolTimeline } from "../components/elements/tool-timeline.js";
 import { FileTree } from "../components/elements/file-tree.js";
-import { fileTreeNodes, mergeChangedFiles, type ChangedFile } from "../lib/fileTree.js";
+import { changedFilesOf, fileTreeNodes } from "../lib/fileTree.js";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -356,17 +356,12 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
   // 旧日志没有这个字段,那样的行就不报数字
   const changedFiles = useMemo(() => {
     const index = proj?.index;
-    const entries: ChangedFile[] = [];
-    for (const call of calls) {
-      if (call.name !== "write_file") continue;
-      const path = toolFilePath(
-        index === undefined ? call : { ...call, args: effectiveArgs(call, index) },
-      );
-      if (path === null) continue;
-      const stat = index?.results.get(call.id)?.diffStat;
-      entries.push({ path, ...(stat ?? {}) });
-    }
-    return mergeChangedFiles(entries);
+    return changedFilesOf(
+      calls,
+      (call) =>
+        toolFilePath(index === undefined ? call : { ...call, args: effectiveArgs(call, index) }),
+      (id) => index?.results.get(id)?.diffStat,
+    );
   }, [proj, calls]);
   const restingLabel = timelineLabel(calls.length, changedFiles.length, elapsed, running);
 
