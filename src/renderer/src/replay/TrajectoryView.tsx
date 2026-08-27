@@ -3,7 +3,7 @@
 // 选中哪一行是视图自己的瞬态状态，不进 store：换会话 / 离开视图即作废，没人需要恢复它。
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Search, X } from "lucide-react";
+import { Download, Search, X } from "lucide-react";
 import { useChat } from "../store.js";
 import {
   ResizableHandle,
@@ -35,6 +35,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.js";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.js";
+import { buildExport, type ExportFormat } from "./trajectoryExport.js";
 
 /* 三类角色三种色：input 绿 / model 紫 / tools 橙（对齐 deepseek-harness 的泳道配色）。
    system 行归 input 道但灰显——它们不是人说的话 */
@@ -456,6 +465,84 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
   );
 }
 
+/* ─── 导出 ─── */
+
+/** 把一份文本交给系统「保存」。渲染进程不碰 fs（ShellBridge 硬规则），
+    走 <a download> —— 和图片下载同一条路（components/assistant-ui/image.tsx） */
+function saveText(filename: string, mime: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 40_000);
+}
+
+const FORMATS: { format: ExportFormat; label: string; hint: string }[] = [
+  { format: "json", label: "JSON · 结构化轨迹", hint: "一步一条，带时长 / token / 工具入参出参" },
+  { format: "jsonl", label: "JSONL · 原始事件日志", hint: "无损全量，可重放（不受搜索过滤影响）" },
+  { format: "markdown", label: "Markdown · 通读稿", hint: "人读的那一份，长正文会截断" },
+];
+
+/** 导出当前会话的轨迹。json / markdown 导出的是**你正在看的那些步**（跟着搜索框走）；
+    jsonl 永远整条日志 —— 过滤过的日志不是日志 */
+function ExportMenu({ traj, rows, query }: { traj: Traj; rows: TrajRow[]; query: string }) {
+  const events = useChat((s) => s.events);
+  const sessionId = useChat((s) => s.sessionId);
+  const workspace = useChat((s) => s.workspace);
+  const model = useChat((s) => s.model);
+  const title = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
+  const empty = traj.rows.length === 0;
+  const filtered = query.trim() !== "" && rows.length !== traj.rows.length;
+
+  const run = (format: ExportFormat) => {
+    const file = buildExport(format, {
+      traj,
+      rows,
+      events,
+      meta: { sessionId, title, workspace, model, exportedTs: Date.now(), query },
+    });
+    saveText(file.filename, file.mime, file.text);
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          disabled={empty}
+          data-testid="trajectory-export"
+          title="导出轨迹"
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+        >
+          <Download className="w-[13px] h-[13px]" />
+          导出
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[280px]">
+        <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+          {filtered
+            ? `导出 ${rows.length}/${traj.rows.length} 步（当前搜索结果）`
+            : `导出全部 ${traj.rows.length} 步`}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {FORMATS.map((f) => (
+          <DropdownMenuItem
+            key={f.format}
+            onClick={() => run(f.format)}
+            className="flex-col items-start gap-0"
+          >
+            <span className="text-[12.5px]">{f.label}</span>
+            <span className="text-[11px] text-muted-foreground">{f.hint}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /* ─── 视图 ─── */
 
 export function TrajectoryView() {
@@ -509,7 +596,9 @@ export function TrajectoryView() {
         <span className="ml-2 font-mono text-[11px] text-muted-foreground tabular-nums">
           {traj.turns} turns · {traj.rows.length} steps
         </span>
-        <div className="ml-auto relative w-[220px]">
+        <div className="ml-auto" />
+        <ExportMenu traj={traj} rows={visible} query={query} />
+        <div className="relative w-[220px]">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-[13px] h-[13px] text-muted-foreground pointer-events-none" />
           <Input
             value={query}
