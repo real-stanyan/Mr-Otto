@@ -53,3 +53,14 @@ describe("humanizeError —— 报错的人话版", () => {
     expect(humanizeError(raw).text).toBe(raw);
   });
 });
+
+describe("humanizeError —— vision-bridge 的戳", () => {
+  it("代读失败点名是哪一款看图模型 —— 不然读起来像用户正在用的模型 key 坏了", () => {
+    const raw =
+      'Error invoking remote method \'otter:sendMessage\': Error: vision-bridge(glm-4.6v-flash) model API 401: {"error":{"code":"401","message":"令牌已过期或验证不正确"}}';
+    expect(humanizeError(raw).text).toBe(
+      "看图模型 glm-4.6v-flash 代读失败：令牌已过期或验证不正确",
+    );
+    expect(humanizeError(raw).raw).toBe(raw);
+  });
+});

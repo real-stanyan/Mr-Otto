@@ -5,8 +5,9 @@
 // 只是这一屏念得不好听;要是在落盘前就把原文换成"人话",日志里存下的就是解析器
 // 的猜测 —— 猜错了永远查不回去(硬规则:日志是唯一事实来源)。
 //
-// 认三层壳,一层层剥:
+// 认四层壳,一层层剥:
 //   ① Electron 的 IPC 包装   "Error invoking remote method 'otter:sendMessage': Error: …"
+//   ①.5 代读员的戳          "vision-bridge(glm-4.6v-flash) …"(报错的不是当前模型)
 //   ② 本仓 adapter 的包装     "model API 429: <响应体>"
 //   ③ 各家的 JSON 错误体      {"error":{"code":"1113","message":"余额不足…"}}
 // 剥到人写的那句话就用它 —— 服务商自己写的提示("余额不足或无可用资源包,请充值")
@@ -72,6 +73,15 @@ export function humanizeError(raw: string): HumanError {
     /^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/,
     "",
   );
+
+  // ①.5 vision-bridge 的戳（main/visionBridge.ts）：带图消息在喂当前模型之前
+  //      先由「看图模型」代读一遍，代读失败时报错来自**那一款**。不点名的话
+  //      "令牌已过期或验证不正确"读起来就是用户正在用的这款 key 坏了 ——
+  //      而他的主模型 key 好好的（纯文字发得出去），只会一头雾水
+  const bridge = /^vision-bridge\(([^)]*)\)\s+([\s\S]*)$/.exec(unwrapped);
+  if (bridge) {
+    return keep(`看图模型 ${bridge[1]} 代读失败：${humanizeError(bridge[2] ?? "").text}`);
+  }
 
   // ② 本仓 adapter 的包装（model/openaiCompatible.ts）
   const api = /^model API (\d{3}):\s*([\s\S]*)$/.exec(unwrapped);

@@ -4,7 +4,8 @@
 // 代读就是一次普通的非流式 vision 调用,不新增方言。
 
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
-import { errorClassOf } from "../model/errorClass.js";
+import { errorClassOf, markErrorClass } from "../model/errorClass.js";
+import { routeModel } from "./modelRoute.js";
 import { findModel } from "../shared/modelCatalog.js";
 import { DEFAULT_VISION_MODEL } from "../shared/visionModel.js";
 import type { UserAttachmentRef } from "../session/events.js";
@@ -13,6 +14,17 @@ import type { UserAttachmentRef } from "../session/events.js";
     实测高峰期逐次成功率仅 ~1/3,两段退避常耗尽——加密到五段(总窗 ~35s)
     穿过拥堵;放弃后照旧 turn 失败,用户看得到原始错误 */
 const RETRY_DELAYS_MS = [1500, 3000, 6000, 10000, 15000];
+
+/** 代读失败的戳。渲染层剥壳时据此说清"报错的是看图模型,不是你正在用的这款"
+    (renderer/lib/modelError.ts)。只加前缀不改原文——上游那句原话是排查时
+    唯一能信的东西,得原样落进 turn_ended.error */
+function brandBridgeError(e: unknown, model: string): Error {
+  const err = e instanceof Error ? e : new Error(String(e));
+  if (err.message.startsWith("vision-bridge(")) return err; // 别盖第二遍
+  const branded = new Error(`vision-bridge(${model}) ${err.message}`, { cause: err });
+  const cls = errorClassOf(err);
+  return cls ? markErrorClass(branded, cls) : branded;
+}
 
 /** 组装根注入附件读取器,返回代读函数。
     userText 一并交给视觉模型——带着问题读图,解析才有针对性,不是干巴巴 OCR。
@@ -30,9 +42,25 @@ export function createVisionBridge(
   ): Promise<string> {
     const choice = findModel(model);
     if (!choice) throw new Error(`vision-bridge 型号不在目录: ${model}`);
+    // 没配代读员的 key 时别硬发:空 Bearer 打上去,上游回的是一句自己的鉴权
+    // 文案(智谱是"令牌已过期或验证不正确")——用户看到的是"发不出去",却完全
+    // 看不出坏的是代读员那把 key,而不是他正在用的那款模型的 key。
+    // 走 modelRoute 这道既有的闸门,把"缺什么"在发请求之前说成人话
+    const route = routeModel({
+      choice,
+      ownKey: process.env[choice.apiKeyEnv] ?? "",
+      ownBaseUrl: process.env[choice.baseUrlEnv],
+    });
+    if (route.kind === "blocked") {
+      throw new Error(
+        `看图模型「${choice.label}」代读失败:${route.reason}` +
+          "(当前模型看不了图,带图的消息要先请看图模型把图读成文字;" +
+          "也可以在设置里把当前模型换成能直接看图的那款)"
+      );
+    }
     const adapter = createOpenAICompatibleAdapter({
-      baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
-      apiKey: process.env[choice.apiKeyEnv] ?? "",
+      baseUrl: route.baseUrl,
+      apiKey: route.apiKey,
       model: choice.model,
       vision: true,
       readAttachment,
@@ -66,7 +94,7 @@ export function createVisionBridge(
         // 判据是抛错处贴的 errorClass(issue #389)——不再从错误文案里正则倒推,
         // 网关限流(人话文案,没有 "API 429" 字样)从此也能被认出来
         const delay = RETRY_DELAYS_MS[attempt];
-        if (errorClassOf(e) !== "rate-limit" || delay === undefined) throw e;
+        if (errorClassOf(e) !== "rate-limit" || delay === undefined) throw brandBridgeError(e, model);
         await sleep(delay);
       }
     }
