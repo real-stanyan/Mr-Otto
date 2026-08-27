@@ -1,4 +1,4 @@
-// 「动效:始终开启」是怎么实现的(issue #604)。
+// 「动效:始终开启」是怎么实现的(issue #607)。
 //
 // 系统层的「减弱动效」(Windows 设置 → 辅助功能 → 视觉效果 → 动画效果;
 // macOS 的 Reduce Motion)会让 Chromium 把 prefers-reduced-motion 报成 reduce,

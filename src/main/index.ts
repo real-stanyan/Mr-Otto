@@ -175,7 +175,7 @@ app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
 
-// 动效设置(issue #604)。现读不缓存——读的频率是"开设置页/开窗"量级。
+// 动效设置(issue #607)。现读不缓存——读的频率是"开设置页/开窗"量级。
 // 落点跟着上面 setPath 之后的 userData 走,双开各算各的
 const motionSettingsPath = join(app.getPath("userData"), "motion.json");
 
@@ -335,7 +335,7 @@ function createWindow(): BrowserWindow {
     }, 500);
     win.on("closed", () => clearInterval(zoomWatch));
   }
-  // 每次页面加载完对一次动效档位(#604):覆盖挂在渲染进程上,热重载/重新 load
+  // 每次页面加载完对一次动效档位(#607):覆盖挂在渲染进程上,热重载/重新 load
   // 之后要重挂。系统没减弱的机器上这一步只是问一句 matchMedia,不挂调试器
   win.webContents.on("did-finish-load", () => void syncMotionOverride());
   if (process.env["ELECTRON_RENDERER_URL"]) {
@@ -2091,7 +2091,7 @@ void app.whenReady().then(() => {
     }
   });
 
-  // 动效(#604)。set 完当场把覆盖挂上/撤掉——设置页点一下就该看见球转起来,
+  // 动效(#607)。set 完当场把覆盖挂上/撤掉——设置页点一下就该看见球转起来,
   // 不该让人重启;await 是为了"存下去了"这件事先于回值成立
   ipcMain.handle(CHANNELS.getMotionSettings, () => loadMotionSettings(motionSettingsPath));
   ipcMain.handle(CHANNELS.setMotionSettings, async (_e, settings: MotionSettings) => {

@@ -521,7 +521,7 @@ export interface ShellBridge {
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
   getIslandSettings(): Promise<IslandSettings>;
   setIslandSettings(settings: IslandSettings): Promise<void>;
-  /** 动效设置(设置页外观区读,落 userData/motion.json,issue #604)。
+  /** 动效设置(设置页外观区读,落 userData/motion.json,issue #607)。
       set 之后主进程立刻把覆盖挂上/撤掉——当场生效,不用重启 */
   getMotionSettings(): Promise<MotionSettings>;
   setMotionSettings(settings: MotionSettings): Promise<void>;
@@ -929,7 +929,7 @@ export interface IslandSettings {
   display: IslandDisplay;
 }
 
-/** 动效偏好(#604):system = 跟随系统的 prefers-reduced-motion(出厂默认);
+/** 动效偏好(#607):system = 跟随系统的 prefers-reduced-motion(出厂默认);
     always = 无视系统的"减弱动效",照常播。没有反向的"始终关闭"——系统说减弱
     就减弱,那是无障碍设置,不给人反向覆盖 */
 export type MotionPref = "system" | "always";

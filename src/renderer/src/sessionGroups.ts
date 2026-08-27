@@ -16,7 +16,7 @@ export interface SessionGroup {
 
 /** Windows 形状的路径:盘符开头(C:\\…)或 UNC(\\\\server\\share)。
     只对这两种形状把反斜杠当分隔符——POSIX 下反斜杠是合法文件名字符,
-    无条件按它切会把 /Users/stan/a\\b 的名字截成 b(issue #603 顺带) */
+    无条件按它切会把 /Users/stan/a\\b 的名字截成 b(issue #606) */
 function isWindowsPath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
 }

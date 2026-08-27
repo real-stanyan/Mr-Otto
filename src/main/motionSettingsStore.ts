@@ -1,6 +1,6 @@
 // 动效设置的落点:userData/motion.json(同 islandSettingsStore.ts 的落法)。
 //
-// 为什么要这么一档开关(issue #604):整个 app 都认 prefers-reduced-motion——
+// 为什么要这么一档开关(issue #607):整个 app 都认 prefers-reduced-motion——
 // Tailwind 的 motion-reduce: 变体、app.css 里十几个 @media 块、还有跑 turn 时
 // 那颗 canvas 球(thinking-orbs 在 reduce 下只画一帧静止的)。Windows 的
 // 「设置 → 辅助功能 → 视觉效果 → 动画效果」默认在不少机器上是关的,Chromium

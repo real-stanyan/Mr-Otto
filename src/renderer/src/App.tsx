@@ -1482,7 +1482,7 @@ function AppearancePage() {
     { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
   ];
 
-  // 动效(#604)。null = 还没读回来(同 islandDisplay 的 loaded 模式)。
+  // 动效(#607)。null = 还没读回来(同 islandDisplay 的 loaded 模式)。
   // set 完主进程当场挂/撤覆盖,不用重启,所以这里不需要"存了但还没生效"那一档
   const [motion, setMotion] = useState<MotionSettings | null>(null);
   useEffect(() => {
