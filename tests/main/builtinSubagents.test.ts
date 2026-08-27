@@ -87,12 +87,13 @@ describe("builtinSubagents", () => {
     expect(without.tools).toEqual([]);
   });
 
-  // 三档判据（ADR-0116 记忆按项目分级）：nudge 派出去的 reviewer 不认三档的话，
-  // 会把项目级条目往全局档塞，正好和这次改动反着来
-  it("memory-reviewer 的指令写明三档判据", () => {
+  // 三档判据（ADR-0116，判据正文自 issue #589 起单源在 tierRuleText）：nudge 派出去的
+  // reviewer 不认三档的话，会把项目级条目往全局档塞——上线首日审计（#589）证实这正是
+  // 旧判据「拿不准就写 MEMORY」的实际效果
+  it("memory-reviewer 的指令写明三档判据（单源正文）", () => {
     const def = builtinSubagents(["memory"]).find((s) => s.name === "memory-reviewer")!;
     expect(def.instructions).toContain("PROJECT");
-    expect(def.instructions).toContain("拿不准");
+    expect(def.instructions).toContain("换个项目还成立吗");
   });
 });
 

@@ -14,6 +14,39 @@ export function isMemoryTarget(v: unknown): v is MemoryTarget {
 // 不做成配置：紧上限不是为了省 token，是为了逼出策展；可配置会诱导调数字而非合并条目。
 export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200 };
 
+/** 三档判据的唯一正文（issue #589）。此前三个注入点（memory 工具描述 /
+    memory-reviewer 指令 / system 尾部）各写一份，已经各自漂移过一轮；上线首日
+    审计发现旧判据「拿不准就写 memory」的实际效果是模型几乎全写全局——项目事实
+    堆在 1100 字符的全局档里互相驱逐，唯一一次项目档写入还写反了方向。
+    换向：判据收成一个可回答的问题（换个项目还成立吗），并把「机器/环境事实
+    不进项目档」「一个事实只住一档」明说。upper = 提示词里用大写档名（PROJECT/
+    MEMORY/USER），工具描述用小写（对齐 target 枚举值）。 */
+export function tierRuleText(opts: { upper?: boolean; projectRoot?: string } = {}): string {
+  const P = opts.upper ? "PROJECT" : "project";
+  const M = opts.upper ? "MEMORY" : "memory";
+  const U = opts.upper ? "USER" : "user";
+  const at = opts.projectRoot ? `（${opts.projectRoot}）` : "";
+  return (
+    `${P} 记与当前项目${at}绑定的事（它的代码路径、分支/worktree、构建/门禁怪癖、数据目录、项目约定）；` +
+    `${M} 记换个项目还成立的事（本机 PATH、CLI 登录态、全局工具怪癖）——机器/环境事实不进 ${P}；` +
+    `${U} 记关于用户本人的事。` +
+    `判据一句话：换个项目还成立吗？成立写 ${M}，不成立写 ${P}。` +
+    `一个事实只住一档，别跨档重复；${M} 条目不点名具体项目（点名会被拒，改投 ${P}）。`
+  );
+}
+
+/** 全局档写入点名当前项目的检测（issue #589）：命中返回命中的字面量，没命中返回
+    null。匹配两样——项目根绝对路径、根目录名（大小写不敏感；名字太短误伤率高，
+    ≥3 字符才认）。故意只做子串匹配不做分词：真正跨项目成立的事实本来就不该点名
+    具体项目，误伤的正确出路是模型把项目名从内容里去掉重写，而不是这里做聪明的
+    自然语言判断 */
+export function projectMentionInGlobal(content: string, projectRoot: string): string | null {
+  if (content.includes(projectRoot)) return projectRoot;
+  const base = projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  if (base.length >= 3 && content.toLowerCase().includes(base.toLowerCase())) return base;
+  return null;
+}
+
 export const MEMORY_DIR = "memories";
 /** 项目记忆目录里的两个文件。root.txt 让目录自描述（设置页要显示「这份记忆属于
     哪个项目」），不引入中心索引——索引是派生物，会和磁盘现实脱节 */

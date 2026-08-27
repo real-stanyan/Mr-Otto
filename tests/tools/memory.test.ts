@@ -155,11 +155,11 @@ describe("项目档", () => {
     expect(tool.def.description).not.toContain("PROJECT");
   });
 
-  it("有项目根时枚举含 project，描述里带判据", () => {
+  it("有项目根时枚举含 project，描述里带判据（单源正文，issue #589）", () => {
     const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
     const target = (tool.def.parameters as any).properties.target;
     expect(target.enum).toEqual(["memory", "user", "project"]);
-    expect(tool.def.description).toContain("只在当前项目为真");
+    expect(tool.def.description).toContain("换个项目还成立吗");
   });
 
   it("写 project 落到项目目录，并写 root.txt 让目录自描述", async () => {
@@ -183,5 +183,55 @@ describe("项目档", () => {
     const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
     await expect(tool.run({ target: "project", action: "add", content: "x".repeat(2300) }, world))
       .rejects.toThrow(/2200/);
+  });
+});
+
+// 项目归位守卫（issue #589）：上线首日审计发现项目事实几乎全落全局档，唯一一次
+// 项目档写入还是反向误写。守卫拦「全局档条目点名当前项目」这半边——反方向
+// （机器事实进项目档）没有可靠的文本判据，交给判据文案
+describe("项目归位守卫", () => {
+  const proj = { root: "/Users/x/Github/Mr_Otto", dir: "memories/projects/d3d" };
+
+  it("target=memory 且内容含项目根路径：拒写，指路 project，不落盘", async () => {
+    const { world, store } = fakeWorld();
+    const tool = createMemoryTool(proj);
+    await expect(tool.run({ target: "memory", action: "add", content: "构建产物在 /Users/x/Github/Mr_Otto/dist" }, world))
+      .rejects.toThrow(/project/);
+    expect(store.get("memories/MEMORY.md")).toBeUndefined();
+  });
+
+  it("内容含 repo 目录名（大小写不敏感）也拦", async () => {
+    const tool = createMemoryTool(proj);
+    const { world } = fakeWorld();
+    await expect(tool.run({ target: "memory", action: "add", content: "mr_otto 的 dev 数据目录是 mr-otto-dev" }, world))
+      .rejects.toThrow(/命中/);
+  });
+
+  it("不点名项目的全局事实照常写入", async () => {
+    const tool = createMemoryTool(proj);
+    const { world, store } = fakeWorld();
+    await tool.run({ target: "memory", action: "add", content: "本机 gh 在 /opt/homebrew/bin" }, world);
+    expect(store.get("memories/MEMORY.md")).toBe("本机 gh 在 /opt/homebrew/bin");
+  });
+
+  it("remove 的 old_text 点名项目不拦——清理错放存量要走这条路", async () => {
+    const tool = createMemoryTool(proj);
+    const { world, store } = fakeWorld({ "memories/MEMORY.md": "Mr_Otto 的门禁是 npm test" });
+    await tool.run({ target: "memory", action: "remove", old_text: "Mr_Otto" }, world);
+    expect(store.get("memories/MEMORY.md")).toBe("");
+  });
+
+  it("没有项目根（project=null）时不设防：分不出「点名项目」，别误伤", async () => {
+    const tool = createMemoryTool(null);
+    const { world, store } = fakeWorld();
+    await tool.run({ target: "memory", action: "add", content: "Mr_Otto 相关笔记" }, world);
+    expect(store.get("memories/MEMORY.md")).toBe("Mr_Otto 相关笔记");
+  });
+
+  it("写 project 档点名项目当然不拦", async () => {
+    const tool = createMemoryTool(proj);
+    const { world, store } = fakeWorld();
+    await tool.run({ target: "project", action: "add", content: "Mr_Otto 主工作区多 lane 共用" }, world);
+    expect(store.get("memories/projects/d3d/MEMORY.md")).toBe("Mr_Otto 主工作区多 lane 共用");
   });
 });
