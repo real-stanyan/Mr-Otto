@@ -74,3 +74,22 @@ function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
     })
     .sort((a, b) => b.firstTs - a.firstTs);
 }
+
+/** 任务栏(#559)那一摞:内置 Default 工作区的顶层会话,平铺,lastTs 倒序照原序。
+    和 groupSessionsByWorkspace 共用同一条可见性口径——**子会话(spawnedFrom 非空)
+    同样不进这一栏**:memory-reviewer / Explore 这些派出去的活跑在父会话的
+    workspace 里,而任务栏的会话恰恰都住在内置 Default,于是这一栏是子会话唯一
+    漏得出来的口子(表现:侧栏凭空多出一个叫「当前 MEMORY:」的会话,没人开过它)。
+    口径写成函数而不是在 App.tsx 里再抄一遍谓词——上一次抄漏的正是这一条。 */
+export function taskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
+  return sessions.filter(
+    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+  );
+}
+
+/** 任务栏的「已归档」那一摞:同上,只是要 archived 的那半边 */
+export function archivedTaskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
+  return sessions.filter(
+    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+  );
+}
