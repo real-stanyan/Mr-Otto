@@ -81,6 +81,8 @@ const EMPTY_POLICY: { rules: ExecRule[] } = { rules: [] };
 import { buildApprovalPreview } from "./approvalPreview.js";
 import { TurnDiffTracker, createTurnDiffMiddleware } from "./turnDiff.js";
 import { createImageIntakeMiddleware } from "./imageIntake.js";
+import { createCoworkMiddleware } from "./coworkMiddleware.js";
+import { familyRootOf } from "../shared/workspaceExclusion.js";
 import { createBranchWatchMiddleware } from "./branchWatch.js";
 import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
@@ -160,6 +162,24 @@ function maybeDirtyTreeAware(
   return createDirtyTreeAwareApprover({ dirtyFiles, cwd }, inner, ui);
 }
 
+/** 「这个会话跟我是不是一家人」——子会话 / SideChat 顺着 spawnedFrom 爬到同一个根。
+    同家族共享工作区是故意的（ADR-0152 的豁免），所以它们之间不互拦。
+    结果按会话缓存：spawnedFrom 在会话建出来那一刻就定死了，只有**没见过的**
+    会话 id 才值得再查一次库 */
+function isMyFamily(store: EventStore, sessionId: string): (other: string) => boolean {
+  const memo = new Map<string, boolean>();
+  return (other) => {
+    if (other === sessionId) return true;
+    const hit = memo.get(other);
+    if (hit !== undefined) return hit;
+    const parents = new Map(store.sessions().map((s) => [s.sessionId, s.spawnedFrom]));
+    const rootOf = (id: string) => familyRootOf(id, (x) => parents.get(x));
+    const same = rootOf(other) === rootOf(sessionId);
+    memo.set(other, same);
+    return same;
+  };
+}
+
 export function createAgent(opts: {
   /** app 级资源，由外面注入——欢迎页列会话时 agent 还不存在，库必须先活着 */
   store: EventStore;
@@ -172,6 +192,11 @@ export function createAgent(opts: {
       —— 投影据此告诉模型「你在副本上，合回去要问一句」。缺席 = 直接在用户选的
       目录里干活（第一只水獭 / 非 git 目录），一字不变 */
   isolated?: { projectRoot: string; branch: string };
+  /** 开协作记录（issue #658）：这个工作区**可能同时有别的水獭在动**——也就是
+      非 git 目录（git 的各自拿独立副本，见 isolated）。开了之后写盘会往工作区的
+      协作记录里留言，读盘会看见别人的留言，撞同一个文件会被拦一次。
+      缺席 = 不开，一字不变（独立副本里没有别人，记账只剩噪音） */
+  cowork?: boolean;
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
@@ -666,6 +691,18 @@ export function createAgent(opts: {
       // 工具产出的图片落进附件库,ref 进 tool_result(#594)。放在最外层:
       // 里面那些中间件(审批/钩子)可能把结果整个换掉,换掉之后就不该再留图
       createImageIntakeMiddleware(opts.attachments),
+      // 同一个文件夹里的多只水獭（issue #658）：记账 + 按需注入 + 文件级的闸。
+      // 排在 turnDiff 外面：被这道闸拦下的写盘从没发生过，不该进 turn 聚合
+      ...(opts.cowork
+        ? [
+            createCoworkMiddleware({
+              workspace: opts.workspace,
+              sessionId,
+              isMyFamily: isMyFamily(store, sessionId),
+              title: () => store.titleOf(sessionId),
+            }),
+          ]
+        : []),
       createTurnDiffMiddleware(turnDiffTracker, sessionId, () => engine.runningTurnId, (u) =>
         opts.push.turnDiff?.(u)
       ),

@@ -98,6 +98,9 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **任务 / 项目（侧栏分栏）**：任务 = 内置 Default 工作区（文档区 `Mr Otto/Default`，#559）的会话，平铺不露路径——新手不用先懂「文件夹」；项目 = 其余工程的分组视图。语义钉在内置路径（`builtinWorkspace`）上，与设置里改没改默认工作文件夹无关。档位纯本机视图状态，不落日志。
 - **打包为项目**：Default 会话里产出成形时 agent 主动询问、经审批把点名的文件搬进 `文档区/Mr Otto/<项目名>`（`package_project` 工具，唯一故意越出围栏的能力）。旧对话留在任务栏不动（日志 append-only）；时间线上出一张带「在新项目开会话」CTA 的卡（ADR-0135）。
 
+- **协作记录**：非 git 工作区根目录那本 `Mr Otto 协作记录.md`。多只水獭同时在一个文件夹里干活时互相留言——时间 · 谁 · 动了哪个文件 · 一句为什么（`write_file` 的 `reason` 参数供料，没写退回会话标题）。明文可见是**故意的**：人和水獭都要读，与 ADR-0155 那把刻意藏起来的锁正相反。配套的是**文件级互斥**：撞上同一个文件才拦一次要求重读，不同文件一律放行（ADR-0161）。
+- **文件级互斥**：ADR-0161 收窄 ADR-0152 的结果。非 git 目录里，判据从「同一个文件夹同一时刻只跑一条 turn」变成「别的家族在我看过这个文件之后动过它」。git 仓不变——`git checkout` 抹掉的是 `.git` 里的状态，文件级看不见。
+
 ## Key invariants
 
 - `AGENTS.md` is always the single source of rules; `CLAUDE.md` is always just the `@AGENTS.md` empty shell

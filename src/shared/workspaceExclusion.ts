@@ -97,13 +97,20 @@ export const EXCLUSION_WHY =
 export const EXCLUSION_WAY_OUT =
   `想让两只水獭真的同时干活：给这个会话换一个文件夹，各写各的，互不打架。`;
 
+/** 走到这条提示，说明本来该有的独立副本没建成（ADR-0161 之后，非 git 目录改走
+    文件级的闸 + 协作记录，根本不来这儿）。这句话是诊断：不说的话，用户只知道
+    自己被拦了，不知道系统本来打算怎么伺候他。仍然不提 git 术语（issue #653） */
+export const EXCLUSION_FALLBACK =
+  `正常情况下每只水獭都拿一份独立的工作副本，各干各的互不相干。这次没建成，才退回到同一个文件夹。`;
+
 /** 拒绝时给人看的话。照 git 的口气：说清谁占着、为什么拦、怎么继续 */
 export function conflictMessage(c: WorkspaceConflict): string {
   return (
     `另一只水獭正在这个文件夹里干活，先让它做完：\n` +
     `  文件夹：${c.workspace}\n` +
     `  正在忙的会话：${c.heldByTitle ? `${c.heldByTitle}（${c.heldBy}）` : c.heldBy}\n\n` +
-    `${EXCLUSION_WHY}\n\n` +
+    `${EXCLUSION_WHY}\n` +
+    `${EXCLUSION_FALLBACK}\n\n` +
     `怎么办：\n` +
     `  · 等它做完，再把这条消息发一次；\n` +
     `  · ${EXCLUSION_WAY_OUT}`

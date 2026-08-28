@@ -11,6 +11,12 @@ export const writeFileTool: Tool = {
       properties: {
         path: { type: "string", description: "目标文件的绝对路径" },
         content: { type: "string", description: "要写入的完整内容" },
+        reason: {
+          type: "string",
+          description:
+            "一句话说明这次为什么改它。同一个文件夹里可能有别的水獭在干活，" +
+            "这句话会写进工作区的协作记录，让它们知道文件为什么变了。",
+        },
       },
       required: ["path", "content"],
     },
@@ -18,6 +24,8 @@ export const writeFileTool: Tool = {
   requiresApproval: true,
 
   async run(args, world) {
+    // reason 只给协作记录用（中间件读 ctx.call.args，见 main/coworkMiddleware.ts），
+    // 工具自己不消费它：写盘的语义不因为有没有说明而改变
     const { path, content } = args as { path: string; content: string };
     if (typeof path !== "string" || path.length === 0) {
       throw new Error("write_file: 参数 path 必须是非空字符串");
