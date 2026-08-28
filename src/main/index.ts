@@ -2684,7 +2684,11 @@ void app.whenReady().then(() => {
     {
       // 家族链拍一次快照就够：turn 起跑是低频动作，但 sessions() 是一次查库，
       // 别在 agents 的循环里每条都查一遍
-      const parents = new Map(store.sessions().map((s) => [s.sessionId, s.spawnedFrom]));
+      const rows = store.sessions();
+      const parents = new Map(rows.map((s) => [s.sessionId, s.spawnedFrom]));
+      // 标题只为提示语点名用（issue #653）：会话 id 对用户没有意义，
+      // 「正在忙的是『客户提案』那只」他才知道去看哪一个
+      const titles = new Map(rows.map((s) => [s.sessionId, s.title]));
       const rootOf = (id: string) => familyRootOf(id, (x) => parents.get(x));
       const conflict = turnConflict(
         { sessionId, workspace: agent.workspace, familyRoot: rootOf(sessionId) },
@@ -2693,6 +2697,7 @@ void app.whenReady().then(() => {
           workspace: a.workspace,
           familyRoot: rootOf(a.sessionId),
           running: runningSessions.has(a.sessionId),
+          title: titles.get(a.sessionId) ?? null,
         }))
       );
       if (conflict) throw new Error(conflictMessage(conflict));

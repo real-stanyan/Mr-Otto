@@ -12,6 +12,11 @@ import {
   STALE_AFTER_MS,
   type WorkspaceLockFile,
 } from "../../src/shared/workspaceLock.js";
+import {
+  conflictMessage,
+  EXCLUSION_WHY,
+  EXCLUSION_WAY_OUT,
+} from "../../src/shared/workspaceExclusion.js";
 
 const lock = (over: Partial<WorkspaceLockFile> = {}): WorkspaceLockFile => ({
   pid: 4242,
@@ -53,12 +58,25 @@ describe("lockFileName", () => {
 });
 
 describe("crossProcessMessage", () => {
+  const m = crossProcessMessage(lock({ app: "Mr Otto Dev" }), "/Users/x/文案");
+
   it("点名程序与进程号，并说明锁会自己过期", () => {
-    const m = crossProcessMessage(lock({ app: "Mr Otto Dev" }), "/Users/x/repo");
     expect(m).toContain("Mr Otto Dev");
     expect(m).toContain("4242");
-    expect(m).toContain("/Users/x/repo");
+    expect(m).toContain("/Users/x/文案");
     // 「等一分钟会过期」必须在场：否则用户以为自己被永久锁死了
     expect(m).toContain("过期");
+  });
+
+  it("与进程内那半共用同一段措辞 —— 用户看不见两层的分界（issue #653）", () => {
+    expect(m).toContain(EXCLUSION_WHY);
+    expect(m).toContain(EXCLUSION_WAY_OUT);
+    const other = conflictMessage({ heldBy: "s-1", workspace: "/Users/x/文案" });
+    expect(other).toContain(EXCLUSION_WHY);
+    expect(other).toContain(EXCLUSION_WAY_OUT);
+  });
+
+  it("同样不提 git / worktree", () => {
+    expect(m).not.toMatch(/worktree|git/i);
   });
 });

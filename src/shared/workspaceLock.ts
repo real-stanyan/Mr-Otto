@@ -19,6 +19,8 @@
 // 陈旧锁必须能自愈：进程崩了不该把文件夹永久锁死。两道判据——心跳过期、进程已死。
 // 纯逻辑在这里，真正的读写和 pid 探活在 main 层。
 
+import { EXCLUSION_WHY, EXCLUSION_WAY_OUT } from "./workspaceExclusion.js";
+
 /** 落盘的锁内容。字段都是给人看的诊断信息，判定只用 pid 和 heartbeatTs */
 export interface WorkspaceLockFile {
   /** 持锁进程 */
@@ -61,14 +63,17 @@ export function lockFileName(workspace: string, sha256Hex: (s: string) => string
   return `ws-${sha256Hex(workspace).slice(0, 32)}.json`;
 }
 
-/** 拒绝时给人看的话。与 ADR-0152 同一口气：说清谁占着、怎么继续 */
+/** 拒绝时给人看的话。与 ADR-0152 那半**共用同一段措辞**（issue #653）：
+    用户看不见这两层的分界，两条提示读起来必须是同一句话 */
 export function crossProcessMessage(lock: WorkspaceLockFile, workspace: string): string {
   return (
-    `另一个 Mr Otto 正在这个文件夹里跑：\n` +
+    `另一个 Mr Otto 正在这个文件夹里干活：\n` +
     `  文件夹：${workspace}\n` +
     `  占用的程序：${lock.app}（进程 ${lock.pid}）\n\n` +
-    `两个程序同时在同一个文件夹里跑，一边切分支/改文件，另一边的改动会无声消失。\n` +
-    `继续的办法：等它跑完，或者让这个会话换一个文件夹。\n` +
-    `如果那个程序已经关了，等一分钟锁会自己过期。`
+    `${EXCLUSION_WHY}\n\n` +
+    `怎么办：\n` +
+    `  · 等它做完，再把这条消息发一次；\n` +
+    `  · ${EXCLUSION_WAY_OUT}\n` +
+    `  · 那个程序要是已经关了，等一分钟这里会自己过期解开。`
   );
 }
