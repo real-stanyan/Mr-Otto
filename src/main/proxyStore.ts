@@ -10,6 +10,7 @@
 
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { b64decode, b64encode } from "../shared/remote/b64.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
 
 /** 一笔审计账 */
@@ -25,18 +26,51 @@ export interface ProxyAuditRecord {
   detail?: string;
 }
 
+/**
+ * 一把已 pin 的好友身份公钥（base64）。
+ *
+ * 首次由邀请码里那把一次性 secret 的持有证明建立（proxyConnection 的 tryPair，
+ * issue #657 / ADR-0161），之后握手走正常 pin 路径——邀请码是一次性、10 分钟就过期的，
+ * **长期信任落在这里**：A 重启、B 重连都不必再发一张邀请。
+ */
+export interface ProxyPin {
+  friendUid: string;
+  /** 好友的身份公钥（32 字节，base64） */
+  identityPub: string;
+}
+
+/**
+ * A 给某好友开的 relay 频道 id。
+ *
+ * **要落盘**：channelId 是生成邀请码时随机出来的，B 靠它找到 A 的房间。
+ * 不落盘的话 A 一重启就找不回来了，而邀请码是一次性、10 分钟过期的——
+ * 总不能要求用户每次重开 app 都重发一张邀请。
+ *
+ * 频道 id 本身**不是**信任凭证（知道它只能 attach 到房间，握不了手，
+ * 见 proxyConnection 的 tryPair），所以落盘不构成新的泄漏面。
+ */
+export interface ProxyChannel {
+  friendUid: string;
+  channelId: string;
+}
+
 export interface ProxyStoreData {
   /** 按好友授权的代理白名单 */
   grants: ProxyGrant[];
   /** 审计账（追加式，新→旧排在前面方便读，容量封顶） */
   audits: ProxyAuditRecord[];
+  /** 已 pin 的好友身份公钥（握手层认人用；与 grants 分开——授权是「能干什么」，
+      pin 是「你是谁」，撤销授权时两个一起清） */
+  pins: ProxyPin[];
+  /** 给每个好友开的 relay 频道（A 重启后据此把房间重新开起来等 B） */
+  channels: ProxyChannel[];
 }
 
 /** 审计账的容量上限——append 不封顶会把文件越撑越大。超了丢最旧的 */
 export const AUDIT_CAP = 500;
 
 export function emptyProxyStore(): ProxyStoreData {
-  return { grants: [], audits: [] };
+  return { grants: [], audits: [], pins: [], channels: [] };
 }
 
 /** 解析落盘的 JSON。坏了/不是对象 → 空店（不带着坏数据跑） */
@@ -48,6 +82,9 @@ export function parseProxyStore(json: string | null | undefined): ProxyStoreData
     return {
       grants: Array.isArray(d.grants) ? d.grants : [],
       audits: Array.isArray(d.audits) ? d.audits : [],
+      // pins/channels 是后加的字段（issue #657）：老台账里没有，缺席按空组读，不算坏数据
+      pins: Array.isArray(d.pins) ? d.pins : [],
+      channels: Array.isArray(d.channels) ? d.channels : [],
     };
   } catch {
     return emptyProxyStore();
@@ -65,9 +102,48 @@ export function setGrant(data: ProxyStoreData, grant: ProxyGrant): ProxyStoreDat
   return { ...data, grants };
 }
 
-/** 撤销某好友的全部代理授权。一键收回的落点 */
+/** 撤销某好友的全部代理授权。一键收回的落点。
+    **pin 也一起清**：撤销的语义是「这个好友什么都不剩」，留着 pin 等于留着
+    一条随时能重新握手的通道，只差 A 再点一次授权——那不是用户按下「撤销」时想要的。
+    要重新给，重发一张邀请码即可（这也是重新做一次有意识的授权动作）。 */
 export function revokeGrant(data: ProxyStoreData, friendUid: string): ProxyStoreData {
-  return { ...data, grants: data.grants.filter((g) => g.friendUid !== friendUid) };
+  return {
+    ...data,
+    grants: data.grants.filter((g) => g.friendUid !== friendUid),
+    pins: data.pins.filter((p) => p.friendUid !== friendUid),
+    channels: data.channels.filter((c) => c.friendUid !== friendUid),
+  };
+}
+
+/** 记下给某好友开的频道（整份替换——一个好友一条通道） */
+export function setChannel(data: ProxyStoreData, friendUid: string, channelId: string): ProxyStoreData {
+  const channels = data.channels.filter((c) => c.friendUid !== friendUid);
+  channels.push({ friendUid, channelId });
+  return { ...data, channels };
+}
+
+/** 某好友的频道 id，没开过回 null */
+export function channelFor(data: ProxyStoreData, friendUid: string): string | null {
+  return data.channels.find((c) => c.friendUid === friendUid)?.channelId ?? null;
+}
+
+/** pin 一把好友公钥（同一好友整份替换——一个好友一台机器一把身份密钥） */
+export function setPin(data: ProxyStoreData, friendUid: string, identityPub: Uint8Array): ProxyStoreData {
+  const pins = data.pins.filter((p) => p.friendUid !== friendUid);
+  pins.push({ friendUid, identityPub: b64encode(identityPub) });
+  return { ...data, pins };
+}
+
+/** 某好友已 pin 的公钥（解码后；坏 base64/长度不对的整条丢掉——握手宁可拒也不能用坏钥匙）。
+    回数组而不是单把：proxyConnection 的 peerIdentities 就是逐把试的形状 */
+export function pinnedIdentities(data: ProxyStoreData, friendUid: string): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  for (const pin of data.pins) {
+    if (pin.friendUid !== friendUid) continue;
+    const raw = b64decode(pin.identityPub);
+    if (raw && raw.length === 32) out.push(raw);
+  }
+  return out;
 }
 
 /** 查某好友的授权（A 侧执行器每次收帧都查这个） */

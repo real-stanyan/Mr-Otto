@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   appendAudit,
   AUDIT_CAP,
+  channelFor,
   emptyProxyStore,
   grantFor,
   parseProxyStore,
+  pinnedIdentities,
   revokeGrant,
   serializeProxyStore,
+  setChannel,
   setGrant,
+  setPin,
   type ProxyAuditRecord,
 } from "../../src/main/proxyStore.js";
 import type { ProxyGrant } from "../../src/shared/remote/proxyProtocol.js";
@@ -88,5 +92,59 @@ describe("proxyStore 文件落盘（issue #622 PR-D2）", () => {
     // 写成坏 JSON → 读回空
     writeFileSync(p, "not-json{{{");
     expect(readProxyStore(p).grants).toEqual([]);
+  });
+});
+
+// ─── pin 与频道（issue #657 / ADR-0161）────────────────────────────────
+describe("proxyStore 的 pin 与频道（issue #657 / ADR-0161）", () => {
+  it("setPin/pinnedIdentities 往返；同一好友整份替换", () => {
+    const pubA = new Uint8Array(32).fill(7);
+    const pubB = new Uint8Array(32).fill(9);
+    let d = setPin(emptyProxyStore(), "b1", pubA);
+    expect(pinnedIdentities(d, "b1").map((k) => Array.from(k))).toEqual([Array.from(pubA)]);
+    d = setPin(d, "b1", pubB); // 换机器 = 换身份密钥，整份替换
+    expect(pinnedIdentities(d, "b1").map((k) => Array.from(k))).toEqual([Array.from(pubB)]);
+    expect(pinnedIdentities(d, "b2")).toEqual([]);
+  });
+
+  it("坏 base64 / 长度不对的 pin 读不出来（宁可拒握手，也不用坏钥匙）", () => {
+    const d = parseProxyStore(JSON.stringify({
+      pins: [
+        { friendUid: "b1", identityPub: "!!!not-base64!!!" },
+        { friendUid: "b1", identityPub: "AAAA" }, // 解得出，但不是 32 字节
+      ],
+    }));
+    expect(pinnedIdentities(d, "b1")).toEqual([]);
+  });
+
+  it("setChannel/channelFor 往返", () => {
+    let d = setChannel(emptyProxyStore(), "b1", "chan-1");
+    expect(channelFor(d, "b1")).toBe("chan-1");
+    d = setChannel(d, "b1", "chan-2");
+    expect(channelFor(d, "b1")).toBe("chan-2");
+    expect(channelFor(d, "b2")).toBeNull();
+  });
+
+  it("撤销把授权、pin、频道一起清掉——「这个好友什么都不剩」", () => {
+    let d = setGrant(emptyProxyStore(), G1);
+    d = setPin(d, "b1", new Uint8Array(32).fill(3));
+    d = setChannel(d, "b1", "chan-1");
+    d = setGrant(d, G2);
+    d = setPin(d, "b2", new Uint8Array(32).fill(4));
+
+    d = revokeGrant(d, "b1");
+    expect(grantFor(d, "b1")).toBeNull();
+    expect(pinnedIdentities(d, "b1")).toEqual([]);
+    expect(channelFor(d, "b1")).toBeNull();
+    // 别人的不动
+    expect(grantFor(d, "b2")).not.toBeNull();
+    expect(pinnedIdentities(d, "b2")).toHaveLength(1);
+  });
+
+  it("老台账（没有 pins/channels 字段）读得进来，按空组算", () => {
+    const d = parseProxyStore(JSON.stringify({ grants: [G1], audits: [] }));
+    expect(d.grants).toEqual([G1]);
+    expect(d.pins).toEqual([]);
+    expect(d.channels).toEqual([]);
   });
 });

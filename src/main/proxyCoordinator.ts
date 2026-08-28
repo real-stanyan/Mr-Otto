@@ -23,7 +23,22 @@ import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js
 export interface ProxyWireTransport {
   send(payload: string): void;
   onMessage(cb: (payload: string) => void): void;
+  /** 对端 attach 了（relay 的 `:peer`）。**握手的起跑枪** —— 协调器拿它调
+      connection.start()。注册式而不是构造式：传输比连接先造出来，构造传输那一刻
+      还没有连接可 start（issue #657）。假传输不实现它 = 测试里手动 start */
+  onPeerPresent?(cb: () => void): void;
+  /** 对端走了（`:gone`）或底层断开。可选，同上 */
+  onPeerGone?(cb: () => void): void;
   close(): void;
+}
+
+/** 握手层认人那一套的注入（proxyConnection 的 pairing，issue #657 / ADR-0161）。
+    A 侧填 verifyWith/onPaired/consume，B 侧填 proveWith */
+export interface ProxyPairing {
+  proveWith?: () => Uint8Array | null;
+  verifyWith?: () => Uint8Array | null;
+  onPaired?: (peerIdentityPub: Uint8Array) => void;
+  consume?: () => void;
 }
 
 /** A 侧（host）协调器：接 B 的代理调用，用自己的 MCP 执行 */
@@ -34,8 +49,11 @@ export function startProxyHostCoordinator(deps: {
   transport: ProxyWireTransport;
   /** A 自己的真 McpCapability（mcpHub）——B 的调用最终落在这上面执行 */
   mcp: McpCapability;
-  /** B 的身份公钥（已 pin） */
+  /** B 的身份公钥（已 pin）。首次连接时是空组——信任由下面的 pairing 建立 */
   peerIdentityPub: () => Uint8Array[];
+  /** 邀请码那条受理路径（A 侧：verifyWith 给手里那张活着的邀请，onPaired 落 pin）。
+      **不传 = 只认 pin 组**，首次连接必然握不上手（这是安全的默认，不是 bug） */
+  pairing?: ProxyPairing;
   /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧 */
   friendUid: string;
   /** 读/写授权+审计存储（proxyStore 的持久化由调用方落盘） */
@@ -53,9 +71,12 @@ export function startProxyHostCoordinator(deps: {
     role: "host",
     deviceId: deps.deviceId,
     peerIdentities: deps.peerIdentityPub,
+    ...(deps.pairing ? { pairing: deps.pairing } : {}),
     send: (payload) => deps.transport.send(payload),
     log,
   });
+  // relay 说「B 到了」= 开一轮握手。重连也走这里（每次 attach 都会再来一条 `:peer`）
+  deps.transport.onPeerPresent?.(() => connection.start());
 
   // 连接就绪后，把收到的明文帧交给 proxyHost 执行（白名单 + 审计 + 回传）
   const host = startProxyHost({
@@ -109,6 +130,9 @@ export function startProxyGuestCoordinator(deps: {
   transport: ProxyWireTransport;
   /** A 的身份公钥（从邀请码拿到，B pin 它） */
   peerIdentityPub: () => Uint8Array[];
+  /** 邀请码那条受理路径（B 侧：proveWith 给邀请码里那把一次性 secret，
+      hello 里带上持有证明——A 靠它认得「这条连接是被邀请的那个 B」） */
+  pairing?: ProxyPairing;
   /** A 授权给 B 的服务句柄（invite 流程里 A 给的，B 的工具表只报这些） */
   grantedServers: readonly McpServerHandle[];
   callTimeoutMs?: number;
@@ -122,9 +146,12 @@ export function startProxyGuestCoordinator(deps: {
     role: "guest",
     deviceId: deps.deviceId,
     peerIdentities: deps.peerIdentityPub,
+    ...(deps.pairing ? { pairing: deps.pairing } : {}),
     send: (payload) => deps.transport.send(payload),
     log,
   });
+  // 同 host 侧：relay 报「A 在场」才发 hello，对端不在场时发 hello 只是喂虚空
+  deps.transport.onPeerPresent?.(() => connection.start());
 
   // proxyMcp 的传输：callTool 打帧走连接发走，连接收到明文帧喂回 proxyMcp 匹配 reqId
   const mcp = createProxyMcp({
