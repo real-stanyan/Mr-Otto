@@ -11,7 +11,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { isolatedBranchName, isolatedDirName, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
+import {
+  isolatedBranchName,
+  isolatedDirName,
+  renamedBranch,
+  type IsolatedWorkspace,
+} from "../shared/sessionWorktree.js";
 
 export interface SessionWorktreeDeps {
   /** userData 根；副本落在 <userData>/worktrees/ 下 */
@@ -27,6 +32,13 @@ export interface SessionWorktreeService {
   /** 恢复会话时副本目录不见了（用户删了 / 换了机器）→ 按同一个分支重新挂一个。
       挂不回来 → null，调用方退回项目本体 */
   restore(iso: IsolatedWorkspace, workspace: string): boolean;
+  /** 会话有标题之后给分支改个认得出来的名字（issue #647）。
+      当前分支名现问 git，不从日志读——日志里那份是「当初叫什么」，改过一次就陈旧了。
+      改不动（名字已存在、不是我们建的那种名字）就算了：名字是便利，不是正确性 */
+  rename(workspace: string, title: string): string | null;
+  /** 会话活着时锁住这份副本（issue #647）：锁定原因带 sessionId 与 pid，
+      清理程序据此分得出「正在用」和「早该清了」。照 Claude Code 那行的形状 */
+  lock(workspace: string, sessionId: string): void;
 }
 
 export function createSessionWorktreeService(deps: SessionWorktreeDeps): SessionWorktreeService {
@@ -69,6 +81,22 @@ export function createSessionWorktreeService(deps: SessionWorktreeDeps): Session
       // 空仓库（还没有任何提交）也能建——git 会给它一个未出生的分支，验过（见测试）
       if (tryGit(["worktree", "add", workspace, "-b", branch], projectRoot) === null) return null;
       return { workspace, isolated: { projectRoot, branch } };
+    },
+
+    rename(workspace, title) {
+      const from = tryGit(["branch", "--show-current"], workspace);
+      if (!from) return null;
+      const next = renamedBranch(from, title);
+      if (!next) return null;
+      // -m 而不是 -M：目标名已存在就失败，绝不覆盖别人的分支
+      if (tryGit(["branch", "-m", from, next], workspace) === null) return null;
+      return next;
+    },
+
+    lock(workspace, sessionId) {
+      // 锁只挡「别人来删这份副本」，不挡任何读写。原因串是给清理程序看的：
+      // 里面的 pid 让它能按探活判断这把锁是不是陈旧的（同 ADR-0155 的自愈判据）
+      tryGit(["worktree", "lock", "--reason", `mr-otto session ${sessionId} (pid ${process.pid})`, workspace], workspace);
     },
 
     restore(iso, workspace) {

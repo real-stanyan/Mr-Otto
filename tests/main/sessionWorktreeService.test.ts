@@ -100,4 +100,38 @@ describe("createSessionWorktreeService（issue #641）", () => {
     expect(made).not.toBeNull();
     expect(git(made!.workspace, "branch", "--show-current")).toBe(made!.isolated.branch);
   });
+
+  it("rename：会话有标题之后分支改名，随机后缀留着（目录名带着它，两边对得上）", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "session")!;
+    const suffix = made.isolated.branch.slice(-6);
+    const next = s2.rename(made.workspace, "Files 面板 scroll");
+    expect(next).toBe(`otto/files-scroll-${suffix}`);
+    expect(git(made.workspace, "branch", "--show-current")).toBe(next);
+  });
+
+  it("rename：标题里没有可用字符 → 不改名（留着原名比改成 otto/-xxxxxx 强）", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "session")!;
+    expect(s2.rename(made.workspace, "面板")).toBeNull();
+    expect(git(made.workspace, "branch", "--show-current")).toBe(made.isolated.branch);
+  });
+
+  it("rename：目标名已存在 → 失败不覆盖别人的分支", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "session")!;
+    const suffix = made.isolated.branch.slice(-6);
+    git(proj, "branch", `otto/taken-${suffix}`);
+    expect(s2.rename(made.workspace, "taken")).toBeNull();
+  });
+
+  it("lock：锁定原因带 sessionId 与 pid，清理程序据此分得出正在用还是早该清了", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    s2.lock(made.workspace, "s-42");
+    const porcelain = git(proj, "worktree", "list", "--porcelain");
+    const locked = porcelain.split("\n").find((l) => l.startsWith("locked "));
+    expect(locked).toContain("mr-otto session s-42");
+    expect(locked).toContain(`pid ${process.pid}`);
+  });
 });
