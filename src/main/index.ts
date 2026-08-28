@@ -107,6 +107,7 @@ import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
+import { createWorkspaceLock } from "./workspaceLockFile.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
@@ -579,6 +580,9 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  /** 工作区互斥的跨进程那一半（issue #634，ADR-0154）。落点是机器级临时目录——
+      两个 app 实例看得见同一份，用户的工作区一个字节都不动 */
+  const workspaceLock = createWorkspaceLock({ appName: app.getName() });
 
   // 「压缩中」是 running 灯的一个子档：compact 复用 turn 状态灯（下面的 compact
   // handler），光看 runningSessions 分不出它和普通 turn。渲染层原来靠自己发起
@@ -2675,6 +2679,11 @@ void app.whenReady().then(() => {
         throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
       }
     }
+    // 跨进程那一半（issue #634）：ADR-0152 的 runningSessions 是进程内状态，
+    // 两个 app 实例（dev 版 / 正式版）指着同一个文件夹时互相看不见。紧挨着进程内
+    // 那条判定拿锁——两道判据是同一件事，分开写只因为一道在内存、一道在盘上
+    const wsLock = workspaceLock.acquire(agent.workspace, sessionId);
+    if (typeof wsLock === "string") throw new Error(wsLock);
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
     feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
@@ -2751,6 +2760,7 @@ void app.whenReady().then(() => {
       ));
       throw err;
     } finally {
+      wsLock.release();
       runningSessions.delete(sessionId);
       // turn 收口 = 不可能还有人挂在审批/问卷门上（fail-closed 已经把它们
       // 按拒绝收场了）。挂起表跟着清，别让下一次 sessionRuntime 交出一张
