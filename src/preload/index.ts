@@ -177,6 +177,10 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.friendsSendMessage, friendId, body),
   friendsListMessages: (friendId, beforeId) =>
     ipcRenderer.invoke(CHANNELS.friendsListMessages, friendId, beforeId),
+  shareSessionToFriend: (sessionId, friendUid, message, title, model) =>
+    ipcRenderer.invoke(CHANNELS.shareSessionToFriend, sessionId, friendUid, message, title, model),
+  importSharedSession: (prefix, workspace) =>
+    ipcRenderer.invoke(CHANNELS.importSharedSession, prefix, workspace),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
   onFriendsChanged: subscribe(CHANNELS.friendsChanged),
   onPresenceChanged: subscribe(CHANNELS.presenceChanged),
