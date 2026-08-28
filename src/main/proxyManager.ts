@@ -22,7 +22,8 @@ import {
 } from "../shared/remote/proxyInvite.js";
 import { startProxyHostCoordinator, startProxyGuestCoordinator } from "./proxyCoordinator.js";
 import {
-  channelFor, pinnedIdentities, revokeGrant, setChannel, setGrant, setPin,
+  channelFor, pinnedIdentities, removeBorrow, revokeGrant, setBorrow, setChannel,
+  setGrant, setPin, usableBorrows,
   type ProxyStoreData,
 } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
@@ -32,6 +33,17 @@ import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js
 import type { ProxyWireTransport } from "./proxyCoordinator.js";
 
 export type FriendsResult<T> = { ok: true; value: T } | { ok: false; message: string };
+
+/** B 侧一条借来的通道，给 UI 看的样子 */
+export interface ProxyBorrowStatus {
+  hostUid: string;
+  /** 好友的人话名字。查不到时 UI 自己退回短标签 */
+  label: string;
+  /** 握手过了没有——不是「配过没有」。断线时这里是 false，而台账里那条还在 */
+  connected: boolean;
+  /** 对方此刻授了几个服务（A 推来的清单）。0 = 还没推到 / 被撤光了 */
+  serverCount: number;
+}
 
 /** 代理管理器的依赖（index.ts 装配根填） */
 export interface ProxyManagerDeps {
@@ -49,6 +61,8 @@ export interface ProxyManagerDeps {
   friendUids: () => readonly string[] | null;
   /** 好友的人话名字（进代理工具的描述与 UI）。查不到回空串——调用方自己退回短标签 */
   friendLabel: (uid: string) => string;
+  /** B 侧任一条借来的通道状态变了（接上/断开/授权清单更新）。装配根据此推给渲染层 */
+  onChange?: () => void;
   /** 开一个到 relay 某频道的点对点传输（index.ts 用 createWsTransport + adaptProxyWire 造） */
   openWireTransport: (channelId: string, role: "host" | "guest") => ProxyWireTransport;
   /** proxyStore 的落盘（0600/userData，index.ts 填 readProxyStore/writeProxyStore 的绑定） */
@@ -65,11 +79,15 @@ export interface ProxyManager {
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
   proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: ProxyStoreData["audits"] }>>;
   /**
-   * 把已授权好友的房间重新开起来（app 启动时调一次）。
-   * 邀请码是一次性的，A 重启不该要求用户重发一张——落盘的 channelId + pin 足够
-   * 让 B 直接连回来（这一轮走正常 pin 路径，不消耗邀请）。
+   * 把落盘的通道全部重新连起来（登录那一刻调）：A 侧已授权好友的房间 +
+   * B 侧借来的那些。邀请码是一次性的，重启不该要求用户重发一张——
+   * 两边都靠落盘的 channelId + pin 走正常路径，不消耗邀请。
    */
-  resumeHosts(): void;
+  resume(): void;
+  /** B 侧：当前借来的那些通道的状态（UI 用）。connected 来自握手层，不是「有没有配过」 */
+  borrowStatus(): readonly ProxyBorrowStatus[];
+  /** B 侧：不再借某好友的服务——关通道 + 从台账里删掉（下次启动不再连回去） */
+  proxyDisconnect(hostUid: string): Promise<FriendsResult<null>>;
   /**
    * B 侧：此刻活着的代理通道（issue #670）。装配根拿它把好友的 MCP 合并进
    * 会话的 world（`mergeProxyMcp`）——**这是 proxyMcp 唯一的出口**。
@@ -85,9 +103,11 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
   const log = deps.log ?? (() => {});
   /** A 侧：每个好友一条 host 通道（重开时先关旧的，免得两条连接抢同一个房间） */
   const hosts = new Map<string, { pushGrant(): void; close(): void }>();
-  /** B 侧：当前这条 guest 通道（一次只代理一个 A——UI 上就是「正在用谁的服务」）。
-      带上 friendUid 是因为下游要按它加前缀，带上 mcp 是因为它就是那个出口 */
-  let guest: { friendUid: string; mcp: McpCapability; close(): void } | null = null;
+  /** B 侧：借来的每条通道（issue #676 之前是单条变量，所以一次只能代理一个好友；
+      合并层本身一直支持多条）。带 friendUid 是因为下游要按它加前缀，
+      带 mcp 是因为它就是那个出口，带 isReady 是因为 UI 要显示连没连 */
+  const guests = new Map<string, { mcp: McpCapability; isReady: () => boolean; close(): void }>();
+  const changed = (): void => deps.onChange?.();
 
   /**
    * 开一条 A 侧的 host 通道。`invite` 有值 = 这一轮还接受邀请码证明（首次配对）；
@@ -121,6 +141,34 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       log,
     });
     hosts.set(friendUid, coord);
+  }
+
+  /**
+   * 开一条 B 侧的通道。`secret` 有值 = 首次配对那一轮（hello 里带持有证明）；
+   * 没有 = 重启后的恢复路径，A 早就 pin 了 B，两边都走 pin。
+   */
+  function openGuest(
+    hostUid: string,
+    channelId: string,
+    hostIdentityPub: Uint8Array,
+    secret: Uint8Array | null,
+    selfUid: string
+  ): void {
+    guests.get(hostUid)?.close();
+    const transport = deps.openWireTransport(channelId, "guest");
+    const coord = startProxyGuestCoordinator({
+      crypto: deps.crypto,
+      identity: deps.identity,
+      deviceId: deps.deviceId,
+      fromUid: selfUid,
+      transport,
+      peerIdentityPub: () => [hostIdentityPub],
+      ...(secret ? { pairing: { proveWith: () => secret } } : {}),
+      grantedServers: [], // 初始空——A 握手后推 proxy_grant 帧更新（proxyMcp 动态收）
+      onStateChange: changed,
+      log,
+    });
+    guests.set(hostUid, { mcp: coord.mcp, isReady: () => coord.connection.isReady(), close: coord.close });
   }
 
   return {
@@ -159,23 +207,14 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       }
 
       // B 侧：连 A 的频道（guest 角色），hello 里带上「我持有这张邀请的 secret」的证明，
-      // 同时 pin 邀请码里 A 的身份公钥（双向认证都靠这张带外传来的码）
-      guest?.close();
-      const transport = deps.openWireTransport(inv.channelId, "guest");
-      const coord = startProxyGuestCoordinator({
-        crypto: deps.crypto,
-        identity: deps.identity,
-        deviceId: deps.deviceId,
-        fromUid: uid,
-        transport,
-        peerIdentityPub: () => [inv.hostIdentityPub],
-        pairing: { proveWith: () => inv.secret },
-        grantedServers: [], // 初始空——A 握手后推 proxy_grant 帧更新（proxyMcp 动态收）
-        log,
-      });
-      guest = { friendUid: inv.hostUid, mcp: coord.mcp, close: coord.close };
+      // 同时 pin 邀请码里 A 的身份公钥（双向认证都靠这张带外传来的码）。
+      // **落盘**：邀请码一次性，不记下来 B 一重启就得让对方重发一张（issue #676）
+      deps.saveStore(setBorrow(deps.loadStore(), inv.hostUid, inv.channelId, inv.hostIdentityPub));
+      openGuest(inv.hostUid, inv.channelId, inv.hostIdentityPub, inv.secret, uid);
+      changed();
       // grantedCount 此刻是 0：授权清单在握手后才由 A 推 proxy_grant 帧过来。
-      // UI 据此显示「已连上，等待对方推送授权」，不是「授权为空」
+      // UI 据此显示「已连上，等待对方推送授权」，不是「授权为空」——
+      // 真实数字随后由 onStateChange 推过去
       log(`代理通道已连上对方的频道 ${inv.channelId.slice(0, 8)}…（guest）`);
       return { ok: true, value: { grantedCount: 0 } };
     },
@@ -207,8 +246,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       return { ok: true, value: { audits } };
     },
 
-    resumeHosts() {
+    resume() {
       const cur = deps.loadStore();
+      // ── A 侧：把已授权好友的房间重新开起来 ──
       for (const g of cur.grants) {
         const channelId = channelFor(cur, g.friendUid);
         // 没频道 = 邀请码还没发过；没 pin = B 还没连上过，那张邀请也已经不在内存里了，
@@ -217,19 +257,54 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         if (pinnedIdentities(cur, g.friendUid).length === 0) continue;
         openHost(g.friendUid, channelId, null);
       }
-      if (hosts.size > 0) log(`代理：已恢复 ${hosts.size} 条好友通道`);
+      if (hosts.size > 0) log(`代理：已恢复 ${hosts.size} 条对外通道`);
+
+      // ── B 侧：把借来的那些重新连回去。没有 secret（一次性、不落盘），
+      // 走 pin 路径——A 早就 pin 了 B，B 这边 pin 的是台账里那把公钥 ──
+      const selfUid = deps.currentUid();
+      if (selfUid) {
+        for (const b of usableBorrows(cur)) {
+          openGuest(b.hostUid, b.channelId, b.hostIdentityPub, null, selfUid);
+        }
+        if (guests.size > 0) log(`代理：已恢复 ${guests.size} 条借来的通道`);
+      }
+      changed();
     },
 
     activeProxies() {
-      if (!guest) return [];
-      return [{ friendUid: guest.friendUid, label: deps.friendLabel(guest.friendUid), mcp: guest.mcp }];
+      return [...guests.entries()].map(([friendUid, g]) => ({
+        friendUid, label: deps.friendLabel(friendUid), mcp: g.mcp,
+      }));
+    },
+
+    borrowStatus() {
+      // 台账是底本，活着的通道往上贴状态：断线的那条**仍然要在列表里**——
+      // 用户得看得见「配过、但现在没连上」，而不是它凭空消失
+      return usableBorrows(deps.loadStore()).map((b) => {
+        const g = guests.get(b.hostUid);
+        return {
+          hostUid: b.hostUid,
+          label: deps.friendLabel(b.hostUid),
+          connected: g?.isReady() ?? false,
+          serverCount: g?.mcp.servers().length ?? 0,
+        };
+      });
+    },
+
+    async proxyDisconnect(hostUid) {
+      guests.get(hostUid)?.close();
+      guests.delete(hostUid);
+      deps.saveStore(removeBorrow(deps.loadStore(), hostUid));
+      changed();
+      log(`已断开借来的代理通道：${hostUid}`);
+      return { ok: true, value: null };
     },
 
     closeAll() {
       for (const h of hosts.values()) h.close();
       hosts.clear();
-      guest?.close();
-      guest = null;
+      for (const g of guests.values()) g.close();
+      guests.clear();
     },
   };
 }

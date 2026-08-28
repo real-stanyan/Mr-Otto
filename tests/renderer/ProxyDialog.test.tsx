@@ -39,7 +39,10 @@ const servers: McpServersSnapshot = {
 };
 
 function seed(otter: Record<string, unknown>) {
-  vi.stubGlobal("window", Object.assign(window, { otter }));
+  vi.stubGlobal("window", Object.assign(window, {
+    // 借来的通道是推送式更新的，弹窗打开时拉一次补齐——每个用例都会调到
+    otter: { proxyBorrows: vi.fn(async () => ({ ok: true as const, value: { borrows: [] } })), ...otter },
+  }));
   useChat.setState({
     mcpServers: servers,
     friendsSnapshot: {
@@ -51,6 +54,7 @@ function seed(otter: Record<string, unknown>) {
     },
     proxyGrants: [],
     proxyAudits: [],
+    proxyBorrows: [],
     friendError: null,
   });
 }
@@ -135,6 +139,33 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     await userEvent.click(screen.getByText("接受"));
 
     await waitFor(() => expect(proxyAcceptInvite).toHaveBeenCalledWith("otto-proxy:1:c:AA:BB:1"));
-    expect(await screen.findByText(/等对方推来授权清单/)).toBeInTheDocument();
+    expect(await screen.findByText(/上面那行会显示接上没有/)).toBeInTheDocument();
+  });
+
+  it("借来的通道列表：连没连分得开，断开打到桥上", async () => {
+    const proxyDisconnect = vi.fn(async () => ({ ok: true as const, value: null }));
+    seed({
+      proxyListGrants: vi.fn(async () => ({ ok: true as const, value: { grants: [] } })),
+      proxyDisconnect,
+      // 弹窗打开时会拉一次（推送之外的那扇查询窗口），所以数据从这儿来而不是 setState
+      proxyBorrows: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          borrows: [
+            { hostUid: "a-uid", label: "小明", connected: true, serverCount: 2 },
+            { hostUid: "c-uid", label: "小红", connected: false, serverCount: 0 },
+          ],
+        },
+      })),
+    });
+    render(<ProxyDialog open onOpenChange={() => {}} friend={null} />);
+
+    await userEvent.click(screen.getByText("接受邀请"));
+    // 「配过但没连上」和「连上了但对方一个都没授」是两件事
+    expect(await screen.findByText("2 个服务")).toBeInTheDocument();
+    expect(screen.getByText("没连上")).toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByText("断开")[0]!);
+    await waitFor(() => expect(proxyDisconnect).toHaveBeenCalledWith("a-uid"));
   });
 });

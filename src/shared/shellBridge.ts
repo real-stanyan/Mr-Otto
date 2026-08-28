@@ -844,6 +844,12 @@ export interface ShellBridge {
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[] }>>;
   /** A 侧：一键撤销某好友的全部代理授权（通道立即失效，下一笔调用被拒） */
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
+  /** B 侧：我借来的那些通道此刻怎么样（issue #676）。
+      `connected` 是握手层的实况，不是「配过没有」——断线的那条仍然在列表里，
+      用户得看得见「配过、但现在没连上」。变化推送走 onProxyChanged */
+  proxyBorrows(): Promise<FriendsResult<{ borrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[] }>>;
+  /** B 侧：不再借某好友的服务（关通道 + 从台账删掉，下次启动不再连回去） */
+  proxyDisconnect(hostUid: string): Promise<FriendsResult<null>>;
   /** A 侧：查某好友（或全部）的代理审计账。
       `argsSummary` 是截断到 200 字符的入参 JSON —— ADR-0151 防线 1 要的是
       「谁、何时、哪个工具、**什么参数**、什么结果」，少了参数那条防线只剩三分之二
@@ -853,6 +859,8 @@ export interface ShellBridge {
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
   onFriendsChanged(cb: (snapshot: FriendsSnapshot) => void): Unsubscribe;
+  /** 借来的代理通道有变化（接上/断开/对方改了授权）。全量快照，同 onFriendsChanged 口径 */
+  onProxyChanged(cb: (borrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[]) => void): Unsubscribe;
   /** 我 + 在线好友各自在哪个仓库哪个分支(全量快照,Realtime presence ∪ 心跳列) */
   onWorkspacesChanged(cb: (snapshot: WorkspacesSnapshot) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
@@ -1196,6 +1204,9 @@ export const CHANNELS = {
   proxyListGrants: "otter:proxyListGrants",
   proxyRevoke: "otter:proxyRevoke",
   proxyAudit: "otter:proxyAudit",
+  proxyBorrows: "otter:proxyBorrows",
+  proxyDisconnect: "otter:proxyDisconnect",
+  proxyChanged: "otter:proxyChanged",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
