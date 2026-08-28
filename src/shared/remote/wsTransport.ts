@@ -41,10 +41,14 @@ const PING_MS = 20_000;
     "手机看着连着、其实什么都收不到",比断线难查得多 */
 const SILENT_MS = PING_MS * 2.5;
 
+import type { Role } from "./handshake.js";
+
 export interface WsTransportOpts {
   /** 服务根,不含 /rl。例:https://otto-auth.example/gw */
   baseUrl: string;
-  role: "desktop" | "mobile";
+  /** 连接角色。自远程用 desktop/mobile,好友代理用 host/guest(ADR-0151)——
+      relay 的 parseRole 四种都认,这里只是拼进 ?role= query,不解读语义 */
+  role: Role;
   /** 当前的 Supabase access token。没登录回 null —— 那就不连。
       异步是因为上游 AccountManager.getAccessToken() 每次读 supabase 的 session
       而不是缓存令牌:令牌会过期,缓存一份等于把"过期"变成一次静默失联 */
