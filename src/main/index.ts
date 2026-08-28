@@ -108,7 +108,7 @@ import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
 import { createWorkspaceLock } from "./workspaceLockFile.js";
-import { createSessionWorktreeService } from "./sessionWorktreeService.js";
+import { createSessionWorktreeService, type MergeResult } from "./sessionWorktreeService.js";
 import { shouldIsolate } from "../shared/sessionWorktree.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
@@ -2547,6 +2547,11 @@ void app.whenReady().then(() => {
     // 只有 Default 会话有这份仓(#573);按名字直接试删,不存在就静默过——
     // 项目会话的共享仓名字里没有 sessionId,不会被误删
     const doomedWorkspace = store.sessions().find((s) => s.sessionId === sessionId)?.workspace;
+    // 独立副本的回收（issue #643）：也要在 purge 之前拿——日志没了就不知道它在哪条分支上。
+    // 只回收「干净且已合并」的，其余原样留着：没合的活留在分支上，用户还找得回来
+    const doomedFirst = store.load(sessionId)[0];
+    const doomedIsolated =
+      doomedFirst?.type === "session_created" ? doomedFirst.isolated : undefined;
     for (const id of store.purge(sessionId)) {
       terminals.killSession(id); // 会话没了,它名下的终端也不该继续跑
       browsers.close(id); // 会话没了,它的浏览器也该没
@@ -2559,9 +2564,31 @@ void app.whenReady().then(() => {
         );
       }
     }
+    if (doomedIsolated && doomedWorkspace) {
+      const outcome = sessionWorktrees.recycle(doomedIsolated, doomedWorkspace);
+      if (outcome !== "removed") {
+        // 留下来是有意的，但得让人知道去哪儿找——控制台是这条路径唯一的出口
+        console.warn(`副本没有回收（${outcome}）：${doomedWorkspace}，分支还在 ${doomedIsolated.projectRoot}`);
+      }
+    }
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
     fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
     pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
+  });
+
+  // 把副本合回项目本体（issue #643）。合到项目目录此刻所在的那条分支——
+  // 不猜、不写死 main：用户自己 checkout 在哪就是他说过的话
+  ipcMain.handle(CHANNELS.mergeIsolated, (_e, sessionId: string): MergeResult => {
+    if (runningSessions.has(sessionId)) {
+      return { ok: false, reason: "failed", detail: "turn 进行中不能合并——先等它跑完" };
+    }
+    const first = store.load(sessionId)[0];
+    if (first?.type !== "session_created" || !first.isolated) {
+      return { ok: false, reason: "failed", detail: "这个会话不在独立副本上" };
+    }
+    const workspace = agents.get(sessionId)?.workspace ?? first.workspace;
+    if (!workspace) return { ok: false, reason: "failed", detail: "会话没有记录工作目录" };
+    return sessionWorktrees.merge(first.isolated, workspace);
   });
 
   ipcMain.handle(CHANNELS.archiveSession, (_e, sessionId: string) => {

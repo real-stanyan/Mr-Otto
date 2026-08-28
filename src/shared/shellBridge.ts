@@ -28,6 +28,11 @@ import type {
 } from "./files.js";
 import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
+
+/** 副本合回项目本体的结果（issue #643）。失败分四档，每档对应一句人话 */
+export type IsolatedMergeResult =
+  | { ok: true; into: string; branch: string }
+  | { ok: false; reason: "dirty" | "conflict" | "nothing" | "failed"; detail: string };
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, RealtimeHealth,
   WorkspacesSnapshot,
@@ -626,6 +631,9 @@ export interface ShellBridge {
   gitCheckout(repoDir: string, branch: string, sessionId?: string): Promise<GitCheckoutResult>;
   /** 工作区此刻的未提交改动(只读)。非 git 目录按 kind 降级,渲染层据此不显示改动浮窗 */
   gitStatus(repoDir: string): Promise<GitStatusResult>;
+  /** 把这个会话的独立副本合回项目本体（issue #643，ADR-0159）。
+      合到项目目录此刻所在的那条分支；项目目录脏 / 副本有未提交改动 / 冲突 → 结构化拒绝 */
+  mergeIsolated(sessionId: string): Promise<IsolatedMergeResult>;
   /** Files 面板(只读):列一层目录。全显——node_modules/out/点文件都列,
       不卡的前提是一次只列一层(懒加载),不是靠过滤 */
   filesList(root: string, relDir: string): Promise<FilesResult<FileEntry[]>>;
@@ -1100,6 +1108,7 @@ export const CHANNELS = {
   gitGraphLog: "otter:gitGraphLog",
   gitGraphCommit: "otter:gitGraphCommit",
   gitBranches: "otter:gitBranches",
+  mergeIsolated: "otter:mergeIsolated",
   gitCheckout: "otter:gitCheckout",
   gitStatus: "otter:gitStatus",
   filesList: "otter:filesList",
