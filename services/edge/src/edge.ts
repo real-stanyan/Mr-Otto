@@ -81,12 +81,20 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     const who = await identify(subprotocolToken(req));
     if (who instanceof Response) return who;
 
-    const role: RelayRole | null = parseRole(new URL(req.url).searchParams.get("role"));
-    if (!role) return apiError(400, "role 必须是 desktop 或 mobile", "bad_role");
+    const params = new URL(req.url).searchParams;
+    const role: RelayRole | null = parseRole(params.get("role"));
+    if (!role) return apiError(400, "role 必须是 desktop/mobile/host/guest", "bad_role");
+
+    // 房间键:带 channel 参数就按 channel 分房间(好友代理,issue #622),
+    // 否则按 userId(自远程,向后兼容)。好友代理里 A 和 B 是两个 userId,
+    // 只有按「同一个 channelId」才能进同一房间。channelId 是邀请码里的随机
+    // 32 字节——知道它 = 被邀请,relay 不用懂好友关系(鉴权在握手层,ADR-0151)。
+    const channel = params.get("channel");
+    const roomKey = channel ? `proxy:${channel}` : who.userId;
 
     // 转给 DO 的请求**不带 token**:验完就到此为止,DO 只需要知道 role。
     // 换一个干净的 Request 而不是原样转发 —— 原样转发等于把凭据再往下游递一层
-    return deps.relay(who.userId).fetch(
+    return deps.relay(roomKey).fetch(
       new Request(`https://relay/connect?role=${role}`, {
         headers: { upgrade: "websocket" },
       })

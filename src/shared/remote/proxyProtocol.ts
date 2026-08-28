@@ -51,7 +51,17 @@ export interface ProxyCancel {
   reqId: string;
 }
 
-export type ProxyFrame = ProxyRequest | ProxyResult | ProxyCancel;
+/** A→B 的授权清单帧（握手完成后 A 主动推给 B，issue #622 PR-D2）。
+    B 收到后才知道自己能调哪些服务/工具——这是「grantedServers 从哪来」的答案。
+    不是请求-响应，没有 reqId；A 改授权就重发一帧，B 以最新一帧为准。 */
+export interface ProxyGrantFrame {
+  kind: "proxy_grant";
+  v: typeof PROXY_FRAME_VERSION;
+  /** A 授给 B 的服务 + 工具清单（与 ProxyGrant.allow 同形） */
+  allow: readonly { serverId: string; tools: readonly string[] }[];
+}
+
+export type ProxyFrame = ProxyRequest | ProxyResult | ProxyCancel | ProxyGrantFrame;
 
 export function encodeProxyFrame(f: ProxyFrame): string {
   return JSON.stringify(f);
@@ -69,9 +79,14 @@ export function decodeProxyFrame(raw: string): ProxyFrame | null {
   if (typeof o !== "object" || o === null) return null;
   const f = o as Record<string, unknown>;
   if (f.v !== PROXY_FRAME_VERSION) return null;
-  if (typeof f.reqId !== "string" || !f.reqId) return null;
   switch (f.kind) {
+    case "proxy_grant": {
+      // grant 帧没有 reqId（主动推送，非请求-响应）
+      if (!Array.isArray(f.allow)) return null;
+      return f as unknown as ProxyGrantFrame;
+    }
     case "proxy_req":
+      if (typeof f.reqId !== "string" || !f.reqId) return null;
       if (typeof f.fromUid === "string" && f.fromUid &&
           typeof f.serverId === "string" && f.serverId &&
           typeof f.tool === "string" && f.tool) {
@@ -79,9 +94,11 @@ export function decodeProxyFrame(raw: string): ProxyFrame | null {
       }
       return null;
     case "proxy_res":
+      if (typeof f.reqId !== "string" || !f.reqId) return null;
       if (typeof f.ok === "boolean") return f as unknown as ProxyResult;
       return null;
     case "proxy_cancel":
+      if (typeof f.reqId !== "string" || !f.reqId) return null;
       return f as unknown as ProxyCancel;
     default:
       return null;

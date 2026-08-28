@@ -61,3 +61,32 @@ describe("proxyStore（好友代理授权/审计落盘，issue #622 PR-D1）", (
     expect(d.audits.some((a) => a.ts === 1)).toBe(false); // 最旧的丢了
   });
 });
+
+// ─── 文件落盘层（0600/userData）─────────────────────────────────
+describe("proxyStore 文件落盘（issue #622 PR-D2）", () => {
+  it("读不存在的文件回空台账", async () => {
+    const { readProxyStore } = await import("../../src/main/proxyStore.js");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const d = readProxyStore(join(tmpdir(), `proxy-test-nonexist-${Date.now()}.json`));
+    expect(d.grants).toEqual([]);
+    expect(d.audits).toEqual([]);
+  });
+
+  it("写读往返一致 + 坏 JSON 回空", async () => {
+    const { readProxyStore, writeProxyStore, setGrant } = await import("../../src/main/proxyStore.js");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { writeFileSync } = await import("node:fs");
+    const p = join(tmpdir(), `proxy-test-${Date.now()}.json`);
+    // 写一个带授权的台账
+    writeProxyStore(p, setGrant(emptyProxyStore(), { friendUid: "b1", allow: [{ serverId: "shopify", tools: ["get_orders"] }] }));
+    const back = readProxyStore(p);
+    expect(back.grants).toHaveLength(1);
+    expect(back.grants[0]?.friendUid).toBe("b1");
+    expect(back.grants[0]?.allow[0]?.tools).toEqual(["get_orders"]);
+    // 写成坏 JSON → 读回空
+    writeFileSync(p, "not-json{{{");
+    expect(readProxyStore(p).grants).toEqual([]);
+  });
+});

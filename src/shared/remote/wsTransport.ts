@@ -49,6 +49,10 @@ export interface WsTransportOpts {
   /** 连接角色。自远程用 desktop/mobile,好友代理用 host/guest(ADR-0151)——
       relay 的 parseRole 四种都认,这里只是拼进 ?role= query,不解读语义 */
   role: Role;
+  /** 好友代理的频道 id(issue #622)。给了就拼进 ?channel= query,relay 按它
+      分房间(A 和 B 两个 userId 靠同一 channelId 进同一房间);不给 = 自远程,
+      relay 按 userId 分房间(向后兼容)。 */
+  channel?: string;
   /** 当前的 Supabase access token。没登录回 null —— 那就不连。
       异步是因为上游 AccountManager.getAccessToken() 每次读 supabase 的 session
       而不是缓存令牌:令牌会过期,缓存一份等于把"过期"变成一次静默失联 */
@@ -62,7 +66,8 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
   const WS = opts.wsImpl ?? WebSocket;
   const log = opts.log ?? (() => {});
   const base = opts.baseUrl.replace(/\/+$/, "");
-  const url = `${base}/rl/v1/connect?role=${opts.role}`;
+  const channelQ = opts.channel ? `&channel=${encodeURIComponent(opts.channel)}` : "";
+  const url = `${base}/rl/v1/connect?role=${opts.role}${channelQ}`;
 
   let onMsg: (p: string, from: string) => void = () => {};
   let onPeer: (cid: string) => void = () => {};

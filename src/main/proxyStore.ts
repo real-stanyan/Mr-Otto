@@ -8,6 +8,8 @@
 // 纯逻辑 + 注入的读写：文件 IO 由调用方（main 装配根）做，本模块只管
 // 「对象 ↔ JSON」的序列化与合并，假 fs 即可测试。
 
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
 
 /** 一笔审计账 */
@@ -78,4 +80,26 @@ export function appendAudit(data: ProxyStoreData, entry: ProxyAuditRecord): Prox
   const audits = [entry, ...data.audits];
   if (audits.length > AUDIT_CAP) audits.length = AUDIT_CAP;
   return { ...data, audits };
+}
+
+
+// ─── 文件落盘（0600，userData 下）────────────────────────────────
+// 与 mcp-auth.json 同一套口径：好友代理的授权是「谁能用你的凭证」的台账，
+// 文件只属当前用户可读写。读失败（不存在/坏 JSON）回落空台账而不是抛——
+// 一个新装的实例本就该是空台账。
+
+/** 读 userData 下的代理台账文件。不存在/坏 JSON 回空台账 */
+export function readProxyStore(path: string): ProxyStoreData {
+  try {
+    return parseProxyStore(readFileSync(path, "utf8"));
+  } catch {
+    return emptyProxyStore();
+  }
+}
+
+/** 写代理台账文件（0600）。先建目录再写，已有文件补一刀 chmod（同 keyVault） */
+export function writeProxyStore(path: string, data: ProxyStoreData): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, serializeProxyStore(data), { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
