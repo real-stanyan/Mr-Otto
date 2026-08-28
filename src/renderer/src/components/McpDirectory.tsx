@@ -74,6 +74,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
   const [filling, setFilling] = useState<DirectoryItem | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [installNote, setInstallNote] = useState<string | null>(null);
 
   // 每次查询的编号。回来的结果对不上此刻的编号 = 它属于一个已经被顶掉的
   // 查询，丢掉（见文件顶部注释：IPC 那头没有取消这回事，只能在这里判）
@@ -125,6 +126,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
     const id = uniqueServerId(entry.id, installedIds);
     setInstalling(entry.id);
     setInstallError(null);
+    setInstallNote(null);
     try {
       await saveMcpServer(id, configFromEntry(entry, values));
     } catch (e) {
@@ -133,12 +135,23 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
       return;
     }
     if (entry.transport === "http") {
-      // 授权失败不等于装失败：配置已经落盘了，下面那张卡片上还能再点一次
-      // 「授权」。把它报成"装不上"是撒谎
-      try {
-        await authorizeMcpServer(id);
-      } catch (e) {
-        setInstallError(`「${id}」已装上，但授权没跑通：${bridgeErrorMessage(e)}`);
+      if (item.verified) {
+        // 授权失败不等于装失败：配置已经落盘了，下面那张卡片上还能再点一次
+        // 「授权」。把它报成"装不上"是撒谎
+        try {
+          await authorizeMcpServer(id);
+        } catch (e) {
+          setInstallError(`「${id}」已装上，但授权没跑通：${bridgeErrorMessage(e)}`);
+        }
+      } else {
+        // 未核验的不自动拉授权。授权会按对方 server 自己给的 OAuth 元数据
+        // 开系统浏览器（主进程的 shell.openExternal），也就是说：在一个开放
+        // 投稿的注册表里点一下卡片，浏览器就被带去一个陌生人指定的地址。
+        // 「代码跑在对方机器上」这条豁免讲的是不执行代码，管不到"把用户的
+        // 浏览器送去哪"——所以这一步交回给用户，在他自己想授权的时候点
+        setInstallNote(
+          `「${id}」已装上。这台来自公开注册表，没有自动拉授权——要用的话，在下面那台的卡片里点一次「授权」。`
+        );
       }
     }
     setInstalling(null);
@@ -146,6 +159,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
 
   const start = (item: DirectoryItem) => {
     setInstallError(null);
+    setInstallNote(null);
     if (needsInstallConfirm(item)) {
       setConfirming(item);
       return;
@@ -186,6 +200,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
       </div>
 
       {installError && <p className="text-[13px] text-err">{installError}</p>}
+      {installNote && <p className={HINT}>{installNote}</p>}
 
       {curated.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -294,11 +309,17 @@ function DirectoryCard({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-[6px]">
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{entry.name}</span>
-          {verified && (
+          {/* 长尾卡也要自己带记号：分隔线只在区块顶部，24 条结果滚两屏之后它
+              早就出了视口，那时候「这张是不是核过的」只能靠"没有已核验角标"
+              去反推——缺席不是信号。两个记号同样安静（同字号、同弱色），
+              区别只在字面 */}
+          {verified ? (
             <span className="inline-flex shrink-0 items-center gap-[3px] text-[10.5px] text-muted-foreground">
               <ShieldCheck className="size-[11px]" aria-hidden />
               已核验
             </span>
+          ) : (
+            <span className="shrink-0 text-[10.5px] text-muted-foreground/70">未核验</span>
           )}
         </div>
         <p className="truncate text-[12px] text-muted-foreground" title={entry.description}>

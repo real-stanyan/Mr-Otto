@@ -134,6 +134,57 @@ describe("mapRegistryServer —— remote 形态", () => {
     expect(mapRegistryServer(REMOTE_WITH_TOKEN)!.auth).toBe("token");
   });
 
+  // param 只留下占位符名，请求头名（Authorization）和 `Bearer ` 这个前缀——
+  // 也就是认证方案本身——从前在这一步被扔掉了，落盘的于是成了
+  // `smithery_api_key: <key>`，服务端永远 401
+  it("请求头连名带模板一起留下 —— 只有占位符名拼不回 Authorization: Bearer …", () => {
+    expect(mapRegistryServer(REMOTE_WITH_TOKEN)!.headerTemplates).toEqual({
+      Authorization: "Bearer {smithery_api_key}",
+    });
+  });
+
+  it("一个头都没有的条目不带 headerTemplates", () => {
+    expect(mapRegistryServer(REMOTE_NO_AUTH)!.headerTemplates).toBeUndefined();
+  });
+
+  it("必填但模板里没有占位符：整个值就是要问用户的那一格", () => {
+    const record = {
+      server: {
+        name: "com.example/bare",
+        remotes: [
+          {
+            type: "streamable-http",
+            url: "https://bare.example/mcp",
+            headers: [{ name: "X-Api-Key", value: "", isRequired: true }],
+          },
+        ],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { isLatest: true } },
+    };
+    const e = mapRegistryServer(record)!;
+    expect(e.params.map((p) => p.name)).toEqual(["X-Api-Key"]);
+    expect(e.headerTemplates).toEqual({ "X-Api-Key": "{X-Api-Key}" });
+  });
+
+  it("非必填的静态头原样带上（版本号之类），不变成一格要填的东西", () => {
+    const record = {
+      server: {
+        name: "com.example/static",
+        remotes: [
+          {
+            type: "streamable-http",
+            url: "https://static.example/mcp",
+            headers: [{ name: "X-Api-Version", value: "2026-08-01" }],
+          },
+        ],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { isLatest: true } },
+    };
+    const e = mapRegistryServer(record)!;
+    expect(e.params).toEqual([]);
+    expect(e.headerTemplates).toEqual({ "X-Api-Version": "2026-08-01" });
+  });
+
   it("没有任何凭据要求 = auth none，不猜 oauth", () => {
     const e = mapRegistryServer(REMOTE_NO_AUTH)!;
     expect(e.auth).toBe("none");

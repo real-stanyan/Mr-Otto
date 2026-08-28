@@ -9,6 +9,7 @@ import {
   uniqueServerId,
 } from "../../src/renderer/src/lib/mcpDirectory.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
+import { mapRegistryServer } from "../../src/shared/mcpRegistry.js";
 
 const http = (id: string): CatalogEntry => ({
   id,
@@ -157,7 +158,43 @@ describe("configFromEntry", () => {
     });
   });
 
-  it("http：没有占位符可代的参数落进 headers", () => {
+  // 端到端钉住这一趟：注册表原始记录 → mapRegistryServer → configFromEntry。
+  // 从前这里存的是 `smithery_api_key: <key>` —— 键名是问用户时用的**占位符**名，
+  // 不是请求头名，`Bearer ` 前缀也没了。服务端 401，而用户看到的是一条指向
+  // OAuth 的授权失败，凭据躺在 mcp.json 里一个毫无意义的键下面
+  it("注册表的 secret header 走完一圈：键名是 Authorization，值带 Bearer 前缀", () => {
+    const entry = mapRegistryServer({
+      server: {
+        name: "ai.smithery/smithery-notion",
+        title: "Notion",
+        remotes: [
+          {
+            type: "streamable-http",
+            url: "https://server.smithery.ai/@smithery/notion/mcp",
+            headers: [
+              {
+                name: "Authorization",
+                value: "Bearer {smithery_api_key}",
+                isRequired: true,
+                isSecret: true,
+              },
+            ],
+          },
+        ],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { isLatest: true } },
+    })!;
+    // 表单上问的是占位符名（它才是有意义的标签）
+    expect(entry.params.map((p) => p.name)).toEqual(["smithery_api_key"]);
+    expect(configFromEntry(entry, { smithery_api_key: "sk-1" })).toEqual({
+      kind: "http",
+      url: "https://server.smithery.ai/@smithery/notion/mcp",
+      headers: { Authorization: "Bearer sk-1" },
+      enabled: true,
+    });
+  });
+
+  it("http：没有模板可装的参数不落盘 —— 宁可缺一个头，也不写一个毫无意义的键", () => {
     const entry: CatalogEntry = {
       ...http("smithery"),
       params: [{ name: "smithery_api_key", description: "", required: true }],
@@ -166,7 +203,21 @@ describe("configFromEntry", () => {
     expect(cfg).toEqual({
       kind: "http",
       url: "https://smithery.test/mcp",
-      headers: { smithery_api_key: "tok" },
+      headers: {},
+      enabled: true,
+    });
+  });
+
+  it("没填的参数不留一个装着 {占位符} 字面量的头", () => {
+    const entry: CatalogEntry = {
+      ...http("x"),
+      params: [{ name: "tok", description: "", required: false }],
+      headerTemplates: { Authorization: "Bearer {tok}" },
+    };
+    expect(configFromEntry(entry, {})).toEqual({
+      kind: "http",
+      url: "https://x.test/mcp",
+      headers: {},
       enabled: true,
     });
   });

@@ -52,15 +52,42 @@ function paramNameFromHeader(h: Record<string, unknown>): string | undefined {
   return hole ?? str(h.name);
 }
 
-function paramsFromHeaders(headers: unknown[]): CatalogParam[] {
-  const out: CatalogParam[] = [];
+/** 请求头这一趟只走一遍，params 和 headerTemplates 一起产出——**这两样必须
+    同源**：param 是问用户的那一格，template 是把答案装回请求头的那个模子，
+    分两个函数各扫一遍，就有了"有 param 没 template"的可能，而那正是凭据落进
+    `smithery_api_key: <key>` 这种无意义键的路。同一个循环产出，这类不同步
+    在构造上就不存在。 */
+function fromHeaders(headers: unknown[]): {
+  params: CatalogParam[];
+  templates: Record<string, string>;
+} {
+  const params: CatalogParam[] = [];
+  const templates: Record<string, string> = {};
   for (const h of headers) {
-    if (!isObj(h) || h.isRequired !== true) continue;
-    const name = paramNameFromHeader(h);
-    if (name === undefined) continue;
-    out.push({ name, description: str(h.description) ?? `${name} 的值`, required: true });
+    if (!isObj(h)) continue;
+    const headerName = str(h.name);
+    const template = str(h.value);
+    const hasHole = template !== undefined && /\{\w+\}/.test(template);
+    if (h.isRequired === true) {
+      const name = paramNameFromHeader(h);
+      if (name !== undefined) {
+        params.push({ name, description: str(h.description) ?? `${name} 的值`, required: true });
+        if (headerName !== undefined) {
+          // 必填但模板里没有占位符（`"value": ""` 或直接写着 `Bearer YOUR_TOKEN`）：
+          // paramNameFromHeader 这时已经退回拿 header 名当参数名，那就把整个值
+          // 当成"要问用户的东西"。丢掉 `Bearer ` 这种前缀是这一支的已知代价——
+          // 注册表的约定本来就是用 {占位符} 标出用户要填的部分，没标就没得推
+          templates[headerName] = hasHole ? template : `{${name}}`;
+        }
+      }
+      continue;
+    }
+    // 非必填的静态头（版本号之类）原样带上；带占位符却又不必填的没法问，跳过
+    if (headerName !== undefined && template !== undefined && !hasHole) {
+      templates[headerName] = template;
+    }
   }
-  return out;
+  return { params, templates };
 }
 
 function paramsFromEnv(vars: unknown[]): CatalogParam[] {
@@ -111,7 +138,7 @@ export function mapRegistryServer(record: unknown): CatalogEntry | null {
     (r) => isObj(r) && r.type === "streamable-http" && str(r.url) !== undefined
   );
   if (isObj(remote)) {
-    const params = paramsFromHeaders(arr(remote.headers));
+    const { params, templates } = fromHeaders(arr(remote.headers));
     const secret = arr(remote.headers).some((h) => isObj(h) && h.isSecret === true);
     return {
       id,
@@ -122,6 +149,9 @@ export function mapRegistryServer(record: unknown): CatalogEntry | null {
       params,
       auth: secret || params.length > 0 ? "token" : "none",
       authNote: params[0]?.description ?? UNVERIFIED_NOTE,
+      // 一个头都没有的条目不带这个字段（exactOptionalPropertyTypes：给了就得是
+      // 真值，不能是 undefined）
+      ...(Object.keys(templates).length > 0 ? { headerTemplates: templates } : {}),
     };
   }
 

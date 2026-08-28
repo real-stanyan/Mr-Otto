@@ -32,6 +32,15 @@ export interface CatalogEntry {
       **刻意不接受远程 URL**：注册表条目的 icons 由投稿者自由填写，让渲染进程
       去加载等于每翻一次目录就把用户 IP 交给一批陌生服务器。长尾层一律色块 */
   icon?: string;
+  /** 可选：http 传输的请求头模板。键是**真实**请求头名，值是带 {占位符} 的模板
+      （`Authorization` → `Bearer {smithery_api_key}`）。
+      为什么不能只靠 params 拼：params 里的名字是**占位符**名（它才是问用户时
+      该显示的标签），而请求头名和 `Bearer ` 这个前缀合起来才是认证方案本身。
+      只留占位符名去落盘，存出来的是 `smithery_api_key: <key>` —— 服务端永远
+      401，而用户看到的却是一条指向 OAuth 的授权失败，凭据还躺在 mcp.json 里
+      一个毫无意义的键下面。
+      精选层用不上（它们的凭据要么走 OAuth，要么就在 url 模板里），所以是可选的 */
+  headerTemplates?: Readonly<Record<string, string>>;
 }
 
 export const MCP_CATALOG: readonly CatalogEntry[] = [

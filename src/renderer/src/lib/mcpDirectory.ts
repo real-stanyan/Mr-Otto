@@ -77,14 +77,19 @@ export function uniqueServerId(base: string, existingIds: readonly string[]): st
 }
 
 /** 目录条目 + 用户填的参数值 → 可落盘的配置。
-    值先代进 url / args 里的 `{占位符}`；代不进去的（注册表把 stdio 的
-    environmentVariables 和 http 的请求头都折成了 params，参数名就是变量名，
-    模板本身没留占位符）落进 env / headers ——不能因为"没找到占位符"就把
-    用户刚填的凭据丢掉，那是一次静默的数据丢失。
-    http 那一路存的键名是**参数名**而不是真实请求头名（映射层没保留它），
-    所以这条路装出来的远程 server 可能连不上，用户在下面的行编辑器里改一下
-    键名即可——值还在，比人间蒸发强。
-    空值不落盘：没填的可选参数不该变成一个空环境变量 */
+    值代进 url / args / 请求头模板里的 `{占位符}`。两种传输的收尾不一样：
+
+    - **http**：请求头只从 `entry.headerTemplates` 生成，键名是**真实**请求头名
+      （`Authorization`），值是整条模板代完的结果（`Bearer <key>`）。不拿参数名
+      当键名——那样存出来的 `smithery_api_key: <key>` 服务端永远 401，用户看到的
+      却是一条指向 OAuth 的授权失败，而凭据已经躺在 mcp.json 里一个毫无意义的键
+      下面了。params 和 headerTemplates 在映射层是同一个循环产出的（fromHeaders），
+      所以"有参数没地方放"在构造上不成立。
+    - **stdio**：注册表把 environmentVariables 折成 params，**参数名就是环境变量
+      名**，args 里本来就没有占位符可代——代不进去的落 env 才是对的。
+
+    空值、以及代完仍留着占位符的（用户没填），一律不落盘：宁可少一个头/一个环境
+    变量让服务端明说缺什么，也不写一个装着 `{hole}` 字面量的键 */
 export function configFromEntry(
   entry: CatalogEntry,
   values: Readonly<Record<string, string>>
@@ -97,16 +102,22 @@ export function configFromEntry(
       used.add(name);
       return v;
     });
-  const leftovers = (): Record<string, string> =>
-    Object.fromEntries(
-      Object.entries(values).filter(([k, v]) => !used.has(k) && v !== "")
-    );
+  const hasHole = (text: string): boolean => /\{\w+\}/.test(text);
   if (entry.transport === "http") {
     const url = fill(entry.url ?? "");
-    return { kind: "http", url, headers: leftovers(), enabled: true };
+    const headers: Record<string, string> = {};
+    for (const [headerName, template] of Object.entries(entry.headerTemplates ?? {})) {
+      const value = fill(template);
+      if (value === "" || hasHole(value)) continue;
+      headers[headerName] = value;
+    }
+    return { kind: "http", url, headers, enabled: true };
   }
   const args = (entry.args ?? []).map(fill);
-  return { kind: "stdio", command: entry.command ?? "", args, env: leftovers(), enabled: true };
+  const env = Object.fromEntries(
+    Object.entries(values).filter(([k, v]) => !used.has(k) && v !== "")
+  );
+  return { kind: "stdio", command: entry.command ?? "", args, env, enabled: true };
 }
 
 /** 确认卡上那句"从 <哪儿> 下载"。认不出的运行时不冒充 npm——说错了比说
