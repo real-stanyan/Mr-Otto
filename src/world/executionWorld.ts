@@ -260,6 +260,11 @@ export interface ExecutionWorld {
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
+    /** 可选：JSON GET。可选的理由同 execDetached/openTerminal——仓里几十处测试
+        假 world 只实现了 postJson，必填会让它们全红，而那些红跟网络能力无关。
+        缺席 = 这个世界不提供 GET，调用方（tools/mcpCatalog.ts）据此说人话。
+        v2 Docker 世界若要断网，不实现这个字段即可 */
+    getJson?(url: string, opts?: HttpPostOptions): Promise<unknown>;
   };
   /** 可选：这个世界开不开得了交互终端。
       可选 = 向后兼容（旧实现和测试里的假 world 零改动，同 ExecOptions 的先例）；
@@ -315,6 +320,13 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
+      // 用 ?. 探测而非 world.http.getJson：像 tests/loop/engine.autoCompact.test.ts
+      // 那样把假 world 写成 `{} as ExecutionWorld`（连 http 本身都没有）的测试
+      // 早已存在——postJson 那行是闭包里惰性访问，只有真调用才会炸；这里的存在性
+      // 探测发生在构造 wrapper 的这一刻，必须扛住 http 缺席，不能提前把它炸穿
+      ...(world.http?.getJson
+        ? { getJson: (url: string, opts?: HttpPostOptions) => world.http.getJson!(url, { ...opts, signal }) }
+        : {}),
     },
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser
