@@ -9,6 +9,7 @@ import type { ApprovalRequest, IslandBoot, TurnDiffUpdate, TurnStatusUpdate } fr
 import { toolFilePath, toolSummary } from "../shared/toolSummary.js";
 import type { SessionSummary } from "../session/store.js";
 import type { IslandAgent, IslandFleet } from "../shared/shellBridge.js";
+import { localWorkspaceLens, type WorkspaceLens } from "./workspaceLens.js";
 
 export type IslandPhase = "idle" | "active" | "approval";
 
@@ -113,15 +114,22 @@ export function reduceIsland(s: IslandState, input: IslandInput): IslandState {
 }
 
 /** 侧栏可见集合口径 + 同序:滤掉子会话(spawnedFrom!=null)/无 workspace,
-    按 workspace 分组、组内 lastTs 倒序、组序按组内最近 lastTs 倒序,展平。
-    与 renderer 的 groupSessionsByWorkspace 同规则(那份带 UI 标签,这里只要顺序) */
-export function orderedVisibleSessions(sessions: SessionSummary[]): SessionSummary[] {
+    按**项目根**分组、组内 lastTs 倒序、组序按组内最近 lastTs 倒序,展平。
+    分组键从 workspace 换成项目根之后(ADR-0157 的 worktree 折回主仓),同一个项目的
+    几只水獭在这里就是连续的一段——Swift 侧的分组只做"连续切段",顺序在这里定死。
+    镜头由主进程注入(要读 .git),默认镜头 = 就地当项目,于是非 worktree 的仓库
+    与旧行为逐字一致。 */
+export function orderedVisibleSessions(
+  sessions: SessionSummary[],
+  lens: WorkspaceLens = localWorkspaceLens
+): SessionSummary[] {
   const byDir = new Map<string, SessionSummary[]>();
   for (const s of sessions) {
     if (s.workspace === null || s.spawnedFrom !== null) continue;
-    const bucket = byDir.get(s.workspace);
+    const key = lens(s.workspace).projectRoot;
+    const bucket = byDir.get(key);
     if (bucket) bucket.push(s);
-    else byDir.set(s.workspace, [s]);
+    else byDir.set(key, [s]);
   }
   return [...byDir.values()]
     .map((list) => [...list].sort((a, b) => b.lastTs - a.lastTs))
@@ -130,7 +138,11 @@ export function orderedVisibleSessions(sessions: SessionSummary[]): SessionSumma
 }
 
 /** 一份 IslandState(可能没有,按 idle)+ SessionSummary → 拍平成一行 IslandAgent */
-export function flattenAgent(state: IslandState | undefined, session: SessionSummary): IslandAgent {
+export function flattenAgent(
+  state: IslandState | undefined,
+  session: SessionSummary,
+  lens: WorkspaceLens = localWorkspaceLens
+): IslandAgent {
   const s = state ?? initialIsland;
   const ct = s.currentTool ? toolSummary(s.currentTool) : null;
   let pending: IslandAgent["pendingApproval"] = null;
@@ -146,18 +158,29 @@ export function flattenAgent(state: IslandState | undefined, session: SessionSum
     turnStartedAt: s.turnStartedAt,
     pendingApproval: pending,
     workspace: session.workspace,
+    // workspace 为 null 的史前会话没有可解析的来历——两个字段一起缺席,
+    // Swift 侧照旧归到"其他"组
+    ...(session.workspace === null ? {} : facts(session.workspace, lens)),
     ...(s.turnDiff ? { turnDiff: s.turnDiff } : {}),
   };
+}
+
+/** workspace → 拍在行上的那两个可选字段。branch 只在真是副本时出现:
+    "缺席"和"null"在 NDJSON 那头是同一件事,不多发一个 null 上线 */
+function facts(workspace: string, lens: WorkspaceLens): Pick<IslandAgent, "projectRoot" | "branch"> {
+  const { projectRoot, branch } = lens(workspace);
+  return { projectRoot, ...(branch === null ? {} : { branch }) };
 }
 
 /** 会话集合 → 线上 fleet。顺序 = 侧栏序,但审批态置顶(要人当场动手,不被淹) */
 export function flattenFleet(
   states: ReadonlyMap<string, IslandState>,
   sessions: SessionSummary[],
-  focusedSessionId: string | null
+  focusedSessionId: string | null,
+  lens: WorkspaceLens = localWorkspaceLens
 ): IslandFleet {
-  const ordered = orderedVisibleSessions(sessions);
-  const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess));
+  const ordered = orderedVisibleSessions(sessions, lens);
+  const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess, lens));
   // 不再做审批置顶排序(#206):分组视图里顺序必须保持侧栏序(同 workspace 连续),
   // 置顶会把审批行拽出它的组。审批可见性改由 Swift 侧承担——selectedAgent 兜底
   // 优先审批行(auto-expand 后详情区照样当场三按钮)+ 收起的组头带橙点。

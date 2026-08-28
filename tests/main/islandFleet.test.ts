@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { flattenFleet, orderedVisibleSessions, initialIsland, reduceIsland } from "../../src/main/islandProjection.js";
 import type { IslandState } from "../../src/main/islandProjection.js";
+import type { WorkspaceLens } from "../../src/main/workspaceLens.js";
 
 // 造 SessionSummary 的小工具(只填 flattenFleet/排序用到的字段)
 const sess = (id: string, over: Partial<{ title: string | null; workspace: string | null; lastTs: number; spawnedFrom: string | null }> = {}) => ({
@@ -149,5 +150,67 @@ describe("reduceIsland turnDiff(issue #345)", () => {
       now: 0,
     });
     expect(s.turnDiff).toBeNull();
+  });
+});
+
+// ── 分组键从 workspace 换成项目根（#690）───────────────────────────────────
+// 每只水獭一份独立 worktree（ADR-0157）之后，workspace 是
+// `<userData>/worktrees/<12位哈希>-<6位随机>`。按它分组的话：组头是那串哈希，
+// 同一个项目还裂成 N 组。镜头把副本折回主仓。
+const WORKTREES: Record<string, { projectRoot: string; branch: string | null }> = {
+  "/ud/worktrees/d3dbc74d37b3-a29018": { projectRoot: "/gh/Mr_Otto", branch: "otto/friends-a29018" },
+  "/ud/worktrees/d3dbc74d37b3-7f10ab": { projectRoot: "/gh/Mr_Otto", branch: "otto/tidy-7f10ab" },
+  "/ud/worktrees/9b21c0af4e77-31d0f2": { projectRoot: "/gh/bubble_tea", branch: "otto/x-31d0f2" },
+};
+const foldLens: WorkspaceLens = (w) => WORKTREES[w] ?? { projectRoot: w, branch: null };
+
+describe("按项目根分组（#690）", () => {
+  it("同一项目的两份副本归一组、连续；不同项目仍然分开", () => {
+    const list = [
+      sess("a1", { workspace: "/ud/worktrees/d3dbc74d37b3-a29018", lastTs: 10 }),
+      sess("b1", { workspace: "/ud/worktrees/9b21c0af4e77-31d0f2", lastTs: 50 }),
+      sess("a2", { workspace: "/ud/worktrees/d3dbc74d37b3-7f10ab", lastTs: 30 }),
+    ];
+    // 按 workspace 分组的话三条各自成组，b1(50) a2(30) a1(10) 三段
+    expect(orderedVisibleSessions(list).map((s) => s.sessionId)).toEqual(["b1", "a2", "a1"]);
+    // 折回项目后 Mr_Otto 组的最近是 a2(30)，bubble_tea 组是 b1(50) → b1 组在前
+    expect(orderedVisibleSessions(list, foldLens).map((s) => s.sessionId))
+      .toEqual(["b1", "a2", "a1"]);
+    // 顺序恰好一样不足以证明分组变了——看拍平后的分组键
+    const fleet = flattenFleet(new Map(), list, null, foldLens);
+    expect(fleet.agents.map((a) => a.projectRoot))
+      .toEqual(["/gh/bubble_tea", "/gh/Mr_Otto", "/gh/Mr_Otto"]);
+  });
+
+  it("组序按组内最近 lastTs：同项目两份副本的 lastTs 一起参与组序", () => {
+    const list = [
+      sess("a1", { workspace: "/ud/worktrees/d3dbc74d37b3-a29018", lastTs: 99 }),
+      sess("b1", { workspace: "/ud/worktrees/9b21c0af4e77-31d0f2", lastTs: 50 }),
+      sess("a2", { workspace: "/ud/worktrees/d3dbc74d37b3-7f10ab", lastTs: 1 }),
+    ];
+    // Mr_Otto 组最近是 99 → 整组在前，a2 跟着它的组走（不因为 lastTs=1 掉到最后）
+    expect(orderedVisibleSessions(list, foldLens).map((s) => s.sessionId))
+      .toEqual(["a1", "a2", "b1"]);
+  });
+
+  it("副本的分支拍在行上；不是副本的行不带 branch 字段（缺席≠null，不多发一个 null 上线）", () => {
+    const list = [
+      sess("a1", { workspace: "/ud/worktrees/d3dbc74d37b3-a29018" }),
+      sess("plain", { workspace: "/gh/other" }),
+    ];
+    const agents = flattenFleet(new Map(), list, null, foldLens).agents;
+    const a1 = agents.find((a) => a.sessionId === "a1")!;
+    expect(a1.branch).toBe("otto/friends-a29018");
+    expect(a1.workspace).toBe("/ud/worktrees/d3dbc74d37b3-a29018"); // 原路径照旧带着
+    const plain = agents.find((a) => a.sessionId === "plain")!;
+    expect("branch" in plain).toBe(false);
+    expect(plain.projectRoot).toBe("/gh/other");
+  });
+
+  it("不传镜头 = 引入这个字段之前的行为逐字不变（projectRoot 即 workspace）", () => {
+    const list = [sess("s1", { workspace: "/gh/Mr_Otto" })];
+    const a = flattenFleet(new Map(), list, null).agents[0]!;
+    expect(a.projectRoot).toBe("/gh/Mr_Otto");
+    expect("branch" in a).toBe(false);
   });
 });

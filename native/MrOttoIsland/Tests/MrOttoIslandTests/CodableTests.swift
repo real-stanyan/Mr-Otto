@@ -57,6 +57,38 @@ final class CodableTests: XCTestCase {
     XCTAssertNil(old.state.agents[0].turnDiff)
   }
 
+  /// #690:projectRoot / branch 是后加的可选字段。带上时组头名与分组键取项目根,
+  /// 分支拿来画行上那枚 chip。
+  func testDecodeAgentProjectRootAndBranch() throws {
+    let line = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null,"workspace":"/Users/x/Library/Application Support/Mr Otto/worktrees/d3dbc74d37b3-a29018","projectRoot":"/Users/x/Github/Mr_Otto","branch":"otto/friends-a29018"}],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
+    let a = inbound.state.agents[0]
+    XCTAssertEqual(a.projectRoot, "/Users/x/Github/Mr_Otto")
+    XCTAssertEqual(a.branch, "otto/friends-a29018")
+    // 组头名是**项目**末段,不是副本目录名——这条正是 #690 要修的那个回归
+    XCTAssertEqual(a.workspaceLabel, "Mr_Otto")
+    XCTAssertEqual(a.groupKey, "/Users/x/Github/Mr_Otto")
+  }
+
+  /// 旧主进程不带 projectRoot:回落 workspace,岛的行为与引入这个字段之前逐字一致。
+  func testDecodeAgentFallsBackToWorkspaceWithoutProjectRoot() throws {
+    let line = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null,"workspace":"/Users/x/Github/Mr_Otto"}],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
+    let a = inbound.state.agents[0]
+    XCTAssertNil(a.projectRoot)
+    XCTAssertNil(a.branch)
+    XCTAssertEqual(a.workspaceLabel, "Mr_Otto")
+    XCTAssertEqual(a.groupKey, "/Users/x/Github/Mr_Otto")
+  }
+
+  /// workspace 也没有的史前会话:归"其他"组,不炸。
+  func testDecodeAgentWithoutAnyPath() throws {
+    let line = #"{"type":"state","state":{"agents":[{"sessionId":"s1","title":null,"phase":"idle","currentTool":null,"turnStartedAt":null,"pendingApproval":null}],"focusedSessionId":null}}"#
+    let inbound = try JSONDecoder().decode(Inbound.self, from: line.data(using: .utf8)!)
+    XCTAssertEqual(inbound.state.agents[0].workspaceLabel, "其他")
+    XCTAssertEqual(inbound.state.agents[0].groupKey, "其他")
+  }
+
   func testOutboundJSON() throws {
     let line = Outbound.approve(sessionId: "s", callId: "c", grant: "session").jsonLine()
     let o = try JSONSerialization.jsonObject(with: line.data(using: .utf8)!) as! [String: Any]

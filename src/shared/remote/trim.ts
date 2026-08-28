@@ -11,7 +11,12 @@ import type { IslandFleet } from "../shellBridge.js";
 
 export function trimForMobile(fleet: IslandFleet): IslandFleet {
   return {
-    agents: fleet.agents,
+    // projectRoot / branch 不出机器:两者都是**桌面灵动岛的分组用料**——
+    // projectRoot 是又一条本机绝对路径,branch 是本机 git 的状态,而手机端那一屏
+    // 既不分组也不显示分支(mobile/ 里没有任何地方读它们)。没人读的东西不该
+    // 持续过公网,哪怕中继解不开。要是哪天手机端也要按项目分组,把这里放开、
+    // 并在那时重新回答"绝对路径能不能出机器"这个问题
+    agents: fleet.agents.map(({ projectRoot: _p, branch: _b, ...agent }) => agent),
     focusedSessionId: fleet.focusedSessionId,
     // display / usage 一律不出机器:
     // - display 是灵动岛展开态的本机设置,手机没有那个 UI
