@@ -54,8 +54,12 @@ export function startProxyHostCoordinator(deps: {
   /** 邀请码那条受理路径（A 侧：verifyWith 给手里那张活着的邀请，onPaired 落 pin）。
       **不传 = 只认 pin 组**，首次连接必然握不上手（这是安全的默认，不是 bug） */
   pairing?: ProxyPairing;
-  /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧 */
+  /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧。
+      **这是密码学上确定的那个身份**（A 发邀请时定、握手时由 secret 证明钉死），
+      不是帧里自称的 fromUid（issue #665，见 proxyHost 的 friendUid 注释） */
   friendUid: string;
+  /** A 此刻的好友 uid 集；null = 还没同步好。ADR-0151 决策 1：删好友 = 代理权限跟着死 */
+  friendUids: () => readonly string[] | null;
   /** 读/写授权+审计存储（proxyStore 的持久化由调用方落盘） */
   loadStore: () => ProxyStoreData;
   saveStore: (d: ProxyStoreData) => void;
@@ -86,6 +90,8 @@ export function startProxyHostCoordinator(deps: {
       isPeerConnected: () => connection.isReady(),
     },
     mcp: deps.mcp,
+    friendUid: deps.friendUid,
+    friendUids: deps.friendUids,
     // 白名单从存储读：每笔调用都查最新的（A 撤销后下一笔立即生效）
     getGrants: () => deps.loadStore().grants,
     audit: (e: ProxyAuditEntry) => {
@@ -105,10 +111,15 @@ export function startProxyHostCoordinator(deps: {
   // B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
   // A 改授权后可再调 connection 重发；这里至少在握手后推一次。
   connection.onReady(() => {
-    const grant = grantFor(deps.loadStore(), deps.friendUid);
+    // 已经不是好友了就推一份空清单（协议里 servers: [] 就是「撤销全部授权」）。
+    // 不这么做的话，删了好友之后对面仍然看得见 A 接了哪些服务、每个服务有哪些工具
+    // ——调不动，但看得见，而那份清单本身就是不该给的东西（issue #665）
+    const known = deps.friendUids();
+    const stillFriend = known !== null && known.includes(deps.friendUid);
+    const grant = stillFriend ? grantFor(deps.loadStore(), deps.friendUid) : null;
     const servers = buildGrantedServers(deps.mcp.servers(), grant);
     connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }));
-    log(`代理授权已推送给 B：${servers.length} 个服务`);
+    log(`代理授权已推送给 B：${servers.length} 个服务${stillFriend ? "" : "（已不是好友/名单未同步，推空清单）"}`);
   });
 
   // 传输 → 连接（首字符定型在 proxyConnection.onWire 里做）
