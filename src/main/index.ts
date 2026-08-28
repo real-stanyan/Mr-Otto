@@ -108,6 +108,8 @@ import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
 import { createWorkspaceLock } from "./workspaceLockFile.js";
+import { createSessionWorktreeService } from "./sessionWorktreeService.js";
+import { shouldIsolate } from "../shared/sessionWorktree.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
@@ -583,6 +585,9 @@ void app.whenReady().then(() => {
   /** 工作区互斥的跨进程那一半（issue #634，ADR-0155）。落点是机器级临时目录——
       两个 app 实例看得见同一份，用户的工作区一个字节都不动 */
   const workspaceLock = createWorkspaceLock({ appName: app.getName() });
+  /** 独立工作副本（issue #641，ADR-0156）：同一个项目上开第二只水獭时，给它一个
+      一次性 worktree。落点在 userData，不进用户的仓库 */
+  const sessionWorktrees = createSessionWorktreeService({ userData: app.getPath("userData") });
 
   // 「压缩中」是 running 灯的一个子档：compact 复用 turn 状态灯（下面的 compact
   // handler），光看 runningSessions 分不出它和普通 turn。渲染层原来靠自己发起
@@ -1499,6 +1504,8 @@ void app.whenReady().then(() => {
    */
   const createSessionAgent = (args: {
     workspace: string;
+    /** 独立工作副本（issue #641）：workspace 是 worktree 路径，这里记项目本体与分支 */
+    isolated?: { projectRoot: string; branch: string };
     /** 给了 = 恢复既有会话 */
     resumeSessionId?: string;
     /** 恢复的是一个子会话（日志第 0 条带 spawnedBy）时给它当初那副装备 */
@@ -1573,6 +1580,7 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      ...(args.isolated ? { isolated: args.isolated } : {}),
       // 破坏性 git + 工作区脏 → 越过 bypass 问一次（issue #633）。复用 gitGraph 的
       // status，不另起一套 git 管道。闭包懒读：gitGraph 在装配后段才建，而会话都是
       // IPC 触发的，跑到这里时它一定已经在了
@@ -1811,7 +1819,27 @@ void app.whenReady().then(() => {
     // createSessionAgent 是同步的（它调的 createAgent 就是同步的），
     // 等这件事只能发生在它外面
     await mcpHub.ready();
-    const agent = createSessionAgent({ workspace: opts.workspace });
+    // 同一个项目上的第二只水獭 → 给它一份独立工作副本（issue #641，ADR-0156）。
+    // 判据是「同一个仓库」而不是「同一个路径」：已经在副本里的会话与主目录的会话
+    // 共享同一个 .git，分支空间是共享的，算同一个项目。
+    // 家族（子会话/SideChat）共享工作区是故意的，不算占用。
+    // 任何一步失败 → isolated 为 null，退回 ADR-0152 的排队行为（没有副本比建错副本安全）
+    const parents = new Map(store.sessions().map((x) => [x.sessionId, x.spawnedFrom]));
+    const rootOf = (id: string) => familyRootOf(id, (x) => parents.get(x));
+    const repoOfWorkspace = new Map<string, string | null>();
+    const repoCached = (dir: string) => {
+      if (!repoOfWorkspace.has(dir)) repoOfWorkspace.set(dir, sessionWorktrees.repoOf(dir));
+      return repoOfWorkspace.get(dir) ?? null;
+    };
+    const isolate = shouldIsolate(
+      { repo: repoCached(opts.workspace), familyRoot: "" }, // 新会话还没有 id，自成一族
+      [...agents.values()].map((a) => ({ repo: repoCached(a.workspace), familyRoot: rootOf(a.sessionId) }))
+    )
+      ? sessionWorktrees.create(opts.workspace, "session")
+      : null;
+    const agent = createSessionAgent(
+      isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: opts.workspace }
+    );
     agents.set(agent.sessionId, agent);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
@@ -1860,10 +1888,18 @@ void app.whenReady().then(() => {
         // 同 startSession：工具表挂载一次定终身，拼之前必须等 ready。
         // 排在上面那两道门之后——它们该抛就抛，没必要先等一轮握手
         await mcpHub.ready();
+        // 独立工作副本的会话（issue #641）：副本目录可能已经不在了（用户删了、
+        // 清过缓存、换了机器）。按日志里记着的分支重新挂一个——分支才是活的凭据，
+        // 目录只是它的一个挂载点。挂不回来（分支也没了）就退回项目本体：
+        // 那时这个会话已经没有自己的副本可言，围栏落在项目上比落在一个空路径上强
+        let resumeWorkspace = first.workspace;
+        if (first.isolated && !sessionWorktrees.restore(first.isolated, first.workspace)) {
+          resumeWorkspace = first.isolated.projectRoot;
+        }
         agents.set(
           sessionId,
           createSessionAgent({
-            workspace: first.workspace,
+            workspace: resumeWorkspace,
             resumeSessionId: sessionId,
             ...(child ? { child } : {}),
           })

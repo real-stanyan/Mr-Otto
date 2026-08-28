@@ -167,6 +167,11 @@ export function createAgent(opts: {
   /** "default" = workspace 是内置 Default 工作区（#559 后续）。写进 session_created,
       投影据此多注入「打包为项目」引导段。缺席 = 项目会话/子会话/测试,一字不变 */
   workspaceKind?: "default";
+  /** 这个会话跑在项目的一份独立工作副本里（issue #641，ADR-0156）：workspace 是
+      worktree 的路径，这里记它属于哪个项目、占了哪条分支。写进 session_created
+      —— 投影据此告诉模型「你在副本上，合回去要问一句」。缺席 = 直接在用户选的
+      目录里干活（第一只水獭 / 非 git 目录），一字不变 */
+  isolated?: { projectRoot: string; branch: string };
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
@@ -340,6 +345,7 @@ export function createAgent(opts: {
       // 条件展开（memory_loaded 同款）：无条件写会让项目会话的事件对象凭空
       // 多一个值为 undefined 的 key，破坏「旧日志形状逐字节不变」
       ...(opts.workspaceKind ? { workspaceKind: opts.workspaceKind } : {}),
+      ...(opts.isolated ? { isolated: opts.isolated } : {}),
       ...(opts.spawnedBy ? { spawnedBy: opts.spawnedBy } : {}),
     });
     // 长期记忆快照落盘（ADR-0060）：紧跟 session_created 之后，先落盘再喂模型。

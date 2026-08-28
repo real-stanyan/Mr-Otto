@@ -1,6 +1,7 @@
 // deriveMessages — 从事件日志投影出模型上下文（OpenAI-compatible 消息格式）
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
+import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import type { SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -52,12 +53,16 @@ export function dayOfLastEvent(events: { ts: number }[]): string | undefined {
 export function systemPromptText(
   workspace: string,
   today?: string,
-  workspaceKind?: "default"
+  workspaceKind?: "default",
+  isolated?: IsolatedWorkspace
 ): string {
   return (
     `你是 Mr. Otto（叫我 Otto），一个会用工具的桌面 agent。当前工程文件夹：${workspace}\n` +
     (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
     (workspaceKind === "default" ? PACKAGE_NUDGE : "") +
+    // 独立工作副本（issue #641）：不说的话水獭会以为自己在项目本体上，
+    // 干完活直接往用户的分支上招呼，而项目本体可能正被另一只水獭占着
+    (isolated ? isolatedPromptText(isolated) : "") +
     // 说实话而不是说得更强:read_file/write_file 真被 world 的 fence 圈住(越界抛错),
     // bash 只是把 cwd 设在这儿,cd 出得去(localWorld.ts 开头那句"诚实说明")。
     // 对模型宣布一个代码兑现不了的保证,等于教它在越界时也不必打招呼
@@ -510,7 +515,7 @@ export function deriveMessages(
           // 不取 session_created 自己的 ts——跨夜的会话会一直以为还是开会话那天
           systemMessage = {
             role: "system",
-            content: systemPromptText(event.workspace, today, event.workspaceKind),
+            content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated),
           };
           messages.push(systemMessage);
         }
