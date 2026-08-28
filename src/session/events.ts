@@ -170,6 +170,16 @@ export interface SessionCreatedEvent extends SessionEventBase {
       「打包为项目」引导,而投影必须可从日志推导（硬规则）,不能现场读设置。
       可选 = 旧日志/项目会话缺席,投影逐字节不变 */
   workspaceKind?: "default";
+  /** 这个会话跑在项目的一份**独立工作副本**（git worktree）里（issue #641，ADR-0156）。
+      同一个项目上开第二只水獭时由主进程判定并落盘——投影据此多注入一段
+      「你在副本上、合回去要问一句」，而投影必须可从日志推导（硬规则）。
+      缺席 = 直接在用户选的目录里干活（第一只水獭 / 非 git 目录 / 旧日志），投影逐字节不变 */
+  isolated?: {
+    /** 用户当初选的项目目录（主 checkout），合并的目的地 */
+    projectRoot: string;
+    /** 这只水獭独占的分支 */
+    branch: string;
+  };
   forkedFrom?: {                 // 普通新会话 = 不填
     sessionId: string;
     seq: number;                 // 从源会话哪个位置分叉
