@@ -22,8 +22,8 @@ import {
 } from "../shared/remote/proxyInvite.js";
 import { startProxyHostCoordinator, startProxyGuestCoordinator } from "./proxyCoordinator.js";
 import {
-  channelFor, pinnedIdentities, removeBorrow, revokeGrant, setBorrow, setChannel,
-  setGrant, setPin, usableBorrows,
+  allBorrows, channelFor, pinnedIdentities, removeBorrow, revokeGrant, setBorrow,
+  setBorrowRevoked, setChannel, setGrant, setPin, usableBorrows,
   type ProxyStoreData,
 } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
@@ -43,6 +43,27 @@ export interface ProxyBorrowStatus {
   connected: boolean;
   /** 对方此刻授了几个服务（A 推来的清单）。0 = 还没推到 / 被撤光了 */
   serverCount: number;
+  /** 对方**明说**撤销了，以及理由（issue #680）。有值 = 别等了，要用得重走邀请码；
+      没值 + connected=false = 只是这会儿没连上，等着就行 */
+  revokedReason?: string;
+}
+
+/**
+ * A 侧一条对外通道，给 UI 看的样子（issue #680）。
+ *
+ * 白名单内的调用是**全自动**的——没有这块表，「有人正在用我的凭证」这件事
+ * 在界面上完全没有痕迹，只能事后翻审计账。ADR-0151 的三道防线里，
+ * 「审计」那一道要能当场看见才算数。
+ */
+export interface ProxyHostStatus {
+  friendUid: string;
+  label: string;
+  /** 好友此刻握上手没有 */
+  connected: boolean;
+  /** 此刻正在跑几笔。>0 = **正在**用 A 的凭证动 A 的账号 */
+  inflight: number;
+  /** 最近一笔调用的时间（含被拒的）。null = 从没调过 */
+  lastCallAt: number | null;
 }
 
 /** 代理管理器的依赖（index.ts 装配根填） */
@@ -76,6 +97,14 @@ export interface ProxyManager {
   proxyCreateInvite(friendUid: string, allow: ProxyGrant["allow"]): Promise<FriendsResult<{ invite: string }>>;
   proxyAcceptInvite(invite: string): Promise<FriendsResult<{ grantedCount: number }>>;
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: ProxyGrant["allow"] }[] }>>;
+  /**
+   * A 侧：改一个**已有**好友的白名单，不重发邀请码（issue #680）。
+   *
+   * 与 `proxyCreateInvite` 的差别就是这一条：那边会换一张邀请、重开房间、
+   * 逼对方重新接受一次；而「把 read 改成 read+write」根本不是一次新的配对。
+   * 改完当场推一帧新的授权清单，对面的工具表立刻跟着变。
+   */
+  proxyUpdateGrant(friendUid: string, allow: ProxyGrant["allow"]): Promise<FriendsResult<null>>;
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
   proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: ProxyStoreData["audits"] }>>;
   /**
@@ -86,6 +115,8 @@ export interface ProxyManager {
   resume(): void;
   /** B 侧：当前借来的那些通道的状态（UI 用）。connected 来自握手层，不是「有没有配过」 */
   borrowStatus(): readonly ProxyBorrowStatus[];
+  /** A 侧：我授出去的那些此刻怎么样（连没连、正在跑几笔、最近一次什么时候） */
+  hostStatus(): readonly ProxyHostStatus[];
   /** B 侧：不再借某好友的服务——关通道 + 从台账里删掉（下次启动不再连回去） */
   proxyDisconnect(hostUid: string): Promise<FriendsResult<null>>;
   /**
@@ -102,7 +133,10 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
   /** A 侧：每个好友一条 host 通道（重开时先关旧的，免得两条连接抢同一个房间） */
-  const hosts = new Map<string, { pushGrant(): void; close(): void }>();
+  const hosts = new Map<string, {
+    pushGrant(): void; pushRevoked(reason: string): void;
+    isReady(): boolean; inflight(): number; close(): void;
+  }>();
   /** B 侧：借来的每条通道（issue #676 之前是单条变量，所以一次只能代理一个好友；
       合并层本身一直支持多条）。带 friendUid 是因为下游要按它加前缀，
       带 mcp 是因为它就是那个出口，带 isReady 是因为 UI 要显示连没连 */
@@ -137,6 +171,8 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       friendUids: deps.friendUids,
       loadStore: deps.loadStore,
       saveStore: deps.saveStore,
+      // A 侧那块表的信号源：握手完成 / 好友离场 / 调用起跑收尾 / 记了一笔审计
+      onStateChange: changed,
       now,
       log,
     });
@@ -166,6 +202,16 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       ...(secret ? { pairing: { proveWith: () => secret } } : {}),
       grantedServers: [], // 初始空——A 握手后推 proxy_grant 帧更新（proxyMcp 动态收）
       onStateChange: changed,
+      // A 明说撤销了：**标记不删除**。删掉的话列表里那条凭空消失，
+      // 和「对方今天没开机」长得一样；标记之后它还在，只是配着一句原因，
+      // 而 usableBorrows 已经把它排除在自动重连之外
+      onRevoked: (reason) => {
+        guests.get(hostUid)?.close();
+        guests.delete(hostUid);
+        deps.saveStore(setBorrowRevoked(deps.loadStore(), hostUid, reason));
+        changed();
+        log(`好友撤销了代理授权：${hostUid}（${reason}）`);
+      },
       log,
     });
     guests.set(hostUid, { mcp: coord.mcp, isReady: () => coord.connection.isReady(), close: coord.close });
@@ -224,18 +270,33 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       return { ok: true, value: { grants: cur.grants.map((g) => ({ friendUid: g.friendUid, allow: g.allow })) } };
     },
 
+    async proxyUpdateGrant(friendUid, allow) {
+      // 没通道也照样存：好友还没接受邀请时改白名单是合理的（等他连上就按新的推）。
+      // 有通道就当场推一帧——不推的话对面的工具表要等到下次握手才变
+      deps.saveStore(setGrant(deps.loadStore(), { friendUid, allow }));
+      hosts.get(friendUid)?.pushGrant();
+      changed();
+      log(`代理授权已更新：好友 ${friendUid}，${allow.length} 个服务`);
+      return { ok: true, value: null };
+    },
+
     async proxyRevoke(friendUid) {
-      // 三步的顺序都有理由：
+      // 四步的顺序都有理由：
       // ① 存储先清——下一笔调用立即被拒（反过来的话中间那一瞬还能放行一笔）；
       // ② 再推一帧授权清单：此刻存储已空，推出去的就是 `servers: []`，
       //    B 的工具表当场清干净。不推的话那几把刀一直留在 B 的模型眼前，
       //    调起来还要等满超时才失败（issue #672）；
-      // ③ 最后关房间。
+      // ③ **明说一句「撤销了」**（issue #680）：只做 ② 和 ④ 的话，B 看到的
+      //    是「工具表空了 + 连接断了」——和「A 关机了」完全一样，而这两件事
+      //    该做的动作相反（等一等 vs 重走一次邀请码）；
+      // ④ 最后关房间。
       deps.saveStore(revokeGrant(deps.loadStore(), friendUid));
       const host = hosts.get(friendUid);
       host?.pushGrant();
+      host?.pushRevoked("对方撤销了这条代理授权——要继续用得让他重新发一张邀请码");
       host?.close();
       hosts.delete(friendUid);
+      changed();
       log(`代理授权已撤销：好友 ${friendUid}`);
       return { ok: true, value: null };
     },
@@ -279,14 +340,37 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
 
     borrowStatus() {
       // 台账是底本，活着的通道往上贴状态：断线的那条**仍然要在列表里**——
-      // 用户得看得见「配过、但现在没连上」，而不是它凭空消失
-      return usableBorrows(deps.loadStore()).map((b) => {
+      // 用户得看得见「配过、但现在没连上」，而不是它凭空消失。
+      // 用 allBorrows 不用 usableBorrows：被撤销的那条**更**要看得见（带着理由），
+      // 它只是不该再自动连回去（issue #680）
+      return allBorrows(deps.loadStore()).map((b) => {
         const g = guests.get(b.hostUid);
         return {
           hostUid: b.hostUid,
           label: deps.friendLabel(b.hostUid),
           connected: g?.isReady() ?? false,
           serverCount: g?.mcp.servers().length ?? 0,
+          ...(b.revokedReason !== undefined ? { revokedReason: b.revokedReason } : {}),
+        };
+      });
+    },
+
+    hostStatus() {
+      const cur = deps.loadStore();
+      // 同 borrowStatus 的口径：**授权台账是底本**，活着的通道往上贴状态。
+      // 反过来（列举活着的通道）的话，好友没上线的那些授权在界面上就不存在了——
+      // 而「授出去了但对方没连」恰恰是 A 最该看见的一格
+      return cur.grants.map((g) => {
+        const h = hosts.get(g.friendUid);
+        // 最近一次被调用：审计是新→旧排的，第一条命中的就是最近的（含被拒的——
+        // 「有人在拿被拒的请求敲门」同样是 A 该看见的活动）
+        const last = cur.audits.find((a) => a.friendUid === g.friendUid);
+        return {
+          friendUid: g.friendUid,
+          label: deps.friendLabel(g.friendUid),
+          connected: h?.isReady() ?? false,
+          inflight: h?.inflight() ?? 0,
+          lastCallAt: last?.ts ?? null,
         };
       });
     },
@@ -305,6 +389,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       hosts.clear();
       for (const g of guests.values()) g.close();
       guests.clear();
+      // 登出时也走这里（issue #680）：界面得当场变成「都没连上」，
+      // 而不是留着一排看起来还连着的绿点
+      changed();
     },
   };
 }

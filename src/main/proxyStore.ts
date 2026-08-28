@@ -69,6 +69,15 @@ export interface ProxyBorrow {
   channelId: string;
   /** 对方的身份公钥（32 字节，base64）。来自那张带外传来的邀请码 */
   hostIdentityPub: string;
+  /**
+   * 对方明说撤销了，以及他给的理由（issue #680，`proxy_revoked` 帧）。
+   *
+   * **有值 = 别再自动连回去了**，但**这一条仍然留在台账里**：直接删掉的话，
+   * 用户看到的是「那条不见了」，和「对方今天没开机」长得一样。而这两件事
+   * 该做的动作相反——留着它，配一句原因，用户才知道要重走一次邀请码。
+   * （同一条道理在 ADR-0168 已经用过一次：断线的那条也留在列表里。）
+   */
+  revokedReason?: string;
 }
 
 export interface ProxyStoreData {
@@ -164,16 +173,43 @@ export function removeBorrow(data: ProxyStoreData, hostUid: string): ProxyStoreD
   return { ...data, borrows: data.borrows.filter((b) => b.hostUid !== hostUid) };
 }
 
-/** B 侧：能连回去的那些通道（公钥解不出来/长度不对的整条丢掉——
-    宁可让用户重走一次邀请码，也不能拿一把坏钥匙去 pin） */
-export function usableBorrows(data: ProxyStoreData): { hostUid: string; channelId: string; hostIdentityPub: Uint8Array }[] {
-  const out: { hostUid: string; channelId: string; hostIdentityPub: Uint8Array }[] = [];
+/** B 侧：对方撤销了这条借来的通道——留着条目，记上原因（见 ProxyBorrow.revokedReason）。
+    台账里没有这条 = 忽略（对方撤的是一条我这边早就断掉的，没什么可标） */
+export function setBorrowRevoked(data: ProxyStoreData, hostUid: string, reason: string): ProxyStoreData {
+  return {
+    ...data,
+    borrows: data.borrows.map((b) => (b.hostUid === hostUid ? { ...b, revokedReason: reason } : b)),
+  };
+}
+
+/** B 侧一条借来的通道，解码后的样子 */
+export interface DecodedBorrow {
+  hostUid: string;
+  channelId: string;
+  hostIdentityPub: Uint8Array;
+  revokedReason?: string;
+}
+
+/** B 侧：台账里全部**认得出**的那些（公钥解不出来/长度不对的整条丢掉——
+    宁可让用户重走一次邀请码，也不能拿一把坏钥匙去 pin）。
+    含被撤销的那些：它们不该再连，但该在界面上看得见（见 ProxyBorrow.revokedReason） */
+export function allBorrows(data: ProxyStoreData): DecodedBorrow[] {
+  const out: DecodedBorrow[] = [];
   for (const b of data.borrows) {
     const raw = b64decode(b.hostIdentityPub);
     if (!raw || raw.length !== 32 || !b.channelId || !b.hostUid) continue;
-    out.push({ hostUid: b.hostUid, channelId: b.channelId, hostIdentityPub: raw });
+    out.push({
+      hostUid: b.hostUid, channelId: b.channelId, hostIdentityPub: raw,
+      ...(b.revokedReason !== undefined ? { revokedReason: b.revokedReason } : {}),
+    });
   }
   return out;
+}
+
+/** B 侧：**能连回去**的那些通道（`resume()` 用）。被撤销的不在其中——
+    对方已经明说不给了，再连回去只会握手失败，然后无限重试 */
+export function usableBorrows(data: ProxyStoreData): DecodedBorrow[] {
+  return allBorrows(data).filter((b) => b.revokedReason === undefined);
 }
 
 /** pin 一把好友公钥（同一好友整份替换——一个好友一台机器一把身份密钥） */

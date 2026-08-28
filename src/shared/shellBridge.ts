@@ -388,6 +388,32 @@ export interface PermissionsSnapshot {
 }
 
 
+/** B 侧一条借来的通道，界面上的样子（issue #676 / #680） */
+export interface ProxyBorrowView {
+  hostUid: string;
+  label: string;
+  connected: boolean;
+  serverCount: number;
+  /** 对方**明说**撤销了 + 理由。有值 = 别等了；没值 + connected=false = 只是没连上 */
+  revokedReason?: string;
+}
+
+/** A 侧一条授出去的通道，界面上的样子（issue #680）。
+    白名单内是全自动的，`inflight > 0` 是「此刻正在用我的凭证」唯一的实况来源 */
+export interface ProxyHostView {
+  friendUid: string;
+  label: string;
+  connected: boolean;
+  inflight: number;
+  lastCallAt: number | null;
+}
+
+/** 代理全景：借进来的 + 借出去的 */
+export interface ProxyStatusSnapshot {
+  borrows: ProxyBorrowView[];
+  hosts: ProxyHostView[];
+}
+
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
   boot(): Promise<BootInfo | null>;
@@ -842,12 +868,20 @@ export interface ShellBridge {
   ): Promise<FriendsResult<{ grantedCount: number }>>;
   /** A 侧：列出当前所有的代理授权（谁有什么权限）+ 各自审计账 */
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[] }>>;
-  /** A 侧：一键撤销某好友的全部代理授权（通道立即失效，下一笔调用被拒） */
+  /** A 侧：一键撤销某好友的全部代理授权（通道立即失效，下一笔调用被拒，
+      并给对面发一帧「撤销了」——不发的话对面分不清这和「你关机了」） */
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
-  /** B 侧：我借来的那些通道此刻怎么样（issue #676）。
-      `connected` 是握手层的实况，不是「配过没有」——断线的那条仍然在列表里，
-      用户得看得见「配过、但现在没连上」。变化推送走 onProxyChanged */
-  proxyBorrows(): Promise<FriendsResult<{ borrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[] }>>;
+  /** A 侧：改一个已有好友的白名单，**不重发邀请码**（issue #680）。
+      改完当场推一帧新的授权清单，对面的工具表立刻跟着变 */
+  proxyUpdateGrant(
+    friendUid: string,
+    allow: readonly { serverId: string; tools: readonly string[] }[]
+  ): Promise<FriendsResult<null>>;
+  /** 代理此刻的全景：借进来的 + 借出去的（issue #676 / #680）。
+      两个方向同一份快照——同一台机器两个角色，界面上是同一件事的两栏。
+      `connected` 一律是握手层的实况，不是「配过没有」：断线（乃至被撤销）的那条
+      仍然在列表里，用户得看得见「配过、但现在没连上」。变化推送走 onProxyChanged */
+  proxyStatus(): Promise<FriendsResult<ProxyStatusSnapshot>>;
   /** B 侧：不再借某好友的服务（关通道 + 从台账删掉，下次启动不再连回去） */
   proxyDisconnect(hostUid: string): Promise<FriendsResult<null>>;
   /** A 侧：查某好友（或全部）的代理审计账。
@@ -860,7 +894,7 @@ export interface ShellBridge {
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
   onFriendsChanged(cb: (snapshot: FriendsSnapshot) => void): Unsubscribe;
   /** 借来的代理通道有变化（接上/断开/对方改了授权）。全量快照，同 onFriendsChanged 口径 */
-  onProxyChanged(cb: (borrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[]) => void): Unsubscribe;
+  onProxyChanged(cb: (status: ProxyStatusSnapshot) => void): Unsubscribe;
   /** 我 + 在线好友各自在哪个仓库哪个分支(全量快照,Realtime presence ∪ 心跳列) */
   onWorkspacesChanged(cb: (snapshot: WorkspacesSnapshot) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
@@ -1204,7 +1238,8 @@ export const CHANNELS = {
   proxyListGrants: "otter:proxyListGrants",
   proxyRevoke: "otter:proxyRevoke",
   proxyAudit: "otter:proxyAudit",
-  proxyBorrows: "otter:proxyBorrows",
+  proxyStatus: "otter:proxyStatus",
+  proxyUpdateGrant: "otter:proxyUpdateGrant",
   proxyDisconnect: "otter:proxyDisconnect",
   proxyChanged: "otter:proxyChanged",
   setBadgeCount: "otter:setBadgeCount",

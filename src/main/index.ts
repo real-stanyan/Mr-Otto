@@ -72,6 +72,8 @@ import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, MotionSettings, UpdaterState,
   RemoteStatus,
   PermissionsSnapshot,
+  ProxyBorrowView,
+  ProxyHostView,
   WorkspaceSettingsInfo,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
@@ -517,6 +519,8 @@ void app.whenReady().then(() => {
       代理管理器要等 mcpHub 装完才造得出来,而登录可能比那早也可能比那晚。
       没登录时 wsTransport 根本不连,所以这件事必须挂在"登录那一刻"上 */
   let proxyResumeNow: (() => void) | null = null;
+  /** 好友代理:登出时把通道全关掉(issue #680)。同上是个空位,理由一样 */
+  let proxyCloseNow: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -532,6 +536,7 @@ void app.whenReady().then(() => {
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
       if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); }
+      else proxyCloseNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -1315,7 +1320,14 @@ void app.whenReady().then(() => {
         friendLabel: (uid) => friends.friendLabel(uid),
         // 借来的通道有任何变化就推一份全量（接上/断开/对方改授权）。
         // 同 onFriendsChanged 的口径：量小，快照比增量简单
-        onChange: () => { if (proxy) send(CHANNELS.proxyChanged, proxy.borrowStatus()); },
+        onChange: () => {
+          if (!proxy) return;
+          send(CHANNELS.proxyChanged, proxySnapshot());
+          // 借来的服务变了 = 这个会话的工具表变了（issue #680）。sendToolDefs 原本
+          // 只挂在 mcpHub.onChange 上，而代理来的那些不经 mcpHub —— 不补这一句，
+          // 好友刚授的刀要等下一个 turn 重算工具表时才在界面上出现
+          sendToolDefs();
+        },
         // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
         // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
         openWireTransport: (channel, role) =>
@@ -1337,6 +1349,15 @@ void app.whenReady().then(() => {
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
   proxyResumeNow = proxy ? () => proxy.resume() : null;
+  // 登出 = 断开所有代理通道（issue #680）。安全上本来就是失败关闭的
+  // （A 侧 friendUids() 回 null 一律拒），但不断的话 B 那边借来的刀还留在
+  // 工具表里，模型调了才报错——账号都换了，那些刀不该还在
+  proxyCloseNow = proxy ? () => proxy.closeAll() : null;
+  /** 代理全景（借进来的 + 借出去的）。推送与拉取共用一份，免得两边算得不一样 */
+  const proxySnapshot = (): { borrows: ProxyBorrowView[]; hosts: ProxyHostView[] } => ({
+    borrows: proxy ? [...proxy.borrowStatus()] : [],
+    hosts: proxy ? [...proxy.hostStatus()] : [],
+  });
 
   /**
    * 会话拿到的那份 MCP 能力 = 自己接的 + 此刻借来的（issue #670）。
@@ -2553,8 +2574,10 @@ void app.whenReady().then(() => {
     proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
   ipcMain.handle(CHANNELS.proxyAudit, (_e, friendUid?: string) =>
     proxy ? proxy.proxyAudit(friendUid) : proxyOff);
-  ipcMain.handle(CHANNELS.proxyBorrows, () =>
-    proxy ? { ok: true as const, value: { borrows: proxy.borrowStatus() } } : proxyOff);
+  ipcMain.handle(CHANNELS.proxyUpdateGrant, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
+    proxy ? proxy.proxyUpdateGrant(friendUid, allow) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyStatus, () =>
+    proxy ? { ok: true as const, value: proxySnapshot() } : proxyOff);
   ipcMain.handle(CHANNELS.proxyDisconnect, (_e, hostUid: string) =>
     proxy ? proxy.proxyDisconnect(hostUid) : proxyOff);
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allBorrows,
   appendAudit,
   AUDIT_CAP,
   channelFor,
@@ -11,6 +12,7 @@ import {
   revokeGrant,
   serializeProxyStore,
   setBorrow,
+  setBorrowRevoked,
   setChannel,
   setGrant,
   setPin,
@@ -183,5 +185,26 @@ describe("proxyStore 的 borrows（issue #676）", () => {
 
   it("老台账（没有 borrows 字段）读得进来", () => {
     expect(parseProxyStore(JSON.stringify({ grants: [] })).borrows).toEqual([]);
+  });
+
+  // ─── 被撤销的那条：留着看得见，但不再自动连回去（issue #680）──────────
+  it("setBorrowRevoked：allBorrows 里还在（带理由），usableBorrows 里没了", () => {
+    const pub = new Uint8Array(32).fill(5);
+    let d = setBorrow(setBorrow(emptyProxyStore(), "a", "c1", pub), "b", "c2", pub);
+    d = setBorrowRevoked(d, "a", "对方撤销了");
+
+    // 界面要看得见——不然「被撤销」和「对方今天没开机」长得一样
+    expect(allBorrows(d).map((x) => [x.hostUid, x.revokedReason])).toEqual([
+      ["a", "对方撤销了"], ["b", undefined],
+    ]);
+    // 自动重连不该再碰它：pin 那边已经清了，连回去只会握手失败然后无限重试
+    expect(usableBorrows(d).map((x) => x.hostUid)).toEqual(["b"]);
+  });
+
+  it("重新接受一张邀请码 = 那条整份换掉，撤销标记跟着没", () => {
+    const pub = new Uint8Array(32).fill(5);
+    let d = setBorrowRevoked(setBorrow(emptyProxyStore(), "a", "c1", pub), "a", "撤了");
+    d = setBorrow(d, "a", "c2", pub);
+    expect(usableBorrows(d).map((x) => x.channelId)).toEqual(["c2"]);
   });
 });

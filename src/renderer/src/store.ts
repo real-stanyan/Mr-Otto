@@ -61,7 +61,7 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
-import type { NotificationTarget, ProviderBalance, WorkspaceSettingsInfo } from "../../shared/shellBridge.js";
+import type { NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
@@ -383,7 +383,11 @@ interface ChatState {
       开对话框时拉一次，撤销/新授权后主进程不推——这是本机台账，回值即新状态 */
   proxyGrants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[];
   /** 好友代理(issue #676)：我借来的那些通道此刻怎么样。主进程推送式更新 */
-  proxyBorrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[];
+  proxyBorrows: ProxyBorrowView[];
+  /** 好友代理(issue #680)：我授出去的那些此刻怎么样（连没连、正在跑几笔、最近一次）。
+      同一条推送带来的另一半——白名单内是全自动的，这是「有人正在用我的凭证」
+      在界面上唯一的实况来源 */
+  proxyHosts: ProxyHostView[];
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
   proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
@@ -630,8 +634,13 @@ interface ChatState {
   revokeProxy(friendUid: string): Promise<void>;
   /** A 侧：拉审计账。不给 friendUid = 全部 */
   loadProxyAudits(friendUid?: string): Promise<void>;
-  /** B 侧：拉一次借来的通道状态（推送之外的那扇查询窗口，重载后补齐用） */
-  refreshProxyBorrows(): Promise<void>;
+  /** 拉一次代理全景（借进来的 + 借出去的）。推送之外的那扇查询窗口，重载后补齐用 */
+  refreshProxyStatus(): Promise<void>;
+  /** A 侧：改一个已有好友的白名单，不重发邀请码。回是否成功 */
+  updateProxyGrant(
+    friendUid: string,
+    allow: readonly { serverId: string; tools: readonly string[] }[]
+  ): Promise<boolean>;
   /** B 侧：不再借某好友的服务 */
   disconnectProxy(hostUid: string): Promise<void>;
   setFriendsPanelOpen(open: boolean): void;
@@ -856,6 +865,7 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyGrants: [],
   proxyAudits: [],
   proxyBorrows: [],
+  proxyHosts: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -1511,13 +1521,24 @@ export const useChat = create<ChatState>((set, get) => ({
     await get().refreshProxyGrants();
   },
 
-  async refreshProxyBorrows() {
-    const r = await window.otter.proxyBorrows();
+  async refreshProxyStatus() {
+    const r = await window.otter.proxyStatus();
     if (!r.ok) {
       set({ friendError: r.message });
       return;
     }
-    set({ proxyBorrows: r.value.borrows, friendError: null });
+    set({ proxyBorrows: r.value.borrows, proxyHosts: r.value.hosts, friendError: null });
+  },
+
+  async updateProxyGrant(friendUid, allow) {
+    const r = await window.otter.proxyUpdateGrant(friendUid, allow);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return false;
+    }
+    set({ friendError: null });
+    await get().refreshProxyGrants();
+    return true;
   },
 
   async disconnectProxy(hostUid) {
@@ -1714,8 +1735,8 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onToolDefsChanged(({ sessionId, toolDefs }) => {
       if (get().sessionId === sessionId) set({ toolDefs });
     });
-    window.otter.onProxyChanged((proxyBorrows) => {
-      set({ proxyBorrows });
+    window.otter.onProxyChanged(({ borrows, hosts }) => {
+      set({ proxyBorrows: borrows, proxyHosts: hosts });
     });
     window.otter.onMcpChanged((mcpServers) => {
       set({ mcpServers });

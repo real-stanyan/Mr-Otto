@@ -220,13 +220,14 @@ describe("proxyHost 的取消（issue #668）", () => {
     const t = fakeTransport();
     const audits: ProxyAuditEntry[] = [];
     const { mcp, started } = hangingMcp();
-    const off = startProxyHost({
+    const host = startProxyHost({
       transport: t.transport, mcp, friendUid: "b1", friendUids: () => ["b1"],
       getGrants: () => grants, audit: (e) => audits.push(e), now: () => 1,
     });
     t.incoming({ reqId: "r2", fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
     await started;
-    off();
+    expect(host.inflight()).toBe(1);
+    host.stop();
     await flush();
     expect(audits[0]).toMatchObject({ decision: "executed", outcome: "error" });
   });

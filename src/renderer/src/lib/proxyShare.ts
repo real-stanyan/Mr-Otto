@@ -109,12 +109,53 @@ export interface AuditLine {
   args: string;
 }
 
+/** 「8月28日 20:11」。审计账和两侧的状态行共用一份写法 */
+export function formatProxyTime(ts: number): string {
+  const at = new Date(ts);
+  return `${String(at.getMonth() + 1)}月${String(at.getDate())}日 ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 一行的状态：那个点是什么档，右边那句话说什么。
+ *
+ * 四档不能合并，每一档对应用户**不同的下一步动作**：
+ *   live = 此刻正在动我的账号（看一眼在调什么）
+ *   on   = 连着，闲着（没事）
+ *   off  = 配过、但这会儿没连上（等一等）
+ *   dead = 对方明说撤销了（别等了，要用得重走邀请码）
+ * off 和 dead 长得像却是相反的建议——这正是 issue #680 要分开的那一对。
+ */
+export interface ProxyStatusLine {
+  dot: "live" | "on" | "off" | "dead";
+  text: string;
+}
+
+/** A 侧：我授出去的那条此刻怎么样 */
+export function hostStatusLine(h: {
+  connected: boolean; inflight: number; lastCallAt: number | null;
+}): ProxyStatusLine {
+  // 「正在跑」优先于其他一切：白名单内是全自动的，这是唯一一次
+  // 用户能在事情发生的**当下**看见它
+  if (h.inflight > 0) return { dot: "live", text: `正在调用 · ${h.inflight} 笔` };
+  const last = h.lastCallAt === null ? "还没用过" : `最近 ${formatProxyTime(h.lastCallAt)}`;
+  return h.connected ? { dot: "on", text: `已连上 · ${last}` } : { dot: "off", text: `没连上 · ${last}` };
+}
+
+/** B 侧：我借来的那条此刻怎么样 */
+export function borrowStatusLine(b: {
+  connected: boolean; serverCount: number; revokedReason?: string;
+}): ProxyStatusLine {
+  if (b.revokedReason) return { dot: "dead", text: b.revokedReason };
+  if (!b.connected) return { dot: "off", text: "没连上" };
+  // 「连上了但对方一个都没授」和「没连上」是两件事，分开说
+  return { dot: "on", text: b.serverCount === 0 ? "已连上 · 等对方推授权" : `${b.serverCount} 个服务` };
+}
+
 export function auditLine(rec: {
   ts: number; serverId: string; tool: string; argsSummary?: string;
   decision: string; outcome: string; detail?: string;
 }): AuditLine {
-  const at = new Date(rec.ts);
-  const time = `${String(at.getMonth() + 1)}月${String(at.getDate())}日 ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  const time = formatProxyTime(rec.ts);
   const verdict =
     rec.decision === "denied" ? `已拒绝${rec.detail ? `（${rec.detail}）` : ""}`
     : rec.outcome === "error" ? `出错了${rec.detail ? `（${rec.detail}）` : ""}`
