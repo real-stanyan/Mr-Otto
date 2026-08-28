@@ -382,6 +382,8 @@ interface ChatState {
   /** 好友代理(issue #657)：我授权出去的清单（谁能以我的身份调哪些服务）。
       开对话框时拉一次，撤销/新授权后主进程不推——这是本机台账，回值即新状态 */
   proxyGrants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[];
+  /** 好友代理(issue #676)：我借来的那些通道此刻怎么样。主进程推送式更新 */
+  proxyBorrows: { hostUid: string; label: string; connected: boolean; serverCount: number }[];
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
   proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
@@ -628,6 +630,10 @@ interface ChatState {
   revokeProxy(friendUid: string): Promise<void>;
   /** A 侧：拉审计账。不给 friendUid = 全部 */
   loadProxyAudits(friendUid?: string): Promise<void>;
+  /** B 侧：拉一次借来的通道状态（推送之外的那扇查询窗口，重载后补齐用） */
+  refreshProxyBorrows(): Promise<void>;
+  /** B 侧：不再借某好友的服务 */
+  disconnectProxy(hostUid: string): Promise<void>;
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
@@ -849,6 +855,7 @@ export const useChat = create<ChatState>((set, get) => ({
   friendError: null,
   proxyGrants: [],
   proxyAudits: [],
+  proxyBorrows: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -1504,6 +1511,21 @@ export const useChat = create<ChatState>((set, get) => ({
     await get().refreshProxyGrants();
   },
 
+  async refreshProxyBorrows() {
+    const r = await window.otter.proxyBorrows();
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    set({ proxyBorrows: r.value.borrows, friendError: null });
+  },
+
+  async disconnectProxy(hostUid) {
+    const r = await window.otter.proxyDisconnect(hostUid);
+    // 成功后的新状态由主进程推（onProxyChanged），不本地猜
+    set({ friendError: r.ok ? null : r.message });
+  },
+
   async loadProxyAudits(friendUid) {
     const r = await window.otter.proxyAudit(friendUid);
     if (!r.ok) {
@@ -1691,6 +1713,9 @@ export const useChat = create<ChatState>((set, get) => ({
     // 只推活跃会话，而渲染层可能正在切换，切一半收到旧会话的表会把账算错
     window.otter.onToolDefsChanged(({ sessionId, toolDefs }) => {
       if (get().sessionId === sessionId) set({ toolDefs });
+    });
+    window.otter.onProxyChanged((proxyBorrows) => {
+      set({ proxyBorrows });
     });
     window.otter.onMcpChanged((mcpServers) => {
       set({ mcpServers });

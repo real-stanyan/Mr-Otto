@@ -7,11 +7,14 @@ import {
   grantFor,
   parseProxyStore,
   pinnedIdentities,
+  removeBorrow,
   revokeGrant,
   serializeProxyStore,
+  setBorrow,
   setChannel,
   setGrant,
   setPin,
+  usableBorrows,
   type ProxyAuditRecord,
 } from "../../src/main/proxyStore.js";
 import type { ProxyGrant } from "../../src/shared/remote/proxyProtocol.js";
@@ -146,5 +149,39 @@ describe("proxyStore 的 pin 与频道（issue #657 / ADR-0162）", () => {
     expect(d.grants).toEqual([G1]);
     expect(d.pins).toEqual([]);
     expect(d.channels).toEqual([]);
+  });
+});
+
+// ─── B 侧那一栏（issue #676）────────────────────────────────────────────
+describe("proxyStore 的 borrows（issue #676）", () => {
+  it("setBorrow/usableBorrows 往返；同一好友整份替换", () => {
+    const pub = new Uint8Array(32).fill(5);
+    let d = setBorrow(emptyProxyStore(), "a-uid", "chan-1", pub);
+    expect(usableBorrows(d)).toEqual([{ hostUid: "a-uid", channelId: "chan-1", hostIdentityPub: pub }]);
+    d = setBorrow(d, "a-uid", "chan-2", pub);
+    expect(usableBorrows(d)).toHaveLength(1);
+    expect(usableBorrows(d)[0]?.channelId).toBe("chan-2");
+  });
+
+  it("坏公钥/缺字段的整条丢掉——宁可重走一次邀请码，也不拿坏钥匙去 pin", () => {
+    const d = parseProxyStore(JSON.stringify({
+      borrows: [
+        { hostUid: "a", channelId: "c", hostIdentityPub: "!!!" },
+        { hostUid: "b", channelId: "c", hostIdentityPub: "AAAA" }, // 解得出但不是 32 字节
+        { hostUid: "", channelId: "c", hostIdentityPub: "AAAA" },
+      ],
+    }));
+    expect(usableBorrows(d)).toEqual([]);
+  });
+
+  it("removeBorrow 只删这一条", () => {
+    const pub = new Uint8Array(32).fill(5);
+    let d = setBorrow(setBorrow(emptyProxyStore(), "a", "c1", pub), "b", "c2", pub);
+    d = removeBorrow(d, "a");
+    expect(usableBorrows(d).map((x) => x.hostUid)).toEqual(["b"]);
+  });
+
+  it("老台账（没有 borrows 字段）读得进来", () => {
+    expect(parseProxyStore(JSON.stringify({ grants: [] })).borrows).toEqual([]);
   });
 });

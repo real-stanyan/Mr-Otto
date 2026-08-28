@@ -56,6 +56,7 @@ export function ProxyDialog({
   const mcpServers = useChat((s) => s.mcpServers);
   const snapshot = useChat((s) => s.friendsSnapshot);
   const grants = useChat((s) => s.proxyGrants);
+  const borrows = useChat((s) => s.proxyBorrows);
   const audits = useChat((s) => s.proxyAudits);
   const friendError = useChat((s) => s.friendError);
   const refreshProxyGrants = useChat((s) => s.refreshProxyGrants);
@@ -63,6 +64,8 @@ export function ProxyDialog({
   const acceptProxyInvite = useChat((s) => s.acceptProxyInvite);
   const revokeProxy = useChat((s) => s.revokeProxy);
   const loadProxyAudits = useChat((s) => s.loadProxyAudits);
+  const refreshProxyBorrows = useChat((s) => s.refreshProxyBorrows);
+  const disconnectProxy = useChat((s) => s.disconnectProxy);
 
   const [tab, setTab] = useState(friend ? "share" : "grants");
   const [sel, setSel] = useState<ProxySelection>({});
@@ -85,7 +88,9 @@ export function ProxyDialog({
     setAccepted(false);
     setAuditOf(null);
     void refreshProxyGrants();
-  }, [open, friend, refreshProxyGrants]);
+    // 借来的那些是推送式更新的（onProxyChanged），这里拉一次补齐重载后的空白
+    void refreshProxyBorrows();
+  }, [open, friend, refreshProxyGrants, refreshProxyBorrows]);
 
   // 只圈得动连上的服务：没连上的给了对方也调不动，反而误导（同 buildGrantedServers 的口径）。
   // 展示名就是 server id —— 那是 mcp.json 里的键，也是用户自己起的名字
@@ -287,8 +292,30 @@ export function ProxyDialog({
             )}
           </TabsContent>
 
-          {/* ─── 接受邀请：B 侧 ─────────────────────────────────────── */}
+          {/* ─── 接受邀请 + 我借来的：B 侧 ────────────────────────────── */}
           <TabsContent value="accept" className="space-y-2">
+            {borrows.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[11px] text-muted-foreground">我在用的服务</div>
+                {borrows.map((b) => (
+                  <div key={b.hostUid} className="border border-border rounded-md px-2 py-[6px] text-xs flex items-center gap-2">
+                    <span
+                      className={`size-[7px] rounded-full shrink-0 ${b.connected ? "bg-brand" : "bg-border"}`}
+                      aria-label={b.connected ? "已连上" : "没连上"}
+                    />
+                    <span className="flex-1 min-w-0 truncate">{b.label || b.hostUid.slice(0, 8)}</span>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {/* 「配过但没连上」和「连上了但对方一个都没授」是两件事，分开说 */}
+                      {b.connected ? `${b.serverCount} 个服务` : "没连上"}
+                    </span>
+                    <Button variant="ghost" size="sm" className="px-2 text-xs text-err"
+                      onClick={() => void disconnectProxy(b.hostUid)}>
+                      断开
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
             <Textarea
               value={paste}
               onChange={(e) => { setPaste(e.target.value); setAccepted(false); }}
@@ -299,7 +326,7 @@ export function ProxyDialog({
               <Button size="sm" disabled={!paste.trim()} onClick={() => void accept()}>接受</Button>
               {accepted && (
                 <span className="text-[11px] text-muted-foreground">
-                  已连上，等对方推来授权清单
+                  已接受，上面那行会显示接上没有
                 </span>
               )}
             </div>
