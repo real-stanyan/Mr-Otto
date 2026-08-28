@@ -30,7 +30,7 @@ export interface ProxyAuditRecord {
  * 一把已 pin 的好友身份公钥（base64）。
  *
  * 首次由邀请码里那把一次性 secret 的持有证明建立（proxyConnection 的 tryPair，
- * issue #657 / ADR-0161），之后握手走正常 pin 路径——邀请码是一次性、10 分钟就过期的，
+ * issue #657 / ADR-0162），之后握手走正常 pin 路径——邀请码是一次性、10 分钟就过期的，
  * **长期信任落在这里**：A 重启、B 重连都不必再发一张邀请。
  */
 export interface ProxyPin {

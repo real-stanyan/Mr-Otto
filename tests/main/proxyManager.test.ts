@@ -12,7 +12,7 @@ import { nodeRemoteCrypto } from "../../src/main/remoteCryptoNode.js";
 // 中间那根管子是一个假 relay：按 channelId 分房，两边都到齐时各发一次「对端在场」
 // （真 relay 的 `:peer`），这正是握手的起跑枪。
 //
-// 这里钉死的是**信任根**（ADR-0161）：光知道 channelId 连不进来，
+// 这里钉死的是**信任根**（ADR-0162）：光知道 channelId 连不进来，
 // 只有拿着那张邀请码的 B 才 pin 得上——否则任何拿到频道号的人都能用 A 的凭证。
 
 const p = nodeRemoteCrypto();
@@ -88,7 +88,7 @@ function machine(relay: ReturnType<typeof fakeRelay>, uid: string, servers: McpS
 /** 假 relay 的「对端在场」走 microtask，等一拍让握手跑完 */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0161）", () => {
+describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0162）", () => {
   it("B 输入真邀请码 → A 把 B 的公钥 pin 下来", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);

@@ -37,7 +37,7 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 - 两个实例的**通知/焦点抢夺**没做隔离，深链回调成功后会 `app.focus({steal:true})`——但按上面的顺序登录不会触发这条路径。
 - 两个号的额度桶各算各的（注册赠额是按用户发的），一边跑干了不影响另一边——所以拿它验 402 只能验一边。
 
-## 好友代理的两账号验收（issue #622 / #657，ADR-0151 / ADR-0161）
+## 好友代理的两账号验收（issue #622 / #657，ADR-0151 / ADR-0162）
 
 前置：两个号已经互为好友（上一节），A 那台至少接通一台 MCP server（`~/.mr-otto/mcp.json`，
 用 `OTTO_PROFILE=b` 起的 B 实例**共用同一份** mcp.json——所以要验「B 调的是 A 的凭证」，
@@ -51,7 +51,7 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 4. **看 A 那边落了什么**：`~/Library/Application Support/mr-otto/proxy-store.json`
    （0600）里应当出现这个好友的 `grants` / `pins` / `channels` 三条。
    **`pins` 是关键**——它在的意思是「A 验过了 B 对邀请码 secret 的持有证明」，
-   不在就说明握手没走通（见 ADR-0161）。
+   不在就说明握手没走通（见 ADR-0162）。
 5. **撤销**：A 的「已授权」页点撤销 → 三条一起没，B 那条通道当场失效。
 6. **审计**：同一页「查看记录」。放行与拒绝都记，拒绝还带人话原因。
 

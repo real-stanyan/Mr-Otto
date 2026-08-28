@@ -10,7 +10,7 @@
 //
 // 信任来源：握手时对端身份公钥必须落在「已 pin 的集合」里——和 remoteBridge
 // 同一个 TOFU 口径。**首次 pin 由邀请码里那把一次性 secret 的持有证明建立**
-// （pairing.ts 的 buildPairProof/verifyPairProof，issue #657 / ADR-0161）——
+// （pairing.ts 的 buildPairProof/verifyPairProof，issue #657 / ADR-0162）——
 // channelId 不是信任来源，「知道频道号」不等于「是被邀请的那个好友」。
 //
 // 纯逻辑零 IO：transport/crypto/identity 全注入，假 transport 即可离线测试。
@@ -36,7 +36,7 @@ export interface ProxyConnectionDeps {
   /** 已 pin 的对端身份公钥集合（A pin B 的、B pin A 的）。空 = 谁都不认 */
   peerIdentities: () => Uint8Array[];
   /**
-   * 邀请码那条受理路径（issue #657，ADR-0161）。**没传 = 老行为**：只认 pin 组里的公钥。
+   * 邀请码那条受理路径（issue #657，ADR-0162）。**没传 = 老行为**：只认 pin 组里的公钥。
    *
    * 好友代理的信任根是邀请码里那把一次性 secret（proxyInvite），不是 channelId。
    * channelId 随机 32 字节难猜，但「知道就能连」≠「是被邀请的那个 B」——

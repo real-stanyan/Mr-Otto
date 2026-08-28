@@ -95,8 +95,8 @@ describe("proxyStore 文件落盘（issue #622 PR-D2）", () => {
   });
 });
 
-// ─── pin 与频道（issue #657 / ADR-0161）────────────────────────────────
-describe("proxyStore 的 pin 与频道（issue #657 / ADR-0161）", () => {
+// ─── pin 与频道（issue #657 / ADR-0162）────────────────────────────────
+describe("proxyStore 的 pin 与频道（issue #657 / ADR-0162）", () => {
   it("setPin/pinnedIdentities 往返；同一好友整份替换", () => {
     const pubA = new Uint8Array(32).fill(7);
     const pubB = new Uint8Array(32).fill(9);

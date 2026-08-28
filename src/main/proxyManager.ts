@@ -1,4 +1,4 @@
-// proxyManager —— 好友代理的主进程管理器（issue #622 / #657，ADR-0151 / ADR-0161）。
+// proxyManager —— 好友代理的主进程管理器（issue #622 / #657，ADR-0151 / ADR-0162）。
 // 把邀请码生成/接受、A/B 协调器生命周期、授权/撤销/审计收敛到一个可测模块，
 // index.ts 只做薄接线（填依赖 + 注册 IPC）。
 //
@@ -8,7 +8,7 @@
 //   B 侧（好友/guest）：proxyAcceptInvite 输邀请码 → 连 A 的频道握手 → startProxyGuestCoordinator
 //     得到代理 McpCapability，换进会话的 world。
 //
-// **握手层认人**（ADR-0161）：A 手里那张邀请的一次性 secret 只活在内存里，
+// **握手层认人**（ADR-0162）：A 手里那张邀请的一次性 secret 只活在内存里，
 // B 在 hello 里证明持有它，A 验过才 pin B 的公钥；pin 落进 proxyStore，
 // 之后的连接走正常 pin 路径。channelId 落盘（A 重启后房间要开得回来），
 // **secret 不落盘**——一次性的东西落了盘就不是一次性的了。

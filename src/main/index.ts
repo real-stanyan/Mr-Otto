@@ -1273,7 +1273,7 @@ void app.whenReady().then(() => {
   };
   mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
 
-  // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0161）─────────────────
+  // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0162）─────────────────
   // A 把「操作我已接通的服务」这件能力临时授给好友：B 的工具调用经 relay 打到
   // A 这台机器，用 A 自己的凭证执行，结果加密回传——密钥不出 A 的 ~/.mr-otto/。
   //

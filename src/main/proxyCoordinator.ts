@@ -32,7 +32,7 @@ export interface ProxyWireTransport {
   close(): void;
 }
 
-/** 握手层认人那一套的注入（proxyConnection 的 pairing，issue #657 / ADR-0161）。
+/** 握手层认人那一套的注入（proxyConnection 的 pairing，issue #657 / ADR-0162）。
     A 侧填 verifyWith/onPaired/consume，B 侧填 proveWith */
 export interface ProxyPairing {
   proveWith?: () => Uint8Array | null;

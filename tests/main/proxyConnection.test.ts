@@ -106,7 +106,7 @@ describe("proxyConnection（好友代理密封连接骨架，issue #622 PR-D1）
   });
 });
 
-// ─── 邀请码 secret 证明（issue #657 / ADR-0161）──────────────────────────
+// ─── 邀请码 secret 证明（issue #657 / ADR-0162）──────────────────────────
 //
 // 信任根：A 手里那张邀请的一次性 secret。A 的 pin 组一开始是空的（还不认识 B），
 // 「谁能对 secret 签出名」才是 A 认下这条连接的全部依据 —— 光知道 channelId
@@ -155,7 +155,7 @@ function linkedWithInvite(opts: {
   return { p, host, guest, hostIdentity, guestIdentity, paired, consumed };
 }
 
-describe("proxyConnection 的邀请码 secret 证明（issue #657 / ADR-0161）", () => {
+describe("proxyConnection 的邀请码 secret 证明（issue #657 / ADR-0162）", () => {
   it("B 用邀请里那把 secret 签出证明 → A 认下、pin 住、那张邀请作废", () => {
     const p = nodeRemoteCrypto();
     const secret = p.randomBytes(32);
