@@ -27,8 +27,9 @@ import {
     密封/寻址在实现里（装配根用 sealedStream + wsTransport 填）；
     本接口只关心「发一帧、收一帧、对面在不在」 */
 export interface ProxyTransport {
-  /** 发一个代理帧给 A（已序列化的 JSON 字符串） */
-  send(frameJson: string): void;
+  /** 发一个代理帧给 A（已序列化的 JSON 字符串）。
+      回 false = 没发出去（对端不在 / 超过单帧上限，见 proxyConnection） */
+  send(frameJson: string): boolean;
   /** 注册收帧回调。返回退订函数 */
   onFrame(cb: (frameJson: string) => void): () => void;
   /** A 现在连着没有。没连就发不出——callTool 该立刻失败而不是干等 */
@@ -119,7 +120,14 @@ export function createProxyMcp(deps: ProxyMcpDeps): McpCapability {
         }, { once: true });
       }
       pending.set(reqId, { resolve, reject, timer });
-      deps.transport.send(encodeProxyFrame(req));
+      if (!deps.transport.send(encodeProxyFrame(req))) {
+        // 多半是参数太大，超过了 relay 的单帧上限（issue #674）。交出去的下场是
+        // **我这条连接**被 relay 关掉，所以 proxyConnection 宁可不发——
+        // 这里当场失败，而不是让它挂在 pending 里等满超时
+        pending.delete(reqId);
+        clearTimeout(timer);
+        reject(new ProxyError(`代理调用 ${serverId}/${tool} 发不出去（多半是参数太大，超过单帧上限）`));
+      }
     });
 
     if (!res.ok) {

@@ -293,3 +293,48 @@ describe("proxyConnection 的离场（issue #672）", () => {
     expect(host.isReady()).toBe(false);
   });
 });
+
+// ─── 单帧上限（issue #674）──────────────────────────────────────────────
+//
+// relay 对整条消息设了 MAX_FRAME_BYTES 的闸，超了它 **关掉发送方的连接**（1009）——
+// 不是丢这一帧。所以宁可这一帧不发，让调用方回一句人话。
+
+describe("proxyConnection 的单帧上限（issue #674）", () => {
+  it("载荷超限 → 回 false 且一个字节都不交给传输；小的照发", () => {
+    const p = nodeRemoteCrypto();
+    const hostIdentity = p.generateEd25519();
+    const guestIdentity = p.generateEd25519();
+    const wire: string[] = [];
+
+    const host = createProxyConnection({
+      crypto: p, identity: hostIdentity, role: "host", deviceId: "A",
+      peerIdentities: () => [guestIdentity.publicKey],
+      send: (payload) => { wire.push(payload); guest.onWire(payload); },
+      log: () => {},
+    });
+    const guest = createProxyConnection({
+      crypto: p, identity: guestIdentity, role: "guest", deviceId: "B",
+      peerIdentities: () => [hostIdentity.publicKey],
+      send: (payload) => host.onWire(payload),
+      log: () => {},
+    });
+    host.start();
+    guest.start();
+    expect(host.isReady()).toBe(true);
+
+    wire.length = 0;
+    expect(host.sendSealed("小的一帧")).toBe(true);
+    expect(wire).toHaveLength(1);
+
+    wire.length = 0;
+    // 300 KB 明文 → base64 之后铁定过 256 KiB
+    expect(host.sendSealed("x".repeat(300 * 1024))).toBe(false);
+    expect(wire).toEqual([]); // 交出去的下场是本端连接被 relay 关掉
+    expect(host.isReady()).toBe(true); // 连接本身没事，只是这一帧没发
+  });
+
+  it("没 ready 时也回 false（调用方分不出是哪种，但两种都要说人话）", () => {
+    const { host } = linked();
+    expect(host.sendSealed("还没握手")).toBe(false);
+  });
+});

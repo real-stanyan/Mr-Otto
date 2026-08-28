@@ -16,6 +16,7 @@
 // 纯逻辑零 IO：transport/crypto/identity 全注入，假 transport 即可离线测试。
 
 import { b64decode, b64encode } from "../shared/remote/b64.js";
+import { MAX_FRAME_BYTES } from "../shared/remote/wire.js";
 import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type Role, type SelfParty,
@@ -25,6 +26,18 @@ import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 
 type Phase = "idle" | "handshaking" | "ready" | "closed";
+
+/**
+ * 一帧能塞下的最大 base64 载荷（issue #674）。
+ *
+ * relay 对**整条消息**（`<cid> <载荷>`）设了 `MAX_FRAME_BYTES` 的闸，
+ * 超了它 `ws.close(1009)` —— **关的是发送方的连接**，不是丢这一帧。
+ * cid 是 `c` + 12 位十六进制（`newCid`），加个空格 14 字节；留 64 字节余量，
+ * 免得哪天 cid 变长就变成一条谁都想不到的断线。
+ *
+ * 这里量的是**编码后**的长度，不是估算的：估错的代价是连接被关。
+ */
+const MAX_SEALED_PAYLOAD = MAX_FRAME_BYTES - 64;
 
 export interface ProxyConnectionDeps {
   crypto: RemoteCryptoPrimitives;
@@ -67,8 +80,12 @@ export interface ProxyConnection {
   start(): void;
   /** 喂进一条线上收到的 payload（首字符 '{'=握手包，否则=密封帧） */
   onWire(payload: string): void;
-  /** 发一个密封帧（ready 才发得出，否则丢） */
-  sendSealed(plainText: string): void;
+  /**
+   * 发一个密封帧。**回 false = 没发出去**，调用方要把它翻成人话：
+   * 没 ready（对端不在），或者超过了 relay 的单帧上限（超了会被 relay
+   * 关掉本端连接，所以宁可这一帧不发，issue #674）。
+   */
+  sendSealed(plainText: string): boolean;
   /** 注册「收到解出的明文帧」回调 */
   onPlain(cb: (plainText: string) => void): void;
   /** 注册「握手完成、可以收发」回调 */
@@ -245,8 +262,16 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
       else onSealed(payload);
     },
     sendSealed(plainText) {
-      if (phase !== "ready" || !sealer) return;
-      deps.send(b64encode(sealer.seal(new TextEncoder().encode(plainText))));
+      if (phase !== "ready" || !sealer) return false;
+      const payload = b64encode(sealer.seal(new TextEncoder().encode(plainText)));
+      if (payload.length > MAX_SEALED_PAYLOAD) {
+        // 交出去的下场是 relay 把**我这条连接**关掉（1009），然后退避重连、
+        // 对端那笔等满超时。宁可这一帧不发，让调用方回一句人话
+        log(`代理连接:这一帧 ${payload.length} 字节，超过单帧上限，没发出去`);
+        return false;
+      }
+      deps.send(payload);
+      return true;
     },
     onPlain(cb) { plainCbs.push(cb); },
     onReady(cb) { readyCbs.push(cb); },

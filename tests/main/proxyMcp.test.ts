@@ -8,7 +8,7 @@ function fakeTransport(connected = true) {
   const sent: string[] = [];
   let frameCb: ((j: string) => void) | null = null;
   const transport: ProxyTransport = {
-    send: (j) => { sent.push(j); },
+    send: (j) => { sent.push(j); return true; },
     onFrame: (cb) => { frameCb = cb; return () => { frameCb = null; }; },
     isPeerConnected: () => connected,
   };
@@ -117,5 +117,20 @@ describe("proxyMcp 的取消（issue #668）", () => {
     const p = mcp.callTool("shopify", "get_orders", {});
     await expect(p).rejects.toThrow(/超时/);
     expect(JSON.parse(t.sent[1]!)).toEqual({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId: "r10" });
+  });
+});
+
+// ─── 帧发不出去（issue #674）────────────────────────────────────────────
+describe("proxyMcp：帧发不出去就当场失败（issue #674）", () => {
+  it("请求发不出去（多半是参数太大）→ 立刻 reject，不挂在 pending 里等满超时", async () => {
+    let cb: ((j: string) => void) | null = null;
+    const transport: ProxyTransport = {
+      send: () => false, // proxyConnection 判定超过单帧上限
+      onFrame: (c) => { cb = c; return () => { cb = null; }; },
+      isPeerConnected: () => true,
+    };
+    const mcp = createProxyMcp({ ...DEPS, transport, nextReqId: () => "r1", timeoutMs: 60_000 });
+    await expect(mcp.callTool("shopify", "get_orders", { blob: "x" })).rejects.toThrow(/发不出去/);
+    expect(cb).not.toBeNull(); // 连接还在，只是这一笔没发出去
   });
 });
