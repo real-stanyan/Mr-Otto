@@ -8,9 +8,11 @@
 // →新 .app 移入原路径 → open 拉起新版。失败时把 .bak 挪回去，最坏也有一份能跑的。
 // .bak 留着不删——没签名没公证，新版首启炸了用户还能手动改名回滚。
 //
-// win 换包同理但更省事：下载产物本身就是 NSIS 安装器，批处理等本进程退干净后
-// 跑 `安装器 /S` 静默重装（NSIS 自己管文件替换与回滚），装完拉起 exe。
-// 回滚兜底也交给 NSIS——装失败旧文件原样在，脚本只在装成功后才重启 app。
+// win 换包不用脚本：下载产物本身就是 NSIS 安装器，直接 detached 起它
+// `/S --force-run`（静默重装 + 装完拉起新版），关掉在跑的旧版和文件替换/回滚
+// 全是 NSIS 自己的活。为什么不能像 mac 那样套一层等待脚本，见 winSwapSpawn
+// 的注释（issue #662：detached 的 cmd 没有控制台，批处理里的控制台子进程
+// 只好各自新建一个，屏幕上每秒弹三个黑框）。
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,7 +23,12 @@ import { pipeline } from "node:stream/promises";
 import { app, shell } from "electron";
 import { join } from "node:path";
 import type { UpdaterDeps } from "./updater.js";
-import { UPDATE_ASSET_SUFFIX, appBundlePathFromExe, isTranslocated } from "./updaterCore.js";
+import {
+  UPDATE_ASSET_SUFFIX,
+  appBundlePathFromExe,
+  isTranslocated,
+  winSwapSpawn,
+} from "./updaterCore.js";
 import type { UpdaterState } from "../shared/shellBridge.js";
 
 /** GitHub API/下载都带上 UA——GitHub 对无 UA 请求直接 403 */
@@ -40,25 +47,6 @@ else
   open "$APP"
   exit 1
 fi
-`;
-
-// win 版换包脚本。tasklist 按 PID 过滤轮询本进程退干净（ping -n 2 ≈ 睡 1s，
-// timeout 命令在无交互 stdin 下会报错，不能用）；NSIS /S 静默重装到原目录，
-// 装成功才 start 拉起新版——装失败就保持退出状态，旧版文件 NSIS 没动。
-const SWAP_SCRIPT_WIN = `@echo off\r
-rem Mr Otto OTA 换包脚本（updaterHost.ts 生成）。参数：pid 安装器路径 exe路径\r
-set APP_PID=%~1\r
-set SETUP=%~2\r
-set APP_EXE=%~3\r
-:wait\r
-tasklist /FI "PID eq %APP_PID%" 2>nul | find "%APP_PID%" >nul\r
-if not errorlevel 1 (\r
-  ping -n 2 127.0.0.1 >nul\r
-  goto wait\r
-)\r
-"%SETUP%" /S\r
-if errorlevel 1 exit /b 1\r
-start "" "%APP_EXE%"\r
 `;
 
 function runCommand(cmd: string, args: string[]): Promise<void> {
@@ -89,7 +77,8 @@ async function findAppBundle(dir: string): Promise<string | null> {
   return name === undefined ? null : join(dir, name);
 }
 
-/** 写脚本、detached spawn、app.quit()。脚本等本进程退干净再动文件 */
+/** detached spawn 换包程序 + app.quit()。mac 起的是等本进程退干净再动文件的脚本，
+    win 起的是 NSIS 安装器本身（等待与替换都是它自己的活，见 winSwapSpawn） */
 function spawnDetachedAndQuit(cmd: string, args: string[]): void {
   const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
   child.unref();
@@ -139,8 +128,8 @@ function macPlatformDeps(updatesDir: string) {
 }
 
 /** win 席位：无预检（NSIS per-user 装机目录本用户可写；没有 Translocation 对应物），
-    免解包（产物即安装器），批处理静默重装换包 */
-function winPlatformDeps(updatesDir: string) {
+    免解包（产物即安装器），直接跑安装器静默重装换包 */
+function winPlatformDeps() {
   return {
     assetSuffix: UPDATE_ASSET_SUFFIX.win32,
 
@@ -149,17 +138,8 @@ function winPlatformDeps(updatesDir: string) {
     stage: async (downloadedPath: string): Promise<string> => downloadedPath,
 
     installAndQuit(stagedPath: string): void {
-      const scriptPath = join(updatesDir, "swap.cmd");
-      void (async () => {
-        await writeFile(scriptPath, SWAP_SCRIPT_WIN);
-        spawnDetachedAndQuit("cmd.exe", [
-          "/c",
-          scriptPath,
-          String(process.pid),
-          stagedPath,
-          process.execPath,
-        ]);
-      })();
+      const { cmd, args } = winSwapSpawn(stagedPath);
+      spawnDetachedAndQuit(cmd, args);
     },
   };
 }
@@ -167,7 +147,7 @@ function winPlatformDeps(updatesDir: string) {
 export function createUpdaterHostDeps(onState: (state: UpdaterState) => void): UpdaterDeps {
   const updatesDir = join(app.getPath("userData"), "updates");
   const platform =
-    process.platform === "win32" ? winPlatformDeps(updatesDir) : macPlatformDeps(updatesDir);
+    process.platform === "win32" ? winPlatformDeps() : macPlatformDeps(updatesDir);
   return {
     currentVersion: app.getVersion(),
     updatesDir,
