@@ -1,4 +1,4 @@
-// workspaceExclusion —— 同一个工作区，同一时刻只允许一条 turn 在跑（issue #620，ADR-0151）
+// workspaceExclusion —— 同一个工作区，同一时刻只允许一条 turn 在跑（issue #620，ADR-0152）
 //
 // 为什么需要：一只水獭的沙箱是 `ExecutionWorld` 圈定的**文件系统路径**。git 的状态不在
 // 路径里，在 `.git` 里——两只水獭指着同一个工作目录时，一边 `git checkout`，另一边的

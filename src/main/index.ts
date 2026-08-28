@@ -2600,7 +2600,7 @@ void app.whenReady().then(() => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
-    // 同一个文件夹，同一时刻只让一条 turn 起跑（issue #620，ADR-0151）。
+    // 同一个文件夹，同一时刻只让一条 turn 起跑（issue #620，ADR-0152）。
     // 沙箱围的是路径，围不住共享的 .git——两个会话指着同一个工作目录时，一边
     // git checkout，另一边的未提交改动就无声消失了。与 git 自己同构：只拒绝，
     // 不做魔法（不自动开 worktree、不自动换目录）。
