@@ -19,7 +19,7 @@
 // 陈旧锁必须能自愈：进程崩了不该把文件夹永久锁死。两道判据——心跳过期、进程已死。
 // 纯逻辑在这里，真正的读写和 pid 探活在 main 层。
 
-import { EXCLUSION_WHY, EXCLUSION_WAY_OUT } from "./workspaceExclusion.js";
+import { EXCLUSION_WHY, EXCLUSION_WAY_OUT, EXCLUSION_FALLBACK } from "./workspaceExclusion.js";
 
 /** 落盘的锁内容。字段都是给人看的诊断信息，判定只用 pid 和 heartbeatTs */
 export interface WorkspaceLockFile {
@@ -70,7 +70,8 @@ export function crossProcessMessage(lock: WorkspaceLockFile, workspace: string):
     `另一个 Mr Otto 正在这个文件夹里干活：\n` +
     `  文件夹：${workspace}\n` +
     `  占用的程序：${lock.app}（进程 ${lock.pid}）\n\n` +
-    `${EXCLUSION_WHY}\n\n` +
+    `${EXCLUSION_WHY}\n` +
+    `${EXCLUSION_FALLBACK}\n\n` +
     `怎么办：\n` +
     `  · 等它做完，再把这条消息发一次；\n` +
     `  · ${EXCLUSION_WAY_OUT}\n` +

@@ -588,6 +588,23 @@ void app.whenReady().then(() => {
   /** 独立工作副本（issue #641，ADR-0156）：同一个项目上开第二只水獭时，给它一个
       一次性 worktree。落点在 userData，不进用户的仓库 */
   const sessionWorktrees = createSessionWorktreeService({ userData: app.getPath("userData") });
+  /** 这个目录在 git 仓里吗——问一次记住。答案在会话生命周期内不会变（用户不会
+      中途给文件夹 git init 再指望正在跑的水獭改行为），而 repoOf 每问一次起一个
+      git 子进程，turn 起跑处不该每次都付这个钱 */
+  const repoCache = new Map<string, string | null>();
+  const repoOfCached = (dir: string): string | null => {
+    const hit = repoCache.get(dir);
+    if (hit !== undefined) return hit;
+    const repo = sessionWorktrees.repoOf(dir);
+    repoCache.set(dir, repo);
+    return repo;
+  };
+  /** 这个工作区允许两只水獭同时干活吗（issue #658）。
+      非 git 目录 = 允许：文件级的闸 + 协作记录接管（ADR-0161）。
+      git 仓 = 不允许：各自拿独立副本本来就撞不上；万一没拿到（worktree 建失败），
+      `git checkout` 这类命令能抹掉对方的未提交改动，而文件级的闸看不懂 shell 命令
+      ——那一格仍旧排队（ADR-0152 / 0155 保留） */
+  const parallelOk = (workspace: string): boolean => repoOfCached(workspace) === null;
 
   // 「压缩中」是 running 灯的一个子档：compact 复用 turn 状态灯（下面的 compact
   // handler），光看 runningSessions 分不出它和普通 turn。渲染层原来靠自己发起
@@ -1545,6 +1562,9 @@ void app.whenReady().then(() => {
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
       ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+      // 协作记录（issue #658）：只在可能有第二只水獭同时动手的工作区开——
+      // 也就是非 git 目录。独立副本里没有别人，记账只剩噪音
+      ...(parallelOk(args.workspace) ? { cowork: true as const } : {}),
     };
     if (args.child && args.resumeSessionId) {
       // 子会话重建走 createChildAgent：它的签名里没有 subagentRunner 这一项，
@@ -2681,7 +2701,12 @@ void app.whenReady().then(() => {
     // git checkout，另一边的未提交改动就无声消失了。与 git 自己同构：只拒绝，
     // 不做魔法（不自动开 worktree、不自动换目录）。
     // 同家族（子会话 / SideChat）不互斥：它们本来就共享 workspace 并且并发运行。
-    {
+    //
+    // **只在 git 仓里还这么拦**（issue #658，ADR-0161）：非 git 目录改走文件级的
+    // 闸 + 协作记录——两只水獭一个写提案一个写预算根本不会撞，文件夹级一刀切拦掉
+    // 的正是这种情况。git 仓保留这道闸，因为 `git checkout` 抹掉的是 .git 里的状态，
+    // 文件级的闸看不懂 shell 命令（正常路径上它也几乎不发生：各自拿独立副本）
+    if (!parallelOk(agent.workspace)) {
       // 家族链拍一次快照就够：turn 起跑是低频动作，但 sessions() 是一次查库，
       // 别在 agents 的循环里每条都查一遍
       const rows = store.sessions();
@@ -2751,7 +2776,11 @@ void app.whenReady().then(() => {
     // 跨进程那一半（issue #634）：ADR-0152 的 runningSessions 是进程内状态，
     // 两个 app 实例（dev 版 / 正式版）指着同一个文件夹时互相看不见。紧挨着进程内
     // 那条判定拿锁——两道判据是同一件事，分开写只因为一道在内存、一道在盘上
-    const wsLock = workspaceLock.acquire(agent.workspace, sessionId);
+    // 同上，只在 git 仓里拿这把锁（ADR-0161）：进程内允许并行、跨进程照拦，
+    // 是解释不通的两套语义
+    const wsLock = parallelOk(agent.workspace)
+      ? null
+      : workspaceLock.acquire(agent.workspace, sessionId);
     if (typeof wsLock === "string") throw new Error(wsLock);
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
@@ -2829,7 +2858,7 @@ void app.whenReady().then(() => {
       ));
       throw err;
     } finally {
-      wsLock.release();
+      wsLock?.release();
       runningSessions.delete(sessionId);
       // turn 收口 = 不可能还有人挂在审批/问卷门上（fail-closed 已经把它们
       // 按拒绝收场了）。挂起表跟着清，别让下一次 sessionRuntime 交出一张
