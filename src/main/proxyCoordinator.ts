@@ -15,7 +15,7 @@ import {
   appendAudit, grantFor, serializeProxyStore,
   type ProxyStoreData,
 } from "./proxyStore.js";
-import type { ProxyRequest } from "../shared/remote/proxyProtocol.js";
+import { buildGrantedServers, encodeProxyFrame, type ProxyRequest } from "../shared/remote/proxyProtocol.js";
 import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 
@@ -36,6 +36,8 @@ export function startProxyHostCoordinator(deps: {
   mcp: McpCapability;
   /** B 的身份公钥（已 pin） */
   peerIdentityPub: () => Uint8Array[];
+  /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧 */
+  friendUid: string;
   /** 读/写授权+审计存储（proxyStore 的持久化由调用方落盘） */
   loadStore: () => ProxyStoreData;
   saveStore: (d: ProxyStoreData) => void;
@@ -76,6 +78,16 @@ export function startProxyHostCoordinator(deps: {
     },
     now,
     log,
+  });
+
+  // 握手成功后，把授权清单（A 的真服务按白名单过滤、脱敏）推给 B——
+  // B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
+  // A 改授权后可再调 connection 重发；这里至少在握手后推一次。
+  connection.onReady(() => {
+    const grant = grantFor(deps.loadStore(), deps.friendUid);
+    const servers = buildGrantedServers(deps.mcp.servers(), grant);
+    connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }));
+    log(`代理授权已推送给 B：${servers.length} 个服务`);
   });
 
   // 传输 → 连接（首字符定型在 proxyConnection.onWire 里做）

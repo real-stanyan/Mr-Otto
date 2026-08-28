@@ -67,6 +67,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
       crypto: p, identity: aId, deviceId: "A",
       transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
+      friendUid: "b-uid",
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
 
@@ -110,6 +111,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
     const host = startProxyHostCoordinator({
       crypto: p, identity: aId, deviceId: "A", transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
+      friendUid: "b-uid",
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
     const guest = startProxyGuestCoordinator({
@@ -140,6 +142,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
     const host = startProxyHostCoordinator({
       crypto: p, identity: aId, deviceId: "A", transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
+      friendUid: "b-uid",
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
     const guest = startProxyGuestCoordinator({

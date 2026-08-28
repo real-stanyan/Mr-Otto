@@ -16,6 +16,7 @@ import type { McpCapability, McpServerHandle } from "../world/executionWorld.js"
 import type { McpContent, McpServerConfig } from "../shared/mcp.js";
 import {
   decodeProxyFrame,
+  type ProxyGrantedServer,
   encodeProxyFrame,
   PROXY_FRAME_VERSION,
   type ProxyRequest,
@@ -41,6 +42,8 @@ export interface ProxyMcpDeps {
   /** 这次代理会话里 A 授权给 B 的 server 句柄（白名单圈的那些）。
       B 侧 servers() 只报这些——不该让 B 看到 A 接的全部服务 */
   grantedServers: readonly McpServerHandle[];
+  /** A 推来新的授权清单（proxy_grant 帧）时回调——B 侧 UI 刷新工具表用。可空 */
+  onGrantsChanged?: (servers: readonly McpServerHandle[]) => void;
   /** reqId 生成器。默认自增 + 随机前缀（测试可注入确定值） */
   nextReqId?: () => string;
   /** callTool 等 A 回帧的超时（ms）。默认 60s——A 执行真实工具要时间 */
@@ -65,9 +68,22 @@ export function createProxyMcp(deps: ProxyMcpDeps): McpCapability {
     timer: ReturnType<typeof setTimeout>;
   }>();
 
+  // 授权清单是可变的：A 握手后推 proxy_grant 帧（改授权就重发），B 以最新一帧为准
+  let grantedServers: readonly McpServerHandle[] = deps.grantedServers;
+
   deps.transport.onFrame((frameJson) => {
     const frame = decodeProxyFrame(frameJson);
-    if (!frame || frame.kind !== "proxy_res") return; // 不是结果帧（或坏帧）不归这里
+    if (!frame) return;
+    // A 推来的新授权清单：更新 B 的工具表（status 恒 connected/live 恒 true——A 确认能用才发）
+    if (frame.kind === "proxy_grant") {
+      grantedServers = frame.servers.map((gs: ProxyGrantedServer): McpServerHandle => ({
+        id: gs.id, name: gs.name, status: "connected", live: true, tools: gs.tools, resources: [], prompts: [],
+      }));
+      log(`代理授权更新：${grantedServers.length} 个服务`);
+      deps.onGrantsChanged?.(grantedServers);
+      return;
+    }
+    if (frame.kind !== "proxy_res") return; // 不是结果帧（或坏帧）不归这里
     const slot = pending.get(frame.reqId);
     if (!slot) return; // 没人等的 reqId（迟到/重发）——丢掉，不报错
     pending.delete(frame.reqId);
@@ -111,7 +127,7 @@ export function createProxyMcp(deps: ProxyMcpDeps): McpCapability {
     // B 没有本地 server 要连——工具表在授权时已由 A 给 B。ready 是空操作
     ready: async () => {},
     // 只报 A 授权的那几个 server——B 看不到 A 接的全部服务
-    servers: () => deps.grantedServers,
+    servers: () => grantedServers,
     callTool,
     // 资源/提示第一期不代理（ADR-0151：先只做工具调用）
     readResource: () => { throw new ProxyError("好友代理第一期不支持读资源（只代理工具调用）"); },
