@@ -196,6 +196,10 @@ export class FriendsManager {
   private friendIds = new Set<string>();
   /** 已 start 且拿到 uid:setWorkspace 要立刻补一拍心跳时用 */
   private uid: string | null = null;
+  /** 最近一次推给渲染层的那份快照里,**已接受**的好友 uid 集。
+      null = 还没推过任何快照(没登录 / 首次快照还没到) —— 这个区别对好友代理是硬要求:
+      它把「名单未知」当拒绝处理,拿空集冒充就成了「所有人都不是好友」(issue #665) */
+  private acceptedUids: Set<string> | null = null;
   /** 上次推给渲染层的并集,只在变化时再推 */
   private pushedOnline: string[] = [];
   /** 最近一次读到的好友心跳时间(在线判断的第二条腿) */
@@ -230,9 +234,24 @@ export class FriendsManager {
     return buildSnapshot(uid, rows, profiles);
   }
 
+  /** 好友代理的第二道闸读的那份名单(issue #665)。**每一份新鲜快照都顺手更新它**,
+      而不是另起一条拉取 —— 两份名单迟早不一样。于是这道闸的新鲜度恰好等于
+      用户在界面上看到的那份:Realtime 推、轮询兜底、渲染层拉,三条路都会喂到它 */
+  private cacheAccepted(snap: FriendsSnapshot): void {
+    this.acceptedUids = new Set(snap.friends.map((e) => e.profile.id));
+  }
+
   /** 变更后重拉快照推给渲染层(本端操作与对端 Realtime 同一条出口) */
   private async pushSnapshot(uid: string): Promise<void> {
-    this.push.friendsChanged(await this.snapshot(uid));
+    const snap = await this.snapshot(uid);
+    this.cacheAccepted(snap);
+    this.push.friendsChanged(snap);
+  }
+
+  /** 已接受的好友 uid 集;**null = 还没同步好**。好友代理拿它当第二道闸
+      (ADR-0151 决策 1:friendships 被删除 = 代理权限跟着死) */
+  acceptedFriendUids(): readonly string[] | null {
+    return this.acceptedUids === null ? null : [...this.acceptedUids];
   }
 
   async search(query: string): Promise<FriendsResult<FriendProfile[]>> {
@@ -277,7 +296,11 @@ export class FriendsManager {
   }
 
   async list(): Promise<FriendsResult<FriendsSnapshot>> {
-    return this.withUid((uid) => this.snapshot(uid));
+    return this.withUid(async (uid) => {
+      const snap = await this.snapshot(uid);
+      this.cacheAccepted(snap); // 拉一次也算一次新鲜快照(见 cacheAccepted)
+      return snap;
+    });
   }
 
   /** 发消息回自己那条真行:渲染层拿真 id/时间戳直接落,不必再拉一整页回显 */
@@ -475,6 +498,9 @@ export class FriendsManager {
     this.pushedOnline = [];
     this.pushedWorkspaces = "";
     this.friendIds = new Set();
+    // 退回「还不知道」而不是「一个好友都没有」:登出/重连期间代理该拒,
+    // 但拒的理由是「名单没同步好」,不是「你们不是好友了」
+    this.acceptedUids = null;
   }
 
   /** 登出时调:退订 + 推空快照/空在线集(UI 立即清) */

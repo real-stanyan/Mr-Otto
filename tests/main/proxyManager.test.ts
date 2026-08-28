@@ -69,7 +69,12 @@ function fakeRelay() {
 }
 
 /** 一台机器：自己的身份 + 自己的台账 + 接同一个假 relay 的 manager */
-function machine(relay: ReturnType<typeof fakeRelay>, uid: string, servers: McpServerHandle[] = []) {
+function machine(
+  relay: ReturnType<typeof fakeRelay>,
+  uid: string,
+  servers: McpServerHandle[] = [],
+  friends: readonly string[] = ["a-uid", "b-uid", "evil-uid"]
+) {
   const identity = p.generateEd25519();
   let store: ProxyStoreData = emptyProxyStore();
   const manager = createProxyManager({
@@ -78,6 +83,8 @@ function machine(relay: ReturnType<typeof fakeRelay>, uid: string, servers: McpS
     deviceId: uid,
     mcp: fakeMcp(servers),
     currentUid: () => uid,
+    // 这台机器把对面当好友（关系闸在 proxyHost 层，那里单独测）
+    friendUids: () => friends,
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
@@ -179,6 +186,7 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
     const manager = createProxyManager({
       crypto: p, identity, deviceId: "B", mcp: fakeMcp([]),
       currentUid: () => null,
+      friendUids: () => [],
       openWireTransport: (c, r) => relay.open(c, r),
       loadStore: () => store, saveStore: (d) => { store = d; },
     });

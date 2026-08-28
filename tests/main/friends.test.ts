@@ -501,3 +501,53 @@ describe("FriendsManager 推送兜底", () => {
     expect(h.push.healthChanged).toHaveBeenLastCalledWith("connecting");
   });
 });
+
+// ─── 好友代理的第二道闸读的那份名单（issue #665）────────────────────────
+//
+// 「还不知道」和「一个好友都没有」必须分得开：代理侧两者都拒，但拒的话不一样，
+// 而且拿空集冒充「还不知道」等于把「所有人都不是好友」写死。
+
+describe("FriendsManager.acceptedFriendUids（issue #665）", () => {
+  const rows = [
+    { id: "f1", requester: "me", addressee: "u2", status: "accepted" as const },
+    { id: "f2", requester: "u3", addressee: "me", status: "pending" as const },
+  ];
+
+  it("start 之前 = null（还没同步好），start 之后 = 已接受的那些", async () => {
+    const api = fakeApi({
+      listFriendships: vi.fn(async () => rows),
+      listProfiles: vi.fn(async () => [P("u2"), P("u3")]),
+    });
+    const m = new FriendsManager({ api, push: mkPush() });
+    expect(m.acceptedFriendUids()).toBeNull();
+    await m.start();
+    // pending 的不算好友——代理权限跟着**已接受**的关系走
+    expect(m.acceptedFriendUids()).toEqual(["u2"]);
+  });
+
+  it("登出退回 null，而不是空数组", async () => {
+    const api = fakeApi({
+      listFriendships: vi.fn(async () => rows),
+      listProfiles: vi.fn(async () => [P("u2")]),
+    });
+    const m = new FriendsManager({ api, push: mkPush() });
+    await m.start();
+    expect(m.acceptedFriendUids()).toEqual(["u2"]);
+    m.stop();
+    expect(m.acceptedFriendUids()).toBeNull();
+  });
+
+  it("好友被删 → 下一次快照里就没了（代理侧下一笔调用即被拒）", async () => {
+    let current = rows;
+    const api = fakeApi({
+      listFriendships: vi.fn(async () => current),
+      listProfiles: vi.fn(async () => [P("u2"), P("u3")]),
+    });
+    const m = new FriendsManager({ api, push: mkPush() });
+    await m.start();
+    expect(m.acceptedFriendUids()).toEqual(["u2"]);
+    current = [];
+    await m.list(); // 任一条会重推快照的路径
+    expect(m.acceptedFriendUids()).toEqual([]);
+  });
+});

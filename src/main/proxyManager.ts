@@ -42,6 +42,10 @@ export interface ProxyManagerDeps {
   mcp: McpCapability;
   /** 当前登录用户的 Supabase uid（B 发起 proxy_req 时写 fromUid；A 侧记录用）。未登录 = null */
   currentUid: () => string | null;
+  /** A 此刻的好友 uid 集；**null = 名单还没同步好**（没登录 / 首次快照还没到）。
+      ADR-0151 决策 1：friendships 被删除 = 代理权限跟着死。null 一律按「拒」处理
+      （见 proxyHost 的 friendUids 注释），所以这里不能拿空数组冒充「还不知道」 */
+  friendUids: () => readonly string[] | null;
   /** 开一个到 relay 某频道的点对点传输（index.ts 用 createWsTransport + adaptProxyWire 造） */
   openWireTransport: (channelId: string, role: "host" | "guest") => ProxyWireTransport;
   /** proxyStore 的落盘（0600/userData，index.ts 填 readProxyStore/writeProxyStore 的绑定） */
@@ -100,6 +104,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         consume: () => { secret = null; },
       },
       friendUid,
+      friendUids: deps.friendUids,
       loadStore: deps.loadStore,
       saveStore: deps.saveStore,
       now,

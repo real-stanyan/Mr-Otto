@@ -1305,6 +1305,9 @@ void app.whenReady().then(() => {
         deviceId: remoteKeys.idStore.deviceId,
         mcp: mcpHub,
         currentUid: () => friends.currentUid(),
+        // 第二道闸：删好友 = 代理权限跟着死（ADR-0151 决策 1，issue #665）。
+        // null = 名单还没同步好，代理侧按「拒」处理
+        friendUids: () => friends.acceptedFriendUids(),
         // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
         // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
         openWireTransport: (channel, role) =>
