@@ -163,13 +163,16 @@ Serial single-human repos need none of this — with one live shift, the rules a
 
 The main checkout is **frozen on the default branch and read-only**. Every shift works inside its own worktree.
 
-- **Open one to start work**: `git worktree add .claude/worktrees/<任务名> -b <分支名>`. One agreed location — `.claude/worktrees/` — so `prune` sees all of them.
+- **Open one to start work**: `npm run lane -- <任务名>` (ADR-0150). It fetches, opens `.claude/worktrees/<slug>-<随机>` off `origin/<default>`, and gives the branch a random suffix so two lanes on the same task name cannot collide; an existing directory or branch is refused rather than reused. Repo-local, no Gearbox involved.
 - **A worktree is single-use**: one worktree serves one task, thrown away when done, and **never `git checkout`s to a different branch**. A long-lived worktree that switches branches *is* a second main checkout — the branch-switching is back, just in another directory. Isolation comes from the single-use part, not from the word "worktree".
 - **Why this one rule suffices**: under worktrees, having a branch pulled out from under you is *physically impossible* — git refuses to check the same branch out twice (`fatal: 'main' is already used by worktree at ...`). Nobody working in the main checkout ⇒ the branch switch never happens ⇒ no clause is needed to forbid it.
 - **Never bare `git stash` / `git stash pop`**: worktrees isolate files and HEAD, but `.git` is shared — **so is the stash stack**, and that is the one leak in the model (issue #543 symptom 2 was another lane's `pop` walking off with somebody else's work). Use `git stash push -u -m "<唯一标签>"`, capture your entry's SHA via `git stash list --format='%H %gs'`, restore with `git stash apply <sha>` (never `pop`), then re-find `stash@{n}` by tag and drop it. Better still: in your own worktree nothing can touch uncommitted work, so a WIP commit beats stashing.
-- **Mechanical backstop**: `.githooks/pre-commit` refuses commits made in the main checkout on a non-default branch. Install once per clone (covers all of that clone's worktrees): `git config core.hooksPath .githooks`. Its ceiling is stated in the hook itself — git has no pre-checkout hook, so the branch switch itself cannot be blocked; `--no-verify` is a deliberate escape hatch.
+- **Clean up at shift-end**: `npm run lane:prune` (dry-run; `-- --apply` to act) removes merged+clean worktrees and merged local branches. It never force-deletes, never touches a dirty worktree, and **never deletes a branch nobody has committed on** — that shape is a freshly opened lane, not a leftover twig (#449). Repo-local; this is why the repo no longer depends on `gearbox-agents prune` (ADR-0150).
+- **Mechanical backstop**: `.githooks/pre-commit` refuses commits made in the main checkout on a non-default branch. Installed automatically by `npm install` (the `prepare` script, ADR-0150 — a setup command you must remember to run fails the same way a rule you must remember to follow does); to do it by hand: `git config core.hooksPath .githooks`. Its ceiling is stated in the hook itself — git has no pre-checkout hook, so the branch switch itself cannot be blocked; `--no-verify` is a deliberate escape hatch.
 
 ### Branch hygiene (optional)
+
+> **This repo uses its own `npm run lane:prune` instead** (ADR-0150) — it carries the zero-work-branch protection this tool lacks (#449 / upstream gearbox#141). The paragraph below is the upstream description, kept for the other three things the upstream tool covers.
 
 Before shift-end (or when you hit stale refs at shift-start), run `npx gearbox-agents prune`. It cleans up four things (ADR-0030/0043):
 
@@ -197,6 +200,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/docs/adrNumbers.test.ts` — `docs/adr/` 编号唯一 + 不跳号的可执行版（撞号在这里红，ADR-0074）
+- `scripts/lane.mjs` / `scripts/lane-prune.mjs` / `scripts/install-hooks.mjs` — 开一条 lane / 收工清理 / 自动挂钩子（`npm run lane -- <任务名>`、`npm run lane:prune`；零工作量分支为什么不删见 ADR-0150 与 #449）
 - `.githooks/pre-commit` / `tests/hooks/preCommitWorktree.test.ts` — 「主 checkout 只读、开工用一次性 worktree」的机制兜底 + 它的可执行版（装一次：`git config core.hooksPath .githooks`；天花板与逃生门写在钩子文件头，ADR-0149）
 - `src/shared/fileRefs.ts` / `src/renderer/src/lib/rehypeFileRefs.ts` / `src/renderer/src/lib/codeLines.ts` — 正文里的「文件:行号」认成可点 chip，点了跳到 Files 面板的那一行（ADR-0110；rehype 插件的装配顺序有两条不会报错的坑，见该 ADR 第二节）
 - `src/shared/askUser.ts` / `src/renderer/src/lib/askUserCard.ts` — 问卷答卷的编解码（`formatAnswers` 的逆函数在这儿）+ 时间线上那张「已作答」卡的纯逻辑（ADR-0111）

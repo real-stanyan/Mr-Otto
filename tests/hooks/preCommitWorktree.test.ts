@@ -70,7 +70,8 @@ describe("pre-commit：主 checkout 只读（issue #543，ADR-0149）", () => {
     const { ok, stderr } = tryCommit(repo, "on a branch in the main checkout");
     expect(ok).toBe(false);
     // 错误信息必须带修法，不能只说"不行"
-    expect(stderr).toContain("git worktree add");
+    // 修法这一句随 ADR-0150 从裸 git 命令改成了本仓的 npm run lane（同一个 PR 里的产品改动）
+    expect(stderr).toContain("npm run lane");
     expect(stderr).toContain("feat/x");
   });
 

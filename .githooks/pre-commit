@@ -39,14 +39,14 @@ cat >&2 <<EOF
 
   主 checkout 冻结在 $default_branch、只读；开工请开一次性 worktree：
 
-      git worktree add .claude/worktrees/<任务名> -b <分支名>
+      npm run lane -- <任务名>
 
   为什么：多条 lane 共享一个 checkout 时，分支会被互相切走，未提交改动无声消失
   （issue #543 记了三次事故）。worktree 模型下 git 自己就会拒绝同一分支被两处
   checkout，不需要任何人自觉。
 
   一次性 = 一个 worktree 只服务一个任务，用完即弃、从不切分支换活；
-  复用它就等于把这道互斥关掉。收工用 npx gearbox-agents prune 清理。
+  复用它就等于把这道互斥关掉。收工用 npm run lane:prune 清理。
 
   确实要在这儿提交：git commit --no-verify
 
