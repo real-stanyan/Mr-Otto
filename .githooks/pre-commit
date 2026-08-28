@@ -1,0 +1,54 @@
+#!/bin/sh
+# pre-commit —— 主 checkout 只读的机制兜底（issue #543，ADR-0149）
+#
+# 规则：主 checkout 冻结在默认分支。任何开工都在一次性 worktree 里。
+# 这个钩子拦的是「在主 checkout 上、非默认分支提交」——也就是「有人把主 checkout
+# 当工作台用」的那一刻。
+#
+# 为什么拦提交而不是拦切分支：git 没有 pre-checkout 钩子，切分支本身拦不住。
+# 但切走别人分支的动机来自「想在这儿干活」，堵住提交就堵住动机。这是这条机制
+# 的天花板，明写在这里，别指望它防住蓄意操作。
+#
+# 判定「我是不是主 checkout」：linked worktree 的 --git-dir 是
+# <repo>/.git/worktrees/<name>，与 --git-common-dir（永远指向 <repo>/.git）不同；
+# 主 checkout 两者相同。不靠路径字符串匹配，不靠 .claude/worktrees 这个约定位置
+# ——手搓在别处的 worktree 一样认得。
+#
+# 安装（每个 clone 一次，对该 clone 的所有 worktree 生效）：
+#   git config core.hooksPath .githooks
+#
+# 逃生门：git commit --no-verify。留着是故意的——机制是给「忘了」兜底的，
+# 不是给「明知故犯」上锁的。
+
+set -e
+
+git_dir=$(git rev-parse --git-dir)
+common_dir=$(git rev-parse --git-common-dir)
+
+# linked worktree —— 正常开工路径，放行
+[ "$git_dir" != "$common_dir" ] && exit 0
+
+# 主 checkout：只允许停在默认分支上提交（typo 级改动直接进 main 是协议允许的）
+default_branch=$(git config --get gearbox.defaultBranch || echo main)
+branch=$(git symbolic-ref --short -q HEAD || echo "(detached)")
+[ "$branch" = "$default_branch" ] && exit 0
+
+cat >&2 <<EOF
+
+✗ 主 checkout 上不许在非 $default_branch 分支提交（当前：$branch）
+
+  主 checkout 冻结在 $default_branch、只读；开工请开一次性 worktree：
+
+      git worktree add .claude/worktrees/<任务名> -b <分支名>
+
+  为什么：多条 lane 共享一个 checkout 时，分支会被互相切走，未提交改动无声消失
+  （issue #543 记了三次事故）。worktree 模型下 git 自己就会拒绝同一分支被两处
+  checkout，不需要任何人自觉。
+
+  一次性 = 一个 worktree 只服务一个任务，用完即弃、从不切分支换活；
+  复用它就等于把这道互斥关掉。收工用 npx gearbox-agents prune 清理。
+
+  确实要在这儿提交：git commit --no-verify
+
+EOF
+exit 1
