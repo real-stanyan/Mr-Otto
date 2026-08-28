@@ -32,6 +32,7 @@ import { Switch } from "@/components/ui/switch.js";
 import { cn } from "@/lib/utils.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
+import { McpDirectory } from "./McpDirectory.js";
 import { useChat } from "../store.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import {
@@ -115,15 +116,9 @@ export function McpSettings() {
           </div>
         )}
 
-        {snapshot.servers.length === 0 && snapshot.errors.length === 0 && (
-          <div className="flex flex-col items-center gap-3 rounded-[10px] border border-dashed border-border px-[18px] py-8 text-center">
-            <p className="text-[13px] text-foreground">还没配置任何 MCP server</p>
-            <Button variant="outline" size="sm" onClick={() => setNewOpen(true)}>
-              <Plus className="size-3.5" />
-              新建
-            </Button>
-          </div>
-        )}
+        {/* 目录页本身就是最好的空状态：一屏可点的连接器，比一句"还没配置任何
+            MCP server"有用得多——原来那个空状态块因此删掉了 */}
+        <McpDirectory installedIds={snapshot.servers.map((s) => s.id)} />
 
         {snapshot.servers.map((server) => (
           <McpServerRow key={server.id} server={server} />

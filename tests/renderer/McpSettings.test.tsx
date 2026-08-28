@@ -52,6 +52,13 @@ function stubBridge(over: Partial<ShellBridge> = {}) {
     authorizeMcpServer: vi.fn(
       (): Promise<McpServersSnapshot> => Promise.resolve({ servers: [], errors: [] })
     ),
+    // 栏目顶部现在挂着 <McpDirectory>（连接器目录），它会调这个方法。
+    // 下面这几条用例都不往搜索框里打字，而空查询这一路压根不过桥（McpDirectory
+    // 的 effect 直接返回），所以此刻没有一条会走到这儿——钉在这里是因为组件
+    // 的桥面确实多了这一项：哪天有用例往搜索框里打字，缺了它就是一个
+    // "window.otter.searchMcpRegistry is not a function"，而错误会指向目录，
+    // 跟这份文件测的授权按钮毫无关系
+    searchMcpRegistry: vi.fn((): Promise<never[]> => Promise.resolve([])),
     ...over,
   } as unknown as ShellBridge;
   window.otter = bridge;
