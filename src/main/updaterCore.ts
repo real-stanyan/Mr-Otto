@@ -77,6 +77,24 @@ export function parseLatestRelease(json: unknown, assetSuffix: string): ReleaseI
   return { version: tag.replace(/^v/, ""), assetUrl, assetName, shasumsUrl, pageUrl };
 }
 
+/** win 换包要跑的东西（issue #662）：NSIS 安装器**本身**，不经 cmd.exe。
+    `/S` 静默重装到注册表里记着的原安装目录，`--force-run` 装完拉起新版；
+    「等旧进程退干净」不用我们操心 —— 安装器本来就得处理「装的时候 app 在跑」。
+
+    为什么不能再套一层批处理（原来那版的做法）：detached spawn 在 Windows 上是
+    `DETACHED_PROCESS`，新进程**不继承也不新建**控制台（`windowsHide` 在这个组合下
+    被 CreateProcess 忽略，MSDN 明写）。于是批处理里 `tasklist` / `find` / `ping`
+    这些控制台程序启动时找不到可继承的控制台，Windows 就一人给建一个 ——
+    等待循环每秒弹三个黑框，标题就是命令行（用户看到的 `find "<pid>"`）。
+    安装器是 GUI 子系统程序，detached 起它压根没有控制台这回事。
+
+    附带好处：命令行上只剩安装器路径一个参数，绕开了 `cmd /c` 那套引号剥离规则
+    （`cmd /?` 规则 2：引号超过两个就剥首引号 + 删最后一个引号）—— 而本机路径
+    `…\Mr Otto\updates\…` 与 `…\Mr Otto\Mr Otto.exe` 全都带空格。 */
+export function winSwapSpawn(setupPath: string): { cmd: string; args: string[] } {
+  return { cmd: setupPath, args: ["/S", "--force-run"] };
+}
+
 /** `shasum -a 256` 输出格式：`<hex>  <filename>`（两个空格，二进制模式是 ` *`）。
     大小写不敏感，文件名保留原样 */
 export function parseShasums(text: string): Map<string, string> {
