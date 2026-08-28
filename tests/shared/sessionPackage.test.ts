@@ -31,6 +31,13 @@ function richEvents(): SessionEvent[] {
     ev({ type: "memory_nudge", userTurns: 10 }),
     ev({ type: "workspace_restored", checkpointId: "cp-1" }),
     ev({ type: "branch_checked_out", repoDir: "/Users/stan/secret", branch: "main" }),
+    ev({
+      type: "project_instructions",
+      segments: [
+        { path: "/Users/stan/secret/project/AGENTS.md", content: "项目私有指令：内部 API 密钥在 vault 里" },
+        { path: "/Users/stan/secret/project/CLAUDE.md", content: "别外传的架构约定" },
+      ],
+    }),
     ev({ type: "turn_ended", outcome: "completed" }),
   ];
 }
@@ -48,6 +55,7 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(keptTypes).not.toContain("checkpoint_created");
     expect(keptTypes).not.toContain("workspace_restored");
     expect(keptTypes).not.toContain("branch_checked_out");
+    expect(keptTypes).not.toContain("project_instructions");
 
     // 该留的都在：对话本体 + fork 起点
     expect(keptTypes).toEqual([
@@ -71,6 +79,7 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(PRIVACY_STRIP_TYPES.has("memory_user_edit")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("memory_nudge")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("request_envelope")).toBe(true);
+    expect(PRIVACY_STRIP_TYPES.has("project_instructions")).toBe(true);
   });
 
   it("纯净会话（没有隐私事件）原样通过，stripped 为空", () => {
@@ -89,6 +98,18 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     const before = input.length;
     applyPrivacyGate(input);
     expect(input).toHaveLength(before);
+  });
+
+  it("project_instructions 的本机路径与指令全文一个字节都不外泄（issue #617）", () => {
+    // 这份泄露和 rewriteWorkspace 剥 workspace 同源：本机绝对路径 + AGENTS.md /
+    // CLAUDE.md 一类指令文件全文。过闸后不仅事件没了，那些字符串也不能出现在包里。
+    const { kept } = applyPrivacyGate(richEvents());
+    const blob = JSON.stringify(kept);
+    expect(blob).not.toContain("project_instructions");
+    expect(blob).not.toContain("/Users/stan/secret/project/AGENTS.md");
+    expect(blob).not.toContain("/Users/stan/secret/project/CLAUDE.md");
+    expect(blob).not.toContain("项目私有指令");
+    expect(blob).not.toContain("别外传的架构约定");
   });
 });
 
