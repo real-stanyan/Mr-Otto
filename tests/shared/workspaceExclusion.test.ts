@@ -9,6 +9,8 @@ import {
   turnConflict,
   familyRootOf,
   conflictMessage,
+  EXCLUSION_WHY,
+  EXCLUSION_WAY_OUT,
   type LiveSession,
 } from "../../src/shared/workspaceExclusion.js";
 
@@ -25,7 +27,7 @@ describe("turnConflict：同一文件夹同一时刻只跑一条 turn（issue #6
       S("a", "/w", true),
       S("b", "/w", false),
     ]);
-    expect(c).toEqual({ heldBy: "a", workspace: "/w" });
+    expect(c).toEqual({ heldBy: "a", heldByTitle: null, workspace: "/w" });
   });
 
   it("对方闲着 → 不拦（闲着不会执行任何命令）", () => {
@@ -85,14 +87,49 @@ describe("familyRootOf：顺着 spawnedFrom 爬到顶", () => {
     const cyclic: Record<string, string> = { a: "b", b: "a" };
     expect(familyRootOf("a", (id) => cyclic[id])).toBe("b");
   });
+  it("冲突里带上占用会话的标题，供提示语点名（issue #653）", () => {
+    const c = turnConflict(
+      { sessionId: "b", workspace: "/w", familyRoot: "b" },
+      [{ ...S("a", "/w", true), title: "给客户写提案" }]
+    );
+    expect(c?.heldByTitle).toBe("给客户写提案");
+  });
+
+  it("还没命名的会话 → 标题为 null，不编造", () => {
+    const c = turnConflict({ sessionId: "b", workspace: "/w", familyRoot: "b" }, [S("a", "/w", true)]);
+    expect(c?.heldByTitle).toBeNull();
+  });
 });
 
-describe("conflictMessage", () => {
-  it("说清谁占着、撞的哪个目录、怎么继续", () => {
-    const m = conflictMessage({ heldBy: "s-123", workspace: "/Users/x/repo" });
+describe("conflictMessage（issue #653：这句话现在只有非 git 用户会看到）", () => {
+  const m = conflictMessage({ heldBy: "s-123", workspace: "/Users/x/文案" });
+
+  it("说清谁占着、撞的哪个目录", () => {
     expect(m).toContain("s-123");
-    expect(m).toContain("/Users/x/repo");
-    // 修法必须在场：只说"不行"的错误信息等于把人卡死
-    expect(m).toContain("worktree");
+    expect(m).toContain("/Users/x/文案");
+  });
+
+  it("拿得到标题就点名 —— 会话 id 对用户是一串没意义的十六进制", () => {
+    const named = conflictMessage({
+      heldBy: "s-123",
+      heldByTitle: "给客户写提案",
+      workspace: "/Users/x/文案",
+    });
+    expect(named).toContain("给客户写提案");
+    expect(named).toContain("s-123"); // id 不丢：诊断时还要用
+  });
+
+  it("说清这是设计不是故障 —— 否则用户只会觉得第二只水獭坏了", () => {
+    expect(m).toContain(EXCLUSION_WHY);
+  });
+
+  it("给出真正的出路：换一个文件夹", () => {
+    expect(m).toContain(EXCLUSION_WAY_OUT);
+    expect(m).toContain("换一个文件夹");
+  });
+
+  it("不提 git / worktree —— ADR-0157 之后 git 文件夹各自拿副本、根本走不到这条提示，", () => {
+    // 会走到这里的只剩非 git 文件夹（白领的一堆文案）。对着他们说 worktree 是天书。
+    expect(m).not.toMatch(/worktree|git/i);
   });
 });

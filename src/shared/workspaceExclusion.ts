@@ -29,11 +29,17 @@ export interface LiveSession {
   familyRoot: string;
   /** 此刻有没有 turn 在跑 */
   running: boolean;
+  /** 会话标题，拿得到就带上（提示语里点名用；还没命名 → null/缺席） */
+  title?: string | null;
 }
 
 export interface WorkspaceConflict {
   /** 占着的那个会话 */
   heldBy: string;
+  /** 那个会话的标题，能拿到就带上。会话 id 对用户是一串没有意义的十六进制——
+      他要做的事是「去看看那只水獭」，标题才认得出是哪一只。
+      新会话还没自动命名 → null，退回只报 id（issue #653） */
+  heldByTitle?: string | null;
   /** 撞的是哪个目录 */
   workspace: string;
 }
@@ -54,7 +60,7 @@ export function turnConflict(
     if (!s.running) continue;
     if (s.familyRoot === candidate.familyRoot) continue;
     if (s.workspace !== candidate.workspace) continue;
-    return { heldBy: s.sessionId, workspace: s.workspace };
+    return { heldBy: s.sessionId, heldByTitle: s.title ?? null, workspace: s.workspace };
   }
   return null;
 }
@@ -75,14 +81,31 @@ export function familyRootOf(
   }
 }
 
+/** 两条互斥（进程内 ADR-0152 / 跨进程 ADR-0155）共用的措辞。
+    共用不是为了省字数，是为了不再各自漂移：这两句原先各写各的，其中一句漂到了
+    「同一个仓库可以用 git worktree 开一份独立的工作目录」——而 ADR-0157 之后 git
+    文件夹各自拿了副本、根本撞不上，那句建议只在**非 git 文件夹**这唯一还会出现的
+    场合露面，对着不用 git 的人说 worktree（issue #653）。
+
+    所以这两段刻意不提 git：会读懂 worktree 的那批用户，已经在这条提示的适用范围之外了。 */
+export const EXCLUSION_WHY =
+  `同一个文件夹，同一时刻只让一只水獭动手——这是故意的，不是出错了。\n` +
+  `两只水獭同时改同一批文件，后写的会把先写的悄悄盖掉，事后谁也说不清丢了什么。`;
+
+/** 真正的出路。文案类工作想并行，正常做法是**两个文件夹各写各的**，
+    而不是同一个文件夹里两只手（issue #653 第三条） */
+export const EXCLUSION_WAY_OUT =
+  `想让两只水獭真的同时干活：给这个会话换一个文件夹，各写各的，互不打架。`;
+
 /** 拒绝时给人看的话。照 git 的口气：说清谁占着、为什么拦、怎么继续 */
 export function conflictMessage(c: WorkspaceConflict): string {
   return (
-    `另一只水獭正在这个文件夹里干活，先让它跑完：\n` +
+    `另一只水獭正在这个文件夹里干活，先让它做完：\n` +
     `  文件夹：${c.workspace}\n` +
-    `  占用的会话：${c.heldBy}\n\n` +
-    `两个会话同时在同一个文件夹里跑，一边切分支/改文件，另一边的改动会无声消失——` +
-    `沙箱围的是路径，围不住共享的 .git。\n` +
-    `继续的办法：等它跑完，或者让这个会话换一个文件夹（同一个仓库可以用 git worktree 开一份独立的工作目录）。`
+    `  正在忙的会话：${c.heldByTitle ? `${c.heldByTitle}（${c.heldBy}）` : c.heldBy}\n\n` +
+    `${EXCLUSION_WHY}\n\n` +
+    `怎么办：\n` +
+    `  · 等它做完，再把这条消息发一次；\n` +
+    `  · ${EXCLUSION_WAY_OUT}`
   );
 }
