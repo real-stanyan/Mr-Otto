@@ -65,6 +65,11 @@ export interface SessionPackage {
     - checkpoint_created / workspace_restored：发送方本机 ~/.mr-otto/checkpoints
       里的快照 id。接收方机器上没有这份快照库，留着只是死引用。
     - branch_checked_out：发送方本机的 git 分支切换记录。接收方工作区不同，无意义。
+    - project_instructions：发送方本机的指令文件——segments[].path 是本机绝对路径、
+      content 是 AGENTS.md / CLAUDE.md 一类指令文件全文（issue #617）。与
+      rewriteWorkspace 剥 session_created.workspace 完全同源：本机路径和项目私有
+     指令原文都不该给对方。接收方导入后 projectInstructions.ts 会按他自己的目录
+      重新爬升生成，deriveMessages 对缺了这条的日志是安全的（没有就不焊进 system）。
 
     注意「剥」不等于「删改历史」——这是导出时刻的投影裁剪，源会话的 append-only
     日志一个字节不动。硬规则（append-only 是唯一事实来源）管的是源日志，不管
@@ -77,6 +82,7 @@ export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set([
   "checkpoint_created",
   "workspace_restored",
   "branch_checked_out",
+  "project_instructions",
 ]);
 
 /** 过隐私闸：返回 { kept, stripped }。
