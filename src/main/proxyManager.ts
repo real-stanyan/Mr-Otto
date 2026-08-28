@@ -84,7 +84,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
   /** A 侧：每个好友一条 host 通道（重开时先关旧的，免得两条连接抢同一个房间） */
-  const hosts = new Map<string, { close(): void }>();
+  const hosts = new Map<string, { pushGrant(): void; close(): void }>();
   /** B 侧：当前这条 guest 通道（一次只代理一个 A——UI 上就是「正在用谁的服务」）。
       带上 friendUid 是因为下游要按它加前缀，带上 mcp 是因为它就是那个出口 */
   let guest: { friendUid: string; mcp: McpCapability; close(): void } | null = null;
@@ -186,10 +186,16 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
     },
 
     async proxyRevoke(friendUid) {
-      // 存储先清（下一笔调用立即被拒），再把房间关掉——顺序反过来的话，
-      // 关房间到清存储之间那一瞬还能放行一笔
+      // 三步的顺序都有理由：
+      // ① 存储先清——下一笔调用立即被拒（反过来的话中间那一瞬还能放行一笔）；
+      // ② 再推一帧授权清单：此刻存储已空，推出去的就是 `servers: []`，
+      //    B 的工具表当场清干净。不推的话那几把刀一直留在 B 的模型眼前，
+      //    调起来还要等满超时才失败（issue #672）；
+      // ③ 最后关房间。
       deps.saveStore(revokeGrant(deps.loadStore(), friendUid));
-      hosts.get(friendUid)?.close();
+      const host = hosts.get(friendUid);
+      host?.pushGrant();
+      host?.close();
       hosts.delete(friendUid);
       log(`代理授权已撤销：好友 ${friendUid}`);
       return { ok: true, value: null };

@@ -65,7 +65,7 @@ export function startProxyHostCoordinator(deps: {
   saveStore: (d: ProxyStoreData) => void;
   now?: () => number;
   log?: (m: string) => void;
-}): { connection: ProxyConnection; close(): void } {
+}): { connection: ProxyConnection; pushGrant(): void; close(): void } {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
 
@@ -81,6 +81,8 @@ export function startProxyHostCoordinator(deps: {
   });
   // relay 说「B 到了」= 开一轮握手。重连也走这里（每次 attach 都会再来一条 `:peer`）
   deps.transport.onPeerPresent?.(() => connection.start());
+  // 「B 走了」得让连接跟着退出就绪（issue #672）——否则 isPeerConnected() 一直是 true
+  deps.transport.onPeerGone?.(() => connection.peerGone());
 
   // 连接就绪后，把收到的明文帧交给 proxyHost 执行（白名单 + 审计 + 回传）
   const host = startProxyHost({
@@ -107,10 +109,14 @@ export function startProxyHostCoordinator(deps: {
     log,
   });
 
-  // 握手成功后，把授权清单（A 的真服务按白名单过滤、脱敏）推给 B——
-  // B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
-  // A 改授权后可再调 connection 重发；这里至少在握手后推一次。
-  connection.onReady(() => {
+  /**
+   * 把此刻的授权清单（A 的真服务按白名单过滤、脱敏）推给 B。
+   * B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
+   *
+   * 两个调用点：握手完成时推一次；**A 撤销时先推一帧空的再关房间**（issue #672）——
+   * 不推的话 B 的工具表里那几把刀一直留着，模型还会去调。
+   */
+  function pushGrant(): void {
     // 已经不是好友了就推一份空清单（协议里 servers: [] 就是「撤销全部授权」）。
     // 不这么做的话，删了好友之后对面仍然看得见 A 接了哪些服务、每个服务有哪些工具
     // ——调不动，但看得见，而那份清单本身就是不该给的东西（issue #665）
@@ -120,13 +126,16 @@ export function startProxyHostCoordinator(deps: {
     const servers = buildGrantedServers(deps.mcp.servers(), grant);
     connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }));
     log(`代理授权已推送给 B：${servers.length} 个服务${stillFriend ? "" : "（已不是好友/名单未同步，推空清单）"}`);
-  });
+  }
+
+  connection.onReady(pushGrant);
 
   // 传输 → 连接（首字符定型在 proxyConnection.onWire 里做）
   deps.transport.onMessage((payload) => connection.onWire(payload));
 
   return {
     connection,
+    pushGrant,
     close() { host(); connection.close(); deps.transport.close(); },
   };
 }
@@ -163,6 +172,9 @@ export function startProxyGuestCoordinator(deps: {
   });
   // 同 host 侧：relay 报「A 在场」才发 hello，对端不在场时发 hello 只是喂虚空
   deps.transport.onPeerPresent?.(() => connection.start());
+  // A 走了（退出 / 撤销时关房间）：连接退出就绪，proxyMcp 当场答「代理通道断了」，
+  // 而不是把帧发进虚空再等满 60 秒超时（issue #672）
+  deps.transport.onPeerGone?.(() => connection.peerGone());
 
   // proxyMcp 的传输：callTool 打帧走连接发走，连接收到明文帧喂回 proxyMcp 匹配 reqId
   const mcp = createProxyMcp({

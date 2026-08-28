@@ -40,13 +40,13 @@ function fakeMcp(servers: McpServerHandle[]): McpCapability {
 
 /** 假 relay：按 channelId 分房，一房两角色，两边到齐就各喊一声「对端在场」 */
 function fakeRelay() {
-  type Side = { msg: ((p: string) => void) | null; peers: (() => void)[]; closed: boolean };
+  type Side = { msg: ((p: string) => void) | null; peers: (() => void)[]; gone: (() => void)[]; closed: boolean };
   const rooms = new Map<string, { host: Side | null; guest: Side | null }>();
 
   function open(channelId: string, role: "host" | "guest"): ProxyWireTransport {
     const room = rooms.get(channelId) ?? { host: null, guest: null };
     rooms.set(channelId, room);
-    const me: Side = { msg: null, peers: [], closed: false };
+    const me: Side = { msg: null, peers: [], gone: [], closed: false };
     room[role] = me;
     const other = (): Side | null => (role === "host" ? room.guest : room.host);
 
@@ -62,7 +62,14 @@ function fakeRelay() {
       send: (payload) => { const o = other(); if (o && !o.closed) o.msg?.(payload); },
       onMessage: (cb) => { me.msg = cb; },
       onPeerPresent: (cb) => { me.peers.push(cb); },
-      close: () => { me.closed = true; room[role] = null; },
+      onPeerGone: (cb) => { me.gone.push(cb); },
+      close: () => {
+        me.closed = true;
+        room[role] = null;
+        // 真 relay 上一方断开，另一方会收到一条 `:gone`
+        const o = other();
+        if (o && !o.closed) for (const cb of o.gone) cb();
+      },
     };
   }
   return { open };
@@ -267,5 +274,49 @@ describe("proxyManager 的 B 侧出口（issue #670）", () => {
     const r = await manager.proxyCreateInvite("b-uid", []);
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.message).toContain("登录");
+  });
+});
+
+// ─── A 那边发生的事，B 要感知得到（issue #672）──────────────────────────
+describe("proxyManager：撤销与离场传到 B（issue #672）", () => {
+  it("A 撤销 → 先推一帧空清单再关房间，B 的工具表当场清干净", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+
+    const proxied = b.manager.activeProxies()[0]!;
+    expect(proxied.mcp.servers().map((s) => s.id)).toEqual(["shopify"]); // A 推来的授权清单
+
+    await a.manager.proxyRevoke("b-uid");
+    await settle();
+    // 不推空清单的话这几把刀会一直留在 B 的模型眼前，调起来还要等满超时才失败
+    expect(proxied.mcp.servers()).toEqual([]);
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
+  it("A 关掉房间 → B 这边的通道退出就绪，调用当场失败而不是等满超时", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    const proxied = b.manager.activeProxies()[0]!;
+
+    a.manager.closeAll(); // A 退出 app / 撤销
+    await settle();
+
+    // 「代理通道断了」是当场答的；不接 onPeerGone 的话这里会把帧发进虚空，
+    // 然后等满 60 秒报「超时（A 没回）」——错的时机、错的原因
+    await expect(proxied.mcp.callTool("shopify", "get_orders", {})).rejects.toThrow(/通道断了/);
+
+    b.manager.closeAll();
   });
 });
