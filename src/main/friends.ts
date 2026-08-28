@@ -384,6 +384,13 @@ export class FriendsManager {
     this.pollTimer = null;
   }
 
+  /** 当前登录用户的 uid,没登录/还没 start 完回 null。
+      好友代理要拿它当应用层身份(proxy_req.fromUid / 查白名单,issue #657):
+      AccountInfo 里刻意没有 uid(那四个字段是给渲染层看的),而这里本来就缓存着一份 */
+  currentUid(): string | null {
+    return this.uid;
+  }
+
   /** 登录后调:起 Realtime 订阅 + 心跳 + 推一次初始快照。幂等(重复 start 先 teardown) */
   async start(): Promise<void> {
     this.teardown();

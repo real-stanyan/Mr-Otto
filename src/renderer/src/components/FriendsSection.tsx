@@ -3,8 +3,9 @@
 // 全部状态走 store,不直接摸 window.otter(硬规则)。未登录显示占位。
 
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
+import { KeyRound, Search } from "lucide-react";
 import { useChat } from "../store.js";
+import { ProxyDialog } from "./ProxyDialog.js";
 import type { FriendProfile } from "../../../shared/friends.js";
 import {
   SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarMenuAction,
@@ -49,6 +50,10 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<FriendProfile[] | null>(null); // null = 没搜过,[] = 搜过没命中
+  // 好友代理弹窗(issue #657)。friend 有值 = 从某位好友那把钥匙进来的(直接开"分享"页),
+  // null = 从底下那行进来的(管理已授权 / 粘别人的邀请码)
+  const [proxyFor, setProxyFor] = useState<{ id: string; label: string } | null>(null);
+  const [proxyOpen, setProxyOpen] = useState(false);
 
   // 边输边搜(防抖 300ms)。单字符太散(ilike %x% 半个库都命中),从 2 个字符起搜;
   // stale 位挡住乱序返回——慢的旧响应不许覆盖新查询的结果
@@ -160,7 +165,7 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         {snapshot.friends.map((e) => (
           <SidebarMenuItem key={e.friendshipId}>
             <SidebarMenuButton
-              className="h-auto py-[5px] pr-12"
+              className="h-auto py-[5px] pr-[54px]"
               isActive={friendChat?.id === e.profile.id}
               onClick={() => void openFriendChat(e.profile)}
             >
@@ -170,6 +175,18 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
                 <span className="text-[10px] font-semibold text-brand">{unread[e.profile.id]}</span>
               )}
             </SidebarMenuButton>
+            <SidebarMenuAction
+              showOnHover
+              className="right-7"
+              title="把我接通的服务分享给他用"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                setProxyFor({ id: e.profile.id, label: e.profile.name || e.profile.email });
+                setProxyOpen(true);
+              }}
+            >
+              <KeyRound className="size-[13px]" />
+            </SidebarMenuAction>
             <SidebarMenuAction
               showOnHover
               title="删除好友"
@@ -198,6 +215,24 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         ))}
       </SidebarMenu>
 
+      {/* 好友代理的另外两件事：看/撤销自己授出去的，和粘别人发来的邀请码。
+          不挂在某位好友身上，所以单独一行 */}
+      <div className="px-[10px] pt-1">
+        <button
+          type="button"
+          className="flex items-center gap-[6px] w-full px-[6px] py-[5px] rounded-md bg-transparent text-xs text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors duration-150"
+          onClick={() => { setProxyFor(null); setProxyOpen(true); }}
+        >
+          <KeyRound className="w-[13px] h-[13px]" />
+          好友代理…
+        </button>
+      </div>
+
+      <ProxyDialog
+        open={proxyOpen}
+        onOpenChange={(o) => { setProxyOpen(o); if (!o) setProxyFor(null); }}
+        friend={proxyFor}
+      />
     </>
   );
 }
