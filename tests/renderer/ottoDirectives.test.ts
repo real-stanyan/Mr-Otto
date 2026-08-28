@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  findFriendMention,
   findSkillDirective,
   ottoDirectiveFormatter,
+  ottoFriendFormatter,
   ottoPathFormatter,
   ottoSlashFormatter,
 } from "../../src/renderer/src/aui/ottoDirectives.js";
@@ -74,45 +76,50 @@ describe("ottoSlashFormatter", () => {
   });
 });
 
-describe("ottoPathFormatter(@路径)", () => {
+describe("ottoPathFormatter(#路径)", () => {
+  // issue #611：路径 mention 从 @ 迁到 #（@ 让给「@好友 分享会话」），一刀切不留兼容期
   const f = ottoPathFormatter();
 
-  it("@ 开头的路径整条高亮", () => {
-    expect(f.parse("@src/App.tsx")).toEqual([
-      { kind: "mention", type: "path", label: "@src/App.tsx", id: "src/App.tsx" },
+  it("# 开头的路径整条高亮", () => {
+    expect(f.parse("#src/App.tsx")).toEqual([
+      { kind: "mention", type: "path", label: "#src/App.tsx", id: "src/App.tsx" },
     ]);
   });
 
-  it("邮箱不算——@ 前面不是行首也不是空白", () => {
-    expect(f.parse("写给 foo@bar.com")).toEqual([{ kind: "text", text: "写给 foo@bar.com" }]);
+  it("# 前面不是行首也不是空白不算（foo#bar、URL 锚点）", () => {
+    expect(f.parse("写给 foo#bar.com")).toEqual([{ kind: "text", text: "写给 foo#bar.com" }]);
   });
 
-  it("光秃秃一个 @ 不算(还没打路径,别闪一下)", () => {
-    expect(f.parse("@")).toEqual([{ kind: "text", text: "@" }]);
-    expect(f.parse("@ 后面是空格")).toEqual([{ kind: "text", text: "@ 后面是空格" }]);
+  it("@ 不再触发路径（@ 让给了好友，issue #611）", () => {
+    expect(f.parse("@src/App.tsx")).toEqual([{ kind: "text", text: "@src/App.tsx" }]);
+  });
+
+  it("光秃秃一个 # 不算(还没打路径,别闪一下)", () => {
+    expect(f.parse("#")).toEqual([{ kind: "text", text: "#" }]);
+    expect(f.parse("# 后面是空格")).toEqual([{ kind: "text", text: "# 后面是空格" }]);
   });
 
   it("句末标点不吃进路径里", () => {
-    expect(f.parse("看 @a.md。")).toEqual([
+    expect(f.parse("看 #a.md。")).toEqual([
       { kind: "text", text: "看 " },
-      { kind: "mention", type: "path", label: "@a.md", id: "a.md" },
+      { kind: "mention", type: "path", label: "#a.md", id: "a.md" },
       { kind: "text", text: "。" },
     ]);
   });
 
   it("一句话里两条路径各自高亮", () => {
-    const segs = f.parse("@a.ts 和 @b/c.ts 对比");
+    const segs = f.parse("#a.ts 和 #b/c.ts 对比");
     expect(segs.filter((s) => s.kind === "mention").map((s) => "id" in s && s.id)).toEqual(["a.ts", "b/c.ts"]);
   });
 
   it("路径里带点、连字符、下划线、中文都留着", () => {
-    expect(f.parse("@docs/adr/0091-files面板_v2.md")[0]).toMatchObject({
+    expect(f.parse("#docs/adr/0091-files面板_v2.md")[0]).toMatchObject({
       id: "docs/adr/0091-files面板_v2.md",
     });
   });
 
-  it("serialize = 面板那颗 @ 按钮塞进输入框的写法(带尾随空格)", () => {
-    expect(f.serialize({ id: "src/a.ts", label: "src/a.ts", type: "path" })).toBe("@src/a.ts ");
+  it("serialize = 面板那颗 # 按钮塞进输入框的写法(带尾随空格)", () => {
+    expect(f.serialize({ id: "src/a.ts", label: "src/a.ts", type: "path" })).toBe("#src/a.ts ");
   });
 });
 
@@ -233,5 +240,83 @@ describe("转义:反引号和斜杠打头的 $ 不是指令(issue #441)", () => 
   it("斜杠指令那个 sigil 走同一个判定", () => {
     const cmd = ottoSlashFormatter(["compact"]);
     expect(cmd.parse("`/compact` 是什么")).toEqual([{ kind: "text", text: "`/compact` 是什么" }]);
+  });
+});
+
+// ─── @好友 分享会话（issue #611，PR#3）────────────────────────────────
+// 名单是 (uid, name) 对：chip 的 label 用显示名（人读），id 用 uid（机读，发送用）。
+// 显示名可能含空格/中文，parse 不能靠"吃名字字符"，靠名单最长前缀匹配。
+describe("ottoFriendFormatter(@好友)", () => {
+  const friends = [
+    { uid: "u-alice", name: "Alice" },
+    { uid: "u-xiaoming", name: "小明" },
+    { uid: "u-xiaoming2", name: "小明同学" }, // 前缀撞名，逼最长优先
+  ];
+  const f = ottoFriendFormatter(friends);
+
+  it("英文名单词命中，label 是显示名，id 是 uid", () => {
+    expect(f.parse("@Alice 帮我看看")).toEqual([
+      { kind: "mention", type: "friend", label: "@Alice", id: "u-alice" },
+      { kind: "text", text: " 帮我看看" },
+    ]);
+  });
+
+  it("中文名（含 NAME_CHARS 之外的字符）也能命中", () => {
+    expect(f.parse("把这个 @小明 看一下")).toEqual([
+      { kind: "text", text: "把这个 " },
+      { kind: "mention", type: "friend", label: "@小明", id: "u-xiaoming" },
+      { kind: "text", text: " 看一下" },
+    ]);
+  });
+
+  it("最长优先：@小明同学 命中长的，不吃成 @小明 + 残留", () => {
+    expect(f.parse("@小明同学 在吗")).toEqual([
+      { kind: "mention", type: "friend", label: "@小明同学", id: "u-xiaoming2" },
+      { kind: "text", text: " 在吗" },
+    ]);
+  });
+
+  it("@ 前面是字符（邮箱/紧贴文字）不触发", () => {
+    expect(f.parse("写给 foo@Alice")).toEqual([{ kind: "text", text: "写给 foo@Alice" }]);
+  });
+
+  it("不在名单里的名字不画 chip", () => {
+    expect(f.parse("@陌生人 你好")).toEqual([{ kind: "text", text: "@陌生人 你好" }]);
+  });
+
+  it("serialize 写进 composer 的是显示名（人读形态），带尾随空格", () => {
+    expect(f.serialize({ id: "u-alice", label: "@Alice", type: "friend" })).toBe("@Alice ");
+  });
+});
+
+describe("findFriendMention(@好友 发送检测)", () => {
+  const friends = [
+    { uid: "u-alice", name: "Alice" },
+    { uid: "u-xiaoming", name: "小明" },
+  ];
+
+  it("命中返回 uid/name/task：task 是摘掉 @名字 后的留言", () => {
+    expect(findFriendMention("@Alice 帮我把这个 bug 查完", friends)).toEqual({
+      uid: "u-alice",
+      name: "Alice",
+      task: "帮我把这个 bug 查完",
+    });
+  });
+
+  it("@好友 在句中也认（issue #438 同款：界面画了，发就要认）", () => {
+    expect(findFriendMention("这个会话 @小明 接着跑", friends)).toEqual({
+      uid: "u-xiaoming",
+      name: "小明",
+      task: "这个会话 接着跑",
+    });
+  });
+
+  it("没命中（没好友 / 不在名单）返回 null", () => {
+    expect(findFriendMention("普通一句话", friends)).toBeNull();
+    expect(findFriendMention("@陌生人 你好", friends)).toBeNull();
+  });
+
+  it("只留 @名字 没留言时，task 是空串（留言可空，manifest 允许）", () => {
+    expect(findFriendMention("@Alice", friends)).toEqual({ uid: "u-alice", name: "Alice", task: "" });
   });
 });

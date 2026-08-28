@@ -183,8 +183,10 @@ import {
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
 import {
+  findFriendMention,
   findSkillDirective,
   ottoDirectiveFormatter,
+  ottoFriendFormatter,
   ottoPathFormatter,
   ottoSlashFormatter,
 } from "./aui/ottoDirectives.js";
@@ -3064,9 +3066,40 @@ function ChatComposer() {
   );
   // 路径那份不依赖任何名单(靠形状判定),造一次就够
   const pathFormatter = useMemo(() => ottoPathFormatter(), []);
+  // @好友(issue #611):名单是 accepted 好友,选中把 `@显示名 ` 填进输入框,
+  // 发送时 submit() 用 findFriendMention 认出并先调 shareSession 再发留言。
+  // 数据源直接是 friendsSnapshot.friends(FriendsSection 同款),不用新增 hook
+  const friends = useChat((s) => s.friendsSnapshot.friends);
+  const friendMentions = useMemo(
+    () => friends.map((e) => ({ uid: e.profile.id, name: e.profile.name })),
+    [friends]
+  );
+  const friendFormatter = useMemo(() => ottoFriendFormatter(friendMentions), [friendMentions]);
+  const friendAdapter = useMemo<Unstable_TriggerAdapter>(() => {
+    const items = friendMentions.map((f) => ({
+      id: f.uid,
+      type: "friend",
+      label: `@${f.name}`,
+    }));
+    return {
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query: string) => {
+        const lower = query.toLowerCase();
+        return lower === "" ? items : items.filter((i) => i.label.toLowerCase().includes(lower));
+      },
+    };
+  }, [friendMentions]);
+  const friendDirective = useMemo(() => ({ formatter: friendFormatter }), [friendFormatter]);
   const composerSegments = useMemo(
-    () => segmentComposerText(input, [skillFormatter, slashDirective.formatter, pathFormatter]),
-    [input, skillFormatter, slashDirective, pathFormatter]
+    () =>
+      segmentComposerText(input, [
+        skillFormatter,
+        slashDirective.formatter,
+        friendFormatter,
+        pathFormatter,
+      ]),
+    [input, skillFormatter, slashDirective, friendFormatter, pathFormatter]
   );
 
 
@@ -3138,6 +3171,23 @@ function ChatComposer() {
       useChat.setState({ error: `skill 不存在: ${name}（$ 后跟已安装的 skill 名，可带参数：$名字(参数)）` });
       return;
     }
+    // @好友 分享会话(issue #611):句子里带 @好友名 时,先把当前会话快照分享给
+    // 这位好友,正文作为留言随包发过去。分享成功才把留言发给模型(失败已落
+    // friendError,输入框不清让用户改)。判定与 composer 高亮共用一份名单、
+    // 同一套最长优先(findFriendMention)——画的和发的认的是同一个好友
+    const friendHit = findFriendMention(text, friendMentions);
+    if (friendHit) {
+      void (async () => {
+        const ok = await useChat.getState().shareSession(
+          useChat.getState().sessionId,
+          friendHit.uid,
+          friendHit.name,
+          friendHit.task
+        );
+        if (ok) setInput("");
+      })();
+      return;
+    }
     setInput("");
     // "/" 开头 = 对 harness 说话，不进模型 —— 也就不排队:它们是本地动作
     // (开面板、改标题),等一个 turn 跑完再执行没有道理。
@@ -3185,6 +3235,16 @@ function ChatComposer() {
           <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative cursor-text shadow-sm transition-[border-color,background-color]">
             {/* 两个补全浮层:锚在会话框上沿(popover 自己 absolute bottom-full),
                 和旧的手写菜单同一个位置 */}
+            <ComposerTriggerPopover
+              char="@"
+              className={TRIGGER_POP}
+              adapter={friendAdapter}
+              directive={friendDirective}
+              emptyItemsLabel="没有匹配的好友"
+              emptyCategoriesLabel="还没有好友"
+              backLabel="返回"
+              loadingLabel="加载中…"
+            />
             <ComposerTriggerPopover
               char="$"
               className={TRIGGER_POP}
