@@ -224,7 +224,8 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/shared/workspaceExclusion.ts` — 同一个文件夹同一时刻只跑一条 turn（纯逻辑；接线在 `index.ts` 的 turn 起跑处，紧挨着 `runningSessions` 那条自检）。沙箱围的是路径，围不住共享的 `.git`；同家族（子会话/SideChat）不互斥（ADR-0152）。**只在 git 仓里还这么拦**——非 git 目录改走 `coworkLog` 那条文件级的路（ADR-0161）
 - `src/shared/workspaceLock.ts` / `src/main/workspaceLockFile.ts` — 工作区互斥的**跨进程**那一半（两个 app 实例指同一个文件夹）。锁在机器级临时目录、按路径哈希取名——不进用户的仓库；陈旧锁靠心跳过期 + pid 探活自愈，**自愈比挡住更重要**（一次崩溃不该把文件夹永久锁死，ADR-0155）
 - `src/shared/gitSafety.ts` / `src/main/dirtyTreeApprover.ts` — 破坏性 git（`reset --hard` / `clean -f` / `checkout -- 路径` / `restore` / `stash drop`…）+ 工作区脏 = 越过 bypass 模式问人一次。**裸 `git checkout <分支>` 不在名单里**——git 自己会拒绝覆盖，拦它只会训练用户闭眼点批准（ADR-0153）
-- `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）
+- `src/main/workspaceLens.ts` — 岛的分组镜头：workspace →「哪个项目 + 是不是副本、副本在哪条分支」（30s TTL 记忆化，因为 `pushFleet` 跟着每条事件跑）。**组头回答「这是哪个项目」，副本身份下沉成行上的 chip**；投影层靠注入这只镜头保持纯函数，默认镜头 = 不折叠 = 旧行为（ADR-0172）
+- `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。`resolveWorkspaceOrigin` 一次爬升同时得出根与 worktree 分支（分支从 `<主仓>/.git/worktrees/<名>/HEAD` 读，**现查不读日志**——日志那份会陈旧，ADR-0158/0172），`resolveProjectRoot` 是它的投影。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）
 - `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0121）
 - `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0118）
 - `src/renderer/src/lib/runtimeHydration.ts` / `src/main/index.ts` 的 `sessionRuntime` handler — 推送之外那扇查询窗口：重载后补回 turn 状态/压缩标记/挂起的审批问卷。**只填空不覆盖**（为什么这条规则就够，见 ADR-0133）
