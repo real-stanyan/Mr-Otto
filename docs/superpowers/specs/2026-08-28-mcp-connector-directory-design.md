@@ -107,17 +107,22 @@
 
 ### 4.4 图标一律不外链
 
-**决定**：渲染进程不出现 `<img src="<远程 URL>">`。有 `icons` 的（7%）由主进程代下再交给渲染进程；没有的（93%）用首字母色块。
+**决定**：渲染进程不出现 `<img src="<远程 URL>">`，一张远程图片都不加载。**长尾层一律首字母色块**；**精选层用打进包的本地 SVG**（`src/renderer/src/assets/mcp/<key>.svg`），`CatalogEntry.icon` 存的是**资源键，不是 URL**。
 
-**理由**：让渲染进程直接加载注册表条目里的任意 URL，等于每翻一次目录就把用户 IP 交给一批陌生服务器，且这批 URL 由投稿者自由填写。首字母色块是本来就要写的兜底路径——93% 的条目走的就是它——所以「代下」这条路径服务的是少数情况，不是主路径。
+**理由**：让渲染进程直接加载注册表条目里的任意 URL，等于每翻一次目录就把用户 IP 交给一批陌生服务器，且这批 URL 由投稿者自由填写。
+
+本节曾写成「有 `icons` 的由主进程代下」，写实现计划时改掉了：只有 7/100 的注册表条目有图标，为这 7% 造一条下载 + 缓存 + 失败兜底的链路不划算，而首字母色块本来就要写（93% 的条目走的就是它）。砍掉代理这一层，安全边界也从「代理后可控」收紧成「压根不出网」。精选层只有约 20 条，图标打进包即可。
 
 **被否掉的**：
 - *直接 `<img src>`*：见上。
+- *主进程代下远程图标*：见上，为 7% 造一个子系统。
 - *完全不显示图标，全用色块*：更省事，但精选层那 20 条是有官方图标的，卡片认知效率差很多。
 
 ### 4.5 `world.http` 开一个 `getJson`
 
-**决定**：在 `src/world/executionWorld.ts:261` 的 `http` 接缝上加 `getJson(url, opts)`，`src/world/localWorld.ts:180` 实现，两处包装器（`:317`、`:366`）透传。
+**决定**：在 `src/world/executionWorld.ts:261` 的 `http` 接缝上加 **`getJson?(url, opts)`——可选字段**，`src/world/localWorld.ts:180` 实现，`withAbortSignal`（`:317`）条件透传（`withExecOutput` 的 `:366` 是整对象透传，不用改）。
+
+**为什么可选**：仓里有 35 处测试假 world 写着 `http: { postJson: async () => ({}) }`，做成必填会让它们全红，而那些红跟网络能力毫无关系。仓内已立先例——`execDetached?` / `openTerminal?` / `browser?` / `simulator?` 都是可选，注释原文是「可选 = 向后兼容（假 world 零改动）」。缺席的语义是「这个世界不提供 GET」，调用方据此退回 web_search；v2 Docker 世界若要断网，不实现即可。
 
 **理由**：4.6 让 `mcp_catalog` 工具查注册表，而工具只能依赖 `ExecutionWorld`（硬规则，`tests/architecture.test.ts` 第 1 条）。现有接缝只有 `postJson`，注册表是 GET。这是 ADR-0050「MCP 骑在 world 接缝上」的正常延伸——把新能力加到缝上，而不是在工具里绕过缝。
 
@@ -170,7 +175,10 @@ remotes[0].type === "streamable-http"  → transport: "http", url
 - **`auth`**：有 `isSecret` 的 header 或环境变量 → `"token"`；两者皆无 → `"none"`。**不猜 `"oauth"`**——注册表没有这个字段，猜错的代价是 UI 上出现一颗点了没用的授权按钮。真需要 OAuth 的 server 连上会 401，现有的 `needs-auth` 状态与授权按钮（ADR-0121）会接住，这条路已经通了。
 - **`authNote`**：拼 header / 环境变量的 `description`；都没有就写「这台 server 来自公开注册表，配置未经核验」。
 
-输出复用既有的 `CatalogEntry` 形状，外加两个新字段：`verified: boolean`（精选=true）与 `icon?: string`。下游（UI / `mcp_catalog` / `mcp_configure`）吃同一个形状。
+输出复用既有的 `CatalogEntry` 形状。下游（UI / `mcp_catalog` / `mcp_configure`）吃同一个形状。两个新字段的落点不一样：
+
+- **`icon?: string` 加在 `CatalogEntry` 上**，值是打进包的资源键（4.4），可选，现有 9 条字面量不受影响。
+- **`verified` 不加在 `CatalogEntry` 上**，而是 UI 层的包装类型 `DirectoryItem { entry; verified; installed }`。核验与否是**来路**的性质，不是条目自身的属性——同一份配置从精选层拿是核过的，从注册表拿就不是。放在包装上，`MCP_CATALOG` 那批字面量一个字都不用改。
 
 `src/shared` 不碰 node builtin（`tests/architecture.test.ts` 第 5 条，手机端 import 同一份源码）。
 
