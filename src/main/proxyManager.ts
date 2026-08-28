@@ -26,6 +26,7 @@ import {
   type ProxyStoreData,
 } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
+import type { ProxyChannelView } from "./proxyNamespace.js";
 import type { McpCapability } from "../world/executionWorld.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import type { ProxyWireTransport } from "./proxyCoordinator.js";
@@ -46,6 +47,8 @@ export interface ProxyManagerDeps {
       ADR-0151 决策 1：friendships 被删除 = 代理权限跟着死。null 一律按「拒」处理
       （见 proxyHost 的 friendUids 注释），所以这里不能拿空数组冒充「还不知道」 */
   friendUids: () => readonly string[] | null;
+  /** 好友的人话名字（进代理工具的描述与 UI）。查不到回空串——调用方自己退回短标签 */
+  friendLabel: (uid: string) => string;
   /** 开一个到 relay 某频道的点对点传输（index.ts 用 createWsTransport + adaptProxyWire 造） */
   openWireTransport: (channelId: string, role: "host" | "guest") => ProxyWireTransport;
   /** proxyStore 的落盘（0600/userData，index.ts 填 readProxyStore/writeProxyStore 的绑定） */
@@ -67,6 +70,12 @@ export interface ProxyManager {
    * 让 B 直接连回来（这一轮走正常 pin 路径，不消耗邀请）。
    */
   resumeHosts(): void;
+  /**
+   * B 侧：此刻活着的代理通道（issue #670）。装配根拿它把好友的 MCP 合并进
+   * 会话的 world（`mergeProxyMcp`）——**这是 proxyMcp 唯一的出口**。
+   * 回的是快照：通道随时来去，调用方每次现取（工具表每 turn 现算）。
+   */
+  activeProxies(): readonly ProxyChannelView[];
   /** 关停所有活动通道（app 退出 / 登录态失效时调） */
   closeAll(): void;
 }
@@ -76,8 +85,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
   const log = deps.log ?? (() => {});
   /** A 侧：每个好友一条 host 通道（重开时先关旧的，免得两条连接抢同一个房间） */
   const hosts = new Map<string, { close(): void }>();
-  /** B 侧：当前这条 guest 通道（一次只代理一个 A——UI 上就是「正在用谁的服务」） */
-  let guest: { close(): void } | null = null;
+  /** B 侧：当前这条 guest 通道（一次只代理一个 A——UI 上就是「正在用谁的服务」）。
+      带上 friendUid 是因为下游要按它加前缀，带上 mcp 是因为它就是那个出口 */
+  let guest: { friendUid: string; mcp: McpCapability; close(): void } | null = null;
 
   /**
    * 开一条 A 侧的 host 通道。`invite` 有值 = 这一轮还接受邀请码证明（首次配对）；
@@ -115,11 +125,15 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
 
   return {
     async proxyCreateInvite(friendUid, allow) {
+      // 邀请码里要写进 A 自己的 uid（B 拿它贴标签 + 记绑定，issue #670），
+      // 没登录就没有这个 uid —— 而没登录本来也连不上 relay
+      const selfUid = deps.currentUid();
+      if (!selfUid) return { ok: false, message: "还没登录——好友代理要先登录" };
       // A 侧：先把授权写进白名单存储（B 连上后 host 按它执行 + 推 grant 帧）
       let store = setGrant(deps.loadStore(), { friendUid, allow });
       // 同一个好友复用同一个频道：重发邀请不该把 B 已经连着的那条房间换掉
       const channelId = channelFor(store, friendUid);
-      const fresh = createProxyInvite(deps.crypto, deps.identity.publicKey, now());
+      const fresh = createProxyInvite(deps.crypto, deps.identity.publicKey, now(), selfUid);
       const inv: ProxyInvite = channelId ? { ...fresh, channelId } : fresh;
       store = setChannel(store, friendUid, inv.channelId);
       deps.saveStore(store);
@@ -136,12 +150,19 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       const inv = decodeProxyInvite(invite);
       if (!inv) return { ok: false, message: "邀请码不对——不是合法的代理邀请码（要 otto-proxy 开头的一串）" };
       if (proxyInviteExpired(inv, now())) return { ok: false, message: "邀请码过期了（10 分钟有效）——让对方重新生成一个" };
+      // 对面得是自己的好友。A 那边本来就有同样一道闸（ADR-0164），这一道纯粹是为了
+      // **把话说清楚**：不加这句，非好友的码也能「连上」，然后永远停在等授权
+      const known = deps.friendUids();
+      if (known === null) return { ok: false, message: "好友名单还没同步好，过一会儿再试" };
+      if (!known.includes(inv.hostUid)) {
+        return { ok: false, message: "这张邀请码的主人不在你的好友里——先互加好友再试" };
+      }
 
       // B 侧：连 A 的频道（guest 角色），hello 里带上「我持有这张邀请的 secret」的证明，
       // 同时 pin 邀请码里 A 的身份公钥（双向认证都靠这张带外传来的码）
       guest?.close();
       const transport = deps.openWireTransport(inv.channelId, "guest");
-      guest = startProxyGuestCoordinator({
+      const coord = startProxyGuestCoordinator({
         crypto: deps.crypto,
         identity: deps.identity,
         deviceId: deps.deviceId,
@@ -152,6 +173,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         grantedServers: [], // 初始空——A 握手后推 proxy_grant 帧更新（proxyMcp 动态收）
         log,
       });
+      guest = { friendUid: inv.hostUid, mcp: coord.mcp, close: coord.close };
       // grantedCount 此刻是 0：授权清单在握手后才由 A 推 proxy_grant 帧过来。
       // UI 据此显示「已连上，等待对方推送授权」，不是「授权为空」
       log(`代理通道已连上对方的频道 ${inv.channelId.slice(0, 8)}…（guest）`);
@@ -190,6 +212,11 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         openHost(g.friendUid, channelId, null);
       }
       if (hosts.size > 0) log(`代理：已恢复 ${hosts.size} 条好友通道`);
+    },
+
+    activeProxies() {
+      if (!guest) return [];
+      return [{ friendUid: guest.friendUid, label: deps.friendLabel(guest.friendUid), mcp: guest.mcp }];
     },
 
     closeAll() {

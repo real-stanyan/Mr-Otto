@@ -139,6 +139,7 @@ import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { createProxyManager, type ProxyManager } from "./proxyManager.js";
+import { mergeProxyMcp } from "./proxyNamespace.js";
 import { adaptProxyWire } from "./proxyWire.js";
 import { readProxyStore, writeProxyStore } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
@@ -1303,11 +1304,15 @@ void app.whenReady().then(() => {
         crypto: remoteKeys.crypto,
         identity: remoteKeys.idStore.identity,
         deviceId: remoteKeys.idStore.deviceId,
+        // **这里必须是 mcpHub 本尊，不能换成下面那份合并的**：A 执行 B 的调用时
+        // 用的是自己的真服务。换成合并的等于允许「B 借 A 去调 C 的服务」——
+        // 传递性代理，而 A 圈的白名单里从来没有 C 那些工具（issue #670）
         mcp: mcpHub,
         currentUid: () => friends.currentUid(),
         // 第二道闸：删好友 = 代理权限跟着死（ADR-0151 决策 1，issue #665）。
         // null = 名单还没同步好，代理侧按「拒」处理
         friendUids: () => friends.acceptedFriendUids(),
+        friendLabel: (uid) => friends.friendLabel(uid),
         // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
         // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
         openWireTransport: (channel, role) =>
@@ -1329,6 +1334,16 @@ void app.whenReady().then(() => {
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
   proxyResumeNow = proxy ? () => proxy.resumeHosts() : null;
+
+  /**
+   * 会话拿到的那份 MCP 能力 = 自己接的 + 此刻借来的（issue #670）。
+   * 代理来的服务按好友加前缀，所以 B 自己的 `shopify` 和好友的 `shopify`
+   * 既不会在工具名上塌成一个（`assignMcpToolNames` 会静默丢重复项），
+   * 也不会在 `callTool(serverId)` 上分不清该本地跑还是打帧发走。
+   *
+   * 取函数而不是快照：好友通道随时来去，而 `buildTools` 每 turn 现算一次工具表。
+   */
+  const sessionMcp = proxy ? mergeProxyMcp(mcpHub, () => proxy.activeProxies()) : mcpHub;
 
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
@@ -1477,7 +1492,9 @@ void app.whenReady().then(() => {
       快照会让"认不认得这个名字"停在装配那一刻。逻辑本体在 shared/mcp.ts
       （issue #473 拎出去的，纯函数才测得到）：自助配置三件套 + mcp_read_resource
       无条件在列（挂载条件是"有 mcp 能力"，零 server 也挂），server 工具只算 live */
-  const mcpToolNamesNow = (): string[] => knownMcpToolNames(mcpHub.servers());
+  // 借来的服务也算数：子 agent 的 allowTools 点名一把代理工具时，
+  // 认不出就会被静默剔除（issue #473 那条陷阱），所以这里问的是合并后的那份
+  const mcpToolNamesNow = (): string[] => knownMcpToolNames(sessionMcp.servers());
 
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
@@ -1640,7 +1657,7 @@ void app.whenReady().then(() => {
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
-        mcp: mcpHub,
+        mcp: sessionMcp,
         // skill 库同理（issue #482）：挂载归挂载，白名单说了算。skills: "none"
         // 的子 agent 当初就没挂上这把刀，快照里没有它的名字，恢复回来照样没有
         skills: { listSkills: () => scanSkills(skillRoots) },
@@ -1766,8 +1783,10 @@ void app.whenReady().then(() => {
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
       // 而 MCP server 是第三方代码，接一台新 server 不该悄悄扩大所有子 agent 的权限面。
       // 两条调用点（startSession / resumeSession）都在调这个函数之前
-      // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
-      mcp: mcpHub,
+      // await 过 mcpHub.ready()——那句话现在只对本地服务成立：好友借来的服务
+      // 是握手后由对方推 proxy_grant 帧来的，等不到也不必等（buildTools 每 turn
+      // 现算，晚到的服务下一轮就出现在工具表里，issue #670）
+      mcp: sessionMcp,
       listSubagents: listForSession,
       subagentRunner: createSubagentRunner({
         store,
@@ -2324,7 +2343,7 @@ void app.whenReady().then(() => {
     await mcpHub.ready();
     // task 过滤掉：子 agent 不能再派子 agent（main/subagents.ts 解析时也剔）。
     // 这条探针本来就没有 subagentRunner、装不出 task，留着这句是写给下一个人看的
-    return probeToolDefs(mcpHub).filter((d) => d.name !== "task");
+    return probeToolDefs(sessionMcp).filter((d) => d.name !== "task");
   });
   ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
     listSubagents(trusted(workspace))
