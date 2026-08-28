@@ -31,6 +31,7 @@ import { createTerminalHub } from "./terminalHub.js";
 import { createSimulatorHub } from "./simulatorHub.js";
 import type { SimButton } from "../shared/simulator.js";
 import type { GitCheckoutResult } from "../shared/gitGraph.js";
+import type { CatalogEntry } from "../shared/mcpCatalog.js";
 import { createSimInputBridge } from "./simInputBridge.js";
 import { resolveSimInputBinPath } from "./simInputBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
@@ -40,6 +41,7 @@ import { trafficLightPosition } from "./trafficLights.js";
 import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration } from "./mcpAuthStore.js";
+import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
@@ -2333,6 +2335,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig): Promise<McpServersSnapshot> => {
     await mcpHub.save(id, cfg);
     return mcpSnapshot();
+  });
+  ipcMain.handle(CHANNELS.searchMcpRegistry, async (_e, query: string): Promise<CatalogEntry[]> => {
+    return searchMcpRegistry(query);
   });
   ipcMain.handle(CHANNELS.removeMcpServer, async (_e, id: string): Promise<McpServersSnapshot> => {
     await mcpHub.remove(id);

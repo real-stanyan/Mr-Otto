@@ -174,6 +174,68 @@ describe("http.postJson", () => {
   });
 });
 
+describe("http.getJson", () => {
+  it("发 GET，不带 body，解析 JSON", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init! });
+      return { ok: true, status: 200, json: async () => ({ servers: [] }), text: async () => "" } as Response;
+    }) as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+
+    const out = await world.http.getJson!("https://x.test/v0/servers?search=a");
+
+    expect(out).toEqual({ servers: [] });
+    expect(calls[0]!.url).toBe("https://x.test/v0/servers?search=a");
+    expect(calls[0]!.init.method).toBe("GET");
+    expect(calls[0]!.init.body).toBeUndefined();
+  });
+
+  it("非 2xx 抛，错误里带状态码和响应片段", async () => {
+    const fetchImpl = (async () =>
+      ({ ok: false, status: 503, json: async () => ({}), text: async () => "upstream exploded" }) as Response) as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    await expect(world.http.getJson!("https://x.test/v0/servers")).rejects.toThrow(/503.*upstream exploded/s);
+  });
+
+  it("外部中断穿透，报错含「中断」", async () => {
+    const fetchImpl = (async (_u: string | URL | Request, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        init!.signal!.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")));
+      })) as unknown as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    const ac = new AbortController();
+    const pending = world.http.getJson!("https://x.test/v0/servers", { signal: ac.signal });
+    ac.abort();
+    await expect(pending).rejects.toThrow(/中断/);
+  });
+
+  it("withAbortSignal 把 signal 焊进 http.getJson", async () => {
+    const seen: (AbortSignal | undefined)[] = [];
+    const base = createLocalWorld({
+      fetchImpl: (async (_u: string | URL | Request, init?: RequestInit) => {
+        seen.push(init?.signal ?? undefined);
+        return new Promise((_res, rej) => {
+          if (init?.signal?.aborted) {
+            rej(new DOMException("Aborted", "AbortError"));
+          } else {
+            init?.signal?.addEventListener("abort", () => {
+              rej(new DOMException("Aborted", "AbortError"));
+            });
+          }
+        });
+      }) as unknown as typeof fetch,
+    });
+    const ac = new AbortController();
+    const world = withAbortSignal(base, ac.signal);
+    const pending = world.http.getJson!("https://x.test/v0/servers");
+    ac.abort();
+    await expect(pending).rejects.toThrow(/中断/);
+    expect(seen[0]).toBeDefined();
+    expect(seen[0]?.aborted).toBe(true);
+  });
+});
+
 describe("装饰器透传 http", () => {
   it("withAbortSignal 把 signal 焊进 http.postJson", async () => {
     const seen: (AbortSignal | undefined)[] = [];

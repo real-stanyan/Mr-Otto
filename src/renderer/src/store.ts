@@ -38,6 +38,7 @@ import type {
   McpServersSnapshot,
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
+import type { CatalogEntry } from "../../shared/mcpCatalog.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -436,6 +437,7 @@ interface ChatState {
       原样带着 list() 给的遮罩值回来——主进程的 mergeMaskedCreds 会把它们
       合并回真值，抛出的 Error 已经是中文句子，组件自己 catch 显示 */
   saveMcpServer(id: string, cfg: McpServerConfig): Promise<void>;
+  searchMcpRegistry(query: string): Promise<CatalogEntry[]>;
   removeMcpServer(id: string): Promise<void>;
   /** 手动重连(failed 的那台，用户修好环境/网络后自己点) */
   reconnectMcpServer(id: string): Promise<void>;
@@ -1008,6 +1010,12 @@ export const useChat = create<ChatState>((set, get) => ({
     // 三个写操作都回全量快照(同 subagent 三件套的做法)——存写完立刻在 state
     // 里看到最新镜像，不用再补一次 refresh 才能看见自己刚存的东西
     set({ mcpServers: await window.otter.saveMcpServer(id, cfg) });
+  },
+
+  // 不进 store 状态：搜索结果是瞬时的，组件自己拿着就行。放进 store 等于
+  // 给一份会被下一次输入立刻作废的数据造一个全局家
+  async searchMcpRegistry(query) {
+    return window.otter.searchMcpRegistry(query);
   },
 
   async removeMcpServer(id) {

@@ -2,7 +2,18 @@ import { describe, it, expect } from "vitest";
 import { mcpCatalogTool } from "../../src/tools/mcpCatalog.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
-const world = {} as ExecutionWorld;
+function worldWith(getJson?: (url: string) => Promise<unknown>): ExecutionWorld {
+  return {
+    fs: {} as never,
+    exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    http: {
+      postJson: async () => ({}),
+      ...(getJson ? { getJson: async (url: string) => getJson(url) } : {}),
+    },
+  } as unknown as ExecutionWorld;
+}
+
+const world = worldWith();
 
 describe("mcp_catalog 工具", () => {
   it("免审批——只读一份仓内常量，没有副作用", () => {
@@ -47,5 +58,103 @@ describe("mcp_catalog 工具", () => {
     const out = String(await mcpCatalogTool.run(null, world));
     expect(out).toContain("supabase");
     expect(out).toContain("github");
+  });
+});
+
+const REGISTRY_HIT = {
+  servers: [
+    {
+      server: {
+        name: "com.example/widgets",
+        title: "Widgets",
+        description: "管理 widget",
+        version: "1.0.0",
+        remotes: [{ type: "streamable-http", url: "https://widgets.example/mcp" }],
+      },
+      _meta: { "io.modelcontextprotocol.registry/official": { isLatest: true } },
+    },
+  ],
+};
+
+describe("mcp_catalog", () => {
+  it("精选命中就不打注册表", async () => {
+    let called = false;
+    const out = await mcpCatalogTool.run(
+      { query: "supabase" },
+      worldWith(async () => {
+        called = true;
+        return { servers: [] };
+      })
+    );
+    expect(String(out)).toContain("Supabase");
+    expect(called).toBe(false);
+  });
+
+  it("精选没命中就查注册表，结果里带上未核验的话", async () => {
+    const out = String(await mcpCatalogTool.run({ query: "widgets" }, worldWith(async () => REGISTRY_HIT)));
+    expect(out).toContain("Widgets");
+    expect(out).toContain("https://widgets.example/mcp");
+    expect(out).toContain("未经核验");
+  });
+
+  it("查询词进了 URL", async () => {
+    let seen = "";
+    await mcpCatalogTool.run(
+      { query: "widgets" },
+      worldWith(async (url) => {
+        seen = url;
+        return REGISTRY_HIT;
+      })
+    );
+    expect(seen).toContain("search=widgets");
+  });
+
+  it("注册表也没有就退回 web_search 的话术", async () => {
+    const out = String(
+      await mcpCatalogTool.run({ query: "绝无此物xyzzy" }, worldWith(async () => ({ servers: [] })))
+    );
+    expect(out).toContain("web_search");
+  });
+
+  it("注册表打不通不抛，退回 web_search 的话术", async () => {
+    const out = String(
+      await mcpCatalogTool.run(
+        { query: "绝无此物xyzzy" },
+        worldWith(async () => {
+          throw new Error("ENOTFOUND");
+        })
+      )
+    );
+    expect(out).toContain("web_search");
+  });
+
+  it("世界不提供 getJson 时不炸，退回 web_search 的话术", async () => {
+    const out = String(await mcpCatalogTool.run({ query: "绝无此物xyzzy" }, worldWith()));
+    expect(out).toContain("web_search");
+  });
+
+  // 注册表是开放投稿的第三方服务，返回什么形状不由本仓说了算：
+  // 「打不通」那条只覆盖了抛异常，成功返回一个不认识的形状同样不许把工具打挂。
+  it.each([
+    ["null", null],
+    ["裸数组", []],
+    ["servers 不是数组", { servers: "not-an-array" }],
+  ])("注册表回了不认识的形状（%s）也不炸，退回 web_search 的话术", async (_name, body) => {
+    const out = String(
+      await mcpCatalogTool.run({ query: "绝无此物xyzzy" }, worldWith(async () => body))
+    );
+    expect(out).toContain("web_search");
+  });
+
+  it("注册表超时被 abort 也不炸，退回 web_search 的话术", async () => {
+    const out = String(
+      await mcpCatalogTool.run(
+        { query: "绝无此物xyzzy" },
+        worldWith(async () => {
+          throw new DOMException("The operation was aborted", "AbortError");
+        })
+      )
+    );
+    expect(out).toContain("web_search");
   });
 });

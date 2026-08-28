@@ -201,6 +201,25 @@ export function createLocalWorld(
         }
         return res.json();
       },
+
+      async getJson(url, o) {
+        const fetchImpl = opts.fetchImpl ?? fetch;
+        // 30s 超时与外部中断信号合并;两者都能掐死请求（同 postJson）
+        const timeout = AbortSignal.timeout(30_000);
+        const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
+        let res: Response;
+        try {
+          res = await fetchImpl(url, { method: "GET", headers: { ...o?.headers }, signal });
+        } catch (err) {
+          // 中断是外力,不是请求自身失败——语义对齐 exec(ADR-0006)
+          if (o?.signal?.aborted) throw new Error("请求被中断：用户停止了 turn");
+          throw err;
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        }
+        return res.json();
+      },
     },
 
     async openTerminal(o): Promise<TerminalSession> {

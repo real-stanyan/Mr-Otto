@@ -48,6 +48,7 @@ import type {
 import type { SubagentDef } from "./subagent.js";
 import type { MemoryTarget } from "./memoryStore.js";
 import type { AutoCompactSettings } from "./autoCompact.js";
+import type { CatalogEntry } from "./mcpCatalog.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
@@ -610,6 +611,9 @@ export interface ShellBridge {
       cfg 里没改过的凭据字段允许原样带着 list() 给的遮罩值回来——
       hub.save() 会把它们合并回真值，不会拿星号覆盖磁盘上的真凭据 */
   saveMcpServer(id: string, cfg: McpServerConfig): Promise<McpServersSnapshot>;
+  /** 搜公开注册表。空查询返回空数组（目录页的空状态显示仓内精选层，不打网）。
+      网络失败原样抛给渲染进程——目录页要能显示「搜不动」而不是假装没结果 */
+  searchMcpRegistry(query: string): Promise<CatalogEntry[]>;
   removeMcpServer(id: string): Promise<McpServersSnapshot>;
   /** 手动重连（failed 的那台，用户修好环境后自己点） */
   reconnectMcpServer(id: string): Promise<McpServersSnapshot>;
@@ -1158,6 +1162,7 @@ export const CHANNELS = {
   updaterState: "otter:updaterState",
   listMcpServers: "otter:listMcpServers",
   saveMcpServer: "otter:saveMcpServer",
+  searchMcpRegistry: "otter:searchMcpRegistry",
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
   authorizeMcpServer: "otter:authorizeMcpServer",
