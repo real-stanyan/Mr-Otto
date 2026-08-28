@@ -20,7 +20,7 @@ struct TurnDiffSummary: Codable, Equatable {
 }
 
 /// 一只水獭(一个 session)在灵动岛里的状态。
-/// workspace = 工程文件夹全路径(#206 分组键;旧主进程不带 → nil,
+/// workspace = 工程文件夹全路径(旧主进程不带 → nil,
 /// synthesized Codable 对 Optional 走 decodeIfPresent,天然向后兼容)。
 struct IslandAgent: Codable, Equatable, Identifiable {
   let sessionId: String
@@ -30,14 +30,25 @@ struct IslandAgent: Codable, Equatable, Identifiable {
   let turnStartedAt: Double?
   let pendingApproval: PendingApproval?
   var workspace: String?
+  /// 所属**项目**根目录全路径:worktree 折回主仓,主进程算好(main/workspaceLens.ts)。
+  /// 分组键与组头名都取它——每只水獭一份独立 worktree 之后(ADR-0157),按 workspace
+  /// 分组会让组头变成副本目录名的哈希,同一个项目还裂成 N 组。
+  /// Optional → 旧主进程不带时回落 workspace,岛的行为与从前逐字一致。
+  var projectRoot: String?
+  /// 这只水獭在一份独立副本上干活时的当前分支名;不是副本 → nil。
+  /// 折回项目分组之后,"这一行在副本上"就只剩行上这枚 chip 能说了。
+  var branch: String?
   /// Optional → decodeIfPresent,旧主进程不带此字段照常解码(向后兼容同 workspace)
   var turnDiff: TurnDiffSummary?
   var id: String { sessionId }
 
-  /// 组头显示名:路径末段。nil(旧主进程)归到"其他"组。
+  /// 分组键:项目根优先,回落 workspace(旧主进程),都没有归"其他"。
+  var groupKey: String { projectRoot ?? workspace ?? "其他" }
+
+  /// 组头显示名:项目根的路径末段。nil(旧主进程且无 workspace)归到"其他"组。
   var workspaceLabel: String {
-    guard let workspace else { return "其他" }
-    return (workspace as NSString).lastPathComponent
+    guard let path = projectRoot ?? workspace else { return "其他" }
+    return (path as NSString).lastPathComponent
   }
 }
 
