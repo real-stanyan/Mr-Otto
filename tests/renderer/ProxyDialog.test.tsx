@@ -40,8 +40,11 @@ const servers: McpServersSnapshot = {
 
 function seed(otter: Record<string, unknown>) {
   vi.stubGlobal("window", Object.assign(window, {
-    // 借来的通道是推送式更新的，弹窗打开时拉一次补齐——每个用例都会调到
-    otter: { proxyBorrows: vi.fn(async () => ({ ok: true as const, value: { borrows: [] } })), ...otter },
+    // 代理全景是推送式更新的，弹窗打开时拉一次补齐——每个用例都会调到
+    otter: {
+      proxyStatus: vi.fn(async () => ({ ok: true as const, value: { borrows: [], hosts: [] } })),
+      ...otter,
+    },
   }));
   useChat.setState({
     mcpServers: servers,
@@ -55,6 +58,7 @@ function seed(otter: Record<string, unknown>) {
     proxyGrants: [],
     proxyAudits: [],
     proxyBorrows: [],
+    proxyHosts: [],
     friendError: null,
   });
 }
@@ -148,12 +152,14 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
       proxyListGrants: vi.fn(async () => ({ ok: true as const, value: { grants: [] } })),
       proxyDisconnect,
       // 弹窗打开时会拉一次（推送之外的那扇查询窗口），所以数据从这儿来而不是 setState
-      proxyBorrows: vi.fn(async () => ({
+      proxyStatus: vi.fn(async () => ({
         ok: true as const,
         value: {
+          hosts: [],
           borrows: [
             { hostUid: "a-uid", label: "小明", connected: true, serverCount: 2 },
             { hostUid: "c-uid", label: "小红", connected: false, serverCount: 0 },
+            { hostUid: "d-uid", label: "小刚", connected: false, serverCount: 0, revokedReason: "对方撤销了这条代理授权" },
           ],
         },
       })),
@@ -164,8 +170,64 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     // 「配过但没连上」和「连上了但对方一个都没授」是两件事
     expect(await screen.findByText("2 个服务")).toBeInTheDocument();
     expect(screen.getByText("没连上")).toBeInTheDocument();
+    // 被撤销的那条**留在列表里**，而且说的是另一句话——「没连上」是等一等，
+    // 这一句是别等了（issue #680）
+    expect(screen.getByText("对方撤销了这条代理授权")).toBeInTheDocument();
+    expect(screen.getByText("移除")).toBeInTheDocument();
 
     await userEvent.click(screen.getAllByText("断开")[0]!);
     await waitFor(() => expect(proxyDisconnect).toHaveBeenCalledWith("a-uid"));
+  });
+
+  it("已授权页：A 看得见对方连没连、此刻在跑几笔（issue #680）", async () => {
+    seed({
+      proxyListGrants: vi.fn(async () => ({
+        ok: true as const,
+        value: { grants: [
+          { friendUid: "b-uid", allow: [{ serverId: "shopify", tools: [] }] },
+          { friendUid: "z-uid", allow: [{ serverId: "shopify", tools: ["refund"] }] },
+        ] },
+      })),
+      proxyStatus: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          borrows: [],
+          hosts: [
+            { friendUid: "b-uid", label: "小明", connected: true, inflight: 2, lastCallAt: 0 },
+            { friendUid: "z-uid", label: "小强", connected: false, inflight: 0, lastCallAt: null },
+          ],
+        },
+      })),
+    });
+    render(<ProxyDialog open onOpenChange={() => {}} friend={null} />);
+
+    // 白名单内是全自动的：「此刻正在用我的凭证」只有这一行说得出口
+    expect(await screen.findByText("正在调用 · 2 笔")).toBeInTheDocument();
+    expect(screen.getByText("没连上 · 还没用过")).toBeInTheDocument();
+  });
+
+  it("分享页：已授过的好友预勾选 + 更新授权不重发邀请码（issue #680）", async () => {
+    const proxyUpdateGrant = vi.fn(async () => ({ ok: true as const, value: null }));
+    const proxyCreateInvite = vi.fn();
+    seed({
+      proxyUpdateGrant,
+      proxyCreateInvite,
+      proxyListGrants: vi.fn(async () => ({
+        ok: true as const,
+        value: { grants: [{ friendUid: "b-uid", allow: [{ serverId: "shopify", tools: ["get_orders"] }] }] },
+      })),
+    });
+    render(<ProxyDialog open onOpenChange={() => {}} friend={{ id: "b-uid", label: "小明" }} />);
+
+    // 已有的那份被预勾上了——不预填的话改授权要把原来的全部重勾一遍
+    expect(await screen.findByText(/已按现有授权预勾选/)).toBeInTheDocument();
+
+    // 展开、把剩下那个工具也勾上（两个都勾 = 收回成整服务放行 tools: []），
+    // 然后「更新授权」——邀请码一张都不该发
+    await userEvent.click(screen.getByLabelText("展开工具"));
+    await userEvent.click(await screen.findByLabelText("refund"));
+    await userEvent.click(screen.getByText("更新授权"));
+    await waitFor(() => expect(proxyUpdateGrant).toHaveBeenCalledWith("b-uid", [{ serverId: "shopify", tools: [] }]));
+    expect(proxyCreateInvite).not.toHaveBeenCalled();
   });
 });

@@ -192,8 +192,10 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.proxyRevoke, friendUid),
   proxyAudit: (friendUid) =>
     ipcRenderer.invoke(CHANNELS.proxyAudit, friendUid),
-  proxyBorrows: () =>
-    ipcRenderer.invoke(CHANNELS.proxyBorrows),
+  proxyStatus: () =>
+    ipcRenderer.invoke(CHANNELS.proxyStatus),
+  proxyUpdateGrant: (friendUid, allow) =>
+    ipcRenderer.invoke(CHANNELS.proxyUpdateGrant, friendUid, allow),
   proxyDisconnect: (hostUid) =>
     ipcRenderer.invoke(CHANNELS.proxyDisconnect, hostUid),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),

@@ -23,11 +23,24 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.j
 import { Textarea } from "@/components/ui/textarea.js";
 import { useChat } from "../store.js";
 import {
-  auditLine, buildAllow, describeAllow, isServerOn, isToolOn,
-  toggleServer, toggleTool, type ProxySelection,
+  auditLine, borrowStatusLine, buildAllow, describeAllow, hostStatusLine,
+  isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
+  type ProxySelection, type ProxyStatusLine,
 } from "../lib/proxyShare.js";
 
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
+
+/** 状态点：四档配四种样子（档位的含义见 proxyShare.ProxyStatusLine） */
+const DOT: Record<ProxyStatusLine["dot"], string> = {
+  live: "bg-brand animate-pulse",
+  on: "bg-brand",
+  off: "bg-border",
+  dead: "bg-err",
+};
+
+function StatusDot({ line }: { line: ProxyStatusLine }) {
+  return <span className={`size-[7px] rounded-full shrink-0 ${DOT[line.dot]}`} aria-label={line.text} />;
+}
 
 /** 朴素勾选框：shadcn 那套没装 checkbox，这里就地用原生的（尺寸/配色对齐主题） */
 function Check({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
@@ -57,6 +70,7 @@ export function ProxyDialog({
   const snapshot = useChat((s) => s.friendsSnapshot);
   const grants = useChat((s) => s.proxyGrants);
   const borrows = useChat((s) => s.proxyBorrows);
+  const hosts = useChat((s) => s.proxyHosts);
   const audits = useChat((s) => s.proxyAudits);
   const friendError = useChat((s) => s.friendError);
   const refreshProxyGrants = useChat((s) => s.refreshProxyGrants);
@@ -64,8 +78,9 @@ export function ProxyDialog({
   const acceptProxyInvite = useChat((s) => s.acceptProxyInvite);
   const revokeProxy = useChat((s) => s.revokeProxy);
   const loadProxyAudits = useChat((s) => s.loadProxyAudits);
-  const refreshProxyBorrows = useChat((s) => s.refreshProxyBorrows);
+  const refreshProxyStatus = useChat((s) => s.refreshProxyStatus);
   const disconnectProxy = useChat((s) => s.disconnectProxy);
+  const updateProxyGrant = useChat((s) => s.updateProxyGrant);
 
   const [tab, setTab] = useState(friend ? "share" : "grants");
   const [sel, setSel] = useState<ProxySelection>({});
@@ -75,6 +90,7 @@ export function ProxyDialog({
   const [paste, setPaste] = useState("");
   const [accepted, setAccepted] = useState(false);
   const [auditOf, setAuditOf] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   // 每次打开都重置 + 拉一次台账：授权是本机状态，主进程不推
   useEffect(() => {
@@ -86,11 +102,21 @@ export function ProxyDialog({
     setCopied(false);
     setPaste("");
     setAccepted(false);
+    setSaved(false);
     setAuditOf(null);
-    void refreshProxyGrants();
-    // 借来的那些是推送式更新的（onProxyChanged），这里拉一次补齐重载后的空白
-    void refreshProxyBorrows();
-  }, [open, friend, refreshProxyGrants, refreshProxyBorrows]);
+    void (async () => {
+      await refreshProxyGrants();
+      // **把现有授权预勾上**（issue #680）：不预填的话「把 read 改成 read+write」
+      // 要用户把原来勾过的全部重勾一遍，一步都不能漏，漏了就是静默降权。
+      // 拉完再读 store 而不是把 grants 进依赖数组——那样每次台账刷新
+      // 都会把用户正在改的勾选覆盖掉
+      if (!friend) return;
+      const g = useChat.getState().proxyGrants.find((x) => x.friendUid === friend.id);
+      if (g) setSel(selectionFromAllow(g.allow));
+    })();
+    // 代理全景是推送式更新的（onProxyChanged），这里拉一次补齐重载后的空白
+    void refreshProxyStatus();
+  }, [open, friend, refreshProxyGrants, refreshProxyStatus]);
 
   // 只圈得动连上的服务：没连上的给了对方也调不动，反而误导（同 buildGrantedServers 的口径）。
   // 展示名就是 server id —— 那是 mcp.json 里的键，也是用户自己起的名字
@@ -104,6 +130,13 @@ export function ProxyDialog({
   }, [snapshot]);
 
   const allow = buildAllow(sel);
+  /** 这个好友已经授过了没有——决定「更新授权」这条路走不走得通 */
+  const existing = friend ? grants.find((g) => g.friendUid === friend.id) : undefined;
+
+  const save = async () => {
+    if (!friend || allow.length === 0) return;
+    setSaved(await updateProxyGrant(friend.id, allow));
+  };
 
   const generate = async () => {
     if (!friend || allow.length === 0) return;
@@ -225,13 +258,31 @@ export function ProxyDialog({
                 </div>
               </div>
             ) : (
-              <Button size="sm" disabled={!friend || allow.length === 0} onClick={() => void generate()}>
-                <KeyRound className="size-[13px]" />
-                生成邀请码
-              </Button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* 已经授过的：改白名单是**改**，不是重新配一次对（issue #680）。
+                    重发邀请码会换一张邀请、重开房间、逼对方再接受一遍，
+                    而「把 read 改成 read+write」根本不需要那些 */}
+                {existing && (
+                  <Button size="sm" disabled={allow.length === 0} onClick={() => void save()}>
+                    {saved ? "已更新" : "更新授权"}
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant={existing ? "secondary" : "default"}
+                  disabled={!friend || allow.length === 0}
+                  onClick={() => void generate()}
+                >
+                  <KeyRound className="size-[13px]" />
+                  {existing ? "重发邀请码" : "生成邀请码"}
+                </Button>
+              </div>
             )}
             {allow.length > 0 && !invite && (
-              <p className="text-[11px] text-muted-foreground">将授权：{describeAllow(allow)}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {existing ? "改成" : "将授权"}：{describeAllow(allow)}
+                {existing && "（已按现有授权预勾选）"}
+              </p>
             )}
           </TabsContent>
 
@@ -240,9 +291,15 @@ export function ProxyDialog({
             {grants.length === 0 ? (
               <p className="text-xs text-muted-foreground py-3">还没有授权给任何人。</p>
             ) : (
-              grants.map((g) => (
+              grants.map((g) => {
+                // 台账里有、状态表里还没有 = 主进程刚起来还没推。按「没连上」显示，
+                // 那也是事实（同 hostStatus 的口径：授权是底本，状态往上贴）
+                const h = hosts.find((x) => x.friendUid === g.friendUid);
+                const line = hostStatusLine(h ?? { connected: false, inflight: 0, lastCallAt: null });
+                return (
                 <div key={g.friendUid} className="border border-border rounded-md px-2 py-[6px] text-xs">
                   <div className="flex items-center gap-2">
+                    <StatusDot line={line} />
                     <span className="flex-1 min-w-0 truncate">{friendNameOf(g.friendUid)}</span>
                     <Button variant="ghost" size="sm" className="px-2 text-xs"
                       onClick={() => void showAudits(g.friendUid)}>
@@ -253,9 +310,12 @@ export function ProxyDialog({
                       撤销
                     </Button>
                   </div>
+                  {/* 白名单内是全自动的——「此刻正在用我的凭证」只有这一行说得出口 */}
+                  <p className="text-[11px] text-muted-foreground truncate">{line.text}</p>
                   <p className="text-[11px] text-muted-foreground truncate">{describeAllow(g.allow)}</p>
                 </div>
-              ))
+                );
+              })
             )}
 
             {auditOf !== null && (
@@ -297,23 +357,24 @@ export function ProxyDialog({
             {borrows.length > 0 && (
               <div className="space-y-1">
                 <div className="text-[11px] text-muted-foreground">我在用的服务</div>
-                {borrows.map((b) => (
+                {borrows.map((b) => {
+                  const line = borrowStatusLine(b);
+                  return (
                   <div key={b.hostUid} className="border border-border rounded-md px-2 py-[6px] text-xs flex items-center gap-2">
-                    <span
-                      className={`size-[7px] rounded-full shrink-0 ${b.connected ? "bg-brand" : "bg-border"}`}
-                      aria-label={b.connected ? "已连上" : "没连上"}
-                    />
+                    <StatusDot line={line} />
                     <span className="flex-1 min-w-0 truncate">{b.label || b.hostUid.slice(0, 8)}</span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {/* 「配过但没连上」和「连上了但对方一个都没授」是两件事，分开说 */}
-                      {b.connected ? `${b.serverCount} 个服务` : "没连上"}
+                    {/* 「没连上」「被撤销了」「连上了但没授权」是三件事，
+                        对应的下一步完全不同（等 / 重走邀请码 / 找对方要授权） */}
+                    <span className="shrink-0 text-[11px] text-muted-foreground max-w-[180px] truncate">
+                      {line.text}
                     </span>
                     <Button variant="ghost" size="sm" className="px-2 text-xs text-err"
                       onClick={() => void disconnectProxy(b.hostUid)}>
-                      断开
+                      {b.revokedReason ? "移除" : "断开"}
                     </Button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             <Textarea

@@ -414,6 +414,87 @@ describe("proxyManager 的 B 侧台账（issue #676）", () => {
     b.manager.closeAll();
   });
 
+  // ─── A 侧那块表 + 撤销说得清（issue #680）────────────────────────────
+  it("A 看得见：对方连没连、最近一次什么时候被调用", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    // 还没连上时也要在表里：「授出去了但对方没连」正是 A 最该看见的一格
+    expect(a.manager.hostStatus()).toMatchObject([
+      { friendUid: "b-uid", connected: false, inflight: 0, lastCallAt: null },
+    ]);
+
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    expect(a.manager.hostStatus()[0]).toMatchObject({ connected: true, inflight: 0, lastCallAt: null });
+
+    // B 真调一笔 → A 那边记了审计 → 「最近一次」有值了
+    await b.manager.activeProxies()[0]!.mcp.callTool("shopify", "get_orders", {});
+    await settle();
+    expect(a.manager.hostStatus()[0]!.lastCallAt).not.toBeNull();
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
+  it("撤销 → B 收到的是一句「被撤销了」，不是一次静默断线；台账标记但不删除", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    expect(b.manager.borrowStatus()[0]).toMatchObject({ connected: true });
+
+    await a.manager.proxyRevoke("b-uid");
+    await settle();
+
+    // 那条**还在列表里**，只是配着一句理由 —— 直接删掉的话它长得和
+    // 「对方今天没开机」一模一样，而这两件事该做的动作相反
+    const st = b.manager.borrowStatus();
+    expect(st).toHaveLength(1);
+    expect(st[0]!.connected).toBe(false);
+    expect(st[0]!.revokedReason).toMatch(/撤销/);
+
+    // 而且不该再自动连回去：重启一次，被撤的那条不进 resume
+    const b2 = reopen(relay, b, "b-uid");
+    b2.manager.resume();
+    await settle();
+    expect(b2.manager.activeProxies()).toHaveLength(0);
+    expect(b2.manager.borrowStatus()[0]!.revokedReason).toMatch(/撤销/);
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+    b2.manager.closeAll();
+  });
+
+  it("改授权不重发邀请码：频道不变，B 的工具表当场跟着变", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify"), server("ads")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    const chan = channelFor(a.store(), "b-uid");
+    expect(b.manager.activeProxies()[0]!.mcp.servers()).toHaveLength(1);
+
+    await a.manager.proxyUpdateGrant("b-uid", [
+      { serverId: "shopify", tools: [] }, { serverId: "ads", tools: [] },
+    ]);
+    await settle();
+
+    // 频道没换（没重新配对），但对面的工具表已经是新的
+    expect(channelFor(a.store(), "b-uid")).toBe(chan);
+    expect(b.manager.activeProxies()[0]!.mcp.servers()).toHaveLength(2);
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
   it("状态变了会喊一声（UI 的唯一信号源）", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);

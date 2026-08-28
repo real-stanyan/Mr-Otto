@@ -15,7 +15,10 @@ import {
   appendAudit, grantFor, serializeProxyStore,
   type ProxyStoreData,
 } from "./proxyStore.js";
-import { buildGrantedServers, encodeProxyFrame, type ProxyRequest } from "../shared/remote/proxyProtocol.js";
+import {
+  buildGrantedServers, decodeProxyFrame, encodeProxyFrame, PROXY_FRAME_VERSION,
+  type ProxyRequest,
+} from "../shared/remote/proxyProtocol.js";
 import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 
@@ -63,9 +66,27 @@ export function startProxyHostCoordinator(deps: {
   /** 读/写授权+审计存储（proxyStore 的持久化由调用方落盘） */
   loadStore: () => ProxyStoreData;
   saveStore: (d: ProxyStoreData) => void;
+  /**
+   * 这条对外通道的状态变了（issue #680）：握手完成、好友离场、有笔调用起跑或跑完、
+   * 记了一笔审计。**A 侧那块表的唯一信号源** —— B 侧早就有一份对称的
+   * （guest 的 onStateChange），A 侧一直缺，结果就是「别人正在用我的凭证」
+   * 这件事只有事后翻账才看得见。
+   */
+  onStateChange?: () => void;
   now?: () => number;
   log?: (m: string) => void;
-}): { connection: ProxyConnection; pushGrant(): void; close(): void } {
+}): {
+  connection: ProxyConnection;
+  pushGrant(): void;
+  /** 明说一句「撤销了」再关门（issue #680）。见 ProxyRevokedFrame 的注释：
+      撤销不能靠沉默表达，否则 B 那边和「A 关机了」分不开 */
+  pushRevoked(reason: string): void;
+  /** 好友此刻握上手没有（UI 的「连上了没」） */
+  isReady(): boolean;
+  /** 此刻正在跑几笔（>0 = 正在用 A 的凭证） */
+  inflight(): number;
+  close(): void;
+} {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
 
@@ -82,7 +103,7 @@ export function startProxyHostCoordinator(deps: {
   // relay 说「B 到了」= 开一轮握手。重连也走这里（每次 attach 都会再来一条 `:peer`）
   deps.transport.onPeerPresent?.(() => connection.start());
   // 「B 走了」得让连接跟着退出就绪（issue #672）——否则 isPeerConnected() 一直是 true
-  deps.transport.onPeerGone?.(() => connection.peerGone());
+  deps.transport.onPeerGone?.(() => { connection.peerGone(); deps.onStateChange?.(); });
 
   // 连接就绪后，把收到的明文帧交给 proxyHost 执行（白名单 + 审计 + 回传）
   const host = startProxyHost({
@@ -104,7 +125,13 @@ export function startProxyHostCoordinator(deps: {
         outcome: e.decision === "denied" ? "denied" : (e.outcome ?? "ok"),
         ...((e.denyReason ?? e.error) !== undefined ? { detail: (e.denyReason ?? e.error)! } : {}),
       }));
+      // 记了一笔 = 「最近一次被调用」变了。审计是**每条决策**都写（含被拒的），
+      // 所以这一钩也覆盖了「有人在拿被拒的请求刷我」那种情形
+      deps.onStateChange?.();
     },
+    // 起跑/跑完的边沿：inflight 从 0 变 1 时没有任何审计会写（审计在结果出来才记），
+    // 不挂这一钩的话「正在跑」这一格永远亮不起来
+    onActivity: () => deps.onStateChange?.(),
     now,
     log,
   });
@@ -134,7 +161,7 @@ export function startProxyHostCoordinator(deps: {
     log(`代理授权已推送给 B：${servers.length} 个服务${stillFriend ? "" : "（已不是好友/名单未同步，推空清单）"}`);
   }
 
-  connection.onReady(pushGrant);
+  connection.onReady(() => { pushGrant(); deps.onStateChange?.(); });
 
   // 传输 → 连接（首字符定型在 proxyConnection.onWire 里做）
   deps.transport.onMessage((payload) => connection.onWire(payload));
@@ -142,7 +169,17 @@ export function startProxyHostCoordinator(deps: {
   return {
     connection,
     pushGrant,
-    close() { host(); connection.close(); deps.transport.close(); },
+    pushRevoked(reason: string) {
+      // 发不出去（对面此刻不在线）就算了：B 下次连回来握不上手（pin 已清），
+      // 台账那条会停在「没连上」——比现在好，但不如收到帧那么明确。
+      // 这是尽力而为的一句话，不是必达的协议保证
+      if (!connection.sendSealed(encodeProxyFrame({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION, reason }))) {
+        log("代理撤销通知没发出去（好友此刻不在线）——对面只会看到连接断开");
+      }
+    },
+    isReady: () => connection.isReady(),
+    inflight: () => host.inflight(),
+    close() { host.stop(); connection.close(); deps.transport.close(); },
   };
 }
 
@@ -166,6 +203,14 @@ export function startProxyGuestCoordinator(deps: {
    * B 侧 UI 的唯一信号源——没有它，界面只能停在「已连上，等对方推来授权清单」。
    */
   onStateChange?: () => void;
+  /**
+   * A 明说「撤销了」（`proxy_revoked` 帧，issue #680）。
+   *
+   * 没有这一帧的话，撤销在 B 眼里长得和「A 关机了」一模一样——工具表空掉、
+   * 连接断掉。而这两件事该做的动作相反：一个是等，一个是别等了。
+   * 上层收到它就把这条从「会自动重连的台账」里摘出来，并把原因显示出来。
+   */
+  onRevoked?: (reason: string) => void;
   callTimeoutMs?: number;
   log?: (m: string) => void;
 }): { connection: ProxyConnection; mcp: McpCapability; close(): void } {
@@ -201,6 +246,15 @@ export function startProxyGuestCoordinator(deps: {
     onGrantsChanged: () => deps.onStateChange?.(),
     ...(deps.callTimeoutMs !== undefined ? { timeoutMs: deps.callTimeoutMs } : {}),
     log,
+  });
+
+  // 撤销帧不归 proxyMcp 管（它只认 grant/res 两种）——这是**通道级**的事：
+  // 收到就不该再自动连回去了，而 proxyMcp 管不着台账
+  connection.onPlain((frameJson) => {
+    const frame = decodeProxyFrame(frameJson);
+    if (frame?.kind !== "proxy_revoked") return;
+    log(`代理被撤销：${frame.reason}`);
+    deps.onRevoked?.(frame.reason);
   });
 
   deps.transport.onMessage((payload) => connection.onWire(payload));

@@ -89,6 +89,14 @@ export interface ProxyHostDeps {
   /** 令牌桶：持续速率（每分钟几笔）与桶容量（允许多大的突发） */
   ratePerMinute?: number;
   rateBurst?: number;
+  /**
+   * 有笔调用开跑 / 跑完了（issue #680）。**A 侧那块表的信号源**：
+   * 白名单内是全自动的，不给 A 一个「此刻正在被用」的实况，
+   * 「别人在用我的凭证」这件事就只能事后翻审计账才看得见。
+   *
+   * 只报边沿不报内容——报什么由上层从 inflight() 与审计账现取。
+   */
+  onActivity?: () => void;
   now?: () => number;
   log?: (m: string) => void;
 }
@@ -119,8 +127,16 @@ function summarizeArgs(args: unknown): string {
   }
 }
 
-/** 把 A 侧代理接到传输上。返回退订函数（A 撤销/断开时停） */
-export function startProxyHost(deps: ProxyHostDeps): () => void {
+/** A 侧代理接上传输之后的把手：停（A 撤销/断开时调）+ 此刻在跑几笔 */
+export interface ProxyHostHandle {
+  /** 退订并 abort 掉还挂着的调用 */
+  stop(): void;
+  /** 此刻正在跑的代理调用笔数。>0 = 有人正在用 A 的凭证（issue #680） */
+  inflight(): number;
+}
+
+/** 把 A 侧代理接到传输上 */
+export function startProxyHost(deps: ProxyHostDeps): ProxyHostHandle {
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
   /** 正在跑的调用：reqId → 中止把手（收到 proxy_cancel 时按它 abort） */
@@ -197,6 +213,7 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
     // signal 一路传到 mcpHub.callTool → 连接层，SDK 那边才真的停得下来
     const ctl = new AbortController();
     inflight.set(req.reqId, ctl);
+    deps.onActivity?.();
     try {
       const content = await deps.mcp.callTool(req.serverId, req.tool, req.args, ctl.signal);
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: true, content };
@@ -227,6 +244,7 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
       deps.transport.send(encodeProxyFrame(res));
     } finally {
       inflight.delete(req.reqId);
+      deps.onActivity?.();
     }
   }
 
@@ -248,11 +266,14 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
     // proxy_res 在 A 侧不处理（A 是执行方，不收结果帧）
   });
 
-  return () => {
-    off();
-    // 连接没了，还挂着的调用没人等结果了。abort 掉而不是让它跑完：
-    // 它占着 A 的凭证在动 A 的账号，而下命令的那个人已经不在线上了
-    for (const ctl of inflight.values()) ctl.abort();
-    inflight.clear();
+  return {
+    stop() {
+      off();
+      // 连接没了，还挂着的调用没人等结果了。abort 掉而不是让它跑完：
+      // 它占着 A 的凭证在动 A 的账号，而下命令的那个人已经不在线上了
+      for (const ctl of inflight.values()) ctl.abort();
+      inflight.clear();
+    },
+    inflight: () => inflight.size,
   };
 }

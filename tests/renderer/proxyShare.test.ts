@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  auditLine, buildAllow, describeAllow, isServerOn, isToolOn,
-  selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
+  auditLine, borrowStatusLine, buildAllow, describeAllow, hostStatusLine,
+  isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
+  type ProxySelection,
 } from "../../src/renderer/src/lib/proxyShare.js";
 
 const TOOLS = ["get_orders", "create_order", "refund"];
@@ -82,5 +83,35 @@ describe("proxyShare（圈白名单的纯逻辑，issue #657）", () => {
     expect(auditLine({ ...base, argsSummary: "{}" }).args).toBe("");
     expect(auditLine({ ...base, argsSummary: "null" }).args).toBe("");
     expect(auditLine(base).args).toBe("");
+  });
+});
+
+// ─── 状态行：四档对应四种不同的下一步动作（issue #680）──────────────────
+describe("hostStatusLine / borrowStatusLine", () => {
+  it("A 侧：正在跑压倒一切——那是唯一一次能在当下看见它", () => {
+    // 白名单内是全自动的：事情发生的那一刻不显示，之后就只剩翻账了
+    expect(hostStatusLine({ connected: true, inflight: 3, lastCallAt: 0 }))
+      .toEqual({ dot: "live", text: "正在调用 · 3 笔" });
+  });
+
+  it("A 侧：连着但闲着 / 没连上，都带上「最近一次」", () => {
+    expect(hostStatusLine({ connected: true, inflight: 0, lastCallAt: null }))
+      .toEqual({ dot: "on", text: "已连上 · 还没用过" });
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null }))
+      .toEqual({ dot: "off", text: "没连上 · 还没用过" });
+  });
+
+  it("B 侧：「被撤销」和「没连上」不是一句话——一个别等了，一个等着就行", () => {
+    expect(borrowStatusLine({ connected: false, serverCount: 0, revokedReason: "对方撤销了" }))
+      .toEqual({ dot: "dead", text: "对方撤销了" });
+    expect(borrowStatusLine({ connected: false, serverCount: 0 }))
+      .toEqual({ dot: "off", text: "没连上" });
+  });
+
+  it("B 侧：「连上了但对方一个都没授」也不是「没连上」", () => {
+    expect(borrowStatusLine({ connected: true, serverCount: 0 }))
+      .toEqual({ dot: "on", text: "已连上 · 等对方推授权" });
+    expect(borrowStatusLine({ connected: true, serverCount: 2 }))
+      .toEqual({ dot: "on", text: "2 个服务" });
   });
 });
