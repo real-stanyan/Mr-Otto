@@ -379,6 +379,11 @@ interface ChatState {
   unreadByFriend: Record<string, number>;
   /** 好友区/DM 面板的内联错误(FriendsResult ok:false 的 message 落这) */
   friendError: string | null;
+  /** 好友代理(issue #657)：我授权出去的清单（谁能以我的身份调哪些服务）。
+      开对话框时拉一次，撤销/新授权后主进程不推——这是本机台账，回值即新状态 */
+  proxyGrants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[];
+  /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
+  proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; decision: string; outcome: string; detail?: string }[];
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
@@ -610,6 +615,19 @@ interface ChatState {
   /** 接收端导入好友分享的会话：下载、解包、用 workspace 作围栏 fork 出新会话，
       成功后跳转过去(ResumeState 从主进程推) */
   importShared(prefix: string, workspace: string): Promise<boolean>;
+  /** 好友代理(issue #657)。全部经 ShellBridge，成功/失败都落 friendError */
+  refreshProxyGrants(): Promise<void>;
+  /** A 侧：为好友生成邀请码。回邀请码文本，失败回 null（原因在 friendError） */
+  createProxyInvite(
+    friendUid: string,
+    allow: readonly { serverId: string; tools: readonly string[] }[]
+  ): Promise<string | null>;
+  /** B 侧：粘贴邀请码接上对方。回是否成功 */
+  acceptProxyInvite(invite: string): Promise<boolean>;
+  /** A 侧：一键撤销（授权/pin/频道一起没，见 proxyStore.revokeGrant） */
+  revokeProxy(friendUid: string): Promise<void>;
+  /** A 侧：拉审计账。不给 friendUid = 全部 */
+  loadProxyAudits(friendUid?: string): Promise<void>;
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
@@ -829,6 +847,8 @@ export const useChat = create<ChatState>((set, get) => ({
   dmByFriend: {},
   unreadByFriend: {},
   friendError: null,
+  proxyGrants: [],
+  proxyAudits: [],
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -1446,6 +1466,51 @@ export const useChat = create<ChatState>((set, get) => ({
   async removeFriend(friendshipId) {
     const r = await window.otter.friendsRemove(friendshipId);
     set({ friendError: r.ok ? null : r.message });
+  },
+
+  async refreshProxyGrants() {
+    const r = await window.otter.proxyListGrants();
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    set({ proxyGrants: r.value.grants, friendError: null });
+  },
+
+  async createProxyInvite(friendUid, allow) {
+    const r = await window.otter.proxyCreateInvite(friendUid, allow);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return null;
+    }
+    set({ friendError: null });
+    await get().refreshProxyGrants(); // 授权当场写进台账了，列表跟着新
+    return r.value.invite;
+  },
+
+  async acceptProxyInvite(invite) {
+    const r = await window.otter.proxyAcceptInvite(invite);
+    set({ friendError: r.ok ? null : r.message });
+    return r.ok;
+  },
+
+  async revokeProxy(friendUid) {
+    const r = await window.otter.proxyRevoke(friendUid);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    set({ friendError: null });
+    await get().refreshProxyGrants();
+  },
+
+  async loadProxyAudits(friendUid) {
+    const r = await window.otter.proxyAudit(friendUid);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return;
+    }
+    set({ proxyAudits: r.value.audits, friendError: null });
   },
 
   async openFriendChat(profile) {
