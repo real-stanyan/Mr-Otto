@@ -90,4 +90,26 @@ describe("pre-commit：主 checkout 只读（issue #543，ADR-0149）", () => {
     git(wt, "add", "-A");
     expect(tryCommit(wt, "in a hand-rolled worktree").ok).toBe(true);
   });
+
+  // 带 lane-branch 凭据的 worktree 换了分支 = ADR-0149 说的复用。这条路原来没有
+  // 可执行版：它的错误信息跟上面那条同一个形状（两个分支名都从变量展开），只是
+  // 这两处后面跟的是 ASCII 空格，所以 #686 那个 bug 没打中它。补上是为了下一个
+  // 改文案的人——把空格换成中文标点就会静默丢分支名，这条会红。
+  it("worktree 换了分支：拒绝，并说清它原本是为哪条分支开的、现在在哪条上", async () => {
+    const wt = join(root, "wt-marked");
+    git(repo, "worktree", "add", "-q", wt, "-b", "feat/开工的那条");
+    // npm run lane 会把分支名写进这个 worktree 的管理目录；这里手写等价的一份
+    const gitDir = resolve(wt, git(wt, "rev-parse", "--git-dir").trim());
+    await writeFile(join(gitDir, "lane-branch"), "feat/开工的那条");
+
+    git(wt, "checkout", "-q", "-b", "feat/换的那条");
+    await writeFile(join(wt, "e.txt"), "e\n");
+    git(wt, "add", "-A");
+
+    const { ok, stderr } = tryCommit(wt, "reused the worktree for another task");
+    expect(ok).toBe(false);
+    expect(stderr).toContain("feat/开工的那条");
+    expect(stderr).toContain("feat/换的那条");
+    expect(stderr).toContain("npm run lane");
+  });
 });

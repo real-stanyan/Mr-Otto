@@ -36,9 +36,14 @@ if [ "$git_dir" != "$common_dir" ]; then
   want=$(cat "$marker")
   have=$(git symbolic-ref --short -q HEAD || echo "(detached)")
   [ "$want" = "$have" ] && exit 0
+  # 下面两段 heredoc 里的变量一律写 ${}，别省这对花括号（issue #686）：本文件是
+  # #!/bin/sh，macOS 上就是 bash 3.2 的 sh 模式，$branch）这种「变量后面直接跟
+  # 中文标点」会把那几个高位字节当成变量名的一部分吃进去，展开成空——错误信息
+  # 里的分支名整个没了，只剩一句「不行」。Linux 的 sh 不这么解析，所以 CI 全绿、
+  # 只有 macOS 上的人看到坏消息。
   cat >&2 <<EOF
 
-✗ 这个 worktree 是为 $want 开的，现在在 $have 上
+✗ 这个 worktree 是为 ${want} 开的，现在在 ${have} 上
 
   worktree 是一次性的：一个 worktree 只服务一个任务，用完即弃、从不切分支换活。
   会切分支的长期 worktree 就是第二个主 checkout，互斥等于关掉（ADR-0149/0150）。
@@ -59,9 +64,9 @@ branch=$(git symbolic-ref --short -q HEAD || echo "(detached)")
 
 cat >&2 <<EOF
 
-✗ 主 checkout 上不许在非 $default_branch 分支提交（当前：$branch）
+✗ 主 checkout 上不许在非 ${default_branch} 分支提交（当前：${branch}）
 
-  主 checkout 冻结在 $default_branch、只读；开工请开一次性 worktree：
+  主 checkout 冻结在 ${default_branch}、只读；开工请开一次性 worktree：
 
       npm run lane -- <任务名>
 
