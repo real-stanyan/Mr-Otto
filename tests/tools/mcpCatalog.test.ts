@@ -132,4 +132,29 @@ describe("mcp_catalog", () => {
     const out = String(await mcpCatalogTool.run({ query: "绝无此物xyzzy" }, worldWith()));
     expect(out).toContain("web_search");
   });
+
+  // 注册表是开放投稿的第三方服务，返回什么形状不由本仓说了算：
+  // 「打不通」那条只覆盖了抛异常，成功返回一个不认识的形状同样不许把工具打挂。
+  it.each([
+    ["null", null],
+    ["裸数组", []],
+    ["servers 不是数组", { servers: "not-an-array" }],
+  ])("注册表回了不认识的形状（%s）也不炸，退回 web_search 的话术", async (_name, body) => {
+    const out = String(
+      await mcpCatalogTool.run({ query: "绝无此物xyzzy" }, worldWith(async () => body))
+    );
+    expect(out).toContain("web_search");
+  });
+
+  it("注册表超时被 abort 也不炸，退回 web_search 的话术", async () => {
+    const out = String(
+      await mcpCatalogTool.run(
+        { query: "绝无此物xyzzy" },
+        worldWith(async () => {
+          throw new DOMException("The operation was aborted", "AbortError");
+        })
+      )
+    );
+    expect(out).toContain("web_search");
+  });
 });
