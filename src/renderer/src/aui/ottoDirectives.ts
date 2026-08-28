@@ -124,21 +124,24 @@ export function ottoSlashFormatter(commandNames: readonly string[]): Unstable_Di
 }
 
 /**
- * `@路径` 的那一份(type = "path")。
+ * `#路径` 的那一份(type = "path")。
+ *
+ * 触发字符是 `#` 不是 `@`（issue #611）：`@` 让给了「@好友 分享会话」，
+ * 路径 mention 一刀切迁到 `#`（本期 shift 决策，不留兼容期）。
  *
  * 和 `$skill` / `/命令` 不是同一种判定:那两种有名单可比对,认不出就当普通字符;
  * 路径**没有名单**——工作区里任何一条路径都可能是真的,而且用户手打一半的路径
  * 也该跟着亮。所以这里靠**形状**:
- *   ① `@` 前面必须是行首或空白 —— 挡住 foo@bar.com 这类邮箱
- *   ② 后面至少一个非空白字符 —— 光一个 `@` 不闪
- *   ③ 吃到下一个空白为止,末尾的中英文标点不算路径的一部分(`@a.md。`)
+ *   ① `#` 前面必须是行首或空白 —— 挡住 foo#bar、URL 锚点这类误命中
+ *   ② 后面至少一个非空白字符 —— 光一个 `#` 不闪
+ *   ③ 吃到下一个空白为止,末尾的中英文标点不算路径的一部分(`#a.md。`)
  *
- * 代价是会认错:`@某人` 这种非路径写法也会被画成 chip。接受——它进不了模型
+ * 代价是会认错:`#话题` 这种非路径写法也会被画成 chip。接受——它进不了模型
  * 上下文,只是输入框里的一层高亮,而漏亮真路径比错亮一个词更烦人。
  */
 export function ottoPathFormatter(): Unstable_DirectiveFormatter {
   return {
-    serialize: (item: Unstable_TriggerItem) => `@${item.id} `,
+    serialize: (item: Unstable_TriggerItem) => `#${item.id} `,
 
     parse(text: string): readonly Unstable_DirectiveSegment[] {
       const out: Unstable_DirectiveSegment[] = [];
@@ -153,14 +156,14 @@ export function ottoPathFormatter(): Unstable_DirectiveFormatter {
 
       while (i < text.length) {
         const atBoundary = i === 0 || /\s/.test(text[i - 1]!);
-        if (text[i] !== "@" || !atBoundary) {
+        if (text[i] !== "#" || !atBoundary) {
           plain += text[i];
           i++;
           continue;
         }
         let j = i + 1;
         while (j < text.length && !/\s/.test(text[j]!)) j++;
-        // 句末标点不属于路径:`看 @a.md。` 的路径是 a.md
+        // 句末标点不属于路径:`看 #a.md。` 的路径是 a.md
         while (j > i + 1 && TRAILING_PUNCT.test(text[j - 1]!)) j--;
         const path = text.slice(i + 1, j);
         if (path === "") {
@@ -169,7 +172,7 @@ export function ottoPathFormatter(): Unstable_DirectiveFormatter {
           continue;
         }
         flush();
-        out.push({ kind: "mention", type: "path", label: `@${path}`, id: path });
+        out.push({ kind: "mention", type: "path", label: `#${path}`, id: path });
         i = j;
       }
 
@@ -230,4 +233,114 @@ function makeFormatter(
       return out.length === 0 ? [{ kind: "text", text }] : out;
     },
   };
+}
+
+// ─── @好友：把本次会话分享给好友（issue #611，PR#3）──────────────────────
+// 与 $skill/@路径 不同：@好友 的 chip 不是给模型的语法，是**发送侧的一个动作信号**——
+// 句子里带 @好友名 时，submit() 先把当前会话快照分享给这位好友
+// (bridge.shareSessionToFriend)，正文照常作为留言发出去。
+//
+// chip 的 id 存 **uid**（不是显示名）：显示名可能含空格/中文/重名，uid 才是
+// 发送要的那个精确地址。serialize 时 label 用显示名（人读），id 用 uid（机读）。
+
+/** @好友 chip 的数据载体：显示名给人看，uid 给发送用 */
+export interface FriendMention {
+  uid: string;
+  name: string;
+}
+
+/**
+ * @好友 的那一份（type = "friend"，名单是 (uid, name) 对）。
+ *
+ * serialize 写成 `@显示名 `（人读的形态），但 mention 的 id 塞 uid——
+ * composer 高亮靠 label，发送检测靠 id 对回 uid（见 findFriendMention）。
+ * 显示名里的空格/中文不在 NAME_CHARS 里，所以 parse 不能靠"一路吃名字字符"，
+ * 而是**拿好友名单做最长前缀匹配**：从 `@` 往后逐位试，命中名单里最长的名字。
+ */
+export function ottoFriendFormatter(friends: readonly FriendMention[]): Unstable_DirectiveFormatter {
+  // 名字 → uid。重名时后到覆盖先到（同一 uid 不会重，重名是两个 uid 同名——
+  // 发送侧 findFriendMention 同样这张表，画的和发的认的是同一个人，ADR-0106）
+  const byName = new Map(friends.map((f) => [f.name, f.uid]));
+  // 按名字长度降序：最长优先，「@小明」和「@小明同学」都在名单时命中长的
+  const names = [...byName.keys()].sort((a, b) => b.length - a.length);
+
+  return {
+    // 选中项的 id 是 uid（adapter 里 item.id = uid），但写进 composer 的是显示名——
+    // serialize 收到的是 item，里面有 label；从 label 剥掉 @ 前缀就是显示名
+    serialize: (item: Unstable_TriggerItem) => `@${item.label.replace(/^@/, "")} `,
+
+    parse(text: string): readonly Unstable_DirectiveSegment[] {
+      const out: Unstable_DirectiveSegment[] = [];
+      let plain = "";
+      let i = 0;
+      const flush = (): void => {
+        if (plain !== "") {
+          out.push({ kind: "text", text: plain });
+          plain = "";
+        }
+      };
+
+      while (i < text.length) {
+        const atBoundary = i === 0 || /\s/.test(text[i - 1]!);
+        if (text[i] !== "@" || !atBoundary || escapedAt(text, i)) {
+          plain += text[i];
+          i++;
+          continue;
+        }
+        // 从 @ 之后的位置试名单里每个名字（已按长度降序），命中即停
+        const rest = text.slice(i + 1);
+        const hit = names.find((n) => rest.startsWith(n));
+        if (!hit) {
+          plain += text[i];
+          i++;
+          continue;
+        }
+        flush();
+        out.push({
+          kind: "mention",
+          type: "friend",
+          label: `@${hit}`,
+          id: byName.get(hit)!,
+        });
+        i += 1 + hit.length;
+      }
+
+      flush();
+      return out.length === 0 ? [{ kind: "text", text }] : out;
+    },
+  };
+}
+
+/**
+ * 从输入框文本里找出 @好友 mention（发送检测，issue #611）。
+ *
+ * 与 findSkillDirective 同一份职责墙：画的（parse）和发的（这里）共用一份名单、
+ * 同一套最长优先判定——界面上亮着的 chip，回车必须认成同一个好友，不许界面骗人。
+ *
+ * 命中返回 { uid, name, task }：task = 摘掉 `@显示名` 后的正文（用户的留言，
+ * 随会话包一起发给好友，交代这个 fork 是去干什么的）。没命中返回 null。
+ */
+export function findFriendMention(
+  text: string,
+  friends: readonly FriendMention[]
+): { uid: string; name: string; task: string } | null {
+  const byName = new Map(friends.map((f) => [f.name, f.uid]));
+  const names = [...byName.keys()].sort((a, b) => b.length - a.length);
+
+  for (let i = 0; i < text.length; i++) {
+    const atBoundary = i === 0 || /\s/.test(text[i - 1]!);
+    if (text[i] !== "@" || !atBoundary || escapedAt(text, i)) continue;
+    const rest = text.slice(i + 1);
+    const hit = names.find((n) => rest.startsWith(n));
+    if (!hit) continue;
+
+    const end = i + 1 + hit.length;
+    const before = text.slice(0, i);
+    const after = text.slice(end);
+    // 摘掉 `@名字` token，接缝处连续空白折一个（同 findSkillDirective 的规矩）
+    const seam = /\s$/.test(before) && /^\s/.test(after);
+    const task = (seam ? before + after.replace(/^\s+/, "") : before + after).trim();
+    return { uid: byName.get(hit)!, name: hit, task };
+  }
+  return null;
 }

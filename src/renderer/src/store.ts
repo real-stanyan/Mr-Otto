@@ -600,6 +600,13 @@ interface ChatState {
   sendDm(body: string): Promise<void>;
   /** DM 面板顶部"加载更早"——按当前最旧 id 往前翻一页 */
   loadOlderDms(): Promise<void>;
+  /** @好友分享当前会话(issue #611)：把 sessionId 的完整快照发给 friendUid，
+      message 是随包的留言(交代 fork 去干什么)。成功/失败都落 friendError/提示。
+      返回是否成功——组件据它决定要不要清空输入框/给反馈 */
+  shareSession(sessionId: string, friendUid: string, friendName: string, message: string): Promise<boolean>;
+  /** 接收端导入好友分享的会话：下载、解包、用 workspace 作围栏 fork 出新会话，
+      成功后跳转过去(ResumeState 从主进程推) */
+  importShared(prefix: string, workspace: string): Promise<boolean>;
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
@@ -1378,6 +1385,30 @@ export const useChat = create<ChatState>((set, get) => ({
     const r = await window.otter.friendsList();
     if (r.ok) set({ friendsSnapshot: r.value, friendError: null });
     else set({ friendError: r.message });
+  },
+
+  async shareSession(sessionId, friendUid, friendName, message) {
+    // title/model 现在从 store 拿得到就带，拿不到给 null（manifest 里可空）
+    const title = get().sessions.find((x) => x.sessionId === sessionId)?.title ?? null;
+    const r = await window.otter.shareSessionToFriend(sessionId, friendUid, message, title, get().model ?? null);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return false;
+    }
+    set({ friendError: null });
+    return true;
+  },
+
+  async importShared(prefix, workspace) {
+    const r = await window.otter.importSharedSession(prefix, workspace);
+    if (!r.ok) {
+      set({ friendError: r.message });
+      return false;
+    }
+    // fork 出的新会话由主进程落库；切过去让它成为当前会话
+    await get().resume(r.value.sessionId);
+    set({ friendError: null });
+    return true;
   },
 
   async searchFriend(query) {
