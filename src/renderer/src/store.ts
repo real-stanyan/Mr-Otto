@@ -52,6 +52,7 @@ const DEFAULT_THINKING: ThinkingMode = describeModel(DEFAULT_MODEL)?.thinking.de
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
+import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createRequestGate } from "./lib/latestRequest.js";
@@ -500,6 +501,8 @@ interface ChatState {
   loadBranches(dir: string): Promise<void>;
   /** 重问一次工作区状态(工具跑完 / 切会话 / 窗口重新聚焦时) */
   refreshGitStatus(): Promise<void>;
+  /** 副本合回项目本体（issue #643）。没有会话 → null */
+  mergeIsolated(): Promise<IsolatedMergeResult | null>;
   /** 关掉改动浮窗:记下当前指纹,状态再变才重新出现 */
   dismissWorkTree(): void;
   /** 切分支。失败落 checkoutError(脏工作区给可行动文案),成功后重拉分支 + 图 */
@@ -1252,6 +1255,15 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
+  },
+
+  /** 把这个会话的独立副本合回项目本体（issue #643，ADR-0159）。
+      组件不直接摸 window.otter——这条和别的跨进程调用一样收敛在 store。
+      结果原样交回给调用方渲染：四档失败各有一句人话，store 不替它翻译 */
+  async mergeIsolated() {
+    const sessionId = get().sessionId;
+    if (!sessionId) return null;
+    return window.otter.mergeIsolated(sessionId);
   },
 
   async refreshGitStatus() {

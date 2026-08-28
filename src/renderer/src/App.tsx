@@ -2562,6 +2562,69 @@ function WorkspacePicker({ value, onChange }: {
 /** 分支选择器：目录是 git 仓库才出现（不是仓库 = 整个控件消失，不占位不解释）。
     新会话里 = 选分支再开工；会话里 = 常显当前分支，也能就地切。
     切分支是唯一的 git 写操作（ADR-0014），失败给可行动文案，不甩 stderr */
+/** 这个会话在不在独立副本上（issue #643）。日志第 0 条说了算——与主进程同一个事实来源 */
+function isolatedOf(events: SessionEvent[]): { projectRoot: string; branch: string } | null {
+  const first = events[0];
+  return first?.type === "session_created" && first.isolated ? first.isolated : null;
+}
+
+/** 头部那枚「独立副本」标记（issue #643，ADR-0159）。
+    只是状态，不是控件：常驻、不动画、不抢注意力。用户真正需要知道的一句话
+    （你的项目目录不会变）挂在 title 上——头部一行放不下，也不该放下。 */
+function IsolatedChip({ events }: { events: SessionEvent[] }) {
+  const iso = isolatedOf(events);
+  if (!iso) return null;
+  return (
+    <>
+      <span className="text-muted-foreground text-xs shrink-0">·</span>
+      <span
+        className="shrink-0 inline-flex items-center gap-1 rounded-full border border-border/60 px-1.5 py-px text-[11px] text-muted-foreground"
+        title={`这只水獭在一份独立副本上干活，你的项目目录（${iso.projectRoot}）暂时不会变。合并请用右边的「更多」菜单。`}
+      >
+        <GitBranch className="w-3 h-3" />
+        独立副本
+      </span>
+    </>
+  );
+}
+
+/** 「合并回项目」菜单项（issue #643）。合到项目目录此刻所在的那条分支——
+    不猜、不写死 main。四档失败各有一句人话，原样显示，不翻译成「失败了」。
+    结果留在菜单里而不是弹窗：合并是用户主动发起的，他此刻正看着这儿 */
+function IsolatedMergeItem({ events, disabled }: { events: SessionEvent[]; disabled: boolean }) {
+  const iso = isolatedOf(events);
+  const mergeIsolated = useChat((s) => s.mergeIsolated);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (!iso) return null;
+  return (
+    <>
+      <DropdownMenuItem
+        disabled={disabled || busy}
+        onSelect={(e) => {
+          e.preventDefault(); // 菜单别关：结果就显示在下面那行
+          setBusy(true);
+          setNote(null);
+          void mergeIsolated()
+            .then((r) => {
+              if (!r) return setNote("没有可合并的会话");
+              setNote(r.ok ? `已合并 ${r.branch} → ${r.into}` : r.detail);
+            })
+            .catch((err: unknown) => setNote(err instanceof Error ? err.message : String(err)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <GitBranch /> {busy ? "合并中…" : "合并回项目"}
+      </DropdownMenuItem>
+      {note && (
+        <div className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground max-w-[280px] whitespace-pre-wrap">
+          {note}
+        </div>
+      )}
+    </>
+  );
+}
+
 function BranchPicker({
   dir,
   disabled,
@@ -3540,6 +3603,7 @@ export function App() {
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}
           <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />
+          <IsolatedChip events={events} />
         </div>
         {/* 对话 / 轨迹 两个视图外显成 tab(deepseek-harness 版式):同一份日志的两种投影,
             切换零成本,不该藏在溢出菜单里。replayCursor 非 null = 轨迹视图 */}
@@ -3568,6 +3632,9 @@ export function App() {
             <DropdownMenuItem onClick={() => void openGitGraph()}>
               <GitBranch /> Git Graph
             </DropdownMenuItem>
+            {/* 独立副本（issue #643）：只有在副本上的会话才有这一项——
+                不在副本上时整条不出现，而不是灰着，菜单里没有意义的行不该占位置 */}
+            <IsolatedMergeItem events={events} disabled={status === "running"} />
             <DropdownMenuItem onClick={() => useChat.getState().openFilesPanel()}>
               <FolderOpen /> 文件
             </DropdownMenuItem>

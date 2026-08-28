@@ -92,6 +92,7 @@ const bridge: ShellBridge = {
   gitCheckout: (repoDir, branch, sessionId) =>
     ipcRenderer.invoke(CHANNELS.gitCheckout, repoDir, branch, sessionId),
   gitStatus: (repoDir) => ipcRenderer.invoke(CHANNELS.gitStatus, repoDir),
+  mergeIsolated: (sessionId) => ipcRenderer.invoke(CHANNELS.mergeIsolated, sessionId),
   filesList: (root, relDir) => ipcRenderer.invoke(CHANNELS.filesList, root, relDir),
   filesSearch: (root, query, opts) => ipcRenderer.invoke(CHANNELS.filesSearch, root, query, opts),
   filesRead: (root, rel) => ipcRenderer.invoke(CHANNELS.filesRead, root, rel),

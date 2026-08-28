@@ -134,4 +134,84 @@ describe("createSessionWorktreeService（issue #641）", () => {
     expect(locked).toContain("mr-otto session s-42");
     expect(locked).toContain(`pid ${process.pid}`);
   });
+
+  it("merge：合到项目目录此刻所在的那条分支，不猜也不写死 main", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    execFileSync("bash", ["-c", `echo x > ${made.workspace}/b.txt`]);
+    git(made.workspace, "add", "-A");
+    git(made.workspace, "commit", "-q", "-m", "work");
+
+    const r = s2.merge(made.isolated, made.workspace);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.into).toBe("main");
+    expect(existsSync(join(proj, "b.txt"))).toBe(true);
+  });
+
+  it("merge：项目目录脏 → 拒绝（往脏工作区上合并正是 ADR-0153 拦的那类事故）", async () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    execFileSync("bash", ["-c", `echo x > ${made.workspace}/b.txt`]);
+    git(made.workspace, "add", "-A");
+    git(made.workspace, "commit", "-q", "-m", "work");
+    await writeFile(join(proj, "uncommitted.txt"), "人手改的\n");
+
+    const r = s2.merge(made.isolated, made.workspace);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toBe("dirty");
+  });
+
+  it("merge：冲突 → 回滚，绝不把用户的 checkout 留在冲突态", async () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    await writeFile(join(made.workspace, "a.txt"), "副本这么写\n");
+    git(made.workspace, "add", "-A");
+    git(made.workspace, "commit", "-q", "-m", "副本");
+    await writeFile(join(proj, "a.txt"), "本体那么写\n");
+    git(proj, "add", "-A");
+    git(proj, "commit", "-q", "-m", "本体");
+
+    const r = s2.merge(made.isolated, made.workspace);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toBe("conflict");
+    // 回滚干净：没有 MERGE_HEAD、工作区不脏
+    expect(existsSync(join(proj, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(git(proj, "status", "--porcelain")).toBe("");
+  });
+
+  it("merge：副本里还有没提交的东西 → 拒绝并说清「合并只带走已提交的部分」", async () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    await writeFile(join(made.workspace, "b.txt"), "还没提交\n");
+    const r = s2.merge(made.isolated, made.workspace);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.detail).toContain("未提交");
+  });
+
+  it("recycle：干净且已合并 → 连分支一起收掉（锁是我们上的，先解开）", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    s2.lock(made.workspace, "s-1");
+    expect(s2.recycle(made.isolated, made.workspace)).toBe("removed");
+    expect(existsSync(made.workspace)).toBe(false);
+    expect(git(proj, "branch", "--format=%(refname:short)")).not.toContain(made.isolated.branch);
+  });
+
+  it("recycle：没合的活留着——分支和目录都不动，用户还找得回来", () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    execFileSync("bash", ["-c", `echo x > ${made.workspace}/b.txt`]);
+    git(made.workspace, "add", "-A");
+    git(made.workspace, "commit", "-q", "-m", "没合的活");
+    expect(s2.recycle(made.isolated, made.workspace)).toBe("kept-unmerged");
+    expect(existsSync(made.workspace)).toBe(true);
+  });
+
+  it("recycle：有未提交改动 → 留着（那些东西只在这儿，删了就没了）", async () => {
+    const s2 = svc();
+    const made = s2.create(proj, "ui")!;
+    await writeFile(join(made.workspace, "scratch.txt"), "x\n");
+    expect(s2.recycle(made.isolated, made.workspace)).toBe("kept-dirty");
+    expect(existsSync(made.workspace)).toBe(true);
+  });
 });
