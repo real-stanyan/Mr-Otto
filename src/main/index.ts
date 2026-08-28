@@ -106,6 +106,7 @@ import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
+import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
 import { describeModel, OLLAMA_MODEL_PREFIX } from "../shared/modelCatalog.js";
 import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
@@ -578,6 +579,7 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+
   // 「压缩中」是 running 灯的一个子档：compact 复用 turn 状态灯（下面的 compact
   // handler），光看 runningSessions 分不出它和普通 turn。渲染层原来靠自己发起
   // compact 时记的本地标记分辨——那份标记活不过一次重载（issue #548）
@@ -2598,6 +2600,27 @@ void app.whenReady().then(() => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
     if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
+    // 同一个文件夹，同一时刻只让一条 turn 起跑（issue #620，ADR-0152）。
+    // 沙箱围的是路径，围不住共享的 .git——两个会话指着同一个工作目录时，一边
+    // git checkout，另一边的未提交改动就无声消失了。与 git 自己同构：只拒绝，
+    // 不做魔法（不自动开 worktree、不自动换目录）。
+    // 同家族（子会话 / SideChat）不互斥：它们本来就共享 workspace 并且并发运行。
+    {
+      // 家族链拍一次快照就够：turn 起跑是低频动作，但 sessions() 是一次查库，
+      // 别在 agents 的循环里每条都查一遍
+      const parents = new Map(store.sessions().map((s) => [s.sessionId, s.spawnedFrom]));
+      const rootOf = (id: string) => familyRootOf(id, (x) => parents.get(x));
+      const conflict = turnConflict(
+        { sessionId, workspace: agent.workspace, familyRoot: rootOf(sessionId) },
+        [...agents.values()].map((a) => ({
+          sessionId: a.sessionId,
+          workspace: a.workspace,
+          familyRoot: rootOf(a.sessionId),
+          running: runningSessions.has(a.sessionId),
+        }))
+      );
+      if (conflict) throw new Error(conflictMessage(conflict));
+    }
     // skill 先解析再落盘：发送时刻现读 SKILL.md 做快照（不是列表页那份陈旧拷贝）。
     // 找不到就整条拒发——不静默降级成"没有 skill 的普通消息"。
     // skillArgs 与附件同理是渲染层送来的不可信输入：非字符串会原样进 append-only
