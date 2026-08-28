@@ -92,3 +92,30 @@ describe("proxyMcp（B 侧代理 McpCapability，issue #622 PR-C2）", () => {
     expect(mcp.configOf("shopify")).toBeUndefined(); // B 不持有 A 的配置（含凭据）
   });
 });
+
+// ─── 取消要发到线上（issue #668，ADR-0151 §4）────────────────────────────
+//
+// 本地 reject 只让 B 这一侧停下来。A 那边还捏着 **A 自己的凭证** 在跑——
+// 写工具（下单/退款）尤其要紧：B 以为取消了，钱可能已经动了。
+
+describe("proxyMcp 的取消（issue #668）", () => {
+  it("abort → 先发 proxy_cancel 再本地 reject", async () => {
+    const t = fakeTransport();
+    const mcp = createProxyMcp({ ...DEPS, transport: t.transport, nextReqId: () => "r9" });
+    const ctl = new AbortController();
+    const p = mcp.callTool("shopify", "refund", { id: 1 }, ctl.signal);
+    expect(JSON.parse(t.sent[0]!)).toMatchObject({ kind: "proxy_req", reqId: "r9" });
+
+    ctl.abort();
+    await expect(p).rejects.toThrow(/被取消/);
+    expect(JSON.parse(t.sent[1]!)).toEqual({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId: "r9" });
+  });
+
+  it("超时 → 同样发 proxy_cancel（B 不等了 = A 该停手，起因不同而已）", async () => {
+    const t = fakeTransport();
+    const mcp = createProxyMcp({ ...DEPS, transport: t.transport, nextReqId: () => "r10", timeoutMs: 5 });
+    const p = mcp.callTool("shopify", "get_orders", {});
+    await expect(p).rejects.toThrow(/超时/);
+    expect(JSON.parse(t.sent[1]!)).toEqual({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId: "r10" });
+  });
+});
