@@ -17,3 +17,6 @@ mobile/android/
 # wrangler 本地开发的假 secret 与缓存（services/edge）
 .dev.vars
 .wrangler/
+
+# 非 .claude 约定位置的 agent lane worktree（另一条 lane 建过一次，见 issue #616）
+.worktrees/
