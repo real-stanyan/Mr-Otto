@@ -80,10 +80,13 @@ function machine(
   relay: ReturnType<typeof fakeRelay>,
   uid: string,
   servers: McpServerHandle[] = [],
-  friends: readonly string[] = ["a-uid", "b-uid", "evil-uid"]
+  friends: readonly string[] = ["a-uid", "b-uid", "evil-uid"],
+  onChange?: () => void,
+  /** 「重启」用：沿用同一把身份密钥和同一份台账 */
+  carry?: { identity: ReturnType<typeof p.generateEd25519>; store: ProxyStoreData }
 ) {
-  const identity = p.generateEd25519();
-  let store: ProxyStoreData = emptyProxyStore();
+  const identity = carry?.identity ?? p.generateEd25519();
+  let store: ProxyStoreData = carry?.store ?? emptyProxyStore();
   const manager = createProxyManager({
     crypto: p,
     identity,
@@ -93,11 +96,19 @@ function machine(
     // 这台机器把对面当好友（关系闸在 proxyHost 层，那里单独测）
     friendUids: () => friends,
     friendLabel: (u) => (u === "a-uid" ? "小明" : ""),
+    ...(onChange ? { onChange } : {}),
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
   });
   return { identity, manager, store: () => store };
+}
+
+/** 同一台机器「重启」：同一把身份密钥 + 同一份台账，新的 manager */
+function reopen(relay: ReturnType<typeof fakeRelay>, prev: ReturnType<typeof machine>, uid: string) {
+  return machine(relay, uid, [], ["a-uid", "b-uid", "c-uid"], undefined, {
+    identity: prev.identity, store: prev.store(),
+  });
 }
 
 /** 假 relay 的「对端在场」走 microtask，等一拍让握手跑完 */
@@ -180,7 +191,7 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
     expect(channelFor(a.store(), "b-uid")).toBeNull();
 
     // 房间关了：A 重启也不会把它恢复起来
-    a.manager.resumeHosts();
+    a.manager.resume();
     expect(a.store().pins).toEqual([]);
 
     a.manager.closeAll();
@@ -316,6 +327,108 @@ describe("proxyManager：撤销与离场传到 B（issue #672）", () => {
     // 「代理通道断了」是当场答的；不接 onPeerGone 的话这里会把帧发进虚空，
     // 然后等满 60 秒报「超时（A 没回）」——错的时机、错的原因
     await expect(proxied.mcp.callTool("shopify", "get_orders", {})).rejects.toThrow(/通道断了/);
+
+    b.manager.closeAll();
+  });
+});
+
+// ─── B 侧持久化与多好友（issue #676）────────────────────────────────────
+describe("proxyManager 的 B 侧台账（issue #676）", () => {
+  it("同时借两个好友的服务——合并层一直支持多条，之前卡在单条变量上", async () => {
+    const relay = fakeRelay();
+    const a1 = machine(relay, "a-uid", [server("shopify")]);
+    const a2 = machine(relay, "c-uid", [server("ads")]);
+    const b = machine(relay, "b-uid", [], ["a-uid", "c-uid"]);
+
+    for (const [host, srv] of [[a1, "shopify"], [a2, "ads"]] as const) {
+      const made = await host.manager.proxyCreateInvite("b-uid", [{ serverId: srv, tools: [] }]);
+      await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    }
+    await settle();
+
+    expect(b.manager.activeProxies().map((c) => c.friendUid).sort()).toEqual(["a-uid", "c-uid"]);
+    expect(b.manager.borrowStatus()).toHaveLength(2);
+    expect(b.manager.borrowStatus().every((s) => s.connected)).toBe(true);
+
+    a1.manager.closeAll(); a2.manager.closeAll(); b.manager.closeAll();
+  });
+
+  it("B 重启：靠落盘的 channelId + 对方公钥连回去，不用重发邀请码", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b1 = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b1.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    expect(b1.store().borrows).toHaveLength(1);
+
+    // 「重启」= 同一份台账、同一把身份密钥，重新造一个 manager
+    b1.manager.closeAll();
+    const b2 = reopen(relay, b1, "b-uid");
+    b2.manager.resume();
+    await settle();
+
+    // secret 是一次性的、没落盘——这一轮走的是两边的 pin
+    expect(b2.manager.activeProxies()).toHaveLength(1);
+    expect(b2.manager.borrowStatus()[0]).toMatchObject({ hostUid: "a-uid", connected: true });
+
+    a.manager.closeAll(); b2.manager.closeAll();
+  });
+
+  it("断开 = 关通道 + 从台账删掉，下次启动不再连回去", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+
+    await b.manager.proxyDisconnect("a-uid");
+    expect(b.manager.activeProxies()).toEqual([]);
+    expect(b.store().borrows).toEqual([]);
+    b.manager.resume();
+    await settle();
+    expect(b.manager.activeProxies()).toEqual([]);
+
+    a.manager.closeAll(); b.manager.closeAll();
+  });
+
+  it("断线的那条仍然在列表里（「配过但没连上」不是「凭空消失」）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    expect(b.manager.borrowStatus()[0]?.connected).toBe(true);
+
+    a.manager.closeAll(); // 对方下线
+    await settle();
+    const st = b.manager.borrowStatus();
+    expect(st).toHaveLength(1);
+    expect(st[0]).toMatchObject({ hostUid: "a-uid", connected: false });
+
+    b.manager.closeAll();
+  });
+
+  it("状态变了会喊一声（UI 的唯一信号源）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    let beats = 0;
+    const b = machine(relay, "b-uid", [], ["a-uid"], () => { beats += 1; });
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    expect(beats).toBeGreaterThan(0); // 接受 + 握手完成 + 收到授权清单
+
+    beats = 0;
+    a.manager.closeAll(); // 对方下线也要喊
+    await settle();
+    expect(beats).toBeGreaterThan(0);
 
     b.manager.closeAll();
   });

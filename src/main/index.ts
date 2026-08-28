@@ -1313,6 +1313,9 @@ void app.whenReady().then(() => {
         // null = 名单还没同步好，代理侧按「拒」处理
         friendUids: () => friends.acceptedFriendUids(),
         friendLabel: (uid) => friends.friendLabel(uid),
+        // 借来的通道有任何变化就推一份全量（接上/断开/对方改授权）。
+        // 同 onFriendsChanged 的口径：量小，快照比增量简单
+        onChange: () => { if (proxy) send(CHANNELS.proxyChanged, proxy.borrowStatus()); },
         // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
         // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
         openWireTransport: (channel, role) =>
@@ -1333,7 +1336,7 @@ void app.whenReady().then(() => {
     : null;
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
-  proxyResumeNow = proxy ? () => proxy.resumeHosts() : null;
+  proxyResumeNow = proxy ? () => proxy.resume() : null;
 
   /**
    * 会话拿到的那份 MCP 能力 = 自己接的 + 此刻借来的（issue #670）。
@@ -2550,6 +2553,10 @@ void app.whenReady().then(() => {
     proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
   ipcMain.handle(CHANNELS.proxyAudit, (_e, friendUid?: string) =>
     proxy ? proxy.proxyAudit(friendUid) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyBorrows, () =>
+    proxy ? { ok: true as const, value: { borrows: proxy.borrowStatus() } } : proxyOff);
+  ipcMain.handle(CHANNELS.proxyDisconnect, (_e, hostUid: string) =>
+    proxy ? proxy.proxyDisconnect(hostUid) : proxyOff);
 
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、

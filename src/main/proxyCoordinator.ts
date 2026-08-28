@@ -161,6 +161,11 @@ export function startProxyGuestCoordinator(deps: {
   pairing?: ProxyPairing;
   /** A 授权给 B 的服务句柄（invite 流程里 A 给的，B 的工具表只报这些） */
   grantedServers: readonly McpServerHandle[];
+  /**
+   * 这条通道的状态变了（issue #676）：握手完成、对端离场、A 推来新的授权清单。
+   * B 侧 UI 的唯一信号源——没有它，界面只能停在「已连上，等对方推来授权清单」。
+   */
+  onStateChange?: () => void;
   callTimeoutMs?: number;
   log?: (m: string) => void;
 }): { connection: ProxyConnection; mcp: McpCapability; close(): void } {
@@ -180,7 +185,8 @@ export function startProxyGuestCoordinator(deps: {
   deps.transport.onPeerPresent?.(() => connection.start());
   // A 走了（退出 / 撤销时关房间）：连接退出就绪，proxyMcp 当场答「代理通道断了」，
   // 而不是把帧发进虚空再等满 60 秒超时（issue #672）
-  deps.transport.onPeerGone?.(() => connection.peerGone());
+  deps.transport.onPeerGone?.(() => { connection.peerGone(); deps.onStateChange?.(); });
+  connection.onReady(() => deps.onStateChange?.());
 
   // proxyMcp 的传输：callTool 打帧走连接发走，连接收到明文帧喂回 proxyMcp 匹配 reqId
   const mcp = createProxyMcp({
@@ -191,6 +197,8 @@ export function startProxyGuestCoordinator(deps: {
     },
     fromUid: deps.fromUid,
     grantedServers: deps.grantedServers,
+    // A 推来新的授权清单 = B 的工具表变了，UI 要跟着变（这个回调声明了很久没人接）
+    onGrantsChanged: () => deps.onStateChange?.(),
     ...(deps.callTimeoutMs !== undefined ? { timeoutMs: deps.callTimeoutMs } : {}),
     log,
   });
