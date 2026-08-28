@@ -32,7 +32,10 @@
 export interface IsolatedWorkspace {
   /** 用户当初选的那个项目目录（主 checkout）。合回去的目的地在这里 */
   projectRoot: string;
-  /** 这只水獭独占的分支 */
+  /** 创建那一刻的分支名。**会被改名**（issue #647：自动标题出来后跟着走），
+      所以这个字段是「当初叫什么」的历史记录，不是「此刻叫什么」——
+      要当前名字就去问 git（`git branch --show-current`）。
+      日志是 append-only，改不了；提示语因此不写死分支名，否则会陈旧 */
   branch: string;
 }
 
@@ -74,13 +77,31 @@ export function shouldIsolate(candidate: {
     共用同一处文案——两边各写一份，「系统提示词占多少」就是猜的 */
 export function isolatedPromptText(iso: IsolatedWorkspace): string {
   return (
-    `\n注意：这个文件夹是一份**独立工作副本**（git worktree），分支 \`${iso.branch}\`。` +
+    `\n注意：这个文件夹是一份**独立工作副本**（git worktree），有自己的分支` +
+    `（要用名字时现查：\`git branch --show-current\`）。` +
     `项目本体在 ${iso.projectRoot}，那边可能有另一只水獭在同时干活。\n` +
     `所以：只改这份副本，别去动项目本体的目录；活干完了提交在自己分支上，` +
-    `用户要合并时再把 \`${iso.branch}\` 合回去（先问一句合到哪个分支）。\n` +
+    `用户要合并时再把这条分支合回去（先问一句合到哪个分支）。\n` +
     // 用户看不到副本里的改动——他打开自己的项目目录会以为你什么都没干。
     // 这是这套隔离的全部代价，所以必须由你在动手之前主动说，不能等他来问
     `重要：用户很可能不知道有这份副本。**第一次动文件之前**，先用一句话告诉他：` +
     `你在一份独立副本上干活、他的项目目录暂时不会变、要合回去随时说。\n`
   );
+}
+
+/** 会话有标题之后，副本分支改叫什么。保留原来的随机后缀——目录名带着它，
+    改名只换可读的那一半，两边仍然对得上。
+    标题里没有可用字符（纯中文/纯符号）→ 返回 null，不改名（留着原名比改成
+    `otto/-a1b2c3` 强） */
+export function renamedBranch(oldBranch: string, title: string): string | null {
+  const suffix = oldBranch.slice(oldBranch.lastIndexOf("-") + 1);
+  if (!/^[0-9a-f]{6}$/.test(suffix)) return null; // 不是我们建的那种名字，不碰
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  if (!slug) return null;
+  const next = `otto/${slug}-${suffix}`;
+  return next === oldBranch ? null : next;
 }

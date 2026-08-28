@@ -10,6 +10,7 @@ import {
   isolatedBranchName,
   isolatedDirName,
   isolatedPromptText,
+  renamedBranch,
 } from "../../src/shared/sessionWorktree.js";
 
 const REPO = "/Users/x/proj/.git";
@@ -44,7 +45,9 @@ describe("isolatedPromptText", () => {
     const t = isolatedPromptText({ projectRoot: "/Users/x/proj", branch: "otto/ui-a1b2c3" });
     expect(t).toContain("独立工作副本");
     expect(t).toContain("/Users/x/proj");
-    expect(t).toContain("otto/ui-a1b2c3");
+    // 分支名**不**写死在提示里：改名之后日志里那份就陈旧了，而投影必须可从日志推导
+    expect(t).not.toContain("otto/ui-a1b2c3");
+    expect(t).toContain("git branch --show-current");
     // 「先问一句合到哪个分支」必须在场：模型的默认脾气是直接往 main 上合
     expect(t).toContain("先问");
     // 「别去动项目本体」必须在场：那边可能有另一只水獭
@@ -53,5 +56,23 @@ describe("isolatedPromptText", () => {
     // 「动文件之前先说明白」是这套隔离唯一的缓解，掉了就是静默的困惑
     expect(t).toContain("第一次动文件之前");
     expect(t).toContain("项目目录暂时不会变");
+  });
+});
+
+describe("renamedBranch（issue #647）", () => {
+  it("换掉可读的那一半，随机后缀留着", () => {
+    expect(renamedBranch("otto/session-a1b2c3", "Files 面板 scroll")).toBe("otto/files-scroll-a1b2c3");
+  });
+
+  it("标题里没有可用字符 → null（不改名）", () => {
+    expect(renamedBranch("otto/session-a1b2c3", "面板")).toBeNull();
+  });
+
+  it("改出来跟原名一样 → null（不做空操作）", () => {
+    expect(renamedBranch("otto/files-a1b2c3", "files")).toBeNull();
+  });
+
+  it("不是我们建的那种名字 → 不碰（用户自己的分支不该被改名）", () => {
+    expect(renamedBranch("feature/whatever", "标题 title")).toBeNull();
   });
 });

@@ -915,6 +915,15 @@ void app.whenReady().then(() => {
         title: result.sessionTitle, model: result.model, ...billOnce(),
       });
       send(CHANNELS.event, event);
+      // 副本分支跟着标题走（issue #647）：建会话那一刻还没有主题，所有副本都叫
+      // otto/session-<hex>，一个项目开三只就是三条认不出来的分支。
+      // 日志里 isolated.branch 是「当初叫什么」的历史记录（append-only 改不了），
+      // 所以系统提示不写死分支名——要当前名字由水獭自己 git branch --show-current
+      const created = store.load(sessionId)[0];
+      const agent = agents.get(sessionId);
+      if (created?.type === "session_created" && created.isolated && agent) {
+        sessionWorktrees.rename(agent.workspace, result.sessionTitle);
+      }
     }
   };
 
@@ -1830,6 +1839,9 @@ void app.whenReady().then(() => {
       isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: opts.workspace }
     );
     agents.set(agent.sessionId, agent);
+    // 副本上锁（issue #647）：锁定原因带 sessionId + pid，清理程序据此分得出
+    // 「正在用」和「早该清了」。要 sessionId，所以排在建 agent 之后
+    if (isolate) sessionWorktrees.lock(isolate.workspace, agent.sessionId);
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
     // 与默认相同时 switchModel 内部 no-op，零多余事件）；审批/thinking 是运行时偏好
