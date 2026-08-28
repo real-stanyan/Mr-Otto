@@ -40,12 +40,12 @@ const IDLE: IslandFleet = {
 };
 
 /** 两端各一条连接时中继给的 cid(ADR-0130)。这个 harness 只模两条 */
-const CID: Record<Role, string> = { desktop: "cd", mobile: "cm" };
+const CID: Record<Role, string> = { desktop: "cd", mobile: "cm", host: "ch", guest: "cg" };
 
 function fakeRelay() {
   const sink: Record<Role, ((p: string, from: string) => void) | null> =
-    { desktop: null, mobile: null };
-  const peerCb: Record<Role, ((cid: string) => void) | null> = { desktop: null, mobile: null };
+    { desktop: null, mobile: null, host: null, guest: null };
+  const peerCb: Record<Role, ((cid: string) => void) | null> = { desktop: null, mobile: null, host: null, guest: null };
   const queue: Array<() => void> = [];
   const dropped: string[] = [];
   const peerOf = (r: Role): Role => (r === "desktop" ? "mobile" : "desktop");

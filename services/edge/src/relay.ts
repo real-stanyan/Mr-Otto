@@ -36,7 +36,35 @@ export {
   parseControl,
 } from "../../../src/shared/remote/wire.js";
 
-export type RelayRole = "desktop" | "mobile";
+// 角色 = 「一对有序角色」里的一个。**序**是协议关心的全部：第一角色 ↔ 第二角色
+// 才能互发、加密握手按序拼 nonce/分信道。具体叫什么名字（desktop/mobile 还是
+// host/guest）协议不关心 —— 它只关心「你在哪一对、是第几个」。
+//
+// 两对：
+//   desktop ↔ mobile  自远程（自己的手机看自己的电脑，ADR-0094 起）
+//   host    ↔ guest   好友代理（A 把操作自己 MCP 服务的能力授给好友 B，ADR-0151）
+//                     host=A（被代理方，持凭证的那台）、guest=B（发起方）。
+// 两对的角色值不混用 —— 一个房间要么是自远程、要么是好友代理，不会同时有两种对。
+export type RelayRole = "desktop" | "mobile" | "host" | "guest";
+
+/** 角色在它对里是「第一」还是「第二」。序决定握手 nonce 顺序与信道方向 */
+export const ROLE_ORDER: Record<RelayRole, 1 | 2> = {
+  desktop: 1,
+  host: 1,
+  mobile: 2,
+  guest: 2,
+};
+
+/** 同一对里的对端角色。desktop↔mobile、host↔guest */
+export const otherRole = (r: RelayRole): RelayRole =>
+  r === "desktop" ? "mobile"
+  : r === "mobile" ? "desktop"
+  : r === "host" ? "guest"
+  : "host";
+
+export function parseRole(v: string | null): RelayRole | null {
+  return v === "desktop" || v === "mobile" || v === "host" || v === "guest" ? v : null;
+}
 
 /** 一条连接在纯逻辑眼里的样子。DO 里是 WebSocket + 两个 tag,测试里是个假货 */
 export interface RelayPeer {
@@ -47,15 +75,10 @@ export interface RelayPeer {
   open: boolean;
 }
 
-export const otherRole = (r: RelayRole): RelayRole => (r === "desktop" ? "mobile" : "desktop");
-
-export function parseRole(v: string | null): RelayRole | null {
-  return v === "desktop" || v === "mobile" ? v : null;
-}
-
 /**
- * 对端那一侧还活着的连接。**只认对端角色** —— 同角色之间不该能互相发东西
- * (桌面发给另一台桌面在这套协议里没有意义,而它会让"我在跟谁说话"多一种可能性)。
+ * 对端那一侧还活着的连接。**只认同对的异角色** —— 同角色之间不该能互相发东西
+ * (桌面发给另一台桌面、A 发给另一个 A 在这套协议里都没有意义,而它会让
+ * "我在跟谁说话"多一种可能性)。同对的两个角色才能互发(desktop↔mobile、host↔guest)。
  */
 export function peersOf<T extends RelayPeer>(conns: readonly T[], from: RelayRole): T[] {
   const want = otherRole(from);

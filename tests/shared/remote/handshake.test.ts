@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { b64decode, b64encode } from "../../../src/shared/remote/b64.js";
-import { buildHello, deriveSession, fingerprint, newConnectionParty } from "../../../src/shared/remote/handshake.js";
+import { buildHello, deriveSession, fingerprint, newConnectionParty, type Role } from "../../../src/shared/remote/handshake.js";
 import { createOpener, createSealer } from "../../../src/shared/remote/sealedStream.js";
 import { nodeRemoteCrypto } from "../../../src/main/remoteCryptoNode.js";
 
 const P = nodeRemoteCrypto();
 
-function party(role: "desktop" | "mobile", deviceId: string) {
+function party(role: Role, deviceId: string) {
   const identity = P.generateEd25519();
   return newConnectionParty(P, { role, deviceId, identity });
 }
@@ -141,5 +141,51 @@ describe("指纹", () => {
     const b = P.generateEd25519().publicKey;
     const c = P.generateEd25519().publicKey;
     expect(fingerprint(P, a, c)).not.toBe(fingerprint(P, a, b));
+  });
+});
+
+
+// ─── host/guest：好友代理角色对（ADR-0151，issue #622 PR-A）────────────────
+// 与 desktop↔mobile 同一套握手，只是角色换成了 host(A,被代理方) ↔ guest(B,发起方)。
+// 协议只关心「序」：host 是第一角色（同 desktop）、guest 是第二角色（同 mobile）。
+describe("握手 · host/guest（好友代理）", () => {
+  it("host↔guest 派生出对得上的两条单向密钥（host 发 = guest 收）", () => {
+    const a = party("host", "A-machine");
+    const b = party("guest", "B-machine");
+    const { sa, sb } = connect(a, b);
+    expect(sa).not.toBeNull();
+    expect(sb).not.toBeNull();
+    expect([...sa!.send.key]).toEqual([...sb!.recv.key]);
+    expect([...sa!.recv.key]).toEqual([...sb!.send.key]);
+    expect([...sa!.send.key]).not.toEqual([...sa!.recv.key]);
+  });
+
+  it("端到端：guest 封，host 拆（B 的请求 A 能解）", () => {
+    const a = party("host", "A-machine");
+    const b = party("guest", "B-machine");
+    const { sa, sb } = connect(a, b);
+    const sealer = createSealer(P, sb!.send.key, sb!.send.prefix);
+    const opener = createOpener(P, sa!.recv.key, sa!.recv.prefix);
+    const plain = new TextEncoder().encode('{"proxy":"call","tool":"shopify"}');
+    expect([...opener.open(sealer.seal(plain))!]).toEqual([...plain]);
+  });
+
+  it("host↔host 同角色 → 拒（两个 A 不建连）", () => {
+    const a = party("host", "A1");
+    const a2 = party("host", "A2");
+    const { sa, sb } = connect(a, a2);
+    expect(sa).toBeNull();
+    expect(sb).toBeNull();
+  });
+
+  it("跨对不建连：host↔mobile、desktop↔guest 都拒", () => {
+    const h = party("host", "A");
+    const m = party("mobile", "M");
+    const d = party("desktop", "D");
+    const g = party("guest", "B");
+    // host(1) × mobile(2) 序不同但不同对 → 拒
+    expect(connect(h, m).sa).toBeNull();
+    // desktop(1) × guest(2) 序不同但不同对 → 拒
+    expect(connect(d, g).sa).toBeNull();
   });
 });
