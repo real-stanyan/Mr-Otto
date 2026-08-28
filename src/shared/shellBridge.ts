@@ -801,6 +801,23 @@ export interface ShellBridge {
   friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<DirectMessage>>;
   /** 拉历史,新→旧;beforeId 翻旧页(取 id < beforeId 的一页,每页 50) */
   friendsListMessages(friendId: string, beforeId?: number): Promise<FriendsResult<DirectMessage[]>>;
+  /** @好友分享会话(issue #611)：把 sessionId 这个会话打包(过隐私闸)上传,
+      DM 发信封给 friendUid。message = @好友时那句「这个 fork 去干什么」。
+      title/model 仅作接收方卡片展示。ok:true 带 pkgId/事件数 */
+  shareSessionToFriend(
+    sessionId: string,
+    friendUid: string,
+    message: string,
+    title: string | null,
+    model: string | null
+  ): Promise<FriendsResult<{ pkgId: string; eventCount: number }>>;
+  /** 接收方导入会话包(issue #611)：下载 + 解包 + 用 workspace 重填围栏 +
+      逐条 append 成新 fork 会话。workspace = 接收方选定的本机目录。
+      回新会话 id(渲染层随后 resumeSession 切过去)与缺图数 */
+  importSharedSession(
+    prefix: string,
+    workspace: string
+  ): Promise<FriendsResult<{ sessionId: string; eventCount: number; missingAttachments: number }>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -1140,6 +1157,8 @@ export const CHANNELS = {
   friendsList: "otter:friendsList",
   friendsSendMessage: "otter:friendsSendMessage",
   friendsListMessages: "otter:friendsListMessages",
+  shareSessionToFriend: "otter:shareSessionToFriend",
+  importSharedSession: "otter:importSharedSession",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",

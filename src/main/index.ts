@@ -150,6 +150,9 @@ import { relayBaseUrl } from "../shared/edgeConfig.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
+import { shareSessionToFriend } from "./sessionShare.js";
+import { importSharedSession } from "./sessionShareReceive.js";
+import { uploadPackageFiles, downloadPackageFiles } from "./sessionShareApi.js";
 import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
@@ -2385,6 +2388,43 @@ void app.whenReady().then(() => {
     friends.sendMessage(friendId, body));
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
+
+  // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
+  // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、
+  // friends.sendMessage 发 DM 信封——四件事各有各的真身，本层只接线。
+  ipcMain.handle(
+    CHANNELS.shareSessionToFriend,
+    async (_e, sessionId: string, friendUid: string, message: string, title: string | null, model: string | null) =>
+      shareSessionToFriend(
+        {
+          myUid: async () => (await supabase.raw.auth.getUser()).data.user?.id ?? null,
+          loadEvents: (sid) => store.load(sid),
+          readAttachment: (id) => attachmentStore.read(id),
+          upload: (files) => uploadPackageFiles(supabase.raw, files),
+          // FriendsResult 适配成「失败抛错」：编排层只认 throw
+          sendDm: async (fuid, body) => {
+            const r = await friends.sendMessage(fuid, body);
+            if (!r.ok) throw new Error(r.message);
+            return r.value;
+          },
+        },
+        { sessionId, friendUid, message, title, model }
+      )
+  );
+  // 接收端导入：下载 + 解包 + 重填 workspace + 逐条 append 成新 fork 会话
+  ipcMain.handle(
+    CHANNELS.importSharedSession,
+    async (_e, prefix: string, workspace: string) =>
+      importSharedSession(
+        {
+          download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
+          saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
+          append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
+          newSessionId: () => crypto.randomUUID(),
+        },
+        { prefix, workspace }
+      )
+  );
   // dock 角标:未读数只有渲染层算得出(它知道哪个面板开着),主进程只负责画。
   // 非 mac 平台没有 dock,setBadgeCount 在那边是 no-op,不用分支
   ipcMain.handle(CHANNELS.setBadgeCount, (_e, count: number) => {
