@@ -138,11 +138,16 @@ import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
+import { createProxyManager, type ProxyManager } from "./proxyManager.js";
+import { adaptProxyWire } from "./proxyWire.js";
+import { readProxyStore, writeProxyStore } from "./proxyStore.js";
+import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
 import { createRemoteBridge } from "./remoteBridge.js";
 import { createPairingOffers, encodePairingOffer } from "../shared/remote/pairing.js";
 import { createRemoteDevices } from "../shared/remote/devices.js";
 import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
+import type { RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createWsTransport } from "../shared/remote/wsTransport.js";
 import { createRejectionLedger, visibleRejection } from "./remoteRejections.js";
@@ -507,6 +512,10 @@ void app.whenReady().then(() => {
   /** 叫醒远程传输(登录那一刻)。远程那一块装配得比 accountManager 晚,
       所以这里先留个空位,由它填上 —— null = 远程没起来(系统封装不可用) */
   let remoteRetryNow: (() => void) | null = null;
+  /** 好友代理:把已授权好友的房间重新开起来(issue #657)。同上是个空位 ——
+      代理管理器要等 mcpHub 装完才造得出来,而登录可能比那早也可能比那晚。
+      没登录时 wsTransport 根本不连,所以这件事必须挂在"登录那一刻"上 */
+  let proxyResumeNow: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -521,7 +530,7 @@ void app.whenReady().then(() => {
       // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
-      if (info.signedIn) remoteRetryNow?.();
+      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); }
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -652,6 +661,13 @@ void app.whenReady().then(() => {
       要读它,而它的写入方在桥的回调里 */
   const rejections = createRejectionLedger({ now: () => Date.now() });
 
+  /** 好友代理要复用的那份身份 + crypto（下面那个 IIFE 装配远程时填上）。
+      null = 系统封装不可用，没有身份密钥 —— 那么代理也开不了，同自远程 */
+  let remoteKeys: {
+    crypto: RemoteCryptoPrimitives;
+    idStore: NonNullable<ReturnType<typeof openIdentityStore>>;
+  } | null = null;
+
   const remote = (() => {
     const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
@@ -667,6 +683,9 @@ void app.whenReady().then(() => {
     // 系统封装不可用 = 不开远程,而不是明文落盘。这两种"关着"要分得开:
     // 用户该做的事完全不同(去开开关 vs 去解锁钥匙串)
     if (!idStore) return { off: "no-secure-storage" as const };
+    // 好友代理用的是**同一把身份密钥**（ADR-0151：一台机器一个密码学身份，
+    // 自远程和好友代理都认它）。它装配得比这里晚（要等 mcpHub），所以从这儿递出去
+    remoteKeys = { crypto, idStore };
     const transport = createWsTransport({
       baseUrl: relayBaseUrl(),
       role: "desktop",
@@ -1253,6 +1272,43 @@ void app.whenReady().then(() => {
     if (agent) send(CHANNELS.toolDefsChanged, { sessionId: agent.sessionId, toolDefs: agent.toolDefs });
   };
   mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
+
+  // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0161）─────────────────
+  // A 把「操作我已接通的服务」这件能力临时授给好友：B 的工具调用经 relay 打到
+  // A 这台机器，用 A 自己的凭证执行，结果加密回传——密钥不出 A 的 ~/.mr-otto/。
+  //
+  // 装在这里而不是跟 remote 一块：host 侧要拿 mcpHub 当执行落点，而 mcpHub 造得比
+  // remote 晚。身份/crypto 复用 remote 那一份（同一台机器同一个密码学身份）。
+  // 系统封装不可用 = 没有身份密钥 = 代理也开不了（和自远程同一个理由，不明文落盘）。
+  const proxyStorePath = join(app.getPath("userData"), "proxy-store.json");
+  const proxy: ProxyManager | null = remoteKeys
+    ? createProxyManager({
+        crypto: remoteKeys.crypto,
+        identity: remoteKeys.idStore.identity,
+        deviceId: remoteKeys.idStore.deviceId,
+        mcp: mcpHub,
+        currentUid: () => friends.currentUid(),
+        // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
+        // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
+        openWireTransport: (channel, role) =>
+          adaptProxyWire(
+            createWsTransport({
+              baseUrl: relayBaseUrl(),
+              role,
+              channel,
+              authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+              log: (m) => console.warn(m),
+            }),
+            { log: (m) => console.warn(m) }
+          ),
+        loadStore: () => readProxyStore(proxyStorePath),
+        saveStore: (d) => writeProxyStore(proxyStorePath, d),
+        log: (m) => console.warn(m),
+      })
+    : null;
+  // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
+  // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
+  proxyResumeNow = proxy ? () => proxy.resumeHosts() : null;
 
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
@@ -2440,6 +2496,19 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
 
+  // 好友代理（issue #622 / #657）：同一套结构化回流。proxy 为 null = 系统封装不可用
+  // （没有身份密钥就没有握手，见上面的装配）——回一句人话，别让渲染层拿到 undefined
+  const proxyOff = { ok: false as const, message: "系统钥匙串不可用，好友代理开不了（同「手机远程」那一条）" };
+  ipcMain.handle(CHANNELS.proxyCreateInvite, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
+    proxy ? proxy.proxyCreateInvite(friendUid, allow) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAcceptInvite, (_e, invite: string) =>
+    proxy ? proxy.proxyAcceptInvite(invite) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyListGrants, () => (proxy ? proxy.proxyListGrants() : proxyOff));
+  ipcMain.handle(CHANNELS.proxyRevoke, (_e, friendUid: string) =>
+    proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAudit, (_e, friendUid?: string) =>
+    proxy ? proxy.proxyAudit(friendUid) : proxyOff);
+
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、
   // friends.sendMessage 发 DM 信封——四件事各有各的真身，本层只接线。
@@ -3207,6 +3276,8 @@ void app.whenReady().then(() => {
     // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
     simulators.dispose();
     simInput?.dispose();
+    // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
+    proxy?.closeAll();
     store.close();
   });
 });
