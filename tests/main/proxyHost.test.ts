@@ -7,7 +7,7 @@ function fakeTransport() {
   const sent: string[] = [];
   let cb: ((j: string) => void) | null = null;
   const transport: HostTransport = {
-    send: (j) => { sent.push(j); },
+    send: (j) => { sent.push(j); return true; },
     onFrame: (c) => { cb = c; return () => { cb = null; }; },
     isPeerConnected: () => true,
   };
@@ -229,5 +229,88 @@ describe("proxyHost 的取消（issue #668）", () => {
     off();
     await flush();
     expect(audits[0]).toMatchObject({ decision: "executed", outcome: "error" });
+  });
+});
+
+// ─── 单帧上限与限流（issue #674）────────────────────────────────────────
+describe("proxyHost 的单帧上限与限流（issue #674）", () => {
+  /** 传输拒收（模拟 proxyConnection 判定超过 relay 单帧上限） */
+  function pickyTransport(reject: (frameJson: string) => boolean) {
+    const sent: string[] = [];
+    let cb: ((j: string) => void) | null = null;
+    const transport: HostTransport = {
+      send: (j) => { if (reject(j)) return false; sent.push(j); return true; },
+      onFrame: (c) => { cb = c; return () => { cb = null; }; },
+      isPeerConnected: () => true,
+    };
+    return {
+      transport, sent,
+      incoming(req: Omit<ProxyRequest, "kind" | "v">) {
+        cb?.(encodeProxyFrame({ kind: "proxy_req", v: PROXY_FRAME_VERSION, ...req }));
+      },
+    };
+  }
+
+  it("结果太大传不回去 → 回一条小错误帧，且按 executed/error 记账（副作用已经发生了）", async () => {
+    const audits: ProxyAuditEntry[] = [];
+    // 只拒 ok:true 那一帧（大结果），小的错误帧照收
+    const t = pickyTransport((j) => JSON.parse(j).ok === true);
+    startProxyHost({
+      transport: t.transport, mcp: fakeMcp(), friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: (e) => audits.push(e), now: () => 1,
+    });
+    t.incoming({ reqId: "r1", fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    await flush();
+
+    // 工具已经执行了——不能当没发生过
+    expect(audits[0]).toMatchObject({ decision: "executed", outcome: "error" });
+    expect(audits[0]?.error).toMatch(/结果太大/);
+    // 好友那边当场知道原因，而不是等满超时
+    expect(JSON.parse(t.sent[0]!)).toMatchObject({ reqId: "r1", ok: false });
+    expect(JSON.parse(t.sent[0]!).error).toMatch(/结果太大/);
+  });
+
+  it("并发上限：在跑的塞满了 → 后来的当场拒，不落到 A 的凭证上", async () => {
+    const t = fakeTransport();
+    const audits: ProxyAuditEntry[] = [];
+    let calls = 0;
+    const mcp = fakeMcp(() => { calls += 1; return new Promise(() => {}); }); // 永远不结束
+    startProxyHost({
+      transport: t.transport, mcp, friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: (e) => audits.push(e), now: () => 1,
+      maxInflight: 2, ratePerMinute: 1000, rateBurst: 1000,
+    });
+    for (const id of ["a", "b", "c", "d"]) {
+      t.incoming({ reqId: id, fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    }
+    await flush();
+
+    expect(calls).toBe(2); // 只有两笔真跑起来
+    expect(t.sent).toHaveLength(2); // 另外两笔各回一条拒绝
+    expect(JSON.parse(t.sent[0]!).error).toMatch(/太多了/);
+    // 限流**不逐条记账**：一个限流时段只留一笔，否则刷请求就能把真记录挤出去
+    expect(audits.filter((a) => a.denyReason?.includes("太多了"))).toHaveLength(1);
+  });
+
+  it("令牌桶：突发用完就拒；时间往前走，桶回血又能用", async () => {
+    const t = fakeTransport();
+    const audits: ProxyAuditEntry[] = [];
+    let clock = 0;
+    startProxyHost({
+      transport: t.transport, mcp: fakeMcp(), friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: (e) => audits.push(e), now: () => clock,
+      maxInflight: 99, ratePerMinute: 60, rateBurst: 2,
+    });
+    for (const id of ["a", "b", "c"]) {
+      t.incoming({ reqId: id, fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    }
+    await flush();
+    expect(audits.filter((a) => a.decision === "executed")).toHaveLength(2);
+    expect(audits.filter((a) => a.denyReason?.includes("太频繁"))).toHaveLength(1);
+
+    clock += 60_000; // 一分钟后桶回满
+    t.incoming({ reqId: "d", fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    await flush();
+    expect(audits.filter((a) => a.decision === "executed")).toHaveLength(3);
   });
 });

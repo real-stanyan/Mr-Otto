@@ -124,7 +124,13 @@ export function startProxyHostCoordinator(deps: {
     const stillFriend = known !== null && known.includes(deps.friendUid);
     const grant = stillFriend ? grantFor(deps.loadStore(), deps.friendUid) : null;
     const servers = buildGrantedServers(deps.mcp.servers(), grant);
-    connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }));
+    if (!connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }))) {
+      // 授权清单带着每把工具的完整 inputSchema，服务多起来是有可能撞上单帧上限的
+      // （issue #674）。撞上了 B 就什么都收不到——**说出来**，别让它表现成
+      // 「连上了但对方一个服务都没授权」那种查不动的样子
+      log(`代理授权推不出去：${servers.length} 个服务的清单超过单帧上限，好友那边工具表会是空的`);
+      return;
+    }
     log(`代理授权已推送给 B：${servers.length} 个服务${stillFriend ? "" : "（已不是好友/名单未同步，推空清单）"}`);
   }
 

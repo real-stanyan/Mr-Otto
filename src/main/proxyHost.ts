@@ -31,7 +31,8 @@ import { grantAllows, grantDenyReason } from "../shared/remote/proxyProtocol.js"
 
 /** A 侧看的代理传输（同 proxyMcp 的 ProxyTransport，方向相反） */
 export interface HostTransport {
-  send(frameJson: string): void;
+  /** 回 false = 这一帧没发出去（对端不在 / 超过单帧上限，见 proxyConnection） */
+  send(frameJson: string): boolean;
   onFrame(cb: (frameJson: string) => void): () => void;
   isPeerConnected(): boolean;
 }
@@ -78,6 +79,16 @@ export interface ProxyHostDeps {
   getGrants(): readonly ProxyGrant[];
   /** 记一笔审计 */
   audit(entry: ProxyAuditEntry): void;
+  /**
+   * 同时在跑的代理调用上限（issue #674）。白名单内是**全自动**的——
+   * 好友那边一个跑飞的循环能对 A 的账号连开几百笔，而 ADR-0151 的三道防线
+   * （审计/撤销/白名单）没有一条管速率：审计只能事后看见，撤销要人去点，
+   * 白名单管「能不能调」不管「调多少次」。
+   */
+  maxInflight?: number;
+  /** 令牌桶：持续速率（每分钟几笔）与桶容量（允许多大的突发） */
+  ratePerMinute?: number;
+  rateBurst?: number;
   now?: () => number;
   log?: (m: string) => void;
 }
@@ -115,6 +126,29 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
   /** 正在跑的调用：reqId → 中止把手（收到 proxy_cancel 时按它 abort） */
   const inflight = new Map<string, AbortController>();
 
+  // ── 闸门 0：并发与速率（issue #674）────────────────────────────────
+  // 放在**所有闸的最前面**，因为它保护的不只是 A 的凭证，还有审计账本身：
+  // 下面每条拒绝都会写一笔审计，而审计有 AUDIT_CAP 上限——不限流的话，
+  // 刷一串必然被拒的请求就能把真记录挤出去。
+  const maxInflight = deps.maxInflight ?? 4;
+  const ratePerMinute = deps.ratePerMinute ?? 30;
+  const rateBurst = deps.rateBurst ?? 30;
+  let tokens = rateBurst;
+  let lastRefill = now();
+  /** 正处在被限流的状态。**一个限流时段只记一笔审计** —— 逐条记等于
+      把「防止刷爆审计账」这件事自己变成刷爆审计账 */
+  let throttling = false;
+
+  function admit(): string | null {
+    if (inflight.size >= maxInflight) return `同时在跑的代理调用太多了（上限 ${maxInflight} 笔），等前面的跑完再来`;
+    const t = now();
+    tokens = Math.min(rateBurst, tokens + ((t - lastRefill) / 60_000) * ratePerMinute);
+    lastRefill = t;
+    if (tokens < 1) return `代理调用太频繁了（上限 ${ratePerMinute} 笔/分钟），先缓一缓`;
+    tokens -= 1;
+    return null;
+  }
+
   /** 拒一笔：记审计 + 回帧。审计里的 fromUid 一律是**绑定的**那个身份，不是自称的 */
   function deny(req: ProxyRequest, base: Omit<ProxyAuditEntry, "decision">, reason: string): void {
     log(`代理拒 ${deps.friendUid} ${req.serverId}/${req.tool}: ${reason}`);
@@ -130,6 +164,22 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
       ts: now(), reqId: req.reqId, fromUid: deps.friendUid,
       serverId: req.serverId, tool: req.tool, argsSummary: summarizeArgs(req.args),
     };
+    // 闸门 0 在最前面（见上）。被限流的**不逐条记账**：只在进入限流状态时记一笔，
+    // 这样 A 看得见「有人在刷」，而账本不会被刷爆
+    const busy = admit();
+    if (busy) {
+      if (!throttling) {
+        throttling = true;
+        deps.audit({ ...base, decision: "denied", denyReason: `${busy}（后续同类请求不再逐条记账）` });
+      }
+      log(`代理限流 ${deps.friendUid} ${req.serverId}/${req.tool}: ${busy}`);
+      deps.transport.send(encodeProxyFrame({
+        kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: busy,
+      }));
+      return;
+    }
+    throttling = false;
+
     const gate = gateReason(deps, req.fromUid);
     if (gate) {
       deny(req, base, gate);
@@ -149,9 +199,20 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
     inflight.set(req.reqId, ctl);
     try {
       const content = await deps.mcp.callTool(req.serverId, req.tool, req.args, ctl.signal);
-      deps.audit({ ...base, decision: "executed", outcome: "ok" });
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: true, content };
-      deps.transport.send(encodeProxyFrame(res));
+      if (deps.transport.send(encodeProxyFrame(res))) {
+        deps.audit({ ...base, decision: "executed", outcome: "ok" });
+        return;
+      }
+      // 结果太大，超过 relay 的单帧上限（issue #674）。**工具已经执行了**——
+      // 副作用已经发生，所以这笔按 executed/error 记账，而不是当没发生过。
+      // 回一条小的错误帧，好友那边当场知道原因，而不是等满超时
+      const tooBig = `${req.serverId}/${req.tool} 执行完了，但结果太大，传不回来（超过单帧上限）`;
+      log(`代理结果超限 ${deps.friendUid} ${req.serverId}/${req.tool}`);
+      deps.audit({ ...base, decision: "executed", outcome: "error", error: tooBig });
+      deps.transport.send(encodeProxyFrame({
+        kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: tooBig,
+      }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (ctl.signal.aborted) {
