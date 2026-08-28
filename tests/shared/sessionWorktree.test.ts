@@ -14,40 +14,13 @@ import {
 
 const REPO = "/Users/x/proj/.git";
 
-describe("shouldIsolate（issue #641）", () => {
-  it("第一只水獭不隔离——用户点的文件夹就是他看得见的那个", () => {
-    expect(shouldIsolate({ repo: REPO, familyRoot: "new" }, [])).toBe(false);
+describe("shouldIsolate（issue #641，判据在 #644 收窄成一条）", () => {
+  it("工作区在 git 仓里 → 隔离。第一只也隔离（#644 取消了那条例外）", () => {
+    expect(shouldIsolate({ repo: REPO })).toBe(true);
   });
 
-  it("同一个仓库已经有别的会话 → 隔离", () => {
-    expect(
-      shouldIsolate({ repo: REPO, familyRoot: "new" }, [{ repo: REPO, familyRoot: "a" }])
-    ).toBe(true);
-  });
-
-  it("判据是仓库不是路径：已经在副本里的会话也算占着这个项目", () => {
-    // 副本的 workspace 是另一个路径，但 --git-common-dir 指向同一个 .git
-    expect(
-      shouldIsolate({ repo: REPO, familyRoot: "new" }, [{ repo: REPO, familyRoot: "b" }])
-    ).toBe(true);
-  });
-
-  it("别的项目不算占用", () => {
-    expect(
-      shouldIsolate({ repo: REPO, familyRoot: "new" }, [{ repo: "/other/.git", familyRoot: "a" }])
-    ).toBe(false);
-  });
-
-  it("同家族（子会话 / SideChat）不算占用——共享工作区是故意的", () => {
-    expect(
-      shouldIsolate({ repo: REPO, familyRoot: "a" }, [{ repo: REPO, familyRoot: "a" }])
-    ).toBe(false);
-  });
-
-  it("工作区不在 git 仓里 → 不隔离（没有 worktree 这回事，退回排队）", () => {
-    expect(
-      shouldIsolate({ repo: null, familyRoot: "new" }, [{ repo: null, familyRoot: "a" }])
-    ).toBe(false);
+  it("工作区不在 git 仓里 → 不隔离（没有 worktree 这回事，退回原目录）", () => {
+    expect(shouldIsolate({ repo: null })).toBe(false);
   });
 });
 
@@ -76,5 +49,9 @@ describe("isolatedPromptText", () => {
     expect(t).toContain("先问");
     // 「别去动项目本体」必须在场：那边可能有另一只水獭
     expect(t).toContain("别去动");
+    // #644 之后每只水獭都在副本里，用户打开自己的项目目录会以为什么都没发生——
+    // 「动文件之前先说明白」是这套隔离唯一的缓解，掉了就是静默的困惑
+    expect(t).toContain("第一次动文件之前");
+    expect(t).toContain("项目目录暂时不会变");
   });
 });

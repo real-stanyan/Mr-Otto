@@ -1819,22 +1819,11 @@ void app.whenReady().then(() => {
     // createSessionAgent 是同步的（它调的 createAgent 就是同步的），
     // 等这件事只能发生在它外面
     await mcpHub.ready();
-    // 同一个项目上的第二只水獭 → 给它一份独立工作副本（issue #641，ADR-0156）。
-    // 判据是「同一个仓库」而不是「同一个路径」：已经在副本里的会话与主目录的会话
-    // 共享同一个 .git，分支空间是共享的，算同一个项目。
-    // 家族（子会话/SideChat）共享工作区是故意的，不算占用。
-    // 任何一步失败 → isolated 为 null，退回 ADR-0152 的排队行为（没有副本比建错副本安全）
-    const parents = new Map(store.sessions().map((x) => [x.sessionId, x.spawnedFrom]));
-    const rootOf = (id: string) => familyRootOf(id, (x) => parents.get(x));
-    const repoOfWorkspace = new Map<string, string | null>();
-    const repoCached = (dir: string) => {
-      if (!repoOfWorkspace.has(dir)) repoOfWorkspace.set(dir, sessionWorktrees.repoOf(dir));
-      return repoOfWorkspace.get(dir) ?? null;
-    };
-    const isolate = shouldIsolate(
-      { repo: repoCached(opts.workspace), familyRoot: "" }, // 新会话还没有 id，自成一族
-      [...agents.values()].map((a) => ({ repo: repoCached(a.workspace), familyRoot: rootOf(a.sessionId) }))
-    )
+    // 每只水獭都拿一份独立工作副本（issue #644 取消了 #641 的「第一只不隔离」）：
+    // 工作区在 git 仓里就开 worktree。两只水獭形态一致，不用解释「什么时候会隔离」。
+    // 任何一步失败 → isolated 为 null，退回原目录 + ADR-0152 的互斥兜底
+    //（没有副本比建错副本安全）
+    const isolate = shouldIsolate({ repo: sessionWorktrees.repoOf(opts.workspace) })
       ? sessionWorktrees.create(opts.workspace, "session")
       : null;
     const agent = createSessionAgent(

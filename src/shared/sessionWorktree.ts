@@ -8,9 +8,13 @@
 //
 // ── 三个不显然的选择 ──────────────────────────────────────────────
 //
-// **第一只不隔离**。用户在 GUI 里点了个文件夹，他的编辑器开着那个文件夹——单只水獭
-// 时把它挪进 worktree，等于第一次用就要他理解「你的活在别的目录、回头要 merge」。
-// 隔离只在真的出现第二只时才发生，那时用户本来就在做一件更复杂的事。
+// **每只水獭都隔离**（issue #644 取消了 0156 的「第一只不隔离」）。曾经留过那条例外，
+// 怕第一次用的人就面对「你的活在别的目录、回头要 merge」；取消它换来的是一条规则而不是
+// 两条——不用再解释「什么时候会隔离、什么时候不会」，也不会出现「第一只在原目录、第二只
+// 在副本」这种两只水獭形态不一致的局面。
+//
+// 代价是真的：**用户打开自己的项目目录会看不到任何改动**，直到合并。缓解写在
+// isolatedPromptText 里——水獭在动文件之前先讲明白这件事。
 //
 // **worktree 不放在用户的仓库里**。放 `<repo>/.mr-otto/worktrees/…` 会进他的
 // `git status`、可能被误提交。落在 userData 下（与 ADR-0155 的锁文件同一个理由：
@@ -51,17 +55,18 @@ export function isolatedDirName(projectHash: string, rand: string): string {
 }
 
 /** 该不该给这个新会话开 worktree？
-    要三个条件同时成立：
-    - 这个工作区在一个 git 仓库里（不是仓库 → 没有 worktree 这回事，退回排队）
-    - 已经有**活着的**会话在同一个仓库里（第一只不隔离，见文件头）
-    - 那个会话不是本会话的家族成员（子会话 / SideChat 共享工作区是故意的） */
+    只剩一个条件：**这个工作区在一个 git 仓库里**（issue #644）。
+    不是仓库 → 没有 worktree 这回事，退回原目录（ADR-0152 的互斥在那儿兜底）。
+
+    「已经有别的会话占着吗」这个条件在 #644 里去掉了：留着它就有两条规则、两种形态，
+    而两只水獭形态不一致（一只在原目录、一只在副本）比两只都在副本更难解释。
+
+    子会话 / SideChat 不走这条路——它们直接继承父会话的 workspace，压根不问这个函数。 */
 export function shouldIsolate(candidate: {
   /** 本会话工作区所属仓库的 `.git` 绝对路径；不是仓库 → null */
   repo: string | null;
-  familyRoot: string;
-}, live: readonly { repo: string | null; familyRoot: string }[]): boolean {
-  if (!candidate.repo) return false;
-  return live.some((s) => s.repo === candidate.repo && s.familyRoot !== candidate.familyRoot);
+}): boolean {
+  return candidate.repo !== null;
 }
 
 /** 注进系统提示的那一段：告诉水獭它在副本上，以及怎么把活交回去。
@@ -72,6 +77,10 @@ export function isolatedPromptText(iso: IsolatedWorkspace): string {
     `\n注意：这个文件夹是一份**独立工作副本**（git worktree），分支 \`${iso.branch}\`。` +
     `项目本体在 ${iso.projectRoot}，那边可能有另一只水獭在同时干活。\n` +
     `所以：只改这份副本，别去动项目本体的目录；活干完了提交在自己分支上，` +
-    `用户要合并时再把 \`${iso.branch}\` 合回去（先问一句合到哪个分支）。\n`
+    `用户要合并时再把 \`${iso.branch}\` 合回去（先问一句合到哪个分支）。\n` +
+    // 用户看不到副本里的改动——他打开自己的项目目录会以为你什么都没干。
+    // 这是这套隔离的全部代价，所以必须由你在动手之前主动说，不能等他来问
+    `重要：用户很可能不知道有这份副本。**第一次动文件之前**，先用一句话告诉他：` +
+    `你在一份独立副本上干活、他的项目目录暂时不会变、要合回去随时说。\n`
   );
 }
