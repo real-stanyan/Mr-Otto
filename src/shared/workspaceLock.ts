@@ -1,4 +1,4 @@
-// workspaceLock —— 工作区互斥的跨进程那一半（issue #634，ADR-0154）
+// workspaceLock —— 工作区互斥的跨进程那一半（issue #634，ADR-0155）
 //
 // ADR-0152 用 `runningSessions` 挡住了同一个进程里的两条 turn。它明写了不覆盖的第一条：
 // **两个 app 实例**（dev 版和正式版、或两份安装）指着同一个文件夹时互相看不见——

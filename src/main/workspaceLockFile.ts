@@ -1,4 +1,4 @@
-// workspaceLockFile —— 工作区跨进程锁的落盘那一半（issue #634，ADR-0154）
+// workspaceLockFile —— 工作区跨进程锁的落盘那一半（issue #634，ADR-0155）
 //
 // 纯逻辑（判据、文件名、提示语）在 shared/workspaceLock.ts；这里只做读写、pid 探活、
 // 心跳定时器。落点是机器级临时目录——两个 app 实例看得见同一份，用户的工作区一个

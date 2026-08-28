@@ -580,7 +580,7 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
-  /** 工作区互斥的跨进程那一半（issue #634，ADR-0154）。落点是机器级临时目录——
+  /** 工作区互斥的跨进程那一半（issue #634，ADR-0155）。落点是机器级临时目录——
       两个 app 实例看得见同一份，用户的工作区一个字节都不动 */
   const workspaceLock = createWorkspaceLock({ appName: app.getName() });
 
