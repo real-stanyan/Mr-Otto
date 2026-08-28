@@ -12,7 +12,19 @@
 import { b64decode, b64encode } from "./b64.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "./crypto.js";
 
-export type Role = "desktop" | "mobile";
+// 角色 = 「一对有序角色」里的一个，与 services/edge/src/relay.ts 的 RelayRole 同源。
+// 两对：desktop↔mobile（自远程）、host↔guest（好友代理，ADR-0151）。
+// 握手只关心「序」——第一角色在前拼 nonce、第一角色发 d2m 收 m2d；
+// 具体叫什么不关心。ROLE_ORDER 是这份「序」的唯一出处。
+export type Role = "desktop" | "mobile" | "host" | "guest";
+
+/** 角色在它对里是「第一」还是「第二」。与 relay.ts 的 ROLE_ORDER 保持一致 */
+export const ROLE_ORDER: Record<Role, 1 | 2> = {
+  desktop: 1,
+  host: 1,
+  mobile: 2,
+  guest: 2,
+};
 
 /** 线上的握手包(JSON 安全:字节一律 base64url) */
 export interface HandshakeHello {
@@ -111,10 +123,11 @@ export function buildHello(
   };
 }
 
-/** 双方的 nonceHalf 拼成 KDF 的 salt。拼接顺序按角色钉死(desktop 在前),
-    两边才能算出同一个 salt —— 不能按"我的在前" */
+/** 双方的 nonceHalf 拼成 KDF 的 salt。拼接顺序按角色序钉死(第一角色在前),
+    两边才能算出同一个 salt —— 不能按"我的在前"。两对角色共用这一条:
+    desktop/host 都是第一角色,mobile/guest 都是第二角色 */
 function connectionNonce(selfRole: Role, selfHalf: Uint8Array, peerHalf: Uint8Array): Uint8Array {
-  const [first, second] = selfRole === "desktop" ? [selfHalf, peerHalf] : [peerHalf, selfHalf];
+  const [first, second] = ROLE_ORDER[selfRole] === 1 ? [selfHalf, peerHalf] : [peerHalf, selfHalf];
   const out = new Uint8Array(first.length + second.length);
   out.set(first, 0);
   out.set(second, first.length);
@@ -137,9 +150,15 @@ export function deriveSession(
 ): SessionKeys | null {
   const { self, peerHello, peerIdentityPub } = args;
 
-  // 两台桌面 / 两台手机之间不该建连
+  // 同角色之间不该建连(两台桌面、两个 A)。合法对是同对的两个异角色
   if (peerHello.role === self.role) return null;
-  if (peerHello.role !== "desktop" && peerHello.role !== "mobile") return null;
+  if (!(peerHello.role in ROLE_ORDER)) return null;
+  // 跨对不建连:desktop 只能对 mobile、host 只能对 guest。序相同却不是同对
+  // (如 desktop 对 guest,一第一一第二)也属于"我在跟谁说话"多一种可能,拒
+  const samePair = ROLE_ORDER[peerHello.role] !== ROLE_ORDER[self.role]
+    && (peerHello.role === "desktop" || peerHello.role === "mobile")
+       === (self.role === "desktop" || self.role === "mobile");
+  if (!samePair) return null;
 
   const ephPub = b64decode(peerHello.ephPub);
   const peerHalf = b64decode(peerHello.nonceHalf);
@@ -167,7 +186,8 @@ export function deriveSession(
   const salt = connectionNonce(self.role, self.nonceHalf, peerHalf);
   const d2m = directionKeys(p, shared, salt, "otto-stream-v1:d2m");
   const m2d = directionKeys(p, shared, salt, "otto-stream-v1:m2d");
-  return self.role === "desktop" ? { send: d2m, recv: m2d } : { send: m2d, recv: d2m };
+  // 第一角色(desktop/host)发 d2m 收 m2d,第二角色(mobile/guest)反之
+  return ROLE_ORDER[self.role] === 1 ? { send: d2m, recv: m2d } : { send: m2d, recv: d2m };
 }
 
 /** 两端各自显示的 6 位安全码。排序后哈希 —— 两边看到同一个数,

@@ -86,7 +86,12 @@ describe("配对的纯逻辑", () => {
   it("otherRole / parseRole", () => {
     expect(otherRole("desktop")).toBe("mobile");
     expect(otherRole("mobile")).toBe("desktop");
+    // host↔guest:好友代理那一对(ADR-0151)
+    expect(otherRole("host")).toBe("guest");
+    expect(otherRole("guest")).toBe("host");
     expect(parseRole("desktop")).toBe("desktop");
+    expect(parseRole("host")).toBe("host");
+    expect(parseRole("guest")).toBe("guest");
     for (const bad of [null, "", "DESKTOP", "both", "server"]) {
       expect(parseRole(bad)).toBeNull();
     }
@@ -273,5 +278,43 @@ describe("中继（照 worker.ts 的动作顺序）", () => {
     spyLog.mockRestore();
     spyErr.mockRestore();
     spyWarn.mockRestore();
+  });
+});
+
+
+// ─── host/guest 转发（好友代理，ADR-0151，issue #622 PR-A）──────────────────
+describe("relay · host/guest（好友代理转发）", () => {
+  const peer = (cid: string, role: "host" | "guest", open = true) => ({ cid, role, open });
+
+  it("host 能发给 guest、guest 能发给 host（同对异角色互发）", () => {
+    const a = peer("cA", "host");
+    const b = peer("cB", "guest");
+    const conns = [a, b];
+    // host → guest
+    expect(targetOf(conns, "host", "cB")?.cid).toBe("cB");
+    // guest → host
+    expect(targetOf(conns, "guest", "cA")?.cid).toBe("cA");
+  });
+
+  it("host 不能发给另一个 host（同角色禁发）", () => {
+    const a1 = peer("cA1", "host");
+    const a2 = peer("cA2", "host");
+    const conns = [a1, a2];
+    expect(peersOf(conns, "host")).toHaveLength(0);
+    expect(targetOf(conns, "host", "cA2")).toBeUndefined();
+  });
+
+  it("host 的对端不包括 desktop/mobile（跨对不可见）", () => {
+    const a = peer("cA", "host");
+    const b = peer("cB", "guest");
+    const conns: { cid: string; role: import("../../services/edge/src/relay.js").RelayRole; open: boolean }[] = [
+      a, b,
+      { cid: "cD", role: "desktop", open: true },
+      { cid: "cM", role: "mobile", open: true },
+    ];
+    // host 只看得见 guest
+    expect(peersOf(conns, "host").map((c) => c.cid)).toEqual(["cB"]);
+    // desktop 只看得见 mobile（不受 host/guest 影响）
+    expect(peersOf(conns, "desktop").map((c) => c.cid)).toEqual(["cM"]);
   });
 });

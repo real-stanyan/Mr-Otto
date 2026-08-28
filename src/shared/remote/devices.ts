@@ -17,6 +17,12 @@ import { b64decode, b64encode } from "./b64.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "./crypto.js";
 import { fingerprint, type Role } from "./handshake.js";
 
+/** 设备种类：这台机器是桌面还是手机。**与握手角色（Role）是两个概念**——
+    握手角色在好友代理里扩成了 host/guest（ADR-0151），但设备种类没有第三种:
+    好友代理里 A 和 B 都是桌面设备（kind=desktop），只是握手角色一个是 host
+    一个是 guest。设备目录（本文件）关心的是物理端，不是握手里的序。 */
+export type DeviceKind = "desktop" | "mobile";
+
 /** devices 表的一行(列名跟 SQL 走,不驼峰化 —— 少一层翻译少一处 drift) */
 export interface DeviceRow {
   device_id: string;
@@ -75,7 +81,7 @@ export function createRemoteDevices(deps: {
   store: PinnedPeerStore;
   crypto: RemoteCryptoPrimitives;
   /** 本机是哪一端。对端就是另一端 —— 桌面不跟桌面配对,手机也不跟手机配 */
-  selfKind: Role;
+  selfKind: DeviceKind;
   log?: (m: string) => void;
 }): {
   registerSelf(label: string): Promise<boolean>;
@@ -86,7 +92,7 @@ export function createRemoteDevices(deps: {
 } {
   const log = deps.log ?? (() => {});
   const mine = deps.store.identity.publicKey;
-  const peerKind: Role = deps.selfKind === "desktop" ? "mobile" : "desktop";
+  const peerKind: DeviceKind = deps.selfKind === "desktop" ? "mobile" : "desktop";
 
   return {
     /** 把自己登记进目录。**只上传公钥** —— 私钥两把都不出各自的系统安全存储 */
