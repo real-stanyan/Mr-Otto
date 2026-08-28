@@ -72,6 +72,7 @@ const bridge: ShellBridge = {
   onUpdaterState: subscribe(CHANNELS.updaterState),
   listMcpServers: () => ipcRenderer.invoke(CHANNELS.listMcpServers),
   saveMcpServer: (id, cfg) => ipcRenderer.invoke(CHANNELS.saveMcpServer, id, cfg),
+  searchMcpRegistry: (query) => ipcRenderer.invoke(CHANNELS.searchMcpRegistry, query),
   removeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.removeMcpServer, id),
   reconnectMcpServer: (id) => ipcRenderer.invoke(CHANNELS.reconnectMcpServer, id),
   authorizeMcpServer: (id) => ipcRenderer.invoke(CHANNELS.authorizeMcpServer, id),
