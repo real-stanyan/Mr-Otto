@@ -86,6 +86,7 @@ import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
 import type { SessionEvent, ToolCallRequest, MemoryLoadedEvent } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
+import { createDirtyTreeAwareApprover } from "./dirtyTreeApprover.js";
 import type { ToolGuard } from "../loop/middleware.js";
 import type { DeltaKind } from "../model/adapter.js";
 import type { ApprovalPreview, TurnDiffUpdate } from "../shared/shellBridge.js";
@@ -147,6 +148,18 @@ export interface SkillLibrary {
   listSkills(): { name: string; description: string; content: string; argumentHint?: string }[];
 }
 
+/** 没注入 dirtyFiles 就原样返回 inner —— 这一层是可选加固，缺席时审批链一字不变
+    （issue #633）。ui 是命中时越过 mode/grant 直接找的那个人 */
+function maybeDirtyTreeAware(
+  dirtyFiles: ((cwd: string) => Promise<string[]>) | undefined,
+  cwd: string,
+  inner: Approver,
+  ui: Approver | undefined
+): Approver {
+  if (!dirtyFiles || !ui) return inner;
+  return createDirtyTreeAwareApprover({ dirtyFiles, cwd }, inner, ui);
+}
+
 export function createAgent(opts: {
   /** app 级资源，由外面注入——欢迎页列会话时 agent 还不存在，库必须先活着 */
   store: EventStore;
@@ -169,6 +182,10 @@ export function createAgent(opts: {
   /** execpolicy 规则（issue #347）：每次 decide 现读（热更新与 alwaysAllow 同款）。
       不给 = 无静态判定，链条与从前逐字节一致 */
   execPolicy?: () => { rules: ExecRule[] };
+  /** 工作区里带未提交改动的文件（含未跟踪，issue #633）。装配根注入，让审批链能在
+      「破坏性 git + 工作区脏」时越过 bypass 模式问人一次。
+      不给 = 没有这一层，链条与从前逐字节一致 */
+  dirtyFiles?: (cwd: string) => Promise<string[]>;
   /** 审批 UI「永久」产出 allow 前缀规则（issue #347 ③）。返回 false = 候选规则
       没过禁止前缀校验，调用方退回精确 key。不给 = 永久授权只走精确 key（旧路） */
   persistAllowRule?: (pattern: string[], cwd: string | undefined) => boolean;
@@ -673,15 +690,23 @@ export function createAgent(opts: {
       createPolicyAwareApprover(
         () => opts.execPolicy?.() ?? EMPTY_POLICY,
         opts.workspace,
-        createModeAwareApprover(
-          () => approvalMode,
-          createGrantAwareApprover(
-            // 判定粒度是规范化 key（issue #342，shared/grantKey.ts）：bash 按命令、
-            // write_file 按路径、其余按工具，全部掺 cwd；旧的裸工具名条目按宽语义兼容
-            (call) =>
-              grantedScope(call, opts.workspace, sessionAllow, opts.alwaysAllow?.() ?? EMPTY_GRANTS),
-            approver
-          )
+        // 破坏性 git + 工作区脏（issue #633）：夹在 policy 与 mode 之间——
+        // execpolicy forbidden 仍然最先赢，但「完全访问」模式和长期授权压不过它。
+        // 没注入 dirtyFiles 的装配（测试/裸装配/子会话）这一层不存在，链路一字不变
+        maybeDirtyTreeAware(
+          opts.dirtyFiles,
+          opts.workspace,
+          createModeAwareApprover(
+            () => approvalMode,
+            createGrantAwareApprover(
+              // 判定粒度是规范化 key（issue #342，shared/grantKey.ts）：bash 按命令、
+              // write_file 按路径、其余按工具，全部掺 cwd；旧的裸工具名条目按宽语义兼容
+              (call) =>
+                grantedScope(call, opts.workspace, sessionAllow, opts.alwaysAllow?.() ?? EMPTY_GRANTS),
+              approver
+            )
+          ),
+          approver
         )
       ),
     onEvent: opts.push.event,

@@ -1569,6 +1569,14 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      // 破坏性 git + 工作区脏 → 越过 bypass 问一次（issue #633）。复用 gitGraph 的
+      // status，不另起一套 git 管道。闭包懒读：gitGraph 在装配后段才建，而会话都是
+      // IPC 触发的，跑到这里时它一定已经在了
+      dirtyFiles: async (cwd: string) => {
+        const r = await gitGraph.status(cwd);
+        if (!r.ok) throw new Error(r.detail); // 不是仓库/读不到 → 上层 fail-open，不加摩擦
+        return r.status.files.map((f) => f.path);
+      },
       // SideChat 标记进第 0 条（append-only：建会话那一刻一次写对，事后补不了）
       ...(args.sideOf
         ? { spawnedBy: { sessionId: args.sideOf, toolCallId: "side-chat", agent: "side", kind: "side" as const } }
