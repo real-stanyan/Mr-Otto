@@ -263,3 +263,33 @@ describe("proxyConnection 的邀请码 secret 证明（issue #657 / ADR-0162）"
     expect(paired).toEqual([]); // 走的是 pin 路径，没再动那张邀请
   });
 });
+
+// ─── 对端离场（issue #672）──────────────────────────────────────────────
+describe("proxyConnection 的离场（issue #672）", () => {
+  it("peerGone → 退出就绪、帧发不出去；对端回来重新握手又能用", () => {
+    const { host, guest, guestPlain } = linked();
+    host.start();
+    guest.start();
+    expect(host.isReady()).toBe(true);
+
+    host.peerGone();
+    expect(host.isReady()).toBe(false);
+    host.sendSealed("发不出去的"); // 静默丢弃，不抛
+    expect(guestPlain).toEqual([]);
+
+    // 对端回来：两边各重新握一次手（真 relay 上由 `:peer` 驱动）
+    guest.start();
+    host.start();
+    expect(host.isReady()).toBe(true);
+    host.sendSealed("回来了");
+    expect(guestPlain).toEqual(["回来了"]);
+  });
+
+  it("close 之后再 peerGone 不做任何事（已经关了的连接没有「退出就绪」可言）", () => {
+    const { host } = linked();
+    host.start();
+    host.close();
+    host.peerGone();
+    expect(host.isReady()).toBe(false);
+  });
+});

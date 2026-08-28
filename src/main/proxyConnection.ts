@@ -75,6 +75,14 @@ export interface ProxyConnection {
   onReady(cb: () => void): void;
   /** 当前是否 ready */
   isReady(): boolean;
+  /**
+   * 对端离场了（relay 的 `:gone` / 底层断开，issue #672）。
+   *
+   * **退出 ready 但不 close**：对端还会回来，回来时 `:peer` 会再驱动一轮握手。
+   * 不做这一步的话 `isReady()` 一直是 true，上层会把帧发进虚空，
+   * 然后等满超时才失败——而且报的是「对方没回」，不是「对方不在」。
+   */
+  peerGone(): void;
   close(): void;
 }
 
@@ -243,6 +251,14 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
     onPlain(cb) { plainCbs.push(cb); },
     onReady(cb) { readyCbs.push(cb); },
     isReady() { return phase === "ready"; },
+    peerGone() {
+      if (phase === "closed" || phase === "idle") return;
+      clearSession();
+      // 记住的那份 peer hello 也扔掉：对端确定走了，它不可能再是
+      // 「对端已经 ready 不会重发」那种情形，留着只会让下一轮拿旧 eph 派生一次
+      lastPeerHello = null;
+      log("代理连接:对端离场,通道退出就绪(等它回来重新握手)");
+    },
     close() {
       phase = "closed";
       sealer = null;
