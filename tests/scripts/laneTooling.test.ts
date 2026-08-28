@@ -119,6 +119,17 @@ describe("lane:prune：收工清理（issue #623）", () => {
     expect(git(work, "branch", "--format=%(refname:short)")).toContain("fresh/lane-a");
   });
 
+  it("--apply：刚开还没提交的 lane，worktree 和分支都留着（#627）", () => {
+    node(work, LANE, "fresh-lane");
+    const dir = execFileSync("bash", ["-c", `ls -d ${work}/.claude/worktrees/fresh-lane-*`], {
+      encoding: "utf8",
+    }).trim();
+    // 它同时满足「已合并」（tip == origin/main）和「干净」——正是 #449 那个洞的 worktree 版本
+    const r = node(work, PRUNE, "--apply");
+    expect(r.out).toContain("这条 lane 刚开，还没提交");
+    expect(git(work, "worktree", "list")).toContain(dir);
+  });
+
   it("--apply：已合并 + 干净的 worktree 连同分支一起清掉", () => {
     const { branch, dir } = mergedLane("done-lane");
     const r = node(work, PRUNE, "--apply");
