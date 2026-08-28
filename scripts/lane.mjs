@@ -16,7 +16,7 @@
 // 不依赖 Gearbox：纯 git 操作。
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { argv, exit, stderr, stdout } from "node:process";
 
@@ -30,6 +30,15 @@ function tryGit(args) {
     return null;
   }
 }
+/** 跑一个外部命令拿 stdout；不在 PATH / 非零退出 → null（调用方按「没这回事」处理） */
+function tryRun(bin, args) {
+  try {
+    return execFileSync(bin, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
 function die(msg, hint = "") {
   stderr.write(`\n✗ ${msg}\n${hint ? `  ${hint}\n` : ""}\n`);
   exit(1);
@@ -81,6 +90,36 @@ try {
   stdout.write("  (fetch 失败，离线？用本地的 origin/" + defaultBranch + " 继续)\n");
 }
 
+// 开工前查撞车（AGENTS.md 开工第 2 步 / ADR-0148）。规则原本纯靠自觉——把它挪到
+// 「开 lane」这个必经动作上，命中的东西直接摆在面前，不需要谁记得去搜。
+// 只报告不拦：判断「这条命中是不是同一件事」是人的活，脚本没有资格替他决定。
+// gh 没装 / 没登录 / 离线 → 安静跳过，绝不因此挡住开工
+function collisionScan(keyword) {
+  const hits = [];
+  const issues = tryRun("gh", [
+    "issue", "list", "--state", "all", "--limit", "5",
+    "--search", keyword,
+    "--json", "number,title,state",
+  ]);
+  if (issues) {
+    try {
+      for (const i of JSON.parse(issues)) hits.push(`#${i.number} [${i.state}] ${i.title}`);
+    } catch {
+      // gh 换了输出格式：当作没搜到，不炸
+    }
+  }
+  const branches = tryGit(["branch", "-a", "--list", `*${keyword}*`]);
+  if (branches) for (const b of branches.split("\n").filter(Boolean)) hits.push(`分支 ${b.trim()}`);
+  return hits;
+}
+
+const hits = collisionScan(slug);
+if (hits.length > 0) {
+  stdout.write(`\n⚠ 同主题的东西已经存在（含已关闭的 issue）——先读一眼再决定：\n`);
+  for (const h of hits) stdout.write(`    ${h}\n`);
+  stdout.write(`  已经做完的别重做；做了一半的接着做，别从头再来。\n`);
+}
+
 const branch = `claude/${slug}-${suffix()}`;
 const dir = join(mainRoot, ".claude", "worktrees", `${slug}-${branch.slice(-6)}`);
 
@@ -93,6 +132,17 @@ if (tryGit(["show-ref", "--verify", `refs/heads/${branch}`]) !== null) {
 git(["worktree", "add", dir, "-b", branch, `origin/${defaultBranch}`], {
   stdio: ["ignore", "pipe", "inherit"],
 });
+
+// 一次性的可执行凭据（issue #632）：把「这个 worktree 是为哪条分支开的」写进它的
+// 管理目录（.git/worktrees/<名>/lane-branch，在工作树之外，不会被提交）。
+// pre-commit 据此拒绝「同一个 worktree 换活干」——ADR-0149 说了一次性，但当时只是
+// 一句话；本仓真实发生过跨任务复用（同一个目录先后服务三个 issue）
+try {
+  const adminDir = git(["-C", dir, "rev-parse", "--path-format=absolute", "--git-dir"]);
+  writeFileSync(join(adminDir, "lane-branch"), `${branch}\n`);
+} catch {
+  // 落不下就算了：pre-commit 见不到 marker 时按「没有凭据」放行，不制造假阳性
+}
 
 stdout.write(`
 ✓ lane 开好了

@@ -25,8 +25,32 @@ set -e
 git_dir=$(git rev-parse --git-dir)
 common_dir=$(git rev-parse --git-common-dir)
 
-# linked worktree —— 正常开工路径，放行
-[ "$git_dir" != "$common_dir" ] && exit 0
+# linked worktree —— 正常开工路径。再核一件事：它还在为当初开它的那条分支干活吗？
+# npm run lane 会把分支名写进这个 worktree 的管理目录（lane-branch）。对不上 =
+# 「同一个 worktree 换了活干」，那就是 ADR-0149 说的复用——一个会切分支的长期
+# worktree 就是第二个主 checkout，互斥等于关掉。没有 marker（手工 git worktree add
+# 开的）就按「没有凭据」放行，不制造假阳性。
+if [ "$git_dir" != "$common_dir" ]; then
+  marker="$git_dir/lane-branch"
+  [ -f "$marker" ] || exit 0
+  want=$(cat "$marker")
+  have=$(git symbolic-ref --short -q HEAD || echo "(detached)")
+  [ "$want" = "$have" ] && exit 0
+  cat >&2 <<EOF
+
+✗ 这个 worktree 是为 $want 开的，现在在 $have 上
+
+  worktree 是一次性的：一个 worktree 只服务一个任务，用完即弃、从不切分支换活。
+  会切分支的长期 worktree 就是第二个主 checkout，互斥等于关掉（ADR-0149/0150）。
+
+  新任务开新的：npm run lane -- <任务名>
+  这条 lane 完事了：npm run lane:prune -- --apply
+
+  确实要在这儿提交：git commit --no-verify
+
+EOF
+  exit 1
+fi
 
 # 主 checkout：只允许停在默认分支上提交（typo 级改动直接进 main 是协议允许的）
 default_branch=$(git config --get gearbox.defaultBranch || echo main)

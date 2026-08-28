@@ -156,3 +156,78 @@ describe("lane:prune：收工清理（issue #623）", () => {
     expect(git(work, "worktree", "list")).toContain(dir);
   });
 });
+
+/** 试着提交，返回 { ok, stderr }。不抛——被钩子拒绝本身就是被测行为 */
+function tryCommit(cwd: string, message: string): { ok: boolean; stderr: string } {
+  try {
+    git(cwd, "commit", "-m", message);
+    return { ok: true, stderr: "" };
+  } catch (e) {
+    const err = e as { stderr?: Buffer | string };
+    return { ok: false, stderr: String(err.stderr ?? "") };
+  }
+}
+
+describe("lane marker：worktree 换活干会被 pre-commit 拒（issue #632）", () => {
+  it("在为 A 开的 worktree 里切到 B 提交 → 拒绝，并给出开新 lane 的修法", () => {
+    git(work, "config", "core.hooksPath", join(REPO, ".githooks"));
+    node(work, LANE, "marker-lane");
+    const dir = execFileSync("bash", ["-c", `ls -d ${work}/.claude/worktrees/marker-lane-*`], {
+      encoding: "utf8",
+    }).trim();
+    git(dir, "config", "user.email", "t@example.com");
+    git(dir, "config", "user.name", "t");
+    // 换活：同一个目录切到另一条分支——这正是 ADR-0149 说的复用
+    git(dir, "checkout", "-q", "-b", "another/task");
+    execFileSync("bash", ["-c", `echo x > ${dir}/x.txt`]);
+    git(dir, "add", "-A");
+
+    const r = tryCommit(dir, "reused worktree");
+    expect(r.ok).toBe(false);
+    expect(r.stderr).toContain("npm run lane");
+  });
+
+  it("还在原分支上 → 照常放行", () => {
+    git(work, "config", "core.hooksPath", join(REPO, ".githooks"));
+    node(work, LANE, "same-lane");
+    const dir = execFileSync("bash", ["-c", `ls -d ${work}/.claude/worktrees/same-lane-*`], {
+      encoding: "utf8",
+    }).trim();
+    git(dir, "config", "user.email", "t@example.com");
+    git(dir, "config", "user.name", "t");
+    execFileSync("bash", ["-c", `echo x > ${dir}/x.txt`]);
+    git(dir, "add", "-A");
+    expect(tryCommit(dir, "on its own lane").ok).toBe(true);
+  });
+
+  it("手工 git worktree add 开的（没有 marker）→ 放行，不制造假阳性", () => {
+    git(work, "config", "core.hooksPath", join(REPO, ".githooks"));
+    const dir = join(root, "handmade");
+    git(work, "worktree", "add", "-q", dir, "-b", "hand/made");
+    git(dir, "config", "user.email", "t@example.com");
+    git(dir, "config", "user.name", "t");
+    git(dir, "checkout", "-q", "-b", "hand/switched");
+    execFileSync("bash", ["-c", `echo x > ${dir}/x.txt`]);
+    git(dir, "add", "-A");
+    expect(tryCommit(dir, "no marker").ok).toBe(true);
+  });
+});
+
+describe("wip：把活落成提交而不是 stash（issue #632）", () => {
+  const WIP = join(REPO, "scripts/wip.mjs");
+
+  it("提交所有改动（含未跟踪），并印出撤销办法", async () => {
+    await writeFile(join(work, "dirty.txt"), "x\n");
+    const r = node(work, WIP, "半路存一下");
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("git reset --soft HEAD~1");
+    expect(git(work, "status", "--porcelain")).toBe("");
+    expect(git(work, "log", "-1", "--format=%s")).toBe("半路存一下");
+  });
+
+  it("没有改动时什么都不做", () => {
+    const r = node(work, WIP);
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("没有改动");
+  });
+});
