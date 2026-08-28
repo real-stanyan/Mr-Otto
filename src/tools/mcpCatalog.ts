@@ -1,8 +1,11 @@
 // mcp_catalog —— agent 查"这台 server 该怎么配"。
-// 只读一份仓内常量：不碰 world、没有副作用、免审批。
+// 精选层只读一份仓内常量；精选没命中时经 world.http.getJson 只读查一次公开
+// 注册表（GET，无副作用）。两条路都没有副作用，免审批不变（ADR-0171 4.6）。
 
 import type { Tool } from "./tool.js";
 import { searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
+import type { ExecutionWorld } from "../world/executionWorld.js";
+import { mapRegistryResponse, registrySearchUrl } from "../shared/mcpRegistry.js";
 
 function render(e: CatalogEntry): string {
   const lines = [
@@ -21,6 +24,19 @@ function render(e: CatalogEntry): string {
   );
   lines.push(`认证：${e.auth} —— ${e.authNote}`);
   return lines.join("\n");
+}
+
+/** 查公开注册表。任何失败都吞成空数组——这是一条回退路径，它自己失败不该
+    让整个工具调用失败；调用方拿到空数组会退到 web_search 那句话，链条不断。
+    world.http.getJson 是可选字段（见 executionWorld.ts 的注释），缺席 =
+    这个世界不提供 GET，同样退回 web_search */
+async function searchRegistry(world: ExecutionWorld, query: string): Promise<CatalogEntry[]> {
+  if (world.http.getJson === undefined) return [];
+  try {
+    return mapRegistryResponse(await world.http.getJson(registrySearchUrl(query)));
+  } catch {
+    return [];
+  }
 }
 
 export const mcpCatalogTool: Tool = {
@@ -53,22 +69,40 @@ export const mcpCatalogTool: Tool = {
   requiresApproval: false,
   // 纯读常量，无共享状态
   parallelSafe: true,
-  async run(args) {
+  async run(args, world) {
     const q = (args as { query?: unknown } | null)?.query;
-    const hits = searchCatalog(typeof q === "string" ? q : "");
-    if (hits.length === 0) {
+    const query = typeof q === "string" ? q : "";
+    const hits = searchCatalog(query);
+    if (hits.length > 0) {
+      // 末尾这一句是 deferred 那两把刀的引子：它们不在初始工具表里，模型得先
+      // 知道有这么两把才会去调（终审 A Critical——入口 direct 了，链条后半段
+      // 也要在文案里点名，不能指望模型凭空想起来）
       return (
-        `目录里没有「${String(q)}」。用 web_search 查一下它的 MCP server 地址` +
-        `（关键词：<服务名> MCP server url），拿到之后再调 mcp_configure。`
+        hits.map(render).join("\n\n") +
+        "\n\n下一步：调 mcp_configure 把它写进配置（会弹审批卡请用户确认）；" +
+        "http 传输的通常还要再调一次 mcp_authorize 授权。"
       );
     }
-    // 末尾这一句是 deferred 那两把刀的引子：它们不在初始工具表里，模型得先
-    // 知道有这么两把才会去调（终审 A Critical——入口 direct 了，链条后半段
-    // 也要在文案里点名，不能指望模型凭空想起来）
+
+    // 精选没命中 → 查公开注册表。原来这里直接叫模型去 web_search，而本文件
+    // 顶部记着那个取舍的代价：web_search「每次多花几秒、还可能拿到错 URL」，
+    // 而「让用户在审批卡上判断一个 URL 对不对，等于把认知负担又还给了用户」。
+    // 注册表返回的是结构化配置，比从网页里读出来的 URL 准。
+    const found = query === "" ? [] : await searchRegistry(world, query);
+    if (found.length > 0) {
+      return (
+        found.slice(0, 8).map(render).join("\n\n") +
+        "\n\n以上来自公开注册表（registry.modelcontextprotocol.io），**未经核验**——" +
+        "任何人都可以往里投稿，同一个服务名下常有第三方包装的条目。" +
+        "装之前把发布者说给用户听，让用户确认这是不是他要的那一台。" +
+        "\n下一步：调 mcp_configure 把它写进配置（会弹审批卡请用户确认）；" +
+        "http 传输的通常还要再调一次 mcp_authorize 授权。"
+      );
+    }
+
     return (
-      hits.map(render).join("\n\n") +
-      "\n\n下一步：调 mcp_configure 把它写进配置（会弹审批卡请用户确认）；" +
-      "http 传输的通常还要再调一次 mcp_authorize 授权。"
+      `目录和公开注册表里都没有「${query}」。用 web_search 查一下它的 MCP server 地址` +
+      `（关键词：<服务名> MCP server url），拿到之后再调 mcp_configure。`
     );
   },
 };
