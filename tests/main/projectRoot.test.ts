@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { projectMemoryDir, resolveProjectRoot, type GitFsReader } from "../../src/main/projectRoot.js";
+import {
+  projectMemoryDir, resolveProjectRoot, resolveWorkspaceOrigin, type GitFsReader,
+} from "../../src/main/projectRoot.js";
 
 /** 假文件系统。值 = null 代表「这是个目录」（readFileSync 读目录会抛，真实现返回 null） */
 function fakeFs(files: Record<string, string | null>): GitFsReader {
@@ -71,5 +73,55 @@ describe("projectMemoryDir", () => {
     expect(a).toBe(projectMemoryDir("/repo"));
     expect(a).not.toBe(projectMemoryDir("/repo2"));
     expect(a).toMatch(/^memories\/projects\/[0-9a-f]{16}$/);
+  });
+});
+
+describe("resolveWorkspaceOrigin", () => {
+  it("worktree：一次爬升同时得出项目根和当前分支（读 HEAD，不起 git 子进程）", () => {
+    const fs = fakeFs({
+      "/repo/wt/a/.git": "gitdir: /repo/.git/worktrees/a\n",
+      "/repo/.git/worktrees/a/HEAD": "ref: refs/heads/otto/friends-a29018\n",
+    });
+    expect(resolveWorkspaceOrigin("/repo/wt/a", fs)).toEqual({
+      root: "/repo",
+      branch: "otto/friends-a29018",
+    });
+  });
+
+  it("普通仓库不是副本：branch 为 null（没有「副本分支」这回事）", () => {
+    const fs = fakeFs({ "/repo/.git": null });
+    expect(resolveWorkspaceOrigin("/repo/src", fs)).toEqual({ root: "/repo", branch: null });
+  });
+
+  it("游离 HEAD（裸 sha）：branch 为 null —— 没有名字可显示，编一个不如不显示", () => {
+    const fs = fakeFs({
+      "/repo/wt/a/.git": "gitdir: /repo/.git/worktrees/a",
+      "/repo/.git/worktrees/a/HEAD": "9f8b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3\n",
+    });
+    expect(resolveWorkspaceOrigin("/repo/wt/a", fs).branch).toBeNull();
+  });
+
+  it("HEAD 读不到（权限错/文件没了）：root 照常，branch 退成 null", () => {
+    const fs = fakeFs({ "/repo/wt/a/.git": "gitdir: /repo/.git/worktrees/a" });
+    expect(resolveWorkspaceOrigin("/repo/wt/a", fs)).toEqual({ root: "/repo", branch: null });
+  });
+
+  it("submodule 不折叠，也没有副本分支", () => {
+    const fs = fakeFs({ "/parent/sub/.git": "gitdir: /parent/.git/modules/sub" });
+    expect(resolveWorkspaceOrigin("/parent/sub", fs)).toEqual({ root: "/parent/sub", branch: null });
+  });
+
+  it("一路没有 .git：两个字段都是 null", () => {
+    expect(resolveWorkspaceOrigin("/nowhere", fakeFs({}))).toEqual({ root: null, branch: null });
+  });
+
+  // resolveProjectRoot 现在是 resolveWorkspaceOrigin 的投影 —— 两者若给出不同答案,
+  // 「worktree 折回主仓」这件事会在项目记忆和灵动岛上分裂成两个结论
+  it("resolveProjectRoot 与它同源", () => {
+    const fs = fakeFs({
+      "/repo/wt/a/.git": "gitdir: /repo/.git/worktrees/a",
+      "/repo/.git/worktrees/a/HEAD": "ref: refs/heads/x",
+    });
+    expect(resolveProjectRoot("/repo/wt/a", fs)).toBe(resolveWorkspaceOrigin("/repo/wt/a", fs).root);
   });
 });

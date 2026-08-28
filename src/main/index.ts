@@ -120,6 +120,7 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
+import { createWorkspaceLens } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
 import {
@@ -798,9 +799,13 @@ void app.whenReady().then(() => {
     return fleetSessionsCache.rows;
   };
 
+  // 岛的分组镜头(main/workspaceLens.ts):workspace → 项目根 + worktree 分支。
+  // 读 .git,所以自带 30s 记忆化——pushFleet 跟着每条事件跑
+  const workspaceLens = createWorkspaceLens();
+
   const pushFleet = (): void => {
     if (!bridge && !remoteBridge) return;
-    const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId);
+    const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId, workspaceLens);
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge?.pushState(fleet);

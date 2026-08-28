@@ -955,9 +955,20 @@ export interface IslandAgent {
   currentTool: { verb: string; target: string } | null;
   turnStartedAt: number | null;
   pendingApproval: { callId: string; verb: string; target: string; fullPath: string | null } | null;
-  /** 工程文件夹全路径(SessionSummary.workspace,#206 分组键;显示名由 Swift 取
-      basename)。orderedVisibleSessions 已滤掉 null,但类型跟着源头如实标可空 */
+  /** 工程文件夹全路径(SessionSummary.workspace)。orderedVisibleSessions 已滤掉 null,
+      但类型跟着源头如实标可空。**不再是分组键**——见下面的 projectRoot */
   workspace: string | null;
+  /** 这个会话所属**项目**的根目录全路径:worktree 折回主仓(同 main/projectRoot.ts
+      给记忆用的那套判据,ADR-0116)。#206 起的分组键与组头显示名都取这个——
+      每只水獭一份独立 worktree 之后(ADR-0157),再按 workspace 分组的话组头会变成
+      副本目录名(`<userData>/worktrees/<12位哈希>-<6位随机>` 的末段),同一个项目
+      还裂成 N 组。可选:旧 helper 解码时忽略,缺席时 Swift 侧回落 workspace */
+  projectRoot?: string | null;
+  /** 这只水獭在一份独立副本上干活时的**当前**分支名;不是副本 → 缺席。
+      现查 `.git` 而不是读日志里 `session_created.isolated.branch`:那是"当初叫什么"
+      的历史记录,自动标题出来后分支会改名(ADR-0158)。折回项目分组之后,
+      "这一行在副本上"这件事就只剩行级的 chip 能说了 */
+  branch?: string | null;
   /** 本轮聚合改动摘要（issue #345，"3 文件 +120 −45"）。与对话视图消费同一份
       TurnDiffUpdate 的统计——两处只能显示同一个数。可选：旧 helper 解码时忽略，
       turn 没写过文件时缺席 */

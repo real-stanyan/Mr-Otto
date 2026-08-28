@@ -41,10 +41,8 @@ const MAX_ASCEND = 12;
 
 /** 从 .git 文件的 `gitdir:` 指向反推项目根。认不出形状就返回 null（调用方就地当根，不猜） */
 function rootFromGitdir(gitFileDir: string, content: string): string | null {
-  const m = /^\s*gitdir:\s*(.+?)\s*$/m.exec(content);
-  if (!m) return null;
-  const target = m[1]!;
-  const abs = isAbsolute(target) ? target : resolve(gitFileDir, target);
+  const abs = gitdirTarget(gitFileDir, content);
+  if (abs === null) return null;
   // worktree：<主仓>/.git/worktrees/<名> —— 剥两层得 <主仓>/.git，再取父目录
   const wt = abs.lastIndexOf("/.git/worktrees/");
   if (wt >= 0) return abs.slice(0, wt);
@@ -53,11 +51,44 @@ function rootFromGitdir(gitFileDir: string, content: string): string | null {
   return null;
 }
 
-/** workspace 所属的项目根。null = 一路没有 .git，这个会话没有项目档 */
-export function resolveProjectRoot(
+/** `.git` 文件里 `gitdir:` 指向的绝对路径；认不出形状 → null */
+function gitdirTarget(gitFileDir: string, content: string): string | null {
+  const m = /^\s*gitdir:\s*(.+?)\s*$/m.exec(content);
+  if (!m) return null;
+  const target = m[1]!;
+  return isAbsolute(target) ? target : resolve(gitFileDir, target);
+}
+
+/** worktree 的当前分支：`<主仓>/.git/worktrees/<名>/HEAD` 里那行 `ref: refs/heads/…`。
+    **纯读文件，不起 `git` 子进程** —— 岛的每条事件都会重推一次 fleet，一个
+    `git branch --show-current` 在那个频率上是不能付的成本。
+    游离 HEAD（HEAD 里是裸 sha）→ null：没有名字可显示，编一个不如不显示。 */
+function branchFromWorktreeGitdir(gitdir: string, reader: GitFsReader): string | null {
+  const head = reader.readFile(join(gitdir, "HEAD"));
+  if (head === null) return null;
+  const m = /^\s*ref:\s*refs\/heads\/(.+?)\s*$/m.exec(head);
+  return m ? m[1]! : null;
+}
+
+/** 一个 workspace 的来历：它属于哪个项目、以及它是不是一份 worktree 副本。
+    `resolveProjectRoot` 是它的投影（只取 root 那一半）—— 两者必须同源，否则
+    「worktree 折回主仓」这件事会在项目记忆和灵动岛上给出两个不同的答案。 */
+export interface WorkspaceOrigin {
+  /** 项目根。null = 一路没有 .git，这个会话没有项目档 */
+  root: string | null;
+  /** 它是一份 worktree 副本时的当前分支名；不是副本（或游离 HEAD）→ null。
+      分支**会被改名**（自动标题出来后跟着走，ADR-0158），所以这里现查，
+      不用日志里 `session_created.isolated.branch` 那个历史记录 */
+  branch: string | null;
+}
+
+const NO_ORIGIN: WorkspaceOrigin = { root: null, branch: null };
+
+/** workspace 的来历（项目根 + worktree 分支），一次爬升同时得出两件事 */
+export function resolveWorkspaceOrigin(
   workspace: string,
   reader: GitFsReader = nodeReader
-): string | null {
+): WorkspaceOrigin {
   // 先归一化再爬:返回值会被 projectMemoryDir 哈希成目录名,`/repo` 和 `/repo/`
   // 不归一化就是两个不同的哈希 = 同一个仓库分裂出两份项目记忆。
   // join(dir, ".git") 只归一化了**查找**,没归一化返回值——普通仓库那条分支
@@ -67,14 +98,26 @@ export function resolveProjectRoot(
     const gitPath = join(dir, ".git");
     if (reader.exists(gitPath)) {
       const content = reader.readFile(gitPath);
-      if (content === null) return dir; // .git 是目录 = 普通仓库根
-      return rootFromGitdir(dir, content) ?? dir; // 认不出就就地当根
+      if (content === null) return { root: dir, branch: null }; // .git 是目录 = 普通仓库根
+      const root = rootFromGitdir(dir, content) ?? dir; // 认不出就就地当根
+      // 只有真被认成 worktree(root 折回了别处)才去读那份 HEAD——submodule 和
+      // 认不出形状的两条路都已经就地当根,它们没有"副本分支"这回事
+      const gitdir = root === dir ? null : gitdirTarget(dir, content);
+      return { root, branch: gitdir === null ? null : branchFromWorktreeGitdir(gitdir, reader) };
     }
     const parent = dirname(dir);
     if (parent === dir) break; // 到文件系统顶了
     dir = parent;
   }
-  return null;
+  return NO_ORIGIN;
+}
+
+/** workspace 所属的项目根。null = 一路没有 .git，这个会话没有项目档 */
+export function resolveProjectRoot(
+  workspace: string,
+  reader: GitFsReader = nodeReader
+): string | null {
+  return resolveWorkspaceOrigin(workspace, reader).root;
 }
 
 /** 项目记忆目录（配置目录相对路径）。绝对路径的 sha256 前 16 位——路径里的
