@@ -1,0 +1,172 @@
+// proxyShare —— 「圈白名单」那张勾选表的纯逻辑（issue #657，ADR-0151 / ADR-0162）。
+//
+// A 把「操作我已接通的服务」授给好友时，要圈两层：哪些服务、每个服务里的哪些工具。
+// 线上那份白名单（ProxyGrant.allow）有一条容易踩的约定：
+//
+//   **`tools: []` 表示「这个服务全部工具都放行」**，不是「一个都不放行」。
+//
+// 所以「用户把某个服务下的工具全部取消勾选」绝不能编码成 `tools: []`——那会把
+// 「什么都别给」变成「全都给」。这一层的存在就是为了让那件事在一个纯函数里被钉死，
+// 而不是散在勾选框的 onChange 里靠人记得。
+//
+// 选择态用「服务 id → 'all' | 明确的工具名数组」表示：
+//   - 缺席      = 这个服务没授权
+//   - "all"     = 整服务放行（含 A 以后新装的工具——这是 A 主动选的宽口径）
+//   - string[]  = 只放行这几个；空数组视同没授权（见上）
+
+/** 勾选表的状态：服务 id → 全放行 or 明确的工具名清单 */
+export type ProxySelection = Record<string, "all" | readonly string[]>;
+
+/** 线上白名单的形状（= ProxyGrant["allow"] 的一项） */
+export interface ProxyAllowEntry {
+  serverId: string;
+  tools: readonly string[];
+}
+
+/** 这个服务授权了没（"all" 或非空清单才算） */
+export function isServerOn(sel: ProxySelection, serverId: string): boolean {
+  const v = sel[serverId];
+  return v === "all" || (Array.isArray(v) && v.length > 0);
+}
+
+/** 这个工具放行没 */
+export function isToolOn(sel: ProxySelection, serverId: string, tool: string): boolean {
+  const v = sel[serverId];
+  if (v === "all") return true;
+  return Array.isArray(v) && v.includes(tool);
+}
+
+/** 勾/取消整个服务。勾 = "all"（含以后新增的工具），取消 = 整条移除 */
+export function toggleServer(sel: ProxySelection, serverId: string, on: boolean): ProxySelection {
+  const next = { ...sel };
+  if (on) next[serverId] = "all";
+  else delete next[serverId];
+  return next;
+}
+
+/**
+ * 勾/取消单个工具。
+ * 从 "all" 里取消一个 = 先摊成明确清单再减——否则没法表达「除了这一个」。
+ * 减到空就整条移除：空清单在线上等于「全放行」，留着它等于把用户的「都不要」
+ * 翻译成「都要」。
+ */
+export function toggleTool(
+  sel: ProxySelection,
+  serverId: string,
+  tool: string,
+  allTools: readonly string[]
+): ProxySelection {
+  const cur = sel[serverId];
+  const explicit: string[] = cur === "all" ? [...allTools] : Array.isArray(cur) ? [...cur] : [];
+  const at = explicit.indexOf(tool);
+  if (at >= 0) explicit.splice(at, 1);
+  else explicit.push(tool);
+
+  const next = { ...sel };
+  if (explicit.length === 0) delete next[serverId];
+  // 又勾满了就收回成 "all"：以后 A 新装的工具跟着放行，语义与用户勾的那一下一致
+  else if (allTools.length > 0 && explicit.length === allTools.length) next[serverId] = "all";
+  else next[serverId] = explicit;
+  return next;
+}
+
+/** 勾选表 → 线上白名单。空清单的服务一律不进（见文件头那条约定） */
+export function buildAllow(sel: ProxySelection): ProxyAllowEntry[] {
+  const out: ProxyAllowEntry[] = [];
+  for (const [serverId, v] of Object.entries(sel)) {
+    if (v === "all") out.push({ serverId, tools: [] });
+    else if (Array.isArray(v) && v.length > 0) out.push({ serverId, tools: [...v] });
+  }
+  return out;
+}
+
+/** 线上白名单 → 勾选表（打开对话框时把已有授权回填进去） */
+export function selectionFromAllow(allow: readonly ProxyAllowEntry[]): ProxySelection {
+  const sel: ProxySelection = {};
+  for (const a of allow) sel[a.serverId] = a.tools.length === 0 ? "all" : [...a.tools];
+  return sel;
+}
+
+/** 一句话说清这份授权给了什么。`nameOf` 把 server id 换成展示名（认不出就用 id） */
+export function describeAllow(
+  allow: readonly ProxyAllowEntry[],
+  nameOf: (serverId: string) => string = (id) => id
+): string {
+  if (allow.length === 0) return "没有授权";
+  return allow
+    .map((a) => (a.tools.length === 0 ? `${nameOf(a.serverId)}（全部工具）` : `${nameOf(a.serverId)}（${a.tools.length} 个工具）`))
+    .join("、");
+}
+
+/** 审计账一行要显示的几段。decision/outcome 说人话——「denied」不是给用户看的 */
+export interface AuditLine {
+  time: string;
+  target: string;
+  verdict: string;
+  /** 入参摘要（落盘时已截断到 200 字符）。空字符串 = 这笔没参数，UI 就不占那一行。
+      ADR-0151 防线 1 点名要它：白名单内的写操作是全自动的，
+      事后「到底动了什么」只有这一处答得上来 */
+  args: string;
+}
+
+/** 「8月28日 20:11」。审计账和两侧的状态行共用一份写法 */
+export function formatProxyTime(ts: number): string {
+  const at = new Date(ts);
+  return `${String(at.getMonth() + 1)}月${String(at.getDate())}日 ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 一行的状态：那个点是什么档，右边那句话说什么。
+ *
+ * 四档不能合并，每一档对应用户**不同的下一步动作**：
+ *   live = 此刻正在动我的账号（看一眼在调什么）
+ *   on   = 连着，闲着（没事）
+ *   off  = 配过、但这会儿没连上（等一等）
+ *   dead = 对方明说撤销了（别等了，要用得重走邀请码）
+ * off 和 dead 长得像却是相反的建议——这正是 issue #680 要分开的那一对。
+ */
+export interface ProxyStatusLine {
+  dot: "live" | "on" | "off" | "dead";
+  text: string;
+}
+
+/** A 侧：我授出去的那条此刻怎么样 */
+export function hostStatusLine(h: {
+  connected: boolean; inflight: number; lastCallAt: number | null;
+  pairing?: "paired" | "waiting" | "needsInvite";
+}): ProxyStatusLine {
+  // 「正在跑」优先于其他一切：白名单内是全自动的，这是唯一一次
+  // 用户能在事情发生的**当下**看见它
+  if (h.inflight > 0) return { dot: "live", text: `正在调用 · ${h.inflight} 笔` };
+  // 配对还没成立的两档要排在「连没连」前面：那两种情况下「没连上」这句话
+  // 是**误导**——它暗示等一等就好，而实际上等到天荒地老也不会连上（issue #682）
+  if (h.pairing === "needsInvite") return { dot: "dead", text: "邀请已失效 · 重发一张" };
+  if (h.pairing === "waiting") return { dot: "off", text: "等对方接受邀请" };
+  const last = h.lastCallAt === null ? "还没用过" : `最近 ${formatProxyTime(h.lastCallAt)}`;
+  return h.connected ? { dot: "on", text: `已连上 · ${last}` } : { dot: "off", text: `没连上 · ${last}` };
+}
+
+/** B 侧：我借来的那条此刻怎么样 */
+export function borrowStatusLine(b: {
+  connected: boolean; serverCount: number; revokedReason?: string;
+}): ProxyStatusLine {
+  if (b.revokedReason) return { dot: "dead", text: b.revokedReason };
+  if (!b.connected) return { dot: "off", text: "没连上" };
+  // 「连上了但对方一个都没授」和「没连上」是两件事，分开说
+  return { dot: "on", text: b.serverCount === 0 ? "已连上 · 等对方推授权" : `${b.serverCount} 个服务` };
+}
+
+export function auditLine(rec: {
+  ts: number; serverId: string; tool: string; argsSummary?: string;
+  decision: string; outcome: string; detail?: string;
+}): AuditLine {
+  const time = formatProxyTime(rec.ts);
+  const verdict =
+    rec.decision === "denied" ? `已拒绝${rec.detail ? `（${rec.detail}）` : ""}`
+    : rec.outcome === "error" ? `出错了${rec.detail ? `（${rec.detail}）` : ""}`
+    : "已执行";
+  // `{}` 和 `null` 是「没给参数」的两种写法，占一行只是噪音
+  const raw = (rec.argsSummary ?? "").trim();
+  const args = raw === "{}" || raw === "null" ? "" : raw;
+  return { time, target: `${rec.serverId} / ${rec.tool}`, verdict, args };
+}

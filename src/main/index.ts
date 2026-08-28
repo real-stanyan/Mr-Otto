@@ -74,6 +74,8 @@ import type { AutoCompactSettings } from "../shared/autoCompact.js";
 import type { IslandSettings, MotionSettings, UpdaterState,
   RemoteStatus,
   PermissionsSnapshot,
+  ProxyBorrowView,
+  ProxyHostView,
   WorkspaceSettingsInfo,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
@@ -140,11 +142,17 @@ import { createSend } from "./rendererPush.js";
 import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
+import { createProxyManager, type ProxyManager } from "./proxyManager.js";
+import { mergeProxyMcp } from "./proxyNamespace.js";
+import { adaptProxyWire } from "./proxyWire.js";
+import { readProxyStore, writeProxyStore } from "./proxyStore.js";
+import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
 import { createRemoteBridge } from "./remoteBridge.js";
 import { createPairingOffers, encodePairingOffer } from "../shared/remote/pairing.js";
 import { createRemoteDevices } from "../shared/remote/devices.js";
 import { createSupabaseDevicesApi } from "./supabaseDevicesApi.js";
 import { nodeRemoteCrypto } from "./remoteCryptoNode.js";
+import type { RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import { openIdentityStore } from "./remoteIdentity.js";
 import { createWsTransport } from "../shared/remote/wsTransport.js";
 import { createRejectionLedger, visibleRejection } from "./remoteRejections.js";
@@ -509,6 +517,12 @@ void app.whenReady().then(() => {
   /** 叫醒远程传输(登录那一刻)。远程那一块装配得比 accountManager 晚,
       所以这里先留个空位,由它填上 —— null = 远程没起来(系统封装不可用) */
   let remoteRetryNow: (() => void) | null = null;
+  /** 好友代理:把已授权好友的房间重新开起来(issue #657)。同上是个空位 ——
+      代理管理器要等 mcpHub 装完才造得出来,而登录可能比那早也可能比那晚。
+      没登录时 wsTransport 根本不连,所以这件事必须挂在"登录那一刻"上 */
+  let proxyResumeNow: (() => void) | null = null;
+  /** 好友代理:登出时把通道全关掉(issue #680)。同上是个空位,理由一样 */
+  let proxyCloseNow: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -523,7 +537,8 @@ void app.whenReady().then(() => {
       // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
-      if (info.signedIn) remoteRetryNow?.();
+      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); }
+      else proxyCloseNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -671,6 +686,13 @@ void app.whenReady().then(() => {
       要读它,而它的写入方在桥的回调里 */
   const rejections = createRejectionLedger({ now: () => Date.now() });
 
+  /** 好友代理要复用的那份身份 + crypto（下面那个 IIFE 装配远程时填上）。
+      null = 系统封装不可用，没有身份密钥 —— 那么代理也开不了，同自远程 */
+  let remoteKeys: {
+    crypto: RemoteCryptoPrimitives;
+    idStore: NonNullable<ReturnType<typeof openIdentityStore>>;
+  } | null = null;
+
   const remote = (() => {
     const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
@@ -686,6 +708,9 @@ void app.whenReady().then(() => {
     // 系统封装不可用 = 不开远程,而不是明文落盘。这两种"关着"要分得开:
     // 用户该做的事完全不同(去开开关 vs 去解锁钥匙串)
     if (!idStore) return { off: "no-secure-storage" as const };
+    // 好友代理用的是**同一把身份密钥**（ADR-0151：一台机器一个密码学身份，
+    // 自远程和好友代理都认它）。它装配得比这里晚（要等 mcpHub），所以从这儿递出去
+    remoteKeys = { crypto, idStore };
     const transport = createWsTransport({
       baseUrl: relayBaseUrl(),
       role: "desktop",
@@ -1273,6 +1298,79 @@ void app.whenReady().then(() => {
   };
   mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
 
+  // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0162）─────────────────
+  // A 把「操作我已接通的服务」这件能力临时授给好友：B 的工具调用经 relay 打到
+  // A 这台机器，用 A 自己的凭证执行，结果加密回传——密钥不出 A 的 ~/.mr-otto/。
+  //
+  // 装在这里而不是跟 remote 一块：host 侧要拿 mcpHub 当执行落点，而 mcpHub 造得比
+  // remote 晚。身份/crypto 复用 remote 那一份（同一台机器同一个密码学身份）。
+  // 系统封装不可用 = 没有身份密钥 = 代理也开不了（和自远程同一个理由，不明文落盘）。
+  const proxyStorePath = join(app.getPath("userData"), "proxy-store.json");
+  const proxy: ProxyManager | null = remoteKeys
+    ? createProxyManager({
+        crypto: remoteKeys.crypto,
+        identity: remoteKeys.idStore.identity,
+        deviceId: remoteKeys.idStore.deviceId,
+        // **这里必须是 mcpHub 本尊，不能换成下面那份合并的**：A 执行 B 的调用时
+        // 用的是自己的真服务。换成合并的等于允许「B 借 A 去调 C 的服务」——
+        // 传递性代理，而 A 圈的白名单里从来没有 C 那些工具（issue #670）
+        mcp: mcpHub,
+        currentUid: () => friends.currentUid(),
+        // 第二道闸：删好友 = 代理权限跟着死（ADR-0151 决策 1，issue #665）。
+        // null = 名单还没同步好，代理侧按「拒」处理
+        friendUids: () => friends.acceptedFriendUids(),
+        friendLabel: (uid) => friends.friendLabel(uid),
+        // 借来的通道有任何变化就推一份全量（接上/断开/对方改授权）。
+        // 同 onFriendsChanged 的口径：量小，快照比增量简单
+        onChange: () => {
+          if (!proxy) return;
+          send(CHANNELS.proxyChanged, proxySnapshot());
+          // 借来的服务变了 = 这个会话的工具表变了（issue #680）。sendToolDefs 原本
+          // 只挂在 mcpHub.onChange 上，而代理来的那些不经 mcpHub —— 不补这一句，
+          // 好友刚授的刀要等下一个 turn 重算工具表时才在界面上出现
+          sendToolDefs();
+        },
+        // 一条代理通道 = relay 上一个按 channelId 分的房间。adaptProxyWire 把
+        // 「按 cid 寻址」包成点对点，并把 `:peer` 转成协调器的握手起跑枪
+        openWireTransport: (channel, role) =>
+          adaptProxyWire(
+            createWsTransport({
+              baseUrl: relayBaseUrl(),
+              role,
+              channel,
+              authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+              log: (m) => console.warn(m),
+            }),
+            { log: (m) => console.warn(m) }
+          ),
+        loadStore: () => readProxyStore(proxyStorePath),
+        saveStore: (d) => writeProxyStore(proxyStorePath, d),
+        log: (m) => console.warn(m),
+      })
+    : null;
+  // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
+  // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
+  proxyResumeNow = proxy ? () => proxy.resume() : null;
+  // 登出 = 断开所有代理通道（issue #680）。安全上本来就是失败关闭的
+  // （A 侧 friendUids() 回 null 一律拒），但不断的话 B 那边借来的刀还留在
+  // 工具表里，模型调了才报错——账号都换了，那些刀不该还在
+  proxyCloseNow = proxy ? () => proxy.closeAll() : null;
+  /** 代理全景（借进来的 + 借出去的）。推送与拉取共用一份，免得两边算得不一样 */
+  const proxySnapshot = (): { borrows: ProxyBorrowView[]; hosts: ProxyHostView[] } => ({
+    borrows: proxy ? [...proxy.borrowStatus()] : [],
+    hosts: proxy ? [...proxy.hostStatus()] : [],
+  });
+
+  /**
+   * 会话拿到的那份 MCP 能力 = 自己接的 + 此刻借来的（issue #670）。
+   * 代理来的服务按好友加前缀，所以 B 自己的 `shopify` 和好友的 `shopify`
+   * 既不会在工具名上塌成一个（`assignMcpToolNames` 会静默丢重复项），
+   * 也不会在 `callTool(serverId)` 上分不清该本地跑还是打帧发走。
+   *
+   * 取函数而不是快照：好友通道随时来去，而 `buildTools` 每 turn 现算一次工具表。
+   */
+  const sessionMcp = proxy ? mergeProxyMcp(mcpHub, () => proxy.activeProxies()) : mcpHub;
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     return agent
@@ -1420,7 +1518,9 @@ void app.whenReady().then(() => {
       快照会让"认不认得这个名字"停在装配那一刻。逻辑本体在 shared/mcp.ts
       （issue #473 拎出去的，纯函数才测得到）：自助配置三件套 + mcp_read_resource
       无条件在列（挂载条件是"有 mcp 能力"，零 server 也挂），server 工具只算 live */
-  const mcpToolNamesNow = (): string[] => knownMcpToolNames(mcpHub.servers());
+  // 借来的服务也算数：子 agent 的 allowTools 点名一把代理工具时，
+  // 认不出就会被静默剔除（issue #473 那条陷阱），所以这里问的是合并后的那份
+  const mcpToolNamesNow = (): string[] => knownMcpToolNames(sessionMcp.servers());
 
   /** 现扫磁盘的清单。workspace 决定要不要带上工作区那两条根（ADR-0048）。
       null = 只看用户级（设置页的「用户」视图、探针装配） */
@@ -1583,7 +1683,7 @@ void app.whenReady().then(() => {
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
-        mcp: mcpHub,
+        mcp: sessionMcp,
         // skill 库同理（issue #482）：挂载归挂载，白名单说了算。skills: "none"
         // 的子 agent 当初就没挂上这把刀，快照里没有它的名字，恢复回来照样没有
         skills: { listSkills: () => scanSkills(skillRoots) },
@@ -1709,8 +1809,10 @@ void app.whenReady().then(() => {
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，
       // 而 MCP server 是第三方代码，接一台新 server 不该悄悄扩大所有子 agent 的权限面。
       // 两条调用点（startSession / resumeSession）都在调这个函数之前
-      // await 过 mcpHub.ready()——工具表挂载一次定终身，拼之前必须等到
-      mcp: mcpHub,
+      // await 过 mcpHub.ready()——那句话现在只对本地服务成立：好友借来的服务
+      // 是握手后由对方推 proxy_grant 帧来的，等不到也不必等（buildTools 每 turn
+      // 现算，晚到的服务下一轮就出现在工具表里，issue #670）
+      mcp: sessionMcp,
       listSubagents: listForSession,
       subagentRunner: createSubagentRunner({
         store,
@@ -2270,7 +2372,7 @@ void app.whenReady().then(() => {
     await mcpHub.ready();
     // task 过滤掉：子 agent 不能再派子 agent（main/subagents.ts 解析时也剔）。
     // 这条探针本来就没有 subagentRunner、装不出 task，留着这句是写给下一个人看的
-    return probeToolDefs(mcpHub).filter((d) => d.name !== "task");
+    return probeToolDefs(sessionMcp).filter((d) => d.name !== "task");
   });
   ipcMain.handle(CHANNELS.listSubagents, (_e, workspace: unknown) =>
     listSubagents(trusted(workspace))
@@ -2464,6 +2566,25 @@ void app.whenReady().then(() => {
     friends.sendMessage(friendId, body));
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
+
+  // 好友代理（issue #622 / #657）：同一套结构化回流。proxy 为 null = 系统封装不可用
+  // （没有身份密钥就没有握手，见上面的装配）——回一句人话，别让渲染层拿到 undefined
+  const proxyOff = { ok: false as const, message: "系统钥匙串不可用，好友代理开不了（同「手机远程」那一条）" };
+  ipcMain.handle(CHANNELS.proxyCreateInvite, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
+    proxy ? proxy.proxyCreateInvite(friendUid, allow) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAcceptInvite, (_e, invite: string) =>
+    proxy ? proxy.proxyAcceptInvite(invite) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyListGrants, () => (proxy ? proxy.proxyListGrants() : proxyOff));
+  ipcMain.handle(CHANNELS.proxyRevoke, (_e, friendUid: string) =>
+    proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAudit, (_e, friendUid?: string) =>
+    proxy ? proxy.proxyAudit(friendUid) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyUpdateGrant, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
+    proxy ? proxy.proxyUpdateGrant(friendUid, allow) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyStatus, () =>
+    proxy ? { ok: true as const, value: proxySnapshot() } : proxyOff);
+  ipcMain.handle(CHANNELS.proxyDisconnect, (_e, hostUid: string) =>
+    proxy ? proxy.proxyDisconnect(hostUid) : proxyOff);
 
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、
@@ -3241,6 +3362,8 @@ void app.whenReady().then(() => {
     // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
     simulators.dispose();
     simInput?.dispose();
+    // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
+    proxy?.closeAll();
     store.close();
   });
 });

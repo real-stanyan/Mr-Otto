@@ -67,3 +67,18 @@ describe("白名单策略 grantAllows", () => {
     expect(grantDenyReason(GRANT, req({ serverId: "google-ads", tool: "update_campaign" }))).toContain("update_campaign");
   });
 });
+
+// ─── 撤销帧（issue #680）────────────────────────────────────────────────
+describe("proxy_revoked 帧", () => {
+  it("编解码往返，理由原样带过去", () => {
+    const raw = encodeProxyFrame({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION, reason: "不给了" });
+    expect(decodeProxyFrame(raw)).toEqual({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION, reason: "不给了" });
+  });
+
+  it("没有理由的撤销帧一律丢掉", () => {
+    // 理由是这一帧存在的**全部意义**：没有它，B 收到的就只是一次静默断线，
+    // 和「对方关机了」分不开——那正是这一帧要修的那件事
+    expect(decodeProxyFrame(JSON.stringify({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION }))).toBeNull();
+    expect(decodeProxyFrame(JSON.stringify({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION, reason: "" }))).toBeNull();
+  });
+});

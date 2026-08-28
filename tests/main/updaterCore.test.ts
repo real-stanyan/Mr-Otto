@@ -6,6 +6,7 @@ import {
   isTranslocated,
   parseLatestRelease,
   parseShasums,
+  winSwapSpawn,
   parseVersion,
 } from "../../src/main/updaterCore.js";
 
@@ -109,5 +110,23 @@ describe("路径判定", () => {
       "/Applications/Mr Otto.app",
     );
     expect(appBundlePathFromExe("/usr/local/bin/electron")).toBeNull();
+  });
+});
+
+describe("win 换包命令（issue #662）", () => {
+  const SETUP = "C:\\Users\\u\\AppData\\Roaming\\Mr Otto\\updates\\Mr.Otto-1.1.0-win-x64-setup.exe";
+
+  it("跑的是安装器本身，不经 cmd.exe/批处理——那条路会弹一堆控制台黑框", () => {
+    const { cmd, args } = winSwapSpawn(SETUP);
+    expect(cmd).toBe(SETUP);
+    // 这三条是这次修复的全部内容：命令不是 shell、参数里没有脚本、路径不进命令行拼接。
+    // 哪天有人想「顺手加个等待脚本」回来，先在这里红
+    expect(cmd.toLowerCase()).not.toContain("cmd.exe");
+    expect(args.some((a) => a === "/c" || a.endsWith(".cmd") || a.endsWith(".bat"))).toBe(false);
+    expect(args).not.toContain(SETUP);
+  });
+
+  it("静默重装 + 装完拉起新版", () => {
+    expect(winSwapSpawn(SETUP).args).toEqual(["/S", "--force-run"]);
   });
 });

@@ -15,7 +15,10 @@ import {
   appendAudit, grantFor, serializeProxyStore,
   type ProxyStoreData,
 } from "./proxyStore.js";
-import { buildGrantedServers, encodeProxyFrame, type ProxyRequest } from "../shared/remote/proxyProtocol.js";
+import {
+  buildGrantedServers, decodeProxyFrame, encodeProxyFrame, PROXY_FRAME_VERSION,
+  type ProxyRequest,
+} from "../shared/remote/proxyProtocol.js";
 import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 
@@ -23,7 +26,22 @@ import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js
 export interface ProxyWireTransport {
   send(payload: string): void;
   onMessage(cb: (payload: string) => void): void;
+  /** 对端 attach 了（relay 的 `:peer`）。**握手的起跑枪** —— 协调器拿它调
+      connection.start()。注册式而不是构造式：传输比连接先造出来，构造传输那一刻
+      还没有连接可 start（issue #657）。假传输不实现它 = 测试里手动 start */
+  onPeerPresent?(cb: () => void): void;
+  /** 对端走了（`:gone`）或底层断开。可选，同上 */
+  onPeerGone?(cb: () => void): void;
   close(): void;
+}
+
+/** 握手层认人那一套的注入（proxyConnection 的 pairing，issue #657 / ADR-0162）。
+    A 侧填 verifyWith/onPaired/consume，B 侧填 proveWith */
+export interface ProxyPairing {
+  proveWith?: () => Uint8Array | null;
+  verifyWith?: () => Uint8Array | null;
+  onPaired?: (peerIdentityPub: Uint8Array) => void;
+  consume?: () => void;
 }
 
 /** A 侧（host）协调器：接 B 的代理调用，用自己的 MCP 执行 */
@@ -34,16 +52,41 @@ export function startProxyHostCoordinator(deps: {
   transport: ProxyWireTransport;
   /** A 自己的真 McpCapability（mcpHub）——B 的调用最终落在这上面执行 */
   mcp: McpCapability;
-  /** B 的身份公钥（已 pin） */
+  /** B 的身份公钥（已 pin）。首次连接时是空组——信任由下面的 pairing 建立 */
   peerIdentityPub: () => Uint8Array[];
-  /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧 */
+  /** 邀请码那条受理路径（A 侧：verifyWith 给手里那张活着的邀请，onPaired 落 pin）。
+      **不传 = 只认 pin 组**，首次连接必然握不上手（这是安全的默认，不是 bug） */
+  pairing?: ProxyPairing;
+  /** B 的 Supabase userId——host 一个通道就一个好友，握手后按它查白名单、发 grant 帧。
+      **这是密码学上确定的那个身份**（A 发邀请时定、握手时由 secret 证明钉死），
+      不是帧里自称的 fromUid（issue #665，见 proxyHost 的 friendUid 注释） */
   friendUid: string;
+  /** A 此刻的好友 uid 集；null = 还没同步好。ADR-0151 决策 1：删好友 = 代理权限跟着死 */
+  friendUids: () => readonly string[] | null;
   /** 读/写授权+审计存储（proxyStore 的持久化由调用方落盘） */
   loadStore: () => ProxyStoreData;
   saveStore: (d: ProxyStoreData) => void;
+  /**
+   * 这条对外通道的状态变了（issue #680）：握手完成、好友离场、有笔调用起跑或跑完、
+   * 记了一笔审计。**A 侧那块表的唯一信号源** —— B 侧早就有一份对称的
+   * （guest 的 onStateChange），A 侧一直缺，结果就是「别人正在用我的凭证」
+   * 这件事只有事后翻账才看得见。
+   */
+  onStateChange?: () => void;
   now?: () => number;
   log?: (m: string) => void;
-}): { connection: ProxyConnection; close(): void } {
+}): {
+  connection: ProxyConnection;
+  pushGrant(): void;
+  /** 明说一句「撤销了」再关门（issue #680）。见 ProxyRevokedFrame 的注释：
+      撤销不能靠沉默表达，否则 B 那边和「A 关机了」分不开 */
+  pushRevoked(reason: string): void;
+  /** 好友此刻握上手没有（UI 的「连上了没」） */
+  isReady(): boolean;
+  /** 此刻正在跑几笔（>0 = 正在用 A 的凭证） */
+  inflight(): number;
+  close(): void;
+} {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
 
@@ -53,9 +96,14 @@ export function startProxyHostCoordinator(deps: {
     role: "host",
     deviceId: deps.deviceId,
     peerIdentities: deps.peerIdentityPub,
+    ...(deps.pairing ? { pairing: deps.pairing } : {}),
     send: (payload) => deps.transport.send(payload),
     log,
   });
+  // relay 说「B 到了」= 开一轮握手。重连也走这里（每次 attach 都会再来一条 `:peer`）
+  deps.transport.onPeerPresent?.(() => connection.start());
+  // 「B 走了」得让连接跟着退出就绪（issue #672）——否则 isPeerConnected() 一直是 true
+  deps.transport.onPeerGone?.(() => { connection.peerGone(); deps.onStateChange?.(); });
 
   // 连接就绪后，把收到的明文帧交给 proxyHost 执行（白名单 + 审计 + 回传）
   const host = startProxyHost({
@@ -65,6 +113,8 @@ export function startProxyHostCoordinator(deps: {
       isPeerConnected: () => connection.isReady(),
     },
     mcp: deps.mcp,
+    friendUid: deps.friendUid,
+    friendUids: deps.friendUids,
     // 白名单从存储读：每笔调用都查最新的（A 撤销后下一笔立即生效）
     getGrants: () => deps.loadStore().grants,
     audit: (e: ProxyAuditEntry) => {
@@ -75,27 +125,61 @@ export function startProxyHostCoordinator(deps: {
         outcome: e.decision === "denied" ? "denied" : (e.outcome ?? "ok"),
         ...((e.denyReason ?? e.error) !== undefined ? { detail: (e.denyReason ?? e.error)! } : {}),
       }));
+      // 记了一笔 = 「最近一次被调用」变了。审计是**每条决策**都写（含被拒的），
+      // 所以这一钩也覆盖了「有人在拿被拒的请求刷我」那种情形
+      deps.onStateChange?.();
     },
+    // 起跑/跑完的边沿：inflight 从 0 变 1 时没有任何审计会写（审计在结果出来才记），
+    // 不挂这一钩的话「正在跑」这一格永远亮不起来
+    onActivity: () => deps.onStateChange?.(),
     now,
     log,
   });
 
-  // 握手成功后，把授权清单（A 的真服务按白名单过滤、脱敏）推给 B——
-  // B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
-  // A 改授权后可再调 connection 重发；这里至少在握手后推一次。
-  connection.onReady(() => {
-    const grant = grantFor(deps.loadStore(), deps.friendUid);
+  /**
+   * 把此刻的授权清单（A 的真服务按白名单过滤、脱敏）推给 B。
+   * B 收到 proxy_grant 才知道自己能调哪些服务/工具（这是 grantedServers 的来源）。
+   *
+   * 两个调用点：握手完成时推一次；**A 撤销时先推一帧空的再关房间**（issue #672）——
+   * 不推的话 B 的工具表里那几把刀一直留着，模型还会去调。
+   */
+  function pushGrant(): void {
+    // 已经不是好友了就推一份空清单（协议里 servers: [] 就是「撤销全部授权」）。
+    // 不这么做的话，删了好友之后对面仍然看得见 A 接了哪些服务、每个服务有哪些工具
+    // ——调不动，但看得见，而那份清单本身就是不该给的东西（issue #665）
+    const known = deps.friendUids();
+    const stillFriend = known !== null && known.includes(deps.friendUid);
+    const grant = stillFriend ? grantFor(deps.loadStore(), deps.friendUid) : null;
     const servers = buildGrantedServers(deps.mcp.servers(), grant);
-    connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }));
-    log(`代理授权已推送给 B：${servers.length} 个服务`);
-  });
+    if (!connection.sendSealed(encodeProxyFrame({ kind: "proxy_grant", v: 1, servers }))) {
+      // 授权清单带着每把工具的完整 inputSchema，服务多起来是有可能撞上单帧上限的
+      // （issue #674）。撞上了 B 就什么都收不到——**说出来**，别让它表现成
+      // 「连上了但对方一个服务都没授权」那种查不动的样子
+      log(`代理授权推不出去：${servers.length} 个服务的清单超过单帧上限，好友那边工具表会是空的`);
+      return;
+    }
+    log(`代理授权已推送给 B：${servers.length} 个服务${stillFriend ? "" : "（已不是好友/名单未同步，推空清单）"}`);
+  }
+
+  connection.onReady(() => { pushGrant(); deps.onStateChange?.(); });
 
   // 传输 → 连接（首字符定型在 proxyConnection.onWire 里做）
   deps.transport.onMessage((payload) => connection.onWire(payload));
 
   return {
     connection,
-    close() { host(); connection.close(); deps.transport.close(); },
+    pushGrant,
+    pushRevoked(reason: string) {
+      // 发不出去（对面此刻不在线）就算了：B 下次连回来握不上手（pin 已清），
+      // 台账那条会停在「没连上」——比现在好，但不如收到帧那么明确。
+      // 这是尽力而为的一句话，不是必达的协议保证
+      if (!connection.sendSealed(encodeProxyFrame({ kind: "proxy_revoked", v: PROXY_FRAME_VERSION, reason }))) {
+        log("代理撤销通知没发出去（好友此刻不在线）——对面只会看到连接断开");
+      }
+    },
+    isReady: () => connection.isReady(),
+    inflight: () => host.inflight(),
+    close() { host.stop(); connection.close(); deps.transport.close(); },
   };
 }
 
@@ -109,8 +193,24 @@ export function startProxyGuestCoordinator(deps: {
   transport: ProxyWireTransport;
   /** A 的身份公钥（从邀请码拿到，B pin 它） */
   peerIdentityPub: () => Uint8Array[];
+  /** 邀请码那条受理路径（B 侧：proveWith 给邀请码里那把一次性 secret，
+      hello 里带上持有证明——A 靠它认得「这条连接是被邀请的那个 B」） */
+  pairing?: ProxyPairing;
   /** A 授权给 B 的服务句柄（invite 流程里 A 给的，B 的工具表只报这些） */
   grantedServers: readonly McpServerHandle[];
+  /**
+   * 这条通道的状态变了（issue #676）：握手完成、对端离场、A 推来新的授权清单。
+   * B 侧 UI 的唯一信号源——没有它，界面只能停在「已连上，等对方推来授权清单」。
+   */
+  onStateChange?: () => void;
+  /**
+   * A 明说「撤销了」（`proxy_revoked` 帧，issue #680）。
+   *
+   * 没有这一帧的话，撤销在 B 眼里长得和「A 关机了」一模一样——工具表空掉、
+   * 连接断掉。而这两件事该做的动作相反：一个是等，一个是别等了。
+   * 上层收到它就把这条从「会自动重连的台账」里摘出来，并把原因显示出来。
+   */
+  onRevoked?: (reason: string) => void;
   callTimeoutMs?: number;
   log?: (m: string) => void;
 }): { connection: ProxyConnection; mcp: McpCapability; close(): void } {
@@ -122,9 +222,16 @@ export function startProxyGuestCoordinator(deps: {
     role: "guest",
     deviceId: deps.deviceId,
     peerIdentities: deps.peerIdentityPub,
+    ...(deps.pairing ? { pairing: deps.pairing } : {}),
     send: (payload) => deps.transport.send(payload),
     log,
   });
+  // 同 host 侧：relay 报「A 在场」才发 hello，对端不在场时发 hello 只是喂虚空
+  deps.transport.onPeerPresent?.(() => connection.start());
+  // A 走了（退出 / 撤销时关房间）：连接退出就绪，proxyMcp 当场答「代理通道断了」，
+  // 而不是把帧发进虚空再等满 60 秒超时（issue #672）
+  deps.transport.onPeerGone?.(() => { connection.peerGone(); deps.onStateChange?.(); });
+  connection.onReady(() => deps.onStateChange?.());
 
   // proxyMcp 的传输：callTool 打帧走连接发走，连接收到明文帧喂回 proxyMcp 匹配 reqId
   const mcp = createProxyMcp({
@@ -135,8 +242,19 @@ export function startProxyGuestCoordinator(deps: {
     },
     fromUid: deps.fromUid,
     grantedServers: deps.grantedServers,
+    // A 推来新的授权清单 = B 的工具表变了，UI 要跟着变（这个回调声明了很久没人接）
+    onGrantsChanged: () => deps.onStateChange?.(),
     ...(deps.callTimeoutMs !== undefined ? { timeoutMs: deps.callTimeoutMs } : {}),
     log,
+  });
+
+  // 撤销帧不归 proxyMcp 管（它只认 grant/res 两种）——这是**通道级**的事：
+  // 收到就不该再自动连回去了，而 proxyMcp 管不着台账
+  connection.onPlain((frameJson) => {
+    const frame = decodeProxyFrame(frameJson);
+    if (frame?.kind !== "proxy_revoked") return;
+    log(`代理被撤销：${frame.reason}`);
+    deps.onRevoked?.(frame.reason);
   });
 
   deps.transport.onMessage((payload) => connection.onWire(payload));

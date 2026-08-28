@@ -9,19 +9,35 @@
 // （handshake/sealedStream），但帧是代理帧、角色是 host/guest、连接是一对一。
 //
 // 信任来源：握手时对端身份公钥必须落在「已 pin 的集合」里——和 remoteBridge
-// 同一个 TOFU 口径。首次 pin 由邀请码路径建立（proxyInvite + PR-D2 的配对）。
+// 同一个 TOFU 口径。**首次 pin 由邀请码里那把一次性 secret 的持有证明建立**
+// （pairing.ts 的 buildPairProof/verifyPairProof，issue #657 / ADR-0162）——
+// channelId 不是信任来源，「知道频道号」不等于「是被邀请的那个好友」。
 //
 // 纯逻辑零 IO：transport/crypto/identity 全注入，假 transport 即可离线测试。
 
 import { b64decode, b64encode } from "../shared/remote/b64.js";
+import { MAX_FRAME_BYTES } from "../shared/remote/wire.js";
 import {
   buildHello, deriveSession, newConnectionParty,
   type HandshakeHello, type Role, type SelfParty,
 } from "../shared/remote/handshake.js";
+import { buildPairProof, verifyPairProof } from "../shared/remote/pairing.js";
 import { createOpener, createSealer } from "../shared/remote/sealedStream.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 
 type Phase = "idle" | "handshaking" | "ready" | "closed";
+
+/**
+ * 一帧能塞下的最大 base64 载荷（issue #674）。
+ *
+ * relay 对**整条消息**（`<cid> <载荷>`）设了 `MAX_FRAME_BYTES` 的闸，
+ * 超了它 `ws.close(1009)` —— **关的是发送方的连接**，不是丢这一帧。
+ * cid 是 `c` + 12 位十六进制（`newCid`），加个空格 14 字节；留 64 字节余量，
+ * 免得哪天 cid 变长就变成一条谁都想不到的断线。
+ *
+ * 这里量的是**编码后**的长度，不是估算的：估错的代价是连接被关。
+ */
+const MAX_SEALED_PAYLOAD = MAX_FRAME_BYTES - 64;
 
 export interface ProxyConnectionDeps {
   crypto: RemoteCryptoPrimitives;
@@ -32,6 +48,28 @@ export interface ProxyConnectionDeps {
   deviceId: string;
   /** 已 pin 的对端身份公钥集合（A pin B 的、B pin A 的）。空 = 谁都不认 */
   peerIdentities: () => Uint8Array[];
+  /**
+   * 邀请码那条受理路径（issue #657，ADR-0162）。**没传 = 老行为**：只认 pin 组里的公钥。
+   *
+   * 好友代理的信任根是邀请码里那把一次性 secret（proxyInvite），不是 channelId。
+   * channelId 随机 32 字节难猜，但「知道就能连」≠「是被邀请的那个 B」——
+   * 没有下面这一步，A 会接受任何拿到 channelId 的连接，然后用**自己的凭证**
+   * 替它跑 Shopify/Google Ads。
+   *
+   * - guest（B）：`proveWith()` 有值时，hello 里带上「我持有这把 secret」的证明；
+   * - host（A）：pin 组全验不过时，用 `verifyWith()` 那把 secret 验 B 的证明，
+   *   **验过才 pin（onPaired）、才作废那张邀请（consume）、才派生会话**。
+   */
+  pairing?: {
+    /** 我要证明「我持有邀请里那把 secret」时用的 secret（B 侧填）。null = 这轮不带证明 */
+    proveWith?: () => Uint8Array | null;
+    /** 我要验对端证明时用的 secret（A 侧填：手里那张还活着的邀请）。null = 手上没邀请 */
+    verifyWith?: () => Uint8Array | null;
+    /** 验过了：把对端公钥 pin 进本地（下一次连接走正常 pin 路径） */
+    onPaired?: (peerIdentityPub: Uint8Array) => void;
+    /** 配上了：那张一次性邀请作废 */
+    consume?: () => void;
+  };
   /** 发送一帧到底层传输（已 base64 的密文 或 明文握手 JSON） */
   send: (payload: string) => void;
   log?: (m: string) => void;
@@ -42,14 +80,26 @@ export interface ProxyConnection {
   start(): void;
   /** 喂进一条线上收到的 payload（首字符 '{'=握手包，否则=密封帧） */
   onWire(payload: string): void;
-  /** 发一个密封帧（ready 才发得出，否则丢） */
-  sendSealed(plainText: string): void;
+  /**
+   * 发一个密封帧。**回 false = 没发出去**，调用方要把它翻成人话：
+   * 没 ready（对端不在），或者超过了 relay 的单帧上限（超了会被 relay
+   * 关掉本端连接，所以宁可这一帧不发，issue #674）。
+   */
+  sendSealed(plainText: string): boolean;
   /** 注册「收到解出的明文帧」回调 */
   onPlain(cb: (plainText: string) => void): void;
   /** 注册「握手完成、可以收发」回调 */
   onReady(cb: () => void): void;
   /** 当前是否 ready */
   isReady(): boolean;
+  /**
+   * 对端离场了（relay 的 `:gone` / 底层断开，issue #672）。
+   *
+   * **退出 ready 但不 close**：对端还会回来，回来时 `:peer` 会再驱动一轮握手。
+   * 不做这一步的话 `isReady()` 一直是 true，上层会把帧发进虚空，
+   * 然后等满超时才失败——而且报的是「对方没回」，不是「对方不在」。
+   */
+  peerGone(): void;
   close(): void;
 }
 
@@ -75,6 +125,36 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
     opener = null;
   }
 
+  /**
+   * 邀请码那条受理路径。回一把「该用来验这条 hello 的公钥」，认不下就 null。
+   * **只在 pin 组全验不过之后才走** —— 已经 pin 住的好友不该每次连接都消耗一张邀请。
+   *
+   * 证明签的内容里带着 secret + 这一轮的 eph/nonceHalf（pairing.ts 的 proofPayload），
+   * 所以：没拿到邀请码的人填不出来，截走这条证明的人也换不到另一条连接上用。
+   */
+  function tryPair(hello: HandshakeHello): Uint8Array | null {
+    const secret = deps.pairing?.verifyWith?.() ?? null;
+    if (!secret || !hello.pair || !hello.identityPub) return null;
+    const claimed = b64decode(hello.identityPub);
+    const ephPub = b64decode(hello.ephPub);
+    const nonceHalf = b64decode(hello.nonceHalf);
+    if (!claimed || !ephPub || !nonceHalf) return null;
+    const ok = verifyPairProof(p, {
+      proof: hello.pair,
+      role: hello.role,
+      deviceId: hello.deviceId,
+      identityPub: claimed,
+      secret,
+      ephPub,
+      nonceHalf,
+    });
+    if (!ok) {
+      log("代理连接:邀请码证明验不过,这条连接不作数");
+      return null;
+    }
+    return claimed;
+  }
+
   function adopt(hello: HandshakeHello): void {
     if (!self) return;
     // 逐把 pin 公钥试：验不过 deriveSession 回 null（签名不对/公钥不对）。
@@ -84,9 +164,24 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
       keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: pub });
       if (keys) break;
     }
+    // pin 组之外只剩一条路：拿着还没用掉的那张邀请码来的那个 B（issue #657）
+    let freshlyPaired: Uint8Array | null = null;
     if (!keys) {
-      log("代理连接:对端身份验不过(公钥 pin 不上/签名不对),不建立会话");
+      const claimed = tryPair(hello);
+      if (claimed) {
+        keys = deriveSession(p, { self, peerHello: hello, peerIdentityPub: claimed });
+        if (keys) freshlyPaired = claimed;
+      }
+    }
+    if (!keys) {
+      log("代理连接:对端身份验不过(公钥 pin 不上/邀请码证明不对),不建立会话");
       return;
+    }
+    if (freshlyPaired) {
+      // 顺序:先落 pin 再作废那张邀请。反过来的话,中间崩一下就成了「邀请没了也没 pin 上」
+      deps.pairing?.onPaired?.(freshlyPaired);
+      deps.pairing?.consume?.();
+      log("代理连接:邀请码证明验过,好友身份已 pin");
     }
     usedPeerEphs.add(hello.ephPub);
     lastPeerHello = hello;
@@ -103,7 +198,22 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
     const carried = lastPeerHello;
     self = newConnectionParty(p, { role: deps.role, deviceId: deps.deviceId, identity: deps.identity });
     usedPeerEphs = new Set();
-    deps.send(JSON.stringify(buildHello(p, self)));
+    // 手上有邀请里那把 secret（B 侧）= 这一轮的 hello 带上持有证明。
+    // 证明绑在这一轮的 eph/nonceHalf 上，所以必须在 newConnectionParty 之后现签
+    const proveSecret = deps.pairing?.proveWith?.() ?? null;
+    const hello = proveSecret
+      ? buildHello(p, self, {
+          proof: buildPairProof(p, {
+            role: self.role,
+            deviceId: self.deviceId,
+            identity: self.identity,
+            secret: proveSecret,
+            ephPub: self.eph.publicKey,
+            nonceHalf: self.nonceHalf,
+          }),
+        })
+      : buildHello(p, self);
+    deps.send(JSON.stringify(hello));
     // 对端可能早就 ready 不会再发 hello——拿记住的那份当场重派生（同 remoteBridge）
     if (carried && phase !== "ready") adopt(carried);
   }
@@ -152,12 +262,28 @@ export function createProxyConnection(deps: ProxyConnectionDeps): ProxyConnectio
       else onSealed(payload);
     },
     sendSealed(plainText) {
-      if (phase !== "ready" || !sealer) return;
-      deps.send(b64encode(sealer.seal(new TextEncoder().encode(plainText))));
+      if (phase !== "ready" || !sealer) return false;
+      const payload = b64encode(sealer.seal(new TextEncoder().encode(plainText)));
+      if (payload.length > MAX_SEALED_PAYLOAD) {
+        // 交出去的下场是 relay 把**我这条连接**关掉（1009），然后退避重连、
+        // 对端那笔等满超时。宁可这一帧不发，让调用方回一句人话
+        log(`代理连接:这一帧 ${payload.length} 字节，超过单帧上限，没发出去`);
+        return false;
+      }
+      deps.send(payload);
+      return true;
     },
     onPlain(cb) { plainCbs.push(cb); },
     onReady(cb) { readyCbs.push(cb); },
     isReady() { return phase === "ready"; },
+    peerGone() {
+      if (phase === "closed" || phase === "idle") return;
+      clearSession();
+      // 记住的那份 peer hello 也扔掉：对端确定走了，它不可能再是
+      // 「对端已经 ready 不会重发」那种情形，留着只会让下一轮拿旧 eph 派生一次
+      lastPeerHello = null;
+      log("代理连接:对端离场,通道退出就绪(等它回来重新握手)");
+    },
     close() {
       phase = "closed";
       sealer = null;

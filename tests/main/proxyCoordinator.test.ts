@@ -67,7 +67,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
       crypto: p, identity: aId, deviceId: "A",
       transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
-      friendUid: "b-uid",
+      friendUid: "b-uid", friendUids: () => ["b-uid"],
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
 
@@ -111,7 +111,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
     const host = startProxyHostCoordinator({
       crypto: p, identity: aId, deviceId: "A", transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
-      friendUid: "b-uid",
+      friendUid: "b-uid", friendUids: () => ["b-uid"],
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
     const guest = startProxyGuestCoordinator({
@@ -142,7 +142,7 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
     const host = startProxyHostCoordinator({
       crypto: p, identity: aId, deviceId: "A", transport: hostWire, mcp: aMcp,
       peerIdentityPub: () => [bId.publicKey],
-      friendUid: "b-uid",
+      friendUid: "b-uid", friendUids: () => ["b-uid"],
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
     const guest = startProxyGuestCoordinator({
@@ -159,6 +159,57 @@ describe("proxyCoordinator（A/B 协调器端到端，issue #622 PR-D2）", () =
     store = { ...store, grants: [] };
     await expect(guest.mcp.callTool("shopify", "get_orders", {})).rejects.toThrow();
     expect(aMcp.calls).toHaveLength(1); // 没再执行
+
+    host.close();
+    guest.close();
+  });
+});
+
+// ─── 关系闸也管 grant 帧（issue #665）────────────────────────────────
+describe("proxyCoordinator 的关系闸（issue #665）", () => {
+  it("已经不是好友 → 握手后推空清单：调不动，也**看不见** A 接了什么", () => {
+    const p = nodeRemoteCrypto();
+    const aId = p.generateEd25519();
+    const bId = p.generateEd25519();
+    const { hostWire, guestWire } = linkedWire();
+    let store: ProxyStoreData = setGrant(emptyProxyStore(), {
+      friendUid: "b-uid", allow: [{ serverId: "shopify", tools: [] }],
+    });
+    // A 的 MCP 真有一台连着的 shopify——不是好友时这份清单不该出门
+    const aMcp = {
+      ready: async () => {},
+      servers: () => [{
+        id: "shopify", name: "shopify", status: "connected", live: true,
+        tools: [{ name: "get_orders", description: "", inputSchema: {} }],
+        resources: [], prompts: [],
+      }],
+      callTool: async () => [],
+    } as unknown as McpCapability;
+
+    const host = startProxyHostCoordinator({
+      crypto: p, identity: aId, deviceId: "A",
+      transport: hostWire, mcp: aMcp,
+      peerIdentityPub: () => [bId.publicKey],
+      friendUid: "b-uid", friendUids: () => [], // 被删好友了，grants 里那条还留着
+      loadStore: () => store, saveStore: (d) => { store = d; },
+    });
+    const grantFrames: string[] = [];
+    const guest = startProxyGuestCoordinator({
+      crypto: p, identity: bId, deviceId: "B", fromUid: "b-uid",
+      transport: guestWire,
+      peerIdentityPub: () => [aId.publicKey],
+      grantedServers: [],
+    });
+    guest.connection.onPlain((t) => grantFrames.push(t));
+
+    // 先 guest 后 host：这根直连管道是**同步重入**的，反过来的话 host 会在
+    // guest 的 start() 还没走完（还没 ready）时就把 grant 帧推出去，被当无主帧丢掉。
+    // 真 relay 上不会：A 的 hello 和 grant 走同一条连接、按序到达，B 必先 ready
+    guest.connection.start();
+    host.connection.start();
+
+    expect(grantFrames).toHaveLength(1);
+    expect(JSON.parse(grantFrames[0]!)).toMatchObject({ kind: "proxy_grant", servers: [] });
 
     host.close();
     guest.close();

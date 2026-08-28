@@ -1,6 +1,18 @@
-// proxyHost —— A 侧代理接入编排（issue #622 PR-C2，ADR-0151）。
-// 把 PR-B 的 proxyExecutor 接到传输层：relay 收到 B 的 proxy_req → 查白名单 →
+// proxyHost —— A 侧代理接入编排（issue #622 PR-C2 / #665，ADR-0151）。
+// 把 PR-B 的 proxyExecutor 接到传输层：relay 收到 B 的 proxy_req → 三道闸 →
 // 用 A 的 McpCapability 执行 → proxy_res 回传 B + 记审计。
+//
+// 三道闸，顺序固定（issue #665）：
+//   1. **身份**：帧里自称的 fromUid 必须等于这条通道绑定的那个好友（握手时用
+//      邀请码 secret 证明过的那个）。不核对的话 B 能自选身份，吃别人的白名单。
+//   2. **关系**：那个好友现在还是不是好友（ADR-0151 决策 1 的后半句）。
+//   3. **白名单**：这个服务/工具在不在他那份授权里。
+// 前两道之后，**查授权只按绑定的 uid**，绝不按帧里自称的那个。
+//
+// 取消（issue #668，ADR-0151 §4）：B 撤了 AbortSignal 就发一帧 `proxy_cancel`，
+// A 这边把那笔在跑的调用 abort 掉。**取消不等于没发生** —— 帧到达时工具可能
+// 已经把单下了，所以取消照样记审计（`outcome: "error"`，detail 说清「可能已生效」），
+// 不静默抹掉。
 //
 // 依赖全部注入（传输、白名单、MCP、审计）——本层不连 relay、不碰加密，
 // 那些由装配根（接 wsTransport + sealedStream + 真 McpCapability）填进来。
@@ -19,7 +31,8 @@ import { grantAllows, grantDenyReason } from "../shared/remote/proxyProtocol.js"
 
 /** A 侧看的代理传输（同 proxyMcp 的 ProxyTransport，方向相反） */
 export interface HostTransport {
-  send(frameJson: string): void;
+  /** 回 false = 这一帧没发出去（对端不在 / 超过单帧上限，见 proxyConnection） */
+  send(frameJson: string): boolean;
   onFrame(cb: (frameJson: string) => void): () => void;
   isPeerConnected(): boolean;
 }
@@ -42,12 +55,67 @@ export interface ProxyHostDeps {
   transport: HostTransport;
   /** A 自己的真 McpCapability（连着 Shopify/Google Ads，持 A 的凭证） */
   mcp: McpCapability;
+  /**
+   * **这条通道属于哪个好友**（issue #665）。A 发邀请时定的，握手时由邀请码 secret
+   * 的持有证明钉死（ADR-0162）——所以它是密码学上确定的那个身份。
+   *
+   * `proxy_req.fromUid` 是 B 自己在帧里填的，**只能用来核对，不能用来查授权**：
+   * 拿它查等于让 B 自选身份，一个被正常邀请的好友把它填成另一个好友的 uid，
+   * 就吃到那个人的白名单。这与 ADR-0162 修掉的那个洞是同一类——握手层认了
+   * 「哪把密钥」，应用层却信了一个自称的 id。
+   */
+  friendUid: string;
+  /**
+   * A 此刻的好友 uid 集；**`null` = 名单还没同步好**（没登录 / 首次快照还没到）。
+   *
+   * ADR-0151 决策 1 的后半句：「friendships 被删除 = 代理权限跟着死」——
+   * 白名单之外的第二道闸。删好友之后不必再想起来去点一次「撤销」。
+   *
+   * `null` 一律拒（名单未知时放行等于这道闸不存在），但拒的话要说不同的人话：
+   * 「还没同步好，稍后再试」和「你们已经不是好友了」对 B 是两件事。
+   */
+  friendUids(): readonly string[] | null;
   /** 当前生效的代理授权白名单 */
   getGrants(): readonly ProxyGrant[];
   /** 记一笔审计 */
   audit(entry: ProxyAuditEntry): void;
+  /**
+   * 同时在跑的代理调用上限（issue #674）。白名单内是**全自动**的——
+   * 好友那边一个跑飞的循环能对 A 的账号连开几百笔，而 ADR-0151 的三道防线
+   * （审计/撤销/白名单）没有一条管速率：审计只能事后看见，撤销要人去点，
+   * 白名单管「能不能调」不管「调多少次」。
+   */
+  maxInflight?: number;
+  /** 令牌桶：持续速率（每分钟几笔）与桶容量（允许多大的突发） */
+  ratePerMinute?: number;
+  rateBurst?: number;
+  /**
+   * 有笔调用开跑 / 跑完了（issue #680）。**A 侧那块表的信号源**：
+   * 白名单内是全自动的，不给 A 一个「此刻正在被用」的实况，
+   * 「别人在用我的凭证」这件事就只能事后翻审计账才看得见。
+   *
+   * 只报边沿不报内容——报什么由上层从 inflight() 与审计账现取。
+   */
+  onActivity?: () => void;
   now?: () => number;
   log?: (m: string) => void;
+}
+
+/**
+ * 白名单之前的两道闸：这条连接是不是它自称的那个人、那个人还是不是好友。
+ * 过不了回一句给 B 看的人话，过了回 null。
+ *
+ * 顺序有意：先核对身份再查关系 —— 身份对不上时，「你们不是好友」这句话
+ * 说的是**哪个人**都讲不清。
+ */
+function gateReason(deps: ProxyHostDeps, claimedUid: string): string | null {
+  if (claimedUid !== deps.friendUid) {
+    return "这条代理通道不是给这个身份开的";
+  }
+  const known = deps.friendUids();
+  if (known === null) return "好友名单还没同步好，过一会儿再试";
+  if (!known.includes(deps.friendUid)) return "你们已经不是好友了——代理权限跟着好友关系走";
+  return null;
 }
 
 function summarizeArgs(args: unknown): string {
@@ -59,36 +127,124 @@ function summarizeArgs(args: unknown): string {
   }
 }
 
-/** 把 A 侧代理接到传输上。返回退订函数（A 撤销/断开时停） */
-export function startProxyHost(deps: ProxyHostDeps): () => void {
+/** A 侧代理接上传输之后的把手：停（A 撤销/断开时调）+ 此刻在跑几笔 */
+export interface ProxyHostHandle {
+  /** 退订并 abort 掉还挂着的调用 */
+  stop(): void;
+  /** 此刻正在跑的代理调用笔数。>0 = 有人正在用 A 的凭证（issue #680） */
+  inflight(): number;
+}
+
+/** 把 A 侧代理接到传输上 */
+export function startProxyHost(deps: ProxyHostDeps): ProxyHostHandle {
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
+  /** 正在跑的调用：reqId → 中止把手（收到 proxy_cancel 时按它 abort） */
+  const inflight = new Map<string, AbortController>();
+
+  // ── 闸门 0：并发与速率（issue #674）────────────────────────────────
+  // 放在**所有闸的最前面**，因为它保护的不只是 A 的凭证，还有审计账本身：
+  // 下面每条拒绝都会写一笔审计，而审计有 AUDIT_CAP 上限——不限流的话，
+  // 刷一串必然被拒的请求就能把真记录挤出去。
+  const maxInflight = deps.maxInflight ?? 4;
+  const ratePerMinute = deps.ratePerMinute ?? 30;
+  const rateBurst = deps.rateBurst ?? 30;
+  let tokens = rateBurst;
+  let lastRefill = now();
+  /** 正处在被限流的状态。**一个限流时段只记一笔审计** —— 逐条记等于
+      把「防止刷爆审计账」这件事自己变成刷爆审计账 */
+  let throttling = false;
+
+  function admit(): string | null {
+    if (inflight.size >= maxInflight) return `同时在跑的代理调用太多了（上限 ${maxInflight} 笔），等前面的跑完再来`;
+    const t = now();
+    tokens = Math.min(rateBurst, tokens + ((t - lastRefill) / 60_000) * ratePerMinute);
+    lastRefill = t;
+    if (tokens < 1) return `代理调用太频繁了（上限 ${ratePerMinute} 笔/分钟），先缓一缓`;
+    tokens -= 1;
+    return null;
+  }
+
+  /** 拒一笔：记审计 + 回帧。审计里的 fromUid 一律是**绑定的**那个身份，不是自称的 */
+  function deny(req: ProxyRequest, base: Omit<ProxyAuditEntry, "decision">, reason: string): void {
+    log(`代理拒 ${deps.friendUid} ${req.serverId}/${req.tool}: ${reason}`);
+    deps.audit({ ...base, decision: "denied", denyReason: reason });
+    const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: reason };
+    deps.transport.send(encodeProxyFrame(res));
+  }
 
   async function execute(req: ProxyRequest): Promise<void> {
     const base = {
-      ts: now(), reqId: req.reqId, fromUid: req.fromUid,
+      // 审计记的是这条通道**绑定**的那个好友，不是帧里自称的那个 —— 台账要能当证据用，
+      // 而自称的字段谁都能填。自称与绑定不一致时，那件事本身进 denyReason
+      ts: now(), reqId: req.reqId, fromUid: deps.friendUid,
       serverId: req.serverId, tool: req.tool, argsSummary: summarizeArgs(req.args),
     };
-    // 按 fromUid 找到这个好友的那份授权，再判断这笔请求放不放行
-    const grant = deps.getGrants().find((g) => g.friendUid === req.fromUid) ?? null;
-    if (!grantAllows(grant, req)) {
-      const deny = grantDenyReason(grant, req);
-      log(`代理拒 ${req.fromUid} ${req.serverId}/${req.tool}: ${deny}`);
-      deps.audit({ ...base, decision: "denied", denyReason: deny });
-      const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: deny };
-      deps.transport.send(encodeProxyFrame(res));
+    // 闸门 0 在最前面（见上）。被限流的**不逐条记账**：只在进入限流状态时记一笔，
+    // 这样 A 看得见「有人在刷」，而账本不会被刷爆
+    const busy = admit();
+    if (busy) {
+      if (!throttling) {
+        throttling = true;
+        deps.audit({ ...base, decision: "denied", denyReason: `${busy}（后续同类请求不再逐条记账）` });
+      }
+      log(`代理限流 ${deps.friendUid} ${req.serverId}/${req.tool}: ${busy}`);
+      deps.transport.send(encodeProxyFrame({
+        kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: busy,
+      }));
       return;
     }
+    throttling = false;
+
+    const gate = gateReason(deps, req.fromUid);
+    if (gate) {
+      deny(req, base, gate);
+      return;
+    }
+    // 身份闸过了才查白名单。查询与判定一律按绑定的那个 uid —— 这一行是
+    // 「B 不能自选身份」的落点，别改回按 req.fromUid 查
+    const bound: ProxyRequest = { ...req, fromUid: deps.friendUid };
+    const grant = deps.getGrants().find((g) => g.friendUid === deps.friendUid) ?? null;
+    if (!grantAllows(grant, bound)) {
+      deny(req, base, grantDenyReason(grant, bound));
+      return;
+    }
+    // 在跑的这一笔登记进 inflight —— B 发 proxy_cancel 时按 reqId 找到它 abort。
+    // signal 一路传到 mcpHub.callTool → 连接层，SDK 那边才真的停得下来
+    const ctl = new AbortController();
+    inflight.set(req.reqId, ctl);
+    deps.onActivity?.();
     try {
-      const content = await deps.mcp.callTool(req.serverId, req.tool, req.args);
-      deps.audit({ ...base, decision: "executed", outcome: "ok" });
+      const content = await deps.mcp.callTool(req.serverId, req.tool, req.args, ctl.signal);
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: true, content };
-      deps.transport.send(encodeProxyFrame(res));
+      if (deps.transport.send(encodeProxyFrame(res))) {
+        deps.audit({ ...base, decision: "executed", outcome: "ok" });
+        return;
+      }
+      // 结果太大，超过 relay 的单帧上限（issue #674）。**工具已经执行了**——
+      // 副作用已经发生，所以这笔按 executed/error 记账，而不是当没发生过。
+      // 回一条小的错误帧，好友那边当场知道原因，而不是等满超时
+      const tooBig = `${req.serverId}/${req.tool} 执行完了，但结果太大，传不回来（超过单帧上限）`;
+      log(`代理结果超限 ${deps.friendUid} ${req.serverId}/${req.tool}`);
+      deps.audit({ ...base, decision: "executed", outcome: "error", error: tooBig });
+      deps.transport.send(encodeProxyFrame({
+        kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: tooBig,
+      }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (ctl.signal.aborted) {
+        // **取消照样记账**：帧到达时工具可能已经把单下了，抹掉这一笔等于让
+        // 审计账在最需要它的那一次（写操作被中途叫停）恰好是空的
+        deps.audit({ ...base, decision: "executed", outcome: "error", error: "B 中途取消——A 这边可能已经动过了" });
+        // 不回结果帧：B 那边的 pending 早在发 cancel 时就删了，回过去也是丢
+        return;
+      }
       deps.audit({ ...base, decision: "executed", outcome: "error", error: msg });
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: `A 执行 ${req.serverId}/${req.tool} 出错: ${msg}` };
       deps.transport.send(encodeProxyFrame(res));
+    } finally {
+      inflight.delete(req.reqId);
+      deps.onActivity?.();
     }
   }
 
@@ -98,9 +254,26 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
     if (frame.kind === "proxy_req") {
       // 不 await——传输回调不阻塞；execute 内部自己回帧
       void execute(frame);
+      return;
     }
-    // proxy_cancel / proxy_res 在 A 侧不处理（A 是执行方，不发 req、不收 res）
+    if (frame.kind === "proxy_cancel") {
+      // 认不出的 reqId（已经跑完 / 从没来过）静默忽略——迟到的取消不是错误
+      const ctl = inflight.get(frame.reqId);
+      if (!ctl) return;
+      log(`代理取消 ${deps.friendUid} ${frame.reqId}`);
+      ctl.abort();
+    }
+    // proxy_res 在 A 侧不处理（A 是执行方，不收结果帧）
   });
 
-  return off;
+  return {
+    stop() {
+      off();
+      // 连接没了，还挂着的调用没人等结果了。abort 掉而不是让它跑完：
+      // 它占着 A 的凭证在动 A 的账号，而下命令的那个人已经不在线上了
+      for (const ctl of inflight.values()) ctl.abort();
+      inflight.clear();
+    },
+    inflight: () => inflight.size,
+  };
 }

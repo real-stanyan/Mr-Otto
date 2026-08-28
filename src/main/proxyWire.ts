@@ -20,24 +20,28 @@ export function adaptProxyWire(
   transport: RemoteTransport,
   hooks: {
     /** 对端在场（`:peer <cid>`）——驱动连接握手 start */
-    onPeerPresent: () => void;
+    onPeerPresent?: () => void;
     /** 对端走了（`:gone`）或连接断开 */
     onPeerGone?: () => void;
     log?: (m: string) => void;
-  }
+  } = {}
 ): ProxyWireTransport {
   let peerCid: string | null = null;
   const log = hooks.log ?? (() => {});
+  // 传输比连接先造出来（连接要拿传输当 send），所以「对端在场」除了构造时传，
+  // 还得能事后注册——协调器造完连接才知道要 start 谁（issue #657）
+  const peerCbs: (() => void)[] = hooks.onPeerPresent ? [hooks.onPeerPresent] : [];
+  const goneCbs: (() => void)[] = hooks.onPeerGone ? [hooks.onPeerGone] : [];
 
   transport.onPeer((cid) => {
     peerCid = cid;
     log(`代理传输:对端在场 ${cid.slice(0, 8)}`);
-    hooks.onPeerPresent();
+    for (const cb of peerCbs) cb();
   });
   transport.onGone((goneCid) => {
     if (goneCid === peerCid) peerCid = null;
     log("代理传输:对端走了");
-    hooks.onPeerGone?.();
+    for (const cb of goneCbs) cb();
   });
   transport.onClose(() => {
     peerCid = null;
@@ -55,6 +59,12 @@ export function adaptProxyWire(
       transport.onMessage((payload, _from) => {
         cb(payload);
       });
+    },
+    onPeerPresent(cb: () => void): void {
+      peerCbs.push(cb);
+    },
+    onPeerGone(cb: () => void): void {
+      goneCbs.push(cb);
     },
     close(): void {
       transport.close();

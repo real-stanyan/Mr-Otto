@@ -75,7 +75,24 @@ export interface ProxyGrantFrame {
   servers: readonly ProxyGrantedServer[];
 }
 
-export type ProxyFrame = ProxyRequest | ProxyResult | ProxyCancel | ProxyGrantFrame;
+/**
+ * A→B：这条代理关系被撤销了（issue #680）。
+ *
+ * 为什么不能靠「推一份空的 grant 帧然后关房间」表达：那两件事 B 看到的样子，
+ * 和「A 关机了」**一模一样**——都是工具表空掉、连接断掉。而这两件事该做的动作
+ * 完全相反（等对方回来 vs 别等了，要用得重走一次邀请码）。
+ *
+ * 所以撤销是一帧**要真发出去的话**，不是一个可以从沉默里推断出来的状态。
+ * 同一条原则在 ADR-0165 已经用过一次（取消不能靠沉默表达）。
+ */
+export interface ProxyRevokedFrame {
+  kind: "proxy_revoked";
+  v: typeof PROXY_FRAME_VERSION;
+  /** 人话原因，B 原样讲给用户听 */
+  reason: string;
+}
+
+export type ProxyFrame = ProxyRequest | ProxyResult | ProxyCancel | ProxyGrantFrame | ProxyRevokedFrame;
 
 export function encodeProxyFrame(f: ProxyFrame): string {
   return JSON.stringify(f);
@@ -114,6 +131,11 @@ export function decodeProxyFrame(raw: string): ProxyFrame | null {
     case "proxy_cancel":
       if (typeof f.reqId !== "string" || !f.reqId) return null;
       return f as unknown as ProxyCancel;
+    case "proxy_revoked":
+      // 撤销帧也没有 reqId（主动推送）。reason 必须在——B 要拿它讲给用户听，
+      // 缺了就退化成「静默断线」，正是这一帧存在的理由
+      if (typeof f.reason !== "string" || !f.reason) return null;
+      return f as unknown as ProxyRevokedFrame;
     default:
       return null;
   }

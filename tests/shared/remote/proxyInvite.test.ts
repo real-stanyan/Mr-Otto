@@ -22,7 +22,7 @@ const PUB = Uint8Array.from({ length: 32 }, (_, i) => 200 + (i % 50));
 
 describe("proxyInvite（好友代理邀请码，issue #622 PR-C1）", () => {
   it("生成→编码→解码 往返一致", () => {
-    const inv = createProxyInvite(fakeCrypto(), PUB, 1000);
+    const inv = createProxyInvite(fakeCrypto(), PUB, 1000, "a-uid");
     const text = encodeProxyInvite(inv);
     const back = decodeProxyInvite(text);
     expect(back).not.toBeNull();
@@ -37,18 +37,18 @@ describe("proxyInvite（好友代理邀请码，issue #622 PR-C1）", () => {
     // 这里 fake 用自增序列模拟「连续两次结果不同」。各自新建 fake 会重置序列，
     // 那就成了「两份相同」，测的不是随机性
     const c = fakeCrypto();
-    const a = createProxyInvite(c, PUB, 1);
-    const b = createProxyInvite(c, PUB, 1);
+    const a = createProxyInvite(c, PUB, 1, "a-uid");
+    const b = createProxyInvite(c, PUB, 1, "a-uid");
     expect(a.channelId).not.toBe(b.channelId);
     expect([...a.secret]).not.toEqual([...b.secret]);
   });
 
   it("host 身份公钥不是 32 字节 → 生成直接抛", () => {
-    expect(() => createProxyInvite(fakeCrypto(), Uint8Array.from([1, 2, 3]), 0)).toThrow(/32 字节/);
+    expect(() => createProxyInvite(fakeCrypto(), Uint8Array.from([1, 2, 3]), 0, "a-uid")).toThrow(/32 字节/);
   });
 
   it("解码：前缀/段数/版本/长度不对 → null", () => {
-    const good = encodeProxyInvite(createProxyInvite(fakeCrypto(), PUB, 5));
+    const good = encodeProxyInvite(createProxyInvite(fakeCrypto(), PUB, 5, "a-uid"));
     expect(decodeProxyInvite("otto-pair:1:x:y:z:5")).toBeNull(); // 错前缀（那是扫码配对）
     expect(decodeProxyInvite("otto-proxy:1:only:three")).toBeNull(); // 段数不够
     expect(decodeProxyInvite(good.replace(":1:", ":99:"))).toBeNull(); // 版本不符
@@ -57,10 +57,34 @@ describe("proxyInvite（好友代理邀请码，issue #622 PR-C1）", () => {
   });
 
   it("过期判断：默认 10 分钟 TTL", () => {
-    const inv = createProxyInvite(fakeCrypto(), PUB, 1000);
+    const inv = createProxyInvite(fakeCrypto(), PUB, 1000, "a-uid");
     expect(proxyInviteExpired(inv, 1000 + PROXY_INVITE_TTL_MS - 1)).toBe(false);
     expect(proxyInviteExpired(inv, 1000 + PROXY_INVITE_TTL_MS + 1)).toBe(true);
     // 自定义 TTL
     expect(proxyInviteExpired(inv, 1000 + 500, 1000)).toBe(false);
+  });
+});
+
+// ─── 邀请码带上 A 的 uid（issue #670）────────────────────────────────────
+describe("邀请码里的 hostUid（issue #670）", () => {
+  it("编解码往返带得回来", () => {
+    const inv = createProxyInvite(fakeCrypto(), PUB, 7, "a-uid-123");
+    const back = decodeProxyInvite(encodeProxyInvite(inv));
+    expect(back?.hostUid).toBe("a-uid-123");
+    expect(back?.channelId).toBe(inv.channelId);
+  });
+
+  it("旧格式（没有 hostUid 那一段）不认——段数对不上一律回 null", () => {
+    const inv = createProxyInvite(fakeCrypto(), PUB, 7, "a-uid-123");
+    const six = encodeProxyInvite(inv).split(":");
+    six.splice(2, 1); // 去掉 hostUid 那段 = 老编码
+    expect(decodeProxyInvite(six.join(":"))).toBeNull();
+  });
+
+  it("hostUid 为空 → 不认（外部输入，空身份没法贴标签也没法验好友）", () => {
+    const inv = createProxyInvite(fakeCrypto(), PUB, 7, "a-uid-123");
+    const parts = encodeProxyInvite(inv).split(":");
+    parts[2] = "";
+    expect(decodeProxyInvite(parts.join(":"))).toBeNull();
   });
 });

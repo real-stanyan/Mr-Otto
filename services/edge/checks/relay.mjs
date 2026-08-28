@@ -70,9 +70,10 @@ const bad = [];
 const check = (name, cond, extra = "") => (cond ? ok : bad).push(`${name}${extra ? " — " + extra : ""}`);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function open(role, sub) {
+function open(role, sub, channel) {
+  const q = channel ? `&channel=${encodeURIComponent(channel)}` : "";
   return new Promise((res, rej) => {
-    const ws = new WebSocket(`${WS_BASE}/rl/v1/connect?role=${role}`, [SUBPROTOCOL, token(sub)]);
+    const ws = new WebSocket(`${WS_BASE}/rl/v1/connect?role=${role}${q}`, [SUBPROTOCOL, token(sub)]);
     ws.rx = [];       // 载荷帧 {cid, payload}
     ws.peers = [];    // 收到的 :peer <cid>
     ws.gone = [];     // 收到的 :gone <cid>
@@ -168,12 +169,45 @@ const other = await open("desktop", randomUUID());
 await wait(300);
 check("另一个用户收不到别人的 :peer", other.peers.length === 0, JSON.stringify(other.peers));
 
+// ---- 好友代理：按 channel 分房，两个**不同用户**同房（issue #622 / #657）----
+// 自远程按 userId 分房（上面那一段），好友代理按 channelId 分房：A 和 B 是两个
+// 不同的 Supabase 用户，靠同一个 channelId 进同一个房间。这一段是那件事的运行时验证——
+// 单测跑的是纯逻辑 + 假 DO，"跨用户能不能互相看见"只有真 workerd 说了算。
+const chan = randomUUID();
+const aUid = randomUUID();
+const bUid = randomUUID();
+const hostWs = await open("host", aUid, chan);
+await wait(300);
+check("代理：host 独自在房里，没有在场信号", hostWs.peers.length === 0, JSON.stringify(hostWs.peers));
+
+const guestWs = await open("guest", bUid, chan);
+await wait(500);
+check("代理：不同用户同 channel → 两侧各一条 :peer",
+  hostWs.peers.includes(guestWs.cid) && guestWs.peers.includes(hostWs.cid),
+  `host.peers=${JSON.stringify(hostWs.peers)} guest.peers=${JSON.stringify(guestWs.peers)}`);
+
+hostWs.rx.length = 0; guestWs.rx.length = 0;
+guestWs.send(frame(hostWs.cid, "PROXY-REQ"));
+await wait(400);
+check("代理：guest→host 字节原样到达，且带发件人",
+  hostWs.rx.some((f) => f?.payload === "PROXY-REQ" && f.cid === guestWs.cid),
+  JSON.stringify(hostWs.rx));
+hostWs.send(frame(guestWs.cid, "PROXY-RES"));
+await wait(400);
+check("代理：host→guest 字节原样到达",
+  guestWs.rx.some((f) => f?.payload === "PROXY-RES" && f.cid === hostWs.cid));
+
+// 别的房间看不见这一间：channelId 是分房键，不是"同一个 worker 就都在一起"
+const otherChan = await open("guest", randomUUID(), randomUUID());
+await wait(400);
+check("代理：另一个 channel 收不到别人的 :peer", otherChan.peers.length === 0, JSON.stringify(otherChan.peers));
+
 // ---- 单帧上限 ----
 d.send(frame(m2.cid, "x".repeat(MAX_FRAME)));
 await wait(500);
 check("超 256 KiB → 关掉发送方", d.readyState === 3, `readyState=${d.readyState}`);
 
-for (const ws of [d, m1, m2, other]) { try { ws.close(); } catch { /* 已关 */ } }
+for (const ws of [d, m1, m2, other, hostWs, guestWs, otherChan]) { try { ws.close(); } catch { /* 已关 */ } }
 
 console.log(`\n${BASE}\n通过 ${ok.length} 条：`);
 for (const o of ok) console.log(`  ✓ ${o}`);
