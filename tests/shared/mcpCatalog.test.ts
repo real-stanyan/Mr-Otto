@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { MCP_CATALOG, searchCatalog } from "../../src/shared/mcpCatalog.js";
 
 describe("mcpCatalog", () => {
@@ -41,5 +43,15 @@ describe("mcpCatalog", () => {
 
   it("空查询返回全部——agent 想看看有哪些", () => {
     expect(searchCatalog("")).toHaveLength(MCP_CATALOG.length);
+  });
+
+  it("填了 icon 的条目，资源文件必须真的在", () => {
+    // icon 是资源键不是 URL（见 CatalogEntry.icon 的注释）。填了键却没放文件，
+    // UI 上是一个静默的空白格——这类失败不会自己冒头，只能靠断言抓
+    const dir = join(__dirname, "..", "..", "src", "renderer", "src", "assets", "mcp");
+    for (const e of MCP_CATALOG) {
+      if (e.icon === undefined) continue;
+      expect(existsSync(join(dir, `${e.icon}.svg`)), `${e.id} 的图标`).toBe(true);
+    }
   });
 });
