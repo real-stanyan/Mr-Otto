@@ -85,12 +85,16 @@ function listWorktrees() {
   let cur = null;
   for (const line of out.split("\n")) {
     if (line.startsWith("worktree ")) {
-      cur = { path: line.slice(9), branch: null, locked: false };
+      cur = { path: line.slice(9), branch: null, locked: false, lockReason: "" };
       items.push(cur);
     } else if (cur && line.startsWith("branch ")) {
       cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
-    } else if (cur && line === "locked") {
+    } else if (cur && (line === "locked" || line.startsWith("locked "))) {
+      // porcelain 在有锁定原因时输出 `locked <原因>`，无原因时才是光秃秃的 `locked`。
+      // 只认后者的话，带原因的锁定 worktree 会被判成可清理（#625）——而锁定原因恰恰
+      // 常常是 `claude session …`，也就是另一条 lane 正占着它。
       cur.locked = true;
+      cur.lockReason = line.slice("locked".length).trim();
     }
   }
   return items;
@@ -101,7 +105,7 @@ const keptWorktrees = [];
 for (const wt of listWorktrees()) {
   if (wt.path === mainRoot || wt.path === thisWorktree) continue;
   if (wt.locked) {
-    keptWorktrees.push({ ...wt, why: "locked（有人故意锁住了）" });
+    keptWorktrees.push({ ...wt, why: `locked${wt.lockReason ? `（${wt.lockReason}）` : "（有人故意锁住了）"}` });
     continue;
   }
   const dirty = tryGit(["-C", wt.path, "status", "--porcelain"]);

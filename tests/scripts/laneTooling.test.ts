@@ -127,6 +127,16 @@ describe("lane:prune：收工清理（issue #623）", () => {
     expect(git(work, "branch", "--format=%(refname:short)")).not.toContain(branch);
   });
 
+  it("--apply：锁住的 worktree 只报告，永不删——锁定原因常常是另一条 lane（#625）", () => {
+    const { dir } = mergedLane("locked-lane");
+    // porcelain 在有原因时输出 `locked <原因>`；只认光秃秃的 `locked` 会漏判
+    git(work, "worktree", "lock", "--reason", "claude session locked-lane (pid 1)", dir);
+    const r = node(work, PRUNE, "--apply");
+    expect(r.out).toContain("locked（claude session locked-lane (pid 1)）");
+    expect(git(work, "worktree", "list")).toContain(dir);
+    git(work, "worktree", "unlock", dir);
+  });
+
   it("--apply：有未提交改动的 worktree 只报告，永不删", async () => {
     const { dir } = mergedLane("dirty-lane");
     await writeFile(join(dir, "scratch.txt"), "uncommitted\n");
