@@ -85,6 +85,7 @@ function machine(
     currentUid: () => uid,
     // 这台机器把对面当好友（关系闸在 proxyHost 层，那里单独测）
     friendUids: () => friends,
+    friendLabel: (u) => (u === "a-uid" ? "小明" : ""),
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
@@ -187,6 +188,7 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
       crypto: p, identity, deviceId: "B", mcp: fakeMcp([]),
       currentUid: () => null,
       friendUids: () => [],
+      friendLabel: () => "",
       openWireTransport: (c, r) => relay.open(c, r),
       loadStore: () => store, saveStore: (d) => { store = d; },
     });
@@ -210,5 +212,60 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
 
     a.manager.closeAll();
     b.manager.closeAll();
+  });
+});
+
+// ─── B 侧的出口与好友闸（issue #670）────────────────────────────────────
+describe("proxyManager 的 B 侧出口（issue #670）", () => {
+  it("接上之后 activeProxies 报出这条通道——这是 proxyMcp 唯一的出口", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    expect(b.manager.activeProxies()).toEqual([]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+
+    const live = b.manager.activeProxies();
+    expect(live).toHaveLength(1);
+    expect(live[0]?.friendUid).toBe("a-uid");
+    expect(live[0]?.label).toBe("小明"); // 人话名字来自注入的 friendLabel
+    expect(typeof live[0]?.mcp.callTool).toBe("function");
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
+  it("邀请码的主人不在我的好友里 → 说人话拒绝，而不是连上了什么都没有", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const stranger = machine(relay, "b-uid", [], ["someone-else"]); // a-uid 不在它的好友里
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    const r = await stranger.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("不在你的好友里");
+    expect(stranger.manager.activeProxies()).toEqual([]);
+
+    a.manager.closeAll();
+    stranger.manager.closeAll();
+  });
+
+  it("A 没登录 → 生成不了邀请码（码里要写进 A 自己的 uid）", async () => {
+    const relay = fakeRelay();
+    const identity = p.generateEd25519();
+    let store: ProxyStoreData = emptyProxyStore();
+    const manager = createProxyManager({
+      crypto: p, identity, deviceId: "A", mcp: fakeMcp([]),
+      currentUid: () => null,
+      friendUids: () => ["b-uid"],
+      friendLabel: () => "",
+      openWireTransport: (c, r) => relay.open(c, r),
+      loadStore: () => store, saveStore: (d) => { store = d; },
+    });
+    const r = await manager.proxyCreateInvite("b-uid", []);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("登录");
   });
 });

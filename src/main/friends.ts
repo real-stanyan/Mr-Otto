@@ -199,7 +199,7 @@ export class FriendsManager {
   /** 最近一次推给渲染层的那份快照里,**已接受**的好友 uid 集。
       null = 还没推过任何快照(没登录 / 首次快照还没到) —— 这个区别对好友代理是硬要求:
       它把「名单未知」当拒绝处理,拿空集冒充就成了「所有人都不是好友」(issue #665) */
-  private acceptedUids: Set<string> | null = null;
+  private acceptedUids: Map<string, string> | null = null;
   /** 上次推给渲染层的并集,只在变化时再推 */
   private pushedOnline: string[] = [];
   /** 最近一次读到的好友心跳时间(在线判断的第二条腿) */
@@ -238,7 +238,11 @@ export class FriendsManager {
       而不是另起一条拉取 —— 两份名单迟早不一样。于是这道闸的新鲜度恰好等于
       用户在界面上看到的那份:Realtime 推、轮询兜底、渲染层拉,三条路都会喂到它 */
   private cacheAccepted(snap: FriendsSnapshot): void {
-    this.acceptedUids = new Set(snap.friends.map((e) => e.profile.id));
+    // 顺手记下人话名字:好友代理要拿它当代理工具的描述前缀(issue #670)。
+    // 同一份快照里取,不另起一条查询 —— 理由同上
+    this.acceptedUids = new Map(
+      snap.friends.map((e) => [e.profile.id, e.profile.name || e.profile.email])
+    );
   }
 
   /** 变更后重拉快照推给渲染层(本端操作与对端 Realtime 同一条出口) */
@@ -251,7 +255,12 @@ export class FriendsManager {
   /** 已接受的好友 uid 集;**null = 还没同步好**。好友代理拿它当第二道闸
       (ADR-0151 决策 1:friendships 被删除 = 代理权限跟着死) */
   acceptedFriendUids(): readonly string[] | null {
-    return this.acceptedUids === null ? null : [...this.acceptedUids];
+    return this.acceptedUids === null ? null : [...this.acceptedUids.keys()];
+  }
+
+  /** 好友的人话名字(名字为空就退回邮箱)。查不到回空串 —— 调用方自己决定退回什么 */
+  friendLabel(uid: string): string {
+    return this.acceptedUids?.get(uid) ?? "";
   }
 
   async search(query: string): Promise<FriendsResult<FriendProfile[]>> {
