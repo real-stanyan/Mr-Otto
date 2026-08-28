@@ -54,11 +54,25 @@ export interface ProxyCancel {
 /** A→B 的授权清单帧（握手完成后 A 主动推给 B，issue #622 PR-D2）。
     B 收到后才知道自己能调哪些服务/工具——这是「grantedServers 从哪来」的答案。
     不是请求-响应，没有 reqId；A 改授权就重发一帧，B 以最新一帧为准。 */
+/** grant 帧里携带的「服务定义」（脱敏后，B 渲染工具表用）。
+    与 McpServerHandle 同形但定义在 shared——proxyProtocol 是纯逻辑，不能依赖
+    executionWorld（main 层）。A 从自己的 McpServerHandle 映射成这个形状发给 B，
+    B 直接拿它当 McpServerHandle 用（status 恒 connected、live 恒 true——
+    这是 A 确认过能用的服务）。 */
+export interface ProxyGrantedServer {
+  /** MCP server id（mcp.json 里的键，如 "shopify"） */
+  id: string;
+  /** 展示名 */
+  name: string;
+  /** 授权的工具完整定义（含 inputSchema——B 要拿它渲染工具表、喂模型参数 schema） */
+  tools: readonly { name: string; description: string; inputSchema: unknown }[];
+}
+
 export interface ProxyGrantFrame {
   kind: "proxy_grant";
   v: typeof PROXY_FRAME_VERSION;
-  /** A 授给 B 的服务 + 工具清单（与 ProxyGrant.allow 同形） */
-  allow: readonly { serverId: string; tools: readonly string[] }[];
+  /** A 授给 B 的服务完整定义（B 的工具表 = 这个清单）。空数组 = 撤销全部授权 */
+  servers: readonly ProxyGrantedServer[];
 }
 
 export type ProxyFrame = ProxyRequest | ProxyResult | ProxyCancel | ProxyGrantFrame;
@@ -82,7 +96,7 @@ export function decodeProxyFrame(raw: string): ProxyFrame | null {
   switch (f.kind) {
     case "proxy_grant": {
       // grant 帧没有 reqId（主动推送，非请求-响应）
-      if (!Array.isArray(f.allow)) return null;
+      if (!Array.isArray(f.servers)) return null;
       return f as unknown as ProxyGrantFrame;
     }
     case "proxy_req":
@@ -134,4 +148,36 @@ export function grantDenyReason(grant: ProxyGrant | null, req: Pick<ProxyRequest
   const entry = grant.allow.find((a) => a.serverId === req.serverId);
   if (!entry) return `代理授权里没有服务「${req.serverId}」`;
   return `代理授权里「${req.serverId}」不含工具「${req.tool}」`;
+}
+
+// ─── grant 帧的构造：从 A 的真服务 + 白名单 → 发给 B 的授权清单 ────────────
+
+/** 从 A 的真 MCP 服务清单 + 白名单，构造发给 B 的授权服务清单（grant 帧的载荷）。
+    纯函数：A 侧协调器在握手后调它，把自己的 McpServerHandle[] 按白名单过滤、
+    脱敏（只留 id/name/tools 定义）成 ProxyGrantedServer[]。
+
+    过滤规则与白名单同口径：服务在白名单里才进；白名单某服务 tools 非空 = 只留
+    点名的工具，空 = 整服务的工具都留。只保留 connected 的服务（没连上的给了 B
+    也调不动，反而误导）。 */
+export function buildGrantedServers<S extends {
+  id: string; name: string; live: boolean; tools: readonly { name: string; description: string; inputSchema: unknown }[];
+}>(
+  servers: readonly S[],
+  grant: ProxyGrant | null,
+): ProxyGrantedServer[] {
+  if (!grant) return [];
+  const out: ProxyGrantedServer[] = [];
+  for (const allowEntry of grant.allow) {
+    const srv = servers.find((s) => s.id === allowEntry.serverId && s.live);
+    if (!srv) continue;
+    const tools = allowEntry.tools.length === 0
+      ? srv.tools
+      : srv.tools.filter((t) => allowEntry.tools.includes(t.name));
+    out.push({
+      id: srv.id,
+      name: srv.name,
+      tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+    });
+  }
+  return out;
 }
