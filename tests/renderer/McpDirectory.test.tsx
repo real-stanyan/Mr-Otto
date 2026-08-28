@@ -61,8 +61,12 @@ function deferredBridge() {
     (q: string) =>
       new Promise<CatalogEntry[]>((resolve, reject) => pending.set(q, { resolve, reject }))
   );
-  const saveMcpServer = vi.fn(() => Promise.resolve({ servers: [], errors: [] }));
-  const authorizeMcpServer = vi.fn(() => Promise.resolve({ servers: [], errors: [] }));
+  // 参数照 ShellBridge 的真签名写出来（值用不上，名字前缀下划线）：vi.fn(() => …) 的
+  // mock.calls 是 [][]，下面那条按下标取实参的断言在 tuple 上就没有第 0 位可取。
+  const saveMcpServer = vi.fn((_id: string, _cfg: unknown) =>
+    Promise.resolve({ servers: [], errors: [] })
+  );
+  const authorizeMcpServer = vi.fn((_id: string) => Promise.resolve({ servers: [], errors: [] }));
   window.otter = { searchMcpRegistry, saveMcpServer, authorizeMcpServer } as unknown as ShellBridge;
   return { pending, searchMcpRegistry, saveMcpServer, authorizeMcpServer };
 }
