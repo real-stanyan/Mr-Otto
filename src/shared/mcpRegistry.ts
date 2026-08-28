@@ -157,13 +157,16 @@ export function mapRegistryResponse(json: unknown): CatalogEntry[] {
   const usedIds = new Set<string>();
   const out: CatalogEntry[] = [];
   for (const record of records) {
+    const entry = mapRegistryServer(record);
+    if (entry === null) continue;
+    // 注册表按版本历史把同一个 server 的每条记录都返回，旧版本在前。
+    // name 去重必须落在 mapRegistryServer 判完 isLatest 之后——先记 name 再
+    // 校验的话，旧版本会先把坑占了，后面才轮到的当前版本反而被当成"重复"丢掉
     const fullName = isObj(record) && isObj(record.server) ? str(record.server.name) : undefined;
     if (fullName !== undefined) {
       if (seenNames.has(fullName)) continue;
       seenNames.add(fullName);
     }
-    const entry = mapRegistryServer(record);
-    if (entry === null) continue;
     let id = entry.id;
     for (let n = 2; usedIds.has(id); n += 1) id = `${entry.id}-${n}`;
     usedIds.add(id);

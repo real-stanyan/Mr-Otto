@@ -207,6 +207,16 @@ describe("mapRegistryResponse", () => {
     expect(out).toHaveLength(1);
   });
 
+  // 顺序是这类 bug 的触发条件：注册表按版本历史返回同一个 server 的每条
+  // 记录，旧版本在前。旧版本没通过 isLatest 校验，不该抢先把这个 name 记成
+  // "见过"——名字去重要等 mapRegistryServer 判完之后才作数，否则后面才轮到
+  // 的当前版本会被当成"重复"白白丢掉
+  it("旧版本先出现、当前版本后出现 —— 当前版本不会被提前占位的 name 吞掉", () => {
+    const out = mapRegistryResponse(wrap(STALE_VERSION, REMOTE_NO_AUTH));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.url).toBe("https://plain.example/mcp");
+  });
+
   it("id 撞了就补数字后缀 —— 不同 name 可能 slug 成同一个 id", () => {
     const a = { ...REMOTE_NO_AUTH, server: { ...REMOTE_NO_AUTH.server, name: "com.a/plain" } };
     const b = { ...REMOTE_NO_AUTH, server: { ...REMOTE_NO_AUTH.server, name: "com.b/plain" } };
@@ -232,5 +242,60 @@ describe("真实响应样本", () => {
       if (e.transport === "http") expect(e.url).toBeTruthy();
       else expect(e.command).toBeTruthy();
     }
+  });
+
+  // 结构不变量，不是硬编码数字——注册表内容会变，写死条数迟早无故变红。
+  // 直接从同一份原始 fixture 里数"有 isLatest 记录、且装得了"的 name 有多少
+  // 个，映射结果不能比这个数还少。这条测的正是版本历史顺序那类 bug：同名的
+  // 旧版本先把 name 占了坑，真正 isLatest 的那条后面才来却被当成"重复"丢
+  // 掉——数量对不上就是这类"整条记录凭空消失"的信号
+  it("有当前版本、且装得了的 name，映射结果一个都不能少", () => {
+    const raw: unknown = JSON.parse(
+      readFileSync(join(__dirname, "..", "fixtures", "mcpRegistry.sample.json"), "utf8")
+    );
+
+    const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+
+    // 独立判断"装得了"——不导入实现里 slugId/commandFor 那批私有函数，两边
+    // 各自读一遍注册表字段，这条测试才谈得上校验实现，而不是抄一遍答案
+    const hasInstallTarget = (server: Record<string, unknown>): boolean => {
+      const remotes = Array.isArray(server.remotes) ? server.remotes : [];
+      const hasRemote = remotes.some(
+        (r) =>
+          isPlainObject(r) &&
+          r.type === "streamable-http" &&
+          typeof r.url === "string" &&
+          r.url !== ""
+      );
+      if (hasRemote) return true;
+      const packages = Array.isArray(server.packages) ? server.packages : [];
+      return packages.some((p) => {
+        if (!isPlainObject(p)) return false;
+        if (typeof p.identifier !== "string" || p.identifier === "") return false;
+        if (typeof p.runtimeHint === "string" && p.runtimeHint !== "") return true;
+        return p.registryType === "npm" || p.registryType === "pypi";
+      });
+    };
+
+    const records = isPlainObject(raw) && Array.isArray(raw.servers) ? raw.servers : [];
+    const currentNames = new Set<string>();
+    const uninstallableNames = new Set<string>();
+    for (const record of records) {
+      if (!isPlainObject(record)) continue;
+      if (!isPlainObject(record.server)) continue;
+      const server = record.server;
+      if (typeof server.name !== "string") continue;
+      if (!isPlainObject(record._meta)) continue;
+      const meta = record._meta["io.modelcontextprotocol.registry/official"];
+      if (!isPlainObject(meta) || meta.isLatest !== true) continue;
+
+      currentNames.add(server.name);
+      if (!hasInstallTarget(server)) uninstallableNames.add(server.name);
+    }
+
+    const expectedMinimum = currentNames.size - uninstallableNames.size;
+    const out = mapRegistryResponse(raw);
+    expect(out.length).toBeGreaterThanOrEqual(expectedMinimum);
   });
 });
