@@ -1,0 +1,137 @@
+// lane / lane:prune / install-hooks 的可执行版（issue #623，ADR-0150）。
+//
+// 这三个脚本是「开工用一次性 worktree」那条规则（ADR-0149）从纪律变成机制的那一半：
+// 规则说「请开 worktree」靠自觉，脚本是把选择删掉。所以它们的行为要钉死，尤其是
+// 那些**不做**的事——不复用已存在的 worktree、不删没人提交过的分支、不覆盖别人配好的
+// hooksPath。这些是保护性行为，坏了不会报错，只会安静地把保护取消掉。
+//
+// 照 tests/hooks/preCommitWorktree.test.ts 的路子：起真临时仓、spawn 真脚本、断言真行为。
+// 脚本是 .mjs，从 TS 里 import 会撞 allowJs；走子进程反而更接近它们实际被调用的样子。
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const REPO = resolve(__dirname, "../..");
+const LANE = join(REPO, "scripts/lane.mjs");
+const PRUNE = join(REPO, "scripts/lane-prune.mjs");
+
+let root: string;
+let work: string;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+function node(cwd: string, script: string, ...args: string[]): { ok: boolean; out: string } {
+  try {
+    const out = execFileSync(process.execPath, [script, ...args], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { ok: true, out };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string };
+    return { ok: false, out: String(err.stdout ?? "") + String(err.stderr ?? "") };
+  }
+}
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "otter-lane-"));
+  git(root, "init", "-q", "--bare", "-b", "main", "origin.git");
+  git(root, "clone", "-q", join(root, "origin.git"), "work");
+  work = join(root, "work");
+  git(work, "checkout", "-q", "-b", "main");
+  git(work, "config", "user.email", "t@example.com");
+  git(work, "config", "user.name", "t");
+  await writeFile(join(work, "a.txt"), "seed\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", "seed");
+  git(work, "push", "-q", "-u", "origin", "main");
+  git(work, "remote", "set-head", "origin", "--auto");
+});
+
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("lane：开一条 lane（issue #623）", () => {
+  it("在 .claude/worktrees/ 下建 worktree，分支带随机后缀，base 是 origin/main", async () => {
+    const r = node(work, LANE, "files-panel-scroll");
+    expect(r.ok).toBe(true);
+
+    const dirs = await readdir(join(work, ".claude/worktrees"));
+    expect(dirs).toHaveLength(1);
+    const laneDir = dirs[0]!;
+    // 后缀存在 = 两条 lane 同名也撞不了
+    expect(laneDir).toMatch(/^files-panel-scroll-[0-9a-f]{6}$/);
+
+    const branch = git(join(work, ".claude/worktrees", laneDir), "branch", "--show-current");
+    expect(branch).toMatch(/^claude\/files-panel-scroll-[0-9a-f]{6}$/);
+    // 从 origin/main 开出来的：tip 与它一致
+    expect(git(work, "rev-parse", branch)).toBe(git(work, "rev-parse", "origin/main"));
+  });
+
+  it("两条同名 lane 拿到不同分支，互不覆盖（一次性的前提）", () => {
+    expect(node(work, LANE, "same-name").ok).toBe(true);
+    expect(node(work, LANE, "same-name").ok).toBe(true);
+    const branches = git(work, "branch", "--format=%(refname:short)")
+      .split("\n")
+      .filter((b) => b.startsWith("claude/same-name-"));
+    expect(new Set(branches).size).toBe(2);
+  });
+
+  it("任务名里没有可用字符（纯中文）时报错，不产出一个只有随机后缀的名字", () => {
+    const r = node(work, LANE, "会话分享");
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("没有可用于分支名的字符");
+  });
+});
+
+describe("lane:prune：收工清理（issue #623）", () => {
+  /** 造一条干完活并回 main 的 lane，返回它的分支名与目录 */
+  function mergedLane(name: string): { branch: string; dir: string } {
+    node(work, LANE, name);
+    const dir = execFileSync("bash", ["-c", `ls -d ${work}/.claude/worktrees/${name}-*`], {
+      encoding: "utf8",
+    }).trim();
+    git(dir, "config", "user.email", "t@example.com");
+    git(dir, "config", "user.name", "t");
+    execFileSync("bash", ["-c", `echo x > ${dir}/b.txt`]);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "work");
+    const branch = git(dir, "branch", "--show-current");
+    git(work, "merge", "-q", "--no-ff", branch, "-m", "merge");
+    git(work, "push", "-q", "origin", "main");
+    git(work, "fetch", "-q", "origin");
+    return { branch, dir };
+  }
+
+  it("没人提交过的分支不删——那是刚开的 lane，不是残枝（#449）", () => {
+    git(work, "branch", "fresh/lane-a");
+    const r = node(work, PRUNE);
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("fresh/lane-a — 零提交");
+    // dry-run 之后它还在
+    expect(git(work, "branch", "--format=%(refname:short)")).toContain("fresh/lane-a");
+  });
+
+  it("--apply：已合并 + 干净的 worktree 连同分支一起清掉", () => {
+    const { branch, dir } = mergedLane("done-lane");
+    const r = node(work, PRUNE, "--apply");
+    expect(r.ok).toBe(true);
+    expect(git(work, "worktree", "list")).not.toContain(dir);
+    expect(git(work, "branch", "--format=%(refname:short)")).not.toContain(branch);
+  });
+
+  it("--apply：有未提交改动的 worktree 只报告，永不删", async () => {
+    const { dir } = mergedLane("dirty-lane");
+    await writeFile(join(dir, "scratch.txt"), "uncommitted\n");
+    const r = node(work, PRUNE, "--apply");
+    expect(r.out).toContain("有未提交改动");
+    expect(git(work, "worktree", "list")).toContain(dir);
+  });
+});
