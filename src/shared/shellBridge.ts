@@ -826,6 +826,26 @@ export interface ShellBridge {
     prefix: string,
     workspace: string
   ): Promise<FriendsResult<{ sessionId: string; eventCount: number; missingAttachments: number }>>;
+
+  // ─── 好友代理（issue #622，ADR-0151）：A 授权 B 以 A 的身份操作 MCP 服务 ──
+  /** A 侧：为某好友生成一个代理邀请码（含频道 id + 一次性 secret + A 的身份公钥）。
+      allow = A 圈的白名单（服务 id + 工具名清单，空工具数组 = 整服务放行）。
+      ok:true 带邀请码文本（A 复制发给 B） */
+  proxyCreateInvite(
+    friendUid: string,
+    allow: readonly { serverId: string; tools: readonly string[] }[]
+  ): Promise<FriendsResult<{ invite: string }>>;
+  /** B 侧：输入 A 给的邀请码，连上 A 的频道、握手、建立代理通道。
+      ok:true 带 A 授给 B 的服务数（B 的工具表随后按它渲染） */
+  proxyAcceptInvite(
+    invite: string
+  ): Promise<FriendsResult<{ grantedCount: number }>>;
+  /** A 侧：列出当前所有的代理授权（谁有什么权限）+ 各自审计账 */
+  proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[] }>>;
+  /** A 侧：一键撤销某好友的全部代理授权（通道立即失效，下一笔调用被拒） */
+  proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
+  /** A 侧：查某好友（或全部）的代理审计账 */
+  proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: { ts: number; friendUid: string; serverId: string; tool: string; decision: string; outcome: string; detail?: string }[] }>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -1168,6 +1188,11 @@ export const CHANNELS = {
   friendsListMessages: "otter:friendsListMessages",
   shareSessionToFriend: "otter:shareSessionToFriend",
   importSharedSession: "otter:importSharedSession",
+  proxyCreateInvite: "otter:proxyCreateInvite",
+  proxyAcceptInvite: "otter:proxyAcceptInvite",
+  proxyListGrants: "otter:proxyListGrants",
+  proxyRevoke: "otter:proxyRevoke",
+  proxyAudit: "otter:proxyAudit",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
