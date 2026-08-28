@@ -439,6 +439,48 @@ describe("proxyManager 的 B 侧台账（issue #676）", () => {
     b.manager.closeAll();
   });
 
+  it("A 发码后退出 app → 那条报「邀请已失效」，不是「没连上」（issue #682）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+
+    await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    // 码刚发出去、没人接：等着就行
+    expect(a.manager.hostStatus()[0]!.pairing).toBe("waiting");
+
+    // A 退出 app —— 一次性 secret 只活在内存里（ADR-0162），跟着没了
+    a.manager.closeAll();
+    const a2 = reopen(relay, a, "a-uid");
+    a2.manager.resume();
+    await settle();
+
+    // 台账里那条 grant 还在，但那张邀请已经没用了：resume 因为没有 pin 跳过它，
+    // 房间再也不开。这一档必须有自己的名字——报成「没连上」等于让用户干等
+    expect(a2.manager.hostStatus()).toMatchObject([{ friendUid: "b-uid", pairing: "needsInvite" }]);
+
+    a2.manager.closeAll();
+  });
+
+  it("重发一张 → 对方接上 → 转成 paired，A 重启后不再需要邀请码", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    // pin 落下来了 = 长期信任成立，之后重连都走 pin
+    expect(a.manager.hostStatus()[0]!.pairing).toBe("paired");
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+    const a2 = reopen(relay, a, "a-uid");
+    a2.manager.resume();
+    await settle();
+    expect(a2.manager.hostStatus()[0]!.pairing).toBe("paired");
+
+    a2.manager.closeAll();
+  });
+
   it("撤销 → B 收到的是一句「被撤销了」，不是一次静默断线；台账标记但不删除", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);

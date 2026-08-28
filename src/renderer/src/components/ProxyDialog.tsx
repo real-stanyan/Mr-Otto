@@ -91,6 +91,8 @@ export function ProxyDialog({
   const [accepted, setAccepted] = useState(false);
   const [auditOf, setAuditOf] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  /** 在「已授权」页就地重发出来的邀请码：好友 uid → 码 */
+  const [reinvited, setReinvited] = useState<Record<string, string>>({});
 
   // 每次打开都重置 + 拉一次台账：授权是本机状态，主进程不推
   useEffect(() => {
@@ -103,6 +105,7 @@ export function ProxyDialog({
     setPaste("");
     setAccepted(false);
     setSaved(false);
+    setReinvited({});
     setAuditOf(null);
     void (async () => {
       await refreshProxyGrants();
@@ -158,6 +161,11 @@ export function ProxyDialog({
     const ok = await acceptProxyInvite(text);
     setAccepted(ok);
     if (ok) setPaste("");
+  };
+
+  const reinvite = async (uid: string, allow: readonly { serverId: string; tools: readonly string[] }[]) => {
+    const code = await createProxyInvite(uid, allow);
+    if (code) setReinvited((prev) => ({ ...prev, [uid]: code }));
   };
 
   const showAudits = async (uid: string) => {
@@ -301,6 +309,15 @@ export function ProxyDialog({
                   <div className="flex items-center gap-2">
                     <StatusDot line={line} />
                     <span className="flex-1 min-w-0 truncate">{friendNameOf(g.friendUid)}</span>
+                    {/* 邀请失效那一档给一条出路：一次性 secret 只活在内存里，
+                        A 在对方接受前退出 app 就没了，房间再也不开（issue #682）。
+                        原样用这份已有的白名单重发，不必再圈一遍 */}
+                    {h?.pairing === "needsInvite" && (
+                      <Button variant="ghost" size="sm" className="px-2 text-xs"
+                        onClick={() => void reinvite(g.friendUid, g.allow)}>
+                        重发邀请码
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" className="px-2 text-xs"
                       onClick={() => void showAudits(g.friendUid)}>
                       查看记录
@@ -313,6 +330,17 @@ export function ProxyDialog({
                   {/* 白名单内是全自动的——「此刻正在用我的凭证」只有这一行说得出口 */}
                   <p className="text-[11px] text-muted-foreground truncate">{line.text}</p>
                   <p className="text-[11px] text-muted-foreground truncate">{describeAllow(g.allow)}</p>
+                  {reinvited[g.friendUid] && (
+                    <div className="pt-1 space-y-1">
+                      <Textarea readOnly value={reinvited[g.friendUid]}
+                        className="text-[11px] font-mono h-[60px]" />
+                      <Button size="sm" variant="secondary"
+                        onClick={() => void navigator.clipboard.writeText(reinvited[g.friendUid]!)}>
+                        <Copy className="size-[13px] " />
+                        复制邀请码
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 );
               })
