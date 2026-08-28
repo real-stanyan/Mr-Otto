@@ -98,15 +98,20 @@ export function describeAllow(
     .join("、");
 }
 
-/** 审计账一行要显示的三段。decision/outcome 说人话——「denied」不是给用户看的 */
+/** 审计账一行要显示的几段。decision/outcome 说人话——「denied」不是给用户看的 */
 export interface AuditLine {
   time: string;
   target: string;
   verdict: string;
+  /** 入参摘要（落盘时已截断到 200 字符）。空字符串 = 这笔没参数，UI 就不占那一行。
+      ADR-0151 防线 1 点名要它：白名单内的写操作是全自动的，
+      事后「到底动了什么」只有这一处答得上来 */
+  args: string;
 }
 
 export function auditLine(rec: {
-  ts: number; serverId: string; tool: string; decision: string; outcome: string; detail?: string;
+  ts: number; serverId: string; tool: string; argsSummary?: string;
+  decision: string; outcome: string; detail?: string;
 }): AuditLine {
   const at = new Date(rec.ts);
   const time = `${String(at.getMonth() + 1)}月${String(at.getDate())}日 ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
@@ -114,5 +119,8 @@ export function auditLine(rec: {
     rec.decision === "denied" ? `已拒绝${rec.detail ? `（${rec.detail}）` : ""}`
     : rec.outcome === "error" ? `出错了${rec.detail ? `（${rec.detail}）` : ""}`
     : "已执行";
-  return { time, target: `${rec.serverId} / ${rec.tool}`, verdict };
+  // `{}` 和 `null` 是「没给参数」的两种写法，占一行只是噪音
+  const raw = (rec.argsSummary ?? "").trim();
+  const args = raw === "{}" || raw === "null" ? "" : raw;
+  return { time, target: `${rec.serverId} / ${rec.tool}`, verdict, args };
 }

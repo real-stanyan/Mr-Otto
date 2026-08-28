@@ -167,3 +167,67 @@ describe("proxyHost 的身份闸与关系闸（issue #665）", () => {
     expect(audits[0]).toMatchObject({ decision: "executed", outcome: "ok", fromUid: "b1" });
   });
 });
+
+// ─── 取消（issue #668，ADR-0151 §4）──────────────────────────────────────
+describe("proxyHost 的取消（issue #668）", () => {
+  /** 一个能被外部叫停的假工具：signal 一 abort 就抛，模拟 SDK 的行为 */
+  function hangingMcp(): { mcp: McpCapability; started: Promise<void> } {
+    let markStarted = (): void => {};
+    const started = new Promise<void>((r) => { markStarted = () => r(); });
+    const mcp = {
+      callTool: (_id: string, _tool: string, _args: unknown, signal?: AbortSignal) =>
+        new Promise((_res, rej) => {
+          markStarted();
+          signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+        }),
+    } as unknown as McpCapability;
+    return { mcp, started };
+  }
+
+  it("收到 proxy_cancel → 把那笔在跑的调用 abort 掉", async () => {
+    const t = fakeTransport();
+    const audits: ProxyAuditEntry[] = [];
+    const { mcp, started } = hangingMcp();
+    startProxyHost({
+      transport: t.transport, mcp, friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: (e) => audits.push(e), now: () => 1,
+    });
+    t.incoming({ reqId: "r1", fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    await started;
+    t.incomingRaw(encodeProxyFrame({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId: "r1" }));
+    await flush();
+
+    // **取消照样记账**：帧到达时工具可能已经把单下了，抹掉这一笔等于让审计账
+    // 在最需要它的那一次恰好是空的
+    expect(audits[0]).toMatchObject({ decision: "executed", outcome: "error" });
+    expect(audits[0]?.error).toMatch(/可能已经动过/);
+    // 不回结果帧：B 那边发 cancel 时就把 pending 删了
+    expect(t.sent).toHaveLength(0);
+  });
+
+  it("取消一个认不出的 reqId → 静默忽略（迟到的取消不是错误）", async () => {
+    const t = fakeTransport();
+    startProxyHost({
+      transport: t.transport, mcp: fakeMcp(), friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: () => {}, now: () => 1,
+    });
+    t.incomingRaw(encodeProxyFrame({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId: "从没见过" }));
+    await flush();
+    expect(t.sent).toHaveLength(0);
+  });
+
+  it("退订（通道断了）→ 还在跑的调用一并 abort，不留着替一个不在线的人动 A 的账号", async () => {
+    const t = fakeTransport();
+    const audits: ProxyAuditEntry[] = [];
+    const { mcp, started } = hangingMcp();
+    const off = startProxyHost({
+      transport: t.transport, mcp, friendUid: "b1", friendUids: () => ["b1"],
+      getGrants: () => grants, audit: (e) => audits.push(e), now: () => 1,
+    });
+    t.incoming({ reqId: "r2", fromUid: "b1", serverId: "shopify", tool: "get_orders", args: {} });
+    await started;
+    off();
+    await flush();
+    expect(audits[0]).toMatchObject({ decision: "executed", outcome: "error" });
+  });
+});

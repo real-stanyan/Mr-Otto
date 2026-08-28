@@ -844,8 +844,11 @@ export interface ShellBridge {
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[] }>>;
   /** A 侧：一键撤销某好友的全部代理授权（通道立即失效，下一笔调用被拒） */
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
-  /** A 侧：查某好友（或全部）的代理审计账 */
-  proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: { ts: number; friendUid: string; serverId: string; tool: string; decision: string; outcome: string; detail?: string }[] }>>;
+  /** A 侧：查某好友（或全部）的代理审计账。
+      `argsSummary` 是截断到 200 字符的入参 JSON —— ADR-0151 防线 1 要的是
+      「谁、何时、哪个工具、**什么参数**、什么结果」，少了参数那条防线只剩三分之二
+      （写工具在白名单内是全自动的，事后能不能看清动了什么全靠它） */
+  proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[] }>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */

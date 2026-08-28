@@ -102,12 +102,19 @@ export function createProxyMcp(deps: ProxyMcpDeps): McpCapability {
     const res = await new Promise<ProxyResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(reqId);
+        // 超时与取消是同一件事的两种起因：B 不等了。同样要通知 A 停手——
+        // 不然 A 会为一个没人接的结果继续动自己的账号
+        deps.transport.send(encodeProxyFrame({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId }));
         reject(new ProxyError(`代理调用 ${serverId}/${tool} 超时（${timeoutMs}ms A 没回）`));
       }, timeoutMs);
       if (signal) {
         signal.addEventListener("abort", () => {
           pending.delete(reqId);
           clearTimeout(timer);
+          // **先告诉 A 再放弃**：本地 reject 只让这一侧停下来，A 那边还捏着
+          // A 自己的凭证在跑（ADR-0151 §4）。发不出去也照样 reject——
+          // 通道断了正是「B 不必再等」的另一种情形
+          deps.transport.send(encodeProxyFrame({ kind: "proxy_cancel", v: PROXY_FRAME_VERSION, reqId }));
           reject(new ProxyError(`代理调用 ${serverId}/${tool} 被取消`));
         }, { once: true });
       }

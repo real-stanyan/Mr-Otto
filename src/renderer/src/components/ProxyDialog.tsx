@@ -265,10 +265,19 @@ export function ProxyDialog({
                     {audits.map((a, i) => {
                       const line = auditLine(a);
                       return (
-                        <div key={`${a.ts}-${i}`} className={`${ROW} gap-3`}>
-                          <span className="text-muted-foreground shrink-0">{line.time}</span>
-                          <span className="flex-1 min-w-0 truncate">{line.target}</span>
-                          <span className="shrink-0 text-muted-foreground">{line.verdict}</span>
+                        <div key={`${a.ts}-${i}`} className="px-2 py-[6px] text-xs">
+                          <div className="flex items-center gap-3">
+                            <span className="text-muted-foreground shrink-0">{line.time}</span>
+                            <span className="flex-1 min-w-0 truncate">{line.target}</span>
+                            <span className="shrink-0 text-muted-foreground">{line.verdict}</span>
+                          </div>
+                          {/* 参数是防线 1 点名要的那一段：白名单内的写操作全自动，
+                              事后「到底动了什么」只有这里答得上来（ADR-0151） */}
+                          {line.args && (
+                            <div className="text-[10px] font-mono text-muted-foreground/80 break-all pt-[2px]">
+                              {line.args}
+                            </div>
+                          )}
                         </div>
                       );
                     })}

@@ -66,10 +66,21 @@ describe("proxyShare（圈白名单的纯逻辑，issue #657）", () => {
   it("auditLine：拒绝/出错带原因，执行成功就一句话", () => {
     const ts = new Date(2026, 7, 28, 9, 5).getTime();
     expect(auditLine({ ts, serverId: "shopify", tool: "refund", decision: "denied", outcome: "denied", detail: "白名单里没有" }))
-      .toEqual({ time: "8月28日 09:05", target: "shopify / refund", verdict: "已拒绝（白名单里没有）" });
+      .toEqual({ time: "8月28日 09:05", target: "shopify / refund", verdict: "已拒绝（白名单里没有）", args: "" });
     expect(auditLine({ ts, serverId: "shopify", tool: "get_orders", decision: "executed", outcome: "ok" }).verdict)
       .toBe("已执行");
     expect(auditLine({ ts, serverId: "shopify", tool: "get_orders", decision: "executed", outcome: "error", detail: "429" }).verdict)
       .toBe("出错了（429）");
+  });
+
+  it("auditLine 带出参数摘要——白名单内的写操作全自动，事后只有它答得上「动了什么」", () => {
+    const ts = new Date(2026, 7, 28, 9, 5).getTime();
+    const base = { ts, serverId: "shopify", tool: "refund", decision: "executed", outcome: "ok" };
+    expect(auditLine({ ...base, argsSummary: '{"orderId":"1234","amount":99}' }).args)
+      .toBe('{"orderId":"1234","amount":99}');
+    // 「没给参数」的两种写法都不占那一行
+    expect(auditLine({ ...base, argsSummary: "{}" }).args).toBe("");
+    expect(auditLine({ ...base, argsSummary: "null" }).args).toBe("");
+    expect(auditLine(base).args).toBe("");
   });
 });

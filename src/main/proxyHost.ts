@@ -9,6 +9,11 @@
 //   3. **白名单**：这个服务/工具在不在他那份授权里。
 // 前两道之后，**查授权只按绑定的 uid**，绝不按帧里自称的那个。
 //
+// 取消（issue #668，ADR-0151 §4）：B 撤了 AbortSignal 就发一帧 `proxy_cancel`，
+// A 这边把那笔在跑的调用 abort 掉。**取消不等于没发生** —— 帧到达时工具可能
+// 已经把单下了，所以取消照样记审计（`outcome: "error"`，detail 说清「可能已生效」），
+// 不静默抹掉。
+//
 // 依赖全部注入（传输、白名单、MCP、审计）——本层不连 relay、不碰加密，
 // 那些由装配根（接 wsTransport + sealedStream + 真 McpCapability）填进来。
 // 这样 A 侧「收帧→执行→回传」的编排能脱离真传输进 vitest。
@@ -107,6 +112,8 @@ function summarizeArgs(args: unknown): string {
 export function startProxyHost(deps: ProxyHostDeps): () => void {
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
+  /** 正在跑的调用：reqId → 中止把手（收到 proxy_cancel 时按它 abort） */
+  const inflight = new Map<string, AbortController>();
 
   /** 拒一笔：记审计 + 回帧。审计里的 fromUid 一律是**绑定的**那个身份，不是自称的 */
   function deny(req: ProxyRequest, base: Omit<ProxyAuditEntry, "decision">, reason: string): void {
@@ -136,16 +143,29 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
       deny(req, base, grantDenyReason(grant, bound));
       return;
     }
+    // 在跑的这一笔登记进 inflight —— B 发 proxy_cancel 时按 reqId 找到它 abort。
+    // signal 一路传到 mcpHub.callTool → 连接层，SDK 那边才真的停得下来
+    const ctl = new AbortController();
+    inflight.set(req.reqId, ctl);
     try {
-      const content = await deps.mcp.callTool(req.serverId, req.tool, req.args);
+      const content = await deps.mcp.callTool(req.serverId, req.tool, req.args, ctl.signal);
       deps.audit({ ...base, decision: "executed", outcome: "ok" });
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: true, content };
       deps.transport.send(encodeProxyFrame(res));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (ctl.signal.aborted) {
+        // **取消照样记账**：帧到达时工具可能已经把单下了，抹掉这一笔等于让
+        // 审计账在最需要它的那一次（写操作被中途叫停）恰好是空的
+        deps.audit({ ...base, decision: "executed", outcome: "error", error: "B 中途取消——A 这边可能已经动过了" });
+        // 不回结果帧：B 那边的 pending 早在发 cancel 时就删了，回过去也是丢
+        return;
+      }
       deps.audit({ ...base, decision: "executed", outcome: "error", error: msg });
       const res: ProxyResult = { kind: "proxy_res", v: PROXY_FRAME_VERSION, reqId: req.reqId, ok: false, error: `A 执行 ${req.serverId}/${req.tool} 出错: ${msg}` };
       deps.transport.send(encodeProxyFrame(res));
+    } finally {
+      inflight.delete(req.reqId);
     }
   }
 
@@ -155,9 +175,23 @@ export function startProxyHost(deps: ProxyHostDeps): () => void {
     if (frame.kind === "proxy_req") {
       // 不 await——传输回调不阻塞；execute 内部自己回帧
       void execute(frame);
+      return;
     }
-    // proxy_cancel / proxy_res 在 A 侧不处理（A 是执行方，不发 req、不收 res）
+    if (frame.kind === "proxy_cancel") {
+      // 认不出的 reqId（已经跑完 / 从没来过）静默忽略——迟到的取消不是错误
+      const ctl = inflight.get(frame.reqId);
+      if (!ctl) return;
+      log(`代理取消 ${deps.friendUid} ${frame.reqId}`);
+      ctl.abort();
+    }
+    // proxy_res 在 A 侧不处理（A 是执行方，不收结果帧）
   });
 
-  return off;
+  return () => {
+    off();
+    // 连接没了，还挂着的调用没人等结果了。abort 掉而不是让它跑完：
+    // 它占着 A 的凭证在动 A 的账号，而下命令的那个人已经不在线上了
+    for (const ctl of inflight.values()) ctl.abort();
+    inflight.clear();
+  };
 }

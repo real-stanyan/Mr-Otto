@@ -383,7 +383,7 @@ interface ChatState {
       开对话框时拉一次，撤销/新授权后主进程不推——这是本机台账，回值即新状态 */
   proxyGrants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[];
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
-  proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; decision: string; outcome: string; detail?: string }[];
+  proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */

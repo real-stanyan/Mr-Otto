@@ -97,6 +97,31 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     await waitFor(() => expect(proxyRevoke).toHaveBeenCalledWith("b-uid"));
   });
 
+  it("已授权页：调用记录带出参数摘要（ADR-0151 防线 1 点名要的那一段）", async () => {
+    seed({
+      proxyListGrants: vi.fn(async () => ({
+        ok: true as const,
+        value: { grants: [{ friendUid: "b-uid", allow: [{ serverId: "shopify", tools: [] }] }] },
+      })),
+      proxyAudit: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          audits: [{
+            ts: new Date(2026, 7, 28, 9, 5).getTime(), friendUid: "b-uid",
+            serverId: "shopify", tool: "refund", argsSummary: '{"orderId":"1234"}',
+            decision: "executed", outcome: "ok",
+          }],
+        },
+      })),
+    });
+    render(<ProxyDialog open onOpenChange={() => {}} friend={null} />);
+
+    await userEvent.click(await screen.findByText("查看记录"));
+    expect(await screen.findByText("shopify / refund")).toBeInTheDocument();
+    expect(screen.getByText("已执行")).toBeInTheDocument();
+    expect(screen.getByText('{"orderId":"1234"}')).toBeInTheDocument();
+  });
+
   it("接受邀请页：粘码 → 接受 → 说清「等对方推授权」", async () => {
     const proxyAcceptInvite = vi.fn(async () => ({ ok: true as const, value: { grantedCount: 0 } }));
     seed({
