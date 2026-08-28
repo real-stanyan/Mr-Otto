@@ -100,6 +100,7 @@ function listWorktrees() {
   return items;
 }
 
+const baseTip = tryGit(["rev-parse", base]);
 const removable = [];
 const keptWorktrees = [];
 for (const wt of listWorktrees()) {
@@ -124,12 +125,20 @@ for (const wt of listWorktrees()) {
     keptWorktrees.push({ ...wt, why: `分支还没并回 ${base}` });
     continue;
   }
+  // 一条**刚开还没提交**的 lane 同时满足上面两条：tip 就是 default 的 tip（所以"已合并"），
+  // 目录里还没动过文件（所以"干净"）。这是 #449 那个洞的 worktree 版本——修 #449 时只想到了
+  // 分支那一趟。清掉它零收益（里面没有任何提交），代价是踩掉另一个 agent 正在用的工作目录，
+  // 而且这一条**没有第二道保险**：worktree remove 对干净目录会欣然执行（#627）。
+  const fresh = zeroWorkReason(wt.branch, tryGit(["rev-parse", `refs/heads/${wt.branch}`]), baseTip);
+  if (fresh) {
+    keptWorktrees.push({ ...wt, why: `这条 lane 刚开，还没提交（${fresh}）` });
+    continue;
+  }
   removable.push(wt);
 }
 
 // ── 分支一趟 ───────────────────────────────────────────────────────────────
 
-const baseTip = tryGit(["rev-parse", base]);
 const deletable = [];
 const keptBranches = [];
 const mergedOut = tryGit(["branch", "--merged", base, "--format=%(refname:short)\t%(worktreepath)\t%(objectname)"]);
