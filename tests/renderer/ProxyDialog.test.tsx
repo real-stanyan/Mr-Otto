@@ -193,8 +193,8 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
         value: {
           borrows: [],
           hosts: [
-            { friendUid: "b-uid", label: "小明", connected: true, inflight: 2, lastCallAt: 0 },
-            { friendUid: "z-uid", label: "小强", connected: false, inflight: 0, lastCallAt: null },
+            { friendUid: "b-uid", label: "小明", connected: true, inflight: 2, lastCallAt: 0, pairing: "paired" },
+            { friendUid: "z-uid", label: "小强", connected: false, inflight: 0, lastCallAt: null, pairing: "paired" },
           ],
         },
       })),
@@ -204,6 +204,38 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     // 白名单内是全自动的：「此刻正在用我的凭证」只有这一行说得出口
     expect(await screen.findByText("正在调用 · 2 笔")).toBeInTheDocument();
     expect(screen.getByText("没连上 · 还没用过")).toBeInTheDocument();
+  });
+
+  it("邀请失效那一档：说清是失效不是没连上，就地重发一张（issue #682）", async () => {
+    const proxyCreateInvite = vi.fn(async () => ({
+      ok: true as const, value: { invite: "otto-proxy:1:a:c:AA:BB:1" },
+    }));
+    seed({
+      proxyCreateInvite,
+      proxyListGrants: vi.fn(async () => ({
+        ok: true as const,
+        value: { grants: [{ friendUid: "b-uid", allow: [{ serverId: "shopify", tools: [] }] }] },
+      })),
+      proxyStatus: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          borrows: [],
+          hosts: [{
+            friendUid: "b-uid", label: "小明", connected: false, inflight: 0,
+            lastCallAt: null, pairing: "needsInvite" as const,
+          }],
+        },
+      })),
+    });
+    render(<ProxyDialog open onOpenChange={() => {}} friend={null} />);
+
+    // 「没连上」会让用户干等，而这一档等到天荒地老也不会连上
+    expect(await screen.findByText("邀请已失效 · 重发一张")).toBeInTheDocument();
+
+    // 出路就在这一行上：原样用已有白名单重发，不必再圈一遍
+    await userEvent.click(screen.getByText("重发邀请码"));
+    await waitFor(() => expect(proxyCreateInvite).toHaveBeenCalledWith("b-uid", [{ serverId: "shopify", tools: [] }]));
+    expect(await screen.findByDisplayValue("otto-proxy:1:a:c:AA:BB:1")).toBeInTheDocument();
   });
 
   it("分享页：已授过的好友预勾选 + 更新授权不重发邀请码（issue #680）", async () => {

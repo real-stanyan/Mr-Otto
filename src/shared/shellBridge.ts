@@ -406,6 +406,9 @@ export interface ProxyHostView {
   connected: boolean;
   inflight: number;
   lastCallAt: number | null;
+  /** 配对到哪一步（issue #682）。`needsInvite` = 那张邀请已经没用了，得重发一张
+      —— 不是「没连上」的同义词，见 ProxyHostStatus 上那段注释 */
+  pairing: "paired" | "waiting" | "needsInvite";
 }
 
 /** 代理全景：借进来的 + 借出去的 */

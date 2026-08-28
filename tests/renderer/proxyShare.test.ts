@@ -101,6 +101,17 @@ describe("hostStatusLine / borrowStatusLine", () => {
       .toEqual({ dot: "off", text: "没连上 · 还没用过" });
   });
 
+  it("A 侧：配对没成立时不能说「没连上」——那句话暗示等一等就好（issue #682）", () => {
+    // 邀请失效是个死锁：等到天荒地老也不会连上，出路只有重发一张
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null, pairing: "needsInvite" }))
+      .toEqual({ dot: "dead", text: "邀请已失效 · 重发一张" });
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null, pairing: "waiting" }))
+      .toEqual({ dot: "off", text: "等对方接受邀请" });
+    // 配对成立之后才轮到「连没连」
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null, pairing: "paired" }))
+      .toEqual({ dot: "off", text: "没连上 · 还没用过" });
+  });
+
   it("B 侧：「被撤销」和「没连上」不是一句话——一个别等了，一个等着就行", () => {
     expect(borrowStatusLine({ connected: false, serverCount: 0, revokedReason: "对方撤销了" }))
       .toEqual({ dot: "dead", text: "对方撤销了" });

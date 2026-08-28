@@ -133,10 +133,15 @@ export interface ProxyStatusLine {
 /** A 侧：我授出去的那条此刻怎么样 */
 export function hostStatusLine(h: {
   connected: boolean; inflight: number; lastCallAt: number | null;
+  pairing?: "paired" | "waiting" | "needsInvite";
 }): ProxyStatusLine {
   // 「正在跑」优先于其他一切：白名单内是全自动的，这是唯一一次
   // 用户能在事情发生的**当下**看见它
   if (h.inflight > 0) return { dot: "live", text: `正在调用 · ${h.inflight} 笔` };
+  // 配对还没成立的两档要排在「连没连」前面：那两种情况下「没连上」这句话
+  // 是**误导**——它暗示等一等就好，而实际上等到天荒地老也不会连上（issue #682）
+  if (h.pairing === "needsInvite") return { dot: "dead", text: "邀请已失效 · 重发一张" };
+  if (h.pairing === "waiting") return { dot: "off", text: "等对方接受邀请" };
   const last = h.lastCallAt === null ? "还没用过" : `最近 ${formatProxyTime(h.lastCallAt)}`;
   return h.connected ? { dot: "on", text: `已连上 · ${last}` } : { dot: "off", text: `没连上 · ${last}` };
 }

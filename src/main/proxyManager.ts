@@ -18,6 +18,7 @@
 
 import {
   createProxyInvite, encodeProxyInvite, decodeProxyInvite, proxyInviteExpired,
+  PROXY_INVITE_TTL_MS,
   type ProxyInvite,
 } from "../shared/remote/proxyInvite.js";
 import { startProxyHostCoordinator, startProxyGuestCoordinator } from "./proxyCoordinator.js";
@@ -64,6 +65,20 @@ export interface ProxyHostStatus {
   inflight: number;
   /** 最近一笔调用的时间（含被拒的）。null = 从没调过 */
   lastCallAt: number | null;
+  /**
+   * 配对到哪一步了（issue #682）。**这一格不是「连上了没」的同义词**：
+   *
+   *   paired      —— 对方的公钥已经 pin 下来，长期信任成立。连没连看 `connected`
+   *   waiting     —— 邀请码发出去了、还没过期，就等对方粘进去
+   *   needsInvite —— **那张邀请已经没用了**，得重发一张
+   *
+   * 最后这一档是一个真死锁的名字：一次性 secret 只活在内存里（ADR-0162），
+   * A 在对方接受之前退出 app，secret 就没了；重启时 `resume()` 因为没有 pin
+   * 而跳过这个好友，房间再也不开。B 那边无限重连显示「没连上」，
+   * A 这边看着一切正常——两边都不知道修法是「A 重发一张」。
+   * 判据全在已有数据里（有 channel、无 pin、房间没开着），只是一直没有名字。
+   */
+  pairing: "paired" | "waiting" | "needsInvite";
 }
 
 /** 代理管理器的依赖（index.ts 装配根填） */
@@ -142,6 +157,14 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       带 mcp 是因为它就是那个出口，带 isReady 是因为 UI 要显示连没连 */
   const guests = new Map<string, { mcp: McpCapability; isReady: () => boolean; close(): void }>();
   const changed = (): void => deps.onChange?.();
+  /**
+   * 已经发出去、还没被人接受的邀请：好友 uid → 过期时刻（epoch ms）。
+   *
+   * **只在内存里**，和那把一次性 secret 同生共死（ADR-0162）——落盘的话就是在
+   * 落盘一个「一次性」的东西的影子。进程一没，这张表跟着没，
+   * 而那正是 `needsInvite` 要表达的事实本身。
+   */
+  const pendingInvites = new Map<string, number>();
 
   /**
    * 开一条 A 侧的 host 通道。`invite` 有值 = 这一轮还接受邀请码证明（首次配对）；
@@ -164,7 +187,10 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         // pin 组全验不过时才轮到它：手里那张还活着的邀请
         verifyWith: () => (secret && invite && !proxyInviteExpired(invite, now()) ? secret : null),
         // 验过了才落 pin —— 这一步就是「这个公钥是被邀请的那个 B」的全部依据
-        onPaired: (pub) => { deps.saveStore(setPin(deps.loadStore(), friendUid, pub)); },
+        onPaired: (pub) => {
+          deps.saveStore(setPin(deps.loadStore(), friendUid, pub));
+          pendingInvites.delete(friendUid); // 有人接了，这张邀请不再「等着」
+        },
         consume: () => { secret = null; },
       },
       friendUid,
@@ -234,6 +260,8 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // A 主动连上这个频道（host 角色）等 B——B 用同一 channelId 连进来时，
       // relay 房间里就有 A(host)/B(guest) 两条连接，握手、推 grant、接受调用
       openHost(friendUid, inv.channelId, inv);
+      pendingInvites.set(friendUid, inv.createdTs + PROXY_INVITE_TTL_MS);
+      changed();
       log(`代理邀请码已生成并监听：好友 ${friendUid}，频道 ${inv.channelId.slice(0, 8)}…`);
       return { ok: true, value: { invite: encodeProxyInvite(inv) } };
     },
@@ -296,6 +324,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       host?.pushRevoked("对方撤销了这条代理授权——要继续用得让他重新发一张邀请码");
       host?.close();
       hosts.delete(friendUid);
+      pendingInvites.delete(friendUid);
       changed();
       log(`代理授权已撤销：好友 ${friendUid}`);
       return { ok: true, value: null };
@@ -365,12 +394,22 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         // 最近一次被调用：审计是新→旧排的，第一条命中的就是最近的（含被拒的——
         // 「有人在拿被拒的请求敲门」同样是 A 该看见的活动）
         const last = cur.audits.find((a) => a.friendUid === g.friendUid);
+        // 三档的判据全在已有数据里（issue #682）：
+        //   有 pin                       = 配对成立，之后重连都走 pin，不再需要邀请码
+        //   无 pin + 房间开着 + 邀请没过期 = 就等对方粘码
+        //   其余                          = 那张邀请已经没用了（过期，或 app 重启把
+        //                                   只在内存里的 secret 带走了）→ 重发一张
+        const pinned = pinnedIdentities(cur, g.friendUid).length > 0;
+        const inviteLive = (pendingInvites.get(g.friendUid) ?? 0) > now();
         return {
           friendUid: g.friendUid,
           label: deps.friendLabel(g.friendUid),
           connected: h?.isReady() ?? false,
           inflight: h?.inflight() ?? 0,
           lastCallAt: last?.ts ?? null,
+          pairing: pinned ? "paired" as const
+            : hosts.has(g.friendUid) && inviteLive ? "waiting" as const
+            : "needsInvite" as const,
         };
       });
     },
