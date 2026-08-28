@@ -217,6 +217,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/shared/remote/pairing.ts` / `src/renderer/src/lib/qr.ts` — 扫码配对：一次性二维码 + 持有证明的纯逻辑（三边共用），和把它画出来的模块矩阵。**目录仍然不是信任来源**，桌面验的是「谁能对 secret 签出名」（ADR-0142，推进 ADR-0095 后果表第三行）
 - `src/shared/remote/stats.ts` / `src/shared/sessionActivity.ts` — 手机端设置页那两块：会话热力图 + 各模型用量。**拉取不订阅**（`stats` 帧对），`trim.ts` 那道闸门不动（ADR-0115）
 - `src/shared/workspaceExclusion.ts` — 同一个文件夹同一时刻只跑一条 turn（纯逻辑；接线在 `index.ts` 的 turn 起跑处，紧挨着 `runningSessions` 那条自检）。沙箱围的是路径，围不住共享的 `.git`；同家族（子会话/SideChat）不互斥（ADR-0152）
+- `src/shared/gitSafety.ts` / `src/main/dirtyTreeApprover.ts` — 破坏性 git（`reset --hard` / `clean -f` / `checkout -- 路径` / `restore` / `stash drop`…）+ 工作区脏 = 越过 bypass 模式问人一次。**裸 `git checkout <分支>` 不在名单里**——git 自己会拒绝覆盖，拦它只会训练用户闭眼点批准（ADR-0153）
 - `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）
 - `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0121）
 - `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0118）
