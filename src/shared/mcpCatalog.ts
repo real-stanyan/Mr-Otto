@@ -77,6 +77,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权",
+    icon: "sentry",
   },
   {
     id: "notion",
@@ -87,6 +88,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权，在浏览器里选择要开放给 Mr Otto 的页面",
+    icon: "notion",
   },
   {
     id: "linear",
@@ -108,6 +110,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权",
+    icon: "stripe",
   },
   {
     id: "filesystem",
@@ -119,6 +122,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [{ name: "root", description: "要暴露的目录绝对路径", required: true }],
     auth: "none",
     authNote: "不需要授权",
+    icon: "filesystem",
   },
   {
     id: "playwright",
@@ -163,6 +167,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权",
+    icon: "asana",
   },
   {
     id: "canva",
@@ -173,6 +178,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权",
+    icon: "canva",
   },
   {
     id: "cloudflare",
@@ -183,6 +189,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权，选择要开放的账号",
+    icon: "cloudflare",
   },
   {
     id: "neon",
@@ -204,6 +211,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权",
+    icon: "intercom",
   },
   {
     id: "miro",
@@ -214,6 +222,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "oauth",
     authNote: "配好后点一次授权，选择白板所在的团队",
+    icon: "miro",
   },
   {
     id: "netlify",
@@ -248,6 +257,7 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     params: [],
     auth: "none",
     authNote: "不需要授权；跑在 uvx 上，本机没装 uv 的话先装好",
+    icon: "fetch",
   },
 ];
 

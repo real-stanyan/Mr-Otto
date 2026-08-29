@@ -45,6 +45,18 @@ describe("mcpCatalog", () => {
     expect(searchCatalog("")).toHaveLength(MCP_CATALOG.length);
   });
 
+  it("精选层每一条都得有图标——色块兜底是长尾层的待遇（issue #715）", () => {
+    // ADR-0171 第四节：精选层用打进包的本地 SVG，长尾层才一律首字母色块。
+    // #661 落地时 19 条只放了 9 个图标文件，剩下 10 条静默走了长尾层的兜底——
+    // 没有任何报错，只是"有一半卡片没有 logo"。新加条目忘了配图会在这里红。
+    const missing = MCP_CATALOG.filter((e) => e.icon === undefined).map((e) => e.id);
+    expect(
+      missing,
+      `这些精选条目没有 icon，会退化成首字母色块：${missing.join("、")}。` +
+        "放一个 src/renderer/src/assets/mcp/<key>.svg 并把 key 填进 icon"
+    ).toEqual([]);
+  });
+
   it("填了 icon 的条目，资源文件必须真的在", () => {
     // icon 是资源键不是 URL（见 CatalogEntry.icon 的注释）。填了键却没放文件，
     // UI 上是一个静默的空白格——这类失败不会自己冒头，只能靠断言抓

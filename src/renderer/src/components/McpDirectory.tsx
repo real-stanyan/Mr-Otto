@@ -267,15 +267,25 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
 function EntryIcon({ entry }: { entry: CatalogEntry }) {
   const src = iconUrl(entry.icon);
   if (src !== undefined) {
+    // 白底方片，不是装饰：品牌标本来就是画在白底上的，GitHub 和 Notion 的标是纯黑，
+    // 裸画在深色主题上等于看不见（这一版之前就是这样，"有图的反而更难认"）。
+    // 白底一条规则同时管住两个主题，不用给每个品牌各做一套深浅——SVG 里写
+    // prefers-color-scheme 也解决不了：它当 <img> 加载，只看得见系统设置，
+    // 看不见 app 自己那个主题开关（neon.svg 已经踩在这个坑上，只是它两档都是绿的）。
+    // ring 那一条给白片在浅色主题上留个边，否则它化在卡片里。
     return (
-      <img
-        src={src}
-        // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
-        alt=""
+      <span
         aria-hidden
-        draggable={false}
-        className="size-8 shrink-0 select-none rounded-[8px]"
-      />
+        className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-[8px] bg-white ring-1 ring-black/[0.06]"
+      >
+        <img
+          src={src}
+          // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
+          alt=""
+          draggable={false}
+          className="size-full select-none object-contain"
+        />
+      </span>
     );
   }
   // 没有本地图标就画首字母色块。颜色由 id 定死（directoryTint），同一条目
