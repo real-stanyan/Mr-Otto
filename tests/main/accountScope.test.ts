@@ -179,6 +179,13 @@ describe("writeWho", () => {
   });
 
   it("写不出来不算错 —— 名片是给人看的便利，不是正确性的一环", () => {
-    expect(() => writeWho("/proc/nope/nowhere", { uid: null, email: "" })).not.toThrow();
+    // 「写不出来」用**普通文件底下的路径**造（mkdir 到非目录 = ENOTDIR），不用
+    // /proc 之类的特殊文件系统：那等于让用例去断言某个 OS 的权限模型，两个平台上
+    // 走的根本不是同一条内核路径。第一版就写成了 `/proc/nope/nowhere`，在 macOS
+    // 上是瞬间 EPERM、在 Linux CI 上把整个 vitest 挂死了十五分钟（#749 的 PR 里
+    // 连红两次，症状是这个文件一行输出都没有）。ENOTDIR 两边都是立刻返回
+    const blocker = join(tempDir("who-blocked"), "not-a-dir");
+    writeFileSync(blocker, "我是文件，不是目录");
+    expect(() => writeWho(join(blocker, "aa"), { uid: null, email: "" })).not.toThrow();
   });
 });
