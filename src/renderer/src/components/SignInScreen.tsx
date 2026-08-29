@@ -10,13 +10,13 @@
 //     没登录的用户连窗口都挪不动。按钮/输入框由 `app.css` 的后代规则自动 `no-drag`。
 //  3. **错误要在这儿显示**。密码错、邮箱没注册这类失败走的是 `store.error`
 //     （`signInWithPassword` 自己不抛给表单），这一屏不画它 = 点了登录毫无反应。
+//     画在右下角那张 Alert 里（`AuthErrorAlert.tsx`），话术在 `lib/authError.ts`。
 
 import { useEffect, useState } from "react";
 
 import ottoLogo from "../assets/otto.png";
 
-import { useChat } from "../store.js";
-import { ERR_TXT } from "../settingsShell.js";
+import { AuthErrorAlert } from "./AuthErrorAlert.js";
 import { DitherBackground } from "./DitherBackground.js";
 import { SignInCard } from "./SignInCard.js";
 
@@ -25,7 +25,6 @@ import { SignInCard } from "./SignInCard.js";
 const ENTER_MS = 260;
 
 export function SignInScreen() {
-  const error = useChat((s) => s.error);
   // 主题跟 Splash 同一个口径：挂载时读一次。这一屏够不着外观设置，中途不会变
   const [dark] = useState(() => document.documentElement.classList.contains("dark"));
   const [shown, setShown] = useState(false);
@@ -55,15 +54,20 @@ export function SignInScreen() {
               它们属于这一屏，不属于登录控件 —— 账号页复用同一份控件但不该顶一张大 logo */}
           <div className="flex flex-col items-center gap-[8px]">
             <img src={ottoLogo} alt="" className="size-20 rounded-2xl shadow-2xl" draggable={false} />
-            <p className="text-[15px] font-[650]">Mr Otto</p>
+            {/* Poppins SemiBold Italic（@font-face 在 app.css）。字体名后面留一串兜底：
+                字体没加载出来时这行仍然是斜体半粗，而不是突然掉回正体 */}
+            <p className="text-[17px] font-semibold italic [font-family:Poppins,ui-sans-serif,system-ui,sans-serif]">
+              Mr Otto
+            </p>
           </div>
           {/* 三块面板压在动效背景上：半透明 + 背板模糊，让它们坐在画面里而不是贴在画面上。
               backdrop-filter 失败是静默的（整条被丢掉），届时退回不透明面板，仍然读得清 */}
           <SignInCard variant="glass" />
         </div>
-        {/* 密码错这类失败只会落在 store.error 里，卡片自己不显示它 */}
-        {error && <p className={`${ERR_TXT} max-w-[360px] text-center`}>{error}</p>}
       </div>
+      {/* 失败信息不顶在卡下面 —— 那会把整块内容往上推、按钮跟着跳。
+          右下角是个固定坑位，出现与消失都不动别人（AuthErrorAlert.tsx） */}
+      <AuthErrorAlert />
     </div>
   );
 }

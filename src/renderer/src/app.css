@@ -13,6 +13,19 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Poppins SemiBold Italic —— 只给进门闸那行「Mr Otto」用（issue #736）。
+   字体文件随仓库走、不走 Google Fonts CDN：这是个桌面 app，**离线也得能开**，
+   而 CSP 本来也不放行外域字体。只取 latin 子集（8.7 KB）—— 那行字是 ASCII，
+   把全字重全语种拉进来是几百 KB 的白搭。Poppins 是 OFL-1.1，随包分发没问题。 */
+@font-face {
+  font-family: "Poppins";
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/Poppins-SemiBoldItalic-latin.woff2") format("woff2");
+}
+
+
 :root {
   color-scheme: light;
   --background: #efece3;

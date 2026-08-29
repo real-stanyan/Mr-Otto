@@ -534,10 +534,15 @@ interface ChatState {
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   /** 邮箱密码登录；成功走 onAccountChanged，失败落 error。回 true = 没抛错 */
-  signInWithPassword(email: string, password: string): Promise<boolean>;
+  /** 邮箱密码登录。`silent` 给「等确认邮件」那张弹窗轮询用：失败不写 store.error
+      —— 轮询期间每隔几秒失败一次是**预期**，照写的话右下角那张报错卡会一直弹 */
+  signInWithPassword(email: string, password: string, silent?: boolean): Promise<boolean>;
   /** 邮箱密码注册；"signed-in"|"confirm-email" 由 UI 提示，出错回 null（error 已置） */
-  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email" | null>;
+  signUpWithPassword(email: string, password: string, name: string): Promise<"signed-in" | "confirm-email" | null>;
   signOut(): Promise<void>;
+  /** 清/设那条全局报错。右下角那张 Alert（components/AuthErrorAlert.tsx）
+      靠它自己走掉和被点掉；其余地方仍然只写不清 */
+  setError(error: string | null): void;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
   /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
@@ -1419,27 +1424,27 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.signIn(provider); // 生效凭证是 onAccountChanged 推来的事件，不是这个 Promise
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
     }
   },
 
-  async signInWithPassword(email, password) {
-    set({ error: null });
+  async signInWithPassword(email, password, silent = false) {
+    if (!silent) set({ error: null });
     try {
       await window.otter.signInWithPassword(email, password); // 生效凭证走 onAccountChanged
       return true;
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!silent) set({ error: bridgeErrorMessage(e) });
       return false;
     }
   },
 
-  async signUpWithPassword(email, password) {
+  async signUpWithPassword(email, password, name) {
     set({ error: null });
     try {
-      return await window.otter.signUpWithPassword(email, password);
+      return await window.otter.signUpWithPassword(email, password, name);
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
       return null;
     }
   },
@@ -1448,8 +1453,12 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.signOut();
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
     }
+  },
+
+  setError(error) {
+    set({ error });
   },
 
   async refreshFriends() {

@@ -757,7 +757,7 @@ export interface ShellBridge {
   signInWithPassword(email: string, password: string): Promise<void>;
   /** 邮箱密码注册："signed-in" = 注册即登录；"confirm-email" = 去邮箱点确认
       链接后回来登录（此时还不是登录态）。失败（邮箱已注册等）抛可读错误 */
-  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email">;
+  signUpWithPassword(email: string, password: string, name?: string): Promise<"signed-in" | "confirm-email">;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
   /** 本人在 profiles 表里的那一行（好友看到的就是它）。未登录 → value: null。

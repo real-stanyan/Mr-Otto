@@ -2565,8 +2565,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.signInWithPassword, (_e, email: string, password: string) =>
     manager.signInWithPassword(email, password)
   );
-  ipcMain.handle(CHANNELS.signUpWithPassword, (_e, email: string, password: string) =>
-    manager.signUpWithPassword(email, password)
+  ipcMain.handle(CHANNELS.signUpWithPassword, (_e, email: string, password: string, name?: string) =>
+    manager.signUpWithPassword(email, password, name ?? "")
   );
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 

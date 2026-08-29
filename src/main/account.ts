@@ -16,6 +16,7 @@ import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../shared/authConfig.js";
 import { authLandingUrl } from "../shared/edgeConfig.js";
 import type { AccountInfo } from "../shared/shellBridge.js";
+import { NAME_MAX } from "../shared/profile.js";
 
 export type { AccountInfo };
 
@@ -38,6 +39,9 @@ export type SupabaseLike = {
     signUp(args: {
       email: string;
       password: string;
+      // `options.data` 进 auth.users 的 raw_user_meta_data —— profiles 的插入触发器
+      // (migration 0007 的 handle_auth_user_upsert)正是从那里取 name
+      options?: { data?: Record<string, string> };
     }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
@@ -168,8 +172,24 @@ export class AccountManager {
    * - "confirm-email"：服务端要求邮箱验证（user 有、session 无），去邮箱点完
    *   确认链接后回来用密码登录；此时**不是**登录态，不触发 onChange。
    */
-  async signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email"> {
-    const { data, error } = await this.client.auth.signUp({ email, password });
+  /**
+   * 邮箱密码注册。`name` 是注册表单上填的用户名（issue #738）。
+   *
+   * 它走 `options.data` 进 auth.users 的 `raw_user_meta_data`，profiles 那一行由
+   * migration 0007 的 `handle_auth_user_upsert` 触发器在 insert 时取它填 name ——
+   * 所以**不需要**等登录成功再补写一次 profiles（注册那一刻根本还没有 session）。
+   * 空名字就不传：触发器的 coalesce 会退回邮箱前缀，比落一个空串强。
+   *
+   * 落库前按 NAME_MAX 截断：渲染层那边是 maxLength，但 IPC 是可以被绕过的边界，
+   * 长度这条规矩得在**两边**都成立（shared/profile.ts 的注释写的就是这个分工）。
+   */
+  async signUpWithPassword(email: string, password: string, name = ""): Promise<"signed-in" | "confirm-email"> {
+    const trimmed = name.trim().slice(0, NAME_MAX);
+    const { data, error } = await this.client.auth.signUp({
+      email,
+      password,
+      ...(trimmed === "" ? {} : { options: { data: { name: trimmed } } }),
+    });
     if (error) {
       throw new Error(errorMessage(error));
     }
