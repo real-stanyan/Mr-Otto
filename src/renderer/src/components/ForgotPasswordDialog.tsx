@@ -11,11 +11,14 @@
 //
 // ## 验过之后这张弹窗就没了
 //
-// recovery OTP 换到的是一个**真 session**：验证成功那一刻人已经登录了，进门闸抬起来，
-// 这棵树连同这张弹窗一起卸载。所以第三步「设新密码」不在这里 —— 它在 App 那层的
-// `SetPasswordDialog`，由 `resetPassword` 落下的那笔 pending 记号掀开。
-// 把三步硬塞进一张弹窗的话，它得跨过闸门活着，那意味着两个挂载点 + 一份搬进 store
-// 的状态；换来的只是"卡片没眨眼"。
+// recovery OTP 换到的是一个**真 session**：验证成功那一刻人已经登录了，这棵树连同
+// 这张弹窗一起卸载。所以第三步「设新密码」不在这里 —— 它在 `SetPasswordDialog`，
+// 由 `resetPassword` 落下的那笔 pending 记号掀开。把三步硬塞进一张弹窗的话，它得
+// 跨过闸门活着，那意味着两个挂载点 + 一份搬进 store 的状态。
+//
+// **但闸门不跟着抬**（`atGate`，issue #744）：第一版让它抬了，结果是整个 app 在一个
+// 还没设完密码的人背后铺开，而「以后再说」等于让旧密码原封不动的他就这么进去。
+// 现在按住闸门，那张弹窗压在登录屏上，设完（或明确跳过）才放行。
 //
 // 「查无此人也不报错」那条规矩由主进程守着（AccountManager.resetPassword），
 // 所以这里发完一律进第二步 —— 界面上看不出这个邮箱注册过没有。
@@ -46,10 +49,15 @@ import { Input } from "@/components/ui/input.js";
 
 export function ForgotPasswordDialog({
   initialEmail,
+  atGate = false,
   onClose,
 }: {
   /** 登录表单里已经填了的那个邮箱。人已经在那一格上打过字了,不该让他再打一遍 */
   initialEmail: string;
+  /** 这次重置是在进门闸上发起的。它在**发信那一刻**就落进记号里（而不是验证时），
+      因为点邮件链接那条路要经过浏览器 —— 内存里的标记跨不过那次往返。
+      收尾时闸门按住不放，让人在门外把新密码设完（issue #744，见 `lib/identity.ts`） */
+  atGate?: boolean;
   onClose: () => void;
 }) {
   const resetPassword = useChat((s) => s.resetPassword);
@@ -80,7 +88,7 @@ export function ForgotPasswordDialog({
       return;
     }
     setBusy(true);
-    const ok = await resetPassword(addr);
+    const ok = await resetPassword(addr, atGate);
     setBusy(false);
     if (!ok) return;
     setStep("code");
@@ -91,7 +99,8 @@ export function ForgotPasswordDialog({
     setBusy(true);
     await verifyRecoveryOtp(email.trim(), normalizeOtp(code));
     setBusy(false);
-    // 验过了也不用做别的:登录态一变,这棵树整个卸载
+    // 验过了也不用做别的:登录态一变,这棵树整个卸载(闸门那条路上,
+    // 换上来的是同一位置的「设一个新密码」)
   };
 
   const onEmailStep = step === "email";

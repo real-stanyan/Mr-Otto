@@ -68,3 +68,26 @@ export function needsOnboarding(account: AccountInfo, profile: MyProfile | null)
 export function needsSignIn(account: AccountInfo, authRecord: boolean): boolean {
   return !account.signedIn && !authRecord;
 }
+
+/**
+ * 闸门那一屏到底画不画。= 「还没进来」**或**「正在门口把重置走完」（issue #744）。
+ *
+ * 后半句解释一下。忘记密码填完验证码那一刻，人**已经是登录态**了 —— recovery OTP
+ * 换到的是一个真 session，`needsSignIn` 立刻变 false，闸门自己抬起来。于是出现了
+ * 维护者截图里那一幕：整个 app 已经在背后铺开，前面压着一张「设一个新密码」，
+ * 而「以后再说」等于让一个**旧密码一个字没变**的人就这么进去了。
+ *
+ * 重置该在门外走完。做法不是让那张弹窗跨过闸门活着（那要两个挂载点 + 一份搬进
+ * store 的状态），而是反过来 —— **让闸门先别抬**，等这一步结束再放行。
+ *
+ * `holdForPasswordReset` 只在「从闸门进来的那条路」上为真：账号页也渲染同一张登录卡
+ * （有记录但没验上的人落在那儿），那些人本来就在 app 里，把他们的界面换成登录屏
+ * 是另一种意外。所以这个判据由**发起方**给，不从 `resetPending` 反推。
+ */
+export function showsSignInScreen(
+  account: AccountInfo,
+  authRecord: boolean,
+  holdForPasswordReset: boolean,
+): boolean {
+  return needsSignIn(account, authRecord) || holdForPasswordReset;
+}

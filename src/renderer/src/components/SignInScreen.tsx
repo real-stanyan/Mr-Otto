@@ -18,6 +18,7 @@ import ottoLogo from "../assets/otto.png";
 
 import { AuthErrorAlert } from "./AuthErrorAlert.js";
 import { DitherBackground } from "./DitherBackground.js";
+import { SetPasswordDialog } from "./SetPasswordDialog.js";
 import { SignInCard } from "./SignInCard.js";
 
 /** 入场时长。这一屏一辈子只见两次（首次开 app、登出之后），给得起一点排场，
@@ -62,9 +63,12 @@ export function SignInScreen() {
           </div>
           {/* 三块面板压在动效背景上：半透明 + 背板模糊，让它们坐在画面里而不是贴在画面上。
               backdrop-filter 失败是静默的（整条被丢掉），届时退回不透明面板，仍然读得清 */}
-          <SignInCard variant="glass" />
+          <SignInCard variant="glass" atGate />
         </div>
       </div>
+      {/* 重置走到最后一步时压在这一屏上。它同时也挂在 App 的主树里（点邮件链接
+          回来那条路走的是那一份）—— 两处只会有一处在挂载，状态在 store 里 */}
+      <SetPasswordDialog />
       {/* 失败信息不顶在卡下面 —— 那会把整块内容往上推、按钮跟着跳。
           右下角是个固定坑位，出现与消失都不动别人（AuthErrorAlert.tsx） */}
       <AuthErrorAlert />

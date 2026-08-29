@@ -70,9 +70,13 @@ const SECTION = "flex flex-col gap-[8px]";
 export function SignInCard({
   className,
   variant = "plain",
+  atGate = false,
 }: {
   className?: string;
   variant?: "plain" | "glass";
+  /** 这张卡此刻画在进门闸上（而不是账号页）。忘记密码那条路要靠它决定
+      验完之后闸门抬不抬 —— 不从外观 `variant` 反推，那是两件事（issue #744） */
+  atGate?: boolean;
 }) {
   const signIn = useChat((s) => s.signIn);
   const signInWithPassword = useChat((s) => s.signInWithPassword);
@@ -235,7 +239,11 @@ export function SignInCard({
       {/* 忘记密码。验证成功那一刻人就是登录态了,这棵树跟着卸载 ——
           第三步「设新密码」由 App 那层的 SetPasswordDialog 接手 */}
       {forgotOpen && (
-        <ForgotPasswordDialog initialEmail={email} onClose={() => setForgotOpen(false)} />
+        <ForgotPasswordDialog
+          initialEmail={email}
+          atGate={atGate}
+          onClose={() => setForgotOpen(false)}
+        />
       )}
 
       {/* 等确认邮件那张弹窗。它自己 portal 到 body，挂在这儿只是为了好找 */}
