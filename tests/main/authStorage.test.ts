@@ -97,4 +97,69 @@ describe("authStorage", () => {
     const storage = createAuthStorage(filePath, nodeIO);
     expect(storage.getItem("anything")).toBeNull();
   });
+
+  // hasSession 是进门闸（SignInScreen / ADR-0182，判据由 ADR-0183 收紧）唯一的判据：
+  // 它必须同步、离线也答得出，所以停在本地文件这一层，不发网络校验
+  const SESSION = JSON.stringify({
+    access_token: "at",
+    refresh_token: "rt",
+    token_type: "bearer",
+    expires_at: 1,
+    user: { id: "u1" },
+  });
+
+  it("hasSession：没存过东西 = 没有登录记录", () => {
+    const io = fakeIO();
+    expect(createAuthStorage("/fake/auth.json", io).hasSession()).toBe(false);
+  });
+
+  it("hasSession：存着一份 session 就算有登录记录", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-kpeemypbhkynapkjzewr-auth-token", SESSION);
+    expect(storage.hasSession()).toBe(true);
+  });
+
+  // #729 的原样复现：维护者 dev 目录里就是这三条、一份 session 都没有，而闸门放行了。
+  // code verifier 是 signInWithOAuth **一开始**就写的，它证明有人点过按钮，不证明登录过
+  it("hasSession：只有 PKCE 的 code-verifier 残留时不算登录记录（#729）", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-otto-auth-auth-token-code-verifier", "abc123");
+    storage.setItem("sb-otto-auth-auth-token-flows-code-verifier", "[]");
+    storage.setItem("sb-otto-auth-auth-token-flow-de7873f9-code-verifier", "def456");
+    expect(storage.hasSession()).toBe(false);
+  });
+
+  // 就算 code verifier 那笔碰巧是个带 access_token 的 JSON，key 名也一票否决 ——
+  // 判 key 在前、判形状在后，两道都要过
+  it("hasSession：key 里带 code-verifier 的一律不算，哪怕值长得像 session", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-xxx-auth-token-code-verifier", SESSION);
+    expect(storage.hasSession()).toBe(false);
+  });
+
+  it("hasSession：值不是 JSON、或解析出来没有 access_token，都不算", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-xxx-auth-token", "不是 JSON");
+    storage.setItem("sb-yyy-auth-token", JSON.stringify({ user: { id: "u1" } }));
+    storage.setItem("sb-zzz-auth-token", JSON.stringify({ access_token: "" }));
+    expect(storage.hasSession()).toBe(false);
+  });
+
+  it("hasSession：登出把 session 删掉之后回到没有", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-kpeemypbhkynapkjzewr-auth-token", SESSION);
+    storage.removeItem("sb-kpeemypbhkynapkjzewr-auth-token");
+    expect(storage.hasSession()).toBe(false);
+  });
+
+  it("hasSession：坏 JSON 当没存过——闸门宁可让人重登，也不能靠一个解析不了的文件放行", () => {
+    const io = fakeIO();
+    io.write("/fake/auth.json", "{ 这不是 JSON");
+    expect(createAuthStorage("/fake/auth.json", io).hasSession()).toBe(false);
+  });
 });

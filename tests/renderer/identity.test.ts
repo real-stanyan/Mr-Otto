@@ -2,7 +2,7 @@
 // 这两条规则散在四五个渲染点上过一次就会走样,所以它们只有这一份实现。
 
 import { describe, expect, it } from "vitest";
-import { displayIdentity, needsOnboarding } from "../../src/renderer/src/lib/identity.js";
+import { displayIdentity, needsOnboarding, needsSignIn } from "../../src/renderer/src/lib/identity.js";
 import type { AccountInfo } from "../../src/shared/shellBridge.js";
 import type { MyProfile } from "../../src/shared/profile.js";
 
@@ -69,5 +69,27 @@ describe("needsOnboarding", () => {
     expect(needsOnboarding(tester, profile({ onboarded: true }))).toBe(true);
     // 防闪那条对测试账号同样成立:资料没读到就先不弹
     expect(needsOnboarding(tester, null)).toBe(false);
+  });
+});
+
+describe("needsSignIn（进门闸，ADR-0182）", () => {
+  it("从没登录过 = 拦在门外", () => {
+    expect(needsSignIn(OUT, false)).toBe(true);
+  });
+
+  it("有登录记录就放行，哪怕此刻 signedIn 还是假——这一条是冷启动不闪登录页的全部理由", () => {
+    // 冷启动的真实形状：主进程的 restore() 是 fire-and-forget 且要等一次网络往返，
+    // getAccount() 先回来的几乎必然是这个空账号。照 signedIn 判定的话，
+    // 已登录用户每次开 app 都会先看到一屏登录页再被顶掉
+    expect(needsSignIn(OUT, true)).toBe(false);
+  });
+
+  it("断网同理：restore() 永远回不来，但本地记录还在，人不该被锁在自己的软件外面", () => {
+    expect(needsSignIn(OUT, true)).toBe(false);
+  });
+
+  it("登录着 = 放行（记录标志迟到也不该把人弹出去）", () => {
+    expect(needsSignIn(account, false)).toBe(false);
+    expect(needsSignIn(account, true)).toBe(false);
   });
 });

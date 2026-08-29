@@ -48,3 +48,23 @@ export function needsOnboarding(account: AccountInfo, profile: MyProfile | null)
   if (!account.signedIn || profile === null) return false;
   return !profile.onboarded || isOnboardingTestAccount(account.email);
 }
+
+/**
+ * 该不该把人拦在进门那道闸上（SignInScreen，ADR-0182）。
+ *
+ * 判据是「有没有登录记录」而不是「此刻登录着没有」——两条都不能少：
+ *
+ * - `authRecord` 单独就够放行：冷启动时 `getAccount()` 几乎必然先回未登录
+ *   （主进程的 `restore()` 是 fire-and-forget，还要等一次 `auth.getUser()` 的网络
+ *   往返），照 `signedIn` 判定的话已登录用户每次开 app 都会先闪一屏登录页；
+ *   断网时 `restore()` 更是永远回不来，等于把人锁在自己的桌面软件外面。
+ * - `signedIn` 也单独够放行：登录成功那一刻 `onAccountChanged` 先到，
+ *   `authRecord` 由同一次 set 一起翻，但顺序不该由这里假设。
+ *
+ * 代价说清楚：session 被服务端吊销、而 auth.json 还躺在本地的用户仍然进得来，
+ * 只是进去之后处处是未登录态（账号页画的还是登录卡）。用「锁不住少数过期
+ * session」换「断网不锁人」，这笔账是故意这么算的。
+ */
+export function needsSignIn(account: AccountInfo, authRecord: boolean): boolean {
+  return !account.signedIn && !authRecord;
+}
