@@ -1,7 +1,7 @@
 // 主进程 — Electron 接线层：开窗、IPC 应答、把 agent 的推送接到 webContents。
 // agent 懒加载：用户选完工程文件夹（startSession）才组装，选之前 boot 返回 null。
 
-import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, safeStorage, screen, shell } from "electron";
 import type { WebContents } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
@@ -38,6 +38,7 @@ import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
+import { defaultWindowSize } from "./windowSize.js";
 import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
 import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration } from "./mcpAuthStore.js";
@@ -300,9 +301,13 @@ app.on("second-instance", (_event, argv) => {
 }
 
 function createWindow(): BrowserWindow {
+  // 大小跟着屏幕算,不是写死的常数(windowSize.ts 说了为什么)。取**鼠标所在**那块屏
+  // 而不是主屏:多显示器下人是在哪块屏上点的图标,窗口就该开在哪块屏的尺度上
+  const { workAreaSize } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { width, height } = defaultWindowSize(workAreaSize);
   const win = new BrowserWindow({
-    width: 1100,
-    height: 760,
+    width,
+    height,
     title: "Mr Otto",
     backgroundColor: "#121212",
     // macOS 隐藏原生标题栏那一行,红绿灯(hiddenInset)叠进内容左上角——
