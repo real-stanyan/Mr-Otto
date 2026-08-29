@@ -287,16 +287,18 @@ describe("McpDirectory", () => {
     const user = userEvent.setup();
     render(<McpDirectory servers={[]} />);
 
-    await user.click(await screen.findByRole("button", { name: "添加 GitHub" }));
+    // 主角原来是 GitHub，#760 之后它标着 blocked、根本不发「添加」——
+    // 换一条同形状的（http + oauth + 无参数）继续测这条路
+    await user.click(await screen.findByRole("button", { name: "添加 Sentry" }));
     await waitFor(() => {
-      expect(saveMcpServer).toHaveBeenCalledWith("github", {
+      expect(saveMcpServer).toHaveBeenCalledWith("sentry", {
         kind: "http",
-        url: "https://api.githubcopilot.com/mcp/",
+        url: "https://mcp.sentry.dev/mcp",
         headers: {},
         enabled: true,
       });
     });
-    await waitFor(() => expect(authorizeMcpServer).toHaveBeenCalledWith("github"));
+    await waitFor(() => expect(authorizeMcpServer).toHaveBeenCalledWith("sentry"));
   });
 
   it("带参数的条目先问参数，值代进 URL 的占位符", async () => {
@@ -373,6 +375,41 @@ describe("McpDirectory", () => {
     pending.get("weather")!.resolve([remote("weather-remote", "Weather Remote")]);
 
     expect(await screen.findByText("未核验")).toBeInTheDocument();
+  });
+
+  // ── 已知接不上的那几条（issue #760）───────────────────────────────
+  it("已知接不上的不发「添加」—— 提供一个必然失败的动作就是撒谎", async () => {
+    // GitHub 的授权服务器不支持动态客户端注册，实测点了必失败（#733）。
+    // 这个结论早就写在 catalog 里，却只写进了 authNote，而 authNote 只在
+    // 未核验条目的确认框里露面 —— 于是一个用户都没看见，按钮照发
+    deferredBridge();
+    render(<McpDirectory servers={[]} />);
+
+    await screen.findByText("开发与部署");
+    expect(screen.queryByRole("button", { name: "添加 GitHub" })).not.toBeInTheDocument();
+    // 条目本身留着：GitHub 是目录里最常被找的一台，删了用户的结论会是
+    // "这软件接不了 GitHub"
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+  });
+
+  it("已经装上的那台也不发「授权」—— 用户就是这么卡在「待接通」里的", async () => {
+    deferredBridge();
+    render(<McpDirectory servers={[srv("github", "needs-auth")]} />);
+
+    await screen.findByText("待接通");
+    expect(screen.queryByRole("button", { name: "授权 GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("详情页把原因画出来，不是挂在 tooltip 上", async () => {
+    // 用户是带着"为什么点了没反应"这个问题点进来的，答案该在视线落点上
+    deferredBridge();
+    render(<McpDirectory servers={[]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "GitHub 详情" }));
+
+    expect(await screen.findByText(/不支持动态客户端注册/)).toBeInTheDocument();
+    expect(screen.getByText(/#697/)).toBeInTheDocument();
   });
 
   // ── 详情页（issue #745）─────────────────────────────────────────────

@@ -52,7 +52,12 @@ import {
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
 import type { McpServerStatus } from "../../../shared/mcp.js";
-import { filterInstalled, installedItems, splitInstalled } from "../lib/mcpInstalled.js";
+import {
+  filterInstalled,
+  humanizeMcpError,
+  installedItems,
+  splitInstalled,
+} from "../lib/mcpInstalled.js";
 import { mcpDisplayStatus } from "../lib/mcpForm.js";
 import { McpConnectorPage } from "./McpConnectorPage.js";
 

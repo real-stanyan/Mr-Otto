@@ -104,3 +104,28 @@ describe("paramSuffix / sourceNote", () => {
     expect(sourceNote(false)).toContain("没有人替你核过");
   });
 });
+
+describe("connectorFacts 与 blocked", () => {
+  const blocked: CatalogEntry = {
+    id: "x",
+    name: "X",
+    description: "",
+    transport: "http",
+    url: "https://x.test/mcp",
+    params: [],
+    auth: "oauth",
+    authNote: "配好后点一次授权",
+    blocked: "这台的授权服务器不支持动态注册",
+  };
+
+  it("已知接不上的不出「授权」那一行 —— 它和上面那条横幅互相打架（#760）", () => {
+    // "配好后点一次授权"说的是要授权该干什么；横幅刚说完这台现在授权不了。
+    // 两句摞在一起，用户得自己判断信哪句
+    expect(connectorFacts(blocked).map((f) => f.label)).not.toContain("授权");
+  });
+
+  it("没标 blocked 的照旧有那一行", () => {
+    const { blocked: _drop, ...ok } = blocked;
+    expect(connectorFacts(ok).map((f) => f.label)).toContain("授权");
+  });
+});

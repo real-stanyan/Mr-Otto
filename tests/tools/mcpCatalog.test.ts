@@ -41,6 +41,15 @@ describe("mcp_catalog 工具", () => {
     expect(out).toContain("mcp_authorize");
   });
 
+  it("已知接不上的那几条要跟水獭说清楚 —— 界面知道不等于 agent 知道（#760）", async () => {
+    // 这句原来混在 authNote 里，#760 把它拆成独立字段。不在这儿也说一次的话，
+    // 水獭照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
+    // 永远连不上的 server 在用户的 mcp.json 里
+    const out = String(await mcpCatalogTool.run({ query: "github" }, world));
+    expect(out).toContain("现在接不上");
+    expect(out).toContain("别装这台");
+  });
+
   it("命中时返回可直接照着填的字段", async () => {
     const out = await mcpCatalogTool.run({ query: "supabase" }, world);
     expect(String(out)).toContain("mcp.supabase.com");

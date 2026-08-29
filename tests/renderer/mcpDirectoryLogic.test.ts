@@ -297,6 +297,34 @@ describe("installSlot", () => {
     expect(installSlot(item("disabled"), false).kind).toBe("note");
   });
 
+  it("已知接不上的：既不发「添加」也不发「授权」，改说一句原因（#760）", () => {
+    // 撒谎的形状跟 #722 是同一个：界面提供了一个我们**已经知道**会失败的动作。
+    // 目录里那三条（GitHub / Asana / Figma）实测过点了必失败（#733），
+    // 结论早就写在 catalog 里，却从没上过屏
+    const blocked = (installed: McpDisplayStatus | null): DirectoryItem => ({
+      entry: { ...http("x"), blocked: "这台的授权服务器不支持动态注册" },
+      verified: true,
+      installed,
+    });
+    expect(installSlot(blocked(null), false)).toEqual({
+      kind: "note",
+      label: "暂时连不上",
+      title: "这台的授权服务器不支持动态注册",
+    });
+    expect(installSlot(blocked("needs-auth"), false).kind).toBe("note");
+  });
+
+  it("真连上了以现实为准 —— blocked 是上次实测的结论，可能过期", () => {
+    // 对方随时可能补上动态注册，或者用户手改了 mcp.json 塞了个能用的凭据。
+    // 那时候还画「暂时连不上」，说的就是我们的记忆而不是事实
+    const item2: DirectoryItem = {
+      entry: { ...http("x"), blocked: "这台的授权服务器不支持动态注册" },
+      verified: true,
+      installed: "connected",
+    };
+    expect(installSlot(item2, false)).toEqual({ kind: "done" });
+  });
+
   it("busy 盖住一切 —— 授权在飞的那五分钟不能显示成已完成", () => {
     // saveMcpServer 一成功 installed 就有值了，而 authorizeMcpServer 还挂在
     // waitForCode 上（AUTH_TIMEOUT_MS = 5 分钟）。这段窗口必须是 busy

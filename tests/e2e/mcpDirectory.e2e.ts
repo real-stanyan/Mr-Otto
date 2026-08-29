@@ -254,3 +254,29 @@ test("装上了但没授权的，卡片画的是「授权」不是 ✓", async (
     server.close();
   }
 });
+
+test("已知接不上的那几条：不发按钮，原因画在详情页上（#760）", async () => {
+  // 用户点了 GitHub 的「添加」，落进「待接通」，点「授权」永远是那句
+  // `Incompatible auth server: does not support dynamic client registration`。
+  // 结论 ADR-0184 那次就实测出来了，只是写进了没人渲染的字段（ADR-0190）
+  const otto = await launchOtto();
+  try {
+    await stubRegistry(otto);
+    await openSettings(otto.win, "连接器");
+    await otto.win.getByRole("button", { name: "添加 Supabase" }).waitFor({ timeout: 15_000 });
+
+    // 条目还在（删掉的话用户的结论会是"这软件接不了 GitHub"），但那颗按钮没了
+    await expect(otto.win.getByRole("button", { name: "GitHub 详情" })).toBeVisible();
+    await expect(
+      otto.win.getByRole("button", { name: "添加 GitHub" }),
+      "已知点了必失败的动作不该出现在界面上"
+    ).toHaveCount(0);
+
+    await otto.win.getByRole("button", { name: "GitHub 详情" }).click();
+    // 原因是画出来的，不是挂在 tooltip 上——用户带着"为什么点了没反应"进来的
+    await expect(otto.win.getByText(/不支持动态客户端注册/)).toBeVisible({ timeout: 10_000 });
+    expectNoRendererErrors(otto);
+  } finally {
+    await otto.close();
+  }
+});
