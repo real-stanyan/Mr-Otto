@@ -850,7 +850,10 @@ export interface ShellBridge {
     friendUid: string,
     message: string,
     title: string | null,
-    model: string | null
+    model: string | null,
+    /** 连带借出的服务名（展示用）+ 代理邀请码（issue #694，ADR-0177）。
+        缺席 = 只分享对话，与这个功能上线前完全一样 */
+    grant?: { servers: readonly string[]; invite: string } | null
   ): Promise<FriendsResult<{ pkgId: string; eventCount: number }>>;
   /** 接收方导入会话包(issue #611)：下载 + 解包 + 用 workspace 重填围栏 +
       逐条 append 成新 fork 会话。workspace = 接收方选定的本机目录。
@@ -866,12 +869,17 @@ export interface ShellBridge {
       ok:true 带邀请码文本（A 复制发给 B） */
   proxyCreateInvite(
     friendUid: string,
-    allow: readonly { serverId: string; tools: readonly string[] }[]
+    allow: readonly { serverId: string; tools: readonly string[] }[],
+    /** 有效期。缺席 = 10 分钟（手动粘贴那条路）；随分享发出去的传 24 小时，
+        见 PROXY_SHARE_INVITE_TTL_MS 与 ADR-0177 */
+    ttlMs?: number
   ): Promise<FriendsResult<{ invite: string }>>;
   /** B 侧：输入 A 给的邀请码，连上 A 的频道、握手、建立代理通道。
       ok:true 带 A 授给 B 的服务数（B 的工具表随后按它渲染） */
   proxyAcceptInvite(
-    invite: string
+    invite: string,
+    /** 有效期，口径同 proxyCreateInvite。从分享卡片接受时传 24 小时那档 */
+    ttlMs?: number
   ): Promise<FriendsResult<{ grantedCount: number }>>;
   /** A 侧：列出当前所有的代理授权（谁有什么权限）+ 各自审计账 */
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: readonly { serverId: string; tools: readonly string[] }[] }[] }>>;

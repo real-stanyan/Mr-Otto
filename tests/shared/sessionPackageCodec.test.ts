@@ -119,4 +119,42 @@ describe("DM 信封（encodeEnvelope / decodeEnvelope）", () => {
     expect(body.length).toBeLessThan(4000);
     expect(() => JSON.parse(body)).not.toThrow();
   });
+
+  // ─── 连带授权那两个字段（issue #694，ADR-0177）────────────────────
+  const INVITE = "otto-proxy:1:host-uid:chan-1:cHVi:c2Vj:1700000000000";
+
+  it("带上邀请码与服务清单也往返得回来", () => {
+    const out = decodeEnvelope(encodeEnvelope({ ...env, grantServers: ["shopify"], invite: INVITE }));
+    expect(out?.grantServers).toEqual(["shopify"]);
+    expect(out?.invite).toBe(INVITE);
+    // 加了这两个字段仍然远在 DM 的 4000 字符限内（邀请码是定长的七段）
+    expect(encodeEnvelope({ ...env, grantServers: ["shopify"], invite: INVITE }).length).toBeLessThan(4000);
+  });
+
+  it("老信封（没有这两个字段）照常解得开，且不凭空长出它们", () => {
+    const out = decodeEnvelope(encodeEnvelope(env));
+    expect(out).not.toBeNull();
+    expect(out?.invite).toBeUndefined();
+    expect(out?.grantServers).toBeUndefined();
+  });
+
+  it("版本仍然是 1 —— 涨版本会让老客户端把整条私信判成不认识", () => {
+    const body = encodeEnvelope({ ...env, invite: INVITE });
+    expect((JSON.parse(body) as { v: number }).v).toBe(1);
+  });
+
+  it("字段形状不对就当没有：信封来自网络，一律先验再用", () => {
+    const bad = JSON.stringify({
+      otto: "otto.session-share", v: 1, bucket: "b", prefix: "p",
+      grantServers: [1, "shopify", null], invite: 42,
+    });
+    const out = decodeEnvelope(bad);
+    expect(out?.grantServers).toEqual(["shopify"]); // 非字符串项剔掉，不是整条丢弃
+    expect(out?.invite).toBeUndefined(); // 不是字符串 = 没有邀请码，卡片不给按钮
+  });
+
+  it("空邀请码不算邀请码 —— 否则卡片会给出一个点了必然失败的按钮", () => {
+    const out = decodeEnvelope(encodeEnvelope({ ...env, invite: "" }));
+    expect(out?.invite).toBeUndefined();
+  });
 });

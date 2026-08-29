@@ -126,6 +126,24 @@ export interface ShareEnvelope {
   title: string | null;
   /** 包内事件条数（卡片上显示「N 条」让对方有体积预期） */
   eventCount: number;
+  /**
+   * 连带借出的服务清单（issue #694，ADR-0177）。缺席 = 这份分享只给对话，不借服务。
+   *
+   * 只是**给人看的名字**（= server id，mcp.json 里的键）。真正的白名单存在 A 那边
+   * （proxyStore），握手后由 A 推 `proxy_grant` 帧过来——这里写什么都不构成授权。
+   */
+  grantServers?: readonly string[];
+  /**
+   * 代理邀请码（`otto-proxy:…`），有它才有「导入并接上对方的服务」那个按钮。
+   *
+   * 为什么敢把 secret 放进 DM：手动那条路本来也是 DM/当面（ADR-0151 的「带外」
+   * 就是这个意思），信道没变，变的只是「谁来复制粘贴」。
+   *
+   * 老版本客户端读到这条信封会照常渲染卡片、认不得这两个字段——`v` 保持 1 是刻意的：
+   * 涨版本会让老客户端把整条私信判成不认识（`decodeEnvelope` 的 `v !== 1` 直接 null），
+   * 一个新字段不值得换来那个后果。
+   */
+  invite?: string;
 }
 
 /** 编信封：把分享元数据编成 DM body 字符串 */
@@ -149,6 +167,11 @@ export function decodeEnvelope(body: string): ShareEnvelope | null {
   if (e.otto !== ENVELOPE_KIND) return null;
   if (e.v !== 1) return null; // 将来 v2 再说
   if (typeof e.bucket !== "string" || typeof e.prefix !== "string") return null;
+  // 连带授权那两个字段是后加的（ADR-0177），一律按「可能缺席、可能是别的形状」读：
+  // 信封来自网络，而老版本发的信封本来就没有它们
+  const grantServers = Array.isArray(e.grantServers)
+    ? e.grantServers.filter((s): s is string => typeof s === "string")
+    : [];
   return {
     otto: ENVELOPE_KIND,
     v: 1,
@@ -157,5 +180,7 @@ export function decodeEnvelope(body: string): ShareEnvelope | null {
     message: typeof e.message === "string" ? e.message : "",
     title: typeof e.title === "string" ? e.title : null,
     eventCount: typeof e.eventCount === "number" ? e.eventCount : 0,
+    ...(grantServers.length > 0 ? { grantServers } : {}),
+    ...(typeof e.invite === "string" && e.invite !== "" ? { invite: e.invite } : {}),
   };
 }

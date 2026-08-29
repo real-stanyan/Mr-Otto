@@ -3,7 +3,9 @@ import { createProxyManager } from "../../src/main/proxyManager.js";
 import {
   channelFor, emptyProxyStore, pinnedIdentities, type ProxyStoreData,
 } from "../../src/main/proxyStore.js";
-import { decodeProxyInvite, encodeProxyInvite } from "../../src/shared/remote/proxyInvite.js";
+import {
+  decodeProxyInvite, encodeProxyInvite, PROXY_SHARE_INVITE_TTL_MS,
+} from "../../src/shared/remote/proxyInvite.js";
 import type { ProxyWireTransport } from "../../src/main/proxyCoordinator.js";
 import type { McpCapability, McpServerHandle } from "../../src/world/executionWorld.js";
 import { nodeRemoteCrypto } from "../../src/main/remoteCryptoNode.js";
@@ -227,6 +229,43 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
     const stale = encodeProxyInvite({ ...inv, createdTs: inv.createdTs - 11 * 60_000 });
     const old = await b.manager.proxyAcceptInvite(stale);
     expect(old.ok === false && old.message).toContain("过期");
+    expect(old.ok === false && old.message).toContain("10 分钟");
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
+  // ─── 随分享发出去的那种邀请活得久一点（issue #694，ADR-0177）─────
+  it("传了 24 小时的有效期，11 分钟前那张就还认", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid");
+    const b = machine(relay, "b-uid");
+    const made = await a.manager.proxyCreateInvite("b-uid", [], PROXY_SHARE_INVITE_TTL_MS);
+    const inv = decodeProxyInvite(made.ok ? made.value.invite : "")!;
+    const elevenMinAgo = encodeProxyInvite({ ...inv, createdTs: inv.createdTs - 11 * 60_000 });
+
+    // 默认那 10 分钟的口径下它早就过期了 —— 两次判定的差别只来自 ttlMs
+    const asDefault = await b.manager.proxyAcceptInvite(elevenMinAgo);
+    expect(asDefault.ok).toBe(false);
+
+    const asShare = await b.manager.proxyAcceptInvite(elevenMinAgo, PROXY_SHARE_INVITE_TTL_MS);
+    expect(asShare.ok).toBe(true);
+
+    a.manager.closeAll();
+    b.manager.closeAll();
+  });
+
+  it("超过 24 小时照样拒，且话里说的是 24 小时不是 10 分钟", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid");
+    const b = machine(relay, "b-uid");
+    const made = await a.manager.proxyCreateInvite("b-uid", [], PROXY_SHARE_INVITE_TTL_MS);
+    const inv = decodeProxyInvite(made.ok ? made.value.invite : "")!;
+    const yesterday = encodeProxyInvite({ ...inv, createdTs: inv.createdTs - 25 * 60 * 60_000 });
+
+    const r = await b.manager.proxyAcceptInvite(yesterday, PROXY_SHARE_INVITE_TTL_MS);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("24 小时");
 
     a.manager.closeAll();
     b.manager.closeAll();

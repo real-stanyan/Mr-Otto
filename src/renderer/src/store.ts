@@ -55,6 +55,8 @@ import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../sha
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { shareAllow } from "../../shared/shareGrant.js";
+import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
@@ -619,7 +621,14 @@ interface ChatState {
   /** @好友分享当前会话(issue #611)：把 sessionId 的完整快照发给 friendUid，
       message 是随包的留言(交代 fork 去干什么)。成功/失败都落 friendError/提示。
       返回是否成功——组件据它决定要不要清空输入框/给反馈 */
-  shareSession(sessionId: string, friendUid: string, friendName: string, message: string): Promise<boolean>;
+  shareSession(
+    sessionId: string, friendUid: string, friendName: string, message: string,
+    /** 连带借出的服务（issue #694，ADR-0177）：这里传服务 id 清单，本 action 负责
+        先生成一张 24 小时的代理邀请、再把它塞进分享信封。缺席 = 只分享对话。
+        邀请生成失败**不继续分享**——半成品分享（对面看得见按钮、点了连不上）
+        比直接说失败更难排查 */
+    grantServers?: readonly string[]
+  ): Promise<boolean>;
   /** 接收端导入好友分享的会话：下载、解包、用 workspace 作围栏 fork 出新会话，
       成功后跳转过去(ResumeState 从主进程推) */
   importShared(prefix: string, workspace: string): Promise<boolean>;
@@ -628,10 +637,11 @@ interface ChatState {
   /** A 侧：为好友生成邀请码。回邀请码文本，失败回 null（原因在 friendError） */
   createProxyInvite(
     friendUid: string,
-    allow: readonly { serverId: string; tools: readonly string[] }[]
+    allow: readonly { serverId: string; tools: readonly string[] }[],
+    ttlMs?: number
   ): Promise<string | null>;
-  /** B 侧：粘贴邀请码接上对方。回是否成功 */
-  acceptProxyInvite(invite: string): Promise<boolean>;
+  /** B 侧：粘贴邀请码接上对方。回是否成功。ttlMs 见 PROXY_SHARE_INVITE_TTL_MS */
+  acceptProxyInvite(invite: string, ttlMs?: number): Promise<boolean>;
   /** A 侧：一键撤销（授权/pin/频道一起没，见 proxyStore.revokeGrant） */
   revokeProxy(friendUid: string): Promise<void>;
   /** A 侧：拉审计账。不给 friendUid = 全部 */
@@ -1444,10 +1454,22 @@ export const useChat = create<ChatState>((set, get) => ({
     else set({ friendError: r.message });
   },
 
-  async shareSession(sessionId, friendUid, friendName, message) {
+  async shareSession(sessionId, friendUid, friendName, message, grantServers) {
     // title/model 现在从 store 拿得到就带，拿不到给 null（manifest 里可空）
     const title = get().sessions.find((x) => x.sessionId === sessionId)?.title ?? null;
-    const r = await window.otter.shareSessionToFriend(sessionId, friendUid, message, title, get().model ?? null);
+    // 连带授权（ADR-0177）：先把白名单写进 A 侧台账并开好房间，拿到邀请码，
+    // 再把码随信封发出去。顺序不能反 —— 先发信封的话，码还没生成就已经许诺了
+    let grant: { servers: readonly string[]; invite: string } | null = null;
+    if (grantServers && grantServers.length > 0) {
+      const invite = await get().createProxyInvite(
+        friendUid, shareAllow(grantServers), PROXY_SHARE_INVITE_TTL_MS
+      );
+      if (!invite) return false; // 原因已落 friendError（createProxyInvite 负责）
+      grant = { servers: grantServers, invite };
+    }
+    const r = await window.otter.shareSessionToFriend(
+      sessionId, friendUid, message, title, get().model ?? null, grant
+    );
     if (!r.ok) {
       set({ friendError: r.message });
       return false;
@@ -1502,8 +1524,8 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ proxyGrants: r.value.grants, friendError: null });
   },
 
-  async createProxyInvite(friendUid, allow) {
-    const r = await window.otter.proxyCreateInvite(friendUid, allow);
+  async createProxyInvite(friendUid, allow, ttlMs) {
+    const r = await window.otter.proxyCreateInvite(friendUid, allow, ttlMs);
     if (!r.ok) {
       set({ friendError: r.message });
       return null;
@@ -1513,8 +1535,8 @@ export const useChat = create<ChatState>((set, get) => ({
     return r.value.invite;
   },
 
-  async acceptProxyInvite(invite) {
-    const r = await window.otter.proxyAcceptInvite(invite);
+  async acceptProxyInvite(invite, ttlMs) {
+    const r = await window.otter.proxyAcceptInvite(invite, ttlMs);
     set({ friendError: r.ok ? null : r.message });
     return r.ok;
   },

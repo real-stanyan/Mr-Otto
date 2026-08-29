@@ -82,9 +82,11 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     await userEvent.click(screen.getByLabelText("get_orders"));
     await userEvent.click(screen.getByText("生成邀请码"));
 
+    // 第三个参数是有效期：这个弹窗发的码不传 = 默认 10 分钟。
+    // 放宽到 24 小时只发生在「随会话分享」那条路上（ADR-0177）
     await waitFor(() => expect(proxyCreateInvite).toHaveBeenCalledWith("b-uid", [
       { serverId: "shopify", tools: ["get_orders"] },
-    ]));
+    ], undefined));
     expect(await screen.findByDisplayValue("otto-proxy:1:c:AA:BB:1")).toBeInTheDocument();
   });
 
@@ -142,7 +144,7 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
     await userEvent.type(screen.getByPlaceholderText(/otto-proxy/), "otto-proxy:1:c:AA:BB:1");
     await userEvent.click(screen.getByText("接受"));
 
-    await waitFor(() => expect(proxyAcceptInvite).toHaveBeenCalledWith("otto-proxy:1:c:AA:BB:1"));
+    await waitFor(() => expect(proxyAcceptInvite).toHaveBeenCalledWith("otto-proxy:1:c:AA:BB:1", undefined));
     expect(await screen.findByText(/上面那行会显示接上没有/)).toBeInTheDocument();
   });
 
@@ -234,7 +236,7 @@ describe("ProxyDialog（好友代理弹窗，issue #657）", () => {
 
     // 出路就在这一行上：原样用已有白名单重发，不必再圈一遍
     await userEvent.click(screen.getByText("重发邀请码"));
-    await waitFor(() => expect(proxyCreateInvite).toHaveBeenCalledWith("b-uid", [{ serverId: "shopify", tools: [] }]));
+    await waitFor(() => expect(proxyCreateInvite).toHaveBeenCalledWith("b-uid", [{ serverId: "shopify", tools: [] }], undefined));
     expect(await screen.findByDisplayValue("otto-proxy:1:a:c:AA:BB:1")).toBeInTheDocument();
   });
 

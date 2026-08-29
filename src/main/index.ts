@@ -2575,10 +2575,10 @@ void app.whenReady().then(() => {
   // 好友代理（issue #622 / #657）：同一套结构化回流。proxy 为 null = 系统封装不可用
   // （没有身份密钥就没有握手，见上面的装配）——回一句人话，别让渲染层拿到 undefined
   const proxyOff = { ok: false as const, message: "系统钥匙串不可用，好友代理开不了（同「手机远程」那一条）" };
-  ipcMain.handle(CHANNELS.proxyCreateInvite, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
-    proxy ? proxy.proxyCreateInvite(friendUid, allow) : proxyOff);
-  ipcMain.handle(CHANNELS.proxyAcceptInvite, (_e, invite: string) =>
-    proxy ? proxy.proxyAcceptInvite(invite) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyCreateInvite, (_e, friendUid: string, allow: ProxyGrant["allow"], ttlMs?: number) =>
+    proxy ? proxy.proxyCreateInvite(friendUid, allow, ttlMs) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAcceptInvite, (_e, invite: string, ttlMs?: number) =>
+    proxy ? proxy.proxyAcceptInvite(invite, ttlMs) : proxyOff);
   ipcMain.handle(CHANNELS.proxyListGrants, () => (proxy ? proxy.proxyListGrants() : proxyOff));
   ipcMain.handle(CHANNELS.proxyRevoke, (_e, friendUid: string) =>
     proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
@@ -2596,7 +2596,10 @@ void app.whenReady().then(() => {
   // friends.sendMessage 发 DM 信封——四件事各有各的真身，本层只接线。
   ipcMain.handle(
     CHANNELS.shareSessionToFriend,
-    async (_e, sessionId: string, friendUid: string, message: string, title: string | null, model: string | null) =>
+    async (
+      _e, sessionId: string, friendUid: string, message: string, title: string | null, model: string | null,
+      grant?: { servers: readonly string[]; invite: string } | null
+    ) =>
       shareSessionToFriend(
         {
           myUid: async () => (await supabase.raw.auth.getUser()).data.user?.id ?? null,
@@ -2610,7 +2613,10 @@ void app.whenReady().then(() => {
             return r.value;
           },
         },
-        { sessionId, friendUid, message, title, model }
+        {
+          sessionId, friendUid, message, title, model,
+          ...(grant ? { grantServers: grant.servers, invite: grant.invite } : {}),
+        }
       )
   );
   // 接收端导入：下载 + 解包 + 重填 workspace + 逐条 append 成新 fork 会话
