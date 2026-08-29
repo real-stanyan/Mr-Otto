@@ -121,10 +121,23 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
         </div>
       </div>
       {hits?.length === 0 && <p className="px-[10px] text-xs text-muted-foreground">没有匹配的用户。</p>}
+      {/* 命中行：头像 + 名字 + 邮箱。头像不带在线点——搜到的人还不是好友，
+          presence 只对好友广播（ADR-0055），画个灰点等于把"我不知道"说成"他离线"。
+          邮箱那一行不是装饰：同名的人搜出来就是两行一模一样的字（真实截图里
+          两个「Stan Yan」），只有邮箱能分辨该给谁发请求；手机端一直是这么画的 */}
       {hits?.map((hit) => (
-        <div key={hit.id} className="mx-[10px] mb-1 px-2 py-1 border border-border rounded text-xs flex items-center gap-1">
-          <span className="flex-1 min-w-0 truncate">{hit.name || hit.email}</span>
-          <Button variant="ghost" size="sm" className="px-2 text-xs"
+        <div key={hit.id} className="mx-[10px] mb-1 px-2 py-1 border border-border rounded text-xs flex items-center gap-[6px]">
+          <Avatar size="sm" className="shrink-0">
+            <AvatarImage src={hit.avatarUrl} alt={hit.name || hit.email} />
+            <AvatarFallback>{(hit.name || hit.email || "?").slice(0, 1).toUpperCase()}</AvatarFallback>
+          </Avatar>
+          <span className="flex flex-1 min-w-0 flex-col leading-tight">
+            <span className="truncate">{hit.name || hit.email}</span>
+            {hit.name && hit.email && (
+              <span className="truncate text-[10.5px] text-muted-foreground">{hit.email}</span>
+            )}
+          </span>
+          <Button variant="ghost" size="sm" className="shrink-0 px-2 text-xs"
             onClick={() => { void addFriend(hit.id); setHits(null); setQuery(""); }}>
             发请求
           </Button>
