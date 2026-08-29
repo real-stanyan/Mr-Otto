@@ -1,3 +1,6 @@
+// SideChat 窗口的纯逻辑。名字里那个 Logic 是碰撞的解药——叫回 sideChatWindow.test.ts
+// 的话，它和同目录的 SideChatWindow.test.tsx 在 macOS 上会被 tsc 当成同一个，那份 .tsx
+// 被静默丢出类型检查（issue #687，ADR-0173）。
 import { describe, expect, it } from "vitest";
 import {
   SIDE_W,
