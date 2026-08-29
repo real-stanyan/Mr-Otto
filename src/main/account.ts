@@ -19,9 +19,9 @@ import type { AccountInfo } from "../shared/shellBridge.js";
 
 export type { AccountInfo };
 
-const EMPTY_ACCOUNT: AccountInfo = { signedIn: false, email: "", name: "", avatarUrl: "" };
+const EMPTY_ACCOUNT: AccountInfo = { signedIn: false, id: "", email: "", name: "", avatarUrl: "" };
 
-type SupabaseUserLike = { email?: string; user_metadata?: Record<string, unknown> } | null;
+type SupabaseUserLike = { id?: string; email?: string; user_metadata?: Record<string, unknown> } | null;
 
 /** supabase-js 客户端的最小接口——真 client 结构上兼容，测试注入假实现 */
 export type SupabaseLike = {
@@ -98,7 +98,10 @@ export function toAccountInfo(user: SupabaseUserLike): AccountInfo {
   const metaPicture = typeof metadata["picture"] === "string" ? (metadata["picture"] as string) : undefined;
   const avatarUrl = metaAvatarUrl ?? metaPicture ?? "";
 
-  return { signedIn: true, email, name, avatarUrl };
+  // id 是本机数据分抽屉的依据（ADR-0186）：它决定「换号了没有」，进而决定要不要
+  // 重启换数据目录。取不到就留空串 —— 空串 ≠ 任何真 uid，于是判不出换号、
+  // 不会误重启，退化成本条修复之前的行为（同一个抽屉），而不是随机换一个
+  return { signedIn: true, id: user.id ?? "", email, name, avatarUrl };
 }
 
 /**

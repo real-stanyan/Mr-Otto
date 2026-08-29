@@ -178,6 +178,16 @@ import {
 import type { FriendsSnapshot } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
 import { findMrottoDeepLink } from "./deepLink.js";
+import { sessionIdentity } from "./authStorage.js";
+import {
+  accountConfigDir,
+  accountDataDir,
+  adoptLegacyData,
+  needsRelaunch,
+  writeWho,
+  LEGACY_CONFIG_ENTRIES,
+  LEGACY_USER_DATA_ENTRIES,
+} from "./accountScope.js";
 import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
 import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
 
@@ -193,9 +203,25 @@ app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
 
+// 本机数据按登录账号分抽屉（issue #749，ADR-0186）。算在这里而不是 whenReady 里面：
+// 下面二十来处 store 各自持着一条**装配时就钉死**的绝对路径，抽屉选错了没有第二次
+// 机会。uid 不必等 restore() 的网络往返 —— supabase 落在 auth.json 里的那份 session
+// 自带 user.id，和进门闸（ADR-0183）读同一个文件、同样同步、同样离线答得出。
+// auth.json 自己**留在 userData 根**：它是 uid 的来源，不能跟着抽屉走。
+const userDataRoot = app.getPath("userData");
+const authFilePath = join(userDataRoot, "auth.json");
+const bootAccount = sessionIdentity(authFilePath);
+/** 这次开机打开的是谁的抽屉。null = 没有登录记录（走 _signed-out 那一格） */
+const bootUid = bootAccount.uid;
+const accountData = accountDataDir(userDataRoot, bootUid);
+const accountConfig = accountConfigDir(homedir(), bootUid);
+/** `~/.mr-otto/` 本身（`.otter` 老目录的改名仍然发生在这一层，ADR-0057）。
+    抽屉是它的子目录，存量搬家的来源也是它 */
+const legacyConfigRoot = configDir(homedir());
+
 // 动效设置(issue #607)。现读不缓存——读的频率是"开设置页/开窗"量级。
 // 落点跟着上面 setPath 之后的 userData 走,双开各算各的
-const motionSettingsPath = join(app.getPath("userData"), "motion.json");
+const motionSettingsPath = join(accountData, "motion.json");
 
 /** 覆盖动作的真身:问渲染层要 matchMedia 的结果,用 CDP 钉住那条媒体查询。
     判定在 motionOverride.ts(有测试钉着),这里只提供能力 */
@@ -237,6 +263,26 @@ async function syncMotionOverride(): Promise<void> {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 }
+
+// 抽屉落地 + 存量搬家（ADR-0186）。排在抢锁**之后**：搬家是全局副作用，只该由
+// 活下来的那个实例做。「存量归给当前登录的账号」是维护者裁的（issue #749）——
+// 第一次实施隔离时现有数据整体划给此刻登录的人，它本来大概率就是他的，而留在
+// 共享层等于把泄漏窗口一直开着。没登录记录时不搬：那时还不知道该划给谁
+mkdirSync(accountData, { recursive: true });
+mkdirSync(accountConfig, { recursive: true });
+if (bootUid) {
+  adoptLegacyData(userDataRoot, accountData, LEGACY_USER_DATA_ENTRIES);
+  adoptLegacyData(legacyConfigRoot, accountConfig, LEGACY_CONFIG_ENTRIES);
+  // 未登录那一格里可能有开机时顺手建出来的空壳（EventStore 一造就落一个
+  // sessions.db）。同样划给第一个登录的人 —— adoptLegacyData 的「目标已存在
+  // 就不搬」保证它绝不会盖掉抽屉里真的那份
+  adoptLegacyData(accountDataDir(userDataRoot, null), accountData, LEGACY_USER_DATA_ENTRIES);
+  adoptLegacyData(accountConfigDir(homedir(), null), accountConfig, LEGACY_CONFIG_ENTRIES);
+}
+// 抽屉名是哈希，人找不着自己那份。放张名片（同 memoryStore 的 root.txt：
+// 目录自描述，不建中心索引）—— 手编 mcp.json 的人靠它认路
+writeWho(accountData, bootAccount);
+writeWho(accountConfig, bootAccount);
 
 // Windows/Linux 摘掉 Electron 默认菜单栏（File/Edit/View/Window，issue #320）：
 // UI 全在窗体内，那排菜单只占一行还暴露 DevTools。剪贴板/输入快捷键是 Chromium
@@ -388,29 +434,29 @@ void app.whenReady().then(() => {
 
   loadDotEnv((p) => readFileSync(p, "utf8"), join(process.cwd(), ".env"));
   // 设置页存的 key 后加载 = 覆盖 .env（用户最新意志优先）
-  const keyVaultPath = join(app.getPath("userData"), "keys.json");
+  const keyVaultPath = join(accountData, "keys.json");
   // 永久授权名单（ADR-0041）。和 keys.json 一样是 app 级、跨会话的东西,
   // 所以和它放在一起装配；每次现读文件 —— 名单被改了不用重启
-  const permissionsPath = join(app.getPath("userData"), "permissions.json");
-  const execPolicyPath = join(app.getPath("userData"), "execPolicy.json");
-  const userHooksPath = join(app.getPath("userData"), "hooks.json");
+  const permissionsPath = join(accountData, "permissions.json");
+  const execPolicyPath = join(accountData, "execPolicy.json");
+  const userHooksPath = join(accountData, "hooks.json");
   // 自动压缩设置（ADR-0062）。和 permissions.json 同款：app 级、跨会话，
   // 每次造 agent 前现读——设置页改了不用重启
-  const autoCompactPath = join(app.getPath("userData"), "auto-compact.json");
+  const autoCompactPath = join(accountData, "auto-compact.json");
   // 三个 turn 外挂共用的那一款小模型（issue #112）。现读不缓存：设置页改了当场生效。
   // 出厂默认和 vision-bridge 共一家的免费额度——那条路失败会让整个 turn 失败，
   // 而外挂失败只少一条标题；愿意换家的人在设置页换，换了就换了一把 key、一份额度
-  const helperModelPath = join(app.getPath("userData"), "helper-model.json");
+  const helperModelPath = join(accountData, "helper-model.json");
   const helperModel = (): string => loadHelperModel(helperModelPath);
-  const visionModelPath = join(app.getPath("userData"), "vision-model.json");
+  const visionModelPath = join(accountData, "vision-model.json");
   const visionModel = (): string => loadVisionModel(visionModelPath);
   // 灵动岛设置(#199)。app 级、跨会话;启动读一次进内存——只有 set handler 会改它,
   // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
-  const islandSettingsPath = join(app.getPath("userData"), "island.json");
+  const islandSettingsPath = join(accountData, "island.json");
   let islandSettings = loadIslandSettings(islandSettingsPath);
   // 兜底工作区(#559)。现读不缓存(islandSettingsStore 顶注的另一半理由):
   // 读的频率是"开设置页/开新会话"量级,不值得为它维护一份内存镜像
-  const workspaceSettingsPath = join(app.getPath("userData"), "workspace.json");
+  const workspaceSettingsPath = join(accountData, "workspace.json");
   const workspaceSettingsInfo = (): WorkspaceSettingsInfo => {
     const s = loadWorkspaceSettings(workspaceSettingsPath);
     return {
@@ -456,7 +502,7 @@ void app.whenReady().then(() => {
 
   // 固定接线形态（Task 6 裁定，见 account.ts 顶部注释）：openExternal 走系统浏览器，
   // onChange 推 accountChanged 事件，client 是真 supabase client（authStorage 落盘于 userData）
-  const supabase = createSupabaseAuthClient(join(app.getPath("userData"), "auth.json"));
+  const supabase = createSupabaseAuthClient(authFilePath);
   // 提示音走渲染层播 wav(mac/win 同一份音频):聚焦分支两端都用它;
   // 失焦分支只有 win 用(toast 不支持自定义音),mac 用原生音名——
   // 这样 mac 窗口已关(Cmd+W,渲染层不在)时失焦通知的声音也不丢
@@ -527,9 +573,31 @@ void app.whenReady().then(() => {
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
+  /** 一次进程只重启一次。判据本身是收敛的（重启后 bootUid 就是新账号），
+      这个标志是防死循环的兜底 —— 万一 auth.json 和 getUser() 各说各话，
+      宁可停在一个抽屉里不动，也不要无限重启 */
+  let relaunching = false;
   accountManager = new AccountManager({
     openExternal: (url) => shell.openExternal(url),
     onChange: (info) => {
+      // 换号了就重启，换到它自己的抽屉去（issue #749，ADR-0186）。抽屉在装配那一刻
+      // 钉死（二十来处 store 各持一条绝对路径），热切换要么把它们全改成 getter、
+      // 要么在三千行的装配根中间拆一刀；重启一次换得**干净** —— 没有「这个 store
+      // 换了那个没换」的中间态。
+      //
+      // 位置在 send 之前且直接 return：渲染层不该在上一个账号的数据上多活一帧。
+      // 进门闸的 authRecord 只在开机问一次（store.ts 的 boot），所以收不到
+      // accountChanged 的渲染层会一直停在登录屏上，直到本进程退干净。
+      //
+      // 登出不走这条路（needsRelaunch 对 null 恒 false）：进门闸自己会挡，
+      // 同号登出再登入也就不必空转一趟重启。
+      if (!relaunching && needsRelaunch(bootUid, info.signedIn ? info.id || null : null)) {
+        relaunching = true;
+        console.warn("[account] 登录的账号变了，重启以换到它自己的数据目录");
+        app.relaunch();
+        app.quit();
+        return;
+      }
       send(CHANNELS.accountChanged, info);
       // 好友子系统跟着登录态起落:登录起订阅,登出清场。start 内部自查 uid,
       // 不 await——推送式子系统,失败静默(下次 friendsList 调用还有机会报错)
@@ -583,11 +651,11 @@ void app.whenReady().then(() => {
     void manager.restore().catch((err) => console.error("account.restore 失败", err));
   }
 
-  const dbPath = join(app.getPath("userData"), "sessions.db");
+  const dbPath = join(accountData, "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
   const store = new EventStore(dbPath);
   // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
-  const attachmentStore = new AttachmentStore(join(app.getPath("userData"), "attachments"));
+  const attachmentStore = new AttachmentStore(join(accountData, "attachments"));
   /**
    * 手机传上来的附件先在这里拼回整个文件,再走**和 ＋ 按钮同一道闸门**
    * (attachmentIntake 的 intakeFile):图片入库、文档转 Markdown、文本带内容、
@@ -605,7 +673,7 @@ void app.whenReady().then(() => {
   const workspaceLock = createWorkspaceLock({ appName: app.getName() });
   /** 独立工作副本（issue #641，ADR-0156）：同一个项目上开第二只水獭时，给它一个
       一次性 worktree。落点在 userData，不进用户的仓库 */
-  const sessionWorktrees = createSessionWorktreeService({ userData: app.getPath("userData") });
+  const sessionWorktrees = createSessionWorktreeService({ userData: accountData });
   /** 这个目录在 git 仓里吗——问一次记住。答案在会话生命周期内不会变（用户不会
       中途给文件夹 git init 再指望正在跑的水獭改行为），而 repoOf 每问一次起一个
       git 子进程，turn 起跑处不该每次都付这个钱 */
@@ -697,7 +765,7 @@ void app.whenReady().then(() => {
   const remote = (() => {
     const crypto = nodeRemoteCrypto();
     const idStore = openIdentityStore({
-      path: join(app.getPath("userData"), "remote-identity.bin"),
+      path: join(accountData, "remote-identity.bin"),
       crypto,
       box: {
         available: () => safeStorage.isEncryptionAvailable(),
@@ -1231,10 +1299,10 @@ void app.whenReady().then(() => {
   // MCP server 登记表:配置存 userData 外的 ~/.mr-otto/mcp.json(与 skill 目录同一条口径,
   // 是人手编的配置而不是 app 生成的状态)。connect 注入 SDK 客户端(mcpClient.ts)——
   // hub 本身不碰 SDK,状态机能用假 connect 测干净(mcpHub.ts 顶部注释)。
-  const mcpConfigPath = join(configDir(homedir()), "mcp.json");
+  const mcpConfigPath = join(accountConfig, "mcp.json");
   // OAuth 凭据落在同一个配置目录下的独立文件（Task 1，0600），与 mcp.json
   // 分开存：一份是人手编的连接配置，一份是程序读写的密态
-  const mcpAuthPath = join(configDir(homedir()), "mcp-auth.json");
+  const mcpAuthPath = join(accountConfig, "mcp-auth.json");
   const mcpHub = createMcpHub({
     load: () => loadMcpConfig(mcpConfigPath),
     save: (servers, unrecognizedIds) => saveMcpConfig(mcpConfigPath, servers, unrecognizedIds),
@@ -1310,7 +1378,7 @@ void app.whenReady().then(() => {
   // 装在这里而不是跟 remote 一块：host 侧要拿 mcpHub 当执行落点，而 mcpHub 造得比
   // remote 晚。身份/crypto 复用 remote 那一份（同一台机器同一个密码学身份）。
   // 系统封装不可用 = 没有身份密钥 = 代理也开不了（和自远程同一个理由，不明文落盘）。
-  const proxyStorePath = join(app.getPath("userData"), "proxy-store.json");
+  const proxyStorePath = join(accountData, "proxy-store.json");
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
         crypto: remoteKeys.crypto,
@@ -1449,7 +1517,7 @@ void app.whenReady().then(() => {
   // 静默混入——那些是「导入 skill」弹窗里的候选，用户勾选后复制进来才算安装。
   // 声明位置提到探针之前：探针也要给 skills（见下），而它跑在 whenReady 早期，
   // 留在下面会撞 TDZ
-  const skillRoots = [join(configDir(homedir()), "skills")];
+  const skillRoots = [join(accountConfig, "skills")];
 
   // 一次性探针：只为拿到"本装配有哪些工具"这份名单。用后即弃（它的 session
   // 落在库里是一条只有 session_created 的空会话——所以刻意用内存库）。
@@ -1485,7 +1553,7 @@ void app.whenReady().then(() => {
       // world.config 是 undefined，memory 工具不会出现在 TOOL_NAMES 里——
       // builtinSubagents 的 memory-reviewer 定义会把 "memory" 过滤成不认识的
       // 工具名，装出来的清单永远挂不上它要用的那把工具
-      configRoot: configDir(homedir()),
+      configRoot: accountConfig,
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
@@ -1546,7 +1614,7 @@ void app.whenReady().then(() => {
     // subagentRoots 只拼路径;搬家(.otter → .mr-otto)在这里先做一遍,用户级和工作区级都搬
     configDir(homedir());
     if (workspace) configDir(workspace);
-    return withBuiltins(scanSubagents(subagentRoots(homedir(), workspace), known), known);
+    return withBuiltins(scanSubagents(subagentRoots(accountConfig, workspace), known), known);
   };
   // 渲染层传来的 workspace 不可信——它会变成 mkdir + 写文件的落点。
   // 白名单 = 日志里真实存在过的会话围栏。它把可写面收窄到"这个路径至少在会话日志里
@@ -1567,7 +1635,7 @@ void app.whenReady().then(() => {
       的 getMemory handler）共用这一份，别各写一份 ENOENT 分支出来 */
   const readMemoryFile = (rel: string): string => {
     try {
-      return readFileSync(join(configDir(homedir()), rel), "utf8");
+      return readFileSync(join(accountConfig, rel), "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
@@ -1602,7 +1670,7 @@ void app.whenReady().then(() => {
     store,
     readFile: async (rel: string) => {
       try {
-        return await readFile(join(configDir(homedir()), rel), "utf8");
+        return await readFile(join(accountConfig, rel), "utf8");
       } catch (err) {
         // ENOENT = 没记过。别的错误必须抛（issue #186）：吞掉的话 before 会被
         // 记成空串，writeFile 若碰巧成功，memory_user_edit 的留证就在说谎
@@ -1611,7 +1679,7 @@ void app.whenReady().then(() => {
       }
     },
     writeFile: async (rel: string, c: string) => {
-      const abs = join(configDir(homedir()), rel);
+      const abs = join(accountConfig, rel);
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, c, "utf8");
     },
@@ -1742,19 +1810,19 @@ void app.whenReady().then(() => {
             createShadowGitCheckpoints({
               workspace: args.workspace,
               gitDir: join(
-                configDir(homedir()),
+                accountConfig,
                 "checkpoints",
                 sessionCheckpointStoreName(args.workspace, sessionId)
               ),
             })
         : createShadowGitCheckpoints({
             workspace: args.workspace,
-            gitDir: join(configDir(homedir()), "checkpoints", workspaceStoreName(args.workspace)),
+            gitDir: join(accountConfig, "checkpoints", workspaceStoreName(args.workspace)),
           }),
       // 只有主会话（这条装配路径）才有长期记忆：world 带 config 能力才挂得上
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
-      configRoot: configDir(homedir()),
+      configRoot: accountConfig,
       memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
@@ -2175,7 +2243,7 @@ void app.whenReady().then(() => {
   // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
   // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
   ipcMain.handle(CHANNELS.listProjectMemories, async () => {
-    const dir = join(configDir(homedir()), "memories", "projects");
+    const dir = join(accountConfig, "memories", "projects");
     let names: string[];
     try {
       names = await readdir(dir);
@@ -2200,7 +2268,7 @@ void app.whenReady().then(() => {
   // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
   ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
     if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
-    await rm(join(configDir(homedir()), projectMemoryDir(root)), { recursive: true, force: true });
+    await rm(join(accountConfig, projectMemoryDir(root)), { recursive: true, force: true });
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────
@@ -2400,7 +2468,7 @@ void app.whenReady().then(() => {
   const subagentWriteDeps: SubagentWriteDeps = {
     listSubagents,
     trustedForWrite,
-    roots: (ws) => subagentRoots(homedir(), ws),
+    roots: (ws) => subagentRoots(accountConfig, ws),
     slotTaken: (root, name) => subagentSlotTaken(root, name, TOOL_NAMES),
     write: (def) => writeSubagent(def),
     join,
@@ -2548,6 +2616,9 @@ void app.whenReady().then(() => {
   // 进门闸的判据（ADR-0182）：读的是 auth.json 存没存过东西，不是 manager 里那份
   // 投影——后者要等 restore() 的网络校验回来，冷启动时问它等于问了个还没醒的人
   ipcMain.handle(CHANNELS.hasAuthRecord, () => supabase.hasAuthRecord());
+  // 界面上「去哪个目录手改」的那几处文案要说真话（ADR-0186）：抽屉名是 uid 的哈希，
+  // 渲染层算不出来。开机取一次即可 —— 换号会重启，这个值在一个进程里恒定
+  ipcMain.handle(CHANNELS.configRoot, () => accountConfig);
 
   // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
   // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切
@@ -2749,7 +2820,7 @@ void app.whenReady().then(() => {
       islandStates.delete(id); // 岛的 Map 投影也剪掉——不然拍平出来的 fleet 会带一行死会话
       if (doomedWorkspace) {
         rmSync(
-          join(configDir(homedir()), "checkpoints", sessionCheckpointStoreName(doomedWorkspace, id)),
+          join(accountConfig, "checkpoints", sessionCheckpointStoreName(doomedWorkspace, id)),
           { recursive: true, force: true } // force: 不存在不算错（项目会话本来就没有）
         );
       }
