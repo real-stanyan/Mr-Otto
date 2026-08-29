@@ -113,6 +113,19 @@ export const MCP_CATALOG: readonly CatalogEntry[] = [
     icon: "stripe",
   },
   {
+    id: "square",
+    name: "Square",
+    description: "查支付与订单、管商品目录与库存、看客户",
+    transport: "http",
+    // /sse 是文档写的那条；这里用 /mcp —— 它回的是带 www-authenticate 与
+    // resource_metadata 的 401，即标准的 MCP 受保护资源（streamable-http 那一侧）
+    url: "https://mcp.squareup.com/mcp",
+    params: [],
+    auth: "oauth",
+    authNote: "配好后点一次授权，浏览器里登录 Square 并选要授权的权限",
+    icon: "square",
+  },
+  {
     id: "filesystem",
     name: "本地文件系统",
     description: "把指定目录暴露成 MCP 资源（Mr Otto 自带读写文件工具，一般用不上）",
