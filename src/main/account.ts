@@ -39,9 +39,14 @@ export type SupabaseLike = {
     signUp(args: {
       email: string;
       password: string;
-      // `options.data` 进 auth.users 的 raw_user_meta_data —— profiles 的插入触发器
-      // (migration 0007 的 handle_auth_user_upsert)正是从那里取 name
-      options?: { data?: Record<string, string> };
+      options?: {
+        // `options.data` 进 auth.users 的 raw_user_meta_data —— profiles 的插入触发器
+        // (migration 0007 的 handle_auth_user_upsert)正是从那里取 name
+        data?: Record<string, string>;
+        // 确认邮件里那条链接落到哪。不传的话由项目的 site_url 说了算 —— 一个
+        // 远端配置字段，改它不需要动代码，也就意味着**没人保证它指着我们**
+        emailRedirectTo?: string;
+      };
     }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
     // 忘记密码:发重置邮件。redirectTo 必须在 Supabase 的 uri_allow_list 里,
@@ -203,7 +208,14 @@ export class AccountManager {
     const { data, error } = await this.client.auth.signUp({
       email,
       password,
-      ...(trimmed === "" ? {} : { options: { data: { name: trimmed } } }),
+      options: {
+        // 显式指到落地页,和 OAuth / 重置密码同一条路(issue #743)。
+        // 不传的话 Supabase 退回项目的 `site_url` —— 那是个远端配置字段,
+        // 而这条链接最终要唤起的是**我们的** app:一条自己必须处理的深链,
+        // 落点不该由一个改起来不用发版、也没人盯着的远端设置决定。
+        emailRedirectTo: REDIRECT_TO,
+        ...(trimmed === "" ? {} : { data: { name: trimmed } }),
+      },
     });
     if (error) {
       throw new Error(errorMessage(error));

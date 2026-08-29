@@ -448,6 +448,32 @@ describe("AccountManager 邮箱密码", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("signUpWithPassword 显式指定确认邮件的落点 —— 不把它交给远端的 site_url", async () => {
+    const client = fakeClient();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
+
+    await manager.signUpWithPassword("alice@example.com", "hunter22", "小獭");
+
+    expect(client.auth.signUp).toHaveBeenCalledWith({
+      email: "alice@example.com",
+      password: "hunter22",
+      options: { emailRedirectTo: authLandingUrl(), data: { name: "小獭" } },
+    });
+  });
+
+  it("没填名字也照样带落点 —— 空名字省掉的是 data，不是 emailRedirectTo", async () => {
+    const client = fakeClient();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
+
+    await manager.signUpWithPassword("alice@example.com", "hunter22");
+
+    expect(client.auth.signUp).toHaveBeenCalledWith({
+      email: "alice@example.com",
+      password: "hunter22",
+      options: { emailRedirectTo: authLandingUrl() },
+    });
+  });
+
   it("verifyRecoveryOtp 验过 = 登录态：按 recovery 类型验，并把账号推出去", async () => {
     const client = fakeClient({
       auth: {

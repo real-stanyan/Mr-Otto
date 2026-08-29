@@ -6,9 +6,9 @@
 //
 // ## 怎么知道他确认完了
 //
-// **不能靠深链回跳。** `AccountManager.signUpWithPassword`（`main/account.ts`）调
-// `signUp` 时没有传 `emailRedirectTo`，确认链接落到哪由 Supabase 项目的 Site URL
-// 决定，不保证回得到这个 app。
+// **不能只靠深链回跳。** 确认链接现在确实指着落地页（`signUp` 传了
+// `emailRedirectTo`，见 `main/account.ts` 与 issue #743），但那条路要经过默认浏览器、
+// 系统那句「要打开 Mr Otto 吗」，中间还可能隔着一次冷启动 —— 每一跳都可能不回来。
 //
 // 可靠的判据是**重试登录**：邮箱没确认时 GoTrue 一律回 `Email not confirmed`，确认
 // 之后同一把邮箱密码立刻就能换到 session。所以这里的轮询既是检测、又顺手把登录做了
