@@ -88,6 +88,8 @@ export function McpSettings() {
   const snapshot = useChat((s) => s.mcpServers);
   const refreshMcp = useChat((s) => s.refreshMcp);
   const [newOpen, setNewOpen] = useState(false);
+  // 目录页里开着某个连接器的详情页 —— 那是一整屏，这一页的其余部分让位（#745）
+  const [onConnectorPage, setOnConnectorPage] = useState(false);
 
   useEffect(() => {
     void refreshMcp();
@@ -104,7 +106,7 @@ export function McpSettings() {
         </Button>
       </header>
       <section className={SETTINGS_BODY}>
-        {snapshot.errors.length > 0 && (
+        {!onConnectorPage && snapshot.errors.length > 0 && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-err/30 bg-err/[0.06] px-[14px] py-3">
             <span className="flex items-center gap-[6px] text-[12.5px] font-medium text-err">
               <TriangleAlert className="size-[13px]" />
@@ -123,16 +125,20 @@ export function McpSettings() {
         <McpDirectory
           // 传状态而不只是 id：目录卡上那个勾得分得清"连上了"和"装上了但没授权"
           // （issue #722）。mcpDisplayStatus 是下面每一行用的同一把尺子——
-          // 上下两半对同一台 server 说同一句话
+          // 上下两半对同一台 server 说同一句话。
+          // tools 是给详情页的（#745）：那一页要回答"这台到底给了我什么"
           installed={snapshot.servers.map((s) => ({
             id: s.id,
             status: mcpDisplayStatus(s.config, s.status),
+            tools: s.tools.map((t) => t.name),
           }))}
+          onPageChange={setOnConnectorPage}
         />
 
-        {snapshot.servers.map((server) => (
-          <McpServerRow key={server.id} server={server} />
-        ))}
+        {/* 详情页是一整屏，下面这份清单得让位——不然"新页面"底下还挂着
+            上一页的尾巴（#745） */}
+        {!onConnectorPage &&
+          snapshot.servers.map((server) => <McpServerRow key={server.id} server={server} />)}
       </section>
       <NewMcpServerDialog
         open={newOpen}

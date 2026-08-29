@@ -51,6 +51,7 @@ import {
   type InstalledServer,
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
+import { McpConnectorPage } from "./McpConnectorPage.js";
 
 // eager:true 只把**地址**收进来（?url），不是把图标内容打进包里（同 FileTypeIcon）
 //
@@ -77,7 +78,15 @@ const DEBOUNCE_MS = 250;
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 const GRID = "grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]";
 
-export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
+export function McpDirectory({
+  installed,
+  onPageChange,
+}: {
+  installed: InstalledServer[];
+  /** 详情页开着时通知外面：它是一整屏，下面那份 server 清单得让位，
+      不然"新页面"底下还挂着上一页的尾巴（#745） */
+  onPageChange?: (open: boolean) => void;
+}) {
   const searchMcpRegistry = useChat((s) => s.searchMcpRegistry);
   const saveMcpServer = useChat((s) => s.saveMcpServer);
   const authorizeMcpServer = useChat((s) => s.authorizeMcpServer);
@@ -86,6 +95,9 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
   const [registry, setRegistry] = useState<CatalogEntry[]>([]);
   const [searching, setSearching] = useState(false);
   const [registryError, setRegistryError] = useState<string | null>(null);
+  // 打开的详情页。存 id 而不是整个 item：item 每次 buildDirectory 都是新对象，
+  // 存下来的那份会在装完之后停在旧状态上（卡片切成 ✓ 了，详情页还写着"添加"）
+  const [openedId, setOpenedId] = useState<string | null>(null);
 
   const [confirming, setConfirming] = useState<DirectoryItem | null>(null);
   const [filling, setFilling] = useState<DirectoryItem | null>(null);
@@ -216,6 +228,68 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
 
   const searched = query.trim() !== "";
 
+  // 现查而不是存对象：装完之后 installed 变了，buildDirectory 会产出一份新的
+  // item，详情页上那颗按钮得跟着变。存下 item 的那一版会停在打开那一刻的状态
+  const opened =
+    openedId === null
+      ? null
+      : ([...curated, ...longTail].find((i) => i.entry.id === openedId) ?? null);
+
+  // 通知外面"这一屏被一整页盖住了"。放 effect 里而不是在 setOpenedId 旁边顺手
+  // 调一次：openedId 还会因为搜索词变化而失效（搜走了那条，opened 变 null），
+  // 那种情况下也得把清单还回去
+  useEffect(() => {
+    onPageChange?.(opened !== null);
+  }, [opened, onPageChange]);
+
+  // 装/授权的结果两个分支都要说 —— 详情页上点了「添加」失败却一声不吭，
+  // 比在目录页上失败更糟：那一屏除了这颗按钮什么都没有
+  const messages = (
+    <>
+      {installError && <p className="text-[13px] text-err">{installError}</p>}
+      {installNote && <p className={HINT}>{installNote}</p>}
+    </>
+  );
+
+  // 两道对话框跟着 messages 一起，两个分支都挂 —— 详情页上点「添加」同样会
+  // 走到"要填参数"和"未核验的 stdio 先确认"这两步，而只挂在网格那一支的话，
+  // 状态设了、对话框根本没渲染：按钮点下去一声不响（#745 差点这样出门）
+  const dialogs = (
+    <>
+      <InstallConfirmDialog
+        item={confirming}
+        onCancel={() => setConfirming(null)}
+        onConfirm={afterConfirm}
+      />
+      <ParamsDialog
+        item={filling}
+        onCancel={() => setFilling(null)}
+        onSubmit={(item, values) => {
+          setFilling(null);
+          void install(item, values);
+        }}
+      />
+    </>
+  );
+
+  if (opened !== null) {
+    return (
+      <div className="flex flex-col gap-3">
+        {messages}
+        <McpConnectorPage
+          item={opened}
+          installedServer={installed.find((s) => s.id === opened.entry.id)}
+          busy={installing === opened.entry.id}
+          icon={<EntryIcon entry={opened.entry} size={40} />}
+          onBack={() => setOpenedId(null)}
+          onAdd={() => start(opened)}
+          onAuthorize={() => void authorize(opened)}
+        />
+        {dialogs}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <div className="relative">
@@ -232,8 +306,7 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
         />
       </div>
 
-      {installError && <p className="text-[13px] text-err">{installError}</p>}
-      {installNote && <p className={HINT}>{installNote}</p>}
+      {messages}
 
       {curated.length > 0 && (
         <div className="flex flex-col gap-4">
@@ -254,6 +327,7 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
                     busy={installing === item.entry.id}
                     onAdd={() => start(item)}
                     onAuthorize={() => void authorize(item)}
+                    onOpen={() => setOpenedId(item.entry.id)}
                   />
                 ))}
               </div>
@@ -270,6 +344,7 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
                       busy={installing === item.entry.id}
                       onAdd={() => start(item)}
                       onAuthorize={() => void authorize(item)}
+                      onOpen={() => setOpenedId(item.entry.id)}
                     />
                   ))}
                 </div>
@@ -302,6 +377,7 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
                   busy={installing === item.entry.id}
                   onAdd={() => start(item)}
                   onAuthorize={() => void authorize(item)}
+                  onOpen={() => setOpenedId(item.entry.id)}
                 />
               ))}
             </div>
@@ -309,25 +385,16 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
         </div>
       )}
 
-      <InstallConfirmDialog
-        item={confirming}
-        onCancel={() => setConfirming(null)}
-        onConfirm={afterConfirm}
-      />
-      <ParamsDialog
-        item={filling}
-        onCancel={() => setFilling(null)}
-        onSubmit={(item, values) => {
-          setFilling(null);
-          void install(item, values);
-        }}
-      />
+      {dialogs}
     </div>
   );
 }
 
-function EntryIcon({ entry }: { entry: CatalogEntry }) {
+function EntryIcon({ entry, size = 32 }: { entry: CatalogEntry; size?: number }) {
   const src = iconUrl(entry.icon);
+  // 尺寸走 style 而不是 tailwind 的 size-* ——类名要能被静态扫出来，
+  // `size-[${n}]` 拼出来的那种在生产构建里根本不会生成
+  const box = { width: size, height: size };
   if (src !== undefined && entry.icon !== undefined) {
     // 透明底，标直接坐在卡片上。上一版给每个标垫了一张白色方片——它确实解决了
     // "纯黑的标在深色主题上看不见"，代价是二十张白方片自己成了噪音，比 logo
@@ -345,8 +412,9 @@ function EntryIcon({ entry }: { entry: CatalogEntry }) {
       return (
         <span
           aria-hidden
-          className="size-8 shrink-0 bg-current"
+          className="shrink-0 bg-current"
           style={{
+            ...box,
             maskImage: `url("${src}")`,
             WebkitMaskImage: `url("${src}")`,
             maskRepeat: "no-repeat",
@@ -365,7 +433,8 @@ function EntryIcon({ entry }: { entry: CatalogEntry }) {
         // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
         alt=""
         draggable={false}
-        className="size-8 shrink-0 select-none object-contain"
+        style={box}
+        className="shrink-0 select-none object-contain"
       />
     );
   }
@@ -374,8 +443,9 @@ function EntryIcon({ entry }: { entry: CatalogEntry }) {
   return (
     <span
       aria-hidden
+      style={box}
       className={cn(
-        "grid size-8 shrink-0 place-items-center rounded-[8px] text-[13px] font-semibold",
+        "grid shrink-0 place-items-center rounded-[8px] text-[13px] font-semibold",
         directoryTint(entry.id)
       )}
     >
@@ -389,16 +459,41 @@ function DirectoryCard({
   busy,
   onAdd,
   onAuthorize,
+  onOpen,
 }: {
   item: DirectoryItem;
   busy: boolean;
   onAdd: () => void;
   onAuthorize: () => void;
+  onOpen: () => void;
 }) {
   const { entry, verified } = item;
   const slot = installSlot(item, busy);
+  // 整张卡可点开详情（#745）。不用 <button> 包整张：右边那颗还是按钮，
+  // 按钮套按钮既非法也会让读屏器读出两层可点。role+tabIndex+键盘处理是
+  // 这个形状（"卡片是个链接，里面还有一颗独立的钮"）唯一能两边都对的写法
+  const open = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    onOpen();
+  };
   return (
-    <div className="flex items-center gap-[10px] rounded-[10px] border border-border bg-card px-3 py-[10px]">
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${entry.name} 详情`}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open(e);
+        }
+      }}
+      className={cn(
+        "press-card flex cursor-pointer items-center gap-[10px] rounded-[10px] border border-border",
+        "bg-card px-3 py-[10px] transition-colors duration-150 hover:border-foreground/20",
+        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      )}
+    >
       <EntryIcon entry={entry} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-[6px]">
@@ -442,7 +537,10 @@ function DirectoryCard({
             "ring-1 ring-border hover:bg-foreground/[0.06] hover:text-foreground"
           )}
           title="已装上，还差一次授权"
-          onClick={onAuthorize}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAuthorize();
+          }}
         >
           授权
         </button>
@@ -460,7 +558,10 @@ function DirectoryCard({
             "text-muted-foreground transition-colors duration-150",
             "hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50"
           )}
-          onClick={onAdd}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAdd();
+          }}
         >
           {slot.kind === "busy" ? (
             <Loader2 className="size-4 animate-spin" aria-hidden />
