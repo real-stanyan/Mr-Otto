@@ -5,7 +5,7 @@ import {
   endpointFact,
   paramSuffix,
   sourceNote,
-  toolCountLabel,
+  toolsNote,
   transportFact,
 } from "../../src/renderer/src/lib/mcpDetail.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
@@ -65,18 +65,31 @@ describe("connectorFacts", () => {
   });
 });
 
-describe("toolCountLabel", () => {
-  it("没装（undefined）不说话", () => {
-    expect(toolCountLabel(undefined)).toBeNull();
+describe("toolsNote", () => {
+  it("没装不说话", () => {
+    expect(toolsNote(null, undefined)).toBeNull();
   });
 
-  it("装了但零个工具，要说出来", () => {
+  it("连上了、零个工具，要说出来", () => {
     // 一片空白会被当成"还没加载完"，而"这台没有工具"是个该去查的事实
-    expect(toolCountLabel([])).toBe("这台没有暴露任何工具");
+    expect(toolsNote("connected", [])).toBe("这台没有暴露任何工具");
   });
 
-  it("有工具就报个数", () => {
-    expect(toolCountLabel(["a", "b"])).toBe("2 个工具");
+  it("连上了就报个数", () => {
+    expect(toolsNote("connected", ["a", "b"])).toBe("2 个工具");
+  });
+
+  it("没连上的时候不许说「这台没有暴露任何工具」", () => {
+    // #747：Sentry 装了但停在 needs-auth，工具清单当然是空的——那是关于
+    // 连接的事实，不是关于这台 server 的事实。只看 length 的那一版把
+    // "还没连上"讲成了"这台是空的"，跟 #722 那个撒谎的勾同一类错
+    for (const status of ["needs-auth", "connecting", "failed", "disabled"] as const) {
+      const note = toolsNote(status, []);
+      expect(note, `${status} 的话术`).not.toBeNull();
+      expect(note, `${status} 不该谈"这台有没有工具"`).not.toContain("这台没有暴露");
+    }
+    expect(toolsNote("needs-auth", [])).toContain("授权");
+    expect(toolsNote("failed", [])).toContain("连不上");
   });
 });
 

@@ -5,6 +5,7 @@
 // 和装之后要知道的一件事（它到底给了哪些工具），都在这儿。
 
 import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
+import type { McpDisplayStatus } from "./mcpForm.js";
 
 export interface DetailFact {
   label: string;
@@ -59,10 +60,31 @@ export function paramSuffix(required: boolean): string {
   return required ? "必填" : "选填";
 }
 
-/** 已装的那台暴露了多少工具，说给人听。
-    零个也要说：一台连上了却没有工具的 server，用户看到"0 个工具"才知道
-    该去查它，看到一片空白只会以为是这一页还没加载完 */
-export function toolCountLabel(tools: readonly string[] | undefined): string | null {
-  if (tools === undefined) return null;
-  return tools.length === 0 ? "这台没有暴露任何工具" : `${tools.length} 个工具`;
+/** 已装的那台，「它提供的工具」这一段的标题。
+    **必须看状态**：只看 `tools.length` 的那一版会在 needs-auth 上说"这台没有
+    暴露任何工具"——把"还没连上"讲成"这台是空的"，跟 #722 那个撒谎的勾同一类
+    错（issue #747）。没连上的时候工具清单当然是空的，那不是关于这台 server
+    的事实，是关于连接的事实。
+
+    零个也要说：一台**连上了**却没有工具的 server，用户看到"没有暴露任何工具"
+    才知道该去查它，看到一片空白只会以为是这一页还没加载完。
+
+    没装（tools === undefined）返回 null = 这一段不出现 */
+export function toolsNote(
+  status: McpDisplayStatus | null,
+  tools: readonly string[] | undefined
+): string | null {
+  if (tools === undefined || status === null) return null;
+  switch (status) {
+    case "connected":
+      return tools.length === 0 ? "这台没有暴露任何工具" : `${tools.length} 个工具`;
+    case "needs-auth":
+      return "还没授权，授权之后才知道它提供什么";
+    case "connecting":
+      return "正在连，连上才知道它提供什么";
+    case "failed":
+      return "连不上，看不到它提供什么";
+    case "disabled":
+      return "已经关掉了，打开才能看到它提供什么";
+  }
 }

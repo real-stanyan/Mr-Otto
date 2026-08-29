@@ -412,7 +412,12 @@ function EntryIcon({ entry, size = 32 }: { entry: CatalogEntry; size?: number })
       return (
         <span
           aria-hidden
-          className="shrink-0 bg-current"
+          data-testid="mcp-icon-mono"
+          // block 不能省：宽高对 inline 元素不生效，而这一档的尺寸只有宽高。
+          // 目录卡上看不出来（卡片外层是 flex，它作为 flex item 被 blockify 了），
+          // 详情页里包进一个普通 span 就消失——症状是"只有纯黑的那批标不见"，
+          // 而且不报错（#747）。让 EntryIcon 自足，别指望父级恰好是 flex
+          className="block shrink-0 bg-current"
           style={{
             ...box,
             maskImage: `url("${src}")`,
