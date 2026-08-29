@@ -8,6 +8,9 @@ import { join } from "node:path";
 import {
   ACCOUNTS_DIR,
   SIGNED_OUT_DIR,
+  UNCLAIMED_DIR,
+  hasLegacy,
+  parkUnclaimed,
   WHO_FILE,
   accountConfigDir,
   accountDataDir,
@@ -166,6 +169,59 @@ describe("adoptLegacyData", () => {
     adoptLegacyData(dir, join(dir, "accounts", "aa"), ["keys.json"]);
     expect(existsSync(join(dir, "keys.json"))).toBe(false);
     expect(existsSync(join(dir, "accounts", "aa", "keys.json"))).toBe(true);
+  });
+});
+
+describe("parkUnclaimed —— 归属不明的存量（issue #755）", () => {
+  /** parkUnclaimed 的两个副作用（mkdir / 写说明）也注入，测试不碰真盘 */
+  function fakeIo() {
+    const dirs: string[] = [];
+    const notes: string[] = [];
+    return { io: { mkdir: (p: string) => dirs.push(p), writeNote: (p: string) => notes.push(p) }, dirs, notes };
+  }
+
+  it("整堆挪进 accounts/_unclaimed —— 挪走本身就是修复：根下空了，后来者扫不走", () => {
+    const { fs, has } = fakeFs(["/d/sessions.db", "/d/keys.json"]);
+    const { io } = fakeIo();
+    expect(parkUnclaimed("/d", ["sessions.db", "keys.json"], io, fs)).toEqual([
+      "sessions.db",
+      "keys.json",
+    ]);
+    expect(has.has("/d/sessions.db")).toBe(false);
+    expect(has.has(`/d/${ACCOUNTS_DIR}/${UNCLAIMED_DIR}/sessions.db`)).toBe(true);
+  });
+
+  it("没存量就什么都不做 —— 不凭空建出一格空的 _unclaimed 来", () => {
+    const { fs } = fakeFs([]);
+    const { io, dirs, notes } = fakeIo();
+    expect(parkUnclaimed("/d", ["sessions.db"], io, fs)).toEqual([]);
+    expect(dirs).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it("挪了就留一张说明 —— 只有哈希名的目录里躺着 26MB 的库，不写清楚只会被删掉", () => {
+    const { fs } = fakeFs(["/d/sessions.db"]);
+    const { io, notes } = fakeIo();
+    parkUnclaimed("/d", ["sessions.db"], io, fs);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain(UNCLAIMED_DIR);
+  });
+
+  it("_unclaimed 不是任何 uid 的抽屉名 —— 它永远不会被当成某个账号的那一格", () => {
+    expect(UNCLAIMED_DIR).not.toMatch(/^[0-9a-f]{16}$/);
+    expect(UNCLAIMED_DIR).not.toBe(SIGNED_OUT_DIR);
+  });
+});
+
+describe("hasLegacy", () => {
+  it("根下任意一条存量在就算有", () => {
+    const { fs } = fakeFs(["/d/keys.json"]);
+    expect(hasLegacy("/d", ["sessions.db", "keys.json"], fs)).toBe(true);
+  });
+
+  it("一条都没有就是没有", () => {
+    const { fs } = fakeFs(["/d/accounts/aa/keys.json"]);
+    expect(hasLegacy("/d", ["sessions.db", "keys.json"], fs)).toBe(false);
   });
 });
 

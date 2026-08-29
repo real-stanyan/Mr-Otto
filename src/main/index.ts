@@ -184,9 +184,11 @@ import {
   accountDataDir,
   adoptLegacyData,
   needsRelaunch,
+  parkUnclaimed,
   writeWho,
   LEGACY_CONFIG_ENTRIES,
   LEGACY_USER_DATA_ENTRIES,
+  UNCLAIMED_DIR,
 } from "./accountScope.js";
 import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
 import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
@@ -265,19 +267,29 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 // 抽屉落地 + 存量搬家（ADR-0187）。排在抢锁**之后**：搬家是全局副作用，只该由
-// 活下来的那个实例做。「存量归给当前登录的账号」是维护者裁的（issue #749）——
-// 第一次实施隔离时现有数据整体划给此刻登录的人，它本来大概率就是他的，而留在
-// 共享层等于把泄漏窗口一直开着。没登录记录时不搬：那时还不知道该划给谁
+// 活下来的那个实例做。
 mkdirSync(accountData, { recursive: true });
 mkdirSync(accountConfig, { recursive: true });
+
+// 「存量归给账号 1」是维护者裁的（issue #749）。**而"账号 1"只有一个时刻证明得了**：
+// 升级后第一次开机时 auth.json 里还有没有 session —— 人一登出，证据就永远没了。
+// 所以能归属就归属，归属不了就整堆挪进 _unclaimed，从此不再自动归给任何人。
+//
+// 第一版少了后半句（写成 `if (bootUid) adopt(…)`，没有 else），实际语义变成
+// 「归给升级后第一个登录的人」：登出状态升级、再登录另一个号，A 的会话/记忆/key
+// 全被交给了 B —— 正是 #749 要修的那个现象换了条路发生（issue #755）。
+// 挪进 _unclaimed 这一步本身就是堵口子：根下空了，后来者再也扫不走。
 if (bootUid) {
   adoptLegacyData(userDataRoot, accountData, LEGACY_USER_DATA_ENTRIES);
   adoptLegacyData(legacyConfigRoot, accountConfig, LEGACY_CONFIG_ENTRIES);
-  // 未登录那一格里可能有开机时顺手建出来的空壳（EventStore 一造就落一个
-  // sessions.db）。同样划给第一个登录的人 —— adoptLegacyData 的「目标已存在
-  // 就不搬」保证它绝不会盖掉抽屉里真的那份
-  adoptLegacyData(accountDataDir(userDataRoot, null), accountData, LEGACY_USER_DATA_ENTRIES);
-  adoptLegacyData(accountConfigDir(homedir(), null), accountConfig, LEGACY_CONFIG_ENTRIES);
+} else {
+  const parkedData = parkUnclaimed(userDataRoot, LEGACY_USER_DATA_ENTRIES);
+  const parkedConfig = parkUnclaimed(legacyConfigRoot, LEGACY_CONFIG_ENTRIES);
+  if (parkedData.length + parkedConfig.length > 0) {
+    console.warn(
+      `[accountScope] 升级前的旧数据归属不明（开机时没有登录记录），已停进 accounts/${UNCLAIMED_DIR}/，不会自动归给任何账号`
+    );
+  }
 }
 // 抽屉名是哈希，人找不着自己那份。放张名片（同 memoryStore 的 root.txt：
 // 目录自描述，不建中心索引）—— 手编 mcp.json 的人靠它认路
