@@ -84,6 +84,10 @@ export function McpConnectorPage({
           里，一个用户都没看见过（issue #760） */}
       {entry.blocked !== undefined && item.installed !== "connected" && (
         <p
+          // 这台此刻的原始错误挪到这儿来了：管理面那条红字被收起了（它说的
+          // 「凭据不对」会把用户支去检查 token，而那不是问题所在），但证据
+          // 不该跟着一起没（同 ADR-0189「翻译不是为了藏证据」，issue #764）
+          title={server?.error ?? undefined}
           className={cn(
             "rounded-[10px] border border-warn/30 bg-warn/[0.07] px-[14px] py-3",
             "text-[12.5px] leading-[1.6] text-warn"
@@ -158,7 +162,7 @@ export function McpConnectorPage({
       {server !== undefined && (
         <section className="flex flex-col gap-2">
           <span className={SECTION_LABEL}>设置</span>
-          <McpServerEditor server={server} />
+          <McpServerEditor server={server} blocked={entry.blocked} />
         </section>
       )}
 
