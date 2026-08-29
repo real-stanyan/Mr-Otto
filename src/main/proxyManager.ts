@@ -109,8 +109,13 @@ export interface ProxyManagerDeps {
 }
 
 export interface ProxyManager {
-  proxyCreateInvite(friendUid: string, allow: ProxyGrant["allow"]): Promise<FriendsResult<{ invite: string }>>;
-  proxyAcceptInvite(invite: string): Promise<FriendsResult<{ grantedCount: number }>>;
+  /** `ttlMs` 缺席 = 手动复制粘贴那条路的 10 分钟；随会话分享发出去的那种传
+      `PROXY_SHARE_INVITE_TTL_MS`（异步兑换，issue #694 / ADR-0177） */
+  proxyCreateInvite(
+    friendUid: string, allow: ProxyGrant["allow"], ttlMs?: number
+  ): Promise<FriendsResult<{ invite: string }>>;
+  /** `ttlMs` 同上。B 侧这次判定只是提前给人话——权威判定在 A 侧的 `verifyWith` */
+  proxyAcceptInvite(invite: string, ttlMs?: number): Promise<FriendsResult<{ grantedCount: number }>>;
   proxyListGrants(): Promise<FriendsResult<{ grants: { friendUid: string; allow: ProxyGrant["allow"] }[] }>>;
   /**
    * A 侧：改一个**已有**好友的白名单，不重发邀请码（issue #680）。
@@ -170,7 +175,10 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
    * 开一条 A 侧的 host 通道。`invite` 有值 = 这一轮还接受邀请码证明（首次配对）；
    * 没有 = 只认 pin 组（重启后的恢复路径）。
    */
-  function openHost(friendUid: string, channelId: string, invite: ProxyInvite | null): void {
+  function openHost(
+    friendUid: string, channelId: string, invite: ProxyInvite | null,
+    ttlMs: number = PROXY_INVITE_TTL_MS
+  ): void {
     hosts.get(friendUid)?.close();
     // 一次性 secret：只在内存里，验过一次就作废（consume）。过期了也不再认
     let secret: Uint8Array | null = invite?.secret ?? null;
@@ -185,7 +193,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       peerIdentityPub: () => pinnedIdentities(deps.loadStore(), friendUid),
       pairing: {
         // pin 组全验不过时才轮到它：手里那张还活着的邀请
-        verifyWith: () => (secret && invite && !proxyInviteExpired(invite, now()) ? secret : null),
+        verifyWith: () => (secret && invite && !proxyInviteExpired(invite, now(), ttlMs) ? secret : null),
         // 验过了才落 pin —— 这一步就是「这个公钥是被邀请的那个 B」的全部依据
         onPaired: (pub) => {
           deps.saveStore(setPin(deps.loadStore(), friendUid, pub));
@@ -244,7 +252,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
   }
 
   return {
-    async proxyCreateInvite(friendUid, allow) {
+    async proxyCreateInvite(friendUid, allow, ttlMs = PROXY_INVITE_TTL_MS) {
       // 邀请码里要写进 A 自己的 uid（B 拿它贴标签 + 记绑定，issue #670），
       // 没登录就没有这个 uid —— 而没登录本来也连不上 relay
       const selfUid = deps.currentUid();
@@ -259,19 +267,24 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       deps.saveStore(store);
       // A 主动连上这个频道（host 角色）等 B——B 用同一 channelId 连进来时，
       // relay 房间里就有 A(host)/B(guest) 两条连接，握手、推 grant、接受调用
-      openHost(friendUid, inv.channelId, inv);
-      pendingInvites.set(friendUid, inv.createdTs + PROXY_INVITE_TTL_MS);
+      openHost(friendUid, inv.channelId, inv, ttlMs);
+      pendingInvites.set(friendUid, inv.createdTs + ttlMs);
       changed();
       log(`代理邀请码已生成并监听：好友 ${friendUid}，频道 ${inv.channelId.slice(0, 8)}…`);
       return { ok: true, value: { invite: encodeProxyInvite(inv) } };
     },
 
-    async proxyAcceptInvite(invite) {
+    async proxyAcceptInvite(invite, ttlMs = PROXY_INVITE_TTL_MS) {
       const uid = deps.currentUid();
       if (!uid) return { ok: false, message: "还没登录——好友代理要先登录" };
       const inv = decodeProxyInvite(invite);
       if (!inv) return { ok: false, message: "邀请码不对——不是合法的代理邀请码（要 otto-proxy 开头的一串）" };
-      if (proxyInviteExpired(inv, now())) return { ok: false, message: "邀请码过期了（10 分钟有效）——让对方重新生成一个" };
+      if (proxyInviteExpired(inv, now(), ttlMs)) {
+        // 分享带来的那种活 24 小时，手动粘贴那种活 10 分钟——话得说对，
+        // 不然用户按着「才刚发的啊」的印象去找原因
+        const window = ttlMs >= 60 * 60_000 ? `${Math.round(ttlMs / 3_600_000)} 小时` : `${Math.round(ttlMs / 60_000)} 分钟`;
+        return { ok: false, message: `邀请码过期了（${window}有效）——让对方重新生成一个` };
+      }
       // 对面得是自己的好友。A 那边本来就有同样一道闸（ADR-0164），这一道纯粹是为了
       // **把话说清楚**：不加这句，非好友的码也能「连上」，然后永远停在等授权
       const known = deps.friendUids();

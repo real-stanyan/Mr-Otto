@@ -24,6 +24,21 @@ import { PROXY_FRAME_VERSION } from "./proxyProtocol.js";
 const RAW_BYTES = 32;
 /** 邀请码有效期：默认 10 分钟。过期没用完就作废，A 得重发——限制 secret 暴露窗口 */
 export const PROXY_INVITE_TTL_MS = 10 * 60_000;
+/**
+ * 随会话分享一起发出去的那种邀请的有效期：24 小时（issue #694，ADR-0177）。
+ *
+ * 手动复制粘贴那条路上，A 生成码、B 当场粘，10 分钟绰绰有余。而分享包是**异步**的：
+ * 它躺在 DM 里等对方哪天点开——10 分钟意味着「几乎一定过期」，这个功能就不存在。
+ *
+ * 放宽到 24 小时不是把闸门拆了，因为 secret 从来不是唯一那道闸：兑换还要求 A 的
+ * 房间开着，而 secret 只活在内存里（ADR-0162 / 0170），**A 一重启这张码就作废**，
+ * 与 TTL 无关。所以真实窗口 = min(A 这次运行时长, 24h)，通常由前者封顶。
+ *
+ * 版本号里不写这个值：邀请码的线上格式是固定七段（`encodeProxyInvite`），
+ * 加字段会让旧客户端把整张码判成非法。TTL 由**两端共用这一个常量**表达，
+ * 且 A 侧的判定才是权威（B 侧那次判定只是提前给人话，不是防线）。
+ */
+export const PROXY_SHARE_INVITE_TTL_MS = 24 * 60 * 60_000;
 
 const PREFIX = "otto-proxy";
 

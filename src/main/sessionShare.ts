@@ -33,7 +33,14 @@ export type ShareSendResult =
     任何一步失败都归一成 { ok:false, message }，不抛——bridge 边界要结构化回流 */
 export async function shareSessionToFriend(
   deps: ShareSendDeps,
-  args: { sessionId: string; friendUid: string; message: string; title: string | null; model: string | null }
+  args: {
+    sessionId: string; friendUid: string; message: string; title: string | null; model: string | null;
+    /** 连带借出的服务名（展示用）+ 代理邀请码（issue #694，ADR-0177）。
+        两个都缺席 = 老行为，只分享对话。本层不生成邀请、不写白名单——那是
+        proxyManager 的活，这里只负责把它塞进信封 */
+    grantServers?: readonly string[];
+    invite?: string | null;
+  }
 ): Promise<ShareSendResult> {
   try {
     const uid = await deps.myUid();
@@ -73,6 +80,8 @@ export async function shareSessionToFriend(
       message: args.message,
       title: args.title,
       eventCount: pkg.manifest.eventCount,
+      ...(args.grantServers && args.grantServers.length > 0 ? { grantServers: args.grantServers } : {}),
+      ...(args.invite ? { invite: args.invite } : {}),
     });
     await deps.sendDm(args.friendUid, body);
 

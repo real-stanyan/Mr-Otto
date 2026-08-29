@@ -37,6 +37,38 @@ function sendDeps(overrides: Partial<ShareSendDeps> = {}): ShareSendDeps & {
 }
 
 describe("shareSessionToFriend（发送端编排）", () => {
+  // ─── 连带把服务借出去（issue #694，ADR-0177）────────────────────
+  it("默认不带授权：信封里没有邀请码，与这个功能上线前一样", async () => {
+    const deps = sendDeps();
+    await shareSessionToFriend(deps, {
+      sessionId: "src", friendUid: "f", message: "看看", title: null, model: null,
+    });
+    const env = decodeEnvelope(deps.dmBody!);
+    expect(env?.invite).toBeUndefined();
+    expect(env?.grantServers).toBeUndefined();
+  });
+
+  it("给了邀请码就随信封发出去 —— B 那张卡据此长出「接上服务」的按钮", async () => {
+    const deps = sendDeps();
+    const r = await shareSessionToFriend(deps, {
+      sessionId: "src", friendUid: "f", message: "帮我改店铺", title: null, model: null,
+      grantServers: ["shopify"], invite: "otto-proxy:1:a:c:cHVi:c2Vj:1",
+    });
+    expect(r.ok).toBe(true);
+    const env = decodeEnvelope(deps.dmBody!);
+    expect(env?.grantServers).toEqual(["shopify"]);
+    expect(env?.invite).toBe("otto-proxy:1:a:c:cHVi:c2Vj:1");
+  });
+
+  it("空服务清单不写进信封（勾光了 = 只分享对话）", async () => {
+    const deps = sendDeps();
+    await shareSessionToFriend(deps, {
+      sessionId: "src", friendUid: "f", message: "", title: null, model: null,
+      grantServers: [], invite: null,
+    });
+    expect(decodeEnvelope(deps.dmBody!)?.grantServers).toBeUndefined();
+  });
+
   it("全链路：load → 打包（剥隐私）→ 上传 → 发信封", async () => {
     const deps = sendDeps();
     const r = await shareSessionToFriend(deps, {
