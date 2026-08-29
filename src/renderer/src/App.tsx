@@ -73,19 +73,21 @@ import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
 import { fallbackSessionLabel, sessionDisplayName } from "./lib/sessionLabel.js";
 import { cn, isMac } from "@/lib/utils.js";
-import { HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
+import { ERR_TXT, HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { SignInCard } from "./components/SignInCard.js";
+import { SignInScreen } from "./components/SignInScreen.js";
 import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
 import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
-import { displayIdentity } from "./lib/identity.js";
+import { displayIdentity, needsSignIn } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
@@ -118,7 +120,6 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.js";
 import {
   Dialog,
   DialogContent,
@@ -213,7 +214,6 @@ const IS_MAC = isMac();
 
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
-const ERR_TXT = "text-err text-[13px]";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
   "bg-background border border-border rounded-lg text-foreground transition-[border-color,box-shadow] duration-150 focus:outline-none focus:border-ring focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_15%,transparent)]";
@@ -1258,147 +1258,9 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[1
   );
 }
 
-/** 桶名 → 显示名。对得上模型下拉里的叫法，别让用户猜 flash 是哪个 */
-/** Google 官方四色 G(品牌规范配色,path 数据是官方 SVG)。尺寸交给按钮的 [&_svg] 规则 */
-function GoogleIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="#4285F4"
-        d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.27 14.29A7.16 7.16 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a11.99 11.99 0 0 0 0 10.76l3.98-3.09Z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.69 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"
-      />
-    </svg>
-  );
-}
-
-/** GitHub mark(官方 octocat 轮廓),currentColor 跟随按钮文字色,暗色主题下自动反白 */
-function GitHubIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-      <path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.81 1.1.81 2.22l-.01 3.29c0 .32.22.7.83.57A12 12 0 0 0 12 .3Z" />
-    </svg>
-  );
-}
-
-/** 邮箱密码登录/注册表单（登录卡片内,OAuth 按钮下方）。
-    登录成功由 onAccountChanged 推账号,表单自己只管两件事:
-    注册后"去邮箱点确认链接"的提示,和转圈期间禁点。错误走 store.error 统一显示 */
-function EmailPasswordForm() {
-  const signInWithPassword = useChat((s) => s.signInWithPassword);
-  const signUpWithPassword = useChat((s) => s.signUpWithPassword);
-  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const canSubmit = !busy && email.includes("@") && password.length >= 6;
-
-  const submit = async () => {
-    if (!canSubmit) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      if (mode === "sign-in") {
-        await signInWithPassword(email, password);
-      } else {
-        const result = await signUpWithPassword(email, password);
-        if (result === "confirm-email") {
-          setNotice("确认邮件已发送,点完邮件里的链接后回来登录。");
-          setMode("sign-in");
-        }
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form
-      className="flex flex-col gap-[8px]"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <Input
-        type="email"
-        placeholder="邮箱"
-        autoComplete="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-      />
-      <Input
-        type="password"
-        placeholder={mode === "sign-up" ? "密码（至少 6 位）" : "密码"}
-        autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      <Button type="submit" disabled={!canSubmit} className="w-full mt-[2px]">
-        {busy ? "…" : mode === "sign-in" ? "用邮箱登录" : "注册"}
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground"
-        onClick={() => {
-          setMode(mode === "sign-in" ? "sign-up" : "sign-in");
-          setNotice(null);
-        }}
-      >
-        {mode === "sign-in" ? "没有账号？注册" : "已有账号？登录"}
-      </Button>
-      {notice && <p className={HINT}>{notice}</p>}
-    </form>
-  );
-}
-
-/** 未登录态的登录卡片:OAuth 在上(老用户全走这),分隔线,邮箱密码在下 */
-function SignInCard() {
-  const signIn = useChat((s) => s.signIn);
-
-  return (
-    <Card className="w-full max-w-[360px]">
-      <CardHeader>
-        <CardTitle>登录 Mr Otto</CardTitle>
-        <CardDescription>登录后可在多台设备同步配置（即将上线）</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-[16px]">
-        <div className="flex flex-col gap-[8px]">
-          <Button variant="outline" className="w-full" onClick={() => void signIn("google")}>
-            <GoogleIcon />
-            用 Google 登录
-          </Button>
-          <Button variant="outline" className="w-full" onClick={() => void signIn("github")}>
-            <GitHubIcon />
-            用 GitHub 登录
-          </Button>
-        </div>
-        {/* 分隔线上嵌一句话:比孤零零一个「或」更说明下半段是什么 */}
-        <div className="relative text-center text-xs text-muted-foreground after:absolute after:inset-x-0 after:top-1/2 after:border-t after:border-border">
-          <span className="relative z-10 bg-card px-[8px]">或用邮箱</span>
-        </div>
-        <EmailPasswordForm />
-      </CardContent>
-    </Card>
-  );
-}
-
-/** 账号页（设置栏目之一）：未登录 = 两个 OAuth 按钮,已登录 = 头像+身份+退出 */
+/** 账号页（设置栏目之一）：已登录 = 头像+身份+退出;未登录 = 那张登录卡。
+    进门闸（ADR-0182）之后未登录这一支不是死代码 —— 闸门认的是「有没有登录记录」,
+    离线或 session 过期的人正是被它故意放进来的,进来之后处处是未登录态 */
 function AccountPage() {
   const account = useChat((s) => s.account);
   const closeSettings = useChat((s) => s.closeSettings);
@@ -3435,6 +3297,9 @@ export function App() {
   // (每个流式 token、每段 bash 输出、每次 presence 推送)都重渲染整棵树。
   // boot/stop/resume 是建店时定义的 action,引用稳定,单选不会多触发
   const phase = useChat((s) => s.phase);
+  // 进门闸的两个入参。都是低频字段（登录/登出才动），订在树根不会带来额外重渲染
+  const account = useChat((s) => s.account);
+  const authRecord = useChat((s) => s.authRecord);
   const sessionId = useChat((s) => s.sessionId);
   const workspace = useChat((s) => s.workspace);
   const events = useChat((s) => s.events);
@@ -3588,6 +3453,16 @@ export function App() {
   }, [sessionId, panelKey]);
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
+
+  // 进门那道闸（ADR-0182）：没有登录记录 = 整个 app 只画这一屏。
+  // 位置卡在 connecting 之后 —— boot() 没回来之前 authRecord 还是初值 false，
+  // 那一拍判定出来的"没登录"是假的（这一拍的画面本来也被 Splash 盖着）。
+  // 放在这里而不是包在 main.tsx 外层：boot() 挂在 App 的 effect 上，
+  // 不让 App 挂载就永远拿不到登录记录，闸门会把所有人都关在外面。
+  // 早退在返回值这一层而不是提前 return：上面所有 hook 照常跑（含 boot），
+  // 而下面那棵树（侧栏 / 会话 / ⌘K 搜索框 / 各种弹窗）一个都不挂 —— 没登录的人
+  // 按 ⌘K 不该有东西浮在登录卡上面
+  if (needsSignIn(account, authRecord)) return <SignInScreen />;
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏

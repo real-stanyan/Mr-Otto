@@ -347,6 +347,9 @@ interface ChatState {
   providerBalances: ProviderBalance[];
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
+  /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
+      account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0182） */
+  authRecord: boolean;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
       和 account 不是同一份数据,显示身份时以这份为准(ADR-0028) */
   myProfile: MyProfile | null;
@@ -860,6 +863,7 @@ export const useChat = create<ChatState>((set, get) => ({
   providerUsage: null,
   providerBalances: [],
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
+  authRecord: false,
   myProfile: null,
   profileSetupOpen: false,
   modelSetupOpen: false,
@@ -1717,9 +1721,13 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onAccountChanged((account) => {
       set(
         account.signedIn
-          ? { account }
+          ? // 登录成功 = 从此有了登录记录（auth.json 刚被 supabase 写进去）。
+            // 反过来 onChange 推 signedIn:false 只有登出一条路（restore/handleCallback
+            // 失败都是静默的、不 onChange），所以这两边正好是闸门的开与关
+            { account, authRecord: true }
           : {
               account,
+              authRecord: false,
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
@@ -1959,8 +1967,8 @@ export const useChat = create<ChatState>((set, get) => ({
         set((s) => ({ bootDone: s.bootDone + 1 }));
         return v;
       });
-    set({ bootDone: 0, bootTotal: 7 });
-    const [info, sessions, skills, mcpPrompts, account, keyStatus, fullscreen] = await Promise.all([
+    set({ bootDone: 0, bootTotal: 8 });
+    const [info, sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen] = await Promise.all([
       tick(window.otter.boot()),
       tick(window.otter.listSessions()),
       tick(window.otter.listSkills()),
@@ -1969,13 +1977,16 @@ export const useChat = create<ChatState>((set, get) => ({
       // 才拉的话,新会话一开始 `/` 菜单里永远看不到已经连上的 server 的 prompt
       tick(window.otter.listMcpPrompts()),
       tick(window.otter.getAccount()),
+      // 进门闸的判据（ADR-0182）。和 getAccount() 一起取而不是懒加载:它决定首屏
+      // 画哪一屏,晚一拍就是"先闪一下登录页再跳进去"
+      tick(window.otter.hasAuthRecord()),
       tick(window.otter.keyStatus()),
       tick(window.otter.getWindowFullscreen()),
     ]);
     set(
       info
-        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
-        : { phase: "welcome", sessions, skills, mcpPrompts, account, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
+        : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
     );
     // 冷启动命中的那条会话可能正跑着（后台 turn、上一次是崩溃/重载）。推送这一路
     // 只在状态**变化**时开火，错过的那一拍靠这一问补（issue #548）

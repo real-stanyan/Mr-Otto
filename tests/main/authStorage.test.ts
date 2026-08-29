@@ -97,4 +97,32 @@ describe("authStorage", () => {
     const storage = createAuthStorage(filePath, nodeIO);
     expect(storage.getItem("anything")).toBeNull();
   });
+
+  // hasAny 是进门闸（SignInScreen / ADR-0182）唯一的判据：它必须同步、离线也答得出，
+  // 所以停在"文件里有没有 key"这一层，不解析 session、更不发网络校验
+  it("hasAny：没存过东西 = 没有登录记录", () => {
+    const io = fakeIO();
+    expect(createAuthStorage("/fake/auth.json", io).hasAny()).toBe(false);
+  });
+
+  it("hasAny：存过任意一个 key 就算有登录记录", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-xxx-auth-token", "token-value");
+    expect(storage.hasAny()).toBe(true);
+  });
+
+  it("hasAny：登出把最后一个 key 删掉之后回到没有", () => {
+    const io = fakeIO();
+    const storage = createAuthStorage("/fake/auth.json", io);
+    storage.setItem("sb-xxx-auth-token", "token-value");
+    storage.removeItem("sb-xxx-auth-token");
+    expect(storage.hasAny()).toBe(false);
+  });
+
+  it("hasAny：坏 JSON 当没存过——闸门宁可让人重登，也不能靠一个解析不了的文件放行", () => {
+    const io = fakeIO();
+    io.write("/fake/auth.json", "{ 这不是 JSON");
+    expect(createAuthStorage("/fake/auth.json", io).hasAny()).toBe(false);
+  });
 });

@@ -23,11 +23,12 @@
 import { _electron as electron, expect, type ElectronApplication, type Page } from "@playwright/test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { providerKeyEnvs } from "../../src/shared/providerCatalog.js";
+import { profileDirName } from "../../src/main/profile.js";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAIN = join(ROOT, "out", "main", "index.js");
@@ -74,6 +75,10 @@ export interface LaunchOptions {
       "agent 还在内存里，只切视线"那条路，压根到不了 createChildAgent */
   home?: string;
   profile?: string;
+  /** 这只 app 开机时「有没有登录记录」（ADR-0182 的进门闸判据）。**默认 true** ——
+      绝大多数用例验的不是登录，它们要的是直接站在 app 里面。给 false 就是
+      一个全新用户：开机第一屏是 SignInScreen，里面的东西一个都点不到 */
+  authRecord?: boolean;
 }
 
 /** electron-builder 产出的 .app 里的可执行文件。`npm run dist:mac` 跑过才有；
@@ -158,6 +163,36 @@ function blankCredentials(): Record<string, string> {
   return blanked;
 }
 
+/** Electron 的 userData 目录 —— 起 app **之前**就得算出来，因为登录记录要先播进去
+    （`app.evaluate` 拿得到真值，但那时渲染层可能已经问过 `hasAuthRecord` 了）。
+    算法照抄 `src/main/index.ts` 的 `app.setPath("userData", join(appData, profileDirName(...)))`，
+    目录名从 `profileDirName` 现取而不是手抄。
+
+    `appData` 各平台不同，而且 **darwin 那一支不认 `$HOME`**（Electron 走
+    NSHomeDirectory，见本文件顶部的隔离说明）—— 所以 mac 上用的是跑测试这个
+    进程的真实 home，Linux 上用的才是这只 app 的临时 HOME。算错了不会静默：
+    登录记录播不进去 = 每条用例都被挡在 SignInScreen 上，当场全红。 */
+function userDataPathFor(profile: string, home: string): string {
+  const appData =
+    process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support")
+      : process.platform === "win32"
+        ? (process.env["APPDATA"] ?? join(homedir(), "AppData", "Roaming"))
+        : (process.env["XDG_CONFIG_HOME"] ?? join(home, ".config"));
+  return join(appData, profileDirName({ OTTO_PROFILE: profile }, false));
+}
+
+/** 播一条「这台机器登录过」的记录（ADR-0182 的进门闸认的就是 auth.json 里有没有 key）。
+
+    **刻意不写 `sb-<ref>-auth-token`**：写成 supabase 认得的形状，supabase-js 会拿着
+    这把假 token 去刷新，e2e 就真的出网了 —— 而这套用例的第一条规矩就是不碰网络
+    （见本文件顶部）。闸门读的是「文件里有没有东西」，与 key 叫什么无关，
+    所以一个 supabase 永远不会读的 key 既满足闸门，又不会把它叫醒。 */
+function seedAuthRecord(userData: string): void {
+  mkdirSync(userData, { recursive: true });
+  writeFileSync(join(userData, "auth.json"), JSON.stringify({ "e2e-auth-record": "1" }), { mode: 0o600 });
+}
+
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   if (!opts.packaged) {
     expect(existsSync(MAIN), "先 npm run build —— e2e 跑的是 out/ 里的产物").toBe(true);
@@ -171,6 +206,9 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   seedInto(userAgentsDir, opts.userAgents);
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
   seedSkills(join(home, CONFIG_DIR, "skills"), opts.skills);
+  // 进门闸（ADR-0182）：没有登录记录的话第一屏是 SignInScreen，里面什么都点不到。
+  // 默认播一条 —— 让 33 条既有用例继续站在 app 里面，而不是各自去登一次录
+  if (opts.authRecord !== false) seedAuthRecord(userDataPathFor(profile, home));
 
   const app = await electron.launch({
     // 打好包的那一只从自己的 asar 里读入口，不能再把仓库根塞给它

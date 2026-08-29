@@ -747,6 +747,10 @@ export interface ShellBridge {
   attachmentDataUrl(id: string): Promise<string>;
   /** 当前登录账号（未登录 = signedIn: false 的空账号，不是 null） */
   getAccount(): Promise<AccountInfo>;
+  /** 这台机器上有没有登录记录（auth.json 里存过东西）。进门闸（SignInScreen）的判据：
+      `getAccount()` 在冷启动时答不准也答不快（restore() 是 fire-and-forget 且走网络），
+      拿它当闸门会让已登录用户闪一下登录页、让断网用户彻底进不来（ADR-0182） */
+  hasAuthRecord(): Promise<boolean>;
   /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
   signIn(provider: "google" | "github"): Promise<void>;
   /** 邮箱密码登录：成功由 onAccountChanged 推账号，失败（密码错等）抛可读错误 */
@@ -1242,6 +1246,7 @@ export const CHANNELS = {
   browserState: "otter:browserState",
   intakePastedFiles: "otter:intakePastedFiles",
   getAccount: "otter:getAccount",
+  hasAuthRecord: "otter:hasAuthRecord",
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
   signIn: "otter:signIn",

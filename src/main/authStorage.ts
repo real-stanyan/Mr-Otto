@@ -26,6 +26,18 @@ function loadFile(filePath: string, io: AuthStorageIO): AuthFile {
 
 export function createAuthStorage(filePath: string, io: AuthStorageIO = nodeIO) {
   return {
+    /**
+     * 这台机器上「有没有登录记录」——文件里存着任意一个 key 就算有（ADR-0182）。
+     *
+     * 判据刻意停在**文件层**，不解析里面的 session、更不发网络校验：进门那道闸
+     * （SignInScreen）要的是一个**同步、离线也答得出**的答案。看 `signedIn` 不行——
+     * `AccountManager.restore()` 是 fire-and-forget 且走 `auth.getUser()` 网络校验，
+     * 冷启动时它多半晚于渲染层的第一问，已登录用户会被闪一下登录页；断网时它更是
+     * 永远回未登录，等于把人锁在自己的桌面软件外面。
+     */
+    hasAny(): boolean {
+      return Object.keys(loadFile(filePath, io)).length > 0;
+    },
     getItem(key: string): string | null {
       const file = loadFile(filePath, io);
       return typeof file[key] === "string" ? file[key] : null;
