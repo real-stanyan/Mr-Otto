@@ -46,6 +46,10 @@ export const ACCOUNTS_DIR = "accounts";
 /** 没有登录记录时用的那一格。带前缀下划线，和 16 位十六进制的真抽屉永远不会撞 */
 export const SIGNED_OUT_DIR = "_signed-out";
 
+/** 归属不明的存量停在这一格（issue #755）。**永远不会被自动归给任何账号** —— 它存在的
+    全部意义就是「这堆东西有主，但这台机器上已经没有证据说主人是谁了」。 */
+export const UNCLAIMED_DIR = "_unclaimed";
+
 /** 抽屉的自描述文件（同 memoryStore 的 root.txt）。目录名是哈希，人找不着自己的那份，
     所以每个抽屉里放一张名片 —— 手编 mcp.json 的人 grep 一遍
     `~/.mr-otto/accounts` 底下的 who.txt 就找到自己那间 */
@@ -127,12 +131,25 @@ const nodeAdoptFs: AdoptFs = {
   rename: (a, b) => renameSync(a, b),
 };
 
+/** 根下还有没有升级前的存量。`adoptLegacy` 之前先问这一句：没有存量的话，
+    「归属不明」这件事根本不存在，不该凭空建出一格 `_unclaimed` 来 */
+export function hasLegacy(
+  root: string,
+  entries: readonly string[],
+  fs: AdoptFs = nodeAdoptFs,
+): boolean {
+  return entries.some((e) => fs.exists(join(root, e)));
+}
+
 /**
  * 把散在 `from` 根下的存量整个搬进 `to` 这个抽屉，返回真搬动了的条目名。
  *
- * 「存量归给当前登录的账号」是维护者裁的（issue #749）：第一次实施隔离时，
- * 现有数据整体划给此刻登录的那个人 —— 它本来就大概率是他的，而留在共享层
- * 等于把泄漏窗口一直开着。
+ * 归属的裁决是「存量归给账号 1」（issue #749）。**但"账号 1"只有一个时刻证明得了**：
+ * 升级后第一次开机时 `auth.json` 里还有没有 session —— 人一登出，证据就永远没了。
+ * 第一版把这句写成了 `if (bootUid) adopt(…)`，实际语义是「归给升级后第一个登录的人」，
+ * 于是「登出 → 升级 → 登录另一个号」这条路上，A 的全部数据被交给了 B（issue #755，
+ * 正是 #749 要修的那个现象换了条路发生）。所以调用方分两支：能归属就归属，
+ * 归属不了就整堆挪进 `_unclaimed`，从此不再自动归给任何人。
  *
  * 两条守则：
  * - **目标已存在就不搬**。这一条同时兜住两种情况：搬过一次不重复搬；
@@ -161,6 +178,52 @@ export function adoptLegacyData(
   }
   return moved;
 }
+
+/** 归属不明的存量停车场里那张说明。它比 who.txt 更需要存在：一个只有哈希名的
+    目录里躺着 26 MB 的 sessions.db，不写清楚是什么，下一个看到的人只会删掉它 */
+export const UNCLAIMED_NOTE = [
+  "这里是「升级到按账号分抽屉之前」的旧数据（issue #755）。",
+  "",
+  "它有主，但这台机器上已经没有证据说主人是谁了 —— 升级后第一次开机时没有任何",
+  "登录记录，而那是唯一一次能证明它属于谁的机会。所以它停在这儿，不会被自动",
+  "归给任何账号：猜错一次的后果，就是另一个人看到你的会话、记忆和 API key。",
+  "",
+  "确定它是谁的，把这些文件移进那个账号的抽屉即可（同级目录，名字是 uid 的",
+  "sha256 前 16 位，每间里的 who.txt 写着是谁）。",
+  "",
+].join("\n");
+
+/**
+ * 归属不明时的去处：把 `root` 下的存量整堆挪进 `<root>/accounts/_unclaimed/`，
+ * 返回挪走的条目名。
+ *
+ * 挪走这个动作本身就是修复（issue #755）—— 留在根下的话，**下一个登录的人会把它
+ * 顺手扫走**，而那个人多半正是你想把数据挡在外面的那个人。
+ */
+export function parkUnclaimed(
+  root: string,
+  entries: readonly string[],
+  io: { mkdir(p: string): void; writeNote(p: string, text: string): void } = nodeParkIo,
+  fs: AdoptFs = nodeAdoptFs,
+): string[] {
+  if (!hasLegacy(root, entries, fs)) return []; // 没存量就不该凭空建出一格来
+  const parked = join(root, ACCOUNTS_DIR, UNCLAIMED_DIR);
+  io.mkdir(parked);
+  const moved = adoptLegacyData(root, parked, entries, fs);
+  if (moved.length > 0) io.writeNote(join(parked, "读我.txt"), UNCLAIMED_NOTE);
+  return moved;
+}
+
+const nodeParkIo = {
+  mkdir: (p: string) => mkdirSync(p, { recursive: true }),
+  writeNote: (p: string, text: string) => {
+    try {
+      writeFileSync(p, text, { mode: 0o600 });
+    } catch {
+      // 说明写不出来不影响数据本身已经挪到位
+    }
+  },
+};
 
 /** 抽屉的名片。写失败不算错（只读盘、权限）—— 它是给人看的便利，不是正确性的一环 */
 export function writeWho(dir: string, who: { uid: string | null; email: string }): void {
