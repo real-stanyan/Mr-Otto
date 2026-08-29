@@ -29,7 +29,19 @@ export function entryFromInstalled(
 ): CatalogEntry {
   const hit = catalog.find((e) => e.id === server.id);
   const description = installedSummary(server.config);
-  if (hit !== undefined) return { ...hit, description };
+  // 地址/命令也换成**这一台此刻**的：目录里那份可能带着没代进去的 {占位符}，
+  // 也可能早被用户改过。详情页那张事实表说的是"这台是什么样"，拿目录的模板
+  // 去填，用户看到的就是一台跟他改过的配置对不上的机器（#764 顺手）
+  const actual: Pick<CatalogEntry, "transport" | "url" | "command" | "args"> =
+    server.config.kind === "stdio"
+      ? { transport: "stdio", command: server.config.command, args: server.config.args }
+      : { transport: "http", url: server.config.url };
+  if (hit !== undefined) {
+    // 换掉而不是合并：目录那条是 http 而盘上这台改成了 stdio 的话，
+    // 展开 hit 会把两边的字段都留下，事实表上同时出现地址和命令
+    const { url: _u, command: _c, args: _a, ...rest } = hit;
+    return { ...rest, description, ...actual };
+  }
   return {
     id: server.id,
     name: server.id,

@@ -36,7 +36,18 @@ import { DataTable } from "./elements/data-table.js";
 
 const ERR_TXT = "text-err text-[13px]";
 
-export function McpServerEditor({ server }: { server: McpServerStatus }) {
+export function McpServerEditor({
+  server,
+  blocked,
+}: {
+  server: McpServerStatus;
+  /** 目录里标着"已知接不上"的那几条，值是原因（CatalogEntry.blocked，ADR-0190）。
+      有值时这一段不画授权按钮、也不画那条错误红字 —— 详情页上面那条横幅已经
+      给出了更准确的答案，而这两样各说各的：
+      红字说"凭据不对"会把用户支去检查 token，而那不是问题所在（issue #764）。
+      #760 只挡住了上半张页面，同一个撒谎的形状在这份管理面里原样活着 */
+  blocked: string | undefined;
+}) {
   const saveMcpServer = useChat((s) => s.saveMcpServer);
   // mcp.json 跟着账号走（ADR-0187）：写死 ~/.mr-otto/mcp.json 的话，照着提示去手改
   // 的用户会编辑一个对本账号完全不生效的文件
@@ -186,14 +197,14 @@ export function McpServerEditor({ server }: { server: McpServerStatus }) {
   return (
 
       <div className="flex flex-col gap-4">
-        {server.error && (display === "failed" || display === "needs-auth") && (
+        {blocked === undefined && server.error && (display === "failed" || display === "needs-auth") && (
           // 原文留在 title 里：翻译是为了让用户知道该改什么，不是为了把证据藏起来
           <p className={ERR_TXT} title={server.error}>
             {humanizeMcpError(server.error)}
           </p>
         )}
 
-        {display === "needs-auth" && cfg.kind === "http" && (
+        {blocked === undefined && display === "needs-auth" && cfg.kind === "http" && (
           <div className="flex items-center gap-2">
             <Button
               size="sm"

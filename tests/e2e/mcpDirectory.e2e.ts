@@ -183,7 +183,8 @@ test("注册表搜不动就说原因，不吞成「没有结果」", async () =>
     await expect(otto.win.getByText(/注册表搜不动/)).toBeVisible({ timeout: 15_000 });
     await expect(otto.win.getByText(/503/)).toBeVisible();
     // 分两层要换来的就是这个：长尾挂了，精选层照常可用（ADR-0171 第一节）
-    await expect(otto.win.getByRole("button", { name: "添加 GitHub" })).toBeVisible();
+    // 锚点不用 GitHub：它标着 blocked，本来就没有「添加」（ADR-0190）
+    await expect(otto.win.getByRole("button", { name: "添加 GitLab" })).toBeVisible();
     expectNoRendererErrors(otto);
   } finally {
     await otto.close();
@@ -201,7 +202,8 @@ test("纯黑的标真的被 mask 削成形状，不是一格实心方块", async
   try {
     await stubRegistry(otto);
     await openSettings(otto.win, "连接器");
-    const card = otto.win.getByRole("button", { name: "添加 GitHub" }).locator("xpath=..");
+    // 同上：换成另一条同档的纯黑标（GitHub 标着 blocked，没有那颗按钮了）
+    const card = otto.win.getByRole("button", { name: "添加 Notion" }).locator("xpath=..");
     await card.waitFor({ timeout: 15_000 });
     const mask = await card
       .locator("span[aria-hidden]")
@@ -278,5 +280,44 @@ test("已知接不上的那几条：不发按钮，原因画在详情页上（#7
     expectNoRendererErrors(otto);
   } finally {
     await otto.close();
+  }
+});
+
+test("已装的那台是 blocked：详情页上一颗「授权」都没有（#764）", async () => {
+  // #760 只挡住了上半张页面 —— 管理面（#753 搬进详情页的那份）有它自己的
+  // 授权按钮和错误红字，两者都不认识 blocked
+  const server = createServer((_req, res) => {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "invalid_token" }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+
+  const home = mkdtempSync(join(tmpdir(), "otto-home-"));
+  mkdirSync(join(home, ".mr-otto"), { recursive: true });
+  writeFileSync(
+    join(home, ".mr-otto", "mcp.json"),
+    JSON.stringify({ mcpServers: { github: { url: `http://127.0.0.1:${port}/mcp`, headers: {} } } })
+  );
+
+  const otto = await launchOtto({ home });
+  try {
+    await openSettings(otto.win, "连接器");
+    await otto.win.getByRole("button", { name: "GitHub 详情" }).click({ timeout: 30_000 });
+
+    await expect(otto.win.getByText(/不支持动态客户端注册/)).toBeVisible({ timeout: 15_000 });
+    await expect(
+      otto.win.getByRole("button", { name: "授权", exact: true }),
+      "管理面里那颗也得没了 —— 点下去还是必失败"
+    ).toHaveCount(0);
+    // 两句互相矛盾的解释不能同屏：红字说"凭据不对"会把用户支去检查 token
+    await expect(otto.win.getByText(/对方拒绝了这次请求/)).toHaveCount(0);
+    // 事实表说的是这一台此刻的样子：目录里 github 的模板地址不该出现在这儿
+    await expect(otto.win.getByText("https://api.githubcopilot.com/mcp/")).toHaveCount(0);
+    expectNoRendererErrors(otto);
+  } finally {
+    await otto.close();
+    rmSync(home, { recursive: true, force: true });
+    server.close();
   }
 });

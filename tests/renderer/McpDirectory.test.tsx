@@ -426,6 +426,31 @@ describe("McpDirectory", () => {
     expect(screen.queryByRole("button", { name: "授权 GitHub" })).not.toBeInTheDocument();
   });
 
+  it("已装的那台：详情页上一颗「授权」都不该有（#764）", async () => {
+    // #760 只挡住了上半张页面 —— McpServerEditor（#753 搬进详情页的管理面）
+    // 有它自己的授权按钮和自己的错误红字，两者都不认识 blocked。
+    // 于是同一页上两句互相矛盾的解释：横幅说"对方不支持动态注册"，红字说
+    // "凭据不对"——后者把用户支去检查 token，而那不是问题所在
+    deferredBridge();
+    const github: McpServerStatus = {
+      ...srv("github", "needs-auth"),
+      error: "MCP error -32000: HTTP 401 Unauthorized",
+    };
+    render(<McpDirectory servers={[github]} />);
+    await screen.findByText("待接通");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "GitHub 详情" }));
+    await screen.findByText(/不支持动态客户端注册/);
+
+    expect(screen.queryAllByRole("button", { name: "授权" })).toHaveLength(0);
+    expect(screen.queryByText(/对方拒绝了这次请求/)).not.toBeInTheDocument();
+    // 证据不丢：这台此刻的原话挪进了横幅的 title
+    expect(screen.getByText(/不支持动态客户端注册/)).toHaveAttribute(
+      "title",
+      expect.stringContaining("401")
+    );
+  });
+
   it("详情页把原因画出来，不是挂在 tooltip 上", async () => {
     // 用户是带着"为什么点了没反应"这个问题点进来的，答案该在视线落点上
     deferredBridge();
