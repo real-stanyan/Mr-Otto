@@ -11,18 +11,16 @@ import { ArrowLeft, Check, Loader2, Plus, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { HINT } from "../settingsShell.js";
 import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
-import {
-  installSlot,
-  type DirectoryItem,
-  type InstalledServer,
-} from "../lib/mcpDirectory.js";
+import { installSlot, type DirectoryItem } from "../lib/mcpDirectory.js";
+import type { McpServerStatus } from "../../../shared/mcp.js";
+import { McpServerEditor } from "./McpServerEditor.js";
 import { connectorFacts, paramSuffix, sourceNote, toolsNote } from "../lib/mcpDetail.js";
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 
 export function McpConnectorPage({
   item,
-  installedServer,
+  server,
   busy,
   icon,
   onBack,
@@ -30,8 +28,8 @@ export function McpConnectorPage({
   onAuthorize,
 }: {
   item: DirectoryItem;
-  /** 已装的话是它此刻在盘上的样子（状态 + 工具清单）；没装是 undefined */
-  installedServer: InstalledServer | undefined;
+  /** 已装的话是它此刻在盘上的样子（状态 / 工具 / 配置）；没装是 undefined */
+  server: McpServerStatus | undefined;
   busy: boolean;
   /** 图标由目录页渲染后传进来 —— 那边的 EntryIcon 认得 vite 的资源表，
       这一页不该为了画个标再复制一份 glob */
@@ -43,7 +41,7 @@ export function McpConnectorPage({
   const { entry, verified } = item;
   const slot = installSlot(item, busy);
   const facts = connectorFacts(entry);
-  const tools = toolsNote(item.installed, installedServer?.tools);
+  const tools = toolsNote(item.installed, server?.tools.map((t) => t.name));
 
   return (
     <div className="connector-page flex flex-col gap-5">
@@ -123,18 +121,29 @@ export function McpConnectorPage({
           {/* 名字只在真连上时列。没连上时那份清单是空的，而空清单在这儿会被
               读成"这台就是没有工具"——那是关于连接的事实，不是关于这台
               server 的事实（#747） */}
-          {item.installed === "connected" && installedServer !== undefined && (
+          {item.installed === "connected" && server !== undefined && (
             <div className="flex flex-wrap gap-1.5">
-              {(installedServer.tools ?? []).map((t) => (
+              {server.tools.map((t) => (
                 <code
-                  key={t}
+                  key={t.name}
+                  title={t.description}
                   className="rounded-[6px] bg-muted/60 px-[7px] py-[3px] font-mono text-[11.5px]"
                 >
-                  {t}
+                  {t.name}
                 </code>
               ))}
             </div>
           )}
+        </section>
+      )}
+
+      {/* 已装的那台才有管理面（启用开关 / 改地址与参数 / 重连 / 删除）。
+          它原来是设置页下半那份清单里的一个 <details>——卡片是索引、详情页是
+          答案，那份编辑器的家在这儿（issue #753） */}
+      {server !== undefined && (
+        <section className="flex flex-col gap-2">
+          <span className={SECTION_LABEL}>设置</span>
+          <McpServerEditor server={server} />
         </section>
       )}
 

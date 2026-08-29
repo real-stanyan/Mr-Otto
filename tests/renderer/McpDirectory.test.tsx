@@ -22,6 +22,23 @@ import "@testing-library/jest-dom/vitest";
 import { McpDirectory } from "../../src/renderer/src/components/McpDirectory.js";
 import type { ShellBridge } from "../../src/shared/shellBridge.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
+import type { McpServerStatus } from "../../src/shared/mcp.js";
+
+/** 盘上的一台。#753 起 McpDirectory 吃的是完整快照——已装的那几台也画成卡片，
+    而"目录里没有的那些"只能从 config 现造条目 */
+const srv = (
+  id: string,
+  status: McpServerStatus["status"],
+  tools: string[] = [],
+  url = `https://${id}.test/mcp`
+): McpServerStatus => ({
+  id,
+  config: { kind: "http", url, headers: {}, enabled: true },
+  status,
+  tools: tools.map((name) => ({ name, description: "", inputSchema: {} })),
+  resources: [],
+  prompts: [],
+});
 
 afterEach(() => {
   cleanup();
@@ -77,7 +94,7 @@ function deferredBridge() {
 describe("McpDirectory", () => {
   it("不搜也能看见精选网格，而且一个字节都不打网", async () => {
     const { searchMcpRegistry } = deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     // 不搜时按分类分段（#725 把目录扩到八十多条，平铺是一堵墙）
     expect(await screen.findByText("开发与部署")).toBeInTheDocument();
@@ -97,7 +114,7 @@ describe("McpDirectory", () => {
 
   it("一搜就换回平铺，「精选」标题这时才出现——它是跟长尾那块的对照", async () => {
     deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
 
     await userEvent.setup().type(screen.getByLabelText("搜索连接器"), "supabase");
@@ -110,7 +127,7 @@ describe("McpDirectory", () => {
 
   it("装上且连上了才画 ✓，没装的画一个可点的加号", async () => {
     deferredBridge();
-    render(<McpDirectory installed={[{ id: "github", status: "connected" }]} />);
+    render(<McpDirectory servers={[srv("github", "connected")]} />);
 
     await screen.findByText("开发与部署");
     expect(screen.getByText("GitHub 已经装上了")).toBeInTheDocument();
@@ -122,7 +139,7 @@ describe("McpDirectory", () => {
     // issue #722：装 Canva 时把浏览器关了，配置落了盘、授权没成，卡片照样画勾。
     // "配置里有这个 id"和"这台能用了"不是一回事
     deferredBridge();
-    render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
+    render(<McpDirectory servers={[srv("canva", "needs-auth")]} />);
 
     await screen.findByText("开发与部署");
     expect(screen.queryByText("Canva 已经装上了")).not.toBeInTheDocument();
@@ -131,7 +148,7 @@ describe("McpDirectory", () => {
 
   it("点卡片上的「授权」直接跑授权，不用先找到下面那一行", async () => {
     const { authorizeMcpServer } = deferredBridge();
-    render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
+    render(<McpDirectory servers={[srv("canva", "needs-auth")]} />);
 
     await screen.findByText("开发与部署");
     await userEvent.setup().click(screen.getByRole("button", { name: "授权 Canva" }));
@@ -141,7 +158,7 @@ describe("McpDirectory", () => {
   it("搜到的注册表结果压在「未经核验」分隔线下面", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "notion");
     await waitFor(() => expect(pending.has("notion")).toBe(true));
@@ -156,7 +173,7 @@ describe("McpDirectory", () => {
   it("慢的旧响应回来，不许盖掉新查询的结果", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -183,7 +200,7 @@ describe("McpDirectory", () => {
       searchMcpRegistry: vi.fn(() => Promise.reject(new Error("注册表返回 HTTP 503"))),
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "notion");
     expect(await screen.findByText(/注册表搜不动：.*503/)).toBeInTheDocument();
@@ -195,7 +212,7 @@ describe("McpDirectory", () => {
   it("慢的旧请求最后报错，不许把新结果换成「搜不动」", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -222,7 +239,7 @@ describe("McpDirectory", () => {
   it("慢的旧请求先回来，不许把「搜索中…」提前关掉", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -243,7 +260,7 @@ describe("McpDirectory", () => {
   it("长尾的 stdio 点加号先弹确认卡，说清会下载什么、在哪儿跑", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -268,7 +285,7 @@ describe("McpDirectory", () => {
       authorizeMcpServer,
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.click(await screen.findByRole("button", { name: "添加 GitHub" }));
     await waitFor(() => {
@@ -290,7 +307,7 @@ describe("McpDirectory", () => {
       authorizeMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.click(await screen.findByRole("button", { name: "添加 Supabase" }));
     await user.type(await screen.findByLabelText("project_ref"), "kpee");
@@ -312,7 +329,7 @@ describe("McpDirectory", () => {
   it("长尾 stdio：确认卡点掉之前一个字节都不落盘，点了「知道了，装上」才落", async () => {
     const { pending, saveMcpServer } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -333,7 +350,7 @@ describe("McpDirectory", () => {
   it("未核验的 http：装上但不自动拉授权，改成告诉用户自己点", async () => {
     const { pending, saveMcpServer, authorizeMcpServer } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -349,7 +366,7 @@ describe("McpDirectory", () => {
   it("长尾卡自己带「未核验」记号，不靠分隔线", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -361,7 +378,7 @@ describe("McpDirectory", () => {
   // ── 详情页（issue #745）─────────────────────────────────────────────
   it("点卡片进详情页：卡片上截断的东西这儿要看得全", async () => {
     deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Supabase 详情" }));
@@ -378,7 +395,7 @@ describe("McpDirectory", () => {
     // 差点这样出门：filling 状态设了，而 ParamsDialog 只渲染在网格分支里，
     // 于是详情页上按钮点下去一声不响
     deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
     const user = userEvent.setup();
 
@@ -392,7 +409,7 @@ describe("McpDirectory", () => {
     // 一颗按钮套在一张可点的卡里：不拦冒泡的话，点「添加」会顺手换页，
     // 用户看着一个陌生的页面，不知道自己刚才装没装上
     const { saveMcpServer } = deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "添加 Sentry" }));
@@ -404,7 +421,7 @@ describe("McpDirectory", () => {
 
   it("返回回到网格", async () => {
     deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
     const user = userEvent.setup();
 
@@ -420,7 +437,7 @@ describe("McpDirectory", () => {
     deferredBridge();
     render(
       <McpDirectory
-        installed={[{ id: "sentry", status: "connected", tools: ["find_issues", "get_trace"] }]}
+        servers={[srv("sentry", "connected", ["find_issues", "get_trace"])]}
       />
     );
     await screen.findByText("开发与部署");
@@ -436,7 +453,7 @@ describe("McpDirectory", () => {
     // 详情页里包进一个普通 span 就整个消失——宽高对 inline 元素不生效，
     // 而这一档的尺寸只有宽高。不报错，就是没有标
     deferredBridge();
-    render(<McpDirectory installed={[]} />);
+    render(<McpDirectory servers={[]} />);
     await screen.findByText("开发与部署");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Sentry 详情" }));
@@ -448,12 +465,62 @@ describe("McpDirectory", () => {
 
   it("装了但没连上：不说「这台没有暴露任何工具」，也不列空清单", async () => {
     deferredBridge();
-    render(<McpDirectory installed={[{ id: "sentry", status: "needs-auth", tools: [] }]} />);
+    render(<McpDirectory servers={[srv("sentry", "needs-auth")]} />);
     await screen.findByText("开发与部署");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Sentry 详情" }));
 
     expect(await screen.findByText(/授权之后才知道/)).toBeInTheDocument();
     expect(screen.queryByText(/没有暴露任何工具/)).not.toBeInTheDocument();
+  });
+
+  // ── 已装的那几台也是卡片，放最上面（issue #753）────────────────────
+  it("已装的进「已接通」/「待接通」，不再在下面的分类里重复出现", async () => {
+    // 同一台 server 在一屏上出现两次，用户要先想明白"这两张是不是一个东西"
+    deferredBridge();
+    render(
+      <McpDirectory
+        servers={[srv("supabase", "connected", ["list_tables"]), srv("canva", "needs-auth")]}
+      />
+    );
+
+    expect(await screen.findByText("已接通")).toBeInTheDocument();
+    expect(screen.getByText("待接通")).toBeInTheDocument();
+    // 每张卡只有一张
+    expect(screen.getAllByRole("button", { name: "Supabase 详情" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Canva 详情" })).toHaveLength(1);
+    // 分类里不再有它们（Supabase 属于「数据与分析」，Canva 属于「设计与内容」）
+    expect(screen.queryByRole("button", { name: "添加 Supabase" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加 Canva" })).not.toBeInTheDocument();
+  });
+
+  it("目录里没有的那台也画成卡片 —— 名字用 id，描述用它自己的地址", async () => {
+    // 手填的、从注册表装的都走这条。藏起来的话那台就再也点不到了
+    deferredBridge();
+    render(<McpDirectory servers={[srv("my-thing", "connected", [], "https://mine.test/mcp")]} />);
+
+    expect(await screen.findByRole("button", { name: "my-thing 详情" })).toBeInTheDocument();
+    expect(screen.getByText("https://mine.test/mcp")).toBeInTheDocument();
+  });
+
+  it("一台都没装就没有那两个标题 —— 空组不出", async () => {
+    deferredBridge();
+    render(<McpDirectory servers={[]} />);
+    await screen.findByText("开发与部署");
+    expect(screen.queryByText("已接通")).not.toBeInTheDocument();
+    expect(screen.queryByText("待接通")).not.toBeInTheDocument();
+  });
+
+  it("已装的那台点进去，详情页里有管理面", async () => {
+    // 卡片是索引，详情页是答案（#745 定的分工）——管理面的家在那儿，
+    // 不在页面下半另起一份等宽字体的清单
+    deferredBridge();
+    render(<McpDirectory servers={[srv("supabase", "connected", ["list_tables"])]} />);
+    await screen.findByText("已接通");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Supabase 详情" }));
+
+    expect(await screen.findByText("设置")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
   });
 });

@@ -66,9 +66,29 @@ function stubBridge(over: Partial<ShellBridge> = {}) {
 }
 
 describe("McpSettings 的授权按钮", () => {
+  /** #753 起管理面住在连接器详情页里（卡片是索引，详情页是答案）。
+      这几条用例测的是那面里的按钮，所以先点开那张卡。
+      卡片自己右边也有一颗「授权」，但它的可读名是「授权 Supabase」——
+      跟详情页里那颗纯「授权」不会撞 */
+  const openCard = async (name: string) => {
+    // pointerEventsCheck 关掉：这一屏被 <SidebarProvider> 包着（真实 app 里也是），
+    // 它那个收起态的 Sheet 让 jsdom 里算出来的 pointer-events 变成 none，于是
+    // userEvent 拒绝点这张 div[role=button]（同一份文件里点普通 <button> 不受
+    // 影响，所以不是全局的）。真机上点得动——e2e 里量过（#753）
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    // 点开之后等它真的开了再往下走：第一条用例里 refreshMcp 的那次 resolve
+    // 和这一下点击挨得太近，卡片刚出现就点，偶发点在一个还没接上处理器的
+    // 节点上。等「返回」那颗按钮出现 = 详情页真的在了
+    await waitFor(async () => {
+      await user.click(await screen.findByRole("button", { name: `${name} 详情` }));
+      expect(screen.getByRole("button", { name: "连接器" })).toBeInTheDocument();
+    });
+  };
+
   it("needs-auth 的 server 显示「授权」按钮", async () => {
     stubBridge();
     renderMcpSettings();
+    await openCard("Supabase");
     expect(await screen.findByRole("button", { name: "授权" })).toBeInTheDocument();
   });
 
@@ -90,7 +110,8 @@ describe("McpSettings 的授权按钮", () => {
         }),
     });
     renderMcpSettings();
-    await screen.findByText("s");
+    // 目录里没有 id 为 "s" 的条目 —— 现造的那张卡名字就是 id
+    await openCard("s");
     expect(screen.queryByRole("button", { name: "授权" })).not.toBeInTheDocument();
   });
 
@@ -107,6 +128,7 @@ describe("McpSettings 的授权按钮", () => {
       authorizeMcpServer: vi.fn(() => pending.then(() => ({ servers: [], errors: [] }))),
     });
     renderMcpSettings();
+    await openCard("Supabase");
     const btn = await screen.findByRole("button", { name: "授权" });
     await userEvent.click(btn);
 
@@ -128,6 +150,7 @@ describe("McpSettings 的授权按钮", () => {
       ),
     });
     renderMcpSettings();
+    await openCard("Supabase");
     await userEvent.click(await screen.findByRole("button", { name: "授权" }));
     expect(await screen.findByText(/等授权超时/)).toBeInTheDocument();
   });
@@ -142,6 +165,7 @@ describe("McpSettings 的授权按钮", () => {
     } as Partial<ShellBridge>);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderMcpSettings();
+    await openCard("Supabase");
     await userEvent.click(await screen.findByRole("button", { name: "授权" }));
     expect(await screen.findByText(/等授权超时/)).toBeInTheDocument();
 
