@@ -1,10 +1,16 @@
-// SignInCard — 登录/注册那张卡本身（OAuth 在上,分隔线,邮箱密码在下）。
+// SignInCard — 登录/注册那组控件本身。三块独立面板，自上而下：
+// 邮箱密码 → OAuth → 「没有账号？注册」（issue #731 的结构稿）。
 //
-// 从 App.tsx 抽出来是因为它现在有**两个**渲染点（ADR-0182）：
-//   1. `components/SignInScreen.tsx` —— 进门那道闸，没有登录记录时的整屏
+// **logo 和「Mr Otto」字样不在这里** —— 它们属于进门那一屏（`SignInScreen`），
+// 不属于这组控件。因为这个文件有两个渲染点：
+//   1. `components/SignInScreen.tsx` —— 进门闸，没有登录记录时的整屏
 //   2. `App.tsx` 的账号页 —— 有登录记录但此刻没验上（离线 / session 过期）时
-//      仍然会落到这里，闸门放行的正是这类人
-// 两处必须是同一张卡：登录入口有两套写法，改一处忘一处是迟早的事。
+//      仍然会落到这里，闸门放行的正是这类人（ADR-0182）
+// 账号页不该顶一张大 logo，而两处的**控件**必须是同一份：登录入口有两套写法，
+// 改一处忘一处是迟早的事。
+//
+// 三块之间的间距大于块内间距（`gap-3` vs `gap-2`）—— 分组是靠这个读出来的，
+// 不是靠边框。顺序上邮箱在前、OAuth 在后是维护者定的（#731）。
 
 import { useState } from "react";
 
@@ -12,7 +18,6 @@ import { useChat } from "../store.js";
 import { HINT } from "../settingsShell.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.js";
 import { cn } from "@/lib/utils.js";
 
 /** Google 官方四色 G(品牌规范配色,path 数据是官方 SVG)。尺寸交给按钮的 [&_svg] 规则 */
@@ -48,18 +53,31 @@ function GitHubIcon() {
   );
 }
 
-/** 邮箱密码登录/注册表单（登录卡片内,OAuth 按钮下方）。
-    登录成功由 onAccountChanged 推账号,表单自己只管两件事:
-    注册后"去邮箱点确认链接"的提示,和转圈期间禁点。错误走 store.error 统一显示 */
-function EmailPasswordForm() {
+/** 一块面板的底色。`glass` 只在进门闸上用 —— 那一屏铺着 dither 动效，
+    不透一点、不糊一层的话卡是"贴"在画面上而不是"坐"在画面里；
+    账号页背后是一块纯色，糊它没有意义，还会把卡的色调压掉一点点 */
+const PANEL = "rounded-xl border p-[10px] flex flex-col gap-[8px]";
+
+export function SignInCard({
+  className,
+  variant = "plain",
+}: {
+  className?: string;
+  variant?: "plain" | "glass";
+}) {
+  const signIn = useChat((s) => s.signIn);
   const signInWithPassword = useChat((s) => s.signInWithPassword);
   const signUpWithPassword = useChat((s) => s.signUpWithPassword);
+  // mode 提到这一层:切换它的那颗按钮已经不在表单里了(它自己是第三块面板),
+  // 但它管的仍然是表单的文案与 autoComplete
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  // 注册后"去邮箱点确认链接"那句。错误(密码错等)走 store.error,由调用方显示
   const [notice, setNotice] = useState<string | null>(null);
 
+  const panel = cn(PANEL, variant === "glass" ? "bg-card/85 shadow-2xl backdrop-blur-xl" : "bg-card");
   const canSubmit = !busy && email.includes("@") && password.length >= 6;
 
   const submit = async () => {
@@ -82,75 +100,65 @@ function EmailPasswordForm() {
   };
 
   return (
-    <form
-      className="flex flex-col gap-[8px]"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <Input
-        type="email"
-        placeholder="邮箱"
-        autoComplete="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-      />
-      <Input
-        type="password"
-        placeholder={mode === "sign-up" ? "密码（至少 6 位）" : "密码"}
-        autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      <Button type="submit" disabled={!canSubmit} className="w-full mt-[2px]">
-        {busy ? "…" : mode === "sign-in" ? "用邮箱登录" : "注册"}
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground"
-        onClick={() => {
-          setMode(mode === "sign-in" ? "sign-up" : "sign-in");
-          setNotice(null);
+    <div className={cn("w-full max-w-[320px] flex flex-col gap-[12px]", className)}>
+      {/* 一：邮箱密码。OAuth 两颗不放进这个 <form> —— 它们不是提交这张表单的动作，
+          放进来还得逐个写 type="button" 才不会误触发提交 */}
+      <form
+        className={panel}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
         }}
       >
-        {mode === "sign-in" ? "没有账号？注册" : "已有账号？登录"}
-      </Button>
-      {notice && <p className={HINT}>{notice}</p>}
-    </form>
-  );
-}
+        <Input
+          type="email"
+          placeholder="邮箱"
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <Input
+          type="password"
+          placeholder={mode === "sign-up" ? "密码（至少 6 位）" : "密码"}
+          autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <Button type="submit" disabled={!canSubmit} className="w-full">
+          {busy ? "…" : mode === "sign-in" ? "用邮箱登录" : "注册"}
+        </Button>
+      </form>
 
-/** 未登录态的登录卡片:OAuth 在上(老用户全走这),分隔线,邮箱密码在下。
-    `className` 给进门闸留的口子——同一张卡,铺在动效背景上时要换一层材质 */
-export function SignInCard({ className }: { className?: string }) {
-  const signIn = useChat((s) => s.signIn);
+      {/* 注册回执贴着它产生的那块，不挤进面板里 */}
+      {notice && <p className={cn(HINT, "px-[2px] text-center")}>{notice}</p>}
 
-  return (
-    <Card className={cn("w-full max-w-[360px]", className)}>
-      <CardHeader>
-        <CardTitle>登录 Mr Otto</CardTitle>
-        <CardDescription>登录后可在多台设备同步配置（即将上线）</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-[16px]">
-        <div className="flex flex-col gap-[8px]">
-          <Button variant="outline" className="w-full" onClick={() => void signIn("google")}>
-            <GoogleIcon />
-            用 Google 登录
-          </Button>
-          <Button variant="outline" className="w-full" onClick={() => void signIn("github")}>
-            <GitHubIcon />
-            用 GitHub 登录
-          </Button>
-        </div>
-        {/* 分隔线上嵌一句话:比孤零零一个「或」更说明下半段是什么 */}
-        <div className="relative text-center text-xs text-muted-foreground after:absolute after:inset-x-0 after:top-1/2 after:border-t after:border-border">
-          <span className="relative z-10 bg-card px-[8px]">或用邮箱</span>
-        </div>
-        <EmailPasswordForm />
-      </CardContent>
-    </Card>
+      {/* 二：OAuth */}
+      <div className={panel}>
+        <Button variant="outline" className="w-full" onClick={() => void signIn("google")}>
+          <GoogleIcon />
+          用 Google 登录
+        </Button>
+        <Button variant="outline" className="w-full" onClick={() => void signIn("github")}>
+          <GitHubIcon />
+          用 GitHub 登录
+        </Button>
+      </div>
+
+      {/* 三：登录 ⇄ 注册。自己一块、居中收窄 —— 它不是登录方式,是换一张表单 */}
+      <div className={cn(panel, "self-center p-[4px]")}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          onClick={() => {
+            setMode(mode === "sign-in" ? "sign-up" : "sign-in");
+            setNotice(null);
+          }}
+        >
+          {mode === "sign-in" ? "没有账号？注册" : "已有账号？登录"}
+        </Button>
+      </div>
+    </div>
   );
 }
