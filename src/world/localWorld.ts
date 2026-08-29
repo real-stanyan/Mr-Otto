@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
 import type { LiveGroupRegistry } from "./liveGroups.js";
+import { createLocalResidue } from "./residueLocal.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
@@ -333,5 +334,9 @@ export function createLocalWorld(
           },
         }
       : {}),
+
+    // 残留物审计（issue #759）：没有登记表就没有"这个组是不是 agent 起的"归属判定，
+    // 挂了也只会误报——不挂比挂个半残的更诚实
+    ...(liveGroups ? { residue: createLocalResidue(liveGroups) } : {}),
   };
 }
