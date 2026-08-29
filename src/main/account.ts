@@ -50,6 +50,13 @@ export type SupabaseLike = {
       email: string,
       options: { redirectTo: string },
     ): Promise<{ error: unknown }>;
+    // 重置邮件里那串六位数(邮件模板的 `{{ .Token }}`)。验过 = 登录 ——
+    // recovery OTP 换到的是一个真 session,和点链接那条路殊途同归
+    verifyOtp(args: {
+      email: string;
+      token: string;
+      type: "recovery";
+    }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     // 改密码。要有 session —— 重置链接换来的那个就算
     updateUser(attrs: { password: string }): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
@@ -181,7 +188,7 @@ export class AccountManager {
    *   确认链接后回来用密码登录；此时**不是**登录态，不触发 onChange。
    */
   /**
-   * 邮箱密码注册。`name` 是注册表单上填的用户名（issue #738）。
+   * 邮箱密码注册。`name` 是注册表单上填的用户名（issue #742）。
    *
    * 它走 `options.data` 进 auth.users 的 `raw_user_meta_data`，profiles 那一行由
    * migration 0007 的 `handle_auth_user_upsert` 触发器在 insert 时取它填 name ——
@@ -234,6 +241,26 @@ export class AccountManager {
   async resetPassword(email: string): Promise<void> {
     const { error } = await this.client.auth.resetPasswordForEmail(email, { redirectTo: REDIRECT_TO });
     if (error) throw new Error(errorMessage(error));
+  }
+
+  /**
+   * 验证重置邮件里那串六位数（issue #741）。
+   *
+   * 为什么要有这条路，而不是只让人点链接：**点链接会跳出这个 app**。用户在浏览器里
+   * 完成一半流程，再靠深链跳回来 —— 中间隔着默认浏览器、隔着系统的「要打开 Mr Otto 吗」
+   * 那一问，隔着一次可能的冷启动。验证码把整段流程留在窗口里。
+   *
+   * 验过就是登录态（recovery OTP 换到真 session），所以这里和 signInWithPassword
+   * 一样推 onChange —— 剩下的「设个新密码」由 SetPasswordDialog 接手。
+   *
+   * 前提：Supabase 的 Reset Password 邮件模板里必须有 `{{ .Token }}`。默认模板只有
+   * 链接，验证码虽然照样签发、但用户看不见（见 issue #741 里那段实测）。
+   */
+  async verifyRecoveryOtp(email: string, token: string): Promise<void> {
+    const { data, error } = await this.client.auth.verifyOtp({ email, token, type: "recovery" });
+    if (error) throw new Error(errorMessage(error));
+    this.account = toAccountInfo(data.user);
+    this.onChange(this.account);
   }
 
   /** 设新密码。调用方保证此刻有 session（重置链接换来的那个就算） */

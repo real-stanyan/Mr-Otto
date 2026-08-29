@@ -19,15 +19,7 @@ import { useChat } from "../store.js";
 import { localEmailProblem } from "../lib/authError.js";
 import { MIN_PASSWORD, NAME_MAX, canSubmitSignIn, confirmHint } from "../lib/signInForm.js";
 import { ConfirmEmailDialog } from "./ConfirmEmailDialog.js";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog.js";
+import { ForgotPasswordDialog } from "./ForgotPasswordDialog.js";
 import { HINT } from "../settingsShell.js";
 import { Button } from "@/components/ui/button.js";
 import { Card, CardContent } from "@/components/ui/card.js";
@@ -86,7 +78,6 @@ export function SignInCard({
   const signInWithPassword = useChat((s) => s.signInWithPassword);
   const signUpWithPassword = useChat((s) => s.signUpWithPassword);
   const setError = useChat((s) => s.setError);
-  const resetPassword = useChat((s) => s.resetPassword);
   // mode 提到这一层:切换它的那颗按钮已经不在表单里了(它自己是第三块面板),
   // 但它管的仍然是表单的文案与 autoComplete
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -100,30 +91,14 @@ export function SignInCard({
   /** 注册成功、正在等确认邮件。存的是那一刻的邮箱密码 —— 弹窗要拿它轮询探测
       （见 ConfirmEmailDialog）。只活在内存里，不落盘、不进日志 */
   const [pending, setPending] = useState<{ email: string; password: string } | null>(null);
-  /** 重置邮件已发出、正在告诉用户去点。**不等待也不轮询** —— 用户点完链接会被
-      深链带回 app 并直接换到 session，闸门自己就抬起来了（issue #739） */
-  const [resetSentTo, setResetSentTo] = useState<string | null>(null);
+  /** 忘记密码那张弹窗开着没有。整段流程（填邮箱→收验证码→填回来）都在它里面，
+      这里只管开关（issue #741） */
+  const [forgotOpen, setForgotOpen] = useState(false);
 
   const card = cn(CARD, variant === "glass" && "bg-card/85 shadow-2xl backdrop-blur-xl");
   const form = { mode, name, email, password, confirm, busy };
   const canSubmit = canSubmitSignIn(form);
   const mismatch = confirmHint(form);
-
-  /**
-   * 忘记密码：拿输入框里那个邮箱发重置邮件。
-   *
-   * 不另开一个"请输入邮箱"的弹窗 —— 邮箱那一格就在上面，人已经在那儿了。
-   * 但它可能是空的或写错的，所以走的是和注册**同一条**本地预检，报错也落同一张卡。
-   */
-  const forgot = async () => {
-    const addr = email.trim();
-    const bad = localEmailProblem(addr);
-    if (bad) {
-      setError(bad);
-      return;
-    }
-    if (await resetPassword(addr)) setResetSentTo(addr);
-  };
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -234,7 +209,7 @@ export function SignInCard({
             variant="link"
             size="sm"
             className="h-auto p-0 text-[12px] text-muted-foreground"
-            onClick={() => void forgot()}
+            onClick={() => setForgotOpen(true)}
           >
             忘记密码？
           </Button>
@@ -257,25 +232,10 @@ export function SignInCard({
         </Button>
       </div>
       </CardContent>
-      {/* 重置邮件发出去了。这张只说明、不等待:点完链接是深链把 app 带回登录态,
-          闸门自己抬起来,这棵树跟着卸载 */}
-      {resetSentTo && (
-        <AlertDialog open>
-          <AlertDialogContent size="sm" className="gap-[16px]">
-            <AlertDialogHeader>
-              <AlertDialogTitle>重置链接发出去了</AlertDialogTitle>
-              <AlertDialogDescription>
-                去 <span className="font-medium text-foreground">{resetSentTo}</span>{" "}
-                收信，点开里面的链接就能回来设新密码。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogAction asChild>
-                <Button onClick={() => setResetSentTo(null)}>知道了</Button>
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+      {/* 忘记密码。验证成功那一刻人就是登录态了,这棵树跟着卸载 ——
+          第三步「设新密码」由 App 那层的 SetPasswordDialog 接手 */}
+      {forgotOpen && (
+        <ForgotPasswordDialog initialEmail={email} onClose={() => setForgotOpen(false)} />
       )}
 
       {/* 等确认邮件那张弹窗。它自己 portal 到 body，挂在这儿只是为了好找 */}

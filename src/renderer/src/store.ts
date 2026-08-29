@@ -567,6 +567,8 @@ interface ChatState {
   setError(error: string | null): void;
   /** 忘记密码：发重置邮件。同时记一笔「在等重置」，等登录态回来时弹「设新密码」 */
   resetPassword(email: string): Promise<boolean>;
+  /** 验证重置邮件里那串六位数。true = 验过（此刻已是登录态，SetPasswordDialog 跟着掀开） */
+  verifyRecoveryOtp(email: string, token: string): Promise<boolean>;
   /** 设新密码。成了就把那笔记号抹掉 */
   updatePassword(password: string): Promise<boolean>;
   setSetPasswordOpen(open: boolean): void;
@@ -1494,6 +1496,19 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.resetPassword(email);
       markResetPending(true);
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  async verifyRecoveryOtp(email, token) {
+    set({ error: null });
+    try {
+      await window.otter.verifyRecoveryOtp(email, token);
+      // 验过就是登录态：onAccountChanged 带着 resetPending 把 SetPasswordDialog 掀开,
+      // 这里不用再做别的（进门闸同时抬起,忘记密码那张弹窗跟着卸载）
       return true;
     } catch (e) {
       set({ error: bridgeErrorMessage(e) });

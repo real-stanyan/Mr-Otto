@@ -2574,6 +2574,9 @@ void app.whenReady().then(() => {
     manager.signUpWithPassword(email, password, name ?? "")
   );
   ipcMain.handle(CHANNELS.resetPassword, (_e, email: string) => manager.resetPassword(email));
+  ipcMain.handle(CHANNELS.verifyRecoveryOtp, (_e, email: string, token: string) =>
+    manager.verifyRecoveryOtp(email, token),
+  );
   ipcMain.handle(CHANNELS.updatePassword, (_e, password: string) => manager.updatePassword(password));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 

@@ -136,6 +136,7 @@ const bridge: ShellBridge = {
   signInWithPassword: (email, password) => ipcRenderer.invoke(CHANNELS.signInWithPassword, email, password),
   signUpWithPassword: (email, password, name) => ipcRenderer.invoke(CHANNELS.signUpWithPassword, email, password, name),
   resetPassword: (email) => ipcRenderer.invoke(CHANNELS.resetPassword, email),
+  verifyRecoveryOtp: (email, token) => ipcRenderer.invoke(CHANNELS.verifyRecoveryOtp, email, token),
   updatePassword: (password) => ipcRenderer.invoke(CHANNELS.updatePassword, password),
   signOut: () => ipcRenderer.invoke(CHANNELS.signOut),
   myProfile: () => ipcRenderer.invoke(CHANNELS.myProfile),

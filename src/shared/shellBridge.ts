@@ -761,6 +761,9 @@ export interface ShellBridge {
   /** 忘记密码：发一封重置邮件。**查无此人也不报错** —— 报了就等于把
       「这个邮箱注册过没有」做成一个人人可查的接口 */
   resetPassword(email: string): Promise<void>;
+  /** 验证重置邮件里那串六位数。验过 = 登录态（由 onAccountChanged 推），
+      接下来才是设新密码。码错/过期抛可读错误 */
+  verifyRecoveryOtp(email: string, token: string): Promise<void>;
   /** 设新密码。要有 session（重置链接换来的那个就算）；失败抛可读错误 */
   updatePassword(password: string): Promise<void>;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
@@ -1258,6 +1261,7 @@ export const CHANNELS = {
   signInWithPassword: "otter:signInWithPassword",
   signUpWithPassword: "otter:signUpWithPassword",
   resetPassword: "otter:resetPassword",
+  verifyRecoveryOtp: "otter:verifyRecoveryOtp",
   updatePassword: "otter:updatePassword",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
