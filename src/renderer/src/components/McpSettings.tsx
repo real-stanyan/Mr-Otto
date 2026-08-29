@@ -120,7 +120,15 @@ export function McpSettings() {
 
         {/* 目录页本身就是最好的空状态：一屏可点的连接器，比一句"还没配置任何
             MCP server"有用得多——原来那个空状态块因此删掉了 */}
-        <McpDirectory installedIds={snapshot.servers.map((s) => s.id)} />
+        <McpDirectory
+          // 传状态而不只是 id：目录卡上那个勾得分得清"连上了"和"装上了但没授权"
+          // （issue #722）。mcpDisplayStatus 是下面每一行用的同一把尺子——
+          // 上下两半对同一台 server 说同一句话
+          installed={snapshot.servers.map((s) => ({
+            id: s.id,
+            status: mcpDisplayStatus(s.config, s.status),
+          }))}
+        />
 
         {snapshot.servers.map((server) => (
           <McpServerRow key={server.id} server={server} />

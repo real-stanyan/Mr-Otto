@@ -7,10 +7,13 @@ import {
   configFromEntry,
   directoryTint,
   installPackageName,
+  installSlot,
   installSourceLabel,
   needsInstallConfirm,
   uniqueServerId,
+  type DirectoryItem,
 } from "../../src/renderer/src/lib/mcpDirectory.js";
+import type { McpDisplayStatus } from "../../src/renderer/src/lib/mcpForm.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import { mapRegistryServer } from "../../src/shared/mcpRegistry.js";
 
@@ -43,7 +46,7 @@ describe("buildDirectory", () => {
       query: "",
       curated: [http("a"), http("b")],
       registry: [http("z")],
-      installedIds: [],
+      installed: [],
     });
     expect(out.curated.map((i) => i.entry.id)).toEqual(["a", "b"]);
     expect(out.longTail).toEqual([]);
@@ -54,20 +57,23 @@ describe("buildDirectory", () => {
       query: "a",
       curated: [http("a")],
       registry: [http("z")],
-      installedIds: [],
+      installed: [],
     });
     expect(out.curated[0]!.verified).toBe(true);
     expect(out.longTail[0]!.verified).toBe(false);
   });
 
-  it("已装的标出来 —— UI 据此画 ✓ 而不是 +", () => {
+  it("已装的带着**状态**出来 —— 光有 id 会让「连上了」和「还没授权」长得一样", () => {
     const out = buildDirectory({
       query: "",
-      curated: [http("a"), http("b")],
+      curated: [http("a"), http("b"), http("c")],
       registry: [],
-      installedIds: ["b"],
+      installed: [
+        { id: "b", status: "connected" },
+        { id: "c", status: "needs-auth" },
+      ],
     });
-    expect(out.curated.map((i) => i.installed)).toEqual([false, true]);
+    expect(out.curated.map((i) => i.installed)).toEqual([null, "connected", "needs-auth"]);
   });
 
   it("长尾里跟精选撞 id 的剔掉 —— 同一台 server 不该出现两次", () => {
@@ -75,7 +81,7 @@ describe("buildDirectory", () => {
       query: "a",
       curated: [http("notion")],
       registry: [http("notion"), http("other")],
-      installedIds: [],
+      installed: [],
     });
     expect(out.longTail.map((i) => i.entry.id)).toEqual(["other"]);
   });
@@ -83,15 +89,15 @@ describe("buildDirectory", () => {
 
 describe("needsInstallConfirm", () => {
   it("长尾的 stdio 要确认 —— 会在本机跑陌生人发布的包", () => {
-    expect(needsInstallConfirm({ entry: stdio("x"), verified: false, installed: false })).toBe(true);
+    expect(needsInstallConfirm({ entry: stdio("x"), verified: false, installed: null })).toBe(true);
   });
 
   it("精选的 stdio 不要 —— 已人工核过", () => {
-    expect(needsInstallConfirm({ entry: stdio("x"), verified: true, installed: false })).toBe(false);
+    expect(needsInstallConfirm({ entry: stdio("x"), verified: true, installed: null })).toBe(false);
   });
 
   it("长尾的 http 不要 —— 代码跑在对方机器上，不在用户机器上", () => {
-    expect(needsInstallConfirm({ entry: http("x"), verified: false, installed: false })).toBe(false);
+    expect(needsInstallConfirm({ entry: http("x"), verified: false, installed: null })).toBe(false);
   });
 });
 
@@ -263,5 +269,37 @@ describe("directoryTint", () => {
   it("不同 id 落在同一个色板里", () => {
     const tints = new Set(["a", "b", "c", "d", "e", "f", "g", "h"].map(directoryTint));
     expect(tints.size).toBeGreaterThan(1);
+  });
+});
+
+describe("installSlot", () => {
+  const item = (installed: McpDisplayStatus | null): DirectoryItem => ({
+    entry: http("x"),
+    verified: true,
+    installed,
+  });
+
+  it("没装画加号", () => {
+    expect(installSlot(item(null), false)).toEqual({ kind: "add" });
+  });
+
+  it("装上且连上了才画勾", () => {
+    expect(installSlot(item("connected"), false)).toEqual({ kind: "done" });
+  });
+
+  it("needs-auth 画的是「授权」不是勾 —— issue #722 的本体", () => {
+    expect(installSlot(item("needs-auth"), false)).toEqual({ kind: "authorize" });
+  });
+
+  it("连不上 / 关掉的各说各的，不冒充完事", () => {
+    expect(installSlot(item("failed"), false).kind).toBe("note");
+    expect(installSlot(item("disabled"), false).kind).toBe("note");
+  });
+
+  it("busy 盖住一切 —— 授权在飞的那五分钟不能显示成已完成", () => {
+    // saveMcpServer 一成功 installed 就有值了，而 authorizeMcpServer 还挂在
+    // waitForCode 上（AUTH_TIMEOUT_MS = 5 分钟）。这段窗口必须是 busy
+    expect(installSlot(item("connecting"), true)).toEqual({ kind: "busy" });
+    expect(installSlot(item("connected"), true)).toEqual({ kind: "busy" });
   });
 });
