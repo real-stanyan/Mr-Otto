@@ -1,5 +1,5 @@
-<!-- Fetch —— 不是品牌，用 lucide 的 globe（lucide-static，ISC）。描边色写死：它当 <img> 加载，currentColor 到不了。
-     底板是白的，见 McpDirectory.tsx 的 EntryIcon。 -->
+<!-- Fetch —— 不是品牌，用 lucide 的 globe（lucide-static，ISC）。
+     标由 mask 上色（见 McpDirectory.tsx 的 EntryIcon），只取形状，写在这儿的颜色不生效。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
      stroke="#525252" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
 <circle cx="12" cy="12" r="10" />

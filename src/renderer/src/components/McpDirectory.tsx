@@ -36,6 +36,7 @@ import {
   buildDirectory,
   configFromEntry,
   directoryTint,
+  iconPaint,
   installPackageName,
   installSourceLabel,
   needsInstallConfirm,
@@ -266,26 +267,45 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
 
 function EntryIcon({ entry }: { entry: CatalogEntry }) {
   const src = iconUrl(entry.icon);
-  if (src !== undefined) {
-    // 白底方片，不是装饰：品牌标本来就是画在白底上的，GitHub 和 Notion 的标是纯黑，
-    // 裸画在深色主题上等于看不见（这一版之前就是这样，"有图的反而更难认"）。
-    // 白底一条规则同时管住两个主题，不用给每个品牌各做一套深浅——SVG 里写
-    // prefers-color-scheme 也解决不了：它当 <img> 加载，只看得见系统设置，
-    // 看不见 app 自己那个主题开关（neon.svg 已经踩在这个坑上，只是它两档都是绿的）。
-    // ring 那一条给白片在浅色主题上留个边，否则它化在卡片里。
-    return (
-      <span
-        aria-hidden
-        className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-[8px] bg-white ring-1 ring-black/[0.06]"
-      >
-        <img
-          src={src}
-          // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
-          alt=""
-          draggable={false}
-          className="size-full select-none object-contain"
+  if (src !== undefined && entry.icon !== undefined) {
+    // 透明底，标直接坐在卡片上。上一版给每个标垫了一张白色方片——它确实解决了
+    // "纯黑的标在深色主题上看不见"，代价是二十张白方片自己成了噪音，比 logo
+    // 还抢眼。现在按 iconPaint 分两种画法（分野的理由写在 lib/mcpDirectory.ts）：
+    // 纯黑/近黑的标走 mask，只取形状、颜色跟主题前景色走；有品牌色的照原样画。
+    if (iconPaint(entry.icon) === "mono") {
+      // mask-image 取的是这张 SVG 的 alpha（填充与描边的覆盖区），颜色一概不看，
+      // 所以那几个文件里写的是什么 fill 都无所谓——形状是它唯一的贡献。
+      // 两个 mask-* 前缀都写：Safari 到今天仍然只认带 -webkit- 的那一支。
+      //
+      // 地址**必须加引号**：小于 4 KB 的 SVG 被 vite 内联成 `data:image/svg+xml,`
+      // 加百分号编码的原文，裸写进 url() 里会被 CSS 解析器判成非法值**整条丢掉**
+      // ——症状是没有 mask、bg-current 把整个 8×8 涂满，一格实心方块（第一版就是
+      // 这样，而它不报错）。
+      return (
+        <span
+          aria-hidden
+          className="size-8 shrink-0 bg-current"
+          style={{
+            maskImage: `url("${src}")`,
+            WebkitMaskImage: `url("${src}")`,
+            maskRepeat: "no-repeat",
+            WebkitMaskRepeat: "no-repeat",
+            maskPosition: "center",
+            WebkitMaskPosition: "center",
+            maskSize: "contain",
+            WebkitMaskSize: "contain",
+          }}
         />
-      </span>
+      );
+    }
+    return (
+      <img
+        src={src}
+        // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
+        alt=""
+        draggable={false}
+        className="size-8 shrink-0 select-none object-contain"
+      />
     );
   }
   // 没有本地图标就画首字母色块。颜色由 id 定死（directoryTint），同一条目

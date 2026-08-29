@@ -153,3 +153,36 @@ export function directoryTint(id: string): string {
   for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return TINTS[h % TINTS.length]!;
 }
+
+/* 这个标该怎么上色。`<img>` 里的 SVG 收不到 currentColor，也看不见 app 自己
+   那个主题开关（它只认系统的 prefers-color-scheme），所以"一张图两个主题都
+   认得出"这件事没法在 SVG 内部解决。
+
+   分野按**品牌色本身有没有信息量**来划：
+   - "mono" —— 品牌标就是纯黑/近黑（GitHub、Notion、Linear、Square、Miro、
+     Sentry），以及本来就不是品牌的功能图标（文件夹、地球）。这类标的颜色不
+     携带任何品牌信息，各家自己在深色背景上也一律翻成白的。渲染成
+     `mask-image` + `background-color: currentColor`：只取形状，颜色跟着主题
+     的前景色走，浅色主题近黑、深色主题近白。
+   - "color" —— 品牌色是标的一部分（Stripe 紫、Figma 五色、Supabase 渐变）。
+     照原样画，前提是这个颜色在两种卡片底色上都过得去（≥3:1，图形元素的
+     WCAG 下限）。Atlassian 的 #0052CC 在深色底上只有 1.9:1，所以换成它自己
+     那支深色底专用的 Blue 400 #2684FF，而不是给它开个特例。
+
+   为什么不干脆全走 mask：那等于把 Stripe 画成灰的。品牌色是识别信号的一半。 */
+const MONO_ICONS = new Set([
+  "github",
+  "notion",
+  "linear",
+  "square",
+  "miro",
+  "sentry",
+  "filesystem",
+  "fetch",
+]);
+
+export type IconPaint = "mono" | "color";
+
+export function iconPaint(icon: string): IconPaint {
+  return MONO_ICONS.has(icon) ? "mono" : "color";
+}

@@ -1,22 +1,10 @@
+<!-- netlify —— 删掉了原来的 @media (prefers-color-scheme: dark)：
+     它当 <img> 加载，只看得见系统设置，看不见 app 自己那个主题开关
+     （中心那个点原本在系统深色下翻白——它跟的是系统设置不是 app 主题，两者不一致时翻错方向）。 -->
 <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
   <style>
-    .favicon-center-dot {
-      fill: #014847;
-    }
-
-    .favicon-lines {
-      fill: #05BDBA;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .favicon-center-dot {
-        fill: #fff;
-      }
-
-      .favicon-lines {
-        fill: #05BDBA;
-      }
-    }
+    .favicon-center-dot { fill: #014847; }
+    .favicon-lines { fill: #05BDBA; }
   </style>
   <path class="favicon-center-dot" stroke="none" d="M17.9922 18.3225H14.005L13.6746 17.9921V14.005L14.005 13.6746H17.9922L18.3226 14.005V17.9921L17.9922 18.3225Z" />
   <g class="favicon-lines" stroke="none">
