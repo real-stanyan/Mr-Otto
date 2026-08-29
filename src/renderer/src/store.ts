@@ -55,6 +55,25 @@ import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../sha
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+
+/** 「发过重置邮件、还没设新密码」这笔记号。放 localStorage 而不是内存:
+    用户是在**浏览器**里点的链接,回到 app 中间可能隔着一次冷启动(issue #739) */
+const RESET_PENDING_KEY = "otter-password-reset-pending";
+function resetPending(): boolean {
+  try {
+    return localStorage.getItem(RESET_PENDING_KEY) === "1";
+  } catch {
+    return false; // 隐私模式之类读不到:退化成"不弹",而不是崩
+  }
+}
+function markResetPending(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(RESET_PENDING_KEY, "1");
+    else localStorage.removeItem(RESET_PENDING_KEY);
+  } catch {
+    // 记不下就算了:代价只是少弹一次「设新密码」,用户仍可在账号页改
+  }
+}
 import { shareAllow } from "../../shared/shareGrant.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
@@ -350,6 +369,9 @@ interface ChatState {
   /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
       account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0182） */
   authRecord: boolean;
+  /** 点过重置链接回来了、还没设新密码。**落 localStorage** —— 用户很可能是
+      在浏览器点完链接才回到 app，中间隔着一次冷启动，只放内存就丢了（issue #739） */
+  setPasswordOpen: boolean;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
       和 account 不是同一份数据,显示身份时以这份为准(ADR-0028) */
   myProfile: MyProfile | null;
@@ -543,6 +565,11 @@ interface ChatState {
   /** 清/设那条全局报错。右下角那张 Alert（components/AuthErrorAlert.tsx）
       靠它自己走掉和被点掉；其余地方仍然只写不清 */
   setError(error: string | null): void;
+  /** 忘记密码：发重置邮件。同时记一笔「在等重置」，等登录态回来时弹「设新密码」 */
+  resetPassword(email: string): Promise<boolean>;
+  /** 设新密码。成了就把那笔记号抹掉 */
+  updatePassword(password: string): Promise<boolean>;
+  setSetPasswordOpen(open: boolean): void;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
   /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
@@ -869,6 +896,7 @@ export const useChat = create<ChatState>((set, get) => ({
   providerBalances: [],
   account: { signedIn: false, email: "", name: "", avatarUrl: "" },
   authRecord: false,
+  setPasswordOpen: false,
   myProfile: null,
   profileSetupOpen: false,
   modelSetupOpen: false,
@@ -1461,6 +1489,36 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ error });
   },
 
+  async resetPassword(email) {
+    set({ error: null });
+    try {
+      await window.otter.resetPassword(email);
+      markResetPending(true);
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  async updatePassword(password) {
+    set({ error: null });
+    try {
+      await window.otter.updatePassword(password);
+      markResetPending(false);
+      set({ setPasswordOpen: false });
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  setSetPasswordOpen(open) {
+    if (!open) markResetPending(false);
+    set({ setPasswordOpen: open });
+  },
+
   async refreshFriends() {
     const r = await window.otter.friendsList();
     if (r.ok) set({ friendsSnapshot: r.value, friendError: null });
@@ -1733,10 +1791,12 @@ export const useChat = create<ChatState>((set, get) => ({
           ? // 登录成功 = 从此有了登录记录（auth.json 刚被 supabase 写进去）。
             // 反过来 onChange 推 signedIn:false 只有登出一条路（restore/handleCallback
             // 失败都是静默的、不 onChange），所以这两边正好是闸门的开与关
-            { account, authRecord: true }
+            // 点重置链接回来的那一次也是"登录成功"——这里顺手把「该设新密码了」掀开
+            { account, authRecord: true, setPasswordOpen: resetPending() }
           : {
               account,
               authRecord: false,
+  setPasswordOpen: false,
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
@@ -1997,6 +2057,8 @@ export const useChat = create<ChatState>((set, get) => ({
         ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
     );
+    // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
+    if (account.signedIn && resetPending()) set({ setPasswordOpen: true });
     // 冷启动命中的那条会话可能正跑着（后台 turn、上一次是崩溃/重载）。推送这一路
     // 只在状态**变化**时开火，错过的那一拍靠这一问补（issue #548）
     if (info) void get().hydrateRuntime(info.sessionId);

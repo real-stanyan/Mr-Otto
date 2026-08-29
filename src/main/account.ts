@@ -44,6 +44,14 @@ export type SupabaseLike = {
       options?: { data?: Record<string, string> };
     }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
+    // 忘记密码:发重置邮件。redirectTo 必须在 Supabase 的 uri_allow_list 里,
+    // 否则链接点开会被打回 site_url(实测 2026-08-29:落地页那条在名单里)
+    resetPasswordForEmail(
+      email: string,
+      options: { redirectTo: string },
+    ): Promise<{ error: unknown }>;
+    // 改密码。要有 session —— 重置链接换来的那个就算
+    updateUser(attrs: { password: string }): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
     // 用 authStorage 里恢复出来的 session 换一个当下有效的 user；离线/过期时 user 为 null。
     getUser(): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
@@ -210,6 +218,28 @@ export class AccountManager {
     }
     this.account = toAccountInfo(data.user);
     this.onChange(this.account);
+  }
+
+  /**
+   * 忘记密码:发一封重置邮件（issue #739）。
+   *
+   * 落点是 OAuth 那张落地页（`authLandingUrl()`）—— 和登录回调同一条路：
+   * 浏览器渲染不了 `mrotto://`，落地页给流程一个看得见的终点，再由页内 JS
+   * 转发 code 唤起 app。用户点完链接就**已经是登录态**（recovery code 换到了
+   * session），所以「重置」这件事在 app 里剩下的只有「设个新密码」。
+   *
+   * 不因「查无此人」而报错是**故意的**：那等于把「这个邮箱注册过没有」做成
+   * 一个人人可查的接口。supabase 本身也这么设计，这里不去拆它。
+   */
+  async resetPassword(email: string): Promise<void> {
+    const { error } = await this.client.auth.resetPasswordForEmail(email, { redirectTo: REDIRECT_TO });
+    if (error) throw new Error(errorMessage(error));
+  }
+
+  /** 设新密码。调用方保证此刻有 session（重置链接换来的那个就算） */
+  async updatePassword(password: string): Promise<void> {
+    const { error } = await this.client.auth.updateUser({ password });
+    if (error) throw new Error(errorMessage(error));
   }
 
   async signOut(): Promise<void> {

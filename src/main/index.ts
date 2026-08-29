@@ -2568,6 +2568,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.signUpWithPassword, (_e, email: string, password: string, name?: string) =>
     manager.signUpWithPassword(email, password, name ?? "")
   );
+  ipcMain.handle(CHANNELS.resetPassword, (_e, email: string) => manager.resetPassword(email));
+  ipcMain.handle(CHANNELS.updatePassword, (_e, password: string) => manager.updatePassword(password));
   ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
 
   // 本人资料:读/写 profiles 自己那一行。结构化回流(ProfileResult),不靠 invoke reject

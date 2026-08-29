@@ -108,6 +108,8 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
         error: null,
       })),
       signInWithPassword: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
+      resetPasswordForEmail: vi.fn(async () => ({ error: null })),
+      updateUser: vi.fn(async () => ({ data: { user: null }, error: null })),
       signUp: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
       signOut: vi.fn(async () => ({ error: null })),
       getUser: vi.fn(async () => ({ data: { user: null }, error: null })),

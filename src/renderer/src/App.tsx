@@ -82,6 +82,7 @@ import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { SignInCard } from "./components/SignInCard.js";
 import { SignInScreen } from "./components/SignInScreen.js";
+import { SetPasswordDialog } from "./components/SetPasswordDialog.js";
 import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
 import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -3712,6 +3713,8 @@ export function App() {
           {main}
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {/* 点完重置链接回来的人,进的是这棵树(已登录),所以它挂在这儿不在闸门里 */}
+          <SetPasswordDialog />
           {!isPackaged && <DevBadge />}
           {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型
               (接力逻辑在 store 的 setProfileSetupOpen,盖章见 lib/modelSetup.ts) */}

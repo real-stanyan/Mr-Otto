@@ -758,6 +758,11 @@ export interface ShellBridge {
   /** 邮箱密码注册："signed-in" = 注册即登录；"confirm-email" = 去邮箱点确认
       链接后回来登录（此时还不是登录态）。失败（邮箱已注册等）抛可读错误 */
   signUpWithPassword(email: string, password: string, name?: string): Promise<"signed-in" | "confirm-email">;
+  /** 忘记密码：发一封重置邮件。**查无此人也不报错** —— 报了就等于把
+      「这个邮箱注册过没有」做成一个人人可查的接口 */
+  resetPassword(email: string): Promise<void>;
+  /** 设新密码。要有 session（重置链接换来的那个就算）；失败抛可读错误 */
+  updatePassword(password: string): Promise<void>;
   /** 登出：本地状态清空，服务端登出失败不阻塞（AccountManager 内部已处理） */
   signOut(): Promise<void>;
   /** 本人在 profiles 表里的那一行（好友看到的就是它）。未登录 → value: null。
@@ -1252,6 +1257,8 @@ export const CHANNELS = {
   signIn: "otter:signIn",
   signInWithPassword: "otter:signInWithPassword",
   signUpWithPassword: "otter:signUpWithPassword",
+  resetPassword: "otter:resetPassword",
+  updatePassword: "otter:updatePassword",
   signOut: "otter:signOut",
   accountChanged: "otter:accountChanged",
   myProfile: "otter:myProfile",
