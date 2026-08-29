@@ -4,7 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch, Mail } from "lucide-react";
+import { GitBranch, KeyRound, Mail, Share2 } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -511,6 +511,30 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
           <MarkerContent>
             切到分支 <span className="font-medium text-foreground">{event.branch}</span>
             {event.from ? `（自 ${event.from}）` : ""}
+          </MarkerContent>
+        </Marker>
+      );
+
+    // 分享给好友（issue #705）：`@好友` 那条正文不进模型（它是发送侧的动作信号，
+    // 不是给模型的话），所以时间线上本来一片空白 —— 输入框一清，看起来像消息
+    // 被吞了。用 AUDIT 那种缩进小字而不是分隔线：它记的是「我把这条会话交出去了」
+    // 这件事本身，不是「线之下换了个世界」，量纲比切分支小一档。
+    // 连带借了服务的话那一句要单独说 —— 那是这一行里唯一有后果的部分
+    case "session_shared":
+      return (
+        <Marker variant="default" className="py-1" data-testid="share-marker">
+          <MarkerIcon>
+            <Share2 />
+          </MarkerIcon>
+          <MarkerContent>
+            已分享给 <span className="font-medium text-foreground">{event.friendName}</span>
+            {event.message ? `：“${event.message}”` : ""}
+            {event.grantedServers && event.grantedServers.length > 0 && (
+              <span className="ms-1 inline-flex items-center gap-1 text-foreground/70">
+                <KeyRound className="size-3" />
+                连带借出 {event.grantedServers.join("、")}
+              </span>
+            )}
           </MarkerContent>
         </Marker>
       );

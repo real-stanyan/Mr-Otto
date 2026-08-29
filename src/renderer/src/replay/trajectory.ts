@@ -92,6 +92,10 @@ function systemSummary(e: SessionEvent): string {
       return `workspace_restored ← ${e.checkpointId.slice(0, 8)}`;
     case "branch_checked_out":
       return e.from ? `branch ${e.from} → ${e.branch}` : `branch → ${e.branch}`;
+    case "session_shared":
+      return e.grantedServers && e.grantedServers.length > 0
+        ? `shared → ${e.friendName} (+${e.grantedServers.join(",")})`
+        : `shared → ${e.friendName}`;
     default:
       return e.type;
   }

@@ -76,6 +76,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "checkpoint_created": // 工作区检查点（issue #395）：回退锚点，id 推不出必须落
     case "workspace_restored": // 文件恢复事实（issue #395）：分支会话的磁盘对齐凭据
     case "branch_checked_out": // 分支切换（issue #411）：时间线上那一行的唯一事实来源，推不出必须落
+    case "session_shared": // 分享给好友（issue #705）：这条会话被交出去过——外部后果，倒推不出来
       return true;
 
     // ── transient：live 投影的临时燃料，落盘即违反「终态覆盖」契约 ──

@@ -572,6 +572,27 @@ export interface BranchCheckedOutEvent extends SessionEventBase {
   from?: string;                 // 切之前在哪
 }
 
+/** 额外 N：把这条会话分享给了谁（issue #705，ADR-0177 / issue #611）。
+    **log-only，模型不消费**——`@好友` 是发送侧的一个动作信号，不是给模型的话
+    （见 App.tsx 的 submit：那条正文只作为随包留言发给好友，不 dispatch）。
+    但动作本身必须留痕：输入框一清、时间线上什么都没有，看起来就像消息被吞了；
+    而且分享现在可能连带借出 MCP 服务（ADR-0177），那是一件有后果的事，
+    「谁在什么时候把这条会话连同哪几台服务给了谁」只有这一行答得出。
+
+    只记好友的**显示名**不记 uid：时间线要的是人读的那个，而昵称会变——
+    日志是历史记录，记的就该是当时那个名字。要按人查请走好友代理的审计账。
+
+    ignorable：旧版本跳过它照常重放——它不参与模型视野推导（投影本来就丢弃它）。 */
+export interface SessionSharedEvent extends SessionEventBase {
+  type: "session_shared";
+  /** 分享给谁（当时的好友显示名） */
+  friendName: string;
+  /** 随包那句留言（`@名字` 摘掉之后的正文）。空串 = 没留话 */
+  message: string;
+  /** 连带借出的服务名（ADR-0177）。缺席/空 = 只分享了对话，没借服务 */
+  grantedServers?: readonly string[];
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -606,7 +627,8 @@ export type SessionEvent =
   | BackgroundTaskStartedEvent
   | CheckpointCreatedEvent
   | WorkspaceRestoredEvent
-  | BranchCheckedOutEvent;
+  | BranchCheckedOutEvent
+  | SessionSharedEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -652,6 +674,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   checkpoint_created: true,
   workspace_restored: true,
   branch_checked_out: true,
+  session_shared: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

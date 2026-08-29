@@ -38,6 +38,7 @@ function richEvents(): SessionEvent[] {
         { path: "/Users/stan/secret/project/CLAUDE.md", content: "别外传的架构约定" },
       ],
     }),
+    ev({ type: "session_shared", friendName: "小红", message: "你看看", grantedServers: ["shopify"] }),
     ev({ type: "turn_ended", outcome: "completed" }),
   ];
 }
@@ -80,6 +81,15 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(PRIVACY_STRIP_TYPES.has("memory_nudge")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("request_envelope")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("project_instructions")).toBe(true);
+    expect(PRIVACY_STRIP_TYPES.has("session_shared")).toBe(true);
+  });
+
+  it("剥掉「这条会话以前还分享给过谁」——发给 B 的包不该带发送方的社交关系与授权史", () => {
+    const { kept, stripped } = applyPrivacyGate(richEvents());
+    expect(kept.map((e) => e.type)).not.toContain("session_shared");
+    expect(stripped).toContain("session_shared");
+    // 连带借出过的服务名也跟着走（issue #705）
+    expect(JSON.stringify(kept)).not.toContain("小红");
   });
 
   it("纯净会话（没有隐私事件）原样通过，stripped 为空", () => {

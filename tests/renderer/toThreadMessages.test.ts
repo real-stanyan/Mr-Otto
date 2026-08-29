@@ -538,6 +538,15 @@ describe("branch_checked_out（issue #411）", () => {
   });
 });
 
+describe("session_shared（issue #705）", () => {
+  it("投成 system 审计消息 —— `@好友` 那条正文不进模型，这一行是那个动作唯一的痕迹", () => {
+    const e = ev({ type: "session_shared", friendName: "小明", message: "帮我退了" }, 0);
+    expect(toThreadMessages([e])).toEqual([
+      { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
+    ]);
+  });
+});
+
 describe("同一 turn 的多个 assistant_message 合并成一条 UI 消息", () => {
   it("一个 turn 里 6 个 bash 各自一条事件 → 合并成一条消息,工具行连续可折叠", () => {
     // 复刻真实场景:user 发问,模型边想边干 6 次 bash,最后一段总结
