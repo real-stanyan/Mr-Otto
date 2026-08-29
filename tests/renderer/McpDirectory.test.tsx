@@ -430,4 +430,30 @@ describe("McpDirectory", () => {
     expect(await screen.findByText(/2 个工具/)).toBeInTheDocument();
     expect(screen.getByText("find_issues")).toBeInTheDocument();
   });
+
+  it("纯黑那批标自带 display —— 不能靠父级恰好是 flex（#747）", async () => {
+    // 症状很刁：目录卡上好好的（卡片外层是 flex，span 被 blockify 了），
+    // 详情页里包进一个普通 span 就整个消失——宽高对 inline 元素不生效，
+    // 而这一档的尺寸只有宽高。不报错，就是没有标
+    deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Sentry 详情" }));
+
+    const icon = await screen.findByTestId("mcp-icon-mono");
+    expect(icon.className.split(/\s+/)).toContain("block");
+    expect(icon).toHaveStyle({ width: "40px", height: "40px" });
+  });
+
+  it("装了但没连上：不说「这台没有暴露任何工具」，也不列空清单", async () => {
+    deferredBridge();
+    render(<McpDirectory installed={[{ id: "sentry", status: "needs-auth", tools: [] }]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Sentry 详情" }));
+
+    expect(await screen.findByText(/授权之后才知道/)).toBeInTheDocument();
+    expect(screen.queryByText(/没有暴露任何工具/)).not.toBeInTheDocument();
+  });
 });

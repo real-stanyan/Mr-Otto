@@ -16,12 +16,7 @@ import {
   type DirectoryItem,
   type InstalledServer,
 } from "../lib/mcpDirectory.js";
-import {
-  connectorFacts,
-  paramSuffix,
-  sourceNote,
-  toolCountLabel,
-} from "../lib/mcpDetail.js";
+import { connectorFacts, paramSuffix, sourceNote, toolsNote } from "../lib/mcpDetail.js";
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 
@@ -48,7 +43,7 @@ export function McpConnectorPage({
   const { entry, verified } = item;
   const slot = installSlot(item, busy);
   const facts = connectorFacts(entry);
-  const tools = toolCountLabel(installedServer?.tools);
+  const tools = toolsNote(item.installed, installedServer?.tools);
 
   return (
     <div className="connector-page flex flex-col gap-5">
@@ -125,9 +120,12 @@ export function McpConnectorPage({
       {tools !== null && (
         <section className="flex flex-col gap-2">
           <span className={SECTION_LABEL}>它提供的工具 · {tools}</span>
-          {installedServer !== undefined && installedServer.tools !== undefined && (
+          {/* 名字只在真连上时列。没连上时那份清单是空的，而空清单在这儿会被
+              读成"这台就是没有工具"——那是关于连接的事实，不是关于这台
+              server 的事实（#747） */}
+          {item.installed === "connected" && installedServer !== undefined && (
             <div className="flex flex-wrap gap-1.5">
-              {installedServer.tools.map((t) => (
+              {(installedServer.tools ?? []).map((t) => (
                 <code
                   key={t}
                   className="rounded-[6px] bg-muted/60 px-[7px] py-[3px] font-mono text-[11.5px]"
