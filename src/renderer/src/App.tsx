@@ -61,6 +61,8 @@ import { panelKeyOf } from "./lib/sidePanel.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
+import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
+import { serversUsedInSession } from "../../shared/shareGrant.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
@@ -3154,6 +3156,19 @@ function ChatComposer() {
     };
   }, [friendMentions]);
   const friendDirective = useMemo(() => ({ formatter: friendFormatter }), [friendFormatter]);
+  // 分享前那次确认的对象（null = 没在问）。候选服务现算不订阅：@ 一次算一次，
+  // 而 events/mcpServers 变一次就重算的话，这个组件每个流式 token 都要重跑一遍
+  const [shareTarget, setShareTarget] = useState<ShareGrantTarget | null>(null);
+  const shareOnline = useChat((s) => (shareTarget ? s.onlineIds.includes(shareTarget.uid) : false));
+  const shareGrantCandidates = (): string[] => {
+    const st = useChat.getState();
+    return serversUsedInSession(
+      st.events,
+      st.mcpServers.servers.map((m) => ({
+        id: m.id, live: m.status === "connected", tools: m.tools,
+      }))
+    );
+  };
   const composerSegments = useMemo(
     () =>
       segmentComposerText(input, [
@@ -3240,6 +3255,16 @@ function ChatComposer() {
     // 同一套最长优先(findFriendMention)——画的和发的认的是同一个好友
     const friendHit = findFriendMention(text, friendMentions);
     if (friendHit) {
+      // 这个会话用到了 MCP 服务的话，分享前先问一次「要不要连带借给 TA」
+      // （issue #694，ADR-0177）——问的是授权，不是分享本身，所以没有服务
+      // 可借时一步都不多走：直接分享，与这个功能上线前完全一样
+      const candidates = shareGrantCandidates();
+      if (candidates.length > 0) {
+        setShareTarget({
+          uid: friendHit.uid, name: friendHit.name, message: friendHit.task, servers: candidates,
+        });
+        return;
+      }
       void (async () => {
         const ok = await useChat.getState().shareSession(
           useChat.getState().sessionId,
@@ -3374,6 +3399,23 @@ function ChatComposer() {
           </ComposerBar>
         </AttachDropZone>
       </ComposerPrimitive.Root>
+      <ShareGrantDialog
+        target={shareTarget}
+        online={shareOnline}
+        onCancel={() => setShareTarget(null)}
+        onConfirm={async (selected) => {
+          if (!shareTarget) return false;
+          const ok = await useChat.getState().shareSession(
+            useChat.getState().sessionId,
+            shareTarget.uid,
+            shareTarget.name,
+            shareTarget.message,
+            selected
+          );
+          if (ok) setInput("");
+          return ok;
+        }}
+      />
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 }
