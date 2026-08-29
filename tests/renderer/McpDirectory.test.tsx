@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 //
 // 目录页组件的行为测试。纯逻辑（两层怎么分、要不要弹确认卡）在
-// mcpDirectory.test.ts 里；这里测的是只有真渲染才成立的那几条：
+// mcpDirectoryLogic.test.ts 里——名字里那个 Logic 不是修饰语，是碰撞的解药：
+// 叫回 mcpDirectory.test.ts 的话，它和本文件在 macOS 上会被 tsc 当成同一个，
+// 本文件被静默丢出类型检查（issue #687，ADR-0173）。这里测的是只有真渲染才
+// 成立的那几条：
 //
 // ① 不搜也能看见精选网格，且**不打网**——首屏零网络是这个功能的设计前提
 // ② 慢的旧响应不许盖掉新结果。这条不是想象出来的边角：searchMcpRegistry 走
