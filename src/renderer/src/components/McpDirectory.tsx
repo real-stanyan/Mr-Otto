@@ -114,7 +114,9 @@ export function McpDirectory({
   const [confirming, setConfirming] = useState<DirectoryItem | null>(null);
   const [filling, setFilling] = useState<DirectoryItem | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
-  const [installError, setInstallError] = useState<string | null>(null);
+  // 原文跟着译文一起存：humanizeMcpError 只翻认得出的那几类，而调试时
+  // 还得看得到 SDK 的原话——它去 title（ADR-0189 定的那条约定）
+  const [installError, setInstallError] = useState<{ text: string; raw: string } | null>(null);
   const [installNote, setInstallNote] = useState<string | null>(null);
 
   // 每次查询的编号。回来的结果对不上此刻的编号 = 它属于一个已经被顶掉的
@@ -181,7 +183,8 @@ export function McpDirectory({
     try {
       await saveMcpServer(id, configFromEntry(entry, values));
     } catch (e) {
-      setInstallError(bridgeErrorMessage(e));
+      const raw = bridgeErrorMessage(e);
+      setInstallError({ text: humanizeMcpError(raw), raw });
       setInstalling(null);
       return;
     }
@@ -192,7 +195,8 @@ export function McpDirectory({
         try {
           await authorizeMcpServer(id);
         } catch (e) {
-          setInstallError(`「${id}」已装上，但授权没跑通：${bridgeErrorMessage(e)}`);
+          const raw = bridgeErrorMessage(e);
+          setInstallError({ text: `「${id}」已装上，但授权没跑通：${humanizeMcpError(raw)}`, raw });
         }
       } else {
         // 未核验的不自动拉授权。授权会按对方 server 自己给的 OAuth 元数据
@@ -218,7 +222,8 @@ export function McpDirectory({
     try {
       await authorizeMcpServer(id);
     } catch (e) {
-      setInstallError(`「${id}」授权没跑通：${bridgeErrorMessage(e)}`);
+      const raw = bridgeErrorMessage(e);
+      setInstallError({ text: `「${id}」授权没跑通：${humanizeMcpError(raw)}`, raw });
     }
     setInstalling(null);
   };
@@ -267,7 +272,11 @@ export function McpDirectory({
   // 比在目录页上失败更糟：那一屏除了这颗按钮什么都没有
   const messages = (
     <>
-      {installError && <p className="text-[13px] text-err">{installError}</p>}
+      {installError && (
+        <p className="text-[13px] text-err" title={installError.raw}>
+          {installError.text}
+        </p>
+      )}
       {installNote && <p className={HINT}>{installNote}</p>}
     </>
   );

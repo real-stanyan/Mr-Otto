@@ -155,6 +155,32 @@ describe("McpDirectory", () => {
     expect(authorizeMcpServer).toHaveBeenCalledWith("canva");
   });
 
+  it("授权失败那条横幅说人话，SDK 的原话留在 title 里（#762）", async () => {
+    // #761 声称改了这里，实际只合进了一行 import ——`humanizeMcpError` 导进来
+    // 一次都没用。tsc 不报（noUnusedLocals 没开），vitest 也不报：那次新增的
+    // 用例测的是纯函数本身和 installSlot，**没有一条测横幅上写的是什么**。
+    // 纯函数测了不等于它被接上了，这一条补的就是那段接缝
+    const authorizeMcpServer = vi.fn(() =>
+      Promise.reject(
+        new Error("Incompatible auth server: does not support dynamic client registration")
+      )
+    );
+    window.otter = {
+      searchMcpRegistry: vi.fn(() => Promise.resolve([])),
+      saveMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
+      authorizeMcpServer,
+    } as unknown as ShellBridge;
+    render(<McpDirectory servers={[srv("canva", "needs-auth")]} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "授权 Canva" }));
+
+    const banner = await screen.findByText(/授权没跑通/);
+    expect(banner).toHaveTextContent("client_id");
+    expect(banner).not.toHaveTextContent("Incompatible");
+    // 原文不是藏起来，是挪个地方——调试时还得靠它
+    expect(banner).toHaveAttribute("title", expect.stringContaining("Incompatible auth server"));
+  });
+
   it("搜到的注册表结果压在「未经核验」分隔线下面", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
