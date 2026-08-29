@@ -7,6 +7,7 @@ import type {
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
 import type { SimButton, SimDevice, SimFrame, SimUiElement } from "../shared/simulator.js";
+import type { ResidueItem, ResidueSnapshot, CleanupResult } from "../shared/residue.js";
 import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
@@ -243,6 +244,16 @@ export interface ProjectsCapability {
   packageProject(name: string, files: string[]): Promise<{ dir: string; moved: string[] }>;
 }
 
+/** 残留物审计能力：capture 已生成的 simulators/ports/processes 快照，cleanup 清理单个条目。
+    工作原理（ADR-0xxx）：工具层（residue_audit）靠它做残留物检测 + 用户批准后清理。
+    可选 = 向后兼容（假 world 零改动）；缺席 = 该装配无残留物审计能力（residue_audit
+    工具不挂）。v1 由 index.ts 用 withResidue 焊进来；v2 Docker 世界可按 bot 的
+    容器内部状态实现（通过 docker exec simctl list / ps / lsof 等）*/
+export interface ResidueCapability {
+  snapshot(): Promise<ResidueSnapshot>;
+  cleanup(item: ResidueItem): Promise<CleanupResult>;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -306,6 +317,11 @@ export interface ExecutionWorld {
       withProjects 焊进来。缺席 = 该装配没有打包能力（package_project 不挂）。
       只在内置 Default 工作区的主会话上会被焊上 */
   projects?: ProjectsCapability;
+  /** 可选：残留物审计（ADR-0xxx）。注入方向同 simulator/projects——由组装根用
+      withResidue 焊进来。缺席 = 该装配没有残留物审计能力（residue_audit 工具不挂）。
+      v2 Docker 世界可自己实现这个字段而无需注入，通过容器的 simctl/ps/lsof 等命令
+      构建快照；v1 LocalWorld 造不出来需外部注入（macOS 系统进程 API 不向用户程序开放） */
+  residue?: ResidueCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -360,6 +376,8 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     ...(world.simulator ? { simulator: world.simulator } : {}),
     // 打包同理:一次性的 mkdir + 搬文件,不绑信号
     ...(world.projects ? { projects: world.projects } : {}),
+    // 残留物审计同理:snapshot 和 cleanup 都是一次性操作,不绑信号
+    ...(world.residue ? { residue: world.residue } : {}),
   };
 }
 
@@ -386,6 +404,7 @@ export function withExecOutput(
     // 中断收益为零（同 fs 的取舍）
     ...(world.simulator ? { simulator: world.simulator } : {}),
     ...(world.projects ? { projects: world.projects } : {}),
+    ...(world.residue ? { residue: world.residue } : {}),
   };
 }
 
@@ -429,4 +448,11 @@ export function withSimulator(world: ExecutionWorld, simulator: SimulatorCapabil
     world.projects.packageProject(...),对文档区路径的存在无感 */
 export function withProjects(world: ExecutionWorld, projects: ProjectsCapability): ExecutionWorld {
   return { ...world, projects };
+}
+
+/** 把残留物审计能力焊进 world —— withProjects 同款手法（ADR-0xxx）。
+    组装根从残留物审计服务注入；工具照旧只调 world.residue.snapshot()/cleanup(...),
+    对宿主 API 的存在无感（硬规则原样成立） */
+export function withResidue(world: ExecutionWorld, residue: ResidueCapability): ExecutionWorld {
+  return { ...world, residue };
 }
