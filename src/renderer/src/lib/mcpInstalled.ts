@@ -97,6 +97,15 @@ export type { McpDisplayStatus };
     自信的错误翻译有用得多。原文始终留在 title 里（调试时还得靠它）。 */
 export function humanizeMcpError(raw: string): string {
   const t = raw.trim();
+  // 授权那条路上最常撞的一句。目录里已知的三条走 catalog 的 blocked 字段
+  // （那句更具体，还带 issue 号），这里覆盖的是**目录外**的 server——手填的、
+  // 注册表来的，撞上同一堵墙时也该拿到一句人话而不是 SDK 的原文（#760）
+  if (/does not support dynamic client registration/i.test(t)) {
+    return "这台要求事先注册好的 client_id，而 Mr Otto 还没有手填它的地方 —— 暂时接不上（#697）。";
+  }
+  if (/Incompatible auth server/i.test(t)) {
+    return "这台的授权方式 Mr Otto 还不支持。";
+  }
   if (/Connection closed/i.test(t)) {
     return "进程没起来，或者起来之后立刻退出了 —— 先确认命令和包名是对的。";
   }

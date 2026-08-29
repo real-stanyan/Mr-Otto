@@ -132,6 +132,21 @@ describe("humanizeMcpError", () => {
     expect(humanizeMcpError("spawn uvx ENOENT")).toContain("找不到这个命令");
   });
 
+  it("授权那条路上的 DCR 那句也翻 —— 目录外的 server 也会撞（#760）", () => {
+    // 目录里已知的三条走 catalog 的 blocked（那句更具体，还带 issue 号），
+    // 这里覆盖的是手填的 / 注册表来的那些
+    const out = humanizeMcpError(
+      "Incompatible auth server: does not support dynamic client registration"
+    );
+    expect(out).toContain("client_id");
+    expect(out).not.toContain("Incompatible");
+    // 同族的另外两句（response type / code challenge method）也得有话说，
+    // 不能只认死那一句
+    expect(
+      humanizeMcpError("Incompatible auth server: does not support response type code")
+    ).toContain("授权方式");
+  });
+
   it("认不出的原样保留 —— 一句看不懂的英文比一句自信的错误翻译有用", () => {
     expect(humanizeMcpError("weird upstream thing 12x")).toBe("weird upstream thing 12x");
   });

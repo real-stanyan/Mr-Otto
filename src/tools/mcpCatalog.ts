@@ -23,6 +23,13 @@ function render(e: CatalogEntry): string {
           .join("\n")}`
   );
   lines.push(`认证：${e.auth} —— ${e.authNote}`);
+  // 已知接不上的那几条要在这里也说一次。这句话原来混在 authNote 里，#760 把
+  // 它拆成独立字段之后，不补这一行就等于**只有界面知道、agent 不知道**——
+  // 水獭会照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
+  // 永远连不上的 server 在用户的 mcp.json 里
+  if (e.blocked !== undefined) {
+    lines.push(`现在接不上：${e.blocked}。别装这台，把这句原因直接告诉用户。`);
+  }
   return lines.join("\n");
 }
 

@@ -66,6 +66,16 @@ export interface CatalogEntry {
   auth: "oauth" | "token" | "none";
   /** 认证方式的一句话说明，直接说给用户听 */
   authNote: string;
+  /** 可选：**实测**过、此刻接不上，值是给用户看的那句原因。
+      为什么要有这个字段：这三条（GitHub / Asana / Figma）的结论早就写进
+      目录了，但只写进了 authNote，而 authNote 只在未核验条目的确认框里
+      露面——于是"我们知道它连不上"这件事一个用户都没看见，界面照发
+      「添加」和「授权」，点下去必失败（issue #760）。
+      写下来而没说出口等于没写：`installSlot` 读这个字段，把那两颗按钮
+      换成一句安静的说明。
+      **真连上了以现实为准**——这是我们上次实测的结论，对方随时可能补上
+      动态注册，所以 connected 不受它影响。判据与复现法见 #733。 */
+  blocked?: string;
   /** 可选：打进包的本地图标资源键（不是 URL）。渲染进程用它查
       src/renderer/src/assets/mcp/ 下的 SVG 或 PNG；缺席就画首字母色块。
       **刻意不接受远程 URL**：注册表条目的 icons 由投稿者自由填写，让渲染进程
@@ -100,10 +110,11 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     url: "https://api.githubcopilot.com/mcp/",
     params: [],
     auth: "oauth",
-    // 实测：它的授权服务器**不支持动态客户端注册**，我们没有手填 client_id
-    // 的路（#697），所以点授权会停在"不兼容"。留着不删：这是目录里最常被
-    // 找的一台，删掉等于把问题藏起来；话术里先说清楚（issue #733）
-    authNote: "暂时连不上：GitHub 要求预先注册的 client_id，Mr Otto 还没有手填它的地方（#697）",
+    // 留着不删：这是目录里最常被找的一台，删掉用户的结论会是"这软件接不了
+    // GitHub"。实测结论写进 blocked，界面据此不再发那颗按钮（#733 / #760）
+    authNote: "配好后点一次授权",
+    blocked:
+      "GitHub 的授权服务器不支持动态客户端注册，而 Mr Otto 还没有手填 client_id 的地方——这台暂时接不上（#697）",
     icon: "github",
   },
   {
@@ -385,9 +396,10 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     url: "https://mcp.figma.com/mcp",
     params: [],
     auth: "oauth",
-    // 实测：动态注册那一步被服务端 403 挡下（换 UA 无效），点授权会失败。
-    // 与 GitHub 同因不同果——那边是明说不支持，这边是支持但拒绝我们（issue #733）
-    authNote: "暂时连不上：Figma 的动态客户端注册接口拒绝了我们的注册请求（#733）",
+    // 与 GitHub 同因不同果——那边是明说不支持动态注册，这边是支持但拒绝我们
+    authNote: "配好后点一次授权",
+    blocked:
+      "Figma 的动态注册接口用 HTTP 403 拒绝了我们的注册请求（换浏览器 UA 无效）——这台暂时接不上（#733）",
     icon: "figma",
   },
   {
@@ -533,8 +545,10 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     url: "https://mcp.asana.com/v2/mcp",
     params: [],
     auth: "oauth",
-    // 与 GitHub 同因：授权服务器不支持动态客户端注册（issue #733）
-    authNote: "暂时连不上：Asana 要求预先注册的 client_id，Mr Otto 还没有手填它的地方（#697）",
+    // 与 GitHub 同因：授权服务器不支持动态客户端注册
+    authNote: "配好后点一次授权",
+    blocked:
+      "Asana 的授权服务器不支持动态客户端注册，而 Mr Otto 还没有手填 client_id 的地方——这台暂时接不上（#697）",
     icon: "asana",
   },
   {

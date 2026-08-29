@@ -83,4 +83,33 @@ describe("mcpCatalog", () => {
     const missing = MCP_CATALOG.filter((e) => e.category === undefined).map((e) => e.id);
     expect(missing).toEqual([]);
   });
+
+  it("「连不上」这件事只能写进 blocked，不能写进 authNote（#760）", () => {
+    // 这就是 #760 本体：结论写对了，但写进了一个只在未核验条目的确认框里
+    // 才露面的字段，于是一个用户都没看见，界面照发「授权」按钮。
+    // authNote 说的是"要授权的话该干什么"，blocked 说的是"现在干不成，因为…"——
+    // 后者是 installSlot 唯一读得懂的那个
+    const wrong = MCP_CATALOG.filter((e) => /连不上|接不上/.test(e.authNote)).map((e) => e.id);
+    expect(
+      wrong,
+      `这些条目把"接不上"写进了 authNote：${wrong.join("、")}。搬进 blocked 字段，` +
+        "界面才会据此收起那颗必然失败的按钮"
+    ).toEqual([]);
+  });
+
+  it("blocked 写了就得有内容 —— 空串等于把按钮收了却不说为什么", () => {
+    for (const e of MCP_CATALOG) {
+      if (e.blocked === undefined) continue;
+      expect(e.blocked.trim().length, `${e.id} 的 blocked`).toBeGreaterThan(10);
+    }
+  });
+
+  it("#733 实测过的那三条挂着 blocked", () => {
+    // 判据与复现法在 #733：拿仓里那份 SDK 跑一遍授权前半段。
+    // 哪天 #697 落地、或者对方补上动态注册，删掉字段的同时也该更新这里
+    for (const id of ["github", "asana", "figma"]) {
+      const e = MCP_CATALOG.find((x) => x.id === id);
+      expect(e?.blocked, `${id} 应该标着接不上`).toBeTruthy();
+    }
+  });
 });
