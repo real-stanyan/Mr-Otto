@@ -77,7 +77,7 @@ function deferredBridge() {
 describe("McpDirectory", () => {
   it("不搜也能看见精选网格，而且一个字节都不打网", async () => {
     const { searchMcpRegistry } = deferredBridge();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     expect(await screen.findByText("精选")).toBeInTheDocument();
     // MCP_CATALOG 里的字面量，随目录增删而变的是数量，不是这两条在不在
@@ -89,9 +89,9 @@ describe("McpDirectory", () => {
     expect(searchMcpRegistry).not.toHaveBeenCalled();
   });
 
-  it("已装的画 ✓，没装的画一个可点的加号", async () => {
+  it("装上且连上了才画 ✓，没装的画一个可点的加号", async () => {
     deferredBridge();
-    render(<McpDirectory installedIds={["github"]} />);
+    render(<McpDirectory installed={[{ id: "github", status: "connected" }]} />);
 
     await screen.findByText("精选");
     expect(screen.getByText("GitHub 已经装上了")).toBeInTheDocument();
@@ -99,10 +99,30 @@ describe("McpDirectory", () => {
     expect(screen.getByRole("button", { name: "添加 Supabase" })).toBeInTheDocument();
   });
 
+  it("装上了但还没授权：不画 ✓，画一颗能点的「授权」", async () => {
+    // issue #722：装 Canva 时把浏览器关了，配置落了盘、授权没成，卡片照样画勾。
+    // "配置里有这个 id"和"这台能用了"不是一回事
+    deferredBridge();
+    render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
+
+    await screen.findByText("精选");
+    expect(screen.queryByText("Canva 已经装上了")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "授权 Canva" })).toBeInTheDocument();
+  });
+
+  it("点卡片上的「授权」直接跑授权，不用先找到下面那一行", async () => {
+    const { authorizeMcpServer } = deferredBridge();
+    render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
+
+    await screen.findByText("精选");
+    await userEvent.setup().click(screen.getByRole("button", { name: "授权 Canva" }));
+    expect(authorizeMcpServer).toHaveBeenCalledWith("canva");
+  });
+
   it("搜到的注册表结果压在「未经核验」分隔线下面", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "notion");
     await waitFor(() => expect(pending.has("notion")).toBe(true));
@@ -117,7 +137,7 @@ describe("McpDirectory", () => {
   it("慢的旧响应回来，不许盖掉新查询的结果", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -144,7 +164,7 @@ describe("McpDirectory", () => {
       searchMcpRegistry: vi.fn(() => Promise.reject(new Error("注册表返回 HTTP 503"))),
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "notion");
     expect(await screen.findByText(/注册表搜不动：.*503/)).toBeInTheDocument();
@@ -156,7 +176,7 @@ describe("McpDirectory", () => {
   it("慢的旧请求最后报错，不许把新结果换成「搜不动」", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -183,7 +203,7 @@ describe("McpDirectory", () => {
   it("慢的旧请求先回来，不许把「搜索中…」提前关掉", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     const box = screen.getByLabelText("搜索连接器");
     await user.type(box, "notion");
@@ -204,7 +224,7 @@ describe("McpDirectory", () => {
   it("长尾的 stdio 点加号先弹确认卡，说清会下载什么、在哪儿跑", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -229,7 +249,7 @@ describe("McpDirectory", () => {
       authorizeMcpServer,
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.click(await screen.findByRole("button", { name: "添加 GitHub" }));
     await waitFor(() => {
@@ -251,7 +271,7 @@ describe("McpDirectory", () => {
       authorizeMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
     } as unknown as ShellBridge;
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.click(await screen.findByRole("button", { name: "添加 Supabase" }));
     await user.type(await screen.findByLabelText("project_ref"), "kpee");
@@ -273,7 +293,7 @@ describe("McpDirectory", () => {
   it("长尾 stdio：确认卡点掉之前一个字节都不落盘，点了「知道了，装上」才落", async () => {
     const { pending, saveMcpServer } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -294,7 +314,7 @@ describe("McpDirectory", () => {
   it("未核验的 http：装上但不自动拉授权，改成告诉用户自己点", async () => {
     const { pending, saveMcpServer, authorizeMcpServer } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));
@@ -310,7 +330,7 @@ describe("McpDirectory", () => {
   it("长尾卡自己带「未核验」记号，不靠分隔线", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
-    render(<McpDirectory installedIds={[]} />);
+    render(<McpDirectory installed={[]} />);
 
     await user.type(screen.getByLabelText("搜索连接器"), "weather");
     await waitFor(() => expect(pending.has("weather")).toBe(true));

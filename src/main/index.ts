@@ -2336,7 +2336,19 @@ void app.whenReady().then(() => {
   }
 
   // ── MCP ─────────────────────────────────────────────────────────
-  ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => mcpSnapshot());
+  ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => {
+    // 打开设置页 = 想知道每台此刻是什么状态。而连接只由 ready() 发起（会话
+    // 开始时），在那之前每台的 status 都停在 connecting —— 那个 connecting
+    // 的意思是「还没试过」，不是「正在连」（见 mcpHub.ts syncFromDisk 的注释）。
+    // 于是重启后第一次进设置页，一台连得好好的 server 和一台需要授权的长得
+    // 一模一样，页面上下两半都在说同一句没有信息量的话（issue #722）。
+    //
+    // **不 await**：ready() 最长要等 10 秒，而每连上一台 hub 都会 emit 一次，
+    // 顺着 mcpChanged 推给渲染层。页面立刻拿到当前快照先画出来，状态随后
+    // 自己填进去，不用让用户对着一个空页面等握手。
+    void mcpHub.ready();
+    return mcpSnapshot();
+  });
   ipcMain.handle(CHANNELS.saveMcpServer, async (_e, id: string, cfg: McpServerConfig): Promise<McpServersSnapshot> => {
     await mcpHub.save(id, cfg);
     return mcpSnapshot();

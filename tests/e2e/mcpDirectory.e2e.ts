@@ -16,6 +16,10 @@
 // 顺带保证这条用例不真的出网（注册表是第三方服务，CI 上打它等于给别人添堵，
 // 而且它挂了不该让本仓红）。
 
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import { expectNoRendererErrors, launchOtto, openSettings, type Otto } from "./harness.js";
@@ -208,5 +212,45 @@ test("纯黑的标真的被 mask 削成形状，不是一格实心方块", async
     expectNoRendererErrors(otto);
   } finally {
     await otto.close();
+  }
+});
+
+test("装上了但没授权的，卡片画的是「授权」不是 ✓", async () => {
+  // issue #722：装 Canva 时把浏览器关了，配置落了盘、授权没成，卡片照样画绿勾。
+  // 这条走的是完整链路，每一环都只有真进程验得到：
+  //   ① 打开设置页要能触发 mcpHub.ready() —— 在此之前每台的 status 都停在
+  //      connecting（那个 connecting 的意思是"还没试过"）。重启后第一次进
+  //      设置页，一台好端端的 server 和一台要授权的长得一模一样
+  //   ② 401 要被分类成 needs-auth 而不是 failed（mcpClient 的 isAuthError）
+  //   ③ 状态是**推**回来的（mcpChanged），不是这次 list 的返回值——list 返回时
+  //      连接才刚开始
+  // server 用本地的：真打 mcp.canva.com 等于让本仓的 e2e 依赖第三方在线
+  const server = createServer((_req, res) => {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "invalid_token" }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+
+  const home = mkdtempSync(join(tmpdir(), "otto-home-"));
+  mkdirSync(join(home, ".mr-otto"), { recursive: true });
+  writeFileSync(
+    join(home, ".mr-otto", "mcp.json"),
+    JSON.stringify({ mcpServers: { canva: { url: `http://127.0.0.1:${port}/mcp`, headers: {} } } })
+  );
+
+  const otto = await launchOtto({ home });
+  try {
+    await openSettings(otto.win, "连接器");
+    await expect(
+      otto.win.getByRole("button", { name: "授权 Canva" }),
+      "没授权成的 server 应该画「授权」"
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(otto.win.getByText("Canva 已经装上了")).toHaveCount(0);
+    expectNoRendererErrors(otto);
+  } finally {
+    await otto.close();
+    rmSync(home, { recursive: true, force: true });
+    server.close();
   }
 });
