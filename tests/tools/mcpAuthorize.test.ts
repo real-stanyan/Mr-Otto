@@ -36,14 +36,14 @@ describe("mcp_authorize", () => {
   // （engine.rebuildTools()），这一轮照着"可用工具 N 个"直接调会命中"未知
   // 工具"，逃生舱 tool_search 也不通（listDeferred 闭包捕获的是这一轮的
   // list）。断关键子串不断整句——否则改一次文案就脆
-  it("成功文案说清「下一轮才生效」，别鼓励模型这一轮就调", async () => {
+  it("成功文案说「这一轮就能用」，别再把用户支去发下一条消息（#750）", async () => {
     const c = cap({
       servers: () => [{ id: "s", name: "s", status: "connected", live: true,
         tools: [{ name: "list_tables", description: "", inputSchema: {} }], resources: [], prompts: [] }],
     });
     const out = String(await createMcpAuthorizeTool().run({ id: "s" }, world(c)));
-    expect(out).toContain("下一条消息");
-    expect(out).toContain("不要在这一轮直接调用");
+    expect(out).toContain("这一轮就能用");
+    expect(out).not.toContain("下一条消息");
   });
 
   it("授权失败把原因转述给模型，让它能告诉用户下一步", async () => {
