@@ -71,19 +71,28 @@ describe("McpSettings 的授权按钮", () => {
       卡片自己右边也有一颗「授权」，但它的可读名是「授权 Supabase」——
       跟详情页里那颗纯「授权」不会撞 */
   const openCard = async (name: string) => {
-    // pointerEventsCheck 关掉：这一屏被 <SidebarProvider> 包着（真实 app 里也是），
-    // 它那个收起态的 Sheet 让 jsdom 里算出来的 pointer-events 变成 none，于是
-    // userEvent 拒绝点这张 div[role=button]（同一份文件里点普通 <button> 不受
-    // 影响，所以不是全局的）。真机上点得动——e2e 里量过（#753）
+    // 两处必须小心，都踩过（#753）：
+    // ① pointerEventsCheck 关掉——这一屏被 <SidebarProvider> 包着（真实 app
+    //    里也是），它那个收起态的 Sheet 让 jsdom 算出来的 pointer-events 变成
+    //    none，userEvent 因此拒绝点这张 div[role=button]。同一份文件里点普通
+    //    <button> 不受影响，所以排查时很容易看错方向。真机上点得动（e2e 验过）。
+    // ② 每次重试都**重新查一遍**卡片，并且开了就停。第一次 refreshMcp 落地
+    //    和这一下点击挨得很近，握在手里的那个节点可能已经被一次重渲染换掉了
+    //    ——点一个脱离文档的节点什么都不会发生，而且不报错。CI 上比本机更容易
+    //    撞上（第一版在本机全绿、CI 红两条）
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    // 点开之后等它真的开了再往下走：第一条用例里 refreshMcp 的那次 resolve
-    // 和这一下点击挨得太近，卡片刚出现就点，偶发点在一个还没接上处理器的
-    // 节点上。等「返回」那颗按钮出现 = 详情页真的在了
-    await waitFor(async () => {
-      await user.click(await screen.findByRole("button", { name: `${name} 详情` }));
-      expect(screen.getByRole("button", { name: "连接器" })).toBeInTheDocument();
-    });
+    await screen.findByRole("button", { name: `${name} 详情` });
+    await waitFor(
+      async () => {
+        if (screen.queryByRole("button", { name: "连接器" })) return;
+        const card = screen.queryByRole("button", { name: `${name} 详情` });
+        if (card) await user.click(card);
+        expect(screen.getByRole("button", { name: "连接器" })).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
   };
+
 
   it("needs-auth 的 server 显示「授权」按钮", async () => {
     stubBridge();
