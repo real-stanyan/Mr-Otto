@@ -16,6 +16,27 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 
 隔离的是 `auth.json`（登录态）、`sessions.db`（会话日志）、`keys.json`、`attachments/`。不隔离的是服务端：两个实例连的是同一个 Supabase 和同一个网关，这正是要测的东西。
 
+**自 ADR-0187 起，隔离还多了一层**：本机数据按**登录账号**分抽屉，`OTTO_PROFILE` 之内又切了一刀。
+
+```
+~/Library/Application Support/mr-otto-b/
+  auth.json                        ← 留在根（uid 从这儿读）
+  accounts/<sha256(uid) 前16位>/     ← sessions.db、keys.json、attachments/…
+
+~/.mr-otto/accounts/<同一个抽屉名>/   ← memories/、mcp.json、mcp-auth.json、skills/、agents/
+```
+
+所以这一节以前那句「用 `OTTO_PROFILE=b` 起的 B 实例**共用同一份** mcp.json」**已经不成立了**——
+`~/.mr-otto/` 那一层过去连 `OTTO_PROFILE` 都不分（记忆和 MCP 令牌一直是两个实例共享的，
+这正是 #749 的一半），现在按账号分开了。要验「B 调的是 A 的凭证」，两边本来就各配各的 MCP。
+
+抽屉名是 uid 的哈希，人认不出来。每个抽屉里有一张 `who.txt`（邮箱 + uid）——
+`grep -r . ~/.mr-otto/accounts/*/who.txt` 就知道哪间是谁的。界面上凡是说
+「去哪个目录手改」的地方也都显示真路径（`configRoot`），不再是写死的 `~/.mr-otto/…`。
+
+**换号会重启**：登录一个和开机时不同的账号，app 会 `relaunch` 一次去换抽屉。
+按下面的顺序登录不受影响（每个实例开机时 `auth.json` 里就是它自己那个号）。
+
 ## 登录必须一个一个来
 
 `mrotto://auth-callback` 这个 scheme，macOS 只会交给一个实例。两个 dev 用的是同一个 Electron bundle，交给谁不由我们定。所以：
@@ -39,16 +60,17 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 
 ## 好友代理的两账号验收（issue #622 / #657，ADR-0151 / ADR-0162）
 
-前置：两个号已经互为好友（上一节），A 那台至少接通一台 MCP server（`~/.mr-otto/mcp.json`，
-用 `OTTO_PROFILE=b` 起的 B 实例**共用同一份** mcp.json——所以要验「B 调的是 A 的凭证」，
-最省事的办法是给 A 接一台 B 那边配置里没有的、或者干脆看 A 的审计账里有没有记上那一笔）。
+前置：两个号已经互为好友（上一节），A 那台至少接通一台 MCP server
+（`~/.mr-otto/accounts/<A 的抽屉>/mcp.json` —— 自 ADR-0187 起 A 和 B 各有各的一份，
+不再共用，所以「B 调的是 A 的凭证」天然可验：B 那边根本没配过那台 server；
+想再确认一次就看 A 的审计账里有没有记上那一笔）。
 
 1. **A 授权**：好友区把鼠标停在 B 那一行 → 钥匙图标 → 勾服务/勾工具 → 「生成邀请码」→ 复制。
    邀请码 10 分钟有效、一次性。
 2. **带外发给 B**：私信、粘贴板，都行——它就是一把钥匙，走什么通道由人决定。
 3. **B 接受**：好友区底下「好友代理…」→「接受邀请」页 → 粘贴 → 接受。
    界面显示「已连上，等对方推来授权清单」= 握手过了、A 已经 pin 住 B。
-4. **看 A 那边落了什么**：`~/Library/Application Support/mr-otto/proxy-store.json`
+4. **看 A 那边落了什么**：`~/Library/Application Support/mr-otto/accounts/<A 的抽屉>/proxy-store.json`
    （0600）里应当出现这个好友的 `grants` / `pins` / `channels` 三条。
    **`pins` 是关键**——它在的意思是「A 验过了 B 对邀请码 secret 的持有证明」，
    不在就说明握手没走通（见 ADR-0162）。

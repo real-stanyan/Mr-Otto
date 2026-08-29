@@ -11,7 +11,8 @@ import { expect, test } from "@playwright/test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONFIG_DIR, expectNoRendererErrors, launchOtto, openSettings } from "./harness.js";
+import { expectNoRendererErrors, launchOtto, openSettings } from "./harness.js";
+import { ACCOUNTS_DIR } from "../../src/main/accountScope.js";
 
 test("#142-1/2/3 空态有交代；新建落盘；中文名在发 IPC 前就被挡住", async () => {
   const otto = await launchOtto();
@@ -73,7 +74,8 @@ test("#142-7 内置那份「改成我自己的一份」；ADR-0056 撤掉的 ~/.
     await win.getByRole("button", { name: /^Explore 内置/ }).click();
     await expect(win.getByLabel("Description")).toBeDisabled();
     const materialize = win.getByRole("button", { name: "改成我自己的一份" });
-    await expect(materialize).toHaveAttribute("title", `~/${CONFIG_DIR}/agents`);
+    // 落点跟着账号走（ADR-0187）：title 上写的是真路径，不再是 `~/.mr-otto/agents`
+    await expect(materialize).toHaveAttribute("title", userAgentsDir);
     await materialize.click();
 
     // 点完**留在编辑页**，只是这一页现在编的是磁盘上那份（issue #268）：
@@ -83,7 +85,7 @@ test("#142-7 内置那份「改成我自己的一份」；ADR-0056 撤掉的 ~/.
     await expect(win.getByLabel("Description")).toBeEnabled({ timeout: 10_000 });
     // 这一页的身份换了：不再是「内置」，而是「内置 · 已自定义」+ 磁盘路径
     await expect(win.getByText("内置 · 已自定义")).toBeVisible();
-    await expect(win.getByText(new RegExp(`${CONFIG_DIR}/agents/Explore\\.md$`))).toBeVisible();
+    await expect(win.getByText(new RegExp(`${ACCOUNTS_DIR}/[0-9a-f]{16}/agents/Explore\\.md$`))).toBeVisible();
 
     const written = readFileSync(join(userAgentsDir, "Explore.md"), "utf8");
     expect(written).toMatch(/^---\nname: Explore\n/);

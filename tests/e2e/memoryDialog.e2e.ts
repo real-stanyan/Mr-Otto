@@ -15,7 +15,7 @@ import { expect, test } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONFIG_DIR, expectNoRendererErrors, launchOtto, openSettings } from "./harness.js";
+import { expectNoRendererErrors, launchOtto, openSettings } from "./harness.js";
 
 const LONG =
   "2026-08 首页重设计：分屏一屏 100svh 锁死——左 65vw 深色 Dither shader（src/components/dither-background.tsx）+水獭头像 scale(1.35)；右 35vw Apple 官网式白底排版，标题 clamp(2.5rem,5vw,4rem)";
@@ -32,7 +32,7 @@ test("记忆弹窗：长条目 + 项目档在场，内容仍待在卡片里", as
       w.center();
     });
 
-    const dir = join(otto.home, CONFIG_DIR, "memories");
+    const dir = join(otto.userConfig, "memories");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "MEMORY.md"),

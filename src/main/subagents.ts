@@ -34,13 +34,17 @@ export interface SubagentRoot {
     workspace 为 null（设置页选「用户」、探针装配）时只有用户那一条。
     只认自己的目录：`.claude/agents/`（Claude Code 的定义）不再扫——那些文件的
     工具名、模型名是另一套产品的词，混进清单就是一排「N 个工具名无法识别」的只读
-    条目，模型还会把活派给它们（ADR-0056 撤销 ADR-0048 的第 2/4 条根） */
-export function subagentRoots(home: string, workspace: string | null): SubagentRoot[] {
+    条目，模型还会把活派给它们（ADR-0056 撤销 ADR-0048 的第 2/4 条根）。
+
+    用户那条根收的是**解析好的配置目录**而不是 home：自 ADR-0187 起它是
+    `~/.mr-otto/accounts/<抽屉>/`（跟着账号走），不再是 `<home>/.mr-otto/`。
+    算法在 accountScope.ts，不在这儿重拼一遍 */
+export function subagentRoots(userConfigDir: string, workspace: string | null): SubagentRoot[] {
   return [
     ...(workspace
       ? [{ root: join(workspace, CONFIG_DIR, "agents"), readOnly: false, scope: "workspace" as const }]
       : []),
-    { root: join(home, CONFIG_DIR, "agents"), readOnly: false, scope: "user" as const },
+    { root: join(userConfigDir, "agents"), readOnly: false, scope: "user" as const },
   ];
 }
 
