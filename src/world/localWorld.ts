@@ -28,7 +28,7 @@ export function killGroup(pgid: number, signal: NodeJS.Signals = "SIGTERM"): voi
 }
 
 /** SIGTERM 后的宽限：组里还有硬骨头就 SIGKILL 补刀 */
-const KILL_GRACE_MS = 5_000;
+export const KILL_GRACE_MS = 5_000;
 
 /** 探组存活：EPERM 也算活着（有进程但无权限，本 app 起的组不该出现） */
 export function groupAlive(pgid: number): boolean {
@@ -153,6 +153,7 @@ export function createLocalWorld(
           onOutput?.(chunk, "stderr");
         });
         child.on("error", (e) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
           clearTimeout(timer);
           opts?.signal?.removeEventListener("abort", onAbort);
           // 中断不是命令自己的失败——被杀是外力，必须抛出去按 error 结果落盘（ADR-0006）
@@ -218,6 +219,7 @@ export function createLocalWorld(
         child.stdout?.on("data", (chunk: string) => out.push(chunk));
         child.stderr?.on("data", (chunk: string) => err.push(chunk));
         child.on("error", (e) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
           clearTimeout(timer);
           done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
         });

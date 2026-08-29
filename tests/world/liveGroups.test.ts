@@ -28,4 +28,26 @@ describe("LiveGroupRegistry", () => {
     expect(reg.live()).toHaveLength(0);
     expect(reg.escaped()).toHaveLength(0);
   });
+
+  it(
+    "SIGTERM 无视者：sweepAll 宽限后补 SIGKILL",
+    async () => {
+      // 进程陷阱 SIGTERM，只有 SIGKILL 才能杀死
+      const child = spawn("sh -c 'trap \"\" TERM; sleep 100'", {
+        shell: true,
+        detached: true,
+      });
+      const pgid = child.pid!;
+      const reg = new LiveGroupRegistry();
+      reg.register(pgid, "sh -c 'trap \"\" TERM; sleep 100'", "exec");
+      reg.noteClosed(pgid);
+      reg.sweepAll();
+      // 给宽限时间 + 缓冲（确保 setTimeout 执行）
+      await new Promise((r) => setTimeout(r, 6_000));
+      // 进程现在应该已经被 SIGKILL 杀死
+      expect(reg.escaped()).toHaveLength(0);
+      expect(reg.live()).toHaveLength(0);
+    },
+    10_000
+  );
 });

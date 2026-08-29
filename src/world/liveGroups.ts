@@ -1,7 +1,7 @@
 // src/world/liveGroups.ts —— agent 起的进程组的存活登记表（issue #759）。
 // 「谁还真的活着」的唯一判据在主进程内存里（事件日志重放不出进程存活），
 // 与 backgroundTasks 的 liveMap 同一哲学。world 内模块：允许贴着进程 API。
-import { killGroup, groupAlive } from "./localWorld.js";
+import { killGroup, groupAlive, KILL_GRACE_MS } from "./localWorld.js";
 
 export interface LiveGroup {
   pgid: number;
@@ -40,8 +40,12 @@ export class LiveGroupRegistry {
   }
 
   sweepAll(): void {
-    for (const g of [...this.liveMap.values(), ...this.escapedMap.values()])
+    // 套用 localWorld 的超时模式：SIGTERM 宽限后 SIGKILL 补刀
+    for (const g of [...this.liveMap.values(), ...this.escapedMap.values()]) {
       killGroup(g.pgid, "SIGTERM");
+      // app 正在退出，timer 用 .unref() 不拖住事件循环
+      setTimeout(() => { if (groupAlive(g.pgid)) killGroup(g.pgid, "SIGKILL"); }, KILL_GRACE_MS).unref();
+    }
     this.liveMap.clear();
     this.escapedMap.clear();
   }
