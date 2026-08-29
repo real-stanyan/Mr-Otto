@@ -88,6 +88,10 @@ function isAuditEvent(e: SessionEvent): boolean {
     // 分支切换（issue #411）：往回翻时「这段话是在哪个分支上说的」只有这一行能答——
     // 它比模型切换管得更宽，聊天区当然要占一行
     case "branch_checked_out":
+    // 分享给好友（issue #705）：`@好友` 那条正文不进模型，于是时间线上本来什么都
+    // 没有——输入框一清，看起来像消息被吞了。这一行是那个动作唯一的痕迹，
+    // 而它现在还可能连带借出了 MCP 服务（ADR-0177），更该看得见
+    case "session_shared":
       return true;
     case "approval_decision":
       return e.decision === "denied";

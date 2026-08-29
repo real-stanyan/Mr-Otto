@@ -2599,8 +2599,8 @@ void app.whenReady().then(() => {
     async (
       _e, sessionId: string, friendUid: string, message: string, title: string | null, model: string | null,
       grant?: { servers: readonly string[]; invite: string } | null
-    ) =>
-      shareSessionToFriend(
+    ) => {
+      const r = await shareSessionToFriend(
         {
           myUid: async () => (await supabase.raw.auth.getUser()).data.user?.id ?? null,
           loadEvents: (sid) => store.load(sid),
@@ -2617,7 +2617,25 @@ void app.whenReady().then(() => {
           sessionId, friendUid, message, title, model,
           ...(grant ? { grantServers: grant.servers, invite: grant.invite } : {}),
         }
-      )
+      );
+      // 成功了才往日志追一条（issue #705）。`@好友` 那条正文不进模型——它是发送侧的
+      // 动作信号，不是给模型的话——所以时间线上本来一片空白，输入框一清就像消息被
+      // 吞了。这一行是那个动作唯一的痕迹；分享现在还可能连带借出 MCP 服务
+      // （ADR-0177），「谁在什么时候把这条会话连同哪几台服务给了谁」只有它答得出。
+      // 失败不记：记一条没发生的事比不记更坏。
+      if (r.ok) {
+        const ev = store.append({
+          sessionId, ts: Date.now(), type: "session_shared",
+          ignorable: true, // 模型不消费，旧版本跳过照常重放
+          // 名字查不到就退回 uid：时间线上一个丑但真的标识，好过一行空白
+          friendName: friends.friendLabel(friendUid) || friendUid,
+          message,
+          ...(grant && grant.servers.length > 0 ? { grantedServers: grant.servers } : {}),
+        });
+        send(CHANNELS.event, ev);
+      }
+      return r;
+    }
   );
   // 接收端导入：下载 + 解包 + 重填 workspace + 逐条 append 成新 fork 会话
   ipcMain.handle(

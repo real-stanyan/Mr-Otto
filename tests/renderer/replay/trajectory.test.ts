@@ -201,3 +201,21 @@ describe("skill 的启用/停用在轨迹里怎么写（ADR-0122 D8）", () => {
     expect(t.rows[0]!.kind).toBe("system");
   });
 });
+
+describe("session_shared 的轨迹摘要（issue #705）", () => {
+  const at = (e: Partial<SessionEvent>): SessionEvent =>
+    ({ seq: 1, sessionId: "s", ts: 1000, type: "session_shared", friendName: "小明", message: "", ...e }) as SessionEvent;
+
+  it("只分享对话时就一行「给了谁」", () => {
+    expect(buildTrajectory([at({})]).rows[0]!.summary).toBe("shared → 小明");
+  });
+
+  it("连带借了服务就把服务名写出来 —— 那是这一行里唯一有后果的部分", () => {
+    const t = buildTrajectory([at({ grantedServers: ["shopify", "google-ads"] })]);
+    expect(t.rows[0]!.summary).toBe("shared → 小明 (+shopify,google-ads)");
+  });
+
+  it("空清单不写成 (+)", () => {
+    expect(buildTrajectory([at({ grantedServers: [] })]).rows[0]!.summary).toBe("shared → 小明");
+  });
+});

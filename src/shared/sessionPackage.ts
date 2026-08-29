@@ -70,6 +70,10 @@ export interface SessionPackage {
       rewriteWorkspace 剥 session_created.workspace 完全同源：本机路径和项目私有
      指令原文都不该给对方。接收方导入后 projectInstructions.ts 会按他自己的目录
       重新爬升生成，deriveMessages 对缺了这条的日志是安全的（没有就不焊进 system）。
+    - session_shared：这条会话**以前还分享给过谁**、连带借出过哪几台服务
+      （issue #705）。发给 B 的包里留着它，等于顺手告诉 B「我还把这个给了小红，
+      而且把 Shopify 借给了她」——发送方的社交关系与授权史，两样都不是 B 该看的。
+      它本来也只是发送方时间线上的一行记录，对接收方没有任何用处。
 
     注意「剥」不等于「删改历史」——这是导出时刻的投影裁剪，源会话的 append-only
     日志一个字节不动。硬规则（append-only 是唯一事实来源）管的是源日志，不管
@@ -83,6 +87,7 @@ export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set([
   "workspace_restored",
   "branch_checked_out",
   "project_instructions",
+  "session_shared",
 ]);
 
 /** 过隐私闸：返回 { kept, stripped }。
