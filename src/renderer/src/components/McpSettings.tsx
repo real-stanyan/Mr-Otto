@@ -304,6 +304,9 @@ function NewMcpServerDialog({
 
 function McpServerRow({ server }: { server: McpServerStatus }) {
   const saveMcpServer = useChat((s) => s.saveMcpServer);
+  // mcp.json 跟着账号走（ADR-0186）：写死 ~/.mr-otto/mcp.json 的话，照着提示去手改
+  // 的用户会编辑一个对本账号完全不生效的文件
+  const configRoot = useChat((s) => s.configRoot);
   const removeMcpServer = useChat((s) => s.removeMcpServer);
   const reconnectMcpServer = useChat((s) => s.reconnectMcpServer);
   const authorizeMcpServer = useChat((s) => s.authorizeMcpServer);
@@ -523,7 +526,7 @@ function McpServerRow({ server }: { server: McpServerStatus }) {
                 placeholder="空格分隔，例如 -y @modelcontextprotocol/server-filesystem /Users/x"
                 className="font-mono text-[12.5px]"
               />
-              <p className={HINT}>不支持引号里带空格这种 shell 语法——更复杂的命令行直接改 ~/.mr-otto/mcp.json</p>
+              <p className={HINT}>不支持引号里带空格这种 shell 语法——更复杂的命令行直接改 {configRoot ? `${configRoot}/mcp.json` : "~/.mr-otto/mcp.json"}</p>
             </div>
           </>
         ) : (

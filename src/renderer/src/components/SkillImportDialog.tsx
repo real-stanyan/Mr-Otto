@@ -25,6 +25,8 @@ import { useChat } from "../store.js";
 
 export function SkillImportDialog() {
   const refreshSkills = useChat((s) => s.refreshSkills);
+  // 落点跟着账号走（ADR-0186），不是写死的 ~/.mr-otto/skills
+  const configRoot = useChat((s) => s.configRoot);
   const [open, setOpen] = useState(false);
   const [externals, setExternals] = useState<ExternalSkillInfo[] | null>(null); // null = 扫描中
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -96,8 +98,8 @@ export function SkillImportDialog() {
             <DialogTitle>导入 skill</DialogTitle>
             <DialogDescription>
               从其他厂家 agent 已安装的 skill 里挑选，复制进{" "}
-              <code className="text-[11px]">~/.mr-otto/skills</code>。之后与来源无关——
-              那边卸载或改动不影响这边。
+              <code className="text-[11px]">{configRoot ? `${configRoot}/skills` : "~/.mr-otto/skills"}</code>
+              。之后与来源无关—— 那边卸载或改动不影响这边。
             </DialogDescription>
           </DialogHeader>
 

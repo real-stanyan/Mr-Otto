@@ -26,13 +26,21 @@ export function useSubagentScope(): SubagentScopeView {
   const scope = useChat((s) => s.subagentScope);
   const setScope = useChat((s) => s.setSubagentScope);
 
+  // 用户级那条路径不能写死（ADR-0186）：它现在是 `~/.mr-otto/accounts/<抽屉>/agents`，
+  // 抽屉名是 uid 的哈希。这个字符串会出现在「建在这一层」的提示、按钮 title，
+  // 以及「去那个目录里手工把内容填上」那句错误里 —— 写死的话三处一起在说谎
+  const configRoot = useChat((s) => s.configRoot);
   const options = useMemo(() => subagentScopeOptions(sessions), [sessions]);
   const current = options.find((o) => o.workspace === scope) ?? options[0]!;
 
   return {
     options,
     current,
-    scopeDir: current.workspace ? `${current.workspace}/.mr-otto/agents` : "~/.mr-otto/agents",
+    scopeDir: current.workspace
+      ? `${current.workspace}/.mr-otto/agents`
+      : configRoot
+        ? `${configRoot}/agents`
+        : "~/.mr-otto/agents", // 开机那一瞬还没取到，退回旧字面量而不是画一条 "/agents"
     showScope: current.workspace !== null,
     setScope,
   };
