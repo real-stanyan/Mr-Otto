@@ -7,6 +7,7 @@ import {
   configFromEntry,
   directoryTint,
   installPackageName,
+  groupByCategory,
   installSlot,
   installSourceLabel,
   needsInstallConfirm,
@@ -14,7 +15,7 @@ import {
   type DirectoryItem,
 } from "../../src/renderer/src/lib/mcpDirectory.js";
 import type { McpDisplayStatus } from "../../src/renderer/src/lib/mcpForm.js";
-import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
+import type { CatalogCategory, CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import { mapRegistryServer } from "../../src/shared/mcpRegistry.js";
 
 const http = (id: string): CatalogEntry => ({
@@ -301,5 +302,37 @@ describe("installSlot", () => {
     // waitForCode 上（AUTH_TIMEOUT_MS = 5 分钟）。这段窗口必须是 busy
     expect(installSlot(item("connecting"), true)).toEqual({ kind: "busy" });
     expect(installSlot(item("connected"), true)).toEqual({ kind: "busy" });
+  });
+});
+
+describe("groupByCategory", () => {
+  const item = (id: string, category: CatalogCategory): DirectoryItem => ({
+    entry: { ...http(id), category },
+    verified: true,
+    installed: null,
+  });
+
+  it("段落顺序取自 CATALOG_CATEGORIES，不是条目出现的顺序", () => {
+    // 目录数组是按分类写的，但那是**书写**顺序：挪一条目录的位置不该顺带
+    // 改掉界面上的段落次序
+    const groups = groupByCategory([
+      item("a", "国内平台"),
+      item("b", "开发与部署"),
+      item("c", "国内平台"),
+    ]);
+    expect(groups.map((g) => g.category)).toEqual(["开发与部署", "国内平台"]);
+    expect(groups[1]!.items.map((i) => i.entry.id)).toEqual(["a", "c"]);
+  });
+
+  it("空段不出", () => {
+    const groups = groupByCategory([item("a", "本机工具")]);
+    expect(groups).toHaveLength(1);
+  });
+
+  it("没分类的不进任何一段 —— 那只可能是长尾条目", () => {
+    // 注册表不给分类。长尾本来就平铺，混进分组里会顶着一个凭空捏的段名
+    expect(groupByCategory([{ entry: http("x"), verified: false, installed: null }])).toEqual(
+      []
+    );
   });
 });
