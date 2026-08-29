@@ -72,7 +72,7 @@ describe("needsOnboarding", () => {
   });
 });
 
-describe("needsSignIn（进门闸，ADR-0181）", () => {
+describe("needsSignIn（进门闸，ADR-0182）", () => {
   it("从没登录过 = 拦在门外", () => {
     expect(needsSignIn(OUT, false)).toBe(true);
   });

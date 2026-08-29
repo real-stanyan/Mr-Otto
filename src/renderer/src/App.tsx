@@ -1259,7 +1259,7 @@ function AccountAvatar({ name, avatarUrl, sizeCls = "size-7", textCls = "text-[1
 }
 
 /** 账号页（设置栏目之一）：已登录 = 头像+身份+退出;未登录 = 那张登录卡。
-    进门闸（ADR-0181）之后未登录这一支不是死代码 —— 闸门认的是「有没有登录记录」,
+    进门闸（ADR-0182）之后未登录这一支不是死代码 —— 闸门认的是「有没有登录记录」,
     离线或 session 过期的人正是被它故意放进来的,进来之后处处是未登录态 */
 function AccountPage() {
   const account = useChat((s) => s.account);
@@ -3454,7 +3454,7 @@ export function App() {
 
   if (phase === "connecting") return <main className="flex-1 min-w-0 px-6 py-24 text-muted-foreground">连接主进程…</main>;
 
-  // 进门那道闸（ADR-0181）：没有登录记录 = 整个 app 只画这一屏。
+  // 进门那道闸（ADR-0182）：没有登录记录 = 整个 app 只画这一屏。
   // 位置卡在 connecting 之后 —— boot() 没回来之前 authRecord 还是初值 false，
   // 那一拍判定出来的"没登录"是假的（这一拍的画面本来也被 Splash 盖着）。
   // 放在这里而不是包在 main.tsx 外层：boot() 挂在 App 的 effect 上，

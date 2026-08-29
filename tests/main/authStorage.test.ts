@@ -98,7 +98,7 @@ describe("authStorage", () => {
     expect(storage.getItem("anything")).toBeNull();
   });
 
-  // hasAny 是进门闸（SignInScreen / ADR-0181）唯一的判据：它必须同步、离线也答得出，
+  // hasAny 是进门闸（SignInScreen / ADR-0182）唯一的判据：它必须同步、离线也答得出，
   // 所以停在"文件里有没有 key"这一层，不解析 session、更不发网络校验
   it("hasAny：没存过东西 = 没有登录记录", () => {
     const io = fakeIO();

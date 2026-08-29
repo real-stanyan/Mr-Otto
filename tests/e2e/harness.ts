@@ -75,7 +75,7 @@ export interface LaunchOptions {
       "agent 还在内存里，只切视线"那条路，压根到不了 createChildAgent */
   home?: string;
   profile?: string;
-  /** 这只 app 开机时「有没有登录记录」（ADR-0181 的进门闸判据）。**默认 true** ——
+  /** 这只 app 开机时「有没有登录记录」（ADR-0182 的进门闸判据）。**默认 true** ——
       绝大多数用例验的不是登录，它们要的是直接站在 app 里面。给 false 就是
       一个全新用户：开机第一屏是 SignInScreen，里面的东西一个都点不到 */
   authRecord?: boolean;
@@ -182,7 +182,7 @@ function userDataPathFor(profile: string, home: string): string {
   return join(appData, profileDirName({ OTTO_PROFILE: profile }, false));
 }
 
-/** 播一条「这台机器登录过」的记录（ADR-0181 的进门闸认的就是 auth.json 里有没有 key）。
+/** 播一条「这台机器登录过」的记录（ADR-0182 的进门闸认的就是 auth.json 里有没有 key）。
 
     **刻意不写 `sb-<ref>-auth-token`**：写成 supabase 认得的形状，supabase-js 会拿着
     这把假 token 去刷新，e2e 就真的出网了 —— 而这套用例的第一条规矩就是不碰网络
@@ -206,7 +206,7 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   seedInto(userAgentsDir, opts.userAgents);
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
   seedSkills(join(home, CONFIG_DIR, "skills"), opts.skills);
-  // 进门闸（ADR-0181）：没有登录记录的话第一屏是 SignInScreen，里面什么都点不到。
+  // 进门闸（ADR-0182）：没有登录记录的话第一屏是 SignInScreen，里面什么都点不到。
   // 默认播一条 —— 让 33 条既有用例继续站在 app 里面，而不是各自去登一次录
   if (opts.authRecord !== false) seedAuthRecord(userDataPathFor(profile, home));
 

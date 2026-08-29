@@ -50,7 +50,7 @@ export function needsOnboarding(account: AccountInfo, profile: MyProfile | null)
 }
 
 /**
- * 该不该把人拦在进门那道闸上（SignInScreen，ADR-0181）。
+ * 该不该把人拦在进门那道闸上（SignInScreen，ADR-0182）。
  *
  * 判据是「有没有登录记录」而不是「此刻登录着没有」——两条都不能少：
  *

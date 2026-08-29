@@ -2533,7 +2533,7 @@ void app.whenReady().then(() => {
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
-  // 进门闸的判据（ADR-0181）：读的是 auth.json 存没存过东西，不是 manager 里那份
+  // 进门闸的判据（ADR-0182）：读的是 auth.json 存没存过东西，不是 manager 里那份
   // 投影——后者要等 restore() 的网络校验回来，冷启动时问它等于问了个还没醒的人
   ipcMain.handle(CHANNELS.hasAuthRecord, () => supabase.hasAuthRecord());
 

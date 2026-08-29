@@ -348,7 +348,7 @@ interface ChatState {
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
-      account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0181） */
+      account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0182） */
   authRecord: boolean;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
       和 account 不是同一份数据,显示身份时以这份为准(ADR-0028) */
@@ -1977,7 +1977,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // 才拉的话,新会话一开始 `/` 菜单里永远看不到已经连上的 server 的 prompt
       tick(window.otter.listMcpPrompts()),
       tick(window.otter.getAccount()),
-      // 进门闸的判据（ADR-0181）。和 getAccount() 一起取而不是懒加载:它决定首屏
+      // 进门闸的判据（ADR-0182）。和 getAccount() 一起取而不是懒加载:它决定首屏
       // 画哪一屏,晚一拍就是"先闪一下登录页再跳进去"
       tick(window.otter.hasAuthRecord()),
       tick(window.otter.keyStatus()),
