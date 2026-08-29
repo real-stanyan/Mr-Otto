@@ -201,6 +201,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `docs/dev-two-accounts.md` — 本机同时跑两个账号（好友功能联调）
 - `tests/architecture.test.ts` — Hard rules 的可执行版（越界 import 在这里红，错误信息带修法，ADR-0058）
 - `tests/docs/adrNumbers.test.ts` — `docs/adr/` 编号唯一 + 不跳号的可执行版（撞号在这里红，ADR-0074）
+- `tests/architecture.caseCollision.test.ts` — 同目录 TS 文件名去扩展名后不许只差大小写的可执行版。macOS 的文件系统大小写不敏感，撞名的那对里 `.tsx` 会被 tsc **静默丢出类型检查**，于是本机门禁与 CI 给出不同答案（vitest 照跑，所以没有任何症状）。光改名不够，断言才是改名的保鲜期（ADR-0173，#687）
 - `scripts/wip.mjs` — `npm run wip [说明]`：把手上的活落成一个提交而不是 stash（多 worktree 共享同一个 stash 栈，#543 踩过；撤销 `git reset --soft HEAD~1`，ADR-0154）
 - `scripts/lane.mjs` / `scripts/lane-prune.mjs` / `scripts/install-hooks.mjs` — 开一条 lane / 收工清理 / 自动挂钩子（`npm run lane -- <任务名>`、`npm run lane:prune`；零工作量分支为什么不删见 ADR-0150 与 #449）
 - `.githooks/pre-commit` / `tests/hooks/preCommitWorktree.test.ts` — 「主 checkout 只读、开工用一次性 worktree」的机制兜底 + 它的可执行版（装一次：`git config core.hooksPath .githooks`；天花板与逃生门写在钩子文件头，ADR-0149）
