@@ -19,6 +19,9 @@ import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
 export interface InstalledServer {
   id: string;
   status: McpDisplayStatus;
+  /** 它此刻暴露的工具名。详情页要显示（#745），目录卡不用——所以是可选的，
+      不必为了一张卡把整份快照传进来 */
+  tools?: readonly string[];
 }
 
 export interface DirectoryItem {

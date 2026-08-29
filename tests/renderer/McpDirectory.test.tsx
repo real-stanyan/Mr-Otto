@@ -357,4 +357,77 @@ describe("McpDirectory", () => {
 
     expect(await screen.findByText("未核验")).toBeInTheDocument();
   });
+
+  // ── 详情页（issue #745）─────────────────────────────────────────────
+  it("点卡片进详情页：卡片上截断的东西这儿要看得全", async () => {
+    deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Supabase 详情" }));
+
+    // 地址是卡片上根本没有的那一项 —— 用户点进来主要就为了这个
+    expect(await screen.findByText(/mcp\.supabase\.com/)).toBeInTheDocument();
+    expect(screen.getByText(/代码跑在对方的机器上/)).toBeInTheDocument();
+    expect(screen.getByText("project_ref")).toBeInTheDocument();
+    // 换页而不是叠加：网格让位了
+    expect(screen.queryByText("国内平台")).not.toBeInTheDocument();
+  });
+
+  it("详情页上点「添加」照样弹参数框 —— 对话框不能只挂在网格那一支", async () => {
+    // 差点这样出门：filling 状态设了，而 ParamsDialog 只渲染在网格分支里，
+    // 于是详情页上按钮点下去一声不响
+    deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Supabase 详情" }));
+    await user.click(screen.getByRole("button", { name: "添加 Supabase" }));
+
+    expect(await screen.findByText("配置「Supabase」")).toBeInTheDocument();
+  });
+
+  it("卡片右边那颗加号不把人带进详情页", async () => {
+    // 一颗按钮套在一张可点的卡里：不拦冒泡的话，点「添加」会顺手换页，
+    // 用户看着一个陌生的页面，不知道自己刚才装没装上
+    const { saveMcpServer } = deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "添加 Sentry" }));
+
+    expect(saveMcpServer).toHaveBeenCalled();
+    // 还在网格上（分组标题还在），没被带进详情页
+    expect(screen.getByText("开发与部署")).toBeInTheDocument();
+  });
+
+  it("返回回到网格", async () => {
+    deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Supabase 详情" }));
+    await screen.findByText("来路");
+    await user.click(screen.getByRole("button", { name: "连接器" }));
+
+    expect(await screen.findByText("开发与部署")).toBeInTheDocument();
+    expect(screen.queryByText("来路")).not.toBeInTheDocument();
+  });
+
+  it("已装的那台，详情页要说它给了哪些工具", async () => {
+    deferredBridge();
+    render(
+      <McpDirectory
+        installed={[{ id: "sentry", status: "connected", tools: ["find_issues", "get_trace"] }]}
+      />
+    );
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Sentry 详情" }));
+
+    expect(await screen.findByText(/2 个工具/)).toBeInTheDocument();
+    expect(screen.getByText("find_issues")).toBeInTheDocument();
+  });
 });
