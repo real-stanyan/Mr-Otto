@@ -13,6 +13,8 @@
 
 import { useEffect, useState } from "react";
 
+import ottoLogo from "../assets/otto.png";
+
 import { useChat } from "../store.js";
 import { ERR_TXT } from "../settingsShell.js";
 import { DitherBackground } from "./DitherBackground.js";
@@ -40,7 +42,7 @@ export function SignInScreen() {
       <DitherBackground className="absolute inset-0 h-full w-full" dark={dark} />
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6">
         <div
-          className="w-full max-w-[360px] transition-[opacity,transform] ease-[var(--ease-strong)] motion-reduce:transition-none"
+          className="flex w-full max-w-[320px] flex-col items-center gap-[16px] transition-[opacity,transform] ease-[var(--ease-strong)] motion-reduce:transition-none"
           style={{
             transitionDuration: `${ENTER_MS}ms`,
             opacity: shown ? 1 : 0,
@@ -49,9 +51,15 @@ export function SignInScreen() {
             transform: shown ? "none" : "translateY(10px) scale(0.98)",
           }}
         >
-          {/* 卡片压在动效背景上：半透明 + 背板模糊，让它坐在画面里而不是贴在画面上。
-              backdrop-filter 失败是静默的（整条被丢掉），届时退回不透明卡，仍然读得清 */}
-          <SignInCard className="bg-card/85 shadow-2xl backdrop-blur-xl" />
+          {/* 身份就是这两行：一张脸 + 一个名字，取代了原来卡里那行标题。
+              它们属于这一屏，不属于登录控件 —— 账号页复用同一份控件但不该顶一张大 logo */}
+          <div className="flex flex-col items-center gap-[8px]">
+            <img src={ottoLogo} alt="" className="size-20 rounded-2xl shadow-2xl" draggable={false} />
+            <p className="text-[15px] font-[650]">Mr Otto</p>
+          </div>
+          {/* 三块面板压在动效背景上：半透明 + 背板模糊，让它们坐在画面里而不是贴在画面上。
+              backdrop-filter 失败是静默的（整条被丢掉），届时退回不透明面板，仍然读得清 */}
+          <SignInCard variant="glass" />
         </div>
         {/* 密码错这类失败只会落在 store.error 里，卡片自己不显示它 */}
         {error && <p className={`${ERR_TXT} max-w-[360px] text-center`}>{error}</p>}
