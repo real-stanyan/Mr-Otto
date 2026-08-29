@@ -90,6 +90,17 @@ function pgidFromHint(hint: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** SIGTERM 送达是异步的（实测：kill 后立刻探活，进程往往还"活着"——内核还没调度
+    完终止），紧跟着探一次会把刚杀成功的组误判成杀不掉。轮询给内核一点时间；
+    fixture 测试里 pgid 本来就不存在，第一次探测就是死的，不会真的睡这几百 ms。 */
+async function confirmDead(pgid: number, attempts = 5, intervalMs = 100): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (!groupAlive(pgid)) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return !groupAlive(pgid);
+}
+
 export function createLocalResidue(
   reg: LiveGroupRegistry,
   runCmd: (cmd: string) => Promise<string> = defaultRunCmd
@@ -144,7 +155,7 @@ export function createLocalResidue(
       reg.ackEscaped(pgid);
       // 探活确认：killGroup 是 fire-and-forget（SIGTERM 可能被忽略），
       // 探一下才知道真死了没有
-      if (groupAlive(pgid)) {
+      if (!(await confirmDead(pgid))) {
         return { id: item.id, ok: false, note: "已发送终止信号，进程组仍存活" };
       }
       return { id: item.id, ok: true };

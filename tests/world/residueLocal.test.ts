@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
+import { spawn } from "node:child_process";
 import { createLocalResidue } from "../../src/world/residueLocal.js";
 import { LiveGroupRegistry } from "../../src/world/liveGroups.js";
+
+// 本仓 idiom（tests/world/localWorldProcessGroup.test.ts）：不 mock kill，起真进程拿真
+// pgid，用 process.kill(pid, 0) 探真活——killGroup/groupAlive 底层就是 process.kill，
+// mock 掉等于没测到真正会炸的那条线。
+const alive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+};
 
 const SIMCTL_JSON = JSON.stringify({
   devices: {
@@ -56,4 +65,50 @@ describe("createLocalResidue.cleanup", () => {
     expect(r.ok).toBe(false);
     expect(r.note).toMatch(/已消失|失败/);
   });
+
+  it(
+    "process_groups owned：真杀真进程组，escaped 台账里也摘干净",
+    async () => {
+      const child = spawn("sleep 100", { shell: true, detached: true });
+      const pgid = child.pid!;
+      const reg = new LiveGroupRegistry();
+      reg.register(pgid, "sleep 100", "detached");
+      reg.noteClosed(pgid); // 组还活着 → 进 escaped（模拟"shell 死了组没死"）
+      expect(reg.escaped().map((g) => g.pgid)).toContain(pgid);
+
+      const residue = createLocalResidue(reg);
+      const r = await residue.cleanup({
+        detector: "process_groups", id: String(pgid), label: "sleep 100",
+        confidence: "owned", cleanupHint: `kill 进程组 ${pgid}`,
+      });
+
+      expect(r.ok).toBe(true);
+      expect(alive(pgid)).toBe(false);
+      expect(reg.escaped().map((g) => g.pgid)).not.toContain(pgid);
+    },
+    10_000
+  );
+
+  it(
+    "owned port：同一条 pgid 解析路径，走 ports 探测器一样能真杀",
+    async () => {
+      const child = spawn("sleep 100", { shell: true, detached: true });
+      const pgid = child.pid!;
+      const reg = new LiveGroupRegistry();
+      reg.register(pgid, "sleep 100", "detached");
+      reg.noteClosed(pgid);
+      expect(reg.escaped().map((g) => g.pgid)).toContain(pgid);
+
+      const residue = createLocalResidue(reg);
+      const r = await residue.cleanup({
+        detector: "ports", id: `port:${pgid}`, label: `sleep:${pgid}`,
+        confidence: "owned", cleanupHint: `kill 进程组 ${pgid}`,
+      });
+
+      expect(r.ok).toBe(true);
+      expect(alive(pgid)).toBe(false);
+      expect(reg.escaped().map((g) => g.pgid)).not.toContain(pgid);
+    },
+    10_000
+  );
 });
