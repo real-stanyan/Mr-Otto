@@ -8,6 +8,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
+import type { LiveGroupRegistry } from "./liveGroups.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
@@ -66,9 +67,12 @@ export function createLocalWorld(
     /** 子进程该用的 PATH（issue #453）。缺省 = 全局登记处（启动时 prime 过的
         登录 shell PATH）；返回 null = 维持原样继承。可注入是为了测试不碰全局态 */
     loginPath?: () => string | null;
+    /** 进程组登记表（issue #759）。给了才登记活组、探活逃逸组。缺省 = 不登记 */
+    liveGroups?: LiveGroupRegistry;
   } = {}
 ): ExecutionWorld {
   const { root } = opts;
+  const liveGroups = opts.liveGroups;
   // 每次起子进程都现算一遍：名单会随用户在设置页存/清 key 而变，
   // 装配时抓一次快照就会留下一个"配 key 之前建的会话永远不设防"的窟窿。
   // PATH 同理现问：prime 是异步的，装配时快照会把「还没取到」定格成永远没有
@@ -116,6 +120,7 @@ export function createLocalWorld(
           ...(root ? { cwd: root } : {}),
         });
         const pgid = child.pid;      // detached 下 spawn 同步拿到组长 pid
+        if (pgid) liveGroups?.register(pgid, cmd, "exec");
         let timedOut = false;
         const timer = setTimeout(() => {
           timedOut = true;
@@ -159,6 +164,7 @@ export function createLocalWorld(
           done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
         });
         child.on("close", (code, signal) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
           clearTimeout(timer);
           opts?.signal?.removeEventListener("abort", onAbort);
           if (opts?.signal?.aborted) {
@@ -196,6 +202,7 @@ export function createLocalWorld(
           ...(root ? { cwd: root } : {}),
         });
         const pgid = child.pid;
+        if (pgid) liveGroups?.register(pgid, cmd, "detached");
         let timedOut = false;
         const timer = setTimeout(() => {
           timedOut = true;
@@ -215,6 +222,7 @@ export function createLocalWorld(
           done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
         });
         child.on("close", (code, signal) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
           clearTimeout(timer);
           if (timedOut || signal !== null) {
             done({
