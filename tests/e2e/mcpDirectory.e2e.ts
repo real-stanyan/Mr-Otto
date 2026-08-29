@@ -91,7 +91,7 @@ test("首屏是仓内精选层，一次网都不打", async () => {
   const otto = await launchOtto();
   try {
     await stubRegistry(otto);
-    await openSettings(otto.win, "MCP");
+    await openSettings(otto.win, "连接器");
 
     // 精选层立刻在（零网络，不等任何请求）
     await expect(otto.win.getByRole("button", { name: "添加 Supabase" })).toBeVisible({
@@ -112,7 +112,7 @@ test("敲字才打网，长尾结果画出来并标未核验", async () => {
   const otto = await launchOtto();
   try {
     await stubRegistry(otto);
-    await openSettings(otto.win, "MCP");
+    await openSettings(otto.win, "连接器");
     await otto.win.getByRole("button", { name: "添加 Supabase" }).waitFor({ timeout: 15_000 });
 
     await otto.win.getByLabel("搜索连接器").fill("widgets");
@@ -136,7 +136,7 @@ test("慢的旧响应不许盖掉新结果——AbortSignal 过不了 IPC，序�
   const otto = await launchOtto();
   try {
     await stubRegistry(otto);
-    await openSettings(otto.win, "MCP");
+    await openSettings(otto.win, "连接器");
     await otto.win.getByRole("button", { name: "添加 Supabase" }).waitFor({ timeout: 15_000 });
 
     const box = otto.win.getByLabel("搜索连接器");
@@ -169,7 +169,7 @@ test("注册表搜不动就说原因，不吞成「没有结果」", async () =>
   const otto = await launchOtto();
   try {
     await stubRegistry(otto);
-    await openSettings(otto.win, "MCP");
+    await openSettings(otto.win, "连接器");
     await otto.win.getByRole("button", { name: "添加 Supabase" }).waitFor({ timeout: 15_000 });
 
     await breakRegistry(otto);
