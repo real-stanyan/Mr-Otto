@@ -1,13 +1,9 @@
+<!-- neon —— 删掉了原来的 @media (prefers-color-scheme: dark)：
+     它当 <img> 加载，只看得见系统设置，看不见 app 自己那个主题开关
+     （两档本来就都是绿的，媒体查询只是个假动作）。 -->
 <svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
 <style xmlns="http://www.w3.org/2000/svg">
-  :root {
-    fill: #37C38F;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      fill: #34D59A;
-    }
-  }
+  :root { fill: #37C38F; }
 </style>
 <path d="M162 17.5406V162.5L105.812 113.897V162.5H18V17.5L162 17.5406ZM35.6515 144.901H88.1606V75.278L144.349 124.843V35.1348L35.6515 35.1037V144.901Z"/>
 </svg>

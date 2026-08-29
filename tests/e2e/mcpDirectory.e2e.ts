@@ -185,3 +185,28 @@ test("注册表搜不动就说原因，不吞成「没有结果」", async () =>
     await otto.close();
   }
 });
+
+test("纯黑的标真的被 mask 削成形状，不是一格实心方块", async () => {
+  // ADR-0180 那一档（GitHub / Notion / Linear…）靠 `mask-image` + `bg-current`
+  // 上色。这条只有真浏览器验得到：mask 的地址是 vite 内联进来的
+  // `data:image/svg+xml,` 加百分号编码原文，**不加引号写进 url() 会被 CSS 解析器
+  // 判成非法值整条丢掉**，剩下 bg-current 把 8×8 涂满——一格纯色方块。
+  // 它不抛错、不进控制台，截图之前谁也不知道（第一版就是这样交出去的）。
+  // jsdom 不算 mask，vitest 那半边看不见这件事。
+  const otto = await launchOtto();
+  try {
+    await stubRegistry(otto);
+    await openSettings(otto.win, "连接器");
+    const card = otto.win.getByRole("button", { name: "添加 GitHub" }).locator("xpath=..");
+    await card.waitFor({ timeout: 15_000 });
+    const mask = await card
+      .locator("span[aria-hidden]")
+      .first()
+      .evaluate((el) => getComputedStyle(el).maskImage);
+    expect(mask, "mask-image 没生效，标会被 bg-current 涂成实心方块").not.toBe("none");
+    expect(mask).toContain("svg");
+    expectNoRendererErrors(otto);
+  } finally {
+    await otto.close();
+  }
+});
