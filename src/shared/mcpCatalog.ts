@@ -102,7 +102,7 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     auth: "oauth",
     // 实测：它的授权服务器**不支持动态客户端注册**，我们没有手填 client_id
     // 的路（#697），所以点授权会停在"不兼容"。留着不删：这是目录里最常被
-    // 找的一台，删掉等于把问题藏起来；话术里先说清楚（issue #726）
+    // 找的一台，删掉等于把问题藏起来；话术里先说清楚（issue #733）
     authNote: "暂时连不上：GitHub 要求预先注册的 client_id，Mr Otto 还没有手填它的地方（#697）",
     icon: "github",
   },
@@ -386,8 +386,8 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     params: [],
     auth: "oauth",
     // 实测：动态注册那一步被服务端 403 挡下（换 UA 无效），点授权会失败。
-    // 与 GitHub 同因不同果——那边是明说不支持，这边是支持但拒绝我们（issue #726）
-    authNote: "暂时连不上：Figma 的动态客户端注册接口拒绝了我们的注册请求（#726）",
+    // 与 GitHub 同因不同果——那边是明说不支持，这边是支持但拒绝我们（issue #733）
+    authNote: "暂时连不上：Figma 的动态客户端注册接口拒绝了我们的注册请求（#733）",
     icon: "figma",
   },
   {
@@ -533,7 +533,7 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     url: "https://mcp.asana.com/v2/mcp",
     params: [],
     auth: "oauth",
-    // 与 GitHub 同因：授权服务器不支持动态客户端注册（issue #726）
+    // 与 GitHub 同因：授权服务器不支持动态客户端注册（issue #733）
     authNote: "暂时连不上：Asana 要求预先注册的 client_id，Mr Otto 还没有手填它的地方（#697）",
     icon: "asana",
   },
