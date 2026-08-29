@@ -5,7 +5,11 @@
 // verified 是**来路**的性质而不是条目自身的属性——同一份配置从精选层拿是
 // 核过的，从注册表拿就不是——所以它在这个包装类型上，不在 CatalogEntry 上。
 
-import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
+import {
+  CATALOG_CATEGORIES,
+  type CatalogCategory,
+  type CatalogEntry,
+} from "../../../shared/mcpCatalog.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
 import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
 
@@ -55,6 +59,36 @@ export function buildDirectory(opts: BuildDirectoryOptions): {
         ? []
         : opts.registry.filter((e) => !curatedIds.has(e.id)).map((e) => wrap(e, false)),
   };
+}
+
+/** 精选层按分类切成小段。
+    八十多张卡平铺是一堵墙——不敲字的时候，"我要找个建站的"这件事只能靠
+    从头扫到尾。分组把它变成扫一眼组名。
+
+    顺序取自 CATALOG_CATEGORIES 而不是条目出现的顺序：目录数组是按分类
+    写的，但那是**书写**顺序，改一条的位置就会顺带改掉界面上的段落次序，
+    而那不该是"挪一条目录"的后果。空组不出（分类是联合类型，加一个却
+    还没有条目的中间态照样得渲染得下去）。
+
+    搜索时不分组：结果本来就少，再切成七段反而更难扫；这个判断在组件里
+    做（searched 分支），这儿只提供分组本身 */
+export function groupByCategory(
+  items: readonly DirectoryItem[]
+): { category: CatalogCategory; items: DirectoryItem[] }[] {
+  const bucket = new Map<CatalogCategory, DirectoryItem[]>();
+  for (const item of items) {
+    // 没分类的一律不进任何一段：那只可能是长尾条目（注册表不给分类），
+    // 而长尾从来不走这条路。精选层漏填在 tsc 里就红了（CuratedEntry）
+    const category = item.entry.category;
+    if (category === undefined) continue;
+    const list = bucket.get(category);
+    if (list === undefined) bucket.set(category, [item]);
+    else list.push(item);
+  }
+  return CATALOG_CATEGORIES.flatMap((category) => {
+    const list = bucket.get(category);
+    return list === undefined || list.length === 0 ? [] : [{ category, items: list }];
+  });
 }
 
 /** 装之前要不要弹确认卡。
@@ -187,6 +221,22 @@ const MONO_ICONS = new Set([
   "sentry",
   "filesystem",
   "fetch",
+  // 下面这批是 #725 扩表时按同一条判据挑的：品牌色的相对亮度低于 0.06
+  // （深色卡上没影）或高于 0.6（浅色卡上没影）就交给 mask，让它跟主题
+  // 前景色走。Supabase 的绿是 0.55，落在带里，所以照旧保原色
+  "vercel",
+  "posthog",
+  "resend",
+  "sanity",
+  "retool",
+  "calcom",
+  "replicate",
+  "alchemy",
+  "prisma",
+  "paypal",
+  "amplitude",
+  "huggingface",
+  "aws",
 ]);
 
 export type IconPaint = "mono" | "color";

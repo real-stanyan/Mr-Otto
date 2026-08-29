@@ -79,21 +79,40 @@ describe("McpDirectory", () => {
     const { searchMcpRegistry } = deferredBridge();
     render(<McpDirectory installed={[]} />);
 
-    expect(await screen.findByText("精选")).toBeInTheDocument();
+    // 不搜时按分类分段（#725 把目录扩到八十多条，平铺是一堵墙）
+    expect(await screen.findByText("开发与部署")).toBeInTheDocument();
+    expect(screen.getByText("国内平台")).toBeInTheDocument();
     // MCP_CATALOG 里的字面量，随目录增删而变的是数量，不是这两条在不在
     expect(screen.getByText("Supabase")).toBeInTheDocument();
     expect(screen.getByText("GitHub")).toBeInTheDocument();
     expect(screen.getAllByText("已核验").length).toBeGreaterThan(0);
+    // 「精选」这个标题只在搜索时出现——它是跟长尾那块的对照，不搜时长尾
+    // 根本不在，一个没有对照物的来路标记只是又一行字（来路由每张卡的
+    // 「已核验」角标承担，上面刚断言过）
+    expect(screen.queryByText("精选")).not.toBeInTheDocument();
     // 长尾那条分隔线只在搜过之后出现
     expect(screen.queryByText("以下来自公开注册表，未经核验")).not.toBeInTheDocument();
     expect(searchMcpRegistry).not.toHaveBeenCalled();
+  });
+
+  it("一搜就换回平铺，「精选」标题这时才出现——它是跟长尾那块的对照", async () => {
+    deferredBridge();
+    render(<McpDirectory installed={[]} />);
+    await screen.findByText("开发与部署");
+
+    await userEvent.setup().type(screen.getByLabelText("搜索连接器"), "supabase");
+
+    expect(await screen.findByText("精选")).toBeInTheDocument();
+    expect(screen.getByText("Supabase")).toBeInTheDocument();
+    // 分组标题让位给平铺：结果本来就少，再切成七段反而更难扫
+    expect(screen.queryByText("国内平台")).not.toBeInTheDocument();
   });
 
   it("装上且连上了才画 ✓，没装的画一个可点的加号", async () => {
     deferredBridge();
     render(<McpDirectory installed={[{ id: "github", status: "connected" }]} />);
 
-    await screen.findByText("精选");
+    await screen.findByText("开发与部署");
     expect(screen.getByText("GitHub 已经装上了")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "添加 GitHub" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加 Supabase" })).toBeInTheDocument();
@@ -105,7 +124,7 @@ describe("McpDirectory", () => {
     deferredBridge();
     render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
 
-    await screen.findByText("精选");
+    await screen.findByText("开发与部署");
     expect(screen.queryByText("Canva 已经装上了")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "授权 Canva" })).toBeInTheDocument();
   });
@@ -114,7 +133,7 @@ describe("McpDirectory", () => {
     const { authorizeMcpServer } = deferredBridge();
     render(<McpDirectory installed={[{ id: "canva", status: "needs-auth" }]} />);
 
-    await screen.findByText("精选");
+    await screen.findByText("开发与部署");
     await userEvent.setup().click(screen.getByRole("button", { name: "授权 Canva" }));
     expect(authorizeMcpServer).toHaveBeenCalledWith("canva");
   });

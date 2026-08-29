@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { MCP_CATALOG, searchCatalog } from "../../src/shared/mcpCatalog.js";
+import { CATALOG_CATEGORIES, MCP_CATALOG, searchCatalog } from "../../src/shared/mcpCatalog.js";
 
 describe("mcpCatalog", () => {
   it("id 唯一", () => {
@@ -59,11 +59,28 @@ describe("mcpCatalog", () => {
 
   it("填了 icon 的条目，资源文件必须真的在", () => {
     // icon 是资源键不是 URL（见 CatalogEntry.icon 的注释）。填了键却没放文件，
-    // UI 上是一个静默的空白格——这类失败不会自己冒头，只能靠断言抓
+    // UI 上是一个静默的空白格——这类失败不会自己冒头，只能靠断言抓。
+    // svg 或 png 都算：有一批牌子根本不发 SVG 标（#725，见 McpDirectory 的 iconUrl）
     const dir = join(__dirname, "..", "..", "src", "renderer", "src", "assets", "mcp");
     for (const e of MCP_CATALOG) {
       if (e.icon === undefined) continue;
-      expect(existsSync(join(dir, `${e.icon}.svg`)), `${e.id} 的图标`).toBe(true);
+      const found =
+        existsSync(join(dir, `${e.icon}.svg`)) || existsSync(join(dir, `${e.icon}.png`));
+      expect(found, `${e.id} 的图标`).toBe(true);
     }
+  });
+
+  it("用到的分类全在 CATALOG_CATEGORIES 里 —— 漏一个，那一段整段不出现", () => {
+    // 联合类型和那个有序数组是两份东西：给联合加一个分类、忘了往数组里加，
+    // tsc 全绿，而 groupByCategory 是照数组遍历的——那一整段条目在界面上
+    // 直接消失，没有任何报错（#725）
+    const listed = new Set<string>(CATALOG_CATEGORIES);
+    const orphan = [...new Set(MCP_CATALOG.map((e) => e.category))].filter((c) => !listed.has(c));
+    expect(orphan, "这些分类没写进 CATALOG_CATEGORIES，整段不会出现在目录页").toEqual([]);
+  });
+
+  it("每条都有分类 —— 没分类就掉出所有分段", () => {
+    const missing = MCP_CATALOG.filter((e) => e.category === undefined).map((e) => e.id);
+    expect(missing).toEqual([]);
   });
 });

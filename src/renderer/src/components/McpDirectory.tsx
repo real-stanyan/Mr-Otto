@@ -44,6 +44,7 @@ import {
   installSlot,
   installPackageName,
   installSourceLabel,
+  groupByCategory,
   needsInstallConfirm,
   uniqueServerId,
   type DirectoryItem,
@@ -51,15 +52,24 @@ import {
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
 
-// eager:true 只把**地址**收进来（?url），不是把 SVG 内容打进包里（同 FileTypeIcon）
-const ICON_URLS = import.meta.glob<string>("../assets/mcp/*.svg", {
+// eager:true 只把**地址**收进来（?url），不是把图标内容打进包里（同 FileTypeIcon）
+//
+// 也收 png：有一批牌子根本不发 SVG 标——国内几家（高德、腾讯位置、腾讯云）
+// 官网只挂 ico/png，Klaviyo、Vanta 这些也一样。可选的路只有三条：给它们
+// 画一个我们自己编的标（那是伪造）、让它们退化成首字母色块（精选层不许，
+// 见 tests/shared/mcpCatalog.test.ts）、或者认 png。认 png 最诚实——代价
+// 是 png 不能走 mask 那一档（不透明底会被 mask 成一个实心方块），所以
+// MONO_ICONS 里不许出现 png 键，这条由 tests/renderer/mcpIcons.test.ts 钉住
+const ICON_URLS = import.meta.glob<string>("../assets/mcp/*.{svg,png}", {
   eager: true,
   query: "?url",
   import: "default",
 });
 
 function iconUrl(icon: string | undefined): string | undefined {
-  return icon === undefined ? undefined : ICON_URLS[`../assets/mcp/${icon}.svg`];
+  if (icon === undefined) return undefined;
+  // svg 优先：同名两种格式都在时，矢量那份永远更好
+  return ICON_URLS[`../assets/mcp/${icon}.svg`] ?? ICON_URLS[`../assets/mcp/${icon}.png`];
 }
 
 const DEBOUNCE_MS = 250;
@@ -226,19 +236,46 @@ export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
       {installNote && <p className={HINT}>{installNote}</p>}
 
       {curated.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className={SECTION_LABEL}>精选</span>
-          <div className={GRID}>
-            {curated.map((item) => (
-              <DirectoryCard
-                key={item.entry.id}
-                item={item}
-                busy={installing === item.entry.id}
-                onAdd={() => start(item)}
-                onAuthorize={() => void authorize(item)}
-              />
-            ))}
-          </div>
+        <div className="flex flex-col gap-4">
+          {/* 不搜的时候按分类分段（八十多张平铺是一堵墙）；搜的时候平铺——
+              结果本来就少，再切成七段反而更难扫。
+              「精选」这个标题只在搜索时出现：它存在的意义是跟下面那块
+              「来自公开注册表，未经核验」对照，而不搜时下面那块根本不在，
+              一个没有对照物的来路标记只是又一行字。每张卡自己带的
+              「已核验」角标在两种排法里都在，来路从来没丢 */}
+          {searched ? (
+            <div className="flex flex-col gap-2">
+              <span className={SECTION_LABEL}>精选</span>
+              <div className={GRID}>
+                {curated.map((item) => (
+                  <DirectoryCard
+                    key={item.entry.id}
+                    item={item}
+                    busy={installing === item.entry.id}
+                    onAdd={() => start(item)}
+                    onAuthorize={() => void authorize(item)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            groupByCategory(curated).map(({ category, items }) => (
+              <div key={category} className="flex flex-col gap-2">
+                <span className={SECTION_LABEL}>{category}</span>
+                <div className={GRID}>
+                  {items.map((item) => (
+                    <DirectoryCard
+                      key={item.entry.id}
+                      item={item}
+                      busy={installing === item.entry.id}
+                      onAdd={() => start(item)}
+                      onAuthorize={() => void authorize(item)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       )}
 
