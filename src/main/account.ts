@@ -111,7 +111,7 @@ export function toAccountInfo(user: SupabaseUserLike): AccountInfo {
 export function createSupabaseAuthClient(filePath: string): {
   auth: SupabaseLike;
   raw: SupabaseClient;
-  /** 这台机器上有没有登录记录（auth.json 里存过东西）。进门闸的判据，见 authStorage.hasAny */
+  /** 这台机器上有没有登录记录（auth.json 里**存着一份 session**）。进门闸的判据，见 authStorage.hasSession */
   hasAuthRecord: () => boolean;
 } {
   const storage = createAuthStorage(filePath);
@@ -124,7 +124,7 @@ export function createSupabaseAuthClient(filePath: string): {
       storage,
     },
   });
-  return { auth: client as unknown as SupabaseLike, raw: client, hasAuthRecord: () => storage.hasAny() };
+  return { auth: client as unknown as SupabaseLike, raw: client, hasAuthRecord: () => storage.hasSession() };
 }
 
 export class AccountManager {

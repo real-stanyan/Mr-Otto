@@ -75,7 +75,7 @@ export interface LaunchOptions {
       "agent 还在内存里，只切视线"那条路，压根到不了 createChildAgent */
   home?: string;
   profile?: string;
-  /** 这只 app 开机时「有没有登录记录」（ADR-0182 的进门闸判据）。**默认 true** ——
+  /** 这只 app 开机时「有没有登录记录」（ADR-0182 的进门闸判据，0183 收紧）。**默认 true** ——
       绝大多数用例验的不是登录，它们要的是直接站在 app 里面。给 false 就是
       一个全新用户：开机第一屏是 SignInScreen，里面的东西一个都点不到 */
   authRecord?: boolean;
@@ -182,15 +182,25 @@ function userDataPathFor(profile: string, home: string): string {
   return join(appData, profileDirName({ OTTO_PROFILE: profile }, false));
 }
 
-/** 播一条「这台机器登录过」的记录（ADR-0182 的进门闸认的就是 auth.json 里有没有 key）。
+/** 播一条「这台机器登录过」的记录（进门闸认的是 auth.json 里**有没有一份 session**，
+    ADR-0183 收紧了 0182 的判据）。
 
-    **刻意不写 `sb-<ref>-auth-token`**：写成 supabase 认得的形状，supabase-js 会拿着
-    这把假 token 去刷新，e2e 就真的出网了 —— 而这套用例的第一条规矩就是不碰网络
-    （见本文件顶部）。闸门读的是「文件里有没有东西」，与 key 叫什么无关，
-    所以一个 supabase 永远不会读的 key 既满足闸门，又不会把它叫醒。 */
+    值必须是 session 形状（带 `access_token`），但 **key 刻意不是 `sb-<ref>-auth-token`**：
+    写成 supabase 认得的 key，supabase-js 会拿着这把假 token 去刷新，e2e 就真的出网了
+    —— 而这套用例的第一条规矩就是不碰网络（见本文件顶部）。闸门按**形状**认 session、
+    不按 key 名认，所以一个 supabase 永远不会读的 key 既满足闸门，又不会把它叫醒。 */
 function seedAuthRecord(userData: string): void {
   mkdirSync(userData, { recursive: true });
-  writeFileSync(join(userData, "auth.json"), JSON.stringify({ "e2e-auth-record": "1" }), { mode: 0o600 });
+  const record = {
+    "e2e-auth-record": JSON.stringify({
+      access_token: "e2e",
+      refresh_token: "e2e",
+      token_type: "bearer",
+      expires_at: 1,
+      user: { id: "00000000-0000-0000-0000-000000000000", email: "e2e@example.invalid" },
+    }),
+  };
+  writeFileSync(join(userData, "auth.json"), JSON.stringify(record), { mode: 0o600 });
 }
 
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
