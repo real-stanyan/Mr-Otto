@@ -203,7 +203,7 @@ app.setName("Mr Otto");
 // OTTO_PROFILE=b 换一个数据目录，用来在同一台机器上同时登两个账号（见 profile.ts）
 app.setPath("userData", join(app.getPath("appData"), profileDirName(process.env, app.isPackaged)));
 
-// 本机数据按登录账号分抽屉（issue #749，ADR-0186）。算在这里而不是 whenReady 里面：
+// 本机数据按登录账号分抽屉（issue #749，ADR-0187）。算在这里而不是 whenReady 里面：
 // 下面二十来处 store 各自持着一条**装配时就钉死**的绝对路径，抽屉选错了没有第二次
 // 机会。uid 不必等 restore() 的网络往返 —— supabase 落在 auth.json 里的那份 session
 // 自带 user.id，和进门闸（ADR-0183）读同一个文件、同样同步、同样离线答得出。
@@ -264,7 +264,7 @@ if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 }
 
-// 抽屉落地 + 存量搬家（ADR-0186）。排在抢锁**之后**：搬家是全局副作用，只该由
+// 抽屉落地 + 存量搬家（ADR-0187）。排在抢锁**之后**：搬家是全局副作用，只该由
 // 活下来的那个实例做。「存量归给当前登录的账号」是维护者裁的（issue #749）——
 // 第一次实施隔离时现有数据整体划给此刻登录的人，它本来大概率就是他的，而留在
 // 共享层等于把泄漏窗口一直开着。没登录记录时不搬：那时还不知道该划给谁
@@ -580,7 +580,7 @@ void app.whenReady().then(() => {
   accountManager = new AccountManager({
     openExternal: (url) => shell.openExternal(url),
     onChange: (info) => {
-      // 换号了就重启，换到它自己的抽屉去（issue #749，ADR-0186）。抽屉在装配那一刻
+      // 换号了就重启，换到它自己的抽屉去（issue #749，ADR-0187）。抽屉在装配那一刻
       // 钉死（二十来处 store 各持一条绝对路径），热切换要么把它们全改成 getter、
       // 要么在三千行的装配根中间拆一刀；重启一次换得**干净** —— 没有「这个 store
       // 换了那个没换」的中间态。
@@ -2616,7 +2616,7 @@ void app.whenReady().then(() => {
   // 进门闸的判据（ADR-0182）：读的是 auth.json 存没存过东西，不是 manager 里那份
   // 投影——后者要等 restore() 的网络校验回来，冷启动时问它等于问了个还没醒的人
   ipcMain.handle(CHANNELS.hasAuthRecord, () => supabase.hasAuthRecord());
-  // 界面上「去哪个目录手改」的那几处文案要说真话（ADR-0186）：抽屉名是 uid 的哈希，
+  // 界面上「去哪个目录手改」的那几处文案要说真话（ADR-0187）：抽屉名是 uid 的哈希，
   // 渲染层算不出来。开机取一次即可 —— 换号会重启，这个值在一个进程里恒定
   ipcMain.handle(CHANNELS.configRoot, () => accountConfig);
 

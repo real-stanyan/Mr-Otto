@@ -16,7 +16,7 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 
 隔离的是 `auth.json`（登录态）、`sessions.db`（会话日志）、`keys.json`、`attachments/`。不隔离的是服务端：两个实例连的是同一个 Supabase 和同一个网关，这正是要测的东西。
 
-**自 ADR-0186 起，隔离还多了一层**：本机数据按**登录账号**分抽屉，`OTTO_PROFILE` 之内又切了一刀。
+**自 ADR-0187 起，隔离还多了一层**：本机数据按**登录账号**分抽屉，`OTTO_PROFILE` 之内又切了一刀。
 
 ```
 ~/Library/Application Support/mr-otto-b/
@@ -61,7 +61,7 @@ OTTO_PROFILE=b npm run dev     # ~/Library/Application Support/mr-otto-b
 ## 好友代理的两账号验收（issue #622 / #657，ADR-0151 / ADR-0162）
 
 前置：两个号已经互为好友（上一节），A 那台至少接通一台 MCP server
-（`~/.mr-otto/accounts/<A 的抽屉>/mcp.json` —— 自 ADR-0186 起 A 和 B 各有各的一份，
+（`~/.mr-otto/accounts/<A 的抽屉>/mcp.json` —— 自 ADR-0187 起 A 和 B 各有各的一份，
 不再共用，所以「B 调的是 A 的凭证」天然可验：B 那边根本没配过那台 server；
 想再确认一次就看 A 的审计账里有没有记上那一笔）。
 

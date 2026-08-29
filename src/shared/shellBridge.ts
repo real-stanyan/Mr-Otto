@@ -71,7 +71,7 @@ export type ApprovalMode = "ask" | "auto";
     只有这四个字段：token/session 对象永不过 IPC（安全硬约束） */
 export interface AccountInfo {
   signedIn: boolean;
-  /** supabase 的 uid。本机数据按它分抽屉（ADR-0186），换号要不要重启也看它。
+  /** supabase 的 uid。本机数据按它分抽屉（ADR-0187），换号要不要重启也看它。
       未登录时是空串 —— 和 email/name 一样，EMPTY_ACCOUNT 里没有 null 这一档 */
   id: string;
   email: string;
@@ -754,7 +754,7 @@ export interface ShellBridge {
       `getAccount()` 在冷启动时答不准也答不快（restore() 是 fire-and-forget 且走网络），
       拿它当闸门会让已登录用户闪一下登录页、让断网用户彻底进不来（ADR-0182） */
   hasAuthRecord(): Promise<boolean>;
-  /** 这个账号的用户级配置目录绝对路径（`~/.mr-otto/accounts/<抽屉>/`，ADR-0186）。
+  /** 这个账号的用户级配置目录绝对路径（`~/.mr-otto/accounts/<抽屉>/`，ADR-0187）。
       界面上凡是告诉用户「去哪个目录手改」的地方都得说真话 —— 自本机数据按账号
       分抽屉起，`~/.mr-otto/agents` 这类写死的字面量已经指不到任何生效的文件了。
       抽屉名是 uid 的哈希，渲染层算不出来，只能问主进程 */

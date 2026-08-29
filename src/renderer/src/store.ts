@@ -350,7 +350,7 @@ interface ChatState {
   /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
       account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0182） */
   authRecord: boolean;
-  /** 这个账号的用户级配置目录（`~/.mr-otto/accounts/<抽屉>/`，ADR-0186）。
+  /** 这个账号的用户级配置目录（`~/.mr-otto/accounts/<抽屉>/`，ADR-0187）。
       凡是界面上告诉用户「文件落在哪」「去哪手改」的地方都从这里取 —— 写死的
       `~/.mr-otto/...` 自分抽屉起指不到任何生效的文件。开机前是空串 */
   configRoot: string;
@@ -1985,7 +1985,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // 进门闸的判据（ADR-0182）。和 getAccount() 一起取而不是懒加载:它决定首屏
       // 画哪一屏,晚一拍就是"先闪一下登录页再跳进去"
       tick(window.otter.hasAuthRecord()),
-      // 「文件落在哪」那几处文案的真实来源（ADR-0186）。和上面一起取:设置页
+      // 「文件落在哪」那几处文案的真实来源（ADR-0187）。和上面一起取:设置页
       // 可能在冷启动后立刻被打开,懒加载会让第一眼看到的是空路径
       tick(window.otter.configRoot()),
       tick(window.otter.keyStatus()),

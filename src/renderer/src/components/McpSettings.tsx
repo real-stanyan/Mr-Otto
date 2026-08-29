@@ -304,7 +304,7 @@ function NewMcpServerDialog({
 
 function McpServerRow({ server }: { server: McpServerStatus }) {
   const saveMcpServer = useChat((s) => s.saveMcpServer);
-  // mcp.json 跟着账号走（ADR-0186）：写死 ~/.mr-otto/mcp.json 的话，照着提示去手改
+  // mcp.json 跟着账号走（ADR-0187）：写死 ~/.mr-otto/mcp.json 的话，照着提示去手改
   // 的用户会编辑一个对本账号完全不生效的文件
   const configRoot = useChat((s) => s.configRoot);
   const removeMcpServer = useChat((s) => s.removeMcpServer);

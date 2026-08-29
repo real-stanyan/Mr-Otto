@@ -98,7 +98,7 @@ export function toAccountInfo(user: SupabaseUserLike): AccountInfo {
   const metaPicture = typeof metadata["picture"] === "string" ? (metadata["picture"] as string) : undefined;
   const avatarUrl = metaAvatarUrl ?? metaPicture ?? "";
 
-  // id 是本机数据分抽屉的依据（ADR-0186）：它决定「换号了没有」，进而决定要不要
+  // id 是本机数据分抽屉的依据（ADR-0187）：它决定「换号了没有」，进而决定要不要
   // 重启换数据目录。取不到就留空串 —— 空串 ≠ 任何真 uid，于是判不出换号、
   // 不会误重启，退化成本条修复之前的行为（同一个抽屉），而不是随机换一个
   return { signedIn: true, id: user.id ?? "", email, name, avatarUrl };

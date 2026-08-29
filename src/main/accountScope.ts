@@ -1,4 +1,4 @@
-// accountScope —— 本机数据按登录账号分家（issue #749，ADR-0186）。
+// accountScope —— 本机数据按登录账号分家（issue #749，ADR-0187）。
 //
 // 在这之前，一台机器上的本地存储只按 `OTTO_PROFILE` 分（userData），或者干脆
 // 一台机器一份（`~/.mr-otto/`）。于是「退出账号 1、登录账号 2」之后，账号 2

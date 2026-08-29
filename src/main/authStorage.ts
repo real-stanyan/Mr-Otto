@@ -54,7 +54,7 @@ function sessionValues(filePath: string, io: AuthStorageIO): Record<string, unkn
 }
 
 /**
- * 落盘 session 里的「这是谁」—— uid 和邮箱（issue #749，ADR-0186）。
+ * 落盘 session 里的「这是谁」—— uid 和邮箱（issue #749，ADR-0187）。
  *
  * 同步、离线、不发网络：本机数据要按账号分抽屉，而抽屉在 `whenReady` 的第一行
  * 就得选定，那时 supabase client 还没造、`restore()` 的网络往返更没影子。

@@ -36,7 +36,7 @@ export interface SubagentRoot {
     工具名、模型名是另一套产品的词，混进清单就是一排「N 个工具名无法识别」的只读
     条目，模型还会把活派给它们（ADR-0056 撤销 ADR-0048 的第 2/4 条根）。
 
-    用户那条根收的是**解析好的配置目录**而不是 home：自 ADR-0186 起它是
+    用户那条根收的是**解析好的配置目录**而不是 home：自 ADR-0187 起它是
     `~/.mr-otto/accounts/<抽屉>/`（跟着账号走），不再是 `<home>/.mr-otto/`。
     算法在 accountScope.ts，不在这儿重拼一遍 */
 export function subagentRoots(userConfigDir: string, workspace: string | null): SubagentRoot[] {

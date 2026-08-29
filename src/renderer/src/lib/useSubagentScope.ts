@@ -26,7 +26,7 @@ export function useSubagentScope(): SubagentScopeView {
   const scope = useChat((s) => s.subagentScope);
   const setScope = useChat((s) => s.setSubagentScope);
 
-  // 用户级那条路径不能写死（ADR-0186）：它现在是 `~/.mr-otto/accounts/<抽屉>/agents`，
+  // 用户级那条路径不能写死（ADR-0187）：它现在是 `~/.mr-otto/accounts/<抽屉>/agents`，
   // 抽屉名是 uid 的哈希。这个字符串会出现在「建在这一层」的提示、按钮 title，
   // 以及「去那个目录里手工把内容填上」那句错误里 —— 写死的话三处一起在说谎
   const configRoot = useChat((s) => s.configRoot);

@@ -25,7 +25,7 @@ import { useChat } from "../store.js";
 
 export function SkillImportDialog() {
   const refreshSkills = useChat((s) => s.refreshSkills);
-  // 落点跟着账号走（ADR-0186），不是写死的 ~/.mr-otto/skills
+  // 落点跟着账号走（ADR-0187），不是写死的 ~/.mr-otto/skills
   const configRoot = useChat((s) => s.configRoot);
   const [open, setOpen] = useState(false);
   const [externals, setExternals] = useState<ExternalSkillInfo[] | null>(null); // null = 扫描中

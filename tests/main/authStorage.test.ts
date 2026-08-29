@@ -164,7 +164,7 @@ describe("authStorage", () => {
   });
 });
 
-// ADR-0186：本机数据按账号分抽屉，而抽屉在 whenReady 的第一行就得选定 —— 那时
+// ADR-0187：本机数据按账号分抽屉，而抽屉在 whenReady 的第一行就得选定 —— 那时
 // supabase client 还没造、restore() 的网络往返更没影子。答案本来就在盘上：
 // supabase 落的那份 session 自带 user.id。
 describe("sessionIdentity —— 落盘 session 里的「这是谁」", () => {

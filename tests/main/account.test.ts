@@ -90,7 +90,7 @@ describe("toAccountInfo", () => {
   });
 
   it("user 没有 id → id 退化成空串（不是 undefined，也不是别人的 uid）", () => {
-    // ADR-0186：id 是本机数据分抽屉的依据。取不到就留空串 —— 空串 ≠ 任何真 uid，
+    // ADR-0187：id 是本机数据分抽屉的依据。取不到就留空串 —— 空串 ≠ 任何真 uid，
     // 于是「换号了没有」判不出来、不会误重启，退化成分抽屉之前的行为（同一个抽屉）
     expect(toAccountInfo({ email: "nobody@example.com", user_metadata: {} }).id).toBe("");
   });

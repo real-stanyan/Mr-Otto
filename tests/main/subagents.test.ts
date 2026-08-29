@@ -303,7 +303,7 @@ describe("序列化往返", () => {
 });
 
 describe("subagentRoots", () => {
-  // 第一个参数自 ADR-0186 起是**解析好的用户配置目录**（账号抽屉），不是 home ——
+  // 第一个参数自 ADR-0187 起是**解析好的用户配置目录**（账号抽屉），不是 home ——
   // 用户级的定义跟着账号走，不再是 `<home>/.mr-otto/`
   const USER_CONFIG = "/home/u/.mr-otto/accounts/deadbeefdeadbeef";
 
@@ -314,7 +314,7 @@ describe("subagentRoots", () => {
     ]);
   });
 
-  it("用户那条根不再自己拼 .mr-otto —— 拼在 accountScope 那一层（ADR-0186）", () => {
+  it("用户那条根不再自己拼 .mr-otto —— 拼在 accountScope 那一层（ADR-0187）", () => {
     const user = subagentRoots("/anywhere", null)[0];
     expect(user?.root).toBe("/anywhere/agents");
   });

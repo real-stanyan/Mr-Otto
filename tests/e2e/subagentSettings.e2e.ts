@@ -74,7 +74,7 @@ test("#142-7 内置那份「改成我自己的一份」；ADR-0056 撤掉的 ~/.
     await win.getByRole("button", { name: /^Explore 内置/ }).click();
     await expect(win.getByLabel("Description")).toBeDisabled();
     const materialize = win.getByRole("button", { name: "改成我自己的一份" });
-    // 落点跟着账号走（ADR-0186）：title 上写的是真路径，不再是 `~/.mr-otto/agents`
+    // 落点跟着账号走（ADR-0187）：title 上写的是真路径，不再是 `~/.mr-otto/agents`
     await expect(materialize).toHaveAttribute("title", userAgentsDir);
     await materialize.click();
 

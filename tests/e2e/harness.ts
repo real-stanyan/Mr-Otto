@@ -39,7 +39,7 @@ const MAIN = join(ROOT, "out", "main", "index.js");
     产品把目录改名了就该在这里红一次，而不是跟着一起改、悄悄继续绿 */
 export const CONFIG_DIR = ".mr-otto";
 
-/** 播进 auth.json 的那份假 session 的 uid。抽屉名是它的哈希（ADR-0186），
+/** 播进 auth.json 的那份假 session 的 uid。抽屉名是它的哈希（ADR-0187），
     所以「播登录记录」和「算配置目录」必须读同一个常量 —— 分成两处写死，
     一处改了另一处不改，症状是播出去的 skill 一条都不出现，而没有任何报错 */
 const E2E_UID = "00000000-0000-0000-0000-000000000000";
@@ -106,7 +106,7 @@ export interface Otto {
   home: string;
   /** 渲染层的 pageerror / console.error，收在这儿，收尾时断言为空 */
   errors: string[];
-  /** 这个账号的 subagent 目录（`$HOME/.mr-otto/accounts/<抽屉>/agents`，ADR-0186） */
+  /** 这个账号的 subagent 目录（`$HOME/.mr-otto/accounts/<抽屉>/agents`，ADR-0187） */
   userAgentsDir: string;
   /** Electron 的 userData 根。auth.json 在这里；sessions.db 不在，见 accountData */
   userData: string;
@@ -213,7 +213,7 @@ function seedAuthRecord(userData: string): void {
   writeFileSync(join(userData, "auth.json"), JSON.stringify(record), { mode: 0o600 });
 }
 
-/** 本机数据按账号分抽屉之后（ADR-0186），会话库、记忆、skill、subagent 全在
+/** 本机数据按账号分抽屉之后（ADR-0187），会话库、记忆、skill、subagent 全在
     `<根>/accounts/<抽屉>/` 底下 —— 播种和查库都得先算出这一层。抽屉名是这份
     假 session 里 uid 的哈希，所以两边必须用同一个常量。
 
