@@ -241,7 +241,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/mcpInstalled.ts` / `src/renderer/src/components/McpServerEditor.tsx` — 已装的那几台也是卡片，
   「已接通」/「待接通」两组置顶（一张写着「连不上」的卡挂在「已接通」下面是自相矛盾；藏起来更糟——那台就再也点不到了）。
   管理面（开关/改地址/重连/删除）住在详情页里，页面下半那份等宽 id + 裸 URL + `0 资源 · 0 prompt` 的清单已删。
-  连不上的那句错误过 `humanizeMcpError`：只翻认得出的，认不出的原样留着，原文进 `title`（ADR-0188）
+  连不上的那句错误过 `humanizeMcpError`：只翻认得出的，认不出的原样留着，原文进 `title`（ADR-0189）
 - `src/renderer/src/lib/mcpDetail.ts` / `src/renderer/src/components/McpConnectorPage.tsx` — 目录卡点开的那一页：
   事实清单（先说「代码跑在谁的机器上」）+ 要填的参数 + 已装那台的工具清单。**换页不是弹窗**，主行动那一格
   复用 `installSlot`（判据分叉就是 #722 那个撒谎的勾的一般形式）。组件长出第二条 return 路径时，挂在旧路径
