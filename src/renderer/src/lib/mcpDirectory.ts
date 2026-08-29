@@ -7,14 +7,22 @@
 
 import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
-import { mcpServerIdError } from "./mcpForm.js";
+import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
+
+/** 已装的一台 —— 目录卡要的是**状态**，不只是"这个 id 在不在配置里"。
+    只拿 id 的那一版让三件事长得一模一样：连上了 / 需要授权 / 连不上，
+    三张卡都是一个绿勾（issue #722：装 Canva 时把浏览器关了，勾照样出现） */
+export interface InstalledServer {
+  id: string;
+  status: McpDisplayStatus;
+}
 
 export interface DirectoryItem {
   entry: CatalogEntry;
   /** 来自仓内精选层 = 人工核过 */
   verified: boolean;
-  /** 已经装上了 —— UI 画 ✓ 而不是 + */
-  installed: boolean;
+  /** 已装的话是它此刻的状态；没装是 null */
+  installed: McpDisplayStatus | null;
 }
 
 export interface BuildDirectoryOptions {
@@ -23,20 +31,20 @@ export interface BuildDirectoryOptions {
   curated: readonly CatalogEntry[];
   /** 注册表返回的条目 */
   registry: readonly CatalogEntry[];
-  /** 已装 server 的 id */
-  installedIds: readonly string[];
+  /** 已装的 server 及其状态 */
+  installed: readonly InstalledServer[];
 }
 
 export function buildDirectory(opts: BuildDirectoryOptions): {
   curated: DirectoryItem[];
   longTail: DirectoryItem[];
 } {
-  const installed = new Set(opts.installedIds);
+  const installed = new Map(opts.installed.map((s) => [s.id, s.status]));
   const curatedIds = new Set(opts.curated.map((e) => e.id));
   const wrap = (entry: CatalogEntry, verified: boolean): DirectoryItem => ({
     entry,
     verified,
-    installed: installed.has(entry.id),
+    installed: installed.get(entry.id) ?? null,
   });
   return {
     curated: opts.curated.map((e) => wrap(e, true)),
@@ -185,4 +193,42 @@ export type IconPaint = "mono" | "color";
 
 export function iconPaint(icon: string): IconPaint {
   return MONO_ICONS.has(icon) ? "mono" : "color";
+}
+
+/* ── 目录卡右边那一格该长什么样 ─────────────────────────────────────────
+   原来只有两档：装了画 ✓、没装画 +。那个 ✓ 的判据是「配置里有没有一个叫
+   这名字的」，从来不看状态，于是它在两种情况下撒谎（issue #722）：
+
+   ① **授权还在飞的时候。** `install()` 里 saveMcpServer 一成功，卡片立刻
+      切到 ✓，而 authorizeMcpServer 还挂在 waitForCode 上——AUTH_TIMEOUT_MS
+      是五分钟。浏览器关掉之后，用户看着一个绿勾，背后是五分钟静默等待。
+   ② **授权没成的时候。** needs-auth 和 connected 同一个勾。真相在页面下半
+      那份清单里（那边有「需要授权」和「授权」按钮），但上半说的是"完事了"。
+
+   所以这一格按真实状态分档，busy 优先——它盖住的正是 ① 那个窗口。
+   needs-auth 直接给一个能点的「授权」：用户不该为了走完流程，先弄明白
+   "上面那个勾和下面那一行是同一台"。 */
+export type InstallSlot =
+  | { kind: "add" }
+  | { kind: "busy" }
+  | { kind: "authorize" }
+  | { kind: "done" }
+  /** 装上了但此刻用不了/不该催 —— 画一句安静的说明，动作留给下面那份清单 */
+  | { kind: "note"; label: string; title: string };
+
+export function installSlot(item: DirectoryItem, busy: boolean): InstallSlot {
+  if (busy) return { kind: "busy" };
+  if (item.installed === null) return { kind: "add" };
+  switch (item.installed) {
+    case "connected":
+      return { kind: "done" };
+    case "needs-auth":
+      return { kind: "authorize" };
+    case "failed":
+      return { kind: "note", label: "连不上", title: "已装上，但连不上——原因看下面那份清单" };
+    case "connecting":
+      return { kind: "note", label: "连接中", title: "已装上，正在连" };
+    case "disabled":
+      return { kind: "note", label: "已关闭", title: "已装上，但被关掉了——在下面那份清单里打开" };
+  }
 }

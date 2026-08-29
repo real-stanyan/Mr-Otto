@@ -7,6 +7,10 @@
 //   它按字母序返回，第一条是 ac.inference.sh，没有任何排名信号。
 // - 打了字才去查公开注册表，结果压在一条"未经核验"的分隔线下面。
 //
+// 卡片右边那一格说的是**此刻的真实状态**，不是"配置里有没有这个 id"
+// （installSlot，见 lib/mcpDirectory.ts）。这两件事不是一回事：授权失败、
+// 连不上、被关掉，配置里都有它——一律画勾等于告诉用户"完事了"（issue #722）。
+//
 // 图标只认打进包的本地资源键（CatalogEntry.icon），**永远不接远程 URL**：
 // 注册表条目的 icons 由投稿者自由填写，让渲染进程去加载等于每翻一次目录就把
 // 用户 IP 交给一批陌生服务器。没有本地图标的一律画首字母色块。
@@ -17,7 +21,7 @@
 // 当前编号就丢掉。打了 notion 又立刻改成 linear，notion 的响应后到也进不来。
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Plus, Search, ShieldCheck } from "lucide-react";
+import { Check, Loader2, Plus, Search, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import {
   Dialog,
@@ -37,11 +41,13 @@ import {
   configFromEntry,
   directoryTint,
   iconPaint,
+  installSlot,
   installPackageName,
   installSourceLabel,
   needsInstallConfirm,
   uniqueServerId,
   type DirectoryItem,
+  type InstalledServer,
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
 
@@ -61,7 +67,7 @@ const DEBOUNCE_MS = 250;
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 const GRID = "grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]";
 
-export function McpDirectory({ installedIds }: { installedIds: string[] }) {
+export function McpDirectory({ installed }: { installed: InstalledServer[] }) {
   const searchMcpRegistry = useChat((s) => s.searchMcpRegistry);
   const saveMcpServer = useChat((s) => s.saveMcpServer);
   const authorizeMcpServer = useChat((s) => s.authorizeMcpServer);
@@ -113,11 +119,12 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
     return () => clearTimeout(timer);
   }, [query, searchMcpRegistry]);
 
+  const installedIds = installed.map((s) => s.id);
   const { curated, longTail } = buildDirectory({
     query,
     curated: searchCatalog(query),
     registry,
-    installedIds,
+    installed,
   });
 
   const install = async (item: DirectoryItem, values: Record<string, string>) => {
@@ -154,6 +161,21 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
           `「${id}」已装上。这台来自公开注册表，没有自动拉授权——要用的话，在下面那台的卡片里点一次「授权」。`
         );
       }
+    }
+    setInstalling(null);
+  };
+
+  // 卡片上那颗「授权」——needs-auth 时用户就在这一格，别逼他先弄明白
+  // 「上面这张卡和下面那一行是同一台 server」
+  const authorize = async (item: DirectoryItem) => {
+    const id = item.entry.id;
+    setInstalling(id);
+    setInstallError(null);
+    setInstallNote(null);
+    try {
+      await authorizeMcpServer(id);
+    } catch (e) {
+      setInstallError(`「${id}」授权没跑通：${bridgeErrorMessage(e)}`);
     }
     setInstalling(null);
   };
@@ -213,6 +235,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
                 item={item}
                 busy={installing === item.entry.id}
                 onAdd={() => start(item)}
+                onAuthorize={() => void authorize(item)}
               />
             ))}
           </div>
@@ -241,6 +264,7 @@ export function McpDirectory({ installedIds }: { installedIds: string[] }) {
                   item={item}
                   busy={installing === item.entry.id}
                   onAdd={() => start(item)}
+                  onAuthorize={() => void authorize(item)}
                 />
               ))}
             </div>
@@ -327,12 +351,15 @@ function DirectoryCard({
   item,
   busy,
   onAdd,
+  onAuthorize,
 }: {
   item: DirectoryItem;
   busy: boolean;
   onAdd: () => void;
+  onAuthorize: () => void;
 }) {
-  const { entry, verified, installed } = item;
+  const { entry, verified } = item;
+  const slot = installSlot(item, busy);
   return (
     <div className="flex items-center gap-[10px] rounded-[10px] border border-border bg-card px-3 py-[10px]">
       <EntryIcon entry={entry} />
@@ -356,9 +383,9 @@ function DirectoryCard({
           {entry.description}
         </p>
       </div>
-      {installed ? (
-        // 已装的不可点：增删改在下面那份列表里（McpServerRow），这里再放一条
-        // 编辑路径等于两个地方管同一台 server
+      {slot.kind === "done" ? (
+        // 已装且连上了：不可点。增删改在下面那份列表里（McpServerRow），
+        // 这里再放一条编辑路径等于两个地方管同一台 server
         <span
           className="inline-flex size-6 shrink-0 items-center justify-center text-ok"
           title="已经装上了"
@@ -366,10 +393,30 @@ function DirectoryCard({
           <Check className="size-4" aria-hidden />
           <span className="sr-only">{entry.name} 已经装上了</span>
         </span>
+      ) : slot.kind === "authorize" ? (
+        // 装上了但还没授权。**这一格不能画勾**——上一版画了，于是"浏览器关掉、
+        // 授权没成"和"完事了"长得一模一样（issue #722）
+        <button
+          type="button"
+          aria-label={`授权 ${entry.name}`}
+          className={cn(
+            "press-scale inline-flex shrink-0 items-center rounded-[7px] px-[7px] py-[3px]",
+            "text-[11px] font-medium text-muted-foreground transition-colors duration-150",
+            "ring-1 ring-border hover:bg-foreground/[0.06] hover:text-foreground"
+          )}
+          title="已装上，还差一次授权"
+          onClick={onAuthorize}
+        >
+          授权
+        </button>
+      ) : slot.kind === "note" ? (
+        <span className="shrink-0 text-[11px] text-muted-foreground" title={slot.title}>
+          {slot.label}
+        </span>
       ) : (
         <button
           type="button"
-          disabled={busy}
+          disabled={slot.kind === "busy"}
           aria-label={`添加 ${entry.name}`}
           className={cn(
             "press-scale inline-flex size-6 shrink-0 items-center justify-center rounded-[7px]",
@@ -378,7 +425,11 @@ function DirectoryCard({
           )}
           onClick={onAdd}
         >
-          <Plus className="size-4" aria-hidden />
+          {slot.kind === "busy" ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+          ) : (
+            <Plus className="size-4" aria-hidden />
+          )}
         </button>
       )}
     </div>
