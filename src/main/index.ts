@@ -2533,6 +2533,9 @@ void app.whenReady().then(() => {
 
   // 安全硬约束：只回 AccountInfo 四字段，token/session 对象永不过 IPC
   ipcMain.handle(CHANNELS.getAccount, () => manager.getAccount());
+  // 进门闸的判据（ADR-0181）：读的是 auth.json 存没存过东西，不是 manager 里那份
+  // 投影——后者要等 restore() 的网络校验回来，冷启动时问它等于问了个还没醒的人
+  ipcMain.handle(CHANNELS.hasAuthRecord, () => supabase.hasAuthRecord());
 
   // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
   // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切

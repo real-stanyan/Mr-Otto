@@ -129,6 +129,7 @@ const bridge: ShellBridge = {
   simRequestInputPermission: () => ipcRenderer.invoke(CHANNELS.simRequestInputPermission),
   intakePastedFiles: (files) => ipcRenderer.invoke(CHANNELS.intakePastedFiles, files),
   getAccount: () => ipcRenderer.invoke(CHANNELS.getAccount),
+  hasAuthRecord: () => ipcRenderer.invoke(CHANNELS.hasAuthRecord),
   usageByProvider: (days: number) => ipcRenderer.invoke(CHANNELS.usageByProvider, days),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
   signIn: (provider) => ipcRenderer.invoke(CHANNELS.signIn, provider),

@@ -108,7 +108,12 @@ export function toAccountInfo(user: SupabaseUserLike): AccountInfo {
  * 真 client 工厂——auth 视角(SupabaseLike)给 AccountManager,raw 完整 client
  * 给好友网关(from/channel)。同一个实例双出口:同一登录态,别建两个 client
  */
-export function createSupabaseAuthClient(filePath: string): { auth: SupabaseLike; raw: SupabaseClient } {
+export function createSupabaseAuthClient(filePath: string): {
+  auth: SupabaseLike;
+  raw: SupabaseClient;
+  /** 这台机器上有没有登录记录（auth.json 里存过东西）。进门闸的判据，见 authStorage.hasAny */
+  hasAuthRecord: () => boolean;
+} {
   const storage = createAuthStorage(filePath);
   const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -119,7 +124,7 @@ export function createSupabaseAuthClient(filePath: string): { auth: SupabaseLike
       storage,
     },
   });
-  return { auth: client as unknown as SupabaseLike, raw: client };
+  return { auth: client as unknown as SupabaseLike, raw: client, hasAuthRecord: () => storage.hasAny() };
 }
 
 export class AccountManager {

@@ -23,6 +23,8 @@ export const HEADER_GHOST = "shrink-0 text-xs text-muted-foreground hover:text-f
 export const SETTINGS_BODY =
   "flex-1 overflow-y-auto scrollbar-stable px-8 py-6 flex flex-col gap-4 w-full";
 export const HINT = "text-muted-foreground text-[13px]";
+/** 报错文案。登录卡有两个渲染点(账号页 / 进门闸),错误样式只能有一份 */
+export const ERR_TXT = "text-err text-[13px]";
 
 /** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案。
     两者不必同名——`mcp` 那一栏的 label 是「连接器」：能发现、能点、能装的那一面
