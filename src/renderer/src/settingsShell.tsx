@@ -24,7 +24,9 @@ export const SETTINGS_BODY =
   "flex-1 overflow-y-auto scrollbar-stable px-8 py-6 flex flex-col gap-4 w-full";
 export const HINT = "text-muted-foreground text-[13px]";
 
-/** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案 */
+/** 设置栏目导航项：id 对应 store 的 settingsSection，label 是侧栏显示文案。
+    两者不必同名——`mcp` 那一栏的 label 是「连接器」：能发现、能点、能装的那一面
+    是产品概念，MCP 是它今天恰好走的协议（ADR-0178）。id 是内部键，不跟着改 */
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "account", label: "账号", icon: UserRound },
   { id: "workspace", label: "工作区", icon: FolderOpen },
@@ -32,7 +34,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: Luci
   { id: "appearance", label: "外观", icon: Palette },
   { id: "skills", label: "Skill 库", icon: BookMarked },
   { id: "agents", label: "子智能体", icon: Bot },
-  { id: "mcp", label: "MCP", icon: Plug },
+  { id: "mcp", label: "连接器", icon: Plug },
   { id: "permissions", label: "权限", icon: ShieldCheck },
   { id: "memory", label: "记忆", icon: Brain },
   { id: "context", label: "上下文", icon: Shrink },

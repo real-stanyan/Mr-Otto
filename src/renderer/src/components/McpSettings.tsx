@@ -1,4 +1,6 @@
-// MCP 栏目（设置页）——SubagentSettings 的写法兄弟：本机 server 清单是"看
+// 「连接器」栏目（设置页；内部 id 仍是 mcp，见 settingsShell.tsx 与 ADR-0178）——
+// 页面上半是可浏览的连接器目录（McpDirectory，ADR-0171），下半是本机 server 清单。
+// 下半是 SubagentSettings 的写法兄弟：清单是"看
 // ~/.mr-otto/mcp.json 里配了什么、连没连上"，用户在这里增删改 + 手动重连失败的那台。
 // 在此之前，配置这份文件唯一的办法是手改 JSON——这个栏目替掉那条路。
 //
