@@ -25,7 +25,7 @@ import { fakeModelEnv, startFakeModel, type FakeModel, type FakeRequest } from "
 /** 直接查会话库。better-sqlite3 是按 Electron 的 ABI 编的，Playwright 这侧的 node
     加载不了；系统自带的 sqlite3 命令行读同一个文件，够用 */
 function sqlite(otto: Otto, sql: string): string {
-  return execFileSync("sqlite3", [join(otto.userData, "sessions.db"), sql], {
+  return execFileSync("sqlite3", [join(otto.accountData, "sessions.db"), sql], {
     encoding: "utf8",
   }).trim();
 }

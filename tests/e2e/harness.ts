@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 
 import { providerKeyEnvs } from "../../src/shared/providerCatalog.js";
 import { profileDirName } from "../../src/main/profile.js";
+import { ACCOUNTS_DIR, accountDirName } from "../../src/main/accountScope.js";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAIN = join(ROOT, "out", "main", "index.js");
@@ -37,6 +38,11 @@ const MAIN = join(ROOT, "out", "main", "index.js");
     刻意重写一遍而不是 import：e2e 是黑盒，它该按「用户看到的路径」断言，
     产品把目录改名了就该在这里红一次，而不是跟着一起改、悄悄继续绿 */
 export const CONFIG_DIR = ".mr-otto";
+
+/** 播进 auth.json 的那份假 session 的 uid。抽屉名是它的哈希（ADR-0186），
+    所以「播登录记录」和「算配置目录」必须读同一个常量 —— 分成两处写死，
+    一处改了另一处不改，症状是播出去的 skill 一条都不出现，而没有任何报错 */
+const E2E_UID = "00000000-0000-0000-0000-000000000000";
 
 export interface SubagentSeed {
   name: string;
@@ -100,10 +106,14 @@ export interface Otto {
   home: string;
   /** 渲染层的 pageerror / console.error，收在这儿，收尾时断言为空 */
   errors: string[];
-  /** `$HOME/.mr-otto/agents` */
+  /** 这个账号的 subagent 目录（`$HOME/.mr-otto/accounts/<抽屉>/agents`，ADR-0186） */
   userAgentsDir: string;
-  /** Electron 的 userData（sessions.db 在里面）。删会话那类用例要直接查库 */
+  /** Electron 的 userData 根。auth.json 在这里；sessions.db 不在，见 accountData */
   userData: string;
+  /** 这个账号的数据抽屉（`<userData>/accounts/<抽屉>/`）。**sessions.db 在这里** */
+  accountData: string;
+  /** 这个账号的用户级配置目录（`$HOME/.mr-otto/accounts/<抽屉>/`）：memories / skills / agents / mcp.json */
+  userConfig: string;
   /** 这一只的 OTTO_PROFILE。重启复用同一份库时要原样传回去（LaunchOptions.profile） */
   profile: string;
   /** 关窗 + 删临时目录。用例用 try/finally 保证它跑到 */
@@ -197,10 +207,28 @@ function seedAuthRecord(userData: string): void {
       refresh_token: "e2e",
       token_type: "bearer",
       expires_at: 1,
-      user: { id: "00000000-0000-0000-0000-000000000000", email: "e2e@example.invalid" },
+      user: { id: E2E_UID, email: "e2e@example.invalid" },
     }),
   };
   writeFileSync(join(userData, "auth.json"), JSON.stringify(record), { mode: 0o600 });
+}
+
+/** 本机数据按账号分抽屉之后（ADR-0186），会话库、记忆、skill、subagent 全在
+    `<根>/accounts/<抽屉>/` 底下 —— 播种和查库都得先算出这一层。抽屉名是这份
+    假 session 里 uid 的哈希，所以两边必须用同一个常量。
+
+    `authRecord: false` 的那批用例没有 session，抽屉是 `_signed-out`；它们停在
+    SignInScreen 上什么也点不到，播进去的东西本来也用不上，但路径仍然算对，
+    免得哪天有人写一条「登录之后才看得见」的用例，播错地方还查不出来。 */
+function accountDirs(userData: string, home: string, signedIn: boolean): {
+  accountData: string;
+  userConfig: string;
+} {
+  const drawer = accountDirName(signedIn ? E2E_UID : null);
+  return {
+    accountData: join(userData, ACCOUNTS_DIR, drawer),
+    userConfig: join(home, CONFIG_DIR, ACCOUNTS_DIR, drawer),
+  };
 }
 
 export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
@@ -212,13 +240,17 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
   const own = opts.home === undefined;
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "otto-e2e-home-"));
   const profile = opts.profile ?? `e2e${randomBytes(4).toString("hex")}`;
-  const userAgentsDir = join(home, CONFIG_DIR, "agents");
+  const userData = userDataPathFor(profile, home);
+  const signedIn = opts.authRecord !== false;
+  const { accountData, userConfig } = accountDirs(userData, home, signedIn);
+  const userAgentsDir = join(userConfig, "agents");
   seedInto(userAgentsDir, opts.userAgents);
+  // `.claude/agents` 是别家产品的安装位，机器级，不跟着账号走（ADR-0056 起也不再扫）
   seedInto(join(home, ".claude", "agents"), opts.claudeAgents);
-  seedSkills(join(home, CONFIG_DIR, "skills"), opts.skills);
+  seedSkills(join(userConfig, "skills"), opts.skills);
   // 进门闸（ADR-0182）：没有登录记录的话第一屏是 SignInScreen，里面什么都点不到。
   // 默认播一条 —— 让 33 条既有用例继续站在 app 里面，而不是各自去登一次录
-  if (opts.authRecord !== false) seedAuthRecord(userDataPathFor(profile, home));
+  if (signedIn) seedAuthRecord(userData);
 
   const app = await electron.launch({
     // 打好包的那一只从自己的 asar 里读入口，不能再把仓库根塞给它
@@ -228,7 +260,9 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     // 一把假 key + 假端点，它们的意志优先
     env: { ...process.env, ...blankCredentials(), ...opts.env, HOME: home, OTTO_PROFILE: profile },
   });
-  const userData = await app.evaluate(({ app }) => app.getPath("userData"));
+  // 主进程算出来的那份必须和上面算的一致 —— 不一致的话播种全落在空处，
+  // 而症状是「用例莫名其妙看不到播进去的东西」，没有任何报错
+  expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
   const errors: string[] = [];
   const win = await app.firstWindow();
   win.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
@@ -246,6 +280,8 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     errors,
     userAgentsDir,
     userData,
+    accountData,
+    userConfig,
     profile,
     async close() {
       await app.close().catch(() => {});
