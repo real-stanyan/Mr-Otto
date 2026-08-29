@@ -188,7 +188,7 @@ describe("mcp_configure", () => {
   // 鼓励模型这一轮就调它们，而这一轮它们根本不存在——命中的是"未知工具"，
   // 逃生舱 tool_search 也不通（listDeferred 闭包捕获的是这一轮的 list）。
   // 断关键子串不断整句，否则改一次文案就脆
-  it("连上之后的文案说清「下一轮才生效」，别鼓励模型这一轮就调", async () => {
+  it("连上之后的文案说「这一轮就能用」，别再把用户支去发下一条消息（#750）", async () => {
     const c = cap({
       servers: () => [{ id: "supabase", name: "supabase", status: "connected", live: true,
         tools: [
@@ -204,8 +204,13 @@ describe("mcp_configure", () => {
     );
     // 工具名照旧要说（用户要知道接上了什么）……
     expect(out).toContain("list_tables");
-    // ……但必须紧跟着"什么时候能用"
-    expect(out).toContain("下一条消息");
-    expect(out).toContain("不要在这一轮直接调用");
+    // ……但必须紧跟着"什么时候能用"。engine 现在每圈只长不缩地刷工具表，
+    // 新刀这一轮就在表里；文案再说"等下一条消息"，模型就会把用户支回去
+    // 让他"随便回一句"——他要的是结果，不是一次"请再说一遍"（#750）
+    expect(out).toContain("这一轮就能用");
+    expect(out).not.toContain("下一条消息");
+    expect(out).not.toContain("不要在这一轮直接调用");
+    // 过阈值时新刀会被判成 deferred，那时确实不在声明表里——两条路都得说清
+    expect(out).toContain("tool_search");
   });
 });
