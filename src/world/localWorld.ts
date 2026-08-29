@@ -97,6 +97,14 @@ export function createLocalWorld(
       // 内存有界且**读到 EOF**——不停读，管道不会 back-pressure 卡死子进程
       const timeoutMs = opts?.timeoutMs ?? 30_000;
       return new Promise<ExecResult>((done, fail) => {
+        // 调用时 signal 已经 aborted：AbortSignal 不会向事后注册的 listener 重放
+        // 已发生的 abort，"abort" 事件永远不会触发，killGroup 也就永远不会被调用
+        // ——旧的原生 signal 选项会在 spawn 时就直接判一次，这里补回同等语义：
+        // 同步短路、连子进程都不起，不然命令会一直跑到 timeoutMs 才被动收口
+        if (opts?.signal?.aborted) {
+          fail(new Error("命令被中断：用户停止了 turn，调用时已中止（未起进程）"));
+          return;
+        }
         const child = spawn(cmd, {
           shell: true,
           detached: true,            // 独立进程组，组长 pgid = child.pid
