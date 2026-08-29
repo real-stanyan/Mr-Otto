@@ -238,6 +238,10 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
 - `src/main/imageIntake.ts` / `src/renderer/src/components/elements/image-generation.tsx` — 工具产出的图：字节落附件库、日志只记 ref 的那道中间件 + 显示它的卡。**上游那张卡没有 `<img>`**（完成态画的是一坨写死的渐变），本仓改动一览写在文件头（ADR-0144）
+- `src/renderer/src/lib/mcpInstalled.ts` / `src/renderer/src/components/McpServerEditor.tsx` — 已装的那几台也是卡片，
+  「已接通」/「待接通」两组置顶（一张写着「连不上」的卡挂在「已接通」下面是自相矛盾；藏起来更糟——那台就再也点不到了）。
+  管理面（开关/改地址/重连/删除）住在详情页里，页面下半那份等宽 id + 裸 URL + `0 资源 · 0 prompt` 的清单已删。
+  连不上的那句错误过 `humanizeMcpError`：只翻认得出的，认不出的原样留着，原文进 `title`（ADR-0189）
 - `src/renderer/src/lib/mcpDetail.ts` / `src/renderer/src/components/McpConnectorPage.tsx` — 目录卡点开的那一页：
   事实清单（先说「代码跑在谁的机器上」）+ 要填的参数 + 已装那台的工具清单。**换页不是弹窗**，主行动那一格
   复用 `installSlot`（判据分叉就是 #722 那个撒谎的勾的一般形式）。组件长出第二条 return 路径时，挂在旧路径

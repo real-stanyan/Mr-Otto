@@ -51,6 +51,9 @@ import {
   type InstalledServer,
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
+import type { McpServerStatus } from "../../../shared/mcp.js";
+import { filterInstalled, installedItems, splitInstalled } from "../lib/mcpInstalled.js";
+import { mcpDisplayStatus } from "../lib/mcpForm.js";
 import { McpConnectorPage } from "./McpConnectorPage.js";
 
 // eager:true 只把**地址**收进来（?url），不是把图标内容打进包里（同 FileTypeIcon）
@@ -79,10 +82,14 @@ const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground upper
 const GRID = "grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]";
 
 export function McpDirectory({
-  installed,
+  servers,
   onPageChange,
 }: {
-  installed: InstalledServer[];
+  /** 盘上那几台的完整快照。传整份而不是 {id,status} 的精简版（#753）：
+      已装的那几台现在也画成卡片放在最上面，而"目录里没有的那些"（手填的、
+      注册表来的）只能从配置现造条目——那需要 url/command。详情页里的管理面
+      也吃这份 */
+  servers: McpServerStatus[];
   /** 详情页开着时通知外面：它是一整屏，下面那份 server 清单得让位，
       不然"新页面"底下还挂着上一页的尾巴（#745） */
   onPageChange?: (open: boolean) => void;
@@ -141,10 +148,19 @@ export function McpDirectory({
     return () => clearTimeout(timer);
   }, [query, searchMcpRegistry]);
 
+  const installed: InstalledServer[] = servers.map((s) => ({
+    id: s.id,
+    status: mcpDisplayStatus(s.config, s.status),
+    tools: s.tools.map((t) => t.name),
+  }));
   const installedIds = installed.map((s) => s.id);
+  const mine = filterInstalled(installedItems(servers), query);
+  const { connected, pending } = splitInstalled(mine);
   const { curated, longTail } = buildDirectory({
     query,
-    curated: searchCatalog(query),
+    // 装过的不在下面的分类里重复出现——它已经在最上面那两组里了。
+    // 同一台 server 在一屏上出现两次，用户要先想明白"这两张是不是一个东西"
+    curated: searchCatalog(query).filter((e) => !installedIds.includes(e.id)),
     registry,
     installed,
   });
@@ -233,7 +249,7 @@ export function McpDirectory({
   const opened =
     openedId === null
       ? null
-      : ([...curated, ...longTail].find((i) => i.entry.id === openedId) ?? null);
+      : ([...mine, ...curated, ...longTail].find((i) => i.entry.id === openedId) ?? null);
 
   // 通知外面"这一屏被一整页盖住了"。放 effect 里而不是在 setOpenedId 旁边顺手
   // 调一次：openedId 还会因为搜索词变化而失效（搜走了那条，opened 变 null），
@@ -278,7 +294,7 @@ export function McpDirectory({
         {messages}
         <McpConnectorPage
           item={opened}
-          installedServer={installed.find((s) => s.id === opened.entry.id)}
+          server={servers.find((s) => s.id === opened.entry.id)}
           busy={installing === opened.entry.id}
           icon={<EntryIcon entry={opened.entry} size={40} />}
           onBack={() => setOpenedId(null)}
@@ -307,6 +323,32 @@ export function McpDirectory({
       </div>
 
       {messages}
+
+      {/* 我装的那几台，放在最上面（issue #753）。两组而不是一组：一张写着
+          「连不上」的卡挂在「已接通」这个标题下面是自相矛盾，而把没接通的
+          藏起来更糟——那台就再也点不到了，连改配置的入口都找不到 */}
+      {[
+        { label: "已接通", items: connected },
+        { label: "待接通", items: pending },
+      ]
+        .filter((g) => g.items.length > 0)
+        .map((g) => (
+          <div key={g.label} className="flex flex-col gap-2">
+            <span className={SECTION_LABEL}>{g.label}</span>
+            <div className={GRID}>
+              {g.items.map((item) => (
+                <DirectoryCard
+                  key={item.entry.id}
+                  item={item}
+                  busy={installing === item.entry.id}
+                  onAdd={() => start(item)}
+                  onAuthorize={() => void authorize(item)}
+                  onOpen={() => setOpenedId(item.entry.id)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
 
       {curated.length > 0 && (
         <div className="flex flex-col gap-4">

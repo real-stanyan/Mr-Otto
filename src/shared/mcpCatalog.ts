@@ -1073,7 +1073,7 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
   {
     id: "filesystem",
     name: "本地文件系统",
-    description: "把指定目录暴露成 MCP 资源（Mr Otto 自带读写文件工具，一般用不上）",
+    description: "把指定目录开放出来（Mr Otto 自带读写文件工具，一般用不上）",
     category: "本机工具",
     transport: "stdio",
     command: "npx",
