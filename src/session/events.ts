@@ -3,6 +3,7 @@
 
 import type { ModelLane } from "../shared/modelLane.js";
 import type { MemoryTarget } from "../shared/memoryStore.js";
+import type { ResidueSnapshot, ResidueItem, CleanupResult } from "../shared/residue.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -538,6 +539,31 @@ export interface BackgroundTaskStartedEvent extends SessionEventBase {
   cmd: string;
 }
 
+/** 残留审计三兄弟（issue #759）。全部 ignorable：审计注记，模型不消费，
+    旧版本跳过照常重放。写入时必须带 ignorable: true */
+export interface ResidueBaselineEvent extends SessionEventBase {
+  type: "residue_baseline";
+  snapshot: ResidueSnapshot;
+}
+export interface ResidueDetectedEvent extends SessionEventBase {
+  type: "residue_detected";
+  items: ResidueItem[];
+  /** 这批残留是从哪个时机查出来的（issue #759 review finding 1）：
+      "turn" = 单个 turn 收口问一次进程组登记表（reportEscapedGroups）——只是
+      "还在跑"，用户可能故意留着，不该替他弹一个要他决断的框，只该冒个角标；
+      "archive" = 会话归档那一刻的全量 diff——会话已经结束，是"该收尾了"的
+      明确时机，弹清单合理。
+      可选 = 向后兼容：旧日志里落过的 residue_detected 没有这个字段，重放时
+      按 "archive" 兜底（渲染层：origin undefined 当 archive 处理，宁可多弹
+      一次也不吞掉用户该看到的残留） */
+  origin?: "turn" | "archive";
+}
+export interface ResidueCleanedEvent extends SessionEventBase {
+  type: "residue_cleaned";
+  item: ResidueItem;
+  result: CleanupResult;
+}
+
 /** 工作区检查点（issue #395 / ADR-0090，Claude Code checkpoint 对照）。
     每个用户 turn 开跑前，装配根把工作区文件快照进影子 git，id 落此事件——
     「回到这一步」的文件侧锚点（对话侧锚点是它前面的 turn_ended，fork 用）。
@@ -625,6 +651,9 @@ export type SessionEvent =
   | RequestEnvelopeEvent
   | BackgroundTaskCompletedEvent
   | BackgroundTaskStartedEvent
+  | ResidueBaselineEvent
+  | ResidueDetectedEvent
+  | ResidueCleanedEvent
   | CheckpointCreatedEvent
   | WorkspaceRestoredEvent
   | BranchCheckedOutEvent
@@ -671,6 +700,9 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   request_envelope: true,
   background_task_completed: true,
   background_task_started: true,
+  residue_baseline: true,
+  residue_detected: true,
+  residue_cleaned: true,
   checkpoint_created: true,
   workspace_restored: true,
   branch_checked_out: true,

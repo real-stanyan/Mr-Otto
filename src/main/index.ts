@@ -6,7 +6,7 @@ import type { WebContents } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
   CHANNELS,
@@ -66,6 +66,9 @@ import type { ExecRule } from "../shared/execPolicy.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
+import { LiveGroupRegistry } from "../world/liveGroups.js";
+import { commandMatches, diffResidue, mergeResidue, type ResidueItem, type CleanupResult } from "../shared/residue.js";
+import { pendingResidue } from "../session/residueProjection.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -95,7 +98,7 @@ import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentDef, saveSubagentDef, type SubagentWriteDeps } from "./subagentWrites.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
-import type { BrowserReadOptions, McpCapability } from "../world/executionWorld.js";
+import type { BrowserReadOptions, McpCapability, ResidueCapability } from "../world/executionWorld.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
@@ -734,6 +737,14 @@ void app.whenReady().then(() => {
   // 它是 resumeSession 那道"绝不重建第二个 agent"守卫的判据（见那里的注释）。
   // 上一轮 app 留下的子会话不在里面 —— 它们本来就该按崩溃修复重建（issue #141）
   const spawnedThisRun = new Set<string>();
+  // 进程组的存活登记表（issue #759）：一个 app 一张表——进程组是 app 级资源，
+  // 不随 session 分家（同 terminals/browsers 那几个 hub 的层级）。装配时随
+  // createAgent 传下去，退出时 sweepAll 收尸
+  const liveGroups = new LiveGroupRegistry();
+  // 已经落过 residue_detected 的进程组（本次运行内）。turn 收口每轮都问一次
+  // 登记表，靠它去重——比每轮重放整份日志便宜。app 重启后它是空的，而那些
+  // **落了盘**的残留由启动重放（bootInfo 的 pendingResidue）兜住，不会漏报
+  const reportedEscaped = new Set<number>();
   let currentSessionId: string | null = null;
   // 岛只跟主窗当前会话。主进程存这一个 id:helper ready 时补一次快照,变化时喂投影器
   let activeSessionId: string | null = null;
@@ -1458,21 +1469,145 @@ void app.whenReady().then(() => {
    */
   const sessionMcp = proxy ? mergeProxyMcp(mcpHub, () => proxy.activeProxies()) : mcpHub;
 
+  /** 跨重启的进程组身份核对（issue #759）：pgid 是会被系统回收的号，重启之后
+      同一个数字很可能已经属于一个不相干的进程组。只问 groupAlive 的话，一条
+      陈旧记录会被当成「还活着的残留」交给用户，而清理项默认勾选、一按就是
+      对无关进程组的误杀。
+      判据：拿登记时记下的命令（item.label = 当初 cmd 的头 200 字符）跟这个组
+      **现在**跑的命令行比一次，对不上就丢弃这条。查不到也算对不上——宁可漏报
+      一条陈旧残留，不可误杀。残留条目天然稀疏，一次 ps 的开销可忽略 */
+  const groupStillIs = (pgid: number, label: string): boolean => {
+    if (!Number.isInteger(pgid) || pgid <= 0) return false;
+    const r = spawnSync("ps", ["-o", "command=", "-g", String(pgid)], {
+      encoding: "utf8",
+      timeout: 2_000,
+    });
+    if (r.status !== 0 || typeof r.stdout !== "string") return false;
+    // 比对判据抽成纯函数 commandMatches（shared/residue.ts，review I4）：
+    // 双向包含，原来只判 `line.includes(want)` 方向是反的——escaped 组里跑的
+    // 常是 `sh -c <命令>` 底下的孙进程，它的命令行是登记命令的**子串**，于是
+    // 恒为 false，重放出来的进程组条目被全数丢弃
+    return r.stdout.split("\n").some((line) => commandMatches(label, line));
+  };
+
+  /** 上次退出时没清干净的残留（issue #759）：全部会话（归档的也算）的
+      residue_detected 减 residue_cleaned 差集，逐条探活后剩下的那些。
+      日志是唯一事实来源——"进程还活着吗"重放不出来，所以差集之后还要现探一次。
+      只探进程组（groupStillIs：存活 + 身份核对）；模拟器/端口原样留着:
+      现拍一次 simctl/lsof 是异步的,而 bootInfo 是同步的、被三处调用,为一行
+      可能陈旧的模拟器把整条 boot 链改成异步不划算——多显示一条让用户手动清掉
+      的行,比漏报强。
+      按类型取事件而不是 store.load 整份日志：残留事件天然稀疏,而
+      (session_id, type, seq) 上有索引；load 整份会把每个会话的全部 JSON 都
+      解一遍,开机路径上付不起 */
+  const pendingResidueNow = (): ResidueItem[] => {
+    const out: ResidueItem[] = [];
+    // **归档的会话也要扫**：残留是 app 级的（进程组/模拟器/端口都不属于哪个
+    // 会话），跟会话收没收起来无关。而且 ports/simulators 条目的**唯一**来源
+    // 就是归档那一刻的全量 diff——那条 residue_detected 恰恰写在刚归档的会话
+    // 上，滤掉归档会话等于这一类残留永远重放不出来，用户没当场处理就永久丢
+    for (const s of store.sessions()) {
+      // 两类事件按 seq 归并回时间序：pendingResidue 是按顺序消费的
+      // （detected 落进表、cleaned 从表里删），顺序错了差集就错
+      const evs = [
+        ...store.eventsOfType(s.sessionId, "residue_detected"),
+        ...store.eventsOfType(s.sessionId, "residue_cleaned"),
+      ].sort((a, b) => a.seq - b.seq);
+      for (const item of pendingResidue(evs)) {
+        // 进程组要过身份核对：光看 pgid 还在会把回收给别人的号当成自己的残留
+        if (item.detector === "process_groups" && !groupStillIs(Number(item.id), item.label)) continue;
+        out.push(item);
+      }
+    }
+    return out;
+  };
+
+  /** 残留清理能力是 **app 级**的（createLocalResidue 只吃那一份全局
+      liveGroups 登记表，跟哪个会话无关），但它挂在每个会话的 world 上。
+      归档已经 `agents.delete(sessionId)` 了，只认自己那份 cap 的话，跨会话
+      清理必然静默空转（review I3）——退到任意一个还活着的 agent 的 cap 上，
+      能力等价。一个 agent 都没有时才真的没能力 */
+  const residueCapFor = (sessionId: string): ResidueCapability | undefined =>
+    agents.get(sessionId)?.world.residue ??
+    [...agents.values()].map((a) => a.world.residue).find((c) => c !== undefined);
+
+  /** 「这个会话此刻的现场 diff」：baseline 快照 vs 此刻快照 + 还在出走的进程组。
+      **没有 baseline 就不做**（review I5）：原来兜底成 `{ts:0,simulators:[],ports:[]}`
+      的空快照，等于宣称"这台机器开机时一个端口一个模拟器都没有"——整机的
+      LISTEN 端口和 booted 模拟器全被算成本会话新增的残留，进了一个默认勾选、
+      一按就清的清单。归档路径（archiveSession）本来就有这道守卫，这里补齐 */
+  const currentResidueDiff = async (sessionId: string): Promise<ResidueItem[]> => {
+    const residueCap = agents.get(sessionId)?.world.residue;
+    if (!residueCap) return [];
+    const baseline = store.lastOfType(sessionId, "residue_baseline");
+    if (baseline?.type !== "residue_baseline") return [];
+    const now = await residueCap.snapshot();
+    return diffResidue(
+      baseline.snapshot,
+      now,
+      liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
+    );
+  };
+
+  /** residueList 的"此刻可见清单"（issue #759）：现查（baseline diff 现拍现算）
+      与日志重放（pendingResidue）合并，现查优先（mergeResidue，issue #759
+      Task 7）——重放条目是落盘那一刻的旧快照，现查是这一刻的真实现场，两边
+      打架时以看得见的那份为准。
+      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
+  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
+    if (!agents.get(sessionId)?.world.residue) return [];
+    const current = await currentResidueDiff(sessionId);
+    // 只看这一个会话的 detected/cleaned（本方法是"这个会话此刻的清单"，
+    // 不是 pendingResidueNow 那种 app 级全量扫描）
+    const evs = [
+      ...store.eventsOfType(sessionId, "residue_detected"),
+      ...store.eventsOfType(sessionId, "residue_cleaned"),
+    ].sort((a, b) => a.seq - b.seq);
+    const replayed = pendingResidue(evs).filter(
+      (item) => item.detector !== "process_groups" || groupStillIs(Number(item.id), item.label)
+    );
+    return mergeResidue(current, replayed);
+  };
+
+  /** residueClean 的匹配池（review I3）：**app 级**，与 pendingResidueNow 同源。
+      为什么不能复用 residueListNow：那份只重放**这一个会话**的
+      detected/cleaned，而弹窗里的条目是 app 级的（归档会话落的那批、别的
+      会话落的那批都在里面）——按会话级清单去匹配，跨会话的 id 一条都对不上，
+      targets 是空数组、循环一圈不做事，UI 那边 `res.every(...)` 对空数组恒真
+      于是报"清理成功"。现查那部分仍然只能问当前会话（baseline 是会话级的），
+      合并时现查优先，同 mergeResidue 的语义 */
+  const residueCleanPool = async (sessionId: string): Promise<ResidueItem[]> => {
+    const current = await currentResidueDiff(sessionId);
+    return mergeResidue(current, pendingResidueNow());
+  };
+
+  // 「上次退出没清的残留」只报一次（issue #759）：bootInfo() 有三个调用方
+  // （boot / startSession / resumeSession），而这个字段的语义是**上次**退出
+  // 留下的，不是「此刻还有什么」——不设这道闸的话每切一次会话就重弹一遍同一
+  // 张清单。消费点放在第一份真的交出去的 BootInfo 上（真·开机那一发
+  // currentSessionId 还是 null，bootInfo 返回 null，那一发不算数）
+  let residueReported = false;
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
-    return agent
-      ? {
-          sessionId: agent.sessionId,
-          model: agent.model,
-          workspace: agent.workspace,
-          events: store.load(agent.sessionId),
-          dbPath,
-          approvalMode: agent.approvalMode,
-          thinking: agent.thinking,
-          toolDefs: agent.toolDefs,
-          isPackaged: app.isPackaged,
-        }
-      : null;
+    if (!agent) return null;
+    // 残留清单是 app 级的（进程组/模拟器/端口都不属于哪个会话），但 BootInfo
+    // 是渲染层开机拿到的唯一一份快照——搭它的车比另开一条频道省一整套接线
+    const residue = residueReported ? [] : pendingResidueNow();
+    residueReported = true;
+    return {
+      sessionId: agent.sessionId,
+      model: agent.model,
+      workspace: agent.workspace,
+      events: store.load(agent.sessionId),
+      dbPath,
+      approvalMode: agent.approvalMode,
+      thinking: agent.thinking,
+      toolDefs: agent.toolDefs,
+      isPackaged: app.isPackaged,
+      // 条件展开而不是无条件写：没有残留时不该凭空多一个空数组字段
+      ...(residue.length > 0 ? { pendingResidue: residue } : {}),
+    };
   };
 
   // 审批卡的载荷只在这里拼一次:实时推送(push.approvalRequest)和岛窗补快照
@@ -1571,6 +1706,13 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      // 同理给 liveGroups（issue #759）：这一发探针的装配必须和真实主会话那一份
+      // 逐字一致，否则两份工具表会各说各话（本函数开头那段注释的原话）。今天
+      // 还没有工具消费 world.residue，所以给不给它 TOOL_NAMES 都一样；一旦有了
+      // 那把刀，缺这一行就会让它在探针里挂不上、于是不进 TOOL_NAMES、于是
+      // subagent 定义里写的那个名字被静默滤掉——预先接上，别等踩了再补。
+      // 给的是真的那张表（探针永远不会真跑一轮，登记不到任何东西）
+      liveGroups,
       // 同理给 skills（ADR-0122）：不给的话 skill 这把刀根本不挂，于是
       // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
       // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
@@ -1774,6 +1916,9 @@ void app.whenReady().then(() => {
         // skill 库同理（issue #482）：挂载归挂载，白名单说了算。skills: "none"
         // 的子 agent 当初就没挂上这把刀，快照里没有它的名字，恢复回来照样没有
         skills: { listSkills: () => scanSkills(skillRoots) },
+        // 进程组登记表（issue #759）：同 mcp/skills，重建这条路没有父 world
+        // 可继承，不显式传的话它起的进程组既不被检出也不被退出时收尸
+        liveGroups,
       });
     }
     // 主会话：能派活。parent() 要拿到"正在构造的这个 agent"，而 createAgent
@@ -1789,7 +1934,9 @@ void app.whenReady().then(() => {
     // 里（cwd = 工作区、凭据环境变量已剥、stdin 递 JSON 上下文），不借
     // agent 的 world：那个被 engine 按调用包了直播/信号层，钩子输出会被
     // 误标成命令输出。getter 现读 hooks.json（热更新，与 execPolicy 同款）
-    const hookWorld = createLocalWorld({ root: args.workspace });
+    // 钩子命令也可能起后台进程，所以它也登记进同一张表（issue #759）：
+    // 一个 app 一张表，谁起的不重要,重要的是退出时收得干净
+    const hookWorld = createLocalWorld({ root: args.workspace, liveGroups });
     const userToolHooks = () => {
       const loaded = loadUserHooks(userHooksPath);
       if (loaded.error) console.warn(`[userHooks] ${loaded.error}`);
@@ -1837,6 +1984,10 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: accountConfig,
+      // 进程组登记表（issue #759）：只挂主会话这条装配路径。活着的子 agent 复用
+      // 父的 world 实例，residue 能力跟着一起继承；重建出来的子会话
+      // （createChildAgent）新造 LocalWorld，刻意没有——同 history/simulator 的取舍
+      liveGroups,
       memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
@@ -1941,6 +2092,29 @@ void app.whenReady().then(() => {
     self.backgroundTasks.onOutput((o) =>
       deltas.bgOutput(self.sessionId, o.id, o.chunk, o.stream)
     );
+    // 残留基线（issue #759）：新会话开工前拍一张现场照，归档时拿它做全量 diff。
+    // 只在新建时拍，resume 不拍——基线要覆盖会话的**一生**，恢复时重拍等于把
+    // 上一段跑出来的残留划进"本来就有"。异步拍（snapshot 要跑 simctl/lsof）、
+    // 失败静默：审计是旁路，不该拖住开工，更不该让建会话失败。
+    // 落事件照 handleBackgroundStarted 那一套：ignorable + send(CHANNELS.event)
+    if (!args.resumeSessionId) {
+      const sid = self.sessionId;
+      void self.world.residue
+        ?.snapshot()
+        .then((snapshot) => {
+          send(
+            CHANNELS.event,
+            store.append({
+              sessionId: sid,
+              ts: Date.now(),
+              type: "residue_baseline",
+              ignorable: true, // 模型不消费，旧版本跳过照常重放
+              snapshot,
+            })
+          );
+        })
+        .catch(() => {});
+    }
     return self;
   };
 
@@ -1977,6 +2151,48 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.liveBackgroundTasks, (_e, sessionId: string) =>
     agents.get(sessionId)?.backgroundTasks.live() ?? []
   );
+
+  // 当前会话此刻的残留清单（issue #759，residueListNow 见上）
+  ipcMain.handle(CHANNELS.residueList, (_e, sessionId: string) => residueListNow(sessionId));
+
+  // 清理选中项：重新算一遍清单（不信渲染层传来的 item 内容），只挑 id 匹配的
+  // 逐项 cleanup，每项落 residue_cleaned——渲染层不能凭空构造一条清单里没有
+  // 的残留物去"清理"（那会调用 cleanup(伪造 item)，行为未定义）
+  ipcMain.handle(CHANNELS.residueClean, async (_e, sessionId: string, itemIds: string[]): Promise<CleanupResult[]> => {
+    const residueCap = residueCapFor(sessionId);
+    if (!residueCap) {
+      // 一个 agent 都没有 = 真的没有清理能力。不能回空数组：调用方对空数组
+      // 的 every(...) 恒真，会把"什么都没做"渲染成"全清完了"（review I3）
+      return itemIds.map((id) => ({ id, ok: false, kind: "failed" as const, note: "没有可用的清理能力" }));
+    }
+    const visible = await residueCleanPool(sessionId);
+    const targets = visible.filter((item) => itemIds.includes(item.id));
+    const results: CleanupResult[] = [];
+    for (const item of targets) {
+      const result = await residueCap.cleanup(item);
+      results.push(result);
+      send(
+        CHANNELS.event,
+        store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "residue_cleaned",
+          ignorable: true, // 模型不消费，旧版本跳过照常重放
+          item,
+          result,
+        })
+      );
+    }
+    // 点了名却在池子里找不到的 id 要**显式回一条失败**（review I3）：漏掉它们
+    // 等于让渲染层拿着一个比请求短的数组去判"全都成功了"——那正是跨会话清理
+    // 静默空转时用户看到"清理成功"的那条路。不落 residue_cleaned 事件：
+    // 什么都没发生过，日志里不该多一条说发生过的记录
+    const found = new Set(targets.map((t) => t.id));
+    for (const id of itemIds) {
+      if (!found.has(id)) results.push({ id, ok: false, kind: "failed", note: "清单中未找到" });
+    }
+    return results;
+  });
 
   // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
   // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)
@@ -2875,6 +3091,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.archiveSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能归档会话");
     if (!store.has(sessionId)) throw new Error("会话不存在");
+    // 残留审计能力先取住（issue #759）：下面那句 agents.delete 之后就再也拿不到
+    // 这个会话的 world 了，而全量 diff 要现拍一张快照
+    const residueCap = agents.get(sessionId)?.world.residue;
     // 归档（ADR-0087）= 收起，不是删除：日志一字不动，只落一条状态事件。
     // 活资源照删除的清单注销——归档的会话不该继续占着 pty/浏览器/agent，
     // 恢复后走 resumeSession 的正常懒加载路径重建
@@ -2887,6 +3106,37 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended);
     fleetSessionsCache = null; // 会话表形状变了,岛不吃 1s 延迟
     pushFleet();
+    // 归档全量 diff（issue #759）：归档 = 这个会话的一生结束，正是"它一共留下
+    // 了什么"唯一算得清的时刻。基线 = 日志里最后一条 residue_baseline，现场 =
+    // 此刻快照，加上还在出走的进程组。异步 + 失败静默：审计不该拖住归档，更不
+    // 该让归档失败。推给渲染层走的就是上面那条 send(CHANNELS.event) 直播通道
+    // （事件即推送，不另开频道）——晚一拍到，渲染层照收
+    const baseline = store.lastOfType(sessionId, "residue_baseline");
+    if (residueCap && baseline?.type === "residue_baseline") {
+      const before = baseline.snapshot;
+      void residueCap
+        .snapshot()
+        .then((now) => {
+          const items = diffResidue(
+            before,
+            now,
+            liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
+          );
+          if (items.length === 0) return;
+          send(
+            CHANNELS.event,
+            store.append({
+              sessionId,
+              ts: Date.now(),
+              type: "residue_detected",
+              ignorable: true, // 模型不消费，旧版本跳过照常重放
+              items,
+              origin: "archive", // 会话归档=该收尾了，渲染层弹清单（review finding 1）
+            })
+          );
+        })
+        .catch(() => {});
+    }
   });
 
   ipcMain.handle(CHANNELS.unarchiveSession, (_e, sessionId: string) => {
@@ -3128,6 +3378,10 @@ void app.whenReady().then(() => {
       pendingAsks.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
+      // 树外残留查一次（issue #759）。放在 finally 里而不是 completed 分支：
+      // 一个跑到一半被停掉的 turn 更可能留下活着的进程组，恰恰不该漏检。
+      // compact 那条 finally 刻意不接：它是一次纯模型调用，起不了进程组
+      reportEscapedGroups(sessionId);
     }
     // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
     // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
@@ -3221,6 +3475,45 @@ void app.whenReady().then(() => {
         ignorable: true, // 模型不消费，旧版本跳过照常重放
         taskId: s.id,
         cmd: s.cmd,
+      })
+    );
+  }
+
+  /** turn 收口时问一次进程组登记表（issue #759）：shell 已经死了、组里却还有
+      活口 = 泄漏出走的树外残留。落 residue_detected 记账，**不杀**——owned 的
+      静默清只发生在退出那一刻（before-quit 的 sweepAll），turn 之间杀掉用户
+      自己起的 dev server 是误杀。
+      去重靠 reportedEscaped 那个内存集合而不是重放日志：同一个 pgid 每轮都还
+      在登记表里，不去重的话每个 turn 都重复落一条。
+      形状与通道照 handleBackgroundStarted：ignorable + send(CHANNELS.event) */
+  function reportEscapedGroups(sessionId: string): void {
+    if (!agents.has(sessionId)) return;
+    const esc = liveGroups.escaped();
+    // 反向剪枝：已经不在出走名单里的 pgid 从「报过」里删掉。escaped() 读时会
+    // 剔除自然死掉的组，而清理路径（residueLocal 的 cleanup）会无条件
+    // ackEscaped——两边都
+    // 可能让一个组离开名单又回来（信号发了没死透）。只增不减的话，这种组在
+    // 本次运行内永远不会被再报一次
+    const stillEscaped = new Set(esc.map((g) => g.pgid));
+    for (const pgid of reportedEscaped) if (!stillEscaped.has(pgid)) reportedEscaped.delete(pgid);
+    const fresh = esc.filter((g) => !reportedEscaped.has(g.pgid));
+    if (fresh.length === 0) return;
+    for (const g of fresh) reportedEscaped.add(g.pgid);
+    send(
+      CHANNELS.event,
+      store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "residue_detected",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        items: fresh.map((g) => ({
+          detector: "process_groups" as const,
+          id: String(g.pgid),
+          label: g.cmd,
+          confidence: "owned" as const,
+          cleanupHint: `kill 进程组 ${g.pgid}`,
+        })),
+        origin: "turn", // 单个 turn 收口=只是还在跑，渲染层只角标不弹窗（review finding 1）
       })
     );
   }
@@ -3499,6 +3792,14 @@ void app.whenReady().then(() => {
     simInput?.dispose();
     // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
     proxy?.closeAll();
+    // 自己登记过的进程组静默收尸（issue #759）：登记表里的每一个都是本 app 起的,
+    // 没有误杀的可能,所以不弹窗、不问人（同上面 terminals.killAll 的立场）。
+    // 没被登记表覆盖的树外残留不在这里杀——它们已经落了 residue_detected,
+    // 下次启动由 bootInfo 的 pendingResidue 重放出来交给用户处置
+    // immediate：这一路**必须**不留 timer——before-quit 一返回 Electron 就继续
+    // 退出流程，宽限用的 setTimeout 永远等不到触发，SIGKILL 补刀等于不存在
+    // （同上面 mcpHub.closeAll 那段注释讲的是一个坑）
+    liveGroups.sweepAll({ immediate: true });
     store.close();
   });
 });

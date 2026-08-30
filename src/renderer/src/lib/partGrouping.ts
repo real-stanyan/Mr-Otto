@@ -36,9 +36,18 @@ const BY_TYPE = groupPartByType({
     但没必要每个 part 都造一个 */
 const NARRATION_PATH = ["group-chainOfThought", "group-tool"] as const;
 
+/** ask_user 不进工具时间线:那张答卷卡(问了什么、我答了什么)是用户说过的话,
+    是后面每一步的前提,收进折叠区等于把前提藏起来。原先靠「组内有答卷就自动
+    展开整组」补救 —— 那是把一整组工具行陪着一张卡全摊开;现在改成组根本不收它。
+    代价同思考:「bash → ask_user → bash」会切成"时间线 / 卡 / 时间线"三块,接受 */
+const ASK_USER_PATH = ["group-chainOfThought"] as const;
+
 /** groupBy 本体。模块级常量 —— GroupedParts 拿函数引用当 memo key,
     渲染里现拼一个会让整棵分组树每次重渲染都重建 */
-export const OTTO_GROUP_PARTS_BY: typeof BY_TYPE = (part, context) =>
-  part.type === "reasoning" && (part as { narration?: boolean }).narration === true
-    ? NARRATION_PATH
-    : BY_TYPE(part, context);
+export const OTTO_GROUP_PARTS_BY: typeof BY_TYPE = (part, context) => {
+  if (part.type === "reasoning" && (part as { narration?: boolean }).narration === true)
+    return NARRATION_PATH;
+  if (part.type === "tool-call" && (part as { toolName?: string }).toolName === "ask_user")
+    return ASK_USER_PATH;
+  return BY_TYPE(part, context);
+};

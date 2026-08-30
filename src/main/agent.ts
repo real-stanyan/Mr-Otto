@@ -25,6 +25,7 @@ function resolveWithCapabilities(model: string): ModelChoice {
   return describeModelWith(model, (tag) => lookupOllamaModel(tag)) ?? resolveModel(model);
 }
 import { createLocalWorld } from "../world/localWorld.js";
+import type { LiveGroupRegistry } from "../world/liveGroups.js";
 import { readFileTool } from "../tools/readFile.js";
 import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
@@ -282,6 +283,12 @@ export function createAgent(opts: {
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
   configRoot?: string;
+  /** agent 起的进程组的存活登记表（issue #759）。组装根注入，工具层不碰——
+      同 configRoot 的先例：只在自己新造 LocalWorld 时用得上（opts.world 给了
+      就走那条路，而子 agent 复用父的 world 实例，residue 能力跟着一起继承，
+      ADR-0047）。不给 = 造出来的 world 没有 residue 能力，组装根那几处
+      `world.residue?.` 静默跳过（会话照常开工，只是不做残留审计） */
+  liveGroups?: LiveGroupRegistry;
   /** 自动压缩设置的现读器（index.ts 从设置页状态注入，ADR-0062）。
       不给 = 用全局默认（DEFAULT_AUTO_COMPACT，开启，按窗口两档阈值） */
   autoCompactSettings?: () => AutoCompactSettings;
@@ -305,6 +312,7 @@ export function createAgent(opts: {
       const local = createLocalWorld({
         root: opts.workspace,
         ...(opts.configRoot ? { configRoot: opts.configRoot } : {}),
+        ...(opts.liveGroups ? { liveGroups: opts.liveGroups } : {}),
       });
       return opts.makeBrowser ? withBrowser(local, opts.makeBrowser(sessionId)) : local;
     })();

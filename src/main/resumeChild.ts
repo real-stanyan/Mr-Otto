@@ -18,6 +18,7 @@ import type { AttachmentStore } from "../session/attachments.js";
 import type { BrowserCapability, McpCapability } from "../world/executionWorld.js";
 import type { SessionEvent } from "../session/events.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
+import type { LiveGroupRegistry } from "../world/liveGroups.js";
 
 /** 一个子会话当初那副装备。审批模式（ask/auto）不在这里：它是运行时偏好、
     从来没落过盘，而重建只信快照（ADR-0048 决策 3），所以 `deny` 现在恒为 true ——
@@ -95,6 +96,10 @@ export function createChildAgent(opts: {
       恢复回来照样没有——「不被行为 skill 污染」这条不靠这一侧记得别传，
       靠快照本身。skill 功能之前的旧日志同理：那时候没有这把刀，快照里没有。 */
   skills?: SkillLibrary;
+  /** 进程组登记表（issue #759）。同 mcp/skills 的理由必须显式传：重建走的是
+      新造的 LocalWorld，没有父 world 可继承。不给的话，一个恢复出来的子会话
+      跑 bash 起的进程组既不进 turn 收口的检出、也不被退出时的 sweepAll 收尸 */
+  liveGroups?: LiveGroupRegistry;
 }): ReturnType<typeof createAgent> {
   // 刻意不传 history：重建出来的子会话没有 world.history，session_search 工具
   // 不会挂上去。活着的子会话（subagentRunner.ts）复用 `parent.world`——同一个
@@ -111,6 +116,7 @@ export function createChildAgent(opts: {
     ...(opts.makeBrowser ? { makeBrowser: opts.makeBrowser } : {}),
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
     ...(opts.skills ? { skills: opts.skills } : {}),
+    ...(opts.liveGroups ? { liveGroups: opts.liveGroups } : {}),
     ...(opts.autoCompactSettings ? { autoCompactSettings: opts.autoCompactSettings } : {}),
     // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧

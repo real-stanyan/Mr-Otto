@@ -13,6 +13,8 @@ import type {
   ExecResult,
   TerminalSession,
 } from "./executionWorld.js";
+import type { LiveGroupRegistry } from "./liveGroups.js";
+import { createLocalResidue } from "./residueLocal.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
@@ -23,6 +25,22 @@ import { HeadTailBuffer } from "../shared/headTail.js";
     旧实现是 execAsync 默认 maxBuffer=1MiB **超限直接杀进程**——命令没跑完、
     尾部（往往是最终结果）全丢；HeadTail 让进程跑到自然结束，只丢中段 */
 const EXEC_BUFFER_CAP = 1_000_000;
+
+/** 杀整个进程组（负 pid）。组已死是常态不是错误（issue #759）。
+    detached:true 起的子进程是组长（pgid = child.pid），全组连坐堵住
+    「SIGTERM 只打 shell、`&` 起的孙进程被 reparent 到 launchd 逃逸」的洞 */
+export function killGroup(pgid: number, signal: NodeJS.Signals = "SIGTERM"): void {
+  try { process.kill(-pgid, signal); } catch { /* 组已死 */ }
+}
+
+/** SIGTERM 后的宽限：组里还有硬骨头就 SIGKILL 补刀 */
+export const KILL_GRACE_MS = 5_000;
+
+/** 探组存活：EPERM 也算活着（有进程但无权限，本 app 起的组不该出现） */
+export function groupAlive(pgid: number): boolean {
+  try { process.kill(-pgid, 0); return true; }
+  catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
 
 /** 后台执行的超时（issue #389）：无限 = 泄漏出走的进程，30 秒 = 后台没意义。
     30 分钟够全量构建/测试跑完 */
@@ -55,9 +73,12 @@ export function createLocalWorld(
     /** 子进程该用的 PATH（issue #453）。缺省 = 全局登记处（启动时 prime 过的
         登录 shell PATH）；返回 null = 维持原样继承。可注入是为了测试不碰全局态 */
     loginPath?: () => string | null;
+    /** 进程组登记表（issue #759）。给了才登记活组、探活逃逸组。缺省 = 不登记 */
+    liveGroups?: LiveGroupRegistry;
   } = {}
 ): ExecutionWorld {
   const { root } = opts;
+  const liveGroups = opts.liveGroups;
   // 每次起子进程都现算一遍：名单会随用户在设置页存/清 key 而变，
   // 装配时抓一次快照就会留下一个"配 key 之前建的会话永远不设防"的窟窿。
   // PATH 同理现问：prime 是异步的，装配时快照会把「还没取到」定格成永远没有
@@ -86,17 +107,36 @@ export function createLocalWorld(
       // 内存有界且**读到 EOF**——不停读，管道不会 back-pressure 卡死子进程
       const timeoutMs = opts?.timeoutMs ?? 30_000;
       return new Promise<ExecResult>((done, fail) => {
+        // 调用时 signal 已经 aborted：AbortSignal 不会向事后注册的 listener 重放
+        // 已发生的 abort，"abort" 事件永远不会触发，killGroup 也就永远不会被调用
+        // ——旧的原生 signal 选项会在 spawn 时就直接判一次，这里补回同等语义：
+        // 同步短路、连子进程都不起，不然命令会一直跑到 timeoutMs 才被动收口
+        if (opts?.signal?.aborted) {
+          fail(new Error("命令被中断：用户停止了 turn，调用时已中止（未起进程）"));
+          return;
+        }
         const child = spawn(cmd, {
           shell: true,
-          timeout: timeoutMs,
-          killSignal: "SIGTERM",
+          detached: true,            // 独立进程组，组长 pgid = child.pid
+          // timeout / killSignal / signal 三个原生选项全部移除——它们只打直接子进程，
+          // 改为下面自管：到点/中断 killGroup 全组连坐
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
           // （issue #153）。其余原样继承——PATH/nvm/语言设置都在里面
           env: childEnv(),
           ...(root ? { cwd: root } : {}),
-          // child_process 原生认 signal：abort = 给进程组发 SIGTERM
-          ...(opts?.signal ? { signal: opts.signal } : {}),
         });
+        const pgid = child.pid;      // detached 下 spawn 同步拿到组长 pid
+        if (pgid) liveGroups?.register(pgid, cmd, "exec");
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (pgid) {
+            killGroup(pgid, "SIGTERM");
+            setTimeout(() => { if (groupAlive(pgid)) killGroup(pgid, "SIGKILL"); }, KILL_GRACE_MS).unref();
+          }
+        }, timeoutMs);
+        const onAbort = () => { if (pgid) killGroup(pgid, "SIGTERM"); };
+        opts?.signal?.addEventListener("abort", onAbort, { once: true });
         // stdin（issue #395 用户钩子）：给了就写完即关；EPIPE（命令不读就退出）
         // 是常态不是错误，吞掉——裁决看 exit code 和输出，不看喂没喂进去
         if (opts?.stdin !== undefined) {
@@ -119,6 +159,9 @@ export function createLocalWorld(
           onOutput?.(chunk, "stderr");
         });
         child.on("error", (e) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
+          clearTimeout(timer);
+          opts?.signal?.removeEventListener("abort", onAbort);
           // 中断不是命令自己的失败——被杀是外力，必须抛出去按 error 结果落盘（ADR-0006）
           if (opts?.signal?.aborted) {
             fail(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"));
@@ -128,12 +171,15 @@ export function createLocalWorld(
           done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
         });
         child.on("close", (code, signal) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
+          clearTimeout(timer);
+          opts?.signal?.removeEventListener("abort", onAbort);
           if (opts?.signal?.aborted) {
             fail(new Error("命令被中断：用户停止了 turn，进程已被终止（SIGTERM）"));
             return;
           }
-          if (signal !== null) {
-            // 不是用户中断却挨了信号 = 超时被 killSignal 终止（或外力 kill）。
+          if (timedOut || signal !== null) {
+            // 不是用户中断却挨了信号 = 超时被 killGroup 终止（或外力 kill）。
             // 按世界反馈返回:HeadTail 里已经攒下的输出照给,模型能看到跑到哪了
             done({
               stdout: out.text(),
@@ -150,19 +196,30 @@ export function createLocalWorld(
     // 后台执行（issue #389）：exec 的孪生减配版——不绑 turn 信号（跨 turn 存活
     // 是它存在的意义）、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
     // 30 分钟够全量构建/测试，真要更久的活该上 CI）。同款 HeadTail 有界缓冲、
-    // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。app 退出时随主进程死
-    // （不 detach 进程组——孤儿进程比丢结果糟）
+    // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。
+    // detached:true 同 exec（issue #759）：不然命令里 `&` 起的孙进程在超时时
+    // 只会看着 shell 死掉、自己被 reparent 到 launchd 逃逸——这正是 exec 要堵的洞，
+    // execDetached 没理由留着。app 退出时孤儿风险与 exec 相同，接受它换全组硬杀。
     // 直播在 issue #772 补上（后台任务面板要画终端），边界同 exec：
     // 碎片喂 UI，日志只收 ExecResult 那一份凝固的整体
     execDetached(cmd: string, dopts?: DetachedOptions): Promise<ExecResult> {
       return new Promise<ExecResult>((done) => {
         const child = spawn(cmd, {
           shell: true,
-          timeout: DETACHED_TIMEOUT_MS,
-          killSignal: "SIGTERM",
+          detached: true,          // 独立进程组，组长 pgid = child.pid
           env: childEnv(),
           ...(root ? { cwd: root } : {}),
         });
+        const pgid = child.pid;
+        if (pgid) liveGroups?.register(pgid, cmd, "detached");
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (pgid) {
+            killGroup(pgid, "SIGTERM");
+            setTimeout(() => { if (groupAlive(pgid)) killGroup(pgid, "SIGKILL"); }, KILL_GRACE_MS).unref();
+          }
+        }, DETACHED_TIMEOUT_MS);
         const out = new HeadTailBuffer(EXEC_BUFFER_CAP);
         const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
         child.stdout?.setEncoding("utf8");
@@ -176,9 +233,15 @@ export function createLocalWorld(
           err.push(chunk);
           onOutput?.(chunk, "stderr");
         });
-        child.on("error", (e) => done({ stdout: out.text(), stderr: e.message, exitCode: 1 }));
+        child.on("error", (e) => {
+          if (pgid) liveGroups?.noteClosed(pgid);
+          clearTimeout(timer);
+          done({ stdout: out.text(), stderr: e.message, exitCode: 1 });
+        });
         child.on("close", (code, signal) => {
-          if (signal !== null) {
+          if (pgid) liveGroups?.noteClosed(pgid);
+          clearTimeout(timer);
+          if (timedOut || signal !== null) {
             done({
               stdout: out.text(),
               stderr: `${err.text()}\n[进程被 ${signal} 终止（后台超时 30 分钟或外部 kill）]`.trim(),
@@ -285,5 +348,9 @@ export function createLocalWorld(
           },
         }
       : {}),
+
+    // 残留物审计（issue #759）：没有登记表就没有"这个组是不是 agent 起的"归属判定，
+    // 挂了也只会误报——不挂比挂个半残的更诚实
+    ...(liveGroups ? { residue: createLocalResidue(liveGroups) } : {}),
   };
 }

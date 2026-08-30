@@ -7,6 +7,7 @@ import type {
 } from "../shared/mcp.js";
 import type { SessionEvent } from "../session/events.js";
 import type { SimButton, SimDevice, SimFrame, SimUiElement } from "../shared/simulator.js";
+import type { ResidueItem, ResidueSnapshot, CleanupResult } from "../shared/residue.js";
 import type { SandboxEnforcementFacts } from "./sandbox.js";
 
 export interface ExecResult {
@@ -248,6 +249,34 @@ export interface ProjectsCapability {
   packageProject(name: string, files: string[]): Promise<{ dir: string; moved: string[] }>;
 }
 
+/** 残留物审计能力：snapshot 拍一张此刻的 simulators/ports/processes 现场照，
+    cleanup 清理单个条目。
+    工作原理（issue #759）：**消费者是组装根**（index.ts）——建会话时拍 baseline、
+    归档时拿它跟现场做全量 diff，结果落 residue_* 事件。今天还没有任何工具消费
+    这层能力；将来要挂「让水獭自己清残留」那把刀时，接口就是这一份。
+    可选 = 向后兼容（假 world 零改动）；缺席 = 该装配没有残留物审计能力
+    （组装根那几处 `world.residue?.` 静默跳过，会话照常开工）。
+    v1 由 LocalWorld **自己造**（`createLocalResidue`，靠 simctl / ps / lsof 三个
+    子进程，见 world/residueLocal.ts）——注入方向与 browser/mcp 相反，组装根只
+    负责把进程组登记表递进去；v2 Docker 世界把那几条命令换成 docker exec，
+    这一层接口一字不改 */
+export interface ResidueCapability {
+  snapshot(): Promise<ResidueSnapshot>;
+  /** 清理单个条目。**契约两条**（issue #759 review C1）：
+      1. **不许 throw** —— 一次清理失败不该炸掉整轮清理（调用方是 residueClean
+         的 for 循环，逐项 append 事件）；出了什么事一律回一条 CleanupResult。
+      2. **`kind` 说的是事实，不是心情** —— 三处消费方（residueProjection 的
+         差集、store.applyResidueEvent 的摘除、ResiduePanel 的划线）只认它：
+         · `cleaned` 只在**确认目标已经不在了**之后才允许回（发了信号 ≠ 死了：
+           SIGTERM 可以被忽略，必须探活确认，见 residueLocal.confirmDead）
+         · `gone`    调用时它本来就不在
+         · `skipped` 这个装配明确不清理这一类（比如 suspected 端口"仅展示"）
+         · `failed`  下过手但它还活着，或压根没能下手 —— 这条**留在清单上**
+         `note` 是给人看的一句话，永远不作判据。省略 `kind` = 旧实现，
+         消费方按"已清"对待（residueSettled 的向后兼容分支） */
+  cleanup(item: ResidueItem): Promise<CleanupResult>;
+}
+
 export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
@@ -315,6 +344,11 @@ export interface ExecutionWorld {
       withProjects 焊进来。缺席 = 该装配没有打包能力（package_project 不挂）。
       只在内置 Default 工作区的主会话上会被焊上 */
   projects?: ProjectsCapability;
+  /** 可选：残留物审计（issue #759）。缺席 = 该装配没有残留物审计能力（组装根
+      那几处 `world.residue?.` 静默跳过）。v1 LocalWorld 拿到进程组登记表
+      （createLocalWorld 的 liveGroups）时自己把它造出来，不需要外部注入；
+      v2 Docker 世界把 simctl/ps/lsof 换成 docker exec，接口不变 */
+  residue?: ResidueCapability;
 }
 
 /** 把中断信号焊进 world 的装饰器（ADR-0006）。
@@ -371,6 +405,8 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     ...(world.simulator ? { simulator: world.simulator } : {}),
     // 打包同理:一次性的 mkdir + 搬文件,不绑信号
     ...(world.projects ? { projects: world.projects } : {}),
+    // 残留物审计同理:snapshot 和 cleanup 都是一次性操作,不绑信号
+    ...(world.residue ? { residue: world.residue } : {}),
   };
 }
 
@@ -412,7 +448,10 @@ export function withExecOutput(
     // 模拟器不绑中断信号：点击/截图都是毫秒级的一次性动作，
     // 中断收益为零（同 fs 的取舍）
     ...(world.simulator ? { simulator: world.simulator } : {}),
+    // 打包同理:一次性的 mkdir + 搬文件,不绑信号
     ...(world.projects ? { projects: world.projects } : {}),
+    // 残留物审计同理:snapshot 和 cleanup 都是一次性操作,不绑信号
+    ...(world.residue ? { residue: world.residue } : {}),
   };
 }
 

@@ -233,7 +233,7 @@ describe("装饰器透传 execDetached（issue #389）", () => {
   });
 });
 
-describe("后台执行的输出直播（issue #772 / ADR-0193）", () => {
+describe("后台执行的输出直播（issue #772 / ADR-0194）", () => {
   it("两个装饰器都把 opts 透传给 execDetached —— 不透传 = 面板永远画空终端", async () => {
     const seen: Array<string | undefined> = [];
     const base: ExecutionWorld = {
