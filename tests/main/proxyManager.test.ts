@@ -89,7 +89,9 @@ function machine(
   /** 云端托管的触发器（issue #797）——白名单落盘时该响的那只钩子 */
   onGrantsChanged?: () => void,
   /** 云端执行面（issue #798）。不注 = 纯通道行为 */
-  cloud?: Parameters<typeof createProxyManager>[0]["cloud"]
+  cloud?: Parameters<typeof createProxyManager>[0]["cloud"],
+  /** A 侧「云端可用」的数据源（issue #799）。不注 = 箱子不在云端 */
+  cloudHostedServerIds?: () => readonly string[] | null
 ) {
   const identity = carry?.identity ?? p.generateEd25519();
   let store: ProxyStoreData = carry?.store ?? emptyProxyStore();
@@ -105,6 +107,7 @@ function machine(
     ...(onChange ? { onChange } : {}),
     ...(onGrantsChanged ? { onGrantsChanged } : {}),
     ...(cloud ? { cloud } : {}),
+    ...(cloudHostedServerIds ? { cloudHostedServerIds } : {}),
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
@@ -765,5 +768,28 @@ describe("proxyManager 的云借用路由（issue #798 / ADR-0197 切片 3）", 
     const view = b.manager.activeProxies()[0]!;
     await expect(view.mcp.callTool("shopify", "get_orders", {})).rejects.toThrow("A（分享者）不在线");
     b.manager.closeAll();
+  });
+});
+
+describe("hostStatus 的 cloudReady（issue #799 / ADR-0197 切片 4）", () => {
+  it("好友授的服务有一台进了托管箱 = true；箱里没有 / 箱子不在云端 = false", async () => {
+    const relay = fakeRelay();
+    let hosted: readonly string[] | null = null;
+    const a = machine(relay, "a-uid", [], undefined, undefined, undefined, undefined, undefined, () => hosted);
+    await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    expect(a.manager.hostStatus()[0]!.cloudReady).toBe(false); // 箱子不在云端
+    hosted = ["ads"];
+    expect(a.manager.hostStatus()[0]!.cloudReady).toBe(false); // 箱里没这台
+    hosted = ["ads", "shopify"];
+    expect(a.manager.hostStatus()[0]!.cloudReady).toBe(true);
+    a.manager.closeAll();
+  });
+
+  it("不注 cloudHostedServerIds：恒 false（旧装配零改动）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid");
+    await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    expect(a.manager.hostStatus()[0]!.cloudReady).toBe(false);
+    a.manager.closeAll();
   });
 });

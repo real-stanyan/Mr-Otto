@@ -134,6 +134,7 @@ export interface ProxyStatusLine {
 export function hostStatusLine(h: {
   connected: boolean; inflight: number; lastCallAt: number | null;
   pairing?: "paired" | "waiting" | "needsInvite";
+  cloudReady?: boolean;
 }): ProxyStatusLine {
   // 「正在跑」优先于其他一切：白名单内是全自动的，这是唯一一次
   // 用户能在事情发生的**当下**看见它
@@ -143,7 +144,11 @@ export function hostStatusLine(h: {
   if (h.pairing === "needsInvite") return { dot: "dead", text: "邀请已失效 · 重发一张" };
   if (h.pairing === "waiting") return { dot: "off", text: "等对方接受邀请" };
   const last = h.lastCallAt === null ? "还没用过" : `最近 ${formatProxyTime(h.lastCallAt)}`;
-  return h.connected ? { dot: "on", text: `已连上 · ${last}` } : { dot: "off", text: `没连上 · ${last}` };
+  if (h.connected) return { dot: "on", text: `已连上 · ${last}` };
+  // 通道断着但托管箱在云端：好友照样用得上（ADR-0197 切片 4）。这时「没连上」
+  // 是误导——它暗示对方用不了，而实际上正相反，只是走的云端那条路
+  if (h.cloudReady) return { dot: "on", text: `云端可用 · ${last}` };
+  return { dot: "off", text: `没连上 · ${last}` };
 }
 
 /** B 侧：我借来的那条此刻怎么样 */
