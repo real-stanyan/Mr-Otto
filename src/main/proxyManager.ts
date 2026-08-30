@@ -29,7 +29,9 @@ import {
 } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
 import type { ProxyChannelView } from "./proxyNamespace.js";
-import type { McpCapability } from "../world/executionWorld.js";
+import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
+import type { McpContent, McpServerConfig } from "../shared/mcp.js";
+import type { CloudGrantedServer } from "./pxCloudClient.js";
 import type { KeyPair, RemoteCryptoPrimitives } from "../shared/remote/crypto.js";
 import type { ProxyWireTransport } from "./proxyCoordinator.js";
 
@@ -112,6 +114,21 @@ export interface ProxyManagerDeps {
   log?: (m: string) => void;
   /** proxyAcceptInvite 等握手完成的上限（issue #788）。默认 12s；测试注小值 */
   acceptWaitMs?: number;
+  /**
+   * 云端执行面（ADR-0197 切片 3，issue #798）。不注入 = 没有云借用，
+   * 一切退回纯通道行为（旧测试与旧装配零改动）。
+   *
+   * 注入后 B 侧的每条借用变成**一把会自己选路的刀**：live 通道 ready 走通道
+   * （免费、快、A 看得见 inflight），否则打云端——A 关机也能用。
+   */
+  cloud?: {
+    /** A 托管的授权清单。null = 查询失败（保留旧缓存，别当成授权清空） */
+    fetchGrants(hostUid: string): Promise<readonly CloudGrantedServer[] | null>;
+    call(hostUid: string, serverId: string, tool: string, args: unknown, signal?: AbortSignal): Promise<McpContent[]>;
+  };
+  /** 云端授权清单缓存的保鲜期（默认 5 分钟）。过了鲜期且通道不在时，
+      servers() 顺手踢一脚后台刷新 */
+  cloudTtlMs?: number;
 }
 
 export interface ProxyManager {
@@ -187,6 +204,66 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
    */
   const pendingInvites = new Map<string, number>();
 
+  // ── 云借用（ADR-0197 切片 3）：hostUid → 云端授权清单的本地缓存 ──
+  // 「缓存 + 后台刷」而不是每次现拉：servers() 是同步接口（工具表每 turn 现算），
+  // 而清单在网络那头。查询失败保留旧缓存——「拿不到」≠「被清空」，
+  // 真撤销有 proxy_revoked 帧与云端 403 双保险，不靠这份缓存表达
+  const cloudServers = new Map<string, McpServerHandle[]>();
+  const cloudFetchedAt = new Map<string, number>();
+  const cloudInflight = new Set<string>();
+  const cloudTtlMs = deps.cloudTtlMs ?? 5 * 60_000;
+
+  function refreshCloudBorrow(hostUid: string): void {
+    if (!deps.cloud || cloudInflight.has(hostUid)) return;
+    cloudInflight.add(hostUid);
+    void deps.cloud.fetchGrants(hostUid).then((granted) => {
+      cloudInflight.delete(hostUid);
+      if (granted === null) return; // 查询失败：旧缓存继续用
+      cloudFetchedAt.set(hostUid, now());
+      const handles = granted.map((g): McpServerHandle => ({
+        // name 取 serverId：mcpHub 的 name 恒等于 id，云端与通道两条路
+        // 由此长出**同一批**前缀工具名——审批记忆、share_grant_note 全都不用分家
+        id: g.serverId, name: g.serverId, status: "connected", live: true,
+        tools: [...g.toolDefs], resources: [], prompts: [],
+      }));
+      const before = JSON.stringify(cloudServers.get(hostUid) ?? []);
+      if (JSON.stringify(handles) !== before) {
+        cloudServers.set(hostUid, handles);
+        changed(); // 工具表变了：渲染层与下个 turn 的工具表都要跟上
+      }
+    }).catch(() => { cloudInflight.delete(hostUid); });
+  }
+
+  /** 一把会自己选路的刀：live 通道 ready 走通道，否则打云端。
+      **每次调用现判**，不在构造时定死——通道来去是常态 */
+  function routedBorrowMcp(hostUid: string): McpCapability {
+    const channel = (): { mcp: McpCapability; isReady: () => boolean } | undefined => guests.get(hostUid);
+    const ready = (): boolean => channel()?.isReady() ?? false;
+    const cloudView = (): McpServerHandle[] => {
+      // 通道不在、缓存过鲜：顺手踢一脚后台刷新（本轮先用旧的，刷到了 changed 会再来）
+      if (deps.cloud && now() - (cloudFetchedAt.get(hostUid) ?? 0) > cloudTtlMs) refreshCloudBorrow(hostUid);
+      return cloudServers.get(hostUid) ?? [];
+    };
+    return {
+      ready: async () => {},
+      servers: () => (ready() ? channel()!.mcp.servers() : cloudView()),
+      callTool: async (serverId, tool, args, signal) => {
+        if (ready()) return channel()!.mcp.callTool(serverId, tool, args, signal);
+        if (!deps.cloud) {
+          // 没有云端执行面时保持旧话术（proxyMcp 同款）：抛错不回落本地（ADR-0166）
+          throw new Error("代理通道断了——A（分享者）不在线。A 关机或吊销时好友代理不可用，这是设计");
+        }
+        return deps.cloud.call(hostUid, serverId, tool, args, signal);
+      },
+      // 以下四个与 proxyMcp 同一口径（通道路那边也是抛同样的话）
+      readResource: () => { throw new Error("好友代理第一期不支持读资源（只代理工具调用）"); },
+      getPrompt: () => { throw new Error("好友代理第一期不支持取提示（只代理工具调用）"); },
+      configure: () => { throw new Error("好友代理的 server 配置在分享者（A）那边，B 不能改"); },
+      authorize: () => { throw new Error("好友代理的授权在分享者（A）那边，B 不能替 A 授权"); },
+      configOf: (): McpServerConfig | undefined => undefined,
+    };
+  }
+
   /**
    * 开一条 A 侧的 host 通道。`invite` 有值 = 这一轮还接受邀请码证明（首次配对）；
    * 没有 = 只认 pin 组（重启后的恢复路径）。
@@ -258,6 +335,8 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       onRevoked: (reason) => {
         guests.get(hostUid)?.close();
         guests.delete(hostUid);
+        cloudServers.delete(hostUid); // 撤销 = 云端那份也不该再画在工具表里
+        cloudFetchedAt.delete(hostUid);
         deps.saveStore(setBorrowRevoked(deps.loadStore(), hostUid, reason));
         changed();
         log(`好友撤销了代理授权：${hostUid}（${reason}）`);
@@ -315,6 +394,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // **落盘**：邀请码一次性，不记下来 B 一重启就得让对方重发一张（issue #676）
       deps.saveStore(setBorrow(deps.loadStore(), inv.hostUid, inv.channelId, inv.hostIdentityPub));
       openGuest(inv.hostUid, inv.channelId, inv.hostIdentityPub, inv.secret, uid);
+      refreshCloudBorrow(inv.hostUid); // 云端清单预热：通道日后断了，刀还在
       changed();
       // **等到握手真的完成再回答**（issue #788）：openGuest 是异步起跑的，
       // 立刻回 ok 的话「A 重启过（secret 作废）/ A 不在线」这两种失败都被
@@ -407,6 +487,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       if (selfUid) {
         for (const b of usableBorrows(cur)) {
           openGuest(b.hostUid, b.channelId, b.hostIdentityPub, null, selfUid);
+          // 云端授权清单也预热一份（issue #798）：A 不在线时通道永远握不上，
+          // 这份缓存就是 B 工具表的唯一来源
+          refreshCloudBorrow(b.hostUid);
         }
         if (guests.size > 0) log(`代理：已恢复 ${guests.size} 条借来的通道`);
       }
@@ -418,8 +501,11 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
     },
 
     activeProxies() {
-      return [...guests.entries()].map(([friendUid, g]) => ({
-        friendUid, label: deps.friendLabel(friendUid), mcp: g.mcp,
+      // 台账（usableBorrows）是底本，不再只列活着的通道（issue #798）：
+      // 「配过、此刻没连上」的借用正是云借用要接住的那种——A 关机了，
+      // 但托管在云端的刀还在。每条的 mcp 是一把会自己选路的刀
+      return usableBorrows(deps.loadStore()).map((b) => ({
+        friendUid: b.hostUid, label: deps.friendLabel(b.hostUid), mcp: routedBorrowMcp(b.hostUid),
       }));
     },
 
@@ -430,11 +516,14 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // 它只是不该再自动连回去（issue #680）
       return allBorrows(deps.loadStore()).map((b) => {
         const g = guests.get(b.hostUid);
+        const connected = g?.isReady() ?? false;
         return {
           hostUid: b.hostUid,
           label: deps.friendLabel(b.hostUid),
-          connected: g?.isReady() ?? false,
-          serverCount: g?.mcp.servers().length ?? 0,
+          connected,
+          // 此刻可用的刀数：通道在按通道算，不在按云端缓存算（issue #798）——
+          // 「断线但云端可用」的那条不该显示成 0 把刀
+          serverCount: connected ? (g?.mcp.servers().length ?? 0) : (cloudServers.get(b.hostUid)?.length ?? 0),
           ...(b.revokedReason !== undefined ? { revokedReason: b.revokedReason } : {}),
         };
       });
@@ -473,6 +562,8 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
     async proxyDisconnect(hostUid) {
       guests.get(hostUid)?.close();
       guests.delete(hostUid);
+      cloudServers.delete(hostUid);
+      cloudFetchedAt.delete(hostUid);
       deps.saveStore(removeBorrow(deps.loadStore(), hostUid));
       changed();
       log(`已断开借来的代理通道：${hostUid}`);
@@ -484,6 +575,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       hosts.clear();
       for (const g of guests.values()) g.close();
       guests.clear();
+      // 登出连云端缓存一起清：换账号后上一个人借来的刀不该还画在表里
+      cloudServers.clear();
+      cloudFetchedAt.clear();
       // 登出时也走这里（issue #680）：界面得当场变成「都没连上」，
       // 而不是留着一排看起来还连着的绿点
       changed();

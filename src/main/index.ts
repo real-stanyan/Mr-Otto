@@ -168,6 +168,7 @@ import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { edgeBaseUrl, relayBaseUrl } from "../shared/edgeConfig.js";
 import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync } from "./pxEscrowSync.js";
+import { createPxCloudClient } from "./pxCloudClient.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -1457,6 +1458,13 @@ void app.whenReady().then(() => {
         // 白名单落盘那一刻同步云端托管（ADR-0197 切片 2）。与 onChange 分开：
         // 那条连接一抖就响，托管只关心授权内容本身
         onGrantsChanged: () => escrowResync?.(),
+        // B 侧云借用（ADR-0197 切片 3）：live 通道 ready 走通道，否则打云端。
+        // 路由在 proxyManager 的 capability 层，对模型是同一把刀
+        cloud: createPxCloudClient({
+          baseUrl: () => edgeBaseUrl(),
+          accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+          log: (m) => console.warn(`[px-cloud] ${m}`),
+        }),
         log: (m) => console.warn(m),
       })
     : null;
