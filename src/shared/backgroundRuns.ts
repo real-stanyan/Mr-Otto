@@ -25,6 +25,9 @@ export interface BackgroundRun {
   state: BackgroundRunState;
   /** background_task_started 的 ts */
   startedAt: number;
+  /** background_task_completed 的 ts。完成才有（issue #772）——没有它，
+      「跑了多久」只能拿此刻的时钟算，于是一个跑完的任务会一直往上走秒 */
+  completedAt?: number;
   /** 完成才有 */
   exitCode?: number;
 }
@@ -67,6 +70,7 @@ function fold(events: readonly SessionEvent[]): Map<string, BackgroundRun> {
         const run = runs.get(e.taskId);
         if (!run) break;
         run.state = e.exitCode === 0 ? "ready" : "failed";
+        run.completedAt = e.ts;
         run.exitCode = e.exitCode;
         break;
       }

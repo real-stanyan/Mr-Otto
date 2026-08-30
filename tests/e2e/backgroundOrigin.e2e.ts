@@ -71,14 +71,19 @@ test("#452 后台回注是居中的系统卡片，默认折叠，不是用户气
   }
 });
 
-test("#452 任务还在跑的时候，输入框上方有面板说它在跑", async () => {
+test("#452/#772 任务还在跑的时候，面板里是一台真的终端 —— 有命令、有输出", async () => {
   const fake = await startFakeModel((req) => {
     if (isReinjectedTurn(req)) return { content: "睡醒了。" };
     if (req.messages.some((m) => m.role === "tool")) return { content: "丢后台睡去了。" };
     return {
       toolCalls: [
-        // 睡够久，好让面板那一档被观察到（echo 一瞬间就完了，看不见 running）
-        { name: "bash", args: { cmd: "sleep 8", run_in_background: true } },
+        // 睡够久，好让面板那一档被观察到（echo 一瞬间就完了，看不见 running）。
+        // 前面那句 echo 是 #772 的靶子：它证明**进程吐的字**真的流进了面板，
+        // 而不是面板自己编了几行状态文字充数
+        {
+          name: "bash",
+          args: { cmd: "echo 开工了; sleep 8; echo 收工", run_in_background: true },
+        },
       ],
     };
   });
@@ -92,8 +97,12 @@ test("#452 任务还在跑的时候，输入框上方有面板说它在跑", asy
     const panel = win.getByLabel("后台任务");
     // 起了就该看得见——这正是 #452 的由来：在此之前界面上一点痕迹都没有
     await expect(panel).toBeVisible({ timeout: 30_000 });
-    await expect(panel.getByText("sleep 8")).toBeVisible();
-    await expect(panel.getByText("1 个在跑")).toBeVisible();
+    await expect(panel.getByText("echo 开工了; sleep 8; echo 收工")).toBeVisible();
+    // 计数挪到了头上那一格（#772）：输出区现在逐帧刷新，aria-live 不能圈着它
+    await expect(win.getByText("1 个在跑")).toBeVisible();
+    // #772 的正主：直播真的流进来了。这一行是进程吐的，不是面板编的
+    // exact:true —— 命令原文里也有这三个字，不加就同时命中头上那行命令
+    await expect(panel.getByText("开工了", { exact: true })).toBeVisible({ timeout: 20_000 });
 
     // 结果注回对话后，这一行就该从面板上摘掉（判据是「进了对话」不是「跑完了」）
     await expect(win.getByText("睡醒了。")).toBeVisible({ timeout: 30_000 });

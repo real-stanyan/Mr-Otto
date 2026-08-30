@@ -166,3 +166,31 @@ describe("formatElapsed", () => {
     expect(formatElapsed(5_000, 1_000)).toBe("0 秒");
   });
 });
+
+describe("completedAt（issue #772）", () => {
+  it("完成的行记下完成时刻 —— 少了它，跑完的任务会一直往上走秒", () => {
+    reset();
+    const runs = projectBackgroundRuns(
+      [started("bg-1", "pytest -q", 1_000), completed("bg-1", 1, 9_500, "pytest -q")],
+      new Set()
+    );
+    expect(runs).toEqual([
+      {
+        id: "bg-1",
+        cmd: "pytest -q",
+        state: "failed",
+        startedAt: 1_000,
+        completedAt: 9_500,
+        exitCode: 1,
+      },
+    ]);
+    // 面板拿这两个数算「跑了多久」：8.5 秒,不跟着此刻的钟走
+    expect(formatElapsed(1_000, 9_500)).toBe("8 秒");
+  });
+
+  it("还在跑的行没有 completedAt —— 「跑完了」这件事不能靠缺省值猜", () => {
+    reset();
+    const runs = projectBackgroundRuns([started("bg-1", "npm run build", 1_000)], new Set(["bg-1"]));
+    expect(runs[0]).not.toHaveProperty("completedAt");
+  });
+});
