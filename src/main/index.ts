@@ -1488,6 +1488,7 @@ void app.whenReady().then(() => {
           return buildEscrowDoc({
             hostUid: uid,
             grants: readProxyStore(proxyStorePath).grants,
+            workspaceGrants: [], // Task 6 落 store 字段后换真读取
             servers: mcpHub.servers(),
             configOf: (id) => mcpHub.configOf(id),
             authOf: (id) => readMcpAuth(mcpAuthPath, id),

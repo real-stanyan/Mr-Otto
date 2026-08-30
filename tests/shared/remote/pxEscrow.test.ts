@@ -3,6 +3,16 @@ import {
   buildEscrowDoc, escrowDigest, parseEscrowDoc, type EscrowSources,
 } from "../../../src/shared/remote/pxEscrow.js";
 
+const srcWithOneLiveHttpsServer: EscrowSources = {
+  hostUid: "a-uid",
+  grants: [],
+  workspaceGrants: [],
+  servers: [{ id: "srv", live: true, tools: [] }],
+  configOf: () => ({ kind: "http", url: "https://x.example/mcp" }),
+  authOf: () => ({}),
+  now: 1000,
+};
+
 // 托管文档的构造（A 侧）与结构门（edge 侧）共用一份（issue #797）。
 // 这里钉死的核心：**构造出来的东西必须过得了 edge 的门**——两边各写各的时，
 // 一台本地 http server 就能让整箱 PUT 恒 400。
@@ -13,6 +23,7 @@ function sources(over: Partial<EscrowSources> = {}): EscrowSources {
   return {
     hostUid: "a-uid",
     grants: [{ friendUid: "b-uid", allow: [{ serverId: "square", tools: [] }] }],
+    workspaceGrants: [],
     servers: [{ id: "square", live: true, tools: TOOLS }],
     configOf: () => ({ kind: "http", url: "https://mcp.squareup.com/mcp", headers: {} }),
     authOf: () => ({ tokens: { access_token: "tok" } }),
@@ -79,6 +90,23 @@ describe("buildEscrowDoc（issue #797 / ADR-0197）", () => {
       headers: { authorization: "Bearer k" },
       toolDefs: TOOLS,
     });
+  });
+});
+
+describe("EscrowGrant workspaceId 变体（ADR-0198 切片 1）", () => {
+  it("parseEscrowDoc 认 workspaceId 变体，两个键都有/都没有的拒", () => {
+    const base = { v: 1, hostUid: "h", services: [], updatedTs: 1 };
+    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: "w1", allow: [] }] })).not.toBeNull();
+    expect(parseEscrowDoc({ ...base, grants: [{ allow: [] }] })).toBeNull();
+    expect(parseEscrowDoc({ ...base, grants: [{ friendUid: "f", workspaceId: "w", allow: [] }] })).toBeNull();
+  });
+  it("buildEscrowDoc 把 workspaceGrants 并进箱（服务准入三条不变）", () => {
+    const doc = buildEscrowDoc({ ...srcWithOneLiveHttpsServer, grants: [], workspaceGrants: [{ workspaceId: "w1", allow: [{ serverId: "srv", tools: [] }] }] });
+    expect(doc?.services.map((s) => s.serverId)).toEqual(["srv"]);
+    expect(doc?.grants).toEqual([{ workspaceId: "w1", allow: [{ serverId: "srv", tools: [] }] }]);
+  });
+  it("buildEscrowDoc 两组授权都空才回 null", () => {
+    expect(buildEscrowDoc({ ...srcWithOneLiveHttpsServer, grants: [], workspaceGrants: [] })).toBeNull();
   });
 });
 
