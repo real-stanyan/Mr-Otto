@@ -96,6 +96,19 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.workspace).toBeNull();
   });
 
+  it("sessions()：sharedWith 从 session_shared 投影，去重；没分享过 = 空数组（issue #809）", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({ sessionId: "s1", ts: 2, type: "session_shared", ignorable: true, friendName: "小红", message: "" });
+    store.append({ sessionId: "s1", ts: 3, type: "session_shared", ignorable: true, friendName: "小明", message: "看看这个" });
+    // 同一个人再分享一次：名单不重复
+    store.append({ sessionId: "s1", ts: 4, type: "session_shared", ignorable: true, friendName: "小红", message: "" });
+    store.append({ sessionId: "s2", ts: 5, type: "session_created", workspace: "/p" });
+
+    const list = store.sessions();
+    expect([...(list.find((s) => s.sessionId === "s1")?.sharedWith ?? [])].sort()).toEqual(["小明", "小红"]);
+    expect(list.find((s) => s.sessionId === "s2")?.sharedWith).toEqual([]);
+  });
+
   it("sessions()：标题 = 第一条 user_message 的首行（多行输入只取首行）", () => {
     store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p" });
     store.append(userMsg("s1", "  帮我修登录 bug\n报错信息如下：\nTypeError…"));

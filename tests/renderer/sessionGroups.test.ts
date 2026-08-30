@@ -4,6 +4,7 @@ import {
   folderName,
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
+  partitionShared,
   taskSessions,
 } from "../../src/renderer/src/sessionGroups.js";
 import type { SessionSummary } from "../../src/shared/shellBridge.js";
@@ -17,6 +18,7 @@ const s = (
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
   sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
+  sharedWith: [],
 });
 
 describe("folderName", () => {
@@ -188,5 +190,23 @@ describe("archivedTaskSessions —— 任务栏的「已归档」", () => {
       DEF
     );
     expect(list.map((x) => x.sessionId)).toEqual(["a"]);
+  });
+});
+
+describe("partitionShared（issue #809）", () => {
+  it("按 sharedWith 非空分两摞，各自保持输入序", () => {
+    const shared1 = { ...s("a", "/w", 50), sharedWith: ["小红"] };
+    const local1 = s("b", "/w", 40);
+    const shared2 = { ...s("c", "/w", 30), sharedWith: ["小红", "小明"] };
+    const out = partitionShared([shared1, local1, shared2]);
+    expect(out.shared.map((x) => x.sessionId)).toEqual(["a", "c"]);
+    expect(out.local.map((x) => x.sessionId)).toEqual(["b"]);
+  });
+
+  it("没有分享过的列表：shared 空，local 全量原序", () => {
+    const list = [s("a", "/w", 2), s("b", "/w", 1)];
+    const out = partitionShared(list);
+    expect(out.shared).toEqual([]);
+    expect(out.local).toEqual(list);
   });
 });

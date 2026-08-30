@@ -102,3 +102,16 @@ export function archivedTaskSessions(sessions: SessionSummary[], builtin: string
     (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
   );
 }
+
+/** 同步（分享）过的会话与纯本地会话分区（issue #809）：分享是把「我干了啥」
+    交到别人手里的动作，之后这条会话对 A 就有了「对面还有一份」的身份——
+    侧栏把它们抽出来单列，本地那摞保持原样。判据 = session_shared 投影非空
+    （sharedWith，见 store.ts），输入序保持（store 给的本来就是 lastTs 倒序）。 */
+export function partitionShared(sessions: SessionSummary[]): {
+  shared: SessionSummary[]; local: SessionSummary[];
+} {
+  const shared: SessionSummary[] = [];
+  const local: SessionSummary[] = [];
+  for (const s of sessions) (s.sharedWith.length > 0 ? shared : local).push(s);
+  return { shared, local };
+}
