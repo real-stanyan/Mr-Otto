@@ -105,9 +105,9 @@ describe("ResiduePanel（残留清单弹窗，issue #759）", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 
-  it("清理失败（无 note）：留在原地，红字提示，不调用 onDone", async () => {
+  it("kind:failed（信号发了、进程还活着）：留在原地，红字提示，不调用 onDone", async () => {
     const residueClean = vi.fn(async () => [
-      { id: "111", ok: false },
+      { id: "111", ok: false, kind: "failed" as const, note: "已发送终止信号，进程组仍存活" },
     ]);
     seed({ residueClean });
     const onDone = vi.fn();
@@ -122,15 +122,16 @@ describe("ResiduePanel（残留清单弹窗，issue #759）", () => {
 
     await userEvent.click(screen.getByText("清理选中 (1)"));
     await waitFor(() => expect(residueClean).toHaveBeenCalled());
-    expect(await screen.findByText("清理失败")).toBeInTheDocument();
+    // 红字优先显示实现给的那句人话，没有 note 才回落成「清理失败」
+    expect(await screen.findByText("已发送终止信号，进程组仍存活")).toBeInTheDocument();
     expect(onDone).not.toHaveBeenCalled();
     // 行还在、没被划掉——checkbox 还看得见
     expect(screen.getByLabelText("npm run dev")).toBeInTheDocument();
   });
 
-  it("清理失败但带 note（已消失）：视为完成，调用 onDone", async () => {
+  it("kind:gone（本来就不在了）：视为完成，调用 onDone", async () => {
     const residueClean = vi.fn(async () => [
-      { id: "111", ok: false, note: "已消失" },
+      { id: "111", ok: false, kind: "gone" as const, note: "已消失" },
     ]);
     seed({ residueClean });
     const onDone = vi.fn();
@@ -145,6 +146,21 @@ describe("ResiduePanel（残留清单弹窗，issue #759）", () => {
 
     await userEvent.click(screen.getByText("清理选中 (1)"));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
+  // 向后兼容那条分支（residueSettled 的 `kind === undefined` 早退）。现有实现
+  // 的每条 return 都带 kind（residueLocal.cleanup），所以这个形状只可能来自
+  // 旧日志重放——重放老日志不该突然多出一批清不掉的僵尸条目，按已清对待。
+  // 钉住它是因为它是唯一一处「ok:false 却算了结」的入口，改错了不会有别的测试红
+  it("无 kind（旧日志形状）：按已清对待，调用 onDone", async () => {
+    const residueClean = vi.fn(async () => [{ id: "111", ok: false }]);
+    seed({ residueClean });
+    const onDone = vi.fn();
+    render(<ResiduePanel sessionId="s1" items={[items[0]!]} open onDone={onDone} />);
+
+    await userEvent.click(screen.getByText("清理选中 (1)"));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(screen.queryByText("清理失败")).not.toBeInTheDocument();
   });
 
   it("「以后再说」直接调用 onDone，不发 residueClean，且不清 items（组件自己没有清单真相）", async () => {

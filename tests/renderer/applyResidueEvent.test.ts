@@ -52,10 +52,10 @@ describe("applyResidueEvent", () => {
     expect(next.liveResidue?.map((i) => i.id)).toEqual(["111"]);
   });
 
-  it("residue_cleaned 按 detector:id 从 bootResidue 和 liveResidue 两份里都精确摘除，不管 ok", () => {
+  it("residue_cleaned 按 detector:id 从 bootResidue 和 liveResidue 两份里都精确摘除", () => {
     const cleaned = item("111");
     const e = {
-      ...base, seq: 2, type: "residue_cleaned", item: cleaned, result: { id: "111", ok: false },
+      ...base, seq: 2, type: "residue_cleaned", item: cleaned, result: { id: "111", ok: true, kind: "cleaned" },
     } as unknown as SessionEvent;
     const next = applyResidueEvent(
       { bootResidue: [item("111"), item("222")], liveResidue: [item("111"), item("333")], bootResidueOpen: false },
@@ -63,6 +63,52 @@ describe("applyResidueEvent", () => {
     );
     expect(next.bootResidue?.map((i) => i.id)).toEqual(["222"]);
     expect(next.liveResidue?.map((i) => i.id)).toEqual(["333"]);
+  });
+
+  // issue #759 review C1d：与 residueProjection.pendingResidue 同一套判据
+  // （shared/residue.ts 的 residueSettled），四层里的第三层
+  it.each(["gone", "skipped"] as const)("kind:'%s' 也算了结，照样摘除", (kind) => {
+    const e = {
+      ...base, seq: 2, type: "residue_cleaned", item: item("111"), result: { id: "111", ok: false, kind },
+    } as unknown as SessionEvent;
+    const next = applyResidueEvent(
+      { bootResidue: [item("111")], liveResidue: [item("111")], bootResidueOpen: false },
+      e
+    );
+    expect(next.bootResidue?.map((i) => i.id)).toEqual([]);
+    expect(next.liveResidue?.map((i) => i.id)).toEqual([]);
+  });
+
+  it("kind:'failed'（信号发了、进程还活着）**不摘**——它还在跑，从 UI 抹掉就是撒谎", () => {
+    const e = {
+      ...base, seq: 2, type: "residue_cleaned", item: item("111"),
+      result: { id: "111", ok: false, kind: "failed", note: "已发送 SIGTERM/SIGKILL，进程组仍存活" },
+    } as unknown as SessionEvent;
+    const next = applyResidueEvent(
+      { bootResidue: [item("111"), item("222")], liveResidue: [item("111")], bootResidueOpen: false },
+      e
+    );
+    // 空 patch：两份数组一个都不动
+    expect(next).toEqual({});
+  });
+
+  it("旧日志的 residue_cleaned 没有 kind——向后兼容按已清对待，照旧摘除", () => {
+    const e = {
+      ...base, seq: 2, type: "residue_cleaned", item: item("111"), result: { id: "111", ok: false, note: "已消失" },
+    } as unknown as SessionEvent;
+    const next = applyResidueEvent({ bootResidue: [item("111")], liveResidue: [], bootResidueOpen: false }, e);
+    expect(next.bootResidue?.map((i) => i.id)).toEqual([]);
+  });
+
+  // issue #759 review I1：残留是 app 级的，两条事件在挂载方那儿豁免了 sessionId
+  // 分流，弹窗可能挂在 welcome 页——清理要的会话 id 只能从事件本身来
+  it("residue_detected 记下事件自带的 sessionId（welcome 页清理时的唯一来源）", () => {
+    const e = {
+      ...base, sessionId: "已归档的那个会话", seq: 1, type: "residue_detected",
+      items: [item("111")], origin: "archive",
+    } as unknown as SessionEvent;
+    const next = applyResidueEvent({ bootResidue: [], liveResidue: [], bootResidueOpen: false }, e);
+    expect(next.lastResidueSessionId).toBe("已归档的那个会话");
   });
 
   it("residue_cleaned 对不匹配的 key 不动其它条目", () => {
