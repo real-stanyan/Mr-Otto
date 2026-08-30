@@ -36,6 +36,12 @@ describe("消息 part 的分组路径", () => {
     expect(think[1]).not.toBe(tool[1]); // 但各有各的折叠头
   });
 
+  it("ask_user 不进时间线 —— 答卷卡留在过程区顶层,不跟着工具组折叠", () => {
+    // 答卷是用户说过的话、后面每一步的前提;收进折叠区等于把前提藏起来。
+    // 原先靠「组内有答卷就自动展开整组」补救,现在组根本不收它
+    expect(path({ type: "tool-call", toolName: "ask_user", toolCallId: "1" })).toEqual([CHAIN]);
+  });
+
   it("正文不分组 —— 最终回复留在过程区外", () => {
     expect(path({ type: "text", text: "好了" })).toEqual([]);
   });

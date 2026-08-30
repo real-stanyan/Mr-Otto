@@ -290,9 +290,11 @@ const WebPageCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
     折叠头故意**不**列工具清单:那份清单展开就在下面,抄到头上等于把折叠白折了,
     步数一多还撑满一行(见 shared/toolSummary.ts 的 timelineLabel)。
     思考不在这一组里(它自己一条折叠头,分组见 lib/partGrouping.ts);进来的是
-    工具步 + 旁白步,按原时间序混排。
-    默认折起;组里有一次「问过你也答了」的 ask_user 就默认展开(那是用户说过的话,
-    不能藏进折叠区);出错不自动弹开,只在折叠头挂一枚黄色三角。 */
+    工具步 + 旁白步,按原时间序混排。ask_user 也不在(答完的卡是用户说过的话,
+    不能藏进折叠区 —— partGrouping 把它整个拎出了时间线)。
+    跑的时候自动展开(看得见正在干哪一步),收工自动收起(过完的过程不占地);
+    自动只在 running 翻转那一帧接管一次,手动开合随时有效。
+    出错不自动弹开,只在折叠头挂一枚黄色三角。 */
 const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, children }) => {
   const failed = useAuiState((s) =>
     group.indices.some((i) => {
@@ -300,25 +302,13 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
       return part?.type === "tool-call" && part.isError === true;
     }),
   );
-  const answered = useAuiState((s) =>
-    group.indices.some((i) => {
-      const part = s.message.content[i];
-      return (
-        part?.type === "tool-call" &&
-        part.toolName === "ask_user" &&
-        typeof part.result === "string" &&
-        part.isError !== true
-      );
-    }),
-  );
-  const [open, setOpen] = useState(false);
-  const [autoOpened, setAutoOpened] = useState(false);
-  useEffect(() => {
-    if (answered && !autoOpened) {
-      setAutoOpened(true);
-      setOpen(true);
-    }
-  }, [answered, autoOpened]);
+  const running = group.status.type === "running";
+  const [open, setOpen] = useState(running);
+  const [prevRunning, setPrevRunning] = useState(running);
+  if (running !== prevRunning) {
+    setPrevRunning(running);
+    setOpen(running);
+  }
 
   // 折叠头那行数字要的是「跑了多久 / 用了几把工具 / 动了几个文件」。耗时的起止在
   // 事件日志里(tool_execution_started / tool_result),不在 part 上。
@@ -336,7 +326,6 @@ const OttoToolGroup: NonNullable<ThreadComponents["ToolGroup"]> = ({ group, chil
         }),
     [group.indices, messageParts],
   );
-  const running = group.status.type === "running";
   // 跑着时才挂表:收口的组耗时已经定死,再滴答只是白重渲
   const now = useNow(running ? 1000 : null);
   const proj = useContext(TimelineProjectionContext);
