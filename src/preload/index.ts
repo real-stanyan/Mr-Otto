@@ -189,8 +189,8 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.friendsListMessages, friendId, beforeId),
   shareSessionToFriend: (sessionId, friendUid, message, title, model, grant) =>
     ipcRenderer.invoke(CHANNELS.shareSessionToFriend, sessionId, friendUid, message, title, model, grant ?? null),
-  importSharedSession: (prefix, workspace) =>
-    ipcRenderer.invoke(CHANNELS.importSharedSession, prefix, workspace),
+  importSharedSession: (prefix, workspace, grant) =>
+    ipcRenderer.invoke(CHANNELS.importSharedSession, prefix, workspace, grant ?? null),
   proxyCreateInvite: (friendUid, allow, ttlMs) =>
     ipcRenderer.invoke(CHANNELS.proxyCreateInvite, friendUid, allow, ttlMs),
   proxyAcceptInvite: (invite, ttlMs) =>

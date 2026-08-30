@@ -102,6 +102,8 @@ function machine(
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
+    // 测试里握手要么几个 microtask 内完成，要么永远不会完成——别等满默认 12s
+    acceptWaitMs: 300,
   });
   return { identity, manager, store: () => store };
 }
@@ -137,6 +139,20 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
     b.manager.closeAll();
   });
 
+  it("A 不在线（房间没 host）：accept 等不到握手，直说失败而不是假装接上（issue #788）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    const invite = made.ok ? made.value.invite : "";
+    a.manager.closeAll(); // A 退出 app：host 连接关掉，房间空了
+
+    const b = machine(relay, "b-uid");
+    const took = await b.manager.proxyAcceptInvite(invite);
+    expect(took.ok).toBe(false);
+    if (!took.ok) expect(took.message).toContain("没握上手");
+    b.manager.closeAll();
+  });
+
   it("只知道 channelId 的人连进同一个房间 → 握不上手，A 不 pin 它", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);
@@ -149,7 +165,10 @@ describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0
     // 冒充者拿到了频道号和 A 的公钥（都在线上/日志里可见），但没有那把一次性 secret
     const forged = encodeProxyInvite({ ...real, secret: p.randomBytes(32) });
     const took = await attacker.manager.proxyAcceptInvite(forged);
-    expect(took.ok).toBe(true); // 本地这一步只是「连上去」，认不认是 A 说了算
+    // guest 侧的 isReady 只证明「我这一半握完了」——A 拒了持有证明但 B 端不知道，
+    // 所以这里仍是 ok:true。issue #788 的等待拦的是「房间根本没开」那一形态
+    // （A 重启/不在线）；「A 在线但拒认」的告知另有 pin 缺席那条防线兜着
+    expect(took.ok).toBe(true);
     await settle();
 
     expect(pinnedIdentities(a.store(), "b-uid")).toEqual([]);

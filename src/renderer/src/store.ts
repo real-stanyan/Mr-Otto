@@ -735,7 +735,7 @@ interface ChatState {
   ): Promise<boolean>;
   /** 接收端导入好友分享的会话：下载、解包、用 workspace 作围栏 fork 出新会话，
       成功后跳转过去(ResumeState 从主进程推) */
-  importShared(prefix: string, workspace: string): Promise<boolean>;
+  importShared(prefix: string, workspace: string, grant?: { friendUid: string; friendName: string; servers: readonly string[] }): Promise<boolean>;
   /** 好友代理(issue #657)。全部经 ShellBridge，成功/失败都落 friendError */
   refreshProxyGrants(): Promise<void>;
   /** A 侧：为好友生成邀请码。回邀请码文本，失败回 null（原因在 friendError） */
@@ -1718,7 +1718,7 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
-  async importShared(prefix, workspace) {
+  async importShared(prefix, workspace, grant) {
     // 从好友 DM 点导入时多半没开着会话，store.workspace 是空串——空串填进围栏
     // 就是一个 resume 不回来的死会话（#783 下半）。回落到默认工作文件夹，
     // 和欢迎页开新会话同一个兜底（#559 的 workspaceSettings）
@@ -1730,7 +1730,7 @@ export const useChat = create<ChatState>((set, get) => ({
         // 读不到就让主进程的空 workspace 闸门拒绝并给人话
       }
     }
-    const r = await window.otter.importSharedSession(prefix, ws);
+    const r = await window.otter.importSharedSession(prefix, ws, grant ?? null);
     if (!r.ok) {
       set({ friendError: r.message });
       return false;

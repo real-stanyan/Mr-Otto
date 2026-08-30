@@ -126,3 +126,14 @@ describe("proxyNamespace（代理来的 MCP 按好友加前缀，issue #670）",
     expect(merged.servers()).toHaveLength(2); // buildTools 每 turn 现算，下一轮就出现
   });
 });
+
+describe("shareGrantNoteText（issue #788）", () => {
+  it("说清对应关系：历史名 → 本机前缀名，且劝阻本地重配", async () => {
+    const { shareGrantNoteText } = await import("../../src/main/proxyNamespace.js");
+    const t = shareGrantNoteText("Stan Yan", "32c6716a-2215-4fef-8865-7da11e0feab9", ["square"]);
+    expect(t).toContain("mcp__square__*");           // 历史里的名字
+    expect(t).toContain("mcp__square_32c6716a__");   // 本机借来的前缀（uid 短标签）
+    expect(t).toContain("mcp_configure");            // 劝阻那句在
+    expect(t).toContain("Stan Yan");
+  });
+});

@@ -176,6 +176,27 @@ describe("importSharedSession（接收端导入编排）", () => {
     expect(appended.length).toBe(0); // 一条都没落——半截导入比失败更坏
   });
 
+  it("带 grantNote 导入：注记事件落在整段历史之后（issue #788）", async () => {
+    const files = await makePackageFiles();
+    const { deps, appended } = receiveDeps(files);
+    const r = await importSharedSession(deps, {
+      prefix: "sender-uid/pkg-1", workspace: "/w",
+      grantNote: { note: "历史里的 mcp__square__* 在本机对应 mcp__square_senderui__*", friendUid: "sender-uid", servers: ["square"] },
+    });
+    expect(r.ok).toBe(true);
+    const last = appended[appended.length - 1] as { type: string; note?: string; servers?: string[] };
+    expect(last.type).toBe("share_grant_note");
+    expect(last.note).toContain("mcp__square_");
+    expect(last.servers).toEqual(["square"]);
+  });
+
+  it("不带 grantNote（只导入对话）：一条注记都不落", async () => {
+    const files = await makePackageFiles();
+    const { deps, appended } = receiveDeps(files);
+    await importSharedSession(deps, { prefix: "sender-uid/pkg-1", workspace: "/w" });
+    expect(appended.some((e) => (e as { type: string }).type === "share_grant_note")).toBe(false);
+  });
+
   it("包不存在（被撤回）返回「已失效」", async () => {
     const { deps } = receiveDeps(null);
     const r = await importSharedSession(deps, { prefix: "x/y", workspace: "/w" });

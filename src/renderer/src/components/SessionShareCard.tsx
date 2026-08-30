@@ -13,7 +13,7 @@ import { useState } from "react";
 import { GitFork, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { decodeEnvelope } from "../../../shared/sessionPackageCodec.js";
-import { PROXY_SHARE_INVITE_TTL_MS } from "../../../shared/remote/proxyInvite.js";
+import { decodeProxyInvite, PROXY_SHARE_INVITE_TTL_MS } from "../../../shared/remote/proxyInvite.js";
 import { useChat } from "../store.js";
 
 /** body 是分享信封就渲染卡片，否则返回 null（调用方回落到普通气泡）。
@@ -55,7 +55,15 @@ export function SessionShareCard({
           return;
         }
       }
-      const ok = await importShared(env.prefix, workspace);
+      // 接上了服务才带 grant（issue #788）：主进程据此在 fork 里焊一条
+      // 「历史工具名 ↔ 本机借来的前缀名」的注记，模型才不会在本地重配一台。
+      // hostUid 从邀请码里取——信封没有单独的 uid 字段，而注记的前缀由 uid 派生
+      const hostUid = withGrant && env.invite ? decodeProxyInvite(env.invite)?.hostUid : undefined;
+      const grant =
+        hostUid && env.grantServers && env.grantServers.length > 0
+          ? { friendUid: hostUid, friendName: fromName, servers: env.grantServers }
+          : undefined;
+      const ok = await importShared(env.prefix, workspace, grant);
       if (!ok) setFailed("导入失败（详见好友错误提示）");
     } catch (e) {
       setFailed(`导入失败：${e instanceof Error ? e.message : String(e)}`);

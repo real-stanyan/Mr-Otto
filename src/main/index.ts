@@ -148,7 +148,7 @@ import { createDeltaCoalescer } from "./deltaCoalescer.js";
 import { createIslandBridge, type IslandCommand } from "./islandBridge.js";
 import { flattenFleet, initialIsland, reduceIsland, type IslandInput, type IslandState } from "./islandProjection.js";
 import { createProxyManager, type ProxyManager } from "./proxyManager.js";
-import { mergeProxyMcp } from "./proxyNamespace.js";
+import { mergeProxyMcp, shareGrantNoteText } from "./proxyNamespace.js";
 import { adaptProxyWire } from "./proxyWire.js";
 import { readProxyStore, writeProxyStore } from "./proxyStore.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
@@ -2972,7 +2972,10 @@ void app.whenReady().then(() => {
   // 接收端导入：下载 + 解包 + 重填 workspace + 逐条 append 成新 fork 会话
   ipcMain.handle(
     CHANNELS.importSharedSession,
-    async (_e, prefix: string, workspace: string) => {
+    async (
+      _e, prefix: string, workspace: string,
+      grant?: { friendUid: string; friendName: string; servers: readonly string[] } | null
+    ) => {
       // 兜底工作区惰性创建，与 startSession 同一条规则（#559）：从好友 DM 导入时
       // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过
       if (workspace && workspace === workspaceSettingsInfo().defaultWorkspace) {
@@ -2985,7 +2988,20 @@ void app.whenReady().then(() => {
           append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
           newSessionId: () => crypto.randomUUID(),
         },
-        { prefix, workspace }
+        {
+          prefix, workspace,
+          // 注记文本在这一侧现算（shareGrantNoteText 要 friendTag/mcpToolName，
+          // 都是主进程的料）；servers 空清单不落事件——没借东西就没有对应关系可说
+          ...(grant && grant.servers.length > 0
+            ? {
+                grantNote: {
+                  note: shareGrantNoteText(grant.friendName, grant.friendUid, grant.servers),
+                  friendUid: grant.friendUid,
+                  servers: grant.servers,
+                },
+              }
+            : {}),
+        }
       );
     }
   );

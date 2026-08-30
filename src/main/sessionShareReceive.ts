@@ -36,7 +36,14 @@ export type ShareReceiveResult = FriendsResult<{
     @param workspace 接收方选定的本机工作目录（fork 会话的围栏） */
 export async function importSharedSession(
   deps: ShareReceiveDeps,
-  args: { prefix: string; workspace: string }
+  args: {
+    prefix: string;
+    workspace: string;
+    /** 信封连带借出了服务（ADR-0177）且握手已接上时，随导入焊进模型视野的
+        注记（issue #788）：历史里的工具名 ↔ 本机借来的前缀名的对应关系。
+        缺席 = 纯对话分享，不多落任何事件 */
+    grantNote?: { note: string; friendUid: string; servers: readonly string[] };
+  }
 ): Promise<ShareReceiveResult> {
   // 围栏不能是空的：fillWorkspaceOnImport 会把它原样填进 session_created，
   // 而 resumeSession 见到没有 workspace 的第 0 条直接拒绝恢复——空串走到底
@@ -74,6 +81,15 @@ export async function importSharedSession(
   const retargeted = retargetForImport(filled, newSessionId);
   try {
     for (const e of retargeted) deps.append(newSessionId, e as Record<string, unknown>);
+    // 注记放在整段历史之后：投影把它焊进 system 尾部，位置只影响 seq 不影响视野
+    if (args.grantNote) {
+      deps.append(newSessionId, {
+        type: "share_grant_note",
+        note: args.grantNote.note,
+        friendUid: args.grantNote.friendUid,
+        servers: [...args.grantNote.servers],
+      });
+    }
   } catch (e) {
     return { ok: false, message: `导入失败：${e instanceof Error ? e.message : String(e)}` };
   }

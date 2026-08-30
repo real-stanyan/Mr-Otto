@@ -56,6 +56,7 @@ const DURABLE = [
   "workspace_restored",
   "branch_checked_out",
   "session_shared",
+  "share_grant_note",
 ] satisfies SessionEvent["type"][];
 type MissingDurable = Exclude<SessionEvent["type"], (typeof DURABLE)[number]>;
 // union 有类型不在数组里时,这行赋值编译红

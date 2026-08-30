@@ -106,6 +106,8 @@ export interface ProxyManagerDeps {
   saveStore: (d: ProxyStoreData) => void;
   now?: () => number;
   log?: (m: string) => void;
+  /** proxyAcceptInvite 等握手完成的上限（issue #788）。默认 12s；测试注小值 */
+  acceptWaitMs?: number;
 }
 
 export interface ProxyManager {
@@ -299,6 +301,24 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       deps.saveStore(setBorrow(deps.loadStore(), inv.hostUid, inv.channelId, inv.hostIdentityPub));
       openGuest(inv.hostUid, inv.channelId, inv.hostIdentityPub, inv.secret, uid);
       changed();
+      // **等到握手真的完成再回答**（issue #788）：openGuest 是异步起跑的，
+      // 立刻回 ok 的话「A 重启过（secret 作废）/ A 不在线」这两种失败都被
+      // 报成成功——分享卡照着它把对话导进去，用户以为接上了，工具表却永远
+      // 是空的，水獭找不到刀就自作主张在本地配一台。台账刚才已落盘：
+      // 失败不回滚——同一个好友复用同一个频道，A 重发邀请后这条台账直接可用
+      const waitMs = deps.acceptWaitMs ?? 12_000;
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        if (guests.get(inv.hostUid)?.isReady()) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!guests.get(inv.hostUid)?.isReady()) {
+        return {
+          ok: false,
+          message:
+            "频道开了但没握上手——对方现在不在线，或分享之后重启过 app（邀请码一次性，重启即作废）。确认 TA 开着 app，或让 TA 重新分享/重发一张邀请码",
+        };
+      }
       // grantedCount 此刻是 0：授权清单在握手后才由 A 推 proxy_grant 帧过来。
       // UI 据此显示「已连上，等待对方推送授权」，不是「授权为空」——
       // 真实数字随后由 onStateChange 推过去
