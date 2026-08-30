@@ -1485,10 +1485,11 @@ void app.whenReady().then(() => {
         buildDoc: () => {
           const uid = friends.currentUid();
           if (!uid) return null;
+          const store = readProxyStore(proxyStorePath);
           return buildEscrowDoc({
             hostUid: uid,
-            grants: readProxyStore(proxyStorePath).grants,
-            workspaceGrants: [], // Task 6 落 store 字段后换真读取
+            grants: store.grants,
+            workspaceGrants: store.workspaceGrants,
             servers: mcpHub.servers(),
             configOf: (id) => mcpHub.configOf(id),
             authOf: (id) => readMcpAuth(mcpAuthPath, id),
@@ -1499,7 +1500,7 @@ void app.whenReady().then(() => {
         // 才需要对齐（撤销后崩溃的残箱正是靠这次开机 DELETE 清掉的）
         everHosted: () => {
           const s = readProxyStore(proxyStorePath);
-          return s.grants.length > 0 || s.channels.length > 0;
+          return s.grants.length > 0 || s.channels.length > 0 || s.workspaceGrants.length > 0;
         },
         log: (m) => console.warn(`[escrow] ${m}`),
       })

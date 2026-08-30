@@ -10,6 +10,7 @@ import {
   parseProxyStore,
   pinnedIdentities,
   removeBorrow,
+  removeWorkspaceGrant,
   revokeGrant,
   serializeProxyStore,
   setBorrow,
@@ -17,7 +18,9 @@ import {
   setChannel,
   setGrant,
   setPin,
+  setWorkspaceGrant,
   usableBorrows,
+  workspaceGrantFor,
   type ProxyAuditRecord,
 } from "../../src/main/proxyStore.js";
 import type { ProxyGrant } from "../../src/shared/remote/proxyProtocol.js";
@@ -253,5 +256,46 @@ describe("proxyStore 的 mergeCloudAudits（issue #799 / ADR-0197 切片 4）", 
     const withCursor = { ...emptyProxyStore(), cloudAuditCursor: 42 };
     expect(parseProxyStore(serializeProxyStore(withCursor)).cloudAuditCursor).toBe(42);
     expect(parseProxyStore(serializeProxyStore(emptyProxyStore())).cloudAuditCursor).toBeUndefined();
+  });
+});
+
+// ─── 工作区授权（Task 6 / ADR-0198 切片 2）────────────────────────────
+describe("proxyStore 的 workspaceGrants（Task 6 / ADR-0198 切片 2）", () => {
+  it("parse 老 JSON（无 workspaceGrants）回 []", () => {
+    const old = parseProxyStore(JSON.stringify({ grants: [G1], audits: [] }));
+    expect(old.workspaceGrants).toEqual([]);
+  });
+
+  it("setWorkspaceGrant 按 workspaceId 整份替换", () => {
+    const wg1: any = { workspaceId: "ws-1", friendUid: "b1", allow: [{ serverId: "shopify", tools: ["get_orders"] }] };
+    const wg2: any = { workspaceId: "ws-2", friendUid: "b2", allow: [{ serverId: "google-ads", tools: [] }] };
+    let d = emptyProxyStore();
+    d = setWorkspaceGrant(d, wg1);
+    expect(workspaceGrantFor(d, "ws-1")).toEqual(wg1);
+    d = setWorkspaceGrant(d, wg2);
+    expect(d.workspaceGrants).toHaveLength(2);
+    // 同一 workspaceId 再设 = 替换
+    const wg1_new = { workspaceId: "ws-1", friendUid: "b3", allow: [{ serverId: "shopify", tools: [] }] };
+    d = setWorkspaceGrant(d, wg1_new);
+    expect(d.workspaceGrants).toHaveLength(2);
+    expect(workspaceGrantFor(d, "ws-1")).toEqual(wg1_new);
+  });
+
+  it("removeWorkspaceGrant 只删指定的", () => {
+    const wg1: any = { workspaceId: "ws-1", friendUid: "b1", allow: [] };
+    const wg2: any = { workspaceId: "ws-2", friendUid: "b2", allow: [] };
+    let d = emptyProxyStore();
+    d = setWorkspaceGrant(d, wg1);
+    d = setWorkspaceGrant(d, wg2);
+    d = removeWorkspaceGrant(d, "ws-1");
+    expect(workspaceGrantFor(d, "ws-1")).toBeNull();
+    expect(workspaceGrantFor(d, "ws-2")).not.toBeNull();
+  });
+
+  it("序列化往返保真", () => {
+    const wg: any = { workspaceId: "ws-1", friendUid: "b1", allow: [{ serverId: "shopify", tools: ["get_orders"] }] };
+    let d = setWorkspaceGrant(emptyProxyStore(), wg);
+    const back = parseProxyStore(serializeProxyStore(d));
+    expect(back.workspaceGrants).toEqual([wg]);
   });
 });

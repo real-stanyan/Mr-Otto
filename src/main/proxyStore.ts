@@ -12,6 +12,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { b64decode, b64encode } from "../shared/remote/b64.js";
 import type { ProxyGrant } from "../shared/remote/proxyProtocol.js";
+import type { WorkspaceGrant } from "../shared/remote/pxEscrow.js";
 
 /** 一笔审计账 */
 export interface ProxyAuditRecord {
@@ -92,6 +93,8 @@ export interface ProxyStoreData {
   channels: ProxyChannel[];
   /** 我从哪些好友那儿借了服务（B 重启后据此重新连回去） */
   borrows: ProxyBorrow[];
+  /** 工作区代理授权（ADR-0198 切片 2）：某个工作区对某个好友开的代理权限 */
+  workspaceGrants: WorkspaceGrant[];
   /** 云端审计回流的游标（ADR-0197 切片 4）：已拉到的最大 ts，下次
       GET /px/v1/audit?since=这个值 只取增量。缺席 = 从没拉过，从 0 起 */
   cloudAuditCursor?: number;
@@ -101,7 +104,7 @@ export interface ProxyStoreData {
 export const AUDIT_CAP = 500;
 
 export function emptyProxyStore(): ProxyStoreData {
-  return { grants: [], audits: [], pins: [], channels: [], borrows: [] };
+  return { grants: [], audits: [], pins: [], channels: [], borrows: [], workspaceGrants: [] };
 }
 
 /** 解析落盘的 JSON。坏了/不是对象 → 空店（不带着坏数据跑） */
@@ -113,10 +116,11 @@ export function parseProxyStore(json: string | null | undefined): ProxyStoreData
     return {
       grants: Array.isArray(d.grants) ? d.grants : [],
       audits: Array.isArray(d.audits) ? d.audits : [],
-      // pins/channels 是后加的字段（issue #657）：老台账里没有，缺席按空组读，不算坏数据
+      // pins/channels/workspaceGrants 是后加的字段：老台账里没有，缺席按空组读，不算坏数据
       pins: Array.isArray(d.pins) ? d.pins : [],
       channels: Array.isArray(d.channels) ? d.channels : [],
       borrows: Array.isArray(d.borrows) ? d.borrows : [],
+      workspaceGrants: Array.isArray(d.workspaceGrants) ? d.workspaceGrants : [],
       ...(typeof d.cloudAuditCursor === "number" ? { cloudAuditCursor: d.cloudAuditCursor } : {}),
     };
   } catch {
@@ -292,6 +296,26 @@ export function mergeCloudAudits(
 // 与 mcp-auth.json 同一套口径：好友代理的授权是「谁能用你的凭证」的台账，
 // 文件只属当前用户可读写。读失败（不存在/坏 JSON）回落空台账而不是抛——
 // 一个新装的实例本就该是空台账。
+
+/** 给某工作区设代理授权（按 workspaceId 整份替换）。ADR-0198 切片 2 */
+export function setWorkspaceGrant(data: ProxyStoreData, grant: WorkspaceGrant): ProxyStoreData {
+  const workspaceGrants = data.workspaceGrants.filter((g) => g.workspaceId !== grant.workspaceId);
+  workspaceGrants.push(grant);
+  return { ...data, workspaceGrants };
+}
+
+/** 撤销某工作区的代理授权 */
+export function removeWorkspaceGrant(data: ProxyStoreData, workspaceId: string): ProxyStoreData {
+  return {
+    ...data,
+    workspaceGrants: data.workspaceGrants.filter((g) => g.workspaceId !== workspaceId),
+  };
+}
+
+/** 查某工作区的授权，没有回 null */
+export function workspaceGrantFor(data: ProxyStoreData, workspaceId: string): WorkspaceGrant | null {
+  return data.workspaceGrants.find((g) => g.workspaceId === workspaceId) ?? null;
+}
 
 /** 读 userData 下的代理台账文件。不存在/坏 JSON 回空台账 */
 export function readProxyStore(path: string): ProxyStoreData {
