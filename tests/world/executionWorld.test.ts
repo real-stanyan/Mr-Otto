@@ -232,3 +232,41 @@ describe("装饰器透传 execDetached（issue #389）", () => {
     expect(Object.hasOwn(withExecOutput(fakeWorld(), () => {}), "execDetached")).toBe(false);
   });
 });
+
+describe("后台执行的输出直播（issue #772 / ADR-0193）", () => {
+  it("两个装饰器都把 opts 透传给 execDetached —— 不透传 = 面板永远画空终端", async () => {
+    const seen: Array<string | undefined> = [];
+    const base: ExecutionWorld = {
+      ...fakeWorld(),
+      execDetached: async (_cmd, opts) => {
+        opts?.onOutput?.("一行", "stdout");
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+    for (const w of [
+      withAbortSignal(base, new AbortController().signal),
+      withExecOutput(base, () => seen.push("引擎")),
+    ]) {
+      await w.execDetached!("x", { onOutput: (chunk) => seen.push(chunk) });
+    }
+    // 两趟都是调用方那份 onOutput 收到的；withExecOutput 的引擎 sink 不该混进来
+    // ——后台任务的输出挂在 taskId 上,不是挂在某次工具调用上
+    expect(seen).toEqual(["一行", "一行"]);
+  });
+
+  it("withExecOutput 的 exec 不顶掉调用方的 onOutput，两个都喂", async () => {
+    const got: string[] = [];
+    const base: ExecutionWorld = {
+      ...fakeWorld(),
+      exec: async (_cmd, opts) => {
+        opts?.onOutput?.("chunk", "stdout");
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+    const w = withExecOutput(base, (c) => got.push(`引擎:${c}`));
+    await w.exec("x", { onOutput: (c) => got.push(`调用方:${c}`) });
+    // bash 的「前台自动转后台」要在同一条 exec 上再挂一份自己的尾巴,
+    // 顶掉任何一边都会让一个接收方瞎掉
+    expect(got).toEqual(["调用方:chunk", "引擎:chunk"]);
+  });
+});

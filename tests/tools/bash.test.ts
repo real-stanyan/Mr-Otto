@@ -185,7 +185,7 @@ describe("bash 工具", () => {
       {
         armed: true,
         start: (_cmd, run) => {
-          void run().then((r) => completions.push(r));
+          void run(() => {}).then((r) => completions.push(r));
           return "bg-7";
         },
       },
@@ -238,5 +238,99 @@ describe("bash 工具", () => {
     const tool = createBashTool({ armed: false, start: () => "bg-x" });
     await tool.run({ cmd: "ls" }, world);
     expect(seenOpts[0]).toBeUndefined(); // 旧调用形状：没有 opts，超时归 world 默认
+  });
+});
+
+// 后台任务的输出直播（issue #772 / ADR-0193）。后台任务面板要画的是终端,
+// 而这一层决定那台终端有没有字：两条起点各有各的接法,漏掉任一条都是一个
+// 「跑三十分钟、界面上一片空白」的任务。
+describe("bash 后台任务的输出直播", () => {
+  const noFs = {
+    read: () => Promise.reject(new Error("bash 测试不该碰 fs")),
+    write: () => Promise.reject(new Error("bash 测试不该碰 fs")),
+  };
+
+  it("显式 run_in_background：onOutput 递到 execDetached，碎片流回登记口", async () => {
+    const got: string[] = [];
+    const tool = createBashTool({
+      armed: true,
+      start: (_cmd, run) => {
+        void run((chunk) => got.push(chunk));
+        return "bg-1";
+      },
+    });
+    const { world } = fakeWorld({ stdout: "", stderr: "", exitCode: 0 });
+    world.execDetached = async (_cmd, opts) => {
+      opts?.onOutput?.("webpack…", "stdout");
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    await tool.run({ cmd: "npm run build", run_in_background: true }, world);
+    expect(got).toEqual(["webpack…"]);
+  });
+
+  it("前台自动转后台：交接前攒下的补给面板，交接后的直接转发 —— 中间不断", async () => {
+    let resolveExec!: (r: ExecResult) => void;
+    let emit!: (chunk: string, stream: "stdout" | "stderr") => void;
+    const world: ExecutionWorld = {
+      fs: noFs,
+      exec: (_cmd, opts) => {
+        emit = (c, s) => opts?.onOutput?.(c, s);
+        return new Promise<ExecResult>((r) => {
+          resolveExec = r;
+        });
+      },
+      http: { postJson: async () => ({}) },
+    };
+    const got: string[] = [];
+    const tool = createBashTool(
+      {
+        armed: true,
+        start: (_cmd, run) => {
+          void run((chunk) => got.push(chunk));
+          return "bg-7";
+        },
+      },
+      { autoBackgroundAfterMs: 10 }
+    );
+
+    const running = tool.run({ cmd: "npm test" }, world);
+    emit("交接前\n", "stdout");
+    expect(got).toEqual([]); // 这会儿还没有后台任务可挂,只能先攒着
+
+    await running; // 超过阈值,转后台
+    expect(got).toEqual(["交接前\n"]); // 攒下的整段补上
+
+    emit("交接后\n", "stdout");
+    expect(got).toEqual(["交接前\n", "交接后\n"]); // 之后直通,不再经过缓冲
+    resolveExec({ stdout: "", stderr: "", exitCode: 0 });
+  });
+
+  it("交接前攒的那段有界：整个构建日志不会堆在工具层等交接", async () => {
+    let emit!: (chunk: string) => void;
+    const world: ExecutionWorld = {
+      fs: noFs,
+      exec: (_cmd, opts) => {
+        emit = (c) => opts?.onOutput?.(c, "stdout");
+        return new Promise<ExecResult>(() => {});
+      },
+      http: { postJson: async () => ({}) },
+    };
+    const got: string[] = [];
+    const tool = createBashTool(
+      {
+        armed: true,
+        start: (_cmd, run) => {
+          void run((chunk) => got.push(chunk));
+          return "bg-9";
+        },
+      },
+      { autoBackgroundAfterMs: 10 }
+    );
+    const running = tool.run({ cmd: "npm run build" }, world);
+    emit("头".repeat(3_000));
+    emit("尾".repeat(3_000));
+    await running;
+    // 丢的是头部：尾巴才是「最新进展」（同 HeadTailBuffer 之外的那套取舍）
+    expect(got.join("")).toBe("尾".repeat(3_000));
   });
 });

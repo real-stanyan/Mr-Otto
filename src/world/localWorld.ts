@@ -7,7 +7,12 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
-import type { ExecutionWorld, ExecResult, TerminalSession } from "./executionWorld.js";
+import type {
+  DetachedOptions,
+  ExecutionWorld,
+  ExecResult,
+  TerminalSession,
+} from "./executionWorld.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
@@ -143,11 +148,13 @@ export function createLocalWorld(
     },
 
     // 后台执行（issue #389）：exec 的孪生减配版——不绑 turn 信号（跨 turn 存活
-    // 是它存在的意义）、不接直播、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
+    // 是它存在的意义）、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
     // 30 分钟够全量构建/测试，真要更久的活该上 CI）。同款 HeadTail 有界缓冲、
     // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。app 退出时随主进程死
     // （不 detach 进程组——孤儿进程比丢结果糟）
-    execDetached(cmd: string): Promise<ExecResult> {
+    // 直播在 issue #772 补上（后台任务面板要画终端），边界同 exec：
+    // 碎片喂 UI，日志只收 ExecResult 那一份凝固的整体
+    execDetached(cmd: string, dopts?: DetachedOptions): Promise<ExecResult> {
       return new Promise<ExecResult>((done) => {
         const child = spawn(cmd, {
           shell: true,
@@ -160,8 +167,15 @@ export function createLocalWorld(
         const err = new HeadTailBuffer(EXEC_BUFFER_CAP);
         child.stdout?.setEncoding("utf8");
         child.stderr?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => out.push(chunk));
-        child.stderr?.on("data", (chunk: string) => err.push(chunk));
+        const onOutput = dopts?.onOutput;
+        child.stdout?.on("data", (chunk: string) => {
+          out.push(chunk);
+          onOutput?.(chunk, "stdout");
+        });
+        child.stderr?.on("data", (chunk: string) => {
+          err.push(chunk);
+          onOutput?.(chunk, "stderr");
+        });
         child.on("error", (e) => done({ stdout: out.text(), stderr: e.message, exitCode: 1 }));
         child.on("close", (code, signal) => {
           if (signal !== null) {
