@@ -80,6 +80,7 @@ import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
 import { SignInScreen } from "./components/SignInScreen.js";
 import { SetPasswordDialog } from "./components/SetPasswordDialog.js";
@@ -3321,6 +3322,20 @@ export function App() {
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
   const isPackaged = useChat((s) => s.isPackaged);
+  // 残留清单弹窗（issue #759，review finding 1/2）：上次(boot latch) / 本次
+  // (直播累加) 两份各自的 items + 各自的 open 开关 + 收尾动作。items 空或
+  // open=false 时 ResiduePanel 自己不渲染，这里不用先判
+  const bootResidue = useChat((s) => s.bootResidue);
+  const bootResidueOpen = useChat((s) => s.bootResidueOpen);
+  const liveResidue = useChat((s) => s.liveResidue);
+  const liveResidueOpen = useChat((s) => s.liveResidueOpen);
+  const dismissBootResidue = useChat((s) => s.dismissBootResidue);
+  const dismissLiveResidue = useChat((s) => s.dismissLiveResidue);
+  const openLiveResidue = useChat((s) => s.openLiveResidue);
+  // 清理走哪个会话（review I1）：正看着的会话优先，welcome 页（sessionId 为空）
+  // 退到最后一条残留事件自带的那个——归档的清单就是这么送到 welcome 页上的
+  const lastResidueSessionId = useChat((s) => s.lastResidueSessionId);
+  const residueSessionId = sessionId !== "" ? sessionId : lastResidueSessionId;
   const protocolOpen = useChat((s) => s.protocolOpen);
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
@@ -3723,6 +3738,55 @@ export function App() {
           <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
+          {/* 残留清单（issue #759，review finding 1/2 + review I1/I2）：boot latch
+              非空 = 上次退出没收干净，一进这个会话就弹一次；本次残留只有
+              origin==="archive" 的直播事件才自动弹（applyResidueEvent 判的，
+              不在这儿判）——turn 收口那批只进 liveResidue、不弹窗，靠下面的
+              角标点开。
+              **不再要求 sessionId !== ""**（review I1）：归档会把 currentSessionId
+              清成 null、渲染层切回 welcome，而归档那一刻算出来的全量 diff 恰恰是
+              这时候才到——挂载条件卡着 sessionId 的话，这批残留在界面上永远不
+              出现。清理要的会话 id 走 lastResidueSessionId（事件自带的那个）。
+              **items 非空才挂载**（review I2）：ResiduePanel 的"owned 默认勾选"
+              是挂载那一刻算的初值，先挂空壳再灌数据 = 初值算的是空集；条件挂载
+              让它挂上去就有数据（组件内另有一条 effect 兜住"分两批到达"） */}
+          <>
+            {bootResidue.length > 0 && (
+              <ResiduePanel
+                sessionId={residueSessionId}
+                items={bootResidue}
+                open={bootResidueOpen}
+                title="上次残留"
+                onDone={dismissBootResidue}
+              />
+            )}
+            {liveResidue.length > 0 && (
+              <ResiduePanel
+                sessionId={residueSessionId}
+                items={liveResidue}
+                open={liveResidueOpen}
+                title="本次残留"
+                onDone={dismissLiveResidue}
+              />
+            )}
+            {/* 角标（review finding 1d）：turn 收口那批只并入 liveResidue 不
+                自动弹窗，得有个入口让用户自己翻出来看——找不到 BackgroundTasksPanel
+                那种"自动开侧栏"的先例能照抄(它是自动开,这里明确不该自动开)，
+                照顾"别过度建设"就做最简的一个带计数的圆角 chip，点开 = 打开
+                同一个 ResiduePanel（本次残留）。弹窗开着时这颗自己藏起来，
+                不叠在 Dialog 上方 */}
+            {liveResidue.length > 0 && !liveResidueOpen && (
+              <button
+                type="button"
+                onClick={openLiveResidue}
+                title="有残留没处理，点开清单"
+                className="fixed bottom-3 left-3 z-40 flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+              >
+                <span className="size-[6px] shrink-0 rounded-full bg-err" aria-hidden />
+                残留 {liveResidue.length}
+              </button>
+            )}
+          </>
         </SidebarInset>
         {/* 侧栏开关常驻左上角,两态同位(见 SidebarNub.tsx)。必须排在侧栏和内容区
             **之后**:Chromium 按文档顺序叠加 app-region 矩形、后者覆盖前者,放前面
