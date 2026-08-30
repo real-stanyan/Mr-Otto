@@ -100,8 +100,10 @@ describe("needsSignIn（进门闸，ADR-0182）", () => {
 });
 
 describe("showsSignInScreen", () => {
-  const signedIn: AccountInfo = { signedIn: true, email: "a@b.com", name: "A", avatarUrl: "" };
-  const out: AccountInfo = { signedIn: false, email: "", name: "", avatarUrl: "" };
+  // id 是 ADR-0187 加的（本机数据按 uid 分抽屉），这两条 fixture 在本分支
+  // 分叉之后才进的 AccountInfo —— 合 main 时补上
+  const signedIn: AccountInfo = { signedIn: true, id: "u1", email: "a@b.com", name: "A", avatarUrl: "" };
+  const out: AccountInfo = { signedIn: false, id: "", email: "", name: "", avatarUrl: "" };
 
   it("已经进来的人正常放行", () => {
     expect(showsSignInScreen(signedIn, true, false)).toBe(false);
