@@ -139,6 +139,9 @@ export interface ProxyManagerDeps {
    * 好友授的服务里有一台进了箱，TA 不在线也能用
    */
   cloudHostedServerIds?: () => readonly string[] | null;
+  /** 工作区连接器的 host（workspaceManager.hostUids()），无通道恒走云端；
+      与配对借用按 hostUid 去重，配对那条优先。 */
+  workspaceHosts?: () => readonly string[];
 }
 
 export interface ProxyManager {
@@ -514,9 +517,18 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // 台账（usableBorrows）是底本，不再只列活着的通道（issue #798）：
       // 「配过、此刻没连上」的借用正是云借用要接住的那种——A 关机了，
       // 但托管在云端的刀还在。每条的 mcp 是一把会自己选路的刀
-      return usableBorrows(deps.loadStore()).map((b) => ({
-        friendUid: b.hostUid, label: deps.friendLabel(b.hostUid), mcp: routedBorrowMcp(b.hostUid),
-      }));
+      const paired = usableBorrows(deps.loadStore());
+      const pairedUids = new Set(paired.map((b) => b.hostUid));
+      // 工作区连接器的 host 并进来（Task 10，ADR-0198 切片 3）：这些 host 从没
+      // 走过配对握手，天生没有通道——routedBorrowMcp 对无通道 host 本来就直接
+      // 落 cloudView/云 call（issue #798 的机器），这里零改动直接复用。
+      // 按 hostUid 去重、配对借用优先：同一个人既配对借用又是工作区 host 时，
+      // 配对那条带着「断线可恢复」的通道语义，不该被工作区那条覆盖
+      const wsOnly = (deps.workspaceHosts?.() ?? []).filter((u) => !pairedUids.has(u));
+      return [
+        ...paired.map((b) => ({ friendUid: b.hostUid, label: deps.friendLabel(b.hostUid), mcp: routedBorrowMcp(b.hostUid) })),
+        ...wsOnly.map((u) => ({ friendUid: u, label: deps.friendLabel(u), mcp: routedBorrowMcp(u) })),
+      ];
     },
 
     borrowStatus() {

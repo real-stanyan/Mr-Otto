@@ -170,6 +170,11 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
+import { createWorkspaceManager } from "./workspaceManager.js";
+import {
+  createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+  deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
+} from "./supabaseWorkspacesApi.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -1424,6 +1429,23 @@ void app.whenReady().then(() => {
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
     log: (m) => console.warn(`[px-cloud] ${m}`),
   });
+  // ─── 工作区（Task 8/10，ADR-0198 切片 2/3）─────────────────────────────
+  // 造得比 proxy 早：proxy 的 workspaceHosts 依赖它的 hostUids()。这里只做
+  // 编排装配，IPC 接线是 Task 11 的事——list() 在那之前没人调，hostUids()
+  // 就一直是空数组（brief 明写的过渡态，不是 bug）。
+  const workspaceManager = createWorkspaceManager({
+    createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+    deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
+    client: () => supabase.raw,
+    selfUid: () => friends.currentUid(),
+    loadStore: () => readProxyStore(proxyStorePath),
+    saveStore: (d) => writeProxyStore(proxyStorePath, d),
+    // escrowResync 此刻还是空位（要等 proxy/escrowSync 装完才填），但这里
+    // 只是存一个箭头函数——真正调用发生在 contributeConnector/withdrawConnector
+    // 落地时，那时 escrowResync 早已就位（同 onGrantsChanged 那条闭包的道理）
+    resyncEscrow: () => escrowResync?.(),
+    serverLabel: (id) => mcpHub.servers().find((s) => s.id === id)?.name ?? id,
+  });
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
         crypto: remoteKeys.crypto,
@@ -1472,6 +1494,9 @@ void app.whenReady().then(() => {
         // A 侧「云端可用」徽标的数据源（切片 4）。escrowSync 造得比 proxy 晚，
         // 箭头函数晚绑定——hostStatus 被问到时它早已就位
         cloudHostedServerIds: (): readonly string[] | null => escrowSync?.hostedServerIds() ?? null,
+        // 工作区连接器的 host 并进借用面（Task 10，ADR-0198 切片 3）：这些 host
+        // 从没走过配对握手，activeProxies() 靠这条把它们收进来，走 cloud-only 路
+        workspaceHosts: () => workspaceManager.hostUids(),
         log: (m) => console.warn(m),
       })
     : null;
