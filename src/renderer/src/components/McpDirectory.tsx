@@ -39,8 +39,6 @@ import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import {
   buildDirectory,
   configFromEntry,
-  directoryTint,
-  iconPaint,
   installSlot,
   installPackageName,
   installSourceLabel,
@@ -51,6 +49,7 @@ import {
   type InstalledServer,
 } from "../lib/mcpDirectory.js";
 import { searchCatalog, type CatalogEntry } from "../../../shared/mcpCatalog.js";
+import { McpEntryIcon } from "./McpEntryIcon.js";
 import type { McpServerStatus } from "../../../shared/mcp.js";
 import {
   filterInstalled,
@@ -60,26 +59,6 @@ import {
 } from "../lib/mcpInstalled.js";
 import { mcpDisplayStatus } from "../lib/mcpForm.js";
 import { McpConnectorPage } from "./McpConnectorPage.js";
-
-// eager:true 只把**地址**收进来（?url），不是把图标内容打进包里（同 FileTypeIcon）
-//
-// 也收 png：有一批牌子根本不发 SVG 标——国内几家（高德、腾讯位置、腾讯云）
-// 官网只挂 ico/png，Klaviyo、Vanta 这些也一样。可选的路只有三条：给它们
-// 画一个我们自己编的标（那是伪造）、让它们退化成首字母色块（精选层不许，
-// 见 tests/shared/mcpCatalog.test.ts）、或者认 png。认 png 最诚实——代价
-// 是 png 不能走 mask 那一档（不透明底会被 mask 成一个实心方块），所以
-// MONO_ICONS 里不许出现 png 键，这条由 tests/renderer/mcpIcons.test.ts 钉住
-const ICON_URLS = import.meta.glob<string>("../assets/mcp/*.{svg,png}", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-
-function iconUrl(icon: string | undefined): string | undefined {
-  if (icon === undefined) return undefined;
-  // svg 优先：同名两种格式都在时，矢量那份永远更好
-  return ICON_URLS[`../assets/mcp/${icon}.svg`] ?? ICON_URLS[`../assets/mcp/${icon}.png`];
-}
 
 const DEBOUNCE_MS = 250;
 
@@ -447,72 +426,9 @@ export function McpDirectory({
 }
 
 function EntryIcon({ entry, size = 32 }: { entry: CatalogEntry; size?: number }) {
-  const src = iconUrl(entry.icon);
-  // 尺寸走 style 而不是 tailwind 的 size-* ——类名要能被静态扫出来，
-  // `size-[${n}]` 拼出来的那种在生产构建里根本不会生成
-  const box = { width: size, height: size };
-  if (src !== undefined && entry.icon !== undefined) {
-    // 透明底，标直接坐在卡片上。上一版给每个标垫了一张白色方片——它确实解决了
-    // "纯黑的标在深色主题上看不见"，代价是二十张白方片自己成了噪音，比 logo
-    // 还抢眼。现在按 iconPaint 分两种画法（分野的理由写在 lib/mcpDirectory.ts）：
-    // 纯黑/近黑的标走 mask，只取形状、颜色跟主题前景色走；有品牌色的照原样画。
-    if (iconPaint(entry.icon) === "mono") {
-      // mask-image 取的是这张 SVG 的 alpha（填充与描边的覆盖区），颜色一概不看，
-      // 所以那几个文件里写的是什么 fill 都无所谓——形状是它唯一的贡献。
-      // 两个 mask-* 前缀都写：Safari 到今天仍然只认带 -webkit- 的那一支。
-      //
-      // 地址**必须加引号**：小于 4 KB 的 SVG 被 vite 内联成 `data:image/svg+xml,`
-      // 加百分号编码的原文，裸写进 url() 里会被 CSS 解析器判成非法值**整条丢掉**
-      // ——症状是没有 mask、bg-current 把整个 8×8 涂满，一格实心方块（第一版就是
-      // 这样，而它不报错）。
-      return (
-        <span
-          aria-hidden
-          data-testid="mcp-icon-mono"
-          // block 不能省：宽高对 inline 元素不生效，而这一档的尺寸只有宽高。
-          // 目录卡上看不出来（卡片外层是 flex，它作为 flex item 被 blockify 了），
-          // 详情页里包进一个普通 span 就消失——症状是"只有纯黑的那批标不见"，
-          // 而且不报错（#747）。让 EntryIcon 自足，别指望父级恰好是 flex
-          className="block shrink-0 bg-current"
-          style={{
-            ...box,
-            maskImage: `url("${src}")`,
-            WebkitMaskImage: `url("${src}")`,
-            maskRepeat: "no-repeat",
-            WebkitMaskRepeat: "no-repeat",
-            maskPosition: "center",
-            WebkitMaskPosition: "center",
-            maskSize: "contain",
-            WebkitMaskSize: "contain",
-          }}
-        />
-      );
-    }
-    return (
-      <img
-        src={src}
-        // 图标是名字的复述，名字就在旁边——给它 alt 只会让读屏器念两遍
-        alt=""
-        draggable={false}
-        style={box}
-        className="shrink-0 select-none object-contain"
-      />
-    );
-  }
-  // 没有本地图标就画首字母色块。颜色由 id 定死（directoryTint），同一条目
-  // 每次都是同一个颜色，色块才有"认出来"的价值
-  return (
-    <span
-      aria-hidden
-      style={box}
-      className={cn(
-        "grid shrink-0 place-items-center rounded-[8px] text-[13px] font-semibold",
-        directoryTint(entry.id)
-      )}
-    >
-      {entry.name.trim().slice(0, 1).toUpperCase()}
-    </span>
-  );
+  // 真身在 McpEntryIcon（issue #786 抽出，分享确认框共用）；这里只是
+  // 「CatalogEntry → 三个字段」的投影，目录页的调用点保持原签名
+  return <McpEntryIcon icon={entry.icon} label={entry.name} tintKey={entry.id} size={size} />;
 }
 
 function DirectoryCard({

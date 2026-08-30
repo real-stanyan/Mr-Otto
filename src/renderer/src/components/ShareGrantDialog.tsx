@@ -12,12 +12,20 @@
 // 一步都没多。为一个不存在的授权去点一次确认，只会训练人闭眼点确认。
 
 import { useEffect, useState } from "react";
-import { KeyRound, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button.js";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
+import { MCP_CATALOG } from "../../../shared/mcpCatalog.js";
+import { McpEntryIcon } from "./McpEntryIcon.js";
+
+/** 服务 id → 目录条目的图标键。从目录装的 server 用条目 id 当配置键，所以
+    直接按 id 对；手写配置对不上目录的，交给 McpEntryIcon 的首字母色块兜底 */
+function catalogIcon(serverId: string): string | undefined {
+  return MCP_CATALOG.find((e) => e.id === serverId)?.icon;
+}
 
 export interface ShareGrantTarget {
   uid: string;
@@ -94,7 +102,7 @@ export function ShareGrantDialog({
                 className="size-[13px] shrink-0 accent-[var(--brand)]"
                 aria-label={id}
               />
-              <KeyRound className="size-3 shrink-0 text-muted-foreground" />
+              <McpEntryIcon icon={catalogIcon(id)} label={id} size={16} />
               <span className="truncate">{id}</span>
             </label>
           ))}
