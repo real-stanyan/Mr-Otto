@@ -87,7 +87,9 @@ function machine(
   /** 「重启」用：沿用同一把身份密钥和同一份台账 */
   carry?: { identity: ReturnType<typeof p.generateEd25519>; store: ProxyStoreData },
   /** 云端托管的触发器（issue #797）——白名单落盘时该响的那只钩子 */
-  onGrantsChanged?: () => void
+  onGrantsChanged?: () => void,
+  /** 云端执行面（issue #798）。不注 = 纯通道行为 */
+  cloud?: Parameters<typeof createProxyManager>[0]["cloud"]
 ) {
   const identity = carry?.identity ?? p.generateEd25519();
   let store: ProxyStoreData = carry?.store ?? emptyProxyStore();
@@ -102,6 +104,7 @@ function machine(
     friendLabel: (u) => (u === "a-uid" ? "小明" : ""),
     ...(onChange ? { onChange } : {}),
     ...(onGrantsChanged ? { onGrantsChanged } : {}),
+    ...(cloud ? { cloud } : {}),
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
@@ -663,5 +666,104 @@ describe("proxyManager 的 onGrantsChanged（云端托管触发器，issue #797 
 
     await a.manager.proxyRevoke("b-uid");
     expect(fired).toBe(4);
+  });
+});
+
+describe("proxyManager 的云借用路由（issue #798 / ADR-0197 切片 3）", () => {
+  const CLOUD_TOOLS = [{ name: "get_orders", description: "d", inputSchema: {} }];
+  function fakeCloud() {
+    const calls: { hostUid: string; serverId: string; tool: string }[] = [];
+    let grantsCalls = 0;
+    return {
+      calls,
+      grantsCalls: () => grantsCalls,
+      cloud: {
+        fetchGrants: async (hostUid: string) => {
+          grantsCalls += 1;
+          return hostUid === "a-uid" ? [{ serverId: "shopify", toolDefs: CLOUD_TOOLS }] : null;
+        },
+        call: async (hostUid: string, serverId: string, tool: string) => {
+          calls.push({ hostUid, serverId, tool });
+          return [{ kind: "text" as const, text: "from-cloud" }];
+        },
+      },
+    };
+  }
+
+  it("A 不在线：接码握手失败但台账已落盘，工具表来自云端，callTool 打云端", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    a.manager.closeAll(); // A 关机
+
+    const fc = fakeCloud();
+    const b = machine(relay, "b-uid", [], undefined, undefined, undefined, undefined, fc.cloud);
+    const took = await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(took.ok).toBe(false); // 握手确实失败——云借用不改这句实话
+    await settle();
+
+    // 但这条借用没有消失：清单来自云端，刀还能用
+    const views = b.manager.activeProxies();
+    expect(views).toHaveLength(1);
+    expect(views[0]!.mcp.servers().map((s) => s.id)).toEqual(["shopify"]);
+    // name 取 serverId：与通道路长出同一批前缀工具名
+    expect(views[0]!.mcp.servers()[0]!.name).toBe("shopify");
+
+    const out = await views[0]!.mcp.callTool("shopify", "get_orders", {});
+    expect(out).toEqual([{ kind: "text", text: "from-cloud" }]);
+    expect(fc.calls).toEqual([{ hostUid: "a-uid", serverId: "shopify", tool: "get_orders" }]);
+
+    // borrowStatus 的刀数按云端算，不显示成 0
+    expect(b.manager.borrowStatus()[0]).toMatchObject({ connected: false, serverCount: 1 });
+    b.manager.closeAll();
+  });
+
+  it("通道 ready 时走通道不走云端——免费、快、A 看得见 inflight", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+
+    const fc = fakeCloud();
+    const b = machine(relay, "b-uid", [], undefined, undefined, undefined, undefined, fc.cloud);
+    const took = await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(took.ok).toBe(true);
+    await settle();
+
+    const view = b.manager.activeProxies()[0]!;
+    const out = await view.mcp.callTool("shopify", "get_orders", {});
+    expect(fc.calls).toEqual([]); // 云端一笔都没打
+    expect(JSON.stringify(out)).toContain("ok"); // fakeMcp 的通道路结果
+    a.manager.closeAll(); b.manager.closeAll();
+  });
+
+  it("对方明说撤销：云端缓存跟着清，activeProxies 不再列它", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    const fc = fakeCloud();
+    const b = machine(relay, "b-uid", [], undefined, undefined, undefined, undefined, fc.cloud);
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+
+    await a.manager.proxyRevoke("b-uid");
+    await settle();
+    expect(b.manager.activeProxies()).toEqual([]); // usableBorrows 已排除
+    expect(b.manager.borrowStatus()[0]).toMatchObject({ serverCount: 0 }); // 云端缓存清了
+    a.manager.closeAll(); b.manager.closeAll();
+  });
+
+  it("不注 cloud：断线时 callTool 抛旧话术，不回落本地（ADR-0166 不变）", async () => {
+    const relay = fakeRelay();
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    const b = machine(relay, "b-uid");
+    await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    await settle();
+    a.manager.closeAll(); // A 下线
+    await settle();
+
+    const view = b.manager.activeProxies()[0]!;
+    await expect(view.mcp.callTool("shopify", "get_orders", {})).rejects.toThrow("A（分享者）不在线");
+    b.manager.closeAll();
   });
 });

@@ -192,6 +192,30 @@ export function knownMcpToolNames(
     图本身会入附件库、在时间线上出卡（#594 的 imagesOf → imageIntake），
     所以这句话要点明"用户看得见"：模型据此才知道自己可以就这张图和人对话，
     而不是以为这次调用什么都没产出。 */
+/** 原始 MCP content 块（SDK 的 result.content / 线上 JSON-RPC 的同一形状） */
+type RawMcpContent = { type: string; text?: string; data?: string; mimeType?: string; resource?: { uri?: string; text?: string; mimeType?: string } };
+
+/** 原始 MCP content → 本仓的 McpContent。认不得的类型折成一行说明,不静默丢。
+    两个消费方：mcpClient（SDK 的 result.content）与 px 云借用（/px/v1/call
+    回来的同一形状，issue #798）——转换必须是同一份，否则同一把刀走两条路
+    产出两种形状 */
+export function toMcpContent(raw: unknown): McpContent[] {
+  const arr = Array.isArray(raw) ? (raw as RawMcpContent[]) : [];
+  return arr.map((c): McpContent => {
+    if (c.type === "text") return { kind: "text", text: c.text ?? "" };
+    if (c.type === "image") return { kind: "image", data: c.data ?? "", mimeType: c.mimeType ?? "image/png" };
+    if (c.type === "resource") {
+      return {
+        kind: "resource",
+        uri: c.resource?.uri ?? "",
+        ...(c.resource?.text !== undefined ? { text: c.resource.text } : {}),
+        ...(c.resource?.mimeType !== undefined ? { mimeType: c.resource.mimeType } : {}),
+      };
+    }
+    return { kind: "text", text: `(server 返回了本版认不得的内容类型：${c.type})` };
+  });
+}
+
 export function renderMcpContent(content: readonly McpContent[]): string {
   if (content.length === 0) return "(工具没有返回任何内容)";
   return content

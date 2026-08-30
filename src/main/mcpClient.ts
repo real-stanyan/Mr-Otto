@@ -17,6 +17,7 @@ import type { OAuthClientInformation, OAuthClientMetadata, OAuthTokens } from "@
 import type {
   McpContent, McpPromptInfo, McpResourceInfo, McpServerConfig, McpToolInfo,
 } from "../shared/mcp.js";
+import { toMcpContent } from "../shared/mcp.js";
 import type { McpAuthRecord } from "./mcpAuthStore.js";
 import { startLoopback, AUTH_TIMEOUT_MS } from "./mcpOAuth.js";
 
@@ -49,25 +50,9 @@ export interface McpClientConn {
   kill(): void;
 }
 
-type RawContent = { type: string; text?: string; data?: string; mimeType?: string; resource?: { uri?: string; text?: string; mimeType?: string } };
-
-/** SDK 的 content 形状 → 本仓的 McpContent。认不得的类型折成一行说明,不静默丢 */
-function toContent(raw: unknown): McpContent[] {
-  const arr = Array.isArray(raw) ? (raw as RawContent[]) : [];
-  return arr.map((c): McpContent => {
-    if (c.type === "text") return { kind: "text", text: c.text ?? "" };
-    if (c.type === "image") return { kind: "image", data: c.data ?? "", mimeType: c.mimeType ?? "image/png" };
-    if (c.type === "resource") {
-      return {
-        kind: "resource",
-        uri: c.resource?.uri ?? "",
-        ...(c.resource?.text !== undefined ? { text: c.resource.text } : {}),
-        ...(c.resource?.mimeType !== undefined ? { mimeType: c.resource.mimeType } : {}),
-      };
-    }
-    return { kind: "text", text: `(server 返回了本版认不得的内容类型：${c.type})` };
-  });
-}
+// SDK 的 content 形状 → McpContent 的转换在 shared/mcp.ts 的 toMcpContent——
+// px 云借用（issue #798）走线上拿到同一形状，转换必须共用一份
+const toContent = toMcpContent;
 
 /** 判断一次连接失败是不是"要授权"。优先认 SDK 给的类型信号——
     StreamableHTTPClientTransport 在 POST 分支的 401/403 上抛 StreamableHTTPError，
