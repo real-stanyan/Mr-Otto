@@ -199,4 +199,86 @@ describe("ResiduePanel（残留清单弹窗，issue #759）", () => {
     expect(screen.getByLabelText("iPhone 15 (iOS 18)")).toBeInTheDocument();
     expect(screen.getByText("python3:9999")).toBeInTheDocument();
   });
+
+  it("kind:'skipped'（仅展示那档）也算了结，不留红字", async () => {
+    const residueClean = vi.fn(async () => [
+      { id: "111", ok: false, kind: "skipped" as const, note: "仅展示，不提供清理" },
+    ]);
+    seed({ residueClean });
+    const onDone = vi.fn();
+    render(<ResiduePanel sessionId="s1" items={[items[0]!]} open onDone={onDone} />);
+    await userEvent.click(screen.getByText("清理选中 (1)"));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
+  it("一成功一失败：只要有一条 failed 就不调 onDone（弹窗留着给用户看红字）", async () => {
+    const residueClean = vi.fn(async () => [
+      { id: "111", ok: true, kind: "cleaned" as const },
+      { id: "udid-1", ok: false, kind: "failed" as const, note: "关不掉" },
+    ]);
+    seed({ residueClean });
+    const onDone = vi.fn();
+    render(<ResiduePanel sessionId="s1" items={items} open onDone={onDone} />);
+    // suspected 的模拟器默认不勾，手动勾上凑成两条一起清
+    await userEvent.click(screen.getByLabelText("iPhone 15 (iOS 18)"));
+    await userEvent.click(screen.getByText("清理选中 (2)"));
+    await waitFor(() => expect(residueClean).toHaveBeenCalled());
+    expect(await screen.findByText("关不掉")).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+// issue #759 review I2：live 路径上挂载方是**先挂组件后来数据**的，
+// "owned 默认勾选"那份 useState 惰性初值算的是空集，之后再也不重算——
+// 于是用户看到一屏空 checkbox 和一个禁用的清理按钮。挂载方改成条件挂载
+// （App.tsx `{liveResidue.length > 0 && ...}`），组件内再加一条 effect
+// 兜住"分两批到达"。这一组钉的是后者。
+describe("owned 默认勾选：items 后到 / 分批到时也要成立（review I2）", () => {
+  const owned = (id: string): ResidueItem => ({
+    detector: "process_groups", id, label: id, confidence: "owned", cleanupHint: `kill 进程组 ${id}`,
+  });
+
+  it("挂载时 items 为空、之后才灌进来——新到的 owned 条目自动勾上", async () => {
+    seed({});
+    const { rerender } = render(<ResiduePanel sessionId="s1" items={[]} open onDone={() => {}} />);
+    rerender(<ResiduePanel sessionId="s1" items={[owned("111")]} open onDone={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText("111")).toBeChecked());
+    expect(screen.getByText("清理选中 (1)")).toBeEnabled();
+  });
+
+  it("分两批到达：第二批的 owned 也并进 checked，第一批的不受影响", async () => {
+    seed({});
+    const { rerender } = render(
+      <ResiduePanel sessionId="s1" items={[owned("111")]} open onDone={() => {}} />
+    );
+    rerender(
+      <ResiduePanel sessionId="s1" items={[owned("111"), owned("222")]} open onDone={() => {}} />
+    );
+    await waitFor(() => expect(screen.getByLabelText("222")).toBeChecked());
+    expect(screen.getByLabelText("111")).toBeChecked();
+    expect(screen.getByText("清理选中 (2)")).toBeInTheDocument();
+  });
+
+  it("用户手动取消掉的那条，不会被后续重渲勾回去（seeded 记住已经判过的 id）", async () => {
+    seed({});
+    const { rerender } = render(
+      <ResiduePanel sessionId="s1" items={[owned("111")]} open onDone={() => {}} />
+    );
+    await userEvent.click(screen.getByLabelText("111")); // 取消勾选
+    expect(screen.getByLabelText("111")).not.toBeChecked();
+    // 新一批到达（111 还在里面）——它已经在 seeded 里，不该被重新勾上
+    rerender(
+      <ResiduePanel sessionId="s1" items={[owned("111"), owned("222")]} open onDone={() => {}} />
+    );
+    await waitFor(() => expect(screen.getByLabelText("222")).toBeChecked());
+    expect(screen.getByLabelText("111")).not.toBeChecked();
+  });
+
+  it("后到的 suspected 不会被自动勾上（默认不动用户自己留着的东西）", async () => {
+    seed({});
+    const { rerender } = render(<ResiduePanel sessionId="s1" items={[]} open onDone={() => {}} />);
+    rerender(<ResiduePanel sessionId="s1" items={items} open onDone={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText("npm run dev")).toBeChecked());
+    expect(screen.getByLabelText("iPhone 15 (iOS 18)")).not.toBeChecked();
+  });
 });
