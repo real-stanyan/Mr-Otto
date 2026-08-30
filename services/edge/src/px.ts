@@ -14,52 +14,19 @@
 
 // ─── 托管文档 ───────────────────────────────────────────────
 
-/** 一台被托管的 http MCP server：执行需要的一切（url + 凭据 + 工具表快照） */
-export interface EscrowService {
-  serverId: string;
-  url: string;
-  headers?: Record<string, string>;
-  /** mcp-auth.json 里那台 server 的家当（tokens / clientInformation）。
-      结构故意宽——这层只透传给 MCP 请求与刷新流程，不解读字段 */
-  oauth?: { tokens?: Record<string, unknown>; clientInformation?: Record<string, unknown> };
-  /** buildGrantedServers 同款脱敏工具表：B 在 A 下线时也要拿得到工具定义 */
-  toolDefs: { name: string; description: string; inputSchema: unknown }[];
-}
-
-export interface EscrowGrant {
-  friendUid: string;
-  /** tools 空数组 = 整服务放行（与 proxyProtocol.grantAllows 同口径） */
-  allow: { serverId: string; tools: string[] }[];
-}
-
-/** 一户（hostUid）的整箱托管。整箱覆盖写入：A 侧是唯一写者，增量没有意义 */
-export interface EscrowDoc {
-  v: 1;
-  hostUid: string;
-  services: EscrowService[];
-  grants: EscrowGrant[];
-  updatedTs: number;
-}
+// 文档形状与结构门从 src/shared/remote/pxEscrow.ts 来——**两方共用一份**
+// （A 侧构造 + 上传，这里解析 + 密封），与 relay.ts 借 wire.ts 同一个纪律
+// （issue #797）。各写各的时，一处对不上的表现是 PUT 恒 400。
+export {
+  parseEscrowDoc,
+  type EscrowDoc,
+  type EscrowGrant,
+  type EscrowService,
+} from "../../../src/shared/remote/pxEscrow.js";
+import { parseEscrowDoc, type EscrowDoc, type EscrowGrant, type EscrowService } from "../../../src/shared/remote/pxEscrow.js";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
-
-/** 线上来的托管文档过结构门。认不出回 null——上传方是我们自己的客户端，
-    但「我们自己的客户端」是信任声明不是形状保证 */
-export function parseEscrowDoc(raw: unknown): EscrowDoc | null {
-  if (!isObj(raw) || raw.v !== 1) return null;
-  if (typeof raw.hostUid !== "string" || !raw.hostUid) return null;
-  if (!Array.isArray(raw.services) || !Array.isArray(raw.grants)) return null;
-  for (const s of raw.services) {
-    if (!isObj(s) || typeof s.serverId !== "string" || !s.serverId) return null;
-    if (typeof s.url !== "string" || !/^https:\/\//.test(s.url)) return null;
-    if (!Array.isArray(s.toolDefs)) return null;
-  }
-  for (const g of raw.grants) {
-    if (!isObj(g) || typeof g.friendUid !== "string" || !Array.isArray(g.allow)) return null;
-  }
-  return raw as unknown as EscrowDoc;
-}
 
 // ─── 三道闸（身份由调用方从 JWT 得出，这里收关系 + 白名单）────────────
 

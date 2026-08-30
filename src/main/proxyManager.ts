@@ -99,6 +99,10 @@ export interface ProxyManagerDeps {
   friendLabel: (uid: string) => string;
   /** B 侧任一条借来的通道状态变了（接上/断开/授权清单更新）。装配根据此推给渲染层 */
   onChange?: () => void;
+  /** A 侧**白名单本身**变了（发邀请/改授权/撤销），与 onChange 分开：那条
+      连接状态一抖就响，而这条只在授权落盘时响——云端托管的 re-sync 挂这里
+      （ADR-0197 切片 2）。撤销也走它：整箱重传/删除的判断在同步层，不在这层 */
+  onGrantsChanged?: () => void;
   /** 开一个到 relay 某频道的点对点传输（index.ts 用 createWsTransport + adaptProxyWire 造） */
   openWireTransport: (channelId: string, role: "host" | "guest") => ProxyWireTransport;
   /** proxyStore 的落盘（0600/userData，index.ts 填 readProxyStore/writeProxyStore 的绑定） */
@@ -282,6 +286,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       openHost(friendUid, inv.channelId, inv, ttlMs);
       pendingInvites.set(friendUid, inv.createdTs + ttlMs);
       changed();
+      deps.onGrantsChanged?.();
       log(`代理邀请码已生成并监听：好友 ${friendUid}，频道 ${inv.channelId.slice(0, 8)}…`);
       return { ok: true, value: { invite: encodeProxyInvite(inv) } };
     },
@@ -347,6 +352,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       deps.saveStore(setGrant(deps.loadStore(), { friendUid, allow }));
       hosts.get(friendUid)?.pushGrant();
       changed();
+      deps.onGrantsChanged?.();
       log(`代理授权已更新：好友 ${friendUid}，${allow.length} 个服务`);
       return { ok: true, value: null };
     },
@@ -369,6 +375,9 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       hosts.delete(friendUid);
       pendingInvites.delete(friendUid);
       changed();
+      // 撤销级联的前半（ADR-0197）：本地白名单已清，云端那份由同步层跟进
+      // ——最后一条授权撤掉时整箱 DELETE，凭证与授权即刻从 edge 消失
+      deps.onGrantsChanged?.();
       log(`代理授权已撤销：好友 ${friendUid}`);
       return { ok: true, value: null };
     },
