@@ -19,6 +19,9 @@ import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
 export interface InstalledServer {
   id: string;
   status: McpDisplayStatus;
+  /** 它此刻暴露的工具名。详情页要显示（#745），目录卡不用——所以是可选的，
+      不必为了一张卡把整份快照传进来 */
+  tools?: readonly string[];
 }
 
 export interface DirectoryItem {
@@ -268,6 +271,13 @@ export type InstallSlot =
 
 export function installSlot(item: DirectoryItem, busy: boolean): InstallSlot {
   if (busy) return { kind: "busy" };
+  // 已知接不上的那几条（catalog 的 blocked，实测结论见 #733）：不发「添加」，
+  // 也不发「授权」——这两颗按钮点下去必失败，而"提供一个已知会失败的动作"
+  // 正是 #722 那个撒谎的勾的形状。把原因说出来，动作留给用户自己决定。
+  // **connected 不受影响**：真连上了说明我们的结论过期了，以现实为准（#760）
+  if (item.installed !== "connected" && item.entry.blocked !== undefined) {
+    return { kind: "note", label: "暂时连不上", title: item.entry.blocked };
+  }
   if (item.installed === null) return { kind: "add" };
   switch (item.installed) {
     case "connected":

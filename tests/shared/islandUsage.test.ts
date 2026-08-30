@@ -47,8 +47,8 @@ describe("islandUsage", () => {
   it("按 14 天用量降序,超出 max 截断", () => {
     const rows = [
       row(0, "deepseek-v4-flash", 5),
-      row(0, "gpt-5", 50),
-      row(0, "gpt-5-mini", 20),
+      row(0, "gpt-5.6-sol", 50),
+      row(0, "gpt-5.6-terra", 20),
     ];
     const out = islandUsage(rows, { now: NOW, max: 2 });
     expect(out.map((r) => r.d14)).toEqual([50, 20]);

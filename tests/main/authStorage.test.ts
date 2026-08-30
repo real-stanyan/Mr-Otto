@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { createAuthStorage, nodeIO } from "../../src/main/authStorage.js";
+import { createAuthStorage, nodeIO, sessionIdentity } from "../../src/main/authStorage.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 function fakeIO() {
@@ -161,5 +161,62 @@ describe("authStorage", () => {
     const io = fakeIO();
     io.write("/fake/auth.json", "{ 这不是 JSON");
     expect(createAuthStorage("/fake/auth.json", io).hasSession()).toBe(false);
+  });
+});
+
+// ADR-0187：本机数据按账号分抽屉，而抽屉在 whenReady 的第一行就得选定 —— 那时
+// supabase client 还没造、restore() 的网络往返更没影子。答案本来就在盘上：
+// supabase 落的那份 session 自带 user.id。
+describe("sessionIdentity —— 落盘 session 里的「这是谁」", () => {
+  const session = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      access_token: "tok",
+      refresh_token: "r",
+      user: { id: "uid-alice", email: "alice@example.com" },
+      ...over,
+    });
+
+  it("读出 uid 和邮箱，同步、不发网络", () => {
+    const io = fakeIO();
+    io.write("/fake/auth.json", JSON.stringify({ "sb-abc-auth-token": session() }));
+    expect(sessionIdentity("/fake/auth.json", io)).toEqual({
+      uid: "uid-alice",
+      email: "alice@example.com",
+    });
+  });
+
+  it("没有文件 → uid 为 null（「没登录记录」不是异常，走 _signed-out 那一格）", () => {
+    expect(sessionIdentity("/fake/auth.json", fakeIO())).toEqual({ uid: null, email: "" });
+  });
+
+  it("只有 code-verifier 残留 → uid 为 null（#729 那三条骗过闸门的东西）", () => {
+    const io = fakeIO();
+    io.write(
+      "/fake/auth.json",
+      JSON.stringify({ "sb-abc-auth-token-code-verifier": "just-a-bare-string" })
+    );
+    expect(sessionIdentity("/fake/auth.json", io).uid).toBeNull();
+  });
+
+  it("有 session 但没有 user.id → uid 为 null，不瞎猜一个", () => {
+    const io = fakeIO();
+    io.write(
+      "/fake/auth.json",
+      JSON.stringify({ "sb-abc-auth-token": session({ user: { email: "a@b.c" } }) })
+    );
+    expect(sessionIdentity("/fake/auth.json", io).uid).toBeNull();
+  });
+
+  it("坏 JSON 不炸 —— 开机路径上抛异常等于整个 app 起不来", () => {
+    const io = fakeIO();
+    io.write("/fake/auth.json", "{ 这不是 JSON");
+    expect(sessionIdentity("/fake/auth.json", io)).toEqual({ uid: null, email: "" });
+  });
+
+  it("和 hasSession 认的是同一份形状 —— 判据只有一份，不会漂移", () => {
+    const io = fakeIO();
+    io.write("/fake/auth.json", JSON.stringify({ "sb-abc-auth-token": session() }));
+    expect(createAuthStorage("/fake/auth.json", io).hasSession()).toBe(true);
+    expect(sessionIdentity("/fake/auth.json", io).uid).toBe("uid-alice");
   });
 });

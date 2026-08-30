@@ -45,10 +45,13 @@ export interface LoopEngineOptions {
       warn 也会从整场一次变成每 turn 一次。生产代码唯一的调用方走函数模式，
       数组模式只有测试在用；别把它当成不可变快照）。
 
-      为什么是"每 turn 重算、turn 内冻结"而不是"随时重算"：模型看到的声明表
-      和 dispatch 时查的 toolsByName 必须是同一份。turn 中途换表，模型按旧表
-      发出的调用会在新表里查不到，收到一句"未知工具"——那正是 mcpTool.ts
-      顶部注释要避免的失败。 */
+      为什么不是"turn 内彻底冻结"（issue #750）：那条冻结原本是为了保住一个
+      不变量——**模型看到过的名字，dispatch 时必须还查得到**。turn 中途整张
+      表换掉会破坏它（模型按旧表发的调用在新表里查不到，收到"未知工具"）。
+      但"只长不缩"不破坏它：加进来的名字不会让已经发出去的调用失效。
+      所以每圈跑一次 refreshToolsKeepingNames()——新连上的 MCP server，
+      这一轮就能用；掉线的那台名字仍然留在表里（available() 会把它挡在
+      声明表外，真被调到也是一句它自己的错误，而不是"未知工具"）。 */
   tools: Tool[] | (() => Tool[]);
   world: ExecutionWorld;
   sessionId: string;
@@ -169,6 +172,35 @@ export class LoopEngine {
         console.warn(`工具「${t.def.name}」已注册，后到的同名工具被拒绝挂载`);
         continue;
       }
+      byName.set(t.def.name, t);
+      list.push(t);
+    }
+    this.toolsByName = byName;
+    this.tools = list;
+  }
+
+  /** turn 内的工具表刷新：**只长不缩**（issue #750）。
+      每圈模型调用前跑一次，于是"这一轮刚接上的 MCP server，这一轮就能用"。
+
+      规则一句话：以 provider 现在这份为准，但**旧表里有、新表里没有的名字
+      一个都不删**。删掉才会破坏那个不变量（模型看到过的名字必须还查得到）；
+      加进来不会。掉线那台的刀就这么留着——`available()` 把它挡在声明表外，
+      模型看不到它；万一真被调到，报的是它自己那句错误，而不是"未知工具"。
+
+      不打撞名警告：那句话每 turn 说一次是刻意的（一台 server 反复挂同名刀，
+      用户该一直看得到），每圈说一次就成了刷屏。 */
+  private refreshToolsKeepingNames(): void {
+    const byName = new Map<string, Tool>();
+    const list: Tool[] = [];
+    for (const t of this.toolsProvider()) {
+      if (byName.has(t.def.name)) continue;
+      byName.set(t.def.name, t);
+      list.push(t);
+    }
+    // 旧表里独有的名字补回去（顺序排在后面：新表是"现在的样子"，
+    // 这些是"这一轮还欠着的收口"）
+    for (const t of this.tools) {
+      if (byName.has(t.def.name)) continue;
       byName.set(t.def.name, t);
       list.push(t);
     }
@@ -594,6 +626,10 @@ export class LoopEngine {
           this.compactFloor = contextUsed(log, barren);
         }
       }
+
+      // 工具表只长不缩地刷一遍（issue #750）：上一圈 mcp_configure 刚接上的
+      // server，这一圈模型就能看见它的刀——不用等用户再说一句"好了"
+      this.refreshToolsKeepingNames();
 
       // 永远从日志现算上下文——loop 自己不持有任何对话状态。
       // 带压缩：老 turn 的长工具输出折叠（确定性，重放可还原模型视野）

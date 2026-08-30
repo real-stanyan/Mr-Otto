@@ -303,19 +303,28 @@ describe("序列化往返", () => {
 });
 
 describe("subagentRoots", () => {
+  // 第一个参数自 ADR-0187 起是**解析好的用户配置目录**（账号抽屉），不是 home ——
+  // 用户级的定义跟着账号走，不再是 `<home>/.mr-otto/`
+  const USER_CONFIG = "/home/u/.mr-otto/accounts/deadbeefdeadbeef";
+
   it("有工作区时两条，工作区排在用户前面（同名先到先得 = 工作区盖用户）", () => {
-    expect(subagentRoots("/home/u", "/work/proj")).toEqual([
+    expect(subagentRoots(USER_CONFIG, "/work/proj")).toEqual([
       { root: "/work/proj/.mr-otto/agents", readOnly: false, scope: "workspace" },
-      { root: "/home/u/.mr-otto/agents", readOnly: false, scope: "user" },
+      { root: `${USER_CONFIG}/agents`, readOnly: false, scope: "user" },
     ]);
   });
 
+  it("用户那条根不再自己拼 .mr-otto —— 拼在 accountScope 那一层（ADR-0187）", () => {
+    const user = subagentRoots("/anywhere", null)[0];
+    expect(user?.root).toBe("/anywhere/agents");
+  });
+
   it("不扫 .claude/agents(ADR-0056)", () => {
-    expect(subagentRoots("/home/u", "/work/proj").some((r) => r.root.includes(".claude"))).toBe(false);
+    expect(subagentRoots(USER_CONFIG, "/work/proj").some((r) => r.root.includes(".claude"))).toBe(false);
   });
 
   it("没有工作区就只有用户那一条", () => {
-    expect(subagentRoots("/home/u", null).map((r) => r.scope)).toEqual(["user"]);
+    expect(subagentRoots(USER_CONFIG, null).map((r) => r.scope)).toEqual(["user"]);
   });
 });
 
@@ -323,7 +332,7 @@ describe("scanSubagents 的覆盖顺序", () => {
   it("同名时工作区那份赢，且 scope 跟着赢的那条根走", () => {
     const files: Record<string, string[]> = {
       "/work/.mr-otto/agents": ["r.md"],
-      "/home/.mr-otto/agents": ["r.md"],
+      "/home/agents": ["r.md"],
     };
     const reader = {
       listFiles: (root: string) => files[root] ?? [],

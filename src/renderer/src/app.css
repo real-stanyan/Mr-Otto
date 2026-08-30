@@ -773,6 +773,44 @@
   }
 }
 
+/* 连接器详情页:从右缘推进来一点点(空间一致性——往深处走)。位移只有 8px,
+   因为它不是叠加层而是**换页**:同一块地方的内容被替换掉,大幅位移会让人
+   以为出现了第二层。离场不做动画——返回时列表本来就在脑子里,补一段退场
+   只会让"回去"这个高频动作变慢(Emil:退场永远比进场快,这里快到 0) */
+.connector-page {
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 200ms var(--ease-strong),
+    transform 200ms var(--ease-strong);
+  @starting-style {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connector-page {
+    transform: none;
+    transition: opacity 200ms ease;
+  }
+}
+
+/* 整张卡可按下的反馈。比 press-scale 轻(0.985 对 0.97):卡片有 240px 宽,
+   缩 3% 会把旁边的卡衬得在动;而"界面听见了"这件事只需要一点点 */
+.press-card {
+  transition:
+    transform 120ms var(--ease-strong),
+    border-color 150ms ease;
+}
+.press-card:active {
+  transform: scale(0.985);
+}
+@media (prefers-reduced-motion: reduce) {
+  .press-card:active {
+    transform: none;
+  }
+}
+
 /* Protocol/Git Graph 叠加面板:从右缘滑入(ease-out,离场即关闭卸载,无对称需求) */
 .side-panel {
   opacity: 1;

@@ -12,7 +12,7 @@ import { expectNoRendererErrors, launchOtto, startSession, type Otto } from "./h
 import { fakeModelEnv, startFakeModel } from "./fakeModel.js";
 
 function sqlite(otto: Otto, sql: string): string {
-  return execFileSync("sqlite3", [join(otto.userData, "sessions.db"), sql], {
+  return execFileSync("sqlite3", [join(otto.accountData, "sessions.db"), sql], {
     encoding: "utf8",
   }).trim();
 }

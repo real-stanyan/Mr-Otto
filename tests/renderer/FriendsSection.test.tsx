@@ -29,7 +29,7 @@ const HITS: FriendProfile[] = [
 function seed(): void {
   vi.stubGlobal("window", Object.assign(window, { otter: {} }));
   useChat.setState({
-    account: { signedIn: true, email: "me@x.com", name: "我", avatarUrl: "" },
+    account: { signedIn: true, id: "u-me", email: "me@x.com", name: "我", avatarUrl: "" },
     friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
     onlineIds: [],
     unreadByFriend: {},

@@ -41,6 +41,7 @@ describe("toAccountInfo", () => {
   it("null 用户 → 全空 signedIn=false", () => {
     expect(toAccountInfo(null)).toEqual({
       signedIn: false,
+      id: "",
       email: "",
       name: "",
       avatarUrl: "",
@@ -49,11 +50,13 @@ describe("toAccountInfo", () => {
 
   it("Google 形态 metadata（name + avatar_url）", () => {
     const user = {
+      id: "uid-alice",
       email: "alice@example.com",
       user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
     };
     expect(toAccountInfo(user)).toEqual({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",
@@ -62,11 +65,13 @@ describe("toAccountInfo", () => {
 
   it("GitHub 形态 metadata（user_name + picture，无 name/avatar_url）", () => {
     const user = {
+      id: "uid-bob",
       email: "bob@example.com",
       user_metadata: { user_name: "bobgh", picture: "https://gh.example/b.png" },
     };
     expect(toAccountInfo(user)).toEqual({
       signedIn: true,
+      id: "uid-bob",
       email: "bob@example.com",
       name: "bobgh",
       avatarUrl: "https://gh.example/b.png",
@@ -74,19 +79,31 @@ describe("toAccountInfo", () => {
   });
 
   it("metadata 全无 name/user_name → 用 email @ 前缀", () => {
-    const user = { email: "carol@example.com", user_metadata: {} };
+    const user = { id: "uid-carol", email: "carol@example.com", user_metadata: {} };
     expect(toAccountInfo(user)).toEqual({
       signedIn: true,
+      id: "uid-carol",
       email: "carol@example.com",
       name: "carol",
       avatarUrl: "",
     });
   });
 
+  it("user 没有 id → id 退化成空串（不是 undefined，也不是别人的 uid）", () => {
+    // ADR-0187：id 是本机数据分抽屉的依据。取不到就留空串 —— 空串 ≠ 任何真 uid，
+    // 于是「换号了没有」判不出来、不会误重启，退化成分抽屉之前的行为（同一个抽屉）
+    expect(toAccountInfo({ email: "nobody@example.com", user_metadata: {} }).id).toBe("");
+  });
+
+  it("user 带 id → 原样带进 AccountInfo（换号判据的唯一来源）", () => {
+    expect(toAccountInfo({ id: "uid-x", email: "x@example.com", user_metadata: {} }).id).toBe("uid-x");
+  });
+
   it("无 email 也无 metadata → name/avatarUrl 为空字符串", () => {
     const user = {};
     expect(toAccountInfo(user)).toEqual({
       signedIn: true,
+      id: "",
       email: "",
       name: "",
       avatarUrl: "",
@@ -101,6 +118,7 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
       exchangeCodeForSession: vi.fn(async () => ({
         data: {
           user: {
+            id: "uid-alice",
             email: "alice@example.com",
             user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
           },
@@ -179,12 +197,14 @@ describe("AccountManager", () => {
     expect(client.auth.exchangeCodeForSession).toHaveBeenCalledWith("abc123");
     expect(onChange).toHaveBeenCalledWith({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",
     });
     expect(manager.getAccount()).toEqual({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",
@@ -221,7 +241,7 @@ describe("AccountManager", () => {
     );
     expect(onChange).not.toHaveBeenCalled();
     // 失败态下 getAccount 仍是初始空账户——不能读出一个"看似登出"的假状态
-    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(manager.getAccount()).toEqual({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" });
   });
 
   it("signOut 调 client.auth.signOut 后 onChange 收到 signedIn=false", async () => {
@@ -238,12 +258,14 @@ describe("AccountManager", () => {
     expect(client.auth.signOut).toHaveBeenCalled();
     expect(onChange).toHaveBeenCalledWith({
       signedIn: false,
+      id: "",
       email: "",
       name: "",
       avatarUrl: "",
     });
     expect(manager.getAccount()).toEqual({
       signedIn: false,
+      id: "",
       email: "",
       name: "",
       avatarUrl: "",
@@ -268,8 +290,8 @@ describe("AccountManager", () => {
 
     expect(client.auth.signOut).toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalled();
-    expect(onChange).toHaveBeenCalledWith({ signedIn: false, email: "", name: "", avatarUrl: "" });
-    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(onChange).toHaveBeenCalledWith({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" });
+    expect(manager.getAccount()).toEqual({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" });
 
     consoleErrorSpy.mockRestore();
   });
@@ -279,6 +301,7 @@ describe("AccountManager", () => {
     const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
     expect(manager.getAccount()).toEqual({
       signedIn: false,
+      id: "",
       email: "",
       name: "",
       avatarUrl: "",
@@ -291,6 +314,7 @@ describe("AccountManager", () => {
         getUser: vi.fn(async () => ({
           data: {
             user: {
+              id: "uid-alice",
               email: "alice@example.com",
               user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
             },
@@ -307,12 +331,14 @@ describe("AccountManager", () => {
     expect(client.auth.getUser).toHaveBeenCalled();
     expect(manager.getAccount()).toEqual({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",
     });
     expect(onChange).toHaveBeenCalledWith({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",
@@ -330,7 +356,7 @@ describe("AccountManager", () => {
 
     await manager.restore();
 
-    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(manager.getAccount()).toEqual({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" });
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -346,7 +372,7 @@ describe("AccountManager", () => {
 
     await expect(manager.restore()).resolves.toBeUndefined();
 
-    expect(manager.getAccount()).toEqual({ signedIn: false, email: "", name: "", avatarUrl: "" });
+    expect(manager.getAccount()).toEqual({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" });
     expect(onChange).not.toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalled();
 
@@ -356,6 +382,7 @@ describe("AccountManager", () => {
 
 describe("AccountManager 邮箱密码", () => {
   const aliceUser = {
+    id: "uid-alice",
     email: "alice@example.com",
     user_metadata: { name: "Alice", avatar_url: "https://g.example/a.png" },
   };
@@ -374,6 +401,7 @@ describe("AccountManager 邮箱密码", () => {
     expect(signInWithPassword).toHaveBeenCalledWith({ email: "alice@example.com", password: "hunter22" });
     expect(onChange).toHaveBeenCalledWith({
       signedIn: true,
+      id: "uid-alice",
       email: "alice@example.com",
       name: "Alice",
       avatarUrl: "https://g.example/a.png",

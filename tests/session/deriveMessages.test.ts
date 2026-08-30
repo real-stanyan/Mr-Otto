@@ -299,7 +299,7 @@ describe("lifecycle 事件对投影隐形（ADR-0004）", () => {
       { seq: 8, sessionId: "s", ts: 8, type: "turn_ended", outcome: "aborted" }, // ADR-0006 加宽
       { seq: 9, sessionId: "s", ts: 9, type: "session_renamed", title: "改了名" }, // /rename：模型不消费
       // 跟进建议：给人点的快捷键，喂回去等于让模型读自己上一轮的猜测再基于它猜
-      { seq: 10, sessionId: "s", ts: 10, type: "suggestions_generated", suggestions: ["跑一下测试"], model: "glm-4.5-flash" },
+      { seq: 10, sessionId: "s", ts: 10, type: "suggestions_generated", suggestions: ["跑一下测试"], model: "glm-4.7-flash" },
     ];
 
     expect(JSON.stringify(deriveMessages(withLifecycle))).toBe(JSON.stringify(deriveMessages(base)));
@@ -623,7 +623,7 @@ describe("什么也没产出的 turn 不进上下文（ADR-0042）", () => {
       { ...env(), type: "turn_ended", outcome: "error", error: "model API 429: …" },
       { ...env(), type: "user_message", content: "收到这个文件说一个字「收」就行",
         textFiles: [{ name: "a.json", content: "{}", bytes: 2 }] },
-      { ...env(), type: "assistant_message", content: "收", model: "glm-4.5-flash" },
+      { ...env(), type: "assistant_message", content: "收", model: "glm-4.7-flash" },
       { ...env(), type: "turn_ended", outcome: "completed" },
     ];
 

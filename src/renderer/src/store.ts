@@ -387,6 +387,10 @@ interface ChatState {
   /** 「设新密码」这一步要不要把进门闸按住。只有从闸门那条路走的重置才为真 ——
       账号页上的同一张登录卡不该把用户的界面换成登录屏（issue #744） */
   holdGateForPasswordReset: boolean;
+  /** 这个账号的用户级配置目录（`~/.mr-otto/accounts/<抽屉>/`，ADR-0187）。
+      凡是界面上告诉用户「文件落在哪」「去哪手改」的地方都从这里取 —— 写死的
+      `~/.mr-otto/...` 自分抽屉起指不到任何生效的文件。开机前是空串 */
+  configRoot: string;
   /** 本人在 profiles 里的那一行(好友看到的就是它)。null = 未登录或还没读到。
       和 account 不是同一份数据,显示身份时以这份为准(ADR-0028) */
   myProfile: MyProfile | null;
@@ -913,10 +917,11 @@ export const useChat = create<ChatState>((set, get) => ({
   ollamaError: "",
   providerUsage: null,
   providerBalances: [],
-  account: { signedIn: false, email: "", name: "", avatarUrl: "" },
+  account: { signedIn: false, id: "", email: "", name: "", avatarUrl: "" },
   authRecord: false,
   setPasswordOpen: false,
   holdGateForPasswordReset: false,
+  configRoot: "",
   myProfile: null,
   profileSetupOpen: false,
   modelSetupOpen: false,
@@ -2077,7 +2082,7 @@ export const useChat = create<ChatState>((set, get) => ({
         return v;
       });
     set({ bootDone: 0, bootTotal: 8 });
-    const [info, sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen] = await Promise.all([
+    const [info, sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen] = await Promise.all([
       tick(window.otter.boot()),
       tick(window.otter.listSessions()),
       tick(window.otter.listSkills()),
@@ -2089,13 +2094,16 @@ export const useChat = create<ChatState>((set, get) => ({
       // 进门闸的判据（ADR-0182）。和 getAccount() 一起取而不是懒加载:它决定首屏
       // 画哪一屏,晚一拍就是"先闪一下登录页再跳进去"
       tick(window.otter.hasAuthRecord()),
+      // 「文件落在哪」那几处文案的真实来源（ADR-0187）。和上面一起取:设置页
+      // 可能在冷启动后立刻被打开,懒加载会让第一眼看到的是空路径
+      tick(window.otter.configRoot()),
       tick(window.otter.keyStatus()),
       tick(window.otter.getWindowFullscreen()),
     ]);
     set(
       info
-        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
-        : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
+        : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
     );
     // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
     // 两个字段同一次 set:分两次的话中间会有一帧"登录了但闸没按住",app 闪一下

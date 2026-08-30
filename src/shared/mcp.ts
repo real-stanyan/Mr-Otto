@@ -205,23 +205,26 @@ export function renderMcpContent(content: readonly McpContent[]): string {
     .join("\n\n");
 }
 
-/** 一台 server 刚连上时，回给模型的那句"新工具什么时候能用"。
+/** 一台 server 刚连上时，回给模型的那句"新工具现在能不能用"。
     mcp_configure / mcp_authorize 共用一份（终审 B Important）。
 
-    工具表是按 turn 重算的（engine.rebuildTools() 在下一个 turn 才跑），所以
-    刚连上的那几把**这一轮不在模型的工具表里**：模型照着"可用工具 3 个：
-    list_tables、execute_sql、apply_migration"在同一轮直接调，命中的是"未知
-    工具"。逃生舱也不通——tool_search 的 listDeferred 闭包捕获的是这一轮的
-    list（agent.ts）。
+    **这句话改过一次（issue #750）**。原来工具表是按 turn 冻结的，新连上的刀
+    要等用户下一条消息才进模型的表，所以这里写的是"本轮不要直接调"——技术上
+    没错，但用户看到的是：他问"看看我 Square 店铺里有哪些商品"，水獭接好了
+    Square，然后请他"随便回一句"。他要的是商品清单，不是一次"请再说一遍"。
 
-    设计上就是"下一个 turn 生效"（spec §5.2），实现也对；出问题的是没人告诉
-    模型。所以这句话必须点明"从用户的下一条消息开始"和"本轮不要直接调"。 */
+    现在 engine 每圈都会只长不缩地刷一次工具表（refreshToolsKeepingNames），
+    新刀在**同一个 turn 的下一圈**就在表里了。所以这句话改成"现在就能用"。
+
+    仍然留了一句"没看见就先 tool_search"：工具总数过阈值时新刀会被判成
+    deferred（tools/exposure.ts），那时候它确实不在声明表里，得先搜出来。
+    与其让模型自己撞一次，不如把两条路都说清楚。 */
 export function mcpNewToolsNotice(toolNames: readonly string[]): string {
   const list = toolNames.length === 0 ? "（这台没有暴露工具）" : toolNames.join(" / ");
   return (
     `新增 ${toolNames.length} 把工具（${list}）。` +
-    "它们从**用户的下一条消息**开始才会出现在你的工具列表里——" +
-    "本轮请先把结果告诉用户，不要在这一轮直接调用它们。"
+    "它们**这一轮就能用**，不用等用户再说话——直接接着把用户原来要的事做完。" +
+    "如果它们没出现在你的工具列表里，先用 tool_search 搜出来再调。"
   );
 }
 

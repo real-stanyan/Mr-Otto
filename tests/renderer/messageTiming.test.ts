@@ -73,7 +73,7 @@ describe("timingStats", () => {
 
   it("免费档出 $0 —— 那是事实,不是缺数据", () => {
     const stats = timingStats(
-      { model: "glm-4.5-flash", usage: { promptTokens: 9000, completionTokens: 900 } },
+      { model: "glm-4.7-flash", usage: { promptTokens: 9000, completionTokens: 900 } },
       1000
     );
     expect(val(stats, "cost")).toBe("$0");

@@ -228,6 +228,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/shared/gitSafety.ts` / `src/main/dirtyTreeApprover.ts` — 破坏性 git（`reset --hard` / `clean -f` / `checkout -- 路径` / `restore` / `stash drop`…）+ 工作区脏 = 越过 bypass 模式问人一次。**裸 `git checkout <分支>` 不在名单里**——git 自己会拒绝覆盖，拦它只会训练用户闭眼点批准（ADR-0153）
 - `src/main/workspaceLens.ts` — 岛的分组镜头：workspace →「哪个项目 + 是不是副本、副本在哪条分支」（30s TTL 记忆化，因为 `pushFleet` 跟着每条事件跑）。**组头回答「这是哪个项目」，副本身份下沉成行上的 chip**；投影层靠注入这只镜头保持纯函数，默认镜头 = 不折叠 = 旧行为（ADR-0172）
 - `src/main/projectRoot.ts` — 记忆的项目作用域解析：workspace 向上第一个 `.git` = 项目根，纯读文件不起 `git` 子进程。`resolveWorkspaceOrigin` 一次爬升同时得出根与 worktree 分支（分支从 `<主仓>/.git/worktrees/<名>/HEAD` 读，**现查不读日志**——日志那份会陈旧，ADR-0158/0172），`resolveProjectRoot` 是它的投影。**worktree 折叠回主仓**（取舍：worktree 是一次性的，不折叠的话项目记忆跟着每次换班出生死亡；代价是 worktree 里读不到 `.git` 时不折叠）——与 `projectInstructions.ts` 的爬升同源但结论相反，两边不共用函数（ADR-0116）
+- `src/main/accountScope.ts` / `src/main/authStorage.ts` 的 `sessionIdentity` — 本机数据按登录账号分抽屉（`<userData>/accounts/<sha256(uid) 前16位>/` 与 `~/.mr-otto/accounts/<同名>/`，ADR-0187、#749）。**`auth.json` 留在 userData 根**：抽屉名从它算出来，uid 不必等 `restore()` 的网络往返 —— supabase 落的 session 自带 `user.id`，和进门闸（ADR-0183）读同一个文件、同样同步离线；形状判据抽成 `sessionValues` 一份，`hasSession` 与它共用（这个判断已经错过一次，#729）。**换号靠重启不做热切换**（`needsRelaunch`，登出不触发）：抽屉在装配那一刻钉死，二十来处 store 各持一条绝对路径，重启换得干净、没有「这个换了那个没换」的中间态；重启**先于** `send(accountChanged)` 且直接 return，否则渲染层会在上一个账号的数据上多活一帧。存量**能归属才归属**：开机时有 session 就归给它，没有就整堆停进 `accounts/_unclaimed/` 且**从此不自动归给任何人**（`parkUnclaimed`，ADR-0188 修正 0187 第四节）—— 第一版少了这个 else，语义变成「归给升级后第一个登录的人」，于是「登出→升级→登录另一个号」把 A 的全部数据交给了 B（#755，#749 换条路重演）。挪进 `_unclaimed` 本身就是修复的一半：根下空了，后来者扫不走。`~/.mr-otto/` **整个**搬而不是挑私密的搬 —— 挑就要每加一个文件重判一次，而这个 bug 本身就是没人做那次判断的结果；不可读的代价用 `who.txt` 抵掉，界面上「去哪手改」的文案一律现取 `configRoot`（写死的话用户会去改一个对本账号不生效的文件）
 - `src/renderer/src/components/SignInScreen.tsx` / `SignInCard.tsx` / `lib/identity.ts` 的 `needsSignIn` — 进门那道闸：没有**登录记录**时 app 只画这一屏（背景与 `Splash` 同一份 dither —— 冷启动是它在底下等着 Splash 淡出，两层不同就成了换皮闪动）。闸门判据是 `auth.json` 里**有没有一份 session**（ADR-0183 收紧了 0182 的「有任意 key 就算」—— PKCE 的 `-code-verifier` 是「点过一次 OAuth 然后放弃」，被它骗过一次，#729），**不是** `account.signedIn`：后者要等主进程 `restore()` 的网络往返，照它判会让已登录用户每次开 app 闪一屏登录页、断网时更是把人锁在自己的软件外面。早退写在 `App()` 的**返回值**里而不是包在 `main.tsx` 外层（`boot()` 挂在 App 的 effect 上，不挂载就永远取不到记录），于是下面那棵树一个都不挂 —— 没登录的人按 ⌘K 不会有搜索框浮在登录卡上。登录卡两个渲染点共用同一张（账号页那个入口留着：有记录但没验上的人是闸门故意放进来的）。e2e 靠 `launchOtto({ authRecord })` 过闸，默认 true（ADR-0182 / 0183，#723 / #729）
 - `src/main/mcpOAuth.ts` / `src/main/mcpAuthStore.ts` — MCP 的 OAuth 授权：loopback 回调 + 0600 凭据落点（ADR-0121）
 - `src/tools/mcpConfigure.ts` — agent 自助配置 MCP，过审批门（ADR-0118）
@@ -237,5 +238,13 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
 - `src/main/imageIntake.ts` / `src/renderer/src/components/elements/image-generation.tsx` — 工具产出的图：字节落附件库、日志只记 ref 的那道中间件 + 显示它的卡。**上游那张卡没有 `<img>`**（完成态画的是一坨写死的渐变），本仓改动一览写在文件头（ADR-0144）
+- `src/renderer/src/lib/mcpInstalled.ts` / `src/renderer/src/components/McpServerEditor.tsx` — 已装的那几台也是卡片，
+  「已接通」/「待接通」两组置顶（一张写着「连不上」的卡挂在「已接通」下面是自相矛盾；藏起来更糟——那台就再也点不到了）。
+  管理面（开关/改地址/重连/删除）住在详情页里，页面下半那份等宽 id + 裸 URL + `0 资源 · 0 prompt` 的清单已删。
+  连不上的那句错误过 `humanizeMcpError`：只翻认得出的，认不出的原样留着，原文进 `title`（ADR-0189）
+- `src/renderer/src/lib/mcpDetail.ts` / `src/renderer/src/components/McpConnectorPage.tsx` — 目录卡点开的那一页：
+  事实清单（先说「代码跑在谁的机器上」）+ 要填的参数 + 已装那台的工具清单。**换页不是弹窗**，主行动那一格
+  复用 `installSlot`（判据分叉就是 #722 那个撒谎的勾的一般形式）。组件长出第二条 return 路径时，挂在旧路径
+  末尾的对话框要跟着一起挂——它们看起来挂在组件上，其实挂在某一支上（ADR-0185）
 - `src/shared/mcpCatalog.ts` — 常见 MCP server 的目录数据（人手维护、会过时；字段与占位符自洽由 `tests/shared/mcpCatalog.test.ts` 钉住，ADR-0118）
 - `src/main/projectPackager.ts` / `src/tools/packageProject.ts` — 「打包为项目」：把 Default 工作区的产出搬进 `文档区/Mr Otto/<项目名>`（唯一故意越出围栏的工具能力，两道闸与被否掉的路见 ADR-0135）；`src/main/workspaceSettingsStore.ts` 是默认工作文件夹/内置 Default 的落盘与解析（#559）

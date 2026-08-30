@@ -12,9 +12,9 @@ import type { AccountInfo } from "../../src/shared/shellBridge.js";
 import type { MyProfile } from "../../src/shared/profile.js";
 
 const account: AccountInfo = {
-  signedIn: true, email: "a@b.c", name: "Provider 名", avatarUrl: "https://p/a.png",
+  signedIn: true, id: "u-a", email: "a@b.c", name: "Provider 名", avatarUrl: "https://p/a.png",
 };
-const OUT: AccountInfo = { signedIn: false, email: "", name: "", avatarUrl: "" };
+const OUT: AccountInfo = { signedIn: false, id: "", email: "", name: "", avatarUrl: "" };
 
 function profile(over: Partial<MyProfile> = {}): MyProfile {
   return { id: "u1", email: "a@b.c", name: "", avatarUrl: "", onboarded: false, ...over };

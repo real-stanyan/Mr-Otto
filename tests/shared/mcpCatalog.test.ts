@@ -83,4 +83,39 @@ describe("mcpCatalog", () => {
     const missing = MCP_CATALOG.filter((e) => e.category === undefined).map((e) => e.id);
     expect(missing).toEqual([]);
   });
+
+  it("「连不上」这件事只能写进 blocked，不能写进 authNote（#760）", () => {
+    // 这就是 #760 本体：结论写对了，但写进了一个只在未核验条目的确认框里
+    // 才露面的字段，于是一个用户都没看见，界面照发「授权」按钮。
+    // authNote 说的是"要授权的话该干什么"，blocked 说的是"现在干不成，因为…"——
+    // 后者是 installSlot 唯一读得懂的那个
+    const wrong = MCP_CATALOG.filter((e) => /连不上|接不上/.test(e.authNote)).map((e) => e.id);
+    expect(
+      wrong,
+      `这些条目把"接不上"写进了 authNote：${wrong.join("、")}。搬进 blocked 字段，` +
+        "界面才会据此收起那颗必然失败的按钮"
+    ).toEqual([]);
+  });
+
+  it("blocked 写了就得有内容 —— 空串等于把按钮收了却不说为什么", () => {
+    for (const e of MCP_CATALOG) {
+      if (e.blocked === undefined) continue;
+      expect(e.blocked.trim().length, `${e.id} 的 blocked`).toBeGreaterThan(10);
+    }
+  });
+
+  it("此刻一条 blocked 都没有 —— 有的话是笔明账，不是默认状态（#766）", () => {
+    // 机制留着（ADR-0190），使用者暂时归零：GitHub 改走 token 就能连，
+    // Asana / Figma 确认没有不经 OAuth 的路，删了。
+    // 这条不是在禁止 blocked——是让"目录里躺着一台接不上的"必须有人**改红了
+    // 才能进来**，顺手把 #766 的判断（是真没路，还是只试了 OAuth 那一条）
+    // 逼到那一刻去做
+    const blocked = MCP_CATALOG.filter((e) => e.blocked !== undefined).map((e) => e.id);
+    expect(
+      blocked,
+      `这些条目标着接不上：${blocked.join("、")}。` +
+        "先确认不是只试了 OAuth 那一条路（#766 就是这么错过 GitHub 的 token 路的）；" +
+        "确实没路就删掉条目，要留就改这条断言并说明为什么留"
+    ).toEqual([]);
+  });
 });
