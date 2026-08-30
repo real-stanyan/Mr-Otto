@@ -19,9 +19,18 @@
     // 一户一个实例：getByName(userId)。中继一个 storage API 都不调，
     // 所以下面的 migration 用 new_sqlite_classes（免费版只给 SQLite 后端），
     // 但实际不存任何行 —— 「不落盘」在这里是字面意义的
-    "bindings": [{ "name": "RELAY", "class_name": "Relay" }]
+    "bindings": [
+      { "name": "RELAY", "class_name": "Relay" },
+      // 托管箱（ADR-0197）：一户一箱，凭据密封在 storage 里，只在 DO 内解封
+      { "name": "ESCROW", "class_name": "Escrow" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Relay"] },
+    { "tag": "v2", "new_sqlite_classes": ["Escrow"] }
+  ],
+  // Supabase 项目根（关系闸查 friendships 用）。不是 secret，钉死在配置里
+  "vars": { "SUPABASE_URL": "https://kpeemypbhkynapkjzewr.supabase.co" }
   // SUPABASE_JWT_SECRET 是 secret，不写在这里：
   //   npx wrangler secret put SUPABASE_JWT_SECRET
 }

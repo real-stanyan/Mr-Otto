@@ -13,6 +13,7 @@
 import { authLandingResponse } from "./authLanding.js";
 import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
+import { parseEscrowDoc } from "./px.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -30,6 +31,10 @@ export interface EdgeDeps {
   now?: () => number;
   /** 按 userId 取中继实例。不注入就没有 /rl/v1/* */
   relay?: (userId: string) => RelayStub;
+  /** 按 hostUid 取托管箱实例（ADR-0197 执行面）。不注入就没有 /px/v1/* */
+  escrow?: (hostUid: string) => RelayStub;
+  /** 关系闸：两人是否 accepted 好友（worker 用 service role 查，60s 缓存在那边做） */
+  isFriend?: (a: string, b: string) => Promise<boolean>;
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -101,6 +106,71 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     );
   }
 
+  /** px 路由的鉴权走 Authorization: Bearer——普通 HTTP，没有 WS 的子协议限制 */
+  async function pxIdentify(req: Request): Promise<{ userId: string } | Response> {
+    const m = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "");
+    if (!m) return apiError(401, "缺少凭据：Authorization: Bearer <Supabase JWT>", "no_token");
+    const verified = await verifyJwt(m[1]!, config.jwtSecret, Math.floor(now() / 1000));
+    if (!verified.ok) return apiError(401, verified.reason, "bad_token");
+    return { userId: verified.claims.sub };
+  }
+
+  /** 好友代理云端执行面（ADR-0197）。edge 只做：验人 → 关系闸 → 转给 hostUid
+      的托管箱 DO。白名单闸与执行在 DO 里（凭据不出 DO）。转发的请求不带 token，
+      但带上已验实的 fromUid——与 relayConnect 同一条「验完就到此为止」的纪律 */
+  async function px(req: Request, pathname: string): Promise<Response> {
+    if (!deps.escrow || !deps.isFriend) return apiError(404, "这个服务没开云端执行面", "px_disabled");
+    const who = await pxIdentify(req);
+    if (who instanceof Response) return who;
+    const forward = (hostUid: string, op: string, body: unknown): Promise<Response> =>
+      deps.escrow!(hostUid).fetch(new Request(`https://px/${op}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+
+    if (pathname === "/px/v1/escrow") {
+      // 自己的箱子自己写/删：hostUid 恒等于 JWT 的 sub，路径上不接受指定别人
+      if (req.method === "PUT") {
+        const doc = parseEscrowDoc(await req.json().catch(() => null));
+        if (!doc) return apiError(400, "托管文档形状不对", "bad_doc");
+        if (doc.hostUid !== who.userId) return apiError(403, "只能托管自己的服务", "not_yours");
+        return forward(who.userId, "put", { doc });
+      }
+      if (req.method === "DELETE") return forward(who.userId, "delete", {});
+      return apiError(405, "escrow 只收 PUT / DELETE", "method_not_allowed");
+    }
+
+    if (pathname === "/px/v1/grants" && req.method === "GET") {
+      const host = new URL(req.url).searchParams.get("host") ?? "";
+      if (!host) return apiError(400, "缺 host 参数", "bad_request");
+      // 关系闸在这层：不是好友连「有没有托管」都不该看见
+      if (!(await deps.isFriend(who.userId, host))) {
+        return apiError(403, "你们已不是好友，代理授权随之失效", "not_friends");
+      }
+      return forward(host, "grants", { fromUid: who.userId });
+    }
+
+    if (pathname === "/px/v1/call" && req.method === "POST") {
+      const body: unknown = await req.json().catch(() => null);
+      const b = body as { hostUid?: unknown; serverId?: unknown; tool?: unknown; args?: unknown } | null;
+      if (!b || typeof b.hostUid !== "string" || typeof b.serverId !== "string" || typeof b.tool !== "string") {
+        return apiError(400, "call 要 hostUid/serverId/tool", "bad_request");
+      }
+      const friend = await deps.isFriend(who.userId, b.hostUid);
+      return forward(b.hostUid, "call", {
+        fromUid: who.userId, serverId: b.serverId, tool: b.tool, args: b.args ?? {}, friendAccepted: friend,
+      });
+    }
+
+    if (pathname === "/px/v1/audit" && req.method === "GET") {
+      const since = Number(new URL(req.url).searchParams.get("since") ?? "0");
+      return forward(who.userId, "audit", { since: Number.isFinite(since) ? since : 0 });
+    }
+
+    return apiError(404, `没有这个端点:${pathname}`, "not_found");
+  }
+
   return async function handle(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
 
@@ -112,6 +182,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
         : apiError(405, "只收 GET", "method_not_allowed");
     }
     if (pathname === "/rl/v1/connect") return relayConnect(req);
+    if (pathname.startsWith("/px/v1/")) return px(req, pathname);
     return apiError(404, `没有这个端点:${pathname}`, "not_found");
   };
 }
