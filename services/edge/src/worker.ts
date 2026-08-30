@@ -12,6 +12,8 @@ import {
   parseFriendshipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
+// Task 5 接在籍查询前，workspaceOk 先留空集——关系闸只走 friendAccepted 这一支，
+// 与切片 1 之前的运行时行为一致（PxRelations 的形状变了，语义没变）
 import {
   CTRL_CID,
   CTRL_GONE,
@@ -185,8 +187,9 @@ export class Escrow extends DurableObject<Env> {
     }
     if (op === "grants") {
       const fromUid = typeof b.fromUid === "string" ? b.fromUid : "";
-      // 关系闸 edge 层已做（不是好友根本到不了这），这里传 true
-      return json(200, grantedView(await this.doc(), fromUid, true));
+      // 关系闸 edge 层已做（不是好友根本到不了这），这里传 true；
+      // workspaceOk 留空集——Task 5 接在籍查询
+      return json(200, grantedView(await this.doc(), fromUid, { friendAccepted: true, workspaceOk: new Set<string>() }));
     }
     if (op === "audit") {
       const since = typeof b.since === "number" ? b.since : 0;
@@ -199,7 +202,8 @@ export class Escrow extends DurableObject<Env> {
       const tool = typeof b.tool === "string" ? b.tool : "";
       const friendAccepted = b.friendAccepted === true;
       const doc = await this.doc();
-      const gate = pxGate(doc, { fromUid, serverId, tool }, friendAccepted);
+      // Task 5 接在籍查询前，workspaceOk 留空集
+      const gate = pxGate(doc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: new Set<string>() });
       if (!gate.ok) {
         await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: gate.message });
         return json(gate.status, { error: { message: gate.message, type: "otto_edge", code: gate.code } });

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  appendAudit, friendshipQuery, grantedView, openEscrow, parseEscrowDoc,
-  parseFriendshipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
-  PX_AUDIT_CAP, type EscrowDoc,
+  appendAudit, friendshipQuery, grantedView, membershipQuery, openEscrow, parseEscrowDoc,
+  parseFriendshipRows, parseMembershipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
+  workspaceIdsOf,
+  PX_AUDIT_CAP, type AllowEntry, type EscrowDoc, type PxRelations,
 } from "../../services/edge/src/px.js";
 
-// 云端执行面的纯逻辑（ADR-0197，issue #796）。
-// 钉四件事：闸序与口径、托管文档的结构门、密封往返、迷你 MCP 客户端的两种响应形态。
+// 云端执行面的纯逻辑（ADR-0197，issue #796；关系闸群组化 ADR-0198 切片 1）。
+// 钉五件事：闸序与口径（好友 + 工作区两支）、托管文档的结构门、密封往返、
+// 迷你 MCP 客户端的两种响应形态、在籍查询的拼串与解析。
+
+/** rel(friendAccepted, ...workspaceIds) —— 机械替换旧布尔参数用的小工厂 */
+const rel = (f: boolean, ...ws: string[]): PxRelations => ({ friendAccepted: f, workspaceOk: new Set(ws) });
 
 const doc: EscrowDoc = {
   v: 1,
@@ -26,12 +31,12 @@ const doc: EscrowDoc = {
 
 describe("pxGate（三道闸的后两道，口径同 proxyProtocol）", () => {
   it("好友 + 整服务放行：过", () => {
-    const r = pxGate(doc, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, true);
+    const r = pxGate(doc, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, rel(true));
     expect(r.ok).toBe(true);
   });
 
   it("关系闸最先：不是好友，连「有没有托管」都不该知道", () => {
-    const r = pxGate(doc, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, false);
+    const r = pxGate(doc, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, rel(false));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("not_friends");
   });
@@ -41,16 +46,16 @@ describe("pxGate（三道闸的后两道，口径同 proxyProtocol）", () => {
       ...doc,
       grants: [{ friendUid: "b-uid", allow: [{ serverId: "square", tools: ["get_service_info"] }] }],
     };
-    expect(pxGate(narrow, { fromUid: "b-uid", serverId: "square", tool: "get_service_info" }, true).ok).toBe(true);
-    const denied = pxGate(narrow, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, true);
+    expect(pxGate(narrow, { fromUid: "b-uid", serverId: "square", tool: "get_service_info" }, rel(true)).ok).toBe(true);
+    const denied = pxGate(narrow, { fromUid: "b-uid", serverId: "square", tool: "make_api_request" }, rel(true));
     expect(denied.ok).toBe(false);
     if (!denied.ok) expect(denied.code).toBe("tool_not_granted");
   });
 
   it("没托管 / 没授权 / 服务缺席：各说各的话", () => {
-    expect((pxGate(null, { fromUid: "b-uid", serverId: "square", tool: "t" }, true) as { code: string }).code).toBe("no_escrow");
-    expect((pxGate(doc, { fromUid: "c-uid", serverId: "square", tool: "t" }, true) as { code: string }).code).toBe("no_grant");
-    expect((pxGate(doc, { fromUid: "b-uid", serverId: "shopify", tool: "t" }, true) as { code: string }).code).toBe("server_not_granted");
+    expect((pxGate(null, { fromUid: "b-uid", serverId: "square", tool: "t" }, rel(true)) as { code: string }).code).toBe("no_escrow");
+    expect((pxGate(doc, { fromUid: "c-uid", serverId: "square", tool: "t" }, rel(true)) as { code: string }).code).toBe("no_grant");
+    expect((pxGate(doc, { fromUid: "b-uid", serverId: "shopify", tool: "t" }, rel(true)) as { code: string }).code).toBe("server_not_granted");
   });
 });
 
@@ -84,7 +89,7 @@ describe("密封往返（AES-GCM）", () => {
 
 describe("grantedView（B 视角，凭据永不出箱）", () => {
   it("只回 toolDefs，绝无 oauth/url", () => {
-    const v = grantedView(doc, "b-uid", true);
+    const v = grantedView(doc, "b-uid", rel(true));
     expect(v.servers).toHaveLength(1);
     expect(JSON.stringify(v)).not.toContain("tok-1");
     expect(JSON.stringify(v)).not.toContain("https://mcp.example.com");
@@ -94,7 +99,7 @@ describe("grantedView（B 视角，凭据永不出箱）", () => {
       ...doc,
       grants: [{ friendUid: "b-uid", allow: [{ serverId: "square", tools: ["get_service_info"] }] }],
     };
-    expect(grantedView(narrow, "b-uid", true).servers[0]?.toolDefs.map((t) => t.name)).toEqual(["get_service_info"]);
+    expect(grantedView(narrow, "b-uid", rel(true)).servers[0]?.toolDefs.map((t) => t.name)).toEqual(["get_service_info"]);
   });
 });
 
@@ -187,5 +192,86 @@ describe("关系闸查询", () => {
   it("形状认不出一律 false（失败关闭）", () => {
     expect(parseFriendshipRows([{ status: "accepted" }])).toBe(true);
     for (const junk of [[], null, {}, "x"]) expect(parseFriendshipRows(junk)).toBe(false);
+  });
+});
+
+describe("pxGate / grantedView 群组化——workspace grant（ADR-0198 切片 1）", () => {
+  const wsDoc: EscrowDoc = {
+    v: 1, hostUid: "host", updatedTs: 1,
+    services: [{ serverId: "srv", url: "https://x", toolDefs: [{ name: "t1", description: "", inputSchema: {} }] }],
+    grants: [{ workspaceId: "w1", allow: [{ serverId: "srv", tools: [] }] }],
+  };
+
+  it("workspace grant：在籍放行", () => {
+    expect(pxGate(wsDoc, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(false, "w1")).ok).toBe(true);
+  });
+  it("workspace grant：不在籍拒 not_member（非好友身份不影响）", () => {
+    const r = pxGate(wsDoc, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(false));
+    expect(r).toMatchObject({ ok: false, code: "not_member" });
+  });
+  it("friend 与 workspace 并存：任一放行即过", () => {
+    const both = { ...wsDoc, grants: [...wsDoc.grants, { friendUid: "b", allow: [] as AllowEntry[] }] };
+    expect(pxGate(both, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(true)).ok).toBe(false); // friend 空 allow，ws 不在籍
+    expect(pxGate(both, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(false, "w1")).ok).toBe(true);
+  });
+  it("纯 friend 路老语义不变：非好友拒 not_friends", () => {
+    const fdoc = { ...wsDoc, grants: [{ friendUid: "b", allow: [{ serverId: "srv", tools: [] }] }] };
+    expect(pxGate(fdoc, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(false))).toMatchObject({ ok: false, code: "not_friends" });
+  });
+  it("grantedView：workspace 来的条目带 workspaceId，friend 来的不带；同服务两路都给时 friend 赢", () => {
+    const v = grantedView(wsDoc, "b", rel(false, "w1"));
+    expect(v.servers).toEqual([{ serverId: "srv", toolDefs: wsDoc.services[0]!.toolDefs, workspaceId: "w1" }]);
+  });
+  it("同服务两路都给：friend 与 workspace 并存时不带 workspaceId（friend 赢）", () => {
+    const both = { ...wsDoc, grants: [...wsDoc.grants, { friendUid: "b", allow: [{ serverId: "srv", tools: [] }] }] };
+    const v = grantedView(both, "b", rel(true, "w1"));
+    expect(v.servers).toEqual([{ serverId: "srv", toolDefs: wsDoc.services[0]!.toolDefs }]);
+  });
+  it("同服务被两条 workspace grant 各点名不同工具：并集放行（互不排斥）", () => {
+    const twoWs: EscrowDoc = {
+      ...wsDoc,
+      services: [{
+        serverId: "srv",
+        url: "https://x",
+        toolDefs: [
+          { name: "t1", description: "", inputSchema: {} },
+          { name: "t2", description: "", inputSchema: {} },
+        ],
+      }],
+      grants: [
+        { workspaceId: "w1", allow: [{ serverId: "srv", tools: ["t1"] }] },
+        { workspaceId: "w2", allow: [{ serverId: "srv", tools: ["t2"] }] },
+      ],
+    };
+    expect(pxGate(twoWs, { fromUid: "b", serverId: "srv", tool: "t1" }, rel(false, "w1")).ok).toBe(true);
+    expect(pxGate(twoWs, { fromUid: "b", serverId: "srv", tool: "t2" }, rel(false, "w1")).ok).toBe(false); // 只在 w1 籍，t2 是 w2 授的
+    const v = grantedView(twoWs, "b", rel(false, "w1", "w2"));
+    expect(v.servers[0]?.toolDefs.map((t) => t.name).sort()).toEqual(["t1", "t2"]);
+  });
+  it("workspaceIdsOf：去重文档里出现过的 workspaceId", () => {
+    const twoWs: EscrowDoc = {
+      ...wsDoc,
+      grants: [
+        { workspaceId: "w1", allow: [] },
+        { workspaceId: "w1", allow: [] },
+        { workspaceId: "w2", allow: [] },
+        { friendUid: "b", allow: [] },
+      ],
+    };
+    expect(workspaceIdsOf(twoWs).sort()).toEqual(["w1", "w2"]);
+    expect(workspaceIdsOf(null)).toEqual([]);
+  });
+});
+
+describe("membershipQuery / parseMembershipRows（在籍查询，Task 5 接线）", () => {
+  it("双方都在的 workspace 才算", () => {
+    const rows = [{ workspace_id: "w1", uid: "a" }, { workspace_id: "w1", uid: "b" }, { workspace_id: "w2", uid: "a" }];
+    expect(parseMembershipRows(rows, "a", "b")).toEqual(new Set(["w1"]));
+    expect(parseMembershipRows("garbage", "a", "b")).toEqual(new Set()); // 失败关闭
+    expect(membershipQuery(["w1"], "a", "b")).toContain("workspace_members");
+  });
+  it("垃圾行混在合法行里：跳过垃圾行，合法行照算", () => {
+    const rows = [{ workspace_id: "w1", uid: "a" }, "junk", { workspace_id: "w1" }, { workspace_id: "w1", uid: "b" }];
+    expect(parseMembershipRows(rows, "a", "b")).toEqual(new Set(["w1"]));
   });
 });
