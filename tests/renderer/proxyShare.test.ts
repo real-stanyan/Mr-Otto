@@ -112,6 +112,17 @@ describe("hostStatusLine / borrowStatusLine", () => {
       .toEqual({ dot: "off", text: "没连上 · 还没用过" });
   });
 
+  it("A 侧：断线但托管箱在云端 = 「云端可用」，不是「没连上」（issue #799）", () => {
+    // 「没连上」暗示对方用不了，而实际上正相反——只是走的云端那条路
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null, pairing: "paired", cloudReady: true }))
+      .toEqual({ dot: "on", text: "云端可用 · 还没用过" });
+    // 连着时通道优先，照旧说「已连上」；配对没成立时云端也接不住（箱里没这好友的授权才对）
+    expect(hostStatusLine({ connected: true, inflight: 0, lastCallAt: null, cloudReady: true }))
+      .toEqual({ dot: "on", text: "已连上 · 还没用过" });
+    expect(hostStatusLine({ connected: false, inflight: 0, lastCallAt: null, pairing: "needsInvite", cloudReady: true }))
+      .toEqual({ dot: "dead", text: "邀请已失效 · 重发一张" });
+  });
+
   it("B 侧：「被撤销」和「没连上」不是一句话——一个别等了，一个等着就行", () => {
     expect(borrowStatusLine({ connected: false, serverCount: 0, revokedReason: "对方撤销了" }))
       .toEqual({ dot: "dead", text: "对方撤销了" });

@@ -44,6 +44,19 @@ export interface EscrowSync {
   schedule(): void;
   /** 立即同步（测试与 resume 用）。并发调用会被串行化 */
   syncNow(): Promise<EscrowSyncOutcome>;
+  /**
+   * 上一次成功 PUT 进箱的 serverId 清单（「云端可用」徽标的数据源，切片 4）。
+   * null = 箱子不在云端（没上传过 / 已 DELETE / 重启后还没同步——resume 那次
+   * schedule 很快会把它填回来，短暂的 null 是接受的代价，宁可少报不虚报）
+   */
+  hostedServerIds(): readonly string[] | null;
+  /**
+   * 强制清箱（登出钩子用，issue #799）：不看 digest、不看 everHosted，直接 DELETE。
+   * 登出把所有设备的 session 都吊销了，云端却还留着能刷新的 MCP 凭证——那只箱子
+   * 必须跟着走。**要在 signOut 之前调**（之后 token 就没了）。失败不阻塞登出
+   * （断网也得能登出），回 false 让调用方记一笔；箱子里的授权靠好友关系闸兜底。
+   */
+  purge(): Promise<boolean>;
   dispose(): void;
 }
 
@@ -57,6 +70,8 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
   let disposed = false;
   /** 上一次**成功**送达的内容指纹。进程内存态——重启后为 null，首轮必对齐 */
   let lastSent: string | null = null;
+  /** 上一次成功 PUT 的箱内 serverId 清单。null = 箱子不在云端（见接口注释） */
+  let hosted: readonly string[] | null = null;
   /** 串行化：同步进行中又被触发 → 记一笔，跑完再来一轮 */
   let inflight: Promise<EscrowSyncOutcome> | null = null;
   let rerun = false;
@@ -85,6 +100,7 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
         return "failed";
       }
       lastSent = digest;
+      hosted = doc ? doc.services.map((s) => s.serverId) : null;
       log(doc ? `托管已上传：${doc.services.length} 台服务 / ${doc.grants.length} 条授权` : "托管已从云端删除");
       return doc ? "put" : "deleted";
     } catch (e) {
@@ -123,6 +139,30 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
       timer = setTimeout(() => { timer = null; void run(); }, debounceMs);
     },
     syncNow: () => run(),
+    hostedServerIds: () => hosted,
+    async purge() {
+      const token = await deps.accessToken();
+      if (!token) return false;
+      try {
+        const res = await doFetch(`${deps.baseUrl()}/px/v1/escrow`, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${token}` },
+          // 登出流程不能被一个挂死的请求卡住
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) {
+          log(`登出清箱被拒（HTTP ${res.status}）`);
+          return false;
+        }
+        lastSent = null;
+        hosted = null;
+        log("登出：托管已从云端删除");
+        return true;
+      } catch (e) {
+        log(`登出清箱失败（${e instanceof Error ? e.message : String(e)}）——不阻塞登出`);
+        return false;
+      }
+    },
     dispose() {
       disposed = true;
       if (timer !== null) clearTimeout(timer);

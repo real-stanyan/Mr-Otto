@@ -6,6 +6,7 @@ import {
   channelFor,
   emptyProxyStore,
   grantFor,
+  mergeCloudAudits,
   parseProxyStore,
   pinnedIdentities,
   removeBorrow,
@@ -206,5 +207,51 @@ describe("proxyStore 的 borrows（issue #676）", () => {
     let d = setBorrowRevoked(setBorrow(emptyProxyStore(), "a", "c1", pub), "a", "撤了");
     d = setBorrow(d, "a", "c2", pub);
     expect(usableBorrows(d).map((x) => x.channelId)).toEqual(["c2"]);
+  });
+});
+
+describe("proxyStore 的 mergeCloudAudits（issue #799 / ADR-0197 切片 4）", () => {
+  const cloudEntry = (ts: number, over: Partial<{ tool: string; outcome: "ok" | "denied" | "error"; note: string }> = {}) => ({
+    ts, fromUid: "b-uid", serverId: "square", tool: over.tool ?? "pay",
+    outcome: over.outcome ?? ("ok" as const),
+    ...(over.note !== undefined ? { note: over.note } : {}),
+  });
+
+  it("映射：denied → decision denied，note → detail，argsSummary 标「云端执行」", () => {
+    const out = mergeCloudAudits(emptyProxyStore(), [
+      cloudEntry(10),
+      cloudEntry(11, { tool: "refund", outcome: "denied", note: "白名单没这把刀" }),
+    ]);
+    expect(out.audits).toEqual([
+      { ts: 11, friendUid: "b-uid", serverId: "square", tool: "refund", argsSummary: "（云端执行）", decision: "denied", outcome: "denied", detail: "白名单没这把刀" },
+      { ts: 10, friendUid: "b-uid", serverId: "square", tool: "pay", argsSummary: "（云端执行）", decision: "executed", outcome: "ok" },
+    ]);
+    expect(out.cloudAuditCursor).toBe(11);
+  });
+
+  it("与本地台账按 ts 交错重排（新→旧），重复条目（游标写盘失败重拉）挡掉", () => {
+    let data = emptyProxyStore();
+    data = appendAudit(data, { ts: 12, friendUid: "c-uid", serverId: "ads", tool: "run", argsSummary: "{}", decision: "executed", outcome: "ok" });
+    data = mergeCloudAudits(data, [cloudEntry(10), cloudEntry(14)]);
+    expect(data.audits.map((a) => a.ts)).toEqual([14, 12, 10]);
+    // 同一段再拉一遍：一条都不重复进账，游标不倒退
+    const again = mergeCloudAudits(data, [cloudEntry(10), cloudEntry(14)]);
+    expect(again.audits.map((a) => a.ts)).toEqual([14, 12, 10]);
+    expect(again.cloudAuditCursor).toBe(14);
+  });
+
+  it("容量封顶 AUDIT_CAP，空增量原样返回", () => {
+    let data = emptyProxyStore();
+    for (let i = 0; i < 500; i++) data = appendAudit(data, { ts: i, friendUid: "x", serverId: "s", tool: "t", argsSummary: "", decision: "executed", outcome: "ok" });
+    const out = mergeCloudAudits(data, [cloudEntry(9999)]);
+    expect(out.audits.length).toBe(500);
+    expect(out.audits[0]!.ts).toBe(9999);
+    expect(mergeCloudAudits(data, [])).toBe(data);
+  });
+
+  it("cloudAuditCursor 落盘可回读，老台账缺席不算坏数据", () => {
+    const withCursor = { ...emptyProxyStore(), cloudAuditCursor: 42 };
+    expect(parseProxyStore(serializeProxyStore(withCursor)).cloudAuditCursor).toBe(42);
+    expect(parseProxyStore(serializeProxyStore(emptyProxyStore())).cloudAuditCursor).toBeUndefined();
   });
 });

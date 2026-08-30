@@ -129,3 +129,26 @@ export function escrowDigest(doc: EscrowDoc | null): string {
   const { updatedTs: _ts, ...rest } = doc;
   return JSON.stringify(rest);
 }
+
+// ─── 审计（云端为准，A 上线增量拉回，ADR-0197 切片 4）──────────────
+//
+// 形状**两方共用一份**（纪律同上）：edge 的 Escrow DO 写、A 侧回流读。
+// A 拉走后并入本地台账（proxyStore.mergeCloudAudits），云端只兜底最近一段。
+
+export interface PxAudit {
+  ts: number;
+  fromUid: string;
+  serverId: string;
+  tool: string;
+  outcome: "ok" | "denied" | "error";
+  /** 拒绝/失败的人话。放行不带 */
+  note?: string;
+}
+
+/** 环形上限：审计是台账不是日志仓，A 拉走后云端只需兜底最近一段 */
+export const PX_AUDIT_CAP = 500;
+
+export function appendAudit(list: readonly PxAudit[], entry: PxAudit): PxAudit[] {
+  const next = [...list, entry];
+  return next.length > PX_AUDIT_CAP ? next.slice(next.length - PX_AUDIT_CAP) : next;
+}

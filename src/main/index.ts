@@ -167,7 +167,8 @@ import type { MobileMessage, UpFrame } from "../shared/remote/frames.js";
 import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { edgeBaseUrl, relayBaseUrl } from "../shared/edgeConfig.js";
 import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
-import { createEscrowSync } from "./pxEscrowSync.js";
+import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
+import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
@@ -1416,6 +1417,13 @@ void app.whenReady().then(() => {
   // remote 晚。身份/crypto 复用 remote 那一份（同一台机器同一个密码学身份）。
   // 系统封装不可用 = 没有身份密钥 = 代理也开不了（和自远程同一个理由，不明文落盘）。
   const proxyStorePath = join(accountData, "proxy-store.json");
+  // 云端执行面的 HTTP 客户端提到 proxy 外面：B 侧借用（proxy.cloud）和
+  // A 侧审计回流（auditBackflow）共用同一个实例（ADR-0197 切片 3/4）
+  const pxCloud = createPxCloudClient({
+    baseUrl: () => edgeBaseUrl(),
+    accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+    log: (m) => console.warn(`[px-cloud] ${m}`),
+  });
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
         crypto: remoteKeys.crypto,
@@ -1460,18 +1468,17 @@ void app.whenReady().then(() => {
         onGrantsChanged: () => escrowResync?.(),
         // B 侧云借用（ADR-0197 切片 3）：live 通道 ready 走通道，否则打云端。
         // 路由在 proxyManager 的 capability 层，对模型是同一把刀
-        cloud: createPxCloudClient({
-          baseUrl: () => edgeBaseUrl(),
-          accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
-          log: (m) => console.warn(`[px-cloud] ${m}`),
-        }),
+        cloud: pxCloud,
+        // A 侧「云端可用」徽标的数据源（切片 4）。escrowSync 造得比 proxy 晚，
+        // 箭头函数晚绑定——hostStatus 被问到时它早已就位
+        cloudHostedServerIds: (): readonly string[] | null => escrowSync?.hostedServerIds() ?? null,
         log: (m) => console.warn(m),
       })
     : null;
   // ─── 云端托管同步（ADR-0197 切片 2，issue #797）────────────────────────
   // A 把「借出的服务」整箱托管到 edge（/px/v1/escrow），B 在 A 下线时打云端。
   // 四个触发源（授权变更/服务清单变更/mcp-auth 重写/登录恢复）都汇到 escrowResync。
-  const escrowSync = proxy
+  const escrowSync: EscrowSync | null = proxy
     ? createEscrowSync({
         baseUrl: () => edgeBaseUrl(),
         accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
@@ -1497,13 +1504,32 @@ void app.whenReady().then(() => {
       })
     : null;
   escrowResync = escrowSync ? () => escrowSync.schedule() : null;
+  // ─── 云端审计回流（ADR-0197 切片 4，issue #799）────────────────────────
+  // 云端执行发生在 A 不在场时，账记在 Escrow DO 里。两个触发点：登录恢复
+  // （下面 proxyResumeNow）+ 用户翻调用记录（proxyAudit IPC）。编排见 pxAuditSync
+  const auditBackflow = proxy
+    ? createAuditBackflow({
+        fetchAudit: (since) => pxCloud.fetchAudit(since),
+        loadStore: () => readProxyStore(proxyStorePath),
+        saveStore: (d) => writeProxyStore(proxyStorePath, d),
+        log: (m) => console.warn(`[px-audit] ${m}`),
+      })
+    : null;
   // A 的服务清单一变就给所有 host 通道补推授权（issue #792）：grant 帧不再是
   // 握手那一刻的一锤子快照。挂在这里而不是并进上面那条 onChange——proxy 在
   // 那条注册之后才造出来，mcpHub.onChange 支持多个监听者
   if (proxy) mcpHub.onChange(() => { proxy.refreshGrants(); escrowResync?.(); });
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
-  proxyResumeNow = proxy ? () => { proxy.resume(); escrowResync?.(); } : null;
+  proxyResumeNow = proxy
+    ? () => {
+        proxy.resume();
+        escrowResync?.();
+        // A 上线第一时间把离线期间云端替我执行的账拉回来——hostStatus 的
+        // lastCallAt 靠本地台账，不补这刀它就一直停在 A 下线前那笔
+        void auditBackflow?.pullNow();
+      }
+    : null;
   // 登出 = 断开所有代理通道（issue #680）。安全上本来就是失败关闭的
   // （A 侧 friendUids() 回 null 一律拒），但不断的话 B 那边借来的刀还留在
   // 工具表里，模型调了才报错——账号都换了，那些刀不该还在
@@ -2935,7 +2961,13 @@ void app.whenReady().then(() => {
     manager.verifyRecoveryOtp(email, token),
   );
   ipcMain.handle(CHANNELS.updatePassword, (_e, password: string) => manager.updatePassword(password));
-  ipcMain.handle(CHANNELS.signOut, () => manager.signOut());
+  // 登出把所有设备的 session 都吊销了（supabase signOut 默认 scope=global），
+  // 云端却还托管着能刷新的 MCP 凭证——先清箱再登出（之后 token 就没了，
+  // issue #799）。清不掉不阻塞登出：断网也得能登出，箱子靠好友关系闸兜底
+  ipcMain.handle(CHANNELS.signOut, async () => {
+    await escrowSync?.purge();
+    return manager.signOut();
+  });
 
   // 本人资料:读/写 profiles 自己那一行。结构化回流(ProfileResult),不靠 invoke reject
   // 没有对应的推送频道:profiles 只被用户自己在这台机器上改,主进程不会背着渲染层
@@ -2964,8 +2996,13 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.proxyListGrants, () => (proxy ? proxy.proxyListGrants() : proxyOff));
   ipcMain.handle(CHANNELS.proxyRevoke, (_e, friendUid: string) =>
     proxy ? proxy.proxyRevoke(friendUid) : proxyOff);
-  ipcMain.handle(CHANNELS.proxyAudit, (_e, friendUid?: string) =>
-    proxy ? proxy.proxyAudit(friendUid) : proxyOff);
+  ipcMain.handle(CHANNELS.proxyAudit, async (_e, friendUid?: string) => {
+    if (!proxy) return proxyOff;
+    // 看账那一刻要新鲜的：先把云端增量并进来再回（拉不到就回本地那份，
+    // pullNow 自己串行化，连点不叠加请求）
+    await auditBackflow?.pullNow();
+    return proxy.proxyAudit(friendUid);
+  });
   ipcMain.handle(CHANNELS.proxyUpdateGrant, (_e, friendUid: string, allow: ProxyGrant["allow"]) =>
     proxy ? proxy.proxyUpdateGrant(friendUid, allow) : proxyOff);
   ipcMain.handle(CHANNELS.proxyStatus, () =>

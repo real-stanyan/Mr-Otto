@@ -67,6 +67,10 @@ export interface ProxyHostStatus {
   inflight: number;
   /** 最近一笔调用的时间（含被拒的）。null = 从没调过 */
   lastCallAt: number | null;
+  /** 这条授权云端接得住吗（ADR-0197 切片 4）：好友授的服务里有一台已进
+      托管箱 = 好友在 A 不在线时也用得上。**不是** connected 的反义词——
+      连着时它照样为 true，只是那会儿没人走云端那条路 */
+  cloudReady: boolean;
   /**
    * 配对到哪一步了（issue #682）。**这一格不是「连上了没」的同义词**：
    *
@@ -129,6 +133,12 @@ export interface ProxyManagerDeps {
   /** 云端授权清单缓存的保鲜期（默认 5 分钟）。过了鲜期且通道不在时，
       servers() 顺手踢一脚后台刷新 */
   cloudTtlMs?: number;
+  /**
+   * A 侧：此刻托管在云端的 serverId 清单（escrowSync.hostedServerIds，切片 4）。
+   * null = 箱子不在云端。hostStatus 用它算每条授权的「云端可用」——
+   * 好友授的服务里有一台进了箱，TA 不在线也能用
+   */
+  cloudHostedServerIds?: () => readonly string[] | null;
 }
 
 export interface ProxyManager {
@@ -534,6 +544,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // 同 borrowStatus 的口径：**授权台账是底本**，活着的通道往上贴状态。
       // 反过来（列举活着的通道）的话，好友没上线的那些授权在界面上就不存在了——
       // 而「授出去了但对方没连」恰恰是 A 最该看见的一格
+      const hostedIds = deps.cloudHostedServerIds?.() ?? null;
       return cur.grants.map((g) => {
         const h = hosts.get(g.friendUid);
         // 最近一次被调用：审计是新→旧排的，第一条命中的就是最近的（含被拒的——
@@ -552,6 +563,7 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
           connected: h?.isReady() ?? false,
           inflight: h?.inflight() ?? 0,
           lastCallAt: last?.ts ?? null,
+          cloudReady: hostedIds !== null && g.allow.some((a) => hostedIds.includes(a.serverId)),
           pairing: pinned ? "paired" as const
             : hosts.has(g.friendUid) && inviteLive ? "waiting" as const
             : "needsInvite" as const,

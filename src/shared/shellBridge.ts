@@ -426,6 +426,8 @@ export interface ProxyHostView {
   connected: boolean;
   inflight: number;
   lastCallAt: number | null;
+  /** 好友授的服务里有一台已托管进云端箱（ADR-0197 切片 4）：我不在线 TA 也能用 */
+  cloudReady: boolean;
   /** 配对到哪一步（issue #682）。`needsInvite` = 那张邀请已经没用了，得重发一张
       —— 不是「没连上」的同义词，见 ProxyHostStatus 上那段注释 */
   pairing: "paired" | "waiting" | "needsInvite";

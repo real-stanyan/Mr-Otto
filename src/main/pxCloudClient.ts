@@ -11,6 +11,7 @@
 // 这类修法）；网络层失败自己补一句。fetch 注入，假货即可测试。
 
 import { toMcpContent, type McpContent, type McpToolInfo } from "../shared/mcp.js";
+import type { PxAudit } from "../shared/remote/pxEscrow.js";
 
 /** grants 端点回的一台 server（grantedView 的载荷） */
 export interface CloudGrantedServer {
@@ -35,6 +36,9 @@ export interface PxCloudClient {
   fetchGrants(hostUid: string): Promise<readonly CloudGrantedServer[] | null>;
   /** 云端执行一笔。失败抛 Error，message 是能给模型看的人话 */
   call(hostUid: string, serverId: string, tool: string, args: unknown, signal?: AbortSignal): Promise<McpContent[]>;
+  /** A 侧：拉自己箱子的云端审计（ts > since 的那段，切片 4 回流）。
+      null = 拿不到（没登录/网络断/被拒）——调用方下轮再试，别当成「云端没审计」 */
+  fetchAudit(since: number): Promise<readonly PxAudit[] | null>;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -74,6 +78,37 @@ export function createPxCloudClient(deps: PxCloudDeps): PxCloudClient {
         return out;
       } catch (e) {
         log(`云端授权清单拿不到（${e instanceof Error ? e.message : String(e)}）`);
+        return null;
+      }
+    },
+
+    async fetchAudit(since) {
+      const token = await deps.accessToken();
+      if (!token) return null;
+      try {
+        const res = await doFetch(
+          `${deps.baseUrl()}/px/v1/audit?since=${encodeURIComponent(String(since))}`,
+          { method: "GET", headers: { authorization: `Bearer ${token}` } }
+        );
+        const payload: unknown = await res.json().catch(() => null);
+        if (!res.ok) {
+          log(`云端审计拉不到（HTTP ${res.status}）：${errMessage(payload) ?? "?"}`);
+          return null;
+        }
+        if (!isObj(payload) || !Array.isArray(payload.audits)) return null;
+        const out: PxAudit[] = [];
+        for (const a of payload.audits) {
+          if (!isObj(a) || typeof a.ts !== "number" || typeof a.fromUid !== "string") continue;
+          if (typeof a.serverId !== "string" || typeof a.tool !== "string") continue;
+          if (a.outcome !== "ok" && a.outcome !== "denied" && a.outcome !== "error") continue;
+          out.push({
+            ts: a.ts, fromUid: a.fromUid, serverId: a.serverId, tool: a.tool, outcome: a.outcome,
+            ...(typeof a.note === "string" ? { note: a.note } : {}),
+          });
+        }
+        return out;
+      } catch (e) {
+        log(`云端审计拉不到（${e instanceof Error ? e.message : String(e)}）`);
         return null;
       }
     },
