@@ -8,6 +8,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { createEdge, type RelayStub } from "./edge.js";
 import {
+  appendAudit, friendshipQuery, grantedView, openEscrow, parseEscrowDoc,
+  parseFriendshipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
+  type EscrowDoc, type PxAudit,
+} from "./px.js";
+import {
   CTRL_CID,
   CTRL_GONE,
   CTRL_PEER,
@@ -28,7 +33,14 @@ import {
 export interface Env {
   /** Supabase 的 HS256 JWT secret。`wrangler secret put SUPABASE_JWT_SECRET` */
   SUPABASE_JWT_SECRET: string;
+  /** 托管箱的应用层 AES-GCM key（32 字节 base64）。`wrangler secret put ESCROW_KEY` */
+  ESCROW_KEY: string;
+  /** Supabase service role key（关系闸查 friendships）。`wrangler secret put SUPABASE_SERVICE_KEY` */
+  SUPABASE_SERVICE_KEY: string;
+  /** Supabase 项目根 URL（vars，不是 secret） */
+  SUPABASE_URL: string;
   RELAY: DurableObjectNamespace<Relay>;
+  ESCROW: DurableObjectNamespace<Escrow>;
 }
 
 /** getWebSockets() 回来的连接 + 它的两个 tag */
@@ -137,11 +149,115 @@ export class Relay extends DurableObject<Env> {
   }
 }
 
+/**
+ * 托管箱 DO（ADR-0197）：一户（hostUid）一箱。凭据只在这里解封——edge 层
+ * 转进来的请求已验过 JWT 并做完关系闸，这里只剩白名单闸 + 执行 + 审计。
+ * storage：`sealed`（AES-GCM 密封的 EscrowDoc）、`audit`（PxAudit[] 环形 500）。
+ */
+export class Escrow extends DurableObject<Env> {
+  private async doc(): Promise<EscrowDoc | null> {
+    const sealed = await this.ctx.storage.get<string>("sealed");
+    return sealed ? openEscrow(this.env.ESCROW_KEY, sealed) : null;
+  }
+
+  private async audit(entry: PxAudit): Promise<void> {
+    const list = (await this.ctx.storage.get<PxAudit[]>("audit")) ?? [];
+    await this.ctx.storage.put("audit", appendAudit(list, entry));
+  }
+
+  override async fetch(req: Request): Promise<Response> {
+    const op = new URL(req.url).pathname.slice(1);
+    const body: unknown = await req.json().catch(() => ({}));
+    const b = body as Record<string, unknown>;
+    const json = (status: number, payload: unknown): Response =>
+      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+
+    if (op === "put") {
+      const doc = parseEscrowDoc(b.doc);
+      if (!doc) return json(400, { error: { message: "托管文档形状不对", type: "otto_edge", code: "bad_doc" } });
+      await this.ctx.storage.put("sealed", await sealEscrow(this.env.ESCROW_KEY, doc));
+      return json(200, { ok: true, services: doc.services.length, grants: doc.grants.length });
+    }
+    if (op === "delete") {
+      // 撤销 = 凭据即刻消失。审计留着——「借出过、后来撤了」是 A 该拉得回的历史
+      await this.ctx.storage.delete("sealed");
+      return json(200, { ok: true });
+    }
+    if (op === "grants") {
+      const fromUid = typeof b.fromUid === "string" ? b.fromUid : "";
+      // 关系闸 edge 层已做（不是好友根本到不了这），这里传 true
+      return json(200, grantedView(await this.doc(), fromUid, true));
+    }
+    if (op === "audit") {
+      const since = typeof b.since === "number" ? b.since : 0;
+      const list = (await this.ctx.storage.get<PxAudit[]>("audit")) ?? [];
+      return json(200, { audits: list.filter((a) => a.ts > since) });
+    }
+    if (op === "call") {
+      const fromUid = typeof b.fromUid === "string" ? b.fromUid : "";
+      const serverId = typeof b.serverId === "string" ? b.serverId : "";
+      const tool = typeof b.tool === "string" ? b.tool : "";
+      const friendAccepted = b.friendAccepted === true;
+      const doc = await this.doc();
+      const gate = pxGate(doc, { fromUid, serverId, tool }, friendAccepted);
+      if (!gate.ok) {
+        await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: gate.message });
+        return json(gate.status, { error: { message: gate.message, type: "otto_edge", code: gate.code } });
+      }
+      const fetchLike = (url: string, init: RequestInit) => fetch(url, init);
+      let r = await pxMcpCall(fetchLike, gate.service, tool, b.args);
+      if (!r.ok && r.code === "upstream_auth") {
+        // 兜底自刷一次（ADR-0197「token 生死」）：刷成就更新密封箱再重试
+        const oauth = await pxRefreshTokens(fetchLike, gate.service);
+        if (oauth && doc) {
+          const updated: EscrowDoc = {
+            ...doc,
+            services: doc.services.map((s) => (s.serverId === serverId ? { ...s, oauth } : s)),
+            updatedTs: Date.now(),
+          };
+          await this.ctx.storage.put("sealed", await sealEscrow(this.env.ESCROW_KEY, updated));
+          r = await pxMcpCall(fetchLike, { ...gate.service, oauth }, tool, b.args);
+        }
+      }
+      if (!r.ok) {
+        await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "error", note: r.message });
+        const msg = r.code === "upstream_auth" ? "托管凭据已失效——让对方上线重新授权一次" : r.message;
+        return json(r.status, { error: { message: msg, type: "otto_edge", code: r.code } });
+      }
+      await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "ok" });
+      return json(200, { result: r.content });
+    }
+    return json(404, { error: { message: `没有这个内部操作:${op}`, type: "otto_edge", code: "not_found" } });
+  }
+}
+
+/** 关系闸：service role 查 friendships，60s 内存缓存（DO 睡醒即失，best-effort） */
+function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
+  const cache = new Map<string, { v: boolean; exp: number }>();
+  return async (a, b) => {
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    const hit = cache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.v;
+    try {
+      const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${friendshipQuery(a, b)}`, {
+        headers: { apikey: env.SUPABASE_SERVICE_KEY, authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}` },
+      });
+      const v = res.ok && parseFriendshipRows(await res.json());
+      cache.set(key, { v, exp: Date.now() + 60_000 });
+      return v;
+    } catch {
+      return false; // 关系闸失败关闭
+    }
+  };
+}
+
 const handler = {
   async fetch(req: Request, env: Env): Promise<Response> {
     const handle = createEdge({
       config: { jwtSecret: env.SUPABASE_JWT_SECRET },
       relay: (userId): RelayStub => env.RELAY.getByName(userId),
+      escrow: (hostUid): RelayStub => env.ESCROW.getByName(hostUid),
+      isFriend: friendChecker(env),
     });
     return handle(req);
   },
