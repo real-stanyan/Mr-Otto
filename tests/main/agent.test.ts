@@ -12,6 +12,7 @@ import type { AgentPush } from "../../src/main/agent.js";
 import type { ToolCallRequest, SessionEvent } from "../../src/session/events.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { createLocalWorld } from "../../src/world/localWorld.js";
+import { LiveGroupRegistry } from "../../src/world/liveGroups.js";
 import { withMcp, type McpCapability } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import { SKILL_TOOL_NAME } from "../../src/tools/skill.js";
@@ -23,6 +24,26 @@ const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserReq
 const attachments = new AttachmentStore(tempDir("otter-agent-test-"));
 
 describe("createAgent 会话生命周期", () => {
+  // ①号接线的回归（issue #759）：登记表是组装根注入的，工具层不碰——所以
+  // 「传了就有 residue 能力、不传就没有」是这条接线唯一能被断言的形状。
+  // 没有它，把 createLocalWorld 那行条件展开删掉，全仓一条测试都不会红
+  it("liveGroups：传了才有 world.residue（组装根注入，不传零改动）", () => {
+    const store = new EventStore(":memory:");
+    const withReg = createAgent({
+      store,
+      workspace: "/proj/x",
+      push,
+      attachments,
+      liveGroups: new LiveGroupRegistry(),
+    });
+    expect(withReg.world.residue).toBeDefined();
+
+    const without = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(without.world.residue).toBeUndefined();
+    store.close();
+  });
+
+
   it("新建：日志第 0 条 = session_created，带 workspace", () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });

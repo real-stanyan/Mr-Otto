@@ -39,12 +39,24 @@ export class LiveGroupRegistry {
     this.escapedMap.delete(pgid);
   }
 
-  sweepAll(): void {
-    // 套用 localWorld 的超时模式：SIGTERM 宽限后 SIGKILL 补刀
+  /** 收尸。
+      默认：套用 localWorld 的超时模式——SIGTERM 宽限后 SIGKILL 补刀。
+      `immediate`：SIGTERM 之后当场补 SIGKILL，不留 timer。**app 退出那一路
+      必须用它**：`before-quit` 一返回 Electron 就继续退出流程，宽限用的
+      `setTimeout(...).unref()` 永远等不到触发，SIGKILL 补刀等于不存在，
+      trap 了 TERM 的组会活成孤儿（同 index.ts 里 mcpHub.closeAll 那段注释
+      讲的是同一个坑）。不给宽限也安全：这张表里全是本 app 自己起的组，
+      没有误杀的可能。 */
+  sweepAll(opts: { immediate?: boolean } = {}): void {
     for (const g of [...this.liveMap.values(), ...this.escapedMap.values()]) {
       killGroup(g.pgid, "SIGTERM");
-      // app 正在退出，timer 用 .unref() 不拖住事件循环
-      setTimeout(() => { if (groupAlive(g.pgid)) killGroup(g.pgid, "SIGKILL"); }, KILL_GRACE_MS).unref();
+      if (opts.immediate) {
+        // 同步补刀：调用方（正在退出的 app）活不到 timer 触发那一刻
+        if (groupAlive(g.pgid)) killGroup(g.pgid, "SIGKILL");
+      } else {
+        // app 正在退出，timer 用 .unref() 不拖住事件循环
+        setTimeout(() => { if (groupAlive(g.pgid)) killGroup(g.pgid, "SIGKILL"); }, KILL_GRACE_MS).unref();
+      }
     }
     this.liveMap.clear();
     this.escapedMap.clear();

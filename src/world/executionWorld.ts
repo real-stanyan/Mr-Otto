@@ -244,10 +244,17 @@ export interface ProjectsCapability {
   packageProject(name: string, files: string[]): Promise<{ dir: string; moved: string[] }>;
 }
 
-/** 残留物审计能力：capture 已生成的 simulators/ports/processes 快照，cleanup 清理单个条目。
-    工作原理（issue #759）：工具层（residue_audit）靠它做残留物检测 + 用户批准后清理。
-    可选 = 向后兼容（假 world 零改动）；缺席 = 该装配无残留物审计能力（residue_audit
-    工具不挂）。v2 Docker 世界可按 bot 的容器内部状态实现（通过 docker exec simctl list / ps / lsof 等）*/
+/** 残留物审计能力：snapshot 拍一张此刻的 simulators/ports/processes 现场照，
+    cleanup 清理单个条目。
+    工作原理（issue #759）：**消费者是组装根**（index.ts）——建会话时拍 baseline、
+    归档时拿它跟现场做全量 diff，结果落 residue_* 事件。今天还没有任何工具消费
+    这层能力；将来要挂「让水獭自己清残留」那把刀时，接口就是这一份。
+    可选 = 向后兼容（假 world 零改动）；缺席 = 该装配没有残留物审计能力
+    （组装根那几处 `world.residue?.` 静默跳过，会话照常开工）。
+    v1 由 LocalWorld **自己造**（`createLocalResidue`，靠 simctl / ps / lsof 三个
+    子进程，见 world/residueLocal.ts）——注入方向与 browser/mcp 相反，组装根只
+    负责把进程组登记表递进去；v2 Docker 世界把那几条命令换成 docker exec，
+    这一层接口一字不改 */
 export interface ResidueCapability {
   snapshot(): Promise<ResidueSnapshot>;
   cleanup(item: ResidueItem): Promise<CleanupResult>;
@@ -316,10 +323,10 @@ export interface ExecutionWorld {
       withProjects 焊进来。缺席 = 该装配没有打包能力（package_project 不挂）。
       只在内置 Default 工作区的主会话上会被焊上 */
   projects?: ProjectsCapability;
-  /** 可选：残留物审计（issue #759）。缺席 = 该装配没有残留物审计能力（residue_audit
-      工具不挂）。v2 Docker 世界可自己实现这个字段而无需注入，通过容器的 simctl/ps/lsof
-      等命令构建快照；v1 LocalWorld 造不出来需外部注入（macOS 系统进程 API 不向用户
-      程序开放）*/
+  /** 可选：残留物审计（issue #759）。缺席 = 该装配没有残留物审计能力（组装根
+      那几处 `world.residue?.` 静默跳过）。v1 LocalWorld 拿到进程组登记表
+      （createLocalWorld 的 liveGroups）时自己把它造出来，不需要外部注入；
+      v2 Docker 世界把 simctl/ps/lsof 换成 docker exec，接口不变 */
   residue?: ResidueCapability;
 }
 
