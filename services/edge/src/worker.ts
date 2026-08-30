@@ -8,12 +8,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { createEdge, type RelayStub } from "./edge.js";
 import {
-  appendAudit, friendshipQuery, grantedView, openEscrow, parseEscrowDoc,
-  parseFriendshipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
+  appendAudit, friendshipQuery, grantedView, membershipQuery, openEscrow, parseEscrowDoc,
+  parseFriendshipRows, parseMembershipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
+  workspaceIdsOf,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
-// Task 5 接在籍查询前，workspaceOk 先留空集——关系闸只走 friendAccepted 这一支，
-// 与切片 1 之前的运行时行为一致（PxRelations 的形状变了，语义没变）
 import {
   CTRL_CID,
   CTRL_GONE,
@@ -167,6 +166,25 @@ export class Escrow extends DurableObject<Env> {
     await this.ctx.storage.put("audit", appendAudit(list, entry));
   }
 
+  /** 工作区关系闸的查询（ADR-0198 切片 1）：照 friendChecker 的写法，
+      60s 内存缓存，DO 睡醒即失（best-effort，不需要跨睡眠持久） */
+  private msCache = new Map<string, { v: Set<string>; exp: number }>();
+  private async workspaceOk(doc: EscrowDoc | null, fromUid: string): Promise<Set<string>> {
+    const ids = workspaceIdsOf(doc);
+    if (ids.length === 0 || !doc) return new Set();
+    const key = `${fromUid}|${ids.join(",")}`;
+    const hit = this.msCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.v;
+    try {
+      const res = await fetch(`${this.env.SUPABASE_URL}/rest/v1/${membershipQuery(ids, fromUid, doc.hostUid)}`, {
+        headers: { apikey: this.env.SUPABASE_SERVICE_KEY, authorization: `Bearer ${this.env.SUPABASE_SERVICE_KEY}` },
+      });
+      const v = res.ok ? parseMembershipRows(await res.json(), fromUid, doc.hostUid) : new Set<string>();
+      this.msCache.set(key, { v, exp: Date.now() + 60_000 });
+      return v;
+    } catch { return new Set(); } // 关系闸失败关闭
+  }
+
   override async fetch(req: Request): Promise<Response> {
     const op = new URL(req.url).pathname.slice(1);
     const body: unknown = await req.json().catch(() => ({}));
@@ -187,9 +205,9 @@ export class Escrow extends DurableObject<Env> {
     }
     if (op === "grants") {
       const fromUid = typeof b.fromUid === "string" ? b.fromUid : "";
-      // 关系闸 edge 层已做（不是好友根本到不了这），这里传 true；
-      // workspaceOk 留空集——Task 5 接在籍查询
-      return json(200, grantedView(await this.doc(), fromUid, { friendAccepted: true, workspaceOk: new Set<string>() }));
+      const friendAccepted = b.friendAccepted === true;
+      const doc = await this.doc();
+      return json(200, grantedView(doc, fromUid, { friendAccepted, workspaceOk: await this.workspaceOk(doc, fromUid) }));
     }
     if (op === "audit") {
       const since = typeof b.since === "number" ? b.since : 0;
@@ -202,8 +220,7 @@ export class Escrow extends DurableObject<Env> {
       const tool = typeof b.tool === "string" ? b.tool : "";
       const friendAccepted = b.friendAccepted === true;
       const doc = await this.doc();
-      // Task 5 接在籍查询前，workspaceOk 留空集
-      const gate = pxGate(doc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: new Set<string>() });
+      const gate = pxGate(doc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: await this.workspaceOk(doc, fromUid) });
       if (!gate.ok) {
         await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: gate.message });
         return json(gate.status, { error: { message: gate.message, type: "otto_edge", code: gate.code } });

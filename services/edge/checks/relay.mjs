@@ -209,6 +209,41 @@ check("超 256 KiB → 关掉发送方", d.readyState === 3, `readyState=${d.rea
 
 for (const ws of [d, m1, m2, other, hostWs, guestWs, otherChan]) { try { ws.close(); } catch { /* 已关 */ } }
 
+// ---- 好友代理云端执行面：workspace 授权变体接在籍查询（ADR-0198 切片 1）----
+// 单测跑的是纯逻辑 + 假 escrow stub，覆盖不到 Escrow DO 真打 Supabase REST
+// 查在籍那一跳——只有真 workerd + 真 env 说了算。
+// workspaceId 要过 WORKSPACE_ID_RE（UUID 形状）：用真 UUID 而不是占位符，
+// 否则托管文档在结构门就被 parseEscrowDoc 判 400，PUT 断言不到 200
+const pxHostUid = randomUUID();
+const pxWsId = randomUUID();
+const pxDoc = {
+  v: 1, hostUid: pxHostUid, services: [],
+  grants: [{ workspaceId: pxWsId, allow: [{ serverId: "s", tools: [] }] }],
+  updatedTs: Date.now(),
+};
+const pxPut = await fetch(`${BASE}/px/v1/escrow`, {
+  method: "PUT",
+  headers: { authorization: `Bearer ${token(pxHostUid)}`, "content-type": "application/json" },
+  body: JSON.stringify(pxDoc),
+});
+const pxPutBody = await pxPut.json().catch(() => ({}));
+check("px：PUT 托管箱（workspace 授权变体）200 + grants:1",
+  pxPut.status === 200 && pxPutBody.grants === 1, JSON.stringify(pxPutBody));
+
+// 随机 uid 不在任何真 workspace 的在籍名单里——不管在籍查询这一跳是打空、
+// 打不通还是查无成员，workspaceOk 都该是空集，grants 端点回空清单而不是 500
+// （查询失败关闭，不是崩）
+const pxGrants = await fetch(`${BASE}/px/v1/grants?host=${pxHostUid}`, {
+  headers: { authorization: `Bearer ${token(randomUUID())}` },
+});
+const pxGrantsBody = await pxGrants.json().catch(() => ({}));
+check("px：grants 查不到在籍 → 空清单而不是 500",
+  pxGrants.status === 200 && Array.isArray(pxGrantsBody.servers) && pxGrantsBody.servers.length === 0,
+  JSON.stringify(pxGrantsBody));
+
+// 清理：删掉这次探针建的箱子，不留痕（中继本来就不落盘，px 的箱子探针要自己收）
+await fetch(`${BASE}/px/v1/escrow`, { method: "DELETE", headers: { authorization: `Bearer ${token(pxHostUid)}` } });
+
 console.log(`\n${BASE}\n通过 ${ok.length} 条：`);
 for (const o of ok) console.log(`  ✓ ${o}`);
 if (bad.length) {

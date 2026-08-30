@@ -144,11 +144,10 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     if (pathname === "/px/v1/grants" && req.method === "GET") {
       const host = new URL(req.url).searchParams.get("host") ?? "";
       if (!host) return apiError(400, "缺 host 参数", "bad_request");
-      // 关系闸在这层：不是好友连「有没有托管」都不该看见
-      if (!(await deps.isFriend(who.userId, host))) {
-        return apiError(403, "你们已不是好友，代理授权随之失效", "not_friends");
-      }
-      return forward(host, "grants", { fromUid: who.userId });
+      // 不再在门口拒非好友：同工作区成员不必是好友（ADR-0198）。
+      // 关系闸整个下沉进 DO——它读得到 doc，才知道要查哪些 workspace 的在籍
+      const friend = await deps.isFriend(who.userId, host);
+      return forward(host, "grants", { fromUid: who.userId, friendAccepted: friend });
     }
 
     if (pathname === "/px/v1/call" && req.method === "POST") {

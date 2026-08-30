@@ -53,22 +53,23 @@ describe("/px/v1 路由层", () => {
     expect(calls[0]).toMatchObject({ hostUid: "a-uid", op: "put" });
   });
 
-  it("grants：关系闸拦非好友，好友转发带 fromUid", async () => {
+  it("grants：不在门口拦非好友，转发时带 friendAccepted（ADR-0198）", async () => {
     const { calls, stub } = fakeEscrow();
     const isFriend = vi.fn(async () => false);
     const handle = createEdge({ config, escrow: stub, isFriend });
 
-    const denied = await handle(new Request("https://e/px/v1/grants?host=a-uid", {
+    // 同工作区成员不必是好友：关系闸整个下沉进 DO——它读得到 doc，
+    // 才知道这份托管里有哪些 workspace 授权、要查谁的在籍
+    await handle(new Request("https://e/px/v1/grants?host=a-uid", {
       headers: { authorization: `Bearer ${await jwtFor("b-uid")}` },
     }));
-    expect(denied.status).toBe(403);
-    expect(calls).toHaveLength(0); // 不是好友：托管箱一个字节都不吐
+    expect(calls[0]).toMatchObject({ hostUid: "a-uid", op: "grants", body: { fromUid: "b-uid", friendAccepted: false } });
 
     isFriend.mockResolvedValue(true);
     await handle(new Request("https://e/px/v1/grants?host=a-uid", {
       headers: { authorization: `Bearer ${await jwtFor("b-uid")}` },
     }));
-    expect(calls[0]).toMatchObject({ hostUid: "a-uid", op: "grants", body: { fromUid: "b-uid" } });
+    expect(calls[1]).toMatchObject({ hostUid: "a-uid", op: "grants", body: { fromUid: "b-uid", friendAccepted: true } });
   });
 
   it("call：fromUid 来自 JWT 不来自 body——身份闸比自报硬", async () => {
