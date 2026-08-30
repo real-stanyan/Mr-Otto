@@ -173,8 +173,11 @@ import { createPxCloudClient } from "./pxCloudClient.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
-  deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
+  deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow,
 } from "./supabaseWorkspacesApi.js";
+import {
+  publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
+} from "./workspaceSessionShare.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -3036,6 +3039,82 @@ void app.whenReady().then(() => {
     proxy ? { ok: true as const, value: proxySnapshot() } : proxyOff);
   ipcMain.handle(CHANNELS.proxyDisconnect, (_e, hostUid: string) =>
     proxy ? proxy.proxyDisconnect(hostUid) : proxyOff);
+
+  // 工作区（Task 11，ADR-0198 切片 3）：八个方法直接委托 workspaceManager——
+  // 未登录时它自己回 { ok:false, message:"还没登录" }（见 workspaceManager.ts
+  // 的 withSession），这层不用再判一次 null（workspaceManager 本身不会是 null）。
+  const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
+  ipcMain.handle(CHANNELS.workspaceList, () => workspaceManager.list());
+  ipcMain.handle(CHANNELS.workspaceCreate, (_e, name: string) => workspaceManager.create(name));
+  ipcMain.handle(CHANNELS.workspaceDelete, (_e, id: string) => workspaceManager.remove(id));
+  ipcMain.handle(CHANNELS.workspaceAddMember, (_e, id: string, uid: string) =>
+    workspaceManager.addMember(id, uid));
+  ipcMain.handle(CHANNELS.workspaceRemoveMember, (_e, id: string, uid: string) =>
+    workspaceManager.kickMember(id, uid));
+  ipcMain.handle(CHANNELS.workspaceLeave, (_e, id: string) => workspaceManager.leave(id));
+  ipcMain.handle(CHANNELS.workspaceContributeConnector, (_e, id: string, serverId: string, tools: string[]) =>
+    workspaceManager.contributeConnector(id, serverId, tools));
+  ipcMain.handle(CHANNELS.workspaceWithdrawConnector, (_e, id: string, serverId: string) =>
+    workspaceManager.withdrawConnector(id, serverId));
+
+  // 发布/撤回/导入会话（Task 9 workspaceSessionShare.ts）：编排在那一层，
+  // 这里只接依赖——同下面 shareSessionToFriend/importSharedSession 那两个
+  // handler 的接法（load 事件/读附件/上传/发 DM 各有各的真身）。
+  ipcMain.handle(CHANNELS.workspacePublishSession, async (_e, id: string, sessionId: string, title: string) => {
+    const uid = friends.currentUid();
+    if (!uid) return NOT_SIGNED_IN;
+    return publishSessionToWorkspace(
+      {
+        myUid: async () => uid,
+        loadEvents: (sid) => store.load(sid),
+        readAttachment: (aid) => attachmentStore.read(aid),
+        upload: (files) => uploadPackageFiles(supabase.raw, files),
+        // 发布制会话没有"收信人"，这条分支编排层不会走到——但字段形状复用
+        // ShareSendDeps 不另造类型（见 workspaceSessionShare.ts 文件头注释），
+        // 传真实现而不是抛错占位：真调用到了也是正常工作，不是一个该报错的意外
+        sendDm: async (fuid, body) => {
+          const r = await friends.sendMessage(fuid, body);
+          if (!r.ok) throw new Error(r.message);
+          return r.value;
+        },
+        client: () => supabase.raw,
+        insertSessionRow,
+      },
+      id, sessionId, title,
+    );
+  });
+  ipcMain.handle(CHANNELS.workspaceUnpublishSession, async (_e, id: string, rowId: string) => {
+    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    // unpublishSession 要 pkgPrefix({publisherUid}/{pkgId})，渲染层只传了 rowId——
+    // 现查这个工作区的快照按 rowId 找那一行，不新开 IPC 签名（brief 里"加不加
+    // pkgId"两条路选的这条：workspaceManager/fetchWorkspace 已经有这份数据）
+    try {
+      const snap = await fetchWorkspace(supabase.raw, id);
+      const row = snap.sessions.find((s) => s.id === rowId);
+      if (!row) return { ok: false, message: "会话不存在或已撤回" };
+      return await unpublishSession(supabase.raw, rowId, `${row.publisherUid}/${row.pkgId}`);
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(CHANNELS.workspaceImportSession, async (_e, publisherUid: string, pkgId: string) => {
+    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    // importWorkspaceSession 的第 4 个参数是接收方选定的本机工作目录——brief 的
+    // 产出签名没暴露这个选择给渲染层，落回内置 Default 工作区（同 DM 导入那条
+    // "从好友 DM 导入时渲染层会回落到默认工作文件夹"的兜底口径，#783 下半），
+    // 惰性建目录同 importSharedSession handler
+    const workspace = workspaceSettingsInfo().defaultWorkspace;
+    mkdirSync(workspace, { recursive: true });
+    return importWorkspaceSession(
+      {
+        download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
+        saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
+        append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
+        newSessionId: () => crypto.randomUUID(),
+      },
+      publisherUid, pkgId, workspace,
+    );
+  });
 
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、

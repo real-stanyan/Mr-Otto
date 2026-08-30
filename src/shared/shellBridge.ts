@@ -39,6 +39,7 @@ import type {
   WorkspacesSnapshot,
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -954,6 +955,35 @@ export interface ShellBridge {
       「谁、何时、哪个工具、**什么参数**、什么结果」，少了参数那条防线只剩三分之二
       （写工具在白名单内是全自动的，事后能不能看清动了什么全靠它） */
   proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[] }>>;
+
+  // ─── 工作区（Task 11，ADR-0198 切片 3）：多人协作组，成员共享贡献的 MCP
+  // 连接器 + 发布制会话 ────────────────────────────────────────────────
+  /** 我在籍的全部工作区快照（成员/连接器/已发布会话）。未登录 → ok:false */
+  workspaceList(): Promise<FriendsResult<WorkspaceSnapshot[]>>;
+  /** 建一个新工作区，创建者即 owner */
+  workspaceCreate(name: string): Promise<FriendsResult<{ id: string }>>;
+  /** owner 解散工作区（先 Supabase 后本地清授权，见 workspaceManager 注释） */
+  workspaceDelete(id: string): Promise<FriendsResult<null>>;
+  /** owner 拉人入群 */
+  workspaceAddMember(id: string, uid: string): Promise<FriendsResult<null>>;
+  /** owner 踢人 */
+  workspaceRemoveMember(id: string, uid: string): Promise<FriendsResult<null>>;
+  /** 自己退群 */
+  workspaceLeave(id: string): Promise<FriendsResult<null>>;
+  /** 把本机已接通的一台 MCP server 借给这个工作区（tools 空数组 = 整服务放行，
+      同好友代理白名单的换算） */
+  workspaceContributeConnector(id: string, serverId: string, tools: string[]): Promise<FriendsResult<null>>;
+  /** 收回上面那笔贡献 */
+  workspaceWithdrawConnector(id: string, serverId: string): Promise<FriendsResult<null>>;
+  /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
+      ok:true 带 workspace_sessions 的行 id + Storage 包 id */
+  workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
+  /** 发布者本人撤回一次发布（删行 + 删 Storage 包） */
+  workspaceUnpublishSession(id: string, rowId: string): Promise<FriendsResult<null>>;
+  /** 把工作区里别人发布的会话导入成本机新 fork（Task 9 importWorkspaceSession，
+      workspace 由渲染层按 startSession 同一条兜底规则决定落哪个目录） */
+  workspaceImportSession(publisherUid: string, pkgId: string): Promise<FriendsResult<{ sessionId: string }>>;
+
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -1326,6 +1356,17 @@ export const CHANNELS = {
   proxyUpdateGrant: "otter:proxyUpdateGrant",
   proxyDisconnect: "otter:proxyDisconnect",
   proxyChanged: "otter:proxyChanged",
+  workspaceList: "otter:workspaceList",
+  workspaceCreate: "otter:workspaceCreate",
+  workspaceDelete: "otter:workspaceDelete",
+  workspaceAddMember: "otter:workspaceAddMember",
+  workspaceRemoveMember: "otter:workspaceRemoveMember",
+  workspaceLeave: "otter:workspaceLeave",
+  workspaceContributeConnector: "otter:workspaceContributeConnector",
+  workspaceWithdrawConnector: "otter:workspaceWithdrawConnector",
+  workspacePublishSession: "otter:workspacePublishSession",
+  workspaceUnpublishSession: "otter:workspaceUnpublishSession",
+  workspaceImportSession: "otter:workspaceImportSession",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
