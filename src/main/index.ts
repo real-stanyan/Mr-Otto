@@ -170,6 +170,14 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
+import { createWorkspaceManager } from "./workspaceManager.js";
+import {
+  createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+  deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow,
+} from "./supabaseWorkspacesApi.js";
+import {
+  publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
+} from "./workspaceSessionShare.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -1424,6 +1432,23 @@ void app.whenReady().then(() => {
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
     log: (m) => console.warn(`[px-cloud] ${m}`),
   });
+  // ─── 工作区（Task 8/10，ADR-0198 切片 2/3）─────────────────────────────
+  // 造得比 proxy 早：proxy 的 workspaceHosts 依赖它的 hostUids()。这里只做
+  // 编排装配，IPC 接线是 Task 11 的事——list() 在那之前没人调，hostUids()
+  // 就一直是空数组（brief 明写的过渡态，不是 bug）。
+  const workspaceManager = createWorkspaceManager({
+    createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+    deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
+    client: () => supabase.raw,
+    selfUid: () => friends.currentUid(),
+    loadStore: () => readProxyStore(proxyStorePath),
+    saveStore: (d) => writeProxyStore(proxyStorePath, d),
+    // escrowResync 此刻还是空位（要等 proxy/escrowSync 装完才填），但这里
+    // 只是存一个箭头函数——真正调用发生在 contributeConnector/withdrawConnector
+    // 落地时，那时 escrowResync 早已就位（同 onGrantsChanged 那条闭包的道理）
+    resyncEscrow: () => escrowResync?.(),
+    serverLabel: (id) => mcpHub.servers().find((s) => s.id === id)?.name ?? id,
+  });
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
         crypto: remoteKeys.crypto,
@@ -1472,6 +1497,9 @@ void app.whenReady().then(() => {
         // A 侧「云端可用」徽标的数据源（切片 4）。escrowSync 造得比 proxy 晚，
         // 箭头函数晚绑定——hostStatus 被问到时它早已就位
         cloudHostedServerIds: (): readonly string[] | null => escrowSync?.hostedServerIds() ?? null,
+        // 工作区连接器的 host 并进借用面（Task 10，ADR-0198 切片 3）：这些 host
+        // 从没走过配对握手，activeProxies() 靠这条把它们收进来，走 cloud-only 路
+        workspaceHosts: () => workspaceManager.hostUids(),
         log: (m) => console.warn(m),
       })
     : null;
@@ -1485,9 +1513,11 @@ void app.whenReady().then(() => {
         buildDoc: () => {
           const uid = friends.currentUid();
           if (!uid) return null;
+          const store = readProxyStore(proxyStorePath);
           return buildEscrowDoc({
             hostUid: uid,
-            grants: readProxyStore(proxyStorePath).grants,
+            grants: store.grants,
+            workspaceGrants: store.workspaceGrants,
             servers: mcpHub.servers(),
             configOf: (id) => mcpHub.configOf(id),
             authOf: (id) => readMcpAuth(mcpAuthPath, id),
@@ -1498,7 +1528,7 @@ void app.whenReady().then(() => {
         // 才需要对齐（撤销后崩溃的残箱正是靠这次开机 DELETE 清掉的）
         everHosted: () => {
           const s = readProxyStore(proxyStorePath);
-          return s.grants.length > 0 || s.channels.length > 0;
+          return s.grants.length > 0 || s.channels.length > 0 || s.workspaceGrants.length > 0;
         },
         log: (m) => console.warn(`[escrow] ${m}`),
       })
@@ -3009,6 +3039,88 @@ void app.whenReady().then(() => {
     proxy ? { ok: true as const, value: proxySnapshot() } : proxyOff);
   ipcMain.handle(CHANNELS.proxyDisconnect, (_e, hostUid: string) =>
     proxy ? proxy.proxyDisconnect(hostUid) : proxyOff);
+
+  // 工作区（Task 11，ADR-0198 切片 3）：八个方法直接委托 workspaceManager——
+  // 未登录时它自己回 { ok:false, message:"还没登录" }（见 workspaceManager.ts
+  // 的 withSession），这层不用再判一次 null（workspaceManager 本身不会是 null）。
+  const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
+  ipcMain.handle(CHANNELS.workspaceList, () => workspaceManager.list());
+  ipcMain.handle(CHANNELS.workspaceCreate, (_e, name: string) => workspaceManager.create(name));
+  ipcMain.handle(CHANNELS.workspaceDelete, (_e, id: string) => workspaceManager.remove(id));
+  ipcMain.handle(CHANNELS.workspaceAddMember, (_e, id: string, uid: string) =>
+    workspaceManager.addMember(id, uid));
+  ipcMain.handle(CHANNELS.workspaceRemoveMember, (_e, id: string, uid: string) =>
+    workspaceManager.kickMember(id, uid));
+  ipcMain.handle(CHANNELS.workspaceLeave, (_e, id: string) => workspaceManager.leave(id));
+  ipcMain.handle(CHANNELS.workspaceContributeConnector, (_e, id: string, serverId: string, tools: string[]) =>
+    workspaceManager.contributeConnector(id, serverId, tools));
+  ipcMain.handle(CHANNELS.workspaceWithdrawConnector, (_e, id: string, serverId: string) =>
+    workspaceManager.withdrawConnector(id, serverId));
+
+  // 发布/撤回/导入会话（Task 9 workspaceSessionShare.ts）：编排在那一层，
+  // 这里只接依赖——同下面 shareSessionToFriend/importSharedSession 那两个
+  // handler 的接法（load 事件/读附件/上传/发 DM 各有各的真身）。
+  ipcMain.handle(CHANNELS.workspacePublishSession, async (_e, id: string, sessionId: string, title: string) => {
+    const uid = friends.currentUid();
+    if (!uid) return NOT_SIGNED_IN;
+    return publishSessionToWorkspace(
+      {
+        myUid: async () => uid,
+        loadEvents: (sid) => store.load(sid),
+        readAttachment: (aid) => attachmentStore.read(aid),
+        upload: (files) => uploadPackageFiles(supabase.raw, files),
+        // 发布制会话没有"收信人"，这条分支编排层不会走到——但字段形状复用
+        // ShareSendDeps 不另造类型（见 workspaceSessionShare.ts 文件头注释），
+        // 传真实现而不是抛错占位：真调用到了也是正常工作，不是一个该报错的意外
+        sendDm: async (fuid, body) => {
+          const r = await friends.sendMessage(fuid, body);
+          if (!r.ok) throw new Error(r.message);
+          return r.value;
+        },
+        client: () => supabase.raw,
+        insertSessionRow,
+      },
+      id, sessionId, title,
+    );
+  });
+  ipcMain.handle(CHANNELS.workspaceUnpublishSession, async (_e, id: string, rowId: string) => {
+    const uid = friends.currentUid();
+    if (!uid) return NOT_SIGNED_IN;
+    // unpublishSession 要 pkgPrefix({publisherUid}/{pkgId})，渲染层只传了 rowId——
+    // 现查这个工作区的快照按 rowId 找那一行，不新开 IPC 签名（brief 里"加不加
+    // pkgId"两条路选的这条：workspaceManager/fetchWorkspace 已经有这份数据）
+    try {
+      const snap = await fetchWorkspace(supabase.raw, id);
+      const row = snap.sessions.find((s) => s.id === rowId);
+      if (!row) return { ok: false, message: "会话不存在或已撤回" };
+      // RLS 在库里真拦，这里提前说人话——否则 0 行生效 + 吞掉的包清理会把
+      // 「没删成」报成成功（审查 round 1）：非发布者传别人的 rowId，delete 语句
+      // 匹配不到行、PostgREST 不报错，deletePackage 失败又被 unpublishSession
+      // 吞掉，两层沉默叠起来就是一句谎报的 ok:true
+      if (row.publisherUid !== uid) return { ok: false, message: "只有发布者能撤回" };
+      return await unpublishSession(supabase.raw, rowId, `${row.publisherUid}/${row.pkgId}`);
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(CHANNELS.workspaceImportSession, async (_e, publisherUid: string, pkgId: string) => {
+    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    // importWorkspaceSession 的第 4 个参数是接收方选定的本机工作目录——brief 的
+    // 产出签名没暴露这个选择给渲染层，落回内置 Default 工作区（同 DM 导入那条
+    // "从好友 DM 导入时渲染层会回落到默认工作文件夹"的兜底口径，#783 下半），
+    // 惰性建目录同 importSharedSession handler
+    const workspace = workspaceSettingsInfo().defaultWorkspace;
+    mkdirSync(workspace, { recursive: true });
+    return importWorkspaceSession(
+      {
+        download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
+        saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
+        append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
+        newSessionId: () => crypto.randomUUID(),
+      },
+      publisherUid, pkgId, workspace,
+    );
+  });
 
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、

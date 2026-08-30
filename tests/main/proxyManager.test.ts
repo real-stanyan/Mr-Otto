@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createProxyManager } from "../../src/main/proxyManager.js";
 import {
-  channelFor, emptyProxyStore, pinnedIdentities, type ProxyStoreData,
+  channelFor, emptyProxyStore, pinnedIdentities, setBorrow, type ProxyStoreData,
 } from "../../src/main/proxyStore.js";
 import {
   decodeProxyInvite, encodeProxyInvite, PROXY_SHARE_INVITE_TTL_MS,
@@ -755,6 +755,44 @@ describe("proxyManager 的云借用路由（issue #798 / ADR-0197 切片 3）", 
     a.manager.closeAll(); b.manager.closeAll();
   });
 
+  it("好友+同群重叠：通道曝光 shopify、云端（工作区授权）曝光 square——servers() 两个都在，callTool 按台选路（终审 H2）", async () => {
+    const relay = fakeRelay();
+    // A 侧通道只连了 shopify；square 是工作区授权的服务，通道执行器压根不认识它，
+    // 只在云端复刻（fakeCloud 模拟工作区授权走的云端 grants）
+    const a = machine(relay, "a-uid", [server("shopify")]);
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+
+    const calls: { hostUid: string; serverId: string; tool: string }[] = [];
+    const cloud = {
+      fetchGrants: async (hostUid: string) =>
+        hostUid === "a-uid" ? [{ serverId: "square", toolDefs: CLOUD_TOOLS }] : null,
+      call: async (hostUid: string, serverId: string, tool: string) => {
+        calls.push({ hostUid, serverId, tool });
+        return [{ kind: "text" as const, text: "from-cloud" }];
+      },
+    };
+    const b = machine(relay, "b-uid", [], undefined, undefined, undefined, undefined, cloud);
+    const took = await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(took.ok).toBe(true); // 通道握手成功——旧写法的 bug 正是「握手成功后 square 反而消失」
+    await settle();
+
+    const view = b.manager.activeProxies()[0]!;
+    // 两台都在：通道的 shopify 和云端（工作区授权）的 square，不是通道整体压过云视图
+    expect(view.mcp.servers().map((s) => s.id).sort()).toEqual(["shopify", "square"]);
+
+    // square 通道不认识：即使通道 ready，也要落云端
+    const out = await view.mcp.callTool("square", "get_orders", {});
+    expect(out).toEqual([{ kind: "text", text: "from-cloud" }]);
+    expect(calls).toEqual([{ hostUid: "a-uid", serverId: "square", tool: "get_orders" }]);
+
+    // shopify 通道认识：仍然走通道，不打云端
+    const out2 = await view.mcp.callTool("shopify", "get_orders", {});
+    expect(JSON.stringify(out2)).toContain("ok"); // fakeMcp 的通道路结果
+    expect(calls).toHaveLength(1); // 没有新增一笔云端调用
+
+    a.manager.closeAll(); b.manager.closeAll();
+  });
+
   it("不注 cloud：断线时 callTool 抛旧话术，不回落本地（ADR-0166 不变）", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);
@@ -791,5 +829,66 @@ describe("hostStatus 的 cloudReady（issue #799 / ADR-0197 切片 4）", () => 
     await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
     expect(a.manager.hostStatus()[0]!.cloudReady).toBe(false);
     a.manager.closeAll();
+  });
+});
+
+describe("activeProxies 并上工作区 host（Task 10，ADR-0198 切片 3）", () => {
+  /** B 侧一台空壳 manager：不做任何真实握手，纯粹用来喂 activeProxies() 的底本
+      （配对借用直接写进台账，workspaceHosts 直接注一个假的） */
+  function bareManager(
+    store: ProxyStoreData,
+    friendLabel: (uid: string) => string,
+    workspaceHosts?: () => readonly string[]
+  ) {
+    const relay = fakeRelay();
+    return createProxyManager({
+      crypto: p,
+      identity: p.generateEd25519(),
+      deviceId: "b-uid",
+      mcp: fakeMcp([]),
+      currentUid: () => "b-uid",
+      friendUids: () => ["hostA", "hostB"],
+      friendLabel,
+      openWireTransport: (channelId, role) => relay.open(channelId, role),
+      loadStore: () => store,
+      saveStore: (d) => { store = d; },
+      ...(workspaceHosts ? { workspaceHosts } : {}),
+    });
+  }
+
+  it("配对借用 hostA + workspaceHosts [hostA, hostB]：恰好两条，按 hostUid 去重，hostB 走 routedBorrowMcp", async () => {
+    // 台账里已有一条配对借用 hostA（不必真的握手——activeProxies 的底本本来就是台账，见 issue #798）
+    const store = setBorrow(emptyProxyStore(), "hostA", "chan-a", p.generateEd25519().publicKey);
+    const manager = bareManager(
+      store,
+      (u) => (u === "hostA" ? "小明" : u === "hostB" ? "小红" : ""),
+      () => ["hostA", "hostB"]
+    );
+
+    const views = manager.activeProxies();
+    expect(views).toHaveLength(2); // 去重之后恰好两条，不是三条
+    const byUid = new Map(views.map((v) => [v.friendUid, v]));
+    expect([...byUid.keys()].sort()).toEqual(["hostA", "hostB"]);
+    expect(byUid.get("hostA")!.label).toBe("小明");
+    expect(byUid.get("hostB")!.label).toBe("小红"); // label 走 friendLabel，同一条口径
+
+    // hostB 没有通道也没注 cloud：mcp 是 routedBorrowMcp 的产物——
+    // servers() 退回空云端视图，callTool 走无通道时的旧话术（ADR-0166 不变）
+    expect(byUid.get("hostB")!.mcp.servers()).toEqual([]);
+    await expect(byUid.get("hostB")!.mcp.callTool("shopify", "get_orders", {}))
+      .rejects.toThrow("A（分享者）不在线");
+
+    manager.closeAll();
+  });
+
+  it("不注 workspaceHosts：旧行为不变，只有配对借用那一条", () => {
+    const store = setBorrow(emptyProxyStore(), "hostA", "chan-a", p.generateEd25519().publicKey);
+    const manager = bareManager(store, (u) => (u === "hostA" ? "小明" : ""));
+
+    const views = manager.activeProxies();
+    expect(views).toHaveLength(1);
+    expect(views[0]!.friendUid).toBe("hostA");
+
+    manager.closeAll();
   });
 });

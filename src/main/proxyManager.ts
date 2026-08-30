@@ -139,6 +139,9 @@ export interface ProxyManagerDeps {
    * 好友授的服务里有一台进了箱，TA 不在线也能用
    */
   cloudHostedServerIds?: () => readonly string[] | null;
+  /** 工作区连接器的 host（workspaceManager.hostUids()），无通道恒走云端；
+      与配对借用按 hostUid 去重，配对那条优先。 */
+  workspaceHosts?: () => readonly string[];
 }
 
 export interface ProxyManager {
@@ -254,11 +257,27 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       if (deps.cloud && now() - (cloudFetchedAt.get(hostUid) ?? 0) > cloudTtlMs) refreshCloudBorrow(hostUid);
       return cloudServers.get(hostUid) ?? [];
     };
+    // 好友+同群重叠：对方既是配对好友（有活着的通道）又是工作区 host 时，
+    // 工作区那份授权只在云端复刻，通道那头压根不知道有这些 server。旧写法
+    // 「通道 ready 就整个替掉云视图」会让工作区授权的服务在 host 上线的
+    // 那一刻反而从工具表里消失、host 下线后又冒出来——按台 id 求并集，
+    // 通道那份撞车时赢（同一 id 两边都报，通道数据更新鲜），才是对的形状
+    // （终审 H2）。
+    const mergedServers = (): McpServerHandle[] => {
+      const chan = ready() ? channel()!.mcp.servers() : [];
+      const byId = new Map<string, McpServerHandle>();
+      for (const s of cloudView()) byId.set(s.id, s);
+      for (const s of chan) byId.set(s.id, s); // 通道赢
+      return [...byId.values()];
+    };
     return {
       ready: async () => {},
-      servers: () => (ready() ? channel()!.mcp.servers() : cloudView()),
+      servers: mergedServers,
       callTool: async (serverId, tool, args, signal) => {
-        if (ready()) return channel()!.mcp.callTool(serverId, tool, args, signal);
+        // 按台现选路：通道 ready 且通道视图确实曝光这台 serverId 才走通道，
+        // 否则打云端——工作区授权的那些 server 通道执行器根本不认识
+        const chanReady = ready() && (channel()!.mcp.servers().some((s) => s.id === serverId));
+        if (chanReady) return channel()!.mcp.callTool(serverId, tool, args, signal);
         if (!deps.cloud) {
           // 没有云端执行面时保持旧话术（proxyMcp 同款）：抛错不回落本地（ADR-0166）
           throw new Error("代理通道断了——A（分享者）不在线。A 关机或吊销时好友代理不可用，这是设计");
@@ -514,9 +533,18 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       // 台账（usableBorrows）是底本，不再只列活着的通道（issue #798）：
       // 「配过、此刻没连上」的借用正是云借用要接住的那种——A 关机了，
       // 但托管在云端的刀还在。每条的 mcp 是一把会自己选路的刀
-      return usableBorrows(deps.loadStore()).map((b) => ({
-        friendUid: b.hostUid, label: deps.friendLabel(b.hostUid), mcp: routedBorrowMcp(b.hostUid),
-      }));
+      const paired = usableBorrows(deps.loadStore());
+      const pairedUids = new Set(paired.map((b) => b.hostUid));
+      // 工作区连接器的 host 并进来（Task 10，ADR-0198 切片 3）：这些 host 从没
+      // 走过配对握手，天生没有通道——routedBorrowMcp 对无通道 host 本来就直接
+      // 落 cloudView/云 call（issue #798 的机器），这里零改动直接复用。
+      // 按 hostUid 去重、配对借用优先：同一个人既配对借用又是工作区 host 时，
+      // 配对那条带着「断线可恢复」的通道语义，不该被工作区那条覆盖
+      const wsOnly = (deps.workspaceHosts?.() ?? []).filter((u) => !pairedUids.has(u));
+      return [
+        ...paired.map((b) => ({ friendUid: b.hostUid, label: deps.friendLabel(b.hostUid), mcp: routedBorrowMcp(b.hostUid) })),
+        ...wsOnly.map((u) => ({ friendUid: u, label: deps.friendLabel(u), mcp: routedBorrowMcp(u) })),
+      ];
     },
 
     borrowStatus() {

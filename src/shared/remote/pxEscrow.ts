@@ -22,10 +22,31 @@ export interface EscrowService {
   toolDefs: { name: string; description: string; inputSchema: unknown }[];
 }
 
-export interface EscrowGrant {
-  friendUid: string;
-  /** tools 空数组 = 整服务放行（与 proxyProtocol.grantAllows 同口径） */
-  allow: { serverId: string; tools: string[] }[];
+/** tools 空数组 = 整服务放行（与 proxyProtocol.grantAllows 同口径） */
+export interface AllowEntry { serverId: string; tools: string[] }
+
+/** 授权来源二选一：好友（原有）或工作区（ADR-0198 切片 1）。恰好一个键，
+    两个都有/都没有的一律在 parseEscrowDoc 里判非法 */
+export type EscrowGrant =
+  | { friendUid: string; allow: AllowEntry[] }
+  | { workspaceId: string; allow: AllowEntry[] };
+
+export type WorkspaceGrant = Extract<EscrowGrant, { workspaceId: string }>;
+
+/** workspaceId 是 Supabase `gen_random_uuid()`——非这个形状的值永远不合法。
+    membershipQuery 会把 workspaceId 拼进 PostgREST 的 `in.(...)` 过滤串，
+    而 encodeURIComponent 不转义括号/逗号；这条形状门堵掉了那个注入面
+    （审查 round 1）：parseEscrowDoc 用它拒绝整份文档，membershipQuery 里
+    还留了第二道同款过滤，两处共用同一个正则 */
+export const WORKSPACE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 类型收窄：friendUid 变体判据。**按值不按键**——`{ friendUid: "", workspaceId: "w" }`
+    这种半吊子形状如果按 `"friendUid" in g` 判，会被误判成一个「空 allow 的好友授权」
+    而不是它实际该归属的工作区授权（审查 round 1）。parseEscrowDoc 已经把这种形状
+    归一化掉了，这里按值判是第二道保险——防止有人绕过 parse 直接构造 EscrowGrant */
+export function isFriendGrant(g: EscrowGrant): g is Extract<EscrowGrant, { friendUid: string }> {
+  const friendUid = (g as { friendUid?: unknown }).friendUid;
+  return typeof friendUid === "string" && friendUid !== "";
 }
 
 /** 一户（hostUid）的整箱托管。整箱覆盖写入：A 侧是唯一写者，增量没有意义 */
@@ -51,10 +72,29 @@ export function parseEscrowDoc(raw: unknown): EscrowDoc | null {
     if (typeof s.url !== "string" || !/^https:\/\//.test(s.url)) return null;
     if (!Array.isArray(s.toolDefs)) return null;
   }
+  const grants: EscrowGrant[] = [];
   for (const g of raw.grants) {
-    if (!isObj(g) || typeof g.friendUid !== "string" || !Array.isArray(g.allow)) return null;
+    if (!isObj(g) || !Array.isArray(g.allow)) return null;
+    const hasFriend = typeof g.friendUid === "string" && g.friendUid !== "";
+    const hasWs = typeof g.workspaceId === "string" && g.workspaceId !== "";
+    if (hasFriend === hasWs) return null; // 恰好一个
+    if (hasWs && !WORKSPACE_ID_RE.test(g.workspaceId as string)) return null; // 见 WORKSPACE_ID_RE 注释：注入面
+    // 归一化：只留合法那一侧的键，剥掉假值的兄弟键（比如 `{ friendUid: "", workspaceId: "..." }`）。
+    // isFriendGrant 已经改成按值判据，这里再收紧一道——不让半吊子形状原样流到下游，
+    // 两边各写各的时才不会出现「一个当 friend 读、一个当 workspace 读」的分歧（审查 round 1）
+    grants.push(
+      hasFriend
+        ? { friendUid: g.friendUid as string, allow: g.allow as AllowEntry[] }
+        : { workspaceId: g.workspaceId as string, allow: g.allow as AllowEntry[] }
+    );
   }
-  return raw as unknown as EscrowDoc;
+  return {
+    v: 1,
+    hostUid: raw.hostUid,
+    services: raw.services as EscrowService[],
+    grants,
+    updatedTs: raw.updatedTs as number,
+  };
 }
 
 // ─── A 侧：从本机真实状态构造整箱（issue #797）─────────────────────────
@@ -63,6 +103,8 @@ export function parseEscrowDoc(raw: unknown): EscrowDoc | null {
 export interface EscrowSources {
   hostUid: string;
   grants: readonly ProxyGrant[];
+  /** 工作区来源的授权（ADR-0198 切片 1）。在籍校验是边缘侧的事，这层只搬形状 */
+  workspaceGrants: readonly WorkspaceGrant[];
   /** mcpHub.servers() 的形状子集 */
   servers: readonly {
     id: string;
@@ -90,8 +132,11 @@ export interface EscrowSources {
  * grantedView/pxGate 消化——那边本来就跳过 services 里不存在的条目。
  */
 export function buildEscrowDoc(src: EscrowSources): EscrowDoc | null {
-  if (src.grants.length === 0) return null;
-  const wanted = new Set(src.grants.flatMap((g) => g.allow.map((a) => a.serverId)));
+  if (src.grants.length === 0 && src.workspaceGrants.length === 0) return null;
+  const wanted = new Set([
+    ...src.grants.flatMap((g) => g.allow.map((a) => a.serverId)),
+    ...src.workspaceGrants.flatMap((g) => g.allow.map((a) => a.serverId)),
+  ]);
   const services: EscrowService[] = [];
   for (const id of wanted) {
     const cfg = src.configOf(id);
@@ -117,7 +162,10 @@ export function buildEscrowDoc(src: EscrowSources): EscrowDoc | null {
     v: 1,
     hostUid: src.hostUid,
     services,
-    grants: src.grants.map((g) => ({ friendUid: g.friendUid, allow: g.allow.map((a) => ({ serverId: a.serverId, tools: [...a.tools] })) })),
+    grants: [
+      ...src.grants.map((g) => ({ friendUid: g.friendUid, allow: g.allow.map((a) => ({ serverId: a.serverId, tools: [...a.tools] })) })),
+      ...src.workspaceGrants.map((g) => ({ workspaceId: g.workspaceId, allow: g.allow.map((a) => ({ serverId: a.serverId, tools: [...a.tools] })) })),
+    ],
     updatedTs: src.now,
   };
 }

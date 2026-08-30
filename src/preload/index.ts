@@ -207,6 +207,22 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.proxyUpdateGrant, friendUid, allow),
   proxyDisconnect: (hostUid) =>
     ipcRenderer.invoke(CHANNELS.proxyDisconnect, hostUid),
+  workspaceList: () => ipcRenderer.invoke(CHANNELS.workspaceList),
+  workspaceCreate: (name) => ipcRenderer.invoke(CHANNELS.workspaceCreate, name),
+  workspaceDelete: (id) => ipcRenderer.invoke(CHANNELS.workspaceDelete, id),
+  workspaceAddMember: (id, uid) => ipcRenderer.invoke(CHANNELS.workspaceAddMember, id, uid),
+  workspaceRemoveMember: (id, uid) => ipcRenderer.invoke(CHANNELS.workspaceRemoveMember, id, uid),
+  workspaceLeave: (id) => ipcRenderer.invoke(CHANNELS.workspaceLeave, id),
+  workspaceContributeConnector: (id, serverId, tools) =>
+    ipcRenderer.invoke(CHANNELS.workspaceContributeConnector, id, serverId, tools),
+  workspaceWithdrawConnector: (id, serverId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceWithdrawConnector, id, serverId),
+  workspacePublishSession: (id, sessionId, title) =>
+    ipcRenderer.invoke(CHANNELS.workspacePublishSession, id, sessionId, title),
+  workspaceUnpublishSession: (id, rowId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceUnpublishSession, id, rowId),
+  workspaceImportSession: (publisherUid, pkgId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceImportSession, publisherUid, pkgId),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
   onFriendsChanged: subscribe(CHANNELS.friendsChanged),
   onProxyChanged: subscribe(CHANNELS.proxyChanged),

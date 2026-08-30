@@ -96,6 +96,11 @@ import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
   DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
+// WorkspaceSnapshot（单数，ADR-0198 多人协作工作区）与上面的 WorkspacesSnapshot（复数，
+// friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
+// 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
+// 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
+import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
 import type { NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo } from "../../shared/shellBridge.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
@@ -469,6 +474,12 @@ interface ChatState {
   proxyHosts: ProxyHostView[];
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
   proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
+  /** 工作区协作组(issue #811, ADR-0198)：我在籍的那些工作区快照。没有推送通道
+      （workspaceList 无 onChanged）——每次改动后本地重拉一次，见下面十一个 action */
+  workspaceGroups: WorkspaceSnapshot[];
+  /** 工作区面板/页面的内联错误。不复用 friendError——那个字段的注释把范围钉在
+      "好友区/DM 面板"，工作区协作组是另一件事，混一起会让读者误以为两处互相影响 */
+  workspaceGroupsError: string | null;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
@@ -759,6 +770,30 @@ interface ChatState {
   ): Promise<boolean>;
   /** B 侧：不再借某好友的服务 */
   disconnectProxy(hostUid: string): Promise<void>;
+
+  /** 工作区协作组(issue #811, ADR-0198 切片 3)。全部经 ShellBridge——十一个
+      IPC 方法（Task 11）没有推送通道，每条改动成功后都调一次 refreshWorkspaceGroups
+      重拉整份快照，成功/失败都落 workspaceGroupsError */
+  refreshWorkspaceGroups(): Promise<void>;
+  /** 回是否成功；失败原因落 workspaceGroupsError */
+  createWorkspaceGroup(name: string): Promise<boolean>;
+  /** owner 解散工作区 */
+  deleteWorkspaceGroup(id: string): Promise<boolean>;
+  addWorkspaceGroupMember(id: string, uid: string): Promise<boolean>;
+  /** owner 踢人（对方的连接器授权跟着失效，见 workspaceManager 注释） */
+  kickWorkspaceGroupMember(id: string, uid: string): Promise<boolean>;
+  leaveWorkspaceGroup(id: string): Promise<boolean>;
+  /** tools: [] = 整服务放行（同 proxyShare.ts 的约定） */
+  contributeWorkspaceConnector(id: string, serverId: string, tools: readonly string[]): Promise<boolean>;
+  withdrawWorkspaceConnector(id: string, serverId: string): Promise<boolean>;
+  /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
+  publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
+  /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
+  unpublishWorkspaceSession(id: string, rowId: string): Promise<boolean>;
+  /** 导入工作区里别人发布的会话，成功后切过去（同 importShared 的落地行为：
+      await resume(sessionId)） */
+  importWorkspaceSession(publisherUid: string, pkgId: string): Promise<boolean>;
+
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
@@ -1055,6 +1090,8 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyAudits: [],
   proxyBorrows: [],
   proxyHosts: [],
+  workspaceGroups: [],
+  workspaceGroupsError: null,
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -1835,6 +1872,126 @@ export const useChat = create<ChatState>((set, get) => ({
       return;
     }
     set({ proxyAudits: r.value.audits, friendError: null });
+  },
+
+  async refreshWorkspaceGroups() {
+    const r = await window.otter.workspaceList();
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return;
+    }
+    set({ workspaceGroups: r.value, workspaceGroupsError: null });
+  },
+
+  async createWorkspaceGroup(name) {
+    const r = await window.otter.workspaceCreate(name);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async deleteWorkspaceGroup(id) {
+    const r = await window.otter.workspaceDelete(id);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async addWorkspaceGroupMember(id, uid) {
+    const r = await window.otter.workspaceAddMember(id, uid);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async kickWorkspaceGroupMember(id, uid) {
+    const r = await window.otter.workspaceRemoveMember(id, uid);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async leaveWorkspaceGroup(id) {
+    const r = await window.otter.workspaceLeave(id);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async contributeWorkspaceConnector(id, serverId, tools) {
+    const r = await window.otter.workspaceContributeConnector(id, serverId, [...tools]);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async withdrawWorkspaceConnector(id, serverId) {
+    const r = await window.otter.workspaceWithdrawConnector(id, serverId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async publishWorkspaceSession(id, sessionId, title) {
+    const r = await window.otter.workspacePublishSession(id, sessionId, title);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async unpublishWorkspaceSession(id, rowId) {
+    const r = await window.otter.workspaceUnpublishSession(id, rowId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async importWorkspaceSession(publisherUid, pkgId) {
+    const r = await window.otter.workspaceImportSession(publisherUid, pkgId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    // fork 出的新会话由主进程落库；切过去让它成为当前会话（同 importShared 的落地行为）
+    await get().resume(r.value.sessionId);
+    return true;
   },
 
   async openFriendChat(profile) {

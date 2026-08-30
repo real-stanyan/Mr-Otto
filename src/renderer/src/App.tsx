@@ -4,7 +4,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { Archive, ArrowLeft, BookMarked, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Loader2 as Loader2Icon, Plug, Plus, Search, Smartphone, Terminal as TerminalIcon, UserRound, Users } from "lucide-react";
+import { Archive, ArrowLeft, BookMarked, Boxes, Bot, ChevronRight, CircleDot, Ellipsis, FolderOpen, GitBranch, Globe, ListChecks, Loader2 as Loader2Icon, Plug, Plus, Search, Smartphone, Terminal as TerminalIcon, UploadCloud, UserRound, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -61,6 +61,8 @@ import { panelKeyOf } from "./lib/sidePanel.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
+import { WorkspacesPanel } from "./components/WorkspacesPanel.js";
+import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
@@ -1669,6 +1671,10 @@ function AppSidebar() {
   // 是因为点系统通知要能把它掀开(store.onNotificationActivated)
   const friendsOpen = useChat((s) => s.friendsPanelOpen);
   const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
+  // 工作区区显隐:同好友区一样收进 footer 的 icon、点开弹 Drawer(ADR-0198 切片 3,
+  // issue #811)。没有系统通知会掀开它这回事,纯本地 state 就够,不用像 friendsOpen
+  // 那样搬进 store
+  const [workspacesOpen, setWorkspacesOpen] = useState(false);
   // 窗口模式(mac + 非全屏)下红绿灯叠在侧栏左上角,logo 得让位;全屏红绿灯隐掉,logo 回来
   const fullscreen = useChat((s) => s.fullscreen);
   const trafficInset = IS_MAC && !fullscreen;
@@ -2245,6 +2251,24 @@ function AppSidebar() {
             </TooltipTrigger>
             <TooltipContent>好友</TooltipContent>
           </Tooltip>
+          {/* 工作区 icon:同好友区一样的抽屉入口(ADR-0198 切片 3,issue #811)。
+              和好友之间不共用一个开关——两块内容独立,同时开着也各自有各自的 Drawer */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className={
+                  "relative shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] bg-transparent hover:text-foreground " +
+                  (workspacesOpen ? "text-foreground bg-foreground/[0.08]" : "text-muted-foreground")
+                }
+                aria-label="工作区"
+                aria-pressed={workspacesOpen}
+                onClick={() => setWorkspacesOpen(!workspacesOpen)}
+              >
+                <Boxes className="w-[14px] h-[14px]" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>工作区</TooltipContent>
+          </Tooltip>
           {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -2297,6 +2321,27 @@ function AppSidebar() {
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable px-[6px] py-2">
             <SidebarProvider defaultOpen className="flex-col min-h-0">
               <FriendsSection embedded />
+            </SidebarProvider>
+          </div>
+        </DrawerContent>
+      </Drawer>
+      {/* 工作区弹窗:同一件事的第二份(ADR-0198 切片 3,issue #811)。
+          WorkspacesPanel 自己管"列表 or 详情页"这一层,这里只负责开/关抽屉本身 */}
+      <Drawer open={workspacesOpen} onOpenChange={setWorkspacesOpen} direction="right" shouldScaleBackground={false}>
+        <DrawerContent side="right" className="w-[min(380px,90vw)]">
+          <DrawerHeader className="flex items-center justify-between gap-2 text-left px-4 py-3 border-b border-border">
+            <DrawerTitle className="text-sm">工作区</DrawerTitle>
+            <button
+              className="text-muted-foreground hover:text-foreground bg-transparent px-1 rounded-md text-[13px]"
+              aria-label="关闭工作区面板"
+              onClick={() => setWorkspacesOpen(false)}
+            >
+              ✕
+            </button>
+          </DrawerHeader>
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable px-[6px] py-2">
+            <SidebarProvider defaultOpen className="flex-col min-h-0">
+              <WorkspacesPanel embedded />
             </SidebarProvider>
           </div>
         </DrawerContent>
@@ -3421,6 +3466,8 @@ export function App() {
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
+  // 「发布到工作区…」弹窗开关（头部「更多」菜单，ADR-0198 切片 3，issue #811）
+  const [publishOpen, setPublishOpen] = useState(false);
   // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
   // 渲染的 div(见 components/assistant-ui/thread.tsx),不再是 ThreadViewport 自己的 <section>
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -3664,6 +3711,13 @@ export function App() {
               <Loader2Icon /> 后台任务
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            {/* 发布到工作区(ADR-0198 切片 3,issue #811):跟 @好友 分享是两条不同的路——
+                分享是一次性给一个人,发布是常驻挂在工作区里给全体成员(含未来加入者)
+                反复导入。没有工作区时对话框自己说"先建一个",这一项不藏起来 */}
+            <DropdownMenuItem onClick={() => setPublishOpen(true)}>
+              <UploadCloud /> 发布到工作区…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
                 (SubagentSettings 的 initialSubagentScope),所以从这进去编的就是
                 <工程>/.mr-otto/agents 里的定义,不是用户级那份 */}
@@ -3803,6 +3857,15 @@ export function App() {
           <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
+          {/* 发布到工作区(ADR-0198 切片 3,issue #811):头部「更多」菜单开的口。
+              sessionId 为空(欢迎页)时头部本来就不渲染,菜单项也点不到,这里不用再判 */}
+          <PublishSessionDialog
+            open={publishOpen}
+            onOpenChange={setPublishOpen}
+            sessionId={sessionId}
+            events={events}
+            defaultTitle={sessionTitle ?? ""}
+          />
           {/* 残留清单（issue #759，review finding 1/2 + review I1/I2）：boot latch
               非空 = 上次退出没收干净，一进这个会话就弹一次；本次残留只有
               origin==="archive" 的直播事件才自动弹（applyResidueEvent 判的，

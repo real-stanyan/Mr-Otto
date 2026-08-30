@@ -45,6 +45,13 @@ create table workspace_members (
 RLS：成员可读本工作区两表；owner 可写 members（拉人/踢人）；成员可删自己那行（退群）。
 建群时 owner 自动成为第一行 member（role='owner'）。
 
+**`workspaces` 的 select policy 必须写成 `owner_uid = auth.uid() OR is member`**，
+不能只认「是成员」——建群时 insert `workspaces` 一行后紧跟着 `RETURNING`，此时
+`workspace_members` 里 owner 自己那行还没插入，若 select policy 只放行「在
+`workspace_members` 里能查到自己」，这次 `RETURNING` 会被 RLS 挡在前面（owner
+此刻在两张表的意义上都还不是「成员」）。加上 `owner_uid = auth.uid()` 这一支，
+建群这一步不依赖插入顺序或事务内可见性假设。
+
 **拉人限定好友**：邀请候选 = owner 的 accepted 好友（`friendships` 表现有口径）。
 成员↔成员之间**不要求**互为好友——工作区成员关系本身就是关系闸的依据（见 §2.3）。
 
@@ -56,13 +63,16 @@ create table workspace_sessions (
   workspace_id uuid not null references workspaces(id) on delete cascade,
   publisher_uid uuid not null,
   title text not null,
-  doc jsonb not null,                -- 脱敏后的会话快照（§4.1 的形状）
+  pkg_id text not null,              -- 指向 session-packages 桶里的包（见下）
   updated_at timestamptz not null default now()
 );
 ```
 
-RLS：成员可读；publisher 可写/删自己发布的。快照上限 2 MiB（jsonb 够用；超限提示
-「会话太大，先压缩再发布」——与 trim.ts 的闸门口径一致，不为一期造附件存储）。
+RLS：成员可读；publisher 可写/删自己发布的。快照本体不落这张表——`pkg_id` 指向
+`session-packages` 桶（migration 0014）里 `{publisher_uid}/{pkg_id}/` 的包，
+复用 0014 的包机制，下载权限见 migration 0015 的 storage policy（ADR-0198 推翻
+本节初稿的 jsonb 快照方案：包机制已有隐私闸/上传/导入全链路，jsonb 要重造一遍
+且 2 MiB 顶不住附件）。
 
 ### 1.3 不新增 edge 存储
 

@@ -21,12 +21,18 @@ export {
   parseEscrowDoc,
   appendAudit,
   PX_AUDIT_CAP,
+  isFriendGrant,
+  WORKSPACE_ID_RE,
   type EscrowDoc,
   type EscrowGrant,
   type EscrowService,
   type PxAudit,
+  type AllowEntry,
 } from "../../../src/shared/remote/pxEscrow.js";
-import { parseEscrowDoc, type EscrowDoc, type EscrowGrant, type EscrowService } from "../../../src/shared/remote/pxEscrow.js";
+import {
+  parseEscrowDoc, isFriendGrant, WORKSPACE_ID_RE,
+  type EscrowDoc, type EscrowGrant, type EscrowService,
+} from "../../../src/shared/remote/pxEscrow.js";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -36,46 +42,96 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 export type PxDeny = { ok: false; status: number; code: string; message: string };
 export type PxPass = { ok: true; service: EscrowService; grant: EscrowGrant };
 
+/** 关系闸群组化的输入（ADR-0198 切片 1）：好友与工作区各自的判定结果，
+    由调用方（worker）分别查好注入——这层只消化，不查数据库 */
+export interface PxRelations {
+  friendAccepted: boolean;
+  /** fromUid 与 hostUid **都在籍**的 workspaceId 集合 */
+  workspaceOk: ReadonlySet<string>;
+}
+
+/** 文档里出现过的 workspaceId 全集（去重）。给调用方拿去打在籍查询用 */
+export function workspaceIdsOf(doc: EscrowDoc | null): string[] {
+  if (!doc) return [];
+  return [...new Set(doc.grants.flatMap((g) => (isFriendGrant(g) ? [] : [g.workspaceId])))];
+}
+
 export function pxGate(
   doc: EscrowDoc | null,
   req: { fromUid: string; serverId: string; tool: string },
-  friendAccepted: boolean
+  rel: PxRelations
 ): PxPass | PxDeny {
-  // 关系闸在白名单之前：删好友 = 代理权限跟着死（ADR-0151 决策 1），云端同样成立
-  if (!friendAccepted) {
-    return { ok: false, status: 403, code: "not_friends", message: "你们已不是好友，代理授权随之失效" };
-  }
   if (!doc) return { ok: false, status: 404, code: "no_escrow", message: "对方没有托管任何服务（或已撤销）" };
-  const grant = doc.grants.find((g) => g.friendUid === req.fromUid);
-  if (!grant) return { ok: false, status: 403, code: "no_grant", message: "对方没有为你开通代理授权" };
-  const entry = grant.allow.find((a) => a.serverId === req.serverId);
-  if (!entry) {
-    return { ok: false, status: 403, code: "server_not_granted", message: `代理授权里没有服务「${req.serverId}」` };
+  // 关系闸在白名单之前：删好友 = 代理权限跟着死（ADR-0151 决策 1），云端同样成立；
+  // 工作区那一支同理——不在籍 = 授权随之失效。两支各自算「适用授权」，任一给过即放行
+  const friendGrants = doc.grants.filter((g) => isFriendGrant(g) && g.friendUid === req.fromUid);
+  const wsGrants = doc.grants.filter((g) => !isFriendGrant(g));
+  const applicable: EscrowGrant[] = [
+    ...(rel.friendAccepted ? friendGrants : []),
+    ...wsGrants.filter((g) => !isFriendGrant(g) && rel.workspaceOk.has(g.workspaceId)),
+  ];
+  if (applicable.length === 0) {
+    if (friendGrants.length > 0 && !rel.friendAccepted) {
+      return { ok: false, status: 403, code: "not_friends", message: "你们已不是好友，代理授权随之失效" };
+    }
+    if (wsGrants.length > 0) {
+      return { ok: false, status: 403, code: "not_member", message: "你或对方已不在该工作区，授权随之失效" };
+    }
+    return { ok: false, status: 403, code: "no_grant", message: "对方没有为你开通代理授权" };
   }
-  if (entry.tools.length > 0 && !entry.tools.includes(req.tool)) {
-    return { ok: false, status: 403, code: "tool_not_granted", message: `代理授权里「${req.serverId}」不含工具「${req.tool}」` };
+  let sawServer = false;
+  for (const grant of applicable) {
+    const entry = grant.allow.find((a) => a.serverId === req.serverId);
+    if (!entry) continue;
+    sawServer = true;
+    if (entry.tools.length > 0 && !entry.tools.includes(req.tool)) continue;
+    const service = doc.services.find((s) => s.serverId === req.serverId);
+    if (!service) {
+      return { ok: false, status: 404, code: "service_missing", message: `服务「${req.serverId}」的托管资料不在（对方可能已移除）` };
+    }
+    return { ok: true, service, grant };
   }
-  const service = doc.services.find((s) => s.serverId === req.serverId);
-  if (!service) {
-    return { ok: false, status: 404, code: "service_missing", message: `服务「${req.serverId}」的托管资料不在（对方可能已移除）` };
-  }
-  return { ok: true, service, grant };
+  return sawServer
+    ? { ok: false, status: 403, code: "tool_not_granted", message: `代理授权里「${req.serverId}」不含工具「${req.tool}」` }
+    : { ok: false, status: 403, code: "server_not_granted", message: `代理授权里没有服务「${req.serverId}」` };
 }
 
 /** B 视角的授权清单（GET /px/v1/grants 的载荷）：只给 B 被授权的那部分，
-    且剥掉凭据——toolDefs 是唯一目的 */
-export function grantedView(doc: EscrowDoc | null, fromUid: string, friendAccepted: boolean): {
-  servers: { serverId: string; toolDefs: EscrowService["toolDefs"] }[];
+    且剥掉凭据——toolDefs 是唯一目的。同一服务两路都给时按 name 去重取并集
+    （任一来源 tools 为空 = 全量 toolDefs）；来源全是 workspace 才带 workspaceId，
+    有 friend 来源则不带（friend 授权是更强的信任来源，UI 不该把它标成工作区共享） */
+export function grantedView(doc: EscrowDoc | null, fromUid: string, rel: PxRelations): {
+  servers: { serverId: string; toolDefs: EscrowService["toolDefs"]; workspaceId?: string }[];
 } {
-  if (!doc || !friendAccepted) return { servers: [] };
-  const grant = doc.grants.find((g) => g.friendUid === fromUid);
-  if (!grant) return { servers: [] };
-  const out: { serverId: string; toolDefs: EscrowService["toolDefs"] }[] = [];
-  for (const a of grant.allow) {
-    const s = doc.services.find((x) => x.serverId === a.serverId);
+  if (!doc) return { servers: [] };
+  const friendGrants = doc.grants.filter((g) => isFriendGrant(g) && g.friendUid === fromUid);
+  const wsGrants = doc.grants.filter((g) => !isFriendGrant(g));
+  const applicable: EscrowGrant[] = [
+    ...(rel.friendAccepted ? friendGrants : []),
+    ...wsGrants.filter((g) => !isFriendGrant(g) && rel.workspaceOk.has(g.workspaceId)),
+  ];
+  const byServer = new Map<string, { full: boolean; toolNames: Set<string>; fromFriend: boolean; fromWorkspaceId?: string }>();
+  for (const grant of applicable) {
+    const fromFriend = isFriendGrant(grant);
+    for (const a of grant.allow) {
+      const cur = byServer.get(a.serverId) ?? { full: false, toolNames: new Set<string>(), fromFriend: false };
+      if (a.tools.length === 0) cur.full = true;
+      else for (const t of a.tools) cur.toolNames.add(t);
+      cur.fromFriend = cur.fromFriend || fromFriend;
+      if (!fromFriend && cur.fromWorkspaceId === undefined) cur.fromWorkspaceId = (grant as { workspaceId: string }).workspaceId;
+      byServer.set(a.serverId, cur);
+    }
+  }
+  const out: { serverId: string; toolDefs: EscrowService["toolDefs"]; workspaceId?: string }[] = [];
+  for (const [serverId, info] of byServer) {
+    const s = doc.services.find((x) => x.serverId === serverId);
     if (!s) continue;
-    const toolDefs = a.tools.length === 0 ? s.toolDefs : s.toolDefs.filter((t) => a.tools.includes(t.name));
-    out.push({ serverId: a.serverId, toolDefs });
+    const toolDefs = info.full ? s.toolDefs : s.toolDefs.filter((t) => info.toolNames.has(t.name));
+    out.push({
+      serverId,
+      toolDefs,
+      ...(!info.fromFriend && info.fromWorkspaceId ? { workspaceId: info.fromWorkspaceId } : {}),
+    });
   }
   return { servers: out };
 }
@@ -273,4 +329,28 @@ export function friendshipQuery(a: string, b: string): string {
 /** REST 响应 → 是否好友。形状认不出一律 false（关系闸失败关闭） */
 export function parseFriendshipRows(raw: unknown): boolean {
   return Array.isArray(raw) && raw.length > 0;
+}
+
+/** workspace_members 表「a、b 是否都在籍」的 PostgREST 查询串（ADR-0198 切片 1）。
+    Task 5 接在籍查询——这里只管拼串 */
+export function membershipQuery(workspaceIds: readonly string[], a: string, b: string): string {
+  const enc = encodeURIComponent;
+  // 防御性再过一遍 UUID 形状——parseEscrowDoc 已经在文档入口挡过一次，这里是第二道闸：
+  // 万一调用方绕过了那道解析门直接把 workspaceIdsOf(doc) 的产物递进来，查询串本身也不该
+  // 因为一个带括号/逗号的 workspaceId 被拼出多余的 PostgREST 逻辑分支（审查 round 1）
+  const ids = workspaceIds.filter((id) => WORKSPACE_ID_RE.test(id)).map(enc).join(",");
+  return `workspace_members?select=workspace_id,uid&workspace_id=in.(${ids})&uid=in.(${enc(a)},${enc(b)})`;
+}
+
+/** REST 响应 → 双方都在的 workspaceId 集合。形状认不出一律空集（失败关闭） */
+export function parseMembershipRows(raw: unknown, a: string, b: string): Set<string> {
+  if (!Array.isArray(raw)) return new Set();
+  const byWs = new Map<string, Set<string>>();
+  for (const r of raw) {
+    if (r === null || typeof r !== "object") continue;
+    const { workspace_id, uid } = r as { workspace_id?: unknown; uid?: unknown };
+    if (typeof workspace_id !== "string" || typeof uid !== "string") continue;
+    (byWs.get(workspace_id) ?? byWs.set(workspace_id, new Set()).get(workspace_id)!).add(uid);
+  }
+  return new Set([...byWs].filter(([, uids]) => uids.has(a) && uids.has(b)).map(([id]) => id));
 }
