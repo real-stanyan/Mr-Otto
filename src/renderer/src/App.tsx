@@ -3319,12 +3319,16 @@ export function App() {
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
   const isPackaged = useChat((s) => s.isPackaged);
-  // 残留清单弹窗（issue #759）：上次(boot latch) / 本次(直播累加) 两份各自的
-  // items + 收尾动作。都是空数组时 ResiduePanel 自己不渲染，这里不用先判
+  // 残留清单弹窗（issue #759，review finding 1/2）：上次(boot latch) / 本次
+  // (直播累加) 两份各自的 items + 各自的 open 开关 + 收尾动作。items 空或
+  // open=false 时 ResiduePanel 自己不渲染，这里不用先判
   const bootResidue = useChat((s) => s.bootResidue);
+  const bootResidueOpen = useChat((s) => s.bootResidueOpen);
   const liveResidue = useChat((s) => s.liveResidue);
+  const liveResidueOpen = useChat((s) => s.liveResidueOpen);
   const dismissBootResidue = useChat((s) => s.dismissBootResidue);
   const dismissLiveResidue = useChat((s) => s.dismissLiveResidue);
+  const openLiveResidue = useChat((s) => s.openLiveResidue);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
@@ -3725,23 +3729,45 @@ export function App() {
           <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
-          {/* 残留清单（issue #759）：boot latch 非空 = 上次退出没收干净，一进
-              这个会话就弹一次；items 空时 ResiduePanel 自己不渲染，sessionId
-              为空（welcome/无会话）时两份也必然是空数组，不用另判 */}
+          {/* 残留清单（issue #759，review finding 1/2）：boot latch 非空 = 上次
+              退出没收干净，一进这个会话就弹一次；本次残留只有 origin==="archive"
+              的直播事件才自动弹（applyResidueEvent 判的，不在这儿判）——turn
+              收口那批只进 liveResidue、不弹窗，靠下面的角标点开。items 空或
+              各自的 open 是 false 时 ResiduePanel 自己不渲染，sessionId 为空
+              （welcome/无会话）时两份也必然是空数组/false，不用另判 */}
           {sessionId !== "" && (
             <>
               <ResiduePanel
                 sessionId={sessionId}
                 items={bootResidue}
+                open={bootResidueOpen}
                 title="上次残留"
                 onDone={dismissBootResidue}
               />
               <ResiduePanel
                 sessionId={sessionId}
                 items={liveResidue}
+                open={liveResidueOpen}
                 title="本次残留"
                 onDone={dismissLiveResidue}
               />
+              {/* 角标（review finding 1d）：turn 收口那批只并入 liveResidue 不
+                  自动弹窗，得有个入口让用户自己翻出来看——找不到 BackgroundTasksPanel
+                  那种"自动开侧栏"的先例能照抄(它是自动开,这里明确不该自动开)，
+                  照顾"别过度建设"就做最简的一个带计数的圆角 chip，点开 = 打开
+                  同一个 ResiduePanel（本次残留）。弹窗开着时这颗自己藏起来，
+                  不叠在 Dialog 上方 */}
+              {liveResidue.length > 0 && !liveResidueOpen && (
+                <button
+                  type="button"
+                  onClick={openLiveResidue}
+                  title="有残留没处理，点开清单"
+                  className="fixed bottom-3 left-3 z-40 flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+                >
+                  <span className="size-[6px] shrink-0 rounded-full bg-err" aria-hidden />
+                  残留 {liveResidue.length}
+                </button>
+              )}
             </>
           )}
         </SidebarInset>

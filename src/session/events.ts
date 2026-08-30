@@ -548,6 +548,15 @@ export interface ResidueBaselineEvent extends SessionEventBase {
 export interface ResidueDetectedEvent extends SessionEventBase {
   type: "residue_detected";
   items: ResidueItem[];
+  /** 这批残留是从哪个时机查出来的（issue #759 review finding 1）：
+      "turn" = 单个 turn 收口问一次进程组登记表（reportEscapedGroups）——只是
+      "还在跑"，用户可能故意留着，不该替他弹一个要他决断的框，只该冒个角标；
+      "archive" = 会话归档那一刻的全量 diff——会话已经结束，是"该收尾了"的
+      明确时机，弹清单合理。
+      可选 = 向后兼容：旧日志里落过的 residue_detected 没有这个字段，重放时
+      按 "archive" 兜底（渲染层：origin undefined 当 archive 处理，宁可多弹
+      一次也不吞掉用户该看到的残留） */
+  origin?: "turn" | "archive";
 }
 export interface ResidueCleanedEvent extends SessionEventBase {
   type: "residue_cleaned";

@@ -3083,6 +3083,7 @@ void app.whenReady().then(() => {
               type: "residue_detected",
               ignorable: true, // 模型不消费，旧版本跳过照常重放
               items,
+              origin: "archive", // 会话归档=该收尾了，渲染层弹清单（review finding 1）
             })
           );
         })
@@ -3464,6 +3465,7 @@ void app.whenReady().then(() => {
           confidence: "owned" as const,
           cleanupHint: `kill 进程组 ${g.pgid}`,
         })),
+        origin: "turn", // 单个 turn 收口=只是还在跑，渲染层只角标不弹窗（review finding 1）
       })
     );
   }

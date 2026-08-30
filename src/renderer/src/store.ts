@@ -280,14 +280,25 @@ interface ChatState {
       所以单独存一份;面板和自动开面板的判据都从 events + 这份名单推 */
   liveBgIds: readonly string[];
   /** 「上次残留」弹窗（issue #759）：BootInfo.pendingResidue 的落位，一次性
-      latch——boot 那一刻搬进来，ResiduePanel 处理完（onDone）就清空,不会再弹。
-      弹窗只在这一份非空时挂载(App.tsx),空表示没有或已处理完 */
+      latch——boot 那一刻搬进来。**注意**：这份数组本身不会因为弹窗关掉就清空
+      （review finding 2：onDone 整表清空会把用户没处理的条目一起吞掉）——
+      条目只随 residue_cleaned 事件按 detector:id 精确摘除（applyResidueEvent）。
+      弹窗的开关是下面的 bootResidueOpen，跟数组解耦 */
   bootResidue: ResidueItem[];
+  bootResidueOpen: boolean;
   /** 「本次残留」弹窗（issue #759）：会话活着的时候收到的 residue_detected
       直播事件(turn 收口出走的进程组 / 归档全量 diff)按 detector:id 累加。
       只收当前正看着的会话的事件——同 absorbEvent 的分流(切走的会话事件
-      仍在 DB 里,回来时靠 pendingResidue 重放,不必在这儿常驻) */
+      仍在 DB 里,回来时靠 pendingResidue 重放,不必在这儿常驻)。同 bootResidue,
+      数组只随 residue_cleaned 精确摘除,不因弹窗关掉整表清空 */
   liveResidue: ResidueItem[];
+  /** 「本次残留」弹窗的开关（review finding 1/2）：只有 origin==="archive"
+      （或旧日志缺这个字段，向后兼容按 archive 处理）的 residue_detected 才
+      置 true——单个 turn 收口(origin==="turn")只是"还在跑"，不该弹一个要
+      用户决断的框，只该让下面 liveResidue 非空、由角标去露头。
+      bootResidue 弹窗还开着时不会被这条置 true（两个 Dialog 不叠着弹，见
+      applyResidueEvent）——用户关掉那个之后,角标接手 */
+  liveResidueOpen: boolean;
   /** 每个会话上次开着哪块右侧面板(issue #578)。切走再切回来该还在那儿——
       面板是「我在这个会话里干活的姿势」,不是一次性的弹窗。
       只在内存里活着:重启后从零开始,不值得为它落盘 */
@@ -520,10 +531,14 @@ interface ChatState {
   closeBgPanel(): void;
   /** 主进程那张 live 名单的落位(轮询在 useBackgroundWatch 里) */
   setLiveBgIds(ids: readonly string[]): void;
-  /** 「上次残留」弹窗处理完(清完/以后再说)：清空 latch,不会再弹第二次 */
+  /** 「上次残留」弹窗关掉(清完/以后再说)：只关弹窗(bootResidueOpen=false)，
+      不动 bootResidue 数组——数组由 residue_cleaned 精确摘除(review finding 2) */
   dismissBootResidue(): void;
-  /** 「本次残留」弹窗处理完:清空累加的直播清单 */
+  /** 「本次残留」弹窗关掉：同上,只关弹窗,不清 liveResidue 数组 */
   dismissLiveResidue(): void;
+  /** 角标点开「本次残留」弹窗(review finding 1d)：turn 收口那批只角标不自动
+      弹窗,用户自己点角标才翻开来看 */
+  openLiveResidue(): void;
   /** 记下某会话此刻开着哪块面板,供切回来时还原 */
   rememberPanel(sessionId: string, key: PanelKey | null): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
@@ -764,6 +779,39 @@ export const absorbEvent = (
   };
 };
 
+/** residue_detected / residue_cleaned 的归约核心（issue #759，review finding 1/2）。
+    导出给单测直接钉两条契约（tests/renderer/applyResidueEvent.test.ts）：
+    · origin==="turn"（单个 turn 收口问一次进程组登记表）只并入 liveResidue,
+      不弹「本次残留」弹窗——那批东西可能是用户故意留的 dev server,不该在他
+      正说着话的时候弹一个要他决断的框,只该让 liveResidue 非空、由角标去露头
+      （App.tsx 的小 chip）。origin==="archive"、或旧日志没有这个字段（向前
+      兼容：老版本落的 residue_detected 没有 origin，重放时宁可当 archive
+      多弹一次也不能吞掉用户该看到的残留）才置 liveResidueOpen = true。
+    · s.bootResidueOpen 为 true 时不会被这条置为 true——「上次残留」弹窗还
+      开着的时候不叠第二层 Dialog（两个都是模态,叠着弹用户分不清哪个是哪个）。
+      liveResidue 本身照样合并,等用户关掉上一个弹窗,角标立刻接手露出来。
+    · residue_cleaned 按 `${detector}:${id}` 从 bootResidue 和 liveResidue
+      两份里都精确摘除,不管 result.ok——语义对齐 residueProjection.pendingResidue
+      的注释："cleaned 无论 ok 与否都算清，ok:false 的 note 类永远挂着比漏一次
+      更糟"。两份都摘是因为同一条残留物可能同时挂在两份里（比如 boot 重放出来
+      的那条,这个会话里又被现查一遍,同一个 key 两边都有）*/
+export const applyResidueEvent = (
+  s: { bootResidue: ResidueItem[]; liveResidue: ResidueItem[]; bootResidueOpen: boolean },
+  e: SessionEvent
+): { bootResidue?: ResidueItem[]; liveResidue?: ResidueItem[]; liveResidueOpen?: boolean } => {
+  if (e.type === "residue_detected") {
+    const liveResidue = mergeResidue(e.items, s.liveResidue);
+    const shouldOpen = e.origin !== "turn" && !s.bootResidueOpen;
+    return shouldOpen ? { liveResidue, liveResidueOpen: true } : { liveResidue };
+  }
+  if (e.type === "residue_cleaned") {
+    const key = `${e.item.detector}:${e.item.id}`;
+    const drop = (items: ResidueItem[]) => items.filter((i) => `${i.detector}:${i.id}` !== key);
+    return { bootResidue: drop(s.bootResidue), liveResidue: drop(s.liveResidue) };
+  }
+  return {};
+};
+
 /** 三条进聊天的路（boot 命中 / 新建 / 恢复）共用的状态落位。
     export 是为了让这份"换会话该清什么"能被单测直接断言（见
     tests/renderer/enterChat.test.ts）——它是纯函数，导出零代价 */
@@ -786,10 +834,14 @@ export const enterChat = (
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
   // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才落位,
   // 空/没有时给空表——ResiduePanel 空 items 不渲染,不用另判「有没有 boot 过」。
+  // bootResidueOpen 跟着这次 boot 是否真带了残留走(而不是像 bootResidue 那样
+  // 只增不减)——每次进这个会话都该按"这次 boot 有没有"重新判一遍要不要弹。
   // liveResidue 换会话必清:它是"这个会话活着时收到的直播",不是这个会话的
-  // 历史事实(历史那份已经在上面这行 bootResidue 里了)
+  // 历史事实(历史那份已经在上面这行 bootResidue 里了);liveResidueOpen 同理归零
   bootResidue: info.pendingResidue ?? [],
+  bootResidueOpen: (info.pendingResidue?.length ?? 0) > 0,
   liveResidue: [],
+  liveResidueOpen: false,
   // 设置模式 / DM 让位（侧栏点会话 = 想看聊天），右侧面板则**还原成这个会话
   // 上次的样子**——同一块槽位,两种待遇:前者是"我刚才在别处",后者是"我在这个
   // 会话里就是这么摆的"
@@ -866,7 +918,9 @@ export const useChat = create<ChatState>((set, get) => ({
   ...panelFlags(null),
   liveBgIds: [],
   bootResidue: [],
+  bootResidueOpen: false,
   liveResidue: [],
+  liveResidueOpen: false,
   panelBySession: {},
   fileJump: null,
   workTree: null,
@@ -1259,8 +1313,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setLiveBgIds: (ids) => set({ liveBgIds: ids }),
 
-  dismissBootResidue: () => set({ bootResidue: [] }),
-  dismissLiveResidue: () => set({ liveResidue: [] }),
+  dismissBootResidue: () => set({ bootResidueOpen: false }),
+  dismissLiveResidue: () => set({ liveResidueOpen: false }),
+  openLiveResidue: () => set({ liveResidueOpen: true }),
 
   rememberPanel: (sessionId, key) =>
     set((s) =>
@@ -1890,13 +1945,15 @@ export const useChat = create<ChatState>((set, get) => ({
           void window.otter.listSessions().then((sessions) => set({ sessions }));
         }
       }
-      // 「本次残留」直播（issue #759）：turn 收口出走的进程组 / 归档全量 diff
-      // 都走这条 residue_detected。只收当前正看着的会话——同 absorbEvent 的
-      // 分流,archiveSession 归档的若不是当前会话,不弹到这儿来(那份等重开
-      // app 由 bootResidue 重放)。mergeResidue 现查覆盖同 key,直播里新推的
-      // 那批数据比累加进来的旧数据更新
-      if (e.type === "residue_detected" && e.sessionId === get().sessionId) {
-        set((s) => ({ liveResidue: mergeResidue(e.items, s.liveResidue) }));
+      // 残留审计两兄弟直播（issue #759，review finding 1/2）：residue_detected
+      // 落新一批、residue_cleaned 精确摘一条,都走 applyResidueEvent。只收当前
+      // 正看着的会话——同 absorbEvent 的分流,archiveSession 归档的若不是当前
+      // 会话,不弹到这儿来(那份等重开 app 由 bootResidue 重放)
+      if (
+        (e.type === "residue_detected" || e.type === "residue_cleaned") &&
+        e.sessionId === get().sessionId
+      ) {
+        set((s) => applyResidueEvent(s, e));
       }
       if (e.type === "tool_result") {
         clearTimeout(gitGraphAutoRefresh);

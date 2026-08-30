@@ -14,6 +14,12 @@
 // 一键清逐项走 residueClean：ok → 视为完成；ok:false 但带 note(比如"已消失",
 // 说明它已经不在了) → 同样视为完成；其余的真失败留在原地给用户看清红字，
 // 不能假装收工了——所以 onDone 只在"一个真失败都没有"时才调。
+//
+// review finding 2：onDone 不清 items——items 的真相在挂载方(store)手里，
+// 只随 residue_cleaned 事件按 detector:id 精确摘除；这个组件叫 onDone 单纯
+// 是"该关弹窗了"的信号，不代表"清单已经空了"（勾了 A 清完，B 没勾不该跟着
+// 消失）。挂载方额外给一个 open 布尔——弹窗关着但 items 里还剩东西时(比如
+// 用户点了"以后再说"），组件照 open 隐身，剩下的条目留着给角标去数。
 
 import { useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -46,11 +52,15 @@ function isDisplayOnly(item: ResidueItem): boolean {
 export function ResiduePanel({
   sessionId,
   items,
+  open,
   onDone,
   title = "清理残留",
 }: {
   sessionId: string;
   items: ResidueItem[];
+  /** 弹窗可见性,挂载方（store 的 bootResidueOpen / liveResidueOpen）控制。
+      与 items 解耦（review finding 2）：关掉弹窗不等于清单被清空 */
+  open: boolean;
   onDone: () => void;
   /** 挂载方区分"上次残留"/"本次残留"，不传就是通用标题 */
   title?: string;
@@ -66,8 +76,9 @@ export function ResiduePanel({
   const [results, setResults] = useState<Map<string, CleanupResult>>(new Map());
   const [busy, setBusy] = useState(false);
 
-  // 空 items 不渲染：调用方可以无条件挂载这个组件，自己决定要不要弹
-  if (items.length === 0) return null;
+  // 空 items 不渲染 + open=false 不渲染：调用方可以无条件挂载这个组件，
+  // 自己决定要不要弹（items 有剩但 open=false，就是"以后再说"之后的样子）
+  if (items.length === 0 || !open) return null;
 
   const toggle = (id: string): void =>
     setChecked((prev) => {
