@@ -12,6 +12,14 @@
   // 全账号共用一个名字。落地页是用户在 OAuth 流程里看得见的那一屏,
   // 地址栏上顶着另一个项目的名字既不对也不该。
   "account_id": "ab38e454df1503c246069cb89466de63",
+  // 自有域名（issue #802）：workers.dev 整域在大陆被 DNS 污染，客户端编译期
+  // 常量已换到这个门牌（src/shared/edgeConfig.ts）。workers.dev 地址继续活着
+  // 服务存量客户端——同一个 worker 的两个名字，不是两套服务
+  "routes": [{ "pattern": "edge.mrotto.agency", "custom_domain": true }],
+  // **必须显式 true**：挂了 routes 之后 wrangler 默认把 workers.dev 路由关掉，
+  // 而旧地址钉死在每一个已发出去的客户端里——漏这行 = 存量用户当场全断
+  // （部署时真发生过一次，旧地址 404，靠这行救回）
+  "workers_dev": true,
   // 这个日期定住运行时行为。别顺手往上抬 —— 抬它等于换一批默认值
   "compatibility_date": "2026-04-07",
   "observability": { "enabled": true },
