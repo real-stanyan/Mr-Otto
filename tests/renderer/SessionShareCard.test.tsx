@@ -63,7 +63,7 @@ describe("SessionShareCard", () => {
     expect(screen.getByText("导入并接上 TA 的服务")).toBeInTheDocument();
     expect(screen.getByText("只导入对话")).toBeInTheDocument();
     expect(screen.getByText("shopify")).toBeInTheDocument();
-    expect(screen.getByText(/凭证在 TA 那台机器上/)).toBeInTheDocument();
+    expect(screen.getByText(/凭证托管在 Mr Otto 云端/)).toBeInTheDocument();
   });
 
   it("点「导入并接上」：先握手再导入，且用的是 24 小时那档有效期", async () => {

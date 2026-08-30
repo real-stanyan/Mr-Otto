@@ -3023,7 +3023,6 @@ function ChatComposer() {
   // 分享前那次确认的对象（null = 没在问）。候选服务现算不订阅：@ 一次算一次，
   // 而 events/mcpServers 变一次就重算的话，这个组件每个流式 token 都要重跑一遍
   const [shareTarget, setShareTarget] = useState<ShareGrantTarget | null>(null);
-  const shareOnline = useChat((s) => (shareTarget ? s.onlineIds.includes(shareTarget.uid) : false));
   const shareGrantCandidates = (): string[] => {
     const st = useChat.getState();
     return serversUsedInSession(
@@ -3274,7 +3273,6 @@ function ChatComposer() {
       </ComposerPrimitive.Root>
       <ShareGrantDialog
         target={shareTarget}
-        online={shareOnline}
         onCancel={() => setShareTarget(null)}
         onConfirm={async (selected) => {
           if (!shareTarget) return false;

@@ -165,7 +165,9 @@ import { projectTimelineForMobile } from "../shared/remote/timeline.js";
 import { trimForMobile } from "../shared/remote/trim.js";
 import type { MobileMessage, UpFrame } from "../shared/remote/frames.js";
 import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
-import { relayBaseUrl } from "../shared/edgeConfig.js";
+import { edgeBaseUrl, relayBaseUrl } from "../shared/edgeConfig.js";
+import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
+import { createEscrowSync } from "./pxEscrowSync.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -592,6 +594,10 @@ void app.whenReady().then(() => {
   let proxyResumeNow: (() => void) | null = null;
   /** 好友代理:登出时把通道全关掉(issue #680)。同上是个空位,理由一样 */
   let proxyCloseNow: (() => void) | null = null;
+  /** 云端托管的 re-sync 触发器（ADR-0197 切片 2，issue #797）。空位理由同上，
+      多一条：mcp-auth.json 的写回调在 mcpHub 装配时就要引用它，而同步器要等
+      proxy 装完才造——token 刷新落盘正是 re-sync 四个触发源之一 */
+  let escrowResync: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -1361,7 +1367,7 @@ void app.whenReady().then(() => {
               // 覆盖掉——用户点完同意换 token 时 invalid_grant
               persistFlowState: false,
               read: () => readMcpAuth(mcpAuthPath, id),
-              write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
+              write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); escrowResync?.(); },
               openBrowser: () => {
                 // 连接路径上不发浏览器：一台 server 的 token 过期不该劫持
                 // 用户的屏幕。让它抛 Unauthorized → hub 标 needs-auth →
@@ -1377,13 +1383,13 @@ void app.whenReady().then(() => {
         cfg,
         {
           read: () => readMcpAuth(mcpAuthPath, id),
-          write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); },
-          resetClientRegistration: () => { dropMcpAuthClientRegistration(mcpAuthPath, id); },
+          write: (patch) => { writeMcpAuth(mcpAuthPath, id, patch); escrowResync?.(); },
+          resetClientRegistration: () => { dropMcpAuthClientRegistration(mcpAuthPath, id); escrowResync?.(); },
           openBrowser: (url) => { void shell.openExternal(url); },
         },
         signal
       ),
-    clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); },
+    clearAuth: (id) => { clearMcpAuth(mcpAuthPath, id); escrowResync?.(); },
   });
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
@@ -1448,16 +1454,48 @@ void app.whenReady().then(() => {
           ),
         loadStore: () => readProxyStore(proxyStorePath),
         saveStore: (d) => writeProxyStore(proxyStorePath, d),
+        // 白名单落盘那一刻同步云端托管（ADR-0197 切片 2）。与 onChange 分开：
+        // 那条连接一抖就响，托管只关心授权内容本身
+        onGrantsChanged: () => escrowResync?.(),
         log: (m) => console.warn(m),
       })
     : null;
+  // ─── 云端托管同步（ADR-0197 切片 2，issue #797）────────────────────────
+  // A 把「借出的服务」整箱托管到 edge（/px/v1/escrow），B 在 A 下线时打云端。
+  // 四个触发源（授权变更/服务清单变更/mcp-auth 重写/登录恢复）都汇到 escrowResync。
+  const escrowSync = proxy
+    ? createEscrowSync({
+        baseUrl: () => edgeBaseUrl(),
+        accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+        buildDoc: () => {
+          const uid = friends.currentUid();
+          if (!uid) return null;
+          return buildEscrowDoc({
+            hostUid: uid,
+            grants: readProxyStore(proxyStorePath).grants,
+            servers: mcpHub.servers(),
+            configOf: (id) => mcpHub.configOf(id),
+            authOf: (id) => readMcpAuth(mcpAuthPath, id),
+            now: Date.now(),
+          });
+        },
+        // 从没碰过代理的账号别每次开机白打一个 DELETE；有过授权/频道痕迹的
+        // 才需要对齐（撤销后崩溃的残箱正是靠这次开机 DELETE 清掉的）
+        everHosted: () => {
+          const s = readProxyStore(proxyStorePath);
+          return s.grants.length > 0 || s.channels.length > 0;
+        },
+        log: (m) => console.warn(`[escrow] ${m}`),
+      })
+    : null;
+  escrowResync = escrowSync ? () => escrowSync.schedule() : null;
   // A 的服务清单一变就给所有 host 通道补推授权（issue #792）：grant 帧不再是
   // 握手那一刻的一锤子快照。挂在这里而不是并进上面那条 onChange——proxy 在
   // 那条注册之后才造出来，mcpHub.onChange 支持多个监听者
-  if (proxy) mcpHub.onChange(() => proxy.refreshGrants());
+  if (proxy) mcpHub.onChange(() => { proxy.refreshGrants(); escrowResync?.(); });
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
-  proxyResumeNow = proxy ? () => proxy.resume() : null;
+  proxyResumeNow = proxy ? () => { proxy.resume(); escrowResync?.(); } : null;
   // 登出 = 断开所有代理通道（issue #680）。安全上本来就是失败关闭的
   // （A 侧 friendUids() 回 null 一律拒），但不断的话 B 那边借来的刀还留在
   // 工具表里，模型调了才报错——账号都换了，那些刀不该还在

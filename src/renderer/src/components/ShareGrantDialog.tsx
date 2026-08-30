@@ -38,14 +38,10 @@ export interface ShareGrantTarget {
 
 export function ShareGrantDialog({
   target,
-  online,
   onCancel,
   onConfirm,
 }: {
   target: ShareGrantTarget | null;
-  /** 对方此刻在不在线。代理是同步的：B 用借来的工具时 A 得在线，反过来
-      A 分享时对方在不在，决定了这句话该说「现在就能用」还是「等 TA 上线」 */
-  online: boolean;
   onCancel: () => void;
   /** 回 true = 分享成功（调用方负责清输入框）。selected 为空 = 只分享对话 */
   onConfirm: (selected: readonly string[]) => Promise<boolean>;
@@ -78,7 +74,7 @@ export function ShareGrantDialog({
           <DialogTitle>分享会话给 {target.name}</DialogTitle>
           <DialogDescription>
             对方会拿到这次会话的一份快照。下面这些服务可以连带借给 TA 用 ——
-            凭证留在你这台机器上，对方拿到的是调用结果。
+            对方拿到的是调用结果，凭证会托管到 Mr Otto 云端，你不在线 TA 也能用。
           </DialogDescription>
         </DialogHeader>
 
@@ -111,7 +107,7 @@ export function ShareGrantDialog({
         {/* 三句实话。写在按钮上方而不是帮助文档里——这是这个弹窗的全部意义 */}
         <ul className="text-[11px] leading-relaxed text-muted-foreground space-y-[2px] list-disc pl-4">
           <li>勾上的服务，对方和对方的水獭可以直接调用，<b>不会再逐次问你</b>；每一笔都记在「好友代理 → 已授权」的审计里，可随时一键撤销。</li>
-          <li>对方调用时你得开着 app。{online ? `${target.name} 现在在线。` : `${target.name} 现在不在线，等 TA 上线才用得上。`}</li>
+          <li>勾上的服务的凭证会<b>托管到 Mr Otto 云端</b>（应用层加密），所以你关机 TA 也能用；撤销授权会把云端那份一并删掉，即刻生效。</li>
           <li>这张授权邀请 24 小时内有效，<b>你退出 app 它就作废</b>（一次性密钥只在内存里）——那时对方点「接上服务」会失败，找你重发即可。</li>
         </ul>
 

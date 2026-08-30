@@ -89,7 +89,7 @@ export function SessionShareCard({
           <span>
             {mine ? "连带借出了：" : `${fromName} 连带把这些服务借给你用：`}
             <b className="text-foreground/80">{env.grantServers.join("、")}</b>
-            {!mine && "（凭证在 TA 那台机器上，调用时 TA 得在线）"}
+            {!mine && "（TA 不在线也能用——凭证托管在 Mr Otto 云端）"}
           </span>
         </div>
       )}

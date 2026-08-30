@@ -99,7 +99,7 @@ export function shareGrantNoteText(
   });
   return [
     `【会话来源】这个会话是好友 ${who} 分享给你的 fork。历史里那些 MCP 工具调用当时跑在 TA 的机器上；`,
-    `TA 已把这些服务借给你（好友代理，凭证留在 TA 那边、调用时 TA 得在线）：${servers.join("、")}。`,
+    `TA 已把这些服务借给你（好友代理，用的是 TA 的凭证；TA 不在线也能用——凭证托管在 Mr Otto 云端）：${servers.join("、")}。`,
     ...lines,
     `继续用这些服务时直接调上面带后缀的工具名；**不要**为它们在本地跑 mcp_configure / mcp_authorize——那会改用你自己的账号，和这段历史操作的不是同一份数据。`,
   ].join("\n");

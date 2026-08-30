@@ -23,7 +23,7 @@ afterEach(cleanup);
 describe("ShareGrantDialog", () => {
   it("默认全勾，确认时把整份清单交出去", async () => {
     const onConfirm = vi.fn(async () => true);
-    render(<ShareGrantDialog target={target} online onCancel={() => {}} onConfirm={onConfirm} />);
+    render(<ShareGrantDialog target={target} onCancel={() => {}} onConfirm={onConfirm} />);
 
     expect(screen.getByLabelText("shopify")).toBeChecked();
     expect(screen.getByLabelText("google-ads")).toBeChecked();
@@ -34,7 +34,7 @@ describe("ShareGrantDialog", () => {
 
   it("减掉一项，按钮上的数跟着变", async () => {
     const onConfirm = vi.fn(async () => true);
-    render(<ShareGrantDialog target={target} online onCancel={() => {}} onConfirm={onConfirm} />);
+    render(<ShareGrantDialog target={target} onCancel={() => {}} onConfirm={onConfirm} />);
 
     await userEvent.click(screen.getByLabelText("google-ads"));
     await userEvent.click(screen.getByText("分享并借出 1 项服务"));
@@ -43,7 +43,7 @@ describe("ShareGrantDialog", () => {
 
   it("全部取消 = 只分享对话，按钮当场改口", async () => {
     const onConfirm = vi.fn(async () => true);
-    render(<ShareGrantDialog target={target} online onCancel={() => {}} onConfirm={onConfirm} />);
+    render(<ShareGrantDialog target={target} onCancel={() => {}} onConfirm={onConfirm} />);
 
     await userEvent.click(screen.getByLabelText("shopify"));
     await userEvent.click(screen.getByLabelText("google-ads"));
@@ -52,20 +52,22 @@ describe("ShareGrantDialog", () => {
   });
 
   it("说清「不会再逐次问你」—— 这句话是这个弹窗存在的理由", () => {
-    render(<ShareGrantDialog target={target} online onCancel={() => {}} onConfirm={async () => true} />);
+    render(<ShareGrantDialog target={target} onCancel={() => {}} onConfirm={async () => true} />);
     expect(screen.getByText(/不会再逐次问你/)).toBeInTheDocument();
     expect(screen.getByText(/你退出 app 它就作废/)).toBeInTheDocument();
   });
 
-  it("对方不在线时把话说成「等 TA 上线」，而不是假装现在就能用", () => {
-    render(<ShareGrantDialog target={target} online={false} onCancel={() => {}} onConfirm={async () => true} />);
-    expect(screen.getByText(/小明 现在不在线，等 TA 上线才用得上。/)).toBeInTheDocument();
+  it("知情同意的对象换成托管本身（ADR-0197）：说清凭证会上云端、撤销即刻生效，不再拿在线性说事", () => {
+    render(<ShareGrantDialog target={target} onCancel={() => {}} onConfirm={async () => true} />);
+    expect(screen.getAllByText(/托管到 Mr Otto 云端/)[0]!).toBeInTheDocument();
+    expect(screen.getByText(/撤销授权会把云端那份一并删掉/)).toBeInTheDocument();
+    expect(screen.queryByText(/等 TA 上线/)).not.toBeInTheDocument();
   });
 
   it("分享失败留在框里 —— 让人能改，而不是把输入连同弹窗一起吞掉", async () => {
     const onCancel = vi.fn();
     render(
-      <ShareGrantDialog target={target} online onCancel={onCancel} onConfirm={async () => false} />
+      <ShareGrantDialog target={target} onCancel={onCancel} onConfirm={async () => false} />
     );
     await userEvent.click(screen.getByText("分享并借出 2 项服务"));
     expect(onCancel).not.toHaveBeenCalled();
@@ -75,7 +77,7 @@ describe("ShareGrantDialog", () => {
     render(
       <ShareGrantDialog
         target={{ ...target, servers: ["square", "google-ads"] }}
-        online
+       
         onCancel={vi.fn()}
         onConfirm={vi.fn(async () => true)}
       />
@@ -88,7 +90,7 @@ describe("ShareGrantDialog", () => {
 
   it("target 为 null 时什么都不画（没在问）", () => {
     const { container } = render(
-      <ShareGrantDialog target={null} online onCancel={() => {}} onConfirm={async () => true} />
+      <ShareGrantDialog target={null} onCancel={() => {}} onConfirm={async () => true} />
     );
     expect(container).toBeEmptyDOMElement();
   });

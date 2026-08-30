@@ -85,7 +85,9 @@ function machine(
   friends: readonly string[] = ["a-uid", "b-uid", "evil-uid"],
   onChange?: () => void,
   /** 「重启」用：沿用同一把身份密钥和同一份台账 */
-  carry?: { identity: ReturnType<typeof p.generateEd25519>; store: ProxyStoreData }
+  carry?: { identity: ReturnType<typeof p.generateEd25519>; store: ProxyStoreData },
+  /** 云端托管的触发器（issue #797）——白名单落盘时该响的那只钩子 */
+  onGrantsChanged?: () => void
 ) {
   const identity = carry?.identity ?? p.generateEd25519();
   let store: ProxyStoreData = carry?.store ?? emptyProxyStore();
@@ -99,6 +101,7 @@ function machine(
     friendUids: () => friends,
     friendLabel: (u) => (u === "a-uid" ? "小明" : ""),
     ...(onChange ? { onChange } : {}),
+    ...(onGrantsChanged ? { onGrantsChanged } : {}),
     openWireTransport: (channelId, role) => relay.open(channelId, role),
     loadStore: () => store,
     saveStore: (d) => { store = d; },
@@ -634,5 +637,31 @@ describe("proxyManager 的 B 侧台账（issue #676）", () => {
     expect(beats).toBeGreaterThan(0);
 
     b.manager.closeAll();
+  });
+});
+
+describe("proxyManager 的 onGrantsChanged（云端托管触发器，issue #797 / ADR-0197）", () => {
+  it("发邀请 / 改授权 / 撤销各响一次；连接抖动不响", async () => {
+    const relay = fakeRelay();
+    let fired = 0;
+    const a = machine(relay, "a-uid", [server("square")], undefined, undefined, undefined, () => { fired += 1; });
+
+    await a.manager.proxyCreateInvite("b-uid", [{ serverId: "square", tools: [] }]);
+    expect(fired).toBe(1);
+
+    await a.manager.proxyUpdateGrant("b-uid", [{ serverId: "square", tools: ["pay"] }]);
+    expect(fired).toBe(2);
+
+    // 好友接受邀请（连接状态变化走 onChange，不该动这只钩子）
+    const b = machine(relay, "b-uid");
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "square", tools: [] }]);
+    expect(fired).toBe(3); // 重发邀请本身也是一次白名单落盘
+    const took = await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(took.ok).toBe(true);
+    await settle();
+    expect(fired).toBe(3); // 握手/推 grant 帧没有再响
+
+    await a.manager.proxyRevoke("b-uid");
+    expect(fired).toBe(4);
   });
 });
