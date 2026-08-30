@@ -1719,7 +1719,18 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async importShared(prefix, workspace) {
-    const r = await window.otter.importSharedSession(prefix, workspace);
+    // 从好友 DM 点导入时多半没开着会话，store.workspace 是空串——空串填进围栏
+    // 就是一个 resume 不回来的死会话（#783 下半）。回落到默认工作文件夹，
+    // 和欢迎页开新会话同一个兜底（#559 的 workspaceSettings）
+    let ws = workspace;
+    if (!ws) {
+      try {
+        ws = (await window.otter.getWorkspaceSettings()).defaultWorkspace;
+      } catch {
+        // 读不到就让主进程的空 workspace 闸门拒绝并给人话
+      }
+    }
+    const r = await window.otter.importSharedSession(prefix, ws);
     if (!r.ok) {
       set({ friendError: r.message });
       return false;

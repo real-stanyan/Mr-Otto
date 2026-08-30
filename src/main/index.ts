@@ -2972,8 +2972,13 @@ void app.whenReady().then(() => {
   // 接收端导入：下载 + 解包 + 重填 workspace + 逐条 append 成新 fork 会话
   ipcMain.handle(
     CHANNELS.importSharedSession,
-    async (_e, prefix: string, workspace: string) =>
-      importSharedSession(
+    async (_e, prefix: string, workspace: string) => {
+      // 兜底工作区惰性创建，与 startSession 同一条规则（#559）：从好友 DM 导入时
+      // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过
+      if (workspace && workspace === workspaceSettingsInfo().defaultWorkspace) {
+        mkdirSync(workspace, { recursive: true });
+      }
+      return importSharedSession(
         {
           download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
           saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
@@ -2981,7 +2986,8 @@ void app.whenReady().then(() => {
           newSessionId: () => crypto.randomUUID(),
         },
         { prefix, workspace }
-      )
+      );
+    }
   );
   // dock 角标:未读数只有渲染层算得出(它知道哪个面板开着),主进程只负责画。
   // 非 mac 平台没有 dock,setBadgeCount 在那边是 no-op,不用分支

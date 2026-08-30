@@ -6,6 +6,7 @@
 import { packSession, type SessionPackage } from "../shared/sessionPackage.js";
 import { packageKeys, encodeEnvelope } from "../shared/sessionPackageCodec.js";
 import type { SessionEvent } from "../session/events.js";
+import type { FriendsResult } from "../shared/friends.js";
 
 /** 发送端要的外部能力（index.ts 用真 EventStore/AttachmentStore/Storage/DM 填） */
 export interface ShareSendDeps {
@@ -24,9 +25,10 @@ export interface ShareSendDeps {
   now?: () => number;
 }
 
-export type ShareSendResult =
-  | { ok: true; pkgId: string; eventCount: number }
-  | { ok: false; message: string };
+/** 与 shellBridge.shareSessionToFriend 声明的 FriendsResult 同形（理由见
+    sessionShareReceive.ShareReceiveResult 的注释——同一道没有类型的 IPC 缝，#783）。
+    发送端的渲染层目前只读 ok/message，之前平铺的成功臂碰巧没炸，但桥上契约是 value */
+export type ShareSendResult = FriendsResult<{ pkgId: string; eventCount: number }>;
 
 /** 把 sessionId 这个会话分享给 friendUid，附一句留言。
     全过程：load → 收集附件字节 → 打包（隐私闸在这道）→ 上传 → 发信封。
@@ -85,7 +87,7 @@ export async function shareSessionToFriend(
     });
     await deps.sendDm(args.friendUid, body);
 
-    return { ok: true, pkgId, eventCount: pkg.manifest.eventCount };
+    return { ok: true, value: { pkgId, eventCount: pkg.manifest.eventCount } };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
   }

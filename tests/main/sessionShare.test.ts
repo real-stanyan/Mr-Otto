@@ -141,8 +141,8 @@ describe("importSharedSession（接收端导入编排）", () => {
     const r = await importSharedSession(deps, { prefix: "sender-uid/pkg-1", workspace: "/Users/friend/work" });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.sessionId).toBe("receiver-fork");
-    expect(r.missingAttachments).toBe(0);
+    expect(r.value.sessionId).toBe("receiver-fork");
+    expect(r.value.missingAttachments).toBe(0);
 
     // append 的事件：首条 session_created 已重填接收方 workspace
     const first = appended[0] as { type: string; workspace?: string; sessionId: string };
@@ -156,6 +156,24 @@ describe("importSharedSession（接收端导入编排）", () => {
     expect(JSON.stringify(appended)).not.toContain("我的私密记忆");
     // 附件落盘了
     expect(savedAttachments.get("sha256:aa")).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("成功臂是 FriendsResult：sessionId 在 value 里（shellBridge 契约，#783）", async () => {
+    const files = await makePackageFiles();
+    const { deps } = receiveDeps(files);
+    const r = await importSharedSession(deps, { prefix: "sender-uid/pkg-1", workspace: "/w" });
+    expect(r.ok).toBe(true);
+    expect("value" in r).toBe(true);
+    expect((r as { value: { sessionId: string } }).value.sessionId).toBe("receiver-fork");
+  });
+
+  it("workspace 空串直接拒绝——不铸一个 resume 不回来的死会话（#783 下半）", async () => {
+    const files = await makePackageFiles();
+    const { deps, appended } = receiveDeps(files);
+    const r = await importSharedSession(deps, { prefix: "sender-uid/pkg-1", workspace: "" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("工作");
+    expect(appended.length).toBe(0); // 一条都没落——半截导入比失败更坏
   });
 
   it("包不存在（被撤回）返回「已失效」", async () => {
