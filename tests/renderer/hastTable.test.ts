@@ -26,14 +26,14 @@ describe("plainTable —— markdown 表格能不能交给 data-table", () => {
     const node = table(
       [cell("th", text("型号")), cell("th", text("入")), cell("th", text("出"))],
       [
-        [cell("td", text("glm-4.6")), cell("td", text("1200")), cell("td", text("340"))],
+        [cell("td", text("glm-5.3")), cell("td", text("1200")), cell("td", text("340"))],
         [cell("td", text("ollama/qwen3")), cell("td", text("80")), cell("td", text("12"))],
       ],
     );
     expect(plainTable(node)).toEqual({
       columns: ["型号", "入", "出"],
       rows: [
-        ["glm-4.6", "1200", "340"],
+        ["glm-5.3", "1200", "340"],
         ["ollama/qwen3", "80", "12"],
       ],
     });

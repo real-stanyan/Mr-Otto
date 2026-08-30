@@ -3,7 +3,7 @@ import { routeModel } from "../../src/main/modelRoute.js";
 import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
 const deepseek = findModel("deepseek-v4-flash")!;
-const glm = findModel("glm-4.5-flash")!;
+const glm = findModel("glm-4.7-flash")!;
 
 // ADR-0129 之后只剩两种结局:有 key(或免 key 的本机 Ollama)直连,否则 blocked。
 // 曾经的第三条(走 otto-gateway 花官方赠额)连同 officialGrant 开关一起删了,

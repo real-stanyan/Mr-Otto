@@ -35,7 +35,7 @@ const okReply = (content: string, usage?: { prompt_tokens: number; completion_to
 });
 
 describe("annotateTurn —— 一次往返两边各取所需", () => {
-  it("打到 glm-4.5-flash，一次 fetch 回分区 + 建议 + 账单", async () => {
+  it("打到 glm-4.7-flash，一次 fetch 回分区 + 建议 + 账单", async () => {
     const bodies: string[] = [];
     const fetchSpy = vi.fn(async (url: string, init: { body: string }) => {
       expect(url).toContain("bigmodel.cn");

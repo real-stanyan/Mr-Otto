@@ -23,7 +23,7 @@ describe("lane 的选单 id", () => {
   });
 
   it("认不出前缀的一律 auto", () => {
-    expect(parseLaneValue("glm-4.6")).toEqual({ model: "glm-4.6", lane: "auto" });
+    expect(parseLaneValue("glm-5.3")).toEqual({ model: "glm-5.3", lane: "auto" });
   });
 });
 

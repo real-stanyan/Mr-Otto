@@ -1,6 +1,6 @@
 // cheapAdapter — 三个 turn 后外挂（分区分类 / 跟进建议 / 微压缩）共用的便宜模型通道。
 // 规矩一处写：型号从目录查、没配 key 就不出门（空 Bearer 是每 turn 一次必 401 的往返）、
-// thinking 显式关（glm-4.5-flash 默认开，实测四个字烧 1452 个 completion token）、
+// thinking 显式关（智谱那几款 flash 默认开，实测四个字烧 1452 个 completion token）、
 // 带超时信号（openaiCompatible 走裸 fetch 没有任何超时，一条卡死的 TCP 会让 await 永远不回）。
 
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";

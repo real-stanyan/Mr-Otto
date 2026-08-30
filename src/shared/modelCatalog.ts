@@ -72,43 +72,56 @@ interface ModelSpec {
 // 端点覆盖走各家的 *_BASE_URL。目录只是"开箱能选"的默认集合，不是白名单。
 const MODEL_SPECS: ModelSpec[] = [
   // ── OpenAI ──
-  // GPT-5 是推理型号，思考关不掉，只能调档（reasoning_effort）
-  { provider: "openai", model: "gpt-5", label: "GPT-5", contextWindow: 400_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
-  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 mini", contextWindow: 400_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
-  { provider: "openai", model: "gpt-4.1", label: "GPT-4.1", contextWindow: 1_000_000, thinking: THINKING_NONE, supportsVision: true },
+  // GPT-5.6 一代三档（sol 旗舰 / terra 中档 / luna 便宜），都是推理型号：
+  // 思考关不掉，只能调档（reasoning_effort）
+  { provider: "openai", model: "gpt-5.6-sol", label: "GPT-5.6 Sol", contextWindow: 1_050_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "openai", model: "gpt-5.6-terra", label: "GPT-5.6 Terra", contextWindow: 1_050_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "openai", model: "gpt-5.6-luna", label: "GPT-5.6 Luna", contextWindow: 1_050_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
 
   // ── Anthropic ──
-  // Claude 的扩展思考是原生 API 的 thinking.budget_tokens，OpenAI 兼容层没这个开关。
-  // 手上没有 Anthropic key 验不了，宁可一个字段都不发，也不拿一个猜的参数去撞 400
-  { provider: "anthropic", model: "claude-opus-5", label: "Claude Opus 5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
-  { provider: "anthropic", model: "claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
-  { provider: "anthropic", model: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
+  // Claude 的扩展思考是原生 API 的 thinking 参数，而我们走的是官方 OpenAI 兼容层——
+  // 那一层**明确不支持** extended thinking（也不支持 PDF / citations / prompt caching，
+  // 见 docs.anthropic.com/en/api/openai-sdk）。所以这里一个字段都不发，不是"没验过"，
+  // 是"验过了，这条路上没有这个开关"
+  { provider: "anthropic", model: "claude-opus-5", label: "Claude Opus 5", contextWindow: 1_000_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "anthropic", model: "claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 1_000_000, thinking: THINKING_NONE, supportsVision: true },
+  // id 不带日期后缀：Claude 的型号 id 本身就是完整的，补一个 -20251001 会 404
+  { provider: "anthropic", model: "claude-haiku-4-5", label: "Claude Haiku 4.5", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── Google ──（OpenAI 兼容层认 reasoning_effort；2.5 Pro 关不掉思考，Flash 可以）
-  { provider: "google", model: "gemini-2.5-pro", label: "Gemini 2.5 Pro", contextWindow: 1_000_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
-  { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash", contextWindow: 1_000_000, thinking: THINKING_EFFORT, supportsVision: true },
+  // ── Google ──（OpenAI 兼容层认 reasoning_effort；Pro 关不掉思考，Flash 可以）
+  { provider: "google", model: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro（预览）", contextWindow: 1_000_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: true },
+  { provider: "google", model: "gemini-3.7-flash", label: "Gemini 3.7 Flash", contextWindow: 1_000_000, thinking: THINKING_EFFORT, supportsVision: true },
 
   // ── DeepSeek（官方赠额唯一覆盖的一家，见 main/modelRoute.ts）──
+  // 三条都是 2026-08-30 拿本机 key 打 GET /v1/models 拿到的实况，不是从文档抄的
   { provider: "deepseek", model: "deepseek-v4-flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
   { provider: "deepseek", model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
+  { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash 视觉（实验）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
 
-  // ── 智谱 GLM ──（thinking:{type} 二选一，本机用 glm-4.5-flash 实测过：
-  // disabled 时 reasoning_content 空，enabled 时有）
-  { provider: "glm", model: "glm-4.5-flash", label: "GLM-4.5 Flash（免费）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: false },
-  { provider: "glm", model: "glm-4.6", label: "GLM-4.6", contextWindow: 200_000, thinking: THINKING_FLAG, supportsVision: false },
-  // 目录里唯一的视觉款：图片附件(file-input-v1)得有人吃。免费、同端点同 key。
-  // 兼任 vision-bridge 的代读员:纯文本款发图时由它先解析成文字(image_described)
+  // ── 智谱 GLM ──（thinking:{type} 二选一，本机实测过：disabled 时 reasoning_content 空）
+  // 这一家给到四款，比别家多一款：app 的三个出厂默认里有两个住在这儿
+  // （后台小模型 = glm-4.7-flash、看图代读员 = glm-4.6v-flash），删哪一款都会让默认失效。
+  // 四个 id 都在 2026-08-30 逐个发过一次真请求，全通
+  { provider: "glm", model: "glm-5.3", label: "GLM-5.3", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
+  { provider: "glm", model: "glm-5.3-flash", label: "GLM-5.3 Flash（视觉）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "glm", model: "glm-4.7-flash", label: "GLM-4.7 Flash（免费）", contextWindow: 200_000, thinking: THINKING_FLAG, supportsVision: false },
+  // 免费的那款视觉：图片附件(file-input-v1)得有人吃，同端点同 key。
+  // 兼任 vision-bridge 的代读员：纯文本款发图时由它先解析成文字(image_described)
   { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费·视觉）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 月之暗面 Kimi（按量）──
-  { provider: "moonshot", model: "kimi-k2-0905-preview", label: "Kimi K2", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: false },
-  { provider: "moonshot", model: "moonshot-v1-128k", label: "Moonshot v1 128k", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
+  // K2 系与 moonshot-v1 系 2026-08-31 全平台下线，目录里那两条正好卡在下线前一天换掉。
+  // thinking 方言按同公司订阅端点的实测结论（下面 Kimi Code 那段）推的，没在按量端点单独验过
+  { provider: "moonshot", model: "kimi-k3", label: "Kimi K3（1M）", contextWindow: 1_048_576, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "moonshot", model: "kimi-k2.6", label: "Kimi K2.6", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "moonshot", model: "kimi-k2.7-code", label: "Kimi K2.7 Code", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: false },
 
   // ── Kimi Code（订阅）──
-  // 下面这些数不是从文档抄的，是拿一把订阅 token 问它自己的 /models 拿的（2026-08-26）：
-  // context_length / supports_image_in 都在那份响应里。thinking 也实测过：
-  // 四款都吃 GLM 那套 thinking:{type:"enabled"|"disabled"} —— disabled 时 reasoning_content 消失。
-  // （k3 / k3-256k 另有 think_efforts low/high/max 三档，本仓没接，默认 high）
+  // 下面这些数不是从文档抄的，是拿一把订阅 token 问它自己的 /models 拿的（2026-08-26，
+  // 2026-08-30 复验四条仍在）：context_length / supports_image_in 都在那份响应里。
+  // thinking 也实测过：四款都吃 GLM 那套 thinking:{type:"enabled"|"disabled"} ——
+  // disabled 时 reasoning_content 消失。（k3 / k3-256k 另有 think_efforts low/high/max 三档，
+  // 本仓没接，默认 high）
   // 型号按会员档位分：kimi-for-coding 全员可用，其余几款低档位会员调不到，
   // 目录只管"开箱能选"，调不到时上游自己会报错——不在这儿假装知道用户买的是哪档
   { provider: "kimicode", model: "kimi-for-coding", label: "K2.7 Coding", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
@@ -117,35 +130,37 @@ const MODEL_SPECS: ModelSpec[] = [
   { provider: "kimicode", model: "k3-256k", label: "K3 256k", contextWindow: 262_144, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 阿里通义千问 ──（DashScope 的写法是 enable_thinking）
-  { provider: "qwen", model: "qwen3-max", label: "Qwen3 Max", contextWindow: 256_000, thinking: THINKING_ENABLE, supportsVision: false },
-  { provider: "qwen", model: "qwen-plus", label: "Qwen Plus", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
-  { provider: "qwen", model: "qwen-vl-max", label: "Qwen VL Max（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "qwen", model: "qwen3.8-max", label: "Qwen3.8 Max", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: true },
+  { provider: "qwen", model: "qwen3.7-plus", label: "Qwen3.7 Plus", contextWindow: 256_000, thinking: THINKING_ENABLE, supportsVision: true },
+  { provider: "qwen", model: "qwen3.8-flash", label: "Qwen3.8 Flash", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
 
-  // ── xAI ──（Grok 4 一直思考，且不认 reasoning_effort：没有请求级开关可给）
-  { provider: "xai", model: "grok-4", label: "Grok 4", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: true },
-  { provider: "xai", model: "grok-4-fast", label: "Grok 4 Fast", contextWindow: 2_000_000, thinking: THINKING_NONE, supportsVision: true },
+  // ── xAI ──（Grok 一直思考，且不认 reasoning_effort：没有请求级开关可给。
+  // grok-4 / grok-4-fast 这两个旧 id 2026 年已被上游重定向到 grok-4.3，不再单独列）
+  { provider: "xai", model: "grok-4.6", label: "Grok 4.6", contextWindow: 500_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "xai", model: "grok-4.3", label: "Grok 4.3", contextWindow: 1_000_000, thinking: THINKING_NONE, supportsVision: true },
 
-  // ── MiniMax ──（M2 交错思考，常开，无开关）
-  { provider: "minimax", model: "MiniMax-M2", label: "MiniMax M2", contextWindow: 200_000, thinking: THINKING_NONE, supportsVision: false },
+  // ── MiniMax ──（M3 起有开关了：thinking:{type:"disabled"} 关，默认开——
+  // M2 时代那句"常开、无开关"到这一代不成立了）
+  { provider: "minimax", model: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
 
-  // ── Mistral ──
-  { provider: "mistral", model: "mistral-large-latest", label: "Mistral Large", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
-  { provider: "mistral", model: "pixtral-large-latest", label: "Pixtral Large（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
+  // ── Mistral ──（用 -latest 别名而不是钉版本号：这一家的日期后缀命名换过好几轮，
+  // 别名是它自己长期维护的那一个入口。代价是上游换代时这一行的能力描述会滞后）
+  { provider: "mistral", model: "mistral-large-latest", label: "Mistral Large 3", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "mistral", model: "mistral-small-latest", label: "Mistral Small 4（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
 
   // ── Groq ──（gpt-oss 一直推理，只能调档）
-  { provider: "groq", model: "openai/gpt-oss-120b", label: "GPT-OSS 120B", contextWindow: 128_000, thinking: THINKING_EFFORT_ALWAYS, supportsVision: false },
-  { provider: "groq", model: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: false },
+  { provider: "groq", model: "openai/gpt-oss-120b", label: "GPT-OSS 120B", contextWindow: 131_072, thinking: THINKING_EFFORT_ALWAYS, supportsVision: false },
+  { provider: "groq", model: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", contextWindow: 131_072, thinking: THINKING_NONE, supportsVision: false },
 
   // ── OpenRouter（聚合，型号 id 形如 厂商/型号）──
   // 转发层把各家的写法统一成 reasoning:{effort} / reasoning:{enabled:false}，
   // 我们照它这一套发就行，不用管背后那家原本长什么样
-  { provider: "openrouter", model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 200_000, thinking: THINKING_OPENROUTER, supportsVision: true },
-  { provider: "openrouter", model: "openai/gpt-5", label: "GPT-5", contextWindow: 400_000, thinking: THINKING_OPENROUTER, supportsVision: true },
+  { provider: "openrouter", model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", contextWindow: 1_000_000, thinking: THINKING_OPENROUTER, supportsVision: true },
+  { provider: "openrouter", model: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", contextWindow: 1_050_000, thinking: THINKING_OPENROUTER, supportsVision: true },
 
   // ── 硅基流动 ──
-  { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V3.2-Exp", label: "DeepSeek V3.2", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
-  { provider: "siliconflow", model: "Qwen/Qwen3-235B-A22B", label: "Qwen3 235B", contextWindow: 128_000, thinking: THINKING_ENABLE, supportsVision: false },
-
+  { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V4-Flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
+  { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V4-Pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
 ];
 
 function expand(spec: ModelSpec): ModelChoice {

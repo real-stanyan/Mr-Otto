@@ -23,34 +23,34 @@ describe("modelHandoff —— 一条 model_changed 的两端", () => {
   });
 
   it("第一次切换的来处 = 之前最后一条回复的 model（事实），厂商从目录反查", () => {
-    const reply = { sessionId: "s", type: "assistant_message", content: "在", model: "glm-4.5-flash", seq: 2, ts: 0 } as SessionEvent;
-    const h = modelHandoff([reply, sw(3, "glm", "glm-4.6v-flash")], 3);
-    expect(h?.from).toEqual({ provider: "glm", model: "glm-4.5-flash" });
+    const reply = { sessionId: "s", type: "assistant_message", content: "在", model: "glm-4.7-flash", seq: 2, ts: 0 } as SessionEvent;
+    const h = modelHandoff([reply, sw(3, "glm", "glm-5.3v-flash")], 3);
+    expect(h?.from).toEqual({ provider: "glm", model: "glm-4.7-flash" });
   });
 
   it("目录里没有、也没带厂商前缀的型号认不出来处 → 不画", () => {
     const reply = { sessionId: "s", type: "assistant_message", content: "在", model: "mystery-9000", seq: 2, ts: 0 } as SessionEvent;
-    expect(modelHandoff([reply, sw(3, "glm", "glm-4.6")], 3)?.from).toBeUndefined();
+    expect(modelHandoff([reply, sw(3, "glm", "glm-5.3")], 3)?.from).toBeUndefined();
   });
 
   it("来处 = 上一条 model_changed，中间隔着别的事件也认得出", () => {
-    const events = [sw(1, "deepseek", "deepseek-chat"), noise, sw(3, "glm", "glm-4.6")];
+    const events = [sw(1, "deepseek", "deepseek-chat"), noise, sw(3, "glm", "glm-5.3")];
     expect(modelHandoff(events, 3)).toEqual({
       from: { provider: "deepseek", model: "deepseek-chat" },
-      to: { provider: "glm", model: "glm-4.6" },
+      to: { provider: "glm", model: "glm-5.3" },
       settled: false,
     });
   });
 
   it("被后来的切换覆盖掉的那几条是 settled，最后一条不是（现在跑的就是它）", () => {
-    const events = [sw(1, "deepseek", "deepseek-chat"), sw(3, "glm", "glm-4.6"), sw(5, "anthropic", "claude-opus-5")];
+    const events = [sw(1, "deepseek", "deepseek-chat"), sw(3, "glm", "glm-5.3"), sw(5, "anthropic", "claude-opus-5")];
     expect(modelHandoff(events, 1)?.settled).toBe(true);
     expect(modelHandoff(events, 3)?.settled).toBe(true);
     expect(modelHandoff(events, 5)?.settled).toBe(false);
   });
 
   it("seq 不是一条 model_changed（或压根不在日志里）→ null，不猜", () => {
-    const events = [sw(1, "glm", "glm-4.6"), noise];
+    const events = [sw(1, "glm", "glm-5.3"), noise];
     expect(modelHandoff(events, 2)).toBeNull();
     expect(modelHandoff(events, 99)).toBeNull();
   });
@@ -58,7 +58,7 @@ describe("modelHandoff —— 一条 model_changed 的两端", () => {
 
 describe("modelSideLabel —— chip 上的型号名", () => {
   it("脱掉自家厂商前缀：厂商由旁边那枚标记说，不用写两遍", () => {
-    expect(modelSideLabel({ provider: "glm", model: "glm-4.5-flash" })).toBe("glm-4.5-flash");
+    expect(modelSideLabel({ provider: "glm", model: "glm-4.7-flash" })).toBe("glm-4.7-flash");
     expect(modelSideLabel({ provider: "ollama", model: "ollama/qwen3:8b" })).toBe("qwen3:8b");
   });
 
