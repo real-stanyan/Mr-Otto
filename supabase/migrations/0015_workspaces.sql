@@ -79,11 +79,16 @@ create policy wsm_select_member on public.workspace_members for select to authen
 drop policy if exists wsm_insert_owner on public.workspace_members;
 create policy wsm_insert_owner on public.workspace_members for insert to authenticated
   with check (exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()));
--- owner 踢人，或成员删自己那行（退群）。owner 行由 ws_delete_owner 级联走
+-- 退群：删自己的行，但 owner 不许退——owner 的出口是删群（级联带走本行）
+-- 踢人：owner 删别人的行
 drop policy if exists wsm_delete on public.workspace_members;
 create policy wsm_delete on public.workspace_members for delete to authenticated
-  using (uid = auth.uid()
-     or exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()));
+  using (
+    -- 退群：删自己的行，但 owner 不许退——owner 的出口是删群（级联带走本行）
+    (uid = auth.uid() and not exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()))
+    -- 踢人：owner 删别人的行
+    or (uid <> auth.uid() and exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()))
+  );
 
 -- ── workspace_connectors RLS ──────────────────────────────────────────────
 -- 成员只能看自己所在群的连接器清单
@@ -95,9 +100,11 @@ drop policy if exists wsc_upsert_host on public.workspace_connectors;
 create policy wsc_upsert_host on public.workspace_connectors for insert to authenticated
   with check (host_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
 -- host 本人可以修改自己的那行（调整标签/权限清单）
+-- with check 补在籍：不许把自己的行改挂到别人的工作区（审查发现的越权路）
 drop policy if exists wsc_update_host on public.workspace_connectors;
 create policy wsc_update_host on public.workspace_connectors for update to authenticated
-  using (host_uid = auth.uid());
+  using (host_uid = auth.uid())
+  with check (host_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
 -- host 或群 owner 可以删掉这条接入（host 撤销接入，或 owner 踢掉 host 的服务）
 drop policy if exists wsc_delete_host_or_owner on public.workspace_connectors;
 create policy wsc_delete_host_or_owner on public.workspace_connectors for delete to authenticated
@@ -114,9 +121,11 @@ drop policy if exists wss_insert_publisher on public.workspace_sessions;
 create policy wss_insert_publisher on public.workspace_sessions for insert to authenticated
   with check (publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
 -- 发布者本人可以改标题等元数据
+-- with check 补在籍：不许把自己的行改挂到别人的工作区（审查发现的越权路）
 drop policy if exists wss_update_publisher on public.workspace_sessions;
 create policy wss_update_publisher on public.workspace_sessions for update to authenticated
-  using (publisher_uid = auth.uid());
+  using (publisher_uid = auth.uid())
+  with check (publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
 -- 发布者本人可以撤回会话（删掉这条记录）
 drop policy if exists wss_delete_publisher on public.workspace_sessions;
 create policy wss_delete_publisher on public.workspace_sessions for delete to authenticated
