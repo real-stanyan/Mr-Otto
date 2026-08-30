@@ -109,7 +109,7 @@ describe("回注 user_message 的 origin 标（issue #428）", () => {
   });
 });
 
-// 输出直播（issue #772 / ADR-0194）：主进程既往外推碎片，也自己留一份尾巴——
+// 输出直播（issue #772 / ADR-0195）：主进程既往外推碎片，也自己留一份尾巴——
 // 推送只覆盖此刻在场的人，重开面板 / 重载渲染层要靠 live() 里那份尾巴补回来。
 describe("BackgroundTasks 的输出尾巴", () => {
   it("run 拿到的 sink 一头喂订阅者、一头攒进 live() 的尾巴", async () => {

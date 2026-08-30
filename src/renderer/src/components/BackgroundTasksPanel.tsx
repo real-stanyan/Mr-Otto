@@ -1,5 +1,5 @@
 // 后台任务面板（issue #452 / ADR-0109，槽位改在 issue #578 / ADR-0139，
-// 改画成终端在 issue #772 / ADR-0194）。
+// 改画成终端在 issue #772 / ADR-0195）。
 //
 // 为什么需要它：后台任务的主要来源不是用户点单，是**前台命令跑满 30 秒自动
 // 转的**（tools/bash.ts 的 AUTO_BACKGROUND_AFTER_MS，issue #395）。用户从没
@@ -14,7 +14,7 @@
 // 每一行改画成一台终端（elements/terminal-block，与时间线上工具行底下那条
 // 直播尾巴同一个组件）：一个跑三十分钟的构建，「◜ npm run build · 12:04」
 // 这一行回答不了用户唯一真正想问的问题——它卡住了没有。所以后台任务的输出
-// 也接上直播了（ADR-0194）；直播是 UI 增强不是事实，完整输出照旧随完成回注
+// 也接上直播了（ADR-0195）；直播是 UI 增强不是事实，完整输出照旧随完成回注
 // 那条 user_message 进日志。
 //
 // 行不可点：ready 的行意味着「结果还没进对话」，点它跳不到任何地方；等它进了
@@ -106,7 +106,7 @@ export function BackgroundTasksPanel() {
             {runs.map((r) => {
               const lines = linesOf(outputs[r.id] ?? "");
               // 跑完的按 completedAt 冻住;跑完但日志里没有 completedAt 的
-              // (ADR-0194 之前的旧日志)退回此刻的钟——不准,但比不显示强
+              // (ADR-0195 之前的旧日志)退回此刻的钟——不准,但比不显示强
               const elapsed = formatElapsed(r.startedAt, r.completedAt ?? now);
               return (
                 <li key={r.id}>
