@@ -2,7 +2,12 @@
 // 这两条规则散在四五个渲染点上过一次就会走样,所以它们只有这一份实现。
 
 import { describe, expect, it } from "vitest";
-import { displayIdentity, needsOnboarding, needsSignIn } from "../../src/renderer/src/lib/identity.js";
+import {
+  displayIdentity,
+  needsOnboarding,
+  needsSignIn,
+  showsSignInScreen,
+} from "../../src/renderer/src/lib/identity.js";
 import type { AccountInfo } from "../../src/shared/shellBridge.js";
 import type { MyProfile } from "../../src/shared/profile.js";
 
@@ -91,5 +96,30 @@ describe("needsSignIn（进门闸，ADR-0182）", () => {
   it("登录着 = 放行（记录标志迟到也不该把人弹出去）", () => {
     expect(needsSignIn(account, false)).toBe(false);
     expect(needsSignIn(account, true)).toBe(false);
+  });
+});
+
+describe("showsSignInScreen", () => {
+  // id 是 ADR-0187 加的（本机数据按 uid 分抽屉），这两条 fixture 在本分支
+  // 分叉之后才进的 AccountInfo —— 合 main 时补上
+  const signedIn: AccountInfo = { signedIn: true, id: "u1", email: "a@b.com", name: "A", avatarUrl: "" };
+  const out: AccountInfo = { signedIn: false, id: "", email: "", name: "", avatarUrl: "" };
+
+  it("已经进来的人正常放行", () => {
+    expect(showsSignInScreen(signedIn, true, false)).toBe(false);
+  });
+
+  it("重置走到设新密码这一步：**闸门按住不放** —— 人此刻已经是登录态了", () => {
+    expect(needsSignIn(signedIn, true), "光看登录态的话闸早抬了").toBe(false);
+    expect(showsSignInScreen(signedIn, true, true)).toBe(true);
+  });
+
+  it("设完或明确跳过（标记清掉）就放行", () => {
+    expect(showsSignInScreen(signedIn, true, false)).toBe(false);
+  });
+
+  it("没登录的人本来就在门外，多一条也不改变结论", () => {
+    expect(showsSignInScreen(out, false, false)).toBe(true);
+    expect(showsSignInScreen(out, false, true)).toBe(true);
   });
 });

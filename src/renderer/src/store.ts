@@ -55,6 +55,37 @@ import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../sha
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+
+/** 「发过重置邮件、还没设新密码」这笔记号。放 localStorage 而不是内存:
+    用户是在**浏览器**里点的链接,回到 app 中间可能隔着一次冷启动(issue #739) */
+const RESET_PENDING_KEY = "otter-password-reset-pending";
+/** 记号还带着「从哪儿发起的」:`gate` = 进门闸上那张登录卡,`1` = 账号页那张。
+    两者的收尾不一样 —— 前者要把闸门按住、让人在门外设完（issue #744），
+    后者本来就在 app 里，把界面换成登录屏才是意外。
+    **必须落盘**:点邮件链接那条路要经过浏览器,内存里的标记跨不过那次往返 */
+function resetPendingMark(): "gate" | "1" | null {
+  try {
+    const v = localStorage.getItem(RESET_PENDING_KEY);
+    return v === "gate" || v === "1" ? v : null;
+  } catch {
+    return null; // 隐私模式之类读不到:退化成"不弹",而不是崩
+  }
+}
+function resetPending(): boolean {
+  return resetPendingMark() !== null;
+}
+/** 这次重置是在进门闸上发起的 —— 收尾时闸门要按住不放 */
+function resetPendingAtGate(): boolean {
+  return resetPendingMark() === "gate";
+}
+function markResetPending(on: boolean, atGate = false): void {
+  try {
+    if (on) localStorage.setItem(RESET_PENDING_KEY, atGate ? "gate" : "1");
+    else localStorage.removeItem(RESET_PENDING_KEY);
+  } catch {
+    // 记不下就算了:代价只是少弹一次「设新密码」,用户仍可在账号页改
+  }
+}
 import { shareAllow } from "../../shared/shareGrant.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
@@ -377,6 +408,12 @@ interface ChatState {
   /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
       account.signedIn —— 后者冷启动时慢一个网络 RTT、断网时永远为假（ADR-0182） */
   authRecord: boolean;
+  /** 点过重置链接回来了、还没设新密码。**落 localStorage** —— 用户很可能是
+      在浏览器点完链接才回到 app，中间隔着一次冷启动，只放内存就丢了（issue #739） */
+  setPasswordOpen: boolean;
+  /** 「设新密码」这一步要不要把进门闸按住。只有从闸门那条路走的重置才为真 ——
+      账号页上的同一张登录卡不该把用户的界面换成登录屏（issue #744） */
+  holdGateForPasswordReset: boolean;
   /** 这个账号的用户级配置目录（`~/.mr-otto/accounts/<抽屉>/`，ADR-0187）。
       凡是界面上告诉用户「文件落在哪」「去哪手改」的地方都从这里取 —— 写死的
       `~/.mr-otto/...` 自分抽屉起指不到任何生效的文件。开机前是空串 */
@@ -573,10 +610,24 @@ interface ChatState {
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   /** 邮箱密码登录；成功走 onAccountChanged，失败落 error。回 true = 没抛错 */
-  signInWithPassword(email: string, password: string): Promise<boolean>;
+  /** 邮箱密码登录。`silent` 给「等确认邮件」那张弹窗轮询用：失败不写 store.error
+      —— 轮询期间每隔几秒失败一次是**预期**，照写的话右下角那张报错卡会一直弹 */
+  signInWithPassword(email: string, password: string, silent?: boolean): Promise<boolean>;
   /** 邮箱密码注册；"signed-in"|"confirm-email" 由 UI 提示，出错回 null（error 已置） */
-  signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email" | null>;
+  signUpWithPassword(email: string, password: string, name: string): Promise<"signed-in" | "confirm-email" | null>;
   signOut(): Promise<void>;
+  /** 清/设那条全局报错。右下角那张 Alert（components/AuthErrorAlert.tsx）
+      靠它自己走掉和被点掉；其余地方仍然只写不清 */
+  setError(error: string | null): void;
+  /** 忘记密码：发重置邮件。同时记一笔「在等重置」，等登录态回来时弹「设新密码」 */
+  /** 忘记密码：发一封重置邮件。`atGate` = 从进门闸那张卡发起的（issue #744） */
+  resetPassword(email: string, atGate?: boolean): Promise<boolean>;
+  /** 验证重置邮件里那串六位数。true = 验过（此刻已是登录态，SetPasswordDialog 跟着掀开；
+      从闸门发起的话闸门按住不放，判据是发信时落下的那笔记号） */
+  verifyRecoveryOtp(email: string, token: string): Promise<boolean>;
+  /** 设新密码。成了就把那笔记号抹掉 */
+  updatePassword(password: string): Promise<boolean>;
+  setSetPasswordOpen(open: boolean): void;
   /** 只弹文件夹选择框（新会话 composer 的文件夹按钮）。null = 用户取消 */
   pickWorkspace(): Promise<string | null>;
   /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
@@ -971,6 +1022,8 @@ export const useChat = create<ChatState>((set, get) => ({
   providerBalances: [],
   account: { signedIn: false, id: "", email: "", name: "", avatarUrl: "" },
   authRecord: false,
+  setPasswordOpen: false,
+  holdGateForPasswordReset: false,
   configRoot: "",
   myProfile: null,
   profileSetupOpen: false,
@@ -1531,27 +1584,27 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.signIn(provider); // 生效凭证是 onAccountChanged 推来的事件，不是这个 Promise
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
     }
   },
 
-  async signInWithPassword(email, password) {
-    set({ error: null });
+  async signInWithPassword(email, password, silent = false) {
+    if (!silent) set({ error: null });
     try {
       await window.otter.signInWithPassword(email, password); // 生效凭证走 onAccountChanged
       return true;
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      if (!silent) set({ error: bridgeErrorMessage(e) });
       return false;
     }
   },
 
-  async signUpWithPassword(email, password) {
+  async signUpWithPassword(email, password, name) {
     set({ error: null });
     try {
-      return await window.otter.signUpWithPassword(email, password);
+      return await window.otter.signUpWithPassword(email, password, name);
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
       return null;
     }
   },
@@ -1560,8 +1613,56 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.signOut();
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: bridgeErrorMessage(e) });
     }
+  },
+
+  setError(error) {
+    set({ error });
+  },
+
+  async resetPassword(email, atGate = false) {
+    set({ error: null });
+    try {
+      await window.otter.resetPassword(email);
+      markResetPending(true, atGate);
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  async verifyRecoveryOtp(email, token) {
+    set({ error: null });
+    try {
+      await window.otter.verifyRecoveryOtp(email, token);
+      // 验过就是登录态：onAccountChanged 带着 resetPending 把 SetPasswordDialog 掀开,
+      // 这里不用再做别的（进门闸同时抬起,忘记密码那张弹窗跟着卸载）
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  async updatePassword(password) {
+    set({ error: null });
+    try {
+      await window.otter.updatePassword(password);
+      markResetPending(false);
+      set({ setPasswordOpen: false, holdGateForPasswordReset: false });
+      return true;
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+      return false;
+    }
+  },
+
+  setSetPasswordOpen(open) {
+    if (!open) markResetPending(false);
+    // 关掉 = 「以后再说」,那是一次明确的选择,可以放行了
+    set({ setPasswordOpen: open, ...(open ? {} : { holdGateForPasswordReset: false }) });
   },
 
   async refreshFriends() {
@@ -1836,10 +1937,18 @@ export const useChat = create<ChatState>((set, get) => ({
           ? // 登录成功 = 从此有了登录记录（auth.json 刚被 supabase 写进去）。
             // 反过来 onChange 推 signedIn:false 只有登出一条路（restore/handleCallback
             // 失败都是静默的、不 onChange），所以这两边正好是闸门的开与关
-            { account, authRecord: true }
+            // 点重置链接回来的那一次也是"登录成功"——这里顺手把「该设新密码了」掀开
+            {
+              account,
+              authRecord: true,
+              setPasswordOpen: resetPending(),
+              holdGateForPasswordReset: account.signedIn && resetPendingAtGate(),
+            }
           : {
               account,
               authRecord: false,
+  setPasswordOpen: false,
+  holdGateForPasswordReset: false,
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
@@ -2114,6 +2223,11 @@ export const useChat = create<ChatState>((set, get) => ({
         ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
     );
+    // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
+    // 两个字段同一次 set:分两次的话中间会有一帧"登录了但闸没按住",app 闪一下
+    if (account.signedIn && resetPending()) {
+      set({ setPasswordOpen: true, holdGateForPasswordReset: resetPendingAtGate() });
+    }
     // 冷启动命中的那条会话可能正跑着（后台 turn、上一次是崩溃/重载）。推送这一路
     // 只在状态**变化**时开火，错过的那一拍靠这一问补（issue #548）
     if (info) void get().hydrateRuntime(info.sessionId);

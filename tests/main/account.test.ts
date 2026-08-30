@@ -126,6 +126,9 @@ function fakeClient(overrides?: { auth?: Partial<SupabaseLike["auth"]> }): Supab
         error: null,
       })),
       signInWithPassword: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
+      resetPasswordForEmail: vi.fn(async () => ({ error: null })),
+      verifyOtp: vi.fn(async () => ({ data: { user: null, session: {} }, error: null })),
+      updateUser: vi.fn(async () => ({ data: { user: null }, error: null })),
       signUp: vi.fn(async () => ({ data: { user: null, session: null }, error: null })),
       signOut: vi.fn(async () => ({ error: null })),
       getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
@@ -471,5 +474,86 @@ describe("AccountManager 邮箱密码", () => {
       "User already registered",
     );
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("signUpWithPassword 显式指定确认邮件的落点 —— 不把它交给远端的 site_url", async () => {
+    const client = fakeClient();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
+
+    await manager.signUpWithPassword("alice@example.com", "hunter22", "小獭");
+
+    expect(client.auth.signUp).toHaveBeenCalledWith({
+      email: "alice@example.com",
+      password: "hunter22",
+      options: { emailRedirectTo: authLandingUrl(), data: { name: "小獭" } },
+    });
+  });
+
+  it("没填名字也照样带落点 —— 空名字省掉的是 data，不是 emailRedirectTo", async () => {
+    const client = fakeClient();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
+
+    await manager.signUpWithPassword("alice@example.com", "hunter22");
+
+    expect(client.auth.signUp).toHaveBeenCalledWith({
+      email: "alice@example.com",
+      password: "hunter22",
+      options: { emailRedirectTo: authLandingUrl() },
+    });
+  });
+
+  it("verifyRecoveryOtp 验过 = 登录态：按 recovery 类型验，并把账号推出去", async () => {
+    const client = fakeClient({
+      auth: {
+        verifyOtp: vi.fn(async () => ({
+          data: {
+            user: { email: "alice@example.com", user_metadata: { name: "Alice" } },
+            session: {},
+          },
+          error: null,
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await manager.verifyRecoveryOtp("alice@example.com", "12345678");
+
+    expect(client.auth.verifyOtp).toHaveBeenCalledWith({
+      email: "alice@example.com",
+      token: "12345678",
+      type: "recovery",
+    });
+    expect(manager.getAccount()).toMatchObject({ signedIn: true, email: "alice@example.com" });
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("verifyRecoveryOtp 码错/过期 → throw，且**不调 onChange** —— 验失败不能看起来像登出", async () => {
+    const client = fakeClient({
+      auth: {
+        verifyOtp: vi.fn(async () => ({
+          data: { user: null, session: null },
+          error: { message: "Token has expired or is invalid" },
+        })),
+      },
+    });
+    const onChange = vi.fn();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange, client });
+
+    await expect(manager.verifyRecoveryOtp("alice@example.com", "00000000")).rejects.toThrow(
+      "Token has expired or is invalid",
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    expect(manager.getAccount().signedIn).toBe(false);
+  });
+
+  it("resetPassword：查无此人也不报错 —— 报了等于把「这邮箱注册过没有」做成公开接口", async () => {
+    const client = fakeClient();
+    const manager = new AccountManager({ openExternal: vi.fn(), onChange: vi.fn(), client });
+
+    await expect(manager.resetPassword("nobody@example.com")).resolves.toBeUndefined();
+    expect(client.auth.resetPasswordForEmail).toHaveBeenCalledWith("nobody@example.com", {
+      redirectTo: authLandingUrl(),
+    });
   });
 });

@@ -83,12 +83,13 @@ import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
 import { SignInScreen } from "./components/SignInScreen.js";
+import { SetPasswordDialog } from "./components/SetPasswordDialog.js";
 import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
 import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
 import { BypassSwitch, BypassToggle } from "./components/BypassSwitch.js";
 import { SessionSearchDialog, useSessionSearchHotkey } from "./components/SessionSearch.js";
-import { displayIdentity, needsSignIn } from "./lib/identity.js";
+import { displayIdentity, showsSignInScreen } from "./lib/identity.js";
 import { QuestionnaireCard } from "./components/QuestionnaireCard.js";
 import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
@@ -3301,6 +3302,8 @@ export function App() {
   // 进门闸的两个入参。都是低频字段（登录/登出才动），订在树根不会带来额外重渲染
   const account = useChat((s) => s.account);
   const authRecord = useChat((s) => s.authRecord);
+  /** 闸门抬不抬还多一条：从闸门发起的重置，要在门外把新密码设完（issue #744） */
+  const holdGateForPasswordReset = useChat((s) => s.holdGateForPasswordReset);
   const sessionId = useChat((s) => s.sessionId);
   const workspace = useChat((s) => s.workspace);
   const events = useChat((s) => s.events);
@@ -3477,7 +3480,7 @@ export function App() {
   // 早退在返回值这一层而不是提前 return：上面所有 hook 照常跑（含 boot），
   // 而下面那棵树（侧栏 / 会话 / ⌘K 搜索框 / 各种弹窗）一个都不挂 —— 没登录的人
   // 按 ⌘K 不该有东西浮在登录卡上面
-  if (needsSignIn(account, authRecord)) return <SignInScreen />;
+  if (showsSignInScreen(account, authRecord, holdGateForPasswordReset)) return <SignInScreen />;
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
@@ -3727,6 +3730,8 @@ export function App() {
           {main}
           {/* 首登引导:只在 profiles.onboarded_at 还是空的时候自己弹一次 */}
           <ProfileSetupDialog />
+          {/* 点完重置链接回来的人,进的是这棵树(已登录),所以它挂在这儿不在闸门里 */}
+          <SetPasswordDialog />
           {!isPackaged && <DevBadge />}
           {/* 首登引导第二步:上面那个关掉后,一把 key 都没配的新用户接着配模型
               (接力逻辑在 store 的 setProfileSetupOpen,盖章见 lib/modelSetup.ts) */}

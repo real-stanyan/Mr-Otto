@@ -16,6 +16,7 @@ import { createAuthStorage } from "./authStorage.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../shared/authConfig.js";
 import { authLandingUrl } from "../shared/edgeConfig.js";
 import type { AccountInfo } from "../shared/shellBridge.js";
+import { NAME_MAX } from "../shared/profile.js";
 
 export type { AccountInfo };
 
@@ -38,8 +39,31 @@ export type SupabaseLike = {
     signUp(args: {
       email: string;
       password: string;
+      options?: {
+        // `options.data` 进 auth.users 的 raw_user_meta_data —— profiles 的插入触发器
+        // (migration 0007 的 handle_auth_user_upsert)正是从那里取 name
+        data?: Record<string, string>;
+        // 确认邮件里那条链接落到哪。不传的话由项目的 site_url 说了算 —— 一个
+        // 远端配置字段，改它不需要动代码，也就意味着**没人保证它指着我们**
+        emailRedirectTo?: string;
+      };
     }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
     signOut(): Promise<{ error: unknown }>;
+    // 忘记密码:发重置邮件。redirectTo 必须在 Supabase 的 uri_allow_list 里,
+    // 否则链接点开会被打回 site_url(实测 2026-08-29:落地页那条在名单里)
+    resetPasswordForEmail(
+      email: string,
+      options: { redirectTo: string },
+    ): Promise<{ error: unknown }>;
+    // 重置邮件里那串六位数(邮件模板的 `{{ .Token }}`)。验过 = 登录 ——
+    // recovery OTP 换到的是一个真 session,和点链接那条路殊途同归
+    verifyOtp(args: {
+      email: string;
+      token: string;
+      type: "recovery";
+    }): Promise<{ data: { user: SupabaseUserLike; session: unknown }; error: unknown }>;
+    // 改密码。要有 session —— 重置链接换来的那个就算
+    updateUser(attrs: { password: string }): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
     // 冷启动恢复用：向 supabase 发一次真实校验（不是读本地 getSession），
     // 用 authStorage 里恢复出来的 session 换一个当下有效的 user；离线/过期时 user 为 null。
     getUser(): Promise<{ data: { user: SupabaseUserLike }; error: unknown }>;
@@ -171,8 +195,31 @@ export class AccountManager {
    * - "confirm-email"：服务端要求邮箱验证（user 有、session 无），去邮箱点完
    *   确认链接后回来用密码登录；此时**不是**登录态，不触发 onChange。
    */
-  async signUpWithPassword(email: string, password: string): Promise<"signed-in" | "confirm-email"> {
-    const { data, error } = await this.client.auth.signUp({ email, password });
+  /**
+   * 邮箱密码注册。`name` 是注册表单上填的用户名（issue #742）。
+   *
+   * 它走 `options.data` 进 auth.users 的 `raw_user_meta_data`，profiles 那一行由
+   * migration 0007 的 `handle_auth_user_upsert` 触发器在 insert 时取它填 name ——
+   * 所以**不需要**等登录成功再补写一次 profiles（注册那一刻根本还没有 session）。
+   * 空名字就不传：触发器的 coalesce 会退回邮箱前缀，比落一个空串强。
+   *
+   * 落库前按 NAME_MAX 截断：渲染层那边是 maxLength，但 IPC 是可以被绕过的边界，
+   * 长度这条规矩得在**两边**都成立（shared/profile.ts 的注释写的就是这个分工）。
+   */
+  async signUpWithPassword(email: string, password: string, name = ""): Promise<"signed-in" | "confirm-email"> {
+    const trimmed = name.trim().slice(0, NAME_MAX);
+    const { data, error } = await this.client.auth.signUp({
+      email,
+      password,
+      options: {
+        // 显式指到落地页,和 OAuth / 重置密码同一条路(issue #743)。
+        // 不传的话 Supabase 退回项目的 `site_url` —— 那是个远端配置字段,
+        // 而这条链接最终要唤起的是**我们的** app:一条自己必须处理的深链,
+        // 落点不该由一个改起来不用发版、也没人盯着的远端设置决定。
+        emailRedirectTo: REDIRECT_TO,
+        ...(trimmed === "" ? {} : { data: { name: trimmed } }),
+      },
+    });
     if (error) {
       throw new Error(errorMessage(error));
     }
@@ -193,6 +240,48 @@ export class AccountManager {
     }
     this.account = toAccountInfo(data.user);
     this.onChange(this.account);
+  }
+
+  /**
+   * 忘记密码:发一封重置邮件（issue #739）。
+   *
+   * 落点是 OAuth 那张落地页（`authLandingUrl()`）—— 和登录回调同一条路：
+   * 浏览器渲染不了 `mrotto://`，落地页给流程一个看得见的终点，再由页内 JS
+   * 转发 code 唤起 app。用户点完链接就**已经是登录态**（recovery code 换到了
+   * session），所以「重置」这件事在 app 里剩下的只有「设个新密码」。
+   *
+   * 不因「查无此人」而报错是**故意的**：那等于把「这个邮箱注册过没有」做成
+   * 一个人人可查的接口。supabase 本身也这么设计，这里不去拆它。
+   */
+  async resetPassword(email: string): Promise<void> {
+    const { error } = await this.client.auth.resetPasswordForEmail(email, { redirectTo: REDIRECT_TO });
+    if (error) throw new Error(errorMessage(error));
+  }
+
+  /**
+   * 验证重置邮件里那串六位数（issue #741）。
+   *
+   * 为什么要有这条路，而不是只让人点链接：**点链接会跳出这个 app**。用户在浏览器里
+   * 完成一半流程，再靠深链跳回来 —— 中间隔着默认浏览器、隔着系统的「要打开 Mr Otto 吗」
+   * 那一问，隔着一次可能的冷启动。验证码把整段流程留在窗口里。
+   *
+   * 验过就是登录态（recovery OTP 换到真 session），所以这里和 signInWithPassword
+   * 一样推 onChange —— 剩下的「设个新密码」由 SetPasswordDialog 接手。
+   *
+   * 前提：Supabase 的 Reset Password 邮件模板里必须有 `{{ .Token }}`。默认模板只有
+   * 链接，验证码虽然照样签发、但用户看不见（见 issue #741 里那段实测）。
+   */
+  async verifyRecoveryOtp(email: string, token: string): Promise<void> {
+    const { data, error } = await this.client.auth.verifyOtp({ email, token, type: "recovery" });
+    if (error) throw new Error(errorMessage(error));
+    this.account = toAccountInfo(data.user);
+    this.onChange(this.account);
+  }
+
+  /** 设新密码。调用方保证此刻有 session（重置链接换来的那个就算） */
+  async updatePassword(password: string): Promise<void> {
+    const { error } = await this.client.auth.updateUser({ password });
+    if (error) throw new Error(errorMessage(error));
   }
 
   async signOut(): Promise<void> {
