@@ -1451,6 +1451,10 @@ void app.whenReady().then(() => {
         log: (m) => console.warn(m),
       })
     : null;
+  // A 的服务清单一变就给所有 host 通道补推授权（issue #792）：grant 帧不再是
+  // 握手那一刻的一锤子快照。挂在这里而不是并进上面那条 onChange——proxy 在
+  // 那条注册之后才造出来，mcpHub.onChange 支持多个监听者
+  if (proxy) mcpHub.onChange(() => proxy.refreshGrants());
   // 登录那一刻把已授权好友的房间开起来（没登录时 wsTransport 不连，开了也白开）。
   // 冷启动时如果已经是登录态，AccountManager.restore() 会走同一条 onChange
   proxyResumeNow = proxy ? () => proxy.resume() : null;

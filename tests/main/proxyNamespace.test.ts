@@ -54,7 +54,8 @@ describe("proxyNamespace（代理来的 MCP 按好友加前缀，issue #670）",
     const [srv] = viewProxyServers(ch);
     expect(srv?.id).toBe("proxy:3f2a1b9c:shopify");
     expect(srv?.name).toBe(proxyServerName(A_UID, "shopify"));
-    expect(srv?.name).toBe("shopify@3f2a1b9c");
+    // 下划线不是 '@'（issue #792）：'@' 过不了 safe()，每把工具都会挂指纹
+    expect(srv?.name).toBe("shopify_3f2a1b9c");
     expect(srv?.tools[0]?.description).toContain("小明");
     expect(srv?.tools[0]?.description).toContain("凭证");
     // 原说明留着——模型还得知道这把刀是干嘛的
@@ -132,7 +133,8 @@ describe("shareGrantNoteText（issue #788）", () => {
     const { shareGrantNoteText } = await import("../../src/main/proxyNamespace.js");
     const t = shareGrantNoteText("Stan Yan", "32c6716a-2215-4fef-8865-7da11e0feab9", ["square"]);
     expect(t).toContain("mcp__square__*");           // 历史里的名字
-    expect(t).toContain("mcp__square_32c6716a__");   // 本机借来的前缀（uid 短标签）
+    expect(t).toContain("`mcp__square_32c6716a__*`"); // 本机前缀——**精确**形状，
+    // 没有指纹尾巴（#792 前是 TOOL_43cd 这样的写歪形态）
     expect(t).toContain("mcp_configure");            // 劝阻那句在
     expect(t).toContain("Stan Yan");
   });
