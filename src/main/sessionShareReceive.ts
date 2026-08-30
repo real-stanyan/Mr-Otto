@@ -7,6 +7,7 @@ import {
   retargetForImport,
 } from "../shared/sessionPackage.js";
 import { decodePackage } from "../shared/sessionPackageCodec.js";
+import type { FriendsResult } from "../shared/friends.js";
 
 /** 接收端要的外部能力（index.ts 用真 Storage/AttachmentStore/EventStore 填） */
 export interface ShareReceiveDeps {
@@ -21,9 +22,13 @@ export interface ShareReceiveDeps {
   newSessionId: () => string;
 }
 
-export type ShareReceiveResult =
-  | { ok: true; sessionId: string; eventCount: number; missingAttachments: number }
-  | { ok: false; message: string };
+/** 与 shellBridge.importSharedSession 声明的 FriendsResult 同形（成功臂包在 value 里）。
+    这里曾是平铺的 { ok, sessionId, … }：ipcMain.handle 这道缝没有类型，渲染层照桥上
+    声明读 r.value.sessionId，读到 undefined 抛 TypeError，两个导入按钮永远转圈（#783）。
+    形状由 tests/main/sessionShare.test.ts 的「形状钉」用例钉死 */
+export type ShareReceiveResult = FriendsResult<{
+  sessionId: string; eventCount: number; missingAttachments: number;
+}>;
 
 /** 把一个会话包导入成接收方机器上的新 fork 会话。
     workspace 用接收方选定的目录重填（剥白的包没有围栏，这一步不可省，
@@ -33,6 +38,12 @@ export async function importSharedSession(
   deps: ShareReceiveDeps,
   args: { prefix: string; workspace: string }
 ): Promise<ShareReceiveResult> {
+  // 围栏不能是空的：fillWorkspaceOnImport 会把它原样填进 session_created，
+  // 而 resumeSession 见到没有 workspace 的第 0 条直接拒绝恢复——空串走到底
+  // 就是一个点不开的死会话（#783 下半）。先拒，别铸
+  if (!args.workspace) {
+    return { ok: false, message: "没有可用的工作目录——先选一个默认工作文件夹再导入" };
+  }
   // 下载
   let files: Map<string, Uint8Array> | null;
   try {
@@ -67,5 +78,8 @@ export async function importSharedSession(
     return { ok: false, message: `导入失败：${e instanceof Error ? e.message : String(e)}` };
   }
 
-  return { ok: true, sessionId: newSessionId, eventCount: pkg.events.length, missingAttachments: missing };
+  return {
+    ok: true,
+    value: { sessionId: newSessionId, eventCount: pkg.events.length, missingAttachments: missing },
+  };
 }
