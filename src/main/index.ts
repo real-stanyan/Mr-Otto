@@ -65,7 +65,10 @@ import { loadExecPolicy, appendAllowRule, removeExecRule } from "./execPolicySto
 import type { ExecRule } from "../shared/execPolicy.js";
 import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
-import { createLocalWorld } from "../world/localWorld.js";
+import { createLocalWorld, groupAlive } from "../world/localWorld.js";
+import { LiveGroupRegistry } from "../world/liveGroups.js";
+import { diffResidue, type ResidueItem } from "../shared/residue.js";
+import { pendingResidue } from "../session/residueProjection.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -732,6 +735,14 @@ void app.whenReady().then(() => {
   // 它是 resumeSession 那道"绝不重建第二个 agent"守卫的判据（见那里的注释）。
   // 上一轮 app 留下的子会话不在里面 —— 它们本来就该按崩溃修复重建（issue #141）
   const spawnedThisRun = new Set<string>();
+  // 进程组的存活登记表（issue #759）：一个 app 一张表——进程组是 app 级资源，
+  // 不随 session 分家（同 terminals/browsers 那几个 hub 的层级）。装配时随
+  // createAgent 传下去，退出时 sweepAll 收尸
+  const liveGroups = new LiveGroupRegistry();
+  // 已经落过 residue_detected 的进程组（本次运行内）。turn 收口每轮都问一次
+  // 登记表，靠它去重——比每轮重放整份日志便宜。app 重启后它是空的，而那些
+  // **落了盘**的残留由启动重放（bootInfo 的 pendingResidue）兜住，不会漏报
+  const reportedEscaped = new Set<number>();
   let currentSessionId: string | null = null;
   // 岛只跟主窗当前会话。主进程存这一个 id:helper ready 时补一次快照,变化时喂投影器
   let activeSessionId: string | null = null;
@@ -1456,21 +1467,53 @@ void app.whenReady().then(() => {
    */
   const sessionMcp = proxy ? mergeProxyMcp(mcpHub, () => proxy.activeProxies()) : mcpHub;
 
+  /** 上次退出时没清干净的残留（issue #759）：全部未归档会话的
+      residue_detected 减 residue_cleaned 差集，逐条探活后剩下的那些。
+      日志是唯一事实来源——"进程还活着吗"重放不出来，所以差集之后还要现探一次。
+      只探进程组（groupAlive 是同步的一次 kill(pgid, 0)）；模拟器/端口原样留着:
+      现拍一次 simctl/lsof 是异步的,而 bootInfo 是同步的、被三处调用,为一行
+      可能陈旧的模拟器把整条 boot 链改成异步不划算——多显示一条让用户手动清掉
+      的行,比漏报强。
+      按类型取事件而不是 store.load 整份日志：残留事件天然稀疏,而
+      (session_id, type, seq) 上有索引；load 整份会把每个会话的全部 JSON 都
+      解一遍,开机路径上付不起 */
+  const pendingResidueNow = (): ResidueItem[] => {
+    const out: ResidueItem[] = [];
+    for (const s of store.sessions()) {
+      if (s.archived) continue;
+      // 两类事件按 seq 归并回时间序：pendingResidue 是按顺序消费的
+      // （detected 落进表、cleaned 从表里删），顺序错了差集就错
+      const evs = [
+        ...store.eventsOfType(s.sessionId, "residue_detected"),
+        ...store.eventsOfType(s.sessionId, "residue_cleaned"),
+      ].sort((a, b) => a.seq - b.seq);
+      for (const item of pendingResidue(evs)) {
+        if (item.detector === "process_groups" && !groupAlive(Number(item.id))) continue;
+        out.push(item);
+      }
+    }
+    return out;
+  };
+
   const bootInfo = (): BootInfo | null => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
-    return agent
-      ? {
-          sessionId: agent.sessionId,
-          model: agent.model,
-          workspace: agent.workspace,
-          events: store.load(agent.sessionId),
-          dbPath,
-          approvalMode: agent.approvalMode,
-          thinking: agent.thinking,
-          toolDefs: agent.toolDefs,
-          isPackaged: app.isPackaged,
-        }
-      : null;
+    if (!agent) return null;
+    // 残留清单是 app 级的（进程组/模拟器/端口都不属于哪个会话），但 BootInfo
+    // 是渲染层开机拿到的唯一一份快照——搭它的车比另开一条频道省一整套接线
+    const residue = pendingResidueNow();
+    return {
+      sessionId: agent.sessionId,
+      model: agent.model,
+      workspace: agent.workspace,
+      events: store.load(agent.sessionId),
+      dbPath,
+      approvalMode: agent.approvalMode,
+      thinking: agent.thinking,
+      toolDefs: agent.toolDefs,
+      isPackaged: app.isPackaged,
+      // 条件展开而不是无条件写：没有残留时不该凭空多一个空数组字段
+      ...(residue.length > 0 ? { pendingResidue: residue } : {}),
+    };
   };
 
   // 审批卡的载荷只在这里拼一次:实时推送(push.approvalRequest)和岛窗补快照
@@ -1569,6 +1612,11 @@ void app.whenReady().then(() => {
       // 同理给 history：不给的话 world.history 是 undefined，session_search
       // 不会出现在 TOOL_NAMES 里——固定假 id 就够，这条装配永远不会真跑一轮
       history: createHistoryCapability(probeStore, () => "probe"),
+      // 同理给 liveGroups（issue #759）：不给的话 world.residue 是 undefined，
+      // residue_audit 不会出现在 TOOL_NAMES 里——于是 subagent 定义里写的
+      // "residue_audit" 会被当成不认识的工具名滤掉、设置页的工具勾选框里也
+      // 没有它。给的是真的那张表（探针永远不会真跑一轮，登记不到任何东西）
+      liveGroups,
       // 同理给 skills（ADR-0122）：不给的话 skill 这把刀根本不挂，于是
       // skill ∉ TOOL_NAMES，于是 subagents.ts 解析定义时把用户写的 `skill`
       // 当成不认识的工具名滤掉、设置页的工具勾选框里也没有它——D9 说的
@@ -1787,7 +1835,9 @@ void app.whenReady().then(() => {
     // 里（cwd = 工作区、凭据环境变量已剥、stdin 递 JSON 上下文），不借
     // agent 的 world：那个被 engine 按调用包了直播/信号层，钩子输出会被
     // 误标成命令输出。getter 现读 hooks.json（热更新，与 execPolicy 同款）
-    const hookWorld = createLocalWorld({ root: args.workspace });
+    // 钩子命令也可能起后台进程，所以它也登记进同一张表（issue #759）：
+    // 一个 app 一张表，谁起的不重要,重要的是退出时收得干净
+    const hookWorld = createLocalWorld({ root: args.workspace, liveGroups });
     const userToolHooks = () => {
       const loaded = loadUserHooks(userHooksPath);
       if (loaded.error) console.warn(`[userHooks] ${loaded.error}`);
@@ -1835,6 +1885,10 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: accountConfig,
+      // 进程组登记表（issue #759）：只挂主会话这条装配路径。活着的子 agent 复用
+      // 父的 world 实例，residue 能力跟着一起继承；重建出来的子会话
+      // （createChildAgent）新造 LocalWorld，刻意没有——同 history/simulator 的取舍
+      liveGroups,
       memory: readMemoryFiles(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
@@ -1933,6 +1987,29 @@ void app.whenReady().then(() => {
     // bash 对它们拒绝 run_in_background（没人管的结果不该被承诺"会注回"）
     self.backgroundTasks.onCompletion((c) => handleBackgroundDone(self.sessionId, c));
     self.backgroundTasks.onStart((s) => handleBackgroundStarted(self.sessionId, s));
+    // 残留基线（issue #759）：新会话开工前拍一张现场照，归档时拿它做全量 diff。
+    // 只在新建时拍，resume 不拍——基线要覆盖会话的**一生**，恢复时重拍等于把
+    // 上一段跑出来的残留划进"本来就有"。异步拍（snapshot 要跑 simctl/lsof）、
+    // 失败静默：审计是旁路，不该拖住开工，更不该让建会话失败。
+    // 落事件照 handleBackgroundStarted 那一套：ignorable + send(CHANNELS.event)
+    if (!args.resumeSessionId) {
+      const sid = self.sessionId;
+      void self.world.residue
+        ?.snapshot()
+        .then((snapshot) => {
+          send(
+            CHANNELS.event,
+            store.append({
+              sessionId: sid,
+              ts: Date.now(),
+              type: "residue_baseline",
+              ignorable: true, // 模型不消费，旧版本跳过照常重放
+              snapshot,
+            })
+          );
+        })
+        .catch(() => {});
+    }
     return self;
   };
 
@@ -2867,6 +2944,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.archiveSession, (_e, sessionId: string) => {
     if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能归档会话");
     if (!store.has(sessionId)) throw new Error("会话不存在");
+    // 残留审计能力先取住（issue #759）：下面那句 agents.delete 之后就再也拿不到
+    // 这个会话的 world 了，而全量 diff 要现拍一张快照
+    const residueCap = agents.get(sessionId)?.world.residue;
     // 归档（ADR-0087）= 收起，不是删除：日志一字不动，只落一条状态事件。
     // 活资源照删除的清单注销——归档的会话不该继续占着 pty/浏览器/agent，
     // 恢复后走 resumeSession 的正常懒加载路径重建
@@ -2879,6 +2959,36 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended);
     fleetSessionsCache = null; // 会话表形状变了,岛不吃 1s 延迟
     pushFleet();
+    // 归档全量 diff（issue #759）：归档 = 这个会话的一生结束，正是"它一共留下
+    // 了什么"唯一算得清的时刻。基线 = 日志里最后一条 residue_baseline，现场 =
+    // 此刻快照，加上还在出走的进程组。异步 + 失败静默：审计不该拖住归档，更不
+    // 该让归档失败。推给渲染层走的就是上面那条 send(CHANNELS.event) 直播通道
+    // （事件即推送，不另开频道）——晚一拍到，渲染层照收
+    const baseline = store.lastOfType(sessionId, "residue_baseline");
+    if (residueCap && baseline?.type === "residue_baseline") {
+      const before = baseline.snapshot;
+      void residueCap
+        .snapshot()
+        .then((now) => {
+          const items = diffResidue(
+            before,
+            now,
+            liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
+          );
+          if (items.length === 0) return;
+          send(
+            CHANNELS.event,
+            store.append({
+              sessionId,
+              ts: Date.now(),
+              type: "residue_detected",
+              ignorable: true, // 模型不消费，旧版本跳过照常重放
+              items,
+            })
+          );
+        })
+        .catch(() => {});
+    }
   });
 
   ipcMain.handle(CHANNELS.unarchiveSession, (_e, sessionId: string) => {
@@ -3120,6 +3230,10 @@ void app.whenReady().then(() => {
       pendingAsks.delete(sessionId);
       send(CHANNELS.turnStatus, { sessionId, status: "idle" });
       feedIsland({ kind: "turnStatus", update: { sessionId, status: "idle" }, now: Date.now() });
+      // 树外残留查一次（issue #759）。放在 finally 里而不是 completed 分支：
+      // 一个跑到一半被停掉的 turn 更可能留下活着的进程组，恰恰不该漏检。
+      // compact 那条 finally 刻意不接：它是一次纯模型调用，起不了进程组
+      reportEscapedGroups(sessionId);
     }
     // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
     // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
@@ -3213,6 +3327,36 @@ void app.whenReady().then(() => {
         ignorable: true, // 模型不消费，旧版本跳过照常重放
         taskId: s.id,
         cmd: s.cmd,
+      })
+    );
+  }
+
+  /** turn 收口时问一次进程组登记表（issue #759）：shell 已经死了、组里却还有
+      活口 = 泄漏出走的树外残留。落 residue_detected 记账，**不杀**——owned 的
+      静默清只发生在退出那一刻（before-quit 的 sweepAll），turn 之间杀掉用户
+      自己起的 dev server 是误杀。
+      去重靠 reportedEscaped 那个内存集合而不是重放日志：同一个 pgid 每轮都还
+      在登记表里，不去重的话每个 turn 都重复落一条。
+      形状与通道照 handleBackgroundStarted：ignorable + send(CHANNELS.event) */
+  function reportEscapedGroups(sessionId: string): void {
+    if (!agents.has(sessionId)) return;
+    const fresh = liveGroups.escaped().filter((g) => !reportedEscaped.has(g.pgid));
+    if (fresh.length === 0) return;
+    for (const g of fresh) reportedEscaped.add(g.pgid);
+    send(
+      CHANNELS.event,
+      store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "residue_detected",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        items: fresh.map((g) => ({
+          detector: "process_groups" as const,
+          id: String(g.pgid),
+          label: g.cmd,
+          confidence: "owned" as const,
+          cleanupHint: `kill 进程组 ${g.pgid}`,
+        })),
       })
     );
   }
@@ -3491,6 +3635,11 @@ void app.whenReady().then(() => {
     simInput?.dispose();
     // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
     proxy?.closeAll();
+    // 自己登记过的进程组静默收尸（issue #759）：登记表里的每一个都是本 app 起的,
+    // 没有误杀的可能,所以不弹窗、不问人（同上面 terminals.killAll 的立场）。
+    // 没被登记表覆盖的树外残留不在这里杀——它们已经落了 residue_detected,
+    // 下次启动由 bootInfo 的 pendingResidue 重放出来交给用户处置
+    liveGroups.sweepAll();
     store.close();
   });
 });

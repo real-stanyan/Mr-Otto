@@ -7,6 +7,7 @@
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
 import type { DiffViewLine } from "./diffView.js";
+import type { ResidueItem } from "./residue.js";
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
@@ -158,6 +159,11 @@ export interface BootInfo {
   toolDefs: ToolDefinition[];
   /** 是否打包版（生产）。dev 实例 = false，渲染层拿它挂右下角 dev 角标 */
   isPackaged: boolean;
+  /** 上次退出时没清干净的残留（issue #759）：日志里 residue_detected 减
+      residue_cleaned 的差集，再逐条探活后剩下的那些。UI 第一眼弹「上次残留」。
+      **可选** = 旧渲染层零改动（同 preview / fromAgent 的先例）；空/没有残留
+      时缺席，不发一个空数组 */
+  pendingResidue?: ResidueItem[];
 }
 
 export type TurnStatus = "idle" | "running";
