@@ -71,6 +71,21 @@ describe("ShareGrantDialog", () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it("服务行画各自的 logo：目录认得的用品牌图标，认不得的首字母色块兜底（#786）", () => {
+    render(
+      <ShareGrantDialog
+        target={{ ...target, servers: ["square", "google-ads"] }}
+        online
+        onCancel={vi.fn()}
+        onConfirm={vi.fn(async () => true)}
+      />
+    );
+    // square 是纯黑标（MONO_ICONS）→ mask 那一档
+    expect(screen.getByTestId("mcp-icon-mono")).toBeInTheDocument();
+    // google-ads 目录里没有 → 首字母色块，不再是统一的钥匙图标
+    expect(screen.getByText("G")).toBeInTheDocument();
+  });
+
   it("target 为 null 时什么都不画（没在问）", () => {
     const { container } = render(
       <ShareGrantDialog target={null} online onCancel={() => {}} onConfirm={async () => true} />
