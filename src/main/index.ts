@@ -67,7 +67,7 @@ import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { LiveGroupRegistry } from "../world/liveGroups.js";
-import { diffResidue, type ResidueItem } from "../shared/residue.js";
+import { diffResidue, mergeResidue, type ResidueItem, type ResidueSnapshot, type CleanupResult } from "../shared/residue.js";
 import { pendingResidue } from "../session/residueProjection.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
@@ -1522,6 +1522,35 @@ void app.whenReady().then(() => {
     return out;
   };
 
+  /** residueList/residueClean 共用的"此刻可见清单"（issue #759）：现查
+      （baseline diff 现拍现算）与日志重放（pendingResidue）合并，现查优先
+      （mergeResidue，issue #759 Task 7）——重放条目是落盘那一刻的旧快照，
+      现查是这一刻的真实现场，两边打架时以看得见的那份为准。
+      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
+  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
+    const residueCap = agents.get(sessionId)?.world.residue;
+    if (!residueCap) return [];
+    const baseline = store.lastOfType(sessionId, "residue_baseline");
+    const before: ResidueSnapshot =
+      baseline?.type === "residue_baseline" ? baseline.snapshot : { ts: 0, simulators: [], ports: [] };
+    const now = await residueCap.snapshot();
+    const current = diffResidue(
+      before,
+      now,
+      liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
+    );
+    // 只看这一个会话的 detected/cleaned（本方法是"这个会话此刻的清单"，
+    // 不是 pendingResidueNow 那种 app 级全量扫描）
+    const evs = [
+      ...store.eventsOfType(sessionId, "residue_detected"),
+      ...store.eventsOfType(sessionId, "residue_cleaned"),
+    ].sort((a, b) => a.seq - b.seq);
+    const replayed = pendingResidue(evs).filter(
+      (item) => item.detector !== "process_groups" || groupStillIs(Number(item.id), item.label)
+    );
+    return mergeResidue(current, replayed);
+  };
+
   // 「上次退出没清的残留」只报一次（issue #759）：bootInfo() 有三个调用方
   // （boot / startSession / resumeSession），而这个字段的语义是**上次**退出
   // 留下的，不是「此刻还有什么」——不设这道闸的话每切一次会话就重弹一遍同一
@@ -2086,6 +2115,36 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.liveBackgroundTasks, (_e, sessionId: string) =>
     agents.get(sessionId)?.backgroundTasks.live() ?? []
   );
+
+  // 当前会话此刻的残留清单（issue #759，residueListNow 见上）
+  ipcMain.handle(CHANNELS.residueList, (_e, sessionId: string) => residueListNow(sessionId));
+
+  // 清理选中项：重新算一遍清单（不信渲染层传来的 item 内容），只挑 id 匹配的
+  // 逐项 cleanup，每项落 residue_cleaned——渲染层不能凭空构造一条清单里没有
+  // 的残留物去"清理"（那会调用 cleanup(伪造 item)，行为未定义）
+  ipcMain.handle(CHANNELS.residueClean, async (_e, sessionId: string, itemIds: string[]): Promise<CleanupResult[]> => {
+    const residueCap = agents.get(sessionId)?.world.residue;
+    if (!residueCap) return [];
+    const visible = await residueListNow(sessionId);
+    const targets = visible.filter((item) => itemIds.includes(item.id));
+    const results: CleanupResult[] = [];
+    for (const item of targets) {
+      const result = await residueCap.cleanup(item);
+      results.push(result);
+      send(
+        CHANNELS.event,
+        store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "residue_cleaned",
+          ignorable: true, // 模型不消费，旧版本跳过照常重放
+          item,
+          result,
+        })
+      );
+    }
+    return results;
+  });
 
   // 只读地取一个会话的全部事件，不建 agent、不切视图（resumeSession 那一套围栏
   // 重建在这里都不需要）——时间线上的 subagent 卡问一眼子会话的事实(步数/token)

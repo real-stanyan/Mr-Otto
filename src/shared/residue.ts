@@ -116,3 +116,18 @@ export function diffResidue(
 
   return result;
 }
+
+/**
+ * mergeResidue — 纯函数（issue #759），合并"此刻现查"清单与"日志重放"清单，
+ * 按 key = detector:id 去重，现查优先。
+ *
+ * 为什么现查优先：replayed（pendingResidue 重放出来的）是上次落盘时刻的快照
+ * （label/confidence 可能已经过期），而 current（diffResidue 现拍现算）是这一刻
+ * 的真实现场——同一个残留物两边都有记录时，以看得见的那份为准，不是谁先谁后。
+ */
+export function mergeResidue(current: ResidueItem[], replayed: ResidueItem[]): ResidueItem[] {
+  const merged = new Map<string, ResidueItem>();
+  for (const item of replayed) merged.set(`${item.detector}:${item.id}`, item);
+  for (const item of current) merged.set(`${item.detector}:${item.id}`, item); // 现查覆盖同 key
+  return [...merged.values()];
+}

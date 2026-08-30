@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffResidue, type ResidueSnapshot } from "../../src/shared/residue.js";
+import { diffResidue, mergeResidue, type ResidueSnapshot, type ResidueItem } from "../../src/shared/residue.js";
 
 const base: ResidueSnapshot = {
   ts: 1000,
@@ -61,5 +61,39 @@ describe("diffResidue", () => {
     // 不应该有独立的 process_groups 条目（被去重了）
     const groupItem = items.find((i) => i.detector === "process_groups" && i.id === "555");
     expect(groupItem).toBeUndefined();
+  });
+});
+
+describe("mergeResidue", () => {
+  it("按 detector:id 去重——不同 key 的条目全部保留", () => {
+    const current: ResidueItem[] = [
+      { detector: "ports", id: "port:3000", label: "next-server:3000", confidence: "owned", cleanupHint: "kill 进程组 555" },
+    ];
+    const replayed: ResidueItem[] = [
+      { detector: "simulators", id: "AAA", label: "iPhone 17 (iOS 26.5)", confidence: "suspected", cleanupHint: "simctl shutdown AAA" },
+    ];
+    const merged = mergeResidue(current, replayed);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((i) => `${i.detector}:${i.id}`).sort()).toEqual(["ports:port:3000", "simulators:AAA"]);
+  });
+
+  it("同 key 冲突时现查（current）覆盖重放（replayed）", () => {
+    const stale: ResidueItem = {
+      detector: "process_groups",
+      id: "555",
+      label: "npx next dev（旧标签）",
+      confidence: "owned",
+      cleanupHint: "kill 进程组 555",
+    };
+    const fresh: ResidueItem = {
+      detector: "process_groups",
+      id: "555",
+      label: "npx next dev（现查最新）",
+      confidence: "owned",
+      cleanupHint: "kill 进程组 555",
+    };
+    const merged = mergeResidue([fresh], [stale]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(fresh);
   });
 });
