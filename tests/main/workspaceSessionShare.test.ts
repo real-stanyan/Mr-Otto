@@ -181,10 +181,14 @@ describe("unpublishSession（Task 9）：删行 + deletePackage", () => {
       from: (table: string) => {
         deletedTable = table;
         return {
+          // deleteSessionRow 现在链 .select("id") 取行数证据（审查 round 1）：
+          // 假货照真实链子补上 select，回非空数组代表"真删了一行"
           delete: () => ({
-            eq: async (_col: string, val: string) => {
+            eq: (_col: string, val: string) => {
               deletedRowId = val;
-              return { data: null, error: null };
+              return {
+                select: async (_cols: string) => ({ data: [{ id: val }], error: null }),
+              };
             },
           }),
         };
@@ -224,7 +228,9 @@ describe("unpublishSession（Task 9）：删行 + deletePackage", () => {
     const client = {
       from: () => ({
         delete: () => ({
-          eq: async () => ({ data: null, error: { message: "rls", code: "42501" } }),
+          eq: () => ({
+            select: async () => ({ data: null, error: { message: "rls", code: "42501" } }),
+          }),
         }),
       }),
       storage: {
@@ -242,14 +248,41 @@ describe("unpublishSession（Task 9）：删行 + deletePackage", () => {
     expect(removeCalled).toBe(false);
   });
 
+  it("删行 0 行生效(RLS 静默拦截,不是自己发布的行):归一成 FriendsResult,不抛,也不再往下删包（审查 round 1）", async () => {
+    let removeCalled = false;
+    const client = {
+      from: () => ({
+        delete: () => ({
+          eq: () => ({
+            select: async () => ({ data: [], error: null }),
+          }),
+        }),
+      }),
+      storage: {
+        from: () => ({
+          list: async () => ({ data: [], error: null }),
+          remove: async () => {
+            removeCalled = true;
+            return { error: null };
+          },
+        }),
+      },
+    } as unknown as SupabaseClient;
+    const r = await unpublishSession(client, "row-1", "pub-uid/pkg-1");
+    expect(r).toEqual({ ok: false, message: "行不存在或无权删除" });
+    expect(removeCalled).toBe(false);
+  });
+
   it("行删成功但删包失败：仍然报 ok:true——行已经删了，撤回对用户来说已经生效（审查 round 1）", async () => {
     let deletedRowId: string | null = null;
     const client = {
       from: () => ({
         delete: () => ({
-          eq: async (_col: string, val: string) => {
+          eq: (_col: string, val: string) => {
             deletedRowId = val;
-            return { data: null, error: null };
+            return {
+              select: async (_cols: string) => ({ data: [{ id: val }], error: null }),
+            };
           },
         }),
       }),

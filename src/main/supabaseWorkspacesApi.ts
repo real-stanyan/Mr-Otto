@@ -185,7 +185,12 @@ export async function insertSessionRow(
   return unwrap(res) as { id: string };
 }
 
-/** 发布者本人撤回会话 */
+/** 发布者本人撤回会话。RLS 静默过滤成 0 行时 PostgREST 不报错——`.select("id")`
+    是唯一的行数证据，空数组说明这一行根本没被删掉（不是自己发布的/已经删过），
+    抛错而不是悄悄回成功，让调用方（workspaceUnpublishSession handler）如实报告 */
 export async function deleteSessionRow(client: SupabaseClient, id: string): Promise<void> {
-  unwrap(await client.from("workspace_sessions").delete().eq("id", id));
+  const rows = unwrap(await client.from("workspace_sessions").delete().eq("id", id).select("id"));
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权删除");
+  }
 }

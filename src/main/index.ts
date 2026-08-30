@@ -3084,7 +3084,8 @@ void app.whenReady().then(() => {
     );
   });
   ipcMain.handle(CHANNELS.workspaceUnpublishSession, async (_e, id: string, rowId: string) => {
-    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    const uid = friends.currentUid();
+    if (!uid) return NOT_SIGNED_IN;
     // unpublishSession 要 pkgPrefix({publisherUid}/{pkgId})，渲染层只传了 rowId——
     // 现查这个工作区的快照按 rowId 找那一行，不新开 IPC 签名（brief 里"加不加
     // pkgId"两条路选的这条：workspaceManager/fetchWorkspace 已经有这份数据）
@@ -3092,6 +3093,11 @@ void app.whenReady().then(() => {
       const snap = await fetchWorkspace(supabase.raw, id);
       const row = snap.sessions.find((s) => s.id === rowId);
       if (!row) return { ok: false, message: "会话不存在或已撤回" };
+      // RLS 在库里真拦，这里提前说人话——否则 0 行生效 + 吞掉的包清理会把
+      // 「没删成」报成成功（审查 round 1）：非发布者传别人的 rowId，delete 语句
+      // 匹配不到行、PostgREST 不报错，deletePackage 失败又被 unpublishSession
+      // 吞掉，两层沉默叠起来就是一句谎报的 ok:true
+      if (row.publisherUid !== uid) return { ok: false, message: "只有发布者能撤回" };
       return await unpublishSession(supabase.raw, rowId, `${row.publisherUid}/${row.pkgId}`);
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
