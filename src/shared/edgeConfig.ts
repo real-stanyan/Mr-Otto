@@ -19,8 +19,12 @@
  * 那台 VPS 上的旧网关还在跑,旧客户端连的是它。两套中继并存,互不相识 ——
  * 所以**桌面和手机必须一起更新**(旧桌面 + 新手机永远配不上对,表现是两边都
  * 显示在线但什么都传不过去)。停机与善后见 #521。
+ *
+ * 2026-08-30 起换到自有域名(issue #802):`workers.dev` 整域在大陆被 DNS 污染,
+ * 老地址对大陆用户从来就不可达。`edge.mrotto.workers.dev` 是**同一个 worker**
+ * 的另一个门牌,继续活着服务存量客户端 —— 这次过渡没有第二套服务,只有第二个名字。
  */
-export const DEFAULT_EDGE_BASE_URL = "https://edge.mrotto.workers.dev";
+export const DEFAULT_EDGE_BASE_URL = "https://edge.mrotto.agency";
 
 /**
  * 覆盖用的环境变量。本地起服务调试时用(例:`http://127.0.0.1:8787`)。
