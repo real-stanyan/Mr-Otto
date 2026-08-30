@@ -119,6 +119,28 @@ function reopen(relay: ReturnType<typeof fakeRelay>, prev: ReturnType<typeof mac
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 describe("proxyManager（邀请码 → 握手认人 → pin，issue #657 / ADR-0162）", () => {
+  it("A 的服务握手时没 live、随后活了：refreshGrants 补推，B 的工具表跟着长（issue #792）", async () => {
+    const relay = fakeRelay();
+    // A 起步时一台服务都没有（刚重启还在连的形态）
+    const aServers: McpServerHandle[] = [];
+    const a = machine(relay, "a-uid", aServers);
+    const b = machine(relay, "b-uid");
+
+    const made = await a.manager.proxyCreateInvite("b-uid", [{ serverId: "shopify", tools: [] }]);
+    const took = await b.manager.proxyAcceptInvite(made.ok ? made.value.invite : "");
+    expect(took.ok).toBe(true);
+    await settle();
+    expect(b.manager.borrowStatus()[0]?.serverCount).toBe(0); // 快照是残缺的
+
+    // 服务活了（mcpHub.onChange 那一刻）→ 补推
+    aServers.push(server("shopify"));
+    a.manager.refreshGrants();
+    await settle();
+    expect(b.manager.borrowStatus()[0]?.serverCount).toBe(1);
+
+    a.manager.closeAll(); b.manager.closeAll();
+  });
+
   it("B 输入真邀请码 → A 把 B 的公钥 pin 下来", async () => {
     const relay = fakeRelay();
     const a = machine(relay, "a-uid", [server("shopify")]);

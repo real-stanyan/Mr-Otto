@@ -130,6 +130,16 @@ export interface ProxyManager {
   proxyRevoke(friendUid: string): Promise<FriendsResult<null>>;
   proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: ProxyStoreData["audits"] }>>;
   /**
+   * A 侧：给所有连着的好友**补推**一帧授权清单（issue #792）。
+   *
+   * grant 帧原本只在握手 onReady 时推一次——那一刻 A 的 mcpHub 里某台服务
+   * 还没 live（刚重启还在连 / OAuth 待授权），推出去的就是残缺清单，服务
+   * 随后活了 B 也永远看不见。装配根把它挂在 mcpHub.onChange 上：A 的服务
+   * 清单一变，所有 host 通道各补一帧。没握上手的通道 sendSealed 自己会
+   * 拒发，不用在这层分辨
+   */
+  refreshGrants(): void;
+  /**
    * 把落盘的通道全部重新连起来（登录那一刻调）：A 侧已授权好友的房间 +
    * B 侧借来的那些。邀请码是一次性的，重启不该要求用户重发一张——
    * 两边都靠落盘的 channelId + pin 走正常路径，不消耗邀请。
@@ -392,6 +402,10 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
         if (guests.size > 0) log(`代理：已恢复 ${guests.size} 条借来的通道`);
       }
       changed();
+    },
+
+    refreshGrants() {
+      for (const h of hosts.values()) h.pushGrant();
     },
 
     activeProxies() {

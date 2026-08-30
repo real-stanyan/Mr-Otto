@@ -59,11 +59,17 @@ export function parseProxyServerId(id: string): { tag: string; realServerId: str
   return { tag: rest.slice(0, sep), realServerId };
 }
 
-/** 代理服务的展示名 = `<真名>@<短标签>`。过 `safe()` 之后是 `shopify_3f2a1b9c`，
-    模型看到的刀就是 `mcp__shopify_3f2a1b9c__get_orders` —— 读得出是哪台服务，
-    也读得出「不是我自己那台」 */
+/** 代理服务的展示名 = `<真名>_<短标签>`，如 `shopify_3f2a1b9c`——模型看到的刀
+    就是 `mcp__shopify_3f2a1b9c__get_orders`：读得出是哪台服务，也读得出
+    「不是我自己那台」。
+    **不用 `@`**（issue #792，原来是 `<真名>@<短标签>`）：'@' 过不了 mcpToolName
+    的 safe()，名字不 faithful，于是**每把**借来的工具都挂 4 位指纹
+    （`…__get_orders_ab3f`）——名字没法预告（share_grant_note 的对应表写不准）、
+    也没法肉眼对回去。下划线形态 safe() 原样保留，faithful、零指纹。
+    审批记忆按完整工具名记，这次改名会作废旧记录——该功能线上从没通过（#790），
+    此刻改零成本，以后就改不动了 */
 export function proxyServerName(friendUid: string, realName: string): string {
-  return `${realName}@${friendTag(friendUid)}`;
+  return `${realName}_${friendTag(friendUid)}`;
 }
 
 /** 工具描述前缀：**这一刀会动别人的账号**，模型和审批弹窗都该一眼看见 */
