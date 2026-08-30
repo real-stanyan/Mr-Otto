@@ -619,6 +619,29 @@ export interface SessionSharedEvent extends SessionEventBase {
   grantedServers?: readonly string[];
 }
 
+/** 接收端导入连带借来服务的会话包时落的一条注记（issue #788，ADR-0177 的续）。
+
+    fork 过来的历史里，工具调用记的是**分享者机器上**的名字（`mcp__square__…`），
+    而借来的同一台服务在本机按好友前缀命名（`mcp__square_<tag>__…`，ADR-0166）。
+    模型对不上号时会自作主张在本地 mcp_configure/mcp_authorize——凭证本该留在
+    对方机器上，这条注记就是把「对应关系 + 别本地配」焊进模型视野的载体。
+
+    note 存**渲染好的成品文本**而不是原料：日志是历史，当年注入了什么就该
+    永远重放出什么——渲染代码将来改了，旧 fork 的模型视野不跟着变。
+    friendUid/servers 是给 UI/审计按人按服务查的结构化事实。
+
+    **不带 ignorable**：它参与模型视野推导，旧版本跳过它 = 重建出一个少了
+    这句话的视野，那是撒谎——按向前兼容规则拒读（UnknownSessionEventError）。 */
+export interface ShareGrantNoteEvent extends SessionEventBase {
+  type: "share_grant_note";
+  /** 焊进围栏 system 消息的成品文本 */
+  note: string;
+  /** 分享者 uid（借来的工具前缀由它派生） */
+  friendUid: string;
+  /** 连带借来的服务 id 清单 */
+  servers: readonly string[];
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -657,7 +680,8 @@ export type SessionEvent =
   | CheckpointCreatedEvent
   | WorkspaceRestoredEvent
   | BranchCheckedOutEvent
-  | SessionSharedEvent;
+  | SessionSharedEvent
+  | ShareGrantNoteEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -707,6 +731,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   workspace_restored: true,
   branch_checked_out: true,
   session_shared: true,
+  share_grant_note: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

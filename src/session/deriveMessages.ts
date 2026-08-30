@@ -559,6 +559,15 @@ export function deriveMessages(
         else messages.push({ role: "user", content: projectInstructionsText(event.segments) });
         break;
 
+      case "share_grant_note":
+        // 焊进围栏 system 尾部，走 project_instructions 同一条通道（issue #788）：
+        // compact 清场时随 system 幸存——「借来的工具叫什么名」不是历史，是
+        // 每轮都该在的事实。没有围栏 system 时退回 user 消息，理由同项目指令：
+        // 它是任务能不能继续的前提，宁可退化不能没有
+        if (systemMessage) systemMessage.content += `\n${event.note}`;
+        else messages.push({ role: "user", content: event.note });
+        break;
+
       case "image_described":
         // 视觉模型的代读结果,注入为 user 消息(同 skill_invoked:中途插 system
         // 各家方言兼容性参差)。位置就是事件位置——紧贴在它服务的 user_message 之前

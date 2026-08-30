@@ -11,10 +11,16 @@ import "@testing-library/jest-dom/vitest";
 
 import { SessionShareCard } from "../../src/renderer/src/components/SessionShareCard.js";
 import { encodeEnvelope } from "../../src/shared/sessionPackageCodec.js";
-import { PROXY_SHARE_INVITE_TTL_MS } from "../../src/shared/remote/proxyInvite.js";
+import { encodeProxyInvite, PROXY_SHARE_INVITE_TTL_MS } from "../../src/shared/remote/proxyInvite.js";
+import { PROXY_FRAME_VERSION } from "../../src/shared/remote/proxyProtocol.js";
 import { useChat } from "../../src/renderer/src/store.js";
 
-const INVITE = "otto-proxy:1:a-uid:chan:cHVi:c2Vj:1700000000000";
+// 造一张**能过 decodeProxyInvite 校验**的码（32 字节公钥/secret）——卡片
+// 现在会解它取 hostUid 随导入下发（issue #788），随手编的串会解出 null
+const INVITE = encodeProxyInvite({
+  v: PROXY_FRAME_VERSION, hostUid: "a-uid", channelId: "chan",
+  secret: new Uint8Array(32), hostIdentityPub: new Uint8Array(32), createdTs: 1700000000000,
+});
 
 function envelope(extra: Record<string, unknown> = {}): string {
   return encodeEnvelope({
@@ -71,7 +77,12 @@ describe("SessionShareCard", () => {
     );
     await userEvent.click(screen.getByText("导入并接上 TA 的服务"));
 
-    await waitFor(() => expect(importShared).toHaveBeenCalledWith("a-uid/pkg-1", "/w"));
+    // 第三个参数 = 接上服务后随导入焊注记的料（issue #788）：uid 取自邀请码
+    await waitFor(() =>
+      expect(importShared).toHaveBeenCalledWith("a-uid/pkg-1", "/w", {
+        friendUid: "a-uid", friendName: "小明", servers: ["shopify"],
+      })
+    );
     expect(acceptProxyInvite).toHaveBeenCalledWith(INVITE, PROXY_SHARE_INVITE_TTL_MS);
     expect(order).toEqual(["accept", "import"]);
   });

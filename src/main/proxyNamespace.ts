@@ -21,7 +21,7 @@
 // 纯逻辑零 IO：不碰传输、不碰存储，假 capability 即可测。
 
 import type { McpCapability, McpServerHandle } from "../world/executionWorld.js";
-import type { McpContent, McpServerConfig } from "../shared/mcp.js";
+import { mcpToolName, type McpContent, type McpServerConfig } from "../shared/mcp.js";
 
 /** id 前缀。冒号在 server id 里不会出现（mcp.json 的键是人手起的名字），
     而且它已经被 `safe()` 换成下划线——不会污染模型可见名的可读性 */
@@ -70,6 +70,33 @@ export function proxyServerName(friendUid: string, realName: string): string {
 function describedFor(label: string, friendUid: string, original: string): string {
   const who = label || friendTag(friendUid);
   return `【好友代理·${who}】这次调用在${who}的机器上执行、用${who}的凭证。${original}`;
+}
+
+/**
+ * 导入连带借来服务的会话包时，焊进模型视野的那段注记（issue #788）。
+ *
+ * fork 历史里的工具调用记的是分享者机器上的名字（`mcp__square__…`），借来的
+ * 同一台在本机叫 `mcp__square_<tag>__…`——不说清对应关系，模型对不上号时会
+ * 自作主张在本地 mcp_configure/mcp_authorize，把「凭证不出对方机器」整个绕开。
+ * 名字用 mcpToolName 现算（与工具表同一条流水线），不手拼字符串。
+ */
+export function shareGrantNoteText(
+  friendName: string,
+  friendUid: string,
+  servers: readonly string[]
+): string {
+  const who = friendName || friendTag(friendUid);
+  const lines = servers.map((id) => {
+    // 占位工具名 TOOL 纯 ASCII，safe() 原样保留，末尾替换成 * 就是前缀形状
+    const shape = mcpToolName(proxyServerName(friendUid, id), "TOOL").replace(/TOOL$/, "*");
+    return `- 历史里的 \`mcp__${id}__*\` 在本机对应 \`${shape}\``;
+  });
+  return [
+    `【会话来源】这个会话是好友 ${who} 分享给你的 fork。历史里那些 MCP 工具调用当时跑在 TA 的机器上；`,
+    `TA 已把这些服务借给你（好友代理，凭证留在 TA 那边、调用时 TA 得在线）：${servers.join("、")}。`,
+    ...lines,
+    `继续用这些服务时直接调上面带后缀的工具名；**不要**为它们在本地跑 mcp_configure / mcp_authorize——那会改用你自己的账号，和这段历史操作的不是同一份数据。`,
+  ].join("\n");
 }
 
 /** 把一条代理通道报出来的服务改写成「B 这边看到的样子」 */

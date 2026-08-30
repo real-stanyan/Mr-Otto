@@ -904,7 +904,11 @@ export interface ShellBridge {
       回新会话 id(渲染层随后 resumeSession 切过去)与缺图数 */
   importSharedSession(
     prefix: string,
-    workspace: string
+    workspace: string,
+    /** 连带接上了对方借出的服务时给（issue #788）：主进程据此在 fork 里落一条
+        share_grant_note，把「历史工具名 ↔ 本机借来的前缀名」焊进模型视野。
+        缺席 = 只导入对话 */
+    grant?: { friendUid: string; friendName: string; servers: readonly string[] } | null
   ): Promise<FriendsResult<{ sessionId: string; eventCount: number; missingAttachments: number }>>;
 
   // ─── 好友代理（issue #622，ADR-0151）：A 授权 B 以 A 的身份操作 MCP 服务 ──
