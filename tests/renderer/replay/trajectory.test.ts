@@ -12,20 +12,20 @@ import type { SessionEvent } from "../../../src/session/events.js";
 // 两个 turn：写文件（审批 + 执行），bash 报错，turn 暴死
 const log: SessionEvent[] = [
   { seq: 0, sessionId: "s", ts: 1000, type: "session_created", workspace: "/proj/x" },
-  { seq: 1, sessionId: "s", ts: 1001, type: "model_changed", provider: "glm", model: "glm-4.5-flash" },
+  { seq: 1, sessionId: "s", ts: 1001, type: "model_changed", provider: "glm", model: "glm-4.7-flash" },
   { seq: 2, sessionId: "s", ts: 2000, type: "user_message", content: "写个文件" },
   {
-    seq: 3, sessionId: "s", ts: 3000, type: "assistant_message", content: "", model: "glm-4.5-flash",
+    seq: 3, sessionId: "s", ts: 3000, type: "assistant_message", content: "", model: "glm-4.7-flash",
     toolCalls: [{ id: "c1", name: "write_file", args: { path: "a.txt", content: "hi" } }],
   },
   { seq: 4, sessionId: "s", ts: 3500, type: "approval_decision", toolCallId: "c1", decision: "approved" },
   { seq: 5, sessionId: "s", ts: 4000, type: "tool_execution_started", toolCallId: "c1" },
   { seq: 6, sessionId: "s", ts: 4800, type: "tool_result", toolCallId: "c1", status: "ok", output: "已写入" },
-  { seq: 7, sessionId: "s", ts: 5000, type: "assistant_message", content: "写好了", model: "glm-4.5-flash" },
+  { seq: 7, sessionId: "s", ts: 5000, type: "assistant_message", content: "写好了", model: "glm-4.7-flash" },
   { seq: 8, sessionId: "s", ts: 5001, type: "turn_ended", outcome: "completed" },
   { seq: 9, sessionId: "s", ts: 6000, type: "user_message", content: "跑一下" },
   {
-    seq: 10, sessionId: "s", ts: 7000, type: "assistant_message", content: "", model: "glm-4.5-flash",
+    seq: 10, sessionId: "s", ts: 7000, type: "assistant_message", content: "", model: "glm-4.7-flash",
     toolCalls: [{ id: "c2", name: "bash", args: { command: "boom" } }],
   },
   { seq: 11, sessionId: "s", ts: 7900, type: "tool_result", toolCallId: "c2", status: "error", output: "炸了" },

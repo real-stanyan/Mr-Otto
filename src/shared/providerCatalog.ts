@@ -155,7 +155,9 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     id: "minimax",
     name: "MiniMax",
     blurb: "稀宇科技，MiniMax 系列",
-    baseUrl: "https://api.minimax.chat/v1",
+    // api.minimax.chat 是上一代域名；国内开放平台（platform.minimaxi.com，下面那条
+    // consoleUrl 指的就是它）现在的 API host 是 api.minimaxi.com，两者不再互通
+    baseUrl: "https://api.minimaxi.com/v1",
     baseUrlEnv: "MINIMAX_BASE_URL",
     apiKeyEnv: "MINIMAX_API_KEY",
     consoleUrl: "https://platform.minimaxi.com/user-center/basic-information",
