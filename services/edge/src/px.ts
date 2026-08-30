@@ -22,13 +22,17 @@ export {
   appendAudit,
   PX_AUDIT_CAP,
   isFriendGrant,
+  WORKSPACE_ID_RE,
   type EscrowDoc,
   type EscrowGrant,
   type EscrowService,
   type PxAudit,
   type AllowEntry,
 } from "../../../src/shared/remote/pxEscrow.js";
-import { parseEscrowDoc, isFriendGrant, type EscrowDoc, type EscrowGrant, type EscrowService } from "../../../src/shared/remote/pxEscrow.js";
+import {
+  parseEscrowDoc, isFriendGrant, WORKSPACE_ID_RE,
+  type EscrowDoc, type EscrowGrant, type EscrowService,
+} from "../../../src/shared/remote/pxEscrow.js";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -331,7 +335,10 @@ export function parseFriendshipRows(raw: unknown): boolean {
     Task 5 接在籍查询——这里只管拼串 */
 export function membershipQuery(workspaceIds: readonly string[], a: string, b: string): string {
   const enc = encodeURIComponent;
-  const ids = workspaceIds.map(enc).join(",");
+  // 防御性再过一遍 UUID 形状——parseEscrowDoc 已经在文档入口挡过一次，这里是第二道闸：
+  // 万一调用方绕过了那道解析门直接把 workspaceIdsOf(doc) 的产物递进来，查询串本身也不该
+  // 因为一个带括号/逗号的 workspaceId 被拼出多余的 PostgREST 逻辑分支（审查 round 1）
+  const ids = workspaceIds.filter((id) => WORKSPACE_ID_RE.test(id)).map(enc).join(",");
   return `workspace_members?select=workspace_id,uid&workspace_id=in.(${ids})&uid=in.(${enc(a)},${enc(b)})`;
 }
 

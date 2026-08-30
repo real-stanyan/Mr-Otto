@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  appendAudit, friendshipQuery, grantedView, membershipQuery, openEscrow, parseEscrowDoc,
+  appendAudit, friendshipQuery, grantedView, isFriendGrant, membershipQuery, openEscrow, parseEscrowDoc,
   parseFriendshipRows, parseMembershipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
   workspaceIdsOf,
-  PX_AUDIT_CAP, type AllowEntry, type EscrowDoc, type PxRelations,
+  PX_AUDIT_CAP, type AllowEntry, type EscrowDoc, type EscrowGrant, type PxRelations,
 } from "../../services/edge/src/px.js";
 
 // 云端执行面的纯逻辑（ADR-0197，issue #796；关系闸群组化 ADR-0198 切片 1）。
@@ -273,5 +273,19 @@ describe("membershipQuery / parseMembershipRows（在籍查询，Task 5 接线�
   it("垃圾行混在合法行里：跳过垃圾行，合法行照算", () => {
     const rows = [{ workspace_id: "w1", uid: "a" }, "junk", { workspace_id: "w1" }, { workspace_id: "w1", uid: "b" }];
     expect(parseMembershipRows(rows, "a", "b")).toEqual(new Set(["w1"]));
+  });
+  it("membershipQuery：非 UUID 形状的 workspaceId 被防御性过滤——第二道闸，即便调用方跳过了 parseEscrowDoc", () => {
+    const valid = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+    const q = membershipQuery([valid, "w1)and(evil", "not-a-uuid"], "a", "b");
+    expect(q).toContain(encodeURIComponent(valid));
+    expect(q).not.toContain("evil");
+    expect(q).not.toContain(")and(");
+  });
+});
+
+describe("isFriendGrant 判据对齐 parseEscrowDoc（审查 round 1）", () => {
+  it("friendUid 是空字符串、workspaceId 有值：按值判据归为 workspace，不按键存在与否判", () => {
+    const mixed = { friendUid: "", workspaceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", allow: [] } as unknown as EscrowGrant;
+    expect(isFriendGrant(mixed)).toBe(false);
   });
 });

@@ -96,7 +96,8 @@ describe("buildEscrowDoc（issue #797 / ADR-0197）", () => {
 describe("EscrowGrant workspaceId 变体（ADR-0198 切片 1）", () => {
   it("parseEscrowDoc 认 workspaceId 变体，两个键都有/都没有的拒", () => {
     const base = { v: 1, hostUid: "h", services: [], updatedTs: 1 };
-    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: "w1", allow: [] }] })).not.toBeNull();
+    // 合法 workspaceId 走 UUID 形状（见下面单独一条测试）——这里只钉「变体判据」本身
+    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", allow: [] }] })).not.toBeNull();
     expect(parseEscrowDoc({ ...base, grants: [{ allow: [] }] })).toBeNull();
     expect(parseEscrowDoc({ ...base, grants: [{ friendUid: "f", workspaceId: "w", allow: [] }] })).toBeNull();
   });
@@ -107,6 +108,26 @@ describe("EscrowGrant workspaceId 变体（ADR-0198 切片 1）", () => {
   });
   it("buildEscrowDoc 两组授权都空才回 null", () => {
     expect(buildEscrowDoc({ ...srcWithOneLiveHttpsServer, grants: [], workspaceGrants: [] })).toBeNull();
+  });
+
+  const VALID_WS_ID = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+
+  it("workspaceId 必须是 UUID 形状——不是就拒整份文档（PostgREST in.() 拼接的注入面）", () => {
+    const base = { v: 1, hostUid: "h", services: [], updatedTs: 1 };
+    // 括号/逗号能在 membershipQuery 的 in.(...) 里拼出多余的逻辑分支——workspaceId
+    // 来自 A 上传的 EscrowDoc（攻击者可影响），不能只靠 encodeURIComponent（它不转义括号）
+    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: "w1)and(evil", allow: [] }] })).toBeNull();
+    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: "not-a-uuid", allow: [] }] })).toBeNull();
+    expect(parseEscrowDoc({ ...base, grants: [{ workspaceId: VALID_WS_ID, allow: [] }] })).not.toBeNull();
+  });
+
+  it("parseEscrowDoc 归一化：合法一侧之外的假值兄弟键被剥掉", () => {
+    // isFriendGrant 按值判据，不是按键判据——但两边各写各的时，「键在但值是空字符串」
+    // 这种半吊子形状不该活着流到下游；parseEscrowDoc 索性把它剥掉，归一化只留合法那一侧
+    const base = { v: 1, hostUid: "h", services: [], updatedTs: 1 };
+    const doc = parseEscrowDoc({ ...base, grants: [{ friendUid: "", workspaceId: VALID_WS_ID, allow: [] }] });
+    expect(doc?.grants[0]).toEqual({ workspaceId: VALID_WS_ID, allow: [] });
+    expect(doc?.grants[0]).not.toHaveProperty("friendUid");
   });
 });
 
