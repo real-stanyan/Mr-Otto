@@ -50,10 +50,17 @@ export async function createWorkspace(
     await client.from("workspaces").insert({ name, owner_uid: selfUid })
       .select("id,name,owner_uid,created_at").single(),
   ) as WorkspaceListRow;
-  unwrap(
-    await client.from("workspace_members")
-      .insert({ workspace_id: ws.id, uid: selfUid, role: "owner", added_by: selfUid }),
-  );
+  try {
+    unwrap(
+      await client.from("workspace_members")
+        .insert({ workspace_id: ws.id, uid: selfUid, role: "owner", added_by: selfUid }),
+    );
+  } catch (e) {
+    // 补偿：孤儿工作区行删掉再抛——两笔插入不原子，断在中间不该留一个「只有 owner 看得见的空群」。
+    // 删失败就算了（原错误优先，补偿是尽力而为）
+    await client.from("workspaces").delete().eq("id", ws.id).then(() => undefined, () => undefined);
+    throw e;
+  }
   return ws;
 }
 
