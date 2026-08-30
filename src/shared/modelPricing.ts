@@ -13,7 +13,7 @@
 //
 // 命中规则：先按型号 id 精确查；Ollama 的 id 带 `ollama/` 前缀，整族都是 0。
 //
-// **抄表日期：2026-08-24**，来源是各厂自己的定价页（下面每一组标了出处）。
+// **抄表日期：2026-08-30**，来源是各厂自己的定价页（下面每一组标了出处）。
 // 这个日期比价格本身重要：它是判断"这张表还能不能信"的唯一依据。
 // 加/改一行的时候连日期一起改。
 
@@ -42,46 +42,56 @@ const LOCAL_PREFIX = "ollama/";
  */
 const PRICES: Readonly<Record<string, ModelPrice>> = {
   // OpenAI — developers.openai.com/api/docs/pricing
-  "gpt-5": { input: 1.25, output: 10, cachedInput: 0.125 },
-  "gpt-5-mini": { input: 0.25, output: 2, cachedInput: 0.025 },
-  "gpt-4.1": { input: 2, output: 8, cachedInput: 0.5 },
+  "gpt-5.6-sol": { input: 4, output: 20, cachedInput: 0.4 },
+  "gpt-5.6-terra": { input: 2, output: 12, cachedInput: 0.2 },
+  "gpt-5.6-luna": { input: 0.2, output: 1.2, cachedInput: 0.02 },
 
   // Anthropic — platform.claude.com/docs/en/about-claude/pricing
   // cachedInput = Cache Hits 档（0.1× base）；fast mode 是另一档价，本仓不发那个参数
   "claude-opus-5": { input: 5, output: 25, cachedInput: 0.5 },
   "claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2 },
-  "claude-haiku-4-5-20251001": { input: 1, output: 5, cachedInput: 0.1 },
+  "claude-haiku-4-5": { input: 1, output: 5, cachedInput: 0.1 },
 
   // Google — ai.google.dev/gemini-api/docs/pricing（付费档，提示 ≤200k 那一档）
-  "gemini-2.5-pro": { input: 1.25, output: 10 },
-  "gemini-2.5-flash": { input: 0.3, output: 2.5 },
+  // 3.7 Flash 现在挂着"2026-12-31 前 $0.75/$3.75"的促销，这里取**促销结束后**的标准价：
+  // 同一条规则的另一面——错峰价/促销价都是碰上了才有，报低了会让人以为便宜一半
+  "gemini-3.1-pro-preview": { input: 2, output: 12 },
+  "gemini-3.7-flash": { input: 1.5, output: 7.5 },
 
   // DeepSeek — api-docs.deepseek.com/quick_start/pricing
   // 它按时段分两档（错峰半价）。这里取**高峰价**：页脚那个数是"这一次大概花了多少"，
   // 报低了会让人以为便宜一半，而错峰是碰运气碰上的，不是常态
-  // cachedInput = 缓存命中档（同取高峰价）
+  // cachedInput = 缓存命中档（同取高峰价）；vision-exp 与 flash 同价
   "deepseek-v4-flash": { input: 0.44, output: 1.32, cachedInput: 0.014 },
   "deepseek-v4-pro": { input: 1.32, output: 3.96, cachedInput: 0.044 },
+  "deepseek-v4-flash-vision-exp": { input: 0.44, output: 1.32, cachedInput: 0.014 },
 
   // 智谱 — docs.z.ai/guides/overview/pricing。两款 flash 官网标的就是 Free
-  "glm-4.5-flash": { input: 0, output: 0 },
+  // glm-5.3-flash 取标准价（$0.15/$0.50）；它挂着到 2026-09-09 的五折促销，理由同上
+  "glm-5.3": { input: 1.4, output: 4.4, cachedInput: 0.26 },
+  "glm-5.3-flash": { input: 0.15, output: 0.5 },
+  "glm-4.7-flash": { input: 0, output: 0 },
   "glm-4.6v-flash": { input: 0, output: 0 },
-  "glm-4.6": { input: 0.6, output: 2.2 },
 
-  // 月之暗面 — platform.kimi.ai/docs/pricing/chat-v1（缓存未命中价）
-  "moonshot-v1-128k": { input: 2, output: 5 },
+  // 月之暗面 — platform.kimi.com/docs/pricing（缓存未命中价）
+  "kimi-k3": { input: 3, output: 15, cachedInput: 0.3 },
+  "kimi-k2.6": { input: 0.95, output: 4, cachedInput: 0.16 },
 
   // 阿里百炼 — alibabacloud.com/help/en/model-studio/model-pricing
-  // 国际站（新加坡）价；qwen3-max 有按长度的阶梯，取最低那档（≤32K）
-  "qwen3-max": { input: 1.2, output: 6 },
-  "qwen-plus": { input: 0.4, output: 1.2 },
-  "qwen-vl-max": { input: 0.8, output: 3.2 },
+  // 国际站（新加坡）价；中国大陆站便宜 60–70%，这里同样取贵的那一档
+  "qwen3.8-max": { input: 2, output: 6 },
+  "qwen3.7-plus": { input: 0.4, output: 1.6 },
 
-  // MiniMax — 官网标准价 $0.30/$1.20（各家转售报的都是这个基准价）
-  "MiniMax-M2": { input: 0.3, output: 1.2 },
+  // xAI — docs.x.ai/docs/models。两款都有"提示 ≥200K 时整单翻倍"的阶梯，取标准档
+  "grok-4.6": { input: 2, output: 6, cachedInput: 0.5 },
+  "grok-4.3": { input: 1.25, output: 2.5 },
+
+  // MiniMax — 官网标准价（$0.60/$2.40 挂着"永久五折"，实付即下面这两个数）
+  "MiniMax-M3": { input: 0.3, output: 1.2 },
 
   // Mistral — mistral.ai/pricing/api
   "mistral-large-latest": { input: 0.5, output: 1.5 },
+  "mistral-small-latest": { input: 0.1, output: 0.3 },
 
   // Groq — console.groq.com/docs/models
   "openai/gpt-oss-120b": { input: 0.15, output: 0.6 },
@@ -89,20 +99,20 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   // OpenRouter — 它是转售，按上游原价计费（平台的抽成收在充值那一步，不在 token 上），
   // 所以这两条与第一方同价。上游改价它跟着改，这里也就跟着改
   "anthropic/claude-sonnet-5": { input: 2, output: 10, cachedInput: 0.2 },
-  "openai/gpt-5": { input: 1.25, output: 10, cachedInput: 0.125 },
+  "openai/gpt-5.6-sol": { input: 4, output: 20, cachedInput: 0.4 },
 
-  // 硅基流动 — siliconflow.com/pricing
-  "deepseek-ai/DeepSeek-V3.2-Exp": { input: 0.27, output: 0.41 },
+  // 硅基流动 — siliconflow.com/models（DeepSeek-V4-Flash 那一页）
+  "deepseek-ai/DeepSeek-V4-Flash": { input: 0.13, output: 0.28, cachedInput: 0.028 },
 };
 
-/** 目录里有、但**上游已经查不到**的型号 —— 留空不是偷懒，是这几个 id 本身就过期了：
-      · grok-4 / grok-4-fast —— xAI 的价目表现在只有 grok-4.6/4.5/4.3/4.20 那几档
-      · kimi-k2-0905-preview —— Kimi 的在售阵容已经换到 K3 / K2.7 / K2.6
-      · llama-3.3-70b-versatile —— Groq 的型号页上已经没有它
-      · pixtral-large-latest —— Mistral 的 API 价目页上已经没有它
-      · Qwen/Qwen3-235B-A22B —— 硅基流动的价目页上已经没有它
-    它们大概率连调都调不通了（不只是没价）。修目录是另一件事，不在这张表里做 ——
-    但既然查价时撞见了，就把结论留在这儿，免得下一个人再查一遍。 */
+/** 目录里有、但这张表里**故意留空**的几款（留空不是偷懒，是查不到确切现价）：
+      · kimi-k2.7-code —— Kimi 的定价页把它拆到单独的型号页，按量价没查到公开数
+      · qwen3.8-flash —— 百炼国际站的价目页上还没有这一档
+      · llama-3.3-70b-versatile —— Groq 的型号页有这款，价目页上没单列
+      · deepseek-ai/DeepSeek-V4-Pro —— 硅基流动只公开了 Flash 那一页的单价
+    留空的后果是这几款不显示 cost，而不是显示 0 —— 宁可少一行，不能给一个错的钱数。
+    上一版这段名单记的是"上游已经下架"的一批（grok-4 / kimi-k2-0905-preview /
+    pixtral-large-latest / Qwen/Qwen3-235B-A22B 等），那批 id 这一轮已经从目录里删掉了 */
 
 /** 表里写了价的型号 id。只给测试用:key 是手抄的,抄错一个字符不会报错,
     只会安静地变成"这一款查不到价"—— 而"查不到价"本身是合法状态(上游下架了),

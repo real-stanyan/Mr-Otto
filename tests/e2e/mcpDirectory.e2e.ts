@@ -183,7 +183,8 @@ test("注册表搜不动就说原因，不吞成「没有结果」", async () =>
     await expect(otto.win.getByText(/注册表搜不动/)).toBeVisible({ timeout: 15_000 });
     await expect(otto.win.getByText(/503/)).toBeVisible();
     // 分两层要换来的就是这个：长尾挂了，精选层照常可用（ADR-0171 第一节）
-    await expect(otto.win.getByRole("button", { name: "添加 GitHub" })).toBeVisible();
+    // 锚点不用 GitHub：它标着 blocked，本来就没有「添加」（ADR-0190）
+    await expect(otto.win.getByRole("button", { name: "添加 GitLab" })).toBeVisible();
     expectNoRendererErrors(otto);
   } finally {
     await otto.close();
@@ -201,7 +202,8 @@ test("纯黑的标真的被 mask 削成形状，不是一格实心方块", async
   try {
     await stubRegistry(otto);
     await openSettings(otto.win, "连接器");
-    const card = otto.win.getByRole("button", { name: "添加 GitHub" }).locator("xpath=..");
+    // 同上：换成另一条同档的纯黑标（GitHub 标着 blocked，没有那颗按钮了）
+    const card = otto.win.getByRole("button", { name: "添加 Notion" }).locator("xpath=..");
     await card.waitFor({ timeout: 15_000 });
     const mask = await card
       .locator("span[aria-hidden]")

@@ -155,6 +155,32 @@ describe("McpDirectory", () => {
     expect(authorizeMcpServer).toHaveBeenCalledWith("canva");
   });
 
+  it("授权失败那条横幅说人话，SDK 的原话留在 title 里（#762）", async () => {
+    // #761 声称改了这里，实际只合进了一行 import ——`humanizeMcpError` 导进来
+    // 一次都没用。tsc 不报（noUnusedLocals 没开），vitest 也不报：那次新增的
+    // 用例测的是纯函数本身和 installSlot，**没有一条测横幅上写的是什么**。
+    // 纯函数测了不等于它被接上了，这一条补的就是那段接缝
+    const authorizeMcpServer = vi.fn(() =>
+      Promise.reject(
+        new Error("Incompatible auth server: does not support dynamic client registration")
+      )
+    );
+    window.otter = {
+      searchMcpRegistry: vi.fn(() => Promise.resolve([])),
+      saveMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
+      authorizeMcpServer,
+    } as unknown as ShellBridge;
+    render(<McpDirectory servers={[srv("canva", "needs-auth")]} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "授权 Canva" }));
+
+    const banner = await screen.findByText(/授权没跑通/);
+    expect(banner).toHaveTextContent("client_id");
+    expect(banner).not.toHaveTextContent("Incompatible");
+    // 原文不是藏起来，是挪个地方——调试时还得靠它
+    expect(banner).toHaveAttribute("title", expect.stringContaining("Incompatible auth server"));
+  });
+
   it("搜到的注册表结果压在「未经核验」分隔线下面", async () => {
     const { pending } = deferredBridge();
     const user = userEvent.setup();
@@ -287,16 +313,18 @@ describe("McpDirectory", () => {
     const user = userEvent.setup();
     render(<McpDirectory servers={[]} />);
 
-    await user.click(await screen.findByRole("button", { name: "添加 GitHub" }));
+    // 主角原来是 GitHub，#760 之后它标着 blocked、根本不发「添加」——
+    // 换一条同形状的（http + oauth + 无参数）继续测这条路
+    await user.click(await screen.findByRole("button", { name: "添加 Sentry" }));
     await waitFor(() => {
-      expect(saveMcpServer).toHaveBeenCalledWith("github", {
+      expect(saveMcpServer).toHaveBeenCalledWith("sentry", {
         kind: "http",
-        url: "https://api.githubcopilot.com/mcp/",
+        url: "https://mcp.sentry.dev/mcp",
         headers: {},
         enabled: true,
       });
     });
-    await waitFor(() => expect(authorizeMcpServer).toHaveBeenCalledWith("github"));
+    await waitFor(() => expect(authorizeMcpServer).toHaveBeenCalledWith("sentry"));
   });
 
   it("带参数的条目先问参数，值代进 URL 的占位符", async () => {
@@ -373,6 +401,19 @@ describe("McpDirectory", () => {
     pending.get("weather")!.resolve([remote("weather-remote", "Weather Remote")]);
 
     expect(await screen.findByText("未核验")).toBeInTheDocument();
+  });
+
+  // blocked 那几条用例搬去 McpConnectorPage.test.tsx 了（#766）：它们原来借
+  // 「目录里的 GitHub 是 blocked 的」当支点，而 GitHub 一改走 token 支点就没了。
+  // 卡片这一侧只剩「note 这一档画得出来」，用 failed 走同一个分支
+  it("连不上的那台，卡片上画一句说明而不是一颗按钮", async () => {
+    deferredBridge();
+    render(<McpDirectory servers={[srv("canva", "failed")]} />);
+
+    await screen.findByText("待接通");
+    expect(screen.getByText("连不上")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "授权 Canva" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加 Canva" })).not.toBeInTheDocument();
   });
 
   // ── 详情页（issue #745）─────────────────────────────────────────────

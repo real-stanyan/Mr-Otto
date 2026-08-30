@@ -80,14 +80,14 @@ describe("createAgent 会话生命周期", () => {
       attachments,
     });
 
-    agent.switchModel("glm-4.5-flash");
+    agent.switchModel("glm-4.7-flash");
 
-    expect(agent.model).toBe("glm-4.5-flash");
+    expect(agent.model).toBe("glm-4.7-flash");
     const log = store.load(agent.sessionId);
-    expect(log.at(-1)).toMatchObject({ type: "model_changed", provider: "glm", model: "glm-4.5-flash" });
+    expect(log.at(-1)).toMatchObject({ type: "model_changed", provider: "glm", model: "glm-4.7-flash" });
     expect(pushed).toContain("model_changed");
 
-    agent.switchModel("glm-4.5-flash"); // 切到当前型号 = 无操作，不落重复事件
+    agent.switchModel("glm-4.7-flash"); // 切到当前型号 = 无操作，不落重复事件
     expect(store.load(agent.sessionId)).toHaveLength(log.length);
     store.close();
   });
@@ -95,7 +95,7 @@ describe("createAgent 会话生命周期", () => {
   it("恢复时模型选择从日志回来：最后一条 model_changed 说了算", () => {
     const store = new EventStore(":memory:");
     store.append({ sessionId: "s-m", ts: 1, type: "session_created", workspace: "/proj/x" });
-    store.append({ sessionId: "s-m", ts: 2, type: "model_changed", provider: "glm", model: "glm-4.5-flash" });
+    store.append({ sessionId: "s-m", ts: 2, type: "model_changed", provider: "glm", model: "glm-4.7-flash" });
     store.append({
       sessionId: "s-m", ts: 3, type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro",
     });
@@ -395,17 +395,17 @@ describe("agent 运行时偏好（审批模式 / thinking）", () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
-    // DeepSeek 的"开" → GPT-5 只有低/中/高（关不掉），就近落到中档
-    agent.switchModel("gpt-5");
+    // DeepSeek 的"开" → GPT-5.6 只有低/中/高（关不掉），就近落到中档
+    agent.switchModel("gpt-5.6-sol");
     expect(agent.thinking).toBe("medium");
 
     // 调到高，再切回二选一的 GLM：高 → 开
     agent.setThinking("high");
-    agent.switchModel("glm-4.6");
+    agent.switchModel("glm-5.3");
     expect(agent.thinking).toBe("on");
 
     // 切到压根没有开关的型号：值退到 off，且不参与请求
-    agent.switchModel("grok-4");
+    agent.switchModel("grok-4.6");
     expect(agent.thinking).toBe("off");
     store.close();
   });
@@ -414,8 +414,8 @@ describe("agent 运行时偏好（审批模式 / thinking）", () => {
     const store = new EventStore(":memory:");
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
-    agent.switchModel("gpt-5"); // 只有 low/medium/high
-    agent.setThinking("on"); // 二选一那派的说法，GPT-5 没这一档
+    agent.switchModel("gpt-5.6-sol"); // 只有 low/medium/high
+    agent.setThinking("on"); // 二选一那派的说法，GPT-5.6 没这一档
     expect(agent.thinking).toBe("medium");
     store.close();
   });

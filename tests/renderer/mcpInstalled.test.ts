@@ -120,6 +120,29 @@ describe("filterInstalled", () => {
   });
 });
 
+describe("entryFromInstalled 说的是这一台此刻的样子", () => {
+  it("地址取盘上那份，不取目录里的模板（#764）", () => {
+    // 目录里 github 的 url 是 https://api.githubcopilot.com/mcp/；用户改过之后
+    // 事实表还画着模板，等于给他看一台跟他的配置对不上的机器
+    const e = entryFromInstalled({
+      id: "github",
+      config: { kind: "http", url: "https://ghe.corp.test/mcp", headers: {}, enabled: true },
+    });
+    expect(e.url).toBe("https://ghe.corp.test/mcp");
+    expect(e.name).toBe("GitHub"); // 目录那份的 logo / 名字仍然留着
+  });
+
+  it("盘上改成了本地命令，就不该再挂着目录那条地址", () => {
+    const e = entryFromInstalled({
+      id: "github",
+      config: { kind: "stdio", command: "npx", args: ["-y", "x"], env: {}, enabled: true },
+    });
+    expect(e.transport).toBe("stdio");
+    expect(e.command).toBe("npx");
+    expect(e.url, "两边字段并存的话事实表上会同时出现地址和命令").toBeUndefined();
+  });
+});
+
 describe("humanizeMcpError", () => {
   it("认得出的翻成人话，并且说清该去改什么", () => {
     // SDK 抛的是 `MCP error -32000: Connection closed`——它把 MCP 这三个字母
@@ -130,6 +153,21 @@ describe("humanizeMcpError", () => {
     expect(out).toContain("命令");
     expect(humanizeMcpError("fetch failed")).toContain("连不上这个地址");
     expect(humanizeMcpError("spawn uvx ENOENT")).toContain("找不到这个命令");
+  });
+
+  it("授权那条路上的 DCR 那句也翻 —— 目录外的 server 也会撞（#760）", () => {
+    // 目录里已知的三条走 catalog 的 blocked（那句更具体，还带 issue 号），
+    // 这里覆盖的是手填的 / 注册表来的那些
+    const out = humanizeMcpError(
+      "Incompatible auth server: does not support dynamic client registration"
+    );
+    expect(out).toContain("client_id");
+    expect(out).not.toContain("Incompatible");
+    // 同族的另外两句（response type / code challenge method）也得有话说，
+    // 不能只认死那一句
+    expect(
+      humanizeMcpError("Incompatible auth server: does not support response type code")
+    ).toContain("授权方式");
   });
 
   it("认不出的原样保留 —— 一句看不懂的英文比一句自信的错误翻译有用", () => {

@@ -7,7 +7,10 @@ import { searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import { mapRegistryResponse, registrySearchUrl } from "../shared/mcpRegistry.js";
 
-function render(e: CatalogEntry): string {
+/** 一条目录 → 说给水獭听的那段话。
+    导出只为了测：目录里此刻一条 blocked 都没有（#766），而"接不上的要跟水獭
+    说一声"这条行为仍然要钉住——拿合成条目测它，比等下一台坏 server 出现再说好 */
+export function render(e: CatalogEntry): string {
   const lines = [
     `## ${e.name}（建议 id: ${e.id}）`,
     e.description,
@@ -23,6 +26,13 @@ function render(e: CatalogEntry): string {
           .join("\n")}`
   );
   lines.push(`认证：${e.auth} —— ${e.authNote}`);
+  // 已知接不上的那几条要在这里也说一次。这句话原来混在 authNote 里，#760 把
+  // 它拆成独立字段之后，不补这一行就等于**只有界面知道、agent 不知道**——
+  // 水獭会照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
+  // 永远连不上的 server 在用户的 mcp.json 里
+  if (e.blocked !== undefined) {
+    lines.push(`现在接不上：${e.blocked}。别装这台，把这句原因直接告诉用户。`);
+  }
   return lines.join("\n");
 }
 
@@ -47,7 +57,7 @@ export const mcpCatalogTool: Tool = {
       "并由此进入「给自己接一台新 server」的入口：查到之后调 mcp_configure 落盘，" +
       "http 传输的再调 mcp_authorize 授权。" +
       "用户说要接某个外部服务（supabase / github / notion / linear / sentry / stripe / " +
-      "postgres / slack / figma / playwright / 文件系统 filesystem 之类）、" +
+      "postgres / slack / canva / playwright / 文件系统 filesystem 之类）、" +
       "或者你发现手上没有能干这件事的工具时，先查这里；查不到再用 web_search。" +
       "留空 query 可以列出全部已知的 server。",
     parameters: {

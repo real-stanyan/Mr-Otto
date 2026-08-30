@@ -4,13 +4,13 @@ import { MODEL_CATALOG } from "../../src/shared/modelCatalog.js";
 
 describe("priceOf", () => {
   it("查不到的型号返回 undefined —— 不是 0", () => {
-    // 目录里确实有、但上游价目页上已经没有的一款（见 modelPricing.ts 末尾那段名单）
-    expect(priceOf("grok-4")).toBeUndefined();
+    // 目录里确实有、但这张表里故意留空的一款（见 modelPricing.ts 末尾那段名单）
+    expect(priceOf("llama-3.3-70b-versatile")).toBeUndefined();
     expect(priceOf("某个没见过的型号")).toBeUndefined();
   });
 
   it("免费档在表里,是真的 0", () => {
-    expect(priceOf("glm-4.5-flash")).toEqual({ input: 0, output: 0 });
+    expect(priceOf("glm-4.7-flash")).toEqual({ input: 0, output: 0 });
   });
 
   it("本机推理整族按前缀命中", () => {
@@ -23,12 +23,12 @@ describe("costUsd", () => {
   const usage = { promptTokens: 1_000_000, completionTokens: 1_000_000 };
 
   it("查不到价就算不出钱", () => {
-    // 换了个例子:gpt-5 现在表里有价了。挑一个目录里有、上游却已经查不到的
-    expect(costUsd("grok-4", usage)).toBeUndefined();
+    // 挑一个目录里有、这张表里却查不到价的
+    expect(costUsd("llama-3.3-70b-versatile", usage)).toBeUndefined();
   });
 
   it("免费档算出来是 0", () => {
-    expect(costUsd("glm-4.5-flash", usage)).toBe(0);
+    expect(costUsd("glm-4.7-flash", usage)).toBe(0);
   });
 
   it("缓存命中按 cachedInput 档计价 —— 命中部分不再按全价", () => {
@@ -52,7 +52,7 @@ describe("costUsd", () => {
 
   it("表里没有 cachedInput 的型号,报了 cachedTokens 也按全价 —— 宁可报高不报错", () => {
     const hit = { promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 };
-    expect(costUsd("glm-4.6", hit)).toBeCloseTo(0.6, 6);
+    expect(costUsd("gemini-3.7-flash", hit)).toBeCloseTo(1.5, 6);
   });
 
   it("cachedTokens 超过 promptTokens 时按 promptTokens 截断 —— 上游报错数不至于算出负钱", () => {

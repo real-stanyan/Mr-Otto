@@ -11,7 +11,7 @@ const daysAgo = (n: number): number => NOW - n * 86_400_000;
 /** 目录里真有的两款(价目也有) */
 const CHEAP = "deepseek-v4-flash";
 /** 目录里有、价目表里没有的那一款 —— 用来钉住"null 不是 0"这条 */
-const UNPRICED = "grok-4";
+const UNPRICED = "llama-3.3-70b-versatile";
 const row = (model: string, ts: number, inTok = 1000, outTok = 100): BilledRow =>
   ({ ts, model, promptTokens: inTok, completionTokens: outTok });
 
@@ -43,7 +43,7 @@ describe("projectStats", () => {
   });
 
   it("查不到价的型号 costUsd 是 null —— 不是 0", () => {
-    // grok-4 在目录里,但 modelPricing 明确没有它的价(那份文件里写着理由)
+    // 这一款在目录里,但 modelPricing 明确没有它的价(那份文件里写着理由)
     const s = projectStats([], [row(UNPRICED, daysAgo(1))], NOW);
     expect(s.models).toHaveLength(1);
     expect(s.models[0]!.costUsd).toBeNull();

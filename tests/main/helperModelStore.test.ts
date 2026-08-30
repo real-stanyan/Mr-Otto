@@ -11,7 +11,7 @@ const path = () => join(tempDir("otto-helper-"), "helper-model.json");
 
 describe("normaliseHelperModel", () => {
   it("目录里有的型号原样放行", () => {
-    expect(normaliseHelperModel("gemini-2.5-flash")).toBe("gemini-2.5-flash");
+    expect(normaliseHelperModel("gemini-3.7-flash")).toBe("gemini-3.7-flash");
   });
 
   it("目录里没有的退回默认 —— 不存在的 id 会让三个外挂集体静默失效", () => {
@@ -19,7 +19,7 @@ describe("normaliseHelperModel", () => {
   });
 
   it("不是字符串也退回默认", () => {
-    for (const bad of [null, undefined, 42, {}, ["gemini-2.5-flash"]]) {
+    for (const bad of [null, undefined, 42, {}, ["gemini-3.7-flash"]]) {
       expect(normaliseHelperModel(bad)).toBe(DEFAULT_HELPER_MODEL);
     }
   });
@@ -38,8 +38,8 @@ describe("loadHelperModel / saveHelperModel", () => {
 
   it("存了再读是同一个", () => {
     const p = path();
-    expect(saveHelperModel(p, "gemini-2.5-flash")).toBe("gemini-2.5-flash");
-    expect(loadHelperModel(p)).toBe("gemini-2.5-flash");
+    expect(saveHelperModel(p, "gemini-3.7-flash")).toBe("gemini-3.7-flash");
+    expect(loadHelperModel(p)).toBe("gemini-3.7-flash");
   });
 
   it("存之前先整形：认不出来的落盘成默认，返回值就是真正存下去的那个", () => {

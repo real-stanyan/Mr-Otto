@@ -78,6 +78,25 @@ export function McpConnectorPage({
         <MainAction slot={slot} entry={entry} onAdd={onAdd} onAuthorize={onAuthorize} />
       </header>
 
+      {/* 已知接不上的那句话要**画出来**，不能只挂在右上角那格的 title 上：
+          tooltip 要悬停才有，而用户是带着"为什么点了没反应"这个问题进来的，
+          答案该在他视线落点上。上一版这句话只活在 catalog 的注释和 authNote
+          里，一个用户都没看见过（issue #760） */}
+      {entry.blocked !== undefined && item.installed !== "connected" && (
+        <p
+          // 这台此刻的原始错误挪到这儿来了：管理面那条红字被收起了（它说的
+          // 「凭据不对」会把用户支去检查 token，而那不是问题所在），但证据
+          // 不该跟着一起没（同 ADR-0189「翻译不是为了藏证据」，issue #764）
+          title={server?.error ?? undefined}
+          className={cn(
+            "rounded-[10px] border border-warn/30 bg-warn/[0.07] px-[14px] py-3",
+            "text-[12.5px] leading-[1.6] text-warn"
+          )}
+        >
+          {entry.blocked}
+        </p>
+      )}
+
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-[10px] border border-border bg-card px-[14px] py-3">
         {facts.map((f) => (
           <div key={f.label} className="col-span-2 grid grid-cols-subgrid items-baseline">
@@ -143,7 +162,7 @@ export function McpConnectorPage({
       {server !== undefined && (
         <section className="flex flex-col gap-2">
           <span className={SECTION_LABEL}>设置</span>
-          <McpServerEditor server={server} />
+          <McpServerEditor server={server} blocked={entry.blocked} />
         </section>
       )}
 

@@ -41,7 +41,12 @@ export function endpointFact(entry: CatalogEntry): DetailFact {
 export function connectorFacts(entry: CatalogEntry): DetailFact[] {
   const facts: DetailFact[] = [transportFact(entry), endpointFact(entry)];
   if (entry.category !== undefined) facts.push({ label: "分类", value: entry.category });
-  if (entry.authNote.trim() !== "") facts.push({ label: "授权", value: entry.authNote });
+  // blocked 的那几条不出「授权」这一行。authNote 说的是"要授权的话该干什么"
+  // （"配好后点一次授权"），而上面那条横幅刚说完这台现在授权不了——两句话
+  // 摞在一起，用户得自己判断该信哪句。已知接不上的时候，横幅就是答案（#760）
+  if (entry.blocked === undefined && entry.authNote.trim() !== "") {
+    facts.push({ label: "授权", value: entry.authNote });
+  }
   return facts.filter((f) => f.value.trim() !== "");
 }
 

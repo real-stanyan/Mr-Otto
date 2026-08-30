@@ -553,12 +553,15 @@ const ToolFallbackImpl = ({
     status?.type === "incomplete" && status.reason === "cancelled";
   const isRequiresAction = status?.type === "requires-action";
 
-  const [open, setOpen] = useState(isRequiresAction);
-  const [prevRequiresAction, setPrevRequiresAction] =
-    useState(isRequiresAction);
-  if (isRequiresAction !== prevRequiresAction) {
-    setPrevRequiresAction(isRequiresAction);
-    if (isRequiresAction) setOpen(true);
+  // 本仓改动:跑着的那一步自动展开、出了结果自动收起(同一时刻只有一步在跑,
+  // 于是时间线里始终只摊开正在干的那一行)。原件只在 requires-action 时弹开、
+  // 且从不自动收。自动只在活跃态翻转那一帧接管一次,手动开合随时有效
+  const isActive = isRequiresAction || status?.type === "running";
+  const [open, setOpen] = useState(isActive);
+  const [prevActive, setPrevActive] = useState(isActive);
+  if (isActive !== prevActive) {
+    setPrevActive(isActive);
+    setOpen(isActive);
   }
 
   return (

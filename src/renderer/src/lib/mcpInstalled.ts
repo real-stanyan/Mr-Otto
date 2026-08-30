@@ -29,7 +29,19 @@ export function entryFromInstalled(
 ): CatalogEntry {
   const hit = catalog.find((e) => e.id === server.id);
   const description = installedSummary(server.config);
-  if (hit !== undefined) return { ...hit, description };
+  // 地址/命令也换成**这一台此刻**的：目录里那份可能带着没代进去的 {占位符}，
+  // 也可能早被用户改过。详情页那张事实表说的是"这台是什么样"，拿目录的模板
+  // 去填，用户看到的就是一台跟他改过的配置对不上的机器（#764 顺手）
+  const actual: Pick<CatalogEntry, "transport" | "url" | "command" | "args"> =
+    server.config.kind === "stdio"
+      ? { transport: "stdio", command: server.config.command, args: server.config.args }
+      : { transport: "http", url: server.config.url };
+  if (hit !== undefined) {
+    // 换掉而不是合并：目录那条是 http 而盘上这台改成了 stdio 的话，
+    // 展开 hit 会把两边的字段都留下，事实表上同时出现地址和命令
+    const { url: _u, command: _c, args: _a, ...rest } = hit;
+    return { ...rest, description, ...actual };
+  }
   return {
     id: server.id,
     name: server.id,
@@ -97,6 +109,15 @@ export type { McpDisplayStatus };
     自信的错误翻译有用得多。原文始终留在 title 里（调试时还得靠它）。 */
 export function humanizeMcpError(raw: string): string {
   const t = raw.trim();
+  // 授权那条路上最常撞的一句。目录里已知的三条走 catalog 的 blocked 字段
+  // （那句更具体，还带 issue 号），这里覆盖的是**目录外**的 server——手填的、
+  // 注册表来的，撞上同一堵墙时也该拿到一句人话而不是 SDK 的原文（#760）
+  if (/does not support dynamic client registration/i.test(t)) {
+    return "这台要求事先注册好的 client_id，而 Mr Otto 还没有手填它的地方 —— 暂时接不上（#697）。";
+  }
+  if (/Incompatible auth server/i.test(t)) {
+    return "这台的授权方式 Mr Otto 还不支持。";
+  }
   if (/Connection closed/i.test(t)) {
     return "进程没起来，或者起来之后立刻退出了 —— 先确认命令和包名是对的。";
   }
