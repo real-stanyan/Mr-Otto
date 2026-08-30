@@ -80,6 +80,7 @@ import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
 import { NumberTicker } from "@/components/elements/number-ticker.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
+import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
 import { SignInScreen } from "./components/SignInScreen.js";
 import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
@@ -3318,6 +3319,12 @@ export function App() {
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
   const isPackaged = useChat((s) => s.isPackaged);
+  // 残留清单弹窗（issue #759）：上次(boot latch) / 本次(直播累加) 两份各自的
+  // items + 收尾动作。都是空数组时 ResiduePanel 自己不渲染，这里不用先判
+  const bootResidue = useChat((s) => s.bootResidue);
+  const liveResidue = useChat((s) => s.liveResidue);
+  const dismissBootResidue = useChat((s) => s.dismissBootResidue);
+  const dismissLiveResidue = useChat((s) => s.dismissLiveResidue);
   const protocolOpen = useChat((s) => s.protocolOpen);
   const openProtocol = useChat((s) => s.openProtocol);
   const gitGraphOpen = useChat((s) => s.gitGraphOpen);
@@ -3718,6 +3725,25 @@ export function App() {
           <ModelSetupDialog />
           {/* 会话搜索(⌘K):侧栏按工程分堆,堆多了只能翻——这条是"记得说过什么就找得到" */}
           <SessionSearchDialog />
+          {/* 残留清单（issue #759）：boot latch 非空 = 上次退出没收干净，一进
+              这个会话就弹一次；items 空时 ResiduePanel 自己不渲染，sessionId
+              为空（welcome/无会话）时两份也必然是空数组，不用另判 */}
+          {sessionId !== "" && (
+            <>
+              <ResiduePanel
+                sessionId={sessionId}
+                items={bootResidue}
+                title="上次残留"
+                onDone={dismissBootResidue}
+              />
+              <ResiduePanel
+                sessionId={sessionId}
+                items={liveResidue}
+                title="本次残留"
+                onDone={dismissLiveResidue}
+              />
+            </>
+          )}
         </SidebarInset>
         {/* 侧栏开关常驻左上角,两态同位(见 SidebarNub.tsx)。必须排在侧栏和内容区
             **之后**:Chromium 按文档顺序叠加 app-region 矩形、后者覆盖前者,放前面

@@ -56,6 +56,7 @@ import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js
 import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { shareAllow } from "../../shared/shareGrant.js";
+import { mergeResidue, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createRequestGate } from "./lib/latestRequest.js";
@@ -278,6 +279,15 @@ interface ChatState {
       日志推不出这一件事(started 没配上 completed 的,可能是随上次退出一起死的),
       所以单独存一份;面板和自动开面板的判据都从 events + 这份名单推 */
   liveBgIds: readonly string[];
+  /** 「上次残留」弹窗（issue #759）：BootInfo.pendingResidue 的落位，一次性
+      latch——boot 那一刻搬进来，ResiduePanel 处理完（onDone）就清空,不会再弹。
+      弹窗只在这一份非空时挂载(App.tsx),空表示没有或已处理完 */
+  bootResidue: ResidueItem[];
+  /** 「本次残留」弹窗（issue #759）：会话活着的时候收到的 residue_detected
+      直播事件(turn 收口出走的进程组 / 归档全量 diff)按 detector:id 累加。
+      只收当前正看着的会话的事件——同 absorbEvent 的分流(切走的会话事件
+      仍在 DB 里,回来时靠 pendingResidue 重放,不必在这儿常驻) */
+  liveResidue: ResidueItem[];
   /** 每个会话上次开着哪块右侧面板(issue #578)。切走再切回来该还在那儿——
       面板是「我在这个会话里干活的姿势」,不是一次性的弹窗。
       只在内存里活着:重启后从零开始,不值得为它落盘 */
@@ -510,6 +520,10 @@ interface ChatState {
   closeBgPanel(): void;
   /** 主进程那张 live 名单的落位(轮询在 useBackgroundWatch 里) */
   setLiveBgIds(ids: readonly string[]): void;
+  /** 「上次残留」弹窗处理完(清完/以后再说)：清空 latch,不会再弹第二次 */
+  dismissBootResidue(): void;
+  /** 「本次残留」弹窗处理完:清空累加的直播清单 */
+  dismissLiveResidue(): void;
   /** 记下某会话此刻开着哪块面板,供切回来时还原 */
   rememberPanel(sessionId: string, key: PanelKey | null): void;
   /** silent = 不闪加载态(工具结果触发的自动重拉用);手动刷新按钮走默认可见加载 */
@@ -770,6 +784,12 @@ export const enterChat = (
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
+  // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才落位,
+  // 空/没有时给空表——ResiduePanel 空 items 不渲染,不用另判「有没有 boot 过」。
+  // liveResidue 换会话必清:它是"这个会话活着时收到的直播",不是这个会话的
+  // 历史事实(历史那份已经在上面这行 bootResidue 里了)
+  bootResidue: info.pendingResidue ?? [],
+  liveResidue: [],
   // 设置模式 / DM 让位（侧栏点会话 = 想看聊天），右侧面板则**还原成这个会话
   // 上次的样子**——同一块槽位,两种待遇:前者是"我刚才在别处",后者是"我在这个
   // 会话里就是这么摆的"
@@ -845,6 +865,8 @@ export const useChat = create<ChatState>((set, get) => ({
   panelWide: false,
   ...panelFlags(null),
   liveBgIds: [],
+  bootResidue: [],
+  liveResidue: [],
   panelBySession: {},
   fileJump: null,
   workTree: null,
@@ -1236,6 +1258,9 @@ export const useChat = create<ChatState>((set, get) => ({
   closeBgPanel: () => set({ bgPanelOpen: false }),
 
   setLiveBgIds: (ids) => set({ liveBgIds: ids }),
+
+  dismissBootResidue: () => set({ bootResidue: [] }),
+  dismissLiveResidue: () => set({ liveResidue: [] }),
 
   rememberPanel: (sessionId, key) =>
     set((s) =>
@@ -1864,6 +1889,14 @@ export const useChat = create<ChatState>((set, get) => ({
         if (known && known.title === null) {
           void window.otter.listSessions().then((sessions) => set({ sessions }));
         }
+      }
+      // 「本次残留」直播（issue #759）：turn 收口出走的进程组 / 归档全量 diff
+      // 都走这条 residue_detected。只收当前正看着的会话——同 absorbEvent 的
+      // 分流,archiveSession 归档的若不是当前会话,不弹到这儿来(那份等重开
+      // app 由 bootResidue 重放)。mergeResidue 现查覆盖同 key,直播里新推的
+      // 那批数据比累加进来的旧数据更新
+      if (e.type === "residue_detected" && e.sessionId === get().sessionId) {
+        set((s) => ({ liveResidue: mergeResidue(e.items, s.liveResidue) }));
       }
       if (e.type === "tool_result") {
         clearTimeout(gitGraphAutoRefresh);
