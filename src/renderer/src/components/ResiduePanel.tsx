@@ -11,9 +11,12 @@
 // diffResidue 规则 3 写死了它"仅展示，不提供清理"（没法安全 kill 一个不确定
 // 是谁在监听的端口），所以连 checkbox 都不给，纯展示行。
 //
-// 一键清逐项走 residueClean：ok → 视为完成；ok:false 但带 note(比如"已消失",
-// 说明它已经不在了) → 同样视为完成；其余的真失败留在原地给用户看清红字，
-// 不能假装收工了——所以 onDone 只在"一个真失败都没有"时才调。
+// 一键清逐项走 residueClean：**算不算完成看 result.kind**（issue #759 review
+// C1e，判据是 shared/residue.ts 的 residueSettled，和主进程的差集投影、store
+// 的精确摘除同一个纯函数）。cleaned/gone/skipped = 了结，划掉；failed = 下过手
+// 但它还活着，留在原地给红字——旧写法的 `ok || note` 把 failed 那句"已发送终止
+// 信号，进程组仍存活"当成了成功，进程还在跑却报清完了。所以 onDone 只在
+// "一条 failed 都没有"时才调。
 //
 // review finding 2：onDone 不清 items——items 的真相在挂载方(store)手里，
 // 只随 residue_cleaned 事件按 detector:id 精确摘除；这个组件叫 onDone 单纯
@@ -21,7 +24,7 @@
 // 消失）。挂载方额外给一个 open 布尔——弹窗关着但 items 里还剩东西时(比如
 // 用户点了"以后再说"），组件照 open 隐身，剩下的条目留着给角标去数。
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Badge } from "@/components/ui/badge.js";
@@ -33,7 +36,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.js";
-import type { CleanupResult, ResidueItem } from "../../../shared/residue.js";
+import { residueSettled, type CleanupResult, type ResidueItem } from "../../../shared/residue.js";
 
 /** 分组顺序 + 中文标题（brief 点名的顺序：进程组 / 模拟器 / 端口） */
 const DETECTOR_ORDER = ["process_groups", "simulators", "ports"] as const;
@@ -65,8 +68,7 @@ export function ResiduePanel({
   /** 挂载方区分"上次残留"/"本次残留"，不传就是通用标题 */
   title?: string;
 }) {
-  // owned 默认勾、suspected 默认不勾。只在挂载那一刻算一次(items 引用变了也
-  // 不重算)——用户手上已经改动过的勾选不该被后台重新推的一批数据打乱
+  // owned 默认勾、suspected 默认不勾
   const [checked, setChecked] = useState<Set<string>>(
     () =>
       new Set(
@@ -75,9 +77,32 @@ export function ResiduePanel({
   );
   const [results, setResults] = useState<Map<string, CleanupResult>>(new Map());
   const [busy, setBusy] = useState(false);
+  /** 已经替用户判过一次"要不要默认勾"的 id。有它才能区分"用户手动取消了这条"
+      和"这条是刚到的新条目"——前者不该被重新勾上，后者必须被勾上 */
+  const seeded = useRef<Set<string>>(new Set(items.map((i) => i.id)));
+
+  // 新出现的 owned 条目自动并进 checked（issue #759 review I2）。
+  // 为什么不能只靠 useState 的惰性初值：live 路径上这个组件是**先挂载后来数据**
+  // （挂载方无条件挂着，items 一开始是空数组），初值那一发算的是空集，之后
+  // liveResidue 再怎么到都不会重算——于是"owned 默认勾选"在 live 路径整个失效，
+  // 用户看到一屏全空的 checkbox 和一个禁用的清理按钮。分两批到达也是同理。
+  // 只并入没见过的 id：用户手动取消掉的那条在 seeded 里，不会被后续重渲勾回去
+  useEffect(() => {
+    const fresh = items.filter(
+      (i) => i.confidence === "owned" && !isDisplayOnly(i) && !seeded.current.has(i.id)
+    );
+    for (const i of items) seeded.current.add(i.id);
+    if (fresh.length === 0) return;
+    setChecked((prev) => {
+      const next = new Set(prev);
+      for (const i of fresh) next.add(i.id);
+      return next;
+    });
+  }, [items]);
 
   // 空 items 不渲染 + open=false 不渲染：调用方可以无条件挂载这个组件，
-  // 自己决定要不要弹（items 有剩但 open=false，就是"以后再说"之后的样子）
+  // 自己决定要不要弹（items 有剩但 open=false，就是"以后再说"之后的样子）。
+  // 早退写在 hooks **之后**——React 的 hooks 顺序不能被条件分支打断
   if (items.length === 0 || !open) return null;
 
   const toggle = (id: string): void =>
@@ -97,8 +122,8 @@ export function ResiduePanel({
       return next;
     });
     setBusy(false);
-    // ok 或带 note(比如"已消失")都视为处理完；还有一条真失败就留在原地
-    if (res.every((r) => r.ok || r.note)) onDone();
+    // 判据统一走 residueSettled：cleaned/gone/skipped 算了结，failed 留在原地
+    if (res.every(residueSettled)) onDone();
   };
 
   const groups = DETECTOR_ORDER.map((detector) => ({
@@ -131,8 +156,8 @@ export function ResiduePanel({
               </div>
               {g.rows.map((item) => {
                 const result = results.get(item.id);
-                const done = Boolean(result && (result.ok || result.note));
-                const failed = Boolean(result && !result.ok && !result.note);
+                const done = result !== undefined && residueSettled(result);
+                const failed = result !== undefined && !residueSettled(result);
                 const displayOnly = isDisplayOnly(item);
                 return (
                   <div

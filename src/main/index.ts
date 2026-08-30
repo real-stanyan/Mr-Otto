@@ -67,7 +67,7 @@ import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { LiveGroupRegistry } from "../world/liveGroups.js";
-import { diffResidue, mergeResidue, type ResidueItem, type ResidueSnapshot, type CleanupResult } from "../shared/residue.js";
+import { commandMatches, diffResidue, mergeResidue, type ResidueItem, type CleanupResult } from "../shared/residue.js";
 import { pendingResidue } from "../session/residueProjection.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
@@ -98,7 +98,7 @@ import { withBuiltins } from "./builtinSubagents.js";
 import { createSubagentDef, saveSubagentDef, type SubagentWriteDeps } from "./subagentWrites.js";
 import { createSubagentRunner } from "./subagentRunner.js";
 import { childAgentConfig, createChildAgent, type ChildAgentConfig } from "./resumeChild.js";
-import type { BrowserReadOptions, McpCapability } from "../world/executionWorld.js";
+import type { BrowserReadOptions, McpCapability, ResidueCapability } from "../world/executionWorld.js";
 import type { ToolDefinition } from "../model/adapter.js";
 import { DEFAULT_PREAMBLE, type SubagentDef } from "../shared/subagent.js";
 import { createProtocolService } from "./protocolService.js";
@@ -1476,18 +1476,16 @@ void app.whenReady().then(() => {
       一条陈旧残留，不可误杀。残留条目天然稀疏，一次 ps 的开销可忽略 */
   const groupStillIs = (pgid: number, label: string): boolean => {
     if (!Number.isInteger(pgid) || pgid <= 0) return false;
-    const norm = (t: string) => t.replace(/\s+/g, " ").trim();
-    // 只比头一截：后面常是被 ps 改写/截断的参数，比全串会假阴性
-    const want = norm(label).slice(0, 60);
-    if (!want) return false;
     const r = spawnSync("ps", ["-o", "command=", "-g", String(pgid)], {
       encoding: "utf8",
       timeout: 2_000,
     });
     if (r.status !== 0 || typeof r.stdout !== "string") return false;
-    // 用 includes 而不是 startsWith：组里跑的常是 `sh -c <命令>` 那层壳，
-    // 真正的命令在中间，严格前缀比对会把每一条都判成对不上
-    return r.stdout.split("\n").some((line) => norm(line).includes(want));
+    // 比对判据抽成纯函数 commandMatches（shared/residue.ts，review I4）：
+    // 双向包含，原来只判 `line.includes(want)` 方向是反的——escaped 组里跑的
+    // 常是 `sh -c <命令>` 底下的孙进程，它的命令行是登记命令的**子串**，于是
+    // 恒为 false，重放出来的进程组条目被全数丢弃
+    return r.stdout.split("\n").some((line) => commandMatches(label, line));
   };
 
   /** 上次退出时没清干净的残留（issue #759）：全部会话（归档的也算）的
@@ -1522,23 +1520,41 @@ void app.whenReady().then(() => {
     return out;
   };
 
-  /** residueList/residueClean 共用的"此刻可见清单"（issue #759）：现查
-      （baseline diff 现拍现算）与日志重放（pendingResidue）合并，现查优先
-      （mergeResidue，issue #759 Task 7）——重放条目是落盘那一刻的旧快照，
-      现查是这一刻的真实现场，两边打架时以看得见的那份为准。
-      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
-  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
+  /** 残留清理能力是 **app 级**的（createLocalResidue 只吃那一份全局
+      liveGroups 登记表，跟哪个会话无关），但它挂在每个会话的 world 上。
+      归档已经 `agents.delete(sessionId)` 了，只认自己那份 cap 的话，跨会话
+      清理必然静默空转（review I3）——退到任意一个还活着的 agent 的 cap 上，
+      能力等价。一个 agent 都没有时才真的没能力 */
+  const residueCapFor = (sessionId: string): ResidueCapability | undefined =>
+    agents.get(sessionId)?.world.residue ??
+    [...agents.values()].map((a) => a.world.residue).find((c) => c !== undefined);
+
+  /** 「这个会话此刻的现场 diff」：baseline 快照 vs 此刻快照 + 还在出走的进程组。
+      **没有 baseline 就不做**（review I5）：原来兜底成 `{ts:0,simulators:[],ports:[]}`
+      的空快照，等于宣称"这台机器开机时一个端口一个模拟器都没有"——整机的
+      LISTEN 端口和 booted 模拟器全被算成本会话新增的残留，进了一个默认勾选、
+      一按就清的清单。归档路径（archiveSession）本来就有这道守卫，这里补齐 */
+  const currentResidueDiff = async (sessionId: string): Promise<ResidueItem[]> => {
     const residueCap = agents.get(sessionId)?.world.residue;
     if (!residueCap) return [];
     const baseline = store.lastOfType(sessionId, "residue_baseline");
-    const before: ResidueSnapshot =
-      baseline?.type === "residue_baseline" ? baseline.snapshot : { ts: 0, simulators: [], ports: [] };
+    if (baseline?.type !== "residue_baseline") return [];
     const now = await residueCap.snapshot();
-    const current = diffResidue(
-      before,
+    return diffResidue(
+      baseline.snapshot,
       now,
       liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
     );
+  };
+
+  /** residueList 的"此刻可见清单"（issue #759）：现查（baseline diff 现拍现算）
+      与日志重放（pendingResidue）合并，现查优先（mergeResidue，issue #759
+      Task 7）——重放条目是落盘那一刻的旧快照，现查是这一刻的真实现场，两边
+      打架时以看得见的那份为准。
+      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
+  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
+    if (!agents.get(sessionId)?.world.residue) return [];
+    const current = await currentResidueDiff(sessionId);
     // 只看这一个会话的 detected/cleaned（本方法是"这个会话此刻的清单"，
     // 不是 pendingResidueNow 那种 app 级全量扫描）
     const evs = [
@@ -1549,6 +1565,18 @@ void app.whenReady().then(() => {
       (item) => item.detector !== "process_groups" || groupStillIs(Number(item.id), item.label)
     );
     return mergeResidue(current, replayed);
+  };
+
+  /** residueClean 的匹配池（review I3）：**app 级**，与 pendingResidueNow 同源。
+      为什么不能复用 residueListNow：那份只重放**这一个会话**的
+      detected/cleaned，而弹窗里的条目是 app 级的（归档会话落的那批、别的
+      会话落的那批都在里面）——按会话级清单去匹配，跨会话的 id 一条都对不上，
+      targets 是空数组、循环一圈不做事，UI 那边 `res.every(...)` 对空数组恒真
+      于是报"清理成功"。现查那部分仍然只能问当前会话（baseline 是会话级的），
+      合并时现查优先，同 mergeResidue 的语义 */
+  const residueCleanPool = async (sessionId: string): Promise<ResidueItem[]> => {
+    const current = await currentResidueDiff(sessionId);
+    return mergeResidue(current, pendingResidueNow());
   };
 
   // 「上次退出没清的残留」只报一次（issue #759）：bootInfo() 有三个调用方
@@ -2123,9 +2151,13 @@ void app.whenReady().then(() => {
   // 逐项 cleanup，每项落 residue_cleaned——渲染层不能凭空构造一条清单里没有
   // 的残留物去"清理"（那会调用 cleanup(伪造 item)，行为未定义）
   ipcMain.handle(CHANNELS.residueClean, async (_e, sessionId: string, itemIds: string[]): Promise<CleanupResult[]> => {
-    const residueCap = agents.get(sessionId)?.world.residue;
-    if (!residueCap) return [];
-    const visible = await residueListNow(sessionId);
+    const residueCap = residueCapFor(sessionId);
+    if (!residueCap) {
+      // 一个 agent 都没有 = 真的没有清理能力。不能回空数组：调用方对空数组
+      // 的 every(...) 恒真，会把"什么都没做"渲染成"全清完了"（review I3）
+      return itemIds.map((id) => ({ id, ok: false, kind: "failed" as const, note: "没有可用的清理能力" }));
+    }
+    const visible = await residueCleanPool(sessionId);
     const targets = visible.filter((item) => itemIds.includes(item.id));
     const results: CleanupResult[] = [];
     for (const item of targets) {
@@ -2142,6 +2174,14 @@ void app.whenReady().then(() => {
           result,
         })
       );
+    }
+    // 点了名却在池子里找不到的 id 要**显式回一条失败**（review I3）：漏掉它们
+    // 等于让渲染层拿着一个比请求短的数组去判"全都成功了"——那正是跨会话清理
+    // 静默空转时用户看到"清理成功"的那条路。不落 residue_cleaned 事件：
+    // 什么都没发生过，日志里不该多一条说发生过的记录
+    const found = new Set(targets.map((t) => t.id));
+    for (const id of itemIds) {
+      if (!found.has(id)) results.push({ id, ok: false, kind: "failed", note: "清单中未找到" });
     }
     return results;
   });

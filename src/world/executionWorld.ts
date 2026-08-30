@@ -257,6 +257,18 @@ export interface ProjectsCapability {
     这一层接口一字不改 */
 export interface ResidueCapability {
   snapshot(): Promise<ResidueSnapshot>;
+  /** 清理单个条目。**契约两条**（issue #759 review C1）：
+      1. **不许 throw** —— 一次清理失败不该炸掉整轮清理（调用方是 residueClean
+         的 for 循环，逐项 append 事件）；出了什么事一律回一条 CleanupResult。
+      2. **`kind` 说的是事实，不是心情** —— 三处消费方（residueProjection 的
+         差集、store.applyResidueEvent 的摘除、ResiduePanel 的划线）只认它：
+         · `cleaned` 只在**确认目标已经不在了**之后才允许回（发了信号 ≠ 死了：
+           SIGTERM 可以被忽略，必须探活确认，见 residueLocal.confirmDead）
+         · `gone`    调用时它本来就不在
+         · `skipped` 这个装配明确不清理这一类（比如 suspected 端口"仅展示"）
+         · `failed`  下过手但它还活着，或压根没能下手 —— 这条**留在清单上**
+         `note` 是给人看的一句话，永远不作判据。省略 `kind` = 旧实现，
+         消费方按"已清"对待（residueSettled 的向后兼容分支） */
   cleanup(item: ResidueItem): Promise<CleanupResult>;
 }
 
