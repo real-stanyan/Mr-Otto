@@ -66,10 +66,17 @@ export function PublishSessionDialog({
       setBusy(false);
       return;
     }
-    const candidates = serversUsedInSession(
+    const allServers = useChat.getState().mcpServers.servers;
+    const usedIds = serversUsedInSession(
       events,
-      useChat.getState().mcpServers.servers.map((m) => ({ id: m.id, live: m.status === "connected", tools: m.tools }))
+      allServers.map((m) => ({ id: m.id, live: m.status === "connected", tools: m.tools }))
     );
+    // 进箱三条准入之一是 https（pxEscrow.buildEscrowDoc）——这里不滤，贡献
+    // 出去就是一行永远「云端不可用」的死目录（终审 M3）
+    const httpsIds = new Set(
+      allServers.filter((m) => m.config.kind === "http" && m.config.url?.startsWith("https://")).map((m) => m.id)
+    );
+    const candidates = usedIds.filter((id) => httpsIds.has(id));
     setBusy(false);
     if (candidates.length > 0) {
       setSelected(candidates);

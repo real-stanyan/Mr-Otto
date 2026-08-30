@@ -232,8 +232,12 @@ function ContributeConnectorDialog({
   const contribute = useChat((s) => s.contributeWorkspaceConnector);
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
   // 只有本机已接通的 http-transport server 能贡献进云端箱——同 escrowSync
-  // 「进箱只收 live 的 https http-transport server」那条闸（ADR-0197）
-  const eligible = mcpServers.servers.filter((s) => s.config.kind === "http" && s.status === "connected");
+  // 「进箱只收 live 的 https http-transport server」那条闸（ADR-0197）。
+  // 进箱三条准入之一是 https（pxEscrow.buildEscrowDoc）——这里不滤，贡献
+  // 出去就是一行永远「云端不可用」的死目录（终审 M3）。
+  const eligible = mcpServers.servers.filter(
+    (s) => s.config.kind === "http" && s.status === "connected" && s.config.url?.startsWith("https://")
+  );
   const mine = ws.connectors.filter((c) => c.hostUid === selfUid);
   const [sel, setSel] = useState<ProxySelection>(() => selectionFromAllow(mine));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());

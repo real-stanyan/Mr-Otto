@@ -56,6 +56,13 @@ create or replace function public.is_ws_member(ws uuid, u uuid) returns boolean
 language sql stable security definer set search_path = public as
 $$ select exists (select 1 from workspace_members where workspace_id = ws and uid = u) $$;
 
+-- 包是否被某工作区发布过。security definer：好友策略的排除子查询若直接查
+-- workspace_sessions，会被 wss_select_member 按「查询者」过滤——非成员什么都看不见，
+-- not exists 恒真，排除条款成了空话（终审 C1）
+create or replace function public.pkg_is_ws_published(pub text, pkg text) returns boolean
+language sql stable security definer set search_path = public as
+$$ select exists (select 1 from workspace_sessions where publisher_uid::text = pub and pkg_id = pkg) $$;
+
 -- ── workspaces RLS ────────────────────────────────────────────────────────
 -- owner 可以看自己建的群；成员可以看所在的群
 drop policy if exists ws_select_member on public.workspaces;
@@ -155,6 +162,11 @@ create policy session_packages_select_ws on storage.objects for select to authen
 -- 工作区发布的包语义是「成员可见」不是「我的所有好友可见」——被
 -- workspace_sessions 指名的包只走 0015 的成员策略；代价：同一个包同时走
 -- DM 分享与工作区发布时，好友那条路读不到（罕见，接受）。
+--
+-- 排除条款必须过 pkg_is_ws_published（security definer），不能直接查
+-- workspace_sessions：policy 子查询按「查询者」过 RLS，攻击者（发布者的好友，
+-- 但不是工作区成员）被 wss_select_member 挡在外面、什么都看不见，
+-- not exists 对他恒真，排除条款形同虚设（终审 C1）。
 drop policy if exists "session_packages_select_friend" on storage.objects;
 create policy "session_packages_select_friend"
   on storage.objects for select to authenticated
@@ -169,9 +181,5 @@ create policy "session_packages_select_friend"
           and greatest(f.requester, f.addressee) = greatest(auth.uid(), ((storage.foldername(name))[1])::uuid)
       )
     )
-    and not exists (
-      select 1 from public.workspace_sessions ws
-      where ws.publisher_uid::text = (storage.foldername(name))[1]
-        and ws.pkg_id = (storage.foldername(name))[2]
-    )
+    and not public.pkg_is_ws_published((storage.foldername(name))[1], (storage.foldername(name))[2])
   );

@@ -257,11 +257,27 @@ export function createProxyManager(deps: ProxyManagerDeps): ProxyManager {
       if (deps.cloud && now() - (cloudFetchedAt.get(hostUid) ?? 0) > cloudTtlMs) refreshCloudBorrow(hostUid);
       return cloudServers.get(hostUid) ?? [];
     };
+    // 好友+同群重叠：对方既是配对好友（有活着的通道）又是工作区 host 时，
+    // 工作区那份授权只在云端复刻，通道那头压根不知道有这些 server。旧写法
+    // 「通道 ready 就整个替掉云视图」会让工作区授权的服务在 host 上线的
+    // 那一刻反而从工具表里消失、host 下线后又冒出来——按台 id 求并集，
+    // 通道那份撞车时赢（同一 id 两边都报，通道数据更新鲜），才是对的形状
+    // （终审 H2）。
+    const mergedServers = (): McpServerHandle[] => {
+      const chan = ready() ? channel()!.mcp.servers() : [];
+      const byId = new Map<string, McpServerHandle>();
+      for (const s of cloudView()) byId.set(s.id, s);
+      for (const s of chan) byId.set(s.id, s); // 通道赢
+      return [...byId.values()];
+    };
     return {
       ready: async () => {},
-      servers: () => (ready() ? channel()!.mcp.servers() : cloudView()),
+      servers: mergedServers,
       callTool: async (serverId, tool, args, signal) => {
-        if (ready()) return channel()!.mcp.callTool(serverId, tool, args, signal);
+        // 按台现选路：通道 ready 且通道视图确实曝光这台 serverId 才走通道，
+        // 否则打云端——工作区授权的那些 server 通道执行器根本不认识
+        const chanReady = ready() && (channel()!.mcp.servers().some((s) => s.id === serverId));
+        if (chanReady) return channel()!.mcp.callTool(serverId, tool, args, signal);
         if (!deps.cloud) {
           // 没有云端执行面时保持旧话术（proxyMcp 同款）：抛错不回落本地（ADR-0166）
           throw new Error("代理通道断了——A（分享者）不在线。A 关机或吊销时好友代理不可用，这是设计");
