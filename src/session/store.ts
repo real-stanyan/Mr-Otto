@@ -35,6 +35,10 @@ export interface SessionSummary {
       系统归档（reason 缺席或 "system"）根本不出现在返回值里。
       归档状态 = 最后一条 session_archived / session_unarchived 事件说了算 */
   archived: boolean;
+  /** 分享给过谁（session_shared 事件投影，issue #809）：去重后的好友显示名。
+      空数组 = 纯本地会话。名字是**分享那一刻**的（事件只记显示名不记 uid，
+      见 events.ts 那条注释），UI 拿它匹配头像是尽力而为 */
+  sharedWith: string[];
 }
 
 const SCHEMA = `
@@ -457,22 +461,31 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                    FROM events e5
                   WHERE e5.session_id = e.session_id
                     AND e5.type IN ('session_archived', 'session_unarchived')
-                  ORDER BY e5.seq DESC LIMIT 1) AS archivedReason
+                  ORDER BY e5.seq DESC LIMIT 1) AS archivedReason,
+                (SELECT json_group_array(DISTINCT json_extract(payload, '$.friendName'))
+                   FROM events e6
+                  WHERE e6.session_id = e.session_id
+                    AND e6.type = 'session_shared') AS sharedWithJson
            FROM events e
           GROUP BY session_id
           HAVING archivedReason IS NULL OR archivedReason <> 'system'
           ORDER BY lastTs DESC`
       )
-      .all() as (Omit<SessionSummary, "archived"> & {
+      .all() as (Omit<SessionSummary, "archived" | "sharedWith"> & {
         renamed: string | null; autotitled: string | null; archivedReason: string | null;
+        sharedWithJson: string | null;
       })[];
     // 手动改名（最后一条胜出）压过模型浓缩标题（session_autotitled，issue #335），
     // 浓缩标题压过自动标题（第一条 user_message 首行）；
     // 空白一律算没有（显示截断交给 UI 的 ellipsis）
-    return rows.map(({ renamed, autotitled, archivedReason, ...r }) => ({
+    return rows.map(({ renamed, autotitled, archivedReason, sharedWithJson, ...r }) => ({
       ...r,
       title: renamed?.trim() || autotitled?.trim() || r.title?.split("\n")[0]?.trim() || null,
       archived: archivedReason === "user", // system 归档已被 HAVING 滤掉,能到这的非空值只有 "user"
+      // json_group_array 空集回 '[]'；防御 null（子查询整体为空的边界）与非串元素
+      sharedWith: (JSON.parse(sharedWithJson ?? "[]") as unknown[]).filter(
+        (n): n is string => typeof n === "string" && n !== ""
+      ),
     }));
   }
 

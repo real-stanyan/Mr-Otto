@@ -117,6 +117,7 @@ import {
   folderName,
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
+  partitionShared,
   taskSessions,
 } from "./sessionGroups.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
@@ -215,6 +216,9 @@ const IS_MAC = isMac();
 
 
 const TITLE_SPAN = "text-[13px] max-w-full truncate";
+/** 侧栏平铺列表里的小段头（任务栏的「已同步 / 本地」分区，issue #809）。
+    与「史前会话」那行同一副长相——同一层级的东西一张脸 */
+const SECTION_HEADING = "text-[11px] text-muted-foreground tracking-[0.04em] pt-[10px] px-[10px] pb-[2px]";
 const WHEN_SPAN = "text-[11px] text-muted-foreground font-mono max-w-full truncate";
 /* 其余文本框与主输入框同一套焦点语言(浏览器默认外环太糙) */
 const FOCUS_INPUT =
@@ -1599,6 +1603,34 @@ function ArchivedGroup({
 
 /** 左侧常驻侧栏（shadcn Sidebar,offcanvas）：会话列表（设置模式下换成栏目导航）
     + 底部设置/登录槽。handler 与原自制版一字不动,只换结构壳（spec 修订 2026-08-18） */
+/** 会话名右侧那串「同步给谁了」的小头像（issue #809）。
+    session_shared 只记**分享那一刻**的显示名不记 uid（events.ts 的取舍——日志是
+    历史记录），所以头像按名字对当前好友表匹配，是尽力而为：好友改了名就退回
+    首字母圆点。最多画 3 枚，多的折成 +N；全名单在 title 里 */
+function SharedAvatars({ names }: { names: readonly string[] }) {
+  const friends = useChat((s) => s.friendsSnapshot.friends);
+  if (names.length === 0) return null;
+  return (
+    <span
+      className="flex shrink-0 items-center -space-x-[5px]"
+      title={`已同步给 ${names.join("、")}`}
+    >
+      {names.slice(0, 3).map((n) => {
+        const url = friends.find((f) => f.profile.name === n)?.profile.avatarUrl;
+        return (
+          <Avatar key={n} className="size-4 border border-sidebar">
+            {url ? <AvatarImage src={url} alt={n} /> : null}
+            <AvatarFallback className="text-[9px]">{n.slice(0, 1)}</AvatarFallback>
+          </Avatar>
+        );
+      })}
+      {names.length > 3 && (
+        <span className="pl-[7px] font-mono text-[10px] text-muted-foreground">+{names.length - 3}</span>
+      )}
+    </span>
+  );
+}
+
 function AppSidebar() {
   const sessions = useChat((s) => s.sessions);
   const asks = useChat((s) => s.asks);
@@ -1752,6 +1784,8 @@ function AppSidebar() {
         <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
           {s.title ?? fallbackLabel}
         </span>
+        {/* 同步给谁了（issue #809）：只有分享过的会话才有这串，本地会话零占位 */}
+        <SharedAvatars names={s.sharedWith} />
       </SidebarMenuButton>
       {/* ✕ 直删换成 ⋮ 菜单（ADR-0087）：删除旁边有了"归档"这条
           后悔药,菜单让两种语义并排可辨——归档可逆不设闸,
@@ -1806,14 +1840,24 @@ function AppSidebar() {
   useEffect(() => {
     if (settingsSection !== null) setArchivedView(false);
   }, [settingsSection]);
-  // 任务平铺列表：sessions 本来就是最近活跃在前,不再分组
-  const taskList = useMemo(() => taskSessions(sessions, builtin), [sessions, builtin]);
+  // 任务平铺列表：sessions 本来就是最近活跃在前,不再分组。
+  // 同步（分享）过的会话抽出来单列一段（issue #809）——分享之后「对面还有一份」，
+  // 和纯本地会话不再是同一种东西，混在一摞里这条身份就看不见了
+  const taskParts = useMemo(() => partitionShared(taskSessions(sessions, builtin)), [sessions, builtin]);
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着。
-  // 内置 Default 的会话归任务栏,不在这儿再出现一组
-  const groups = useMemo(
-    () => groupSessionsByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
+  // 内置 Default 的会话归任务栏,不在这儿再出现一组。
+  // 项目栏同样先把同步过的抽走：分区那段平铺（分享的单位是会话不是工程），
+  // 剩下的照旧按工程分组
+  const projectParts = useMemo(
+    () =>
+      partitionShared(
+        sessions.filter(
+          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace !== builtin
+        )
+      ),
     [sessions, builtin]
   );
+  const groups = useMemo(() => groupSessionsByWorkspace(projectParts.local), [projectParts]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedProjects(COLLAPSED_KEY));
   const [archivedCollapsed, setArchivedCollapsed] = useState<Set<string>>(() =>
     loadCollapsedProjects(ARCHIVED_COLLAPSED_KEY)
@@ -2023,12 +2067,35 @@ function AppSidebar() {
           </>
         ) : tab === "tasks" ? (
           // 任务视图：内置 Default 工作区的会话平铺（最近活跃在前，列表本来的序）。
-          // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」
+          // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」。
+          // 同步过的单列一段在上（issue #809）；一条都没分享过时不出段头，
+          // 列表长相和从前一模一样——分区是给用过分享的人的，不是给所有人的税
           <SidebarMenu className="p-2">
-            {taskList.map((s) => sessionRow(s, "任务"))}
+            {taskParts.shared.length > 0 && (
+              <>
+                <div className={SECTION_HEADING}>已同步</div>
+                {taskParts.shared.map((s) => sessionRow(s, "任务"))}
+                <div className={SECTION_HEADING}>本地</div>
+              </>
+            )}
+            {taskParts.local.map((s) => sessionRow(s, "任务"))}
           </SidebarMenu>
         ) : (
           <>
+            {/* 同步过的会话单列一段在最上（issue #809）：分享的单位是会话不是工程，
+                平铺；行的 fallback 标题给它原属工程的文件夹名，线索不断 */}
+            {projectParts.shared.length > 0 && (
+              <SidebarGroup className="py-1">
+                <SidebarGroupLabel>已同步</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {projectParts.shared.map((s) =>
+                      sessionRow(s, s.workspace ? folderName(s.workspace) : "会话")
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
             {/* 一个工程一组：组序按组内最近会话时间，最近动过的工程浮上来。
                 折叠状态记 localStorage（UI 偏好不进事件日志，沿用 theme.ts 的先例） */}
             {groups.map((g) => {
@@ -2072,7 +2139,7 @@ function AppSidebar() {
                 </SidebarGroup>
               );
             })}
-            {groups.length === 0 && (
+            {groups.length === 0 && projectParts.shared.length === 0 && (
               // 新手第一次切过来的空态:顺手把「项目是什么」讲了
               <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
                 还没有项目。项目就是在你自己指定的文件夹里开的会话——
