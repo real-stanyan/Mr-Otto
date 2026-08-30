@@ -74,3 +74,30 @@ describe("pxCloudClient.call", () => {
     await expect(p).rejects.toThrow("被取消");
   });
 });
+
+describe("pxCloudClient.fetchAudit（issue #799 / ADR-0197 切片 4）", () => {
+  it("带 since 打 /px/v1/audit，认得的条目过形状闸回来", async () => {
+    let seenUrl = "";
+    const c = client(async (url) => {
+      seenUrl = url;
+      return json(200, { audits: [
+        { ts: 5, fromUid: "b-uid", serverId: "square", tool: "pay", outcome: "ok" },
+        { ts: 6, fromUid: "b-uid", serverId: "square", tool: "refund", outcome: "denied", note: "白名单没这把刀" },
+        { ts: "bad", fromUid: "b-uid", serverId: "x", tool: "y", outcome: "ok" }, // 坏条目丢掉
+        { ts: 7, fromUid: "b-uid", serverId: "x", tool: "y", outcome: "weird" }, // outcome 不认识丢掉
+      ] });
+    });
+    const out = await c.fetchAudit(4);
+    expect(seenUrl).toBe("https://edge.test/px/v1/audit?since=4");
+    expect(out).toEqual([
+      { ts: 5, fromUid: "b-uid", serverId: "square", tool: "pay", outcome: "ok" },
+      { ts: 6, fromUid: "b-uid", serverId: "square", tool: "refund", outcome: "denied", note: "白名单没这把刀" },
+    ]);
+  });
+
+  it("HTTP 失败 / 网络断 / 没登录一律回 null——「拉不到」不是「没有」", async () => {
+    expect(await client(async () => json(500, { error: { message: "boom" } })).fetchAudit(0)).toBeNull();
+    expect(await client(async () => { throw new Error("net down"); }).fetchAudit(0)).toBeNull();
+    expect(await client(async () => json(200, { audits: [] }), null).fetchAudit(0)).toBeNull();
+  });
+});

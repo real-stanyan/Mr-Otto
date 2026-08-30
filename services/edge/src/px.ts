@@ -19,9 +19,12 @@
 // （issue #797）。各写各的时，一处对不上的表现是 PUT 恒 400。
 export {
   parseEscrowDoc,
+  appendAudit,
+  PX_AUDIT_CAP,
   type EscrowDoc,
   type EscrowGrant,
   type EscrowService,
+  type PxAudit,
 } from "../../../src/shared/remote/pxEscrow.js";
 import { parseEscrowDoc, type EscrowDoc, type EscrowGrant, type EscrowService } from "../../../src/shared/remote/pxEscrow.js";
 
@@ -121,25 +124,8 @@ export async function openEscrow(keyB64: string, sealed: string): Promise<Escrow
   }
 }
 
-// ─── 审计（云端为准，A 上线增量拉回，ADR-0197）────────────────────
-
-export interface PxAudit {
-  ts: number;
-  fromUid: string;
-  serverId: string;
-  tool: string;
-  outcome: "ok" | "denied" | "error";
-  /** 拒绝/失败的人话。放行不带 */
-  note?: string;
-}
-
-/** 环形上限：审计是台账不是日志仓，A 拉走后云端只需兜底最近一段 */
-export const PX_AUDIT_CAP = 500;
-
-export function appendAudit(list: readonly PxAudit[], entry: PxAudit): PxAudit[] {
-  const next = [...list, entry];
-  return next.length > PX_AUDIT_CAP ? next.slice(next.length - PX_AUDIT_CAP) : next;
-}
+// 审计形状（PxAudit / appendAudit）也在 pxEscrow.ts——切片 4 A 侧回流要读同一份，
+// 搬过去共用（re-export 在文件头）。
 
 // ─── 迷你 MCP 客户端（Streamable HTTP，执行那一跳）──────────────────
 //
