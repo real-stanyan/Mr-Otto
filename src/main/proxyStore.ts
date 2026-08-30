@@ -92,6 +92,9 @@ export interface ProxyStoreData {
   channels: ProxyChannel[];
   /** 我从哪些好友那儿借了服务（B 重启后据此重新连回去） */
   borrows: ProxyBorrow[];
+  /** 云端审计回流的游标（ADR-0197 切片 4）：已拉到的最大 ts，下次
+      GET /px/v1/audit?since=这个值 只取增量。缺席 = 从没拉过，从 0 起 */
+  cloudAuditCursor?: number;
 }
 
 /** 审计账的容量上限——append 不封顶会把文件越撑越大。超了丢最旧的 */
@@ -114,6 +117,7 @@ export function parseProxyStore(json: string | null | undefined): ProxyStoreData
       pins: Array.isArray(d.pins) ? d.pins : [],
       channels: Array.isArray(d.channels) ? d.channels : [],
       borrows: Array.isArray(d.borrows) ? d.borrows : [],
+      ...(typeof d.cloudAuditCursor === "number" ? { cloudAuditCursor: d.cloudAuditCursor } : {}),
     };
   } catch {
     return emptyProxyStore();
@@ -241,6 +245,46 @@ export function appendAudit(data: ProxyStoreData, entry: ProxyAuditRecord): Prox
   const audits = [entry, ...data.audits];
   if (audits.length > AUDIT_CAP) audits.length = AUDIT_CAP;
   return { ...data, audits };
+}
+
+/**
+ * 云端审计并入本地台账（ADR-0197 切片 4）。
+ *
+ * 云端那笔（PxAudit）比本地的瘦：没有 argsSummary（参数不出 DO，回流的是
+ * 台账不是参数库）、没有独立 decision（denied 就是拒，其余都是执行过了）。
+ * 映射钉死在这里，两边字段各自演化时这一处是唯一要改的。
+ *
+ * 顺序：本地与云端的时间戳会交错（B 的通道断着打云端时 A 可能同时在本地
+ * 记通道那侧的账），所以并入后整体按 ts 新→旧重排，而不是简单头插。
+ * 去重兜底：游标写盘失败重拉会给出重复条目，按 ts+friendUid+tool 挡一层。
+ */
+export function mergeCloudAudits(
+  data: ProxyStoreData,
+  entries: readonly { ts: number; fromUid: string; serverId: string; tool: string; outcome: "ok" | "denied" | "error"; note?: string }[]
+): ProxyStoreData {
+  if (entries.length === 0) return data;
+  const seen = new Set(data.audits.map((a) => `${a.ts} ${a.friendUid} ${a.tool}`));
+  const fresh: ProxyAuditRecord[] = [];
+  let cursor = data.cloudAuditCursor ?? 0;
+  for (const e of entries) {
+    if (e.ts > cursor) cursor = e.ts;
+    const key = `${e.ts} ${e.fromUid} ${e.tool}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fresh.push({
+      ts: e.ts,
+      friendUid: e.fromUid,
+      serverId: e.serverId,
+      tool: e.tool,
+      argsSummary: "（云端执行）",
+      decision: e.outcome === "denied" ? "denied" : "executed",
+      outcome: e.outcome,
+      ...(e.note !== undefined ? { detail: e.note } : {}),
+    });
+  }
+  const audits = [...fresh, ...data.audits].sort((a, b) => b.ts - a.ts);
+  if (audits.length > AUDIT_CAP) audits.length = AUDIT_CAP;
+  return { ...data, audits, cloudAuditCursor: cursor };
 }
 
 
