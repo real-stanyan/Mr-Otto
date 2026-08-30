@@ -118,4 +118,32 @@ describe("SessionShareCard", () => {
     const { container } = render(<SessionShareCard body="晚上吃啥" mine={false} fromName="小明" />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  // #783 的形态：桥那头抛异常（handler reject / 形状不对的 TypeError）时，
+  // 按钮不许停在「接入中…」永远转圈——要回到可点状态并说一句人话。
+  // store 层正常返回 false 的路已有上面几条测过，这两条测的是 **reject** 那条路
+  it("importShared 抛异常：按钮回到可点状态并显示失败，而不是永远转圈", async () => {
+    seed({ importShared: vi.fn(async () => { throw new TypeError("Cannot read properties of undefined"); }) });
+    render(
+      <SessionShareCard body={envelope({ invite: INVITE, grantServers: ["shopify"] })} mine={false} fromName="小明" />
+    );
+    await userEvent.click(screen.getByText("只导入对话"));
+
+    expect(await screen.findByText(/导入失败/)).toBeInTheDocument();
+    expect(screen.getByText("只导入对话")).toBeEnabled(); // busy 已复位
+    expect(screen.queryByText("导入中…")).not.toBeInTheDocument();
+  });
+
+  it("acceptProxyInvite 抛异常：同样复位并报错，不进导入", async () => {
+    const importShared = vi.fn(async () => true);
+    seed({ importShared, acceptProxyInvite: vi.fn(async () => { throw new Error("ipc boom"); }) });
+    render(
+      <SessionShareCard body={envelope({ invite: INVITE, grantServers: ["shopify"] })} mine={false} fromName="小明" />
+    );
+    await userEvent.click(screen.getByText("导入并接上 TA 的服务"));
+
+    expect(await screen.findByText(/导入失败|接不上对方的服务/)).toBeInTheDocument();
+    expect(screen.getByText("导入并接上 TA 的服务")).toBeEnabled();
+    expect(importShared).not.toHaveBeenCalled();
+  });
 });

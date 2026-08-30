@@ -40,21 +40,28 @@ export function SessionShareCard({
   const onImport = async (withGrant: boolean) => {
     setBusy(withGrant ? "grant" : "plain");
     setFailed(null);
-    // 先握手再导入：反过来的话，服务接不上时对话已经躺进工作区了，
-    // 而这张卡上那句报错说的是另一件事——人得靠猜才知道哪一半成了
-    if (withGrant && env.invite) {
-      const paired = await acceptProxyInvite(env.invite, PROXY_SHARE_INVITE_TTL_MS);
-      if (!paired) {
-        setBusy(null);
-        // 最常见的两种：对方退出过 app（一次性密钥只在内存里，ADR-0170）、
-        // 或者超过 24 小时。两种的解法是同一句话，所以不细分
-        setFailed("接不上对方的服务（详见好友错误提示）——可以先「只导入对话」，或让 TA 重新分享一次");
-        return;
+    // 整段兜住 + finally 复位：这两个 await 走的是 IPC 桥，handler 抛异常时
+    // invoke 会 reject——不兜的话 setBusy(null) 永远轮不到，按钮停在
+    // 「接入中…」转一辈子圈（#783 的表现形态）。错误照样落一句人话
+    try {
+      // 先握手再导入：反过来的话，服务接不上时对话已经躺进工作区了，
+      // 而这张卡上那句报错说的是另一件事——人得靠猜才知道哪一半成了
+      if (withGrant && env.invite) {
+        const paired = await acceptProxyInvite(env.invite, PROXY_SHARE_INVITE_TTL_MS);
+        if (!paired) {
+          // 最常见的两种：对方退出过 app（一次性密钥只在内存里，ADR-0170）、
+          // 或者超过 24 小时。两种的解法是同一句话，所以不细分
+          setFailed("接不上对方的服务（详见好友错误提示）——可以先「只导入对话」，或让 TA 重新分享一次");
+          return;
+        }
       }
+      const ok = await importShared(env.prefix, workspace);
+      if (!ok) setFailed("导入失败（详见好友错误提示）");
+    } catch (e) {
+      setFailed(`导入失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
     }
-    const ok = await importShared(env.prefix, workspace);
-    setBusy(null);
-    if (!ok) setFailed("导入失败（详见好友错误提示）");
   };
 
   return (
