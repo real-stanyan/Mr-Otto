@@ -119,15 +119,56 @@ describe("publishSessionToWorkspace（Task 9）", () => {
     expect(deps.packSessionCalls).toBe(0);
   });
 
-  it("insertSessionRow 失败：归一成 FriendsResult，不抛（包已经传上去了，行没插成）", async () => {
+  it("insertSessionRow 失败：补偿删除刚上传的包，再把原始错误归一成 FriendsResult（审查 round 1）", async () => {
+    // unpublishSession 够不到这个孤儿包——它需要一个从未存在过的 rowId 才能删，
+    // 所以补偿删除必须在 publishSessionToWorkspace 自己的 catch 里做，不能指望调用方
+    // 事后调 unpublishSession 清理（这条曾经是本文件一句错误的注释，见审查 round 1）
+    let removedKeys: string[] | null = null;
+    const client = {
+      storage: {
+        from: () => ({
+          list: async () => ({
+            data: [{ name: "manifest.json" }, { name: "events.jsonl" }],
+            error: null,
+          }),
+          remove: async (keys: string[]) => {
+            removedKeys = keys;
+            return { error: null };
+          },
+        }),
+      },
+    } as unknown as SupabaseClient;
     const deps = sendDeps({
+      client: () => client,
       insertSessionRow: async () => {
         throw new Error("rls");
       },
     });
     const r = await publishSessionToWorkspace(deps, "ws-1", "src", "标题");
     expect(r).toEqual({ ok: false, message: "rls" });
-    expect(deps.uploaded).not.toBeNull(); // 已经上传过——撤回走 unpublishSession 清理
+    expect(deps.uploaded).not.toBeNull(); // 已经上传过
+    expect(removedKeys).toEqual(["sender-uid/pkg-1/manifest.json", "sender-uid/pkg-1/events.jsonl"]);
+  });
+
+  it("insertSessionRow 失败 + 补偿删除也失败：仍然报原始错误，不是补偿失败的错误", async () => {
+    const client = {
+      storage: {
+        from: () => ({
+          list: async () => {
+            throw new Error("storage boom");
+          },
+          remove: async () => ({ error: null }),
+        }),
+      },
+    } as unknown as SupabaseClient;
+    const deps = sendDeps({
+      client: () => client,
+      insertSessionRow: async () => {
+        throw new Error("rls");
+      },
+    });
+    const r = await publishSessionToWorkspace(deps, "ws-1", "src", "标题");
+    expect(r).toEqual({ ok: false, message: "rls" });
   });
 });
 
@@ -199,6 +240,31 @@ describe("unpublishSession（Task 9）：删行 + deletePackage", () => {
     const r = await unpublishSession(client, "row-1", "pub-uid/pkg-1");
     expect(r).toEqual({ ok: false, message: "rls" });
     expect(removeCalled).toBe(false);
+  });
+
+  it("行删成功但删包失败：仍然报 ok:true——行已经删了，撤回对用户来说已经生效（审查 round 1）", async () => {
+    let deletedRowId: string | null = null;
+    const client = {
+      from: () => ({
+        delete: () => ({
+          eq: async (_col: string, val: string) => {
+            deletedRowId = val;
+            return { data: null, error: null };
+          },
+        }),
+      }),
+      storage: {
+        from: () => ({
+          list: async () => {
+            throw new Error("storage boom");
+          },
+          remove: async () => ({ error: null }),
+        }),
+      },
+    } as unknown as SupabaseClient;
+    const r = await unpublishSession(client, "row-1", "pub-uid/pkg-1");
+    expect(r).toEqual({ ok: true, value: null });
+    expect(deletedRowId).toBe("row-1");
   });
 });
 

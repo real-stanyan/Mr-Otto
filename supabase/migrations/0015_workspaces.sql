@@ -145,3 +145,33 @@ create policy session_packages_select_ws on storage.objects for select to authen
         and public.is_ws_member(ws.workspace_id, auth.uid())
     )
   );
+
+-- ── 收紧 0014 的好友策略：工作区发布的包不再走"好友全体可见"（审查 round 1）──
+-- 0014 的 session_packages_select_friend 给上传者的**所有** accepted 好友开了
+-- 读权限——不区分这个包是 1:1 DM 分享的，还是发布进了工作区。后者一旦被
+-- workspace_sessions 指名，语义就变成「工作区成员可见」，不是「我的所有好友
+-- 可见」：一个只想给工作区看的包，不该因为发布者恰好和某个不在工作区里的
+-- 人是好友，就被那个人读到。
+-- 工作区发布的包语义是「成员可见」不是「我的所有好友可见」——被
+-- workspace_sessions 指名的包只走 0015 的成员策略；代价：同一个包同时走
+-- DM 分享与工作区发布时，好友那条路读不到（罕见，接受）。
+drop policy if exists "session_packages_select_friend" on storage.objects;
+create policy "session_packages_select_friend"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'session-packages'
+    and (
+      (storage.foldername(name))[1] = auth.uid()::text
+      or exists (
+        select 1 from public.friendships f
+        where f.status = 'accepted'
+          and least(f.requester, f.addressee) = least(auth.uid(), ((storage.foldername(name))[1])::uuid)
+          and greatest(f.requester, f.addressee) = greatest(auth.uid(), ((storage.foldername(name))[1])::uuid)
+      )
+    )
+    and not exists (
+      select 1 from public.workspace_sessions ws
+      where ws.publisher_uid::text = (storage.foldername(name))[1]
+        and ws.pkg_id = (storage.foldername(name))[2]
+    )
+  );

@@ -101,7 +101,19 @@ export async function publishSessionToWorkspace(
     await deps.upload(packageKeys(prefix, pkg));
 
     // 插行（本体在 Storage，行只带 pkg_id + 展示字段——ADR-0198 ④）
-    const row = await deps.insertSessionRow(client, { workspaceId, publisherUid: uid, pkgId, title });
+    let row: { id: string };
+    try {
+      row = await deps.insertSessionRow(client, { workspaceId, publisherUid: uid, pkgId, title });
+    } catch (e) {
+      // 补偿：包已经传上去了，行没插成——留着就是一个 unpublishSession 够不到的
+      // 孤儿包（它要一个从未存在过的 rowId 才能删）。尽力删掉，删失败就算了
+      // （原错误优先，同 supabaseWorkspacesApi.createWorkspace 的补偿取舍）
+      await deletePackage(client, prefix).then(
+        () => undefined,
+        () => undefined,
+      );
+      throw e;
+    }
 
     return { ok: true, value: { rowId: row.id, pkgId } };
   } catch (e) {
@@ -111,8 +123,11 @@ export async function publishSessionToWorkspace(
 
 /** 撤回一次发布：删 workspace_sessions 那一行 + 删 Storage 里的包文件。
     先删行后删包（同 workspaceManager 的"权威判定优先"取舍：行是权威——行没了，
-    列表页就再也看不到这次发布；包本体是这一行的后续清理，删包失败不该让
-    行又重新"冒出来"，只是留了几个孤儿文件，不影响可见的撤回结果）。
+    列表页就再也看不到这次发布；包本体是这一行的后续清理）。
+    两步**不共用一个 try**：行删失败要真的报 { ok:false }（撤回没生效，列表页
+    还看得到这次发布，用户需要知道）；行删成功之后，包清理是纯粹的收尾——
+    包删失败最多留几个孤儿文件，不该让一次已经对用户可见生效的撤回显示失败
+    （那会让人误以为会话还挂在工作区里，其实已经看不到了）。
     pkgPrefix = {publisher_uid}/{pkg_id}，与 publishSessionToWorkspace 里的
     prefix 同一个值——调用方（index.ts）从行数据里取，不是这里现拼 */
 export async function unpublishSession(
@@ -122,11 +137,16 @@ export async function unpublishSession(
 ): Promise<FriendsResult<null>> {
   try {
     await WorkspacesApi.deleteSessionRow(client, rowId);
-    await deletePackage(client, pkgPrefix);
-    return { ok: true, value: null };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
   }
+  try {
+    await deletePackage(client, pkgPrefix);
+  } catch {
+    // 吞掉：行已经删了，撤回对用户来说已经生效——包清理失败只是留几个孤儿
+    // 文件，不该把一次成功的撤回报成失败（对称于上面补偿删除的取舍）
+  }
+  return { ok: true, value: null };
 }
 
 /** 把发布在 workspaceId 里的一份会话导入成本机的新 fork 会话。
