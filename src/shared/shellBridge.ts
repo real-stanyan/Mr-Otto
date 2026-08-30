@@ -7,6 +7,7 @@
 //   订阅（main 推，renderer 听）：onEvent / onApprovalRequest / onTurnStatus
 
 import type { DiffViewLine } from "./diffView.js";
+import type { ResidueItem, CleanupResult } from "./residue.js";
 import type { SessionEvent, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ThinkingMode } from "./thinking.js";
 import type { GrantScope } from "./permissionGrants.js";
@@ -158,6 +159,11 @@ export interface BootInfo {
   toolDefs: ToolDefinition[];
   /** 是否打包版（生产）。dev 实例 = false，渲染层拿它挂右下角 dev 角标 */
   isPackaged: boolean;
+  /** 上次退出时没清干净的残留（issue #759）：日志里 residue_detected 减
+      residue_cleaned 的差集，再逐条探活后剩下的那些。UI 第一眼弹「上次残留」。
+      **可选** = 旧渲染层零改动（同 preview / fromAgent 的先例）；空/没有残留
+      时缺席，不发一个空数组 */
+  pendingResidue?: ResidueItem[];
 }
 
 export type TurnStatus = "idle" | "running";
@@ -451,6 +457,11 @@ export interface ShellBridge {
       这个判据只有主进程手里那张 live map 有，所以单开一路问。
       未知/未激活的 sessionId 回空数组（同 readSessionEvents 的语义） */
   liveBackgroundTasks(sessionId: string): Promise<Array<{ id: string; cmd: string }>>;
+  /** 当前会话此刻的残留清单（issue #759）：escaped 组现查 + 日志差集探活合并。
+      审计旁路：world 无 residue 能力时回空数组 */
+  residueList(sessionId: string): Promise<ResidueItem[]>;
+  /** 清理选中项，逐项落 residue_cleaned，返回逐项结果（失败=已消失，不算错） */
+  residueClean(sessionId: string, itemIds: string[]): Promise<CleanupResult[]>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** 归档会话（ADR-0087）：落一条 session_archived(reason:"user")。
@@ -1145,6 +1156,8 @@ export const CHANNELS = {
   readSessionEvents: "otter:readSessionEvents",
   startSideSession: "otter:startSideSession",
   liveBackgroundTasks: "otter:liveBackgroundTasks",
+  residueList: "otter:residueList",
+  residueClean: "otter:residueClean",
   deleteSession: "otter:deleteSession",
   archiveSession: "otter:archiveSession",
   unarchiveSession: "otter:unarchiveSession",

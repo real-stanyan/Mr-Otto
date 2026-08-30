@@ -39,6 +39,24 @@ describe("enterChat(换会话的状态落位)", () => {
   });
 });
 
+describe("enterChat(残留清单落位, issue #759)", () => {
+  it("BootInfo.pendingResidue 落成 bootResidue 一次性 latch；liveResidue 换会话清零", () => {
+    const next = enterChat(
+      boot({
+        pendingResidue: [
+          { detector: "ports", id: "port:9999", label: "python3:9999", confidence: "owned", cleanupHint: "kill 进程组 1" },
+        ],
+      })
+    );
+    expect(next.bootResidue).toHaveLength(1);
+    expect(next.liveResidue).toEqual([]);
+  });
+
+  it("没有 pendingResidue 时 bootResidue 是空数组，不是 undefined", () => {
+    expect(enterChat(boot()).bootResidue).toEqual([]);
+  });
+});
+
 describe("enterChat(每会话的右侧面板记忆,issue #578)", () => {
   it("这个会话上次开着哪块,就还原哪块——切走再切回来面板还在", () => {
     const next = enterChat(boot({ sessionId: "session-b" }), { "session-b": "files" });
