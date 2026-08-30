@@ -1,6 +1,8 @@
-// workspaceView 纯逻辑单测（Task 12，ADR-0198 切片 3）：
+// workspaceView 纯逻辑单测（Task 12，ADR-0198 切片 3；cloudState 三态化——
+// 审查 round 1，措辞纪律同 px：拿不到清单说「未知」不说「不可用」）：
 // snapshot → 三个 tab 的行模型。钉住 brief 点名的三条易错规则：
-// cloudReady 三态（自己贡献+云端在/自己贡献+云端不在/别人贡献恒 true）、
+// cloudState 四种局面（自己贡献+云端在=ready/自己贡献+云端不在=off/
+// 自己贡献+清单拿不到=unknown/别人贡献恒 ready）、
 // canKick（owner 且不是自己）、toolsSummary（[] → 全部工具）。
 
 import { describe, expect, it } from "vitest";
@@ -25,25 +27,30 @@ const WS: WorkspaceSnapshot = {
 };
 
 describe("connectorRows", () => {
-  it("cloudReady 三态：自己贡献的行 = hostedServerIds 含该 serverId", () => {
+  it("cloudState：自己贡献的行 + hostedServerIds 含该 serverId → ready", () => {
     const rows = connectorRows(WS, "owner-uid", ["shopify"]);
     const mine = rows.find((r) => r.serverId === "shopify")!;
     expect(mine.mine).toBe(true);
-    expect(mine.cloudReady).toBe(true);
+    expect(mine.cloudState).toBe("ready");
   });
 
-  it("cloudReady 三态：自己贡献但不在 hostedServerIds 里（含 null）→ false", () => {
+  it("cloudState：自己贡献的行 + hostedServerIds 不含该 serverId（非 null）→ off", () => {
     const notHosted = connectorRows(WS, "owner-uid", []).find((r) => r.serverId === "shopify")!;
-    expect(notHosted.cloudReady).toBe(false);
-    const nullHosted = connectorRows(WS, "owner-uid", null).find((r) => r.serverId === "shopify")!;
-    expect(nullHosted.cloudReady).toBe(false);
+    expect(notHosted.cloudState).toBe("off");
   });
 
-  it("cloudReady 三态：别人贡献的行恒 true（B 侧无从探箱）", () => {
+  it("cloudState：自己贡献的行 + hostedServerIds === null（拿不到清单）→ unknown，不是 off", () => {
+    // 拿不到清单 ≠ 不可用——同 px 一节的措辞纪律（hostStatusLine 的
+    // "断线但箱在说云端可用不说没连上"），这里不能把"不知道"塌成"不可用"
+    const unknown = connectorRows(WS, "owner-uid", null).find((r) => r.serverId === "shopify")!;
+    expect(unknown.cloudState).toBe("unknown");
+  });
+
+  it("cloudState：别人贡献的行恒 ready（B 侧无从探箱）", () => {
     const rows = connectorRows(WS, "owner-uid", null);
     const theirs = rows.find((r) => r.serverId === "notion")!;
     expect(theirs.mine).toBe(false);
-    expect(theirs.cloudReady).toBe(true);
+    expect(theirs.cloudState).toBe("ready");
   });
 
   it("toolsSummary：[] → 全部工具，否则 N 个工具", () => {

@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { useChat } from "../store.js";
-import { connectorRows, memberRows, sessionRows } from "../lib/workspaceView.js";
+import { connectorRows, memberRows, sessionRows, type ConnectorCloudState } from "../lib/workspaceView.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   formatProxyTime, type ProxySelection,
@@ -159,6 +159,25 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
 
 // ─── 连接器 tab ───────────────────────────────────────────────────────
 
+/** 云端状态的点：三档不能合并成两档——"unknown"（拿不到清单）与 "off"
+    （清单里确实没有）是两件事，前者不该说成后者的负面措辞（同 px 一节
+    hostStatusLine 的纪律：拿不到 ≠ 不可用，审查 round 1 finding）*/
+function CloudStateDot({ state }: { state: ConnectorCloudState }) {
+  if (state === "ready") {
+    return <span className="size-[7px] shrink-0 rounded-full bg-brand" aria-label="云端可用" title="云端可用" />;
+  }
+  if (state === "unknown") {
+    return (
+      <span
+        className="size-[7px] shrink-0 rounded-full bg-muted-foreground/40"
+        aria-label="云端状态未知"
+        title="云端状态未知——本机暂时拿不到这份清单"
+      />
+    );
+  }
+  return <span className="size-[7px] shrink-0 rounded-full bg-border" aria-label="云端不可用" />;
+}
+
 function ConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
   // hostedServerIds 的渲染层来源目前只有 A 侧「云端可用」总览按 friendUid 聚合
@@ -179,11 +198,7 @@ function ConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string
         <div className="flex flex-col gap-1">
           {rows.map((row) => (
             <div key={row.serverId} className={cn(ROW, "border border-border")}>
-              <span
-                className={cn("size-[7px] shrink-0 rounded-full", row.cloudReady ? "bg-brand" : "bg-border")}
-                aria-label={row.cloudReady ? "云端可用" : "云端不可用"}
-                title={row.cloudReady ? "云端可用" : undefined}
-              />
+              <CloudStateDot state={row.cloudState} />
               <span className="min-w-0 flex-1 truncate">
                 <b className="font-medium">{row.serverId}</b>
                 <span className="text-muted-foreground"> · {row.hostLabel} · {row.toolsSummary}</span>
