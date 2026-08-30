@@ -232,6 +232,51 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
     expect(h.manager.hostUids().slice().sort()).toEqual(["friend-a", "friend-b"]);
   });
 
+  it("contributeConnector：目录写失败——箱是真相，授权已经生效不回滚（审查 round 1）", async () => {
+    const h = harness({
+      upsertConnectorRow: async () => {
+        // 不记 call：throw 发生在 saveStore/resyncEscrow 之后，这里要证明的是
+        // "即使目录这一步炸了，前面两步已经落地"，而不是这一步本身有没有记账
+        throw new Error("目录写失败(网络)");
+      },
+    });
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [{ workspaceId: "ws-1", allow: [{ serverId: "old-server", tools: ["a"] }] }],
+    });
+
+    const res = await h.manager.contributeConnector("ws-1", "new-server", ["read"]);
+
+    expect(res).toEqual({ ok: false, message: "目录写失败(网络)" });
+    // 箱是真相：saveStore + resyncEscrow 已经跑完(顺序上先于抛错的 upsertConnectorRow)
+    expect(h.calls).toEqual(["saveStore", "resyncEscrow"]);
+    // 授权已经生效——workspaceGrantFor 能看到合并后的条目，不因为目录写失败被撤回
+    const grant = h.getStore().workspaceGrants.find((g) => g.workspaceId === "ws-1");
+    expect(grant?.allow).toEqual([
+      { serverId: "old-server", tools: ["a"] },
+      { serverId: "new-server", tools: ["read"] },
+    ]);
+  });
+
+  it("withdrawConnector：目录写失败——本地台账的撤回已经生效不回滚", async () => {
+    const h = harness({
+      deleteConnectorRow: async () => {
+        throw new Error("目录删除失败(网络)");
+      },
+    });
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [{ workspaceId: "ws-1", allow: [{ serverId: "only-one", tools: [] }] }],
+    });
+
+    const res = await h.manager.withdrawConnector("ws-1", "only-one");
+
+    expect(res).toEqual({ ok: false, message: "目录删除失败(网络)" });
+    expect(h.calls).toEqual(["saveStore", "resyncEscrow"]);
+    // 唯一一条 allow 已经被删空 → 整条 grant 已经不见了，即使目录那一步失败
+    expect(h.getStore().workspaceGrants.find((g) => g.workspaceId === "ws-1")).toBeUndefined();
+  });
+
   it("未登录早退：client() 为 null 时全部动作回 还没登录，不碰任何依赖", async () => {
     const h = harness();
     h.signOut();
