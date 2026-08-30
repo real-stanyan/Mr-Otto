@@ -30,6 +30,15 @@ export function useBackgroundRuns(): BackgroundRun[] {
   );
 }
 
+/** 当前会话每个后台任务的输出尾巴（issue #772）：taskId ⇒ 尾巴。
+    面板画终端要的就是它。空对象是个常量——每次现造一个会让选择器每帧都变 */
+export function useBackgroundOutputs(): Readonly<Record<string, string>> {
+  const sessionId = useChat((s) => s.sessionId);
+  return useChat((s) => (sessionId ? (s.bgOutputBySession[sessionId] ?? NO_OUTPUT) : NO_OUTPUT));
+}
+
+const NO_OUTPUT: Readonly<Record<string, string>> = {};
+
 /** 常驻在 App 上的那一份：轮询 live 名单 + 决定要不要自己把面板掀开。
     整个应用只该挂一次（挂两次就是两趟轮询）。 */
 export function useBackgroundWatch(): void {
@@ -42,16 +51,15 @@ export function useBackgroundWatch(): void {
   const hasCandidates = useMemo(() => hasUndeliveredBackgroundTasks(events), [events]);
 
   useEffect(() => {
-    const { setLiveBgIds } = useChat.getState();
     if (!sessionId || !hasCandidates) {
-      setLiveBgIds([]);
+      useChat.getState().setLiveBg(sessionId, []);
       return;
     }
     let alive = true;
     const pull = async () => {
       const live = await window.otter.liveBackgroundTasks(sessionId);
       // 会话切走后回来的那趟结果不能往新会话身上贴
-      if (alive) useChat.getState().setLiveBgIds(live.map((t) => t.id));
+      if (alive) useChat.getState().setLiveBg(sessionId, live);
     };
     void pull();
     const timer = setInterval(() => void pull(), LIVE_POLL_MS);

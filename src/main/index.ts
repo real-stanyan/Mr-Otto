@@ -501,6 +501,8 @@ void app.whenReady().then(() => {
       rawSend(CHANNELS.assistantDelta, { sessionId, text, kind }),
     toolOutput: (sessionId, toolCallId, chunk, stream) =>
       rawSend(CHANNELS.toolOutput, { sessionId, toolCallId, chunk, stream }),
+    bgOutput: (sessionId, taskId, chunk, stream) =>
+      rawSend(CHANNELS.bgTaskOutput, { sessionId, taskId, chunk, stream }),
   });
   const send: typeof rawSend = (channel, ...args) => {
     deltas.flush();
@@ -1933,6 +1935,12 @@ void app.whenReady().then(() => {
     // bash 对它们拒绝 run_in_background（没人管的结果不该被承诺"会注回"）
     self.backgroundTasks.onCompletion((c) => handleBackgroundDone(self.sessionId, c));
     self.backgroundTasks.onStart((s) => handleBackgroundStarted(self.sessionId, s));
+    // 输出直播（issue #772）：走合帧器而不是直发——后台任务多半是构建/全量测试，
+    // 刷屏速度和前台 bash 一模一样。**不落盘**：这一路是 UI 增强，完整输出仍由
+    // 完成回注那条 user_message 承担（同 ExecOptions.onOutput 的边界）
+    self.backgroundTasks.onOutput((o) =>
+      deltas.bgOutput(self.sessionId, o.id, o.chunk, o.stream)
+    );
     return self;
   };
 

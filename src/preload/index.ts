@@ -163,6 +163,7 @@ const bridge: ShellBridge = {
   onTurnDiff: subscribe(CHANNELS.turnDiff),
   onAssistantDelta: subscribe(CHANNELS.assistantDelta),
   onToolOutput: subscribe(CHANNELS.toolOutput),
+  onBgTaskOutput: subscribe(CHANNELS.bgTaskOutput),
   onTerminalData: subscribe(CHANNELS.terminalData),
   onTerminalExit: subscribe(CHANNELS.terminalExit),
   onBrowserState: subscribe(CHANNELS.browserState),

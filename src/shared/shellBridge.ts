@@ -239,6 +239,16 @@ export interface ToolOutputChunk {
   stream: "stdout" | "stderr";
 }
 
+/** 后台任务输出直播碎片（issue #772，与 ToolOutputChunk 同形不同键）：
+    渲染层按 taskId 攒着，喂给后台任务面板里那一个个终端。
+    同样不落日志——完整输出以完成回注的那条 user_message 为准 */
+export interface BgTaskOutputChunk {
+  sessionId: string;
+  taskId: string;
+  chunk: string;
+  stream: "stdout" | "stderr";
+}
+
 /** write_file 审批预览：旧内容 vs 新内容。diff 是投影（两个事实推得出），
     渲染层现算，不落盘。oldText 为 null = 新文件 */
 export interface WriteFilePreview {
@@ -449,8 +459,10 @@ export interface ShellBridge {
       日志唯一推不出的是：started 没配上 completed 的那些，进程到底还活着，
       还是随上一次 app 退出一起死了——重放会把上次的孤儿一并放出来。
       这个判据只有主进程手里那张 live map 有，所以单开一路问。
-      未知/未激活的 sessionId 回空数组（同 readSessionEvents 的语义） */
-  liveBackgroundTasks(sessionId: string): Promise<Array<{ id: string; cmd: string }>>;
+      未知/未激活的 sessionId 回空数组（同 readSessionEvents 的语义）。
+      tail = 主进程手里那份输出尾巴（issue #772）：推送只覆盖此刻在场的人，
+      重开面板 / 重载渲染层要靠这一趟补回来 */
+  liveBackgroundTasks(sessionId: string): Promise<Array<{ id: string; cmd: string; tail: string }>>;
   /** 删除会话 = 整会话从库里物理抹除，不可逆（ADR-0002） */
   deleteSession(sessionId: string): Promise<void>;
   /** 归档会话（ADR-0087）：落一条 session_archived(reason:"user")。
@@ -822,6 +834,7 @@ export interface ShellBridge {
   onTurnDiff(cb: (update: TurnDiffUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
   onToolOutput(cb: (chunk: ToolOutputChunk) => void): Unsubscribe;
+  onBgTaskOutput(cb: (chunk: BgTaskOutputChunk) => void): Unsubscribe;
   onTerminalData(cb: (chunk: { id: string; data: string }) => void): Unsubscribe;
   onTerminalExit(cb: (info: { id: string; exitCode: number }) => void): Unsubscribe;
   /** 浏览器状态变了(导航/标题/加载中/失败)。渲染层按 sessionId 分流 */
@@ -1315,6 +1328,7 @@ export const CHANNELS = {
   turnDiff: "otter:turnDiff",
   assistantDelta: "otter:assistantDelta",
   toolOutput: "otter:toolOutput",
+  bgTaskOutput: "otter:bgTaskOutput",
 } as const;
 
 declare global {

@@ -7,6 +7,7 @@ function harness() {
   const sink: DeltaSink = {
     assistantDelta: (s, text, kind) => calls.push(`a:${s}:${kind}:${text}`),
     toolOutput: (s, id, chunk, stream) => calls.push(`t:${s}:${id}:${stream}:${chunk}`),
+    bgOutput: (s, id, chunk, stream) => calls.push(`b:${s}:${id}:${stream}:${chunk}`),
   };
   let pending: (() => void) | null = null;
   let armed = 0;
@@ -83,5 +84,31 @@ describe("createDeltaCoalescer", () => {
     h.fire();
     h.co.flush();
     expect(h.calls).toEqual(["t:s1:c1:stdout:输出"]);
+  });
+});
+
+// 后台任务的输出（issue #772）走同一个合帧器：它的典型来源是构建/全量测试,
+// 刷屏速度和前台 bash 一模一样,直发就是每秒上百次 IPC。
+describe("bgOutput", () => {
+  it("同一个 taskId 的碎片在一帧里拼成一条，与 toolOutput 各走各的键", () => {
+    const h = harness();
+    h.co.bgOutput("s1", "bg-1", "web", "stdout");
+    h.co.toolOutput("s1", "bg-1", "别的", "stdout"); // 同名不同族:不许并到一起
+    h.co.bgOutput("s1", "bg-1", "pack", "stdout");
+    h.co.bgOutput("s1", "bg-1", "警告", "stderr"); // 分流也分开
+    h.fire();
+    expect(h.calls).toEqual([
+      "b:s1:bg-1:stdout:webpack",
+      "t:s1:bg-1:stdout:别的",
+      "b:s1:bg-1:stderr:警告",
+    ]);
+  });
+
+  it("会话之间不合并 —— bg-N 的计数器每个会话各数各的", () => {
+    const h = harness();
+    h.co.bgOutput("s1", "bg-1", "A", "stdout");
+    h.co.bgOutput("s2", "bg-1", "B", "stdout");
+    h.fire();
+    expect(h.calls).toEqual(["b:s1:bg-1:stdout:A", "b:s2:bg-1:stdout:B"]);
   });
 });
