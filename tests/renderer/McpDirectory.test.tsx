@@ -403,64 +403,17 @@ describe("McpDirectory", () => {
     expect(await screen.findByText("未核验")).toBeInTheDocument();
   });
 
-  // ── 已知接不上的那几条（issue #760）───────────────────────────────
-  it("已知接不上的不发「添加」—— 提供一个必然失败的动作就是撒谎", async () => {
-    // GitHub 的授权服务器不支持动态客户端注册，实测点了必失败（#733）。
-    // 这个结论早就写在 catalog 里，却只写进了 authNote，而 authNote 只在
-    // 未核验条目的确认框里露面 —— 于是一个用户都没看见，按钮照发
+  // blocked 那几条用例搬去 McpConnectorPage.test.tsx 了（#766）：它们原来借
+  // 「目录里的 GitHub 是 blocked 的」当支点，而 GitHub 一改走 token 支点就没了。
+  // 卡片这一侧只剩「note 这一档画得出来」，用 failed 走同一个分支
+  it("连不上的那台，卡片上画一句说明而不是一颗按钮", async () => {
     deferredBridge();
-    render(<McpDirectory servers={[]} />);
-
-    await screen.findByText("开发与部署");
-    expect(screen.queryByRole("button", { name: "添加 GitHub" })).not.toBeInTheDocument();
-    // 条目本身留着：GitHub 是目录里最常被找的一台，删了用户的结论会是
-    // "这软件接不了 GitHub"
-    expect(screen.getByText("GitHub")).toBeInTheDocument();
-  });
-
-  it("已经装上的那台也不发「授权」—— 用户就是这么卡在「待接通」里的", async () => {
-    deferredBridge();
-    render(<McpDirectory servers={[srv("github", "needs-auth")]} />);
+    render(<McpDirectory servers={[srv("canva", "failed")]} />);
 
     await screen.findByText("待接通");
-    expect(screen.queryByRole("button", { name: "授权 GitHub" })).not.toBeInTheDocument();
-  });
-
-  it("已装的那台：详情页上一颗「授权」都不该有（#764）", async () => {
-    // #760 只挡住了上半张页面 —— McpServerEditor（#753 搬进详情页的管理面）
-    // 有它自己的授权按钮和自己的错误红字，两者都不认识 blocked。
-    // 于是同一页上两句互相矛盾的解释：横幅说"对方不支持动态注册"，红字说
-    // "凭据不对"——后者把用户支去检查 token，而那不是问题所在
-    deferredBridge();
-    const github: McpServerStatus = {
-      ...srv("github", "needs-auth"),
-      error: "MCP error -32000: HTTP 401 Unauthorized",
-    };
-    render(<McpDirectory servers={[github]} />);
-    await screen.findByText("待接通");
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "GitHub 详情" }));
-    await screen.findByText(/不支持动态客户端注册/);
-
-    expect(screen.queryAllByRole("button", { name: "授权" })).toHaveLength(0);
-    expect(screen.queryByText(/对方拒绝了这次请求/)).not.toBeInTheDocument();
-    // 证据不丢：这台此刻的原话挪进了横幅的 title
-    expect(screen.getByText(/不支持动态客户端注册/)).toHaveAttribute(
-      "title",
-      expect.stringContaining("401")
-    );
-  });
-
-  it("详情页把原因画出来，不是挂在 tooltip 上", async () => {
-    // 用户是带着"为什么点了没反应"这个问题点进来的，答案该在视线落点上
-    deferredBridge();
-    render(<McpDirectory servers={[]} />);
-    await screen.findByText("开发与部署");
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "GitHub 详情" }));
-
-    expect(await screen.findByText(/不支持动态客户端注册/)).toBeInTheDocument();
-    expect(screen.getByText(/#697/)).toBeInTheDocument();
+    expect(screen.getByText("连不上")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "授权 Canva" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加 Canva" })).not.toBeInTheDocument();
   });
 
   // ── 详情页（issue #745）─────────────────────────────────────────────

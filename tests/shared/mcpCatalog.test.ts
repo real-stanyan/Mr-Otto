@@ -104,12 +104,18 @@ describe("mcpCatalog", () => {
     }
   });
 
-  it("#733 实测过的那三条挂着 blocked", () => {
-    // 判据与复现法在 #733：拿仓里那份 SDK 跑一遍授权前半段。
-    // 哪天 #697 落地、或者对方补上动态注册，删掉字段的同时也该更新这里
-    for (const id of ["github", "asana", "figma"]) {
-      const e = MCP_CATALOG.find((x) => x.id === id);
-      expect(e?.blocked, `${id} 应该标着接不上`).toBeTruthy();
-    }
+  it("此刻一条 blocked 都没有 —— 有的话是笔明账，不是默认状态（#766）", () => {
+    // 机制留着（ADR-0190），使用者暂时归零：GitHub 改走 token 就能连，
+    // Asana / Figma 确认没有不经 OAuth 的路，删了。
+    // 这条不是在禁止 blocked——是让"目录里躺着一台接不上的"必须有人**改红了
+    // 才能进来**，顺手把 #766 的判断（是真没路，还是只试了 OAuth 那一条）
+    // 逼到那一刻去做
+    const blocked = MCP_CATALOG.filter((e) => e.blocked !== undefined).map((e) => e.id);
+    expect(
+      blocked,
+      `这些条目标着接不上：${blocked.join("、")}。` +
+        "先确认不是只试了 OAuth 那一条路（#766 就是这么错过 GitHub 的 token 路的）；" +
+        "确实没路就删掉条目，要留就改这条断言并说明为什么留"
+    ).toEqual([]);
   });
 });

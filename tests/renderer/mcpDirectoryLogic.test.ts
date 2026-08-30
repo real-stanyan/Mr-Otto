@@ -15,6 +15,7 @@ import {
   type DirectoryItem,
 } from "../../src/renderer/src/lib/mcpDirectory.js";
 import type { McpDisplayStatus } from "../../src/renderer/src/lib/mcpForm.js";
+import { MCP_CATALOG } from "../../src/shared/mcpCatalog.js";
 import type { CatalogCategory, CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import { mapRegistryServer } from "../../src/shared/mcpRegistry.js";
 
@@ -114,6 +115,24 @@ describe("uniqueServerId", () => {
 
   it("空名字不返回空 —— 落盘的对象键不能是空串", () => {
     expect(uniqueServerId("   ", [])).not.toBe("");
+  });
+});
+
+describe("目录里 GitHub 那条真的能连（#766）", () => {
+  it("填的 token 变成 Authorization: Bearer …", () => {
+    // 实测过 https://api.githubcopilot.com/mcp/ 收任意来源的 bearer token
+    // （200 + 44 个工具）。这条钉的是**我们这一侧**：请求头名和 Bearer 前缀
+    // 拼对了没有。拼错的话服务端 401，而用户看到的会是一条指向授权的失败，
+    // 凭据却已经躺在 mcp.json 里（headerTemplates 那段注释里的老坑）
+    const gh = MCP_CATALOG.find((e) => e.id === "github");
+    expect(gh?.auth, "改走 token 之后不该再标成 oauth").toBe("token");
+    const cfg = configFromEntry(gh!, { github_token: "gho_abc" });
+    expect(cfg).toEqual({
+      kind: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      headers: { Authorization: "Bearer gho_abc" },
+      enabled: true,
+    });
   });
 });
 
@@ -299,7 +318,8 @@ describe("installSlot", () => {
 
   it("已知接不上的：既不发「添加」也不发「授权」，改说一句原因（#760）", () => {
     // 撒谎的形状跟 #722 是同一个：界面提供了一个我们**已经知道**会失败的动作。
-    // 目录里那三条（GitHub / Asana / Figma）实测过点了必失败（#733），
+    // 当初那三条（GitHub / Asana / Figma）实测过点了必失败（#733；后来
+    // GitHub 改走 token 能连了，另外两条删掉了，见 #766），
     // 结论早就写在 catalog 里，却从没上过屏
     const blocked = (installed: McpDisplayStatus | null): DirectoryItem => ({
       entry: { ...http("x"), blocked: "这台的授权服务器不支持动态注册" },
