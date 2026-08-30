@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { mcpCatalogTool } from "../../src/tools/mcpCatalog.js";
+import { mcpCatalogTool, render } from "../../src/tools/mcpCatalog.js";
+import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 function worldWith(getJson?: (url: string) => Promise<unknown>): ExecutionWorld {
@@ -41,13 +42,29 @@ describe("mcp_catalog 工具", () => {
     expect(out).toContain("mcp_authorize");
   });
 
-  it("已知接不上的那几条要跟水獭说清楚 —— 界面知道不等于 agent 知道（#760）", async () => {
+  it("已知接不上的要跟水獭说清楚 —— 界面知道不等于 agent 知道（#760）", () => {
     // 这句原来混在 authNote 里，#760 把它拆成独立字段。不在这儿也说一次的话，
     // 水獭照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
-    // 永远连不上的 server 在用户的 mcp.json 里
-    const out = String(await mcpCatalogTool.run({ query: "github" }, world));
+    // 永远连不上的 server 在用户的 mcp.json 里。
+    // 用合成条目：目录里此刻一条 blocked 都没有（#766），但这条行为得留着
+    const out = render({
+      id: "x",
+      name: "X",
+      description: "",
+      transport: "http",
+      url: "https://x.test/mcp",
+      params: [],
+      auth: "oauth",
+      authNote: "配好后点一次授权",
+      blocked: "对方的授权服务器不支持动态注册",
+    });
     expect(out).toContain("现在接不上");
     expect(out).toContain("别装这台");
+  });
+
+  it("没标 blocked 的不会平白多出那句话", async () => {
+    const out = String(await mcpCatalogTool.run({ query: "supabase" }, world));
+    expect(out).not.toContain("现在接不上");
   });
 
   it("命中时返回可直接照着填的字段", async () => {
