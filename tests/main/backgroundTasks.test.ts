@@ -18,7 +18,7 @@ describe("BackgroundTasks", () => {
     const gate = new Promise<ExecResult>((r) => (release = r));
     const id = bg.start("npm run build", () => gate);
     expect(id).toBe("bg-1");
-    expect(bg.live()).toEqual([{ id: "bg-1", cmd: "npm run build" }]);
+    expect(bg.live()).toEqual([{ id: "bg-1", cmd: "npm run build", tail: "" }]);
 
     release(ok);
     await new Promise((r) => setTimeout(r, 0));
@@ -106,5 +106,77 @@ describe("回注 user_message 的 origin 标（issue #428）", () => {
     // 人打的字里凑巧写了同样的正文也不会被认成后台任务
     const h = human[1]!;
     expect(h.type === "user_message" && h.origin).toBeUndefined();
+  });
+});
+
+// 输出直播（issue #772 / ADR-0194）：主进程既往外推碎片，也自己留一份尾巴——
+// 推送只覆盖此刻在场的人，重开面板 / 重载渲染层要靠 live() 里那份尾巴补回来。
+describe("BackgroundTasks 的输出尾巴", () => {
+  it("run 拿到的 sink 一头喂订阅者、一头攒进 live() 的尾巴", async () => {
+    const bg = new BackgroundTasks();
+    const pushed: string[] = [];
+    bg.onCompletion(() => {});
+    bg.onOutput((o) => pushed.push(`${o.id}:${o.stream}:${o.chunk}`));
+
+    let release!: (r: ExecResult) => void;
+    const gate = new Promise<ExecResult>((r) => (release = r));
+    bg.start("npm run build", (onOutput) => {
+      onOutput("webpack…\n", "stdout");
+      onOutput("warn\n", "stderr");
+      return gate;
+    });
+
+    expect(pushed).toEqual(["bg-1:stdout:webpack…\n", "bg-1:stderr:warn\n"]);
+    // stdout/stderr 不分家：终端视角按到达顺序混流（同 toolOutputByCall）
+    expect(bg.live()).toEqual([
+      { id: "bg-1", cmd: "npm run build", tail: "webpack…\nwarn\n" },
+    ]);
+
+    release(ok);
+    await new Promise((r) => setTimeout(r, 0));
+    // 完成了也留着：结果贴回对话之前那张卡还画在面板上
+    expect(bg.tailOf("bg-1")).toBe("webpack…\nwarn\n");
+  });
+
+  it("没人订阅照样攒尾巴 —— 直播是增强，攒不攒不取决于有没有人在看", () => {
+    const bg = new BackgroundTasks();
+    bg.start("x", (onOutput) => {
+      onOutput("有", "stdout");
+      return new Promise<ExecResult>(() => {});
+    });
+    expect(bg.tailOf("bg-1")).toBe("有");
+  });
+
+  it("尾巴有界：只留最后 4000 字，头部先丢", () => {
+    const bg = new BackgroundTasks();
+    bg.start("x", (onOutput) => {
+      onOutput("头".repeat(3_000), "stdout");
+      onOutput("尾".repeat(3_000), "stdout");
+      return new Promise<ExecResult>(() => {});
+    });
+    const tail = bg.tailOf("bg-1");
+    expect(tail.length).toBe(4_000);
+    expect(tail.endsWith("尾")).toBe(true);
+    expect(tail.startsWith("头")).toBe(true); // 丢的是头部，不是整段重来
+  });
+
+  it("任务数超上限时淘汰已死的那些，正在写字的终端不被清屏", async () => {
+    const bg = new BackgroundTasks();
+    bg.onCompletion(() => {});
+    // 一个长跑的：先起，永远不完
+    bg.start("长跑", (onOutput) => {
+      onOutput("still here", "stdout");
+      return new Promise<ExecResult>(() => {});
+    });
+    // 再灌 40 个瞬间跑完的，把上限撑爆
+    for (let i = 0; i < 40; i++) {
+      bg.start(`短命 ${i}`, (onOutput) => {
+        onOutput("x", "stdout");
+        return Promise.resolve(ok);
+      });
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(bg.tailOf("bg-1")).toBe("still here");
+    expect(bg.tailOf("bg-2")).toBe(""); // 最早那批已经被淘汰
   });
 });

@@ -43,6 +43,11 @@ export interface ExecOptions {
   stdin?: string;
 }
 
+/** 后台执行的可选项（issue #772）。刻意只有 onOutput 这一格：signal 不能有
+    （后台任务躲开 turn 信号正是它独立成方法的理由），timeoutMs 也不给
+    （30 分钟那个上限是 world 的承诺，不是调用方的旋钮）。 */
+export type DetachedOptions = Pick<ExecOptions, "onOutput">;
+
 export interface HttpPostOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -284,8 +289,12 @@ export interface ExecutionWorld {
       **刻意是独立方法而不是 ExecOptions 里的 flag**：withAbortSignal 把 turn
       信号焊进每个 exec 调用，后台任务必须躲开那次注入——分开的方法让装饰器
       "透传不加签"成为显式决定而不是遗漏。可选 = 向后兼容（假 world 零改动）；
-      缺席 = 该装配不支持后台执行（bash 的 run_in_background 报错说明） */
-  execDetached?(cmd: string): Promise<ExecResult>;
+      缺席 = 该装配不支持后台执行（bash 的 run_in_background 报错说明）。
+      **onOutput（issue #772）**：与 exec 同款直播，边界也同款——碎片永不进日志，
+      完整输出仍由 ExecResult 一次性返回。给它的理由是后台任务面板画的是终端：
+      一个跑三十分钟的构建，没有直播就只有一个空盒子加一个跳动的光标。
+      实现可忽略（假 world 零改动） */
+  execDetached?(cmd: string, opts?: DetachedOptions): Promise<ExecResult>;
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
@@ -351,7 +360,9 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
     exec: (cmd, opts) => world.exec(cmd, { ...opts, signal }),
     // 后台执行透传**不加签**（issue #389）：turn 中止不该杀后台任务——
     // 它的生命周期本来就设计成跨 turn 的
-    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
+    ...(world.execDetached
+      ? { execDetached: (cmd: string, o?: DetachedOptions) => world.execDetached!(cmd, o) }
+      : {}),
     http: {
       postJson: (url, body, opts) => world.http.postJson(url, body, { ...opts, signal }),
       // 用 ?. 探测而非 world.http.getJson：像 tests/loop/engine.autoCompact.test.ts
@@ -408,9 +419,25 @@ export function withExecOutput(
 ): ExecutionWorld {
   return {
     fs: world.fs,
-    exec: (cmd, opts) => world.exec(cmd, { ...opts, onOutput }),
+    // 调用方自己的 onOutput 不被顶掉，**两个都喂**（issue #772）：bash 的
+    // 前台自动转后台要在同一条 exec 上再挂一份自己的尾巴（喂给后台任务面板），
+    // 而引擎这一份是按 toolCallId 挂到工具卡上的——两个接收方，一条输出流
+    exec: (cmd, opts) => {
+      const caller = opts?.onOutput;
+      return world.exec(cmd, {
+        ...opts,
+        onOutput: caller
+          ? (chunk, stream) => {
+              caller(chunk, stream);
+              onOutput(chunk, stream);
+            }
+          : onOutput,
+      });
+    },
     // 后台执行不接直播（v1）：完整结果在完成回注时整段给
-    ...(world.execDetached ? { execDetached: (cmd: string) => world.execDetached!(cmd) } : {}),
+    ...(world.execDetached
+      ? { execDetached: (cmd: string, o?: DetachedOptions) => world.execDetached!(cmd, o) }
+      : {}),
     http: world.http,
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),
     ...(world.browser ? { browser: world.browser } : {}),

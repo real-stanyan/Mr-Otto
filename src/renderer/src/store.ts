@@ -310,6 +310,11 @@ interface ChatState {
       日志推不出这一件事(started 没配上 completed 的,可能是随上次退出一起死的),
       所以单独存一份;面板和自动开面板的判据都从 events + 这份名单推 */
   liveBgIds: readonly string[];
+  /** 后台任务的输出直播（issue #772）：会话 ⇒ taskId ⇒ 尾巴。
+      **按会话套一层不是洁癖**：taskId 是 `bg-N`，计数器每个会话各数各的，
+      平铺一层的话 A 会话的 bg-1 会把 B 会话的 bg-1 的终端画出来。
+      和 toolOutputByCall 同款边界：碎片不落日志，完整输出以回注的那条消息为准 */
+  bgOutputBySession: Readonly<Record<string, Readonly<Record<string, string>>>>;
   /** 「上次残留」弹窗（issue #759）：BootInfo.pendingResidue 的落位，一次性
       latch——boot 那一刻搬进来。**注意**：这份数组本身不会因为弹窗关掉就清空
       （review finding 2：onDone 整表清空会把用户没处理的条目一起吞掉）——
@@ -573,7 +578,13 @@ interface ChatState {
   openBgPanel(): void;
   closeBgPanel(): void;
   /** 主进程那张 live 名单的落位(轮询在 useBackgroundWatch 里) */
-  setLiveBgIds(ids: readonly string[]): void;
+  /** 主进程那趟 live 名单的落点（issue #452 / #772）。名单整份替换，
+      输出尾巴**只合并不替换**：完成了但还没贴回对话的任务不在 live 里，
+      可它的卡片还画在面板上——整份替换会把它的终端当场清空 */
+  setLiveBg(
+    sessionId: string | null,
+    tasks: ReadonlyArray<{ id: string; tail: string }>
+  ): void;
   /** 「上次残留」弹窗关掉(清完/以后再说)：只关弹窗(bootResidueOpen=false)，
       不动 bootResidue 数组——数组由 residue_cleaned 精确摘除(review finding 2) */
   dismissBootResidue(): void;
@@ -994,6 +1005,7 @@ export const useChat = create<ChatState>((set, get) => ({
   panelWide: false,
   ...panelFlags(null),
   liveBgIds: [],
+  bgOutputBySession: {},
   bootResidue: [],
   bootResidueOpen: false,
   liveResidue: [],
@@ -1391,7 +1403,18 @@ export const useChat = create<ChatState>((set, get) => ({
   openBgPanel: () => set(panelFlags("bg")),
   closeBgPanel: () => set({ bgPanelOpen: false }),
 
-  setLiveBgIds: (ids) => set({ liveBgIds: ids }),
+  setLiveBg: (sessionId, tasks) =>
+    set((s) => {
+      // 没有会话 = 只清名单：尾巴按会话存着，没有会话就没有该动的那一格
+      if (sessionId === null) return { liveBgIds: [] };
+      const prev = s.bgOutputBySession[sessionId] ?? {};
+      const merged = { ...prev };
+      for (const t of tasks) merged[t.id] = t.tail;
+      return {
+        liveBgIds: tasks.map((t) => t.id),
+        bgOutputBySession: { ...s.bgOutputBySession, [sessionId]: merged },
+      };
+    }),
 
   dismissBootResidue: () => set({ bootResidueOpen: false }),
   dismissLiveResidue: () => set({ liveResidueOpen: false }),
@@ -2141,6 +2164,23 @@ export const useChat = create<ChatState>((set, get) => ({
           toolOutputByCall: {
             ...s.toolOutputByCall,
             [toolCallId]: merged.length > 4000 ? merged.slice(-4000) : merged,
+          },
+        };
+      })
+    );
+    window.otter.onBgTaskOutput(({ sessionId, taskId, chunk }) =>
+      set((s) => {
+        // 上限同 toolOutputByCall 的 4000 字，也同主进程那份尾巴（TAIL_CHARS）——
+        // 三处攒的是同一段尾巴，配不同的数只会让补空白那一刻出现一个台阶
+        const prev = s.bgOutputBySession[sessionId] ?? {};
+        const merged = (prev[taskId] ?? "") + chunk;
+        return {
+          bgOutputBySession: {
+            ...s.bgOutputBySession,
+            [sessionId]: {
+              ...prev,
+              [taskId]: merged.length > 4000 ? merged.slice(-4000) : merged,
+            },
           },
         };
       })

@@ -13,10 +13,20 @@ import type { ExecResult } from "../world/executionWorld.js";
     工具层只见接口不 import main（ExecutionWorld 同款分层方向）。
     armed = 组装根接了完成回调：没接线的装配（subagent）起后台任务 = 结果必丢，
     这里拒绝而不是对模型撒谎说"会注回" */
+/** 后台任务的输出直播口（issue #772）。start 把它递给 run，run 负责把它接到
+    真实的输出流上——显式后台接 world.execDetached 的 onOutput，前台自动转后台
+    接的是命令起跑时就挂好的那一份 tee（见下）。不接 = 面板画一个空终端，
+    不报错：直播是增强，不是承诺 */
+export type BackgroundOutputSink = (chunk: string, stream: "stdout" | "stderr") => void;
+
 export interface BackgroundStarter {
   readonly armed: boolean;
-  start(cmd: string, run: () => Promise<ExecResult>): string;
+  start(cmd: string, run: (onOutput: BackgroundOutputSink) => Promise<ExecResult>): string;
 }
+
+/** 转后台之前先攒下的输出上限（字符，issue #772）。与主进程那份尾巴同数：
+    两头攒的是同一条流的同一段尾巴，配不同的数只会让交接处出现一个台阶 */
+const MIGRATED_TEE_CHARS = 4_000;
 
 /** 模型可见预算（字符/流）——三层截断的第三层（issue #343）。与内存层
     （world/localWorld.ts 的 EXEC_BUFFER_CAP）、IPC 层（shared/execStream.ts）
@@ -106,7 +116,7 @@ export function createBashTool(
         if (!background || !background.armed || !world.execDetached) {
           throw new Error("bash: 此装配不支持后台执行（run_in_background），请去掉该参数直接执行");
         }
-        const id = background.start(cmd, () => world.execDetached!(cmd));
+        const id = background.start(cmd, (onOutput) => world.execDetached!(cmd, { onOutput }));
         return `后台任务 ${id} 已启动（30 分钟超时）。完成后结果会以新消息注回会话，无需轮询等待。`;
       }
       // 前台自动转后台（issue #395）：回注已接线（armed）的装配里，前台命令
@@ -119,7 +129,29 @@ export function createBashTool(
       // 立场：停止键停的是"这个 turn 发起的一切"，显式后台是用户经模型明确
       // 要求的例外。② 直播碎片继续流向原工具卡（对账诚实，略显冗余）
       if (background?.armed) {
-        const inflight = world.exec(cmd, { timeoutMs: MIGRATED_TIMEOUT_MS });
+        // 输出的第二个接收方（issue #772）：转后台那一刻，工具卡上的直播随
+        // tool_result 落地一起消失（渲染层清 toolOutputByCall），可进程还在跑——
+        // 后台任务面板要接着画同一个终端，中间不能断。所以命令起跑时就挂一份
+        // 自己的 tee：交接前攒着（超上限丢头部，尾巴才是"最新进展"），
+        // 交接那一刻整段补给面板，之后直接转发。
+        // 没转后台的那条路（命令 30 秒内跑完）白攒一次，代价是有界的几 KB
+        let sink: BackgroundOutputSink | null = null;
+        let buffered: Array<[string, "stdout" | "stderr"]> = [];
+        let bufferedChars = 0;
+        const inflight = world.exec(cmd, {
+          timeoutMs: MIGRATED_TIMEOUT_MS,
+          onOutput: (chunk, stream) => {
+            if (sink) {
+              sink(chunk, stream);
+              return;
+            }
+            buffered.push([chunk, stream]);
+            bufferedChars += chunk.length;
+            while (bufferedChars > MIGRATED_TEE_CHARS && buffered.length > 1) {
+              bufferedChars -= buffered.shift()![0].length;
+            }
+          },
+        });
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timedOut = Symbol("timeout");
         const winner = await Promise.race([
@@ -129,7 +161,13 @@ export function createBashTool(
           }),
         ]).finally(() => clearTimeout(timer));
         if (winner === timedOut) {
-          const id = background.start(cmd, () => inflight);
+          const id = background.start(cmd, (onOutput) => {
+            for (const [chunk, stream] of buffered) onOutput(chunk, stream);
+            buffered = [];
+            bufferedChars = 0;
+            sink = onOutput;
+            return inflight;
+          });
           return (
             `命令已运行超 ${Math.round(autoAfterMs / 1000)} 秒，自动转入后台任务 ${id} 继续执行` +
             `（同一进程，上限 30 分钟）。完成后结果会以新消息注回会话，无需轮询等待。`
