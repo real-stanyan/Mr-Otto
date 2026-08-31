@@ -440,6 +440,22 @@ export interface ProxyStatusSnapshot {
   hosts: ProxyHostView[];
 }
 
+/** 云会话（Task 12，ADR-0199）的连接状态推送。connecting = 已发起 join，
+    还没收到 welcome/denied；ready = welcome 之后的 backlog 已经补完全量；
+    denied = hello 被拒（deniedCode 是协议给的原始码，UI 按码给人话，不在这里
+    预先翻译）；gone = runtime 掉线了（不代表本次云会话失败——桌面自己的
+    wsTransport 会自动重连，回来后状态会弹回 connecting/ready）。
+    initiatorUid/ownerUid 在 welcome 之前是占位（null / ""），welcome 一到就是真值 */
+export interface CloudSessionStatus {
+  workspaceId: string;
+  sessionId: string;
+  state: "connecting" | "ready" | "denied" | "gone";
+  deniedCode?: string;
+  initiatorUid: string | null;
+  ownerUid: string;
+  selfUid: string;
+}
+
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
   boot(): Promise<BootInfo | null>;
@@ -984,6 +1000,25 @@ export interface ShellBridge {
       workspace 由渲染层按 startSession 同一条兜底规则决定落哪个目录） */
   workspaceImportSession(publisherUid: string, pkgId: string): Promise<FriendsResult<{ sessionId: string }>>;
 
+  // ─── 云会话（Task 12，ADR-0199）：桌面当显示器，接 VPS 上的 runtime ──────
+  /** 这个工作区里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
+  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number }[]>>;
+  /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件） */
+  workspaceCloudCreate(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>>;
+  /** 加入一个云会话（同时只保留一条连接，join 先断旧的）。resolve 只代表连接
+      发起成功——后续 welcome/denied/ready/gone 走 onCloudSessionStatus 推送 */
+  workspaceCloudJoin(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 断当前云会话连接 */
+  workspaceCloudLeave(): Promise<FriendsResult<null>>;
+  /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员 */
+  workspaceCloudSay(text: string, mention: boolean): Promise<FriendsResult<null>>;
+  /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
+  workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
+  /** 归档当前云会话 */
+  workspaceCloudArchive(): Promise<FriendsResult<null>>;
+  /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
+  workspaceCloudConfig(workspaceId: string, repoUrl: string, pat?: string): Promise<FriendsResult<null>>;
+
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -992,6 +1027,10 @@ export interface ShellBridge {
   onProxyChanged(cb: (status: ProxyStatusSnapshot) => void): Unsubscribe;
   /** 我 + 在线好友各自在哪个仓库哪个分支(全量快照,Realtime presence ∪ 心跳列) */
   onWorkspacesChanged(cb: (snapshot: WorkspacesSnapshot) => void): Unsubscribe;
+  /** 当前云会话的新事件（去重之后，按 seq 单条转发；backlog 与直播共用这一条通道） */
+  onCloudSessionEvent(cb: (event: SessionEvent) => void): Unsubscribe;
+  /** 当前云会话的连接状态变化（connecting/ready/denied/gone） */
+  onCloudSessionStatus(cb: (status: CloudSessionStatus) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
@@ -1367,10 +1406,20 @@ export const CHANNELS = {
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",
+  workspaceCloudList: "otter:workspaceCloudList",
+  workspaceCloudCreate: "otter:workspaceCloudCreate",
+  workspaceCloudJoin: "otter:workspaceCloudJoin",
+  workspaceCloudLeave: "otter:workspaceCloudLeave",
+  workspaceCloudSay: "otter:workspaceCloudSay",
+  workspaceCloudApprove: "otter:workspaceCloudApprove",
+  workspaceCloudArchive: "otter:workspaceCloudArchive",
+  workspaceCloudConfig: "otter:workspaceCloudConfig",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",
   workspacesChanged: "otter:workspacesChanged",
+  cloudSessionEvent: "otter:cloudSessionEvent",
+  cloudSessionStatus: "otter:cloudSessionStatus",
   directMessage: "otter:directMessage",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",

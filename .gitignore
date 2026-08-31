@@ -20,3 +20,7 @@ mobile/android/
 
 # 非 .claude 约定位置的 agent lane worktree（另一条 lane 建过一次，见 issue #616）
 .worktrees/
+
+# runtime-deploy.mjs 现生成的瘦身依赖清单（版本从根 package.json 现读，
+# 是构建产物不是源码，见 scripts/runtime-deploy.mjs，ADR-0199 task-11）
+services/runtime/deploy-package.json

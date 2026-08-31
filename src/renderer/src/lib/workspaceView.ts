@@ -1,5 +1,6 @@
 // workspaceView —— WorkspaceSnapshot → 三个 tab（连接器/成员/会话）的行模型
-// （Task 12，ADR-0198 切片 3）。纯逻辑零 IO，UI 只管拿去画。
+// （Task 12，ADR-0198 切片 3）+ 云会话列表的行模型（Task 13，ADR-0199）。
+// 纯逻辑零 IO，UI 只管拿去画。
 //
 // 三条易错规则钉在这里，不散在组件里：
 // · cloudState：自己贡献的行按 hostedServerIds（escrowSync 的托管箱清单）分
@@ -29,8 +30,9 @@ export interface ConnectorRowView {
 }
 
 /** hostUid/publisherUid → 展示名：成员表查得到就用，查不到（已退群）回 uid 前 8 位——
-    界面总得显示点什么，与 workspaces.ts 的 resolveLabel 同一口径 */
-function labelOf(ws: WorkspaceSnapshot, uid: string): string {
+    界面总得显示点什么，与 workspaces.ts 的 resolveLabel 同一口径。
+    导出给 CloudSessionPage 复用（审批卡「等待 X 审批」的 X 同一口径） */
+export function labelOf(ws: WorkspaceSnapshot, uid: string): string {
   return ws.members.find((m) => m.uid === uid)?.label ?? uid.slice(0, 8);
 }
 
@@ -100,4 +102,44 @@ export function sessionRows(ws: WorkspaceSnapshot): SessionRowView[] {
     publisherLabel: labelOf(ws, s.publisherUid),
     updatedTs: s.updatedTs,
   }));
+}
+
+// ─── 云会话列表（Task 13，ADR-0199） ────────────────────────────────────
+
+/** ShellBridge.workspaceCloudList 一行的形状。不从 main/supabaseWorkspacesApi.ts
+    的同名 CloudSessionRow 引入——渲染层不能 import 主进程模块（架构硬边界，
+    tests/architecture.test.ts），形状凑巧相同也只能各自留一份 */
+export interface CloudSessionListRow {
+  id: string;
+  title: string;
+  publisherUid: string;
+  archived: boolean;
+  updatedTs: number;
+}
+
+export interface CloudSessionRowView {
+  id: string;
+  title: string;
+  creatorLabel: string;
+  archived: boolean;
+  updatedTs: number;
+}
+
+/** archived 沉底、同档内 updatedTs 降序——同一本工作区列表里"还能进去接着说话的"
+    排在"已经收尾的"前面，档内新的在前（sessionRows/connectorRows 都没有排序，
+    这是云会话独有的规则：会话列表天然按"最近动过"排序才好用，发布会话那张表
+    是一次性快照，没有这个诉求） */
+export function cloudSessionRows(
+  rows: readonly CloudSessionListRow[],
+  ws: WorkspaceSnapshot
+): CloudSessionRowView[] {
+  return rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      creatorLabel: labelOf(ws, r.publisherUid),
+      archived: r.archived,
+      updatedTs: r.updatedTs,
+    }))
+    .sort((a, b) => (a.archived !== b.archived ? (a.archived ? 1 : -1) : b.updatedTs - a.updatedTs));
 }

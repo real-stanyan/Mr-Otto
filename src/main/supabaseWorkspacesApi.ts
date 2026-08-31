@@ -90,7 +90,9 @@ export async function fetchWorkspace(
   }[];
   const sessions = (unwrap(
     await client.from("workspace_sessions")
-      .select("id,workspace_id,publisher_uid,pkg_id,title,updated_at").eq("workspace_id", id),
+      .select("id,workspace_id,publisher_uid,pkg_id,title,updated_at")
+      .eq("workspace_id", id)
+      .eq("kind", "package"),
   ) ?? []) as {
     id: string; workspace_id: string; publisher_uid: string; pkg_id: string; title: string;
     updated_at: string;
@@ -193,4 +195,48 @@ export async function deleteSessionRow(client: SupabaseClient, id: string): Prom
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("行不存在或无权删除");
   }
+}
+
+/** 云会话列表页用的行（Task 12，ADR-0199）。kind='cloud' 的那些
+    workspace_sessions 行——archived/updated_at 是 migration 0016 加的字段
+    （一期 kind='package' 的查询不选它们，见 fetchWorkspace） */
+export interface CloudSessionRow {
+  id: string;
+  title: string;
+  publisherUid: string;
+  archived: boolean;
+  updatedTs: number;
+}
+
+/** ISO 字符串 → epoch ms；解析不出来回 0，不让脏数据混进排序比较
+    （与 src/shared/workspaces.ts 的 toEpochMs 同一条口径，未导出，各自留一份——
+    那份服务 kind='package' 的 assembleSnapshot，这份服务 kind='cloud' 的薄查询，
+    两处独立到没有共用的价值） */
+function toEpochMs(iso: string): number {
+  const ts = Date.parse(iso);
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+/** 这个工作区里的云会话清单，成员在籍即可见（RLS wss_select_member，同
+    kind='package' 那一半）。runtime 用 service key 写 kind='cloud' 行
+    （daemon.ts 的 sessions.create），这里只读 */
+export async function listCloudSessions(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<CloudSessionRow[]> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,publisher_uid,title,archived,updated_at")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud");
+  const rows = (unwrap(res) ?? []) as {
+    id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    publisherUid: r.publisher_uid,
+    archived: r.archived,
+    updatedTs: toEpochMs(r.updated_at),
+  }));
 }

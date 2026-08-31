@@ -223,11 +223,24 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceUnpublishSession, id, rowId),
   workspaceImportSession: (publisherUid, pkgId) =>
     ipcRenderer.invoke(CHANNELS.workspaceImportSession, publisherUid, pkgId),
+  workspaceCloudList: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudList, workspaceId),
+  workspaceCloudCreate: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudCreate, workspaceId),
+  workspaceCloudJoin: (workspaceId, sessionId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudJoin, workspaceId, sessionId),
+  workspaceCloudLeave: () => ipcRenderer.invoke(CHANNELS.workspaceCloudLeave),
+  workspaceCloudSay: (text, mention) => ipcRenderer.invoke(CHANNELS.workspaceCloudSay, text, mention),
+  workspaceCloudApprove: (callId, decision) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
+  workspaceCloudArchive: () => ipcRenderer.invoke(CHANNELS.workspaceCloudArchive),
+  workspaceCloudConfig: (workspaceId, repoUrl, pat) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudConfig, workspaceId, repoUrl, pat),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
   onFriendsChanged: subscribe(CHANNELS.friendsChanged),
   onProxyChanged: subscribe(CHANNELS.proxyChanged),
   onPresenceChanged: subscribe(CHANNELS.presenceChanged),
   onWorkspacesChanged: subscribe(CHANNELS.workspacesChanged),
+  onCloudSessionEvent: subscribe(CHANNELS.cloudSessionEvent),
+  onCloudSessionStatus: subscribe(CHANNELS.cloudSessionStatus),
   onDirectMessage: subscribe(CHANNELS.directMessage),
   onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),
