@@ -159,6 +159,18 @@ async function main(): Promise<void> {
     transport.send(encodeCs(msg), cid);
   }
 
+  /** 复审补漏：把一个 cid 从广播名单（roomRosters）与路由表（cidTransport）
+      里摘掉，但**不关闭底层连接**——连接归 transport 管，这里只是不再主动
+      往它发东西。两个调用方：① 真的断线（transport.onGone）；② frameHandler
+      判定"已不在籍"（requireStillMember，连接还活着，只是不再够资格）。
+      两条路径都可能对同一个 cid 触发，必须幂等：Map.get 查不到就是
+      undefined、Map.delete 删不存在的键不报错，天然满足 */
+  function dropCid(cid: string): void {
+    const transport = cidTransport.get(cid);
+    if (transport) roomRosters.get(transport)?.delete(cid);
+    cidTransport.delete(cid);
+  }
+
   const activeSessions = new Map<string, { session: CloudSession; workspaceId: string }>();
   const workspaceStores = new Map<string, EventStore>();
 
@@ -204,8 +216,7 @@ async function main(): Promise<void> {
       });
     });
     transport.onGone((cid) => {
-      cidTransport.delete(cid);
-      roster.delete(cid);
+      dropCid(cid); // 等价于原来的 cidTransport.delete(cid) + roster.delete(cid)，见 dropCid 注释
       frameHandler.onGone(cid);
     });
 
@@ -303,6 +314,7 @@ async function main(): Promise<void> {
     },
     saveConfig: (workspaceId, cfg) => workspaceConfigStore.save(workspaceId, cfg),
     send: globalSend,
+    dropCid,
   };
 
   const frameHandler = createFrameHandler(frameHandlerDeps);
@@ -362,7 +374,7 @@ async function main(): Promise<void> {
     });
   });
   ctlTransport.onGone((cid) => {
-    cidTransport.delete(cid);
+    dropCid(cid); // ctl 房的 cid 从不进 roomRosters，dropCid 里那半是无操作，安全
     frameHandler.onGone(cid);
   });
 

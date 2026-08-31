@@ -40,6 +40,16 @@ export interface FrameHandlerDeps {
   };
   saveConfig: (workspaceId: string, cfg: { repoUrl: string; pat?: string }) => Promise<void>;
   send: (cid: string, msg: CsDown) => void;
+  /** 复审补漏：踢人只清 frameHandler 自己的验籍表（cids）是不够的——daemon.ts
+      的实时广播走另一张表（roomRosters，只在 transport.onGone 时才清），
+      不摘掉的话，被判定为"已不在籍"的 cid 仍然会继续收到该会话后续每一条
+      onEvent 广播。`requireStillMember` 命中时调这个钩子，让 daemon 把
+      同一个 cid 从广播名单/路由表里一并摘掉——**不关闭底层连接**（连接
+      归 transport 管，这里只是不再主动往它发东西）。可选 = 不给就不摘
+      （daemon.ts 是唯一装配者，总会给；测试假货可以留空）。daemon 侧的
+      实现要求幂等——同一个 cid 既可能从这里被摘、也可能随后真的
+      onGone，两条路径不能打架 */
+  dropCid?: (cid: string) => void;
 }
 
 export interface FrameHandler {
@@ -76,17 +86,22 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     deps.send(cid, { t: "denied", code });
   }
 
-  /** say/approve/config 能改变会话状态或授权敏感操作——被踢出工作区的
-      成员只要连接不断（wsTransport 心跳就是奔着长期不断线去的）就不该
+  /** say/approve/config/backlog 能读写会话状态或敏感信息——被踢出工作区
+      的成员只要连接不断（wsTransport 心跳就是奔着长期不断线去的）就不该
       继续被当在籍成员对待（复审 Important：hello 之后从不复查在籍，被踢
-      的成员能无限期发言/批审批）。命中时顺带把 cid 清出验籍表，效果等同
-      onGone：同一个 cid 之后再发任何帧都会落进「未过 hello」分支，不用
-      每条帧都重新判一次。isMember 自带 60s 缓存，边际成本很低。
-      backlog 是只读重放，不挂这道闸。 */
+      的成员能无限期发言/批审批；复审补漏：backlog 的 afterSeq 由客户端
+      自己给、没有"只到踢出那一刻"的截断，读路径原样能拉到踢出之后新
+      产生的全部事件）。命中时：① 把 cid 清出验籍表，效果等同 onGone——
+      同一个 cid 之后再发任何帧都会落进「未过 hello」分支；② 调
+      deps.dropCid，让 daemon 把同一个 cid 从广播名单/路由表里一并摘掉
+      （否则 say/approve/config/backlog 都被拒之后，这个 cid 仍然会继续
+      实时收到该会话后续的 onEvent 广播——那张表在 daemon.ts，frameHandler
+      自己够不着）。isMember 自带 60s 缓存，边际成本很低。 */
   async function requireStillMember(workspaceId: string, cid: string, uid: string): Promise<boolean> {
     if (await deps.isMember(workspaceId, uid)) return true;
     deny(cid, "not_authorized");
     cids.delete(cid);
+    deps.dropCid?.(cid);
     return false;
   }
 
@@ -189,6 +204,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
 
         case "backlog": {
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           const events = session.backlog(msg.afterSeq);
           deps.send(cid, { t: "backlog", events, done: true });
           return;

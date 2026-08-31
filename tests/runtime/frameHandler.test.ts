@@ -34,8 +34,10 @@ function makeDeps(config: {
   createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
   ownerOf?: (workspaceId: string) => Promise<string>;
   saveConfig?: FrameHandlerDeps["saveConfig"];
-} = {}): { deps: FrameHandlerDeps; sent: Sent[] } {
+  dropCid?: FrameHandlerDeps["dropCid"];
+} = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[] } {
   const sent: Sent[] = [];
+  const dropCidCalls: string[] = [];
   const deps: FrameHandlerDeps = {
     verifyJwt: config.verifyJwt ?? (async (token) => (token.startsWith("jwt:") ? { userId: token.slice(4) } : null)),
     isMember: config.isMember ?? (async () => true),
@@ -47,8 +49,9 @@ function makeDeps(config: {
     },
     saveConfig: config.saveConfig ?? (async () => {}),
     send: (cid, msg) => sent.push({ cid, msg }),
+    dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
   };
-  return { deps, sent };
+  return { deps, sent, dropCidCalls };
 }
 
 const hello = (v: number, jwt: string) => encodeCs({ t: "hello", v, jwt });
@@ -186,7 +189,7 @@ describe("createFrameHandler", () => {
         sayCalls.push(args);
       },
     });
-    const { deps, sent } = makeDeps({
+    const { deps, sent, dropCidCalls } = makeDeps({
       isMember: async () => member,
       getSession: () => session,
     });
@@ -199,11 +202,38 @@ describe("createFrameHandler", () => {
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还能说话吗", mention: false }));
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
     expect(sayCalls).toHaveLength(0); // 没有落到 CloudSession.say
+    expect(dropCidCalls).toEqual(["c1"]); // 复审补漏：同时摘掉广播席位（daemon.ts 的 roomRosters）
 
     // cid 已经被清出验籍表：同一个 cid 再发 say，走的是「未过 hello」分支
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "再试一次", mention: false }));
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  it("复审补漏：backlog 也挂在籍复查——isMember 翻 false 后 backlog 被拒、没调到 session.backlog、dropCid 带正确 cid", async () => {
+    let member = true;
+    const backlogCalls: unknown[] = [];
+    const session = fakeSession({
+      backlog: (...args: Parameters<CloudSession["backlog"]>) => {
+        backlogCalls.push(args);
+        return [];
+      },
+    });
+    const { deps, sent, dropCidCalls } = makeDeps({
+      isMember: async () => member,
+      getSession: () => session,
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false; // 被踢出工作区，读路径（backlog）原本完全不受影响——这正是要堵的口子
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "backlog", afterSeq: 0 }));
+
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+    expect(backlogCalls).toHaveLength(0); // ① 没有落到 CloudSession.backlog
+    expect(dropCidCalls).toEqual(["c1"]); // ② dropCid 被调用，且带的是这个 cid
   });
 
   // ── 补充覆盖（超出五条最低要求，但同一份纯逻辑，成本很低）──────────────
