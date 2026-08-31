@@ -835,10 +835,14 @@ interface ChatState {
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
-  /** 往当前云会话发一句话。mention = 「@Agent」toggle 开着 */
-  cloudSay(text: string, mention: boolean): Promise<void>;
-  /** 批/拒当前云会话里的一个审批请求 */
-  cloudApprove(callId: string, decision: "approved" | "denied"): Promise<void>;
+  /** 往当前云会话发一句话。mention = 「@Agent」toggle 开着。回是否成功——
+      CloudSessionPage 的 submit() 靠它决定要不要清空草稿（同
+      createWorkspaceGroup 等十一件套"回 boolean 给调用方决定要不要清输入框"
+      的既有约定，复审 Medium：失败时不清，草稿原样留着） */
+  cloudSay(text: string, mention: boolean): Promise<boolean>;
+  /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
+      workspaceGroupsError，调用方按需读） */
+  cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
@@ -2098,12 +2102,24 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async cloudSay(text, mention) {
     const r = await window.otter.workspaceCloudSay(text, mention);
-    if (!r.ok) set({ workspaceGroupsError: r.message });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    // 成功也要清一次：不清的话上一次失败留下的 workspaceGroupsError
+    // 会一直挂在 footer 附近，这次明明发成功了却还在说上次的错
+    set({ workspaceGroupsError: null });
+    return true;
   },
 
   async cloudApprove(callId, decision) {
     const r = await window.otter.workspaceCloudApprove(callId, decision);
-    if (!r.ok) set({ workspaceGroupsError: r.message });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    return true;
   },
 
   async openFriendChat(profile) {

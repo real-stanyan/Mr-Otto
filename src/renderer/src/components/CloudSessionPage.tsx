@@ -15,6 +15,24 @@
 // 呈现不是"时间线上的一行"，而是"贴着输入区的一张可操作的卡"（同本地
 // 会话 App.tsx 的 ApprovalCard 紧贴 composer 的既有位置约定）。
 //
+// user_message / assistant_message 也单独渲（复审 Rejected #1 补齐，brief
+// 原稿的设计漏洞，不是实现偏离）：EventRow 的 switch 里同样没有这两个
+// case（该文件注释原话"这两个分支从此到不了"——本地会话里它们由
+// assistant-ui 的主渲染管线接管，EventRow 只兜审计层）。但云会话真正点火
+// 一个 turn 时，`services/runtime/src/sessionService.ts` 的 say() 走的是
+// `engine.runTurn(\`[${label}]: ${text}\`)`，落盘的是 user_message（不是
+// chat_message——chat_message 只在 `logged_only` 分支，即没点火的插话），
+// Agent 的回复落 assistant_message。只认 chat_message 会让"@Agent 之后
+// 那句话和 Agent 的回答"整段静默消失，只剩闲聊和被拒的审批——spec 里
+// "云会话在 UI 里就是一个 session"这句话就不成立了。
+// user_message.content 是 `"[label]: text"` 这个人工拼的前缀（协议没有
+// 独立 fromUid/label 字段），parseUserMessageLabel 做尽力而为的解析，解析
+// 不出就原样显示全文当正文。assistant_message.content 在纯工具调用的
+// turn 里可能是空串（events.ts 的字段注释）——AssistantMessageRow 据此
+// 只在有正文时才画气泡，同时无条件把 toolCalls 摊成一行行工具活动
+// （ToolActivityLine，复用 timelineProjection.index 查执行状态），这样
+// 一次纯工具 turn 依旧看得见"发生过什么"，不会全程无声。
+//
 // 审批卡不搬 App.tsx 那套 ApprovalCardBody——那一套是围着本地 decide()
 // 的五种意志（批/拒/中止/授权档位/改过的参数）与 diff 分块取舍搭的，云端
 // 协议只认 approved/denied 两种（cloudSessionClient.ts deliverEvent 的
@@ -29,12 +47,14 @@ import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
-import { buildToolIndex } from "../lib/toolIndex.js";
+import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { labelOf } from "../lib/workspaceView.js";
+import { toolSummary } from "../../../shared/toolSummary.js";
 import type {
-  ApprovalDecisionEvent, ApprovalRequestEvent, ChatMessageEvent, SessionEvent,
+  ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatMessageEvent,
+  SessionEvent, ToolCallRequest, ToolResultEvent, UserMessageEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
@@ -42,6 +62,17 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
 // 同 FriendChatView 的 EMPTY 先例，模块级常量避免每次渲染新建 []）
 const EMPTY_EVENTS: SessionEvent[] = [];
+
+/** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
+    协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
+    "普通会话的一条用户消息"，云会话群聊只是把发言人编进了正文），只能在
+    渲染层尽力而为地把它解析回来：非贪婪匹配第一个 "]: " 之前的内容当
+    label，其余原样当正文。解析不出（旧日志 / 前缀被破坏）就把 label 记
+    null、正文原样显示全文，不装作解析成功了 */
+function parseUserMessageLabel(content: string): { label: string | null; text: string } {
+  const m = /^\[(.*?)\]: ([\s\S]*)$/.exec(content);
+  return m ? { label: m[1]!, text: m[2]! } : { label: null, text: content };
+}
 
 /** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
     main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
@@ -95,6 +126,9 @@ export function CloudSessionPage({
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
+  // 发送/审批失败落这一格（复审 Medium：这条错误此前只在 WorkspacePage
+  // 原来那条 return 路径里渲染，云会话走的是提前 return，根本到不了）
+  const actionError = useChat((s) => s.workspaceGroupsError);
 
   const [draft, setDraft] = useState("");
   const [mentionOn, setMentionOn] = useState(false);
@@ -138,14 +172,24 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
+  // user_message.content 只有 "[label]: text" 这一个可解析的身份信号（协议
+  // 没给这个事件独立的 fromUid），只能拿它跟"我自己的展示名"比对来判断
+  // "这句是不是我说的"——同一个 uid 在 ws.members 里查到的 label，跟
+  // sessionService.say() 落盘时传的 label 理应是同一份 profiles 数据
+  const myLabel = labelOf(ws, selfUid);
 
   const submit = async (): Promise<void> => {
     const text = draft.trim();
     if (!text || sending || !ready) return;
     setSending(true);
-    setDraft("");
-    await cloudSay(text, mentionOn);
-    setMentionOn(false);
+    // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
+    // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
+    // 露出来说明失败原因
+    const ok = await cloudSay(text, mentionOn);
+    if (ok) {
+      setDraft("");
+      setMentionOn(false);
+    }
     setSending(false);
   };
 
@@ -175,13 +219,27 @@ export function CloudSessionPage({
           {events.length === 0 ? (
             <p className="text-xs text-muted-foreground">还没有消息。</p>
           ) : (
-            events.map((e, i) =>
-              e.type === "chat_message" ? (
-                <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />
-              ) : (
-                <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />
-              )
-            )
+            events.map((e, i) => {
+              if (e.type === "chat_message") {
+                return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
+              }
+              if (e.type === "user_message") {
+                const parsed = parseUserMessageLabel(e.content);
+                return (
+                  <UserMessageRow
+                    key={e.seq}
+                    ts={e.ts}
+                    label={parsed.label}
+                    text={parsed.text}
+                    mine={parsed.label === myLabel}
+                  />
+                );
+              }
+              if (e.type === "assistant_message") {
+                return <AssistantMessageRow key={e.seq} event={e} index={timelineProjection.index} />;
+              }
+              return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
+            })
           )}
         </TimelineProjectionContext.Provider>
       </div>
@@ -200,6 +258,8 @@ export function CloudSessionPage({
           ))}
         </div>
       )}
+
+      {actionError && <p className="text-xs text-err">{actionError}</p>}
 
       <footer className="flex items-end gap-2 border-t border-border/60 pt-3">
         <textarea
@@ -261,6 +321,88 @@ function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolea
         <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
       </Bubble>
     </div>
+  );
+}
+
+/** 点火了一个 turn 的那句话（复审 Rejected #1 补齐）：user_message 本体，
+    可视觉语言照抄 ChatMessageRow——群聊里这就是"有人说了一句话"，只是
+    这一句额外触发了 Agent 干活。label 解析不出时（旧日志/前缀被破坏）就
+    不画标签行，只显示时间，正文原样兜底显示全文（含没剥掉的前缀，宁可
+    多显示一点也不假装解析成功了） */
+function UserMessageRow({
+  ts,
+  label,
+  text,
+  mine,
+}: {
+  ts: number;
+  label: string | null;
+  text: string;
+  mine: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex max-w-[85%] flex-col gap-0.5",
+        mine ? "self-end items-end" : "self-start items-start"
+      )}
+    >
+      <span className="px-1 text-[10.5px] text-muted-foreground">
+        {!mine && label ? `${label} · ` : ""}
+        {formatProxyTime(ts)}
+      </span>
+      <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
+        <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
+      </Bubble>
+    </div>
+  );
+}
+
+/** Agent 的回复（复审 Rejected #1 补齐）：恒左对齐（Agent 不可能是"我"）。
+    content 在纯工具调用的 turn 里可能是空串（events.ts 的字段注释）——
+    这时不画空气泡，改成无条件把 toolCalls 摊成一行行 ToolActivityLine，
+    这样即使模型这一轮一个字没说，用户也能看见"它干了什么"，不是全程无声。
+    有正文又有工具调用时两者都画（events.ts 原话："文本和工具调用请求可以
+    同时出现"）*/
+function AssistantMessageRow({ event, index }: { event: AssistantMessageEvent; index: ToolIndex }) {
+  const hasText = event.content.trim() !== "";
+  const toolCalls = event.toolCalls ?? [];
+  return (
+    <div className="flex max-w-[85%] flex-col items-start gap-1 self-start">
+      <span className="px-1 text-[10.5px] text-muted-foreground">
+        Agent · {formatProxyTime(event.ts)}
+      </span>
+      {hasText && (
+        <Bubble align="start" variant="muted">
+          <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
+        </Bubble>
+      )}
+      {toolCalls.map((call) => (
+        <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
+      ))}
+    </div>
+  );
+}
+
+/** 一次工具调用的一行可见提示（复审 Rejected #1 补齐）：不用 ToolRow——那
+    是折叠展开的重组件，围着本地会话的详情面板设计；这里只要"看得见发生过
+    什么"，`toolSummary` 已经把 verb/target 提炼好了，状态从
+    `timelineProjection.index`（同一份，OttoThread 顶层算法同款）里查，
+    没查到 = 还在执行中（tool_execution_started 落了、tool_result 还没落） */
+function ToolActivityLine({ call, result }: { call: ToolCallRequest; result: ToolResultEvent | undefined }) {
+  const { verb, target } = toolSummary(call);
+  const statusText = !result
+    ? "执行中…"
+    : result.status === "ok"
+      ? "完成"
+      : result.status === "denied"
+        ? "被拒绝"
+        : "出错";
+  return (
+    <span className="px-1 text-[11px] text-muted-foreground">
+      {verb}
+      {target ? ` ${target}` : ""} · {statusText}
+    </span>
   );
 }
 
