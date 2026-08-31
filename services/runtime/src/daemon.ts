@@ -12,7 +12,7 @@ import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
-import { createFrameHandler, type FrameHandlerDeps } from "./frameHandler.js";
+import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
 import { createSandbox, type DockerLike, type OrphansStore, type Sandbox } from "./sandbox.js";
 import { createMembershipCache } from "./membershipCache.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
@@ -26,7 +26,6 @@ import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
   csChannel,
-  encodeCs,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
@@ -156,7 +155,18 @@ async function main(): Promise<void> {
     if (msg.t === "welcome") {
       roomRosters.get(transport)?.add(cid);
     }
-    transport.send(encodeCs(msg), cid);
+    // 终审 C2：encode 失败（一条事件超过 MAX_FRAME_BYTES，read_file 读回一个
+    // 大文件很常见）不许打断这里的调用方——onEvent 钩子里是一个
+    // `for (const cid of roster) globalSend(...)` 循环，globalSend 一旦抛出，
+    // 循环腰斩，roster 后半永远收不到这条广播（静默分叉）；再往上游，
+    // onEvent 挂在 engine.ts 的 append() 里，那里没有 try/catch，会把整条
+    // turn 一起带走。safeEncodeCs 把这次失败按下：只记日志，其余 cid/
+    // 后续事件照常收发。
+    const payload = safeEncodeCs(msg, (err) => {
+      console.error(`[otto-runtime] globalSend 编码失败（cid=${cid}, t=${msg.t}）：`, err);
+    });
+    if (payload === null) return;
+    transport.send(payload, cid);
   }
 
   /** 复审补漏：把一个 cid 从广播名单（roomRosters）与路由表（cidTransport）
@@ -319,14 +329,21 @@ async function main(): Promise<void> {
 
   const frameHandler = createFrameHandler(frameHandlerDeps);
 
-  // ── 启动引导：沙箱 reconcile + markActive（T8 复审 Minor 落地处）───────
-  const { data: workspaceRows, error: workspacesErr } = await supabase.from("workspaces").select("id");
-  if (workspacesErr) {
-    console.warn(`[otto-runtime] 启动时拉取 workspaces 失败，reconcile 本轮跳过：${workspacesErr.message}`);
-  } else {
+  // ── 沙箱 reconcile：起初只在启动时跑一次（T8 复审 Minor 落地处），终审
+  // I2 指出 systemd 常驻的 daemon 上这样不够——被删工作区的容器+卷永不
+  // 回收。抽成函数，启动时先跑一次打底，再挂到下面与 sweepIdle 同一个
+  // 5 分钟定时器上反复跑（工作区名单每次现查，不是启动时那份快照的复用）。
+  async function runReconcile(): Promise<void> {
+    const { data: workspaceRows, error: workspacesErr } = await supabase.from("workspaces").select("id");
+    if (workspacesErr) {
+      console.warn(`[otto-runtime] 拉取 workspaces 失败，reconcile 本轮跳过：${workspacesErr.message}`);
+      return;
+    }
     const validIds = new Set((workspaceRows ?? []).map((r: { id: string }) => r.id));
     await sandbox.reconcile(validIds);
   }
+
+  await runReconcile();
 
   try {
     const running = await docker.listContainers({
@@ -351,6 +368,14 @@ async function main(): Promise<void> {
       // 变成 unhandledRejection 带走整个进程
       sandbox.sweepIdle(running).catch((err: unknown) => {
         console.error("[otto-runtime] sweepIdle 失败：", err);
+      });
+      // 终审 I2：孤儿回收不能只在启动那一刻跑——挂到同一个定时器上，
+      // .catch 写法与 sweepIdle 同理（一次 Supabase/Docker 抖动不该带走
+      // 整个进程）。不接 destroy()：runtime 没有工作区删除的通知源，两阶段
+      // 孤儿回收（reconcile 自己的 mark→grace→remove）正是为此设计的，
+      // 不需要额外接一条"删除事件"的线
+      runReconcile().catch((err: unknown) => {
+        console.error("[otto-runtime] reconcile 失败：", err);
       });
     },
     5 * 60 * 1000

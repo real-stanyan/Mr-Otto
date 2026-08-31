@@ -66,6 +66,15 @@ create policy wss_update_publisher on public.workspace_sessions for update to au
   with check (publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()) and kind = 'package');
 -- using 也钉 kind，策略只能触达本就是 package 的行，防止成员伪造云会话行后再改元数据
 
+-- 发布者本人可以撤回会话，但只能删 kind='package' 的行（终审 I1）：0015 的
+-- wss_delete_publisher 漏钉 kind，云会话的创建者能直接打 Supabase REST 删掉
+-- 自己那一行 workspace_sessions——会话从所有成员列表消失、daemon 重启后
+-- 房间不再恢复（启动引导按 kind='cloud' 且 archived=false 查这张表），
+-- VPS 上的权威事件日志变成够不着的孤儿，且不产生任何归档事件。
+drop policy if exists wss_delete_publisher on public.workspace_sessions;
+create policy wss_delete_publisher on public.workspace_sessions for delete to authenticated
+  using (publisher_uid = auth.uid() and kind = 'package');
+
 -- 用量台账：runtime 异步镜像写（service key），本人只读自己的行。
 create table if not exists public.usage_ledger (
   id bigint generated always as identity primary key,

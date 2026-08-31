@@ -258,6 +258,35 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
   });
 });
 
+// 终审 C1：ready 之后收到的新 peer 通告（后到的 host，可能是真的重连，也
+// 可能是绕过 edge.ts 角色收口的攻击者）不该重绑 hostCid——重绑意味着后续
+// 帧（包括含 JWT 的 hello）会发给这个未经确认的 peer。
+describe("createCloudSessionClient — 终审 C1：ready 后不重绑 hostCid", () => {
+  it("ready 之后收到新的 peer 通告：忽略，不重发 hello，后续帧仍然发给原来的 host cid", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer(); // HOST_CID
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+
+    const sentBefore = t.sent.length;
+    t.emitPeer("attacker-cid"); // 后到的 peer 通告
+    await tick();
+
+    // 没有因为新 peer 到场而多发一帧（旧代码会在这里重发一次 hello，把 jwt
+    // 发给 attacker-cid）
+    expect(t.sent.length).toBe(sentBefore);
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready"); // 状态没有被打回 connecting
+
+    const r = await h.client.say("hi", false);
+    expect(r).toEqual({ ok: true, value: null });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID); // 仍然发给原来的 host，不是 attacker-cid
+  });
+});
+
 describe("createCloudSessionClient — approval_request / approval_decision", () => {
   async function readyHarness(selfUid: string) {
     const h = harness();
@@ -551,6 +580,33 @@ describe("createCloudSessionClient — create", () => {
     const r = await h.client.create("w1");
     expect(r).toEqual({ ok: false, message: "还没登录" });
     expect(h.transports).toHaveLength(0);
+  });
+
+  // 终审 C1：控制房没有 ready 概念可以把关（不像 join() 的会话房），
+  // hostCid 这个局部变量本身就是"是否已经认定过一个 host"的哨兵——
+  // 第二个 peer 通告不该再收到 hello（里面带着 JWT）
+  it("onPeer 触发多次（多个 host 通告）：hello/create 只发给第一个 cid，忽略后续", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer("first-cid");
+    await tick();
+    t.emitPeer("second-cid"); // 后到的通告——不该收到 hello/jwt
+    await tick();
+
+    expect(t.sent.every((s) => s.to === "first-cid")).toBe(true);
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: 1, jwt: "token-abc" },
+      { t: "create", workspaceId: "w1" },
+    ]);
+
+    t.emitDown(
+      { t: "created", workspaceId: "w1", sessionId: "new-session-id", channel: "cs-w1-new-session-id" },
+      "first-cid"
+    );
+    const r = await promise;
+    expect(r).toEqual({ ok: true, value: { sessionId: "new-session-id" } });
   });
 });
 

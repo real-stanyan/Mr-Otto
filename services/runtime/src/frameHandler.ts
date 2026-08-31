@@ -19,10 +19,87 @@ import {
   CS_PROTOCOL_VERSION,
   csChannel,
   decodeCsUp,
+  encodeCs,
   type CsDeniedCode,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
+import type { SessionEvent } from "../../../src/session/events.js";
 import type { CloudSession } from "./sessionService.js";
+
+/** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
+    (256 KiB,那是 base64 编码后的整帧硬上限)——留出安全边际。水獭在沙箱里
+    read_file 一个 ~190KB+ 的 package-lock/打包产物/日志很常见,不分片时这类
+    事件会让 encodeCs 直接抛错:daemon.ts 的 globalSend 扇出时 roster 后半收
+    不到(静默分叉),backlog 重放时异常被 daemon.ts 的 .catch 吞掉、连 error
+    帧都不回,客户端死等 done:true 永远停在 connecting。 */
+const BACKLOG_CHUNK_BYTES = 128 * 1024;
+
+function jsonByteLength(v: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(v)).byteLength;
+}
+
+/** 把 backlog 要发的全量事件切成若干条 CsDown 帧:累计字节不超过
+    maxChunkBytes 就合并进同一片。单条事件自己就超过阈值的——分片救的是
+    "多条加起来大",救不了"一条本身就大",这种直接跳过、换一条可见的
+    error 帧,不让它绑架同一批其余事件(整条云会话卡死)。**保证最后一条
+    一定是 done:true 的 backlog 帧**,即使末尾全是被跳过的事件——否则客户端
+    永远等不到 done:true,原地卡在 connecting(终审 C2 的原始复现)。 */
+export function chunkBacklogFrames(
+  events: SessionEvent[],
+  maxChunkBytes: number = BACKLOG_CHUNK_BYTES
+): CsDown[] {
+  type Unit = { kind: "chunk"; events: SessionEvent[] } | { kind: "skip"; event: SessionEvent };
+  const units: Unit[] = [];
+  let current: SessionEvent[] = [];
+  let currentBytes = 0;
+
+  const flush = (): void => {
+    units.push({ kind: "chunk", events: current });
+    current = [];
+    currentBytes = 0;
+  };
+
+  for (const e of events) {
+    const bytes = jsonByteLength(e);
+    if (bytes > maxChunkBytes) {
+      if (current.length > 0) flush();
+      units.push({ kind: "skip", event: e });
+      continue;
+    }
+    if (current.length > 0 && currentBytes + bytes > maxChunkBytes) flush();
+    current.push(e);
+    currentBytes += bytes;
+  }
+  flush(); // 收尾:即使 current 是空数组,也要保证末尾是一条 done:true 的 backlog 帧
+
+  return units.map(
+    (u, i): CsDown =>
+      u.kind === "skip"
+        ? {
+            t: "error",
+            msg: `一条历史事件过大已跳过(type=${u.event.type}, seq=${u.event.seq}):单条超过下发上限`,
+          }
+        : { t: "backlog", events: u.events, done: i === units.length - 1 }
+  );
+}
+
+/** encodeCs 的安全版本(终审 C2):daemon.ts 的 globalSend 既是广播 for-of
+    循环体(对 roster 里每个 cid 广播同一条事件),也是上面 backlog 分片下发
+    的落点——一条事件编码失败(超过 MAX_FRAME_BYTES)不许把异常甩给调用方:
+    那个循环会被腰斩,后半 roster 静默收不到广播;再往上游,daemon.ts 的
+    onEvent 钩子挂在 engine.ts 的 append() 里,那里没有 try/catch,一路能把
+    整条 turn 带走。返回 null = 编码失败,调用方据此跳过这一次发送、只记
+    日志不重抛。放在这个文件(而不是 daemon.ts 本体)是为了能单测——
+    daemon.ts 自己不进 vitest(见该文件头注释),纯逻辑照旧全部下沉到已经
+    有测试覆盖的这一层。 */
+export function safeEncodeCs(msg: CsDown, onError: (err: unknown) => void): string | null {
+  try {
+    return encodeCs(msg);
+  } catch (err) {
+    onError(err);
+    return null;
+  }
+}
 
 export interface FrameHandlerDeps {
   /** JWT → uid。**异步**（与 brief 草图的同步签名不同,是本任务落地时的必要修正）：
@@ -206,7 +283,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           const events = session.backlog(msg.afterSeq);
-          deps.send(cid, { t: "backlog", events, done: true });
+          // 终审 C2：按累计字节分片下发，不再一帧打包全量——见文件头
+          // chunkBacklogFrames 的注释，一条超限事件曾经能让整条云会话
+          // 永久卡在 connecting
+          for (const frame of chunkBacklogFrames(events)) deps.send(cid, frame);
           return;
         }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createEdge, RUNTIME_SERVICE_UID, type EdgeConfig, type RelayStub } from "../../services/edge/src/edge.js";
 import { SUBPROTOCOL } from "../../services/edge/src/relay.js";
+import { signTestJwt } from "./jwtTestUtil.js";
 
 // runtime 服务身份（ADR-0199）：VPS 上的云 runtime 之后要以平台身份连 relay、
 // 打 px 执行面，不必先替一个真用户签出 JWT。四条断言对应 task-3-brief 的四件事：
@@ -97,5 +98,55 @@ describe("runtime 服务身份（ADR-0199）", () => {
     }));
     expect(res.status).toBe(400);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// 终审 C1：cs-* 房间（工作区云会话）里，role=host 只认平台身份。真人一律
+// 降级成 guest——房名 `cs-${workspaceId}-${sessionId}` 现任成员和被踢的
+// 前成员都知道，不收口的话谁先连上谁就能抢到 host 角色、被 relay 当权威
+// 广播（真 runtime 的帧被丢弃、攻击者的帧被当权威）。
+describe("cs-* 房间角色收口（终审 C1）", () => {
+  const realUserJwt = (sub = "real-user"): string =>
+    signTestJwt(JWT_SECRET, { sub, email: "a@b.c", exp: Math.floor(Date.now() / 1000) + 3600 });
+
+  it("真人 JWT 对 cs-* 房间要 role=host → 被降级成 guest", async () => {
+    const { routed, handle } = relayHarness();
+    const res = await handle(
+      upgrade("http://edge/rl/v1/connect?role=host&channel=cs-w1-s1", `${SUBPROTOCOL}, ${realUserJwt()}`)
+    );
+    expect(res.status).toBe(200);
+    expect(routed).toHaveLength(1);
+    // 带 channel 参数时房间键是 `proxy:${channel}`（不是 who.userId）——这里
+    // 只是确认路由本身没有被角色收口影响到，重点在下面的 role 断言
+    expect(routed[0]!.userId).toBe("proxy:cs-w1-s1");
+    expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("guest");
+  });
+
+  it("平台身份（RUNTIME_SECRET）对 cs-* 房间要 role=host → 保留 host（真 runtime 不受收口影响）", async () => {
+    const { routed, handle } = relayHarness();
+    const res = await handle(
+      upgrade("http://edge/rl/v1/connect?role=host&channel=cs-w1-s1", `${SUBPROTOCOL}, ${RUNTIME_SECRET}`)
+    );
+    expect(res.status).toBe(200);
+    expect(routed[0]!.userId).toBe("proxy:cs-w1-s1");
+    expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("host");
+  });
+
+  it("真人 JWT 对非 cs- 频道（好友代理房间）要 role=host → 不受收口影响，正常放行", async () => {
+    const { routed, handle } = relayHarness();
+    const res = await handle(
+      upgrade("http://edge/rl/v1/connect?role=host&channel=some-proxy-channel", `${SUBPROTOCOL}, ${realUserJwt()}`)
+    );
+    expect(res.status).toBe(200);
+    expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("host");
+  });
+
+  it("真人 JWT 对 cs-* 房间要 role=guest → 不受影响（收口只降级 host）", async () => {
+    const { routed, handle } = relayHarness();
+    const res = await handle(
+      upgrade("http://edge/rl/v1/connect?role=guest&channel=cs-w1-s1", `${SUBPROTOCOL}, ${realUserJwt()}`)
+    );
+    expect(res.status).toBe(200);
+    expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("guest");
   });
 });

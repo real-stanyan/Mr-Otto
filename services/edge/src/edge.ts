@@ -114,7 +114,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     if (who instanceof Response) return who;
 
     const params = new URL(req.url).searchParams;
-    const role: RelayRole | null = parseRole(params.get("role"));
+    let role: RelayRole | null = parseRole(params.get("role"));
     if (!role) return apiError(400, "role 必须是 desktop/mobile/host/guest", "bad_role");
 
     // 房间键:带 channel 参数就按 channel 分房间(好友代理,issue #622),
@@ -122,6 +122,20 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // 只有按「同一个 channelId」才能进同一房间。channelId 是邀请码里的随机
     // 32 字节——知道它 = 被邀请,relay 不用懂好友关系(鉴权在握手层,ADR-0151)。
     const channel = params.get("channel");
+
+    // cs-* 房间(工作区云会话,ADR-0199)角色收口(终审 C1):role=host 仅当
+    // 对面是平台身份(VPS runtime,已在上面 identify() 里用
+    // x-runtime-secret/子协议 secret 验过)。真人一律降级成 guest——cs 房名
+    // 是 `cs-${workspaceId}-${sessionId}`,现任成员和被踢的前成员都知道,
+    // 不做这道收口的话谁先连上谁就能抢到 host 角色,relay 会把它当权威向
+    // 其余 guest 广播:真 runtime 的帧被丢弃、攻击者的帧被当权威(伪造
+    // welcome/event,截获 say 正文与 approve)。好友代理房间(channel 不带
+    // cs- 前缀)不受影响——那里 host/guest 是两个真人各自的角色,鉴权在
+    // 握手层(ADR-0151 的 tryPair),不是这里。
+    if (role === "host" && channel?.startsWith("cs-") && who.userId !== RUNTIME_SERVICE_UID) {
+      role = "guest";
+    }
+
     const roomKey = channel ? `proxy:${channel}` : who.userId;
 
     // 平台身份豁免 MAX_CONNS_PER_USER:同一枚 runtime 账号从多台 VPS 并发连,

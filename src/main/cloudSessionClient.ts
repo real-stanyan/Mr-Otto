@@ -457,6 +457,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       }, CS_CREATE_TIMEOUT_MS);
 
       transport.onPeer((cid) => {
+        // 终审 C1：JWT 不发给还没被确认为权威的 peer——只发给第一个 host
+        // 通告。控制房没有 ready 概念可用来把关（不像 join() 的会话房），
+        // 这个局部变量本身就是"是否已经认定过一个 host"的哨兵：配合
+        // edge.ts 的角色收口（role=host 只认平台身份），第一个到场的就
+        // 必然是真 runtime，后到的一律忽略，不再把 hello 里的 jwt 发给它。
+        if (hostCid !== null) return;
         hostCid = cid;
         try {
           // 控制房没有「welcome」概念——hello 成功是静默的，下一步直接发
@@ -514,6 +520,16 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
     transport.onPeer((cid) => {
       if (active !== session) return; // 陈旧回调：这份会话已经被 leave/重新 join 顶掉了
+      // 终审 C1：ready 之后不再重绑 hostCid。edge.ts 已经把 cs-* 房间的
+      // role=host 收口给平台身份专用，正常情况下 ready 之后不会再有第二个
+      // host 通告——真出现，要么是陈旧的重复 :peer（该忽略），要么是有人
+      // 绕过收口抢到了 host 角色（更该忽略，不能把它当成新的权威）。不重绑
+      // 也就不会把 hello/JWT 发给这个未经确认的 peer（sendHello 发的地址
+      // 正是 session.hostCid）。
+      if (session.status === "ready") {
+        deps.log?.(`云会话:ready 后收到新的 peer 通告(cid=${cid})，忽略`);
+        return;
+      }
       session.hostCid = cid;
       // gone 之后 runtime 回来了：状态先弹回 connecting（而不是等 welcome 才动），
       // UI 立刻能看出"正在重连"而不是干等在"离线"
