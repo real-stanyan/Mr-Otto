@@ -41,4 +41,6 @@
   "vars": { "SUPABASE_URL": "https://kpeemypbhkynapkjzewr.supabase.co" }
   // SUPABASE_JWT_SECRET 是 secret，不写在这里：
   //   npx wrangler secret put SUPABASE_JWT_SECRET
+  // RUNTIME_SECRET 同理（平台身份，ADR-0199）：
+  //   npx wrangler secret put RUNTIME_SECRET
 }

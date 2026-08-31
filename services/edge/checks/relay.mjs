@@ -244,6 +244,42 @@ check("px：grants 查不到在籍 → 空清单而不是 500",
 // 清理：删掉这次探针建的箱子，不留痕（中继本来就不落盘，px 的箱子探针要自己收）
 await fetch(`${BASE}/px/v1/escrow`, { method: "DELETE", headers: { authorization: `Bearer ${token(pxHostUid)}` } });
 
+// ---- runtime 服务身份（ADR-0199）----
+// 单测（tests/edge/runtimeAuth.test.ts）钉的是纯路由逻辑，覆盖不到真 workerd
+// 那一层——子协议 token 真的能不能换来一次 101 upgrade，只有真跑一次说了算。
+// 没配 RUNTIME_SECRET 就跳过：本地/dev 环境常常没这个 secret，那不该让整个
+// 脚本报红，跳过是这段检查自己的前提没满足，不是被测的东西坏了
+const RUNTIME_SECRET = process.env.RUNTIME_SECRET;
+if (!RUNTIME_SECRET) {
+  console.log("跳过 runtime 服务身份检查：没有 RUNTIME_SECRET（本地/dev 环境常见，传 env 才会跑）");
+} else {
+  // ① 用 secret 连 relay 成功收到 :cid
+  const svcWs = await new Promise((res, rej) => {
+    const ws = new WebSocket(`${WS_BASE}/rl/v1/connect?role=host`, [SUBPROTOCOL, RUNTIME_SECRET]);
+    ws.cid = "";
+    ws.onmessage = (e) => {
+      const c = ctrl(e.data);
+      if (c?.kind === "cid") ws.cid = c.cid;
+    };
+    ws.onopen = () => res(ws);
+    ws.onerror = () => rej(new Error("runtime secret 连不上 relay"));
+  });
+  await wait(300);
+  check("runtime：用 RUNTIME_SECRET 连 relay 成功收到 :cid", svcWs.cid !== "", `cid=${svcWs.cid}`);
+  try { svcWs.close(); } catch { /* 已关 */ }
+
+  // ② 不带 secret 的普通请求，伪造一个错的 x-runtime-secret 想蹭平台身份 →
+  // 401/403（错 secret 不该比"没带这个 header"多换来任何东西——同一条鉴权
+  // 失败路径，见 tests/edge/runtimeAuth.test.ts 的防 oracle 那条）
+  const forged = await fetch(`${BASE}/px/v1/call`, {
+    method: "POST",
+    headers: { "x-runtime-secret": "wrong-secret-guess", "content-type": "application/json" },
+    body: JSON.stringify({ hostUid: randomUUID(), serverId: "s", tool: "t", fromUid: randomUUID() }),
+  });
+  check("runtime：伪造错的 x-runtime-secret 打 /px/v1/call → 401/403（不给白嫖）",
+    forged.status === 401 || forged.status === 403, `status=${forged.status}`);
+}
+
 console.log(`\n${BASE}\n通过 ${ok.length} 条：`);
 for (const o of ok) console.log(`  ✓ ${o}`);
 if (bad.length) {

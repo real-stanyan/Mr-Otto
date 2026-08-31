@@ -40,6 +40,10 @@ export interface Env {
   SUPABASE_SERVICE_KEY: string;
   /** Supabase 项目根 URL（vars，不是 secret） */
   SUPABASE_URL: string;
+  /** 平台身份（VPS 云 runtime）的共享密钥。`wrangler secret put RUNTIME_SECRET`
+      （ADR-0199）——本地/测试环境常常不配，px.ts/edge.ts 的 runtime 分支
+      因此整个不存在，不是"配了空字符串所以永远比不中" */
+  RUNTIME_SECRET: string;
   RELAY: DurableObjectNamespace<Relay>;
   ESCROW: DurableObjectNamespace<Escrow>;
 }
@@ -83,13 +87,18 @@ export class Relay extends DurableObject<Env> {
   }
 
   override async fetch(req: Request): Promise<Response> {
-    const role = parseRole(new URL(req.url).searchParams.get("role"));
+    const params = new URL(req.url).searchParams;
+    const role = parseRole(params.get("role"));
     // 门口(edge.ts)已经验过一遍;这里是纵深,不是重复劳动 —— DO 也可能被别的
     // 代码路径调到,而"没有 role 就没法配对"是它自己的前提
     if (!role) return new Response("bad role", { status: 400 });
 
+    // 平台身份（svc-runtime）豁免连接数上限（ADR-0199）：同一枚 runtime 账号
+    // 从多台 VPS 并发连是合法的多实例形态,不是滥用信号。DO 自己不认识
+    // userId,只认识 edge.ts 验完 secret 后打在转发请求里的这个显式标记
+    const isSvcRuntime = params.get("svc") === "1";
     const existing = this.live();
-    if (existing.length >= MAX_CONNS_PER_USER) {
+    if (!isSvcRuntime && existing.length >= MAX_CONNS_PER_USER) {
       return new Response("too many connections", { status: 503 });
     }
 
@@ -275,7 +284,7 @@ function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
 const handler = {
   async fetch(req: Request, env: Env): Promise<Response> {
     const handle = createEdge({
-      config: { jwtSecret: env.SUPABASE_JWT_SECRET },
+      config: { jwtSecret: env.SUPABASE_JWT_SECRET, runtimeSecret: env.RUNTIME_SECRET },
       relay: (userId): RelayStub => env.RELAY.getByName(userId),
       escrow: (hostUid): RelayStub => env.ESCROW.getByName(hostUid),
       isFriend: friendChecker(env),
