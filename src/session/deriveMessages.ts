@@ -449,6 +449,15 @@ export function deriveMessages(
         break;
       }
 
+      case "chat_message": {
+        // 云会话群聊发言（issue #799）：其他成员的话对模型来说就是对话的一部分，
+        // 同 user_message 一样要走"组开着就先攒着"的插话修法（同 :433）。
+        // 发言人身份靠 label 前缀带出来（发言时快照，改名不追认历史）
+        const target = pendingToolIds.size > 0 ? deferredUsers : messages;
+        target.push({ role: "user", content: `[${event.label}]: ${event.content}` });
+        break;
+      }
+
       case "assistant_message":
         // 上一组若没答完就到此为止（中断后的下一轮）：先把攒着的插话放出来，
         // 别让它们隔着新组越攒越远
@@ -671,6 +680,12 @@ export function deriveMessages(
       // 请求信封（issue #383）是 log-only 审计快照：它记录"模型看到了什么"，
       // 自己绝不能成为模型看到的东西（喂回去 = 信封套信封，永动机）
       case "request_envelope":
+      // 云会话群聊审批请求（issue #799）：给 UI/其他在线成员看的广播事实，
+      // 结果体现在配对的 approval_decision/tool_result 里，同 approval_decision
+      // 一样模型不直接消费
+      case "approval_request":
+      // 按人头计的 token 用量（issue #799）：计费审计凭据，不是对话内容
+      case "model_usage":
         break;
 
       // 钩子干预事件本身不直接投影（issue #350）：pre/block 与 post/reject 的

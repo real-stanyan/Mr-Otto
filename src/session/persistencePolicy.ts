@@ -24,7 +24,10 @@ import type { SessionEvent } from "./events.js";
 export type TransientPushKind =
   | "assistant_delta" // 模型文本/思考碎片（otter:assistantDelta）——完整内容落在 assistant_message
   | "tool_output" // bash stdout/stderr 碎片（otter:toolOutput）——完整输出落在 tool_result
-  | "approval_request" // 审批弹卡（otter:approvalRequest）——结果落在 approval_decision
+  // 本地单人会话的审批弹卡（otter:approvalRequest push 通道，结果落在 approval_decision）
+  // 曾经也叫 "approval_request"，issue #799 把这个字面量挪给了云会话群聊的
+  // ApprovalRequestEvent（durable，见下面 switch）——同一个字符串不能既 true 又
+  // false，这里不再重复列出它；push 通道本身照旧，只是不再经这份类型对账
   | "ask_user_request" // askUser 提问卡（otter:askUserRequest）——答案落在 tool_result
   | "turn_status"; // turn 运行状态灯（otter:turnStatus）——事实是 user_message/turn_ended 边界
 
@@ -81,12 +84,14 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "branch_checked_out": // 分支切换（issue #411）：时间线上那一行的唯一事实来源，推不出必须落
     case "session_shared": // 分享给好友（issue #705）：这条会话被交出去过——外部后果，倒推不出来
     case "share_grant_note": // 导入注记（issue #788）：模型视野的一部分，视野必须可从日志推导
+    case "chat_message": // 云会话群聊发言（issue #799）：模型视野的一部分，倒推不出来
+    case "approval_request": // 云会话群聊审批请求（issue #799）：要广播给其他在线成员的事实，倒推不出来
+    case "model_usage": // 按人头计的 token 用量（issue #799）：计费审计凭据，倒推不出来
       return true;
 
     // ── transient：live 投影的临时燃料，落盘即违反「终态覆盖」契约 ──
     case "assistant_delta":
     case "tool_output":
-    case "approval_request":
     case "ask_user_request":
     case "turn_status":
       return false;

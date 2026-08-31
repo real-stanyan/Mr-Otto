@@ -123,6 +123,11 @@ export interface ApprovalDecisionEvent extends SessionEventBase {
       只有这个字段能回答"到底什么东西碰了磁盘"。日志是唯一事实来源，
       少了它日志就在说谎。缺席 = 原样执行（旧日志照常重放）。 */
   revisedArgs?: unknown;
+  /** 云会话群聊场景（issue #799 系列）：这条决定是谁按下的按钮。
+      本地单人会话里审批人就是唯一操作者，字段没意义——缺席 = 本地会话（旧日志
+      照常重放）。群聊里多个成员共享同一条云会话，"谁批的"是审计要的事实，
+      日志推不出来，必须落盘。 */
+  decidedBy?: { uid: string; label: string };
 }
 
 /** 时间线 4：工具执行结果 —— 模型消费的是这个（拒绝也是一种"结果"） */
@@ -642,6 +647,54 @@ export interface ShareGrantNoteEvent extends SessionEventBase {
   servers: readonly string[];
 }
 
+/** 云会话群聊三事件之一（issue #799 系列，workspace phase 2）：
+    群里另一个成员发的一句话。**参与模型视野推导**——群聊里其他人的发言
+    对模型来说就是对话的一部分（同 user_message，只是发言人不是本机操作者），
+    投影时按 `[label]: content` 拼进 user 消息，模型才知道是谁在说话。
+    不带 ignorable：旧版本跳过它 = 少了一句真实发言，是残缺视野，按向前
+    兼容规则拒读。
+
+    label 是发言那一刻的显示名快照（同 SessionSharedEvent 的 friendName 取舍）：
+    日志是历史记录，成员改名不该让旧发言跟着改名。 */
+export interface ChatMessageEvent extends SessionEventBase {
+  type: "chat_message";
+  /** 发言人 uid，审计/去重用；模型投影只用 label */
+  fromUid: string;
+  label: string;
+  content: string;
+  /** 这条发言 @ 了本机操作者（决定要不要提醒/高亮，UI 消费） */
+  mention: boolean;
+}
+
+/** 云会话群聊三事件之二：群里有人的操作触发了一次审批请求。
+    log-only——**模型不消费**（同 approval_decision，那是给 UI/审计看的时间线）。
+    落盘理由：群聊场景下审批请求本身要广播给其他在线成员（谁在等谁批），
+    这件事日志推不出来，必须成为事实来源。argsSummary 只存预览文本，
+    不存完整 args——完整参数在触发它的 assistant_message.toolCalls 里，
+    这里重复存一份只会带来"两处不一致时听谁的"的新问题。 */
+export interface ApprovalRequestEvent extends SessionEventBase {
+  type: "approval_request";
+  callId: string;
+  toolName: string;
+  argsSummary: string;
+  initiatorUid: string;
+  expiresTs: number;
+}
+
+/** 云会话群聊三事件之三：一次 turn 花了多少 token，按谁头上算。
+    ignorable：纯审计/计费凭据，模型不消费，旧版本跳过它照常重放——
+    同 checkpoint_created 等审计三兄弟的取舍（见上）。 */
+export interface ModelUsageEvent extends SessionEventBase {
+  type: "model_usage";
+  ignorable: true;
+  /** turn 发起人（花的谁的账） */
+  uid: string;
+  workspaceId: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+}
+
 // ─── 联合类型 ───────────────────────────────────────────────
 
 export type SessionEvent =
@@ -681,7 +734,10 @@ export type SessionEvent =
   | WorkspaceRestoredEvent
   | BranchCheckedOutEvent
   | SessionSharedEvent
-  | ShareGrantNoteEvent;
+  | ShareGrantNoteEvent
+  | ChatMessageEvent
+  | ApprovalRequestEvent
+  | ModelUsageEvent;
 
 // ─── 向前兼容拒读（issue #383，dsh ignorable 对照）──────────
 // 硬规则定义了向后兼容（旧日志永远可重放），这里补上反方向：**新版本写的日志
@@ -732,6 +788,9 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   branch_checked_out: true,
   session_shared: true,
   share_grant_note: true,
+  chat_message: true,
+  approval_request: true,
+  model_usage: true,
 };
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(KNOWN_EVENT_TYPES_MAP));
 

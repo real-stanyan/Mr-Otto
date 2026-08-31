@@ -57,6 +57,9 @@ const DURABLE = [
   "branch_checked_out",
   "session_shared",
   "share_grant_note",
+  "chat_message",
+  "approval_request",
+  "model_usage",
 ] satisfies SessionEvent["type"][];
 type MissingDurable = Exclude<SessionEvent["type"], (typeof DURABLE)[number]>;
 // union 有类型不在数组里时,这行赋值编译红
@@ -66,7 +69,6 @@ void durableCovered;
 const TRANSIENT = [
   "assistant_delta",
   "tool_output",
-  "approval_request",
   "ask_user_request",
   "turn_status",
 ] satisfies TransientPushKind[];
