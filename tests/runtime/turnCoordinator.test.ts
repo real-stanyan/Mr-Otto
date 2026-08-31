@@ -24,4 +24,10 @@ describe("turn 协调器", () => {
     expect(c.onChat(true)).toBe("start_turn");
     expect(c.onChat(true)).toBe("logged_only");   // start 已被认领，装配层保证随后 turnStarted
   });
+  it("turnEnded 在 claimed 态也能恢复到 idle（异常路径：turnStarted 失败）", () => {
+    const c = createTurnCoordinator();
+    expect(c.onChat(true)).toBe("start_turn");
+    c.turnEnded();
+    expect(c.onChat(true)).toBe("start_turn");
+  });
 });

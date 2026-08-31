@@ -39,8 +39,8 @@ export function createTurnCoordinator(): TurnCoordinator {
     },
 
     turnEnded(): void {
-      // running → idle
-      if (state === "running") {
+      // running → idle, 且 claimed 也要能回 idle（起跑失败的兜底）
+      if (state !== "idle") {
         state = "idle";
       }
     },
