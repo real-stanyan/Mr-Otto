@@ -4,7 +4,7 @@
   "productName": "Mr Otto",
   "description": "Mr Otto — macOS desktop GUI agent",
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc --noEmit -p services/edge",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p services/edge && tsc --noEmit -p services/runtime",
     "pretest": "node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",

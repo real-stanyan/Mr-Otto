@@ -1,0 +1,36 @@
+{
+  // services/runtime 单独一份 tsconfig（同 services/edge 的先例，ADR-0199）：
+  // 这是一个真 Node 进程（daemon.ts 由 systemd 直接跑 node，不是 Worker）——
+  // 用 @types/node 而不是 @cloudflare/workers-types，其余照抄 edge 那份的
+  // 结构（strict 全套开关）。独立一份的理由同 edge：npm test 里单跑一条
+  // tsc，clone 完 npm ci 就能过，不需要额外安装步骤。
+  //
+  // include 覆盖到它借用的那几棵 src/ 目录（loop/session/model/tools/world/
+  // shared）以及 services/edge/src/jwt.ts（纯函数，运行时无关，相对路径
+  // import，两个 tsconfig 各编各的——现在是三个）。这些目录本身也在根
+  // tsconfig 的默认范围内，两边各编一次不是回归，是新增一道门禁（ADR-0010
+  // 的「新增更严断言 = L2」）。
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/**/*",
+    "../edge/src/jwt.ts",
+    "../../src/loop/**/*",
+    "../../src/session/**/*",
+    "../../src/model/**/*",
+    "../../src/tools/**/*",
+    "../../src/world/**/*",
+    "../../src/shared/**/*"
+  ]
+}
