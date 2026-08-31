@@ -151,4 +151,58 @@ describe("createCloudSession", () => {
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
     store.close();
   });
+
+  it("④ 并发 approve：同 callId 背靠背两次（不 await 中间态）——第一次赢，decidedBy 记的是第一次的 uid（复审 Important，非旁路 Map）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let round = 0;
+    const approveResults: boolean[] = [];
+
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) {
+          return { content: "", toolCalls: [{ id: "cA", name: "bash", args: { cmd: "echo hi" } }] };
+        }
+        return { content: "跑完了" };
+      },
+    };
+
+    const onEvent = (e: SessionEvent): void => {
+      events.push(e);
+      if (e.type === "approval_request") {
+        const req = e as ApprovalRequestEvent;
+        // approve() 是同步函数：背靠背连续调用两次，中间不 await 任何东西——
+        // 模拟同一个 callId 几乎同时被批两次（两个人/两个设备都点了按钮）。
+        // 旁路 Map 版本在这个场景下会静默丢 decidedBy（第二次覆盖 meta 又因
+        // resolve 失败把 key 删掉，第一次的续体读到空 map）；显式参数版本
+        // 不共享任何状态，第一次落定后 pending 已被消化，第二次连 entry 都
+        // 查不到，早早短路回 false
+        approveResults.push(session.approve(req.callId, "owner", "Owner-first", "approved"));
+        approveResults.push(session.approve(req.callId, "owner", "Owner-second", "denied"));
+      }
+    };
+
+    session = createCloudSession({
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      store,
+      world: fakeWorld,
+      adapter,
+      px,
+      hostUids: async () => [],
+      onEvent,
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "帮我跑个命令", true);
+
+    expect(approveResults).toEqual([true, false]);
+    const decision = events.find((e) => e.type === "approval_decision");
+    expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
+    store.close();
+  });
 });

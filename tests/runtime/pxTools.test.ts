@@ -67,6 +67,28 @@ describe("buildPxTools", () => {
     expect(tools[0]!.requiresApproval).toBe(false);
   });
 
+  it("撞名（两个不同 host/server 生成同一个安全名）：保留先到者，warn 带两边 hostUid/serverId/tool 名（复审 Minor）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const granted: GrantedPxServer[] = [
+      { hostUid: "abcdefgh1111", serverId: "sq", toolDefs: [{ name: "t1", description: "first", inputSchema: {} }] },
+      { hostUid: "abcdefgh2222", serverId: "sq", toolDefs: [{ name: "t1", description: "second", inputSchema: {} }] },
+    ];
+
+    const tools = buildPxTools(baseDeps(fetch), "fromU", granted);
+
+    // 两个 host 的短前缀（slice(0,8)）恰好相同 → 生成同一个安全名，只保留先到者
+    expect(tools).toHaveLength(1);
+    expect(tools[0]!.def.description).toBe("first");
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0]!.join(" ");
+    expect(msg).toContain("px_abcdefgh_sq_t1");
+    expect(msg).toContain("abcdefgh1111");
+    expect(msg).toContain("abcdefgh2222");
+    expect(msg).toContain("sq");
+    expect(msg).toContain("t1");
+    warn.mockRestore();
+  });
+
   it("run() 打 POST /px/v1/call，载荷形状 {fromUid,hostUid,serverId,tool,args}；content 数组压成文本", async () => {
     const calls: { url: string; body: string }[] = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {

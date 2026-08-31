@@ -100,7 +100,15 @@ function squashContent(content: unknown): string {
 /** fetchGrantedTools 的产物 → engine 能挂的 Tool[]。
     requiresApproval:false（ADR-0151 口径：白名单内没有逐次审批）；
     run 打 POST /px/v1/call，4xx/5xx 抛错（不吞——错误要进 tool_result，
-    让模型知道这次调用没成） */
+    让模型知道这次调用没成）。
+
+    撞名自诊断（复审 Minor）：safe 化改名后两个不同 host/server 的工具仍可能
+    撞到同一个名字（比如两个好友都托管了叫 "list" 的工具、且 host 短前缀恰好
+    相同）。engine 的 rebuildTools() 本来就会做"先到者赢 + warn"兜底，但那条
+    warn 只报工具名，不报是哪两个 host/server 撞的——线上排查很费劲。这里自己
+    先查一遍，撞名时把两边的 hostUid/serverId/原始 tool 名都打进 warn，**语义
+    不变**：仍然保留先到者，只是把 engine 会做的兜底提前做一遍、顺便留下
+    诊断信息（重复项不重复推入数组，避免 engine 那条无信息量的 warn 再叠一次） */
 export function buildPxTools(
   deps: PxCallDeps,
   fromUid: string,
@@ -108,9 +116,20 @@ export function buildPxTools(
 ): Tool[] {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const tools: Tool[] = [];
+  const seen = new Map<string, { hostUid: string; serverId: string; toolName: string }>();
   for (const g of granted) {
     for (const t of g.toolDefs) {
       const name = safeName(`px_${g.hostUid.slice(0, 8)}_${g.serverId}_${t.name}`);
+      const prior = seen.get(name);
+      if (prior) {
+        console.warn(
+          `px 工具名撞车「${name}」：` +
+            `先到者 host=${prior.hostUid} server=${prior.serverId} tool=${prior.toolName}，` +
+            `被拒者 host=${g.hostUid} server=${g.serverId} tool=${t.name}——保留先到者`
+        );
+        continue;
+      }
+      seen.set(name, { hostUid: g.hostUid, serverId: g.serverId, toolName: t.name });
       tools.push({
         def: { name, description: t.description, parameters: (t.inputSchema ?? {}) as object },
         requiresApproval: false,

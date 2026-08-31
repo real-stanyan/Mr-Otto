@@ -12,7 +12,6 @@
 // store.append 一条 chat_message）不用碰 engine 半个字就能被下一轮模型看到。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
-import type { Approver } from "../../../src/loop/approvalGate.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -83,22 +82,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
   });
 
-  // decidedBy 暂存喂给 engine 内置的 onDecision：router.resolve 本身只回内存
-  // promise（不落盘），approval_decision 的落盘统一走 approvalGate 的 onDecision
-  // 回调——约定一处写，避免 approve() 自己再落一条造成双写。
-  // 用 call.id 做钥匙：approve() 在调 router.resolve() 之前先把这次决定是谁
-  // 按下的存进来，router.decide() 的 promise 一旦被 resolve 落定，这里把它
-  // 缝进 outcome 再往下游传（approvalGate → engine 的 onDecision）
-  const decidedByMeta = new Map<string, { uid: string; label: string }>();
-  const approver: Approver = {
-    async decide(call, tool, signal) {
-      const outcome = await router.decide(call, tool, signal);
-      const meta = decidedByMeta.get(call.id);
-      decidedByMeta.delete(call.id);
-      return meta ? { ...outcome, decidedBy: meta } : outcome;
-    },
-  };
-
+  // decidedBy 不经旁路状态——approve() 把它当参数直接递给 router.resolve()，
+  // resolve() 随 settle() 把它缝进 outcome，approvalGate → engine 内置的
+  // onDecision 原样落盘。router.resolve 本身只回内存 promise（不落盘），
+  // approval_decision 的落盘统一走 onDecision 回调——一处写，不会双写。
+  // ApprovalRouter 已经结构性满足 Approver（extends），engine 的 approver
+  // 选项直接传 router 本体即可，不用再包一层
   const engine = new LoopEngine({
     store,
     adapter: opts.adapter,
@@ -107,7 +96,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     tools: () => [readFileTool, writeFileTool, bashTool, ...cachedPxTools],
     world: opts.world,
     sessionId,
-    approver,
+    approver: router,
     onEvent: notify,
     middlewares: [],
   });
@@ -157,10 +146,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     approve(callId, byUid, byLabel, decision) {
-      decidedByMeta.set(callId, { uid: byUid, label: byLabel });
-      const ok = router.resolve(callId, byUid, decision);
-      if (!ok) decidedByMeta.delete(callId); // 没有这个 pending / 无权——不留悬空 meta
-      return ok;
+      return router.resolve(callId, byUid, decision, { uid: byUid, label: byLabel });
     },
 
     backlog(afterSeq) {
