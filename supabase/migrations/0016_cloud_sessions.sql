@@ -62,8 +62,9 @@ create policy wss_insert_publisher on public.workspace_sessions for insert to au
 -- 发布者本人可以改元数据，但只能改 kind='package' 的行（不能把 package 改成 cloud）
 drop policy if exists wss_update_publisher on public.workspace_sessions;
 create policy wss_update_publisher on public.workspace_sessions for update to authenticated
-  using (publisher_uid = auth.uid())
+  using (publisher_uid = auth.uid() and kind = 'package')
   with check (publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()) and kind = 'package');
+-- using 也钉 kind，策略只能触达本就是 package 的行，防止成员伪造云会话行后再改元数据
 
 -- 用量台账：runtime 异步镜像写（service key），本人只读自己的行。
 create table if not exists public.usage_ledger (
