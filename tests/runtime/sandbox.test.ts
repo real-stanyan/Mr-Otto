@@ -178,6 +178,70 @@ describe("createSandbox", () => {
     expect(volRemoveIdx).toBeGreaterThan(removeIdx);
   });
 
+  it("⑥ reconcile 反悔：标记后变回 valid → 清除标记；再次不 valid 从头计时", async () => {
+    let t = 0;
+    const { docker, calls } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-flaky", state: "running", labels: { "mrotto.workspace": "flaky" } },
+    ]);
+    let store: Record<string, number> = {};
+    const orphans = {
+      load: () => ({ ...store }),
+      save: (m: Record<string, number>) => {
+        store = { ...m };
+      },
+    };
+    const sandbox = createSandbox(docker, { now: () => t, orphanGraceMs: 1000, orphans });
+
+    const r1 = await sandbox.reconcile(new Set()); // 误标记（比如 supabase 抖动）
+    expect(r1.marked).toEqual(["flaky"]);
+    expect(store).toEqual({ flaky: 0 });
+
+    t = 500;
+    const r2 = await sandbox.reconcile(new Set(["flaky"])); // 恢复合法
+    expect(r2.marked).toEqual([]);
+    expect(r2.removed).toEqual([]);
+    expect(store).toEqual({}); // 标记被清除，不是留着等下次抖动时越过 grace
+
+    t = 5000; // 早已过 grace——若标记没清，这里会被误删
+    const r3 = await sandbox.reconcile(new Set()); // 再次不合法
+    expect(r3.marked).toEqual(["flaky"]); // 重新计时，只标记不删
+    expect(r3.removed).toEqual([]);
+    expect(calls.some((c) => c.startsWith("remove:"))).toBe(false);
+  });
+
+  it("⑦ reconcile 无容器的孤儿卷：按名字前缀反推 id，同样走 marked/grace 两段式", async () => {
+    let t = 0;
+    const { docker, calls, volumes } = makeFakeDocker([]);
+    volumes.add("otto-ws-danglingvol"); // 容器已经没了，卷还在
+    let store: Record<string, number> = {};
+    const orphans = {
+      load: () => ({ ...store }),
+      save: (m: Record<string, number>) => {
+        store = { ...m };
+      },
+    };
+    const sandbox = createSandbox(docker, { now: () => t, orphanGraceMs: 1000, orphans });
+
+    const r1 = await sandbox.reconcile(new Set(["other"]));
+    expect(r1.marked).toEqual(["danglingvol"]);
+    expect(r1.removed).toEqual([]);
+    expect(volumes.has("otto-ws-danglingvol")).toBe(true); // 首轮只标记不删
+
+    t = 2000; // 越过 grace
+    const r2 = await sandbox.reconcile(new Set(["other"]));
+    expect(r2.marked).toEqual([]);
+    expect(r2.removed).toEqual(["danglingvol"]);
+    expect(volumes.has("otto-ws-danglingvol")).toBe(false);
+    expect(calls.some((c) => c === "volumeRemove:otto-ws-danglingvol")).toBe(true);
+
+    // valid 的孤儿卷不动
+    volumes.add("otto-ws-keepvol");
+    const r3 = await sandbox.reconcile(new Set(["keepvol"]));
+    expect(r3.marked).not.toContain("keepvol");
+    expect(r3.removed).not.toContain("keepvol");
+    expect(volumes.has("otto-ws-keepvol")).toBe(true);
+  });
+
   it("⑤ destroy 容器与卷都删；容器不存在时只删卷、不炸", async () => {
     const { docker, calls, volumes } = makeFakeDocker([
       { id: "c1", name: "otto-ws-y", state: "running", labels: { "mrotto.workspace": "y" } },

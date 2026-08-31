@@ -129,6 +129,30 @@ export function createSandbox(
     return stopped;
   }
 
+  /** 单个 workspaceId 在本轮 reconcile 里的判定：合法就清掉旧标记（反悔路径——
+      一次 Supabase 抖动的误标记不该在下一次抖动时越过 grace 直接被判死刑）；
+      不合法则走"首见只标记 / 已标记且过 grace 才删"两段式。 */
+  function classifyOrphan(
+    workspaceId: string,
+    valid: boolean,
+    orphans: Record<string, number>,
+  ): "valid" | "mark" | "wait" | "remove" {
+    if (valid) {
+      if (workspaceId in orphans) delete orphans[workspaceId];
+      return "valid";
+    }
+    const markedAt = orphans[workspaceId];
+    if (markedAt === undefined) {
+      orphans[workspaceId] = now();
+      return "mark";
+    }
+    if (now() - markedAt > orphanGraceMs) {
+      delete orphans[workspaceId];
+      return "remove";
+    }
+    return "wait";
+  }
+
   async function reconcile(validWorkspaceIds: ReadonlySet<string>): Promise<{ marked: string[]; removed: string[] }> {
     const marked: string[] = [];
     const removed: string[] = [];
@@ -139,22 +163,38 @@ export function createSandbox(
       filters: JSON.stringify({ label: [WORKSPACE_LABEL] }),
     });
 
+    const containerWorkspaceIds = new Set<string>();
+
     for (const c of list) {
       const workspaceId = c.Labels[WORKSPACE_LABEL];
       if (!workspaceId) continue;
-      if (validWorkspaceIds.has(workspaceId)) continue; // 不是孤儿
+      containerWorkspaceIds.add(workspaceId);
 
-      const markedAt = orphans[workspaceId];
-      if (markedAt === undefined) {
-        orphans[workspaceId] = now();
+      const verdict = classifyOrphan(workspaceId, validWorkspaceIds.has(workspaceId), orphans);
+      if (verdict === "mark") {
         marked.push(workspaceId);
-        continue;
-      }
-
-      if (now() - markedAt > orphanGraceMs) {
+      } else if (verdict === "remove") {
         await docker.getContainer(c.Id).remove({ force: true }); // 先删容器
         await docker.getVolume(containerName(workspaceId)).remove(); // 卷被容器占用，顺序反了会失败
-        delete orphans[workspaceId];
+        removed.push(workspaceId);
+      }
+    }
+
+    // 无容器的孤儿卷：容器已经没了（比如上一轮 reconcile 中途崩溃，或者被手动删过），
+    // 卷却还在。卷没有 label，只能按名字前缀 "otto-ws-" 反推 workspaceId——这是唯一
+    // 能用的线索，真实 docker 里卷的 filters 也不像容器那样可靠，干脆全列出来自己过滤。
+    const { Volumes } = await docker.listVolumes({ filters: JSON.stringify({}) });
+    const PREFIX = "otto-ws-";
+    for (const v of Volumes) {
+      if (!v.Name.startsWith(PREFIX)) continue;
+      const workspaceId = v.Name.slice(PREFIX.length);
+      if (containerWorkspaceIds.has(workspaceId)) continue; // 有同名容器，上面那段已经处理过
+
+      const verdict = classifyOrphan(workspaceId, validWorkspaceIds.has(workspaceId), orphans);
+      if (verdict === "mark") {
+        marked.push(workspaceId);
+      } else if (verdict === "remove") {
+        await docker.getVolume(v.Name).remove(); // 没有容器可删，只删卷
         removed.push(workspaceId);
       }
     }
