@@ -64,7 +64,17 @@ export function encodeCs(msg: CsUp | CsDown): string {
 
   const json = JSON.stringify(msg);
   const utf8 = new TextEncoder().encode(json);
-  return b64encode(utf8);
+  const encoded = b64encode(utf8);
+
+  // Check entire frame size limit
+  const frameBytes = new TextEncoder().encode(encoded).byteLength;
+  if (frameBytes > MAX_FRAME_BYTES) {
+    throw new Error(
+      `cs frame exceeds ${MAX_FRAME_BYTES} bytes: ${frameBytes}`
+    );
+  }
+
+  return encoded;
 }
 
 function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
@@ -80,7 +90,15 @@ function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
 function isSessionEvent(v: unknown): v is SessionEvent {
   if (typeof v !== "object" || v === null) return false;
   const obj = v as Record<string, unknown>;
-  return typeof obj.type === "string";
+  // 浅校验 SessionEventBase 的三个必填字段。
+  // 逐子类型的形状验证属于 EventStore 落盘侧的责任，
+  // 这层是线上防呆，只验 base 字段。
+  return (
+    typeof obj.type === "string" &&
+    typeof obj.seq === "number" &&
+    typeof obj.sessionId === "string" &&
+    typeof obj.ts === "number"
+  );
 }
 
 export function decodeCsUp(b64: string): CsUp | null {
