@@ -141,6 +141,13 @@ export interface CloudSessionSummary {
   workspaceId: string;
   sessionId: string;
   status: "connecting" | "ready" | "denied" | "gone";
+  /** 这条会话已知最新一条事件的 ts；还没收到任何事件时退回 activeSummary()
+      被调用那一刻的 Date.now()（这是唯一允许现取"此刻"的地方——一旦见过
+      一条真事件，就永远用真事件的 ts，不会再被"此刻"覆盖，见 ActiveSession
+      的 lastEventTs 字段注释）。喂给 cloudSessionFleetRow 当 lastTs——不是
+      每次都现取 Date.now()（复审 fix round 2 Minor：那样会让 ready 的云
+      会话永远排在 fleet 最上面，压过所有本地项目组，不管本地会话多新） */
+  lastEventTs: number;
 }
 
 /** CloudSessionSummary → 喂给 flattenFleet 的那一条虚拟 SessionSummary
@@ -152,14 +159,16 @@ export interface CloudSessionSummary {
     projectRoot = 这串字符串本身——自成一路，不会撞上任何真实项目分组。
     必须是**绝对路径**：相对片段会被 path.resolve 拼上 process.cwd()，在
     dev checkout 这样的环境里可能意外爬进真实项目的 .git，把云会话错误地
-    并进某个本地项目组。*/
+    并进某个本地项目组。lastTs 用 summary.lastEventTs（真实事件时间线），
+    不现取 Date.now()——orderedVisibleSessions 按组内最新 lastTs 倒序排组，
+    现取会让这条云会话只要 ready 就永远压过所有本地项目组。*/
 export function cloudSessionFleetRow(summary: CloudSessionSummary | null): SessionSummary | null {
   if (!summary || summary.status !== "ready") return null;
   return {
     sessionId: summary.sessionId,
     events: 0,
     startedTs: 0,
-    lastTs: Date.now(),
+    lastTs: summary.lastEventTs,
     workspace: `/__otto-cloud-session__/${summary.workspaceId}`,
     title: "云会话",
     spawnedFrom: null,
@@ -205,6 +214,17 @@ interface ActiveSession {
       暂存在这里不经过 deliverEvent；backlog 落定时与它合并排序后统一转发，
       保证转发给渲染层的顺序是 seq 升序（复审 High） */
   liveBuffer: SessionEvent[];
+  /** 已知最新一条事件的 ts；null = 还没见过任何真实事件。**不能**用
+      Date.now() 占位再 Math.max——那样 join() 那一刻的"此刻"会变成一个不该
+      存在的下限，历史事件（ts 早于打开这个会话的那一刻，比如重新打开一个
+      沉寂多日的云会话）永远抬不动它，云会话会显得比实际更"新鲜"，跟复审
+      当初要修的那个 bug 是同一类问题（这条本身就是当初那次修复自己引入的
+      回归，被本轮新增的用例抓到）。deliverEvent 第一条真事件直接赋值，
+      之后每条用 event.ts 取 max（防一条 ts 更早的事件把它往回拨）。
+      activeSummary() 只在仍是 null（真的一条事件都没见过）时才退回
+      Date.now() 当占位——cloudSessionFleetRow 的 lastTs 最终用的是
+      activeSummary() 那一份 */
+  lastEventTs: number | null;
 }
 
 export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
@@ -252,23 +272,35 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
   function teardown(): void {
     if (!active) return;
+    const sessionId = active.sessionId;
     try {
       active.transport.close();
     } catch {
       /* 已经在关了 */
     }
+    // 必须先置 null 再通知（复审 fix round 2 Medium）：onSessionInactive 的
+    // 装配方实现会调 pushFleet()，那会重入 activeSummary()——如果这时候
+    // active 还没置 null，activeSummary() 照样报回这条会话（还是 ready），
+    // cloudSessionFleetRow 会照样合成一条虚拟行，"即时清行"就白做了，
+    // 幽灵行要等下一次不相干事件路过才会消失。markGone() 的顺序是对的
+    // （先把 status 改成 gone 再通知）——这里跟它对齐：先让 activeSummary()
+    // 读不到这条会话，再通知装配方去清 pendingApprovals/island。
+    //
     // leave() 或者被下一次 join() 顶掉：这条会话彻底不再追踪了（不是"暂时
     // 联系不上"的 gone，是"以后也不会再有人问起它"），残留的 pendingApprovals/
     // island 一并清掉。真要再 join 回同一个 sessionId 也是全新的 ActiveSession
     // （seenSeqs 从空开始），backlog 会把还没决定的 approval_request 原样
     // 重放一遍，不会永久丢失
-    deps.onSessionInactive(active.sessionId);
     active = null;
+    deps.onSessionInactive(sessionId);
   }
 
   function deliverEvent(session: ActiveSession, event: SessionEvent): void {
     if (session.seenSeqs.has(event.seq)) return;
     session.seenSeqs.add(event.seq);
+    session.lastEventTs = session.lastEventTs === null
+      ? event.ts
+      : Math.max(session.lastEventTs, event.ts);
     deps.sendEvent(event);
 
     if (event.type === "approval_request") {
@@ -324,15 +356,30 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         }
         return;
       case "backlog": {
-        // 与 liveBuffer 合并、按 seq 升序排序后统一转发——去重表保证同一条
-        // 不会转发两次，排序保证转发顺序是 seq 升序（不管这条事件是从 backlog
-        // 本身来的，还是刚才攒在 liveBuffer 里的）
-        const merged = [...msg.events, ...session.liveBuffer].sort((a, b) => a.seq - b.seq);
-        session.liveBuffer = [];
-        for (const e of merged) deliverEvent(session, e);
-        if (msg.done && session.status !== "ready") {
-          session.status = "ready";
-          pushStatus(session);
+        // liveBuffer 只在**最后一片**（done:true）才参与合并 flush（复审
+        // fix round 2 High）：backlog 可能分片下发，如果每一片都无条件把
+        // liveBuffer 整个合并进来再清空，中间那些 done:false 的分片会把
+        // liveBuffer 里 seq 落在"这一片和下一片之间"的直播事件提前放出去——
+        // 实测复现：welcome(lastSeq=7)→直播 event(seq:5)→
+        // backlog([0,1,2,3],done:false)→backlog([4,5,6,7],done:true) 时，
+        // 旧写法在第一片就把 liveBuffer 的 5 混进 [0,1,2,3] 一起排序转发，
+        // 产出 [0,1,2,3,5,4,6,7]——非 seq 升序。现在的服务端总是一次
+        // done:true 下发全量，所以这条路径生产不可达，但客户端不该依赖这个
+        // 假设。
+        if (msg.done) {
+          // 最后一片：与攒了一路的 liveBuffer 合并、按 seq 升序排序后统一
+          // 转发（去重表保证同一条不会转发两次），这之后才清空 liveBuffer
+          const merged = [...msg.events, ...session.liveBuffer].sort((a, b) => a.seq - b.seq);
+          session.liveBuffer = [];
+          for (const e of merged) deliverEvent(session, e);
+          if (session.status !== "ready") {
+            session.status = "ready";
+            pushStatus(session);
+          }
+        } else {
+          // 中间分片：只转发这一片自己的事件，liveBuffer 原样留着不动
+          const chunk = [...msg.events].sort((a, b) => a.seq - b.seq);
+          for (const e of chunk) deliverEvent(session, e);
         }
         return;
       }
@@ -458,6 +505,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: "",
       seenSeqs: new Set(),
       liveBuffer: [],
+      // null = 还没有任何事件事实（不能用 Date.now() 占位，见 ActiveSession
+      // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
+      lastEventTs: null,
     };
     active = session;
     pushStatus(session);
@@ -536,7 +586,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
   function activeSummary(): CloudSessionSummary | null {
     if (!active) return null;
-    return { workspaceId: active.workspaceId, sessionId: active.sessionId, status: active.status };
+    return {
+      workspaceId: active.workspaceId,
+      sessionId: active.sessionId,
+      status: active.status,
+      // 只在真的一条事件都没见过时才退回"此刻"当占位——一旦有真实事件，
+      // active.lastEventTs 就不再是 null，这里不会再碰 Date.now()
+      lastEventTs: active.lastEventTs ?? Date.now(),
+    };
   }
 
   return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, config };

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCloudSessionClient, cloudSessionFleetRow,
-  type CloudSessionClientDeps, type CloudSessionSummary,
+  type CloudSessionClient, type CloudSessionClientDeps, type CloudSessionSummary,
 } from "../../src/main/cloudSessionClient.js";
 import { decodeCsUp, encodeCs, type CsDown, type CsUp } from "../../src/shared/remote/cloudSession.js";
 import type { RemoteTransport } from "../../src/shared/remote/transport.js";
@@ -106,6 +106,10 @@ function approvalRequestEvent(seq: number, sessionId = "cloud-s1"): ApprovalRequ
     callId: `call-${seq}`, toolName: "bash", argsSummary: "ls -la",
     initiatorUid: "initiator-uid", expiresTs: 9999,
   };
+}
+
+function cloudSummary(overrides: Partial<CloudSessionSummary> = {}): CloudSessionSummary {
+  return { workspaceId: "w1", sessionId: "cloud-s1", status: "ready", lastEventTs: 12345, ...overrides };
 }
 
 describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
@@ -222,6 +226,35 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
     t.emitDown({ t: "backlog", events: [], done: false });
     expect(h.statuses.some((s) => s.state === "ready")).toBe(false);
+  });
+
+  it("分片 backlog：中间分片（done:false）不会提前 flush liveBuffer，最后一片（done:true）才合并，转发严格 seq 升序（复审 fix round 2 High）", async () => {
+    // 原始复现：welcome(lastSeq=7) → 直播 event(seq:5) →
+    // backlog chunk1([0,1,2,3], done:false) → chunk2([4,5,6,7], done:true)。
+    // 旧写法对每一条 backlog 消息都无条件合并 liveBuffer 再清空，chunk1 会把
+    // liveBuffer 里的 5 提前和 [0,1,2,3] 一起排序转发，产出
+    // [0,1,2,3,5,4,6,7]——这正是 fix round 1 那个 bug 的直接变体，当前服务端
+    // 总是一次 done:true 下发所以生产不可达，但客户端不该依赖这个假设。
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" });
+
+    t.emitDown({ t: "event", event: chatMsg(5) }); // 还没 ready：进 liveBuffer
+    expect(h.events).toHaveLength(0);
+
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3].map((n) => chatMsg(n)), done: false });
+    // 中间分片自己的事件正常转发，但还没 ready（liveBuffer 里的 5 原封不动）
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.statuses.some((s) => s.state === "ready")).toBe(false);
+
+    t.emitDown({ t: "backlog", events: [4, 5, 6, 7].map((n) => chatMsg(n)), done: true });
+
+    expect(h.events).toHaveLength(8); // 去重：不是 9（chunk2 自带的 5 与 liveBuffer 的 5 只算一条）
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]); // 严格升序
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
   });
 });
 
@@ -522,11 +555,14 @@ describe("createCloudSessionClient — create", () => {
 });
 
 describe("createCloudSessionClient — activeSummary()", () => {
-  it("没有 join 过 = null；join 之后带上 workspaceId/sessionId/status", async () => {
+  it("没有 join 过 = null；join 之后带上 workspaceId/sessionId/status/lastEventTs", async () => {
     const h = harness();
     expect(h.client.activeSummary()).toBeNull();
     await h.client.join("w1", "cloud-s1");
-    expect(h.client.activeSummary()).toEqual({ workspaceId: "w1", sessionId: "cloud-s1", status: "connecting" });
+    expect(h.client.activeSummary()).toEqual({
+      workspaceId: "w1", sessionId: "cloud-s1", status: "connecting",
+      lastEventTs: expect.any(Number), // join() 时占位成 Date.now()，非确定值
+    });
   });
 
   it("leave 之后回到 null", async () => {
@@ -534,6 +570,101 @@ describe("createCloudSessionClient — activeSummary()", () => {
     await h.client.join("w1", "cloud-s1");
     await h.client.leave();
     expect(h.client.activeSummary()).toBeNull();
+  });
+
+  it("lastEventTs 跟着已知最新事件的 ts 走，不是每次现取 Date.now()（复审 fix round 2 Minor）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    // ts:5000 是一个"很久以前"的历史事件（远小于当下的 Date.now()）——这条
+    // 用例专门钉住第一版 fix 的一个回归：那版用 Date.now() 占位再 Math.max，
+    // join() 那一刻的"此刻"会变成一个历史事件抬不动的下限，5000 会被吞掉，
+    // 云会话看起来比实际更"新鲜"，跟复审当初要修的 bug 是同一类问题
+    t.emitDown({ t: "backlog", events: [{ ...chatMsg(0), ts: 5000 }], done: true });
+
+    expect(h.client.activeSummary()!.lastEventTs).toBe(5000);
+
+    // 再来一条 ts 更晚的事件：往前推
+    t.emitDown({ t: "event", event: { ...chatMsg(1), ts: 9000 } });
+    expect(h.client.activeSummary()!.lastEventTs).toBe(9000);
+
+    // 一条 ts 更早的事件不会把它往回拨（取 max）
+    t.emitDown({ t: "event", event: { ...chatMsg(2), ts: 3000 } });
+    expect(h.client.activeSummary()!.lastEventTs).toBe(9000);
+  });
+
+  it("从没见过任何事件时（比如刚 ready、backlog 是空的）：lastEventTs 退回一个接近当下的值，不是 0 或者别的冻结值", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "backlog", events: [], done: true }); // 空 backlog：一条事件都没有
+
+    const before = Date.now();
+    expect(h.client.activeSummary()!.lastEventTs).toBeGreaterThanOrEqual(before - 5000);
+    expect(h.client.activeSummary()!.lastEventTs).toBeLessThanOrEqual(before + 5000);
+  });
+
+  it("teardown（leave/切会话）：onSessionInactive 触发时 activeSummary() 已经是 null，不是重入读到旧会话的 ready（复审 fix round 2 Medium）", async () => {
+    // 这是关键的接缝：onSessionInactive 的真实装配方（index.ts）会在回调里
+    // 调 pushFleet() → cloudFleetSession() → cloudClient.activeSummary()——
+    // 必须真的重入 client.activeSummary() 才能测出"先置 null 再通知"这件事，
+    // 只 push 一个 sessionId 的旧假货测不出这条时序 bug
+    let client: CloudSessionClient | undefined;
+    const readBack: (CloudSessionSummary | null)[] = [];
+    const h = harness({
+      onSessionInactive: () => {
+        readBack.push(client!.activeSummary());
+      },
+    });
+    client = h.client;
+
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "backlog", events: [], done: true }); // ready
+
+    await h.client.leave();
+
+    expect(readBack).toEqual([null]);
+  });
+
+  it("同一条接缝也适用于 join() 切会话（旧会话被顶掉时的 teardown）", async () => {
+    let client: CloudSessionClient | undefined;
+    const readBack: (CloudSessionSummary | null)[] = [];
+    const h = harness({
+      onSessionInactive: () => {
+        readBack.push(client!.activeSummary());
+      },
+    });
+    client = h.client;
+
+    await h.client.join("w1", "s-old");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "s-old", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "backlog", events: [], done: true });
+
+    await h.client.join("w1", "s-new");
+
+    // teardown() 是 join() 的第一步，在旧会话被摘掉、新会话还没被造出来
+    // 之前执行——onSessionInactive 触发那一刻两边都够不着：既不是旧会话的
+    // ready（已经清空），也还不是新会话（要等 teardown() 返回后 join() 才
+    // 往下走）。activeSummary() 读到 null，跟 leave() 触发时是同一个结论——
+    // 这正是"先置 null 再通知"这条纪律该保证的：不管 teardown 因为什么原因
+    // 被调用，通知那一刻都读不到任何一条"还活着"的云会话。
+    expect(readBack).toEqual([null]);
+    // join() 继续往下走，新会话最终确实就位了——只是不在 onSessionInactive
+    // 触发的那一瞬间
+    expect(h.client.currentSessionId()).toBe("s-new");
   });
 });
 
@@ -549,12 +680,12 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     expect(cloudSessionFleetRow(null)).toBeNull();
     const statuses: CloudSessionSummary["status"][] = ["connecting", "denied", "gone"];
     for (const status of statuses) {
-      expect(cloudSessionFleetRow({ workspaceId: "w1", sessionId: "cloud-s1", status })).toBeNull();
+      expect(cloudSessionFleetRow(cloudSummary({ status }))).toBeNull();
     }
   });
 
   it("ready：产出一条合成 SessionSummary——sessionId 对得上、workspace 是绝对路径、不是子会话、不是归档", () => {
-    const row = cloudSessionFleetRow({ workspaceId: "w1", sessionId: "cloud-s1", status: "ready" });
+    const row = cloudSessionFleetRow(cloudSummary({ sessionId: "cloud-s1" }));
     expect(row).not.toBeNull();
     expect(row!.sessionId).toBe("cloud-s1");
     expect(row!.workspace).not.toBeNull();
@@ -565,9 +696,14 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     expect(row!.archived).toBe(false);
   });
 
+  it("lastTs 用 summary.lastEventTs，不是现取 Date.now()（复审 fix round 2 Minor）", () => {
+    const row = cloudSessionFleetRow(cloudSummary({ lastEventTs: 424242 }));
+    expect(row!.lastTs).toBe(424242); // 精确等于传入值，不是"接近当下"
+  });
+
   it("不同 workspaceId 产出不同的 workspace 分组键（不会把两个不同工作区的云会话混进同一组）", () => {
-    const a = cloudSessionFleetRow({ workspaceId: "w1", sessionId: "s-a", status: "ready" })!;
-    const b = cloudSessionFleetRow({ workspaceId: "w2", sessionId: "s-b", status: "ready" })!;
+    const a = cloudSessionFleetRow(cloudSummary({ workspaceId: "w1", sessionId: "s-a" }))!;
+    const b = cloudSessionFleetRow(cloudSummary({ workspaceId: "w2", sessionId: "s-b" }))!;
     expect(a.workspace).not.toBe(b.workspace);
   });
 
@@ -578,7 +714,7 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     const noFs = { exists: () => false, readFile: () => null };
     const lens = createWorkspaceLens({ reader: noFs });
 
-    const cloudRow = cloudSessionFleetRow({ workspaceId: "w1", sessionId: "cloud-s1", status: "ready" })!;
+    const cloudRow = cloudSessionFleetRow(cloudSummary({ sessionId: "cloud-s1" }))!;
     const approval: ApprovalRequest = {
       sessionId: "cloud-s1",
       call: { id: "call-1", name: "bash", args: { summary: "ls -la" } },
@@ -601,7 +737,7 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     const noFs = { exists: () => false, readFile: () => null };
     const lens = createWorkspaceLens({ reader: noFs });
 
-    const goneRow = cloudSessionFleetRow({ workspaceId: "w1", sessionId: "cloud-s1", status: "gone" });
+    const goneRow = cloudSessionFleetRow(cloudSummary({ status: "gone" }));
     expect(goneRow).toBeNull();
 
     const approval: ApprovalRequest = {
