@@ -19,6 +19,12 @@ export interface ApprovalOutcome {
       门在放行前把它写回 ctx.call.args —— 执行器只认 ctx.call，
       改在别处都会变成"日志说一套、磁盘上是另一套" */
   revisedArgs?: unknown;
+  /** 云会话群聊场景（issue #799 系列，ADR-0199）：这次决定是谁按下的按钮。
+      桌面单人会话里审批人就是唯一操作者，字段没意义——普通 Approver 实现
+      不填即可（可选 = 老实现零改动）。engine 的内置 onDecision 把它原样
+      落进 approval_decision.decidedBy；门本身不判断"谁"，只负责转告——
+      "谁能批、谁批的"是 Approver 实现（云 runtime 里是 approvalRouter）的事 */
+  decidedBy?: { uid: string; label: string };
 }
 
 /** 审批人 —— 谁实现都行，engine 只认这个形状。

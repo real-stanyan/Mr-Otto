@@ -148,6 +148,9 @@ export class LoopEngine {
             // 长期许可和改过的参数都是"这一刻发生的新事实",日志推不出来 —— 必须落盘
             ...(outcome.grant ? { grant: outcome.grant } : {}),
             ...(outcome.revisedArgs !== undefined ? { revisedArgs: outcome.revisedArgs } : {}),
+            // 云会话群聊（issue #799 系列）："谁批的"同样是日志推不出来的新事实——
+            // Approver 实现（云 runtime 的 approvalRouter）负责认定，这里只转告
+            ...(outcome.decidedBy ? { decidedBy: outcome.decidedBy } : {}),
           }),
       }),
       ...(opts.middlewares ?? []),
