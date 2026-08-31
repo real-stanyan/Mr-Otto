@@ -30,6 +30,7 @@ interface Pending {
   initiatorUid: string;
   settle: (outcome: ApprovalOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
+  abortHandler?: () => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -41,6 +42,8 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
   let initiatorUid = "";
 
   function canDecide(uid: string): boolean {
+    // 答的是「此 uid 此刻能不能当审批人」（用 live initiator），不是「能不能批某个具体 pending」
+    // 具体归属判定以 resolve() 的快照为准
     return uid === initiatorUid || uid === opts.ownerUid;
   }
 
@@ -58,7 +61,12 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
       return new Promise<ApprovalOutcome>((resolvePromise) => {
         const cleanup = () => {
           clearTimeout(entry.timer);
-          pending.delete(callId);
+          if (entry.abortHandler && signal) {
+            signal.removeEventListener("abort", entry.abortHandler);
+          }
+          if (pending.get(callId) === entry) {
+            pending.delete(callId);
+          }
         };
 
         const settle = (outcome: ApprovalOutcome) => {
@@ -78,13 +86,11 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
             settle({ decision: "denied", reason: "turn 已中断" });
             return;
           }
-          signal.addEventListener(
-            "abort",
-            () => {
-              settle({ decision: "denied", reason: "turn 已中断" });
-            },
-            { once: true },
-          );
+          const abortHandler = () => {
+            settle({ decision: "denied", reason: "turn 已中断" });
+          };
+          entry.abortHandler = abortHandler;
+          signal.addEventListener("abort", abortHandler, { once: true });
         }
 
         opts.onRequest({

@@ -30,4 +30,38 @@ describe("审批路由", () => {
     await expect(p).resolves.toMatchObject({ decision: "denied" });
     vi.useRealTimers();
   });
+  it("同 callId 二次 decide：第一个 entry 超时了结后，第二个 pending 仍可被 resolve", async () => {
+    vi.useFakeTimers();
+    const r = createApprovalRouter({ ownerUid: "o", timeoutMs: 1000, onRequest: () => {} });
+    r.setInitiator("a");
+    const p1 = r.decide(call, tool);
+    // 第一个 decide 超时
+    vi.advanceTimersByTime(1001);
+    await expect(p1).resolves.toMatchObject({ decision: "denied" });
+
+    // 第二个 decide 与第一个 callId 相同
+    r.setInitiator("b");
+    const p2 = r.decide(call, tool);
+    // 第二个 pending 应该可被 resolve
+    expect(r.resolve("c1", "b", "approved")).toBe(true);
+    await expect(p2).resolves.toMatchObject({ decision: "approved" });
+    vi.useRealTimers();
+  });
+  it("settle 后 abort 信号再触发不炸、不影响后续", async () => {
+    const controller = new AbortController();
+    const r = createApprovalRouter({ ownerUid: "owner", onRequest: () => {} });
+    r.setInitiator("alice");
+    const p = r.decide(call, tool, controller.signal);
+
+    // 先 resolve approved
+    expect(r.resolve("c1", "alice", "approved")).toBe(true);
+    const result = await p;
+    expect(result).toMatchObject({ decision: "approved" });
+
+    // settle 后再 abort 信号，不应该炸也不应该改变结果
+    controller.abort();
+    // 重新等待 promise，结果仍然是 approved
+    const result2 = await p;
+    expect(result2).toMatchObject({ decision: "approved" });
+  });
 });
