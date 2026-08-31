@@ -18,6 +18,28 @@ export function csChannel(workspaceId: string, sessionId: string): string {
   return `cs-${workspaceId}-${sessionId}`;
 }
 
+/** 标准 UUID 的十六进制形状（8-4-4-4-12，全小写——workspaceId 来自 Supabase
+    的 `gen_random_uuid()`，sessionId 来自 Node 的 `crypto.randomUUID()`，
+    两者的规范文本形式都是小写）。 */
+const UUID_SEGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const CS_SESSION_CHANNEL_RE = new RegExp(`^cs-${UUID_SEGMENT}-${UUID_SEGMENT}$`);
+
+/** 精确判定「这是不是一条 cs 房间名」——不是「以 `cs-` 开头」（终审复审
+    R1）。用于 edge.ts 的角色收口（role=host 只认平台身份）：好友代理的
+    channelId 是 `b64encode(randomBytes(32))`（proxyInvite.ts），base64url
+    字母表含 `-`（b64.ts），约 1/262144 的邀请码会生成 `cs-` 开头的房名——
+    收口判据若只看前缀，撞上时代理房间里真人的 host 会被误降级成
+    guest，A/B 双方都变 guest 后 relay.ts 的 `peersOf`/`otherRole` 只配对
+    异角色，永远配不上、也没有任何报错（正是 relay.ts 文件头警告的那种
+    失败形态）。精确匹配 `cs-ctl` 或 `cs-<uuid>-<uuid>`——要求精确长度 +
+    十六进制字母表 + 固定短横线位置，随机 base64url 串撞不上；`Cs-`/
+    `xcs-` 这类变体本来就落进空房间，不受影响。
+    房名的构造（上面两个函数）与识别（这个函数）刻意放在同一处、同源于
+    这份协议文件——分了家迟早会漂。 */
+export function isCsChannel(channel: string): boolean {
+  return channel === csCtlChannel() || CS_SESSION_CHANNEL_RE.test(channel);
+}
+
 export type CsDeniedCode =
   | "bad_jwt"
   | "not_member"

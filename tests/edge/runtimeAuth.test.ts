@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEdge, RUNTIME_SERVICE_UID, type EdgeConfig, type RelayStub } from "../../services/edge/src/edge.js";
 import { SUBPROTOCOL } from "../../services/edge/src/relay.js";
 import { signTestJwt } from "./jwtTestUtil.js";
+import { csChannel } from "../../src/shared/remote/cloudSession.js";
 
 // runtime 服务身份（ADR-0199）：VPS 上的云 runtime 之后要以平台身份连 relay、
 // 打 px 执行面，不必先替一个真用户签出 JWT。四条断言对应 task-3-brief 的四件事：
@@ -105,30 +106,57 @@ describe("runtime 服务身份（ADR-0199）", () => {
 // 降级成 guest——房名 `cs-${workspaceId}-${sessionId}` 现任成员和被踢的
 // 前成员都知道，不收口的话谁先连上谁就能抢到 host 角色、被 relay 当权威
 // 广播（真 runtime 的帧被丢弃、攻击者的帧被当权威）。
-describe("cs-* 房间角色收口（终审 C1）", () => {
+//
+// 判据是精确格式匹配（isCsChannel），不是「以 cs- 开头」（终审复审 R1）：
+// 好友代理的 channelId 是随机 base64url（字母表含 `-`），约 1/262144 的
+// 邀请码会撞出一个 `cs-` 开头的房名——用真实形状的 UUID 房名 / 代理频道名
+// 分别验证两条边界。
+describe("cs-* 房间角色收口（终审 C1 / R1）", () => {
   const realUserJwt = (sub = "real-user"): string =>
     signTestJwt(JWT_SECRET, { sub, email: "a@b.c", exp: Math.floor(Date.now() / 1000) + 3600 });
 
-  it("真人 JWT 对 cs-* 房间要 role=host → 被降级成 guest", async () => {
+  // 真实形状：workspaceId/sessionId 都是标准 UUID，用 csChannel() 本身构造——
+  // 与生产上 daemon.ts 的 openSessionRoom 用的是同一个函数，保证测试没有
+  // 自己臆造一个"看起来像"但实际上房间构造代码永远不会生成的房名
+  const REAL_CS_CHANNEL = csChannel("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
+
+  // 手工构造一个真实形状的代理 channelId：b64encode(randomBytes(32)) 的
+  // 长度是 43 字符，字母表含 `-`/`_`——这一条恰好以 "cs-" 开头，但显然不是
+  // cs-<uuid>-<uuid> 的精确格式（终审复审 R1 的原始复现：约 1/262144 的
+  // 邀请码会撞出这种形状）
+  const PROXY_LIKE_CHANNEL = "cs-Qx7mZ2pL9vN4wR8tY1zA6bC3dE5fG0hJ_mK-lMnO";
+
+  it("真人 JWT 对合法 cs 房名要 role=host → 被降级成 guest", async () => {
     const { routed, handle } = relayHarness();
     const res = await handle(
-      upgrade("http://edge/rl/v1/connect?role=host&channel=cs-w1-s1", `${SUBPROTOCOL}, ${realUserJwt()}`)
+      upgrade(`http://edge/rl/v1/connect?role=host&channel=${REAL_CS_CHANNEL}`, `${SUBPROTOCOL}, ${realUserJwt()}`)
     );
     expect(res.status).toBe(200);
     expect(routed).toHaveLength(1);
-    // 带 channel 参数时房间键是 `proxy:${channel}`（不是 who.userId）——这里
-    // 只是确认路由本身没有被角色收口影响到，重点在下面的 role 断言
-    expect(routed[0]!.userId).toBe("proxy:cs-w1-s1");
     expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("guest");
   });
 
-  it("平台身份（RUNTIME_SECRET）对 cs-* 房间要 role=host → 保留 host（真 runtime 不受收口影响）", async () => {
+  it("平台身份（RUNTIME_SECRET）对合法 cs 房名要 role=host → 保留 host（真 runtime 不受收口影响）", async () => {
     const { routed, handle } = relayHarness();
     const res = await handle(
-      upgrade("http://edge/rl/v1/connect?role=host&channel=cs-w1-s1", `${SUBPROTOCOL}, ${RUNTIME_SECRET}`)
+      upgrade(`http://edge/rl/v1/connect?role=host&channel=${REAL_CS_CHANNEL}`, `${SUBPROTOCOL}, ${RUNTIME_SECRET}`)
     );
     expect(res.status).toBe(200);
-    expect(routed[0]!.userId).toBe("proxy:cs-w1-s1");
+    expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("host");
+  });
+
+  // R1 的直接回归用例：一个 cs- 开头但不是精确 cs 房名格式的代理频道——
+  // 真人拿 role=host 连它不该被误伤，否则 A/B 双方都变 guest，peersOf
+  // 永远配不上，配对永远开不起来且没有任何报错
+  it("真人 JWT 对 cs- 开头但非法格式的频道（代理频道撞前缀）要 role=host → 不被降级（R1）", async () => {
+    const { routed, handle } = relayHarness();
+    const res = await handle(
+      upgrade(
+        `http://edge/rl/v1/connect?role=host&channel=${PROXY_LIKE_CHANNEL}`,
+        `${SUBPROTOCOL}, ${realUserJwt()}`
+      )
+    );
+    expect(res.status).toBe(200);
     expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("host");
   });
 
@@ -141,10 +169,10 @@ describe("cs-* 房间角色收口（终审 C1）", () => {
     expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("host");
   });
 
-  it("真人 JWT 对 cs-* 房间要 role=guest → 不受影响（收口只降级 host）", async () => {
+  it("真人 JWT 对合法 cs 房名要 role=guest → 不受影响（收口只降级 host）", async () => {
     const { routed, handle } = relayHarness();
     const res = await handle(
-      upgrade("http://edge/rl/v1/connect?role=guest&channel=cs-w1-s1", `${SUBPROTOCOL}, ${realUserJwt()}`)
+      upgrade(`http://edge/rl/v1/connect?role=guest&channel=${REAL_CS_CHANNEL}`, `${SUBPROTOCOL}, ${realUserJwt()}`)
     );
     expect(res.status).toBe(200);
     expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("guest");

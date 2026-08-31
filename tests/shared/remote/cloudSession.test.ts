@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  CS_PROTOCOL_VERSION, csChannel, csCtlChannel,
+  CS_PROTOCOL_VERSION, csChannel, csCtlChannel, isCsChannel,
   encodeCs, decodeCsUp, decodeCsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 
@@ -54,5 +54,42 @@ describe("cs 帧协议", () => {
       }));
     const msg = { t: "backlog" as const, events: hugeEvents, done: false } as never;
     expect(() => encodeCs(msg)).toThrow(/cs frame exceeds/);
+  });
+
+  // isCsChannel 是 edge.ts 角色收口的判据（终审 C1，精确格式化于终审复审
+  // R1）：房名的构造（csChannel/csCtlChannel）与识别（isCsChannel）同源于
+  // 这个文件，这里直接钉住识别函数本身的边界，不必每次都绕道 HTTP 层
+  describe("isCsChannel — 精确格式匹配，不是前缀匹配（终审复审 R1）", () => {
+    it("cs-ctl 与 csChannel() 生成的真实 UUID 房名都判定为 true", () => {
+      expect(isCsChannel(csCtlChannel())).toBe(true);
+      const real = csChannel("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
+      expect(isCsChannel(real)).toBe(true);
+    });
+
+    it("非 UUID 的两段（比如测试里常用的 w1/s1）判定为 false——房名格式必须是精确的 UUID 对", () => {
+      expect(isCsChannel(csChannel("w1", "s1"))).toBe(false);
+    });
+
+    it("以 cs- 开头但不是精确格式的随机 base64url 串判定为 false（R1 的原始复现：好友代理 channelId 撞前缀）", () => {
+      // 43 字符，字母表含 -/_，贴近 b64encode(randomBytes(32)) 的真实长度，
+      // 但不是 cs-<uuid>-<uuid> 的形状
+      expect(isCsChannel("cs-Qx7mZ2pL9vN4wR8tY1zA6bC3dE5fG0hJ_mK-lMnO")).toBe(false);
+    });
+
+    it("大小写混淆的 UUID（非规范小写形式）判定为 false——workspaceId/sessionId 的规范文本形式都是小写", () => {
+      const upper = csChannel("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+        .toUpperCase();
+      expect(isCsChannel(upper)).toBe(false);
+    });
+
+    it("完全不相关的字符串、空字符串、只差一个字符的变体都判定为 false", () => {
+      expect(isCsChannel("")).toBe(false);
+      expect(isCsChannel("cs-")).toBe(false);
+      expect(isCsChannel("Cs-ctl")).toBe(false); // 大小写敏感
+      expect(isCsChannel("xcs-ctl")).toBe(false); // 前缀之前多一个字符
+      expect(isCsChannel("cs-ctl-extra")).toBe(false); // 后面多余的内容
+      const real = csChannel("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
+      expect(isCsChannel(`${real}-extra`)).toBe(false); // 合法房名后面缀了尾巴
+    });
   });
 });

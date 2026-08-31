@@ -14,6 +14,7 @@ import { authLandingResponse } from "./authLanding.js";
 import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
 import { parseEscrowDoc } from "./px.js";
+import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -129,10 +130,18 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // 是 `cs-${workspaceId}-${sessionId}`,现任成员和被踢的前成员都知道,
     // 不做这道收口的话谁先连上谁就能抢到 host 角色,relay 会把它当权威向
     // 其余 guest 广播:真 runtime 的帧被丢弃、攻击者的帧被当权威(伪造
-    // welcome/event,截获 say 正文与 approve)。好友代理房间(channel 不带
-    // cs- 前缀)不受影响——那里 host/guest 是两个真人各自的角色,鉴权在
-    // 握手层(ADR-0151 的 tryPair),不是这里。
-    if (role === "host" && channel?.startsWith("cs-") && who.userId !== RUNTIME_SERVICE_UID) {
+    // welcome/event,截获 say 正文与 approve)。好友代理房间不受影响——
+    // 那里 host/guest 是两个真人各自的角色,鉴权在握手层(ADR-0151 的
+    // tryPair),不是这里。
+    //
+    // 判据是 isCsChannel 的**精确格式匹配**,不是「以 cs- 开头」(终审复审
+    // R1):好友代理的 channelId 是随机 base64url(b64encode(randomBytes(32)),
+    // 字母表含 `-`),约 1/262144 的邀请码恰好会生成 `cs-` 开头的房名——
+    // 只看前缀的话,撞上时代理房间里真人的 host 会被误降级成 guest,
+    // 双方都变 guest 后 peersOf 永远配不上、也没有任何报错。isCsChannel
+    // 与 csChannel()/csCtlChannel() 同源于 cloudSession.ts,要求精确长度 +
+    // 十六进制字母表 + 固定短横线位置,随机串撞不上。
+    if (role === "host" && channel !== null && isCsChannel(channel) && who.userId !== RUNTIME_SERVICE_UID) {
       role = "guest";
     }
 
