@@ -90,7 +90,9 @@ export async function fetchWorkspace(
   }[];
   const sessions = (unwrap(
     await client.from("workspace_sessions")
-      .select("id,workspace_id,publisher_uid,pkg_id,title,updated_at").eq("workspace_id", id),
+      .select("id,workspace_id,publisher_uid,pkg_id,title,updated_at")
+      .eq("workspace_id", id)
+      .eq("kind", "package"),
   ) ?? []) as {
     id: string; workspace_id: string; publisher_uid: string; pkg_id: string; title: string;
     updated_at: string;
