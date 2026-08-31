@@ -178,7 +178,7 @@ import {
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
 } from "./workspaceSessionShare.js";
-import { createCloudSessionClient } from "./cloudSessionClient.js";
+import { createCloudSessionClient, cloudSessionFleetRow } from "./cloudSessionClient.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -918,9 +918,21 @@ void app.whenReady().then(() => {
   // 读 .git,所以自带 30s 记忆化——pushFleet 跟着每条事件跑
   const workspaceLens = createWorkspaceLens();
 
+  // cloudClient 装配得比这里晚（要等 workspaceManager 先造出来，见下方那段
+  // 装配注释），这个洞先占位，真身在 cloudClient 造完之后才填上——同
+  // escrowResync 那条弦的道理（:611）。只服务一件事：把「当前 ready 的云会话」
+  // 合成一条虚拟 SessionSummary 喂给 flattenFleet（Task 12 复审 P0）——云会话
+  // 从不 store.append，天生不在 fleetSessions() 里；flattenFleet 只遍历
+  // sessions 参数、不会反向遍历 islandStates 的 key，不补这一条的话，那份
+  // 算好的 IslandState（含 pendingApproval）永远够不到原生岛/手机 fleet，
+  // 失败模式是静默的——手机上那条审批横幅永远不出现
+  let cloudFleetSession: (() => SessionSummary | null) | null = null;
+
   const pushFleet = (): void => {
     if (!bridge && !remoteBridge) return;
-    const fleet = flattenFleet(islandStates, fleetSessions(), activeSessionId, workspaceLens);
+    const cloud = cloudFleetSession?.() ?? null;
+    const sessions = cloud ? [...fleetSessions(), cloud] : fleetSessions();
+    const fleet = flattenFleet(islandStates, sessions, activeSessionId, workspaceLens);
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge?.pushState(fleet);
@@ -1481,8 +1493,25 @@ void app.whenReady().then(() => {
       pendingApprovals.delete(event.sessionId);
       feedIsland({ kind: "event", event });
     },
+    // 断线(gone)/leave()/被下一次 join() 顶掉：这条云会话不再追踪，清掉可能
+    // 挂着的审批（复审 Medium，同本地 turn 收尾 finally 块的无条件清理纪律
+    // 对齐）。island 那份直接整条删——下次这个 sessionId 又变得相关时（重新
+    // join，或者 gone 之后重连），feedIsland 的惰性播种会给它一份全新的
+    // initialIsland，approval_request 若仍然有效会重新把它填回去
+    // （cloudSessionClient.ts 的 :gone 那段）。pushFleet() 补一次即时推送——
+    // 不然要等下一条不相干的事件路过才会把这一行从 fleet 上抹掉
+    onSessionInactive: (sessionId) => {
+      pendingApprovals.delete(sessionId);
+      islandStates.delete(sessionId);
+      pushFleet();
+    },
     log: (m) => console.warn(m),
   });
+  // pushFleet 定义得比这里早（占位见 :929 的 cloudFleetSession 声明），
+  // 真身在这里才填上——cloudClient 造完之前 pushFleet 若被调用只会看到 null，
+  // 等价于"还没有云会话"，不是 bug（此刻确实还没有）。合成逻辑本身是纯函数
+  // （cloudSessionFleetRow，独立单测），这里只做接线
+  cloudFleetSession = () => cloudSessionFleetRow(cloudClient.activeSummary());
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
         crypto: remoteKeys.crypto,
@@ -3901,8 +3930,10 @@ void app.whenReady().then(() => {
     incoming: ApprovalDecisionOutcome
   ): Promise<void> {
     // 云会话分流（Task 12，ADR-0199）：sessionId 是当前云会话时不碰本地
-    // agents（云会话的 sessionId 是 uuid，与本地会话 id 无碰撞，agents.get
-    // 找不到它也不会误判）。"abort" 在云端没有对应语义（协议只认
+    // agents（云会话的 sessionId 由 daemon.ts 现铸 randomUUID()——本地会话 id
+    // 同样是 uuid 格式，如 importWorkspaceSession 那条路，两边不是靠"格式不同"
+    // 分开的；真正的理由是 UUID 随机空间的碰撞概率可忽略，agents.get 找不到
+    // 它也不会误判）。"abort" 在云端没有对应语义（协议只认
     // approved/denied，没有能从这儿中止别人机器上那个 turn 的动作），
     // 保守地并进 denied——同 mapApprovalDecision 对本地未知走向的处理精神一致。
     // pendingApprovals 不在这里清：云端可能因为请求已失效/不是发起人而回
@@ -4093,6 +4124,10 @@ void app.whenReady().then(() => {
     simInput?.dispose();
     // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
     proxy?.closeAll();
+    // 云会话连接同理是长连的 WebSocket（Task 12 复审 Medium）：app 退了还挂着
+    // 也是替一个不存在的成员守房间。leave() 内部会 try/catch 吞掉关闭异常，
+    // 不需要再包一层
+    void cloudClient.leave();
     // 自己登记过的进程组静默收尸（issue #759）：登记表里的每一个都是本 app 起的,
     // 没有误杀的可能,所以不弹窗、不问人（同上面 terminals.killAll 的立场）。
     // 没被登记表覆盖的树外残留不在这里杀——它们已经落了 residue_detected,

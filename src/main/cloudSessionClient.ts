@@ -15,11 +15,16 @@
 //     直播事件 + 收发审批都走这一条。同时只保留一条（join 先断旧的——
 //     桌面是显示器，多开留后续）。
 //
-// 去重：welcome 之后无条件 backlog(afterSeq: -1) 拉全量（**不是** 0——EventStore
-// 的 seq 从 0 开始，字面传 0 会漏掉 seq:0 那第一条，-1 才是"什么都没见过"的
-// 正确哨兵，T11 冒烟已验证同一件事）。backlog 里的事件与直播 event 帧可能重叠
-// （backlog 请求飞在路上时新事件已经广播过来），靠 seenSeqs 按 seq 去重，
-// 只转发一次给渲染层。
+// 去重 + 保序：welcome 之后无条件 backlog(afterSeq: -1) 拉全量（**不是** 0——
+// EventStore 的 seq 从 0 开始，字面传 0 会漏掉 seq:0 那第一条，-1 才是"什么都
+// 没见过"的正确哨兵，T11 冒烟已验证同一件事）。backlog 在飞的时候直播 event
+// 帧可能先到（复审 High 实测复现：welcome(lastSeq=7)→直播 event(seq=5)→
+// backlog([0..7]) 时，即发即转会产出 [5,0,1,2,3,4,6,7] 这种非 seq 升序的转发
+// 顺序——渲染层是纯 append，乱序会让工具调用与对话先后错位）。做法：还没
+// ready 之前收到的直播事件全部先进 liveBuffer，不经过 deliverEvent；backlog
+// 落定时把它与 liveBuffer 合并、按 seq 升序排序后统一喂给 deliverEvent（去重
+// 表保证同一条不会转发两次），这之后才切回直发。seenSeqs 只在**同一条连接
+// 存续期间**有效——见下面 :gone 那段。
 //
 // 审批复用现有 fleet 卡（不新造一套 UI 通道）：收到 approval_request 事件且
 // selfUid ∈ {initiatorUid, ownerUid} 时，构造一张 ApprovalRequest 交给
@@ -35,12 +40,33 @@
 // 云事件走的是 otter:cloudSessionEvent 通道，不会自动流进本地 push.event 那条
 // 已经接好的 feedIsland 管线，所以这里必须显式转一次。
 //
-// :gone（runtime 离场，daemon 重启/掉线）→ status "gone"，**不清任何已转发的
-// 状态**（seenSeqs 留着——host 回来后 welcome→backlog(-1) 会把同一批事件
-// 再发一遍，去重表保证不会重复推给渲染层；渲染层自己的 events 数组也不清，
-// 由 T13 负责）。断线重连本身由 wsTransport 内置（退避），这里不重复实现。
+// :gone（runtime 离场，daemon 重启/掉线）→ status "gone"，**清 seenSeqs/
+// liveBuffer**（复审 Medium）：host 回来后 welcome→backlog(-1) 会把同一批
+// 事件再拉一遍，这次不去重、原样再转发一轮——渲染层（T13）自己也按 seq 去重
+// （append 进 cloudSession.events 那一步），重复送达对它无害；换来的是
+// approval_request 命中 self 可批时会**重新**跑一遍 deliverEvent 的资格判断，
+// 从而重新调 deps.onApprovalRequest 把 pendingApprovals 填回去——这正是下一条
+// 要接住的东西。**pendingApprovals 的清理**：status 变 gone、或者这条会话被
+// leave()/被下一次 join() 顶掉（teardown）时，一律经 deps.onSessionInactive
+// 通知装配方去清 pendingApprovals + island（同本地 turn 收尾那条无条件清理
+// 纪律对齐，见 index.ts 的 finally 块）——gone 期间那条连接够不到任何人，
+// 一张按不动的审批卡比没有卡更糟；等 host 真回来，上一段说的"重新
+// deliverEvent"会把它公平地重新挂回去。渲染层自己的 cloudSession.events 数组
+// 不清，那是 T13 的地盘。断线重连本身由 wsTransport 内置（退避），这里不重复
+// 实现。
+//
+// 上岛（复审 P0）：云会话从不 store.append，天生不在 index.ts 的
+// fleetSessions()（store.sessions() 的投影）里；flattenFleet 只遍历它拿到的
+// sessions 参数、不会反向遍历 islandStates 的 key——approval_request 命中
+// self 可批时算出来的那份 IslandState（含 pendingApproval）因此永远不可达
+// 原生岛/手机 fleet，失败模式是静默的：不报错，只是那条审批横幅永远不出现。
+// `cloudSessionFleetRow` 是这个洞的补丁：纯函数，把 activeSummary() 的结果
+// 转成一条虚拟 SessionSummary，index.ts 的 pushFleet 把它并进真实会话列表
+// 一起喂给 flattenFleet。只在 status:"ready" 时给出结果——connecting 还没有
+// 可展示的事实，denied/gone 没有活连接，虚拟行随之消失。
 
 import type { RemoteTransport } from "../shared/remote/transport.js";
+import type { SessionSummary } from "../session/store.js";
 import {
   CS_PROTOCOL_VERSION,
   csCtlChannel,
@@ -97,14 +123,57 @@ export interface CloudSessionClientDeps {
   onApprovalRequest: (req: ApprovalRequest) => void;
   /** approval_decision → 装配方清 pendingApprovals + 转给 feedIsland 清岛上的卡 */
   onApprovalDecision: (event: ApprovalDecisionEvent) => void;
+  /** 这条云会话不再是"可能还有东西挂着"的状态了（status 变 gone，或者
+      leave()/被下一次 join() 顶掉）——装配方据此清 pendingApprovals + island
+      里这个 sessionId 的残留（复审 Medium，同本地 turn 收尾 finally 块里
+      pendingApprovals.delete 的无条件清理纪律对齐） */
+  onSessionInactive: (sessionId: string) => void;
   /** 日志钩子。**禁止在这里打印 payload/jwt 原文**——只记帧类型/错误文本 */
   log?: (m: string) => void;
+}
+
+/** pushFleet 合成虚拟 fleet 行要的最小信息（复审 P0：云会话从不 store.append，
+    天生不在 fleetSessions() 里，flattenFleet 只遍历 sessions 参数、不会反向
+    遍历 islandStates 的 key——不补一行虚拟 SessionSummary，审批卡对原生岛/
+    手机 fleet 永远不可达）。只在 status:"ready" 时才有意义（装配方按此过滤：
+    connecting 还没有可显示的事实，denied/gone 没有活连接） */
+export interface CloudSessionSummary {
+  workspaceId: string;
+  sessionId: string;
+  status: "connecting" | "ready" | "denied" | "gone";
+}
+
+/** CloudSessionSummary → 喂给 flattenFleet 的那一条虚拟 SessionSummary
+    （复审 P0 的落地处，纯函数、独立可测）。null = 没有可展示的：没 join 过，
+    或者还没 ready（connecting/denied/gone 都没有"此刻活着"的事实可以摆上
+    fleet）。workspace 字段是合成路径不是真目录：真实 lens
+    （main/workspaceLens.ts → projectRoot.ts 的 resolveWorkspaceOrigin）会顺着
+    它一路向上找 .git，找到文件系统根都找不到就回落到"就地当根"，即
+    projectRoot = 这串字符串本身——自成一路，不会撞上任何真实项目分组。
+    必须是**绝对路径**：相对片段会被 path.resolve 拼上 process.cwd()，在
+    dev checkout 这样的环境里可能意外爬进真实项目的 .git，把云会话错误地
+    并进某个本地项目组。*/
+export function cloudSessionFleetRow(summary: CloudSessionSummary | null): SessionSummary | null {
+  if (!summary || summary.status !== "ready") return null;
+  return {
+    sessionId: summary.sessionId,
+    events: 0,
+    startedTs: 0,
+    lastTs: Date.now(),
+    workspace: `/__otto-cloud-session__/${summary.workspaceId}`,
+    title: "云会话",
+    spawnedFrom: null,
+    archived: false,
+    sharedWith: [],
+  };
 }
 
 export interface CloudSessionClient {
   /** 当前已 join 的云会话 id；没有 = null。handleDecideApproval 拿它判断一个
       sessionId 是不是该走云端分流，不碰本地 agents */
   currentSessionId(): string | null;
+  /** 当前云会话的概览，没有 join 过 = null（pushFleet 拿它合成虚拟行） */
+  activeSummary(): CloudSessionSummary | null;
   create(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>>;
   join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 断当前云会话连接（不管在什么状态：connecting/ready/denied/gone 都能断） */
@@ -129,8 +198,13 @@ interface ActiveSession {
   initiatorUid: string | null;
   ownerUid: string;
   /** 已经转发给渲染层的事件 seq。backlog 与直播可能重叠，靠它去重（拉全量
-      每次都是 -1，不靠"上次读到哪条"——那样反而在 gone→重连之间产生缺口） */
+      每次都是 -1，不靠"上次读到哪条"——那样反而在 gone→重连之间产生缺口）。
+      gone 时清空——见文件头「:gone」那段 */
   seenSeqs: Set<number>;
+  /** 还没 ready（welcome 之后、backlog done:true 之前）收到的直播 event，
+      暂存在这里不经过 deliverEvent；backlog 落定时与它合并排序后统一转发，
+      保证转发给渲染层的顺序是 seq 升序（复审 High） */
+  liveBuffer: SessionEvent[];
 }
 
 export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
@@ -153,6 +227,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
     if (session.status === "gone" || session.status === "denied") return;
     session.status = "gone";
+    // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
+    // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
+    // 事件原样再拉一遍，这次不去重、重新跑一遍 deliverEvent，approval_request
+    // 若仍命中 self 可批会重新把 pendingApprovals 填回去（文件头「:gone」段）
+    session.seenSeqs = new Set();
+    session.liveBuffer = [];
+    deps.onSessionInactive(session.sessionId);
     pushStatus(session);
   }
 
@@ -176,6 +257,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     } catch {
       /* 已经在关了 */
     }
+    // leave() 或者被下一次 join() 顶掉：这条会话彻底不再追踪了（不是"暂时
+    // 联系不上"的 gone，是"以后也不会再有人问起它"），残留的 pendingApprovals/
+    // island 一并清掉。真要再 join 回同一个 sessionId 也是全新的 ActiveSession
+    // （seenSeqs 从空开始），backlog 会把还没决定的 approval_request 原样
+    // 重放一遍，不会永久丢失
+    deps.onSessionInactive(active.sessionId);
     active = null;
   }
 
@@ -228,15 +315,27 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         markDenied(session, msg.code);
         return;
       case "event":
-        deliverEvent(session, msg.event);
+        // 还没 ready：backlog 没落定之前不能让直播事件抢跑，先攒着（复审
+        // High，文件头有完整推演）。ready 之后是正常的直发路径
+        if (session.status !== "ready") {
+          session.liveBuffer.push(msg.event);
+        } else {
+          deliverEvent(session, msg.event);
+        }
         return;
-      case "backlog":
-        for (const e of msg.events) deliverEvent(session, e);
+      case "backlog": {
+        // 与 liveBuffer 合并、按 seq 升序排序后统一转发——去重表保证同一条
+        // 不会转发两次，排序保证转发顺序是 seq 升序（不管这条事件是从 backlog
+        // 本身来的，还是刚才攒在 liveBuffer 里的）
+        const merged = [...msg.events, ...session.liveBuffer].sort((a, b) => a.seq - b.seq);
+        session.liveBuffer = [];
+        for (const e of merged) deliverEvent(session, e);
         if (msg.done && session.status !== "ready") {
           session.status = "ready";
           pushStatus(session);
         }
         return;
+      }
       case "error":
         // 只记文本（server 生成的固定提示语，如"审批未生效：…"），不是帧原文
         deps.log?.(`云会话:runtime 回错:${msg.msg}`);
@@ -358,6 +457,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       initiatorUid: null,
       ownerUid: "",
       seenSeqs: new Set(),
+      liveBuffer: [],
     };
     active = session;
     pushStatus(session);
@@ -434,5 +534,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return active ? active.sessionId : null;
   }
 
-  return { currentSessionId, create, join, leave, say, approve, archive, config };
+  function activeSummary(): CloudSessionSummary | null {
+    if (!active) return null;
+    return { workspaceId: active.workspaceId, sessionId: active.sessionId, status: active.status };
+  }
+
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, config };
 }
