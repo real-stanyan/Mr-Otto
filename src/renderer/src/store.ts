@@ -101,7 +101,10 @@ import type {
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
 import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
-import type { NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo } from "../../shared/shellBridge.js";
+import type {
+  NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
+} from "../../shared/shellBridge.js";
+import type { CloudSessionListRow } from "./lib/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
@@ -158,6 +161,21 @@ export interface McpPromptFormState {
   values: Record<string, string>;
   submitting: boolean;
   error: string | null;
+}
+
+/** 当前 join 着的云会话（Task 13，ADR-0199）。state/deniedCode/initiatorUid/
+    ownerUid/selfUid 逐字段照抄 ShellBridge 的 CloudSessionStatus——onCloudSessionStatus
+    推来的就是这五个字段，这里只多一个 events（推送另开 onCloudSessionEvent 通道，
+    两路在 store 里合成一份） */
+export interface CloudSessionState {
+  workspaceId: string;
+  sessionId: string;
+  state: "connecting" | "ready" | "denied" | "gone";
+  deniedCode?: string;
+  initiatorUid: string | null;
+  ownerUid: string;
+  selfUid: string;
+  events: SessionEvent[];
 }
 
 interface ChatState {
@@ -478,8 +496,19 @@ interface ChatState {
       （workspaceList 无 onChanged）——每次改动后本地重拉一次，见下面十一个 action */
   workspaceGroups: WorkspaceSnapshot[];
   /** 工作区面板/页面的内联错误。不复用 friendError——那个字段的注释把范围钉在
-      "好友区/DM 面板"，工作区协作组是另一件事，混一起会让读者误以为两处互相影响 */
+      "好友区/DM 面板"，工作区协作组是另一件事，混一起会让读者误以为两处互相影响。
+      云会话（下面两个字段）的失败也落在这——CloudSessionPage 是 WorkspacePage
+      内切换渲染出来的（同一块"工作区面板/页面"），不新开一条并行的错误槽位 */
   workspaceGroupsError: string | null;
+  /** 云会话（Task 13，ADR-0199）：当前 join 着的那一条，没有 = null。全局单条——
+      同 main/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
+      events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
+      onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
+  cloudSession: CloudSessionState | null;
+  /** 工作区 id → 该工作区的云会话清单（SessionsTab「云会话」小节用）。
+      无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
+      refreshCloudSessions 重拉 */
+  cloudSessionList: Record<string, CloudSessionListRow[]>;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
@@ -794,6 +823,23 @@ interface ChatState {
       await resume(sessionId)） */
   importWorkspaceSession(publisherUid: string, pkgId: string): Promise<boolean>;
 
+  /** 云会话（Task 13，ADR-0199）。同样无推送通道地拉清单——
+      workspaceCloudList 没有 onChanged，SessionsTab 的「云会话」小节自己
+      在挂载时调一次 */
+  refreshCloudSessions(workspaceId: string): Promise<void>;
+  /** sessionId = null → 先 workspaceCloudCreate 拿到新 id 再 join；
+      非 null → 直接 join 这一条（同时只保留一条连接，join 先顶掉旧的，
+      语义与 main/cloudSessionClient.ts 的 join() 完全对齐）。
+      失败（含 create 阶段）落 workspaceGroupsError，cloudSession 保持/回落 null */
+  openCloudSession(workspaceId: string, sessionId: string | null): Promise<void>;
+  /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
+      往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
+  closeCloudSession(): void;
+  /** 往当前云会话发一句话。mention = 「@Agent」toggle 开着 */
+  cloudSay(text: string, mention: boolean): Promise<void>;
+  /** 批/拒当前云会话里的一个审批请求 */
+  cloudApprove(callId: string, decision: "approved" | "denied"): Promise<void>;
+
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
@@ -1092,6 +1138,8 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyHosts: [],
   workspaceGroups: [],
   workspaceGroupsError: null,
+  cloudSession: null,
+  cloudSessionList: {},
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   fullscreen: false,
@@ -1994,6 +2042,70 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
+  async refreshCloudSessions(workspaceId) {
+    const r = await window.otter.workspaceCloudList(workspaceId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return;
+    }
+    set((s) => ({
+      cloudSessionList: { ...s.cloudSessionList, [workspaceId]: r.value },
+      workspaceGroupsError: null,
+    }));
+  },
+
+  async openCloudSession(workspaceId, sessionId) {
+    let sid = sessionId;
+    if (sid === null) {
+      const created = await window.otter.workspaceCloudCreate(workspaceId);
+      if (!created.ok) {
+        set({ workspaceGroupsError: created.message });
+        return;
+      }
+      sid = created.value.sessionId;
+    }
+    // 乐观占位：join() 的 pushStatus 是同步调用（main/cloudSessionClient.ts
+    // join() 里没有 await 就到 pushStatus），但那一推是另一条 IPC 通道，
+    // 谁先到渲染层不该是这段代码依赖的东西——先给一个"连接中"的壳，真状态
+    // 由随后的 onCloudSessionStatus 推送纠正/补齐（同 SessionRuntime 的
+    // "只填空不覆盖"精神，这里反过来是"先占位，来了就覆盖"，因为这一格
+    // 在 join() 调用前必然是 null，没有旧值可覆盖）
+    set({
+      cloudSession: {
+        workspaceId, sessionId: sid, state: "connecting",
+        initiatorUid: null, ownerUid: "", selfUid: get().account.id,
+        events: [],
+      },
+      workspaceGroupsError: null,
+    });
+    const r = await window.otter.workspaceCloudJoin(workspaceId, sid);
+    if (!r.ok) {
+      // 只在这仍是我们刚占位的那一条时才清——异步期间用户可能已经手快切到
+      // 别的云会话（新的 openCloudSession 调用会覆盖这一格），这时旧调用
+      // 的失败不该把新调用刚占好的位子摘掉
+      set((s) => (
+        s.cloudSession?.sessionId === sid
+          ? { cloudSession: null, workspaceGroupsError: r.message }
+          : { workspaceGroupsError: r.message }
+      ));
+    }
+  },
+
+  closeCloudSession() {
+    void window.otter.workspaceCloudLeave();
+    set({ cloudSession: null });
+  },
+
+  async cloudSay(text, mention) {
+    const r = await window.otter.workspaceCloudSay(text, mention);
+    if (!r.ok) set({ workspaceGroupsError: r.message });
+  },
+
+  async cloudApprove(callId, decision) {
+    const r = await window.otter.workspaceCloudApprove(callId, decision);
+    if (!r.ok) set({ workspaceGroupsError: r.message });
+  },
+
   async openFriendChat(profile) {
     set((s) => ({
       ...panelFlags(null), friendChat: profile, // 互斥:同一右侧槽位
@@ -2187,6 +2299,39 @@ export const useChat = create<ChatState>((set, get) => ({
     });
     window.otter.onProxyChanged(({ borrows, hosts }) => {
       set({ proxyBorrows: borrows, proxyHosts: hosts });
+    });
+    // 云会话（Task 13，ADR-0199）：两条推送只在"当前 join 着的正是这条"时才
+    // 生效——异步期间可能已经 leave()/切到另一条，旧连接的迟到推送不该
+    // 落到新连接头上（sessionId 是这两条通道唯一的挂靠键，main 侧同款判据
+    // 见 cloudSessionClient.ts 的 `if (active !== session) return`）
+    window.otter.onCloudSessionEvent((event) => {
+      set((s) => {
+        if (!s.cloudSession || s.cloudSession.sessionId !== event.sessionId) return s;
+        // 按 seq 去重：:gone → host 回来重连会把 backlog 全量再推一遍
+        // （main/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
+        // 无害地被过滤掉，不会在时间线上出现两条一样的事件
+        if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
+        return { cloudSession: { ...s.cloudSession, events: [...s.cloudSession.events, event] } };
+      });
+    });
+    window.otter.onCloudSessionStatus((status) => {
+      set((s) => {
+        if (!s.cloudSession || s.cloudSession.sessionId !== status.sessionId) return s;
+        return {
+          cloudSession: {
+            ...s.cloudSession,
+            state: status.state,
+            initiatorUid: status.initiatorUid,
+            ownerUid: status.ownerUid,
+            selfUid: status.selfUid,
+            // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
+            // 目标字段是可选的 string——只在真有值时才落这个键，不能把
+            // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，
+            // 与"这个键不存在"是两码事，见 tsconfig 的 exactOptionalPropertyTypes）
+            ...(status.deniedCode !== undefined ? { deniedCode: status.deniedCode } : {}),
+          },
+        };
+      });
     });
     window.otter.onMcpChanged((mcpServers) => {
       set({ mcpServers });

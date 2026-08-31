@@ -11,8 +11,12 @@
 // 危险动作（踢人 / 解散工作区 / 撤回发布 / 退出工作区）走 `confirm()`——同
 // FriendsSection「删除好友」、侧栏「删除会话」一样的原生确认，不新造一套
 // AlertDialog 视觉语言（本仓这一类判定至今都是这么做的）。
+//
+// 云会话（Task 13，ADR-0199）：会话 tab 顶部加一节，点开/新建都会把整页换成
+// CloudSessionPage（同上一条"页而不是弹窗"的道理，换页判据是全局 store 里的
+// cloudSession，不是这个组件自己的 state——见 WorkspacePage 函数体那段注释）。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, LogOut, Trash2, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -21,12 +25,21 @@ import {
 } from "@/components/ui/dialog.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { useChat } from "../store.js";
-import { connectorRows, memberRows, sessionRows, type ConnectorCloudState } from "../lib/workspaceView.js";
+import {
+  cloudSessionRows, connectorRows, memberRows, sessionRows,
+  type ConnectorCloudState, type CloudSessionListRow,
+} from "../lib/workspaceView.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   formatProxyTime, type ProxySelection,
 } from "../lib/proxyShare.js";
+import { CloudSessionPage } from "./CloudSessionPage.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+
+// 云会话清单没拉过时的兜底：模块级常量而非每次渲染 `?? []`，保证 selector
+// 每次返回同一引用，不触发 zustand 无谓重渲（仓库 selector 约定，同
+// FriendChatView 的 EMPTY 先例）
+const EMPTY_CLOUD_SESSIONS: CloudSessionListRow[] = [];
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
@@ -43,6 +56,19 @@ export function WorkspacePage({
   const deleteGroup = useChat((s) => s.deleteWorkspaceGroup);
   const leaveGroup = useChat((s) => s.leaveWorkspaceGroup);
   const error = useChat((s) => s.workspaceGroupsError);
+  const cloudSession = useChat((s) => s.cloudSession);
+  const closeCloudSession = useChat((s) => s.closeCloudSession);
+
+  // 云会话开着就整页替换（Task 13，ADR-0199）：同 WorkspacesPanel 拿
+  // WorkspacePage 换掉列表的模式，换页不是弹窗（ADR-0185 的教训）。
+  // 判据用全局 cloudSession（不是本地 state）——它天生就是"此刻 join 着
+  // 哪一条"的事实来源（同时只保留一条连接，同 cloudSessionClient.ts），
+  // 按 workspaceId 过滤是为了防一种边角情况：cloudSession 挂着别的工作区
+  // 那条（用户从别处直接跳进了这个工作区页），这时不该把那条的内容
+  // 套在这个工作区的壳里显示
+  if (cloudSession && cloudSession.workspaceId === ws.id) {
+    return <CloudSessionPage ws={ws} selfUid={selfUid} onBack={closeCloudSession} />;
+  }
 
   const isOwner = ws.ownerUid === selfUid;
 
@@ -116,43 +142,103 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
   const unpublish = useChat((s) => s.unpublishWorkspaceSession);
   const rows = sessionRows(ws);
 
-  if (rows.length === 0) {
-    return <p className="px-2 text-xs text-muted-foreground">还没有人发布会话到这个工作区。</p>;
-  }
+  return (
+    <div className="flex flex-col gap-4">
+      <CloudSessionsSection ws={ws} />
+
+      <div className="flex flex-col gap-1">
+        <span className={SECTION_LABEL}>已发布会话</span>
+        {rows.length === 0 ? (
+          <p className="px-2 text-xs text-muted-foreground">还没有人发布会话到这个工作区。</p>
+        ) : (
+          rows.map((row) => {
+            const raw = ws.sessions.find((s) => s.id === row.id)!;
+            const mine = raw.publisherUid === selfUid;
+            return (
+              <div key={row.id} className={cn(ROW, "border border-border")}>
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 flex-col items-start gap-0.5 bg-transparent text-left"
+                  onClick={() => void importSession(raw.publisherUid, raw.pkgId)}
+                  title="导入到本机成为一个新会话"
+                >
+                  <span className="min-w-0 truncate font-medium">{row.title}</span>
+                  <span className="text-[10.5px] text-muted-foreground">
+                    {row.publisherLabel} · {formatProxyTime(row.updatedTs)}
+                  </span>
+                </button>
+                {mine && (
+                  <Button
+                    variant="ghost" size="xs" className="shrink-0 text-err"
+                    onClick={() => {
+                      if (confirm(`撤回会话「${row.title}」？其他成员将不能再导入它。`)) {
+                        void unpublish(ws.id, row.id);
+                      }
+                    }}
+                  >
+                    撤回
+                  </Button>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 云会话小节（Task 13，ADR-0199）：桌面当显示器，接 VPS 上常驻的 runtime——
+    与上面"已发布会话"（一次性快照，导入即 fork 成本机新会话）是两种不同的
+    东西，分开一节，不混进同一张表。列表本身没有推送通道（同 workspaceGroups
+    的十一个 action，workspaceCloudList 无 onChanged），挂载时拉一次 */
+function CloudSessionsSection({ ws }: { ws: WorkspaceSnapshot }) {
+  const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
+  const refresh = useChat((s) => s.refreshCloudSessions);
+  const openCloud = useChat((s) => s.openCloudSession);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    void refresh(ws.id);
+  }, [ws.id, refresh]);
+
+  const rows = cloudSessionRows(list, ws);
+
+  const createNew = async (): Promise<void> => {
+    if (creating) return;
+    setCreating(true);
+    await openCloud(ws.id, null);
+    setCreating(false);
+  };
 
   return (
     <div className="flex flex-col gap-1">
-      {rows.map((row) => {
-        const raw = ws.sessions.find((s) => s.id === row.id)!;
-        const mine = raw.publisherUid === selfUid;
-        return (
-          <div key={row.id} className={cn(ROW, "border border-border")}>
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 flex-col items-start gap-0.5 bg-transparent text-left"
-              onClick={() => void importSession(raw.publisherUid, raw.pkgId)}
-              title="导入到本机成为一个新会话"
-            >
-              <span className="min-w-0 truncate font-medium">{row.title}</span>
-              <span className="text-[10.5px] text-muted-foreground">
-                {row.publisherLabel} · {formatProxyTime(row.updatedTs)}
-              </span>
-            </button>
-            {mine && (
-              <Button
-                variant="ghost" size="xs" className="shrink-0 text-err"
-                onClick={() => {
-                  if (confirm(`撤回会话「${row.title}」？其他成员将不能再导入它。`)) {
-                    void unpublish(ws.id, row.id);
-                  }
-                }}
-              >
-                撤回
-              </Button>
-            )}
-          </div>
-        );
-      })}
+      <div className="flex items-center justify-between">
+        <span className={SECTION_LABEL}>云会话</span>
+        <Button variant="ghost" size="xs" disabled={creating} onClick={() => void createNew()}>
+          {creating ? "创建中…" : "新建云会话"}
+        </Button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-2 text-xs text-muted-foreground">
+          还没有云会话——建一个由云端常驻的 agent，桌面断线也不中断它。
+        </p>
+      ) : (
+        rows.map((row) => (
+          <button
+            key={row.id}
+            type="button"
+            className={cn(ROW, "border border-border bg-transparent text-left")}
+            onClick={() => void openCloud(ws.id, row.id)}
+          >
+            <span className="min-w-0 flex-1 truncate">
+              <b className="font-medium">{row.title}</b>
+              <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
+            </span>
+            {row.archived && <span className="shrink-0 text-[10px] text-muted-foreground">已归档</span>}
+          </button>
+        ))
+      )}
     </div>
   );
 }
