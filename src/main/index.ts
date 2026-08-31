@@ -173,11 +173,12 @@ import { createPxCloudClient } from "./pxCloudClient.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
-  deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow,
+  deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
 } from "./supabaseWorkspacesApi.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
 } from "./workspaceSessionShare.js";
+import { createCloudSessionClient } from "./cloudSessionClient.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -1448,6 +1449,39 @@ void app.whenReady().then(() => {
     // 落地时，那时 escrowResync 早已就位（同 onGrantsChanged 那条闭包的道理）
     resyncEscrow: () => escrowResync?.(),
     serverLabel: (id) => mcpHub.servers().find((s) => s.id === id)?.name ?? id,
+  });
+  // ─── 云会话客户端（Task 12，ADR-0199）─────────────────────────────────
+  // 桌面当显示器，接 VPS 上的 runtime：role 固定 "guest"（runtime 在每个 cs
+  // 房间里都以 "host" 常驻，relay 的配对模型只认同对异角色互发，见
+  // cloudSessionClient.ts 文件头）。审批复用现有 fleet 卡：命中 self 可批时
+  // 塞进 pendingApprovals + 推 approvalRequest + feedIsland，手机端零改动；
+  // approval_decision 到达时清 pendingApprovals，并把那条 SessionEvent 转给
+  // feedIsland 的 "event" 分支——岛上清卡靠的正是 reduceIsland 认
+  // approval_decision 那条逻辑，云事件不会自动流进本地 push.event 那条管线，
+  // 这里必须显式转一次。
+  const cloudClient = createCloudSessionClient({
+    accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+    selfUid: () => friends.currentUid(),
+    createTransport: (channel) =>
+      createWsTransport({
+        baseUrl: relayBaseUrl(),
+        role: "guest",
+        channel,
+        authToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+        log: (m) => console.warn(m),
+      }),
+    sendEvent: (event) => send(CHANNELS.cloudSessionEvent, event),
+    sendStatus: (status) => send(CHANNELS.cloudSessionStatus, status),
+    onApprovalRequest: (req) => {
+      pendingApprovals.set(req.sessionId, req);
+      send(CHANNELS.approvalRequest, req);
+      feedIsland({ kind: "approvalRequest", req });
+    },
+    onApprovalDecision: (event) => {
+      pendingApprovals.delete(event.sessionId);
+      feedIsland({ kind: "event", event });
+    },
+    log: (m) => console.warn(m),
   });
   const proxy: ProxyManager | null = remoteKeys
     ? createProxyManager({
@@ -3122,6 +3156,29 @@ void app.whenReady().then(() => {
     );
   });
 
+  // 云会话（Task 12，ADR-0199）：list 是纯 Supabase 查询（不经 cloudClient——
+  // 它管的是 relay 连接，不是台账查询），其余七个直接委托 cloudClient；
+  // cloudClient 自己按登录态/连接状态回 FriendsResult，这层不用重复判断。
+  ipcMain.handle(CHANNELS.workspaceCloudList, async (_e, workspaceId: string) => {
+    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    try {
+      return { ok: true as const, value: await listCloudSessions(supabase.raw, workspaceId) };
+    } catch (e) {
+      return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string) => cloudClient.create(workspaceId));
+  ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string) =>
+    cloudClient.join(workspaceId, sessionId));
+  ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
+  ipcMain.handle(CHANNELS.workspaceCloudSay, (_e, text: string, mention: boolean) =>
+    cloudClient.say(text, mention));
+  ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
+    cloudClient.approve(callId, decision));
+  ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());
+  ipcMain.handle(CHANNELS.workspaceCloudConfig, (_e, workspaceId: string, repoUrl: string, pat?: string) =>
+    cloudClient.config(workspaceId, repoUrl, pat));
+
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、
   // friends.sendMessage 发 DM 信封——四件事各有各的真身，本层只接线。
@@ -3843,6 +3900,19 @@ void app.whenReady().then(() => {
     toolCallId: string,
     incoming: ApprovalDecisionOutcome
   ): Promise<void> {
+    // 云会话分流（Task 12，ADR-0199）：sessionId 是当前云会话时不碰本地
+    // agents（云会话的 sessionId 是 uuid，与本地会话 id 无碰撞，agents.get
+    // 找不到它也不会误判）。"abort" 在云端没有对应语义（协议只认
+    // approved/denied，没有能从这儿中止别人机器上那个 turn 的动作），
+    // 保守地并进 denied——同 mapApprovalDecision 对本地未知走向的处理精神一致。
+    // pendingApprovals 不在这里清：云端可能因为请求已失效/不是发起人而回
+    // error 帧，真正的清理要等 approval_decision 事件回来（cloudClient 的
+    // onApprovalDecision 钩子），乐观清掉的话一次失败的 approve 会让卡片
+    // 消失却没有真的处理掉。
+    if (cloudClient.currentSessionId() === sessionId) {
+      await cloudClient.approve(toolCallId, incoming.decision === "approved" ? "approved" : "denied");
+      return;
+    }
     const agent = agents.get(sessionId);
     if (!agent) return;
     // "abort" 在这被映射成 denied + 中止 turn（issue #341 规则②）：
