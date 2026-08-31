@@ -72,7 +72,7 @@ RUNTIME_SSH=user@host npm run runtime:deploy
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
 自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下八条要真机走一遍。
-①②③④⑤⑥⑦对应 spec §8「DockerWorld 走 VPS 真机手验清单」列的六个场景，①是新增的部署链路
+②③④⑤⑥⑦对应 spec §8「DockerWorld 走 VPS 真机手验清单」列的六个场景，①是新增的部署链路
 本身验证，⑧是新增的连接豁免验证：
 
 1. **首次部署本身是这条链路的第一次真机验证**——`scripts/runtime-deploy.mjs` 交付时（T11）
@@ -133,7 +133,8 @@ sudo systemctl stop otto-runtime
 sudo rm -rf /var/lib/otto-runtime
 ```
 
-删容器不删卷——容器可以重建，卷里是 git clone 下来的工作区文件，误删代价更大：
+删容器不删卷——容器可以重建，卷里是 agent 直接写入的工作区文件（当前版本 git clone 尚未
+接线，见 `daemon.ts:73-78` 的已知限制），误删代价更大：
 
 ```bash
 docker rm -f otto-ws-<workspaceId>
