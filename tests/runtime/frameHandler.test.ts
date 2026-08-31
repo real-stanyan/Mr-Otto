@@ -178,6 +178,34 @@ describe("createFrameHandler", () => {
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
+  it("复审 Important：say/approve/config 在 hello 之后复查在籍——isMember 翻 false 后被拒且 cid 清出表", async () => {
+    let member = true;
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => {
+        sayCalls.push(args);
+      },
+    });
+    const { deps, sent } = makeDeps({
+      isMember: async () => member,
+      getSession: () => session,
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false; // 被踢出工作区，但 60s 缓存窗口 / 连接本身都还没体现出来
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还能说话吗", mention: false }));
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+    expect(sayCalls).toHaveLength(0); // 没有落到 CloudSession.say
+
+    // cid 已经被清出验籍表：同一个 cid 再发 say，走的是「未过 hello」分支
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "再试一次", mention: false }));
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
   // ── 补充覆盖（超出五条最低要求，但同一份纯逻辑，成本很低）──────────────
 
   it("onCtlFrame：hello 成功后 create 成功，回 created；非成员 create 回 denied not_member", async () => {

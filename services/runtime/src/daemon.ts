@@ -6,7 +6,7 @@
 // 搬运 + env 装配，靠 T11 的冒烟 check 兜底，不进 vitest（task-10-brief.md）。
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
@@ -89,7 +89,11 @@ function createWorkspaceConfigStore(path: string) {
     async save(workspaceId: string, cfg: { repoUrl: string; pat?: string }): Promise<void> {
       const all = loadAll();
       all[workspaceId] = cfg;
-      writeFileSync(path, JSON.stringify(all, null, 2));
+      // pat 是敏感凭据，这份文件是**所有工作区共用**的一份，泄漏面比单机
+      // 凭据库大——照抄本仓已确立的落盘纪律（src/main/mcpAuthStore.ts:89-90）：
+      // mode 只在新建时生效，已有文件要再补一刀 chmod（复审 Important）
+      writeFileSync(path, JSON.stringify(all, null, 2), { mode: 0o600 });
+      chmodSync(path, 0o600);
     },
   };
 }
@@ -188,7 +192,16 @@ async function main(): Promise<void> {
     });
     transport.onMessage((payload, cid) => {
       cidTransport.set(cid, transport); // 保险登记：onMessage 早于/独立于 onPeer 的边缘情况
-      void frameHandler.onSessionFrame(workspaceId, sessionId, cid, payload);
+      // .catch 不能省：Node 默认 --unhandled-rejections=throw，一次 reject
+      // （workspace 被删后在 isMember 60s 缓存窗口内还有人发帧、Supabase
+      // 抖动、SQLite 偶发写失败……）不该终止整个进程、踢掉所有工作区的连接
+      // （复审 Critical；写法照抄 src/main/index.ts:1210-1214 的既有先例）
+      frameHandler.onSessionFrame(workspaceId, sessionId, cid, payload).catch((err: unknown) => {
+        console.error(
+          `[otto-runtime] onSessionFrame 失败（workspaceId=${workspaceId}, sessionId=${sessionId}, cid=${cid}）：`,
+          err
+        );
+      });
     });
     transport.onGone((cid) => {
       cidTransport.delete(cid);
@@ -214,20 +227,28 @@ async function main(): Promise<void> {
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
       });
-      // fire-and-forget：失败只 console.warn——权威记录已经在上面落盘了
-      void supabase
-        .from("usage_ledger")
-        .insert({
-          uid,
-          workspace_id: workspaceId,
-          session_id: sessionId,
-          model,
-          prompt_tokens: usage.promptTokens,
-          completion_tokens: usage.completionTokens,
-        })
-        .then(({ error }: { error: { message: string } | null }) => {
+      // fire-and-forget：失败只 console.warn/console.error——权威记录已经
+      // 在上面落盘了。async IIFE + try/catch 而不是 .then/.catch 链——
+      // supabase-js 的查询构造器只实现 PromiseLike（.then 的返回类型不是
+      // 真 Promise，接不上 .catch()），await 在 try 块里同时接住两类失败：
+      // 「请求成功、Supabase 回了个错误信封」与「网络层本身 reject（断网/
+      // 超时）」。后者原来完全没人接，会变成一次能带走整个进程的
+      // unhandledRejection（复审 Critical，同上）
+      void (async () => {
+        try {
+          const { error } = await supabase.from("usage_ledger").insert({
+            uid,
+            workspace_id: workspaceId,
+            session_id: sessionId,
+            model,
+            prompt_tokens: usage.promptTokens,
+            completion_tokens: usage.completionTokens,
+          });
           if (error) console.warn(`[otto-runtime] usage_ledger 写入失败（日志里有权威记录）：${error.message}`);
-        });
+        } catch (err: unknown) {
+          console.error("[otto-runtime] usage_ledger 写入抛出异常（日志里有权威记录）：", err);
+        }
+      })();
     });
 
     const world = createDockerWorld({ container: () => sandbox.ensure(workspaceId) });
@@ -314,7 +335,11 @@ async function main(): Promise<void> {
       const running = new Set(
         [...activeSessions.values()].filter((a) => a.session.isRunning()).map((a) => a.workspaceId)
       );
-      void sandbox.sweepIdle(running);
+      // .catch 不能省（复审 Critical，同上）：定时器回调里的 reject 一样会
+      // 变成 unhandledRejection 带走整个进程
+      sandbox.sweepIdle(running).catch((err: unknown) => {
+        console.error("[otto-runtime] sweepIdle 失败：", err);
+      });
     },
     5 * 60 * 1000
   );
@@ -331,7 +356,10 @@ async function main(): Promise<void> {
   });
   ctlTransport.onMessage((payload, cid) => {
     cidTransport.set(cid, ctlTransport);
-    void frameHandler.onCtlFrame(cid, payload);
+    // .catch 不能省（复审 Critical，同上）
+    frameHandler.onCtlFrame(cid, payload).catch((err: unknown) => {
+      console.error(`[otto-runtime] onCtlFrame 失败（cid=${cid}）：`, err);
+    });
   });
   ctlTransport.onGone((cid) => {
     cidTransport.delete(cid);

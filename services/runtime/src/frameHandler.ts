@@ -2,9 +2,15 @@
 // 「transport ↔ 它」的搬运（cid→transport 路由、事件扇出的已验籍名单，都是
 // daemon.ts 装配层的活）。控制房（create 流程）与会话房（say/backlog/approve/
 // config/archive）共用同一份 cid→{uid,label} 表：cid 由 relay 的 newCid()
-// 现铸（12 位随机十六进制，src/shared/remote/wire.ts），跨房间撞号的概率
-// 与 UUID 相当——可以忽略，换来 onGone(cid) 不用带房间信息也能正确清表
-// （FrameHandler 接口就是这个形状：onGone 只认 cid）。
+// 现铸（`c${randomUUID().replace(/-/g,"").slice(0,12)}`，src/shared/remote/
+// wire.ts:121）——12 个十六进制字符 = **48 bit** 随机（不是 UUID 的 ~122
+// bit：版本位/变体位落在被截掉的那一段之后，slice(0,12) 反而躲过了它们，
+// 所以这 48 bit 是纯随机，但只有 48 bit）。扁平 Map 撞号时是**静默覆盖**
+// （后来者的 hello 直接顶掉先来者的 {uid,label}，不报错）不是报错；48 bit
+// 空间的生日界在 2^24（约一千七百万）条并发连接附近才开始有感知的碰撞率，
+// 这台 runtime 的真实并发规模远低于这个量级，可以接受——换来的是
+// onGone(cid) 不用带房间信息也能正确清表（FrameHandler 接口就是这个形状：
+// onGone 只认 cid）。
 //
 // 房名可猜（csChannel 是纯字符串拼接），所以「连上了」不代表「有权限」——
 // 每条非 hello 的帧都先过这张表，没过表的 cid 什么都做不了。
@@ -68,6 +74,20 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
   function deny(cid: string, code: CsDeniedCode): void {
     deps.send(cid, { t: "denied", code });
+  }
+
+  /** say/approve/config 能改变会话状态或授权敏感操作——被踢出工作区的
+      成员只要连接不断（wsTransport 心跳就是奔着长期不断线去的）就不该
+      继续被当在籍成员对待（复审 Important：hello 之后从不复查在籍，被踢
+      的成员能无限期发言/批审批）。命中时顺带把 cid 清出验籍表，效果等同
+      onGone：同一个 cid 之后再发任何帧都会落进「未过 hello」分支，不用
+      每条帧都重新判一次。isMember 自带 60s 缓存，边际成本很低。
+      backlog 是只读重放，不挂这道闸。 */
+  async function requireStillMember(workspaceId: string, cid: string, uid: string): Promise<boolean> {
+    if (await deps.isMember(workspaceId, uid)) return true;
+    deny(cid, "not_authorized");
+    cids.delete(cid);
+    return false;
   }
 
   return {
@@ -164,6 +184,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       switch (msg.t) {
         case "say":
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           await session.say(entry.uid, entry.label, msg.text, msg.mention);
           return;
 
@@ -174,6 +195,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "approve": {
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           const ok = session.approve(msg.callId, entry.uid, entry.label, msg.decision);
           if (!ok) {
             deps.send(cid, { t: "error", msg: "审批未生效：请求已失效，或你不是发起人/owner" });
@@ -182,6 +204,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "config": {
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           const ownerUid = await deps.sessions.ownerOf(workspaceId);
           if (entry.uid !== ownerUid) {
             deny(cid, "not_authorized");
