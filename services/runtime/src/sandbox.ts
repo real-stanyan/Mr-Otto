@@ -42,7 +42,12 @@ export interface Sandbox {
       失败/幂等跳过）——owner 纠正 cs_config 里的 repoUrl/PAT 之后如果
       不调这个，cloneAttempts 缓存的结果会一直挡着，只有重启 daemon 才会
       重新尝试，而且没有任何提示告诉 owner「你的修正没生效」（复审 I4）。
-      daemon.ts 的 saveConfig 落盘成功后调它。 */
+      daemon.ts 的 saveConfig 落盘成功后调它。
+      **不会打断正在跑的 attempt**（复审二轮竞态修复）：只是标记"过期"，
+      真正的旧 attempt 该怎么跑完还怎么跑完（含它自己的凭据清理）；下一次
+      ensure() 会等它完全收尾之后才起新的 attempt，不是立刻并发起一个——
+      同一工作区可能有多个 session，跨 session 没有互斥，直接摘掉正在
+      pending 的缓存会让两个 attempt 同时动同一个容器/卷/凭据文件。 */
   invalidateClone(workspaceId: string): void;
 }
 
@@ -106,7 +111,12 @@ function memoryOrphansStore(): OrphansStore {
 //      （复审 I6：ensure() 是 dockerWorld 拿容器句柄的唯一入口，任何一条
 //      卡住不返回，这个工作区之后所有工具调用永久挂起，没有看门狗）。
 //   7. owner 纠正配置后可以调 `Sandbox.invalidateClone` 让下一次 ensure()
-//      立刻重新尝试，不用等 daemon 重启（复审 I4）。
+//      重新尝试，不用等 daemon 重启（复审 I4）——但它只标记"过期"，不会
+//      打断正在跑的旧 attempt；新 attempt 必须等旧的（含它自己的凭据
+//      清理）完全收尾才起步，串行而不是并发（复审二轮竞态修复：同一
+//      workspaceId 可能被多个 session 共用，跨 session 没有互斥，直接
+//      摘掉 pending 的缓存会让两个 attempt 同时动同一个容器/卷/凭据
+//      文件）。
 //   8. 结果经 onCloneResult 回调通报，sandbox.ts 自己不做任何 console/IO。
 
 /** git credential 协议要求 username 字段非空；PAT 场景下主流 provider
@@ -225,8 +235,21 @@ async function execInContainer(
     克隆大概率留下一个"目录在、没有可用提交"的半成品。`git -C /work
     rev-parse HEAD` 能拿到有效提交才算真正克隆完；拿不到（unborn
     ref/仓库不存在/半成品）一律当"没克隆完"处理，交给 performClone 清空
-    /work 后重新 clone。 */
+    /work 后重新 clone。
+
+    rev-parse 之前先注册 /work 为 safe.directory（复审二轮防患）：现在
+    容器跑 root（`services/runtime/sandbox/Dockerfile` 建了 otter 用户但
+    没有 `USER otter`），`.git/` 的属主就是 root；将来谁给镜像补上那行
+    `USER otter`，容器进程 UID 就会和历史遗留的 root 属主对不上，
+    git 2.35+ 的 dubious-ownership 保护会让 rev-parse **直接报错退出**
+    （不是"没有提交"那种正常失败）。那会被这里误判成"没克隆完"，进而
+    在 performClone 里触发 `find -delete`——清空一个其实完好、且因为
+    本期不允许 push 而没有任何远程备份的工作区（agent 未推的 commit、
+    未提交的改动全没）。这行命令对"容器跑 root"的现状是无害的空操作
+    （属主本来就是自己），纯粹是为"以后镜像加了 USER otter"预先垫一层，
+    不等那天真的踩到才修。 */
 async function checkCloneComplete(container: ContainerLike): Promise<boolean> {
+  await execInContainer(container, "git config --global --add safe.directory /work");
   const result = await execInContainer(container, "git -C /work rev-parse HEAD");
   return result.exitCode === 0;
 }
@@ -366,31 +389,67 @@ export function createSandbox(
   const lastActive = new Map<string, number>();
 
   /** 同一个 workspaceId 在本进程生命周期内只跑一次 clone 流程：不仅是
-      "并发调用去重"（后来者等同一个 promise），settle 之后这个 promise 也
+      "并发调用去重"（后来者等同一个 promise），settle 之后这个 slot 也
       刻意不从 map 里删——后续每次 ensure() 直接拿到那个已经 resolve 的
       promise、瞬间返回，不会每次工具调用都重新问一遍幂等检查，更不会在
       repoUrl 配错时让每一次工具调用都重新触发一次可能长达 10 分钟的
       clone 超时（那才是真正会拖垮云会话的问题——单次幂等检查本身很
       便宜，但"配错了就永远重试到超时"不行）。owner 纠正配置后要靠
-      `invalidateClone` 显式让这份缓存失效（复审 I4），不是自动感知
-      config 变了。
+      `invalidateClone` 显式让这份缓存失效（复审 I4）。
       已知限制：如果卷在本进程存活期间被人手动清空（不是走 reconcile/
       destroy 这两条本模块自己的路径），这份内存缓存发现不了，要等下次
-      进程重启才会重新检测——这个代价换来的是不会有重试风暴，判断是值得的。 */
-  const cloneAttempts = new Map<string, Promise<void>>();
+      进程重启才会重新检测——这个代价换来的是不会有重试风暴，判断是值得的。
+
+      `invalidated` 字段的存在理由（复审二轮竞态修复）：`sandbox` 是单例，
+      `cloneAttempts` 按 workspaceId 键控，同一工作区的所有 session 共用
+      同一个 slot（daemon.ts 里每个 session 各自的 `container: () =>
+      sandbox.ensure(workspaceId)` 调的是同一个 `ensure`）；`turnCoordinator`
+      的互斥只在单个 session 内，跨 session 没有互斥，`cs_config` 帧随时
+      能打进来。如果 `invalidateClone` 直接 `delete` 掉一个仍在 pending 的
+      slot，紧随其后另一个 session 的工具调用会以为"没有任何缓存"，立刻
+      拿新配置起第二个并发 attempt——两个 attempt 同时动同一个容器/卷/
+      凭据文件：新的 `find -delete` 能删掉旧的还在写的 `.git/objects`，
+      旧的收尾时的 `cleanupCredentials` 也能撤掉新的刚 approve 完的凭据。
+      改成只打标记：旧 attempt 该怎么跑完还怎么跑完（含它自己的
+      cleanup），`ensureRepoCloned` 看到标记时才会等旧 promise 先
+      settle，再起新的——串行，不是并发。 */
+  interface CloneAttemptSlot {
+    promise: Promise<void>;
+    invalidated: boolean;
+  }
+  const cloneAttempts = new Map<string, CloneAttemptSlot>();
 
   function ensureRepoCloned(workspaceId: string, container: ContainerLike): Promise<void> {
     if (!opts?.repoConfig) return Promise.resolve();
-    let attempt = cloneAttempts.get(workspaceId);
-    if (!attempt) {
-      attempt = runCloneAttempt(workspaceId, container);
-      cloneAttempts.set(workspaceId, attempt);
+
+    const existing = cloneAttempts.get(workspaceId);
+    if (existing && !existing.invalidated) {
+      return existing.promise; // 仍然有效（不管还在 pending 还是已经 settle），直接复用
     }
-    return attempt;
+
+    // 走到这里：这个 workspaceId 要么从没 clone 过，要么上一个 slot 被
+    // invalidateClone 标记过期了。两种情况都要新起一个 attempt；如果
+    // existing 存在（哪怕它还在 pending），新 attempt 必须先等它完全
+    // 收尾（`.then()` 串联，不是各跑各的）才能起步——见上面 slot 类型
+    // 注释里的竞态分析。`.catch(() => {})` 纯粹防御：runCloneAttempt 本身
+    // 设计上不会 reject，但万一某天有人改坏了，也不该让一次意外 reject
+    // 打断"新的必须排在旧的后面"这条串行链。
+    const previous = existing?.promise ?? Promise.resolve();
+    const slot: CloneAttemptSlot = {
+      invalidated: false,
+      promise: previous.catch(() => {}).then(() => runCloneAttempt(workspaceId, container)),
+    };
+    cloneAttempts.set(workspaceId, slot);
+    return slot.promise;
   }
 
+  /** 让下一次 ensure() 重新跑一次 clone——**不是**立刻摘掉当前这个 slot
+      （复审二轮竞态修复，见 CloneAttemptSlot 的注释）：只打一个"已过期"
+      标记，真正的替换动作留给 ensureRepoCloned 在下一次被调用时，串行
+      在旧 attempt（含它自己的 cleanup）收尾之后。 */
   function invalidateClone(workspaceId: string): void {
-    cloneAttempts.delete(workspaceId);
+    const existing = cloneAttempts.get(workspaceId);
+    if (existing) existing.invalidated = true;
   }
 
   /** onCloneResult 是调用方（daemon.ts）给的回调，可能同步做 I/O（比如

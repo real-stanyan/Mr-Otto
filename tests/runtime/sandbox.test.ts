@@ -103,6 +103,11 @@ interface ExecOutcome {
       本身出错（execInContainer 里 stream.on("error", reject) 那条路，同样
       是复审 C1 要覆盖的"execInContainer 直接抛异常"场景之一） */
   streamError?: boolean;
+  /** 让这次 exec 的完成（'end'/'error'）等这个 promise 先 resolve——用来
+      模拟"一个 attempt 的某条命令还卡着"，测试 invalidateClone 在它
+      pending 期间被调用时，新 attempt 是否老老实实排队等它收尾（复审
+      二轮竞态回归测试），而不是立刻并发起步 */
+  gate?: Promise<void>;
 }
 type ExecRouter = (cmd: string[]) => ExecOutcome;
 type ExecLog = Array<{ cmd: string[]; stdin?: string; workingDir?: string }>;
@@ -151,16 +156,22 @@ function withCloneExec(docker: DockerLike, router: ExecRouter, execLog: ExecLog)
             if (outcome.streamError) stream.emit("error", new Error("simulated docker attach stream error"));
             else stream.emit("end");
           };
+          // gate 未设置时和原来一样立刻（下一个 tick）收尾；设置了就先等
+          // gate resolve，再补一个 setImmediate 让收尾走真正的异步路径
+          const scheduleFinish = () => {
+            if (outcome.gate) outcome.gate.then(() => setImmediate(finish));
+            else setImmediate(finish);
+          };
           (stream as unknown as { write: (d: string) => boolean }).write = (d: string) => {
             record.stdin = (record.stdin ?? "") + d;
             return true;
           };
           (stream as unknown as { end: () => void }).end = () => {
-            setImmediate(finish);
+            scheduleFinish();
           };
           return {
             async start(startOpts?: { hijack?: boolean; stdin?: boolean }) {
-              if (!startOpts?.stdin) setImmediate(finish);
+              if (!startOpts?.stdin) scheduleFinish();
               return stream;
             },
             async inspect() {
@@ -415,6 +426,18 @@ describe("createSandbox", () => {
   });
 });
 
+/** 轮询等一个条件成立——不用固定 sleep（太短会 flaky，太长拖慢测试）。
+    这份 fake 除了 gate 之外全靠 setImmediate 驱动异步收尾，没有真实
+    timer，所以每次 setImmediate 都足够推进一步；给个宽松上限防止真出
+    bug 时测试挂死不报错。 */
+async function waitUntil(cond: () => boolean, maxTicks = 500): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error("waitUntil：条件在预期的 tick 数内没有成立");
+}
+
 describe("createSandbox — git clone（issue #821 slice 1）", () => {
   it("⑧ 没配 repo 时不 clone", async () => {
     const { docker } = makeFakeDocker([
@@ -453,7 +476,7 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
 
     // PAT 不出现在任何一条 Cmd 数组里（拼接后整段搜，防止它被拆在两个数组元素之间也漏检）
     for (const call of execLog) {
-      expect(call.cmd.join(" ")).not.toContain(PAT);
+      expect(call.cmd.join(" ")).not.toContain(PAT);
     }
 
     // PAT 经 stdin 传入 git credential approve
@@ -836,5 +859,101 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     expect(results.length).toBe(1);
     expect(results[0]!.result.ok).toBe(false);
     expect(results[0]!.result.reason).toContain("命令超时");
+  });
+
+  it("㉖（复审二轮防患）checkCloneComplete 先注册 safe.directory，且发生在 rev-parse 之前", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-safedir", state: "running", labels: { "mrotto.workspace": "safedir" } },
+    ]);
+    const execLog: ExecLog = [];
+    // cloneComplete:true——幂等命中，只走 checkCloneComplete 不真的 clone，
+    // 断言聚焦在这一个函数内两条命令的先后顺序
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("safedir");
+
+    const safeDirIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("safe.directory /work"));
+    const revParseIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("rev-parse HEAD"));
+    expect(safeDirIdx).toBeGreaterThanOrEqual(0);
+    expect(revParseIdx).toBeGreaterThan(safeDirIdx);
+  });
+
+  it("㉗（复审二轮竞态修复）clone 进行中调 invalidateClone——新 attempt 等旧 attempt 完全收尾（含 cleanup）才起步，不重叠", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-race2", state: "running", labels: { "mrotto.workspace": "race2" } },
+    ]);
+    const execLog: ExecLog = [];
+
+    let releaseOldClone: (() => void) | undefined;
+    const oldCloneGate = new Promise<void>((resolve) => {
+      releaseOldClone = resolve;
+    });
+
+    // rev-parse 永远回"没克隆完"（逼真的走到 clone 那一步）；旧配置
+    // （old-repo）的 clone 卡在 gate 上，新配置（new-repo）的 clone 立刻
+    // 完成——用仓库名区分是哪一次 attempt 发起的调用
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 1 };
+        if (script.includes("git clone --") && script.includes("old-repo")) {
+          return { exitCode: 0, gate: oldCloneGate };
+        }
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+
+    let repoConfigCalls = 0;
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => {
+        repoConfigCalls++;
+        // 第一次给旧（坏）配置；owner 纠正之后甚至换成了不需要 PAT 的
+        // 公开仓库——第二次 attempt 应该用这份新配置，而不是继续用旧的
+        return repoConfigCalls === 1
+          ? { repoUrl: "https://github.com/acme/old-repo.git", pat: "ghp_old" }
+          : { repoUrl: "https://github.com/acme/new-repo.git" };
+      },
+    });
+
+    const firstEnsure = sandbox.ensure("race2"); // session A：起第一个 attempt，会卡在 old-repo 的 clone 上
+
+    await waitUntil(() => {
+      const j = execLog.map((c) => c.cmd.join(" "));
+      return j.some((s) => s.includes("git clone --") && s.includes("old-repo"));
+    });
+
+    sandbox.invalidateClone("race2"); // owner 纠正了配置
+    const secondEnsure = sandbox.ensure("race2"); // session B：紧接着触发新的工具调用
+
+    // 给事件循环几个 tick 的机会——如果实现有 bug（invalidateClone 直接
+    // delete 掉 pending 的 slot，导致 B 立刻并发起第二个 attempt），这里
+    // 就会看到 repoConfig 已经被查了第二次。正确实现下 B 的
+    // runCloneAttempt 要等 A 的 promise（含 finally 里的 cleanup）settle
+    // 之后才会调 repoConfig，所以此刻应该仍然是 1。
+    await new Promise((r) => setTimeout(r, 30));
+    expect(repoConfigCalls).toBe(1);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("new-repo"))).toBe(false);
+
+    releaseOldClone!(); // 放行旧 attempt，让它的 clone 完成、走完 finally 里的 cleanup
+
+    await Promise.all([firstEnsure, secondEnsure]);
+
+    // 新 attempt 确实起来了，且用的是新配置（没有 PAT 的公开仓库）
+    expect(repoConfigCalls).toBe(2);
+    const newCloneIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("new-repo"));
+    expect(newCloneIdx).toBeGreaterThanOrEqual(0);
+
+    // 不重叠：旧 attempt 收尾时的凭据清理（整个 execLog 里唯一一次
+    // "git credential reject"——B 的新配置没有 PAT，不会触发它自己的
+    // 凭据步骤，所以这次 reject 只可能属于 A）严格发生在新 attempt 的
+    // clone 之前，证明 B 是排在 A 完全收尾之后才起步的，不是并发
+    const rejectIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git credential reject"));
+    expect(rejectIdx).toBeGreaterThanOrEqual(0);
+    expect(rejectIdx).toBeLessThan(newCloneIdx);
   });
 });
