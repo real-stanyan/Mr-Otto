@@ -30,6 +30,9 @@ import {
 interface FakeConn {
   cid: string;
   role: RelayRole;
+  /** 连接计数桶（issue #824）：edge.ts 按 (房间, 用户) 算出来的分桶键。
+      同一个房间里两个人拿到两个不同的 ck，各自数各自的 */
+  ck: string;
   open: boolean;
   sent: string[];
   closed: { code: number; reason: string } | null;
@@ -43,10 +46,11 @@ function fakeRelay() {
   const self = {
     conns,
     /** 照 worker.ts 的 fetch() */
-    connect(role: RelayRole): FakeConn | "full" {
-      if (conns.filter((c) => c.open).length >= MAX_CONNS_PER_USER) return "full";
+    connect(role: RelayRole, ck = "user-a"): FakeConn | "full" {
+      // 按桶数，不按房间总数（issue #824）——照 worker.ts 的 fetch()
+      if (conns.filter((c) => c.open && c.ck === ck).length >= MAX_CONNS_PER_USER) return "full";
       const existing = conns.slice();
-      const me: FakeConn = { cid: newCid(), role, open: true, sent: [], closed: null };
+      const me: FakeConn = { cid: newCid(), role, ck, open: true, sent: [], closed: null };
       conns.push(me);
       send(me, `${CTRL_CID} ${me.cid}`);
       for (const p of peersOf(existing, role)) {
@@ -253,6 +257,19 @@ describe("中继（照 worker.ts 的动作顺序）", () => {
       expect(r.connect(i % 2 === 0 ? "desktop" : "mobile")).not.toBe("full");
     }
     expect(r.connect("mobile")).toBe("full");
+  });
+
+  // issue #824：这个上限的名字一直是 PER_USER，数的却是房间里的连接总数。
+  // 自远程的房间键就是 userId，两者碰巧相等，所以一直没露馅；cs-ctl 是
+  // 全平台一个固定房，于是"一个人握住 16 条 socket"= 所有人都建不了云会话
+  it("一个人占满自己那 16 条，别人照样连得上（共用房间不再是共命运）", () => {
+    const r = fakeRelay();
+    for (let i = 0; i < MAX_CONNS_PER_USER; i += 1) {
+      expect(r.connect("guest", "user-a")).not.toBe("full");
+    }
+    expect(r.connect("guest", "user-a")).toBe("full");
+    expect(r.connect("guest", "user-b")).not.toBe("full");
+    expect(r.connect("host", "svc-runtime")).not.toBe("full");
   });
 
   // ↓ 盲管道这个性质要有测试守着，否则三个月后有人为调试加一行 console.log

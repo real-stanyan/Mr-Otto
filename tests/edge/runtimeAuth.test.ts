@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEdge, RUNTIME_SERVICE_UID, type EdgeConfig, type RelayStub } from "../../services/edge/src/edge.js";
 import { SUBPROTOCOL } from "../../services/edge/src/relay.js";
 import { signTestJwt } from "./jwtTestUtil.js";
-import { csChannel } from "../../src/shared/remote/cloudSession.js";
+import { csChannel, csCtlChannel } from "../../src/shared/remote/cloudSession.js";
 
 // runtime 服务身份（ADR-0199）：VPS 上的云 runtime 之后要以平台身份连 relay、
 // 打 px 执行面，不必先替一个真用户签出 JWT。四条断言对应 task-3-brief 的四件事：
@@ -176,5 +176,42 @@ describe("cs-* 房间角色收口（终审 C1 / R1）", () => {
     );
     expect(res.status).toBe(200);
     expect(new URL(routed[0]!.req.url).searchParams.get("role")).toBe("guest");
+  });
+});
+
+// issue #824：`MAX_CONNS_PER_USER` 数的一直是**房间里的连接总数**——自远程
+// 的房间键就是 userId，两者碰巧相等，所以没露馅；cs-ctl 是全平台一个固定
+// 房，于是它变成了"全平台同时最多 16 条人类连接进控制房"。修法是让 DO 按
+// 人分桶数数，而分桶键由 edge.ts 算好递下去（DO 不该认识 userId——好友代理
+// 房间的设计前提就是中继不懂参与者是谁，ADR-0151）。
+describe("连接计数键 ck（issue #824）", () => {
+  const jwtOf = (sub: string): string =>
+    signTestJwt(JWT_SECRET, { sub, email: "a@b.c", exp: Math.floor(Date.now() / 1000) + 3600 });
+  const ckOf = async (sub: string, channel?: string): Promise<string> => {
+    const { routed, handle } = relayHarness();
+    const url = `http://edge/rl/v1/connect?role=guest${channel === undefined ? "" : `&channel=${channel}`}`;
+    await handle(upgrade(url, `${SUBPROTOCOL}, ${jwtOf(sub)}`));
+    return new URL(routed[0]!.req.url).searchParams.get("ck") ?? "";
+  };
+
+  it("每条转发都带 ck，且同一个人在同一个房间里稳定相同", async () => {
+    const a1 = await ckOf("user-a");
+    const a2 = await ckOf("user-a");
+    expect(a1).toMatch(/^[0-9a-f]{16}$/);
+    expect(a2).toBe(a1);
+  });
+
+  it("同一个房间里两个人的 ck 不同 —— 这正是「别人占满 16 条」不再殃及自己的原因", async () => {
+    const ctl = csCtlChannel();
+    expect(await ckOf("user-a", ctl)).not.toBe(await ckOf("user-b", ctl));
+  });
+
+  it("ck 不是身份：同一个人在两个房间里对不上号，且哪里都不出现 uid 明文", async () => {
+    const ctl = await ckOf("user-a", csCtlChannel());
+    const proxy = await ckOf("user-a", "some-proxy-channel");
+    // 跨房间不可关联——好友代理的中继本来就不该认得出"这两条是同一个人"
+    expect(ctl).not.toBe(proxy);
+    expect(ctl).not.toContain("user-a");
+    expect(proxy).not.toContain("user-a");
   });
 });
