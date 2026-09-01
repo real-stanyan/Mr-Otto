@@ -18,6 +18,7 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
+import type { CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -454,6 +455,10 @@ export interface CloudSessionStatus {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
+  /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
+      welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
+      **不含 token 本身**，只有 hasPat 布尔 */
+  repo: CsRepoState | null;
 }
 
 export interface ShellBridge {

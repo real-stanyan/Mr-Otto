@@ -62,6 +62,7 @@ import type {
   SessionEvent, ToolCallRequest, ToolResultEvent, UserMessageEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import type { CsRepoState } from "../../../shared/remote/cloudSession.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -213,7 +214,7 @@ export function CloudSessionPage({
           <ArrowLeft className="size-[13px]" aria-hidden />
           {ws.name}
         </button>
-        <CloudRepoConfigEntry isOwner={selfUid === cs.ownerUid} ready={ready} />
+        <CloudRepoConfigEntry isOwner={selfUid === cs.ownerUid} ready={ready} repo={cs.repo} />
       </div>
 
       {banner && (
@@ -317,16 +318,45 @@ export function CloudSessionPage({
     config 帧的控件。ready 是弱一档的门（cs.state !=="ready" 时 config()
     在本地 requireReady() 就短路回错，不会真的发帧出去），沿用 composer
     disabled={!ready} 的同一条约定，用 title 说明而不是另起一行文案 */
-function CloudRepoConfigEntry({ isOwner, ready }: { isOwner: boolean; ready: boolean }) {
+/** 仓库那一格的状态文字（issue #834）。**给所有人看，不只是 owner**：
+    "这个工作区的水獭到底在哪个仓库上干活、拉下来没有"是每个成员都该
+    看得见的事实，而在这之前它只存在于 owner 那一次保存的瞬间和恰好
+    开着会话的人的聊天流里。`repo === null` 与"还没 welcome"合并成同一句
+    ——这一格在 connecting 期间不必当真，同 initiatorUid/ownerUid 的约定。 */
+function repoStatusText(repo: CsRepoState | null): { short: string; full: string } {
+  if (!repo) return { short: "未配仓库", full: "这个工作区还没有配仓库，水獭的工作目录是空的。" };
+  let host = repo.url;
+  try {
+    const u = new URL(repo.url);
+    host = `${u.host}${u.pathname}`.replace(/\.git$/, "");
+  } catch {
+    /* 服务端校验过才存得进来，这里只是显示层的尽力而为 */
+  }
+  if (!repo.clone) {
+    return { short: `${host} · 待克隆`, full: `${repo.url}\n还没克隆——下一次工具调用时才会去拉。` };
+  }
+  const bad = repo.clone.kind === "failed" || repo.clone.kind === "refused";
+  return {
+    short: `${host} · ${bad ? "未拉下来" : "已克隆"}`,
+    full: `${repo.url}\n${repo.clone.text}`,
+  };
+}
+
+function CloudRepoConfigEntry({
+  isOwner,
+  ready,
+  repo,
+}: {
+  isOwner: boolean;
+  ready: boolean;
+  repo: CsRepoState | null;
+}) {
   const [open, setOpen] = useState(false);
   // 保存成功后短暂显示在钮上的确认(同 ProviderKeyDialog 的"已保存"手法:
   // 弹窗这时已经关了,提示得留在用户看得见的地方)。放在这个外层组件而不是
   // 弹窗内部,是为了让它在弹窗关闭之后还能继续显示 2 秒
   const [saved, setSaved] = useState(false);
-
-  if (!isOwner) {
-    return <span className="shrink-0 text-[11px] text-muted-foreground">只有工作区所有者能配置仓库</span>;
-  }
+  const status = repoStatusText(repo);
 
   const onSaved = (): void => {
     setOpen(false);
@@ -335,19 +365,26 @@ function CloudRepoConfigEntry({ isOwner, ready }: { isOwner: boolean; ready: boo
   };
 
   return (
-    <>
-      <Button
-        variant="outline"
-        size="xs"
-        className="shrink-0"
-        disabled={!ready}
-        title={ready ? undefined : "连接就绪后才能配置"}
-        onClick={() => setOpen(true)}
-      >
-        {saved ? "已保存" : "配置云仓库…"}
-      </Button>
-      <CloudRepoConfigDialog open={open} onOpenChange={setOpen} onSaved={onSaved} />
-    </>
+    <div className="flex min-w-0 shrink-0 items-center gap-2">
+      <span className="max-w-[220px] truncate text-[11px] text-muted-foreground" title={status.full}>
+        {status.short}
+      </span>
+      {isOwner ? (
+        <>
+          <Button
+            variant="outline"
+            size="xs"
+            className="shrink-0"
+            disabled={!ready}
+            title={ready ? undefined : "连接就绪后才能配置"}
+            onClick={() => setOpen(true)}
+          >
+            {saved ? "已保存" : repo ? "改仓库…" : "配置云仓库…"}
+          </Button>
+          <CloudRepoConfigDialog open={open} onOpenChange={setOpen} onSaved={onSaved} repo={repo} />
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -359,23 +396,31 @@ function CloudRepoConfigEntry({ isOwner, ready }: { isOwner: boolean; ready: boo
     调用的参数)——关窗口这一步本身也会让 React 卸载这两个输入框,但"存完
     即清"不能指望卸载去兜底,得在那一刻显式清。失败(含本地校验拦下来的)
     不关窗口,原样留着让人改了重试,同 cloudSay/cloudApprove 的既有约定。
-    每次**打开**弹窗都从空白开始(同 ProviderKeyDialog"每次打开都是空的"
-    的理由)：没有任何读接口能查"现在配的是什么"，空白比"显示一个可能
-    早就过期的旧草稿冒充现状"更诚实——服务端保存成功是静默的，ADR-0199
-    这条协议线上就没有 config 的读路径 */
+    地址栏每次打开都从**服务端此刻的真实配置**预填（issue #834 加了读路径，
+    welcome 就带着它——原来那句"空白比显示一个可能过期的旧草稿更诚实"是在
+    协议没有读路径时的将就，现在预填的是服务端刚说的事实，不是本地草稿）。
+    token 栏仍然永远是空的：那是 ProviderKeyDialog 的不变量，服务端也只回
+    一个 hasPat 布尔，token 本身不下行。 */
 function CloudRepoConfigDialog({
   open,
   onOpenChange,
   onSaved,
+  repo,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
+  repo: CsRepoState | null;
 }) {
   const cloudConfig = useChat((s) => s.cloudConfig);
 
   const [repoUrl, setRepoUrl] = useState("");
   const [pat, setPat] = useState("");
+  /** 显式清除已存的 token（issue #834）。没有这一格的话，"留空 = 清掉
+      token"是个静默陷阱：地址栏预填了、密码框天生是空的，owner 顺手改个
+      地址就把私有仓库的凭据清了，下次 clone 静默失败。语义因此变成三态：
+      省略 = 不动，`""` = 清除（只有这个开关能产生），非空 = 换新的 */
+  const [clearPat, setClearPat] = useState(false);
   const [busy, setBusy] = useState(false);
   // 本地校验(URL 里嵌了凭据)和 cloudConfig 失败共用这一格——都是"这次
   // 提交没成"，人话没必要分两条通道。**不**用 useChat((s) => s.workspaceGroupsError)
@@ -387,11 +432,12 @@ function CloudRepoConfigDialog({
 
   useEffect(() => {
     if (open) {
-      setRepoUrl("");
+      setRepoUrl(repo?.url ?? "");
       setPat("");
+      setClearPat(false);
       setError(null);
     }
-  }, [open]);
+  }, [open, repo]);
 
   const submit = async (): Promise<void> => {
     const url = repoUrl.trim();
@@ -402,8 +448,10 @@ function CloudRepoConfigDialog({
     }
     setError(null);
     setBusy(true);
-    const patValue = pat.trim();
-    const ok = await cloudConfig(url, patValue === "" ? undefined : patValue);
+    const typed = pat.trim();
+    // 三态，见 clearPat 的注释：清除 > 新值 > 不动
+    const patArg = clearPat ? "" : typed === "" ? undefined : typed;
+    const ok = await cloudConfig(url, patArg);
     setBusy(false);
     if (ok) {
       setPat(""); // 存完即清——即使紧接着 onSaved() 就要把整个弹窗关掉
@@ -437,14 +485,34 @@ function CloudRepoConfigDialog({
             type="password"
             autoComplete="off"
             spellCheck={false}
+            disabled={clearPat}
             className="font-mono text-[13px]"
-            placeholder="Personal Access Token（可选，私有仓库需要）"
+            placeholder={
+              repo?.hasPat
+                ? "已存了一个 token（留空 = 不改动）"
+                : "Personal Access Token（可选，私有仓库需要）"
+            }
             value={pat}
             onChange={(e) => setPat(e.target.value)}
           />
           <p className="text-[11px] text-muted-foreground">
             私有仓库的 token 请填在这一栏——不要拼进上面的仓库地址。
           </p>
+          {repo?.hasPat && (
+            <button
+              type="button"
+              className="w-fit text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+              onClick={() => {
+                setClearPat((v) => !v);
+                setPat("");
+              }}
+            >
+              {clearPat ? "取消清除（保留已存的 token）" : "清除已存的 token"}
+            </button>
+          )}
+          {repo?.clone && (
+            <p className="text-[11px] text-muted-foreground">最近一次：{repo.clone.text}</p>
+          )}
         </div>
 
         {error && <p className="text-xs text-err">{error}</p>}

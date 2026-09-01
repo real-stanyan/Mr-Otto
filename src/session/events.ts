@@ -164,6 +164,13 @@ export interface ModelChangedEvent extends SessionEventBase {
   lane?: ModelLane;
 }
 
+/** 云会话（工作区群聊）的身份（issue #833）。目前只需要 workspaceId——
+    留成对象而不是布尔，是因为「哪个工作区」这条信息将来一定会有第二个
+    消费方（比如把工作区名字写进提示词），到时候不用再改一次 schema。 */
+export interface CloudSessionFacts {
+  workspaceId: string;
+}
+
 /** 额外 2：会话创建 —— 永远是日志的第 0 条 */
 export interface SessionCreatedEvent extends SessionEventBase {
   type: "session_created";
@@ -186,6 +193,12 @@ export interface SessionCreatedEvent extends SessionEventBase {
     /** 这只水獭独占的分支 */
     branch: string;
   };
+  /** 这是一条**云会话**（工作区群聊，跑在 VPS runtime 的容器里，ADR-0199）。
+      投影据此多注入一段「你在容器里 / 对面是一群人 / 审批归发起人 / 推不
+      出去」——投影必须可从日志推导（硬规则），所以是日志里的一个字段，
+      不是 runtime 现场拼的提示词。缺席 = 本机会话（旧日志照常重放，投影
+      逐字节不变）。issue #833 */
+  cloud?: CloudSessionFacts;
   forkedFrom?: {                 // 普通新会话 = 不填
     sessionId: string;
     seq: number;                 // 从源会话哪个位置分叉

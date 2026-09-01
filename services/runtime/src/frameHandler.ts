@@ -20,8 +20,10 @@ import {
   csChannel,
   decodeCsUp,
   encodeCs,
+  validateRepoUrl,
   type CsDeniedCode,
   type CsDown,
+  type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { CloudSession } from "./sessionService.js";
@@ -116,6 +118,11 @@ export interface FrameHandlerDeps {
     ownerOf(workspaceId: string): Promise<string>;
   };
   saveConfig: (workspaceId: string, cfg: { repoUrl: string; pat?: string }) => Promise<void>;
+  /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
+      welcome 和 config 的回执都带上它——协议原来只有写路径，owner 存完
+      看不到任何反馈，别的成员更是永远不知道仓库配没配、拉没拉下来。
+      **实现必须保证不下发 token 本身**（只回 hasPat 布尔） */
+  repoState: (workspaceId: string) => CsRepoState | null;
   send: (cid: string, msg: CsDown) => void;
   /** 复审补漏：踢人只清 frameHandler 自己的验籍表（cids）是不够的——daemon.ts
       的实时广播走另一张表（roomRosters，只在 transport.onGone 时才清），
@@ -262,6 +269,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           lastSeq: session.lastSeq(),
           initiatorUid: session.initiatorUid(),
           ownerUid,
+          repo: deps.repoState(workspaceId),
         });
         return;
       }
@@ -306,10 +314,37 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deny(cid, "not_authorized");
             return;
           }
-          await deps.saveConfig(
-            workspaceId,
-            msg.pat !== undefined ? { repoUrl: msg.repoUrl, pat: msg.pat } : { repoUrl: msg.repoUrl }
-          );
+          // 服务端自己校验一次（issue #834）：渲染层那份的定位是"提交前的
+          // 早期 UX 提示"（见 lib/cloudRepoUrl.ts 文件头），一个改造过的
+          // 客户端能直接发 `ext::sh -c ...` 这类 git 传输上来，那会以 root
+          // 在容器里跑起来。判据是结构化白名单，不是"认出凭据"的黑名单
+          const valid = validateRepoUrl(msg.repoUrl);
+          if (!valid.ok) {
+            deps.send(cid, {
+              t: "config_result",
+              ok: false,
+              message: valid.message,
+              repo: deps.repoState(workspaceId),
+            });
+            return;
+          }
+          try {
+            await deps.saveConfig(
+              workspaceId,
+              msg.pat !== undefined ? { repoUrl: valid.url, pat: msg.pat } : { repoUrl: valid.url }
+            );
+          } catch (err) {
+            // 落盘失败以前只会冒到 daemon 的 .catch 里记一行日志，owner 那边
+            // 的按钮照样显示"已保存"——回执这条路存在的意义就是别再这样
+            deps.send(cid, {
+              t: "config_result",
+              ok: false,
+              message: `保存失败：${err instanceof Error ? err.message : String(err)}`,
+              repo: deps.repoState(workspaceId),
+            });
+            return;
+          }
+          deps.send(cid, { t: "config_result", ok: true, repo: deps.repoState(workspaceId) });
           return;
         }
 

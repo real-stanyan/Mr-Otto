@@ -13,11 +13,18 @@ import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
-import { createSandbox, type DockerLike, type OrphansStore, type Sandbox } from "./sandbox.js";
+import {
+  cloneOutcomeText,
+  createSandbox,
+  type CloneOutcome,
+  type DockerLike,
+  type OrphansStore,
+  type Sandbox,
+} from "./sandbox.js";
 import { createMembershipCache } from "./membershipCache.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createDockerWorld } from "../../../src/world/dockerWorld.js";
+import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import { createOpenAICompatibleAdapter } from "../../../src/model/openaiCompatible.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -26,6 +33,7 @@ import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
   csChannel,
+  type CsCloneKind,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
@@ -78,26 +86,72 @@ function createFileOrphansStore(path: string): OrphansStore {
     workspaceId 现查一次（同步读本地 JSON 文件，快到可以忽略），不额外
     做缓存——sandbox.ts 自己那层 cloneAttempts 缓存的是"是否已经跑过
     clone"，不是配置本身。 */
+interface WorkspaceConfigRecord {
+  repoUrl: string;
+  pat?: string;
+  /** 最近一次 clone 判定的结局。落这儿而不是内存：daemon 一重启，
+      "这个工作区的仓库到底拉下来没有"就再也没人答得上来了，而这正是
+      #834 要给 owner 看的那一格。类型直接借线上契约那份（CsCloneKind）
+      ——`setCloneState` 的调用点塞的是 sandbox 的 `CloneOutcome["kind"]`，
+      两组值真分叉的话这个文件编译不过，不用两处人肉同步 */
+  clone?: { kind: CsCloneKind; text: string; at: number };
+}
+
 function createWorkspaceConfigStore(path: string) {
-  function loadAll(): Record<string, { repoUrl: string; pat?: string }> {
+  function loadAll(): Record<string, WorkspaceConfigRecord> {
     if (!existsSync(path)) return {};
     try {
-      return JSON.parse(readFileSync(path, "utf8")) as Record<string, { repoUrl: string; pat?: string }>;
+      return JSON.parse(readFileSync(path, "utf8")) as Record<string, WorkspaceConfigRecord>;
     } catch {
       return {};
     }
   }
+  function writeAll(all: Record<string, WorkspaceConfigRecord>): void {
+    // pat 是敏感凭据，这份文件是**所有工作区共用**的一份，泄漏面比单机
+    // 凭据库大——照抄本仓已确立的落盘纪律（src/main/mcpAuthStore.ts:89-90）：
+    // mode 只在新建时生效，已有文件要再补一刀 chmod（复审 Important）
+    writeFileSync(path, JSON.stringify(all, null, 2), { mode: 0o600 });
+    chmodSync(path, 0o600);
+  }
   return {
+    /** `pat` 的三态（issue #834）：**省略 = 保持原样**，`""` = 显式清除，
+        非空串 = 换成新的。改配置的界面预填了仓库地址却不可能预填 token
+        （密码框永远是空的），"留空 = 清掉 token"会让"顺手改个地址"
+        静默毁掉一个私有仓库的配置——所以省略必须是"别动"。 */
     async save(workspaceId: string, cfg: { repoUrl: string; pat?: string }): Promise<void> {
       const all = loadAll();
-      all[workspaceId] = cfg;
-      // pat 是敏感凭据，这份文件是**所有工作区共用**的一份，泄漏面比单机
-      // 凭据库大——照抄本仓已确立的落盘纪律（src/main/mcpAuthStore.ts:89-90）：
-      // mode 只在新建时生效，已有文件要再补一刀 chmod（复审 Important）
-      writeFileSync(path, JSON.stringify(all, null, 2), { mode: 0o600 });
-      chmodSync(path, 0o600);
+      const prev = all[workspaceId];
+      const next: WorkspaceConfigRecord = { repoUrl: cfg.repoUrl };
+      const pat = cfg.pat === undefined ? prev?.pat : cfg.pat === "" ? undefined : cfg.pat;
+      if (pat !== undefined) next.pat = pat;
+      // 换了仓库就别把上一个仓库的 clone 结果留着冒充现状
+      if (prev?.clone && prev.repoUrl === cfg.repoUrl) next.clone = prev.clone;
+      all[workspaceId] = next;
+      writeAll(all);
     },
-    load(workspaceId: string): { repoUrl: string; pat?: string } | undefined {
+    setCloneState(workspaceId: string, clone: WorkspaceConfigRecord["clone"]): void {
+      const all = loadAll();
+      const prev = all[workspaceId];
+      if (!prev) return; // 配置都没了（工作区被回收），没有可挂的地方
+      // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的
+      // 省略这个键（同 cloudSessionClient.config 的既有先例）
+      const next: WorkspaceConfigRecord = { repoUrl: prev.repoUrl };
+      if (prev.pat !== undefined) next.pat = prev.pat;
+      if (clone !== undefined) next.clone = clone;
+      all[workspaceId] = next;
+      writeAll(all);
+    },
+    /** 工作区没了就把它这条整个删掉（issue #835④）。上一版只有 save/load，
+        于是 PAT 明文条目一旦写进去就**永远**留在这台 VPS 上——工作区删了、
+        仓库换了都不会清。调用点在 runReconcile：孤儿回收真的删掉容器+卷
+        的那一刻。 */
+    remove(workspaceId: string): void {
+      const all = loadAll();
+      if (!(workspaceId in all)) return;
+      delete all[workspaceId];
+      writeAll(all);
+    },
+    load(workspaceId: string): WorkspaceConfigRecord | undefined {
       return loadAll()[workspaceId];
     },
   };
@@ -235,16 +289,17 @@ async function main(): Promise<void> {
   const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
     orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
     repoConfig: async (workspaceId) => workspaceConfigStore.load(workspaceId),
-    onCloneResult: (workspaceId, result) => {
-      const text = result.ok
-        ? `仓库克隆成功：${result.repoUrl}`
-        : `仓库克隆失败（${result.repoUrl}）：${result.reason}`;
-      if (result.ok) {
-        console.log(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
-      } else {
-        console.warn(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
-      }
-      notifyWorkspace(workspaceId, text);
+    onCloneOutcome: (workspaceId, outcome) => {
+      const text = cloneOutcomeText(outcome);
+      const bad = outcome.kind === "failed" || outcome.kind === "refused";
+      (bad ? console.warn : console.log)(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
+      // 状态那一格每个 kind 都记（含 skipped）——它回答的是"现在到底
+      // 拉下来没有"，重启之后也得答得上来（#834）
+      workspaceConfigStore.setCloneState(workspaceId, { kind: outcome.kind, text, at: Date.now() });
+      // 聊天流里只说"发生了变化"这几种。skipped 不进聊天：它每个进程
+      // 生命周期都会来一次，进了就是每次重启都对着老结果刷一遍屏——
+      // 这是原来"幂等跳过不回调"想防的事，防的是刷屏不是防被人看见
+      if (outcome.kind !== "skipped") notifyWorkspace(workspaceId, text);
     },
   });
 
@@ -377,6 +432,20 @@ async function main(): Promise<void> {
           pkg_id: null,
         });
         if (error) throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        // 日志的第 0 条（issue #833）。少了它，deriveMessages 那边**一条
+        // system 消息都投不出来**——它只从 session_created.workspace 产出
+        // 那条消息，engine 不会补默认值。后果是云端水獭不知道自己在
+        // /work、不知道对面是一群人、不知道自己的提交推不出去。
+        // 只在这里 append，不在 openSessionRoom 里：那个函数在 daemon 重启
+        // 时会对每条存量会话再跑一遍，在那里 append 等于往日志中间插一条
+        // session_created（invariants.ts 的"唯一 / 在头部"就破了）。
+        storeFor(workspaceId).append({
+          sessionId,
+          ts: Date.now(),
+          type: "session_created",
+          workspace: WORKDIR,
+          cloud: { workspaceId },
+        });
         openSessionRoom(workspaceId, sessionId, owner);
         return { sessionId };
       },
@@ -390,6 +459,12 @@ async function main(): Promise<void> {
     saveConfig: async (workspaceId, cfg) => {
       await workspaceConfigStore.save(workspaceId, cfg);
       sandbox.invalidateClone(workspaceId);
+    },
+    // token 本身从不下行——只回一个 hasPat 布尔（issue #834）
+    repoState: (workspaceId) => {
+      const record = workspaceConfigStore.load(workspaceId);
+      if (!record) return null;
+      return { url: record.repoUrl, hasPat: record.pat !== undefined, clone: record.clone ?? null };
     },
     send: globalSend,
     dropCid,
@@ -408,7 +483,10 @@ async function main(): Promise<void> {
       return;
     }
     const validIds = new Set((workspaceRows ?? []).map((r: { id: string }) => r.id));
-    await sandbox.reconcile(validIds);
+    const { removed } = await sandbox.reconcile(validIds);
+    // 容器+卷真的删掉的那一刻，把这个工作区的仓库配置（**含明文 PAT**）
+    // 一起删掉（issue #835④）——上一版只写不删，凭据条目永久留在 VPS 上
+    for (const workspaceId of removed) workspaceConfigStore.remove(workspaceId);
   }
 
   await runReconcile();

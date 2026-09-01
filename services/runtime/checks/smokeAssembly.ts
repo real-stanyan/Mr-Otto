@@ -157,6 +157,7 @@ async function scenarioMainFlow(): Promise<void> {
         },
       },
       saveConfig: async () => {},
+      repoState: () => null,
       send,
       dropCid: (cid) => {
         roster.delete(cid);
@@ -315,6 +316,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
       },
     },
     saveConfig: async () => {},
+    repoState: () => null,
     send: (cid, msg) => resilientSent.push({ cid, msg }),
     dropCid: () => {},
   };

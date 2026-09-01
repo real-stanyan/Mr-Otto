@@ -1,19 +1,23 @@
 import { describe, it, expect } from "vitest";
 import {
   CS_PROTOCOL_VERSION, csChannel, csCtlChannel, isCsChannel,
-  encodeCs, decodeCsUp, decodeCsDown,
+  encodeCs, decodeCsUp, decodeCsDown, validateRepoUrl,
 } from "../../../src/shared/remote/cloudSession.js";
 
 describe("cs 帧协议", () => {
-  it("协议版本是整数 1", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(1);
+  it("协议版本", () => {
+    // 2 = issue #834 那次进位（welcome 多了 repo、下行多了 config_result）。
+    // 握手是精确相等，两端同一个仓库一起发版——加字段照样进位，宁可让
+    // 老客户端在 hello 那一步被明确拒绝，也不要它收到一条读不懂的 welcome
+    // 之后静默少一格状态
+    expect(CS_PROTOCOL_VERSION).toBe(2);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
     expect(csChannel("w1", "s1")).toBe("cs-w1-s1");
   });
   it("up 帧 roundtrip + 未知形状回 null", () => {
-    const hello = { t: "hello" as const, v: 1, jwt: "j" };
+    const hello = { t: "hello" as const, v: CS_PROTOCOL_VERSION, jwt: "j" };
     expect(decodeCsUp(encodeCs(hello))).toEqual(hello);
     const say = { t: "say" as const, text: "干活", mention: true };
     expect(decodeCsUp(encodeCs(say))).toEqual(say);
@@ -91,5 +95,49 @@ describe("cs 帧协议", () => {
       const real = csChannel("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
       expect(isCsChannel(`${real}-extra`)).toBe(false); // 合法房名后面缀了尾巴
     });
+  });
+});
+
+/** 仓库地址的结构化白名单（issue #834）。刻意不是"检测有没有藏凭据"那种
+    黑名单——那条路在 #821 被复审连破三轮，教训写在 lib/cloudRepoUrl.ts 的
+    文件头。这里只问 URL 解析器自己答得上来的四个问题。 */
+describe("validateRepoUrl", () => {
+  it("普通 https 地址放行，回的是 trim 过的原串（不重新序列化）", () => {
+    expect(validateRepoUrl("  https://github.com/acme/widgets.git  ")).toEqual({
+      ok: true,
+      url: "https://github.com/acme/widgets.git",
+    });
+  });
+
+  it("带 userinfo 的一律拒——凭据在 git URL 里只能住在这儿，这是结构性判据", () => {
+    for (const url of [
+      "https://ghp_token@github.com/acme/widgets.git",
+      "https://user:pass@github.com/acme/widgets.git",
+    ]) {
+      const r = validateRepoUrl(url);
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.message).toContain("token");
+    }
+  });
+
+  it("非 https（http / file / ext / ssh）一律拒——沙箱里没有 SSH key，ext:: 会执行任意命令", () => {
+    for (const url of ["http://github.com/a/b.git", "file:///etc/passwd", "ext::sh -c whoami"]) {
+      expect(validateRepoUrl(url).ok).toBe(false);
+    }
+  });
+
+  it("scp 语法（git@host:path）拒，且给的是「换 https」而不是「格式错误」", () => {
+    const r = validateRepoUrl("git@github.com:acme/widgets.git");
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("https");
+  });
+
+  it("空串 / 超长 拒", () => {
+    expect(validateRepoUrl("   ").ok).toBe(false);
+    expect(validateRepoUrl(`https://github.com/${"x".repeat(3000)}`).ok).toBe(false);
+  });
+
+  it("路径里带 @ 的合法地址不误伤（@ 在 path 里不是 userinfo）", () => {
+    expect(validateRepoUrl("https://github.com/acme/widgets@v2.git").ok).toBe(true);
   });
 });

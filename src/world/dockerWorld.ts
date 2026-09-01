@@ -33,7 +33,10 @@ export interface ContainerLike {
   modem: { demuxStream(stream: NodeJS.ReadableStream, out: NodeJS.WritableStream, err: NodeJS.WritableStream): void };
 }
 
-const WORKDIR = "/work";
+/** 容器里的工作目录。导出是因为 daemon 建云会话时要把它写进
+    `session_created.workspace`（投影成 system 消息告诉模型自己在哪，
+    issue #833）——两处写死同一个字符串迟早会漂。 */
+export const WORKDIR = "/work";
 
 /** 单引号包裹 + `'\''` 转义（POSIX shell 惯用法：先结束单引号、插一个转义单引号、
     再开新的单引号），比双引号更安全——单引号内没有任何字符会被 shell 二次展开 */
