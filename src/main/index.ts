@@ -3205,8 +3205,13 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));
   ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());
-  ipcMain.handle(CHANNELS.workspaceCloudConfig, (_e, workspaceId: string, repoUrl: string, pat?: string) =>
-    cloudClient.config(workspaceId, repoUrl, pat));
+  ipcMain.handle(
+    CHANNELS.workspaceCloudConfig,
+    (
+      _e,
+      workspaceId: string,
+      patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
+    ) => cloudClient.config(workspaceId, patch));
 
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、

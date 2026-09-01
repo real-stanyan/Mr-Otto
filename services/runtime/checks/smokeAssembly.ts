@@ -162,6 +162,7 @@ async function scenarioMainFlow(): Promise<void> {
       },
       saveConfig: async () => {},
       repoState: () => null,
+      modelState: () => null,
       rateLimit: { allow: () => true },
       send,
       dropCid: (cid) => {
@@ -334,6 +335,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
     },
     saveConfig: async () => {},
     repoState: () => null,
+    modelState: () => null,
     rateLimit: { allow: () => true },
     send: (cid, msg) => resilientSent.push({ cid, msg }),
     dropCid: () => {},

@@ -1,19 +1,23 @@
 import { describe, it, expect } from "vitest";
 import {
   CS_PROTOCOL_VERSION, csChannel, csCtlChannel, isCsChannel,
-  encodeCs, decodeCsUp, decodeCsDown, validateRepoUrl,
+  encodeCs, decodeCsUp, decodeCsDown, validateRepoUrl, validateModelConfig,
+  type CsUp,
 } from "../../../src/shared/remote/cloudSession.js";
+import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
-    // 3 = issue #819 那次进位（denied 多了 rate_limited 码）。
+    // 4 = issue #844 那次进位（welcome/config_result 多了 model 一格，
+    //     config 帧多了 model 字段、repoUrl 变成可选）。
+    // 3 = issue #819 那次（denied 多了 rate_limited 码）。
     // 2 = issue #834 那次（welcome 多了 repo、下行多了 config_result）。
     // 握手是精确相等，两端同一个仓库一起发版——加字段照样进位，宁可让
     // 老客户端在 hello 那一步被明确拒绝，也不要它收到一条读不懂的 welcome
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(3);
+    expect(CS_PROTOCOL_VERSION).toBe(4);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -151,5 +155,65 @@ describe("rate_limited 码（issue #819）", () => {
   it("decodeCsDown 认得出，不被当成垃圾帧丢掉", () => {
     const frame = encodeCs({ t: "denied", code: "rate_limited" });
     expect(decodeCsDown(frame)).toEqual({ t: "denied", code: "rate_limited" });
+  });
+});
+
+// issue #844：模型配置的结构化校验（两端共用一份）
+describe("validateModelConfig（issue #844）", () => {
+  it("https + 非空型号 = 通过，顺带 trim", () => {
+    const r = validateModelConfig("  https://api.deepseek.com/v1  ", " deepseek-v4-flash ");
+    expect(r).toEqual({ ok: true, baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-v4-flash" });
+  });
+
+  // runtime 是拿着平台身份在跑的：一条指向内网的模型地址等于让它替人访问内网
+  it("http / 内网地址被拒 —— 服务端也要自己验一次，渲染层不是安全边界", () => {
+    for (const bad of ["http://127.0.0.1:11434/v1", "http://api.example.com", "file:///etc/passwd"]) {
+      expect(validateModelConfig(bad, "m").ok).toBe(false);
+    }
+  });
+
+  it("解析不开的串被拒", () => {
+    expect(validateModelConfig("api.deepseek.com/v1", "m").ok).toBe(false);
+    expect(validateModelConfig("", "m").ok).toBe(false);
+  });
+
+  it("型号为空被拒 —— 半个配置比没有配置更危险", () => {
+    expect(validateModelConfig("https://api.deepseek.com/v1", "   ").ok).toBe(false);
+  });
+
+  // 型号 id 的字母表由各家厂商定：白名单会把还没出生的型号挡在外面
+  it("奇怪但非空的型号照放 —— 不猜厂商的命名规则", () => {
+    expect(validateModelConfig("https://x.com/v1", "kimi-for-coding-highspeed@2026").ok).toBe(true);
+  });
+});
+
+// 线上形状：config 帧两组字段各自可选，坏形状整帧判无效
+describe("config 帧的两组字段（issue #844）", () => {
+  it("只带 model 的 config 帧能原样往返", () => {
+    const frame: CsUp = { t: "config", model: { baseUrl: "https://a.com/v1", modelId: "m", apiKey: "k" } };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+  });
+
+  it("只带 repoUrl 的照旧", () => {
+    const frame: CsUp = { t: "config", repoUrl: "https://github.com/x/y.git" };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+  });
+
+  it("空 config 帧是合法的（服务端会回「没有要保存的内容」）", () => {
+    expect(decodeCsUp(encodeCs({ t: "config" }))).toEqual({ t: "config" });
+  });
+
+  it("model 形状不对 → 整帧判无效，不落半个配置", () => {
+    const bad = b64encode(new TextEncoder().encode(JSON.stringify({ t: "config", model: { baseUrl: 1 } })));
+    expect(decodeCsUp(bad)).toBeNull();
+  });
+
+  it("welcome/config_result 的 model 一格能解回来，形状不对时降级成 null", () => {
+    const w = decodeCsDown(encodeCs({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
+      initiatorUid: null, ownerUid: "o", repo: null,
+      model: { baseUrl: "https://a.com/v1", modelId: "m", hasKey: true },
+    }));
+    expect(w && w.t === "welcome" && w.model).toEqual({ baseUrl: "https://a.com/v1", modelId: "m", hasKey: true });
   });
 });

@@ -39,7 +39,7 @@ import type {
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsRepoState } from "../../shared/remote/cloudSession.js";
+import type { CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -179,6 +179,9 @@ export interface CloudSessionState {
   /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
       null = 没配 / 还没 welcome。**没有 token 本身**，只有 hasPat */
   repo: CsRepoState | null;
+  /** 这个工作区当前的模型配置（issue #844）。null = 还没配，@Agent 起不了
+      turn。**没有 key 本身**，只有 hasKey */
+  model: CsModelState | null;
   events: SessionEvent[];
 }
 
@@ -854,7 +857,11 @@ interface ChatState {
       "渲染层不留 key 的任何副本"的纪律）。回是否成功——同 cloudSay/cloudApprove
       的既有约定，失败信息落 workspaceGroupsError，调用方按需读；服务端保存
       成功是静默的，IPC 回 ok 就算成功，没有二次确认帧 */
-  cloudConfig(repoUrl: string, pat?: string): Promise<boolean>;
+  cloudConfig(patch: {
+    repoUrl?: string;
+    pat?: string;
+    model?: { baseUrl: string; modelId: string; apiKey?: string };
+  }): Promise<boolean>;
   /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
       是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
       看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，
@@ -2098,6 +2105,7 @@ export const useChat = create<ChatState>((set, get) => ({
         workspaceId, sessionId: sid, state: "connecting",
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         repo: null, // welcome 一到就补真值
+        model: null, // 同上（issue #844）
         events: [],
       },
       workspaceGroupsError: null,
@@ -2142,7 +2150,7 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
-  async cloudConfig(repoUrl, pat) {
+  async cloudConfig(patch) {
     // 没有已连接的云会话就不该走到这——CloudSessionPage 只在已 join 时才
     // 挂载配置入口，这里仍然判一次是防状态错乱（比如异步期间被 closeCloudSession
     // 顶掉），不是主路径
@@ -2151,7 +2159,7 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ workspaceGroupsError: "没有已连接的云会话" });
       return false;
     }
-    const r = await window.otter.workspaceCloudConfig(workspaceId, repoUrl, pat);
+    const r = await window.otter.workspaceCloudConfig(workspaceId, patch);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
@@ -2405,6 +2413,7 @@ export const useChat = create<ChatState>((set, get) => ({
             ownerUid: status.ownerUid,
             selfUid: status.selfUid,
             repo: status.repo,
+            model: status.model,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

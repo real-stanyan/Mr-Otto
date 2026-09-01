@@ -12,9 +12,6 @@ export interface RuntimeConfig {
   supabaseServiceKey: string;
   edgeBase: string;
   relayBase: string;
-  modelBaseUrl: string;
-  modelApiKey: string;
-  modelId: string;
   /** 默认 /var/lib/otto-runtime——唯一有默认值的一个，其余全部必填 */
   dataDir: string;
 }
@@ -26,10 +23,13 @@ const REQUIRED_KEYS = [
   "SUPABASE_SERVICE_KEY",
   "EDGE_BASE",
   "RELAY_BASE",
-  "MODEL_BASE_URL",
-  "MODEL_API_KEY",
-  "MODEL_ID",
 ] as const;
+
+// MODEL_BASE_URL / MODEL_API_KEY / MODEL_ID **故意不在这份清单里**（issue #844，
+// 推翻 ADR-0199 决策⑥）：模型 key 跟着工作区走，由 owner 自己配，runtime 这个
+// 进程不持有任何模型 key。也**不做 env 兜底**——有兜底就等于"忘了配的工作区
+// 默默烧维护者的钱"，而那正是这一版要消灭的东西。没配 key 的工作区里 @Agent
+// 会得到一条看得见的话，不是一个静默扣费的 turn。
 
 const DEFAULT_DATA_DIR = "/var/lib/otto-runtime";
 
@@ -55,9 +55,6 @@ export function resolveConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     supabaseServiceKey: env.SUPABASE_SERVICE_KEY!,
     edgeBase: env.EDGE_BASE!,
     relayBase: env.RELAY_BASE!,
-    modelBaseUrl: env.MODEL_BASE_URL!,
-    modelApiKey: env.MODEL_API_KEY!,
-    modelId: env.MODEL_ID!,
     dataDir,
   };
 }

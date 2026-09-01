@@ -18,7 +18,7 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsRepoState } from "./remote/cloudSession.js";
+import type { CsModelState, CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -459,6 +459,9 @@ export interface CloudSessionStatus {
       welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
       **不含 token 本身**，只有 hasPat 布尔 */
   repo: CsRepoState | null;
+  /** 这个工作区当前的模型配置（issue #844）。null = 还没配——能建能聊，
+      但 @Agent 起不了 turn。**不含 key 本身**，只有 hasKey 布尔 */
+  model: CsModelState | null;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
       失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送
@@ -1027,7 +1030,13 @@ export interface ShellBridge {
   /** 归档当前云会话 */
   workspaceCloudArchive(): Promise<FriendsResult<null>>;
   /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
-  workspaceCloudConfig(workspaceId: string, repoUrl: string, pat?: string): Promise<FriendsResult<null>>;
+  /** 两组字段各自可选（issue #844）：只给 repo 就只改仓库，只给 model 就只改
+      模型。`pat` / `model.apiKey` 三态——省略 = 保持不变，`""` = 清除，
+      非空 = 换新（密码框预填不了，"留空 = 清掉"会让顺手改个型号毁掉一把 key） */
+  workspaceCloudConfig(
+    workspaceId: string,
+    patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
+  ): Promise<FriendsResult<null>>;
 
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;

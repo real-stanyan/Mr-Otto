@@ -26,13 +26,16 @@ daemon，装配现有 agent 核心 + DockerWorld，权威 EventStore 落 VPS 本
 | `SUPABASE_SERVICE_KEY` | 同上页面的 service role key——查 `workspace_members` 在籍、写 `usage_ledger` 都要绕过 RLS，必须用 service key 不是 anon key |
 | `EDGE_BASE` | edge worker 部署后的根地址，不带尾斜杠。好友代理云端执行面 `/px/v1/*`（runtime 打 px call 时用平台身份自证）走这个根 |
 | `RELAY_BASE` | edge worker 部署后的中继根地址，不带尾斜杠。cs 帧（云会话协议）走的那条 WebSocket |
-| `MODEL_BASE_URL` | 模型 provider 的 OpenAI-compatible base URL |
-| `MODEL_API_KEY` | 模型 provider key。ADR-0199 决策⑥「过渡期模型 key」：本期是维护者一份 key 配进 VPS env，不是按用户计费——三期才会换成平台级 key + 额度强制执行 |
-| `MODEL_ID` | 模型 id |
 | `DATA_DIR`（可选） | 本地状态（EventStore、`orphans.json`、workspace-config.json）落盘目录，缺省 `/var/lib/otto-runtime`（`config.ts` 的 `DEFAULT_DATA_DIR`），一般不用填 |
 
-**一共 9 个必需变量**（逐字数 `REQUIRED_KEYS` 得出，不是估的数），`DATA_DIR` 是唯一有默认值
+**一共 6 个必需变量**（逐字数 `REQUIRED_KEYS` 得出，不是估的数），`DATA_DIR` 是唯一有默认值
 的可选项。
+
+**模型 key 不在这份清单里**（issue #844，推翻 ADR-0199 决策⑥）：它跟着工作区走，由每个
+工作区的所有者在客户端里配自己那把（云会话页右上角「配置模型 / 仓库…」），落在 VPS 的
+`<DATA_DIR>/workspace-config.json`（0600，与仓库 PAT 同一份文件）。这台 runtime **不持有
+任何模型 key，也不做 env 兜底**——有兜底就等于「忘了配的工作区默默烧维护者的钱」。没配
+模型的工作区能建会话、能聊天，但 @Agent 起不了 turn，会回一条看得见的话。
 
 ### 1.2 systemd unit
 
@@ -71,10 +74,10 @@ RUNTIME_SSH=user@host npm run runtime:deploy
 
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
-自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下十三条要真机走一遍。
+自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下十四条要真机走一遍。
 ②③④⑤⑥⑦对应 spec §8「DockerWorld 走 VPS 真机手验清单」列的六个场景，①是新增的部署链路
 本身验证，⑧是连接豁免验证，⑨⑩来自 ADR-0200（clone 那条链路），⑪⑫⑬来自 ADR-0201
-（限流 / 归档 / 连接计数按人分桶）：
+（限流 / 归档 / 连接计数按人分桶），⑭来自 ADR-0202（模型 key 跟着工作区走）：
 
 1. **首次部署本身是这条链路的第一次真机验证**——`scripts/runtime-deploy.mjs` 交付时（T11）
    按指示没有真的连过 VPS：esbuild 打包与 `deploy-package.json` 生成逻辑在仓外独立验证过，
@@ -148,6 +151,14 @@ RUNTIME_SSH=user@host npm run runtime:deploy
 13. **连接计数按人分桶**（ADR-0201 第一节，#824；接着 ⑧ 一起验）：用**同一个**账号占满 16 条
     连进 `cs-ctl`，第 17 条应该 503；此时换**另一个**账号连同一个房间应该**照常连得上**
     （改之前它会一起被拒——这正是这条修的东西）。
+
+14. **模型 key 跟着工作区走**（ADR-0202，#844）：新建一个工作区、建一条云会话，
+    **先别配模型**就 @Agent —— 应该在群里看到一条「这个工作区还没配模型」的话（不是一个
+    401 堆栈，也不是静默卡住）。然后 owner 点右上角配一把自己的 key（https 的 base URL +
+    型号 id + key），再 @Agent，这次应该真的跑起来。VPS 上验两件事：
+    `cat <DATA_DIR>/workspace-config.json` 里那把 key 在、文件权限是 `0600`；
+    `systemctl show otto-runtime -p Environment` 里**没有**任何 `MODEL_*`。
+    非 owner 的成员：页头看得见「模型：<型号>」这一格，但**没有**那颗配置按钮。
 
 ## 3. 回滚
 

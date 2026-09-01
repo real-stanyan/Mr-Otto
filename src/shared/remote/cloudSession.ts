@@ -7,7 +7,10 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 3（issue #819）：denied 多了一个 `rate_limited` 码。
+/** 4（issue #844）：welcome/config_result 多了 `model` 一格，config 帧多了
+    `model` 字段、`repoUrl` 变成可选（模型配置与仓库配置是两件独立的事，
+    改一个不该被迫连另一个一起发）。
+    3（issue #819）：denied 多了一个 `rate_limited` 码。
     2（issue #834）：welcome 多了 `repo`，下行多了 `config_result`。
     握手是**精确相等**（frameHandler 的 version_mismatch），两端同一个仓库
     一起发版，所以加字段照样要进位——桌面拿着 v1 连上 v2 的 runtime 会在
@@ -15,7 +18,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 3;
+export const CS_PROTOCOL_VERSION = 4;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** clone 判定的结局种类。与 runtime 侧 `CloneOutcome["kind"]` 是同一组值，
@@ -75,6 +78,46 @@ export function validateRepoUrl(raw: string): { ok: true; url: string } | { ok: 
   return { ok: true, url };
 }
 
+/** 一个工作区此刻的模型配置（issue #844）。**key 本身永不下行**——同
+    `CsRepoState.hasPat` 的纪律。runtime 自己不再持有任何模型 key：
+    `config.ts` 的必需项里没有 MODEL_*，也不做 env 兜底，因为兜底等于
+    「忘了配的工作区默默烧维护者的钱」，而那正是这一版要消灭的东西。 */
+export interface CsModelState {
+  baseUrl: string;
+  modelId: string;
+  hasKey: boolean;
+}
+
+/** 模型配置的结构化校验（issue #844）——两端共用一份，纪律同
+    `validateRepoUrl`：渲染层那份只是提交前的早期提示，服务端必须自己再验
+    一次（一个改造过的客户端能直接发 `http://127.0.0.1` 这类内网地址上来，
+    而 runtime 是拿着平台身份在跑的）。
+    只问 URL 解析器自己答得上来的问题：解析得开吗、是不是 https、
+    有没有 host。modelId 只查非空与长度——型号 id 的字母表由各家厂商定，
+    白名单会把还没出生的型号挡在外面。 */
+export function validateModelConfig(
+  rawBaseUrl: string,
+  rawModelId: string
+): { ok: true; baseUrl: string; modelId: string } | { ok: false; message: string } {
+  const baseUrl = rawBaseUrl.trim();
+  const modelId = rawModelId.trim();
+  if (baseUrl === "") return { ok: false, message: "模型 API 地址不能为空。" };
+  if (baseUrl.length > 2048) return { ok: false, message: "模型 API 地址太长了。" };
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { ok: false, message: "这不是一条完整的模型 API 地址（要像 https://api.example.com/v1）。" };
+  }
+  if (parsed.protocol !== "https:") {
+    return { ok: false, message: `模型 API 地址必须是 https://（收到的是 ${parsed.protocol}）。` };
+  }
+  if (parsed.host === "") return { ok: false, message: "模型 API 地址里没有主机名。" };
+  if (modelId === "") return { ok: false, message: "型号 id 不能为空。" };
+  if (modelId.length > 256) return { ok: false, message: "型号 id 太长了。" };
+  return { ok: true, baseUrl, modelId };
+}
+
 export function csCtlChannel(): string {
   return "cs-ctl";
 }
@@ -123,7 +166,16 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  | { t: "config"; repoUrl: string; pat?: string }
+  /** 工作区配置。**两组字段各自可选**（issue #844）：给了 repoUrl 就改仓库，
+      给了 model 就改模型，两个都不给是无操作。`pat` / `model.apiKey` 同款
+      三态——省略 = 保持不变，`""` = 显式清除，非空 = 换成新的。密码框永远
+      预填不了，"留空 = 清掉"会让"顺手改个型号"静默毁掉一把 key */
+  | {
+      t: "config";
+      repoUrl?: string;
+      pat?: string;
+      model?: { baseUrl: string; modelId: string; apiKey?: string };
+    }
   | { t: "archive" };
 
 /** runtime → 成员 */
@@ -139,6 +191,9 @@ export type CsDown =
           搭在 welcome 上而不是另开一个查询往返：任何人一 join 就看得见，
           不用等"恰好有人在配"或"恰好开着会话时 clone 跑了一次" */
       repo: CsRepoState | null;
+      /** 这个工作区此刻的模型配置（issue #844）。null = 还没配——这条云会话
+          能建、能聊，但 @Agent 起不了 turn，owner 得先配一把自己的 key */
+      model: CsModelState | null;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
   | { t: "denied"; code: CsDeniedCode }
@@ -149,7 +204,13 @@ export type CsDown =
       一条不相干的 error 提前唤醒。ok=false 时 message 说明为什么被拒
       （服务端校验不通过 / 保存失败），repo 是**服务端此刻的真实状态**，
       成功失败都带——失败时它正好告诉 owner「那你现在配的还是这个」 */
-  | { t: "config_result"; ok: boolean; message?: string; repo: CsRepoState | null }
+  | {
+      t: "config_result";
+      ok: boolean;
+      message?: string;
+      repo: CsRepoState | null;
+      model: CsModelState | null;
+    }
   | { t: "error"; msg: string };
 
 export function encodeCs(msg: CsUp | CsDown): string {
@@ -204,6 +265,16 @@ function isCsRepoState(v: unknown): v is CsRepoState {
   if (typeof o.clone !== "object") return false;
   const c = o.clone as Record<string, unknown>;
   return isCsCloneKind(c.kind) && typeof c.text === "string" && typeof c.at === "number";
+}
+
+function normalizeModelState(v: unknown): CsModelState | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.baseUrl !== "string" || typeof o.modelId !== "string" || typeof o.hasKey !== "boolean") {
+    return null;
+  }
+  return { baseUrl: o.baseUrl, modelId: o.modelId, hasKey: o.hasKey };
 }
 
 /** decode 出来的 CsRepoState 一律走这里补齐 `clone`——调用方拿到的永远是
@@ -284,17 +355,28 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "config") {
-      if (typeof obj.repoUrl === "string") {
-        const pat = obj.pat;
-        if (pat === undefined || typeof pat === "string") {
-          const result: CsUp = { t: "config", repoUrl: obj.repoUrl };
-          if (typeof pat === "string") {
-            result.pat = pat;
-          }
-          return result;
-        }
+      // 两组字段各自可选（issue #844）：给了 repoUrl 就是在改仓库，给了
+      // model 就是在改模型。类型不对（不是 string / 形状不对）一律判整帧
+      // 无效——半个配置比没有配置更危险
+      const { repoUrl, pat, model } = obj;
+      if (repoUrl !== undefined && typeof repoUrl !== "string") return null;
+      if (pat !== undefined && typeof pat !== "string") return null;
+
+      const result: CsUp = { t: "config" };
+      if (typeof repoUrl === "string") result.repoUrl = repoUrl;
+      if (typeof pat === "string") result.pat = pat;
+
+      if (model !== undefined) {
+        if (typeof model !== "object" || model === null) return null;
+        const m = model as Record<string, unknown>;
+        if (typeof m.baseUrl !== "string" || typeof m.modelId !== "string") return null;
+        if (m.apiKey !== undefined && typeof m.apiKey !== "string") return null;
+        result.model =
+          typeof m.apiKey === "string"
+            ? { baseUrl: m.baseUrl, modelId: m.modelId, apiKey: m.apiKey }
+            : { baseUrl: m.baseUrl, modelId: m.modelId };
       }
-      return null;
+      return result;
     }
 
     if (t === "archive") {
@@ -336,6 +418,7 @@ export function decodeCsDown(b64: string): CsDown | null {
           initiatorUid: obj.initiatorUid as string | null,
           ownerUid: obj.ownerUid,
           repo: normalizeRepoState(obj.repo),
+          model: normalizeModelState(obj.model),
         };
       }
       return null;
@@ -343,7 +426,12 @@ export function decodeCsDown(b64: string): CsDown | null {
 
     if (t === "config_result") {
       if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
-        const result: CsDown = { t: "config_result", ok: obj.ok, repo: normalizeRepoState(obj.repo) };
+        const result: CsDown = {
+          t: "config_result",
+          ok: obj.ok,
+          repo: normalizeRepoState(obj.repo),
+          model: normalizeModelState(obj.model),
+        };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }
