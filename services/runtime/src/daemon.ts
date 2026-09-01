@@ -275,6 +275,8 @@ async function main(): Promise<void> {
   // 里已经有的那个 broadcast 闭包（同一个函数引用，不是重新拼一遍
   // for-of-roster 逻辑）。
   const sessionBroadcast = new Map<string, (e: SessionEvent) => void>();
+  /** 每个会话房的"收摊"闭包（issue #822）——归档时用 */
+  const closeRoom = new Map<string, () => void>();
 
   /** clone 结果通报：console 之外，再给该工作区**此刻还活着**的每一条云
       会话各追加一条 chat_message（fromUid:"system"、label:"系统"）+ 实时
@@ -325,7 +327,12 @@ async function main(): Promise<void> {
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
       的房间重新接上（不然重启后没人监听那个 channel，desktop 的 join 会
       连上 relay 却什么都收不到） */
-  function openSessionRoom(workspaceId: string, sessionId: string, ownerUid: string): CloudSession {
+  function openSessionRoom(
+    workspaceId: string,
+    sessionId: string,
+    ownerUid: string,
+    createdByUid: string
+  ): CloudSession {
     const store = storeFor(workspaceId);
     const roster = new Set<string>();
 
@@ -412,6 +419,7 @@ async function main(): Promise<void> {
       workspaceId,
       sessionId,
       ownerUid,
+      createdByUid,
       store,
       world,
       adapter: perSessionAdapter,
@@ -423,6 +431,16 @@ async function main(): Promise<void> {
 
     activeSessions.set(sessionId, { session, workspaceId });
     sessionBroadcast.set(sessionId, broadcast);
+    // 归档时要能把这个房间收掉（issue #822）——闭包里才拿得到 transport
+    closeRoom.set(sessionId, () => {
+      roomRosters.delete(transport);
+      for (const cid of roster) cidTransport.delete(cid);
+      try {
+        transport.close();
+      } catch {
+        /* 已经在关了 */
+      }
+    });
     return session;
   }
 
@@ -464,10 +482,40 @@ async function main(): Promise<void> {
           workspace: WORKDIR,
           cloud: { workspaceId },
         });
-        openSessionRoom(workspaceId, sessionId, owner);
+        openSessionRoom(workspaceId, sessionId, owner, byUid);
         return { sessionId };
       },
       ownerOf,
+      /** 归档三件事（issue #822）：落日志 → 写 Supabase 那行 → 收房间。
+          顺序不能换：日志那条 session_archived 要先广播出去，房里的人才
+          知道发生了什么；房间一关，谁都收不到了。 */
+      async archive(workspaceId, sessionId, byLabel) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId) return false;
+        if (!active.session.archive(byLabel)) return false;
+
+        const { error } = await supabase
+          .from("workspace_sessions")
+          .update({ archived: true })
+          .eq("id", sessionId);
+        if (error) {
+          // 日志已经落了（append-only，撤不回），Supabase 那行没翻——下次
+          // 重启这个房间会被当成"未归档"重新开出来。记一行，不假装成功：
+          // 客户端那边看到的 session_archived 是真的，只是没落到台账
+          console.error(`[otto-runtime] 归档写库失败（sessionId=${sessionId}）：${error.message}`);
+        }
+
+        activeSessions.delete(sessionId);
+        sessionBroadcast.delete(sessionId);
+        // 关房间要等广播真的写出去：ws.close() 之后排队的帧还发不发得出去
+        // 是实现细节，不该赌。延一拍收摊——这条会话此刻已经不在
+        // activeSessions 里了，期间再来的帧一律 no_session，不会有人趁机
+        // 往一条已归档的会话里说话
+        const close = closeRoom.get(sessionId);
+        closeRoom.delete(sessionId);
+        if (close) setTimeout(close, 2_000);
+        return true;
+      },
     },
     // owner 纠正 repoUrl/PAT 后，光写盘不够——sandbox.ts 的 cloneAttempts
     // 缓存（settle 后刻意不删，见该文件注释）会一直挡着重新尝试，只有
@@ -579,16 +627,16 @@ async function main(): Promise<void> {
   // 都收不到。启动时把它们全部重新 openSessionRoom 一遍。
   const { data: cloudSessions, error: cloudErr } = await supabase
     .from("workspace_sessions")
-    .select("id,workspace_id")
+    .select("id,workspace_id,publisher_uid")
     .eq("kind", "cloud")
     .eq("archived", false);
   if (cloudErr) {
     console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
   } else {
-    for (const row of (cloudSessions ?? []) as { id: string; workspace_id: string }[]) {
+    for (const row of (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[]) {
       try {
         const owner = await ownerOf(row.workspace_id);
-        openSessionRoom(row.workspace_id, row.id, owner);
+        openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
       } catch (err) {
         console.warn(
           `[otto-runtime] 恢复会话房失败（workspaceId=${row.workspace_id}, sessionId=${row.id}）：${err instanceof Error ? err.message : String(err)}`

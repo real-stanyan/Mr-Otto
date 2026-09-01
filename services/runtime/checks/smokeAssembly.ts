@@ -139,6 +139,7 @@ async function scenarioMainFlow(): Promise<void> {
             workspaceId: ws,
             sessionId,
             ownerUid: byUid,
+            createdByUid: byUid,
             store,
             world: fakeWorld,
             adapter: fakeAdapter,
@@ -151,6 +152,9 @@ async function scenarioMainFlow(): Promise<void> {
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });
           return { sessionId };
+        },
+        async archive() {
+          return false;
         },
         async ownerOf() {
           return operatorUid;
@@ -295,6 +299,12 @@ async function scenarioAssemblyResilience(): Promise<void> {
     initiatorUid() {
       return null;
     },
+    createdByUid() {
+      return "";
+    },
+    archive() {
+      return false;
+    },
   };
 
   const resilientDeps: FrameHandlerDeps = {
@@ -305,6 +315,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
       get: () => stubSession,
       async create() {
         throw new Error("smoke：韧性场景不使用 create");
+      },
+      async archive() {
+        return false;
       },
       async ownerOf() {
         // 模拟"调用即抛错的假 Supabase"：onSessionFrame 的 hello 分支里

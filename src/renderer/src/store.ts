@@ -855,6 +855,13 @@ interface ChatState {
       的既有约定，失败信息落 workspaceGroupsError，调用方按需读；服务端保存
       成功是静默的，IPC 回 ok 就算成功，没有二次确认帧 */
   cloudConfig(repoUrl: string, pat?: string): Promise<boolean>;
+  /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
+      是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
+      看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，
+      同 cloudSay/cloudApprove 的既有约定。
+      云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开
+      房间），所以调用方要先问一句 */
+  cloudArchive(): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
@@ -2155,6 +2162,16 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
+  async cloudArchive() {
+    const r = await window.otter.workspaceCloudArchive();
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    return true;
+  },
+
   async openFriendChat(profile) {
     set((s) => ({
       ...panelFlags(null), friendChat: profile, // 互斥:同一右侧槽位
@@ -2362,6 +2379,16 @@ export const useChat = create<ChatState>((set, get) => ({
         if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
         return { cloudSession: { ...s.cloudSession, events: [...s.cloudSession.events, event] } };
       });
+      // 归档广播回来了（issue #822）：这条会话到此为止——服务端两秒后收摊
+      // 房间。**判据是日志里那条事件**，不是"我刚点了归档"：谁点的都算，
+      // 而且投影从日志推导（同一条硬规则）。收页 + 刷新清单，那边有
+      // archived 沉底的排序
+      const cur = get().cloudSession;
+      if (event.type === "session_archived" && cur && cur.sessionId === event.sessionId) {
+        const workspaceId = cur.workspaceId;
+        get().closeCloudSession();
+        void get().refreshCloudSessions(workspaceId);
+      }
     });
     window.otter.onCloudSessionStatus((status) => {
       set((s) => {

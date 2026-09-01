@@ -117,6 +117,10 @@ export interface FrameHandlerDeps {
     get(workspaceId: string, sessionId: string): CloudSession | null;
     create(workspaceId: string, byUid: string): Promise<{ sessionId: string }>;
     ownerOf(workspaceId: string): Promise<string>;
+    /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
+        Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
+        只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
+    archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
   saveConfig: (workspaceId: string, cfg: { repoUrl: string; pat?: string }) => Promise<void>;
   /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
@@ -373,11 +377,25 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
-        case "archive":
-          // 归档目前没有对应的能力面（CloudSession 没有 archive 方法，
-          // FrameHandlerDeps 也没暴露）——已过 hello + session 存在即算
-          // 通过，不做进一步动作。真正落盘 session_archived 留给后续任务接。
+        case "archive": {
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 谁能收尾（issue #822）：**owner 或建这条会话的人**。云端没有
+          // "恢复归档"那一半（daemon 启动只捞 archived=false 的房间重开），
+          // 所以这是个不可逆动作，不能让任意成员替所有人按下去。判据在
+          // 服务端，客户端那颗按钮的显隐只是 UX——渲染层不是安全边界
+          const ownerUid = await deps.sessions.ownerOf(workspaceId);
+          if (entry.uid !== ownerUid && entry.uid !== session.createdByUid()) {
+            deny(cid, "not_authorized");
+            return;
+          }
+          const done = await deps.sessions.archive(workspaceId, sessionId, entry.label);
+          // 成功不回执：session_archived 事件本身会广播给房里每个人，那就是
+          // 回执（而且是所有人都看得见的那一份）。只有"没生效"才需要单独说
+          if (!done) {
+            deps.send(cid, { t: "error", msg: "归档没有生效：这条会话可能已经归档了。" });
+          }
           return;
+        }
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
         default:
