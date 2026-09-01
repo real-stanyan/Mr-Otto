@@ -33,6 +33,7 @@ import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
   csChannel,
+  type CsCloneKind,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
@@ -90,8 +91,10 @@ interface WorkspaceConfigRecord {
   pat?: string;
   /** 最近一次 clone 判定的结局。落这儿而不是内存：daemon 一重启，
       "这个工作区的仓库到底拉下来没有"就再也没人答得上来了，而这正是
-      #834 要给 owner 看的那一格 */
-  clone?: { kind: CloneOutcome["kind"]; text: string; at: number };
+      #834 要给 owner 看的那一格。类型直接借线上契约那份（CsCloneKind）
+      ——`setCloneState` 的调用点塞的是 sandbox 的 `CloneOutcome["kind"]`，
+      两组值真分叉的话这个文件编译不过，不用两处人肉同步 */
+  clone?: { kind: CsCloneKind; text: string; at: number };
 }
 
 function createWorkspaceConfigStore(path: string) {
@@ -456,6 +459,12 @@ async function main(): Promise<void> {
     saveConfig: async (workspaceId, cfg) => {
       await workspaceConfigStore.save(workspaceId, cfg);
       sandbox.invalidateClone(workspaceId);
+    },
+    // token 本身从不下行——只回一个 hasPat 布尔（issue #834）
+    repoState: (workspaceId) => {
+      const record = workspaceConfigStore.load(workspaceId);
+      if (!record) return null;
+      return { url: record.repoUrl, hasPat: record.pat !== undefined, clone: record.clone ?? null };
     },
     send: globalSend,
     dropCid,

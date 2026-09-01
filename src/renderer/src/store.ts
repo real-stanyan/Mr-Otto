@@ -39,6 +39,7 @@ import type {
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
+import type { CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -175,6 +176,9 @@ export interface CloudSessionState {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
+  /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
+      null = 没配 / 还没 welcome。**没有 token 本身**，只有 hasPat */
+  repo: CsRepoState | null;
   events: SessionEvent[];
 }
 
@@ -2086,6 +2090,7 @@ export const useChat = create<ChatState>((set, get) => ({
       cloudSession: {
         workspaceId, sessionId: sid, state: "connecting",
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
+        repo: null, // welcome 一到就补真值
         events: [],
       },
       workspaceGroupsError: null,
@@ -2368,6 +2373,7 @@ export const useChat = create<ChatState>((set, get) => ({
             initiatorUid: status.initiatorUid,
             ownerUid: status.ownerUid,
             selfUid: status.selfUid,
+            repo: status.repo,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

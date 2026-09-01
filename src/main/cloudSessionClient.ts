@@ -73,7 +73,9 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
+  validateRepoUrl,
   type CsDeniedCode,
+  type CsRepoState,
   type CsUp,
 } from "../shared/remote/cloudSession.js";
 import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
@@ -225,7 +227,20 @@ interface ActiveSession {
       Date.now() 当占位——cloudSessionFleetRow 的 lastTs 最终用的是
       activeSummary() 那一份 */
   lastEventTs: number | null;
+  /** welcome 给的仓库配置 + 最近一次 clone 结局（issue #834）；config 存成功
+      后由回执刷新。null = 没配，或者还没 welcome */
+  repo: CsRepoState | null;
+  /** 还没等到回执的那次 config（issue #834）。协议原来没有回执，
+      "已保存"只证明本地 encode 没抛异常——叠上 #829（transport.send 三条
+      静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
+      同一时刻只允许一次：并发两次配置本来也没有意义，而"回执按 cid 到达、
+      不带请求 id"决定了两次并发无法区分谁是谁的 */
+  pendingConfig: { settle: (r: FriendsResult<null>) => void; timer: ReturnType<typeof setTimeout> } | null;
 }
+
+/** 等 config 回执的上限。超时不是"失败"而是"不知道"——文案要照实说
+    （见 config() 里那句），因为服务端完全可能已经存好了，只是回执没回来。 */
+const CONFIG_ACK_TIMEOUT_MS = 15_000;
 
 export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
   let active: ActiveSession | null = null;
@@ -239,7 +254,20 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       initiatorUid: session.initiatorUid,
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
+      repo: session.repo,
     });
+  }
+
+  /** 把还挂着的那次 config 结掉（issue #834）。三个调用点：回执到达、
+      超时、连接进终态（gone/denied）。少了最后一条，一次断线会让
+      "保存中…"的按钮永远转下去——await 一个再也不会被 resolve 的 promise
+      是这类 UI 最典型的死法 */
+  function settleConfig(session: ActiveSession, result: FriendsResult<null>): void {
+    const pending = session.pendingConfig;
+    if (!pending) return;
+    session.pendingConfig = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
   }
 
   function markGone(session: ActiveSession): void {
@@ -247,6 +275,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
     if (session.status === "gone" || session.status === "denied") return;
     session.status = "gone";
+    // 挂着的那次 config 就地结掉（issue #834）——否则"保存中…"永远转下去
+    settleConfig(session, { ok: false, message: "云会话断开了，这次保存不确定有没有生效——重连后请重试。" });
     // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
     // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
     // 事件原样再拉一遍，这次不去重、重新跑一遍 deliverEvent，approval_request
@@ -260,6 +290,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function markDenied(session: ActiveSession, code: CsDeniedCode): void {
     session.status = "denied";
     session.deniedCode = code;
+    settleConfig(session, { ok: false, message: "这条云会话被拒绝了，保存没有生效。" });
     pushStatus(session);
     // denied 没有重试的意义（版本不对/不是成员/会话没了，都不会因为再连一次
     // 而自愈），主动断开，别留一条注定失败的连接空转
@@ -333,6 +364,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       case "welcome": {
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
+        session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
@@ -341,6 +373,17 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         } catch (e) {
           deps.log?.(`云会话:backlog 请求编码失败:${e instanceof Error ? e.message : String(e)}`);
         }
+        return;
+      }
+      case "config_result": {
+        // 服务端此刻的真实状态，成功失败都刷——失败时它正好告诉 owner
+        // "那你现在配的还是这个"
+        session.repo = msg.repo;
+        pushStatus(session);
+        settleConfig(
+          session,
+          msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "保存被拒绝" }
+        );
         return;
       }
       case "denied":
@@ -514,6 +557,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // null = 还没有任何事件事实（不能用 Date.now() 占位，见 ActiveSession
       // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
       lastEventTs: null,
+      repo: null,
+      pendingConfig: null,
     };
     active = session;
     pushStatus(session);
@@ -582,18 +627,46 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return sendFrame(r.session, { t: "archive" });
   }
 
+  /** issue #834：等服务端的 `config_result` 才算保存成功。
+      在此之前这个函数回 ok 只证明"本地 encode 没抛异常"——连帧有没有交给
+      网络层都不保证（#829：wsTransport.send 有三条静默丢帧分支，其中一条
+      正是"正在自动重连"这个完全正常的窗口）。配置这个调用方是最受伤的：
+      聊天丢一条人看得出，配置丢了看不出，下次工具调用照旧用老配置克隆。
+
+      `pat` 的三态跟着服务端那份走（daemon 的 workspaceConfigStore.save）：
+      省略 = 保持不变，`""` = 显式清除，非空 = 换成新的。 */
   async function config(workspaceId: string, repoUrl: string, pat?: string): Promise<FriendsResult<null>> {
     const r = requireReady();
     if (!r.ok) return r;
-    if (r.session.workspaceId !== workspaceId) {
+    const session = r.session;
+    if (session.workspaceId !== workspaceId) {
       return { ok: false, message: "未加入该工作区的云会话" };
     }
+    // 本地先过一遍同一份校验，省掉一次明知会被拒的往返（服务端仍然会
+    // 自己校验一次——渲染层/主进程都不是安全边界，见 validateRepoUrl 注释）
+    const valid = validateRepoUrl(repoUrl);
+    if (!valid.ok) return { ok: false, message: valid.message };
+    if (session.pendingConfig) return { ok: false, message: "上一次保存还没有回执，稍等一下再试。" };
+
     // exactOptionalPropertyTypes：pat?: string 不接受显式 undefined，
     // 得真的省略这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
-    return sendFrame(
-      r.session,
-      pat !== undefined ? { t: "config", repoUrl, pat } : { t: "config", repoUrl },
+    const sent = sendFrame(
+      session,
+      pat !== undefined ? { t: "config", repoUrl: valid.url, pat } : { t: "config", repoUrl: valid.url },
     );
+    if (!sent.ok) return sent;
+
+    return new Promise<FriendsResult<null>>((resolve) => {
+      const timer = setTimeout(() => {
+        settleConfig(session, {
+          ok: false,
+          // 照实说"不知道"而不是"失败了"：服务端完全可能已经存好了，
+          // 只是回执没回来。让人重试一次是安全的（同一份配置存两遍等价）
+          message: "没等到服务端的回执，这次保存不确定有没有生效——请重试一次。",
+        });
+      }, CONFIG_ACK_TIMEOUT_MS);
+      session.pendingConfig = { settle: resolve, timer };
+    });
   }
 
   function currentSessionId(): string | null {

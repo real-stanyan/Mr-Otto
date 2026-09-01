@@ -3,7 +3,7 @@ import {
   createCloudSessionClient, cloudSessionFleetRow,
   type CloudSessionClient, type CloudSessionClientDeps, type CloudSessionSummary,
 } from "../../src/main/cloudSessionClient.js";
-import { decodeCsUp, encodeCs, type CsDown, type CsUp } from "../../src/shared/remote/cloudSession.js";
+import { decodeCsUp, encodeCs, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../src/shared/remote/cloudSession.js";
 import type { RemoteTransport } from "../../src/shared/remote/transport.js";
 import type { ApprovalDecisionEvent, ApprovalRequestEvent, ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import type { ApprovalRequest, CloudSessionStatus } from "../../src/shared/shellBridge.js";
@@ -133,7 +133,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     await tick();
     expect(t.sent).toHaveLength(1);
     expect(t.sent[0]!.to).toBe(HOST_CID);
-    expect(t.decoded()[0]).toEqual({ t: "hello", v: 1, jwt: "token-abc" });
+    expect(t.decoded()[0]).toEqual({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" });
   });
 
   it("welcome 到达后：状态补真值 + 自动发 backlog(-1)（不是 0）", async () => {
@@ -143,7 +143,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     t.emitPeer();
     await tick();
 
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 5, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 5, initiatorUid: "u1", ownerUid: "u2" , repo: null });
 
     expect(t.decoded()[1]).toEqual({ t: "backlog", afterSeq: -1 });
     const last = h.statuses[h.statuses.length - 1]!;
@@ -156,7 +156,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" , repo: null });
 
     t.emitDown({ t: "event", event: chatMsg(5) });
 
@@ -173,7 +173,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" , repo: null });
 
     t.emitDown({ t: "event", event: chatMsg(5) });
     expect(h.events).toHaveLength(0); // 还在缓冲区
@@ -193,7 +193,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 6, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 6, initiatorUid: "u1", ownerUid: "u2" , repo: null });
 
     // backlog 请求飞在路上时,一条全新的事件(seq:7)先被直播广播到
     t.emitDown({ t: "event", event: chatMsg(7) });
@@ -209,7 +209,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true });
     expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
 
@@ -223,7 +223,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: false });
     expect(h.statuses.some((s) => s.state === "ready")).toBe(false);
   });
@@ -240,7 +240,7 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" , repo: null });
 
     t.emitDown({ t: "event", event: chatMsg(5) }); // 还没 ready：进 liveBuffer
     expect(h.events).toHaveLength(0);
@@ -268,7 +268,7 @@ describe("createCloudSessionClient — 终审 C1：ready 后不重绑 hostCid", 
     const t = h.transports[0]!;
     t.emitPeer(); // HOST_CID
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready
     expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
 
@@ -295,7 +295,7 @@ describe("createCloudSessionClient — approval_request / approval_decision", ()
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready，事件才走直发路径
     return { h, t };
   }
@@ -360,7 +360,7 @@ describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理"
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true });
 
     t.emitGone();
@@ -378,7 +378,7 @@ describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理"
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" , repo: null });
     t.emitDown({ t: "backlog", events: [approvalRequestEvent(0)], done: true });
     expect(h.approvalRequests).toHaveLength(1);
 
@@ -388,7 +388,7 @@ describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理"
     // host 回来，同一个 approval_request（还没被任何人决定）原样再拉一遍
     t.emitPeer("host-cid-2");
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" }, "host-cid-2");
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" , repo: null }, "host-cid-2");
     t.emitDown({ t: "backlog", events: [approvalRequestEvent(0)], done: true }, "host-cid-2");
 
     expect(h.approvalRequests).toHaveLength(2); // 重新挂回去了，不是永久消失
@@ -400,7 +400,7 @@ describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理"
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [chatMsg(0)], done: true });
     expect(h.events).toHaveLength(1);
 
@@ -411,7 +411,7 @@ describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理"
     t.emitPeer("host-cid-2");
     await tick();
     expect(h.statuses[h.statuses.length - 1]!.state).toBe("connecting");
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" }, "host-cid-2");
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null }, "host-cid-2");
     t.emitDown({ t: "backlog", events: [chatMsg(0)], done: true }, "host-cid-2");
 
     expect(h.events).toHaveLength(2); // seenSeqs 已被 gone 清空，这次原样再送一次
@@ -476,7 +476,7 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true });
     return { h, t };
   }
@@ -527,10 +527,76 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
 
   it("config：workspaceId 匹配时正常发送，pat 省略时帧里不带 pat", async () => {
     const { h, t } = await ready();
-    await h.client.config("w1", "https://example.com/repo.git");
+    const pending = h.client.config("w1", "https://example.com/repo.git");
     const last = t.decoded()[t.decoded().length - 1];
     expect(last).toEqual({ t: "config", repoUrl: "https://example.com/repo.git" });
     expect(last && "pat" in last).toBe(false);
+    // issue #834：现在要等服务端回执才算数
+    t.emitDown({ t: "config_result", ok: true, repo: { url: "https://example.com/repo.git", hasPat: false, clone: null } });
+    expect(await pending).toEqual({ ok: true, value: null });
+  });
+
+  // ── issue #834：config 的回执 / 读路径 ────────────────────────────────
+  // 在这之前 config() 回 ok 只证明"本地 encode 没抛异常"——连帧有没有交给
+  // 网络层都不保证（#829：wsTransport.send 有三条静默丢帧分支，其中一条
+  // 正是"正在自动重连"这个完全正常的窗口）。owner 看到"已保存"，下次工具
+  // 调用照旧用老配置去 clone，没有任何信号。
+
+  it("config：服务端回 ok:false → 带着服务端的理由失败，不是「已保存」", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.config("w1", "https://example.com/repo.git");
+    t.emitDown({ t: "config_result", ok: false, message: "云沙箱只支持 https://", repo: null });
+    expect(await pending).toEqual({ ok: false, message: "云沙箱只支持 https://" });
+  });
+
+  it("config：回执到达之前不 resolve——「已保存」必须等服务端说话", async () => {
+    const { h } = await ready();
+    let settled = false;
+    void h.client.config("w1", "https://example.com/repo.git").then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(settled).toBe(false);
+  });
+
+  it("config：本地就能判死的地址不发帧，直接回失败（省一次明知会被拒的往返）", async () => {
+    const { h, t } = await ready();
+    const before = t.decoded().length;
+    const r = await h.client.config("w1", "git@github.com:acme/widgets.git");
+    expect(r.ok).toBe(false);
+    expect(t.decoded().length).toBe(before); // 一帧都没发
+  });
+
+  it("config：等回执期间连接断了 → 就地结掉，不让「保存中…」永远转下去", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.config("w1", "https://example.com/repo.git");
+    t.emitGone();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("不确定");
+  });
+
+  it("welcome 带的 repo 进 status 推送——任何人一 join 就看得见仓库状态", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome",
+      v: CS_PROTOCOL_VERSION,
+      sessionId: "cloud-s1",
+      lastSeq: -1,
+      initiatorUid: null,
+      ownerUid: "u2",
+      repo: { url: "https://example.com/repo.git", hasPat: true, clone: { kind: "cloned", text: "仓库克隆成功", at: 1 } },
+    });
+    const last = h.statuses[h.statuses.length - 1];
+    expect(last?.repo).toEqual({
+      url: "https://example.com/repo.git",
+      hasPat: true,
+      clone: { kind: "cloned", text: "仓库克隆成功", at: 1 },
+    });
   });
 
   it("say.text 超 64KiB：encodeCs 抛错被 client 接住，回 ok:false 而不是抛出", async () => {
@@ -551,7 +617,7 @@ describe("createCloudSessionClient — create", () => {
     await tick();
 
     expect(t.decoded()).toEqual([
-      { t: "hello", v: 1, jwt: "token-abc" },
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
       { t: "create", workspaceId: "w1" },
     ]);
 
@@ -597,7 +663,7 @@ describe("createCloudSessionClient — create", () => {
 
     expect(t.sent.every((s) => s.to === "first-cid")).toBe(true);
     expect(t.decoded()).toEqual([
-      { t: "hello", v: 1, jwt: "token-abc" },
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
       { t: "create", workspaceId: "w1" },
     ]);
 
@@ -634,7 +700,7 @@ describe("createCloudSessionClient — activeSummary()", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" , repo: null });
     // ts:5000 是一个"很久以前"的历史事件（远小于当下的 Date.now()）——这条
     // 用例专门钉住第一版 fix 的一个回归：那版用 Date.now() 占位再 Math.max，
     // join() 那一刻的"此刻"会变成一个历史事件抬不动的下限，5000 会被吞掉，
@@ -658,7 +724,7 @@ describe("createCloudSessionClient — activeSummary()", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true }); // 空 backlog：一条事件都没有
 
     const before = Date.now();
@@ -684,7 +750,7 @@ describe("createCloudSessionClient — activeSummary()", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true }); // ready
 
     await h.client.leave();
@@ -706,7 +772,7 @@ describe("createCloudSessionClient — activeSummary()", () => {
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
-    t.emitDown({ t: "welcome", v: 1, sessionId: "s-old", lastSeq: -1, initiatorUid: null, ownerUid: "u2" });
+    t.emitDown({ t: "welcome", v: 1, sessionId: "s-old", lastSeq: -1, initiatorUid: null, ownerUid: "u2" , repo: null });
     t.emitDown({ t: "backlog", events: [], done: true });
 
     await h.client.join("w1", "s-new");

@@ -40,6 +40,7 @@ function makeDeps(config: {
   createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
   ownerOf?: (workspaceId: string) => Promise<string>;
   saveConfig?: FrameHandlerDeps["saveConfig"];
+  repoState?: FrameHandlerDeps["repoState"];
   dropCid?: FrameHandlerDeps["dropCid"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[] } {
   const sent: Sent[] = [];
@@ -54,6 +55,7 @@ function makeDeps(config: {
       ownerOf: config.ownerOf ?? (async () => "owner-uid"),
     },
     saveConfig: config.saveConfig ?? (async () => {}),
+    repoState: config.repoState ?? (() => null),
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
   };
@@ -117,6 +119,7 @@ describe("createFrameHandler", () => {
         lastSeq: 7,
         initiatorUid: "u1",
         ownerUid: "owner-uid",
+        repo: null, // 没配仓库（issue #834：welcome 现在带这一格）
       },
     });
   });
@@ -153,6 +156,75 @@ describe("createFrameHandler", () => {
     expect(saveConfigCalls).toEqual([
       { workspaceId: "w1", cfg: { repoUrl: "https://example.com/repo.git", pat: "secret-pat" } },
     ]);
+    // issue #834：存成功要回执，不再静默
+    expect(sent.at(-1)).toEqual({ cid: "cOwner", msg: { t: "config_result", ok: true, repo: null } });
+  });
+
+  // ── issue #834：服务端自己校验 + 回执 ────────────────────────────────
+  // 校验只在渲染层是不够的：那份的定位是"提交前的早期 UX 提示"（文件头
+  // 写着），一个改造过的客户端能直接发 `ext::sh -c ...` 上来，那是 git 的
+  // 一种传输，会以 root 在容器里跑起来。
+
+  it("③b config：地址过不了服务端校验 → 回 config_result ok:false，saveConfig 一次都不调", async () => {
+    const saveConfigCalls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "owner-uid",
+      saveConfig: async (workspaceId, cfg) => {
+        saveConfigCalls.push({ workspaceId, cfg });
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
+    sent.length = 0;
+
+    for (const repoUrl of ["ext::sh -c whoami", "git@github.com:acme/x.git", "https://tok@github.com/a/b.git"]) {
+      await handler.onSessionFrame("w1", "s1", "cOwner", encodeCs({ t: "config", repoUrl }));
+    }
+
+    expect(saveConfigCalls).toHaveLength(0);
+    expect(sent).toHaveLength(3);
+    for (const s of sent) {
+      expect(s.msg.t).toBe("config_result");
+      expect(s.msg).toMatchObject({ ok: false });
+    }
+  });
+
+  it("③c config：saveConfig 抛异常 → 也回执（以前只冒到 daemon 的 .catch 记一行日志，按钮照样说已保存）", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "owner-uid",
+      saveConfig: async () => {
+        throw new Error("EACCES: 落盘失败");
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
+    sent.length = 0;
+
+    await handler.onSessionFrame(
+      "w1",
+      "s1",
+      "cOwner",
+      encodeCs({ t: "config", repoUrl: "https://example.com/repo.git" })
+    );
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "config_result", ok: false });
+    expect((sent[0]!.msg as { message: string }).message).toContain("EACCES");
+  });
+
+  it("③d welcome 带 repoState——任何成员一 join 就看得见仓库状态，不必是 owner", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "owner-uid",
+      repoState: () => ({ url: "https://example.com/repo.git", hasPat: true, clone: null }),
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "cMember", hello(CS_PROTOCOL_VERSION, "jwt:member-uid"));
+
+    expect(sent.at(-1)!.msg).toMatchObject({
+      t: "welcome",
+      repo: { url: "https://example.com/repo.git", hasPat: true, clone: null },
+    });
   });
 
   it("④ say 落到 sessions.get(...).say 且带 label（hello 时缓存的那份，不是每次现查）", async () => {
