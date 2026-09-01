@@ -74,7 +74,7 @@ function desktopTransport(relay: ReturnType<typeof fakeRelay>): RemoteTransport 
   let onPeer: (cid: string) => void = () => {};
   relay.attach("desktop", (p, from) => onMsg(p, from), (cid) => onPeer(cid));
   return {
-    send(p) { relay.send("desktop", p); },
+    send(p) { relay.send("desktop", p); return true; },
     onMessage(cb) { onMsg = cb; },
     onPeer(cb) { onPeer = cb; },
     onGone() { /* 这一组不测对端离场 */ },

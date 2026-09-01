@@ -80,13 +80,19 @@ console.log(`[runtime-deploy] 写好 ${OUTFILE}`);
 // ── ② deploy-package.json：只含两个原生件，版本从根 package.json 现读 ──────
 // 现读而不是写死：根 package.json 升级 better-sqlite3/dockerode 版本时，
 // 这份瘦身清单不该在这再手动同步一遍——同一个事实只留一处（根 package.json）。
+//
+// **dependencies 与 devDependencies 都认**（issue #820）：桌面一行都不 import
+// dockerode，而 electron-builder 隐式把生产依赖整个打进 DMG——只认
+// dependencies 的话，这个脚本就成了「dockerode 必须留在 dependencies 里」的
+// 硬约束，逼着桌面安装包一直背着 dockerode/docker-modem/ssh2。这台 VPS 的
+// `npm install` 只看这份生成出来的清单，dep 在根里挂哪一栏与它无关。
 const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
 const NATIVE_DEPS = ["better-sqlite3", "dockerode"];
 const deployDeps = {};
 for (const dep of NATIVE_DEPS) {
-  const version = rootPkg.dependencies?.[dep];
+  const version = rootPkg.dependencies?.[dep] ?? rootPkg.devDependencies?.[dep];
   if (!version) {
-    console.error(`[runtime-deploy] 根 package.json 的 dependencies 里没有 ${dep}，deploy-package.json 生不出来`);
+    console.error(`[runtime-deploy] 根 package.json 里没有 ${dep}（dependencies/devDependencies 都没有），deploy-package.json 生不出来`);
     process.exit(1);
   }
   deployDeps[dep] = version;

@@ -152,6 +152,32 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     ).toEqual([]);
   });
 
+  // issue #820：electron-builder **隐式**把 dependencies 整个打进 DMG，而
+  // 桌面一行都不 import dockerode（src/world/dockerWorld.ts 只收注入的
+  // ContainerLike，零 dockerode import）——它只有 services/runtime 那个
+  // 跑在 VPS 上的 daemon 用。留在 dependencies 里的代价是每个用户的安装包
+  // 里多背一套 dockerode/docker-modem/ssh2，而 ssh2 的可选原生件
+  // cpu-features 与 mac 的 npmRebuild 有交互风险，门禁又跑不到 dist:mac。
+  // 挪走一次不够：下一次 `npm i dockerode` 会默认写回 dependencies，
+  // 而这件事没有任何症状——只有用户的下载体积变大。
+  it("dockerode 不在 dependencies 里 —— 桌面不 import 它，别打进 DMG", () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    expect(
+      pkg.dependencies?.dockerode,
+      "dockerode 回到了 dependencies（大概率是一次 `npm i dockerode` 的默认行为）。" +
+        "修法：挪进 devDependencies —— 它只服务 services/runtime 的 VPS daemon，" +
+        "而 scripts/runtime-deploy.mjs 两栏都认（issue #820）"
+    ).toBeUndefined();
+    expect(
+      pkg.devDependencies?.dockerode,
+      "dockerode 从 devDependencies 里没了 —— services/runtime 的 daemon import 它，" +
+        "tsc 会红。要删的话先把 daemon 那条 import 一起处理掉"
+    ).toBeTruthy();
+  });
+
   it("移动端复用的那批 src/session 文件不 import node builtin", () => {
     // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
     // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,

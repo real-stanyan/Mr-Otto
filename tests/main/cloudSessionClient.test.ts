@@ -24,10 +24,20 @@ function fakeTransport() {
   let onGoneCb: (cid: string) => void = () => {};
   let onCloseCb: () => void = () => {};
   const closeSpy = vi.fn();
+  // issue #829：真 wsTransport 的 send 有四条不抛异常的丢帧路径（连接关了 /
+  // 没有收件人 / socket 还没 open，含正在自动重连的窗口 / sock.send 抛错）。
+  // 假传输默认"发得出去"，测试用 dropFrames() 切到那一侧
+  let sendOk = true;
   return {
     sent,
     send(p: string, to: string) {
+      if (!sendOk) return false; // 丢帧路径不记进 sent：真传输那几条也是发都没发
       sent.push({ payload: p, to });
+      return true;
+    },
+    /** 之后的每一次 send 都丢帧并回 false */
+    dropFrames() {
+      sendOk = false;
     },
     onMessage(cb: (p: string, from: string) => void) {
       onMsg = cb;
@@ -599,6 +609,31 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     });
   });
 
+  // ── issue #829：transport.send 的丢帧要说出口 ─────────────────────────
+  // 回执（#834）只覆盖 config 一条路：say/approve/archive 依然是"发出去就
+  // 算成功"。而 send 有四条不抛异常的丢帧路径，其中一条正是自动重连的窗口。
+
+  it("config：帧压根没发出去 → 立刻回失败，不是挂着等 15 秒回执超时", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.config("w1", "https://example.com/repo.git");
+    expect(r).toEqual({ ok: false, message: "连接不通，这一帧没发出去——稍后重试。" });
+  });
+
+  it("say：帧没发出去就不能回 ok —— 聊天丢一条人看得出，但别在这撒谎", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.say("在吗", true);
+    expect(r.ok).toBe(false);
+  });
+
+  it("approve：同上——审批是「用户点完就不再看」的那一类", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.approve("call-1", "approved");
+    expect(r.ok).toBe(false);
+  });
+
   it("say.text 超 64KiB：encodeCs 抛错被 client 接住，回 ok:false 而不是抛出", async () => {
     const { h } = await ready();
     const r = await h.client.say("x".repeat(65 * 1024), false);
@@ -646,6 +681,22 @@ describe("createCloudSessionClient — create", () => {
     const r = await h.client.create("w1");
     expect(r).toEqual({ ok: false, message: "还没登录" });
     expect(h.transports).toHaveLength(0);
+  });
+
+  // issue #829：hello/create 掉在丢帧路径上时，原来要白等满
+  // CS_CREATE_TIMEOUT_MS 才回一句"云端无响应"——把"我们没发出去"说成
+  // "对面没回话"，人会去查 VPS
+  it("hello/create 没发出去 → 当场失败，不等超时，也不说成「云端无响应」", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.dropFrames();
+    t.emitPeer();
+    await tick();
+    const r = await promise;
+    expect(r).toEqual({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
+    expect(t.close).toHaveBeenCalledTimes(1);
   });
 
   // 终审 C1：控制房没有 ready 概念可以把关（不像 join() 的会话房），

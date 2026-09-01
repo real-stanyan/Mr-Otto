@@ -41,7 +41,7 @@
 // 新造。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, AtSign } from "lucide-react";
+import { Archive, ArrowLeft, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
@@ -132,6 +132,15 @@ export function CloudSessionPage({
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
+  const cloudArchive = useChat((s) => s.cloudArchive);
+  // 建这条会话的人（issue #822）：清单那一行本来就带 publisherUid，不用为
+  // 这个再往协议里加字段。清单还没拉到时查不到 → 按钮不显示（服务端才是
+  // 判据，这里少显示一颗按钮的代价远小于显示一颗按了被拒的）
+  const creatorUid = useChat((s) =>
+    s.cloudSession
+      ? s.cloudSessionList[s.cloudSession.workspaceId]?.find((r) => r.id === s.cloudSession?.sessionId)?.publisherUid
+      : undefined
+  );
   // 发送/审批失败落这一格（复审 Medium：这条错误此前只在 WorkspacePage
   // 原来那条 return 路径里渲染，云会话走的是提前 return，根本到不了）
   const actionError = useChat((s) => s.workspaceGroupsError);
@@ -214,7 +223,29 @@ export function CloudSessionPage({
           <ArrowLeft className="size-[13px]" aria-hidden />
           {ws.name}
         </button>
-        <CloudRepoConfigEntry isOwner={selfUid === cs.ownerUid} ready={ready} repo={cs.repo} />
+        <div className="flex items-center gap-1.5">
+          {/* 收尾（issue #822）。云端没有"恢复归档"那一半（daemon 启动只捞
+              archived=false 的会话重开房间），所以先问一句——同侧栏「删除
+              会话」、踢人那几处的原生 confirm，不新造一套视觉语言 */}
+          {ready && (selfUid === cs.ownerUid || selfUid === creatorUid) && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!window.confirm("归档这条云会话？群里所有人都会看到它收尾，之后不能再发言，也不能恢复。")) return;
+                void cloudArchive();
+              }}
+              className={cn(
+                "press-scale inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
+                "text-[12.5px] text-muted-foreground transition-colors duration-150",
+                "hover:bg-foreground/[0.06] hover:text-foreground"
+              )}
+            >
+              <Archive className="size-[13px]" aria-hidden />
+              归档
+            </button>
+          )}
+          <CloudRepoConfigEntry isOwner={selfUid === cs.ownerUid} ready={ready} repo={cs.repo} />
+        </div>
       </div>
 
       {banner && (

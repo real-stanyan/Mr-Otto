@@ -32,6 +32,10 @@ export interface CloudSessionOpts {
   world: ExecutionWorld; // DockerWorld
   adapter: ModelAdapter; // daemon 用 env 造好并包 usage
   px: PxCallDeps;
+  /** 建这条会话的人（workspace_sessions.publisher_uid）。归档权限用它——
+      owner 或建的人才能收尾（issue #822）。daemon 给：create 时是 byUid，
+      重启恢复房间时从那张表现读 */
+  createdByUid: string;
   /** 这条云会话所在工作区此刻的成员（= 可借代理服务的 host 候选）。
       daemon 给；每 turn 起跑前现取一次（成员变化下一 turn 生效） */
   hostUids: () => Promise<string[]>;
@@ -47,15 +51,34 @@ export interface CloudSession {
   isRunning(): boolean;
   lastSeq(): number;
   initiatorUid(): string | null;
+  /** 建这条会话的人。frameHandler 用它判归档权限（issue #822） */
+  createdByUid(): string;
+  /** 日志里已经有 session_archived 了吗（issue #822）。**日志是事实，
+      Supabase 那一列只是缓存**：写库那步失败过的话，那一行会停在
+      archived=false，daemon 下次启动就把一条已经收尾的会话重新开出房间。
+      启动时按这个判据兜一道 */
+  isArchived(): boolean;
+  /** 收尾（issue #822）：往日志里落一条系统发言 + 一条 session_archived。
+      false = 已经归档过了（幂等，不重复落第二条）。
+      **只管日志这一半**：Supabase 那行的 archived 列、房间的关闭，都归
+      daemon（它才有 supabase 句柄和 transport）——同这个文件里其余部分
+      的分工，纯逻辑不碰 IO。 */
+  archive(byLabel: string): boolean;
 }
 
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
   const coordinator = createTurnCoordinator();
 
-  // 起点从已有日志播种（resume 场景：daemon 可能拿一条有历史的会话来装配）
-  let lastSeqSeen = store.load(sessionId).at(-1)?.seq ?? -1;
+  // 起点从已有日志播种（resume 场景：daemon 可能拿一条有历史的会话来装配）。
+  // **一次 load 推两件事**：末条 seq 与归档状态——它们是同一份日志的两个
+  // 投影，读两遍只是把同一段 IO 做两次
+  const seed = store.load(sessionId);
+  let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   let currentInitiator: string | null = null;
+  // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
+  // 归档那一半，所以只看有没有 session_archived
+  let archived = seed.some((e) => e.type === "session_archived");
   let cachedPxTools: Tool[] = [];
 
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
@@ -163,6 +186,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     initiatorUid() {
       return currentInitiator;
+    },
+
+    createdByUid() {
+      return opts.createdByUid;
+    },
+
+    isArchived() {
+      return archived;
+    },
+
+    archive(byLabel) {
+      if (archived) return false;
+      archived = true;
+      // 先说一句人话再落状态事件：群里其他人只看到会话消失是很糟的体验，
+      // 而 session_archived 自己没有"谁干的"这个字段（ADR-0087 的形状，
+      // 单机时代不需要）。走 chat_message 与 clone 结果通报同一条路
+      // （daemon 的 notifyWorkspace）——客户端不必为"系统消息"另做一套。
+      notify(store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "chat_message",
+        fromUid: "system",
+        label: "系统",
+        content: `${byLabel} 归档了这条会话。`,
+        mention: false,
+      }));
+      // reason:"user" 而不是 "system"：这是人点的，日志里要能跟系统保留
+      // 会话那种区分开（events.ts 的字段注释：user 仍可被跨会话召回）
+      notify(store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "user" }));
+      return true;
     },
   };
 }

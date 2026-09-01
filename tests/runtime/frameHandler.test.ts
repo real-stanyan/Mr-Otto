@@ -21,6 +21,9 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     isRunning: () => false,
     lastSeq: () => -1,
     initiatorUid: () => null,
+    createdByUid: () => "creator-uid",
+    archive: () => true,
+    isArchived: () => false,
     ...overrides,
   };
 }
@@ -39,9 +42,13 @@ function makeDeps(config: {
   getSession?: (workspaceId: string, sessionId: string) => CloudSession | null;
   createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
   ownerOf?: (workspaceId: string) => Promise<string>;
+  archiveSession?: FrameHandlerDeps["sessions"]["archive"];
   saveConfig?: FrameHandlerDeps["saveConfig"];
   repoState?: FrameHandlerDeps["repoState"];
   dropCid?: FrameHandlerDeps["dropCid"];
+  /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
+      传一个只对某几档说 false 的假货 */
+  rateLimit?: FrameHandlerDeps["rateLimit"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -53,9 +60,11 @@ function makeDeps(config: {
       get: config.getSession ?? (() => fakeSession()),
       create: config.createSession ?? (async () => ({ sessionId: "new-session" })),
       ownerOf: config.ownerOf ?? (async () => "owner-uid"),
+      archive: config.archiveSession ?? (async () => true),
     },
     saveConfig: config.saveConfig ?? (async () => {}),
     repoState: config.repoState ?? (() => null),
+    rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
   };
@@ -498,5 +507,174 @@ describe("onSessionFrame 的 backlog 分片接线（终审 C2）", () => {
 
     const merged = backlogSent.flatMap((m) => m.events).map((e) => e.seq);
     expect(merged).toEqual([0, 1, 2]); // 合并后 seq 连续、不重不丢
+  });
+});
+
+// issue #819：过渡期烧的是维护者的模型 key，而 say / turn 触发 / create
+// 三条路一道闸都没有。闸门本身的逻辑在 rateLimit.test.ts，这里验的是接线：
+// 拒绝**看得见**（不静默丢），且会话房与控制房用的是两种不同的回执。
+describe("限流接线（issue #819）", () => {
+  const denying = (deniedKinds: string[]): FrameHandlerDeps["rateLimit"] => ({
+    allow: (kind) => !deniedKinds.includes(kind),
+  });
+
+  it("say 超速 → 回一条看得见的 error 帧，且不落到 CloudSession.say", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    const { deps, sent } = makeDeps({ getSession: () => session, rateLimit: denying(["say"]) });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "刷屏", mention: false }));
+
+    expect(sayCalls).toHaveLength(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg.t).toBe("error");
+  });
+
+  it("会话房里限速回 error 不回 denied —— 客户端把 denied 当终态会直接断连接", async () => {
+    const { deps, sent } = makeDeps({ rateLimit: denying(["say", "turn"]) });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@Agent", mention: true }));
+    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
+  it("@Agent 走 turn 桶、普通发言走 say 桶 —— 一帧只记一个桶", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    // turn 桶空了，say 桶还有：普通发言照常放行，@Agent 被拦
+    const { deps, sent } = makeDeps({ getSession: () => session, rateLimit: denying(["turn"]) });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "闲聊", mention: false }));
+    expect(sayCalls).toHaveLength(1);
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@Agent 干活", mention: true }));
+    expect(sayCalls).toHaveLength(1); // 没再涨
+    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
+  it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {
+    const created: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      createSession: async (w, u) => { created.push([w, u]); return { sessionId: "s-new" }; },
+      rateLimit: denying(["create"]),
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }));
+
+    expect(created).toHaveLength(0);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "rate_limited" } }]);
+  });
+
+  it("在籍复查在限流**之前** —— 被踢的人拿到的是「你不在这了」，不是「慢一点」", async () => {
+    let member = true;
+    const { deps, sent } = makeDeps({
+      isMember: async () => member,
+      rateLimit: { allow: () => false }, // 三档全空，但它不该是第一个说话的
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false; // hello 之后被踢出工作区
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "x", mention: false }));
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "denied", code: "not_authorized" }]);
+  });
+});
+
+// issue #822：`archive` 分支原来是**显式 no-op**（CloudSession 没有 archive
+// 方法，deps 也没暴露）。链路上 cs_archive 帧 / ShellBridge / preload / IPC
+// 全通，只有服务端什么都不做——好在渲染层也一直没人调，没做出一个"点了
+// 没反应"的按钮。
+describe("归档（issue #822）", () => {
+  const sessionOf = (createdBy: string): CloudSession =>
+    fakeSession({ createdByUid: () => createdBy });
+
+  it("owner 可以归档 → 调到 sessions.archive，不回错", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => sessionOf("someone-else"),
+      ownerOf: async () => "u1",
+      archiveSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+
+    expect(calls).toEqual([["w1", "s1", "Label(u1)"]]);
+    expect(sent).toEqual([]); // 成功不回执：session_archived 广播给所有人，那就是回执
+  });
+
+  it("建这条会话的人也可以归档（不是只有 owner）", async () => {
+    const calls: unknown[] = [];
+    const { deps } = makeDeps({
+      getSession: () => sessionOf("u1"),
+      ownerOf: async () => "someone-else",
+      archiveSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("既不是 owner 也不是建的人 → not_authorized，不落归档（云端没有恢复归档那一半）", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => sessionOf("someone-else"),
+      ownerOf: async () => "another-one",
+      archiveSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  it("已经归档过了 → 回一条看得见的 error，不假装成功", async () => {
+    const { deps, sent } = makeDeps({
+      getSession: () => sessionOf("u1"),
+      ownerOf: async () => "u1",
+      archiveSession: async () => false,
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
+  it("被踢出工作区的人归档不了 —— 在籍复查在权限判断之前", async () => {
+    let member = true;
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      isMember: async () => member,
+      getSession: () => sessionOf("u1"),
+      ownerOf: async () => "u1",
+      archiveSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false;
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 });

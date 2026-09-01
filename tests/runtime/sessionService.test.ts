@@ -38,6 +38,7 @@ describe("createCloudSession", () => {
       workspaceId: "w1",
       sessionId: "s1",
       ownerUid: "owner",
+      createdByUid: "creator",
       store,
       world: fakeWorld,
       adapter,
@@ -83,6 +84,7 @@ describe("createCloudSession", () => {
       workspaceId: "w1",
       sessionId: "s1",
       ownerUid: "owner",
+      createdByUid: "creator",
       store,
       world: fakeWorld,
       adapter,
@@ -132,6 +134,7 @@ describe("createCloudSession", () => {
       workspaceId: "w1",
       sessionId: "s1",
       ownerUid: "owner",
+      createdByUid: "creator",
       store,
       world: fakeWorld,
       adapter,
@@ -189,6 +192,7 @@ describe("createCloudSession", () => {
       workspaceId: "w1",
       sessionId: "s1",
       ownerUid: "owner",
+      createdByUid: "creator",
       store,
       world: fakeWorld,
       adapter,
@@ -203,6 +207,74 @@ describe("createCloudSession", () => {
     expect(approveResults).toEqual([true, false]);
     const decision = events.find((e) => e.type === "approval_decision");
     expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
+    store.close();
+  });
+});
+
+// issue #822：归档的日志那一半（Supabase 那行的 archived 列与房间收摊在
+// daemon 里——这一层只碰日志）
+describe("CloudSession.archive（issue #822）", () => {
+  const openSession = (store: ReturnType<typeof newStore>, events: SessionEvent[]) =>
+    createCloudSession({
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      adapter: { model: "fake-model", async chat() { return { content: "" }; } },
+      px,
+      hostUids: async () => [],
+      onEvent: (e) => events.push(e),
+      onUsage: () => {},
+    });
+
+  it("落一条人话 + 一条 session_archived，两条都推给房里的人", () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openSession(store, events);
+
+    expect(session.archive("alice")).toBe(true);
+
+    expect(events.map((e) => e.type)).toEqual(["chat_message", "session_archived"]);
+    // 谁干的：session_archived 自己没有这个字段（ADR-0087 的形状，单机
+    // 时代不需要），所以要有那条人话，否则群里其他人只看到会话消失
+    expect(events[0]).toMatchObject({ type: "chat_message", fromUid: "system" });
+    expect((events[0] as { content: string }).content).toContain("alice");
+    // reason:"user"——人点的，跟系统保留会话那种区分开
+    expect(events[1]).toMatchObject({ type: "session_archived", reason: "user" });
+    expect(session.lastSeq()).toBe(events[1]!.seq);
+    store.close();
+  });
+
+  it("第二次归档回 false，不重复落事件（幂等）", () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openSession(store, events);
+    session.archive("alice");
+    events.length = 0;
+
+    expect(session.archive("bob")).toBe(false);
+    expect(events).toEqual([]);
+    store.close();
+  });
+
+  it("装配时从已有日志播种归档状态 —— daemon 重启后不会把已归档的又归一次", () => {
+    const store = newStore();
+    const first: SessionEvent[] = [];
+    const session = openSession(store, first);
+    expect(session.isArchived()).toBe(false);
+    session.archive("alice");
+    expect(session.isArchived()).toBe(true);
+
+    // 同一份日志重新装配一条会话（daemon 重启恢复房间的形态）
+    const second: SessionEvent[] = [];
+    const revived = openSession(store, second);
+    // 日志是事实：Supabase 那列写失败过的话，daemon 会拿着 archived=false
+    // 的一行走到这里，靠这个判据兜住（daemon 启动时据此当场收摊 + 补写）
+    expect(revived.isArchived()).toBe(true);
+    expect(revived.archive("bob")).toBe(false);
+    expect(second).toEqual([]);
     store.close();
   });
 });

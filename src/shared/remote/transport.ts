@@ -29,13 +29,25 @@
 export interface RemoteTransport {
   /**
    * 发一帧给**某一条**对端连接。对端不在线不是错误(中继直接丢弃,不排队),
-   * 连接没开也不是——两种都由实现自己吞掉,桥不关心。
+   * 连接没开也不是——两种都不抛异常、不触发 onClose,桥不必为它们准备退路。
+   *
+   * **回 boolean(issue #829)**:`true` = 这一帧已经交给了本机的 socket;
+   * `false` = 压根没发出去(连接关了/没有收件人/socket 还没 open,含**正在
+   * 自动重连**那个完全正常的窗口)。它**不是送达确认**——中继收没收到、
+   * 对端解没解开,这一层都不知道。
+   *
+   * 大多数调用方照旧忽略这个返回值:聊天/投影帧丢一条,人看得出来,而
+   * 重连后中继会重发 `:peer`,下一轮自会补上。**需要它的是那些"用户点完
+   * 就不再看"的写操作**——云会话的仓库配置是第一个(cloudSessionClient
+   * 的 config):点了保存、看到"已保存",没人会再回来确认,而帧可能连本机
+   * 的 socket 都没进。先例是 proxyConnection 的 `sendSealed`(ADR-0167,
+   * 那里是单帧超限不发,同样回 boolean)。
    *
    * `to` 是中继编的连接 id(ADR-0130),从 onPeer 拿到。**必须寻址、不能广播**:
    * 每条连接有自己一套会话密钥,广播过去的帧在别人那儿解不开,
    * 而 sealedStream 还带计数器校验 —— 收到别人的帧会被判成异常而不是无害的噪音。
    */
-  send(payload: string, to: string): void;
+  send(payload: string, to: string): boolean;
   /** from = 发件人的 cid(中继在帧头给的,见 wire.ts 的 encodeFrame)。
       老中继给不出,是空串 */
   onMessage(cb: (payload: string, from: string) => void): void;

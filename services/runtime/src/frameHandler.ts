@@ -26,6 +26,7 @@ import {
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { throttleMessage, type FrameRateLimiter } from "./rateLimit.js";
 import type { CloudSession } from "./sessionService.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
@@ -116,6 +117,10 @@ export interface FrameHandlerDeps {
     get(workspaceId: string, sessionId: string): CloudSession | null;
     create(workspaceId: string, byUid: string): Promise<{ sessionId: string }>;
     ownerOf(workspaceId: string): Promise<string>;
+    /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
+        Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
+        只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
+    archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
   saveConfig: (workspaceId: string, cfg: { repoUrl: string; pat?: string }) => Promise<void>;
   /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
@@ -123,6 +128,11 @@ export interface FrameHandlerDeps {
       看不到任何反馈，别的成员更是永远不知道仓库配没配、拉没拉下来。
       **实现必须保证不下发 token 本身**（只回 hasPat 布尔） */
   repoState: (workspaceId: string) => CsRepoState | null;
+  /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
+      模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
+      靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
+      几条连接就能多刷几次"。构造见 rateLimit.ts 的 createFrameRateLimiter */
+  rateLimit: FrameRateLimiter;
   send: (cid: string, msg: CsDown) => void;
   /** 复审补漏：踢人只清 frameHandler 自己的验籍表（cids）是不够的——daemon.ts
       的实时广播走另一张表（roomRosters，只在 transport.onGone 时才清），
@@ -225,6 +235,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
+      // 建会话是低频动作，但每条 = 一行 Supabase + 一个常驻 WebSocket 房间 +
+      // 一份 EventStore（issue #819）。控制房里用 denied 而不是 error 帧：
+      // create() 只认 created/denied 两种回执，回 error 等于让它白等满超时
+      if (!deps.rateLimit.allow("create", entry.uid)) {
+        deny(cid, "rate_limited");
+        return;
+      }
+
       const { sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid);
       deps.send(cid, {
         t: "created",
@@ -283,10 +301,21 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       }
 
       switch (msg.t) {
-        case "say":
+        case "say": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 一帧只记一个桶（issue #819）：@Agent 的那条走 turn 桶（每条都
+          // 可能起一次真花钱的模型调用），普通发言走 say 桶（撑大的是 VPS
+          // 的 SQLite）。超速**不静默丢**——回一条看得见的 error 帧，
+          // 客户端把它显示给发送者本人（会话房里不能回 denied：客户端把
+          // denied 当终态，会直接断掉这条连接，而限速是"待会儿再来"）
+          const kind = msg.mention ? "turn" : "say";
+          if (!deps.rateLimit.allow(kind, entry.uid)) {
+            deps.send(cid, { t: "error", msg: throttleMessage(kind) });
+            return;
+          }
           await session.say(entry.uid, entry.label, msg.text, msg.mention);
           return;
+        }
 
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
@@ -348,11 +377,25 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
-        case "archive":
-          // 归档目前没有对应的能力面（CloudSession 没有 archive 方法，
-          // FrameHandlerDeps 也没暴露）——已过 hello + session 存在即算
-          // 通过，不做进一步动作。真正落盘 session_archived 留给后续任务接。
+        case "archive": {
+          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 谁能收尾（issue #822）：**owner 或建这条会话的人**。云端没有
+          // "恢复归档"那一半（daemon 启动只捞 archived=false 的房间重开），
+          // 所以这是个不可逆动作，不能让任意成员替所有人按下去。判据在
+          // 服务端，客户端那颗按钮的显隐只是 UX——渲染层不是安全边界
+          const ownerUid = await deps.sessions.ownerOf(workspaceId);
+          if (entry.uid !== ownerUid && entry.uid !== session.createdByUid()) {
+            deny(cid, "not_authorized");
+            return;
+          }
+          const done = await deps.sessions.archive(workspaceId, sessionId, entry.label);
+          // 成功不回执：session_archived 事件本身会广播给房里每个人，那就是
+          // 回执（而且是所有人都看得见的那一份）。只有"没生效"才需要单独说
+          if (!done) {
+            deps.send(cid, { t: "error", msg: "归档没有生效：这条会话可能已经归档了。" });
+          }
           return;
+        }
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
         default:

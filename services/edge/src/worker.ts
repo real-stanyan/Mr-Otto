@@ -48,11 +48,14 @@ export interface Env {
   ESCROW: DurableObjectNamespace<Escrow>;
 }
 
-/** getWebSockets() 回来的连接 + 它的两个 tag */
+/** getWebSockets() 回来的连接 + 它的三个 tag */
 interface Live {
   ws: WebSocket;
   cid: string;
   role: RelayRole;
+  /** 连接计数桶（issue #824）：edge.ts 的 connCountKey 算好递下来的
+      「同一个人在这个房间里」的分组键。不是身份——DO 拿它只能数数 */
+  ck: string;
   open: boolean;
 }
 
@@ -72,9 +75,12 @@ export class Relay extends DurableObject<Env> {
   private live(): Live[] {
     const out: Live[] = [];
     for (const ws of this.ctx.getWebSockets()) {
-      const [rawRole, cid] = this.ctx.getTags(ws);
+      // 第三个 tag（ck）是后加的（issue #824）：部署那一刻还连着的老连接
+      // 没有它，`?? ""` 让它们落进同一个桶——与改之前的行为等价，且随着
+      // 那批连接断开自然消失
+      const [rawRole, cid, ck] = this.ctx.getTags(ws);
       const role = parseRole(rawRole ?? null);
-      if (role && cid) out.push({ ws, cid, role, open: ws.readyState === WebSocket.OPEN });
+      if (role && cid) out.push({ ws, cid, role, ck: ck ?? "", open: ws.readyState === WebSocket.OPEN });
     }
     return out;
   }
@@ -97,8 +103,15 @@ export class Relay extends DurableObject<Env> {
     // 从多台 VPS 并发连是合法的多实例形态,不是滥用信号。DO 自己不认识
     // userId,只认识 edge.ts 验完 secret 后打在转发请求里的这个显式标记
     const isSvcRuntime = params.get("svc") === "1";
+    const ck = params.get("ck") ?? "";
     const existing = this.live();
-    if (!isSvcRuntime && existing.length >= MAX_CONNS_PER_USER) {
+    // **按人数，不按房间总数**（issue #824）：这个上限的名字一直是
+    // "PER_USER"，但数的是房间里的连接总数——只有自远程那种"房间键就是
+    // userId"的房间里两者才碰巧相等。cs-ctl 是全平台一个固定房，于是它
+    // 变成了"全平台同时最多 16 条人类连接"，一个人握住 16 条 socket 就能
+    // 让所有人建不了云会话。ck 是 edge.ts 按 (房间, 用户) 算出来的不可逆
+    // 分桶键（见那里的注释）：DO 数的是"这个桶里已经有几条"
+    if (!isSvcRuntime && existing.filter((l) => l.ck === ck).length >= MAX_CONNS_PER_USER) {
       return new Response("too many connections", { status: 503 });
     }
 
@@ -106,8 +119,10 @@ export class Relay extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     // acceptWebSocket 而不是 server.accept():这一句就是休眠。连接由边缘代持,
     // DO 闲时出内存、不计时长,消息到达才重新构造出来。
-    // 两个 tag 的**顺序是约定**:[role, cid],live()/who() 按位置读
-    this.ctx.acceptWebSocket(server, [role, cid]);
+    // 三个 tag 的**顺序是约定**:[role, cid, ck],live()/who() 按位置读。
+    // ck 为空(没经过 edge.ts 的那条纵深路径)时不挂这个 tag——空串 tag 是
+    // 运行时的未定义地带,而"不挂"与改动之前的行为完全一致
+    this.ctx.acceptWebSocket(server, ck ? [role, cid, ck] : [role, cid]);
 
     // 先告诉它自己是谁 —— 发帧要带收件人,而它得先知道自己的 cid 才能被回信
     server.send(`${CTRL_CID} ${cid}`);

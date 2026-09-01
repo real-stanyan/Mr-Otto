@@ -459,6 +459,11 @@ export interface CloudSessionStatus {
       welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
       **不含 token 本身**，只有 hasPat 布尔 */
   repo: CsRepoState | null;
+  /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
+      失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
+      （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送
+      不带，所以渲染层拿到就显示，不用自己做去重 */
+  notice?: string;
 }
 
 export interface ShellBridge {

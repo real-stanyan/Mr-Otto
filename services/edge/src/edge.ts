@@ -87,6 +87,30 @@ function subprotocolToken(req: Request): string {
   return parts[1] ?? "";
 }
 
+/** 连接计数键（issue #824）。
+ *
+ * `MAX_CONNS_PER_USER` 这个名字一直在撒谎：DO 数的是**一个房间里的连接
+ * 总数**，只有自远程那种「房间键就是 userId」的房间里，两者才碰巧相等。
+ * `cs-ctl` 是全平台一个固定房（cloudSession.ts 的 csCtlChannel），于是
+ * 上限变成"全平台同时最多 16 条人类连接进控制房"——一个人握住 16 条
+ * socket，所有人都建不了云会话。
+ *
+ * 修法不是给 DO 一个 userId：好友代理房间的设计前提正是**中继不懂参与者
+ * 是谁**（ADR-0151，鉴权在握手层），把 uid 递下去等于顺手拆了它。给的是
+ * 一个**按房间加盐**的不可逆标记——同一个人在同一个房间里稳定相同，
+ * 跨房间互不关联，DO 拿它只能做一件事：数数。
+ *
+ * 64 bit 截断：同房间内两个不同用户撞上的后果只是"共用一个计数桶"，
+ * 不是越权，量级上也不会在这个规模出现。 */
+async function connCountKey(userId: string, roomKey: string): Promise<string> {
+  // 分隔符写成转义而不是真的敲一个 NUL 进源码：字面 NUL 会让 git 把整个
+  // 文件当二进制（没有 diff、没法 merge），而这一层要的只是「roomKey 和
+  // uid 拼不出歧义」——uid 里不可能出现它
+  const bytes = new TextEncoder().encode(`${roomKey}\u0000${userId}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> {
   const { config } = deps;
   const now = deps.now ?? (() => Date.now());
@@ -152,10 +176,14 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // 转发请求),所以豁免要靠这个显式标记带过去,由 worker.ts 的 Relay.fetch 读
     const svcFlag = who.userId === RUNTIME_SERVICE_UID ? "&svc=1" : "";
 
+    // 连接计数键（issue #824）：DO 按它分桶数连接数，见 connCountKey 的注释。
+    // 它不是身份，只是"同一个人在这个房间里的第几条"的分组依据
+    const ck = await connCountKey(who.userId, roomKey);
+
     // 转给 DO 的请求**不带 token**:验完就到此为止,DO 只需要知道 role。
     // 换一个干净的 Request 而不是原样转发 —— 原样转发等于把凭据再往下游递一层
     return deps.relay(roomKey).fetch(
-      new Request(`https://relay/connect?role=${role}${svcFlag}`, {
+      new Request(`https://relay/connect?role=${role}${svcFlag}&ck=${ck}`, {
         headers: { upgrade: "websocket" },
       })
     );
