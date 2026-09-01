@@ -6,6 +6,7 @@
 // markedTs（内存 + 注入的 orphans 存取器落盘），过 orphanGraceMs（默认 7 天）才真删——
 // 宽限期是留给"workspace 记录还没同步过来"这种误判空间，不是立刻判死刑。
 
+import { Writable } from "node:stream";
 import type { ContainerLike } from "../../../src/world/dockerWorld.js";
 
 /** dockerode 顶层句柄的最小注入面 */
@@ -37,7 +38,38 @@ export interface Sandbox {
   sweepIdle(runningWorkspaces: ReadonlySet<string>): Promise<string[]>; // 停掉的 workspaceId 列表；跑着 turn 的不停
   reconcile(validWorkspaceIds: ReadonlySet<string>): Promise<{ marked: string[]; removed: string[] }>;
   destroy(workspaceId: string): Promise<void>; // 容器+卷一起删（工作区删除级联）
+  /** 让下一次 ensure() 重新跑一次 clone 流程（不管上一次结果是成功/
+      失败/幂等跳过）——owner 纠正 cs_config 里的 repoUrl/PAT 之后如果
+      不调这个，cloneAttempts 缓存的结果会一直挡着，只有重启 daemon 才会
+      重新尝试，而且没有任何提示告诉 owner「你的修正没生效」（复审 I4）。
+      daemon.ts 的 saveConfig 落盘成功后调它。
+      **不会打断正在跑的 attempt**（复审二轮竞态修复）：只是标记"过期"，
+      真正的旧 attempt 该怎么跑完还怎么跑完（含它自己的凭据清理）；下一次
+      ensure() 会等它完全收尾之后才起新的 attempt，不是立刻并发起一个——
+      同一工作区可能有多个 session，跨 session 没有互斥，直接摘掉正在
+      pending 的缓存会让两个 attempt 同时动同一个容器/卷/凭据文件。 */
+  invalidateClone(workspaceId: string): void;
 }
+
+/** owner 经 cs_config 发来的工作区云配置（issue #821 slice 1）——落点见
+    daemon.ts 的 workspaceConfigStore，这里只描述 ensure() 消费它需要的形状 */
+export interface WorkspaceRepoConfig {
+  repoUrl: string;
+  pat?: string;
+}
+
+/** 一次 clone 尝试的结局。**`repoUrl` 字段从不是原始配置的 repoUrl，
+    永远是 `safeRepoLabel(...)` 的输出**（复审三轮：UI 侧"检测输入里有没
+    有藏凭据"这条路已经被绕过三次——全角 ＠ U+FF20、11 层以上嵌套 percent
+    编码——说明输入校验做不完美，安全边界必须搬到输出侧）。这个类型是要
+    经 `onCloneResult` 广播给整个工作区的东西（daemon.ts 的
+    `notifyWorkspace` 发 `chat_message` 给全体成员），原始 repoUrl（可能带
+    userinfo 语法嵌进去的凭据）绝不允许流到这里——真正需要原始 repoUrl 的
+    地方只有 `performClone` 内部（拿去跑 `git clone`），出了那个函数就再
+    也摸不到它，不依赖任何一处调用方"记得脱敏"。`reason` 同理已经过
+    `sanitizeCloneText` 脱敏（既擦 pat，也擦 repoUrl 里可能藏的凭据），
+    可以直接落日志/`chat_message`，不需要调用方再处理一遍。 */
+export type CloneResult = { ok: true; repoUrl: string } | { ok: false; repoUrl: string; reason: string };
 
 const DEFAULT_IMAGE = "otto-sandbox";
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
@@ -58,9 +90,402 @@ function memoryOrphansStore(): OrphansStore {
   };
 }
 
+// ── git clone（issue #821 slice 1，复审 Rejected 八条已修，见各函数注释）───
+// 设计要点（对照 docs/superpowers/specs/2026-08-31-workspace-phase2-design.md:87
+// 的原始设想，token 走 stdin 而不是原文说的"exec 传参"——容器里跑着 agent
+// 自己的 bash，argv 会出现在 `ps aux` 里，等于把 PAT 摆在 agent 面前）：
+//   1. PAT 只经 stdin 喂给 `git credential approve`；Cmd 数组、日志、
+//      onCloneResult 的输出一律不含它（redactPat 兜底）。clone 本身用原样
+//      的 https URL，不拼 token 进 URL。
+//   2. 一旦"确认要写凭据"，从那一刻到 clone 尝试结束整段包 try/finally——
+//      不管中间哪一步是正常返回非零 exitCode 还是直接抛异常（docker 流
+//      错误/inspect 退出码不可得），finally 都保证 `git credential
+//      reject` + 删凭据文件 + unset credential.helper 至少跑一次（复审
+//      C1：只判 exitCode 不够，execInContainer 会抛异常）。代价是 agent
+//      之后不能 git push，本期有意不做推送，是最小权限的取舍，不是漏做。
+//   3. 幂等判据是 `git -C /work rev-parse HEAD` 而不是 `test -d
+//      /work/.git`（复审 I3：git clone 在对象传输**开始前**就建好
+//      `.git/`，超时/OOM/断网留下的半成品目录会让旧判据永久误判"已经
+//      克隆过"，且这个误判在幂等分支里从不通报，用户完全看不到）。判定
+//      "没克隆完"时会先清空 /work 再重新 clone（git clone 拒绝克隆进
+//      非空目录）。
+//   4. 幂等命中（真的已经克隆完）时也顺手探一次凭据残留并清理（复审
+//      C2）：进程被 kill -9/宿主机崩溃这种连 finally 都跑不完的场景，
+//      残留只能等"下一次这个 workspaceId 被 ensure() 到"才有机会补救——
+//      不能指望"容器下次被清理"，stop/start 不清可写层，reconcile 孤儿
+//      宽限默认 7 天，destroy 要工作区被删，那不是"下次"，是数周后。
+//   5. clone 失败绝不向上抛出——ensure() 永远正常返回容器，只是内容是
+//      空的；onCloneResult 回调自己抛出也不例外（复审 I5）。
+//   6. 除 clone 本身给 10 分钟外，其余每条 exec 都套一个较短的默认超时
+//      （复审 I6：ensure() 是 dockerWorld 拿容器句柄的唯一入口，任何一条
+//      卡住不返回，这个工作区之后所有工具调用永久挂起，没有看门狗）。
+//   7. owner 纠正配置后可以调 `Sandbox.invalidateClone` 让下一次 ensure()
+//      重新尝试，不用等 daemon 重启（复审 I4）——但它只标记"过期"，不会
+//      打断正在跑的旧 attempt；新 attempt 必须等旧的（含它自己的凭据
+//      清理）完全收尾才起步，串行而不是并发（复审二轮竞态修复：同一
+//      workspaceId 可能被多个 session 共用，跨 session 没有互斥，直接
+//      摘掉 pending 的缓存会让两个 attempt 同时动同一个容器/卷/凭据
+//      文件）。
+//   8. 结果经 onCloneResult 回调通报，sandbox.ts 自己不做任何 console/IO。
+
+/** git credential 协议要求 username 字段非空；PAT 场景下主流 provider
+    （GitHub/GitLab/Bitbucket）不校验这个值本身、只认 password 里的
+    token——固定占位符即可，不必问用户要真实用户名。用 GitHub Apps 同款
+    惯例 "x-access-token"。 */
+const CREDENTIAL_USERNAME = "x-access-token";
+/** clone 本身的超时上限——大仓库真的可能要跑到接近这个数量级 */
+const CLONE_TIMEOUT_SEC = 600;
+/** 除 clone 本身外，其余每条 exec（凭据配置/幂等检查/清理…）的默认超时——
+    同 src/world/dockerWorld.ts exec() 的默认 30s 对齐，不是随便选的数字
+    （复审 I6：这些命令没一条应该跑很久，卡住只可能是异常状态，不该无限
+    等）。 */
+const DEFAULT_EXEC_TIMEOUT_SEC = 30;
+const EXEC_INSPECT_MAX_ATTEMPTS = 5;
+const EXEC_INSPECT_RETRY_DELAY_MS = 40;
+
+/** 单引号包裹 + `'\''` 转义——同 src/world/dockerWorld.ts 的 shellQuote，
+    但两个模块按分工不允许互相 import（本刀只能动 services/runtime/ 下的
+    文件），故在此复制一份而不是导出那边的私有函数 */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/** 防御性脱敏：clone 流程设计上 PAT 从不进 URL/Cmd，理论上不会出现在任何
+    stderr 里，但"理论上"不是保证——错误可能来自意料之外的路径。任何要
+    对外暴露（onCloneResult/日志）的文本都过一遍这个函数再交出去 */
+function redactPat(text: string, pat: string | undefined): string {
+  if (!pat) return text;
+  return text.split(pat).join("***");
+}
+
+// ── repoUrl 本身可能藏凭据（复审三轮）─────────────────────────────────────
+// owner 填的 repoUrl 理论上不该带凭据（PAT 走独立的 pat 字段），但用户
+// 完全可能自己塞一条 `https://user:pass@host/x.git` 进来（或者是 UI 侧
+// 输入检测想拦却没拦住的某种绕过形态——那条检测已经被绕过三轮：全角 ＠
+// U+FF20、11 层以上嵌套 percent 编码）。UI 那边的教训是：靠"识别输入里
+// 有没有藏凭据"这条路做不完美，每堵一个新花样都只是又添一条黑名单规则。
+// 这里换一种做法——不猜"这串像不像藏了凭据"，只用 WHATWG URL 解析器
+// **自己**给出的字段（协议+host+路径，从不读 username/password）拼展示串；
+// 解析失败就整体退化成不含任何原始片段的通用文案。经验证（Node 内置
+// URL）：全角 ＠、嵌套 percent 编码、scp 语法（user@host:path）、
+// protocol-relative（//host/path）全部会让 `new URL(...)` 直接抛异常，
+// 不会被解析成"看似正常的 host"——落进这里的 catch 分支，不会漏出任何
+// 原始片段。真正的安全边界不是这个函数猜得准不准，是 CloneResult.repoUrl
+// 这个字段**结构上**永远只存这个函数的输出（见该类型的注释）——即使
+// 未来又出现第四种绕过输入检测的编码花样，也不需要专门再堵一次，因为
+// 这个函数从来没有"认出凭据再擦掉"这一步，它是白名单，不是黑名单。
+export function safeRepoLabel(repoUrl: string): string {
+  try {
+    const url = new URL(repoUrl);
+    if (!url.host) return "仓库"; // 有 scheme 但没有 host（比如 file:// 之类）——没有安全的部分可展示
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "仓库"; // 解析不出来的串——UI 侧三轮绕过形态全部落在这一分支
+  }
+}
+
+/** clone 流程里任何要交给 onCloneResult 的自由文本（git 的 stdout/stderr、
+    捕获到的异常消息）都要过这个函数，不能只调 redactPat——PAT 是我们自己
+    塞进凭据里的字符串，redactPat 擦得掉；但 repoUrl 本身也可能被用户
+    塞了凭据（见 safeRepoLabel 的注释），而且 git 的错误消息经常把它执行
+    失败时用的那条 URL **原样回显**（比如 "fatal: unable to access
+    'https://user:pass@host/x.git/'"）——这条泄漏路径不在 pat 变量里，
+    redactPat 管不到。
+
+    repoUrl **能解析**时做三件事：① 走 redactPat；② 把整条 repoUrl 子串
+    （如果原样出现）换成 safeRepoLabel 的结果；③ repoUrl 解析得出的
+    username/password（如果非空）各自的原文也擦掉，兜底"工具只把凭据
+    片段打进日志、没抄整条 URL"的情形。
+
+    repoUrl **解析失败**时——fail-closed（复审四轮）：不再对 text 做任何
+    部分脱敏，整段换成固定文案。原因见下面 catch 分支的注释：②那种逐字
+    子串匹配一旦 git 在报错前哪怕只改写了 URL 的一个字符（百分号编码/
+    解码/只回显片段），就会失效，而这时③又用不了（parse 都失败了，没有
+    username/password 可比对）——复审四轮就是拿这个盲点实测出了 3 个真实
+    泄漏案例。跟 redactPat 一样是尽力而为，不是形式化证明——真正的安全
+    边界是 CloneResult.repoUrl 从来不存原始 repoUrl，这个函数是给 reason
+    这种自由文本字段的第二道防线，不是唯一防线。 */
+function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: string }): string {
+  let url: URL;
+  try {
+    url = new URL(cfg.repoUrl);
+  } catch {
+    // repoUrl 解析不出来——fail-closed（复审四轮，跟 safeRepoLabel 同一条
+    // 原则）：不能只靠"整条 cfg.repoUrl 子串替换"兜底。git（或它调用的
+    // ssh）在报错前经常会**改写**这条 URL 再回显——百分号编码非 ASCII
+    // 字符、解码已有的 %XX、或者干脆只回显 user@host 这一小段而不是整条
+    // URL——改写后的文本跟原始 cfg.repoUrl 逐字比对不上，子串替换直接
+    // 落空；而这里又拿不到 username/password 做第二道匹配（parse 都
+    // 失败了）。继续放行这段自由文本，就是继续赌"这次 git 没有在输出里
+    // 留下凭据碎片"——赌输一次就是把凭据广播给工作区全体成员（复审四轮
+    // 实测出的 3 个真实案例：全角 ＠ 被百分号编码回显、scp 语法被 ssh
+    // 回显 user@host 片段、%40 被解码回显，都属于"整条子串匹配对不上"）。
+    // 宁可损失这条路径下的排错细节，也不放行任何一个字符——owner 少看到
+    // 一点排错信息，换来的是 token 结构上不可能从这条路径出现在 reason
+    // 里。能正常解析的路径（下面 try 之后的部分）不受影响，排错信息照旧。
+    return "（错误详情已省略：仓库地址无法解析，可能含凭据）";
+  }
+
+  let result = redactPat(text, cfg.pat);
+  result = result.split(cfg.repoUrl).join(safeRepoLabel(cfg.repoUrl));
+  if (url.password) result = result.split(url.password).join("***");
+  if (url.username) result = result.split(url.username).join("***");
+  return result;
+}
+
+/** git credential 协议的 host 字段——用 URL.host（含端口，如果有）而不是
+    hostname：credential store 按这个字段匹配，得和 clone 用的 URL 对得上 */
+function safeHostOf(repoUrl: string): string {
+  try {
+    return new URL(repoUrl).host;
+  } catch {
+    // 不回显原始 repoUrl——这条错误消息最终会经 sanitizeCloneText/
+    // safeRepoLabel 处理，但那两层是第二道防线，第一道是"压根不产出
+    // 带原始片段的文本"（复审三轮的教训）
+    throw new Error("repoUrl 不是合法 URL，无法配置凭据");
+  }
+}
+
+async function inspectExecExitCode(exec: { inspect(): Promise<{ ExitCode: number | null }> }): Promise<number> {
+  for (let attempt = 1; attempt <= EXEC_INSPECT_MAX_ATTEMPTS; attempt++) {
+    const { ExitCode } = await exec.inspect();
+    if (ExitCode !== null) return ExitCode;
+    if (attempt < EXEC_INSPECT_MAX_ATTEMPTS) {
+      await new Promise((res) => setTimeout(res, EXEC_INSPECT_RETRY_DELAY_MS));
+    }
+  }
+  throw new Error(`exec 退出码不可得（inspect 连续 ${EXEC_INSPECT_MAX_ATTEMPTS} 次仍为 null）`);
+}
+
+/** src/world/dockerWorld.ts 的 runExec 精简版，只服务 clone 流程：不需要
+    onOutput/AbortSignal 那一整套，但保留了它的两个关键行为——WorkingDir
+    固定 /work、exitCode 124 补一句"命令超时"（复审 M8：两边行为不该
+    分叉，clone 失败的 reason 会直接进 chat_message 给工作区成员看，裸
+    `exitCode 124` 不是人话）。两边按分工不共用代码（本刀范围只能动
+    services/runtime/ 下的文件）；真要合并成一份留给后续专门的 ADR/PR。
+
+    接的是一段 bash 脚本（不是 Cmd 数组）——`/usr/bin/timeout` 包裹在这里
+    统一加，调用方不用每次记得写（复审 I6）：clone 本身传
+    `{timeoutSec: CLONE_TIMEOUT_SEC}` 覆盖默认的 30 秒，其余调用方一律
+    吃默认值。 */
+async function execInContainer(
+  container: ContainerLike,
+  script: string,
+  opts: { stdin?: string; timeoutSec?: number } = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const timeoutSec = opts.timeoutSec ?? DEFAULT_EXEC_TIMEOUT_SEC;
+  const cmd = ["/usr/bin/timeout", "-k", "5", String(timeoutSec), "/bin/bash", "-lc", script];
+  const attachStdin = opts.stdin !== undefined;
+  const exec = await container.exec({
+    Cmd: cmd,
+    AttachStdout: true,
+    AttachStderr: true,
+    ...(attachStdin ? { AttachStdin: true } : {}),
+    WorkingDir: "/work",
+  });
+  const stream = await exec.start(attachStdin ? { hijack: true, stdin: true } : {});
+
+  let stdout = "";
+  let stderr = "";
+  const stdoutSink = new Writable({
+    write(chunk, _enc, cb) {
+      stdout += chunk.toString("utf8");
+      cb();
+    },
+  });
+  const stderrSink = new Writable({
+    write(chunk, _enc, cb) {
+      stderr += chunk.toString("utf8");
+      cb();
+    },
+  });
+  container.modem.demuxStream(stream, stdoutSink, stderrSink);
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on("end", resolve);
+    stream.on("error", (err: unknown) => reject(err instanceof Error ? err : new Error(String(err))));
+    if (opts.stdin !== undefined) {
+      stream.write(opts.stdin);
+      stream.end();
+    }
+  });
+
+  const exitCode = await inspectExecExitCode(exec);
+  if (exitCode === 124) {
+    stderr = `${stderr}\n命令超时`.trim();
+  }
+  return { stdout, stderr, exitCode };
+}
+
+/** 幂等判据：不能只看 `.git/` 存在（复审 I3）——git clone 在对象传输
+    **开始前**就先 `git init` 建好 `.git/`，撞 600s 超时/OOM/网络断的
+    克隆大概率留下一个"目录在、没有可用提交"的半成品。`git -C /work
+    rev-parse HEAD` 能拿到有效提交才算真正克隆完；拿不到（unborn
+    ref/仓库不存在/半成品）一律当"没克隆完"处理，交给 performClone 清空
+    /work 后重新 clone。
+
+    rev-parse 之前先注册 /work 为 safe.directory（复审二轮防患）：现在
+    容器跑 root（`services/runtime/sandbox/Dockerfile` 建了 otter 用户但
+    没有 `USER otter`），`.git/` 的属主就是 root；将来谁给镜像补上那行
+    `USER otter`，容器进程 UID 就会和历史遗留的 root 属主对不上，
+    git 2.35+ 的 dubious-ownership 保护会让 rev-parse **直接报错退出**
+    （不是"没有提交"那种正常失败）。那会被这里误判成"没克隆完"，进而
+    在 performClone 里触发 `find -delete`——清空一个其实完好、且因为
+    本期不允许 push 而没有任何远程备份的工作区（agent 未推的 commit、
+    未提交的改动全没）。这行命令对"容器跑 root"的现状是无害的空操作
+    （属主本来就是自己），纯粹是为"以后镜像加了 USER otter"预先垫一层，
+    不等那天真的踩到才修。 */
+async function checkCloneComplete(container: ContainerLike): Promise<boolean> {
+  await execInContainer(container, "git config --global --add safe.directory /work");
+  const result = await execInContainer(container, "git -C /work rev-parse HEAD");
+  return result.exitCode === 0;
+}
+
+/** 用完即焚：clone 尝试结束（不管成不成功）都撤掉这一次性凭据——reject
+    掉 credential store 里的条目、删掉凭据文件本身、unset 全局 helper
+    配置。尽力而为（try/catch 吞掉失败）：清理本身失败不该反过来推翻
+    clone 结果的判定，那个判定已经由调用方决定。调用方（performClone）
+    用 try/finally 保证这个函数至少被调一次，即使中间某一步抛异常
+    （复审 C1）；幂等命中分支也会顺手探测残留再调它一次（复审 C2，见
+    cleanupResidualCredentialsIfAny）。仍然可能失败的残留窗口：这一步
+    本身失败（比如容器此刻恰好在重启），要等下一次这个 workspaceId 被
+    ensure() 到、命中幂等分支时才会被 cleanupResidualCredentialsIfAny
+    探测到并补救——不是"容器下次被清理"（stop/start 不清可写层，真正
+    的清理要等 reconcile 孤儿宽限或工作区被删，那是数周后）。 */
+async function cleanupCredentials(container: ContainerLike, repoUrl: string): Promise<void> {
+  try {
+    const host = safeHostOf(repoUrl);
+    const rejectBlock = `protocol=https\nhost=${host}\nusername=${CREDENTIAL_USERNAME}\n\n`;
+    await execInContainer(
+      container,
+      "git credential reject; rm -f ~/.git-credentials; git config --global --unset credential.helper; true",
+      { stdin: rejectBlock },
+    );
+  } catch {
+    // 见函数头注释——尽力而为，不让清理失败拖累 clone 结果本身
+  }
+}
+
+/** 幂等分支也顺手探一次凭据残留，把"要不要重新 clone"和"凭据清没清
+    干净"解耦（复审 C2）。先用 `test -f` 探一次——真有残留才跑完整的
+    reject/rm/unset，免得每次进程重启对着一堆早就 clone 好的工作区各白
+    跑几次 exec。探测/清理都失败也不影响幂等跳过的主判定（本来就是尽力
+    而为，见 cleanupCredentials 的注释）。 */
+async function cleanupResidualCredentialsIfAny(container: ContainerLike, repoUrl: string): Promise<void> {
+  try {
+    const probe = await execInContainer(container, "test -f ~/.git-credentials");
+    if (probe.exitCode === 0) {
+      await cleanupCredentials(container, repoUrl);
+    }
+  } catch {
+    // 探测本身失败——静默即可，同 cleanupCredentials 的尽力而为
+  }
+}
+
+/** 真正跑一次 clone：有 PAT 就先配好一次性凭据（stdin 喂、绝不进 Cmd/URL），
+    clone 尝试结束（不管成败，也不管是不是中途抛了异常）都烧掉凭据。永远
+    返回 CloneResult，不 throw——已知的失败路径（helper 配置失败/凭据
+    写入失败/清空目标目录失败/clone 本身失败/repoUrl 解析失败/任何一步
+    的 execInContainer 直接抛异常）全部转成 {ok:false, reason}。
+
+    复审 C1：整个"配凭据→clone"用一个 try/catch/finally 包住，而不是像
+    上一版那样对每个 execInContainer 调用分别判 exitCode——那样漏了
+    "execInContainer 自己抛异常"这条路（docker 流错误、inspect 退出码
+    连续 5 次拿不到），一旦抛出会跳过 cleanup 直接冒到 runCloneAttempt
+    的外层 catch，那层只上报不清理，PAT 就留在容器里。`credentialsConfigured`
+    标记"从这一刻起凭据可能已经落进容器"，finally 只在标记为真时才清理
+    ——helper 配置那一步失败/safeHostOf 抛出时还没写凭据，没必要多一次
+    exec。 */
+async function performClone(container: ContainerLike, cfg: WorkspaceRepoConfig): Promise<CloneResult> {
+  const { repoUrl, pat } = cfg;
+  let credentialsConfigured = false;
+
+  // repoUrl 出现在返回值/reason 里的每一处都要过 safeRepoLabel/
+  // sanitizeCloneText（复审三轮：CloneResult.repoUrl 结构上只允许存安全
+  // 标签，见该类型的注释）；cfg/repoUrl 变量本身在函数内部照常使用（拿去
+  // 跑 git clone/配凭据），只是不允许直接进返回值。
+  try {
+    if (pat) {
+      const helperSetup = await execInContainer(container, "git config --global credential.helper store");
+      if (helperSetup.exitCode !== 0) {
+        const detail = helperSetup.stderr || helperSetup.stdout || `exitCode ${helperSetup.exitCode}`;
+        return {
+          ok: false,
+          repoUrl: safeRepoLabel(repoUrl),
+          reason: sanitizeCloneText(`credential.helper 配置失败：${detail}`, cfg),
+        };
+      }
+
+      const host = safeHostOf(repoUrl); // 抛出的话走下面的 catch；此时还没写凭据
+      const credentialBlock = `protocol=https\nhost=${host}\nusername=${CREDENTIAL_USERNAME}\npassword=${pat}\n\n`;
+
+      // 从这一行起，凭据就可能已经落进容器的 ~/.git-credentials——不管
+      // 下面这次 exec 本身、还是后面的 clone，会不会抛异常，finally 都要
+      // 清理一次（复审 C1）
+      credentialsConfigured = true;
+      const approve = await execInContainer(container, "git credential approve", { stdin: credentialBlock });
+      if (approve.exitCode !== 0) {
+        const detail = approve.stderr || approve.stdout || `exitCode ${approve.exitCode}`;
+        return {
+          ok: false,
+          repoUrl: safeRepoLabel(repoUrl),
+          reason: sanitizeCloneText(`凭据写入失败：${detail}`, cfg),
+        };
+      }
+    }
+
+    // 目标目录可能残留上一次没跑完的 clone（.git/ 建好了但对象没传完，
+    // checkCloneComplete 判定"没完成"就会重新走到这里——git clone 拒绝
+    // 往非空目录里克隆，复审 I3）。find -mindepth 1 -delete 连隐藏文件
+    // 一起删，但保留 /work 本身（挂载点）；对本来就空的目录是无操作。
+    const clear = await execInContainer(container, "find /work -mindepth 1 -delete");
+    if (clear.exitCode !== 0) {
+      const detail = clear.stderr || clear.stdout || `exitCode ${clear.exitCode}`;
+      return {
+        ok: false,
+        repoUrl: safeRepoLabel(repoUrl),
+        reason: sanitizeCloneText(`清空目标目录失败：${detail}`, cfg),
+      };
+    }
+
+    const cloneCmd = `git clone -- ${shellQuote(repoUrl)} /work`;
+    const cloneResult = await execInContainer(container, cloneCmd, { timeoutSec: CLONE_TIMEOUT_SEC });
+    if (cloneResult.exitCode !== 0) {
+      // 最容易实际携带原始 repoUrl 的一条：git clone 失败时的 stderr
+      // 经常把它当时用的那条 URL 原样回显（"fatal: unable to access
+      // '<url>'"），sanitizeCloneText 就是为这种情形准备的
+      const detail = cloneResult.stderr || cloneResult.stdout || `exitCode ${cloneResult.exitCode}`;
+      return { ok: false, repoUrl: safeRepoLabel(repoUrl), reason: sanitizeCloneText(detail, cfg) };
+    }
+    return { ok: true, repoUrl: safeRepoLabel(repoUrl) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, repoUrl: safeRepoLabel(repoUrl), reason: sanitizeCloneText(message, cfg) };
+  } finally {
+    if (credentialsConfigured) {
+      await cleanupCredentials(container, repoUrl); // 成功/失败/异常都烧——PAT 只值这一次 clone 的信任
+    }
+  }
+}
+
 export function createSandbox(
   docker: DockerLike,
-  opts?: { image?: string; idleMs?: number; orphanGraceMs?: number; now?: () => number; orphans?: OrphansStore },
+  opts?: {
+    image?: string;
+    idleMs?: number;
+    orphanGraceMs?: number;
+    now?: () => number;
+    orphans?: OrphansStore;
+    /** 工作区云配置（repoUrl/PAT）的按需查询——ensure() 首次遇到一个
+        workspaceId 时才会调一次（见 cloneAttempts 的"只跑一次"注释），不是
+        每次工具执行都查。没配置回调 = 不做任何 clone 相关的事，维持现状
+        （空容器）；查询本身抛错也一样按"没配"处理，不算 clone 失败。 */
+    repoConfig?: (workspaceId: string) => Promise<WorkspaceRepoConfig | undefined>;
+    /** clone 尝试的结果回调——只在**真的跑过一次 clone**时触发（已经
+        clone 过、幂等跳过的情况不算，见 runCloneAttempt）。daemon.ts 用它
+        落 console + 通报活跃会话；sandbox.ts 自己不做任何 I/O 副作用。 */
+    onCloneResult?: (workspaceId: string, result: CloneResult) => void;
+  },
 ): Sandbox {
   const image = opts?.image ?? DEFAULT_IMAGE;
   const idleMs = opts?.idleMs ?? DEFAULT_IDLE_MS;
@@ -69,6 +494,121 @@ export function createSandbox(
   const orphansStore = opts?.orphans ?? memoryOrphansStore();
 
   const lastActive = new Map<string, number>();
+
+  /** 同一个 workspaceId 在本进程生命周期内只跑一次 clone 流程：不仅是
+      "并发调用去重"（后来者等同一个 promise），settle 之后这个 slot 也
+      刻意不从 map 里删——后续每次 ensure() 直接拿到那个已经 resolve 的
+      promise、瞬间返回，不会每次工具调用都重新问一遍幂等检查，更不会在
+      repoUrl 配错时让每一次工具调用都重新触发一次可能长达 10 分钟的
+      clone 超时（那才是真正会拖垮云会话的问题——单次幂等检查本身很
+      便宜，但"配错了就永远重试到超时"不行）。owner 纠正配置后要靠
+      `invalidateClone` 显式让这份缓存失效（复审 I4）。
+      已知限制：如果卷在本进程存活期间被人手动清空（不是走 reconcile/
+      destroy 这两条本模块自己的路径），这份内存缓存发现不了，要等下次
+      进程重启才会重新检测——这个代价换来的是不会有重试风暴，判断是值得的。
+
+      `invalidated` 字段的存在理由（复审二轮竞态修复）：`sandbox` 是单例，
+      `cloneAttempts` 按 workspaceId 键控，同一工作区的所有 session 共用
+      同一个 slot（daemon.ts 里每个 session 各自的 `container: () =>
+      sandbox.ensure(workspaceId)` 调的是同一个 `ensure`）；`turnCoordinator`
+      的互斥只在单个 session 内，跨 session 没有互斥，`cs_config` 帧随时
+      能打进来。如果 `invalidateClone` 直接 `delete` 掉一个仍在 pending 的
+      slot，紧随其后另一个 session 的工具调用会以为"没有任何缓存"，立刻
+      拿新配置起第二个并发 attempt——两个 attempt 同时动同一个容器/卷/
+      凭据文件：新的 `find -delete` 能删掉旧的还在写的 `.git/objects`，
+      旧的收尾时的 `cleanupCredentials` 也能撤掉新的刚 approve 完的凭据。
+      改成只打标记：旧 attempt 该怎么跑完还怎么跑完（含它自己的
+      cleanup），`ensureRepoCloned` 看到标记时才会等旧 promise 先
+      settle，再起新的——串行，不是并发。 */
+  interface CloneAttemptSlot {
+    promise: Promise<void>;
+    invalidated: boolean;
+  }
+  const cloneAttempts = new Map<string, CloneAttemptSlot>();
+
+  function ensureRepoCloned(workspaceId: string, container: ContainerLike): Promise<void> {
+    if (!opts?.repoConfig) return Promise.resolve();
+
+    const existing = cloneAttempts.get(workspaceId);
+    if (existing && !existing.invalidated) {
+      return existing.promise; // 仍然有效（不管还在 pending 还是已经 settle），直接复用
+    }
+
+    // 走到这里：这个 workspaceId 要么从没 clone 过，要么上一个 slot 被
+    // invalidateClone 标记过期了。两种情况都要新起一个 attempt；如果
+    // existing 存在（哪怕它还在 pending），新 attempt 必须先等它完全
+    // 收尾（`.then()` 串联，不是各跑各的）才能起步——见上面 slot 类型
+    // 注释里的竞态分析。`.catch(() => {})` 纯粹防御：runCloneAttempt 本身
+    // 设计上不会 reject，但万一某天有人改坏了，也不该让一次意外 reject
+    // 打断"新的必须排在旧的后面"这条串行链。
+    const previous = existing?.promise ?? Promise.resolve();
+    const slot: CloneAttemptSlot = {
+      invalidated: false,
+      promise: previous.catch(() => {}).then(() => runCloneAttempt(workspaceId, container)),
+    };
+    cloneAttempts.set(workspaceId, slot);
+    return slot.promise;
+  }
+
+  /** 让下一次 ensure() 重新跑一次 clone——**不是**立刻摘掉当前这个 slot
+      （复审二轮竞态修复，见 CloneAttemptSlot 的注释）：只打一个"已过期"
+      标记，真正的替换动作留给 ensureRepoCloned 在下一次被调用时，串行
+      在旧 attempt（含它自己的 cleanup）收尾之后。 */
+  function invalidateClone(workspaceId: string): void {
+    const existing = cloneAttempts.get(workspaceId);
+    if (existing) existing.invalidated = true;
+  }
+
+  /** onCloneResult 是调用方（daemon.ts）给的回调，可能同步做 I/O（比如
+      better-sqlite3 的 store.append）而抛出（磁盘满/SQLite 损坏，复审
+      I5）——回调本身失败不该让 cloneAttempts 缓存的 promise 变成
+      reject，那会让 ensure() 本身 reject，违反"绝不 throw 出 ensure()"
+      这条设计红线。runCloneAttempt 的两处调用点（正常出结果/意外异常
+      兜底）都过这个函数，不直接调 opts.onCloneResult。 */
+  function safeReportCloneResult(workspaceId: string, result: CloneResult): void {
+    try {
+      opts?.onCloneResult?.(workspaceId, result);
+    } catch {
+      // 吞掉——sandbox.ts 不做 console 之类的 IO 副作用（同文件其余 catch
+      // 块的一贯做法），可观测性交给调用方自己的回调实现负责
+    }
+  }
+
+  async function runCloneAttempt(workspaceId: string, container: ContainerLike): Promise<void> {
+    const repoConfig = opts?.repoConfig;
+    if (!repoConfig) return;
+
+    let cfg: WorkspaceRepoConfig | undefined;
+    try {
+      cfg = await repoConfig(workspaceId);
+    } catch {
+      return; // 配置查询本身失败——不算"clone 失败"，静默维持现状（空容器）
+    }
+    if (!cfg?.repoUrl) return; // 没配 repo，现状行为（空容器）
+
+    try {
+      const alreadyCloned = await checkCloneComplete(container);
+      if (alreadyCloned) {
+        await cleanupResidualCredentialsIfAny(container, cfg.repoUrl); // 复审 C2
+        return; // 幂等：卷里已有完整克隆（可能来自上一个进程生命周期），
+        // 不重复也不通报——onCloneResult 只在真的跑了一次 clone 时触发，
+        // 不然每次进程重启都会对旧结果重复刷一遍"克隆成功"
+      }
+
+      const outcome = await performClone(container, cfg);
+      safeReportCloneResult(workspaceId, outcome);
+    } catch (err) {
+      // performClone 内部已经把已知失败路径都转成 {ok:false,...} 不
+      // throw；这里兜的是 checkCloneComplete/performClone 自身意外抛出的
+      // 情况——绝不能让 clone 相关的失败反过来拖垮 ensure() 本身（设计点 5）。
+      // repoUrl/reason 同样要过 safeRepoLabel/sanitizeCloneText——这里是
+      // 唯一另一处直接构造 CloneResult 的地方，漏了就等于给复审三轮那道
+      // 边界开了个后门（复审三轮）
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = sanitizeCloneText(message, cfg);
+      safeReportCloneResult(workspaceId, { ok: false, repoUrl: safeRepoLabel(cfg.repoUrl), reason });
+    }
+  }
 
   function markActive(workspaceId: string): void {
     lastActive.set(workspaceId, now());
@@ -84,7 +624,7 @@ export function createSandbox(
     const name = containerName(workspaceId);
     const found = await findByName(name);
 
-    let id: string;
+    let container: ReturnType<DockerLike["getContainer"]>;
     if (!found) {
       const created = await docker.createContainer({
         name,
@@ -98,19 +638,21 @@ export function createSandbox(
           Mounts: [{ Type: "volume", Source: name, Target: "/work" }],
         },
       });
-      id = created.id;
-      const container = docker.getContainer(id);
+      container = docker.getContainer(created.id);
       await container.start();
-      markActive(workspaceId);
-      return container;
-    }
-
-    id = found.Id;
-    const container = docker.getContainer(id);
-    if (found.State !== "running") {
-      await container.start();
+    } else {
+      container = docker.getContainer(found.Id);
+      if (found.State !== "running") {
+        await container.start();
+      }
     }
     markActive(workspaceId);
+
+    // clone 挂在这里——容器（不管是刚建的还是既有的）已经在跑，卷已经挂
+    // 好。见文件头 git clone 设计要点块的注释；ensureRepoCloned 自己处理
+    // "没配置""已经 clone 过""并发去重""失败不阻塞"这几件事，这里只是
+    // 单纯地等它一下，不关心结果（结果走 onCloneResult，不走返回值）。
+    await ensureRepoCloned(workspaceId, container);
     return container;
   }
 
@@ -212,5 +754,5 @@ export function createSandbox(
     await docker.getVolume(name).remove(); // 容器不存在时只走这一步，不炸
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy };
+  return { ensure, markActive, sweepIdle, reconcile, destroy, invalidateClone };
 }

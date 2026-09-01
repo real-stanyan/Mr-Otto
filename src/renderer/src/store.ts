@@ -843,6 +843,14 @@ interface ChatState {
   /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
       workspaceGroupsError，调用方按需读） */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
+  /** owner 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，issue #821 slice 2）。
+      workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
+      时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
+      pat 不落这个 store 的任何字段，只透传给 IPC 这一次调用（同 ProviderKeyDialog
+      "渲染层不留 key 的任何副本"的纪律）。回是否成功——同 cloudSay/cloudApprove
+      的既有约定，失败信息落 workspaceGroupsError，调用方按需读；服务端保存
+      成功是静默的，IPC 回 ok 就算成功，没有二次确认帧 */
+  cloudConfig(repoUrl: string, pat?: string): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
@@ -2118,6 +2126,26 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ workspaceGroupsError: r.message });
       return false;
     }
+    set({ workspaceGroupsError: null });
+    return true;
+  },
+
+  async cloudConfig(repoUrl, pat) {
+    // 没有已连接的云会话就不该走到这——CloudSessionPage 只在已 join 时才
+    // 挂载配置入口，这里仍然判一次是防状态错乱（比如异步期间被 closeCloudSession
+    // 顶掉），不是主路径
+    const workspaceId = get().cloudSession?.workspaceId;
+    if (!workspaceId) {
+      set({ workspaceGroupsError: "没有已连接的云会话" });
+      return false;
+    }
+    const r = await window.otter.workspaceCloudConfig(workspaceId, repoUrl, pat);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    // 服务端保存成功是静默的（没有二次确认帧）——IPC 回 ok 就是这里能拿到的
+    // 唯一信号，同 cloudSay/cloudApprove"回 boolean 给调用方"的约定
     set({ workspaceGroupsError: null });
     return true;
   },

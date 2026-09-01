@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { createSandbox, type DockerLike } from "../../services/runtime/src/sandbox.js";
+import { EventEmitter } from "node:events";
+import { createSandbox, safeRepoLabel, type DockerLike } from "../../services/runtime/src/sandbox.js";
 
 interface FakeContainer {
   id: string;
@@ -82,6 +83,167 @@ function makeFakeDocker(initial: FakeContainer[] = []) {
 
   const docker: DockerLike = { listContainers, getContainer, createContainer, listVolumes, getVolume };
   return { docker, calls, containers, volumes };
+}
+
+// ── git clone（issue #821 slice 1，复审 Rejected 八条修复后重建）専用の假
+// exec ─────────────────────────────────────────────────────────────────
+// 既有 makeFakeDocker 的 getContainer(id).exec 一律 throw（"not used in
+// sandbox tests"）——不动它，克隆相关测试改用这层 wrapper 单独接管 exec/modem，
+// 其余 listContainers/createContainer/listVolumes/getVolume 原样透传。
+
+interface ExecOutcome {
+  exitCode: number;
+  stdout?: string;
+  stderr?: string;
+  /** 让这次 exec 的 inspect() 永远回 { ExitCode: null }——模拟 docker 一直
+      给不出退出码的场景（复审 C1 repro：credential approve 卡在这个状态，
+      execInContainer 的 inspectExecExitCode 重试 5 次后会 throw） */
+  neverResolveExitCode?: boolean;
+  /** 让这次 exec 的 stream 走 'error' 而不是 'end'——模拟 docker attach 流
+      本身出错（execInContainer 里 stream.on("error", reject) 那条路，同样
+      是复审 C1 要覆盖的"execInContainer 直接抛异常"场景之一） */
+  streamError?: boolean;
+  /** 让这次 exec 的完成（'end'/'error'）等这个 promise 先 resolve——用来
+      模拟"一个 attempt 的某条命令还卡着"，测试 invalidateClone 在它
+      pending 期间被调用时，新 attempt 是否老老实实排队等它收尾（复审
+      二轮竞态回归测试），而不是立刻并发起步 */
+  gate?: Promise<void>;
+}
+type ExecRouter = (cmd: string[]) => ExecOutcome;
+type ExecLog = Array<{ cmd: string[]; stdin?: string; workingDir?: string }>;
+
+/** 按 exec 拿到的完整 Cmd 数组（`["/usr/bin/timeout","-k","5",secs,
+    "/bin/bash","-lc",<script>]`，复审 I6 之后多了 timeout 前缀，脚本不再
+    固定在 cmd[2]）拼成整段文本路由到预设结局，并把 attachStdin 场景下
+    写入的内容整段记下——克隆测试要断言"PAT 经 stdin 传入、Cmd 数组里不含
+    PAT"，全靠这份 execLog。
+
+    execLog 的登记点在 exec() 被调用的那一刻（不是 inspect() 里）：
+    neverResolveExitCode 场景下 inspect() 会被连续调用最多 5 次，登记点
+    挂在 inspect() 会让同一条命令在 execLog 里重复出现好几遍，污染"数了
+    几次 clone/reject 调用"这类断言。stdin 在 exec() 调用时还不知道（要
+    等 start() 之后才会被写入），所以先登记一条占位记录，stdin 到达时
+    原地在同一个对象上补上。 */
+function withCloneExec(docker: DockerLike, router: ExecRouter, execLog: ExecLog): DockerLike {
+  return {
+    ...docker,
+    getContainer(id: string) {
+      const base = docker.getContainer(id);
+      return {
+        ...base,
+        async exec(execOpts: {
+          Cmd: string[];
+          AttachStdout: boolean;
+          AttachStderr: boolean;
+          AttachStdin?: boolean;
+          WorkingDir?: string;
+        }) {
+          const outcome = router(execOpts.Cmd);
+          const record: ExecLog[number] = {
+            cmd: execOpts.Cmd,
+            ...(execOpts.WorkingDir !== undefined ? { workingDir: execOpts.WorkingDir } : {}),
+          };
+          execLog.push(record);
+
+          // outcome 挂在 stream 实例本身上——modem.demuxStream 是容器共用
+          // 的一个函数，没法从参数直接知道"这次 demux 对应哪次 exec"，
+          // 靠 stream 自带的 __outcome 标记把预设 stdout/stderr 喂给对应
+          // sink（每次 exec() 调用都会拿到一个全新的 stream 实例，互不
+          // 干扰）
+          const stream = new EventEmitter() as unknown as NodeJS.ReadWriteStream & { __outcome?: ExecOutcome };
+          stream.__outcome = outcome;
+          const finish = () => {
+            if (outcome.streamError) stream.emit("error", new Error("simulated docker attach stream error"));
+            else stream.emit("end");
+          };
+          // gate 未设置时和原来一样立刻（下一个 tick）收尾；设置了就先等
+          // gate resolve，再补一个 setImmediate 让收尾走真正的异步路径
+          const scheduleFinish = () => {
+            if (outcome.gate) outcome.gate.then(() => setImmediate(finish));
+            else setImmediate(finish);
+          };
+          (stream as unknown as { write: (d: string) => boolean }).write = (d: string) => {
+            record.stdin = (record.stdin ?? "") + d;
+            return true;
+          };
+          (stream as unknown as { end: () => void }).end = () => {
+            scheduleFinish();
+          };
+          return {
+            async start(startOpts?: { hijack?: boolean; stdin?: boolean }) {
+              if (!startOpts?.stdin) scheduleFinish();
+              return stream;
+            },
+            async inspect() {
+              if (outcome.neverResolveExitCode) return { ExitCode: null };
+              return { ExitCode: outcome.exitCode };
+            },
+          };
+        },
+        modem: {
+          demuxStream(stream: NodeJS.ReadableStream, out: NodeJS.WritableStream, err: NodeJS.WritableStream) {
+            const s = stream as NodeJS.ReadableStream & { __outcome?: ExecOutcome };
+            if (s.__outcome?.stdout) out.write(s.__outcome.stdout);
+            if (s.__outcome?.stderr) err.write(s.__outcome.stderr);
+          },
+        },
+      };
+    },
+  };
+}
+
+/** 七个命令按 Cmd 拼接后的整段文本互斥匹配（幂等检查/凭据残留探测/凭据
+    配置/凭据写入/清空目标目录/clone/凭据回收），每个都可以单独配置退出码
+    ——覆盖字段走 overrides，不写就是"一路成功、且尚未 clone 过、没有
+    残留凭据"的默认状态。字段名对齐 sandbox.ts 里的真实语义（`cloneComplete`
+    对应 `git -C /work rev-parse HEAD`，不再是旧版的 `test -d /work/.git`
+    ——复审 I3 之后判据换了）。 */
+function cloneRouter(
+  overrides: {
+    cloneComplete?: boolean;
+    residualCredentials?: boolean;
+    credHelperExit?: number;
+    approveExit?: number;
+    approveNeverResolves?: boolean;
+    clearExit?: number;
+    cloneExit?: number;
+    cloneStderr?: string;
+    cloneStreamError?: boolean;
+    rejectExit?: number;
+  } = {},
+): ExecRouter {
+  return (cmd) => {
+    const script = cmd.join(" ");
+    if (script.includes("rev-parse HEAD")) {
+      return { exitCode: overrides.cloneComplete ? 0 : 1 };
+    }
+    if (script.includes("test -f ~/.git-credentials")) {
+      return { exitCode: overrides.residualCredentials ? 0 : 1 };
+    }
+    if (script.includes("credential.helper store")) {
+      return { exitCode: overrides.credHelperExit ?? 0 };
+    }
+    if (script.includes("git credential approve")) {
+      return {
+        exitCode: overrides.approveExit ?? 0,
+        ...(overrides.approveNeverResolves ? { neverResolveExitCode: true } : {}),
+      };
+    }
+    if (script.includes("find /work -mindepth 1 -delete")) {
+      return { exitCode: overrides.clearExit ?? 0 };
+    }
+    if (script.includes("git clone --")) {
+      return {
+        exitCode: overrides.cloneExit ?? 0,
+        ...(overrides.cloneStderr ? { stderr: overrides.cloneStderr } : {}),
+        ...(overrides.cloneStreamError ? { streamError: true } : {}),
+      };
+    }
+    if (script.includes("git credential reject")) {
+      return { exitCode: overrides.rejectExit ?? 0 };
+    }
+    return { exitCode: 0 };
+  };
 }
 
 describe("createSandbox", () => {
@@ -261,5 +423,848 @@ describe("createSandbox", () => {
     await expect(sandbox.destroy("z")).resolves.toBeUndefined();
     expect(volumes.has("otto-ws-z")).toBe(false);
     expect(calls.some((c) => c.startsWith("remove:") && c.endsWith(":true") && c.includes("z"))).toBe(false);
+  });
+});
+
+/** 轮询等一个条件成立——不用固定 sleep（太短会 flaky，太长拖慢测试）。
+    这份 fake 除了 gate 之外全靠 setImmediate 驱动异步收尾，没有真实
+    timer，所以每次 setImmediate 都足够推进一步；给个宽松上限防止真出
+    bug 时测试挂死不报错。 */
+async function waitUntil(cond: () => boolean, maxTicks = 500): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error("waitUntil：条件在预期的 tick 数内没有成立");
+}
+
+describe("createSandbox — git clone（issue #821 slice 1）", () => {
+  it("⑧ 没配 repo 时不 clone", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-noconf", state: "running", labels: { "mrotto.workspace": "noconf" } },
+    ]);
+    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
+    const wrapped = withCloneExec(docker, cloneRouter(), execLog);
+    const results: Array<{ workspaceId: string; result: unknown }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => undefined, // 有查询面，但这个工作区没配
+      onCloneResult: (workspaceId, result) => results.push({ workspaceId, result }),
+    });
+
+    const container = await sandbox.ensure("noconf");
+
+    expect(container).toBeDefined();
+    expect(execLog.length).toBe(0); // 没碰 exec 半步——现状行为（空容器）
+    expect(results.length).toBe(0);
+  });
+
+  it("⑨ 配了且没克隆过 → 执行 clone；Cmd 数组不含 PAT，PAT 经 stdin 传入", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-fresh", state: "running", labels: { "mrotto.workspace": "fresh" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const results: Array<{ workspaceId: string; result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const PAT = "ghp_supersecrettoken1234";
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: PAT }),
+      onCloneResult: (workspaceId, result) =>
+        results.push({ workspaceId, result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("fresh");
+
+    // PAT 不出现在任何一条 Cmd 数组里（拼接后整段搜，防止它被拆在两个数组元素之间也漏检）
+    for (const call of execLog) {
+      expect(call.cmd.join(" ")).not.toContain(PAT);
+    }
+
+    // PAT 经 stdin 传入 git credential approve
+    const approveCall = execLog.find((c) => c.cmd.join(" ").includes("git credential approve"));
+    expect(approveCall).toBeDefined();
+    expect(approveCall!.stdin).toContain(`password=${PAT}`);
+    expect(approveCall!.stdin).toContain("protocol=https");
+    expect(approveCall!.stdin).toContain("host=github.com");
+
+    // clone 本身也发生了，且 Cmd 里是原样 URL（不含 token）
+    const cloneCall = execLog.find((c) => c.cmd.join(" ").includes("git clone"));
+    expect(cloneCall).toBeDefined();
+    expect(cloneCall!.cmd.join(" ")).toContain("https://github.com/acme/widgets.git");
+
+    expect(results).toEqual([
+      { workspaceId: "fresh", result: { ok: true, repoUrl: "https://github.com/acme/widgets.git" } },
+    ]);
+  });
+
+  it("⑩ 已经完整克隆过（rev-parse HEAD 成功） → 跳过 clone，不通报（幂等）", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-existing", state: "running", labels: { "mrotto.workspace": "existing" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true }), execLog);
+    const results: unknown[] = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: (_workspaceId, result) => results.push(result),
+    });
+
+    const container = await sandbox.ensure("existing");
+
+    expect(container).toBeDefined();
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git clone"))).toBe(false);
+    expect(results.length).toBe(0);
+  });
+
+  it("⑪ clone 以非零码失败 → ensure 仍正常返回容器，回调收到失败原因", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-bad", state: "running", labels: { "mrotto.workspace": "bad" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: repository 'https://bad' not found" }),
+      execLog,
+    );
+    const results: Array<{ workspaceId: string; result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/does-not-exist.git" }),
+      onCloneResult: (workspaceId, result) =>
+        results.push({ workspaceId, result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    const container = await sandbox.ensure("bad");
+
+    expect(container).toBeDefined(); // 容器照常返回，没有被 clone 失败拖下水
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.reason).toContain("not found");
+  });
+
+  it("⑫ 并发两次 ensure 只 clone 一次", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-race", state: "running", labels: { "mrotto.workspace": "race" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    const [c1, c2] = await Promise.all([sandbox.ensure("race"), sandbox.ensure("race")]);
+
+    expect(c1).toBeDefined();
+    expect(c2).toBeDefined();
+    const cloneCalls = execLog.filter((c) => c.cmd.join(" ").includes("git clone"));
+    expect(cloneCalls.length).toBe(1);
+  });
+
+  it("⑬ 凭据在 clone 后被清理（reject + 删文件 + unset），发生在 clone 之后", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-cleanup", state: "running", labels: { "mrotto.workspace": "cleanup" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_xxx" }),
+    });
+
+    await sandbox.ensure("cleanup");
+
+    const cleanupCall = execLog.find((c) => c.cmd.join(" ").includes("git credential reject"));
+    expect(cleanupCall).toBeDefined();
+    expect(cleanupCall!.cmd.join(" ")).toContain("rm -f");
+    expect(cleanupCall!.cmd.join(" ")).toContain("git-credentials");
+    expect(cleanupCall!.cmd.join(" ")).toContain("--unset credential.helper");
+
+    const cloneIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git clone"));
+    const cleanupIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git credential reject"));
+    expect(cloneIdx).toBeGreaterThanOrEqual(0);
+    expect(cleanupIdx).toBeGreaterThan(cloneIdx);
+  });
+
+  it("⑭ 第二次 ensure（同进程内）不重新执行幂等检查——沿用已 settle 的 clone 结果", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-twice", state: "running", labels: { "mrotto.workspace": "twice" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    let queries = 0;
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => {
+        queries++;
+        return { repoUrl: "https://github.com/acme/widgets.git" };
+      },
+    });
+
+    await sandbox.ensure("twice");
+    const afterFirst = execLog.length;
+    await sandbox.ensure("twice");
+
+    expect(execLog.length).toBe(afterFirst); // 第二次 ensure 没有再发起任何 exec
+    expect(queries).toBe(1); // repoConfig 也没有被再查一次
+  });
+
+  // ── 复审 Rejected 八条 ────────────────────────────────────────────────
+
+  it("⑮（C1）credential approve 的 inspect 永远拿不到退出码 → ensure 仍正常返回，但凭据依然被清理", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-stuck", state: "running", labels: { "mrotto.workspace": "stuck" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, approveNeverResolves: true }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_stuck" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    const container = await sandbox.ensure("stuck");
+
+    expect(container).toBeDefined(); // ensure 没有被拖下水
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    // 关键断言：即使 approve 阶段的 exec 本身抛异常（不是返回非零 exitCode），
+    // cleanup（reject/rm/unset）依然被调用过——旧版本这里会漏做（复审 C1 repro）
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    // clone 本身不应该发生——approve 都没成功，不该往下走
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git clone --"))).toBe(false);
+  });
+
+  it("⑯（C1）clone 阶段 docker 流本身出错 → ensure 仍正常返回，但凭据依然被清理", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-streamerr", state: "running", labels: { "mrotto.workspace": "streamerr" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneStreamError: true }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_streamerr" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean } }),
+    });
+
+    const container = await sandbox.ensure("streamerr");
+
+    expect(container).toBeDefined();
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+  });
+
+  it("⑰（C2）幂等命中但探到凭据残留 → 顺手清理，不重新 clone", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-residual", state: "running", labels: { "mrotto.workspace": "residual" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true, residualCredentials: true }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("residual");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("test -f ~/.git-credentials"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git clone --"))).toBe(false); // 没有重新 clone
+  });
+
+  it("⑱（C2）幂等命中且没有残留凭据 → 只探测，不空跑 reject/rm/unset", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-clean", state: "running", labels: { "mrotto.workspace": "clean" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true, residualCredentials: false }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("clean");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("test -f ~/.git-credentials"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(false);
+  });
+
+  it("⑲（I3）半成品 clone（.git 建了但没有可用提交）→ 判定没完成，清空目标目录后重新 clone", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-half", state: "running", labels: { "mrotto.workspace": "half" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const results: Array<{ result: { ok: boolean } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean } }),
+    });
+
+    await sandbox.ensure("half");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("rev-parse HEAD"))).toBe(true); // 幂等检查跑过
+    const clearIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("find /work -mindepth 1 -delete"));
+    const cloneIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git clone --"));
+    expect(clearIdx).toBeGreaterThanOrEqual(0); // 判定没完成后，清空目标目录这一步确实跑了
+    expect(cloneIdx).toBeGreaterThan(clearIdx); // 清空发生在重新 clone 之前（不然 git clone 会因目录非空拒绝）
+    expect(results.length).toBe(1); // 没有被幂等分支静默吞掉——用户能看到这次重新 clone 的结果
+    expect(results[0]!.result.ok).toBe(true);
+  });
+
+  it("⑳（I4）invalidateClone 后重新配置——ensure 立刻重新尝试 clone，不用等进程重启", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-retry", state: "running", labels: { "mrotto.workspace": "retry" } },
+    ]);
+    const execLog: ExecLog = [];
+    let cloneExit = 128; // 先失败（比如 repoUrl 配错）
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 1 };
+        if (script.includes("git clone --")) return { exitCode: cloneExit };
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("retry");
+    const cloneCallsAfterFirst = execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length;
+    expect(cloneCallsAfterFirst).toBe(1);
+
+    await sandbox.ensure("retry"); // 缓存生效，不重新尝试
+    expect(execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length).toBe(cloneCallsAfterFirst);
+
+    sandbox.invalidateClone("retry"); // owner 纠正了配置
+    cloneExit = 0; // 这次能成功了
+    await sandbox.ensure("retry");
+
+    expect(execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length).toBe(cloneCallsAfterFirst + 1);
+  });
+
+  it("㉑（I5）onCloneResult 回调自身抛出异常（正常出结果路径）→ 不传导，ensure 仍正常返回", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-cbthrows", state: "running", labels: { "mrotto.workspace": "cbthrows" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: () => {
+        throw new Error("simulated store.append failure (disk full)");
+      },
+    });
+
+    await expect(sandbox.ensure("cbthrows")).resolves.toBeDefined();
+  });
+
+  it("㉒（I5）onCloneResult 回调自身抛出异常（意外异常兜底路径）→ 同样不传导", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-cbthrows2", state: "running", labels: { "mrotto.workspace": "cbthrows2" } },
+    ]);
+    const execLog: ExecLog = [];
+    // 幂等检查本身抛异常（inspect 永远拿不到退出码），逼 runCloneAttempt
+    // 走它自己的 catch 分支——这条分支也调 onCloneResult，同样要吞掉回调
+    // 自身的异常
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 0, neverResolveExitCode: true };
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: () => {
+        throw new Error("simulated callback failure");
+      },
+    });
+
+    await expect(sandbox.ensure("cbthrows2")).resolves.toBeDefined();
+  });
+
+  it("㉓（M7）PAT 存在 + clone 以非零码失败 → 同样触发凭据清理，reason 不含 PAT", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-patfail", state: "running", labels: { "mrotto.workspace": "patfail" } },
+    ]);
+    const execLog: ExecLog = [];
+    const PAT = "ghp_patfail_secret";
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: authentication failed" }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: PAT }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("patfail");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.reason).not.toContain(PAT);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    for (const call of execLog) {
+      expect(call.cmd.join(" ")).not.toContain(PAT);
+    }
+  });
+
+  it("㉔（M8）每条 exec 都带 WorkingDir=/work，且各自套了 timeout（clone 600s，其余默认 30s）", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-wd", state: "running", labels: { "mrotto.workspace": "wd" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("wd");
+
+    expect(execLog.length).toBeGreaterThan(0);
+    for (const call of execLog) {
+      expect(call.workingDir).toBe("/work");
+    }
+
+    const rev = execLog.find((c) => c.cmd.join(" ").includes("rev-parse HEAD"));
+    expect(rev!.cmd.slice(0, 4)).toEqual(["/usr/bin/timeout", "-k", "5", "30"]);
+    const clone = execLog.find((c) => c.cmd.join(" ").includes("git clone --"));
+    expect(clone!.cmd.slice(0, 4)).toEqual(["/usr/bin/timeout", "-k", "5", "600"]);
+  });
+
+  it("㉕（M8）clone 超时（exitCode 124）→ reason 带「命令超时」友好文案", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-timeout", state: "running", labels: { "mrotto.workspace": "timeout" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 124 }), execLog);
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("timeout");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.reason).toContain("命令超时");
+  });
+
+  it("㉖（复审二轮防患）checkCloneComplete 先注册 safe.directory，且发生在 rev-parse 之前", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-safedir", state: "running", labels: { "mrotto.workspace": "safedir" } },
+    ]);
+    const execLog: ExecLog = [];
+    // cloneComplete:true——幂等命中，只走 checkCloneComplete 不真的 clone，
+    // 断言聚焦在这一个函数内两条命令的先后顺序
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("safedir");
+
+    const safeDirIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("safe.directory /work"));
+    const revParseIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("rev-parse HEAD"));
+    expect(safeDirIdx).toBeGreaterThanOrEqual(0);
+    expect(revParseIdx).toBeGreaterThan(safeDirIdx);
+  });
+
+  it("㉗（复审二轮竞态修复）clone 进行中调 invalidateClone——新 attempt 等旧 attempt 完全收尾（含 cleanup）才起步，不重叠", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-race2", state: "running", labels: { "mrotto.workspace": "race2" } },
+    ]);
+    const execLog: ExecLog = [];
+
+    let releaseOldClone: (() => void) | undefined;
+    const oldCloneGate = new Promise<void>((resolve) => {
+      releaseOldClone = resolve;
+    });
+
+    // rev-parse 永远回"没克隆完"（逼真的走到 clone 那一步）；旧配置
+    // （old-repo）的 clone 卡在 gate 上，新配置（new-repo）的 clone 立刻
+    // 完成——用仓库名区分是哪一次 attempt 发起的调用
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 1 };
+        if (script.includes("git clone --") && script.includes("old-repo")) {
+          return { exitCode: 0, gate: oldCloneGate };
+        }
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+
+    let repoConfigCalls = 0;
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => {
+        repoConfigCalls++;
+        // 第一次给旧（坏）配置；owner 纠正之后甚至换成了不需要 PAT 的
+        // 公开仓库——第二次 attempt 应该用这份新配置，而不是继续用旧的
+        return repoConfigCalls === 1
+          ? { repoUrl: "https://github.com/acme/old-repo.git", pat: "ghp_old" }
+          : { repoUrl: "https://github.com/acme/new-repo.git" };
+      },
+    });
+
+    const firstEnsure = sandbox.ensure("race2"); // session A：起第一个 attempt，会卡在 old-repo 的 clone 上
+
+    await waitUntil(() => {
+      const j = execLog.map((c) => c.cmd.join(" "));
+      return j.some((s) => s.includes("git clone --") && s.includes("old-repo"));
+    });
+
+    sandbox.invalidateClone("race2"); // owner 纠正了配置
+    const secondEnsure = sandbox.ensure("race2"); // session B：紧接着触发新的工具调用
+
+    // 给事件循环几个 tick 的机会——如果实现有 bug（invalidateClone 直接
+    // delete 掉 pending 的 slot，导致 B 立刻并发起第二个 attempt），这里
+    // 就会看到 repoConfig 已经被查了第二次。正确实现下 B 的
+    // runCloneAttempt 要等 A 的 promise（含 finally 里的 cleanup）settle
+    // 之后才会调 repoConfig，所以此刻应该仍然是 1。
+    await new Promise((r) => setTimeout(r, 30));
+    expect(repoConfigCalls).toBe(1);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("new-repo"))).toBe(false);
+
+    releaseOldClone!(); // 放行旧 attempt，让它的 clone 完成、走完 finally 里的 cleanup
+
+    await Promise.all([firstEnsure, secondEnsure]);
+
+    // 新 attempt 确实起来了，且用的是新配置（没有 PAT 的公开仓库）
+    expect(repoConfigCalls).toBe(2);
+    const newCloneIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("new-repo"));
+    expect(newCloneIdx).toBeGreaterThanOrEqual(0);
+
+    // 不重叠：旧 attempt 收尾时的凭据清理（整个 execLog 里唯一一次
+    // "git credential reject"——B 的新配置没有 PAT，不会触发它自己的
+    // 凭据步骤，所以这次 reject 只可能属于 A）严格发生在新 attempt 的
+    // clone 之前，证明 B 是排在 A 完全收尾之后才起步的，不是并发
+    const rejectIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git credential reject"));
+    expect(rejectIdx).toBeGreaterThanOrEqual(0);
+    expect(rejectIdx).toBeLessThan(newCloneIdx);
+  });
+});
+
+/** 复审三轮：UI 侧"检测 repoUrl 里有没有藏凭据"这条路已经被绕过三次
+    （全角 ＠ U+FF20、11 层以上嵌套 percent 编码），说明输入校验做不完美，
+    安全边界必须搬到输出侧——`safeRepoLabel` 就是那道边界：只用 WHATWG URL
+    解析器**自己**给出的 protocol+host+pathname 拼展示串，从不读取
+    username/password 字段，解析失败一律退化成不含任何原始片段的「仓库」。
+    这里把 UI 侧三轮复审找到的绕过形态全部喂一遍，加上标准 userinfo 语法
+    和一些边界情况，断言输出里都不含 token 子串。 */
+describe("safeRepoLabel（issue #821 复审三轮：repoUrl 里可能藏凭据，输出侧脱敏）", () => {
+  const TOKEN = "ghp_supersecrettoken1234";
+
+  /** 手搓一段"N 层嵌套 percent 编码"的 @——每多一层，就把上一层结果里的
+      每个 % 再编码成 %25 一次（对应"把上一层的密文当明文再加密一遍"这个
+      直觉）。11 层对应复审提到的"11 层以上嵌套 percent 编码"这个具体
+      花样，不是随便选的层数。 */
+  function nestedPercentEncodedAt(layers: number): string {
+    let result = encodeURIComponent("@"); // 第 1 层：@ → %40
+    for (let i = 1; i < layers; i++) result = result.replace(/%/g, "%25");
+    return result;
+  }
+
+  it("干净的 URL（没有 userinfo）——protocol+host+path 原样展示", () => {
+    expect(safeRepoLabel("https://github.com/acme/widgets.git")).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("标准 userinfo 语法（user:pass@host）——username/password 都被抹掉", () => {
+    const label = safeRepoLabel(`https://user:${TOKEN}@github.com/acme/widgets.git`);
+    expect(label).not.toContain(TOKEN);
+    expect(label).not.toContain("user");
+    expect(label).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("只有 username 没有 password（token-as-username，GitHub PAT 常见写法）——同样被抹掉", () => {
+    const label = safeRepoLabel(`https://${TOKEN}@github.com/acme/widgets.git`);
+    expect(label).not.toContain(TOKEN);
+    expect(label).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("host 为空（file:// 之类没有 host 的合法 URL）——退化成「仓库」", () => {
+    expect(safeRepoLabel("file:///etc/passwd")).toBe("仓库");
+  });
+
+  it("完全解析不出来的字符串——退化成「仓库」，不回显任何原始片段", () => {
+    expect(safeRepoLabel("not a url at all")).toBe("仓库");
+  });
+
+  // ── UI 侧复审三轮找到的绕过形态：逐条喂给 safeRepoLabel，只断言"输出
+  // 不含 token 子串"——不要求每条都精确落在哪个分支（有的会解析失败退化
+  // 成「仓库」，有的可能解析成功但 token 只出现在 username/password 里
+  // 一样被排除），因为这正是"不用逐个识别绕过花样"这个设计目标要验的事。
+  const bypassForms: Array<[string, string]> = [
+    ["全角 ＠（U+FF20）代替 ASCII @，无冒号（模拟 scp 语法混进 https URL）", `https://user${TOKEN}＠github.com/acme/widgets.git`],
+    ["全角 ＠（U+FF20）代替 ASCII @，带冒号", `https://user:${TOKEN}＠github.com/acme/widgets.git`],
+    ["11 层以上嵌套 percent 编码的 @", `https://user:${TOKEN}${nestedPercentEncodedAt(11)}github.com/acme/widgets.git`],
+    ["scp 语法（user@host:path）", `git@github.com:acme/${TOKEN}.git`],
+    ["protocol-relative（//host/path，没有 scheme）", `//github.com/${TOKEN}/widgets.git`],
+    ["纯垃圾字符串里混了 token", `not a url, just ${TOKEN} sitting here`],
+  ];
+
+  for (const [label, url] of bypassForms) {
+    it(`绕过形态——${label}——输出不含 token 子串`, () => {
+      expect(safeRepoLabel(url)).not.toContain(TOKEN);
+    });
+  }
+});
+
+describe("createSandbox — clone 结果的端到端脱敏（issue #821 复审三轮）", () => {
+  it("repoUrl 本身嵌了凭据（userinfo 语法，没有单独配 pat）——clone 成功时 onCloneResult 收到的 repoUrl 不含 token", async () => {
+    const TOKEN = "ghp_endtoend_success_token";
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-embedcred-ok", state: "running", labels: { "mrotto.workspace": "embedcred-ok" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const results: Array<{ result: { ok: boolean; repoUrl: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      // 没有单独的 pat 字段——凭据整个嵌在 repoUrl 里，正是这一轮要堵的口子
+      repoConfig: async () => ({ repoUrl: `https://x:${TOKEN}@github.com/acme/widgets.git` }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; repoUrl: string } }),
+    });
+
+    await sandbox.ensure("embedcred-ok");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(true);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.repoUrl).toBe("https://github.com/acme/widgets.git");
+    // Cmd 数组本来就不该含 URL 里的凭据（clone 用的是原样 repoUrl，这条
+    // 断言确认"原样"不等于"把 userinfo 也原样喂给 shell"——shellQuote
+    // 只是转义，不会主动剥凭据，token 仍然会出现在 Cmd 里（这是预期行为：
+    // git 需要这条完整 URL 才能真的认证），这条测试只保证它不出现在
+    // onCloneResult 的 repoUrl 里
+    expect(results[0]!.result.repoUrl).not.toContain("x:");
+  });
+
+  it("repoUrl 嵌了凭据 + git clone 失败时把整条 URL 回显进 stderr——reason 里也不含 token", async () => {
+    const TOKEN = "ghp_endtoend_fail_token";
+    const rawUrl = `https://x:${TOKEN}@github.com/acme/does-not-exist.git`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-embedcred-fail", state: "running", labels: { "mrotto.workspace": "embedcred-fail" } },
+    ]);
+    const execLog: ExecLog = [];
+    // 模拟 git 的真实行为：clone 失败时把它当时用的那条 URL（含凭据）
+    // 原样回显进 stderr——这正是 sanitizeCloneText 要接住的情形
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({
+        cloneComplete: false,
+        cloneExit: 128,
+        cloneStderr: `fatal: unable to access '${rawUrl}/': The requested URL returned error: 403`,
+      }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("embedcred-fail");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).toBeDefined();
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+    // sanitizeCloneText 应该把整条原样 URL 换成安全标签，而不只是抠掉
+    // token 子串——顺带确认这一点（reason 里不该有原样 rawUrl）
+    expect(results[0]!.result.reason).not.toContain(rawUrl);
+  });
+
+  it("repoUrl 用绕过 UI 检测的全角 ＠ 编码嵌了凭据——clone 失败时 repoUrl/reason 都不含 token", async () => {
+    const TOKEN = "ghp_fullwidth_bypass_token";
+    // 全角 ＠ 会让 new URL(...) 直接抛异常（已在实现里验证过）——这条
+    // 测试模拟"UI 检测被绕过、这串字符串就这样一路传到了 runtime"的情形
+    const rawUrl = `https://x${TOKEN}＠github.com/acme/widgets.git`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-fullwidth-e2e", state: "running", labels: { "mrotto.workspace": "fullwidth-e2e" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: `fatal: unable to access '${rawUrl}/'` }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("fullwidth-e2e");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.repoUrl).toBe("仓库"); // 解析失败——safeRepoLabel 的通用退化文案
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+  });
+
+  it("repoUrl 解析失败时的内部错误消息（safeHostOf 抛出）不回显原始 repoUrl", async () => {
+    // repoUrl 解析不出来 + 配了 pat（走 safeHostOf 那条路）——用一个
+    // new URL() 也解析不了的字符串
+    const TOKEN = "ghp_safehostof_token";
+    const rawUrl = `not-a-valid-url-with-${TOKEN}`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-safehostof", state: "running", labels: { "mrotto.workspace": "safehostof" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false }), execLog);
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl, pat: "ghp_separate_pat" }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("safehostof");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).not.toContain(rawUrl);
+  });
+
+  // ── 复审四轮：reason 通道单独还漏（同一文件第二条出境通道）───────────
+  // 上面几条测试证明了 repoUrl 字段和"stderr 原样回显整条 URL"这个情形
+  // 下 reason 字段的安全性，但漏了一类更刁钻的情形：repoUrl 解析失败
+  // （fail-closed 分支该接管的时候），git（或它调用的 ssh）在报错前会
+  // **改写**这条 URL 再回显——百分号编码非 ASCII 字符、解码已有的 %XX、
+  // 或者只回显 user@host 这一小段——改写后的文本跟原始 cfg.repoUrl 逐字
+  // 比对不上，旧版 sanitizeCloneText 的"整条子串替换"直接落空，SECRET
+  // 就从 reason 漏出去了。这里把复审实测出的 3 个真实案例原样搬进来。
+  it("（复审四轮①）全角 ＠ 解析失败 + git 把 ＠ 百分号编码后回显——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_fullwidth_secret";
+    const rawUrl = `https://user${SECRET}＠github.com/acme/widgets.git`;
+    // 模拟 git 在报错前把非 ASCII 的全角 ＠（UTF-8 是 EF BC A0）百分号
+    // 编码后再回显——这条字符串跟 rawUrl 逐字对不上，正是漏洞成因
+    const gitEcho = `fatal: unable to access 'https://user${SECRET}%EF%BC%A0github.com/acme/widgets.git/': Failed to connect`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-fullwidth", state: "running", labels: { "mrotto.workspace": "r4-fullwidth" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-fullwidth");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBeDefined();
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    // fail-closed：整条改写成固定文案，不放行 git 的自由文本
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮②）scp 语法解析失败 + ssh 只回显 user@host 片段——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_scp_secret";
+    const rawUrl = `${SECRET}@github.com:acme/widgets.git`; // scp 语法，SECRET 冒充 git 用户名
+    // ssh 失败时经常只回显 user@host 这一小段，不包含冒号后面的 path——
+    // 这段片段跟完整的 rawUrl 逐字对不上
+    const gitEcho = `ssh: connect to host github.com port 22: Permission denied (publickey) for ${SECRET}@github.com`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-scp", state: "running", labels: { "mrotto.workspace": "r4-scp" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-scp");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮③）%40 解析失败 + git 解码后回显——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_percent40_secret";
+    const rawUrl = `https://user:${SECRET}%40github.com/acme/widgets.git`; // 单层 %40，new URL() 拒绝
+    // git 在报错前把 %40 解码成字面 @ 再回显——解码后的文本跟原样保留
+    // %40 的 rawUrl 逐字对不上
+    const gitEcho = `fatal: unable to access 'https://user:${SECRET}@github.com/acme/widgets.git/': The requested URL returned error: 403`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-percent40", state: "running", labels: { "mrotto.workspace": "r4-percent40" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-percent40");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮，正常路径不受影响）repoUrl 能正常解析时，clone 失败的排错信息照旧透传", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-normal", state: "running", labels: { "mrotto.workspace": "r4-normal" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: repository not found" }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/does-not-exist.git" }), // 干净的、能正常解析的 URL
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-normal");
+
+    expect(results.length).toBe(1);
+    // 能解析的正常路径不受 fail-closed 影响——排错信息照旧，不是固定文案
+    expect(results[0]!.result.reason).toContain("repository not found");
+    expect(results[0]!.result.reason).not.toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
   });
 });

@@ -21,7 +21,7 @@ import { createDockerWorld } from "../../../src/world/dockerWorld.js";
 import { createOpenAICompatibleAdapter } from "../../../src/model/openaiCompatible.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
-import type { TokenUsage } from "../../../src/session/events.js";
+import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
@@ -73,8 +73,11 @@ function createFileOrphansStore(path: string): OrphansStore {
     migration 0016 只加了 workspace_sessions.kind/archived 和 usage_ledger），
     所以落本地文件，形状同 orphans.json——一个按 workspaceId 键控的小 JSON。
     pat 是敏感凭据，不落 Supabase 也更保守（同 ADR-0151「凭证不出你的机器」
-    的精神，虽然这里的「机器」换成了 runtime VPS）。目前没有任何消费方读它
-    （sandbox.ensure 还不会拿它去 git clone）——见 report 的已知限制。 */
+    的精神，虽然这里的「机器」换成了 runtime VPS）。
+    消费方是 sandbox.ts 的 ensure()（issue #821 slice 1）：`load` 按
+    workspaceId 现查一次（同步读本地 JSON 文件，快到可以忽略），不额外
+    做缓存——sandbox.ts 自己那层 cloneAttempts 缓存的是"是否已经跑过
+    clone"，不是配置本身。 */
 function createWorkspaceConfigStore(path: string) {
   function loadAll(): Record<string, { repoUrl: string; pat?: string }> {
     if (!existsSync(path)) return {};
@@ -94,6 +97,9 @@ function createWorkspaceConfigStore(path: string) {
       writeFileSync(path, JSON.stringify(all, null, 2), { mode: 0o600 });
       chmodSync(path, 0o600);
     },
+    load(workspaceId: string): { repoUrl: string; pat?: string } | undefined {
+      return loadAll()[workspaceId];
+    },
   };
 }
 
@@ -105,9 +111,8 @@ async function main(): Promise<void> {
   const docker = new Docker();
   const workspaceConfigStore = createWorkspaceConfigStore(join(config.dataDir, "workspace-config.json"));
 
-  const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
-    orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
-  });
+  // sandbox 的构造挪到下面（activeSessions/storeFor/sessionBroadcast 定义
+  // 之后）——onCloneResult 要用 notifyWorkspace 通报活跃会话，见那里的注释
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
 
@@ -193,6 +198,56 @@ async function main(): Promise<void> {
     return store;
   }
 
+  // clone 结果通报（issue #821 slice 1）的广播口——按 sessionId 记住"怎么
+  // 把一条事件广播给这个会话房间里已验籍的 cid 们"，复用 openSessionRoom
+  // 里已经有的那个 broadcast 闭包（同一个函数引用，不是重新拼一遍
+  // for-of-roster 逻辑）。
+  const sessionBroadcast = new Map<string, (e: SessionEvent) => void>();
+
+  /** clone 结果通报：console 之外，再给该工作区**此刻还活着**的每一条云
+      会话各追加一条 chat_message（fromUid:"system"、label:"系统"）+ 实时
+      广播——和真人发言走同一条日志/推送路径，客户端不需要为"系统消息"
+      单独处理一套。只在 sandbox.ts 真的跑了一次 clone 时被调（幂等跳过
+      的情况不触发，见 sandbox.ts 的 runCloneAttempt），不会在每次进程
+      重启时对旧结果重复刷屏。
+      已知限制：这个工作区如果此刻没有任何活跃会话（比如 daemon 刚重启，
+      还没人发过言），这条通报没有落点——下一个人发言时新开的会话不会
+      补看到它，只有 console 那份日志还在。UI 入口是这个 issue 的第二刀，
+      到时候"任何人一打开工作区就能看见 clone 状态"要在那边解决，不是
+      在这条只服务"已经开着的会话"的通报线里硬塞。 */
+  function notifyWorkspace(workspaceId: string, text: string): void {
+    for (const [sessionId, entry] of activeSessions) {
+      if (entry.workspaceId !== workspaceId) continue;
+      const store = storeFor(workspaceId);
+      const e = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "chat_message",
+        fromUid: "system",
+        label: "系统",
+        content: text,
+        mention: false,
+      });
+      sessionBroadcast.get(sessionId)?.(e);
+    }
+  }
+
+  const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
+    orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
+    repoConfig: async (workspaceId) => workspaceConfigStore.load(workspaceId),
+    onCloneResult: (workspaceId, result) => {
+      const text = result.ok
+        ? `仓库克隆成功：${result.repoUrl}`
+        : `仓库克隆失败（${result.repoUrl}）：${result.reason}`;
+      if (result.ok) {
+        console.log(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
+      } else {
+        console.warn(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
+      }
+      notifyWorkspace(workspaceId, text);
+    },
+  });
+
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
       的房间重新接上（不然重启后没人监听那个 channel，desktop 的 join 会
@@ -274,6 +329,12 @@ async function main(): Promise<void> {
 
     const world = createDockerWorld({ container: () => sandbox.ensure(workspaceId) });
 
+    // 提出来命名，好让 notifyWorkspace（clone 结果通报）复用同一份广播
+    // 逻辑，而不是重新拼一遍 for-of-roster
+    const broadcast = (e: SessionEvent): void => {
+      for (const cid of roster) globalSend(cid, { t: "event", event: e });
+    };
+
     session = createCloudSession({
       workspaceId,
       sessionId,
@@ -283,13 +344,12 @@ async function main(): Promise<void> {
       adapter: perSessionAdapter,
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
-      onEvent: (e) => {
-        for (const cid of roster) globalSend(cid, { t: "event", event: e });
-      },
+      onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 withUsage 钩子，这个口留白（同 T9 report 的记录）
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
+    sessionBroadcast.set(sessionId, broadcast);
     return session;
   }
 
@@ -322,7 +382,15 @@ async function main(): Promise<void> {
       },
       ownerOf,
     },
-    saveConfig: (workspaceId, cfg) => workspaceConfigStore.save(workspaceId, cfg),
+    // owner 纠正 repoUrl/PAT 后，光写盘不够——sandbox.ts 的 cloneAttempts
+    // 缓存（settle 后刻意不删，见该文件注释）会一直挡着重新尝试，只有
+    // daemon 重启才会失效，且没有任何提示告诉 owner「你的修正没生效」
+    // （复审 I4）。落盘成功后立刻调 invalidateClone，让下一次 ensure()
+    // 重新走一遍幂等检查/clone。
+    saveConfig: async (workspaceId, cfg) => {
+      await workspaceConfigStore.save(workspaceId, cfg);
+      sandbox.invalidateClone(workspaceId);
+    },
     send: globalSend,
     dropCid,
   };
