@@ -63,9 +63,10 @@ function fakeRelay() {
         send(p) {
           // 这个 harness 一边只有一条连接,所以 to 一定指向对面那条,不用查表
           const peer = sink[peerOf(role)];
-          if (!peer) { dropped.push(p); return; }
+          if (!peer) { dropped.push(p); return false; }
           queue.push(() => peer(p, CID[role]));
           flush();
+          return true;
         },
         /** 桥不该调它(重连时机归调用方,见 RemoteTransport 合同) */
         reconnectNow() {},

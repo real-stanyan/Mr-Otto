@@ -257,13 +257,15 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
       attempt = 0; // 主动换,不是失败重试,退避从头算
       void connect();
     },
+    // 四条 return false 就是 issue #829 的全部内容:它们原来都只 log 一句
+    // 就静默返回,于是"发了"和"没发"在调用方那里长得一模一样
     send(payload, to) {
-      if (closed) return;
+      if (closed) return false;
       // **必须指名。** 每条对端连接有自己一套会话密钥,发错了对面解不开,
       // 而 sealedStream 的计数器还会把它判成异常(ADR-0130)
       if (!to) {
         log("远程传输:没有收件人,这一帧丢了");
-        return;
+        return false;
       }
       const sock = ws;
       // 连接不在/没开:丢掉。**刻意不触发 onClose** —— 对端不在线和连接没建好
@@ -272,12 +274,14 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
       // 下一轮由那条信号开
       if (!sock || sock.readyState !== 1 /* OPEN */) {
         log("远程传输:连接没开,这一帧丢了");
-        return;
+        return false;
       }
       try {
         sock.send(encodeFrame(to, payload));
+        return true;
       } catch (e: unknown) {
         log(`远程传输:上行发不出去:${e instanceof Error ? e.message : String(e)}`);
+        return false;
       }
     },
     onMessage(cb) { onMsg = cb; },

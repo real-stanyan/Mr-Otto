@@ -37,7 +37,7 @@ function fakeTransport() {
   return {
     sent,
     addressed,
-    send(p: string, to: string) { sent.push(p); addressed.push({ payload: p, to }); },
+    send(p: string, to: string) { sent.push(p); addressed.push({ payload: p, to }); return true; },
     onMessage(cb: (p: string, from: string) => void) { onMsg = cb; },
     onPeer(cb: (cid: string) => void) { onPeer = cb; },
     onGone(cb: (cid: string) => void) { onGone = cb; },

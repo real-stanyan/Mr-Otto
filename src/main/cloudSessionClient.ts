@@ -449,10 +449,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       return;
     }
     try {
-      session.transport.send(
+      const sent = session.transport.send(
         encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }),
         session.hostCid,
       );
+      // 丢了不是死局（issue #829）：重连后中继会重发 `:peer`，那条信号会
+      // 再触发一次 sendHello。但它必须留下痕迹——"一直停在 connecting"
+      // 只看日志的话，有这一行和没这一行是两种排查难度
+      if (!sent) deps.log?.("云会话:hello 没发出去（连接没开），等下一轮 :peer 重试");
     } catch (e) {
       deps.log?.(`云会话:hello 编码失败:${e instanceof Error ? e.message : String(e)}`);
     }
@@ -467,7 +471,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   }
 
   /** say/approve/archive/config 共用：编码失败（say.text 超 64KiB / 整帧超
-      MAX_FRAME_BYTES）在这里落地成失败结果，不让 encodeCs 的异常原样往外抛 */
+      MAX_FRAME_BYTES）在这里落地成失败结果，不让 encodeCs 的异常原样往外抛。
+
+      transport.send 的返回值也在这里落地（issue #829）：它有四条不抛异常的
+      丢帧路径，其中一条正是"正在自动重连"这个完全正常的窗口。回 true 只
+      证明帧已经交给本机的 socket——**不是送达确认**（那件事由 config 的
+      `config_result` 回执负责），但至少把"压根没发出去"这一半从"成功"里
+      择了出来。 */
   function sendFrame(session: ActiveSession, msg: CsUp): FriendsResult<null> {
     let payload: string;
     try {
@@ -475,7 +485,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
-    session.transport.send(payload, session.hostCid!);
+    if (!session.transport.send(payload, session.hostCid!)) {
+      return { ok: false, message: "连接不通，这一帧没发出去——稍后重试。" };
+    }
     return { ok: true, value: null };
   }
 
@@ -515,8 +527,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         try {
           // 控制房没有「welcome」概念——hello 成功是静默的，下一步直接发
           // create，回执是 created 帧（frameHandler.ts 的注释原话）
-          transport.send(encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }), cid);
-          transport.send(encodeCs({ t: "create", workspaceId }), cid);
+          const helloSent = transport.send(encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }), cid);
+          const createSent = helloSent && transport.send(encodeCs({ t: "create", workspaceId }), cid);
+          // 没发出去就当场收工（issue #829）：原来这里会白等满
+          // CS_CREATE_TIMEOUT_MS 才回一句"云端无响应"——把"我们没发出去"
+          // 说成"对面没回话"，方向反了，人会去查 VPS
+          if (!createSent) finish({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
         } catch (e) {
           finish({ ok: false, message: e instanceof Error ? e.message : String(e) });
         }
