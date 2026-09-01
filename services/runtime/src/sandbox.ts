@@ -190,22 +190,46 @@ export function safeRepoLabel(repoUrl: string): string {
     塞了凭据（见 safeRepoLabel 的注释），而且 git 的错误消息经常把它执行
     失败时用的那条 URL **原样回显**（比如 "fatal: unable to access
     'https://user:pass@host/x.git/'"）——这条泄漏路径不在 pat 变量里，
-    redactPat 管不到。这里做两件事：① 把整条 repoUrl 子串（如果原样出现）
-    换成 safeRepoLabel 的结果；② repoUrl 解析得出的 username/password
-    （如果非空）各自的原文也擦掉，兜底"工具只把凭据片段打进日志、没抄
-    整条 URL"的情形。跟 redactPat 一样是尽力而为，不是形式化证明——真正
-    的安全边界是 CloneResult.repoUrl 从来不存原始 repoUrl，这个函数是给
-    reason 这种自由文本字段的第二道防线，不是唯一防线。 */
+    redactPat 管不到。
+
+    repoUrl **能解析**时做三件事：① 走 redactPat；② 把整条 repoUrl 子串
+    （如果原样出现）换成 safeRepoLabel 的结果；③ repoUrl 解析得出的
+    username/password（如果非空）各自的原文也擦掉，兜底"工具只把凭据
+    片段打进日志、没抄整条 URL"的情形。
+
+    repoUrl **解析失败**时——fail-closed（复审四轮）：不再对 text 做任何
+    部分脱敏，整段换成固定文案。原因见下面 catch 分支的注释：②那种逐字
+    子串匹配一旦 git 在报错前哪怕只改写了 URL 的一个字符（百分号编码/
+    解码/只回显片段），就会失效，而这时③又用不了（parse 都失败了，没有
+    username/password 可比对）——复审四轮就是拿这个盲点实测出了 3 个真实
+    泄漏案例。跟 redactPat 一样是尽力而为，不是形式化证明——真正的安全
+    边界是 CloneResult.repoUrl 从来不存原始 repoUrl，这个函数是给 reason
+    这种自由文本字段的第二道防线，不是唯一防线。 */
 function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: string }): string {
+  let url: URL;
+  try {
+    url = new URL(cfg.repoUrl);
+  } catch {
+    // repoUrl 解析不出来——fail-closed（复审四轮，跟 safeRepoLabel 同一条
+    // 原则）：不能只靠"整条 cfg.repoUrl 子串替换"兜底。git（或它调用的
+    // ssh）在报错前经常会**改写**这条 URL 再回显——百分号编码非 ASCII
+    // 字符、解码已有的 %XX、或者干脆只回显 user@host 这一小段而不是整条
+    // URL——改写后的文本跟原始 cfg.repoUrl 逐字比对不上，子串替换直接
+    // 落空；而这里又拿不到 username/password 做第二道匹配（parse 都
+    // 失败了）。继续放行这段自由文本，就是继续赌"这次 git 没有在输出里
+    // 留下凭据碎片"——赌输一次就是把凭据广播给工作区全体成员（复审四轮
+    // 实测出的 3 个真实案例：全角 ＠ 被百分号编码回显、scp 语法被 ssh
+    // 回显 user@host 片段、%40 被解码回显，都属于"整条子串匹配对不上"）。
+    // 宁可损失这条路径下的排错细节，也不放行任何一个字符——owner 少看到
+    // 一点排错信息，换来的是 token 结构上不可能从这条路径出现在 reason
+    // 里。能正常解析的路径（下面 try 之后的部分）不受影响，排错信息照旧。
+    return "（错误详情已省略：仓库地址无法解析，可能含凭据）";
+  }
+
   let result = redactPat(text, cfg.pat);
   result = result.split(cfg.repoUrl).join(safeRepoLabel(cfg.repoUrl));
-  try {
-    const url = new URL(cfg.repoUrl);
-    if (url.password) result = result.split(url.password).join("***");
-    if (url.username) result = result.split(url.username).join("***");
-  } catch {
-    // repoUrl 解析不出来——上面的整条子串替换已经是能做的全部
-  }
+  if (url.password) result = result.split(url.password).join("***");
+  if (url.username) result = result.split(url.username).join("***");
   return result;
 }
 

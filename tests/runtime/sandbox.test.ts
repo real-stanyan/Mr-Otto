@@ -1143,4 +1143,128 @@ describe("createSandbox — clone 结果的端到端脱敏（issue #821 复审�
     expect(results[0]!.result.reason).not.toContain(TOKEN);
     expect(results[0]!.result.reason).not.toContain(rawUrl);
   });
+
+  // ── 复审四轮：reason 通道单独还漏（同一文件第二条出境通道）───────────
+  // 上面几条测试证明了 repoUrl 字段和"stderr 原样回显整条 URL"这个情形
+  // 下 reason 字段的安全性，但漏了一类更刁钻的情形：repoUrl 解析失败
+  // （fail-closed 分支该接管的时候），git（或它调用的 ssh）在报错前会
+  // **改写**这条 URL 再回显——百分号编码非 ASCII 字符、解码已有的 %XX、
+  // 或者只回显 user@host 这一小段——改写后的文本跟原始 cfg.repoUrl 逐字
+  // 比对不上，旧版 sanitizeCloneText 的"整条子串替换"直接落空，SECRET
+  // 就从 reason 漏出去了。这里把复审实测出的 3 个真实案例原样搬进来。
+  it("（复审四轮①）全角 ＠ 解析失败 + git 把 ＠ 百分号编码后回显——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_fullwidth_secret";
+    const rawUrl = `https://user${SECRET}＠github.com/acme/widgets.git`;
+    // 模拟 git 在报错前把非 ASCII 的全角 ＠（UTF-8 是 EF BC A0）百分号
+    // 编码后再回显——这条字符串跟 rawUrl 逐字对不上，正是漏洞成因
+    const gitEcho = `fatal: unable to access 'https://user${SECRET}%EF%BC%A0github.com/acme/widgets.git/': Failed to connect`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-fullwidth", state: "running", labels: { "mrotto.workspace": "r4-fullwidth" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-fullwidth");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBeDefined();
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    // fail-closed：整条改写成固定文案，不放行 git 的自由文本
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮②）scp 语法解析失败 + ssh 只回显 user@host 片段——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_scp_secret";
+    const rawUrl = `${SECRET}@github.com:acme/widgets.git`; // scp 语法，SECRET 冒充 git 用户名
+    // ssh 失败时经常只回显 user@host 这一小段，不包含冒号后面的 path——
+    // 这段片段跟完整的 rawUrl 逐字对不上
+    const gitEcho = `ssh: connect to host github.com port 22: Permission denied (publickey) for ${SECRET}@github.com`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-scp", state: "running", labels: { "mrotto.workspace": "r4-scp" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-scp");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮③）%40 解析失败 + git 解码后回显——reason 不含 SECRET", async () => {
+    const SECRET = "ghp_fourthround_percent40_secret";
+    const rawUrl = `https://user:${SECRET}%40github.com/acme/widgets.git`; // 单层 %40，new URL() 拒绝
+    // git 在报错前把 %40 解码成字面 @ 再回显——解码后的文本跟原样保留
+    // %40 的 rawUrl 逐字对不上
+    const gitEcho = `fatal: unable to access 'https://user:${SECRET}@github.com/acme/widgets.git/': The requested URL returned error: 403`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-percent40", state: "running", labels: { "mrotto.workspace": "r4-percent40" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: gitEcho }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-percent40");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(SECRET);
+    expect(results[0]!.result.reason).not.toContain(SECRET);
+    expect(results[0]!.result.reason).toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
+
+  it("（复审四轮，正常路径不受影响）repoUrl 能正常解析时，clone 失败的排错信息照旧透传", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-r4-normal", state: "running", labels: { "mrotto.workspace": "r4-normal" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: repository not found" }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/does-not-exist.git" }), // 干净的、能正常解析的 URL
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("r4-normal");
+
+    expect(results.length).toBe(1);
+    // 能解析的正常路径不受 fail-closed 影响——排错信息照旧，不是固定文案
+    expect(results[0]!.result.reason).toContain("repository not found");
+    expect(results[0]!.result.reason).not.toBe("（错误详情已省略：仓库地址无法解析，可能含凭据）");
+  });
 });
