@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { createSandbox, type DockerLike } from "../../services/runtime/src/sandbox.js";
+import { createSandbox, safeRepoLabel, type DockerLike } from "../../services/runtime/src/sandbox.js";
 
 interface FakeContainer {
   id: string;
@@ -955,5 +955,192 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     const rejectIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git credential reject"));
     expect(rejectIdx).toBeGreaterThanOrEqual(0);
     expect(rejectIdx).toBeLessThan(newCloneIdx);
+  });
+});
+
+/** 复审三轮：UI 侧"检测 repoUrl 里有没有藏凭据"这条路已经被绕过三次
+    （全角 ＠ U+FF20、11 层以上嵌套 percent 编码），说明输入校验做不完美，
+    安全边界必须搬到输出侧——`safeRepoLabel` 就是那道边界：只用 WHATWG URL
+    解析器**自己**给出的 protocol+host+pathname 拼展示串，从不读取
+    username/password 字段，解析失败一律退化成不含任何原始片段的「仓库」。
+    这里把 UI 侧三轮复审找到的绕过形态全部喂一遍，加上标准 userinfo 语法
+    和一些边界情况，断言输出里都不含 token 子串。 */
+describe("safeRepoLabel（issue #821 复审三轮：repoUrl 里可能藏凭据，输出侧脱敏）", () => {
+  const TOKEN = "ghp_supersecrettoken1234";
+
+  /** 手搓一段"N 层嵌套 percent 编码"的 @——每多一层，就把上一层结果里的
+      每个 % 再编码成 %25 一次（对应"把上一层的密文当明文再加密一遍"这个
+      直觉）。11 层对应复审提到的"11 层以上嵌套 percent 编码"这个具体
+      花样，不是随便选的层数。 */
+  function nestedPercentEncodedAt(layers: number): string {
+    let result = encodeURIComponent("@"); // 第 1 层：@ → %40
+    for (let i = 1; i < layers; i++) result = result.replace(/%/g, "%25");
+    return result;
+  }
+
+  it("干净的 URL（没有 userinfo）——protocol+host+path 原样展示", () => {
+    expect(safeRepoLabel("https://github.com/acme/widgets.git")).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("标准 userinfo 语法（user:pass@host）——username/password 都被抹掉", () => {
+    const label = safeRepoLabel(`https://user:${TOKEN}@github.com/acme/widgets.git`);
+    expect(label).not.toContain(TOKEN);
+    expect(label).not.toContain("user");
+    expect(label).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("只有 username 没有 password（token-as-username，GitHub PAT 常见写法）——同样被抹掉", () => {
+    const label = safeRepoLabel(`https://${TOKEN}@github.com/acme/widgets.git`);
+    expect(label).not.toContain(TOKEN);
+    expect(label).toBe("https://github.com/acme/widgets.git");
+  });
+
+  it("host 为空（file:// 之类没有 host 的合法 URL）——退化成「仓库」", () => {
+    expect(safeRepoLabel("file:///etc/passwd")).toBe("仓库");
+  });
+
+  it("完全解析不出来的字符串——退化成「仓库」，不回显任何原始片段", () => {
+    expect(safeRepoLabel("not a url at all")).toBe("仓库");
+  });
+
+  // ── UI 侧复审三轮找到的绕过形态：逐条喂给 safeRepoLabel，只断言"输出
+  // 不含 token 子串"——不要求每条都精确落在哪个分支（有的会解析失败退化
+  // 成「仓库」，有的可能解析成功但 token 只出现在 username/password 里
+  // 一样被排除），因为这正是"不用逐个识别绕过花样"这个设计目标要验的事。
+  const bypassForms: Array<[string, string]> = [
+    ["全角 ＠（U+FF20）代替 ASCII @，无冒号（模拟 scp 语法混进 https URL）", `https://user${TOKEN}＠github.com/acme/widgets.git`],
+    ["全角 ＠（U+FF20）代替 ASCII @，带冒号", `https://user:${TOKEN}＠github.com/acme/widgets.git`],
+    ["11 层以上嵌套 percent 编码的 @", `https://user:${TOKEN}${nestedPercentEncodedAt(11)}github.com/acme/widgets.git`],
+    ["scp 语法（user@host:path）", `git@github.com:acme/${TOKEN}.git`],
+    ["protocol-relative（//host/path，没有 scheme）", `//github.com/${TOKEN}/widgets.git`],
+    ["纯垃圾字符串里混了 token", `not a url, just ${TOKEN} sitting here`],
+  ];
+
+  for (const [label, url] of bypassForms) {
+    it(`绕过形态——${label}——输出不含 token 子串`, () => {
+      expect(safeRepoLabel(url)).not.toContain(TOKEN);
+    });
+  }
+});
+
+describe("createSandbox — clone 结果的端到端脱敏（issue #821 复审三轮）", () => {
+  it("repoUrl 本身嵌了凭据（userinfo 语法，没有单独配 pat）——clone 成功时 onCloneResult 收到的 repoUrl 不含 token", async () => {
+    const TOKEN = "ghp_endtoend_success_token";
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-embedcred-ok", state: "running", labels: { "mrotto.workspace": "embedcred-ok" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const results: Array<{ result: { ok: boolean; repoUrl: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      // 没有单独的 pat 字段——凭据整个嵌在 repoUrl 里，正是这一轮要堵的口子
+      repoConfig: async () => ({ repoUrl: `https://x:${TOKEN}@github.com/acme/widgets.git` }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; repoUrl: string } }),
+    });
+
+    await sandbox.ensure("embedcred-ok");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(true);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.repoUrl).toBe("https://github.com/acme/widgets.git");
+    // Cmd 数组本来就不该含 URL 里的凭据（clone 用的是原样 repoUrl，这条
+    // 断言确认"原样"不等于"把 userinfo 也原样喂给 shell"——shellQuote
+    // 只是转义，不会主动剥凭据，token 仍然会出现在 Cmd 里（这是预期行为：
+    // git 需要这条完整 URL 才能真的认证），这条测试只保证它不出现在
+    // onCloneResult 的 repoUrl 里
+    expect(results[0]!.result.repoUrl).not.toContain("x:");
+  });
+
+  it("repoUrl 嵌了凭据 + git clone 失败时把整条 URL 回显进 stderr——reason 里也不含 token", async () => {
+    const TOKEN = "ghp_endtoend_fail_token";
+    const rawUrl = `https://x:${TOKEN}@github.com/acme/does-not-exist.git`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-embedcred-fail", state: "running", labels: { "mrotto.workspace": "embedcred-fail" } },
+    ]);
+    const execLog: ExecLog = [];
+    // 模拟 git 的真实行为：clone 失败时把它当时用的那条 URL（含凭据）
+    // 原样回显进 stderr——这正是 sanitizeCloneText 要接住的情形
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({
+        cloneComplete: false,
+        cloneExit: 128,
+        cloneStderr: `fatal: unable to access '${rawUrl}/': The requested URL returned error: 403`,
+      }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("embedcred-fail");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).toBeDefined();
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+    // sanitizeCloneText 应该把整条原样 URL 换成安全标签，而不只是抠掉
+    // token 子串——顺带确认这一点（reason 里不该有原样 rawUrl）
+    expect(results[0]!.result.reason).not.toContain(rawUrl);
+  });
+
+  it("repoUrl 用绕过 UI 检测的全角 ＠ 编码嵌了凭据——clone 失败时 repoUrl/reason 都不含 token", async () => {
+    const TOKEN = "ghp_fullwidth_bypass_token";
+    // 全角 ＠ 会让 new URL(...) 直接抛异常（已在实现里验证过）——这条
+    // 测试模拟"UI 检测被绕过、这串字符串就这样一路传到了 runtime"的情形
+    const rawUrl = `https://x${TOKEN}＠github.com/acme/widgets.git`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-fullwidth-e2e", state: "running", labels: { "mrotto.workspace": "fullwidth-e2e" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: `fatal: unable to access '${rawUrl}/'` }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("fullwidth-e2e");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.repoUrl).toBe("仓库"); // 解析失败——safeRepoLabel 的通用退化文案
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+  });
+
+  it("repoUrl 解析失败时的内部错误消息（safeHostOf 抛出）不回显原始 repoUrl", async () => {
+    // repoUrl 解析不出来 + 配了 pat（走 safeHostOf 那条路）——用一个
+    // new URL() 也解析不了的字符串
+    const TOKEN = "ghp_safehostof_token";
+    const rawUrl = `not-a-valid-url-with-${TOKEN}`;
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-safehostof", state: "running", labels: { "mrotto.workspace": "safehostof" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false }), execLog);
+    const results: Array<{ result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: rawUrl, pat: "ghp_separate_pat" }),
+      onCloneResult: (_workspaceId, result) =>
+        results.push({ result: result as { ok: boolean; repoUrl: string; reason?: string } }),
+    });
+
+    await sandbox.ensure("safehostof");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.repoUrl).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).not.toContain(TOKEN);
+    expect(results[0]!.result.reason).not.toContain(rawUrl);
   });
 });

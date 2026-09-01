@@ -58,8 +58,17 @@ export interface WorkspaceRepoConfig {
   pat?: string;
 }
 
-/** 一次 clone 尝试的结局——ok:false 时 reason 已经过脱敏（见 redactPat），
-    可以直接落日志/chat_message，不需要调用方再处理一遍 */
+/** 一次 clone 尝试的结局。**`repoUrl` 字段从不是原始配置的 repoUrl，
+    永远是 `safeRepoLabel(...)` 的输出**（复审三轮：UI 侧"检测输入里有没
+    有藏凭据"这条路已经被绕过三次——全角 ＠ U+FF20、11 层以上嵌套 percent
+    编码——说明输入校验做不完美，安全边界必须搬到输出侧）。这个类型是要
+    经 `onCloneResult` 广播给整个工作区的东西（daemon.ts 的
+    `notifyWorkspace` 发 `chat_message` 给全体成员），原始 repoUrl（可能带
+    userinfo 语法嵌进去的凭据）绝不允许流到这里——真正需要原始 repoUrl 的
+    地方只有 `performClone` 内部（拿去跑 `git clone`），出了那个函数就再
+    也摸不到它，不依赖任何一处调用方"记得脱敏"。`reason` 同理已经过
+    `sanitizeCloneText` 脱敏（既擦 pat，也擦 repoUrl 里可能藏的凭据），
+    可以直接落日志/`chat_message`，不需要调用方再处理一遍。 */
 export type CloneResult = { ok: true; repoUrl: string } | { ok: false; repoUrl: string; reason: string };
 
 const DEFAULT_IMAGE = "otto-sandbox";
@@ -149,13 +158,67 @@ function redactPat(text: string, pat: string | undefined): string {
   return text.split(pat).join("***");
 }
 
+// ── repoUrl 本身可能藏凭据（复审三轮）─────────────────────────────────────
+// owner 填的 repoUrl 理论上不该带凭据（PAT 走独立的 pat 字段），但用户
+// 完全可能自己塞一条 `https://user:pass@host/x.git` 进来（或者是 UI 侧
+// 输入检测想拦却没拦住的某种绕过形态——那条检测已经被绕过三轮：全角 ＠
+// U+FF20、11 层以上嵌套 percent 编码）。UI 那边的教训是：靠"识别输入里
+// 有没有藏凭据"这条路做不完美，每堵一个新花样都只是又添一条黑名单规则。
+// 这里换一种做法——不猜"这串像不像藏了凭据"，只用 WHATWG URL 解析器
+// **自己**给出的字段（协议+host+路径，从不读 username/password）拼展示串；
+// 解析失败就整体退化成不含任何原始片段的通用文案。经验证（Node 内置
+// URL）：全角 ＠、嵌套 percent 编码、scp 语法（user@host:path）、
+// protocol-relative（//host/path）全部会让 `new URL(...)` 直接抛异常，
+// 不会被解析成"看似正常的 host"——落进这里的 catch 分支，不会漏出任何
+// 原始片段。真正的安全边界不是这个函数猜得准不准，是 CloneResult.repoUrl
+// 这个字段**结构上**永远只存这个函数的输出（见该类型的注释）——即使
+// 未来又出现第四种绕过输入检测的编码花样，也不需要专门再堵一次，因为
+// 这个函数从来没有"认出凭据再擦掉"这一步，它是白名单，不是黑名单。
+export function safeRepoLabel(repoUrl: string): string {
+  try {
+    const url = new URL(repoUrl);
+    if (!url.host) return "仓库"; // 有 scheme 但没有 host（比如 file:// 之类）——没有安全的部分可展示
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "仓库"; // 解析不出来的串——UI 侧三轮绕过形态全部落在这一分支
+  }
+}
+
+/** clone 流程里任何要交给 onCloneResult 的自由文本（git 的 stdout/stderr、
+    捕获到的异常消息）都要过这个函数，不能只调 redactPat——PAT 是我们自己
+    塞进凭据里的字符串，redactPat 擦得掉；但 repoUrl 本身也可能被用户
+    塞了凭据（见 safeRepoLabel 的注释），而且 git 的错误消息经常把它执行
+    失败时用的那条 URL **原样回显**（比如 "fatal: unable to access
+    'https://user:pass@host/x.git/'"）——这条泄漏路径不在 pat 变量里，
+    redactPat 管不到。这里做两件事：① 把整条 repoUrl 子串（如果原样出现）
+    换成 safeRepoLabel 的结果；② repoUrl 解析得出的 username/password
+    （如果非空）各自的原文也擦掉，兜底"工具只把凭据片段打进日志、没抄
+    整条 URL"的情形。跟 redactPat 一样是尽力而为，不是形式化证明——真正
+    的安全边界是 CloneResult.repoUrl 从来不存原始 repoUrl，这个函数是给
+    reason 这种自由文本字段的第二道防线，不是唯一防线。 */
+function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: string }): string {
+  let result = redactPat(text, cfg.pat);
+  result = result.split(cfg.repoUrl).join(safeRepoLabel(cfg.repoUrl));
+  try {
+    const url = new URL(cfg.repoUrl);
+    if (url.password) result = result.split(url.password).join("***");
+    if (url.username) result = result.split(url.username).join("***");
+  } catch {
+    // repoUrl 解析不出来——上面的整条子串替换已经是能做的全部
+  }
+  return result;
+}
+
 /** git credential 协议的 host 字段——用 URL.host（含端口，如果有）而不是
     hostname：credential store 按这个字段匹配，得和 clone 用的 URL 对得上 */
 function safeHostOf(repoUrl: string): string {
   try {
     return new URL(repoUrl).host;
   } catch {
-    throw new Error(`repoUrl 不是合法 URL，无法配置凭据: ${repoUrl}`);
+    // 不回显原始 repoUrl——这条错误消息最终会经 sanitizeCloneText/
+    // safeRepoLabel 处理，但那两层是第二道防线，第一道是"压根不产出
+    // 带原始片段的文本"（复审三轮的教训）
+    throw new Error("repoUrl 不是合法 URL，无法配置凭据");
   }
 }
 
@@ -313,12 +376,20 @@ async function performClone(container: ContainerLike, cfg: WorkspaceRepoConfig):
   const { repoUrl, pat } = cfg;
   let credentialsConfigured = false;
 
+  // repoUrl 出现在返回值/reason 里的每一处都要过 safeRepoLabel/
+  // sanitizeCloneText（复审三轮：CloneResult.repoUrl 结构上只允许存安全
+  // 标签，见该类型的注释）；cfg/repoUrl 变量本身在函数内部照常使用（拿去
+  // 跑 git clone/配凭据），只是不允许直接进返回值。
   try {
     if (pat) {
       const helperSetup = await execInContainer(container, "git config --global credential.helper store");
       if (helperSetup.exitCode !== 0) {
         const detail = helperSetup.stderr || helperSetup.stdout || `exitCode ${helperSetup.exitCode}`;
-        return { ok: false, repoUrl, reason: redactPat(`credential.helper 配置失败：${detail}`, pat) };
+        return {
+          ok: false,
+          repoUrl: safeRepoLabel(repoUrl),
+          reason: sanitizeCloneText(`credential.helper 配置失败：${detail}`, cfg),
+        };
       }
 
       const host = safeHostOf(repoUrl); // 抛出的话走下面的 catch；此时还没写凭据
@@ -331,7 +402,11 @@ async function performClone(container: ContainerLike, cfg: WorkspaceRepoConfig):
       const approve = await execInContainer(container, "git credential approve", { stdin: credentialBlock });
       if (approve.exitCode !== 0) {
         const detail = approve.stderr || approve.stdout || `exitCode ${approve.exitCode}`;
-        return { ok: false, repoUrl, reason: redactPat(`凭据写入失败：${detail}`, pat) };
+        return {
+          ok: false,
+          repoUrl: safeRepoLabel(repoUrl),
+          reason: sanitizeCloneText(`凭据写入失败：${detail}`, cfg),
+        };
       }
     }
 
@@ -342,18 +417,26 @@ async function performClone(container: ContainerLike, cfg: WorkspaceRepoConfig):
     const clear = await execInContainer(container, "find /work -mindepth 1 -delete");
     if (clear.exitCode !== 0) {
       const detail = clear.stderr || clear.stdout || `exitCode ${clear.exitCode}`;
-      return { ok: false, repoUrl, reason: redactPat(`清空目标目录失败：${detail}`, pat) };
+      return {
+        ok: false,
+        repoUrl: safeRepoLabel(repoUrl),
+        reason: sanitizeCloneText(`清空目标目录失败：${detail}`, cfg),
+      };
     }
 
     const cloneCmd = `git clone -- ${shellQuote(repoUrl)} /work`;
     const cloneResult = await execInContainer(container, cloneCmd, { timeoutSec: CLONE_TIMEOUT_SEC });
     if (cloneResult.exitCode !== 0) {
+      // 最容易实际携带原始 repoUrl 的一条：git clone 失败时的 stderr
+      // 经常把它当时用的那条 URL 原样回显（"fatal: unable to access
+      // '<url>'"），sanitizeCloneText 就是为这种情形准备的
       const detail = cloneResult.stderr || cloneResult.stdout || `exitCode ${cloneResult.exitCode}`;
-      return { ok: false, repoUrl, reason: redactPat(detail, pat) };
+      return { ok: false, repoUrl: safeRepoLabel(repoUrl), reason: sanitizeCloneText(detail, cfg) };
     }
-    return { ok: true, repoUrl };
+    return { ok: true, repoUrl: safeRepoLabel(repoUrl) };
   } catch (err) {
-    return { ok: false, repoUrl, reason: redactPat(err instanceof Error ? err.message : String(err), pat) };
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, repoUrl: safeRepoLabel(repoUrl), reason: sanitizeCloneText(message, cfg) };
   } finally {
     if (credentialsConfigured) {
       await cleanupCredentials(container, repoUrl); // 成功/失败/异常都烧——PAT 只值这一次 clone 的信任
@@ -493,9 +576,13 @@ export function createSandbox(
     } catch (err) {
       // performClone 内部已经把已知失败路径都转成 {ok:false,...} 不
       // throw；这里兜的是 checkCloneComplete/performClone 自身意外抛出的
-      // 情况——绝不能让 clone 相关的失败反过来拖垮 ensure() 本身（设计点 5）
-      const reason = redactPat(err instanceof Error ? err.message : String(err), cfg.pat);
-      safeReportCloneResult(workspaceId, { ok: false, repoUrl: cfg.repoUrl, reason });
+      // 情况——绝不能让 clone 相关的失败反过来拖垮 ensure() 本身（设计点 5）。
+      // repoUrl/reason 同样要过 safeRepoLabel/sanitizeCloneText——这里是
+      // 唯一另一处直接构造 CloneResult 的地方，漏了就等于给复审三轮那道
+      // 边界开了个后门（复审三轮）
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = sanitizeCloneText(message, cfg);
+      safeReportCloneResult(workspaceId, { ok: false, repoUrl: safeRepoLabel(cfg.repoUrl), reason });
     }
   }
 
