@@ -9,9 +9,38 @@ import {
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import { ChevronLeftIcon, ChevronRightIcon, SparklesIcon } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { cn } from "@/lib/utils.js";
 
 type IconComponent = FC<{ className?: string }>;
+
+/**
+ * 本仓改动:条目可以是「一个人」而不是「一条指令」(issue #831)。
+ *
+ * 判据放在 item.metadata 上,跟上游既有的 `metadata.icon` 同一个路子 —— 由
+ * adapter(数据那头)决定这一行长什么样,组件不认识"好友"这个概念,也就不用
+ * 为第二种 trigger 再开一个组件。三个键都是可选的,`$skill` / `/指令` 一个
+ * 都不给,渲染逐字节不变。
+ *
+ * - `avatar`     有这个键 = 人行:最左那格从图标换成头像(空串也算,走首字母兜底)
+ * - `avatarLabel` 头像的 alt 与首字母兜底取自它(显示名),不从 label 猜 ——
+ *                label 带着 sigil(`@张三`),按字符剥前缀在中文名上会剥过头
+ * - `trailing`   贴右边缘的那格(好友这里是邮箱)。它和 description 的区别不是
+ *                样式而是职责:description 是"这条是干什么的",trailing 是
+ *                "这条到底是谁" —— 后者要能一眼扫一列,所以必须靠右对齐
+ */
+function personBits(item: Unstable_TriggerItem): {
+  avatar: string | undefined;
+  avatarLabel: string;
+  trailing: string | undefined;
+} {
+  const m = item.metadata;
+  const avatar = typeof m?.avatar === "string" ? m.avatar : undefined;
+  const avatarLabel = typeof m?.avatarLabel === "string" ? m.avatarLabel : item.label;
+  const trailing =
+    typeof m?.trailing === "string" && m.trailing !== "" ? m.trailing : undefined;
+  return { avatar, avatarLabel, trailing };
+}
 
 type DirectiveBehaviorProps = {
   /** Formatter used to serialize the selected item into composer text. */
@@ -151,6 +180,7 @@ const Items: FC<ItemsProps> = ({
                   ? item.metadata.icon
                   : undefined;
               const Icon = resolveIcon(iconKey, iconMap, fallbackIcon);
+              const { avatar, avatarLabel, trailing } = personBits(item);
               return (
                 // 本仓改动:一条一行(图标 · 名字 · 描述 · ↵),版式照
                 // elements/composer 的 ComposerMenuItem —— 输入框上方弹出的菜单
@@ -162,8 +192,28 @@ const Items: FC<ItemsProps> = ({
                   index={index}
                   className="group/item data-[highlighted]:bg-foreground/[0.06] hover:bg-foreground/[0.04] flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-start text-[13.5px] transition-colors outline-none"
                 >
-                  <Icon className="text-foreground/35 size-3.5 shrink-0" />
-                  <span className="shrink-0 font-medium">{item.label}</span>
+                  {avatar === undefined ? (
+                    <Icon className="text-foreground/35 size-3.5 shrink-0" />
+                  ) : (
+                    // 头像挤在图标那一格里(20px):行高不变,只是"是谁"从一枚
+                    // 所有人共用的闪光换成了这个人的脸
+                    <Avatar className="size-5">
+                      <AvatarImage src={avatar} alt={avatarLabel} referrerPolicy="no-referrer" />
+                      <AvatarFallback className="text-[10px]">
+                        {avatarLabel.charAt(0).toUpperCase() || "?"}
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                  {/* 名字:没有靠右那格时照旧不缩(长 skill 名整条读得到);
+                      有的话得让位 —— 两边都 shrink-0 的话行会顶破弹层 */}
+                  <span
+                    className={cn(
+                      "font-medium",
+                      trailing === undefined ? "shrink-0" : "min-w-0 truncate"
+                    )}
+                  >
+                    {item.label}
+                  </span>
                   {item.description && (
                     // 描述截成一行:skill 的 description 常有三五行,
                     // 整段摊开的话补全菜单变成了阅读材料
@@ -171,8 +221,25 @@ const Items: FC<ItemsProps> = ({
                       {item.description}
                     </span>
                   )}
-                  {/* 选中那条才出现的回车提示:告诉人"现在按回车选的是这一条" */}
-                  <kbd className="bg-foreground/[0.06] text-foreground/45 ms-auto hidden rounded px-1 font-mono text-[10px] group-data-[highlighted]/item:inline">
+                  {trailing && (
+                    // 贴右边缘(ms-auto):一列扫下来对齐,而不是跟着名字长短漂。
+                    // 放不下就截,原文进 title —— 邮箱截断了还能悬停看全
+                    <span
+                      className="text-foreground/45 ms-auto min-w-0 truncate text-xs"
+                      title={trailing}
+                    >
+                      {trailing}
+                    </span>
+                  )}
+                  {/* 选中那条才出现的回车提示:告诉人"现在按回车选的是这一条"。
+                      靠右那格已经把剩余空间吃掉了,这里再来一个 ms-auto 会跟它
+                      对半分 —— 于是邮箱一被高亮就往左跳一下。有 trailing 就不加 */}
+                  <kbd
+                    className={cn(
+                      "bg-foreground/[0.06] text-foreground/45 hidden shrink-0 rounded px-1 font-mono text-[10px] group-data-[highlighted]/item:inline",
+                      trailing === undefined && "ms-auto"
+                    )}
+                  >
                     ↵
                   </kbd>
                 </ComposerPrimitive.Unstable_TriggerPopoverItem>

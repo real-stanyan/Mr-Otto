@@ -61,6 +61,7 @@ import { panelKeyOf } from "./lib/sidePanel.js";
 import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
+import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionItems.js";
 import { WorkspacesPanel } from "./components/WorkspacesPanel.js";
 import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
@@ -3116,21 +3117,18 @@ function ChatComposer() {
     [friends]
   );
   const friendFormatter = useMemo(() => ottoFriendFormatter(friendMentions), [friendMentions]);
+  // 一行 = 一个人:最左头像 · 中间显示名 · 最右邮箱(issue #831)。
+  // 显示名是对方随时能改、还可以重名的字段,而 @好友 的后果是把会话连同服务借用
+  // 一起发出去(ADR-0177)——选错人不是打错字那一级,所以行上得有邮箱这个准地址。
+  // 建条目与过滤都在 lib/friendMentionItems(显示什么就搜什么,两条判定同一份)
   const friendAdapter = useMemo<Unstable_TriggerAdapter>(() => {
-    const items = friendMentions.map((f) => ({
-      id: f.uid,
-      type: "friend",
-      label: `@${f.name}`,
-    }));
+    const items = friendMentionItems(friends);
     return {
       categories: () => [],
       categoryItems: () => [],
-      search: (query: string) => {
-        const lower = query.toLowerCase();
-        return lower === "" ? items : items.filter((i) => i.label.toLowerCase().includes(lower));
-      },
+      search: (query: string) => searchFriendMentions(items, query),
     };
-  }, [friendMentions]);
+  }, [friends]);
   const friendDirective = useMemo(() => ({ formatter: friendFormatter }), [friendFormatter]);
   // 分享前那次确认的对象（null = 没在问）。候选服务现算不订阅：@ 一次算一次，
   // 而 events/mcpServers 变一次就重算的话，这个组件每个流式 token 都要重跑一遍
@@ -3309,7 +3307,10 @@ function ChatComposer() {
                 和旧的手写菜单同一个位置 */}
             <ComposerTriggerPopover
               char="@"
-              className={TRIGGER_POP}
+              // 好友这一族比指令宽(头像 + 名字 + 邮箱三格),但得封顶 ——
+              // TRIGGER_POP 是 w-auto,不封顶的话一个长邮箱就把弹层拉过整屏,
+              // 而 truncate 也只有在有上界时才会真的截
+              className={`${TRIGGER_POP} max-w-[26rem]`}
               adapter={friendAdapter}
               directive={friendDirective}
               emptyItemsLabel="没有匹配的好友"
