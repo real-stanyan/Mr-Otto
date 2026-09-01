@@ -564,29 +564,37 @@ async function withCloneContainer<T>(
   },
   fn: (container: ContainerLike) => Promise<T>,
 ): Promise<T> {
-  const created = await deps.docker.createContainer({
-    name: deps.name,
-    Image: deps.image,
-    Cmd: ["sleep", "infinity"],
-    Labels: { [CLONE_LABEL]: deps.workspaceId },
-    HostConfig: {
-      Memory: 2 * 1024 ** 3,
-      NanoCpus: 2e9,
-      PidsLimit: 256,
-      Mounts: [{ Type: "volume", Source: containerName(deps.workspaceId), Target: "/work" }],
-    },
-  });
+  // 先登记名字再建（不是建完再登记）：`sweepCloneContainers` 按标签扫，
+  // 靠这份名单跳过"本进程正在用的"。反过来的话，createContainer 到
+  // onCreated 之间那一小段里跑一次 reconcile，会把刚建出来的这台当成
+  // 残骸删掉——窗口极小，但它引起的失败是"clone 莫名其妙失败了"，
+  // 排查成本远大于把这两行换个顺序
   deps.onCreated(deps.name);
-  const container = deps.docker.getContainer(created.id);
   try {
-    await container.start();
-    return await fn(container);
-  } finally {
+    const created = await deps.docker.createContainer({
+      name: deps.name,
+      Image: deps.image,
+      Cmd: ["sleep", "infinity"],
+      Labels: { [CLONE_LABEL]: deps.workspaceId },
+      HostConfig: {
+        Memory: 2 * 1024 ** 3,
+        NanoCpus: 2e9,
+        PidsLimit: 256,
+        Mounts: [{ Type: "volume", Source: containerName(deps.workspaceId), Target: "/work" }],
+      },
+    });
+    const container = deps.docker.getContainer(created.id);
     try {
-      await container.remove({ force: true });
-    } catch {
-      // 见函数头注释——漏下的那台由 reconcile 按标签收走
+      await container.start();
+      return await fn(container);
+    } finally {
+      try {
+        await container.remove({ force: true });
+      } catch {
+        // 见函数头注释——漏下的那台由 reconcile 按标签收走
+      }
     }
+  } finally {
     deps.onReleased(deps.name);
   }
 }

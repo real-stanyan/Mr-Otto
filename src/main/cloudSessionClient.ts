@@ -304,6 +304,11 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function teardown(): void {
     if (!active) return;
     const sessionId = active.sessionId;
+    // 挂着的那次 config 就地结掉（issue #834）——leave()/被下一次 join() 顶掉
+    // 都会走到这里，而这条连接之后再也不会有回执回来。markGone/markDenied
+    // 各自也有一条：三条终态路径一条都不能漏，漏哪条就是那条路径上的
+    // "保存中…"永远转下去
+    settleConfig(active, { ok: false, message: "云会话已经关闭，这次保存不确定有没有生效。" });
     try {
       active.transport.close();
     } catch {

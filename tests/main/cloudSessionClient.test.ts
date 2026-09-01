@@ -877,3 +877,38 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     expect(fleet.agents.find((a) => a.sessionId === "cloud-s1")).toBeUndefined();
   });
 });
+
+/** issue #834 自查补的一条：三条终态路径（gone / denied / teardown）都要
+    把挂着的 config 结掉。漏哪条就是那条路径上的「保存中…」永远转下去——
+    await 一个再也不会被 resolve 的 promise 是这类 UI 最典型的死法。 */
+describe("createCloudSessionClient — config 的终态收口（issue #834）", () => {
+  async function readyForConfig(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: null, ownerUid: "u2", repo: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("leave() 顶掉时挂着的 config 就地结掉", async () => {
+    const { h } = await readyForConfig();
+    const pending = h.client.config("w1", "https://example.com/repo.git");
+    await h.client.leave();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+
+  it("被 denied 时挂着的 config 就地结掉", async () => {
+    const { h, t } = await readyForConfig();
+    const pending = h.client.config("w1", "https://example.com/repo.git");
+    t.emitDown({ t: "denied", code: "not_authorized" });
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+});
