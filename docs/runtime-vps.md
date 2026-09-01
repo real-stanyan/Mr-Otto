@@ -71,9 +71,9 @@ RUNTIME_SSH=user@host npm run runtime:deploy
 
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
-自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下八条要真机走一遍。
+自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下十条要真机走一遍。
 ②③④⑤⑥⑦对应 spec §8「DockerWorld 走 VPS 真机手验清单」列的六个场景，①是新增的部署链路
-本身验证，⑧是新增的连接豁免验证：
+本身验证，⑧是新增的连接豁免验证，⑨⑩是 ADR-0200（clone 那条链路）新增的：
 
 1. **首次部署本身是这条链路的第一次真机验证**——`scripts/runtime-deploy.mjs` 交付时（T11）
    按指示没有真的连过 VPS：esbuild 打包与 `deploy-package.json` 生成逻辑在仓外独立验证过，
@@ -117,6 +117,21 @@ RUNTIME_SSH=user@host npm run runtime:deploy
    `services/edge/README.md`「运行时那一层怎么验」）。手验做法：起够 16 条以上的普通用户
    连接占满上限，确认带 `svc=1` 参数 + `RUNTIME_SECRET` 子协议的连接仍能正常接上（不是
    503），而第 17 条普通用户连接应该被拒。
+
+9. **配仓库 → clone → 状态可见**（ADR-0200）：owner 在云会话页配一个 https 仓库（私有仓
+   填 PAT），点保存应该等到**服务端回执**才显示「已保存」（不是本地一发就变）；这之后
+   @Agent 让它跑一条工具命令，clone 在那一刻才发生（惰性），聊天流里会出现一条系统消息说
+   克隆结果，而**页头那一格**（所有成员都看得见，不只是 owner）应该从「待克隆」变成
+   「已克隆」。VPS 上验三件事：`docker ps -a` 里**没有**残留的 `otto-clone-*` 容器（旁路
+   容器跑完即删）；`docker exec otto-ws-<id> cat /root/.git-credentials` 应该**不存在**
+   （凭据从不进水獭那台容器）；`docker exec otto-ws-<id> git -C /work remote get-url origin`
+   是刚配的那个地址。
+10. **换仓库 / 拒绝清空**（ADR-0200 的决策表，两条都要走）：
+    - 换一个**不同的**仓库地址再保存，下一次工具调用应该看到「已切换仓库：旧 → 新」，
+      `/work` 里换成新仓库的内容；
+    - 先让水獭在 `/work` 里改一个文件不提交（或者 `git commit` 但不推），再换仓库地址——
+      这次应该看到**拒绝**（「有未提交的改动」/「有还没推送出去的提交」），`/work` 原样
+      不动。这条是这次改动的核心：默认值从「删」翻成「不删」，删错不可逆。
 
 ## 3. 回滚
 
