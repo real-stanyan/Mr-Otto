@@ -45,6 +45,7 @@ function makeDeps(config: {
   archiveSession?: FrameHandlerDeps["sessions"]["archive"];
   saveConfig?: FrameHandlerDeps["saveConfig"];
   repoState?: FrameHandlerDeps["repoState"];
+  modelState?: FrameHandlerDeps["modelState"];
   dropCid?: FrameHandlerDeps["dropCid"];
   /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
       传一个只对某几档说 false 的假货 */
@@ -64,6 +65,7 @@ function makeDeps(config: {
     },
     saveConfig: config.saveConfig ?? (async () => {}),
     repoState: config.repoState ?? (() => null),
+    modelState: config.modelState ?? (() => null),
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
@@ -129,12 +131,16 @@ describe("createFrameHandler", () => {
         initiatorUid: "u1",
         ownerUid: "owner-uid",
         repo: null, // 没配仓库（issue #834：welcome 现在带这一格）
+        model: null, // 没配模型（issue #844：同一条读路径上的第二格）
       },
     });
   });
 
   it("③ config：非 owner 拒 not_authorized；owner 过，saveConfig 收到 pat", async () => {
-    const saveConfigCalls: { workspaceId: string; cfg: { repoUrl: string; pat?: string } }[] = [];
+    const saveConfigCalls: {
+      workspaceId: string;
+      cfg: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } };
+    }[] = [];
     const { deps, sent } = makeDeps({
       ownerOf: async () => "owner-uid",
       saveConfig: async (workspaceId, cfg) => {
@@ -166,7 +172,10 @@ describe("createFrameHandler", () => {
       { workspaceId: "w1", cfg: { repoUrl: "https://example.com/repo.git", pat: "secret-pat" } },
     ]);
     // issue #834：存成功要回执，不再静默
-    expect(sent.at(-1)).toEqual({ cid: "cOwner", msg: { t: "config_result", ok: true, repo: null } });
+    expect(sent.at(-1)).toEqual({
+      cid: "cOwner",
+      msg: { t: "config_result", ok: true, repo: null, model: null },
+    });
   });
 
   // ── issue #834：服务端自己校验 + 回执 ────────────────────────────────
@@ -233,6 +242,7 @@ describe("createFrameHandler", () => {
     expect(sent.at(-1)!.msg).toMatchObject({
       t: "welcome",
       repo: { url: "https://example.com/repo.git", hasPat: true, clone: null },
+      model: null,
     });
   });
 
@@ -676,5 +686,111 @@ describe("归档（issue #822）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
     expect(calls).toEqual([]);
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+});
+
+// issue #844（推翻 ADR-0199 决策⑥）：模型 key 跟着工作区走，由 owner 自己配。
+// runtime 这个进程不再持有任何模型 key，也不做 env 兜底——兜底就是"忘了配的
+// 工作区默默烧维护者的钱"。
+describe("模型配置（issue #844）", () => {
+  const ownerDeps = (extra: Parameters<typeof makeDeps>[0] = {}) =>
+    makeDeps({ ownerOf: async () => "u1", ...extra });
+
+  it("只发 model 那一组 → 只有那一组进 saveConfig，仓库那格原样不动", async () => {
+    const calls: unknown[] = [];
+    const { deps } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({
+      t: "config",
+      model: { baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-v4-flash", apiKey: "sk-x" },
+    }));
+
+    expect(calls).toEqual([[
+      "w1",
+      { model: { baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-v4-flash", apiKey: "sk-x" } },
+    ]]);
+  });
+
+  it("服务端自己校验一次：非 https 的模型地址被拒，不落盘", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    // 一个改造过的客户端能直接发内网地址上来，而 runtime 是拿着平台身份在跑的
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({
+      t: "config",
+      model: { baseUrl: "http://127.0.0.1:11434/v1", modelId: "x", apiKey: "k" },
+    }));
+
+    expect(calls).toEqual([]);
+    const last = sent.at(-1)!.msg as Extract<CsDown, { t: "config_result" }>;
+    expect(last.t).toBe("config_result");
+    expect(last.ok).toBe(false);
+  });
+
+  it("型号为空也被拒 —— 半个配置比没有配置更危险", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({
+      t: "config",
+      model: { baseUrl: "https://api.deepseek.com/v1", modelId: "  ", apiKey: "k" },
+    }));
+
+    expect(calls).toEqual([]);
+    expect((sent.at(-1)!.msg as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("一格都没给 → 明确说「没有要保存的内容」，不假装存过了", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "config" }));
+
+    expect(calls).toEqual([]);
+    expect((sent.at(-1)!.msg as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("非 owner 改模型同样被拒 —— key 是谁的钱，只有 owner 说了算", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "someone-else",
+      saveConfig: async (w, cfg) => { calls.push([w, cfg]); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({
+      t: "config",
+      model: { baseUrl: "https://api.deepseek.com/v1", modelId: "m", apiKey: "k" },
+    }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  it("welcome 带 model 那一格 —— 任何人一 join 就知道「这个工作区能不能干活」", async () => {
+    const { deps, sent } = makeDeps({
+      modelState: () => ({ baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-v4-flash", hasKey: true }),
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    const welcome = sent.at(-1)!.msg as Extract<CsDown, { t: "welcome" }>;
+    expect(welcome.model).toEqual({
+      baseUrl: "https://api.deepseek.com/v1",
+      modelId: "deepseek-v4-flash",
+      hasKey: true,
+    });
   });
 });

@@ -73,8 +73,10 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
+  validateModelConfig,
   validateRepoUrl,
   type CsDeniedCode,
+  type CsModelState,
   type CsRepoState,
   type CsUp,
 } from "../shared/remote/cloudSession.js";
@@ -194,7 +196,10 @@ export interface CloudSessionClient {
   say(text: string, mention: boolean): Promise<FriendsResult<null>>;
   approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   archive(): Promise<FriendsResult<null>>;
-  config(workspaceId: string, repoUrl: string, pat?: string): Promise<FriendsResult<null>>;
+  config(
+    workspaceId: string,
+    patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
+  ): Promise<FriendsResult<null>>;
 }
 
 interface ActiveSession {
@@ -232,6 +237,9 @@ interface ActiveSession {
   /** welcome 给的仓库配置 + 最近一次 clone 结局（issue #834）；config 存成功
       后由回执刷新。null = 没配，或者还没 welcome */
   repo: CsRepoState | null;
+  /** welcome 给的模型配置（issue #844）。null = 这个工作区还没配模型——
+      能建能聊，但 @Agent 起不了 turn。key 本身从不下行 */
+  model: CsModelState | null;
   /** 还没等到回执的那次 config（issue #834）。协议原来没有回执，
       "已保存"只证明本地 encode 没抛异常——叠上 #829（transport.send 三条
       静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
@@ -260,6 +268,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
       repo: session.repo,
+      model: session.model,
       ...(notice === undefined ? {} : { notice }),
     });
   }
@@ -376,6 +385,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
         session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
+        session.model = msg.model; // issue #844：同理，模型配没配也是一 join 就看得见
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
@@ -390,6 +400,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 服务端此刻的真实状态，成功失败都刷——失败时它正好告诉 owner
         // "那你现在配的还是这个"
         session.repo = msg.repo;
+        session.model = msg.model;
         pushStatus(session);
         settleConfig(
           session,
@@ -589,6 +600,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
       lastEventTs: null,
       repo: null,
+      model: null,
       pendingConfig: null,
     };
     active = session;
@@ -664,9 +676,21 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       正是"正在自动重连"这个完全正常的窗口）。配置这个调用方是最受伤的：
       聊天丢一条人看得出，配置丢了看不出，下次工具调用照旧用老配置克隆。
 
-      `pat` 的三态跟着服务端那份走（daemon 的 workspaceConfigStore.save）：
-      省略 = 保持不变，`""` = 显式清除，非空 = 换成新的。 */
-  async function config(workspaceId: string, repoUrl: string, pat?: string): Promise<FriendsResult<null>> {
+      `pat` / `model.apiKey` 的三态跟着服务端那份走（daemon 的
+      workspaceConfigStore.save）：省略 = 保持不变，`""` = 显式清除，
+      非空 = 换成新的。
+
+      **两组字段各自可选**（issue #844）：只给 repo 就是只改仓库，只给
+      model 就是只改模型——它们是两件独立的事，改一个不该被迫连另一个
+      一起发（发过去就意味着"我确认这一格也是这个值"）。 */
+  async function config(
+    workspaceId: string,
+    patch: {
+      repoUrl?: string;
+      pat?: string;
+      model?: { baseUrl: string; modelId: string; apiKey?: string };
+    }
+  ): Promise<FriendsResult<null>> {
     const r = requireReady();
     if (!r.ok) return r;
     const session = r.session;
@@ -675,16 +699,29 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     }
     // 本地先过一遍同一份校验，省掉一次明知会被拒的往返（服务端仍然会
     // 自己校验一次——渲染层/主进程都不是安全边界，见 validateRepoUrl 注释）
-    const valid = validateRepoUrl(repoUrl);
-    if (!valid.ok) return { ok: false, message: valid.message };
+    const frame: CsUp = { t: "config" };
+    if (patch.repoUrl !== undefined) {
+      const valid = validateRepoUrl(patch.repoUrl);
+      if (!valid.ok) return { ok: false, message: valid.message };
+      frame.repoUrl = valid.url;
+    }
+    // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的省略
+    // 这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
+    if (patch.pat !== undefined) frame.pat = patch.pat;
+    if (patch.model !== undefined) {
+      const valid = validateModelConfig(patch.model.baseUrl, patch.model.modelId);
+      if (!valid.ok) return { ok: false, message: valid.message };
+      frame.model =
+        patch.model.apiKey !== undefined
+          ? { baseUrl: valid.baseUrl, modelId: valid.modelId, apiKey: patch.model.apiKey }
+          : { baseUrl: valid.baseUrl, modelId: valid.modelId };
+    }
+    if (frame.repoUrl === undefined && frame.pat === undefined && frame.model === undefined) {
+      return { ok: false, message: "没有要保存的内容。" };
+    }
     if (session.pendingConfig) return { ok: false, message: "上一次保存还没有回执，稍等一下再试。" };
 
-    // exactOptionalPropertyTypes：pat?: string 不接受显式 undefined，
-    // 得真的省略这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
-    const sent = sendFrame(
-      session,
-      pat !== undefined ? { t: "config", repoUrl: valid.url, pat } : { t: "config", repoUrl: valid.url },
-    );
+    const sent = sendFrame(session, frame);
     if (!sent.ok) return sent;
 
     return new Promise<FriendsResult<null>>((resolve) => {

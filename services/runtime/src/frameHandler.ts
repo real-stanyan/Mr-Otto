@@ -20,9 +20,11 @@ import {
   csChannel,
   decodeCsUp,
   encodeCs,
+  validateModelConfig,
   validateRepoUrl,
   type CsDeniedCode,
   type CsDown,
+  type CsModelState,
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -122,12 +124,18 @@ export interface FrameHandlerDeps {
         只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
     archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
-  saveConfig: (workspaceId: string, cfg: { repoUrl: string; pat?: string }) => Promise<void>;
+  saveConfig: (
+    workspaceId: string,
+    cfg: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } }
+  ) => Promise<void>;
   /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
       welcome 和 config 的回执都带上它——协议原来只有写路径，owner 存完
       看不到任何反馈，别的成员更是永远不知道仓库配没配、拉没拉下来。
       **实现必须保证不下发 token 本身**（只回 hasPat 布尔） */
   repoState: (workspaceId: string) => CsRepoState | null;
+  /** 这个工作区此刻的模型配置（issue #844）。同 repoState 的纪律：
+      **实现必须保证不下发 key 本身**（只回 hasKey 布尔） */
+  modelState: (workspaceId: string) => CsModelState | null;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -288,6 +296,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           initiatorUid: session.initiatorUid(),
           ownerUid,
           repo: deps.repoState(workspaceId),
+          model: deps.modelState(workspaceId),
         });
         return;
       }
@@ -343,37 +352,69 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deny(cid, "not_authorized");
             return;
           }
-          // 服务端自己校验一次（issue #834）：渲染层那份的定位是"提交前的
-          // 早期 UX 提示"（见 lib/cloudRepoUrl.ts 文件头），一个改造过的
-          // 客户端能直接发 `ext::sh -c ...` 这类 git 传输上来，那会以 root
-          // 在容器里跑起来。判据是结构化白名单，不是"认出凭据"的黑名单
-          const valid = validateRepoUrl(msg.repoUrl);
-          if (!valid.ok) {
+          const fail = (message: string): void => {
             deps.send(cid, {
               t: "config_result",
               ok: false,
-              message: valid.message,
+              message,
               repo: deps.repoState(workspaceId),
+              model: deps.modelState(workspaceId),
             });
+          };
+
+          // 服务端自己校验一次（issue #834 / #844）：渲染层那份的定位是
+          // "提交前的早期 UX 提示"（见 lib/cloudRepoUrl.ts 文件头），一个
+          // 改造过的客户端能直接发 `ext::sh -c ...` 这类 git 传输、或者一条
+          // 指向内网的模型地址上来，两者都会以 runtime 的身份被执行。
+          // 判据是结构化白名单，不是"认出凭据"的黑名单
+          const patch: {
+            repoUrl?: string;
+            pat?: string;
+            model?: { baseUrl: string; modelId: string; apiKey?: string };
+          } = {};
+
+          if (msg.repoUrl !== undefined) {
+            const valid = validateRepoUrl(msg.repoUrl);
+            if (!valid.ok) {
+              fail(valid.message);
+              return;
+            }
+            patch.repoUrl = valid.url;
+          }
+          if (msg.pat !== undefined) patch.pat = msg.pat;
+
+          if (msg.model !== undefined) {
+            const valid = validateModelConfig(msg.model.baseUrl, msg.model.modelId);
+            if (!valid.ok) {
+              fail(valid.message);
+              return;
+            }
+            patch.model =
+              msg.model.apiKey !== undefined
+                ? { baseUrl: valid.baseUrl, modelId: valid.modelId, apiKey: msg.model.apiKey }
+                : { baseUrl: valid.baseUrl, modelId: valid.modelId };
+          }
+
+          if (patch.repoUrl === undefined && patch.pat === undefined && patch.model === undefined) {
+            // 一格都没给：不是错误，但也不该假装存过了
+            fail("这一次没有要保存的内容。");
             return;
           }
+
           try {
-            await deps.saveConfig(
-              workspaceId,
-              msg.pat !== undefined ? { repoUrl: valid.url, pat: msg.pat } : { repoUrl: valid.url }
-            );
+            await deps.saveConfig(workspaceId, patch);
           } catch (err) {
             // 落盘失败以前只会冒到 daemon 的 .catch 里记一行日志，owner 那边
             // 的按钮照样显示"已保存"——回执这条路存在的意义就是别再这样
-            deps.send(cid, {
-              t: "config_result",
-              ok: false,
-              message: `保存失败：${err instanceof Error ? err.message : String(err)}`,
-              repo: deps.repoState(workspaceId),
-            });
+            fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
             return;
           }
-          deps.send(cid, { t: "config_result", ok: true, repo: deps.repoState(workspaceId) });
+          deps.send(cid, {
+            t: "config_result",
+            ok: true,
+            repo: deps.repoState(workspaceId),
+            model: deps.modelState(workspaceId),
+          });
           return;
         }
 

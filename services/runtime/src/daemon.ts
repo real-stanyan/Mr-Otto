@@ -96,6 +96,10 @@ interface WorkspaceConfigRecord {
       ——`setCloneState` 的调用点塞的是 sandbox 的 `CloneOutcome["kind"]`，
       两组值真分叉的话这个文件编译不过，不用两处人肉同步 */
   clone?: { kind: CsCloneKind; text: string; at: number };
+  /** 这个工作区的模型配置（issue #844，推翻 ADR-0199 决策⑥）。**runtime 自己
+      不再持有任何模型 key**：没有这一格的工作区起不了 turn，会得到一条看得见
+      的话。落点与 pat 同一份 0600 文件——同样是别人的凭据，同样不进 Supabase */
+  model?: { baseUrl: string; modelId: string; apiKey: string };
 }
 
 function createWorkspaceConfigStore(path: string) {
@@ -119,14 +123,37 @@ function createWorkspaceConfigStore(path: string) {
         非空串 = 换成新的。改配置的界面预填了仓库地址却不可能预填 token
         （密码框永远是空的），"留空 = 清掉 token"会让"顺手改个地址"
         静默毁掉一个私有仓库的配置——所以省略必须是"别动"。 */
-    async save(workspaceId: string, cfg: { repoUrl: string; pat?: string }): Promise<void> {
+    async save(
+      workspaceId: string,
+      cfg: {
+        repoUrl?: string;
+        pat?: string;
+        model?: { baseUrl: string; modelId: string; apiKey?: string };
+      }
+    ): Promise<void> {
       const all = loadAll();
       const prev = all[workspaceId];
-      const next: WorkspaceConfigRecord = { repoUrl: cfg.repoUrl };
+      // 两组字段各自可选（issue #844）：这一帧没提到的那一组原样保留。
+      // 改模型不该顺手把仓库配置抹了，反过来同理
+      const repoUrl = cfg.repoUrl ?? prev?.repoUrl ?? "";
+      const next: WorkspaceConfigRecord = { repoUrl };
       const pat = cfg.pat === undefined ? prev?.pat : cfg.pat === "" ? undefined : cfg.pat;
       if (pat !== undefined) next.pat = pat;
       // 换了仓库就别把上一个仓库的 clone 结果留着冒充现状
-      if (prev?.clone && prev.repoUrl === cfg.repoUrl) next.clone = prev.clone;
+      if (prev?.clone && prev.repoUrl === repoUrl) next.clone = prev.clone;
+
+      if (cfg.model === undefined) {
+        if (prev?.model) next.model = prev.model;
+      } else {
+        // apiKey 三态同 pat：省略 = 保持不变（改型号不该把 key 抹了），
+        // "" = 显式清除（清除 = 整格作废，一个没有 key 的 baseUrl 起不了 turn），
+        // 非空 = 换成新的
+        const apiKey =
+          cfg.model.apiKey === undefined ? prev?.model?.apiKey : cfg.model.apiKey === "" ? undefined : cfg.model.apiKey;
+        if (apiKey !== undefined) {
+          next.model = { baseUrl: cfg.model.baseUrl, modelId: cfg.model.modelId, apiKey };
+        }
+      }
       all[workspaceId] = next;
       writeAll(all);
     },
@@ -138,6 +165,7 @@ function createWorkspaceConfigStore(path: string) {
       // 省略这个键（同 cloudSessionClient.config 的既有先例）
       const next: WorkspaceConfigRecord = { repoUrl: prev.repoUrl };
       if (prev.pat !== undefined) next.pat = prev.pat;
+      if (prev.model !== undefined) next.model = prev.model;
       if (clone !== undefined) next.clone = clone;
       all[workspaceId] = next;
       writeAll(all);
@@ -171,11 +199,38 @@ async function main(): Promise<void> {
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
 
-  const baseAdapter = createOpenAICompatibleAdapter({
-    baseUrl: config.modelBaseUrl,
-    apiKey: config.modelApiKey,
-    model: config.modelId,
-  });
+  /** 每工作区一把模型（issue #844）。**每次 chat() 现读一次配置**而不是在
+      开房间那一刻定死：owner 随时可能改 key/换型号，而会话房是长命的——
+      定死意味着改完要重启 daemon 才生效。构造 adapter 只是拼一个闭包，
+      现读的代价可以忽略。
+      没配 = **抛一条给人看的错**，不是回落到某把 key：回落就是"忘了配的
+      工作区默默烧别人的钱"，正是这一版要消灭的东西。这条错会被 engine
+      当成 turn 失败落进日志，群里所有人都看得见 */
+  function adapterFor(workspaceId: string): ModelAdapter {
+    const cfg = () => workspaceConfigStore.load(workspaceId)?.model;
+    return {
+      // 型号 id 落进 assistant_message.model，是事实记录——没配时给一个
+      // 说得出口的占位，而不是空串
+      get model(): string {
+        return cfg()?.modelId ?? "(未配置)";
+      },
+      async chat(messages, tools, onDelta, signal) {
+        const m = cfg();
+        if (!m) {
+          throw new Error(
+            "这个工作区还没配模型：所有者打开工作区 → 云会话 → 右上角「仓库/模型」，" +
+            "填一条 https 的 API 地址、型号 id 和自己的 API key。" +
+            "（云端不提供公共 key，这里烧的是配置者自己的额度）"
+          );
+        }
+        return createOpenAICompatibleAdapter({
+          baseUrl: m.baseUrl,
+          apiKey: m.apiKey,
+          model: m.modelId,
+        }).chat(messages, tools, onDelta, signal);
+      },
+    };
+  }
 
   /** workspace_members 的 uid 集合——membershipCache 的 query 与
       hostUids()（每 turn 现取一次成员名单）共用同一条查询，前者带 60s 缓存，
@@ -369,7 +424,7 @@ async function main(): Promise<void> {
     // 而 session 本身要在 createCloudSession 里才造出来——回调只在 engine.chat()
     // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全
     let session!: CloudSession;
-    const perSessionAdapter = withUsage(baseAdapter, (usage, model) => {
+    const perSessionAdapter = withUsage(adapterFor(workspaceId), (usage, model) => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调——理论不会发生
       store.append({
@@ -524,7 +579,10 @@ async function main(): Promise<void> {
     // 重新走一遍幂等检查/clone。
     saveConfig: async (workspaceId, cfg) => {
       await workspaceConfigStore.save(workspaceId, cfg);
-      sandbox.invalidateClone(workspaceId);
+      // 只在真的动了仓库那一格时才作废 clone 缓存（issue #844）：改模型
+      // key 不该顺手触发一次重新 clone——那会在 owner 只是换个型号时把
+      // 水獭正在改的工作副本卷进一次 clone 判定
+      if (cfg.repoUrl !== undefined || cfg.pat !== undefined) sandbox.invalidateClone(workspaceId);
     },
     // 三档令牌桶（issue #819）。日志"一个时段只记一笔"由 createFrameRateLimiter
     // 自己保证——不然日志本身就成了第二个能被刷爆的东西（ADR-0167 同款）
@@ -536,8 +594,14 @@ async function main(): Promise<void> {
     // token 本身从不下行——只回一个 hasPat 布尔（issue #834）
     repoState: (workspaceId) => {
       const record = workspaceConfigStore.load(workspaceId);
-      if (!record) return null;
+      if (!record || record.repoUrl === "") return null;
       return { url: record.repoUrl, hasPat: record.pat !== undefined, clone: record.clone ?? null };
+    },
+    // 同理：模型 key 本身从不下行，只回 hasKey（issue #844）
+    modelState: (workspaceId) => {
+      const m = workspaceConfigStore.load(workspaceId)?.model;
+      if (!m) return null;
+      return { baseUrl: m.baseUrl, modelId: m.modelId, hasKey: m.apiKey !== "" };
     },
     send: globalSend,
     dropCid,
