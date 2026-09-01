@@ -636,7 +636,26 @@ async function main(): Promise<void> {
     for (const row of (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[]) {
       try {
         const owner = await ownerOf(row.workspace_id);
-        openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
+        const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
+        // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库
+        // 那一步失败过的话，这一行会停在 archived=false，于是一条已经收尾的
+        // 会话被重新开出房间来（而且再也归档不了——CloudSession.archive 从
+        // 日志播种，第二次一律回 false）。日志里有 session_archived 就当场
+        // 收摊，顺便把那一列补上；补不上也不重试，下次启动还会走到这里
+        if (session.isArchived()) {
+          closeRoom.get(row.id)?.();
+          closeRoom.delete(row.id);
+          activeSessions.delete(row.id);
+          sessionBroadcast.delete(row.id);
+          const { error: fixErr } = await supabase
+            .from("workspace_sessions")
+            .update({ archived: true })
+            .eq("id", row.id);
+          if (fixErr) {
+            console.warn(`[otto-runtime] 补写 archived 列失败（sessionId=${row.id}）：${fixErr.message}`);
+          }
+          continue;
+        }
       } catch (err) {
         console.warn(
           `[otto-runtime] 恢复会话房失败（workspaceId=${row.workspace_id}, sessionId=${row.id}）：${err instanceof Error ? err.message : String(err)}`

@@ -53,6 +53,11 @@ export interface CloudSession {
   initiatorUid(): string | null;
   /** 建这条会话的人。frameHandler 用它判归档权限（issue #822） */
   createdByUid(): string;
+  /** 日志里已经有 session_archived 了吗（issue #822）。**日志是事实，
+      Supabase 那一列只是缓存**：写库那步失败过的话，那一行会停在
+      archived=false，daemon 下次启动就把一条已经收尾的会话重新开出房间。
+      启动时按这个判据兜一道 */
+  isArchived(): boolean;
   /** 收尾（issue #822）：往日志里落一条系统发言 + 一条 session_archived。
       false = 已经归档过了（幂等，不重复落第二条）。
       **只管日志这一半**：Supabase 那行的 archived 列、房间的关闭，都归
@@ -65,13 +70,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
   const coordinator = createTurnCoordinator();
 
-  // 起点从已有日志播种（resume 场景：daemon 可能拿一条有历史的会话来装配）
-  let lastSeqSeen = store.load(sessionId).at(-1)?.seq ?? -1;
+  // 起点从已有日志播种（resume 场景：daemon 可能拿一条有历史的会话来装配）。
+  // **一次 load 推两件事**：末条 seq 与归档状态——它们是同一份日志的两个
+  // 投影，读两遍只是把同一段 IO 做两次
+  const seed = store.load(sessionId);
+  let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   let currentInitiator: string | null = null;
-  // 归档状态从已有日志播种（resume 场景同 lastSeqSeen）：ADR-0087 的口径是
-  // "最后一条 archived/unarchived 说了算"，云会话目前没有恢复归档那一半，
-  // 所以只看有没有 session_archived
-  let archived = store.load(sessionId).some((e) => e.type === "session_archived");
+  // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
+  // 归档那一半，所以只看有没有 session_archived
+  let archived = seed.some((e) => e.type === "session_archived");
   let cachedPxTools: Tool[] = [];
 
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
@@ -183,6 +190,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     createdByUid() {
       return opts.createdByUid;
+    },
+
+    isArchived() {
+      return archived;
     },
 
     archive(byLabel) {

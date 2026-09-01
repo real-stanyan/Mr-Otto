@@ -305,6 +305,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     archive() {
       return false;
     },
+    isArchived() {
+      return false;
+    },
   };
 
   const resilientDeps: FrameHandlerDeps = {

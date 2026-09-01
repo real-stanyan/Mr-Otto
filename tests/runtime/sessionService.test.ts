@@ -262,11 +262,18 @@ describe("CloudSession.archive（issue #822）", () => {
   it("装配时从已有日志播种归档状态 —— daemon 重启后不会把已归档的又归一次", () => {
     const store = newStore();
     const first: SessionEvent[] = [];
-    openSession(store, first).archive("alice");
+    const session = openSession(store, first);
+    expect(session.isArchived()).toBe(false);
+    session.archive("alice");
+    expect(session.isArchived()).toBe(true);
 
     // 同一份日志重新装配一条会话（daemon 重启恢复房间的形态）
     const second: SessionEvent[] = [];
-    expect(openSession(store, second).archive("bob")).toBe(false);
+    const revived = openSession(store, second);
+    // 日志是事实：Supabase 那列写失败过的话，daemon 会拿着 archived=false
+    // 的一行走到这里，靠这个判据兜住（daemon 启动时据此当场收摊 + 补写）
+    expect(revived.isArchived()).toBe(true);
+    expect(revived.archive("bob")).toBe(false);
     expect(second).toEqual([]);
     store.close();
   });
