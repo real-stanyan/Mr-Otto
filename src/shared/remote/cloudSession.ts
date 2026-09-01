@@ -7,12 +7,15 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 2（issue #834）：welcome 多了 `repo`，下行多了 `config_result`。
+/** 3（issue #819）：denied 多了一个 `rate_limited` 码。
+    2（issue #834）：welcome 多了 `repo`，下行多了 `config_result`。
     握手是**精确相等**（frameHandler 的 version_mismatch），两端同一个仓库
     一起发版，所以加字段照样要进位——桌面拿着 v1 连上 v2 的 runtime 会在
     hello 那一步就被明确拒绝，而不是收到一条它读不懂的 welcome 之后静默
-    少一格状态。 */
-export const CS_PROTOCOL_VERSION = 2;
+    少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
+    `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
+    要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
+export const CS_PROTOCOL_VERSION = 3;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** clone 判定的结局种类。与 runtime 侧 `CloneOutcome["kind"]` 是同一组值，
@@ -107,7 +110,11 @@ export type CsDeniedCode =
   | "not_member"
   | "version_mismatch"
   | "not_authorized"
-  | "no_session";
+  | "no_session"
+  /** 超速了，稍后重试（issue #819）。**只用于控制房的 create**：会话房里
+      客户端把 denied 当终态（markDenied 会直接断连接），而限速是"待会儿
+      再来"，两者语义相反——会话房里的限速回的是 `error` 帧 */
+  | "rate_limited";
 
 /** 成员 → runtime */
 export type CsUp =
@@ -177,7 +184,8 @@ function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
     v === "not_member" ||
     v === "version_mismatch" ||
     v === "not_authorized" ||
-    v === "no_session"
+    v === "no_session" ||
+    v === "rate_limited"
   );
 }
 

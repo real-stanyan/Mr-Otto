@@ -6,11 +6,14 @@ import {
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
-    // 2 = issue #834 那次进位（welcome 多了 repo、下行多了 config_result）。
+    // 3 = issue #819 那次进位（denied 多了 rate_limited 码）。
+    // 2 = issue #834 那次（welcome 多了 repo、下行多了 config_result）。
     // 握手是精确相等，两端同一个仓库一起发版——加字段照样进位，宁可让
     // 老客户端在 hello 那一步被明确拒绝，也不要它收到一条读不懂的 welcome
-    // 之后静默少一格状态
-    expect(CS_PROTOCOL_VERSION).toBe(2);
+    // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
+    // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
+    // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
+    expect(CS_PROTOCOL_VERSION).toBe(3);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -139,5 +142,14 @@ describe("validateRepoUrl", () => {
 
   it("路径里带 @ 的合法地址不误伤（@ 在 path 里不是 userinfo）", () => {
     expect(validateRepoUrl("https://github.com/acme/widgets@v2.git").ok).toBe(true);
+  });
+});
+
+// issue #819：新加的 denied 码要能被 decodeCsDown 认出来——认不出的后果是
+// 整帧被判成 null 静默丢掉，客户端白等满超时
+describe("rate_limited 码（issue #819）", () => {
+  it("decodeCsDown 认得出，不被当成垃圾帧丢掉", () => {
+    const frame = encodeCs({ t: "denied", code: "rate_limited" });
+    expect(decodeCsDown(frame)).toEqual({ t: "denied", code: "rate_limited" });
   });
 });

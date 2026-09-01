@@ -22,6 +22,7 @@ import {
   type Sandbox,
 } from "./sandbox.js";
 import { createMembershipCache } from "./membershipCache.js";
+import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
@@ -477,6 +478,13 @@ async function main(): Promise<void> {
       await workspaceConfigStore.save(workspaceId, cfg);
       sandbox.invalidateClone(workspaceId);
     },
+    // 三档令牌桶（issue #819）。日志"一个时段只记一笔"由 createFrameRateLimiter
+    // 自己保证——不然日志本身就成了第二个能被刷爆的东西（ADR-0167 同款）
+    rateLimit: createFrameRateLimiter({
+      onThrottled: (kind, uid) => {
+        console.warn(`[otto-runtime] 限流生效（kind=${kind}, uid=${uid}）：这一分钟内不再重复记`);
+      },
+    }),
     // token 本身从不下行——只回一个 hasPat 布尔（issue #834）
     repoState: (workspaceId) => {
       const record = workspaceConfigStore.load(workspaceId);

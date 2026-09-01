@@ -2367,6 +2367,10 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== status.sessionId) return s;
         return {
+          // runtime 对这条连接说的话（issue #819：限速/审批失效/事件过大）
+          // 落进这一页已有的那格"人话"里——CloudSessionPage 的 actionError
+          // 就在 footer 上方。不进 cloudSession：它是一次性的，不是状态
+          ...(status.notice === undefined ? {} : { workspaceGroupsError: status.notice }),
           cloudSession: {
             ...s.cloudSession,
             state: status.state,

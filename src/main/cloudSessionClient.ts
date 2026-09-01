@@ -103,6 +103,8 @@ function deniedMessage(code: CsDeniedCode): string {
       return "云会话不存在或已归档";
     case "not_authorized":
       return "没有权限执行此操作";
+    case "rate_limited":
+      return "操作太频繁了，稍等一会儿再试";
   }
 }
 
@@ -245,7 +247,10 @@ const CONFIG_ACK_TIMEOUT_MS = 15_000;
 export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
   let active: ActiveSession | null = null;
 
-  function pushStatus(session: ActiveSession): void {
+  /** notice（issue #819）：runtime 对**这条连接**说的一句话，随下一次状态
+      推送捎给渲染层显示。一次性——只有传了才带，不进 ActiveSession，所以
+      不会在后续每次推送里重复出现 */
+  function pushStatus(session: ActiveSession, notice?: string): void {
     deps.sendStatus({
       workspaceId: session.workspaceId,
       sessionId: session.sessionId,
@@ -255,6 +260,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
       repo: session.repo,
+      ...(notice === undefined ? {} : { notice }),
     });
   }
 
@@ -434,6 +440,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       case "error":
         // 只记文本（server 生成的固定提示语，如"审批未生效：…"），不是帧原文
         deps.log?.(`云会话:runtime 回错:${msg.msg}`);
+        // 还要给人看（issue #819）：这条帧是**定向发给这条连接**的，说的
+        // 就是"你刚才那一下没生效"。只进日志的话，被限速的人看到的是
+        // 消息凭空消失——和"网断了"长得一模一样，而两者该做的事相反
+        pushStatus(session, msg.msg);
         return;
       case "created":
         return; // 控制房专用帧，出现在会话房里是协议错位，忽略

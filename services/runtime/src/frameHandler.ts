@@ -26,6 +26,7 @@ import {
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { throttleMessage, type FrameRateLimiter } from "./rateLimit.js";
 import type { CloudSession } from "./sessionService.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
@@ -123,6 +124,11 @@ export interface FrameHandlerDeps {
       看不到任何反馈，别的成员更是永远不知道仓库配没配、拉没拉下来。
       **实现必须保证不下发 token 本身**（只回 hasPat 布尔） */
   repoState: (workspaceId: string) => CsRepoState | null;
+  /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
+      模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
+      靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
+      几条连接就能多刷几次"。构造见 rateLimit.ts 的 createFrameRateLimiter */
+  rateLimit: FrameRateLimiter;
   send: (cid: string, msg: CsDown) => void;
   /** 复审补漏：踢人只清 frameHandler 自己的验籍表（cids）是不够的——daemon.ts
       的实时广播走另一张表（roomRosters，只在 transport.onGone 时才清），
@@ -225,6 +231,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
+      // 建会话是低频动作，但每条 = 一行 Supabase + 一个常驻 WebSocket 房间 +
+      // 一份 EventStore（issue #819）。控制房里用 denied 而不是 error 帧：
+      // create() 只认 created/denied 两种回执，回 error 等于让它白等满超时
+      if (!deps.rateLimit.allow("create", entry.uid)) {
+        deny(cid, "rate_limited");
+        return;
+      }
+
       const { sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid);
       deps.send(cid, {
         t: "created",
@@ -283,10 +297,21 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       }
 
       switch (msg.t) {
-        case "say":
+        case "say": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 一帧只记一个桶（issue #819）：@Agent 的那条走 turn 桶（每条都
+          // 可能起一次真花钱的模型调用），普通发言走 say 桶（撑大的是 VPS
+          // 的 SQLite）。超速**不静默丢**——回一条看得见的 error 帧，
+          // 客户端把它显示给发送者本人（会话房里不能回 denied：客户端把
+          // denied 当终态，会直接断掉这条连接，而限速是"待会儿再来"）
+          const kind = msg.mention ? "turn" : "say";
+          if (!deps.rateLimit.allow(kind, entry.uid)) {
+            deps.send(cid, { t: "error", msg: throttleMessage(kind) });
+            return;
+          }
           await session.say(entry.uid, entry.label, msg.text, msg.mention);
           return;
+        }
 
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
