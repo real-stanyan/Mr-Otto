@@ -45,12 +45,17 @@ import { ArrowLeft, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog.js";
+import { Input } from "@/components/ui/input.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { labelOf } from "../lib/workspaceView.js";
+import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import type {
   ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatMessageEvent,
@@ -195,18 +200,21 @@ export function CloudSessionPage({
 
   return (
     <div className="flex flex-col gap-3">
-      <button
-        type="button"
-        onClick={onBack}
-        className={cn(
-          "press-scale -ml-1 inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
-          "text-[12.5px] text-muted-foreground transition-colors duration-150",
-          "hover:bg-foreground/[0.06] hover:text-foreground"
-        )}
-      >
-        <ArrowLeft className="size-[13px]" aria-hidden />
-        {ws.name}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className={cn(
+            "press-scale -ml-1 inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
+            "text-[12.5px] text-muted-foreground transition-colors duration-150",
+            "hover:bg-foreground/[0.06] hover:text-foreground"
+          )}
+        >
+          <ArrowLeft className="size-[13px]" aria-hidden />
+          {ws.name}
+        </button>
+        <CloudRepoConfigEntry isOwner={selfUid === cs.ownerUid} ready={ready} />
+      </div>
 
       {banner && (
         <p className={cn("text-xs", banner.tone === "err" ? "text-err" : "text-muted-foreground")}>
@@ -296,6 +304,161 @@ export function CloudSessionPage({
         </Button>
       </footer>
     </div>
+  );
+}
+
+/** 云仓库配置入口（issue #821 slice 2）：只有 owner 能配（服务端也拦——
+    services/runtime/src/frameHandler.ts 的 "config" 分支非 owner 回
+    `denied not_authorized`），而 `denied` 帧一旦收到会把**整条云会话连接**
+    标成 denied（main/cloudSessionClient.ts 的 markDenied，同一个状态位
+    是"云会话被拒绝加入"和"这次操作被拒"共用的），不是"这次操作失败"那么
+    轻——非 owner 点了会直接把自己踢出这条云会话。所以这里不做"点了才
+    报错的按钮"，非 owner 从一开始就只看见只读说明，压根摸不到能触发
+    config 帧的控件。ready 是弱一档的门（cs.state !=="ready" 时 config()
+    在本地 requireReady() 就短路回错，不会真的发帧出去），沿用 composer
+    disabled={!ready} 的同一条约定，用 title 说明而不是另起一行文案 */
+function CloudRepoConfigEntry({ isOwner, ready }: { isOwner: boolean; ready: boolean }) {
+  const [open, setOpen] = useState(false);
+  // 保存成功后短暂显示在钮上的确认(同 ProviderKeyDialog 的"已保存"手法:
+  // 弹窗这时已经关了,提示得留在用户看得见的地方)。放在这个外层组件而不是
+  // 弹窗内部,是为了让它在弹窗关闭之后还能继续显示 2 秒
+  const [saved, setSaved] = useState(false);
+
+  if (!isOwner) {
+    return <span className="shrink-0 text-[11px] text-muted-foreground">只有工作区所有者能配置仓库</span>;
+  }
+
+  const onSaved = (): void => {
+    setOpen(false);
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="xs"
+        className="shrink-0"
+        disabled={!ready}
+        title={ready ? undefined : "连接就绪后才能配置"}
+        onClick={() => setOpen(true)}
+      >
+        {saved ? "已保存" : "配置云仓库…"}
+      </Button>
+      <CloudRepoConfigDialog open={open} onOpenChange={setOpen} onSaved={onSaved} />
+    </>
+  );
+}
+
+/** 配置表单本体：repo URL(必填)+ PAT(可选)。PAT 纪律照抄 ProviderKeyDialog
+    的不变量原话——"输入框存完即清,渲染层不留 key 的任何副本;状态只有布尔"
+    (ProviderKeyDialog.tsx:8)。保存成功就关窗口(同 ProviderKeyDialog/
+    ContributeConnectorDialog 的既有约定),PAT 草稿在关窗口前先清空,不
+    回显、不缓存,store 的 cloudConfig 也不落它到任何字段(只是这一次 IPC
+    调用的参数)——关窗口这一步本身也会让 React 卸载这两个输入框,但"存完
+    即清"不能指望卸载去兜底,得在那一刻显式清。失败(含本地校验拦下来的)
+    不关窗口,原样留着让人改了重试,同 cloudSay/cloudApprove 的既有约定。
+    每次**打开**弹窗都从空白开始(同 ProviderKeyDialog"每次打开都是空的"
+    的理由)：没有任何读接口能查"现在配的是什么"，空白比"显示一个可能
+    早就过期的旧草稿冒充现状"更诚实——服务端保存成功是静默的，ADR-0199
+    这条协议线上就没有 config 的读路径 */
+function CloudRepoConfigDialog({
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const cloudConfig = useChat((s) => s.cloudConfig);
+
+  const [repoUrl, setRepoUrl] = useState("");
+  const [pat, setPat] = useState("");
+  const [busy, setBusy] = useState(false);
+  // 本地校验(URL 里嵌了凭据)和 cloudConfig 失败共用这一格——都是"这次
+  // 提交没成"，人话没必要分两条通道。**不**用 useChat((s) => s.workspaceGroupsError)
+  // 订阅式地读:那一格是整页共用的,弹窗刚打开那一刻可能还留着上一次跟这个
+  // 表单毫不相干的旧错误(比如刚才发消息失败),订阅式读会让这个错误原样
+  // 出现在一个用户还没点过保存的新表单里——改成失败那一刻用 getState()
+  // 现取一次快照存进本地状态,不随全局字段之后的变化联动
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setRepoUrl("");
+      setPat("");
+      setError(null);
+    }
+  }, [open]);
+
+  const submit = async (): Promise<void> => {
+    const url = repoUrl.trim();
+    if (!url || busy) return;
+    if (repoUrlHasEmbeddedCredential(url)) {
+      setError(EMBEDDED_CREDENTIAL_MESSAGE);
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    const patValue = pat.trim();
+    const ok = await cloudConfig(url, patValue === "" ? undefined : patValue);
+    setBusy(false);
+    if (ok) {
+      setPat(""); // 存完即清——即使紧接着 onSaved() 就要把整个弹窗关掉
+      onSaved();
+    } else {
+      setError(useChat.getState().workspaceGroupsError);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle>配置云仓库</DialogTitle>
+          <DialogDescription>
+            云端 agent 干活的工作目录会 clone 这个仓库。保存不会立刻触发 clone——
+            要等下一次工具调用才会用这份配置去拉代码。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-[10px]">
+          <Input
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono text-[13px]"
+            placeholder="https://github.com/x/y.git"
+            value={repoUrl}
+            onChange={(e) => { setRepoUrl(e.target.value); setError(null); }}
+          />
+          <Input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono text-[13px]"
+            placeholder="Personal Access Token（可选，私有仓库需要）"
+            value={pat}
+            onChange={(e) => setPat(e.target.value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            私有仓库的 token 请填在这一栏——不要拼进上面的仓库地址。
+          </p>
+        </div>
+
+        {error && <p className="text-xs text-err">{error}</p>}
+
+        <DialogFooter className="gap-2">
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button size="sm" disabled={busy || !repoUrl.trim()} onClick={() => void submit()}>
+            {busy ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
