@@ -8,7 +8,7 @@
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,10 +93,25 @@ test("#123/#106 工作区改动浮窗：git 里有改动才出现，头行可展
     cwd: ws,
     env: { ...process.env, GIT_AUTHOR_NAME: "e2e", GIT_AUTHOR_EMAIL: "e2e@example.com", GIT_COMMITTER_NAME: "e2e", GIT_COMMITTER_EMAIL: "e2e@example.com" },
   });
-  writeFileSync(join(ws, "新加的文件.ts"), "export const x = 1;\n");
   try {
     const { win } = otto;
     await startSession(otto, ws, "开个会话看改动浮窗");
+
+    // ADR-0157 起会话开在自己的 git worktree 副本里，浮窗读的是 store.workspace
+    // 那个真实工作目录的 git status（WorkTreePill.tsx），不是 ws 本身——
+    // ws 只是 worktree 签出的源仓库，`git worktree add` 只签出已提交内容，改动
+    // 写进 ws 副本压根看不见。这里现查那份副本的真实路径，改动落在那儿浮窗才有东西可显示
+    const worktreesDir = join(otto.accountData, "worktrees");
+    const worktreeEntries = readdirSync(worktreesDir);
+    expect(worktreeEntries, `会话应该恰好开出一份 worktree 副本：${worktreesDir}`).toHaveLength(1);
+    const workspace = join(worktreesDir, worktreeEntries[0]!);
+    writeFileSync(join(workspace, "新加的文件.ts"), "export const x = 1;\n");
+
+    // 浮窗只在挂载、工具调用后（tool_result 事件）、或窗口重新聚焦时才问一次 git
+    // （WorkTreePill.tsx 的两个 useEffect）。这里没有工具调用，用「窗口重新聚焦」
+    // 这条真实路径去触发重新问 git —— 走的是应用自己注册的 focus 监听器，
+    // 和用户在别处改完文件切回 app 时跑的是同一段代码，不是绕开产品逻辑的桩
+    await win.evaluate(() => window.dispatchEvent(new Event("focus")));
 
     const head = win.getByRole("button", { expanded: false }).filter({ hasText: "新加的文件.ts" });
     await expect(head).toBeVisible({ timeout: 30_000 });
