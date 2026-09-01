@@ -20,8 +20,14 @@ test("默认启动：真机上拿得到系统封装，页面讲清楚要核对�
 
     // 这一条同时是 openIdentityStore 的真机断言:safeStorage 不可用的话
     // 页面会是「这台机器没有可用的系统安全存储」
-    await expect(otto.win.getByText("配对前先核对安全码")).toBeVisible();
+    // commit e2f6209（issue #583）把主流程从「核对 6 位安全码」换成了「桌面出码、
+    // 手机扫」,主标题变成这一句;核对码没有消失,降级成了扫不了码时的备选(见下)
+    await expect(otto.win.getByText("用手机扫一下就配好")).toBeVisible();
     await expect(otto.win.getByText("这台机器没有可用的系统安全存储")).toHaveCount(0);
+
+    // 安全提示这层保护不能丢:页面仍然讲清楚要核对安全码,只是从主流程
+    // 降级成了二级文案(RemoteDevicesSettings.tsx:234)
+    await expect(otto.win.getByText("扫不了码的话:核对 6 位安全码")).toBeVisible();
 
     // 没登录 → 目录读不出任何设备,空态要有交代而不是一片白
     await expect(otto.win.getByText("还没有手机登记到这个账号")).toBeVisible();
