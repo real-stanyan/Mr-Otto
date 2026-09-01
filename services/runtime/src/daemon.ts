@@ -224,7 +224,24 @@ async function main(): Promise<void> {
     const payload = safeEncodeCs(msg, (err) => {
       console.error(`[otto-runtime] globalSend 编码失败（cid=${cid}, t=${msg.t}）：`, err);
     });
-    if (payload === null) return;
+    if (payload === null) {
+      // 直播扇出的洞要出声（issue #823 R2）：backlog 那条路早就会回一条
+      // 「历史事件过大已跳过」的占位（chunkBacklogFrames 的 skip 分支），
+      // 直播这条却只 console.error 后静默丢——客户端不做 seq 缺口检测，
+      // 于是流里出现一个**无声的洞**，只有重新 join 拉一次 backlog 才看得见
+      // 那条占位。同一件事在两条路上给出两种可见性，是最难查的那类不一致。
+      if (msg.t === "event") {
+        const placeholder = safeEncodeCs(
+          {
+            t: "error",
+            msg: `一条实时事件过大已跳过（type=${msg.event.type}, seq=${msg.event.seq}）：单条超过下发上限，重新进入会话可看到同样的占位`,
+          },
+          (err) => console.error("[otto-runtime] 跳过占位帧本身也编码失败：", err)
+        );
+        if (placeholder !== null) transport.send(placeholder, cid);
+      }
+      return;
+    }
     transport.send(payload, cid);
   }
 
