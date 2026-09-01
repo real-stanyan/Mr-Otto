@@ -85,7 +85,8 @@ function makeFakeDocker(initial: FakeContainer[] = []) {
   return { docker, calls, containers, volumes };
 }
 
-// ── git clone（issue #821 slice 1）専用の假 exec ──────────────────────────
+// ── git clone（issue #821 slice 1，复审 Rejected 八条修复后重建）専用の假
+// exec ─────────────────────────────────────────────────────────────────
 // 既有 makeFakeDocker 的 getContainer(id).exec 一律 throw（"not used in
 // sandbox tests"）——不动它，克隆相关测试改用这层 wrapper 单独接管 exec/modem，
 // 其余 listContainers/createContainer/listVolumes/getVolume 原样透传。
@@ -94,44 +95,76 @@ interface ExecOutcome {
   exitCode: number;
   stdout?: string;
   stderr?: string;
+  /** 让这次 exec 的 inspect() 永远回 { ExitCode: null }——模拟 docker 一直
+      给不出退出码的场景（复审 C1 repro：credential approve 卡在这个状态，
+      execInContainer 的 inspectExecExitCode 重试 5 次后会 throw） */
+  neverResolveExitCode?: boolean;
+  /** 让这次 exec 的 stream 走 'error' 而不是 'end'——模拟 docker attach 流
+      本身出错（execInContainer 里 stream.on("error", reject) 那条路，同样
+      是复审 C1 要覆盖的"execInContainer 直接抛异常"场景之一） */
+  streamError?: boolean;
 }
 type ExecRouter = (cmd: string[]) => ExecOutcome;
+type ExecLog = Array<{ cmd: string[]; stdin?: string; workingDir?: string }>;
 
-/** 按 exec 拿到的 Cmd（`["/bin/bash","-lc",<script>]`）文本路由到预设结局，
-    并把 attachStdin 场景下写入的内容整段记下——克隆测试要断言"PAT 经 stdin
-    传入、Cmd 数组里不含 PAT"，全靠这份 execLog。modem.demuxStream 是容器
-    共用的一个函数，没法从参数直接知道"这次 exec 是哪一条"，靠 stream 自带
-    的 __outcome 标记把预设 stdout/stderr 喂给对应 sink。 */
-function withCloneExec(
-  docker: DockerLike,
-  router: ExecRouter,
-  execLog: Array<{ cmd: string[]; stdin?: string }>,
-): DockerLike {
+/** 按 exec 拿到的完整 Cmd 数组（`["/usr/bin/timeout","-k","5",secs,
+    "/bin/bash","-lc",<script>]`，复审 I6 之后多了 timeout 前缀，脚本不再
+    固定在 cmd[2]）拼成整段文本路由到预设结局，并把 attachStdin 场景下
+    写入的内容整段记下——克隆测试要断言"PAT 经 stdin 传入、Cmd 数组里不含
+    PAT"，全靠这份 execLog。
+
+    execLog 的登记点在 exec() 被调用的那一刻（不是 inspect() 里）：
+    neverResolveExitCode 场景下 inspect() 会被连续调用最多 5 次，登记点
+    挂在 inspect() 会让同一条命令在 execLog 里重复出现好几遍，污染"数了
+    几次 clone/reject 调用"这类断言。stdin 在 exec() 调用时还不知道（要
+    等 start() 之后才会被写入），所以先登记一条占位记录，stdin 到达时
+    原地在同一个对象上补上。 */
+function withCloneExec(docker: DockerLike, router: ExecRouter, execLog: ExecLog): DockerLike {
   return {
     ...docker,
     getContainer(id: string) {
       const base = docker.getContainer(id);
       return {
         ...base,
-        async exec(execOpts: { Cmd: string[]; AttachStdout: boolean; AttachStderr: boolean; AttachStdin?: boolean }) {
+        async exec(execOpts: {
+          Cmd: string[];
+          AttachStdout: boolean;
+          AttachStderr: boolean;
+          AttachStdin?: boolean;
+          WorkingDir?: string;
+        }) {
           const outcome = router(execOpts.Cmd);
-          let stdin: string | undefined;
+          const record: ExecLog[number] = {
+            cmd: execOpts.Cmd,
+            ...(execOpts.WorkingDir !== undefined ? { workingDir: execOpts.WorkingDir } : {}),
+          };
+          execLog.push(record);
+
+          // outcome 挂在 stream 实例本身上——modem.demuxStream 是容器共用
+          // 的一个函数，没法从参数直接知道"这次 demux 对应哪次 exec"，
+          // 靠 stream 自带的 __outcome 标记把预设 stdout/stderr 喂给对应
+          // sink（每次 exec() 调用都会拿到一个全新的 stream 实例，互不
+          // 干扰）
           const stream = new EventEmitter() as unknown as NodeJS.ReadWriteStream & { __outcome?: ExecOutcome };
           stream.__outcome = outcome;
+          const finish = () => {
+            if (outcome.streamError) stream.emit("error", new Error("simulated docker attach stream error"));
+            else stream.emit("end");
+          };
           (stream as unknown as { write: (d: string) => boolean }).write = (d: string) => {
-            stdin = (stdin ?? "") + d;
+            record.stdin = (record.stdin ?? "") + d;
             return true;
           };
           (stream as unknown as { end: () => void }).end = () => {
-            setImmediate(() => stream.emit("end"));
+            setImmediate(finish);
           };
           return {
             async start(startOpts?: { hijack?: boolean; stdin?: boolean }) {
-              if (!startOpts?.stdin) setImmediate(() => stream.emit("end"));
+              if (!startOpts?.stdin) setImmediate(finish);
               return stream;
             },
             async inspect() {
-              execLog.push({ cmd: execOpts.Cmd, ...(stdin !== undefined ? { stdin } : {}) });
+              if (outcome.neverResolveExitCode) return { ExitCode: null };
               return { ExitCode: outcome.exitCode };
             },
           };
@@ -148,34 +181,51 @@ function withCloneExec(
   };
 }
 
-/** 五个命令按 Cmd 里的脚本文本互斥匹配（幂等检查/凭据配置/凭据写入/clone/
-    凭据回收），每个都可以单独配置退出码——覆盖脚本走 overrides，不写就是
-    "一路成功、且尚未 clone 过" 的默认状态 */
+/** 七个命令按 Cmd 拼接后的整段文本互斥匹配（幂等检查/凭据残留探测/凭据
+    配置/凭据写入/清空目标目录/clone/凭据回收），每个都可以单独配置退出码
+    ——覆盖字段走 overrides，不写就是"一路成功、且尚未 clone 过、没有
+    残留凭据"的默认状态。字段名对齐 sandbox.ts 里的真实语义（`cloneComplete`
+    对应 `git -C /work rev-parse HEAD`，不再是旧版的 `test -d /work/.git`
+    ——复审 I3 之后判据换了）。 */
 function cloneRouter(
   overrides: {
-    gitDirExists?: boolean;
+    cloneComplete?: boolean;
+    residualCredentials?: boolean;
     credHelperExit?: number;
     approveExit?: number;
+    approveNeverResolves?: boolean;
+    clearExit?: number;
     cloneExit?: number;
     cloneStderr?: string;
+    cloneStreamError?: boolean;
     rejectExit?: number;
   } = {},
 ): ExecRouter {
   return (cmd) => {
-    const script = cmd[2] ?? "";
-    if (script.includes("test -d /work/.git")) {
-      return { exitCode: overrides.gitDirExists ? 0 : 1 };
+    const script = cmd.join(" ");
+    if (script.includes("rev-parse HEAD")) {
+      return { exitCode: overrides.cloneComplete ? 0 : 1 };
+    }
+    if (script.includes("test -f ~/.git-credentials")) {
+      return { exitCode: overrides.residualCredentials ? 0 : 1 };
     }
     if (script.includes("credential.helper store")) {
       return { exitCode: overrides.credHelperExit ?? 0 };
     }
     if (script.includes("git credential approve")) {
-      return { exitCode: overrides.approveExit ?? 0 };
+      return {
+        exitCode: overrides.approveExit ?? 0,
+        ...(overrides.approveNeverResolves ? { neverResolveExitCode: true } : {}),
+      };
     }
-    if (script.includes("git clone")) {
+    if (script.includes("find /work -mindepth 1 -delete")) {
+      return { exitCode: overrides.clearExit ?? 0 };
+    }
+    if (script.includes("git clone --")) {
       return {
         exitCode: overrides.cloneExit ?? 0,
         ...(overrides.cloneStderr ? { stderr: overrides.cloneStderr } : {}),
+        ...(overrides.cloneStreamError ? { streamError: true } : {}),
       };
     }
     if (script.includes("git credential reject")) {
@@ -385,12 +435,12 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     expect(results.length).toBe(0);
   });
 
-  it("⑨ 配了且 /work/.git 不存在 → 执行 clone；Cmd 数组不含 PAT，PAT 经 stdin 传入", async () => {
+  it("⑨ 配了且没克隆过 → 执行 clone；Cmd 数组不含 PAT，PAT 经 stdin 传入", async () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-fresh", state: "running", labels: { "mrotto.workspace": "fresh" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
-    const wrapped = withCloneExec(docker, cloneRouter({ gitDirExists: false, cloneExit: 0 }), execLog);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
     const results: Array<{ workspaceId: string; result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
     const PAT = "ghp_supersecrettoken1234";
     const sandbox = createSandbox(wrapped, {
@@ -423,12 +473,12 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     ]);
   });
 
-  it("⑩ 已有 /work/.git → 跳过 clone，不通报（幂等）", async () => {
+  it("⑩ 已经完整克隆过（rev-parse HEAD 成功） → 跳过 clone，不通报（幂等）", async () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-existing", state: "running", labels: { "mrotto.workspace": "existing" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
-    const wrapped = withCloneExec(docker, cloneRouter({ gitDirExists: true }), execLog);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true }), execLog);
     const results: unknown[] = [];
     const sandbox = createSandbox(wrapped, {
       repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
@@ -442,14 +492,14 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     expect(results.length).toBe(0);
   });
 
-  it("⑪ clone 失败 → ensure 仍正常返回容器，回调收到失败原因", async () => {
+  it("⑪ clone 以非零码失败 → ensure 仍正常返回容器，回调收到失败原因", async () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-bad", state: "running", labels: { "mrotto.workspace": "bad" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
+    const execLog: ExecLog = [];
     const wrapped = withCloneExec(
       docker,
-      cloneRouter({ gitDirExists: false, cloneExit: 128, cloneStderr: "fatal: repository 'https://bad' not found" }),
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: repository 'https://bad' not found" }),
       execLog,
     );
     const results: Array<{ workspaceId: string; result: { ok: boolean; repoUrl: string; reason?: string } }> = [];
@@ -471,8 +521,8 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-race", state: "running", labels: { "mrotto.workspace": "race" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
-    const wrapped = withCloneExec(docker, cloneRouter({ gitDirExists: false, cloneExit: 0 }), execLog);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
     const sandbox = createSandbox(wrapped, {
       repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
     });
@@ -489,8 +539,8 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-cleanup", state: "running", labels: { "mrotto.workspace": "cleanup" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
-    const wrapped = withCloneExec(docker, cloneRouter({ gitDirExists: false, cloneExit: 0 }), execLog);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
     const sandbox = createSandbox(wrapped, {
       repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_xxx" }),
     });
@@ -513,8 +563,8 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
     const { docker } = makeFakeDocker([
       { id: "c1", name: "otto-ws-twice", state: "running", labels: { "mrotto.workspace": "twice" } },
     ]);
-    const execLog: Array<{ cmd: string[]; stdin?: string }> = [];
-    const wrapped = withCloneExec(docker, cloneRouter({ gitDirExists: false, cloneExit: 0 }), execLog);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
     let queries = 0;
     const sandbox = createSandbox(wrapped, {
       repoConfig: async () => {
@@ -529,5 +579,262 @@ describe("createSandbox — git clone（issue #821 slice 1）", () => {
 
     expect(execLog.length).toBe(afterFirst); // 第二次 ensure 没有再发起任何 exec
     expect(queries).toBe(1); // repoConfig 也没有被再查一次
+  });
+
+  // ── 复审 Rejected 八条 ────────────────────────────────────────────────
+
+  it("⑮（C1）credential approve 的 inspect 永远拿不到退出码 → ensure 仍正常返回，但凭据依然被清理", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-stuck", state: "running", labels: { "mrotto.workspace": "stuck" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, approveNeverResolves: true }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_stuck" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    const container = await sandbox.ensure("stuck");
+
+    expect(container).toBeDefined(); // ensure 没有被拖下水
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    // 关键断言：即使 approve 阶段的 exec 本身抛异常（不是返回非零 exitCode），
+    // cleanup（reject/rm/unset）依然被调用过——旧版本这里会漏做（复审 C1 repro）
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    // clone 本身不应该发生——approve 都没成功，不该往下走
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git clone --"))).toBe(false);
+  });
+
+  it("⑯（C1）clone 阶段 docker 流本身出错 → ensure 仍正常返回，但凭据依然被清理", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-streamerr", state: "running", labels: { "mrotto.workspace": "streamerr" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneStreamError: true }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: "ghp_streamerr" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean } }),
+    });
+
+    const container = await sandbox.ensure("streamerr");
+
+    expect(container).toBeDefined();
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+  });
+
+  it("⑰（C2）幂等命中但探到凭据残留 → 顺手清理，不重新 clone", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-residual", state: "running", labels: { "mrotto.workspace": "residual" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true, residualCredentials: true }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("residual");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("test -f ~/.git-credentials"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git clone --"))).toBe(false); // 没有重新 clone
+  });
+
+  it("⑱（C2）幂等命中且没有残留凭据 → 只探测，不空跑 reject/rm/unset", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-clean", state: "running", labels: { "mrotto.workspace": "clean" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: true, residualCredentials: false }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("clean");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("test -f ~/.git-credentials"))).toBe(true);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(false);
+  });
+
+  it("⑲（I3）半成品 clone（.git 建了但没有可用提交）→ 判定没完成，清空目标目录后重新 clone", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-half", state: "running", labels: { "mrotto.workspace": "half" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const results: Array<{ result: { ok: boolean } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean } }),
+    });
+
+    await sandbox.ensure("half");
+
+    expect(execLog.some((c) => c.cmd.join(" ").includes("rev-parse HEAD"))).toBe(true); // 幂等检查跑过
+    const clearIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("find /work -mindepth 1 -delete"));
+    const cloneIdx = execLog.findIndex((c) => c.cmd.join(" ").includes("git clone --"));
+    expect(clearIdx).toBeGreaterThanOrEqual(0); // 判定没完成后，清空目标目录这一步确实跑了
+    expect(cloneIdx).toBeGreaterThan(clearIdx); // 清空发生在重新 clone 之前（不然 git clone 会因目录非空拒绝）
+    expect(results.length).toBe(1); // 没有被幂等分支静默吞掉——用户能看到这次重新 clone 的结果
+    expect(results[0]!.result.ok).toBe(true);
+  });
+
+  it("⑳（I4）invalidateClone 后重新配置——ensure 立刻重新尝试 clone，不用等进程重启", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-retry", state: "running", labels: { "mrotto.workspace": "retry" } },
+    ]);
+    const execLog: ExecLog = [];
+    let cloneExit = 128; // 先失败（比如 repoUrl 配错）
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 1 };
+        if (script.includes("git clone --")) return { exitCode: cloneExit };
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("retry");
+    const cloneCallsAfterFirst = execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length;
+    expect(cloneCallsAfterFirst).toBe(1);
+
+    await sandbox.ensure("retry"); // 缓存生效，不重新尝试
+    expect(execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length).toBe(cloneCallsAfterFirst);
+
+    sandbox.invalidateClone("retry"); // owner 纠正了配置
+    cloneExit = 0; // 这次能成功了
+    await sandbox.ensure("retry");
+
+    expect(execLog.filter((c) => c.cmd.join(" ").includes("git clone --")).length).toBe(cloneCallsAfterFirst + 1);
+  });
+
+  it("㉑（I5）onCloneResult 回调自身抛出异常（正常出结果路径）→ 不传导，ensure 仍正常返回", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-cbthrows", state: "running", labels: { "mrotto.workspace": "cbthrows" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: () => {
+        throw new Error("simulated store.append failure (disk full)");
+      },
+    });
+
+    await expect(sandbox.ensure("cbthrows")).resolves.toBeDefined();
+  });
+
+  it("㉒（I5）onCloneResult 回调自身抛出异常（意外异常兜底路径）→ 同样不传导", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-cbthrows2", state: "running", labels: { "mrotto.workspace": "cbthrows2" } },
+    ]);
+    const execLog: ExecLog = [];
+    // 幂等检查本身抛异常（inspect 永远拿不到退出码），逼 runCloneAttempt
+    // 走它自己的 catch 分支——这条分支也调 onCloneResult，同样要吞掉回调
+    // 自身的异常
+    const wrapped = withCloneExec(
+      docker,
+      (cmd) => {
+        const script = cmd.join(" ");
+        if (script.includes("rev-parse HEAD")) return { exitCode: 0, neverResolveExitCode: true };
+        return { exitCode: 0 };
+      },
+      execLog,
+    );
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: () => {
+        throw new Error("simulated callback failure");
+      },
+    });
+
+    await expect(sandbox.ensure("cbthrows2")).resolves.toBeDefined();
+  });
+
+  it("㉓（M7）PAT 存在 + clone 以非零码失败 → 同样触发凭据清理，reason 不含 PAT", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-patfail", state: "running", labels: { "mrotto.workspace": "patfail" } },
+    ]);
+    const execLog: ExecLog = [];
+    const PAT = "ghp_patfail_secret";
+    const wrapped = withCloneExec(
+      docker,
+      cloneRouter({ cloneComplete: false, cloneExit: 128, cloneStderr: "fatal: authentication failed" }),
+      execLog,
+    );
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git", pat: PAT }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("patfail");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.reason).not.toContain(PAT);
+    expect(execLog.some((c) => c.cmd.join(" ").includes("git credential reject"))).toBe(true);
+    for (const call of execLog) {
+      expect(call.cmd.join(" ")).not.toContain(PAT);
+    }
+  });
+
+  it("㉔（M8）每条 exec 都带 WorkingDir=/work，且各自套了 timeout（clone 600s，其余默认 30s）", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-wd", state: "running", labels: { "mrotto.workspace": "wd" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 0 }), execLog);
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+    });
+
+    await sandbox.ensure("wd");
+
+    expect(execLog.length).toBeGreaterThan(0);
+    for (const call of execLog) {
+      expect(call.workingDir).toBe("/work");
+    }
+
+    const rev = execLog.find((c) => c.cmd.join(" ").includes("rev-parse HEAD"));
+    expect(rev!.cmd.slice(0, 4)).toEqual(["/usr/bin/timeout", "-k", "5", "30"]);
+    const clone = execLog.find((c) => c.cmd.join(" ").includes("git clone --"));
+    expect(clone!.cmd.slice(0, 4)).toEqual(["/usr/bin/timeout", "-k", "5", "600"]);
+  });
+
+  it("㉕（M8）clone 超时（exitCode 124）→ reason 带「命令超时」友好文案", async () => {
+    const { docker } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-timeout", state: "running", labels: { "mrotto.workspace": "timeout" } },
+    ]);
+    const execLog: ExecLog = [];
+    const wrapped = withCloneExec(docker, cloneRouter({ cloneComplete: false, cloneExit: 124 }), execLog);
+    const results: Array<{ result: { ok: boolean; reason?: string } }> = [];
+    const sandbox = createSandbox(wrapped, {
+      repoConfig: async () => ({ repoUrl: "https://github.com/acme/widgets.git" }),
+      onCloneResult: (_workspaceId, result) => results.push({ result: result as { ok: boolean; reason?: string } }),
+    });
+
+    await sandbox.ensure("timeout");
+
+    expect(results.length).toBe(1);
+    expect(results[0]!.result.ok).toBe(false);
+    expect(results[0]!.result.reason).toContain("命令超时");
   });
 });

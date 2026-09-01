@@ -382,7 +382,15 @@ async function main(): Promise<void> {
       },
       ownerOf,
     },
-    saveConfig: (workspaceId, cfg) => workspaceConfigStore.save(workspaceId, cfg),
+    // owner 纠正 repoUrl/PAT 后，光写盘不够——sandbox.ts 的 cloneAttempts
+    // 缓存（settle 后刻意不删，见该文件注释）会一直挡着重新尝试，只有
+    // daemon 重启才会失效，且没有任何提示告诉 owner「你的修正没生效」
+    // （复审 I4）。落盘成功后立刻调 invalidateClone，让下一次 ensure()
+    // 重新走一遍幂等检查/clone。
+    saveConfig: async (workspaceId, cfg) => {
+      await workspaceConfigStore.save(workspaceId, cfg);
+      sandbox.invalidateClone(workspaceId);
+    },
     send: globalSend,
     dropCid,
   };
