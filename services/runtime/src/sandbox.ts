@@ -666,8 +666,16 @@ async function performClone(
 
     // GIT_TERMINAL_PROMPT=0（issue #835 顺带）：私有仓库没配 PAT 时，让 git
     // **明确**报"需要凭据"而不是去摸终端——没有 tty 时它本来也会失败，但
-    // 那条路的行为取决于镜像里有没有 askpass 之类的东西，不该靠环境碰运气
-    const cloneCmd = `export GIT_TERMINAL_PROMPT=0\ngit clone -- ${shellQuote(repoUrl)} /work`;
+    // 那条路的行为取决于镜像里有没有 askpass 之类的东西，不该靠环境碰运气。
+    //
+    // `--depth 1`（issue #836）：卷没有磁盘上限，而一个仓库最容易失控的
+    // 部分是历史不是工作树（linux/chromium 这种，`.git` 比 checkout 大一个
+    // 量级）。浅克隆把这一半砍掉，是 CI 的标准做法。代价是 `git log`/
+    // `git blame` 只看得到 tip——**水獭自己能解**（系统提示里写了
+    // `git fetch --unshallow`），比"整台 VPS 磁盘满了"这个代价小得多。
+    // 这不是配额：一个 50G 的工作树照样是 50G，真配额见 #836 里验过的
+    // 那两条路（这台机器 overlayfs + ext4，`--storage-opt size=` 用不了）
+    const cloneCmd = `export GIT_TERMINAL_PROMPT=0\ngit clone --depth 1 -- ${shellQuote(repoUrl)} /work`;
     const cloneResult = await execInContainer(container, cloneCmd, { timeoutSec: CLONE_TIMEOUT_SEC });
     if (cloneResult.exitCode !== 0) {
       // 最容易实际携带原始 repoUrl 的一条：git clone 失败时的 stderr

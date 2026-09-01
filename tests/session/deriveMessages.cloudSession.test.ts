@@ -36,6 +36,9 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(content).toContain("[名字]: 内容"); // ② 消息长什么样
     expect(content).toContain("工作区所有者"); // ③ 审批归谁
     expect(content).toContain("不允许 git push"); // ④ 提交推不出去
+    // ⑤ 浅克隆（issue #836）：只说限制不给解法，模型会以为 blame 坏了
+    expect(content).toContain("--depth 1");
+    expect(content).toContain("git fetch --unshallow");
   });
 
   it("cloud 与 workspaceKind/isolated 互不干扰（各自独立注入）", () => {

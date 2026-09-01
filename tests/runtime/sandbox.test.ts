@@ -521,6 +521,10 @@ describe("createSandbox — git clone（#821 slice 1 / #832 决策表 / #835 旁
     const clone = execLog.find((c) => c.cmd.join(" ").includes("git clone --"));
     expect(clone).toBeDefined();
     expect(clone!.cmd.join(" ")).not.toContain(PAT);
+    // 浅克隆（issue #836）：一个仓库最容易失控的部分是历史不是工作树，
+    // 而卷没有磁盘上限。水獭要历史时自己 `git fetch --unshallow`（系统
+    // 提示里写了），这比"整台 VPS 磁盘满了"便宜得多
+    expect(clone!.cmd.join(" ")).toContain("--depth 1");
     const approve = execLog.find((c) => c.cmd.join(" ").includes("git credential approve"));
     expect(approve).toBeDefined();
     expect(approve!.cmd.join(" ")).not.toContain(PAT);
