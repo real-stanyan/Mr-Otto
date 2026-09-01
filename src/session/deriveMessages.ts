@@ -2,7 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import type { SessionEvent, UserTextFile } from "./events.js";
+import type { CloudSessionFacts, SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
@@ -54,12 +54,16 @@ export function systemPromptText(
   workspace: string,
   today?: string,
   workspaceKind?: "default",
-  isolated?: IsolatedWorkspace
+  isolated?: IsolatedWorkspace,
+  cloud?: CloudSessionFacts
 ): string {
   return (
     `你是 Mr. Otto（叫我 Otto），一个会用工具的桌面 agent。当前工程文件夹：${workspace}\n` +
     (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
     (workspaceKind === "default" ? PACKAGE_NUDGE : "") +
+    // 云会话（issue #833）：不注入的话模型对自己的处境一无所知——不知道
+    // 在容器里、不知道对面是一群人、不知道自己的提交推不出去
+    (cloud ? CLOUD_SESSION_TEXT : "") +
     // 独立工作副本（issue #641）：不说的话水獭会以为自己在项目本体上，
     // 干完活直接往用户的分支上招呼，而项目本体可能正被另一只水獭占着
     (isolated ? isolatedPromptText(isolated) : "") +
@@ -75,6 +79,27 @@ export function systemPromptText(
     STRUCTURED_BLOCKS
   );
 }
+
+/** 云会话（工作区群聊）独有的几件事实（issue #833）。桌面会话没有这段，
+    投影逐字节不变——`session_created.cloud` 缺席就不注入。
+
+    为什么这四条、不是更多：每一条都是**模型不知道就会做错事**的那种事实。
+    ① 在容器里、工作目录 /work：不说的话它会按桌面的习惯去猜路径；
+    ② 群聊 + `[名字]:` 前缀：不说的话它会把别人的发言当成用户对它说的话，
+       或者反过来以为每条消息都要回；
+    ③ 审批归发起人/所有者：桌面那句「弹给用户审批」在这里字面上不成立
+       （屏幕前不止一个人）；
+    ④ 推不出去：沙箱的凭据用完即焚（services/runtime/src/sandbox.ts），
+       模型干完活习惯性 `git push` 会失败，更糟的是它可能因此以为「提交
+       已经安全了」——实际这些提交只活在这个卷里。 */
+const CLOUD_SESSION_TEXT =
+  `你跑在一台云沙箱容器里（Linux），工具都在容器内执行，工作目录就是上面那个。\n` +
+  `这是一条**群聊**会话：工作区的多个成员都能发言，他们的消息以「[名字]: 内容」的形式到你这里；` +
+  `@ 你的那条才会触发你的回合，其余的你看得见但不必逐条回应。\n` +
+  `危险操作的审批由发起这一轮的人或工作区所有者决定，不是"某个用户"——` +
+  `被拒同样是"别做这件事"，别换个写法绕过去。\n` +
+  `这个沙箱不允许 git push（拉代码用的凭据用完就烧了）。你的提交只留在这个工作区里，` +
+  `别当成"已经推上去了"——需要交付时说一声，让人来决定怎么带出去。\n`;
 
 /** 界面认得的结构化围栏。写进提示词而不是留给模型自己发挥：
     界面只认这几种语言 + 这几个字段（渲染在 lib/ottoBlocks.ts 里逐字段校验），
@@ -524,7 +549,7 @@ export function deriveMessages(
           // 不取 session_created 自己的 ts——跨夜的会话会一直以为还是开会话那天
           systemMessage = {
             role: "system",
-            content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated),
+            content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated, event.cloud),
           };
           messages.push(systemMessage);
         }

@@ -24,7 +24,7 @@ import {
 import { createMembershipCache } from "./membershipCache.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createDockerWorld } from "../../../src/world/dockerWorld.js";
+import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import { createOpenAICompatibleAdapter } from "../../../src/model/openaiCompatible.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -429,6 +429,20 @@ async function main(): Promise<void> {
           pkg_id: null,
         });
         if (error) throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        // 日志的第 0 条（issue #833）。少了它，deriveMessages 那边**一条
+        // system 消息都投不出来**——它只从 session_created.workspace 产出
+        // 那条消息，engine 不会补默认值。后果是云端水獭不知道自己在
+        // /work、不知道对面是一群人、不知道自己的提交推不出去。
+        // 只在这里 append，不在 openSessionRoom 里：那个函数在 daemon 重启
+        // 时会对每条存量会话再跑一遍，在那里 append 等于往日志中间插一条
+        // session_created（invariants.ts 的"唯一 / 在头部"就破了）。
+        storeFor(workspaceId).append({
+          sessionId,
+          ts: Date.now(),
+          type: "session_created",
+          workspace: WORKDIR,
+          cloud: { workspaceId },
+        });
         openSessionRoom(workspaceId, sessionId, owner);
         return { sessionId };
       },
