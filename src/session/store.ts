@@ -39,6 +39,9 @@ export interface SessionSummary {
       空数组 = 纯本地会话。名字是**分享那一刻**的（事件只记显示名不记 uid，
       见 events.ts 那条注释），UI 拿它匹配头像是尽力而为 */
   sharedWith: string[];
+  /** 主题桶 slug（#846）：最后一条 session_topic_set 胜出（null 也是一种「设了」），
+      没有手动记录时取最后一条 session_topic_assigned；都没有 → null */
+  topic: string | null;
 }
 
 const SCHEMA = `
@@ -465,20 +468,30 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_group_array(DISTINCT json_extract(payload, '$.friendName'))
                    FROM events e6
                   WHERE e6.session_id = e.session_id
-                    AND e6.type = 'session_shared') AS sharedWithJson
+                    AND e6.type = 'session_shared') AS sharedWithJson,
+                (SELECT CASE WHEN json_type(e7.payload, '$.topic') = 'null' THEN ''
+                             ELSE json_extract(e7.payload, '$.topic') END
+                   FROM events e7
+                  WHERE e7.session_id = e.session_id AND e7.type = 'session_topic_set'
+                  ORDER BY e7.seq DESC LIMIT 1) AS topicSet,
+                (SELECT json_extract(payload, '$.topic')
+                   FROM events e8
+                  WHERE e8.session_id = e.session_id AND e8.type = 'session_topic_assigned'
+                  ORDER BY e8.seq DESC LIMIT 1) AS topicAssigned
            FROM events e
           GROUP BY session_id
           HAVING archivedReason IS NULL OR archivedReason <> 'system'
           ORDER BY lastTs DESC`
       )
-      .all() as (Omit<SessionSummary, "archived" | "sharedWith"> & {
+      .all() as (Omit<SessionSummary, "archived" | "sharedWith" | "topic"> & {
         renamed: string | null; autotitled: string | null; archivedReason: string | null;
         sharedWithJson: string | null;
+        topicSet: string | null; topicAssigned: string | null;
       })[];
     // 手动改名（最后一条胜出）压过模型浓缩标题（session_autotitled，issue #335），
     // 浓缩标题压过自动标题（第一条 user_message 首行）；
     // 空白一律算没有（显示截断交给 UI 的 ellipsis）
-    return rows.map(({ renamed, autotitled, archivedReason, sharedWithJson, ...r }) => ({
+    return rows.map(({ renamed, autotitled, archivedReason, sharedWithJson, topicSet, topicAssigned, ...r }) => ({
       ...r,
       title: renamed?.trim() || autotitled?.trim() || r.title?.split("\n")[0]?.trim() || null,
       archived: archivedReason === "user", // system 归档已被 HAVING 滤掉,能到这的非空值只有 "user"
@@ -486,6 +499,8 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       sharedWith: (JSON.parse(sharedWithJson ?? "[]") as unknown[]).filter(
         (n): n is string => typeof n === "string" && n !== ""
       ),
+      // '' 是 SQL 层把「手动归到 null」编码出来的哨兵（json_extract 对 JSON null 和缺席都回 NULL，分不开）
+      topic: topicSet === null ? (topicAssigned?.trim() || null) : (topicSet === "" ? null : topicSet),
     }));
   }
 

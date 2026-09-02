@@ -156,6 +156,18 @@ describe("EventStore", () => {
     expect(store.sessions()[0]?.title).toBe("自动标题");
   });
 
+  it("sessions().topic：手动 session_topic_set 压过 session_topic_assigned；set 成 null 是「归到未分类」不是「没设过」", () => {
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/p", workspaceKind: "default" });
+    store.append(userMsg("s1", "改装车"));
+    expect(store.sessions()[0]?.topic).toBeNull();
+    store.append({ sessionId: "s1", ts: 3, type: "session_topic_assigned", topic: "hobbies", model: "cheap", ignorable: true });
+    expect(store.sessions()[0]?.topic).toBe("hobbies");
+    store.append({ sessionId: "s1", ts: 4, type: "session_topic_set", topic: "work", ignorable: true });
+    expect(store.sessions()[0]?.topic).toBe("work");
+    store.append({ sessionId: "s1", ts: 5, type: "session_topic_set", topic: null, ignorable: true });
+    expect(store.sessions()[0]?.topic).toBeNull(); // 手动归到未分类，自动那条不复活
+  });
+
   it("sessions()：spawnedFrom 从第 0 条 session_created 的 spawnedBy 投影出来", () => {
     store.append({ sessionId: "parent", ts: 1, type: "session_created", workspace: "/p" });
     store.append({

@@ -27,6 +27,7 @@ const bridge: ShellBridge = {
   archiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.archiveSession, sessionId),
   unarchiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.unarchiveSession, sessionId),
   renameSession: (sessionId, title) => ipcRenderer.invoke(CHANNELS.renameSession, sessionId, title),
+  setSessionTopic: (sessionId, topic) => ipcRenderer.invoke(CHANNELS.setSessionTopic, sessionId, topic),
   rewindToCheckpoint: (sessionId, checkpointSeq) =>
     ipcRenderer.invoke(CHANNELS.rewindToCheckpoint, sessionId, checkpointSeq),
   switchModel: (model, lane) => ipcRenderer.invoke(CHANNELS.switchModel, model, lane),

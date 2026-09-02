@@ -3531,6 +3531,15 @@ void app.whenReady().then(() => {
     pushFleet(); // 岛上的行标题立即换,不等下一个事件
   });
 
+  ipcMain.handle(CHANNELS.setSessionTopic, (_e, sessionId: string, topic: unknown) => {
+    if (topic !== null && !isTopicSlug(topic)) throw new Error("topic 只能是桶 slug 或 null");
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_topic_set", topic, ignorable: true });
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null;
+    pushFleet();
+  });
+
   ipcMain.handle(CHANNELS.switchModel, (_e, model: string, lane?: ModelLane) => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     if (!agent) throw new Error("还没有会话");

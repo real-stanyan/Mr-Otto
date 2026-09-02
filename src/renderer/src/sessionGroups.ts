@@ -103,6 +103,35 @@ export function archivedTaskSessions(sessions: SessionSummary[], builtin: string
   );
 }
 
+export interface TopicGroup {
+  /** null = 未分类 */
+  topic: string | null;
+  label: string;
+  sessions: SessionSummary[];
+  lastTs: number;
+}
+
+/** 任务栏按主题桶分组（#846）。组序按组内最近活动倒序——任务栏的语义一直是「最近的在上」，
+    分组只是在这上面加一层；未分类永远沉底。labelOf 由调用方给（种子表 + 用户改过的 .label） */
+export function groupTasksByTopic(sessions: SessionSummary[], labelOf: (slug: string) => string): TopicGroup[] {
+  const byTopic = new Map<string | null, SessionSummary[]>();
+  for (const s of sessions) {
+    const bucket = byTopic.get(s.topic);
+    if (bucket) bucket.push(s);
+    else byTopic.set(s.topic, [s]);
+  }
+  return [...byTopic.entries()]
+    .map(([topic, list]) => {
+      const sorted = [...list].sort((a, b) => b.lastTs - a.lastTs);
+      return { topic, label: topic === null ? "未分类" : labelOf(topic), sessions: sorted, lastTs: sorted[0]?.lastTs ?? 0 };
+    })
+    .sort((a, b) => {
+      if (a.topic === null) return 1;
+      if (b.topic === null) return -1;
+      return b.lastTs - a.lastTs;
+    });
+}
+
 /** 同步（分享）过的会话与纯本地会话分区（issue #809）：分享是把「我干了啥」
     交到别人手里的动作，之后这条会话对 A 就有了「对面还有一份」的身份——
     侧栏把它们抽出来单列，本地那摞保持原样。判据 = session_shared 投影非空
