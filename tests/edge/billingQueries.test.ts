@@ -41,8 +41,14 @@ describe("查询串", () => {
     expect(q.addonConsumed).toContain("select=cost_micro");
     expect(q.addonConsumed).not.toContain("sum");
   });
-  it("addonConsumed 显式钉 limit：被截断和本来就这么多不该长一样", () => {
-    expect(rebuildQueries("u1", 0).addonConsumed).toContain("limit=10000");
+  it("三条重建查询都显式钉 limit：被截断和本来就这么多不该长一样（I2）", () => {
+    const q = rebuildQueries("u1", 0);
+    expect(q.addonConsumed).toContain("limit=10000");
+    expect(q.events).toContain("limit=10000");
+    expect(q.grants).toContain("limit=1000");
+  });
+  it("events 显式按 created_at 升序：rebuild 要按时间重放固定窗，不是求和（I2）", () => {
+    expect(rebuildQueries("u1", 0).events).toContain("order=created_at.asc");
   });
   it("grantByPaymentIntentQuery 按幂等键取金额与到期日（撞行时要用行里那份）", () => {
     const q = grantByPaymentIntentQuery("pi_1");

@@ -88,6 +88,10 @@ export function planIdForPrice(plans: PlanRow[], priceId: string): string | null
   return plans.find((p) => p.stripe_price_id === priceId && p.id !== "addon")?.id ?? null;
 }
 
+/** 路由表。**`effective_from` / `effective_to` 这一片没有过滤**：价格表的时间维护
+    （改价留历史、按时间段选价）是 spec 第 0 节明确推后的事，这里只按 `enabled` +
+    `priority` 取。后果是价格表里若真填了未来生效的行，它现在就会被用上——所以在
+    做那一片之前，价目改动要直接改现有行，不要靠 effective_* 排期。 */
 export function routesQuery(): string {
   return "model_route?enabled=eq.true&quantization=eq.none&select=id,logical_model,platform,base_url,wire_model,price_in_micro_per_m,price_cache_micro_per_m,price_out_micro_per_m,default_max_tokens&order=priority.asc";
 }
@@ -117,13 +121,18 @@ export function usageEventInsert(requestId: string, meta: SettleMeta, chargedTo:
 export function rebuildQueries(uid: string, sinceMs: number): { events: string; grants: string; addonConsumed: string } {
   const u = encodeURIComponent(uid);
   const since = new Date(sinceMs).toISOString();
+  // 三条都显式钉 limit：PostgREST 自己也有一个 max-rows 上限，不写的话"被截断"和
+  // "本来就这么多"长得一模一样——而截断的后果是重建出来的账**少扣**（events 少几行 =
+  // 窗口用量偏低）或**多算余额**（grants/addonConsumed 少几行 = 加购余额偏高）。
+  // 谁被截断都没有报错，只有账不对。10000 行以上要分页，那是后续切片的事
+  // （真到那个量级的用户，重建本身也该换成物化的余额列）。
+  // events 另外显式按 created_at 升序：rebuild 要按时间重放固定窗语义（ADR-0203 决定 5），
+  // 顺序不是可选项；不写的话 PostgREST 的返回顺序没有保证，而"截断"若发生在
+  // 无序结果上，被丢掉的是随机的一批行，不是最老的那批。
   return {
-    events: `usage_event?user_id=eq.${u}&created_at=gte.${since}&select=created_at,cost_micro,charged_to`,
-    grants: `credit_grant?user_id=eq.${u}&expires_at=gt.${new Date().toISOString()}&select=micro_usd,expires_at`,
-    // 不用聚合（见文件头）：拉行，parseRebuildRows 求和。
-    // limit 显式钉住：PostgREST 自己也有一个 max-rows 上限，不写的话"被截断"和
-    // "本来就这么多"长得一模一样，而截断的后果是加购余额被算多。10000 行以上要分页，
-    // 那是后续切片的事（真到那个量级的用户，重建本身也该换成物化的余额列）
+    events: `usage_event?user_id=eq.${u}&created_at=gte.${since}&select=created_at,cost_micro,charged_to&order=created_at.asc&limit=10000`,
+    grants: `credit_grant?user_id=eq.${u}&expires_at=gt.${new Date().toISOString()}&select=micro_usd,expires_at&limit=1000`,
+    // 不用聚合（见文件头）：拉行，parseRebuildRows 求和
     addonConsumed: `usage_event?user_id=eq.${u}&charged_to=eq.addon&select=cost_micro&limit=10000`,
   };
 }
