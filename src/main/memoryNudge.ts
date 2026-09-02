@@ -1,9 +1,11 @@
 // 每 10 个 user turn 提醒一次"该整理记忆了"（hermes memory.nudge_interval 同款）。
 // 计数从日志推导：最后一条 memory_nudge 之后的 user_message 数——重开 app 不丢数。
 
-import type { SessionEvent } from "../session/events.js";
+import type { SessionEvent, MemoryTopicSnapshot } from "../session/events.js";
 import type { NewSessionEvent } from "../session/store.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
+import { topicIndexOf } from "../shared/memoryStore.js";
+import { renderTopicIndex } from "../shared/memoryTopics.js";
 
 export const MEMORY_NUDGE_EVERY = 10;
 
@@ -94,11 +96,17 @@ export function reviewerTranscript(messages: ChatMessage[], cap = 12_000): strin
     三档判据本身是不随会话变的静态事实，写进了 builtinSubagents.ts 的
     instructions；这里只管拼"当次"的内容 */
 export function buildReviewerTask(
-  mem: { memory: string; user: string; project?: string; projectRoot?: string },
+  mem: { memory: string; user: string; project?: string; projectRoot?: string; topics?: MemoryTopicSnapshot[] },
   transcript: string,
 ): string {
   const projectBlock = mem.projectRoot
     ? `当前 PROJECT（${mem.projectRoot}）:\n${mem.project || "(空)"}\n\n`
     : "";
-  return `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n${projectBlock}最近对话：\n${transcript}`;
+  // 主题索引 + 只挑非空桶的正文——同 renderMemoryBlocks 的取舍：空桶已经在
+  // 索引里报过「0 条」，再贴一段空正文只会占 reviewer 的上下文
+  const topicBlock = mem.topics
+    ? `主题索引：\n${renderTopicIndex(topicIndexOf(mem.topics))}\n\n` +
+      mem.topics.filter((t) => t.content).map((t) => `当前 TOPIC:${t.slug}（${t.label}）:\n${t.content}\n\n`).join("")
+    : "";
+  return `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n${projectBlock}${topicBlock}最近对话：\n${transcript}`;
 }

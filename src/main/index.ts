@@ -46,7 +46,7 @@ import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { ToolCallRequest, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
@@ -110,6 +110,8 @@ import {
   memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
+import { TOPICS_DIR } from "../shared/memoryTopics.js";
+import { readTopics } from "./memoryTopics.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
@@ -1980,10 +1982,13 @@ void app.whenReady().then(() => {
       workspace 不在任何 git 仓库里 */
   const readMemoryFiles = (
     workspace: string
-  ): { memory: string; user: string; project?: string; projectRoot?: string } => {
+  ): { memory: string; user: string; project?: string; projectRoot?: string; topics: MemoryTopicSnapshot[] } => {
     const base = {
       memory: readMemoryFile(memoryRelPath("memory")),
       user: readMemoryFile(memoryRelPath("user")),
+      // 主题桶不跟着 projectRoot 走（同 memory/user，跟账号走不跟项目走）——
+      // 无论这个 workspace 在不在 git 仓库里都读得到
+      topics: readTopics(join(accountConfig, TOPICS_DIR)),
     };
     const projectRoot = resolveProjectRoot(workspace);
     if (!projectRoot) return base;

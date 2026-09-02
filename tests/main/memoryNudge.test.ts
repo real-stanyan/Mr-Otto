@@ -129,6 +129,17 @@ describe("buildReviewerTask", () => {
     expect(task).toContain("当前 USER:\n(空)");
     expect(task).toContain("当前 PROJECT（/repo）:\n(空)");
   });
+
+  it("带 topics：拼主题索引 + 非空桶正文", () => {
+    const task = buildReviewerTask(
+      { memory: "", user: "", topics: [{ slug: "work", label: "工作", content: "" }, { slug: "cars", label: "改装车", content: "WRX" }] },
+      "对话",
+    );
+    expect(task).toContain("主题索引");
+    expect(task).toContain("work（工作）· 0 条");
+    expect(task).toContain("当前 TOPIC:cars（改装车）:\nWRX");
+    expect(task).not.toContain("当前 TOPIC:work");
+  });
 });
 
 // issue #186：memory-nudge-<seq> 这种合成 parentToolCallId 没有配对的 tool_result，

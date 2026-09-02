@@ -401,6 +401,14 @@ export interface SubagentBriefedEvent extends SessionEventBase {
     注意不是"旧日志的投影逐字节不变"：MEMORY 的上限同时从 2200 降到了 1100，而
     memoryBlock 把 limit 渲进标题，所以旧日志的记忆块**数字会变**。不变的是结构
     （没有 project 字段就不多渲一块）和可读性——重放不失败，这才是硬规则要的 */
+/** 一个主题桶的快照（第四档 TOPIC，#846）。label 是快照那一刻的显示名——
+    用户后来改了 .label 不回写日志，重放不失真（同 memory 快照语义） */
+export interface MemoryTopicSnapshot {
+  slug: string;
+  label: string;
+  content: string;
+}
+
 export interface MemoryLoadedEvent extends SessionEventBase {
   type: "memory_loaded";
   memory: string;
@@ -409,6 +417,9 @@ export interface MemoryLoadedEvent extends SessionEventBase {
   project?: string;
   /** 项目档归属的项目根绝对路径（UI 显示 + 审计） */
   projectRoot?: string;
+  /** 主题桶快照（#846）。**可选**，理由同 project：旧日志没有它照旧重放、投影逐字节不变；
+      缺席 = 这个装配没有主题桶能力（或旧日志），有字段（哪怕空数组）= 有能力 */
+  topics?: MemoryTopicSnapshot[];
 }
 
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
@@ -427,6 +438,8 @@ export interface MemoryUserEditEvent extends SessionEventBase {
       旧版本读到时 assertReplayable 拒的是未知事件类型，已知类型上的多余字段
       它认得。target 不是 "project" 时缺席 */
   projectRoot?: string;
+  /** topic 档改的是哪个桶。target 不是 "topic" 时缺席（同 projectRoot 的理由） */
+  topic?: string;
 }
 
 /** 额外 16：记忆审查触发点。每 10 个 user_message 落一条，随后派 memory-reviewer

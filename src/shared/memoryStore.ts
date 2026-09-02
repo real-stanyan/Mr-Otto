@@ -258,3 +258,12 @@ export function parseMemoryResult(output: string): MemoryToolResult | null {
     return null;
   }
 }
+
+import type { TopicIndexEntry } from "./memoryTopics.js";
+/** 快照 → 索引条目（entries 是条目数，不是字符数）。放这儿而不是 memoryTopics.ts：
+    memoryTopics.ts 没有 parseEntries，这个函数要用它——放过去就是 memoryStore
+    反向 import memoryTopics，而 memoryStore 已经 import 了 memoryTopics（见文件顶部），
+    两边互相 import 就是环 */
+export function topicIndexOf(topics: { slug: string; label: string; content: string }[]): TopicIndexEntry[] {
+  return topics.map((t) => ({ slug: t.slug, label: t.label, entries: parseEntries(t.content).length }));
+}
