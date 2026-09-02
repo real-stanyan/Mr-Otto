@@ -25,6 +25,7 @@ import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
+import { createHostedProbe, decideRuntimeRoute } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import { createOpenAICompatibleAdapter } from "../../../src/model/openaiCompatible.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -199,35 +200,57 @@ async function main(): Promise<void> {
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
 
-  /** 每工作区一把模型（issue #844）。**每次 chat() 现读一次配置**而不是在
-      开房间那一刻定死：owner 随时可能改 key/换型号，而会话房是长命的——
-      定死意味着改完要重启 daemon 才生效。构造 adapter 只是拼一个闭包，
-      现读的代价可以忽略。
-      没配 = **抛一条给人看的错**，不是回落到某把 key：回落就是"忘了配的
-      工作区默默烧别人的钱"，正是这一版要消灭的东西。这条错会被 engine
-      当成 turn 失败落进日志，群里所有人都看得见 */
-  function adapterFor(workspaceId: string): ModelAdapter {
-    const cfg = () => workspaceConfigStore.load(workspaceId)?.model;
+  // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
+  // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
+  const hostedProbe = createHostedProbe({ edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret });
+
+  /** 每次 chat() 现读一次工作区配置（issue #844）而不是在开房间那一刻定死：owner
+      随时可能改 key/换型号，而会话房是长命的——定死意味着改完要重启 daemon 才生效。
+      构造 adapter 只是拼一个闭包，现读的代价可以忽略。
+      路由三步（Task 13）：① 发起人有活跃订阅且网关供着型号 → hosted（平台身份代发起人
+      走网关，runtime 仍不持有模型 key）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
+      **抛一条给人看的错**，不回落到任何 key——回落就是"忘了配的工作区默默烧别人的钱"，
+      正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见 */
+  function adapterFor(workspaceId: string, sessionId: string, initiatorUid: () => string | null): ModelAdapter {
+    const cfg = () => workspaceConfigStore.load(workspaceId)?.model ?? null;
+    // 型号 id 落进 assistant_message.model，是事实记录——没配时给一个说得出口的
+    // 占位，而不是空串；chat() 决出真实路由后再更新成那一趟真正用的型号
+    let lastModel = "(未配置)";
     return {
-      // 型号 id 落进 assistant_message.model，是事实记录——没配时给一个
-      // 说得出口的占位，而不是空串
       get model(): string {
-        return cfg()?.modelId ?? "(未配置)";
+        return lastModel;
       },
       async chat(messages, tools, onDelta, signal) {
-        const m = cfg();
-        if (!m) {
-          throw new Error(
-            "这个工作区还没配模型：所有者打开工作区 → 云会话 → 右上角「仓库/模型」，" +
-            "填一条 https 的 API 地址、型号 id 和自己的 API key。" +
-            "（云端不提供公共 key，这里烧的是配置者自己的额度）"
-          );
+        const uid = initiatorUid() ?? "";
+        const ws = cfg();
+        const route = decideRuntimeRoute({
+          me: uid ? await hostedProbe.me(uid) : null,
+          requestedModel: ws?.modelId ?? null,
+          workspace: ws ? { baseUrl: ws.baseUrl, apiKey: ws.apiKey, modelId: ws.modelId } : null,
+          initiatorUid: uid,
+          workspaceId,
+          sessionId,
+          edgeBase: config.edgeBase,
+          runtimeSecret: config.runtimeSecret,
+        });
+        if (route.kind === "blocked") {
+          throw new Error(route.reason);
         }
-        return createOpenAICompatibleAdapter({
-          baseUrl: m.baseUrl,
-          apiKey: m.apiKey,
-          model: m.modelId,
-        }).chat(messages, tools, onDelta, signal);
+        lastModel = route.model;
+        const adapter =
+          route.kind === "hosted"
+            ? createOpenAICompatibleAdapter({
+                baseUrl: route.endpoint.baseUrl,
+                apiKey: "",
+                resolveEndpoint: async () => route.endpoint,
+                model: route.model,
+              })
+            : createOpenAICompatibleAdapter({
+                baseUrl: route.baseUrl,
+                apiKey: route.apiKey,
+                model: route.model,
+              });
+        return adapter.chat(messages, tools, onDelta, signal);
       },
     };
   }
@@ -424,7 +447,7 @@ async function main(): Promise<void> {
     // 而 session 本身要在 createCloudSession 里才造出来——回调只在 engine.chat()
     // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全
     let session!: CloudSession;
-    const perSessionAdapter = withUsage(adapterFor(workspaceId), (usage, model) => {
+    const perSessionAdapter = withUsage(adapterFor(workspaceId, sessionId, () => session.initiatorUid()), (usage, model) => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调——理论不会发生
       store.append({
