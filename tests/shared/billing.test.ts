@@ -19,6 +19,13 @@ describe("billing 约定", () => {
     expect(parseBillingError(500, "boom")).toBeNull();
   });
 
+  it("parseBillingError 认得 forbidden（平台身份不能发起购买那条 403）", () => {
+    const e = parseBillingError(403, {
+      error: { type: "otto_edge", code: "forbidden", message: "平台身份不能发起购买" },
+    });
+    expect(e).toEqual({ code: "forbidden", message: "平台身份不能发起购买" });
+  });
+
   it("parseBillingMe：无订阅时 windows=null、plan=null；形状不对回 null", () => {
     const me = parseBillingMe({
       plan: null, status: "none", windows: null,

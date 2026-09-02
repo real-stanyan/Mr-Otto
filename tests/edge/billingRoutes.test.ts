@@ -46,6 +46,16 @@ describe("/llm/v1/chat/completions 身份", () => {
     expect(h.llmCalls).toEqual([{ uid: "u9", source: "desktop", workspaceId: "w1", sessionId: "s1" }]);
   });
 
+  it("workspace/session 头超长会被截断到 128 字符才递给 llm（Task 7 落库用）", async () => {
+    const h = harness();
+    const long = "w".repeat(5000);
+    const res = await h.handle(post("/llm/v1/chat/completions", { authorization: `Bearer ${token("u9")}`, [WORKSPACE_HEADER]: long, [SESSION_HEADER]: long }));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls[0]!.workspaceId).toHaveLength(128);
+    expect(h.llmCalls[0]!.sessionId).toHaveLength(128);
+    expect(h.llmCalls[0]!.workspaceId).toBe(long.slice(0, 128));
+  });
+
   it("没令牌 401 no_token；坏令牌 401 bad_token", async () => {
     const h = harness();
     expect((await h.handle(post("/llm/v1/chat/completions", {}))).status).toBe(401);
@@ -106,6 +116,13 @@ describe("/billing/v1/*", () => {
     expect(res.status).toBe(400);
   });
 
+  it("{addon:true} 不带 quantity → 400；quantity:0 → 400（不悄悄夹回 1，见 commit 说明）", async () => {
+    const h = harness();
+    expect((await h.handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ addon: true })))).status).toBe(400);
+    expect((await h.handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ addon: true, quantity: 0 })))).status).toBe(400);
+    expect(h.billingCalls).toEqual([]);
+  });
+
   it("POST /portal 回 url", async () => {
     const h = harness();
     expect(await (await h.handle(post("/billing/v1/portal", { authorization: `Bearer ${token()}` }))).json()).toEqual({ url: "https://stripe/p" });
@@ -116,6 +133,13 @@ describe("/billing/v1/*", () => {
     const res = await h.handle(post("/billing/v1/webhook", { "stripe-signature": "t=1,v1=abc" }, '{"type":"x"}'));
     expect(res.status).toBe(200);
     expect(h.billingCalls).toEqual(['webhook:{"type":"x"}:t=1,v1=abc']);
+  });
+
+  it("webhook 正文超过 1 MB（按 content-length）→ 413，不读 body 也不进 BillingPort", async () => {
+    const h = harness();
+    const res = await h.handle(post("/billing/v1/webhook", { "stripe-signature": "t=1,v1=abc", "content-length": String(1_000_001) }, "x"));
+    expect(res.status).toBe(413);
+    expect(h.billingCalls).toEqual([]);
   });
 
   it("GET /billing/v1/done 是给浏览器看的 HTML，不要令牌", async () => {

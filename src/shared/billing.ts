@@ -44,7 +44,8 @@ export type BillingErrorCode =
   | "unknown_model"
   | "upstream"
   | "too_many_inflight"
-  | "bad_request";
+  | "bad_request"
+  | "forbidden";
 
 export interface BillingError {
   code: BillingErrorCode;
@@ -55,6 +56,7 @@ export interface BillingError {
 
 const CODES: ReadonlySet<string> = new Set([
   "bad_token", "no_subscription", "quota_exhausted", "unknown_model", "upstream", "too_many_inflight", "bad_request",
+  "forbidden",
 ]);
 
 const isObj = (v: unknown): v is Record<string, unknown> =>

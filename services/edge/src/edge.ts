@@ -316,10 +316,12 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     } else if (onBehalf !== null) {
       return apiError(400, `只有平台身份能带 ${ON_BEHALF_HEADER}`, "bad_request");
     }
+    // 上限 128：这两个头最终落进 Task 7 的 DB 行，不截断就是把「请求头长度不设防」
+    // 变成「数据库行长度不设防」——同一个把关做一次，放在身份出口最省心
     return {
       uid, source,
-      workspaceId: req.headers.get(WORKSPACE_HEADER) ?? "",
-      sessionId: req.headers.get(SESSION_HEADER) ?? "",
+      workspaceId: (req.headers.get(WORKSPACE_HEADER) ?? "").slice(0, 128),
+      sessionId: (req.headers.get(SESSION_HEADER) ?? "").slice(0, 128),
     };
   }
 
@@ -340,6 +342,11 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // Stripe → 我们。不验 JWT（Stripe 不带），验签在 BillingPort 里做
     if (pathname === "/billing/v1/webhook") {
       if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
+      // 这条路没有 JWT 挡在前面，正文大小是唯一的门槛：真 Stripe 事件远小于 1 MB，
+      // 读大正文之前先按 content-length 拒绝，别把整份未鉴权的 body 吃进内存
+      if (Number(req.headers.get("content-length") ?? 0) > 1_000_000) {
+        return apiError(413, "webhook 正文过大", "payload_too_large");
+      }
       const r = await deps.billing.webhook(await req.text(), req.headers.get("stripe-signature") ?? "");
       return json(r.status, r.body);
     }
