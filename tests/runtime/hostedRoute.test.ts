@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
-import { createHostedProbe, decideRuntimeRoute } from "../../services/runtime/src/hostedRoute.js";
-import { ON_BEHALF_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createHostedProbe,
+  createHostedRuntimeAdapter,
+  decideRuntimeRoute,
+  type HostedProbe,
+} from "../../services/runtime/src/hostedRoute.js";
+import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 
 const me: BillingMe = { plan: "pro", status: "active", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
 const base = { initiatorUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
@@ -44,5 +49,103 @@ describe("createHostedProbe", () => {
     now = 61_000;
     (fetchImpl as unknown as { mockResolvedValueOnce: (v: Response) => void }).mockResolvedValueOnce(new Response("x", { status: 500 }));
     expect(await p.me("u1")).toBeNull();
+  });
+});
+
+describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope.model 不落后一个 turn）", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function fakeProbe(v: BillingMe | null): HostedProbe {
+    return { me: vi.fn(async () => v) };
+  }
+
+  it("prepare() 现算路由 → model getter 在 chat() 之前就等于决出的型号", async () => {
+    const probe = fakeProbe(me);
+    const adapter = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe,
+      cfg: () => ws,
+      initiatorUid: () => "u1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    expect(adapter.model).toBe("(未配置)"); // 还没 prepare()/chat() 过
+    await adapter.prepare?.();
+    expect(adapter.model).toBe("glm-5.3"); // 网关供着，尊重工作区配的型号
+    expect(probe.me).toHaveBeenCalledTimes(1);
+  });
+
+  it("chat() 复用 prepare() 决出的路由：不重复现决，且用 prepared 的 hosted endpoint 发请求", async () => {
+    const probe = fakeProbe(me);
+    const adapter = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe,
+      cfg: () => ws,
+      initiatorUid: () => "u1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+      })
+    );
+
+    await adapter.prepare?.();
+    expect(adapter.model).toBe("glm-5.3");
+    await adapter.chat([{ role: "user", content: "hi" }]);
+
+    // prepare() 现决过一次；chat() 复用它，不再打第二次 probe
+    expect(probe.me).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://edge/llm/v1/chat/completions");
+    expect(calls[0]!.init.headers).toMatchObject({
+      "x-runtime-secret": "rs",
+      [ON_BEHALF_HEADER]: "u1",
+      [WORKSPACE_HEADER]: "w1",
+      [SESSION_HEADER]: "s1",
+    });
+  });
+
+  it("没调用 prepare() 时 chat() 向后兼容：自己现决一次", async () => {
+    const probe = fakeProbe(null); // 没订阅 → workspace 原路
+    const adapter = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe,
+      cfg: () => ws,
+      initiatorUid: () => "u1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) }))
+    );
+    const reply = await adapter.chat([{ role: "user", content: "hi" }]);
+    expect(reply.content).toBe("ok");
+    expect(adapter.model).toBe("glm-5.3"); // workspace 路，型号即 ws.modelId
+    expect(probe.me).toHaveBeenCalledTimes(1);
+  });
+
+  it("决出 blocked：model 给一个说得出口的占位，chat() 抛出两条出路都说的原因", async () => {
+    const probe = fakeProbe(null);
+    const adapter = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe,
+      cfg: () => null, // 工作区也没配 key
+      initiatorUid: () => "u1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    await adapter.prepare?.();
+    expect(adapter.model).toBe("(无可用模型)");
+    await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/订阅/);
   });
 });

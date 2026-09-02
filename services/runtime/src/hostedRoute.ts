@@ -1,7 +1,8 @@
 // 云会话的模型路由（spec 第 5 节）：发起人有订阅 → 平台 key（扣发起人）；否则工作区自带 key
 // （ADR-0202）；都没 → 一句人能看懂的错。runtime 仍然一把模型 key 都不拿：托管那条路的
 // 凭据是平台身份 + 「我代表谁」，key 在 edge 那边。
-import type { ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
+import type { ModelAdapter } from "../../../src/model/adapter.js";
+import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
@@ -79,5 +80,76 @@ export function decideRuntimeRoute(o: {
     reason:
       "这个 turn 没有可用的模型：发起人没有活跃订阅，工作区也没配自己的 API key。" +
       "两条路：发起人订阅 Mr Otto（桌面端设置 → 订阅），或工作区所有者在「仓库/模型」里填一把 key。",
+  };
+}
+
+export interface HostedRuntimeAdapterDeps {
+  edgeBase: string;
+  runtimeSecret: string;
+  probe: HostedProbe;
+  /** 每次现读一次——owner 随时可能改 key/换型号，会话房是长命的 */
+  cfg: () => { baseUrl: string; apiKey: string; modelId: string } | null;
+  initiatorUid: () => string | null;
+  workspaceId: string;
+  sessionId: string;
+}
+
+/** daemon.ts 的 adapterFor 装配点：把 decideRuntimeRoute 包成一个 ModelAdapter
+    （issue #696 fix round 1，抽成独立、可单测的工厂——daemon.ts 本身不进 vitest，
+    见文件头注释）。
+    `prepare()` 让 engine 在读 `model` / 落 request_envelope 之前现算一次路由，
+    决出的结果存进闭包里的 `prepared`，`chat()` 用它（用完即清）；没被 prepare()
+    先调用的话 `chat()` 自己现决一次——两条路径共用同一份 `decide()`，向后兼容
+    不调用 `prepare()` 的调用方。`decide()` 决出 blocked 时把 `model` 设成一个
+    说得出口的占位（"(无可用模型)"），真正的原因留给 `chat()` 抛出去。 */
+export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): ModelAdapter {
+  let lastModel = "(未配置)";
+  let prepared: RuntimeRoute | null = null;
+
+  async function decide(): Promise<RuntimeRoute> {
+    const uid = deps.initiatorUid() ?? "";
+    const ws = deps.cfg();
+    const route = decideRuntimeRoute({
+      me: uid ? await deps.probe.me(uid) : null,
+      requestedModel: ws?.modelId ?? null,
+      workspace: ws ? { baseUrl: ws.baseUrl, apiKey: ws.apiKey, modelId: ws.modelId } : null,
+      initiatorUid: uid,
+      workspaceId: deps.workspaceId,
+      sessionId: deps.sessionId,
+      edgeBase: deps.edgeBase,
+      runtimeSecret: deps.runtimeSecret,
+    });
+    lastModel = route.kind === "blocked" ? "(无可用模型)" : route.model;
+    return route;
+  }
+
+  return {
+    get model(): string {
+      return lastModel;
+    },
+    async prepare(): Promise<void> {
+      prepared = await decide();
+    },
+    async chat(messages, tools, onDelta, signal) {
+      const route = prepared ?? (await decide());
+      prepared = null;
+      if (route.kind === "blocked") {
+        throw new Error(route.reason);
+      }
+      const adapter =
+        route.kind === "hosted"
+          ? createOpenAICompatibleAdapter({
+              baseUrl: route.endpoint.baseUrl,
+              apiKey: "",
+              resolveEndpoint: async () => route.endpoint,
+              model: route.model,
+            })
+          : createOpenAICompatibleAdapter({
+              baseUrl: route.baseUrl,
+              apiKey: route.apiKey,
+              model: route.model,
+            });
+      return adapter.chat(messages, tools, onDelta, signal);
+    },
   };
 }

@@ -650,6 +650,18 @@ export class LoopEngine {
         .filter((t) => t.available?.() ?? true)
         .map((t) => t.def);
 
+      // 给 adapter 一次现算路由的机会（issue #696 fix round 1）：云 runtime 的
+      // model 是读 chat() 才会算出来的值，不先 prepare() 一次，这里读到的
+      // this.adapter.model 就是上一 turn 的旧值——信封与 assistant_message 对不上。
+      // 只在 adapter 真实现了 prepare() 时才 await：`await undefined` 本身也会
+      // 让出一个微任务，没实现 prepare() 的 adapter（桌面端、大多数测试假货）
+      // 不该白吃这一次让权——engine.test.ts 的中断竞态测试靠的正是：调用
+      // runTurn() 后同步调用 abortTurn() 时，chat() 的 Promise executor 已经跑过、
+      // 监听器已经挂上；多一次无谓的微任务边界会把 abort 冲到 chat() 调用之前
+      if (this.adapter.prepare) {
+        await this.adapter.prepare();
+      }
+
       // 请求信封（issue #383）：先落盘再喂模型——信封里是这次请求中日志推不出的
       // 那半（渲染后的 system、工具声明表、model/wireModel/thinking）。与上一条
       // 相同就不落；本进程首次比较时从快照里播种（resume 后不重复落一条一样的）
