@@ -2,17 +2,20 @@
 // 放 shared：工具（主进程）和设置页（渲染层）都要算占用、都要认同一种格式。
 // 字符上限而不是 token：字符数与模型无关（hermes 同款理由）。
 
-export type MemoryTarget = "memory" | "user" | "project";
+import { topicRelPath } from "./memoryTopics.js";
+
+export type MemoryTarget = "memory" | "user" | "project" | "topic";
 
 /** 运行时守卫（issue #186）：IPC/工具入参都是 unknown，非法值会一路传进文件路径拼接 */
 export function isMemoryTarget(v: unknown): v is MemoryTarget {
-  return v === "memory" || v === "user" || v === "project";
+  return v === "memory" || v === "user" || v === "project" || v === "topic";
 }
 
 // 三档预算（ADR-0116）。全局 MEMORY 从 2200 降到 1100：三档之后它的职责
 // 变窄了——项目约定全搬去项目档，它只装「换个项目也成立」的事（本机环境、工具怪癖）。
 // 不做成配置：紧上限不是为了省 token，是为了逼出策展；可配置会诱导调数字而非合并条目。
-export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200 };
+// 主题桶 700/桶、封顶 8 桶（memoryTopics.MAX_TOPICS）：合计 5600，整份注入约 1.5k token
+export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200, topic: 700 };
 
 /** 三档判据的唯一正文（issue #589）。此前三个注入点（memory 工具描述 /
     memory-reviewer 指令 / system 尾部）各写一份，已经各自漂移过一轮；上线首日
@@ -32,6 +35,17 @@ export function tierRuleText(opts: { upper?: boolean; projectRoot?: string } = {
     `${U} 记关于用户本人的事。` +
     `判据一句话：换个项目还成立吗？成立写 ${M}，不成立写 ${P}。` +
     `一个事实只住一档，别跨档重复；${M} 条目不点名具体项目（点名会被拒，改投 ${P}）。`
+  );
+}
+
+/** TOPIC 档的判据，单独一句：三档判据（tierRuleText）在没有主题桶的装配里也要能原样用 */
+export function topicRuleText(opts: { upper?: boolean } = {}): string {
+  const T = opts.upper ? "TOPIC" : "topic";
+  const U = opts.upper ? "USER" : "user";
+  return (
+    `${T} 记用户生活里某一块领域的事实（工作内容、爱好、生活安排、在学什么），写时指明桶（topic）；` +
+    `${U} 只留身份与偏好（名字、语言、回复风格）。判据：「这条事实属于用户生活的哪一块」答得上来就写 ${T}。` +
+    `桶优先用索引里已有的；确实没有相近的桶才新建（create_topic），桶名用小写英文 kebab。`
   );
 }
 
@@ -55,9 +69,13 @@ export const PROJECT_ROOT_FILE = "root.txt";
 
 /** 记忆文件的配置目录相对路径。projectDir 由主进程算好传进来（形如
     "memories/projects/<hash16>"）——src/shared 不许 import node:crypto（手机端要跑这一层） */
-export function memoryRelPath(target: MemoryTarget, projectDir?: string | null): string {
+export function memoryRelPath(target: MemoryTarget, projectDir?: string | null, topic?: string | null): string {
   if (target === "user") return `${MEMORY_DIR}/USER.md`;
   if (target === "memory") return `${MEMORY_DIR}/MEMORY.md`;
+  if (target === "topic") {
+    if (!topic) throw new Error("topic 档需要 topic——没有桶名时不该走到这里");
+    return topicRelPath(topic);
+  }
   if (!projectDir) throw new Error("project 档需要 projectDir——没有项目根时不该走到这里");
   return `${projectDir}/${PROJECT_MEMORY_FILE}`;
 }
@@ -110,7 +128,7 @@ export type ApplyResult =
   | { ok: true; entries: string[]; changed: { added: string[]; updated: string[]; removed: string[] } }
   | { ok: false; error: string };
 
-const LABEL: Record<MemoryTarget, string> = { memory: "MEMORY", user: "USER", project: "PROJECT" };
+const LABEL: Record<MemoryTarget, string> = { memory: "MEMORY", user: "USER", project: "PROJECT", topic: "TOPIC" };
 
 /** 按 old_text 子串找唯一一条。0 条 / 多条都是错：模型给的定位词不够具体，
     让它换个更长的——绝不猜 */
@@ -206,6 +224,8 @@ export function assertMemoryFits(target: MemoryTarget, text: string): void {
 export interface MemoryToolResult {
   ok: true;
   target: MemoryTarget;
+  /** target 为 topic 时是哪个桶（UI 的忘掉按钮要知道忘哪个文件） */
+  topic?: string;
   added: string[];
   updated: string[];
   removed: string[];

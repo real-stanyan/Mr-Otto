@@ -154,7 +154,7 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
     });
     const n = result.added.length + result.updated.length + result.removed.length;
     // 终态一句话，不回显条目
-    const label = { memory: "MEMORY", user: "USER", project: "PROJECT" }[result.target];
+    const label = { memory: "MEMORY", user: "USER", project: "PROJECT", topic: "TOPIC" }[result.target];
     return `已更新 ${label}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
   }
 
