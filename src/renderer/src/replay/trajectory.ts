@@ -84,6 +84,10 @@ function systemSummary(e: SessionEvent): string {
       return `session_renamed → ${e.title}`;
     case "session_autotitled":
       return `session_autotitled → ${e.title}`;
+    case "session_topic_assigned":
+      return `session_topic_assigned → ${e.topic}`;
+    case "session_topic_set":
+      return `session_topic_set → ${e.topic ?? "(未分类)"}`;
     case "subagent_spawned":
       return `subagent_spawned ${e.agent}`;
     case "checkpoint_created":

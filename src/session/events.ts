@@ -475,7 +475,7 @@ export interface SessionAutoTitledEvent extends SessionEventBase {
   usage?: TokenUsage;            // 本次浓缩烧的 token
 }
 
-/** 额外 19：会话主题分类（#846）。Default 主会话第一次 turn 收口后，合并调用
+/** 额外 21：会话主题分类（#846）。Default 主会话第一次 turn 收口后，合并调用
     （turnAnnotator 任务四）从主题桶索引里选一个 slug。模型产出、日志推不出 → 必须落盘；
     给人看的侧栏分组，不喂回模型 → 投影丢弃（同 session_autotitled）。
     一次会话最多一条；手动归类（session_topic_set）之后不再触发。
@@ -487,7 +487,7 @@ export interface SessionTopicAssignedEvent extends SessionEventBase {
   usage?: TokenUsage;
 }
 
-/** 额外 20：用户手动把会话归到某个主题桶（侧栏「归到…」）。null = 归到未分类。
+/** 额外 22：用户手动把会话归到某个主题桶（侧栏「归到…」）。null = 归到未分类。
     最后一条胜出，且压过 session_topic_assigned。ignorable 同上 */
 export interface SessionTopicSetEvent extends SessionEventBase {
   type: "session_topic_set";

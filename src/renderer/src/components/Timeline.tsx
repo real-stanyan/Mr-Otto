@@ -597,6 +597,12 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "suggestions_generated":
       return null;
 
+    // 主题分类/手动归类同理:侧栏分组用的标签,不进正文(同 threadGroups.isInvisible
+    // 的同名分支,显式列出防 default 漂移,#846)
+    case "session_topic_assigned":
+    case "session_topic_set":
+      return null;
+
     // 记忆事件（ADR-0060）：与 threadGroups.isInvisible 一一对应——快照/留证/触发点
     // 都不是对话内容(memory_nudge 派出的活由 subagent_spawned 卡呈现)
     case "memory_loaded":
