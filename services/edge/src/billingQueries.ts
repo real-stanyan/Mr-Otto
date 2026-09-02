@@ -120,8 +120,11 @@ export function rebuildQueries(uid: string, sinceMs: number): { events: string; 
   return {
     events: `usage_event?user_id=eq.${u}&created_at=gte.${since}&select=created_at,cost_micro,charged_to`,
     grants: `credit_grant?user_id=eq.${u}&expires_at=gt.${new Date().toISOString()}&select=micro_usd,expires_at`,
-    // 不用聚合（见文件头）：拉行，parseRebuildRows 求和
-    addonConsumed: `usage_event?user_id=eq.${u}&charged_to=eq.addon&select=cost_micro`,
+    // 不用聚合（见文件头）：拉行，parseRebuildRows 求和。
+    // limit 显式钉住：PostgREST 自己也有一个 max-rows 上限，不写的话"被截断"和
+    // "本来就这么多"长得一模一样，而截断的后果是加购余额被算多。10000 行以上要分页，
+    // 那是后续切片的事（真到那个量级的用户，重建本身也该换成物化的余额列）
+    addonConsumed: `usage_event?user_id=eq.${u}&charged_to=eq.addon&select=cost_micro&limit=10000`,
   };
 }
 export function parseRebuildRows(events: unknown, grants: unknown, addonConsumed: unknown): RebuildInput {
@@ -165,6 +168,19 @@ export function grantInsertBody(a: Extract<BillingAction, { kind: "grant" }>, un
 /** DO 的 view 回执 + 路由表型号 → `/billing/v1/me` 的回包。
     窗口只在 active 时下发：非 active 时 hold 一律拒（quota.remaining 也回 0），
     报一份满额度的窗口是谎话。 */
+/** 加购的幂等键查询：撞上已有行时，**用行里存着的那份**去通知 DO，
+    不是拿此刻重算的值（单位额可能已经改过，重算出来的会和账上那笔对不上） */
+export function grantByPaymentIntentQuery(paymentIntentId: string): string {
+  return `credit_grant?stripe_payment_intent_id=eq.${encodeURIComponent(paymentIntentId)}&select=micro_usd,expires_at&limit=1`;
+}
+export function parseGrantRow(v: unknown): { microUsd: number; expiresAt: string } | null {
+  if (!Array.isArray(v) || !isObj(v[0])) return null;
+  const microUsd = num(v[0].micro_usd);
+  const expiresAt = str(v[0].expires_at);
+  if (microUsd === null || !expiresAt) return null;
+  return { microUsd, expiresAt };
+}
+
 export function meFromParts(
   sub: SubscriptionRow | null,
   windows: { h5: WindowState; week: WindowState } | null,

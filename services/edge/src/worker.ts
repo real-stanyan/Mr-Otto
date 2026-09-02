@@ -17,13 +17,14 @@ import {
 } from "./px.js";
 import { createLlmGateway, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
-  WEEK_MS, addonExpiresAt, addonMicro, emptyState, hold as quotaHold, rebuild, release as quotaRelease,
+  WEEK_MS, addonExpiresAt, addonMicro, hold as quotaHold, rebuild, release as quotaRelease,
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
   type PlanSnapshot, type QuotaState, type WindowState,
 } from "./quota.js";
 import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "./billing.js";
 import {
-  grantInsertBody, meFromParts, parsePlanRows, parseRebuildRows, parseRouteRows, parseSubscriptionOwner,
+  grantByPaymentIntentQuery, grantInsertBody, meFromParts, parseGrantRow, parsePlanRows, parseRebuildRows,
+  parseRouteRows, parseSubscriptionOwner,
   parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery, rebuildQueries, routesQuery,
   subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert,
   type SubscriptionRow,
@@ -323,8 +324,17 @@ function supa(env: Env) {
       if (!res.ok) throw new Error(`supabase GET ${query.split("?")[0]} ${res.status}`);
       return res.json();
     },
-    insert: (table: string, body: unknown, opts: { ignoreDuplicates?: boolean } = {}): Promise<void> =>
-      write("POST", table, opts.ignoreDuplicates ? "resolution=ignore-duplicates,return=minimal" : "return=minimal", body),
+    /** `onConflict` = 冲突判据那一列。**必须显式给**：PostgREST 的
+        `resolution=ignore-duplicates` 默认只认**主键**，而 usage_event / credit_grant 的
+        幂等键是各自那个 unique 列（request_id / stripe_payment_intent_id），主键是 identity。
+        不给的话重投会撞 unique 约束直接 409，而不是被安静忽略（I4） */
+    insert: (table: string, body: unknown, opts: { ignoreDuplicates?: boolean; onConflict?: string } = {}): Promise<void> =>
+      write(
+        "POST",
+        opts.onConflict ? `${table}?on_conflict=${encodeURIComponent(opts.onConflict)}` : table,
+        opts.ignoreDuplicates ? "resolution=ignore-duplicates,return=minimal" : "return=minimal",
+        body
+      ),
     upsert: (table: string, body: unknown): Promise<void> =>
       write("POST", table, "resolution=merge-duplicates,return=minimal", body),
     patch: (query: string, body: unknown): Promise<void> => write("PATCH", query, "return=minimal", body),
@@ -343,6 +353,16 @@ function supa(env: Env) {
  * ③ 所有 op 走 fetch（同 Escrow 的写法）。DO 单线程，读改写在一次 fetch 里做完，
  *    天然无竞态，quota.ts 因此可以是一组纯函数。
  */
+/** 重建拿不到事实时抛这个。**不是普通的 Error**：DO 的每个 op 认它 → 503，
+    而 503 的意思是"稍后再试"，不是"你没花过钱"。C1 的整改就靠这个类型区分：
+    以前这里返回 emptyState()，三个 op 会把那份空投影**落盘**，于是一次 Supabase
+    抖动 = 这个人的窗口用量永久归零、买过的加购余额凭空消失 */
+class QuotaUnavailable extends Error {}
+
+/** 加购通知的去重环（I5）。DO 侧按 payment_intent 记账，所以 webhook 可以放心重投：
+    「插库成功了但通知没送到」这种半截状态，靠 Stripe 的重试就能治好 */
+const GRANT_SEEN_MAX = 200;
+
 export class Quota extends DurableObject<Env> {
   private planCache: { v: PlanSnapshot | null; sub: SubscriptionRow | null; exp: number } | null = null;
 
@@ -367,29 +387,54 @@ export class Quota extends DurableObject<Env> {
   private async state(plan: PlanSnapshot | null): Promise<QuotaState> {
     const stored = await this.ctx.storage.get<QuotaState>("state");
     if (stored) return stored;
-    // 冷启动：从事实重建。没订阅也要建 —— 加购余额不依赖订阅
-    const since = plan ? plan.periodStartMs : Date.now() - WEEK_MS;
-    const q = rebuildQueries(this.uid(), since);
-    const db = supa(this.env);
-    try {
-      const [ev, gr, ac] = await Promise.all([db.get(q.events), db.get(q.grants), db.get(q.addonConsumed)]);
-      const rebuilt = rebuild(parseRebuildRows(ev, gr, ac), plan, Date.now());
-      await this.ctx.storage.put("state", rebuilt);
-      return rebuilt;
-    } catch (err) {
-      // 重建失败**不落盘**：落一份空的等于把「这次查不到」冻成「这个人从没花过钱」，
-      // 而且从此不会再查。不落盘则下一次操作自己重试一遍，能自愈
-      console.error(`quota rebuild 失败（${this.uid()}）：${err instanceof Error ? err.message : String(err)}`);
-      return emptyState();
-    }
+    // 冷启动：从事实重建。没订阅也要建 —— 加购余额不依赖订阅。
+    // I2：重建包在 blockConcurrencyWhile 里。DO 单线程只保证「一次 fetch 内的读改写
+    // 没人插队」，await 之间照样会切出去 —— 一个冷 DO 同时进来两个请求时，两边都读到
+    // 「没有 state」、各自重建、各自 put，后写的那份把前一个的 hold 抹掉（那笔调用
+    // 从此没人记账）。blockConcurrencyWhile 把「查库 + 落盘」变成一个原子段，
+    // 段内再查一次 storage：第二个请求进来时已经有 state 了，直接用
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const again = await this.ctx.storage.get<QuotaState>("state");
+      if (again) return again;
+      const since = plan ? plan.periodStartMs : Date.now() - WEEK_MS;
+      const q = rebuildQueries(this.uid(), since);
+      const db = supa(this.env);
+      try {
+        const [ev, gr, ac] = await Promise.all([db.get(q.events), db.get(q.grants), db.get(q.addonConsumed)]);
+        const rebuilt = rebuild(parseRebuildRows(ev, gr, ac), plan, Date.now());
+        await this.ctx.storage.put("state", rebuilt);
+        return rebuilt;
+      } catch (err) {
+        // C1：重建失败**既不落盘也不返回空投影**，而是抛 —— 调用方回 503。
+        // 返回 emptyState() 的话，hold/view/planChanged 会把它当成"这个人没花过钱"
+        // 直接 put 进 storage：一次 Supabase 抖动就把窗口用量清零、把买过的加购
+        // 余额抹掉，而且从此不会再重建（storage 里有 state 了）。少扣对用户有利
+        // 那条只适用于"一笔账没落"，不适用于"整份余额归零"
+        console.error(`quota rebuild 失败（${this.uid()}）：${err instanceof Error ? err.message : String(err)}`);
+        throw new QuotaUnavailable(err instanceof Error ? err.message : String(err));
+      }
+    });
   }
 
   override async fetch(req: Request): Promise<Response> {
+    const json = (payload: unknown, status = 200): Response =>
+      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+    try {
+      return await this.dispatch(req, json);
+    } catch (err) {
+      // C1：重建拿不到事实 = 这一刻算不出额度，回 503「稍后再试」。
+      // 别的异常照抛 —— 把所有错误都译成 503 会把真 bug 伪装成暂时性故障
+      if (err instanceof QuotaUnavailable) {
+        return json({ error: { message: `额度暂时算不出来：${err.message}`, type: "otto_edge", code: "quota_unavailable" } }, 503);
+      }
+      throw err;
+    }
+  }
+
+  private async dispatch(req: Request, json: (payload: unknown, status?: number) => Response): Promise<Response> {
     const op = new URL(req.url).pathname.slice(1);
     const body: unknown = await req.json().catch(() => ({}));
     const b = (body ?? {}) as Record<string, unknown>;
-    const json = (payload: unknown, status = 200): Response =>
-      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json; charset=utf-8" } });
     const now = Date.now();
 
     if (op === "hold") {
@@ -412,12 +457,15 @@ export class Quota extends DurableObject<Env> {
     }
 
     if (op === "release") {
-      const { plan } = await this.plan();
-      const st = await this.state(plan);
-      const next = quotaRelease(st, String(b.requestId));
-      // 认不出的 requestId：quota.release 原样回同一个对象 —— 这就是网关要的 no-op
-      // （settle 失败后它还会再 release 一次），连写盘都不必
-      if (next !== st) await this.ctx.storage.put("state", next);
+      // M9：先读 storage。没有 state = 没有任何挂着的 hold，本来就没什么可释放的——
+      // 为它查一次档位再整份重建，纯属白花两次往返（而且重建失败会把一次
+      // no-op 变成 503）。网关在 settle 失败后还会再 release 一次，这条路要最便宜
+      const stored = await this.ctx.storage.get<QuotaState>("state");
+      if (!stored) return json({ ok: true });
+      const next = quotaRelease(stored, String(b.requestId));
+      // 认不出的 requestId：quota.release 原样回同一个对象 —— 这就是网关要的 no-op，
+      // 连写盘都不必
+      if (next !== stored) await this.ctx.storage.put("state", next);
       return json({ ok: true });
     }
 
@@ -446,18 +494,33 @@ export class Quota extends DurableObject<Env> {
 
     if (op === "addonGranted") {
       // 加购入账：**append 一笔**，不是往一个标量上加 —— 分两次买的额度各自到期，
-      // 合成一个数会让先买的那份被后买的那份的到期日一起打成 0（quota.ts C2）
+      // 合成一个数会让先买的那份被后买的那份的到期日一起打成 0（quota.ts C2）。
+      //
+      // I5：按 payment_intent 幂等。这条 op 因此**可以被重投**——「credit_grant 插进去了、
+      // 通知这一步炸了」以前是个治不好的半截状态（重投会被 webhook 那边的查重挡掉，
+      // 而热 DO 又永远等不到这笔额度）。现在 webhook 撞见重复行也照样通知，
+      // 由这里的 grantSeen 环去重，Stripe 的重试就把它治好了
+      const paymentIntentId = typeof b.paymentIntentId === "string" ? b.paymentIntentId : "";
+      const micro = Number(b.micro);
+      const expiresAt = Number(b.expiresAt);
+      if (!paymentIntentId || !Number.isFinite(micro) || micro <= 0 || !Number.isFinite(expiresAt)) {
+        return json({ ok: false, reason: "bad_grant" });
+      }
+      const seen = (await this.ctx.storage.get<string[]>("grantSeen")) ?? [];
+      if (seen.includes(paymentIntentId)) return json({ ok: true, dup: true });
+      const nextSeen = [...seen, paymentIntentId].slice(-GRANT_SEEN_MAX);
+
       const stored = await this.ctx.storage.get<QuotaState>("state");
       if (!stored) {
         // 冷的：这笔 grant 已经在 credit_grant 表里了（webhook 先插再通知），
-        // 下一次操作的冷启动重建会把它算进来。这里再 append 一次就是发两份额度
+        // 下一次操作的冷启动重建会把它算进来 —— 这里再 append 一次就是发两份额度。
+        // 但**记号照留**：不然重投打到一个已经重建过的热 DO 上，就真的会 append 第二份
+        await this.ctx.storage.put("grantSeen", nextSeen);
         return json({ ok: true, note: "cold: rebuild 会从 credit_grant 把它算进来" });
       }
-      const micro = Number(b.micro);
-      const expiresAt = Number(b.expiresAt);
-      if (!Number.isFinite(micro) || micro <= 0 || !Number.isFinite(expiresAt)) return json({ ok: false, reason: "bad_grant" });
       const grants = [...stored.grants, { micro, expiresAt }].sort((g1, g2) => g1.expiresAt - g2.expiresAt);
-      await this.ctx.storage.put("state", { ...stored, grants });
+      // 两把钥匙一次写完：分两次 put 的话，「余额加了、记号没落」那半会在重投时再加一份
+      await this.ctx.storage.put({ state: { ...stored, grants }, grantSeen: nextSeen });
       return json({ ok: true });
     }
 
@@ -493,7 +556,9 @@ function quotaPort(env: Env): QuotaPort {
       if (r.ok !== true) return; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
       try {
-        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), { ignoreDuplicates: true });
+        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), {
+          ignoreDuplicates: true, onConflict: "request_id", // 主键是 identity，幂等键是这一列（I4）
+        });
       } catch (err) {
         // 投影已经扣了、事实没落 —— 下次 DO 冷启动重建时会少算这一笔。记日志，**不回滚投影**：
         // 少扣对用户有利，回滚才会把「已经给出去的内容」变成既没扣钱也没记录
@@ -593,7 +658,10 @@ function billingPort(env: Env): BillingPort {
           if (!planId) return { status: 200, body: { ignored: `unknown price ${a.priceId}` } };
           // 乱序闸：Stripe 不保证到达顺序、重投窗口 3 天。比现有行的 last_event_at ——
           // 没这一比，一条晚到的 created 事件能把 updated 写好的 active 覆盖回旧状态。
-          // 行不存在 / 那一列读不到（空串 → NaN）时比较恒为 false = 放行
+          // 行不存在 / 那一列读不到（空串 → NaN）时比较恒为 false = 放行。
+          // M7：`event.created` 只到**秒**，所以同一秒内的两条事件分不出先后，
+          // 落成后写者赢（判据是 `<` 不是 `<=`）。Stripe 那边同秒的两条订阅事件本就罕见，
+          // 真要分得清得改成拿 Stripe 的对象重查一次当前状态，那是另一个量级的代价
           const existing = parseSubscriptionRows(await db.get(subscriptionQuery(a.uid)));
           if (existing && a.eventCreated < Date.parse(existing.last_event_at)) {
             return { status: 200, body: { ignored: "stale event" } };
@@ -611,14 +679,28 @@ function billingPort(env: Env): BillingPort {
         } else if (a.kind === "grant") {
           const unit = parsePlanRows(await db.get(plansQuery())).find((p) => p.id === "addon")?.addon_unit_micro ?? 0;
           if (unit <= 0) return { status: 200, body: { ignored: "addon unit not configured" } };
-          // 幂等键是 payment_intent（0017 里那列是 unique）。**先查再插**：光靠
-          // ignore-duplicates 插不进去也不报错，我们就分不出「新的一笔」和「重投」，
-          // 而重投一次通知一次 DO = 多发一份额度
-          const dup = await db.get(`credit_grant?stripe_payment_intent_id=eq.${encodeURIComponent(a.paymentIntentId)}&select=id&limit=1`);
-          if (Array.isArray(dup) && dup.length > 0) return { status: 200, body: { ignored: "duplicate" } };
-          const row = grantInsertBody(a, unit, Date.now());
-          await db.insert("credit_grant", row, { ignoreDuplicates: true });
-          await quotaCall(env, a.uid, "addonGranted", { micro: row.micro_usd, expiresAt: Date.parse(row.expires_at as string) });
+          // 幂等键是 payment_intent（0017 里那列 unique）。先查一次，是为了知道该
+          // 「插新的」还是「用已有那笔」——**不是为了在重投时提前返回**（I5）：
+          // 「行插进去了、通知 DO 那步炸了」以前是个治不好的半截状态（重投被这里挡掉，
+          // 热 DO 又永远等不到这笔额度）。现在照样往下通知，去重挪进 DO 按
+          // payment_intent 做，Stripe 的重试因此能把它治好
+          const existing = parseGrantRow(await db.get(grantByPaymentIntentQuery(a.paymentIntentId)));
+          let microUsd: number;
+          let expiresAt: number;
+          if (existing) {
+            // 用行里存着的那份，不是此刻重算的：单位额可能已经改过
+            microUsd = existing.microUsd;
+            expiresAt = Date.parse(existing.expiresAt);
+          } else {
+            const row = grantInsertBody(a, unit, Date.now());
+            await db.insert("credit_grant", row, {
+              ignoreDuplicates: true, onConflict: "stripe_payment_intent_id", // 同上，不是主键（I4）
+            });
+            microUsd = Number(row.micro_usd);
+            expiresAt = Date.parse(row.expires_at as string);
+          }
+          await quotaCall(env, a.uid, "addonGranted", { micro: microUsd, expiresAt, paymentIntentId: a.paymentIntentId });
+          return { status: 200, body: { ok: true, kind: a.kind, duplicate: existing !== null } };
         }
         return { status: 200, body: { ok: true, kind: a.kind } };
       } catch (err) {

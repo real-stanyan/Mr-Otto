@@ -354,7 +354,16 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     const caller = await callerOf(req);
     if (caller instanceof Response) return caller;
 
-    if (pathname === "/billing/v1/me" && req.method === "GET") return json(200, await deps.billing.me(caller.uid));
+    if (pathname === "/billing/v1/me" && req.method === "GET") {
+      // 计费面后面是 Quota DO + Supabase：它们抖一下不该变成一个没有 otto_edge
+      // 信封的裸 500 —— 客户端的 parseBillingError 认不出那种响应，界面上会
+      // 退化成"未知错误"而不是"稍后再试"
+      try {
+        return json(200, await deps.billing.me(caller.uid));
+      } catch (err) {
+        return apiError(502, `取额度失败：${err instanceof Error ? err.message : String(err)}`, "upstream");
+      }
+    }
 
     // 下面两条是人的动作：平台身份替人买东西没有意义（钱是人付的）
     if (caller.source === "runtime") return apiError(403, "平台身份不能发起购买", "forbidden");

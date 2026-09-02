@@ -213,7 +213,15 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
       return apiError(400, "请求体不是 JSON", "bad_request");
     }
 
-    const route = pickRoute(await deps.routes(), body.model as string);
+    // C1：取路由表要落在自己的 try 里。它打的是 Supabase，而 Supabase 抖一下
+    // 不该变成一个没有 otto_edge 信封的裸 500 —— 客户端认不出那是"稍后再试"
+    let routes: RouteRow[];
+    try {
+      routes = await deps.routes();
+    } catch {
+      return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
+    }
+    const route = pickRoute(routes, body.model as string);
     if (!route) return apiError(400, `网关不供这款型号：${String(body.model)}`, "unknown_model");
     const key = deps.upstreamKey(route.platform);
     if (!key) return apiError(502, `服务端没配 ${route.platform} 的 key`, "upstream");
@@ -229,7 +237,15 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         ? Math.min(Math.floor(body.max_tokens), 128_000)
         : route.defaultMaxTokens;
     const requestId = newId();
-    const held = await deps.quota.hold(caller.uid, requestId, estimateMicro(bodyBytes, maxTokens, route));
+    // C1：hold 自己也可能抛（DO 算不出额度时回 503，quotaCall 据此抛）。这一刻
+    // **还没有 hold 可释放**，所以只回错、不 release —— release 一个不存在的
+    // requestId 虽然是 no-op，但白打一趟 DO
+    let held: HoldOutcome;
+    try {
+      held = await deps.quota.hold(caller.uid, requestId, estimateMicro(bodyBytes, maxTokens, route));
+    } catch {
+      return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
+    }
     if (!held.ok) {
       // M8：hold 被拒也带上剩余额度头，省得客户端再问一次；取额度这一步本身失败
       // 不该连累这条错误响应发不出去——查不到就不带头，不能因为这个再抛一次错。

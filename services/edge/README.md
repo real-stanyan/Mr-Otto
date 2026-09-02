@@ -28,8 +28,8 @@ Mr Otto 的边缘服务。三件事，互不相干：**OAuth 落地页**、**远
 | GET | `/healthz` | 存活探针，不要令牌 |
 | GET | `/auth/landing` | OAuth 落地页。不要令牌，浏览器裸访问，回 HTML |
 | GET | `/rl/v1/connect?role=desktop\|mobile` | 中继。WebSocket upgrade，上下行同一条。`101` 接上，`400` role 不合法，`401` 凭据问题，`404` 未开中继，`426` 不是 upgrade 请求 |
-| POST | `/llm/v1/chat/completions` | 托管模型网关（OpenAI 兼容，流式/非流式都收）。`200` 正常（响应头带剩余额度），`400` `bad_request`/`unknown_model`，`401` 凭据问题，`402` `no_subscription`，`429` `quota_exhausted`（带 `window`/`resetAt`）或 `too_many_inflight`，`502` `upstream` |
-| GET | `/billing/v1/me` | 这个人的档位 / 两个窗口 / 加购余额 / 网关此刻供的型号（`BillingMe`）。`200` |
+| POST | `/llm/v1/chat/completions` | 托管模型网关（OpenAI 兼容，流式/非流式都收）。`200` 正常（响应头带剩余额度），`400` `bad_request`/`unknown_model`，`401` 凭据问题，`402` `no_subscription`，`429` `quota_exhausted`（带 `window`/`resetAt`）或 `too_many_inflight`，`502` `upstream`（上游出错），`503` `upstream`（额度算不出来，稍后再试） |
+| GET | `/billing/v1/me` | 这个人的档位 / 两个窗口 / 加购余额 / 网关此刻供的型号（`BillingMe`）。`200`，`502` `upstream`（Quota DO / Supabase 挂了） |
 | POST | `/billing/v1/checkout` | 开一张 Stripe Checkout：`{planId}` 订阅或 `{addon:true,quantity}` 加购。`200 {url}`，`400` 形状不对，`403` `forbidden`（平台身份不能买），`502` Stripe 那边出错 |
 | POST | `/billing/v1/portal` | 开一张 Stripe Billing Portal（改卡/退订）。`200 {url}`，`502`（含"还没有订阅记录"） |
 | POST | `/billing/v1/webhook` | Stripe → 我们。不验 JWT，验 `Stripe-Signature`。`200` 收下或显式忽略，`400` 签名/JSON 不对，`413` 正文过大，`500` 落库失败（让 Stripe 重投） |
@@ -138,14 +138,23 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 
 **Quota DO 存的是投影，不是事实**：钱的唯一事实是 Supabase 的 `usage_event` 表
 （append-only，见 `0017_subscriptions.sql`）。DO 冷启动没有 state 时**从事实重建**
-——不重建的话，DO 睡一觉醒来额度就全满了。重建失败**不落盘**（落一份空的等于把
-"这次查不到"冻成"这个人没花过钱"），下一次操作自己重试。
+——不重建的话，DO 睡一觉醒来额度就全满了。重建包在 `blockConcurrencyWhile` 里：
+DO 单线程只保证"一次 fetch 内没人插队"，`await` 之间照样会切出去，两个并发的首请求
+会各自重建、后写的那份抹掉前一个的 hold。
+
+**重建失败既不落盘也不当成零**：这一刻回 `503`（网关译成 `503 upstream`
+「额度服务暂时不可用」）。返回一份空投影再落盘的话，一次 Supabase 抖动就等于
+"这个人没花过钱"——窗口用量归零、买过的加购余额消失，而且从此不会再重建
+（storage 里已经有 state 了）。"少扣对用户有利"只适用于一笔账没落，不适用于整份余额归零。
 
 `usage_event` 落库失败**不回滚投影**：少扣对用户有利，回滚才会把"已经给出去的内容"
 变成既没扣钱也没记录。
 
-**加购 webhook 先查再插**：幂等键是 `stripe_payment_intent_id`（DB 里 unique）。
-光靠 `ignore-duplicates` 分不出"新的一笔"和"重投"，而重投一次通知一次 DO = 多发一份额度。
+**加购的幂等在两层**：DB 那层键是 `stripe_payment_intent_id`（unique；`ignore-duplicates`
+要显式带 `on_conflict=` 指到这一列——PostgREST 默认只认主键，而主键是 identity）；
+DO 那层按同一个 `paymentIntentId` 记一个 200 条的环。所以 webhook 撞见重复行**照样通知
+DO**：这样"行插进去了、通知那步炸了"才有救——Stripe 的重投会把它治好。反过来（撞重复
+就提前返回）那个半截状态永远治不好。
 
 **四个 secret**（另外两个是中继那边的 `SUPABASE_JWT_SECRET` / `RUNTIME_SECRET`）：
 
@@ -188,13 +197,35 @@ npm --prefix services/edge run deploy
 2. **手工造一行订阅**：在 `subscription` 表插一行（`user_id` 用你的测试账号、
    `plan_id='lite'`、`status='active'`、`current_period_start/end` 覆盖此刻），
    再打 `/billing/v1/me` —— `windows` 应该从 `null` 变成两个窗口，`periodEnd` 有值。
+   **档位快照在 DO 里有 60 秒内存缓存**：刚在 DB 里改完立刻打，看到的可能还是上一份。
+   等一分钟再打一次，或者换一个没被叫醒过的 uid（缓存是每实例的，DO 睡醒即失）。
 3. **真扣一笔**：`OTTO_CHECK_UID=<那个 uid> SUPABASE_JWT_SECRET='…' npm --prefix services/edge run check:llm`。
    脚本自己会等一拍再打一次 `/me` 断言 `windows.h5.usedMicro > 0`；同时去
    `usage_event` 表看应该多一行（`request_id` 唯一），响应头里的剩余额度比第 2 步小。
-4. **webhook 通路**：`stripe listen --forward-to http://127.0.0.1:8799/billing/v1/webhook`
-   配 `npm --prefix services/edge run dev`，然后 `stripe trigger customer.subscription.created`
-   ——`subscription` 表应该多/改一行，且 `last_event_at` 跟着事件的 `created` 走。
-   （`stripe listen` 会打印一个临时的 `whsec_…`，本地放进 `.dev.vars`。）
+4. **webhook 通路**（分两半，别把第一半的结果当失败）：
+
+   ```bash
+   npm --prefix services/edge run dev   # 一个终端
+   stripe listen --forward-to http://127.0.0.1:8799/billing/v1/webhook   # 另一个
+   #   ↑ 它会打印一个临时的 whsec_…，放进 .dev.vars 的 STRIPE_WEBHOOK_SECRET
+   stripe trigger customer.subscription.created
+   ```
+
+   - **第一半（验签 + 事件解析）**：`stripe trigger` 用的是官方 fixture，那份订阅
+     **没有 `metadata.uid`**——我们无从知道这是谁的订阅，所以 `actionFromEvent` 回
+     `ignore`，响应是 `200 {"ok":true,"kind":"ignore"}`。**这就是这一步的预期结果**：
+     它证明了签名验过了、JSON 解析了、路由通了。看到 `kind:"ignore"` 不要当成坏了。
+   - **第二半（写库）**：要走到写库那条路，fixture 里得有 `metadata.uid`。
+     `stripe trigger --help` 里有 `--add`（往 fixture 加参数）和 `--override`（改已有的），
+     `metadata.uid` 是新加的，所以用 `--add`，形如
+     `stripe trigger customer.subscription.created --add subscription:metadata.uid=<你的 uid>`。
+     **fixture 里那个实体叫什么名字没有在本机验证过**（要跑它就得对着真 Stripe 建对象），
+     `stripe trigger customer.subscription.created --edit` 能把 fixture 打开来确认。
+     嫌麻烦就**在 test mode 下真跑一次 Checkout**（走 `/billing/v1/checkout` 拿到 url、
+     用 Stripe 的测试卡付掉）——那条路的 `metadata.uid` 是我们自己在 `checkoutParams`
+     里塞的，一定在。
+   - 无论走哪条，写库成功的判据是：`subscription` 表多/改了一行，且 `last_event_at`
+     等于那条事件的 `created`（不是 `now()`）——那一列就是乱序防护比的东西。
 5. **额度用尽**：把 `plan.window5h_limit_micro` 临时改成 `1`，等 60 秒（DO 的档位缓存
    TTL）再打一次 chat —— 应得 **429 `quota_exhausted`**，body 里带 `window` 与 `resetAt`。
    验完记得改回去。

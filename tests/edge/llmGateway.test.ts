@@ -334,6 +334,38 @@ describe("createLlmGateway", () => {
     expect(res.headers.get(BILLING_HEADERS.h5)).toBeNull();
   });
 
+  it("routes 抛（Supabase 抖）→ 503 upstream 信封，不是裸 500（C1）", async () => {
+    const { quota, calls } = quotaStub();
+    const gw = createLlmGateway({
+      routes: async () => { throw new Error("supabase GET model_route 500"); },
+      quota, upstreamKey: () => "k",
+    });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(res.status).toBe(503);
+    expect((await res.json() as { error: { type: string; code: string } }).error).toMatchObject({ type: "otto_edge", code: "upstream" });
+    // 还没走到 hold，不该有任何额度动作
+    expect(calls.hold).toEqual([]);
+    expect(calls.release).toEqual([]);
+  });
+
+  it("hold 抛（Quota DO 回 503）→ 503 信封，且不 release / 不 settle（C1）", async () => {
+    const calls: { release: string[]; settle: number } = { release: [], settle: 0 };
+    const quota: QuotaPort = {
+      hold: async () => { throw new Error("quota hold 503"); },
+      settle: async () => { calls.settle += 1; },
+      release: async (_uid, rid) => { calls.release.push(rid); },
+      remaining: async () => ({ h5: 1, week: 1, addon: 0, plan: "lite" }),
+    };
+    const up = upstream(() => Response.json({ choices: [] }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(res.status).toBe(503);
+    // 没拿到 hold 就没有可释放的；也绝不该打上游（那是真花钱那一步）
+    expect(calls.release).toEqual([]);
+    expect(calls.settle).toBe(0);
+    expect(up.seen).toEqual([]);
+  });
+
   it("stream 只判一次，转发给上游的 body 用同一个布尔值覆盖客户端传的非法值（M9）", async () => {
     const { quota } = quotaStub();
     const up = upstream(() => Response.json({ choices: [], usage: null }));

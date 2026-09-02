@@ -91,6 +91,23 @@ describe("/llm/v1/chat/completions 身份", () => {
 });
 
 describe("/billing/v1/*", () => {
+  it("BillingPort.me 抛（Quota DO / Supabase 挂）→ 502 otto_edge 信封，不是裸 500（C1）", async () => {
+    const handle = createEdge({
+      config, now: () => NOW_MS,
+      billing: {
+        me: async () => { throw new Error("quota view 503"); },
+        checkout: async () => ({ url: "x" }), portal: async () => ({ url: "x" }),
+        webhook: async () => ({ status: 200, body: {} }),
+      },
+    });
+    const res = await handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token("u1")}` } }));
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { type: string; code: string; message: string } };
+    expect(body.error).toMatchObject({ type: "otto_edge", code: "upstream" });
+    // 原因带出去：客户端不用猜，wrangler tail 里也认得出是哪一段
+    expect(body.error.message).toContain("quota view 503");
+  });
+
   it("GET /me 回 BillingPort.me 的结果；平台身份也能代表人查", async () => {
     const h = harness();
     const res = await h.handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token("u1")}` } }));

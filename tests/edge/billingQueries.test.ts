@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  grantInsertBody, meFromParts, parsePlanRows, parseRebuildRows, parseRouteRows, parseSubscriptionRows, planIdForPrice,
-  parseSubscriptionOwner, planSnapshotOf, plansQuery, rebuildQueries, routesQuery, subscriptionByStripeIdQuery,
-  subscriptionQuery,
-  subscriptionUpsertBody, usageEventInsert,
+  grantByPaymentIntentQuery, grantInsertBody, meFromParts, parseGrantRow, parsePlanRows, parseRebuildRows,
+  parseRouteRows, parseSubscriptionOwner, parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery,
+  rebuildQueries, routesQuery, subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody,
+  usageEventInsert,
 } from "../../services/edge/src/billingQueries.js";
 
 const plans = [
@@ -41,6 +41,15 @@ describe("查询串", () => {
     expect(q.addonConsumed).toContain("select=cost_micro");
     expect(q.addonConsumed).not.toContain("sum");
   });
+  it("addonConsumed 显式钉 limit：被截断和本来就这么多不该长一样", () => {
+    expect(rebuildQueries("u1", 0).addonConsumed).toContain("limit=10000");
+  });
+  it("grantByPaymentIntentQuery 按幂等键取金额与到期日（撞行时要用行里那份）", () => {
+    const q = grantByPaymentIntentQuery("pi_1");
+    expect(q).toContain("stripe_payment_intent_id=eq.pi_1");
+    expect(q).toContain("select=micro_usd,expires_at");
+    expect(q).toContain("limit=1");
+  });
   it("plansQuery 取 plan 表", () => {
     expect(plansQuery()).toContain("plan?select=");
   });
@@ -62,6 +71,12 @@ describe("行解析", () => {
     expect(parseSubscriptionOwner([{ user_id: "u1" }])).toEqual({ userId: "u1", lastEventAt: "" });
     expect(parseSubscriptionOwner([])).toBeNull();
     expect(parseSubscriptionOwner(null)).toBeNull();
+  });
+  it("parseGrantRow：空/坏行回 null", () => {
+    expect(parseGrantRow([{ micro_usd: 7_000_000, expires_at: "2027-09-01T00:00:00Z" }]))
+      .toEqual({ microUsd: 7_000_000, expiresAt: "2027-09-01T00:00:00Z" });
+    expect(parseGrantRow([{ micro_usd: 1 }])).toBeNull();
+    expect(parseGrantRow([])).toBeNull();
   });
   it("parsePlanRows / parseRouteRows 丢掉坏行", () => {
     expect(parsePlanRows([...plans, { id: 1 }])).toHaveLength(2);
