@@ -23,14 +23,17 @@ on conflict (id) do update set
   -- 故意不刷 stripe_price_id：那一列由维护者在 Stripe 后台建完后手填，重跑 seed 不能把它清回 ''
   updated_at = now();
 
-insert into public.model_route (id, logical_model, platform, base_url, wire_model, price_in_micro_per_m, price_cache_micro_per_m, price_out_micro_per_m, default_max_tokens, priority)
+-- quantization 由 seed 显式声明（不留给列默认值 'none' 隐式决定）：ADR-0175 把它定成必填项，
+-- 「unknown」按量化处理——insert 列表里漏了它，excluded.quantization 会静默取列默认值，
+-- 每次重跑 seed 都把量化状态悄悄扳回 'none'（round 1 修 enabled/effective_* 时留下的同款坑）。
+insert into public.model_route (id, logical_model, platform, base_url, wire_model, price_in_micro_per_m, price_cache_micro_per_m, price_out_micro_per_m, default_max_tokens, quantization, priority)
 values
   -- DeepSeek V4 Flash：¥1.00 / ¥0.02 / ¥2.00
-  ('deepseek-v4-flash@deepseek', 'deepseek-v4-flash', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-flash', 138889, 2778, 277778, 8192, 10),
+  ('deepseek-v4-flash@deepseek', 'deepseek-v4-flash', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-flash', 138889, 2778, 277778, 8192, 'none', 10),
   -- DeepSeek V4 Pro：¥3.00 / ¥0.025 / ¥6.00（cache 价是异常值，ADR-0174「会被推翻的前提」——核实后改这一行）
-  ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 416667, 3472, 833333, 8192, 10),
+  ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 416667, 3472, 833333, 8192, 'none', 10),
   -- GLM-5.3：按 GLM-5.1 ¥6.00 / ¥1.30 / ¥24.00 抄，待核
-  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 10)
+  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 'none', 10)
 on conflict (id) do update set
   platform = excluded.platform,
   base_url = excluded.base_url,
