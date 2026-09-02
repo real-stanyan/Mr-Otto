@@ -25,13 +25,17 @@ export type CheckoutTarget = { planId: PlanId } | { addon: true; quantity: numbe
 
 const PLAN_IDS: ReadonlySet<string> = new Set(["lite", "pro", "max"]);
 
-/** IPC 边界的校验（fix round 1）：渲染层传来的 target 不可信——即便是本仓自己的
-    代码,IPC 那头也可能被改坏/被绕过 preload 直接 invoke。null = 形状不对,
-    调用方据此拒绝,不能原样转给 hostedQuota.checkout（否则会把任意字符串当
-    planId 转给 Stripe，或者把负数/小数当 quantity 发出去） */
+/** IPC 边界的校验（fix round 1，加固于 fix round 2）：渲染层传来的 target 不可信——
+    即便是本仓自己的代码,IPC 那头也可能被改坏/被绕过 preload 直接 invoke。null = 形状
+    不对,调用方据此拒绝,不能原样转给 hostedQuota.checkout（否则会把任意字符串当
+    planId 转给 Stripe，或者把负数/小数当 quantity 发出去）。
+    CheckoutTarget 是 XOR 的联合类型（订阅 or 加购，不能两者都要）——两个字段同时
+    出现的混合形状必须拒绝，不能像 fix round 1 那样悄悄按 addon 分支放行、把
+    planId 原样吞掉（那等于模型可见的行为和调用方传的东西对不上） */
 export function parseCheckoutTarget(v: unknown): CheckoutTarget | null {
   if (v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
+  if ("planId" in o && "addon" in o) return null;
   if (o.addon === true) {
     const q = o.quantity;
     return typeof q === "number" && Number.isInteger(q) && q >= 1 && q <= 100

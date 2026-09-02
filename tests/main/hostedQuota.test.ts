@@ -142,6 +142,10 @@ describe("parseCheckoutTarget", () => {
     expect(parseCheckoutTarget({ addon: "true", quantity: 1 })).toBeNull();
   });
 
+  it("planId 和 addon 同时出现的混合形状拒绝（fix round 2）：CheckoutTarget 是 XOR,不能两者都要", () => {
+    expect(parseCheckoutTarget({ planId: "max", addon: true, quantity: 1 })).toBeNull();
+  });
+
   it("形状不对（null / 非对象 / 数组 / 空对象）全拒绝", () => {
     expect(parseCheckoutTarget(null)).toBeNull();
     expect(parseCheckoutTarget(undefined)).toBeNull();
