@@ -5,7 +5,8 @@
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
-import { classifyStatus, errorClassOf, markErrorClass } from "./errorClass.js";
+import { classifyStatus, errorClassOf, markErrorClass, markReroute, type RerouteInfo } from "./errorClass.js";
+import { parseBillingError } from "../shared/billing.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
 /** 一次请求真正用的端点 */
@@ -14,6 +15,8 @@ export interface ResolvedEndpoint {
   apiKey: string;
   /** 附加请求头 */
   headers?: Record<string, string>;
+  /** 走的哪条路；缺省 direct */
+  route?: "hosted" | "direct";
 }
 
 export interface OpenAICompatibleOptions {
@@ -48,6 +51,11 @@ export interface OpenAICompatibleOptions {
   /** 重试/超时参数覆盖。生产装配用默认常量；唯一例外是本机推理
       （keyless，装配时传 localTiming()）；测试也走这里。 */
   timing?: Partial<AdapterTiming>;
+  /** 每次 2xx 响应的头（托管模式的剩余额度从这里刷，见 main/hostedQuota.ts） */
+  onResponse?: (info: { route: "hosted" | "direct"; headers: Headers }) => void;
+  /** 网关说额度用完那一刻（改道之前）。调用方据此把快照标成 exhausted，
+      让紧接着的 resolveEndpoint 给出另一条路 */
+  onReroute?: (info: RerouteInfo) => void;
 }
 
 /** 传输层健壮性参数（issue #283）。原则：**首 token 前**的失败可重试（限流/网络闪断/
@@ -351,12 +359,21 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       if (!res.ok) {
         const errBody = await res.text();
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(errBody); } catch { /* 非 JSON：不是 edge 信封 */ }
+        const billing = parseBillingError(res.status, parsed);
+        if (billing?.code === "quota_exhausted") {
+          const info: RerouteInfo = { ...(billing.window ? { window: billing.window } : {}), ...(billing.resetAt !== undefined ? { resetAt: billing.resetAt } : {}) };
+          opts.onReroute?.(info);
+          throw markRetryable(markReroute(markErrorClass(new Error(`model API 429: ${billing.message}`), "reroute"), info));
+        }
         const err = markErrorClass(
           new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
           classifyStatus(res.status)
         );
         throw errorClassOf(err) === "fatal" ? err : markRetryable(err);
       }
+      opts.onResponse?.({ route: endpoint.route ?? "direct", headers: res.headers });
 
       // ---- 流式分支：SSE 攒完整消息，途中 onDelta 直播 ----
       if (onDelta) {
@@ -388,6 +405,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         const acc = await readSSE(watched, onDelta).catch(normalize);
         return {
           content: acc.content,
+          route: endpoint.route ?? "direct",
           ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
           ...(acc.usage ? { usage: toTokenUsage(acc.usage) } : {}),
           ...(acc.toolCalls.length > 0
@@ -409,6 +427,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       return {
         content: msg.content ?? "",
+        route: endpoint.route ?? "direct",
         ...((msg.reasoning_content ?? msg.reasoning)
           ? { reasoning: msg.reasoning_content ?? msg.reasoning ?? "" }
           : {}),
@@ -466,11 +485,18 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       // 重试循环（issue #283）：只重试贴了 retryable 标记的失败（首 token 前的
       // 限流/瞬时故障/网络闪断/静默）。用户 abort 优先于一切——退避窗口里也能醒
+      let rerouted = false;
       for (let attempt = 1; ; attempt++) {
         signal?.throwIfAborted();
         try {
           return await attemptChat(body, onDelta, signal);
         } catch (err) {
+          if (errorClassOf(err) === "reroute") {
+            // 改道只给一次机会：第二次还是额度用完 = 另一条路也没有，抛给 engine
+            if (rerouted || signal?.aborted) throw err;
+            rerouted = true;
+            continue; // 不睡退避——等的是窗口不是上游
+          }
           if (!isRetryable(err) || attempt >= timing.maxAttempts || signal?.aborted) throw err;
           await sleep(
             timing.backoffMs[Math.min(attempt - 1, timing.backoffMs.length - 1)] ?? 0,

@@ -4,6 +4,7 @@
 import type { ModelLane } from "../shared/modelLane.js";
 import type { MemoryTarget } from "../shared/memoryStore.js";
 import type { ResidueSnapshot, ResidueItem, CleanupResult } from "../shared/residue.js";
+import type { ModelErrorClass } from "../model/errorClass.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -291,7 +292,7 @@ export interface TurnEndedEvent extends SessionEventBase {
       error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错
       那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
       缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
-  errorClass?: "rate-limit" | "retryable" | "fatal";
+  errorClass?: ModelErrorClass;
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md

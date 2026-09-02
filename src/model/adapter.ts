@@ -19,6 +19,8 @@ export interface ModelReply {
   usage?: TokenUsage;
   /** 思考过程（reasoning_content）。thinking 关/型号不支持 = 没有 */
   reasoning?: string;
+  /** 这次调用走的哪条路（ADR-0176）。缺省 = direct（老 adapter / 测试假货） */
+  route?: "hosted" | "direct";
 }
 
 /** 流式碎片的频道：思考先到，正文后到。UI 分区渲染靠它区分 */

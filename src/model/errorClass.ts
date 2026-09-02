@@ -12,7 +12,21 @@
 //   （半条消息续不上）。所以 visionBridge 看 class（它关心"是不是限流"），
 //   adapter 重试环看 retryable（它关心"重发安不安全"）。
 
-export type ModelErrorClass = "rate-limit" | "retryable" | "fatal";
+export type ModelErrorClass = "rate-limit" | "retryable" | "fatal" | "reroute";
+
+/** 网关说额度用完了（429 quota_exhausted）。种类单列：它既不该退避（等上游没用，等的是窗口）
+    也不是致命（配了自己的 key 换条路就能走）——adapter 收到立刻重解析端点重来一次 */
+export interface RerouteInfo { window?: "5h" | "week"; resetAt?: number }
+
+export function markReroute<T extends Error>(err: T, info: RerouteInfo): T {
+  (err as T & { reroute?: RerouteInfo }).reroute = info;
+  return err;
+}
+export function rerouteInfoOf(err: unknown): RerouteInfo | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const r = (err as { reroute?: unknown }).reroute;
+  return r !== null && typeof r === "object" ? (r as RerouteInfo) : undefined;
+}
 
 /** 标记贴属性不建子类（markRetryable 同款理由）：错误要跨 try 边界原样上抛，
     标记比 instanceof 皮实 */
@@ -25,7 +39,7 @@ export function markErrorClass<T extends Error>(err: T, cls: ModelErrorClass): T
 export function errorClassOf(err: unknown): ModelErrorClass | undefined {
   if (!(err instanceof Error)) return undefined;
   const cls = (err as { errorClass?: unknown }).errorClass;
-  return cls === "rate-limit" || cls === "retryable" || cls === "fatal" ? cls : undefined;
+  return cls === "rate-limit" || cls === "retryable" || cls === "fatal" || cls === "reroute" ? cls : undefined;
 }
 
 /** HTTP 状态码 → 分类。429 限流；5xx + 529（Anthropic overloaded）瞬态；
