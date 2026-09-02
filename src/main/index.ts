@@ -1056,8 +1056,10 @@ void app.whenReady().then(() => {
         ? null
         : autoTitleSource(store.firstUserMessage(sessionId));
     // 会话主题（#846）：只对内置 Default 的主会话跑，且还没有任何主题事件。
-    // 判据读日志第 0 条的 workspaceKind——建会话那一刻落的事实，不现场读设置
-    const created = store.load(sessionId)[0];
+    // 判据读日志第 0 条的 workspaceKind——建会话那一刻落的事实，不现场读设置。
+    // 这条现在跑在每个 turn 上（原来只在 result.sessionTitle 分支里，一个会话最多一次）——
+    // 不能再 full load 反序列化整份日志，untilSeq: 0 只取 seq<=0 那一行（issue #279 同款纪律）
+    const created = store.load(sessionId, { untilSeq: 0 })[0];
     const wantTopic =
       created?.type === "session_created" &&
       created.workspaceKind === "default" &&
@@ -2715,6 +2717,11 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
     if (!isTopicSlug(slug)) throw new Error("slug 非法");
     if (slug in SEED_TOPICS) throw new Error("种子桶不能删，只能清空");
+    // 删桶也要走 applyUserEdit 落 memory_user_edit（spec §5）：先把 after 写成空串——
+    // before 是删除那一刻磁盘上的真实原文（在 withMemoryFileLock 之下拿到，和工具的
+    // read-modify-write 不撞），这样删除动作和手编一样留证、可审计、可在 before 里
+    // 找回删之前的内容。事件落完了再动文件系统：rm 是不可逆的物理删除，落证在先。
+    await applyUserEdit(memoryEditDeps, "topic", "", undefined, null, slug);
     await rm(join(accountConfig, topicRelPath(slug)), { force: true });
     await rm(join(accountConfig, topicLabelRelPath(slug)), { force: true });
   });

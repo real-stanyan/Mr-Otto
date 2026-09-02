@@ -1881,8 +1881,13 @@ function AppSidebar() {
     void window.otter.listTopicMemories().then((ts) => setTopicLabels(Object.fromEntries(ts.map((t) => [t.slug, t.label]))));
   }, [sessions]); // 会话列表变了（含主题事件刷新）顺手刷一次标签；量小，不值得单独订阅
   const labelOf = (slug: string) => topicLabels[slug] ?? SEED_TOPICS[slug] ?? slug;
-  const taskGroups = useMemo(() => groupTasksByTopic(taskParts.local, labelOf), [taskParts, topicLabels]);
   const topicSlugs = useMemo(() => withSeedTopics(Object.keys(topicLabels)), [topicLabels]);
+  // known 桶集合：桶被删了的会话回未分类而不是画出一个死链组（spec §3）
+  const knownTopics = useMemo(() => new Set(topicSlugs), [topicSlugs]);
+  const taskGroups = useMemo(
+    () => groupTasksByTopic(taskParts.local, labelOf, knownTopics),
+    [taskParts, topicLabels, knownTopics]
+  );
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着。
   // 内置 Default 的会话归任务栏,不在这儿再出现一组。
   // 项目栏同样先把同步过的抽走：分区那段平铺（分享的单位是会话不是工程），

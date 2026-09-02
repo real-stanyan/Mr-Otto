@@ -112,13 +112,22 @@ export interface TopicGroup {
 }
 
 /** 任务栏按主题桶分组（#846）。组序按组内最近活动倒序——任务栏的语义一直是「最近的在上」，
-    分组只是在这上面加一层；未分类永远沉底。labelOf 由调用方给（种子表 + 用户改过的 .label） */
-export function groupTasksByTopic(sessions: SessionSummary[], labelOf: (slug: string) => string): TopicGroup[] {
+    分组只是在这上面加一层；未分类永远沉底。labelOf 由调用方给（种子表 + 用户改过的 .label）。
+    known = 此刻真实存在的桶 slug 集合（种子桶 + 自定义桶,调用方传 withSeedTopics(...)）——
+    桶被删了的会话回未分类（spec §3）:slug 文件已经不在了,继续按它分组会画出一个
+    没人能点进去、标题还是旧 slug 的组。判据只看 known,不去问文件系统:分组是纯函数,
+    真实性由调用方（读过一次磁盘）担保。 */
+export function groupTasksByTopic(
+  sessions: SessionSummary[],
+  labelOf: (slug: string) => string,
+  known: ReadonlySet<string>
+): TopicGroup[] {
   const byTopic = new Map<string | null, SessionSummary[]>();
   for (const s of sessions) {
-    const bucket = byTopic.get(s.topic);
+    const topic = s.topic !== null && known.has(s.topic) ? s.topic : null;
+    const bucket = byTopic.get(topic);
     if (bucket) bucket.push(s);
-    else byTopic.set(s.topic, [s]);
+    else byTopic.set(topic, [s]);
   }
   return [...byTopic.entries()]
     .map(([topic, list]) => {

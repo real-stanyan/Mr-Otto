@@ -39,6 +39,8 @@ function richEvents(): SessionEvent[] {
       ],
     }),
     ev({ type: "session_shared", friendName: "小红", message: "你看看", grantedServers: ["shopify"] }),
+    ev({ type: "session_topic_assigned", topic: "life", model: "m" }),
+    ev({ type: "session_topic_set", topic: "work" }),
     ev({ type: "turn_ended", outcome: "completed" }),
   ];
 }
@@ -82,6 +84,16 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(PRIVACY_STRIP_TYPES.has("request_envelope")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("project_instructions")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("session_shared")).toBe(true);
+    expect(PRIVACY_STRIP_TYPES.has("session_topic_assigned")).toBe(true);
+    expect(PRIVACY_STRIP_TYPES.has("session_topic_set")).toBe(true);
+  });
+
+  it("剥掉主题桶分类（#846）——A 的私有生活分类法在 B 的机器上没有意义", () => {
+    const { kept, stripped } = applyPrivacyGate(richEvents());
+    expect(kept.map((e) => e.type)).not.toContain("session_topic_assigned");
+    expect(kept.map((e) => e.type)).not.toContain("session_topic_set");
+    expect(stripped).toContain("session_topic_assigned");
+    expect(stripped).toContain("session_topic_set");
   });
 
   it("剥掉「这条会话以前还分享给过谁」——发给 B 的包不该带发送方的社交关系与授权史", () => {
