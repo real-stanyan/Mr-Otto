@@ -170,7 +170,7 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
-import { createHostedQuota } from "./hostedQuota.js";
+import { createHostedQuota, type CheckoutTarget } from "./hostedQuota.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
@@ -1459,6 +1459,9 @@ void app.whenReady().then(() => {
     log: (m) => console.warn(`[billing] ${m}`),
   });
   hostedQuotaRefresh = () => void hostedQuota.refresh();
+  // 订阅页镜像（Task 11）：快照一变就推，同 accountChanged 那条推送的写法。
+  // send() 早于这里定义（line ~529），装配顺序上没有先有鸡还是先有蛋的问题
+  hostedQuota.onChange((s) => send(CHANNELS.billingChanged, s));
   const hostedDeps = {
     quota: hostedQuota,
     edgeBaseUrl: () => edgeBaseUrl(),
@@ -3063,6 +3066,20 @@ void app.whenReady().then(() => {
   });
   // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
   ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
+
+  // 订阅制托管额度（ADR-0176/issue #696，Task 11）。refresh=true 先打一次 /me——
+  // 开订阅页那一刻要最新的，不是内存里可能过期的旧快照
+  ipcMain.handle(CHANNELS.billingSnapshot, async (_e, refresh: boolean) => {
+    if (refresh) await hostedQuota.refresh();
+    return hostedQuota.snapshot();
+  });
+  // 拿 url 后在系统浏览器里开：Stripe Checkout 是它自己的页面，不进 Electron 窗口
+  ipcMain.handle(CHANNELS.billingCheckout, async (_e, target: CheckoutTarget) => {
+    await shell.openExternal(await hostedQuota.checkout(target));
+  });
+  ipcMain.handle(CHANNELS.billingPortal, async () => {
+    await shell.openExternal(await hostedQuota.portal());
+  });
 
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));

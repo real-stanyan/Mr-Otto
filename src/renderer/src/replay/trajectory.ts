@@ -96,6 +96,8 @@ function systemSummary(e: SessionEvent): string {
       return e.grantedServers && e.grantedServers.length > 0
         ? `shared → ${e.friendName} (+${e.grantedServers.join(",")})`
         : `shared → ${e.friendName}`;
+    case "route_changed":
+      return `route_changed ${e.from} → ${e.to} (${e.reason})`;
     default:
       return e.type;
   }

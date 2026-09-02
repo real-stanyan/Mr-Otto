@@ -18,6 +18,7 @@ import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
+import { countdown } from "../lib/billingView.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -534,6 +535,26 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
                 <KeyRound className="size-3" />
                 连带借出 {event.grantedServers.join("、")}
               </span>
+            )}
+          </MarkerContent>
+        </Marker>
+      );
+
+    // 改道（ADR-0176/issue #696）：托管额度用完、自动落到用户自己的 key 那一刻——
+    // 钱从谁账上出变了，这是那件事唯一的痕迹。同 session_shared 一类的量纲：
+    // 一行灰字，不是分隔线（线之下没有换世界，只是换了付钱的人）
+    case "route_changed":
+      return (
+        <Marker variant="default" className="py-1" data-testid="route-changed-marker">
+          <MarkerIcon>
+            <KeyRound />
+          </MarkerIcon>
+          <MarkerContent>
+            {event.to === "direct"
+              ? "订阅额度已用完，本次起用的是你自己的 key"
+              : `改道：${event.from} → ${event.to}`}
+            {event.resetAt !== undefined && (
+              <span className="ms-1 text-foreground/70">（{countdown(event.resetAt, Date.now())}）</span>
             )}
           </MarkerContent>
         </Marker>
