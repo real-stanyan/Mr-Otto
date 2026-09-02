@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   grantInsertBody, meFromParts, parsePlanRows, parseRebuildRows, parseRouteRows, parseSubscriptionRows, planIdForPrice,
-  planSnapshotOf, plansQuery, rebuildQueries, routesQuery, subscriptionByStripeIdQuery, subscriptionQuery,
+  parseSubscriptionOwner, planSnapshotOf, plansQuery, rebuildQueries, routesQuery, subscriptionByStripeIdQuery,
+  subscriptionQuery,
   subscriptionUpsertBody, usageEventInsert,
 } from "../../services/edge/src/billingQueries.js";
 
@@ -54,6 +55,13 @@ describe("行解析", () => {
   it("parseSubscriptionRows：缺 last_event_at 不整行作废（老行/select 少列时按空串，比不动）", () => {
     const { last_event_at: _dropped, ...withoutStamp } = sub;
     expect(parseSubscriptionRows([withoutStamp])?.last_event_at).toBe("");
+  });
+  it("parseSubscriptionOwner：反查行只有两列，缺 user_id 回 null", () => {
+    expect(parseSubscriptionOwner([{ user_id: "u1", last_event_at: "2026-09-01T00:00:00Z" }]))
+      .toEqual({ userId: "u1", lastEventAt: "2026-09-01T00:00:00Z" });
+    expect(parseSubscriptionOwner([{ user_id: "u1" }])).toEqual({ userId: "u1", lastEventAt: "" });
+    expect(parseSubscriptionOwner([])).toBeNull();
+    expect(parseSubscriptionOwner(null)).toBeNull();
   });
   it("parsePlanRows / parseRouteRows 丢掉坏行", () => {
     expect(parsePlanRows([...plans, { id: 1 }])).toHaveLength(2);

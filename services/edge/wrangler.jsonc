@@ -30,12 +30,16 @@
     "bindings": [
       { "name": "RELAY", "class_name": "Relay" },
       // 托管箱（ADR-0197）：一户一箱，凭据密封在 storage 里，只在 DO 内解封
-      { "name": "ESCROW", "class_name": "Escrow" }
+      { "name": "ESCROW", "class_name": "Escrow" },
+      // 额度（ADR-0174，spec 2026-09-02）：一户一个计量实例，storage 里只有
+      // 一份 QuotaState 投影 —— 钱的事实在 Supabase 的 usage_event 表
+      { "name": "QUOTA", "class_name": "Quota" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Relay"] },
-    { "tag": "v2", "new_sqlite_classes": ["Escrow"] }
+    { "tag": "v2", "new_sqlite_classes": ["Escrow"] },
+    { "tag": "v3", "new_sqlite_classes": ["Quota"] }
   ],
   // Supabase 项目根（关系闸查 friendships 用）。不是 secret，钉死在配置里
   "vars": { "SUPABASE_URL": "https://kpeemypbhkynapkjzewr.supabase.co" }
@@ -43,4 +47,11 @@
   //   npx wrangler secret put SUPABASE_JWT_SECRET
   // RUNTIME_SECRET 同理（平台身份，ADR-0199）：
   //   npx wrangler secret put RUNTIME_SECRET
+  //
+  // 托管网关 + 计费（spec 2026-09-02）另外四个 secret，全部 `wrangler secret put`，
+  // 一个都不写进这个文件：
+  //   npx wrangler secret put DEEPSEEK_API_KEY      # 上游模型 key
+  //   npx wrangler secret put ZHIPU_API_KEY
+  //   npx wrangler secret put STRIPE_SECRET_KEY     # sk_live_… / sk_test_…
+  //   npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…（Stripe Dashboard 的端点密钥）
 }

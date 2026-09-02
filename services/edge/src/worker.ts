@@ -3,7 +3,9 @@
 // 主进程那边的 fetch/Request/WebSocket 全局声明打架)。
 //
 // 路由逻辑在 edge.ts,配对逻辑在 relay.ts,线上约定在 src/shared/remote/wire.ts,
-// 三个都是纯的、跑在根门禁里。这一层只做装配 + 握运行时的手。
+// 计量在 quota.ts、网关在 llmGateway.ts、Stripe 在 billing.ts、查询串在 billingQueries.ts,
+// 全都是纯的、跑在根门禁里。这一层只做装配 + 握运行时的手:三个 DO(Relay/Escrow/Quota)、
+// Supabase 与 Stripe 的真实 HTTP、以及 ctx.waitUntil。
 
 import { DurableObject } from "cloudflare:workers";
 import { createEdge, type RelayStub } from "./edge.js";
@@ -13,6 +15,20 @@ import {
   workspaceIdsOf,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
+import { createLlmGateway, type QuotaPort, type RouteRow } from "./llmGateway.js";
+import {
+  WEEK_MS, addonExpiresAt, addonMicro, emptyState, hold as quotaHold, rebuild, release as quotaRelease,
+  remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
+  type PlanSnapshot, type QuotaState, type WindowState,
+} from "./quota.js";
+import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "./billing.js";
+import {
+  grantInsertBody, meFromParts, parsePlanRows, parseRebuildRows, parseRouteRows, parseSubscriptionOwner,
+  parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery, rebuildQueries, routesQuery,
+  subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert,
+  type SubscriptionRow,
+} from "./billingQueries.js";
+import type { BillingPort, CheckoutTarget } from "./edge.js";
 import {
   CTRL_CID,
   CTRL_GONE,
@@ -44,8 +60,18 @@ export interface Env {
       （ADR-0199）——本地/测试环境常常不配，px.ts/edge.ts 的 runtime 分支
       因此整个不存在，不是"配了空字符串所以永远比不中" */
   RUNTIME_SECRET: string;
+  /** 托管网关的上游 key（spec 2026-09-02 第 2 节）。
+      `wrangler secret put DEEPSEEK_API_KEY` / `ZHIPU_API_KEY`。
+      没配的平台在网关里回 502「服务端没配 key」——不是静默降级 */
+  DEEPSEEK_API_KEY?: string;
+  ZHIPU_API_KEY?: string;
+  /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
   RELAY: DurableObjectNamespace<Relay>;
   ESCROW: DurableObjectNamespace<Escrow>;
+  /** 一户一个额度实例：getByName(uid) */
+  QUOTA: DurableObjectNamespace<Quota>;
 }
 
 /** getWebSockets() 回来的连接 + 它的三个 tag */
@@ -276,6 +302,334 @@ export class Escrow extends DurableObject<Env> {
   }
 }
 
+/** PostgREST 小工具：读写都走 service role key（这些表对 authenticated 一律无写策略，
+    见 0017 末尾）。失败一律抛，调用方自己决定要不要吞——哪几处该吞在各自的注释里写着 */
+function supa(env: Env) {
+  const headers = { apikey: env.SUPABASE_SERVICE_KEY, authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}` };
+  const rest = `${env.SUPABASE_URL}/rest/v1`;
+  const write = async (verb: string, path: string, prefer: string, body: unknown): Promise<void> => {
+    const res = await fetch(`${rest}/${path}`, {
+      method: verb,
+      headers: { ...headers, "content-type": "application/json", prefer },
+      body: JSON.stringify(body),
+    });
+    // 错误正文截 200 字：PostgREST 的报错里有列名和约束名，是查这类故障唯一的线索；
+    // 全量进日志则可能把一整行数据抄进去
+    if (!res.ok) throw new Error(`supabase ${verb} ${path.split("?")[0]} ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  };
+  return {
+    async get(query: string): Promise<unknown> {
+      const res = await fetch(`${rest}/${query}`, { headers });
+      if (!res.ok) throw new Error(`supabase GET ${query.split("?")[0]} ${res.status}`);
+      return res.json();
+    },
+    insert: (table: string, body: unknown, opts: { ignoreDuplicates?: boolean } = {}): Promise<void> =>
+      write("POST", table, opts.ignoreDuplicates ? "resolution=ignore-duplicates,return=minimal" : "return=minimal", body),
+    upsert: (table: string, body: unknown): Promise<void> =>
+      write("POST", table, "resolution=merge-duplicates,return=minimal", body),
+    patch: (query: string, body: unknown): Promise<void> => write("PATCH", query, "return=minimal", body),
+  };
+}
+
+/**
+ * 一户一个额度实例（spec 2026-09-02 第 2 节，ADR-0174）。storage 只有一把钥匙：
+ * `state`（QuotaState 投影）。**投影不是事实** —— 钱的事实是 usage_event 表，
+ * 这里存的是"为了不每次都扫全表"的那份缓存。
+ *
+ * 三件事值得写下来：
+ * ① 档位快照在内存里带 60s TTL：DO 睡醒即失，回 DB 读一次，不是每请求读一次；
+ * ② 冷启动没有 state 时**从事实重建**（一次范围查询），不是从零开始 ——
+ *    从零开始 = 睡一觉醒来额度全满；
+ * ③ 所有 op 走 fetch（同 Escrow 的写法）。DO 单线程，读改写在一次 fetch 里做完，
+ *    天然无竞态，quota.ts 因此可以是一组纯函数。
+ */
+export class Quota extends DurableObject<Env> {
+  private planCache: { v: PlanSnapshot | null; sub: SubscriptionRow | null; exp: number } | null = null;
+
+  /** 这一份额度是谁的：**只认 DO 的实例名**。实例名是 edge 拿验过的 JWT sub 调
+      getByName 时钉死的；请求体里可以写任何字，所以请求体里根本不带身份 */
+  private uid(): string {
+    return this.ctx.id.name ?? "";
+  }
+
+  private async plan(force = false): Promise<{ plan: PlanSnapshot | null; sub: SubscriptionRow | null }> {
+    if (!force && this.planCache && this.planCache.exp > Date.now()) {
+      return { plan: this.planCache.v, sub: this.planCache.sub };
+    }
+    const db = supa(this.env);
+    const [subRows, planRows] = await Promise.all([db.get(subscriptionQuery(this.uid())), db.get(plansQuery())]);
+    const sub = parseSubscriptionRows(subRows);
+    const v = planSnapshotOf(sub, parsePlanRows(planRows));
+    this.planCache = { v, sub, exp: Date.now() + 60_000 };
+    return { plan: v, sub };
+  }
+
+  private async state(plan: PlanSnapshot | null): Promise<QuotaState> {
+    const stored = await this.ctx.storage.get<QuotaState>("state");
+    if (stored) return stored;
+    // 冷启动：从事实重建。没订阅也要建 —— 加购余额不依赖订阅
+    const since = plan ? plan.periodStartMs : Date.now() - WEEK_MS;
+    const q = rebuildQueries(this.uid(), since);
+    const db = supa(this.env);
+    try {
+      const [ev, gr, ac] = await Promise.all([db.get(q.events), db.get(q.grants), db.get(q.addonConsumed)]);
+      const rebuilt = rebuild(parseRebuildRows(ev, gr, ac), plan, Date.now());
+      await this.ctx.storage.put("state", rebuilt);
+      return rebuilt;
+    } catch (err) {
+      // 重建失败**不落盘**：落一份空的等于把「这次查不到」冻成「这个人从没花过钱」，
+      // 而且从此不会再查。不落盘则下一次操作自己重试一遍，能自愈
+      console.error(`quota rebuild 失败（${this.uid()}）：${err instanceof Error ? err.message : String(err)}`);
+      return emptyState();
+    }
+  }
+
+  override async fetch(req: Request): Promise<Response> {
+    const op = new URL(req.url).pathname.slice(1);
+    const body: unknown = await req.json().catch(() => ({}));
+    const b = (body ?? {}) as Record<string, unknown>;
+    const json = (payload: unknown, status = 200): Response =>
+      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+    const now = Date.now();
+
+    if (op === "hold") {
+      const { plan } = await this.plan();
+      const r = quotaHold(await this.state(plan), plan, String(b.requestId), Number(b.estimateMicro), now);
+      if (r.ok) await this.ctx.storage.put("state", r.state);
+      // 被拒的那三支形状就是 HoldOutcome（code/window/resetAt），原样回
+      return json(r.ok ? { ok: true, chargedTo: r.chargedTo } : r);
+    }
+
+    if (op === "settle") {
+      const { plan } = await this.plan();
+      // **不在这里先 roll**：quota.settle 自己 roll，且刻意先查 hold 再 roll ——
+      // 先 roll 会把超过 HOLD_TTL_MS 的 hold 当成没人认领直接释放掉，
+      // 这笔已经花出去的成本就没人记账了（quota.ts 文件头 fix round 2）
+      const r = quotaSettle(await this.state(plan), String(b.requestId), Number(b.costMicro), now, plan);
+      if (!r) return json({ ok: false, reason: "no_hold" }); // 已结算/已释放：幂等，调用方据此不写 usage_event
+      await this.ctx.storage.put("state", r.state);
+      return json({ ok: true, chargedTo: r.hold.chargedTo });
+    }
+
+    if (op === "release") {
+      const { plan } = await this.plan();
+      const st = await this.state(plan);
+      const next = quotaRelease(st, String(b.requestId));
+      // 认不出的 requestId：quota.release 原样回同一个对象 —— 这就是网关要的 no-op
+      // （settle 失败后它还会再 release 一次），连写盘都不必
+      if (next !== st) await this.ctx.storage.put("state", next);
+      return json({ ok: true });
+    }
+
+    if (op === "remaining") {
+      const { plan } = await this.plan();
+      return json({ ...quotaRemaining(await this.state(plan), plan, now), plan: plan?.planId ?? null });
+    }
+
+    if (op === "view") {
+      const { plan, sub } = await this.plan();
+      const st = roll(await this.state(plan), now, plan);
+      await this.ctx.storage.put("state", st); // roll 掉的过期窗/过期加购顺手落盘，别每次读都重算
+      return json({
+        sub, windows: quotaView(st, plan, now),
+        addon: { remainingMicro: addonMicro(st), expiresAt: addonExpiresAt(st) },
+      });
+    }
+
+    if (op === "planChanged") {
+      // webhook 刚改了订阅：丢缓存重读。周窗锚定日可能跟着变了，
+      // roll 会按新的 periodStart 重算当前周段（对不上就整段归零）
+      const { plan } = await this.plan(true);
+      await this.ctx.storage.put("state", roll(await this.state(plan), now, plan));
+      return json({ ok: true });
+    }
+
+    if (op === "addonGranted") {
+      // 加购入账：**append 一笔**，不是往一个标量上加 —— 分两次买的额度各自到期，
+      // 合成一个数会让先买的那份被后买的那份的到期日一起打成 0（quota.ts C2）
+      const stored = await this.ctx.storage.get<QuotaState>("state");
+      if (!stored) {
+        // 冷的：这笔 grant 已经在 credit_grant 表里了（webhook 先插再通知），
+        // 下一次操作的冷启动重建会把它算进来。这里再 append 一次就是发两份额度
+        return json({ ok: true, note: "cold: rebuild 会从 credit_grant 把它算进来" });
+      }
+      const micro = Number(b.micro);
+      const expiresAt = Number(b.expiresAt);
+      if (!Number.isFinite(micro) || micro <= 0 || !Number.isFinite(expiresAt)) return json({ ok: false, reason: "bad_grant" });
+      const grants = [...stored.grants, { micro, expiresAt }].sort((g1, g2) => g1.expiresAt - g2.expiresAt);
+      await this.ctx.storage.put("state", { ...stored, grants });
+      return json({ ok: true });
+    }
+
+    return json({ error: { message: `没有这个内部操作:${op}`, type: "otto_edge", code: "not_found" } }, 404);
+  }
+}
+
+/** 打这个人的 Quota DO。实例按 uid 取名，DO 自己从实例名读身份 ——
+    请求体里不带 uid，也就没有「body 里冒充别人」这条路。
+    非 2xx 一律抛：让调用方走它自己的失败路径，而不是把一份错误信封
+    当成额度回执解析（那会把 500 读成「太多并发请求」） */
+async function quotaCall<T = Record<string, unknown>>(env: Env, uid: string, op: string, body: unknown): Promise<T> {
+  const res = await env.QUOTA.getByName(uid).fetch(new Request(`https://quota/${op}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }));
+  if (!res.ok) throw new Error(`quota ${op} ${res.status}`);
+  return (await res.json()) as T;
+}
+
+function quotaPort(env: Env): QuotaPort {
+  const db = supa(env);
+  return {
+    async hold(uid, requestId, estimateMicro) {
+      const r = await quotaCall(env, uid, "hold", { requestId, estimateMicro });
+      if (r.ok === true) return { ok: true, chargedTo: r.chargedTo === "addon" ? "addon" : "window" };
+      if (r.code === "quota_exhausted") {
+        return { ok: false, code: "quota_exhausted", window: r.window === "week" ? "week" : "5h", resetAt: Number(r.resetAt) };
+      }
+      return { ok: false, code: r.code === "no_subscription" ? "no_subscription" : "too_many_inflight" };
+    },
+    async settle(uid, requestId, meta) {
+      const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro });
+      if (r.ok !== true) return; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
+      const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
+      try {
+        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), { ignoreDuplicates: true });
+      } catch (err) {
+        // 投影已经扣了、事实没落 —— 下次 DO 冷启动重建时会少算这一笔。记日志，**不回滚投影**：
+        // 少扣对用户有利，回滚才会把「已经给出去的内容」变成既没扣钱也没记录
+        console.error(`usage_event 落库失败（${uid}/${requestId}）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    async release(uid, requestId) { await quotaCall(env, uid, "release", { requestId }); },
+    async remaining(uid) {
+      const r = await quotaCall(env, uid, "remaining", {});
+      return { h5: Number(r.h5), week: Number(r.week), addon: Number(r.addon), plan: typeof r.plan === "string" ? r.plan : null };
+    },
+  };
+}
+
+/** model_route 的 60s 缓存。isolate 级、best-effort —— 边缘上有很多个 isolate，
+    这不是"全局一份"，只是"同一个 isolate 里一分钟内不重复查" */
+let routesCache: { v: RouteRow[]; exp: number } | null = null;
+async function routesOf(env: Env): Promise<RouteRow[]> {
+  if (routesCache && routesCache.exp > Date.now()) return routesCache.v;
+  const v = parseRouteRows(await supa(env).get(routesQuery()));
+  routesCache = { v, exp: Date.now() + 60_000 };
+  return v;
+}
+
+/** 计费面（spec 2026-09-02 第 3 节）：Stripe 是订阅状态的事实来源，
+    subscription 表是投影，Quota DO 是投影的投影。写库顺序永远是
+    「先落事实（表），再通知投影（DO）」—— 反过来的话通知成功、落库失败，
+    投影里凭空多出一份没有凭据的额度 */
+function billingPort(env: Env): BillingPort {
+  const db = supa(env);
+  const stripe = async (path: string, params: URLSearchParams): Promise<Record<string, unknown>> => {
+    const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY ?? ""}`, "content-type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const e = body.error as { message?: string } | undefined;
+      throw new Error(`stripe ${path} ${res.status}: ${e?.message ?? "?"}`);
+    }
+    return body;
+  };
+
+  return {
+    async me(uid) {
+      const v = await quotaCall<{
+        sub: SubscriptionRow | null;
+        windows: { h5: WindowState; week: WindowState } | null;
+        addon: { remainingMicro: number; expiresAt: number | null };
+      }>(env, uid, "view", {});
+      const models = [...new Set((await routesOf(env)).map((x) => x.logicalModel))];
+      return meFromParts(v.sub, v.windows, v.addon, models);
+    },
+
+    async checkout(uid, target: CheckoutTarget, origin) {
+      if (!env.STRIPE_SECRET_KEY) return { error: "服务端没配 Stripe" };
+      try {
+        const [plans, sub] = await Promise.all([
+          db.get(plansQuery()).then(parsePlanRows),
+          db.get(subscriptionQuery(uid)).then(parseSubscriptionRows),
+        ]);
+        const wanted = "planId" in target ? target.planId : "addon";
+        const row = plans.find((p) => p.id === wanted);
+        if (!row || !row.stripe_price_id) return { error: `${wanted} 这个档位还没配 Stripe price` };
+        const params = checkoutParams({
+          mode: "planId" in target ? "subscription" : "payment",
+          priceId: row.stripe_price_id, quantity: "planId" in target ? 1 : target.quantity, uid,
+          // 已经有 customer 就复用：同一个人在 Stripe 那边不该长出第二个客户
+          ...(sub?.stripe_customer_id ? { customerId: sub.stripe_customer_id } : {}),
+          successUrl: `${origin}/billing/v1/done?ok=1`, cancelUrl: `${origin}/billing/v1/done?ok=0`,
+        });
+        const s = await stripe("checkout/sessions", params);
+        return typeof s.url === "string" ? { url: s.url } : { error: "Stripe 没回 url" };
+      } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    async portal(uid, origin) {
+      if (!env.STRIPE_SECRET_KEY) return { error: "服务端没配 Stripe" };
+      try {
+        const sub = parseSubscriptionRows(await db.get(subscriptionQuery(uid)));
+        if (!sub?.stripe_customer_id) return { error: "还没有订阅记录" };
+        const s = await stripe("billing_portal/sessions", portalParams(sub.stripe_customer_id, `${origin}/billing/v1/done?ok=1`));
+        return typeof s.url === "string" ? { url: s.url } : { error: "Stripe 没回 url" };
+      } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    async webhook(payload, signatureHeader) {
+      const ok = await verifyStripeSignature(payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000));
+      if (!ok) return { status: 400, body: { error: { message: "签名不对", type: "otto_edge", code: "bad_signature" } } };
+      let event: unknown;
+      try { event = JSON.parse(payload); } catch { return { status: 400, body: { error: { message: "不是 JSON", type: "otto_edge", code: "bad_request" } } }; }
+      const a = actionFromEvent(event);
+      try {
+        if (a.kind === "subscription_upsert") {
+          const planId = planIdForPrice(parsePlanRows(await db.get(plansQuery())), a.priceId);
+          if (!planId) return { status: 200, body: { ignored: `unknown price ${a.priceId}` } };
+          // 乱序闸：Stripe 不保证到达顺序、重投窗口 3 天。比现有行的 last_event_at ——
+          // 没这一比，一条晚到的 created 事件能把 updated 写好的 active 覆盖回旧状态。
+          // 行不存在 / 那一列读不到（空串 → NaN）时比较恒为 false = 放行
+          const existing = parseSubscriptionRows(await db.get(subscriptionQuery(a.uid)));
+          if (existing && a.eventCreated < Date.parse(existing.last_event_at)) {
+            return { status: 200, body: { ignored: "stale event" } };
+          }
+          await db.upsert("subscription", subscriptionUpsertBody(a, planId));
+          await quotaCall(env, a.uid, "planChanged", {});
+        } else if (a.kind === "subscription_status") {
+          const owner = parseSubscriptionOwner(await db.get(subscriptionByStripeIdQuery(a.subscriptionId)));
+          if (!owner) return { status: 200, body: { ignored: `unknown subscription ${a.subscriptionId}` } };
+          if (a.eventCreated < Date.parse(owner.lastEventAt)) return { status: 200, body: { ignored: "stale event" } };
+          await db.patch(`subscription?user_id=eq.${encodeURIComponent(owner.userId)}`, {
+            status: a.status, last_event_at: new Date(a.eventCreated).toISOString(), updated_at: new Date().toISOString(),
+          });
+          await quotaCall(env, owner.userId, "planChanged", {});
+        } else if (a.kind === "grant") {
+          const unit = parsePlanRows(await db.get(plansQuery())).find((p) => p.id === "addon")?.addon_unit_micro ?? 0;
+          if (unit <= 0) return { status: 200, body: { ignored: "addon unit not configured" } };
+          // 幂等键是 payment_intent（0017 里那列是 unique）。**先查再插**：光靠
+          // ignore-duplicates 插不进去也不报错，我们就分不出「新的一笔」和「重投」，
+          // 而重投一次通知一次 DO = 多发一份额度
+          const dup = await db.get(`credit_grant?stripe_payment_intent_id=eq.${encodeURIComponent(a.paymentIntentId)}&select=id&limit=1`);
+          if (Array.isArray(dup) && dup.length > 0) return { status: 200, body: { ignored: "duplicate" } };
+          const row = grantInsertBody(a, unit, Date.now());
+          await db.insert("credit_grant", row, { ignoreDuplicates: true });
+          await quotaCall(env, a.uid, "addonGranted", { micro: row.micro_usd, expiresAt: Date.parse(row.expires_at as string) });
+        }
+        return { status: 200, body: { ok: true, kind: a.kind } };
+      } catch (err) {
+        // 5xx 让 Stripe 按退避重投（它重试三天）。这里**不吞** —— 吞掉等于
+        // 用户付了钱而我们这边什么都没发生，且没有第二次机会
+        return { status: 500, body: { error: { message: err instanceof Error ? err.message : String(err), type: "otto_edge", code: "upstream" } } };
+      }
+    },
+  };
+}
+
 /** 关系闸：service role 查 friendships，60s 内存缓存（DO 睡醒即失，best-effort） */
 function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
   const cache = new Map<string, { v: boolean; exp: number }>();
@@ -297,12 +651,21 @@ function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
 }
 
 const handler = {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const handle = createEdge({
       config: { jwtSecret: env.SUPABASE_JWT_SECRET, runtimeSecret: env.RUNTIME_SECRET },
       relay: (userId): RelayStub => env.RELAY.getByName(userId),
       escrow: (hostUid): RelayStub => env.ESCROW.getByName(hostUid),
       isFriend: friendChecker(env),
+      llm: createLlmGateway({
+        routes: () => routesOf(env),
+        quota: quotaPort(env),
+        upstreamKey: (platform) => (platform === "deepseek" ? env.DEEPSEEK_API_KEY : platform === "zhipu" ? env.ZHIPU_API_KEY : undefined),
+        // 流式响应的 settle 发生在响应已经发出之后。没有 waitUntil，Worker 会在
+        // 返回响应那一刻把这个 isolate 收掉 —— 结算就永远不会落地（额度白送）
+        waitUntil: (p) => ctx.waitUntil(p),
+      }),
+      billing: billingPort(env),
     });
     return handle(req);
   },

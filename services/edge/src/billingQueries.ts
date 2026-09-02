@@ -50,6 +50,15 @@ export function parseSubscriptionRows(v: unknown): SubscriptionRow | null {
   };
 }
 
+/** `subscription_status` 事件只报 Stripe 那边的订阅 id：反查这行是谁的 +
+    乱序防护要比的那个时间戳。列只有两个，走不了 parseSubscriptionRows */
+export function parseSubscriptionOwner(v: unknown): { userId: string; lastEventAt: string } | null {
+  if (!Array.isArray(v) || !isObj(v[0])) return null;
+  const userId = str(v[0].user_id);
+  if (!userId) return null;
+  return { userId, lastEventAt: str(v[0].last_event_at) ?? "" };
+}
+
 export function plansQuery(): string {
   return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id";
 }
