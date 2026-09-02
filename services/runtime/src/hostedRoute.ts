@@ -3,6 +3,7 @@
 // 凭据是平台身份 + 「我代表谁」，key 在 edge 那边。
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
+import type { TokenUsage } from "../../../src/session/events.js";
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
@@ -150,6 +151,33 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
               model: route.model,
             });
       return adapter.chat(messages, tools, onDelta, signal);
+    },
+  };
+}
+
+/** 记账装饰器：包一层 usage 回调，adapter 本身该干嘛干嘛。搬到这份文件而不是
+    daemon.ts（issue #696 fix round 2）——daemon.ts 的 `main()` 在 import 那一刻
+    就跑（见文件头注释「不进 vitest」），从那儿导出 `withUsage` 会让单测一 import
+    就触发真的 Docker/Supabase 装配；这里是已经在 vitest 里跑的纯逻辑文件。
+    **不能用对象展开**——`{ ...adapter, async chat(...) {} }` 会在构造这一刻把
+    `model` 这个同步 getter 的"此刻取值"复制成一份静态数据属性；`perSessionAdapter`
+    只在开会话房那一刻造一次、活整个房间的生命周期，一旦复制就永远冻结在
+    construct 时的值（云 runtime 的 adapter 那时还没跑过 prepare()/chat()，是
+    "(未配置)"）——round 1 的 prepare() 修复因此在 request_envelope/
+    assistant_message 里从没被观察到过。逐个成员显式转发：`model` 转发成 getter
+    （每次现读 adapter.model，不是快照）；`prepare`/`requestConfig` 是可选成员，
+    adapter 有就转发、没有就不放这个 key（同一份 ModelAdapter 接口，字段各自可选） */
+export function withUsage(adapter: ModelAdapter, onUsage: (u: TokenUsage, model: string) => void): ModelAdapter {
+  return {
+    get model(): string {
+      return adapter.model;
+    },
+    ...(adapter.prepare ? { prepare: () => adapter.prepare!() } : {}),
+    ...(adapter.requestConfig ? { requestConfig: adapter.requestConfig } : {}),
+    async chat(messages, tools, onDelta, signal) {
+      const reply = await adapter.chat(messages, tools, onDelta, signal);
+      if (reply.usage) onUsage(reply.usage, adapter.model);
+      return reply;
     },
   };
 }

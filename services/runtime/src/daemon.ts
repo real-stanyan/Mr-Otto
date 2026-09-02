@@ -25,11 +25,11 @@ import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
+import type { SessionEvent } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
@@ -45,19 +45,6 @@ import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
     裁定挪到这里：不补的话，重启后已闲置容器永远跳过 sweepIdle 的闲停判定，
     因为 lastActive 表是进程内状态，daemon 一重启就空了）。 */
 const WORKSPACE_LABEL = "mrotto.workspace";
-
-/** 外包 usage 钩子（brief 给的原样形状）：chat() resolve 后有 usage 就回调一次。
-    调用方决定 usage 记账去哪——这里不关心，只负责不吞掉这个事实。 */
-function withUsage(adapter: ModelAdapter, onUsage: (u: TokenUsage, model: string) => void): ModelAdapter {
-  return {
-    ...adapter,
-    async chat(messages, tools, onDelta, signal) {
-      const reply = await adapter.chat(messages, tools, onDelta, signal);
-      if (reply.usage) onUsage(reply.usage, adapter.model);
-      return reply;
-    },
-  };
-}
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
     DATA_DIR，不是 Supabase：孤儿判定是这台 runtime 自己的运行时状态，

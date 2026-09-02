@@ -3,9 +3,11 @@ import {
   createHostedProbe,
   createHostedRuntimeAdapter,
   decideRuntimeRoute,
+  withUsage,
   type HostedProbe,
 } from "../../services/runtime/src/hostedRoute.js";
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import type { TokenUsage } from "../../src/session/events.js";
 
 const me: BillingMe = { plan: "pro", status: "active", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
 const base = { initiatorUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
@@ -149,3 +151,56 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/订阅/);
   });
 });
+
+describe("withUsage（issue #696 fix round 2：不能用对象展开转发 model，否则永远冻结在构造时的快照）", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function fakeProbe(v: BillingMe | null): HostedProbe {
+    return { me: vi.fn(async () => v) };
+  }
+
+  it("包一层 withUsage 之后，prepare() 决出的型号仍然反映在外层 .model 上（不是构造时的旧快照）", async () => {
+    const inner = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe: fakeProbe(me),
+      cfg: () => ws,
+      initiatorUid: () => "u1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    const usages: { u: TokenUsage; model: string }[] = [];
+    const wrapped = withUsage(inner, (u, model) => usages.push({ u, model }));
+
+    // 包完那一刻，内层还没 prepare()/chat() 过——外层照样得是内层此刻的值，
+    // 不是"包的时候顺手 spread 出来的快照"
+    expect(wrapped.model).toBe(inner.model);
+    expect(wrapped.model).toBe("(未配置)");
+
+    expect(wrapped.prepare).toBeDefined();
+    await wrapped.prepare?.();
+
+    // 关键断言：包一层之后 .model 依然跟着内层的真实路由走
+    expect(wrapped.model).toBe("glm-5.3");
+    expect(inner.model).toBe("glm-5.3");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 2 } }),
+      }))
+    );
+    await wrapped.chat([{ role: "user", content: "hi" }]);
+    expect(usages).toHaveLength(1);
+    expect(usages[0]!.model).toBe("glm-5.3"); // usage 回调也读到刚决出的型号，不是旧快照
+  });
+
+  it("adapter 没有 prepare()（桌面端的老 adapter）：wrapped 也不应该凭空长出 prepare", () => {
+    const noPrepareAdapter = { model: "m-1", async chat() { return { content: "ok" }; } };
+    const wrapped = withUsage(noPrepareAdapter, () => {});
+    expect(wrapped.prepare).toBeUndefined();
+    expect(wrapped.model).toBe("m-1");
+  });
+});
+
