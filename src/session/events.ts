@@ -475,6 +475,25 @@ export interface SessionAutoTitledEvent extends SessionEventBase {
   usage?: TokenUsage;            // 本次浓缩烧的 token
 }
 
+/** 额外 19：会话主题分类（#846）。Default 主会话第一次 turn 收口后，合并调用
+    （turnAnnotator 任务四）从主题桶索引里选一个 slug。模型产出、日志推不出 → 必须落盘；
+    给人看的侧栏分组，不喂回模型 → 投影丢弃（同 session_autotitled）。
+    一次会话最多一条；手动归类（session_topic_set）之后不再触发。
+    ignorable：旧版本跳过它照常重放——不参与模型视野推导 */
+export interface SessionTopicAssignedEvent extends SessionEventBase {
+  type: "session_topic_assigned";
+  topic: string;
+  model: string;
+  usage?: TokenUsage;
+}
+
+/** 额外 20：用户手动把会话归到某个主题桶（侧栏「归到…」）。null = 归到未分类。
+    最后一条胜出，且压过 session_topic_assigned。ignorable 同上 */
+export interface SessionTopicSetEvent extends SessionEventBase {
+  type: "session_topic_set";
+  topic: string | null;
+}
+
 /** 额外 17：工具钩子干预（issue #350，Pre/PostToolUse）。钩子改变了
     "模型看到什么 / 执行用什么"，干预本身必须落盘——model-visible means
     logged 的钩子版，也是投影可推导（硬规则）的前提。四种 action：
@@ -748,6 +767,8 @@ export type SessionEvent =
   | MemoryNudgeEvent
   | MicroCompactedEvent
   | SessionAutoTitledEvent
+  | SessionTopicAssignedEvent
+  | SessionTopicSetEvent
   | ToolHookEvent
   | ProjectInstructionsEvent
   | RequestEnvelopeEvent
@@ -801,6 +822,8 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   memory_nudge: true,
   micro_compacted: true,
   session_autotitled: true,
+  session_topic_assigned: true,
+  session_topic_set: true,
   tool_hook: true,
   project_instructions: true,
   request_envelope: true,

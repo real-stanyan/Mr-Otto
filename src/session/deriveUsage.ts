@@ -34,6 +34,7 @@ export const BILLED_EVENT_TYPES = [
   "suggestions_generated",
   "micro_compacted",
   "session_autotitled",
+  "session_topic_assigned",
 ] as const;
 
 type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;

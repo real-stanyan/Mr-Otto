@@ -58,6 +58,7 @@ import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
 import { annotateTurn } from "./turnAnnotator.js";
 import { autoTitleSource } from "./sessionTitler.js";
+import { topicSource } from "./sessionTopic.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
@@ -107,7 +108,7 @@ import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import {
-  memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
+  memoryRelPath, isMemoryTarget, parseEntries, formatEntries, topicIndexOf,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
 import { TOPICS_DIR, isTopicSlug, SEED_TOPICS, topicRelPath, topicLabelRelPath } from "../shared/memoryTopics.js";
@@ -1054,11 +1055,24 @@ void app.whenReady().then(() => {
       store.lastSeqOf(sessionId, "session_autotitled") >= 0
         ? null
         : autoTitleSource(store.firstUserMessage(sessionId));
+    // 会话主题（#846）：只对内置 Default 的主会话跑，且还没有任何主题事件。
+    // 判据读日志第 0 条的 workspaceKind——建会话那一刻落的事实，不现场读设置
+    const created = store.load(sessionId)[0];
+    const wantTopic =
+      created?.type === "session_created" &&
+      created.workspaceKind === "default" &&
+      !created.spawnedBy &&
+      store.lastSeqOf(sessionId, "session_topic_assigned") < 0 &&
+      store.lastSeqOf(sessionId, "session_topic_set") < 0;
+    const source = wantTopic ? topicSource(store.firstUserMessage(sessionId)) : null;
+    const topicChoice =
+      source === null ? null : { source, index: topicIndexOf(readTopics(join(accountConfig, TOPICS_DIR))) };
     const result = await annotateTurn(
       classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
       helperModel(),
-      titleSource
+      titleSource,
+      topicChoice
     );
     if (!result) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
@@ -1097,11 +1111,19 @@ void app.whenReady().then(() => {
       // otto/session-<hex>，一个项目开三只就是三条认不出来的分支。
       // 日志里 isolated.branch 是「当初叫什么」的历史记录（append-only 改不了），
       // 所以系统提示不写死分支名——要当前名字由水獭自己 git branch --show-current
-      const created = store.load(sessionId)[0];
       const agent = agents.get(sessionId);
       if (created?.type === "session_created" && created.isolated && agent) {
         sessionWorktrees.rename(agent.workspace, result.sessionTitle);
       }
+    }
+    if (result.sessionTopic) {
+      const event = store.append({
+        sessionId, ts: Date.now(), type: "session_topic_assigned",
+        topic: result.sessionTopic, model: result.model, ignorable: true, ...billOnce(),
+      });
+      send(CHANNELS.event, event);
+      fleetSessionsCache = null;
+      pushFleet();
     }
   };
 

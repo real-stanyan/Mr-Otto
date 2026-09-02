@@ -720,6 +720,9 @@ export function deriveMessages(
       case "memory_nudge":
       // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
       case "session_autotitled":
+      // 主题分类 / 手动归类同理：给侧栏分组用的标签，不是对话内容（#846）
+      case "session_topic_assigned":
+      case "session_topic_set":
       // 请求信封（issue #383）是 log-only 审计快照：它记录"模型看到了什么"，
       // 自己绝不能成为模型看到的东西（喂回去 = 信封套信封，永动机）
       case "request_envelope":
