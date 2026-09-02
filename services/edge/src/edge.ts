@@ -53,11 +53,17 @@ export interface RelayStub {
 
 export type CheckoutTarget = { planId: PlanId } | { addon: true; quantity: number };
 
+/** Supabase 的 user id 形状（`x-otto-on-behalf-of` 的唯一合法值，见 callerOf） */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** 计费面（spec 2026-09-02 第 3 节）。生产上是 worker.ts 里握 Stripe + Supabase 的实现，测试里是假货 */
 export interface BillingPort {
   me(uid: string): Promise<BillingMe>;
-  /** origin = 请求的 origin（拼 success/cancel/return url） */
-  checkout(uid: string, target: CheckoutTarget, origin: string): Promise<{ url: string } | { error: string }>;
+  /** origin = 请求的 origin（拼 success/cancel/return url）。
+      `code` 是给失败分类用的：`already_subscribed` 译成 409（用户拿它当「去管理页换档」的
+      指示），其余失败一律 502 upstream（Stripe 那边的事）。分类留在 BillingPort 里做，
+      因为「已有订阅」这件事只有握着 Supabase 的那一侧看得见 */
+  checkout(uid: string, target: CheckoutTarget, origin: string): Promise<{ url: string } | { error: string; code?: "already_subscribed" }>;
   portal(uid: string, origin: string): Promise<{ url: string } | { error: string }>;
   /** 验签 + 落库都在里面；回 HTTP 状态与 body */
   webhook(payload: string, signatureHeader: string): Promise<{ status: number; body: unknown }>;
@@ -307,6 +313,14 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     const who = await pxIdentify(req);
     if (who instanceof Response) return who;
     const onBehalf = req.headers.get(ON_BEHALF_HEADER);
+    // I4：这个头的值会直接变成 `uid`——被扣钱的那个人。它不经过任何签名，
+    // 只靠「知道 RUNTIME_SECRET」这一条撑着，所以形状必须自己把一次关：
+    // Supabase 的 user id 是 uuid，不是 uuid 的一律 400。不校验的话一个笔误
+    // 就能凭空开出一个谁都不是的额度户头（DO 按 uid 分实例），而它在账上
+    // 长得跟一个真人一模一样
+    if (onBehalf !== null && !UUID_RE.test(onBehalf)) {
+      return apiError(400, `${ON_BEHALF_HEADER} 必须是 uuid`, "bad_request");
+    }
     let uid = who.userId;
     let source: Caller["source"] = "desktop";
     if (who.userId === RUNTIME_SERVICE_UID) {
@@ -382,7 +396,13 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       }
       if (!target) return apiError(400, "checkout 要 {planId: lite|pro|max} 或 {addon:true, quantity}", "bad_request");
       const r = await deps.billing.checkout(caller.uid, target, origin);
-      return "url" in r ? json(200, r) : apiError(502, r.error, "upstream");
+      if ("url" in r) return json(200, r);
+      // C2：已有订阅还去开一张订阅 Checkout，Stripe 会**再建一条订阅**，两笔一起扣。
+      // 这不是上游出错（502 会被客户端当成「稍后再试」然后重试，正好把第二笔开出来），
+      // 是这次请求本身不该发生 —— 409，客户端据此把人引到「管理」页换档
+      return r.code === "already_subscribed"
+        ? apiError(409, r.error, "already_subscribed")
+        : apiError(502, r.error, "upstream");
     }
     if (pathname === "/billing/v1/portal" && req.method === "POST") {
       const r = await deps.billing.portal(caller.uid, origin);

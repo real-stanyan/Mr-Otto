@@ -15,6 +15,10 @@ function token(sub = "u1"): string {
   return `${head}.${body}.${sig}`;
 }
 const config: EdgeConfig = { jwtSecret: SECRET, runtimeSecret: RUNTIME };
+// I4 起 `x-otto-on-behalf-of` 必须是 uuid（它的值直接变成被扣钱的 uid）
+const U7 = "77777777-7777-4777-8777-777777777777";
+const U3 = "33333333-3333-4333-8333-333333333333";
+const U2 = "22222222-2222-4222-8222-222222222222";
 
 const me: BillingMe = { plan: "lite", status: "active", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [] };
 
@@ -66,20 +70,32 @@ describe("/llm/v1/chat/completions 身份", () => {
 
   it("平台身份 + on-behalf-of → caller.source=runtime，uid 是被代表的人", async () => {
     const h = harness();
-    const res = await h.handle(post("/llm/v1/chat/completions", { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: "u7" }));
+    const res = await h.handle(post("/llm/v1/chat/completions", { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7 }));
     expect(res.status).toBe(200);
-    expect(h.llmCalls[0]).toMatchObject({ uid: "u7", source: "runtime" });
+    expect(h.llmCalls[0]).toMatchObject({ uid: U7, source: "runtime" });
   });
 
   it("平台身份没带 on-behalf-of → 400；桌面 JWT 带了 on-behalf-of → 400（只有平台能代表别人）", async () => {
     const h = harness();
     expect((await h.handle(post("/llm/v1/chat/completions", { "x-runtime-secret": RUNTIME }))).status).toBe(400);
-    expect((await h.handle(post("/llm/v1/chat/completions", { authorization: `Bearer ${token()}`, [ON_BEHALF_HEADER]: "u2" }))).status).toBe(400);
+    expect((await h.handle(post("/llm/v1/chat/completions", { authorization: `Bearer ${token()}`, [ON_BEHALF_HEADER]: U2 }))).status).toBe(400);
+    expect(h.llmCalls).toEqual([]);
+  });
+
+  it("on-behalf-of 不是 uuid → 400 bad_request（它的值就是被扣钱的 uid，不校验等于凭空开户，I4）", async () => {
+    const h = harness();
+    // 注意不放「uuid 后面跟个空格」：Request 建头时会把头值 trim 掉，那个值到不了这里
+    for (const bad of ["u7", "", "77777777-7777-4777-8777-77777777777", `${U7}x`, "'; drop--"]) {
+      const res = await h.handle(post("/llm/v1/chat/completions", { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: bad }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe("bad_request");
+    }
     expect(h.llmCalls).toEqual([]);
   });
 
   it("错的 runtime secret 落进普通 JWT 校验：401 bad_token，形状和烂 token 一样（不泄露 secret 存在）", async () => {
     const h = harness();
+    // on-behalf 故意写成不合法的形状：身份没验过就该 401，不该先漏出「你这个头形状不对」
     const res = await h.handle(post("/llm/v1/chat/completions", { "x-runtime-secret": "wrong", [ON_BEHALF_HEADER]: "u7" }));
     expect(res.status).toBe(401);
   });
@@ -112,8 +128,8 @@ describe("/billing/v1/*", () => {
     const h = harness();
     const res = await h.handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token("u1")}` } }));
     expect(await res.json()).toEqual(me);
-    await h.handle(new Request("https://edge/billing/v1/me", { headers: { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: "u3" } }));
-    expect(h.billingCalls).toEqual(["me:u1", "me:u3"]);
+    await h.handle(new Request("https://edge/billing/v1/me", { headers: { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U3 } }));
+    expect(h.billingCalls).toEqual(["me:u1", `me:${U3}`]);
   });
 
   it("POST /checkout {planId} 与 {addon,quantity} 都回 url；planId 不合法 400；平台身份不许买（402 那条路是人的事）", async () => {
@@ -124,7 +140,7 @@ describe("/billing/v1/*", () => {
     expect(r2.status).toBe(200);
     expect(h.billingCalls).toEqual(['checkout:u1:{"planId":"pro"}', 'checkout:u1:{"addon":true,"quantity":2}']);
     expect((await h.handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "gold" })))).status).toBe(400);
-    expect((await h.handle(post("/billing/v1/checkout", { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: "u1" }, JSON.stringify({ planId: "pro" })))).status).toBe(403);
+    expect((await h.handle(post("/billing/v1/checkout", { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7 }, JSON.stringify({ planId: "pro" })))).status).toBe(403);
   });
 
   it("quantity 超过 MAX_GRANT_QUANTITY → 400", async () => {
@@ -138,6 +154,38 @@ describe("/billing/v1/*", () => {
     expect((await h.handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ addon: true })))).status).toBe(400);
     expect((await h.handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ addon: true, quantity: 0 })))).status).toBe(400);
     expect(h.billingCalls).toEqual([]);
+  });
+
+  it("BillingPort.checkout 回 already_subscribed → 409，不是 502（C2：502 会被客户端当「稍后再试」而重试）", async () => {
+    const handle = createEdge({
+      config, now: () => NOW_MS,
+      billing: {
+        me: async () => me,
+        checkout: async () => ({ error: "已有订阅，换档请走「管理」", code: "already_subscribed" as const }),
+        portal: async () => ({ url: "x" }),
+        webhook: async () => ({ status: 200, body: {} }),
+      },
+    });
+    const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: { type: string; code: string; message: string } };
+    expect(body.error).toMatchObject({ type: "otto_edge", code: "already_subscribed" });
+    expect(body.error.message).toContain("管理");
+  });
+
+  it("checkout 的其它失败照旧 502 upstream（只有 already_subscribed 这一类走 409）", async () => {
+    const handle = createEdge({
+      config, now: () => NOW_MS,
+      billing: {
+        me: async () => me,
+        checkout: async () => ({ error: "stripe checkout/sessions 500: ?" }),
+        portal: async () => ({ url: "x" }),
+        webhook: async () => ({ status: 200, body: {} }),
+      },
+    });
+    const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.code).toBe("upstream");
   });
 
   it("POST /portal 回 url", async () => {

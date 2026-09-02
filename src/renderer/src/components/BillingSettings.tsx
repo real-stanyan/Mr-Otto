@@ -174,9 +174,14 @@ export function BillingSettings() {
               size="xs"
               variant="outline"
               disabled={pending !== null}
-              onClick={() => run(`plan:${c.id}`, () => checkout({ planId: c.id }))}
+              // 升档走 Customer Portal，**不是**再开一张 Checkout（C2）：后者会在
+              // Stripe 那边长出第二条订阅、两笔一起扣款。Portal 在同一条订阅上换
+              // price 并按比例结算，是 Stripe 给「换档」准备的那扇门。
+              // 按钮 key 仍然按档位记（哪一颗在飞就换哪一颗的文案），落到的动作是同一个
+              // portal —— 边缘那侧也会把「已有订阅还来 checkout」拒成 409。
+              onClick={() => run(`plan:${c.id}`, () => portal())}
             >
-              {pending === `plan:${c.id}` ? "打开中…" : `升到 ${c.name}（$${c.priceUsd}）`}
+              {pending === `plan:${c.id}` ? "打开中…" : `升到 ${c.name}（在管理页切换）`}
             </Button>
           ))}
         </div>

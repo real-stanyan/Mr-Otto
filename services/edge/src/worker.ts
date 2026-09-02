@@ -621,6 +621,14 @@ function billingPort(env: Env): BillingPort {
           db.get(plansQuery()).then(parsePlanRows),
           db.get(subscriptionQuery(uid)).then(parseSubscriptionRows),
         ]);
+        // C2：已经有一条**没退订**的订阅时，再开一张订阅 Checkout = Stripe 那边
+        // 长出第二条订阅，两笔一起扣款（升档按钮以前就是这么点的）。换档的正路是
+        // Customer Portal（`portal`），它在同一条订阅上改 price 并按比例结算。
+        // canceled 放行：那是「退订过又想回来」，本来就该重新开一张。
+        // 加购（payment 模式）不受这条管——它是一次性购买，跟订阅条数无关。
+        if ("planId" in target && sub && sub.status !== "canceled") {
+          return { error: "已有订阅，换档请走「管理」", code: "already_subscribed" };
+        }
         const wanted = "planId" in target ? target.planId : "addon";
         const row = plans.find((p) => p.id === wanted);
         if (!row || !row.stripe_price_id) return { error: `${wanted} 这个档位还没配 Stripe price` };

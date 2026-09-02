@@ -26,6 +26,13 @@ describe("billing 约定", () => {
     expect(e).toEqual({ code: "forbidden", message: "平台身份不能发起购买" });
   });
 
+  it("parseBillingError 认得 already_subscribed（已有订阅还想再开一张的那条 409，C2）", () => {
+    const e = parseBillingError(409, {
+      error: { type: "otto_edge", code: "already_subscribed", message: "已有订阅，换档请走「管理」" },
+    });
+    expect(e).toEqual({ code: "already_subscribed", message: "已有订阅，换档请走「管理」" });
+  });
+
   it("parseBillingMe：无订阅时 windows=null、plan=null；形状不对回 null", () => {
     const me = parseBillingMe({
       plan: null, status: "none", windows: null,
