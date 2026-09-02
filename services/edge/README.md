@@ -30,7 +30,7 @@ Mr Otto 的边缘服务。三件事，互不相干：**OAuth 落地页**、**远
 | GET | `/rl/v1/connect?role=desktop\|mobile` | 中继。WebSocket upgrade，上下行同一条。`101` 接上，`400` role 不合法，`401` 凭据问题，`404` 未开中继，`426` 不是 upgrade 请求 |
 | POST | `/llm/v1/chat/completions` | 托管模型网关（OpenAI 兼容，流式/非流式都收）。`200` 正常（响应头带剩余额度），`400` `bad_request`/`unknown_model`，`401` 凭据问题，`402` `no_subscription`，`429` `quota_exhausted`（带 `window`/`resetAt`）或 `too_many_inflight`，`502` `upstream`（上游出错），`503` `upstream`（额度算不出来，稍后再试） |
 | GET | `/billing/v1/me` | 这个人的档位 / 两个窗口 / 加购余额 / 网关此刻供的型号（`BillingMe`）。`200`，`502` `upstream`（Quota DO / Supabase 挂了） |
-| POST | `/billing/v1/checkout` | 开一张 Stripe Checkout：`{planId}` 订阅或 `{addon:true,quantity}` 加购。`200 {url}`，`400` 形状不对，`403` `forbidden`（平台身份不能买），`502` Stripe 那边出错 |
+| POST | `/billing/v1/checkout` | 开一张 Stripe Checkout：`{planId}` 订阅或 `{addon:true,quantity}` 加购。`200 {url}`，`400` 形状不对，`403` `forbidden`（平台身份不能买），`409` `already_subscribed`（已有非 canceled 的订阅还想再订 —— 换档走 `/portal`），`502` Stripe 那边出错 |
 | POST | `/billing/v1/portal` | 开一张 Stripe Billing Portal（改卡/退订）。`200 {url}`，`502`（含"还没有订阅记录"） |
 | POST | `/billing/v1/webhook` | Stripe → 我们。不验 JWT，验 `Stripe-Signature`。`200` 收下或显式忽略，`400` 签名/JSON 不对，`413` 正文过大，`500` 落库失败（让 Stripe 重投） |
 | GET | `/billing/v1/done?ok=0\|1` | 付款完成/取消后浏览器落的那一页。不要令牌，回 HTML |
@@ -125,7 +125,10 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 - 真人：`Authorization: Bearer <Supabase JWT>`，`uid` 就是 JWT 的 `sub`；带
   `x-otto-on-behalf-of` 一律 **400**（能代表别人的只有平台）
 - 平台（VPS 上的云 runtime）：`x-runtime-secret: <RUNTIME_SECRET>` +
-  **必须**带 `x-otto-on-behalf-of: <真用户 uid>`（它没有自己的 `sub`，替谁花钱要说清楚）
+  **必须**带 `x-otto-on-behalf-of: <真用户 uid>`（它没有自己的 `sub`，替谁花钱要说清楚）。
+  这个头的值不经过任何签名却直接变成被扣钱的 uid，所以形状自己把一次关：**必须是
+  uuid**，不是就 400（否则一个笔误能凭空开出一个谁都不是的额度户头，而它在账上跟
+  一个真人长得一模一样）
 
 另两个可选头 `x-otto-workspace` / `x-otto-session` 只进 `usage_event` 的行，
 在身份出口截到 128 字节。
@@ -133,8 +136,12 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 **hold / settle**（为什么不是"用完再算"）：并发请求能在"算账"之前一起冲进窗口。
 所以一次调用是「按请求体字节 + `max_tokens` **高估**一笔 → 预扣（hold）→ 转发 →
 从响应/SSE 流里挑 `usage` → 按实际成本结算（settle），退掉估算与实际的差」。
-流式响应的 settle 发生在**响应已经发出之后**，靠 `ctx.waitUntil` 活着；上游失败、
-流中断、客户端断线三条路都走 `release`（不记账）。
+流式响应的 settle 发生在**响应已经发出之后**，靠 `ctx.waitUntil` 活着。
+
+**中断 ≠ 没花钱**：流中途出错 / 客户端断线，只要**已经有字节转发出去**，就按预扣的
+估算 settle，不 release —— 内容已经送出去、上游已经收了我们的钱，release 等于把这笔
+成本送掉，而「收到内容之后断线」是客户端随时能做的事。`release`（不记账）只剩三条
+真的没花钱的路：上游非 2xx / 连不上、一个字节都没转发就断、hold 之后花钱之前自己炸了。
 
 **Quota DO 存的是投影，不是事实**：钱的唯一事实是 Supabase 的 `usage_event` 表
 （append-only，见 `0017_subscriptions.sql`）。DO 冷启动没有 state 时**从事实重建**
@@ -170,12 +177,18 @@ npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…
 
 ## 部署与手验（订阅制）
 
-四步，顺序不能换（表要先在，DO 才有东西可读；secret 要先在，webhook 才验得动）：
+五步，顺序不能换（表要先在，DO 才有东西可读；secret 要先在，webhook 才验得动）：
 
 ```bash
-# ① DB：在 Supabase SQL editor 跑一次（重复执行安全）
-#    supabase/migrations/0017_subscriptions.sql
-#    然后在 plan 表手填 stripe_price_id（seed 故意不覆盖这一列）
+# ① DB：在 Supabase SQL editor 依次跑（两个都重复执行安全，顺序不能换）
+#    ①a  supabase/migrations/0017_subscriptions.sql   建表
+#    ①b  supabase/seed/0017_plans_routes.sql          灌档位 + 首批模型路由
+#    ①c  在 plan 表手填 stripe_price_id —— 四行都要填：lite / pro / max / addon
+#        （seed 故意不刷这一列，重跑 seed 不会把你填的 price 清回空串）
+#
+#    没跑 ①b 的症状：每次 chat 400 unknown_model，/billing/v1/me 的 models 为空，
+#    webhook 全部回 ignore（price 对不上任何档位）。三样都不报错，只是什么都不工作。
+#    没填 ①c 的症状：checkout 回「<档位> 这个档位还没配 Stripe price」。
 
 # ② secret：上面那四个 + 已有的两个，一个都不写进 wrangler.jsonc
 npx wrangler secret put STRIPE_SECRET_KEY   # …等四条
@@ -187,9 +200,16 @@ npm --prefix services/edge run deploy
 #    https://edge.mrotto.agency/billing/v1/webhook
 #    事件选：customer.subscription.created / .updated / .deleted /
 #            invoice.payment_failed / checkout.session.completed
+#
+# ⑤ Stripe Dashboard → Settings → Billing → Customer portal：
+#    打开 subscription update（允许在 lite / pro / max 三档之间切换），
+#    并把这三个 Price 加进可切换列表。
+#    换档只走 Portal —— `/billing/v1/checkout` 对已有订阅的人回 409
+#    `already_subscribed`（再开一张 Checkout 会长出第二条订阅、两笔一起扣款）。
+#    这一步不做的话，升档按钮打开的 Portal 里没有「换套餐」，用户只能退订再订。
 ```
 
-**手验六条**（前两条不花钱，第三条起会真扣额度）：
+**手验九条**（前两条不花钱，第三条起会真扣额度）：
 
 1. **没订阅的人**：`npm --prefix services/edge run check:llm`（默认签一个随机 uuid）。
    `/billing/v1/me` 应回 `status: "none"` 且 `models` 非空（`models` 空 = `model_route`
@@ -226,6 +246,11 @@ npm --prefix services/edge run deploy
      里塞的，一定在。
    - 无论走哪条，写库成功的判据是：`subscription` 表多/改了一行，且 `last_event_at`
      等于那条事件的 `created`（不是 `now()`）——那一列就是乱序防护比的东西。
+   - **新旧两种 Stripe 形状都收**（C3）：`current_period_start/end` 在订阅对象顶层
+     （旧）或订阅**条目**上（API ≥ 2025-04-30）都认；`invoice.payment_failed` 的
+     订阅 id 在 `subscription`（旧）或 `parent.subscription_details.subscription`
+     （新）都认。webhook 的 API 版本跟着 Stripe 账号走、不跟着这份代码走，所以
+     这里看到的是哪一种取决于你的账号——两种都该写进库，写不进就是这条坏了。
 5. **额度用尽**：把 `plan.window5h_limit_micro` 临时改成 `1`，等 60 秒（DO 的档位缓存
    TTL）再打一次 chat —— 应得 **429 `quota_exhausted`**，body 里带 `window` 与 `resetAt`。
    验完记得改回去。
@@ -233,6 +258,24 @@ npm --prefix services/edge run deploy
    重来一遍：给新 uid 插订阅行 + 手工往 `usage_event` 插几行（`charged_to='window'`、
    `created_at` 落在本周段内），第一次打 `/billing/v1/me` 时 `windows.h5.usedMicro`
    应该等于那几行的和 —— 那就是重建生效了（从零开始的话它会是 0）。
+
+7. **中断的流照样记账**（C1，也是 `transformer.cancel` 在 workerd 上真会触发的唯一
+   证据）：起一次流式 `check:llm`，在它还在吐字的时候 Ctrl-C（或用一个 `AbortController`
+   在收到第一个 chunk 之后 abort）。等一拍再打 `/billing/v1/me` —— `windows.h5.usedMicro`
+   应该**变大**（按预扣估算结算了），不是回到中断前的数（那是 release，就是被修掉的洞）。
+   `usage_event` 表里应该多一行，`cost_micro` 等于那次 hold 的估算值。
+8. **webhook 重投只加一笔额度**：拿一条真实的 `checkout.session.completed`（payment
+   模式，加购那条）跑 `stripe events resend <evt_id>` 重发一次。判据两个：
+   `credit_grant` 表里那个 `stripe_payment_intent_id` **只有一行**，且第二次响应
+   不是 500（那证明 PostgREST 的 `on_conflict` 真的指到了那个非主键的唯一列——
+   不指的话第二次 INSERT 会撞唯一键报错，Stripe 会一直重投）。
+   DO 那层的去重看 `/me` 的 `addon.remainingMicro` 没有翻倍。
+9. **两个并发首请求各拿到一份 hold**（`blockConcurrencyWhile` 的证据）：换一个全新的
+   uid（插好订阅行），**同时**打两次 `check:llm`（两个终端一起回车，或 `&` 后台起两条）。
+   判据：两条都得到 200（不是一条 200 一条 402/429），`usage_event` 里两条各一行、
+   `request_id` 不同，且 `/me` 的 `usedMicro` 等于两笔之和。冷启动重建若没被
+   `blockConcurrencyWhile` 串起来，后写的那份会抹掉前一个的 hold —— 症状是这个和
+   只有一笔。
 
 **这个脚本会真花钱**（第 3 步走真上游）。它不写任何配置、不留后门；随机 uid 那条路
 一分钱不花，但已经验完「身份 → 选路 → hold」整条链。
