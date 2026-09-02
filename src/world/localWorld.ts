@@ -4,7 +4,7 @@
 // root 选项 = 软沙箱：文件操作圈在工程文件夹内，越界抛错。
 // exec 只把 cwd 设为 root（挡不住 `cd ..`，诚实说明）——硬隔离是 v2 Docker world 的活。
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type {
@@ -344,6 +344,14 @@ export function createLocalWorld(
               const abs = fence(opts.configRoot, rel, "配置目录");
               await mkdir(dirname(abs), { recursive: true });
               await writeFile(abs, content, "utf8");
+            },
+            list: async (relDir: string) => {
+              try {
+                return await readdir(fence(opts.configRoot, relDir, "配置目录"));
+              } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+                throw err;
+              }
             },
           },
         }

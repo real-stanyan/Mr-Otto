@@ -16,6 +16,8 @@ function fakeWorld(files: Record<string, string | null> = {}, opts: { readThrows
         return store.get(rel) ?? null;
       },
       write: async (rel: string, c: string) => { store.set(rel, c); },
+      list: async (relDir: string) =>
+        [...store.keys()].filter((k) => k.startsWith(`${relDir}/`)).map((k) => k.slice(relDir.length + 1)),
     },
   } as unknown as ExecutionWorld;
   return { world, store };
