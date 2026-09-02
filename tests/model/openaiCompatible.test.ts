@@ -259,6 +259,29 @@ describe("传输层重试与超时（issue #283）", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("响应头默认看门狗容得下长上下文 prefill：35s 才回头的云端 API 不掐、不重试（issue #847）", async () => {
+    // Kimi Code（k3）prefill 完才发响应头，30k token 冷 prefill 实测 33s；
+    // 30s 门槛掐断 = 服务端那次 prefill 作废，重试又是冷的，三连败
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((res, rej) => {
+            init.signal.addEventListener("abort", () => rej(init.signal.reason), { once: true });
+            setTimeout(() => res(okJson), 35_000);
+          })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const pending = fastAdapter({ maxAttempts: 1 }).chat([]); // 不许靠重试蒙混
+      await vi.advanceTimersByTimeAsync(35_000);
+      const reply = await pending;
+      expect(reply.content).toBe("好了");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("SSE 首字节前静默超时：可重试（什么都没直播过）", async () => {
     const hangingBody = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
     const fetchMock = vi
@@ -568,7 +591,7 @@ describe("localTiming — 本机推理的看门狗放宽（issue #300）", () =>
     expect(LOCAL_IDLE_TIMEOUT_MS).toBe(600_000);
   });
 
-  it("云端型号：{} = 沿用默认看门狗（30s/90s，那里的静默才是挂死）", () => {
+  it("云端型号：{} = 沿用默认看门狗（120s/90s，那里的静默才是挂死）", () => {
     expect(localTiming({ keyless: false })).toEqual({});
   });
 });
