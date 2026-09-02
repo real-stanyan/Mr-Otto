@@ -13,15 +13,25 @@
 // expiresAt 排列，roll 只丢真正过期的那几条，消耗按「先到期的先扣」（FIFO by expiry）——
 // 这样才不会把「还没到期的余额」错杀。
 //
-// 为什么 settle 自己也要 roll(now, plan)（fix round 1，C1/I3）：hold 发生时窗口是开着的，
-// 但流式响应可能跑很久——真正 settle 落地时，原来那扇窗可能早就过了 5 小时关掉了。不重新
-// roll 的话，成本会记进一扇名存实亡的窗（open5hAt 是过去的时间戳，对外的 resetAt 已经算
-// 错，等于这笔钱没有窗口可落）。settle 里重新 roll 之后，如果窗口已经关闭，就地开一扇新窗
-// 把这笔成本记进去——钱永远有地方落，不会人间蒸发。
+// 为什么 settle 要先在 roll 之前从 state.holds 原样查 hold（fix round 2）：如果先 roll 再
+// 查，超过 HOLD_TTL_MS 没结算的 hold 会被 roll 当成「没人认领」直接释放，查到的就是
+// undefined——这笔成本从此没人记账，钱凭空消失。而 HOLD_TTL_MS 存在的本意只是别让并发
+// 槽位被一个不会再回来的调用占着不放，不是说流式请求跑久了就不用付钱。做法：先按原始
+// requestId 从 state.holds 原样摘出 hold（找不到就是已经结算/释放过，幂等地返回
+// null），摘除之后再对**剩下的**那份 state 调用 roll(now, plan) 推进窗口/周段/其它
+// hold 的 TTL/加购到期，最后才计费——这样无论这笔 hold 已经挂了多久，只要还没被显式
+// settle/release，它的成本就一定有地方落（这才是「钱永远有地方落」的完整保证，不是
+// 靠 roll 本身）。
+//
+// 为什么 settle 还要在充费那一步做「窗口已关就地重开」（fix round 1，C1/I3）：hold 发生时
+// 窗口是开着的，但流式响应可能跑很久——真正 settle 落地时，原来那扇窗可能早就过了 5 小时
+// 关掉了（这是上面那次 roll 对剩余 state 的正常推进结果）。不重开的话，成本会记进一扇
+// 名存实亡的窗（open5hAt 是过去的时间戳，对外的 resetAt 已经算错）。就地开一扇新窗把这笔
+// 成本记进去——两条机制合起来，钱才真的永远有地方落。
 
 export const WINDOW_5H_MS = 5 * 3_600_000;
 export const WEEK_MS = 7 * 86_400_000;
-/** 一个 hold 最多挂多久：流式响应最长也就几分钟，10 分钟没 settle = 那次调用没回来 */
+/** 一个 hold 最多挂多久：流式响应最长也就几分钟，10 分钟没 settle = 那次调用没回来（只释放并发槽位，不影响它日后被 settle） */
 export const HOLD_TTL_MS = 10 * 60_000;
 /** 单用户并发上限（ADR-0174 第 5 条「加购无视限速」的兜底） */
 export const MAX_INFLIGHT = 4;
@@ -191,21 +201,23 @@ export function hold(
     : { ok: false, code: "quota_exhausted", window: "week", resetAt: resetWeekAt(s, plan, now) };
 }
 
-/** 结算：按实际成本记账，退掉 hold。null = 这个 requestId 没有挂着的 hold（已结算/已释放/超时被清）——
-    调用方据此不写 usage_event，幂等。
-    C1/I3：settle 自己先 roll(now, plan)——hold 时开着的窗，settle 落地时可能已经关了；
-    这时候不能让钱凭空消失，而是就地开一扇新窗把成本记进去。
+/** 结算：按实际成本记账，退掉 hold。null = 这个 requestId 没有挂着的 hold（已结算/已释放，幂等）——
+    调用方据此不写 usage_event。
+    fix round 2：hold 先从**原始** state.holds 里查（不是先 roll 再查）——否则一个超过
+    HOLD_TTL_MS 还没结算的 hold 会在 roll 那一步就被当成过期释放，查到的就是 undefined，
+    这笔成本从此没人记账。摘掉这个 hold 之后，再对剩下的 state 调用 roll 推进窗口/周段/
+    其它 hold 的 TTL/加购到期，最后才计费。
+    C1/I3：充费时如果窗口已经关了（roll 的正常结果），就地开一扇新窗，不让成本落空。
     I2：addon 结算按实际成本扣 grants，扣不完的差额（成本超过整个加购余额）落进窗口用量，
     不再用 Math.max(0, …) 把超出部分直接抹掉。 */
 export function settle(
   state: QuotaState, requestId: string, costMicro: number, now: number, plan: PlanSnapshot | null
 ): { state: QuotaState; hold: Hold } | null {
   const cost = safe(costMicro); // I4
-  const s = roll(state, now, plan);
-  const h = s.holds[requestId];
+  const h = state.holds[requestId]; // 必须在 roll 之前查——TTL 只释放槽位，不该抹掉成本
   if (!h) return null;
-  const { [requestId]: _dropped, ...holds } = s.holds;
-  const base = { ...s, holds };
+  const { [requestId]: _dropped, ...holdsWithoutThis } = state.holds;
+  const base = roll({ ...state, holds: holdsWithoutThis }, now, plan);
 
   if (h.chargedTo === "addon") {
     const { grants, remainder } = deductAddon(base.grants, cost);
@@ -243,16 +255,17 @@ export function view(state: QuotaState, plan: PlanSnapshot | null, now: number):
   };
 }
 
-/** 响应头用：扣掉未结算 hold 之后还剩多少。M1：没有订阅或订阅非 active 时 addon 恒为 0——
-    hold 本来就会在这种状态下拒绝，这里保持一致，不让响应头暴露一个用不了的余额 */
+/** 响应头用：扣掉未结算 hold 之后还剩多少。fix round 2：没有订阅或订阅非 active 时整份
+    恒为 0（不只是 addon）——hold 本来就会在这种状态下拒绝，报出满额度的 h5/week 会
+    误导调用方以为还能打请求。 */
 export function remaining(state: QuotaState, plan: PlanSnapshot | null, now: number): { h5: number; week: number; addon: number } {
+  if (!plan || plan.status !== "active") return { h5: 0, week: 0, addon: 0 };
   const s = roll(state, now, plan);
   const heldW = heldMicro(s, "window");
-  const planUsable = plan !== null && plan.status === "active";
   return {
-    h5: plan ? Math.max(0, plan.window5hLimitMicro - s.used5hMicro - heldW) : 0,
-    week: plan ? Math.max(0, plan.weekLimitMicro - s.usedWeekMicro - heldW) : 0,
-    addon: planUsable ? Math.max(0, addonMicro(s) - heldMicro(s, "addon")) : 0,
+    h5: Math.max(0, plan.window5hLimitMicro - s.used5hMicro - heldW),
+    week: Math.max(0, plan.weekLimitMicro - s.usedWeekMicro - heldW),
+    addon: Math.max(0, addonMicro(s) - heldMicro(s, "addon")),
   };
 }
 
@@ -269,7 +282,9 @@ export interface RebuildInput {
     一个事件如果落在「上一个窗口起点 + 5h」之外，就说明上一个窗口已经到点关闭，
     从它开始另起一扇新窗；回放完之后再补一刀：以 now 而论，最后那扇窗是不是也已经
     过了 5h 寿命——线上 hold/settle 都是这样惰性推进的，rebuild 必须重放同一套语义，
-    不然重建出来的窗会比线上实际的窗「活得更久」。 */
+    不然重建出来的窗会比线上实际的窗「活得更久」。
+    fix round 2：单条事件的 costMicro 也过 safe()——事实来源（usage_event 表）里混进一条
+    NaN，不该把整份重建出来的累计数一起污染成 NaN。 */
 export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: number): QuotaState {
   let st = emptyState();
   if (plan) {
@@ -281,12 +296,13 @@ export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: num
       .filter((e) => e.chargedTo === "window" && e.at >= ws)
       .sort((a, b) => a.at - b.at);
     for (const e of windowEvents) {
-      usedWeek += e.costMicro;
+      const cost = safe(e.costMicro);
+      usedWeek += cost;
       if (open5hAt === null || e.at >= open5hAt + WINDOW_5H_MS) {
         open5hAt = e.at;
         used5h = 0;
       }
-      used5h += e.costMicro;
+      used5h += cost;
     }
     if (open5hAt !== null && now >= open5hAt + WINDOW_5H_MS) {
       open5hAt = null;

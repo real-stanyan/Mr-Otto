@@ -144,6 +144,21 @@ describe("hold / settle / release", () => {
     expect(s.state.usedWeekMicro).toBe(665_000 + 300_000);
     expect(s.state.open5hAt).toBe(settleAt); // 窗口已关，差额就地重开一扇新窗
   });
+
+  it("settle 对一个已经超过 HOLD_TTL_MS 没结算的 hold 依然记账：TTL 只释放并发槽位，不抹掉成本（fix round 2, finding 1）", () => {
+    const h = hold(emptyState(), plan, "id", 1000, T0);
+    if (!h.ok) throw new Error();
+    const settleAt = T0 + HOLD_TTL_MS + 1; // 早就过了 TTL——若先 roll 再查 hold，这里会被当成"没人认领"释放掉
+    const s = settle(h.state, "id", 500, settleAt, plan)!;
+    expect(s).not.toBeNull();
+    expect(s.state.used5hMicro).toBe(500); // 成本落地了，没有凭空消失
+    expect(s.state.usedWeekMicro).toBe(500);
+    expect(s.state.holds).toEqual({}); // hold 结算之后照常摘除
+    // 这个场景里窗口本身没关(离 T0 才过了 10 分钟出头，远没到 5h 寿命)，所以窗口沿用
+    // hold 当初开的那个 T0，不是 settleAt——"窗口若已关就地重开"是 C1/I3 的独立机制，
+    // 覆盖测试见上面那条 settle 专门测试；这条测试要钉的是"TTL 不该让成本消失"这一件事。
+    expect(s.state.open5hAt).toBe(T0);
+  });
 });
 
 describe("roll：惰性推进", () => {
@@ -207,10 +222,14 @@ describe("view / remaining / rebuild", () => {
     expect(remaining(r.state, plan, T0)).toEqual({ h5: 664_900, week: 3_324_900, addon: 0 });
   });
 
-  it("remaining：没有订阅或订阅非 active 时 addon 恒为 0（M1）", () => {
-    const st = { ...emptyState(), grants: [{ micro: 500, expiresAt: T0 + 1e9 }] };
-    expect(remaining(st, null, T0).addon).toBe(0);
-    expect(remaining(st, { ...plan, status: "past_due" }, T0).addon).toBe(0);
+  it("remaining：没有订阅或订阅非 active 时全部恒为 0，不只是 addon（fix round 2, finding 3 / M1）", () => {
+    const st = {
+      ...emptyState(),
+      grants: [{ micro: 500, expiresAt: T0 + 1e9 }],
+      open5hAt: T0, used5hMicro: 100, weekStartAt: T0, usedWeekMicro: 100,
+    };
+    expect(remaining(st, null, T0)).toEqual({ h5: 0, week: 0, addon: 0 });
+    expect(remaining(st, { ...plan, status: "past_due" }, T0)).toEqual({ h5: 0, week: 0, addon: 0 });
   });
 
   it("rebuild：只算当前 5h 窗 / 当前周段内的事件；加购 = 未过期 grant 之和 − 已消耗", () => {
@@ -243,6 +262,20 @@ describe("view / remaining / rebuild", () => {
       addonConsumedMicro: 0,
     }, plan, now);
     expect(st.open5hAt).toBe(now - 2 * 3_600_000);
+    expect(st.used5hMicro).toBe(10);
+  });
+
+  it("rebuild 对事件里的 NaN 成本消毒，不会污染累计（fix round 2, finding 2）", () => {
+    const now = T0 + WEEK_MS + 2 * 3_600_000;
+    const st = rebuild({
+      events: [
+        { at: now - 1 * 3_600_000, costMicro: 10, chargedTo: "window" },
+        { at: now - 30 * 60_000, costMicro: NaN, chargedTo: "window" },
+      ],
+      grants: [],
+      addonConsumedMicro: 0,
+    }, plan, now);
+    expect(st.usedWeekMicro).toBe(10);
     expect(st.used5hMicro).toBe(10);
   });
 });
