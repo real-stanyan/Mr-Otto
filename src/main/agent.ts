@@ -569,11 +569,15 @@ export function createAgent(opts: {
           hostedBaseUrl: `${h.edgeBaseUrl()}/llm/v1`,
         });
         if (next.kind === "blocked") return; // 没有真的改道——这个 turn 会以 blocked 报错收场
-        store.append({
+        const ev = store.append({
           sessionId, ts: Date.now(), type: "route_changed", ignorable: true,
           from: lastRoute, to: next.kind,
           reason: "quota_exhausted", ...(info.resetAt !== undefined ? { resetAt: info.resetAt } : {}),
         });
+        // 同 branch_checked_out 那条中途 ignorable 事件的纪律：落盘之外还要推
+        // live——"本次起用的是你自己的 key"这句提示该在这个 turn 还没结束时就
+        // 出现在 UI 上，不是等下次刷新/重载才从日志里翻出来
+        opts.push.event(ev);
       },
     });
 

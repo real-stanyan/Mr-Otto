@@ -16,8 +16,25 @@ import { LiveGroupRegistry } from "../../src/world/liveGroups.js";
 import { withMcp, type McpCapability } from "../../src/world/executionWorld.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import { SKILL_TOOL_NAME } from "../../src/tools/skill.js";
+import type { HostedQuota } from "../../src/main/hostedQuota.js";
 import { tempDir } from "../helpers/tempDir.js";
 import Database from "better-sqlite3";
+
+// hosted 改道（ADR-0176，onReroute）测试专用：换掉真的 createOpenAICompatibleAdapter，
+// 只为拦下 agent.ts 传给它的 opts（尤其 onReroute/resolveEndpoint 两个回调）——
+// 其余测试一律 setAdapter() 覆盖掉 makeAdapter(current) 产出的这份初始 adapter，
+// 换真实现不影响它们
+const capturedAdapterOpts = vi.hoisted(() => ({ current: null as any }));
+vi.mock("../../src/model/openaiCompatible.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/model/openaiCompatible.js")>();
+  return {
+    ...actual,
+    createOpenAICompatibleAdapter: (opts: unknown) => {
+      capturedAdapterOpts.current = opts;
+      return { model: (opts as { model: string }).model, chat: async () => ({ content: "" }) };
+    },
+  };
+});
 
 const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserRequest: () => {}, assistantDelta: () => {}, toolOutput: () => {} };
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
@@ -899,6 +916,53 @@ describe("MCP 自助配置的三把刀", () => {
     expect(names).toContain("mcp_catalog");
     expect(names).toContain("mcp_configure");
     expect(names).toContain("mcp_authorize");
+    store.close();
+  });
+});
+
+describe("hosted 改道（ADR-0176）：onReroute 落 route_changed 且 push 给渲染层", () => {
+  it("额度耗尽那一刻：store.append 落盘 + opts.push.event 同步推 live（同 branch_checked_out 纪律）", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "sk-own"); // 耗尽后还有自己的 key，改道才是 direct 不是 blocked
+    const store = new EventStore(":memory:");
+    const pushed: SessionEvent[] = [];
+    const fakeQuota: HostedQuota = {
+      snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
+      routeInput: () => ({ subscribed: true, exhausted: false, supportsModel: true }),
+      refresh: async () => null,
+      noteHeaders: () => {},
+      noteExhausted: () => {},
+      checkout: async () => "https://edge/checkout",
+      portal: async () => "https://edge/portal",
+      onChange: () => () => {},
+    };
+    const agent = createAgent({
+      store,
+      workspace: "/proj/x",
+      push: { ...push, event: (e) => pushed.push(e) },
+      attachments,
+      hosted: { quota: fakeQuota, edgeBaseUrl: () => "https://edge", accessToken: async () => "jwt" },
+    });
+
+    const opts = capturedAdapterOpts.current as {
+      resolveEndpoint?: () => Promise<unknown>;
+      onReroute?: (info: { window?: "5h" | "week"; resetAt?: number }) => void;
+    };
+    expect(opts.onReroute).toBeTypeOf("function");
+    // 先真走一次 resolveEndpoint（走 hosted：quota 说未耗尽 + 有 jwt），让 lastRoute
+    // 落成 "hosted"——不这么做的话 onReroute 的 from 会停在初值，测不出"真的改道了"
+    await opts.resolveEndpoint?.();
+    opts.onReroute?.({ window: "5h", resetAt: 123 });
+
+    // push.event 收到了同一条（这是本轮修的东西：以前只落盘,UI 要等下次刷新才看得到）
+    const pushedRoute = pushed.find((e) => e.type === "route_changed");
+    expect(pushedRoute).toMatchObject({ type: "route_changed", from: "hosted", to: "direct", reason: "quota_exhausted", resetAt: 123 });
+
+    // 落盘的那条与推给渲染层的是同一份事实（branch_checked_out 那条中途
+    // ignorable 事件的写法：store.append 的返回值直接喂给 push.event）。
+    // 不用 toBe：EventStore 走 SQLite 往返，load() 拿回来的是反序列化后的新对象
+    const logged = store.load(agent.sessionId).at(-1);
+    expect(logged).toEqual(pushedRoute);
+
     store.close();
   });
 });
