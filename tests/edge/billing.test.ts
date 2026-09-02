@@ -51,6 +51,24 @@ describe("actionFromEvent", () => {
     }
   });
 
+  it("period 只在订阅**条目**上（Stripe API ≥ 2025-04-30 的形状）→ 解析结果与旧形状一模一样（C3）", () => {
+    // 新版把 current_period_* 从订阅对象搬到了 items.data[0]。webhook 的 API 版本
+    // 跟着 Stripe 账号走、不跟着这份代码走，所以两种形状必须给出同一个 action
+    const newShape = {
+      id: "sub_1", customer: "cus_1", status: "active", metadata: { uid: "u1" },
+      items: { data: [{ price: { id: "price_pro" }, current_period_start: 1_700_000_000, current_period_end: 1_702_592_000 }] },
+    };
+    const ev = (obj: unknown) => actionFromEvent({ type: "customer.subscription.updated", created: 1_700_000_100, data: { object: obj } });
+    expect(ev(newShape)).toEqual(ev(sub()));
+    expect(ev(newShape)).toMatchObject({ kind: "subscription_upsert", periodStartMs: 1_700_000_000_000, periodEndMs: 1_702_592_000_000 });
+  });
+
+  it("两处都没有 period → 还是 ignore（认不出周期就不该往库里写一行）", () => {
+    const noPeriod = { id: "sub_1", customer: "cus_1", status: "active", metadata: { uid: "u1" }, items: { data: [{ price: { id: "price_pro" } }] } };
+    expect(actionFromEvent({ type: "customer.subscription.updated", created: 1_700_000_100, data: { object: noPeriod } }))
+      .toMatchObject({ kind: "ignore" });
+  });
+
   it("Stripe 状态归三档：trialing→active，unpaid/past_due→past_due，其余→canceled", () => {
     const st = (s: string) => (actionFromEvent({ type: "customer.subscription.updated", created: 1_700_000_100, data: { object: sub({ status: s }) } }) as { status: string }).status;
     expect(st("trialing")).toBe("active");
@@ -72,6 +90,15 @@ describe("actionFromEvent", () => {
       .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "canceled", eventCreated: 1_700_000_100_000 });
     expect(actionFromEvent({ type: "invoice.payment_failed", created: 1_700_000_100, data: { object: { subscription: "sub_1" } } }))
       .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "past_due", eventCreated: 1_700_000_100_000 });
+  });
+
+  it("invoice.payment_failed 的新形状（parent.subscription_details.subscription）→ 与旧形状同一个 action（C3）", () => {
+    const newShape = { parent: { subscription_details: { subscription: "sub_1" } } };
+    expect(actionFromEvent({ type: "invoice.payment_failed", created: 1_700_000_100, data: { object: newShape } }))
+      .toEqual(actionFromEvent({ type: "invoice.payment_failed", created: 1_700_000_100, data: { object: { subscription: "sub_1" } } }));
+    // 两处都没有订阅 id 才 ignore
+    expect(actionFromEvent({ type: "invoice.payment_failed", created: 1_700_000_100, data: { object: { parent: {} } } }))
+      .toMatchObject({ kind: "ignore" });
   });
 
   it("checkout.session.completed 的 payment 模式 → grant；subscription 模式 → ignore（等 subscription.* 事件）", () => {

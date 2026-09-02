@@ -22,6 +22,7 @@ export type BillingAction =
 export const MAX_GRANT_QUANTITY = 100;
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -84,16 +85,22 @@ export function actionFromEvent(event: unknown): BillingAction {
     if (o.status === "incomplete") return { kind: "ignore", eventType: type };
     const uid = isObj(o.metadata) && typeof o.metadata.uid === "string" ? o.metadata.uid : "";
     const items = isObj(o.items) && Array.isArray(o.items.data) ? o.items.data : [];
-    const first = items[0];
-    const priceId = isObj(first) && isObj(first.price) && typeof first.price.id === "string" ? first.price.id : "";
+    const first = isObj(items[0]) ? items[0] : null;
+    const priceId = first && isObj(first.price) && typeof first.price.id === "string" ? first.price.id : "";
+    // C3：Stripe API ≥ 2025-04-30 把 `current_period_start/end` 从订阅对象搬到了
+    // **订阅条目**（一条订阅可以有多个 item、各有各的周期）。两种形状都收：老账号
+    // 用的旧 API 版本仍然发顶层那份，webhook 的 API 版本又跟着账号走、不跟着代码走。
+    // 只认不到就 ignore 的话，升级 API 版本那天所有订阅事件会一起静默失效。
+    const periodStart = num(o.current_period_start) ?? (first ? num(first.current_period_start) : null);
+    const periodEnd = num(o.current_period_end) ?? (first ? num(first.current_period_end) : null);
     if (!uid || !priceId || eventCreated === null || typeof o.id !== "string" || typeof o.customer !== "string"
-      || typeof o.current_period_start !== "number" || typeof o.current_period_end !== "number") {
+      || periodStart === null || periodEnd === null) {
       return { kind: "ignore", eventType: type };
     }
     return {
       kind: "subscription_upsert", uid, priceId, customerId: o.customer, subscriptionId: o.id,
       status: normalizeStatus(o.status),
-      periodStartMs: o.current_period_start * 1000, periodEndMs: o.current_period_end * 1000,
+      periodStartMs: periodStart * 1000, periodEndMs: periodEnd * 1000,
       eventCreated,
     };
   }
@@ -103,8 +110,15 @@ export function actionFromEvent(event: unknown): BillingAction {
       : { kind: "ignore", eventType: type };
   }
   if (type === "invoice.payment_failed") {
-    return typeof o.subscription === "string" && eventCreated !== null
-      ? { kind: "subscription_status", subscriptionId: o.subscription, status: "past_due", eventCreated }
+    // C3：同一次改版把 invoice 上的 `subscription` 挪进了
+    // `parent.subscription_details.subscription`。两种都读，理由同上。
+    const parent = isObj(o.parent) && isObj(o.parent.subscription_details) ? o.parent.subscription_details : null;
+    const subId =
+      typeof o.subscription === "string" ? o.subscription
+      : parent && typeof parent.subscription === "string" ? parent.subscription
+      : null;
+    return subId !== null && eventCreated !== null
+      ? { kind: "subscription_status", subscriptionId: subId, status: "past_due", eventCreated }
       : { kind: "ignore", eventType: type };
   }
   if (type === "checkout.session.completed") {
