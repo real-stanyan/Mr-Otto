@@ -31,6 +31,7 @@ create table if not exists public.subscription (
   stripe_subscription_id text not null default '',
   current_period_start timestamptz not null,
   current_period_end timestamptz not null,
+  last_event_at timestamptz not null default to_timestamp(0), -- Stripe 事件的 created；webhook 不保证顺序，写库前比它，旧事件不覆盖新状态
   updated_at timestamptz not null default now()
 );
 create index if not exists subscription_stripe_sub on public.subscription (stripe_subscription_id);

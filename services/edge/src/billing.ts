@@ -10,10 +10,16 @@ export type BillingAction =
       uid: string; priceId: string; customerId: string; subscriptionId: string;
       status: "active" | "past_due" | "canceled";
       periodStartMs: number; periodEndMs: number;
+      /** event.created（毫秒）。Stripe webhook 不保证到达顺序、且重投窗口 3 天，
+          写库前要跟旧行的这个字段比一次，晚到的旧事件不许覆盖新状态。 */
+      eventCreated: number;
     }
-  | { kind: "subscription_status"; subscriptionId: string; status: "past_due" | "canceled" }
+  | { kind: "subscription_status"; subscriptionId: string; status: "past_due" | "canceled"; eventCreated: number }
   | { kind: "grant"; uid: string; paymentIntentId: string; quantity: number }
   | { kind: "ignore"; eventType: string };
+
+/** 一次 checkout 最多放行的加购数量；超过按形状不对处理（ignore），不是业务上限的例外。 */
+export const MAX_GRANT_QUANTITY = 100;
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -47,8 +53,10 @@ export async function verifyStripeSignature(
     if (k === "t") t = v;
     else if (k === "v1") sigs.push(v);
   }
+  if (!t) return false; // 没有 t= 直接拒，不指望时间戳巧好落在容差外兜底
   const ts = Number(t);
   if (!Number.isFinite(ts) || sigs.length === 0) return false;
+  // 同时挡住「未来」超前 toleranceSeconds 的时间戳——比 Stripe 官方库更严，是故意的
   if (Math.abs(nowSeconds - ts) > toleranceSeconds) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const expected = hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${t}.${payload}`)));
@@ -67,13 +75,18 @@ export function actionFromEvent(event: unknown): BillingAction {
   }
   const type = event.type;
   const o = event.data.object;
+  // event.created 是整条 event 信封上的字段，不在 data.object 里；不是数字就没法排序，只能 ignore。
+  const eventCreated = typeof event.created === "number" ? event.created * 1000 : null;
 
   if (type === "customer.subscription.created" || type === "customer.subscription.updated") {
+    // incomplete：Stripe 还没收到第一笔款，这笔订阅"没发生"——没有行才是对的状态，
+    // 不能落成 canceled（那意味着"曾经有过又没了"，会覆盖别的事件已经写好的 active）。
+    if (o.status === "incomplete") return { kind: "ignore", eventType: type };
     const uid = isObj(o.metadata) && typeof o.metadata.uid === "string" ? o.metadata.uid : "";
     const items = isObj(o.items) && Array.isArray(o.items.data) ? o.items.data : [];
     const first = items[0];
     const priceId = isObj(first) && isObj(first.price) && typeof first.price.id === "string" ? first.price.id : "";
-    if (!uid || !priceId || typeof o.id !== "string" || typeof o.customer !== "string"
+    if (!uid || !priceId || eventCreated === null || typeof o.id !== "string" || typeof o.customer !== "string"
       || typeof o.current_period_start !== "number" || typeof o.current_period_end !== "number") {
       return { kind: "ignore", eventType: type };
     }
@@ -81,20 +94,25 @@ export function actionFromEvent(event: unknown): BillingAction {
       kind: "subscription_upsert", uid, priceId, customerId: o.customer, subscriptionId: o.id,
       status: normalizeStatus(o.status),
       periodStartMs: o.current_period_start * 1000, periodEndMs: o.current_period_end * 1000,
+      eventCreated,
     };
   }
   if (type === "customer.subscription.deleted") {
-    return typeof o.id === "string" ? { kind: "subscription_status", subscriptionId: o.id, status: "canceled" } : { kind: "ignore", eventType: type };
+    return typeof o.id === "string" && eventCreated !== null
+      ? { kind: "subscription_status", subscriptionId: o.id, status: "canceled", eventCreated }
+      : { kind: "ignore", eventType: type };
   }
   if (type === "invoice.payment_failed") {
-    return typeof o.subscription === "string" ? { kind: "subscription_status", subscriptionId: o.subscription, status: "past_due" } : { kind: "ignore", eventType: type };
+    return typeof o.subscription === "string" && eventCreated !== null
+      ? { kind: "subscription_status", subscriptionId: o.subscription, status: "past_due", eventCreated }
+      : { kind: "ignore", eventType: type };
   }
   if (type === "checkout.session.completed") {
     if (o.mode !== "payment") return { kind: "ignore", eventType: type }; // 订阅那份靠 customer.subscription.* 来
     const uid = typeof o.client_reference_id === "string" ? o.client_reference_id : "";
     const pi = typeof o.payment_intent === "string" ? o.payment_intent : "";
     const q = isObj(o.metadata) ? Number(o.metadata.quantity) : NaN;
-    if (!uid || !pi || !Number.isInteger(q) || q <= 0) return { kind: "ignore", eventType: type };
+    if (!uid || !pi || !Number.isInteger(q) || q <= 0 || q > MAX_GRANT_QUANTITY) return { kind: "ignore", eventType: type };
     return { kind: "grant", uid, paymentIntentId: pi, quantity: q };
   }
   return { kind: "ignore", eventType: type };

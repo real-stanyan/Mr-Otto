@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "../../services/edge/src/billing.js";
+import { MAX_GRANT_QUANTITY, actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "../../services/edge/src/billing.js";
 
 const SECRET = "whsec_test";
 const NOW = 1_800_000_000;
@@ -24,6 +24,10 @@ describe("verifyStripeSignature", () => {
     expect(await verifyStripeSignature("{}", `t=${NOW}`, SECRET, NOW)).toBe(false);
     expect(await verifyStripeSignature("{}", `t=${NOW},v1=abc`, SECRET, NOW)).toBe(false);
   });
+  it("坑四：没有 t=（哪怕 v1 本身合法）→ 拒，不靠时间戳巧好越界兜底", async () => {
+    const good = sign("{}").split(",")[1] as string; // "v1=<hash>"，整个头里没有 t=
+    expect(await verifyStripeSignature("{}", good, SECRET, NOW)).toBe(false);
+  });
   it("多个 v1（密钥轮换期）任一匹配即可", async () => {
     const good = sign("{}").split(",")[1];
     expect(await verifyStripeSignature("{}", `t=${NOW},v1=deadbeef,${good}`, SECRET, NOW)).toBe(true);
@@ -37,31 +41,37 @@ describe("actionFromEvent", () => {
     metadata: { uid: "u1" }, items: { data: [{ price: { id: "price_pro" } }] }, ...over,
   });
 
-  it("customer.subscription.created/updated → subscription_upsert，period 秒转毫秒", () => {
+  it("customer.subscription.created/updated → subscription_upsert，period 秒转毫秒，带 eventCreated", () => {
     for (const type of ["customer.subscription.created", "customer.subscription.updated"]) {
-      expect(actionFromEvent({ type, data: { object: sub() } })).toEqual({
+      expect(actionFromEvent({ type, created: 1_700_000_100, data: { object: sub() } })).toEqual({
         kind: "subscription_upsert", uid: "u1", priceId: "price_pro", customerId: "cus_1", subscriptionId: "sub_1",
         status: "active", periodStartMs: 1_700_000_000_000, periodEndMs: 1_702_592_000_000,
+        eventCreated: 1_700_000_100_000,
       });
     }
   });
 
   it("Stripe 状态归三档：trialing→active，unpaid/past_due→past_due，其余→canceled", () => {
-    const st = (s: string) => (actionFromEvent({ type: "customer.subscription.updated", data: { object: sub({ status: s }) } }) as { status: string }).status;
+    const st = (s: string) => (actionFromEvent({ type: "customer.subscription.updated", created: 1_700_000_100, data: { object: sub({ status: s }) } }) as { status: string }).status;
     expect(st("trialing")).toBe("active");
     expect(st("unpaid")).toBe("past_due");
     expect(st("incomplete_expired")).toBe("canceled");
+  });
+
+  it("incomplete → ignore（还没真正扣款，没有行才是对的状态；incomplete_expired 仍归 canceled）", () => {
+    expect(actionFromEvent({ type: "customer.subscription.updated", created: 1_700_000_100, data: { object: sub({ status: "incomplete" }) } }))
+      .toEqual({ kind: "ignore", eventType: "customer.subscription.updated" });
   });
 
   it("没有 metadata.uid 的订阅 → ignore（不是我们建的）", () => {
     expect(actionFromEvent({ type: "customer.subscription.updated", data: { object: sub({ metadata: {} }) } })).toMatchObject({ kind: "ignore" });
   });
 
-  it("customer.subscription.deleted → subscription_status canceled；invoice.payment_failed → past_due", () => {
-    expect(actionFromEvent({ type: "customer.subscription.deleted", data: { object: sub() } }))
-      .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "canceled" });
-    expect(actionFromEvent({ type: "invoice.payment_failed", data: { object: { subscription: "sub_1" } } }))
-      .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "past_due" });
+  it("customer.subscription.deleted → subscription_status canceled；invoice.payment_failed → past_due，带 eventCreated", () => {
+    expect(actionFromEvent({ type: "customer.subscription.deleted", created: 1_700_000_100, data: { object: sub() } }))
+      .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "canceled", eventCreated: 1_700_000_100_000 });
+    expect(actionFromEvent({ type: "invoice.payment_failed", created: 1_700_000_100, data: { object: { subscription: "sub_1" } } }))
+      .toEqual({ kind: "subscription_status", subscriptionId: "sub_1", status: "past_due", eventCreated: 1_700_000_100_000 });
   });
 
   it("checkout.session.completed 的 payment 模式 → grant；subscription 模式 → ignore（等 subscription.* 事件）", () => {
@@ -70,6 +80,12 @@ describe("actionFromEvent", () => {
     } } })).toEqual({ kind: "grant", uid: "u1", paymentIntentId: "pi_1", quantity: 3 });
     expect(actionFromEvent({ type: "checkout.session.completed", data: { object: { mode: "subscription", client_reference_id: "u1" } } }))
       .toMatchObject({ kind: "ignore" });
+  });
+
+  it("grant 数量超过 MAX_GRANT_QUANTITY → ignore", () => {
+    expect(actionFromEvent({ type: "checkout.session.completed", data: { object: {
+      mode: "payment", client_reference_id: "u1", payment_intent: "pi_1", metadata: { quantity: String(MAX_GRANT_QUANTITY + 1) },
+    } } })).toMatchObject({ kind: "ignore" });
   });
 
   it("不认识的事件 / 形状不对 → ignore 带 eventType", () => {
@@ -86,14 +102,21 @@ describe("请求体", () => {
     expect(p.get("client_reference_id")).toBe("u1");
     expect(p.get("subscription_data[metadata][uid]")).toBe("u1");
     expect(p.get("customer")).toBe("cus_1");
+    expect(p.get("success_url")).toBe("https://e/done");
+    expect(p.get("cancel_url")).toBe("https://e/cancel");
   });
   it("checkoutParams：payment 模式带 quantity 进 metadata，没 customer 就不带", () => {
     const p = checkoutParams({ mode: "payment", priceId: "price_addon", quantity: 3, uid: "u1", successUrl: "s", cancelUrl: "c" });
     expect(p.get("line_items[0][quantity]")).toBe("3");
     expect(p.get("metadata[quantity]")).toBe("3");
+    expect(p.get("metadata[uid]")).toBe("u1");
     expect(p.get("customer")).toBeNull();
+    expect(p.get("success_url")).toBe("s");
+    expect(p.get("cancel_url")).toBe("c");
   });
   it("portalParams", () => {
-    expect(portalParams("cus_1", "https://e/done").get("customer")).toBe("cus_1");
+    const p = portalParams("cus_1", "https://e/done");
+    expect(p.get("customer")).toBe("cus_1");
+    expect(p.get("return_url")).toBe("https://e/done");
   });
 });
