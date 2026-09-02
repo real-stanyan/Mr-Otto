@@ -83,6 +83,24 @@ describe("纯函数", () => {
     await new Response(tapSseUsage(sse(["data: {}\n\n"]), (u) => { got = u; })).text();
     expect(got).toBeNull();
   });
+
+  it("tapSseUsage：流末尾那行 data: 没有换行结尾也要扫到（M6）", async () => {
+    let got: unknown = "unset";
+    // 故意不给最后一行加 \n —— 模拟上游在一行 usage 数据写完后直接关闭连接
+    const noTrailingNl = sse(['data: {"usage":{"prompt_tokens":7,"completion_tokens":2}}']);
+    await new Response(tapSseUsage(noTrailingNl, (u) => { got = u; })).text();
+    expect(got).toEqual({ promptTokens: 7, cachedTokens: 0, completionTokens: 2 });
+  });
+
+  it("tapSseUsage：外部 signal abort → onDone(null)，哪怕返回的流从没被消费过（C1）", async () => {
+    let got: unknown = "unset";
+    const ac = new AbortController();
+    const neverCloses = new ReadableStream<Uint8Array>({ start() { /* 故意不 enqueue 也不 close */ } });
+    tapSseUsage(neverCloses, (u) => { got = u; }, ac.signal);
+    ac.abort();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(got).toBeNull();
+  });
 });
 
 describe("createLlmGateway", () => {
@@ -121,6 +139,7 @@ describe("createLlmGateway", () => {
     expect(sent.headers.get("authorization")).toBe("Bearer sk-up");
     const sentBody = JSON.parse(await sent.text());
     expect(sentBody.model).toBe("deepseek-v4-flash");
+    expect(sentBody.stream).toBe(true);
     expect(sentBody.stream_options).toEqual({ include_usage: true });
     const text = await res.text();
     expect(text).toContain("[DONE]");
@@ -182,5 +201,146 @@ describe("createLlmGateway", () => {
     const gw = createLlmGateway({ routes: async () => [flash], quota: quotaStub().quota, upstreamKey: () => "k" });
     const res = await gw(new Request("https://edge/llm/v1/chat/completions", { method: "POST", body: "{" }), caller);
     expect(res.status).toBe(400);
+  });
+
+  it("上游流中途出错（读位报错）→ release 一次，settle 不发生（C1a）", async () => {
+    const { quota, calls } = quotaStub();
+    const erroring = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'));
+        c.error(new Error("boom-upstream"));
+      },
+    });
+    const up = upstream(() => new Response(erroring, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
+    await expect(res.text()).rejects.toThrow();
+    // res.text() 的 reject 只保证流已经报错；tapSseUsage 里的 finish → settleWith 是异步
+    // 触发的（cancel 回调 → void settled），等一拍微任务让它落地再断言
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.release).toHaveLength(1);
+    expect(calls.settle).toEqual([]);
+  });
+
+  it("消费者主动 cancel 返回的 body（客户端断线）→ release 一次，settle 不发生（C1b）", async () => {
+    const { quota, calls } = quotaStub();
+    // 故意不 close：模拟「还在流式输出中」，这样 cancel 才是一次真断线，不是正常收尾撞车
+    const stillStreaming = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n')); },
+    });
+    const up = upstream(() => new Response(stillStreaming, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
+    await res.body!.cancel();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.release).toHaveLength(1);
+    expect(calls.settle).toEqual([]);
+  });
+
+  it("estimateMicro 用的是 UTF-8 字节数不是 UTF-16 code unit（I2）", async () => {
+    const estimates: number[] = [];
+    const quota: QuotaPort = {
+      hold: async (_uid, _rid, est) => { estimates.push(est); return { ok: true, chargedTo: "window" }; },
+      settle: async () => {}, release: async () => {}, remaining: async () => ({ h5: 100, week: 200, addon: 0, plan: "lite" }),
+    };
+    const up = upstream(() => Response.json({ choices: [], usage: null }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    // 中文在 UTF-16 下是 1 code unit/字符、UTF-8 下是 3 字节/字符——这条请求体的 code unit
+    // 长度和一条等长 ASCII 请求体完全一样（都是 371），但字节数是 371 vs 971
+    const cjkBody = { model: "deepseek-v4-flash", messages: [{ role: "user", content: "中".repeat(300) }] };
+    await gw(chatReq(cjkBody), caller);
+    const raw = JSON.stringify(cjkBody);
+    const expectedCorrect = estimateMicro(new TextEncoder().encode(raw).length, flash.defaultMaxTokens, flash);
+    const expectedIfBuggy = estimateMicro(raw.length, flash.defaultMaxTokens, flash); // 误用 code unit 数会得到这个错误值
+    expect(expectedCorrect).not.toBe(expectedIfBuggy); // 先确认这条用例真的能分辨两种算法（不是巧合撞了同一个数）
+    expect(estimates).toEqual([expectedCorrect]);
+  });
+
+  it("有 waitUntil 时，流式路径正好把 settle 的 promise 扔给它一次（I3）", async () => {
+    const { quota } = quotaStub();
+    const up = upstream(() => new Response(sse([
+      'data: {"usage":{"prompt_tokens":10,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+    ]), { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const seen: Promise<unknown>[] = [];
+    const gw = createLlmGateway({
+      routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl,
+      waitUntil: (p) => { seen.push(p); },
+    });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
+    await res.text();
+    await Promise.all(seen);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("max_tokens 不合法（负数 / 非有限数）→ 估算按 route 默认值走（I4）", async () => {
+    // JSON 里没有字面 NaN（NaN 不是合法 JSON token），用同样会被 Number.isFinite 挡住的
+    // Infinity 顶替——`1e400` 是合法 JSON 数字字面量，解析后溢出成 Infinity，走的是同一条判断分支
+    const estimates: number[] = [];
+    const quota: QuotaPort = {
+      hold: async (_uid, _rid, est) => { estimates.push(est); return { ok: true, chargedTo: "window" }; },
+      settle: async () => {}, release: async () => {}, remaining: async () => ({ h5: 100, week: 200, addon: 0, plan: "lite" }),
+    };
+    const up = upstream(() => Response.json({ choices: [], usage: null }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const rawNeg = '{"model":"deepseek-v4-flash","messages":[],"max_tokens":-5}';
+    const rawInf = '{"model":"deepseek-v4-flash","messages":[],"max_tokens":1e400}';
+    const req = (raw: string) => new Request("https://edge/llm/v1/chat/completions", { method: "POST", body: raw });
+    await gw(req(rawNeg), caller);
+    await gw(req(rawInf), caller);
+    const expectedNeg = estimateMicro(new TextEncoder().encode(rawNeg).length, flash.defaultMaxTokens, flash);
+    const expectedInf = estimateMicro(new TextEncoder().encode(rawInf).length, flash.defaultMaxTokens, flash);
+    expect(estimates).toEqual([expectedNeg, expectedInf]);
+  });
+
+  it("hold 之后任何一步再炸（quota.remaining 挂了）→ release，回 502，不留孤儿 hold（I5）", async () => {
+    const calls: { hold: string[]; settle: SettleMeta[]; release: string[] } = { hold: [], settle: [], release: [] };
+    const quota: QuotaPort = {
+      hold: async (_uid, rid) => { calls.hold.push(rid); return { ok: true, chargedTo: "window" }; },
+      settle: async (_uid, _rid, meta) => { calls.settle.push(meta); },
+      release: async (_uid, rid) => { calls.release.push(rid); },
+      remaining: async () => { throw new Error("quota DO 挂了"); },
+    };
+    const up = upstream(() => Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(res.status).toBe(502);
+    expect(calls.hold).toHaveLength(1);
+    expect(calls.release).toHaveLength(1);
+    expect(calls.settle).toEqual([]);
+  });
+
+  it("hold 被拒的三种情形都带 BILLING_HEADERS（M8）", async () => {
+    const mk = (o: HoldOutcome) =>
+      createLlmGateway({ routes: async () => [flash], quota: quotaStub(o).quota, upstreamKey: () => "k" });
+    const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(r1.headers.get(BILLING_HEADERS.h5)).toBe("100");
+    expect(r1.headers.get(BILLING_HEADERS.plan)).toBe("lite");
+    const r2 = await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(r2.headers.get(BILLING_HEADERS.week)).toBe("200");
+    const r3 = await mk({ ok: false, code: "too_many_inflight" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(r3.headers.get(BILLING_HEADERS.addon)).toBe("0");
+  });
+
+  it("hold 被拒但 quota.remaining 也炸了 → 错误照样发出去，只是没有额度头（M8）", async () => {
+    const quota: QuotaPort = {
+      hold: async () => ({ ok: false, code: "no_subscription" }),
+      settle: async () => {},
+      release: async () => {},
+      remaining: async () => { throw new Error("quota DO 挂了"); },
+    };
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k" });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(res.status).toBe(402);
+    expect(res.headers.get(BILLING_HEADERS.h5)).toBeNull();
+  });
+
+  it("stream 只判一次，转发给上游的 body 用同一个布尔值覆盖客户端传的非法值（M9）", async () => {
+    const { quota } = quotaStub();
+    const up = upstream(() => Response.json({ choices: [], usage: null }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    // 客户端传了个非布尔的 truthy 值——我们判定 stream === true 为 false，转发时也得是 false
+    await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: "yes" }), caller);
+    const sentBody = JSON.parse(await up.seen[0]!.text());
+    expect(sentBody.stream).toBe(false);
   });
 });
