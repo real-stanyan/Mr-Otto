@@ -110,7 +110,7 @@ import {
   memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
-import { TOPICS_DIR } from "../shared/memoryTopics.js";
+import { TOPICS_DIR, isTopicSlug, SEED_TOPICS, topicRelPath, topicLabelRelPath } from "../shared/memoryTopics.js";
 import { readTopics } from "./memoryTopics.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
@@ -2630,8 +2630,8 @@ void app.whenReady().then(() => {
   // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
   ipcMain.handle(
     CHANNELS.saveMemory,
-    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
-      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot))
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string, topic?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot), topic ?? null)
   );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
@@ -2645,13 +2645,13 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(
     CHANNELS.forgetMemory,
-    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string) => {
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string) => {
       // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
       // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
-      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project / topic，收到 ${String(target)}`);
       const project = memoryProject(projectRoot);
-      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir)));
-      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project);
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir, topic)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project, topic ?? null);
     }
   );
   // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
@@ -2684,6 +2684,28 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
     if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
     await rm(join(accountConfig, projectMemoryDir(root)), { recursive: true, force: true });
+  });
+  // 主题桶分区（设置页第四档，#846）：种子 ∪ 磁盘的现状，与 memory_loaded 的
+  // topics 快照走同一个 readTopics
+  ipcMain.handle(CHANNELS.listTopicMemories, () =>
+    readTopics(join(accountConfig, TOPICS_DIR)).map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
+  );
+  ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
+    if (!isTopicSlug(slug)) throw new Error("slug 非法");
+    if (slug in SEED_TOPICS) throw new Error("种子桶不能删，只能清空");
+    await rm(join(accountConfig, topicRelPath(slug)), { force: true });
+    await rm(join(accountConfig, topicLabelRelPath(slug)), { force: true });
+  });
+  ipcMain.handle(CHANNELS.setTopicLabel, async (_e, slug: unknown, label: unknown) => {
+    if (!isTopicSlug(slug)) throw new Error("slug 非法");
+    if (typeof label !== "string") throw new Error("label 必须是字符串");
+    const abs = join(accountConfig, topicLabelRelPath(slug));
+    if (!label.trim()) {
+      await rm(abs, { force: true });
+      return;
+    }
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, label.trim(), "utf8");
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────

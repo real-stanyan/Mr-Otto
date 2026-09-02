@@ -58,6 +58,7 @@ describe("applyUserEdit", () => {
       config: {
         read: async (rel: string) => d.files.get(rel) ?? null,
         write: async (rel: string, c: string) => { d.files.set(rel, c); },
+        list: async () => [],
       },
     } as unknown as ExecutionWorld;
     await Promise.all([
@@ -113,5 +114,20 @@ describe("applyUserEdit", () => {
     };
     await expect(applyUserEdit(deps, "project", "x", "s1")).rejects.toThrow(/projectDir/);
     expect(files.get("memories/MEMORY.md")).toBeUndefined();
+  });
+
+  it("topic 档：写 memories/topics/<slug>.md，事件带 topic 字段", async () => {
+    const d = deps();
+    await applyUserEdit(d, "topic", "改装 WRX", "s1", null, "hobbies");
+    expect(d.files.get("memories/topics/hobbies.md")).toBe("改装 WRX");
+    const ev = d.store.load("s1").find((e) => e.type === "memory_user_edit");
+    expect(ev).toMatchObject({ target: "topic", topic: "hobbies", before: "", after: "改装 WRX" });
+  });
+
+  it("topic 档缺 topic：抛，不写盘、不落事件", async () => {
+    const d = deps();
+    await expect(applyUserEdit(d, "topic", "x", "s1", null)).rejects.toThrow(/topic/);
+    expect(d.files.size).toBe(0);
+    expect(d.store.load("s1")).toHaveLength(0);
   });
 });

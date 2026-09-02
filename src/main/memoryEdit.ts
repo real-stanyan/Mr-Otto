@@ -28,12 +28,14 @@ export async function applyUserEdit(
   // 缺 project 时 memoryRelPath 会抛——绝不能悄悄落到全局档。
   // root（项目根绝对路径）和 dir（配置目录相对路径）成对传，形状同 createMemoryTool：
   // dir 是 root 的哈希，分开传两个参数迟早会有一处只传一半，落出一条对不上号的证据
-  project?: { root: string; dir: string } | null
+  project?: { root: string; dir: string } | null,
+  /** topic 档改的是哪个桶；其他档忽略。缺了 memoryRelPath 会抛——绝不悄悄落到别的档 */
+  topic?: string | null
 ): Promise<void> {
   // IPC 入参是 unknown（issue #186）：非法 target 会让 memoryRelPath(target) 抛出
   // 一个语义不明的错误，在唯一入口处先挡掉
-  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
-  const rel = memoryRelPath(target, project?.dir);
+  if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project / topic，收到 ${String(target)}`);
+  const rel = memoryRelPath(target, project?.dir, topic);
   // 与 memory 工具共用同一把 per-file 锁（issue #185）：工具的 read-modify-write
   // 进行中时这里进不来，before 永远是写入时刻的真实磁盘原文
   await withMemoryFileLock(rel, async () => {
@@ -57,6 +59,7 @@ export async function applyUserEdit(
     deps.store.append({
       sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after,
       ...(target === "project" && project ? { projectRoot: project.root } : {}),
+      ...(target === "topic" && topic ? { topic } : {}),
     });
   });
 }
