@@ -6,7 +6,7 @@
   ADR-0176（托管优先于自带 key，自带 key 不过网关）。本文不复述那三份的理由，只写落地形状。
 - 维护者会话拍板（2026-09-02）：
   - 第一片包含 Stripe（订阅 + 加购），不拆。
-  - 四档照 ADR-0174（Lite \$19 / Pro \$59 / Max5 \$149 / Max20 \$299）。
+  - 三档：Lite \$19 / Pro \$59 / Max \$89（维护者 2026-09-02 改定，取代 ADR-0174 写的四档；折算规则不变：70% 成本预算、周窗 ÷4、5h 窗 ×0.2）。
   - 云会话（VPS runtime）一起做；一个 turn 的额度**扣发起这个 turn 的人**。
   - 旧 `token_*` 三张表与 4 个用户的余额：**不动也不认**，新账本另起；#520 继续作废。
   - Stripe Product / Price 由维护者在后台建，代码只认 `price_id`。
@@ -25,7 +25,7 @@
 
 ```
 plan                 -- 档位字典，DB 行不是代码常量
-  id text pk         -- 'lite' | 'pro' | 'max5' | 'max20'
+  id text pk         -- 'lite' | 'pro' | 'max' | 'addon'（最后一行只放加购单价）
   price_usd_cents int
   monthly_budget_micro bigint        -- 售价 × 70% 折成的月成本预算（micro-USD）
   week_limit_micro bigint            -- monthly_budget ÷ 4，算好落行
@@ -141,7 +141,7 @@ key 永远只在 Worker env。
 不装 SDK：裸 fetch Stripe REST（form-encoded）+ 手写 webhook 验签（HMAC-SHA256，
 `Stripe-Signature` 的 `t=` / `v1=`，5 分钟容差，定长比较前先比长度）。理由同 ADR-0019 决定四。
 
-secret：`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`。四个订阅 `price_id` + 加购 `price_id`
+secret：`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`。三个订阅 `price_id` + 加购 `price_id`
 落 `plan` 表（加购那条用 id `'addon'` 的行，`week_limit_micro` 等为 0）。
 
 订阅购买：
@@ -202,7 +202,7 @@ JWT 从 `account.getSession()` 现取（`resolveEndpoint` 每请求跑一次，A
 UI 三处：
 
 1. 设置 → 订阅页（新）：档位、两条进度条 + 「N 小时后恢复」、加购余额与到期、按钮：订阅/升档、加购、管理。
-   无订阅 = 四档卡片。
+   无订阅 = 三档卡片。
 2. 浮层花费面板 + 页脚（ADR-0176 决定五）：hosted 段显示「消耗 X credit」，direct 段显示「\$X」，并列不混。
 3. 运行指示条：耗尽落 direct 那一刻 toast 一次。
 
