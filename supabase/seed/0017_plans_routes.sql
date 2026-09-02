@@ -19,6 +19,8 @@ on conflict (id) do update set
   week_limit_micro = excluded.week_limit_micro,
   window5h_limit_micro = excluded.window5h_limit_micro,
   addon_unit_micro = excluded.addon_unit_micro,
+  capabilities = excluded.capabilities,
+  -- 故意不刷 stripe_price_id：那一列由维护者在 Stripe 后台建完后手填，重跑 seed 不能把它清回 ''
   updated_at = now();
 
 insert into public.model_route (id, logical_model, platform, base_url, wire_model, price_in_micro_per_m, price_cache_micro_per_m, price_out_micro_per_m, default_max_tokens, priority)
@@ -30,7 +32,13 @@ values
   -- GLM-5.3：按 GLM-5.1 ¥6.00 / ¥1.30 / ¥24.00 抄，待核
   ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 10)
 on conflict (id) do update set
+  platform = excluded.platform,
+  base_url = excluded.base_url,
+  wire_model = excluded.wire_model,
   price_in_micro_per_m = excluded.price_in_micro_per_m,
   price_cache_micro_per_m = excluded.price_cache_micro_per_m,
   price_out_micro_per_m = excluded.price_out_micro_per_m,
-  default_max_tokens = excluded.default_max_tokens;
+  default_max_tokens = excluded.default_max_tokens,
+  quantization = excluded.quantization,
+  priority = excluded.priority;
+  -- 故意不刷 enabled / effective_from / effective_to：那三列是运维在 DB 里手动切换的开关，重跑 seed 不能把它们扳回去
