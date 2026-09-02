@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  costMicro, createLlmGateway, estimateMicro, parseUsage, pickRoute, tapSseUsage,
+  costMicro, createLlmGateway, estimateMicro, estimateUsage, parseUsage, pickRoute, tapSseUsage,
   type Caller, type HoldOutcome, type QuotaPort, type RouteRow, type SettleMeta,
 } from "../../services/edge/src/llmGateway.js";
 import { BILLING_HEADERS } from "../../src/shared/billing.js";
@@ -42,6 +42,11 @@ const chatReq = (body: unknown) =>
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
 
+/** 中断结算（C1）落的那一笔：网关按 body 的 UTF-8 字节数 + max_tokens 估算，
+    测试里照同一个算式算一遍——断言的是「结算的正好是预扣的那一笔」 */
+const estUsageFor = (body: unknown, maxTokens = flash.defaultMaxTokens) =>
+  estimateUsage(new TextEncoder().encode(JSON.stringify(body)).length, maxTokens);
+
 describe("纯函数", () => {
   it("pickRoute：按 logicalModel 取第一条；不认识回 null", () => {
     expect(pickRoute([flash], "deepseek-v4-flash")).toBe(flash);
@@ -78,10 +83,29 @@ describe("纯函数", () => {
     expect(got).toEqual({ promptTokens: 5, cachedTokens: 0, completionTokens: 1 });
   });
 
-  it("tapSseUsage：流里没有 usage → onDone(null)", async () => {
+  it("tapSseUsage：流里没有 usage → onDone(null)，但 info.bytes 说清字节确实出去过（C1）", async () => {
     let got: unknown = "unset";
-    await new Response(tapSseUsage(sse(["data: {}\n\n"]), (u) => { got = u; })).text();
+    let info: { bytes: number } | null = null;
+    await new Response(tapSseUsage(sse(["data: {}\n\n"]), (u, i) => { got = u; info = i; })).text();
     expect(got).toBeNull();
+    // 「没有 usage」这一个事实分不出中断与空流，字节数才分得出——记账的判断靠它
+    expect(info).toEqual({ bytes: "data: {}\n\n".length });
+  });
+
+  it("tapSseUsage：一个字节都没转发就 abort → info.bytes === 0（C1 的 release 那一支）", async () => {
+    let info: { bytes: number } | null = null;
+    const ac = new AbortController();
+    const neverEnqueues = new ReadableStream<Uint8Array>({ start() { /* 不 enqueue 也不 close */ } });
+    tapSseUsage(neverEnqueues, (_u, i) => { info = i; }, ac.signal);
+    ac.abort();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(info).toEqual({ bytes: 0 });
+  });
+
+  it("estimateUsage 与 estimateMicro 同源：按估算结算出来的钱正好等于预扣的那一笔（C1）", () => {
+    // 中断结算靠这个等式成立才不会在窗口账上多出/少掉一分
+    expect(costMicro(estimateUsage(3000, 1000), flash)).toBe(estimateMicro(3000, 1000, flash));
+    expect(costMicro(estimateUsage(7, 13), flash)).toBe(estimateMicro(7, 13, flash));
   });
 
   it("tapSseUsage：流末尾那行 data: 没有换行结尾也要扫到（M6）", async () => {
@@ -180,13 +204,16 @@ describe("createLlmGateway", () => {
     expect(calls.release).toHaveLength(1);
   });
 
-  it("流里没有 usage → release 不 settle（没账可记）", async () => {
+  it("流正常结束但没有 usage 帧 → 按预扣结算，不 release（字节已经出门了，C1）", async () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(sse(["data: {}\n\n"]), { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    await (await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller)).text();
-    expect(calls.release).toHaveLength(1);
-    expect(calls.settle).toEqual([]);
+    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    await (await gw(chatReq(body), caller)).text();
+    expect(calls.release).toEqual([]);
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
+    expect(calls.settle[0]!.costMicro).toBe(costMicro(estUsageFor(body), flash));
   });
 
   it("平台没配 key → 502 upstream（code 一样，message 说清是服务端没配），不 hold", async () => {
@@ -203,32 +230,62 @@ describe("createLlmGateway", () => {
     expect(res.status).toBe(400);
   });
 
-  it("上游流中途出错（读位报错）→ release 一次，settle 不发生（C1a）", async () => {
+  it("上游流中途出错（读位报错，但内容已经发出去了）→ 按预扣结算，不 release（C1a）", async () => {
     const { quota, calls } = quotaStub();
+    // 先发一块、等消费者收到之后**再**报错。start() 里 enqueue 完立刻 error 是另一回事：
+    // 按 spec，error() 会清空队列，那一块根本没出门（那就是下面 C1c 测的那条路）
+    let ctl!: ReadableStreamDefaultController<Uint8Array>;
     const erroring = new ReadableStream<Uint8Array>({
       start(c) {
+        ctl = c;
         c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'));
-        c.error(new Error("boom-upstream"));
       },
     });
     const up = upstream(() => new Response(erroring, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
-    await expect(res.text()).rejects.toThrow();
-    // res.text() 的 reject 只保证流已经报错；tapSseUsage 里的 finish → settleWith 是异步
-    // 触发的（cancel 回调 → void settled），等一拍微任务让它落地再断言
+    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const res = await gw(chatReq(body), caller);
+    // **先真读出第一块再让错误浮上来**：TransformStream 的可读端默认 HWM 是 0，
+    // 没人读就没人往 transform 里推——测试里不读一下的话，「上游发过内容」这个前提
+    // 根本没成立，测的就成了另一件事（bytes === 0 那条）
+    const reader = res.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    ctl.error(new Error("boom-upstream"));
+    await expect(reader.read()).rejects.toThrow("boom-upstream");
+    // 流报错只保证读位炸了；tapSseUsage 里的 finish → 结算是异步触发的
+    // （cancel 回调 → void settled），等一拍微任务让它落地再断言
     await new Promise((r) => setTimeout(r, 0));
-    expect(calls.release).toHaveLength(1);
-    expect(calls.settle).toEqual([]);
+    expect(calls.release).toEqual([]);
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.settle[0]!.costMicro).toBe(costMicro(estUsageFor(body), flash));
   });
 
-  it("消费者主动 cancel 返回的 body（客户端断线）→ release 一次，settle 不发生（C1b）", async () => {
+  it("消费者主动 cancel 返回的 body（客户端断线）→ 按预扣结算，不 release（C1b）", async () => {
     const { quota, calls } = quotaStub();
     // 故意不 close：模拟「还在流式输出中」，这样 cancel 才是一次真断线，不是正常收尾撞车
     const stillStreaming = new ReadableStream<Uint8Array>({
       start(c) { c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n')); },
     });
     const up = upstream(() => new Response(stillStreaming, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const res = await gw(chatReq(body), caller);
+    // 先收下一块（客户端已经拿到内容），再断线——同上，不读一下这个前提就不成立
+    const reader = res.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 0));
+    // 「收到内容之后断线」曾经是 release —— 那是一个每次断线都能白嫖一次的洞
+    expect(calls.release).toEqual([]);
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
+  });
+
+  it("一个字节都没转发出去就断 → release，不结算（这一刻我们真的没花钱，C1c）", async () => {
+    const { quota, calls } = quotaStub();
+    // 上游 200 了但一个 chunk 都还没来，客户端就走了
+    const silent = new ReadableStream<Uint8Array>({ start() { /* 不 enqueue 也不 close */ } });
+    const up = upstream(() => new Response(silent, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
     const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
     await res.body!.cancel();

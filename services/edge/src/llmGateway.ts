@@ -5,13 +5,22 @@
 // 一次调用：解析 → 选路 → hold（预扣估算）→ 转发 → 旁路挑 usage → settle（退差额）。
 // **先花后扣要有 hold**（ADR-0174 第 9 条），否则并发请求能把窗口打穿。
 //
-// release（不记账）覆盖的不只是「上游失败 / 流里没 usage」这两条，还有三条容易漏的路：
-// ① 流式响应中途出错或客户端断线（SSE 旁路的 TransformStream cancel 算法统一兜住这两种
-//   情形——上游源出错走 sink abort、下游消费者主动 cancel 走 source cancel，spec 层面走的
-//   是同一个 transformer.cancel() 回调）；② hold 拿到之后、真正花钱之前的任何一步再炸
-//   （比如 quota.remaining 挂了、非流式 res.text() 读炸了）——这笔 hold 不能变成孤儿；
-//   ③ hold 被拒（no_subscription/quota_exhausted/too_many_inflight）时，响应也带上剩余
-//   额度头，省得客户端再问一次（若取额度本身也炸了，错误照样发，只是没有那几个头）。
+// **中断 ≠ 没花钱**（C1，推翻 spec 第 2 节第 5 步「中断一律 release」）：只要有一个字节
+// 转发给了客户端，上游就已经在收我们的钱了——内容已经送出去，成本已经发生。所以流被
+// 打断的三种情形（上游中途出错 / 下游消费者 cancel / req.signal abort）一律**按预扣估算
+// settle**，不 release。release 等于把已经花掉的钱送给这次调用，而「收到内容之后断线」
+// 是客户端随时能做的事，那就是一个可以无限白嫖的洞。按估算结算是**保守的上限**
+// （估算 = body 字节 ÷ 3 + max_tokens 顶格，通常高于真实用量），宁可多扣自己人也不留洞。
+// 同一条规则也管「正常结束但流里没有 usage 帧」：字节出去了，就按估算记账。
+//
+// release（不记账）只剩「我们一分钱没花」这几条路：
+// ① 上游没接受这次请求（`!res.ok`）或压根连不上（doFetch 抛）；
+// ② 流开起来了但**一个字节都没转发出去**就断（bytes === 0）——这一刻内容还没出门；
+// ③ hold 拿到之后、真正花钱之前的任何一步再炸（比如 quota.remaining 挂了、非流式
+//   res.text() 读炸了）——这笔 hold 不能变成孤儿；
+// ④ 非流式 200 但正文里挑不出 usage（没账可记；流式那条已按上面的规则改成结算）。
+// hold 被拒（no_subscription/quota_exhausted/too_many_inflight）时，响应也带上剩余
+// 额度头，省得客户端再问一次（若取额度本身也炸了，错误照样发，只是没有那几个头）。
 //
 // 上游的 4xx 也翻成 502：那是我们和上游之间的事（key 错、账户欠费），
 // 让客户端看到上游 401 会让用户去怀疑自己的 key——而他根本没用自己的 key。
@@ -94,10 +103,17 @@ export function pickRoute(routes: RouteRow[], logicalModel: string): RouteRow | 
   return routes.find((r) => r.logicalModel === logicalModel) ?? null;
 }
 
-/** 预扣估算：宁高勿低，结算退差。prompt 按 body 字节 ÷ 3 粗估（中英混排 1 token ≈ 3 字节） */
+/** 预扣估算用的那份「假 usage」：prompt 按 body 字节 ÷ 3 粗估（中英混排 1 token ≈ 3 字节），
+    输出按 max_tokens 顶格算，cached 记 0（估不出来，按最贵的算）。
+    中断结算（C1）拿它当上限，所以它和 estimateMicro 必须**同源**——两边各写一遍
+    算式的话，改了价格公式的一边就会让「按预扣结算」结出一个跟 hold 对不上的数。 */
+export function estimateUsage(bodyBytes: number, maxTokens: number): UsageCounts {
+  return { promptTokens: Math.ceil(bodyBytes / 3), cachedTokens: 0, completionTokens: maxTokens };
+}
+
+/** 预扣估算：宁高勿低，结算退差。= costMicro(estimateUsage(...))，见上 */
 export function estimateMicro(bodyBytes: number, maxTokens: number, route: RouteRow): number {
-  const promptTokens = Math.ceil(bodyBytes / 3);
-  return Math.ceil((promptTokens * route.priceInMicroPerM + maxTokens * route.priceOutMicroPerM) / 1_000_000);
+  return costMicro(estimateUsage(bodyBytes, maxTokens), route);
 }
 
 /** 实际成本：cached 从 prompt 里扣，按 cache 价；其余按 in 价；out 按 out 价 */
@@ -131,20 +147,26 @@ export function parseUsage(v: unknown): UsageCounts | null {
     ③ 外部信号：调用方把 `req.signal` 递进来时，那个信号 abort 也当断线处理——
        这条不经过 TransformStream 本身，是直接监听 signal 触发的，所以哪怕这个函数
        返回的流从没被消费过，abort 照样能让 onDone(null) 落地。
-    三条路径无论谁先到，`done` 标志保证 onDone 只吐一次结果。 */
+    三条路径无论谁先到，`done` 标志保证 onDone 只吐一次结果。
+
+    **finalizer 报的是「我看见了什么」，不是「该怎么记账」**（C1）：第二个参数带上
+    这条流到此刻**转发出去多少字节**，因为「没有 usage」这一个事实分不出「中断了但
+    内容已经出门」和「一个字节都没出门」——而这两件事该做的动作相反（前者结算、
+    后者释放）。记账的判断留给调用方，这个函数只负责说清事实。 */
 export function tapSseUsage(
   body: ReadableStream<Uint8Array>,
-  onDone: (u: UsageCounts | null) => void,
+  onDone: (u: UsageCounts | null, info: { bytes: number }) => void,
   signal?: AbortSignal
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let buf = "";
   let usage: UsageCounts | null = null;
+  let bytes = 0;
   let done = false;
   const finish = (u: UsageCounts | null) => {
     if (done) return;
     done = true;
-    onDone(u);
+    onDone(u, { bytes });
   };
   const scan = (text: string) => {
     buf += text;
@@ -172,6 +194,9 @@ export function tapSseUsage(
   const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): void } = {
     transform(chunk, controller) {
       scan(decoder.decode(chunk, { stream: true }));
+      // 先 enqueue 再计数会有一个「已经出门但没记上」的窗口；反过来（先记后发）
+      // 最坏是多记一个 chunk，而多记的后果是结算，正是保守的那一边
+      bytes += chunk.byteLength;
       controller.enqueue(chunk);
     },
     flush() {
@@ -297,9 +322,11 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
       }
 
+      const settleAt = (usage: UsageCounts) =>
+        deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
       const settleWith = async (usage: UsageCounts | null) => {
         if (!usage) { await deps.quota.release(caller.uid, requestId); return; }
-        await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
+        await settleAt(usage);
       };
 
       const headers = await remainingHeaders(caller.uid);
@@ -309,11 +336,20 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         // 客户端此时已经拿到全部内容，晚一拍记账不影响它。
         // C1：结束不只有「正常关闭」一条路——中途出错/客户端断线都要走到这个回调，
         // 不然那笔 hold 就死死卡在「预扣了但没人来结算也没人来释放」的状态。
+        // 走到这个回调之后**记账还是释放**，由回调里那三行判断（见文件头）。
         // I3：有 waitUntil（真 Worker 环境）就把这个后台 promise 交给它，让 Worker
         // 知道响应发出去之后还有活没干完；没有（比如这次测试）就照旧 void + catch 记日志，
         // 不能让 rejection 逃逸成 unhandledRejection。
-        const tapped = tapSseUsage(res.body, (u) => {
-          const settled = settleWith(u).catch((err: unknown) => {
+        const tapped = tapSseUsage(res.body, (u, info) => {
+          // C1：中断 ≠ 没花钱——内容已经送出去了、上游已经收了我们的钱；按预扣结算是
+          // 保守的上限。只有「一个字节都没转发出去」才是真的没花钱，那条才 release。
+          // 结算用的 usage 与 hold 用的估算同源（estimateUsage），所以这一笔正好等于
+          // 预扣的那一笔，窗口账上不会多出也不会少掉一分。
+          const finish =
+            u ? settleAt(u)
+            : info.bytes > 0 ? settleAt(estimateUsage(bodyBytes, maxTokens))
+            : deps.quota.release(caller.uid, requestId);
+          const settled = finish.catch((err: unknown) => {
             console.error("llmGateway: settle 失败", err);
           });
           if (deps.waitUntil) deps.waitUntil(settled);
