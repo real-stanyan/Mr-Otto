@@ -59,7 +59,10 @@ export interface AdapterTiming {
   maxAttempts: number;
   /** 第 n 次重试前的退避毫秒数；越界取末位 */
   backoffMs: readonly number[];
-  /** fetch 发出后多久没收到响应头就掐断（连接挂死的 TCP 会让 await 永远不回） */
+  /** fetch 发出后多久没收到响应头就掐断（连接挂死的 TCP 会让 await 永远不回）。
+      不是所有云端 API 都「头先回、再慢慢吐字」：Kimi Code（k3）prefill 完才发响应头，
+      30k token 冷 prefill 实测 33s（issue #847）。门槛太紧的代价是复利的——掐断让
+      服务端那次 prefill 作废，重试又从冷的开始，上下文越长越必炸 */
   headersTimeoutMs: number;
   /** SSE 流上多久没有任何字节就掐断（连上了但服务端不再吐字的挂死态） */
   idleTimeoutMs: number;
@@ -68,12 +71,12 @@ export interface AdapterTiming {
 const DEFAULT_TIMING: AdapterTiming = {
   maxAttempts: 3,
   backoffMs: [500, 2000],
-  headersTimeoutMs: 30_000,
+  headersTimeoutMs: 120_000, // 原 30s，#847：得容得下长上下文的冷 prefill
   idleTimeoutMs: 90_000,
 };
 
 /** 本机推理（keyless，Ollama）的超时上限：10 分钟。
-    默认的 30s/90s 是给云端 API 定的——那里的静默意味着连接挂死。本机大模型
+    默认的 120s/90s 是给云端 API 定的——那里的静默意味着连接挂死。本机大模型
     在**首 token 前**要冷加载权重 + 整段上下文 prefill，期间 Ollama 的
     OpenAI 兼容流一个字节都不发，27B 级模型带长上下文轻松超 90s；这是在干活，
     不是挂死。两个看门狗都放宽（headers 也可能等到模型加载后才回）；用户等不及
