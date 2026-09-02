@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHostedQuota } from "../../src/main/hostedQuota.js";
+import { createHostedQuota, parseCheckoutTarget } from "../../src/main/hostedQuota.js";
 import { BILLING_HEADERS, type BillingMe } from "../../src/shared/billing.js";
 
 const T0 = 1_800_000_000_000;
@@ -110,5 +110,44 @@ describe("hostedQuota", () => {
     expect(newerResult).toEqual(me2);
     expect(olderResult).toEqual(me2); // 过期响应落地时读到的已经是 newer 的快照，不是自己拿到的 me
     expect(q.snapshot().me).toEqual(me2); // 快照最终定格在更新的那份，没被旧响应覆盖回去
+  });
+});
+
+describe("parseCheckoutTarget", () => {
+  it("合法的 planId 三档都放行", () => {
+    expect(parseCheckoutTarget({ planId: "lite" })).toEqual({ planId: "lite" });
+    expect(parseCheckoutTarget({ planId: "pro" })).toEqual({ planId: "pro" });
+    expect(parseCheckoutTarget({ planId: "max" })).toEqual({ planId: "max" });
+  });
+
+  it("合法的加购（1..100 的整数）放行", () => {
+    expect(parseCheckoutTarget({ addon: true, quantity: 1 })).toEqual({ addon: true, quantity: 1 });
+    expect(parseCheckoutTarget({ addon: true, quantity: 100 })).toEqual({ addon: true, quantity: 100 });
+  });
+
+  it("不认识的 planId 拒绝", () => {
+    expect(parseCheckoutTarget({ planId: "enterprise" })).toBeNull();
+    expect(parseCheckoutTarget({ planId: "" })).toBeNull();
+  });
+
+  it("加购数量非法（0/负数/小数/超 100/非数字）全拒绝", () => {
+    expect(parseCheckoutTarget({ addon: true, quantity: 0 })).toBeNull();
+    expect(parseCheckoutTarget({ addon: true, quantity: -1 })).toBeNull();
+    expect(parseCheckoutTarget({ addon: true, quantity: 1.5 })).toBeNull();
+    expect(parseCheckoutTarget({ addon: true, quantity: 101 })).toBeNull();
+    expect(parseCheckoutTarget({ addon: true, quantity: "1" })).toBeNull();
+  });
+
+  it("addon 不是字面量 true（比如字符串 \"true\"）拒绝——不能靠隐式转换放行", () => {
+    expect(parseCheckoutTarget({ addon: "true", quantity: 1 })).toBeNull();
+  });
+
+  it("形状不对（null / 非对象 / 数组 / 空对象）全拒绝", () => {
+    expect(parseCheckoutTarget(null)).toBeNull();
+    expect(parseCheckoutTarget(undefined)).toBeNull();
+    expect(parseCheckoutTarget("lite")).toBeNull();
+    expect(parseCheckoutTarget(42)).toBeNull();
+    expect(parseCheckoutTarget([])).toBeNull();
+    expect(parseCheckoutTarget({})).toBeNull();
   });
 });

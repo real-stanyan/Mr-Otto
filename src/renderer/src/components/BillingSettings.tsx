@@ -7,19 +7,24 @@
 // 没有入场动画:这是设置页里偶尔看一眼的区块,不是天天盯着的仪表盘,
 // 唯一值得过渡的是进度条宽度变化(状态指示,不是装饰)。
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button.js";
 import { addonLine, countdown, PLAN_CARDS, windowPercent } from "../lib/billingView.js";
 import { fmtCredit } from "../../../shared/billing.js";
+import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
 
 /** 一张价目卡：档名 + 价格 + 一句话 + 订阅按钮 */
-function PlanCard({ id, name, priceUsd, blurb, onSubscribe }: {
+function PlanCard({ id, name, priceUsd, blurb, pending, disabled, onSubscribe }: {
   id: string;
   name: string;
   priceUsd: number;
   blurb: string;
+  /** 这张卡自己的下单在飞——按钮换文案 */
+  pending: boolean;
+  /** 有任意一张卡（或加购/管理）在飞——全部按钮跟着禁掉,防重复下单开出两个 Stripe session */
+  disabled: boolean;
   onSubscribe: () => void;
 }) {
   return (
@@ -30,8 +35,8 @@ function PlanCard({ id, name, priceUsd, blurb, onSubscribe }: {
         <span className="text-[11px] text-muted-foreground">/月</span>
       </div>
       <p className="text-[11.5px] leading-[1.5] text-muted-foreground">{blurb}</p>
-      <Button size="sm" className="mt-1" onClick={onSubscribe} data-testid={`plan-subscribe-${id}`}>
-        订阅
+      <Button size="sm" className="mt-1" disabled={disabled} onClick={onSubscribe} data-testid={`plan-subscribe-${id}`}>
+        {pending ? "打开中…" : "订阅"}
       </Button>
     </div>
   );
@@ -73,8 +78,20 @@ export function BillingSettings() {
     void loadBilling(true);
   }, [loadBilling]);
 
-  const now = Date.now();
+  // 倒计时要真的走:60s 跳一次就够(分钟粒度的文案),同 Timeline.tsx 用同一颗表
+  // (lib/useNow.ts)——裸 Date.now() 只在挂载那一刻取一次,数字会钉死不动
+  const now = useNow(60_000);
   const me = billing?.me ?? null;
+
+  // 同一时刻只放一个下单在飞:按钮防连点(fix round 1)——双击/手滑两下会打开
+  // 两个 Stripe checkout session。key 记的是"哪一个"在飞,不只用来判断要不要
+  // 禁用,也用来只给那颗按钮换文案，其它按钮照样显示原文案（只是也被禁用）
+  const [pending, setPending] = useState<string | null>(null);
+  const run = (key: string, fn: () => Promise<void>) => {
+    if (pending) return;
+    setPending(key);
+    void fn().finally(() => setPending(null));
+  };
 
   if (!me || me.status === "none" || me.plan === null) {
     return (
@@ -85,7 +102,13 @@ export function BillingSettings() {
         </p>
         <div className="grid grid-cols-3 gap-2">
           {PLAN_CARDS.map((c) => (
-            <PlanCard key={c.id} {...c} onSubscribe={() => void checkout({ planId: c.id })} />
+            <PlanCard
+              key={c.id}
+              {...c}
+              pending={pending === `plan:${c.id}`}
+              disabled={pending !== null}
+              onSubscribe={() => run(`plan:${c.id}`, () => checkout({ planId: c.id }))}
+            />
           ))}
         </div>
       </section>
@@ -105,8 +128,14 @@ export function BillingSettings() {
           订阅 · {planName}
           {me.status === "past_due" && <span className="text-warn"> · 扣款失败</span>}
         </h2>
-        <Button size="xs" variant="ghost" className="text-muted-foreground" onClick={() => void portal()}>
-          管理
+        <Button
+          size="xs"
+          variant="ghost"
+          className="text-muted-foreground"
+          disabled={pending !== null}
+          onClick={() => run("portal", () => portal())}
+        >
+          {pending === "portal" ? "打开中…" : "管理"}
         </Button>
       </div>
 
@@ -126,8 +155,13 @@ export function BillingSettings() {
 
         <div className="flex items-center justify-between gap-2 text-[11.5px]">
           <span className="text-muted-foreground">{addonText ?? "没有加购余额"}</span>
-          <Button size="xs" variant="outline" onClick={() => void checkout({ addon: true, quantity: 1 })}>
-            加购 $10
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={pending !== null}
+            onClick={() => run("addon", () => checkout({ addon: true, quantity: 1 }))}
+          >
+            {pending === "addon" ? "打开中…" : "加购 $10"}
           </Button>
         </div>
       </div>
@@ -135,8 +169,14 @@ export function BillingSettings() {
       {upgrades.length > 0 && (
         <div className="flex flex-wrap gap-2 px-1">
           {upgrades.map((c) => (
-            <Button key={c.id} size="xs" variant="outline" onClick={() => void checkout({ planId: c.id })}>
-              升到 {c.name}（${c.priceUsd}）
+            <Button
+              key={c.id}
+              size="xs"
+              variant="outline"
+              disabled={pending !== null}
+              onClick={() => run(`plan:${c.id}`, () => checkout({ planId: c.id }))}
+            >
+              {pending === `plan:${c.id}` ? "打开中…" : `升到 ${c.name}（$${c.priceUsd}）`}
             </Button>
           ))}
         </div>

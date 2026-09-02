@@ -170,7 +170,7 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
-import { createHostedQuota, type CheckoutTarget } from "./hostedQuota.js";
+import { createHostedQuota, parseCheckoutTarget } from "./hostedQuota.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
@@ -3073,9 +3073,13 @@ void app.whenReady().then(() => {
     if (refresh) await hostedQuota.refresh();
     return hostedQuota.snapshot();
   });
-  // 拿 url 后在系统浏览器里开：Stripe Checkout 是它自己的页面，不进 Electron 窗口
-  ipcMain.handle(CHANNELS.billingCheckout, async (_e, target: CheckoutTarget) => {
-    await shell.openExternal(await hostedQuota.checkout(target));
+  // 拿 url 后在系统浏览器里开：Stripe Checkout 是它自己的页面，不进 Electron 窗口。
+  // target 先过 parseCheckoutTarget 校验（fix round 1）：IPC 边界不能假设调用方
+  // 守规矩，形状不对直接拒绝，不原样转给 hostedQuota.checkout
+  ipcMain.handle(CHANNELS.billingCheckout, async (_e, target: unknown) => {
+    const parsed = parseCheckoutTarget(target);
+    if (!parsed) throw new Error("checkout 参数不合法");
+    await shell.openExternal(await hostedQuota.checkout(parsed));
   });
   ipcMain.handle(CHANNELS.billingPortal, async () => {
     await shell.openExternal(await hostedQuota.portal());

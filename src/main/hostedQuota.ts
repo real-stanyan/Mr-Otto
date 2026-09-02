@@ -23,6 +23,24 @@ export interface HostedSnapshot {
 
 export type CheckoutTarget = { planId: PlanId } | { addon: true; quantity: number };
 
+const PLAN_IDS: ReadonlySet<string> = new Set(["lite", "pro", "max"]);
+
+/** IPC 边界的校验（fix round 1）：渲染层传来的 target 不可信——即便是本仓自己的
+    代码,IPC 那头也可能被改坏/被绕过 preload 直接 invoke。null = 形状不对,
+    调用方据此拒绝,不能原样转给 hostedQuota.checkout（否则会把任意字符串当
+    planId 转给 Stripe，或者把负数/小数当 quantity 发出去） */
+export function parseCheckoutTarget(v: unknown): CheckoutTarget | null {
+  if (v === null || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (o.addon === true) {
+    const q = o.quantity;
+    return typeof q === "number" && Number.isInteger(q) && q >= 1 && q <= 100
+      ? { addon: true, quantity: q }
+      : null;
+  }
+  return typeof o.planId === "string" && PLAN_IDS.has(o.planId) ? { planId: o.planId as PlanId } : null;
+}
+
 export interface HostedQuota {
   snapshot(): HostedSnapshot;
   /** 路由判断用的三元组 */

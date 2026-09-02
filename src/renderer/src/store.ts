@@ -1726,10 +1726,22 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
   async billingCheckout(target) {
-    await window.otter.billingCheckout(target);
+    set({ error: null });
+    try {
+      await window.otter.billingCheckout(target);
+    } catch (e) {
+      // 同 signIn 的纪律：失败落 error banner，不吞——不然点了订阅按钮
+      // 什么都没发生，用户只会以为按钮坏了
+      set({ error: bridgeErrorMessage(e) });
+    }
   },
   async billingPortal() {
-    await window.otter.billingPortal();
+    set({ error: null });
+    try {
+      await window.otter.billingPortal();
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+    }
   },
 
   async saveApiKey(envName, key) {
