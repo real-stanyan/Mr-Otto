@@ -20,8 +20,9 @@ test("无 key：会话建得起、发送失败给人话、轨迹视图照常渲�
     // 发送会失败（没有 key，也不该有）——会话本身在发请求之前就已落盘
     await startSession(otto, ws, "keyless 轨迹验收");
 
-    // 失败以人话浮出（modelRoute blocked 的文案指向设置页），不是白屏/裸异常
-    await expect(otto.win.getByText(/还没配 key/).first()).toBeVisible({ timeout: 20_000 });
+    // 失败以人话浮出（modelRoute blocked 的文案指向设置页——未登录/未订阅时
+    // 两条出路都会点名，ADR-0176），不是白屏/裸异常
+    await expect(otto.win.getByText(/DEEPSEEK_API_KEY/).first()).toBeVisible({ timeout: 20_000 });
 
     // 轨迹视图：同一份日志的另一种投影，不碰模型
     await otto.win.getByRole("tab", { name: "轨迹" }).click();

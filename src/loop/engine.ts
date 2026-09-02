@@ -683,6 +683,7 @@ export class LoopEngine {
         ...(reply.reasoning ? { reasoning: reply.reasoning } : {}),
         // 耗时只在真有思考内容时才有意义(空思考的耗时是噪音)
         ...(reply.reasoning && reasoningMs !== null ? { reasoningMs } : {}),
+        ...(reply.route ? { route: reply.route } : {}), // 钱从谁账上出（ADR-0176 决定五）
       });
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了

@@ -170,6 +170,7 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
+import { createHostedQuota } from "./hostedQuota.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
@@ -609,6 +610,10 @@ void app.whenReady().then(() => {
       多一条：mcp-auth.json 的写回调在 mcpHub 装配时就要引用它，而同步器要等
       proxy 装完才造——token 刷新落盘正是 re-sync 四个触发源之一 */
   let escrowResync: (() => void) | null = null;
+  /** 托管额度刷新触发器（ADR-0176）。同 escrowResync 的空位理由：hostedQuota 造得比
+      accountManager 晚（要等 edgeBaseUrl/accountManager 都齐），这里先占位，登录/
+      恢复登录那一刻的 onChange 调它——refresh() 内部自己处理"拿不到 token"的情形 */
+  let hostedQuotaRefresh: (() => void) | null = null;
   // 本人资料(profiles 自己那一行)。和 friends 共用同一个 supabase client:
   // 同一登录态,别建第二个
   const userProfile = new UserProfileManager({ api: createSupabaseUserProfileApi(supabase.raw) });
@@ -645,7 +650,7 @@ void app.whenReady().then(() => {
       // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
-      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); }
+      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); hostedQuotaRefresh?.(); }
       else proxyCloseNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
@@ -1445,6 +1450,20 @@ void app.whenReady().then(() => {
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
     log: (m) => console.warn(`[px-cloud] ${m}`),
   });
+  // ─── 托管额度（订阅制，ADR-0176）─────────────────────────────────────
+  // 主进程侧快照：三个更新源（启动/设置页 refresh、每次网关响应头、429 那一刻）
+  // 都装在 agent.ts 的 hosted 接线里，这里只造实例 + 接上登录恢复触发器
+  const hostedQuota = createHostedQuota({
+    baseUrl: () => edgeBaseUrl(),
+    accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+    log: (m) => console.warn(`[billing] ${m}`),
+  });
+  hostedQuotaRefresh = () => void hostedQuota.refresh();
+  const hostedDeps = {
+    quota: hostedQuota,
+    edgeBaseUrl: () => edgeBaseUrl(),
+    accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+  };
   // ─── 工作区（Task 8/10，ADR-0198 切片 2/3）─────────────────────────────
   // 造得比 proxy 早：proxy 的 workspaceHosts 依赖它的 hostUids()。这里只做
   // 编排装配，IPC 接线是 Task 11 的事——list() 在那之前没人调，hostUids()
@@ -2119,6 +2138,10 @@ void app.whenReady().then(() => {
     let self: ReturnType<typeof createAgent>;
     self = createAgent({
       ...base,
+      // 托管额度（ADR-0176）：只挂主会话这条真实装配路径——探针（probeToolDefs）
+      // 永远不会真跑一轮，给了也白给；子会话继承父的 world 但不重新走 createAgent，
+      // 与本条无关
+      hosted: hostedDeps,
       ...(args.isolated ? { isolated: args.isolated } : {}),
       // 破坏性 git + 工作区脏 → 越过 bypass 问一次（issue #633）。复用 gitGraph 的
       // status，不另起一套 git 管道。闭包懒读：gitGraph 在装配后段才建，而会话都是

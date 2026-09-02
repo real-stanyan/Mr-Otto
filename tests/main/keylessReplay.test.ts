@@ -42,17 +42,20 @@ describe("keyless 回放（issue #389）", () => {
     store.close();
   });
 
-  it("没有 key 发送：turn 失败给人话（还没配 key），错误落盘、历史仍可回放", async () => {
+  it("没有 key 发送：turn 失败给人话（两条出路都说清楚），错误落盘、历史仍可回放", async () => {
     vi.stubEnv("DEEPSEEK_API_KEY", "");
     vi.stubEnv("OTTER_MODEL", "");
     const store = new EventStore(":memory:");
+    // 不给 hosted opts（同子会话/测试）：路由永远给不出 hosted，但 blocked 措辞
+    // 仍然把订阅这条路点出来（ADR-0176 决定二的 routeModel 兜底文案，与是否
+    // 装配了托管无关——没装配托管不等于产品上没有这条路）
     const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
 
-    await expect(agent.engine.runTurn("你好")).rejects.toThrow(/还没配 key/);
+    await expect(agent.engine.runTurn("你好")).rejects.toThrow(/DEEPSEEK_API_KEY/);
     expect(store.load(agent.sessionId).at(-1)).toMatchObject({
       type: "turn_ended",
       outcome: "error",
-      error: expect.stringContaining("还没配 key"),
+      error: expect.stringContaining("DEEPSEEK_API_KEY"),
     });
     // 失败的会话照样能投影成轨迹（错误也是历史）
     expect(buildTrajectory(store.load(agent.sessionId)).rows.length).toBeGreaterThan(0);
