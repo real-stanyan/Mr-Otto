@@ -79,4 +79,36 @@ describe("hostedQuota", () => {
     q.noteHeaders(new Headers({ [BILLING_HEADERS.h5]: "1" }));
     expect(cb).toHaveBeenCalledTimes(3);
   });
+
+  it("emit 隔离：一个订阅者抛错不挡住第二个，也不会让 refresh 误判成失败", async () => {
+    const logs: string[] = [];
+    const fetchImpl = vi.fn(async () => Response.json(me)) as unknown as typeof fetch;
+    const q = createHostedQuota({
+      baseUrl: () => "https://edge", accessToken: async () => "jwt", fetchImpl, now: () => T0,
+      log: (m) => logs.push(m),
+    });
+    q.onChange(() => { throw new Error("boom"); });
+    const second = vi.fn();
+    q.onChange(second);
+    const result = await q.refresh();
+    expect(result).toEqual(me); // 快照确实更新了，不该被第一个订阅者的异常带偏
+    expect(second).toHaveBeenCalledTimes(1); // 第一个抛错不挡住第二个
+    expect(logs.some((m) => m.includes("保留旧快照"))).toBe(false); // 不能把"订阅者抛错"记成"refresh 失败"
+  });
+
+  it("并发 refresh：更早发起、更晚回来的响应不能覆盖更新的那份快照", async () => {
+    const resolvers: Array<(r: Response) => void> = [];
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => { resolvers.push(resolve); })) as unknown as typeof fetch;
+    const q = createHostedQuota({ baseUrl: () => "https://edge", accessToken: async () => "jwt", fetchImpl, now: () => T0 });
+    const older = q.refresh(); // seq 1，先发起
+    const newer = q.refresh(); // seq 2，后发起
+    await Promise.resolve(); // 让两次调用都各自跑到自己的 fetchImpl 调用并挂起
+    const me2: BillingMe = { ...me, plan: "max" };
+    resolvers[1]!(Response.json(me2)); // 更晚发起的那次先回
+    resolvers[0]!(Response.json(me)); // 更早发起的那次后回——它才是过期响应
+    const [olderResult, newerResult] = await Promise.all([older, newer]);
+    expect(newerResult).toEqual(me2);
+    expect(olderResult).toEqual(me2); // 过期响应落地时读到的已经是 newer 的快照，不是自己拿到的 me
+    expect(q.snapshot().me).toEqual(me2); // 快照最终定格在更新的那份，没被旧响应覆盖回去
+  });
 });

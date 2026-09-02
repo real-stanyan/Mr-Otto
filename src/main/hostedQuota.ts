@@ -40,8 +40,15 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
   let snap: HostedSnapshot = { me: null, fetchedAt: 0, exhausted: null };
+  let refreshSeq = 0; // 并发 refresh 的护栏：只有最新发起的那次才允许落地快照
   const listeners = new Set<(s: HostedSnapshot) => void>();
-  const emit = () => { for (const cb of listeners) cb(snap); };
+  // 每个订阅者独立隔离：一个抛异常不该吞掉后面的通知，也不该被上游 try/catch 接住
+  // 误判成「refresh 失败」（模型可见的日志话术要对得上快照的真实状态）。
+  const emit = () => {
+    for (const cb of listeners) {
+      try { cb(snap); } catch (err) { log(`hostedQuota 订阅者抛错：${err instanceof Error ? err.message : String(err)}`); }
+    }
+  };
 
   // exhausted 记号过了 resetAt 自动失效——不需要定时器，谁读谁现算
   const liveExhausted = (): HostedSnapshot["exhausted"] =>
@@ -75,22 +82,36 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
     },
 
     async refresh() {
+      const seq = ++refreshSeq; // 这次调用的序号；落地前核对还是不是最新的那次
       const token = await deps.accessToken();
-      if (!token) { snap = { me: null, fetchedAt: now(), exhausted: null }; emit(); return null; }
+      if (!token) {
+        if (seq !== refreshSeq) return snap.me; // 期间又发起了一次更新的 refresh，这次作废
+        snap = { me: null, fetchedAt: now(), exhausted: null };
+        emit();
+        return null;
+      }
+      let me: BillingMe | null = null;
+      let failed: unknown = null;
       try {
         const res = await doFetch(`${deps.baseUrl()}/billing/v1/me`, { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const me = parseBillingMe(await res.json());
+        me = parseBillingMe(await res.json());
         if (!me) throw new Error("/me 形状不对");
-        snap = { me, fetchedAt: now(), exhausted: null }; // 服务端说了算：拿到新快照就清 exhausted
-        emit();
-        return me;
       } catch (err) {
-        log(`billing /me 失败：${err instanceof Error ? err.message : String(err)}，保留旧快照`);
+        failed = err;
+      }
+      if (seq !== refreshSeq) return snap.me; // 更旧的响应比更新的先落地——丢弃，别覆盖回去
+      if (failed !== null || me === null) {
+        log(`billing /me 失败：${failed instanceof Error ? failed.message : String(failed)}，保留旧快照`);
         return snap.me;
       }
+      snap = { me, fetchedAt: now(), exhausted: null }; // 服务端说了算：拿到新快照就清 exhausted
+      emit(); // 成功落地之后才通知，保证 emit 看到的 snap 与 refresh 的返回值一致
+      return me;
     },
 
+    // 只负责「设成耗尽」，不负责「解除耗尽」——那是 refresh（服务端确认）或 resetAt 到点
+    // （routeInput 现算）的事；响应头本身没有「已经恢复」这个信号，不能靠它推断复原。
     noteHeaders(h) {
       const r = remainingFromHeaders(h);
       const me = snap.me;
