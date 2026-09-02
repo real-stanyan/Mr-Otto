@@ -7,14 +7,18 @@
 //      Durable Object。DO 自己永远看不到 token —— 它只知道有两条连接、
 //      一条标 desktop 一条标 mobile。爆炸半径比验在里面小。
 //
-// 曾经还有第三件 —— 拿官方 DeepSeek key 代理模型调用、按 token 桶扣额度
-// (ADR-0019/0021)。ADR-0085 关了那条产品线,ADR-0129 删了它的实现。
+//   3. 托管模型网关 + 计费面(订阅制,ADR-0174 起三篇 + spec 2026-09-02):
+//      验人 → 交给 llmGateway(hold/转发/settle 都在那边)。ADR-0085 关掉、
+//      ADR-0129 删掉的那一版是赠额形态;这一版是订阅形态,机制层复活。
 
 import { authLandingResponse } from "./authLanding.js";
 import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
 import { parseEscrowDoc } from "./px.js";
 import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
+import { MAX_GRANT_QUANTITY } from "./billing.js";
+import type { Caller } from "./llmGateway.js";
+import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId } from "../../../src/shared/billing.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -47,6 +51,18 @@ export interface RelayStub {
   fetch(req: Request): Promise<Response>;
 }
 
+export type CheckoutTarget = { planId: PlanId } | { addon: true; quantity: number };
+
+/** 计费面（spec 2026-09-02 第 3 节）。生产上是 worker.ts 里握 Stripe + Supabase 的实现，测试里是假货 */
+export interface BillingPort {
+  me(uid: string): Promise<BillingMe>;
+  /** origin = 请求的 origin（拼 success/cancel/return url） */
+  checkout(uid: string, target: CheckoutTarget, origin: string): Promise<{ url: string } | { error: string }>;
+  portal(uid: string, origin: string): Promise<{ url: string } | { error: string }>;
+  /** 验签 + 落库都在里面；回 HTTP 状态与 body */
+  webhook(payload: string, signatureHeader: string): Promise<{ status: number; body: unknown }>;
+}
+
 export interface EdgeDeps {
   config: EdgeConfig;
   /** 注入时钟:过期判断要能被测试钉死 */
@@ -57,6 +73,10 @@ export interface EdgeDeps {
   escrow?: (hostUid: string) => RelayStub;
   /** 关系闸：两人是否 accepted 好友（worker 用 service role 查，60s 缓存在那边做） */
   isFriend?: (a: string, b: string) => Promise<boolean>;
+  /** 托管模型网关（Task 4 的 createLlmGateway）。不注入就没有 /llm/v1/* */
+  llm?: (req: Request, caller: Caller) => Promise<Response>;
+  /** 计费面。不注入就没有 /billing/v1/*（webhook 也没有） */
+  billing?: BillingPort;
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -279,6 +299,82 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     return apiError(404, `没有这个端点:${pathname}`, "not_found");
   }
 
+  /** llm / billing 路由的身份：pxIdentify 那一套 + on-behalf-of。
+      平台身份**必须**带 x-otto-on-behalf-of（它没有自己的 sub，代表谁要说清楚）；
+      真人**不许**带（能代表别人的只有平台）。两条都是 400 而不是静默忽略——
+      一个带着这个头却被当成本人处理的请求，正是「以为在替 A 扣、其实扣了自己」那种账 */
+  async function callerOf(req: Request): Promise<Caller | Response> {
+    const who = await pxIdentify(req);
+    if (who instanceof Response) return who;
+    const onBehalf = req.headers.get(ON_BEHALF_HEADER);
+    let uid = who.userId;
+    let source: Caller["source"] = "desktop";
+    if (who.userId === RUNTIME_SERVICE_UID) {
+      if (!onBehalf) return apiError(400, `平台身份必须声明 ${ON_BEHALF_HEADER}`, "bad_request");
+      uid = onBehalf;
+      source = "runtime";
+    } else if (onBehalf !== null) {
+      return apiError(400, `只有平台身份能带 ${ON_BEHALF_HEADER}`, "bad_request");
+    }
+    return {
+      uid, source,
+      workspaceId: req.headers.get(WORKSPACE_HEADER) ?? "",
+      sessionId: req.headers.get(SESSION_HEADER) ?? "",
+    };
+  }
+
+  async function billingRoute(req: Request, pathname: string): Promise<Response> {
+    if (!deps.billing) return apiError(404, "这个服务没开计费面", "billing_disabled");
+    const origin = new URL(req.url).origin;
+
+    // 付款完成/取消后浏览器落的页：给人看的一句话，不要令牌（同 /auth/landing 的理由）
+    if (pathname === "/billing/v1/done") {
+      const ok = new URL(req.url).searchParams.get("ok") !== "0";
+      return new Response(
+        `<!doctype html><meta charset="utf-8"><title>Mr Otto</title>` +
+        `<body style="font-family:system-ui;padding:3rem;text-align:center">` +
+        `<h1>${ok ? "付款完成" : "已取消"}</h1><p>${ok ? "回到 Mr Otto，额度已经生效。" : "什么都没发生，回到 Mr Otto 即可。"}</p></body>`,
+        { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }
+      );
+    }
+    // Stripe → 我们。不验 JWT（Stripe 不带），验签在 BillingPort 里做
+    if (pathname === "/billing/v1/webhook") {
+      if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
+      const r = await deps.billing.webhook(await req.text(), req.headers.get("stripe-signature") ?? "");
+      return json(r.status, r.body);
+    }
+
+    const caller = await callerOf(req);
+    if (caller instanceof Response) return caller;
+
+    if (pathname === "/billing/v1/me" && req.method === "GET") return json(200, await deps.billing.me(caller.uid));
+
+    // 下面两条是人的动作：平台身份替人买东西没有意义（钱是人付的）
+    if (caller.source === "runtime") return apiError(403, "平台身份不能发起购买", "forbidden");
+
+    if (pathname === "/billing/v1/checkout" && req.method === "POST") {
+      const b: unknown = await req.json().catch(() => null);
+      const o = b as { planId?: unknown; addon?: unknown; quantity?: unknown } | null;
+      let target: CheckoutTarget | null = null;
+      if (o && (o.planId === "lite" || o.planId === "pro" || o.planId === "max")) target = { planId: o.planId };
+      else if (o && o.addon === true) {
+        const q = o.quantity;
+        if (typeof q !== "number" || !Number.isInteger(q) || q <= 0 || q > MAX_GRANT_QUANTITY) {
+          return apiError(400, `quantity 必须是 1..${MAX_GRANT_QUANTITY} 的整数`, "bad_request");
+        }
+        target = { addon: true, quantity: q };
+      }
+      if (!target) return apiError(400, "checkout 要 {planId: lite|pro|max} 或 {addon:true, quantity}", "bad_request");
+      const r = await deps.billing.checkout(caller.uid, target, origin);
+      return "url" in r ? json(200, r) : apiError(502, r.error, "upstream");
+    }
+    if (pathname === "/billing/v1/portal" && req.method === "POST") {
+      const r = await deps.billing.portal(caller.uid, origin);
+      return "url" in r ? json(200, r) : apiError(502, r.error, "upstream");
+    }
+    return apiError(404, `没有这个端点:${pathname}`, "not_found");
+  }
+
   return async function handle(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
 
@@ -291,6 +387,14 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     }
     if (pathname === "/rl/v1/connect") return relayConnect(req);
     if (pathname.startsWith("/px/v1/")) return px(req, pathname);
+    if (pathname === "/llm/v1/chat/completions") {
+      if (!deps.llm) return apiError(404, "这个服务没开托管网关", "llm_disabled");
+      if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
+      const caller = await callerOf(req);
+      if (caller instanceof Response) return caller;
+      return deps.llm(req, caller);
+    }
+    if (pathname.startsWith("/billing/v1/")) return billingRoute(req, pathname);
     return apiError(404, `没有这个端点:${pathname}`, "not_found");
   };
 }
