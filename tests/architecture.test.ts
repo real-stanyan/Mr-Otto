@@ -202,7 +202,7 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
   // 判据：一个文件既 import 了 node:fs 又提到记忆路径符号，就是在绕过那个口。
   // memoryTopics.ts 是只读的组装根、projectRoot.ts 只定义目录名函数——白名单。
   it("碰 memories/ 路径的文件不 import node:fs —— 记忆写路径只有 memoryFiles.ts 一个口（#852）", () => {
-    const MEMORY_PATH_SYMBOLS = /\b(memoryRelPath|topicRelPath|topicLabelRelPath|TOPICS_DIR|MEMORY_DIR|PROJECT_ROOT_FILE|PROJECT_MEMORY_FILE)\b|["'`]memories\//;
+    const MEMORY_PATH_SYMBOLS = /\b(memoryRelPath|topicRelPath|topicLabelRelPath|TOPICS_DIR|MEMORY_DIR|PROJECT_ROOT_FILE|PROJECT_MEMORY_FILE|PROJECT_MERGED_FILE)\b|["'`]memories\//;
     const allow = new Set(["main/memoryFiles.ts", "main/memoryTopics.ts", "main/projectRoot.ts"]);
     const bad = walk(ROOT)
       .filter((f) => !allow.has(relative(ROOT, f)))

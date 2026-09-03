@@ -112,7 +112,8 @@ import { isMemoryTarget, parseEntries, formatEntries, topicIndexOf, type MemoryT
 import { isTopicSlug, SEED_TOPICS } from "../shared/memoryTopics.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
-import { projectMemoryDir } from "./projectRoot.js";
+import { isPathScopeId, projectMemoryDir, projectScopeId } from "./projectRoot.js";
+import { migrateProjectMemories } from "./projectMemoryMigrate.js";
 import { createMemoryFiles } from "./memoryFiles.js";
 import { createMemorySync } from "./memorySync.js";
 import { createSupabaseMemoryDocsApi } from "./supabaseMemoryDocsApi.js";
@@ -2024,7 +2025,21 @@ void app.whenReady().then(() => {
     uid: () => friends.currentUid(),
   });
   memorySyncHook.touched = (rel) => memorySync.touched(rel);
-  memoryPullNow = () => void memorySync.pullNow();
+
+  /** 旧项目记忆目录并进新的作用域键（#886）。跑两次：开机一次，**每次云端对账之后
+      再一次**——对账会把别的机器的旧目录也拉下来（其中本机能解析出 remote 的那些
+      正是要搬的），只在开机跑就永远轮不到它们。幂等，搬过的带墓碑不会重复合并。
+      失败只打日志：记忆迁移不成功也不该拦住 app 起来 */
+  const migrateProjectScopes = async () => {
+    try {
+      const { merged } = await migrateProjectMemories({ files: memoryFiles, scopeOf: projectScopeId });
+      for (const m of merged) console.log(`项目记忆并入新作用域键：${m.from} → ${m.to}`);
+    } catch (err) {
+      console.error("项目记忆作用域迁移失败（不影响启动）", err);
+    }
+  };
+  void migrateProjectScopes();
+  memoryPullNow = () => void memorySync.pullNow().then(migrateProjectScopes);
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
       memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
@@ -2034,11 +2049,15 @@ void app.whenReady().then(() => {
     writeFile: (rel: string, c: string) => memoryFiles.write(rel, c),
   };
 
-  /** 渲染层给的 projectRoot 折成 applyUserEdit 要的那对 {root, dir}（形状同
-      agent.ts 给 createMemoryTool 的那份）。缺省 = 全局档。两个记忆 handler
-      共用这一份，免得一处传 dir、一处传 root，落出对不上号的证据 */
-  const memoryProject = (projectRoot?: string): { root: string; dir: string } | null =>
-    projectRoot ? { root: projectRoot, dir: projectMemoryDir(projectRoot) } : null;
+  /** 渲染层给的作用域键折成 applyUserEdit 要的那对 {id, dir}。缺省 = 全局档。
+      两个记忆 handler 共用这一份，免得一处传 dir、一处传 id，落出对不上号的证据。
+      **旧日志里那个值是项目根绝对路径**（#886 之前的键）——看起来像路径就按今天的
+      规则重解析一次，否则恢复出来的老会话点「忘掉」会写回一个已经被并走的旧目录 */
+  const memoryProject = (scope?: string): { id: string; dir: string } | null => {
+    if (!scope) return null;
+    const id = isPathScopeId(scope) ? projectScopeId(scope) : scope;
+    return { id, dir: projectMemoryDir(id) };
+  };
 
   /**
    * 会话装配的唯一入口：新建（startSession）和恢复（resumeSession）走同一份代码。
@@ -2665,14 +2684,14 @@ void app.whenReady().then(() => {
     memory: await memoryFiles.readTier("memory"),
     user: await memoryFiles.readTier("user"),
   }));
-  // projectRoot 缺省 = 全局档（project 传 null，路径按 target 走
-  // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
-  // 否则路径拼接在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
+  // projectScope 缺省 = 全局档（project 传 null，路径按 target 走
+  // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectScope，
+  // 否则路径拼接在 applyUserEdit 里抛。键一路带到 applyUserEdit（不是
   // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
   ipcMain.handle(
     CHANNELS.saveMemory,
-    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string, topic?: string) =>
-      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot), topic ?? null)
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectScope?: string, topic?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectScope), topic ?? null)
   );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
@@ -2686,11 +2705,11 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(
     CHANNELS.forgetMemory,
-    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string) => {
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectScope?: string, topic?: string) => {
       // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先要
       // 拼路径读现状，得在拼之前挡
       if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project / topic，收到 ${String(target)}`);
-      const project = memoryProject(projectRoot);
+      const project = memoryProject(projectScope);
       const cur = parseEntries(await memoryFiles.readTier(target, project?.dir, topic));
       await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project, topic ?? null);
     }
@@ -2699,10 +2718,11 @@ void app.whenReady().then(() => {
   // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
   // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
   ipcMain.handle(CHANNELS.listProjectMemories, () => memoryFiles.listProjects());
-  // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
-  ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
-    if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
-    await memoryFiles.deleteProject(root);
+  // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），连同被并走的旧副本一起，
+  // 不可恢复——确认弹窗在渲染层
+  ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, scope: unknown) => {
+    if (typeof scope !== "string" || !scope) throw new Error("作用域键必须是非空字符串");
+    await memoryFiles.deleteProject(scope);
   });
   // 主题桶分区（设置页第四档，#846）：种子 ∪ 磁盘的现状，与 memory_loaded 的
   // topics 快照走同一个 readTopics

@@ -97,10 +97,12 @@ function parseOps(args: unknown, hasProject: boolean): {
   return { target, ops, topic, createTopic };
 }
 
-/** project 由组装根传入（root = 项目根绝对路径，dir = 配置目录相对路径）。
+/** project 由组装根传入（id = 作用域键，root = 本机项目根绝对路径，
+    dir = 配置目录相对路径 = `memories/projects/<sha16(id)>`）。
+    id 与 root 在有 remote 的仓里**不同**（#886）：写盘按 id，点名检测按 root。
     null = 这个会话的 workspace 不在任何 git 仓库里 ⇒ 不给模型看 project 这个选项：
     看不见的档就不会误写，比给它一个必然报错的选项干净 */
-export function createMemoryTool(project: { root: string; dir: string } | null): Tool {
+export function createMemoryTool(project: { id: string; root: string; dir: string } | null): Tool {
   let consecutiveFailures = 0;
 
   async function execute(args: unknown, world: ExecutionWorld): Promise<string> {
@@ -172,7 +174,7 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
       // 目录自描述（设置页要显示「这份记忆属于哪个项目」）。每次写都覆盖同样内容，
       // 幂等；不做存在性检查是为了不引入「先读后写」的第二条竞态路径
       if (target === "project" && project) {
-        await world.config!.write(`${project.dir}/${PROJECT_ROOT_FILE}`, project.root);
+        await world.config!.write(`${project.dir}/${PROJECT_ROOT_FILE}`, project.id);
       }
 
       return {

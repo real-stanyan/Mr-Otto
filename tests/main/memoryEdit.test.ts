@@ -78,20 +78,22 @@ describe("applyUserEdit", () => {
       writeFile: async (rel: string, c: string) => void files.set(rel, c),
     };
     await applyUserEdit(deps, "project", "本项目门禁是 npm test", "s1", {
-      root: "/repo", dir: "memories/projects/abc123",
+      id: "github.com/o/repo", dir: "memories/projects/abc123",
     });
     expect(files.get("memories/projects/abc123/MEMORY.md")).toBe("本项目门禁是 npm test");
     const ev = store.load("s1").find((e) => e.type === "memory_user_edit");
-    // projectRoot 是"记忆文件可从日志重建"的必要部分：三档之后光看 target: "project"
-    // 分不出改的是哪个 repo（ADR-0116）
-    expect(ev).toMatchObject({ target: "project", after: "本项目门禁是 npm test", projectRoot: "/repo" });
+    // projectScope 是"记忆文件可从日志重建"的必要部分：三档之后光看 target: "project"
+    // 分不出改的是哪个 repo（ADR-0116）；落的是作用域键不是本机路径（#886）
+    expect(ev).toMatchObject({
+      target: "project", after: "本项目门禁是 npm test", projectScope: "github.com/o/repo",
+    });
   });
 
-  it("全局档不带 projectRoot（可选字段，缺席就是缺席）", async () => {
+  it("全局档不带 projectScope（可选字段，缺席就是缺席）", async () => {
     const d = deps();
     await applyUserEdit(d, "memory", "甲", "s1");
     const ev = d.store.load("s1").find((e) => e.type === "memory_user_edit")!;
-    expect("projectRoot" in ev).toBe(false);
+    expect("projectScope" in ev).toBe(false);
   });
 
   it("项目档写盘同时补 root.txt，目录自描述（否则 listProjectMemories 永远不列它）", async () => {
@@ -101,8 +103,10 @@ describe("applyUserEdit", () => {
       readFile: async (rel: string) => files.get(rel) ?? "",
       writeFile: async (rel: string, c: string) => void files.set(rel, c),
     };
-    await applyUserEdit(deps, "project", "约定一", "s1", { root: "/repo", dir: "memories/projects/abc123" });
-    expect(files.get("memories/projects/abc123/root.txt")).toBe("/repo");
+    await applyUserEdit(deps, "project", "约定一", "s1", {
+      id: "github.com/o/repo", dir: "memories/projects/abc123",
+    });
+    expect(files.get("memories/projects/abc123/root.txt")).toBe("github.com/o/repo");
   });
 
   it("project 没给 project 就抛，绝不落到全局档", async () => {

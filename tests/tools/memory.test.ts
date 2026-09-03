@@ -198,18 +198,20 @@ describe("项目档", () => {
   });
 
   it("有项目根时枚举含 project，描述里带判据（单源正文，issue #589）", () => {
-    const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
+    const tool = createMemoryTool({ id: "github.com/o/repo", root: "/repo", dir: "memories/projects/abc123" });
     const target = (tool.def.parameters as any).properties.target;
     expect(target.enum).toEqual(["memory", "user", "project", "topic"]);
     expect(tool.def.description).toContain("换个项目还成立吗");
   });
 
-  it("写 project 落到项目目录，并写 root.txt 让目录自描述", async () => {
+  // root.txt 里是**作用域键**不是本机路径（#886）：它跟着云端去别的机器，
+  // 那台机器上这个仓库的路径完全不同——写路径进去等于给出一个只在这台机器成立的身份
+  it("写 project 落到项目目录，root.txt 里是作用域键（不是本机路径）", async () => {
     const { world } = fakeWorld();
-    const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
+    const tool = createMemoryTool({ id: "github.com/o/repo", root: "/repo", dir: "memories/projects/abc123" });
     await tool.run({ target: "project", action: "add", content: "本项目门禁是 npm test" }, world);
     expect(await world.config!.read("memories/projects/abc123/MEMORY.md")).toBe("本项目门禁是 npm test");
-    expect(await world.config!.read("memories/projects/abc123/root.txt")).toBe("/repo");
+    expect(await world.config!.read("memories/projects/abc123/root.txt")).toBe("github.com/o/repo");
   });
 
   it("没有项目根却写 project：报错，绝不静默落到全局档", async () => {
@@ -222,7 +224,7 @@ describe("项目档", () => {
 
   it("project 超限报错带 2200", async () => {
     const { world } = fakeWorld();
-    const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
+    const tool = createMemoryTool({ id: "github.com/o/repo", root: "/repo", dir: "memories/projects/abc123" });
     await expect(tool.run({ target: "project", action: "add", content: "x".repeat(2300) }, world))
       .rejects.toThrow(/2200/);
   });
@@ -232,7 +234,8 @@ describe("项目档", () => {
 // 项目档写入还是反向误写。守卫拦「全局档条目点名当前项目」这半边——反方向
 // （机器事实进项目档）没有可靠的文本判据，交给判据文案
 describe("项目归位守卫", () => {
-  const proj = { root: "/Users/x/Github/Mr_Otto", dir: "memories/projects/d3d" };
+  // 点名检测按 root（本机路径）不按 id：模型写进记忆里的是它工作的那条路径
+  const proj = { id: "github.com/x/mr_otto", root: "/Users/x/Github/Mr_Otto", dir: "memories/projects/d3d" };
 
   it("target=memory 且内容含项目根路径：拒写，指路 project，不落盘", async () => {
     const { world, store } = fakeWorld();

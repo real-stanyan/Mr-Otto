@@ -16,7 +16,7 @@ import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { ToolLoopDetection } from "../shared/toolLoopGuard.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
-import { projectMemoryDir } from "./projectRoot.js";
+import { projectMemoryDir, projectScopeId } from "./projectRoot.js";
 
 /** 目录查表 + Ollama 能力补齐（装了什么、能不能看图、思不思考、窗多大只有探测知道）。
     会话里所有拿到 ModelChoice 的地方都走它。
@@ -285,7 +285,10 @@ export function createAgent(opts: {
   /** 新 session 的长期记忆快照（ADR-0060）。由 index.ts 在造 agent 之前读好——
       createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的。
       project/projectRoot 缺席 = 这个 workspace 不在任何 git 仓库里 */
-  memory?: { memory: string; user: string; project?: string; projectRoot?: string; topics?: MemoryTopicSnapshot[] };
+  memory?: {
+    memory: string; user: string; project?: string;
+    projectRoot?: string; projectScope?: string; topics?: MemoryTopicSnapshot[];
+  };
   /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
@@ -408,7 +411,11 @@ export function createAgent(opts: {
         // 项目根的会话事件对象凭空多出两个值为 undefined 的 key，破坏「旧日志
         // 形状逐字节不变」这条断言
         ...(opts.memory.projectRoot
-          ? { project: opts.memory.project ?? "", projectRoot: opts.memory.projectRoot }
+          ? {
+              project: opts.memory.project ?? "",
+              projectRoot: opts.memory.projectRoot,
+              ...(opts.memory.projectScope ? { projectScope: opts.memory.projectScope } : {}),
+            }
           : {}),
         ...(opts.memory.topics ? { topics: opts.memory.topics } : {}),
       });
@@ -613,12 +620,21 @@ export function createAgent(opts: {
   // 工具挂载在两条路径上都要发生，不能只认"刚落盘"这一种情况。
   // 反向查找最新一条（一个 session 通常只有一条，但保险起见找最后一条，
   // 与 engine.ts 里同一种查找同一种事件的写法保持一致）
-  const loadedProjectRoot =
-    opts.memory?.projectRoot ??
-    [...(resumeLog ?? [])].reverse().find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")
-      ?.projectRoot;
+  const loggedMemory = [...(resumeLog ?? [])]
+    .reverse()
+    .find((e): e is MemoryLoadedEvent => e.type === "memory_loaded");
+  // 键和路径必须出自**同一个**来源：一个来自刚读的快照、另一个来自日志，
+  // 就会造出「这个项目根配那个项目的记忆目录」这种对不上号的组合
+  const loadedMemory = opts.memory?.projectRoot ? opts.memory : loggedMemory;
+  const loadedProjectRoot = loadedMemory?.projectRoot;
+  // 作用域键（#886）：新快照/新日志里直接有；**旧日志没有这个字段**，它当时的键
+  // 就是那条绝对路径——按今天的规则重解析一次（有 remote 的仓解析出 remote 键），
+  // 恢复出来的老会话才不会把记忆写回一个已经被并走的旧目录
   const memoryProject = loadedProjectRoot
-    ? { root: loadedProjectRoot, dir: projectMemoryDir(loadedProjectRoot) }
+    ? (() => {
+        const id = loadedMemory?.projectScope ?? projectScopeId(loadedProjectRoot);
+        return { id, root: loadedProjectRoot, dir: projectMemoryDir(id) };
+      })()
     : null;
 
   // Deferred 检索口（issue #348）：可见集是**闭包外**的共享活 Set，跨 turn 存活——

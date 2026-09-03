@@ -6,7 +6,7 @@ import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adap
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
 import { classifyStatus, errorClassOf, markErrorClass, markReroute, type RerouteInfo } from "./errorClass.js";
-import { parseBillingError } from "../shared/billing.js";
+import { parseBillingError, parseSseCostComment } from "../shared/billing.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
 /** 一次请求真正用的端点 */
@@ -218,6 +218,8 @@ async function readSSE(
   reasoning: string;
   toolCalls: { id: string; name: string; args: string }[];
   usage?: Usage;
+  /** 网关贴在流末尾那笔「本次花费」（micro-USD，#857）。缺席 ≠ 0 */
+  costMicro?: number;
 }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -225,10 +227,15 @@ async function readSSE(
   let content = "";
   let reasoning = "";
   let usage: Usage | undefined;
+  let costMicro: number | undefined;
   // index 稀疏归位：理论上模型可以乱序发多个 tool_call 的碎片
   const calls: { id: string; name: string; args: string }[] = [];
 
   const feedLine = (line: string) => {
+    // #857：网关把「本次花费」贴成一行 SSE 注释追在 `data: [DONE]` 之后——
+    // 头里放不下（流式的 settle 发生在响应头早已发出之后）。别的注释行照旧跳过
+    const cost = parseSseCostComment(line);
+    if (cost !== null) { costMicro = cost; return; }
     if (!line.startsWith("data:")) return; // SSE 注释行 / 空行
     const payload = line.slice(5).trim();
     if (!payload || payload === "[DONE]") return;
@@ -264,7 +271,11 @@ async function readSSE(
   }
   if (buf) feedLine(buf); // 流关了缓冲还有货 = 服务器没带尾换行
 
-  return { content, reasoning, toolCalls: calls.filter(Boolean), ...(usage ? { usage } : {}) };
+  return {
+    content, reasoning, toolCalls: calls.filter(Boolean),
+    ...(usage ? { usage } : {}),
+    ...(costMicro !== undefined ? { costMicro } : {}),
+  };
 }
 
 export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): ModelAdapter {
@@ -409,6 +420,11 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         return {
           content: acc.content,
           route: endpoint.route ?? "direct",
+          // 尾注只在托管这条路上认（同非流式那支）：direct 打的是用户自己的
+          // 上游，那边冒出来的同名注释与我们的账本无关
+          ...(endpoint.route === "hosted" && acc.costMicro !== undefined
+            ? { creditCostMicro: acc.costMicro }
+            : {}),
           ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
           ...(acc.usage ? { usage: toTokenUsage(acc.usage) } : {}),
           ...(acc.toolCalls.length > 0
@@ -428,8 +444,8 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       const msg = data.choices[0]?.message;
       if (!msg) throw new Error("model API returned no choices");
 
-      // #857：本次花了多少 credit。只在 hosted + 非流式才有这个头（流式的 settle
-      // 发生在响应发出之后，那一刻 edge 才知道数）；direct 路压根没有，缺席 ≠ 0
+      // #857：本次花了多少 credit。非流式从响应头读；流式那支读的是流末尾那行
+      // SSE 注释（头早发出去了，settle 还没发生）。direct 路压根没有，缺席 ≠ 0
       const costHeader = res.headers?.get("x-otto-cost-micro") ?? null;
       const creditCostMicro =
         endpoint.route === "hosted" && costHeader !== null && Number.isFinite(Number(costHeader))

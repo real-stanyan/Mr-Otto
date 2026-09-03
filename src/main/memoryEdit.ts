@@ -26,9 +26,10 @@ export async function applyUserEdit(
   sessionId: string = MEMORY_EDITS_SESSION,
   // 三档记忆（Task 6）：project 档需要知道写哪个项目，缺省 null = 不是项目档。
   // 缺 project 时 memoryRelPath 会抛——绝不能悄悄落到全局档。
-  // root（项目根绝对路径）和 dir（配置目录相对路径）成对传，形状同 createMemoryTool：
-  // dir 是 root 的哈希，分开传两个参数迟早会有一处只传一半，落出一条对不上号的证据
-  project?: { root: string; dir: string } | null,
+  // id（作用域键，#886）和 dir（配置目录相对路径）成对传，形状同 createMemoryTool：
+  // dir 是 id 的哈希，分开传两个参数迟早会有一处只传一半，落出一条对不上号的证据。
+  // 这条路径（设置页 / 忘掉按钮）**只知道键不知道本机路径**——渲染层拿到的就是键
+  project?: { id: string; dir: string } | null,
   /** topic 档改的是哪个桶；其他档忽略。缺了 memoryRelPath 会抛——绝不悄悄落到别的档 */
   topic?: string | null
 ): Promise<void> {
@@ -48,17 +49,18 @@ export async function applyUserEdit(
     // root.txt 列，于是它永远不出现在设置页，可注入是按哈希查目录、根本不看 root.txt，
     // 结果是一份看不见却仍在进模型上下文的记忆（ADR-0116）
     if (target === "project" && project) {
-      await deps.writeFile(`${project.dir}/${PROJECT_ROOT_FILE}`, project.root);
+      await deps.writeFile(`${project.dir}/${PROJECT_ROOT_FILE}`, project.id);
     }
     if (sessionId === MEMORY_EDITS_SESSION && deps.store.load(sessionId).length === 0) {
       deps.store.append({ sessionId, ts: Date.now(), type: "session_created" });
       deps.store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "system" });
     }
-    // projectRoot 只在项目档上带（可选字段）：三档之后 target: "project" 不再唯一
-    // 标识一份文件，不带的话两个 repo 的手编在日志里分不开（ADR-0116）
+    // projectScope 只在项目档上带（可选字段）：三档之后 target: "project" 不再唯一
+    // 标识一份文件，不带的话两个 repo 的手编在日志里分不开（ADR-0116）。
+    // 落的是作用域键而不是本机路径（#886）——这条路径本来也拿不到路径
     deps.store.append({
       sessionId, ts: Date.now(), type: "memory_user_edit", target, before, after,
-      ...(target === "project" && project ? { projectRoot: project.root } : {}),
+      ...(target === "project" && project ? { projectScope: project.id } : {}),
       ...(target === "topic" && topic ? { topic } : {}),
     });
   });
