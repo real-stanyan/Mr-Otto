@@ -12,6 +12,7 @@
 // 那些一起带走。放进 try/catch 里现要,拿不到就只是这一个按钮不能用。
 
 import { detectImageType } from "../../src/shared/images.js";
+import { IMAGE_FIT_LADDER, asJpegName } from "../../src/shared/imageFit.js";
 import { UPLOAD_LIMITS } from "../../src/shared/remote/uploads.js";
 
 /** 挑好的一个文件。字节按需再读 —— 选完不一定会发,先读进内存是白读 */
@@ -38,20 +39,11 @@ export class NeedsRebuild extends Error {
 
 export class TooBig extends Error {}
 
-/**
- * 缩放阶梯。**一级一级往下试,每级都量真实字节数**——
- * 从像素尺寸预测 JPEG 大小是猜:同样 2048px,一张纯色图几十 KB,
- * 一张树叶几 MB。猜错的代价是用户白等一次上传。
- *
- * 顶格 2048 是有意的:模型看图基本用不到更高,而 iPhone 原图 4032px
- * 有一多半的字节花在没人会看的细节上。
- */
-const LADDER: { edge: number; quality: number }[] = [
-  { edge: 2048, quality: 0.8 },
-  { edge: 1600, quality: 0.7 },
-  { edge: 1280, quality: 0.6 },
-  { edge: 1024, quality: 0.5 },
-];
+// 缩放阶梯搬去了 src/shared/imageFit.ts —— 桌面那侧(issue #882)也要缩,
+// 两边各写一张表的话,同一张照片从手机传和从桌面传会得到不同画质,
+// 而这种差别没人会去查(同 shared/images.ts 那张签名表的理由)。
+// **这里仍然自己走阶梯**:手机上缩图的是 expo-image-manipulator,它按 uri 工作、
+// 顺带解 HEIC,和桌面那个按字节工作的编解码器不是同一台机器,共用的只有那张表。
 
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any */
 
@@ -151,11 +143,6 @@ async function readBytes(uri: string): Promise<Uint8Array> {
   return new Uint8Array(await new File(uri).bytes());
 }
 
-/** 只改扩展名。转码之后文件就是 JPEG 了,名字还挂着 .heic 会骗到人 */
-function asJpegName(name: string): string {
-  return name.replace(/\.[^./\\]*$/, "") + ".jpg";
-}
-
 /**
  * 送去分片之前的最后一步。回来的字节就是要传的字节。
  *
@@ -196,7 +183,7 @@ export async function prepareForUpload(p: Picked): Promise<{ name: string; data:
   }
   const longEdge = Math.max(width, height);
 
-  for (const step of LADDER) {
+  for (const step of IMAGE_FIT_LADDER) {
     // **只缩不放**:比目标还小的图硬拉到 2048 只会更大更糊
     const actions = longEdge > step.edge
       ? [width >= height ? { resize: { width: step.edge } } : { resize: { height: step.edge } }]

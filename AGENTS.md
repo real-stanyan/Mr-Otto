@@ -240,6 +240,7 @@ Division of labor is a project-level property; the template doesn't presume one 
 - `src/renderer/src/lib/agentPhase.ts` — 运行指示条那枚药丸写什么、配哪个 orb。六档，审批最优先；调用方保证 turn 在跑（ADR-0133 / issue #549）
 - `src/renderer/src/lib/liquidGlass.ts` / `src/renderer/src/components/LiquidGlass.tsx` — 液态玻璃卡片：位移贴图（纯逻辑）+ 挂滤镜的壳，材质配方在 `app.css` 的 `.liquid-glass`。失败模式是**静默的**（整条 backdrop-filter 被丢掉），所以 e2e 里有一条专门盯它（ADR-0132）
 - `src/main/imageIntake.ts` / `src/renderer/src/components/elements/image-generation.tsx` — 工具产出的图：字节落附件库、日志只记 ref 的那道中间件 + 显示它的卡。**上游那张卡没有 `<img>`**（完成态画的是一坨写死的渐变），本仓改动一览写在文件头（ADR-0144）
+- `src/shared/imageFit.ts` / `src/main/imageCodec.ts` — 超上限的图**先缩再入库**，缩不动才拒（ADR-0207，#882）。阶梯（长边/画质一级级往下试，每级量真实字节数）**与手机端共用一份**，干活的编解码器各是各的（桌面 Electron `nativeImage`，手机 expo-image-manipulator）；纯逻辑在 shared、编解码器注入，所以 `intakeFile` 那一层照旧不碰 electron，`encode` **必填无默认**（忘接线该编译不过）。目标 4MB 不是 10MB —— 入库成功 ≠ 送得到模型（Anthropic 单图 5MB）。天花板实测：`nativeImage` 只解 png/jpeg，webp/gif 走 `undecodable` 原样交给 10MB 那道闸
 - `src/renderer/src/lib/mcpInstalled.ts` / `src/renderer/src/components/McpServerEditor.tsx` — 已装的那几台也是卡片，
   「已接通」/「待接通」两组置顶（一张写着「连不上」的卡挂在「已接通」下面是自相矛盾；藏起来更糟——那台就再也点不到了）。
   管理面（开关/改地址/重连/删除）住在详情页里，页面下半那份等宽 id + 裸 URL + `0 资源 · 0 prompt` 的清单已删。

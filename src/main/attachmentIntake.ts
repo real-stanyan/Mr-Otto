@@ -1,10 +1,18 @@
 // attachmentIntake — ＋ 按钮选中文件的分类闸门(纯逻辑,fs 由调用方喂 bytes)。
-// 四路出口:图片(嗅探认得)→ 入附件库返 ref+预览;文档(容器签名认得)→ 转 Markdown
-// 后并入文本那条路(ADR-0046);文本(可 UTF-8、无 \0)→ 内容直接带走(发送时内联进
-// 消息,不入库);其余 → rejected 带人话理由。
+// 四路出口:图片(嗅探认得)→ 缩到能送出去的尺寸后入附件库返 ref+预览;文档(容器
+// 签名认得)→ 转 Markdown 后并入文本那条路(ADR-0046);文本(可 UTF-8、无 \0)→
+// 内容直接带走(发送时内联进消息,不入库);其余 → rejected 带人话理由。
+//
+// 图片那条出口为什么要缩:见 shared/imageFit.ts 的文件头(issue #882)。
+// 编解码由调用方注入(encode),这一层继续不碰 electron —— 它是有单元测试的纯逻辑。
 
 import { formatFromBytes, toMarkdownBytes } from "@firecrawl/anydoc";
-import { AttachmentStore, detectImageType, stripToBasename } from "../session/attachments.js";
+import {
+  AttachmentStore, IMAGE_MAX_BYTES, detectImageType, stripToBasename,
+} from "../session/attachments.js";
+import {
+  IMAGE_FIT_TARGET_BYTES, asJpegName, fitImage, type FitEncoder,
+} from "../shared/imageFit.js";
 import type { StagedAttachment } from "../shared/shellBridge.js";
 
 export const TEXT_MAX_BYTES = 100 * 1024;
@@ -22,23 +30,14 @@ const CONVERT_REASON: Record<string, string> = {
 export async function intakeFile(
   path: string,
   data: Uint8Array,
-  store: AttachmentStore
+  store: AttachmentStore,
+  /** 缩图用的编解码器。**必填**——给个默认值等于"忘了接线时静默不缩",
+      而那个失败模式是无症状的:用户只会看到一条"图片太大" */
+  encode: FitEncoder
 ): Promise<StagedAttachment> {
   const name = stripToBasename(path) ?? "(未命名)";
   const imageType = detectImageType(data);
-  if (imageType) {
-    try {
-      const ref = store.save(data, path);
-      return {
-        kind: "image",
-        ref,
-        previewDataUrl: `data:${imageType};base64,${Buffer.from(data).toString("base64")}`,
-      };
-    } catch (e) {
-      // 超限等入库拒绝:转成分类结果——一个坏文件不该炸掉整次多选
-      return { kind: "rejected", name, reason: e instanceof Error ? e.message : String(e) };
-    }
-  }
+  if (imageType) return intakeImage(path, name, data, imageType, store, encode);
 
   // 文档必须判在 \0 嗅探之前:docx 是 zip、pdf 头是 %PDF,两者都含 \0,
   // 放到后面等于永远走不到这条路。
@@ -66,6 +65,56 @@ export async function intakeFile(
     bytes: data.byteLength,
   };
 }
+
+/**
+ * 图片出口。超上限的先缩再入库,缩不动才拒 —— 一张能用的图不该因为大了一圈
+ * 就变成用户的问题(issue #882)。
+ *
+ * 三种结局各有各的说法:
+ *   缩过了      → 名字改成 .jpg(文件已经是 JPEG 了,名字还挂着 .png 会骗到人)
+ *   格式解不了  → 原样入库,能不能过交给 AttachmentStore 的 10MB 上限;
+ *                 超了的话理由要说"压不动这个格式",不是干巴巴一句"太大"
+ *   压到底还超  → 拒,并报最小那一版的真实字节数
+ */
+async function intakeImage(
+  path: string,
+  name: string,
+  data: Uint8Array,
+  imageType: string,
+  store: AttachmentStore,
+  encode: FitEncoder
+): Promise<StagedAttachment> {
+  try {
+    const fit = await fitImage(data, IMAGE_FIT_TARGET_BYTES, encode);
+    if (fit.kind === "stillTooBig") {
+      return {
+        kind: "rejected", name,
+        reason: `图片压到最小仍有 ${mb(fit.bytes)}MB,超过 ${mb(IMAGE_FIT_TARGET_BYTES)}MB 上限`,
+      };
+    }
+    if (fit.kind === "undecodable" && data.byteLength > IMAGE_MAX_BYTES) {
+      return {
+        kind: "rejected", name,
+        reason: `${imageType} 有 ${mb(data.byteLength)}MB,而本机压不动这个格式——转存成 png/jpg 再传`,
+      };
+    }
+    const shrunk = fit.kind === "shrunk";
+    const bytes = shrunk ? fit.data : data;
+    // mediaType 一律取 ref 上那个:它是 store 按最终字节的签名重新认的,
+    // 比这里从入参推更可信(转码之后 imageType 已经过期了)
+    const ref = store.save(bytes, shrunk ? asJpegName(path) : path);
+    return {
+      kind: "image",
+      ref,
+      previewDataUrl: `data:${ref.mediaType};base64,${Buffer.from(bytes).toString("base64")}`,
+    };
+  } catch (e) {
+    // 入库拒绝/解码器抛:转成分类结果——一个坏文件不该炸掉整次多选
+    return { kind: "rejected", name, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+const mb = (n: number): string => (n / 1024 / 1024).toFixed(1);
 
 /** 转 Markdown 并入文本出口。失败一律降级成 rejected —— 转换器不该炸穿闸门 */
 async function convertDocument(

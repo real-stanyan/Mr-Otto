@@ -52,6 +52,7 @@ import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
+import { nativeImageEncoder } from "./imageCodec.js";
 import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
@@ -3947,7 +3948,7 @@ void app.whenReady().then(() => {
     });
     if (picked.canceled) return [];
     return Promise.all(
-      picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore))
+      picked.filePaths.map((p) => intakeFile(p, readFileSync(p), attachmentStore, nativeImageEncoder))
     );
   });
 
@@ -3956,7 +3957,11 @@ void app.whenReady().then(() => {
   ipcMain.handle(
     CHANNELS.intakePastedFiles,
     (_e, files: { name: string; data: Uint8Array }[]) =>
-      Promise.all(files.map((f) => intakeFile(f.name, new Uint8Array(f.data), attachmentStore)))
+      Promise.all(
+        files.map((f) =>
+          intakeFile(f.name, new Uint8Array(f.data), attachmentStore, nativeImageEncoder)
+        )
+      )
   );
 
   ipcMain.handle(CHANNELS.attachmentDataUrl, (_e, id: string) => {
@@ -4095,7 +4100,7 @@ void app.whenReady().then(() => {
         remoteBridge?.pushNotice(cid, "有附件没传完,这条消息没发出去");
         return null;
       }
-      const staged = await intakeFile(file.name, file.data, attachmentStore);
+      const staged = await intakeFile(file.name, file.data, attachmentStore, nativeImageEncoder);
       if (staged.kind === "rejected") {
         // 静默丢弃在手机上和"传成功了"长得一模一样,必须回话。**只回给发的那台** ——
         // 别人没做这件事,收到一句"你的文件没收下"只会莫名其妙
