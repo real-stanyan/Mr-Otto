@@ -10,6 +10,8 @@ const flash: RouteRow = {
   baseUrl: "https://up/v1", wireModel: "deepseek-v4-flash",
   priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000, defaultMaxTokens: 1000,
 };
+/** 同款逻辑模型在另一个平台的备选路（failover 的「下一条」） */
+const alt: RouteRow = { ...flash, id: "deepseek-v4-flash@siliconflow", platform: "siliconflow", baseUrl: "https://up2/v1" };
 const caller: Caller = { uid: "u1", source: "desktop", workspaceId: "", sessionId: "" };
 
 function quotaStub(outcome: HoldOutcome = { ok: true, chargedTo: "window" }) {
@@ -48,9 +50,23 @@ const estUsageFor = (body: unknown, maxTokens = flash.defaultMaxTokens) =>
   estimateUsage(new TextEncoder().encode(JSON.stringify(body)).length, maxTokens);
 
 describe("纯函数", () => {
-  it("pickRoute：按 logicalModel 取第一条；不认识回 null", () => {
-    expect(pickRoute([flash], "deepseek-v4-flash")).toBe(flash);
+  it("pickRoute：无粘性时按有效混合价取最低（cache 权重最大）；不认识回 null", () => {
+    // 便宜站与贵站：贵站标价 in 低但 cache 价飞天，混合价反而更贵（ADR-0175 的坑）
+    const cheap: RouteRow = { ...flash, id: "flash@cheap", priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000 };
+    const trap: RouteRow = { ...flash, id: "flash@trap", priceInMicroPerM: 100_000, priceCacheMicroPerM: 50_000_000, priceOutMicroPerM: 100_000 };
+    expect(pickRoute([cheap, trap], "deepseek-v4-flash")).toBe(cheap);
     expect(pickRoute([flash], "gpt-9")).toBeNull();
+  });
+
+  it("pickRoute：粘性优先于比价——上次用的 route 还在就直接回它，哪怕它更贵（cache 不丢）", () => {
+    const cheap: RouteRow = { ...flash, id: "flash@cheap", priceCacheMicroPerM: 1 };
+    const sticky: RouteRow = { ...flash, id: "flash@sticky", priceCacheMicroPerM: 9_000_000 };
+    // 没有粘性 → 选便宜的
+    expect(pickRoute([cheap, sticky], "deepseek-v4-flash")).toBe(cheap);
+    // 有粘性且它还在 → 直接它，不比价
+    expect(pickRoute([cheap, sticky], "deepseek-v4-flash", "flash@sticky")).toBe(sticky);
+    // 粘性指的那条已经下架 → 退回比价
+    expect(pickRoute([cheap, sticky], "deepseek-v4-flash", "flash@gone")).toBe(cheap);
   });
 
   it("estimateMicro：body 字节 ÷ 3 当 prompt token，加 max_tokens × 输出价", () => {
@@ -209,15 +225,29 @@ describe("createLlmGateway", () => {
     expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
   });
 
-  it("上游 5xx → release，回 502 upstream，带上游状态码与正文片段", async () => {
+  it("上游 5xx：只有一条候选时 failover 换无可换 → release，回 502 upstream", async () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response("boom", { status: 503 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
     const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
     expect(res.status).toBe(502);
-    expect((await res.json()).error).toMatchObject({ code: "upstream", upstreamStatus: 503 });
+    expect((await res.json()).error).toMatchObject({ code: "upstream" });
     expect(calls.release).toHaveLength(1);
     expect(calls.settle).toEqual([]);
+  });
+
+  it("failover：5xx 那条换下一条候选，成功的那次照常结算", async () => {
+    const { quota, calls } = quotaStub();
+    let n = 0;
+    const up = upstream(() => (n++ === 0
+      ? new Response("boom", { status: 503 })
+      : new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 })));
+    const gw = createLlmGateway({ routes: async () => [flash, alt], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    expect(res.status).toBe(200);
+    expect(n).toBe(2);          // 两家都打过
+    expect(calls.release).toHaveLength(1);  // 病的那家释放了
+    expect(calls.settle).toHaveLength(1);   // 成功的那家结算了
   });
 
   it("上游 4xx（比如我们的 key 错）→ 也是 release + 502：客户端不该看到上游 401 然后去怀疑自己的 key", async () => {

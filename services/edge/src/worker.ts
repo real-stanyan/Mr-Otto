@@ -21,12 +21,11 @@ import {
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
   type PlanSnapshot, type QuotaState, type WindowState,
 } from "./quota.js";
-import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "./billing.js";
+import { checkoutParams, portalParams } from "./billing.js";
+import { handleWebhookEvent } from "./webhookHandler.js";
 import {
-  grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, parseGrantRow, parseGrantRows,
-  parsePlanRows, parseRouteRows, parseSubscriptionOwner,
-  parseSubscriptionRows, parseUsageEventRows, planIdForPrice, planSnapshotOf, plansQuery, routesQuery,
-  subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery,
+  grantsQuery, meFromParts, pageAll, parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionRows,
+  parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
@@ -628,8 +627,9 @@ function billingPort(env: Env): BillingPort {
         windows: { h5: WindowState; week: WindowState } | null;
         addon: { remainingMicro: number; expiresAt: number | null };
       }>(env, uid, "view", {});
-      const models = [...new Set((await routesOf(env)).map((x) => x.logicalModel))];
-      return meFromParts(v.sub, v.windows, v.addon, models);
+      const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
+      const models = [...new Set(routes.map((x) => x.logicalModel))];
+      return meFromParts(v.sub, v.windows, v.addon, models, plans);
     },
 
     async checkout(uid, target: CheckoutTarget, origin) {
@@ -672,69 +672,11 @@ function billingPort(env: Env): BillingPort {
       } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
     },
 
-    async webhook(payload, signatureHeader) {
-      const ok = await verifyStripeSignature(payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000));
-      if (!ok) return { status: 400, body: { error: { message: "签名不对", type: "otto_edge", code: "bad_signature" } } };
-      let event: unknown;
-      try { event = JSON.parse(payload); } catch { return { status: 400, body: { error: { message: "不是 JSON", type: "otto_edge", code: "bad_request" } } }; }
-      const a = actionFromEvent(event);
-      try {
-        if (a.kind === "subscription_upsert") {
-          const planId = planIdForPrice(parsePlanRows(await db.get(plansQuery())), a.priceId);
-          if (!planId) return { status: 200, body: { ignored: `unknown price ${a.priceId}` } };
-          // 乱序闸：Stripe 不保证到达顺序、重投窗口 3 天。比现有行的 last_event_at ——
-          // 没这一比，一条晚到的 created 事件能把 updated 写好的 active 覆盖回旧状态。
-          // 行不存在 / 那一列读不到（空串 → NaN）时比较恒为 false = 放行。
-          // M7：`event.created` 只到**秒**，所以同一秒内的两条事件分不出先后，
-          // 落成后写者赢（判据是 `<` 不是 `<=`）。Stripe 那边同秒的两条订阅事件本就罕见，
-          // 真要分得清得改成拿 Stripe 的对象重查一次当前状态，那是另一个量级的代价
-          const existing = parseSubscriptionRows(await db.get(subscriptionQuery(a.uid)));
-          if (existing && a.eventCreated < Date.parse(existing.last_event_at)) {
-            return { status: 200, body: { ignored: "stale event" } };
-          }
-          await db.upsert("subscription", subscriptionUpsertBody(a, planId));
-          await quotaCall(env, a.uid, "planChanged", {});
-        } else if (a.kind === "subscription_status") {
-          const owner = parseSubscriptionOwner(await db.get(subscriptionByStripeIdQuery(a.subscriptionId)));
-          if (!owner) return { status: 200, body: { ignored: `unknown subscription ${a.subscriptionId}` } };
-          if (a.eventCreated < Date.parse(owner.lastEventAt)) return { status: 200, body: { ignored: "stale event" } };
-          await db.patch(`subscription?user_id=eq.${encodeURIComponent(owner.userId)}`, {
-            status: a.status, last_event_at: new Date(a.eventCreated).toISOString(), updated_at: new Date().toISOString(),
-          });
-          await quotaCall(env, owner.userId, "planChanged", {});
-        } else if (a.kind === "grant") {
-          const unit = parsePlanRows(await db.get(plansQuery())).find((p) => p.id === "addon")?.addon_unit_micro ?? 0;
-          if (unit <= 0) return { status: 200, body: { ignored: "addon unit not configured" } };
-          // 幂等键是 payment_intent（0017 里那列 unique）。先查一次，是为了知道该
-          // 「插新的」还是「用已有那笔」——**不是为了在重投时提前返回**（I5）：
-          // 「行插进去了、通知 DO 那步炸了」以前是个治不好的半截状态（重投被这里挡掉，
-          // 热 DO 又永远等不到这笔额度）。现在照样往下通知，去重挪进 DO 按
-          // payment_intent 做，Stripe 的重试因此能把它治好
-          const existing = parseGrantRow(await db.get(grantByPaymentIntentQuery(a.paymentIntentId)));
-          let microUsd: number;
-          let expiresAt: number;
-          if (existing) {
-            // 用行里存着的那份，不是此刻重算的：单位额可能已经改过
-            microUsd = existing.microUsd;
-            expiresAt = Date.parse(existing.expiresAt);
-          } else {
-            const row = grantInsertBody(a, unit, Date.now());
-            await db.insert("credit_grant", row, {
-              ignoreDuplicates: true, onConflict: "stripe_payment_intent_id", // 同上，不是主键（I4）
-            });
-            microUsd = Number(row.micro_usd);
-            expiresAt = Date.parse(row.expires_at as string);
-          }
-          await quotaCall(env, a.uid, "addonGranted", { micro: microUsd, expiresAt, paymentIntentId: a.paymentIntentId });
-          return { status: 200, body: { ok: true, kind: a.kind, duplicate: existing !== null } };
-        }
-        return { status: 200, body: { ok: true, kind: a.kind } };
-      } catch (err) {
-        // 5xx 让 Stripe 按退避重投（它重试三天）。这里**不吞** —— 吞掉等于
-        // 用户付了钱而我们这边什么都没发生，且没有第二次机会
-        return { status: 500, body: { error: { message: err instanceof Error ? err.message : String(err), type: "otto_edge", code: "upstream" } } };
-      }
-    },
+    // 编排抽在 webhookHandler.ts（#854）：三条钱路（乱序闸 / 加购去重+通知 DO /
+    // planChanged）是纯函数可测的，这里只剩把真实的 Supabase/Stripe 递进去
+    webhook: (payload, signatureHeader) =>
+      handleWebhookEvent({ db, quotaCall: (uid, op, body) => quotaCall(env, uid, op, body) },
+        payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000)),
   };
 }
 

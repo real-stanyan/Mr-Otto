@@ -22,6 +22,11 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 
 export interface PlanRow {
   id: string; week_limit_micro: number; window5h_limit_micro: number; addon_unit_micro: number; stripe_price_id: string;
+  /** 月费（美元分）。/billing/v1/me 要把它下发给客户端——价目卡渲染这个数，改价不发版 */
+  price_usd_cents: number;
+  /** 多模态能力门禁（{"image":false,"video":false}）。读不到一律按关——
+      给没买的能力开门是漏钱，关门只是少一颗按钮 */
+  capabilities: { image: boolean; video: boolean };
 }
 export interface SubscriptionRow {
   user_id: string; plan_id: string; status: "active" | "past_due" | "canceled";
@@ -65,7 +70,7 @@ export function parseSubscriptionOwner(v: unknown): { userId: string; lastEventA
 }
 
 export function plansQuery(): string {
-  return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id";
+  return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id,price_usd_cents,capabilities";
 }
 export function parsePlanRows(v: unknown): PlanRow[] {
   if (!Array.isArray(v)) return [];
@@ -74,7 +79,12 @@ export function parsePlanRows(v: unknown): PlanRow[] {
     if (!isObj(r)) continue;
     const id = str(r.id), w = num(r.week_limit_micro), h = num(r.window5h_limit_micro), a = num(r.addon_unit_micro);
     if (id === null || w === null || h === null || a === null) continue;
-    out.push({ id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a, stripe_price_id: str(r.stripe_price_id) ?? "" });
+    const caps = isObj(r.capabilities) ? r.capabilities : {};
+    out.push({
+      id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a,
+      stripe_price_id: str(r.stripe_price_id) ?? "", price_usd_cents: num(r.price_usd_cents) ?? 0,
+      capabilities: { image: caps.image === true, video: caps.video === true },
+    });
   }
   return out;
 }
@@ -225,11 +235,17 @@ export function meFromParts(
   sub: SubscriptionRow | null,
   windows: { h5: WindowState; week: WindowState } | null,
   addon: { remainingMicro: number; expiresAt: number | null },
-  models: string[]
+  models: string[],
+  plans: PlanRow[]
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
     plan, status: sub ? sub.status : "none",
+    // 价目跟着 /me 走（ADR-0203 偏差 (a)）：plan 表是事实，渲染层不再抄一份写死的价。
+    // addon 行排除：它是一次性加购的单价，不是订阅档位，不该出现在价目卡里
+    plans: plans
+      .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
+      .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
     addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models,
   };

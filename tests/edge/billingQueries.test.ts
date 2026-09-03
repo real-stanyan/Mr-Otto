@@ -7,8 +7,8 @@ import {
 } from "../../services/edge/src/billingQueries.js";
 
 const plans = [
-  { id: "lite", week_limit_micro: 3_325_000, window5h_limit_micro: 665_000, addon_unit_micro: 0, stripe_price_id: "price_lite" },
-  { id: "addon", week_limit_micro: 0, window5h_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon" },
+  { id: "lite", week_limit_micro: 3_325_000, window5h_limit_micro: 665_000, addon_unit_micro: 0, stripe_price_id: "price_lite", price_usd_cents: 1900, capabilities: { image: false, video: false } },
+  { id: "addon", week_limit_micro: 0, window5h_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon", price_usd_cents: 1000, capabilities: { image: false, video: false } },
 ];
 const sub = {
   user_id: "u1", plan_id: "lite", status: "active", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1",
@@ -179,19 +179,23 @@ describe("写入体", () => {
 
 describe("meFromParts", () => {
   it("没订阅：plan null / status none / 没有窗口，加购与型号照给", () => {
-    const me = meFromParts(null, null, { remainingMicro: 500, expiresAt: 123 }, ["m1"]);
-    expect(me).toEqual({ plan: null, status: "none", windows: null, addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"] });
+    const me = meFromParts(null, null, { remainingMicro: 500, expiresAt: 123 }, ["m1"], plans);
+    expect(me).toEqual({
+      plan: null, status: "none", windows: null, addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
+      // plans 只带三个订阅档（addon 是加购行，不是档位），价格与 capabilities 跟着下发（#856 / #864）
+      plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false } }],
+    });
   });
   it("订阅非 active：窗口不下发（hold 此时一律拒，报满额度是谎话）", () => {
     const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 1, limitMicro: 2, resetAt: 3 } };
-    const me = meFromParts({ ...sub, status: "past_due" } as never, windows, { remainingMicro: 0, expiresAt: null }, []);
+    const me = meFromParts({ ...sub, status: "past_due" } as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans);
     expect(me.status).toBe("past_due");
     expect(me.windows).toBeNull();
     expect(me.periodEnd).toBe(Date.UTC(2026, 9, 1));
   });
   it("active：窗口原样带出，plan 只认三个档位", () => {
     const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 4, limitMicro: 5, resetAt: 6 } };
-    expect(meFromParts(sub as never, windows, { remainingMicro: 0, expiresAt: null }, []).windows).toEqual(windows);
-    expect(meFromParts({ ...sub, plan_id: "addon" } as never, windows, { remainingMicro: 0, expiresAt: null }, []).plan).toBeNull();
+    expect(meFromParts(sub as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).windows).toEqual(windows);
+    expect(meFromParts({ ...sub, plan_id: "addon" } as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).plan).toBeNull();
   });
 });
