@@ -141,6 +141,16 @@ describe("请求体", () => {
     expect(p.get("success_url")).toBe("s");
     expect(p.get("cancel_url")).toBe("c");
   });
+  // issue #910：真机上点订阅一律 400 —— Stripe 账号上 Managed Payments 默认开着，
+  // 而开着就要求每个 Product 有 tax_code。两种模式都要带这个参数：加购走的是
+  // payment 模式，它同样过 checkout/sessions 同一道校验
+  it("checkoutParams：两种模式都显式关掉 Managed Payments（#910）", () => {
+    for (const mode of ["subscription", "payment"] as const) {
+      const p = checkoutParams({ mode, priceId: "price_x", quantity: 1, uid: "u1", successUrl: "s", cancelUrl: "c" });
+      expect(p.get("managed_payments[enabled]"), mode).toBe("false");
+    }
+  });
+
   it("portalParams", () => {
     const p = portalParams("cus_1", "https://e/done");
     expect(p.get("customer")).toBe("cus_1");

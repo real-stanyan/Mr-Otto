@@ -57,6 +57,7 @@ import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js
 import type { IsolatedMergeResult, BillingSnapshotView } from "../../shared/shellBridge.js";
 import type { PlanId } from "../../shared/billing.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
+import { humanizeBillingError } from "./lib/billingError.js";
 
 /** 「发过重置邮件、还没设新密码」这笔记号。放 localStorage 而不是内存:
     用户是在**浏览器**里点的链接,回到 app 中间可能隔着一次冷启动(issue #739) */
@@ -1733,8 +1734,11 @@ export const useChat = create<ChatState>((set, get) => ({
       await window.otter.billingCheckout(target);
     } catch (e) {
       // 同 signIn 的纪律：失败落 error banner，不吞——不然点了订阅按钮
-      // 什么都没发生，用户只会以为按钮坏了
-      set({ error: bridgeErrorMessage(e) });
+      // 什么都没发生，用户只会以为按钮坏了。
+      // 过一道 humanizeBillingError（#910）：Stripe 的原文是说给维护者听的
+      // （"pass managed_payments[enabled]=false"、后台链接、账号 id），
+      // 认得出的翻成人话，认不出的原样留着
+      set({ error: humanizeBillingError(bridgeErrorMessage(e)) });
     }
   },
   async billingPortal() {
@@ -1742,7 +1746,7 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await window.otter.billingPortal();
     } catch (e) {
-      set({ error: bridgeErrorMessage(e) });
+      set({ error: humanizeBillingError(bridgeErrorMessage(e)) });
     }
   },
 
