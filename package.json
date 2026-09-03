@@ -5,7 +5,7 @@
   "description": "Mr Otto — macOS desktop GUI agent",
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p services/edge && tsc --noEmit -p services/runtime",
-    "pretest": "node scripts/fix-pty-perms.mjs",
+    "pretest": "node scripts/check-node.mjs && node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",
     "dev": "node scripts/build-island.mjs --debug && node scripts/build-siminput.mjs --debug && electron-vite dev",
@@ -22,6 +22,9 @@
     "dist:mac": "node scripts/build-island.mjs && node scripts/build-siminput.mjs && electron-vite build && electron-builder --mac --arm64",
     "dist:win": "node scripts/ensure-win-bindings.mjs && electron-vite build && electron-builder --win --x64 --config.npmRebuild=false",
     "release": "node scripts/release.mjs"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "main": "out/main/index.js",
   "keywords": [],
