@@ -185,6 +185,30 @@ describe("createLlmGateway", () => {
     expect(calls.settle[0]!.costMicro).toBe(12);
   });
 
+  it("非流式 200 但正文里挑不出 usage → 按预扣结算，不 release（#855，C1 的另一半）", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => Response.json({ choices: [{ message: { content: "ok" } }] }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const body = { model: "deepseek-v4-flash", messages: [] };
+    const res = await gw(chatReq(body), caller);
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.content).toBe("ok");
+    // 200 = 上游收了钱、正文马上出门——与流式「字节出门了」是同一件事，release 会把这笔成本送掉
+    expect(calls.release).toEqual([]);
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
+  });
+
+  it("非流式 200 但正文不是 JSON → 同样按预扣结算（#855）", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => new Response("<html>not json</html>", { status: 200 }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const body = { model: "deepseek-v4-flash", messages: [] };
+    await (await gw(chatReq(body), caller)).text();
+    expect(calls.release).toEqual([]);
+    expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
+  });
+
   it("上游 5xx → release，回 502 upstream，带上游状态码与正文片段", async () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response("boom", { status: 503 }));

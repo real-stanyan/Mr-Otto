@@ -17,16 +17,16 @@ import {
 } from "./px.js";
 import { createLlmGateway, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
-  WEEK_MS, addonExpiresAt, addonMicro, hold as quotaHold, rebuild, release as quotaRelease,
+  addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
   type PlanSnapshot, type QuotaState, type WindowState,
 } from "./quota.js";
 import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "./billing.js";
 import {
-  grantByPaymentIntentQuery, grantInsertBody, meFromParts, parseGrantRow, parsePlanRows, parseRebuildRows,
-  parseRouteRows, parseSubscriptionOwner,
-  parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery, rebuildQueries, routesQuery,
-  subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert,
+  grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, parseGrantRow, parseGrantRows,
+  parsePlanRows, parseRouteRows, parseSubscriptionOwner,
+  parseSubscriptionRows, parseUsageEventRows, planIdForPrice, planSnapshotOf, plansQuery, routesQuery,
+  subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
@@ -396,13 +396,28 @@ export class Quota extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const again = await this.ctx.storage.get<QuotaState>("state");
       if (again) return again;
-      const since = plan ? plan.periodStartMs : Date.now() - WEEK_MS;
-      const q = rebuildQueries(this.uid(), since);
       const db = supa(this.env);
+      const uid = this.uid();
+      const now = Date.now();
       try {
-        const [ev, gr, ac] = await Promise.all([db.get(q.events), db.get(q.grants), db.get(q.addonConsumed)]);
-        const rebuilt = rebuild(parseRebuildRows(ev, gr, ac), plan, Date.now());
-        await this.ctx.storage.put("state", rebuilt);
+        // #858：三条都分页翻到底，翻到上限抛错（→ 503），不静默截断。
+        // #863：grant 先拉（全部，含过期），addon 事件的起点由它算——没有活着的 grant 就一行都不拉；
+        // window 事件从「周段起点 / now−5h」较早者起拉，跨周边界还开着的 5h 窗才不会被截半。
+        const grants = parseGrantRows(await pageAll(db.get, grantsQuery(uid)));
+        const addonSince = addonSinceOf(grants, now);
+        const [win, add] = await Promise.all([
+          plan ? pageAll(db.get, usageEventsQuery(uid, "window", rebuildWindowSince(plan, now))) : Promise.resolve([]),
+          addonSince === null ? Promise.resolve([]) : pageAll(db.get, usageEventsQuery(uid, "addon", addonSince)),
+        ]);
+        const rebuilt = rebuild({ events: [...parseUsageEventRows(win), ...parseUsageEventRows(add)], grants }, plan, now);
+        // #862：把此刻活着的 grant 的幂等键并进 grantSeen。竞态是「webhook 插行 → 冷 DO 重建把
+        // 这行算进来 → webhook 通知 addonGranted」：通知到达时 storage 已有 state，不并进来
+        // 就会 append 第二份。blockConcurrencyWhile 保证通知要么排在重建前（冷、只留记号）、
+        // 要么排在重建后（记号已在 → dup），没有第三种交错
+        const seen = (await this.ctx.storage.get<string[]>("grantSeen")) ?? [];
+        const liveIds = grants.filter((g) => g.expiresAt > now && g.paymentIntentId).map((g) => g.paymentIntentId as string);
+        const nextSeen = [...new Set([...seen, ...liveIds])].slice(-GRANT_SEEN_MAX);
+        await this.ctx.storage.put({ state: rebuilt, grantSeen: nextSeen });
         return rebuilt;
       } catch (err) {
         // C1：重建失败**既不落盘也不返回空投影**，而是抛 —— 调用方回 503。
@@ -410,7 +425,7 @@ export class Quota extends DurableObject<Env> {
         // 直接 put 进 storage：一次 Supabase 抖动就把窗口用量清零、把买过的加购
         // 余额抹掉，而且从此不会再重建（storage 里有 state 了）。少扣对用户有利
         // 那条只适用于"一笔账没落"，不适用于"整份余额归零"
-        console.error(`quota rebuild 失败（${this.uid()}）：${err instanceof Error ? err.message : String(err)}`);
+        console.error(`quota rebuild 失败（${uid}）：${err instanceof Error ? err.message : String(err)}`);
         throw new QuotaUnavailable(err instanceof Error ? err.message : String(err));
       }
     });
@@ -453,7 +468,9 @@ export class Quota extends DurableObject<Env> {
       const r = quotaSettle(await this.state(plan), String(b.requestId), Number(b.costMicro), now, plan);
       if (!r) return json({ ok: false, reason: "no_hold" }); // 已结算/已释放：幂等，调用方据此不写 usage_event
       await this.ctx.storage.put("state", r.state);
-      return json({ ok: true, chargedTo: r.hold.chargedTo });
+      // #863：这笔成本落进了哪扇 5h 窗——只有真有钱进窗时才带（addon 没溢出就是 null），
+      // usage_event 记下它，冷启动重建按锚算窗，不再按事件链猜
+      return json({ ok: true, chargedTo: r.hold.chargedTo, windowOpenAt: r.windowMicro > 0 ? r.state.open5hAt : null });
     }
 
     if (op === "release") {
@@ -555,8 +572,9 @@ function quotaPort(env: Env): QuotaPort {
       const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro });
       if (r.ok !== true) return; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
+      const windowOpenAt = typeof r.windowOpenAt === "number" && Number.isFinite(r.windowOpenAt) ? r.windowOpenAt : null;
       try {
-        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), {
+        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo, windowOpenAt), {
           ignoreDuplicates: true, onConflict: "request_id", // 主键是 identity，幂等键是这一列（I4）
         });
       } catch (err) {

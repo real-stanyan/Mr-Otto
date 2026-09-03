@@ -49,7 +49,10 @@ export type BillingErrorCode =
   /** 已经有一条非 canceled 的订阅，还想再开一张订阅 Checkout（C2）。
       不是「买不起」也不是「参数错」——换档要走 Stripe 的 Customer Portal，
       再开一张会在 Stripe 那边长出**第二条订阅**，两笔一起扣款 */
-  | "already_subscribed";
+  | "already_subscribed"
+  /** webhook 正文超过 1 MB 被 edge 在读 body 之前拒掉（413）。面向 Stripe 不面向客户端，
+      列进来只是让 `parseBillingError` 认得 edge 发出的**每一个** code（#867） */
+  | "payload_too_large";
 
 export interface BillingError {
   code: BillingErrorCode;
@@ -60,7 +63,7 @@ export interface BillingError {
 
 const CODES: ReadonlySet<string> = new Set([
   "bad_token", "no_subscription", "quota_exhausted", "unknown_model", "upstream", "too_many_inflight", "bad_request",
-  "forbidden", "already_subscribed",
+  "forbidden", "already_subscribed", "payload_too_large",
 ]);
 
 const isObj = (v: unknown): v is Record<string, unknown> =>

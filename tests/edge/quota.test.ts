@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  addonExpiresAt, addonMicro, emptyState, hold, HOLD_TTL_MS, MAX_INFLIGHT, rebuild, release,
-  remaining, roll, settle, view, WEEK_MS, WINDOW_5H_MS, type PlanSnapshot,
+  addonExpiresAt, addonMicro, addonSinceOf, emptyState, hold, HOLD_TTL_MS, MAX_INFLIGHT, rebuild, rebuildWindowSince,
+  release, remaining, roll, settle, view, WEEK_MS, WINDOW_5H_MS, type PlanSnapshot,
 } from "../../services/edge/src/quota.js";
 
 const T0 = 1_800_000_000_000;
@@ -232,50 +232,164 @@ describe("view / remaining / rebuild", () => {
     expect(remaining(st, { ...plan, status: "past_due" }, T0)).toEqual({ h5: 0, week: 0, addon: 0 });
   });
 
-  it("rebuild：只算当前 5h 窗 / 当前周段内的事件；加购 = 未过期 grant 之和 − 已消耗", () => {
-    const now = T0 + WEEK_MS + 8 * 3_600_000; // 第二周段，8 小时处
+  const H = 3_600_000;
+  const g = (micro: number, expiresAt: number, createdAt: number, paymentIntentId?: string) =>
+    ({ micro, expiresAt, createdAt, ...(paymentIntentId ? { paymentIntentId } : {}) });
+
+  it("rebuild（旧行无锚）：按事件链回放固定窗；周段外的事件不进周用量", () => {
+    const now = T0 + WEEK_MS + 8 * H; // 第二周段，8 小时处
     const st = rebuild({
       events: [
-        { at: T0 + 1000, costMicro: 999, chargedTo: "window" },                    // 上一周段，不算
-        { at: now - 2 * 3_600_000, costMicro: 10, chargedTo: "window" },           // 本周段，落在 now-6h 开的那扇窗内(4h<5h)
-        { at: now - 6 * 3_600_000, costMicro: 20, chargedTo: "window" },           // 本周段，开窗事件
-        { at: now - 100, costMicro: 5, chargedTo: "addon" },                       // 加购不进窗
+        { at: T0 + 1000, costMicro: 999, chargedTo: "window", windowOpenAt: null },   // 上一周段，不进周用量
+        { at: now - 2 * H, costMicro: 10, chargedTo: "window", windowOpenAt: null },  // 落在 now-6h 开的那扇窗内(4h<5h)
+        { at: now - 6 * H, costMicro: 20, chargedTo: "window", windowOpenAt: null },  // 开窗事件
       ],
-      grants: [{ micro: 1000, expiresAt: now + 1 }, { micro: 999, expiresAt: now - 1 }],
-      addonConsumedMicro: 300,
+      grants: [],
     }, plan, now);
     expect(st.usedWeekMicro).toBe(30);
-    // C3：固定窗按事件顺序回放——now-6h 开窗、now-2h 落在窗内(4h<5h)不重开，used5h 累到 30；
-    // 但这扇窗的寿命是 [now-6h, now-1h)，回放完还要再核一次「以 now 而论它是否已经到期」——
-    // now 比 now-1h 晚 1 小时，窗口已经关闭超过 5h 寿命，所以最终 open5hAt/used5hMicro 归零
-    // （这正是 C3 要修的问题：不是滑动窗，不能只看两个事件之间的间隔，还要看到「现在」的间隔）
+    // C3：now-6h 开窗、now-2h 落在窗内不重开；但这扇窗的寿命是 [now-6h, now-1h)，以 now 而论已经关了
     expect(st.used5hMicro).toBe(0);
     expect(st.open5hAt).toBeNull();
-    expect(addonMicro(st)).toBe(700);
   });
 
-  it("rebuild：窗口开启距 now 不到 5h 寿命 → 回放后仍然保持打开（C3，与上一条互补的分支）", () => {
-    const now = T0 + WEEK_MS + 3 * 3_600_000; // 距开窗只过了 2 小时，还没到 5h 寿命
-    const st = rebuild({
-      events: [{ at: now - 2 * 3_600_000, costMicro: 10, chargedTo: "window" }],
-      grants: [],
-      addonConsumedMicro: 0,
-    }, plan, now);
-    expect(st.open5hAt).toBe(now - 2 * 3_600_000);
+  it("rebuild（旧行无锚）：窗口开启距 now 不到 5h 寿命 → 回放后仍然保持打开（C3 互补分支）", () => {
+    const now = T0 + WEEK_MS + 3 * H;
+    const st = rebuild({ events: [{ at: now - 2 * H, costMicro: 10, chargedTo: "window", windowOpenAt: null }], grants: [] }, plan, now);
+    expect(st.open5hAt).toBe(now - 2 * H);
     expect(st.used5hMicro).toBe(10);
+  });
+
+  it("rebuild（带锚）：最后一条事件的锚就是此刻这扇窗，同锚的成本相加；链回放会算错的形状这里算对（#863）", () => {
+    const now = T0 + WEEK_MS + 3 * H;
+    // 线上：窗 A 开于 now-9h（关于 now-4h），窗 B 开于 now-3h。now-4h 那条事件属于 A（hold 在 A 内、settle 落在 A）
+    // 链回放从 now-5h 起看到的第一条是 now-4h，会把它当成开窗，得出「窗开于 now-4h、用了 15」——错
+    const st = rebuild({
+      events: [
+        { at: now - 4 * H, costMicro: 5, chargedTo: "window", windowOpenAt: now - 9 * H },
+        { at: now - 3 * H, costMicro: 10, chargedTo: "window", windowOpenAt: now - 3 * H },
+        { at: now - 1 * H, costMicro: 7, chargedTo: "window", windowOpenAt: now - 3 * H },
+      ],
+      grants: [],
+    }, plan, now);
+    expect(st.open5hAt).toBe(now - 3 * H);
+    expect(st.used5hMicro).toBe(17);
+    expect(st.usedWeekMicro).toBe(17); // now-4h 那条在周段起点（now-3h）之前，不进周用量
+  });
+
+  it("rebuild（带锚）：锚 + 5h 已过 → 窗已关，不管最后一条事件多晚", () => {
+    const now = T0 + WEEK_MS + 8 * H;
+    const st = rebuild({
+      events: [{ at: now - 1 * H, costMicro: 7, chargedTo: "window", windowOpenAt: now - 6 * H }],
+      grants: [],
+    }, plan, now);
+    expect(st.open5hAt).toBeNull();
+    expect(st.used5hMicro).toBe(0);
+    expect(st.usedWeekMicro).toBe(7);
+  });
+
+  it("rebuild：5h 窗跨周边界不被截断——锚早于周段起点的事件进 5h 窗、不进周用量（#863 第二条）", () => {
+    const now = T0 + WEEK_MS + 1 * H; // 第二周段刚过 1 小时
+    const ws = T0 + WEEK_MS;
+    const st = rebuild({
+      events: [
+        { at: ws - 2 * H, costMicro: 10, chargedTo: "window", windowOpenAt: ws - 3 * H }, // 上周段，窗 [ws-3h, ws+2h) 还开着
+        { at: ws + 30 * 60_000, costMicro: 5, chargedTo: "window", windowOpenAt: ws - 3 * H },
+      ],
+      grants: [],
+    }, plan, now);
+    expect(st.open5hAt).toBe(ws - 3 * H);
+    expect(st.used5hMicro).toBe(15); // 两笔都在这扇窗里
+    expect(st.usedWeekMicro).toBe(5); // 周用量只算周段内那笔（roll 在周边界清过）
+    // 拉取起点也要跨过去：周段起点与 now−5h 取早的那个
+    expect(rebuildWindowSince(plan, now)).toBe(now - WINDOW_5H_MS);
+    expect(rebuildWindowSince(plan, ws + 6 * H)).toBe(ws);
+  });
+
+  it("rebuild：加购逐笔重放——过期 grant 的历史消费落在它自己头上，不扣活着的那笔（#863 第一条）", () => {
+    const now = T0 + 10 * H;
+    const st = rebuild({
+      events: [
+        { at: T0 - 20 * H, costMicro: 300, chargedTo: "addon" }, // 那时只有 g1 活着，扣 g1
+        { at: T0 + 1 * H, costMicro: 100, chargedTo: "addon" },  // g1 已过期，扣 g2
+      ],
+      grants: [
+        g(1000, T0 - 10 * H, T0 - 30 * H), // g1：已过期
+        g(1000, now + 1e9, T0),            // g2：活着
+      ],
+    }, plan, now);
+    // 以前：总消耗 400 全扣到 g2 → 600；现在 g2 只承担自己那 100
+    expect(addonMicro(st)).toBe(900);
+  });
+
+  it("rebuild：加购先到期先扣，与 settle 同一规则；扣光的 grant 不留 0 额度的空壳", () => {
+    const now = T0 + 10 * H;
+    const st = rebuild({
+      events: [{ at: T0 + 1 * H, costMicro: 150, chargedTo: "addon" }],
+      grants: [g(100, now + 2e9, T0 - H), g(100, now + 1e9, T0)], // 后买的先到期 → 先扣它
+    }, plan, now);
+    expect(st.grants).toEqual([{ micro: 50, expiresAt: now + 2e9 }]);
+  });
+
+  it("rebuild：消费不会预支到那一刻还没买的 grant 上", () => {
+    const now = T0 + 10 * H;
+    const st = rebuild({
+      events: [{ at: T0 + 1 * H, costMicro: 100, chargedTo: "addon" }], // 那时一笔 grant 都没有
+      grants: [g(500, now + 1e9, T0 + 2 * H)],
+    }, plan, now);
+    expect(addonMicro(st)).toBe(500);
+  });
+
+  it("rebuild：addon 溢出到窗口的差额按锚进 5h 窗、按周段进周用量（settle 的 I2 在重建里的镜像）", () => {
+    const now = T0 + WEEK_MS + 3 * H;
+    const st = rebuild({
+      events: [
+        { at: now - 2 * H, costMicro: 10, chargedTo: "window", windowOpenAt: now - 2 * H },
+        { at: now - 1 * H, costMicro: 130, chargedTo: "addon", windowOpenAt: now - 2 * H }, // grant 只有 100，溢 30
+      ],
+      grants: [g(100, now + 1e9, T0)],
+    }, plan, now);
+    expect(addonMicro(st)).toBe(0);
+    expect(st.used5hMicro).toBe(40);
+    expect(st.usedWeekMicro).toBe(40);
+  });
+
+  it("addonSinceOf：最早那笔活着的 grant 的进账时刻；没有活着的就 null（一行 addon 事件都不用拉）", () => {
+    const now = T0;
+    expect(addonSinceOf([], now)).toBeNull();
+    expect(addonSinceOf([g(1, T0 - 1, T0 - 100)], now)).toBeNull();
+    expect(addonSinceOf([g(1, T0 - 1, T0 - 100), g(1, T0 + 1, T0 - 50), g(1, T0 + 2, T0 - 20)], now)).toBe(T0 - 50);
   });
 
   it("rebuild 对事件里的 NaN 成本消毒，不会污染累计（fix round 2, finding 2）", () => {
-    const now = T0 + WEEK_MS + 2 * 3_600_000;
+    const now = T0 + WEEK_MS + 2 * H;
     const st = rebuild({
       events: [
-        { at: now - 1 * 3_600_000, costMicro: 10, chargedTo: "window" },
-        { at: now - 30 * 60_000, costMicro: NaN, chargedTo: "window" },
+        { at: now - 1 * H, costMicro: 10, chargedTo: "window", windowOpenAt: now - H },
+        { at: now - 30 * 60_000, costMicro: NaN, chargedTo: "window", windowOpenAt: now - H },
+        { at: now - 20 * 60_000, costMicro: NaN, chargedTo: "addon" },
       ],
-      grants: [],
-      addonConsumedMicro: 0,
+      grants: [g(NaN, now + 1e9, T0)],
     }, plan, now);
     expect(st.usedWeekMicro).toBe(10);
     expect(st.used5hMicro).toBe(10);
+    expect(addonMicro(st)).toBe(0);
+  });
+
+  it("rebuild：没有订阅也重建加购余额（加购不依赖订阅），窗口保持空", () => {
+    const now = T0;
+    const st = rebuild({ events: [], grants: [g(700, now + 1e9, T0 - H)] }, null, now);
+    expect(addonMicro(st)).toBe(700);
+    expect(st.open5hAt).toBeNull();
+    expect(st.weekStartAt).toBeNull();
+  });
+
+  it("settle 回 windowMicro：window 结算 = 成本；addon 没溢出 = 0；addon 溢出 = 差额（usage_event 的锚靠它判要不要带）", () => {
+    const w = hold(emptyState(), plan, "a", 100, T0); if (!w.ok) throw new Error();
+    expect(settle(w.state, "a", 60, T0 + 1, plan)!.windowMicro).toBe(60);
+    const base = { ...emptyState(), used5hMicro: 665_000, open5hAt: T0, weekStartAt: T0, grants: [{ micro: 50, expiresAt: T0 + 1e9 }] };
+    const a = hold(base, plan, "b", 10, T0); if (!a.ok) throw new Error();
+    expect(a.chargedTo).toBe("addon");
+    expect(settle(a.state, "b", 10, T0 + 1, plan)!.windowMicro).toBe(0);
+    expect(settle(a.state, "b", 80, T0 + 1, plan)!.windowMicro).toBe(30);
   });
 });
