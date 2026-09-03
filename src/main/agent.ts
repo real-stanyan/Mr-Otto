@@ -810,7 +810,8 @@ export function createAgent(opts: {
             )
           ),
           approver
-        )
+        ),
+        () => approvalMode
       ),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),
