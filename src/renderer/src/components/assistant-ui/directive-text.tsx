@@ -27,7 +27,9 @@ export function createDirectiveText(
     const segments = formatter.parse(text);
 
     if (segments.length === 1 && segments[0]!.kind === "text") {
-      return <>{text}</>;
+      // 纯文本也要 whitespace-pre-wrap——用户 Shift+回车 打的换行不能被
+      // white-space: normal 吃掉（#879）
+      return <span className="whitespace-pre-wrap">{text}</span>;
     }
 
     return (

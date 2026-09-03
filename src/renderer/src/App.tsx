@@ -3235,7 +3235,9 @@ function ChatComposer() {
 
   const submit = (opts?: { queue?: boolean }) => {
     const queue = opts?.queue ?? false;
-    const text = input.trim();
+    // trim() 会把首尾换行全剥掉——用户 Shift+回车 打的格式（开头空行、结尾空行）
+    // 就丢了。只剥首尾的空行，保留中间的所有换行。
+    const text = input.replace(/^\n+|\n+$/g, "");
     // 只贴了图不打字也算一条消息:附件本身就是内容
     if (!text && staged.length === 0) return;
     // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
