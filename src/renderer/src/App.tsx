@@ -77,6 +77,7 @@ import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
+import { PlanQuotaSection } from "./components/PlanQuotaSection.js";
 import { SessionActivity } from "./components/SessionActivity.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
@@ -362,6 +363,10 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
             只报一个总数会把这件事抹平 */}
         <CostPanel events={events} />
       </div>
+
+      {/* 套餐额度(ADR-0174 的双固定窗)。读起来是一路往外拉:窗口里装了什么 →
+          这个会话花了多少 → 我的账号还剩多少。没订阅时整段不画 */}
+      <PlanQuotaSection />
     </TooltipContent>
   );
 }

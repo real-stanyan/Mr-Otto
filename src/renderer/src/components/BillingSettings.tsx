@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button.js";
-import { addonLine, countdown, planCards, planCardsOrNull, upgradeCards, windowPercent } from "../lib/billingView.js";
+import { addonLine, countdown, liveWindow, planCards, planCardsOrNull, upgradeCards, windowPercent } from "../lib/billingView.js";
 import { fmtCredit } from "../../../shared/billing.js";
 import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
@@ -42,12 +42,16 @@ function PlanCard({ id, name, priceUsd, blurb, pending, disabled, onSubscribe }:
   );
 }
 
-/** 一条额度窗口：标题 + 用量/倒计时 + 进度条 */
-function WindowRow({ label, w, now }: {
+/** 一条额度窗口：标题 + 用量/倒计时 + 进度条。
+    过了 resetAt 的窗按清零画（liveWindow）——快照来自上一次网关响应，而窗口到点会
+    自己清零；开着这一页坐过一扇窗的人会看着一个早就不成立的占用。与浮层里那段
+    （components/PlanQuotaSection.tsx）共用同一个换算，两处报同一个窗不能给出两个数 */
+function WindowRow({ label, w: raw, now }: {
   label: string;
   w: { usedMicro: number; limitMicro: number; resetAt: number };
   now: number;
 }) {
+  const w = liveWindow(raw, now);
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between text-[11.5px]">
