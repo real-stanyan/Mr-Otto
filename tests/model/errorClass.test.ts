@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyStatus, errorClassOf, markErrorClass } from "../../src/model/errorClass.js";
+import { classifyStatus, errorClassOf, markErrorClass, markReroute, rerouteInfoOf } from "../../src/model/errorClass.js";
 
 // 错误分类（issue #389）：抛错处贴标记，下游读标记——不从文案倒推。
 
@@ -29,5 +29,12 @@ describe("markErrorClass / errorClassOf", () => {
     const dirty = new Error("x");
     (dirty as Error & { errorClass?: unknown }).errorClass = "bogus";
     expect(errorClassOf(dirty)).toBeUndefined();
+  });
+
+  it("markReroute / rerouteInfoOf：info 贴在错误上，跨 try 边界原样上抛", () => {
+    const e = markReroute(markErrorClass(new Error("x"), "reroute"), { window: "week", resetAt: 5 });
+    expect(errorClassOf(e)).toBe("reroute");
+    expect(rerouteInfoOf(e)).toEqual({ window: "week", resetAt: 5 });
+    expect(rerouteInfoOf(new Error("plain"))).toBeUndefined();
   });
 });

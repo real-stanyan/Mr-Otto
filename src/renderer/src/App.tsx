@@ -111,6 +111,7 @@ import { thinkingSpecOf, useModelChoice } from "./lib/useModelChoice.js";
 import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
+import { BillingSettings } from "./components/BillingSettings.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { PermissionsSettings } from "./components/PermissionsSettings.js";
@@ -1328,6 +1329,7 @@ function KeysPage() {
         <SettingsTitle id="keys" />
       </header>
       <section className={SETTINGS_BODY}>
+        <BillingSettings />
         <ModelProviderSettings />
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>

@@ -4,6 +4,7 @@
 import type { ModelLane } from "../shared/modelLane.js";
 import type { MemoryTarget } from "../shared/memoryStore.js";
 import type { ResidueSnapshot, ResidueItem, CleanupResult } from "../shared/residue.js";
+import type { ModelErrorClass } from "../model/errorClass.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -102,6 +103,10 @@ export interface AssistantMessageEvent extends SessionEventBase {
       非流式路径(没传 onAssistantDelta)测不到 → 字段缺席,不是 0。
       可选 = 旧日志照常重放 */
   reasoningMs?: number;
+  /** 这条回复走的哪条路（ADR-0176）：hosted = 官方 key + 订阅额度，direct = 用户自己
+      的 key。UI 据此决定显示「X credit」还是「$X」（决定五）。缺省 = direct（旧日志 /
+      子会话），可选 = 旧日志照常重放 */
+  route?: "hosted" | "direct";
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */
@@ -162,6 +167,18 @@ export interface ModelChangedEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）；
       落进日志而不是当运行时偏好，是因为它决定这个 turn 的钱从谁账上出 */
   lane?: ModelLane;
+}
+
+/** 额外 N：调用中途改道（issue #696）。托管额度用完、自动落到用户自己的 key 那一刻——
+    钱从谁账上出变了，日志推不出来（assistant_message.route 只说结果，不说为什么），
+    而 UI 要在那一刻提示一次「本次起用的是你自己的 key」。ignorable：模型不可见的注记 */
+export interface RouteChangedEvent extends SessionEventBase {
+  type: "route_changed";
+  from: "hosted" | "direct";
+  to: "hosted" | "direct";
+  reason: "quota_exhausted";
+  resetAt?: number;
+  ignorable: true;
 }
 
 /** 云会话（工作区群聊）的身份（issue #833）。目前只需要 workspaceId——
@@ -291,7 +308,7 @@ export interface TurnEndedEvent extends SessionEventBase {
       error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错
       那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
       缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
-  errorClass?: "rate-limit" | "retryable" | "fatal";
+  errorClass?: ModelErrorClass;
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md
@@ -749,6 +766,7 @@ export type SessionEvent =
   | ApprovalDecisionEvent
   | ToolResultEvent
   | ModelChangedEvent
+  | RouteChangedEvent
   | SessionArchivedEvent
   | SessionUnarchivedEvent
   | SessionRenamedEvent
@@ -804,6 +822,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   approval_decision: true,
   tool_result: true,
   model_changed: true,
+  route_changed: true,
   session_archived: true,
   session_unarchived: true,
   session_renamed: true,

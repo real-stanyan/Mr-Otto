@@ -41,6 +41,7 @@ Realtime 通不通决定的是**快慢不是有无**(ADR-0027):客户端在订�
 | `0011_remote_devices.sql` | 手机端远程投影的 `devices` 配对表（ADR-0094 起四篇） | **尚未在 Cloud 上执行**，见下节；不是本目录里唯一没跑的，但它是唯一有人在等的 |
 | `0012_drop_poker.sql` | 删掉德州扑克的全部表 / 函数 / policy | 删除面**不含**钱包:`token_*` 三张表和 `grant_tokens` / `spend_tokens` / `rebuild_balance` 是另一套(休眠中的)功能,网关还在用 |
 | `0013_realtime_publication.sql` | 把好友三张表重新加回 `supabase_realtime` publication | 迁 Cloud 时 schema 和数据都过去了、publication 成员关系没有。没跑这一条时不报错,只是"慢":推送全断,一路走轮询兜底(ADR-0027) |
+| `0017_subscriptions.sql` | 订阅制五张表（`plan` / `subscription` / `credit_grant` / `usage_event` / `model_route`）+ RLS；seed 在 `seed/0017_plans_routes.sql`（档位数字与首批价表，**价格待核**） | ADR-0174 起三篇 + spec 2026-09-02；旧 `token_*` 三张不动不认（#696）。**尚未在 Cloud 上执行** |
 
 ## 真库执行状态
 
@@ -57,6 +58,8 @@ public 下只剩 `profiles` / `friendships` / `messages` 与 `token_*` 三张,�
 但 **`0011_remote_devices.sql` 尚未执行**——用 anon key 探 PostgREST,`profiles` 回 200 而
 `devices` 回 404(与一个不存在的表同码,已用对照组确认)。手机端远程投影(ADR-0094 起四篇)
 的配对一连就会 404,计划 B 开工前必须先补这一条。`0010` 的执行状态未核。
+
+`0017_subscriptions.sql` 及其 seed(`seed/0017_plans_routes.sql`)**尚未在 Cloud 上执行**。
 
 这一行会过期,所以它记的是**日期**不是「已完成」:新增 migration 之后要么补一行,
 要么直接跑一遍 checks —— 校验脚本不留痕,想知道真库是什么形状,跑它比读这段字准。

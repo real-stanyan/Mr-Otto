@@ -5,7 +5,8 @@
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
-import { classifyStatus, errorClassOf, markErrorClass } from "./errorClass.js";
+import { classifyStatus, errorClassOf, markErrorClass, markReroute, type RerouteInfo } from "./errorClass.js";
+import { parseBillingError } from "../shared/billing.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
 /** 一次请求真正用的端点 */
@@ -14,6 +15,8 @@ export interface ResolvedEndpoint {
   apiKey: string;
   /** 附加请求头 */
   headers?: Record<string, string>;
+  /** 走的哪条路；缺省 direct */
+  route?: "hosted" | "direct";
 }
 
 export interface OpenAICompatibleOptions {
@@ -48,6 +51,11 @@ export interface OpenAICompatibleOptions {
   /** 重试/超时参数覆盖。生产装配用默认常量；唯一例外是本机推理
       （keyless，装配时传 localTiming()）；测试也走这里。 */
   timing?: Partial<AdapterTiming>;
+  /** 每次 2xx 响应的头（托管模式的剩余额度从这里刷，见 main/hostedQuota.ts） */
+  onResponse?: (info: { route: "hosted" | "direct"; headers: Headers }) => void;
+  /** 网关说额度用完那一刻（改道之前）。调用方据此把快照标成 exhausted，
+      让紧接着的 resolveEndpoint 给出另一条路 */
+  onReroute?: (info: RerouteInfo) => void;
 }
 
 /** 传输层健壮性参数（issue #283）。原则：**首 token 前**的失败可重试（限流/网络闪断/
@@ -59,7 +67,10 @@ export interface AdapterTiming {
   maxAttempts: number;
   /** 第 n 次重试前的退避毫秒数；越界取末位 */
   backoffMs: readonly number[];
-  /** fetch 发出后多久没收到响应头就掐断（连接挂死的 TCP 会让 await 永远不回） */
+  /** fetch 发出后多久没收到响应头就掐断（连接挂死的 TCP 会让 await 永远不回）。
+      不是所有云端 API 都「头先回、再慢慢吐字」：Kimi Code（k3）prefill 完才发响应头，
+      30k token 冷 prefill 实测 33s（issue #847）。门槛太紧的代价是复利的——掐断让
+      服务端那次 prefill 作废，重试又从冷的开始，上下文越长越必炸 */
   headersTimeoutMs: number;
   /** SSE 流上多久没有任何字节就掐断（连上了但服务端不再吐字的挂死态） */
   idleTimeoutMs: number;
@@ -68,12 +79,12 @@ export interface AdapterTiming {
 const DEFAULT_TIMING: AdapterTiming = {
   maxAttempts: 3,
   backoffMs: [500, 2000],
-  headersTimeoutMs: 30_000,
+  headersTimeoutMs: 120_000, // 原 30s，#847：得容得下长上下文的冷 prefill
   idleTimeoutMs: 90_000,
 };
 
 /** 本机推理（keyless，Ollama）的超时上限：10 分钟。
-    默认的 30s/90s 是给云端 API 定的——那里的静默意味着连接挂死。本机大模型
+    默认的 120s/90s 是给云端 API 定的——那里的静默意味着连接挂死。本机大模型
     在**首 token 前**要冷加载权重 + 整段上下文 prefill，期间 Ollama 的
     OpenAI 兼容流一个字节都不发，27B 级模型带长上下文轻松超 90s；这是在干活，
     不是挂死。两个看门狗都放宽（headers 也可能等到模型加载后才回）；用户等不及
@@ -351,12 +362,21 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       if (!res.ok) {
         const errBody = await res.text();
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(errBody); } catch { /* 非 JSON：不是 edge 信封 */ }
+        const billing = parseBillingError(res.status, parsed);
+        if (billing?.code === "quota_exhausted") {
+          const info: RerouteInfo = { ...(billing.window ? { window: billing.window } : {}), ...(billing.resetAt !== undefined ? { resetAt: billing.resetAt } : {}) };
+          opts.onReroute?.(info);
+          throw markRetryable(markReroute(markErrorClass(new Error(`model API 429: ${billing.message}`), "reroute"), info));
+        }
         const err = markErrorClass(
           new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
           classifyStatus(res.status)
         );
         throw errorClassOf(err) === "fatal" ? err : markRetryable(err);
       }
+      opts.onResponse?.({ route: endpoint.route ?? "direct", headers: res.headers });
 
       // ---- 流式分支：SSE 攒完整消息，途中 onDelta 直播 ----
       if (onDelta) {
@@ -388,6 +408,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         const acc = await readSSE(watched, onDelta).catch(normalize);
         return {
           content: acc.content,
+          route: endpoint.route ?? "direct",
           ...(acc.reasoning ? { reasoning: acc.reasoning } : {}),
           ...(acc.usage ? { usage: toTokenUsage(acc.usage) } : {}),
           ...(acc.toolCalls.length > 0
@@ -409,6 +430,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       return {
         content: msg.content ?? "",
+        route: endpoint.route ?? "direct",
         ...((msg.reasoning_content ?? msg.reasoning)
           ? { reasoning: msg.reasoning_content ?? msg.reasoning ?? "" }
           : {}),
@@ -466,11 +488,18 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
 
       // 重试循环（issue #283）：只重试贴了 retryable 标记的失败（首 token 前的
       // 限流/瞬时故障/网络闪断/静默）。用户 abort 优先于一切——退避窗口里也能醒
+      let rerouted = false;
       for (let attempt = 1; ; attempt++) {
         signal?.throwIfAborted();
         try {
           return await attemptChat(body, onDelta, signal);
         } catch (err) {
+          if (errorClassOf(err) === "reroute") {
+            // 改道只给一次机会：第二次还是额度用完 = 另一条路也没有，抛给 engine
+            if (rerouted || signal?.aborted) throw err;
+            rerouted = true;
+            continue; // 不睡退避——等的是窗口不是上游
+          }
           if (!isRetryable(err) || attempt >= timing.maxAttempts || signal?.aborted) throw err;
           await sleep(
             timing.backoffMs[Math.min(attempt - 1, timing.backoffMs.length - 1)] ?? 0,

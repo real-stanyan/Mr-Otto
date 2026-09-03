@@ -98,6 +98,7 @@ import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { routeModel } from "./modelRoute.js";
+import type { HostedQuota } from "./hostedQuota.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import type { Approver } from "../loop/approvalGate.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
@@ -203,6 +204,8 @@ export function createAgent(opts: {
   resumeSessionId?: string;
   /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
   attachments: AttachmentStore;
+  /** 托管额度（订阅制，ADR-0176）。index.ts 注入；子会话/测试不给 = 路由永远不出 hosted */
+  hosted?: { quota: HostedQuota; edgeBaseUrl: () => string; accessToken: () => Promise<string | null> };
   /** 浏览器能力工厂(index.ts 注入,按 sessionId 绑到 browserHub)。
       不给 = 这个装配没有浏览器,browser_read 会明确报错(测试和裸装配照旧) */
   makeBrowser?: (sessionId: string) => BrowserCapability;
@@ -499,15 +502,30 @@ export function createAgent(opts: {
   //
   // 端点每次请求现算(resolveEndpoint),不在构造时定死:用户可能在会话中途填了
   // 自己的 key,路线该当场改,而不是等重开会话。
+  //
+  // lastRoute 记的是"最近一次 resolveEndpoint 给出的结局"，供 onReroute 落
+  // route_changed 时填 from——它总是紧跟在真正用来发请求的那次 resolve 之后更新
+  // （adapter 每次真发请求前都会调 resolveEndpoint），onReroute 触发时它就是
+  // "刚才那次请求走的哪条路"，不需要另外记账
+  let lastRoute: "hosted" | "direct" = "direct";
   const resolveEndpoint = async (choice: ModelChoice) => {
+    const h = opts.hosted;
     const route = routeModel({
       choice,
       ownKey: process.env[choice.apiKeyEnv] ?? "",
       ownBaseUrl: process.env[choice.baseUrlEnv],
       lane, // 每次请求现读:会话中途换 lane,下一次调用就该改道(同 key)
+      ...(h
+        ? {
+            hosted: h.quota.routeInput(choice.model),
+            hostedBaseUrl: `${h.edgeBaseUrl()}/llm/v1`,
+            ...(await h.accessToken().then((t) => (t ? { hostedToken: t } : {}))),
+          }
+        : {}),
     });
     if (route.kind === "blocked") throw new Error(route.reason);
-    return { baseUrl: route.baseUrl, apiKey: route.apiKey };
+    lastRoute = route.kind;
+    return { baseUrl: route.baseUrl, apiKey: route.apiKey, route: route.kind };
   };
 
   const makeAdapter = (choice: ModelChoice) =>
@@ -529,6 +547,39 @@ export function createAgent(opts: {
       // 本机推理（Ollama）：首 token 前的冷加载 + prefill 是在干活不是挂死，
       // 看门狗放宽到 10 分钟（见 localTiming 的注释）；云端型号 {} = 默认
       timing: localTiming(choice),
+      // 托管模式的剩余额度从每次 2xx 响应头刷新（main/hostedQuota.ts）
+      onResponse: ({ route, headers }) => { if (route === "hosted") opts.hosted?.quota.noteHeaders(headers); },
+      // 网关说额度用完那一刻（改道之前，adapter 紧接着会用新的 resolveEndpoint 重试一次）。
+      // 落一条 route_changed：钱从谁账上出变了，这个事实日志推不出来（assistant_message.route
+      // 只说这个 turn 最终走了哪条路，不说"中途曾经改过道"）
+      onReroute: (info) => {
+        const h = opts.hosted;
+        if (!h) return;
+        h.quota.noteExhausted(info);
+        // "to" 是什么不能拍脑袋写死 direct——没配 key 的话下一次 resolve 会直接
+        // blocked（整个 turn 报错），那就不是"改道成功"，不该落一条撒谎的事件。
+        // 用同一份 routeModel 现算一次："额度已耗尽"这个新事实喂进去，看它给出
+        // 什么结局；hosted 分支的条件里已经含 !exhausted，这里强制 exhausted:true
+        // 之后 routeModel 永远不会再给 hosted，只会给 direct 或 blocked 之一
+        const next = routeModel({
+          choice,
+          ownKey: process.env[choice.apiKeyEnv] ?? "",
+          ownBaseUrl: process.env[choice.baseUrlEnv],
+          lane,
+          hosted: { ...h.quota.routeInput(choice.model), exhausted: true },
+          hostedBaseUrl: `${h.edgeBaseUrl()}/llm/v1`,
+        });
+        if (next.kind === "blocked") return; // 没有真的改道——这个 turn 会以 blocked 报错收场
+        const ev = store.append({
+          sessionId, ts: Date.now(), type: "route_changed", ignorable: true,
+          from: lastRoute, to: next.kind,
+          reason: "quota_exhausted", ...(info.resetAt !== undefined ? { resetAt: info.resetAt } : {}),
+        });
+        // 同 branch_checked_out 那条中途 ignorable 事件的纪律：落盘之外还要推
+        // live——"本次起用的是你自己的 key"这句提示该在这个 turn 还没结束时就
+        // 出现在 UI 上，不是等下次刷新/重载才从日志里翻出来
+        opts.push.event(ev);
+      },
     });
 
   // anysearch key:内置默认(免费注册 key,只管搜索限额,无支付面——用户决定开箱即高限额,

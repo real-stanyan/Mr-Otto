@@ -19,12 +19,20 @@ export interface ModelReply {
   usage?: TokenUsage;
   /** 思考过程（reasoning_content）。thinking 关/型号不支持 = 没有 */
   reasoning?: string;
+  /** 这次调用走的哪条路（ADR-0176）。缺省 = direct（老 adapter / 测试假货） */
+  route?: "hosted" | "direct";
 }
 
 /** 流式碎片的频道：思考先到，正文后到。UI 分区渲染靠它区分 */
 export type DeltaKind = "content" | "reasoning";
 
 export interface ModelAdapter {
+  /** 在 engine 读 `model` / 写 request_envelope 之前给 adapter 一次现算路由的机会；
+      不实现 = 无事发生（桌面 adapter 不需要，端点在 resolveEndpoint 里现算）。
+      云 runtime 的 adapter 需要它：`model` 是同步 getter，读不到还没跑过一次 chat()
+      才现算出来的路由——不调用 prepare() 就落进 request_envelope 的 model 会晚一个
+      turn（issue #696 fix round 1） */
+  prepare?(): Promise<void>;
   /** 实际型号 id，落进 assistant_message.model（事实记录用） */
   readonly model: string;
   /** 请求配置里日志推不出的那几样（issue #383，request_envelope 的原料）：

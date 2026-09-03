@@ -139,6 +139,9 @@ const bridge: ShellBridge = {
   configRoot: () => ipcRenderer.invoke(CHANNELS.configRoot),
   usageByProvider: (days: number) => ipcRenderer.invoke(CHANNELS.usageByProvider, days),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
+  billingSnapshot: (refresh) => ipcRenderer.invoke(CHANNELS.billingSnapshot, refresh),
+  billingCheckout: (target) => ipcRenderer.invoke(CHANNELS.billingCheckout, target),
+  billingPortal: () => ipcRenderer.invoke(CHANNELS.billingPortal),
   signIn: (provider) => ipcRenderer.invoke(CHANNELS.signIn, provider),
   signInWithPassword: (email, password) => ipcRenderer.invoke(CHANNELS.signInWithPassword, email, password),
   signUpWithPassword: (email, password, name) => ipcRenderer.invoke(CHANNELS.signUpWithPassword, email, password, name),
@@ -181,6 +184,7 @@ const bridge: ShellBridge = {
   onMcpChanged: subscribe(CHANNELS.mcpChanged),
   onToolDefsChanged: subscribe(CHANNELS.toolDefsChanged),
   onAccountChanged: subscribe(CHANNELS.accountChanged),
+  onBillingChanged: subscribe(CHANNELS.billingChanged),
   friendsSearch: (query) => ipcRenderer.invoke(CHANNELS.friendsSearch, query),
   friendsSendRequest: (userId) => ipcRenderer.invoke(CHANNELS.friendsSendRequest, userId),
   friendsRespond: (friendshipId, accept) =>

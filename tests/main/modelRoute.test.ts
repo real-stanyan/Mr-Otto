@@ -64,6 +64,48 @@ describe("老日志里的 lane=grant", () => {
   });
 });
 
+// 托管出路（ADR-0176 决定二）：付费订阅下，托管优先于自带 key——绕过用户
+// 买的东西去烧他自己的 key 才是意外。
+describe("routeModel：托管优先（ADR-0176 决定二）", () => {
+  const hosted = { subscribed: true, exhausted: false, supportsModel: true };
+  const hostedArgs = { hosted, hostedBaseUrl: "https://edge/llm/v1", hostedToken: "jwt" };
+
+  it("有订阅 + 未耗尽 + 网关供这款 → hosted，哪怕配了自己的 key", () => {
+    expect(route({ ownKey: "sk-mine", ...hostedArgs })).toEqual({
+      kind: "hosted",
+      baseUrl: "https://edge/llm/v1",
+      apiKey: "jwt",
+    });
+  });
+
+  it("耗尽 + 有自己的 key → direct（耗尽处置第二条出路）", () => {
+    expect(
+      route({ ownKey: "sk-mine", ...hostedArgs, hosted: { ...hosted, exhausted: true, resetAt: 5 } }).kind
+    ).toBe("direct");
+  });
+
+  it("耗尽 + 没 key → blocked，措辞带恢复时间", () => {
+    const r = route({ ...hostedArgs, hosted: { ...hosted, exhausted: true, resetAt: Date.UTC(2026, 8, 2, 10) } });
+    expect(r.kind).toBe("blocked");
+    expect(r.kind === "blocked" && r.reason).toMatch(/额度.*恢复/);
+  });
+
+  it("网关不供这款 + 没 key → blocked，措辞说清是型号不在网关", () => {
+    const r = route({ ...hostedArgs, hosted: { ...hosted, supportsModel: false } });
+    expect(r.kind === "blocked" && r.reason).toContain("网关");
+  });
+
+  it("无订阅 + 没 key → blocked，措辞把两条出路都说出来", () => {
+    const r = route({ hosted: { subscribed: false, exhausted: false, supportsModel: true } });
+    expect(r.kind === "blocked" && r.reason).toMatch(/订阅/);
+    expect(r.kind === "blocked" && r.reason).toContain(deepseek.apiKeyEnv);
+  });
+
+  it("有订阅但没拿到 JWT（token 过期）→ 退回 direct/blocked，不发一个空 Bearer", () => {
+    expect(route({ ownKey: "sk", hosted, hostedBaseUrl: "https://edge/llm/v1" }).kind).toBe("direct");
+  });
+});
+
 describe("免 key 的本机厂商（Ollama）", () => {
   // 目录里没有 Ollama 的型号(本机装了什么只有本机知道),id 靠前缀认领
   const ollama = resolveModel("ollama/qwen3:30b");

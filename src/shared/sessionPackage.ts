@@ -70,6 +70,10 @@ export interface SessionPackage {
       rewriteWorkspace 剥 session_created.workspace 完全同源：本机路径和项目私有
      指令原文都不该给对方。接收方导入后 projectInstructions.ts 会按他自己的目录
       重新爬升生成，deriveMessages 对缺了这条的日志是安全的（没有就不焊进 system）。
+    - route_changed：发送方的**计费状态**（额度用完了 / 没订阅了 / 改用自带 key 了）。
+      它是发送方账户的事，跟这段对话的内容无关；带进包里等于把「我这个月额度
+      用光了」告诉每一个收到分享的人。同样地，它对接收方毫无用处——他重放这份
+      日志时不会因为这条改道而走上另一条路（他有他自己的订阅与 key）。
     - session_shared：这条会话**以前还分享给过谁**、连带借出过哪几台服务
       （issue #705）。发给 B 的包里留着它，等于顺手告诉 B「我还把这个给了小红，
       而且把 Shopify 借给了她」——发送方的社交关系与授权史，两样都不是 B 该看的。
@@ -95,6 +99,7 @@ export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set([
   "session_shared",
   "session_topic_assigned",
   "session_topic_set",
+  "route_changed",
 ]);
 
 /** 过隐私闸：返回 { kept, stripped }。

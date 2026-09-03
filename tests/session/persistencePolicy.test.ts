@@ -26,6 +26,7 @@ const DURABLE = [
   "approval_decision",
   "tool_result",
   "model_changed",
+  "route_changed",
   "session_archived",
   "session_unarchived",
   "session_renamed",

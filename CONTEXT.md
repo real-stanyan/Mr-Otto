@@ -46,8 +46,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 工作区在场（WorkspacePresence） | 一个人此刻「在哪个仓库、哪根分支」：`{repoKey, branch}`。repoKey = 规范化 remote URL 的 sha256 前 16 位（只能比对同不同仓库，看不到地址）；branch 是本地短名，detached 为 null。两条腿广播——Realtime presence 的 track meta ∪ 心跳写入 `profiles.repo_key/repo_branch`——Git Graph 把同仓库好友的头像贴到对应分支徽章上。**可见性:写只能写自己那行,但读是对所有注册用户开放的**（`profiles` 的 select policy 是 `using(true)`，好友搜索依赖它）——即 `repo_branch` 明文对任何注册用户可见，不止好友；维护者已判定接受（#236） | ADR-0055（含 2026-08-23 订正）；`src/shared/repoKey.ts`、`src/main/workspacePresence.ts`、`src/shared/friendBranches.ts` |
 | 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
-| 主题桶（TOPIC 档） | 记忆第四档：`memories/topics/<slug>.md`，种子 work/hobbies/life/learning + 模型可建（先看索引的闸），预算 700 字/桶、封顶 8 桶、整份注入不做检索 | ADR-0203、#846 |
-| 会话主题（session topic） | 任务会话（workspaceKind=default）挂靠某个主题桶：turnAnnotator 合并调用自动分类落 `session_topic_assigned`（投影丢弃），手动 `session_topic_set` 压过自动结果；侧栏任务栏据此分组 | ADR-0203、#846 |
+| 主题桶（TOPIC 档） | 记忆第四档：`memories/topics/<slug>.md`，种子 work/hobbies/life/learning + 模型可建（先看索引的闸），预算 700 字/桶、封顶 8 桶、整份注入不做检索 | ADR-0204、#846 |
+| 会话主题（session topic） | 任务会话（workspaceKind=default）挂靠某个主题桶：turnAnnotator 合并调用自动分类落 `session_topic_assigned`（投影丢弃），手动 `session_topic_set` 压过自动结果；侧栏任务栏据此分组 | ADR-0204、#846 |
 | 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除**系统**归档、子会话、当前会话（用户归档照常可搜，ADR-0087） | ADR-0065 |
 | 会话归档（archive） | 删除之外的中间态：`session_archived(reason:"user")` 把会话从主列表收进侧栏「已归档」区——日志完整保留、仍可被 session_search 召回、`session_unarchived` 可恢复。归档状态 = 最后一条 archived/unarchived 事件说了算。`reason:"system"`（或缺席 = 遗留）是系统藏会话：列表和召回都排除（sys-memory-edits） | ADR-0087 |
 | 历史索引（events_fts） | `events` 表的 FTS5 trigram 派生索引（user/assistant/tool_result 正文），insert 触发器同步、老库首开回填、purge 连带删；可 DROP 重建，不是事实 | ADR-0065 |
@@ -98,6 +98,14 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 控制房（control room） | cs 协议里固定房名 `cs-ctl` 的房间，只用来发 `create` 拿一个新 `sessionId`——「按需连，拿到 created 即断」，不像会话房那样长期持有；没有 welcome 概念，hello 成功是静默的 | ADR-0199；`src/shared/remote/cloudSession.ts` 的 `csCtlChannel`、`services/runtime/src/frameHandler.ts` |
 | otto-sandbox | 每工作区一个 Docker 容器 + 一个具名卷（容器名/卷名同为 `otto-ws-<workspaceId>`）共用的镜像名。资源上限 `--memory 2g --cpus 2 --pids-limit 512`；空闲 30 分钟自动 stop（卷保留）、再来会话自动重启；工作区已不存在的容器/卷先标记、7 天宽限期后才真删（两阶段孤儿回收，防 Supabase 查询抖动误杀） | ADR-0199；`services/runtime/src/sandbox.ts`、`services/runtime/sandbox/Dockerfile` |
 | 发起人审批（initiator approval） | 云会话审批归属模型：能批 `approval_request` 的只有**这条 turn 的发起人**与**工作区 owner**，其余成员只读；应答的 `decidedBy{uid,label}` 是显式参数直接落盘（不经旁路 Map，避免背靠背两次 approve 的 TOCTOU），超时 10 分钟自动 deny——发起人/owner 都不在线时 fail-closed 卡住而不是放行 | ADR-0199；`services/runtime/src/approvalRouter.ts` |
+| 托管模式（hosted） | 用户买订阅档位，网关拿**官方自己的** key 打上游、按 credit 记账；与 BYOK 并行的第二条路，付费订阅下优先于自带 key | ADR-0176；`src/main/modelRoute.ts` |
+| BYOK（bring your own key） | 用户自带上游 key，本地直连，不走网关——key 只活在主进程 env，永不上传，免费档能力全开 | ADR-0176（key 不过桥这条不为托管让路） |
+| 5h 窗 / 周窗 | 双固定窗额度：5h 窗上限是周额度的 20%，两个窗口都不超才放行；固定窗不是滑动窗——到点整窗清零，不做连续倒计时 | ADR-0174 决定 2/3；ADR-0203 决定 2/5（落地用累计数不用环形桶） |
+| credit | 显示层单位，1 credit = 1 美分 = 10_000 micro-USD；服务端记账全用 micro-USD 整数，credit 只是换算给用户看的数字 | ADR-0174 决定 1；`src/shared/billing.ts` |
+| hold（预扣） | 流式请求先按请求体字节 + `max_tokens` 高估一笔预扣额度，再转发上游，最后按实际用量 settle 退差额；中断三出口（flush/cancel/abort）统一走 release，不占坑到 TTL 自然过期 | ADR-0174 决定 9；ADR-0203 决定 3/13 |
+| Quota DO | 每用户一个的 Durable Object，落盘窗口用量与加购余额的**投影**；钱的唯一事实是 Supabase `usage_event` 表，DO 冷启动从事实重建，重建失败 throw 不落空态 | ADR-0203 决定 5/11；`services/edge/src/quota.ts` |
+| on-behalf-of | 云 runtime 代表**发起 turn 的那个人**（不是 workspace owner）调网关的头 `x-otto-on-behalf-of`，配 `x-runtime-secret` 一起用；真人自己的请求带这个头一律 400 | ADR-0203 决定 9 |
+| reroute | 网关 429 `quota_exhausted` 时桌面 adapter 单列的一类失败——不退避、立刻重解析端点一次再打一遍，与限流退避不同类 | ADR-0203 决定 14 |
 
 - **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。树和搜索都全显（含 `node_modules`、隐藏文件），一条规矩管两处。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0092，同 ADR-0031 的边界）。
 - **`@路径` 高亮**：输入框里 `@` 开头的路径跟 `$skill` / `/命令` 一样画成 chip。判定方式不同——那两种比名单，路径没有名单可比，靠形状（`@` 前是行首或空白、后跟非空白、句末标点不吃进去），见 `aui/ottoDirectives.ts` 的 `ottoPathFormatter`。

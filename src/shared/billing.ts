@@ -1,0 +1,140 @@
+// 订阅计费的线上约定——edge Worker / 桌面主进程 / 云 runtime **三端共用一份**
+// （纪律同 src/shared/remote/wire.ts：改这里 = 三端一起改）。
+// 数字全是 micro-USD 整数（1 USD = 1_000_000），显示层才换成 credit。
+// 1 credit = 1 美分 = 10_000 micro。用户看到的额度不是钱数，是 credit：
+// 托管模式的花费和 BYOK 的「$X」不能长得一样（ADR-0176 决定五）。
+
+export type PlanId = "lite" | "pro" | "max";
+export type SubscriptionStatus = "active" | "past_due" | "canceled" | "none";
+
+export interface WindowState {
+  usedMicro: number;
+  limitMicro: number;
+  /** 这个窗口什么时候清零（epoch ms）。倒计时从这里来 */
+  resetAt: number;
+}
+
+export interface BillingMe {
+  plan: PlanId | null;
+  status: SubscriptionStatus;
+  /** null = 没有活跃订阅（没窗口可言） */
+  windows: { h5: WindowState; week: WindowState } | null;
+  addon: { remainingMicro: number; expiresAt: number | null };
+  periodEnd: number | null;
+  /** 网关此刻供的逻辑型号 id（model_route 里 enabled 的） */
+  models: string[];
+}
+
+export const BILLING_HEADERS = {
+  h5: "x-otto-window-5h-remaining",
+  week: "x-otto-window-week-remaining",
+  addon: "x-otto-addon-remaining",
+  plan: "x-otto-plan",
+} as const;
+
+/** 平台身份（runtime）代表哪个真用户；桌面 JWT 带这个头一律 400 */
+export const ON_BEHALF_HEADER = "x-otto-on-behalf-of";
+export const WORKSPACE_HEADER = "x-otto-workspace";
+export const SESSION_HEADER = "x-otto-session";
+
+export type BillingErrorCode =
+  | "bad_token"
+  | "no_subscription"
+  | "quota_exhausted"
+  | "unknown_model"
+  | "upstream"
+  | "too_many_inflight"
+  | "bad_request"
+  | "forbidden"
+  /** 已经有一条非 canceled 的订阅，还想再开一张订阅 Checkout（C2）。
+      不是「买不起」也不是「参数错」——换档要走 Stripe 的 Customer Portal，
+      再开一张会在 Stripe 那边长出**第二条订阅**，两笔一起扣款 */
+  | "already_subscribed";
+
+export interface BillingError {
+  code: BillingErrorCode;
+  message: string;
+  window?: "5h" | "week";
+  resetAt?: number;
+}
+
+const CODES: ReadonlySet<string> = new Set([
+  "bad_token", "no_subscription", "quota_exhausted", "unknown_model", "upstream", "too_many_inflight", "bad_request",
+  "forbidden", "already_subscribed",
+]);
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** 只认 edge 的信封（type: "otto_edge" + 认识的 code）。上游原样透传回来的错误不是它 */
+export function parseBillingError(status: number, payload: unknown): BillingError | null {
+  if (status < 400 || !isObj(payload) || !isObj(payload.error)) return null;
+  const e = payload.error;
+  if (e.type !== "otto_edge" || typeof e.code !== "string" || !CODES.has(e.code)) return null;
+  const out: BillingError = {
+    code: e.code as BillingErrorCode,
+    message: typeof e.message === "string" ? e.message : "",
+  };
+  if (e.window === "5h" || e.window === "week") out.window = e.window;
+  if (typeof e.resetAt === "number") out.resetAt = e.resetAt;
+  return out;
+}
+
+function parseWindow(v: unknown): WindowState | null {
+  if (!isObj(v)) return null;
+  const { usedMicro, limitMicro, resetAt } = v;
+  if (typeof usedMicro !== "number" || typeof limitMicro !== "number" || typeof resetAt !== "number") return null;
+  return { usedMicro, limitMicro, resetAt };
+}
+
+export function parseBillingMe(payload: unknown): BillingMe | null {
+  if (!isObj(payload)) return null;
+  const plan = payload.plan === "lite" || payload.plan === "pro" || payload.plan === "max" ? payload.plan : null;
+  const status = payload.status;
+  if (status !== "active" && status !== "past_due" && status !== "canceled" && status !== "none") return null;
+  let windows: BillingMe["windows"] = null;
+  if (payload.windows !== null) {
+    if (!isObj(payload.windows)) return null;
+    const h5 = parseWindow(payload.windows.h5);
+    const week = parseWindow(payload.windows.week);
+    if (!h5 || !week) return null;
+    windows = { h5, week };
+  }
+  if (!isObj(payload.addon) || typeof payload.addon.remainingMicro !== "number") return null;
+  const expiresAt = typeof payload.addon.expiresAt === "number" ? payload.addon.expiresAt : null;
+  const periodEnd = typeof payload.periodEnd === "number" ? payload.periodEnd : null;
+  const models = Array.isArray(payload.models) ? payload.models.filter((m): m is string => typeof m === "string") : [];
+  return { plan, status, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models };
+}
+
+export const MICRO_PER_CREDIT = 10_000;
+
+export function creditOf(micro: number): number {
+  return micro / MICRO_PER_CREDIT;
+}
+
+/** "12.3 credit"。整数不带小数点：0 credit 比 0.0 credit 读得顺 */
+export function fmtCredit(micro: number): string {
+  const c = creditOf(micro);
+  return `${Number.isInteger(c) ? c : c.toFixed(1)} credit`;
+}
+
+/** 响应头里的剩余额度。缺的头不进结果——「没报」≠「剩 0」 */
+export function remainingFromHeaders(h: Headers): { h5?: number; week?: number; addon?: number; plan?: string } {
+  const out: { h5?: number; week?: number; addon?: number; plan?: string } = {};
+  const num = (name: string): number | undefined => {
+    const raw = h.get(name);
+    if (raw === null) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const h5 = num(BILLING_HEADERS.h5);
+  const week = num(BILLING_HEADERS.week);
+  const addon = num(BILLING_HEADERS.addon);
+  const plan = h.get(BILLING_HEADERS.plan);
+  if (h5 !== undefined) out.h5 = h5;
+  if (week !== undefined) out.week = week;
+  if (addon !== undefined) out.addon = addon;
+  if (plan) out.plan = plan;
+  return out;
+}

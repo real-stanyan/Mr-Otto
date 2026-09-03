@@ -86,6 +86,8 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(PRIVACY_STRIP_TYPES.has("session_shared")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("session_topic_assigned")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("session_topic_set")).toBe(true);
+    // 改道事件带的是发送方的计费状态（额度用完/没订阅），不是这段对话的内容（#696）
+    expect(PRIVACY_STRIP_TYPES.has("route_changed")).toBe(true);
   });
 
   it("剥掉主题桶分类（#846）——A 的私有生活分类法在 B 的机器上没有意义", () => {
