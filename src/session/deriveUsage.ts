@@ -27,6 +27,9 @@ export interface ModelUsage {
       计费上"没报"只能当"没命中"（按全价），与 cacheStats 的口径刻意不同：
       那边是命中率度量,分母要剔掉不报数的调用;这边是钱,漏算命中只会报高不报错 */
   cachedTokens: number;
+  /** hosted 段这次调用实际结算的 credit（micro-USD）。只在 route=hosted 且事件
+      记了它（非流式；流式的 settle 在响应发出后）才有。缺席 ≠ 0 —— 是「这笔没记到」 */
+  creditCostMicro?: number;
 }
 
 /** 会计上"算一次模型调用"的几类事件。导出是为了让主进程的 SQL 用同一份清单筛行
@@ -54,7 +57,7 @@ function isBilledEvent(e: SessionEvent): e is BilledEvent {
     看起来一样 —— 这里的做法是压根不出现在账里 */
 function billed(
   e: SessionEvent
-): { model: string; route: "hosted" | "direct"; promptTokens: number; completionTokens: number; cachedTokens: number } | null {
+): { model: string; route: "hosted" | "direct"; promptTokens: number; completionTokens: number; cachedTokens: number; creditCostMicro?: number } | null {
   if (!isBilledEvent(e)) return null;
   if (!e.usage) return null;
   return {
@@ -65,6 +68,7 @@ function billed(
     promptTokens: e.usage.promptTokens,
     completionTokens: e.usage.completionTokens,
     cachedTokens: e.usage.cachedTokens ?? 0,
+    ...(e.type === "assistant_message" && typeof e.creditCostMicro === "number" ? { creditCostMicro: e.creditCostMicro } : {}),
   };
 }
 
@@ -83,6 +87,10 @@ export function usageByModel(events: SessionEvent[]): ModelUsage[] {
       cur.promptTokens += b.promptTokens;
       cur.completionTokens += b.completionTokens;
       cur.cachedTokens += b.cachedTokens;
+      // credit 求和只加「记了」的那几笔：缺席 ≠ 0，所以**有一笔没记就整行不报数**
+      // （undefined），不报比报一个偏小的数诚实
+      if (b.creditCostMicro === undefined) delete cur.creditCostMicro;
+      else if (cur.creditCostMicro !== undefined) cur.creditCostMicro += b.creditCostMicro;
     } else {
       byModel.set(key, {
         model: b.model,
@@ -90,6 +98,7 @@ export function usageByModel(events: SessionEvent[]): ModelUsage[] {
         promptTokens: b.promptTokens,
         completionTokens: b.completionTokens,
         cachedTokens: b.cachedTokens,
+        ...(b.creditCostMicro !== undefined ? { creditCostMicro: b.creditCostMicro } : {}),
       });
     }
   }

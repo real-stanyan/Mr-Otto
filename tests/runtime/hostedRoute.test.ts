@@ -9,7 +9,7 @@ import {
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
-const me: BillingMe = { plan: "pro", status: "active", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
+const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
 const base = { initiatorUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
 const ws = { baseUrl: "https://own/v1", apiKey: "sk", modelId: "glm-5.3" };
 

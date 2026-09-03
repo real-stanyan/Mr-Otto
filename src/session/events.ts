@@ -107,6 +107,11 @@ export interface AssistantMessageEvent extends SessionEventBase {
       的 key。UI 据此决定显示「X credit」还是「$X」（决定五）。缺省 = direct（旧日志 /
       子会话），可选 = 旧日志照常重放 */
   route?: "hosted" | "direct";
+  /** hosted 这条路本次结算的 credit（micro-USD，x-otto-cost-micro）。#857：
+      网关响应头带的「本次花了多少」落进日志——成本是一个**事实**（不记它，
+      花费面板只能从 token 反推，而反推不出托管侧的单价与 cache 折扣）。
+      可选 = 旧日志 / direct 路 / 流式（settle 在响应发出之后，那一刻才知道数） */
+  creditCostMicro?: number;
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */

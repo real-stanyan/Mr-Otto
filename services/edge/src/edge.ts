@@ -12,6 +12,7 @@
 //      ADR-0129 删掉的那一版是赠额形态;这一版是订阅形态,机制层复活。
 
 import { authLandingResponse } from "./authLanding.js";
+import { timingSafeEqual } from "./util.js";
 import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
 import { parseEscrowDoc } from "./px.js";
@@ -31,20 +32,6 @@ export interface EdgeConfig {
 
 /** 平台身份认作的 userId。relay 房间键、px 三道闸都认这个常量当"不是真人" */
 export const RUNTIME_SERVICE_UID = "svc-runtime";
-
-/**
- * 恒时字符串比较,堵一个基于响应时间猜 secret 内容的边信道。
- * 长度不等时直接 false 是允许的短路 —— 长度本身不构成"猜中了多少字节"的信号,
- * 真正要防的是"等长时逐字节比对提前退出"那条时间差。
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}
 
 /** 一个用户的中继实例。生产上是 DO stub,测试里是个假货 */
 export interface RelayStub {

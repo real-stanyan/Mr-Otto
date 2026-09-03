@@ -31,6 +31,7 @@ import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { createBashTool } from "../tools/bash.js";
+import { createWaitTaskTool } from "../tools/waitTask.js";
 import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
@@ -202,6 +203,8 @@ export function createAgent(opts: {
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
+  /** 建会话前就铸好的 id（#851：Default 子目录名要用它）。resume 优先；两者都没给才现铸 */
+  presetSessionId?: string;
   /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
   attachments: AttachmentStore;
   /** 托管额度（订阅制，ADR-0176）。index.ts 注入；子会话/测试不给 = 路由永远不出 hosted */
@@ -307,7 +310,7 @@ export function createAgent(opts: {
 }) {
   const { store } = opts;
 
-  const sessionId = opts.resumeSessionId ?? newSessionId();
+  const sessionId = opts.resumeSessionId ?? opts.presetSessionId ?? newSessionId();
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）。
   // 外面给了现成的就用它（子 agent 走这条：必须和父在同一个 world 实例里）
   const base: ExecutionWorld =
@@ -639,6 +642,9 @@ export function createAgent(opts: {
       readFileTool,
       writeFileTool,
       createBashTool(backgroundTasks),
+      // 同一 turn 里等后台任务（issue #871）：available 现查 armed——没接回注
+      // 的装配（subagent）起不了后台任务，这把刀从声明表里消失
+      createWaitTaskTool(backgroundTasks),
       createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
       createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
       // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
@@ -814,7 +820,8 @@ export function createAgent(opts: {
             )
           ),
           approver
-        )
+        ),
+        () => approvalMode
       ),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),

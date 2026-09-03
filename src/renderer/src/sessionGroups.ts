@@ -1,8 +1,11 @@
 import type { SessionSummary } from "../../shared/shellBridge.js";
+import { isDefaultWorkspace } from "../../shared/defaultWorkspace.js";
 
 /** 一个工程文件夹下的会话堆 */
 export interface SessionGroup {
-  /** workspace 绝对路径——分组键,也是 UI 折叠状态的 key */
+  /** 工程绝对路径——分组键,也是 UI 折叠状态的 key、组头「＋」开新会话的目录。
+      = 会话的 projectRoot（独立副本上的会话，ADR-0157）或 workspace（其余）；
+      见 projectOf */
   workspace: string;
   /** 侧栏显示用的短名(路径末段);路径以 / 结尾时回退到上一段 */
   label: string;
@@ -29,7 +32,17 @@ export function folderName(path: string): string {
   return segs[segs.length - 1] ?? path;
 }
 
-/** 按 workspace 分组。workspace 为 null 的史前会话不在这里处理——调用方先滤掉,
+/** 一条会话归哪个工程：独立副本上的会话（ADR-0157）workspace 是
+    `<userData>/worktrees/<hash>-<rand>`，按它分组会让同一个项目裂成 N 组、组头是一串
+    哈希（issue #692，岛那边是 #690 / ADR-0172）。**组头回答「这是哪个项目」，副本身份
+    是行级的事实**——侧栏没理由给出与岛不同的答案。
+    折叠状态的持久化键随之从副本路径换成项目路径：主目录会话的键本来就是项目路径，
+    不变；副本组原来那些哈希键成了孤儿，不迁移——它们对应的组头本来就没人认得。 */
+export function projectOf(s: SessionSummary): string | null {
+  return s.projectRoot ?? s.workspace;
+}
+
+/** 按工程分组（projectOf）。workspace 为 null 的史前会话不在这里处理——调用方先滤掉,
     因为它们压根没有工程可归,归到"未知"组等于伪造事实。
     子会话(spawnedFrom 非空,ADR-0047)同样不进任何组:它们只能从派出它们的
     父会话时间线那张卡进去,混进侧栏/⌘K 搜索会让人以为能独立打开一个"工程会话"。
@@ -62,13 +75,14 @@ export function groupArchivedByWorkspace(sessions: SessionSummary[]): ArchivedGr
   };
 }
 
-/** 分组本身:调用方负责筛选,这里只按 workspace 装桶排序(workspace 非 null) */
+/** 分组本身:调用方负责筛选,这里只按工程（projectOf）装桶排序(workspace 非 null) */
 function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
   const byDir = new Map<string, SessionSummary[]>();
   for (const s of sessions) {
-    const bucket = byDir.get(s.workspace!);
+    const key = projectOf(s)!;
+    const bucket = byDir.get(key);
     if (bucket) bucket.push(s);
-    else byDir.set(s.workspace!, [s]);
+    else byDir.set(key, [s]);
   }
   return [...byDir.entries()]
     .map(([workspace, list]) => {
@@ -92,14 +106,14 @@ function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
     口径写成函数而不是在 App.tsx 里再抄一遍谓词——上一次抄漏的正是这一条。 */
 export function taskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
   return sessions.filter(
-    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
   );
 }
 
 /** 任务栏的「已归档」那一摞:同上,只是要 archived 的那半边 */
 export function archivedTaskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
   return sessions.filter(
-    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
   );
 }
 

@@ -705,6 +705,8 @@ interface ChatState {
   setSidebarTab(tab: "tasks" | "projects"): void;
   /** 设置默认工作文件夹;null = 恢复内置 Default。落盘后镜像跟着更新 */
   setDefaultWorkspace(dir: string | null): Promise<void>;
+  /** 清理 Default 下空的任务文件夹（#851） */
+  pruneEmptyTaskFolders(): Promise<{ removed: number; kept: number }>;
   /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西。
       dir = 预填的工程文件夹（侧栏工程分组上那颗 ＋）；不传就是空白开局 */
   newSession(dir?: string): void;
@@ -2759,6 +2761,10 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  async pruneEmptyTaskFolders() {
+    return await window.otter.pruneEmptyTaskFolders();
+  },
+
   newSession: (dir) =>
     set({
       pendingWorkspace: dir ?? null, // composer 的文件夹初值,由 Welcome 消费
@@ -2926,10 +2932,11 @@ export const useChat = create<ChatState>((set, get) => ({
     const attachments = outgoingFrom(event); // 事件形状 → 线上形状,见 lib/resendPayload.ts
     set({ error: null });
     try {
-      await window.otter.sendMessage(
+      // 报 seq 不报正文（issue #871）：正文和「这条是不是后台任务发的」都由主进程
+      // 从日志上取——origin 走 sendMessage 会丢，回注消息重试后就成了用户亲口说的
+      await window.otter.resendMessage(
         sessionId,
-        event.content,
-        undefined,
+        event.seq,
         attachments.length > 0 ? attachments : undefined
       );
     } catch (e) {

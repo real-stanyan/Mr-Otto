@@ -4,6 +4,8 @@
 //
 // Stripe 是订阅状态的事实来源，subscription 表是投影：每个事件都把 Stripe 那份当真。
 
+import { timingSafeEqual } from "./util.js";
+
 export type BillingAction =
   | {
       kind: "subscription_upsert";
@@ -26,14 +28,6 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** 恒时比较（同 edge.ts 的 timingSafeEqual；长度不等直接 false 是允许的短路） */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }
 
 /**

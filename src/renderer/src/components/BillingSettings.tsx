@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button.js";
-import { addonLine, countdown, PLAN_CARDS, windowPercent } from "../lib/billingView.js";
+import { addonLine, countdown, planCards, planCardsOrNull, upgradeCards, windowPercent } from "../lib/billingView.js";
 import { fmtCredit } from "../../../shared/billing.js";
 import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
@@ -93,7 +93,15 @@ export function BillingSettings() {
     void fn().finally(() => setPending(null));
   };
 
-  if (!me || me.status === "none" || me.plan === null) {
+  // #865：canceled 也算「没有订阅」——退订过的人落在有订阅分支会看不到任何订阅卡片
+  // （升档按钮都走 Portal 了，而他没有可管理的活跃订阅）。网关那侧 canceled→checkout
+  // 是放行的（ADR-0203 决定 18：「退订过又想回来」本来就该重开一张），所以这里
+  // 直接给他三张价目卡，等于应用内的重新订阅入口
+  if (!me || me.status === "none" || me.status === "canceled" || me.plan === null) {
+    // 价目是服务端下发的（plan 表是事实，改价不发版）。me 还没回来/里面没有价目时
+    // 先画骨架：名字照给、价格留空、按钮禁用——不拿一个猜的数贴订阅按钮（ADR-0203
+    // 偏差 (a)：以前价格抄死在前端，改价那天卡片和 Stripe 结账页对不上）
+    const cards = planCardsOrNull(me) ?? [];
     return (
       <section className="flex flex-col gap-[6px]">
         <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">订阅</h2>
@@ -101,7 +109,7 @@ export function BillingSettings() {
           订阅后模型调用走 Mr Otto 的 key，不用自己配。自带 key 的免费档能力全开。
         </p>
         <div className="grid grid-cols-3 gap-2">
-          {PLAN_CARDS.map((c) => (
+          {cards.map((c) => (
             <PlanCard
               key={c.id}
               {...c}
@@ -115,10 +123,9 @@ export function BillingSettings() {
     );
   }
 
-  const planName = PLAN_CARDS.find((c) => c.id === me.plan)?.name ?? me.plan;
-  const upgrades = PLAN_CARDS.filter(
-    (c) => c.priceUsd > (PLAN_CARDS.find((x) => x.id === me.plan)?.priceUsd ?? 0)
-  );
+  const cards = planCards(me.plans);
+  const planName = cards.find((c) => c.id === me.plan)?.name ?? me.plan;
+  const upgrades = upgradeCards(me.plans, me.plan);
   const addonText = addonLine(me.addon, now);
 
   return (

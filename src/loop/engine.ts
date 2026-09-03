@@ -9,7 +9,7 @@ import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
-import type { DeltaKind, ModelAdapter, ToolDefinition } from "../model/adapter.js";
+import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "../model/adapter.js";
 import { errorClassOf } from "../model/errorClass.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
 import type { Tool } from "../tools/tool.js";
@@ -116,6 +116,10 @@ export class LoopEngine {
       compact 以它开跑那一刻的日志为准，之后落的 user_message 会被
       context_compacted 的"之前一切被替换"语义静默吞掉——宁可让用户重发 */
   private compacting = false;
+  /** 模型调用进行中（issue #871）：这段时间到达的后台结果先攒进
+      deferredBackground，assistant_message 落盘后再追加（见 appendBackground） */
+  private sampling = false;
+  private deferredBackground: Array<{ text: string; taskIds: string[] }> = [];
   /** 上一条已落盘的请求信封的比较键（issue #383）。null = 本进程还没落过，
       首次比较时从日志快照里找最后一条 request_envelope 播种（resume 后不重复落）。
       信封变了才落新的——典型会话整场一两条 */
@@ -229,6 +233,15 @@ export class LoopEngine {
 
   private env() {
     return { sessionId: this.opts.sessionId, ts: Date.now() };
+  }
+
+  /** 这次投影之后有没有落过新的用户消息（issue #871）。projected = 这圈喂给
+      模型的那份快照；之后引擎自己落的 envelope / assistant_message 也在尾段里，
+      只认 user_message */
+  private unseenUserTail(projected: SessionEvent[]): boolean {
+    const lastSeq = projected.at(-1)?.seq ?? -1;
+    const fresh = this.opts.store.load(this.opts.sessionId, { afterSeq: lastSeq });
+    return fresh.some((e) => e.type === "user_message");
   }
 
   /** 当前日志快照：第一次全量，之后增量补尾段。首圈持有的是 load() 现造的
@@ -521,6 +534,48 @@ export class LoopEngine {
     this.append({ ...this.env(), type: "user_message", content: text });
   }
 
+  /** 后台任务结果尾部追加（issue #871，Claude Code task-notification 对照）：
+      turn 在跑时把完成结果作为 user_message(origin:"background") 追加进日志——
+      loop 每圈从日志重新投影，模型下一次采样就看到，同一 turn 里接着干，
+      不必等收口再另开一轮。与 steer 同一条路：纯尾部追加，前缀字节不变，
+      prefix cache 不受影响（ADR-0088 那条「mid-splice 毁缓存」说的是中段重写，
+      不是这个形状）。
+      回 false = 此刻不能追加（idle：没有 turn 可接；compacting：压缩以它开跑
+      那一刻的日志为准，之后落的会被 context_compacted 静默吞掉），调用方
+      自己决定攒着还是另开一轮。不抛错：后台任务的完成不是用户动作，
+      没人在等一条错误横幅 */
+  appendBackground(text: string, taskIds: string[]): boolean {
+    if (this.currentTurnId === null || this.compacting) return false;
+    // 模型正在采样：先攒着，等这条 assistant_message 落盘再追加。此刻直接
+    // append 的话日志序是 user(后台结果) → assistant(模型正说的话)，投影出来
+    // 像模型已经答过这个结果了——它根本没看见。攒到它说完再落，日志序才是
+    // 模型真实的视野；loop 随后发现尾上多了一条没答的用户消息会再采样一圈
+    if (this.sampling) {
+      this.deferredBackground.push({ text, taskIds });
+      return true;
+    }
+    this.appendBackgroundNow(text, taskIds);
+    return true;
+  }
+
+  private appendBackgroundNow(text: string, taskIds: string[]): void {
+    this.append({
+      ...this.env(),
+      type: "user_message",
+      content: text,
+      origin: "background",
+      backgroundTaskIds: taskIds,
+    });
+  }
+
+  /** 采样期间攒下的后台结果落盘。采样正常结束、中断、暴死三条路都要过这里——
+      完成事实已经发生，攒着的不能随 turn 一起蒸发 */
+  private flushDeferredBackground(): void {
+    const pending = this.deferredBackground;
+    this.deferredBackground = [];
+    for (const d of pending) this.appendBackgroundNow(d.text, d.taskIds);
+  }
+
   /** 跑一个完整 turn：直到模型不再要工具为止。
       收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
       中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障。
@@ -670,17 +725,28 @@ export class LoopEngine {
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
       const clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;
-      const reply = await this.adapter.chat(
-        messages,
-        defs,
-        onDelta
-          ? (text, kind) => {
-              clock.observe(kind);
-              onDelta(text, kind);
-            }
-          : undefined, // 非流式路径:测不到就不测,字段缺席
-        signal // 中断从这穿进 fetch / SSE 读流
-      );
+      this.sampling = true;
+      let reply: ModelReply;
+      try {
+        reply = await this.adapter.chat(
+          messages,
+          defs,
+          onDelta
+            ? (text, kind) => {
+                clock.observe(kind);
+                onDelta(text, kind);
+              }
+            : undefined, // 非流式路径:测不到就不测,字段缺席
+          signal // 中断从这穿进 fetch / SSE 读流
+        );
+      } catch (err) {
+        // 采样没成（中断/暴死）：攒着的后台结果照样落盘——它们是已经发生的事实，
+        // 下一个 turn 的模型该看见。落在 turn_ended 之前
+        this.sampling = false;
+        this.flushDeferredBackground();
+        throw err;
+      }
+      this.sampling = false;
       const reasoningMs = clock.finish();
 
       this.append({
@@ -696,9 +762,22 @@ export class LoopEngine {
         // 耗时只在真有思考内容时才有意义(空思考的耗时是噪音)
         ...(reply.reasoning && reasoningMs !== null ? { reasoningMs } : {}),
         ...(reply.route ? { route: reply.route } : {}), // 钱从谁账上出（ADR-0176 决定五）
+        // #857：本次花了多少 credit。是事实不是投影（不记它就只剩从 token 反推，
+        // 而托管侧的单价/cache 折扣客户端不知道）；只在 hosted + 非流式有
+        ...(reply.creditCostMicro !== undefined ? { creditCostMicro: reply.creditCostMicro } : {}),
       });
+      // 采样期间到的后台结果现在落盘：排在模型这句话之后，日志序 = 它的真实视野
+      this.flushDeferredBackground();
 
-      if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了
+      if (!reply.toolCalls || reply.toolCalls.length === 0) {
+        // 模型说完了——除非它说话的当口有人往日志尾巴上追加了用户消息
+        // （后台任务结果 appendBackground / 插话 steer）而这次采样没看到
+        // （issue #871）：那条消息在投影之后才落盘，就这么收口的话它会永远
+        // 挂在日志尾上没人答，后台结果等于丢了。再采样一圈让模型接上——
+        // 代价只在真撞上这个窗口时付，而且每圈都消费掉新消息，不会空转
+        if (this.unseenUserTail(log)) continue;
+        return;
+      }
 
       // 工具执行（issue #283 ③）：**连续的并发安全调用**（parallelSafe 且免审批）
       // 并发跑；有副作用/要审批的工具是屏障，前后仍严格串行——模型按顺序想事，

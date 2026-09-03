@@ -126,9 +126,10 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
-import { createWorkspaceLens } from "./workspaceLens.js";
+import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
+import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
 import {
   builtinDefaultWorkspace,
   loadWorkspaceSettings,
@@ -136,6 +137,8 @@ import {
   resolveDefaultWorkspace,
   saveWorkspaceSettings,
 } from "./workspaceSettingsStore.js";
+import { isDefaultWorkspace as isDefaultWorkspaceOf } from "../shared/defaultWorkspace.js";
+import { allocateSessionWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
@@ -925,7 +928,7 @@ void app.whenReady().then(() => {
 
   // 岛的分组镜头(main/workspaceLens.ts):workspace → 项目根 + worktree 分支。
   // 读 .git,所以自带 30s 记忆化——pushFleet 跟着每条事件跑
-  const workspaceLens = createWorkspaceLens();
+  const workspaceLens = withDefaultFold(createWorkspaceLens(), builtinDefaultWorkspace(app.getPath("documents")));
 
   // cloudClient 装配得比这里晚（要等 workspaceManager 先造出来，见下方那段
   // 装配注释），这个洞先占位，真身在 cloudClient 造完之后才填上——同
@@ -2060,6 +2063,8 @@ void app.whenReady().then(() => {
         ——可见性借子会话口径（侧栏/⌘K/灵动岛滤掉），resume 时 resumeChild 认
         kind:"side" 回主装配。toolCallId 没有真实的（没人派活），用约定串 */
     sideOf?: string;
+    /** 建会话前就铸好的 id（#851：内置 Default 按会话分格，子目录名要用它）*/
+    presetSessionId?: string;
   }): ReturnType<typeof createAgent> => {
     // 项目指令（issue #353，门禁在 #426 撤掉）：选了工作区并开口说话本身就是
     // 授权，不再单独问一次"信不信任"——找到就注入。注入了哪几份仍以
@@ -2071,7 +2076,7 @@ void app.whenReady().then(() => {
     // 子会话/SideChat 不算：引导是给用户看的，派出去的 agent 轮不到
     const isDefaultWorkspace =
       !args.child && !args.sideOf &&
-      args.workspace === builtinDefaultWorkspace(app.getPath("documents"));
+      isDefaultWorkspaceOf(args.workspace, builtinDefaultWorkspace(app.getPath("documents")));
     const base = {
       store,
       workspace: args.workspace,
@@ -2082,6 +2087,7 @@ void app.whenReady().then(() => {
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
       ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+      ...(args.presetSessionId ? { presetSessionId: args.presetSessionId } : {}),
       // 协作记录（issue #658）：只在可能有第二只水獭同时动手的工作区开——
       // 也就是非 git 目录。独立副本里没有别人，记账只剩噪音
       ...(parallelOk(args.workspace) ? { cowork: true as const } : {}),
@@ -2443,12 +2449,12 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    // 兜底工作区惰性创建(#559):只在它真被用作会话工作区的这一刻 mkdir——
-    // 从没用过兜底的人,文档区永远不会长出 Mr Otto/Default。
-    // 只认"等于当前兜底路径"这一种,别替渲染层传来的任意路径 mkdir
-    if (opts.workspace === workspaceSettingsInfo().defaultWorkspace) {
-      mkdirSync(opts.workspace, { recursive: true });
-    }
+    // 兜底工作区惰性创建（#559）+ 内置 Default 按会话分格（#851）：
+    // 只在「等于当前兜底路径」时动手，别替渲染层传来的任意路径 mkdir
+    const alloc = allocateSessionWorkspace(opts.workspace, workspaceSettingsInfo(), {
+      mint: newSessionId,
+      mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+    });
     // 工具表是一次性拼好的（挂载一次定终身）：必须在 createSessionAgent 之前
     // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
     // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位。
@@ -2459,12 +2465,13 @@ void app.whenReady().then(() => {
     // 工作区在 git 仓里就开 worktree。两只水獭形态一致，不用解释「什么时候会隔离」。
     // 任何一步失败 → isolated 为 null，退回原目录 + ADR-0152 的互斥兜底
     //（没有副本比建错副本安全）
-    const isolate = shouldIsolate({ repo: sessionWorktrees.repoOf(opts.workspace) })
-      ? sessionWorktrees.create(opts.workspace, "session")
+    const isolate = shouldIsolate({ repo: sessionWorktrees.repoOf(alloc.workspace) })
+      ? sessionWorktrees.create(alloc.workspace, "session")
       : null;
-    const agent = createSessionAgent(
-      isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: opts.workspace }
-    );
+    const agent = createSessionAgent({
+      ...(isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: alloc.workspace }),
+      ...(alloc.sessionId ? { presetSessionId: alloc.sessionId } : {}),
+    });
     agents.set(agent.sessionId, agent);
     // 副本上锁（issue #647）：锁定原因带 sessionId + pid，清理程序据此分得出
     // 「正在用」和「早该清了」。要 sessionId，所以排在建 agent 之后
@@ -2796,6 +2803,10 @@ void app.whenReady().then(() => {
     );
     return workspaceSettingsInfo();
   });
+
+  ipcMain.handle(CHANNELS.pruneEmptyTaskFolders, () =>
+    pruneEmptyTaskFolders(builtinDefaultWorkspace(app.getPath("documents")), nodePruneFs, new Set(agents.keys()))
+  );
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
   // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
@@ -3208,17 +3219,20 @@ void app.whenReady().then(() => {
     // importWorkspaceSession 的第 4 个参数是接收方选定的本机工作目录——brief 的
     // 产出签名没暴露这个选择给渲染层，落回内置 Default 工作区（同 DM 导入那条
     // "从好友 DM 导入时渲染层会回落到默认工作文件夹"的兜底口径，#783 下半），
-    // 惰性建目录同 importSharedSession handler
-    const workspace = workspaceSettingsInfo().defaultWorkspace;
-    mkdirSync(workspace, { recursive: true });
+    // 惰性建目录同 importSharedSession handler，内置 Default 下按会话分格（#851）
+    const alloc = allocateSessionWorkspace(workspaceSettingsInfo().defaultWorkspace, workspaceSettingsInfo(), {
+      mint: newSessionId,
+      mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+    });
     return importWorkspaceSession(
       {
         download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
         saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
         append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
-        newSessionId: () => crypto.randomUUID(),
+        // 分格了的话新会话 id 必须与子目录名一致（否则围栏对不上会话）
+        newSessionId: () => alloc.sessionId ?? crypto.randomUUID(),
       },
-      publisherUid, pkgId, workspace,
+      publisherUid, pkgId, alloc.workspace,
     );
   });
 
@@ -3304,19 +3318,22 @@ void app.whenReady().then(() => {
       grant?: { friendUid: string; friendName: string; servers: readonly string[] } | null
     ) => {
       // 兜底工作区惰性创建，与 startSession 同一条规则（#559）：从好友 DM 导入时
-      // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过
-      if (workspace && workspace === workspaceSettingsInfo().defaultWorkspace) {
-        mkdirSync(workspace, { recursive: true });
-      }
+      // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过。
+      // 内置 Default 下按会话分格（#851）——空 workspace 原样回，不误判成兜底
+      const alloc = allocateSessionWorkspace(workspace, workspaceSettingsInfo(), {
+        mint: newSessionId,
+        mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+      });
       return importSharedSession(
         {
           download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
           saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
           append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
-          newSessionId: () => crypto.randomUUID(),
+          // 分格了的话新会话 id 必须与子目录名一致（否则围栏对不上会话）
+          newSessionId: () => alloc.sessionId ?? crypto.randomUUID(),
         },
         {
-          prefix, workspace,
+          prefix, workspace: alloc.workspace,
           // 注记文本在这一侧现算（shareGrantNoteText 要 friendTag/mcpToolName，
           // 都是主进程的料）；servers 空清单不落事件——没借东西就没有对应关系可说
           ...(grant && grant.servers.length > 0
@@ -3775,8 +3792,8 @@ void app.whenReady().then(() => {
       // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
       enqueueMicroCompact(sessionId);
     }
-    // 后台回注排空（issue #389）：turn 在跑时完成的后台任务攒在 pendingBg，
-    // 正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
+    // 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）
+    // 的后台任务攒在 pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
     // 这时自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；
     // 攒着的结果不丢，下一次 turn 正常收口或新完成事件到来时再排。
     // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
@@ -3798,14 +3815,21 @@ void app.whenReady().then(() => {
     }
   }
 
-  /** 后台任务完成（issue #389）：落审计事件，再按 turn 状态决定立即回注还是攒着。
-      回注 = 以新 turn 走 handleSendMessage 的唯一入口——不 mid-splice（ADR-0073）。
-      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足），
-      该事件带 origin:"background"（issue #428）——UI 据此把气泡和人打的字分开，
+  /** 后台任务完成（issue #389；#871 改时机，ADR-0205）：落审计事件，再按 turn
+      状态决定结果怎么进对话——三条路，按优先级：
+      ① 有 wait_task 正等着（claimed）：结果已从那把工具的 tool_result 回给模型，
+         这里只记账。再追加 = 同一份结果进两次上下文；
+      ② turn 在跑：engine.appendBackground 当场尾部追加（纯 append，前缀不变），
+         模型下一次采样就看到，同一 turn 里接着干——这是 Claude Code 的
+         task-notification 形态，也是「一件事别拆成好几段会话」的那一半；
+      ③ idle：另开一轮（handleSendMessage）——模型已经交卷，只能把它叫回来。
+      ②失败（压缩进行中）退回攒着（pendingBg），收口后合并成一条另开一轮。
+      载体统一是 user_message(origin:"background")（issue #428）——UI 据此换皮，
       模型投影不读这个字段 */
   function handleBackgroundDone(sessionId: string, c: BackgroundCompletion): void {
     // 会话已被 purge：结果无处可去（enqueueMicroCompact 同款守卫）
-    if (!agents.has(sessionId)) return;
+    const agent = agents.get(sessionId);
+    if (!agent) return;
     const full = store.append({
       sessionId,
       ts: Date.now(),
@@ -3816,8 +3840,10 @@ void app.whenReady().then(() => {
       exitCode: c.result.exitCode,
     });
     send(CHANNELS.event, full);
+    if (c.claimed) return;
     const text = formatCompletion(c);
     if (runningSessions.has(sessionId)) {
+      if (agent.engine.appendBackground(text, [c.id])) return;
       const queued = pendingBg.get(sessionId) ?? [];
       queued.push({ taskId: c.id, text });
       pendingBg.set(sessionId, queued);
@@ -3896,6 +3922,21 @@ void app.whenReady().then(() => {
       attachments?: OutgoingAttachment[],
       skillArgs?: string
     ) => handleSendMessage(sessionId, text, skill, attachments, skillArgs)
+  );
+
+  // 重试（issue #871）：正文与身份都从日志里那条事件上取。渲染层只报 seq——
+  // origin:"background" 只能来自主进程自己（上面那个 handler 刻意不透传），
+  // 重试一条回注消息若走 sendMessage 就会丢掉这个标，变成用户亲口说的
+  ipcMain.handle(
+    CHANNELS.resendMessage,
+    (_e, sessionId: string, seq: number, attachments?: OutgoingAttachment[]) => {
+      if (!Number.isInteger(seq) || seq < 0) throw new Error("重发的消息 seq 非法");
+      const ev = store.load(sessionId, { afterSeq: seq - 1, untilSeq: seq }).find((e) => e.seq === seq);
+      if (!ev || ev.type !== "user_message") throw new Error("要重发的那条不是用户消息");
+      const background =
+        ev.origin === "background" ? { taskIds: ev.backgroundTaskIds ?? [] } : undefined;
+      return handleSendMessage(sessionId, ev.content, undefined, attachments, undefined, background);
+    }
   );
 
   ipcMain.handle(CHANNELS.pickAttachments, async () => {

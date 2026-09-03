@@ -21,6 +21,10 @@ export interface ModelReply {
   reasoning?: string;
   /** 这次调用走的哪条路（ADR-0176）。缺省 = direct（老 adapter / 测试假货） */
   route?: "hosted" | "direct";
+  /** hosted 路这次结算的 credit（micro-USD，来自 x-otto-cost-micro 响应头）。
+      只在非流式能拿到——流式的 settle 发生在响应发出之后（edge 那边要等流收尾
+      才知道数）。缺席 = 这条没这个数，不是 0 */
+  creditCostMicro?: number;
 }
 
 /** 流式碎片的频道：思考先到，正文后到。UI 分区渲染靠它区分 */

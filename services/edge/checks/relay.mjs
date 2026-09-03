@@ -14,7 +14,9 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const BASE = (process.argv[2] ?? "https://edge.mrotto.workers.dev").replace(/\/+$/, "");
+// 与 llm.mjs / src/shared/edgeConfig.ts 同一个门牌：自有域名。workers.dev 那个旧门牌
+// 也是同一个 worker（wrangler.jsonc 的 routes + workers_dev），打哪个都通，但默认指新的
+const BASE = (process.argv[2] ?? "https://edge.mrotto.agency").replace(/\/+$/, "");
 const WS_BASE = BASE.replace(/^http/, "ws");
 const SUBPROTOCOL = "mrotto.v1";
 const PING = ":ping";

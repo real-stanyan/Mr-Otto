@@ -71,6 +71,7 @@ const bridge: ShellBridge = {
   setMotionSettings: (settings) => ipcRenderer.invoke(CHANNELS.setMotionSettings, settings),
   getWorkspaceSettings: () => ipcRenderer.invoke(CHANNELS.getWorkspaceSettings),
   setDefaultWorkspace: (dir) => ipcRenderer.invoke(CHANNELS.setDefaultWorkspace, dir),
+  pruneEmptyTaskFolders: () => ipcRenderer.invoke(CHANNELS.pruneEmptyTaskFolders),
   updaterGetState: () => ipcRenderer.invoke(CHANNELS.updaterGetState),
   updaterCheckNow: () => ipcRenderer.invoke(CHANNELS.updaterCheckNow),
   updaterStartDownload: () => ipcRenderer.invoke(CHANNELS.updaterStartDownload),
@@ -161,6 +162,8 @@ const bridge: ShellBridge = {
   pickAttachments: () => ipcRenderer.invoke(CHANNELS.pickAttachments),
   attachmentDataUrl: (id) => ipcRenderer.invoke(CHANNELS.attachmentDataUrl, id),
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
+  resendMessage: (sessionId, seq, attachments) =>
+    ipcRenderer.invoke(CHANNELS.resendMessage, sessionId, seq, attachments),
   steerTurn: (sessionId, text, expectedTurnId) =>
     ipcRenderer.invoke(CHANNELS.steerTurn, sessionId, text, expectedTurnId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),

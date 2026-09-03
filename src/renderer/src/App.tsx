@@ -71,6 +71,7 @@ import { WorkspacesPanel } from "./components/WorkspacesPanel.js";
 import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
+import { isDefaultWorkspace } from "../../shared/defaultWorkspace.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
@@ -572,15 +573,20 @@ function ComposerPrefsBar() {
   // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
   // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
-    <ModelPicker
-      value={model}
-      lane={lane}
-      onChange={(m, l) => void switchModel(m, l)}
-      disabled={status === "running"}
-      className={BAR_SELECT}
-      // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
-      cachedTokens={cachedTokensNow(events)}
-    />
+    <div className="flex items-center gap-1.5">
+      <ModelPicker
+        value={model}
+        lane={lane}
+        onChange={(m, l) => void switchModel(m, l)}
+        className={BAR_SELECT}
+        // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
+        cachedTokens={cachedTokensNow(events)}
+      />
+      {/* 会话正在跑时换型号，提示「下一条消息生效」——当前这条已经用旧模型在跑了 */}
+      {status === "running" && (
+        <span className="text-muted-foreground text-[11px] shrink-0">下一条生效</span>
+      )}
+    </div>
   );
 
   // 挡位单独一枚钮(ThinkingPicker):型号浮层只回答"用哪个型号",
@@ -1717,7 +1723,7 @@ function AppSidebar() {
   useEffect(() => {
     if (tabDecided.current || !builtin || sessions.length === 0) return;
     tabDecided.current = true;
-    if (sessions.some((s) => !s.archived && s.workspace !== null && s.workspace !== builtin)) {
+    if (sessions.some((s) => !s.archived && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin))) {
       setTab("projects");
     }
   }, [sessions, builtin, setTab]);
@@ -1732,7 +1738,7 @@ function AppSidebar() {
   // 两栏各自的「已归档」计数和列表互不掺和
   const archivedTask = useMemo(() => archivedTaskSessions(sessions, builtin), [sessions, builtin]);
   const archived = useMemo(
-    () => groupArchivedByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
+    () => groupArchivedByWorkspace(sessions.filter((s) => !isDefaultWorkspace(s.workspace, builtin))),
     [sessions, builtin]
   );
   const archivedCount =
@@ -1800,6 +1806,11 @@ function AppSidebar() {
         <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
           {s.title ?? fallbackLabel}
         </span>
+        {/* 独立副本（ADR-0157）：组头只说「哪个项目」，副本身份下沉到行（#692，同岛的
+            ADR-0172）。只是一个记号，不写分支名——日志里那条会陈旧（ADR-0158） */}
+        {s.projectRoot !== null && (
+          <GitBranch className="w-3 h-3 shrink-0 text-muted-foreground/70" aria-label="独立副本" />
+        )}
         {/* 同步给谁了（issue #809）：只有分享过的会话才有这串，本地会话零占位 */}
         <SharedAvatars names={s.sharedWith} />
       </SidebarMenuButton>
@@ -1823,7 +1834,7 @@ function AppSidebar() {
             重命名
           </DropdownMenuItem>
           {/* 归到…（#846）：只有任务栏（内置 Default 工作区）的会话才有主题桶这个概念 */}
-          {s.workspace === builtin && (
+          {isDefaultWorkspace(s.workspace, builtin) && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>归到…</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
@@ -1898,7 +1909,7 @@ function AppSidebar() {
     () =>
       partitionShared(
         sessions.filter(
-          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace !== builtin
+          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin)
         )
       ),
     [sessions, builtin]
@@ -2171,6 +2182,8 @@ function AppSidebar() {
                       )}
                     </button>
                   </SidebarGroupLabel>
+                  {/* g.workspace 是项目根而不是某只水獭的副本目录（projectOf）：
+                      新会话从项目根起、由主进程再开一份自己的副本 */}
                   <SidebarGroupAction
                     title={`在 ${g.label} 下开新会话`}
                     onClick={() => newSession(g.workspace)}
@@ -2602,11 +2615,10 @@ function IsolatedChip({ events }: { events: SessionEvent[] }) {
     <>
       <span className="text-muted-foreground text-xs shrink-0">·</span>
       <span
-        className="shrink-0 inline-flex items-center gap-1 rounded-full border border-border/60 px-1.5 py-px text-[11px] text-muted-foreground"
+        className="shrink-0 inline-flex items-center text-muted-foreground"
         title={`这只水獭在一份独立副本上干活，你的项目目录（${iso.projectRoot}）暂时不会变。合并请用右边的「更多」菜单。`}
       >
         <GitBranch className="w-3 h-3" />
-        独立副本
       </span>
     </>
   );
@@ -2861,7 +2873,6 @@ function Welcome() {
               setModel(m);
               setLane(l);
             }}
-            disabled={busy}
             // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
             className={NSC_SELECT}
           />
@@ -3232,7 +3243,9 @@ function ChatComposer() {
 
   const submit = (opts?: { queue?: boolean }) => {
     const queue = opts?.queue ?? false;
-    const text = input.trim();
+    // trim() 会把首尾换行全剥掉——用户 Shift+回车 打的格式（开头空行、结尾空行）
+    // 就丢了。只剥首尾的空行，保留中间的所有换行。
+    const text = input.replace(/^\n+|\n+$/g, "");
     // 只贴了图不打字也算一条消息:附件本身就是内容
     if (!text && staged.length === 0) return;
     // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
@@ -3699,9 +3712,12 @@ export function App() {
             {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
           <span className="text-muted-foreground text-xs shrink-0">·</span>
-          <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-            {folderName(workspace)}
-          </span>
+          {/* 内置 Default 工作区不显示文字——「Default」是系统内部名字，不是用户起的 */}
+          {workspace !== builtinWorkspace && (
+            <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
+              {folderName(workspace)}
+            </span>
+          )}
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}
           <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />

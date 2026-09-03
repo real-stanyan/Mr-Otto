@@ -183,6 +183,21 @@ describe("EventStore", () => {
     expect(byId["parent"]).toBeNull(); // 普通会话没有 spawnedBy → null
   });
 
+  it("sessions()：projectRoot 从第 0 条 session_created 的 isolated.projectRoot 投影出来（#692）", () => {
+    store.append({ sessionId: "plain", ts: 1, type: "session_created", workspace: "/p" });
+    store.append({
+      sessionId: "copy",
+      ts: 2,
+      type: "session_created",
+      workspace: "/userData/worktrees/d3dbc74d37b3-a9b959",
+      isolated: { projectRoot: "/p", branch: "otto/session-a9b959" },
+    });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.projectRoot]));
+    expect(byId["copy"]).toBe("/p");
+    expect(byId["plain"]).toBeNull(); // 直接在用户选的目录里干活 → null，workspace 就是项目
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记（无 reason）仍让会话从列表消失", () => {
     // 早期"删除" = 归档标记，无 reason 字段；ADR-0087 后按 system 解读——
     // 列表和召回都排除，跟写下它时的本意（彻底藏起）一致

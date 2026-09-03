@@ -181,6 +181,7 @@ export function cloudSessionFleetRow(summary: CloudSessionSummary | null): Sessi
     archived: false,
     sharedWith: [],
     topic: null,
+    projectRoot: null,
   };
 }
 
