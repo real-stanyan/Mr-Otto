@@ -48,6 +48,7 @@ const bridge: ShellBridge = {
   listProjectMemories: () => ipcRenderer.invoke(CHANNELS.listProjectMemories),
   deleteProjectMemory: (root) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, root),
   listTopicMemories: () => ipcRenderer.invoke(CHANNELS.listTopicMemories),
+  memorySyncStatus: () => ipcRenderer.invoke(CHANNELS.memorySyncStatus),
   deleteTopicMemory: (slug) => ipcRenderer.invoke(CHANNELS.deleteTopicMemory, slug),
   setTopicLabel: (slug, label) => ipcRenderer.invoke(CHANNELS.setTopicLabel, slug, label),
   rebuildSearchIndex: () => ipcRenderer.invoke(CHANNELS.rebuildSearchIndex),

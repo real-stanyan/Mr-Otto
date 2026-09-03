@@ -70,6 +70,8 @@ export function createLocalWorld(
     /** 用户级配置目录（如 ~/.mr-otto）。给了才挂 config 能力——记忆文件跨
         workspace 共享，圈在这里而不是 root（工程文件夹）内 */
     configRoot?: string;
+    /** config.write 落盘后回调（#852）：记忆云同步挂在这里，工具那条写路径不经 memoryFiles */
+    onConfigWrite?: (rel: string) => void;
     /** 子进程该用的 PATH（issue #453）。缺省 = 全局登记处（启动时 prime 过的
         登录 shell PATH）；返回 null = 维持原样继承。可注入是为了测试不碰全局态 */
     loginPath?: () => string | null;
@@ -344,6 +346,7 @@ export function createLocalWorld(
               const abs = fence(opts.configRoot, rel, "配置目录");
               await mkdir(dirname(abs), { recursive: true });
               await writeFile(abs, content, "utf8");
+              opts.onConfigWrite?.(rel);
             },
             list: async (relDir: string) => {
               try {
