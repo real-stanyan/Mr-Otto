@@ -45,6 +45,7 @@ import {
   ChevronRightIcon,
   ChevronDownIcon,
   TerminalIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -497,16 +498,56 @@ function BackgroundResultCard({
   taskIds: string[];
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
   // 标题只用事件上的 id，不去正文里认 `[后台任务 bg-N 完成]` 那个前缀
   // ——ADR-0103 已经把「靠前缀反解」那条路否掉过一次。
   // 旧日志（#452 之前）没有 taskIds，那时只能说"后台任务"
   const label = taskIds.length > 0 ? taskIds.join(" · ") : "后台任务";
   return (
+    <NotFromYouCard origin="background" label={label} suffix="的结果 · 不是你发的">
+      {children}
+    </NotFromYouCard>
+  );
+}
+
+/** 退化循环护栏注的那句话（issue #891）。和后台结果同一张卡，两处不同：
+    - **默认展开**：正文只有几行，而且它要治的病正是「没人注意到出事了」——
+      折叠起来等于把唯一的信号又藏了一遍；
+    - 图标换成警示：这不是「有结果落地了」，是「它在原地打转」。 */
+function LoopGuardCard({ children }: { children: ReactNode }) {
+  return (
+    <NotFromYouCard
+      origin="loop_guard"
+      label="打转提醒"
+      suffix="Mr Otto 在重复同样的操作 · 不是你发的"
+      icon={<TriangleAlertIcon className="size-3 shrink-0" />}
+      defaultOpen
+    >
+      {children}
+    </NotFromYouCard>
+  );
+}
+
+function NotFromYouCard({
+  origin,
+  label,
+  suffix,
+  icon,
+  defaultOpen = false,
+  children,
+}: {
+  origin: string;
+  label: string;
+  suffix: string;
+  icon?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
       data-role="user"
-      data-origin="background"
+      data-origin={origin}
       className="flex flex-col items-center px-2 transition-[opacity,transform] duration-150 ease-strong starting:translate-y-1 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0"
     >
       <div className="w-full max-w-[min(100%,42rem)] overflow-hidden rounded-[10px] border border-border/60 bg-muted/40">
@@ -516,9 +557,9 @@ function BackgroundResultCard({
           aria-expanded={open}
           className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors duration-[120ms] hover:bg-foreground/[0.04]"
         >
-          <TerminalIcon className="size-3 shrink-0" />
+          {icon ?? <TerminalIcon className="size-3 shrink-0" />}
           <span className="font-mono">{label}</span>
-          <span className="truncate">的结果 · 不是你发的</span>
+          <span className="truncate">{suffix}</span>
           <ChevronDownIcon
             className={cn(
               "ml-auto size-3.5 shrink-0 transition-transform duration-150 ease-strong motion-reduce:transition-none",
@@ -557,21 +598,21 @@ const UserMessage: FC = () => {
   const otto = useAuiState(
     (s) => s.message.metadata.custom["otto"] as SessionEvent | undefined,
   );
-  const fromBackground =
-    otto?.type === "user_message" && otto.origin === "background";
-  if (fromBackground) {
-    return (
-      <BackgroundResultCard
-        taskIds={otto.type === "user_message" ? (otto.backgroundTaskIds ?? []) : []}
-      >
-        <MessagePrimitive.Parts
-          components={{
-            File: UserFilePart,
-            Image: UserImagePart,
-            ...(UserText ? { Text: UserText } : {}),
-          }}
-        />
-      </BackgroundResultCard>
+  if (otto?.type === "user_message" && otto.origin !== undefined) {
+    const parts = (
+      <MessagePrimitive.Parts
+        components={{
+          File: UserFilePart,
+          Image: UserImagePart,
+          ...(UserText ? { Text: UserText } : {}),
+        }}
+      />
+    );
+    // 两种「不是你发的」共用居中卡片，各自的标题/默认展开见各自的组件
+    return otto.origin === "loop_guard" ? (
+      <LoopGuardCard>{parts}</LoopGuardCard>
+    ) : (
+      <BackgroundResultCard taskIds={otto.backgroundTaskIds ?? []}>{parts}</BackgroundResultCard>
     );
   }
   return (

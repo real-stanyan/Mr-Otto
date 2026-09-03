@@ -9,6 +9,13 @@ import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
 import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
+import {
+  detectToolLoop,
+  roundFingerprint,
+  loopNudgeText,
+  HISTORY_LIMIT,
+  type ToolLoopDetection,
+} from "../shared/toolLoopGuard.js";
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "../model/adapter.js";
 import { errorClassOf } from "../model/errorClass.js";
 import type { ChatMessage } from "../session/deriveMessages.js";
@@ -77,6 +84,9 @@ export interface LoopEngineOptions {
   /** 单 turn 模型步数到 LONG_TURN_ROUNDS 时喊一次（每 turn 至多一次）。
       不给 = 不喊（测试和裸装配照旧）。装配层拿它发系统通知 */
   onLongTurn?: (rounds: number) => void;
+  /** 认出退化循环时喊一声（issue #891）。每次命中喊一次——历史在喊完后清空，
+      所以再喊得再攒够一个完整周期 × 遍数。不给 = 不喊（护栏本身照常注消息） */
+  onToolLoop?: (detection: ToolLoopDetection) => void;
   /** Deferred 工具的可见集（issue #348）：活 Set 引用，tool_search 命中时写入，
       这里每轮过滤声明表时读。不给 = deferred 工具永不可见（等同 hidden） */
   deferredExposed?: ReadonlySet<string>;
@@ -131,6 +141,10 @@ export class LoopEngine {
       不用在内存里做合并。turn 结束即丢（runTurn 的 finally）：agent 长活，
       一直攥着整段日志是拿常驻内存换查询，不值——turn 内攥着才是纯赚 */
   private turnLog: SessionEvent[] | null = null;
+  /** 本 turn 每一圈工具调用的指纹（issue #891）。只在 turn 内活着——
+      循环是「这一趟活里出不来」，跨 turn 比对没有意义（用户已经又说了话）。
+      喊过一次就清空：护栏不是每圈都念叨的复读机 */
+  private loopFingerprints: string[] = [];
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -636,6 +650,7 @@ export class LoopEngine {
       this.turnAbort = null;
       this.currentTurnId = null; // steer 的目标随 turn 一起消失
       this.turnLog = null; // 快照只活一个 turn：长会话不常驻在内存里
+      this.loopFingerprints = []; // 同上：循环判据的作用域是这一趟活
     }
   }
 
@@ -784,6 +799,17 @@ export class LoopEngine {
       // "先写后跑"的依赖不能被并发打乱。结果按原调用序落盘：投影按 toolCallId
       // 配对不吃顺序，但重放/测试读日志时顺序确定性是白捡的，别丢
       const calls = reply.toolCalls;
+
+      // 退化循环护栏（issue #891）。判据在采样之后、执行之前算，但话要等到
+      // 这一圈的 tool_result 全部落盘之后才注 —— assistant(tool_calls) 与它的
+      // tool_result 之间插一条 user_message，投影出来就是「有 tool_call 没答复」，
+      // OpenAI 方言当场不合法（ADR-0005 的教训）
+      this.loopFingerprints.push(roundFingerprint(calls));
+      if (this.loopFingerprints.length > HISTORY_LIMIT) {
+        this.loopFingerprints.splice(0, this.loopFingerprints.length - HISTORY_LIMIT);
+      }
+      const loop = detectToolLoop(this.loopFingerprints);
+
       const isSafe = (c: { name: string }) => {
         const t = this.toolsByName.get(c.name);
         return t?.parallelSafe === true && !t.requiresApproval;
@@ -822,6 +848,24 @@ export class LoopEngine {
         if (concluded) return;
       }
       // 结果已落盘 → 下一圈 deriveMessages 自然带上它们
+
+      // 打转的那句话现在才注（理由见上面 detectToolLoop 那处的注释）。
+      // **不停 turn** —— 无步数天花板仍然成立（ADR-0006），这只是把模型自己
+      // 看不见的事实摆到它眼前，怎么办由它决定。载体沿用 appendBackground
+      // 那条路：一条 user_message，模型投影时和用户说的话逐字节一样
+      // （deriveMessages 读都不读 origin），UI 靠 origin 换皮认出不是人打的
+      if (loop) {
+        this.append({
+          ...this.env(),
+          type: "user_message",
+          content: loopNudgeText(loop),
+          origin: "loop_guard",
+        });
+        // 清空历史：喊完从头攒，不做每圈复读的护栏。真没听进去的话，
+        // 再凑够一个完整周期 × 遍数会再喊一次——语气不变，次数是升级
+        this.loopFingerprints = [];
+        this.opts.onToolLoop?.(loop);
+      }
     }
   }
 }

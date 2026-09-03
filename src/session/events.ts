@@ -33,13 +33,17 @@ export interface UserMessageEvent extends SessionEventBase {
       UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
       再拼全文。可选 = 旧日志照常重放 */
   textFiles?: UserTextFile[];
-  /** 这条消息不是人打的(issue #428)。目前唯一来源是后台任务回注(issue #389):
-      任务在 turn 之外完成,结果以新 turn 注回,载体就是一条 user_message。
-      缺席 = 人亲手发的(旧日志照常重放,schema 向后兼容硬规则)。
+  /** 这条消息不是人打的(issue #428)。两个来源:
+      - `background`——后台任务回注(issue #389):任务在 turn 之外完成,
+        结果以新 turn 注回,载体就是一条 user_message;
+      - `loop_guard`——退化循环护栏(issue #891):模型把同一组工具调用逐字
+        重复了好几遍,engine 注一条话把这个事实摆到它眼前。不停 turn。
+      缺席 = 人亲手发的(旧日志照常重放,schema 向后兼容硬规则;union 只加宽,
+      旧日志里的 "background" 语义分毫未变)。
       **只影响 UI**(气泡换皮,人能分清哪句是自己说的);模型投影(deriveMessages)
       读都不读它——对模型来说这就是一条用户消息,和从前逐字节一致。
       主进程独占写入:IPC 的 sendMessage 入口不透传,渲染层伪造不了身份 */
-  origin?: "background";
+  origin?: "background" | "loop_guard";
   /** 这条回注驮的后台任务 id(issue #452 / ADR-0109)。只在 origin==="background"
       时出现。数组不是单值:turn 在跑时完成的任务攒进 pendingBg,收口后**合并成
       一条**注回,一条消息驮多个任务是常态。
