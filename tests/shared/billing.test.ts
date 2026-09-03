@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  BILLING_HEADERS, creditOf, fmtCredit, parseBillingError, parseBillingMe, remainingFromHeaders,
+  BILLING_HEADERS, SSE_COST_COMMENT, creditOf, fmtCredit, parseBillingError, parseBillingMe,
+  parseSseCostComment, remainingFromHeaders,
 } from "../../src/shared/billing.js";
 
 describe("billing 约定", () => {
@@ -51,5 +52,22 @@ describe("billing 约定", () => {
     const h = new Headers({ [BILLING_HEADERS.h5]: "5000", [BILLING_HEADERS.plan]: "pro" });
     expect(remainingFromHeaders(h)).toEqual({ h5: 5000, plan: "pro" });
     expect(remainingFromHeaders(new Headers({ [BILLING_HEADERS.week]: "abc" }))).toEqual({});
+  });
+});
+
+describe("parseSseCostComment（#857 流式那半：头里放不下，贴成一行 SSE 注释）", () => {
+  it("认得自己那一行，读出 micro 数", () => {
+    expect(parseSseCostComment(`${SSE_COST_COMMENT}1234`)).toBe(1234);
+    expect(parseSseCostComment(`${SSE_COST_COMMENT} 1234 `)).toBe(1234);
+  });
+  it("别的行一律 null —— 缺席 ≠ 0", () => {
+    expect(parseSseCostComment("data: {}")).toBeNull();
+    expect(parseSseCostComment(": keep-alive")).toBeNull();
+    expect(parseSseCostComment("")).toBeNull();
+    expect(parseSseCostComment(`${SSE_COST_COMMENT}abc`)).toBeNull();
+    expect(parseSseCostComment(`${SSE_COST_COMMENT}-5`)).toBeNull();
+  });
+  it("写成注释行（以 : 开头）：合规的 SSE 解析器一律跳过，对别的客户端是隐形的", () => {
+    expect(SSE_COST_COMMENT.startsWith(":")).toBe(true);
   });
 });
