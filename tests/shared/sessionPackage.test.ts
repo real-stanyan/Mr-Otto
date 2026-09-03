@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEvent } from "../../src/session/events.js";
+import { KNOWN_EVENT_TYPES, type SessionEvent } from "../../src/session/events.js";
 import {
   applyPrivacyGate,
   collectAttachmentRefs,
   packSession,
   PRIVACY_STRIP_TYPES,
+  PRIVACY_VERDICTS,
   rewriteWorkspace,
   validatePackage,
 } from "../../src/shared/sessionPackage.js";
@@ -74,6 +75,24 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(stripped).toContain("request_envelope");
     expect(stripped).toContain("checkpoint_created");
     expect([...stripped].sort()).toEqual(stripped);
+  });
+
+  it("每个已知事件类型都在 PRIVACY_VERDICTS 里表过态（#850）——tsc 管新增漏表态，这里管运行时两张表不脱节", () => {
+    // 类型层已经由 Record<SessionEvent["type"], …> 保证穷尽；这条是它的运行时镜像：
+    // KNOWN_EVENT_TYPES（events.ts）与 PRIVACY_VERDICTS 必须是同一张名单，
+    // 任何一边多出来的类型都说明有人绕过了 union 加事件。
+    const verdictKeys = new Set(Object.keys(PRIVACY_VERDICTS));
+    expect([...verdictKeys].sort()).toEqual([...KNOWN_EVENT_TYPES].sort());
+    for (const t of verdictKeys) {
+      expect(["strip", "keep"]).toContain(PRIVACY_VERDICTS[t as SessionEvent["type"]]);
+    }
+    // 集合是表态表的投影，不是另一份手写名单
+    for (const t of PRIVACY_STRIP_TYPES) expect(PRIVACY_VERDICTS[t]).toBe("strip");
+    for (const t of verdictKeys) {
+      if (PRIVACY_VERDICTS[t as SessionEvent["type"]] === "strip") {
+        expect(PRIVACY_STRIP_TYPES.has(t as SessionEvent["type"])).toBe(true);
+      }
+    }
   });
 
   it("PRIVACY_STRIP_TYPES 覆盖所有记忆类与请求信封——少一个都是泄露", () => {
