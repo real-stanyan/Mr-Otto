@@ -572,15 +572,20 @@ function ComposerPrefsBar() {
   // thinking 挡位收进同一个浮层(ModelSelector.Effort)——挡位是型号的属性,
   // 并排两个下拉框会让人以为可以先定挡位再挑型号,而实际顺序是反的
   const modelSelect = (
-    <ModelPicker
-      value={model}
-      lane={lane}
-      onChange={(m, l) => void switchModel(m, l)}
-      disabled={status === "running"}
-      className={BAR_SELECT}
-      // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
-      cachedTokens={cachedTokensNow(events)}
-    />
+    <div className="flex items-center gap-1.5">
+      <ModelPicker
+        value={model}
+        lane={lane}
+        onChange={(m, l) => void switchModel(m, l)}
+        className={BAR_SELECT}
+        // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
+        cachedTokens={cachedTokensNow(events)}
+      />
+      {/* 会话正在跑时换型号，提示「下一条消息生效」——当前这条已经用旧模型在跑了 */}
+      {status === "running" && (
+        <span className="text-muted-foreground text-[11px] shrink-0">下一条生效</span>
+      )}
+    </div>
   );
 
   // 挡位单独一枚钮(ThinkingPicker):型号浮层只回答"用哪个型号",
@@ -2860,7 +2865,6 @@ function Welcome() {
               setModel(m);
               setLane(l);
             }}
-            disabled={busy}
             // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
             className={NSC_SELECT}
           />
