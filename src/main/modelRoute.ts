@@ -28,6 +28,8 @@ export interface HostedInput {
   subscribed: boolean;
   exhausted: boolean;
   supportsModel: boolean;
+  /** 当前档的多模态能力（plan.capabilities）。没订阅/没下发 = 全关 */
+  capabilities?: { image: boolean; video: boolean };
   resetAt?: number;
 }
 
@@ -57,9 +59,23 @@ const fmtReset = (ms: number): string =>
 export function routeModel(input: RouteInput): ModelRoute {
   const { choice, ownKey, ownBaseUrl, lane, hosted } = input;
 
+  // 0. 多模态门禁（#864，plan.capabilities）：hosted 这条路上，这款模型要的能力
+  //    超出当前档的，不走托管——直连自己的 key 不受影响（自己的 key 什么都能调）。
+  //    判据放在 hosted 分支**之前**：它不是「hosted 失败再退 direct」，是 hosted
+  //    这条路对这个输入整个不通
+  const caps = hosted?.capabilities ?? { image: false, video: false };
+  const wantsVision = choice.supportsVision === true;
+  if (hosted?.subscribed && wantsVision && !caps.image && ownKey === "") {
+    return {
+      kind: "blocked",
+      reason: `${choice.label} 要读图，当前订阅档没开多模态（升档或在设置里填自己的 ${choice.apiKeyEnv}）。`,
+    };
+  }
+  const hostedOk = hosted?.subscribed && wantsVision ? caps.image : true;
+
   // 1. 有活跃订阅、额度没耗尽、网关供这款、拿得到 JWT → 走网关
   //    （付费订阅下托管优先，ADR-0176 决定二）
-  if (hosted?.subscribed && !hosted.exhausted && hosted.supportsModel && input.hostedBaseUrl && input.hostedToken) {
+  if (hosted?.subscribed && hostedOk && !hosted.exhausted && hosted.supportsModel && input.hostedBaseUrl && input.hostedToken) {
     return { kind: "hosted", baseUrl: input.hostedBaseUrl, apiKey: input.hostedToken };
   }
 

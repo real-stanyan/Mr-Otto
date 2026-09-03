@@ -14,9 +14,22 @@ export interface WindowState {
   resetAt: number;
 }
 
+/** 服务端下发的档位价目（plan 表是事实——改价不发版，客户端不抄）。
+    三档之外还有 addon 行：它不下发，加购按钮的单价是 checkout 那边的参数 */
+export interface PlanInfo {
+  id: PlanId;
+  /** 月费，美元分（plan.price_usd_cents） */
+  priceUsdCents: number;
+  /** 多模态能力门禁（plan.capabilities）：false 的档在 hosted 路上收不到这类输入 */
+  capabilities: { image: boolean; video: boolean };
+}
+
 export interface BillingMe {
   plan: PlanId | null;
   status: SubscriptionStatus;
+  /** 全部档位的服务端价目。订阅卡片渲染这里的数（ADR-0203 偏差 (a)：
+      渲染层那份写死的 PLAN_CARDS 价格曾经在改价那天与结账页对不上） */
+  plans: PlanInfo[];
   /** null = 没有活跃订阅（没窗口可言） */
   windows: { h5: WindowState; week: WindowState } | null;
   addon: { remainingMicro: number; expiresAt: number | null };
@@ -30,6 +43,10 @@ export const BILLING_HEADERS = {
   week: "x-otto-window-week-remaining",
   addon: "x-otto-addon-remaining",
   plan: "x-otto-plan",
+  /** 本次调用结算的 credit（micro-USD）。只有 2xx 的响应带它——hold 被拒的
+      响应带的是剩余额度，没有「本次花费」可言。非 2xx 一律按 0 处理（上游出错
+      release 了，没花钱） */
+  cost: "x-otto-cost-micro",
 } as const;
 
 /** 平台身份（runtime）代表哪个真用户；桌面 JWT 带这个头一律 400 */
@@ -107,7 +124,23 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
   const expiresAt = typeof payload.addon.expiresAt === "number" ? payload.addon.expiresAt : null;
   const periodEnd = typeof payload.periodEnd === "number" ? payload.periodEnd : null;
   const models = Array.isArray(payload.models) ? payload.models.filter((m): m is string => typeof m === "string") : [];
-  return { plan, status, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models };
+  const plans: PlanInfo[] = [];
+  if (Array.isArray(payload.plans)) {
+    for (const p of payload.plans) {
+      if (!isObj(p)) continue;
+      const pid = p.id;
+      if ((pid === "lite" || pid === "pro" || pid === "max") && typeof p.priceUsdCents === "number" && Number.isFinite(p.priceUsdCents)) {
+        const caps = isObj(p.capabilities) ? p.capabilities : {};
+        plans.push({
+          id: pid, priceUsdCents: p.priceUsdCents,
+          // 缺省 false（关）：门禁漏报的能力按没有算——给没买的能力开门是漏钱，
+          // 给买了的能力关门是 UI 上少一颗按钮，前者才不可逆
+          capabilities: { image: caps.image === true, video: caps.video === true },
+        });
+      }
+    }
+  }
+  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models };
 }
 
 export const MICRO_PER_CREDIT = 10_000;

@@ -106,7 +106,9 @@ SUPABASE_JWT_SECRET='...' npm --prefix services/edge run check:relay
 npm --prefix services/edge run check:relay http://127.0.0.1:8799
 ```
 
-生产地址是 `https://mrotto-edge.dryrun-agency.workers.dev`（脚本的默认值）。
+生产地址是 `https://edge.mrotto.agency`（自有域名，客户端编译期常量就指它）；
+同一个 worker 还有第二个门牌 `https://edge.mrotto.workers.dev`（存量旧客户端连的是它），
+两个名字背后是**同一份部署**（wrangler.jsonc 的 routes + workers_dev），不是两套服务。
 
 拿 `.dev.vars` 里的假 secret 打生产会被脚本**直接拦掉**：那样跑，中继那些断言会
 全部 401，看起来像"服务坏了"，实际是签的 token 对不上——这是这个脚本最容易

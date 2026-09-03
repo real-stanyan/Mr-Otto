@@ -696,6 +696,9 @@ export class LoopEngine {
         // 耗时只在真有思考内容时才有意义(空思考的耗时是噪音)
         ...(reply.reasoning && reasoningMs !== null ? { reasoningMs } : {}),
         ...(reply.route ? { route: reply.route } : {}), // 钱从谁账上出（ADR-0176 决定五）
+        // #857：本次花了多少 credit。是事实不是投影（不记它就只剩从 token 反推，
+        // 而托管侧的单价/cache 折扣客户端不知道）；只在 hosted + 非流式有
+        ...(reply.creditCostMicro !== undefined ? { creditCostMicro: reply.creditCostMicro } : {}),
       });
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) return; // 模型说完了

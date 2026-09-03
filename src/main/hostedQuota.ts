@@ -47,8 +47,11 @@ export function parseCheckoutTarget(v: unknown): CheckoutTarget | null {
 
 export interface HostedQuota {
   snapshot(): HostedSnapshot;
-  /** 路由判断用的三元组 */
-  routeInput(model: string): { subscribed: boolean; exhausted: boolean; supportsModel: boolean; resetAt?: number };
+  /** 路由判断用的三元组 + 能力门禁（#864：plan.capabilities 随 /me 下发） */
+  routeInput(model: string): {
+    subscribed: boolean; exhausted: boolean; supportsModel: boolean;
+    capabilities?: { image: boolean; video: boolean }; resetAt?: number;
+  };
   refresh(): Promise<BillingMe | null>; // GET /billing/v1/me；失败保留旧快照
   noteHeaders(h: Headers): void; // 每次网关响应头
   noteExhausted(info: RerouteInfo): void; // 429 那一刻
@@ -97,8 +100,12 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
       const me = snap.me;
       const subscribed = me !== null && me.status === "active" && me.plan !== null;
       const ex = liveExhausted();
+      // 当前档的能力门禁：/me 的 plans 里找到这个档。查不到 = 全关
+      // （给没买的能力开门是漏钱，关门只是少一颗按钮）
+      const caps = me?.plan ? me.plans.find((p) => p.id === me.plan)?.capabilities : undefined;
       return {
         subscribed, exhausted: ex !== null, supportsModel: me?.models.includes(model) ?? false,
+        ...(caps ? { capabilities: caps } : {}),
         ...(ex ? { resetAt: ex.resetAt } : {}),
       };
     },
