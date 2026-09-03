@@ -142,6 +142,7 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 估算 settle，不 release —— 内容已经送出去、上游已经收了我们的钱，release 等于把这笔
 成本送掉，而「收到内容之后断线」是客户端随时能做的事。`release`（不记账）只剩三条
 真的没花钱的路：上游非 2xx / 连不上、一个字节都没转发就断、hold 之后花钱之前自己炸了。
+非流式 200 但正文里挑不出 usage 也按预扣结算（#855）——200 就是收了钱，规则与流式同一条。
 
 **Quota DO 存的是投影，不是事实**：钱的唯一事实是 Supabase 的 `usage_event` 表
 （append-only，见 `0017_subscriptions.sql`）。DO 冷启动没有 state 时**从事实重建**

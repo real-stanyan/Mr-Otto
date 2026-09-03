@@ -33,6 +33,11 @@ describe("billing 约定", () => {
     expect(e).toEqual({ code: "already_subscribed", message: "已有订阅，换档请走「管理」" });
   });
 
+  it("parseBillingError 认得 payload_too_large：edge 发得出的每一个 code 都要认得（#867）", () => {
+    const e = parseBillingError(413, { error: { type: "otto_edge", code: "payload_too_large", message: "webhook 正文过大" } });
+    expect(e).toEqual({ code: "payload_too_large", message: "webhook 正文过大" });
+  });
+
   it("parseBillingMe：无订阅时 windows=null、plan=null；形状不对回 null", () => {
     const me = parseBillingMe({
       plan: null, status: "none", windows: null,

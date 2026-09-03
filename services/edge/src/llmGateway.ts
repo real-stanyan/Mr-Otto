@@ -13,12 +13,13 @@
 // （估算 = body 字节 ÷ 3 + max_tokens 顶格，通常高于真实用量），宁可多扣自己人也不留洞。
 // 同一条规则也管「正常结束但流里没有 usage 帧」：字节出去了，就按估算记账。
 //
-// release（不记账）只剩「我们一分钱没花」这几条路：
+// release（不记账）只剩「我们一分钱没花」这三条路：
 // ① 上游没接受这次请求（`!res.ok`）或压根连不上（doFetch 抛）；
 // ② 流开起来了但**一个字节都没转发出去**就断（bytes === 0）——这一刻内容还没出门；
 // ③ hold 拿到之后、真正花钱之前的任何一步再炸（比如 quota.remaining 挂了、非流式
-//   res.text() 读炸了）——这笔 hold 不能变成孤儿；
-// ④ 非流式 200 但正文里挑不出 usage（没账可记；流式那条已按上面的规则改成结算）。
+//   res.text() 读炸了）——这笔 hold 不能变成孤儿。
+// 非流式 200 但正文里挑不出 usage **不在其中**（#855）：上游回了 200 就是收了钱，
+// 正文已经读到手、马上要原样发给客户端——与流式「字节出门了」是同一件事，按预扣估算结算。
 // hold 被拒（no_subscription/quota_exhausted/too_many_inflight）时，响应也带上剩余
 // 额度头，省得客户端再问一次（若取额度本身也炸了，错误照样发，只是没有那几个头）。
 //
@@ -324,10 +325,6 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
 
       const settleAt = (usage: UsageCounts) =>
         deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
-      const settleWith = async (usage: UsageCounts | null) => {
-        if (!usage) { await deps.quota.release(caller.uid, requestId); return; }
-        await settleAt(usage);
-      };
 
       const headers = await remainingHeaders(caller.uid);
 
@@ -367,7 +364,9 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         const parsed: unknown = JSON.parse(text);
         usage = isObj(parsed) ? parseUsage(parsed.usage) : null;
       } catch { /* 上游回了非 JSON 的 200：按没 usage 处理 */ }
-      await settleWith(usage);
+      // #855：挑不出 usage 也按预扣结算，与流式那条同一规则——200 = 上游收了钱，
+      // 正文马上就出门；release 会把这笔成本送掉
+      await settleAt(usage ?? estimateUsage(bodyBytes, maxTokens));
       return new Response(text, {
         status: 200,
         headers: { "content-type": res.headers.get("content-type") ?? "application/json", ...headers },
