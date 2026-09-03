@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  projectMemoryDir, resolveProjectRoot, resolveWorkspaceOrigin, type GitFsReader,
+  isPathScopeId, normalizeRemoteUrl, projectMemoryDir, projectScopeId, readOriginUrl,
+  resolveProjectRoot, resolveProjectScope, resolveWorkspaceOrigin, type GitFsReader,
 } from "../../src/main/projectRoot.js";
 
 /** 假文件系统。值 = null 代表「这是个目录」（readFileSync 读目录会抛，真实现返回 null） */
@@ -123,5 +124,91 @@ describe("resolveWorkspaceOrigin", () => {
       "/repo/.git/worktrees/a/HEAD": "ref: refs/heads/x",
     });
     expect(resolveProjectRoot("/repo/wt/a", fs)).toBe(resolveWorkspaceOrigin("/repo/wt/a", fs).root);
+  });
+});
+
+// ── 作用域键（#886）─────────────────────────────────────────────────────────
+// 记忆的键从「本机路径」换成「remote URL」，项目档才跨得了机器。
+// 归一化的每一条都对应一种「同一个仓库在两台机器上写出两把键」的真实写法。
+
+describe("normalizeRemoteUrl", () => {
+  const same = "github.com/real-stanyan/Mr-Otto";
+  it("四种写法归一到同一把键（同一个仓库不该有两把键）", () => {
+    expect(normalizeRemoteUrl("https://github.com/real-stanyan/Mr-Otto.git")).toBe(same);
+    expect(normalizeRemoteUrl("https://github.com/real-stanyan/Mr-Otto")).toBe(same);
+    expect(normalizeRemoteUrl("git@github.com:real-stanyan/Mr-Otto.git")).toBe(same);
+    expect(normalizeRemoteUrl("ssh://git@github.com:22/real-stanyan/Mr-Otto.git")).toBe(same);
+  });
+
+  it("凭据不进键：URL 里的 token 每台机器都不一样，留着就等于没归一化", () => {
+    expect(normalizeRemoteUrl("https://x-access-token:ghp_secret@github.com/real-stanyan/Mr-Otto.git")).toBe(same);
+  });
+
+  it("host 小写、路径原样：DNS 不区分大小写，仓库路径可能区分", () => {
+    expect(normalizeRemoteUrl("https://GitHub.COM/real-stanyan/Mr-Otto")).toBe(same);
+    expect(normalizeRemoteUrl("https://github.com/real-stanyan/mr-otto")).not.toBe(same);
+  });
+
+  it("本地路径 / file:// 没有跨机身份 → null（调用方退回路径作用域）", () => {
+    expect(normalizeRemoteUrl("/srv/git/repo.git")).toBeNull();
+    expect(normalizeRemoteUrl("../sibling")).toBeNull();
+    expect(normalizeRemoteUrl("file:///srv/git/repo.git")).toBeNull();
+    expect(normalizeRemoteUrl("")).toBeNull();
+    expect(normalizeRemoteUrl("https://github.com/")).toBeNull(); // 只有 host 没有仓
+  });
+});
+
+describe("readOriginUrl", () => {
+  const config = (body: string) => ({ "/repo/.git/config": body });
+  it("只认 origin，取最后一次赋值（git 单值 key 的语义）", () => {
+    const fs = fakeFs(config(
+      '[remote "upstream"]\n\turl = https://github.com/up/x.git\n' +
+      '[remote "origin"]\n\turl = https://github.com/a/old.git\n\turl = https://github.com/a/b.git\n'
+    ));
+    expect(readOriginUrl("/repo", fs)).toBe("https://github.com/a/b.git");
+  });
+
+  it("没有 origin / 读不到 config（submodule 的 .git 是文件）→ null", () => {
+    expect(readOriginUrl("/repo", fakeFs(config('[core]\n\tbare = false\n')))).toBeNull();
+    expect(readOriginUrl("/repo", fakeFs({}))).toBeNull();
+  });
+});
+
+describe("projectScopeId / resolveProjectScope", () => {
+  it("有 remote：键是 remote，root 仍是本机路径——两者故意不同", () => {
+    const fs = fakeFs({
+      "/repo/.git": null,
+      "/repo/.git/config": '[remote "origin"]\n\turl = git@github.com:a/b.git\n',
+      "/repo/src/.keep": "",
+    });
+    expect(resolveProjectScope("/repo/src", fs)).toEqual({ id: "github.com/a/b", root: "/repo" });
+  });
+
+  it("worktree 折回主仓之后再取 remote —— 副本和主仓共用同一份项目记忆", () => {
+    const fs = fakeFs({
+      "/repo/wt/a/.git": "gitdir: /repo/.git/worktrees/a",
+      "/repo/.git/worktrees/a/HEAD": "ref: refs/heads/x",
+      "/repo/.git/config": '[remote "origin"]\n\turl = git@github.com:a/b.git\n',
+    });
+    expect(resolveProjectScope("/repo/wt/a", fs)?.id).toBe("github.com/a/b");
+  });
+
+  it("没有 remote 的仓：键退回路径本身，等于保持改动前的行为", () => {
+    const fs = fakeFs({ "/repo/.git": null });
+    expect(projectScopeId("/repo", fs)).toBe("/repo");
+    expect(resolveProjectScope("/repo", fs)).toEqual({ id: "/repo", root: "/repo" });
+  });
+
+  it("不在任何仓里 → null", () => {
+    expect(resolveProjectScope("/tmp/scratch", fakeFs({}))).toBeNull();
+  });
+});
+
+describe("isPathScopeId", () => {
+  // 迁移和「旧日志里那个值」两处都靠这一句区分新旧键
+  it("绝对路径是旧键，host/path 是新键", () => {
+    expect(isPathScopeId("/Users/x/repo")).toBe(true);
+    expect(isPathScopeId("C:\\src\\repo")).toBe(true);
+    expect(isPathScopeId("github.com/a/b")).toBe(false);
   });
 });

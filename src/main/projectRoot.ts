@@ -120,9 +120,109 @@ export function resolveProjectRoot(
   return resolveWorkspaceOrigin(workspace, reader).root;
 }
 
-/** 项目记忆目录（配置目录相对路径）。绝对路径的 sha256 前 16 位——路径里的
-    斜杠/空格/中文不适合直接当目录名（同 world/checkpoints.ts 的 workspaceStoreName） */
-export function projectMemoryDir(projectRoot: string): string {
-  const h = createHash("sha256").update(projectRoot).digest("hex").slice(0, 16);
+/** 项目记忆目录（配置目录相对路径）。**作用域键**的 sha256 前 16 位——键里的
+    斜杠/空格/中文不适合直接当目录名（同 world/checkpoints.ts 的 workspaceStoreName）。
+    入参是 `ProjectScope.id`，**不是**项目根路径：有 remote 的仓库两者不同
+    （#886），拿路径调这个函数会算出一个没人写过的目录 */
+export function projectMemoryDir(scopeId: string): string {
+  const h = createHash("sha256").update(scopeId).digest("hex").slice(0, 16);
   return `memories/projects/${h}`;
+}
+
+// ── 作用域键：从「本机路径」换成「remote URL」（#886，ADR-0116 第一条的重审）────
+//
+// 路径哈希做键的天花板：换一台机器项目根路径就不同，云端拉下来的是另一个哈希目录，
+// 本机永远解析不到它——项目档实际不跨机（ADR-0207 已知天花板第二条）。
+// remote URL 是同一个仓库在所有机器上唯一相同的那个字符串，所以它才是键。
+// 没有 remote 的仓（纯本地仓、submodule、.git 读不了）退回路径——那种仓本来
+// 就没有跨机身份，退回去 = 保持今天的行为，不是降级。
+
+/** 一个项目的记忆作用域。`id` 是键（root.txt 的内容、目录哈希的原文），
+    `root` 是本机项目根绝对路径（点名检测、提示词文案用）。
+    有 remote 时两者不同，这正是这次改动的全部要点 */
+export interface ProjectScope {
+  id: string;
+  root: string;
+}
+
+/** `origin` 的 URL：`<项目根>/.git/config` 里读，**不起 `git` 子进程**
+    （同 branchFromWorktreeGitdir 的理由——岛的每条事件都会重推一次 fleet）。
+    读不到 / 没有 origin → null。普通仓库的 .git 是目录、config 在它下面；
+    submodule 的 .git 是文件，这一读必然失败 → null → 退回路径作用域，
+    与 rootFromGitdir「子模块不折叠」是同一个取舍。
+    同名 key 出现多次时取最后一个：git 单值 key 的语义就是后写胜 */
+export function readOriginUrl(projectRoot: string, reader: GitFsReader = nodeReader): string | null {
+  const text = reader.readFile(join(projectRoot, ".git", "config"));
+  if (text === null) return null;
+  let inOrigin = false;
+  let url: string | null = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/[#;].*$/, "").trim();
+    if (line.startsWith("[")) {
+      // 节名大小写不敏感，子节名（"origin"）敏感——git 自己就是这个规矩
+      inOrigin = /^\[remote\s+"origin"\]$/i.test(line);
+      continue;
+    }
+    if (!inOrigin) continue;
+    const m = /^url\s*=\s*(.*)$/i.exec(line);
+    if (m) url = m[1]!.trim();
+  }
+  return url === null || url === "" ? null : url;
+}
+
+/** remote URL → 跨机稳定的身份串（`host/path`）。认不出形状、或它根本没有
+    跨机身份（本地路径 / file://）→ null，调用方退回路径作用域。
+    三条归一化，各有各的理由：
+    - **去 userinfo**：`https://x-access-token:<token>@github.com/a/b` 里那段凭据
+      每台机器都不一样，留着就不是同一把键了（顺带也不会把 token 哈希进目录名）
+    - **去端口**：`ssh://git@host:22/a/b` 与 `git@host:a/b` 是同一个仓
+    - **host 小写、路径原样**：DNS 大小写不敏感，所以 host 必须小写；路径**不**小写
+      是保守选择——大小写敏感的自建 host 上 `/a/Repo` 与 `/a/repo` 可能真是两个仓，
+      合并两个不同仓的记忆（注入错内容）比拆开同一个仓（退回今天的行为）更糟 */
+export function normalizeRemoteUrl(url: string): string | null {
+  const raw = url.trim();
+  if (!raw) return null;
+  let rest: string;
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(raw);
+  if (scheme) {
+    if (scheme[1]!.toLowerCase() === "file") return null; // 本地克隆，没有跨机身份
+    rest = raw.slice(scheme[0]!.length);
+  } else if (/^[/~.]/.test(raw) || /^[A-Za-z]:[\\/]/.test(raw)) {
+    return null; // `git clone /path/to/repo` 造出来的本地 remote
+  } else {
+    const scp = /^([^/]*?):(.*)$/.exec(raw); // scp 短语法 [user@]host:path
+    if (!scp) return null;
+    rest = `${scp[1]!}/${scp[2]!}`;
+  }
+  const slash = rest.indexOf("/");
+  let authority = slash < 0 ? rest : rest.slice(0, slash);
+  const at = authority.lastIndexOf("@");
+  if (at >= 0) authority = authority.slice(at + 1);
+  const port = /^(.*?):(\d+)$/.exec(authority); // 只认「冒号后全是数字」，别把 IPv6 切了
+  if (port) authority = port[1]!;
+  const host = authority.toLowerCase();
+  const path = (slash < 0 ? "" : rest.slice(slash + 1))
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+  return host === "" || path === "" ? null : `${host}/${path}`;
+}
+
+/** 项目根 → 作用域键。有 remote 用 remote，其余退回路径本身 */
+export function projectScopeId(projectRoot: string, reader: GitFsReader = nodeReader): string {
+  const url = readOriginUrl(projectRoot, reader);
+  return (url === null ? null : normalizeRemoteUrl(url)) ?? projectRoot;
+}
+
+/** workspace → 这个会话的记忆作用域。null = 一路没有 .git，没有项目档 */
+export function resolveProjectScope(workspace: string, reader: GitFsReader = nodeReader): ProjectScope | null {
+  const root = resolveProjectRoot(workspace, reader);
+  return root === null ? null : { id: projectScopeId(root, reader), root };
+}
+
+/** 作用域键长得像不像一个绝对路径。迁移与「旧日志里那个值」两处都要问这一句：
+    旧键是绝对路径，新键是 `host/path`（既不以斜杠开头，也不是盘符开头） */
+export function isPathScopeId(id: string): boolean {
+  return id.startsWith("/") || /^[A-Za-z]:[\\/]/.test(id);
 }
