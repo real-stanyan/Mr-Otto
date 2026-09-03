@@ -113,6 +113,8 @@ import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { projectMemoryDir } from "./projectRoot.js";
 import { createMemoryFiles } from "./memoryFiles.js";
+import { createMemorySync } from "./memorySync.js";
+import { createSupabaseMemoryDocsApi } from "./supabaseMemoryDocsApi.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
 import { createWorkspaceLock } from "./workspaceLockFile.js";
@@ -604,6 +606,8 @@ void app.whenReady().then(() => {
       代理管理器要等 mcpHub 装完才造得出来,而登录可能比那早也可能比那晚。
       没登录时 wsTransport 根本不连,所以这件事必须挂在"登录那一刻"上 */
   let proxyResumeNow: (() => void) | null = null;
+  /** 记忆云同步：登录恢复后全量对账（#852）。同上是个空位 */
+  let memoryPullNow: (() => void) | null = null;
   /** 好友代理:登出时把通道全关掉(issue #680)。同上是个空位,理由一样 */
   let proxyCloseNow: (() => void) | null = null;
   /** 云端托管的 re-sync 触发器（ADR-0197 切片 2，issue #797）。空位理由同上，
@@ -650,7 +654,7 @@ void app.whenReady().then(() => {
       // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
-      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); hostedQuotaRefresh?.(); }
+      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); memoryPullNow?.(); hostedQuotaRefresh?.(); }
       else proxyCloseNow?.();
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
@@ -2010,6 +2014,14 @@ void app.whenReady().then(() => {
   const memorySyncHook: { touched: ((rel: string) => void) | null } = { touched: null };
   const memoryFiles = createMemoryFiles(accountConfig, { onWrite: (rel) => memorySyncHook.touched?.(rel) });
 
+  const memorySync = createMemorySync({
+    files: memoryFiles,
+    api: createSupabaseMemoryDocsApi(supabase.raw),
+    uid: () => friends.currentUid(),
+  });
+  memorySyncHook.touched = (rel) => memorySync.touched(rel);
+  memoryPullNow = () => void memorySync.pullNow();
+
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
       memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
   const memoryEditDeps = {
@@ -2165,6 +2177,7 @@ void app.whenReady().then(() => {
       // memory 工具；memory 快照只在新 session 落盘（resume 时 agent.ts 内部
       // 按 resumeSessionId 忽略它——日志里那条才是模型看过的，见 ADR-0060）
       configRoot: accountConfig,
+      onConfigWrite: (rel) => memorySync.touched(rel),
       // 进程组登记表（issue #759）：只挂主会话这条装配路径。活着的子 agent 复用
       // 父的 world 实例，residue 能力跟着一起继承；重建出来的子会话
       // （createChildAgent）新造 LocalWorld，刻意没有——同 history/simulator 的取舍
@@ -4146,6 +4159,7 @@ void app.whenReady().then(() => {
 
   app.on("before-quit", () => {
     quitting = true; // 放行 createWindow 里那道 close 拦截 —— 这次是真要退
+    void memorySync.flushNow(); // 尽力而为：把 pending 推完（不 await 阻塞退出）
     bridge?.dispose(); // stdio 桥收掉;helper 子进程跟着退出
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
