@@ -150,6 +150,10 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 DO 单线程只保证"一次 fetch 内没人插队"，`await` 之间照样会切出去，两个并发的首请求
 会各自重建、后写的那份抹掉前一个的 hold。
 
+重建的三段（grant / window 事件 / addon 事件）都**分页翻到底**（#858），翻到上限抛错而不是
+静默截断；5h 窗按 `usage_event.window_open_at` 那个锚算、不按事件链猜，加购按 grant 逐笔重放、
+过期的那几笔吸收自己的历史消费（#863，ADR-0203 决定 19）。
+
 **重建失败既不落盘也不当成零**：这一刻回 `503`（网关译成 `503 upstream`
 「额度服务暂时不可用」）。返回一份空投影再落盘的话，一次 Supabase 抖动就等于
 "这个人没花过钱"——窗口用量归零、买过的加购余额消失，而且从此不会再重建
@@ -186,6 +190,10 @@ npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…
 #    ①b  supabase/seed/0017_plans_routes.sql          灌档位 + 首批模型路由
 #    ①c  在 plan 表手填 stripe_price_id —— 四行都要填：lite / pro / max / addon
 #        （seed 故意不刷这一列，重跑 seed 不会把你填的 price 清回空串）
+#    ①d  supabase/migrations/0018_usage_event_window_anchor.sql   usage_event 加 window_open_at
+#        （#863；不跑的症状：settle 落库 400「column window_open_at does not exist」，
+#        投影已扣、事实没落——冷启动重建会少算这些笔）
+#    验：supabase/checks/0017_*.check.sql 与 0018_*.check.sql 每行 PASS
 #
 #    没跑 ①b 的症状：每次 chat 400 unknown_model，/billing/v1/me 的 models 为空，
 #    webhook 全部回 ignore（price 对不上任何档位）。三样都不报错，只是什么都不工作。

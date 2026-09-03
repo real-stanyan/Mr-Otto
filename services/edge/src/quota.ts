@@ -95,7 +95,7 @@ function safe(x: number): number {
 }
 
 /** now 落在哪一段周窗 */
-function weekStartFor(now: number, periodStartMs: number): number {
+export function weekStartFor(now: number, periodStartMs: number): number {
   const n = Math.max(0, Math.floor((now - periodStartMs) / WEEK_MS));
   return periodStartMs + n * WEEK_MS;
 }
@@ -212,7 +212,7 @@ export function hold(
     不再用 Math.max(0, …) 把超出部分直接抹掉。 */
 export function settle(
   state: QuotaState, requestId: string, costMicro: number, now: number, plan: PlanSnapshot | null
-): { state: QuotaState; hold: Hold } | null {
+): { state: QuotaState; hold: Hold; windowMicro: number } | null {
   const cost = safe(costMicro); // I4
   const h = state.holds[requestId]; // 必须在 roll 之前查——TTL 只释放槽位，不该抹掉成本
   if (!h) return null;
@@ -221,7 +221,7 @@ export function settle(
 
   if (h.chargedTo === "addon") {
     const { grants, remainder } = deductAddon(base.grants, cost);
-    if (remainder <= 0) return { state: { ...base, grants }, hold: h };
+    if (remainder <= 0) return { state: { ...base, grants }, hold: h, windowMicro: 0 };
     const open5hAt = base.open5hAt ?? now; // I2：超出加购余额的部分落进窗口，窗口若已关就地重开
     return {
       state: {
@@ -230,6 +230,7 @@ export function settle(
         usedWeekMicro: base.usedWeekMicro + remainder,
       },
       hold: h,
+      windowMicro: remainder,
     };
   }
 
@@ -237,6 +238,7 @@ export function settle(
   return {
     state: { ...base, open5hAt, used5hMicro: base.used5hMicro + cost, usedWeekMicro: base.usedWeekMicro + cost },
     hold: h,
+    windowMicro: cost,
   };
 }
 
@@ -269,50 +271,123 @@ export function remaining(state: QuotaState, plan: PlanSnapshot | null, now: num
   };
 }
 
+export interface RebuildEvent {
+  at: number;
+  costMicro: number;
+  chargedTo: "window" | "addon";
+  /** 这笔成本落进了哪扇 5h 窗（settle 那一刻的 `open5hAt`，写进 usage_event.window_open_at，#863）。
+      window 事件总带；addon 事件只在溢出到窗口时带；0018 之前的旧行是 null → 退回按事件链回放 */
+  windowOpenAt?: number | null;
+}
+
+export interface RebuildGrant {
+  micro: number;
+  expiresAt: number;
+  /** 进账时刻：重放时一笔消费只能从「那一刻已经买了、还没过期」的 grant 里扣 */
+  createdAt: number;
+  /** 幂等键。冷启动重建把 live grant 的这把键并进 DO 的 grantSeen 环（#862） */
+  paymentIntentId?: string;
+}
+
 export interface RebuildInput {
-  /** usage_event 里本周段起（含）之后的行 */
-  events: { at: number; costMicro: number; chargedTo: "window" | "addon" }[];
-  grants: { micro: number; expiresAt: number }[];
-  /** usage_event 里 charged_to='addon' 的全部 cost 之和（不限周段） */
-  addonConsumedMicro: number;
+  /** window 事件：`rebuildWindowSince` 起的行；addon 事件：`addonSinceOf` 起的行。两类混在一个数组里，按 chargedTo 分 */
+  events: RebuildEvent[];
+  /** 这个人**所有**的 grant，含已过期的——过期的那几笔要在重放里吸收自己那份历史消费，
+      不然那份消费会被扣到还活着的 grant 头上（#863 第一条） */
+  grants: RebuildGrant[];
+}
+
+/** 冷启动重建该从哪一刻起拉 window 事件：本周段起点与「此刻往前 5h」取早的那个。
+    周窗归零不关 5h 窗（roll 只清 usedWeek），一扇跨周边界还开着的窗，锚在它上面的
+    事件可能早于周段起点——只拉周段内的行会把它截成半扇（#863 第二条）。 */
+export function rebuildWindowSince(plan: PlanSnapshot, now: number): number {
+  return Math.min(weekStartFor(now, plan.periodStartMs), now - WINDOW_5H_MS);
+}
+
+/** 冷启动重建该从哪一刻起拉 addon 事件：最早那笔**还活着**的 grant 的进账时刻；
+    没有活着的 grant 就一条都不用拉（null）。更早的消费只可能扣在此刻已经过期的 grant 上——
+    消费从来不会预支到还没买的额度上，所以对现在的余额没有影响。 */
+export function addonSinceOf(grants: RebuildGrant[], now: number): number | null {
+  let min: number | null = null;
+  for (const g of grants) if (g.expiresAt > now && (min === null || g.createdAt < min)) min = g.createdAt;
+  return min;
 }
 
 /** DO 冷启动 / 对不上时从事实重建投影。
-    C3：按事件顺序原样回放固定窗边界（不是「trailing 5h」那种滑动窗判法）——
-    一个事件如果落在「上一个窗口起点 + 5h」之外，就说明上一个窗口已经到点关闭，
-    从它开始另起一扇新窗；回放完之后再补一刀：以 now 而论，最后那扇窗是不是也已经
-    过了 5h 寿命——线上 hold/settle 都是这样惰性推进的，rebuild 必须重放同一套语义，
-    不然重建出来的窗会比线上实际的窗「活得更久」。
-    fix round 2：单条事件的 costMicro 也过 safe()——事实来源（usage_event 表）里混进一条
-    NaN，不该把整份重建出来的累计数一起污染成 NaN。 */
+    **5h 窗按锚不按链**（#863）：每条 usage_event 记着它落进的那扇窗的 `open5hAt`
+    （settle 那一刻的值）。最后一条带锚的事件说的就是「此刻这扇窗几点开的」；它还活着
+    （now < 锚 + 5h）就把同一锚上的成本加起来，否则窗已关。以前那套「从周段起点按事件
+    链回放固定窗」只在链头恰好是一扇新窗时才对：链在周段边界、在任何一次拉取起点都可能
+    被截成半扇，而窗是跨周连续的（roll 只清周用量）。旧行（0018 之前、锚为 null）退回
+    链回放——那是它们唯一能给的信息。
+    **加购逐笔重放**（#863）：按时间把 addon 事件从「那一刻已进账且未过期」的 grant 里
+    先到期先扣（与 settle 的 deductAddon 同一规则），过期 grant 的历史消费落在它自己头上，
+    不再拿一个全时段总消耗去扣此刻还活着的 grant。扣不完的差额是当时落进窗口的那份
+    （settle 的 I2），有锚就照锚进 5h 窗，周段内的进周用量。
+    fix round 2：单条事件的 costMicro 也过 safe()——事实来源里混进一条 NaN，不该把整份
+    累计数一起污染成 NaN。 */
 export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: number): QuotaState {
   let st = emptyState();
-  if (plan) {
-    const ws = weekStartFor(now, plan.periodStartMs);
+  const events = [...input.events].sort((a, b) => a.at - b.at);
+  const ws = plan ? weekStartFor(now, plan.periodStartMs) : null;
+
+  // ── 加购：逐笔重放 ──
+  const pool = [...input.grants]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((g) => ({ micro: safe(g.micro), expiresAt: g.expiresAt, createdAt: g.createdAt }));
+  /** addon 事件溢出到窗口的那份：[at, remainder, windowOpenAt] */
+  const overflow: { at: number; micro: number; windowOpenAt: number | null }[] = [];
+  for (const e of events) {
+    if (e.chargedTo !== "addon") continue;
+    let remaining = safe(e.costMicro);
+    const live = pool.filter((g) => g.createdAt <= e.at && g.expiresAt > e.at).sort((a, b) => a.expiresAt - b.expiresAt);
+    for (const g of live) {
+      if (remaining <= 0) break;
+      const take = Math.min(g.micro, remaining);
+      g.micro -= take;
+      remaining -= take;
+    }
+    if (remaining > 0) overflow.push({ at: e.at, micro: remaining, windowOpenAt: e.windowOpenAt ?? null });
+  }
+  const grants: AddonGrant[] = pool
+    .filter((g) => g.expiresAt > now && g.micro > 0)
+    .map((g) => ({ micro: g.micro, expiresAt: g.expiresAt }));
+
+  if (plan && ws !== null) {
+    const windowEvents = events.filter((e) => e.chargedTo === "window");
     let usedWeek = 0;
-    let used5h = 0;
+    for (const e of windowEvents) if (e.at >= ws) usedWeek += safe(e.costMicro);
+    for (const o of overflow) if (o.at >= ws) usedWeek += o.micro;
+
     let open5hAt: number | null = null;
-    const windowEvents = input.events
-      .filter((e) => e.chargedTo === "window" && e.at >= ws)
-      .sort((a, b) => a.at - b.at);
-    for (const e of windowEvents) {
-      const cost = safe(e.costMicro);
-      usedWeek += cost;
-      if (open5hAt === null || e.at >= open5hAt + WINDOW_5H_MS) {
-        open5hAt = e.at;
+    let used5h = 0;
+    const anchored = [...windowEvents, ...overflow].filter((e) => typeof e.windowOpenAt === "number");
+    const last = anchored.length ? anchored[anchored.length - 1]! : null;
+    if (last && windowEvents.every((e) => typeof e.windowOpenAt === "number")) {
+      // 全部带锚：最后一条的锚就是此刻这扇窗
+      const anchor = last.windowOpenAt as number;
+      if (now < anchor + WINDOW_5H_MS) {
+        open5hAt = anchor;
+        for (const e of windowEvents) if (e.windowOpenAt === anchor) used5h += safe(e.costMicro);
+        for (const o of overflow) if (o.windowOpenAt === anchor) used5h += o.micro;
+      }
+    } else {
+      // 有旧行（无锚）：按事件链回放固定窗边界（C3），最后再核一次以 now 而论窗是否已到寿命
+      for (const e of windowEvents) {
+        const cost = safe(e.costMicro);
+        if (open5hAt === null || e.at >= open5hAt + WINDOW_5H_MS) {
+          open5hAt = e.at;
+          used5h = 0;
+        }
+        used5h += cost;
+      }
+      for (const o of overflow) if (open5hAt !== null && o.at >= open5hAt) used5h += o.micro;
+      if (open5hAt !== null && now >= open5hAt + WINDOW_5H_MS) {
+        open5hAt = null;
         used5h = 0;
       }
-      used5h += cost;
-    }
-    if (open5hAt !== null && now >= open5hAt + WINDOW_5H_MS) {
-      open5hAt = null;
-      used5h = 0;
     }
     st = { ...st, weekStartAt: ws, usedWeekMicro: usedWeek, open5hAt, used5hMicro: used5h };
   }
-  const liveGrants = input.grants
-    .filter((g) => g.expiresAt > now)
-    .map((g) => ({ ...g }));
-  const { grants } = deductAddon(liveGrants, safe(input.addonConsumedMicro));
   return { ...st, grants };
 }

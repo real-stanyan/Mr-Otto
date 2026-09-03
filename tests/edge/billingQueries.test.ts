@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  grantByPaymentIntentQuery, grantInsertBody, meFromParts, parseGrantRow, parsePlanRows, parseRebuildRows,
-  parseRouteRows, parseSubscriptionOwner, parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery,
-  rebuildQueries, routesQuery, subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody,
-  usageEventInsert,
+  grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, pagedQuery, parseGrantRow,
+  parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionOwner, parseSubscriptionRows, parseUsageEventRows,
+  planIdForPrice, planSnapshotOf, plansQuery, REBUILD_PAGE_SIZE, routesQuery, subscriptionByStripeIdQuery,
+  subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery,
 } from "../../services/edge/src/billingQueries.js";
 
 const plans = [
@@ -29,26 +29,50 @@ describe("查询串", () => {
     expect(routesQuery()).toContain("quantization=eq.none");
     expect(routesQuery()).toContain("order=priority.asc");
   });
-  it("rebuildQueries：events 按 user + created_at >= since；grants 未过期；addonConsumed 只取 addon 行", () => {
-    const q = rebuildQueries("u1", Date.UTC(2026, 8, 1));
-    expect(q.events).toContain("user_id=eq.u1");
-    expect(q.events).toContain("created_at=gte.2026-09-01T00:00:00.000Z");
-    expect(q.grants).toContain("expires_at=gt.");
-    expect(q.addonConsumed).toContain("charged_to=eq.addon");
+  it("grantsQuery：拉这个人全部 grant（含过期）+ 幂等键，created_at,id 稳定全序（#863 / #862 / #858）", () => {
+    const q = grantsQuery("u1");
+    expect(q).toContain("credit_grant?user_id=eq.u1");
+    expect(q).not.toContain("expires_at=gt."); // 过期的也要：重放里它们吸收自己那份历史消费
+    expect(q).toContain("select=micro_usd,expires_at,created_at,stripe_payment_intent_id");
+    expect(q).toContain("order=created_at.asc,id.asc");
+    expect(q).not.toContain("limit="); // limit/offset 由 pageAll 追加
   });
-  it("addonConsumed 拉原始行不用 PostgREST 聚合（Supabase 默认关掉聚合函数，线上会 400）", () => {
-    const q = rebuildQueries("u1", 0);
-    expect(q.addonConsumed).toContain("select=cost_micro");
-    expect(q.addonConsumed).not.toContain("sum");
+  it("usageEventsQuery：按类别 + since，带 window_open_at 锚，稳定全序，不钉 limit", () => {
+    const q = usageEventsQuery("u1", "window", Date.UTC(2026, 8, 1));
+    expect(q).toContain("charged_to=eq.window");
+    expect(q).toContain("created_at=gte.2026-09-01T00:00:00.000Z");
+    expect(q).toContain("select=created_at,cost_micro,charged_to,window_open_at");
+    expect(q).toContain("order=created_at.asc,id.asc");
+    expect(q).not.toContain("limit=");
+    expect(q).not.toContain("sum"); // 不用聚合（文件头）
+    expect(usageEventsQuery("u1", "addon", 0)).toContain("charged_to=eq.addon");
   });
-  it("三条重建查询都显式钉 limit：被截断和本来就这么多不该长一样（I2）", () => {
-    const q = rebuildQueries("u1", 0);
-    expect(q.addonConsumed).toContain("limit=10000");
-    expect(q.events).toContain("limit=10000");
-    expect(q.grants).toContain("limit=1000");
+  it("pagedQuery 追加 limit/offset", () => {
+    expect(pagedQuery("t?a=1", 1000, 2000)).toBe("t?a=1&limit=1000&offset=2000");
   });
-  it("events 显式按 created_at 升序：rebuild 要按时间重放固定窗，不是求和（I2）", () => {
-    expect(rebuildQueries("u1", 0).events).toContain("order=created_at.asc");
+  it("pageAll：翻到不足一页为止，把每页拼起来（#858：单次 limit 是硬上限，超了静默截断）", async () => {
+    const seen: string[] = [];
+    const rows = Array.from({ length: 2500 }, (_, i) => ({ i }));
+    const get = async (q: string) => {
+      seen.push(q);
+      const m = /limit=(\d+)&offset=(\d+)/.exec(q)!;
+      return rows.slice(Number(m[2]), Number(m[2]) + Number(m[1]));
+    };
+    const all = await pageAll(get, "usage_event?x=1");
+    expect(all).toHaveLength(2500);
+    expect(seen).toEqual([
+      `usage_event?x=1&limit=${REBUILD_PAGE_SIZE}&offset=0`,
+      `usage_event?x=1&limit=${REBUILD_PAGE_SIZE}&offset=${REBUILD_PAGE_SIZE}`,
+      `usage_event?x=1&limit=${REBUILD_PAGE_SIZE}&offset=${2 * REBUILD_PAGE_SIZE}`,
+    ]);
+    // 正好整页：还要再翻一页确认没了
+    const exact = await pageAll(async (q) => (q.includes("offset=0") ? [1, 2] : []), "t?y=1", { pageSize: 2 });
+    expect(exact).toEqual([1, 2]);
+  });
+  it("pageAll：翻到上限抛错，不静默收口；回的不是数组也抛", async () => {
+    const endless = async () => Array.from({ length: 10 }, () => ({}));
+    await expect(pageAll(endless, "usage_event?x=1", { pageSize: 10, maxPages: 3 })).rejects.toThrow(/超过 30 行/);
+    await expect(pageAll(async () => ({ error: "x" }), "t?y=1")).rejects.toThrow(/不是数组/);
   });
   it("grantByPaymentIntentQuery 按幂等键取金额与到期日（撞行时要用行里那份）", () => {
     const q = grantByPaymentIntentQuery("pi_1");
@@ -99,30 +123,44 @@ describe("行解析", () => {
     expect(planSnapshotOf(null, plans)).toBeNull();
     expect(planSnapshotOf({ ...sub, plan_id: "gone" } as never, plans)).toBeNull();
   });
-  it("parseRebuildRows：把三段查询结果并成 RebuildInput，addon 消耗客户端求和", () => {
-    const r = parseRebuildRows(
-      [{ created_at: "2026-09-01T01:00:00Z", cost_micro: 5, charged_to: "window" }],
-      [{ micro_usd: 100, expires_at: "2027-09-01T00:00:00Z" }],
-      [{ cost_micro: 10 }, { cost_micro: 20 }]
-    );
-    expect(r.events).toEqual([{ at: Date.UTC(2026, 8, 1, 1), costMicro: 5, chargedTo: "window" }]);
-    expect(r.grants[0]!.micro).toBe(100);
-    expect(r.addonConsumedMicro).toBe(30);
-    expect(parseRebuildRows(null, null, null)).toEqual({ events: [], grants: [], addonConsumedMicro: 0 });
+  it("parseUsageEventRows：锚有就转毫秒，null 留 null（旧行退回链回放）；形状不对的行跳过", () => {
+    const r = parseUsageEventRows([
+      { created_at: "2026-09-01T01:00:00Z", cost_micro: 5, charged_to: "window", window_open_at: "2026-09-01T00:30:00Z" },
+      { created_at: "2026-09-01T02:00:00Z", cost_micro: 7, charged_to: "addon", window_open_at: null },
+      { created_at: "2026-09-01T02:00:00Z", cost_micro: "7", charged_to: "addon" },
+      { created_at: "2026-09-01T02:00:00Z", cost_micro: 7, charged_to: "elsewhere" },
+    ]);
+    expect(r).toEqual([
+      { at: Date.UTC(2026, 8, 1, 1), costMicro: 5, chargedTo: "window", windowOpenAt: Date.UTC(2026, 8, 1, 0, 30) },
+      { at: Date.UTC(2026, 8, 1, 2), costMicro: 7, chargedTo: "addon", windowOpenAt: null },
+    ]);
+    expect(parseUsageEventRows(null)).toEqual([]);
+  });
+  it("parseGrantRows：带 created_at 与幂等键；缺 created_at 的行跳过（重放要它定「那一刻买了没」）", () => {
+    const r = parseGrantRows([
+      { micro_usd: 100, expires_at: "2027-09-01T00:00:00Z", created_at: "2026-09-01T00:00:00Z", stripe_payment_intent_id: "pi_1" },
+      { micro_usd: 100, expires_at: "2027-09-01T00:00:00Z", created_at: "2026-09-01T00:00:00Z", stripe_payment_intent_id: null },
+      { micro_usd: 100, expires_at: "2027-09-01T00:00:00Z" },
+    ]);
+    expect(r).toEqual([
+      { micro: 100, expiresAt: Date.UTC(2027, 8, 1), createdAt: Date.UTC(2026, 8, 1), paymentIntentId: "pi_1" },
+      { micro: 100, expiresAt: Date.UTC(2027, 8, 1), createdAt: Date.UTC(2026, 8, 1) },
+    ]);
   });
 });
 
 describe("写入体", () => {
-  it("usageEventInsert 列名与 0017 一致", () => {
-    const body = usageEventInsert("rid", {
-      caller: { uid: "u1", source: "runtime", workspaceId: "w", sessionId: "s" },
+  it("usageEventInsert 列名与 0017/0018 一致；锚 null 落 null、有就转 ISO", () => {
+    const meta = {
+      caller: { uid: "u1", source: "runtime" as const, workspaceId: "w", sessionId: "s" },
       route: { id: "r", logicalModel: "m", platform: "p", baseUrl: "", wireModel: "", priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 0 },
       usage: { promptTokens: 10, cachedTokens: 2, completionTokens: 3 }, costMicro: 42,
-    }, "addon");
-    expect(body).toEqual({
+    };
+    expect(usageEventInsert("rid", meta, "addon", null)).toEqual({
       user_id: "u1", request_id: "rid", source: "runtime", workspace_id: "w", session_id: "s", logical_model: "m", route_id: "r",
-      prompt_tokens: 10, cached_tokens: 2, completion_tokens: 3, cost_micro: 42, charged_to: "addon",
+      prompt_tokens: 10, cached_tokens: 2, completion_tokens: 3, cost_micro: 42, charged_to: "addon", window_open_at: null,
     });
+    expect(usageEventInsert("rid", meta, "window", Date.UTC(2026, 8, 1)).window_open_at).toBe("2026-09-01T00:00:00.000Z");
   });
   it("subscriptionUpsertBody：period 毫秒转 ISO；planIdForPrice 反查档位；last_event_at 落 eventCreated", () => {
     expect(planIdForPrice(plans, "price_lite")).toBe("lite");
