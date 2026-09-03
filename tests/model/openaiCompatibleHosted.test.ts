@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../src/model/openaiCompatible.js";
 import { errorClassOf, rerouteInfoOf } from "../../src/model/errorClass.js";
-import { BILLING_HEADERS } from "../../src/shared/billing.js";
+import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../src/shared/billing.js";
 
 const quotaBody = JSON.stringify({ error: { type: "otto_edge", code: "quota_exhausted", message: "5 小时额度已用完", window: "5h", resetAt: 123 } });
 const okBody = JSON.stringify({ choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
@@ -63,6 +63,61 @@ describe("托管路由的 adapter 行为", () => {
     const a = adapter([{ baseUrl: "https://up/v1", apiKey: "sk" }], { onReroute });
     await a.chat([{ role: "user", content: "hi" }]);
     expect(onReroute).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+  });
+});
+
+// ── #857：本次花了多少 credit ────────────────────────────────────────────
+/** 一段 SSE：正文两块 + include_usage 的终块 + [DONE]，可选尾注 */
+function sse(trailer?: string): Response {
+  const frames = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {} }], usage: { prompt_tokens: 10, completion_tokens: 2 } })}\n\n`,
+    "data: [DONE]\n\n",
+    ...(trailer ? [trailer] : []),
+  ];
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        const enc = new TextEncoder();
+        for (const f of frames) c.enqueue(enc.encode(f));
+        c.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } }
+  );
+}
+
+describe("本次花费（#857）", () => {
+  it("非流式：托管路从响应头读 x-otto-cost-micro", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(okBody, { status: 200, headers: { [BILLING_HEADERS.cost]: "12345" } }));
+    const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }]);
+    expect((await a.chat([{ role: "user", content: "hi" }])).creditCostMicro).toBe(12345);
+    fetchMock.mockRestore();
+  });
+
+  it("流式：从流末尾那行 SSE 注释读——响应头放不下它（settle 发生在头发出之后）", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse(`\n${SSE_COST_COMMENT}9876\n\n`));
+    const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }]);
+    const reply = await a.chat([{ role: "user", content: "hi" }], [], () => {});
+    expect(reply.content).toBe("hi"); // 尾注不掺进正文
+    expect(reply.usage).toEqual({ promptTokens: 10, completionTokens: 2 });
+    expect(reply.creditCostMicro).toBe(9876);
+    fetchMock.mockRestore();
+  });
+
+  it("流式没有尾注（中断 / 网关还没升级）→ 缺席，不是 0", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse());
+    const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }]);
+    expect((await a.chat([{ role: "user", content: "hi" }], [], () => {})).creditCostMicro).toBeUndefined();
+    fetchMock.mockRestore();
+  });
+
+  it("direct 路上的同名尾注不认：那是用户自己的上游，与我们的账本无关", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse(`\n${SSE_COST_COMMENT}9876\n\n`));
+    const a = adapter([{ baseUrl: "https://up/v1", apiKey: "sk", route: "direct" }]);
+    expect((await a.chat([{ role: "user", content: "hi" }], [], () => {})).creditCostMicro).toBeUndefined();
     fetchMock.mockRestore();
   });
 });

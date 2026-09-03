@@ -26,7 +26,7 @@
 // 上游的 4xx 也翻成 502：那是我们和上游之间的事（key 错、账户欠费），
 // 让客户端看到上游 401 会让用户去怀疑自己的 key——而他根本没用自己的 key。
 
-import { BILLING_HEADERS } from "../../../src/shared/billing.js";
+import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../../src/shared/billing.js";
 
 export interface RouteRow {
   id: string;
@@ -188,7 +188,12 @@ export function parseUsage(v: unknown): UsageCounts | null {
 export function tapSseUsage(
   body: ReadableStream<Uint8Array>,
   onDone: (u: UsageCounts | null, info: { bytes: number }) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 正常收尾时追在流末尾的那一行（#857）：拿到最终 usage（挑不出就是 null，
+      调用方按预扣估算算）算出「本次花了多少」，回一个字符串就 enqueue 它。
+      **只在 flush 那条路调**——中断的两条路上 controller 已经不接受新块了，
+      而客户端那时也不在读 */
+  trailer?: (u: UsageCounts | null) => string | null
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let buf = "";
@@ -231,11 +236,16 @@ export function tapSseUsage(
       bytes += chunk.byteLength;
       controller.enqueue(chunk);
     },
-    flush() {
+    flush(controller) {
       scan(decoder.decode());
       // M6：流结束不等于「最后一行有换行符」——把流末尾当成一次隐式的行终止符，
       // 让 buf 里剩下那截没被换行符收口的 `data:` 行也被扫一遍
       if (buf) scan("\n");
+      // #857：尾注排在所有上游帧（含 `data: [DONE]`）之后。追加的字节**不计进 bytes**——
+      // 那个计数回答的是「上游的内容有没有出门」，我们自己贴的一行不该让一次
+      // 零字节中断看起来像是发生过内容传输（它是 release 与结算的判据）
+      const line = trailer?.(usage);
+      if (line) controller.enqueue(new TextEncoder().encode(line));
       finish(usage);
     },
     cancel() {
@@ -394,7 +404,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
             });
             if (deps.waitUntil) deps.waitUntil(settled);
             else void settled;
-          }, req.signal);
+          }, req.signal, (u) => `\n${SSE_COST_COMMENT}${costMicro(u ?? estimateUsage(bodyBytes, maxTokens), route)}\n\n`);
           return new Response(tapped, {
             status: 200,
             headers: { "content-type": res.headers.get("content-type") ?? "text/event-stream", ...headers },
@@ -411,8 +421,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         // 正文马上就出门；release 会把这笔成本送掉
         const finalUsage = usage ?? estimateUsage(bodyBytes, maxTokens);
         await settleAt(finalUsage);
-        // #857：本次花了多少。只在非流式能放进头里——流式的 settle 要等流收尾才发生，
-        // 那一刻响应头早就发出去了；流式的「本次」只能等下一片（usage_event 回查）
+        // #857：本次花了多少。非流式走响应头；流式放不进头（settle 要等流收尾，
+        // 那一刻响应头早发出去了），改成流末尾一行 SSE 注释，见 tapSseUsage 的 trailer
         const costHeader = { [BILLING_HEADERS.cost]: String(costMicro(finalUsage, route)) };
         return new Response(text, {
           status: 200,
