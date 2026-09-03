@@ -643,6 +643,8 @@ export interface ShellBridge {
   /** dir = 设置页选的默认工作文件夹;null = 恢复内置 Default(文档区 Mr Otto/Default)。
       回值是落盘后的最新解析结果,调用方直接拿去更新镜像 */
   setDefaultWorkspace(dir: string | null): Promise<WorkspaceSettingsInfo>;
+  /** 删掉内置 Default 下空的任务文件夹（#851）。只删空的、只删名字像 sessionId 的 */
+  pruneEmptyTaskFolders(): Promise<{ removed: number; kept: number }>;
   /** 手机端远程(设置页「手机」栏目)。读一次就顺手把自己登记进 devices ——
       目录里没有这台桌面的话,手机那边根本看不见它 */
   remoteStatus(): Promise<RemoteStatus>;
@@ -1340,6 +1342,7 @@ export const CHANNELS = {
   setMotionSettings: "otter:setMotionSettings",
   getWorkspaceSettings: "otter:getWorkspaceSettings",
   setDefaultWorkspace: "otter:setDefaultWorkspace",
+  pruneEmptyTaskFolders: "otter:pruneEmptyTaskFolders",
   remoteStatus: "otter:remoteStatus",
   remotePairDevice: "otter:remotePairDevice",
   remoteStartPairing: "otter:remoteStartPairing",

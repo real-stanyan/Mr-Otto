@@ -130,6 +130,7 @@ import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
+import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
 import {
   builtinDefaultWorkspace,
   loadWorkspaceSettings,
@@ -2865,6 +2866,10 @@ void app.whenReady().then(() => {
     );
     return workspaceSettingsInfo();
   });
+
+  ipcMain.handle(CHANNELS.pruneEmptyTaskFolders, () =>
+    pruneEmptyTaskFolders(builtinDefaultWorkspace(app.getPath("documents")), nodePruneFs)
+  );
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
   // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
