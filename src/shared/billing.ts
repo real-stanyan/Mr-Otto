@@ -49,6 +49,22 @@ export const BILLING_HEADERS = {
   cost: "x-otto-cost-micro",
 } as const;
 
+/** 流式响应里那笔「本次花费」的尾注（#857 的另一半）。
+    响应头放不下它：流式的 settle 发生在流收尾那一刻，而响应头早在第一个字节之前
+    就发出去了。所以它跟在最后一个上游帧（含 `data: [DONE]`）之后，写成一行
+    **SSE 注释**——注释行以 `:` 开头，合规的 SSE 解析器一律跳过，对任何
+    OpenAI 兼容客户端都是隐形的；换成一个自造的 `data:` 帧就得赌对方的解析器
+    对不认识的 chunk 形状足够宽容，而那是它们没有义务做到的事。
+    形如 `: otto-cost-micro 1234`（micro-USD）。 */
+export const SSE_COST_COMMENT = ": otto-cost-micro ";
+
+/** 一行 SSE 里读出那笔尾注；不是这行就 null。缺席 ≠ 0 —— 调用方据此不记这笔 */
+export function parseSseCostComment(line: string): number | null {
+  if (!line.startsWith(SSE_COST_COMMENT)) return null;
+  const n = Number(line.slice(SSE_COST_COMMENT.length).trim());
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 /** 平台身份（runtime）代表哪个真用户；桌面 JWT 带这个头一律 400 */
 export const ON_BEHALF_HEADER = "x-otto-on-behalf-of";
 export const WORKSPACE_HEADER = "x-otto-workspace";

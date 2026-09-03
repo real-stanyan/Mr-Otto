@@ -3,7 +3,7 @@ import {
   costMicro, createLlmGateway, estimateMicro, estimateUsage, parseUsage, pickRoute, tapSseUsage,
   type Caller, type HoldOutcome, type QuotaPort, type RouteRow, type SettleMeta,
 } from "../../services/edge/src/llmGateway.js";
-import { BILLING_HEADERS } from "../../src/shared/billing.js";
+import { BILLING_HEADERS, SSE_COST_COMMENT, parseSseCostComment } from "../../src/shared/billing.js";
 
 const flash: RouteRow = {
   id: "deepseek-v4-flash@deepseek", logicalModel: "deepseek-v4-flash", platform: "deepseek",
@@ -485,5 +485,68 @@ describe("createLlmGateway", () => {
     await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: "yes" }), caller);
     const sentBody = JSON.parse(await up.seen[0]!.text());
     expect(sentBody.stream).toBe(false);
+  });
+});
+
+describe("流式的「本次花费」尾注（#857 的另一半）", () => {
+  const usageFrame = `data: ${JSON.stringify({ choices: [{ delta: {} }], usage: { prompt_tokens: 1000, completion_tokens: 100 } })}\n\n`;
+
+  it("正常收尾：尾注排在 [DONE] 之后，数字 = 实际结算那一笔", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => new Response(sse([usageFrame, "data: [DONE]\n\n"]), { status: 200 }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const text = await (await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller)).text();
+    const lines = text.split("\n").map((l) => l.trim());
+    const cost = lines.map(parseSseCostComment).find((n) => n !== null);
+    expect(cost).toBe(calls.settle[0]!.costMicro);
+    expect(cost).toBe(costMicro({ promptTokens: 1000, cachedTokens: 0, completionTokens: 100 }, flash));
+    // 排在 [DONE] 之后：上游那几帧一个字节不改，尾注只是跟在后面
+    expect(lines.indexOf("data: [DONE]")).toBeLessThan(lines.findIndex((l) => parseSseCostComment(l) !== null));
+  });
+
+  it("流里没有 usage 帧 → 尾注报的是预扣估算那一笔（与 settle 同一个数）", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => new Response(sse(["data: {}\n\n"]), { status: 200 }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const text = await (await gw(chatReq(body), caller)).text();
+    const cost = text.split("\n").map((l) => parseSseCostComment(l.trim())).find((n) => n !== null);
+    expect(cost).toBe(calls.settle[0]!.costMicro);
+  });
+
+  it("尾注写成 SSE 注释行：合规解析器一律跳过，对别的 OpenAI 兼容客户端是隐形的", async () => {
+    const { quota } = quotaStub();
+    const up = upstream(() => new Response(sse([usageFrame, "data: [DONE]\n\n"]), { status: 200 }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const text = await (await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller)).text();
+    const added = text.split("\n").map((l) => l.trim()).filter((l) => parseSseCostComment(l) !== null);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.startsWith(SSE_COST_COMMENT)).toBe(true);
+    expect(text.includes("data: " + SSE_COST_COMMENT.trim())).toBe(false); // 不是伪装成 chunk 的 data 帧
+  });
+
+  it("tapSseUsage：中断的两条路不贴尾注（controller 已经不收新块了，客户端也不在读）", async () => {
+    const seen: (string | null)[] = [];
+    const tapped = tapSseUsage(
+      sse(["data: {}\n\n"]),
+      (_u, info) => seen.push(String(info.bytes)),
+      undefined,
+      () => `\n${SSE_COST_COMMENT}42\n\n`
+    );
+    // 消费者直接 cancel = 中断那条路
+    await tapped.cancel();
+    expect(seen).toEqual(["0"]);
+  });
+
+  it("尾注的字节不计进 info.bytes —— 那个数是「上游内容有没有出门」的判据（release 靠它）", async () => {
+    let bytes = -1;
+    const tapped = tapSseUsage(
+      sse([]), // 上游一个字节都没发
+      (_u, info) => { bytes = info.bytes; },
+      undefined,
+      () => `\n${SSE_COST_COMMENT}42\n\n`
+    );
+    await new Response(tapped).text();
+    expect(bytes).toBe(0);
   });
 });
