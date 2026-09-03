@@ -1306,6 +1306,13 @@ function AccountPage() {
             {/* 显示即编辑:名字和头像就地可改,和首登引导共用同一张表单
                 (components/ProfileCard.tsx → ProfileEditor.tsx) */}
             <ProfileCard />
+            {/* 订阅与额度。曾经挂在「模型配置」页顶部（#696 Task 11 的落点），
+                搬来这里(issue #909):订阅是**账号**的属性,不是某个厂商 key 的属性——
+                摆在 keys 页会让人以为它是某一家 key 的开关,而它恰恰是"不用自己配 key"
+                的那条路。额度也是全账号的,和这一页其余东西(名字/邮箱/会话热力图)同类。
+                只在已登录这一支里画:未登录时这一屏的正事是登录,一排点不动的订阅卡
+                只会把登录卡挤成配角(同下面那张热力图的理由) */}
+            <BillingSettings />
           </>
         ) : (
           /* 未登录时这一屏只有一张登录卡,水平垂直都居中:
@@ -1328,7 +1335,8 @@ function AccountPage() {
 /** 模型配置页（设置栏目之一）：市面主流厂商一家一行，挑一家、贴 key 就能用。
     列表主体在 components/ModelProviderSettings.tsx —— 这里只留页壳。
     外观切换曾经挂靠在这一页顶部，已搬去独立的「外观」栏目：它和 API key 没有关系，
-    放在一起只会让人以为主题是模型的一个属性 */
+    放在一起只会让人以为主题是模型的一个属性。**订阅区（BillingSettings）同理，
+    已搬去账号页**（issue #909）——它是账号的属性，不是某一家 key 的开关 */
 function KeysPage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const error = useChat((s) => s.error);
@@ -1340,7 +1348,6 @@ function KeysPage() {
         <SettingsTitle id="keys" />
       </header>
       <section className={SETTINGS_BODY}>
-        <BillingSettings />
         <ModelProviderSettings />
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
