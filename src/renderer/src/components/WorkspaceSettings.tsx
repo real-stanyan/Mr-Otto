@@ -5,7 +5,7 @@
 // 内置 Default 落在文档区 Mr Otto/Default(惰性创建,见 main/workspaceSettingsStore.ts),
 // 新手在 Finder/资源管理器里找得到自己的产出。
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
 import { SidebarNub } from "./SidebarNub.js";
@@ -19,6 +19,8 @@ export function WorkspaceSettings() {
   const loadWorkspaceSettings = useChat((s) => s.loadWorkspaceSettings);
   const setDefaultWorkspace = useChat((s) => s.setDefaultWorkspace);
   const pickWorkspace = useChat((s) => s.pickWorkspace);
+  const pruneEmptyTaskFolders = useChat((s) => s.pruneEmptyTaskFolders);
+  const [pruned, setPruned] = useState<{ removed: number; kept: number } | null>(null);
 
   useEffect(() => {
     void loadWorkspaceSettings();
@@ -28,6 +30,8 @@ export function WorkspaceSettings() {
     const dir = await pickWorkspace();
     if (dir) await setDefaultWorkspace(dir); // 取消 = 保持原选择
   };
+
+  const prune = async () => setPruned(await pruneEmptyTaskFolders());
 
   return (
     <div className={MAIN_COL}>
@@ -66,7 +70,7 @@ export function WorkspaceSettings() {
                 </span>
                 {settings.builtin && (
                   <span className={HINT}>
-                    水獭做出来的东西会放在「文档 › Mr Otto › Default」里，随时打开文件夹就能看到。
+                    水獭做出来的东西会放在「文档 › Mr Otto › Default」里，每个任务一个子文件夹，随时打开就能看到。
                   </span>
                 )}
               </div>
@@ -84,6 +88,23 @@ export function WorkspaceSettings() {
           ) : (
             <span className={HINT}>读取中…</span>
           )}
+        </div>
+        <div className="flex items-center gap-3 rounded-[10px] border border-border px-[14px] py-3">
+          <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+            <span className="text-[13px] font-medium">清理空的任务文件夹</span>
+            <span className={HINT}>
+              归档不会删掉任务的文件夹。这里只删空的，里面有东西的一律留着。
+            </span>
+            {pruned && (
+              <span className={HINT}>
+                {pruned.removed === 0 ? "没有空文件夹" : `已清理 ${pruned.removed} 个`}
+                {pruned.kept > 0 ? `，${pruned.kept} 个有内容留着` : ""}
+              </span>
+            )}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void prune()}>
+            清理
+          </Button>
         </div>
       </section>
     </div>

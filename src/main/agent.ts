@@ -203,6 +203,8 @@ export function createAgent(opts: {
   push: AgentPush;
   /** 给了 = 恢复旧会话：复用它的 id，不再追加 session_created */
   resumeSessionId?: string;
+  /** 建会话前就铸好的 id（#851：Default 子目录名要用它）。resume 优先；两者都没给才现铸 */
+  presetSessionId?: string;
   /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
   attachments: AttachmentStore;
   /** 托管额度（订阅制，ADR-0176）。index.ts 注入；子会话/测试不给 = 路由永远不出 hosted */
@@ -305,7 +307,7 @@ export function createAgent(opts: {
 }) {
   const { store } = opts;
 
-  const sessionId = opts.resumeSessionId ?? newSessionId();
+  const sessionId = opts.resumeSessionId ?? opts.presetSessionId ?? newSessionId();
   // world 先于 approver：审批预览要借它的 fs 读旧文件（围栏天然生效）。
   // 外面给了现成的就用它（子 agent 走这条：必须和父在同一个 world 实例里）
   const base: ExecutionWorld =

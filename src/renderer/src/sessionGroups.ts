@@ -1,4 +1,5 @@
 import type { SessionSummary } from "../../shared/shellBridge.js";
+import { isDefaultWorkspace } from "../../shared/defaultWorkspace.js";
 
 /** 一个工程文件夹下的会话堆 */
 export interface SessionGroup {
@@ -105,14 +106,14 @@ function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
     口径写成函数而不是在 App.tsx 里再抄一遍谓词——上一次抄漏的正是这一条。 */
 export function taskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
   return sessions.filter(
-    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
   );
 }
 
 /** 任务栏的「已归档」那一摞:同上,只是要 archived 的那半边 */
 export function archivedTaskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
   return sessions.filter(
-    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace === builtin
+    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
   );
 }
 

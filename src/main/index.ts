@@ -127,9 +127,10 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
-import { createWorkspaceLens } from "./workspaceLens.js";
+import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
+import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
 import {
   builtinDefaultWorkspace,
   loadWorkspaceSettings,
@@ -137,6 +138,8 @@ import {
   resolveDefaultWorkspace,
   saveWorkspaceSettings,
 } from "./workspaceSettingsStore.js";
+import { isDefaultWorkspace as isDefaultWorkspaceOf } from "../shared/defaultWorkspace.js";
+import { allocateSessionWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
@@ -924,7 +927,7 @@ void app.whenReady().then(() => {
 
   // 岛的分组镜头(main/workspaceLens.ts):workspace → 项目根 + worktree 分支。
   // 读 .git,所以自带 30s 记忆化——pushFleet 跟着每条事件跑
-  const workspaceLens = createWorkspaceLens();
+  const workspaceLens = withDefaultFold(createWorkspaceLens(), builtinDefaultWorkspace(app.getPath("documents")));
 
   // cloudClient 装配得比这里晚（要等 workspaceManager 先造出来，见下方那段
   // 装配注释），这个洞先占位，真身在 cloudClient 造完之后才填上——同
@@ -2096,6 +2099,8 @@ void app.whenReady().then(() => {
         ——可见性借子会话口径（侧栏/⌘K/灵动岛滤掉），resume 时 resumeChild 认
         kind:"side" 回主装配。toolCallId 没有真实的（没人派活），用约定串 */
     sideOf?: string;
+    /** 建会话前就铸好的 id（#851：内置 Default 按会话分格，子目录名要用它）*/
+    presetSessionId?: string;
   }): ReturnType<typeof createAgent> => {
     // 项目指令（issue #353，门禁在 #426 撤掉）：选了工作区并开口说话本身就是
     // 授权，不再单独问一次"信不信任"——找到就注入。注入了哪几份仍以
@@ -2107,7 +2112,7 @@ void app.whenReady().then(() => {
     // 子会话/SideChat 不算：引导是给用户看的，派出去的 agent 轮不到
     const isDefaultWorkspace =
       !args.child && !args.sideOf &&
-      args.workspace === builtinDefaultWorkspace(app.getPath("documents"));
+      isDefaultWorkspaceOf(args.workspace, builtinDefaultWorkspace(app.getPath("documents")));
     const base = {
       store,
       workspace: args.workspace,
@@ -2118,6 +2123,7 @@ void app.whenReady().then(() => {
         read: (o?: BrowserReadOptions) => browsers.read(sid, o),
       }),
       ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
+      ...(args.presetSessionId ? { presetSessionId: args.presetSessionId } : {}),
       // 协作记录（issue #658）：只在可能有第二只水獭同时动手的工作区开——
       // 也就是非 git 目录。独立副本里没有别人，记账只剩噪音
       ...(parallelOk(args.workspace) ? { cowork: true as const } : {}),
@@ -2478,12 +2484,12 @@ void app.whenReady().then(() => {
     if (typeof opts?.workspace !== "string" || !opts.workspace) {
       throw new Error("未选择工程文件夹");
     }
-    // 兜底工作区惰性创建(#559):只在它真被用作会话工作区的这一刻 mkdir——
-    // 从没用过兜底的人,文档区永远不会长出 Mr Otto/Default。
-    // 只认"等于当前兜底路径"这一种,别替渲染层传来的任意路径 mkdir
-    if (opts.workspace === workspaceSettingsInfo().defaultWorkspace) {
-      mkdirSync(opts.workspace, { recursive: true });
-    }
+    // 兜底工作区惰性创建（#559）+ 内置 Default 按会话分格（#851）：
+    // 只在「等于当前兜底路径」时动手，别替渲染层传来的任意路径 mkdir
+    const alloc = allocateSessionWorkspace(opts.workspace, workspaceSettingsInfo(), {
+      mint: newSessionId,
+      mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+    });
     // 工具表是一次性拼好的（挂载一次定终身）：必须在 createSessionAgent 之前
     // 就知道每台 server 提供了什么，所以这里先 await，agent.ts 里的
     // void opts.mcp?.ready() 只是幂等兜底，不能指望它把 ready 等到位。
@@ -2494,12 +2500,13 @@ void app.whenReady().then(() => {
     // 工作区在 git 仓里就开 worktree。两只水獭形态一致，不用解释「什么时候会隔离」。
     // 任何一步失败 → isolated 为 null，退回原目录 + ADR-0152 的互斥兜底
     //（没有副本比建错副本安全）
-    const isolate = shouldIsolate({ repo: sessionWorktrees.repoOf(opts.workspace) })
-      ? sessionWorktrees.create(opts.workspace, "session")
+    const isolate = shouldIsolate({ repo: sessionWorktrees.repoOf(alloc.workspace) })
+      ? sessionWorktrees.create(alloc.workspace, "session")
       : null;
-    const agent = createSessionAgent(
-      isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: opts.workspace }
-    );
+    const agent = createSessionAgent({
+      ...(isolate ? { workspace: isolate.workspace, isolated: isolate.isolated } : { workspace: alloc.workspace }),
+      ...(alloc.sessionId ? { presetSessionId: alloc.sessionId } : {}),
+    });
     agents.set(agent.sessionId, agent);
     // 副本上锁（issue #647）：锁定原因带 sessionId + pid，清理程序据此分得出
     // 「正在用」和「早该清了」。要 sessionId，所以排在建 agent 之后
@@ -2859,6 +2866,10 @@ void app.whenReady().then(() => {
     );
     return workspaceSettingsInfo();
   });
+
+  ipcMain.handle(CHANNELS.pruneEmptyTaskFolders, () =>
+    pruneEmptyTaskFolders(builtinDefaultWorkspace(app.getPath("documents")), nodePruneFs, new Set(agents.keys()))
+  );
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────
   // 打包的 mac / win 版才启用：开发模式没有可换的安装，查了也白查。
@@ -3271,17 +3282,20 @@ void app.whenReady().then(() => {
     // importWorkspaceSession 的第 4 个参数是接收方选定的本机工作目录——brief 的
     // 产出签名没暴露这个选择给渲染层，落回内置 Default 工作区（同 DM 导入那条
     // "从好友 DM 导入时渲染层会回落到默认工作文件夹"的兜底口径，#783 下半），
-    // 惰性建目录同 importSharedSession handler
-    const workspace = workspaceSettingsInfo().defaultWorkspace;
-    mkdirSync(workspace, { recursive: true });
+    // 惰性建目录同 importSharedSession handler，内置 Default 下按会话分格（#851）
+    const alloc = allocateSessionWorkspace(workspaceSettingsInfo().defaultWorkspace, workspaceSettingsInfo(), {
+      mint: newSessionId,
+      mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+    });
     return importWorkspaceSession(
       {
         download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
         saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
         append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
-        newSessionId: () => crypto.randomUUID(),
+        // 分格了的话新会话 id 必须与子目录名一致（否则围栏对不上会话）
+        newSessionId: () => alloc.sessionId ?? crypto.randomUUID(),
       },
-      publisherUid, pkgId, workspace,
+      publisherUid, pkgId, alloc.workspace,
     );
   });
 
@@ -3367,19 +3381,22 @@ void app.whenReady().then(() => {
       grant?: { friendUid: string; friendName: string; servers: readonly string[] } | null
     ) => {
       // 兜底工作区惰性创建，与 startSession 同一条规则（#559）：从好友 DM 导入时
-      // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过
-      if (workspace && workspace === workspaceSettingsInfo().defaultWorkspace) {
-        mkdirSync(workspace, { recursive: true });
-      }
+      // 渲染层会回落到默认工作文件夹（#783 下半），它可能还没在磁盘上出生过。
+      // 内置 Default 下按会话分格（#851）——空 workspace 原样回，不误判成兜底
+      const alloc = allocateSessionWorkspace(workspace, workspaceSettingsInfo(), {
+        mint: newSessionId,
+        mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+      });
       return importSharedSession(
         {
           download: (pfx) => downloadPackageFiles(supabase.raw, pfx),
           saveAttachment: (bytes, name) => attachmentStore.save(bytes, name),
           append: (sid, event) => { store.append({ sessionId: sid, ts: Date.now(), ...event } as never); },
-          newSessionId: () => crypto.randomUUID(),
+          // 分格了的话新会话 id 必须与子目录名一致（否则围栏对不上会话）
+          newSessionId: () => alloc.sessionId ?? crypto.randomUUID(),
         },
         {
-          prefix, workspace,
+          prefix, workspace: alloc.workspace,
           // 注记文本在这一侧现算（shareGrantNoteText 要 friendTag/mcpToolName，
           // 都是主进程的料）；servers 空清单不落事件——没借东西就没有对应关系可说
           ...(grant && grant.servers.length > 0
