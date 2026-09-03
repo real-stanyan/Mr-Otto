@@ -51,12 +51,15 @@ import type {
 } from "./askUser.js";
 import type { SubagentDef } from "./subagent.js";
 import type { MemoryTarget } from "./memoryStore.js";
+import type { MemorySyncState } from "./memorySyncState.js";
 import type { AutoCompactSettings } from "./autoCompact.js";
 import type { CatalogEntry } from "./mcpCatalog.js";
 
 export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, AskUserRequest };
 
 export type { SubagentDef };
+
+export type { MemorySyncState };
 
 export type { SessionSummary, FtsHit };
 
@@ -599,6 +602,8 @@ export interface ShellBridge {
   deleteProjectMemory(root: string): Promise<void>;
   /** 全部主题桶（种子 ∪ 磁盘）的现状（设置页主题区读）。seed = 是种子桶（不可删，只能清空） */
   listTopicMemories(): Promise<{ slug: string; label: string; text: string; seed: boolean }[]>;
+  /** 记忆同步状态（设置页显示）。off = 未登录，idle = 已同步，syncing = 同步中，error = 错误 */
+  memorySyncStatus(): Promise<MemorySyncState>;
   /** 删掉一个非种子桶（.md + .label），不可恢复——确认弹窗在渲染层；种子桶抛 */
   deleteTopicMemory(slug: string): Promise<void>;
   /** 改显示名。空串 = 删 .label 回默认（种子表 / slug） */
@@ -1324,6 +1329,7 @@ export const CHANNELS = {
   listProjectMemories: "otter:listProjectMemories",
   deleteProjectMemory: "otter:deleteProjectMemory",
   listTopicMemories: "otter:listTopicMemories",
+  memorySyncStatus: "otter:memorySyncStatus",
   deleteTopicMemory: "otter:deleteTopicMemory",
   setTopicLabel: "otter:setTopicLabel",
   rebuildSearchIndex: "otter:rebuildSearchIndex",

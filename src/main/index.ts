@@ -2683,6 +2683,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.listTopicMemories, () =>
     memoryFiles.readTopics().map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
   );
+  ipcMain.handle(CHANNELS.memorySyncStatus, () => memorySync.state());
   ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
     if (!isTopicSlug(slug)) throw new Error("slug 非法");
     if (slug in SEED_TOPICS) throw new Error("种子桶不能删，只能清空");

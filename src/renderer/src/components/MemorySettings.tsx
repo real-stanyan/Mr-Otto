@@ -29,7 +29,7 @@ import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../setting
 import { SidebarNub } from "./SidebarNub.js";
 import { bridgeErrorMessage } from "../lib/bridgeError.js";
 import { useChat } from "../store.js";
-import type { FtsHit } from "../../../shared/shellBridge.js";
+import type { FtsHit, MemorySyncState } from "../../../shared/shellBridge.js";
 import type { MemoryLoadedEvent } from "../../../session/events.js";
 import {
   charCount,
@@ -508,9 +508,11 @@ function TopicMemoryCard() {
 
 export function MemorySettings() {
   const [onDisk, setOnDisk] = useState<ProjectMemory[]>([]);
+  const [syncStatus, setSyncStatus] = useState<MemorySyncState>({ kind: "off" });
   const refreshProjects = () => window.otter.listProjectMemories().then(setOnDisk);
   useEffect(() => {
     void refreshProjects();
+    void window.otter.memorySyncStatus().then(setSyncStatus);
   }, []);
 
   /** 当前会话的项目根,取自它自己的 memory_loaded 事件(同 OttoThread 的 MemoryCard):
@@ -550,11 +552,27 @@ export function MemorySettings() {
     await refreshProjects();
   };
 
+  const syncHint = (() => {
+    switch (syncStatus.kind) {
+      case "off":
+        return "记忆只在这台电脑上（登录后会跟账号同步）";
+      case "idle":
+        return "已与账号同步";
+      case "syncing":
+        return "同步中…";
+      case "error":
+        return "同步失败，会自动重试";
+    }
+  })();
+
   return (
     <div className={MAIN_COL}>
       <header className={HEADER}>
         <SidebarNub />
         <SettingsTitle id="memory" className="flex-1" />
+        <span className={HINT} title={syncStatus.kind === "error" ? syncStatus.message : undefined}>
+          {syncHint}
+        </span>
       </header>
       <section className={SETTINGS_BODY}>
         <MemoryField

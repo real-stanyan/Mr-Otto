@@ -4,14 +4,11 @@
 // 离线/未登录：pending 留着不打网络，会话照常开始——「先落盘再喂模型」的节奏不变。
 // 从云端写本地那一刻 muted：否则写本地 → touched → 再推回去，死循环。
 import { planReconcile } from "../shared/memoryReconcile.js";
+import type { MemorySyncState } from "../shared/memorySyncState.js";
 import type { MemoryDocsApi } from "./memoryDocsApi.js";
 import type { MemoryFiles } from "./memoryFiles.js";
 
-export type MemorySyncState =
-  | { kind: "off" }
-  | { kind: "idle"; lastSyncedAt: number }
-  | { kind: "syncing" }
-  | { kind: "error"; message: string; lastSyncedAt: number | null };
+export type { MemorySyncState } from "../shared/memorySyncState.js";
 
 export interface MemorySyncDeps {
   files: Pick<MemoryFiles, "walk" | "read" | "write" | "remove">;
