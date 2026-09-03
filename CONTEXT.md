@@ -47,7 +47,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
 | 记忆云同步 | 记忆四档跟账号走：本地 `memories/**` 是缓存，云端 `memory_docs(uid,key,content,updated_at)` 是账号级副本；后写胜、内容相同不动；写路径只有 `memoryFiles` 一个口 + LocalWorld 钩子；触发点两个（本地写完防抖 / 登录恢复对账），不轮询；离线不阻塞、登出不清 | ADR-0207、#852 |
-| 退化循环（degenerate loop） | 一条 turn 里模型把**同一组工具调用逐字重复**多遍、零进展。判据是「后缀上存在周期 p ≤ 24 且原样重复 ≥ 3 遍」，不是「连续两圈相同」——真实形态里相邻两圈从来不相等。命中只往对话里注一条 `user_message`（`origin:"loop_guard"`）把事实摆给模型，**不停 turn**：无步数天花板仍是 ADR-0006 的决定，硬停只有停止键 | ADR-0210、#891；`src/shared/toolLoopGuard.ts` |
+| 退化循环（degenerate loop） | 一条 turn 里模型把**同一组工具调用逐字重复**多遍、零进展。判据是「后缀上存在周期 p ≤ 24 且原样重复 ≥ 3 遍」，不是「连续两圈相同」——真实形态里相邻两圈从来不相等。命中只往对话里注一条 `user_message`（`origin:"loop_guard"`）把事实摆给模型，**不停 turn**：无步数天花板仍是 ADR-0006 的决定，硬停只有停止键 | ADR-0212、#891；`src/shared/toolLoopGuard.ts` |
 | 任务文件夹 | 内置 Default 下每个任务会话一个子目录 `<Default>/<sessionId>/`（完整 id，不是前 8 位）；旧会话直接等于 Default 根也算任务，判据 `isDefaultWorkspace`；归档不删，设置页可清空壳 | ADR-0206、#851 |
 | 主题桶（TOPIC 档） | 记忆第四档：`memories/topics/<slug>.md`，种子 work/hobbies/life/learning + 模型可建（先看索引的闸），预算 700 字/桶、封顶 8 桶、整份注入不做检索 | ADR-0204、#846 |
 | 会话主题（session topic） | 任务会话（workspaceKind=default）挂靠某个主题桶：turnAnnotator 合并调用自动分类落 `session_topic_assigned`（投影丢弃），手动 `session_topic_set` 压过自动结果；侧栏任务栏据此分组 | ADR-0204、#846 |
