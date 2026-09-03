@@ -10,6 +10,7 @@
 // 通知这一层，漏一处就是一个"为什么组头不更新"的幽灵 bug，而 TTL 自愈。
 
 import { resolveWorkspaceOrigin, type GitFsReader } from "./projectRoot.js";
+import { isDefaultWorkspace } from "../shared/defaultWorkspace.js";
 
 /** 一个 workspace 在岛上的两条身份 */
 export interface WorkspaceFacts {
@@ -55,4 +56,11 @@ export function createWorkspaceLens(opts: {
     cache.set(workspace, { at: t, facts });
     return facts;
   };
+}
+
+/** #851：Default 子目录在岛上折回 Default 根——组头回答「这是哪个项目」，
+    而所有任务会话都属于同一个「Default」。不折的话每个任务各占一组 */
+export function withDefaultFold(lens: WorkspaceLens, builtin: string): WorkspaceLens {
+  return (workspace) =>
+    isDefaultWorkspace(workspace, builtin) ? { projectRoot: builtin, branch: null } : lens(workspace);
 }

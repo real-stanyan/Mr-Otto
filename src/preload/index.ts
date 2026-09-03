@@ -70,6 +70,7 @@ const bridge: ShellBridge = {
   setMotionSettings: (settings) => ipcRenderer.invoke(CHANNELS.setMotionSettings, settings),
   getWorkspaceSettings: () => ipcRenderer.invoke(CHANNELS.getWorkspaceSettings),
   setDefaultWorkspace: (dir) => ipcRenderer.invoke(CHANNELS.setDefaultWorkspace, dir),
+  pruneEmptyTaskFolders: () => ipcRenderer.invoke(CHANNELS.pruneEmptyTaskFolders),
   updaterGetState: () => ipcRenderer.invoke(CHANNELS.updaterGetState),
   updaterCheckNow: () => ipcRenderer.invoke(CHANNELS.updaterCheckNow),
   updaterStartDownload: () => ipcRenderer.invoke(CHANNELS.updaterStartDownload),

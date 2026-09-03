@@ -209,6 +209,11 @@ describe("taskSessions —— 侧栏「任务」那一栏", () => {
     expect(taskSessions([arch, s("live", DEF, 200)], DEF).map((x) => x.sessionId)).toEqual(["live"]);
     expect(taskSessions([s("live", DEF, 200)], null)).toEqual([]);
   });
+
+  it("#851：Default 子目录里的会话也算任务；旧形状（等于根）照旧", () => {
+    const list = taskSessions([s("new", `${DEF}/s-20260903111128-a1b2c3d4`, 300), s("old", DEF, 200), s("proj", "/p/x", 100)], DEF);
+    expect(list.map((x) => x.sessionId)).toEqual(["new", "old"]);
+  });
 });
 
 describe("archivedTaskSessions —— 任务栏的「已归档」", () => {
@@ -223,6 +228,11 @@ describe("archivedTaskSessions —— 任务栏的「已归档」", () => {
       DEF
     );
     expect(list.map((x) => x.sessionId)).toEqual(["a"]);
+  });
+
+  it("#851：归档那半同一判据", () => {
+    const a = { ...s("x", `${DEF}/s-20260903111128-a1b2c3d4`, 1), archived: true };
+    expect(archivedTaskSessions([a], DEF).map((x) => x.sessionId)).toEqual(["x"]);
   });
 });
 

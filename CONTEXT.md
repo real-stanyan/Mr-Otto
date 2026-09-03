@@ -46,6 +46,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 工作区在场（WorkspacePresence） | 一个人此刻「在哪个仓库、哪根分支」：`{repoKey, branch}`。repoKey = 规范化 remote URL 的 sha256 前 16 位（只能比对同不同仓库，看不到地址）；branch 是本地短名，detached 为 null。两条腿广播——Realtime presence 的 track meta ∪ 心跳写入 `profiles.repo_key/repo_branch`——Git Graph 把同仓库好友的头像贴到对应分支徽章上。**可见性:写只能写自己那行,但读是对所有注册用户开放的**（`profiles` 的 select policy 是 `using(true)`，好友搜索依赖它）——即 `repo_branch` 明文对任何注册用户可见，不止好友；维护者已判定接受（#236） | ADR-0055（含 2026-08-23 订正）；`src/shared/repoKey.ts`、`src/main/workspacePresence.ts`、`src/shared/friendBranches.ts` |
 | 长期记忆（Memory） | `~/.mr-otto/memories/MEMORY.md`（agent 笔记，2200 字符）+ `USER.md`（用户画像，1375 字符），`§` 分隔；`memory` 工具维护。文件是投影，事件是事实 | ADR-0060 |
 | 记忆快照（memory_loaded） | 主会话的第 2 条事件（子会话 / sys-memory-edits 不带），模型整个 session 看到的记忆；中途写盘下个 session 才可见 | ADR-0060 |
+| 任务文件夹 | 内置 Default 下每个任务会话一个子目录 `<Default>/<sessionId>/`（完整 id，不是前 8 位）；旧会话直接等于 Default 根也算任务，判据 `isDefaultWorkspace`；归档不删，设置页可清空壳 | ADR-0206、#851 |
 | 主题桶（TOPIC 档） | 记忆第四档：`memories/topics/<slug>.md`，种子 work/hobbies/life/learning + 模型可建（先看索引的闸），预算 700 字/桶、封顶 8 桶、整份注入不做检索 | ADR-0204、#846 |
 | 会话主题（session topic） | 任务会话（workspaceKind=default）挂靠某个主题桶：turnAnnotator 合并调用自动分类落 `session_topic_assigned`（投影丢弃），手动 `session_topic_set` 压过自动结果；侧栏任务栏据此分组 | ADR-0204、#846 |
 | 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除**系统**归档、子会话、当前会话（用户归档照常可搜，ADR-0087） | ADR-0065 |

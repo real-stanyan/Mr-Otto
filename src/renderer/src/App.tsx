@@ -71,6 +71,7 @@ import { WorkspacesPanel } from "./components/WorkspacesPanel.js";
 import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
+import { isDefaultWorkspace } from "../../shared/defaultWorkspace.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
@@ -1722,7 +1723,7 @@ function AppSidebar() {
   useEffect(() => {
     if (tabDecided.current || !builtin || sessions.length === 0) return;
     tabDecided.current = true;
-    if (sessions.some((s) => !s.archived && s.workspace !== null && s.workspace !== builtin)) {
+    if (sessions.some((s) => !s.archived && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin))) {
       setTab("projects");
     }
   }, [sessions, builtin, setTab]);
@@ -1737,7 +1738,7 @@ function AppSidebar() {
   // 两栏各自的「已归档」计数和列表互不掺和
   const archivedTask = useMemo(() => archivedTaskSessions(sessions, builtin), [sessions, builtin]);
   const archived = useMemo(
-    () => groupArchivedByWorkspace(sessions.filter((s) => s.workspace !== builtin)),
+    () => groupArchivedByWorkspace(sessions.filter((s) => !isDefaultWorkspace(s.workspace, builtin))),
     [sessions, builtin]
   );
   const archivedCount =
@@ -1833,7 +1834,7 @@ function AppSidebar() {
             重命名
           </DropdownMenuItem>
           {/* 归到…（#846）：只有任务栏（内置 Default 工作区）的会话才有主题桶这个概念 */}
-          {s.workspace === builtin && (
+          {isDefaultWorkspace(s.workspace, builtin) && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>归到…</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
@@ -1908,7 +1909,7 @@ function AppSidebar() {
     () =>
       partitionShared(
         sessions.filter(
-          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && s.workspace !== builtin
+          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin)
         )
       ),
     [sessions, builtin]

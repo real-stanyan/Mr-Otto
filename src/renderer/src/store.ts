@@ -705,6 +705,8 @@ interface ChatState {
   setSidebarTab(tab: "tasks" | "projects"): void;
   /** 设置默认工作文件夹;null = 恢复内置 Default。落盘后镜像跟着更新 */
   setDefaultWorkspace(dir: string | null): Promise<void>;
+  /** 清理 Default 下空的任务文件夹（#851） */
+  pruneEmptyTaskFolders(): Promise<{ removed: number; kept: number }>;
   /** 回到新会话 composer 视图（侧栏 ＋ 按钮）——纯导航，不建任何东西。
       dir = 预填的工程文件夹（侧栏工程分组上那颗 ＋）；不传就是空白开局 */
   newSession(dir?: string): void;
@@ -2757,6 +2759,10 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
+  },
+
+  async pruneEmptyTaskFolders() {
+    return await window.otter.pruneEmptyTaskFolders();
   },
 
   newSession: (dir) =>
