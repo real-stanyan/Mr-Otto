@@ -6,6 +6,10 @@ import { rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AttachmentStore } from "../../src/session/attachments.js";
 import { intakeFile, TEXT_MAX_BYTES } from "../../src/main/attachmentIntake.js";
+import type { FitEncoder } from "../../src/shared/imageFit.js";
+
+/** 这个文件全是文档/文本分支,一张图都没有 —— 显式给个"解不了",不留默认值 */
+const noFit: FitEncoder = async () => null;
 import { tempDir } from "../helpers/tempDir.js";
 
 const docx = () => new Uint8Array(readFileSync(join(__dirname, "../fixtures/sample.docx")));
@@ -20,7 +24,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("intakeFile 文档分支", () => {
   it("docx → 转成 Markdown 走文本出口(不入库)", async () => {
-    const out = await intakeFile("/home/x/报告.docx", docx(), store);
+    const out = await intakeFile("/home/x/报告.docx", docx(), store, noFit);
     expect(out.kind).toBe("text");
     if (out.kind !== "text") return;
     expect(out.name).toBe("报告.docx");
@@ -31,7 +35,7 @@ describe("intakeFile 文档分支", () => {
 
   it("bytes 是原文件大小,不是转出的 md 长度 —— 转换不该从界面上漏出去", () => {
     const bytes = docx();
-    return intakeFile("/x/报告.docx", bytes, store).then((out) => {
+    return intakeFile("/x/报告.docx", bytes, store, noFit).then((out) => {
       expect(out.kind).toBe("text");
       if (out.kind !== "text") return;
       // 用户丢进来的是这个 docx,界面上就该显示这个大小
@@ -44,7 +48,7 @@ describe("intakeFile 文档分支", () => {
   it("纯文本不受影响:bytes 仍然等于内容长度(两者本来就是同一个数)", async () => {
     const text = "# 标题\n正文";
     const raw = new TextEncoder().encode(text);
-    const out = await intakeFile("/x/readme.md", raw, store);
+    const out = await intakeFile("/x/readme.md", raw, store, noFit);
     expect(out.kind).toBe("text");
     if (out.kind === "text") expect(out.bytes).toBe(raw.byteLength);
   });
@@ -54,14 +58,14 @@ describe("intakeFile 文档分支", () => {
     // 一旦有人把文档分支挪到二进制判断后面,这里立刻红
     const bytes = docx();
     expect(bytes.subarray(0, 8192).includes(0)).toBe(true); // 前提:它确实含 \0
-    const out = await intakeFile("/x/报告.docx", bytes, store);
+    const out = await intakeFile("/x/报告.docx", bytes, store, noFit);
     expect(out.kind).toBe("text");
   });
 
   it("转出的 md 超 100KB → 拒收(判的是 md 的长度,不是原文件的)", async () => {
     // 撑一个正文极长的 docx:原文件压缩后很小,转出来的 md 远超上限
     const big = inflatedDocx("水".repeat(TEXT_MAX_BYTES));
-    const out = await intakeFile("/x/big.docx", big, store);
+    const out = await intakeFile("/x/big.docx", big, store, noFit);
     expect(out.kind).toBe("rejected");
     if (out.kind === "rejected") expect(out.reason).toMatch(/100KB|超/);
   });
@@ -69,7 +73,7 @@ describe("intakeFile 文档分支", () => {
   it("损坏的 zip 容器 → rejected 带人话理由,不抛", async () => {
     const broken = docx();
     broken.fill(0x41, 40, broken.length); // 签名留着,内容砸烂
-    const out = await intakeFile("/x/坏了.docx", broken, store);
+    const out = await intakeFile("/x/坏了.docx", broken, store, noFit);
     expect(out.kind).toBe("rejected");
     if (out.kind === "rejected") {
       expect(out.reason.length).toBeGreaterThan(0);
@@ -78,7 +82,7 @@ describe("intakeFile 文档分支", () => {
   });
 
   it("图片型 PDF(无文本层) → rejected 提到 OCR", async () => {
-    const out = await intakeFile("/x/扫描件.pdf", imageOnlyPdf(), store);
+    const out = await intakeFile("/x/扫描件.pdf", imageOnlyPdf(), store, noFit);
     expect(out.kind).toBe("rejected");
     if (out.kind === "rejected") expect(out.reason).toMatch(/OCR|扫描/);
   });
@@ -86,7 +90,7 @@ describe("intakeFile 文档分支", () => {
   it("认不出容器签名的纯文本(csv/md)不走转换,还是原样文本", async () => {
     // 反向守护:CSV 没有签名,转成表格会撑大体积,把本来收得下的文件顶出上限
     const csv = "name,role\notter,agent\n";
-    const out = await intakeFile("/x/t.csv", new TextEncoder().encode(csv), store);
+    const out = await intakeFile("/x/t.csv", new TextEncoder().encode(csv), store, noFit);
     expect(out.kind).toBe("text");
     if (out.kind === "text") expect(out.content).toBe(csv); // 原样,没变成 GFM 表格
   });
