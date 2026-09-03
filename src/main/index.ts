@@ -107,15 +107,12 @@ import { createProtocolService } from "./protocolService.js";
 import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
-import {
-  memoryRelPath, isMemoryTarget, parseEntries, formatEntries, topicIndexOf,
-  PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
-} from "../shared/memoryStore.js";
-import { TOPICS_DIR, isTopicSlug, SEED_TOPICS, topicRelPath, topicLabelRelPath } from "../shared/memoryTopics.js";
-import { readTopics } from "./memoryTopics.js";
+import { isMemoryTarget, parseEntries, formatEntries, topicIndexOf, type MemoryTarget } from "../shared/memoryStore.js";
+import { isTopicSlug, SEED_TOPICS } from "../shared/memoryTopics.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
-import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
+import { projectMemoryDir } from "./projectRoot.js";
+import { createMemoryFiles } from "./memoryFiles.js";
 import { createWorkspacePresence } from "./workspacePresence.js";
 import { turnConflict, familyRootOf, conflictMessage } from "../shared/workspaceExclusion.js";
 import { createWorkspaceLock } from "./workspaceLockFile.js";
@@ -1073,7 +1070,7 @@ void app.whenReady().then(() => {
       store.lastSeqOf(sessionId, "session_topic_set") < 0;
     const source = wantTopic ? topicSource(store.firstUserMessage(sessionId)) : null;
     const topicChoice =
-      source === null ? null : { source, index: topicIndexOf(readTopics(join(accountConfig, TOPICS_DIR))) };
+      source === null ? null : { source, index: topicIndexOf(memoryFiles.readTopics()) };
     const result = await annotateTurn(
       classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
@@ -1163,7 +1160,7 @@ void app.whenReady().then(() => {
     // user/assistant/tool 全留——工具怪癖长在 tool 消息和 assistant 的
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
-    const mem = readMemoryFiles(agent.workspace);
+    const mem = memoryFiles.readTiers(agent.workspace);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -2006,64 +2003,19 @@ void app.whenReady().then(() => {
   /** 写路径：认不出就抛。降级在这里等于把文件静默写到用户级去（见 trustedWorkspaceForWrite） */
   const trustedForWrite = (workspace: unknown) => trustedWorkspaceForWrite(workspace, known());
 
-  /** 单份记忆文件的当前内容（配置目录相对路径）。读不到 = 空——"没记过"不是
-      故障。ENOENT = 没记过；别的错误（EACCES 之类）不能装没看见——那会让
-      "文件在但读不了"呈现成"记忆是空的"（issue #186）。调用方也不该因此
-      挂掉：记下来，按空处理。两个调用点（会话装配的 readMemoryFiles / 设置页
-      的 getMemory handler）共用这一份，别各写一份 ENOENT 分支出来 */
-  const readMemoryFile = (rel: string): string => {
-    try {
-      return readFileSync(join(accountConfig, rel), "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error(`读记忆文件 ${rel} 失败（按空快照继续）`, err);
-      }
-      return "";
-    }
-  };
-
-  /** 三档记忆的当前内容（ADR-0060，项目档见 ADR-0116）。同步读：index.ts
-      是组装根，本来就允许碰 fs（AGENTS.md 的硬规则挡的是工具层）；createAgent
-      是同步的，这份快照必须在调它之前就手上有值。project/projectRoot 缺席 =
-      workspace 不在任何 git 仓库里 */
-  const readMemoryFiles = (
-    workspace: string
-  ): { memory: string; user: string; project?: string; projectRoot?: string; topics: MemoryTopicSnapshot[] } => {
-    const base = {
-      memory: readMemoryFile(memoryRelPath("memory")),
-      user: readMemoryFile(memoryRelPath("user")),
-      // 主题桶不跟着 projectRoot 走（同 memory/user，跟账号走不跟项目走）——
-      // 无论这个 workspace 在不在 git 仓库里都读得到
-      topics: readTopics(join(accountConfig, TOPICS_DIR)),
-    };
-    const projectRoot = resolveProjectRoot(workspace);
-    if (!projectRoot) return base;
-    return {
-      ...base,
-      project: readMemoryFile(memoryRelPath("project", projectMemoryDir(projectRoot))),
-      projectRoot,
-    };
-  };
+  /** memories/ 的唯一读写口（#852，ADR-0206）：三档读写、项目档/主题桶的增删都
+      经它，云同步（Task 5）就在 onWrite 这一个钩子上接线，不必散在四处的写路径里
+      各挂一次。钩子放在一个可变槽里：memorySync 建得比 memoryFiles 晚（要等 supabase
+      client），先留槽后填 */
+  const memorySyncHook: { touched: ((rel: string) => void) | null } = { touched: null };
+  const memoryFiles = createMemoryFiles(accountConfig, { onWrite: (rel) => memorySyncHook.touched?.(rel) });
 
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
       memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
   const memoryEditDeps = {
     store,
-    readFile: async (rel: string) => {
-      try {
-        return await readFile(join(accountConfig, rel), "utf8");
-      } catch (err) {
-        // ENOENT = 没记过。别的错误必须抛（issue #186）：吞掉的话 before 会被
-        // 记成空串，writeFile 若碰巧成功，memory_user_edit 的留证就在说谎
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        return "";
-      }
-    },
-    writeFile: async (rel: string, c: string) => {
-      const abs = join(accountConfig, rel);
-      await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, c, "utf8");
-    },
+    readFile: (rel: string) => memoryFiles.read(rel),
+    writeFile: (rel: string, c: string) => memoryFiles.write(rel, c),
   };
 
   /** 渲染层给的 projectRoot 折成 applyUserEdit 要的那对 {root, dir}（形状同
@@ -2217,7 +2169,7 @@ void app.whenReady().then(() => {
       // 父的 world 实例，residue 能力跟着一起继承；重建出来的子会话
       // （createChildAgent）新造 LocalWorld，刻意没有——同 history/simulator 的取舍
       liveGroups,
-      memory: readMemoryFiles(args.workspace),
+      memory: memoryFiles.readTiers(args.workspace),
       // 主会话才有历史查询能力（session_search 只在这条装配路径上挂）。
       // self 此刻还没被赋值，但闭包只在 session_search 真被调用那一刻才读
       // self.sessionId——和上面 parent() 闭包同一招（此刻它已经是活的）
@@ -2668,15 +2620,15 @@ void app.whenReady().then(() => {
   // ── 记忆（设置页读/改，Task 8；三档 + 项目档区，Task 6）─────────────
   // 设置页没有 workspace（不是某个会话），只读两档全局文件——项目档的读写
   // 走下面新增的 listProjectMemories / saveMemory(projectRoot) / deleteProjectMemory，
-  // 不借这条 handler。复用 readMemoryFile：ENOENT-vs-其他错误的处理只该有一份
+  // 不借这条 handler。复用 memoryFiles.readTier：ENOENT-vs-其他错误的处理只该有一份
   // （issue #186 那条不能只在一条调用路径上生效）
-  ipcMain.handle(CHANNELS.getMemory, () => ({
-    memory: readMemoryFile(memoryRelPath("memory")),
-    user: readMemoryFile(memoryRelPath("user")),
+  ipcMain.handle(CHANNELS.getMemory, async () => ({
+    memory: await memoryFiles.readTier("memory"),
+    user: await memoryFiles.readTier("user"),
   }));
-  // projectRoot 缺省 = 全局档（project 传 null，memoryRelPath 按 target 走
+  // projectRoot 缺省 = 全局档（project 传 null，路径按 target 走
   // memory/user 的固定路径）；target 是 "project" 时渲染层必须给 projectRoot，
-  // 否则 memoryRelPath 在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
+  // 否则路径拼接在 applyUserEdit 里抛。root 一路带到 applyUserEdit（不是
   // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
   ipcMain.handle(
     CHANNELS.saveMemory,
@@ -2696,49 +2648,27 @@ void app.whenReady().then(() => {
   ipcMain.handle(
     CHANNELS.forgetMemory,
     async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string) => {
-      // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
-      // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
+      // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先要
+      // 拼路径读现状，得在拼之前挡
       if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project / topic，收到 ${String(target)}`);
       const project = memoryProject(projectRoot);
-      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir, topic)));
+      const cur = parseEntries(await memoryFiles.readTier(target, project?.dir, topic));
       await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project, topic ?? null);
     }
   );
   // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
   // 目录自描述，不引入中心索引（会和磁盘现实脱节）。没有 root.txt 的孤儿目录不列，
   // 目录本身不存在（还没有任何项目记忆）也不是故障，按空列表处理
-  ipcMain.handle(CHANNELS.listProjectMemories, async () => {
-    const dir = join(accountConfig, "memories", "projects");
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch {
-      return [];
-    }
-    const out: { root: string; text: string }[] = [];
-    for (const n of names) {
-      const read = async (f: string) => {
-        try {
-          return await readFile(join(dir, n, f), "utf8");
-        } catch {
-          return null;
-        }
-      };
-      const root = await read(PROJECT_ROOT_FILE);
-      if (root === null) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
-      out.push({ root: root.trim(), text: (await read(PROJECT_MEMORY_FILE)) ?? "" });
-    }
-    return out.sort((a, b) => a.root.localeCompare(b.root));
-  });
+  ipcMain.handle(CHANNELS.listProjectMemories, () => memoryFiles.listProjects());
   // 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复——确认弹窗在渲染层
   ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
     if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
-    await rm(join(accountConfig, projectMemoryDir(root)), { recursive: true, force: true });
+    await memoryFiles.deleteProject(root);
   });
   // 主题桶分区（设置页第四档，#846）：种子 ∪ 磁盘的现状，与 memory_loaded 的
   // topics 快照走同一个 readTopics
   ipcMain.handle(CHANNELS.listTopicMemories, () =>
-    readTopics(join(accountConfig, TOPICS_DIR)).map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
+    memoryFiles.readTopics().map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
   );
   ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
     if (!isTopicSlug(slug)) throw new Error("slug 非法");
@@ -2748,19 +2678,12 @@ void app.whenReady().then(() => {
     // read-modify-write 不撞），这样删除动作和手编一样留证、可审计、可在 before 里
     // 找回删之前的内容。事件落完了再动文件系统：rm 是不可逆的物理删除，落证在先。
     await applyUserEdit(memoryEditDeps, "topic", "", undefined, null, slug);
-    await rm(join(accountConfig, topicRelPath(slug)), { force: true });
-    await rm(join(accountConfig, topicLabelRelPath(slug)), { force: true });
+    await memoryFiles.deleteTopic(slug);
   });
   ipcMain.handle(CHANNELS.setTopicLabel, async (_e, slug: unknown, label: unknown) => {
     if (!isTopicSlug(slug)) throw new Error("slug 非法");
     if (typeof label !== "string") throw new Error("label 必须是字符串");
-    const abs = join(accountConfig, topicLabelRelPath(slug));
-    if (!label.trim()) {
-      await rm(abs, { force: true });
-      return;
-    }
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, label.trim(), "utf8");
+    await memoryFiles.setTopicLabel(slug, label);
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────
