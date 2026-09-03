@@ -197,4 +197,23 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
         "(去掉意味着手机端不能用它投影,想清楚再改)"
     ).toEqual([]);
   });
+
+  // #852：memories/ 的写路径必须只有一个口（src/main/memoryFiles.ts），云同步挂在它后面。
+  // 判据：一个文件既 import 了 node:fs 又提到记忆路径符号，就是在绕过那个口。
+  // memoryTopics.ts 是只读的组装根、projectRoot.ts 只定义目录名函数——白名单。
+  it("碰 memories/ 路径的文件不 import node:fs —— 记忆写路径只有 memoryFiles.ts 一个口（#852）", () => {
+    const MEMORY_PATH_SYMBOLS = /\b(memoryRelPath|topicRelPath|topicLabelRelPath|TOPICS_DIR|MEMORY_DIR|PROJECT_ROOT_FILE|PROJECT_MEMORY_FILE)\b|["'`]memories\//;
+    const allow = new Set(["main/memoryFiles.ts", "main/memoryTopics.ts", "main/projectRoot.ts"]);
+    const bad = walk(ROOT)
+      .filter((f) => !allow.has(relative(ROOT, f)))
+      .filter((f) => imports(f).some((s) => /^node:fs(\/promises)?$/.test(s) || s === "fs" || s === "fs/promises"))
+      .filter((f) => MEMORY_PATH_SYMBOLS.test(readFileSync(f, "utf8")))
+      .map((f) => relative(ROOT, f));
+    expect(
+      bad,
+      `这些文件同时 import 了 node:fs 又碰记忆路径:\n  ${bad.join("\n  ")}\n` +
+        "修法:读写 memories/ 一律走 src/main/memoryFiles.ts(createMemoryFiles);" +
+        "它写完会通知 memorySync,绕过它 = 云端少一份"
+    ).toEqual([]);
+  });
 });

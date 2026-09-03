@@ -286,6 +286,9 @@ export function createAgent(opts: {
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
   configRoot?: string;
+  /** config.write 落盘后回调（#852）：记忆云同步挂在这里。同 configRoot 的先例：
+      只在自己新造 LocalWorld 时用得上（opts.world 给了就走那条路） */
+  onConfigWrite?: (rel: string) => void;
   /** agent 起的进程组的存活登记表（issue #759）。组装根注入，工具层不碰——
       同 configRoot 的先例：只在自己新造 LocalWorld 时用得上（opts.world 给了
       就走那条路，而子 agent 复用父的 world 实例，residue 能力跟着一起继承，
@@ -315,6 +318,7 @@ export function createAgent(opts: {
       const local = createLocalWorld({
         root: opts.workspace,
         ...(opts.configRoot ? { configRoot: opts.configRoot } : {}),
+        ...(opts.onConfigWrite ? { onConfigWrite: opts.onConfigWrite } : {}),
         ...(opts.liveGroups ? { liveGroups: opts.liveGroups } : {}),
       });
       return opts.makeBrowser ? withBrowser(local, opts.makeBrowser(sessionId)) : local;

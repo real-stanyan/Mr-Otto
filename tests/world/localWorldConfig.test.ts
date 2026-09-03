@@ -45,4 +45,12 @@ describe("LocalWorld.config", () => {
     const world = createLocalWorld({ configRoot: root });
     await expect(world.config!.list("../etc")).rejects.toThrow();
   });
+
+  it("config.write 完成后调 onConfigWrite(rel)（#852 云同步挂钩）", async () => {
+    const root = tempDir("otto-cfg-");
+    const seen: string[] = [];
+    const world = createLocalWorld({ configRoot: root, onConfigWrite: (rel) => seen.push(rel) });
+    await world.config!.write("memories/USER.md", "x");
+    expect(seen).toEqual(["memories/USER.md"]);
+  });
 });
