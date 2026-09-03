@@ -2868,7 +2868,7 @@ void app.whenReady().then(() => {
   });
 
   ipcMain.handle(CHANNELS.pruneEmptyTaskFolders, () =>
-    pruneEmptyTaskFolders(builtinDefaultWorkspace(app.getPath("documents")), nodePruneFs)
+    pruneEmptyTaskFolders(builtinDefaultWorkspace(app.getPath("documents")), nodePruneFs, new Set(agents.keys()))
   );
 
   // ── OTA 更新（ADR-0075；win 席位 ADR-0081）──────────────────────

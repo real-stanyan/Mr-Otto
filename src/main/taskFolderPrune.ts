@@ -9,11 +9,17 @@ export interface PruneFs {
   rmdirIfEmpty(abs: string): boolean;
 }
 
-export function pruneEmptyTaskFolders(builtin: string, fs: PruneFs): { removed: number; kept: number } {
+/** @param live 此刻活着的会话 id（文件夹名 = sessionId）：活着的会话刚建目录时也是空的，
+    删掉它等于把正在跑的水獭的 cwd 抽走——空不空不是唯一判据 */
+export function pruneEmptyTaskFolders(
+  builtin: string,
+  fs: PruneFs,
+  live: ReadonlySet<string> = new Set(),
+): { removed: number; kept: number } {
   let removed = 0;
   let kept = 0;
   for (const e of fs.list(builtin)) {
-    if (!e.isDir || !isSessionFolderName(e.name)) continue;
+    if (!e.isDir || !isSessionFolderName(e.name) || live.has(e.name)) continue;
     if (fs.rmdirIfEmpty(sessionWorkspaceUnder(builtin, e.name))) removed++;
     else kept++;
   }

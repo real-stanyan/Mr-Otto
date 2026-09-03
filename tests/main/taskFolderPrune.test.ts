@@ -30,4 +30,9 @@ describe("pruneEmptyTaskFolders（#851）", () => {
   it("Default 还没出生：0/0", () => {
     expect(pruneEmptyTaskFolders(DEF, fakeFs([]))).toEqual({ removed: 0, kept: 0 });
   });
+  it("活着的会话的空文件夹不删——那是正在跑的水獭的 cwd", () => {
+    const fs = fakeFs([{ name: "s-20260903111128-a1b2c3d4", isDir: true, empty: true }]);
+    expect(pruneEmptyTaskFolders(DEF, fs, new Set(["s-20260903111128-a1b2c3d4"]))).toEqual({ removed: 0, kept: 0 });
+    expect(fs.removed).toEqual([]);
+  });
 });
