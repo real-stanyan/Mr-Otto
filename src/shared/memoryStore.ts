@@ -62,10 +62,19 @@ export function projectMentionInGlobal(content: string, projectRoot: string): st
 }
 
 export const MEMORY_DIR = "memories";
-/** 项目记忆目录里的两个文件。root.txt 让目录自描述（设置页要显示「这份记忆属于
-    哪个项目」），不引入中心索引——索引是派生物，会和磁盘现实脱节 */
+/** 项目记忆目录里的文件。root.txt 让目录自描述（设置页要显示「这份记忆属于
+    哪个项目」），不引入中心索引——索引是派生物，会和磁盘现实脱节。
+    它装的是**作用域键**（`ProjectScope.id`）：有 remote 的仓是 `host/path`，
+    没有的退回项目根绝对路径（#886）。旧目录里装的都是绝对路径，那正是迁移的判据。 */
 export const PROJECT_MEMORY_FILE = "MEMORY.md";
 export const PROJECT_ROOT_FILE = "root.txt";
+/** 迁移留下的墓碑（#886）：这个目录的内容已经并进 `merged.txt` 里写的那把键，
+    列表/注入/再迁移都跳过它。**为什么是加一个文件而不是删掉整个目录**——
+    云同步没有墓碑机制（planReconcile 里「本地有、云端没有」一律推上去），
+    删除会被任何一台还揣着旧副本的机器原样推回来，于是变成删了又回、回了又删的
+    无限来回；加一个文件是幂等的，两边都收敛。代价是旧内容在盘上和云端各留一份，
+    换来的是「用户手动删过的条目不会在下次开机被重新合回来」 */
+export const PROJECT_MERGED_FILE = "merged.txt";
 
 /** 记忆文件的配置目录相对路径。projectDir 由主进程算好传进来（形如
     "memories/projects/<hash16>"）——src/shared 不许 import node:crypto（手机端要跑这一层） */

@@ -6,11 +6,13 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { memoryRelPath, PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget } from "../shared/memoryStore.js";
+import {
+  memoryRelPath, PROJECT_MEMORY_FILE, PROJECT_MERGED_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
+} from "../shared/memoryStore.js";
 import { TOPICS_DIR, topicLabelRelPath, topicRelPath } from "../shared/memoryTopics.js";
 import type { MemoryTopicSnapshot } from "../session/events.js";
 import { readTopics } from "./memoryTopics.js";
-import { projectMemoryDir, resolveProjectRoot } from "./projectRoot.js";
+import { projectMemoryDir, resolveProjectScope } from "./projectRoot.js";
 
 export const MEMORY_PREFIX = "memories/";
 
@@ -28,15 +30,24 @@ export interface MemoryFiles {
   /** memories/ 下所有文件（递归）：{ rel, content, mtimeMs }；目录不存在 → [] */
   walk(): Promise<{ rel: string; content: string; mtimeMs: number }[]>;
   readTopics(): MemoryTopicSnapshot[];
-  listProjects(): Promise<{ root: string; text: string }[]>;
-  deleteProject(projectRoot: string): Promise<void>;
+  /** `memories/projects/` 下的目录名（含已被并走的），迁移用。目录不存在 → [] */
+  projectDirs(): Promise<string[]>;
+  /** 设置页那份清单。`id` 是作用域键（#886：有 remote 的仓是 `host/path`，
+      其余是项目根绝对路径），已被并走的目录（有 merged.txt）不列 */
+  listProjects(): Promise<{ id: string; text: string }[]>;
+  /** 连同**被并走的旧目录**一起删（它们装着同一份记忆的旧副本，留着等于
+      「删了还看得见」；确认弹窗说的是「不可恢复」，就得真的不可恢复） */
+  deleteProject(scopeId: string): Promise<void>;
   deleteTopic(slug: string): Promise<void>;
   setTopicLabel(slug: string, label: string): Promise<void>;
   readTiers(workspace: string): {
     memory: string;
     user: string;
     project?: string;
+    /** 本机项目根绝对路径（提示词文案 / 点名检测用） */
     projectRoot?: string;
+    /** 作用域键（目录哈希的原文 = root.txt 的内容） */
+    projectScope?: string;
     topics: MemoryTopicSnapshot[];
   };
   /** 单档单文件的内容，target/projectDir/topic → memoryRelPath → read。
@@ -121,23 +132,30 @@ export function createMemoryFiles(root: string, hooks: { onWrite?: (rel: string)
       return out;
     },
     readTopics: () => readTopics(join(root, TOPICS_DIR)),
-    async listProjects() {
-      const dir = join(root, "memories", "projects");
-      let names: string[];
+    async projectDirs() {
       try {
-        names = await readdir(dir);
+        return await readdir(join(root, "memories", "projects"));
       } catch {
-        return [];
+        return []; // 目录还不存在 = 一份项目记忆都没写过，不是故障
       }
-      const out: { root: string; text: string }[] = [];
-      for (const n of names) {
-        const projectRoot = await files.read(`memories/projects/${n}/${PROJECT_ROOT_FILE}`);
-        if (!projectRoot) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
-        out.push({ root: projectRoot.trim(), text: await files.read(`memories/projects/${n}/${PROJECT_MEMORY_FILE}`) });
-      }
-      return out.sort((a, b) => a.root.localeCompare(b.root));
     },
-    deleteProject: (projectRoot) => files.removeDir(projectMemoryDir(projectRoot)),
+    async listProjects() {
+      const out: { id: string; text: string }[] = [];
+      for (const n of await files.projectDirs()) {
+        if (await files.read(`memories/projects/${n}/${PROJECT_MERGED_FILE}`)) continue; // 已并走的旧副本
+        const id = await files.read(`memories/projects/${n}/${PROJECT_ROOT_FILE}`);
+        if (!id) continue; // 没有 root.txt = 不自描述的孤儿目录，不列
+        out.push({ id: id.trim(), text: await files.read(`memories/projects/${n}/${PROJECT_MEMORY_FILE}`) });
+      }
+      return out.sort((a, b) => a.id.localeCompare(b.id));
+    },
+    async deleteProject(scopeId) {
+      await files.removeDir(projectMemoryDir(scopeId));
+      for (const n of await files.projectDirs()) {
+        const merged = (await files.read(`memories/projects/${n}/${PROJECT_MERGED_FILE}`)).trim();
+        if (merged === scopeId) await files.removeDir(`memories/projects/${n}`);
+      }
+    },
     async deleteTopic(slug) {
       // 两条路径都无条件回调（不像 remove() 那样先探是否存在）：删桶是一个概念上的
       // 单一动作，云端要能收到「这个桶没了」的信号去清两个文件，哪怕本地 label
@@ -161,9 +179,14 @@ export function createMemoryFiles(root: string, hooks: { onWrite?: (rel: string)
         user: files.readSync(memoryRelPath("user")),
         topics: files.readTopics(),
       };
-      const projectRoot = resolveProjectRoot(workspace);
-      if (!projectRoot) return base;
-      return { ...base, project: files.readSync(memoryRelPath("project", projectMemoryDir(projectRoot))), projectRoot };
+      const scope = resolveProjectScope(workspace);
+      if (!scope) return base;
+      return {
+        ...base,
+        project: files.readSync(memoryRelPath("project", projectMemoryDir(scope.id))),
+        projectRoot: scope.root,
+        projectScope: scope.id,
+      };
     },
     readTier: (target, projectDir, topic) => files.read(memoryRelPath(target, projectDir, topic)),
   };

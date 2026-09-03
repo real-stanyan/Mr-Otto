@@ -165,9 +165,12 @@ const WebSearchCard: FC<{ part: ToolCallMessagePartProps }> = ({ part }) => {
     不是当前 workspace 现算一遍:重放时模型看到的是那份快照,忘掉操作也该照着它走 */
 const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
   const sessionId = useChat((s) => s.sessionId);
-  const projectRoot = useChat(
-    (s) => s.events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot
-  );
+  const projectScope = useChat((s) => {
+    const e = s.events.find((x): x is MemoryLoadedEvent => x.type === "memory_loaded");
+    // 旧日志（#886 之前）没有 projectScope，退回 projectRoot——那正是它当时的键；
+    // 主进程收到看起来像路径的键会按今天的规则重解析一次
+    return e?.projectScope ?? e?.projectRoot;
+  });
   const [forgotten, setForgotten] = useState<Set<string>>(new Set());
   const chips = memoryChipsFromResult(result).filter((c) => !forgotten.has(c.id));
   if (chips.length === 0) return null;
@@ -176,7 +179,7 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
       chips={chips}
       onForget={(id) => {
         setForgotten((prev) => new Set(prev).add(id));
-        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId, projectRoot, result.topic).catch((e: unknown) => {
+        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId, projectScope, result.topic).catch((e: unknown) => {
           setForgotten((prev) => {
             const next = new Set(prev);
             next.delete(id);

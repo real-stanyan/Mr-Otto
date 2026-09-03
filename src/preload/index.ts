@@ -46,7 +46,7 @@ const bridge: ShellBridge = {
   forgetMemory: (target, entry, sessionId, projectRoot, topic) =>
     ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId, projectRoot, topic),
   listProjectMemories: () => ipcRenderer.invoke(CHANNELS.listProjectMemories),
-  deleteProjectMemory: (root) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, root),
+  deleteProjectMemory: (scope) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, scope),
   listTopicMemories: () => ipcRenderer.invoke(CHANNELS.listTopicMemories),
   memorySyncStatus: () => ipcRenderer.invoke(CHANNELS.memorySyncStatus),
   deleteTopicMemory: (slug) => ipcRenderer.invoke(CHANNELS.deleteTopicMemory, slug),

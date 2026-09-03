@@ -43,7 +43,9 @@ import {
 import { MAX_TOPICS } from "../../../shared/memoryTopics.js";
 
 type ProjectMemory = {
-  root: string;
+  /** 作用域键（#886）：有 remote 的仓是 `host/path`，其余是项目根绝对路径。
+      渲染层只当它是一个不透明的身份串——认得 hash 怎么拼的只有主进程 */
+  id: string;
   text: string;
   /** 磁盘上还没有这个项目的目录（当前会话的项目根，第一次保存时才由主进程造出来）。
       带这个标记的那条不给「删掉这个项目的记忆」——没东西可删，点了也只会看起来没反应 */
@@ -278,7 +280,7 @@ function MemoryField({
 }
 
 /** 一次性动作("移到某个项目"),不是常驻状态——选完立刻回落到占位符。
-    value="" 是"未选中"哨兵,合法:项目 root 都是绝对路径,不可能是空串 */
+    value="" 是"未选中"哨兵,合法:作用域键非空(空 root.txt 的目录压根不进这份清单) */
 function MoveToProjectSelect({
   projects,
   disabled,
@@ -288,7 +290,7 @@ function MoveToProjectSelect({
   disabled: boolean;
   /** 返回 Promise 而不是 void:失败(超限/IPC 报错)要能在这里接住并显示——
       跟 submit/clear/deleteCurrent 那几个动作同一个模式,不做成静默失败 */
-  onMove: (root: string) => Promise<void>;
+  onMove: (scope: string) => Promise<void>;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -298,11 +300,11 @@ function MoveToProjectSelect({
       <Select
         value={value}
         disabled={disabled || busy}
-        onValueChange={(root) => {
+        onValueChange={(scope) => {
           setValue("");
           setBusy(true);
           setError(null);
-          onMove(root)
+          onMove(scope)
             .catch((e: unknown) => setError(bridgeErrorMessage(e)))
             .finally(() => setBusy(false));
         }}
@@ -312,8 +314,8 @@ function MoveToProjectSelect({
         </SelectTrigger>
         <SelectContent align="end">
           {projects.map((p) => (
-            <SelectItem key={p.root} value={p.root} className="text-[11px]">
-              {p.root}
+            <SelectItem key={p.id} value={p.id} className="text-[11px]">
+              {p.id}
             </SelectItem>
           ))}
         </SelectContent>
@@ -324,19 +326,19 @@ function MoveToProjectSelect({
 }
 
 /** 项目档区:哪个项目要靠一个下拉切——只看得见当前会话那份的话,历史项目的记忆
-    就成了看不见的黑洞。key={current.root} 强制切换项目时重挂载 MemoryField:
+    就成了看不见的黑洞。key={current.id} 强制切换项目时重挂载 MemoryField:
     不同项目是不同的草稿,切换该跟打开一个新字段一样干净,不带上一个的草稿。
-    sessionRoot 是当前会话的项目根:它可能还没有磁盘目录(见 MemorySettings 的
+    sessionScope 是当前会话的作用域键:它可能还没有磁盘目录(见 MemorySettings 的
     注释),这时候它照样出现在下拉里、且默认选中——新仓库里第一次写项目档就是
     从这儿开始的 */
 function ProjectMemoryCard({
   projects,
-  sessionRoot,
+  sessionScope,
   refreshProjects,
 }: {
   projects: ProjectMemory[];
   /** exactOptionalPropertyTypes：这里是"可能没有"而不是"可以不传"，显式带上 undefined */
-  sessionRoot: string | undefined;
+  sessionScope: string | undefined;
   refreshProjects: () => Promise<void>;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
@@ -356,14 +358,14 @@ function ProjectMemoryCard({
   // 没手动切过就默认停在当前会话那个项目上:打开设置页最想看的是"我现在这个仓库
   // 记了什么",不是按字母序排第一的那个。走到这里 projects 非空(上面的 length
   // 判断是证据),最后那个 ?? 兜底断言安全
-  const current = (projects.find((p) => p.root === (picked ?? sessionRoot)) ?? projects[0])!;
+  const current = (projects.find((p) => p.id === (picked ?? sessionScope)) ?? projects[0])!;
 
   const deleteCurrent = async () => {
-    if (!window.confirm(`删掉「${current.root}」的项目记忆？不可恢复。`)) return;
+    if (!window.confirm(`删掉「${current.id}」的项目记忆？不可恢复。`)) return;
     setDeleting(true);
     setError(null);
     try {
-      await window.otter.deleteProjectMemory(current.root);
+      await window.otter.deleteProjectMemory(current.id);
       await refreshProjects();
     } catch (e) {
       setError(bridgeErrorMessage(e));
@@ -376,14 +378,14 @@ function ProjectMemoryCard({
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 px-1">
         <span className="text-[13px] font-[650]">PROJECT · 项目档</span>
-        <Select value={current.root} onValueChange={setPicked}>
+        <Select value={current.id} onValueChange={setPicked}>
           <SelectTrigger size="sm" className="ml-auto max-w-60 min-w-32 bg-card text-[12.5px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="end">
             {projects.map((p) => (
-              <SelectItem key={p.root} value={p.root}>
-                {p.root}
+              <SelectItem key={p.id} value={p.id}>
+                {p.id}
               </SelectItem>
             ))}
           </SelectContent>
@@ -396,14 +398,14 @@ function ProjectMemoryCard({
       </div>
       {error !== null && <p className="px-1 text-[13px] text-destructive">{error}</p>}
       <MemoryField
-        key={current.root}
+        key={current.id}
         target="project"
-        label={`PROJECT · ${current.root}`}
+        label={`PROJECT · ${current.id}`}
         fetchText={() =>
-          window.otter.listProjectMemories().then((ps) => ps.find((p) => p.root === current.root)?.text ?? "")
+          window.otter.listProjectMemories().then((ps) => ps.find((p) => p.id === current.id)?.text ?? "")
         }
         onSave={async (text) => {
-          await window.otter.saveMemory("project", text, undefined, current.root);
+          await window.otter.saveMemory("project", text, undefined, current.id);
           await refreshProjects(); // 项目文本变了,外层的 projects 列表(picker/移到项目档下拉)也要跟着新
         }}
       />
@@ -515,11 +517,13 @@ export function MemorySettings() {
     void window.otter.memorySyncStatus().then(setSyncStatus);
   }, []);
 
-  /** 当前会话的项目根,取自它自己的 memory_loaded 事件(同 OttoThread 的 MemoryCard):
-      渲染层不认得 git,也不该自己去爬 .git——那是主进程算好落进事件里的事实 */
-  const sessionRoot = useChat(
-    (s) => s.events.find((e): e is MemoryLoadedEvent => e.type === "memory_loaded")?.projectRoot
-  );
+  /** 当前会话的作用域键,取自它自己的 memory_loaded 事件(同 OttoThread 的 MemoryCard):
+      渲染层不认得 git,也不该自己去爬 .git——那是主进程算好落进事件里的事实。
+      **旧日志没有 projectScope**(#886 之前),退回 projectRoot——那正是它当时的键 */
+  const sessionScope = useChat((s) => {
+    const e = s.events.find((x): x is MemoryLoadedEvent => x.type === "memory_loaded");
+    return e?.projectScope ?? e?.projectRoot;
+  });
 
   /** 磁盘上那份 + 当前会话的项目根（哪怕它还没有目录）。
       为什么必须补这一条:root.txt 只有真正写过项目档才会出现,而
@@ -529,11 +533,11 @@ export function MemorySettings() {
       它恰恰在最需要的场景(新仓库、项目约定还堵在超限的全局档里)不可用（ADR-0116）。
       合成的那条 text 是空串:它在磁盘上还不存在,保存一次就由主进程连 root.txt 一起造出来 */
   const projects = useMemo<ProjectMemory[]>(() => {
-    if (!sessionRoot || onDisk.some((p) => p.root === sessionRoot)) return onDisk;
-    return [...onDisk, { root: sessionRoot, text: "", pending: true as const }].sort((a, b) =>
-      a.root.localeCompare(b.root)
+    if (!sessionScope || onDisk.some((p) => p.id === sessionScope)) return onDisk;
+    return [...onDisk, { id: sessionScope, text: "", pending: true as const }].sort((a, b) =>
+      a.id.localeCompare(b.id)
     );
-  }, [onDisk, sessionRoot]);
+  }, [onDisk, sessionScope]);
 
   /** MEMORY 区某条「移到项目档」:先写项目档、再从全局删,顺序不许调换——中途失败
       宁可重复一条(用户看得见、能删),不可丢失。第二步不传 sessionId:主进程
@@ -543,11 +547,11 @@ export function MemorySettings() {
       报错、不自动淘汰、不截断,逼用户先腾地。检查放在两次写之前,是因为"项目档写完、
       发现超限、全局档没删"比"直接拒绝"更糟——用户会看到同一条记忆凭空出现在两档里,
       且不知道该信哪一份。调用方(MoveToProjectSelect)负责把这里抛出的错误显示出来 */
-  const moveToProject = async (entry: string, allEntries: string[], root: string) => {
-    const proj = projects.find((p) => p.root === root);
+  const moveToProject = async (entry: string, allEntries: string[], scope: string) => {
+    const proj = projects.find((p) => p.id === scope);
     const nextProject = proj?.text ? `${proj.text}${ENTRY_DELIMITER}${entry}` : entry;
     assertMemoryFits("project", nextProject); // 抛的话下面两次 saveMemory 都不会跑，见 memoryStore.ts 的注释
-    await window.otter.saveMemory("project", nextProject, undefined, root);
+    await window.otter.saveMemory("project", nextProject, undefined, scope);
     await window.otter.saveMemory("memory", formatEntries(allEntries.filter((x) => x !== entry)));
     await refreshProjects();
   };
@@ -587,7 +591,7 @@ export function MemorySettings() {
                   <MoveToProjectSelect
                     projects={projects}
                     disabled={disabled}
-                    onMove={(root) => moveToProject(entry, allEntries, root).then(refresh)}
+                    onMove={(scope) => moveToProject(entry, allEntries, scope).then(refresh)}
                   />
                 ),
               })}
@@ -598,7 +602,7 @@ export function MemorySettings() {
           fetchText={() => window.otter.getMemory().then((m) => m.user)}
           onSave={(text) => window.otter.saveMemory("user", text)}
         />
-        <ProjectMemoryCard projects={projects} sessionRoot={sessionRoot} refreshProjects={refreshProjects} />
+        <ProjectMemoryCard projects={projects} sessionScope={sessionScope} refreshProjects={refreshProjects} />
         <TopicMemoryCard />
         <SearchIndexCard />
       </section>
