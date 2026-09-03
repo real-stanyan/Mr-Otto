@@ -880,6 +880,12 @@ export interface ShellBridge {
     attachments?: OutgoingAttachment[],
     skillArgs?: string
   ): Promise<void>;
+  /** 原样重发日志里的一条用户消息（重试，issue #871）。正文与身份（origin /
+      backgroundTaskIds）由主进程从日志里那条事件上取——渲染层伪造不出「这条是
+      后台任务发的」（sendMessage 的 IPC 入口刻意不透传 background，见 index.ts），
+      所以重试一条回注消息也得走主进程读日志这条路，否则它会变成用户亲口说的。
+      附件仍由渲染层翻译好送来（lib/resendPayload.ts），与 sendMessage 同形 */
+  resendMessage(sessionId: string, seq: number, attachments?: OutgoingAttachment[]): Promise<void>;
   /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
       生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
   stopTurn(sessionId: string): Promise<void>;
@@ -1492,6 +1498,7 @@ export const CHANNELS = {
   pickAttachments: "otter:pickAttachments",
   attachmentDataUrl: "otter:attachmentDataUrl",
   stopTurn: "otter:stopTurn",
+  resendMessage: "otter:resendMessage",
   steerTurn: "otter:steerTurn",
   compact: "otter:compact",
   decideApproval: "otter:decideApproval",
