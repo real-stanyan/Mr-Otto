@@ -1800,6 +1800,11 @@ function AppSidebar() {
         <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
           {s.title ?? fallbackLabel}
         </span>
+        {/* 独立副本（ADR-0157）：组头只说「哪个项目」，副本身份下沉到行（#692，同岛的
+            ADR-0172）。只是一个记号，不写分支名——日志里那条会陈旧（ADR-0158） */}
+        {s.projectRoot !== null && (
+          <GitBranch className="w-3 h-3 shrink-0 text-muted-foreground/70" aria-label="独立副本" />
+        )}
         {/* 同步给谁了（issue #809）：只有分享过的会话才有这串，本地会话零占位 */}
         <SharedAvatars names={s.sharedWith} />
       </SidebarMenuButton>
@@ -2171,6 +2176,8 @@ function AppSidebar() {
                       )}
                     </button>
                   </SidebarGroupLabel>
+                  {/* g.workspace 是项目根而不是某只水獭的副本目录（projectOf）：
+                      新会话从项目根起、由主进程再开一份自己的副本 */}
                   <SidebarGroupAction
                     title={`在 ${g.label} 下开新会话`}
                     onClick={() => newSession(g.workspace)}

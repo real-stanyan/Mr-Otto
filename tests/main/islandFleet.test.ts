@@ -13,6 +13,7 @@ const sess = (id: string, over: Partial<{ title: string | null; workspace: strin
   archived: false, // 归档会话在 fleetSessions 缓存层就被滤掉,到不了投影
   sharedWith: [] as string[],
   topic: null as string | null,
+  projectRoot: null as string | null,
 });
 
 describe("orderedVisibleSessions", () => {
