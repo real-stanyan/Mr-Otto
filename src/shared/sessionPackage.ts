@@ -87,20 +87,69 @@ export interface SessionPackage {
     注意「剥」不等于「删改历史」——这是导出时刻的投影裁剪，源会话的 append-only
     日志一个字节不动。硬规则（append-only 是唯一事实来源）管的是源日志，不管
     发给别人的那份副本。 */
-export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set([
-  "request_envelope",
-  "memory_loaded",
-  "memory_user_edit",
-  "memory_nudge",
-  "checkpoint_created",
-  "workspace_restored",
-  "branch_checked_out",
-  "project_instructions",
-  "session_shared",
-  "session_topic_assigned",
-  "session_topic_set",
-  "route_changed",
-]);
+/** 每个事件类型都必须表态（#850）：`Record<type, verdict>` 而不是 denylist Set。
+    denylist 的失败模式是静默的——新事件类型没人想到要来这里，默认就是「可分享」，
+    #846 的两条 topic 事件正是这样漏掉、终审才补上的。改成穷尽表态之后，
+    新加一个事件类型而不来这里写 keep/strip，tsc 直接红（同 events.ts 的
+    KNOWN_EVENT_TYPES_MAP 那一招）。表态时的问题只有一个：这条事件说的是
+    「这段对话」，还是「发送方这台机器 / 这个人的私事」？后者 strip。 */
+export type PrivacyVerdict = "strip" | "keep";
+
+export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
+  // ── 对话本身：接收方要看的就是这些 ──
+  session_created: "keep",
+  user_message: "keep",
+  assistant_message: "keep",
+  approval_decision: "keep",
+  approval_request: "keep",
+  tool_result: "keep",
+  tool_execution_started: "keep",
+  tool_hook: "keep",
+  turn_ended: "keep",
+  model_changed: "keep",
+  model_usage: "keep",
+  session_archived: "keep",
+  session_unarchived: "keep",
+  session_renamed: "keep",
+  session_autotitled: "keep",
+  context_compacted: "keep",
+  micro_compacted: "keep",
+  skill_invoked: "keep",
+  skill_released: "keep",
+  image_described: "keep",
+  section_classified: "keep",
+  suggestions_generated: "keep",
+  subagent_spawned: "keep",
+  subagent_briefed: "keep",
+  background_task_started: "keep",
+  background_task_completed: "keep",
+  residue_baseline: "keep",
+  residue_detected: "keep",
+  residue_cleaned: "keep",
+  share_grant_note: "keep",
+  chat_message: "keep",
+  // ── 发送方的机器 / 这个人的私事：理由见上面那段注释 ──
+  request_envelope: "strip",
+  memory_loaded: "strip",
+  memory_user_edit: "strip",
+  memory_nudge: "strip",
+  checkpoint_created: "strip",
+  workspace_restored: "strip",
+  branch_checked_out: "strip",
+  project_instructions: "strip",
+  session_shared: "strip",
+  session_topic_assigned: "strip",
+  session_topic_set: "strip",
+  route_changed: "strip",
+};
+
+/** 从表态表投影出来的 strip 集合——消费方（applyPrivacyGate 与测试）只认这个集合，
+    表态表是它的唯一来源。 */
+export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set(
+  (Object.keys(PRIVACY_VERDICTS) as SessionEvent["type"][]).filter(
+    (t) => PRIVACY_VERDICTS[t] === "strip",
+  ),
+);
 
 /** 过隐私闸：返回 { kept, stripped }。
     kept = 可进包的事件（顺序保留），stripped = 被剥掉的事件类型名（去重、排序，
