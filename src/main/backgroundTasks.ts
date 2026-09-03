@@ -1,25 +1,33 @@
-// 后台任务完成回注（issue #389，dsh completion re-injection 对照）。
+// 后台任务完成回注（issue #389，dsh completion re-injection 对照；#871 改时机）。
 //
 // 形态：bash 的 run_in_background 起任务（world.execDetached，不绑 turn 信号），
 // 这里跟踪存活任务；完成时回调组装根（index.ts），由它落
-// background_task_completed 事件并决定回注时机——**以新 turn 回注，永不
-// mid-splice**：steer 那条"往跑着的 turn 里 append"的路技术上现成，但 turn
-// 中途改投影中段 = prefix cache 全废（ADR-0073 的教训，微压缩为此宁可丢结果）。
-// turn 在跑就攒着，收口（completed）后合并成一条注回。
+// background_task_completed 事件并决定回注时机（ADR-0205，修订 ADR-0088）：
+// **turn 在跑就当场尾部追加**（engine.appendBackground——纯 append，前缀字节
+// 不变，prefix cache 无损；0088 拿 ADR-0073 反对的是中段重写，不是这个形状），
+// 模型下一次采样就看到，同一 turn 里接着干；idle 才另开一轮；压缩中攒着。
+// 模型也能主动等：wait_task 工具挂在 wait() 上，等到的结果走 tool_result 回去，
+// 完成回调带 claimed:true，组装根只记账不再追加（一份结果不进两次上下文）。
 //
-// 模型可见的载体是回注 turn 的 user_message（"先落盘再喂模型"由 runTurn 的
-// 既有路径满足）；background_task_completed 事件是审计注记，模型不消费。
+// 模型可见的载体是 user_message(origin:"background")（"先落盘再喂模型"由
+// engine 的 append 满足）；background_task_completed 事件是审计注记，模型不消费。
 
 import type { ExecResult } from "../world/executionWorld.js";
 // BackgroundStarter 接口声明在工具层（tools/bash.ts）：工具不 import main 模块
 // （分层与 ExecutionWorld 同款方向——main 实现、工具只见接口），这里是实现方
 import type { BackgroundOutputSink, BackgroundStarter } from "../tools/bash.js";
+import type { BackgroundWaitOutcome, BackgroundWaiter } from "../tools/waitTask.js";
 
 export interface BackgroundCompletion {
   id: string;
   cmd: string;
   result: ExecResult;
+  /** true = 有 wait_task 正等着它，结果已经从那把工具的 tool_result 回给模型
+      （issue #871）。组装根据此只落审计事件、不再往对话里追加——同一份结果
+      进两次上下文是白烧 token，还会让模型以为跑了两遍 */
+  claimed: boolean;
 }
+
 
 /** 一段后台任务的实时输出（issue #772）。组装根接上它，按会话推给渲染层，
     面板据此把每个任务画成一个真终端而不是一个空盒子。
@@ -40,9 +48,18 @@ const TAIL_CHARS = 4_000;
     淘汰只挑已经死掉的那些——活着的任务正在写这份尾巴，砍它等于当场清屏 */
 const TAIL_TASKS = 32;
 
-export class BackgroundTasks implements BackgroundStarter {
+/** 留多少条已完成任务的结果给 wait() 补拿（issue #871）：模型可能在任务已经
+    跑完之后才来等它——结果多半已经追加进对话了，但从工具这条路再拿一次
+    比一句「没这个任务」诚实。与 TAIL_TASKS 同数同理 */
+const DONE_KEEP = 32;
+
+export class BackgroundTasks implements BackgroundStarter, BackgroundWaiter {
   private n = 0;
   private liveMap = new Map<string, string>();
+  /** 已完成任务的结果（插入序 = 淘汰序，见 DONE_KEEP） */
+  private done = new Map<string, BackgroundCompletion>();
+  /** 正在 wait() 的人：taskId ⇒ 唤醒函数。完成时全部叫醒，且完成回调带 claimed */
+  private waiters = new Map<string, Set<(c: BackgroundCompletion) => void>>();
   private cb: ((c: BackgroundCompletion) => void) | null = null;
   private startCb: ((s: { id: string; cmd: string }) => void) | null = null;
   private outCb: ((o: BackgroundOutput) => void) | null = null;
@@ -128,10 +145,73 @@ export class BackgroundTasks implements BackgroundStarter {
       .then((result) => {
         this.liveMap.delete(id);
         this.pruneTails();
-        this.cb?.({ id, cmd, result });
+        const waiting = this.waiters.get(id);
+        this.waiters.delete(id);
+        const completion: BackgroundCompletion = {
+          id,
+          cmd,
+          result,
+          claimed: waiting !== undefined && waiting.size > 0,
+        };
+        this.done.set(id, completion);
+        while (this.done.size > DONE_KEEP) {
+          const oldest = this.done.keys().next().value;
+          if (oldest === undefined) break;
+          this.done.delete(oldest);
+        }
+        // 先叫醒等的人再回调组装根：wait_task 的 tool_result 与审计事件谁先
+        // 落盘无所谓，但 claimed 的判定必须在回调之前定死
+        for (const wake of waiting ?? []) wake(completion);
+        this.cb?.(completion);
       });
     return id;
   }
+
+  /** 等一个后台任务出结果（issue #871，Claude Code TaskOutput 对照）。
+      已完成的直接回（done 表里还留着的话）；活着的挂起到完成 / 超时 / 中断。
+      中断 = 用户按了停止：reject 成 AbortError，让 turn 走 aborted 那条路收口，
+      不能把「用户叫停」伪装成「等超时了」的正常结局 */
+  wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<BackgroundWaitOutcome> {
+    const finished = this.done.get(id);
+    if (finished) return Promise.resolve(doneOutcome(finished));
+    const cmd = this.liveMap.get(id);
+    if (cmd === undefined) return Promise.resolve({ kind: "unknown", id });
+    if (signal?.aborted) return Promise.reject(abortError());
+    return new Promise<BackgroundWaitOutcome>((resolve, reject) => {
+      const set = this.waiters.get(id) ?? new Set();
+      this.waiters.set(id, set);
+      const cleanup = () => {
+        set.delete(wake);
+        if (set.size === 0) this.waiters.delete(id);
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const wake = (c: BackgroundCompletion) => {
+        cleanup();
+        resolve(doneOutcome(c));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve({ kind: "timeout", id, cmd, tail: this.tailOf(id) });
+      }, timeoutMs);
+      const onAbort = () => {
+        cleanup();
+        reject(abortError());
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      set.add(wake);
+    });
+  }
+}
+
+function doneOutcome(c: BackgroundCompletion): BackgroundWaitOutcome {
+  return { kind: "done", id: c.id, cmd: c.cmd, result: c.result };
+}
+
+function abortError(): Error {
+  const err = new Error("等待后台任务被中断");
+  err.name = "AbortError";
+  return err;
 }
 
 /** 回注 turn 的 user_message 文案。中间截断同 bash 的三层截断精神：

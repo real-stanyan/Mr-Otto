@@ -2926,10 +2926,11 @@ export const useChat = create<ChatState>((set, get) => ({
     const attachments = outgoingFrom(event); // 事件形状 → 线上形状,见 lib/resendPayload.ts
     set({ error: null });
     try {
-      await window.otter.sendMessage(
+      // 报 seq 不报正文（issue #871）：正文和「这条是不是后台任务发的」都由主进程
+      // 从日志上取——origin 走 sendMessage 会丢，回注消息重试后就成了用户亲口说的
+      await window.otter.resendMessage(
         sessionId,
-        event.content,
-        undefined,
+        event.seq,
         attachments.length > 0 ? attachments : undefined
       );
     } catch (e) {
