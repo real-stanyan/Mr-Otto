@@ -1,12 +1,17 @@
 // Supabase PostgREST 的查询串与行解析、写入体——全是纯字符串/对象，跑在根门禁里；
 // 真正发请求的是 worker.ts。列名与 supabase/migrations/0017_subscriptions.sql 一一对应。
 //
-// 为什么加购消耗不用 PostgREST 的聚合函数（`select=sum:cost_micro.sum()`）：Supabase 默认
-// 把聚合关掉（db_aggregates_enabled=false），那条查询线上会直接 400，而它是 DO 冷启动
-// 重建的三段之一——重建静默失败 = 用户睡一觉醒来加购余额回满。拉原始行客户端求和，
-// 代价是加购用得多的用户冷启动多拉几百行，可接受。
+// 为什么冷启动重建不用 PostgREST 的聚合函数（`select=sum:cost_micro.sum()`）：Supabase 默认
+// 把聚合关掉（db_aggregates_enabled=false），那条查询线上会直接 400，而重建静默失败 =
+// 用户睡一觉醒来加购余额回满。拉原始行、客户端重放（quota.ts 的 rebuild）。
+//
+// 重建的行走 `pageAll` 分页（#858）：PostgREST 自己有一个 max-rows 上限，单次 GET 钉一个
+// limit 的话"被截断"和"本来就这么多"长得一模一样——而截断的后果是重建出来的账**少扣**
+// （events 少几行 = 窗口用量偏低）或**多算余额**（grants 少几行 = 加购余额偏高），没有报错，
+// 只有账不对。分页到上限（REBUILD_MAX_PAGES）**抛错**而不是静默收口：那一刻算不出额度就
+// 该 503，不该报一个错的数。真到那个量级的用户，重建该换成物化的余额列。
 
-import type { PlanSnapshot, RebuildInput, WindowState } from "./quota.js";
+import type { PlanSnapshot, RebuildEvent, RebuildGrant, WindowState } from "./quota.js";
 import type { RouteRow, SettleMeta } from "./llmGateway.js";
 import type { BillingAction } from "./billing.js";
 import type { BillingMe } from "../../../src/shared/billing.js";
@@ -17,6 +22,11 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 
 export interface PlanRow {
   id: string; week_limit_micro: number; window5h_limit_micro: number; addon_unit_micro: number; stripe_price_id: string;
+  /** 月费（美元分）。/billing/v1/me 要把它下发给客户端——价目卡渲染这个数，改价不发版 */
+  price_usd_cents: number;
+  /** 多模态能力门禁（{"image":false,"video":false}）。读不到一律按关——
+      给没买的能力开门是漏钱，关门只是少一颗按钮 */
+  capabilities: { image: boolean; video: boolean };
 }
 export interface SubscriptionRow {
   user_id: string; plan_id: string; status: "active" | "past_due" | "canceled";
@@ -60,7 +70,7 @@ export function parseSubscriptionOwner(v: unknown): { userId: string; lastEventA
 }
 
 export function plansQuery(): string {
-  return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id";
+  return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id,price_usd_cents,capabilities";
 }
 export function parsePlanRows(v: unknown): PlanRow[] {
   if (!Array.isArray(v)) return [];
@@ -69,7 +79,12 @@ export function parsePlanRows(v: unknown): PlanRow[] {
     if (!isObj(r)) continue;
     const id = str(r.id), w = num(r.week_limit_micro), h = num(r.window5h_limit_micro), a = num(r.addon_unit_micro);
     if (id === null || w === null || h === null || a === null) continue;
-    out.push({ id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a, stripe_price_id: str(r.stripe_price_id) ?? "" });
+    const caps = isObj(r.capabilities) ? r.capabilities : {};
+    out.push({
+      id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a,
+      stripe_price_id: str(r.stripe_price_id) ?? "", price_usd_cents: num(r.price_usd_cents) ?? 0,
+      capabilities: { image: caps.image === true, video: caps.video === true },
+    });
   }
   return out;
 }
@@ -108,55 +123,81 @@ export function parseRouteRows(v: unknown): RouteRow[] {
   return out;
 }
 
-export function usageEventInsert(requestId: string, meta: SettleMeta, chargedTo: "window" | "addon"): Record<string, unknown> {
+export function usageEventInsert(
+  requestId: string, meta: SettleMeta, chargedTo: "window" | "addon", windowOpenAtMs: number | null
+): Record<string, unknown> {
   return {
     user_id: meta.caller.uid, request_id: requestId, source: meta.caller.source,
     workspace_id: meta.caller.workspaceId, session_id: meta.caller.sessionId,
     logical_model: meta.route.logicalModel, route_id: meta.route.id,
     prompt_tokens: meta.usage.promptTokens, cached_tokens: meta.usage.cachedTokens, completion_tokens: meta.usage.completionTokens,
     cost_micro: meta.costMicro, charged_to: chargedTo,
+    // #863：这笔成本落进了哪扇 5h 窗。窗是跨周连续的，重建靠这个锚而不是靠事件链回放
+    window_open_at: windowOpenAtMs === null ? null : new Date(windowOpenAtMs).toISOString(),
   };
 }
 
-export function rebuildQueries(uid: string, sinceMs: number): { events: string; grants: string; addonConsumed: string } {
-  const u = encodeURIComponent(uid);
-  const since = new Date(sinceMs).toISOString();
-  // 三条都显式钉 limit：PostgREST 自己也有一个 max-rows 上限，不写的话"被截断"和
-  // "本来就这么多"长得一模一样——而截断的后果是重建出来的账**少扣**（events 少几行 =
-  // 窗口用量偏低）或**多算余额**（grants/addonConsumed 少几行 = 加购余额偏高）。
-  // 谁被截断都没有报错，只有账不对。10000 行以上要分页，那是后续切片的事
-  // （真到那个量级的用户，重建本身也该换成物化的余额列）。
-  // events 另外显式按 created_at 升序：rebuild 要按时间重放固定窗语义（ADR-0203 决定 5），
-  // 顺序不是可选项；不写的话 PostgREST 的返回顺序没有保证，而"截断"若发生在
-  // 无序结果上，被丢掉的是随机的一批行，不是最老的那批。
-  return {
-    events: `usage_event?user_id=eq.${u}&created_at=gte.${since}&select=created_at,cost_micro,charged_to&order=created_at.asc&limit=10000`,
-    grants: `credit_grant?user_id=eq.${u}&expires_at=gt.${new Date().toISOString()}&select=micro_usd,expires_at&limit=1000`,
-    // 不用聚合（见文件头）：拉行，parseRebuildRows 求和
-    addonConsumed: `usage_event?user_id=eq.${u}&charged_to=eq.addon&select=cost_micro&limit=10000`,
-  };
+/** 一个人的**全部** grant（含已过期）：重放要过期的那几笔来吸收自己那份历史消费（#863）。
+    按 created_at,id 升序——分页要一个稳定的全序，同一毫秒两行光靠 created_at 会在页边界上重复或漏掉 */
+export function grantsQuery(uid: string): string {
+  return `credit_grant?user_id=eq.${encodeURIComponent(uid)}&select=micro_usd,expires_at,created_at,stripe_payment_intent_id&order=created_at.asc,id.asc`;
 }
-export function parseRebuildRows(events: unknown, grants: unknown, addonConsumed: unknown): RebuildInput {
-  const ev: RebuildInput["events"] = [];
-  if (Array.isArray(events)) for (const r of events) {
+/** 某一类（window / addon）自 sinceMs 起的 usage_event。起点由 quota.ts 的
+    rebuildWindowSince / addonSinceOf 算，这里只负责拼串 */
+export function usageEventsQuery(uid: string, chargedTo: "window" | "addon", sinceMs: number): string {
+  const since = new Date(sinceMs).toISOString();
+  return `usage_event?user_id=eq.${encodeURIComponent(uid)}&charged_to=eq.${chargedTo}&created_at=gte.${since}&select=created_at,cost_micro,charged_to,window_open_at&order=created_at.asc,id.asc`;
+}
+
+export const REBUILD_PAGE_SIZE = 1000;
+export const REBUILD_MAX_PAGES = 100;
+
+export function pagedQuery(query: string, limit: number, offset: number): string {
+  return `${query}&limit=${limit}&offset=${offset}`;
+}
+
+/** 按 limit/offset 把一条查询翻到底。不足一页 = 最后一页。超过 maxPages **抛**——
+    静默截断正是 #858 要修的病；这一刻算不出额度就让调用方 503，别报一个错的数 */
+export async function pageAll(
+  get: (query: string) => Promise<unknown>,
+  query: string,
+  opts: { pageSize?: number; maxPages?: number } = {}
+): Promise<unknown[]> {
+  const pageSize = opts.pageSize ?? REBUILD_PAGE_SIZE;
+  const maxPages = opts.maxPages ?? REBUILD_MAX_PAGES;
+  const out: unknown[] = [];
+  for (let page = 0; ; page++) {
+    if (page >= maxPages) {
+      throw new Error(`rebuild ${query.split("?")[0]} 超过 ${maxPages * pageSize} 行，拒绝静默截断`);
+    }
+    const rows = await get(pagedQuery(query, pageSize, page * pageSize));
+    if (!Array.isArray(rows)) throw new Error(`rebuild ${query.split("?")[0]} 回的不是数组`);
+    out.push(...rows);
+    if (rows.length < pageSize) return out;
+  }
+}
+
+export function parseGrantRows(v: unknown): RebuildGrant[] {
+  const out: RebuildGrant[] = [];
+  if (Array.isArray(v)) for (const r of v) {
+    if (!isObj(r)) continue;
+    const m = num(r.micro_usd), e = str(r.expires_at), c = str(r.created_at);
+    if (m === null || !e || !c) continue;
+    const pid = str(r.stripe_payment_intent_id);
+    out.push({ micro: m, expiresAt: Date.parse(e), createdAt: Date.parse(c), ...(pid ? { paymentIntentId: pid } : {}) });
+  }
+  return out;
+}
+export function parseUsageEventRows(v: unknown): RebuildEvent[] {
+  const out: RebuildEvent[] = [];
+  if (Array.isArray(v)) for (const r of v) {
     if (!isObj(r)) continue;
     const at = str(r.created_at), c = num(r.cost_micro);
     if (!at || c === null || (r.charged_to !== "window" && r.charged_to !== "addon")) continue;
-    ev.push({ at: Date.parse(at), costMicro: c, chargedTo: r.charged_to });
+    const w = str(r.window_open_at);
+    out.push({ at: Date.parse(at), costMicro: c, chargedTo: r.charged_to, windowOpenAt: w ? Date.parse(w) : null });
   }
-  const gr: RebuildInput["grants"] = [];
-  if (Array.isArray(grants)) for (const r of grants) {
-    if (!isObj(r)) continue;
-    const m = num(r.micro_usd), e = str(r.expires_at);
-    if (m === null || !e) continue;
-    gr.push({ micro: m, expiresAt: Date.parse(e) });
-  }
-  let consumed = 0;
-  if (Array.isArray(addonConsumed)) for (const r of addonConsumed) {
-    if (!isObj(r)) continue;
-    consumed += num(r.cost_micro) ?? 0;
-  }
-  return { events: ev, grants: gr, addonConsumedMicro: consumed };
+  return out;
 }
 
 export function subscriptionUpsertBody(a: Extract<BillingAction, { kind: "subscription_upsert" }>, planId: string): Record<string, unknown> {
@@ -194,11 +235,17 @@ export function meFromParts(
   sub: SubscriptionRow | null,
   windows: { h5: WindowState; week: WindowState } | null,
   addon: { remainingMicro: number; expiresAt: number | null },
-  models: string[]
+  models: string[],
+  plans: PlanRow[]
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
     plan, status: sub ? sub.status : "none",
+    // 价目跟着 /me 走（ADR-0203 偏差 (a)）：plan 表是事实，渲染层不再抄一份写死的价。
+    // addon 行排除：它是一次性加购的单价，不是订阅档位，不该出现在价目卡里
+    plans: plans
+      .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
+      .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
     addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models,
   };

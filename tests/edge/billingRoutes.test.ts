@@ -20,7 +20,7 @@ const U7 = "77777777-7777-4777-8777-777777777777";
 const U3 = "33333333-3333-4333-8333-333333333333";
 const U2 = "22222222-2222-4222-8222-222222222222";
 
-const me: BillingMe = { plan: "lite", status: "active", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [] };
+const me: BillingMe = { plan: "lite", status: "active", plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false } }], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [] };
 
 function harness() {
   const llmCalls: Caller[] = [];

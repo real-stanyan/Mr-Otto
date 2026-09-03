@@ -106,7 +106,9 @@ SUPABASE_JWT_SECRET='...' npm --prefix services/edge run check:relay
 npm --prefix services/edge run check:relay http://127.0.0.1:8799
 ```
 
-生产地址是 `https://mrotto-edge.dryrun-agency.workers.dev`（脚本的默认值）。
+生产地址是 `https://edge.mrotto.agency`（自有域名，客户端编译期常量就指它）；
+同一个 worker 还有第二个门牌 `https://edge.mrotto.workers.dev`（存量旧客户端连的是它），
+两个名字背后是**同一份部署**（wrangler.jsonc 的 routes + workers_dev），不是两套服务。
 
 拿 `.dev.vars` 里的假 secret 打生产会被脚本**直接拦掉**：那样跑，中继那些断言会
 全部 401，看起来像"服务坏了"，实际是签的 token 对不上——这是这个脚本最容易
@@ -142,12 +144,17 @@ npm --prefix services/edge run check:relay http://127.0.0.1:8799
 估算 settle，不 release —— 内容已经送出去、上游已经收了我们的钱，release 等于把这笔
 成本送掉，而「收到内容之后断线」是客户端随时能做的事。`release`（不记账）只剩三条
 真的没花钱的路：上游非 2xx / 连不上、一个字节都没转发就断、hold 之后花钱之前自己炸了。
+非流式 200 但正文里挑不出 usage 也按预扣结算（#855）——200 就是收了钱，规则与流式同一条。
 
 **Quota DO 存的是投影，不是事实**：钱的唯一事实是 Supabase 的 `usage_event` 表
 （append-only，见 `0017_subscriptions.sql`）。DO 冷启动没有 state 时**从事实重建**
 ——不重建的话，DO 睡一觉醒来额度就全满了。重建包在 `blockConcurrencyWhile` 里：
 DO 单线程只保证"一次 fetch 内没人插队"，`await` 之间照样会切出去，两个并发的首请求
 会各自重建、后写的那份抹掉前一个的 hold。
+
+重建的三段（grant / window 事件 / addon 事件）都**分页翻到底**（#858），翻到上限抛错而不是
+静默截断；5h 窗按 `usage_event.window_open_at` 那个锚算、不按事件链猜，加购按 grant 逐笔重放、
+过期的那几笔吸收自己的历史消费（#863，ADR-0203 决定 19）。
 
 **重建失败既不落盘也不当成零**：这一刻回 `503`（网关译成 `503 upstream`
 「额度服务暂时不可用」）。返回一份空投影再落盘的话，一次 Supabase 抖动就等于
@@ -185,6 +192,10 @@ npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…
 #    ①b  supabase/seed/0017_plans_routes.sql          灌档位 + 首批模型路由
 #    ①c  在 plan 表手填 stripe_price_id —— 四行都要填：lite / pro / max / addon
 #        （seed 故意不刷这一列，重跑 seed 不会把你填的 price 清回空串）
+#    ①d  supabase/migrations/0018_usage_event_window_anchor.sql   usage_event 加 window_open_at
+#        （#863；不跑的症状：settle 落库 400「column window_open_at does not exist」，
+#        投影已扣、事实没落——冷启动重建会少算这些笔）
+#    验：supabase/checks/0017_*.check.sql 与 0018_*.check.sql 每行 PASS
 #
 #    没跑 ①b 的症状：每次 chat 400 unknown_model，/billing/v1/me 的 models 为空，
 #    webhook 全部回 ignore（price 对不上任何档位）。三样都不报错，只是什么都不工作。

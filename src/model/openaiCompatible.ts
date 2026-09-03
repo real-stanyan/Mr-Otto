@@ -428,9 +428,18 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       const msg = data.choices[0]?.message;
       if (!msg) throw new Error("model API returned no choices");
 
+      // #857：本次花了多少 credit。只在 hosted + 非流式才有这个头（流式的 settle
+      // 发生在响应发出之后，那一刻 edge 才知道数）；direct 路压根没有，缺席 ≠ 0
+      const costHeader = res.headers?.get("x-otto-cost-micro") ?? null;
+      const creditCostMicro =
+        endpoint.route === "hosted" && costHeader !== null && Number.isFinite(Number(costHeader))
+          ? Number(costHeader)
+          : undefined;
+
       return {
         content: msg.content ?? "",
         route: endpoint.route ?? "direct",
+        ...(creditCostMicro !== undefined ? { creditCostMicro } : {}),
         ...((msg.reasoning_content ?? msg.reasoning)
           ? { reasoning: msg.reasoning_content ?? msg.reasoning ?? "" }
           : {}),

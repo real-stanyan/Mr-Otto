@@ -17,16 +17,15 @@ import {
 } from "./px.js";
 import { createLlmGateway, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
-  WEEK_MS, addonExpiresAt, addonMicro, hold as quotaHold, rebuild, release as quotaRelease,
+  addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
   type PlanSnapshot, type QuotaState, type WindowState,
 } from "./quota.js";
-import { actionFromEvent, checkoutParams, portalParams, verifyStripeSignature } from "./billing.js";
+import { checkoutParams, portalParams } from "./billing.js";
+import { handleWebhookEvent } from "./webhookHandler.js";
 import {
-  grantByPaymentIntentQuery, grantInsertBody, meFromParts, parseGrantRow, parsePlanRows, parseRebuildRows,
-  parseRouteRows, parseSubscriptionOwner,
-  parseSubscriptionRows, planIdForPrice, planSnapshotOf, plansQuery, rebuildQueries, routesQuery,
-  subscriptionByStripeIdQuery, subscriptionQuery, subscriptionUpsertBody, usageEventInsert,
+  grantsQuery, meFromParts, pageAll, parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionRows,
+  parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
@@ -396,13 +395,28 @@ export class Quota extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const again = await this.ctx.storage.get<QuotaState>("state");
       if (again) return again;
-      const since = plan ? plan.periodStartMs : Date.now() - WEEK_MS;
-      const q = rebuildQueries(this.uid(), since);
       const db = supa(this.env);
+      const uid = this.uid();
+      const now = Date.now();
       try {
-        const [ev, gr, ac] = await Promise.all([db.get(q.events), db.get(q.grants), db.get(q.addonConsumed)]);
-        const rebuilt = rebuild(parseRebuildRows(ev, gr, ac), plan, Date.now());
-        await this.ctx.storage.put("state", rebuilt);
+        // #858：三条都分页翻到底，翻到上限抛错（→ 503），不静默截断。
+        // #863：grant 先拉（全部，含过期），addon 事件的起点由它算——没有活着的 grant 就一行都不拉；
+        // window 事件从「周段起点 / now−5h」较早者起拉，跨周边界还开着的 5h 窗才不会被截半。
+        const grants = parseGrantRows(await pageAll(db.get, grantsQuery(uid)));
+        const addonSince = addonSinceOf(grants, now);
+        const [win, add] = await Promise.all([
+          plan ? pageAll(db.get, usageEventsQuery(uid, "window", rebuildWindowSince(plan, now))) : Promise.resolve([]),
+          addonSince === null ? Promise.resolve([]) : pageAll(db.get, usageEventsQuery(uid, "addon", addonSince)),
+        ]);
+        const rebuilt = rebuild({ events: [...parseUsageEventRows(win), ...parseUsageEventRows(add)], grants }, plan, now);
+        // #862：把此刻活着的 grant 的幂等键并进 grantSeen。竞态是「webhook 插行 → 冷 DO 重建把
+        // 这行算进来 → webhook 通知 addonGranted」：通知到达时 storage 已有 state，不并进来
+        // 就会 append 第二份。blockConcurrencyWhile 保证通知要么排在重建前（冷、只留记号）、
+        // 要么排在重建后（记号已在 → dup），没有第三种交错
+        const seen = (await this.ctx.storage.get<string[]>("grantSeen")) ?? [];
+        const liveIds = grants.filter((g) => g.expiresAt > now && g.paymentIntentId).map((g) => g.paymentIntentId as string);
+        const nextSeen = [...new Set([...seen, ...liveIds])].slice(-GRANT_SEEN_MAX);
+        await this.ctx.storage.put({ state: rebuilt, grantSeen: nextSeen });
         return rebuilt;
       } catch (err) {
         // C1：重建失败**既不落盘也不返回空投影**，而是抛 —— 调用方回 503。
@@ -410,7 +424,7 @@ export class Quota extends DurableObject<Env> {
         // 直接 put 进 storage：一次 Supabase 抖动就把窗口用量清零、把买过的加购
         // 余额抹掉，而且从此不会再重建（storage 里有 state 了）。少扣对用户有利
         // 那条只适用于"一笔账没落"，不适用于"整份余额归零"
-        console.error(`quota rebuild 失败（${this.uid()}）：${err instanceof Error ? err.message : String(err)}`);
+        console.error(`quota rebuild 失败（${uid}）：${err instanceof Error ? err.message : String(err)}`);
         throw new QuotaUnavailable(err instanceof Error ? err.message : String(err));
       }
     });
@@ -453,7 +467,9 @@ export class Quota extends DurableObject<Env> {
       const r = quotaSettle(await this.state(plan), String(b.requestId), Number(b.costMicro), now, plan);
       if (!r) return json({ ok: false, reason: "no_hold" }); // 已结算/已释放：幂等，调用方据此不写 usage_event
       await this.ctx.storage.put("state", r.state);
-      return json({ ok: true, chargedTo: r.hold.chargedTo });
+      // #863：这笔成本落进了哪扇 5h 窗——只有真有钱进窗时才带（addon 没溢出就是 null），
+      // usage_event 记下它，冷启动重建按锚算窗，不再按事件链猜
+      return json({ ok: true, chargedTo: r.hold.chargedTo, windowOpenAt: r.windowMicro > 0 ? r.state.open5hAt : null });
     }
 
     if (op === "release") {
@@ -555,8 +571,9 @@ function quotaPort(env: Env): QuotaPort {
       const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro });
       if (r.ok !== true) return; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
+      const windowOpenAt = typeof r.windowOpenAt === "number" && Number.isFinite(r.windowOpenAt) ? r.windowOpenAt : null;
       try {
-        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), {
+        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo, windowOpenAt), {
           ignoreDuplicates: true, onConflict: "request_id", // 主键是 identity，幂等键是这一列（I4）
         });
       } catch (err) {
@@ -610,8 +627,9 @@ function billingPort(env: Env): BillingPort {
         windows: { h5: WindowState; week: WindowState } | null;
         addon: { remainingMicro: number; expiresAt: number | null };
       }>(env, uid, "view", {});
-      const models = [...new Set((await routesOf(env)).map((x) => x.logicalModel))];
-      return meFromParts(v.sub, v.windows, v.addon, models);
+      const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
+      const models = [...new Set(routes.map((x) => x.logicalModel))];
+      return meFromParts(v.sub, v.windows, v.addon, models, plans);
     },
 
     async checkout(uid, target: CheckoutTarget, origin) {
@@ -654,69 +672,11 @@ function billingPort(env: Env): BillingPort {
       } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
     },
 
-    async webhook(payload, signatureHeader) {
-      const ok = await verifyStripeSignature(payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000));
-      if (!ok) return { status: 400, body: { error: { message: "签名不对", type: "otto_edge", code: "bad_signature" } } };
-      let event: unknown;
-      try { event = JSON.parse(payload); } catch { return { status: 400, body: { error: { message: "不是 JSON", type: "otto_edge", code: "bad_request" } } }; }
-      const a = actionFromEvent(event);
-      try {
-        if (a.kind === "subscription_upsert") {
-          const planId = planIdForPrice(parsePlanRows(await db.get(plansQuery())), a.priceId);
-          if (!planId) return { status: 200, body: { ignored: `unknown price ${a.priceId}` } };
-          // 乱序闸：Stripe 不保证到达顺序、重投窗口 3 天。比现有行的 last_event_at ——
-          // 没这一比，一条晚到的 created 事件能把 updated 写好的 active 覆盖回旧状态。
-          // 行不存在 / 那一列读不到（空串 → NaN）时比较恒为 false = 放行。
-          // M7：`event.created` 只到**秒**，所以同一秒内的两条事件分不出先后，
-          // 落成后写者赢（判据是 `<` 不是 `<=`）。Stripe 那边同秒的两条订阅事件本就罕见，
-          // 真要分得清得改成拿 Stripe 的对象重查一次当前状态，那是另一个量级的代价
-          const existing = parseSubscriptionRows(await db.get(subscriptionQuery(a.uid)));
-          if (existing && a.eventCreated < Date.parse(existing.last_event_at)) {
-            return { status: 200, body: { ignored: "stale event" } };
-          }
-          await db.upsert("subscription", subscriptionUpsertBody(a, planId));
-          await quotaCall(env, a.uid, "planChanged", {});
-        } else if (a.kind === "subscription_status") {
-          const owner = parseSubscriptionOwner(await db.get(subscriptionByStripeIdQuery(a.subscriptionId)));
-          if (!owner) return { status: 200, body: { ignored: `unknown subscription ${a.subscriptionId}` } };
-          if (a.eventCreated < Date.parse(owner.lastEventAt)) return { status: 200, body: { ignored: "stale event" } };
-          await db.patch(`subscription?user_id=eq.${encodeURIComponent(owner.userId)}`, {
-            status: a.status, last_event_at: new Date(a.eventCreated).toISOString(), updated_at: new Date().toISOString(),
-          });
-          await quotaCall(env, owner.userId, "planChanged", {});
-        } else if (a.kind === "grant") {
-          const unit = parsePlanRows(await db.get(plansQuery())).find((p) => p.id === "addon")?.addon_unit_micro ?? 0;
-          if (unit <= 0) return { status: 200, body: { ignored: "addon unit not configured" } };
-          // 幂等键是 payment_intent（0017 里那列 unique）。先查一次，是为了知道该
-          // 「插新的」还是「用已有那笔」——**不是为了在重投时提前返回**（I5）：
-          // 「行插进去了、通知 DO 那步炸了」以前是个治不好的半截状态（重投被这里挡掉，
-          // 热 DO 又永远等不到这笔额度）。现在照样往下通知，去重挪进 DO 按
-          // payment_intent 做，Stripe 的重试因此能把它治好
-          const existing = parseGrantRow(await db.get(grantByPaymentIntentQuery(a.paymentIntentId)));
-          let microUsd: number;
-          let expiresAt: number;
-          if (existing) {
-            // 用行里存着的那份，不是此刻重算的：单位额可能已经改过
-            microUsd = existing.microUsd;
-            expiresAt = Date.parse(existing.expiresAt);
-          } else {
-            const row = grantInsertBody(a, unit, Date.now());
-            await db.insert("credit_grant", row, {
-              ignoreDuplicates: true, onConflict: "stripe_payment_intent_id", // 同上，不是主键（I4）
-            });
-            microUsd = Number(row.micro_usd);
-            expiresAt = Date.parse(row.expires_at as string);
-          }
-          await quotaCall(env, a.uid, "addonGranted", { micro: microUsd, expiresAt, paymentIntentId: a.paymentIntentId });
-          return { status: 200, body: { ok: true, kind: a.kind, duplicate: existing !== null } };
-        }
-        return { status: 200, body: { ok: true, kind: a.kind } };
-      } catch (err) {
-        // 5xx 让 Stripe 按退避重投（它重试三天）。这里**不吞** —— 吞掉等于
-        // 用户付了钱而我们这边什么都没发生，且没有第二次机会
-        return { status: 500, body: { error: { message: err instanceof Error ? err.message : String(err), type: "otto_edge", code: "upstream" } } };
-      }
-    },
+    // 编排抽在 webhookHandler.ts（#854）：三条钱路（乱序闸 / 加购去重+通知 DO /
+    // planChanged）是纯函数可测的，这里只剩把真实的 Supabase/Stripe 递进去
+    webhook: (payload, signatureHeader) =>
+      handleWebhookEvent({ db, quotaCall: (uid, op, body) => quotaCall(env, uid, op, body) },
+        payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000)),
   };
 }
 

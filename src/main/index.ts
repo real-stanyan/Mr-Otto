@@ -3855,8 +3855,8 @@ void app.whenReady().then(() => {
       // 微压缩同理：只在正常收口后跑；自己内部读设置，关着就立刻返回
       enqueueMicroCompact(sessionId);
     }
-    // 后台回注排空（issue #389）：turn 在跑时完成的后台任务攒在 pendingBg，
-    // 正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
+    // 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）
+    // 的后台任务攒在 pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
     // 这时自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；
     // 攒着的结果不丢，下一次 turn 正常收口或新完成事件到来时再排。
     // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
@@ -3878,14 +3878,21 @@ void app.whenReady().then(() => {
     }
   }
 
-  /** 后台任务完成（issue #389）：落审计事件，再按 turn 状态决定立即回注还是攒着。
-      回注 = 以新 turn 走 handleSendMessage 的唯一入口——不 mid-splice（ADR-0073）。
-      模型可见的载体是回注 turn 的 user_message（先落盘再喂模型由 runTurn 满足），
-      该事件带 origin:"background"（issue #428）——UI 据此把气泡和人打的字分开，
+  /** 后台任务完成（issue #389；#871 改时机，ADR-0205）：落审计事件，再按 turn
+      状态决定结果怎么进对话——三条路，按优先级：
+      ① 有 wait_task 正等着（claimed）：结果已从那把工具的 tool_result 回给模型，
+         这里只记账。再追加 = 同一份结果进两次上下文；
+      ② turn 在跑：engine.appendBackground 当场尾部追加（纯 append，前缀不变），
+         模型下一次采样就看到，同一 turn 里接着干——这是 Claude Code 的
+         task-notification 形态，也是「一件事别拆成好几段会话」的那一半；
+      ③ idle：另开一轮（handleSendMessage）——模型已经交卷，只能把它叫回来。
+      ②失败（压缩进行中）退回攒着（pendingBg），收口后合并成一条另开一轮。
+      载体统一是 user_message(origin:"background")（issue #428）——UI 据此换皮，
       模型投影不读这个字段 */
   function handleBackgroundDone(sessionId: string, c: BackgroundCompletion): void {
     // 会话已被 purge：结果无处可去（enqueueMicroCompact 同款守卫）
-    if (!agents.has(sessionId)) return;
+    const agent = agents.get(sessionId);
+    if (!agent) return;
     const full = store.append({
       sessionId,
       ts: Date.now(),
@@ -3896,8 +3903,10 @@ void app.whenReady().then(() => {
       exitCode: c.result.exitCode,
     });
     send(CHANNELS.event, full);
+    if (c.claimed) return;
     const text = formatCompletion(c);
     if (runningSessions.has(sessionId)) {
+      if (agent.engine.appendBackground(text, [c.id])) return;
       const queued = pendingBg.get(sessionId) ?? [];
       queued.push({ taskId: c.id, text });
       pendingBg.set(sessionId, queued);
@@ -3976,6 +3985,21 @@ void app.whenReady().then(() => {
       attachments?: OutgoingAttachment[],
       skillArgs?: string
     ) => handleSendMessage(sessionId, text, skill, attachments, skillArgs)
+  );
+
+  // 重试（issue #871）：正文与身份都从日志里那条事件上取。渲染层只报 seq——
+  // origin:"background" 只能来自主进程自己（上面那个 handler 刻意不透传），
+  // 重试一条回注消息若走 sendMessage 就会丢掉这个标，变成用户亲口说的
+  ipcMain.handle(
+    CHANNELS.resendMessage,
+    (_e, sessionId: string, seq: number, attachments?: OutgoingAttachment[]) => {
+      if (!Number.isInteger(seq) || seq < 0) throw new Error("重发的消息 seq 非法");
+      const ev = store.load(sessionId, { afterSeq: seq - 1, untilSeq: seq }).find((e) => e.seq === seq);
+      if (!ev || ev.type !== "user_message") throw new Error("要重发的那条不是用户消息");
+      const background =
+        ev.origin === "background" ? { taskIds: ev.backgroundTaskIds ?? [] } : undefined;
+      return handleSendMessage(sessionId, ev.content, undefined, attachments, undefined, background);
+    }
   );
 
   ipcMain.handle(CHANNELS.pickAttachments, async () => {

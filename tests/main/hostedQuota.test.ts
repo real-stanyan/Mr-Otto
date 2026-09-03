@@ -4,7 +4,7 @@ import { BILLING_HEADERS, type BillingMe } from "../../src/shared/billing.js";
 
 const T0 = 1_800_000_000_000;
 const me: BillingMe = {
-  plan: "pro", status: "active",
+  plan: "pro", status: "active", plans: [],
   windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
   addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"],
 };

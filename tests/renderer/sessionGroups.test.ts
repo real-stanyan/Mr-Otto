@@ -19,7 +19,13 @@ const s = (
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
   sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
-  sharedWith: [], topic: null,
+  sharedWith: [], topic: null, projectRoot: null,
+});
+
+/** 独立副本上的会话（ADR-0157）：workspace 是 worktree 路径，projectRoot 是用户选的项目 */
+const iso = (sessionId: string, projectRoot: string, dir: string, lastTs: number): SessionSummary => ({
+  ...s(sessionId, dir, lastTs),
+  projectRoot,
 });
 
 describe("folderName", () => {
@@ -106,6 +112,23 @@ describe("groupSessionsByWorkspace", () => {
     expect(g[0]!.workspace).toBe("/Users/stan/Github/Otter");
   });
 
+  it("独立副本上的会话折回项目组：组键/组名是项目根，不是 worktree 目录名（#692，同 ADR-0172）", () => {
+    const g = groupSessionsByWorkspace([
+      s("main", "/Users/stan/Github/Mr_Otto", 100),
+      iso("w1", "/Users/stan/Github/Mr_Otto", "/ud/worktrees/d3dbc74d37b3-a9b959", 300),
+      iso("w2", "/Users/stan/Github/Mr_Otto", "/ud/worktrees/d3dbc74d37b3-c0ffee", 200),
+    ]);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.workspace).toBe("/Users/stan/Github/Mr_Otto");
+    expect(g[0]!.label).toBe("Mr_Otto");
+    expect(g[0]!.sessions.map((x) => x.sessionId)).toEqual(["w1", "w2", "main"]);
+  });
+
+  it("只有副本会话、没有主目录会话时，组照样以项目根命名", () => {
+    const g = groupSessionsByWorkspace([iso("w1", "/p/proj", "/ud/worktrees/abc-def", 1)]);
+    expect(g.map((x) => x.workspace)).toEqual(["/p/proj"]);
+  });
+
   it("空输入 = 空数组", () => {
     expect(groupSessionsByWorkspace([])).toEqual([]);
   });
@@ -135,6 +158,15 @@ describe("groupArchivedByWorkspace", () => {
     ]);
     expect(groups.map((g) => g.workspace)).toEqual(["/p/new", "/p/old"]);
     expect(groups[1]!.sessions.map((x) => x.sessionId)).toEqual(["x2", "x1"]);
+  });
+
+  it("归档的副本会话同样折回项目组（#692）", () => {
+    const { groups } = groupArchivedByWorkspace([
+      a("x1", "/p/proj", 100),
+      { ...a("w1", "/ud/worktrees/abc-def", 200), projectRoot: "/p/proj" },
+    ]);
+    expect(groups.map((g) => g.workspace)).toEqual(["/p/proj"]);
+    expect(groups[0]!.sessions.map((x) => x.sessionId)).toEqual(["w1", "x1"]);
   });
 
   it("没归档的会话不进这一屏", () => {

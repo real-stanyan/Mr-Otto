@@ -31,6 +31,7 @@ import { todoWriteTool } from "../tools/todoWrite.js";
 import { createMemoryTool } from "../tools/memory.js";
 import { writeFileTool } from "../tools/writeFile.js";
 import { createBashTool } from "../tools/bash.js";
+import { createWaitTaskTool } from "../tools/waitTask.js";
 import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
@@ -637,6 +638,9 @@ export function createAgent(opts: {
       readFileTool,
       writeFileTool,
       createBashTool(backgroundTasks),
+      // 同一 turn 里等后台任务（issue #871）：available 现查 armed——没接回注
+      // 的装配（subagent）起不了后台任务，这把刀从声明表里消失
+      createWaitTaskTool(backgroundTasks),
       createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
       createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
       // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
@@ -812,7 +816,8 @@ export function createAgent(opts: {
             )
           ),
           approver
-        )
+        ),
+        () => approvalMode
       ),
     onEvent: opts.push.event,
     onAssistantDelta: (text, kind) => opts.push.assistantDelta(sessionId, text, kind),

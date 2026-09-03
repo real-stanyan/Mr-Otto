@@ -169,7 +169,10 @@ export function createGrantAwareApprover(
 export function createPolicyAwareApprover(
   getPolicy: () => { rules: ExecRule[] },
   cwd: string | undefined,
-  inner: Approver
+  inner: Approver,
+  // #876：execpolicy 的「allow 降级 prompt」不该压过「免审批」——auto 模式下
+  // prompt 直接批准。forbidden 仍然硬拒（用户亲手写的"永不放行"比免审批更硬）。
+  getMode?: () => ApprovalMode
 ): Approver {
   return {
     decide(call, tool, signal) {
@@ -183,7 +186,10 @@ export function createPolicyAwareApprover(
           if (verdict?.decision === "allow") {
             return Promise.resolve({ decision: "approved", reason: verdict.reason } satisfies ApprovalOutcome);
           }
-          // prompt / undefined：往里走，弹不弹由内层各级决定
+          // prompt / undefined：auto 模式直接批，否则往里走
+          if (verdict?.decision === "prompt" && getMode?.() === "auto") {
+            return Promise.resolve({ decision: "approved", reason: `自动批准（execpolicy prompt 降级，免审批模式）` } satisfies ApprovalOutcome);
+          }
         }
       }
       return inner.decide(call, tool, signal);

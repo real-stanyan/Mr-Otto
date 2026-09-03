@@ -85,8 +85,9 @@ export function createBashTool(
         "在工程文件夹内执行一条 shell 命令（cwd = 工程文件夹，30 秒超时）。" +
         "返回 stdout / stderr / exit code；退出码非零不代表失败，自行判断。" +
         (background
-          ? "跑满 30 秒还没完的命令会自动转入后台继续跑（同一进程，不重跑），完成后结果以新消息注回会话。" +
-            "预判会跑很久的命令（构建/全量测试）可直接 run_in_background=true：立即返回任务 id（30 分钟超时），不占等待。"
+          ? "跑满 30 秒还没完的命令会自动转入后台继续跑（同一进程，不重跑），完成后结果自动进入对话。" +
+            "预判会跑很久的命令（构建/全量测试）可直接 run_in_background=true：立即返回任务 id（30 分钟超时），不占等待。" +
+            "后面的步骤依赖它的结果就用 wait_task 在本轮里等，别结束回合去等。"
           : ""),
       parameters: {
         type: "object",
@@ -96,7 +97,7 @@ export function createBashTool(
             ? {
                 run_in_background: {
                   type: "boolean",
-                  description: "true = 后台执行：立即返回任务 id，完成后结果以新消息注回",
+                  description: "true = 后台执行：立即返回任务 id，完成后结果自动进入对话（要等就 wait_task）",
                 },
               }
             : {}),
@@ -117,7 +118,7 @@ export function createBashTool(
           throw new Error("bash: 此装配不支持后台执行（run_in_background），请去掉该参数直接执行");
         }
         const id = background.start(cmd, (onOutput) => world.execDetached!(cmd, { onOutput }));
-        return `后台任务 ${id} 已启动（30 分钟超时）。完成后结果会以新消息注回会话，无需轮询等待。`;
+        return `后台任务 ${id} 已启动（30 分钟超时）。完成后结果会自动进入对话；后面的步骤依赖它就用 wait_task 等，不要轮询。`;
       }
       // 前台自动转后台（issue #395）：回注已接线（armed）的装配里，前台命令
       // 不再 30s 一刀杀——超时放宽到后台档位，工具层等 30s，没等到就把
@@ -170,7 +171,7 @@ export function createBashTool(
           });
           return (
             `命令已运行超 ${Math.round(autoAfterMs / 1000)} 秒，自动转入后台任务 ${id} 继续执行` +
-            `（同一进程，上限 30 分钟）。完成后结果会以新消息注回会话，无需轮询等待。`
+            `（同一进程，上限 30 分钟）。完成后结果会自动进入对话；后面的步骤依赖它就用 wait_task 等，不要轮询。`
           );
         }
         const { stdout, stderr, exitCode, sandbox } = winner;

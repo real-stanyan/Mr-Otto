@@ -42,6 +42,13 @@ export interface SessionSummary {
   /** 主题桶 slug（#846）：最后一条 session_topic_set 胜出（null 也是一种「设了」），
       没有手动记录时取最后一条 session_topic_assigned；都没有 → null */
   topic: string | null;
+  /** 这个会话跑在一份独立工作副本上时（ADR-0157），用户当初选的那个项目目录；
+      直接在选定目录里干活 / 旧日志 → null（此时 workspace 就是项目本身）。
+      从第 0 条 session_created 的 isolated.projectRoot 投影（issue #692）：
+      侧栏按它分组，否则每只水獭的 worktree 目录名各成一组、组头是一串哈希。
+      **不带分支名**——日志里那条是「当初叫什么」，自动标题出来后会改名（ADR-0158），
+      显示陈旧分支名比不显示更坏；要分支去问 workspaceLens（现查）。 */
+  projectRoot: string | null;
 }
 
 const SCHEMA = `
@@ -458,6 +465,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.spawnedBy.sessionId')
                    FROM events e3
                   WHERE e3.session_id = e.session_id AND e3.type = 'session_created') AS spawnedFrom,
+                (SELECT json_extract(payload, '$.isolated.projectRoot')
+                   FROM events e9
+                  WHERE e9.session_id = e.session_id AND e9.type = 'session_created') AS projectRoot,
                 (SELECT CASE WHEN e5.type = 'session_archived'
                              THEN COALESCE(json_extract(e5.payload, '$.reason'), 'system')
                         END
