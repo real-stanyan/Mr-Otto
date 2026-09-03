@@ -192,9 +192,16 @@ export function SideChatWindow() {
                   {/* 主聊天同一份 streamdown 配置（lib/markdownConfig.ts）——
                       代码高亮/CJK 断行/mermaid/otto 块/逐字动画全对齐。
                       最后一条且还在流 = 开逐字动画；落下后静态（同主聊天） */}
+                  {/* **不传 caret**（issue #894）：光标的含义是「这段字此刻还在长」，
+                      而 messages 里的每一条都是已落盘的完整事件——它不会再变了。
+                      给它一个光标，就会和下面那条真的在长字的（streaming 缓冲）
+                      同时闪，屏幕上一次出现两个光标。
+                      这里不是「把条件对齐」——是让「同时只有一个」由构造保证：
+                      整个浮窗只有一个 <Streamdown> 拿得到 caret，就是下面那个。
+                      逐字出场（animated）留着：那是「刚落下的这条」的入场，
+                      和「还在长」不是一回事 */}
                   <Streamdown
                     animated={i === messages.length - 1 && sideRunning ? MD_ANIMATED : false}
-                    caret="block"
                     components={mdComponents}
                     isAnimating={i === messages.length - 1 && sideRunning}
                     mode={i === messages.length - 1 && sideRunning ? "streaming" : "static"}
