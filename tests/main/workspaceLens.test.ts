@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createWorkspaceLens, localWorkspaceLens } from "../../src/main/workspaceLens.js";
+import { createWorkspaceLens, localWorkspaceLens, withDefaultFold } from "../../src/main/workspaceLens.js";
 import type { GitFsReader } from "../../src/main/projectRoot.js";
 
 /** 假文件系统 + 读次数计数（记忆化生效与否只能这么看）。
@@ -81,5 +81,19 @@ describe("createWorkspaceLens", () => {
     expect(lens("/repo/wt/b").branch).toBe("otto/tidy-7f10ab");
     // 同项目 → 同一个分组键，这正是"折回项目"要的结果
     expect(lens("/repo/wt/a").projectRoot).toBe(lens("/repo/wt/b").projectRoot);
+  });
+});
+
+const DEF = "/docs/Mr Otto/Default";
+
+describe("withDefaultFold（#851）", () => {
+  it("Default 子目录折回 Default 根：岛上所有任务一组", () => {
+    const lens = withDefaultFold(localWorkspaceLens, DEF);
+    expect(lens(`${DEF}/s-20260903111128-a1b2c3d4`)).toEqual({ projectRoot: DEF, branch: null });
+    expect(lens(DEF)).toEqual({ projectRoot: DEF, branch: null });
+  });
+  it("别的路径透传给内层镜头", () => {
+    const inner = (ws: string) => ({ projectRoot: `root-of:${ws}`, branch: "b" });
+    expect(withDefaultFold(inner, DEF)("/p/x")).toEqual({ projectRoot: "root-of:/p/x", branch: "b" });
   });
 });

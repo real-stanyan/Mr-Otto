@@ -127,7 +127,7 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
-import { createWorkspaceLens } from "./workspaceLens.js";
+import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
 import {
@@ -926,7 +926,7 @@ void app.whenReady().then(() => {
 
   // 岛的分组镜头(main/workspaceLens.ts):workspace → 项目根 + worktree 分支。
   // 读 .git,所以自带 30s 记忆化——pushFleet 跟着每条事件跑
-  const workspaceLens = createWorkspaceLens();
+  const workspaceLens = withDefaultFold(createWorkspaceLens(), builtinDefaultWorkspace(app.getPath("documents")));
 
   // cloudClient 装配得比这里晚（要等 workspaceManager 先造出来，见下方那段
   // 装配注释），这个洞先占位，真身在 cloudClient 造完之后才填上——同
