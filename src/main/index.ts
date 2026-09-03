@@ -46,7 +46,7 @@ import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { ToolCallRequest, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type { ToolCallRequest, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
@@ -58,6 +58,7 @@ import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { classifyLogView } from "./sectionClassifier.js";
 import { annotateTurn } from "./turnAnnotator.js";
 import { autoTitleSource } from "./sessionTitler.js";
+import { topicSource } from "./sessionTopic.js";
 import { createCheapAdapter } from "./cheapAdapter.js";
 import { microCompactOnce } from "../loop/microCompact.js";
 import { loadKeys, saveKey, applyToEnv } from "./keyVault.js";
@@ -107,9 +108,11 @@ import { profileDirName } from "./profile.js";
 import { createGitGraphService } from "./gitGraphService.js";
 import { createFilesService, nodeFilesDeps } from "./filesService.js";
 import {
-  memoryRelPath, isMemoryTarget, parseEntries, formatEntries,
+  memoryRelPath, isMemoryTarget, parseEntries, formatEntries, topicIndexOf,
   PROJECT_MEMORY_FILE, PROJECT_ROOT_FILE, type MemoryTarget,
 } from "../shared/memoryStore.js";
+import { TOPICS_DIR, isTopicSlug, SEED_TOPICS, topicRelPath, topicLabelRelPath } from "../shared/memoryTopics.js";
+import { readTopics } from "./memoryTopics.js";
 import { validateReleaseSkillRequest } from "../shared/releaseSkillRequest.js";
 import { applyUserEdit } from "./memoryEdit.js";
 import { resolveProjectRoot, projectMemoryDir } from "./projectRoot.js";
@@ -1057,11 +1060,26 @@ void app.whenReady().then(() => {
       store.lastSeqOf(sessionId, "session_autotitled") >= 0
         ? null
         : autoTitleSource(store.firstUserMessage(sessionId));
+    // 会话主题（#846）：只对内置 Default 的主会话跑，且还没有任何主题事件。
+    // 判据读日志第 0 条的 workspaceKind——建会话那一刻落的事实，不现场读设置。
+    // 这条现在跑在每个 turn 上（原来只在 result.sessionTitle 分支里，一个会话最多一次）——
+    // 不能再 full load 反序列化整份日志，untilSeq: 0 只取 seq<=0 那一行（issue #279 同款纪律）
+    const created = store.load(sessionId, { untilSeq: 0 })[0];
+    const wantTopic =
+      created?.type === "session_created" &&
+      created.workspaceKind === "default" &&
+      !created.spawnedBy &&
+      store.lastSeqOf(sessionId, "session_topic_assigned") < 0 &&
+      store.lastSeqOf(sessionId, "session_topic_set") < 0;
+    const source = wantTopic ? topicSource(store.firstUserMessage(sessionId)) : null;
+    const topicChoice =
+      source === null ? null : { source, index: topicIndexOf(readTopics(join(accountConfig, TOPICS_DIR))) };
     const result = await annotateTurn(
       classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
       helperModel(),
-      titleSource
+      titleSource,
+      topicChoice
     );
     if (!result) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
@@ -1100,11 +1118,19 @@ void app.whenReady().then(() => {
       // otto/session-<hex>，一个项目开三只就是三条认不出来的分支。
       // 日志里 isolated.branch 是「当初叫什么」的历史记录（append-only 改不了），
       // 所以系统提示不写死分支名——要当前名字由水獭自己 git branch --show-current
-      const created = store.load(sessionId)[0];
       const agent = agents.get(sessionId);
       if (created?.type === "session_created" && created.isolated && agent) {
         sessionWorktrees.rename(agent.workspace, result.sessionTitle);
       }
+    }
+    if (result.sessionTopic) {
+      const event = store.append({
+        sessionId, ts: Date.now(), type: "session_topic_assigned",
+        topic: result.sessionTopic, model: result.model, ignorable: true, ...billOnce(),
+      });
+      send(CHANNELS.event, event);
+      fleetSessionsCache = null;
+      pushFleet();
     }
   };
 
@@ -2002,10 +2028,13 @@ void app.whenReady().then(() => {
       workspace 不在任何 git 仓库里 */
   const readMemoryFiles = (
     workspace: string
-  ): { memory: string; user: string; project?: string; projectRoot?: string } => {
+  ): { memory: string; user: string; project?: string; projectRoot?: string; topics: MemoryTopicSnapshot[] } => {
     const base = {
       memory: readMemoryFile(memoryRelPath("memory")),
       user: readMemoryFile(memoryRelPath("user")),
+      // 主题桶不跟着 projectRoot 走（同 memory/user，跟账号走不跟项目走）——
+      // 无论这个 workspace 在不在 git 仓库里都读得到
+      topics: readTopics(join(accountConfig, TOPICS_DIR)),
     };
     const projectRoot = resolveProjectRoot(workspace);
     if (!projectRoot) return base;
@@ -2651,8 +2680,8 @@ void app.whenReady().then(() => {
   // 在这里就折成 dir）：memory_user_edit 要把「改的是哪个项目」落进事件里
   ipcMain.handle(
     CHANNELS.saveMemory,
-    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string) =>
-      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot))
+    (_e, target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string, topic?: string) =>
+      applyUserEdit(memoryEditDeps, target, text, sessionId, memoryProject(projectRoot), topic ?? null)
   );
   // 索引是 events 的派生物，rebuildFts 幂等重灌（issue #190：索引损坏时的修复入口）
   ipcMain.handle(CHANNELS.rebuildSearchIndex, () => store.rebuildFts());
@@ -2666,13 +2695,13 @@ void app.whenReady().then(() => {
   });
   ipcMain.handle(
     CHANNELS.forgetMemory,
-    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string) => {
+    async (_e, target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string) => {
       // IPC 入参不直接信（issue #186）：applyUserEdit 入口有同款守卫，但这里先用
       // memoryRelPath(target, dir) 拼了路径，得在拼之前挡
-      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project，收到 ${String(target)}`);
+      if (!isMemoryTarget(target)) throw new Error(`target 只能是 memory / user / project / topic，收到 ${String(target)}`);
       const project = memoryProject(projectRoot);
-      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir)));
-      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project);
+      const cur = parseEntries(await memoryEditDeps.readFile(memoryRelPath(target, project?.dir, topic)));
+      await applyUserEdit(memoryEditDeps, target, formatEntries(cur.filter((x) => x !== entry)), sessionId, project, topic ?? null);
     }
   );
   // 全部项目记忆的现状（设置页项目档区读）。现扫 memories/projects/*/root.txt——
@@ -2705,6 +2734,33 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.deleteProjectMemory, async (_e, root: unknown) => {
     if (typeof root !== "string" || !root) throw new Error("root 必须是非空字符串");
     await rm(join(accountConfig, projectMemoryDir(root)), { recursive: true, force: true });
+  });
+  // 主题桶分区（设置页第四档，#846）：种子 ∪ 磁盘的现状，与 memory_loaded 的
+  // topics 快照走同一个 readTopics
+  ipcMain.handle(CHANNELS.listTopicMemories, () =>
+    readTopics(join(accountConfig, TOPICS_DIR)).map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
+  );
+  ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
+    if (!isTopicSlug(slug)) throw new Error("slug 非法");
+    if (slug in SEED_TOPICS) throw new Error("种子桶不能删，只能清空");
+    // 删桶也要走 applyUserEdit 落 memory_user_edit（spec §5）：先把 after 写成空串——
+    // before 是删除那一刻磁盘上的真实原文（在 withMemoryFileLock 之下拿到，和工具的
+    // read-modify-write 不撞），这样删除动作和手编一样留证、可审计、可在 before 里
+    // 找回删之前的内容。事件落完了再动文件系统：rm 是不可逆的物理删除，落证在先。
+    await applyUserEdit(memoryEditDeps, "topic", "", undefined, null, slug);
+    await rm(join(accountConfig, topicRelPath(slug)), { force: true });
+    await rm(join(accountConfig, topicLabelRelPath(slug)), { force: true });
+  });
+  ipcMain.handle(CHANNELS.setTopicLabel, async (_e, slug: unknown, label: unknown) => {
+    if (!isTopicSlug(slug)) throw new Error("slug 非法");
+    if (typeof label !== "string") throw new Error("label 必须是字符串");
+    const abs = join(accountConfig, topicLabelRelPath(slug));
+    if (!label.trim()) {
+      await rm(abs, { force: true });
+      return;
+    }
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, label.trim(), "utf8");
   });
 
   // ── 自动压缩设置（设置页读/改）────────────────────────────────────
@@ -3524,6 +3580,15 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, appended); // 时间线同款直播通道
     fleetSessionsCache = null; // 这条路不走 push.event,缓存不会自己失效
     pushFleet(); // 岛上的行标题立即换,不等下一个事件
+  });
+
+  ipcMain.handle(CHANNELS.setSessionTopic, (_e, sessionId: string, topic: unknown) => {
+    if (topic !== null && !isTopicSlug(topic)) throw new Error("topic 只能是桶 slug 或 null");
+    if (!store.has(sessionId)) throw new Error("会话不存在");
+    const appended = store.append({ sessionId, ts: Date.now(), type: "session_topic_set", topic, ignorable: true });
+    send(CHANNELS.event, appended);
+    fleetSessionsCache = null;
+    pushFleet();
   });
 
   ipcMain.handle(CHANNELS.switchModel, (_e, model: string, lane?: ModelLane) => {

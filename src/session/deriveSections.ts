@@ -43,7 +43,13 @@ export function deriveSections(events: SessionEvent[]): Section[] {
       // 跟进建议不参与跨度:它和分区分类是两条独立的异步队列,谁先落盘不定。
       // 让它开跨度的话,分区起点会落在"上一段的尾巴"那条事件上,导航跳过去偏一格。
       // 自动命名同理:同一次合并调用落盘,同样不该锚住下一分区的起点
-      if (e.type === "suggestions_generated" || e.type === "session_autotitled") continue;
+      if (
+        e.type === "suggestions_generated" ||
+        e.type === "session_autotitled" ||
+        e.type === "session_topic_assigned" ||
+        e.type === "session_topic_set"
+      )
+        continue;
       if (spanStart === null) spanStart = e.seq;
       if (spanFirstUser === null && e.type === "user_message" && e.content.trim() !== "") {
         spanFirstUser = truncate(e.content);

@@ -176,7 +176,7 @@ const MemoryCard: FC<{ result: MemoryToolResult }> = ({ result }) => {
       chips={chips}
       onForget={(id) => {
         setForgotten((prev) => new Set(prev).add(id));
-        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId, projectRoot).catch((e: unknown) => {
+        window.otter.forgetMemory(result.target, chipEntryText(id), sessionId, projectRoot, result.topic).catch((e: unknown) => {
           setForgotten((prev) => {
             const next = new Set(prev);
             next.delete(id);

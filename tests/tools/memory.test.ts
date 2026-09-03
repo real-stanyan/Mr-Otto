@@ -16,6 +16,8 @@ function fakeWorld(files: Record<string, string | null> = {}, opts: { readThrows
         return store.get(rel) ?? null;
       },
       write: async (rel: string, c: string) => { store.set(rel, c); },
+      list: async (relDir: string) =>
+        [...store.keys()].filter((k) => k.startsWith(`${relDir}/`)).map((k) => k.slice(relDir.length + 1)),
     },
   } as unknown as ExecutionWorld;
   return { world, store };
@@ -191,14 +193,14 @@ describe("项目档", () => {
   it("没有项目根时，target 枚举里不出现 project", () => {
     const tool = createMemoryTool(null);
     const target = (tool.def.parameters as any).properties.target;
-    expect(target.enum).toEqual(["memory", "user"]);
+    expect(target.enum).toEqual(["memory", "user", "topic"]);
     expect(tool.def.description).not.toContain("PROJECT");
   });
 
   it("有项目根时枚举含 project，描述里带判据（单源正文，issue #589）", () => {
     const tool = createMemoryTool({ root: "/repo", dir: "memories/projects/abc123" });
     const target = (tool.def.parameters as any).properties.target;
-    expect(target.enum).toEqual(["memory", "user", "project"]);
+    expect(target.enum).toEqual(["memory", "user", "project", "topic"]);
     expect(tool.def.description).toContain("换个项目还成立吗");
   });
 
@@ -273,5 +275,71 @@ describe("项目归位守卫", () => {
     const { world, store } = fakeWorld();
     await tool.run({ target: "project", action: "add", content: "Mr_Otto 主工作区多 lane 共用" }, world);
     expect(store.get("memories/projects/d3d/MEMORY.md")).toBe("Mr_Otto 主工作区多 lane 共用");
+  });
+});
+
+describe("memory 工具 —— topic 档", () => {
+  it("def：target 枚举含 topic，参数有 topic / create_topic", () => {
+    const tool = createMemoryTool(null);
+    const props = (tool.def.parameters as { properties: Record<string, { enum?: string[] }> }).properties;
+    expect(props["target"]!.enum).toContain("topic");
+    expect(props["topic"]).toBeDefined();
+    expect(props["create_topic"]).toBeDefined();
+  });
+
+  it("写种子桶不用 create_topic：文件还不存在也能写", async () => {
+    const tool = createMemoryTool(null);
+    const { world, store } = fakeWorld();
+    const out = await tool.run({ target: "topic", topic: "hobbies", action: "add", content: "用户在改装一台 WRX" }, world);
+    expect(store.get("memories/topics/hobbies.md")).toBe("用户在改装一台 WRX");
+    const text = typeof out === "string" ? out : out.output;
+    expect(text).toContain("TOPIC:hobbies");
+    expect(parseMemoryResult(text)).toMatchObject({ ok: true, target: "topic", topic: "hobbies", limit: 700 });
+  });
+
+  it("target 是 topic 但没给 topic → 报错", async () => {
+    const tool = createMemoryTool(null);
+    const { world } = fakeWorld();
+    await expect(tool.run({ target: "topic", action: "add", content: "x" }, world)).rejects.toThrow(/topic/);
+  });
+
+  it("不在索引里的桶：不带 create_topic 拒，报错带索引；带了才建", async () => {
+    const tool = createMemoryTool(null);
+    const { world, store } = fakeWorld({ "memories/topics/cars.md": "a" });
+    await expect(
+      tool.run({ target: "topic", topic: "travel", action: "add", content: "x" }, world)
+    ).rejects.toThrow(/create_topic/);
+    await expect(
+      tool.run({ target: "topic", topic: "travel", action: "add", content: "x" }, world)
+    ).rejects.toThrow(/cars/); // 报错里列出现有桶
+    await tool.run({ target: "topic", topic: "travel", create_topic: true, action: "add", content: "x" }, world);
+    expect(store.get("memories/topics/travel.md")).toBe("x");
+  });
+
+  it("slug 非法 → 报错，不写盘", async () => {
+    const tool = createMemoryTool(null);
+    const { world, store } = fakeWorld();
+    await expect(
+      tool.run({ target: "topic", topic: "工作", create_topic: true, action: "add", content: "x" }, world)
+    ).rejects.toThrow(/slug/);
+    expect([...store.keys()]).toEqual([]);
+  });
+
+  it("8 桶满了新建报错", async () => {
+    const tool = createMemoryTool(null);
+    // 4 个种子 + 4 个磁盘桶 = 8
+    const { world } = fakeWorld({
+      "memories/topics/a1.md": "x", "memories/topics/a2.md": "x",
+      "memories/topics/a3.md": "x", "memories/topics/a4.md": "x",
+    });
+    await expect(
+      tool.run({ target: "topic", topic: "a5", create_topic: true, action: "add", content: "x" }, world)
+    ).rejects.toThrow(/8/);
+  });
+
+  it("topic 超限报错带 TOPIC 与 700", async () => {
+    const tool = createMemoryTool(null);
+    const { world } = fakeWorld({ "memories/topics/work.md": "x".repeat(695) });
+    await expect(tool.run({ target: "topic", topic: "work", action: "add", content: "yyyyyyyyyy" }, world)).rejects.toThrow(/700/);
   });
 });

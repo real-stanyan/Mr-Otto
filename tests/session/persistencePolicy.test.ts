@@ -45,6 +45,8 @@ const DURABLE = [
   "memory_nudge",
   "micro_compacted",
   "session_autotitled",
+  "session_topic_assigned",
+  "session_topic_set",
   "tool_hook",
   "project_instructions",
   "request_envelope",

@@ -58,6 +58,7 @@ describe("applyUserEdit", () => {
       config: {
         read: async (rel: string) => d.files.get(rel) ?? null,
         write: async (rel: string, c: string) => { d.files.set(rel, c); },
+        list: async () => [],
       },
     } as unknown as ExecutionWorld;
     await Promise.all([
@@ -113,5 +114,33 @@ describe("applyUserEdit", () => {
     };
     await expect(applyUserEdit(deps, "project", "x", "s1")).rejects.toThrow(/projectDir/);
     expect(files.get("memories/MEMORY.md")).toBeUndefined();
+  });
+
+  it("topic 档：写 memories/topics/<slug>.md，事件带 topic 字段", async () => {
+    const d = deps();
+    await applyUserEdit(d, "topic", "改装 WRX", "s1", null, "hobbies");
+    expect(d.files.get("memories/topics/hobbies.md")).toBe("改装 WRX");
+    const ev = d.store.load("s1").find((e) => e.type === "memory_user_edit");
+    expect(ev).toMatchObject({ target: "topic", topic: "hobbies", before: "", after: "改装 WRX" });
+  });
+
+  it("topic 档缺 topic：抛，不写盘、不落事件", async () => {
+    const d = deps();
+    await expect(applyUserEdit(d, "topic", "x", "s1", null)).rejects.toThrow(/topic/);
+    expect(d.files.size).toBe(0);
+    expect(d.store.load("s1")).toHaveLength(0);
+  });
+
+  // 删桶（deleteTopicMemory 的落证半边，#846 review round）走的正是这条路径：
+  // 调用方传 after="" 把桶清空，applyUserEdit 记下 before=删前原文、after=""，
+  // 再由调用方（IPC handler）动文件系统 rm。这里只钉 applyUserEdit 这一半——
+  // handler 里的 rm 属于集成行为，同目录下 deleteProjectMemory 也没有 handler 级测试
+  it("topic 档删除（after 空串）：before 记下删前原文，after 落空串，不抛", async () => {
+    const d = deps();
+    d.files.set("memories/topics/cars.md", "改装 WRX");
+    await applyUserEdit(d, "topic", "", MEMORY_EDITS_SESSION, null, "cars");
+    expect(d.files.get("memories/topics/cars.md")).toBe("");
+    const ev = d.store.load(MEMORY_EDITS_SESSION).find((e) => e.type === "memory_user_edit");
+    expect(ev).toMatchObject({ target: "topic", topic: "cars", before: "改装 WRX", after: "" });
   });
 });

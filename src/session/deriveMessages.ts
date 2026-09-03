@@ -2,11 +2,12 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import type { CloudSessionFacts, SessionEvent, UserTextFile } from "./events.js";
+import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
-import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText } from "../shared/memoryStore.js";
+import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText, topicRuleText, topicIndexOf } from "../shared/memoryStore.js";
+import { renderTopicIndex } from "../shared/memoryTopics.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
@@ -157,14 +158,19 @@ function memoryBlock(title: string, raw: string, limit: number): string {
   return `${MEMORY_RULE}\n${title} [${pct}% — ${used.toLocaleString("en-US")}/${limit.toLocaleString("en-US")} chars]\n${body}\n`;
 }
 
-/** memory_loaded 渲成 system 尾部的三块。全空 = 空串（投影与无记忆逐字节一致）。
-    标题带占用百分比：模型看得见自己还剩多少地方，超限报错时不至于意外 */
-export function renderMemoryBlocks(memory: string, user: string, project?: string): string {
+/** memory_loaded 渲成 system 尾部的三块（+ 主题桶第四块）。全空 = 空串
+    （投影与无记忆逐字节一致）。标题带占用百分比：模型看得见自己还剩多少地方，
+    超限报错时不至于意外。主题桶只渲非空的——空桶已经在索引里列过了，
+    这里再放一块空块只会占地方 */
+export function renderMemoryBlocks(
+  memory: string, user: string, project?: string, topics?: MemoryTopicSnapshot[]
+): string {
   const m = memoryBlock("MEMORY (your personal notes)", memory, MEMORY_LIMITS.memory);
   const u = memoryBlock("USER (about the user)", user, MEMORY_LIMITS.user);
   const p = project ? memoryBlock("PROJECT (this project only)", project, MEMORY_LIMITS.project) : "";
-  if (!m && !u && !p) return "";
-  return `\n${m}${u}${p}${MEMORY_RULE}`;
+  const t = (topics ?? []).map((x) => memoryBlock(`TOPIC:${x.label} (${x.slug})`, x.content, MEMORY_LIMITS.topic)).join("");
+  if (!m && !u && !p && !t) return "";
+  return `\n${m}${u}${p}${t}${MEMORY_RULE}`;
 }
 
 /** memory_loaded 事件专属的指引 + 块，一起拼进 system 尾部（ADR-0060）。
@@ -172,20 +178,27 @@ export function renderMemoryBlocks(memory: string, user: string, project?: strin
     （老日志 / 子会话 / 没有记忆能力的装配）不该被告知"你有 memory 工具"——
     那把工具压根没挂给它们，写死在 systemPromptText 里就是一句谎话。
     两个文件都空也要说这段话：模型得知道自己**能**写记忆，不是只在已经有内容时才提 */
-export function renderMemoryPrompt(memory: string, user: string, project?: string, projectRoot?: string): string {
+export function renderMemoryPrompt(
+  memory: string, user: string, project?: string, projectRoot?: string, topics?: MemoryTopicSnapshot[]
+): string {
   const tiers = projectRoot
     ? `记忆分三档：${tierRuleText({ upper: true, projectRoot })}`
     : `记忆分两档（这个工作区不在任何 git 仓库里，没有项目档）：MEMORY 是你的笔记，USER 是关于用户。`;
+  // topics 有字段（哪怕空数组）= 这个装配有主题桶；没字段 = 旧日志/没能力，文案逐字节不变
+  const topicRule = topics
+    ? `另有 TOPIC 主题桶：${topicRuleText({ upper: true })}\n主题索引：\n${renderTopicIndex(topicIndexOf(topics))}\n`
+    : "";
   return (
     `\n你有跨会话的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记用户偏好、环境细节、工具怪癖、稳定约定，优先记能减少用户再次纠正你的事；` +
     `不记任务进度、PR/issue 号、commit、一周内会过期的东西。${tiers}` +
+    topicRule +
     `过去做过什么、进度到哪、当时怎么决定的——用 session_search 查历史会话。` +
     `写陈述句不写祈使句（「用户偏好简短回复」对，「总是简短回复」错——祈使句下次会被当成指令）；流程和步骤归 skill 不归记忆。` +
     `\n记忆的工作机制（被问到时照实说，别脑补）：会话开始时整份快照注入（就是下面的记忆块），没有按相关性检索；` +
     (projectRoot ? `项目档按当前工作区所属的 git 仓库挑，换项目换一份（worktree 折叠回主仓）；` : ``) +
     `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这几份笔记；` +
     `session_search 查的是历史会话正文，和记忆是分开的两条路。` +
-    renderMemoryBlocks(memory, user, project)
+    renderMemoryBlocks(memory, user, project, topics)
   );
 }
 
@@ -638,7 +651,7 @@ export function deriveMessages(
         // 子会话）时上面那个 case 不会造 system 消息，这里就只能悄悄丢掉记忆
         // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
         // 只发生在子会话或旧日志上，不影响主线记忆功能。
-        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot);
+        if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot, event.topics);
         break;
 
       case "context_compacted":
@@ -707,6 +720,9 @@ export function deriveMessages(
       case "memory_nudge":
       // 自动命名的标题是给人看的侧栏/岛上名字，不是对话内容（同 section_classified）
       case "session_autotitled":
+      // 主题分类 / 手动归类同理：给侧栏分组用的标签，不是对话内容（#846）
+      case "session_topic_assigned":
+      case "session_topic_set":
       // 请求信封（issue #383）是 log-only 审计快照：它记录"模型看到了什么"，
       // 自己绝不能成为模型看到的东西（喂回去 = 信封套信封，永动机）
       case "request_envelope":

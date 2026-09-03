@@ -4,6 +4,7 @@ import {
   folderName,
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
+  groupTasksByTopic,
   partitionShared,
   taskSessions,
 } from "../../src/renderer/src/sessionGroups.js";
@@ -18,7 +19,7 @@ const s = (
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
   sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
-  sharedWith: [],
+  sharedWith: [], topic: null,
 });
 
 describe("folderName", () => {
@@ -208,5 +209,34 @@ describe("partitionShared（issue #809）", () => {
     const out = partitionShared(list);
     expect(out.shared).toEqual([]);
     expect(out.local).toEqual(list);
+  });
+});
+
+describe("groupTasksByTopic —— 任务栏按主题分组", () => {
+  const DEF = "/home/u/Documents/Mr Otto/Default";
+  const t = (id: string, topic: string | null, lastTs: number) => ({ ...s(id, DEF, lastTs), topic });
+  const labelOf = (slug: string) => ({ work: "工作", hobbies: "爱好" })[slug] ?? slug;
+  const KNOWN = new Set(["work", "hobbies", "life", "learning"]);
+  it("按 topic 装桶：组序 = 组内最近 lastTs 倒序，未分类永远沉底，组内 lastTs 倒序", () => {
+    const groups = groupTasksByTopic(
+      [t("a", "work", 100), t("b", null, 900), t("c", "hobbies", 500), t("d", "work", 300)],
+      labelOf,
+      KNOWN,
+    );
+    expect(groups.map((g) => [g.topic, g.label, g.sessions.map((x) => x.sessionId)])).toEqual([
+      ["hobbies", "爱好", ["c"]],
+      ["work", "工作", ["d", "a"]],
+      [null, "未分类", ["b"]],
+    ]);
+  });
+  it("全部未分类：只有一组、不带组头语义（label 仍是「未分类」，由 UI 决定要不要画头）", () => {
+    expect(groupTasksByTopic([t("a", null, 1)], labelOf, KNOWN)).toHaveLength(1);
+  });
+  it("空输入 → []", () => {
+    expect(groupTasksByTopic([], labelOf, KNOWN)).toEqual([]);
+  });
+  it("桶被删了的会话回未分类：topic 不在 known 集合里当 null，不抛", () => {
+    const groups = groupTasksByTopic([t("a", "cars", 100), t("b", "work", 50)], labelOf, new Set(["work", "hobbies", "life", "learning"]));
+    expect(groups.map((g) => [g.topic, g.sessions.map((x) => x.sessionId)])).toEqual([["work", ["b"]], [null, ["a"]]]);
   });
 });

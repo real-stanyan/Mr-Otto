@@ -40,6 +40,7 @@ import {
   assertMemoryFits,
   type MemoryTarget,
 } from "../../../shared/memoryStore.js";
+import { MAX_TOPICS } from "../../../shared/memoryTopics.js";
 
 type ProjectMemory = {
   root: string;
@@ -410,6 +411,101 @@ function ProjectMemoryCard({
   );
 }
 
+type TopicMemory = { slug: string; label: string; text: string; seed: boolean };
+
+/** 主题桶分区（第四档，#846）：列表选一个桶，正文用 MemoryField（与三档同一套编辑/忘掉），
+    改显示名落 .label，非种子桶可删。桶的创建不在这里——建桶是模型写记忆时的动作 */
+function TopicMemoryCard() {
+  const [topics, setTopics] = useState<TopicMemory[]>([]);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => window.otter.listTopicMemories().then(setTopics);
+  useEffect(() => {
+    void refresh();
+  }, []);
+  const current = topics.find((t) => t.slug === picked) ?? topics[0] ?? null;
+  useEffect(() => {
+    setLabel(current?.label ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.slug, current?.label]);
+
+  const saveLabel = async () => {
+    if (!current) return;
+    setError(null);
+    try {
+      await window.otter.setTopicLabel(current.slug, label);
+      await refresh();
+    } catch (err) {
+      setError(bridgeErrorMessage(err));
+    }
+  };
+  const remove = async () => {
+    if (!current || current.seed) return;
+    if (!window.confirm(`删掉主题桶「${current.label}」（${current.slug}）？不可恢复。`)) return;
+    try {
+      await window.otter.deleteTopicMemory(current.slug);
+      setPicked(null);
+      await refresh();
+    } catch (err) {
+      setError(bridgeErrorMessage(err));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-[10px] border border-border px-[14px] py-3">
+      <div className="flex items-baseline gap-2 text-[13px]">
+        <span className="font-[650]">TOPIC · 主题桶</span>
+        <span className="text-xs text-muted-foreground">
+          {topics.length} 个 · 上限 {MAX_TOPICS}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {topics.map((t) => (
+          <Button
+            key={t.slug}
+            size="sm"
+            variant={t.slug === current?.slug ? "default" : "outline"}
+            onClick={() => setPicked(t.slug)}
+          >
+            {t.label}
+          </Button>
+        ))}
+      </div>
+      {current && (
+        <>
+          <div className="flex items-center gap-2">
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder={current.slug}
+              className="h-8 text-[13px]"
+            />
+            <Button variant="outline" size="sm" onClick={() => void saveLabel()}>
+              改显示名
+            </Button>
+            {!current.seed && (
+              <Button variant="destructive" size="sm" onClick={() => void remove()}>
+                删桶
+              </Button>
+            )}
+          </div>
+          <MemoryField
+            key={current.slug}
+            target="topic"
+            label={`${current.label} (${current.slug})`}
+            fetchText={() =>
+              window.otter.listTopicMemories().then((ts) => ts.find((t) => t.slug === current.slug)?.text ?? "")
+            }
+            onSave={(text) => window.otter.saveMemory("topic", text, undefined, undefined, current.slug)}
+          />
+        </>
+      )}
+      {error !== null && <p className="text-destructive text-[13px]">{error}</p>}
+    </div>
+  );
+}
+
 export function MemorySettings() {
   const [onDisk, setOnDisk] = useState<ProjectMemory[]>([]);
   const refreshProjects = () => window.otter.listProjectMemories().then(setOnDisk);
@@ -485,6 +581,7 @@ export function MemorySettings() {
           onSave={(text) => window.otter.saveMemory("user", text)}
         />
         <ProjectMemoryCard projects={projects} sessionRoot={sessionRoot} refreshProjects={refreshProjects} />
+        <TopicMemoryCard />
         <SearchIndexCard />
       </section>
     </div>

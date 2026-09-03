@@ -298,7 +298,7 @@ export function contextBreakdown(
     ? estimateTokens(
         systemPromptText(workspace, today, workspaceKindOf(events)) +
           (memoryEvent
-            ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user, memoryEvent.project, memoryEvent.projectRoot)
+            ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user, memoryEvent.project, memoryEvent.projectRoot, memoryEvent.topics)
             : "")
       )
     : 0;

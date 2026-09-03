@@ -72,6 +72,8 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "memory_nudge":
     case "micro_compacted":
     case "session_autotitled":
+    case "session_topic_assigned":
+    case "session_topic_set":
     case "tool_hook": // 钩子干预是"模型视野被改写"的事实，投影推导依赖它
     case "project_instructions": // 注入快照（issue #353）：model-visible means logged
     case "request_envelope": // 请求信封（issue #383）：请求可重构性的凭据，log-only 审计快照

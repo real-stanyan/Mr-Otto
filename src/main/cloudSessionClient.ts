@@ -180,6 +180,7 @@ export function cloudSessionFleetRow(summary: CloudSessionSummary | null): Sessi
     spawnedFrom: null,
     archived: false,
     sharedWith: [],
+    topic: null,
   };
 }
 

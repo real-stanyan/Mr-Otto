@@ -2540,7 +2540,9 @@ export const useChat = create<ChatState>((set, get) => ({
       // 分支恒刷(composer 上方常显当前分支),图只在开着时刷
       // 自动命名落地 = 侧栏标题该换了。手动 rename 在自己的 action 里刷,
       // 这条是主进程 turn 收口后自己落的事件,只有这里能听见(含后台会话)
-      if (e.type === "session_autotitled") {
+      // 主题事件（#846）同一条通道：自动分类(session_topic_assigned)落地、或
+      // 手动「归到…」(session_topic_set)落地，侧栏分组该跟着刷
+      if (e.type === "session_autotitled" || e.type === "session_topic_assigned" || e.type === "session_topic_set") {
         void window.otter.listSessions().then((sessions) => set({ sessions }));
       }
       // 首条消息落地 = 这份镜像里的标题(首条 user_message 首行)该有值了。镜像是

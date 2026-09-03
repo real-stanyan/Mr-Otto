@@ -78,6 +78,11 @@ export interface SessionPackage {
       （issue #705）。发给 B 的包里留着它，等于顺手告诉 B「我还把这个给了小红，
       而且把 Shopify 借给了她」——发送方的社交关系与授权史，两样都不是 B 该看的。
       它本来也只是发送方时间线上的一行记录，对接收方没有任何用处。
+    - session_topic_assigned / session_topic_set（#846）：A 的记忆第四档主题桶
+      分类结果——A 自己的生活/工作分类法，是 A 的私有 taxonomy，标准同
+      checkpoint_created / session_shared：接收方机器上没有这份桶索引（甚至
+      桶已经被 A 删了），留着的 slug 在 B 那边没有意义，也不该暴露 A 把这段
+      对话归进了哪个私人分类。
 
     注意「剥」不等于「删改历史」——这是导出时刻的投影裁剪，源会话的 append-only
     日志一个字节不动。硬规则（append-only 是唯一事实来源）管的是源日志，不管
@@ -92,6 +97,8 @@ export const PRIVACY_STRIP_TYPES: ReadonlySet<SessionEvent["type"]> = new Set([
   "branch_checked_out",
   "project_instructions",
   "session_shared",
+  "session_topic_assigned",
+  "session_topic_set",
   "route_changed",
 ]);
 

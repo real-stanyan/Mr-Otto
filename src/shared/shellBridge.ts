@@ -527,6 +527,9 @@ export interface ShellBridge {
   /** /rename：手动改会话标题，落 session_renamed 事件（改两次 = 两条，最后胜出）。
       生效凭证是流回来的事件；空白标题直接 reject */
   renameSession(sessionId: string, title: string): Promise<void>;
+  /** 「归到…」（#846）：手动落一条 session_topic_set，压过自动分类。
+      null = 归到未分类（不是「没设过」——见 SessionSummary.topic 的投影规则） */
+  setSessionTopic(sessionId: string, topic: string | null): Promise<void>;
   /** 回到检查点（issue #395 / ADR-0090）：fork 会话到该检查点前最近的 turn
       收口（零拷贝，ADR-0084）+ 把工作区文件 reset 回检查点快照，返回新分支
       会话 id——切换视图由渲染层随后走 resumeSession。checkpointSeq 是
@@ -584,16 +587,22 @@ export interface ShellBridge {
       MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts）。
       projectRoot 缺省 = 全局档（memory/user）；target 是 "project" 时必填——
       主进程按 projectRoot 现算 projectDir，渲染层不用认得 hash 怎么拼 */
-  saveMemory(target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string): Promise<void>;
+  saveMemory(target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string, topic?: string): Promise<void>;
   /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
       的会话——留证要知道是谁忘的。projectRoot 同 saveMemory：缺省 = 全局档 */
-  forgetMemory(target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string): Promise<void>;
+  forgetMemory(target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string): Promise<void>;
   /** 全部项目记忆的现状（设置页项目档区读，Task 6）。现扫
       memories/projects/ 下每个子目录的 root.txt——没有中心索引，目录自描述。
       没有 root.txt 的孤儿目录不列进来 */
   listProjectMemories(): Promise<{ root: string; text: string }[]>;
   /** 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复 */
   deleteProjectMemory(root: string): Promise<void>;
+  /** 全部主题桶（种子 ∪ 磁盘）的现状（设置页主题区读）。seed = 是种子桶（不可删，只能清空） */
+  listTopicMemories(): Promise<{ slug: string; label: string; text: string; seed: boolean }[]>;
+  /** 删掉一个非种子桶（.md + .label），不可恢复——确认弹窗在渲染层；种子桶抛 */
+  deleteTopicMemory(slug: string): Promise<void>;
+  /** 改显示名。空串 = 删 .label 回默认（种子表 / slug） */
+  setTopicLabel(slug: string, label: string): Promise<void>;
   /** 重建跨会话回忆的全文索引（issue #190）。索引是 events 的派生物，幂等重灌；
       平时只在老库首开时自动跑一次，这个口子是索引损坏时的修复路径 */
   rebuildSearchIndex(): Promise<void>;
@@ -1297,6 +1306,7 @@ export const CHANNELS = {
   archiveSession: "otter:archiveSession",
   unarchiveSession: "otter:unarchiveSession",
   renameSession: "otter:renameSession",
+  setSessionTopic: "otter:setSessionTopic",
   rewindToCheckpoint: "otter:rewindToCheckpoint",
   switchModel: "otter:switchModel",
   setApprovalMode: "otter:setApprovalMode",
@@ -1313,6 +1323,9 @@ export const CHANNELS = {
   forgetMemory: "otter:forgetMemory",
   listProjectMemories: "otter:listProjectMemories",
   deleteProjectMemory: "otter:deleteProjectMemory",
+  listTopicMemories: "otter:listTopicMemories",
+  deleteTopicMemory: "otter:deleteTopicMemory",
+  setTopicLabel: "otter:setTopicLabel",
   rebuildSearchIndex: "otter:rebuildSearchIndex",
   searchIndex: "otter:searchIndex",
   getAutoCompact: "otter:getAutoCompact",

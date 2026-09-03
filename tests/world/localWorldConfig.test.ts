@@ -31,4 +31,18 @@ describe("LocalWorld.config", () => {
     expect(withAbortSignal(world, new AbortController().signal).config).toBe(world.config);
     expect(withExecOutput(world, () => {}).config).toBe(world.config);
   });
+
+  it("list：目录不存在回 []；存在时回文件名", async () => {
+    const root = tempDir("otto-cfg-");
+    const world = createLocalWorld({ configRoot: root });
+    expect(await world.config!.list("memories/topics")).toEqual([]);
+    await world.config!.write("memories/topics/work.md", "a");
+    await world.config!.write("memories/topics/work.label", "上班");
+    expect((await world.config!.list("memories/topics")).sort()).toEqual(["work.label", "work.md"]);
+  });
+  it("list 也过围栏：../ 越界抛", async () => {
+    const root = tempDir("otto-cfg-");
+    const world = createLocalWorld({ configRoot: root });
+    await expect(world.config!.list("../etc")).rejects.toThrow();
+  });
 });

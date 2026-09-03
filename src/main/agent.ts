@@ -87,7 +87,7 @@ import { familyRootOf } from "../shared/workspaceExclusion.js";
 import { createBranchWatchMiddleware } from "./branchWatch.js";
 import { assertReplayable } from "../session/events.js";
 import { checkInvariants } from "../session/invariants.js";
-import type { SessionEvent, ToolCallRequest, MemoryLoadedEvent } from "../session/events.js";
+import type { SessionEvent, ToolCallRequest, MemoryLoadedEvent, MemoryTopicSnapshot } from "../session/events.js";
 import { evaluateCommand } from "../shared/execPolicy.js";
 import { createDirtyTreeAwareApprover } from "./dirtyTreeApprover.js";
 import type { ToolGuard } from "../loop/middleware.js";
@@ -281,7 +281,7 @@ export function createAgent(opts: {
   /** 新 session 的长期记忆快照（ADR-0060）。由 index.ts 在造 agent 之前读好——
       createAgent 是同步的。resume 时忽略：日志里那条 memory_loaded 才是模型看过的。
       project/projectRoot 缺席 = 这个 workspace 不在任何 git 仓库里 */
-  memory?: { memory: string; user: string; project?: string; projectRoot?: string };
+  memory?: { memory: string; user: string; project?: string; projectRoot?: string; topics?: MemoryTopicSnapshot[] };
   /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
@@ -399,6 +399,7 @@ export function createAgent(opts: {
         ...(opts.memory.projectRoot
           ? { project: opts.memory.project ?? "", projectRoot: opts.memory.projectRoot }
           : {}),
+        ...(opts.memory.topics ? { topics: opts.memory.topics } : {}),
       });
     }
     // 项目指令注入（issue #353）：记忆之后、第一条 user_message 之前——模型先

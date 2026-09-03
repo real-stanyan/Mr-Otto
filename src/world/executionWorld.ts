@@ -155,6 +155,9 @@ export interface CheckpointCapability {
 export interface ConfigCapability {
   read(rel: string): Promise<string | null>;
   write(rel: string, content: string): Promise<void>;
+  /** 列一个相对目录下的文件名（不含路径）。目录不存在 = []。
+      memory 工具用它读主题桶索引——桶是「磁盘上有哪些文件」这个事实，不建中心索引 */
+  list(relDir: string): Promise<string[]>;
 }
 
 /** 会话检索结果里的一条历史会话摘要——recent() 的返回形状（session_search 工具用） */

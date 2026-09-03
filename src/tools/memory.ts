@@ -9,9 +9,12 @@ import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import {
   applyOps, charCount, formatEntries, formatMemoryResultLine, isMemoryTarget, parseEntries, withMemoryFileLock,
-  memoryRelPath, projectMentionInGlobal, tierRuleText, MEMORY_LIMITS, PROJECT_ROOT_FILE,
+  memoryRelPath, projectMentionInGlobal, tierRuleText, topicRuleText, MEMORY_LIMITS, PROJECT_ROOT_FILE,
   type MemoryOp, type MemoryTarget, type MemoryToolResult,
 } from "../shared/memoryStore.js";
+import {
+  MAX_TOPICS, TOPICS_DIR, isTopicSlug, renderTopicIndex, slugsFromFileNames, withSeedTopics,
+} from "../shared/memoryTopics.js";
 import { scanThreat } from "../shared/threatPatterns.js";
 
 export { parseMemoryResult } from "../shared/memoryStore.js";
@@ -53,13 +56,22 @@ function inferAction(o: Record<string, unknown>, content: string, oldText: strin
 }
 
 /** 把模型给的 args 归一成 MemoryOp[]。new_text 是 content 的别名（hermes 同款） */
-function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; ops: MemoryOp[] } {
+function parseOps(args: unknown, hasProject: boolean): {
+  target: MemoryTarget; ops: MemoryOp[]; topic: string | null; createTopic: boolean;
+} {
   const a = (args ?? {}) as Record<string, unknown>;
-  if (!isMemoryTarget(a["target"])) throw new Error("target 必填，且只能是 memory / user / project");
+  if (!isMemoryTarget(a["target"])) throw new Error("target 必填，且只能是 memory / user / project / topic");
   const target = a["target"];
   if (target === "project" && !hasProject) {
-    throw new Error("当前工作区不在任何 git 仓库里，没有项目档；写 memory 或 user");
+    throw new Error("当前工作区不在任何 git 仓库里，没有项目档；写 memory、user 或 topic");
   }
+  let topic: string | null = null;
+  if (target === "topic") {
+    if (typeof a["topic"] !== "string" || !a["topic"]) throw new Error("target 为 topic 时 topic（桶 slug）必填，见系统提示里的主题索引");
+    if (!isTopicSlug(a["topic"])) throw new Error(`主题 slug 非法：「${a["topic"]}」——小写字母开头、只含 a-z 0-9 -、≤ 24 字符`);
+    topic = a["topic"];
+  }
+  const createTopic = a["create_topic"] === true;
   const listed = a["operations"] !== undefined ? toOpList(a["operations"]) : null;
   if (a["operations"] !== undefined && listed !== null && listed.length === 0) {
     throw new Error("operations 是空数组：没有要写的就不用调用 memory，直接继续回答");
@@ -82,7 +94,7 @@ function parseOps(args: unknown, hasProject: boolean): { target: MemoryTarget; o
       default: throw new Error(`action 只能是 add / replace / remove，收到 ${String(o["action"])}。${SHAPE_EXAMPLE}`);
     }
   });
-  return { target, ops };
+  return { target, ops, topic, createTopic };
 }
 
 /** project 由组装根传入（root = 项目根绝对路径，dir = 配置目录相对路径）。
@@ -93,7 +105,24 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
 
   async function execute(args: unknown, world: ExecutionWorld): Promise<string> {
     if (!world.config) throw new Error("这个世界没有长期记忆能力（配置目录不可用）");
-    const { target, ops } = parseOps(args, project !== null);
+    const { target, ops, topic, createTopic } = parseOps(args, project !== null);
+
+    if (target === "topic") {
+      // 桶索引 = 种子 ∪ 磁盘。每次调用现列而不是缓存：别的会话此刻可能刚建了一个桶
+      const onDisk = slugsFromFileNames(await world.config.list(TOPICS_DIR));
+      const known = withSeedTopics(onDisk);
+      if (!known.includes(topic!)) {
+        if (!createTopic) {
+          throw new Error(
+            `没有「${topic}」这个桶。现有桶：\n${renderTopicIndex(known.map((s) => ({ slug: s, label: s, entries: 0 })))}\n` +
+            `先确认没有相近的桶；确实要新建就带 create_topic: true 重发。`,
+          );
+        }
+        if (known.length >= MAX_TOPICS) {
+          throw new Error(`桶数已到上限 ${MAX_TOPICS}，不能再建「${topic}」——先把相近的桶合并（把条目 replace 进已有桶、清空旧桶）。`);
+        }
+      }
+    }
 
     for (const op of ops) {
       if (op.action === "remove") continue;
@@ -117,7 +146,7 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
       }
     }
 
-    const rel = memoryRelPath(target, project?.dir);
+    const rel = memoryRelPath(target, project?.dir, topic);
     // read→apply→write 整段持 per-file 锁（issue #185）：并发的另一次写在这段
     // 结束前进不来，读到的永远是上一次写完之后的最新视图
     const result = await withMemoryFileLock(rel, async (): Promise<MemoryToolResult> => {
@@ -147,20 +176,20 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
       }
 
       return {
-        ok: true, target,
+        ok: true, target, ...(topic ? { topic } : {}),
         added: r.changed.added, updated: r.changed.updated, removed: r.changed.removed,
         used: charCount(formatEntries(r.entries)), limit: MEMORY_LIMITS[target],
       };
     });
     const n = result.added.length + result.updated.length + result.removed.length;
     // 终态一句话，不回显条目
-    const label = { memory: "MEMORY", user: "USER", project: "PROJECT" }[result.target];
+    const label = { memory: "MEMORY", user: "USER", project: "PROJECT", topic: `TOPIC:${result.topic ?? ""}` }[result.target];
     return `已更新 ${label}（${n} 处，${result.used}/${result.limit} 字符）。\n${formatMemoryResultLine(result)}`;
   }
 
   // 有无项目根决定判据文案的档数：看不见的档不需要判据，说了也是噪音。
-  // 判据正文单源在 shared/memoryStore.ts 的 tierRuleText（issue #589）
-  const tierRule = project ? `三档：${tierRuleText()}` : "两档：memory = 你的笔记，user = 关于用户。";
+  // 判据正文单源在 shared/memoryStore.ts 的 tierRuleText / topicRuleText（issue #589）
+  const tierRule = (project ? `四档：${tierRuleText()}` : "三档：memory = 你的笔记（本机环境），user = 关于用户。") + topicRuleText();
 
   return {
     def: {
@@ -175,12 +204,14 @@ export function createMemoryTool(project: { root: string; dir: string } | null):
         properties: {
           target: {
             type: "string",
-            enum: project ? ["memory", "user", "project"] : ["memory", "user"],
+            enum: project ? ["memory", "user", "project", "topic"] : ["memory", "user", "topic"],
             description: "写哪个文件",
           },
           action: { type: "string", enum: ["add", "replace", "remove"], description: "单条操作" },
           content: { type: "string", description: "add/replace 的新内容（别名 new_text）" },
           old_text: { type: "string", description: "replace/remove 用：目标条目里一段短且唯一的子串" },
+          topic: { type: "string", description: "target 为 topic 时必填：桶的 slug（小写 kebab）。优先用系统提示主题索引里已有的桶" },
+          create_topic: { type: "boolean", description: "桶不存在时要不要新建。默认 false——先看索引确认没有相近的桶" },
           operations: {
             type: "array",
             description: "批量原子操作；每项 {action, content?, old_text?}。上限只在整批结果上校验",

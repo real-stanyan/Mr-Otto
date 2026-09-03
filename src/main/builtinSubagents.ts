@@ -11,7 +11,7 @@
 
 import { type SubagentDef } from "../shared/subagent.js";
 import { DEFAULT_MODEL } from "../shared/modelCatalog.js";
-import { tierRuleText } from "../shared/memoryStore.js";
+import { tierRuleText, topicRuleText } from "../shared/memoryStore.js";
 
 /** 内置定义的 source —— 设置页拿它当"这份来自哪儿"显示。不是路径：它没有路径 */
 export const BUILTIN_SOURCE = "内置";
@@ -88,6 +88,7 @@ const BUILTINS: readonly Omit<SubagentDef, "unknownTools" | "path" | "source" | 
       "有就用 memory 工具写（陈述句；与已有条目重复的合并而不是再加一条；过时的 replace/remove 掉）；没有就什么也不写。\n\n" +
       `三档判据：${tierRuleText({ upper: true })}` +
       "没有项目档时（工作区不在 git 仓库里）只有两档，别提 PROJECT——那时 memory 工具里也压根没有这个选项。\n\n" +
+      `主题桶：${topicRuleText({ upper: true })}任务里附了主题索引；写 topic 档时 topic 参数给索引里的 slug。\n` +
       "不记任务进度、文件清单、PR/issue 号、commit、正在做的事。汇报一句话：记了什么/没记为什么。",
     tools: ["memory"],
     approval: "inherit",

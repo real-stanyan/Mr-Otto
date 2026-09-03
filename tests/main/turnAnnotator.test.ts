@@ -51,6 +51,7 @@ describe("annotateTurn —— 一次往返两边各取所需", () => {
       section: { title: "修登录 bug" },
       suggestions: ["跑一下测试", "解释一下这段"],
       sessionTitle: null,
+      sessionTopic: null,
       model: ANNOTATE_MODEL,
       usage: { promptTokens: 300, completionTokens: 20 },
     });
@@ -214,7 +215,9 @@ describe("annotateTurn —— 一次往返两边各取所需", () => {
     vi.stubGlobal("fetch", fetchSpy);
     const out = await annotateTurn([], [], ANNOTATE_MODEL, "搜一下 vite 官网，把找到的链接写进 sources-test.md");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(out).toEqual({ section: null, suggestions: null, sessionTitle: "搜 vite 官网写文档", model: ANNOTATE_MODEL });
+    expect(out).toEqual({
+      section: null, suggestions: null, sessionTitle: "搜 vite 官网写文档", sessionTopic: null, model: ANNOTATE_MODEL,
+    });
   });
 
   it("标题那一边形状烂 → 只废标题（触发条件仍在，下个 turn 自愈）", async () => {
@@ -223,5 +226,19 @@ describe("annotateTurn —— 一次往返两边各取所需", () => {
     const out = await annotateTurn(log, exchange, ANNOTATE_MODEL, "很长很长的第一条消息".repeat(5));
     expect(out?.section).toEqual({ title: "修登录 bug" });
     expect(out?.sessionTitle).toBeNull();
+  });
+
+  it("带 topicChoice：提示词含任务四，回复里的 sessionTopic 只认索引内的 slug", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return okReply('{"newSection":true,"title":"改装车","suggestions":["继续"],"sessionTopic":"hobbies"}');
+    }));
+    const out = await annotateTurn(log, exchange, undefined, null, {
+      source: "帮我看看 WRX 改装",
+      index: [{ slug: "work", label: "工作", entries: 0 }, { slug: "hobbies", label: "爱好", entries: 0 }],
+    });
+    expect(out?.sessionTopic).toBe("hobbies");
+    expect(bodies[0]).toContain("任务四");
   });
 });

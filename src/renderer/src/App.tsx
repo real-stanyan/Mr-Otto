@@ -9,7 +9,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { useChat } from "./store.js";
@@ -121,9 +126,11 @@ import {
   folderName,
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
+  groupTasksByTopic,
   partitionShared,
   taskSessions,
 } from "./sessionGroups.js";
+import { SEED_TOPICS, withSeedTopics } from "../../shared/memoryTopics.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -1815,6 +1822,23 @@ function AppSidebar() {
           >
             重命名
           </DropdownMenuItem>
+          {/* 归到…（#846）：只有任务栏（内置 Default 工作区）的会话才有主题桶这个概念 */}
+          {s.workspace === builtin && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>归到…</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuRadioGroup
+                  value={s.topic ?? "__none"}
+                  onValueChange={(v) => void window.otter.setSessionTopic(s.sessionId, v === "__none" ? null : v)}
+                >
+                  {topicSlugs.map((slug) => (
+                    <DropdownMenuRadioItem key={slug} value={slug}>{labelOf(slug)}</DropdownMenuRadioItem>
+                  ))}
+                  <DropdownMenuRadioItem value="__none">未分类</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
           <DropdownMenuItem
             disabled={statusBySession[s.sessionId] === "running"}
             onClick={() => void archiveSession(s.sessionId)}
@@ -1853,6 +1877,19 @@ function AppSidebar() {
   // 同步（分享）过的会话抽出来单列一段（issue #809）——分享之后「对面还有一份」，
   // 和纯本地会话不再是同一种东西，混在一摞里这条身份就看不见了
   const taskParts = useMemo(() => partitionShared(taskSessions(sessions, builtin)), [sessions, builtin]);
+  // 主题分组（#846）：标签优先取用户改过的自定义 label,种子表兜底,再兜底 slug 本身
+  const [topicLabels, setTopicLabels] = useState<Record<string, string>>({});
+  useEffect(() => {
+    void window.otter.listTopicMemories().then((ts) => setTopicLabels(Object.fromEntries(ts.map((t) => [t.slug, t.label]))));
+  }, [sessions]); // 会话列表变了（含主题事件刷新）顺手刷一次标签；量小，不值得单独订阅
+  const labelOf = (slug: string) => topicLabels[slug] ?? SEED_TOPICS[slug] ?? slug;
+  const topicSlugs = useMemo(() => withSeedTopics(Object.keys(topicLabels)), [topicLabels]);
+  // known 桶集合：桶被删了的会话回未分类而不是画出一个死链组（spec §3）
+  const knownTopics = useMemo(() => new Set(topicSlugs), [topicSlugs]);
+  const taskGroups = useMemo(
+    () => groupTasksByTopic(taskParts.local, labelOf, knownTopics),
+    [taskParts, topicLabels, knownTopics]
+  );
   // 可恢复的按工程文件夹分组：平铺流里同一工程被别的工程插花，工程一多就找不着。
   // 内置 Default 的会话归任务栏,不在这儿再出现一组。
   // 项目栏同样先把同步过的抽走：分区那段平铺（分享的单位是会话不是工程），
@@ -2075,8 +2112,8 @@ function AppSidebar() {
             )}
           </>
         ) : tab === "tasks" ? (
-          // 任务视图：内置 Default 工作区的会话平铺（最近活跃在前，列表本来的序）。
-          // 不分组、不出现路径——这一栏的全部意义就是不用先懂「文件夹」。
+          // 任务视图：内置 Default 工作区的会话，不出现路径——这一栏的全部意义
+          // 就是不用先懂「文件夹」。按主题桶分组（#846），组内仍是最近活跃在前。
           // 同步过的单列一段在上（issue #809）；一条都没分享过时不出段头，
           // 列表长相和从前一模一样——分区是给用过分享的人的，不是给所有人的税
           <SidebarMenu className="p-2">
@@ -2087,7 +2124,13 @@ function AppSidebar() {
                 <div className={SECTION_HEADING}>本地</div>
               </>
             )}
-            {taskParts.local.map((s) => sessionRow(s, "任务"))}
+            {taskGroups.map((g) => (
+              <Fragment key={g.topic ?? "__none"}>
+                {/* 只有一组且是未分类时不画组头：从没分类过的人看到的列表和从前一模一样 */}
+                {!(taskGroups.length === 1 && g.topic === null) && <div className={SECTION_HEADING}>{g.label}</div>}
+                {g.sessions.map((s) => sessionRow(s, "任务"))}
+              </Fragment>
+            ))}
           </SidebarMenu>
         ) : (
           <>

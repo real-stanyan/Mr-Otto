@@ -27,6 +27,7 @@ const bridge: ShellBridge = {
   archiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.archiveSession, sessionId),
   unarchiveSession: (sessionId) => ipcRenderer.invoke(CHANNELS.unarchiveSession, sessionId),
   renameSession: (sessionId, title) => ipcRenderer.invoke(CHANNELS.renameSession, sessionId, title),
+  setSessionTopic: (sessionId, topic) => ipcRenderer.invoke(CHANNELS.setSessionTopic, sessionId, topic),
   rewindToCheckpoint: (sessionId, checkpointSeq) =>
     ipcRenderer.invoke(CHANNELS.rewindToCheckpoint, sessionId, checkpointSeq),
   switchModel: (model, lane) => ipcRenderer.invoke(CHANNELS.switchModel, model, lane),
@@ -40,12 +41,15 @@ const bridge: ShellBridge = {
   importSkills: (names) => ipcRenderer.invoke(CHANNELS.importSkills, names),
   releaseSkill: (sessionId, name) => ipcRenderer.invoke(CHANNELS.releaseSkill, sessionId, name),
   getMemory: () => ipcRenderer.invoke(CHANNELS.getMemory),
-  saveMemory: (target, text, sessionId, projectRoot) =>
-    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId, projectRoot),
-  forgetMemory: (target, entry, sessionId, projectRoot) =>
-    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId, projectRoot),
+  saveMemory: (target, text, sessionId, projectRoot, topic) =>
+    ipcRenderer.invoke(CHANNELS.saveMemory, target, text, sessionId, projectRoot, topic),
+  forgetMemory: (target, entry, sessionId, projectRoot, topic) =>
+    ipcRenderer.invoke(CHANNELS.forgetMemory, target, entry, sessionId, projectRoot, topic),
   listProjectMemories: () => ipcRenderer.invoke(CHANNELS.listProjectMemories),
   deleteProjectMemory: (root) => ipcRenderer.invoke(CHANNELS.deleteProjectMemory, root),
+  listTopicMemories: () => ipcRenderer.invoke(CHANNELS.listTopicMemories),
+  deleteTopicMemory: (slug) => ipcRenderer.invoke(CHANNELS.deleteTopicMemory, slug),
+  setTopicLabel: (slug, label) => ipcRenderer.invoke(CHANNELS.setTopicLabel, slug, label),
   rebuildSearchIndex: () => ipcRenderer.invoke(CHANNELS.rebuildSearchIndex),
   searchIndex: (query) => ipcRenderer.invoke(CHANNELS.searchIndex, query),
   getAutoCompact: () => ipcRenderer.invoke(CHANNELS.getAutoCompact),

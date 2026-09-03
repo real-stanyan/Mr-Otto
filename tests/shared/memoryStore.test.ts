@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOps, charCount, formatEntries, parseEntries, MEMORY_LIMITS, ENTRY_DELIMITER,
   parseMemoryResult, MEMORY_RESULT_MARK, projectMentionInGlobal, tierRuleText,
+  isMemoryTarget, memoryRelPath, topicRuleText,
 } from "../../src/shared/memoryStore.js";
 
 describe("parseEntries / formatEntries", () => {
@@ -96,7 +97,7 @@ describe("parseMemoryResult", () => {
   });
 });
 
-import { memoryRelPath, isMemoryTarget, withMemoryFileLock } from "../../src/shared/memoryStore.js";
+import { withMemoryFileLock } from "../../src/shared/memoryStore.js";
 
 describe("三档路径与上限", () => {
   it("memoryRelPath：三档各自的相对路径", () => {
@@ -116,7 +117,7 @@ describe("三档路径与上限", () => {
   });
 
   it("三档上限：全局档让位给项目档", () => {
-    expect(MEMORY_LIMITS).toEqual({ memory: 1100, user: 1375, project: 2200 });
+    expect(MEMORY_LIMITS).toEqual({ memory: 1100, user: 1375, project: 2200, topic: 700 });
   });
 
   it("project 超限的报错文案带 PROJECT 字样", () => {
@@ -255,5 +256,25 @@ describe("projectMentionInGlobal", () => {
   });
   it("Windows 风格分隔符也能取出目录名", () => {
     expect(projectMentionInGlobal("提到 MyProj 的事", "C:\\code\\MyProj")).toBe("MyProj");
+  });
+});
+
+describe("topic 档（第四档）", () => {
+  it("isMemoryTarget 认 topic；memoryRelPath 按 slug 拼；缺 topic 抛", () => {
+    expect(isMemoryTarget("topic")).toBe(true);
+    expect(memoryRelPath("topic", null, "work")).toBe("memories/topics/work.md");
+    expect(() => memoryRelPath("topic")).toThrow(/topic/);
+    expect(() => memoryRelPath("topic", null, "../x")).toThrow(/slug/);
+  });
+  it("预算 700，applyOps 的超限文案带 TOPIC", () => {
+    expect(MEMORY_LIMITS.topic).toBe(700);
+    const r = applyOps("topic", ["x".repeat(695)], [{ action: "add", target: "topic", content: "yyyyyyyyyy" }]);
+    expect(r).toMatchObject({ ok: false });
+    expect((r as { error: string }).error).toContain("TOPIC");
+  });
+  it("topicRuleText 大小写两版", () => {
+    expect(topicRuleText()).toContain("topic 记");
+    expect(topicRuleText({ upper: true })).toContain("TOPIC 记");
+    expect(topicRuleText()).toContain("create_topic");
   });
 });

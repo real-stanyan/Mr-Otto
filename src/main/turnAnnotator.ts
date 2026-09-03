@@ -23,6 +23,8 @@ import {
 } from "./sectionClassifier.js";
 import { WANT, lastExchange, parseSuggestions, summarizeExchange } from "./followUpSuggester.js";
 import { parseSessionTitle, titleBlock } from "./sessionTitler.js";
+import { parseSessionTopic, topicBlock } from "./sessionTopic.js";
+import type { TopicIndexEntry } from "../shared/memoryTopics.js";
 import type { SessionEvent, TokenUsage } from "../session/events.js";
 
 /** 型号出厂默认。用户可以在设置页改（shared/helperModel.ts），
@@ -39,8 +41,15 @@ export interface TurnAnnotation {
   suggestions: string[] | null;
   /** 会话自动命名（issue #335）。null = 没跑（不需要）或解析失败（触发条件仍在，自愈） */
   sessionTitle: string | null;
+  /** 会话主题（#846）。null = 没跑（不是 Default 会话 / 已有主题）或模型选不出 */
+  sessionTopic: string | null;
   model: string;
   usage?: TokenUsage;
+}
+
+export interface TopicChoice {
+  source: string;
+  index: TopicIndexEntry[];
 }
 
 /** 夹住对话原文的围栏。现造随机串而不是固定分隔符（理由见 sectionClassifier
@@ -81,6 +90,7 @@ function buildPrompt(opts: {
   span: string | null;
   exchange: string | null;
   titleSource: string | null;
+  topicChoice: TopicChoice | null;
   tag: string;
 }): string {
   const parts: string[] = ["你是一个 AI 编程助手会话的后勤员，一次回复完成下面的任务。\n"];
@@ -98,6 +108,10 @@ function buildPrompt(opts: {
     parts.push(titleBlock(opts.titleSource, opts.tag));
     shape.push('"sessionTitle": "会话标题"');
   }
+  if (opts.topicChoice !== null) {
+    parts.push(topicBlock(opts.topicChoice.source, opts.topicChoice.index, opts.tag));
+    shape.push('"sessionTopic": "桶 slug 或 null"');
+  }
   parts.push(`只回一个 JSON，不要解释，不要围栏：{${shape.join(", ")}}`);
   return parts.join("\n");
 }
@@ -112,14 +126,18 @@ export async function annotateTurn(
   model: string = ANNOTATE_MODEL,
   /** 会话自动命名的素材（autoTitleSource 的产出）。null = 不需要命名（已有
       标题/首行够短），这一边不进提示词——判定住在调用方，本函数只管跑 */
-  titleSource: string | null = null
+  titleSource: string | null = null,
+  /** 会话主题分类的素材 + 可选桶索引（topicSource 的产出 + topicIndexOf）。null = 不需要
+      分类（不是 Default 主会话/已有主题），这一边不进提示词——判定住在调用方 */
+  topicChoice: TopicChoice | null = null
 ): Promise<TurnAnnotation | null> {
   const span = summarizeSpan(unclassifiedSpan(classifyEvents));
   const exchange = summarizeExchange(lastExchange(exchangeEvents));
   const wantSection = span.trim() !== "";
   const wantSuggest = exchange.trim() !== "";
   const wantTitle = titleSource !== null;
-  if (!wantSection && !wantSuggest && !wantTitle) return null; // 全都没内容：别浪费一次调用
+  const wantTopic = topicChoice !== null;
+  if (!wantSection && !wantSuggest && !wantTitle && !wantTopic) return null; // 全都没内容：别浪费一次调用
 
   try {
     // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
@@ -139,6 +157,7 @@ export async function annotateTurn(
             span: wantSection ? span : null,
             exchange: wantSuggest ? exchange : null,
             titleSource,
+            topicChoice,
             tag: fence(),
           }),
         },
@@ -161,11 +180,14 @@ export async function annotateTurn(
     }
     const suggestions = wantSuggest ? parseSuggestions(reply.content) : null;
     const sessionTitle = wantTitle ? parseSessionTitle(reply.content) : null;
-    if (!section && !suggestions && !sessionTitle) return null; // 全烂：等于这次调用没发生
+    const sessionTopic =
+      topicChoice !== null ? parseSessionTopic(reply.content, topicChoice.index.map((t) => t.slug)) : null;
+    if (!section && !suggestions && !sessionTitle && !sessionTopic) return null; // 全烂：等于这次调用没发生
     return {
       section,
       suggestions,
       sessionTitle,
+      sessionTopic,
       model,
       ...(reply.usage ? { usage: reply.usage } : {}),
     };
