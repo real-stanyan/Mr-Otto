@@ -2262,6 +2262,24 @@ void app.whenReady().then(() => {
         });
         n.show();
       },
+      // 退化循环（issue #891）：同 onLongTurn 的纪律（不拦不停、窗口聚焦时不发），
+      // 但说的是另一回事——「还在跑」是正常的，「原地打转」不是。护栏已经往对话里
+      // 注了一条话给模型；这条通知是给人的那一份，因为真卡住时人才是那个该回来按停止的
+      onToolLoop: ({ period, repeats }) => {
+        if (win.isDestroyed() || win.isFocused() || !Notification.isSupported()) return;
+        const shape = period === 1 ? "同一次工具调用" : `同一组 ${period} 次工具调用`;
+        const n = new Notification({
+          title: "Mr Otto 好像在原地打转",
+          body: `${shape}原样重复了 ${repeats} 遍。已提醒它换个做法；没用的话回来按停止。`,
+        });
+        n.on("click", () => {
+          if (!win.isDestroyed()) {
+            win.show();
+            win.focus();
+          }
+        });
+        n.show();
+      },
       // 子会话也挂 MCP（ADR-0054）：挂载归挂载，能不能用由那份 subagent 定义的
       // 工具白名单逐个点名——没点名就是没有，所以默认行为和"压根不挂"一样。
       // 不自动继承的理由同 ADR-0047 给子 agent 收权：派出去的 agent 没人盯着，

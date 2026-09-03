@@ -14,6 +14,7 @@ import {
 } from "../shared/modelCatalog.js";
 import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
+import type { ToolLoopDetection } from "../shared/toolLoopGuard.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
 import { projectMemoryDir, projectScopeId } from "./projectRoot.js";
 
@@ -307,6 +308,9 @@ export function createAgent(opts: {
   /** 长 turn 软告警（issue #283 ⑥）：单 turn 模型步数踩线时喊一次。
       不给 = 不喊（子会话/测试/裸装配照旧）。index.ts 拿它发系统通知 */
   onLongTurn?: (rounds: number) => void;
+  /** 退化循环护栏喊话时（issue #891）。不给 = 不喊（护栏本身照常往对话里注消息）。
+      index.ts 拿它发系统通知 */
+  onToolLoop?: (detection: ToolLoopDetection) => void;
   /** skill 库接线（issue 待开）。缺席 = 不挂 skill 工具（裸装配/测试照旧）。
       listSkills 现扫磁盘由组装根注入——工具层不碰 fs */
   skills?: SkillLibrary;
@@ -852,6 +856,7 @@ export function createAgent(opts: {
       settings: opts.autoCompactSettings ?? (() => DEFAULT_AUTO_COMPACT),
     },
     ...(opts.onLongTurn ? { onLongTurn: opts.onLongTurn } : {}),
+    ...(opts.onToolLoop ? { onToolLoop: opts.onToolLoop } : {}),
     deferredExposed, // issue #348：tool_search 写、engine 声明表过滤读
     ...(opts.toolHooks ? { hooks: opts.toolHooks } : {}),
   });
