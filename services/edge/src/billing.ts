@@ -132,6 +132,14 @@ export function checkoutParams(o: {
 }): URLSearchParams {
   const p = new URLSearchParams();
   p.set("mode", o.mode);
+  // Managed Payments 显式关掉（issue #910，ADR-0216）。Stripe 在账号上把它**默认开着**，
+  // 而开着就要求每个 Product 填 tax_code —— 没填的后果不是少收税，是 checkout/sessions
+  // 直接 400，订阅按钮点了什么都不发生。关掉 = Mr Otto 自己是 merchant of record，
+  // 各国 VAT/GST 由我们自己管，这正是 ADR-0174/0203 整套设计一直假设的形态。
+  //
+  // 写在**每次会话上**而不是只改账号的默认值：那个默认值是 Stripe 的开关，Stripe 可以改，
+  // 而且 test / live 是两份。参数里写死，行为就不再取决于「后台那一格此刻是什么」。
+  p.set("managed_payments[enabled]", "false");
   p.set("line_items[0][price]", o.priceId);
   p.set("line_items[0][quantity]", String(o.quantity));
   p.set("client_reference_id", o.uid);
