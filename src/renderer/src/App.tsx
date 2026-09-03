@@ -2602,11 +2602,10 @@ function IsolatedChip({ events }: { events: SessionEvent[] }) {
     <>
       <span className="text-muted-foreground text-xs shrink-0">·</span>
       <span
-        className="shrink-0 inline-flex items-center gap-1 rounded-full border border-border/60 px-1.5 py-px text-[11px] text-muted-foreground"
+        className="shrink-0 inline-flex items-center text-muted-foreground"
         title={`这只水獭在一份独立副本上干活，你的项目目录（${iso.projectRoot}）暂时不会变。合并请用右边的「更多」菜单。`}
       >
         <GitBranch className="w-3 h-3" />
-        独立副本
       </span>
     </>
   );
@@ -3699,9 +3698,12 @@ export function App() {
             {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
           <span className="text-muted-foreground text-xs shrink-0">·</span>
-          <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-            {folderName(workspace)}
-          </span>
+          {/* 内置 Default 工作区不显示文字——「Default」是系统内部名字，不是用户起的 */}
+          {workspace !== builtinWorkspace && (
+            <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
+              {folderName(workspace)}
+            </span>
+          )}
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}
           <BranchPicker dir={workspace} disabled={status === "running"} leadingSep />
