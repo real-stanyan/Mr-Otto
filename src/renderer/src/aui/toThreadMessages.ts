@@ -92,6 +92,10 @@ function isAuditEvent(e: SessionEvent): boolean {
     // 没有——输入框一清，看起来像消息被吞了。这一行是那个动作唯一的痕迹，
     // 而它现在还可能连带借出了 MCP 服务（ADR-0177），更该看得见
     case "session_shared":
+    // 改道（issue #696）：托管额度用完、自动落到用户自己的 key 那一刻——钱从谁
+    // 账上出变了，assistant_message.route 只说结果不说"中途曾经改过道"，
+    // 这一行是那个事实唯一的痕迹
+    case "route_changed":
       return true;
     case "approval_decision":
       return e.decision === "denied";

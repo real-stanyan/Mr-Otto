@@ -25,11 +25,11 @@ import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
+import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
-import { createOpenAICompatibleAdapter } from "../../../src/model/openaiCompatible.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
+import type { SessionEvent } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
@@ -45,19 +45,6 @@ import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
     裁定挪到这里：不补的话，重启后已闲置容器永远跳过 sweepIdle 的闲停判定，
     因为 lastActive 表是进程内状态，daemon 一重启就空了）。 */
 const WORKSPACE_LABEL = "mrotto.workspace";
-
-/** 外包 usage 钩子（brief 给的原样形状）：chat() resolve 后有 usage 就回调一次。
-    调用方决定 usage 记账去哪——这里不关心，只负责不吞掉这个事实。 */
-function withUsage(adapter: ModelAdapter, onUsage: (u: TokenUsage, model: string) => void): ModelAdapter {
-  return {
-    ...adapter,
-    async chat(messages, tools, onDelta, signal) {
-      const reply = await adapter.chat(messages, tools, onDelta, signal);
-      if (reply.usage) onUsage(reply.usage, adapter.model);
-      return reply;
-    },
-  };
-}
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
     DATA_DIR，不是 Supabase：孤儿判定是这台 runtime 自己的运行时状态，
@@ -199,37 +186,29 @@ async function main(): Promise<void> {
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
 
-  /** 每工作区一把模型（issue #844）。**每次 chat() 现读一次配置**而不是在
-      开房间那一刻定死：owner 随时可能改 key/换型号，而会话房是长命的——
-      定死意味着改完要重启 daemon 才生效。构造 adapter 只是拼一个闭包，
-      现读的代价可以忽略。
-      没配 = **抛一条给人看的错**，不是回落到某把 key：回落就是"忘了配的
-      工作区默默烧别人的钱"，正是这一版要消灭的东西。这条错会被 engine
-      当成 turn 失败落进日志，群里所有人都看得见 */
-  function adapterFor(workspaceId: string): ModelAdapter {
-    const cfg = () => workspaceConfigStore.load(workspaceId)?.model;
-    return {
-      // 型号 id 落进 assistant_message.model，是事实记录——没配时给一个
-      // 说得出口的占位，而不是空串
-      get model(): string {
-        return cfg()?.modelId ?? "(未配置)";
-      },
-      async chat(messages, tools, onDelta, signal) {
-        const m = cfg();
-        if (!m) {
-          throw new Error(
-            "这个工作区还没配模型：所有者打开工作区 → 云会话 → 右上角「仓库/模型」，" +
-            "填一条 https 的 API 地址、型号 id 和自己的 API key。" +
-            "（云端不提供公共 key，这里烧的是配置者自己的额度）"
-          );
-        }
-        return createOpenAICompatibleAdapter({
-          baseUrl: m.baseUrl,
-          apiKey: m.apiKey,
-          model: m.modelId,
-        }).chat(messages, tools, onDelta, signal);
-      },
-    };
+  // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
+  // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
+  const hostedProbe = createHostedProbe({ edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret });
+
+  /** 每次 chat()/prepare() 现读一次工作区配置（issue #844）而不是在开房间那一刻
+      定死：owner 随时可能改 key/换型号，而会话房是长命的——定死意味着改完要重启
+      daemon 才生效。构造 adapter 只是拼一份 deps，现读的代价可以忽略。
+      决策逻辑（路由三步，Task 13）搬进 hostedRoute.ts 的 createHostedRuntimeAdapter
+      ——daemon.ts 自己不含值得单测的逻辑（见文件头注释），这里只是装配：
+      ① 发起人有活跃订阅且网关供着型号 → hosted（平台身份代发起人走网关，runtime
+      仍不持有模型 key）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
+      **抛一条给人看的错**，不回落到任何 key——回落就是"忘了配的工作区默默烧别人的钱"，
+      正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见 */
+  function adapterFor(workspaceId: string, sessionId: string, initiatorUid: () => string | null): ModelAdapter {
+    return createHostedRuntimeAdapter({
+      edgeBase: config.edgeBase,
+      runtimeSecret: config.runtimeSecret,
+      probe: hostedProbe,
+      cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+      initiatorUid,
+      workspaceId,
+      sessionId,
+    });
   }
 
   /** workspace_members 的 uid 集合——membershipCache 的 query 与
@@ -424,7 +403,7 @@ async function main(): Promise<void> {
     // 而 session 本身要在 createCloudSession 里才造出来——回调只在 engine.chat()
     // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全
     let session!: CloudSession;
-    const perSessionAdapter = withUsage(adapterFor(workspaceId), (usage, model) => {
+    const perSessionAdapter = withUsage(adapterFor(workspaceId, sessionId, () => session.initiatorUid()), (usage, model) => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调——理论不会发生
       store.append({

@@ -126,4 +126,47 @@ describe("request_envelope（issue #383）", () => {
     expect(deriveMessages(log)).toEqual(deriveMessages(without));
     store.close();
   });
+
+  it("有 prepare() 的 adapter：engine 在落信封前等它跑完（issue #696 fix round 1）——" +
+    "信封里的 model 是 prepare() 现算出的那个，不是上一 turn 留下的旧值", async () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/w" });
+    const order: string[] = [];
+    let lastModel = "stale-model"; // 上一 turn（或还没跑过 chat()）留下的值
+    const adapter: ModelAdapter = {
+      get model() {
+        return lastModel;
+      },
+      async prepare() {
+        order.push("prepare");
+        lastModel = "fresh-model"; // 云 runtime 的 adapter 会在这里现算出真正路由到的型号
+      },
+      async chat() {
+        order.push("chat");
+        return { content: "好" };
+      },
+    };
+    const engine = makeEngine(store, adapter);
+    await engine.runTurn("你好");
+
+    // prepare() 先于 chat()——顺序即证据：engine 在读 model 落信封之前调用了它
+    expect(order).toEqual(["prepare", "chat"]);
+    const env = store.load("s1").find((e) => e.type === "request_envelope");
+    expect(env).toBeDefined();
+    if (env?.type !== "request_envelope") throw new Error("unreachable");
+    expect(env.model).toBe("fresh-model");
+    store.close();
+  });
+
+  it("没有 prepare() 的 adapter（桌面端的老路径）：跳过它，行为不变", async () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/w" });
+    const engine = makeEngine(store, fakeAdapter([{ content: "好" }], "m-1"));
+    await engine.runTurn("你好");
+    const env = store.load("s1").find((e) => e.type === "request_envelope");
+    expect(env).toBeDefined();
+    if (env?.type !== "request_envelope") throw new Error("unreachable");
+    expect(env.model).toBe("m-1");
+    store.close();
+  });
 });

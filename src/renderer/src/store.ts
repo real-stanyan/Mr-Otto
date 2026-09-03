@@ -54,7 +54,8 @@ const DEFAULT_THINKING: ThinkingMode = describeModel(DEFAULT_MODEL)?.thinking.de
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/protocol.js";
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
-import type { IsolatedMergeResult } from "../../shared/shellBridge.js";
+import type { IsolatedMergeResult, BillingSnapshotView } from "../../shared/shellBridge.js";
+import type { PlanId } from "../../shared/billing.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 
 /** 「发过重置邮件、还没设新密码」这笔记号。放 localStorage 而不是内存:
@@ -438,6 +439,10 @@ interface ChatState {
   providerUsage: UsageSnapshot | null;
   /** 各厂商账户余额。只有四家有这回事，查不到的厂商压根不在数组里 */
   providerBalances: ProviderBalance[];
+  /** 订阅制托管额度快照（ADR-0176/issue #696，Task 11）。null = 还没查过——
+      和"没有订阅"不是一回事（区分靠 billing.me，不是靠这层 null）。
+      boot() 订阅 onBillingChanged 保持热更新，登录态变化时另外 loadBilling(true) 一次 */
+  billing: BillingSnapshotView | null;
   /** 登录账号（未登录 = signedIn:false 的空账号，boot 时取一次，onAccountChanged 推送更新） */
   account: AccountInfo;
   /** 这台机器上有没有登录记录（auth.json 存过东西）。进门闸看的是它，不是
@@ -665,6 +670,13 @@ interface ChatState {
   /** 拉「模型配置」页要的两份数：跨会话用量 + 各家余额。开页时取一次。
       两份各自成败（余额那趟要出网，慢且可能失败，不该拖累用量图） */
   refreshProviderStats(days: number): Promise<void>;
+  /** 拉一次托管额度快照。refresh=true 先打 /me（开订阅页 / 登录态变化时用），
+      失败保留旧值——同 hostedQuota 那条"拿不到"≠"没订阅"的纪律 */
+  loadBilling(refresh?: boolean): Promise<void>;
+  /** 订阅 / 加购下单：主进程拿 url 后自己在系统浏览器打开，这里只是发起 */
+  billingCheckout(target: { planId: PlanId } | { addon: true; quantity: number }): Promise<void>;
+  /** 打开 Stripe customer portal（改档/取消/换卡） */
+  billingPortal(): Promise<void>;
   /** 发起 OAuth 登录；结果以 onAccountChanged 事件流回，这里只管失败提示 */
   signIn(provider: "google" | "github"): Promise<void>;
   /** 邮箱密码登录；成功走 onAccountChanged，失败落 error。回 true = 没抛错 */
@@ -1143,6 +1155,7 @@ export const useChat = create<ChatState>((set, get) => ({
   ollamaError: "",
   providerUsage: null,
   providerBalances: [],
+  billing: null,
   account: { signedIn: false, id: "", email: "", name: "", avatarUrl: "" },
   authRecord: false,
   setPasswordOpen: false,
@@ -1703,6 +1716,32 @@ export const useChat = create<ChatState>((set, get) => ({
       .providerBalances()
       .then((providerBalances) => set({ providerBalances }))
       .catch(() => set({ providerBalances: [] }));
+  },
+
+  async loadBilling(refresh = false) {
+    try {
+      set({ billing: await window.otter.billingSnapshot(refresh) });
+    } catch {
+      // 保留旧值——"拿不到"≠"没订阅"（同 hostedQuota.refresh 的纪律）
+    }
+  },
+  async billingCheckout(target) {
+    set({ error: null });
+    try {
+      await window.otter.billingCheckout(target);
+    } catch (e) {
+      // 同 signIn 的纪律：失败落 error banner，不吞——不然点了订阅按钮
+      // 什么都没发生，用户只会以为按钮坏了
+      set({ error: bridgeErrorMessage(e) });
+    }
+  },
+  async billingPortal() {
+    set({ error: null });
+    try {
+      await window.otter.billingPortal();
+    } catch (e) {
+      set({ error: bridgeErrorMessage(e) });
+    }
   },
 
   async saveApiKey(envName, key) {
@@ -2333,12 +2372,19 @@ export const useChat = create<ChatState>((set, get) => ({
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
               myProfile: null, profileSetupOpen: false, modelSetupOpen: false,
+              // 订阅额度同理:换号/登出不该让下一个账号背上一个的数字
+              billing: null,
             }
       );
       // 资料补拉必须在 set 之后:needsOnboarding 读的是 store 里的登录态,
       // 先调等于拿着旧的"未登录"去查
       if (account.signedIn) void get().refreshMyProfile();
+      // 登录态变化就重问一次(refresh:true)——登录时是真的要最新额度,
+      // 登出时 hostedQuota.refresh() 因为没有 token 会把 me 清成 null,
+      // 双保险同上面那行 billing:null 一致
+      void get().loadBilling(true);
     });
+    window.otter.onBillingChanged((billing) => set({ billing }));
     window.otter.onFriendsChanged((friendsSnapshot) => set({ friendsSnapshot }));
     window.otter.onPresenceChanged((onlineIds) => set({ onlineIds }));
     window.otter.onWorkspacesChanged((workspaces) => set({ workspaces }));

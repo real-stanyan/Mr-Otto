@@ -82,6 +82,8 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(PRIVACY_STRIP_TYPES.has("request_envelope")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("project_instructions")).toBe(true);
     expect(PRIVACY_STRIP_TYPES.has("session_shared")).toBe(true);
+    // 改道事件带的是发送方的计费状态（额度用完/没订阅），不是这段对话的内容（#696）
+    expect(PRIVACY_STRIP_TYPES.has("route_changed")).toBe(true);
   });
 
   it("剥掉「这条会话以前还分享给过谁」——发给 B 的包不该带发送方的社交关系与授权史", () => {

@@ -15,6 +15,12 @@ import type { SessionEvent } from "./events.js";
 /** 一款型号在本会话的累计用量 */
 export interface ModelUsage {
   model: string;
+  /** 这笔账走的哪条路（ADR-0176 决定五）：hosted = 官方 key + 订阅额度（按 credit 记账，
+      UI 不显示 $）,direct = 用户自己的 key（按 $ 记账）。同一款型号换过路要分两行——
+      合成一行会把两种不同的计费口径混进同一个 $ 数字里，读者会当成一次双重扣费。
+      非 assistant_message 的外挂小调用（压缩/分区/建议…）没有 route 字段,billed()
+      里一律按 direct 记（这些账目前只走用户自己的 key） */
+  route: "hosted" | "direct";
   promptTokens: number;
   completionTokens: number;
   /** promptTokens 里命中 prompt cache 的部分。不报 cache 的调用按 0 计——
@@ -47,32 +53,39 @@ function isBilledEvent(e: SessionEvent): e is BilledEvent {
     看起来一样 —— 这里的做法是压根不出现在账里 */
 function billed(
   e: SessionEvent
-): { model: string; promptTokens: number; completionTokens: number; cachedTokens: number } | null {
+): { model: string; route: "hosted" | "direct"; promptTokens: number; completionTokens: number; cachedTokens: number } | null {
   if (!isBilledEvent(e)) return null;
   if (!e.usage) return null;
   return {
     model: e.model,
+    // 只有 assistant_message 携带 route；外挂小调用（压缩/分区/建议…）没有这个字段，
+    // 按 direct 记（ADR-0176 决定五：缺省 = direct，旧日志 / 子会话照常重放）
+    route: e.type === "assistant_message" ? (e.route ?? "direct") : "direct",
     promptTokens: e.usage.promptTokens,
     completionTokens: e.usage.completionTokens,
     cachedTokens: e.usage.cachedTokens ?? 0,
   };
 }
 
-/** 按型号归并的用量,总量降序(最烧钱的那款在最上面)。
-    同量时按型号名排,免得同一份日志两次渲染出不同顺序 */
+/** 按 (型号, route) 归并的用量,总量降序(最烧钱的那款在最上面)。
+    同一款型号换过路要分两行 —— 合成一行会把两种不同的计费口径（credit / $）
+    混进同一份汇总里。同量时按型号名排,再按 route 排,免得同一份日志两次
+    渲染出不同顺序 */
 export function usageByModel(events: SessionEvent[]): ModelUsage[] {
   const byModel = new Map<string, ModelUsage>();
   for (const e of events) {
     const b = billed(e);
     if (!b) continue;
-    const cur = byModel.get(b.model);
+    const key = `${b.model}|${b.route}`;
+    const cur = byModel.get(key);
     if (cur) {
       cur.promptTokens += b.promptTokens;
       cur.completionTokens += b.completionTokens;
       cur.cachedTokens += b.cachedTokens;
     } else {
-      byModel.set(b.model, {
+      byModel.set(key, {
         model: b.model,
+        route: b.route,
         promptTokens: b.promptTokens,
         completionTokens: b.completionTokens,
         cachedTokens: b.cachedTokens,
@@ -81,7 +94,9 @@ export function usageByModel(events: SessionEvent[]): ModelUsage[] {
   }
   return [...byModel.values()].sort((a, b) => {
     const d = b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens);
-    return d !== 0 ? d : a.model.localeCompare(b.model);
+    if (d !== 0) return d;
+    const m = a.model.localeCompare(b.model);
+    return m !== 0 ? m : a.route.localeCompare(b.route);
   });
 }
 

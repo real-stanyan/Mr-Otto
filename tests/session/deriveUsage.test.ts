@@ -21,13 +21,13 @@ describe("usageByModel", () => {
 
   it("同一型号累加", () => {
     expect(usageByModel([said("m1", 10, 2), said("m1", 5, 3)])).toEqual([
-      { model: "m1", promptTokens: 15, completionTokens: 5, cachedTokens: 0 },
+      { model: "m1", route: "direct", promptTokens: 15, completionTokens: 5, cachedTokens: 0 },
     ]);
   });
 
   it("cachedTokens 跨调用累加,缺席的调用按 0 计 —— 给缓存价计费用", () => {
     expect(usageByModel([said("m1", 100, 1, 80), said("m1", 50, 1)])).toEqual([
-      { model: "m1", promptTokens: 150, completionTokens: 2, cachedTokens: 80 },
+      { model: "m1", route: "direct", promptTokens: 150, completionTokens: 2, cachedTokens: 80 },
     ]);
   });
 
@@ -41,13 +41,21 @@ describe("usageByModel", () => {
     expect(rows.map((r) => r.model)).toEqual(["a", "b"]);
   });
 
+  it("同一款型号走过两条路 → 两行,route 分开", () => {
+    const rows = usageByModel([
+      { seq: 1, sessionId: "s", ts: 0, type: "assistant_message", content: "", model: "m", usage: { promptTokens: 1, completionTokens: 1 }, route: "hosted" },
+      { seq: 2, sessionId: "s", ts: 0, type: "assistant_message", content: "", model: "m", usage: { promptTokens: 2, completionTokens: 2 } },
+    ] as SessionEvent[]);
+    expect(rows.map((r) => [r.model, r.route, r.promptTokens])).toEqual([["m", "direct", 2], ["m", "hosted", 1]]);
+  });
+
   it("外挂小调用也进账:压缩/分区/跟进建议都是真的跑了一次模型", () => {
     const rows = usageByModel([
       ev({ type: "context_compacted", model: "cheap", summary: "", usage: { promptTokens: 7, completionTokens: 1 } }),
       ev({ type: "section_classified", title: null, model: "cheap", usage: { promptTokens: 2, completionTokens: 1 } }),
       ev({ type: "suggestions_generated", suggestions: ["a"], model: "cheap", usage: { promptTokens: 3, completionTokens: 1 } }),
     ]);
-    expect(rows).toEqual([{ model: "cheap", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
+    expect(rows).toEqual([{ model: "cheap", route: "direct", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
   });
 
   it("没记用量的调用不进账 —— 当 0 会让「没记」和「没花」看起来一样", () => {
@@ -70,8 +78,8 @@ describe("totalTokens", () => {
       ev({ type: "micro_compacted", summary: "S", coversUpTo: 3, model: "cheap", usage: { promptTokens: 30, completionTokens: 6 } }),
     ];
     expect(usageByModel(events)).toEqual([
-      { model: "cheap", promptTokens: 30, completionTokens: 6, cachedTokens: 0 },
-      { model: "a", promptTokens: 10, completionTokens: 5, cachedTokens: 0 },
+      { model: "cheap", route: "direct", promptTokens: 30, completionTokens: 6, cachedTokens: 0 },
+      { model: "a", route: "direct", promptTokens: 10, completionTokens: 5, cachedTokens: 0 },
     ]);
     expect(totalTokens(events)).toBe(51);
   });

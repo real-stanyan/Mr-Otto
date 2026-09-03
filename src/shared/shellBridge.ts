@@ -30,6 +30,7 @@ import type {
 } from "./files.js";
 import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
+import type { BillingMe, PlanId } from "./billing.js";
 
 /** 副本合回项目本体的结果（issue #643）。失败分四档，每档对应一句人话 */
 export type IsolatedMergeResult =
@@ -469,6 +470,15 @@ export interface CloudSessionStatus {
   notice?: string;
 }
 
+/** 桥上的托管额度快照（Task 11）。结构与主进程 `hostedQuota.ts` 的 `HostedSnapshot`
+    一致，但故意在这里结构性重定义一份——`src/shared` 不许 import `src/main`
+    （tests/architecture.test.ts），main 那份类型赋值给这份即可，不需要共用符号 */
+export interface BillingSnapshotView {
+  me: BillingMe | null;
+  fetchedAt: number;
+  exhausted: { window: "5h" | "week"; resetAt: number } | null;
+}
+
 export interface ShellBridge {
   /** null = 还没选工程文件夹（UI 该显示欢迎页） */
   boot(): Promise<BootInfo | null>;
@@ -841,6 +851,14 @@ export interface ShellBridge {
   usageByProvider(days: number): Promise<UsageSnapshot>;
   /** 各厂商账户余额。见 ProviderBalance —— 拿不到的厂商不在数组里 */
   providerBalances(): Promise<ProviderBalance[]>;
+  /** 订阅制托管额度快照（ADR-0176/Task 11）。refresh=true 先打一次 /me 再回最新的；
+      refresh=false 只回内存里现有的（省一趟网络，开页展示用）。
+      结构与主进程 hostedQuota.snapshot() 一致（结构性赋值，shellBridge 不 import main） */
+  billingSnapshot(refresh: boolean): Promise<BillingSnapshotView>;
+  /** 订阅 / 加购下单：拿 checkout url 后在系统浏览器打开（Stripe 的页面不进 Electron 窗口） */
+  billingCheckout(target: { planId: PlanId } | { addon: true; quantity: number }): Promise<void>;
+  /** Stripe customer portal（改档/取消/换卡）：同样在系统浏览器打开 */
+  billingPortal(): Promise<void>;
   /** 在指定会话跑一个完整 turn；turn 结束 resolve，中途炸了 reject。
       显式带 sessionId：发消息瞬间用户可能已经切去看别的会话了。
       skill = 随本条消息注入的 skill 名（$ 指令）：主进程现读 SKILL.md 快照
@@ -904,6 +922,8 @@ export interface ShellBridge {
   onMcpChanged(cb: (snapshot: McpServersSnapshot) => void): Unsubscribe;
   /** 账号状态变化推送（登录成功 / 登出），主进程 AccountManager.onChange 触发 */
   onAccountChanged(cb: (info: AccountInfo) => void): Unsubscribe;
+  /** 托管额度快照变化推送（hostedQuota.onChange：刷新成功 / 每次网关响应头 / 429 那一刻） */
+  onBillingChanged(cb: (snapshot: BillingSnapshotView) => void): Unsubscribe;
   /** 用户名/邮箱模糊搜用户(不含自己)。value [] = 没有匹配(不是错误) */
   friendsSearch(query: string): Promise<FriendsResult<FriendProfile[]>>;
   /** 发好友请求。重复请求/已是好友 → ok:false 带人话理由 */
@@ -1386,6 +1406,10 @@ export const CHANNELS = {
   configRoot: "otter:configRoot",
   usageByProvider: "otter:usageByProvider",
   providerBalances: "otter:providerBalances",
+  billingSnapshot: "otter:billingSnapshot",
+  billingCheckout: "otter:billingCheckout",
+  billingPortal: "otter:billingPortal",
+  billingChanged: "otter:billingChanged",
   signIn: "otter:signIn",
   signInWithPassword: "otter:signInWithPassword",
   signUpWithPassword: "otter:signUpWithPassword",

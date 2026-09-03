@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Mr Otto 的边缘服务：OAuth 落地页 + 远程中继",
+  "description": "Mr Otto 的边缘服务：OAuth 落地页 + 远程中继 + 托管模型网关/计费",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check:relay": "node checks/relay.mjs"
+    "check:relay": "node checks/relay.mjs",
+    "check:llm": "node checks/llm.mjs"
   },
   "devDependencies": {
     "tsx": "^4.23.12",
