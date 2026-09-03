@@ -437,8 +437,14 @@ export interface MemoryLoadedEvent extends SessionEventBase {
   user: string;
   /** 项目档内容。缺席 = 这个会话没有项目根（workspace 一路没有 .git） */
   project?: string;
-  /** 项目档归属的项目根绝对路径（UI 显示 + 审计） */
+  /** 项目档归属的**本机**项目根绝对路径（提示词文案 + 审计）。换台机器就不一样，
+      所以它不是身份——身份看 projectScope */
   projectRoot?: string;
+  /** 项目档的**作用域键**（#886）：有 remote 的仓是 `host/path`，其余退回项目根
+      绝对路径。它才是「哪个项目」的身份（目录哈希的原文、设置页那份清单的键）。
+      **可选**，理由同 project：旧日志没有它照旧重放——旧日志的键就是当时的
+      projectRoot，主进程用到它时会按同一条规则重解析一次（#886 的迁移） */
+  projectScope?: string;
   /** 主题桶快照（#846）。**可选**，理由同 project：旧日志没有它照旧重放、投影逐字节不变；
       缺席 = 这个装配没有主题桶能力（或旧日志），有字段（哪怕空数组）= 有能力 */
   topics?: MemoryTopicSnapshot[];
@@ -458,8 +464,12 @@ export interface MemoryUserEditEvent extends SessionEventBase {
       就不再成立（ADR-0116）。
       **可选**字段，理由同 MemoryLoadedEvent：旧日志没有它照旧可重放，新日志被
       旧版本读到时 assertReplayable 拒的是未知事件类型，已知类型上的多余字段
-      它认得。target 不是 "project" 时缺席 */
+      它认得。target 不是 "project" 时缺席。
+      注意 #886 之后设置页那条路径只知道作用域键、不知道本机路径，所以新日志里
+      项目档的手编落的是 projectScope；这个字段留给旧日志（和将来真拿得到路径的调用方） */
   projectRoot?: string;
+  /** 项目档手编改的是哪个作用域键（#886）。语义同 MemoryLoadedEvent.projectScope */
+  projectScope?: string;
   /** topic 档改的是哪个桶。target 不是 "topic" 时缺席（同 projectRoot 的理由） */
   topic?: string;
 }

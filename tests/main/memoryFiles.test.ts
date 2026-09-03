@@ -61,10 +61,26 @@ describe("memoryFiles —— memories/ 的唯一读写口（#852）", () => {
     await files.write(`${dir}/root.txt`, "/p/x");
     await files.write(`${dir}/MEMORY.md`, "m");
     await files.write("memories/projects/orphan/MEMORY.md", "o");
-    expect(await files.listProjects()).toEqual([{ root: "/p/x", text: "m" }]);
+    expect(await files.listProjects()).toEqual([{ id: "/p/x", text: "m" }]);
     writes.length = 0;
     await files.deleteProject("/p/x");
     expect(await files.listProjects()).toEqual([]);
     expect(writes.map((r) => r.split("/").pop()).sort()).toEqual(["MEMORY.md", "root.txt"]);
+  });
+
+  // #886：被并进新作用域键的旧目录还在盘上（云同步没有墓碑机制，删了会被别的机器
+  // 推回来），但它对上层不存在——列表里没有它，删项目时连它一起清
+  it("listProjects 跳过带 merged.txt 的旧副本；deleteProject 把它们一起删掉", async () => {
+    const legacy = projectMemoryDir("/p/x");
+    const canonical = projectMemoryDir("github.com/o/x");
+    await files.write(`${legacy}/root.txt`, "/p/x");
+    await files.write(`${legacy}/MEMORY.md`, "旧的");
+    await files.write(`${legacy}/merged.txt`, "github.com/o/x");
+    await files.write(`${canonical}/root.txt`, "github.com/o/x");
+    await files.write(`${canonical}/MEMORY.md`, "旧的");
+    expect(await files.listProjects()).toEqual([{ id: "github.com/o/x", text: "旧的" }]);
+    await files.deleteProject("github.com/o/x");
+    expect(await files.read(`${legacy}/MEMORY.md`)).toBe("");
+    expect(await files.read(`${canonical}/MEMORY.md`)).toBe("");
   });
 });

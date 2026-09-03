@@ -588,18 +588,20 @@ export interface ShellBridge {
   getMemory(): Promise<{ memory: string; user: string }>;
   /** 保存一整份记忆文件（设置页手改）。sessionId 缺省 = 落到保留会话
       MEMORY_EDITS_SESSION（不是当前会话时用这个，见 src/main/memoryEdit.ts）。
-      projectRoot 缺省 = 全局档（memory/user）；target 是 "project" 时必填——
-      主进程按 projectRoot 现算 projectDir，渲染层不用认得 hash 怎么拼 */
-  saveMemory(target: MemoryTarget, text: string, sessionId?: string, projectRoot?: string, topic?: string): Promise<void>;
+      projectScope 缺省 = 全局档（memory/user）；target 是 "project" 时必填——
+      主进程按作用域键现算 projectDir，渲染层不用认得 hash 怎么拼。
+      键是 listProjectMemories 给的那个 id（#886：有 remote 的仓是 `host/path`） */
+  saveMemory(target: MemoryTarget, text: string, sessionId?: string, projectScope?: string, topic?: string): Promise<void>;
   /** 忘掉一条记忆条目（memory-chips 的"忘掉"按钮）。sessionId 是发起这次忘记
-      的会话——留证要知道是谁忘的。projectRoot 同 saveMemory：缺省 = 全局档 */
-  forgetMemory(target: MemoryTarget, entry: string, sessionId: string, projectRoot?: string, topic?: string): Promise<void>;
+      的会话——留证要知道是谁忘的。projectScope 同 saveMemory：缺省 = 全局档 */
+  forgetMemory(target: MemoryTarget, entry: string, sessionId: string, projectScope?: string, topic?: string): Promise<void>;
   /** 全部项目记忆的现状（设置页项目档区读，Task 6）。现扫
       memories/projects/ 下每个子目录的 root.txt——没有中心索引，目录自描述。
-      没有 root.txt 的孤儿目录不列进来 */
-  listProjectMemories(): Promise<{ root: string; text: string }[]>;
-  /** 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），不可恢复 */
-  deleteProjectMemory(root: string): Promise<void>;
+      没有 root.txt 的孤儿目录不列进来；被并进新作用域键的旧目录也不列（#886）。
+      `id` 是作用域键：有 remote 的仓是 `host/path`（跨机相同），其余是项目根绝对路径 */
+  listProjectMemories(): Promise<{ id: string; text: string }[]>;
+  /** 整个删掉一个项目的记忆目录（MEMORY.md + root.txt），连同被并走的旧副本，不可恢复 */
+  deleteProjectMemory(projectScope: string): Promise<void>;
   /** 全部主题桶（种子 ∪ 磁盘）的现状（设置页主题区读）。seed = 是种子桶（不可删，只能清空） */
   listTopicMemories(): Promise<{ slug: string; label: string; text: string; seed: boolean }[]>;
   /** 记忆同步状态（设置页显示）。off = 未登录，idle = 已同步，syncing = 同步中，error = 错误 */
