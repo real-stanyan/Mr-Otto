@@ -13,7 +13,7 @@ create table if not exists public.workspace_agents (
   description  text not null default '',
   instructions text not null default '',
   models       text[] not null default '{}',
-  tools        jsonb not null default '[]',   -- [] = 整池放行（workspace_connectors 同口径）
+  tools        jsonb not null default '[]'::jsonb,   -- [] = 整池放行（workspace_connectors 同口径）
   created_by   uuid not null references auth.users(id),
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
@@ -44,12 +44,36 @@ create policy wsa_update_owner_or_creator on public.workspace_agents for update 
   with check (public.is_ws_member(workspace_id, auth.uid()));
 
 -- 建的人或 owner 可删，但**管理员那只谁都删不掉**——一个 agent 都没有的
--- 工作区 @ 不到任何人，是死局
+-- 工作区 @ 不到任何人，是死局。同时要求删除者必须是当前成员
+-- （比 0015_workspaces.sql 严 —— wsc_delete_host_or_owner / wss_delete_publisher 不查在籍，
+-- 已开 issue #930 单独修。新表不该带着已知的松口子上线）
 drop policy if exists wsa_delete_owner_or_creator on public.workspace_agents;
 create policy wsa_delete_owner_or_creator on public.workspace_agents for delete to authenticated
   using (agent_id <> 'admin'
+     and public.is_ws_member(workspace_id, auth.uid())
      and (created_by = auth.uid()
        or exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid())));
+
+-- agent_id / workspace_id / created_by 三列不可变。
+-- 为什么必须是触发器而不是策略：RLS 的 USING 绑旧行、WITH CHECK 绑新行，
+-- 各自只看单侧，表达不出"这一列不许变"。而 delete 策略里那句
+-- agent_id <> 'admin' 只看当前值 —— 先改名再删就能绕过去（审阅实证的两步攻击）。
+-- 顺带锁住 workspace_id 与 created_by：(workspace_id, agent_id) 是记忆与用量
+-- 归因的键，搬家或换创建者都会让账断，而且是安静地断。
+create or replace function public.workspace_agents_lock_identity() returns trigger
+language plpgsql as $$
+begin
+  if new.agent_id <> old.agent_id
+     or new.workspace_id <> old.workspace_id
+     or new.created_by <> old.created_by then
+    raise exception 'workspace_agents: agent_id / workspace_id / created_by 不可变（改名请删了重建）';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists workspace_agents_lock_identity on public.workspace_agents;
+create trigger workspace_agents_lock_identity before update on public.workspace_agents
+  for each row execute function public.workspace_agents_lock_identity();
 
 -- 建工作区时种一只「管理员」。用触发器而不是让客户端插第二条：
 -- 客户端插会有一段「群建好了但一只 agent 都没有」的窗口，而那个状态
