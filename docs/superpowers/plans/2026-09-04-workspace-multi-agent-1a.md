@@ -1361,8 +1361,12 @@ npx vitest run tests/runtime/sessionService.test.ts
       每 turn 都落一条的话,日志里堆满同一段文字,而且模型每轮都被重新
       自我介绍一遍 */
   function briefIfNeeded(spec: AgentSpec, roster: AgentSpec[]): void {
-    // **裸 store,不是 agentView 包过的那份**:Task 5 把 agent_briefed 放进了
-    // 丢弃名单,用包过的那份查会永远回空数组,于是每 turn 重新 brief 一遍
+    // **裸 store,不是 agentView 包过的那份**。理由不是"包过的会回空"——那句话
+    // 不准确:projectForAgent 对 owner === agentId 的事件有提前放行分支,
+    // 拿自己的 view 查自己的 brief 其实查得到。真正的理由是**这是记账判断,
+    // 该读事实的原始来源**:agentView 的裁决表是为"模型看得见什么"设计的,
+    // 不是为这里的判断设计的。哪天那张表为了模型可见性调整一下(比如把
+    // agent_briefed 改成对自己也 drop),这里就会安静地每 turn 重新 brief 一遍
     const already = store
       .ofType(sessionId, "agent_briefed")
       .filter((e) => e.type === "agent_briefed" && e.agentId === spec.agentId)
