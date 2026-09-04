@@ -109,6 +109,9 @@ RUNTIME_SSH=user@host npm run runtime:deploy
    `prompt_tokens`/`completion_tokens`）。`daemon.ts` 先落权威的 `model_usage` 事件再异步
    镜像写这张表，镜像写失败只打日志不阻塞 turn——正常路径下应该能看到这一行，看不到不代表
    turn 失败了，要去 VPS 日志里确认是不是镜像写那步报了错。
+   注意这张表的 `uid` 记的是**发起人**（「谁动的手」）；订阅制那本账（`usage_event`）
+   记的是**工作区所有者**（「谁付的钱」，ADR-0217）——同一轮 turn 在两张表里的 uid
+   本来就可以不一样，不是哪一边写错了。
 8. **`MAX_CONNS_PER_USER` 豁免**（只能在真 workerd 上验）：`src/shared/remote/wire.ts` 的
    `MAX_CONNS_PER_USER = 16` 限的是普通用户账号的并发连接数；runtime 以平台身份
    （`svc-runtime`，`RUNTIME_SECRET` 验出）连 relay 时**不受**这条上限约束

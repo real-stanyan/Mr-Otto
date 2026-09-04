@@ -10,11 +10,11 @@ import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } fr
 import type { TokenUsage } from "../../src/session/events.js";
 
 const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
-const base = { initiatorUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
+const base = { ownerUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
 const ws = { baseUrl: "https://own/v1", apiKey: "sk", modelId: "glm-5.3" };
 
 describe("decideRuntimeRoute", () => {
-  it("发起人有订阅 → hosted，带平台身份 + on-behalf-of + workspace/session 头；型号尊重工作区配的（网关供的话）", () => {
+  it("所有者有订阅 → hosted，带平台身份 + on-behalf-of + workspace/session 头；型号尊重工作区配的（网关供的话）", () => {
     const r = decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: ws, ...base });
     expect(r.kind).toBe("hosted");
     if (r.kind !== "hosted") return;
@@ -27,7 +27,7 @@ describe("decideRuntimeRoute", () => {
     const r = decideRuntimeRoute({ me, requestedModel: "gpt-9", workspace: ws, ...base });
     expect(r.kind === "hosted" && r.model).toBe("deepseek-v4-flash");
   });
-  it("没订阅 + 工作区有 key → workspace 原路（ADR-0202）", () => {
+  it("所有者没订阅 + 工作区有 key → workspace 原路（ADR-0202）", () => {
     expect(decideRuntimeRoute({ me: null, requestedModel: "glm-5.3", workspace: ws, ...base })).toEqual({ kind: "workspace", baseUrl: "https://own/v1", apiKey: "sk", model: "glm-5.3" });
     expect(decideRuntimeRoute({ me: { ...me, status: "past_due" }, requestedModel: null, workspace: ws, ...base }).kind).toBe("workspace");
   });
@@ -68,7 +68,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
       runtimeSecret: "rs",
       probe,
       cfg: () => ws,
-      initiatorUid: () => "u1",
+      ownerUid: "u1",
       workspaceId: "w1",
       sessionId: "s1",
     });
@@ -85,7 +85,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
       runtimeSecret: "rs",
       probe,
       cfg: () => ws,
-      initiatorUid: () => "u1",
+      ownerUid: "u1",
       workspaceId: "w1",
       sessionId: "s1",
     });
@@ -121,7 +121,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
       runtimeSecret: "rs",
       probe,
       cfg: () => ws,
-      initiatorUid: () => "u1",
+      ownerUid: "u1",
       workspaceId: "w1",
       sessionId: "s1",
     });
@@ -135,6 +135,34 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     expect(probe.me).toHaveBeenCalledTimes(1);
   });
 
+  it("扣的是 ownerUid，不是发起人（#917/ADR-0217：工作区走创建者的额度）", async () => {
+    // 只有 owner-1 有订阅；群里发消息的那个人（member-9）一分钱订阅都没有。
+    // 按发起人扣的话这里会落进 workspace/blocked 分支，on-behalf 头也不会是 owner-1。
+    // 这一条同时钉住「probe 问的是谁」和「头上写的是谁」——两处只要有一处回到
+    // 发起人，这个用例就红
+    const probe: HostedProbe = { me: vi.fn(async (uid: string) => (uid === "owner-1" ? me : null)) };
+    const adapter = createHostedRuntimeAdapter({
+      edgeBase: "https://edge",
+      runtimeSecret: "rs",
+      probe,
+      cfg: () => ws,
+      ownerUid: "owner-1",
+      workspaceId: "w1",
+      sessionId: "s1",
+    });
+    const calls: { init: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        calls.push({ init });
+        return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+      })
+    );
+    await adapter.chat([{ role: "user", content: "hi" }]);
+    expect(probe.me).toHaveBeenCalledWith("owner-1");
+    expect(calls[0]!.init.headers).toMatchObject({ [ON_BEHALF_HEADER]: "owner-1" });
+  });
+
   it("决出 blocked：model 给一个说得出口的占位，chat() 抛出两条出路都说的原因", async () => {
     const probe = fakeProbe(null);
     const adapter = createHostedRuntimeAdapter({
@@ -142,13 +170,13 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
       runtimeSecret: "rs",
       probe,
       cfg: () => null, // 工作区也没配 key
-      initiatorUid: () => "u1",
+      ownerUid: "u1",
       workspaceId: "w1",
       sessionId: "s1",
     });
     await adapter.prepare?.();
     expect(adapter.model).toBe("(无可用模型)");
-    await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/订阅/);
+    await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/所有者没有活跃订阅/);
   });
 });
 
@@ -165,7 +193,7 @@ describe("withUsage（issue #696 fix round 2：不能用对象展开转发 model
       runtimeSecret: "rs",
       probe: fakeProbe(me),
       cfg: () => ws,
-      initiatorUid: () => "u1",
+      ownerUid: "u1",
       workspaceId: "w1",
       sessionId: "s1",
     });
