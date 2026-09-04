@@ -70,6 +70,8 @@ import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionIte
 import { WorkspacesSidebarSection } from "./components/WorkspacesSidebarSection.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
+import { CloudWelcome } from "./components/CloudWelcome.js";
+import { CloudSessionMain } from "./components/CloudSessionMain.js";
 import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
@@ -1569,6 +1571,9 @@ function SkillsPage() {
     共用一个键会让人在这屏收一下、那屏跟着没了 */
 const COLLAPSED_KEY = "otter-sidebar-collapsed-projects";
 const ARCHIVED_COLLAPSED_KEY = "otter-sidebar-collapsed-archived";
+/** 工作区组的收放另存一个键（issue #919）：工作区 id 和工程绝对路径不同名，
+    混在一个键里迟早撞上，两屏各存各的也是既有做法（见上面归档那个键） */
+const WS_COLLAPSED_KEY = "otter-sidebar-collapsed-workspaces";
 /** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
 const NO_WORKSPACE_KEY = "\u0000no-workspace";
 
@@ -1959,6 +1964,8 @@ function AppSidebar() {
       });
   const toggleGroup = makeToggle(setCollapsed, COLLAPSED_KEY);
   const toggleArchivedGroup = makeToggle(setArchivedCollapsed, ARCHIVED_COLLAPSED_KEY);
+  const [wsCollapsed, setWsCollapsed] = useState<Set<string>>(() => loadCollapsedProjects(WS_COLLAPSED_KEY));
+  const toggleWorkspaceGroup = makeToggle(setWsCollapsed, WS_COLLAPSED_KEY);
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -2024,30 +2031,34 @@ function AppSidebar() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <Button
-              variant="ghost"
-              className="justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
-              onClick={() => {
-                setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
-                // 任务档的新会话直接落进内置 Default(不用选文件夹);
-                // 项目档保持空白开局,文件夹在 composer 里配
-                newSession(tab === "tasks" && builtin ? builtin : undefined);
-              }}
-            >
-              ＋ 新会话
-            </Button>
-            {/* 新工作区(issue #917)。次级样式,和下面的「已归档会话」同一档:
-                上面那颗描边的是每天要按的,这两颗是偶尔按一次的——建工作区一个团队
-                一辈子就那么几次。不给 ＋ 前缀,那是主按钮的记号;图标沿用 Boxes,
-                和侧栏里工作区行、抽屉标题是同一张脸 */}
-            <Button
-              variant="ghost"
-              className="justify-start gap-2 px-3 py-[6px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
-              onClick={() => setNewWorkspaceOpen(true)}
-            >
-              <Boxes className="size-4 shrink-0" aria-hidden />
-              新工作区
-            </Button>
+            {/* 两颗并排不是上下叠(issue #919 的顺手一改):侧栏本来就窄,竖着排
+                每颗都占满整宽、白白吃掉一整行高度,而「新工作区」用不着那么宽。
+                主次靠**宽度**分:「＋ 新会话」flex-1 吃掉剩下的所有宽、还描边;
+                「新工作区」按内容收窄、不描边、字色压一档 */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                className="flex-1 min-w-0 justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+                onClick={() => {
+                  setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
+                  // 任务档的新会话直接落进内置 Default(不用选文件夹);
+                  // 项目档保持空白开局,文件夹在 composer 里配
+                  newSession(tab === "tasks" && builtin ? builtin : undefined);
+                }}
+              >
+                ＋ 新会话
+              </Button>
+              {/* 新工作区(issue #917)。不给 ＋ 前缀,那是主按钮的记号;图标沿用
+                  Boxes,和侧栏里工作区组头、弹窗标题是同一张脸 */}
+              <Button
+                variant="ghost"
+                className="shrink-0 justify-start gap-1.5 px-2.5 py-[7px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
+                onClick={() => setNewWorkspaceOpen(true)}
+              >
+                <Boxes className="size-4 shrink-0" aria-hidden />
+                新工作区
+              </Button>
+            </div>
             {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
                 上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
             <Button
@@ -2188,8 +2199,14 @@ function AppSidebar() {
             {/* 工作区置顶（issue #917 规则三：和自己的项目分开显示）。放最上面不是
                 因为它更重要,是因为它是上面那颗「新工作区」生出来的东西——按钮在
                 头部,产物就该在紧挨着头部的地方出现(空间一致性)。段尾那道内缩的
-                细线是「分开显示」的落点,见组件注释 */}
-            <WorkspacesSidebarSection openId={openWorkspaceId} onOpen={setOpenWorkspaceId} />
+                细线是「分开显示」的落点,见组件注释。
+                每个工作区自己是一个组（＋ 开新会话、⚙ 进设置、组内列云会话），
+                骨架与下面的本地工程组同款——issue #919 */}
+            <WorkspacesSidebarSection
+              collapsed={wsCollapsed}
+              onToggle={toggleWorkspaceGroup}
+              onManage={setOpenWorkspaceId}
+            />
             {/* 同步过的会话单列一段在最上（issue #809）：分享的单位是会话不是工程，
                 平铺；行的 fallback 标题给它原属工程的文件夹名，线索不断 */}
             {projectParts.shared.length > 0 && (
@@ -3538,6 +3555,9 @@ export function App() {
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
+  // 云那条路占不占主区（issue #919）。两格都是低频字段，订在树根不会多带重渲染
+  const cloudDraftWorkspaceId = useChat((s) => s.cloudDraftWorkspaceId);
+  const cloudSession = useChat((s) => s.cloudSession);
   const isPackaged = useChat((s) => s.isPackaged);
   // 残留清单弹窗（issue #759，review finding 1/2）：上次(boot latch) / 本次
   // (直播累加) 两份各自的 items + 各自的 open 开关 + 收尾动作。items 空或
@@ -3736,6 +3756,15 @@ export function App() {
     <RemoteDevicesSettings />
   ) : settingsSection === "about" ? (
     <AboutUpdateSettings />
+  ) : cloudDraftWorkspaceId !== null ? (
+    // 「＋」按在某个工作区组头上：开局卡（issue #919）。排在 cloudSession 之前——
+    // 手上开着一条云会话时点 ＋，要看到的是新的那张卡，不是旧会话
+    <CloudWelcome workspaceId={cloudDraftWorkspaceId} />
+  ) : cloudSession !== null ? (
+    // 云会话占主区（issue #919）。排在 welcome 之前：进云会话时本地 phase 还停在
+    // 上一条会话或 welcome 上，按那个判会画错屏。反过来，newSession/resume 都会
+    // 先 closeCloudSession，所以本地那条路照样抢得回这块地皮
+    <CloudSessionMain />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (

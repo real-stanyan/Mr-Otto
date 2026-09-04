@@ -127,7 +127,10 @@ export function CloudSessionPage({
 }: {
   ws: WorkspaceSnapshot;
   selfUid: string;
-  onBack: () => void;
+  /** 省掉 = 不画返回键（issue #919：这一页搬进主区之后没有"上一层"可回——
+      离开云会话的方式和离开本地会话一样，点侧栏里别的一行）。抽屉时代它是
+      唯一的出口，所以那时是必填 */
+  onBack?: () => void;
 }) {
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
@@ -211,18 +214,24 @@ export function CloudSessionPage({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className={cn(
-            "press-scale -ml-1 inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
-            "text-[12.5px] text-muted-foreground transition-colors duration-150",
-            "hover:bg-foreground/[0.06] hover:text-foreground"
-          )}
-        >
-          <ArrowLeft className="size-[13px]" aria-hidden />
-          {ws.name}
-        </button>
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className={cn(
+              "press-scale -ml-1 inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
+              "text-[12.5px] text-muted-foreground transition-colors duration-150",
+              "hover:bg-foreground/[0.06] hover:text-foreground"
+            )}
+          >
+            <ArrowLeft className="size-[13px]" aria-hidden />
+            {ws.name}
+          </button>
+        ) : (
+          // 没有返回键时工作区名仍然要在：这一行回答的是「我在哪个工作区里」，
+          // 而云会话的每一件事（谁能看见、扣谁的额度、用哪把 key）都挂在它上面
+          <span className="px-1.5 py-1 text-[12.5px] text-muted-foreground">{ws.name}</span>
+        )}
         <div className="flex items-center gap-1.5">
           {/* 收尾（issue #822）。云端没有"恢复归档"那一半（daemon 启动只捞
               archived=false 的会话重开房间），所以先问一句——同侧栏「删除

@@ -518,6 +518,15 @@ interface ChatState {
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
+  /** 「＋ 新会话」在某个工作区上按下了、云会话还没落地的那个中间态（issue #919）：
+      主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个工作区开，
+      null = 没在开。本地那条路的对应物是 `phase === "welcome"` + pendingWorkspace */
+  cloudDraftWorkspaceId: string | null;
+  /** 开局卡上写的第一句话，等云会话进 ready 之后才发得出去（issue #919）。
+      主进程的 say() 要求 status === "ready"（cloudSessionClient 的 requireReady），
+      而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
+      这里，由主区那块的 effect 在 ready 那一刻补发。null = 没有待发的 */
+  cloudPendingFirstMessage: string | null;
   /** 工作区 id → 该工作区的云会话清单（SessionsTab「云会话」小节用）。
       无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
       refreshCloudSessions 重拉 */
@@ -854,6 +863,19 @@ interface ChatState {
       语义与 main/cloudSessionClient.ts 的 join() 完全对齐）。
       失败（含 create 阶段）落 workspaceGroupsError，cloudSession 保持/回落 null */
   openCloudSession(workspaceId: string, sessionId: string | null): Promise<void>;
+  /** 在某个工作区上开一张「新云会话」的开局卡（issue #919，侧栏工作区组头那颗 ＋）。
+      同本地 newSession：这一步不建任何东西，只是把主区换成开局卡 */
+  startCloudDraft(workspaceId: string): void;
+  /** 丢掉开局卡（草稿一起丢，同本地 composer 的待遇） */
+  cancelCloudDraft(): void;
+  /** 开局卡上按了发送：建会话 + 进房 + 把第一句话排进待发（issue #919）。
+      真正发出去的时机在主区那块的 effect（要等 ready，见 cloudPendingFirstMessage）。
+      建/进房失败时把待发那句一起清掉——不留一句吊在半空、下次进别的云会话时
+      突然自己发出去 */
+  createCloudSessionFromDraft(workspaceId: string, text: string): Promise<void>;
+  /** 待发那句已经交出去了。**先清后发**：主区那块的 effect 会因为状态变化重跑，
+      清晚一步就会发两遍 */
+  takeCloudPendingFirstMessage(): string | null;
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
@@ -1184,6 +1206,8 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyHosts: [],
   workspaceGroups: [],
   workspaceGroupsError: null,
+  cloudDraftWorkspaceId: null,
+  cloudPendingFirstMessage: null,
   cloudSession: null,
   cloudSessionList: {},
   realtimeHealth: "connecting",
@@ -2170,7 +2194,33 @@ export const useChat = create<ChatState>((set, get) => ({
 
   closeCloudSession() {
     void window.otter.workspaceCloudLeave();
-    set({ cloudSession: null });
+    set({ cloudSession: null, cloudPendingFirstMessage: null });
+  },
+
+  startCloudDraft: (workspaceId) =>
+    set({
+      cloudDraftWorkspaceId: workspaceId,
+      cloudPendingFirstMessage: null,
+      ...panelFlags(null), // 同 newSession：开局要退出设置模式与右侧面板
+      error: null,
+    }),
+
+  cancelCloudDraft: () => set({ cloudDraftWorkspaceId: null }),
+
+  async createCloudSessionFromDraft(workspaceId, text) {
+    // 先排待发再建：openCloudSession 里那趟 join 结束后状态随时可能翻成 ready，
+    // 反过来写会让 effect 错过那一次翻转
+    set({ cloudPendingFirstMessage: text, cloudDraftWorkspaceId: null });
+    await get().openCloudSession(workspaceId, null);
+    // 建群/进房失败时 openCloudSession 已经把 cloudSession 清成 null 并落了错——
+    // 那句话不能留着，否则下次进别的云会话时它会自己冒出来
+    if (get().cloudSession === null) set({ cloudPendingFirstMessage: null });
+  },
+
+  takeCloudPendingFirstMessage() {
+    const text = get().cloudPendingFirstMessage;
+    if (text !== null) set({ cloudPendingFirstMessage: null });
+    return text;
   },
 
   async cloudSay(text, mention) {
@@ -2769,8 +2819,12 @@ export const useChat = create<ChatState>((set, get) => ({
     return await window.otter.pruneEmptyTaskFolders();
   },
 
-  newSession: (dir) =>
+  newSession: (dir) => {
+    // 本地开新会话 = 离开云会话（主区只有一块地皮，云那条分支排在 welcome 之前）。
+    // 不离开的话点「＋ 新会话」什么都不会发生：主区还画着云会话
+    if (get().cloudSession) get().closeCloudSession();
     set({
+      cloudDraftWorkspaceId: null,
       pendingWorkspace: dir ?? null, // composer 的文件夹初值,由 Welcome 消费
       phase: "welcome",
       sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
@@ -2778,7 +2832,8 @@ export const useChat = create<ChatState>((set, get) => ({
       replayCursor: null,
       ...panelFlags(null), // ＋新会话退出设置模式/面板，回 composer
       error: null,
-    }),
+    });
+  },
 
   async startSession(opts) {
     try {
@@ -2803,6 +2858,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async resume(sessionId) {
+    // 同 newSession：切进本地会话就是离开云会话，否则主区还画着云那条
+    if (get().cloudSession) get().closeCloudSession();
+    set({ cloudDraftWorkspaceId: null });
     try {
       const info = await window.otter.resumeSession(sessionId);
       set((s) => enterChat(info, s.panelBySession));
