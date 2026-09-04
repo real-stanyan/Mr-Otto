@@ -67,7 +67,9 @@ import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionItems.js";
-import { WorkspacesPanel } from "./components/WorkspacesPanel.js";
+import { WorkspacesSidebarSection } from "./components/WorkspacesSidebarSection.js";
+import { WorkspacePage } from "./components/WorkspacePage.js";
+import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
 import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
@@ -1699,10 +1701,24 @@ function AppSidebar() {
   // 是因为点系统通知要能把它掀开(store.onNotificationActivated)
   const friendsOpen = useChat((s) => s.friendsPanelOpen);
   const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
-  // 工作区区显隐:同好友区一样收进 footer 的 icon、点开弹 Drawer(ADR-0198 切片 3,
-  // issue #811)。没有系统通知会掀开它这回事,纯本地 state 就够,不用像 friendsOpen
-  // 那样搬进 store
-  const [workspacesOpen, setWorkspacesOpen] = useState(false);
+  // 工作区(ADR-0198 切片 3,issue #811)。列表已经搬进侧栏项目区(issue #917,
+  // ADR-0217),抽屉只剩「详情页」这一层的载体——null = 没开着任何一个。
+  // 纯本地 state 就够,不用像 friendsOpen 那样搬进 store(没有系统通知会掀开它)
+  const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null);
+  // 「＋ 新工作区」那扇窗的开关。按钮在 SidebarHeader、窗挂在 Sidebar 末尾,
+  // 两头都够得着的最近一层就是这里
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const workspaceGroups = useChat((s) => s.workspaceGroups);
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
+  // 工作区快照没有推送通道(store 那十一个 action 各自改完自己重拉一次)——开机与
+  // 登录态变化时在这一层拉一次。**不放进 WorkspacesSidebarSection**:那个组件一条
+  // 工作区都没有时 return null,effect 写在它里面就永远等不到第一次拉取
+  useEffect(() => {
+    if (account.signedIn) void refreshWorkspaceGroups();
+  }, [account.signedIn, refreshWorkspaceGroups]);
+  // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
+  // 关掉,不用另写一条善后逻辑
+  const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;
   // 窗口模式(mac + 非全屏)下红绿灯叠在侧栏左上角,logo 得让位;全屏红绿灯隐掉,logo 回来
   const fullscreen = useChat((s) => s.fullscreen);
   const trafficInset = IS_MAC && !fullscreen;
@@ -2020,6 +2036,18 @@ function AppSidebar() {
             >
               ＋ 新会话
             </Button>
+            {/* 新工作区(issue #917)。次级样式,和下面的「已归档会话」同一档:
+                上面那颗描边的是每天要按的,这两颗是偶尔按一次的——建工作区一个团队
+                一辈子就那么几次。不给 ＋ 前缀,那是主按钮的记号;图标沿用 Boxes,
+                和侧栏里工作区行、抽屉标题是同一张脸 */}
+            <Button
+              variant="ghost"
+              className="justify-start gap-2 px-3 py-[6px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
+              onClick={() => setNewWorkspaceOpen(true)}
+            >
+              <Boxes className="size-4 shrink-0" aria-hidden />
+              新工作区
+            </Button>
             {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
                 上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
             <Button
@@ -2157,6 +2185,11 @@ function AppSidebar() {
           </SidebarMenu>
         ) : (
           <>
+            {/* 工作区置顶（issue #917 规则三：和自己的项目分开显示）。放最上面不是
+                因为它更重要,是因为它是上面那颗「新工作区」生出来的东西——按钮在
+                头部,产物就该在紧挨着头部的地方出现(空间一致性)。段尾那道内缩的
+                细线是「分开显示」的落点,见组件注释 */}
+            <WorkspacesSidebarSection openId={openWorkspaceId} onOpen={setOpenWorkspaceId} />
             {/* 同步过的会话单列一段在最上（issue #809）：分享的单位是会话不是工程，
                 平铺；行的 fallback 标题给它原属工程的文件夹名，线索不断 */}
             {projectParts.shared.length > 0 && (
@@ -2322,24 +2355,8 @@ function AppSidebar() {
             </TooltipTrigger>
             <TooltipContent>好友</TooltipContent>
           </Tooltip>
-          {/* 工作区 icon:同好友区一样的抽屉入口(ADR-0198 切片 3,issue #811)。
-              和好友之间不共用一个开关——两块内容独立,同时开着也各自有各自的 Drawer */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                className={
-                  "relative shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] bg-transparent hover:text-foreground " +
-                  (workspacesOpen ? "text-foreground bg-foreground/[0.08]" : "text-muted-foreground")
-                }
-                aria-label="工作区"
-                aria-pressed={workspacesOpen}
-                onClick={() => setWorkspacesOpen(!workspacesOpen)}
-              >
-                <Boxes className="w-[14px] h-[14px]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>工作区</TooltipContent>
-          </Tooltip>
+          {/* 工作区那枚 icon 已经撤掉(issue #917):列表搬进了侧栏项目区,入口不该有两个
+              ——一个在眼前、一个藏在页脚,只会让人以为它们是两样东西 */}
           {/* 齿轮:纯图标按钮,颜色/hover 沿用 ghost 风 */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -2396,27 +2413,46 @@ function AppSidebar() {
           </div>
         </DrawerContent>
       </Drawer>
-      {/* 工作区弹窗:同一件事的第二份(ADR-0198 切片 3,issue #811)。
-          WorkspacesPanel 自己管"列表 or 详情页"这一层,这里只负责开/关抽屉本身 */}
-      <Drawer open={workspacesOpen} onOpenChange={setWorkspacesOpen} direction="right" shouldScaleBackground={false}>
-        <DrawerContent side="right" className="w-[min(380px,90vw)]">
-          <DrawerHeader className="flex items-center justify-between gap-2 text-left px-4 py-3 border-b border-border">
-            <DrawerTitle className="text-sm">工作区</DrawerTitle>
-            <button
-              className="text-muted-foreground hover:text-foreground bg-transparent px-1 rounded-md text-[13px]"
-              aria-label="关闭工作区面板"
-              onClick={() => setWorkspacesOpen(false)}
-            >
-              ✕
-            </button>
+      {/* 工作区详情页(issue #917 之后这个抽屉只剩这一层内容)。开合判据是
+          openedWorkspace 而不是 openWorkspaceId:那个工作区被解散/退群后会从快照里
+          消失,抽屉跟着自己关掉,不用另写一条善后。标题就是工作区名——抽屉里装的
+          是「这一个」,再写一遍「工作区」等于什么都没说 */}
+      <Drawer
+        open={openedWorkspace !== null}
+        onOpenChange={(o) => { if (!o) setOpenWorkspaceId(null); }}
+        direction="right"
+        shouldScaleBackground={false}
+      >
+        <DrawerContent side="right" className="w-[min(420px,92vw)]">
+          <DrawerHeader className="sr-only">
+            <DrawerTitle>{openedWorkspace?.name ?? "工作区"}</DrawerTitle>
           </DrawerHeader>
+          {/* SidebarMenu 系列需要 SidebarProvider 上下文(抽屉 portal 到 body,
+              根 provider 够不着)——包一层只喂上下文,不带侧栏结构 */}
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable px-[6px] py-2">
             <SidebarProvider defaultOpen className="flex-col min-h-0">
-              <WorkspacesPanel embedded />
+              {openedWorkspace && (
+                <WorkspacePage
+                  ws={openedWorkspace}
+                  selfUid={account.id}
+                  onBack={() => setOpenWorkspaceId(null)}
+                />
+              )}
             </SidebarProvider>
           </div>
         </DrawerContent>
       </Drawer>
+      {/* 新工作区(issue #917)。建成功后把侧栏切回项目栏并退出归档视图——
+          这颗按钮在两栏里都在,而它生出来的东西只在项目栏看得见 */}
+      <NewWorkspaceDialog
+        open={newWorkspaceOpen}
+        onOpenChange={setNewWorkspaceOpen}
+        onCreated={() => {
+          setArchivedView(false);
+          setTab("projects");
+        }}
+        onGoBilling={() => void openSettings("account")}
+      />
     </Sidebar>
   );
 }
