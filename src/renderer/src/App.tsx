@@ -1576,13 +1576,22 @@ const ARCHIVED_COLLAPSED_KEY = "otter-sidebar-collapsed-archived";
     混在一个键里迟早撞上，两屏各存各的也是既有做法（见上面归档那个键） */
 const WS_COLLAPSED_KEY = "otter-sidebar-collapsed-workspaces";
 
-/* 侧栏头部并排那一对（「新会话」/「新工作区」，issue #921）。**一份类名串两处共用**
+/* 侧栏头部那颗（项目栏是那一对）开局按钮的公共底子。press-scale 是全局那条按下
+   反馈（app.css，100ms 量级、prefers-reduced-motion 下自动去掉）：这是真会被按的钮，
+   按下去得有反应 */
+const HEADER_BUTTON =
+  "press-scale min-w-0 py-[7px] text-[13px] font-normal border border-border hover:bg-foreground/[0.06]";
+/* 项目栏并排那一对（「新会话」/「新工作区」，issue #921）。**一份类名串两处共用**
    而不是各写各的：这两颗要长一样是维护者点名的要求，抄两遍的话下次只改一边就又不一样了。
    px-2 不是 px-3——侧栏窄，等分之后每颗只有一百出头的像素，px-3 会让「新工作区」
-   四个字顶到图标上。press-scale 是全局那条按下反馈（app.css，100ms 量级、
-   prefers-reduced-motion 下自动去掉）：这是两颗真会被按的钮，按下去得有反应 */
-const TWIN_BUTTON =
-  "press-scale flex-1 min-w-0 justify-center gap-1.5 px-2 py-[7px] text-[13px] font-normal border border-border hover:bg-foreground/[0.06]";
+   四个字顶到图标上。justify-center 而不是 start：等宽的一对，左对齐会在各自右边留一段
+   长短不一的空，居中让两颗的内容各自以自己为轴 */
+const TWIN_BUTTON = `${HEADER_BUTTON} flex-1 justify-center gap-1.5 px-2`;
+/* 任务栏只有「新会话」一颗时的样子（issue #923）：撑满一行、内容**左对齐**。
+   居中是上面那一对为了等分才要的，通栏之后那个理由就没了；而正下方的「已归档会话」
+   是通栏左对齐——两条通栏按钮上下叠着，一个居中一个靠左读起来就是没对齐。
+   gap/px 跟着「已归档会话」那一颗走，不跟上面那一对 */
+const SOLO_BUTTON = `${HEADER_BUTTON} w-full justify-start gap-2 px-3`;
 /** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
 const NO_WORKSPACE_KEY = "\u0000no-workspace";
 
@@ -2043,19 +2052,21 @@ function AppSidebar() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            {/* 并排的一对,**同一副样子**(issue #921):同一个 TWIN_BUTTON 类名串、
+            {/* 项目栏是并排的一对,**同一副样子**(issue #921):同一个 TWIN_BUTTON 类名串、
                 各占一半宽、图标同尺寸、字色同一档。#919 那一版曾经想用「描边/不描边 +
                 宽度 + 字色」三样一起分主次,维护者看完真机说这两颗要长一样——
                 两个入口本来就是并列的两件事(开一条会话 / 开一块地方),
                 样式上分出主次反而是在说"右边那颗不太重要"。
                 ＋ 从原来那个全角字符换成 lucide 的 Plus:一颗图标一颗字符,
                 两边的视觉重量对不齐,而"长一样"第一眼看的就是这个。
-                justify-center 而不是 start:等宽的一对,左对齐会在各自右边留一段
-                长短不一的空,居中让两颗的内容各自以自己为轴 */}
+                任务栏只有左边那颗(issue #923):工作区是项目那一侧的概念,而任务栏的
+                全部意义就是「不用先懂文件夹」,摆一颗建工作区的钮进去等于把它刚省掉的
+                概念又端回来。它生出来的东西(WorkspacesSidebarSection)本来也只在项目栏
+                画得出来——按钮留在任务栏的话,点完人在原地看不见任何结果 */}
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
-                className={TWIN_BUTTON}
+                className={tab === "projects" ? TWIN_BUTTON : SOLO_BUTTON}
                 onClick={() => {
                   setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
                   // 任务档的新会话直接落进内置 Default(不用选文件夹);
@@ -2068,14 +2079,16 @@ function AppSidebar() {
               </Button>
               {/* 新工作区(issue #917)。图标沿用 Boxes,和侧栏里工作区组头、
                   弹窗标题是同一张脸 */}
-              <Button
-                variant="ghost"
-                className={TWIN_BUTTON}
-                onClick={() => setNewWorkspaceOpen(true)}
-              >
-                <Boxes className="size-4 shrink-0" aria-hidden />
-                新工作区
-              </Button>
+              {tab === "projects" && (
+                <Button
+                  variant="ghost"
+                  className={TWIN_BUTTON}
+                  onClick={() => setNewWorkspaceOpen(true)}
+                >
+                  <Boxes className="size-4 shrink-0" aria-hidden />
+                  新工作区
+                </Button>
+              )}
             </div>
             {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
                 上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
@@ -2477,8 +2490,9 @@ function AppSidebar() {
           </div>
         </DrawerContent>
       </Drawer>
-      {/* 新工作区(issue #917)。建成功后把侧栏切回项目栏并退出归档视图——
-          这颗按钮在两栏里都在,而它生出来的东西只在项目栏看得见 */}
+      {/* 新工作区(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
+          为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
+          不然新建的工作区在他此刻看的那一屏上根本不出现 */}
       <NewWorkspaceDialog
         open={newWorkspaceOpen}
         onOpenChange={setNewWorkspaceOpen}

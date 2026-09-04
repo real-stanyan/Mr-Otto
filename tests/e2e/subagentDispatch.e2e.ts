@@ -325,7 +325,7 @@ test("#147-6/7 工作区级的那份只在它自己的工程里派得出去", as
       .toContain("w1only");
 
     // 7. 换到另一个工程的会话，它**派不出来**
-    await win.getByRole("button", { name: "＋ 新会话" }).click();
+    await win.getByRole("button", { name: "新会话" }).click();
     await startSession(otto, w2, "W2 的第一条会话");
     await expect.poll(() => dispatchable(fake.requests[fake.requests.length - 1]!), { timeout: 20_000 })
       .not.toContain("w1only");
