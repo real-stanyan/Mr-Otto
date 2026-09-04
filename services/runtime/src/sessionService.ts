@@ -126,11 +126,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   return {
     async say(fromUid, label, text, mention) {
-      const decision = coordinator.onChat(mention);
+      // 行为等价适配(#928 task-8)：turnCoordinator 从互斥锁换成了串行队列
+      // (enqueue/nextJob)，多智能体的排队装配是 task-9 的事——这里只把旧
+      // onChat(mention) 的单 agent、一次一个语义原样接到新接口上。
+      // mention=true 统一记一个占位 agentId："default"：单 agent 场景下
+      // 协调器只需要知道"有没有人在排"，不需要真的区分是谁
+      const decision = coordinator.enqueue({ agentId: mention ? "default" : "", fromUid, label, text });
 
-      if (decision === "logged_only") {
-        // 未点火的发言（未 @ 本机操作者，或 turn 已经在跑）：只落 chat_message，
-        // 不碰 engine——中途注入靠 engine 每轮从 store 重新投影天然生效
+      if (decision !== "start_turn") {
+        // "logged_only"（未 @ 本机操作者）或"queued"（单 agent 场景下起跑权
+        // 已被占用，等价于旧接口的 logged_only）：只落 chat_message，不碰
+        // engine——中途注入靠 engine 每轮从 store 重新投影天然生效
         const e = store.append({
           sessionId,
           ts: Date.now(),
@@ -144,7 +150,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return;
       }
 
-      // decision === "start_turn"
+      // decision === "start_turn"：这个 job 也已经在队里了（enqueue 的约定），
+      // 调用方的标准消费形状是取出它再跑——单 agent 场景下队列里只有这一个，
+      // 取出的返回值就是刚才 enqueue 的那份，不需要再读
+      coordinator.nextJob();
       router.setInitiator(fromUid);
       currentInitiator = fromUid;
       try {
@@ -158,12 +167,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }
         cachedPxTools = buildPxTools(opts.px, fromUid, granted);
 
-        coordinator.turnStarted();
         await engine.runTurn(`[${label}]: ${text}`);
       } finally {
-        // turnEnded 对任意非 idle 态归位——起跑失败（grants 拉取抛错、
-        // runTurn 本身抛错）也要调它，不然协调器永久卡在 claimed/running
-        coordinator.turnEnded();
+        // 再排空一次，取代旧 turnEnded() 的收尾语义——nextJob() 是协调器里
+        // 唯一能把 running 归 false 的入口：队列空了才归 idle。起跑失败
+        // （grants 拉取抛错、runTurn 本身抛错）也要走到这里，不然协调器
+        // 永久卡在"运行中"。单 agent 场景下队列此刻必空，这一下拿到 null；
+        // 万一拿到非 null（并发 mention 挤进来又被判 queued 的那个job），
+        // 它的内容已经在各自的 say() 里独立落过 chat_message 了，这里弃之
+        // 不跑——真正的多 job 排空循环是 task-9 的事
+        coordinator.nextJob();
         currentInitiator = null;
       }
     },
