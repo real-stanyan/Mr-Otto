@@ -11,10 +11,13 @@
 //
 // 于是这一屏必然停在 `workspaceAccess` 的 signed_out 那一档（见
 // src/renderer/src/lib/workspaceAccess.ts）：侧栏里没有工作区那一节（一条都
-// 没有 + 没有错误 = 整节不出），「＋ 新工作区」照常在——它是常驻的发现入口，
+// 没有 + 没有错误 = 整节不出），「新工作区」照常在——它是项目栏常驻的发现入口，
 // 点开告诉你为什么现在不行、并给一条出去的路。这两件事正是这条用例能诚实
 // 断言的全部；建群 → 改名 → 贡献连接器 → 撤回的完整链路需要两个真实登录的
 // 账号，走 docs/dev-two-accounts.md 手册手动验，不写进自动化。
+//
+// 先点一下「项目」：那颗钮只在项目栏（issue #923），而全新的 HOME 一条会话都
+// 没有，侧栏初值落在任务栏。
 
 import { expect, test } from "@playwright/test";
 
@@ -25,6 +28,7 @@ test("新工作区：未登录时弹窗说清为什么 + 给出去的路，关�
   try {
     // 侧栏里没有工作区那一节：一条工作区都没有（也拉不到）时整节不渲染，
     // 段头「工作区」这三个字不该出现在侧栏里
+    await otto.win.getByRole("tab", { name: "项目" }).click();
     await expect(otto.win.getByRole("button", { name: "新工作区" })).toBeVisible({ timeout: 15_000 });
 
     await otto.win.getByRole("button", { name: "新工作区" }).click();

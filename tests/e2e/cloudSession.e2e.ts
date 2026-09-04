@@ -30,8 +30,10 @@ import { expectNoRendererErrors, launchOtto } from "./harness.js";
 test("云会话冒烟：未真实登录时侧栏没有工作区可点，云会话入口不出现也不崩", async () => {
   const otto = await launchOtto(); // authRecord 默认 true——只过 SignInScreen 那道闸，见头部注释
   try {
-    // 侧栏画出来了（拿常驻的「＋ 新工作区」当锚点），说明这一屏是活的——
-    // 下面那几条负向断言才有意义，否则「什么都没有」也可能只是界面崩了
+    // 侧栏画出来了（拿项目栏常驻的「新工作区」当锚点），说明这一屏是活的——
+    // 下面那几条负向断言才有意义，否则「什么都没有」也可能只是界面崩了。
+    // 先切到项目栏：那颗钮只在这一栏（issue #923），新 HOME 的初值是任务栏
+    await otto.win.getByRole("tab", { name: "项目" }).click();
     await expect(otto.win.getByRole("button", { name: "新工作区" })).toBeVisible({ timeout: 15_000 });
 
     // 负向断言：证明「摸不到」是确定行为，不是巧合——这一屏不该露出云会话的
