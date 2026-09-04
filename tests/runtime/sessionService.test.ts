@@ -19,6 +19,10 @@ const fakeWorld: ExecutionWorld = {
 
 const px: PxCallDeps = { edgeBase: "https://edge.example", runtimeSecret: "sek" };
 
+// 单 agent 场景（#928 之前就有的测试）用的占位 roster——只有一只、指令是空串，
+// 专供沿用旧行为的测试用。真正的多智能体 roster 见下面 describe("多智能体云会话…")
+const DEFAULT_AGENT = { agentId: "default", name: "default", description: "", instructions: "", models: ["fake-model"] };
+
 function newStore(): EventStore {
   const dir = tempDir("mrotto-runtime-session-");
   return new EventStore(join(dir, "session.db"));
@@ -41,7 +45,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -50,8 +55,17 @@ describe("createCloudSession", () => {
 
     await session.say("u1", "alice", "你好", true);
 
-    expect(events.map((e) => e.type)).toEqual(["user_message", "request_envelope", "assistant_message", "turn_ended"]);
-    expect(events[0]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
+    // agent_briefed 排最前（#928）：这只 agent 第一次起 turn 前先落一条自我
+    // 介绍，engine 这一轮的 snapshot() 才读得到它——不是这条测试原有的断言，
+    // 是多智能体切片带来的新增事实
+    expect(events.map((e) => e.type)).toEqual([
+      "agent_briefed",
+      "user_message",
+      "request_envelope",
+      "assistant_message",
+      "turn_ended",
+    ]);
+    expect(events[1]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
     // 落盘与 onEvent 是同一份事实
     expect(store.load("s1").map((e) => e.type)).toEqual(events.map((e) => e.type));
     expect(session.isRunning()).toBe(false);
@@ -87,7 +101,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -137,7 +152,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent,
@@ -195,7 +211,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent,
@@ -238,7 +255,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -293,7 +311,8 @@ describe("CloudSession.archive（issue #822）", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter: { model: "fake-model", async chat() { return { content: "" }; } },
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "" }; } }),
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -347,5 +366,107 @@ describe("CloudSession.archive（issue #822）", () => {
     expect(revived.archive("bob")).toBe(false);
     expect(second).toEqual([]);
     store.close();
+  });
+});
+
+const AGENTS = [
+  { agentId: "ops", name: "运营", description: "管店铺运营", instructions: "你管店铺运营", models: ["m-ops"] },
+  { agentId: "ads", name: "广告", description: "管投放", instructions: "你管投放", models: ["m-ads"] },
+];
+
+describe("多智能体云会话（#928 切片 1a）", () => {
+  it("@运营 只让运营那只跑,落盘事件带 agentId=ops", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+
+    expect(seen).toEqual(["ops"]);
+    const am = events.filter((e) => e.type === "assistant_message");
+    expect(am).toHaveLength(1);
+    expect(am[0]).toMatchObject({ agentId: "ops", content: "运营答" });
+  });
+
+  it("@ 两只 —— 串行跑完,顺序按 mentions 给的顺序", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
+
+    expect(seen).toEqual(["ops", "ads"]);
+  });
+
+  it("广告那只看不见运营的工具痕迹,只看得见它说的话", async () => {
+    const store = newStore();
+    const prompts: Record<string, string> = {};
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(messages) {
+          prompts[a.agentId] = JSON.stringify(messages);
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+
+    // 先手工塞一条运营的工具痕迹,再让广告跑
+    store.append({ sessionId: "s1", ts: 1, type: "assistant_message", content: "查了",
+                   model: "m-ops", agentId: "ops",
+                   toolCalls: [{ id: "c1", name: "bash", args: "{}" }] });
+    store.append({ sessionId: "s1", ts: 2, type: "tool_result", toolCallId: "c1",
+                   status: "ok", output: "机密的 12 行查询结果", agentId: "ops" });
+
+    await session.say("u1", "alice", "@广告 看投放", true, ["ads"]);
+
+    expect(prompts.ads).toContain("查了");                    // 说的话进来了
+    expect(prompts.ads).not.toContain("机密的 12 行查询结果");  // 工具输出没进来
+  });
+
+  it("mentions 缺席但正文里有 @ —— 服务端用同一份纯逻辑自己认出来", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    // 手机端只发得出布尔那一版
+    await session.say("u1", "alice", "@广告 看投放", true);
+    expect(seen).toEqual(["ads"]); // 不是名单第一只的 ops
+  });
+
+  it("mentions 缺席、正文也没 @ —— 老语义:唤醒名单第一只", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.say("u1", "alice", "在吗", true);
+    expect(seen).toEqual(["ops"]); // 名单第一只 = 默认那只
   });
 });

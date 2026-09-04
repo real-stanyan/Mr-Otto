@@ -23,7 +23,7 @@ import {
 } from "./sandbox.js";
 import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
-import { createCloudSession, type CloudSession } from "./sessionService.js";
+import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
@@ -45,6 +45,22 @@ import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
     裁定挪到这里：不补的话，重启后已闲置容器永远跳过 sweepIdle 的闲停判定，
     因为 lastActive 表是进程内状态，daemon 一重启就空了）。 */
 const WORKSPACE_LABEL = "mrotto.workspace";
+
+/** 临时占位（#928 task-9 → task-11 过渡）：真正的多 agent 名单来自
+    workspace_agents 表（Task 10 的 migration，Task 11 接线查询 + 按 agent
+    造 adapter，见 task-11-brief.md），在那之前每个工作区先按这一只装配——
+    与 migration 里 seed_workspace_admin_agent 种的默认行同名，保持语义连续。
+    adapterFor 仍然返回原来那套按工作区/发起人算路由的 perSessionAdapter，
+    不引入任何新的模型路由语义（sessionService.ts 的接口从单 adapter 换成
+    agents()/adapterFor() 是 task-9 的事，这里只是让装配点跟上新接口形状，
+    不提前做 task-11 的真实多 agent 查询） */
+const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
+  agentId: "admin",
+  name: "管理员",
+  description: "这个工作区的默认智能体",
+  instructions: "",
+  models: [],
+};
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
     DATA_DIR，不是 Supabase：孤儿判定是这台 runtime 自己的运行时状态，
@@ -462,7 +478,10 @@ async function main(): Promise<void> {
       createdByUid,
       store,
       world,
-      adapter: perSessionAdapter,
+      // 临时占位，见 DEFAULT_WORKSPACE_AGENT 注释：真正的 workspace_agents
+      // 查询是 task-11 的事，这里先保住单 agent 时代的路由行为不变
+      agents: async () => [DEFAULT_WORKSPACE_AGENT],
+      adapterFor: () => perSessionAdapter,
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
       onEvent: broadcast,
