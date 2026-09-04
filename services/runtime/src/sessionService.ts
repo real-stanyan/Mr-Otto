@@ -16,7 +16,11 @@
 //     parseMentions 从正文里认（② 兜底，手机端/旧桌面用）→ 都没有时唤醒名单
 //     第一只（③ 老语义）。
 //   - 谁是谁靠 agent_briefed（briefIfNeeded）：instructions 变了才重新落一条，
-//     不是每 turn 都落；必须用裸 store 查（agentView 把 agent_briefed 丢弃）。
+//     不是每 turn 都落；提示词和同伴都没有时干脆不落（没内容可说，#928
+//     修复轮 3/5）。判断用裸 store 查——这是记账判断，该读事实的原始来源，
+//     不是"agentView 包过的会查到空数组"（那个说法不准确，agentView 对
+//     "拿自己的 view 查自己的 brief"其实查得到，见 briefIfNeeded 里的
+//     完整说明）。
 //
 // engine 有没有被改：改了两处，都是**追加可选字段**，不改既有语义（详见
 // task-9-report.md）——
@@ -210,8 +214,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       每 turn 都落一条的话，日志里堆满同一段文字，而且模型每轮都被重新
       自我介绍一遍 */
   function briefIfNeeded(spec: AgentSpec, roster: AgentSpec[]): void {
-    // **裸 store，不是 agentView 包过的那份**：Task 5 把 agent_briefed 放进了
-    // 丢弃名单，用包过的那份查会永远回空数组，于是每 turn 重新 brief 一遍
+    const otherRoster = roster.filter((r) => r.agentId !== spec.agentId);
+
+    // 这条 brief 此时有没有内容可说——不是"没提示词就跳过"的特例优化，是
+    // 穷举了两个信息来源之后，只有两个都空时它才真的说不出任何东西（#928
+    // 终审 Critical，修复轮 3/5）：
+    //   有提示词、没同伴 → 要落（模型得知道自己管什么）
+    //   没提示词、有同伴 → 要落（"群里还有：广告（管投放）"是有用的）
+    //   两样都没有     → 落出来是「[你是这个工作区里的「管理员」。]\n」这种
+    //                     零信息量的句子——而且是一条**永久**事件，会让既有
+    //                     云会话升级后的第一个 turn 多出这一条、打断一次
+    //                     前缀缓存（ADR-0073）
+    // 两个条件必须是 && 不是 ||：写成或的话，"有提示词但暂时没同伴"这种
+    // 完全正常的单 agent 工作区会被一起挡掉，那条 brief 明明说得出话。
+    //
+    // 这个守卫顺带让 `npm run runtime:smoke` 的事件序列断言（"event 帧序列
+    // 以 user_message 开头"）重新变绿——冒烟脚本与 daemon.ts 的临时占位
+    // agent（`DEFAULT_WORKSPACE_AGENT`/`smokeAgent`）正是"没提示词、没同伴"
+    // 这一态，之前每次都会先落一条空洞的 agent_briefed 把断言顶掉第一位。
+    // 这不是为了讨好那条冒烟脚本才加的特例，是这个占位本来就该服从这条
+    // 通用规则——冒烟变绿只是这条规则生效的必然副产品
+    if (spec.instructions.trim() === "" && otherRoster.length === 0) return;
+
+    // **裸 store，不是 agentView 包过的那份**。理由不是"包过的会回空数组"——
+    // 那个说法不准确（终审实测过）：projectForAgent 对 owner === agentId 有
+    // 提前放行分支，拿自己的 view 查自己的 brief 其实查得到，不是空数组。
+    // 真正的理由是**这是记账判断，该读事实的原始来源**：agentView 的裁决表
+    // 是为"模型看得见什么"设计的，不是为这里"这只 agent 有没有被 brief 过"
+    // 这个判断设计的。哪天那张表为了模型可见性调整一下（比如把 agent_briefed
+    // 改成对自己也 drop），这里就会安静地每 turn 重新 brief 一遍——用裸 store
+    // 是让这个判断不受那张表未来怎么改而摇摆
     const already = store
       .ofType(sessionId, "agent_briefed")
       .filter((e) => e.type === "agent_briefed" && e.agentId === spec.agentId)
@@ -225,9 +257,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         agentId: spec.agentId,
         name: spec.name,
         instructions: spec.instructions,
-        roster: roster
-          .filter((r) => r.agentId !== spec.agentId)
-          .map((r) => ({ name: r.name, description: r.description })),
+        roster: otherRoster.map((r) => ({ name: r.name, description: r.description })),
       })
     );
   }

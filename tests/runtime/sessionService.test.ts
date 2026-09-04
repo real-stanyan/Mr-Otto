@@ -55,17 +55,11 @@ describe("createCloudSession", () => {
 
     await session.say("u1", "alice", "你好", true);
 
-    // agent_briefed 排最前（#928）：这只 agent 第一次起 turn 前先落一条自我
-    // 介绍，engine 这一轮的 snapshot() 才读得到它——不是这条测试原有的断言，
-    // 是多智能体切片带来的新增事实
-    expect(events.map((e) => e.type)).toEqual([
-      "agent_briefed",
-      "user_message",
-      "request_envelope",
-      "assistant_message",
-      "turn_ended",
-    ]);
-    expect(events[1]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
+    // DEFAULT_AGENT 没有 instructions、又是 roster 里唯一一只——briefIfNeeded
+    // 的守卫（#928 修复轮 3/5）判定这条 brief 说不出任何内容，不落
+    // agent_briefed，事件序列因此与多智能体切片之前逐字节相同
+    expect(events.map((e) => e.type)).toEqual(["user_message", "request_envelope", "assistant_message", "turn_ended"]);
+    expect(events[0]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
     // 落盘与 onEvent 是同一份事实
     expect(store.load("s1").map((e) => e.type)).toEqual(events.map((e) => e.type));
     expect(session.isRunning()).toBe(false);
@@ -680,5 +674,50 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 也麻烦 @运营"
       )
     ).toBe(true);
+  });
+
+  it("没提示词也没同伴的占位 agent(#928 终审,修复轮 3/5):brief 说不出任何内容,不该落 agent_briefed", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // 只有一只、instructions 是空串——过滤掉自己之后 roster 也是空的,
+    // 与 daemon.ts 的 DEFAULT_WORKSPACE_AGENT / smokeAssembly.ts 的 smokeAgent
+    // 同一种形状(runtime:smoke 用的正是这种占位)
+    const SOLO_AGENT = { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] };
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => [SOLO_AGENT],
+      adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "你好", true);
+
+    expect(events.some((e) => e.type === "agent_briefed")).toBe(false);
+    // 事件序列直接以 user_message 开头——同 npm run runtime:smoke 那条断言
+    expect(events[0]?.type).toBe("user_message");
+  });
+
+  it("没提示词但有同伴(#928 终审,修复轮 3/5):守卫不是'没提示词就不 brief'——roster 非空时仍要落", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // "solo" 自己没有 instructions,但群里还有"friend"——这条 brief 说得出
+    // "群里还有:friend(帮衬的)",不该被守卫拦下
+    const ROSTER = [
+      { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] },
+      { agentId: "friend", name: "friend", description: "帮衬的", instructions: "你帮衬", models: ["m-friend"] },
+    ];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => ROSTER,
+      adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
+
+    const briefed = events.find((e) => e.type === "agent_briefed");
+    expect(briefed).toMatchObject({ agentId: "solo", instructions: "" });
   });
 });
