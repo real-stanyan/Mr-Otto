@@ -303,10 +303,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
       if (!decisions.includes("start_turn")) {
         // 这些 job 排上了，但轮不到这条调用来跑——已经有另一条 say() 在排空，
-        // 那条调用的排空循环最终会捞到这些 job 并真的跑。这里先落一条人看
-        // 得见的记录（同旧单 agent "queued" 语义的推广），不因为"排上了没跑"
-        // 就在这条调用里丢数据
-        logChat(fromUid, label, text, mention);
+        // 那条调用的排空循环迟早会捞到它们。**这里不落 chat_message**（修复轮
+        // 1/5，#928）：一句话只该留一条事件，事件类型说明它的下场——落得到
+        // 自己一轮的是 user_message（由 runJob → engine.runTurn 产出），没有
+        // 的才是 chat_message。这个 job 会被跑到,所以属于前者；这里再补一条
+        // chat_message,deriveMessages 会把两条都投影成几乎同一句话（同一个
+        // `[label]: content` 形状），模型会把同一句指令读两遍，1b 的时间线上
+        // 也会显示两遍——不是日志变胖，是喂错东西。真正会丢数据的是"这个 job
+        // 最终没被任何人跑到"那种情况（排空循环中途抛错），那种情况的补偿
+        // 记录落在下面 finally 的丢弃分支里，位置对，不在这
         return;
       }
 
@@ -317,9 +322,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 起不了 turn，直到 daemon 重启（#928 task-8 修复轮 1/5，两个成员并发
       // @ 一次即复现，真实复现过的死锁，不是假设）。
       // 起跑失败（hostUids() 抛错、runTurn 抛错）也必须走到这个排空——下面
-      // try 里的 while 一旦因某个 job 抛错提前退出，finally 里的 while 仍然
-      // 把剩下的队列排到 null（不再尝试跑它们：它们各自的记录早在各自的
-      // say() 里落过了，不丢数据；这与旧的单 agent "丢弃多余 job" 语义一致）
+      // try 里的 while 一旦因某个 job 抛错提前退出，finally 里的循环仍然把
+      // 剩下的队列排到 null，让 running 归位
       try {
         let job = coordinator.nextJob();
         while (job !== null) {
@@ -327,9 +331,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           job = coordinator.nextJob();
         }
       } finally {
-        while (coordinator.nextJob() !== null) {
-          // 兜底排空，见上方注释：正常收尾时这里一次就返回 null（队列已经
-          // 空了），只有异常提前退出时才会真的在这里再吐出东西
+        // 兜底排空（修复轮 1/5，#928）：正常收尾时这里一次就返回 null（队列
+        // 已经空了）。只有上面的 while 因某个 job 抛错提前退出时,这里才会
+        // 真的吐出东西——这些 job **不会再被任何人跑到**了（不是"排上了
+        // 还会被跑"，是这条调用本来就是唯一的排空者，它自己都放弃了）。
+        // 不跑不代表可以凭空丢掉它们说过的话：每丢弃一个就替它补一条
+        // chat_message（TurnJob 自带 fromUid/label/text，够用）——异常路径
+        // 因此比什么都不落更诚实："这句话说了，但它那一轮没跑成"，而不是
+        // 假装它从没发生过
+        let leftover = coordinator.nextJob();
+        while (leftover !== null) {
+          logChat(leftover.fromUid, leftover.label, leftover.text, true);
+          leftover = coordinator.nextJob();
         }
       }
     },

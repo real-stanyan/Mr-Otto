@@ -275,14 +275,26 @@ describe("createCloudSession", () => {
     // 第二条 @ 并发进来：协调器此刻应该回 queued，不该起第二个 turn
     await session.say("u2", "bob", "我也有事", true);
 
-    // 断言①：第二条已经落盘——没有因为"排上了没跑"就丢数据
+    // 断言①（修复轮 1/5，#928）：第二条此刻**不**落 chat_message——它排上了
+    // 队，会被第一条的排空循环真正跑到，届时由 runTurn 落 user_message；这里
+    // 提前落一条 chat_message 会让同一句话产生两条几乎同形状的事件
+    // （`[label]: content`），模型读到的就是同一条指令被念了两遍。这是本次
+    // 修复权衡接受的代价：排队中的消息要等当前 turn 跑完才在群里出现，原来
+    // 是立刻可见
     expect(
       events.some((e) => e.type === "chat_message" && (e as { content: string }).content === "我也有事")
-    ).toBe(true);
+    ).toBe(false);
 
-    // 放第一条过关，等它（连同 finally 里的排空）跑完
+    // 放第一条过关，等它（连同 finally 里的排空——这次会真的把 bob 那条也
+    // 排空到并跑掉）跑完
     resolveFirstChat({ content: "第一轮完成" });
     await firstSay;
+
+    // 断言①-b：bob 那条确实被跑到了——它自己的 user_message 出现在日志里，
+    // 没有因为"排上了没跑"丢数据，只是推迟到了它真正起 turn 的那一刻
+    expect(
+      events.some((e) => e.type === "user_message" && (e as { content: string }).content === "[bob]: 我也有事")
+    ).toBe(true);
 
     // 断言②：第一条跑完之后，协调器必须归 idle —— 这是这次复现的死锁本体：
     // finally 里只排一次 nextJob() 的话，会把并发挤进来的第二条 job 捞出来
@@ -468,5 +480,87 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
     await session.say("u1", "alice", "在吗", true);
     expect(seen).toEqual(["ops"]); // 名单第一只 = 默认那只
+  });
+
+  it("排空循环中途抛错(#928 修复轮 1/5):剩下的 job 不再尝试跑,但每个都留下一条 chat_message,协调器不卡死", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          // ops 那只的 adapter 直接炸掉,模拟"起跑失败"(hostUids() 抛错、
+          // runTurn 抛错都是这条路径,这里用最直接的 chat() 抛错触发)
+          if (a.agentId === "ops") throw new Error("boom：ops 的 adapter 炸了");
+          seen.push(a.agentId);
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    // ops 排第一个(拿到 start_turn,真的起跑并抛错),ads 排第二个(queued,
+    // 会在 finally 的丢弃排空里被捞到——但不会被真的跑,因为 ops 已经把这条
+    // 调用的排空循环炸断了)
+    await expect(
+      session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"])
+    ).rejects.toThrow("boom");
+
+    // ads 那个 job 被丢弃排空——从没真的起过 turn,它的 adapter.chat() 没被调用过
+    expect(seen).toEqual([]);
+    // 但它的话没有凭空消失:留下一条 chat_message(两只 agent 的 job 共享
+    // 同一条原始消息,所以丢弃排空只会补这一条,不是两条)
+    const chatMessages = events.filter((e) => e.type === "chat_message");
+    expect(chatMessages).toHaveLength(1);
+    expect(chatMessages[0]).toMatchObject({ fromUid: "u1", label: "alice", content: "@运营 @广告 一起看" });
+    // 协调器没有卡死——不是"看起来没丢数据"但已经再起不来了
+    expect(session.isRunning()).toBe(false);
+
+    // 而且真的还能再起下一轮
+    await session.say("u2", "bob", "@广告 还在吗", true, ["ads"]);
+    expect(seen).toEqual(["ads"]);
+  });
+
+  it("多 agent 场景:approval_request.agentId 是当前跑着的那一只(#928 修复轮 1/5)", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+
+    const onEvent = (e: SessionEvent): void => {
+      events.push(e);
+      if (e.type === "approval_request") {
+        session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      }
+    };
+
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => {
+        let round = 0;
+        return {
+          model: a.models[0]!,
+          async chat() {
+            round++;
+            if (round === 1) return { content: "", toolCalls: [{ id: "cA", name: "bash", args: { cmd: "echo hi" } }] };
+            return { content: `${a.name}跑完了` };
+          },
+        };
+      },
+      onEvent,
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
+
+    // agentId 之前一直没有写入方(#928 之前的单 agent 时代没这个概念)——
+    // 这条断言钉住它:两只 agent 各自弹出的审批卡,日志里要能分清是谁要的
+    const req = events.find((e) => e.type === "approval_request");
+    expect(req).toMatchObject({ agentId: "ads" });
   });
 });
