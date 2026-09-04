@@ -1,6 +1,7 @@
 // tests/session/agentView.test.ts
 import { describe, it, expect } from "vitest";
 import { projectForAgent, agentView } from "../../src/session/agentView.js";
+import { deriveMessages } from "../../src/session/deriveMessages.js";
 import type { EventLog } from "../../src/session/eventLog.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -110,5 +111,52 @@ describe("agentView（#928 切片 1a：EventLog wrapper）", () => {
     const hit = adsView.lastOfType("s1", "user_message");
     expect(hit).not.toBe(null);
     expect(hit?.type).toBe("user_message");
+  });
+
+  it("deriveMessages 链条验证：ops 压缩不会污染 ads 的上下文", () => {
+    // 构造场景：ads 有自己的消息，ops 压缩过，ads 再 load 并投影给模型
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "ads 自己的需求", sessionId: "s1" }),
+      ev({
+        seq: 1,
+        type: "assistant_message",
+        content: "ads 的回复",
+        model: "m",
+        agentId: "ads",
+        sessionId: "s1",
+      } as never),
+      // ops 压缩并生成了摘要（这种摘要包含 ops 私有的视角信息）
+      ev({
+        seq: 2,
+        type: "context_compacted",
+        summary: "ops 已压缩过，这是 ops 视角的摘要",
+        agentId: "ops",
+        sessionId: "s1",
+      } as never),
+    ];
+    const store = memoryLog(log);
+    const adsView = agentView(store, "ads");
+    const projected = adsView.load("s1");
+
+    // 第一关：投影层应该过滤掉 ops 的 context_compacted
+    const hasOpsCompacted = projected.some((e) => e.type === "context_compacted" && e.agentId === "ops");
+    expect(hasOpsCompacted).toBe(false);
+
+    // 第二关：deriveMessages 不应该包含任何来自 ops 的摘要内容
+    const messages = deriveMessages(projected);
+    const hasSummary = messages.some(
+      (m) => typeof m.content === "string" && m.content.includes("ops 已压缩过")
+    );
+    expect(hasSummary).toBe(false);
+
+    // 第三关：不应该有幻影工具消息（deriveMessages 的自愈机制）
+    const phantomToolMessages = messages.filter((m) => m.role === "tool");
+    expect(phantomToolMessages).toHaveLength(0);
+
+    // ads 自己的消息应该还在
+    const adsOwnMessage = messages.some(
+      (m) => typeof m.content === "string" && m.content.includes("ads 的回复")
+    );
+    expect(adsOwnMessage).toBe(true);
   });
 });
