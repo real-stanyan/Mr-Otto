@@ -1574,6 +1574,14 @@ const ARCHIVED_COLLAPSED_KEY = "otter-sidebar-collapsed-archived";
 /** 工作区组的收放另存一个键（issue #919）：工作区 id 和工程绝对路径不同名，
     混在一个键里迟早撞上，两屏各存各的也是既有做法（见上面归档那个键） */
 const WS_COLLAPSED_KEY = "otter-sidebar-collapsed-workspaces";
+
+/* 侧栏头部并排那一对（「新会话」/「新工作区」，issue #921）。**一份类名串两处共用**
+   而不是各写各的：这两颗要长一样是维护者点名的要求，抄两遍的话下次只改一边就又不一样了。
+   px-2 不是 px-3——侧栏窄，等分之后每颗只有一百出头的像素，px-3 会让「新工作区」
+   四个字顶到图标上。press-scale 是全局那条按下反馈（app.css，100ms 量级、
+   prefers-reduced-motion 下自动去掉）：这是两颗真会被按的钮，按下去得有反应 */
+const TWIN_BUTTON =
+  "press-scale flex-1 min-w-0 justify-center gap-1.5 px-2 py-[7px] text-[13px] font-normal border border-border hover:bg-foreground/[0.06]";
 /** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
 const NO_WORKSPACE_KEY = "\u0000no-workspace";
 
@@ -2031,14 +2039,19 @@ function AppSidebar() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            {/* 两颗并排不是上下叠(issue #919 的顺手一改):侧栏本来就窄,竖着排
-                每颗都占满整宽、白白吃掉一整行高度,而「新工作区」用不着那么宽。
-                主次靠**宽度**分:「＋ 新会话」flex-1 吃掉剩下的所有宽、还描边;
-                「新工作区」按内容收窄、不描边、字色压一档 */}
+            {/* 并排的一对,**同一副样子**(issue #921):同一个 TWIN_BUTTON 类名串、
+                各占一半宽、图标同尺寸、字色同一档。#919 那一版曾经想用「描边/不描边 +
+                宽度 + 字色」三样一起分主次,维护者看完真机说这两颗要长一样——
+                两个入口本来就是并列的两件事(开一条会话 / 开一块地方),
+                样式上分出主次反而是在说"右边那颗不太重要"。
+                ＋ 从原来那个全角字符换成 lucide 的 Plus:一颗图标一颗字符,
+                两边的视觉重量对不齐,而"长一样"第一眼看的就是这个。
+                justify-center 而不是 start:等宽的一对,左对齐会在各自右边留一段
+                长短不一的空,居中让两颗的内容各自以自己为轴 */}
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
-                className="flex-1 min-w-0 justify-start px-3 py-[7px] text-[13px] border border-border hover:bg-foreground/[0.06]"
+                className={TWIN_BUTTON}
                 onClick={() => {
                   setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
                   // 任务档的新会话直接落进内置 Default(不用选文件夹);
@@ -2046,13 +2059,14 @@ function AppSidebar() {
                   newSession(tab === "tasks" && builtin ? builtin : undefined);
                 }}
               >
-                ＋ 新会话
+                <Plus className="size-4 shrink-0" aria-hidden />
+                新会话
               </Button>
-              {/* 新工作区(issue #917)。不给 ＋ 前缀,那是主按钮的记号;图标沿用
-                  Boxes,和侧栏里工作区组头、弹窗标题是同一张脸 */}
+              {/* 新工作区(issue #917)。图标沿用 Boxes,和侧栏里工作区组头、
+                  弹窗标题是同一张脸 */}
               <Button
                 variant="ghost"
-                className="shrink-0 justify-start gap-1.5 px-2.5 py-[7px] text-[13px] font-normal text-muted-foreground hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
+                className={TWIN_BUTTON}
                 onClick={() => setNewWorkspaceOpen(true)}
               >
                 <Boxes className="size-4 shrink-0" aria-hidden />
