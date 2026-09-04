@@ -1,6 +1,7 @@
 // tests/session/agentView.test.ts
 import { describe, it, expect } from "vitest";
-import { projectForAgent } from "../../src/session/agentView.js";
+import { projectForAgent, agentView } from "../../src/session/agentView.js";
+import type { EventLog } from "../../src/session/eventLog.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 function ev(partial: Partial<SessionEvent> & { type: SessionEvent["type"]; seq: number }): SessionEvent {
@@ -50,5 +51,64 @@ describe("projectForAgent（#928 切片 1a）", () => {
       ev({ seq: 2, type: "turn_ended", agentId: "ops" } as never),
     ];
     expect(projectForAgent(log, "ads")).toEqual([]);
+  });
+});
+
+describe("agentView（#928 切片 1a：EventLog wrapper）", () => {
+  // 手写假 EventLog
+  function memoryLog(events: SessionEvent[]): EventLog {
+    let allEvents = [...events];
+    return {
+      append: (e: SessionEvent) => {
+        allEvents.push(e);
+        return e;
+      },
+      load: (sessionId: string) =>
+        allEvents.filter((e) => e.sessionId === sessionId),
+      forkOrigin: () => null,
+      lastOfType: (sessionId: string, type: SessionEvent["type"]) =>
+        [...allEvents.filter((e) => e.sessionId === sessionId && e.type === type)].pop() ?? null,
+      ofType: (sessionId: string, type: SessionEvent["type"]) =>
+        allEvents.filter((e) => e.sessionId === sessionId && e.type === type),
+    };
+  }
+
+  it("load 不放行别人的 context_compacted —— Critical 修复：运营压缩过一次，广告 load 出来的事件里没有它", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "需求一：检查销量", sessionId: "s1" }),
+      ev({ seq: 1, type: "assistant_message", content: "已查阅", model: "m", agentId: "ops", sessionId: "s1" }),
+      ev({ seq: 2, type: "context_compacted", summary: "ops 已检查销量", agentId: "ops", sessionId: "s1" } as never),
+    ];
+    const store = memoryLog(log);
+    const adsView = agentView(store, "ads");
+    const projected = adsView.load("s1");
+    // ads 看不见 ops 的 context_compacted
+    const hasContextCompacted = projected.some((e) => e.type === "context_compacted");
+    expect(hasContextCompacted).toBe(false);
+    // ads 看得见 user_message 和别人的 assistant_message（剥了 toolCalls）
+    expect(projected).toHaveLength(2);
+  });
+
+  it("lastOfType context_compacted 在最后一条检查点属于别人时回 null", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "问题", sessionId: "s1" }),
+      ev({ seq: 1, type: "context_compacted", summary: "ops 的摘要", agentId: "ops", sessionId: "s1" } as never),
+    ];
+    const store = memoryLog(log);
+    const adsView = agentView(store, "ads");
+    // ads 查最后一个 context_compacted,它属于 ops,所以回 null
+    const hit = adsView.lastOfType("s1", "context_compacted");
+    expect(hit).toBe(null);
+  });
+
+  it("lastOfType user_message 原样回来（不带 agentId，不该被过滤成 null）", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "来自人的话", sessionId: "s1" }),
+    ];
+    const store = memoryLog(log);
+    const adsView = agentView(store, "ads");
+    const hit = adsView.lastOfType("s1", "user_message");
+    expect(hit).not.toBe(null);
+    expect(hit?.type).toBe("user_message");
   });
 });

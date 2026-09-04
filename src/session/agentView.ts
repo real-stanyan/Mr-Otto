@@ -10,39 +10,105 @@
 // 模型读到的是它没执行。安静地捏造事实,比 400 难查。
 //
 // reasoning / usage 一并剥掉:前者 API 明令禁止塞回上下文,后者是账不是话。
+//
+// **这是一个 Record 不是一张名单**:每个事件类型都必须表态,加了新事件类型不来
+// 这里写一笔,tsc 直接红。形状照 sessionPackage.ts 的 PRIVACY_VERDICTS。
+// 这张表的初稿就是一张名单,而它漏掉 context_compacted 的代价是:别人压缩一次,
+// 我的整段真实历史被抹掉换成别人视角的摘要(deriveMessages 对它的处理是
+// messages.length = 0,清场重来)。名单漏一个是静默灾难,Record 漏一个是编译错误。
 
 import type { EventLog } from "./eventLog.js";
 import type { SessionEvent } from "./events.js";
 
-/** 别人干活留下的痕迹 —— 整条不进我的上下文 */
-const OTHERS_TURN_EVENTS: ReadonlySet<SessionEvent["type"]> = new Set([
-  "tool_result",
-  "tool_execution_started",
-  "approval_request",
-  "approval_decision",
-  "request_envelope",
-  "turn_ended",
-]);
+/** 别人的这条事件,我看得见吗(#928)。判据一句话:这条事件说的是「群里发生的事」,
+    还是「那只 agent 自己干活的过程」?后者 drop */
+type OtherAgentVerdict =
+  /** 全场共有的事实,或与「谁干的」无关 —— 原样进我的上下文 */
+  | "keep"
+  /** 别人干活留下的痕迹 —— 整条不进 */
+  | "drop"
+  /** 只留它说出口的那部分(assistant_message:剥掉 toolCalls / reasoning / usage) */
+  | "spoken";
+
+const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
+  // ── 全场共有或与执行者无关 ──
+  session_created: "keep",
+  user_message: "keep",
+  chat_message: "keep",
+  memory_loaded: "keep",
+  memory_user_edit: "keep",
+  memory_nudge: "keep",
+  session_archived: "keep",
+  session_unarchived: "keep",
+  session_renamed: "keep",
+  session_autotitled: "keep",
+  session_shared: "keep",
+  session_topic_assigned: "keep",
+  session_topic_set: "keep",
+  route_changed: "keep",
+  model_changed: "keep",
+
+  // ── 那只 agent 说出口的话 ──
+  assistant_message: "spoken",
+
+  // ── 别人干活的过程 ──
+  tool_execution_started: "drop",
+  tool_result: "drop",
+  tool_hook: "drop",
+  approval_request: "drop",
+  approval_decision: "drop",
+  request_envelope: "drop",
+  turn_ended: "drop",
+  context_compacted: "drop",
+  micro_compacted: "drop",
+  model_usage: "drop",
+  residue_baseline: "drop",
+  residue_detected: "drop",
+  residue_cleaned: "drop",
+  checkpoint_created: "drop",
+  branch_checked_out: "drop",
+  project_instructions: "drop",
+  skill_invoked: "drop",
+  skill_released: "drop",
+  subagent_spawned: "drop",
+  subagent_briefed: "drop",
+  background_task_started: "drop",
+  background_task_completed: "drop",
+  image_described: "drop",
+  section_classified: "drop",
+  suggestions_generated: "drop",
+  share_grant_note: "drop",
+  workspace_restored: "drop",
+};
 
 export function projectForAgent(events: SessionEvent[], agentId: string): SessionEvent[] {
   const out: SessionEvent[] = [];
   for (const e of events) {
     const owner = "agentId" in e ? e.agentId : undefined;
     // 没有 agentId = 全场共有(session_created / user_message / chat_message /
-    // memory_loaded / context_compacted …),或者这是一条单 agent 会话的旧事件
+    // memory_loaded …),或者这是一条单 agent 会话的旧事件。这条早退路径别动
     if (owner === undefined || owner === agentId) {
       out.push(e);
       continue;
     }
-    if (OTHERS_TURN_EVENTS.has(e.type)) continue;
-    if (e.type === "assistant_message") {
-      // 纯工具调用那一轮它没说话,剥完就是一条空消息 —— 不该占我上下文一格
-      if (e.content.trim() === "") continue;
-      const { toolCalls: _tc, reasoning: _r, usage: _u, ...stripped } = e;
-      out.push(stripped as unknown as SessionEvent);
+    // owner !== agentId 且存在 —— 查表判决这条事件
+    const verdict = OTHER_AGENT_VERDICTS[e.type];
+    if (verdict === "drop") continue;
+    if (verdict === "keep") {
+      out.push(e);
       continue;
     }
-    out.push(e);
+    if (verdict === "spoken") {
+      // assistant_message:纯工具调用那一轮它没说话,剥完就是一条空消息 —— 不该占我上下文一格
+      if (e.type === "assistant_message") {
+        if (e.content.trim() === "") continue;
+        const { toolCalls: _tc, reasoning: _r, usage: _u, ...stripped } = e;
+        out.push(stripped as unknown as SessionEvent);
+      } else {
+        out.push(e);
+      }
+      continue;
+    }
   }
   return out;
 }
