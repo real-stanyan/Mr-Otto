@@ -90,3 +90,11 @@ end $$;
 drop trigger if exists workspaces_seed_admin on public.workspaces;
 create trigger workspaces_seed_admin after insert on public.workspaces
   for each row execute function public.seed_workspace_admin_agent();
+
+-- 存量工作区补种：上面那个触发器只管新建的，已经存在的工作区跑完这份 SQL
+-- 仍然零 agent —— 而零 agent 的工作区里 resolveTargets 对每条消息都回 []，
+-- 只落 chat_message、永远不起 turn，安静变哑。回填放在文件里而不是留在
+-- 某份文档的折叠块里：真去执行的人手上拿的是这个 .sql
+insert into public.workspace_agents (workspace_id, agent_id, name, description, instructions, created_by)
+select w.id, 'admin', '管理员', '这个工作区的默认智能体', '', w.owner_uid from public.workspaces w
+on conflict do nothing;
