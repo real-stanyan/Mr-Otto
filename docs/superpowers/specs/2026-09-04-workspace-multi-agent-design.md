@@ -130,11 +130,16 @@ create unique index if not exists workspace_agents_name
 
 ## 4. 事件 schema 与线协议
 
-### 4.1 三个事件加可选 `agentId`
+### 4.1 turn 期事件加可选 `agentId`
 
-`assistant_message` / `tool_call` / `tool_result` 各加一个可选 `agentId: string`。
+**本仓没有 `tool_call` 事件**——工具调用内嵌在 `assistant_message.toolCalls` 里
+（写 spec 时查证）。所以带 `agentId` 的是这一组：`assistant_message` /
+`tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` /
+`request_envelope` / `turn_ended`。各加一个可选 `agentId: string`。
+
 **缺席 = 单 agent 会话**——全部旧日志、全部本机会话都落在这一档，旧日志照常重放
-（硬规则 4 满足）。
+（硬规则 4 满足）。落盘由 engine 的 `env()` 统一供料（它已经在给 `sessionId` / `ts`），
+不是每个 append 点各写一遍。
 
 ### 4.2 不给 agent 发伪 uid
 
@@ -202,9 +207,19 @@ export interface EventLog {
 五个方法是实测出来的，不是猜的：`engine.ts` 只碰 `append` / `load`，另外三个来自
 `boundedContextEvents`（它也收 store）。`EventStore` 结构上已经实现全部五个（只需在
 类上标注 `implements EventLog`）。
-`agentView(store, agentId)` 是第二个实现：`load` 转发后滤掉
-`agentId !== 本人 && (type === "tool_call" || type === "tool_result")`；
-`append` 原样转发（写路径不过滤）。
+`agentView(store, agentId)` 是第二个实现。`append` 原样转发（写路径不过滤）；
+读路径是**变换不是过滤**——这是本切片唯一一处不小心就会安静出错的地方：
+
+| 别人的事件 | 怎么处理 |
+|---|---|
+| `assistant_message` | **剥掉 `toolCalls` / `reasoning` / `usage`**，只留 `content`；剥完 `content` 为空则整条丢弃（纯工具调用那一轮它没说话） |
+| `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` / `request_envelope` / `turn_ended` | 整条丢弃 |
+| 其余（`chat_message` / `user_message` / `session_created` / `memory_loaded` / `context_compacted` …） | 原样放行 |
+
+**为什么剥 `toolCalls` 是必须的而不是顺手**：留着它、又丢掉配对的 `tool_result`，
+`deriveMessages` 的悬空工具调用自愈（ADR-0005 保命层，`deriveMessages.ts:351`）
+会替它**造一条「没执行」的 tool 消息**塞进我的上下文。那不是崩溃，是**一句凭空
+捏造的事实**——别人明明跑成功了，我的模型读到的是它没执行。安静地错，比 400 难查。
 
 **这是真活不是免费的**：`EventStore` 是 `class` 且有 `private` 成员（`db` / `stmts` /
 `prep` / `loadRaw`），一个裸包一层的对象**过不了 TypeScript 的结构类型检查**——
