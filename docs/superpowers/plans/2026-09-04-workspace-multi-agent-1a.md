@@ -936,62 +936,95 @@ mentions 缺席时按老语义。
 
 ---
 
-### Task 8: `turnCoordinator` 从互斥锁变串行队列
+### Task 8: `turnCoordinator` 从互斥锁换成串行队列
 
 今天 `onChat(mention)` 在 turn 跑着时一律回 `logged_only`（无隐形队列，ADR-0199）。多智能体之后要能排队：@ 了运营，运营跑着时 @ 广告，广告得排上而不是被丢。
 
+**这是换掉那台状态机，不是在旁边加一台。** `onChat` / `turnStarted` / `turnEnded` 的生产调用方只有 `sessionService.say()` 一处（实测），而 Task 9 正好把它整段重写。留着它就是在一个对象里养两台状态机共用同一个 `state`，互相踩。`isRunning()` 留着——`daemon.ts:634` 经 `session.isRunning()` 在用。
+
 **Files:**
-- Modify: `services/runtime/src/turnCoordinator.ts`
-- Test: `tests/runtime/turnCoordinator.test.ts`（追加）
+- Modify: `services/runtime/src/turnCoordinator.ts`（整体重写）
+- Test: `tests/runtime/turnCoordinator.test.ts`（整体重写，现有 5 条 `onChat` 测试跟着换）
 
 **Interfaces:**
 - Produces:
-  - `enqueue(job: { agentId: string; fromUid: string; label: string; text: string }): "start_turn" | "queued" | "logged_only"`
-  - `nextJob(): TurnJob | null`
-  - `turnStarted()` / `turnEnded()` / `isRunning()` 语义不变
-
-- [ ] **Step 1: 写失败测试**
 
 ```ts
-// 追加进 tests/runtime/turnCoordinator.test.ts
+export interface TurnJob {
+  agentId: string;
+  fromUid: string;
+  label: string;
+  text: string;
+}
+export type EnqueueDecision = "start_turn" | "queued" | "logged_only";
+export interface TurnCoordinator {
+  /** 一条已落盘的发言进来:点火 / 排队 / 只落盘。**回 start_turn 时任务也已经在队里**——
+      调用方不是拿着手上这个 job 去跑,而是开始 while (nextJob()) 排空队列 */
+  enqueue(job: TurnJob): EnqueueDecision;
+  /** 取下一个要跑的。队空 = 归 idle,回 null */
+  nextJob(): TurnJob | null;
+  isRunning(): boolean;
+}
+```
+
+- [ ] **Step 1: 重写测试**
+
+```ts
+// tests/runtime/turnCoordinator.test.ts（整份替换）
 import { describe, it, expect } from "vitest";
-import { createTurnCoordinator } from "../../services/runtime/src/turnCoordinator.js";
+import { createTurnCoordinator, type TurnJob } from "../../services/runtime/src/turnCoordinator.js";
 
-const job = (agentId: string) => ({ agentId, fromUid: "u1", label: "alice", text: "干活" });
+const job = (agentId: string): TurnJob => ({ agentId, fromUid: "u1", label: "alice", text: "干活" });
 
-describe("turnCoordinator 的串行队列（#928 切片 1a）", () => {
-  it("空闲时第一条点火", () => {
+/** 调用方的标准消费形状 —— 测试里复用它,免得每条各写一遍 */
+function drain(c: ReturnType<typeof createTurnCoordinator>): string[] {
+  const ran: string[] = [];
+  let j: TurnJob | null;
+  while ((j = c.nextJob()) !== null) ran.push(j.agentId);
+  return ran;
+}
+
+describe("turnCoordinator 串行队列（#928 切片 1a）", () => {
+  it("空闲时第一条回 start_turn,且它本身也在队里", () => {
     const c = createTurnCoordinator();
     expect(c.enqueue(job("ops"))).toBe("start_turn");
+    expect(drain(c)).toEqual(["ops"]);
   });
 
-  it("跑着的时候第二条排队,不丢", () => {
+  it("排空之前进来的排队,按先来后到跑", () => {
     const c = createTurnCoordinator();
-    c.enqueue(job("ops"));
-    c.turnStarted();
+    expect(c.enqueue(job("ops"))).toBe("start_turn");
     expect(c.enqueue(job("ads"))).toBe("queued");
-    c.turnEnded();
-    expect(c.nextJob()).toMatchObject({ agentId: "ads" });
+    expect(drain(c)).toEqual(["ops", "ads"]);
   });
 
   it("没点名的发言不进队 —— 它只落 chat_message,靠投影天然生效", () => {
     const c = createTurnCoordinator();
     expect(c.enqueue({ ...job("ops"), agentId: "" })).toBe("logged_only");
+    expect(drain(c)).toEqual([]);
   });
 
-  it("同一只 agent 已经在队里就不重复排 —— 连点三下 @运营 不该跑三遍", () => {
+  it("同一只已经在队里就不重复排 —— 连点三下 @运营 不该跑三遍", () => {
     const c = createTurnCoordinator();
-    c.enqueue(job("ops"));
-    c.turnStarted();
-    expect(c.enqueue(job("ads"))).toBe("queued");
-    expect(c.enqueue(job("ads"))).toBe("logged_only");
+    expect(c.enqueue(job("ops"))).toBe("start_turn");
+    expect(c.enqueue(job("ops"))).toBe("logged_only");
+    expect(drain(c)).toEqual(["ops"]);
   });
 
-  it("队空时 nextJob 回 null,协调器归 idle", () => {
+  it("排空之后再来一条,又是 start_turn —— 一轮结束协调器归 idle", () => {
     const c = createTurnCoordinator();
     c.enqueue(job("ops"));
-    c.turnStarted();
-    c.turnEnded();
+    drain(c);
+    expect(c.isRunning()).toBe(false);
+    expect(c.enqueue(job("ads"))).toBe("start_turn");
+  });
+
+  it("isRunning 在排空期间为真 —— daemon 用它判「这个工作区此刻在跑吗」", () => {
+    const c = createTurnCoordinator();
+    c.enqueue(job("ops"));
+    expect(c.isRunning()).toBe(true);
+    expect(c.nextJob()).toMatchObject({ agentId: "ops" });
+    expect(c.isRunning()).toBe(true); // 还没排空,这一轮还在跑
     expect(c.nextJob()).toBeNull();
     expect(c.isRunning()).toBe(false);
   });
@@ -1004,11 +1037,14 @@ describe("turnCoordinator 的串行队列（#928 切片 1a）", () => {
 npx vitest run tests/runtime/turnCoordinator.test.ts
 ```
 
-- [ ] **Step 3: 实现**
-
-保留 `onChat` / `ChatDecision` 导出不动（旧测试与旧调用点还在用），**新增**队列那一面：
+- [ ] **Step 3: 重写实现**
 
 ```ts
+// 云 runtime 的 turn 协调器:@ 点名、串行队列(#928,原为 ADR-0199 的单 turn 互斥)
+//
+// 换掉而不是并列:onChat 那台状态机的生产调用方只有 sessionService.say() 一处,
+// 而多智能体版把它整段重写了。两台状态机共用同一个 state 会互相踩。
+
 export interface TurnJob {
   agentId: string;
   fromUid: string;
@@ -1017,44 +1053,44 @@ export interface TurnJob {
 }
 
 export type EnqueueDecision = "start_turn" | "queued" | "logged_only";
-```
 
-`createTurnCoordinator` 内部加 `const queue: TurnJob[] = []`，并加三个方法：
+export interface TurnCoordinator {
+  enqueue(job: TurnJob): EnqueueDecision;
+  nextJob(): TurnJob | null;
+  isRunning(): boolean;
+}
 
-```ts
-    /** 一条已落盘的发言进来,决定它是点火 / 排队 / 只落盘(#928)。
-        agentId 为空 = 没点名任何人:只落 chat_message,靠 engine 每轮从日志
-        重新投影天然生效(ADR-0199 的既有语义,不变)。
-        同一只 agent 已经在队里就不重复排 —— 连点三下 @运营 不该跑三遍;
-        它这一轮开跑时读的是整份日志,三句话都在里面 */
+export function createTurnCoordinator(): TurnCoordinator {
+  const queue: TurnJob[] = [];
+  let running = false;
+
+  return {
     enqueue(job: TurnJob): EnqueueDecision {
+      // 没点名任何人:只落 chat_message,靠 engine 每轮从日志重新投影天然生效
+      //(ADR-0199 的既有语义,不变)
       if (!job.agentId) return "logged_only";
-      if (state === "idle") {
-        state = "claimed";
-        queue.push(job);
-        return "start_turn";
-      }
+      // 同一只已经在队里就不重复排。连点三下 @运营 不该跑三遍 —— 它这一轮
+      // 开跑时读的是整份日志,三句话都在里面
       if (queue.some((q) => q.agentId === job.agentId)) return "logged_only";
       queue.push(job);
-      return "queued";
+      // **回 start_turn 时任务也已经在队里**:调用方开始 while (nextJob()) 排空,
+      // 不是拿着手上这个 job 去跑。两种写法差一个 job,而那正是最容易错的地方
+      if (running) return "queued";
+      running = true;
+      return "start_turn";
     },
 
-    /** 取下一个要跑的。队空 = 归 idle,回 null */
     nextJob(): TurnJob | null {
       const next = queue.shift() ?? null;
-      if (!next) state = "idle";
+      if (!next) running = false;
       return next;
     },
-```
 
-`turnEnded()` 保持「非 idle 一律归位」，但**不能**在有队的时候归 idle —— 改成：
-
-```ts
-    turnEnded(): void {
-      // 队里还有人时停在 claimed:归 idle 的话,下一条 enqueue 会拿到
-      // start_turn 而队列里那些永远没人取,静默丢活
-      if (state !== "idle") state = queue.length > 0 ? "claimed" : "idle";
+    isRunning(): boolean {
+      return running;
     },
+  };
+}
 ```
 
 - [ ] **Step 4: 跑测试 + 全量门禁**
@@ -1063,22 +1099,29 @@ export type EnqueueDecision = "start_turn" | "queued" | "logged_only";
 npx vitest run tests/runtime/turnCoordinator.test.ts && npm test
 ```
 
-`onChat` 的旧测试必须仍然全绿——这一步是**加一面**，不是改语义。
+`npm test` 这一步预期会红在 `services/runtime/src/sessionService.ts`——它还在调已经删掉的 `onChat` / `turnStarted` / `turnEnded`。**这是预期的**：Task 9 修它。为了让本 Task 自己能收在绿上，在 `sessionService.ts` 里做最小适配（`coordinator.onChat(mention)` 换成 `coordinator.enqueue({ agentId: mention ? "default" : "", fromUid, label, text })`，`turnStarted()` / `turnEnded()` 两行删掉，起跑后补一句 `coordinator.nextJob()` 取出它自己排的那个 job），**行为与改动前等价**（单 agent、一次一个）。Task 9 再把这段整体换掉。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add services/runtime/src/turnCoordinator.ts tests/runtime/turnCoordinator.test.ts
-git commit -m "feat(runtime): turnCoordinator 加串行队列那一面（#928）
+git add services/runtime/src/turnCoordinator.ts services/runtime/src/sessionService.ts tests/runtime/turnCoordinator.test.ts
+git commit -m "refactor(runtime): turnCoordinator 从互斥锁换成串行队列（#928）
 
 多智能体之后 @ 了运营、运营跑着时又 @ 广告,广告得排上而不是被丢掉。
-onChat 那一面原样保留 —— 这是加一面不是改语义,旧测试全绿。
 
-两条不显然的:
-· 同一只 agent 已经在队里就不重复排。连点三下 @运营 不该跑三遍 ——
-  它这一轮开跑时读的是整份日志,三句话都在里面。
-· turnEnded 在队非空时停在 claimed 而不是归 idle:归了的话下一条
-  enqueue 会拿到 start_turn,队里那些永远没人取,静默丢活。"
+换掉而不是并列:onChat 那台状态机的生产调用方只有 sessionService.say()
+一处,而多智能体版会把它整段重写。留着它就是在一个对象里养两台状态机
+共用同一个 state,互相踩。isRunning 留着 —— daemon 经 session.isRunning()
+在用它判「这个工作区此刻在跑吗」。
+
+一处刻意的语义:enqueue 回 start_turn 时,那个 job **也已经在队里**。
+调用方开始 while (nextJob()) 排空,不是拿着手上这个 job 去跑。两种写法
+差一个 job,而那正是最容易错的地方。
+
+同一只已经在队里就不重复排:连点三下 @运营 不该跑三遍 —— 它这一轮开跑时
+读的是整份日志,三句话都在里面。
+
+sessionService 这次只做等价适配(单 agent、一次一个),多智能体装配在下一步。"
 ```
 
 ---
@@ -1290,12 +1333,12 @@ npx vitest run tests/runtime/sessionService.test.ts
       每 turn 都落一条的话,日志里堆满同一段文字,而且模型每轮都被重新
       自我介绍一遍 */
   function briefIfNeeded(spec: AgentSpec, roster: AgentSpec[]): void {
-    const last = store.lastOfType(sessionId, "agent_briefed");
+    // **裸 store,不是 agentView 包过的那份**:Task 5 把 agent_briefed 放进了
+    // 丢弃名单,用包过的那份查会永远回空数组,于是每 turn 重新 brief 一遍
     const already = store
       .ofType(sessionId, "agent_briefed")
       .filter((e) => e.type === "agent_briefed" && e.agentId === spec.agentId)
       .at(-1);
-    void last;
     if (already && already.type === "agent_briefed" && already.instructions === spec.instructions) return;
     notify(
       store.append({
