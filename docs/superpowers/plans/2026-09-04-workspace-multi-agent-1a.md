@@ -426,13 +426,18 @@ export function agentView(store: EventLog, agentId: string): EventLog {
   return {
     append: (e) => store.append(e),
     load: (sessionId, opts) => projectForAgent(store.load(sessionId, opts), agentId),
-    // 以下三个只有 boundedContextEvents 用。forkOrigin / lastOfType 回的是
-    // 定位用的 seq(context_compacted / user_message,两者都没有 agentId),
-    // 按 seq 取范围时过滤它反而会错位 —— 原样转发。
-    // ofType 今天只取四种无 agentId 的事件,变换是恒等的;仍然过一遍,
-    // 是为了将来有人给某个新类型加上 agentId 时这里不用记得改
     forkOrigin: (sessionId) => store.forkOrigin(sessionId),
-    lastOfType: (sessionId, type, opts) => store.lastOfType(sessionId, type, opts),
+    // **压缩检查点必须按 agent 分格**:摘要是按 view 生成的(ADR-0003),运营那只
+    // 压缩之后,广告那只若捡到运营的检查点,就会把运营视角的摘要当成自己的历史 ——
+    // 上下文串台,而且安静。boundedContextEvents 正是靠 lastOfType 找检查点的。
+    // user_message 不带 agentId(那是人说的话),照旧原样转发 —— 它回的是定位用的
+    // seq,过滤反而会让后续按 seq 取的范围错位
+    lastOfType: (sessionId, type, opts) => {
+      const hit = store.lastOfType(sessionId, type, opts);
+      if (!hit) return null;
+      const owner = "agentId" in hit ? hit.agentId : undefined;
+      return owner === undefined || owner === agentId ? hit : null;
+    },
     ofType: (sessionId, type, opts) => projectForAgent(store.ofType(sessionId, type, opts), agentId),
   };
 }
@@ -533,13 +538,19 @@ npx vitest run tests/loop/engineAgentId.test.ts
   agentId?: string;
 ```
 
+**九个类型带 agentId，`user_message` 不带。** `env()` 实测喂 9 种事件，其中
+`user_message` 是**人说的话**（还有后台任务回注、循环护栏注话），标成「某只 agent
+干的」是假的——它要一个不含 `agentId` 的信封。
+
 `env()` 改成：
 
 ```ts
   private env() {
     const base = { sessionId: this.opts.sessionId, ts: Date.now() };
-    // 展开而不是恒定写 agentId: undefined —— 后者会让 JSON.stringify 落一个
-    // "agentId": null 进日志,单 agent 会话的日志就不再与改动前逐字节相同了
+    // 展开而不是恒定写 agentId: undefined —— 后者过不了 exactOptionalPropertyTypes
+    //(tsconfig.json:26):把 undefined 塞进 agentId?: string 的值域是 TS2379,直接编译不过。
+    //(JSON.stringify 那边其实无所谓:对象属性值为 undefined 时整个 key 会被丢掉,
+    // 不会写成 null —— 实测 {"sessionId":"s1","ts":1}。挡住这种写法的是类型不是序列化)
     return this.opts.agentId ? { ...base, agentId: this.opts.agentId } : base;
   }
 ```
