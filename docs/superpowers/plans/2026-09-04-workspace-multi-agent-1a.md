@@ -1502,7 +1502,17 @@ create trigger workspaces_seed_admin after insert on public.workspaces
   for each row execute function public.seed_workspace_admin_agent();
 ```
 
-- [ ] **Step 2: 在真库跑一次**
+> **Step 2 与 Step 3（在真库执行）不由实现子 agent 做，也不在本任务的验收内。**
+> 建表 + RLS + 触发器是打到生产 Supabase 上的、工作区外的副作用，属于要先问过维护者的那一类。
+> 本任务只交付**文件**：写好、提交、进门禁。真库执行由协调者单独向维护者确认后进行，
+> 命令与回填语句原样保留在下面，供那一步照用。
+>
+> 代价（接受）：`workspace_agents` 表在这个切片合并时**还不存在**，所以 daemon 那一步
+> 查它会回空名单。1a 的验收标准本来就是「跑得起来，界面上还看不见」，占位名单撑得住；
+> 真正需要这张表的是 1b。
+
+<details>
+<summary>真库执行步骤（留给协调者，不是本任务）</summary>
 
 Supabase SQL editor 贴上去执行（幂等，重跑不炸），或走 Management API：
 
@@ -1514,7 +1524,7 @@ curl -sS -X POST "https://api.supabase.com/v1/projects/kpeemypbhkynapkjzewr/data
   --data-binary "$(python3 -c 'import json,sys;print(json.dumps({"query":open(sys.argv[1]).read()}))' supabase/migrations/0021_workspace_agents.sql)"
 ```
 
-- [ ] **Step 3: 验一眼种子生效了**
+验一眼种子生效了：
 
 ```sql
 select workspace_id, agent_id, name from public.workspace_agents where agent_id = 'admin' limit 5;
@@ -1528,7 +1538,9 @@ select w.id, 'admin', '管理员', '这个工作区的默认智能体', '', w.ow
 on conflict do nothing;
 ```
 
-- [ ] **Step 4: 提交**
+</details>
+
+- [ ] **Step 2: 提交**
 
 ```bash
 git add supabase/migrations/0021_workspace_agents.sql
