@@ -430,6 +430,21 @@ export interface SubagentBriefedEvent extends SessionEventBase {
   model: string;
 }
 
+/** 工作区云会话多 agent：这只 agent 是谁，群里还有谁（#928）。
+    新事件而不是复用 subagent_briefed：那条的投影文案把模型的最终一段文本定义成**返回值**
+    （ADR-0047 的 DEFAULT_PREAMBLE）。群聊里这是错的 —— agent 说的话是说给群里的人听的，
+    不是交回给谁的返回值。复用它等于给模型灌一句关于自己身份的假话。 */
+export interface AgentBriefedEvent extends SessionEventBase {
+  type: "agent_briefed";
+  agentId: string;
+  name: string;
+  /** 派活时刻的全文快照。同 subagent_briefed：定义在库里、随时会改，
+      快照记的是"当时给的是这句"，不是"现在库里写着什么" */
+  instructions: string;
+  /** 群里此刻还有谁（名字 + 一句话职责）。@ 得着谁，这份名单说了算 */
+  roster: { name: string; description: string }[];
+}
+
 /** 额外 14：长期记忆快照（ADR-0060）。session 开头把记忆文件的内容落盘——模型整个
     session 看到的就是这一份（投影拼进 system 尾部），中途写盘下个 session 才可见
     （前缀缓存不被打穿，hermes 同款取舍）。快照语义同 skill_invoked：文件后来
@@ -819,6 +834,7 @@ export type SessionEvent =
   | SuggestionsGeneratedEvent
   | SubagentSpawnedEvent
   | SubagentBriefedEvent
+  | AgentBriefedEvent
   | MemoryLoadedEvent
   | MemoryUserEditEvent
   | MemoryNudgeEvent
@@ -875,6 +891,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   suggestions_generated: true,
   subagent_spawned: true,
   subagent_briefed: true,
+  agent_briefed: true,
   memory_loaded: true,
   memory_user_edit: true,
   memory_nudge: true,

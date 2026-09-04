@@ -72,6 +72,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   skill_released: "drop",
   subagent_spawned: "drop",
   subagent_briefed: "drop",
+  // 别人的 briefing 不进我的上下文：我需要知道群里有「广告」这个人
+  // （那来自我自己 briefing 里的 roster），不需要读它的提示词
+  agent_briefed: "drop",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",
