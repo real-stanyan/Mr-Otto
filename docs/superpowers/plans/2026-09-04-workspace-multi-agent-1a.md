@@ -680,13 +680,17 @@ npx vitest run tests/session/agentBriefed.test.ts
       }
 ```
 
-`src/session/agentView.ts` 的 `OTHERS_TURN_EVENTS` 加一项：
+`src/session/agentView.ts` 的 `OTHER_AGENT_VERDICTS` 加一笔：
 
 ```ts
   // 别人的 briefing 不进我的上下文：我需要知道群里有「广告」这个人
   // （那来自我自己 briefing 里的 roster），不需要读它的提示词
-  "agent_briefed",
+  agent_briefed: "drop",
 ```
+
+> **注意**：那张表是 `Record<SessionEvent["type"], OtherAgentVerdict>`（穷举，Task 3
+> 的修复轮换掉了原来的 `Set`）。所以给 union 加了 `agent_briefed` 之后**不写这一笔就编译不过**
+> —— 这正是它被设计成 Record 的原因，你不用记得来改，tsc 会拦住你。
 
 - [ ] **Step 4: 跑测试 + 全量门禁**
 
@@ -694,10 +698,13 @@ npx vitest run tests/session/agentBriefed.test.ts
 npx vitest run tests/session/agentBriefed.test.ts && npm test
 ```
 
-全量必须跑：`SessionEvent` union 加了成员，`PRIVACY_VERDICTS`（分享会话的隐私闸，
-每个事件类型都必须表态的 `Record`）会因为少一笔而**编译不过**——那是设计好的，
-去补一笔 `"agent_briefed": "keep"`（它说的是「这段对话」不是发送方的私事）。
-新事件类型的检查清单还有另外六处，`tsc` 会挨个把它们打红，跟着报错走。
+全量必须跑：`SessionEvent` union 加了成员，**两张**穷举 `Record` 会因为少一笔而
+编译不过——`PRIVACY_VERDICTS`（`src/shared/sessionPackage.ts`，分享会话的隐私闸）补
+`agent_briefed: "keep"`（它说的是「这段对话」，不是发送方的私事）；`OTHER_AGENT_VERDICTS`
+（`src/session/agentView.ts`）补 `agent_briefed: "drop"`（理由见上）。
+新事件类型的检查清单还有另外六处（`events.ts` union + `KNOWN_EVENT_TYPES_MAP`、
+`persistencePolicy`、`deriveMessages`、`deriveSections`、`threadGroups.isInvisible`、
+`deriveUsage`），`tsc` 会挨个把它们打红，跟着报错走。
 
 - [ ] **Step 5: 提交**
 
