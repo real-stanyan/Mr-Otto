@@ -293,6 +293,8 @@ export interface ContextCompactedEvent extends SessionEventBase {
       自动触发 = "auto"）。缺省只出现在旧事件里——写日志的一律照实填，
       缺省 = 该事件写下时协议还没有这个字段，按语义等价于 manual 解读 */
   trigger?: "auto" | "manual";
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 额外 5：工具执行开始（ADR-0004）——穿过审批门、tool.run 即将碰世界的瞬间。
@@ -566,6 +568,8 @@ export interface ToolHookEvent extends SessionEventBase {
   revisedArgs?: unknown;
   /** post+reject 时的原始工具输出——tool_result 已被替换成 error，原件在这 */
   originalOutput?: string;
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 额外 18：项目指令注入（issue #353）。工作区里的 AGENTS.md/CLAUDE.md 类

@@ -248,10 +248,16 @@ export class LoopEngine {
     return full;
   }
 
+  private envBase() {
+    return { sessionId: this.opts.sessionId, ts: Date.now() };
+  }
+
   private env() {
-    const base = { sessionId: this.opts.sessionId, ts: Date.now() };
-    // 展开而不是恒定写 agentId: undefined —— 后者会让 JSON.stringify 落一个
-    // "agentId": null 进日志,单 agent 会话的日志就不再与改动前逐字节相同了
+    const base = this.envBase();
+    // 展开而不是恒定写 agentId: undefined —— 后者过不了 exactOptionalPropertyTypes
+    //(tsconfig.json:26):把 undefined 塞进 agentId?: string 的值域是 TS2379,直接编译不过。
+    //(JSON.stringify 那边其实无所谓:对象属性值为 undefined 时整个 key 会被丢掉,
+    // 不会写成 null —— 实测 {"sessionId":"s1","ts":1}。挡住这种写法的是类型不是序列化)
     return this.opts.agentId ? { ...base, agentId: this.opts.agentId } : base;
   }
 
@@ -551,7 +557,7 @@ export class LoopEngine {
       throw new Error("turn 对不上号（它可能刚结束、新 turn 又开了）——请确认现场后重发");
     }
     if (!text.trim()) throw new Error("插话内容为空");
-    this.append({ ...this.env(), type: "user_message", content: text });
+    this.append({ ...this.envBase(), type: "user_message", content: text });
   }
 
   /** 后台任务结果尾部追加（issue #871，Claude Code task-notification 对照）：
@@ -580,7 +586,7 @@ export class LoopEngine {
 
   private appendBackgroundNow(text: string, taskIds: string[]): void {
     this.append({
-      ...this.env(),
+      ...this.envBase(),
       type: "user_message",
       content: text,
       origin: "background",
@@ -614,7 +620,7 @@ export class LoopEngine {
     background?: { taskIds: string[] }
   ): Promise<"completed" | "aborted"> {
     const opening = this.append({
-      ...this.env(),
+      ...this.envBase(),
       type: "user_message",
       content: userInput,
       // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
@@ -862,7 +868,7 @@ export class LoopEngine {
       // （deriveMessages 读都不读 origin），UI 靠 origin 换皮认出不是人打的
       if (loop) {
         this.append({
-          ...this.env(),
+          ...this.envBase(),
           type: "user_message",
           content: loopNudgeText(loop),
           origin: "loop_guard",

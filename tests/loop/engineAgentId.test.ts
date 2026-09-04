@@ -29,4 +29,17 @@ describe("LoopEngine 的 agentId（#928 切片 1a）", () => {
     await engine.runTurn("在吗");
     for (const e of store.load("s1")) expect("agentId" in e).toBe(false);
   });
+
+  it("user_message 不带 agentId,即使 engine 配了——人说的话,不是 agent 动作", async () => {
+    const store = new EventStore(join(tempDir("mrotto-engine-agent-"), "s.db"));
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    await engine.runTurn("在吗");
+    const events = store.load("s1");
+    const userMsgs = events.filter((e) => e.type === "user_message");
+    const assistantMsgs = events.filter((e) => e.type === "assistant_message");
+    expect(userMsgs.length).toBeGreaterThan(0);
+    expect(assistantMsgs.length).toBeGreaterThan(0);
+    for (const e of userMsgs) expect("agentId" in e).toBe(false);
+    for (const e of assistantMsgs) expect(e).toMatchObject({ agentId: "ops" });
+  });
 });

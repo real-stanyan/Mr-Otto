@@ -15,17 +15,14 @@ describe("事件的 agentId 字段（#928 切片 1a）", () => {
       agentId: "ops",
     });
     const [e] = store.load("s1");
-    expect(e).toMatchObject({ type: "assistant_message", agentId: "ops" });
+    expect(e!).toMatchObject({ type: "assistant_message", agentId: "ops" });
   });
 
   it("不带 agentId 照常落盘——缺席就是单 agent 会话，全部旧日志都在这一档", () => {
     const store = new EventStore(join(tempDir("mrotto-agentid-"), "s.db"));
     store.append({ sessionId: "s1", ts: 1, type: "assistant_message", content: "hi", model: "m" });
     const [e] = store.load("s1");
-    expect(e).toBeDefined();
-    if (e) {
-      expect(e).toMatchObject({ type: "assistant_message" });
-      expect("agentId" in e).toBe(false);
-    }
+    expect(e!).toMatchObject({ type: "assistant_message" });
+    expect("agentId" in e!).toBe(false);
   });
 });
