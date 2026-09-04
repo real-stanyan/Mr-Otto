@@ -132,6 +132,10 @@ function NewWorkspaceForm({
 }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  // 这一轮里按过「创建」没有。workspaceGroupsError 是全局的、上一次失败留下的那条
+  // 还在（侧栏那一节也在渲染它），不按这个门槛的话，重新打开弹窗会当头一条与本次
+  // 操作无关的红字——读起来像「还没填就已经错了」
+  const [attempted, setAttempted] = useState(false);
   // 建成功了，但紧接着的那次 refresh 挂了（#843 症状 1）。这一态既不是成功
   // 也不是失败，得单独说——尤其得说出「别再建一次」
   const [staleAfterCreate, setStaleAfterCreate] = useState(false);
@@ -139,6 +143,7 @@ function NewWorkspaceForm({
 
   const submit = async (): Promise<void> => {
     if (!trimmed || busy || checking) return;
+    setAttempted(true);
     setBusy(true);
     const ok = await onCreate(trimmed);
     setBusy(false);
@@ -158,7 +163,7 @@ function NewWorkspaceForm({
           工作区<span className="font-medium">「{trimmed}」</span>已经建好了，但列表没刷新出来。
           <span className="text-muted-foreground">别再建一次</span>——重开一次或稍后再看，它就在那儿。
         </p>
-        {error && <p className="text-[12px] text-err break-words">{error}</p>}
+        {attempted && error && <p className="text-[12px] text-err break-words">{error}</p>}
         <DialogFooter>
           <Button type="button" className="press-scale" onClick={onCancel}>
             知道了
@@ -189,7 +194,7 @@ function NewWorkspaceForm({
         里面的每一次模型调用都记在<span className="text-foreground">你的</span>订阅额度上，
         包括你拉进来的成员跑的那些。
       </p>
-      {error && <p className="text-[12px] text-err break-words">{error}</p>}
+      {attempted && error && <p className="text-[12px] text-err break-words">{error}</p>}
       <DialogFooter>
         <Button type="button" variant="ghost" className="press-scale" disabled={busy} onClick={onCancel}>
           取消
