@@ -302,16 +302,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const decisions = targets.map((agentId) => coordinator.enqueue({ agentId, fromUid, label, text }));
 
       if (!decisions.includes("start_turn")) {
-        // 这些 job 排上了，但轮不到这条调用来跑——已经有另一条 say() 在排空，
-        // 那条调用的排空循环迟早会捞到它们。**这里不落 chat_message**（修复轮
-        // 1/5，#928）：一句话只该留一条事件，事件类型说明它的下场——落得到
-        // 自己一轮的是 user_message（由 runJob → engine.runTurn 产出），没有
-        // 的才是 chat_message。这个 job 会被跑到,所以属于前者；这里再补一条
-        // chat_message,deriveMessages 会把两条都投影成几乎同一句话（同一个
-        // `[label]: content` 形状），模型会把同一句指令读两遍，1b 的时间线上
-        // 也会显示两遍——不是日志变胖，是喂错东西。真正会丢数据的是"这个 job
-        // 最终没被任何人跑到"那种情况（排空循环中途抛错），那种情况的补偿
-        // 记录落在下面 finally 的丢弃分支里，位置对，不在这
+        // 全是 logged_only = 这一批一个 job 都没入队（去重命中：turnCoordinator
+        // 的去重分支回 logged_only 时 job 压根没有 push 进队列，#928 终审
+        // Critical，修复轮 2/5）——没有任何 runJob 会替它落 user_message，
+        // finally 的补偿排空也捞不到它（它不在队里）：不补就真的一个字节都
+        // 不留，直接踩「append-only 事件日志是唯一事实来源」这条硬规则。
+        //
+        // 只要有一个 queued，那个 job 就真的入队了，一定会被别人的排空循环
+        // 跑到并落 user_message（与 start_turn 路径对称，见 runJob）——这时
+        // 再补 chat_message 就是重复投影：deriveMessages 把 chat_message 投影
+        // 成与 user_message 相同的 `[label]: content` 形状，模型会把同一句
+        // 指令读两遍，1b 的时间线上也显示两遍（修复轮 1/5 治的就是这个）。
+        //
+        // 三种组合都要分清：["logged_only"] → 补；["logged_only","queued"] →
+        // 不补（那个 queued 的 job 会落 user_message）；含 "start_turn" 走不到
+        // 这个分支
+        if (decisions.every((d) => d === "logged_only")) logChat(fromUid, label, text, mention);
         return;
       }
 

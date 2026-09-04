@@ -563,4 +563,122 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     const req = events.find((e) => e.type === "approval_request");
     expect(req).toMatchObject({ agentId: "ads" });
   });
+
+  it("同一只 agent 排队去重(#928 终审 Critical,修复轮 2/5):它的 job 还排在队里时被连续点名两次,第二次的话不能凭空消失", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let resolveOpsChat!: (reply: ModelReply) => void;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") {
+            // ops 那一轮攥在手里不 resolve —— 让它一直占着 drainer 的位置,
+            // 后面两条 @广告 才真的会先后排进同一份队列,而不是被立刻跑掉
+            return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
+          }
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    // 起 ops 的 turn,卡住——这条调用是 drainer,一直没跑完
+    const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.isRunning()).toBe(true);
+
+    // 第一次 @广告:enqueue 成功入队("queued"),job 真的排进了队列里,
+    // 只是还没被 drainer 的 nextJob() 捞走(drainer 正卡在 ops 那轮)
+    await session.say("u2", "bob", "@广告 做 B", true, ["ads"]);
+
+    // 第二次 @广告(同一只 agent,前一个 job 还原封不动地躺在队列里没被捞
+    // 走):turnCoordinator 的去重分支命中,回 logged_only 且这个 job **压根
+    // 没有入队**。这条消息如果不特殊处理就是真的丢——它不在队列里,不会有
+    // 任何 runJob 替它落 user_message,finally 的补偿排空也捞不到它
+    await session.say("u3", "carol", "@广告 做 C", true, ["ads"]);
+
+    // carol"做 C"这句话必须在日志里找得到——落成 chat_message 还是
+    // user_message 都行,只要不是"一个字节都没留下"
+    expect(
+      events.some(
+        (e) =>
+          (e.type === "chat_message" || e.type === "user_message") &&
+          (e as { content: string }).content === "@广告 做 C"
+      )
+    ).toBe(true);
+
+    // 收尾:放 ops 过关,不留一条永远 pending 的 promise
+    resolveOpsChat({ content: "运营答完了" });
+    await opsSay;
+  });
+
+  it("去重与排队混在同一条调用里(#928 终审 Critical,修复轮 2/5):[\"logged_only\",\"queued\"] 不该补 chat_message —— 那个 queued 的 job 会自己落 user_message", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let resolveOpsChat!: (reply: ModelReply) => void;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => {
+        // 只有"ops"第一次被叫到时才攥住不放——它自己的 job 后面还会因为
+        // message3 里也点了它而再跑一轮(那一轮不该也挂住,否则整条排空
+        // 循环真的会卡死,测试本身就跑不完,不是这次要测的东西)
+        let opsCalls = 0;
+        return {
+          model: a.models[0]!,
+          async chat() {
+            if (a.agentId === "ops") {
+              opsCalls++;
+              if (opsCalls === 1) {
+                return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
+              }
+            }
+            return { content: `${a.name}答` };
+          },
+        };
+      },
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 先让"ads"真的排进队列里(queued,还没被捞走)
+    await session.say("u2", "bob", "@广告 做 B", true, ["ads"]);
+
+    const chatCountBefore = events.filter((e) => e.type === "chat_message").length;
+
+    // 这条调用同时点了"ads"(已经在队里,命中去重 → logged_only)和
+    // "ops"(它自己的 job 已被 drainer 捞走、不在队里 → 不去重,真的入队,
+    // 回 queued)。decisions === ["logged_only","queued"]——含至少一个
+    // queued,所以**不该**补 chat_message:那个 queued 的"ops"job 会在
+    // drainer 排空到它时,自己落一条带这句话原文的 user_message
+    await session.say("u3", "carol", "@广告 也麻烦 @运营", true, ["ads", "ops"]);
+
+    expect(events.filter((e) => e.type === "chat_message").length).toBe(chatCountBefore);
+    expect(
+      events.some(
+        (e) => e.type === "chat_message" && (e as { content: string }).content === "@广告 也麻烦 @运营"
+      )
+    ).toBe(false);
+
+    // 放 ops 第一轮过关,让排空循环继续跑完(ops、ads、message3 的 ops job
+    // 依次落盘)
+    resolveOpsChat({ content: "运营答完了" });
+    await opsSay;
+
+    // 验证注释里说的"那个 queued 的 ops job 会自己落 user_message"是真的
+    // 发生了,不是只凭注释断言——message3 的原文最终确实以 user_message
+    // 的身份出现在日志里
+    expect(
+      events.some(
+        (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 也麻烦 @运营"
+      )
+    ).toBe(true);
+  });
 });
