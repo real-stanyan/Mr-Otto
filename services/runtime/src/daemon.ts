@@ -29,7 +29,7 @@ import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./host
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent } from "../../../src/session/events.js";
+import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
   csCtlChannel,
@@ -46,14 +46,22 @@ import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
     因为 lastActive 表是进程内状态，daemon 一重启就空了）。 */
 const WORKSPACE_LABEL = "mrotto.workspace";
 
-/** 临时占位（#928 task-9 → task-11 过渡）：真正的多 agent 名单来自
-    workspace_agents 表（Task 10 的 migration，Task 11 接线查询 + 按 agent
-    造 adapter，见 task-11-brief.md），在那之前每个工作区先按这一只装配——
-    与 migration 里 seed_workspace_admin_agent 种的默认行同名，保持语义连续。
-    adapterFor 仍然返回原来那套按工作区/发起人算路由的 perSessionAdapter，
-    不引入任何新的模型路由语义（sessionService.ts 的接口从单 adapter 换成
-    agents()/adapterFor() 是 task-9 的事，这里只是让装配点跟上新接口形状，
-    不提前做 task-11 的真实多 agent 查询） */
+/** `queryAgents` 查询失败时的回落名单（task-11，#928）——不是"表建好之前"
+    的常态路径，是异常路径的安全网。**不缓存**：单纯是"这一次查询失败了，
+    这一条消息该派给谁"的兜底答案，下一条消息会重新查一次，不影响查询
+    恢复正常之后的行为。
+    与 migration 里 seed_workspace_admin_agent 触发器给每个工作区种的默认行
+    同一个 agentId（"admin"），这不是巧合：migration 跑完之后，查询成功时
+    第一条返回结果本来就是这一行，回落值因此与"真实结果"同构，不是另造一个
+    会漂移的占位身份。
+    真正会用到它的两个时刻：① workspace_agents 表此刻**还没有在真库上跑过**
+    0021 migration（那是打到生产 Supabase 的副作用，刻意留给维护者手动执行，
+    见 task-10-report.md）——查询会遇到"表不存在"这类 PostgREST 错误；
+    ② migration 之后 Supabase 偶发抖动导致这一次查询失败。
+    两种情况都不该让"这一条消息"整个失败、更不该让 roster 变成空数组——
+    resolveTargets 在空 roster 时永远回 []，那样存量工作区会安静地再也起不了
+    turn（比抛错更难查，因为界面上什么都不会说），见 queryAgents 消费点的
+    注释。 */
 const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   agentId: "admin",
   name: "管理员",
@@ -215,13 +223,23 @@ async function main(): Promise<void> {
       runtime 仍不持有模型 key；扣所有者不扣发起人的理由见 hostedRoute.ts 文件头，
       ADR-0217）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
       **抛一条给人看的错**，不回落到任何 key——回落就是"忘了配的工作区默默烧别人的钱"，
-      正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见 */
-  function adapterFor(workspaceId: string, sessionId: string, ownerUid: string): ModelAdapter {
+      正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见。
+      **每只 agent 一个 adapter**（#928 task-11）：多出来的 `agent` 参数只决定 cfg() 里
+      选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
+      路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
+      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变 */
+  function adapterFor(workspaceId: string, sessionId: string, ownerUid: string, agent: AgentSpec): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
-      cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+      // agent 的型号白名单第一个就是它的默认；空白名单 = 用工作区那份（ADR-0202）。
+      // **不做 env 兜底**，理由同 ADR-0202：兜底 = 忘了配的工作区默默烧维护者的钱
+      cfg: () => {
+        const ws = workspaceConfigStore.load(workspaceId)?.model ?? null;
+        const pick = agent.models[0];
+        return pick && ws ? { ...ws, modelId: pick } : ws;
+      },
       ownerUid,
       workspaceId,
       sessionId,
@@ -235,6 +253,27 @@ async function main(): Promise<void> {
     const { data, error } = await supabase.from("workspace_members").select("uid").eq("workspace_id", workspaceId);
     if (error) throw new Error(error.message);
     return new Set((data ?? []).map((r: { uid: string }) => r.uid));
+  }
+
+  /** 这个工作区此刻的 agent 名单。**不缓存** —— 同 queryMemberUids,
+      sessionService 的设计就是要「这一刻的名单」,建/改 agent 下一 turn 生效。
+      **故意 fail-fast**（error 直接 throw，不在这里回落）：查询失败到底是
+      "表还没迁移"还是"这一次 Supabase 抖了"，这个函数分不清楚，也不该由
+      它猜——回落到哪个名单是装配点的决定（见 openSessionRoom 里 agents:
+      的接线，与 DEFAULT_WORKSPACE_AGENT 的注释） */
+  async function queryAgents(workspaceId: string): Promise<AgentSpec[]> {
+    const { data, error } = await supabase
+      .from("workspace_agents")
+      .select("agent_id,name,description,instructions,models")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(
+      (r: { agent_id: string; name: string; description: string; instructions: string; models: string[] }) => ({
+        agentId: r.agent_id, name: r.name, description: r.description, instructions: r.instructions,
+        models: r.models ?? [],
+      })
+    );
   }
 
   const membership = createMembershipCache(queryMemberUids);
@@ -419,15 +458,17 @@ async function main(): Promise<void> {
       frameHandler.onGone(cid);
     });
 
-    // eslint 风格的 let + 稍后赋值：withUsage 的回调要读 session.initiatorUid()，
+    // eslint 风格的 let + 稍后赋值：recordUsage 的回调要读 session.initiatorUid()，
     // 而 session 本身要在 createCloudSession 里才造出来——回调只在 engine.chat()
     // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全。
     // 路由那一侧不再需要这个 let：扣的是 ownerUid（本函数的入参，ADR-0217），
     // 建房那一刻就有；回调里这个 uid 记的是「谁动的手」，两个事实各归各的
     let session!: CloudSession;
-    const perSessionAdapter = withUsage(adapterFor(workspaceId, sessionId, ownerUid), (usage, model) => {
+    // 原来是 perSessionAdapter 里那个闭包。现在每只 agent 一个 adapter，
+    // 回调得能复用 —— 提成具名函数，记账口径原样不动
+    const recordUsage = (usage: TokenUsage, model: string): void => {
       const uid = session.initiatorUid();
-      if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调——理论不会发生
+      if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调
       store.append({
         sessionId,
         ts: Date.now(),
@@ -461,7 +502,7 @@ async function main(): Promise<void> {
           console.error("[otto-runtime] usage_ledger 写入抛出异常（日志里有权威记录）：", err);
         }
       })();
-    });
+    };
 
     const world = createDockerWorld({ container: () => sandbox.ensure(workspaceId) });
 
@@ -478,14 +519,37 @@ async function main(): Promise<void> {
       createdByUid,
       store,
       world,
-      // 临时占位，见 DEFAULT_WORKSPACE_AGENT 注释：真正的 workspace_agents
-      // 查询是 task-11 的事，这里先保住单 agent 时代的路由行为不变
-      agents: async () => [DEFAULT_WORKSPACE_AGENT],
-      adapterFor: () => perSessionAdapter,
+      // 这个工作区此刻的 agent 名单，真查询（#928 task-11）。**不回落到空
+      // 名单**：workspace_agents 表此刻还没有在真库上跑过 0021 migration
+      // （刻意留给维护者手动执行，见 task-10-report.md），查询会遇到
+      // "表不存在"这类 PostgREST 错误——sessionService 的 say() 第一行就是
+      // await opts.agents()，不接住的话每一条消息都会失败，而且从发言人
+      // 这一侧看是彻底的沉默（frameHandler 的 say 分支没有 try/catch，
+      // 异常只冒到本文件 onMessage 的 .catch(console.error)，连一条 error
+      // 帧都不回客户端）。回落到 DEFAULT_WORKSPACE_AGENT 而不是 []：
+      // resolveTargets 在 roster 为空时永远回 []，那样存量工作区的每一句
+      // 话都只会落 chat_message、永远起不了 turn，而且没有任何可见信号——
+      // 比抛错更难查。回落值取 DEFAULT_WORKSPACE_AGENT 而不是另造一个占位：
+      // migration 的 seed_workspace_admin_agent 触发器给每个工作区种的正是
+      // 同一个 agentId "admin"，migration 跑完之后查询成功的第一条结果本来
+      // 就是这一行，回落与"真实结果"同构（见该常量注释）。console.error
+      // （不是 warn）：这不是预期内的抖动，是"多智能体这半条链路还没打通"，
+      // 运维应该看得见——一旦 migration 落地，这行日志理应消失
+      agents: () =>
+        queryAgents(workspaceId).catch((err: unknown) => {
+          console.error(
+            `[otto-runtime] workspace_agents 查询失败，回落到单 agent 占位（workspaceId=${workspaceId}）：` +
+              `${err instanceof Error ? err.message : String(err)}`
+          );
+          return [DEFAULT_WORKSPACE_AGENT];
+        }),
+      // 按 agent 造 adapter（#928 task-11）：型号来自它自己的白名单，记账
+      // 口径不变——扣的仍是 ownerUid（ADR-0217），不是发起人
+      adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a), recordUsage),
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
       onEvent: broadcast,
-      onUsage: () => {}, // usage 记账走上面的 withUsage 钩子，这个口留白（同 T9 report 的记录）
+      onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
