@@ -1,6 +1,14 @@
-// 云会话的模型路由（spec 第 5 节）：发起人有订阅 → 平台 key（扣发起人）；否则工作区自带 key
-// （ADR-0202）；都没 → 一句人能看懂的错。runtime 仍然一把模型 key 都不拿：托管那条路的
-// 凭据是平台身份 + 「我代表谁」，key 在 edge 那边。
+// 云会话的模型路由（spec 第 5 节）：**工作区所有者**有订阅 → 平台 key（扣所有者）；否则
+// 工作区自带 key（ADR-0202）；都没 → 一句人能看懂的错。runtime 仍然一把模型 key 都不拿：
+// 托管那条路的凭据是平台身份 + 「我代表谁」，key 在 edge 那边。
+//
+// 「扣谁的账」在 issue #917（ADR-0217）改过一次：原来是**发起人**。维护者定的规则是
+// 「工作区走的都是创建者的订阅额度」，配套的另一半是「非订阅用户建不出工作区」——
+// 两条一起，工作区成了「所有者请客、成员进来干活」的形状，成员自己有没有订阅与这本账
+// 无关。按发起人扣的话，一个没订阅的成员在群里发一句话会走进 blocked 分支（或者更糟：
+// 悄悄改用工作区自带的 key），同一个工作区里两个人得到两种行为，而这件事没有任何界面
+// 说得出口。注意本地事件日志里的 `model_usage.uid` 记的仍是**发起人**——那是「谁动的手」，
+// 和「谁付的钱」是两个事实，不该合并成一个。
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import type { TokenUsage } from "../../../src/session/events.js";
@@ -38,7 +46,7 @@ export type RuntimeRoute =
   | { kind: "blocked"; reason: string };
 
 /** 决策（spec 第 5 节）：
-    1. 发起人有活跃订阅 + 网关供着一款模型 → hosted（endpoint 带平台身份 + on-behalf-of +
+    1. 工作区所有者有活跃订阅 + 网关供着一款模型 → hosted（endpoint 带平台身份 + on-behalf-of +
        workspace/session 头，apiKey 留空——edge 的 pxIdentify 先看 x-runtime-secret，
        比中就不看 Authorization，空 Bearer 无害）。目标型号：工作区配的 modelId 若网关也
        供它，否则退到网关第一款（云会话没有型号选单）。
@@ -48,7 +56,8 @@ export function decideRuntimeRoute(o: {
   me: BillingMe | null;
   requestedModel: string | null;
   workspace: { baseUrl: string; apiKey: string; modelId: string } | null;
-  initiatorUid: string;
+  /** 扣谁的账 = 工作区所有者（ADR-0217）。`me` 也必须是**这个 uid** 的订阅快照 */
+  ownerUid: string;
   workspaceId: string;
   sessionId: string;
   edgeBase: string;
@@ -66,7 +75,7 @@ export function decideRuntimeRoute(o: {
         route: "hosted",
         headers: {
           "x-runtime-secret": o.runtimeSecret,
-          [ON_BEHALF_HEADER]: o.initiatorUid,
+          [ON_BEHALF_HEADER]: o.ownerUid,
           [WORKSPACE_HEADER]: o.workspaceId,
           [SESSION_HEADER]: o.sessionId,
         },
@@ -79,8 +88,8 @@ export function decideRuntimeRoute(o: {
   return {
     kind: "blocked",
     reason:
-      "这个 turn 没有可用的模型：发起人没有活跃订阅，工作区也没配自己的 API key。" +
-      "两条路：发起人订阅 Mr Otto（桌面端设置 → 订阅），或工作区所有者在「仓库/模型」里填一把 key。",
+      "这个 turn 没有可用的模型：工作区所有者没有活跃订阅，工作区也没配自己的 API key。" +
+      "两条路：所有者订阅 Mr Otto（桌面端设置 → 账号 → 订阅），或在工作区的「仓库/模型」里填一把 key。",
   };
 }
 
@@ -90,7 +99,9 @@ export interface HostedRuntimeAdapterDeps {
   probe: HostedProbe;
   /** 每次现读一次——owner 随时可能改 key/换型号，会话房是长命的 */
   cfg: () => { baseUrl: string; apiKey: string; modelId: string } | null;
-  initiatorUid: () => string | null;
+  /** 工作区所有者（ADR-0217）。不是 thunk：所有者不会在会话中途换人，
+      而 cfg 是 thunk 是因为 key/型号随时可改 */
+  ownerUid: string;
   workspaceId: string;
   sessionId: string;
 }
@@ -108,13 +119,13 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
   let prepared: RuntimeRoute | null = null;
 
   async function decide(): Promise<RuntimeRoute> {
-    const uid = deps.initiatorUid() ?? "";
+    const uid = deps.ownerUid;
     const ws = deps.cfg();
     const route = decideRuntimeRoute({
       me: uid ? await deps.probe.me(uid) : null,
       requestedModel: ws?.modelId ?? null,
       workspace: ws ? { baseUrl: ws.baseUrl, apiKey: ws.apiKey, modelId: ws.modelId } : null,
-      initiatorUid: uid,
+      ownerUid: uid,
       workspaceId: deps.workspaceId,
       sessionId: deps.sessionId,
       edgeBase: deps.edgeBase,

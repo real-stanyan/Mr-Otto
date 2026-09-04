@@ -195,17 +195,18 @@ async function main(): Promise<void> {
       daemon 才生效。构造 adapter 只是拼一份 deps，现读的代价可以忽略。
       决策逻辑（路由三步，Task 13）搬进 hostedRoute.ts 的 createHostedRuntimeAdapter
       ——daemon.ts 自己不含值得单测的逻辑（见文件头注释），这里只是装配：
-      ① 发起人有活跃订阅且网关供着型号 → hosted（平台身份代发起人走网关，runtime
-      仍不持有模型 key）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
+      ① **工作区所有者**有活跃订阅且网关供着型号 → hosted（平台身份代所有者走网关，
+      runtime 仍不持有模型 key；扣所有者不扣发起人的理由见 hostedRoute.ts 文件头，
+      ADR-0217）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
       **抛一条给人看的错**，不回落到任何 key——回落就是"忘了配的工作区默默烧别人的钱"，
       正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见 */
-  function adapterFor(workspaceId: string, sessionId: string, initiatorUid: () => string | null): ModelAdapter {
+  function adapterFor(workspaceId: string, sessionId: string, ownerUid: string): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
       cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
-      initiatorUid,
+      ownerUid,
       workspaceId,
       sessionId,
     });
@@ -404,9 +405,11 @@ async function main(): Promise<void> {
 
     // eslint 风格的 let + 稍后赋值：withUsage 的回调要读 session.initiatorUid()，
     // 而 session 本身要在 createCloudSession 里才造出来——回调只在 engine.chat()
-    // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全
+    // 内才会真的被调用（那时 say() 早已把 session 赋值完毕），闭包读 let 安全。
+    // 路由那一侧不再需要这个 let：扣的是 ownerUid（本函数的入参，ADR-0217），
+    // 建房那一刻就有；回调里这个 uid 记的是「谁动的手」，两个事实各归各的
     let session!: CloudSession;
-    const perSessionAdapter = withUsage(adapterFor(workspaceId, sessionId, () => session.initiatorUid()), (usage, model) => {
+    const perSessionAdapter = withUsage(adapterFor(workspaceId, sessionId, ownerUid), (usage, model) => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调——理论不会发生
       store.append({
