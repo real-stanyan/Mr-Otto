@@ -239,8 +239,21 @@ export interface EventLog {
 | 别人的事件 | 怎么处理 |
 |---|---|
 | `assistant_message` | **剥掉 `toolCalls` / `reasoning` / `usage`**，只留 `content`；剥完 `content` 为空则整条丢弃（纯工具调用那一轮它没说话） |
-| `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` / `request_envelope` / `turn_ended` / `agent_briefed` | 整条丢弃 |
-| 其余（`chat_message` / `user_message` / `session_created` / `memory_loaded` / `context_compacted` …） | 原样放行 |
+| `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` / `request_envelope` / `turn_ended` / `tool_hook` / `agent_briefed` | 整条丢弃 |
+| **`context_compacted`** | **整条丢弃**（见下，这一条初稿写反过） |
+| 其余（`chat_message` / `user_message` / `session_created` / `memory_loaded` …） | 原样放行 |
+
+**这张表不是一张名单，是一个 `Record<SessionEvent["type"], …>`** —— 每个事件类型都必须
+表态，加了新类型不来这里写一笔 `tsc` 直接红。理由是这张表初稿就漏过一次，而漏掉的代价
+在下一段：名单漏一个是静默灾难，Record 漏一个是编译错误。形状照 `sessionPackage.ts` 的
+`PRIVACY_VERDICTS`（本仓已经用它救过一次场，AGENTS.md 记着它是「新事件类型检查清单的第七处」）。
+
+**`context_compacted` 为什么必须丢**（初稿把它归进「原样放行」，错得很重）：
+`deriveMessages` 对它的处理是 `messages.length = 0` —— **清场重来**，摘要被注入成
+「你对这段历史的全部记忆」。而摘要是**按视角**生成的（ADR-0003）。所以别人的一条压缩事件
+漏进来，不是多一条噪音，是**我的整段真实历史被抹掉、换成别人视角的摘要**。不崩、不报错、
+界面无痕，触发条件只是「群里任何一只压缩过一次」。`agentView` 的 `lastOfType` 单独处理它
+**不够** —— `load` / `ofType` 两条通用读路径同样要过这一关。
 
 **为什么剥 `toolCalls` 是必须的而不是顺手**：留着它、又丢掉配对的 `tool_result`，
 `deriveMessages` 的悬空工具调用自愈（ADR-0005 保命层，`deriveMessages.ts:351`）
