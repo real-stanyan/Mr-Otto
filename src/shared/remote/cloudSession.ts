@@ -163,7 +163,7 @@ export type CsDeniedCode =
 export type CsUp =
   | { t: "hello"; v: number; jwt: string }
   | { t: "create"; workspaceId: string }
-  | { t: "say"; text: string; mention: boolean }
+  | { t: "say"; text: string; mention: boolean; mentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
   /** 工作区配置。**两组字段各自可选**（issue #844）：给了 repoUrl 就改仓库，
@@ -332,7 +332,11 @@ export function decodeCsUp(b64: string): CsUp | null {
 
     if (t === "say") {
       if (typeof obj.text === "string" && typeof obj.mention === "boolean") {
-        return { t: "say", text: obj.text, mention: obj.mention };
+        if (obj.mentions === undefined) return { t: "say", text: obj.text, mention: obj.mention };
+        // 形状不对就整帧拒掉,不是悄悄把字段丢了当没带 —— 后者会让一句
+        // "@运营" 静默变成"谁都没点名",而那两件事该做的动作不一样
+        if (!Array.isArray(obj.mentions) || obj.mentions.some((m) => typeof m !== "string")) return null;
+        return { t: "say", text: obj.text, mention: obj.mention, mentions: obj.mentions as string[] };
       }
       return null;
     }
