@@ -375,6 +375,9 @@ async function main(): Promise<void> {
       role: "host",
       channel: csChannel(workspaceId, sessionId),
       authToken: async () => config.runtimeSecret,
+      // 日志必须接（issue #913）：createWsTransport 的 log 缺省是空函数，
+      // 不传等于把这条连接的整个生命周期扔进黑洞
+      log: (m) => console.log(`[otto-runtime] 中继(会话 ${sessionId})：${m}`),
     });
     roomRosters.set(transport, roster);
 
@@ -649,7 +652,54 @@ async function main(): Promise<void> {
     role: "host",
     channel: csCtlChannel(),
     authToken: async () => config.runtimeSecret,
+    log: (m) => console.log(`[otto-runtime] 中继(ctl)：${m}`),
   });
+
+  // 「连不上中继」这个状态本身没有任何人在看（issue #913）。退避重连是**无限**的，
+  // 所以一条永远握不上手的连接不会以任何方式结束、也不会积累出任何症状：真机上
+  // 它安静地失败了七个多小时，服务器日志里只有启动那一行「就绪」，而桌面那一侧
+  // 唯一的信号是建云会话超时后的一句「云端无响应」——那句话把「握手被拒」说成了
+  // 「对面没回话」，方向指向 VPS 宕机，而真实原因是 RUNTIME_SECRET 两边不一致。
+  //
+  // 所以这里给这个状态**装一个会说话的观察者**：起飞后隔一会儿看一眼，没进房就
+  // 报一条带修法的错，之后每隔一段再报一次（一次性的错会被后面的日志冲走，而这
+  // 条故障是持续的）；真连上了也说一句——「什么时候好的」和「坏没坏」一样重要。
+  const CTL_FIRST_CHECK_MS = 20_000;
+  const CTL_RECHECK_MS = 5 * 60 * 1000;
+  let ctlEverConnected = false;
+  const checkCtl = (): void => {
+    if (ctlTransport.isOpen()) {
+      if (!ctlEverConnected) {
+        ctlEverConnected = true;
+        console.log("[otto-runtime] 控制房已连上，云会话可以创建了");
+      }
+      return;
+    }
+    console.error(
+      `[otto-runtime] 连不上中继的控制房（${config.relayBase}）。云会话建不出来，` +
+        `桌面那边会显示「云端无响应」。
+` +
+        `  最常见的原因：本机 /etc/otto-runtime.env 的 RUNTIME_SECRET 与 edge worker 那侧的不是同一个值
+` +
+        `  （两边是同一把共享口令，不是一对密钥；worker 侧比不中就当普通 JWT 处理，回 401）。
+` +
+        `  自查：curl --http1.1 -o /dev/null -w '%{http_code}\n' \
+` +
+        `    -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+` +
+        `    -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+` +
+        `    -H "Sec-WebSocket-Protocol: mrotto.v1, $RUNTIME_SECRET" \
+` +
+        `    '${config.relayBase}/rl/v1/connect?role=host&channel=cs-ctl'
+` +
+        `  101 = 通了；401 = 口令对不上。**必须加 --http1.1**：HTTP/2 不允许 Connection/Upgrade 头，
+` +
+        `  不加会拿到 426 而不是 401，看起来像是端点不对（踩过，issue #913）。`
+    );
+  };
+  setTimeout(checkCtl, CTL_FIRST_CHECK_MS).unref();
+  setInterval(checkCtl, CTL_RECHECK_MS).unref();
   ctlTransport.onPeer((cid) => {
     cidTransport.set(cid, ctlTransport);
   });

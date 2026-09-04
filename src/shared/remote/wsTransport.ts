@@ -62,7 +62,15 @@ export interface WsTransportOpts {
   log?: (m: string) => void;
 }
 
-export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
+export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
+  /** 这条传输此刻是不是真的在房间里：socket 处于 OPEN **且**中继已经发过号。
+      给「连不上就该有人喊一声」那类看门狗用（issue #913）。
+      为什么不写进 RemoteTransport：那个接口有别的实现（测试假货、桥的适配层），
+      加一个必填成员会把它们全打红；写成可选又更糟——忘了实现的那天看门狗会
+      安静地变成 no-op，而这条 issue 修的正是"失败无声"。返回类型上加，
+      于是只有真拿 WebSocket 那条路的调用方看得见它，且是编译期必有。 */
+  isOpen(): boolean;
+} {
   const WS = opts.wsImpl ?? WebSocket;
   const log = opts.log ?? (() => {});
   const base = opts.baseUrl.replace(/\/+$/, "");
@@ -228,6 +236,13 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport {
   void connect();
 
   return {
+    /** 见返回类型上的注释。`myCid` 非空才算数：socket open 只说明 TCP+升级过了，
+        中继发号（CTRL_CID）才说明我们真的被放进了房间——握手被拒的那条路上，
+        socket 压根不会 open，但把判据只写成 readyState 会让"open 了却没进房"
+        这种半吊子状态被算成连上 */
+    isOpen() {
+      return !closed && ws !== null && ws.readyState === 1 && myCid !== "";
+    },
     /**
      * 立刻换一条连接,不等退避。两个平台各有各的触发时机,合成同一个方法:
      *
