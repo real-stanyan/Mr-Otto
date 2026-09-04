@@ -1,7 +1,8 @@
 // LoopEngine — 把环闭上：输入 → 落盘 → 投影 → 模型 → 落盘 → 工具 → 落盘 → 再投影……
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
-import type { EventStore, NewSessionEvent } from "../session/store.js";
+import type { NewSessionEvent } from "../session/store.js";
+import type { EventLog } from "../session/eventLog.js";
 import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
@@ -44,7 +45,7 @@ export const REAUTO_MIN_GROWTH_TOKENS = 20_000;
 export const LONG_TURN_ROUNDS = 30;
 
 export interface LoopEngineOptions {
-  store: EventStore;
+  store: EventLog;
   adapter: ModelAdapter;
   /** 工具表。传函数 = 每个 turn 开始时重算一次（MCP server 中途连上/掉线
       要能被这个会话看见）；传数组 = 也是每 turn 惰性重读**同一个数组引用**
