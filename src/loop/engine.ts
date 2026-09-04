@@ -98,6 +98,9 @@ export interface LoopEngineOptions {
   /** 单调守卫（issue #383）：Pre 钩子之后、执行留痕之前的 deny-only 闸。
       看到的是最终生效参数（过完审批改参与钩子改参）。不给 = 无守卫 */
   guards?: ToolGuard[];
+  /** 这台 engine 代表哪只工作区 agent(#928)。给了就随 env() 缝进每条落盘事件。
+      不给 = 单 agent 会话,一个字段都不加 —— 本机会话的日志与改动前逐字节相同 */
+  agentId?: string;
 }
 
 export class LoopEngine {
@@ -246,7 +249,10 @@ export class LoopEngine {
   }
 
   private env() {
-    return { sessionId: this.opts.sessionId, ts: Date.now() };
+    const base = { sessionId: this.opts.sessionId, ts: Date.now() };
+    // 展开而不是恒定写 agentId: undefined —— 后者会让 JSON.stringify 落一个
+    // "agentId": null 进日志,单 agent 会话的日志就不再与改动前逐字节相同了
+    return this.opts.agentId ? { ...base, agentId: this.opts.agentId } : base;
   }
 
   /** 这次投影之后有没有落过新的用户消息（issue #871）。projected = 这圈喂给
