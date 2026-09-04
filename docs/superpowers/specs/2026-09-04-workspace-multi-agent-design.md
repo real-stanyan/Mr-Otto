@@ -135,7 +135,8 @@ create unique index if not exists workspace_agents_name
 **本仓没有 `tool_call` 事件**——工具调用内嵌在 `assistant_message.toolCalls` 里
 （写 spec 时查证）。所以带 `agentId` 的是这一组：`assistant_message` /
 `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` /
-`request_envelope` / `turn_ended`。各加一个可选 `agentId: string`。
+`request_envelope` / `turn_ended`。各加一个可选 `agentId: string`。新事件 `agent_briefed`
+（§4.3）的 `agentId` 是**必填**——它整条就是在说「这是谁」。
 
 **缺席 = 单 agent 会话**——全部旧日志、全部本机会话都落在这一档，旧日志照常重放
 （硬规则 4 满足）。落盘由 engine 的 `env()` 统一供料（它已经在给 `sessionId` / `ts`），
@@ -148,7 +149,32 @@ agent 发言走 `assistant_message`（带 `agentId`），**不走 `chat_message`
 `initiatorUid` / `byUid`（ADR-0047 决定 4 的冒泡语义）、代理执行的身份闸（ADR-0164
 第一道）、用量归因的 `usage_event.user_id`。
 
-### 4.3 新事件 `agent_relay`
+### 4.3 新事件 `agent_briefed`
+
+```ts
+{ type: "agent_briefed"; agentId; name; instructions; roster: { name; description }[] }
+```
+
+一只 agent 在这条会话里的自我介绍：它管哪块业务（`instructions`），群里还有谁
+（`roster`，@ 得着谁靠这份名单）。没有它，一只「agent」就只是换了个型号的默认水獭。
+
+**投影成 user 消息不是 system**，手法同 `subagent_briefed` / `skill_invoked`——中途插
+system 消息各家方言兼容性参差（ADR-0047 决定 1 的原话）。云会话的 system 只从
+`session_created.workspace` 产出，那是**会话级围栏**，不是 agent 级身份。
+
+**为什么不复用 `subagent_briefed`**：那条的投影文案写着「你是 subagent「X」，
+以下是你的指令，请在完成任务时遵循」——它把模型的最终一段文本定义成**返回值**
+（ADR-0047 的 `DEFAULT_PREAMBLE`）。群聊里这是错的：agent 说的话是说给群里的人听的。
+复用等于给模型灌一句关于自己身份的假话，而这句假话会稳定地改变它怎么说话。
+
+落盘时机的判据有两条，缺一不可：**这只没被介绍过**，或**介绍时的那份指令和现在不一样**。
+只判前者，用户改完提示词要重开会话才生效；每 turn 都落一条，日志里堆满同一段文字，
+模型每轮被重新自我介绍一遍。
+
+别人的 `agent_briefed` **不进我的上下文**（§5 的丢弃名单里有它）：我需要知道群里有
+「广告」这个人——那来自我自己 briefing 里的 `roster`——不需要读它的提示词。
+
+### 4.4 新事件 `agent_relay`
 
 ```ts
 { type: "agent_relay"; fromAgentId: string; toAgentId: string; depth: number }
@@ -158,7 +184,7 @@ agent 发言走 `assistant_message`（带 `agentId`），**不走 `chat_message`
 接力线是 UI 投影，投影必须可从日志推导；而且**棒数上限的判据不能只活在内存里**——
 daemon 重启后接力链要能续上判断。
 
-### 4.4 `cs_say` 加 `mentions`
+### 4.5 `cs_say` 加 `mentions`
 
 ```ts
 | { t: "say"; text: string; mention: boolean; mentions?: string[] }
@@ -167,7 +193,7 @@ daemon 重启后接力链要能续上判断。
 **布尔那个字段留着**：线协议三端共用一份（`src/shared/remote/cloudSession.ts`），
 手机端和旧桌面还在发布尔。`mentions` 缺席时按老语义（`true` = @ 唯一那只 / 管理员）。
 
-### 4.5 @ 名字解析两处都要，一份纯逻辑共用
+### 4.6 @ 名字解析两处都要，一份纯逻辑共用
 
 - **客户端**：用户打字时出 chip，看得见自己 @ 到了谁；发帧时带解析好的 `mentions`。
 - **服务端**：agent 输出的是**文本**，只能服务端按名单匹配。
@@ -213,7 +239,7 @@ export interface EventLog {
 | 别人的事件 | 怎么处理 |
 |---|---|
 | `assistant_message` | **剥掉 `toolCalls` / `reasoning` / `usage`**，只留 `content`；剥完 `content` 为空则整条丢弃（纯工具调用那一轮它没说话） |
-| `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` / `request_envelope` / `turn_ended` | 整条丢弃 |
+| `tool_result` / `tool_execution_started` / `approval_request` / `approval_decision` / `request_envelope` / `turn_ended` / `agent_briefed` | 整条丢弃 |
 | 其余（`chat_message` / `user_message` / `session_created` / `memory_loaded` / `context_compacted` …） | 原样放行 |
 
 **为什么剥 `toolCalls` 是必须的而不是顺手**：留着它、又丢掉配对的 `tool_result`，
