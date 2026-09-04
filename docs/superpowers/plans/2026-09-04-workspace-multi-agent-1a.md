@@ -1349,6 +1349,10 @@ npx vitest run tests/runtime/sessionService.test.ts
 ```
 
 4. 跑完一个 job 后取 `coordinator.nextJob()`，非 null 就接着跑（`while` 循环，串行）。
+   **这个循环必须跑到 null，且必须在 `finally` 里**——不变量是「拿到 `start_turn` 的那一方
+   负责把队列排空到 null」。`nextJob()` 是唯一能让协调器归 idle 的入口（队列空了才归），
+   少排一次就把 `running` 永久钉在 true：此后每一条 `enqueue` 都回 `queued`，这条会话
+   再也起不了 turn。Task 8 的适配就在这儿栽过一次（只调了一次，两个成员并发 @ 即复现）。
 5. **那只 agent 的 `instructions` 靠 Task 5 的 `agent_briefed` 进上下文**，不碰 system 消息（云会话的 system 只从 `session_created.workspace` 产出，那是会话级围栏，不是 agent 级身份）。落盘时机：
 
 ```ts
