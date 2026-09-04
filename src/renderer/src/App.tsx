@@ -44,6 +44,7 @@ import type {
   SessionSummary,
 } from "../../shared/shellBridge.js";
 import { contextBreakdown, cachedTokensNow } from "../../shared/contextEstimate.js";
+import { displaySessionTitle } from "../../shared/sessionTitle.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
 import type { ToolDefinition } from "../../model/adapter.js";
@@ -1788,7 +1789,7 @@ function AppSidebar() {
       : archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
   // 归档行：分组区和"没有工程记录"那段共用同一份行，行为完全一致——
   // 点击只是翻历史（不自动恢复归档），⋮ 里放恢复和删除
-  const archivedRow = (s: SessionSummary, groupLabel: string | null) => (
+  const archivedRow = (s: SessionSummary) => (
     <SidebarMenuItem key={s.sessionId}>
       <SidebarMenuButton
         className="h-auto flex-row items-center gap-2 py-[7px] opacity-70"
@@ -1796,7 +1797,7 @@ function AppSidebar() {
         title="查看历史（不会自动恢复归档）"
       >
         <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
-          {s.title ?? groupLabel ?? s.sessionId}
+          {displaySessionTitle(s.title)}
         </span>
       </SidebarMenuButton>
       <DropdownMenu>
@@ -1825,9 +1826,10 @@ function AppSidebar() {
     </SidebarMenuItem>
   );
   /** 会话行:任务平铺列表和项目分组视图共用同一副行（球+标题+⋮ 菜单），
-      长得不一样就像两种东西——其实都是会话。fallbackLabel = 还没发话时的标题
-      （项目视图给文件夹名，任务视图给「任务」） */
-  const sessionRow = (s: SessionSummary, fallbackLabel: string) => (
+      长得不一样就像两种东西——其实都是会话。还没发话的会话没有标题，统一由
+      displaySessionTitle 兜成「新会话」（#925）：**兜底不再由调用方传**，
+      原来那个 fallbackLabel 让同一条会话在侧栏叫文件夹名、在 ⌘K 里叫别的名字 */
+  const sessionRow = (s: SessionSummary) => (
     <SidebarMenuItem key={s.sessionId}>
       <SidebarMenuButton
         className="h-auto flex-row items-center gap-2 py-[7px]"
@@ -1843,9 +1845,9 @@ function AppSidebar() {
             running: statusBySession[s.sessionId] === "running",
           })}
         />
-        {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回 fallback */}
+        {/* 标题 = 第一条 user_message 首行（日志投影）；还没发话的会话退回「新会话」 */}
         <span className={cn(TITLE_SPAN, "min-w-0 flex-1")}>
-          {s.title ?? fallbackLabel}
+          {displaySessionTitle(s.title)}
         </span>
         {/* 独立副本（ADR-0157）：组头只说「哪个项目」，副本身份下沉到行（#692，同岛的
             ADR-0172）。只是一个记号，不写分支名——日志里那条会陈旧（ADR-0158） */}
@@ -1870,7 +1872,7 @@ function AppSidebar() {
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
           <DropdownMenuItem
-            onClick={() => setRenaming({ sessionId: s.sessionId, title: s.title ?? fallbackLabel })}
+            onClick={() => setRenaming({ sessionId: s.sessionId, title: displaySessionTitle(s.title) })}
           >
             重命名
           </DropdownMenuItem>
@@ -1901,7 +1903,9 @@ function AppSidebar() {
           <DropdownMenuItem
             variant="destructive"
             onClick={() => {
-              if (confirm(`彻底删除会话 ${fallbackLabel} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
+              // 报的是行上那一格此刻写着的字（#925 之前这里报的是 fallbackLabel，
+              // 于是有标题的会话在确认框里被叫成它所在的文件夹名——和行上对不上）
+              if (confirm(`彻底删除会话 ${displaySessionTitle(s.title)} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
                 void deleteSession(s.sessionId);
               }
             }}
@@ -2149,7 +2153,7 @@ function AppSidebar() {
               // 任务栏的归档:只看 Default 的旧账,平铺(#559 后续)——
               // 和任务列表同一个道理,这一栏不谈"工程"
               <SidebarMenu className="p-2 pt-0">
-                {archivedTask.map((s) => archivedRow(s, "任务"))}
+                {archivedTask.map((s) => archivedRow(s))}
               </SidebarMenu>
             ) : (
               <>
@@ -2167,7 +2171,7 @@ function AppSidebar() {
                     collapsed={archivedCollapsed.has(g.workspace)}
                     onToggle={toggleArchivedGroup}
                   >
-                    {g.sessions.map((s) => archivedRow(s, g.label))}
+                    {g.sessions.map((s) => archivedRow(s))}
                   </ArchivedGroup>
                 ))}
                 {archived.ungrouped.length > 0 && (
@@ -2181,7 +2185,7 @@ function AppSidebar() {
                     collapsed={archivedCollapsed.has(NO_WORKSPACE_KEY)}
                     onToggle={toggleArchivedGroup}
                   >
-                    {archived.ungrouped.map((s) => archivedRow(s, null))}
+                    {archived.ungrouped.map((s) => archivedRow(s))}
                   </ArchivedGroup>
                 )}
               </>
@@ -2196,7 +2200,7 @@ function AppSidebar() {
             {taskParts.shared.length > 0 && (
               <>
                 <div className={SECTION_HEADING}>已同步</div>
-                {taskParts.shared.map((s) => sessionRow(s, "任务"))}
+                {taskParts.shared.map((s) => sessionRow(s))}
                 <div className={SECTION_HEADING}>本地</div>
               </>
             )}
@@ -2204,7 +2208,7 @@ function AppSidebar() {
               <Fragment key={g.topic ?? "__none"}>
                 {/* 只有一组且是未分类时不画组头：从没分类过的人看到的列表和从前一模一样 */}
                 {!(taskGroups.length === 1 && g.topic === null) && <div className={SECTION_HEADING}>{g.label}</div>}
-                {g.sessions.map((s) => sessionRow(s, "任务"))}
+                {g.sessions.map((s) => sessionRow(s))}
               </Fragment>
             ))}
           </SidebarMenu>
@@ -2229,7 +2233,7 @@ function AppSidebar() {
                 <SidebarGroupContent>
                   <SidebarMenu>
                     {projectParts.shared.map((s) =>
-                      sessionRow(s, s.workspace ? folderName(s.workspace) : "会话")
+                      sessionRow(s)
                     )}
                   </SidebarMenu>
                 </SidebarGroupContent>
@@ -2273,7 +2277,7 @@ function AppSidebar() {
                       {/* 缩进只能吃自己的 padding:w-full 上再加 margin 会把总宽顶出侧栏,
                           冒出一条横滚动条 */}
                       <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
-                        {g.sessions.map((s) => sessionRow(s, g.label))}
+                        {g.sessions.map((s) => sessionRow(s))}
                       </SidebarMenu>
                     </SidebarGroupContent>
                   )}

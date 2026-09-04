@@ -393,7 +393,7 @@ struct IslandExpandedView: View {
   @ViewBuilder
   private func whoLabel(_ agent: IslandAgent) -> some View {
     if model.fleet.agents.count > 1 {
-      Text(agent.title ?? "未命名会话")
+      Text(agent.title ?? "新会话")
         .foregroundStyle(.white.opacity(0.42))
         .lineLimit(1)
         .layoutPriority(-1)
@@ -584,7 +584,7 @@ struct AgentRow: View {
         PhaseIndicator(phase: agent.phase).padding(.top, 3)
         VStack(alignment: .leading, spacing: 2) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(agent.title ?? "未命名会话")
+            Text(agent.title ?? "新会话")
               .font(.system(size: 13, weight: .medium))
               .tracking(-0.07)
               .lineLimit(1)

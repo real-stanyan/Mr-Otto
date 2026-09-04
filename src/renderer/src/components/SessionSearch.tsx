@@ -15,6 +15,7 @@ import { ThreadSearch } from "@/components/elements/thread-search.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog.js";
 import { groupSessionsByWorkspace } from "../sessionGroups.js";
 import { useChat } from "../store.js";
+import { displaySessionTitle } from "../../../shared/sessionTitle.js";
 
 /** ⌘K / ⌃K 打开。⌘B 是侧栏、⌃` 是终端,K 是这一带没被占的那个 */
 export function useSessionSearchHotkey(): void {
@@ -52,8 +53,8 @@ export function SessionSearchDialog() {
       groupSessionsByWorkspace(sessions).flatMap((g) =>
         g.sessions.map((s) => ({
           id: s.sessionId,
-          // 标题的兜底与侧栏一致:还没发话的会话退回工程名
-          title: s.title ?? g.label,
+          // 标题的兜底与侧栏一致:还没发话的会话退回「新会话」(#925)
+          title: displaySessionTitle(s.title),
           // 没有"最后一句话"这个投影(列表接口只给条数和时间),
           // 就报条数和日期——比空着强,也不假装有摘要
           preview: `${new Date(s.lastTs).toLocaleDateString()} · ${s.events} 条`,
