@@ -50,9 +50,10 @@ function makeDeps(config: {
   /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
       传一个只对某几档说 false 的假货 */
   rateLimit?: FrameHandlerDeps["rateLimit"];
-} = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[] } {
+} = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
+  const logs: string[] = [];
   const deps: FrameHandlerDeps = {
     verifyJwt: config.verifyJwt ?? (async (token) => (token.startsWith("jwt:") ? { userId: token.slice(4) } : null)),
     isMember: config.isMember ?? (async () => true),
@@ -69,8 +70,9 @@ function makeDeps(config: {
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
+    log: (m) => logs.push(m),
   };
-  return { deps, sent, dropCidCalls };
+  return { deps, sent, dropCidCalls, logs };
 }
 
 const hello = (v: number, jwt: string) => encodeCs({ t: "hello", v, jwt });
@@ -792,5 +794,102 @@ describe("模型配置（issue #844）", () => {
       modelId: "deepseek-v4-flash",
       hasKey: true,
     });
+  });
+});
+
+// issue #915：真机上「新建云会话」一律回 not_authorized，而发起者是工作区所有者。
+//
+// 病因是**顺序**不是权限：桌面的 create() 在同一个 tick 里连发 hello + create，
+// 而 daemon 的接线是「来一帧起一个 promise」。hello 那条要 await 验签**再** await
+// labelOf（真机上是一次 Supabase 往返），create 在这个窗口里被处理时 cids 还是空的，
+// 于是落进「第一帧不是 hello」那条分支。
+//
+// 这些用例**必须不 await 第一条**——await 了就把竞态本身抹掉了，测的就成了另一件事。
+describe("按 cid 串行（#915）", () => {
+  /** 让 labelOf 慢下来并且可控：真机上它是网络调用，这里用一个手动放行的 promise
+      精确复现「hello 还卡在 labelOf 里，create 就到了」那一刻 */
+  function slowLabel() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    return { gate, release, labelOf: async (uid: string) => { await gate; return `Label(${uid})`; } };
+  }
+
+  it("hello 还没登记完，create 就到了：不许回 not_authorized", async () => {
+    const slow = slowLabel();
+    const { deps, sent } = makeDeps({ labelOf: slow.labelOf });
+    const handler = createFrameHandler(deps);
+
+    // 关键：两条都不 await，就像桌面同一个 tick 连发那样
+    const p1 = handler.onCtlFrame("cid-1", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:u1" }));
+    const p2 = handler.onCtlFrame("cid-1", encodeCs({ t: "create", workspaceId: "ws-1" }));
+
+    slow.release();
+    await Promise.all([p1, p2]);
+
+    expect(sent.map((x) => x.msg.t)).not.toContain("denied");
+    expect(sent.map((x) => x.msg.t)).toContain("created");
+  });
+
+  it("同一条 cid 上的帧按到达顺序处理", async () => {
+    const order: string[] = [];
+    const slow = slowLabel();
+    const { deps } = makeDeps({
+      labelOf: async (uid) => { order.push("hello:labelOf"); return slow.labelOf(uid); },
+      createSession: async () => { order.push("create"); return { sessionId: "s1" }; },
+    });
+    const handler = createFrameHandler(deps);
+
+    const p1 = handler.onCtlFrame("cid-1", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:u1" }));
+    const p2 = handler.onCtlFrame("cid-1", encodeCs({ t: "create", workspaceId: "ws-1" }));
+    slow.release();
+    await Promise.all([p1, p2]);
+
+    expect(order).toEqual(["hello:labelOf", "create"]);
+  });
+
+  it("前一条抛了，后面的帧照样处理（一次抖动不该把这条连接永久卡死）", async () => {
+    let first = true;
+    const { deps, sent } = makeDeps({
+      labelOf: async (uid) => {
+        if (first) { first = false; throw new Error("Supabase 抖了一下"); }
+        return `Label(${uid})`;
+      },
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onCtlFrame("cid-1", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:u1" }))
+      .catch(() => { /* 这一条本来就该抛 */ });
+    // 同一条 cid 再来一轮，应该照常走通
+    await handler.onCtlFrame("cid-1", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:u1" }));
+    await handler.onCtlFrame("cid-1", encodeCs({ t: "create", workspaceId: "ws-1" }));
+
+    expect(sent.map((x) => x.msg.t)).toContain("created");
+  });
+
+  it("不同 cid 之间不互相阻塞（串行粒度是 cid，不是全局）", async () => {
+    const slow = slowLabel();
+    const { deps, sent } = makeDeps({
+      labelOf: async (uid) => (uid === "slow" ? slow.labelOf(uid) : `Label(${uid})`),
+    });
+    const handler = createFrameHandler(deps);
+
+    // cid-slow 卡在 labelOf 里
+    const stuck = handler.onCtlFrame("cid-slow", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:slow" }));
+    // cid-fast 不该被它拖住
+    await handler.onCtlFrame("cid-fast", encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "jwt:fast" }));
+    await handler.onCtlFrame("cid-fast", encodeCs({ t: "create", workspaceId: "ws-1" }));
+    expect(sent.some((x) => x.cid === "cid-fast" && x.msg.t === "created")).toBe(true);
+
+    slow.release();
+    await stuck;
+  });
+
+  it("拒绝会记一笔（#915：真机那次拒绝，日志里一个字都没有）", async () => {
+    const { deps, logs } = makeDeps({});
+    const handler = createFrameHandler(deps);
+    // 第一帧不是 hello = 未验籍
+    await handler.onCtlFrame("cid-1", encodeCs({ t: "create", workspaceId: "ws-1" }));
+    expect(logs.join("\n")).toContain("not_authorized");
+    expect(logs.join("\n")).toContain("cid-1");
   });
 });

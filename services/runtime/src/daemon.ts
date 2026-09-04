@@ -482,6 +482,7 @@ async function main(): Promise<void> {
   }
 
   const frameHandlerDeps: FrameHandlerDeps = {
+    log: (m) => console.log(`[otto-runtime] 帧：${m}`),
     verifyJwt: async (token) => {
       const result = await verifyJwtEdge(token, config.supabaseJwtSecret, Date.now() / 1000);
       return result.ok ? { userId: result.claims.sub } : null;

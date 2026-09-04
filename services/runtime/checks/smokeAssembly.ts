@@ -125,6 +125,7 @@ async function scenarioMainFlow(): Promise<void> {
     };
 
     const deps: FrameHandlerDeps = {
+      log: (m) => console.log(`[smoke] 帧：${m}`),
       verifyJwt: async (jwt) => verifyToken(jwt),
       isMember: async () => true,
       labelOf: async (uid) => `smoke-${uid.slice(0, 8)}`,
@@ -312,6 +313,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
   };
 
   const resilientDeps: FrameHandlerDeps = {
+    log: (m) => console.log(`[smoke] 帧：${m}`),
     verifyJwt: async (jwt) => verifyToken(jwt),
     isMember: async () => true,
     labelOf: async (uid) => uid,

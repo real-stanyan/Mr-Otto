@@ -152,6 +152,10 @@ export interface FrameHandlerDeps {
       实现要求幂等——同一个 cid 既可能从这里被摘、也可能随后真的
       onGone，两条路径不能打架 */
   dropCid?: (cid: string) => void;
+  /** 记一句。**必需不是可选**（同 rateLimit 的理由）：拒绝是这一层唯一的失败
+      出口，而"拒绝了却没人知道"正是 #913/#915 各花掉半小时的那种形态——写成
+      可选的话，忘接线的那天它会安静地什么都不记，而那正是最需要它的那天。 */
+  log: (message: string) => void;
 }
 
 export interface FrameHandler {
@@ -185,7 +189,45 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
   const cids = new Map<string, CidEntry>();
 
   function deny(cid: string, code: CsDeniedCode): void {
+    // 每一次拒绝都记一笔（issue #915）：真机上「新建云会话」回
+    // not_authorized 的那次，服务器日志里一个字都没有，于是「谁拒的、为什么」
+    // 只能靠读代码倒推。cid + code 就够定位，uid 不记——它是身份，而这条日志
+    // 会进 journal
+    deps.log(`拒绝 cid=${cid}：${code}`);
     deps.send(cid, { t: "denied", code });
+  }
+
+  /** 每个 cid 一条串行链（issue #915）。
+   *
+   *  病因：桌面的 create() 在**同一个 tick 里**连发 hello + create，而
+   *  daemon 的接线是「来一帧起一个 promise」。hello 那条要 await 验签 **再**
+   *  await labelOf（一次真 Supabase 往返），create 在这个窗口里被处理时
+   *  `cids` 还是空的，于是落进「第一帧不是 hello」那条分支，回 not_authorized。
+   *  `labelOf` 是网络调用 ⇒ 这不是偶发竞态，是近乎必然：云会话大概从来没建成过。
+   *
+   *  粒度是 **cid 不是全局**：两个不同客户端之间没有顺序要求，全局串行会把一个
+   *  慢查询变成所有人的队头阻塞。
+   *
+   *  被否掉的修法记在 issue #915：在 await 之前先登记 cid（窗口变小但没消失，
+   *  而且等于在验签完成前把未验籍的 cid 当已验籍——把竞态换成安全洞）、
+   *  让桌面等一拍再发（控制房**故意没有 welcome**，没有可等的信号）。 */
+  const chains = new Map<string, Promise<void>>();
+
+  function serialize(cid: string, fn: () => Promise<void>): Promise<void> {
+    const prev = chains.get(cid) ?? Promise.resolve();
+    // `.then(fn, fn)`：前一条**抛了也要接着跑下一条**。只接成功路径的话，
+    // 一次 Supabase 抖动会把这条连接的后续帧全部永久卡死
+    const next = prev.then(fn, fn);
+    // 链上存一份吞掉异常的，否则每个失败的环都变成 unhandledRejection
+    const guarded = next.catch(() => {});
+    chains.set(cid, guarded);
+    void guarded.then(() => {
+      // 只有还是自己那一环时才删——期间排进来的新帧已经把 map 指向了更后面
+      // 的一环，删掉它等于把那条链摘断
+      if (chains.get(cid) === guarded) chains.delete(cid);
+    });
+    // 回未吞异常的那一份：daemon 那边的 .catch(err => console.error) 仍然生效
+    return next;
   }
 
   /** say/approve/config/backlog 能读写会话状态或敏感信息——被踢出工作区
@@ -207,7 +249,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     return false;
   }
 
-  return {
+  const inner: FrameHandler = {
     async onCtlFrame(cid, raw) {
       const msg = decodeCsUp(raw);
       if (!msg) return; // 解不开的帧一律静默丢——线上字节永远可能是垃圾
@@ -447,6 +489,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
     onGone(cid) {
       cids.delete(cid);
+    },
+  };
+
+  return {
+    onCtlFrame: (cid, raw) => serialize(cid, () => inner.onCtlFrame(cid, raw)),
+    onSessionFrame: (workspaceId, sessionId, cid, raw) =>
+      serialize(cid, () => inner.onSessionFrame(workspaceId, sessionId, cid, raw)),
+    onGone(cid) {
+      inner.onGone(cid);
+      // 链也要跟着走，否则这张表只增不减
+      chains.delete(cid);
     },
   };
 }
