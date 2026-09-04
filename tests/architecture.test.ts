@@ -216,4 +216,13 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
         "它写完会通知 memorySync,绕过它 = 云端少一份"
     ).toEqual([]);
   });
+
+  it("云会话给 LoopEngine 的 store 必须是 agentView 的产物（#928）", () => {
+    const src = readFileSync("services/runtime/src/sessionService.ts", "utf8");
+    // 判据取「new LoopEngine 那一段里 store: 后面跟的是什么」——不是全文搜
+    // agentView（那样把它写在注释里也能骗过去）
+    const block = src.slice(src.indexOf("new LoopEngine("));
+    const storeLine = block.slice(0, block.indexOf("})")).match(/store:\s*([^,\n]+)/)?.[1] ?? "";
+    expect(storeLine).toContain("agentView(");
+  });
 });
