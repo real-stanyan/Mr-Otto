@@ -32,4 +32,40 @@ describe("parseMentions（#928 切片 1a）", () => {
   it("没有 @ 就是空数组 —— 调用方据此走「谁都没点名」那条路", () => {
     expect(parseMentions("大家好", roster)).toEqual([]);
   });
+
+  // Critical: 中文标点后无空格是常见句子形状
+  it("中文逗号后的 @ —— 「你好，@运营」该认出运营", () => {
+    expect(parseMentions("你好，@运营 看下", roster)).toEqual(["ops"]);
+  });
+
+  it("中文句号后的 @ —— 「补充一下。@广告」该认出广告", () => {
+    expect(parseMentions("补充一下。@广告 这个数", roster)).toEqual(["ads"]);
+  });
+
+  // Regression: 邮箱地址仍然要挡住
+  it("邮箱地址中文标点不影响 —— 「rick@运营」还是不认", () => {
+    expect(parseMentions("rick@运营 的邮箱", roster)).toEqual([]);
+  });
+
+  // Important 1: @运营@广告 只认第一个，第二个前面是中文字符
+  it("连续 @ —— 「@运营@广告」该认出两个", () => {
+    expect(parseMentions("@运营@广告", roster)).toEqual(["ops", "ads"]);
+  });
+
+  // Important 2: 空名字吃掉所有 @
+  it("名单混入空字符串,裸 @ 应该不认", () => {
+    const rosterWithEmpty = [
+      ...roster,
+      { agentId: "phantom", name: "" },
+    ];
+    expect(parseMentions("@随便什么人 你好", rosterWithEmpty)).toEqual([]);
+  });
+
+  it("名单混入空字符串,末尾裸 @ 应该不认", () => {
+    const rosterWithEmpty = [
+      ...roster,
+      { agentId: "phantom", name: "" },
+    ];
+    expect(parseMentions("看这个 @", rosterWithEmpty)).toEqual([]);
+  });
 });
