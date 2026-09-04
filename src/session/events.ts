@@ -116,6 +116,10 @@ export interface AssistantMessageEvent extends SessionEventBase {
       花费面板只能从 token 反推，而反推不出托管侧的单价与 cache 折扣）。
       可选 = 旧日志 / direct 路 / 流式（settle 在响应发出之后，那一刻才知道数） */
   creditCostMicro?: number;
+  /** 这条是哪只工作区 agent 干的（#928）。**缺席 = 单 agent 会话**——旧日志、
+      本机会话、云会话在多智能体上线前落的那些，全在这一档，照常重放。
+      落盘由 engine 的 env() 统一供料，不是每个 append 点各写一遍 */
+  agentId?: string;
 }
 
 /** 时间线 3：审批决定 —— 给 UI 和审计看的；模型不直接消费这个事件 */
@@ -142,6 +146,8 @@ export interface ApprovalDecisionEvent extends SessionEventBase {
       照常重放）。群聊里多个成员共享同一条云会话，"谁批的"是审计要的事实，
       日志推不出来，必须落盘。 */
   decidedBy?: { uid: string; label: string };
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 时间线 4：工具执行结果 —— 模型消费的是这个（拒绝也是一种"结果"） */
@@ -164,6 +170,8 @@ export interface ToolResultEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
       图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
   images?: UserAttachmentRef[];
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 额外 1：模型切换 —— 重放时必须知道每段对话当时用的谁 */
@@ -294,6 +302,8 @@ export interface ContextCompactedEvent extends SessionEventBase {
 export interface ToolExecutionStartedEvent extends SessionEventBase {
   type: "tool_execution_started";
   toolCallId: string;
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 额外 6：turn 收口/暴死（ADR-0004）。此前 turn 死亡只走 IPC reject——
@@ -318,6 +328,8 @@ export interface TurnEndedEvent extends SessionEventBase {
       那一刻**的判定：状态码还在手上时分好类，事后从文案倒推是猜。
       缺席 = 非 API 错或旧日志；可选字段加宽向后兼容 */
   errorClass?: ModelErrorClass;
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md
@@ -595,6 +607,8 @@ export interface RequestEnvelopeEvent extends SessionEventBase {
   /** 本次请求携带的工具声明表（name/description/parameters 全量快照）。
       这是信封里最大的一块，也是最没法从日志推导的一块 */
   tools: { name: string; description: string; parameters: object }[];
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 后台任务完成（issue #389，dsh completion re-injection 对照）。
@@ -760,6 +774,8 @@ export interface ApprovalRequestEvent extends SessionEventBase {
   argsSummary: string;
   initiatorUid: string;
   expiresTs: number;
+  /** 这条是哪只工作区 agent 干的（#928） */
+  agentId?: string;
 }
 
 /** 云会话群聊三事件之三：一次 turn 花了多少 token，按谁头上算。
