@@ -391,3 +391,66 @@ describe("心跳", () => {
     expect(ws.sent).toEqual([]);
   });
 });
+
+// issue #913：runtime 那条「连不上中继却一声不吭」的看门狗要一个**状态**判据，
+// 不是日志文案（文案一改看门狗就静默失效，而这条 issue 修的正是"失败无声"）。
+describe("isOpen（看门狗的判据，#913）", () => {
+  it("刚构造：还没连上", async () => {
+    const { t } = make();
+    expect(t.isOpen()).toBe(false);
+    await settle();
+    // socket 建出来了但还没 open
+    expect(t.isOpen()).toBe(false);
+    t.close();
+  });
+
+  it("socket open 了但中继还没发号：**仍然不算连上**", async () => {
+    const { t } = make();
+    await settle();
+    last().open();
+    // 这一格就是「握手过了却没进房」那种半吊子状态。把判据只写成 readyState
+    // 会把它算成连上，于是看门狗对着一个进不了房的 runtime 说"一切正常"
+    expect(t.isOpen()).toBe(false);
+    t.close();
+  });
+
+  it("中继发号之后才算连上", async () => {
+    const { t } = make();
+    await settle();
+    const ws = last();
+    ws.open();
+    ws.rx(`${CTRL_CID} my-cid`);
+    expect(t.isOpen()).toBe(true);
+    t.close();
+  });
+
+  it("连接死掉：立刻不算连上", async () => {
+    const { t } = make();
+    await settle();
+    const ws = last();
+    ws.open();
+    ws.rx(`${CTRL_CID} my-cid`);
+    expect(t.isOpen()).toBe(true);
+    ws.die();
+    expect(t.isOpen()).toBe(false);
+    t.close();
+  });
+
+  it("close() 之后永远不算连上", async () => {
+    const { t } = make();
+    await settle();
+    const ws = last();
+    ws.open();
+    ws.rx(`${CTRL_CID} my-cid`);
+    t.close();
+    expect(t.isOpen()).toBe(false);
+  });
+
+  it("没 token 那条路：不连也不重连，isOpen 一直是 false", async () => {
+    const { t } = make({ authToken: async () => null });
+    await settle();
+    expect(t.isOpen()).toBe(false);
+    expect(FakeWs.instances).toHaveLength(0);
+    t.close();
+  });
+});
