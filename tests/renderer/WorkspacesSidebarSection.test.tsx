@@ -10,6 +10,8 @@
 // ③ 收起来的组不画会话行，但报条数——不报的话收起来就等于把这个工作区藏了
 // ④ 一条工作区都没有 + 没有错误 = 整节不渲染；有错误就要出（空列表 + 有错 =
 //    「读不到」，不是「没有」，这两件事该做的动作相反）
+// ⑤ 还没发过话的云会话（title 是空串，不是 null）显示「新会话」——真机上它长成
+//    一格空白，一行看不出是什么也看不出能不能点（#925）
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -94,6 +96,18 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     draw(["w1"]);
     expect(screen.queryByText("周报自动化")).not.toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument(); // 归档那条不算进去
+  });
+
+  it("还没发过话的云会话显示「新会话」，不是一格空白（#925）", () => {
+    seed({
+      cloudSessionList: {
+        // 云会话那张表的 title 是 string 不是 string | null：没标题时落库的是
+        // 空串，只挡 null 的兜底挡不住它
+        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3 }],
+      },
+    });
+    draw();
+    expect(screen.getByText("新会话")).toBeInTheDocument();
   });
 
   it("一条工作区都没有：没错误 = 整节不出；有错误 = 要出（「读不到」≠「没有」）", () => {

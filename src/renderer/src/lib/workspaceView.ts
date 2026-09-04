@@ -17,6 +17,7 @@
 //   UI 上得说成「全部工具」而不是「0 个工具」。
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { displaySessionTitle } from "../../../shared/sessionTitle.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -98,7 +99,10 @@ export interface SessionRowView {
 export function sessionRows(ws: WorkspaceSnapshot): SessionRowView[] {
   return ws.sessions.map((s) => ({
     id: s.id,
-    title: s.title,
+    // 兜底放在 row builder 里而不是各个消费方（#925）：同一条会话在侧栏和详情页
+    // 各兜各的，就会长出两个名字。这两张表的 title 是 string 不是 string | null,
+    // 没标题时落库的是空串——只挡 null 挡不住它
+    title: displaySessionTitle(s.title),
     publisherLabel: labelOf(ws, s.publisherUid),
     updatedTs: s.updatedTs,
   }));
@@ -136,7 +140,7 @@ export function cloudSessionRows(
   return rows
     .map((r) => ({
       id: r.id,
-      title: r.title,
+      title: displaySessionTitle(r.title),
       creatorLabel: labelOf(ws, r.publisherUid),
       archived: r.archived,
       updatedTs: r.updatedTs,
