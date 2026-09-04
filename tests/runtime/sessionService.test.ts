@@ -209,6 +209,77 @@ describe("createCloudSession", () => {
     expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
     store.close();
   });
+
+  it("⑤ 并发 @：第一条跑着时第二条也 @ 进来，跑完之后协调器必须能再起下一轮（#928 task-8 修复轮 1/5，真实复现过的死锁）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let chatCalls = 0;
+    let resolveFirstChat!: (reply: ModelReply) => void;
+
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        chatCalls++;
+        if (chatCalls === 1) {
+          // 第一轮攥在手里不 resolve —— 模拟"turn 真的还在跑"，好让第二条
+          // @ 是货真价实地并发进来，不是靠回调时序凑出来的假并发
+          return new Promise<ModelReply>((resolve) => {
+            resolveFirstChat = resolve;
+          });
+        }
+        return { content: `第 ${chatCalls} 轮回复` };
+      },
+    };
+
+    const session = createCloudSession({
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      adapter,
+      px,
+      hostUids: async () => [],
+      onEvent: (e) => events.push(e),
+      onUsage: () => {},
+    });
+
+    // 第一条 @：起 turn，但卡在 adapter.chat() 里不会立刻 resolve
+    const firstSay = session.say("u1", "alice", "开始任务", true);
+
+    // 放一拍，让第一条真正跑进 engine.runTurn() → adapter.chat() 卡住的那一刻
+    // （fetchGrantedTools 在 hostUids=[] 时不发真请求，只是个 microtask，
+    // setTimeout(0) 足够把它排空）
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.isRunning()).toBe(true);
+
+    // 第二条 @ 并发进来：协调器此刻应该回 queued，不该起第二个 turn
+    await session.say("u2", "bob", "我也有事", true);
+
+    // 断言①：第二条已经落盘——没有因为"排上了没跑"就丢数据
+    expect(
+      events.some((e) => e.type === "chat_message" && (e as { content: string }).content === "我也有事")
+    ).toBe(true);
+
+    // 放第一条过关，等它（连同 finally 里的排空）跑完
+    resolveFirstChat({ content: "第一轮完成" });
+    await firstSay;
+
+    // 断言②：第一条跑完之后，协调器必须归 idle —— 这是这次复现的死锁本体：
+    // finally 里只排一次 nextJob() 的话，会把并发挤进来的第二条 job 捞出来
+    // 却因为它不是 null 而让 running 永久卡在 true
+    expect(session.isRunning()).toBe(false);
+
+    // 断言③：之后第三条 @ 还能真的起下一个 turn —— adapter.chat() 会被
+    // 再调用一次。只断言①②不够：协调器可能"看起来没丢数据"但已经再也
+    // 起不了 turn 了，只有这一条才逼出"回不回得去 idle"这件事
+    const callsBefore = chatCalls;
+    await session.say("u3", "carol", "第三条", true);
+    expect(chatCalls).toBeGreaterThan(callsBefore);
+
+    store.close();
+  });
 });
 
 // issue #822：归档的日志那一半（Supabase 那行的 archived 列与房间收摊在

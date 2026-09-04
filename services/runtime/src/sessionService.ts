@@ -169,14 +169,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
         await engine.runTurn(`[${label}]: ${text}`);
       } finally {
-        // 再排空一次，取代旧 turnEnded() 的收尾语义——nextJob() 是协调器里
-        // 唯一能把 running 归 false 的入口：队列空了才归 idle。起跑失败
-        // （grants 拉取抛错、runTurn 本身抛错）也要走到这里，不然协调器
-        // 永久卡在"运行中"。单 agent 场景下队列此刻必空，这一下拿到 null；
-        // 万一拿到非 null（并发 mention 挤进来又被判 queued 的那个job），
-        // 它的内容已经在各自的 say() 里独立落过 chat_message 了，这里弃之
-        // 不跑——真正的多 job 排空循环是 task-9 的事
-        coordinator.nextJob();
+        // 排空到 null，取代旧 turnEnded() 的收尾语义——不是"捞一次就够"。
+        // nextJob() 只在"shift 之后队列空了"那一刻才把 running 归 false；
+        // 拿到 start_turn 的这一方，责任是把队列排到 null 为止（这是协调器
+        // 的真实不变量，不是"单 agent 场景下队列必空"这种一次性假设）。
+        // 起跑之后（await engine.runTurn() 期间）会真的让出控制权，并发的
+        // 一条 mention=true 完全可能在这段时间挤进来变成一个 queued job；
+        // 少排一次就会把那个 job 捞出来却让 running 卡在 true——此后每条
+        // enqueue() 都只能拿到 queued，这条会话再也起不了 turn，直到
+        // daemon 重启（#928 task-8 修复轮 1/5，真实复现过的死锁，不是
+        // 假设：见 task-8-report.md）。
+        // 捞出来的额外 job 仍然弃之不跑——它的内容已经在各自的 say() 里
+        // 独立落过 chat_message 了，真正的多 job 排空消费循环是 task-9 的事，
+        // 这里只负责不让协调器卡死。
+        while (coordinator.nextJob() !== null) {
+          // 丢弃：见上方注释
+        }
         currentInitiator = null;
       }
     },
