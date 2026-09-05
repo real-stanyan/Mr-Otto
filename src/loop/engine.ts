@@ -675,11 +675,18 @@ export class LoopEngine {
     // 的不许被这条 turn_ended 收口**（否则 mid-turn 到的那条会永远没人答）。
     // 只在配了 agentId（云会话多智能体）的 engine 上写：本机会话的日志形状
     // 一个字节都不变（engineAgentId.test.ts 的「没配就一个字段都不加」钉着）
-    const readUpToSeq = this.opts.agentId
-      ? (this.opts.store.load(this.opts.sessionId, { afterSeq: opening.seq }).at(-1)?.seq ?? opening.seq)
-      : null;
+    // 先声明再在 try 里读：这一次 store.load 也可能抛（SQLite 锁 / fork 链深度），
+    // 抛在 try 外面就是「currentTurnId 置位了、turn_ended 永远不落」——正是下面
+    // 那段注释禁止的形状；而 runJob 那侧的 engineStarted 此时已经是 true，
+    // 它的补偿也不会来（#932 终审复审）。读不到就退回 opening.seq：只会少收口
+    // 不会误收口（重启补跑多跑一轮，不丢消息）
+    let readUpToSeq: number | null = null;
     const endEnv = () => (readUpToSeq === null ? this.env() : { ...this.env(), readUpToSeq });
     try {
+      if (this.opts.agentId) {
+        readUpToSeq = opening.seq;
+        readUpToSeq = this.opts.store.load(this.opts.sessionId, { afterSeq: opening.seq }).at(-1)?.seq ?? opening.seq;
+      }
       // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释。
       // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
       // createMcpTools/applyExposurePolicy），抛错要走下面的 catch 落 turn_ended:
