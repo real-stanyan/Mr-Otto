@@ -227,6 +227,14 @@ async function scenarioMainFlow(): Promise<void> {
       sessionCid,
       encodeCs({ t: "say", text: "smoke says hi", mention: true })
     );
+    // #937：say() 在开场白落盘 + 入队那一刻就 resolve，不等 turn 跑完（等就是
+    // 死锁：frameHandler 按 cid 串行，发起人自己的 approve 帧排在 say 后面）。
+    // 断言"turn 跑完了"的等待点因此改成 CloudSession.settled()——从
+    // activeSessions 里拿到真会话本体（deps.sessions.get 只在 cid 世界里用）
+    const liveSession = activeSessions.get(sessionId)?.session;
+    if (!liveSession) throw new Error("装配失败：say 之后拿不到会话本体，无法等排空");
+    await liveSession.settled();
+
     const eventFrames: SessionEvent[] = sent
       .map((s) => s.msg)
       .filter(isEventFrame)
@@ -292,6 +300,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
   // 这几个方法在两次调用里都不会真的被摸到
   const stubSession: CloudSession = {
     async say() {
+      /* 不会被调用 */
+    },
+    async settled() {
       /* 不会被调用 */
     },
     approve() {

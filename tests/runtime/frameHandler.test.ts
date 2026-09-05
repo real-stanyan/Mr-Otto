@@ -16,6 +16,8 @@ import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
     say: async () => {},
+    // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
+    settled: async () => {},
     approve: () => true,
     backlog: () => [],
     isRunning: () => false,

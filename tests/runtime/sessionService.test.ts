@@ -54,6 +54,7 @@ describe("createCloudSession", () => {
     });
 
     await session.say("u1", "alice", "你好", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     // DEFAULT_AGENT 没有 instructions、又是 roster 里唯一一只——briefIfNeeded
     // 的守卫（#928 修复轮 3/5）判定这条 brief 说不出任何内容，不落
@@ -104,6 +105,7 @@ describe("createCloudSession", () => {
     });
 
     await session.say("u1", "alice", "开始任务", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(events.some((e) => e.type === "chat_message")).toBe(true);
     expect(seenMessages).toHaveLength(2);
@@ -155,6 +157,7 @@ describe("createCloudSession", () => {
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(events.some((e) => e.type === "approval_request")).toBe(true);
     const decision = events.find((e) => e.type === "approval_decision");
@@ -214,6 +217,7 @@ describe("createCloudSession", () => {
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(approveResults).toEqual([true, false]);
     const decision = events.find((e) => e.type === "approval_decision");
@@ -279,10 +283,12 @@ describe("createCloudSession", () => {
       events.some((e) => e.type === "chat_message" && (e as { content: string }).content === "我也有事")
     ).toBe(false);
 
-    // 放第一条过关，等它（连同 finally 里的排空——这次会真的把 bob 那条也
-    // 排空到并跑掉）跑完
+    // 放第一条过关，等它（连同排空——这次会真的把 bob 那条也排空到并跑掉）跑完。
+    // #937 之后 firstSay 早就 resolve 了（开场白落盘 + 入队那一刻），真正的
+    // 等待点是 settled()；firstSay 仍然 await 一下，它是"say 不该抛错"那一半
     resolveFirstChat({ content: "第一轮完成" });
     await firstSay;
+    await session.settled();
 
     // 断言①-b：bob 那条确实被跑到了——它自己的 user_message 出现在日志里，
     // 没有因为"排上了没跑"丢数据，只是推迟到了它真正起 turn 的那一刻
@@ -300,6 +306,7 @@ describe("createCloudSession", () => {
     // 起不了 turn 了，只有这一条才逼出"回不回得去 idle"这件事
     const callsBefore = chatCalls;
     await session.say("u3", "carol", "第三条", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(chatCalls).toBeGreaterThan(callsBefore);
 
     store.close();
@@ -394,6 +401,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
 
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(seen).toEqual(["ops"]);
     const am = events.filter((e) => e.type === "assistant_message");
@@ -413,6 +421,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
 
     await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(seen).toEqual(["ops", "ads"]);
   });
@@ -442,6 +451,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
                    status: "ok", output: "机密的 12 行查询结果", agentId: "ops" });
 
     await session.say("u1", "alice", "@广告 看投放", true, ["ads"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(prompts.ads).toContain("查了");                    // 说的话进来了
     expect(prompts.ads).not.toContain("机密的 12 行查询结果");  // 工具输出没进来
@@ -459,6 +469,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
     // 手机端只发得出布尔那一版
     await session.say("u1", "alice", "@广告 看投放", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(seen).toEqual(["ads"]); // 不是名单第一只的 ops
   });
 
@@ -473,6 +484,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       onEvent: () => {}, onUsage: () => {},
     });
     await session.say("u1", "alice", "在吗", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(seen).toEqual(["ops"]); // 名单第一只 = 默认那只
   });
 
@@ -508,6 +520,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
 
     await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     // agentId 之前一直没有写入方(#928 之前的单 agent 时代没这个概念)——
     // 这条断言钉住它:两只 agent 各自弹出的审批卡,日志里要能分清是谁要的
@@ -568,6 +581,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // 收尾:放 ops 过关,不留一条永远 pending 的 promise
     resolveOpsChat({ content: "运营答完了" });
     await opsSay;
+    await session.settled(); // #937：opsSay 早已 resolve，等排空才是"都跑完了"
 
     // 去重的那一只不重复起 turn：ops 一轮 + ads 一轮 = 两条 assistant_message
     // （carol 那句被 ads 的排队去重吃掉，它开跑时读的是整份日志，三句都在里面）
@@ -628,6 +642,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // 依次落盘)
     resolveOpsChat({ content: "运营答完了" });
     await opsSay;
+    await session.settled(); // #937：opsSay 早已 resolve，等排空才是"都跑完了"
 
     // message3 的原文确实以 user_message 的身份在日志里（1b 里它落在 say()
     // 那一刻，而不是等 drainer 排到 ops 那个 job 才落）
@@ -660,6 +675,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
 
     await session.say("u1", "alice", "你好", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     expect(events.some((e) => e.type === "agent_briefed")).toBe(false);
     // 事件序列直接以 user_message 开头——同 npm run runtime:smoke 那条断言
@@ -684,6 +700,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     });
 
     await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
     const briefed = events.find((e) => e.type === "agent_briefed");
     expect(briefed).toMatchObject({ agentId: "solo", instructions: "" });
@@ -711,6 +728,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
     });
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     const ums = store.load("s1").filter((e) => e.type === "user_message");
     expect(ums).toHaveLength(1);
     expect(ums[0]).toMatchObject({ content: "[alice]: @运营 看下销量", fromUid: "u1", mentions: ["ops"] });
@@ -729,8 +747,10 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { used.push(a.models[0]!); return { content: "答" }; } }),
     });
     await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     model = "m-v2";
     await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(used).toEqual(["m-v1", "m-v2"]);
     store.close();
   });
@@ -750,6 +770,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       }),
     });
     await session.say("u1", "alice", "@运营 @广告 一起", true, ["ops", "ads"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     const events = store.load("s1");
     const gone = events.find((e) => e.type === "turn_ended" && e.agentId === "ads");
     expect(gone).toMatchObject({ outcome: "error" });
@@ -780,7 +801,9 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
     });
     await session.say("u1", "alice", "@广告 看投放", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     await session.say("u1", "alice", "在吗", true);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(seen).toEqual(["ads", "ops"]);
     store.close();
   });
@@ -844,6 +867,10 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
     const second = session.say("u2", "bob", "@运营 顺便看下退款", true, ["ops"]);
     gate();
     await Promise.all([first, second]);
+    // #937：两条 say 都在开场白落盘那一刻就 resolve 了（second 甚至在第一轮
+    // 还卡着的时候就返回——这正是这次修复要的：发起人的下一帧不必排在 turn
+    // 后面）。"两轮都跑完了"的等待点是 settled()
+    await session.settled();
 
     const ends = store.load("s1").filter((e) => e.type === "turn_ended" && e.agentId === "ops");
     expect(ends).toHaveLength(2); // 两条发言各自跑了一轮，第二条没被第一轮的收口吞掉
@@ -873,6 +900,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
     });
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     const end = store.load("s1").find((e) => e.type === "turn_ended");
     expect(end).toMatchObject({ outcome: "error", agentId: "ops" });
     expect((end as { error?: string }).error).toContain("supabase 挂了");
@@ -889,6 +917,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
     });
     await session.say("u1", "alice", "@运营 @幽灵 看下销量", true, ["ops", "ghost"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(seen).toEqual(["ops"]);
     const sys = store.load("s1").find((e) => e.type === "chat_message");
     expect(sys).toMatchObject({ fromUid: "system", label: "系统", mention: false });
@@ -924,10 +953,77 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       }),
     });
     await session.say("u1", "alice", "@运营 @广告 一起", true, ["ops", "ads"]);
+    await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
     expect(seen).toEqual(["ops", "ads"]);
     expect(session.isRunning()).toBe(false);
     const ends = store.load("s1").filter((e) => e.type === "turn_ended");
     expect(ends.map((e) => [e.agentId, (e as { outcome: string }).outcome])).toEqual([["ops", "error"], ["ads", "completed"]]);
+    store.close();
+  });
+});
+
+// issue #937：say() 等整条排空才 resolve，而 frameHandler 把同一个 cid 的帧串成
+// 一条链（#915）——发起人自己的 approve 帧于是排在还没 resolve 的 say 后面，而
+// 那条 say 正等着这个审批。死锁到 expiresTs，客户端看到「审批未生效：请求已失效」。
+describe("say() 收下即返回（issue #937）", () => {
+  it("turn 停在审批上时 say() 已经 resolve —— 发起人还能再发帧（approve 就是其中一帧）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let announceRequest!: (req: ApprovalRequestEvent) => void;
+    const requested = new Promise<ApprovalRequestEvent>((r) => { announceRequest = r; });
+    let round = 0;
+
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          round += 1;
+          if (round === 1) return { content: "", toolCalls: [{ id: "cA", name: "bash", args: { cmd: "echo hi" } }] };
+          return { content: "跑完了" };
+        },
+      }),
+      // **不在这里自动批**（测试 ③ 那么做是为了让链路一路跑通）：这条测试要的
+      // 恰恰是「审批悬着的那一刻」，人得在 say() 返回之后才点批准
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
+      },
+      onUsage: () => {},
+    });
+
+    let sayResolved = false;
+    const saying = session.say("u1", "alice", "@运营 帮我跑个命令", true, ["ops"]).then(() => { sayResolved = true; });
+
+    // turn 真的跑到审批这一步、停住了
+    const req = await requested;
+
+    // #937 的本体：这里不该卡。修之前 say() 在 await drain()，而 drain 正等着
+    // 这个审批 —— 谁也不会来批（在真机上，要批的那个人的帧正排在 say 后面），
+    // 于是这条 await 一直挂到 expiresTs。用 race 而不是干等：直接 await 的话
+    // 回归表现为一次 5 秒超时，读起来像"测试慢"，不像"死锁"
+    const raced = await Promise.race([
+      saying.then(() => "say-resolved" as const),
+      new Promise<"deadlock">((r) => setTimeout(() => r("deadlock"), 500)),
+    ]);
+    expect(raced).toBe("say-resolved");
+    expect(sayResolved).toBe(true);
+
+    // 而且是**审批还没被决定**的时候就 resolve 了 —— turn 还在跑
+    expect(events.some((e) => e.type === "approval_decision")).toBe(false);
+    expect(session.isRunning()).toBe(true);
+
+    // 现在才轮到那一帧：批准 → turn 接着跑完
+    expect(session.approve(req.callId, "owner", "Owner", "approved")).toBe(true);
+    await session.settled();
+
+    expect(events.find((e) => e.type === "approval_decision")).toMatchObject({ decision: "approved" });
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "ok" });
+    expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
+    expect(session.isRunning()).toBe(false);
     store.close();
   });
 });

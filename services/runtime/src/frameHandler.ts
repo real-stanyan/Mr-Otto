@@ -367,6 +367,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deps.send(cid, { t: "error", msg: throttleMessage(kind) });
             return;
           }
+          // say() 在开场白落盘 + 入队后就 resolve，**不等 turn 跑完**（#937）：
+          // serialize 把同一个 cid 的帧串成一条链，等在这里的话发起人自己的
+          // approve 帧排在后面，而那条 turn 正等着这个审批——死锁到过期。
+          // 返回值照旧丢掉：没有任何东西消费 say() 的完成
           await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions);
           return;
         }
