@@ -141,6 +141,16 @@
 //      CloudSessionOpts.contextWindowOf 是**必需**字段（同 memory / isMember）。
 //   ⑨ **loopGuardMaxNudges: 5**：ADR-0212 的"注一条话不停 turn"在本机成立是因为
 //      人就坐在那儿；群聊云会话没有那个人。5 次护栏还在打转就抛错收口。
+//
+// 自查第三批（#957 A-2 / A-8）补上了这条会话此前**根本没有的出口**：
+//   ⑩ **stop()**：`abortTurn()` 在整个 services/runtime 里曾经零调用，cs 协议里
+//      也没有 stop 帧——一条跑飞的云 turn 谁都停不下来，而烧的是 owner 的钱。
+//      现在 `currentEngine` 在 runJob 里被记下来（engineFor 之后、finally 清），
+//      stop() 用与审批**同一条**判据（router.canDecide）决定谁按得动。副作用：
+//      runJob 里那行 `if (outcome === "completed") await relayAfterTurn(...)` 的
+//      aborted 分支在云端从此不再是死代码。
+//   ⑪ **archive() 顺带停**：归档以前不动正在跑的 turn，而 daemon 两秒后收房，
+//      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -317,6 +327,27 @@ export interface CloudSession {
       daemon（它才有 supabase 句柄和 transport）——同这个文件里其余部分
       的分工，纯逻辑不碰 IO。 */
   archive(byLabel: string): boolean;
+  /** 此刻**能停**的那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
+      与 `currentAgentId()` 的区别是判据不是「runJob 走到哪儿」而是「engine 拿到手
+      了没有」——起跑前那一段（验籍/取名单/brief/取记忆）还没有可中断的对象，
+      `abortTurn()` 打在空气上。回一个对象而不是布尔：`initiatorUid` 是
+      「谁能停」那条判据的另一半（同 approve），调用方不必再问第二个口 */
+  running(): { agentId: string; initiatorUid: string } | null;
+  /** 停这一轮（#957 A-2）。ADR-0006 的「无步数天花板」前提是「用户就在屏幕前
+      按停止」——云会话里那颗按钮此前根本不存在：`abortTurn()` 在整个
+      `services/runtime/` 里零调用，一条跑飞的 turn 谁都停不下来，而烧的是
+      owner 的钱。
+      三态各有各的回执（frameHandler 翻成 `stop_result`）：
+      - `"idle"`：此刻没有在跑的 turn（幂等，不是错误）
+      - `"not_allowed"`：判据与审批**逐字同一条**——`router.canDecide`（发起人或
+        owner）。两处用同一个函数而不是各写一遍：一个能停别人 turn 的人和一个
+        能替别人批危险工具的人，本来就该是同一批人
+      - `"ok"`：信号已翻转。**已排队未跑的 job 照旧**（停的是「这一轮」，不是清
+        队列）；停掉的那一轮**不接力**（runJob 的 `outcome === "completed"` 判据，
+        原来是一行走不到的死防御，现在它是活的）
+      群里落一条系统发言说是谁停的：别人只看到 agent 突然不说话了是很糟的体验，
+      与归档那句走同一条路 */
+  stop(byUid: string, byLabel: string): "ok" | "idle" | "not_allowed";
 }
 
 /** 重启补跑上限（#957 A-9 / #933）：一条能确定性弄死 daemon 的 turn 不该在
@@ -338,6 +369,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
+  /** 此刻正在跑的那台 engine（#957 A-2）——`stop()` / `archive()` 唯一够得着
+      `abortTurn()` 的口。runJob 在 `engineFor(spec)` **拿到手之后**置位、`finally`
+      清：起跑前那一段（验籍/取名单/brief/取记忆）还没有可中断的对象，
+      那时置位等于让 stop 回一句"停了"而 turn 照跑到底。
+      与 `engines` 那张缓存表分开：那张按 agentId 存着**所有**建过的 engine，
+      回答的是"这只 agent 的 engine 在哪"；这一个回答的是"此刻在跑的是哪台" */
+  let currentEngine: LoopEngine | null = null;
   // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
   // 归档那一半，所以只看有没有 session_archived
   let archived = seed.some((e) => e.type === "session_archived");
@@ -599,6 +637,32 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
+  /** 此刻能停的那一轮（#957 A-2）。判据是 `currentEngine` 而不是
+      `coordinator.isRunning()`：后者在协调器取空队列之前一直是 true，包括
+      runJob 起跑前那一段还没有 engine 可打的窗口 */
+  function runningNow(): { agentId: string; initiatorUid: string } | null {
+    if (!currentEngine || currentAgentId === null || currentInitiator === null) return null;
+    return { agentId: currentAgentId, initiatorUid: currentInitiator };
+  }
+
+  /** 停掉此刻在跑的那一轮（#957 A-2）。**不判权限**——两个调用点各自判过：
+      `stop()` 判 `router.canDecide`，`archive()` 的权限 frameHandler 收帧时
+      就判过（owner 或建会话的人）。没有在跑的 turn 时是无操作，回 false。
+      `abortTurn()` 本身只是翻一个信号：turn_ended{outcome:"aborted"} 由 engine
+      在它自己的 catch 里落（既有路径，不新增事件类型），所以它**晚于**这里
+      落的这条系统发言、也晚于归档那两条事件——一条已经翻了 archived 标志的
+      会话仍然要等它，daemon 的收房因此改成等 `settled()`（A-8 的另一半）。 */
+  function abortCurrent(byLabel: string): boolean {
+    const cur = runningNow();
+    if (!cur || !currentEngine) return false;
+    currentEngine.abortTurn();
+    // 说出口（同 ADR-0168「撤销要说出口」那条纪律）：只把信号翻掉的话，"有人
+    // 按了停止"和"模型这一轮碰巧没话说"在群里长得一模一样，而这两件事该做的
+    // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId
+    logChat("system", "系统", `${byLabel} 停止了「${specNames.get(cur.agentId) ?? cur.agentId}」这一轮`, false);
+    return true;
+  }
+
   /** turn 收口后扫这只 agent 这轮说的话，@ 到谁就替它点名（#950，spec §8）。
       落三样：agent_relay（群事实，时间线画线、护栏与上限的判据来源）→ 带 relay 的 user_message
       开场白（engine 起 turn 的载体，fromUid 仍是点火的人：审批发起人与代理授权按人算，不给 agent
@@ -832,6 +896,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       specNames.set(spec.agentId, spec.name);
       await loadMemoryIfChanged(spec);
       const engine = engineFor(spec);
+      // 停止键够得着的那一刻（#957 A-2）：**拿到 engine 之后**才置位。在这之前
+      // 置位（比如一进 runJob 就写）等于让 stop() 回一句"停了"、而这一轮从
+      // engineFor 之后照跑到底——一个说了谎的回执比没有回执更糟
+      currentEngine = engine;
 
       // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：
       // spec.degraded = 这份名单是 workspace_agents 查询失败时的占位，它的
@@ -898,6 +966,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     } finally {
       currentInitiator = null;
       currentAgentId = null;
+      // 这一轮结束，停止键就没有可打的对象了（#957 A-2）。留着的话下一次
+      // stop() 会对一台已经收口的 engine 调 abortTurn()——那是无操作，但回执
+      // 会说"ok，停了"，而群里那句"某某停止了这一轮"指的是一轮早已结束的 turn
+      currentEngine = null;
     }
   }
 
@@ -1053,8 +1125,32 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return archived;
     },
 
+    running() {
+      return runningNow();
+    },
+
+    stop(byUid, byLabel) {
+      // 顺序：先看有没有得停，再看有没有资格停。反过来的话，一个无关的人对
+      // 一条空闲会话按停止会拿到"只有发起人或 owner 能停"——那句话把"没什么
+      // 好停的"说成了"你没权限"，两次点击之间的差别就没人看得懂了
+      if (!runningNow()) return "idle";
+      // 与审批**逐字同一条判据**（router.canDecide：发起人或 owner）。canDecide
+      // 读的是 live initiator（setInitiator 在 runJob 顶上写），而上一行刚确认
+      // 有 turn 在跑，所以这一刻它读到的就是这一轮的发起人
+      if (!router.canDecide(byUid)) return "not_allowed";
+      abortCurrent(byLabel);
+      return "ok";
+    },
+
     archive(byLabel) {
       if (archived) return false;
+      // **归档顺带停**（#957 A-8）：原来归档只翻标志 + 落两条事件，正在跑的
+      // turn 照样跑到底——而 daemon 两秒后就把房间收了（cidTransport.delete →
+      // globalSend 静默丢帧），于是那条 turn 产出的每一条事件（含它辛苦跑出来
+      // 的回复）都发给了没人，模型调用的钱照付。代码的意图与实际行为相反。
+      // 不判权限：归档权限（owner 或建会话的人）frameHandler 收帧时判过了，
+      // 这里再判一次会用 stop 的判据（发起人或 owner）去否决一个有权归档的人
+      abortCurrent(byLabel);
       archived = true;
       // 先说一句人话再落状态事件：群里其他人只看到会话消失是很糟的体验，
       // 而 session_archived 自己没有"谁干的"这个字段（ADR-0087 的形状，

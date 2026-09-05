@@ -246,6 +246,13 @@ async function scenarioMainFlow(): Promise<void> {
     if (!liveSession) throw new Error("装配失败：say 之后拿不到会话本体，无法等排空");
     await liveSession.settled();
 
+    // #964：say 现在有回执。既有的事件序列断言不受影响（它们先
+    // `filter(isEventFrame)`，回执帧不是 event 帧），但这一格值得单独断一次——
+    // 桌面 composer 的「草稿在发送成功之后才清」等的就是它，装配漏接的话
+    // 界面上表现为"发出去之后草稿永远清不掉"，而事件序列全绿
+    const sayResult = sent.find((s) => s.msg.t === "say_result");
+    check("say 回执到达且 ok:true（#964）", sayResult !== undefined && sayResult.msg.t === "say_result" && sayResult.msg.ok === true);
+
     const eventFrames: SessionEvent[] = sent
       .map((s) => s.msg)
       .filter(isEventFrame)
@@ -342,6 +349,12 @@ async function scenarioAssemblyResilience(): Promise<void> {
     },
     isArchived() {
       return false;
+    },
+    running() {
+      return null;
+    },
+    stop() {
+      return "idle";
     },
   };
 

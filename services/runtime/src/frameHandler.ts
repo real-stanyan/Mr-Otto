@@ -250,14 +250,30 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       deps.dropCid，让 daemon 把同一个 cid 从广播名单/路由表里一并摘掉
       （否则 say/approve/config/backlog 都被拒之后，这个 cid 仍然会继续
       实时收到该会话后续的 onEvent 广播——那张表在 daemon.ts，frameHandler
-      自己够不着）。isMember 自带 60s 缓存，边际成本很低。 */
-  async function requireStillMember(workspaceId: string, cid: string, uid: string): Promise<boolean> {
+      自己够不着）。isMember 自带 60s 缓存，边际成本很低。
+
+      `beforeDeny`（#957 第三批）：say/approve/stop 这三种帧现在都有回执，而桌面
+      为每一条挂着一个 pending（15 s 超时）。回执必须发在 `deny` **之前**：
+      `dropCid` 一执行，daemon 的 `globalSend` 第一行就查不到这个 cid 的
+      transport，之后再 send 什么都是静默丢帧。客户端那侧的 denied → 断线 →
+      统一 settle 是第二道保险，不是第一道：靠它的话，"被踢了"这件事在界面上
+      表现为"没有收到回执，不确定有没有生效"，而那是两件不同的事。 */
+  async function requireStillMember(
+    workspaceId: string,
+    cid: string,
+    uid: string,
+    beforeDeny?: () => void
+  ): Promise<boolean> {
     if (await deps.isMember(workspaceId, uid)) return true;
+    beforeDeny?.();
     deny(cid, "not_authorized");
     cids.delete(cid);
     deps.dropCid?.(cid);
     return false;
   }
+
+  /** 被踢时那三种回执共用的一句话：说"你已经不在这个工作区了"，不说"失败了" */
+  const NOT_MEMBER_MESSAGE = "你已经不在这个工作区了。";
 
   const inner: FrameHandler = {
     async onCtlFrame(cid, raw) {
@@ -364,7 +380,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       switch (msg.t) {
         case "say": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 回执（#964）：桌面的 composer「草稿在发送成功之后才清」此前等的是
+          // 一个**不存在**的信号——服务端对 say 从来不回话，成功与失败在客户端
+          // 看来完全一样。三条出口（不在籍 / 限速 / say() 抛错）各回一条
+          // say_result{ok:false}，成功回 say_result{ok:true}
+          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "say_result", ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
           // 一帧只记一个桶（issue #819）：@Agent 的那条走 turn 桶（每条都
           // 可能起一次真花钱的模型调用），普通发言走 say 桶（撑大的是 VPS
           // 的 SQLite）。超速**不静默丢**——回一条看得见的 error 帧，
@@ -388,14 +410,31 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           const n = Math.min(requested, TURN_BUCKET.capacity);
           if (!deps.rateLimit.allow(kind, entry.uid, n)) {
             const over = requested > n ? `（这条 @ 了 ${requested} 只，一句话最多按 ${TURN_BUCKET.capacity} 只计）` : "";
-            deps.send(cid, { t: "error", msg: `${throttleMessage(kind)}${over}` });
+            // 文案一个字没改，只是换了载体（#964）：原来那条 `error` 帧与这条
+            // say 帧**没有任何关联**——客户端收到它只知道"出了点事"，不知道是
+            // 哪一句话没发出去，草稿照样被清掉。say_result 是同一句话的回执，
+            // 桌面据此把草稿种回去
+            deps.send(cid, { t: "say_result", ok: false, message: `${throttleMessage(kind)}${over}` });
             return;
           }
           // say() 在开场白落盘 + 入队后就 resolve，**不等 turn 跑完**（#937）：
           // serialize 把同一个 cid 的帧串成一条链，等在这里的话发起人自己的
           // approve 帧排在后面，而那条 turn 正等着这个审批——死锁到过期。
-          // 返回值照旧丢掉：没有任何东西消费 say() 的完成
-          await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions);
+          // 抛错这条路以前只冒到 daemon 的 .catch 里记一行日志（#964）：发言人
+          // 那侧是彻底的沉默——话没进日志、草稿被清掉、界面上什么都没有。
+          // 现在把它翻成一条回执，与 config 那条路同一个形状
+          try {
+            await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            deps.log(`say 失败 session=${sessionId} uid=${entry.uid}：${message}`);
+            deps.send(cid, { t: "say_result", ok: false, message: `发送失败：${message}` });
+            return;
+          }
+          // ok = **收下了**（开场白落盘 + 入队），不是"跑完了"：say() 在 #937
+          // 之后就不等 turn 了，等就是死锁。桌面那颗草稿清空的判据本来就该是
+          // 前者——"这句话进日志了没有"，不是"水獭答完了没有"
+          deps.send(cid, { t: "say_result", ok: true });
           return;
         }
 
@@ -410,19 +449,52 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "approve": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "approve_result", callId: msg.callId, ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
           // 三态而不是布尔（#957 A-11/#927）：原来的 false 把"这条 pending 已经
           // 被消化/过期"和"你压根没资格批"糊成同一句模糊错误，也没有任何一行
           // 日志——拒绝是这一层唯一的失败出口，两种拒绝各自留痕才查得出"谁
           // 拒的、为什么"（同 #915 的教训）
+          // 两句文案一字不改，换掉的是**载体**（#964）：`error` 帧不带 callId，
+          // 客户端只能靠"此刻手上那张卡"猜它说的是哪一条——群聊里两只 agent
+          // 各弹一张卡是常态，猜错就是把 A 的失败画在 B 的卡上。approve_result
+          // 带 callId，回执与卡一一对应；成功也要回一条，否则那颗按钮的
+          // submitting 只能等 15 s 超时自己醒来
           const outcome = session.approve(msg.callId, entry.uid, entry.label, msg.decision);
           if (outcome === "no_pending") {
             deps.log(`审批被拒 callId=${msg.callId} uid=${entry.uid}：no_pending`);
-            deps.send(cid, { t: "error", msg: "这条审批已经处理过或已过期。" });
+            deps.send(cid, { t: "approve_result", callId: msg.callId, ok: false, message: "这条审批已经处理过或已过期。" });
           } else if (outcome === "not_allowed") {
             deps.log(`审批被拒 callId=${msg.callId} uid=${entry.uid}：not_allowed`);
-            deps.send(cid, { t: "error", msg: "只有发起人或 owner 能批这条审批。" });
+            deps.send(cid, { t: "approve_result", callId: msg.callId, ok: false, message: "只有发起人或 owner 能批这条审批。" });
+          } else {
+            deps.send(cid, { t: "approve_result", callId: msg.callId, ok: true });
           }
+          return;
+        }
+
+        case "stop": {
+          // 停一轮正在跑的 turn（#957 A-2）。谁能停 = **与审批逐字同一条判据**
+          // （发起人或 owner），由 CloudSession.stop 里的 router.canDecide 判——
+          // 这一层不复制那条判断，复制就迟早分家。
+          // 三态都有回执：一颗点下去没有任何反应的停止按钮，比没有按钮更糟
+          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "stop_result", ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
+          const outcome = session.stop(entry.uid, entry.label);
+          if (outcome === "ok") {
+            deps.send(cid, { t: "stop_result", ok: true });
+            return;
+          }
+          // 两种失败各记一笔（同 approve 的理由，#915 的教训）：拒绝是这一层
+          // 唯一的失败出口，"谁按的、为什么没停下来"只有这行日志答得出
+          deps.log(`停止被拒 session=${sessionId} uid=${entry.uid}：${outcome}`);
+          deps.send(cid, {
+            t: "stop_result",
+            ok: false,
+            message: outcome === "idle" ? "此刻没有正在跑的 turn" : "只有发起人或 owner 能停",
+          });
           return;
         }
 

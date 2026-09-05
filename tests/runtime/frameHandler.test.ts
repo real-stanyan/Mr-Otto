@@ -28,6 +28,9 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     createdByUid: () => "creator-uid",
     archive: () => true,
     isArchived: () => false,
+    // #957 A-2：默认"空闲"——绝大多数用例不关心停止键
+    running: () => null,
+    stop: () => "idle",
     ...overrides,
   };
 }
@@ -398,13 +401,19 @@ describe("createFrameHandler", () => {
     sent.length = 0;
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还能说话吗", mention: false }));
-    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+    // #964：回执排在 denied **之前**——deny 顺手 dropCid，之后再 send 什么都是
+    // 静默丢帧（daemon 的 globalSend 第一行就查不到这个 cid 的 transport）
+    expect(sent).toEqual([
+      { cid: "c1", msg: { t: "say_result", ok: false, message: expect.stringContaining("不在这个工作区") } },
+      { cid: "c1", msg: { t: "denied", code: "not_authorized" } },
+    ]);
     expect(sayCalls).toHaveLength(0); // 没有落到 CloudSession.say
     expect(dropCidCalls).toEqual(["c1"]); // 复审补漏：同时摘掉广播席位（daemon.ts 的 roomRosters）
 
     // cid 已经被清出验籍表：同一个 cid 再发 say，走的是「未过 hello」分支
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "再试一次", mention: false }));
+    // 这一条走的是「未过 hello」分支：没有 entry 就没有会话语境，只有 denied
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
@@ -471,7 +480,7 @@ describe("createFrameHandler", () => {
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
-  it("approve：CloudSession.approve 回 ok 时静默", async () => {
+  it("approve：CloudSession.approve 回 ok 时回 approve_result{ok:true}（#964）", async () => {
     const approveCalls: unknown[] = [];
     const sessionOk = fakeSession({
       approve: (...args) => {
@@ -492,11 +501,13 @@ describe("createFrameHandler", () => {
     );
 
     expect(approveCalls).toEqual([["call-1", "u1", "Label(u1)", "approved"]]);
-    expect(sent).toHaveLength(0);
+    // #964：成功也回执（原来是静默）——没有它，卡上那颗按钮的 submitting
+    // 只能等 15 s 超时自己醒来。callId 带上，群聊里两张卡才分得开
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "approve_result", callId: "call-1", ok: true } }]);
     expect(logs).toHaveLength(0);
   });
 
-  it("approve：no_pending 回「已经处理过或已过期」+ log 带 callId；not_allowed 回「只有发起人或 owner」+ log（#957 A-11/#927）", async () => {
+  it("approve：no_pending / not_allowed 各回一条带 callId 的 approve_result{ok:false} + log（#957 A-11/#927，载体 #964 换成回执）", async () => {
     const outcomes: ("ok" | "no_pending" | "not_allowed")[] = ["no_pending", "not_allowed"];
     let i = 0;
     const session = fakeSession({ approve: () => outcomes[i++]! });
@@ -511,7 +522,10 @@ describe("createFrameHandler", () => {
       encodeCs({ t: "approve", callId: "call-1", decision: "approved" })
     );
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("这条审批已经处理过或已过期") });
+    expect(sent[0]!.msg).toEqual({
+      t: "approve_result", callId: "call-1", ok: false,
+      message: expect.stringContaining("这条审批已经处理过或已过期"),
+    });
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain("call-1");
     expect(logs[0]).toContain("u1");
@@ -522,7 +536,10 @@ describe("createFrameHandler", () => {
       encodeCs({ t: "approve", callId: "call-2", decision: "approved" })
     );
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("只有发起人或 owner 能批这条") });
+    expect(sent[0]!.msg).toEqual({
+      t: "approve_result", callId: "call-2", ok: false,
+      message: expect.stringContaining("只有发起人或 owner 能批这条"),
+    });
     expect(logs).toHaveLength(2);
     expect(logs[1]).toContain("call-2");
     expect(logs[1]).toContain("u1");
@@ -667,7 +684,7 @@ describe("限流接线（issue #819）", () => {
     allow: (kind) => !deniedKinds.includes(kind),
   });
 
-  it("say 超速 → 回一条看得见的 error 帧，且不落到 CloudSession.say", async () => {
+  it("say 超速 → 回一条看得见的 say_result{ok:false}，且不落到 CloudSession.say", async () => {
     const sayCalls: unknown[] = [];
     const session = fakeSession({
       say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
@@ -681,16 +698,20 @@ describe("限流接线（issue #819）", () => {
 
     expect(sayCalls).toHaveLength(0);
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg.t).toBe("error");
+    // #964：文案一字不改，载体从无主的 error 帧换成这一句话自己的回执
+    expect(sent[0]!.msg).toMatchObject({ t: "say_result", ok: false });
   });
 
-  it("会话房里限速回 error 不回 denied —— 客户端把 denied 当终态会直接断连接", async () => {
+  it("会话房里限速回 say_result 不回 denied —— 客户端把 denied 当终态会直接断连接", async () => {
     const { deps, sent } = makeDeps({ rateLimit: denying(["say", "turn"]) });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@Agent", mention: true }));
-    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+    // 关键仍然是"不是 denied"（客户端把 denied 当终态会直接断连接）；
+    // 载体 #964 之后是 say_result{ok:false}
+    expect(sent.map((s) => s.msg.t)).toEqual(["say_result"]);
+    expect(sent[0]!.msg).toMatchObject({ ok: false });
   });
 
   it("@Agent 走 turn 桶、普通发言走 say 桶 —— 一帧只记一个桶", async () => {
@@ -706,10 +727,13 @@ describe("限流接线（issue #819）", () => {
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "闲聊", mention: false }));
     expect(sayCalls).toHaveLength(1);
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "say_result", ok: true }]);
 
+    sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@Agent 干活", mention: true }));
     expect(sayCalls).toHaveLength(1); // 没再涨
-    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+    expect(sent.map((s) => s.msg.t)).toEqual(["say_result"]);
+    expect(sent[0]!.msg).toMatchObject({ ok: false });
   });
 
   it("mentions 非空但 mention=false 也走 turn 桶（#932 坑 ④）—— chip 输入那条帧会真起 turn", async () => {
@@ -736,7 +760,8 @@ describe("限流接线（issue #819）", () => {
 
     expect(buckets).toEqual(["turn"]);
     expect(sayCalls).toHaveLength(0);
-    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+    expect(sent.map((s) => s.msg.t)).toEqual(["say_result"]);
+    expect(sent[0]!.msg).toMatchObject({ ok: false });
   });
 
   it("mentions 长度 3 的帧扣 3 个 turn 令牌（限速按点名数扣，#957 B-I5）", async () => {
@@ -798,10 +823,11 @@ describe("限流接线（issue #819）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@全体", mention: true, mentions: many }));
 
     expect(sent).toHaveLength(1);
-    const msg = (sent[0]!.msg as { t: string; msg: string });
-    expect(msg.t).toBe("error");
-    expect(msg.msg).toContain(String(TURN_BUCKET.capacity));
-    expect(msg.msg).toContain("最多");
+    const msg = (sent[0]!.msg as { t: string; ok: boolean; message: string });
+    expect(msg.t).toBe("say_result");
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toContain(String(TURN_BUCKET.capacity));
+    expect(msg.message).toContain("最多");
   });
 
   it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {
@@ -831,7 +857,10 @@ describe("限流接线（issue #819）", () => {
     sent.length = 0;
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "x", mention: false }));
-    expect(sent.map((s) => s.msg)).toEqual([{ t: "denied", code: "not_authorized" }]);
+    // 说的是"你不在这了"（回执 + denied 两条都在讲同一件事），不是"慢一点"
+    expect(sent.map((s) => s.msg.t)).toEqual(["say_result", "denied"]);
+    expect(sent[0]!.msg).toMatchObject({ ok: false, message: expect.stringContaining("不在这个工作区") });
+    expect(sent[1]!.msg).toEqual({ t: "denied", code: "not_authorized" });
   });
 });
 
@@ -1120,5 +1149,115 @@ describe("按 cid 串行（#915）", () => {
     await handler.onCtlFrame("cid-1", encodeCs({ t: "create", workspaceId: "ws-1" }));
     expect(logs.join("\n")).toContain("not_authorized");
     expect(logs.join("\n")).toContain("cid-1");
+  });
+});
+
+// #957 A-2：停止一轮 turn 的帧接线。这一层不判"谁能停"（那条判据在
+// CloudSession.stop 里，与审批共用 router.canDecide）——它只负责把三态翻成
+// 三条 stop_result，并把两种失败各记一笔。
+describe("停止一轮 turn（#957 A-2）", () => {
+  const stopFrame = encodeCs({ t: "stop" });
+
+  it("三种结果各一条 stop_result：ok 静默成功、idle 与 not_allowed 带文案且各记一笔日志", async () => {
+    const outcomes: ("ok" | "idle" | "not_allowed")[] = ["ok", "idle", "not_allowed"];
+    let i = 0;
+    const stopCalls: unknown[] = [];
+    const session = fakeSession({
+      stop: (...args) => {
+        stopCalls.push(args);
+        return outcomes[i++]!;
+      },
+    });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "stop_result", ok: true }]);
+    expect(logs).toHaveLength(0); // 成功不记：日志是失败出口
+    // uid/label 原样递下去：群里那句「谁停的」用的是这个 label
+    expect(stopCalls).toEqual([["u1", "Label(u1)"]]);
+
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toEqual({ t: "stop_result", ok: false, message: "此刻没有正在跑的 turn" });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("idle");
+    expect(logs[0]).toContain("u1");
+
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toEqual({ t: "stop_result", ok: false, message: "只有发起人或 owner 能停" });
+    expect(logs).toHaveLength(2);
+    expect(logs[1]).toContain("not_allowed");
+  });
+
+  it("被踢的人按停止：回执排在 denied 之前（deny 顺手 dropCid，之后 send 全是静默丢帧）", async () => {
+    let member = true;
+    const stopCalls: unknown[] = [];
+    const session = fakeSession({ stop: (...args) => { stopCalls.push(args); return "ok"; } });
+    const { deps, sent, dropCidCalls } = makeDeps({ isMember: async () => member, getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false;
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+    expect(sent.map((s) => s.msg.t)).toEqual(["stop_result", "denied"]);
+    expect(sent[0]!.msg).toMatchObject({ ok: false });
+    expect(stopCalls).toHaveLength(0); // 没落到 CloudSession.stop
+    expect(dropCidCalls).toEqual(["c1"]);
+  });
+
+  it("未过 hello 就发 stop → denied not_authorized，不落到 CloudSession.stop", async () => {
+    const stopCalls: unknown[] = [];
+    const session = fakeSession({ stop: (...args) => { stopCalls.push(args); return "ok"; } });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "cX", stopFrame);
+
+    expect(sent).toEqual([{ cid: "cX", msg: { t: "denied", code: "not_authorized" } }]);
+    expect(stopCalls).toHaveLength(0);
+  });
+});
+
+// #964：say 的回执。桌面 composer 的「草稿在发送成功之后才清」此前等的是一个
+// 不存在的信号——服务端对 say 从来不回话，成功与失败在客户端看来完全一样。
+describe("say 回执（#964）", () => {
+  it("say() resolve → say_result{ok:true}（ok = 收下了，不是跑完了）", async () => {
+    const session = fakeSession({ say: async () => {} });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "干活", mention: true }));
+
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "say_result", ok: true }]);
+  });
+
+  it("say() 抛错 → say_result{ok:false, message} + 一条日志（原来只冒到 daemon 的 .catch，发言人那侧彻底沉默）", async () => {
+    const session = fakeSession({
+      say: async () => {
+        throw new Error("workspace_agents 查询失败");
+      },
+    });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "干活", mention: true }));
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "say_result", ok: false });
+    expect((sent[0]!.msg as { message: string }).message).toContain("workspace_agents 查询失败");
+    expect(logs.join("\n")).toContain("workspace_agents 查询失败");
   });
 });
