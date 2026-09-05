@@ -497,6 +497,20 @@ export interface MemoryLoadedEvent extends SessionEventBase {
   topics?: MemoryTopicSnapshot[];
 }
 
+/** 工作区多智能体的记忆快照（#949，spec §6）。每只 agent 起 turn 前，runtime 把它此刻能看见的
+    两档（shared = 工作区共享档、own = 它自己的私有档）落成一条——**缺席或内容变了才落**，不是每 turn
+    都落（日志里堆满同一段文字、模型每轮重读一遍）。投影拼进 system 尾部，**最新一条胜出**（本机
+    memory_loaded 是一会话一条，这条是一会话多条：共享档会被别的 agent 在本会话中途改）。
+    带 agentId：别人的快照不进我的上下文（agentView 判 drop）。agentName 是快照那一刻的名字，
+    给 OWN 块的标题用，改名不回写 */
+export interface WorkspaceMemoryLoadedEvent extends SessionEventBase {
+  type: "workspace_memory_loaded";
+  agentId: string;
+  agentName: string;
+  shared: string;
+  own: string;
+}
+
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
     模型不可见。它是"记忆文件可从日志重建"这句话的凭据：工具写入已经有
     tool_call/tool_result 作证，人手改的没有——这条补上 */
@@ -850,6 +864,7 @@ export type SessionEvent =
   | SubagentBriefedEvent
   | AgentBriefedEvent
   | MemoryLoadedEvent
+  | WorkspaceMemoryLoadedEvent
   | MemoryUserEditEvent
   | MemoryNudgeEvent
   | MicroCompactedEvent
@@ -907,6 +922,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   subagent_briefed: true,
   agent_briefed: true,
   memory_loaded: true,
+  workspace_memory_loaded: true,
   memory_user_edit: true,
   memory_nudge: true,
   micro_compacted: true,

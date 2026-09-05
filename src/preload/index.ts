@@ -236,6 +236,9 @@ const bridge: ShellBridge = {
   workspaceAgentDelete: (id, agentId) =>
     ipcRenderer.invoke(CHANNELS.workspaceAgentDelete, id, agentId),
   workspaceUsage: (id) => ipcRenderer.invoke(CHANNELS.workspaceUsage, id),
+  workspaceMemoryList: (id) => ipcRenderer.invoke(CHANNELS.workspaceMemoryList, id),
+  workspaceMemorySave: (id, agentId, text, baseline) =>
+    ipcRenderer.invoke(CHANNELS.workspaceMemorySave, id, agentId, text, baseline),
   workspacePublishSession: (id, sessionId, title) =>
     ipcRenderer.invoke(CHANNELS.workspacePublishSession, id, sessionId, title),
   workspaceUnpublishSession: (id, rowId) =>

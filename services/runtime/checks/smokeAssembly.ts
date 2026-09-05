@@ -21,6 +21,7 @@ import { join } from "node:path";
 
 import { createFrameHandler, type FrameHandlerDeps } from "../src/frameHandler.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "../src/sessionService.js";
+import { createInMemoryWorkspaceMemory } from "../src/workspaceMemory.js";
 import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -158,6 +159,7 @@ async function scenarioMainFlow(): Promise<void> {
               for (const cid of roster) send(cid, { t: "event", event: e });
             },
             onUsage: () => {},
+            memory: createInMemoryWorkspaceMemory(),
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });
           return { sessionId };

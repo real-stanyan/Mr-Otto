@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createWorkspaceManager, type WorkspaceManagerDeps } from "../../src/main/workspaceManager.js";
 import type { ProxyStoreData } from "../../src/main/proxyStore.js";
 import { emptyProxyStore } from "../../src/main/proxyStore.js";
-import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import { MEMORY_CONFLICT, type WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { WorkspaceListRow } from "../../src/main/supabaseWorkspacesApi.js";
 
 // workspaceManager 编排测试（Task 8，ADR-0198 切片 2）：api/client 全假货，
@@ -58,6 +58,13 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     },
     deleteAgentRow: async () => {
       calls.push("deleteAgentRow");
+    },
+    listMemoryRows: async () => {
+      calls.push("listMemoryRows");
+      return [];
+    },
+    saveMemoryRow: async (_c, _ws, _agentId, content, baseline) => {
+      calls.push(`saveMemoryRow:${content}:${baseline}`);
     },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
@@ -335,5 +342,29 @@ describe("workspace agents（#932）", () => {
     const { manager, calls } = harness();
     expect(await manager.updateAgent("ws-1", "a_1", { models: ["glm-5"] })).toEqual({ ok: true, value: null });
     expect(calls).toContain("updateAgentRow");
+  });
+});
+
+describe("workspace memory（#949）", () => {
+  it("saveMemory：写前归一化（去空条目、保序去重）后才落库，baseline 原样透传给 saveMemoryRow", async () => {
+    const { manager, calls } = harness();
+    const res = await manager.saveMemory("ws-1", "ops", "a\n§\n\n§\na", "旧内容");
+    expect(res).toEqual({ ok: true, value: null });
+    expect(calls).toContain("saveMemoryRow:a:旧内容");
+  });
+  it("未登录：saveMemory/listMemories 都回 还没登录，不打网络", async () => {
+    const h = harness();
+    h.signOut();
+    expect(await h.manager.listMemories("ws-1")).toEqual({ ok: false, message: "还没登录" });
+    expect(await h.manager.saveMemory("ws-1", "ops", "x", "")).toEqual({ ok: false, message: "还没登录" });
+    expect(h.calls).toEqual([]);
+  });
+  it("saveMemoryRow 抛 MEMORY_CONFLICT：原样冒泡成 FriendsResult 错误（#949 review finding 2）", async () => {
+    const { manager } = harness({
+      saveMemoryRow: async () => {
+        throw new Error(MEMORY_CONFLICT);
+      },
+    });
+    expect(await manager.saveMemory("ws-1", "ops", "a", "旧内容")).toEqual({ ok: false, message: MEMORY_CONFLICT });
   });
 });

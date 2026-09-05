@@ -3,7 +3,7 @@
 // assembleSnapshot 里单测，这里薄到无逻辑不单测（错误原样上抛给调用方收敛）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { assembleSnapshot, type WorkspaceSnapshot } from "../shared/workspaces.js";
+import { assembleSnapshot, MEMORY_CONFLICT, type WorkspaceMemoryRow, type WorkspaceSnapshot } from "../shared/workspaces.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
@@ -270,6 +270,53 @@ export async function deleteAgentRow(
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("行不存在或无权删除");
   }
+}
+
+/** 工作区记忆（#949）：一档一行，agent_id '' = 共享档。成员可读（0023 RLS） */
+export async function listMemoryRows(client: SupabaseClient, workspaceId: string): Promise<WorkspaceMemoryRow[]> {
+  const rows = (unwrap(
+    await client.from("workspace_memories").select("agent_id,content,updated_at").eq("workspace_id", workspaceId),
+  ) ?? []) as { agent_id: string; content: string; updated_at: string }[];
+  return rows.map((r) => ({ agentId: r.agent_id, content: r.content ?? "", updatedTs: Date.parse(r.updated_at) || 0 }));
+}
+
+/** 成员写一档（0023 RLS 在籍即可）。桌面手编 vs agent 写档是同一 daemon 内的丢更新
+    （#949 review finding 2：blind upsert 会让后写的一方无声吃掉先写的一方）——用乐观
+    前置条件挡：只在这一行此刻的 content 等于编辑器打开时读到的 baseline 才允许覆盖。
+    为什么按 content 不按 updated_at：timestamptz 存微秒，`Date.parse` 会把它砍到毫秒，
+    拿一个已经丢了精度的时间戳做相等判据，两次连续写入很容易撞出假阳性的"没变过"。
+    baseline === "" 走 insert 兜底（这一档可能从未存在过一行）：insert 撞 23505 说明
+    有人在我们探测之后抢先建了这一行——按冲突处理，不静默吞掉对方刚写的内容 */
+export async function saveMemoryRow(
+  client: SupabaseClient,
+  workspaceId: string,
+  agentId: string,
+  content: string,
+  baseline: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const updated = unwrap(
+    await client.from("workspace_memories")
+      .update({ content, updated_at: now })
+      .eq("workspace_id", workspaceId)
+      .eq("agent_id", agentId)
+      .eq("content", baseline)
+      .select("agent_id"),
+  ) as { agent_id: string }[] | null;
+  if (Array.isArray(updated) && updated.length > 0) return;
+  if (baseline === "") {
+    try {
+      unwrap(
+        await client.from("workspace_memories")
+          .insert({ workspace_id: workspaceId, agent_id: agentId, content, updated_at: now }),
+      );
+      return;
+    } catch (err) {
+      if ((err as { code?: string }).code !== "23505") throw err;
+      // 落到下面的冲突分支：撞主键 = 这一档在我们探测之后被别人先建了行
+    }
+  }
+  throw new Error(MEMORY_CONFLICT);
 }
 
 /** 云会话列表页用的行（Task 12，ADR-0199）。kind='cloud' 的那些

@@ -56,6 +56,17 @@ describe("boundedContextEvents（issue #351）", () => {
     store.close();
   });
 
+  it("工作区记忆快照（#949）：checkpoint 之前落的 workspace_memory_loaded 幸存于有界重建", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1" } });
+    put(store, { type: "workspace_memory_loaded", agentId: "ops", agentName: "运营", shared: "[运营] 销量含退款", own: "" });
+    for (let i = 1; i <= 8; i++) turn(store, i);
+    put(store, { type: "context_compacted", summary: "前八轮的摘要", model: "m" });
+    for (let i = 9; i <= 11; i++) turn(store, i);
+    assertEquivalent(store);
+    store.close();
+  });
+
   it("auto-compact 中途触发：当前请求原文兜底重注（issue #193 路径）也一致", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w" });

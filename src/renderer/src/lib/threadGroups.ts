@@ -45,6 +45,7 @@ function isInvisible(e: SessionEvent): boolean {
     case "session_topic_set":
       return true;
     case "memory_loaded":              // 记忆快照拼进 system 尾部(deriveMessages),不是对话内容
+    case "workspace_memory_loaded":    // 工作区记忆快照(#949),同上不是对话内容
     case "memory_user_edit":           // 人手改记忆的留证,模型不可见,UI 也不渲染
     case "memory_nudge":               // 审查触发点只为计数,派活本身有 subagent_spawned 卡说话
       return true;

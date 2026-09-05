@@ -103,7 +103,7 @@ import type {
 // friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
-import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
+import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../../shared/workspaces.js";
 import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
@@ -867,6 +867,10 @@ interface ChatState {
   /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
       组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
   loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
+  /** 设置页「记忆」tab（#949）：同 loadWorkspaceUsage，不进 store 状态 */
+  loadWorkspaceMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
+  /** 成员手改一档；主进程归一化后落库 */
+  saveWorkspaceMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2173,6 +2177,14 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async loadWorkspaceUsage(id) {
     return window.otter.workspaceUsage(id);
+  },
+
+  async loadWorkspaceMemories(id) {
+    return window.otter.workspaceMemoryList(id);
+  },
+
+  async saveWorkspaceMemory(id, agentId, text, baseline) {
+    return window.otter.workspaceMemorySave(id, agentId, text, baseline);
   },
 
   async publishWorkspaceSession(id, sessionId, title) {

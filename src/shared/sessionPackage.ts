@@ -133,6 +133,7 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   // ── 发送方的机器 / 这个人的私事：理由见上面那段注释 ──
   request_envelope: "strip",
   memory_loaded: "strip",
+  workspace_memory_loaded: "strip", // 工作区的记忆是那个工作区的私事，不是这段对话（#949）
   memory_user_edit: "strip",
   memory_nudge: "strip",
   checkpoint_created: "strip",

@@ -155,6 +155,27 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
     expect(contextUsed(events)).toBe(1300);
   });
 
+  it("workspace_memory_loaded 故意不计——本文件只服务本机圆环，云会话页不读它（#949 review finding 3）", () => {
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 200 },
+      },
+      {
+        ...env(),
+        type: "workspace_memory_loaded",
+        agentId: "ops",
+        agentName: "运营",
+        shared: "a".repeat(400),
+        own: "b".repeat(400),
+      },
+    ];
+    expect(contextUsed(events)).toBe(1200);
+  });
+
   it("从无账单（第一条消息还没发出去）：纯估算起步", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "session_created", workspace: "/w" },
