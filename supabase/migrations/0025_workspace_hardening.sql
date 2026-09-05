@@ -11,8 +11,11 @@
 --    · wsc_delete_host_or_owner：照 0015 原文（host_uid = auth.uid() or 该工作区 owner）
 --      补 `is_ws_member`——host 已经退群/被踢的话，这条接入记录该由还在籍的 owner 收尾，
 --      不在籍的 host 自己也删不动。
---    · wss_delete_publisher：照 0015 原文（`publisher_uid = auth.uid()`）补 `is_ws_member`，
---      并且加 `kind <> 'cloud'`——云会话行（0016_cloud_sessions.sql 的 kind='cloud'）的
+--    · wss_delete_publisher：**现行策略是 0016_cloud_sessions.sql:74-76 那一版**
+--      （`publisher_uid = auth.uid() and kind = 'package'`），不是 0015 的原文——0016
+--      的终审 I1 已经把它从「不查 kind」收紧成 `kind = 'package'` 白名单。这里只补
+--      `is_ws_member`，**白名单原样保留**：写成 `kind <> 'cloud'` 黑名单等于把 0016
+--      那次收紧退回去（将来多一个 kind 就自动获得删除权）。云会话行（kind='cloud'）的
 --      出口是**归档**（sessionService.archive，见 services/runtime/），不是这条「发布者删行」
 --      的路；云会话被人从这条策略删掉，runtime 那边的会话对象与订阅还活着，界面上会变成
 --      一条查无此表的孤儿直播。
@@ -29,7 +32,7 @@ create policy wsc_delete_host_or_owner on public.workspace_connectors for delete
 
 drop policy if exists wss_delete_publisher on public.workspace_sessions;
 create policy wss_delete_publisher on public.workspace_sessions for delete to authenticated
-  using (kind <> 'cloud' and publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
+  using (kind = 'package' and publisher_uid = auth.uid() and public.is_ws_member(workspace_id, auth.uid()));
 
 -- ── workspace_agents 形状约束（B-I3 / B-C1 的 DB 兜底）──────────────────────
 -- agent_id 只能是种子管理员的字面量，或者建 agent 那条路（桌面表单 / create_agent 工具）
