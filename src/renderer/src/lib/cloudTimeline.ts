@@ -6,7 +6,7 @@
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentNameOf, labelOf } from "./workspaceView.js";
-import type { AssistantMessageEvent, UserMessageEvent } from "../../../session/events.js";
+import type { AgentRelayEvent, AssistantMessageEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
@@ -42,4 +42,17 @@ export function userRowIdentity(
     维持多智能体上线前的既有文案 */
 export function assistantLabel(e: AssistantMessageEvent, ws: WorkspaceSnapshot): string {
   return e.agentId ? agentNameOf(ws, e.agentId) : "Agent";
+}
+
+/** 接力线文案（#950）：谁 → 谁 · 接力第几棒。名字现查 agentNameOf——被删的
+    agent 回 id（同 assistantLabel/targets 的纪律，旧接力线上还得有个把手） */
+export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string {
+  return `${agentNameOf(ws, e.fromAgentId)} → ${agentNameOf(ws, e.toAgentId)} · 接力第 ${e.depth} 棒`;
+}
+
+/** 这条事件要不要在云会话时间线上画出来（#950）：只对带 relay 的 user_message
+    为真——那条开场白是给模型看的（"[系统] 「运营」@ 了你"），人看接力线
+    （agent_relay 那一行）就够，画出来是同一件事说两遍 */
+export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
+  return e.type === "user_message" && e.relay !== undefined;
 }

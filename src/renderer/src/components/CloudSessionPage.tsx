@@ -58,12 +58,12 @@ import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
-import { assistantLabel, userRowIdentity } from "../lib/cloudTimeline.js";
+import { assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import { parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
-  AgentBriefedEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
+  AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
@@ -342,6 +342,10 @@ export function CloudSessionPage({
             <p className="text-xs text-muted-foreground">还没有消息。</p>
           ) : (
             events.map((e, i) => {
+              // 接力开场白（user_message 带 relay）不画：那是给模型看的
+              // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
+              // 画出来是同一件事说两遍（#950）
+              if (hiddenFromCloudTimeline(e)) return null;
               if (e.type === "chat_message") {
                 return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
               }
@@ -363,6 +367,9 @@ export function CloudSessionPage({
               }
               if (e.type === "agent_briefed") {
                 return <AgentBriefedRow key={e.seq} event={e} />;
+              }
+              if (e.type === "agent_relay") {
+                return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
               }
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
@@ -981,6 +988,18 @@ function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
   return (
     <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
       「{event.name}」就位{event.instructions.trim() ? "（提示词已更新）" : ""}
+    </p>
+  );
+}
+
+/** 接力线（#950）：一只 agent 在自己的回复里 @ 了另一只，棒从谁传到谁、
+    是第几棒。样式照 AgentBriefedRow——同属审计性质的旁白，不是群里任何
+    人说的话。配对的那条 user_message（带 relay）不画（hiddenFromCloudTimeline），
+    这一行是它在时间线上唯一的痕迹 */
+function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSnapshot }) {
+  return (
+    <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
+      {relayLineText(event, ws)}
     </p>
   );
 }
