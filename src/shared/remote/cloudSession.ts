@@ -212,8 +212,13 @@ export type CsUp =
     }
   | { t: "archive" }
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
-      发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。 */
-  | { t: "stop" };
+      发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。
+      `seq`（add-only，协议号不变）= 客户端按的那一行开场白自己的 seq（复审
+      C2-I3）。桌面按**行**画停止按钮，而不带任何 turn 标识的 stop 帧一律停
+      "当前那一轮"——按第二行那颗，停掉的是第一行。服务端拿它与这一轮的采样
+      边界比，更晚就回 `stop_result{ok:false}` 不动手。缺席 = 旧语义（停当前），
+      旧客户端照常工作。 */
+  | { t: "stop"; seq?: number };
 
 /** runtime → 成员 */
 export type CsDown =
@@ -455,7 +460,12 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "stop") {
-      return { t: "stop" };
+      // 缺席即不带（旧客户端）；带了就校验形状——非负整数以外一律判**整帧
+      // 无效**，而不是"当没带过"：后者会把一条本该被拒的停止悄悄升级成
+      // "停掉当前那一轮"，正是这个字段要防的那件事
+      if (obj.seq === undefined) return { t: "stop" };
+      if (!Number.isInteger(obj.seq) || (obj.seq as number) < 0) return null;
+      return { t: "stop", seq: obj.seq as number };
     }
 
     return null;

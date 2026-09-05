@@ -496,7 +496,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deps.send(cid, { t: "stop_result", ok: false, message: throttleMessage("stop") });
             return;
           }
-          const outcome = session.stop(entry.uid, entry.label);
+          // `msg.seq` = 客户端按的那一行开场白的 seq（复审 C2-I3）。缺席 =
+          // 旧客户端 / 旧语义（停当前那一轮），由 CloudSession.stop 放行
+          const outcome = session.stop(entry.uid, entry.label, msg.seq);
           if (outcome === "ok") {
             deps.send(cid, { t: "stop_result", ok: true });
             return;
@@ -507,7 +509,15 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           deps.send(cid, {
             t: "stop_result",
             ok: false,
-            message: outcome === "idle" ? "此刻没有正在跑的 turn" : "只有发起人或 owner 能停",
+            message:
+              outcome === "idle"
+                ? "此刻没有正在跑的 turn"
+                : outcome === "not_current"
+                  // 三种失败要分开说：这一条不是"没权限"也不是"没得停"，而是
+                  // "你点的那一行还没轮到"——说成前两句里的任何一句，人都会
+                  // 以为按钮坏了，然后按住不放
+                  ? "这一行的那句话还在排队，此刻在跑的是更早那一轮"
+                  : "只有发起人或 owner 能停",
           });
           return;
         }

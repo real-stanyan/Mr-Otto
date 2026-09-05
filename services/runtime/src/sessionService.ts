@@ -153,6 +153,11 @@
 //      stop() 用与审批**同一条**判据（router.canDecide）决定谁按得动。副作用：
 //      runJob 里那行 `if (outcome === "completed") await relayAfterTurn(...)` 的
 //      aborted 分支在云端从此不再是死代码。
+//      第二轮复审又补了两处（A2-I2 / E2-1、C2-I3）：`stopRequested` 改成**无条件**
+//      置位（engine 的中断信号只在每圈开头查一次，一条没有工具调用的回复照样
+//      返回 completed，于是接力照点火——刹车读的是记号不是信号）；stop 帧带上
+//      那一行开场白的 `seq`，与 `turnBoundary` 比对，避免"按第二行的按钮停掉
+//      第一行那一轮"。
 //   ⑪ **archive() 顺带停**：归档以前不动正在跑的 turn，而 daemon 两秒后收房，
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
@@ -348,9 +353,16 @@ export interface CloudSession {
         **已排队未跑的 job 照旧**（停的是「这一轮」，不是清队列）；停掉的那一轮
         **不接力**（runJob 的 `outcome === "completed"` 判据，原来是一行走不到的
         死防御，现在它是活的）
+      - `"not_current"`：`seq` 在场、且它比这一轮的采样边界还晚（复审 C2-I3）。
+        桌面按**行**画停止按钮（每条排队中的开场白一颗），而 stop 帧原来不带
+        任何 turn 标识 —— 按第二行那颗，停掉的是此刻在跑的第一行。带上那一行
+        开场白自己的 seq，服务端拿它跟 `turnBoundary`（这一轮起跑那一刻的日志尾）
+        比：更晚 = 那句话还在排队，此刻在跑的是更早那一轮，不停。
+        `seq` 缺席 = 旧语义（停当前），起跑前的窗口一律放行（那一刻还没有边界
+        可比，而人确实看着那一行在转）
       群里落一条系统发言说是谁停的：别人只看到 agent 突然不说话了是很糟的体验，
       与归档那句走同一条路 */
-  stop(byUid: string, byLabel: string): "ok" | "idle" | "not_allowed";
+  stop(byUid: string, byLabel: string, seq?: number): "ok" | "idle" | "not_allowed" | "not_current";
 }
 
 /** 重启补跑上限（#957 A-9 / #933）：一条能确定性弄死 daemon 的 turn 不该在
@@ -415,6 +427,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       「排队中」——界面上那行转到天荒地老，daemon 每次重启还会把它重新排上跑
       一遍（每遍都花 owner 的钱）。`finally` 清：作用域是一个 job，不是一条会话 */
   let stopRequested = false;
+  /** 这一轮的**采样边界**（复审 C2-I3）：`currentEngine` 置位那一刻的日志尾。
+      `stop(…, seq)` 拿它判"客户端点的那一行是不是就是此刻在跑的这一轮"——
+      开场白的 seq 比边界还大 = 那句话是这一轮起跑之后才落盘的，还在排队。
+      `null` = 还没起跑（起跑前那几次网络往返）：那个窗口里没有边界可比，
+      一律放行——人看着那一行在转，回一句"在跑的是更早那一轮"是撒谎。
+      `finally` 清：作用域是一个 job，不是一条会话 */
+  let turnBoundary: number | null = null;
   // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
   // 归档那一半，所以只看有没有 session_archived
   let archived = seed.some((e) => e.type === "session_archived");
@@ -696,21 +715,30 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 停掉此刻在跑的那一轮（#957 A-2）。**不判权限**——两个调用点各自判过：
       `stop()` 判 `router.canDecide`，`archive()` 的权限 frameHandler 收帧时
       就判过（owner 或建会话的人）。没有 job 在手时是无操作，回 false。
-      **两条路，取决于此刻打不打得动**（复审 Important）：
+      **记号一律先落**（第二轮复审 A2-I2）：`stopRequested = true` 无条件，它是
+      relayAfterTurn 那两处刹车唯一读的东西；engine 把不把信号翻成 aborted 与
+      这个事实无关。在此之上，此刻打得动就顺手打一下：
       - `currentEngine` 在 → `abortTurn()` 翻信号。turn_ended{outcome:"aborted"}
         由 engine 在它自己的 catch 里落（既有路径，不新增事件类型），所以它
         **晚于**这里落的这条系统发言、也晚于归档那两条事件——一条已经翻了
         archived 标志的会话仍然要等它，daemon 的收房因此改成等 `settled()`
         （A-8 的另一半）。
       - 还没到 `runLoggedTurn`（起跑前那几次网络往返）→ `engine.turnAbort` 压根
-        还不存在，`abortTurn()` 是一次静默无操作。记一个号，由 runJob 在起跑前
-        自己查、当场落真收口。**不能在这里替它落 turn_ended**：runJob 随后还会
+        还不存在，`abortTurn()` 是一次静默无操作。这条路上那个记号是唯一的
+        痕迹，由 runJob 在起跑前自己查、当场落真收口。**不能在这里替它落 turn_ended**：runJob 随后还会
         走它自己那条路（合成收口 / engine 收口），两条一起落就是同一轮记两遍。 */
   function abortCurrent(byLabel: string): boolean {
     const cur = runningNow();
     if (!cur) return false;
+    // **无条件置位**（复审 A2-I2 / E2-1）：原来这是 if/else —— engine 在手就
+    // 只翻信号、不记号。而 engine 的中断信号只在每圈开头查一次，一条**没有
+    // 工具调用**的回复直接返回 `completed`，于是"按了停止"这件事在 runJob 里
+    // 蒸发得干干净净：relayAfterTurn 那两处刹车读的正是 `stopRequested`，读到
+    // false 就照点火下一棒——人按下停止，屏幕上冒出下一只 agent 开始回复。
+    // 记号与信号是两件事：信号管"这一轮打不打得断"，记号管"停止这个事实还在
+    // 不在"，后者不该取决于前者有没有生效
+    stopRequested = true;
     if (currentEngine) currentEngine.abortTurn();
-    else stopRequested = true;
     // 说出口（同 ADR-0168「撤销要说出口」那条纪律）：只把信号翻掉的话，"有人
     // 按了停止"和"模型这一轮碰巧没话说"在群里长得一模一样，而这两件事该做的
     // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId
@@ -1035,6 +1063,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // `runLoggedTurn` 之间**不许有 await**。`engine.turnAbort` 要到 `runFrom`
       // 里才 new 出来，早置位就是给出一个"停了"的假回执——初版置在 engineFor
       // 之后，中间还隔着 hostUids/fetchGrantedTools 两次网络往返
+      // 采样边界与停止键同一刻置位（复审 C2-I3）：`lastSeqSeen` 是 notify 维护
+      // 的日志尾（engine 的 append 也走它），此刻它就是这一轮起跑前的最后一条
+      turnBoundary = lastSeqSeen;
       currentEngine = engine;
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
@@ -1075,6 +1106,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 会说"ok，停了"，而群里那句"某某停止了这一轮"指的是一轮早已结束的 turn
       currentEngine = null;
       currentJob = null;
+      // 同 currentEngine：下一轮起跑前不该拿上一轮的边界去判"是不是这一行"
+      turnBoundary = null;
       // 作用域是**一个 job**，不是一条会话（复审）：一句话点了两只 agent 时，
       // 停掉第一只不该顺手把第二只也判死——那是"清队列"，而 stop 停的是这一轮
       stopRequested = false;
@@ -1233,7 +1266,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return archived;
     },
 
-    stop(byUid, byLabel) {
+    stop(byUid, byLabel, seq) {
       // 顺序：先看有没有得停，再看有没有资格停。反过来的话，一个无关的人对
       // 一条空闲会话按停止会拿到"只有发起人或 owner 能停"——那句话把"没什么
       // 好停的"说成了"你没权限"，两次点击之间的差别就没人看得懂了
@@ -1242,6 +1275,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 读的是 live initiator（setInitiator 在 runJob 顶上写），而上一行刚确认
       // 有 turn 在跑，所以这一刻它读到的就是这一轮的发起人
       if (!router.canDecide(byUid)) return "not_allowed";
+      // 点的是不是此刻在跑的这一行（复审 C2-I3）。判据是**边界**不是相等：
+      // 一个 job 可能折叠了好几条开场白（协调器去重），拿 `job.opening.seq`
+      // 逐一相等地比会把那几条里的后几条误判成"不是这一轮"。
+      // `turnBoundary === null` = 起跑前窗口，放行（见它的声明处）
+      if (seq !== undefined && turnBoundary !== null && seq > turnBoundary) return "not_current";
       abortCurrent(byLabel);
       return "ok";
     },

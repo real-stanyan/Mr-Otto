@@ -1176,8 +1176,9 @@ describe("停止一轮 turn（#957 A-2）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
     expect(sent.map((s) => s.msg)).toEqual([{ t: "stop_result", ok: true }]);
     expect(logs).toHaveLength(0); // 成功不记：日志是失败出口
-    // uid/label 原样递下去：群里那句「谁停的」用的是这个 label
-    expect(stopCalls).toEqual([["u1", "Label(u1)"]]);
+    // uid/label 原样递下去：群里那句「谁停的」用的是这个 label。
+    // 第三格是 seq：这一帧没带，透传 undefined = 旧语义（停当前那一轮）
+    expect(stopCalls).toEqual([["u1", "Label(u1)", undefined]]);
 
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
@@ -1193,6 +1194,43 @@ describe("停止一轮 turn（#957 A-2）", () => {
     expect(sent[0]!.msg).toEqual({ t: "stop_result", ok: false, message: "只有发起人或 owner 能停" });
     expect(logs).toHaveLength(2);
     expect(logs[1]).toContain("not_allowed");
+  });
+
+  // 复审 C2-I3：桌面按**行**画停止按钮，帧里那个 seq 就是"我按的是哪一行"。
+  // 这一层不判它——判据（与采样边界比）在 CloudSession.stop 里，这里只保证
+  // 它一路透传下去；丢了的话服务端拿不到任何 turn 标识，又退回"停当前那轮"
+  it("stop 帧带的 seq 原样透传到 CloudSession.stop 第三格", async () => {
+    const stopCalls: unknown[] = [];
+    const session = fakeSession({ stop: (...args) => { stopCalls.push(args); return "ok"; } });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "stop", seq: 12 }));
+
+    expect(stopCalls).toEqual([["u1", "Label(u1)", 12]]);
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "stop_result", ok: true }]);
+  });
+
+  // 三种失败要分开说：这一条不是"没权限"也不是"没得停"，而是"你点的那一行
+  // 还没轮到"——说成前两句里的任何一句，人都会以为按钮坏了然后按住不放
+  it("not_current → 单独一句文案（不是 idle 也不是 not_allowed）且记一笔", async () => {
+    const session = fakeSession({ stop: () => "not_current" });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "stop", seq: 99 }));
+
+    expect(sent[0]!.msg).toEqual({
+      t: "stop_result",
+      ok: false,
+      message: "这一行的那句话还在排队，此刻在跑的是更早那一轮",
+    });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("not_current");
   });
 
   it("被踢的人按停止：回执排在 denied 之前（deny 顺手 dropCid，之后 send 全是静默丢帧）", async () => {
