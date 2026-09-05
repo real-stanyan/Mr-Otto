@@ -262,8 +262,13 @@ export interface CloudSessionOpts {
       frameHandler 在收帧那一刻已经验过一次籍，但 turn 可以在队列里等很久、
       也可以被 relayAfterTurn 在几分钟后替他重新点起——起跑那一刻再查一次，
       这条会话才不会替一个已经被踢出去的人继续烧 owner 的钱、继续用他的代理
-      授权。daemon 接的是 membershipCache（60s 记忆化 + fail-closed） */
-  isMember: (uid: string) => Promise<boolean>;
+      授权。daemon 接的是 membershipCache（60s 记忆化）。
+      **三态不是两态**（#957 终审 Critical 1）：`"unknown"` = 这一刻查不出来
+      （Supabase 抖了），与 `false`（确认不在籍）分开——两者该做的动作相反。
+      runJob 那条路仍然 fail-closed（不跑），只是错误文案分开；补跑那条路见到
+      `"unknown"` 什么都不写、把开场白留到下一次重启。daemon 接的是
+      `membershipCache.isMemberOrUnknown` */
+  isMember: (uid: string) => Promise<boolean | "unknown">;
   /** 这个型号的上下文窗口有多大（#957 A-1）。**必需**（同 memory / agentWriter /
       isMember 的纪律）：忘接线该编译不过，而不是安静地跑一条永远不压缩的云会话。
       `undefined` = 这个 id 的窗口是猜的（目录外的自定义 id / 没探测到的本机型号），
@@ -629,7 +634,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const unresolved = mentionTokens(said).filter(
       (t) => !roster.some((a) => a.name.length > 0 && t.startsWith(a.name))
     );
-    if (unresolved.length > 0) {
+    // **降级名单不说这句话**（#957 终审 Minor 3）：`degraded` 的那份是
+    // workspace_agents 查询失败时的占位（daemon 的 DEFAULT_WORKSPACE_AGENT
+    // 一只），拿它做"名单里没有这个人"的判据，等于把每一个真实存在的 @ 都在
+    // 群里报成"查无此人（可能改过名或还没建）"——一句读起来像事实、实际只是
+    // 一次 Supabase 抖动的话，而且它会留在日志里给下一轮的模型读
+    if (unresolved.length > 0 && !roster.some((a) => a.degraded)) {
       logChat(
         "system",
         "系统",
@@ -742,13 +752,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // **合成收口的 readUpToSeq 取 lastSeqSeen（落盘那一刻的日志尾）不是
       // job.opening.seq**：这只 agent 可能还欠着更晚的、折叠进同一个 job 的开场白
       // （去重命中），只收开场白那条的口会把后面那些永远留在「排队中」（#957 F1）
-      if (!(await opts.isMember(job.fromUid))) {
+      // **三态**（#957 终审 Critical 1）：`"unknown"` = 这一刻查不出来。这条路
+      // 上仍然 fail-closed（不跑）——发送者在线、看得见错误、能重发；但文案要
+      // 与"已不在这个工作区"分开：后者说的是一件确定的事（人会去找管理员），
+      // 前者只是"这一刻问不出来"（人重发一次就好）。说成同一句话，一次
+      // Supabase 抖动就会被读成"我被踢了"
+      const membership = await opts.isMember(job.fromUid);
+      if (membership !== true) {
         notify(store.append({
           sessionId,
           ts: Date.now(),
           type: "turn_ended",
           outcome: "error",
-          error: "发起人已不在这个工作区，这条 turn 不跑",
+          error:
+            membership === "unknown"
+              ? "暂时确认不了你还在不在这个工作区，这条没跑，请重发"
+              : "发起人已不在这个工作区，这条 turn 不跑",
           agentId: job.agentId,
           readUpToSeq: lastSeqSeen,
         }));
@@ -1045,6 +1064,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempts: number }[] = [];
       const kicked: { agentId: string; seq: number }[] = [];
       const skipped: number[] = [];
+      // 在籍**查不出来**的那几条（#957 终审 Critical 1）：与 skipped 同一个归宿
+      // （开场白留着、一条收口都不写），单独一个数组只是为了那行 warn 说的是真话
+      const unknownMembership: number[] = [];
       const exhausted: { agentId: string; seq: number }[] = [];
       // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
       // 多条开场白在这里天然也按 seq 升序出现，下面两处分组都借了这个顺序
@@ -1058,7 +1080,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }
         // 上一个进程收下这句话的时候他还在籍，现在未必（#957 B-I1）。补跑是一条
         // **没有任何人发起**的模型调用，替一个已经被踢出去的人重跑它是最不该有的
-        if (!(await opts.isMember(t.fromUid))) {
+        // **只在确认不在籍时才收口**（#957 终审 Critical 1）。daemon 启动时 N 条
+        // 会话错峰补跑，正是 Supabase 最不稳的那一刻；把一次抖动读成"被踢了"的
+        // 代价是 append-only 的——每条排队消息落一条永久收口，用户看到的是"你被
+        // 移出了工作区"，而事实上他好好地在群里。查不到 = 什么都不写，开场白留
+        // 到下一次重启再问一遍（它仍然停在「排队中」，那是诚实的状态）
+        const membership = await opts.isMember(t.fromUid);
+        if (membership === "unknown") {
+          unknownMembership.push(t.seq);
+          continue;
+        }
+        if (membership === false) {
           kicked.push({ agentId: t.agentId, seq: t.seq });
           continue;
         }
@@ -1079,24 +1111,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // **收口先落、再入队**：排在任何 job 起跑之前落盘，落的时候日志还是
       // 「补跑开始前」那个静止的样子，不是某条 turn 跑了一半的中间态。
-      // 下面两个循环的 readUpToSeq 都取**那条开场白自己的 seq**（不是日志尾，
-      // #957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、仍然有效
-      // 的开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是另一回事
-      // ——那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）
-      for (const k of kicked) {
-        notify(store.append({
-          sessionId,
-          ts: Date.now(),
-          type: "turn_ended",
-          outcome: "error",
-          error: "发起人已不在这个工作区，这条 turn 不跑",
-          agentId: k.agentId,
-          // readUpToSeq 取**这条开场白自己的 seq**（#957 Task 4c 复审），同旁边
-          // 到顶收口那条的口径：日志尾此刻已经越过了同一只 agent 更晚、仍然
-          // 有效的开场白，用它会把那条也顺手收了口——没人答它，且没有任何症状
-          readUpToSeq: k.seq,
-        }));
-      }
+      // 到顶与被踢那两个循环的 readUpToSeq 都取**那条开场白自己的 seq**（不是
+      // 日志尾，#957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、
+      // 仍然有效的开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是
+      // 另一回事——那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）。
+      // 被踢那个循环还要等 runnableByAgent 建好（#957 终审 Important 1），所以
+      // 它排在下面第三位、不在这儿——见那段自己的注释
       // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted
       // 记号），readUpToSeq 取**这条开场白自己的 seq**（复审 Critical 修正，不是
       // lastSeqSeen）——它收口自己、也顺带收掉同一只 agent 更早的那些开场白
@@ -1127,6 +1147,28 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // runnable 里同一只 agent 第一次出现的就是最小 seq（上面那条顺序说明）
         if (!cur) runnableByAgent.set(r.agentId, { minSeq: r.opening.seq, fromUid: r.fromUid, attempts: r.attempts });
       }
+      // 被踢那条收口**排在 runnableByAgent 构造之后**（#957 终审 Important 1）：
+      // 顺序「在籍的 U1 在前、被踢的 U2 在后、同一只 agent」时，U2 这条收口的
+      // readUpToSeq = U2.seq >= U1.seq，把还要跑的 U1 也一起关了——这一次 U1
+      // 照样跑（它已经在 runnable 里），但再崩一次 openTurns 就再也捞不到它，
+      // 没人答它，永远。同一只 agent 还有可跑的开场白时干脆不落这条：它那轮的
+      // turn_ended 收口时 readUpToSeq = 日志尾 >= U2.seq，自然把被踢那条也收了
+      // （协调器的去重本来也会把两条折叠进同一个 job）
+      for (const k of kicked) {
+        if (runnableByAgent.has(k.agentId)) continue;
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "发起人已不在这个工作区，这条 turn 不跑",
+          agentId: k.agentId,
+          // readUpToSeq 取**这条开场白自己的 seq**（#957 Task 4c 复审），同旁边
+          // 到顶收口那条的口径：日志尾此刻已经越过了同一只 agent 更晚、仍然
+          // 有效的开场白，用它会把那条也顺手收了口——没人答它，且没有任何症状
+          readUpToSeq: k.seq,
+        }));
+      }
       for (const [agentId, g] of runnableByAgent) {
         notify(store.append({
           sessionId,
@@ -1152,8 +1194,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       if (kicked.length > 0) {
         console.log(
-          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，各落一条 turn_ended 收口）：` +
+          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，同一只 agent 没有别的可跑开场白时各落一条 turn_ended 收口）：` +
             `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
+        );
+      }
+      if (unknownMembership.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑暂缓 ${unknownMembership.length} 条（在籍查询这一刻查不出来，不写收口、留到下次重启再问）：` +
+            `session=${sessionId} seq=${unknownMembership.join(",")}`
         );
       }
       if (exhausted.length > 0) {

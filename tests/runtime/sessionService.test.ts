@@ -2056,7 +2056,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
   // 这一刻已经越过了同一只 agent **更晚**那条仍然有效的开场白 —— 它于是被顺手
   // 收了口，再也没人答它，且没有任何症状。判据换成「这条开场白自己的 seq」，
   // 与旁边到顶收口那条同一口径
-  it("B-I1 复审：被踢的 U1 与在籍的 U2 点同一只 agent —— 收口只关掉 U1，U2 照跑", async () => {
+  it("B-I1 复审：被踢的 U1 与在籍的 U2 点同一只 agent —— U2 照跑（且不误收口）", async () => {
     const store = newStore();
     const { openTurns } = await import("../../src/shared/turnLedger.js");
     const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
@@ -2076,11 +2076,101 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const log = store.load("s1");
     // U2 真的跑了一轮（修之前它被 U1 的收口顺手关掉，一次模型调用都不会发生）
     expect(seen).toEqual(["ops"]);
-    const kickedEnd = log.find((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"));
-    expect(kickedEnd).toMatchObject({ outcome: "error", agentId: "ops", readUpToSeq: u1.seq });
+    // 终审 Important 1 之后：同一只 agent 还有可跑的开场白（U2）时，被踢的 U1
+    // **不再单独落一条收口**——U2 那一轮起跑前的 interrupted 记号（readUpToSeq =
+    // U2.seq − 1 >= U1.seq）与它自己的 turn_ended 都已经把 U1 收了口。少写一条
+    // 事件换来的是反过来那个顺序（U1 在籍、U2 被踢）不会把 U1 顺手关掉
+    expect(log.some((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"))).toBe(false);
+    const interrupted = log.find((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    expect((interrupted as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u1.seq);
     const completed = log.find((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "completed");
     expect(completed).toBeDefined();
     expect((completed as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u2.seq);
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
+  // #957 终审 Critical 1：在籍查询**抛错**与**确认不在籍**在补跑路径上必须分开。
+  // daemon 启动时 N 条会话错峰补跑，正是 Supabase 最不稳的那一刻——把一次抖动
+  // 读成"被踢了"的代价是 append-only 的：每条排队消息落一条永久收口，用户看到
+  // 的是"你被移出了工作区"。查不到 = 什么都不写，开场白留着等下一次重启
+  it("终审 Critical 1：补跑时在籍查不出来（unknown）—— 一条 turn_ended 都不落，开场白仍欠着", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 导出订单", fromUid: "flaky", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => "unknown",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    expect(seen).toEqual([]);                                        // 没在籍证明就不跑
+    expect(log.filter((e) => e.type === "turn_ended")).toEqual([]);   // 也不写任何收口
+    expect(openTurns(log)).toEqual([{ seq: u1.seq, fromUid: "flaky", agentId: "ops", state: "queued" }]);
+    store.close();
+  });
+
+  // 同一条裁决的另一半：runJob 那条路径上发送者在线、看得见错误、能重发，所以
+  // 保持 fail-closed（不跑），但文案要与"已不在这个工作区"分开——后者说的是一件
+  // 确定的事，而这里只是"这一刻问不出来"
+  it("终审 Critical 1：起跑前在籍查不出来（unknown）—— 不跑，但收口文案说的是「暂时确认不了」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => "unknown",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 帮我导出订单", true, ["ops"]);
+    await session.settled();
+    const log = store.load("s1");
+    const end = log.find((e) => e.type === "turn_ended");
+    expect(end).toMatchObject({ outcome: "error", agentId: "ops" });
+    expect((end as { error?: string }).error).toContain("暂时确认不了");
+    expect((end as { error?: string }).error).not.toContain("已不在这个工作区");
+    expect(events.some((e) => e.type === "assistant_message")).toBe(false);
+    store.close();
+  });
+
+  // #957 终审 Important 1：顺序反过来（在籍的 U1 在前、被踢的 U2 在后、同一只
+  // agent）时，U2 那条收口的 readUpToSeq = U2.seq >= U1.seq，把还要跑的 U1 也
+  // 一起关了。这一次 U1 照样跑（它已经在 runnable 里），但再崩一次就再也没人
+  // 捞得到它。修法：同一只 agent 还有可跑的开场白时，不单独落被踢那条收口——
+  // 它的 turn 收口时 readUpToSeq = 日志尾，自然把被踢那条也收了
+  it("终审 Important 1：在籍的 U1 在前、被踢的 U2 在后（同一只 agent）—— 不落单独的被踢收口", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看下销量", fromUid: "u2", mentions: ["ops"] });
+    store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    expect(seen).toEqual(["ops"]);
+    expect(log.some((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"))).toBe(false);
     expect(openTurns(log)).toEqual([]);
     store.close();
   });

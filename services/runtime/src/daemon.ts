@@ -623,7 +623,11 @@ async function main(): Promise<void> {
       // membershipCache（60s 记忆化 + fail-closed）：收帧时验过一次不够——turn
       // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人
       // 重新起 turn，而他可能早已被踢出这个工作区
-      isMember: (uid) => membership.isMember(workspaceId, uid),
+      // **isMemberOrUnknown 不是 isMember**（#957 终审 Critical 1）：这只手同时
+      // 供 runJob（fail-closed，只是文案分开）与重启补跑（查不到就什么都不写）。
+      // 接 fail-closed 那个出口的话，daemon 启动那一刻的一次 Supabase 抖动会把
+      // 每条排队消息永久收口成"发起人已不在这个工作区"
+      isMember: (uid) => membership.isMemberOrUnknown(workspaceId, uid),
       // 自动压缩要知道窗口有多大（#957 A-1）。**目录说不认识的型号一律回
       // undefined**，不猜一个数——`contextWindowKnown` 那一位存在的全部理由就是
       // 这个：拿兜底常量去算 0.75 阈值，压缩时机毫无意义（可能每轮都压，也可能

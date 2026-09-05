@@ -788,6 +788,10 @@ export class LoopEngine {
       // 这一格用掉（hostedRoute 的 `prepared ?? decide()` + 用完即清），于是同
       // 一圈里紧随其后的那次真实 chat() 会再 decide() 一次。多一次 decide 只是
       // 多读一次带缓存的 probe.me()，而它换来的是「压缩按真实型号的窗口判」。
+      // 窄口子（#957 终审 Minor 2）：这两次 decide 之间路由若翻转（比如摘要那
+      // 次调用刚好把额度用完、改道到自带 key），信封上写的型号与随后
+      // assistant_message 记的型号会对不上一条——错的只是一条日志的型号字段，
+      // 调用本身走的是新路由；窗口极窄（同一圈内），不为它加一层锁。
       // 只在 adapter 真实现了 prepare() 时才 await：`await undefined` 本身也会
       // 让出一个微任务，没实现 prepare() 的 adapter（桌面端、大多数测试假货）
       // 不该白吃这一次让权——engine.test.ts 的中断竞态测试靠的正是：调用

@@ -29,7 +29,7 @@ import {
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
-import { throttleMessage, type FrameRateLimiter } from "./rateLimit.js";
+import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import type { CloudSession } from "./sessionService.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
@@ -377,9 +377,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 模型调用（每只 agent 各跑一条 turn），只扣一个 turn 令牌等于让
           // "@ 一个人"和"@ 十个人"同价——@ 越多人反而越省额度。旧协议的
           // `mention: true` 不带 mentions 数组时退回 1（max(1, undefined??1)）
-          const n = Math.max(1, msg.mentions?.length ?? 1);
+          // **夹到桶容量**（#957 终审 Minor 1）：turn 桶的容量是 10，一条 @ 了
+          // 11 只的帧扣 11 个令牌，桶再满也不够——补充速率再快也补不到 11，于是
+          // 这条帧**永远**发不出去，而回给用户的是一句"稍等一会儿再试"，等多久
+          // 都没用。夹住之后它按满桶计一次（该付的钱一分不少，只是封了顶），
+          // 真被限速时那句话再补一句"一句话最多 @ N 只"，把"等一会儿"和"这条
+          // 本身太大了"分开
+          const requested = Math.max(1, msg.mentions?.length ?? 1);
+          const n = Math.min(requested, TURN_BUCKET.capacity);
           if (!deps.rateLimit.allow(kind, entry.uid, n)) {
-            deps.send(cid, { t: "error", msg: throttleMessage(kind) });
+            const over = requested > n ? `（这条 @ 了 ${requested} 只，一句话最多按 ${TURN_BUCKET.capacity} 只计）` : "";
+            deps.send(cid, { t: "error", msg: `${throttleMessage(kind)}${over}` });
             return;
           }
           // say() 在开场白落盘 + 入队后就 resolve，**不等 turn 跑完**（#937）：
