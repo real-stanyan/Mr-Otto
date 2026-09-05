@@ -7,7 +7,8 @@
 // worker.ts 不进 vitest，所以能单测的判断全在这里：查询串、行解析、聚合、窗口。
 
 import { WEEK_MS, weekStartFor } from "./quota.js";
-import type { WorkspaceUsageRow } from "../../../src/shared/billing.js";
+import { pageAll, parseSubscriptionRows, subscriptionQuery } from "./billingQueries.js";
+import type { WorkspaceUsage, WorkspaceUsageRow } from "../../../src/shared/billing.js";
 
 export const WORKSPACE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -78,4 +79,25 @@ export function usageWindowFor(now: number, periodStartMs: number | null): { wee
   if (periodStartMs === null || !Number.isFinite(periodStartMs)) return { weekStartAt: now - WEEK_MS, weekEndAt: now };
   const weekStartAt = weekStartFor(now, periodStartMs);
   return { weekStartAt, weekEndAt: weekStartAt + WEEK_MS };
+}
+
+/** 端点的整段编排：四步（owner → 在籍 → 订阅周窗 → 拉行聚合）。`get` 是注进来的
+    PostgREST 读口，所以这一段能单测——worker.ts 不进 vitest，编排留在那边等于
+    「在籍这道闸」零执行覆盖，而它是这个端点唯一的权限判断。
+    顺序是先查 owner 再查在籍：工作区不存在与「存在但你不在里面」是两件事，
+    合成一个 404 的话，被踢出去的人看到的是「这个工作区没了」。 */
+export async function fetchWorkspaceUsage(
+  get: (query: string) => Promise<unknown>,
+  uid: string,
+  workspaceId: string,
+  now: number
+): Promise<{ ok: true; value: WorkspaceUsage } | { ok: false; code: "not_member" | "not_found"; message: string }> {
+  const owner = parseOwnerRows(await get(workspaceOwnerQuery(workspaceId)));
+  if (!owner) return { ok: false, code: "not_found", message: "没有这个工作区" };
+  const member = await get(memberQuery(workspaceId, uid));
+  if (!Array.isArray(member) || member.length === 0) return { ok: false, code: "not_member", message: "你不在这个工作区里" };
+  const sub = parseSubscriptionRows(await get(subscriptionQuery(owner)));
+  const window = usageWindowFor(now, sub ? Date.parse(sub.current_period_start) : null);
+  const rows = parseAttributionRows(await pageAll(get, workspaceUsageQuery(owner, workspaceId, window.weekStartAt)));
+  return { ok: true, value: { workspaceId, ownerUid: owner, ...window, rows: aggregateByAgent(rows) } };
 }
