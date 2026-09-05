@@ -18,6 +18,7 @@
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
+import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -132,7 +133,7 @@ function modelsSummaryOf(models: readonly string[]): string {
 export function agentRows(ws: WorkspaceSnapshot, selfUid: string): AgentRowView[] {
   const selfIsOwner = ws.ownerUid === selfUid;
   return ws.agents.map((a) => {
-    const isAdmin = a.agentId === "admin";
+    const isAdmin = a.agentId === ADMIN_AGENT_ID;
     const canEdit = a.createdBy === selfUid || selfIsOwner;
     return {
       agentId: a.agentId,

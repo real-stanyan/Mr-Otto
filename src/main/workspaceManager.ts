@@ -24,6 +24,7 @@ import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
+import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import type { ProxyStoreData } from "./proxyStore.js";
 import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -241,7 +242,7 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // admin 在本层就拒,不打网络——RLS 也会拦,但那条回来的是一句
         // PostgREST 的英文。放在 withSession 的业务体里,是为了让未登录时
         // 依旧先报"还没登录"(withSession 的早退在这之前)。
-        if (agentId === "admin") throw new Error(ADMIN_CANNOT_DELETE);
+        if (agentId === ADMIN_AGENT_ID) throw new Error(ADMIN_CANNOT_DELETE);
         await deps.deleteAgentRow(client, id, agentId);
         return null;
       });

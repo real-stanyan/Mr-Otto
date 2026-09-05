@@ -40,7 +40,8 @@
 // 排空循环（drain）随之改成**每个 job 各自 catch**：一只抛错不再让排在后面的
 // 那只被整队丢弃，1a 那套"丢弃时替它补一条 chat_message"的补偿连同它的
 // decisions 组合判断一起删了——话早就在日志里，落盘不再取决于跑不跑。
-// logChat 因此只剩"没点名"一个调用方。
+// logChat 因此只剩两个调用方："没点名"，和终审补的"名单里查无此 agent"那条
+// 系统提示（静默丢掉未知 id = 一句 @ 长得跟闲聊一模一样，发言人白等）。
 //
 // engine 有没有被改：1a 改了两处、1b 加了一个入口，都是**追加**，不改既有语义
 // （详见 task-9-report.md 与 #932 的 task-2）——
@@ -298,8 +299,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
-  /** 落一条纯观察性发言——没人被点名，或者点到的名字排上了队但轮不到这条
-      调用来跑。不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效 */
+  /** 落一条纯观察性发言——没人被点名，或者名单里查无此 agent 的那条系统提示。
+      不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效 */
   function logChat(fromUid: string, label: string, text: string, mention: boolean): void {
     notify(
       store.append({
@@ -321,6 +322,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     router.setInitiator(job.fromUid);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
+    // engine 起跑之前抛错，收口就没人写了（#932 终审 Blocking ②）：agents()
+    // 查询挂了、briefIfNeeded 落盘失败、adapterFor 抛错——drain 的 catch 只
+    // 打一行日志，而开场白已经落盘、它的 mentions 里有这只 agent，于是
+    // openTurns 永远把它算作「排队中」，界面上一行转到天荒地老、每次 daemon
+    // 重启还会把它重新排上跑一遍。这个记号是**跨过 engine 的那一刻**置位的：
+    // engine 自己抛的时候它已经落过 turn_ended{error}，再补一条就是同一次
+    // 失败记两遍（而且两条的 error 文案还不一样）
+    let engineStarted = false;
     try {
       // agents() 每 turn 现取一次（同 hostUids）：建/改 agent 下一 turn 生效，
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
@@ -341,6 +350,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 别为一条错误信息再去猜
           error: `智能体 ${job.agentId} 已不在这个工作区，这句话没人接`,
           agentId: job.agentId,
+          // 这一条收的是**它自己那条开场白**的口，不多不少：合成的收口没有
+          // 「跑到哪儿」，就按 job 拿着的那条算（后来的点名各有各的 job）
+          readUpToSeq: job.opening.seq,
         }));
         return;
       }
@@ -361,7 +373,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
       // 两遍、时间线画两遍
+      engineStarted = true;
       await engine.runLoggedTurn(job.opening);
+    } catch (err) {
+      if (!engineStarted) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: err instanceof Error ? err.message : String(err),
+          agentId: job.agentId,
+          readUpToSeq: job.opening.seq,
+        }));
+      }
+      throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
     } finally {
       currentInitiator = null;
       currentAgentId = null;
@@ -392,10 +418,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     async say(fromUid, label, text, mention, mentions) {
       const roster = await opts.agents();
       const targets = resolveTargets(text, mention, mentions, roster);
+      // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
+      // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
+      // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
+      // 一直等一个不会来的回复（#932 终审 Important ③）。落一条系统发言把
+      // 这件事说出口。只管客户端给的那一份：②③两级是服务端自己解析出来的，
+      // 解析结果天然只含名单里的 id，不存在"未知"
+      const unknown = mentions === undefined ? [] : mentions.filter((id) => !roster.some((a) => a.agentId === id));
+      const sayUnknown = (): void => {
+        if (unknown.length === 0) return;
+        // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）；
+        // 用 id 不用名字，跟"agent 被删"那条错误同一个理由：名字已经查不到了
+        logChat(
+          "system",
+          "系统",
+          `没找到智能体 ${unknown.join("、")}，这部分点名没人接（名单可能刚变过，刷新一下再 @）`,
+          false
+        );
+      };
 
       if (targets.length === 0) {
         // 没人被点名：只落 chat_message，不起 turn
         logChat(fromUid, label, text, mention);
+        sayUnknown();
         return;
       }
 
@@ -412,6 +457,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         mentions: targets,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
+      sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"
 
       // 解出来的每一只按顺序入队。回 "start_turn" 时任务也已经在队里了
       // （turnCoordinator 的约定）：真正取出来跑靠 drain()，不是拿着手上这个
@@ -503,11 +549,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       );
     }
     // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
-    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见
-    console.log(
-      `[otto-runtime] 重启补跑 ${stale.length} 个未收口的 turn（session=${sessionId}）：` +
-        stale.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
-    );
+    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
+    // 数的是**真排上的那几条**不是 stale 全体：跳过的那些上面那条 warn 已经
+    // 单列过，两处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
+    const enqueued = stale.filter((t) => !skipped.includes(t.seq));
+    if (enqueued.length > 0) {
+      console.log(
+        `[otto-runtime] 重启补跑 ${enqueued.length} 个未收口的 turn（session=${sessionId}）：` +
+          enqueued.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
+      );
+    }
     // void：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
     // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）
     if (decisions.includes("start_turn")) void drain();

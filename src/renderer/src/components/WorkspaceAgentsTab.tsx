@@ -86,7 +86,14 @@ function AgentRow({
     <div className={cn(ROW, "border border-border")}>
       <span className="min-w-0 flex-1 truncate">
         <b className="font-medium">{row.name}</b>
-        {row.isAdmin && <span className="ml-1 text-[10.5px] text-muted-foreground">· 管理员</span>}
+        {/* 「管理员不能删除」挂在这枚徽标上，不挂在「编辑」钮上（终审 Minor）：
+            那句话解释的是**这一行为什么没有删除钮**，挂在编辑钮上等于说
+            「编辑这个动作不能删除」 */}
+        {row.isAdmin && (
+          <span className="ml-1 text-[10.5px] text-muted-foreground" title="管理员不能删除">
+            · 管理员
+          </span>
+        )}
         <span className="block text-[10.5px] text-muted-foreground">
           {row.description || "没有写职责"} · {row.modelsSummary} · {row.creatorLabel}
         </span>
@@ -94,7 +101,6 @@ function AgentRow({
       {row.canEdit && (
         <Button
           variant="ghost" size="xs" className="shrink-0"
-          title={row.isAdmin ? "管理员不能删除" : undefined}
           onClick={onEdit}
         >
           编辑

@@ -5,6 +5,13 @@
 
 export const AGENT_NAME_MAX = 32;
 
+/** 每个工作区开箱自带的那只（0021 migration 的 seed_workspace_admin_agent
+    触发器种的行）。不能删、名单里恒排第一（按 created_at 升序），也是
+    "客户端没给 mentions 时唤醒谁"的老语义答案。
+    **DB 那侧的触发器与 RLS 里写着同一个字面量**——那半改不了常量，所以这里
+    改名字不等于改行为，两边要一起动。 */
+export const ADMIN_AGENT_ID = "admin";
+
 export function validateAgentName(raw: string): string | null {
   const name = raw.trim();
   if (name.length === 0) return "名字不能为空";

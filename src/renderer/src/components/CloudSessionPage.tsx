@@ -228,7 +228,11 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
-    const ok = await cloudSay(text, mentions);
+    // 名单一条都没有（还没拉到 / 拉失败）时**不发数组**：服务端把 `[]` 读作
+    // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
+    // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
+    // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
+    const ok = candidates.length === 0 ? await cloudSay(text) : await cloudSay(text, mentions);
     if (ok) {
       // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");

@@ -54,10 +54,12 @@ export interface WorkspaceSnapshot {
   agents: WorkspaceAgentRow[];
 }
 
-/** tools jsonb 落地成 string[]：形状不对（非数组/含非字符串项）一律回 [] */
-function normalizeTools(tools: unknown): string[] {
-  if (!Array.isArray(tools)) return [];
-  return tools.every((t) => typeof t === "string") ? (tools as string[]) : [];
+/** jsonb 的字符串数组列（connectors.tools / agents.models）落地成 string[]：
+    形状不对（非数组 / 含非字符串项）一律回 []。名字里不带 tools —— 它一直
+    服务两列，叫成 tools 会让读 agents 那一段的人以为抄错了行 */
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.every((t) => typeof t === "string") ? (value as string[]) : [];
 }
 
 /** ISO 字符串 → epoch ms；解析不出来（NaN）回 0，不让脏数据混进排序比较 */
@@ -102,7 +104,7 @@ export function assembleSnapshot(
       hostUid: c.host_uid,
       serverId: c.server_id,
       label: c.label,
-      tools: normalizeTools(c.tools),
+      tools: normalizeStringArray(c.tools),
     })),
     sessions: sessions.map((s) => ({
       id: s.id,
@@ -117,7 +119,7 @@ export function assembleSnapshot(
       name: a.name,
       description: a.description,
       instructions: a.instructions,
-      models: normalizeTools(a.models),
+      models: normalizeStringArray(a.models),
       createdBy: a.created_by,
       updatedTs: toEpochMs(a.updated_at),
     })),
