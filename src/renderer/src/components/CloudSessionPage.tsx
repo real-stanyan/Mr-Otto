@@ -49,6 +49,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
@@ -260,8 +261,9 @@ export function CloudSessionPage({
     setDraft(next.text);
     setCaret(next.caret);
     setDismissedAt(null);
-    // setDraft 那一拍会把 textarea 的 value 整个换掉，浏览器随即把光标顶到
-    // 末尾——得等这一帧画完再设回去，同一个 tick 里设会被覆盖
+    // 光标要等这一帧 commit 完再设：React 在 commit 期间会做一次**选区保全**
+    // ——把改动前那个选区偏移恢复到当前有焦点的元素上，于是同一个 tick 里设的
+    // 光标会被它盖掉。rAF 排在 commit 之后，设进去才留得住
     const c = next.caret;
     requestAnimationFrame(() => boxRef.current?.setSelectionRange(c, c));
   };
@@ -389,44 +391,7 @@ export function CloudSessionPage({
 
       {actionError && <p className="text-xs text-err">{actionError}</p>}
 
-      {/* relative 是给上面那个弹层的定位锚（bottom-full = 贴着 footer 上沿往上开） */}
-      <footer className="relative flex flex-col gap-1.5 border-t border-border/60 pt-3">
-        {picking !== null && options.length > 0 && (
-          <div
-            role="listbox"
-            className={cn(
-              "absolute bottom-full left-0 mb-1 z-10 min-w-[200px] max-w-[320px] py-1",
-              "rounded-md border border-border bg-popover shadow-sm origin-bottom-left",
-              // 只有入场动效：这个列表随打字每敲一下都在变，退场动画会让它拖着
-              // 影子跟不上光标（同 StagedChips 那条配方）
-              "transition-[opacity,transform] duration-150 ease-[var(--ease-strong)]",
-              "starting:opacity-0 starting:translate-y-[2px]"
-            )}
-          >
-            {options.map((o, i) => (
-              <div
-                key={o.agentId}
-                role="option"
-                aria-selected={i === hi}
-                // mousedown + preventDefault：click 的话 textarea 会先失焦，
-                // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(i);
-                }}
-                onMouseEnter={() => setHi(i)}
-                className={cn(
-                  "flex cursor-default items-baseline gap-2 px-2 py-[5px] text-[12.5px]",
-                  i === hi && "bg-foreground/[0.06]"
-                )}
-              >
-                <span className="shrink-0">{o.name}</span>
-                <span className="truncate text-muted-foreground">{o.description}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
+      <footer className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
         {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
             才是事实，给 pill 配一颗 × 就等于开了第二个事实来源，两边迟早不一致 */}
         {mentions.length > 0 && (
@@ -441,55 +406,117 @@ export function CloudSessionPage({
         )}
 
         <div className="flex items-end gap-2">
-          <textarea
-            ref={boxRef}
-            rows={1}
-            disabled={!ready}
-            className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
-            placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setCaret(e.target.selectionStart);
-            }}
-            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
-            onClick={(e) => setCaret(e.currentTarget.selectionStart)}
-            onKeyDown={(e) => {
-              // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
-              // FriendChatView 的既有约定），整段跳过
-              if (e.nativeEvent.isComposing) return;
-              if (picking !== null && options.length > 0) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setHi((h) => (h + 1) % options.length);
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setHi((h) => (h - 1 + options.length) % options.length);
-                  return;
-                }
-                // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
-                // 意思一定是"就他"，不是"发出去"
-                if (e.key === "Enter" || e.key === "Tab") {
-                  e.preventDefault();
-                  pick(hi);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setDismissedAt(picking.at);
-                  return;
-                }
-              }
-              // Enter 发送、Shift+Enter 换行
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void submit();
-              }
-            }}
-          />
+          {/* 弹层走 Radix 的 Popover 而不是自己 absolute 定位：这一页整个装在
+              CloudSessionMain 的 overflow-y-auto 里，`absolute bottom-full` 画出来的
+              列表一旦高过 footer 到滚动容器上沿的距离，超出的部分会被裁掉且滚不到
+              （新会话只有一行「还没有消息。」时 footer 离顶不到 90px，三只就削掉一行）。
+              Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
+              键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
+              它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
+          <Popover open={picking !== null && options.length > 0}>
+            <PopoverAnchor asChild>
+              <textarea
+                ref={boxRef}
+                rows={1}
+                disabled={!ready}
+                className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
+                placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setCaret(e.target.selectionStart);
+                }}
+                onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+                onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+                onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+                // 失焦就把这个 @ 关掉：一个飘在别处的选人列表比没有更糟。
+                // 点弹层里的行不会走到这儿——那边 onMouseDown 里 preventDefault 了，
+                // 焦点压根没离开过 textarea，所以不需要在这里认那种点击
+                onBlur={() => setDismissedAt(rawPicking?.at ?? null)}
+                onKeyDown={(e) => {
+                  // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
+                  // FriendChatView 的既有约定），整段跳过
+                  if (e.nativeEvent.isComposing) return;
+                  if (picking !== null && options.length > 0) {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setHi((h) => (h + 1) % options.length);
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setHi((h) => (h - 1 + options.length) % options.length);
+                      return;
+                    }
+                    // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
+                    // 意思一定是"就他"，不是"发出去"
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      pick(hi);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setDismissedAt(picking.at);
+                      return;
+                    }
+                  }
+                  // Enter 发送、Shift+Enter 换行
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </PopoverAnchor>
+            <PopoverContent
+              side="top"
+              align="start"
+              role="listbox"
+              // 焦点一步都不许挪：这个列表是 textarea 的附属显示，人还在打字。
+              // Radix 默认开时把焦点吸进内容、关时还回触发器，两下都会打断输入
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              // 键盘那条路由 textarea 的 onKeyDown 管，这里只兜「焦点不在框里
+              // 时按了 Escape」；两边都设成同一个值，重复触发也无所谓
+              onEscapeKeyDown={() => setDismissedAt(rawPicking?.at ?? null)}
+              onInteractOutside={(e) => {
+                // 点回 textarea 不算「点到外面」——它是这个弹层的锚，同一个部件。
+                // 算成外面的话，点进 @ 查询词中间会把弹层关掉且**再也不开**
+                // （dismissedAt 撞上同一个下标），而人此刻明明还在挑
+                if (e.detail.originalEvent.target === boxRef.current) return;
+                setDismissedAt(rawPicking?.at ?? null);
+              }}
+              className={cn(
+                "w-auto min-w-[200px] max-w-[320px] p-1",
+                // PopoverContent 自带的 data-[state] 动效是 animate-*（不是
+                // transition），所以关它的开关是 animate-none（同 SessionOrb / tool-group）
+                "motion-reduce:animate-none"
+              )}
+            >
+              {options.map((o, i) => (
+                <div
+                  key={o.agentId}
+                  role="option"
+                  aria-selected={i === hi}
+                  // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
+                  // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(i);
+                  }}
+                  onMouseEnter={() => setHi(i)}
+                  className={cn(
+                    "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+                    i === hi && "bg-foreground/[0.06]"
+                  )}
+                >
+                  <span className="shrink-0">{o.name}</span>
+                  <span className="truncate text-muted-foreground">{o.description}</span>
+                </div>
+              ))}
+            </PopoverContent>
+          </Popover>
           {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
               它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
           <Button
