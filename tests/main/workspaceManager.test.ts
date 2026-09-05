@@ -225,6 +225,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
         { workspaceId: "ws-1", hostUid: "friend-b", serverId: "s4", label: "L4", tools: [] },
       ],
       sessions: [],
+      agents: [],
     });
 
     const res = await h.manager.list();

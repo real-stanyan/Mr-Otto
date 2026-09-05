@@ -33,6 +33,7 @@ const WS: WorkspaceSnapshot = {
   ],
   connectors: [],
   sessions: [],
+  agents: [],
 };
 
 function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {

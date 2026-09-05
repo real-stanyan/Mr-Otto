@@ -34,6 +34,16 @@ export interface WorkspaceSessionRow {
   updatedTs: number;
 }
 
+export interface WorkspaceAgentRow {
+  agentId: string;
+  name: string;
+  description: string;
+  instructions: string;
+  models: string[];
+  createdBy: string;
+  updatedTs: number;
+}
+
 export interface WorkspaceSnapshot {
   id: string;
   name: string;
@@ -41,6 +51,7 @@ export interface WorkspaceSnapshot {
   members: WorkspaceMemberRow[];
   connectors: WorkspaceConnectorRow[];
   sessions: WorkspaceSessionRow[];
+  agents: WorkspaceAgentRow[];
 }
 
 /** tools jsonb 落地成 string[]：形状不对（非数组/含非字符串项）一律回 [] */
@@ -71,6 +82,10 @@ export function assembleSnapshot(
     id: string; workspace_id: string; publisher_uid: string; pkg_id: string; title: string;
     updated_at: string;
   }[],
+  agents: readonly {
+    agent_id: string; name: string; description: string; instructions: string; models: unknown;
+    created_by: string; updated_at: string;
+  }[],
   labelOf: (uid: string) => string | null,
 ): WorkspaceSnapshot {
   return {
@@ -96,6 +111,15 @@ export function assembleSnapshot(
       pkgId: s.pkg_id,
       title: s.title,
       updatedTs: toEpochMs(s.updated_at),
+    })),
+    agents: agents.map((a) => ({
+      agentId: a.agent_id,
+      name: a.name,
+      description: a.description,
+      instructions: a.instructions,
+      models: normalizeTools(a.models),
+      createdBy: a.created_by,
+      updatedTs: toEpochMs(a.updated_at),
     })),
   };
 }
