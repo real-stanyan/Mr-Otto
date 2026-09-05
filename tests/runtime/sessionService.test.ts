@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
-import { createCloudSession, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { createCloudSession, SayRejectedError, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, UserMessageEvent } from "../../src/session/events.js";
@@ -2370,13 +2370,23 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const store = newStore();
     const seenTools: string[] = [];
     let hostUidsCalls = 0;
+    let rosterCalls = 0;
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => { hostUidsCalls += 1; return ["h1"]; },
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayMaxDepth: async () => 6,
       contextWindowOf: () => undefined,
-      agents: async () => [{ ...DEFAULT_AGENT, agentId: "admin", name: "管理员", degraded: true as const }],
+      // 第一次（say 读名单）好好的，之后（runJob 每 turn 现读那次）才降级 ——
+      // 第二轮复审 E2-4 之后，say() 见到 degraded + 点了名会直接拒收，
+      // 「说话时名单就已经降级」这条路再也起不了 turn。runJob 里那道 px 闸
+      // 剩下的入口是「说的时候好好的，跑的时候名单挂了」（含重启补跑），
+      // 这个假名单模拟的就是它
+      agents: async () => {
+        rosterCalls += 1;
+        const base = { ...DEFAULT_AGENT, agentId: "admin", name: "管理员" };
+        return [rosterCalls === 1 ? base : { ...base, degraded: true as const }];
+      },
       adapterFor: () => ({
         model: "fake-model",
         async chat(_m, toolDefs) {
@@ -3338,6 +3348,92 @@ describe("stop 带 seq：按的是哪一行（第二轮复审 C2-I3）", () => {
 
     expect(seen).toEqual([]); // 模型一次都没被调
     expect(events.filter((e) => e.type === "turn_ended")).toMatchObject([{ outcome: "aborted", agentId: "ops" }]);
+    store.close();
+  });
+});
+
+// 第二轮复审 B2-C1 / E2-4：限速下沉到 say() 里 resolveTargets 之后按真实
+// targets 数问价（原来在 frameHandler 按客户端自报的 mention/mentions 计价，
+// 省掉字段就按 1 扣而这边照样起 N 条真花钱的 turn），名单降级时点了名的话
+// 一律拒收（原来会对着用户说「没找到智能体 运营」，而真名单里它好端端地在）
+describe("限速下沉与名单降级（第二轮复审 B2-C1 / E2-4）", () => {
+  const noModel = (a: { models: string[] }) => ({
+    model: a.models[0]!,
+    async chat() { return { content: "答" }; },
+  });
+
+  function build(store: EventStore, agents: () => Promise<typeof AGENTS>): CloudSession {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents,
+      adapterFor: noModel,
+      onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+    });
+  }
+
+  it("budget 拿到的是 resolveTargets 之后的真实点名数 —— 客户端省掉 mentions 也照样按 2 问价", async () => {
+    const store = newStore();
+    const asked: number[] = [];
+    const session = build(store, async () => AGENTS);
+    // mentions 缺席 = 老客户端那一版：frameHandler 那侧看得见的只有
+    // `mention:false`，按它计价就是 1 个令牌换 2 条真花钱的模型调用
+    await session.say("u1", "alice", "@运营 @广告 看下", false, undefined, (n) => { asked.push(n); return null; });
+    await session.settled();
+    expect(asked).toEqual([2]);
+    store.close();
+  });
+
+  it("budget 回文案 → 抛 SayRejectedError，且日志一个字节都没落（半落盘的开场白会被 openTurns 永远补跑）", async () => {
+    const store = newStore();
+    const session = build(store, async () => AGENTS);
+    const before = store.load("s1").length;
+    await expect(
+      session.say("u1", "alice", "@运营 看下", true, ["ops"], () => "一句话最多 @ 10 只（这条 @ 了 11 只）")
+    ).rejects.toBeInstanceOf(SayRejectedError);
+    await expect(
+      session.say("u1", "alice", "@运营 看下", true, ["ops"], () => "太快了")
+    ).rejects.toThrow("太快了");
+    expect(store.load("s1").length).toBe(before);
+    store.close();
+  });
+
+  it("没点名的闲聊走 say 桶：budget 收到 0，照常落 chat_message", async () => {
+    const store = newStore();
+    const asked: number[] = [];
+    const session = build(store, async () => AGENTS);
+    await session.say("u1", "alice", "你好", false, [], (n) => { asked.push(n); return null; });
+    expect(asked).toEqual([0]);
+    expect(store.load("s1").filter((e) => e.type === "chat_message")).toHaveLength(1);
+    store.close();
+  });
+
+  it("名单降级 + 点了名 → 拒收，文案说「读不出来」而不是「没找到智能体」，日志零追加", async () => {
+    const store = newStore();
+    const degraded = async () => [{ ...DEFAULT_AGENT, degraded: true as const }] as unknown as typeof AGENTS;
+    const session = build(store, degraded);
+    // 三级点名各来一次：客户端自报的 mention / mentions，以及只有正文里带 @
+    // 的那一版（手机端和旧桌面只发布尔，解析本来就在服务端）
+    await expect(session.say("u1", "alice", "@运营 看下", true)).rejects.toThrow(/名单这会儿读不出来/);
+    await expect(session.say("u1", "alice", "看下", false, ["ops"])).rejects.toThrow(SayRejectedError);
+    await expect(session.say("u1", "alice", "@运营 看下", false)).rejects.toThrow(SayRejectedError);
+    expect(store.load("s1")).toHaveLength(0);
+    store.close();
+  });
+
+  it("名单降级但没点名 → 照常落 chat_message，且**没有**「没找到智能体」那句假话", async () => {
+    const store = newStore();
+    const degraded = async () => [{ ...DEFAULT_AGENT, degraded: true as const }] as unknown as typeof AGENTS;
+    const session = build(store, degraded);
+    await session.say("u1", "alice", "你好", false, []);
+    await session.settled();
+    const log = store.load("s1");
+    expect(log.filter((e) => e.type === "chat_message")).toHaveLength(1);
+    expect(log.some((e) => (e as { content?: string }).content?.includes("没找到智能体"))).toBe(false);
     store.close();
   });
 });

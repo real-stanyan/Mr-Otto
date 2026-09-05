@@ -298,14 +298,39 @@ export interface CloudSessionOpts {
   contextWindowOf: (model: string) => number | undefined;
 }
 
+/** `say()` 的业务拒绝：限速、一句话 @ 太多、名单降级时点了名（#957 B2-C1 / E2-4）。
+    与内部异常（Supabase 抖了、store.append 挂了）分开的理由是**措辞的去向**：
+    这一条的 message 是写给发言人看的人话，frameHandler 原样回进 `say_result`；
+    内部异常那条只进 deps.log，用户拿到的是一句"发送失败，请重试" */
+export class SayRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SayRejectedError";
+  }
+}
+
 export interface CloudSession {
   /** 一条已验籍成员发言。落盘 + 按协调器决定是否起 turn，**开场白落盘并入队
       就 resolve，不等 turn 跑完**（issue #937）——「收下了 = 记下了」在
       #932 坑 ② 之后就已经成立，而等排空会把发起人自己的下一帧（尤其是
       approve）堵在 frameHandler 的 cid 串行链后面，死锁到审批过期。
       mentions：客户端算好的「这句话点了谁」（新版桌面给；手机端/旧桌面缺席时
-      服务端自己用同一份 parseMentions 从 text 里认，见 resolveTargets） */
-  say(fromUid: string, label: string, text: string, mention: boolean, mentions?: string[]): Promise<void>;
+      服务端自己用同一份 parseMentions 从 text 里认，见 resolveTargets）。
+      budget：**问价回调**（#957 B2-C1）。say() 在 resolveTargets 去重之后、
+      任何 store.append 之前调它一次，参数是这句话真正会起几条 turn；回 null =
+      放行，回字符串 = 拒绝的文案（`throw new SayRejectedError(那句话)`）。
+      为什么价钱不在 frameHandler 那侧算：那边看得见的只有客户端自报的
+      mention/mentions，而真实 targets 要解析完才知道 —— 省掉 mentions 字段的
+      客户端一条 @ 了 40 个人的话在那边按 1 扣。缺席 = 不限速（测试与 daemon
+      的其他调用方照旧） */
+  say(
+    fromUid: string,
+    label: string,
+    text: string,
+    mention: boolean,
+    mentions?: string[],
+    budget?: (targetCount: number) => string | null
+  ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
       等待点。没有排空在跑时立刻 resolve。一条排空跑完前可能又排上新的 job
@@ -1159,14 +1184,35 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions) {
+    async say(fromUid, label, text, mention, mentions, budget) {
       const roster = await opts.agents();
+      // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
+      // 是 workspace_agents 查询失败时的占位（只有 DEFAULT_WORKSPACE_AGENT 一只），
+      // 拿它去 resolveTargets，"@运营" 自然解不出来 —— 于是下面那句 sayUnknown
+      // 会对着用户说「没找到智能体 运营」，而真名单里它好端端地在。把一次
+      // Supabase 抖动翻译成「这只 agent 不存在」是句假话，用户照它去改名字只会
+      // 更错；说「读不出来，稍后再试」他才知道该等而不是该改。判据与
+      // relayAfterTurn 那道闸同款（roster.some(degraded)），点没点名按 resolveTargets
+      // 的三级一起看：客户端自报的 mention/mentions 之外，正文里的 @ 也算
+      // （手机端/旧桌面只发布尔那一版，那一级的解析本来就在服务端）
+      const mentionedSomeone = mention || (mentions?.length ?? 0) > 0 || mentionTokens(text).length > 0;
+      if (mentionedSomeone && roster.some((a) => a.degraded)) {
+        throw new SayRejectedError("智能体名单这会儿读不出来，这句话没发出去，稍后再试");
+      }
       // **去重**（#957 F7）：客户端把同一只 agent 报了两遍（chip 行重复、正文里
       // @ 了两次都可能）时，开场白的 mentions 会带两份，而 openTurns 是按
       // `for (const agentId of u.mentions)` 展开的——同一只在界面上就成了两行
       // 「排队中」，其中一行永远收不了口（协调器只会排一个 job）。入队那侧
       // 本来就去重（enqueue 命中 logged_only），落盘这侧也得去
       const targets = [...new Set(resolveTargets(text, mention, mentions, roster))];
+      // **价钱在判据的同一侧算**（#957 B2-C1）：限速原来跑在 frameHandler 里、
+      // 按客户端自报的 mention/mentions 计价，而这句话真正会起几条 turn 是上面
+      // resolveTargets 之后才知道的 —— 省掉 mentions 字段的客户端发一句 @ 了
+      // 40 个名字的话，那边扣 1 个令牌、这边起 40 条真花钱的模型调用。问价挪到
+      // 真实 targets 算出来之后、**任何 store.append 之前**：拒绝时这句话一个
+      // 字节都不落盘，半落盘的开场白会被 openTurns 当成"欠一个回答"永远补跑
+      const veto = budget?.(targets.length) ?? null;
+      if (veto !== null) throw new SayRejectedError(veto);
       // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
       // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
       // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
@@ -1176,6 +1222,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const unknown = mentions === undefined ? [] : mentions.filter((id) => !roster.some((a) => a.agentId === id));
       const sayUnknown = (): void => {
         if (unknown.length === 0) return;
+        // 降级名单说不出这句话（#957 E2-4）：真名单读不出来时「没找到智能体 X」
+        // 是假话。降级 + 点了名那条路上面已经拒了，能走到这里的只剩没点名的
+        // 闲聊（unknown 必空），这道守卫是为了判据与上面、与 relayAfterTurn
+        // 逐字同款 —— 三处里漏一处就是这条 issue 换个入口复发
+        if (roster.some((a) => a.degraded)) return;
         // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）；
         // 用 id 不用名字，跟"agent 被删"那条错误同一个理由：名字已经查不到了
         logChat(

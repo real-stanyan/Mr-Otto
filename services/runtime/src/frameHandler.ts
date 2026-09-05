@@ -31,7 +31,7 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
-import type { CloudSession } from "./sessionService.js";
+import { SayRejectedError, type CloudSession } from "./sessionService.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
     (256 KiB,那是 base64 编码后的整帧硬上限)——留出安全边际。水獭在沙箱里
@@ -382,41 +382,28 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "say": {
           // 回执（#964）：桌面的 composer「草稿在发送成功之后才清」此前等的是
           // 一个**不存在**的信号——服务端对 say 从来不回话，成功与失败在客户端
-          // 看来完全一样。三条出口（不在籍 / 限速 / say() 抛错）各回一条
+          // 看来完全一样。三条出口（不在籍 / say() 的业务拒绝：限速、一句话
+          // @ 太多、名单降级 / say() 的内部异常）各回一条
           // say_result{ok:false}，成功回 say_result{ok:true}
           if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "say_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
-          // 一帧只记一个桶（issue #819）：@Agent 的那条走 turn 桶（每条都
-          // 可能起一次真花钱的模型调用），普通发言走 say 桶（撑大的是 VPS
-          // 的 SQLite）。超速**不静默丢**——回一条看得见的 error 帧，
-          // 客户端把它显示给发送者本人（会话房里不能回 denied：客户端把
-          // denied 当终态，会直接断掉这条连接，而限速是"待会儿再来"）
-          // 判据要连 mentions 一起看（#932 坑 ④）：新版桌面用 chip 输入，
-          // 点了名的那条帧 mentions 非空而 mention 可能是 false —— 只看
-          // mention 的话，一条真会起 turn（真花钱）的发言被记进了 say 桶
-          const kind = msg.mention || (msg.mentions?.length ?? 0) > 0 ? "turn" : "say";
-          // 限速按点名数扣（#957 B-I5）：一条 @ 了 N 个 agent 的帧会真起 N 次
-          // 模型调用（每只 agent 各跑一条 turn），只扣一个 turn 令牌等于让
-          // "@ 一个人"和"@ 十个人"同价——@ 越多人反而越省额度。旧协议的
-          // `mention: true` 不带 mentions 数组时退回 1（max(1, undefined??1)）
-          // **夹到桶容量**（#957 终审 Minor 1）：turn 桶的容量是 10，一条 @ 了
-          // 11 只的帧扣 11 个令牌，桶再满也不够——补充速率再快也补不到 11，于是
-          // 这条帧**永远**发不出去，而回给用户的是一句"稍等一会儿再试"，等多久
-          // 都没用。夹住之后它按满桶计一次（该付的钱一分不少，只是封了顶），
-          // 真被限速时那句话再补一句"一句话最多 @ N 只"，把"等一会儿"和"这条
-          // 本身太大了"分开
-          const requested = Math.max(1, msg.mentions?.length ?? 1);
-          const n = Math.min(requested, TURN_BUCKET.capacity);
-          if (!deps.rateLimit.allow(kind, entry.uid, n)) {
-            const over = requested > n ? `（这条 @ 了 ${requested} 只，一句话最多按 ${TURN_BUCKET.capacity} 只计）` : "";
-            // 文案一个字没改，只是换了载体（#964）：原来那条 `error` 帧与这条
-            // say 帧**没有任何关联**——客户端收到它只知道"出了点事"，不知道是
-            // 哪一句话没发出去，草稿照样被清掉。say_result 是同一句话的回执，
-            // 桌面据此把草稿种回去
-            deps.send(cid, { t: "say_result", ok: false, message: `${throttleMessage(kind)}${over}` });
-            return;
-          }
+          // **价钱在判据的同一侧算**（#957 B2-C1）：这一层看得见的只有客户端
+          // 自报的 mention/mentions，而这句话真正会起几条 turn 要等 say() 里
+          // resolveTargets 之后才知道 —— 一台省掉 mentions 字段的客户端发一句
+          // @ 了 40 个名字的话，这边按 1 扣、那边起 40 条真花钱的模型调用。
+          // 所以问价改成一个回调递进 say()，桶与数量都由真实 targets 决定；
+          // 一帧仍然只记一个桶（#819）：点了名的走 turn 桶（每只都可能起一次
+          // 真花钱的模型调用），没点名的走 say 桶（撑大的是 VPS 的 SQLite）。
+          // **超容量是拒绝不是夹价**：夹到桶容量等于第十一只往后每一只都免费，
+          // 上一版正是这么写的；拒绝时把上限说出口，人才知道这不是"等一会儿"
+          // 能解决的事。拒绝一律走 say_result{ok:false}，不回 denied ——
+          // 客户端把 denied 当终态会直接断掉这条连接，而限速是"待会儿再来"
+          const budget = (n: number): string | null => {
+            if (n > TURN_BUCKET.capacity) return `一句话最多 @ ${TURN_BUCKET.capacity} 只（这条 @ 了 ${n} 只）`;
+            const kind = n > 0 ? "turn" : "say";
+            return deps.rateLimit.allow(kind, entry.uid, Math.max(1, n)) ? null : throttleMessage(kind);
+          };
           // say() 在开场白落盘 + 入队后就 resolve，**不等 turn 跑完**（#937）：
           // serialize 把同一个 cid 的帧串成一条链，等在这里的话发起人自己的
           // approve 帧排在后面，而那条 turn 正等着这个审批——死锁到过期。
@@ -424,8 +411,16 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 那侧是彻底的沉默——话没进日志、草稿被清掉、界面上什么都没有。
           // 现在把它翻成一条回执，与 config 那条路同一个形状
           try {
-            await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions);
+            await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions, budget);
           } catch (err) {
+            // 限速 / 一句话 @ 太多 / 名单降级都从 say() 抛 SayRejectedError
+            // （#957 B2-C1、E2-4）：它是一句**说给发言人听**的业务拒绝，措辞
+            // 本来就是给他看的，原样回过去；也不进下面 deps.log 的「say 失败」
+            // —— 那条是内部异常的告警，把每一次正常限速都记成失败会把它淹掉
+            if (err instanceof SayRejectedError) {
+              deps.send(cid, { t: "say_result", ok: false, message: err.message });
+              return;
+            }
             const message = err instanceof Error ? err.message : String(err);
             deps.log(`say 失败 session=${sessionId} uid=${entry.uid}：${message}`);
             // **原文只进日志**（#957 终审 M4）：这条 catch 罩着的是内部异常

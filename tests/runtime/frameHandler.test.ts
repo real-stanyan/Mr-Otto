@@ -10,9 +10,10 @@ import {
   type FrameHandlerDeps,
 } from "../../services/runtime/src/frameHandler.js";
 import { BACKLOG_SKIP_MARKER, CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
-import type { CloudSession } from "../../services/runtime/src/sessionService.js";
+import { SayRejectedError, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import { TURN_BUCKET, throttleMessage } from "../../services/runtime/src/rateLimit.js";
+import { mentionTokens } from "../../src/shared/remote/agentMention.js";
 
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
@@ -365,7 +366,9 @@ describe("createFrameHandler", () => {
       encodeCs({ t: "say", text: "@运营 看下销量", mention: true, mentions: ["ops"] })
     );
 
-    expect(said[0]).toEqual(["u1", "alice", "@运营 看下销量", true, ["ops"]]);
+    // 第 6 个参数是限速下沉之后的 budget 回调（#957 B2-C1）：这条断言只管
+    // 帧字段有没有原样递进去，价钱那一格另有它自己的用例
+    expect((said[0] as unknown[]).slice(0, 5)).toEqual(["u1", "alice", "@运营 看下销量", true, ["ops"]]);
   });
 
   it("⑤ onGone 清 cid 表：清完后同 cid 再 say 回 denied not_authorized", async () => {
@@ -678,31 +681,55 @@ describe("onSessionFrame 的 backlog 分片接线（终审 C2）", () => {
 // issue #819：过渡期烧的是维护者的模型 key，而 say / turn 触发 / create
 // 三条路一道闸都没有。闸门本身的逻辑在 rateLimit.test.ts，这里验的是接线：
 // 拒绝**看得见**（不静默丢），且会话房与控制房用的是两种不同的回执。
-describe("限流接线（issue #819）", () => {
+describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
   const denying = (deniedKinds: string[]): FrameHandlerDeps["rateLimit"] => ({
     allow: (kind) => !deniedKinds.includes(kind),
   });
 
-  it("say 超速 → 回一条看得见的 say_result{ok:false}，且不落到 CloudSession.say", async () => {
-    const sayCalls: unknown[] = [];
-    const session = fakeSession({
-      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+  /** 限速下沉到 say() 里 resolveTargets 之后（#957 B2-C1）之后，frameHandler
+      这一侧只递一个 budget 回调进去 —— 假 session 得把 say() 里那一段「解出
+      真实 targets 再问价」照抄一遍（数量口径同 resolveTargets：客户端给了
+      mentions 以它为准，缺席就数正文里的 @，都没有再看 mention 布尔），
+      否则限速接线在这一层根本执行不到。record 只在放行之后调 = 真 say() 里
+      「拒绝时一个字节都不落盘」那条 */
+  function budgetedSession(record: (args: unknown[]) => void): CloudSession {
+    return fakeSession({
+      say: async (fromUid, label, text, mention, mentions, budget) => {
+        const targets = mentions !== undefined ? [...new Set(mentions)] : mentionTokens(text);
+        const n = targets.length > 0 ? targets.length : mention ? 1 : 0;
+        const veto = budget?.(n) ?? null;
+        if (veto !== null) throw new SayRejectedError(veto);
+        record([fromUid, label, text, mention, mentions]);
+      },
     });
-    const { deps, sent } = makeDeps({ getSession: () => session, rateLimit: denying(["say"]) });
+  }
+
+  it("say 超速 → 回一条看得见的 say_result{ok:false}，且这句话一个字节都没落盘", async () => {
+    const sayCalls: unknown[] = [];
+    const { deps, sent, logs } = makeDeps({
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
+      rateLimit: denying(["say"]),
+    });
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
+    logs.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "刷屏", mention: false }));
 
     expect(sayCalls).toHaveLength(0);
     expect(sent).toHaveLength(1);
     // #964：文案一字不改，载体从无主的 error 帧换成这一句话自己的回执
-    expect(sent[0]!.msg).toMatchObject({ t: "say_result", ok: false });
+    expect(sent[0]!.msg).toMatchObject({ t: "say_result", ok: false, message: throttleMessage("say") });
+    // 限速是业务拒绝不是内部异常：不该记进「say 失败」那条维护者告警
+    expect(logs).toEqual([]);
   });
 
   it("会话房里限速回 say_result 不回 denied —— 客户端把 denied 当终态会直接断连接", async () => {
-    const { deps, sent } = makeDeps({ rateLimit: denying(["say", "turn"]) });
+    const { deps, sent } = makeDeps({
+      getSession: () => budgetedSession(() => {}),
+      rateLimit: denying(["say", "turn"]),
+    });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
@@ -713,13 +740,13 @@ describe("限流接线（issue #819）", () => {
     expect(sent[0]!.msg).toMatchObject({ ok: false });
   });
 
-  it("@Agent 走 turn 桶、普通发言走 say 桶 —— 一帧只记一个桶", async () => {
+  it("点了名的走 turn 桶、闲聊走 say 桶 —— 一帧只记一个桶", async () => {
     const sayCalls: unknown[] = [];
-    const session = fakeSession({
-      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
-    });
     // turn 桶空了，say 桶还有：普通发言照常放行，@Agent 被拦
-    const { deps, sent } = makeDeps({ getSession: () => session, rateLimit: denying(["turn"]) });
+    const { deps, sent } = makeDeps({
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
+      rateLimit: denying(["turn"]),
+    });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
@@ -727,7 +754,6 @@ describe("限流接线（issue #819）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "闲聊", mention: false }));
     expect(sayCalls).toHaveLength(1);
     expect(sent.map((s) => s.msg)).toEqual([{ t: "say_result", ok: true }]);
-
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@Agent 干活", mention: true }));
     expect(sayCalls).toHaveLength(1); // 没再涨
@@ -737,14 +763,11 @@ describe("限流接线（issue #819）", () => {
 
   it("mentions 非空但 mention=false 也走 turn 桶（#932 坑 ④）—— chip 输入那条帧会真起 turn", async () => {
     const sayCalls: unknown[] = [];
-    const session = fakeSession({
-      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
-    });
     // 记下每一帧记的是哪个桶：只断言"被拦住了"分不清它是被 turn 档拦的还是
     // say 档 —— 而这条 issue 修的正是"记错桶"
     const buckets: string[] = [];
     const { deps, sent } = makeDeps({
-      getSession: () => session,
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
       rateLimit: { allow: (kind) => { buckets.push(kind); return kind !== "turn"; } },
     });
     const handler = createFrameHandler(deps);
@@ -765,12 +788,9 @@ describe("限流接线（issue #819）", () => {
 
   it("mentions 长度 3 的帧扣 3 个 turn 令牌（限速按点名数扣，#957 B-I5）", async () => {
     const sayCalls: unknown[] = [];
-    const session = fakeSession({
-      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
-    });
     const allowCalls: unknown[] = [];
     const { deps, sent } = makeDeps({
-      getSession: () => session,
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
       rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
     });
     const handler = createFrameHandler(deps);
@@ -787,46 +807,74 @@ describe("限流接线（issue #819）", () => {
     expect(sayCalls).toHaveLength(1);
   });
 
-  // #957 终审 Minor 1：turn 桶容量 10。@ 了 11 只的帧扣 11 个令牌，而桶再满
-  // 也只有 10 个 —— 补充速率再快也补不到 11，于是这条帧**永远**发不出去，
-  // 用户看到的是一句"稍等一会儿再试"，等多久都没用
-  it("mentions 超过 turn 桶容量时夹到容量上限，帧发得出去（#957 终审 Minor 1）", async () => {
-    const sayCalls: unknown[] = [];
-    const session = fakeSession({
-      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
-    });
+  // 第二轮复审 B2-C1（Critical）：**省掉 mentions 字段的客户端**。价钱原来在
+  // 这一层按 `msg.mentions?.length ?? 1` 算，于是一句正文里 @ 了 N 个人、
+  // 字段却缺席的话按 1 个令牌收，而 say() 那边照样起 N 条真花钱的模型调用。
+  // 现在价钱由 say() 里 resolveTargets 之后的真实 targets 决定
+  it("mentions 缺席、正文 @ 了两只 → 按 2 扣 turn 令牌（B2-C1）", async () => {
     const allowCalls: unknown[] = [];
-    const { deps, sent } = makeDeps({
-      getSession: () => session,
+    const { deps } = makeDeps({
+      getSession: () => budgetedSession(() => {}),
+      rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    allowCalls.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "say", text: "@运营 @广告 看下", mention: false })
+    );
+
+    expect(allowCalls).toEqual([["turn", "u1", 2]]);
+  });
+
+  it("闲聊按 1 个 say 令牌扣（Math.max(1, 0) —— 0 个令牌等于这一档不设闸）", async () => {
+    const allowCalls: unknown[] = [];
+    const { deps } = makeDeps({
+      getSession: () => budgetedSession(() => {}),
+      rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    allowCalls.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "你好", mention: false }));
+
+    expect(allowCalls).toEqual([["say", "u1", 1]]);
+  });
+
+  // 第二轮复审 B2-C1 的后半：上一版把超容量的帧**夹到桶容量**（按 10 计一次）
+  // 再放行 —— 第十一只往后每一只都免费，而它们各起一条真花钱的 turn。
+  // 拒绝，并且把上限说出口：这不是"等一会儿"能解决的事
+  it("超过 turn 桶容量 → 拒绝而不是夹价，allow 一次都不问、话一个字节都没落", async () => {
+    const sayCalls: unknown[] = [];
+    const allowCalls: unknown[] = [];
+    const { deps, sent, logs } = makeDeps({
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
       rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
     });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
     allowCalls.length = 0;
+    logs.length = 0;
 
-    const many = Array.from({ length: 11 }, (_, i) => `a${i}`);
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@全体", mention: true, mentions: many }));
+    const many = Array.from({ length: TURN_BUCKET.capacity + 1 }, (_, i) => `a${i}`);
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "say", text: many.map((m) => `@${m}`).join(" "), mention: true })
+    );
 
-    expect(allowCalls).toEqual([["turn", "u1", TURN_BUCKET.capacity]]);
-    expect(sayCalls).toHaveLength(1);
-  });
-
-  it("超容量的那条真被限速时，文案说清「一句话最多 @ N 只」（#957 终审 Minor 1）", async () => {
-    const { deps, sent } = makeDeps({ rateLimit: { allow: () => false } });
-    const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    sent.length = 0;
-
-    const many = Array.from({ length: 11 }, (_, i) => `a${i}`);
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@全体", mention: true, mentions: many }));
-
+    expect(allowCalls).toEqual([]); // 超容量在问价之前就拒了，一个令牌都没记
+    expect(sayCalls).toHaveLength(0);
+    expect(logs).toEqual([]);
     expect(sent).toHaveLength(1);
-    const msg = (sent[0]!.msg as { t: string; ok: boolean; message: string });
+    const msg = sent[0]!.msg as { t: string; ok: boolean; message: string };
     expect(msg.t).toBe("say_result");
     expect(msg.ok).toBe(false);
-    expect(msg.message).toContain(String(TURN_BUCKET.capacity));
-    expect(msg.message).toContain("最多");
+    expect(msg.message).toContain(`最多 @ ${TURN_BUCKET.capacity} 只`);
+    expect(msg.message).toContain(String(TURN_BUCKET.capacity + 1)); // 这条 @ 了几只也说出来
   });
 
   it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {
