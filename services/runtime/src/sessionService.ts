@@ -1077,9 +1077,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }
         runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempts });
       }
-      // **收口先落、再入队**：这几条 turn_ended 的 readUpToSeq 取的是落盘那一刻的
-      // 日志尾（同 runJob 的两处合成收口，#957 F1），排在任何 job 起跑之前落盘，
-      // 这个数才确实是"补跑开始前的日志尾"而不是某条 turn 跑了一半的中间态
+      // **收口先落、再入队**：排在任何 job 起跑之前落盘，落的时候日志还是
+      // 「补跑开始前」那个静止的样子，不是某条 turn 跑了一半的中间态。
+      // 下面两个循环的 readUpToSeq 都取**那条开场白自己的 seq**（不是日志尾，
+      // #957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、仍然有效
+      // 的开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是另一回事
+      // ——那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）
       for (const k of kicked) {
         notify(store.append({
           sessionId,

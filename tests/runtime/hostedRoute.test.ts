@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createHostedProbe,
   createHostedRuntimeAdapter,
+  createRouteMemo,
   decideRuntimeRoute,
   probeModelRoute,
   withUsage,
@@ -133,6 +134,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     const adapter = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe,
       cfg: () => ws,
       ownerUid: "u1",
@@ -150,6 +152,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     const adapter = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe,
       cfg: () => ws,
       ownerUid: "u1",
@@ -186,6 +189,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     const adapter = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe,
       cfg: () => ws,
       ownerUid: "u1",
@@ -211,6 +215,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     const adapter = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe,
       cfg: () => ws,
       ownerUid: "owner-1",
@@ -235,6 +240,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     const adapter = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe,
       cfg: () => null, // 工作区也没配 key
       ownerUid: "u1",
@@ -252,10 +258,13 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
   afterEach(() => vi.unstubAllGlobals());
 
   const adapterBase = { edgeBase: "https://edge", runtimeSecret: "rs", ownerUid: "u1", workspaceId: "w1", sessionId: "s1" };
+  // 每台 adapter 各给一份新 memo（这几条用例只关心单台的行为）；
+  // 跨 adapter 共享那一条见下面 describe("换轨记忆住在会话上…")
+  const solo = () => ({ ...adapterBase, routeMemo: createRouteMemo() });
 
   it("D1：cfg() 为 null（工作区没自带 key）时，preferredModel 仍然决定托管路的型号", async () => {
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => me },
       cfg: () => null,
       preferredModel: () => "glm-5.3",
@@ -266,7 +275,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
 
   it("D1：preferredModel 网关不供 → 退到网关第一款（不是抛错，也不是原样发过去）", async () => {
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => me },
       cfg: () => null,
       preferredModel: () => "gpt-9",
@@ -277,7 +286,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
 
   it("D2：没订阅走自带 key 时，型号是 ws.modelId —— preferredModel 一个字都不参与", async () => {
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => null },
       cfg: () => ({ ...ws, modelId: "owner-choice" }),
       preferredModel: () => "gpt-9",
@@ -286,36 +295,65 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
     expect(adapter.model).toBe("owner-choice");
   });
 
-  it("D3：hosted → workspace（探不到）→ hosted，两次换轨各回调一次、reason 分得开", async () => {
+  // #957 D3 复审 Critical：真机上每个 turn 都新造一台 adapter（daemon 的
+  // adapterFor 挂在 engineFor 上，每只 agent 一台）。记忆若住在 adapter 闭包里，
+  // 每次决策都是「第一次」，三个 reason 一个都发不出来 —— 而这一切没有症状。
+  // 所以判据必须是**分别构造**的三台 adapter 共用一份会话级 memo
+  it("D3：换轨记忆住在会话上 —— 三台分别构造的 adapter 共用一份 memo，换轨照样落一次", async () => {
     let meVal: BillingMe | null | "unreachable" = me;
     const changes: [string, string, string][] = [];
-    const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
-      probe: { me: async () => meVal },
-      cfg: () => ws,
-      onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
-    });
+    const memo = createRouteMemo(); // 会话级：daemon 的 openSessionRoom 里那一份
+    const build = () =>
+      createHostedRuntimeAdapter({
+        ...adapterBase,
+        routeMemo: memo,
+        probe: { me: async () => meVal },
+        cfg: () => ws,
+        onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
+      });
 
-    await adapter.prepare?.();
-    expect(changes).toEqual([]); // 第一次决策没有「上一条路」可比，不算换轨
+    await build().prepare?.(); // turn 1：新 adapter，托管路
+    expect(changes).toEqual([]); // 这条会话的第一次决策，没有「上一条路」可比
 
     meVal = "unreachable";
-    await adapter.prepare?.();
+    await build().prepare?.(); // turn 2：另一台新 adapter（另一只 agent 也算）
     expect(changes).toEqual([["hosted", "workspace", "probe_failed"]]);
 
     meVal = me;
-    await adapter.prepare?.();
+    await build().prepare?.(); // turn 3
     expect(changes).toEqual([
       ["hosted", "workspace", "probe_failed"],
       ["workspace", "hosted", "subscription_active"],
     ]);
   });
 
+  // 同一件事的另一半：两只 agent 在同一条会话里先后翻过去 —— 路是工作区级的
+  // 事实，群里该看到**一行**换轨，不是每只 agent 各一行
+  it("D3：两只 agent 各自的 adapter 共用会话 memo —— 一次翻转只落一行换轨", async () => {
+    let meVal: BillingMe | null | "unreachable" = me;
+    const changes: [string, string, string][] = [];
+    const memo = createRouteMemo();
+    const build = (agentId: string) =>
+      createHostedRuntimeAdapter({
+        ...adapterBase,
+        routeMemo: memo,
+        agentId,
+        probe: { me: async () => meVal },
+        cfg: () => ws,
+        onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
+      });
+    await build("a_ops").prepare?.();
+    meVal = "unreachable";
+    await build("a_ops").prepare?.();
+    await build("a_ads").prepare?.(); // 第二只 agent 也决出 workspace —— 不该再喊一次
+    expect(changes).toEqual([["hosted", "workspace", "probe_failed"]]);
+  });
+
   it("D3：探到了、他确实没订阅 —— reason 是 no_subscription 不是 probe_failed", async () => {
     let meVal: BillingMe | null | "unreachable" = me;
     const changes: [string, string, string][] = [];
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => meVal },
       cfg: () => ws,
       onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
@@ -329,7 +367,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
   it("D4：托管路 429 quota_exhausted → 第二次请求打到 ws.baseUrl，并落一条 quota_exhausted 的换轨", async () => {
     const changes: [string, string, string][] = [];
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => me },
       cfg: () => ws,
       onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
@@ -354,10 +392,97 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
     expect(changes).toEqual([["hosted", "workspace", "quota_exhausted"]]);
   });
 
+  // #957 D4 复审 Important 3：改道换得了端点、换不了型号名（请求体在重试之间
+  // 不变）。而这里的型号名来自白名单 —— 成员可改。把它发给所有者自己的
+  // provider 正是 D2 明令禁止的那件事，所以名字不同就不改道
+  it("D4 复审：白名单型号 ≠ ws.modelId —— 不改道，第二次请求仍打网关，也不落换轨", async () => {
+    const changes: [string, string, string][] = [];
+    const adapter = createHostedRuntimeAdapter({
+      ...solo(),
+      probe: { me: async () => me },
+      cfg: () => ({ ...ws, modelId: "owner-choice" }), // 所有者自己的型号名
+      preferredModel: () => "glm-5.3", // 成员在白名单里填的那个
+      onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
+    });
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      return Response.json(
+        { error: { type: "otto_edge", code: "quota_exhausted", message: "额度用完了" } },
+        { status: 429 }
+      );
+    }));
+    await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/429/);
+    expect(urls).toEqual(["https://edge/llm/v1/chat/completions", "https://edge/llm/v1/chat/completions"]);
+    expect(changes).toEqual([]);
+    // #957 D4 复审 Important 2：线上发出去的是 glm-5.3，日志里也必须是它 ——
+    // 改道那次现决的结果（owner-choice）绝不能盖到 lastModel 上
+    expect(adapter.model).toBe("glm-5.3");
+  });
+
+  it("D4 复审：两边型号名相同才改道，且改道后 .model 仍是线上那一款（Important 2）", async () => {
+    const adapter = createHostedRuntimeAdapter({
+      ...solo(),
+      probe: { me: async () => me },
+      cfg: () => ws, // ws.modelId === "glm-5.3" === 白名单那一款
+      preferredModel: () => "glm-5.3",
+    });
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.startsWith("https://edge")) {
+        return Response.json({ error: { type: "otto_edge", code: "quota_exhausted", message: "满了" } }, { status: 429 });
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    }));
+    await adapter.chat([{ role: "user", content: "hi" }]);
+    expect(urls[1]).toBe("https://own/v1/chat/completions");
+    expect(adapter.model).toBe("glm-5.3"); // 两边同名，本来就一致；这里钉的是「没被 blocked 占位盖掉」
+  });
+
+  // #957 D4 复审 Minor 4：不记住窗口的话，重置之前每个 turn 都要先烧一次
+  // 注定 429 的网关请求（外加 adapter 的退避）
+  it("D4 复审：记住耗尽窗口 —— 窗口内的下一个 turn 直接走自带 key，窗口过了再试托管", async () => {
+    let clock = 0;
+    const memo = createRouteMemo();
+    const build = () =>
+      createHostedRuntimeAdapter({
+        ...adapterBase,
+        routeMemo: memo,
+        now: () => clock,
+        probe: { me: async () => me },
+        cfg: () => ws,
+      });
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.startsWith("https://edge")) {
+        return Response.json(
+          { error: { type: "otto_edge", code: "quota_exhausted", message: "满了", window: "5h", resetAt: 10_000 } },
+          { status: 429 }
+        );
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    }));
+
+    await build().chat([{ role: "user", content: "1" }]); // turn 1：撞一次网关，改道成功
+    expect(urls).toEqual(["https://edge/llm/v1/chat/completions", "https://own/v1/chat/completions"]);
+
+    clock = 5_000; // 还在窗口里
+    urls.length = 0;
+    await build().chat([{ role: "user", content: "2" }]); // turn 2：一次网关都不打
+    expect(urls).toEqual(["https://own/v1/chat/completions"]);
+
+    clock = 20_000; // 窗口过了 —— 该回去试托管，不能永远绕开
+    urls.length = 0;
+    await build().chat([{ role: "user", content: "3" }]).catch(() => {});
+    expect(urls[0]).toBe("https://edge/llm/v1/chat/completions");
+  });
+
   it("D4：额度耗尽但工作区没配 key —— 抛原错，且只打了两次网关（没有第三条路可试）", async () => {
     const changes: [string, string, string][] = [];
     const adapter = createHostedRuntimeAdapter({
-      ...adapterBase,
+      ...solo(),
       probe: { me: async () => me },
       cfg: () => null,
       onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
@@ -391,6 +516,7 @@ describe("withUsage（issue #696 fix round 2：不能用对象展开转发 model
     const inner = createHostedRuntimeAdapter({
       edgeBase: "https://edge",
       runtimeSecret: "rs",
+      routeMemo: createRouteMemo(),
       probe: fakeProbe(me),
       cfg: () => ws,
       ownerUid: "u1",

@@ -28,7 +28,7 @@ import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps, type RouteMemo } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -257,7 +257,13 @@ async function main(): Promise<void> {
     agent: AgentSpec,
     // 必需（不是 `deps["onRouteChanged"]` 那个可选类型）：这里只有一个调用方，
     // 写成可选就是「忘了接线那天它安静地什么都不记」（同 FrameHandlerDeps.log 的纪律）
-    onRouteChanged: NonNullable<HostedRuntimeAdapterDeps["onRouteChanged"]>
+    onRouteChanged: NonNullable<HostedRuntimeAdapterDeps["onRouteChanged"]>,
+    // 换轨记忆**由会话房持有**（#957 D3 复审 Critical）：本函数每次
+    // engineFor 都新造一台 adapter（每只 agent 一台），记在 adapter 闭包里
+    // 等于每个 turn 从零开始，第一次决策永远不回调 = 换轨落账整个是 no-op。
+    // 一条会话一份而不是一只 agent 一份：走哪条路是工作区级的事实，两只
+    // agent 先后翻过去该在群里留下**一行**换轨，不是两行
+    routeMemo: RouteMemo
   ): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
@@ -270,6 +276,7 @@ async function main(): Promise<void> {
       // 配的那款，再退到网关第一款（都在 decideRuntimeRoute 里）
       preferredModel: () => agent.models[0],
       onRouteChanged,
+      routeMemo,
       ownerUid,
       workspaceId,
       sessionId,
@@ -467,6 +474,9 @@ async function main(): Promise<void> {
   ): CloudSession {
     const store = storeFor(workspaceId);
     const roster = new Set<string>();
+    // 这条会话的换轨记忆 + 额度耗尽窗口（#957 D3/D4 复审）。所有 agent 的
+    // adapter 共用这一份——见 adapterFor 的 routeMemo 参数
+    const routeMemo = createRouteMemo();
 
     const transport = createWsTransport({
       baseUrl: config.relayBase,
@@ -598,9 +608,13 @@ async function main(): Promise<void> {
             // 换轨落账（#957 D3）：钱从谁账上出变了，这个事实日志里推不出来。
             // 落盘之外还要 broadcast——「本轮改用工作区自己的 key 了」这句话
             // 该在这个 turn 还没结束时就出现在群里，不是等下次刷新才翻出来
-            // （同桌面 main/agent.ts 的 onReroute 纪律）
+            // （同桌面 main/agent.ts 的 onReroute 纪律）。
+            // 形状同上面的 `model_usage`：`ignorable`（模型不可见的注记）、
+            // 绕开 sessionService 的 notify 直接 append，所以 `lastSeqSeen`
+            // 这一刻会短暂落后一格——两条都不参与任何按 seq 的收口判断
+            // （#957 复审 Minor 5：已知、留着）
             broadcast(store.append({ sessionId, ts: Date.now(), type: "route_changed", ignorable: true, from, to, reason }));
-          }),
+          }, routeMemo),
           recordUsage
         ),
       px,
