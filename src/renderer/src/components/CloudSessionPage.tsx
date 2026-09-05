@@ -56,12 +56,15 @@ import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
-import { assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
+import {
+  approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, systemNoteText, turnEndedLineText, userRowIdentity,
+} from "../lib/cloudTimeline.js";
+import { TurnErrorState } from "./TurnErrorState.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
-import { parseMentions } from "../../../shared/remote/agentMention.js";
+import { mentionTokens, parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
@@ -101,8 +104,13 @@ function cloudDeniedMessage(code: string | undefined): string {
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
     gone 时 wsTransport 会自动重连，不代表这次云会话失败（main/cloudSessionClient.ts
-    文件头注释）。ready 没有横幅：一切正常不值得占一行 */
-function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: string } | null {
+    文件头注释）。ready 没有横幅：一切正常不值得占一行——**除非这份历史缺了
+    东西**（issue #957 C-I7）。那一行画在这里而不是 actionError 那格，正是因为
+    这里不会被下一次成功的 cloudSay 擦掉（那格成功时会 `workspaceGroupsError: null`）：
+    「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同，不能只差一行
+    会自己消失的灰字。缺口补齐（重连后 backlog 拉全了）时主进程不再下发它，
+    这一行自己就没了 */
+function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; text: string } | null {
   switch (cs.state) {
     case "connecting":
       return { tone: "muted", text: "连接中…" };
@@ -111,7 +119,11 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: str
     case "denied":
       return { tone: "err", text: cloudDeniedMessage(cs.deniedCode) };
     case "ready":
-      return null;
+      // warn 不是 muted（终审 minor）：muted 那一档在这张页面上说的是「稍等，
+      // 还在连」——数据完整性警告穿它的衣服，就成了一句会被当作过场的灰字，
+      // 而它恰恰是唯一告诉你「别照着这段历史下判断」的话。也不用 err：
+      // 没有任何东西坏了，是这一份历史不全
+      return cs.gapNote === null ? null : { tone: "warn", text: cs.gapNote };
   }
 }
 
@@ -131,6 +143,9 @@ export function CloudSessionPage({
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
   const cloudArchive = useChat((s) => s.cloudArchive);
+  // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
+  // 的 @ 先刷一次都要它
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   // 建这条会话的人（issue #822）：清单那一行本来就带 publisherUid，不用为
   // 这个再往协议里加字段。清单还没拉到时查不到 → 按钮不显示（服务端才是
   // 判据，这里少显示一颗按钮的代价远小于显示一颗按了被拒的）
@@ -142,6 +157,7 @@ export function CloudSessionPage({
   // 发送/审批失败落这一格（复审 Medium：这条错误此前只在 WorkspacePage
   // 原来那条 return 路径里渲染，云会话走的是提前 return，根本到不了）
   const actionError = useChat((s) => s.workspaceGroupsError);
+  const takeDraftSeed = useChat((s) => s.takeCloudDraftSeed);
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -199,6 +215,9 @@ export function CloudSessionPage({
     if (pickingAt === null) setDismissedAt(null);
   }, [pickingAt]);
   const options = picking ? filterAgentCandidates(candidates, picking.query) : [];
+  // 名单刚变过（改名/新增）时 options 会是空的——不画空态的话弹层压根不开，
+  // 用户以为自己没打对字，实际是这份本地快照过期了（#935 / #957 C-I4）
+  const emptyState = pickerEmptyState(picking, options);
   // 发送时点了谁：与 chip 行**同一次**调用算出来的同一份 —— 界面上写着发给
   // 谁，服务端就跑谁。两边各算各的就会分家（坑 ④）
   const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
@@ -208,6 +227,20 @@ export function CloudSessionPage({
   useEffect(() => {
     setHi(0);
   }, [optionKey]);
+
+  // 开局卡那句话没发出去时的原文（issue #957 C-I6）：摆回输入框。这一步之后
+  // 它就是一份普通草稿——后面每一次失败都归下面 submit() 那条既有纪律管
+  // （「草稿在发送成功之后才清」），不需要另一套保管机制。
+  // **只在草稿是空的时候取**：用户已经在打字了就别覆盖他（也别把那份原文
+  // 悄悄丢掉——不取走它就还留在 store 里，等这一格空了再摆回来）
+  const csSessionId = cs?.sessionId ?? null;
+  useEffect(() => {
+    if (csSessionId === null || draft !== "") return;
+    const seed = takeDraftSeed(csSessionId);
+    if (seed === null) return;
+    setDraft(seed);
+    setCaret(seed.length); // 光标落在末尾：接着改比从头挪过去顺手
+  }, [csSessionId, draft, takeDraftSeed]);
 
   // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
   useEffect(() => {
@@ -229,11 +262,26 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
+    let sendCandidates = candidates;
+    let sendMentions = mentions;
+    // 正文里写了 @token，但一个候选都解析不出来（#935 / #957 C-I4）：最常见
+    // 的诱因是名单刚变过（改名/新增）而这份本地快照没跟上——发一个
+    // authoritative 的 `[]` 会被服务端读成"我确认谁都没点"（ADR-0220 决策 2），
+    // 于是消息安静地变成一句没人接的闲聊，用户还以为自己 @ 到了人。发送前
+    // 先刷一次名单，用刷新后的最新快照重算一次再决定发不发数组——不从这个
+    // 组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的旧值），
+    // 直接问 store 要这一刻的真实状态
+    if (mentionTokens(text).length > 0 && mentions.length === 0) {
+      await refreshWorkspaceGroups();
+      const freshWs = useChat.getState().workspaceGroups.find((g) => g.id === ws.id);
+      sendCandidates = (freshWs?.agents ?? []).map((a) => ({ agentId: a.agentId, name: a.name, description: a.description }));
+      sendMentions = parseMentions(text, sendCandidates);
+    }
     // 名单一条都没有（还没拉到 / 拉失败）时**不发数组**：服务端把 `[]` 读作
     // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
     // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
     // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
-    const ok = candidates.length === 0 ? await cloudSay(text) : await cloudSay(text, mentions);
+    const ok = sendCandidates.length === 0 ? await cloudSay(text) : await cloudSay(text, sendMentions);
     if (ok) {
       // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");
@@ -331,7 +379,12 @@ export function CloudSessionPage({
       </div>
 
       {banner && (
-        <p className={cn("text-xs", banner.tone === "err" ? "text-err" : "text-muted-foreground")}>
+        <p
+          className={cn(
+            "text-xs",
+            banner.tone === "err" ? "text-err" : banner.tone === "warn" ? "text-warn" : "text-muted-foreground"
+          )}
+        >
           {banner.text}
         </p>
       )}
@@ -350,6 +403,14 @@ export function CloudSessionPage({
                 return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
               }
               if (e.type === "user_message") {
+                // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，
+                // 不是群里哪个人说的——I5 描述的"一条没有署名的群聊气泡"就是
+                // 落在这条分支之前的老代码。systemNoteText 只对 origin 在场
+                // 的事件给出非 null，人打的话仍然走下面的气泡渲染
+                const note = systemNoteText(e, ws);
+                if (note !== null) {
+                  return <SystemNoteRow key={e.seq} text={note} />;
+                }
                 const identity = userRowIdentity(e, ws, selfUid);
                 return (
                   <UserMessageRow
@@ -374,6 +435,23 @@ export function CloudSessionPage({
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
                 // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
+                //
+                // turnEndedLineText 非 null（#957 M16）：多智能体并发时"谁挂了"看不出来，
+                // 只换 title 那一行（「运营」这一轮出错），detail 仍是 e.error——不是重新
+                // 拼一整句，ErrorState 本来就是 title/detail 分两行画（含 humanizeError 的
+                // 人话/原文折叠）。查不到 agentId（旧日志/本机会话）落回现状的 EventRow
+                const agentTitle = turnEndedLineText(e, ws);
+                if (agentTitle !== null) {
+                  return (
+                    <TurnErrorState
+                      key={e.seq}
+                      title={agentTitle}
+                      detail={e.error ?? "没有错误信息"}
+                      interactive={false}
+                      className="max-w-none"
+                    />
+                  );
+                }
                 return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
@@ -393,10 +471,12 @@ export function CloudSessionPage({
             <ApprovalRow
               key={req.callId}
               event={req}
+              ws={ws}
               waitingLabel={labelOf(ws, req.initiatorUid)}
               canDecide={selfUid === req.initiatorUid || selfUid === cs.ownerUid}
-              onApprove={() => void cloudApprove(req.callId, "approved")}
-              onDeny={() => void cloudApprove(req.callId, "denied")}
+              ready={ready}
+              onApprove={() => cloudApprove(req.callId, "approved")}
+              onDeny={() => cloudApprove(req.callId, "denied")}
             />
           ))}
         </div>
@@ -426,7 +506,7 @@ export function CloudSessionPage({
               Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
               键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
               它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
-          <Popover open={picking !== null && options.length > 0}>
+          <Popover open={picking !== null && (options.length > 0 || emptyState !== null)}>
             <PopoverAnchor asChild>
               <textarea
                 ref={boxRef}
@@ -476,6 +556,12 @@ export function CloudSessionPage({
                       setDismissedAt(picking.at);
                       return;
                     }
+                  } else if (picking !== null && emptyState !== null && e.key === "Escape") {
+                    // 空态那张卡没有候选可挑，方向键/Enter/Tab 都没有意义——
+                    // 只接 Escape 关掉它，同有候选时的既有约定
+                    e.preventDefault();
+                    setDismissedAt(picking.at);
+                    return;
                   }
                   // Enter 发送、Shift+Enter 换行
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -507,27 +593,45 @@ export function CloudSessionPage({
               // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
               className="w-auto min-w-[200px] max-w-[320px] p-1"
             >
-              {options.map((o, i) => (
-                <div
-                  key={o.agentId}
-                  role="option"
-                  aria-selected={i === hi}
-                  // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
-                  // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    pick(i);
-                  }}
-                  onMouseEnter={() => setHi(i)}
-                  className={cn(
-                    "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
-                    i === hi && "bg-foreground/[0.06]"
-                  )}
-                >
-                  <span className="shrink-0">{o.name}</span>
-                  <span className="truncate text-muted-foreground">{o.description}</span>
+              {options.length === 0 && emptyState ? (
+                // 空态（#935 / #957 C-I4）：只读的一行说明 + 一颗刷新钮，不是
+                // 一个可选的选项——名单可能真的刚变过（别人改了名/新建了 agent），
+                // 也可能用户就是打错了字，这里不替他判断，只给出"再核实一次"的路
+                <div className="flex flex-col gap-1.5 px-2 py-1.5 text-[12.5px] text-muted-foreground">
+                  <span>没有叫「{emptyState.query}」的智能体（名单可能刚变过）</span>
+                  <button
+                    type="button"
+                    // 同选项行的道理：mousedown + preventDefault 保住 textarea 的焦点
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void refreshWorkspaceGroups()}
+                    className="press-scale self-start text-foreground underline decoration-dotted underline-offset-2 hover:no-underline"
+                  >
+                    刷新名单
+                  </button>
                 </div>
-              ))}
+              ) : (
+                options.map((o, i) => (
+                  <div
+                    key={o.agentId}
+                    role="option"
+                    aria-selected={i === hi}
+                    // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
+                    // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pick(i);
+                    }}
+                    onMouseEnter={() => setHi(i)}
+                    className={cn(
+                      "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+                      i === hi && "bg-foreground/[0.06]"
+                    )}
+                  >
+                    <span className="shrink-0">{o.name}</span>
+                    <span className="truncate text-muted-foreground">{o.description}</span>
+                  </div>
+                ))
+              )}
             </PopoverContent>
           </Popover>
           {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
@@ -984,6 +1088,13 @@ function AssistantMessageRow({
     才会落这条事件，光看聊天记录本身看不出"我刚改的提示词有没有吃上"，
     这一行就是那个回执。视觉上刻意比 ChatMessageRow/UserMessageRow 更淡更
     小——它是审计性质的旁白，不是群里任何人说的话 */
+/** 护栏 / 后台任务回注的旁白（#957 C-I5，#936）：样式照 AgentBriefedRow/
+    AgentRelayRow——同属审计性质的旁白，不是群里任何人说的话。正文由
+    cloudTimeline.systemNoteText 算好（含 agent 名解析），这里只管画 */
+function SystemNoteRow({ text }: { text: string }) {
+  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
+}
+
 function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
   return (
     <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
@@ -1057,36 +1168,137 @@ function ToolActivityLine({ call, result }: { call: ToolCallRequest; result: Too
     的 owner(据此复审别人的操作);其余成员只读一句"等待谁审批",不能替别人
     按下批准/拒绝(main/cloudSessionClient.ts deliverEvent 的资格判断在推送
     那一层就已经把卡只发给够格的人,这里的 canDecide 是同一条判据在渲染层
-    的镜像——群聊场景大家共读同一份 events,不是每个人各收各的) */
+    的镜像——群聊场景大家共读同一份 events,不是每个人各收各的)。
+    点下去的反馈(#957 C-I2/#927 桌面侧)：`submitting` 按这张卡自己记(卡本身
+    按 callId 有 key，state 天然不会串到别的卡上)。false 才把按钮放回来、
+    在**卡内**画原因——不进 workspaceGroupsError 共享格，那一格已经被同一次
+    失败占了、卡外还会再画一遍反而像两件事。true 就保持 disabled 到这张卡
+    从 pendingApprovals 消失(父组件按 callId 卸载这一整行，本地 state 随之
+    清空，不需要额外清理)。 */
 function ApprovalRow({
   event,
+  ws,
   waitingLabel,
   canDecide,
+  ready,
   onApprove,
   onDeny,
 }: {
   event: ApprovalRequestEvent;
+  ws: WorkspaceSnapshot;
   waitingLabel: string;
   canDecide: boolean;
-  onApprove: () => void;
-  onDeny: () => void;
+  ready: boolean;
+  onApprove: () => Promise<boolean>;
+  onDeny: () => Promise<boolean>;
 }) {
+  const [submitting, setSubmitting] = useState<"approved" | "denied" | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  // cloudApprove 回 true 只确认"帧交给了 socket"，不是送达确认（同 wire.ts
+  // send() 回 boolean 的既有纪律）——approve 没有像 approval_decision 那样
+  // 的确认回执，服务端的 no_pending/not_allowed 拒绝走 error 帧 → 一次性
+  // notice → workspaceGroupsError，比这次 await 晚到（#927 的镜像，#964 是
+  // say 帧的孪生问题）。这两个 ref 是接住"迟到的拒绝"用的：groupsErrorAtClick
+  // 记下点击那一刻的旧值（用于判断"变了"而不是"本来就有"），ackTimer 是兜底——
+  // 见下面 15s 那个 effect，**不要**当成用不上的清理代码删掉
+  const groupsErrorAtClick = useRef<string | null>(null);
+  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupsError = useChat((s) => s.workspaceGroupsError);
+
+  const clearAckTimer = (): void => {
+    if (ackTimer.current !== null) {
+      clearTimeout(ackTimer.current);
+      ackTimer.current = null;
+    }
+  };
+
+  // 卸载兜底：这张卡因 approval_decision 落地而从 pendingApprovals 消失时，
+  // 组件直接卸载——不清定时器的话它照样会在 15s 后触发 setState，React 报
+  // "在已卸载组件上更新状态" 的警告
+  useEffect(() => clearAckTimer, []);
+
+  // 迟到的拒绝：submitting 期间 workspaceGroupsError 变成了一个跟点击时不
+  // 一样的非空值，说明**有一次**操作被服务端事后回绝了——按第一条机制接住
+  // （不清全局那一格：它是共享状态，谁的失败谁负责）。
+  // **不抄那句文案进卡内**（终审 I1）：`error` 帧不带 callId，这条全局错误
+  // 归不了属——两张卡同时 submitting 时，一条 `no_pending` 会让两张都写上
+  // 「这条审批已经处理过或已过期」，而其中一张可能刚刚批准成功；任何一件
+  // 无关的失败（配置保存挂了、限速）同样会被抄成审批的拒绝理由。归属确定的
+  // 只有 `ok === false` 那条路（那次调用自己的返回值），精确文案只在那里显示。
+  // 这里只放开按钮 + 一句中性的话：把「可能有事发生，再看一眼」说出来，
+  // 而不是替服务端断言发生了什么
+  useEffect(() => {
+    if (submitting === null) return;
+    if (groupsError !== null && groupsError !== groupsErrorAtClick.current) {
+      clearAckTimer();
+      setSubmitting(null);
+      setLocalError("刚才有一次操作被拒（可能是这一条），可以再试");
+    }
+  }, [groupsError, submitting]);
+
+  const decide = async (decision: "approved" | "denied", run: () => Promise<boolean>): Promise<void> => {
+    setSubmitting(decision);
+    setLocalError(null);
+    groupsErrorAtClick.current = useChat.getState().workspaceGroupsError;
+    clearAckTimer();
+    // 安全网（第二条机制）：15s 内既没等到卡消失（approval_decision 落地）
+    // 也没等到 notice（上面那个 effect），就别再把按钮焊死——用户还能再点
+    ackTimer.current = setTimeout(() => {
+      ackTimer.current = null;
+      setSubmitting(null);
+      setLocalError("没有收到回执，可以再试");
+    }, 15_000);
+    const ok = await run();
+    if (!ok) {
+      clearAckTimer();
+      setSubmitting(null);
+      setLocalError(useChat.getState().workspaceGroupsError);
+    }
+    // ok === true：故意不清 submitting/定时器——按钮保持 disabled 直到这张卡
+    // 因为 approval_decision 落地而消失，或者上面两条机制之一先接住迟到的拒绝
+  };
+
+  const fields = event.argsFields;
+  const disabled = !ready || submitting !== null;
+
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-2">
       <div className="min-w-0">
-        <span className="text-xs font-medium">{event.toolName}</span>
-        <p className="mt-0.5 text-[12px] whitespace-pre-wrap break-words text-muted-foreground">
-          {event.argsSummary}
-        </p>
+        <span className="text-xs font-medium">{approvalCardTitle(event, ws)}</span>
+        {fields && fields.length > 0 ? (
+          <div className="mt-1 flex flex-col gap-1.5">
+            {fields.map((f, i) => (
+              <div key={i}>
+                <p className="text-[10.5px] text-muted-foreground">{f.label}</p>
+                <p
+                  className={cn(
+                    "whitespace-pre-wrap break-words text-[12px]",
+                    i === fields.length - 1 && "border border-border rounded-md p-2 max-h-48 overflow-y-auto"
+                  )}
+                >
+                  {f.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-0.5 text-[12px] whitespace-pre-wrap break-words text-muted-foreground">
+            {event.argsSummary}
+          </p>
+        )}
       </div>
       {canDecide ? (
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="xs" className="text-err" onClick={onDeny}>
-            拒绝
-          </Button>
-          <Button size="xs" onClick={onApprove}>
-            批准
-          </Button>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="xs" className="text-err" disabled={disabled} onClick={() => void decide("denied", onDeny)}>
+              拒绝
+            </Button>
+            <Button size="xs" disabled={disabled} onClick={() => void decide("approved", onApprove)}>
+              批准
+            </Button>
+          </div>
+          {submitting && <p className="text-[11px] text-muted-foreground">已提交，等待生效…</p>}
+          {localError && <p className="text-[11px] text-err">{localError}</p>}
         </div>
       ) : (
         <p className="text-[11px] text-muted-foreground">等待 {waitingLabel} 审批</p>

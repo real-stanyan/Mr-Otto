@@ -52,6 +52,20 @@ export interface UserMessageEvent extends SessionEventBase {
       刻意不靠正文前缀 `[后台任务 bg-N 完成]` 反解:那是给模型读的文案不是身份,
       ADR-0103 已经把那条路否掉过一次。写入权同 origin:IPC 入口不透传 */
   backgroundTaskIds?: string[];
+  /** 工作区多智能体（#957 A-5）：这条私话（`origin` 在场）是 engine 注给
+      **哪一只** agent 看的——engine.ts 落 loop_guard/background 这两类事件时
+      用 `env()` 不是 `envBase()`，带上落盘那一刻 `LoopEngineOptions.agentId`
+      （展开而不是恒定写 `undefined`，同 `env()` 自己的注释：`exactOptionalPropertyTypes`
+      不许塞 `undefined` 进 `agentId?: string`）。缺席 = 人说的话 / 接力开场白 /
+      本机单 agent 会话（`env()` 在没配 `agentId` 的引擎上完全不写这个字段，
+      同其余 agentId 字段"缺席=旧日志/单 agent 会话"的纪律）。
+      `agentView.ts` 的 `OTHER_AGENT_VERDICTS` 按它判"这条私话要不要进别人的
+      上下文"；`cloudTimeline.ts` 的 `systemNoteText` 按它查显示名（#957 C-I5）。
+      这个字段的类型声明比它实际开始落盘晚一批（#957 A-5 提交只改了
+      engine.ts，靠 TS 对展开对象的宽松检查悄悄透传了这个字段——`agentView.ts`
+      读它时用 `"agentId" in e` 这个 union 判据侧路，这里补上声明让它成为
+      一等字段，不用再侧路） */
+  agentId?: string;
   /** 云会话群聊（#928 / #932）：这句话是哪个成员说的。**只在 runtime 落的
       user_message 上出现**——本机会话没有"别人"，缺席 = 本机操作者/旧日志。
       有了它，渲染层判"这句是不是我说的"不用再拿 `[label]: ` 前缀跟自己的
@@ -845,14 +859,25 @@ export interface ChatMessageEvent extends SessionEventBase {
 /** 云会话群聊三事件之二：群里有人的操作触发了一次审批请求。
     log-only——**模型不消费**（同 approval_decision，那是给 UI/审计看的时间线）。
     落盘理由：群聊场景下审批请求本身要广播给其他在线成员（谁在等谁批），
-    这件事日志推不出来，必须成为事实来源。argsSummary 只存预览文本，
-    不存完整 args——完整参数在触发它的 assistant_message.toolCalls 里，
-    这里重复存一份只会带来"两处不一致时听谁的"的新问题。 */
+    这件事日志推不出来，必须成为事实来源。
+    **存的是"卡上呈现的那一份"，不是完整 args**：完整参数在触发它的
+    assistant_message.toolCalls 里，把整份 args 再存一遍只会带来"两处不一致时
+    听谁的"的新问题。呈现那一份有两种形态、并存不是二选一——`argsSummary`
+    是整块字符串（旧客户端/旧日志唯一读得到的那份），`argsFields` 是同一份内容
+    的逐字段版（#957 B-C2）。注意 argsSummary **不等于"短预览"**：create_agent
+    自 #954 起把提示词全文放进来（截断的卡等于让人批一段没看见的提示词）。 */
 export interface ApprovalRequestEvent extends SessionEventBase {
   type: "approval_request";
   callId: string;
   toolName: string;
   argsSummary: string;
+  /** 审批卡逐字段（#957 B-C2）。`argsSummary` 是一整块字符串，卡上逐行呈现——
+      字段值里的一个换行就能在真正的提示词上方伪造出一整张良性卡。写入侧禁换行是
+      第一道闸，**逐字段的 DOM 是结构闸**：label 与 value 各自一个节点，value 里
+      有什么都只是那一格里的字，伪造不出第二格。
+      可选：旧日志没有这一格（硬规则：旧日志永远可重放），带不动这一格的客户端
+      退回画 `argsSummary`——所以 `argsSummary` 照旧无条件生成，不是二选一。 */
+  argsFields?: { label: string; value: string }[];
   initiatorUid: string;
   expiresTs: number;
   /** 这条是哪只工作区 agent 干的（#928） */

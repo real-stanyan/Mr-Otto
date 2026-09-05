@@ -6,7 +6,7 @@
 // canKick（owner 且不是自己）、toolsSummary（[] → 全部工具）。
 
 import { describe, expect, it } from "vitest";
-import { connectorRows, memberRows, sessionRows } from "../../src/renderer/src/lib/workspaceView.js";
+import { connectorBatchErrorText, connectorRows, memberRows, sessionRows } from "../../src/renderer/src/lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const WS: WorkspaceSnapshot = {
@@ -94,5 +94,29 @@ describe("sessionRows", () => {
     expect(rows).toEqual([
       { id: "sess-1", title: "会话标题", publisherLabel: "Stan", updatedTs: 1000 },
     ]);
+  });
+});
+
+describe("connectorBatchErrorText（#957 C-C1）", () => {
+  it("两边都空 → null", () => {
+    expect(connectorBatchErrorText([], [])).toBeNull();
+  });
+
+  it("只有贡献失败 → 一句「贡献失败」，注明已成功的已生效", () => {
+    expect(connectorBatchErrorText(["shopify", "notion"], [])).toBe(
+      "贡献失败：shopify、notion（已成功的已生效）"
+    );
+  });
+
+  it("只有撤回失败 → 一句「撤回失败」，说清仍然共享给全体成员", () => {
+    expect(connectorBatchErrorText([], ["stale-server"])).toBe(
+      "撤回失败：stale-server——这台仍然共享给全体成员"
+    );
+  });
+
+  it("两边都失败 → 两句分开，贡献在前撤回在后，不合并成一句", () => {
+    expect(connectorBatchErrorText(["a"], ["b"])).toBe(
+      "贡献失败：a（已成功的已生效）\n撤回失败：b——这台仍然共享给全体成员"
+    );
   });
 });

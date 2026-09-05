@@ -18,7 +18,8 @@ import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
-import { countdown } from "../lib/billingView.js";
+import { decisionLineText, routeChangedText } from "../lib/cloudTimeline.js";
+import { isSystemNote, systemNoteBody } from "../lib/systemNote.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -414,24 +415,48 @@ const SkillInvokedRow = memo(function SkillInvokedRow({ event }: { event: SkillI
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
 export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
+  // 护栏 / 后台任务回注（#957 C-I5，#936）：判断放在 switch **之外**——它
+  // 由 origin 现算（isSystemNote），跟下面 switch 里那批"这个 SessionEvent
+  // 类型永远/从不/看字段渲染"的三态分类不是一回事：user_message 本身还有
+  // 一整条完全独立的生路（role:"user" 气泡，走 assistant-ui 的主渲染管线，
+  // 到不了这个函数）。放进 switch 会被
+  // tests/renderer/timelineLists.test.ts 的三份名单对表当成第四个"条件
+  // 分支"要求 isAuditEvent/threadGroups.isInvisible 也认领同一个 case——
+  // 但那两处的判断跟这里说的不是同一件事（isAuditEvent 决定"要不要投成
+  // 审计消息"，isInvisible 决定"要不要打断工具分组"，user_message 走的是
+  // 第三条完全独立的判据），硬凑同一个 case 只是伪造对称。本机没有工作区
+  // 名册，agent 名解析不了，agentName 恒传 null——云时间线那份带真名字的
+  // 版本在 lib/cloudTimeline.ts 的 systemNoteText，两处共用同一份文案
+  // （systemNoteBody），只有"名字从哪查"不同
+  if (isSystemNote(event)) {
+    return <div className={AUDIT}>{systemNoteBody(event, null)}</div>;
+  }
   switch (event.type) {
-    // user_message / assistant_message 两个分支从此到不了:EventRow 现在只剩一个
-    // 调用点(OttoThread 的 SystemMessage override),而那里只会拿到审计事件——
-    // 两类事件各自的渲染已经进了 assistant-ui 自己的 role:"user"/"assistant" 分支
-    // (Task 8 的 UserAttachments override、Task 9 的 streamdown)
+    // assistant_message 分支从此到不了:EventRow 现在只剩一个调用点(OttoThread 的
+    // SystemMessage override),而那里只会拿到审计事件——两类事件各自的渲染已经进了
+    // assistant-ui 自己的 role:"user"/"assistant" 分支(Task 8 的 UserAttachments
+    // override、Task 9 的 streamdown)。user_message 上面已经单独判过 origin 那一档，
+    // 走不到这个 switch，所以这里不需要再列一个 case
     case "tool_result":
       return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 
-    case "approval_decision":
+    case "approval_decision": {
       // 批准(含 bypass 自动批准)只是"正常放行",不是对话事实,时间线不显示——
       // 免审模式下一长串「已批准」纯属噪音。拒绝才上时间线:它中断了流程,
-      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档
-      if (event.decision === "approved") return null;
+      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档。
+      // decidedBy 有值时是另一回事(#957 M8)：群聊场景"谁批的"是审计问题，
+      // 本地免审模式的噪音顾虑不成立(decidedBy 缺席=本地会话，行为不变)
+      const decisionLine = decisionLineText(event);
+      if (event.decision === "approved") {
+        return decisionLine ? <div className={AUDIT}>{decisionLine}</div> : null;
+      }
       return (
         <div className={AUDIT}>
           审批：已拒绝{event.reason ? `（${event.reason}）` : ""}
+          {decisionLine ? `　${decisionLine}` : ""}
         </div>
       );
+    }
 
     case "session_created":
       return <div className={AUDIT}>会话已创建</div>;
@@ -549,17 +574,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
           <MarkerIcon>
             <KeyRound />
           </MarkerIcon>
-          <MarkerContent>
-            {event.to === "direct"
-              ? "订阅额度已用完，本次起用的是你自己的 key"
-              : // to === "hosted" 目前在 main/agent.ts 的 onReroute 里到不了：
-                // 强制 exhausted:true 之后 routeModel 只会给 direct 或 blocked 之一，
-                // blocked 那支根本不落这条事件——这里留着是给类型兜底，不是当前会触发的路径
-                `改道：${event.from} → ${event.to}`}
-            {event.resetAt !== undefined && (
-              <span className="ms-1 text-foreground/70">（{countdown(event.resetAt, Date.now())}）</span>
-            )}
-          </MarkerContent>
+          <MarkerContent>{routeChangedText(event)}</MarkerContent>
         </Marker>
       );
 

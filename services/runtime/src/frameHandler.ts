@@ -16,6 +16,7 @@
 // 每条非 hello 的帧都先过这张表，没过表的 cid 什么都做不了。
 
 import {
+  BACKLOG_SKIP_MARKER,
   CS_PROTOCOL_VERSION,
   csChannel,
   decodeCsUp,
@@ -83,7 +84,7 @@ export function chunkBacklogFrames(
       u.kind === "skip"
         ? {
             t: "error",
-            msg: `一条历史事件过大已跳过(type=${u.event.type}, seq=${u.event.seq}):单条超过下发上限`,
+            msg: `一条历史事件过大${BACKLOG_SKIP_MARKER}(type=${u.event.type}, seq=${u.event.seq}):单条超过下发上限`,
           }
         : { t: "backlog", events: u.events, done: i === units.length - 1 }
   );

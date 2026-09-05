@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  assistantLabel, createAgentLanded, hiddenFromCloudTimeline, relayLineText, userRowIdentity,
+  approvalCardTitle, assistantLabel, createAgentLanded, decisionLineText, hiddenFromCloudTimeline, relayLineText,
+  routeChangedText, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import { countdown } from "../../src/renderer/src/lib/billingView.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
@@ -78,5 +80,107 @@ describe("createAgentLanded（#954：建成后桌面刷新名册的判据）", (
   it("找不到配对的 tool_call（日志被裁过）→ false，不刷新", () => {
     const orphan = { ...base, seq: 9, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
     expect(createAgentLanded([orphan], orphan)).toBe(false);
+  });
+});
+
+describe("approvalCardTitle（#957 C-I3：审批卡说是哪只 agent 在要权限）", () => {
+  it("有 agentId：「运营」请求 <toolName>", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0, agentId: "a_1" };
+    expect(approvalCardTitle(e, ws)).toBe("「运营」请求 bash");
+  });
+  it("查不到名字的 agentId 回 agentId 本身（同 agentNameOf 的兜底纪律）", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0, agentId: "a_x" };
+    expect(approvalCardTitle(e, ws)).toBe("「a_x」请求 bash");
+  });
+  it("没有 agentId（旧日志/单 agent 会话）：裸工具名，现状不变", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0 };
+    expect(approvalCardTitle(e, ws)).toBe("bash");
+  });
+});
+
+describe("decisionLineText（#957 M8：谁批的）", () => {
+  it("有 decidedBy：approved → 由 X 批准，denied → 由 X 拒绝", () => {
+    const approved = { ...base, type: "approval_decision" as const, toolCallId: "c1", decision: "approved" as const, decidedBy: { uid: "u1", label: "Stan" } };
+    expect(decisionLineText(approved)).toBe("由 Stan 批准");
+    const denied = { ...approved, decision: "denied" as const };
+    expect(decisionLineText(denied)).toBe("由 Stan 拒绝");
+  });
+  it("没有 decidedBy（本地会话/旧日志）：null，不装作有答案", () => {
+    const e = { ...base, type: "approval_decision" as const, toolCallId: "c1", decision: "approved" as const };
+    expect(decisionLineText(e)).toBeNull();
+  });
+});
+
+describe("systemNoteText（#957 C-I5 / #936：护栏与后台注话不再是匿名人类气泡）", () => {
+  it("origin:loop_guard 有 agentId：护栏：「运营」在原地打转，已提醒", () => {
+    const e = { ...base, type: "user_message" as const, content: "你在重复同一组命令…", origin: "loop_guard" as const, agentId: "a_1" };
+    expect(systemNoteText(e, ws)).toBe("护栏：「运营」在原地打转，已提醒");
+  });
+  it("origin:loop_guard 没有 agentId：护栏：「某只智能体」在原地打转，已提醒", () => {
+    const e = { ...base, type: "user_message" as const, content: "你在重复同一组命令…", origin: "loop_guard" as const };
+    expect(systemNoteText(e, ws)).toBe("护栏：「某只智能体」在原地打转，已提醒");
+  });
+  it("origin:background：后台任务结果已回注", () => {
+    const e = { ...base, type: "user_message" as const, content: "[后台任务 bg-1 完成] ok", origin: "background" as const, backgroundTaskIds: ["bg-1"] };
+    expect(systemNoteText(e, ws)).toBe("后台任务结果已回注");
+  });
+  it("没有 origin（人打的话）：null，调用方落回气泡渲染", () => {
+    const e = { ...base, type: "user_message" as const, content: "在吗" };
+    expect(systemNoteText(e, ws)).toBeNull();
+  });
+});
+
+describe("turnEndedLineText（#957 M16：turn_ended{error} 说是哪只 agent）", () => {
+  it("outcome:error 有 agentId：「运营」这一轮出错", () => {
+    const e = { ...base, type: "turn_ended" as const, outcome: "error" as const, error: "网络超时", agentId: "a_1" };
+    expect(turnEndedLineText(e, ws)).toBe("「运营」这一轮出错");
+  });
+  it("outcome:error 没有 agentId（旧日志/本机会话）：null，调用方落回现状", () => {
+    const e = { ...base, type: "turn_ended" as const, outcome: "error" as const, error: "网络超时" };
+    expect(turnEndedLineText(e, ws)).toBeNull();
+  });
+  it("outcome 不是 error（aborted/completed）：null，即便带 agentId", () => {
+    const aborted = { ...base, type: "turn_ended" as const, outcome: "aborted" as const, agentId: "a_1" };
+    expect(turnEndedLineText(aborted, ws)).toBeNull();
+    const completed = { ...base, type: "turn_ended" as const, outcome: "completed" as const, agentId: "a_1" };
+    expect(turnEndedLineText(completed, ws)).toBeNull();
+  });
+});
+
+describe("routeChangedText（第一批 Task 6 复审 Minor 7，#957 Task 7b）", () => {
+  const routeBase = { ...base, type: "route_changed" as const, ignorable: true as const };
+  const now = 1_000_000;
+
+  it("hosted→workspace probe_failed：改道：托管 → 工作区自带 key（订阅探测失败）", () => {
+    const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "probe_failed" as const };
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（订阅探测失败）");
+  });
+
+  it("quota_exhausted：（本周额度用完）+ resetAt 有值时带「，X 恢复」", () => {
+    const noReset = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "quota_exhausted" as const };
+    expect(routeChangedText(noReset, now)).toBe("改道：托管 → 工作区自带 key（本周额度用完）");
+
+    const resetAt = now + 3 * 60 * 60 * 1000;
+    const withReset = { ...noReset, resetAt };
+    expect(routeChangedText(withReset, now)).toBe(`改道：托管 → 工作区自带 key（本周额度用完，${countdown(resetAt, now)}）`);
+  });
+
+  it("no_subscription：（所有者没有活跃订阅）", () => {
+    const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "no_subscription" as const };
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（所有者没有活跃订阅）");
+  });
+
+  it("workspace→hosted subscription_active：改回托管（订阅恢复），不套「改道：X → Y」模板", () => {
+    const e = { ...routeBase, from: "workspace" as const, to: "hosted" as const, reason: "subscription_active" as const };
+    expect(routeChangedText(e, now)).toBe("改回托管（订阅恢复）");
+  });
+
+  it("旧日志 to:\"direct\" 文案逐字节不变（桌面唯一的换轨起因，早于 reason 现在这套语义）", () => {
+    const noReset = { ...routeBase, from: "hosted" as const, to: "direct" as const, reason: "quota_exhausted" as const };
+    expect(routeChangedText(noReset, now)).toBe("订阅额度已用完，本次起用的是你自己的 key");
+
+    const resetAt = now + 90 * 60 * 1000;
+    const withReset = { ...noReset, resetAt };
+    expect(routeChangedText(withReset, now)).toBe(`订阅额度已用完，本次起用的是你自己的 key（${countdown(resetAt, now)}）`);
   });
 });

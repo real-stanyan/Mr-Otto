@@ -7,7 +7,7 @@
 // owner，canDelete = canEdit 且不是种子管理员——admin 是每个工作区开箱自带
 // 的那份，这里没有删除钮。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils.js";
@@ -40,10 +40,14 @@ function sameModels(a: readonly string[], b: readonly string[]): boolean {
 
 export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
   const deleteAgent = useChat((s) => s.deleteWorkspaceAgent);
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   const rows = agentRows(ws, selfUid);
   const [editorState, setEditorState] = useState<
     { mode: "create" } | { mode: "edit"; agent: WorkspaceAgentRow } | null
   >(null);
+  // 删除成功、但紧跟着那次 refreshWorkspaceGroups() 挂了（#938①，同 AgentEditorDialog
+  // 那半）——这一行没有弹窗可以留着显示，单独在名单上方挂一条横幅
+  const [deleteStale, setDeleteStale] = useState(false);
 
   return (
     <div className="flex flex-col gap-2">
@@ -51,6 +55,17 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
       <div className="flex justify-end">
         <Button size="sm" onClick={() => setEditorState({ mode: "create" })}>新建智能体…</Button>
       </div>
+      {deleteStale && (
+        <div className={cn(ROW, "border border-border")}>
+          <span className="min-w-0 flex-1">已删除，但列表没刷出来——点『刷新』。</span>
+          <Button
+            size="xs" variant="secondary" className="shrink-0"
+            onClick={() => { void refreshWorkspaceGroups(); setDeleteStale(false); }}
+          >
+            刷新
+          </Button>
+        </div>
+      )}
       {/* 名单空只发生在"还没读到"——每个工作区至少种了一份管理员，真出现这句
           说的是拿不到，不是没有（同 CloudStateDot 的"拿不到 ≠ 不可用"纪律）*/}
       {ws.agents.length === 0 ? (
@@ -68,7 +83,10 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
                     `删除智能体「${row.name}」？它的提示词和型号配置会一起消失，正在排队的消息会被标成没人接。`
                   )
                 ) {
-                  void deleteAgent(ws.id, row.agentId);
+                  void (async () => {
+                    const result = await deleteAgent(ws.id, row.agentId);
+                    if (result === "ok_stale") setDeleteStale(true);
+                  })();
                 }
               }}
             />
@@ -92,6 +110,10 @@ function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boo
   const [raw, setRaw] = useState(String(ws.relayMaxDepth));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 保存成功后 1.5s 内显示「已保存」（M12）——存 6 回 6 时 ws.relayMaxDepth
+  // 不变、下面那条 useEffect 也不会重置输入框，是这一行唯一的成功信号
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ws.relayMaxDepth 变了（别人改的，或本页保存成功后 refreshWorkspaceGroups
   // 拉回的新值）——输入框跟着重置，不留着刚保存前的旧草稿
@@ -99,6 +121,9 @@ function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boo
     setRaw(String(ws.relayMaxDepth));
     setError(null);
   }, [ws.relayMaxDepth]);
+
+  // 卸载时清掉挂起的定时器，否则组件已经不在了还 setState
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
   if (!isOwner) {
     return (
@@ -116,7 +141,13 @@ function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boo
     setError(null);
     const ok = await setRelayMaxDepth(ws.id, validated.value);
     setBusy(false);
-    if (!ok) setError(useChat.getState().workspaceGroupsError);
+    if (!ok) {
+      setError(useChat.getState().workspaceGroupsError);
+      return;
+    }
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
   };
 
   return (
@@ -131,6 +162,7 @@ function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boo
           disabled={busy}
         />
         <span className="shrink-0 text-muted-foreground">棒</span>
+        {saved && <span className="shrink-0 text-xs text-muted-foreground">已保存</span>}
         <Button
           size="xs" variant="secondary" className="ml-auto shrink-0"
           disabled={busy || !validated.ok} onClick={() => void submit()}
@@ -193,6 +225,7 @@ function AgentEditorDialog({
 }) {
   const createAgent = useChat((s) => s.createWorkspaceAgent);
   const updateAgent = useChat((s) => s.updateWorkspaceAgent);
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   const choices = connectorChoices(ws);
 
   const [name, setName] = useState("");
@@ -208,6 +241,9 @@ function AgentEditorDialog({
   // 整页共用的，弹窗刚打开那一刻可能还留着上一次跟这个表单毫不相干的旧
   // 错误，改成失败那一刻用 getState() 现取一次快照存进本地状态
   const [error, setError] = useState<string | null>(null);
+  // IPC 成功、紧跟着那次 refreshWorkspaceGroups() 挂了（#938①）——数据已经
+  // 落库，不是失败，弹窗照旧开着，只是换一句话 + 一颗手动刷新钮
+  const [stale, setStale] = useState(false);
 
   const open = state !== null;
 
@@ -230,6 +266,7 @@ function AgentEditorDialog({
     }
     setExpanded(new Set());
     setError(null);
+    setStale(false);
   }, [state]);
 
   const nameError = validateAgentName(name);
@@ -241,9 +278,10 @@ function AgentEditorDialog({
     if (!canSave || state === null) return;
     setBusy(true);
     setError(null);
+    setStale(false);
     const models = parseModelList(modelsRaw);
     const tools = toolsFromDraft(toolsMode, toolsSel);
-    const ok =
+    const result =
       state.mode === "create"
         ? await createAgent(ws.id, {
             name: name.trim(), description: description.trim(), instructions, models, tools,
@@ -257,8 +295,11 @@ function AgentEditorDialog({
             ...(sameAgentTools(tools, state.agent.tools) ? {} : { tools }),
           });
     setBusy(false);
-    if (ok) {
+    if (result === "ok") {
       onOpenChange(false);
+    } else if (result === "ok_stale") {
+      // 弹窗照旧开着——已经存进去了，关掉等于让用户以为要再存一次
+      setStale(true);
     } else {
       setError(useChat.getState().workspaceGroupsError);
     }
@@ -447,6 +488,17 @@ function AgentEditorDialog({
           </div>
 
           {error && <p className="text-xs text-err">{error}</p>}
+          {stale && (
+            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs">
+              <span className="min-w-0 flex-1">已保存，但列表没刷出来——点『刷新』。</span>
+              <Button
+                size="xs" variant="secondary" className="shrink-0"
+                onClick={() => { void refreshWorkspaceGroups(); setStale(false); }}
+              >
+                刷新
+              </Button>
+            </div>
+          )}
         </div>
 
         <DialogFooter className="gap-2">

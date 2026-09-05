@@ -13,6 +13,7 @@ import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
 import { sourcePartsFor, type Part } from "./toolArtifacts.js";
+import { isSystemNote } from "../lib/systemNote.js";
 
 /** 流式直播缓冲(store.streamingBySession 的一项)。事件未落盘前的预览 */
 export interface LiveBuffer {
@@ -159,6 +160,20 @@ export function toThreadMessages(
   for (let idx = 0; idx < events.length; idx++) {
     const e = events[idx]!;
     if (e.type === "user_message") {
+      // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，不是人打
+      // 的——画成系统旁白（EventRow 接住，见 Timeline.tsx 里 isSystemNote
+      // 那段 switch 之外的早退分支），不再冒充一条 role:"user" 气泡。判据
+      // 与云时间线共用（lib/systemNote.ts），本机没有工作区名册，agent 名
+      // 的解析留给 Timeline.tsx 那一侧（这里只决定"算不算审计事件"）。
+      // 沿用既有的 turn 边界重置（原本任何 user_message 都会重置）——这条
+      // 分支只换目标消息的角色，不改动计时投影的既有行为
+      if (isSystemNote(e)) {
+        turnAssistantIdx = null;
+        turnAgg = EMPTY_TURN_AGG;
+        turnStartTs = e.ts;
+        out.push(toAuditMessage(e));
+        continue;
+      }
       const parts: Part[] = [];
       // "$skill 任务"在发送时被拆成两条事件:skill_invoked(快照)紧贴在 user_message
       // 之前,user_message 只剩任务正文。气泡要把 `$名字` 画回成 chip(UserText 走

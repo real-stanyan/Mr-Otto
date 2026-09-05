@@ -168,6 +168,11 @@ export interface McpPromptFormState {
   error: string | null;
 }
 
+/** 工作区 agent 增/改/删三件套的回值（#938①）。"ok_stale" = IPC 本身成功，
+    但紧跟着那次 refreshWorkspaceGroups() 失败——数据已落库，只是这一屏没
+    刷出来，调用方不能当"没成"处理（那会让用户重试一遍撞 23505 同名冲突） */
+export type WorkspaceAgentMutationResult = "ok" | "ok_stale" | "failed";
+
 /** 当前 join 着的云会话（Task 13，ADR-0199）。state/deniedCode/initiatorUid/
     ownerUid/selfUid 逐字段照抄 ShellBridge 的 CloudSessionStatus——onCloudSessionStatus
     推来的就是这五个字段，这里只多一个 events（推送另开 onCloudSessionEvent 通道，
@@ -189,6 +194,11 @@ export interface CloudSessionState {
   /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
       所有者订阅着的时候 `model` 为 null 也照样跑得动。null = 探不到 */
   modelRoute: CsModelRoute | null;
+  /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久**——主进程
+      每一次状态推送都带（缺席 = 没缺口），所以这一格照抄推送即可，不能像
+      deniedCode 那样"来了才覆盖、没来就留着"：缺口补齐时推送里就没有它了，
+      留着旧值等于一直说一句已经不成立的话 */
+  gapNote: string | null;
   events: SessionEvent[];
 }
 
@@ -532,6 +542,16 @@ interface ChatState {
       而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
       这里，由主区那块的 effect 在 ready 那一刻补发。null = 没有待发的 */
   cloudPendingFirstMessage: string | null;
+  /** 开局卡那句话**没发出去**、要摆回输入框的那一份（issue #957 C-I6）。
+      null = 没有。按 sessionId 挂靠：异步期间用户可能已经切到别的云会话，
+      那句话在**那边**的输入框里冒出来比丢了更糟。
+      为什么不是「放回 cloudPendingFirstMessage 自动重试」：那一格没有任何
+      界面读它——开局卡早已卸载，用户看不见自己刚写的话去哪了；而且
+      `cloudSay` 的 `ok:false` 只覆盖发送侧（帧压根没发出去），限速/被踢那类
+      **业务拒绝**是随后一条 error 帧回来的，那时 say() 早就回过 true 了。
+      摆回 composer 之后，后面每一次失败都归 composer 那条既有纪律管
+      （「草稿在发送成功之后才清」） */
+  cloudDraftSeed: { sessionId: string; text: string } | null;
   /** 工作区 id → 该工作区的云会话清单（SessionsTab「云会话」小节用）。
       无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
       refreshCloudSessions 重拉 */
@@ -848,23 +868,35 @@ interface ChatState {
   /** owner 踢人（对方的连接器授权跟着失效，见 workspaceManager 注释） */
   kickWorkspaceGroupMember(id: string, uid: string): Promise<boolean>;
   leaveWorkspaceGroup(id: string): Promise<boolean>;
-  /** tools: [] = 整服务放行（同 proxyShare.ts 的约定） */
-  contributeWorkspaceConnector(id: string, serverId: string, tools: readonly string[]): Promise<boolean>;
-  withdrawWorkspaceConnector(id: string, serverId: string): Promise<boolean>;
+  /** tools: [] = 整服务放行（同 proxyShare.ts 的约定）。opts.refresh 缺省 true——
+      多步批量调用方（ContributeConnectorDialog 的 doConfirm，#957 C-C1）传
+      { refresh: false } 逐步跳过这里的自动 refreshWorkspaceGroups()，循环
+      结束后自己只调一次，N 步不再是 2N 次往返 */
+  contributeWorkspaceConnector(
+    id: string,
+    serverId: string,
+    tools: readonly string[],
+    opts?: { refresh?: boolean }
+  ): Promise<boolean>;
+  withdrawWorkspaceConnector(id: string, serverId: string, opts?: { refresh?: boolean }): Promise<boolean>;
   /** 智能体名册住在 WorkspaceSnapshot.agents（issue #932）——这三个 action
       跟其余十一件套一个套路：经 ShellBridge 打一次 IPC，成功后
       refreshWorkspaceGroups() 重拉整份快照落地新名册，失败落
-      workspaceGroupsError，回布尔给调用方决定要不要清表单 */
+      workspaceGroupsError。**回三态不回布尔**（#938①）：IPC 本身失败是
+      "failed"（原因在 workspaceGroupsError）；IPC 成功但紧跟着那次
+      refreshWorkspaceGroups() 挂了是 "ok_stale"——数据已经落库，只是这一屏
+      没刷出来，跟"没成"该做的事正好相反（别重试 / 该重试），同
+      NewWorkspaceDialog 的 staleAfterCreate 那一态 */
   createWorkspaceAgent(
     id: string,
     draft: { name: string; description: string; instructions: string; models: readonly string[]; tools: readonly AgentToolAllow[] },
-  ): Promise<boolean>;
+  ): Promise<WorkspaceAgentMutationResult>;
   updateWorkspaceAgent(
     id: string,
     agentId: string,
     patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
-  ): Promise<boolean>;
-  deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
+  ): Promise<WorkspaceAgentMutationResult>;
+  deleteWorkspaceAgent(id: string, agentId: string): Promise<WorkspaceAgentMutationResult>;
   /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
       组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
   loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
@@ -905,6 +937,15 @@ interface ChatState {
   /** 待发那句已经交出去了。**先清后发**：主区那块的 effect 会因为状态变化重跑，
       清晚一步就会发两遍 */
   takeCloudPendingFirstMessage(): string | null;
+  /** 那一句没发出去，把原文摆回输入框（issue #957 C-I6）。`take()` 先摘是对的
+      （不然会发两遍），但没有这一步的话，`cloudSay` 回 false 时那段文字在任何
+      地方都不再存在——开局卡早已卸载，用户只看到一行错误，然后得把刚写的话
+      重打一遍。同一件事在 composer 那条入口上的纪律正相反（「草稿在发送成功
+      之后才清」），摆回去就是让它归那条纪律管 */
+  seedCloudDraft(sessionId: string, text: string): void;
+  /** 取走并清空那一份（CloudSessionPage 挂载/换会话时调）。**sessionId 不匹配
+      就回 null 且不清**：这一格是按会话挂靠的，另一条会话没资格拿走它 */
+  takeCloudDraftSeed(sessionId: string): string | null;
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
@@ -1240,6 +1281,7 @@ export const useChat = create<ChatState>((set, get) => ({
   workspaceGroupsError: null,
   cloudDraftWorkspaceId: null,
   cloudPendingFirstMessage: null,
+  cloudDraftSeed: null,
   cloudSession: null,
   cloudSessionList: {},
   realtimeHealth: "connecting",
@@ -2117,25 +2159,25 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
-  async contributeWorkspaceConnector(id, serverId, tools) {
+  async contributeWorkspaceConnector(id, serverId, tools, opts) {
     const r = await window.otter.workspaceContributeConnector(id, serverId, [...tools]);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
     }
     set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
+    if (opts?.refresh !== false) await get().refreshWorkspaceGroups();
     return true;
   },
 
-  async withdrawWorkspaceConnector(id, serverId) {
+  async withdrawWorkspaceConnector(id, serverId, opts) {
     const r = await window.otter.workspaceWithdrawConnector(id, serverId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
     }
     set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
+    if (opts?.refresh !== false) await get().refreshWorkspaceGroups();
     return true;
   },
 
@@ -2145,11 +2187,11 @@ export const useChat = create<ChatState>((set, get) => ({
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async updateWorkspaceAgent(id, agentId, patch) {
@@ -2161,22 +2203,22 @@ export const useChat = create<ChatState>((set, get) => ({
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async deleteWorkspaceAgent(id, agentId) {
     const r = await window.otter.workspaceAgentDelete(id, agentId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async loadWorkspaceUsage(id) {
@@ -2271,6 +2313,7 @@ export const useChat = create<ChatState>((set, get) => ({
         repo: null, // welcome 一到就补真值
         model: null, // 同上（issue #844）
         modelRoute: null, // 同上（issue #945）
+        gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
         events: [],
       },
       workspaceGroupsError: null,
@@ -2317,6 +2360,20 @@ export const useChat = create<ChatState>((set, get) => ({
     const text = get().cloudPendingFirstMessage;
     if (text !== null) set({ cloudPendingFirstMessage: null });
     return text;
+  },
+
+  seedCloudDraft(sessionId, text) {
+    set({ cloudDraftSeed: { sessionId, text } });
+  },
+
+  takeCloudDraftSeed(sessionId) {
+    const seed = get().cloudDraftSeed;
+    // 按 sessionId 挂靠：不是这一条就当作没有——别把上一条会话没发出去的话
+    // 塞进另一条会话的输入框（同 createCloudSessionFromDraft 失败时清掉待发
+    // 那句的同一个理由）
+    if (seed === null || seed.sessionId !== sessionId) return null;
+    set({ cloudDraftSeed: null });
+    return seed.text;
   },
 
   async cloudSay(text, mentions) {
@@ -2621,6 +2678,10 @@ export const useChat = create<ChatState>((set, get) => ({
             repo: status.repo,
             model: status.model,
             modelRoute: status.modelRoute,
+            // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
+            // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
+            // 这一格来说"补齐了"
+            gapNote: status.gapNote ?? null,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

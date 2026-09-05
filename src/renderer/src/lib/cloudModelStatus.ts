@@ -22,7 +22,7 @@ export function modelStatusText(
       full:
         `走所有者的订阅（托管路由），实际型号 ${route.model}。` +
         (model ? `\n工作区配的 ${model.modelId} 只在订阅失效时用。` : "\n不用配自己的 key。") +
-        "\n按 agent 各自的型号白名单可能不同。",
+        "\n按 agent 各自的型号白名单可能不同（白名单只在这条路生效）。",
       bad: false,
     };
   }
@@ -44,5 +44,13 @@ export function modelStatusText(
   if (!model.hasKey) {
     return { short: `${model.modelId} · 缺 key`, full: `${model.baseUrl}\n配了型号但没有 key —— 这条路起不来`, bad: true };
   }
-  return { short: model.modelId, full: `${model.baseUrl}\n${model.modelId}`, bad: false };
+  return {
+    short: model.modelId,
+    full:
+      `${model.baseUrl}\n${model.modelId}` +
+      // D1：这条路上白名单不生效，hosted 分支那句反过来读会让人以为这里也能
+      // 按 agent 分型号——补一句说清楚型号由谁定
+      (route?.kind === "workspace" ? "\n自带 key 这条路型号由所有者定，agent 白名单不生效" : ""),
+    bad: false,
+  };
 }

@@ -31,7 +31,15 @@ function isBoundary(text: string, at: number, lastMatchEnd: number): boolean {
  * 名字长的先试(最长匹配):名单里同时有「运营」和「运营助理」时,
  * "@运营助理" 该认成后者,而不是前者加两个多余的字。
  */
+// #935 / #957 F1：全角 ＠（U+FF20 FULLWIDTH COMMERCIAL AT）与半角 @ 同等对待——
+// 中文输入法全角标点习惯打出来的就是这个字符，用户以为自己点了名，解析却认不出。
+// 两者都是 BMP 内的单个码元，替换不改变字符串长度/下标，切词/边界判据不用跟着改。
+function normalizeAtSign(text: string): string {
+  return text.replace(/＠/g, "@");
+}
+
 export function parseMentions(text: string, names: readonly MentionCandidate[]): string[] {
+  const normalized = normalizeAtSign(text);
   // 防御:DB 层的唯一性约束还没合并,候选里过滤掉空名字,否则 String.startsWith("", i) 恒真
   const filtered = names.filter(c => c.name.length > 0);
   const byLength = [...filtered].sort((a, b) => b.name.length - a.name.length);
@@ -39,10 +47,10 @@ export function parseMentions(text: string, names: readonly MentionCandidate[]):
   const seen = new Set<string>();
   let lastMatchEnd = 0; // 上次成功匹配结束的位置
 
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "@" || !isBoundary(text, i, lastMatchEnd)) continue;
+  for (let i = 0; i < normalized.length; i++) {
+    if (normalized[i] !== "@" || !isBoundary(normalized, i, lastMatchEnd)) continue;
     for (const c of byLength) {
-      if (!text.startsWith(c.name, i + 1)) continue;
+      if (!normalized.startsWith(c.name, i + 1)) continue;
       if (!seen.has(c.agentId)) {
         seen.add(c.agentId);
         out.push(c.agentId);
@@ -65,13 +73,14 @@ export function parseMentions(text: string, names: readonly MentionCandidate[]):
     才能把第二个 @ 认成新的起点，这里没有名字可比对，无从判断在哪断开）——
     起点判据一致，不代表切词结果一致。 */
 export function mentionTokens(text: string): string[] {
+  const normalized = normalizeAtSign(text);
   const out: string[] = [];
   let lastTokenEnd = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "@" || !isBoundary(text, i, lastTokenEnd)) continue;
+  for (let i = 0; i < normalized.length; i++) {
+    if (normalized[i] !== "@" || !isBoundary(normalized, i, lastTokenEnd)) continue;
     let j = i + 1;
-    while (j < text.length && !/\s/.test(text[j]!)) j++;
-    if (j > i + 1) out.push(text.slice(i + 1, j));
+    while (j < normalized.length && !/\s/.test(normalized[j]!)) j++;
+    if (j > i + 1) out.push(normalized.slice(i + 1, j));
     lastTokenEnd = j;
     i = j - 1;
   }

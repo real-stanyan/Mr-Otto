@@ -476,6 +476,16 @@ export interface CloudSessionStatus {
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送
       不带，所以渲染层拿到就显示，不用自己做去重 */
   notice?: string;
+  /** 这一份历史缺了东西（issue #957 C-I7）：welcome 说日志到 lastSeq，backlog
+      落定时却少了几条（服务端对单条超限的事件产出一条「已跳过」的 error 帧后
+      继续下发，见 services/runtime/src/frameHandler.ts 的 chunkBacklogFrames）。
+      **与 notice 相反，这一格是持久的**——只要这份历史还缺着，每一次推送都
+      带上它，缺口补齐（重连后 backlog 拉全了）才消失。理由：`notice` 落进
+      渲染层那格一次性的错误文案里，而 `cloudSay`/`cloudApprove` 成功时都会把
+      它清空——用户发出的第一句话就把「你的历史缺了一块」擦干净了，而
+      「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同。
+      缺席 = 这份历史是完整的 */
+  gapNote?: string;
 }
 
 /** 桥上的托管额度快照（Task 11）。结构与主进程 `hostedQuota.ts` 的 `HostedSnapshot`

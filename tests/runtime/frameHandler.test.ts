@@ -9,7 +9,7 @@ import {
   safeEncodeCs,
   type FrameHandlerDeps,
 } from "../../services/runtime/src/frameHandler.js";
-import { CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
+import { BACKLOG_SKIP_MARKER, CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
 import type { CloudSession } from "../../services/runtime/src/sessionService.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import { TURN_BUCKET } from "../../services/runtime/src/rateLimit.js";
@@ -593,6 +593,12 @@ describe("chunkBacklogFrames（终审 C2）", () => {
     expect(deliveredSeqs).toEqual([0]); // huge 没有出现在任何一条 backlog 帧里
 
     expect(frames.some((f) => f.t === "error")).toBe(true); // 但有一条可见的 error 帧提示它被跳过
+    // 判据是**共用的那个常量**（终审 I2）：客户端靠 `msg.includes(BACKLOG_SKIP_MARKER)`
+    // 认出这一类 error 帧并据此挂历史缺口横幅。两端各写一份字面量的话，这边改一个字
+    // 那边就静默失效——而这条修的正是「失败无声」
+    expect(frames.find((f) => f.t === "error")).toMatchObject({
+      msg: expect.stringContaining(BACKLOG_SKIP_MARKER),
+    });
     expect(frames.at(-1)).toMatchObject({ t: "backlog", done: true }); // 末帧依然是 done:true——
     // 不然客户端会永远等不到 done:true，原地卡在 connecting（终审 C2 的原始复现）
   });

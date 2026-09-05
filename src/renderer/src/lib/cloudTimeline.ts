@@ -6,9 +6,14 @@
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentNameOf, labelOf } from "./workspaceView.js";
-import type { AgentRelayEvent, AssistantMessageEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
+import { isSystemNote, systemNoteBody } from "./systemNote.js";
+import type {
+  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
+  UserMessageEvent,
+} from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
+import { countdown } from "./billingView.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
@@ -58,6 +63,25 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   return e.type === "user_message" && e.relay !== undefined;
 }
 
+/** 审批卡第一行（#957 C-I3）：多智能体是这一批六片的全部意义，两张卡工具名
+    相同、argsSummary 前 200 字也可能相同时，"批准哪一张"必须先说清"是哪只
+    agent 要的这份权限"。agentId 缺席（旧日志）→ 沿用现状的裸工具名，不装作
+    答得出这个问题（同 assistantLabel 的兜底纪律） */
+export function approvalCardTitle(e: ApprovalRequestEvent, ws: WorkspaceSnapshot): string {
+  return e.agentId ? `「${agentNameOf(ws, e.agentId)}」请求 ${e.toolName}` : e.toolName;
+}
+
+/** 「谁批的」（#957 M8）：decidedBy 是云 runtime 专门认定的字段，本地单人会话
+    没有意义（缺席=本地会话/旧日志，同字段自身的注释），此时不装作有答案，
+    交给调用方决定要不要画这一行。**不收 ws**：decidedBy.label 已经是落盘时
+    算好的展示名（同 agentId 那批字段"带 id 不带名"的反面——这里存的就是名字），
+    这里不用像 agentNameOf/labelOf 那样另查一次成员表（复审 Minor：没有第二个
+    消费方需要重新解析这个名字，收一个用不上的参数只是摆样子） */
+export function decisionLineText(e: ApprovalDecisionEvent): string | null {
+  if (!e.decidedBy) return null;
+  return `由 ${e.decidedBy.label} ${e.decision === "approved" ? "批准" : "拒绝"}`;
+}
+
 /** 管理员刚建成一只 agent（#954）：create_agent 的 tool_result{status:"ok"}。桌面的名册住在
     WorkspaceSnapshot.agents，没有推送通道（store.ts refreshWorkspaceGroups 的注释），看见这条
     就重拉一次——不新增事件类型（那是十一处清单的代价），判据从日志里既有的两条事件反查：
@@ -67,4 +91,67 @@ export function createAgentLanded(events: readonly SessionEvent[], e: SessionEve
   return events.some(
     (p) => p.type === "assistant_message" && (p.toolCalls ?? []).some((c) => c.id === e.toolCallId && c.name === CREATE_AGENT_TOOL_NAME)
   );
+}
+
+/** 护栏 / 后台任务回注在云时间线上的文案（#957 C-I5 / #936）：`origin` 不在场
+    （人打的话）→ null，调用方按 null 落回既有的 UserMessageRow 气泡渲染；
+    在场时画成 `AgentBriefedRow` 同款审计旁白（调用方负责套样式），不再是
+    I5 描述的"一条没有署名的群聊气泡"。agent 名查 `agentNameOf`——批次 1
+    已经把 engine 落这两类事件时改成 `env()`（带 agentId）而不是 `envBase()`
+    （见 engine.ts loop_guard/background 两处落盘的注释），查不到/缺席
+    才落"某只智能体"这句兜底话（同 assistantLabel 等函数的纪律：不装作
+    答得出这个问题）。正文本身（背 "护栏：" / "后台任务结果已回注" 这两句
+    固定文案）与本机时间线共用一份（lib/systemNote.ts 的 systemNoteBody）
+    ——名字从哪查是两端唯一的差异，文案不让两处各写一遍 */
+export function systemNoteText(e: UserMessageEvent, ws: WorkspaceSnapshot): string | null {
+  if (!isSystemNote(e)) return null;
+  return systemNoteBody(e, e.agentId ? agentNameOf(ws, e.agentId) : null);
+}
+
+/** `turn_ended{error}` 行说是哪只 agent（#957 M16）：`outcome !== "error"`
+    （aborted/completed/interrupted）或没有 `agentId`（旧日志/本机单 agent
+    会话）→ null，调用方落回现状（裸的"turn 失败"标题，同 approvalCardTitle
+    等函数"查不到就不装作答得出"的纪律）。**只回前缀**，不把 `error` 拼
+    进来——`ErrorState`（TurnErrorState 用的那个 element）本来就是 title/
+    detail 两行分开画，`error` 依旧走 detail（连带保留 humanizeError 的
+    人话/原文折叠），这里只换 title 那一行，不是重新拼一整句 */
+export function turnEndedLineText(e: TurnEndedEvent, ws: WorkspaceSnapshot): string | null {
+  if (e.outcome !== "error" || !e.agentId) return null;
+  return `「${agentNameOf(ws, e.agentId)}」这一轮出错`;
+}
+
+const ROUTE_LABEL: Record<RouteChangedEvent["from"], string> = {
+  hosted: "托管",
+  workspace: "工作区自带 key",
+  direct: "自带 key",
+};
+
+const ROUTE_REASON_TEXT: Record<RouteChangedEvent["reason"], string> = {
+  quota_exhausted: "本周额度用完",
+  probe_failed: "订阅探测失败",
+  no_subscription: "所有者没有活跃订阅",
+  subscription_active: "订阅恢复",
+};
+
+/** `route_changed` 的时间线文案（第一批 Task 6 复审 Minor 7，#957 Task 7b）：`to==="direct"`
+    是桌面唯一的、在这套 reason 语义之前就有的换轨（额度用完退回本机 key），旧日志里全是
+    这句话——**逐字节保留**，不套下面的通用模板（brief 的硬约束，同 schema 向后兼容的
+    Hard rule：旧日志必须永远可重放）。
+    `subscription_active` 只在换回 hosted 时出现（`decideRuntimeRoute` 只在 `route.kind
+    === "hosted"` 时判这个 reason），措辞走「改回」不走「改道：X → Y」——「改道」暗示
+    从谁那儿抢了额度，而这一格说的是恢复原状。
+    其余（`probe_failed` / `no_subscription` / `quota_exhausted` 落在非 direct 的
+    工作区↔托管之间）用通用模板：改道：<from> → <to>（<原因>）。`resetAt` 有值时在原因后面
+    追加「，X 恢复」——用 Timeline.tsx 原本就在用的 `countdown`（同一扇窗两处不能各写一份，
+    ADR-0209 那条纪律） */
+export function routeChangedText(e: RouteChangedEvent, now: number = Date.now()): string {
+  if (e.to === "direct") {
+    const base = "订阅额度已用完，本次起用的是你自己的 key";
+    return e.resetAt !== undefined ? `${base}（${countdown(e.resetAt, now)}）` : base;
+  }
+  if (e.reason === "subscription_active") {
+    return `改回${ROUTE_LABEL[e.to]}（订阅恢复）`;
+  }
+  const resetSuffix = e.resetAt !== undefined ? `，${countdown(e.resetAt, now)}` : "";
+  return `改道：${ROUTE_LABEL[e.from]} → ${ROUTE_LABEL[e.to]}（${ROUTE_REASON_TEXT[e.reason]}${resetSuffix}）`;
 }

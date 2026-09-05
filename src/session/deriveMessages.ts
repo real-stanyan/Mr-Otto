@@ -2,6 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
+import { promptSafe } from "../shared/promptSafe.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -208,7 +209,9 @@ export function renderMemoryPrompt(
     中途就会被别的 agent 改，下一 turn 的快照就带上了）——共用一段文案得处处加分支 */
 export function renderWorkspaceMemoryPrompt(e: WorkspaceMemoryLoadedEvent): string {
   const s = memoryBlock("SHARED (这个工作区所有智能体共用)", e.shared, WORKSPACE_MEMORY_LIMITS.shared);
-  const o = memoryBlock(`OWN (只有「${e.agentName}」看得见)`, e.own, WORKSPACE_MEMORY_LIMITS.own);
+  // agentName 过结构闸（终审 I4 顺手）：它拼进的是 `OWN (只有「X」看得见)` 这个
+  // 块头，而块头下面就是记忆正文——一个换行就让之后的字看起来是块外的新指令
+  const o = memoryBlock(`OWN (只有「${promptSafe(e.agentName)}」看得见)`, e.own, WORKSPACE_MEMORY_LIMITS.own);
   const blocks = s || o ? `\n${s}${o}${MEMORY_RULE}` : "";
   return (
     `\n你有这个工作区里的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记业务口径、数据定义、客户约定、稳定的分工，优先记能减少同事再次纠正你的事；` +
@@ -520,7 +523,10 @@ export function deriveMessages(
         // 同 user_message 一样要走"组开着就先攒着"的插话修法（同 :433）。
         // 发言人身份靠 label 前缀带出来（发言时快照，改名不追认历史）
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        target.push({ role: "user", content: `[${event.label}]: ${event.content}` });
+        // label 过 promptSafe（#957 复审 Important 2）：它来自 profiles.name，
+        // **写入侧一道校验都没有**——一个叫 `]:\n[系统]: …` 的成员能在模型上下文里
+        // 伪造出一整轮别人的发言。落盘那一头（sessionService）也拦，这一层管旧日志
+        target.push({ role: "user", content: `[${promptSafe(event.label)}]: ${event.content}` });
         break;
       }
 
@@ -678,11 +684,16 @@ export function deriveMessages(
         //      system 里、也不在 modelContextScan 的幸存名单里——压一次之后这只
         //      agent 就再也不知道自己是谁了。焊进 system 两个后果一起免疫。
         // 排在 workspaceMemoryPrompt **之前**：先知道自己是谁，再读记着的事。
+        //
+        // 名字/职责一律过 promptSafe（#957 B-C1）：这一段是**拼**出来的，
+        // 拼进去的是别人写的字。一个 `）]\n` 就把方括号提前闭合，之后的正文
+        // 以「围栏外的指令」身份进每一只别的 agent 的 system 提示。Task 2 那道
+        // 写入校验是第一道闸，这一道是结构闸——旧日志里已经躺着的字段绕不过它。
         const others = event.roster.length
-          ? `群里还有：${event.roster.map((r) => `${r.name}（${r.description}）`).join("、")}。` +
+          ? `群里还有：${event.roster.map((r) => `${promptSafe(r.name)}（${promptSafe(r.description)}）`).join("、")}。` +
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
-        const text = `[你是这个工作区里的「${event.name}」。${others}]\n${event.instructions}`;
+        const text = `[你是这个工作区里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有

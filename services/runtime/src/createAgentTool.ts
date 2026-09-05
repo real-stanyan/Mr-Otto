@@ -16,7 +16,7 @@ import {
   parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
 import { AGENT_NAME_MAX } from "../../../src/shared/workspaceAgents.js";
-import { DuplicateAgentNameError, type WorkspaceAgentWriter } from "./agentRegistry.js";
+import { AgentNameError, type WorkspaceAgentWriter } from "./agentRegistry.js";
 
 export function createCreateAgentTool(deps: {
   workspaceId: string;
@@ -63,7 +63,8 @@ export function createCreateAgentTool(deps: {
         const { agentId } = await deps.writer.create(deps.workspaceId, draft, createdBy);
         return `已创建智能体「${draft.name}」（id ${agentId}）。群里从下一句起可以 @${draft.name}；它第一次开口前会收到自己的提示词与花名册。`;
       } catch (err) {
-        if (err instanceof DuplicateAgentNameError) throw new Error(`${err.message}——换一个名字再试（先看花名册里已有谁）`);
+        // 名字类的错误一家都翻同一句（同名 / 前缀冲突，#957 B-I2）——两种都是"换个名字"能解决的
+        if (err instanceof AgentNameError) throw new Error(`${err.message}——换一个名字再试（先看花名册里已有谁）`);
         throw err;
       }
     },

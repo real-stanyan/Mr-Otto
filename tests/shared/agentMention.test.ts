@@ -68,6 +68,19 @@ describe("parseMentions（#928 切片 1a）", () => {
     ];
     expect(parseMentions("看这个 @", rosterWithEmpty)).toEqual([]);
   });
+
+  // #935 / #957 F1：全角 ＠（U+FF20）与半角 @ 同等对待——中文输入法全角标点习惯打出来的
+  it("全角 ＠ 认成点名，与半角 @ 同等对待", () => {
+    expect(parseMentions("＠运营 看下这周销量", roster)).toEqual(["ops"]);
+  });
+
+  it("全角 ＠ 也吃最长匹配、多个、去重", () => {
+    expect(parseMentions("＠运营助理 和 ＠广告 一起看，@运营 你先", roster)).toEqual(["ops2", "ads", "ops"]);
+  });
+
+  it("全角 ＠ 前面是构词字符时仍算越界（同半角 @ 的边界判据）", () => {
+    expect(parseMentions("rick＠运营 的邮箱", roster)).toEqual([]);
+  });
 });
 
 describe("mentionTokens（#957 F4——原始 token，不按名单解析）", () => {
@@ -90,5 +103,14 @@ describe("mentionTokens（#957 F4——原始 token，不按名单解析）", ()
 
   it("中文标点后的 @ 也算边界（同 parseMentions）", () => {
     expect(mentionTokens("你好，@运营 看下")).toEqual(["运营"]);
+  });
+
+  // #935 / #957 F1：全角 ＠ 与半角 @ 同等对待
+  it("全角 ＠ 产生 token，与半角 @ 混用也认", () => {
+    expect(mentionTokens("＠运营 看下 @广告 都在吗")).toEqual(["运营", "广告"]);
+  });
+
+  it("全角 ＠ 前面是构词字符（邮箱）不算边界", () => {
+    expect(mentionTokens("rick＠运营 的邮箱")).toEqual([]);
   });
 });

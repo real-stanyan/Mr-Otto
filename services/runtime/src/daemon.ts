@@ -27,6 +27,7 @@ import { createCloudSession, type CloudSession, type AgentSpec } from "./session
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
+import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps, type RouteMemo } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
@@ -35,6 +36,7 @@ import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
+  BACKLOG_SKIP_MARKER,
   csCtlChannel,
   csChannel,
   type CsCloneKind,
@@ -320,7 +322,10 @@ async function main(): Promise<void> {
   async function labelOf(uid: string): Promise<string> {
     const { data } = await supabase.from("profiles").select("name").eq("id", uid).maybeSingle();
     const name = (data as { name: string | null } | null)?.name;
-    return name && name.trim() ? name : uid.slice(0, 8);
+    // profiles.name 是成员自己填的，**没有任何写入校验**——过 safeSpeakerLabel
+    // 才敢拼进 `[label]: ` 前缀（#957 复审 Important 2）。空名字退回 uid 前 8 位
+    // 这条老行为收进它里面了，不再在这里判一次
+    return safeSpeakerLabel(name ?? "", uid);
   }
 
   async function ownerOf(workspaceId: string): Promise<string> {
@@ -374,7 +379,9 @@ async function main(): Promise<void> {
         const placeholder = safeEncodeCs(
           {
             t: "error",
-            msg: `一条实时事件过大已跳过（type=${msg.event.type}, seq=${msg.event.seq}）：单条超过下发上限，重新进入会话可看到同样的占位`,
+            // 标记取共用常量（终审 I2）：客户端认的就是它，两端各写一份
+            // 字面量的话，改一个字这道判断就静默失效
+            msg: `一条实时事件过大${BACKLOG_SKIP_MARKER}（type=${msg.event.type}, seq=${msg.event.seq}）：单条超过下发上限，重新进入会话可看到同样的占位`,
           },
           (err) => console.error("[otto-runtime] 跳过占位帧本身也编码失败：", err)
         );
