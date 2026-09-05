@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { memoryDocs } from "../../src/renderer/src/lib/workspaceMemoryView.js";
+import { memoryDocs, replaceRow } from "../../src/renderer/src/lib/workspaceMemoryView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const ws = {
@@ -26,5 +26,30 @@ describe("memoryDocs（#949）", () => {
     expect(docs[0]).toMatchObject({ limit: 2200, used: 7 });
     expect(docs[2]).toMatchObject({ limit: 1100, used: 5, content: "a\n§\nb" });
     expect(docs[1]).toMatchObject({ content: "", used: 0 });
+  });
+});
+
+describe("replaceRow（fix round 1，#949）", () => {
+  it("原位替换已存在的 agentId 那一行，其余原样不动", () => {
+    const rows = [
+      { agentId: "", content: "shared", updatedTs: 1 },
+      { agentId: "ops", content: "old", updatedTs: 2 },
+      { agentId: "admin", content: "x", updatedTs: 3 },
+    ];
+    const next = replaceRow(rows, "ops", "new", 99);
+    expect(next).toEqual([
+      { agentId: "", content: "shared", updatedTs: 1 },
+      { agentId: "ops", content: "new", updatedTs: 99 },
+      { agentId: "admin", content: "x", updatedTs: 3 },
+    ]);
+  });
+
+  it("agentId 不存在时追加一行，不动原有的行", () => {
+    const rows = [{ agentId: "admin", content: "x", updatedTs: 1 }];
+    const next = replaceRow(rows, "ops", "y", 5);
+    expect(next).toEqual([
+      { agentId: "admin", content: "x", updatedTs: 1 },
+      { agentId: "ops", content: "y", updatedTs: 5 },
+    ]);
   });
 });

@@ -28,3 +28,21 @@ export function memoryDocs(ws: WorkspaceSnapshot, rows: readonly WorkspaceMemory
   for (const r of rows) if (!known.has(r.agentId)) out.push(doc(r.agentId, `已删除的智能体 ${r.agentId}`, "own", r.content, true));
   return out;
 }
+
+/** 单块保存成功后的本地更新（fix round 1，#949）：只换 agentId 那一行，原位替换、其余
+    不动——WorkspaceMemoryTab 原来靠整份重拉刷新列表，会让所有 MemoryDocBlock 一起
+    卸载重装，连累别的档还没保存的草稿一起消失。updatedTs 由调用方给（Date.now()），
+    这个函数本身保持纯，方便单测 */
+export function replaceRow(
+  rows: readonly WorkspaceMemoryRow[],
+  agentId: string,
+  content: string,
+  updatedTs: number,
+): WorkspaceMemoryRow[] {
+  const idx = rows.findIndex((r) => r.agentId === agentId);
+  const row: WorkspaceMemoryRow = { agentId, content, updatedTs };
+  if (idx < 0) return [...rows, row];
+  const next = [...rows];
+  next[idx] = row;
+  return next;
+}

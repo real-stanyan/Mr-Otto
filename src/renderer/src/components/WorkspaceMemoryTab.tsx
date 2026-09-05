@@ -4,14 +4,22 @@
 //
 // 每份档一块：标题行（title + used/limit 字符，stale 的档标「（已删除）」）+
 // 一个 Textarea（值是磁盘原文，含 "\n§\n" 分隔符，不重排格式）+ 保存按钮。
-// 保存中禁用输入与按钮；成功后整份刷新列表（version 递增强制 remount，草稿
-// 从服务端最新内容重新起草，同一时刻只有一次网络往返，不做乐观本地合并）。
+// 保存中禁用输入与按钮；失败画 text-err。
+//
+// fix round 1（review）：单块保存成功后**只替换那一行**（workspaceMemoryView.ts
+// 的 replaceRow），不整份重拉——原来的 refresh() 会先把所有 MemoryDocBlock 卸载
+// 再重装，用户在共享档打到一半的字会被另一只 agent 那块的保存悄悄冲掉，且不报警。
+// 「刷新」按钮仍然整份重拉，但若任何一块此刻有未保存的草稿，先用 confirm 问一句
+// ——那才是用户主动要放弃草稿的时刻，不该在别的块保存时顺带发生。
+// 归一化用的是与主进程落库前同一步纯函数（formatEntries(parseEntries(text))），
+// 本地直接算，不必整份重拉才能知道存下去的是什么样子。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { useChat } from "../store.js";
-import { memoryDocs, type MemoryDocView } from "../lib/workspaceMemoryView.js";
+import { memoryDocs, replaceRow, type MemoryDocView } from "../lib/workspaceMemoryView.js";
+import { formatEntries, parseEntries } from "../../../shared/memoryStore.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
@@ -20,15 +28,30 @@ function MemoryDocBlock({
   ws,
   doc,
   onSaved,
+  onDirtyChange,
 }: {
   ws: WorkspaceSnapshot;
   doc: MemoryDocView;
-  onSaved: () => Promise<void>;
+  /** 只更新本地那一行，不触发整份重拉——见文件头注 */
+  onSaved: (agentId: string, content: string) => void;
+  /** 草稿 !== 磁盘内容 时上报，父组件靠它决定「刷新」要不要弹确认框 */
+  onDirtyChange: (agentId: string, dirty: boolean) => void;
 }) {
   const save = useChat((s) => s.saveWorkspaceMemory);
   const [text, setText] = useState(doc.content);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const dirty = text !== doc.content;
+  useEffect(() => {
+    onDirtyChange(doc.agentId, dirty);
+    // 这一档从渲染里消失（理论上不会——docs 名单只增不减，除非工作区快照变了）
+    // 时清掉自己的脏标记，不留一个再也没人能清的 true
+    return () => onDirtyChange(doc.agentId, false);
+    // onDirtyChange 是父组件每次渲染新建的箭头函数，不进依赖——它只读写一个 ref，
+    // 引用变化不代表语义变化，跟着它重跑只会产生多余调用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, doc.agentId]);
 
   const onSave = async (): Promise<void> => {
     setBusy(true);
@@ -39,7 +62,10 @@ function MemoryDocBlock({
       setError(r.message);
       return;
     }
-    await onSaved();
+    // 主进程落库前做的正是这一步归一化——本地直接算出同一个结果
+    const normalized = formatEntries(parseEntries(text));
+    setText(normalized);
+    onSaved(doc.agentId, normalized);
   };
 
   return (
@@ -74,24 +100,36 @@ export function WorkspaceMemoryTab({ ws }: { ws: WorkspaceSnapshot }) {
   const [state, setState] = useState<
     { kind: "loading" } | { kind: "error"; message: string } | { kind: "ok"; rows: WorkspaceMemoryRow[] }
   >({ kind: "loading" });
-  // 每次成功刷新递增一次：下面 MemoryDocBlock 的 key 带上它，强制整块 remount，
-  // 让草稿从服务端最新内容重新起草——不做「保留正在打的字 + 合并服务端新值」
-  // 那套复杂度（同文件头注）
-  const [version, setVersion] = useState(0);
+  // 每只 agent 此刻是否有未保存的草稿——只用来决定「刷新」按钮要不要弹确认框，
+  // 不影响渲染；用 ref 而不是 state：这份标记随便哪个块一按键就变，跟着它重渲染
+  // 整个父组件毫无必要（子组件已经各自管自己的 text）
+  const dirtyRef = useRef<Record<string, boolean>>({});
 
-  const refresh = async (): Promise<void> => {
+  const loadAll = async (): Promise<void> => {
     setState({ kind: "loading" });
     const r = await load(ws.id);
-    if (r.ok) {
-      setState({ kind: "ok", rows: r.value });
-      setVersion((v) => v + 1);
-    } else {
-      setState({ kind: "error", message: r.message });
-    }
+    setState(r.ok ? { kind: "ok", rows: r.value } : { kind: "error", message: r.message });
   };
 
   // ws.id 变化才重拉；load 是 store 里的稳定引用，跟着它一起标依赖只会造成无意义的重跑
-  useEffect(() => { void refresh(); }, [ws.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadAll(); }, [ws.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 「刷新」按钮：整份重拉会卸载所有 MemoryDocBlock，没保存的草稿跟着消失——
+  // 真有未保存的档时先问一句，同意了才重拉。单块保存成功不走这条路（见 handleSaved）
+  const refresh = async (): Promise<void> => {
+    const anyDirty = Object.values(dirtyRef.current).some(Boolean);
+    if (anyDirty && !window.confirm("有未保存的修改，刷新会丢掉它们，继续吗？")) return;
+    await loadAll();
+  };
+
+  // 单块保存成功：只替换那一行，不重拉整份列表——其它块的草稿原封不动
+  const handleSaved = (agentId: string, content: string): void => {
+    setState((s) => (s.kind === "ok" ? { kind: "ok", rows: replaceRow(s.rows, agentId, content, Date.now()) } : s));
+  };
+
+  const handleDirtyChange = (agentId: string, dirty: boolean): void => {
+    dirtyRef.current = { ...dirtyRef.current, [agentId]: dirty };
+  };
 
   if (state.kind === "loading") return <p className="px-2 text-xs text-muted-foreground">正在读记忆…</p>;
   if (state.kind === "error") {
@@ -111,7 +149,7 @@ export function WorkspaceMemoryTab({ ws }: { ws: WorkspaceSnapshot }) {
         <Button size="sm" variant="ghost" onClick={() => void refresh()}>刷新</Button>
       </div>
       {docs.map((d) => (
-        <MemoryDocBlock key={`${d.agentId}:${version}`} ws={ws} doc={d} onSaved={refresh} />
+        <MemoryDocBlock key={d.agentId} ws={ws} doc={d} onSaved={handleSaved} onDirtyChange={handleDirtyChange} />
       ))}
     </div>
   );
