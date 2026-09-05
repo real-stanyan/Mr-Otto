@@ -24,6 +24,7 @@ import {
 import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
+import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
@@ -212,6 +213,7 @@ async function main(): Promise<void> {
   // 之后）——onCloneResult 要用 notifyWorkspace 通报活跃会话，见那里的注释
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
+  const workspaceMemory = createSupabaseWorkspaceMemory(supabase);
 
   // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
@@ -555,6 +557,7 @@ async function main(): Promise<void> {
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
+      memory: workspaceMemory,
     });
 
     activeSessions.set(sessionId, { session, workspaceId });

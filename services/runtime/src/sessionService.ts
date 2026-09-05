@@ -63,6 +63,21 @@
 // 「每轮从 store 重新投影」这条 engine 已经有（loop() 每圈调 this.snapshot()，
 // 增量读 store.load(sessionId,{afterSeq})），中途插话（无人被点名时直接
 // store.append 一条 chat_message）不用碰 engine 半个字就能被下一轮模型看到。
+//
+// 切片 4（#949）在这个文件里改了三处：
+//   ① CloudSessionOpts 加 `memory: WorkspaceMemoryStore`——**必需**不是可选。
+//      忘接线该编译不过，而不是安静地跑一个没有工作区记忆的 agent（同
+//      agentToolAllow.ts 的 `encode` 必填无默认那条纪律）。
+//   ② engineFor 建刀那一支给每只 agent 挂一把 `createWorkspaceMemoryTool`：
+//      共享档的写入者前缀取的是**此刻**的名字（specNames，runJob 每次刷新），
+//      不是建刀那一刻定死的 spec.name——改名之后不用重开会话就能生效。
+//   ③ runJob 里 briefIfNeeded 之后、engineFor 之前加 loadMemoryIfChanged：
+//      起 turn 前把这只 agent 看得见的两档（shared/own）落成一条
+//      workspace_memory_loaded 快照。**缺席或内容变了才落**（同 briefIfNeeded
+//      的两条判据）——每 turn 都落会把日志堆满同一段文字，只判"有没有"则
+//      别人改了共享档我下一 turn 看不见。读失败 warn 跳过、不阻塞 turn：
+//      记忆副作用永不阻塞回复（同本机 memory 工具的纪律），代价是这一 turn
+//      用的是上一条快照（或没有快照）——记忆不是这条会话的正确性前提。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -80,6 +95,9 @@ import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./tur
 import { createApprovalRouter } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
+import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
+import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
+import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 
 /** 一个工作区 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
     （Task 10/11），装配时递给 sessionService。 */
@@ -144,6 +162,8 @@ export interface CloudSessionOpts {
   hostUids: () => Promise<string[]>;
   onEvent: (e: SessionEvent) => void; // daemon 拿去定向广播
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
+  /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
+  memory: WorkspaceMemoryStore;
 }
 
 export interface CloudSession {
@@ -201,6 +221,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 不是换人格：engine 持有每会话状态（loopFingerprints 退化循环护栏、压缩
   // 标记），换人格不换这些就串味，运营那只的护栏指纹会算进广告那只
   const engines = new Map<string, LoopEngine>();
+  // agentId → 此刻的名字，runJob 每次刷新；memory 工具拼共享档前缀时现取
+  // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
+  const specNames = new Map<string, string>();
 
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
       的（chat_message / approval_request / agent_briefed / session_archived），
@@ -252,13 +275,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       hit.setAdapter(opts.adapterFor(spec));
       return hit;
     }
+    // 云侧 memory 工具按 agent 各一把（前缀写谁的名字取决于是哪只在写）。名字现取：改名后下一 turn 的前缀就是新名字
+    const memoryTool = createWorkspaceMemoryTool({
+      workspaceId: opts.workspaceId,
+      agentId: spec.agentId,
+      agentName: () => specNames.get(spec.agentId) ?? spec.name,
+      memory: opts.memory,
+    });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter: opts.adapterFor(spec),
       agentId: spec.agentId,
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
-      tools: () => [readFileTool, writeFileTool, bashTool, ...cachedPxTools],
+      tools: () => [readFileTool, writeFileTool, bashTool, memoryTool, ...cachedPxTools],
       world: opts.world,
       sessionId,
       approver: router,
@@ -267,6 +297,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     });
     engines.set(spec.agentId, engine);
     return engine;
+  }
+
+  /** 起 turn 前落这只 agent 的记忆快照（#949）。**缺席或内容变了才落**（同 briefIfNeeded 的两条判据）：
+      每 turn 都落 = 日志里堆满同一段文字；只判"有没有"= 别人改了共享档我下一 turn 看不见。
+      读失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复，同本机 memory 工具的纪律）——代价是
+      这一 turn 用的是上一条快照（或没有快照），记忆不是这条会话的正确性前提 */
+  async function loadMemoryIfChanged(spec: AgentSpec): Promise<void> {
+    let rows: Map<string, string>;
+    try {
+      rows = await opts.memory.read(opts.workspaceId, [SHARED_MEMORY_AGENT_ID, spec.agentId]);
+    } catch (err) {
+      console.warn(`[otto-runtime] 工作区记忆读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
+      return;
+    }
+    const shared = rows.get(SHARED_MEMORY_AGENT_ID) ?? "";
+    const own = rows.get(spec.agentId) ?? "";
+    // 裸 store 查（同 briefIfNeeded 的理由：记账判断读事实的原始来源）
+    const last = store
+      .ofType(sessionId, "workspace_memory_loaded")
+      .filter((e) => e.type === "workspace_memory_loaded" && e.agentId === spec.agentId)
+      .at(-1);
+    if (last && last.type === "workspace_memory_loaded" && last.shared === shared && last.own === own && last.agentName === spec.name) return;
+    notify(store.append({ sessionId, ts: Date.now(), type: "workspace_memory_loaded", agentId: spec.agentId, agentName: spec.name, shared, own }));
   }
 
   /** 这只 agent 在这条会话里有没有被介绍过、介绍的还是不是现在这份指令。
@@ -381,6 +434,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
 
       briefIfNeeded(spec, roster);
+      specNames.set(spec.agentId, spec.name);
+      await loadMemoryIfChanged(spec);
       const engine = engineFor(spec);
 
       let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];

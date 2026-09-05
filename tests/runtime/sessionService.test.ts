@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { createCloudSession, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
@@ -51,7 +52,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -59,8 +60,18 @@ describe("createCloudSession", () => {
 
     // DEFAULT_AGENT 没有 instructions、又是 roster 里唯一一只——briefIfNeeded
     // 的守卫（#928 修复轮 3/5）判定这条 brief 说不出任何内容，不落
-    // agent_briefed，事件序列因此与多智能体切片之前逐字节相同
-    expect(events.map((e) => e.type)).toEqual(["user_message", "request_envelope", "assistant_message", "turn_ended"]);
+    // agent_briefed，事件序列因此与多智能体切片之前逐字节相同（除了下面这条）。
+    // workspace_memory_loaded（#949）在这里出现是因为 loadMemoryIfChanged
+    // 的判据是"缺席或内容变了才落"——这条会话第一次起 turn，没有过去的快照
+    // （"缺席"），哪怕两档都是空字符串也照样落一条基线快照，与
+    // briefIfNeeded"两样都空就不说"那条额外优化不同
+    expect(events.map((e) => e.type)).toEqual([
+      "user_message",
+      "workspace_memory_loaded",
+      "request_envelope",
+      "assistant_message",
+      "turn_ended",
+    ]);
     expect(events[0]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
     // 落盘与 onEvent 是同一份事实
     expect(store.load("s1").map((e) => e.type)).toEqual(events.map((e) => e.type));
@@ -102,7 +113,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "开始任务", true);
@@ -154,7 +165,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -214,7 +225,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -259,7 +270,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     // 第一条 @：起 turn，但卡在 adapter.chat() 里不会立刻 resolve
@@ -330,7 +341,7 @@ describe("CloudSession.archive（issue #822）", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
   it("落一条人话 + 一条 session_archived，两条都推给房里的人", () => {
@@ -398,7 +409,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -418,7 +429,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: () => {}, onUsage: () => {},
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
@@ -441,7 +452,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: () => {}, onUsage: () => {},
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     // 先手工塞一条运营的工具痕迹,再让广告跑
@@ -466,7 +477,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {},
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
     // 手机端只发得出布尔那一版
     await session.say("u1", "alice", "@广告 看投放", true);
@@ -482,7 +493,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {},
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
     await session.say("u1", "alice", "在吗", true);
     await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
@@ -517,7 +528,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         };
       },
       onEvent,
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
@@ -548,7 +559,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     // 起 ops 的 turn,卡住——这条调用是 drainer,一直没跑完
@@ -617,7 +628,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
@@ -672,7 +683,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => [SOLO_AGENT],
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -697,7 +708,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => ROSTER,
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
@@ -718,7 +729,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: opts.agents, adapterFor: opts.adapterFor,
-      onEvent: (e) => opts.events?.push(e), onUsage: () => {},
+      onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
   }
 
@@ -860,7 +871,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       onEvent: (e) => {
         if (e.type === "turn_ended" && midTurnLedger.length === 0) midTurnLedger.push(openTurns(store.load("s1")));
       },
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     const first = session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -993,7 +1004,7 @@ describe("say() 收下即返回（issue #937）", () => {
         events.push(e);
         if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
       },
-      onUsage: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
 
     let sayResolved = false;
@@ -1054,7 +1065,7 @@ describe("连接器白名单（#941 切片 2）", () => {
       agents: async () => [{ ...DEFAULT_AGENT, tools }],
       adapterFor: () => adapter, px: pxWithGrants,
       hostUids: async () => ["h1"],
-      onEvent: () => {}, onUsage: () => {},
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
     });
   }
 
@@ -1074,5 +1085,109 @@ describe("连接器白名单（#941 切片 2）", () => {
     expect(seen[0]).toContain("px_h1_shopify_list_orders");
     expect(seen[0]).not.toContain("px_h1_shopify_cancel_order");
     expect(seen[0]).not.toContain("px_h1_ads_report");
+  });
+});
+
+describe("工作区记忆（#949 切片 4）", () => {
+  function memSession(store: EventStore, memory: ReturnType<typeof createInMemoryWorkspaceMemory>, chat: (agentId: string, messages: unknown[]) => Promise<ModelReply>, events: SessionEvent[]) {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, chat: (m) => chat(a.agentId, m as unknown[]) }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+  }
+
+  it("起 turn 前落 workspace_memory_loaded（shared+own），内容没变第二 turn 不再落", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const memory = createInMemoryWorkspaceMemory({ "w1/": "[广告] 周三投放", "w1/ops": "先看退款" });
+    const session = memSession(store, memory, async () => ({ content: "好" }), events);
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled();
+    await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+    await session.settled();
+    const snaps = events.filter((e) => e.type === "workspace_memory_loaded");
+    expect(snaps).toHaveLength(1);
+    expect(snaps[0]).toMatchObject({ agentId: "ops", agentName: "运营", shared: "[广告] 周三投放", own: "先看退款" });
+    // 快照落在这只 agent 的 assistant_message 之前
+    const seqSnap = snaps[0]!.seq;
+    const firstAm = events.find((e) => e.type === "assistant_message")!.seq;
+    expect(seqSnap).toBeLessThan(firstAm);
+    store.close();
+  });
+
+  it("模型系统提示里有我的 OWN 块、没有别人的 OWN；memory 工具挂在工具表上", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const memory = createInMemoryWorkspaceMemory({ "w1/ops": "ops 私有手感", "w1/ads": "ads 私有手感" });
+    // deriveMessages 只从 session_created.workspace 产出 system 消息（daemon.ts
+    // 头注同款说明）——workspace_memory_loaded 拼的是 system 消息的尾部，没有
+    // 这条围栏就压根没有 system 消息可拼，OWN/SHARED 块无处可去
+    store.append({ sessionId: "s1", ts: Date.now(), type: "session_created", workspace: "/work" });
+    const seen: Record<string, string> = {};
+    const tools: Record<string, string[]> = {};
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(messages, toolDefs) {
+          seen[a.agentId] = String((messages as { role: string; content: unknown }[])[0]!.content);
+          tools[a.agentId] = (toolDefs ?? []).map((t) => t.name);
+          return { content: "好" };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 @广告 看看", true, ["ops", "ads"]);
+    await session.settled();
+    expect(seen["ops"]).toContain("ops 私有手感");
+    expect(seen["ops"]).not.toContain("ads 私有手感");
+    expect(seen["ads"]).toContain("ads 私有手感");
+    expect(seen["ads"]).not.toContain("ops 私有手感");
+    expect(tools["ops"]).toContain("memory");
+    store.close();
+  });
+
+  it("agent 调 memory 写 shared 后，下一只的快照带上新内容且有 [运营] 前缀", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const memory = createInMemoryWorkspaceMemory();
+    let round = 0;
+    const session = memSession(store, memory, async (agentId) => {
+      round++;
+      if (agentId === "ops" && round === 1) {
+        return { content: "", toolCalls: [{ id: "c1", name: "memory", args: { target: "shared", action: "add", content: "销量含退款" } }] };
+      }
+      return { content: "好" };
+    }, events);
+    await session.say("u1", "alice", "@运营 记一下口径", true, ["ops"]);
+    await session.settled();
+    await session.say("u1", "alice", "@广告 看下", true, ["ads"]);
+    await session.settled();
+    const adsSnap = events.find((e) => e.type === "workspace_memory_loaded" && (e as { agentId: string }).agentId === "ads");
+    expect(adsSnap).toMatchObject({ shared: "[运营] 销量含退款" });
+    store.close();
+  });
+
+  it("记忆读取失败：warn 跳过，turn 照跑、不落快照", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const broken = { read: async () => { throw new Error("db down"); }, write: async () => {} };
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: broken,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "assistant_message")).toBe(true);
+    expect(events.some((e) => e.type === "workspace_memory_loaded")).toBe(false);
+    store.close();
   });
 });
