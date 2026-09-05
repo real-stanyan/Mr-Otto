@@ -43,6 +43,7 @@ import {
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { DEFAULT_RELAY_MAX_DEPTH, normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
+import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
@@ -579,6 +580,14 @@ async function main(): Promise<void> {
       // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人
       // 重新起 turn，而他可能早已被踢出这个工作区
       isMember: (uid) => membership.isMember(workspaceId, uid),
+      // 自动压缩要知道窗口有多大（#957 A-1）。**目录说不认识的型号一律回
+      // undefined**，不猜一个数——`contextWindowKnown` 那一位存在的全部理由就是
+      // 这个：拿兜底常量去算 0.75 阈值，压缩时机毫无意义（可能每轮都压，也可能
+      // 永远压不到），而两种都不报错。桌面 src/main/agent.ts 用的是同一条判据
+      contextWindowOf: (model) => {
+        const c = findModel(model);
+        return c?.contextWindowKnown ? c.contextWindow : undefined;
+      },
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,

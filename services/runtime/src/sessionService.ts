@@ -131,6 +131,16 @@
 //      起跑前与补跑段各查一次，不在籍就落一条说得出原因的收口、不起 turn。
 //      AgentSpec.degraded = "这份名单是查询失败时的占位"，见到它就一把 px 刀
 //      都不挂——它的 `tools: []` 在白名单那张表里恰恰读作"整池放行"。
+//
+// 自查第一批还补上了 engineFor 缺的两格（#957 A-1 / E-F5）——桌面早就有、
+// runtime 从来没有的那两个 LoopEngine 选项：
+//   ⑧ **autoCompact**：不接线 = 云会话**永不压缩**，上下文单调增长到每一轮都
+//      因超窗 400，而每一轮都按全尺寸计在 owner 头上，没有任何自愈路径。窗口
+//      取 `contextWindowOf(此刻 adapter 的 model)`——现读不定死（同坑 ①）：
+//      currentAdapters 这张表就是为了让那个闭包读得到"这一刻是哪个型号"。
+//      CloudSessionOpts.contextWindowOf 是**必需**字段（同 memory / isMember）。
+//   ⑨ **loopGuardMaxNudges: 5**：ADR-0212 的"注一条话不停 turn"在本机成立是因为
+//      人就坐在那儿；群聊云会话没有那个人。5 次护栏还在打转就抛错收口。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -151,6 +161,7 @@ import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/a
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
+import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
 import {
@@ -253,6 +264,13 @@ export interface CloudSessionOpts {
       这条会话才不会替一个已经被踢出去的人继续烧 owner 的钱、继续用他的代理
       授权。daemon 接的是 membershipCache（60s 记忆化 + fail-closed） */
   isMember: (uid: string) => Promise<boolean>;
+  /** 这个型号的上下文窗口有多大（#957 A-1）。**必需**（同 memory / agentWriter /
+      isMember 的纪律）：忘接线该编译不过，而不是安静地跑一条永远不压缩的云会话。
+      `undefined` = 这个 id 的窗口是猜的（目录外的自定义 id / 没探测到的本机型号），
+      `shouldAutoCompact` 见到 undefined 一律不触发——宁可不压，也别按一个假数字
+      烧一次全量摘要。daemon 接 modelCatalog 的 findModel + contextWindowKnown；
+      测试与冒烟一律 `() => undefined`（那些装配没有真实型号可查） */
+  contextWindowOf: (model: string) => number | undefined;
 }
 
 export interface CloudSession {
@@ -316,6 +334,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 不是换人格：engine 持有每会话状态（loopFingerprints 退化循环护栏、压缩
   // 标记），换人格不换这些就串味，运营那只的护栏指纹会算进广告那只
   const engines = new Map<string, LoopEngine>();
+  // agentId → 这台 engine **此刻**挂的 adapter（#957 A-1）。autoCompact 的
+  // contextWindow 是一个闭包，engine 每圈现调一次——它读的必须是这一刻的型号，
+  // 不是建 engine 那一刻的。engineFor 两条分支（新建 / 命中缓存）都往这里写，
+  // 缺一条就是「改了型号，窗口还按旧型号算」：窗口一大一小差两个数量级，
+  // 压缩要么永远不触发要么每轮都触发，而两种都不报错
+  const currentAdapters = new Map<string, ModelAdapter>();
   // agentId → 此刻的名字，runJob 每次刷新；memory 工具拼共享档前缀时现取
   // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
   const specNames = new Map<string, string>();
@@ -384,6 +408,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       到尾只看得见它自己的痕迹 + 全场的发言。engine 内部三处 model-facing
       的读一个都不用改（ADR-0047 的教训：挨个补过滤漏一处就安静地灌错上下文） */
   function engineFor(spec: AgentSpec): LoopEngine {
+    // 一次调用只造一把 adapter，两条分支共用（原来两条各调一次 opts.adapterFor）：
+    // 记进 currentAdapters 之后，autoCompact 的窗口 getter 才现读得到此刻的型号
+    const adapter = opts.adapterFor(spec);
+    currentAdapters.set(spec.agentId, adapter);
     const hit = engines.get(spec.agentId);
     if (hit) {
       // 每 turn 现取一次 adapter（#932 坑 ①，ADR-0202 同款）：型号来自这只
@@ -391,7 +419,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 一 turn 生效」对改提示词成立、对改型号不成立**且静默**（账单会说话，
       // 界面不会）。不比对"变没变"——比对的判据一漏就是安静地继续用旧型号，
       // 而 setAdapter 是纯赋值，白设一次不花钱
-      hit.setAdapter(opts.adapterFor(spec));
+      hit.setAdapter(adapter);
       return hit;
     }
     // 云侧 memory 工具按 agent 各一把（前缀写谁的名字取决于是哪只在写）。名字现取：改名后下一 turn 的前缀就是新名字
@@ -403,7 +431,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
-      adapter: opts.adapterFor(spec),
+      adapter,
       agentId: spec.agentId,
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
@@ -419,6 +447,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       approver: router,
       onEvent: notify,
       middlewares: [],
+      // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
+      // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗
+      // 400，而每一轮都按全尺寸计在 owner 头上，且没有任何自愈路径（用户唯一能做的
+      // 是新开一条会话）。窗口**现读**这台 engine 此刻的 adapter 的型号：改型号
+      // 下一 turn 生效（同 #932 坑 ①），锁死建 engine 那一刻的型号就是同一个教训
+      // 在这一格上再犯一次。settings 取全局默认——云会话没有"设置页"这个概念，
+      // 每工作区可配阈值不是今天的需求（要的话在这加一个现读的 opts）
+      autoCompact: {
+        contextWindow: () => opts.contextWindowOf((currentAdapters.get(spec.agentId) ?? adapter).model),
+        settings: () => DEFAULT_AUTO_COMPACT,
+      },
+      // 护栏硬停（#957 E-F5）。本机会话故意不配：ADR-0006 的"无步数天花板"前提是
+      // 人就坐在那儿，停止键随时能按。群聊云会话没有那个人——真机上跑过 300 次
+      // 模型调用、99 次护栏、零进展、没有任何终点。5 = 喊满五次还在原地打转就认输，
+      // 走 engine 既有的 turn_ended{outcome:"error"} 收口，不新造 outcome
+      loopGuardMaxNudges: 5,
     });
     engines.set(spec.agentId, engine);
     return engine;
