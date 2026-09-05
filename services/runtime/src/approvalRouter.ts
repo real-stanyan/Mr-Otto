@@ -6,6 +6,14 @@ import type { Approver, ApprovalOutcome } from "../../../src/loop/approvalGate.j
 import type { ToolCallRequest } from "../../../src/session/events.js";
 import type { Tool } from "../../../src/tools/tool.js";
 
+/** cs approve 帧的三态回执（#957 A-11/#927）：`resolve` 原来把「无此 pending」
+    和「无权批」两种拒绝都糊成同一个 false，frameHandler 因此只能回一句
+    看不出原因的错误、也没有任何一行日志——拒绝是这一层唯一的失败出口，
+    含糊等于让"谁拒的、为什么"永远只能靠读代码倒推（同 #915 的教训）。
+    `no_pending` = 这个 callId 已经被消化过或从没存在过；`not_allowed` =
+    pending 还在，但这个 uid 既不是发起人也不是 owner */
+export type ApproveOutcome = "ok" | "no_pending" | "not_allowed";
+
 export interface ApprovalRouterOpts {
   ownerUid: string;
   timeoutMs?: number; // 默认 600_000
@@ -37,7 +45,7 @@ export interface ApprovalRouter extends Approver {
       随 settle() 一起传，同一个 callId 的 pending 只能被消化一次（pending.delete 在
       settle 里发生），第二次调用连 entry 都查不到，早早短路返回 false——不存在
       "读到别人刚写的值"的窗口，因为压根没有共享的旁路状态可读 */
-  resolve(callId: string, byUid: string, decision: "approved" | "denied", decidedBy?: { uid: string; label: string }): boolean;
+  resolve(callId: string, byUid: string, decision: "approved" | "denied", decidedBy?: { uid: string; label: string }): ApproveOutcome;
   canDecide(uid: string): boolean; // uid === initiator || uid === owner
 }
 
@@ -123,12 +131,12 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
       byUid: string,
       decision: "approved" | "denied",
       decidedBy?: { uid: string; label: string }
-    ): boolean {
+    ): ApproveOutcome {
       const entry = pending.get(callId);
-      if (!entry) return false;
-      if (byUid !== entry.initiatorUid && byUid !== opts.ownerUid) return false;
+      if (!entry) return "no_pending";
+      if (byUid !== entry.initiatorUid && byUid !== opts.ownerUid) return "not_allowed";
       entry.settle({ decision, ...(decidedBy ? { decidedBy } : {}) });
-      return true;
+      return "ok";
     },
   };
 }

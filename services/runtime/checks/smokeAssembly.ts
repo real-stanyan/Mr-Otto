@@ -314,7 +314,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
       /* 不会被调用 */
     },
     approve() {
-      return false;
+      return "no_pending";
     },
     backlog() {
       return [];

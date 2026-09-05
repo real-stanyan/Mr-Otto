@@ -94,6 +94,15 @@ describe("createFrameRateLimiter（三档 + 日志收口）", () => {
     expect(hits).toEqual(["create:a", "create:b"]);
   });
 
+  it("allow(kind, uid, n) 一次扣 n 个令牌 —— 突发 10、每次扣 3，三次后第四次 false（#957 B-I5）", () => {
+    const c = clock();
+    const l = createFrameRateLimiter({ now: c.now });
+    expect(l.allow("turn", "u", 3)).toBe(true);
+    expect(l.allow("turn", "u", 3)).toBe(true);
+    expect(l.allow("turn", "u", 3)).toBe(true);
+    expect(l.allow("turn", "u", 3)).toBe(false); // 只剩 1 个令牌，不够扣 3 个
+  });
+
   it("拒绝语说的是「慢一点」不是「出错了」—— 后者会让人反复重试", () => {
     for (const kind of ["say", "turn", "create"] as const) {
       expect(throttleMessage(kind)).toMatch(/稍等|太快|超了/);

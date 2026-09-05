@@ -373,7 +373,12 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 点了名的那条帧 mentions 非空而 mention 可能是 false —— 只看
           // mention 的话，一条真会起 turn（真花钱）的发言被记进了 say 桶
           const kind = msg.mention || (msg.mentions?.length ?? 0) > 0 ? "turn" : "say";
-          if (!deps.rateLimit.allow(kind, entry.uid)) {
+          // 限速按点名数扣（#957 B-I5）：一条 @ 了 N 个 agent 的帧会真起 N 次
+          // 模型调用（每只 agent 各跑一条 turn），只扣一个 turn 令牌等于让
+          // "@ 一个人"和"@ 十个人"同价——@ 越多人反而越省额度。旧协议的
+          // `mention: true` 不带 mentions 数组时退回 1（max(1, undefined??1)）
+          const n = Math.max(1, msg.mentions?.length ?? 1);
+          if (!deps.rateLimit.allow(kind, entry.uid, n)) {
             deps.send(cid, { t: "error", msg: throttleMessage(kind) });
             return;
           }
@@ -397,9 +402,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "approve": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
-          const ok = session.approve(msg.callId, entry.uid, entry.label, msg.decision);
-          if (!ok) {
-            deps.send(cid, { t: "error", msg: "审批未生效：请求已失效，或你不是发起人/owner" });
+          // 三态而不是布尔（#957 A-11/#927）：原来的 false 把"这条 pending 已经
+          // 被消化/过期"和"你压根没资格批"糊成同一句模糊错误，也没有任何一行
+          // 日志——拒绝是这一层唯一的失败出口，两种拒绝各自留痕才查得出"谁
+          // 拒的、为什么"（同 #915 的教训）
+          const outcome = session.approve(msg.callId, entry.uid, entry.label, msg.decision);
+          if (outcome === "no_pending") {
+            deps.log(`审批被拒 callId=${msg.callId} uid=${entry.uid}：no_pending`);
+            deps.send(cid, { t: "error", msg: "这条审批已经处理过或已过期。" });
+          } else if (outcome === "not_allowed") {
+            deps.log(`审批被拒 callId=${msg.callId} uid=${entry.uid}：not_allowed`);
+            deps.send(cid, { t: "error", msg: "只有发起人或 owner 能批这条审批。" });
           }
           return;
         }

@@ -138,7 +138,7 @@ import { agentView } from "../../../src/session/agentView.js";
 import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
-import { createApprovalRouter } from "./approvalRouter.js";
+import { createApprovalRouter, type ApproveOutcome } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
@@ -262,7 +262,7 @@ export interface CloudSession {
       （turnCoordinator 的 running 只在队列真空了才落），所以是 while 不是
       一次 await */
   settled(): Promise<void>;
-  approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): boolean;
+  approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): ApproveOutcome;
   backlog(afterSeq: number): SessionEvent[];
   isRunning(): boolean;
   lastSeq(): number;

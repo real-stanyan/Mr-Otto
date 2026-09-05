@@ -10,16 +10,25 @@ describe("审批路由", () => {
     r.setInitiator("alice");
     const p = r.decide(call, tool);
     expect(reqs).toHaveLength(1);
-    expect(r.resolve("c1", "alice", "approved")).toBe(true);
+    expect(r.resolve("c1", "alice", "approved")).toBe("ok");
     await expect(p).resolves.toMatchObject({ decision: "approved" });
   });
-  it("owner 可代批；无关成员 resolve 回 false 且不消化 pending", async () => {
+  it("owner 可代批；无关成员 resolve 回 not_allowed 且不消化 pending", async () => {
     const r = createApprovalRouter({ ownerUid: "owner", onRequest: () => {} });
     r.setInitiator("alice");
     const p = r.decide(call, tool);
-    expect(r.resolve("c1", "mallory", "approved")).toBe(false);
-    expect(r.resolve("c1", "owner", "denied")).toBe(true);
+    expect(r.resolve("c1", "mallory", "approved")).toBe("not_allowed");
+    expect(r.resolve("c1", "owner", "denied")).toBe("ok");
     await expect(p).resolves.toMatchObject({ decision: "denied" });
+  });
+  it("三态：无关 uid → not_allowed 且 pending 仍在，随后 owner → ok；同 callId 二次 resolve → no_pending（#957 A-11/#927）", async () => {
+    const r = createApprovalRouter({ ownerUid: "owner", onRequest: () => {} });
+    r.setInitiator("alice");
+    const p = r.decide(call, tool);
+    expect(r.resolve("c1", "mallory", "approved")).toBe("not_allowed");
+    expect(r.resolve("c1", "owner", "approved")).toBe("ok");
+    await expect(p).resolves.toMatchObject({ decision: "approved" });
+    expect(r.resolve("c1", "owner", "approved")).toBe("no_pending");
   });
   it("超时自动 deny", async () => {
     vi.useFakeTimers();
@@ -43,7 +52,7 @@ describe("审批路由", () => {
     r.setInitiator("b");
     const p2 = r.decide(call, tool);
     // 第二个 pending 应该可被 resolve
-    expect(r.resolve("c1", "b", "approved")).toBe(true);
+    expect(r.resolve("c1", "b", "approved")).toBe("ok");
     await expect(p2).resolves.toMatchObject({ decision: "approved" });
     vi.useRealTimers();
   });
@@ -54,7 +63,7 @@ describe("审批路由", () => {
     const p = r.decide(call, tool, controller.signal);
 
     // 先 resolve approved
-    expect(r.resolve("c1", "alice", "approved")).toBe(true);
+    expect(r.resolve("c1", "alice", "approved")).toBe("ok");
     const result = await p;
     expect(result).toMatchObject({ decision: "approved" });
 

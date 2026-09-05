@@ -18,7 +18,7 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     say: async () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
     settled: async () => {},
-    approve: () => true,
+    approve: () => "ok",
     backlog: () => [],
     isRunning: () => false,
     lastSeq: () => -1,
@@ -469,15 +469,15 @@ describe("createFrameHandler", () => {
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
-  it("approve：CloudSession.approve 回 false 时回 error 帧；回 true 时静默", async () => {
+  it("approve：CloudSession.approve 回 ok 时静默", async () => {
     const approveCalls: unknown[] = [];
-    const sessionFalse = fakeSession({
+    const sessionOk = fakeSession({
       approve: (...args) => {
         approveCalls.push(args);
-        return false;
+        return "ok";
       },
     });
-    const { deps, sent } = makeDeps({ getSession: () => sessionFalse });
+    const { deps, sent, logs } = makeDeps({ getSession: () => sessionOk });
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
@@ -490,8 +490,40 @@ describe("createFrameHandler", () => {
     );
 
     expect(approveCalls).toEqual([["call-1", "u1", "Label(u1)", "approved"]]);
+    expect(sent).toHaveLength(0);
+    expect(logs).toHaveLength(0);
+  });
+
+  it("approve：no_pending 回「已经处理过或已过期」+ log 带 callId；not_allowed 回「只有发起人或 owner」+ log（#957 A-11/#927）", async () => {
+    const outcomes: ("ok" | "no_pending" | "not_allowed")[] = ["no_pending", "not_allowed"];
+    let i = 0;
+    const session = fakeSession({ approve: () => outcomes[i++]! });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "approve", callId: "call-1", decision: "approved" })
+    );
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg.t).toBe("error");
+    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("这条审批已经处理过或已过期") });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("call-1");
+    expect(logs[0]).toContain("u1");
+
+    sent.length = 0;
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "approve", callId: "call-2", decision: "approved" })
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("只有发起人或 owner 能批这条") });
+    expect(logs).toHaveLength(2);
+    expect(logs[1]).toContain("call-2");
+    expect(logs[1]).toContain("u1");
   });
 
   it("backlog：回 sessions.get(...).backlog(afterSeq) 的全量结果，done:true", async () => {
@@ -697,6 +729,30 @@ describe("限流接线（issue #819）", () => {
     expect(buckets).toEqual(["turn"]);
     expect(sayCalls).toHaveLength(0);
     expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
+  it("mentions 长度 3 的帧扣 3 个 turn 令牌（限速按点名数扣，#957 B-I5）", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    const allowCalls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    allowCalls.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "say", text: "@三个人", mention: true, mentions: ["a", "b", "c"] })
+    );
+
+    expect(allowCalls).toEqual([["turn", "u1", 3]]);
+    expect(sayCalls).toHaveLength(1);
   });
 
   it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {

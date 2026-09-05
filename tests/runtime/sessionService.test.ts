@@ -193,7 +193,7 @@ describe("createCloudSession", () => {
     const events: SessionEvent[] = [];
     let session!: CloudSession;
     let round = 0;
-    const approveResults: boolean[] = [];
+    const approveResults: ReturnType<CloudSession["approve"]>[] = [];
 
     const adapter: ModelAdapter = {
       model: "fake-model",
@@ -241,7 +241,7 @@ describe("createCloudSession", () => {
     await session.say("u1", "alice", "帮我跑个命令", true);
     await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
-    expect(approveResults).toEqual([true, false]);
+    expect(approveResults).toEqual(["ok", "no_pending"]);
     const decision = events.find((e) => e.type === "approval_decision");
     expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
     store.close();
@@ -1152,7 +1152,7 @@ describe("say() 收下即返回（issue #937）", () => {
     expect(session.isRunning()).toBe(true);
 
     // 现在才轮到那一帧：批准 → turn 接着跑完
-    expect(session.approve(req.callId, "owner", "Owner", "approved")).toBe(true);
+    expect(session.approve(req.callId, "owner", "Owner", "approved")).toBe("ok");
     await session.settled();
 
     expect(events.find((e) => e.type === "approval_decision")).toMatchObject({ decision: "approved" });
