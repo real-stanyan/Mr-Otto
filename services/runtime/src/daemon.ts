@@ -884,14 +884,18 @@ async function main(): Promise<void> {
     console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
   } else {
     const rows = (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[];
+    // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession 一开工
+    // 就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话各自补跑时
+    // 若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的 CPU/内存/磁盘 I/O
+    // ——错峰不改变总工作量，只把它摊开。**目标时刻线性**（复审 Minor 修正）：
+    // 每条会话相对同一个起点 `start` 晚 `i * 1500ms`，不是每次循环都新等一段
+    // 1500ms 的倍数——那样会把每一轮的 `ownerOf`/`openSessionRoom` 耗时也累进
+    // 下一条的等待里，导致越往后的会话累积延迟按 i² 增长而不是线性
+    const start = Date.now();
     for (const [i, row] of rows.entries()) {
       try {
-        // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession
-        // 一开工就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话
-        // 各自补跑时若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的
-        // CPU/内存/磁盘 I/O——错峰不改变总工作量，只把它摊开，第 i 条话之后
-        // 再开房间
-        if (i > 0) await new Promise((r) => setTimeout(r, i * 1500));
+        const wait = start + i * 1500 - Date.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         const owner = await ownerOf(row.workspace_id);
         const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
         // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库

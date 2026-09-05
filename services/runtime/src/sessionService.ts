@@ -1029,10 +1029,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 回调回来）。等待点照旧走 inflight —— settled() 的 while 循环先等这条
     // catchUp，再等它末尾 startDrain() 起的那条排空
     const catchUp = async (): Promise<void> => {
-      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempt: number }[] = [];
+      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempts: number }[] = [];
       const kicked: { agentId: string; seq: number }[] = [];
       const skipped: number[] = [];
-      const exhausted: { agentId: string; seq: number; attempts: number }[] = [];
+      const exhausted: { agentId: string; seq: number }[] = [];
+      // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
+      // 多条开场白在这里天然也按 seq 升序出现，下面两处分组都借了这个顺序
       for (const t of stale) {
         const opening = seed.find((e) => e.seq === t.seq);
         if (t.fromUid === null || !opening || opening.type !== "user_message") {
@@ -1047,19 +1049,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           kicked.push({ agentId: t.agentId, seq: t.seq });
           continue;
         }
-        // 补跑上限（#957 A-9 / #933）：计数是该 opening 之后、这只 agent 的
-        // interrupted 记号条数——每次补跑都在真正入队前落一条，所以这个数就是
-        // "上一次进程死之前，这条 turn 已经被重跑过几回"。到 3 次说明这条 turn
-        // 大概率是确定性弄死 daemon 的那种：再排一次只是让 owner 再被计一次费、
-        // 让下一次重启继续死在同一个地方
+        // 补跑上限（#957 A-9 / #933，复审 Critical 修正）：计数是该 opening 之后、
+        // 这只 agent 的 interrupted 记号条数。**同一只 agent 的多条开场白共用
+        // 同一条计数线**——晚开的那条 seq 更大，它右边的记号天然更少，于是最多
+        // 晚一次到顶（不是各开一条独立的计数器）：到 3 次说明这条 turn 大概率
+        // 是确定性弄死 daemon 的那种，再排一次只是让 owner 再被计一次费、让下
+        // 一次重启继续死在同一个地方
         const attempts = seed.filter(
           (e) => e.type === "turn_ended" && e.agentId === t.agentId && e.outcome === "interrupted" && e.seq > t.seq
         ).length;
         if (attempts >= MAX_CATCHUP_ATTEMPTS) {
-          exhausted.push({ agentId: t.agentId, seq: t.seq, attempts });
+          exhausted.push({ agentId: t.agentId, seq: t.seq });
           continue;
         }
-        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempt: attempts + 1 });
+        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempts });
       }
       // **收口先落、再入队**：这几条 turn_ended 的 readUpToSeq 取的是落盘那一刻的
       // 日志尾（同 runJob 的两处合成收口，#957 F1），排在任何 job 起跑之前落盘，
@@ -1076,9 +1079,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }));
       }
       // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted
-      // 记号）——它要能把 openTurns 收口（readUpToSeq 取日志尾，同 kicked），
-      // 否则这条 turn 会在下一次重启时又被 openTurns 捞回来，重新数一遍到 3、
-      // 无限循环地"停止补跑"
+      // 记号），readUpToSeq 取**这条开场白自己的 seq**（复审 Critical 修正，不是
+      // lastSeqSeen）——它收口自己、也顺带收掉同一只 agent 更早的那些开场白
+      // （它们的 attempts 计数只会更高，必然也到了上限，见上面 attempts 那段的
+      // 单调性），但不动同一只 agent 更晚的开场白：它们的计数线还没到顶，留给
+      // 下面 runnable 那一段继续跑。不落这条的话，这条 turn 会在下一次重启时
+      // 又被 openTurns 捞回来，重新数一遍到 3、无限循环地"停止补跑"
       for (const x of exhausted) {
         notify(store.append({
           sessionId,
@@ -1087,25 +1093,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           error: "重跑 3 次仍未收口，停止补跑",
           agentId: x.agentId,
-          readUpToSeq: lastSeqSeen,
+          readUpToSeq: x.seq,
         }));
       }
-      // interrupted 记号先落、再入队（#957 A-9）：readUpToSeq 取 opening.seq - 1
-      // ——严格小于开场白的 seq，turnLedger 的收口规则对它天生中性（既不收口也
-      // 不算"有动静"），所以这条记号不会把 openTurns 的判定带偏，纯粹是给下一
-      // 次重启读的计数凭据。每条 runnable 各落各的，紧挨在它自己的 enqueue 前面
-      const decisions: EnqueueDecision[] = runnable.map((r) => {
+      // interrupted 记号**每只 agent 一条，不是每条开场白一条**（复审 Critical
+      // 修正）：一只 agent 此刻可能有好几条还没收口的开场白（U1、U2 都点了它），
+      // 若各开一条 readUpToSeq = 那条自己的 seq-1，落给 U2 的那条 seq 会
+      // ≥ U1.seq，把 U1 也顺手收了口——U1 从此再也不会被补跑捞回来，静默消失。
+      // 改成整只 agent 共用一条：readUpToSeq 取这只 agent 全部 runnable 开场白
+      // 里**最小**的 seq 再减一，严格小于每一条的 seq，对全体天生中性
+      const runnableByAgent = new Map<string, { minSeq: number; fromUid: string; attempts: number }>();
+      for (const r of runnable) {
+        const cur = runnableByAgent.get(r.agentId);
+        // runnable 里同一只 agent 第一次出现的就是最小 seq（上面那条顺序说明）
+        if (!cur) runnableByAgent.set(r.agentId, { minSeq: r.opening.seq, fromUid: r.fromUid, attempts: r.attempts });
+      }
+      for (const [agentId, g] of runnableByAgent) {
         notify(store.append({
           sessionId,
           ts: Date.now(),
           type: "turn_ended",
           outcome: "interrupted",
-          error: `重启补跑第 ${r.attempt} 次`,
-          agentId: r.agentId,
-          readUpToSeq: r.opening.seq - 1,
+          // N 取这只 agent 最早那条开场白的计数（+1）：它是这一组里 attempts
+          // 最大的一条（更早 = 右边被数进去的记号更多），到顶的判断因此不会
+          // 因为后来又有一条新开场白而被稀释
+          error: `重启补跑第 ${g.attempts + 1} 次`,
+          agentId,
+          readUpToSeq: g.minSeq - 1,
         }));
-        return coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening });
-      });
+      }
+      const decisions: EnqueueDecision[] = runnable.map((r) =>
+        coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
+      );
       if (skipped.length > 0) {
         console.warn(
           `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
@@ -1131,7 +1150,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (runnable.length > 0) {
         console.log(
           `[otto-runtime] 重启补跑 ${runnable.length} 个未收口的 turn（session=${sessionId}）：` +
-            runnable.map((r) => `${r.agentId}@${r.opening.seq}（第 ${r.attempt} 次）`).join(" ")
+            runnable.map((r) => `${r.agentId}@${r.opening.seq}（第 ${r.attempts + 1} 次）`).join(" ")
         );
       }
       // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）

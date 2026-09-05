@@ -1043,6 +1043,76 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
     store.close();
   });
 
+  it("补跑上限（#957 A-9 / #933 复审 Critical）：同一只 agent 两条未收口开场白只落一条记号，且对两条都中性", async () => {
+    const store = newStore();
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"] });
+    const u2 = store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[bob]: @运营 再看", fromUid: "u2", mentions: ["ops"] });
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    let markerSnapshot: ReturnType<typeof openTurns> | null = null;
+    createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      // 记号落盘那一刻——真实 turn 的事件（workspace_memory_loaded/request_envelope/
+      // assistant_message）此时都还没落——立刻拍一张 openTurns 快照
+      onEvent: (e) => {
+        if (markerSnapshot === null && e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted") {
+          markerSnapshot = openTurns(store.load("s1"));
+        }
+      },
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+    });
+    // settled() 要靠已装配的 session 拿到，上面那次 createCloudSession 调用没接
+    // 返回值——用日志轮询代替（同"重启补跑"那条老测试的等待手法）
+    for (let i = 0; i < 50 && openTurns(store.load("s1")).length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    // 只落了一条 interrupted 记号——不是 U1、U2 各一条
+    const markers = store.load("s1").filter((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 1 次" });
+    // 记号落盘那一刻，U1、U2 都还列在 openTurns 上——没有被这条记号静默收掉
+    expect(markerSnapshot).toEqual([
+      { seq: u1.seq, fromUid: "u1", agentId: "ops", state: "queued" },
+      { seq: u2.seq, fromUid: "u2", agentId: "ops", state: "queued" },
+    ]);
+    store.close();
+  });
+
+  it("补跑上限（#957 A-9 / #933 复审 Critical）：一条到顶收摊（readUpToSeq 取它自己的 seq），另一条计数没到顶继续跑", async () => {
+    const store = newStore();
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"] });
+    // 第一次重启：只有 U1 开着
+    store.append({ sessionId: "s1", ts: 2, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 1 次" });
+    const u2 = store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "[bob]: @运营 再看", fromUid: "u2", mentions: ["ops"] });
+    // 第二、三次重启：U1、U2 都开着，共用一条记号（readUpToSeq 取 U1.seq-1）
+    store.append({ sessionId: "s1", ts: 4, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 2 次" });
+    store.append({ sessionId: "s1", ts: 5, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 3 次" });
+    // 此刻 U1 之后有 3 条记号（到顶），U2 之后只有 2 条（还有余量）
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.settled();
+    expect(seen).toEqual(["ops"]); // U2 那条真的跑了一轮，不是被 U1 的到顶拖累一起停摆
+    const events = store.load("s1");
+    const endEvents = events.filter((e) => e.type === "turn_ended" && e.agentId === "ops");
+    const exhaustedEnd = endEvents.find((e) => (e as { error?: string }).error?.includes("停止补跑"));
+    // U1 到顶那条收口：readUpToSeq 取它自己的 seq，不是补跑开始前的日志尾
+    // （日志尾此刻已经是 4，若沿用旧代码的 lastSeqSeen 会把这个值算错）
+    expect(exhaustedEnd).toMatchObject({ outcome: "error", agentId: "ops", readUpToSeq: u1.seq });
+    const completedEnd = endEvents.find((e) => (e as { outcome?: string }).outcome === "completed");
+    expect(completedEnd).toBeDefined();
+    expect((completedEnd as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u2.seq);
+    expect((completedEnd as { error?: string }).error ?? "").not.toContain("停止补跑");
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(events)).toEqual([]); // U1（到顶收口）、U2（真的跑完）都收干净了
+    store.close();
+  });
+
   it("turn 跑到一半被再 @：这一轮收口后它再跑一轮，中间那段 openTurns 仍然列着它（#932 终审 Blocking ①）", async () => {
     const store = newStore();
     const { openTurns } = await import("../../src/shared/turnLedger.js");
