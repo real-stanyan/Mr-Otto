@@ -14,6 +14,7 @@ import type {
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
 import { countdown } from "./billingView.js";
+import type { OpenTurn } from "../../../shared/turnLedger.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
@@ -154,4 +155,18 @@ export function routeChangedText(e: RouteChangedEvent, now: number = Date.now())
   }
   const resetSuffix = e.resetAt !== undefined ? `，${countdown(e.resetAt, now)}` : "";
   return `改道：${ROUTE_LABEL[e.from]} → ${ROUTE_LABEL[e.to]}（${ROUTE_REASON_TEXT[e.reason]}${resetSuffix}）`;
+}
+
+/** 「停止」按钮的显示判据（#957 第三批）：与审批同一判据——发起人或 owner——
+    但这里不重判权限，服务端的 stop_result 才是唯一事实，这只决定按钮画不画。
+    state !== "ready" 时云会话本身还没连上/已断，按钮不该出现；turn 不是
+    running（已经排队还没跑，或早收口了）也不该出现——停的是"这一轮"。 */
+export function canStopTurn(
+  turn: OpenTurn,
+  selfUid: string,
+  cs: { state: string; ownerUid: string }
+): boolean {
+  if (cs.state !== "ready") return false;
+  if (turn.state !== "running") return false;
+  return selfUid === turn.fromUid || selfUid === cs.ownerUid;
 }

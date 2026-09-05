@@ -54,6 +54,13 @@ import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
     因为 lastActive 表是进程内状态，daemon 一重启就空了）。 */
 const WORKSPACE_LABEL = "mrotto.workspace";
 
+/** 归档之后最多等多久再收房（#957 A-8）。归档现在顺带停 turn，但 `abortTurn()`
+    只是翻信号：engine 落 turn_ended{aborted} 是异步的，工具跑到一半那种还要等
+    子进程收口。等 `settled()` 才关房，那条 turn 的最后几条事件（含收口）才发得
+    出去。封顶存在的理由是另一半：一条卡死在网络往返里的 turn 不该让房间永远
+    关不掉（cid→transport 表只增不减，那是真正的泄漏）。 */
+const ARCHIVE_SETTLE_MAX_WAIT_MS = 10_000;
+
 /** `queryAgents` 查询失败时的回落名单（task-11，#928）——不是"表建好之前"
     的常态路径，是异常路径的安全网。**不缓存**：单纯是"这一次查询失败了，
     这一条消息该派给谁"的兜底答案，下一条消息会重新查一次，不影响查询
@@ -736,10 +743,35 @@ async function main(): Promise<void> {
         // 关房间要等广播真的写出去：ws.close() 之后排队的帧还发不发得出去
         // 是实现细节，不该赌。延一拍收摊——这条会话此刻已经不在
         // activeSessions 里了，期间再来的帧一律 no_session，不会有人趁机
-        // 往一条已归档的会话里说话
+        // 往一条已归档的会话里说话。
+        // **先等排空**（#957 A-8）：原来是固定 2 s，而归档不停正在跑的 turn
+        // （现在停了，但 abortTurn 只是翻信号，engine 落 turn_ended{aborted}
+        // 是异步的；工具跑到一半的那种更要等子进程收口）。2 s 到点就
+        // `cidTransport.delete`，之后这条 turn 产出的每一条事件都被 globalSend
+        // 静默丢掉 —— 人拿不到回复，模型调用的钱照付。
+        // 封顶 10 s：一条卡死的 turn 不该让房间永远关不掉（`settled()` 等的是
+        // inflight，而 drain 里的一次网络往返可以很久）。`.then(close, close)`
+        // —— settled() 抛了也照样收房，收不掉才是真的漏
         const close = closeRoom.get(sessionId);
         closeRoom.delete(sessionId);
-        if (close) setTimeout(close, 2_000);
+        if (close) {
+          // 封顶那颗定时器要**收掉**（#957 终审 M5）：`Promise.race` 只是不再理
+          // 输的那一边，它并不取消它——排空先到时这颗 10 秒的计时器还挂在事件
+          // 循环上，让进程平白多活最长 10 秒（`unref` 不行：一次真的超时收房
+          // 要靠它把 close 叫醒）。归档在真机上是连着来的，攒一把这种定时器就是
+          // 一段谁都解释不了的"退不出去"
+          let capTimer: ReturnType<typeof setTimeout> | undefined;
+          const settledOrCapped = Promise.race([
+            active.session.settled(),
+            new Promise<void>((r) => { capTimer = setTimeout(r, ARCHIVE_SETTLE_MAX_WAIT_MS); }),
+          ]).finally(() => { if (capTimer !== undefined) clearTimeout(capTimer); });
+          // 排空之后仍然延那一拍：等的两件事不一样 —— 前者等"这条 turn 不再
+          // 产出事件"，后者等"已经交给 socket 的那些字节写出去"
+          void settledOrCapped.then(
+            () => setTimeout(close, 2_000),
+            () => setTimeout(close, 2_000)
+          );
+        }
         return true;
       },
     },

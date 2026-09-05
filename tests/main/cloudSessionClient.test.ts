@@ -309,9 +309,10 @@ describe("createCloudSessionClient — 终审 C1：ready 后不重绑 hostCid", 
     expect(t.sent.length).toBe(sentBefore);
     expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready"); // 状态没有被打回 connecting
 
-    const r = await h.client.say("hi", false);
-    expect(r).toEqual({ ok: true, value: null });
+    const pending = h.client.say("hi", false);
     expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID); // 仍然发给原来的 host，不是 attacker-cid
+    t.emitDown({ t: "say_result", ok: true }); // #957 第三批：say 现在等回执
+    expect(await pending).toEqual({ ok: true, value: null });
   });
 });
 
@@ -526,30 +527,37 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
 
   it("ready 之后：say 发出去的帧形状正确，地址是 host cid", async () => {
     const { h, t } = await ready();
-    const r = await h.client.say("@Agent 干活", true);
-    expect(r).toEqual({ ok: true, value: null });
+    const pending = h.client.say("@Agent 干活", true);
     const last = t.decoded()[t.decoded().length - 1];
     expect(last).toEqual({ t: "say", text: "@Agent 干活", mention: true });
     expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await pending).toEqual({ ok: true, value: null });
   });
 
   it("ready 之后：say 带 mentions 时帧里带 mentions；不带时帧里没有这个字段（#932）", async () => {
     const { h, t } = await ready();
-    await h.client.say("@运营 看", true, ["ops"]);
+    const first = h.client.say("@运营 看", true, ["ops"]);
     const withMentions = t.decoded()[t.decoded().length - 1];
     expect(withMentions).toEqual({ t: "say", text: "@运营 看", mention: true, mentions: ["ops"] });
+    t.emitDown({ t: "say_result", ok: true });
+    await first;
 
-    await h.client.say("x", false);
+    const second = h.client.say("x", false);
     const withoutMentions = t.decoded()[t.decoded().length - 1] as Record<string, unknown>;
     expect(withoutMentions).toEqual({ t: "say", text: "x", mention: false });
     expect("mentions" in withoutMentions).toBe(false);
+    t.emitDown({ t: "say_result", ok: true });
+    await second;
   });
 
   it("ready 之后：approve 发出去的帧带 callId + decision", async () => {
     const { h, t } = await ready();
-    await h.client.approve("call-9", "denied");
+    const pending = h.client.approve("call-9", "denied");
     const last = t.decoded()[t.decoded().length - 1];
     expect(last).toEqual({ t: "approve", callId: "call-9", decision: "denied" });
+    t.emitDown({ t: "approve_result", callId: "call-9", ok: true });
+    expect(await pending).toEqual({ ok: true, value: null });
   });
 
   it("ready 之后：archive 发出去一个 archive 帧", async () => {
@@ -1160,5 +1168,224 @@ describe("createCloudSessionClient — 历史缺口 gapNote（issue #957 C-I7）
     t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n)), done: true }, "host-cid-2");
 
     expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+  });
+});
+
+// ── #957 第三批（#964）：say/approve/stop 等真回执 ──────────────────────
+// 在这之前这三条路都是"帧交给 socket 就算成功"：服务端的限速 / 不在籍 /
+// 无权要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"、
+// "点了批就收卡"早就把它当成生效了。回执不复用 error（同 config_result
+// 的理由）：那条帧还承载 backlog 跳过之类不相干的消息。
+describe("createCloudSessionClient — say/approve/stop 的回执（#957 第三批）", () => {
+  async function ready(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", repo: null, model: null, modelRoute: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("say：回执到达之前不 resolve——「发出去了」必须等服务端说话", async () => {
+    const { h } = await ready();
+    let settled = false;
+    void h.client.say("在吗", false).then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+  });
+
+  it("say：say_result{ok:true} 到达 → resolve 成功", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await pending).toEqual({ ok: true, value: null });
+  });
+
+  it("say：ok:false 带着服务端的理由失败——限速那句原样透出来", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "say_result", ok: false, message: "说话太快了，缓一缓再发" });
+    expect(await pending).toEqual({ ok: false, message: "说话太快了，缓一缓再发" });
+  });
+
+  it("say：15 秒没回执 → 说「不确定」并把人指回时间线，不谎称失败", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.say("在吗", false);
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("say：上一句还挂着时第二句直接被拒——不排队（回执不带请求 id，分不出谁是谁的）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("第一句", false);
+    const sentAfterFirst = t.sent.length;
+    const second = await h.client.say("第二句", false);
+    expect(second).toEqual({ ok: false, message: "上一句还没有回执，稍等" });
+    expect(t.sent.length).toBe(sentAfterFirst); // 第二句一帧都没发出去
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await first).toEqual({ ok: true, value: null });
+  });
+
+  it("say：回执到了之后又能发下一句（pendingSay 真的清掉了）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("第一句", false);
+    t.emitDown({ t: "say_result", ok: true });
+    await first;
+    const second = h.client.say("第二句", false);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await second).toEqual({ ok: true, value: null });
+  });
+
+  it("say：等回执期间断线 → 就地结掉，不让「发送中…」永远转下去", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitGone();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("不确定");
+  });
+
+  it("say：等回执期间被 denied → 就地结掉", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "denied", code: "not_member" });
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+
+  it("say：等回执期间 leave() 顶掉 → 就地结掉", async () => {
+    const { h } = await ready();
+    const pending = h.client.say("在吗", false);
+    await h.client.leave();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+
+  it("approve：两条并发按 callId 各自 resolve，不互相串台", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    const b = h.client.approve("call-b", "denied");
+    // 后到的先回：配对靠 callId，不靠先后顺序
+    t.emitDown({ t: "approve_result", callId: "call-b", ok: false, message: "这条审批请求已经失效了" });
+    expect(await b).toEqual({ ok: false, message: "这条审批请求已经失效了" });
+    t.emitDown({ t: "approve_result", callId: "call-a", ok: true });
+    expect(await a).toEqual({ ok: true, value: null });
+  });
+
+  it("approve：认不出的 callId 回执不误伤别人的挂起态", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    let settled = false;
+    void a.then(() => {
+      settled = true;
+    });
+    t.emitDown({ t: "approve_result", callId: "call-陌生", ok: true });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "approve_result", callId: "call-a", ok: true });
+    expect(await a).toEqual({ ok: true, value: null });
+  });
+
+  it("approve：15 秒没回执 → 同一句「不确定」", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.approve("call-a", "approved");
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("approve：断线时挂着的每一条都结掉", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    const b = h.client.approve("call-b", "approved");
+    t.emitGone();
+    expect((await a).ok).toBe(false);
+    expect((await b).ok).toBe(false);
+  });
+
+  it("stop：发出一个 stop 帧，stop_result{ok:true} 到达才 resolve", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.stop();
+    expect(t.decoded()[t.decoded().length - 1]).toEqual({ t: "stop" });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "stop_result", ok: true });
+    expect(await pending).toEqual({ ok: true, value: null });
+  });
+
+  it("stop：没有在跑的 turn / 无权 → 服务端的理由原样透出来", async () => {
+    const { h, t } = await ready();
+    const idle = h.client.stop();
+    t.emitDown({ t: "stop_result", ok: false, message: "此刻没有正在跑的 turn" });
+    expect(await idle).toEqual({ ok: false, message: "此刻没有正在跑的 turn" });
+
+    const denied = h.client.stop();
+    t.emitDown({ t: "stop_result", ok: false, message: "只有发起人或 owner 能停" });
+    expect(await denied).toEqual({ ok: false, message: "只有发起人或 owner 能停" });
+  });
+
+  it("stop：15 秒没回执 → 同一句「不确定」；断线也就地结掉", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.stop();
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const { h: h2, t: t2 } = await ready();
+    const pending2 = h2.client.stop();
+    t2.emitGone();
+    expect((await pending2).ok).toBe(false);
+  });
+
+  it("stop：没 join 过 / 还没 ready 一律失败，不挂 15 秒", async () => {
+    const h = harness();
+    expect(await h.client.stop()).toEqual({ ok: false, message: "没有已连接的云会话" });
+    await h.client.join("w1", "cloud-s1");
+    expect(await h.client.stop()).toEqual({ ok: false, message: "云会话未就绪" });
+  });
+
+  it("stop：帧压根没发出去 → 立刻回失败，不是挂着等 15 秒回执超时", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.stop();
+    expect(r).toEqual({ ok: false, message: "连接不通，这一帧没发出去——稍后重试。" });
+  });
+
+  // 协议 5→6 是精确相等的握手（frameHandler 的 version_mismatch）：旧 runtime ×
+  // 新桌面、新 runtime × 旧桌面都在 hello 那一步被明确拒绝，不做双版本兼容。
+  // 这一批**没有改**那句人话——改了的话，一次版本不匹配在界面上就换了个说法，
+  // 而这条路本来就只有那一句话可看
+  it("version_mismatch：文案照旧（协议 5→6 不改这句人话）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "version_mismatch" });
+    expect(await promise).toEqual({ ok: false, message: "客户端版本与云端不匹配，请更新 Mr Otto 后再试" });
   });
 });

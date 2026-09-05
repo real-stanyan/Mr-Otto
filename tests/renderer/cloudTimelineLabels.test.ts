@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  approvalCardTitle, assistantLabel, createAgentLanded, decisionLineText, hiddenFromCloudTimeline, relayLineText,
-  routeChangedText, systemNoteText, turnEndedLineText, userRowIdentity,
+  approvalCardTitle, assistantLabel, canStopTurn, createAgentLanded, decisionLineText, hiddenFromCloudTimeline,
+  relayLineText, routeChangedText, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
+import type { OpenTurn } from "../../src/shared/turnLedger.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
@@ -182,5 +183,42 @@ describe("routeChangedText（第一批 Task 6 复审 Minor 7，#957 Task 7b）",
     const resetAt = now + 90 * 60 * 1000;
     const withReset = { ...noReset, resetAt };
     expect(routeChangedText(withReset, now)).toBe(`订阅额度已用完，本次起用的是你自己的 key（${countdown(resetAt, now)}）`);
+  });
+});
+
+describe("canStopTurn", () => {
+  const cs = { state: "ready", ownerUid: "owner1" };
+  const running: OpenTurn = { seq: 1, fromUid: "initiator1", agentId: "a_1", state: "running" };
+
+  it("发起人：真", () => {
+    expect(canStopTurn(running, "initiator1", cs)).toBe(true);
+  });
+
+  it("owner：真", () => {
+    expect(canStopTurn(running, "owner1", cs)).toBe(true);
+  });
+
+  it("既不是发起人也不是 owner：假", () => {
+    expect(canStopTurn(running, "stranger1", cs)).toBe(false);
+  });
+
+  it("云会话不是 ready：假（即便是发起人）", () => {
+    expect(canStopTurn(running, "initiator1", { ...cs, state: "connecting" })).toBe(false);
+  });
+
+  it("turn 还在排队没跑：假", () => {
+    const queued: OpenTurn = { ...running, state: "queued" };
+    expect(canStopTurn(queued, "initiator1", cs)).toBe(false);
+  });
+
+  // 老日志里的 user_message 没有 fromUid（openTurns 把它填成 null）——那一轮
+  // 「谁点的火」这条信息压根不存在。`selfUid === null` 永远不成立，所以按钮
+  // 只留给 owner：这正是想要的形状（无从证明是我点的，就别给我停别人的权），
+  // 而不是把 null 当通配符放行任何人（#957 终审 T4）
+  it("fromUid 缺席（老日志）：owner 仍能停，别人一律不能", () => {
+    const noUid: OpenTurn = { ...running, fromUid: null };
+    expect(canStopTurn(noUid, "owner1", cs)).toBe(true);
+    expect(canStopTurn(noUid, "initiator1", cs)).toBe(false);
+    expect(canStopTurn(noUid, "stranger1", cs)).toBe(false);
   });
 });

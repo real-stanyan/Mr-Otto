@@ -960,6 +960,15 @@ interface ChatState {
   /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
       workspaceGroupsError，调用方按需读） */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
+  /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。只对发起人或 owner
+      显示按钮（canStopTurn），但这里不重复判权限——服务端的 stop_result
+      是唯一事实。
+      **回 `{ok, message}` 而不是 boolean，且不碰 `workspaceGroupsError`**
+      （#957 终审 M3）：这一格是页脚共享的那条错误带，而停止失败的原因
+      （"此刻没有正在跑的 turn" / "只有发起人或 owner 能停"）画在按钮旁边
+      才读得懂——两处一起显示，同一件事在屏幕上说了两遍，页脚那条还会赖着
+      不走（它归下一次别的操作清）。文案随返回值走，归属天然是确定的 */
+  cloudStop(): Promise<{ ok: boolean; message?: string }>;
   /** owner 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，issue #821 slice 2）。
       workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
       时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
@@ -2398,6 +2407,13 @@ export const useChat = create<ChatState>((set, get) => ({
     }
     set({ workspaceGroupsError: null });
     return true;
+  },
+
+  async cloudStop() {
+    const r = await window.otter.workspaceCloudStop();
+    // 共享的那格一个字都不动（成功也不清）：这次调用的成败与页脚上此刻挂着的
+    // 那条错误无关，清掉等于替一件不相干的失败盖了章（#957 终审 M3）
+    return r.ok ? { ok: true } : { ok: false, message: r.message };
   },
 
   async cloudConfig(patch) {

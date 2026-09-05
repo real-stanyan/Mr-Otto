@@ -2636,3 +2636,362 @@ describe("发言人名字过 safeSpeakerLabel（#957 复审 Important 2）", () 
     store.close();
   });
 });
+
+// #957 A-2 / A-8：云会话的停止键。ADR-0006 的「无步数天花板」前提是"用户就在
+// 屏幕前按停止"，而云端此前**根本没有那颗按钮**——`abortTurn()` 在整个
+// services/runtime 里零调用。这一组用例的共同夹具：一台会在 chat() 里停住
+// 等测试放行的 adapter，于是 stop() 被调用的那一刻 turn 是**真的**在飞，
+// 不是"排队中"或"已经跑完了"的假中段。
+describe("停止一轮 turn（#957 A-2）", () => {
+  /** 停在 chat() 里的假模型：`entered` 在进 chat 时 resolve（测试据此确认
+      turn 真的在飞），`release()` 放它跑完。signal 翻转时按真 fetch 的行为
+      reject 一个 AbortError —— engine 的 isAbort 认的就是 err.name */
+  function gatedAgents(replies: Record<string, string>) {
+    let enteredResolve!: () => void;
+    const entered = new Promise<void>((r) => { enteredResolve = r; });
+    const releases: (() => void)[] = [];
+    const seen: string[] = [];
+    const adapterFor = (a: { agentId: string; models: string[] }) => ({
+      model: a.models[0]!,
+      async chat(
+        _m: unknown,
+        _t: unknown,
+        _d: unknown,
+        signal?: AbortSignal
+      ): Promise<{ content: string }> {
+        seen.push(a.agentId);
+        enteredResolve();
+        await new Promise<void>((res, rej) => {
+          releases.push(res);
+          signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+        });
+        return { content: replies[a.agentId] ?? "" };
+      },
+    });
+    return { entered, releaseAll: () => releases.splice(0).forEach((r) => r()), seen, adapterFor };
+  }
+
+  function stopSession(store: EventStore, events: SessionEvent[], replies: Record<string, string>) {
+    const g = gatedAgents(replies);
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: g.adapterFor,
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    return { session, ...g };
+  }
+
+  it("turn 跑到一半 stop(发起人) → turn_ended{aborted,agentId} + 一条系统「停止了」，且这一轮不接力", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // 运营这一轮的回复里 @ 了广告：跑完就会接力。被停掉的那一轮**不该**接力
+    const { session, entered, seen } = stopSession(store, events, { ops: "报表好了，@广告 按这个投" });
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await entered; // 这一刻 turn 真的在 chat() 里飞着
+
+    // "有一轮在跑"现在只从 stop() 的三态读得出来（running() 已从接口撤掉，
+    // #957 终审 M2）：这一句回 "ok" 而不是 "idle" 就是那条断言
+    expect(session.stop("u1", "alice")).toBe("ok");
+    await said;
+    await session.settled();
+
+    const ended = events.filter((e) => e.type === "turn_ended");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "aborted", agentId: "ops" });
+    // 说出口：只翻信号的话，"有人按了停止"与"模型这轮没话说"在群里一模一样
+    const sys = events.find(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("停止了")
+    ) as { fromUid: string; content: string } | undefined;
+    expect(sys).toMatchObject({ fromUid: "system" });
+    expect(sys!.content).toContain("alice");
+    expect(sys!.content).toContain("运营"); // agentId 换成了此刻的名字
+    // 停掉的一轮不接力（runJob 的 outcome === "completed" 判据，从死代码变成活的）
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    expect(seen).toEqual(["ops"]); // 广告那只从来没起跑
+    store.close();
+  });
+
+  it("停的是「这一轮」不是清队列：同一句话点了两只，停掉第一只之后第二只照跑", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, entered, releaseAll, seen } = stopSession(store, events, { ops: "好", ads: "收到" });
+
+    const said = session.say("u1", "alice", "@运营 @广告 都看下", true, ["ops", "ads"]);
+    await entered;
+    expect(session.stop("u1", "alice")).toBe("ok");
+    await said;
+    // 广告那只随后起跑、停在自己的 chat() 里 —— 放它走
+    await vi.waitFor(() => expect(seen).toEqual(["ops", "ads"]));
+    releaseAll();
+    await session.settled();
+
+    const ended = events.filter((e) => e.type === "turn_ended") as { outcome: string; agentId?: string }[];
+    expect(ended.map((e) => [e.agentId, e.outcome])).toEqual([["ops", "aborted"], ["ads", "completed"]]);
+    store.close();
+  });
+
+  it("无关的人按停止 → not_allowed，且这一轮照跑到底（判据与审批同一条：发起人或 owner）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, entered, releaseAll } = stopSession(store, events, { ops: "跑完了" });
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await entered;
+    expect(session.stop("u-stranger", "路人")).toBe("not_allowed");
+    expect(events.some((e) => e.type === "chat_message" && (e as { content: string }).content.includes("停止了"))).toBe(false);
+    releaseAll();
+    await said;
+    await session.settled();
+
+    const ended = events.filter((e) => e.type === "turn_ended");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "completed", agentId: "ops" });
+    store.close();
+  });
+
+  it("owner 也能停（同 approve 的第二半判据）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, entered } = stopSession(store, events, { ops: "x" });
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await entered;
+    expect(session.stop("owner", "老板")).toBe("ok");
+    await said;
+    await session.settled();
+    expect(events.filter((e) => e.type === "turn_ended")[0]).toMatchObject({ outcome: "aborted" });
+    store.close();
+  });
+
+  it("空闲时按停止 → idle（幂等，不是错误），什么都不落；停完再按也是 idle", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, entered } = stopSession(store, events, { ops: "x" });
+
+    expect(session.stop("u1", "alice")).toBe("idle");
+    expect(events).toEqual([]);
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await entered;
+    expect(session.stop("u1", "alice")).toBe("ok");
+    await said;
+    await session.settled();
+    events.length = 0;
+    // 这一轮已经收口：第二次按下去没有可打的对象，不该再落一条"停止了"
+    expect(session.stop("u1", "alice")).toBe("idle");
+    expect(events).toEqual([]);
+    store.close();
+  });
+
+  it("归档顺带停（A-8）：turn 跑到一半归档 → 先 aborted 再 session_archived，settled() 很快就能返回", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, entered } = stopSession(store, events, { ops: "报表好了，@广告 按这个投" });
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await entered;
+    // 归档不判权限（frameHandler 已经判过 owner/建会话的人），用一个既不是
+    // 发起人也不是 owner 的 label 走一遍：它照样要把 turn 停下来
+    expect(session.archive("carol")).toBe(true);
+    await said;
+    // A-8 的另一半在 daemon（收房从固定 2 s 改成等这个 Promise）：它要能很快
+    // 返回，否则归档之后那条 turn 的每一条事件都广播给一间已经关掉的房间
+    await session.settled();
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("session_archived");
+    const ended = events.filter((e) => e.type === "turn_ended");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "aborted", agentId: "ops" });
+    // 归档也不接力
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    // 两句话都在：先说停了谁，再说会话归档了
+    const chats = events.filter((e) => e.type === "chat_message").map((e) => (e as { content: string }).content);
+    expect(chats[0]).toContain("停止了");
+    expect(chats[1]).toContain("归档");
+    store.close();
+  });
+
+  // 复审 Important：`currentEngine` 初版置在 `engineFor(spec)` 之后，而那之后还
+  // 隔着 hostUids() + fetchGrantedTools() 两次真网络往返；`engine.turnAbort` 要到
+  // runFrom 里才 new 出来，于是那个窗口里 abortTurn() 是 undefined?.abort()——
+  // 一次**静默无操作**：回执说"停了"、群里也写了"停止了"，而这一轮照跑到底、
+  // 照样记在 owner 账上。这一组用例把闸卡在那个窗口里。
+  function preEngineSession(store: EventStore, events: SessionEvent[]) {
+    // 卡在 hostUids() 里：它是起跑前最后一次网络往返（还要给每个成员各打一次
+    // edge 拉代理授权），此刻 engine 已经建好、runLoggedTurn 一个字节都没跑，
+    // 正是初版那个假回执的窗口。`held` 只 resolve 一次——放行之后第二个 job
+    // 的 hostUids() 立刻通过，这正是"停的是这一轮不是清队列"要验的形状
+    let entered!: () => void;
+    const inHosts = new Promise<void>((r) => { entered = r; });
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px,
+      hostUids: async () => { entered(); await held; return []; },
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { seen.push(a.agentId); return { content: "跑完了" }; },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    return { session, inHosts, release, seen };
+  }
+
+  it("起跑前那扇窗（engine 还打不动）：running() 非空、stop 回 ok，落一条真收口的 turn_ended{aborted}，模型一次都没被调", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, inHosts, release, seen } = preEngineSession(store, events);
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await inHosts; // 卡在 hostUids() 里：engine 已建，runLoggedTurn 还没起跑
+
+    // 界面上那行此刻已经在转 —— 答"没有在跑的 turn"是撒谎。判据是 stop() 回
+    // "ok" 不是 "idle"（running() 已从接口撤掉，#957 终审 M2）
+    expect(session.stop("u1", "alice")).toBe("ok");
+    release();
+    await said;
+    await session.settled();
+
+    // 模型一次都没被调：这正是初版漏掉的那件事（回执说停了，turn 照跑到底）
+    expect(seen).toEqual([]);
+    expect(events.some((e) => e.type === "assistant_message")).toBe(false);
+    const ended = events.filter((e) => e.type === "turn_ended");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "aborted", agentId: "ops" });
+    expect(events.some((e) => e.type === "chat_message" && (e as { content: string }).content.includes("停止了"))).toBe(true);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    // 真收口：没有这条 turn_ended 的话，开场白（say() 那一刻就落盘了）会被
+    // openTurns 永远算作「排队中」，daemon 每次重启还会把它重新排上再跑一遍
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(store.load("s1"))).toEqual([]);
+    store.close();
+  });
+
+  it("起跑前那扇窗里归档：同一条两条路（archive 内部走 stopRequested），turn 一样不跑", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, inHosts, release, seen } = preEngineSession(store, events);
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await inHosts;
+    expect(session.archive("carol")).toBe(true);
+    release();
+    await said;
+    await session.settled();
+
+    expect(seen).toEqual([]);
+    expect(events.filter((e) => e.type === "turn_ended")).toMatchObject([{ outcome: "aborted", agentId: "ops" }]);
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(store.load("s1"))).toEqual([]);
+    store.close();
+  });
+
+  it("stopRequested 的作用域是一个 job 不是一条会话：停掉第一只之后，第二只不该被顺手判死", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, inHosts, release, seen } = preEngineSession(store, events);
+
+    const said = session.say("u1", "alice", "@运营 @广告 都看下", true, ["ops", "ads"]);
+    await inHosts;
+    expect(session.stop("u1", "alice")).toBe("ok");
+    release();
+    await said;
+    // 广告那只随后照常起跑（闸门已经放行，它的 hostUids() 直接通过）
+    await vi.waitFor(() => expect(seen).toEqual(["ads"]), { timeout: 2000 });
+    await session.settled();
+
+    const ended = events.filter((e) => e.type === "turn_ended") as { outcome: string; agentId?: string }[];
+    expect(ended.map((e) => [e.agentId, e.outcome])).toEqual([["ops", "aborted"], ["ads", "completed"]]);
+    store.close();
+  });
+
+  it("空闲时归档不落「停止了」那句 —— 既有的两条事件形状不变（幂等回归）", () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session } = stopSession(store, events, {});
+    expect(session.archive("alice")).toBe(true);
+    expect(events.map((e) => e.type)).toEqual(["chat_message", "session_archived"]);
+    store.close();
+  });
+
+  // 终审 Important I1：`runLoggedTurn` 返回之后、`finally` 之前还有一整段
+  // relayAfterTurn —— 里面是**两次真 Supabase 往返**（`agents()` 取名单、
+  // `relayMaxDepth()` 取上限）。那个窗口里 `engine.turnAbort` 已经收口、
+  // `currentEngine` 却还挂着，于是 stop 走"翻信号"那条路：翻的是一个已经
+  // 结束的 turn 的信号（无操作），回执照样说 ok、群里照样写"停止了"，而
+  // 接力紧接着照点火 —— 人按了停止，屏幕上却冒出下一只 agent 开始回复。
+  it("收口之后、接力取名单那个窗口里按停止：不接力、不起第二个 turn，回执仍是 ok（终审 I1）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    // 一条 say 一共调三次 agents()：say() 解 @（sessionService.ts:1090）→ runJob
+    // 起跑前现取名单（:908）→ relayAfterTurn 现取名单（:740）。停在**第三次**，
+    // 把真机上那次 Supabase 往返的窗口撑开
+    let inRelayResolve!: () => void;
+    const inRelay = new Promise<void>((r) => { inRelayResolve = r; });
+    let releaseRoster!: () => void;
+    const rosterGate = new Promise<void>((r) => { releaseRoster = r; });
+    let calls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => {
+        calls += 1;
+        if (calls === 3) { inRelayResolve(); await rosterGate; }
+        return AGENTS;
+      },
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { seen.push(a.agentId); return { content: "报表好了，@广告 按这个投" }; },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await inRelay; // 运营这一轮已经 completed 收口，正卡在接力取名单那一步
+
+    expect(session.stop("u1", "alice")).toBe("ok");
+    releaseRoster();
+    await said;
+    await session.settled();
+
+    // 这一棒不接：没有 agent_relay、没有接力开场白、广告那只从来没起跑
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    expect(events.some((e) => e.type === "user_message" && (e as UserMessageEvent).relay !== undefined)).toBe(false);
+    expect(seen).toEqual(["ops"]);
+    // 说出口那句照落（abortCurrent 的既有纪律）
+    expect(events.some(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("停止了")
+    )).toBe(true);
+    // 运营自己那一轮是**跑完了**的（停的是接力那一棒，不是回溯改写它的收口）
+    expect(events.filter((e) => e.type === "turn_ended")).toMatchObject([{ outcome: "completed", agentId: "ops" }]);
+
+    // 作用域仍然是一个 job：下一句话照常起 turn、照常接力（stopRequested 没有
+    // 泄漏给下一个 job —— 泄漏的话这条会话从此再也接不了力，且不报任何错）
+    events.length = 0;
+    seen.length = 0;
+    await session.say("u1", "alice", "@运营 再来一次", true, ["ops"]);
+    await session.settled();
+    expect(seen).toEqual(["ops", "ads"]);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
+    store.close();
+  });
+});

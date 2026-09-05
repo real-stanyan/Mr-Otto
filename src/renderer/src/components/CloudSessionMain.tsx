@@ -41,9 +41,12 @@ export function CloudSessionMain() {
   // 这时早已卸载，不摆回去那段文字在任何地方都不再存在——用户只看到一行
   // 错误，然后得重打一遍；而 composer 那条入口的纪律正相反（「草稿在发送成功
   // 之后才清」），摆回去就是让它从此归那条纪律管。
-  // **say 没有回执**——限速/被踢那类拒绝走 error 帧（随后到达，那时 say() 早
-  // 已回过 true），不在这条 ok:false 路上；见 issue（控制者会开）。所以这里
-  // 接住的只是"帧压根没发出去"那一半，剩下那一半得靠人再打一次
+  // **旧协议（≤5）里 say 没有回执**——限速/被踢那类拒绝走 error 帧（随后到达，
+  // 那时 say() 早已回过 true），不在这条 ok:false 路上，所以这一层只接得住
+  // "帧压根没发出去"那一半。协议 6 起的 `say_result` 是根治（ADR-0227 决策 2/6：
+  // cloudSessionClient 的 pendingSay 等它，限速/不在籍/内部失败都从这条 ok:false
+  // 路回来），这块种草稿的兜底**作为双保险保留**——回执帧本身也可能在传输中丢，
+  // 而那时唯一还剩的救济就是这里（同 ADR-0227 已知代价里"第二批兜底原样保留"）
   useEffect(() => {
     if (pending === null || state !== "ready" || sessionId === null) return;
     const text = take();
