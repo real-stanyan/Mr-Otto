@@ -376,6 +376,8 @@ create table if not exists public.workspace_memories (
 
 > 切片 4 与 5 同一条 lane 分两个 PR 落地（ADR-0222 / 0223，2026-09-05）；记忆表 migration 实际编号 0023，接力上限那列 0024。
 
+> 切片 6 单 PR 落地（ADR-0224，2026-09-05）：不加 migration、不新增事件类型；`create_agent` 只挂管理员那台 engine，审批卡逐字段提示词全文。
+
 3 排在 5 前面不是随手排的：**先有那张用量表，再打开 agent 互相 @**。接力链失控时
 要能一眼看出是哪只在烧——反过来的话，第一次失控只看得到 owner 的周额度掉了一大块，
 查不出是谁。
