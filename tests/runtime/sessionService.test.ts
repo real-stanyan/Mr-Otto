@@ -3456,6 +3456,37 @@ describe("限速下沉与名单降级（第二轮复审 B2-C1 / E2-4）", () => 
     store.close();
   });
 
+  // 复审补漏：上面那条只验了「mentions 缺席」那一支，没有任何用例钉住
+  // budget 拿到的数字是 `[...new Set(resolveTargets(...))]` 之后的——如果
+  // budget 被挪到去重/过滤之前（比如直接用客户端原始 mentions.length），
+  // 这两条测试会先坏
+  it("客户端自己报重复 @ —— budget 收到的是去重之后的数，不是 mentions 原始长度", async () => {
+    const store = newStore();
+    const asked: number[] = [];
+    const session = build(store, async () => AGENTS);
+    await session.say("u1", "alice", "看下", false, ["ops", "ops", "ads"], (n) => { asked.push(n); return null; });
+    await session.settled();
+    // mentions 原始长度是 3；去重之后只剩 ops/ads 两只，价钱按 2 算
+    expect(asked).toEqual([2]);
+    store.close();
+  });
+
+  it("mentions 里混进名单没有的 id —— budget 收到的是名单过滤之后的数，且「没找到智能体」照常落盘", async () => {
+    const store = newStore();
+    const asked: number[] = [];
+    const session = build(store, async () => AGENTS);
+    await session.say("u1", "alice", "看下", false, ["ops", "ghost"], (n) => { asked.push(n); return null; });
+    await session.settled();
+    // mentions 原始长度是 2；ghost 不在名单里，resolveTargets 静默过滤掉它，
+    // 只剩 ops 一只，价钱按 1 算——不能因为客户端多写了一个不存在的名字就多收钱
+    expect(asked).toEqual([1]);
+    const log = store.load("s1");
+    expect(
+      log.some((e) => (e as { content?: string }).content?.includes("没找到智能体 ghost"))
+    ).toBe(true);
+    store.close();
+  });
+
   it("budget 回文案 → 抛 SayRejectedError，且日志一个字节都没落（半落盘的开场白会被 openTurns 永远补跑）", async () => {
     const store = newStore();
     const session = build(store, async () => AGENTS);
