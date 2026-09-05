@@ -74,6 +74,12 @@ const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   instructions: "",
   models: [],
   tools: [],
+  // 这是**占位**不是真名单（#957 B-I7）：上面那个 `tools: []` 在白名单那张表里
+  // 读作"整池放行"（agentToolAllow.ts 的口径），而这份 spec 出现的唯一理由是
+  // workspace_agents 查询失败——把一次 Supabase 抖动翻译成"这只占位 agent 可以
+  // 用发起人全部的好友代理授权"是最不该有的默认。sessionService 见到这个记号
+  // 就一把 px 刀都不挂（并 warn），其余行为不变
+  degraded: true,
 };
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
@@ -568,6 +574,11 @@ async function main(): Promise<void> {
       adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a), recordUsage),
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
+      // 起跑那一刻再验一次籍（#957 B-I1）。与 frameHandler 的那道闸共用同一个
+      // membershipCache（60s 记忆化 + fail-closed）：收帧时验过一次不够——turn
+      // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人
+      // 重新起 turn，而他可能早已被踢出这个工作区
+      isMember: (uid) => membership.isMember(workspaceId, uid),
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,

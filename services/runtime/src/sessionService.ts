@@ -95,6 +95,35 @@
 // 甩回去）。复审 fix round 1 补了两条：归档后不再接力、扫描窗口按每只 job
 // 起跑前的日志尾（scanFrom）而不是它的开场白 seq 划界——详见 relayAfterTurn
 // 自己的注释。
+//
+// 自查第一批（#957 Task 4a）在这个文件里改了七处，每一处都是"投影必须可从日志
+// 推导"这条硬规则的一次落地：
+//   ① **合成收口收到日志尾**（F1）：runJob 两处合成的 turn_ended（agent 被删 /
+//      engine 之前抛错）与补跑段那条，readUpToSeq 一律取 lastSeqSeen 而不是
+//      job.opening.seq。协调器会把同一只 agent 的后续点名**折叠进同一个 job**
+//      （enqueue 去重），只收 opening 那条的口，折叠进来的那几条就永远等不到
+//      任何 turn_ended——openTurns 把它们算作「排队中」直到天荒地老。
+//   ② **接力现取名单**（F3）：relayAfterTurn 不再吃 runJob 起跑那一刻的 roster，
+//      自己 `await opts.agents()`。管理员可以在同一轮里 create_agent 建出一只
+//      新 agent 再 @ 它，旧快照里没有它，那句 @ 会静默落空。
+//   ③ **未知 @ 出声**（A-6）：这一轮 @ 了人但一个都没落到名单上时落一条 system
+//      发言。静默丢掉的话，一句「@财务 你来」和一句闲聊在日志里长得一模一样。
+//      自 @ 不算（parseMentions 认出人了，只是被自 @ 过滤掉）。
+//   ④ **depth 在起跑那一刻算**（A-4）：openingDepthFor 是「点了我、还没被我的
+//      turn_ended 收口的那些 user_message 取 max」，而这一轮的 turn_ended 一落盘
+//      就把它们全收了——放进 relayAfterTurn 里现算答案恒等于 opening 自己那一格。
+//      与 scanFrom 同一个时刻捕获。否决了内存 pendingDepth（重启即丢，#933）。
+//   ⑤ **mentions 去重**（F7）：say() 里 `[...new Set(...)]`，落盘与入队两侧口径
+//      一致——openTurns 按 mentions 逐个展开，重复一次就多一行永远收不了口的
+//      「排队中」。
+//   ⑥ **接力棒上的连接器要点火者批**（B-C3）：job.opening.relay 有值时
+//      buildPxTools 的 requiresApproval 掀成 true。审批人不变（仍是 job.fromUid），
+//      只是"上一只 agent 替他叫起的这一轮"上多问一句。
+//   ⑦ **在籍复查 + 降级名单不挂刀**（B-I1 / B-I7）：CloudSessionOpts.isMember 是
+//      **必需**字段（同 memory / agentWriter 的纪律，忘接线该编译不过）；runJob
+//      起跑前与补跑段各查一次，不在籍就落一条说得出原因的收口、不起 turn。
+//      AgentSpec.degraded = "这份名单是查询失败时的占位"，见到它就一把 px 刀
+//      都不挂——它的 `tools: []` 在白名单那张表里恰恰读作"整池放行"。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -106,7 +135,7 @@ import { readFileTool } from "../../../src/tools/readFile.js";
 import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
-import { parseMentions } from "../../../src/shared/remote/agentMention.js";
+import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter } from "./approvalRouter.js";
@@ -125,9 +154,9 @@ import {
   DEFAULT_RELAY_MAX_DEPTH,
   decideRelay,
   mentionedAgents,
+  openingDepthFor,
   relayCapText,
   relayChain,
-  relayDepthOf,
   relayNudgeText,
   relayOpeningText,
 } from "../../../src/shared/agentRelay.js";
@@ -144,6 +173,13 @@ export interface AgentSpec {
   models: string[];
   /** 连接器白名单（spec §3，切片 2）：[] = 整池放行。接在 fetchGrantedTools 之后过一道 */
   tools: AgentToolAllow[];
+  /** 这份 spec 是**查询失败时的占位**，不是真名单（#957 B-I7）。daemon 的
+      `DEFAULT_WORKSPACE_AGENT` 带这个记号：它的 `tools: []` 在白名单那张表里
+      是"整池放行"（agentToolAllow.ts 的口径），而它出现的唯一理由是
+      workspace_agents 查询挂了——把一次 Supabase 抖动翻译成"这只占位 agent
+      可以用发起人全部的好友代理授权"是最不该有的默认。runJob 见到它就一把
+      px 刀都不挂。**只增不改**：真名单里没有这个字段，行为逐字节不变 */
+  degraded?: true;
 }
 
 /** 这句话点了哪几只。三级，缺一不可：
@@ -203,6 +239,13 @@ export interface CloudSessionOpts {
   /** 管理员替用户建 agent 的写入口（#954，切片 6）。**必需**：忘接线该编译不过，
       而不是安静地跑一个建不了 agent 的管理员（同 memory 的纪律） */
   agentWriter: WorkspaceAgentWriter;
+  /** 这个 uid 此刻还在这个工作区吗（#957 B-I1）。**必需**（同 memory / agentWriter
+      的纪律）：忘接线该编译不过，而不是安静地跑一条谁都能起的 turn。
+      frameHandler 在收帧那一刻已经验过一次籍，但 turn 可以在队列里等很久、
+      也可以被 relayAfterTurn 在几分钟后替他重新点起——起跑那一刻再查一次，
+      这条会话才不会替一个已经被踢出去的人继续烧 owner 的钱、继续用他的代理
+      授权。daemon 接的是 membershipCache（60s 记忆化 + fail-closed） */
+  isMember: (uid: string) => Promise<boolean>;
 }
 
 export interface CloudSession {
@@ -482,13 +525,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       「打转」。`scanFrom` 与 `engine.ts` 的 `readUpToSeq` 是同一个量——「这只 agent
       这一轮开跑前日志已经到哪儿」，只算一次 assistant_message 的归属边界不会有
       两个 job 抢同一段日志的问题 */
-  async function relayAfterTurn(job: TurnJob, spec: AgentSpec, roster: AgentSpec[], scanFrom: number): Promise<void> {
+  async function relayAfterTurn(job: TurnJob, spec: AgentSpec, scanFrom: number, openingDepth: number): Promise<void> {
     if (archived) return;
     const since = store.load(sessionId, { afterSeq: scanFrom });
     const mine = since.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId);
     const said = mine.map((e) => e.content).join("\n");
-    const targets = mentionedAgents(said, roster.map((a) => ({ agentId: a.agentId, name: a.name })), spec.agentId);
-    if (targets.length === 0) return;
+    // **名单现取**（#957 F3）：不能用 runJob 起跑那一刻的那份快照——管理员可以在
+    // **这一轮里**用 create_agent 建出一只新 agent 再在同一条回复里 @ 它，而那只
+    // 在起跑快照里压根不存在。拿旧快照解析 = 那句 @ 静默落空，人看到的是"建好了
+    // 也叫了，就是没人接"
+    const roster = await opts.agents();
+    const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
+    const targets = mentionedAgents(said, candidates, spec.agentId);
+    if (targets.length === 0) {
+      // 这一轮里 @ 了人、但一个都没落到名单上（#957 A-6）：静默丢掉的话，一句
+      // 「@财务 你来核一下账」和一句普通闲聊在日志里长得一模一样——群里的人
+      // （和下一轮的模型）都不知道这一棒断在哪儿。说出口，用**原始 token**
+      // （mentionTokens，不过名单）：名单上没有的名字本来就解析不出 agentId。
+      // **自 @ 不算**：parseMentions 认出了人（就是它自己，被 mentionedAgents
+      // 过滤掉），这时说「名单里没有这个人」是句假话
+      const tokens = mentionTokens(said);
+      if (tokens.length > 0 && parseMentions(said, candidates).length === 0) {
+        logChat(
+          "system",
+          "系统",
+          `「${spec.name}」@ 了「${tokens.join("、")}」，名单里没有这个人（可能改过名或还没建），这一棒没人接`,
+          false
+        );
+      }
+      return;
+    }
 
     let maxDepth: number;
     try {
@@ -503,7 +569,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 这里还是会照样落 agent_relay + 开场白 + enqueue，在一间刚关掉的房间里继续接力
     // （最终审 Important ①a）
     if (archived) return;
-    const openingDepth = relayDepthOf(job.opening);
     const chain = relayChain(store.load(sessionId));
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
     // 「最后说」取的是**最后一条**消息本身（不是拼起来的全部原话取头 200 字——
@@ -571,6 +636,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 失败记两遍（而且两条的 error 文案还不一样）
     let engineStarted = false;
     try {
+      // **起跑那一刻再验一次籍**（#957 B-I1）。frameHandler 收帧时验过一次，但
+      // 那一刻与这一刻之间隔着一整条队列——更要命的是接力：一条 relay 开场白的
+      // fromUid 仍是最初点火的那个人（spec §4.2），他可能在这条链跑到第 4 棒时
+      // 已经被踢出工作区，而这一棒还在用他的代理授权、烧 owner 的钱。
+      // **合成收口的 readUpToSeq 取 lastSeqSeen（落盘那一刻的日志尾）不是
+      // job.opening.seq**：这只 agent 可能还欠着更晚的、折叠进同一个 job 的开场白
+      // （去重命中），只收开场白那条的口会把后面那些永远留在「排队中」（#957 F1）
+      if (!(await opts.isMember(job.fromUid))) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "发起人已不在这个工作区，这条 turn 不跑",
+          agentId: job.agentId,
+          readUpToSeq: lastSeqSeen,
+        }));
+        return;
+      }
       // agents() 每 turn 现取一次（同 hostUids）：建/改 agent 下一 turn 生效，
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
       const roster = await opts.agents();
@@ -590,9 +674,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 别为一条错误信息再去猜
           error: `智能体 ${job.agentId} 已不在这个工作区，这句话没人接`,
           agentId: job.agentId,
-          // 这一条收的是**它自己那条开场白**的口，不多不少：合成的收口没有
-          // 「跑到哪儿」，就按 job 拿着的那条算（后来的点名各有各的 job）
-          readUpToSeq: job.opening.seq,
+          // **落盘那一刻的日志尾**，不是 job.opening.seq（#957 F1）。原来那版
+          // 的理由是"合成的收口没有跑到哪儿，就按 job 拿着的那条算"——它漏了
+          // 协调器的去重：同一只 agent 被再点一次时不会新排一个 job，那条更晚的
+          // 开场白（人再 @ 一次、或别的 agent 接力过来的那条）**折叠进了同一个
+          // job**。只收 opening 的口，那几条就再也等不到任何 turn_ended，
+          // openTurns 把它们永远算作「排队中」，重启还会一遍遍重排
+          readUpToSeq: lastSeqSeen,
         }));
         return;
       }
@@ -611,8 +699,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
       }
       // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
-      // [] = 整池放行，所以 1b 之前建的 agent 行为不变
-      cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools));
+      // [] = 整池放行，所以 1b 之前建的 agent 行为不变。
+      // **降级名单一把刀都不挂**（#957 B-I7）：spec.degraded = 这份名单是
+      // workspace_agents 查询失败时的占位，它的 `tools: []` 在白名单那张表里读作
+      // "整池放行"——把一次 Supabase 抖动翻译成"这只占位 agent 可以用发起人全部的
+      // 好友代理授权"是最不该有的默认。
+      // **接力棒上的刀要点火的人批一次**（#957 B-C3）：`job.opening.relay` 有值 =
+      // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权。
+      // 审批人不变（上面的 router.setInitiator(job.fromUid)），只是这一棒多问一句
+      if (spec.degraded) {
+        console.warn(
+          `[otto-runtime] agent 名单处于降级占位（workspace_agents 查询失败），本 turn 不挂任何好友代理工具` +
+            `（workspaceId=${opts.workspaceId} session=${sessionId} agentId=${spec.agentId}）`
+        );
+      }
+      cachedPxTools = spec.degraded
+        ? []
+        : buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
+            requiresApproval: job.opening.relay !== undefined,
+          });
 
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
       // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
@@ -622,13 +727,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 同一次 @ 落两条 agent_relay（还会把 decideRelay 的周期护栏诓成
       // 「打转」）——用起跑前的日志尾，只圈进这一轮**自己**产出的话
       const scanFrom = store.load(sessionId, { afterSeq: job.opening.seq }).at(-1)?.seq ?? job.opening.seq;
+      // 接力 depth 也只能在**起跑之前**算（#957 A-4）：判据是「日志里点了我、
+      // 又还没被我的 turn_ended 收口的那些 user_message 取 max」，而这一轮的
+      // turn_ended 一落盘就把它们全收了——放到 relayAfterTurn 里现算，答案恒等于
+      // job.opening 自己那一格，折叠进同一个 job 的接力开场白（去重命中）就白带了
+      // 它的 depth，链子每次都从 1 重新数。与 scanFrom 同一个道理、同一个时刻。
+      // **不用内存 pendingDepth**：那份状态重启即丢（#933），这里是日志的纯投影
+      const openingDepth = openingDepthFor(store.load(sessionId), job.agentId, job.opening);
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
       // 两遍、时间线画两遍
       engineStarted = true;
       const outcome = await engine.runLoggedTurn(job.opening);
       // 切片 5（#950）：这只说完了才看它 @ 了谁。aborted 不接力（人按了停止，不该再点起别人）
-      if (outcome === "completed") await relayAfterTurn(job, spec, roster, scanFrom);
+      if (outcome === "completed") await relayAfterTurn(job, spec, scanFrom, openingDepth);
     } catch (err) {
       if (!engineStarted) {
         notify(store.append({
@@ -638,7 +750,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           error: err instanceof Error ? err.message : String(err),
           agentId: job.agentId,
-          readUpToSeq: job.opening.seq,
+          // 同上：日志尾不是 opening.seq（#957 F1）
+          readUpToSeq: lastSeqSeen,
         }));
       }
       throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
@@ -695,7 +808,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions) {
       const roster = await opts.agents();
-      const targets = resolveTargets(text, mention, mentions, roster);
+      // **去重**（#957 F7）：客户端把同一只 agent 报了两遍（chip 行重复、正文里
+      // @ 了两次都可能）时，开场白的 mentions 会带两份，而 openTurns 是按
+      // `for (const agentId of u.mentions)` 展开的——同一只在界面上就成了两行
+      // 「排队中」，其中一行永远收不了口（协调器只会排一个 job）。入队那侧
+      // 本来就去重（enqueue 命中 logged_only），落盘这侧也得去
+      const targets = [...new Set(resolveTargets(text, mention, mentions, roster))];
       // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
       // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
       // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
@@ -819,39 +937,83 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 压根进不了 openTurns。已归档的不补：那条会话已经收摊了
   const stale = openTurns(seed);
   if (!archived && stale.length > 0) {
-    const decisions: EnqueueDecision[] = [];
-    const skipped: number[] = [];
-    for (const t of stale) {
-      const opening = seed.find((e) => e.seq === t.seq);
-      if (t.fromUid === null || !opening || opening.type !== "user_message") {
-        // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
-        // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
-        skipped.push(t.seq);
-        continue;
+    // **补跑段整个变成 async**（#957 B-I1）：每条都要 `await opts.isMember`，
+    // 而装配本身仍然同步返回 session（daemon 那句 `let session!` 的赋值早于任何
+    // 回调回来）。等待点照旧走 inflight —— settled() 的 while 循环先等这条
+    // catchUp，再等它末尾 startDrain() 起的那条排空
+    const catchUp = async (): Promise<void> => {
+      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent }[] = [];
+      const kicked: { agentId: string; seq: number }[] = [];
+      const skipped: number[] = [];
+      for (const t of stale) {
+        const opening = seed.find((e) => e.seq === t.seq);
+        if (t.fromUid === null || !opening || opening.type !== "user_message") {
+          // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
+          // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
+          skipped.push(t.seq);
+          continue;
+        }
+        // 上一个进程收下这句话的时候他还在籍，现在未必（#957 B-I1）。补跑是一条
+        // **没有任何人发起**的模型调用，替一个已经被踢出去的人重跑它是最不该有的
+        if (!(await opts.isMember(t.fromUid))) {
+          kicked.push({ agentId: t.agentId, seq: t.seq });
+          continue;
+        }
+        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening });
       }
-      decisions.push(coordinator.enqueue({ agentId: t.agentId, fromUid: t.fromUid, opening }));
-    }
-    if (skipped.length > 0) {
-      console.warn(
-        `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
-          `session=${sessionId} seq=${skipped.join(",")}`
+      // **收口先落、再入队**：这几条 turn_ended 的 readUpToSeq 取的是落盘那一刻的
+      // 日志尾（同 runJob 的两处合成收口，#957 F1），排在任何 job 起跑之前落盘，
+      // 这个数才确实是"补跑开始前的日志尾"而不是某条 turn 跑了一半的中间态
+      for (const k of kicked) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "发起人已不在这个工作区，这条 turn 不跑",
+          agentId: k.agentId,
+          readUpToSeq: lastSeqSeen,
+        }));
+      }
+      const decisions: EnqueueDecision[] = runnable.map((r) =>
+        coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
       );
-    }
-    // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
-    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
-    // 数的是**真排上的那几条**不是 stale 全体：跳过的那些上面那条 warn 已经
-    // 单列过，两处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
-    const enqueued = stale.filter((t) => !skipped.includes(t.seq));
-    if (enqueued.length > 0) {
-      console.log(
-        `[otto-runtime] 重启补跑 ${enqueued.length} 个未收口的 turn（session=${sessionId}）：` +
-          enqueued.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
-      );
-    }
-    // 后台跑：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
-    // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）。
-    // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）
-    if (decisions.includes("start_turn")) startDrain();
+      if (skipped.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
+            `session=${sessionId} seq=${skipped.join(",")}`
+        );
+      }
+      if (kicked.length > 0) {
+        console.log(
+          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，各落一条 turn_ended 收口）：` +
+            `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
+        );
+      }
+      // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
+      // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
+      // 数的是**真排上的那几条**不是 stale 全体：跳过 / 不在籍的上面各有一行，
+      // 三处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
+      if (runnable.length > 0) {
+        console.log(
+          `[otto-runtime] 重启补跑 ${runnable.length} 个未收口的 turn（session=${sessionId}）：` +
+            runnable.map((r) => `${r.agentId}@${r.opening.seq}`).join(" ")
+        );
+      }
+      // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）
+      if (decisions.includes("start_turn")) startDrain();
+    };
+    // 与 startDrain 同一个形状：catch 兜住 fire-and-forget 的 unhandledRejection，
+    // finally 只清自己那条（此刻 inflight 多半已经是 catchUp 末尾起的那条排空，
+    // `inflight === p` 为假就不该清——清了 settled() 会提前 resolve）
+    const p = catchUp()
+      .catch((err) => {
+        console.error(`[otto-runtime] 重启补跑意外抛错（session=${sessionId}）`, err);
+      })
+      .finally(() => {
+        if (inflight === p) inflight = null;
+      });
+    inflight = p;
   }
 
   return session;

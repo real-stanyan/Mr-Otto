@@ -162,6 +162,7 @@ async function scenarioMainFlow(): Promise<void> {
             onUsage: () => {},
             memory: createInMemoryWorkspaceMemory(),
             agentWriter: createInMemoryAgentWriter(),
+            isMember: async () => true,
             relayMaxDepth: async () => 6,
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });

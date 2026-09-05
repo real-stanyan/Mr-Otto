@@ -1,8 +1,9 @@
 // pxTools —— 好友代理云端执行面接进云 runtime 的工具桥（ADR-0199，issue #799 系列）。
 // 把 edge 的 grantedView 变成 engine 认识的 Tool 列表：每条借来的刀过一次
 // safe 化改名（同 proxyNamespace 口径：uid 短前缀不昵称，不取昵称——昵称过不了
-// safe() 又会变），requiresApproval:false——白名单内没有逐次审批（ADR-0151 口径），
-// 云端三道闸（身份/关系/白名单，px.ts 的 pxGate）才是真正的关卡。
+// safe() 又会变），requiresApproval 缺省 false——白名单内没有逐次审批（ADR-0151 口径），
+// 云端三道闸（身份/关系/白名单，px.ts 的 pxGate）才是真正的关卡。第四参把它掀成
+// true 的只有接力棒那一轮（#957 B-C3，见 buildPxTools 头注）。
 //
 // grants 按 host 逐个查（T3 定稿，覆盖 brief 写作时"一次性整份"的假定）：
 // GET {edgeBase}/px/v1/grants?host=<hostUid>&fromUid=<uid>。单 host 失败（网络/
@@ -98,7 +99,7 @@ function squashContent(content: unknown): string {
 }
 
 /** fetchGrantedTools 的产物 → engine 能挂的 Tool[]。
-    requiresApproval:false（ADR-0151 口径：白名单内没有逐次审批）；
+    requiresApproval 缺省 false（ADR-0151 口径：白名单内没有逐次审批），第四参可掀成 true；
     run 打 POST /px/v1/call，4xx/5xx 抛错（不吞——错误要进 tool_result，
     让模型知道这次调用没成）。
 
@@ -112,8 +113,15 @@ function squashContent(content: unknown): string {
 export function buildPxTools(
   deps: PxCallDeps,
   fromUid: string,
-  granted: readonly GrantedPxServer[]
+  granted: readonly GrantedPxServer[],
+  opts?: { requiresApproval?: boolean }
 ): Tool[] {
+  // 缺省 false = ADR-0151 的既有口径（白名单内没有逐次审批，人自己 @ 起的那一轮
+  // 照旧）。true 只有一个调用形态：**接力棒上的那一轮**（#957 B-C3）——那一轮不是
+  // 点火的人叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权。审批人
+  // 因此仍是点火的人（sessionService 的 router.setInitiator(job.fromUid) 不变），
+  // 只是这一棒上多问一句
+  const requiresApproval = opts?.requiresApproval ?? false;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const tools: Tool[] = [];
   const seen = new Map<string, { hostUid: string; serverId: string; toolName: string }>();
@@ -132,7 +140,7 @@ export function buildPxTools(
       seen.set(name, { hostUid: g.hostUid, serverId: g.serverId, toolName: t.name });
       tools.push({
         def: { name, description: t.description, parameters: (t.inputSchema ?? {}) as object },
-        requiresApproval: false,
+        requiresApproval,
         async run(args) {
           const res = await fetchImpl(`${deps.edgeBase}/px/v1/call`, {
             method: "POST",
