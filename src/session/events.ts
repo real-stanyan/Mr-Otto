@@ -52,6 +52,16 @@ export interface UserMessageEvent extends SessionEventBase {
       刻意不靠正文前缀 `[后台任务 bg-N 完成]` 反解:那是给模型读的文案不是身份,
       ADR-0103 已经把那条路否掉过一次。写入权同 origin:IPC 入口不透传 */
   backgroundTaskIds?: string[];
+  /** 云会话群聊（#928 / #932）：这句话是哪个成员说的。**只在 runtime 落的
+      user_message 上出现**——本机会话没有"别人"，缺席 = 本机操作者/旧日志。
+      有了它，渲染层判"这句是不是我说的"不用再拿 `[label]: ` 前缀跟自己的
+      展示名比对（那是 1a 的将就：同名两个人就分不开）。模型投影不读它 */
+  fromUid?: string;
+  /** 云会话群聊：这句话点了哪几只 agent（agentId，已按名单过滤）。缺席 = 没点名
+      /旧日志/本机会话。它是「排队中 / 正在回复」那个状态的事实来源
+      （src/shared/turnLedger.ts 据此配对 turn_ended），也是 engine 判「这条
+      尾上的用户消息是不是说给我的」的依据（unseenUserTail）。模型投影不读它 */
+  mentions?: string[];
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
