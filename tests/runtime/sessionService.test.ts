@@ -6,6 +6,7 @@ import type { SessionEvent, ApprovalRequestEvent } from "../../src/session/event
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
+import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 const fakeWorld: ExecutionWorld = {
@@ -21,7 +22,7 @@ const px: PxCallDeps = { edgeBase: "https://edge.example", runtimeSecret: "sek" 
 
 // 单 agent 场景（#928 之前就有的测试）用的占位 roster——只有一只、指令是空串，
 // 专供沿用旧行为的测试用。真正的多智能体 roster 见下面 describe("多智能体云会话…")
-const DEFAULT_AGENT = { agentId: "default", name: "default", description: "", instructions: "", models: ["fake-model"] };
+const DEFAULT_AGENT = { agentId: "default", name: "default", description: "", instructions: "", models: ["fake-model"], tools: [] };
 
 function newStore(): EventStore {
   const dir = tempDir("mrotto-runtime-session-");
@@ -383,8 +384,8 @@ describe("CloudSession.archive（issue #822）", () => {
 });
 
 const AGENTS = [
-  { agentId: "ops", name: "运营", description: "管店铺运营", instructions: "你管店铺运营", models: ["m-ops"] },
-  { agentId: "ads", name: "广告", description: "管投放", instructions: "你管投放", models: ["m-ads"] },
+  { agentId: "ops", name: "运营", description: "管店铺运营", instructions: "你管店铺运营", models: ["m-ops"], tools: [] as AgentToolAllow[] },
+  { agentId: "ads", name: "广告", description: "管投放", instructions: "你管投放", models: ["m-ads"], tools: [] as AgentToolAllow[] },
 ];
 
 describe("多智能体云会话（#928 切片 1a）", () => {
@@ -665,7 +666,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // 只有一只、instructions 是空串——过滤掉自己之后 roster 也是空的,
     // 与 daemon.ts 的 DEFAULT_WORKSPACE_AGENT / smokeAssembly.ts 的 smokeAgent
     // 同一种形状(runtime:smoke 用的正是这种占位)
-    const SOLO_AGENT = { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] };
+    const SOLO_AGENT = { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"], tools: [] };
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
@@ -688,8 +689,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // "solo" 自己没有 instructions,但群里还有"friend"——这条 brief 说得出
     // "群里还有:friend(帮衬的)",不该被守卫拦下
     const ROSTER = [
-      { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] },
-      { agentId: "friend", name: "friend", description: "帮衬的", instructions: "你帮衬", models: ["m-friend"] },
+      { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"], tools: [] },
+      { agentId: "friend", name: "friend", description: "帮衬的", instructions: "你帮衬", models: ["m-friend"], tools: [] },
     ];
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
@@ -1025,5 +1026,53 @@ describe("say() 收下即返回（issue #937）", () => {
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
     expect(session.isRunning()).toBe(false);
     store.close();
+  });
+});
+
+describe("连接器白名单（#941 切片 2）", () => {
+  const GRANTS = {
+    servers: [
+      { serverId: "shopify", toolDefs: [{ name: "list_orders", description: "", inputSchema: {} }, { name: "cancel_order", description: "", inputSchema: {} }] },
+      { serverId: "ads", toolDefs: [{ name: "report", description: "", inputSchema: {} }] },
+    ],
+  };
+  const pxWithGrants: PxCallDeps = {
+    ...px,
+    fetchImpl: (async () => ({ ok: true, status: 200, json: async () => GRANTS })) as unknown as typeof fetch,
+  };
+  function sessionWithAgent(tools: { serverId: string; tools: string[] }[], seen: string[][]) {
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_m, toolDefs): Promise<ModelReply> {
+        seen.push((toolDefs ?? []).map((t) => t.name));
+        return { content: "ok" };
+      },
+    };
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store: newStore(), world: fakeWorld,
+      agents: async () => [{ ...DEFAULT_AGENT, tools }],
+      adapterFor: () => adapter, px: pxWithGrants,
+      hostUids: async () => ["h1"],
+      onEvent: () => {}, onUsage: () => {},
+    });
+  }
+
+  it("tools:[] = 整池放行：三把 px 刀都挂上", async () => {
+    const seen: string[][] = [];
+    const session = sessionWithAgent([], seen);
+    await session.say("u1", "alice", "看下", true);
+    await session.settled();
+    expect(seen[0]).toEqual(expect.arrayContaining(["px_h1_shopify_list_orders", "px_h1_shopify_cancel_order", "px_h1_ads_report"]));
+  });
+
+  it("点了名的只挂点名那几把；没点名的服务整台不挂", async () => {
+    const seen: string[][] = [];
+    const session = sessionWithAgent([{ serverId: "shopify", tools: ["list_orders"] }], seen);
+    await session.say("u1", "alice", "看下", true);
+    await session.settled();
+    expect(seen[0]).toContain("px_h1_shopify_list_orders");
+    expect(seen[0]).not.toContain("px_h1_shopify_cancel_order");
+    expect(seen[0]).not.toContain("px_h1_ads_report");
   });
 });

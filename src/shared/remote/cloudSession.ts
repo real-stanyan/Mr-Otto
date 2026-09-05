@@ -7,7 +7,10 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 4（issue #844）：welcome/config_result 多了 `model` 一格，config 帧多了
+/** 5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
+    decideRuntimeRoute 算好「这个工作区此刻的 turn 会走哪条路」下发，客户端不再
+    拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑，那句是假的）。
+    4（issue #844）：welcome/config_result 多了 `model` 一格，config 帧多了
     `model` 字段、`repoUrl` 变成可选（模型配置与仓库配置是两件独立的事，
     改一个不该被迫连另一个一起发）。
     3（issue #819）：denied 多了一个 `rate_limited` 码。
@@ -18,7 +21,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 4;
+export const CS_PROTOCOL_VERSION = 5;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** clone 判定的结局种类。与 runtime 侧 `CloneOutcome["kind"]` 是同一组值，
@@ -87,6 +90,19 @@ export interface CsModelState {
   modelId: string;
   hasKey: boolean;
 }
+
+/** 这个工作区此刻的 turn 会走哪条路（issue #945）。与 runtime 的
+    `decideRuntimeRoute` 同源：hosted 带**实际会用的**型号（工作区配的网关不供时
+    退到网关第一款，界面上该显示退到的那个）。
+    null = **runtime 探测本身抛错**（配置读取失败等）——「拿不到」≠「起不了」，
+    客户端别下结论。**edge 挂掉不长这样**：runtime 的订阅探针把失败缓存成「没有
+    订阅」，所以一次 edge 故障在这一格上表现为 `blocked`（或有自带 key 时的
+    `workspace`），与同一分钟真跑一个 turn 得到的结论一致。
+    按 agent 各自的型号白名单会有差异，这一格答的是工作区默认那份 */
+export type CsModelRoute =
+  | { kind: "hosted"; model: string }
+  | { kind: "workspace" }
+  | { kind: "blocked" };
 
 /** 模型配置的结构化校验（issue #844）——两端共用一份，纪律同
     `validateRepoUrl`：渲染层那份只是提交前的早期提示，服务端必须自己再验
@@ -194,6 +210,10 @@ export type CsDown =
       /** 这个工作区此刻的模型配置（issue #844）。null = 还没配——这条云会话
           能建、能聊，但 @Agent 起不了 turn，owner 得先配一把自己的 key */
       model: CsModelState | null;
+      /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
+          所有者订阅着的时候，`model` 为 null（没配自带 key）也照样跑得动——
+          界面拿 `model === null` 推断「未配模型」就会对订阅用户撒谎 */
+      modelRoute: CsModelRoute | null;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
   | { t: "denied"; code: CsDeniedCode }
@@ -210,6 +230,9 @@ export type CsDown =
       message?: string;
       repo: CsRepoState | null;
       model: CsModelState | null;
+      /** 存完之后的路由判定（issue #945）：改一把 key / 换个型号都可能把这条路
+          从 blocked 挪到 workspace，回执不带它的话界面要等下一次 join 才更新 */
+      modelRoute: CsModelRoute | null;
     }
   | { t: "error"; msg: string };
 
@@ -275,6 +298,19 @@ function normalizeModelState(v: unknown): CsModelState | null {
     return null;
   }
   return { baseUrl: o.baseUrl, modelId: o.modelId, hasKey: o.hasKey };
+}
+
+/** 线上防呆（issue #945）：缺席、`null`、形状不对一律降级成 null，**不拒整帧**。
+    解码永远向后兼容——一个还没升级的 runtime 发来的 welcome 少这一格是正常的，
+    把它判成无效帧等于让客户端白等满超时。hosted 必须带非空 model：没有型号的
+    hosted 界面上写不出任何有意义的东西，那和「探不到」是同一种处境 */
+function normalizeModelRoute(v: unknown): CsModelRoute | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "hosted") return typeof o.model === "string" && o.model !== "" ? { kind: "hosted", model: o.model } : null;
+  if (o.kind === "workspace") return { kind: "workspace" };
+  if (o.kind === "blocked") return { kind: "blocked" };
+  return null;
 }
 
 /** decode 出来的 CsRepoState 一律走这里补齐 `clone`——调用方拿到的永远是
@@ -423,6 +459,7 @@ export function decodeCsDown(b64: string): CsDown | null {
           ownerUid: obj.ownerUid,
           repo: normalizeRepoState(obj.repo),
           model: normalizeModelState(obj.model),
+          modelRoute: normalizeModelRoute(obj.modelRoute),
         };
       }
       return null;
@@ -435,6 +472,7 @@ export function decodeCsDown(b64: string): CsDown | null {
           ok: obj.ok,
           repo: normalizeRepoState(obj.repo),
           model: normalizeModelState(obj.model),
+          modelRoute: normalizeModelRoute(obj.modelRoute),
         };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;

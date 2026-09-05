@@ -3,10 +3,11 @@ import {
   createHostedProbe,
   createHostedRuntimeAdapter,
   decideRuntimeRoute,
+  probeModelRoute,
   withUsage,
   type HostedProbe,
 } from "../../services/runtime/src/hostedRoute.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
 const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
@@ -35,6 +36,12 @@ describe("decideRuntimeRoute", () => {
     const r = decideRuntimeRoute({ me: null, requestedModel: null, workspace: null, ...base });
     expect(r.kind === "blocked" && r.reason).toMatch(/订阅/);
     expect(r.kind === "blocked" && r.reason).toMatch(/key/);
+  });
+  it("给了 agentId → hosted 端点多带 x-otto-agent；不给不带（桌面直连的形状）", () => {
+    const withAgent = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base, agentId: "a_ops" });
+    expect(withAgent.kind === "hosted" && withAgent.endpoint.headers).toMatchObject({ [AGENT_HEADER]: "a_ops" });
+    const without = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base });
+    expect(without.kind === "hosted" && AGENT_HEADER in (without.endpoint.headers ?? {})).toBe(false);
   });
 });
 
@@ -232,3 +239,23 @@ describe("withUsage（issue #696 fix round 2：不能用对象展开转发 model
   });
 });
 
+
+// issue #945：welcome/config_result 那一格 `modelRoute` 与真正跑 turn 的那条路
+// 同源——桌面不再拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑）
+describe("probeModelRoute（#945）", () => {
+  const probeOf = (v: BillingMe | null): HostedProbe => ({ me: async () => v });
+  // probeModelRoute 不发请求，所以不需要 sessionId 那一格
+  const { sessionId: _sessionId, ...probeBase } = base;
+
+  it("有订阅 → hosted + 实际会用的型号（工作区配的网关不供就退到第一款）", async () => {
+    expect(await probeModelRoute({ probe: probeOf(me), cfg: () => ({ ...ws, modelId: "gpt-9" }), ...probeBase })).toEqual({
+      kind: "hosted",
+      model: "deepseek-v4-flash",
+    });
+  });
+
+  it("没订阅有 key → workspace；都没 → blocked", async () => {
+    expect(await probeModelRoute({ probe: probeOf(null), cfg: () => ws, ...probeBase })).toEqual({ kind: "workspace" });
+    expect(await probeModelRoute({ probe: probeOf(null), cfg: () => null, ...probeBase })).toEqual({ kind: "blocked" });
+  });
+});

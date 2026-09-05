@@ -69,6 +69,9 @@ export function parseSseCostComment(line: string): number | null {
 export const ON_BEHALF_HEADER = "x-otto-on-behalf-of";
 export const WORKSPACE_HEADER = "x-otto-workspace";
 export const SESSION_HEADER = "x-otto-session";
+/** runtime 替工作区 agent 调网关时带的 agent_id（#946，spec §7）。桌面直连不带。
+    值落 usage_event.agent_id；名字随时会改，所以带的是 id */
+export const AGENT_HEADER = "x-otto-agent";
 
 export type BillingErrorCode =
   | "bad_token"
@@ -85,7 +88,11 @@ export type BillingErrorCode =
   | "already_subscribed"
   /** webhook 正文超过 1 MB 被 edge 在读 body 之前拒掉（413）。面向 Stripe 不面向客户端，
       列进来只是让 `parseBillingError` 认得 edge 发出的**每一个** code（#867） */
-  | "payload_too_large";
+  | "payload_too_large"
+  /** GET /billing/v1/workspace-usage：查的人已经不在这个工作区里了（403，#946 切片 3） */
+  | "not_member"
+  /** 同上端点：workspace id 查无此工作区（404） */
+  | "not_found";
 
 export interface BillingError {
   code: BillingErrorCode;
@@ -96,7 +103,7 @@ export interface BillingError {
 
 const CODES: ReadonlySet<string> = new Set([
   "bad_token", "no_subscription", "quota_exhausted", "unknown_model", "upstream", "too_many_inflight", "bad_request",
-  "forbidden", "already_subscribed", "payload_too_large",
+  "forbidden", "already_subscribed", "payload_too_large", "not_member", "not_found",
 ]);
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -189,4 +196,44 @@ export function remainingFromHeaders(h: Headers): { h5?: number; week?: number; 
   if (addon !== undefined) out.addon = addon;
   if (plan) out.plan = plan;
   return out;
+}
+
+/** 设置页「用量」tab 的一行：某只 agent 本周烧了多少（#946）。agentId 空串 = 未归因
+    （桌面直连 / 0022 之前的旧行） */
+export interface WorkspaceUsageRow {
+  agentId: string;
+  costMicro: number;
+  calls: number;
+  promptTokens: number;
+  cachedTokens: number;
+  completionTokens: number;
+}
+
+/** GET /billing/v1/workspace-usage 的响应。周窗是 **owner** 的（ADR-0217：工作区烧的是
+    owner 的额度），起点与 Quota DO 同一份 weekStartFor——同一扇窗两个界面不能给出两个数 */
+export interface WorkspaceUsage {
+  workspaceId: string;
+  ownerUid: string;
+  weekStartAt: number;
+  weekEndAt: number;
+  rows: WorkspaceUsageRow[];
+}
+
+export function parseWorkspaceUsage(payload: unknown): WorkspaceUsage | null {
+  if (!isObj(payload)) return null;
+  const { workspaceId, ownerUid, weekStartAt, weekEndAt } = payload;
+  if (typeof workspaceId !== "string" || typeof ownerUid !== "string") return null;
+  if (typeof weekStartAt !== "number" || typeof weekEndAt !== "number") return null;
+  if (!Array.isArray(payload.rows)) return null;
+  const rows: WorkspaceUsageRow[] = [];
+  for (const r of payload.rows) {
+    if (!isObj(r) || typeof r.agentId !== "string") return null;
+    const nums = [r.costMicro, r.calls, r.promptTokens, r.cachedTokens, r.completionTokens];
+    if (!nums.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    rows.push({
+      agentId: r.agentId, costMicro: r.costMicro as number, calls: r.calls as number,
+      promptTokens: r.promptTokens as number, cachedTokens: r.cachedTokens as number, completionTokens: r.completionTokens as number,
+    });
+  }
+  return { workspaceId, ownerUid, weekStartAt, weekEndAt, rows };
 }

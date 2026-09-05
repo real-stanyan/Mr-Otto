@@ -12,7 +12,8 @@
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import type { TokenUsage } from "../../../src/session/events.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
+import type { CsModelRoute } from "../../../src/shared/remote/cloudSession.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
 export interface HostedProbe { me(uid: string): Promise<BillingMe | null> }
@@ -62,6 +63,8 @@ export function decideRuntimeRoute(o: {
   sessionId: string;
   edgeBase: string;
   runtimeSecret: string;
+  /** 这一 turn 是哪只工作区 agent（#946）。带上就落 usage_event.agent_id；桌面直连没有这一格 */
+  agentId?: string;
 }): RuntimeRoute {
   const me = o.me;
   if (me && me.status === "active" && me.plan && me.models.length > 0) {
@@ -78,6 +81,9 @@ export function decideRuntimeRoute(o: {
           [ON_BEHALF_HEADER]: o.ownerUid,
           [WORKSPACE_HEADER]: o.workspaceId,
           [SESSION_HEADER]: o.sessionId,
+          // exactOptionalPropertyTypes 不许把 undefined 塞进 headers；只有非空
+          // agentId 才落这一格（同 sessionService.ts:228 的既有纪律）
+          ...(o.agentId ? { [AGENT_HEADER]: o.agentId } : {}),
         },
       },
     };
@@ -93,6 +99,33 @@ export function decideRuntimeRoute(o: {
   };
 }
 
+/** welcome/config_result 那一格 `modelRoute`（issue #945）：与 turn 真正走的那条路
+    同一份 decideRuntimeRoute，sessionId 留空——这里只要 kind 与型号，不发请求。
+    两处各写一份判定迟早分家，而分家的症状恰恰是这个 issue：界面说「未配模型」，
+    turn 却跑得好好的。 */
+export async function probeModelRoute(o: {
+  probe: HostedProbe;
+  cfg: () => { baseUrl: string; apiKey: string; modelId: string } | null;
+  ownerUid: string;
+  workspaceId: string;
+  edgeBase: string;
+  runtimeSecret: string;
+}): Promise<CsModelRoute> {
+  const ws = o.cfg();
+  const route = decideRuntimeRoute({
+    me: await o.probe.me(o.ownerUid),
+    requestedModel: ws?.modelId ?? null,
+    workspace: ws,
+    ownerUid: o.ownerUid,
+    workspaceId: o.workspaceId,
+    sessionId: "",
+    edgeBase: o.edgeBase,
+    runtimeSecret: o.runtimeSecret,
+  });
+  if (route.kind === "hosted") return { kind: "hosted", model: route.model };
+  return { kind: route.kind };
+}
+
 export interface HostedRuntimeAdapterDeps {
   edgeBase: string;
   runtimeSecret: string;
@@ -104,6 +137,8 @@ export interface HostedRuntimeAdapterDeps {
   ownerUid: string;
   workspaceId: string;
   sessionId: string;
+  /** 这一台 adapter 服务哪只工作区 agent（#946）；桌面直连没有这一格 */
+  agentId?: string;
 }
 
 /** daemon.ts 的 adapterFor 装配点：把 decideRuntimeRoute 包成一个 ModelAdapter
@@ -130,6 +165,8 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       sessionId: deps.sessionId,
       edgeBase: deps.edgeBase,
       runtimeSecret: deps.runtimeSecret,
+      // exactOptionalPropertyTypes：只有非空 agentId 才透传
+      ...(deps.agentId ? { agentId: deps.agentId } : {}),
     });
     lastModel = route.kind === "blocked" ? "(无可用模型)" : route.model;
     return route;

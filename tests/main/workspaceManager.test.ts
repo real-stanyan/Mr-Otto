@@ -301,7 +301,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
 describe("workspace agents（#932）", () => {
   it("createAgent：生成 a_ 前缀的 agentId，透传 draft，回 agentId", async () => {
     const { manager, calls } = harness();
-    const r = await manager.createAgent("ws-1", { name: "运营", description: "管店铺", instructions: "你管运营", models: ["deepseek-v4"] });
+    const r = await manager.createAgent("ws-1", { name: "运营", description: "管店铺", instructions: "你管运营", models: ["deepseek-v4"], tools: [] });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.agentId).toMatch(/^a_[0-9a-f]{12}$/);
     expect(calls).toContain("insertAgentRow");
@@ -310,8 +310,21 @@ describe("workspace agents（#932）", () => {
     const { manager } = harness({
       insertAgentRow: async () => { throw Object.assign(new Error("duplicate key"), { code: "23505" }); },
     });
-    const r = await manager.createAgent("ws-1", { name: "运营", description: "", instructions: "", models: [] });
+    const r = await manager.createAgent("ws-1", { name: "运营", description: "", instructions: "", models: [], tools: [] });
     expect(r).toEqual({ ok: false, message: "已有同名的智能体" });
+  });
+  it("createAgent / updateAgent 透传 tools（切片 2）", async () => {
+    const inserted: unknown[] = [];
+    const updated: unknown[] = [];
+    const { manager } = harness({
+      insertAgentRow: async (_c, row) => { inserted.push(row); },
+      updateAgentRow: async (_c, _ws, _id, patch) => { updated.push(patch); },
+    });
+    const tools = [{ serverId: "shopify", tools: ["list_orders"] }];
+    await manager.createAgent("ws-1", { name: "运营", description: "", instructions: "", models: [], tools });
+    expect(inserted[0]).toMatchObject({ tools });
+    await manager.updateAgent("ws-1", "a_1", { tools: [] });
+    expect(updated[0]).toEqual({ tools: [] });
   });
   it("deleteAgent：admin 在本层就拒，不打网络", async () => {
     const { manager, calls } = harness();

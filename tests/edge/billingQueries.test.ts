@@ -152,12 +152,12 @@ describe("行解析", () => {
 describe("写入体", () => {
   it("usageEventInsert 列名与 0017/0018 一致；锚 null 落 null、有就转 ISO", () => {
     const meta = {
-      caller: { uid: "u1", source: "runtime" as const, workspaceId: "w", sessionId: "s" },
+      caller: { uid: "u1", source: "runtime" as const, workspaceId: "w", sessionId: "s", agentId: "a_1" },
       route: { id: "r", logicalModel: "m", platform: "p", baseUrl: "", wireModel: "", priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 0 },
       usage: { promptTokens: 10, cachedTokens: 2, completionTokens: 3 }, costMicro: 42,
     };
     expect(usageEventInsert("rid", meta, "addon", null)).toEqual({
-      user_id: "u1", request_id: "rid", source: "runtime", workspace_id: "w", session_id: "s", logical_model: "m", route_id: "r",
+      user_id: "u1", request_id: "rid", source: "runtime", workspace_id: "w", session_id: "s", agent_id: "a_1", logical_model: "m", route_id: "r",
       prompt_tokens: 10, cached_tokens: 2, completion_tokens: 3, cost_micro: 42, charged_to: "addon", window_open_at: null,
     });
     expect(usageEventInsert("rid", meta, "window", Date.UTC(2026, 8, 1)).window_open_at).toBe("2026-09-01T00:00:00.000Z");

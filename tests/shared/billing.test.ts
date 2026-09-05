@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  BILLING_HEADERS, SSE_COST_COMMENT, creditOf, fmtCredit, parseBillingError, parseBillingMe,
-  parseSseCostComment, remainingFromHeaders,
+  AGENT_HEADER, BILLING_HEADERS, SSE_COST_COMMENT, creditOf, fmtCredit, parseBillingError,
+  parseBillingMe, parseSseCostComment, parseWorkspaceUsage, remainingFromHeaders,
 } from "../../src/shared/billing.js";
 
 describe("billing 约定", () => {
@@ -69,5 +69,20 @@ describe("parseSseCostComment（#857 流式那半：头里放不下，贴成一�
   });
   it("写成注释行（以 : 开头）：合规的 SSE 解析器一律跳过，对别的客户端是隐形的", () => {
     expect(SSE_COST_COMMENT.startsWith(":")).toBe(true);
+  });
+});
+
+describe("workspace usage（#946）", () => {
+  it("头名固定", () => {
+    expect(AGENT_HEADER).toBe("x-otto-agent");
+  });
+  it("parseWorkspaceUsage：形状对就落地，行里数字缺失回 null", () => {
+    const ok = {
+      workspaceId: "w1", ownerUid: "o", weekStartAt: 1, weekEndAt: 2,
+      rows: [{ agentId: "admin", costMicro: 10, calls: 2, promptTokens: 5, cachedTokens: 1, completionTokens: 3 }],
+    };
+    expect(parseWorkspaceUsage(ok)).toEqual(ok);
+    expect(parseWorkspaceUsage({ ...ok, rows: [{ agentId: "x" }] })).toBeNull();
+    expect(parseWorkspaceUsage(null)).toBeNull();
   });
 });

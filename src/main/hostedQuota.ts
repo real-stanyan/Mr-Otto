@@ -5,7 +5,7 @@
 // exhausted 是带过期的记号：到 resetAt 自动失效，不用定时器——routeInput 现算。
 
 import type { RerouteInfo } from "../model/errorClass.js";
-import { parseBillingError, parseBillingMe, remainingFromHeaders, type BillingMe, type PlanId } from "../shared/billing.js";
+import { parseBillingError, parseBillingMe, parseWorkspaceUsage, remainingFromHeaders, type BillingMe, type PlanId, type WorkspaceUsage } from "../shared/billing.js";
 
 export interface HostedQuotaDeps {
   baseUrl: () => string;
@@ -57,6 +57,7 @@ export interface HostedQuota {
   noteExhausted(info: RerouteInfo): void; // 429 那一刻
   checkout(target: CheckoutTarget): Promise<string>; // 回 url，失败抛
   portal(): Promise<string>;
+  workspaceUsage(workspaceId: string): Promise<WorkspaceUsage>; // GET /billing/v1/workspace-usage；失败抛
   onChange(cb: (s: HostedSnapshot) => void): () => void;
 }
 
@@ -173,6 +174,21 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
       const r = await post("/billing/v1/portal", {});
       if (typeof r.url !== "string") throw new Error("服务端没回 url");
       return r.url;
+    },
+    async workspaceUsage(workspaceId) {
+      const token = await deps.accessToken();
+      if (!token) throw new Error("还没登录");
+      const res = await doFetch(`${deps.baseUrl()}/billing/v1/workspace-usage?workspace=${encodeURIComponent(workspaceId)}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const payload: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const e = parseBillingError(res.status, payload);
+        throw new Error(e?.message ?? `HTTP ${res.status}`);
+      }
+      const usage = parseWorkspaceUsage(payload);
+      if (!usage) throw new Error("workspace-usage 形状不对");
+      return usage;
     },
     onChange(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
   };

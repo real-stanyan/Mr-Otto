@@ -128,6 +128,7 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
+import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
@@ -178,6 +179,7 @@ import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget } from "./hostedQuota.js";
+import type { WorkspaceUsage } from "../shared/billing.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
@@ -201,7 +203,7 @@ import {
   friendRequestNotification, remotePairingNotification, turnCompleteNotification,
   turnFailedNotification, newIncomingRequests,
 } from "./friendNotifier.js";
-import type { FriendsSnapshot } from "../shared/friends.js";
+import type { FriendsSnapshot, FriendsResult } from "../shared/friends.js";
 import type { ProfilePatch } from "../shared/profile.js";
 import { findMrottoDeepLink } from "./deepLink.js";
 import { sessionIdentity } from "./authStorage.js";
@@ -3135,6 +3137,15 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.billingPortal, async () => {
     await shell.openExternal(await hostedQuota.portal());
   });
+  // 设置页「用量」tab（#946 切片 3）：经 hostedQuota 打 edge，失败翻成 FriendsResult
+  // 而不是让 invoke 自然 reject——渲染层这类只读查询统一走结构化回流（同好友系统）
+  ipcMain.handle(CHANNELS.workspaceUsage, async (_e, id: string): Promise<FriendsResult<WorkspaceUsage>> => {
+    try {
+      return { ok: true, value: await hostedQuota.workspaceUsage(id) };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   // signIn/handleCallback 失败会 throw——这里不吞，让 invoke 自然 reject（渲染层 Task 7 接）
   ipcMain.handle(CHANNELS.signIn, (_e, provider: "google" | "github") => manager.signIn(provider));
@@ -3216,8 +3227,11 @@ void app.whenReady().then(() => {
     workspaceManager.withdrawConnector(id, serverId));
   ipcMain.handle(
     CHANNELS.workspaceAgentCreate,
-    (_e, id: string, draft: { name: string; description: string; instructions: string; models: string[] }) =>
-      workspaceManager.createAgent(id, draft),
+    (
+      _e,
+      id: string,
+      draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
+    ) => workspaceManager.createAgent(id, draft),
   );
   ipcMain.handle(
     CHANNELS.workspaceAgentUpdate,
@@ -3225,7 +3239,7 @@ void app.whenReady().then(() => {
       _e,
       id: string,
       agentId: string,
-      patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+      patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
     ) => workspaceManager.updateAgent(id, agentId, patch),
   );
   ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>

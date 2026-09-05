@@ -128,7 +128,7 @@ export function usageEventInsert(
 ): Record<string, unknown> {
   return {
     user_id: meta.caller.uid, request_id: requestId, source: meta.caller.source,
-    workspace_id: meta.caller.workspaceId, session_id: meta.caller.sessionId,
+    workspace_id: meta.caller.workspaceId, session_id: meta.caller.sessionId, agent_id: meta.caller.agentId,
     logical_model: meta.route.logicalModel, route_id: meta.route.id,
     prompt_tokens: meta.usage.promptTokens, cached_tokens: meta.usage.cachedTokens, completion_tokens: meta.usage.completionTokens,
     cost_micro: meta.costMicro, charged_to: chargedTo,

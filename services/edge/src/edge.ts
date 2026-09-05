@@ -19,7 +19,8 @@ import { parseEscrowDoc } from "./px.js";
 import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
 import { MAX_GRANT_QUANTITY } from "./billing.js";
 import type { Caller } from "./llmGateway.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId } from "../../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId, type WorkspaceUsage } from "../../../src/shared/billing.js";
+import { WORKSPACE_ID_RE } from "./usageAttribution.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -54,6 +55,10 @@ export interface BillingPort {
   portal(uid: string, origin: string): Promise<{ url: string } | { error: string }>;
   /** 验签 + 落库都在里面；回 HTTP 状态与 body */
   webhook(payload: string, signatureHeader: string): Promise<{ status: number; body: unknown }>;
+  /** 设置页「用量」tab（#946）：调用者必须在籍；周窗与聚合在 usageAttribution.ts */
+  workspaceUsage(uid: string, workspaceId: string): Promise<
+    { ok: true; value: WorkspaceUsage } | { ok: false; code: "not_member" | "not_found"; message: string }
+  >;
 }
 
 export interface EdgeDeps {
@@ -323,6 +328,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       uid, source,
       workspaceId: (req.headers.get(WORKSPACE_HEADER) ?? "").slice(0, 128),
       sessionId: (req.headers.get(SESSION_HEADER) ?? "").slice(0, 128),
+      agentId: (req.headers.get(AGENT_HEADER) ?? "").slice(0, 128),
     };
   }
 
@@ -363,6 +369,20 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
         return json(200, await deps.billing.me(caller.uid));
       } catch (err) {
         return apiError(502, `取额度失败：${err instanceof Error ? err.message : String(err)}`, "upstream");
+      }
+    }
+
+    if (pathname === "/billing/v1/workspace-usage" && req.method === "GET") {
+      // 平台身份代表谁都没意义（它不会来看设置页），和下面 checkout/portal 同一条理由
+      if (caller.source === "runtime") return apiError(403, "平台身份不能查工作区用量", "forbidden");
+      const workspaceId = new URL(req.url).searchParams.get("workspace") ?? "";
+      if (!WORKSPACE_ID_RE.test(workspaceId)) return apiError(400, "workspace 必须是 uuid", "bad_request");
+      try {
+        const r = await deps.billing.workspaceUsage(caller.uid, workspaceId);
+        if (r.ok) return json(200, r.value);
+        return apiError(r.code === "not_member" ? 403 : 404, r.message, r.code);
+      } catch (err) {
+        return apiError(502, `取用量失败：${err instanceof Error ? err.message : String(err)}`, "upstream");
       }
     }
 

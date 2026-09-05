@@ -933,6 +933,9 @@ describe("hosted 改道（ADR-0176）：onReroute 落 route_changed 且 push 给
       noteExhausted: () => {},
       checkout: async () => "https://edge/checkout",
       portal: async () => "https://edge/portal",
+      workspaceUsage: async () => {
+        throw new Error("not used in this test");
+      },
       onChange: () => () => {},
     };
     const agent = createAgent({

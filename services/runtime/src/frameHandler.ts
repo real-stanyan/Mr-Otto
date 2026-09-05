@@ -24,6 +24,7 @@ import {
   validateRepoUrl,
   type CsDeniedCode,
   type CsDown,
+  type CsModelRoute,
   type CsModelState,
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
@@ -136,6 +137,14 @@ export interface FrameHandlerDeps {
   /** 这个工作区此刻的模型配置（issue #844）。同 repoState 的纪律：
       **实现必须保证不下发 key 本身**（只回 hasKey 布尔） */
   modelState: (workspaceId: string) => CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。async：要问一次订阅快照
+      （hostedProbe 有 60s 缓存）。`ownerUid` 由调用点递进来而不是让实现自己再查
+      一次——这一层每条 welcome/config 都已经 await 过 `sessions.ownerOf`，那是一次
+      未缓存的 Supabase 往返，实现里再查一遍就是同一帧上打两到三次。
+      回 null = **探测这一步自己抛了**（配置读取失败之类），客户端按「不知道」画；
+      注意 edge 挂掉不走这条路——`createHostedProbe` 把失败缓存成「没有订阅」，
+      于是那一分钟里这一格答 `blocked`/`workspace`，与同一分钟的 turn 得到的结论一致 */
+  modelRoute: (workspaceId: string, ownerUid: string) => Promise<CsModelRoute | null>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -339,6 +348,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           ownerUid,
           repo: deps.repoState(workspaceId),
           model: deps.modelState(workspaceId),
+          modelRoute: await deps.modelRoute(workspaceId, ownerUid),
         });
         return;
       }
@@ -401,13 +411,18 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deny(cid, "not_authorized");
             return;
           }
-          const fail = (message: string): void => {
+          // fail 是 async 的（四处早退各 await 一次），**故意不预先探一次**：
+          // 预探等于每条 config 帧都为一条罕见路径付一次探测，而失败这条路
+          // 本来就该现探——失败 = 一个字都没存，此刻的路由就是回执该说的那份。
+          // 于是每条 config 帧恰好探一次：失败时在失败处，成功时在 saveConfig 之后
+          const fail = async (message: string): Promise<void> => {
             deps.send(cid, {
               t: "config_result",
               ok: false,
               message,
               repo: deps.repoState(workspaceId),
               model: deps.modelState(workspaceId),
+              modelRoute: await deps.modelRoute(workspaceId, ownerUid),
             });
           };
 
@@ -425,7 +440,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           if (msg.repoUrl !== undefined) {
             const valid = validateRepoUrl(msg.repoUrl);
             if (!valid.ok) {
-              fail(valid.message);
+              await fail(valid.message);
               return;
             }
             patch.repoUrl = valid.url;
@@ -435,7 +450,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           if (msg.model !== undefined) {
             const valid = validateModelConfig(msg.model.baseUrl, msg.model.modelId);
             if (!valid.ok) {
-              fail(valid.message);
+              await fail(valid.message);
               return;
             }
             patch.model =
@@ -446,7 +461,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
           if (patch.repoUrl === undefined && patch.pat === undefined && patch.model === undefined) {
             // 一格都没给：不是错误，但也不该假装存过了
-            fail("这一次没有要保存的内容。");
+            await fail("这一次没有要保存的内容。");
             return;
           }
 
@@ -455,14 +470,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           } catch (err) {
             // 落盘失败以前只会冒到 daemon 的 .catch 里记一行日志，owner 那边
             // 的按钮照样显示"已保存"——回执这条路存在的意义就是别再这样
-            fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+            await fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
             return;
           }
+          // 存完重新探一次（issue #945）：owner 刚填进去的那把 key 可能正好把
+          // 这个工作区从 blocked 挪到 workspace，回执带旧值等于让界面继续撒谎
           deps.send(cid, {
             t: "config_result",
             ok: true,
             repo: deps.repoState(workspaceId),
             model: deps.modelState(workspaceId),
+            modelRoute: await deps.modelRoute(workspaceId, ownerUid),
           });
           return;
         }

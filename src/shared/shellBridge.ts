@@ -18,19 +18,20 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelState, CsRepoState } from "./remote/cloudSession.js";
+import type { CsModelRoute, CsModelState, CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { AgentToolAllow } from "./agentToolAllow.js";
 import type {
   FileEntry, FileHit, FilePreview, FilesResult, FilesSearchOpts,
 } from "./files.js";
 import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
-import type { BillingMe, PlanId } from "./billing.js";
+import type { BillingMe, PlanId, WorkspaceUsage } from "./billing.js";
 
 /** 副本合回项目本体的结果（issue #643）。失败分四档，每档对应一句人话 */
 export type IsolatedMergeResult =
@@ -466,6 +467,10 @@ export interface CloudSessionStatus {
   /** 这个工作区当前的模型配置（issue #844）。null = 还没配——能建能聊，
       但 @Agent 起不了 turn。**不含 key 本身**，只有 hasKey 布尔 */
   model: CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。runtime 用 turn 同一份
+      decideRuntimeRoute 算好、welcome/config_result 带下来的，渲染层照画不重算。
+      null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
+  modelRoute: CsModelRoute | null;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
       失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送
@@ -1052,16 +1057,18 @@ export interface ShellBridge {
       改/删 */
   workspaceAgentCreate(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: string[] },
+    draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
   ): Promise<FriendsResult<{ agentId: string }>>;
   /** 改一只 agent（建的人或 owner，RLS 拦其余人） */
   workspaceAgentUpdate(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+    patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner；'admin' 谁都删不掉，主进程层先拒） */
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
+  /** 设置页「用量」tab（#946）：每只 agent 本周烧了多少。经 hostedQuota 打 edge，失败翻成 FriendsResult */
+  workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1495,6 +1502,7 @@ export const CHANNELS = {
   workspaceAgentCreate: "otter:workspaceAgentCreate",
   workspaceAgentUpdate: "otter:workspaceAgentUpdate",
   workspaceAgentDelete: "otter:workspaceAgentDelete",
+  workspaceUsage: "otter:workspaceUsage",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

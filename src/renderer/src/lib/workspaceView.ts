@@ -13,12 +13,16 @@
 //   B 侧看得见目录行本身就说明闸后可用，本机无从探对方的箱（ADR-0197 口径）。
 // · canKick：自己是 owner 且这一行不是自己 —— owner 也不能对自己动这个按钮
 //   （出口是删群，不是踢自己）。
-// · toolsSummary：线上 tools: [] 表示「整服务放行」（同 proxyShare.ts 的约定），
-//   UI 上得说成「全部工具」而不是「0 个工具」。
+// · toolsSummary：两处同名字段，量纲不同——ConnectorRowView.toolsSummary 说的是这台
+//   连接器自己的工具清单（线上 tools: [] 表示「整服务放行」，同 proxyShare.ts 的约定，
+//   UI 上得说成「全部工具」而不是「0 个工具」）；AgentRowView.toolsSummary 说的是这只
+//   agent 的连接器白名单（[] = 整池放行，说成「全部连接器」），两者不可互换阅读。
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
+import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
+import { describeAllow } from "./proxyShare.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -116,6 +120,9 @@ export interface AgentRowView {
   name: string;
   description: string;
   modelsSummary: string;
+  /** 这只 agent 的连接器白名单摘要（"全部连接器" / N 个连接器）——与
+      ConnectorRowView.toolsSummary 同名但不同量纲，那个说的是单台连接器自己的工具清单 */
+  toolsSummary: string;
   isAdmin: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -125,6 +132,11 @@ export interface AgentRowView {
 /** []（留空用工作区默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
 function modelsSummaryOf(models: readonly string[]): string {
   return models.length === 0 ? "用工作区默认型号" : models.join(" · ");
+}
+
+/** []（整池放行）→ 一句人话；否则复用 proxyShare 的描述（服务名 + 全部/几个工具） */
+function toolsSummaryOf(tools: readonly AgentToolAllow[]): string {
+  return tools.length === 0 ? "全部连接器" : describeAllow(tools);
 }
 
 /** 权限矩阵（spec §9）：canEdit = 建的人或 owner；canDelete = canEdit 且不是
@@ -140,6 +152,7 @@ export function agentRows(ws: WorkspaceSnapshot, selfUid: string): AgentRowView[
       name: a.name,
       description: a.description,
       modelsSummary: modelsSummaryOf(a.models),
+      toolsSummary: toolsSummaryOf(a.tools),
       isAdmin,
       canEdit,
       canDelete: canEdit && !isAdmin,

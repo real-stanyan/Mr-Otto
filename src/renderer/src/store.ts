@@ -39,7 +39,7 @@ import type {
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
+import type { CsModelRoute, CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -55,7 +55,7 @@ import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/p
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type { IsolatedMergeResult, BillingSnapshotView } from "../../shared/shellBridge.js";
-import type { PlanId } from "../../shared/billing.js";
+import type { PlanId, WorkspaceUsage } from "../../shared/billing.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { humanizeBillingError } from "./lib/billingError.js";
 
@@ -97,13 +97,14 @@ import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
-  DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
+  DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
 // WorkspaceSnapshot（单数，ADR-0198 多人协作工作区）与上面的 WorkspacesSnapshot（复数，
 // friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
 import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
+import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
@@ -184,6 +185,9 @@ export interface CloudSessionState {
   /** 这个工作区当前的模型配置（issue #844）。null = 还没配，@Agent 起不了
       turn。**没有 key 本身**，只有 hasKey */
   model: CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
+      所有者订阅着的时候 `model` 为 null 也照样跑得动。null = 探不到 */
+  modelRoute: CsModelRoute | null;
   events: SessionEvent[];
 }
 
@@ -852,14 +856,17 @@ interface ChatState {
       workspaceGroupsError，回布尔给调用方决定要不要清表单 */
   createWorkspaceAgent(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: readonly string[] },
+    draft: { name: string; description: string; instructions: string; models: readonly string[]; tools: readonly AgentToolAllow[] },
   ): Promise<boolean>;
   updateWorkspaceAgent(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[] },
+    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
   ): Promise<boolean>;
   deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
+  /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
+      组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
+  loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2125,7 +2132,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async createWorkspaceAgent(id, draft) {
-    const r = await window.otter.workspaceAgentCreate(id, { ...draft, models: [...draft.models] });
+    const r = await window.otter.workspaceAgentCreate(id, {
+      ...draft, models: [...draft.models], tools: draft.tools.map((t) => ({ serverId: t.serverId, tools: [...t.tools] })),
+    });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
@@ -2136,10 +2145,11 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async updateWorkspaceAgent(id, agentId, patch) {
-    const { models, ...rest } = patch;
+    const { models, tools, ...rest } = patch;
     const r = await window.otter.workspaceAgentUpdate(id, agentId, {
       ...rest,
       ...(models === undefined ? {} : { models: [...models] }),
+      ...(tools === undefined ? {} : { tools: tools.map((t) => ({ serverId: t.serverId, tools: [...t.tools] })) }),
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
@@ -2159,6 +2169,10 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
     return true;
+  },
+
+  async loadWorkspaceUsage(id) {
+    return window.otter.workspaceUsage(id);
   },
 
   async publishWorkspaceSession(id, sessionId, title) {
@@ -2229,6 +2243,7 @@ export const useChat = create<ChatState>((set, get) => ({
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         repo: null, // welcome 一到就补真值
         model: null, // 同上（issue #844）
+        modelRoute: null, // 同上（issue #945）
         events: [],
       },
       workspaceGroupsError: null,
@@ -2572,6 +2587,7 @@ export const useChat = create<ChatState>((set, get) => ({
             selfUid: status.selfUid,
             repo: status.repo,
             model: status.model,
+            modelRoute: status.modelRoute,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

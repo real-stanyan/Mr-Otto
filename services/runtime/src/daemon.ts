@@ -24,8 +24,9 @@ import {
 import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
+import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -69,6 +70,7 @@ const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   description: "这个工作区的默认智能体",
   instructions: "",
   models: [],
+  tools: [],
 };
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
@@ -228,7 +230,8 @@ async function main(): Promise<void> {
       **每只 agent 一个 adapter**（#928 task-11）：多出来的 `agent` 参数只决定 cfg() 里
       选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
       路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
-      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变 */
+      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变。
+      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁 */
   function adapterFor(workspaceId: string, sessionId: string, ownerUid: string, agent: AgentSpec): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
@@ -244,6 +247,7 @@ async function main(): Promise<void> {
       ownerUid,
       workspaceId,
       sessionId,
+      agentId: agent.agentId,
     });
   }
 
@@ -265,14 +269,15 @@ async function main(): Promise<void> {
   async function queryAgents(workspaceId: string): Promise<AgentSpec[]> {
     const { data, error } = await supabase
       .from("workspace_agents")
-      .select("agent_id,name,description,instructions,models")
+      .select("agent_id,name,description,instructions,models,tools")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
     return (data ?? []).map(
-      (r: { agent_id: string; name: string; description: string; instructions: string; models: string[] }) => ({
+      (r: { agent_id: string; name: string; description: string; instructions: string; models: string[]; tools: unknown }) => ({
         agentId: r.agent_id, name: r.name, description: r.description, instructions: r.instructions,
         models: r.models ?? [],
+        tools: normalizeAgentTools(r.tools),
       })
     );
   }
@@ -671,6 +676,29 @@ async function main(): Promise<void> {
       const m = workspaceConfigStore.load(workspaceId)?.model;
       if (!m) return null;
       return { baseUrl: m.baseUrl, modelId: m.modelId, hasKey: m.apiKey !== "" };
+    },
+    // issue #945：与 turn 同一份 decideRuntimeRoute。`ownerUid` 由 frameHandler 递进来
+    // ——那一层每条 welcome/config 都已经查过一次 ownerOf（未缓存的 Supabase 往返），
+    // 这里再查一遍就是同一帧上打两到三次。
+    // 回 null 只发生在**探测这一步自己抛了**（配置读取失败等）：edge 挂掉走不到这条
+    // catch——createHostedProbe 把失败缓存成「没有订阅」，于是那一分钟这一格答
+    // blocked/workspace，与同一分钟真跑一个 turn 得到的结论一致（本来就该一致）
+    modelRoute: async (workspaceId, ownerUid) => {
+      try {
+        return await probeModelRoute({
+          probe: hostedProbe,
+          cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+          ownerUid,
+          workspaceId,
+          edgeBase: config.edgeBase,
+          runtimeSecret: config.runtimeSecret,
+        });
+      } catch (err) {
+        console.warn(
+          `[otto-runtime] modelRoute 探测失败（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`
+        );
+        return null;
+      }
     },
     send: globalSend,
     dropCid,

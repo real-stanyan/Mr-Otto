@@ -28,6 +28,7 @@ import {
   parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
+import { fetchWorkspaceUsage } from "./usageAttribution.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
 import {
   CTRL_CID,
@@ -631,6 +632,10 @@ function billingPort(env: Env): BillingPort {
       const models = [...new Set(routes.map((x) => x.logicalModel))];
       return meFromParts(v.sub, v.windows, v.addon, models, plans);
     },
+
+    // 归因从 usage_event 现算（不碰 Quota DO —— 那是限流用的投影，没有 agent 维度）。
+    // 整段编排（含在籍那道闸）在 usageAttribution.ts，那边有执行覆盖；这里只递读口
+    workspaceUsage: (uid, workspaceId) => fetchWorkspaceUsage(db.get, uid, workspaceId, Date.now()),
 
     async checkout(uid, target: CheckoutTarget, origin) {
       if (!env.STRIPE_SECRET_KEY) return { error: "服务端没配 Stripe" };

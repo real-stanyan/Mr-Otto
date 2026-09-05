@@ -372,6 +372,8 @@ create table if not exists public.workspace_memories (
 
 **顺序：1a → 1b → 2 → 3 → 5 → 4 → 6。**
 
+> 2 与 3 同一条 lane 一起落地（ADR-0221，2026-09-05）；`usage_event.agent_id` 的 migration 编号实际是 0022（切片 4 的记忆表顺延为 0023）。
+
 3 排在 5 前面不是随手排的：**先有那张用量表，再打开 agent 互相 @**。接力链失控时
 要能一眼看出是哪只在烧——反过来的话，第一次失控只看得到 owner 的周额度掉了一大块，
 查不出是谁。

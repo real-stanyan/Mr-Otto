@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createEdge, type BillingPort, type EdgeConfig } from "../../services/edge/src/edge.js";
 import type { Caller } from "../../services/edge/src/llmGateway.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 
 const SECRET = "jwt-secret";
 const RUNTIME = "runtime-secret";
@@ -30,6 +30,12 @@ function harness() {
     checkout: async (uid, target) => { billingCalls.push(`checkout:${uid}:${JSON.stringify(target)}`); return { url: "https://stripe/x" }; },
     portal: async (uid) => { billingCalls.push(`portal:${uid}`); return { url: "https://stripe/p" }; },
     webhook: async (payload, sig) => { billingCalls.push(`webhook:${payload}:${sig}`); return { status: 200, body: { ok: true } }; },
+    workspaceUsage: async (uid, workspaceId) => {
+      billingCalls.push(`workspaceUsage:${uid}:${workspaceId}`);
+      if (workspaceId === U3) return { ok: false, code: "not_member", message: "不在籍" };
+      if (workspaceId === U2) return { ok: false, code: "not_found", message: "没有这个工作区" };
+      return { ok: true, value: { workspaceId, ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } };
+    },
   };
   const handle = createEdge({
     config, now: () => NOW_MS,
@@ -47,7 +53,17 @@ describe("/llm/v1/chat/completions 身份", () => {
     const h = harness();
     const res = await h.handle(post("/llm/v1/chat/completions", { authorization: `Bearer ${token("u9")}`, [WORKSPACE_HEADER]: "w1", [SESSION_HEADER]: "s1" }));
     expect(res.status).toBe(200);
-    expect(h.llmCalls).toEqual([{ uid: "u9", source: "desktop", workspaceId: "w1", sessionId: "s1" }]);
+    expect(h.llmCalls).toEqual([{ uid: "u9", source: "desktop", workspaceId: "w1", sessionId: "s1", agentId: "" }]);
+  });
+
+  it("x-otto-agent 透进 caller.agentId，同样截到 128", async () => {
+    const h = harness();
+    const res = await h.handle(post("/llm/v1/chat/completions", {
+      "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7, [WORKSPACE_HEADER]: "w1", [AGENT_HEADER]: "a_".padEnd(200, "x"),
+    }));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls[0]!.agentId).toHaveLength(128);
+    expect(h.llmCalls[0]!.source).toBe("runtime");
   });
 
   it("workspace/session 头超长会被截断到 128 字符才递给 llm（Task 7 落库用）", async () => {
@@ -114,6 +130,7 @@ describe("/billing/v1/*", () => {
         me: async () => { throw new Error("quota view 503"); },
         checkout: async () => ({ url: "x" }), portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
       },
     });
     const res = await handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token("u1")}` } }));
@@ -164,6 +181,7 @@ describe("/billing/v1/*", () => {
         checkout: async () => ({ error: "已有订阅，换档请走「管理」", code: "already_subscribed" as const }),
         portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
       },
     });
     const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));
@@ -181,6 +199,7 @@ describe("/billing/v1/*", () => {
         checkout: async () => ({ error: "stripe checkout/sessions 500: ?" }),
         portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
       },
     });
     const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));
@@ -216,5 +235,29 @@ describe("/billing/v1/*", () => {
   it("没注入 billing → 404 billing_disabled", async () => {
     const handle = createEdge({ config, now: () => NOW_MS });
     expect((await handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token()}` } }))).status).toBe(404);
+  });
+});
+
+describe("/billing/v1/workspace-usage（#946）", () => {
+  const get = (q: string, headers: Record<string, string>) => new Request(`https://edge/billing/v1/workspace-usage${q}`, { headers });
+  it("真人 JWT + 在籍 → 200，body 是 WorkspaceUsage", async () => {
+    const h = harness();
+    const res = await h.handle(get(`?workspace=${U7}`, { authorization: `Bearer ${token("u1")}` }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ workspaceId: U7, rows: [] });
+    expect(h.billingCalls).toEqual([`workspaceUsage:u1:${U7}`]);
+  });
+  it("workspace 缺失 / 不是 uuid → 400；不在籍 → 403；没有这个工作区 → 404", async () => {
+    const h = harness();
+    expect((await h.handle(get("", { authorization: `Bearer ${token("u1")}` }))).status).toBe(400);
+    expect((await h.handle(get("?workspace=nope", { authorization: `Bearer ${token("u1")}` }))).status).toBe(400);
+    expect((await h.handle(get(`?workspace=${U3}`, { authorization: `Bearer ${token("u1")}` }))).status).toBe(403);
+    expect((await h.handle(get(`?workspace=${U2}`, { authorization: `Bearer ${token("u1")}` }))).status).toBe(404);
+  });
+  it("平台身份不能查（它代表谁都没意义）→ 403", async () => {
+    const h = harness();
+    // 平台身份认的是 x-runtime-secret 头，不是 Bearer（见上面 /llm 那组用例）
+    const res = await h.handle(get(`?workspace=${U7}`, { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7 }));
+    expect(res.status).toBe(403);
   });
 });

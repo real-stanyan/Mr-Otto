@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleSnapshot, type WorkspaceSnapshot } from "../shared/workspaces.js";
+import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
@@ -99,12 +100,12 @@ export async function fetchWorkspace(
   }[];
   const agents = (unwrap(
     await client.from("workspace_agents")
-      .select("agent_id,name,description,instructions,models,created_by,updated_at")
+      .select("agent_id,name,description,instructions,models,tools,created_by,updated_at")
       .eq("workspace_id", id)
       .order("created_at", { ascending: true }),
   ) ?? []) as {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    created_by: string; updated_at: string;
+    tools: unknown; created_by: string; updated_at: string;
   }[];
   const labels = await fetchProfileLabels(client, members.map((m) => m.uid));
   return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => labels.get(uid) ?? null);
@@ -213,7 +214,7 @@ export async function insertAgentRow(
   client: SupabaseClient,
   row: {
     workspaceId: string; agentId: string; name: string; description: string;
-    instructions: string; models: string[]; createdBy: string;
+    instructions: string; models: string[]; tools: AgentToolAllow[]; createdBy: string;
   },
 ): Promise<void> {
   unwrap(
@@ -224,6 +225,7 @@ export async function insertAgentRow(
       description: row.description,
       instructions: row.instructions,
       models: row.models,
+      tools: row.tools,
       created_by: row.createdBy,
     }),
   );
@@ -236,7 +238,7 @@ export async function updateAgentRow(
   client: SupabaseClient,
   workspaceId: string,
   agentId: string,
-  patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+  patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
 ): Promise<void> {
   const rows = unwrap(
     await client.from("workspace_agents")
