@@ -400,6 +400,24 @@ describe("建/改 agent 的服务端校验（#957 B-C1/B-I2）", () => {
     expect(h.calls).not.toContain("insertAgentRow");
   });
 
+  // 复审 Important 1：精确同名说「已有同名的智能体」（与 23505 那条路、与 runtime 内存
+  // 实现同一句），不是「一个名字不能是另一个的开头」——后者说的是另一回事
+  it("createAgent：精确同名报「已有同名的智能体」，不报前缀冲突那句", async () => {
+    const h = harness();
+    h.agentNames.push({ agentId: "a_1", name: "运营" });
+    expect(await h.manager.createAgent("ws-1", draft({ name: "运营" }))).toEqual({ ok: false, message: "已有同名的智能体" });
+    expect(h.calls).not.toContain("insertAgentRow");
+  });
+
+  // 复审 Minor 2：名单那份也要过 NFKC——历史行「Ａｄｓ」与新建的「Ads」既躲得过
+  // 唯一索引也躲得过前缀检查，落地成两个肉眼一样的名字
+  it("createAgent：名单里是全角旧名字时，半角同名照样拒", async () => {
+    const h = harness();
+    h.agentNames.push({ agentId: "a_1", name: "Ａｄｓ" });
+    expect(await h.manager.createAgent("ws-1", draft({ name: "Ads" }))).toEqual({ ok: false, message: "已有同名的智能体" });
+    expect(h.calls).not.toContain("insertAgentRow");
+  });
+
   it("createAgent：名字先归一化再落库（全角折半角、首尾空白去掉）", async () => {
     const inserted: { name: string }[] = [];
     const h = harness({ insertAgentRow: async (_c, row) => { inserted.push(row); } });

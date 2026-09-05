@@ -25,7 +25,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
-import { ADMIN_AGENT_ID, agentNameConflict } from "../shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName } from "../shared/workspaceAgents.js";
 import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
@@ -114,7 +114,14 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
   /** 名字冲突（同名 / 一方是另一方的开头）现查一次名单再判（#957 B-I2）。同名 DB 的
       唯一索引也拦得住，前缀冲突拦不住——而 @ 的最长匹配正是被前缀骗的那一个。
-      `selfAgentId` 非 null 时把自己那行排掉：改成自己现在的名字不算冲突。 */
+      `selfAgentId` 非 null 时把自己那行排掉：改成自己现在的名字不算冲突。
+      两条纪律与 runtime 的 `agentRegistry.assertNameFree` 逐字一致（两条写入路
+      给同一件事两种说法，比两条路各自漏掉一半更难查）：
+      ① **同名先判**——`agentNameConflict` 的第一条规则就是 `name === other`，不先判
+         的话精确重名会被说成「一个名字不能是另一个的开头」，而 23505 那条路说的是
+         「已有同名的智能体」，同一件事两种文案；
+      ② **已有名字也要归一化**——新名字过了 NFKC，名单那份没过的话，一行历史数据
+         「Ａｄｓ」与新建的「Ads」既躲得过唯一索引也躲得过前缀检查。 */
   async function assertNameFree(
     client: SupabaseClient,
     workspaceId: string,
@@ -122,7 +129,8 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     selfAgentId: string | null,
   ): Promise<void> {
     const rows = await deps.listAgentNames(client, workspaceId);
-    const others = rows.filter((r) => r.agentId !== selfAgentId).map((r) => r.name);
+    const others = rows.filter((r) => r.agentId !== selfAgentId).map((r) => normalizeAgentName(r.name));
+    if (others.includes(name)) throw new Error(DUPLICATE_AGENT_NAME);
     const conflict = agentNameConflict(name, others);
     if (conflict !== null) throw new Error(conflict);
   }

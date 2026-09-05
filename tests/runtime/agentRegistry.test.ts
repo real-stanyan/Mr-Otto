@@ -50,12 +50,20 @@ describe("createInMemoryAgentWriter", () => {
     await w.create("w1", draft, "u1");
     await expect(w.create("w1", draft, "u2")).rejects.toBeInstanceOf(AgentNameError);
   });
+
+  // 名单里那份也要归一化：新名字过了 NFKC，历史行没过的话，「Ａｄｓ」与「Ads」
+  // 既躲得过唯一索引也躲得过前缀检查，落地成两个肉眼一样的名字
+  it("已有名字是全角时，新建的半角同名照样拒（两边都归一化后再比）", async () => {
+    const w = createInMemoryAgentWriter();
+    await w.create("w1", { ...draft, name: "Ａｄｓ" }, "u1");
+    await expect(w.create("w1", { ...draft, name: "Ads" }, "u2")).rejects.toThrow("已有同名的智能体");
+  });
 });
 
 // 假 supabase client：from().insert() 记下 payload、回一个 thenable；
 // from().select().eq() 回 canned.existing（落库前查名单那一步，#957 B-I2）
 function fakeClient(
-  canned: { error?: { code?: string; message: string } | null; existing?: { agent_id: string; name: string }[] },
+  canned: { error?: { code?: string; message: string } | null; existing?: { name: string }[] },
   calls: { table: string; row: unknown }[],
 ): SupabaseClient {
   return {
@@ -79,7 +87,7 @@ describe("createSupabaseAgentWriter", () => {
     const calls: { table: string; row: unknown }[] = [];
     const { agentId } = await createSupabaseAgentWriter(fakeClient({}, calls)).create("w1", draft, "u1");
     expect(calls).toHaveLength(2); // [0] 查名单，[1] 落行
-    expect(calls[0]!.row).toEqual({ select: "agent_id,name", workspace_id: "w1" });
+    expect(calls[0]!.row).toEqual({ select: "name", workspace_id: "w1" });
     expect(calls[1]!.table).toBe("workspace_agents");
     expect(calls[1]!.row).toEqual({
       workspace_id: "w1", agent_id: agentId, name: "广告", description: "管投放", instructions: "你负责投放。",
@@ -89,12 +97,34 @@ describe("createSupabaseAgentWriter", () => {
 
   it("落库前先 select 一次名单：前缀冲突抛 AgentNameError，不 insert（#957 B-I2）", async () => {
     const calls: { table: string; row: unknown }[] = [];
-    const client = fakeClient({ existing: [{ agent_id: "a_0", name: "广告" }] }, calls);
+    const client = fakeClient({ existing: [{ name: "广告" }] }, calls);
     await expect(createSupabaseAgentWriter(client).create("w1", { ...draft, name: "广告投放" }, "u1"))
       .rejects.toThrow("冲突");
-    expect(calls.map((c) => c.row)).toEqual([{ select: "agent_id,name", workspace_id: "w1" }]);
+    expect(calls.map((c) => c.row)).toEqual([{ select: "name", workspace_id: "w1" }]);
   });
 
+  // 复审 Important 1：同名在这一层就先说人话，且那句话要与内存实现逐字相同——
+  // 两条写入路给同一件事两种说法，比两条路各自漏掉一半更难查
+  it("名单里已有同名：抛 DuplicateAgentNameError，文案与内存实现逐字相同，不 insert", async () => {
+    const calls: { table: string; row: unknown }[] = [];
+    const mem = createInMemoryAgentWriter();
+    await mem.create("w1", draft, "u1");
+    const memErr = await mem.create("w1", draft, "u2").catch((e: Error) => e);
+    const dbErr = await createSupabaseAgentWriter(fakeClient({ existing: [{ name: "广告" }] }, calls))
+      .create("w1", draft, "u1").catch((e: Error) => e);
+    expect(dbErr).toBeInstanceOf(DuplicateAgentNameError);
+    expect((dbErr as Error).message).toBe((memErr as Error).message);
+    expect(calls).toHaveLength(1); // 只查了名单，没 insert
+  });
+
+  it("名单里那份也归一化：历史行「Ａｄｓ」挡得住新建的「Ads」", async () => {
+    await expect(
+      createSupabaseAgentWriter(fakeClient({ existing: [{ name: "Ａｄｓ" }] }, [])).create("w1", { ...draft, name: "Ads" }, "u1"),
+    ).rejects.toThrow("已有同名的智能体");
+  });
+
+  // 名单查过之后才 insert，所以 23505 只在"查名单与 insert 之间有人抢先建了同名"
+  // 那个窗口里回来（前缀 TOCTOU 的同款）——它仍是最后一道，不是死代码
   it("23505 → DuplicateAgentNameError；其它错误带表名原样抛", async () => {
     await expect(createSupabaseAgentWriter(fakeClient({ error: { code: "23505", message: "dup" } }, [])).create("w1", draft, "u1"))
       .rejects.toBeInstanceOf(DuplicateAgentNameError);

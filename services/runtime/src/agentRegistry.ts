@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CreateAgentDraft } from "../../../src/shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
-import { agentNameConflict } from "../../../src/shared/workspaceAgents.js";
+import { agentNameConflict, normalizeAgentName } from "../../../src/shared/workspaceAgents.js";
 
 /** 名字类的错误一家：工具那层统一翻成「换个名字再试」的人话，别的错误照抛。
     分成一家而不是一个类型，是因为两条判据的来源不同——同名由 DB 的唯一索引说了算
@@ -32,9 +32,17 @@ export class AgentNamePrefixConflictError extends AgentNameError {
   }
 }
 
-/** 落库前的名字闸：命中就抛，两个实现共用（判据函数与桌面表单是同一份） */
+/** 落库前的名字闸：命中就抛，两个实现共用（判据函数与桌面表单是同一份）。
+    两条纪律写在这一处，两个实现才不会各说各话：
+    ① **同名先判**——`agentNameConflict` 的第一条规则就是 `name === other`，
+       不先判的话精确重名会被说成「一个名字不能是另一个的开头」，而它该说的是「重名了」
+       （内存实现与 DB 唯一索引的 23505 都说后者）；
+    ② **已有名字也要归一化**——新名字过了 NFKC，名单里那份没过的话，一行历史数据
+       「Ａｄｓ」与新建的「Ads」既躲得过唯一索引也躲得过前缀检查，落地成两个肉眼一样的名字。 */
 function assertNameFree(name: string, existing: readonly string[]): void {
-  const conflict = agentNameConflict(name, existing);
+  const others = existing.map(normalizeAgentName);
+  if (others.includes(name)) throw new DuplicateAgentNameError(name);
+  const conflict = agentNameConflict(name, others);
   if (conflict !== null) throw new AgentNamePrefixConflictError(conflict);
 }
 
@@ -62,9 +70,6 @@ export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
   return {
     async create(workspaceId, draft, createdBy) {
       const here = rows.filter((r) => r.workspaceId === workspaceId);
-      // 同名先判：这条的人话文案（「已有同名的智能体「X」」）与 DB 唯一索引那条一致，
-      // 前缀冲突是另一句话（说的是"会 @ 错人"，不是"重名了"）
-      if (here.some((r) => r.name === draft.name)) throw new DuplicateAgentNameError(draft.name);
       assertNameFree(draft.name, here.map((r) => r.name));
       const agentId = newAgentId();
       rows.push({ ...draft, workspaceId, agentId, createdBy });
@@ -82,9 +87,11 @@ export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
 export function createSupabaseAgentWriter(client: SupabaseClient): WorkspaceAgentWriter {
   return {
     async create(workspaceId, draft, createdBy) {
-      // 落库前先查一次名单：同名有唯一索引兜底（23505），前缀冲突 DB 不管
+      // 落库前先查一次名单：前缀冲突 DB 不管，同名这一层也先说人话（唯一索引的 23505
+      // 仍是兜底——查名单与 insert 之间那个窗口里并发建同名，只有它拦得住）。
+      // 只要 name：建这条路没有"把自己排掉"的需要（桌面改名那条才要 agent_id）
       const { data: existing, error: readErr } = await client
-        .from("workspace_agents").select("agent_id,name").eq("workspace_id", workspaceId);
+        .from("workspace_agents").select("name").eq("workspace_id", workspaceId);
       if (readErr) throw new Error(`workspace_agents 读取失败：${readErr.message}`);
       assertNameFree(draft.name, ((existing ?? []) as { name: string | null }[]).map((r) => r.name ?? ""));
       const agentId = newAgentId();
