@@ -960,6 +960,11 @@ interface ChatState {
   /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
       workspaceGroupsError，调用方按需读） */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
+  /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。只对发起人或 owner
+      显示按钮（canStopTurn），但这里不重复判权限——服务端的 stop_result
+      是唯一事实，`ok:false` 时把服务端的精确文案落 workspaceGroupsError。
+      回是否成功，同 cloudSay/cloudApprove 的既有约定 */
+  cloudStop(): Promise<boolean>;
   /** owner 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，issue #821 slice 2）。
       workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
       时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
@@ -2392,6 +2397,16 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async cloudApprove(callId, decision) {
     const r = await window.otter.workspaceCloudApprove(callId, decision);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    return true;
+  },
+
+  async cloudStop() {
+    const r = await window.otter.workspaceCloudStop();
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;

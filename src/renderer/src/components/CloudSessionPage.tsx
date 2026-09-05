@@ -59,7 +59,8 @@ import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
-  approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, systemNoteText, turnEndedLineText, userRowIdentity,
+  approvalCardTitle, assistantLabel, canStopTurn, hiddenFromCloudTimeline, relayLineText, systemNoteText, turnEndedLineText,
+  userRowIdentity,
 } from "../lib/cloudTimeline.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { openTurns } from "../../../shared/turnLedger.js";
@@ -461,7 +462,7 @@ export function CloudSessionPage({
               排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
               历史里某一行的注脚（跟 turn_ended 的错误行不同——那是已经发生
               的事实，钉在它发生的位置）*/}
-          <PendingTurnLines events={events} ws={ws} />
+          <PendingTurnLines events={events} ws={ws} selfUid={selfUid} cs={cs} />
         </TimelineProjectionContext.Provider>
       </div>
 
@@ -1120,7 +1121,17 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
     "接下来会发生什么"，那是时间线尾巴的事；这是日志的投影不是 UI 本地态，
     daemon 重启回来后重新算一遍照样对得上。running 前面一个跳动的点，
     queued 前面一个不跳动的点——同一屏里"正在做"和"还没轮到"要一眼分开 */
-function PendingTurnLines({ events, ws }: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot }) {
+function PendingTurnLines({
+  events,
+  ws,
+  selfUid,
+  cs,
+}: {
+  events: readonly SessionEvent[];
+  ws: WorkspaceSnapshot;
+  selfUid: string;
+  cs: CloudSessionState;
+}) {
   const pending = useMemo(() => openTurns(events), [events]);
   if (pending.length === 0) return null;
   return (
@@ -1134,9 +1145,42 @@ function PendingTurnLines({ events, ws }: { events: readonly SessionEvent[]; ws:
             )}
             aria-hidden
           />
-          {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
+          <span className="flex-1">
+            {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
+          </span>
+          {canStopTurn(t, selfUid, cs) && <StopTurnButton />}
         </div>
       ))}
+    </>
+  );
+}
+
+/** 「停止」按钮（#957 第三批）：只对发起人或 owner 显示（canStopTurn，判据
+    同审批卡的 canDecide）——不重判权限，服务端的 stop_result 才是唯一事实，
+    这里只决定按钮画不画、点下去之后禁用到回执回来。回执前禁用；`ok:false`
+    时把服务端的精确文案画在这一行末尾（同 ApprovalRow 的 localError 纪律，
+    但这里没有"迟到的拒绝"兜底——stop 没有第二条确认路径，15s 超时兜底已经
+    在 cloudSessionClient 的 pendingStop 里做过一次，store.cloudStop 直接
+    转发那个结果） */
+function StopTurnButton() {
+  const cloudStop = useChat((s) => s.cloudStop);
+  const [stopping, setStopping] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const onClick = async (): Promise<void> => {
+    setStopping(true);
+    setLocalError(null);
+    const ok = await cloudStop();
+    setStopping(false);
+    if (!ok) setLocalError(useChat.getState().workspaceGroupsError);
+  };
+
+  return (
+    <>
+      <Button variant="ghost" size="xs" disabled={stopping} onClick={() => void onClick()}>
+        停止
+      </Button>
+      {localError && <span className="text-err">{localError}</span>}
     </>
   );
 }
