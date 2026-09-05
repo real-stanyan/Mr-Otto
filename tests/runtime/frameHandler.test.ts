@@ -23,6 +23,7 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     isRunning: () => false,
     lastSeq: () => -1,
     initiatorUid: () => null,
+    currentAgentId: () => null,
     createdByUid: () => "creator-uid",
     archive: () => true,
     isArchived: () => false,

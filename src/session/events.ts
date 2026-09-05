@@ -205,9 +205,18 @@ export interface ModelChangedEvent extends SessionEventBase {
     而 UI 要在那一刻提示一次「本次起用的是你自己的 key」。ignorable：模型不可见的注记 */
 export interface RouteChangedEvent extends SessionEventBase {
   type: "route_changed";
-  from: "hosted" | "direct";
-  to: "hosted" | "direct";
-  reason: "quota_exhausted";
+  /** 云会话（工作区群聊）多了一档 `"workspace"`（#957 D3）：那条路花的是工作区
+      自己配的 key，与桌面的 `"direct"`（花我这台机器上的 key）不是同一件事，
+      合并成一个词的话「谁付的钱」就说不清了。**只加值不删值**——旧日志里的
+      hosted/direct 原样可重放（schema 向后兼容硬规则） */
+  from: "hosted" | "direct" | "workspace";
+  to: "hosted" | "direct" | "workspace";
+  /** 原来只有一个值（桌面唯一的换轨起因）。云端还会因为**探不到 edge**、
+      **所有者退订**、**所有者又订上了**而换轨，这三件事该做的动作各不相同：
+      probe_failed 是「我们这边的问题，一会儿自己会好」，no_subscription 是
+      「去续费」，subscription_active 是「不用管，已经换回来了」。合成一个
+      quota_exhausted 的话，一次 edge 抖动会被读成「你的额度用完了」 */
+  reason: "quota_exhausted" | "probe_failed" | "no_subscription" | "subscription_active";
   resetAt?: number;
   ignorable: true;
 }
@@ -862,6 +871,10 @@ export interface ModelUsageEvent extends SessionEventBase {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  /** 这笔账是哪只工作区 agent 花的（#957 D7）。可选 = 本机会话/旧日志没有这一格
+      （硬规则：旧日志永远可重放）。带 **id 不带名**，同 `usage_event.agent_id`
+      的口径（ADR-0221）——改名不该断账 */
+  agentId?: string;
 }
 
 // ─── 联合类型 ───────────────────────────────────────────────

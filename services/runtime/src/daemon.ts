@@ -28,7 +28,7 @@ import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -243,19 +243,33 @@ async function main(): Promise<void> {
       选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
       路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
       的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变。
-      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁 */
-  function adapterFor(workspaceId: string, sessionId: string, ownerUid: string, agent: AgentSpec): ModelAdapter {
+      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁。
+      **白名单与自带 key 是两条线**（#957 D1/D2）：原来这里把 `agent.models[0]` 塞进
+      `cfg()` 回的对象里冒充「工作区配的型号」，两个后果——① 工作区没配 key 时
+      `cfg()` 整个是 null，白名单跟着静默蒸发，托管路永远拿网关第一款（D1）；
+      ② 自带 key 那条路上，群里任何成员在设置页填的一串字符会被原样发给**所有者
+      自己的** provider（D2）。改成 `cfg()` 回纯工作区配置、白名单走
+      `preferredModel`（只喂 hosted 分支） */
+  function adapterFor(
+    workspaceId: string,
+    sessionId: string,
+    ownerUid: string,
+    agent: AgentSpec,
+    // 必需（不是 `deps["onRouteChanged"]` 那个可选类型）：这里只有一个调用方，
+    // 写成可选就是「忘了接线那天它安静地什么都不记」（同 FrameHandlerDeps.log 的纪律）
+    onRouteChanged: NonNullable<HostedRuntimeAdapterDeps["onRouteChanged"]>
+  ): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
-      // agent 的型号白名单第一个就是它的默认；空白名单 = 用工作区那份（ADR-0202）。
-      // **不做 env 兜底**，理由同 ADR-0202：兜底 = 忘了配的工作区默默烧维护者的钱
-      cfg: () => {
-        const ws = workspaceConfigStore.load(workspaceId)?.model ?? null;
-        const pick = agent.models[0];
-        return pick && ws ? { ...ws, modelId: pick } : ws;
-      },
+      // 纯工作区配置（ADR-0202 的原路）。**不做 env 兜底**，理由同 ADR-0202：
+      // 兜底 = 忘了配的工作区默默烧维护者的钱
+      cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+      // agent 的型号白名单第一个就是它在网关上的默认；空白名单 = 退到工作区
+      // 配的那款，再退到网关第一款（都在 decideRuntimeRoute 里）
+      preferredModel: () => agent.models[0],
+      onRouteChanged,
       ownerUid,
       workspaceId,
       sessionId,
@@ -497,6 +511,11 @@ async function main(): Promise<void> {
     const recordUsage = (usage: TokenUsage, model: string): void => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调
+      // 这笔账是哪只 agent 花的（#957 D7）。同一个理由 usage_event.agent_id
+      // 已经有了（ADR-0221），本地日志这一份原来没有——于是「这个工作区里
+      // 哪只水獭最烧钱」在日志里推不出来。exactOptionalPropertyTypes：只有
+      // 非空才落这一格（同 decideRuntimeRoute 里 agentId 的既有纪律）
+      const agentId = session.currentAgentId();
       store.append({
         sessionId,
         ts: Date.now(),
@@ -507,6 +526,7 @@ async function main(): Promise<void> {
         model,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
+        ...(agentId ? { agentId } : {}),
       });
       // fire-and-forget：失败只 console.warn/console.error——权威记录已经
       // 在上面落盘了。async IIFE + try/catch 而不是 .then/.catch 链——
@@ -572,7 +592,17 @@ async function main(): Promise<void> {
         }),
       // 按 agent 造 adapter（#928 task-11）：型号来自它自己的白名单，记账
       // 口径不变——扣的仍是 ownerUid（ADR-0217），不是发起人
-      adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a), recordUsage),
+      adapterFor: (a) =>
+        withUsage(
+          adapterFor(workspaceId, sessionId, ownerUid, a, (from, to, reason) => {
+            // 换轨落账（#957 D3）：钱从谁账上出变了，这个事实日志里推不出来。
+            // 落盘之外还要 broadcast——「本轮改用工作区自己的 key 了」这句话
+            // 该在这个 turn 还没结束时就出现在群里，不是等下次刷新才翻出来
+            // （同桌面 main/agent.ts 的 onReroute 纪律）
+            broadcast(store.append({ sessionId, ts: Date.now(), type: "route_changed", ignorable: true, from, to, reason }));
+          }),
+          recordUsage
+        ),
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
       // 起跑那一刻再验一次籍（#957 B-I1）。与 frameHandler 的那道闸共用同一个

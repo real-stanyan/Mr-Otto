@@ -331,6 +331,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     initiatorUid() {
       return null;
     },
+    currentAgentId() {
+      return null;
+    },
     createdByUid() {
       return "";
     },

@@ -292,6 +292,12 @@ export interface CloudSession {
   isRunning(): boolean;
   lastSeq(): number;
   initiatorUid(): string | null;
+  /** 此刻正在跑 turn 的是哪只 agent，turn 外为 null（#957 D7）。daemon 的
+      `recordUsage` 拿它给 `model_usage` 补 `agentId`——那个回调是一个捕获了
+      session 的闭包，且只在 `engine.chat()` 里才会被调（那时必有 turn 在跑），
+      这是它唯一能问到「这笔账是谁花的」的口。与 `initiatorUid()` 平级：
+      一个说「谁动的手」，一个说「哪只水獭动的手」 */
+  currentAgentId(): string | null;
   /** 建这条会话的人。frameHandler 用它判归档权限（issue #822） */
   createdByUid(): string;
   /** 日志里已经有 session_archived 了吗（issue #822）。**日志是事实，
@@ -989,6 +995,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return currentInitiator;
     },
 
+    currentAgentId() {
+      return currentAgentId;
+    },
+
     createdByUid() {
       return opts.createdByUid;
     },
@@ -1078,7 +1088,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           error: "发起人已不在这个工作区，这条 turn 不跑",
           agentId: k.agentId,
-          readUpToSeq: lastSeqSeen,
+          // readUpToSeq 取**这条开场白自己的 seq**（#957 Task 4c 复审），同旁边
+          // 到顶收口那条的口径：日志尾此刻已经越过了同一只 agent 更晚、仍然
+          // 有效的开场白，用它会把那条也顺手收了口——没人答它，且没有任何症状
+          readUpToSeq: k.seq,
         }));
       }
       // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted

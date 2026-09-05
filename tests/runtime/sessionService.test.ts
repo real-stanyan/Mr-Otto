@@ -2026,6 +2026,65 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     store.close();
   });
 
+  // #957 D7：model_usage 要能说出「这笔账是哪只 agent 花的」。daemon 的 recordUsage
+  // 是一个捕获了 session 的闭包，唯一能问到「此刻跑的是谁」的口就是这个方法
+  it("D7：turn 跑着时 currentAgentId 是那只 agent，turn 外一律 null", async () => {
+    const store = newStore();
+    let during: string | null | undefined;
+    let session!: CloudSession;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { during = session.currentAgentId(); return { content: "答" }; },
+      }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    expect(session.currentAgentId()).toBeNull(); // 还没人发言
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled();
+    expect(during).toBe("ops");
+    expect(session.currentAgentId()).toBeNull(); // 排空之后归零，下一笔账不会串到上一只身上
+    store.close();
+  });
+
+  // #957 Task 4c 复审：被踢的那条收口原来取日志尾（lastSeqSeen），而日志尾在
+  // 这一刻已经越过了同一只 agent **更晚**那条仍然有效的开场白 —— 它于是被顺手
+  // 收了口，再也没人答它，且没有任何症状。判据换成「这条开场白自己的 seq」，
+  // 与旁边到顶收口那条同一口径
+  it("B-I1 复审：被踢的 U1 与在籍的 U2 点同一只 agent —— 收口只关掉 U1，U2 照跑", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
+    const u2 = store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[alice]: @运营 看下销量", fromUid: "u2", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    // U2 真的跑了一轮（修之前它被 U1 的收口顺手关掉，一次模型调用都不会发生）
+    expect(seen).toEqual(["ops"]);
+    const kickedEnd = log.find((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"));
+    expect(kickedEnd).toMatchObject({ outcome: "error", agentId: "ops", readUpToSeq: u1.seq });
+    const completed = log.find((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "completed");
+    expect(completed).toBeDefined();
+    expect((completed as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u2.seq);
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
   it("B-I7：名单查询降级到占位 agent 时不挂任何借来的连接器，也不去拉授权（复审 Minor 2）", async () => {
     const store = newStore();
     const seenTools: string[] = [];
