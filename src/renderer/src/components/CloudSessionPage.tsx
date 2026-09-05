@@ -429,10 +429,13 @@ export function CloudSessionPage({
                 onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                 onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
                 onClick={(e) => setCaret(e.currentTarget.selectionStart)}
-                // 失焦就把这个 @ 关掉：一个飘在别处的选人列表比没有更糟。
-                // 点弹层里的行不会走到这儿——那边 onMouseDown 里 preventDefault 了，
-                // 焦点压根没离开过 textarea，所以不需要在这里认那种点击
-                onBlur={() => setDismissedAt(rawPicking?.at ?? null)}
+                // **故意没有 onBlur**：写进 dismissedAt 的是"这个 @ 不要了"这个
+                // 判断，而切窗口不是那个意思——alt-tab 出去再回来，光标一个字没动，
+                // 于是 picking 永远是 null，接着打字列表再也不出来。
+                // 该关的两条路都有人管了：指针点到外面走 onInteractOutside（Radix 的
+                // DismissableLayer 连 focus-outside 一起管），键盘则出不去（Tab /
+                // Shift+Tab 在下面被拦去选人了）。切窗口留着它开着没关系——回来时
+                // 那份候选依然是这句话此刻要的
                 onKeyDown={(e) => {
                   // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
                   // FriendChatView 的既有约定），整段跳过
@@ -487,12 +490,9 @@ export function CloudSessionPage({
                 if (e.detail.originalEvent.target === boxRef.current) return;
                 setDismissedAt(rawPicking?.at ?? null);
               }}
-              className={cn(
-                "w-auto min-w-[200px] max-w-[320px] p-1",
-                // PopoverContent 自带的 data-[state] 动效是 animate-*（不是
-                // transition），所以关它的开关是 animate-none（同 SessionOrb / tool-group）
-                "motion-reduce:animate-none"
-              )}
+              // 进出场在 app.css 的 [data-slot="popover-content"] 那段（手写 keyframes——
+              // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
+              className="w-auto min-w-[200px] max-w-[320px] p-1"
             >
               {options.map((o, i) => (
                 <div
