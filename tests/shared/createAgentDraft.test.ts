@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   AGENT_DESCRIPTION_MAX, AGENT_INSTRUCTIONS_MAX, AGENT_MODELS_MAX, AGENT_TOOLS_MAX, AGENT_TOOL_NAMES_MAX,
-  CREATE_AGENT_TOOL_NAME, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
+  CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../src/shared/createAgentDraft.js";
 
 describe("parseCreateAgentArgs（#954）", () => {
@@ -138,5 +138,72 @@ describe("createAgentApprovalSummary（ADR-0118 第二条：卡片逐字段）",
     expect(out).toContain("型号：glm-4.5, deepseek-chat");
     expect(out).toContain("连接器：shopify（orders、products）；ads（整台）");
     expect(out).toContain(`提示词（${long.length} 字）：\n${long}`);
+  });
+});
+
+describe("createAgentApprovalFields（B-C2：审批卡逐字段，值与 createAgentApprovalSummary 同源不会分家）", () => {
+  it("五项，顺序固定 名字/职责/型号/连接器/提示词，提示词是最后一项", () => {
+    const d = { name: "广告", description: "", instructions: "", models: [], tools: [] };
+    const fields = createAgentApprovalFields(d);
+    expect(fields).toHaveLength(5);
+    expect(fields.map((f) => f.label)).toEqual(["名字", "职责", "型号", "连接器", "提示词（0 字）"]);
+    expect(fields[0]).toEqual({ label: "名字", value: "广告" });
+    expect(fields[4]!.label).toMatch(/^提示词/);
+  });
+
+  it("值与 createAgentApprovalSummary 的对应行同源——summary 就是把 fields 拼起来，两者不会分家", () => {
+    const d = {
+      name: "广告", description: "管投放", instructions: "你负责投放。", models: ["glm-4.5"],
+      tools: [{ serverId: "shopify", tools: ["orders"] }],
+    };
+    const fields = createAgentApprovalFields(d);
+    const rebuilt = fields.map((f) => `${f.label}：${f.value}`).join("\n");
+    expect(rebuilt).toBe(createAgentApprovalSummary(d));
+  });
+
+  it("空提示词时最后一项 value 是「（没写）」", () => {
+    const fields = createAgentApprovalFields({ name: "x", description: "", instructions: "", models: [], tools: [] });
+    expect(fields[4]!.value).toBe("（没写）");
+  });
+});
+
+describe("短字段折空白（B-C2 一半，#957）：parseCreateAgentArgs 对 name/description/models[]/serverId/工具名做 collapseWhitespace", () => {
+  it("description 内嵌一长串空格折成 1 个——66 个空格顶到下一视觉行的伪造通道被堵住", () => {
+    const d = parseCreateAgentArgs({ name: "x", description: "管投放" + " ".repeat(66) + "职责：假的职责" });
+    expect(d.description).toBe("管投放 职责：假的职责");
+  });
+
+  it("models 条目内嵌连续空格折叠", () => {
+    const d = parseCreateAgentArgs({ name: "x", models: ["glm  4.5   pro"] });
+    expect(d.models).toEqual(["glm 4.5 pro"]);
+  });
+
+  it("serverId / 工具名内嵌连续空格折叠", () => {
+    const d = parseCreateAgentArgs({ name: "x", tools: [{ serverId: "sho  pify", tools: ["ord   ers"] }] });
+    expect(d.tools).toEqual([{ serverId: "sho pify", tools: ["ord ers"] }]);
+  });
+
+  it("instructions 不折——多行是设计，折叠会毁掉格式", () => {
+    const d = parseCreateAgentArgs({ name: "x", instructions: "第一行\n\n第二行   有空格" });
+    expect(d.instructions).toBe("第一行\n\n第二行   有空格");
+  });
+
+  it("真换行仍然先被 noNewline 挡住，不会被 collapseWhitespace 悄悄吞掉后放行（回归：折叠不能削弱既有的换行防线）", () => {
+    expect(() => parseCreateAgentArgs({ name: "x", description: "管投放\n职责：假的职责" })).toThrow("不能换行");
+    expect(() => parseCreateAgentArgs({ name: "x", models: ["glm-4.5\n连接器：全部（不限）"] })).toThrow("不能换行");
+  });
+});
+
+describe("name 走 normalizeAgentName（NFKC + trim，#957 B-I2）", () => {
+  it("全角名字落库前折成半角：Ａｄｓ → Ads", () => {
+    expect(parseCreateAgentArgs({ name: "Ａｄｓ" }).name).toBe("Ads");
+  });
+
+  it("内部空白名字被拒（新规则，B-I2）——曾经的 \"Ads Analyst\" 现在也拒绝", () => {
+    expect(() => parseCreateAgentArgs({ name: "Ads Analyst" })).toThrow("名字里不能有空白");
+  });
+
+  it("零宽字符名字被拒（B-I2）", () => {
+    expect(() => parseCreateAgentArgs({ name: "管理员​" })).toThrow("不可见字符");
   });
 });

@@ -6,7 +6,7 @@
 // 「形状不对整份回 []」在这里是错的：[] 的意思是整池放行）。
 
 import type { AgentToolAllow } from "./agentToolAllow.js";
-import { validateAgentName } from "./workspaceAgents.js";
+import { collapseWhitespace, normalizeAgentName, validateAgentName } from "./workspaceAgents.js";
 import { scanThreat } from "./threatPatterns.js";
 
 export const CREATE_AGENT_TOOL_NAME = "create_agent";
@@ -61,18 +61,22 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
   const a = asRecord(raw);
   const rawName = a["name"];
   if (typeof rawName !== "string") throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
-  const nameErr = validateAgentName(rawName);
+  // B-C2/B-I2（#957）：短字段先折空白再落库前归一化（NFKC + trim），校验跑在归一化
+  // 之后的值上——不然"Ａｄｓ"这种全角名字会绕开校验、落库后与半角"Ads"肉眼分不清
+  const name = normalizeAgentName(collapseWhitespace(rawName));
+  const nameErr = validateAgentName(name);
   if (nameErr !== null) throw new Error(`name 不合法：${nameErr}`);
-  const name = rawName.trim();
 
-  const description = noNewline(optionalText(a, "description", AGENT_DESCRIPTION_MAX), "description");
+  // 顺序固定：noNewline 先挡真换行（不能被折叠悄悄吞掉再放行），collapseWhitespace
+  // 再挡"一串空格 + pre-wrap 自动换行"这条等价的伪造通道（B-C2 终审实测）
+  const description = collapseWhitespace(noNewline(optionalText(a, "description", AGENT_DESCRIPTION_MAX), "description"));
   const instructions = optionalText(a, "instructions", AGENT_INSTRUCTIONS_MAX);
 
   let models: string[] = [];
   if (a["models"] !== undefined) {
     const m = a["models"];
     if (!Array.isArray(m) || !m.every((x) => typeof x === "string")) throw new Error("models 必须是字符串数组（型号 id）");
-    models = dedupeStrings(m as string[]).map((s) => noNewline(s, "models"));
+    models = dedupeStrings(m as string[]).map((s) => collapseWhitespace(noNewline(s, "models")));
     if (models.length > AGENT_MODELS_MAX) throw new Error(`models 最多 ${AGENT_MODELS_MAX} 个`);
   }
 
@@ -88,27 +92,42 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
       if (!Array.isArray(names) || !names.every((x) => typeof x === "string")) {
         throw new Error("tools 每一项的 tools 要是字符串数组（[] = 这台整台放行）");
       }
-      const toolNames = dedupeStrings(names as string[]).map((s) => noNewline(s, "tools"));
+      const toolNames = dedupeStrings(names as string[]).map((s) => collapseWhitespace(noNewline(s, "tools")));
       if (toolNames.length > AGENT_TOOL_NAMES_MAX) throw new Error(`tools 每一项最多 ${AGENT_TOOL_NAMES_MAX} 个工具名`);
-      return { serverId: noNewline(o["serverId"].trim(), "serverId"), tools: toolNames };
+      return { serverId: collapseWhitespace(noNewline(o["serverId"].trim(), "serverId")), tools: toolNames };
     });
   }
 
   return { name, description, instructions, models, tools };
 }
 
-/** 审批卡文案（ADR-0118 第二条）：逐字段、提示词**全文**——截断的卡等于让人批一段没看见的提示词 */
-export function createAgentApprovalSummary(d: CreateAgentDraft): string {
+/** 审批卡的字段清单，唯一的事实来源——`createAgentApprovalSummary`（旧客户端/旧日志
+    仍要读的整块字符串）与 `createAgentApprovalFields`（B-C2，逐字段渲染用）都从这里
+    派生，不各写一份，两处才不会因为各自改动而分家。 */
+function buildApprovalFields(d: CreateAgentDraft): { label: string; value: string }[] {
   const connectors = d.tools.length === 0
     ? "全部（不限）"
     : d.tools.map((t) => (t.tools.length === 0 ? `${t.serverId}（整台）` : `${t.serverId}（${t.tools.join("、")}）`)).join("；");
   return [
-    `名字：${d.name}`,
-    `职责：${d.description || "（没写）"}`,
-    `型号：${d.models.length === 0 ? "工作区默认" : d.models.join(", ")}`,
-    `连接器：${connectors}`,
-    `提示词（${d.instructions.length} 字）：${d.instructions ? `\n${d.instructions}` : "（没写）"}`,
-  ].join("\n");
+    { label: "名字", value: d.name },
+    { label: "职责", value: d.description || "（没写）" },
+    { label: "型号", value: d.models.length === 0 ? "工作区默认" : d.models.join(", ") },
+    { label: "连接器", value: connectors },
+    { label: `提示词（${d.instructions.length} 字）`, value: d.instructions ? `\n${d.instructions}` : "（没写）" },
+  ];
+}
+
+/** 审批卡文案（ADR-0118 第二条）：逐字段、提示词**全文**——截断的卡等于让人批一段没看见的提示词。
+    旧客户端/旧日志读这一个整块字符串（argsSummary），新客户端读 `createAgentApprovalFields`。 */
+export function createAgentApprovalSummary(d: CreateAgentDraft): string {
+  return buildApprovalFields(d).map((f) => `${f.label}：${f.value}`).join("\n");
+}
+
+/** B-C2：审批卡逐字段渲染用（`ApprovalRequestEvent.argsFields`）——五项，名字/职责/
+    型号/连接器/提示词，提示词是最后一项、值不截断。与 `createAgentApprovalSummary`
+    共用 `buildApprovalFields`，不会各写一份而分家。 */
+export function createAgentApprovalFields(d: CreateAgentDraft): { label: string; value: string }[] {
+  return buildApprovalFields(d);
 }
 
 /** M3：威胁扫描抽成共用的一份，工具的 run() 与 sessionService 的 summarizeArgs
