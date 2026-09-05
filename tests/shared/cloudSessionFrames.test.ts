@@ -30,6 +30,23 @@ describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）"
     expect(decodeCsUp(encodeCs({ t: "stop" }))).toEqual({ t: "stop" });
   });
 
+  // 复审 C2-I3：桌面按**行**画停止按钮，而不带 turn 标识的 stop 帧一律停"当前
+  // 那一轮"——按第二行那颗，停掉的是第一行。seq 是 add-only 的（协议号仍是 6）
+  it("stop 带 seq 往返；缺席 = 旧客户端，照常解", () => {
+    expect(decodeCsUp(encodeCs({ t: "stop", seq: 7 }))).toEqual({ t: "stop", seq: 7 });
+    expect(decodeCsUp(encodeCs({ t: "stop", seq: 0 }))).toEqual({ t: "stop", seq: 0 });
+    expect(decodeCsUp(encodeCs({ t: "stop" }))).toEqual({ t: "stop" });
+  });
+
+  // 形状不对**整帧无效**，不是"当没带过"：后者会把一条本该被拒的停止悄悄
+  // 升级成"停掉当前那一轮"，正是这个字段要防的那件事
+  it("seq 不是非负整数就整帧拒掉，不降级成不带 seq 的 stop", () => {
+    expect(decodeCsUp(b64({ t: "stop", seq: -1 }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "stop", seq: "7" }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "stop", seq: 1.5 }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "stop", seq: null }))).toBeNull();
+  });
+
   it("say_result 下行往返（有/无 message）", () => {
     expect(decodeCsDown(encodeCs({ t: "say_result", ok: true }))).toEqual({ t: "say_result", ok: true });
     expect(decodeCsDown(encodeCs({ t: "say_result", ok: false, message: "限速了，稍等" }))).toEqual({
@@ -62,5 +79,29 @@ describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）"
   it("decodeCsDown 对形状不对的 approve_result.callId 回 null", () => {
     expect(decodeCsDown(b64({ t: "approve_result", ok: true }))).toBeNull();
     expect(decodeCsDown(b64({ t: "approve_result", callId: 1, ok: true }))).toBeNull();
+  });
+});
+
+describe("denied 帧的服务端协议号（复审 C2-I6，add-only、版本仍是 6）", () => {
+  it("denied 带 v 往返；缺席 = 老服务端，照常解", () => {
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "version_mismatch", v: 6 }))).toEqual({
+      t: "denied",
+      code: "version_mismatch",
+      v: 6,
+    });
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "version_mismatch" }))).toEqual({
+      t: "denied",
+      code: "version_mismatch",
+    });
+    // 别的码不带 v，但真带了也解得出来——解码器不管「该不该带」，只管形状
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "bad_jwt" }))).toEqual({ t: "denied", code: "bad_jwt" });
+  });
+
+  it("v 不是非负整数就整帧拒掉，不降级成不带 v 的 denied", () => {
+    // 一个撒谎的版本号会把方向指反（「云端旧了」vs「你旧了」），比没有版本号更糟
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: "6" }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: -1 }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: 6.5 }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: null }))).toBeNull();
   });
 });

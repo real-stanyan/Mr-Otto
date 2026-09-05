@@ -19,7 +19,7 @@ import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCop
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
 import { decisionLineText, routeChangedText } from "../lib/cloudTimeline.js";
-import { isSystemNote, systemNoteBody } from "../lib/systemNote.js";
+import { isSystemNote, systemNoteBody, systemNoteDetail } from "../lib/systemNote.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -428,8 +428,20 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
   // 名册，agent 名解析不了，agentName 恒传 null——云时间线那份带真名字的
   // 版本在 lib/cloudTimeline.ts 的 systemNoteText，两处共用同一份文案
   // （systemNoteBody），只有"名字从哪查"不同
+  // 后台任务那一档还带一份可展开的详情（第四批 C2-I1）：摘要行只说命令与
+  // 退出码，stdout/stderr 全文折在 <details> 里，默认收着——旁白是一行淡字，
+  // 摊开的几百行输出不该抢时间线。detail 为 null（护栏那一档）时形状一个字
+  // 不变，仍是那条 <div>，旧渲染路径原样保留
   if (isSystemNote(event)) {
-    return <div className={AUDIT}>{systemNoteBody(event, null)}</div>;
+    const body = systemNoteBody(event, null);
+    const detail = systemNoteDetail(event);
+    if (detail === null) return <div className={AUDIT}>{body}</div>;
+    return (
+      <details className={AUDIT}>
+        <summary>{body}</summary>
+        <pre className="mt-1 whitespace-pre-wrap break-words not-italic text-[11px]">{detail}</pre>
+      </details>
+    );
   }
   switch (event.type) {
     // assistant_message 分支从此到不了:EventRow 现在只剩一个调用点(OttoThread 的

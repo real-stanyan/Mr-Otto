@@ -36,16 +36,15 @@ export function CloudSessionMain() {
   // **先取后发**：这个 effect 会因为状态变化重跑，take() 把它从 store 里摘掉
   // 之后再 await，才不会发两遍
   //
-  // **发失败不吞掉原文**（issue #957 C-I6）：cloudSay 回 false 时把原文摆回
-  // 输入框（seedCloudDraft → CloudSessionPage 挂载时取走填进 draft）。开局卡
-  // 这时早已卸载，不摆回去那段文字在任何地方都不再存在——用户只看到一行
-  // 错误，然后得重打一遍；而 composer 那条入口的纪律正相反（「草稿在发送成功
-  // 之后才清」），摆回去就是让它从此归那条纪律管。
-  // **旧协议（≤5）里 say 没有回执**——限速/被踢那类拒绝走 error 帧（随后到达，
-  // 那时 say() 早已回过 true），不在这条 ok:false 路上，所以这一层只接得住
-  // "帧压根没发出去"那一半。协议 6 起的 `say_result` 是根治（ADR-0227 决策 2/6：
-  // cloudSessionClient 的 pendingSay 等它，限速/不在籍/内部失败都从这条 ok:false
-  // 路回来），这块种草稿的兜底**作为双保险保留**——回执帧本身也可能在传输中丢，
+  // **发失败不吞掉原文**（issue #957 C-I6）：cloudSay 失败时把原文交回给
+  // CloudSessionPage（seedCloudDraft → 它挂载时取走）。开局卡这时早已卸载，
+  // 不交回去那段文字在任何地方都不再存在——用户只看到一行错误，然后得重打一遍。
+  // **两种失败去处不同**（第四批 C2-I4）：确定没发出去（`unsent`）摆回输入框，
+  // 从此归 composer 那条既有纪律管（「草稿在发送成功之后才清」）；没收到回执
+  // （`unknown`，15s ACK 超时或连接没了）**不能**摆回输入框——输入框里躺着原文
+  // 就是「再发一次」这个指令的最强信号，而这句话很可能已经落地了，重发就是
+  // 发两遍。那一份走 CloudSessionPage 上方那行带「重新发送」的提示，由人决定。
+  // 这块种草稿的兜底与 `say_result` 回执**并存**：回执帧本身也可能在传输中丢，
   // 而那时唯一还剩的救济就是这里（同 ADR-0227 已知代价里"第二批兜底原样保留"）
   useEffect(() => {
     if (pending === null || state !== "ready" || sessionId === null) return;
@@ -53,8 +52,8 @@ export function CloudSessionMain() {
     if (text === null) return;
     void (async () => {
       // 开局卡那句不 @ 也由名单第一只接（老语义：mentions 缺席）
-      const ok = await cloudSay(text);
-      if (!ok) seedDraft(sessionId, text);
+      const r = await cloudSay(text);
+      if (!r.ok) seedDraft(sessionId, text, r.unknown ? "unknown" : "unsent");
     })();
   }, [pending, state, sessionId, take, cloudSay, seedDraft]);
 

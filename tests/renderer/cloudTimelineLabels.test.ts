@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, createAgentLanded, decisionLineText, hiddenFromCloudTimeline,
-  relayLineText, routeChangedText, systemNoteText, turnEndedLineText, userRowIdentity,
+  relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
@@ -121,9 +121,15 @@ describe("systemNoteText（#957 C-I5 / #936：护栏与后台注话不再是匿�
     const e = { ...base, type: "user_message" as const, content: "你在重复同一组命令…", origin: "loop_guard" as const };
     expect(systemNoteText(e, ws)).toBe("护栏：「某只智能体」在原地打转，已提醒");
   });
-  it("origin:background：后台任务结果已回注", () => {
-    const e = { ...base, type: "user_message" as const, content: "[后台任务 bg-1 完成] ok", origin: "background" as const, backgroundTaskIds: ["bg-1"] };
-    expect(systemNoteText(e, ws)).toBe("后台任务结果已回注");
+  // 第四批 C2-I1：原来这里断言的是一句写死的「后台任务结果已回注」——命令、
+  // 退出码、输出全被吞掉。现在摘要行说事实，全文走 systemNoteDetail
+  it("origin:background：首行 + 括号里的 exit code", () => {
+    const e = {
+      ...base, type: "user_message" as const,
+      content: "[后台任务 bg-3 完成] npm test\nexit code: 137\nstdout:\n killed",
+      origin: "background" as const, backgroundTaskIds: ["bg-3"],
+    };
+    expect(systemNoteText(e, ws)).toBe("[后台任务 bg-3 完成] npm test（exit code: 137）");
   });
   it("没有 origin（人打的话）：null，调用方落回气泡渲染", () => {
     const e = { ...base, type: "user_message" as const, content: "在吗" };
@@ -220,5 +226,28 @@ describe("canStopTurn", () => {
     expect(canStopTurn(noUid, "owner1", cs)).toBe(true);
     expect(canStopTurn(noUid, "initiator1", cs)).toBe(false);
     expect(canStopTurn(noUid, "stranger1", cs)).toBe(false);
+  });
+});
+
+describe("stopButtonRows（第四批 C2-I3：停止按钮只画在每只 agent 最早那行 running 上）", () => {
+  const t = (seq: number, agentId: string, state: OpenTurn["state"]): OpenTurn =>
+    ({ seq, fromUid: "u1", agentId, state });
+
+  it("同一只 agent 两行 running：只取 seq 小的那条", () => {
+    expect(stopButtonRows([t(1, "a_1", "running"), t(5, "a_1", "running")])).toEqual(new Set(["1:a_1"]));
+  });
+
+  it("入参不是升序也取最小的那条——正确性不押在调用方的排序上", () => {
+    expect(stopButtonRows([t(5, "a_1", "running"), t(1, "a_1", "running")])).toEqual(new Set(["1:a_1"]));
+  });
+
+  it("不同 agent 各画各的", () => {
+    const rows = stopButtonRows([t(1, "a_1", "running"), t(2, "a_2", "running")]);
+    expect(rows).toEqual(new Set(["1:a_1", "2:a_2"]));
+  });
+
+  it("queued 不进：停的是「这一轮」，还没起跑的没有可停的东西", () => {
+    expect(stopButtonRows([t(1, "a_1", "queued"), t(2, "a_1", "running")])).toEqual(new Set(["2:a_1"]));
+    expect(stopButtonRows([t(1, "a_1", "queued")])).toEqual(new Set());
   });
 });

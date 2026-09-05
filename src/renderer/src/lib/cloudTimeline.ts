@@ -101,9 +101,11 @@ export function createAgentLanded(events: readonly SessionEvent[], e: SessionEve
     已经把 engine 落这两类事件时改成 `env()`（带 agentId）而不是 `envBase()`
     （见 engine.ts loop_guard/background 两处落盘的注释），查不到/缺席
     才落"某只智能体"这句兜底话（同 assistantLabel 等函数的纪律：不装作
-    答得出这个问题）。正文本身（背 "护栏：" / "后台任务结果已回注" 这两句
-    固定文案）与本机时间线共用一份（lib/systemNote.ts 的 systemNoteBody）
-    ——名字从哪查是两端唯一的差异，文案不让两处各写一遍 */
+    答得出这个问题）。正文本身与本机时间线共用一份（lib/systemNote.ts 的
+    systemNoteBody）——名字从哪查是两端唯一的差异，文案不让两处各写一遍。
+    只回摘要那一行：后台任务那一档还有一份可展开的全文，走同一个文件的
+    systemNoteDetail（第四批 C2-I1），调用方两处各自去取——把两样塞进这个
+    函数的返回值等于让每个只要一行字的 call site 也去解构一个对象 */
 export function systemNoteText(e: UserMessageEvent, ws: WorkspaceSnapshot): string | null {
   if (!isSystemNote(e)) return null;
   return systemNoteBody(e, e.agentId ? agentNameOf(ws, e.agentId) : null);
@@ -169,4 +171,26 @@ export function canStopTurn(
   if (cs.state !== "ready") return false;
   if (turn.state !== "running") return false;
   return selfUid === turn.fromUid || selfUid === cs.ownerUid;
+}
+
+/** 哪几行该画「停止」按钮（第四批 C2-I3）。key = `${seq}:${agentId}`，与
+    `PendingTurnLines` 画每一行时用的那把 key 逐字同一份。
+    为什么不是「每行 running 都画」：`turnLedger` 认不出「那条动静属于哪一轮」
+    （事件上没有 turn id，只有 agentId，见该文件头「已知不精确的一格」），同一只
+    agent 排了两句话时**两行都会读成 running**，而此刻真正在跑的只有最早那一条
+    ——另一行那颗钮点下去停的是别人的轮次。判据因此不是「看起来在跑」而是
+    「每只 agent seq 最小的那条 running」：那是这只 agent 手上唯一可能正在跑的
+    一轮。服务端还会拿 seq 与采样边界再核一次（`not_current`），两道闸各管一头
+    ——这一道让界面不画出点了会停错的钮，那一道让并发窗口里点下去的那次不生效。
+    **取最小 seq 不靠入参顺序**：`openTurns` 眼下是按 seq 升序回的，但「第一条
+    running」与「seq 最小的 running」是两句话，靠前者等于把这个函数的正确性押在
+    调用方的排序上，而那个前提一旦变了这里不会红、只会安静地把钮画到错的行上 */
+export function stopButtonRows(turns: readonly OpenTurn[]): Set<string> {
+  const earliest = new Map<string, number>();
+  for (const t of turns) {
+    if (t.state !== "running") continue;
+    const cur = earliest.get(t.agentId);
+    if (cur === undefined || t.seq < cur) earliest.set(t.agentId, t.seq);
+  }
+  return new Set([...earliest].map(([agentId, seq]) => `${seq}:${agentId}`));
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../../src/renderer/src/lib/agentMentionInput.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/renderer/src/lib/agentMentionInput.js";
 
 describe("mentionQueryAt", () => {
   it("刚打了 @ / 打了一半 / 中文标点后 —— 都算正在打", () => {
@@ -59,5 +59,51 @@ describe("filterAgentCandidates", () => {
     expect(filterAgentCandidates(roster, "")).toHaveLength(3);
     expect(filterAgentCandidates(roster, "店").map((r) => r.name)).toEqual(["运营"]);
     expect(filterAgentCandidates(roster, "ads").map((r) => r.name)).toEqual(["Ads"]);
+  });
+});
+
+// 第四批 C2-I5：五条规则各一例。旧判据（「刷新后名单长度是不是 0」）在下面
+// 第三、第四条上都会走错——前者刷新失败时旧名单还在（长度非 0）于是照发权威
+// 的 `[]`，后者名单是新的但没这个人、同样发 `[]` 且一个字都不说。
+describe("resolveSendMentions", () => {
+  const roster = [{ agentId: "a1", name: "运营" }];
+  it("正文里压根没 @ —— parsed 原样发（那是真的「谁都没点」）", () => {
+    expect(resolveSendMentions({ text: "帮我看下", parsed: [], refreshFailed: false, freshCandidates: null })).toEqual({
+      kind: "send",
+      mentions: [],
+      notice: null,
+    });
+  });
+  it("本地名单就解析得出来 —— 直接发，不看刷新结果", () => {
+    expect(resolveSendMentions({ text: "@运营 看下", parsed: ["a1"], refreshFailed: false, freshCandidates: null })).toEqual({
+      kind: "send",
+      mentions: ["a1"],
+      notice: null,
+    });
+  });
+  it("刷新失败 —— mentions 缺席交给云端解析 + 说出口（旧判据在这里发权威空数组）", () => {
+    // freshCandidates 故意给一份**非空**的旧名单：refreshWorkspaceGroups() 失败时
+    // store 里的名单原样留着，正是旧判据看不出失败的那个形状
+    expect(
+      resolveSendMentions({ text: "@新来的 看下", parsed: [], refreshFailed: true, freshCandidates: roster })
+    ).toEqual({ kind: "send", mentions: undefined, notice: "名单读不出来，这句话的 @ 由云端按名字解析" });
+  });
+  it("名单是新的、里面确实没这个人 —— 拦下来说清是哪个名字", () => {
+    expect(resolveSendMentions({ text: "@小红 看下", parsed: [], refreshFailed: false, freshCandidates: roster })).toEqual({
+      kind: "block",
+      error: "没有叫「小红」的智能体，检查一下名字",
+    });
+  });
+  it("刷新后解析得出来 —— 发新名单算出的那份", () => {
+    expect(resolveSendMentions({ text: "@运营 看下", parsed: [], refreshFailed: false, freshCandidates: roster })).toEqual({
+      kind: "send",
+      mentions: ["a1"],
+      notice: null,
+    });
+  });
+  it("token 超长时截 20 字：不把一整段正文糊进提示里", () => {
+    const long = "x".repeat(30);
+    const r = resolveSendMentions({ text: `@${long} 看下`, parsed: [], refreshFailed: false, freshCandidates: roster });
+    expect(r).toEqual({ kind: "block", error: `没有叫「${"x".repeat(20)}」的智能体，检查一下名字` });
   });
 });
