@@ -12,7 +12,7 @@ import {
 import { BACKLOG_SKIP_MARKER, CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
 import type { CloudSession } from "../../services/runtime/src/sessionService.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
-import { TURN_BUCKET } from "../../services/runtime/src/rateLimit.js";
+import { TURN_BUCKET, throttleMessage } from "../../services/runtime/src/rateLimit.js";
 
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
@@ -1212,6 +1212,46 @@ describe("停止一轮 turn（#957 A-2）", () => {
     expect(sent[0]!.msg).toMatchObject({ ok: false });
     expect(stopCalls).toHaveLength(0); // 没落到 CloudSession.stop
     expect(dropCidCalls).toEqual(["c1"]);
+  });
+
+  it("stop 也过令牌桶（复审 Minor）：超速回 stop_result{ok:false} 且不落到 CloudSession.stop", async () => {
+    const stopCalls: unknown[] = [];
+    const session = fakeSession({ stop: (...args) => { stopCalls.push(args); return "ok"; } });
+    const buckets: string[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (kind) => { buckets.push(kind); return kind !== "stop"; } },
+    });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    buckets.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+
+    // 记的是 stop 桶不是 say 桶（记错桶 = 停止键跟着发言一起被限）
+    expect(buckets).toEqual(["stop"]);
+    expect(stopCalls).toHaveLength(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "stop_result", ok: false });
+    // 说的是"按得太快"不是"停不下来"——后者会让人以为那一轮还在跑
+    expect((sent[0]!.msg as { message: string }).message).toBe(throttleMessage("stop"));
+  });
+
+  it("被踢的人按停止：在籍复查排在限流之前 —— 拿到的是「你不在这了」不是「慢一点」", async () => {
+    let member = true;
+    const { deps, sent } = makeDeps({
+      isMember: async () => member,
+      rateLimit: { allow: () => false }, // 四档全空，但它不该是第一个说话的
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false;
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
+    expect(sent.map((s) => s.msg.t)).toEqual(["stop_result", "denied"]);
+    expect((sent[0]!.msg as { message: string }).message).toContain("不在这个工作区");
   });
 
   it("未过 hello 就发 stop → denied not_authorized，不落到 CloudSession.stop", async () => {

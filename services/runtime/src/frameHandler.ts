@@ -482,6 +482,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "stop_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
+          // 停止键也有桶（复审 Minor）：它不起模型调用、看着是免费的，但每一次
+          // 成功的 stop 都往日志里落一条系统发言——日志是这条会话唯一的事实
+          // 来源，按住不放能把它刷成一屏「某某停止了」。在籍复查之前不扣
+          // （同 say：被踢的人该拿到"你不在这了"，不是"慢一点"）
+          if (!deps.rateLimit.allow("stop", entry.uid)) {
+            deps.send(cid, { t: "stop_result", ok: false, message: throttleMessage("stop") });
+            return;
+          }
           const outcome = session.stop(entry.uid, entry.label);
           if (outcome === "ok") {
             deps.send(cid, { t: "stop_result", ok: true });

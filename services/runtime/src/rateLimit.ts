@@ -20,16 +20,21 @@ export interface BucketSpec {
   refillPerMin: number;
 }
 
-/** 三档闸门的取值。数字的依据都是"一个人手动操作能有多快"，不是压测出来的：
+/** 四档闸门的取值（stop 是 #957 第三批加的第四档）。数字的依据都是"一个人手动操作能有多快"，不是压测出来的：
     - say：群里连着说话，一分钟 30 条已经是很热闹的聊天了（突发 30）
     - turn：每条 @Agent 都可能起一次模型调用 = 真花钱。一分钟 4 次 =
       平均 15 秒一轮，比人类跟 agent 来回的节奏还宽松；突发 10 接住
       "连着补几句上下文"这种真实形态
     - create：建会话是低频动作（每条 = 一行 Supabase + 一个常驻房间 +
-      一份 EventStore），一分钟 2 次、突发 5 足够 */
+      一份 EventStore），一分钟 2 次、突发 5 足够
+    - stop：停止键是**免费**的（不起模型调用），但它不是没有代价——每一次
+      成功的 stop 都往日志里落一条系统发言，而日志是这条会话唯一的事实来源
+      （#957 第三批复审）。按住不放能把一条会话的日志刷成一屏「某某停止了」。
+      一分钟 10 次、突发 5：手点停止一分钟点不到 10 次，脚本能 */
 export const SAY_BUCKET: BucketSpec = { capacity: 30, refillPerMin: 30 };
 export const TURN_BUCKET: BucketSpec = { capacity: 10, refillPerMin: 4 };
 export const CREATE_BUCKET: BucketSpec = { capacity: 5, refillPerMin: 2 };
+export const STOP_BUCKET: BucketSpec = { capacity: 5, refillPerMin: 10 };
 
 /** 被限流时的日志窗口：同一个 uid 在这段时间里只记一笔（ADR-0167 同款）。 */
 const THROTTLE_LOG_WINDOW_MS = 60_000;
@@ -80,7 +85,7 @@ export function createRateLimiter(spec: BucketSpec, now: () => number = Date.now
   };
 }
 
-export type ThrottleKind = "say" | "turn" | "create";
+export type ThrottleKind = "say" | "turn" | "create" | "stop";
 
 export interface FrameRateLimiter {
   /** true = 放行。false = 超速，调用方负责回一条**看得见**的拒绝
@@ -91,7 +96,7 @@ export interface FrameRateLimiter {
   allow(kind: ThrottleKind, uid: string, n?: number): boolean;
 }
 
-/** 三档合一，外加"被限流的一个时段只记一笔"的日志收口。 */
+/** 四档合一，外加"被限流的一个时段只记一笔"的日志收口。 */
 export function createFrameRateLimiter(opts: {
   now?: () => number;
   /** 记一笔"某某在超速"。同一个 (kind, uid) 一分钟只调一次 */
@@ -102,6 +107,7 @@ export function createFrameRateLimiter(opts: {
     say: createRateLimiter(SAY_BUCKET, now),
     turn: createRateLimiter(TURN_BUCKET, now),
     create: createRateLimiter(CREATE_BUCKET, now),
+    stop: createRateLimiter(STOP_BUCKET, now),
   };
   const loggedAt = new Map<string, number>();
 
@@ -130,5 +136,8 @@ export function throttleMessage(kind: ThrottleKind): string {
       return "建会话太频繁了，稍等一会儿再试。";
     case "say":
       return "发得太快了，稍等一会儿再说。";
+    case "stop":
+      // 说"停止键按得太快"而不是"停不下来"：后者会让人以为那一轮还在跑
+      return "停止按得太快了，稍等一会儿再按。";
   }
 }

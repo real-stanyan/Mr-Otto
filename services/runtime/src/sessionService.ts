@@ -145,7 +145,11 @@
 // 自查第三批（#957 A-2 / A-8）补上了这条会话此前**根本没有的出口**：
 //   ⑩ **stop()**：`abortTurn()` 在整个 services/runtime 里曾经零调用，cs 协议里
 //      也没有 stop 帧——一条跑飞的云 turn 谁都停不下来，而烧的是 owner 的钱。
-//      现在 `currentEngine` 在 runJob 里被记下来（engineFor 之后、finally 清），
+//      现在 runJob 记两样：`currentJob`（一进门就置，"欠着一轮"的判据）与
+//      `currentEngine`（**`runLoggedTurn` 前一行**才置，"打得动"的判据，中间不许
+//      有 await —— `engine.turnAbort` 要到 runFrom 里才 new 出来）。两者之间那段
+//      窗口（几次真网络往返）里按下的停止走 `stopRequested`，由 runJob 起跑前
+//      自查、当场落一条真收口的 turn_ended{aborted}。
 //      stop() 用与审批**同一条**判据（router.canDecide）决定谁按得动。副作用：
 //      runJob 里那行 `if (outcome === "completed") await relayAfterTurn(...)` 的
 //      aborted 分支在云端从此不再是死代码。
@@ -327,10 +331,11 @@ export interface CloudSession {
       daemon（它才有 supabase 句柄和 transport）——同这个文件里其余部分
       的分工，纯逻辑不碰 IO。 */
   archive(byLabel: string): boolean;
-  /** 此刻**能停**的那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
-      与 `currentAgentId()` 的区别是判据不是「runJob 走到哪儿」而是「engine 拿到手
-      了没有」——起跑前那一段（验籍/取名单/brief/取记忆）还没有可中断的对象，
-      `abortTurn()` 打在空气上。回一个对象而不是布尔：`initiatorUid` 是
+  /** 此刻**欠着的**那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
+      判据是「runJob 手上有没有 job」，**不是**「engine 拿到手了没有」——起跑前
+      那一段是几次真网络往返（验籍 / 取名单 / 取记忆 / 拉代理授权），那期间界面上
+      那行已经在转了，答"没有在跑"是撒谎。打不打得动是另一回事，由 `stop()` 内部
+      分两条路处理（见那边的说明）。回一个对象而不是布尔：`initiatorUid` 是
       「谁能停」那条判据的另一半（同 approve），调用方不必再问第二个口 */
   running(): { agentId: string; initiatorUid: string } | null;
   /** 停这一轮（#957 A-2）。ADR-0006 的「无步数天花板」前提是「用户就在屏幕前
@@ -342,9 +347,14 @@ export interface CloudSession {
       - `"not_allowed"`：判据与审批**逐字同一条**——`router.canDecide`（发起人或
         owner）。两处用同一个函数而不是各写一遍：一个能停别人 turn 的人和一个
         能替别人批危险工具的人，本来就该是同一批人
-      - `"ok"`：信号已翻转。**已排队未跑的 job 照旧**（停的是「这一轮」，不是清
-        队列）；停掉的那一轮**不接力**（runJob 的 `outcome === "completed"` 判据，
-        原来是一行走不到的死防御，现在它是活的）
+      - `"ok"`：这一轮停定了。**两条路**（复审 Important）——engine 已经在跑就
+        翻它的中断信号；还停在起跑前那几次网络往返里（`engine.turnAbort` 尚未
+        存在，`abortTurn()` 会是一次静默无操作）就记一个号，runJob 起跑前自查、
+        当场落一条真收口的 `turn_ended{aborted}`。两条路的可观测结果一样：一条
+        aborted 收口 + 群里一句话 + 不接力。
+        **已排队未跑的 job 照旧**（停的是「这一轮」，不是清队列）；停掉的那一轮
+        **不接力**（runJob 的 `outcome === "completed"` 判据，原来是一行走不到的
+        死防御，现在它是活的）
       群里落一条系统发言说是谁停的：别人只看到 agent 突然不说话了是很糟的体验，
       与归档那句走同一条路 */
   stop(byUid: string, byLabel: string): "ok" | "idle" | "not_allowed";
@@ -369,13 +379,31 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
-  /** 此刻正在跑的那台 engine（#957 A-2）——`stop()` / `archive()` 唯一够得着
-      `abortTurn()` 的口。runJob 在 `engineFor(spec)` **拿到手之后**置位、`finally`
-      清：起跑前那一段（验籍/取名单/brief/取记忆）还没有可中断的对象，
-      那时置位等于让 stop 回一句"停了"而 turn 照跑到底。
+  /** 此刻这条会话手上有活的那个 job（#957 A-2 复审）。runJob **一进门**就置位
+      （紧挨 `router.setInitiator`）、`finally` 清——它回答的是"有没有欠着的一轮"，
+      不是"engine 拿到手了没有"。停止键的 idle 判据用它：起跑前那一段
+      （验籍 / `agents()` / brief / 取记忆 / `hostUids()` + `fetchGrantedTools`
+      每个成员一次 edge 往返）是几次真网络调用，人在那个窗口里按停止，回一句
+      "此刻没有正在跑的 turn"是撒谎——他明明看着那一行在转 */
+  let currentJob: { agentId: string; fromUid: string } | null = null;
+  /** 此刻**打得动**的那台 engine（#957 A-2 复审 Important）——`abortTurn()` 唯一
+      够得着的口。位置很讲究：`runLoggedTurn` 的**前一行**置位，中间不许有
+      `await`。初版置在 `engineFor(spec)` 之后，而那之后还隔着
+      `hostUids()` + `fetchGrantedTools()` 两次网络往返；`engine.turnAbort` 要到
+      `runFrom` 里才 new 出来，于是那个窗口里 `abortTurn()` 是 `undefined?.abort()`
+      ——一次**无操作**：回执说"停了"、群里也写了"停止了"，而这一轮照跑到底、
+      照样记在 owner 账上。`archive()` 走同一条路，同一个洞。
       与 `engines` 那张缓存表分开：那张按 agentId 存着**所有**建过的 engine，
-      回答的是"这只 agent 的 engine 在哪"；这一个回答的是"此刻在跑的是哪台" */
+      回答的是"这只 agent 的 engine 在哪"；这一个回答的是"此刻打得动的是哪台" */
   let currentEngine: LoopEngine | null = null;
+  /** 「已经按过停止，但那一刻还没有 engine 可打」（#957 A-2 复审）。engine 拿到
+      手之前的那一段窗口里，停止键唯一能做的就是记一个号，由 runJob 在起跑前
+      自己查一次、当场落一条**真收口**的 `turn_ended{aborted}` 然后 return。
+      为什么必须是真收口而不是静默 return：开场白早在 say() 那一刻就落盘了
+      （#932 坑 ②），没有一条 turn_ended 的话 `openTurns` 把它**永远**算作
+      「排队中」——界面上那行转到天荒地老，daemon 每次重启还会把它重新排上跑
+      一遍（每遍都花 owner 的钱）。`finally` 清：作用域是一个 job，不是一条会话 */
+  let stopRequested = false;
   // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
   // 归档那一半，所以只看有没有 session_archived
   let archived = seed.some((e) => e.type === "session_archived");
@@ -637,25 +665,35 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
-  /** 此刻能停的那一轮（#957 A-2）。判据是 `currentEngine` 而不是
-      `coordinator.isRunning()`：后者在协调器取空队列之前一直是 true，包括
-      runJob 起跑前那一段还没有 engine 可打的窗口 */
+  /** 此刻能停的那一轮（#957 A-2）。判据是 `currentJob` 而不是 `currentEngine`：
+      「有没有欠着的一轮」与「打得动它了没有」是两件事，前者从 runJob 一进门
+      就成立，后者要到 `runLoggedTurn` 前一行。用后者判 idle 会让起跑前那一段
+      （几次真网络往返）里的停止请求拿到一句"此刻没有正在跑的 turn"——而人正
+      看着那一行在转。也不是 `coordinator.isRunning()`：那个在协调器取空队列
+      之前一直是 true，包括队列已空但 drain 还没走出循环的那一拍 */
   function runningNow(): { agentId: string; initiatorUid: string } | null {
-    if (!currentEngine || currentAgentId === null || currentInitiator === null) return null;
-    return { agentId: currentAgentId, initiatorUid: currentInitiator };
+    if (!currentJob) return null;
+    return { agentId: currentJob.agentId, initiatorUid: currentJob.fromUid };
   }
 
   /** 停掉此刻在跑的那一轮（#957 A-2）。**不判权限**——两个调用点各自判过：
       `stop()` 判 `router.canDecide`，`archive()` 的权限 frameHandler 收帧时
-      就判过（owner 或建会话的人）。没有在跑的 turn 时是无操作，回 false。
-      `abortTurn()` 本身只是翻一个信号：turn_ended{outcome:"aborted"} 由 engine
-      在它自己的 catch 里落（既有路径，不新增事件类型），所以它**晚于**这里
-      落的这条系统发言、也晚于归档那两条事件——一条已经翻了 archived 标志的
-      会话仍然要等它，daemon 的收房因此改成等 `settled()`（A-8 的另一半）。 */
+      就判过（owner 或建会话的人）。没有 job 在手时是无操作，回 false。
+      **两条路，取决于此刻打不打得动**（复审 Important）：
+      - `currentEngine` 在 → `abortTurn()` 翻信号。turn_ended{outcome:"aborted"}
+        由 engine 在它自己的 catch 里落（既有路径，不新增事件类型），所以它
+        **晚于**这里落的这条系统发言、也晚于归档那两条事件——一条已经翻了
+        archived 标志的会话仍然要等它，daemon 的收房因此改成等 `settled()`
+        （A-8 的另一半）。
+      - 还没到 `runLoggedTurn`（起跑前那几次网络往返）→ `engine.turnAbort` 压根
+        还不存在，`abortTurn()` 是一次静默无操作。记一个号，由 runJob 在起跑前
+        自己查、当场落真收口。**不能在这里替它落 turn_ended**：runJob 随后还会
+        走它自己那条路（合成收口 / engine 收口），两条一起落就是同一轮记两遍。 */
   function abortCurrent(byLabel: string): boolean {
     const cur = runningNow();
-    if (!cur || !currentEngine) return false;
-    currentEngine.abortTurn();
+    if (!cur) return false;
+    if (currentEngine) currentEngine.abortTurn();
+    else stopRequested = true;
     // 说出口（同 ADR-0168「撤销要说出口」那条纪律）：只把信号翻掉的话，"有人
     // 按了停止"和"模型这一轮碰巧没话说"在群里长得一模一样，而这两件事该做的
     // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId
@@ -825,6 +863,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     router.setInitiator(job.fromUid);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
+    // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
+    // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
+    currentJob = { agentId: job.agentId, fromUid: job.fromUid };
     // engine 起跑之前抛错，收口就没人写了（#932 终审 Blocking ②）：agents()
     // 查询挂了、briefIfNeeded 落盘失败、adapterFor 抛错——drain 的 catch 只
     // 打一行日志，而开场白已经落盘、它的 mentions 里有这只 agent，于是
@@ -896,10 +937,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       specNames.set(spec.agentId, spec.name);
       await loadMemoryIfChanged(spec);
       const engine = engineFor(spec);
-      // 停止键够得着的那一刻（#957 A-2）：**拿到 engine 之后**才置位。在这之前
-      // 置位（比如一进 runJob 就写）等于让 stop() 回一句"停了"、而这一轮从
-      // engineFor 之后照跑到底——一个说了谎的回执比没有回执更糟
-      currentEngine = engine;
 
       // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：
       // spec.degraded = 这份名单是 workspace_agents 查询失败时的占位，它的
@@ -942,6 +979,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 同一次 @ 落两条 agent_relay（还会把 decideRelay 的周期护栏诓成
       // 「打转」）——用起跑前的日志尾，只圈进这一轮**自己**产出的话
       const scanFrom = store.load(sessionId, { afterSeq: job.opening.seq }).at(-1)?.seq ?? job.opening.seq;
+      // **起跑前查一次停止键**（#957 A-2 复审 Important）：上面那几步是几次真
+      // 网络往返（isMember / agents / 记忆 / hostUids + 每个成员一次 edge），人在
+      // 这个窗口里按下的停止此刻还打不到任何 engine 身上——`abortCurrent` 只记了
+      // 一个号，收口归这里。
+      // 落**真收口**而不是静默 return：开场白早已落盘（#932 坑 ②），没有 turn_ended
+      // 的话 openTurns 把它永远算作「排队中」，界面上那行转到天荒地外，daemon 每次
+      // 重启还会把它重新排上再跑一遍（每遍都花 owner 的钱）。
+      // `readUpToSeq` 取落盘那一刻的日志尾而不是 `job.opening.seq`：折叠进同一个
+      // job 的那几条开场白（协调器去重）也要一起收口，同 #957 F1 的两处合成收口。
+      // outcome 用 "aborted" 而不是 "error"：人按了停止不是故障（同 engine 自己
+      // 那条路），而且**不接力**——下面那行 `outcome === "completed"` 走不到
+      if (stopRequested) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "aborted",
+          agentId: job.agentId,
+          readUpToSeq: lastSeqSeen,
+        }));
+        return;
+      }
+      // 停止键**打得动**的那一刻（#957 A-2 复审 Important）：置位与
+      // `runLoggedTurn` 之间**不许有 await**。`engine.turnAbort` 要到 `runFrom`
+      // 里才 new 出来，早置位就是给出一个"停了"的假回执——初版置在 engineFor
+      // 之后，中间还隔着 hostUids/fetchGrantedTools 两次网络往返
+      currentEngine = engine;
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
       // 两遍、时间线画两遍
@@ -970,6 +1034,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // stop() 会对一台已经收口的 engine 调 abortTurn()——那是无操作，但回执
       // 会说"ok，停了"，而群里那句"某某停止了这一轮"指的是一轮早已结束的 turn
       currentEngine = null;
+      currentJob = null;
+      // 作用域是**一个 job**，不是一条会话（复审）：一句话点了两只 agent 时，
+      // 停掉第一只不该顺手把第二只也判死——那是"清队列"，而 stop 停的是这一轮
+      stopRequested = false;
     }
   }
 
